@@ -376,6 +376,27 @@ fn read_pending(tx: &mut Tx<'_>, id: &CommitId) -> Result<Option<CommitBlob>> {
     Ok(decode(&bytes).ok())
 }
 
+/// Examines pending commit `id` (stored as `b`) again as one step: a commit refused leaves
+/// nothing of its examination or apply, and bad input forgets it. `None` when it was bad.
+fn retry_pending(tx: &mut Tx<'_>, id: CommitId, b: CommitBlob) -> Result<Option<Ingested>> {
+    let things: Vec<Tid> = if b.header.kind.is_role() { b.header.aspects.iter().map(|a| a.tid).collect() } else { Vec::new() };
+    match tx.step(Step::Commit, |tx| ingest_blob(tx, b, Origin::Remote)) {
+        Ok(out) => Ok(Some(out)),
+        Err(e) if e.class() == ErrorClass::BadInput => {
+            tx.txn.remove_pending(&id, Shred::Yes)?;
+            crate::retention::forget_waiting_leftovers(tx, &id)?;
+            tx.core.ix.pending.remove(&id);
+            keys::forget_unchecked(tx, &id)?;
+            // secrets read from its boxes go unless something else reads them
+            crate::rotation::mark_lost_due(tx, things)?;
+            let now = tx.now();
+            tx.core.events.diagnostic(Diagnostic { kind: DiagnosticKind::BadInput, tids: Vec::new(), commit: Some(id), peer: None, detail: e.to_string() }, now);
+            Ok(None)
+        }
+        Err(e) => Err(e),
+    }
+}
+
 /// Checks a commit and decodes its parts, or says why it waits.
 ///
 /// Invariant (delivery-shape independence, spec/commits.md §4): what applies is a function of the
@@ -608,7 +629,7 @@ fn judge_part(tx: &mut Tx<'_>, h: &Header, id: &CommitId, p: &osis_commit::Part,
         minted_record(h, id, p, &a.tid, interner)?;
     }
     let mut blobs = TxBlobs::new(&mut tx.blobs, tx.txn.is_memory());
-    let mut paged = BlobReader::new(dedup, &mut blobs).with_page_params(crate::engine::blobs::page_params(h));
+    let mut paged = BlobReader::new(dedup, &mut blobs);
     let reader: &mut dyn osis_crdt::PageSource = &mut paged;
     // a snapshot's carried writes stamped after the commit (spec/crdt.md §8: a node's next stamp
     // exceeds every stamp it holds, §2.2)
@@ -702,10 +723,23 @@ fn ingest_class(tx: &mut Tx<'_>, mut blob: CommitBlob, origin: Origin) -> Result
             return Ok(Ingested::Duplicate(id));
         }
     }
+    if tx.core.memory_tx
+        && origin == Origin::Remote
+        && tx.core.ix.commits.contains_key(&id)
+        && let Some(out) = memory::memory_gate(tx, &mut blob, &id)?
+    {
+        return Ok(out);
+    }
     if tx.core.ix.commits.contains_key(&id) {
         return late_parts(tx, &id, blob);
     }
     blob = with_pending(tx, &id, blob)?;
+    if tx.core.memory_tx
+        && origin == Origin::Remote
+        && let Some(out) = memory::memory_gate(tx, &mut blob, &id)?
+    {
+        return Ok(out);
+    }
     let received = tx.now();
     let _s = crate::costs::span("examine");
     let out = match examine(tx, &mut blob, &id, &BTreeSet::new(), origin)? {
@@ -1266,9 +1300,11 @@ impl Engine {
 
     /// Receives a memory commit (session form, spec/commits.md §2-§3) through the commit path,
     /// every row it derives in memory. `room`: what holding it may cost, as `memory_charge`
-    /// counts it (the node cap, spec/sync.md §9 Caps): when its parts not held here could cost
-    /// more decoded (`memory::part_bound`, from their bytes alone) it is `TooLarge`, nothing of
-    /// it decoded, held or kept waiting. Hidden: no production caller until received ephemeral
+    /// counts it (the node cap, spec/sync.md §9 Caps): it waits undecoded until every blob its
+    /// chunk list names is held, and when its parts not held here could cost more decoded
+    /// (`memory::new_parts_bound`, from their bytes and their pages') it is `TooLarge`, nothing
+    /// of it decoded, held or kept waiting (`memory::memory_gate`). One that waits is applied
+    /// only by `apply_waiting_memory`, within the room then. Hidden: no production caller until received ephemeral
     /// commits leave `ingest_ephemeral` (issues/eph-unify.md step B); `ingest` refuses them so a
     /// writer cannot slip one in through the durable lane meanwhile.
     #[doc(hidden)]
@@ -1281,19 +1317,16 @@ impl Engine {
         let memory = room.is_some();
         let _s = crate::costs::span("ingest");
         let mut fresh = false;
+        self.core.memory_room = room;
         let r = self.run(|tx| {
             let decoded = CommitBlob::decode(bytes);
             if matches!(&decoded, Ok(b) if b.header.ephemeral.is_some() != memory) {
                 return Err(Error::BadInput(if memory { "a durable commit on the memory path" } else { "an ephemeral commit on the durable path" }));
             }
-            // a memory commit links no blob and stores nothing durable (spec/commits.md §2)
-            if let Some(room) = room {
+            // a memory commit stores nothing durable; it is decoded only within `room`
+            // (`memory::memory_gate`)
+            if room.is_some() {
                 tx.set_memory();
-                if let Ok(b) = &decoded
-                    && memory::new_parts_bound(tx, b)? > room
-                {
-                    return Ok(Ingested::TooLarge(b.id()));
-                }
             } else {
                 fresh = !tx.store_blobs(blobs)?.is_empty();
             }
@@ -1315,6 +1348,7 @@ impl Engine {
                 Err(e) => Err(e.into()),
             }
         });
+        self.core.memory_room = None;
         if fresh && r.is_ok() {
             self.blobs_stored();
         }
@@ -1411,9 +1445,20 @@ impl Engine {
             let _s = crate::costs::span("reexamine: round");
             let progressed = self.run(|tx| {
                 let mut blobs: Vec<(CommitId, CommitBlob)> = Vec::new();
+                let pending = &tx.core.ix.pending;
+                tx.core.memory_waits.retain(|id| pending.contains_key(id));
                 for id in ids {
+                    // a memory commit waits for node-sync, which applies it within its label's
+                    // room (`apply_waiting_memory`)
+                    if tx.core.memory_waits.contains(&id) {
+                        continue;
+                    }
                     tx.core.waits.examined += 1;
                     if let Some(b) = read_pending(tx, &id)? {
+                        if b.header.ephemeral.is_some() {
+                            tx.core.memory_waits.insert(id);
+                            continue;
+                        }
                         blobs.push((id, b));
                     }
                 }
@@ -1421,23 +1466,7 @@ impl Engine {
                 tx.core.touch();
                 let mut progressed = false;
                 for (id, b) in blobs {
-                    let things: Vec<Tid> = if b.header.kind.is_role() { b.header.aspects.iter().map(|a| a.tid).collect() } else { Vec::new() };
-                    // one step: a commit refused leaves nothing of its examination or apply
-                    match tx.step(Step::Commit, |tx| ingest_blob(tx, b, Origin::Remote)) {
-                        Ok(Ingested::Applied(_)) => progressed = true,
-                        Ok(_) => {}
-                        Err(e) if e.class() == ErrorClass::BadInput => {
-                            tx.txn.remove_pending(&id, Shred::Yes)?;
-                            crate::retention::forget_waiting_leftovers(tx, &id)?;
-                            tx.core.ix.pending.remove(&id);
-                            keys::forget_unchecked(tx, &id)?;
-                            // secrets read from its boxes go unless something else reads them
-                            crate::rotation::mark_lost_due(tx, things)?;
-                            let now = tx.now();
-                            tx.core.events.diagnostic(Diagnostic { kind: DiagnosticKind::BadInput, tids: Vec::new(), commit: Some(id), peer: None, detail: e.to_string() }, now);
-                        }
-                        Err(e) => return Err(e),
-                    }
+                    progressed |= matches!(retry_pending(tx, id, b)?, Some(Ingested::Applied(_)));
                 }
                 Ok(progressed)
             })?;
@@ -1445,6 +1474,34 @@ impl Engine {
                 return Ok(());
             }
         }
+    }
+
+    /// Applies waiting memory commit `id` (pending for its blobs, its `ts` or an epoch) if its
+    /// wait is over, within `room`, what holding it may cost under its label's cap now
+    /// (spec/sync.md §9 Caps, `memory::memory_gate`): `TooLarge` when its bound passes it, nothing
+    /// of it kept. `None` when it is not waiting here. Waiting memory commits are applied only
+    /// so, never by `reexamine`: the room is node-sync's.
+    pub fn apply_waiting_memory(&mut self, id: &CommitId, room: u64) -> Result<Option<Ingested>> {
+        if !self.core.ix.pending.contains_key(id) {
+            self.core.memory_waits.remove(id);
+            return Ok(None);
+        }
+        let id = *id;
+        self.core.memory_room = Some(room);
+        let r = self.run(|tx| {
+            tx.set_memory();
+            let Some(b) = read_pending(tx, &id)? else { return Ok(None) };
+            tx.core.touch();
+            retry_pending(tx, id, b)
+        });
+        self.core.memory_room = None;
+        if !self.core.ix.pending.contains_key(&id) {
+            self.core.memory_waits.remove(&id);
+        }
+        if let Ok(Some(Ingested::Applied(_))) = &r {
+            self.reexamine()?;
+        }
+        r
     }
 
     /// Starts or stops syncing `tid` and what its `group.0` holds, now and as it changes.
@@ -1936,7 +1993,7 @@ fn examine_stored(tx: &mut Tx<'_>, blob: &CommitBlob, id: &CommitId) -> Result<V
         let a = h.aspects.get(p.ai).ok_or(Error::Corrupt("part index"))?;
         let dedup = tx.core.dedup(&a.tid).ok_or(Error::Corrupt("dedup"))?;
         let mut blobs = TxBlobs::new(&mut tx.blobs, tx.txn.is_memory());
-        let mut paged = BlobReader::new(&dedup, &mut blobs).with_page_params(crate::engine::blobs::page_params(&h));
+        let mut paged = BlobReader::new(&dedup, &mut blobs);
         let reader: &mut dyn osis_crdt::PageSource = &mut paged;
         out.push((p.ai, osis_commit::read_part_whole(&h, id, p.ai, checked(&p.delta), &mut interner, Some(reader)).map_err(|_| Error::Corrupt("stored delta"))?));
     }

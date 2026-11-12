@@ -3,8 +3,8 @@
 //! `pass/`), with every record about them kept in memory (`State::memory_entries`, the store's
 //! memory overlay for their blobs). What stays particular to the class is here: the node cap on
 //! what others make this node hold per label (`SyncConfig::ephemeral_bytes`: a received memory
-//! commit is ingested within the room left, `ingest_memory_entry`), the share of it unverified
-//! commits may wait in, entries that never fit, the restart reconciliation (the entries a
+//! commit is decoded and applied only within the room left, at arrival, `ingest_memory_entry`,
+//! and after waiting, `apply_waiting`), entries that never fit, the restart reconciliation (the entries a
 //! persisted cursor passed are in no memory after a start), the headers of forgotten memory
 //! commits (their entries are deleted at hosts by them), the hold-back and coalescing of own
 //! writes while an own upload is in flight (`coalesce_own`), and relay-only commits (ephemeral signals:
@@ -159,8 +159,8 @@ impl RelaySeen {
     }
 }
 
-/// Entries of a label refused for its cap or share here, with the label's held and pending
-/// charges when the last was refused: fetched again once either dropped below that (room
+/// Entries of a label refused for its cap here, with the label's charge when the last was
+/// refused: fetched again once either dropped below that (room
 /// appeared), never while nothing changed.
 #[derive(Clone, Default)]
 pub(crate) struct Refused {
@@ -179,13 +179,13 @@ pub(crate) struct Forgotten {
 /// The memory class's state beside the sync records (all in memory).
 #[derive(Clone, Default)]
 pub(crate) struct Memory {
-    /// Entries refused for the label's cap or share here (their bytes dropped, their record
+    /// Entries refused for the label's cap here (their bytes dropped, their record
     /// kept unopened): fetched again once room appears (`retry_refused`), not before.
     pub refused: BTreeMap<LabelId, Refused>,
     /// Entries that can never fit their label's cap here (encoded past the whole cap, or a part
     /// whose decoded bound is): not fetched again. Forgotten when a host deletes them.
     pub unfit: PerLabel,
-    /// Labels whose cap or share refusal was reported (once until room appears).
+    /// Labels whose cap refusal was reported (once until room appears).
     pub reported: BTreeSet<LabelId>,
     /// Forgotten memory commits with entries still known (`Engine::take_memory_drops`).
     pub forgotten: BTreeMap<CommitId, Forgotten>,
@@ -201,8 +201,8 @@ pub(crate) struct Memory {
     pub coalesced: BTreeSet<CommitId>,
     /// Relay-only entries received (`RelaySeen`).
     pub relays: RelaySeen,
-    /// Memory commits from others charged their bytes while they waited (pending: a page, a
-    /// record, drift): charged as held once they apply (`recharge_applied`).
+    /// Memory commits from others charged their bytes while they wait (pending: their blobs,
+    /// drift, an epoch): applied within their labels' room (`apply_waiting`).
     pub waiting: BTreeSet<CommitId>,
 }
 
@@ -245,7 +245,7 @@ impl SyncEngine {
         for (t, ak) in invalidated {
             self.memory_relist_thing(&t, &ak, out)?;
         }
-        self.recharge_applied()?;
+        self.apply_waiting()?;
         self.retry_refused();
         let signals = self.engine.take_signals();
         for c in signals {
@@ -416,28 +416,75 @@ impl SyncEngine {
         self.memory.forgotten_pages.get(b).is_some_and(|c| !self.engine.memory_body_held(c))
     }
 
-    /// Memory commits that waited and applied since are charged what they cost held
-    /// (`Engine::memory_charge`, their pages' decoded content included), as an arrival that
-    /// applied at once is; those forgotten or still waiting are left.
-    fn recharge_applied(&mut self) -> Result<()> {
-        let done: Vec<CommitId> = self.memory.waiting.iter().filter(|c| !self.engine.memory_pending(c)).copied().collect();
-        for c in done {
-            self.memory.waiting.remove(&c);
-            if !self.engine.memory_body_held(&c) {
+    /// Memory commits from others that wait (for their blobs, their `ts`, an epoch) are applied
+    /// by the engine only within the room their labels' caps leave now, counting each entry's
+    /// charge while it waited (`Engine::apply_waiting_memory`: nothing of one decoded past it,
+    /// spec/sync.md §9 Caps). Applied, each entry is charged what the commit costs held; past the
+    /// room, refused as an arrival past it is; still waiting, left.
+    pub(crate) fn apply_waiting(&mut self) -> Result<()> {
+        let cap = self.cfg.ephemeral_bytes;
+        let waiting: Vec<CommitId> = self.memory.waiting.iter().copied().collect();
+        for c in waiting {
+            let entries: Vec<(LabelId, BlobId)> = self.entries_of_commit(&c).into_iter().filter(|e| self.state.memory_charge.contains_key(e)).collect();
+            let room = entries.iter().map(|(l, b)| {
+                let used = self.state.memory_bytes.get(l).copied().unwrap_or(0);
+                let own = self.state.memory_charge.get(&(*l, *b)).copied().unwrap_or(0);
+                cap.saturating_sub(used.saturating_sub(own))
+            }).min();
+            let Some(room) = room else {
+                // no entry left: the engine's copy goes with the last one (`sweep_pending`)
+                if !self.engine.memory_pending(&c) {
+                    self.memory.waiting.remove(&c);
+                }
                 continue;
-            }
-            let charge = self.engine.memory_charge(&c)?;
-            for (l, b) in self.entries_of_commit(&c) {
-                if self.state.memory_charge.contains_key(&(l, b)) {
-                    let size = self.state.memory_sizes.get(&(l, b)).copied().unwrap_or(0) as u64;
-                    self.state.charge_memory(l, b, Some(charge.max(size)));
+            };
+            let out = self.engine.apply_waiting_memory(&c, room)?;
+            match out {
+                Some(Ingested::Pending(..)) => continue,
+                Some(Ingested::TooLarge(_)) => {
+                    let used = entries.iter().all(|(l, b)| self.state.memory_bytes.get(l).copied().unwrap_or(0) == self.state.memory_charge.get(&(*l, *b)).copied().unwrap_or(0));
+                    for (l, b) in &entries {
+                        self.refuse_memory(*l, *b, used)?;
+                    }
+                }
+                Some(Ingested::Awaits(_, r)) => {
+                    for (l, b) in &entries {
+                        self.mark_awaits(*l, *b, c, r.clone())?;
+                    }
+                }
+                // bad input: never opened again
+                None if !self.engine.memory_pending(&c) && !self.engine.holds_memory(&c) => {
+                    for (l, b) in &entries {
+                        self.mark_bad(*l, *b)?;
+                    }
+                }
+                _ => {
+                    for (l, b) in &entries {
+                        let size = self.state.memory_sizes.get(&(*l, *b)).copied().unwrap_or(0);
+                        self.charge_applied(*l, *b, c, size as u64)?;
+                    }
                 }
             }
+            self.memory.waiting.remove(&c);
         }
         Ok(())
     }
 
-    /// Entries refused for a label's cap or share are fetched again where room appeared: their
+    /// Entry `b` of `l` (`size` bytes) carries memory commit `c`, applied here: charged what it
+    /// costs held (`Engine::memory_charge`, at least its bytes), or nothing when every part of
+    /// it is invalid here (spec/permissions.md §6: no body held, the entry stays known, so the
+    /// commit is, `Engine::forgettable`).
+    fn charge_applied(&mut self, l: LabelId, b: BlobId, c: CommitId, size: u64) -> Result<()> {
+        if self.engine.holds_memory(&c) && !self.engine.memory_body_held(&c) {
+            self.state.charge_memory(l, b, None);
+            return self.forget_blob(&b);
+        }
+        let charge = self.engine.memory_charge(&c)?.max(size);
+        self.state.charge_memory(l, b, Some(charge));
+        Ok(())
+    }
+
+    /// Entries refused for a label's cap are fetched again where room appeared: their
     /// records are opened again (`Kind::Unknown`, fetched by the next pass).
     fn retry_refused(&mut self) {
         let labels: Vec<LabelId> = self.memory.refused.keys().copied().collect();
@@ -463,7 +510,7 @@ impl SyncEngine {
         }
     }
 
-    /// Whether entry `b` of `l` is not fetched here for now (refused for the cap or share, or
+    /// Whether entry `b` of `l` is not fetched here for now (refused for the cap, or
     /// never fitting).
     pub(crate) fn memory_skips(&self, l: &LabelId, b: &BlobId) -> bool {
         self.memory.unfit.contains(*l, *b) || self.memory.refused.get(l).is_some_and(|r| r.ids.contains(b)) || self.state.tombs.contains_key(&(*l, *b))
@@ -471,8 +518,8 @@ impl SyncEngine {
 
     /// Ingests the memory commit of entry `b` of `l` (opened as `cb`, plaintext `pt`, `size`
     /// encoded bytes) within the room its label's cap leaves (spec/sync.md §9): applied, it is
-    /// charged what it costs held (`Engine::memory_charge`); waiting unverified, it is charged
-    /// against the pending share by what it could cost decoded (`Engine::memory_bound`);
+    /// charged what it costs held (`Engine::memory_charge`); waiting (for its blobs, its `ts`, an
+    /// epoch), it is charged its bytes and applied later within the room then (`apply_waiting`);
     /// refused (nothing applies there), its bytes go and its record waits unopened for room
     /// (`refused`), or for good when it can never fit (`unfit`).
     pub(crate) fn ingest_memory_entry(&mut self, l: LabelId, b: BlobId, size: usize, pt: &[u8], cb: &CommitBlob) -> Result<()> {
@@ -530,17 +577,9 @@ impl SyncEngine {
                 return self.mark_bad(l, b);
             }
         }
-        // every part invalid here (spec/permissions.md §6): no body held, nothing charged; the
-        // entry stays known, so the commit is (`Engine::forgettable`)
-        if self.engine.holds_memory(&commit) && !self.engine.memory_body_held(&commit) {
-            self.state.charge_memory(l, b, None);
-            return self.forget_blob(&b);
-        }
         // counted as held in memory (decoded), not as its bytes, within the room given, so the
         // label stays under the cap
-        let charge = self.engine.memory_charge(&commit)?.max(size);
-        self.state.charge_memory(l, b, Some(charge));
-        Ok(())
+        self.charge_applied(l, b, commit, size)
     }
 
     /// Memory blob `b` of `l`, `size` bytes, new here: one that opened to no commit (a page of a

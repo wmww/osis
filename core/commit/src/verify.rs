@@ -47,19 +47,42 @@ pub fn writer_ctx(form: Form, kind: crate::Kind, ts: osis_base::Ts, author: Tid,
     DeltaCtx { ts, own: form.own_source(author, CommitId([0; 32])), range: CounterRange { lo, hi }, kind: kind.delta_kind() }
 }
 
+/// A received delta's page source: a page or link page its commit's chunk list does not name
+/// is bad input (spec/wire.md §4 field 8: the list names every blob the deltas introduce, and a
+/// page is always introduced by its delta), so nothing outside the list is read as a page.
+struct Listed<'a, 'h> {
+    inner: &'a mut dyn PageSource,
+    chunks: &'h [crate::ChunkEntry],
+}
+
+impl PageSource for Listed<'_, '_> {
+    fn get(&mut self, link: &osis_base::Link) -> Result<Vec<u8>, osis_crdt::PageError> {
+        if self.chunks.binary_search_by(|c| c.blob.cmp(&link.blob)).is_err() {
+            return Err(osis_crdt::PageError::Corrupt);
+        }
+        self.inner.get(link)
+    }
+    fn params(&self) -> osis_crdt::PageParams {
+        self.inner.params()
+    }
+}
+
 /// Checks one part's delta hash under the dedup secret of its thing and decodes it against the
-/// header facts (range check, spec/crdt.md §2.3). Pages of a paged delta come from `pages`.
+/// header facts (range check, spec/crdt.md §2.3). Pages of a paged delta come from `pages`,
+/// only those the header's chunk list names (`Listed`).
 pub fn verify_part<'a>(h: &Header, id: &CommitId, part: &Part, dedup: &Secret32, interner: &'a mut Interner, pages: Option<&'a mut dyn PageSource>) -> Result<Decoded, Error> {
     let a = h.aspects.get(part.ai).ok_or(Error::Malformed("part aspect index out of range"))?;
     if delta_hash(dedup, &part.delta) != a.hash {
         return Err(Error::DeltaHash { ai: part.ai });
     }
     let cx = delta_ctx(h, id, part.ai, interner)?;
+    let mut listed = pages.map(|inner| Listed { inner, chunks: &h.chunks });
+    let pages: Option<&mut dyn PageSource> = listed.as_mut().map(|l| l as &mut dyn PageSource);
     let d = match cx.kind {
         DeltaKind::Snapshot => Decoded::Snapshot(decode_snapshot(&part.delta, &cx, interner, pages)?),
         DeltaKind::Writer => Decoded::Delta(decode_delta(&part.delta, &cx, interner, pages)?),
     };
-    check_fragment(h, a.ak.as_str(), d.fragment())?;
+    check_fragment(a.ak.as_str(), d.fragment())?;
     Ok(d)
 }
 
@@ -72,6 +95,8 @@ pub fn stream_part<'a>(h: &Header, id: &CommitId, part: &Part, dedup: &Secret32,
         return Err(Error::DeltaHash { ai: part.ai });
     }
     let cx = delta_ctx(h, id, part.ai, interner)?;
+    let mut listed = pages.map(|inner| Listed { inner, chunks: &h.chunks });
+    let pages: Option<&mut dyn PageSource> = listed.as_mut().map(|l| l as &mut dyn PageSource);
     // `check_fragment` holds of the whole iff of every piece (per record, per position); a bad
     // delta still streams to its end, so a decoding error wins as in `verify_part`
     let ak = a.ak.as_str();
@@ -81,7 +106,7 @@ pub fn stream_part<'a>(h: &Header, id: &CommitId, part: &Part, dedup: &Secret32,
             Piece::Skeleton(f) | Piece::Page { fragment: f, .. } => f,
         };
         if keyed.is_ok() {
-            keyed = check_fragment(h, ak, &f);
+            keyed = check_fragment(ak, &f);
         }
         if keyed.is_ok() { each(f) } else { Ok(()) }
     };
@@ -114,13 +139,13 @@ pub fn read_part_whole<'a>(h: &Header, id: &CommitId, ai: usize, delta: Checked<
 }
 
 /// The rules a delta's fragment answers to by itself (spec/commits.md §4), per record and position.
-fn check_fragment(h: &Header, ak: &str, f: &osis_crdt::Fragment) -> Result<(), Error> {
+fn check_fragment(ak: &str, f: &osis_crdt::Fragment) -> Result<(), Error> {
     check_entry_keys(ak, f)?;
     check_types(ak, f)?;
-    // only durable content chunks (spec/data-model.md §6): an ephemeral value is inline and a
-    // role-class value stays inline. Role kinds write only role-class aspects and `created.0`, a
-    // record far below the threshold; content kinds write no role-class one (`Header::validate`).
-    if h.ephemeral.is_none() && !osis_schema::core_types::is_role_class(ak) && f.holds_unchunked() {
+    // a role-class value stays inline (spec/data-model.md §6). Role kinds write only role-class
+    // aspects and `created.0`, a record far below the threshold; content kinds write no
+    // role-class one (`Header::validate`).
+    if !osis_schema::core_types::is_role_class(ak) && f.holds_unchunked() {
         return Err(Error::Malformed("an unchunked value above CHUNK_THRESHOLD"));
     }
     Ok(())

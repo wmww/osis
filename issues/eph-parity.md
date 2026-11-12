@@ -1,5 +1,5 @@
 # Ephemeral data: differences from durable still to remove
-> Summary: Places where ephemeral data still differs from durable without following from "held in memory" (notes/ephemeral.md Principle): a delete's ephemeral state stays at other holders, purge is half-built, ephemeral values are never chunked, host presence is relearned per connection, and an extra guard on deleting bodies outside the closure. Each has a plan below.
+> Summary: Places where ephemeral data still differs from durable without following from "held in memory" (notes/ephemeral.md Principle): a delete's ephemeral state stays at other holders, purge is half-built, host presence is relearned per connection, and an extra guard on deleting bodies outside the closure. Each has a plan below.
 > Priority: normal
 > Tags: ephemeral, engine, sync, tess-call
 
@@ -17,10 +17,6 @@
 - Plan: hold a purged memory part as its leftover (the expiry path's `make_leftover`, overlay `w/` row), which keeps its commit known, so the durable fall applies (unstrip, `Changed::undropped`, the lane fetches the entry again); the same for a waiting part (`strip_purged` in the memory class); suspect flags for memory aspects in the overlay; then offer purge and purge on replace on ephemeral writes (notes/api-design.md). Nothing writes such a request today, so this is correctness for other implementations and a future API.
 - The plan must also say whether a snapshot's frontier passes a purged body: memory compacts automatically, so a snapshot written after the purge would cover the restored body without its content (the cost issues/eph-unify.md E names for durable compaction). Stopping frontiers below a purged body, as below an invalid one, avoids it.
 - Tests: a purge of an ephemeral write whose right later falls reads the value again at every holder that can fetch it; a purge reaching a waiting ephemeral part reads alike in every arrival order.
-
-## Large values
-- Today: an ephemeral write's values are inline (`engine::write::commit_in` skips `chunk_ops` in memory; spec/commits.md §2 Shape). Durable values above `CHUNK_THRESHOLD` become chunk trees. So one ephemeral value past a blob (8 MiB) cannot be written (`Misuse`, `large_write_pages_and_syncs_spec_crdt_8`), and memory pages skip the `MAX_PAGE_ITEMS` check (`PageParams::EPHEMERAL`), which an inline string past 2 MiB would fail.
-- Plan: chunk large ephemeral values into memory blobs as pages are (class ephemeral, held, placed, fetched and deleted with their commit), then pages take `PageParams::FORMAT`. Needs the reuse and lazy-fetch paths (`large.rs`, `held_trees`) to work on memory blobs.
 
 ## Presence at a host
 - Today (spec/sync.md §9 Held at a host, `MemorySync::memory_gained`): a node relearns which memory entries a host holds on every connection, listing them as `gained` in its first Sync. Past `MAX_GAINED` entries per label it lists none and uploads every held body again, on every reconnect.

@@ -150,6 +150,11 @@ fn notes(net: &mut Net, n: usize, w: Tid) -> BTreeMap<String, String> {
             .into_iter()
             .filter_map(|(k, v)| match (k, v) {
                 (Value::Str(k), Value::Str(v)) => Some((k, v)),
+                // a large value, read whole (spec/data-model.md §6)
+                (Value::Str(k), Value::Link(l)) => match net.engine(n).read_large(&w, &l) {
+                    Ok(Value::Str(v)) => Some((k, v)),
+                    _ => None,
+                },
                 _ => None,
             })
             .collect(),
@@ -3425,48 +3430,99 @@ fn shape(m: &BTreeMap<String, String>) -> Vec<(String, usize, u64)> {
 
 /// `n` large notes of `len` bytes each, keys `{tag}{i}`.
 fn big_notes(n: usize, len: usize, tag: &str) -> Vec<(String, String)> {
-    (0..n).map(|i| (format!("{tag}{i}"), format!("{i}").repeat(len))).collect()
+    (0..n).map(|i| (format!("{tag}{i}"), format!("{i}").repeat(len)[..len].to_string())).collect()
+}
+
+/// Notes of inline values (under `CHUNK_THRESHOLD`) whose delta passes a blob: 75 of 120 KiB.
+fn paged_notes(tag: &str) -> Vec<(String, String)> {
+    big_notes(75, 120 << 10, tag)
+}
+
+/// A host and nodes `ids` syncing with it, ephemeral caps of 256 MiB.
+fn roomy(net: &mut Net, ids: &[u64]) -> (usize, Vec<usize>) {
+    let cap: u64 = 256 << 20;
+    let host = net.add_host_with(osis_host::HostPolicy { ephemeral_bytes: cap, ..osis_host::HostPolicy::default() });
+    let nodes = ids.iter().map(|i| net.add_node(*i, SyncConfig { hosts: vec![net.address(host)], ephemeral_bytes: cap, ..SyncConfig::default() })).collect();
+    (host, nodes)
 }
 
 // spec/crdt.md §8, spec/commits.md §1: an ephemeral write past a blob pages like a durable one:
 // it applies at once, its pages are held in memory and go with it to every holder through the
-// host, which reads it alike; a single value past a blob (values are inline, issues/eph-parity.md
-// Large values) is refused whole, nothing of the batch applied
+// host, which reads it alike
 #[test]
 fn large_write_pages_and_syncs_spec_crdt_8() {
     let mut net = Net::new();
-    let cap: u64 = 256 << 20;
-    let host = net.add_host_with(osis_host::HostPolicy { ephemeral_bytes: cap, ..osis_host::HostPolicy::default() });
-    let a = net.node(1, &[host]);
-    let b = net.add_node(2, SyncConfig { hosts: vec![net.address(host)], ephemeral_bytes: cap, ..SyncConfig::default() });
+    let (host, n) = roomy(&mut net, &[1, 2]);
+    let (a, b) = (n[0], n[1]);
     let g = net.group(a, &[(b, Role::Write)], &[host]);
     net.run();
     let w = window(&mut net, a, g, "w");
     net.run();
-    // 6 values of 1.5 MiB: one delta of 9 MiB, past a blob (8 MiB)
-    let big = big_notes(6, 3 << 19, "k");
+    let big = paged_notes("k");
     let mut m = Mutation::new();
     for (k, v) in &big {
         m.op(w, &eph(NOTES), PathOp { path: vec![PathSeg::Key(s(k))], op: Op::Set(s(v)) }).unwrap();
     }
     net.engine(a).write(m).unwrap();
-    assert!(eph_pages(&mut net, a, w) >= 6, "paged: each value a page");
+    assert!(eph_pages(&mut net, a, w) >= 2, "paged");
     local(&mut net, a);
     net.run();
     let want: BTreeMap<String, String> = big.into_iter().collect();
     assert_eq!(shape(&notes(&mut net, a, w)), shape(&want));
     assert_eq!(shape(&notes(&mut net, b, w)), shape(&want), "b reads it alike");
-    assert!(eph_pages(&mut net, b, w) >= 6, "b holds the paged commit");
+    assert!(eph_pages(&mut net, b, w) >= 2, "b holds the paged commit");
     let l = net.label(a);
     assert!(net.sync(b).ephemeral_bytes(&l) > 9 << 20, "its pages count at b");
     assert!(net.hosts[host].hub.store().ephemeral_bytes(&l) > 9 << 20, "and at the host");
-    // one value past a blob cannot page
+}
+
+// spec/data-model.md §6, spec/sync.md §9: an ephemeral value past a blob (20 MiB) is a chunk tree
+// of ephemeral blobs, as a durable one is: it writes, syncs through the host and reads alike; its
+// blobs are held in memory, charged at the holder, and once its commit is forgotten (covered by
+// a snapshot of a later small write) none of them is held at any node or at the host
+#[test]
+fn large_value_chunks_syncs_and_goes_spec_data_model_6() {
+    let mut net = Net::new();
+    let (host, n) = roomy(&mut net, &[1, 2]);
+    let (a, b) = (n[0], n[1]);
+    let g = net.group(a, &[(b, Role::Write)], &[host]);
+    net.run();
+    let w = window(&mut net, a, g, "w");
+    net.run();
+    let big: String = (0..20u32 << 20).map(|i| char::from(b'a' + (i.wrapping_mul(2_654_435_761) >> 27) as u8 % 26)).collect();
     let mut m = Mutation::new();
-    m.op(w, &eph(NOTES), PathOp { path: vec![PathSeg::Key(s("huge"))], op: Op::Set(s(&"v".repeat(9 << 20))) }).unwrap();
-    m.set(w, &eph(STATE), &s("next")).unwrap();
-    let err = net.engine(a).write(m).unwrap_err().to_string();
-    assert!(err.contains("does not fit a blob"), "{err}");
-    assert_eq!(net.eph_read(a, w, STATE), Some(s("w")), "nothing of the batch applied");
+    m.op(w, &eph(NOTES), PathOp { path: vec![PathSeg::Key(s("big"))], op: Op::Set(s(&big)) }).unwrap();
+    let id = net.engine(a).write(m).unwrap().unwrap().id;
+    let tree: BTreeSet<osis_base::BlobId> = net.engine(a).header(&id).unwrap().chunks.iter().map(|ch| ch.blob).collect();
+    assert!(tree.len() >= 80, "a chunk tree: {}", tree.len());
+    local(&mut net, a);
+    net.run();
+    let want: BTreeMap<String, String> = [("big".to_string(), big)].into_iter().collect();
+    assert_eq!(shape(&notes(&mut net, a, w)), shape(&want));
+    assert_eq!(shape(&notes(&mut net, b, w)), shape(&want), "b reads it alike");
+    assert!(tree.iter().all(|t| net.engine(b).has_blob(t)), "b holds its tree");
+    let l = net.label(a);
+    assert!(net.sync(b).ephemeral_bytes(&l) > 20 << 20, "its tree counts at b");
+    let at_host: BTreeSet<osis_base::BlobId> = net.hosts[host].hub.store().ephemeral_ids(&l).into_iter().collect();
+    assert!(tree.is_subset(&at_host), "and is at the host, in memory");
+    // replaced by a small value and compacted: the commit is forgotten, its tree with it
+    let mut m = Mutation::new();
+    m.op(w, &eph(NOTES), PathOp { path: vec![PathSeg::Key(s("big"))], op: Op::Set(s("small")) }).unwrap();
+    net.engine(a).write(m).unwrap();
+    local(&mut net, a);
+    net.run();
+    let acts = net.sync(a).compact_ephemeral_now().unwrap();
+    net.actions(a, acts);
+    net.run();
+    net.advance(10_000);
+    for n in [a, b] {
+        assert_eq!(notes(&mut net, n, w).get("big").map(String::as_str), Some("small"), "node {n}");
+        assert!(!net.engine(n).holds_memory(&id), "node {n} forgot the commit");
+        assert!(tree.iter().all(|t| !net.engine(n).has_blob(t)), "node {n} holds none of its tree");
+    }
+    assert!(net.sync(b).ephemeral_bytes(&l) < 1 << 20, "its charge released at b");
+    let at_host: BTreeSet<osis_base::BlobId> = net.hosts[host].hub.store().ephemeral_ids(&l).into_iter().collect();
+    assert!(tree.is_disjoint(&at_host), "nor the host");
 }
 
 // spec/crdt.md §8, spec/sync.md §5: a paged ephemeral commit reaches a co-reader peer by its
@@ -3482,20 +3538,21 @@ fn paged_write_over_peer_link_spec_crdt_8() {
     net.run();
     let w = window(&mut net, a, g, "w");
     net.run();
-    let big = big_notes(6, 3 << 19, "k");
+    // within a default cap decoded (`decoded_bound`: about 6 times the bytes)
+    let big = big_notes(10, 120 << 10, "k");
     let mut m = Mutation::new();
     for (k, v) in &big {
         m.op(w, &eph(NOTES), PathOp { path: vec![PathSeg::Key(s(k))], op: Op::Set(s(v)) }).unwrap();
     }
     net.engine(a).write(m).unwrap();
-    assert!(eph_pages(&mut net, a, w) >= 6, "paged");
+    assert!(eph_pages(&mut net, a, w) >= 2, "paged");
     local(&mut net, a);
     net.run();
     let want: BTreeMap<String, String> = big.into_iter().collect();
     assert_eq!(shape(&notes(&mut net, b, w)), shape(&want), "b reads it by a's stream");
-    assert!(eph_pages(&mut net, b, w) >= 6, "b holds the paged commit");
+    assert!(eph_pages(&mut net, b, w) >= 2, "b holds the paged commit");
     let l = net.label(a);
-    assert!(net.sync(b).ephemeral_bytes(&l) > 9 << 20, "its pages count at b");
+    assert!(net.sync(b).ephemeral_bytes(&l) > 1 << 20, "its pages count at b");
 }
 
 // spec/crdt.md §8, spec/sync.md §9 Caps: a receiver's pre-decode bound counts the pages an
@@ -3539,10 +3596,10 @@ fn grown_past_a_blob_compacts_spec_sync_9() {
     let w = window(&mut net, a, g, "w");
     net.run();
     let mut want = BTreeMap::new();
-    // three writers, two commits each of 2 values of 0.75 MiB: 9 MiB of state in all
+    // three writers, two commits each of 13 values of 120 KiB (inline, under CHUNK_THRESHOLD): 9 MiB of state in all
     for (round, n) in [a, b, c, a, b, c].into_iter().enumerate() {
         let mut m = Mutation::new();
-        for (k, v) in big_notes(2, 3 << 18, &format!("r{round}-")) {
+        for (k, v) in big_notes(13, 120 << 10, &format!("r{round}-")) {
             m.op(w, &eph(NOTES), PathOp { path: vec![PathSeg::Key(s(&k))], op: Op::Set(s(&v)) }).unwrap();
             want.insert(k, v);
         }
@@ -3600,7 +3657,7 @@ fn pages_count_against_the_cap_spec_sync_9() {
     let w = window(&mut net, a, g, "w");
     net.run();
     let rx = net.listen(b);
-    let big = big_notes(4, 3 << 19, "k");
+    let big = paged_notes("k");
     let mut m = Mutation::new();
     for (k, v) in &big {
         m.op(w, &eph(NOTES), PathOp { path: vec![PathSeg::Key(s(k))], op: Op::Set(s(v)) }).unwrap();
@@ -3626,7 +3683,7 @@ fn pages_count_against_the_cap_spec_sync_9() {
 fn page_before_its_commit_counts_spec_sync_9() {
     let (mut net, (host, a, b, g, w)) = windowed();
     let mut m = Mutation::new();
-    for (k, v) in big_notes(4, 1 << 18, "k") {
+    for (k, v) in big_notes(20, 120 << 10, "k") {
         m.op(w, &eph(NOTES), PathOp { path: vec![PathSeg::Key(s(&k))], op: Op::Set(s(&v)) }).unwrap();
     }
     // written, never synced: only the pages reach b
@@ -3655,6 +3712,93 @@ fn page_before_its_commit_counts_spec_sync_9() {
     assert_eq!(net.sync(b).ephemeral_bytes(&l), before + size, "the pages count at b on arrival");
     push(&mut net, b, host, l, pages.iter().map(|p| osis_proto::Event::Deleted(*p)).collect());
     assert_eq!(net.sync(b).ephemeral_bytes(&l), before, "released with their entries");
+}
+
+/// A memory commit node `a` writes on `w` and does not sync: `n` tiny map entries, a paged delta
+/// decoding to far more than its bytes. Its blob and its pages' (ID, bytes).
+fn tiny_entries(net: &mut Net, a: usize, w: Tid, n: usize) -> (osis_commit::CommitBlob, Vec<(osis_base::BlobId, Vec<u8>)>) {
+    let mut m = Mutation::new();
+    for i in 0..n {
+        m.op(w, &eph(NOTES), PathOp { path: vec![PathSeg::Key(s(&format!("{i}")))], op: Op::Set(s("x")) }).unwrap();
+    }
+    let id = net.engine(a).write(m).unwrap().unwrap().id;
+    let blob = net.engine(a).memory_blob(&id).unwrap().unwrap();
+    let pages = blob.header.chunks.iter().map(|ch| (ch.blob, net.engine(a).blob(&ch.blob).unwrap().unwrap())).collect();
+    (blob, pages)
+}
+
+// spec/sync.md §9 Caps: a writer uploading a paged commit's root before its pages makes a holder
+// decode nothing past its cap: the root waits for its pages undecoded (nothing examined), and
+// once they are held its bound, pages included, is checked against the room left before any
+// decode: past it the commit is refused (reported), nothing of it held, and the holder's charge
+// stays within its cap
+#[test]
+fn root_before_pages_decodes_within_cap_spec_sync_9() {
+    let mut net = Net::new();
+    let host = net.add_host_with(osis_host::HostPolicy { ephemeral_bytes: 256 << 20, ..osis_host::HostPolicy::default() });
+    let a = net.node(1, &[host]);
+    let cap: u64 = 1 << 20;
+    let b = net.add_node(2, SyncConfig { hosts: vec![net.address(host)], ephemeral_bytes: cap, ..SyncConfig::default() });
+    let g = net.group(a, &[(b, Role::Write)], &[host]);
+    net.run();
+    let w = window(&mut net, a, g, "w");
+    net.run();
+    let (blob, pages) = tiny_entries(&mut net, a, w, 8000);
+    let id = blob.id();
+    let bytes: u64 = pages.iter().map(|p| p.1.len() as u64).sum();
+    assert!(!pages.is_empty() && bytes < cap / 2, "pages that fit the cap: {bytes}");
+    assert!(osis_node::Engine::memory_bound(&blob).0 < cap, "a root that fits the cap");
+    let l = net.label(a);
+    let key = write_key(&mut net, a, g);
+    let rx = net.listen(b);
+    osis_node::costs::take();
+    let (_, root) = sealed(&mut net, a, g, &blob, Some(&key), 1);
+    push(&mut net, b, host, l, vec![root]);
+    assert!(net.engine(b).memory_pending(&id), "the root waits for its pages");
+    let events = pages.iter().map(|(p, bytes)| {
+        let wrap = [7; osis_crypto::WRAP_LEN];
+        osis_proto::Event::Added { blob_id: *p, blob: Some(bytes.clone()), wrap, stamp: Some(osis_label::sign_stamp(&key, &l, p, &wrap)) }
+    }).collect();
+    push(&mut net, b, host, l, events);
+    let costs = osis_node::costs::take();
+    let count = |name: &str| costs.iter().find(|x| x.0 == name).map_or(0, |x| x.2);
+    assert_eq!((count("examine"), count("apply: piece")), (0, 0), "nothing of it examined or decoded");
+    assert!(!net.engine(b).holds_memory(&id) && !net.engine(b).memory_pending(&id), "refused, nothing kept");
+    assert!(notes(&mut net, b, w).is_empty());
+    assert!(net.sync(b).ephemeral_bytes(&l) <= cap, "within b's cap");
+    assert!(rx.try_iter().any(|e| matches!(e, osis_node::Event::Diagnostic(d) if d.kind == osis_node::DiagnosticKind::EphemeralRefused)), "reported");
+}
+
+// spec/sync.md §9 Caps: a memory commit waiting for its `ts` (past MAX_DRIFT ahead) is checked
+// against the room its holder has when its wait ends, before anything of it is decoded: re-
+// examination leaves it waiting, and applied within too small a room it is refused, nothing
+// kept; within enough room it applies
+#[test]
+fn drift_waiting_commit_room_checked_spec_sync_9() {
+    let (mut lp, w) = memory_pair();
+    for (i, small) in [true, false].into_iter().enumerate() {
+        lp.peers[0].clock.advance(2 * osis_base::format::MAX_DRIFT_MS);
+        let id = memory_write(&mut lp, 0, w, &format!("z{i}"));
+        let pk = lp.peers[0].engine.package(&id).unwrap().unwrap();
+        let bound = osis_node::Engine::memory_bound(&osis_commit::CommitBlob::decode(&pk.bytes).unwrap()).0;
+        let room = if small { bound - 1 } else { u64::MAX };
+        assert!(matches!(lp.peers[1].engine.ingest_memory(&pk.bytes, u64::MAX).unwrap(), osis_node::Ingested::Pending(_, osis_node::Reason::Drift)));
+        lp.peers[1].clock.advance(2 * osis_base::format::MAX_DRIFT_MS);
+        lp.peers[1].reexamine().unwrap();
+        assert!(lp.peers[1].engine.memory_pending(&id), "left to node-sync's room");
+        osis_node::costs::take();
+        let out = lp.peers[1].engine.apply_waiting_memory(&id, room).unwrap();
+        let costs = osis_node::costs::take();
+        let examined = costs.iter().find(|x| x.0 == "examine").map_or(0, |x| x.2);
+        if small {
+            assert!(matches!(out, Some(osis_node::Ingested::TooLarge(_))), "{out:?}");
+            assert_eq!(examined, 0, "nothing decoded");
+            assert!(!lp.peers[1].engine.memory_pending(&id) && !lp.peers[1].engine.holds_memory(&id), "nothing kept");
+        } else {
+            assert!(matches!(out, Some(osis_node::Ingested::Applied(_))), "{out:?}");
+            assert!(lp.peers[1].engine.holds_memory(&id));
+        }
+    }
 }
 
 // spec/sync.md §5 (a new sync key ends an open), §6: a Sync refused 8 because a read rotation
@@ -4045,7 +4189,9 @@ fn received_memory_commit_in_memory_spec_commits_4() {
     assert!(matches!(lp.peers[1].engine.ingest_memory(&pk3.bytes, u64::MAX).unwrap(), osis_node::Ingested::Pending(_, osis_node::Reason::Drift)));
     lp.peers[1].clock.advance(2 * osis_base::format::MAX_DRIFT_MS);
     lp.peers[1].reexamine().unwrap();
-    assert!(lp.peers[1].engine.core.ix.commits.contains_key(&id3), "applied at re-examination");
+    assert!(!lp.peers[1].engine.core.ix.commits.contains_key(&id3), "re-examination leaves it to node-sync's room");
+    assert!(matches!(lp.peers[1].engine.apply_waiting_memory(&id3, u64::MAX).unwrap(), Some(osis_node::Ingested::Applied(_))));
+    assert!(lp.peers[1].engine.core.ix.commits.contains_key(&id3), "applied within the room given");
     assert_eq!(faults.forbidden(), 0, "nothing durable written for a memory commit");
     faults.forbid_writes(false);
     lp.peers[1].restart(32).unwrap();

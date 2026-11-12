@@ -209,9 +209,9 @@ fn unchunked_large_value_is_bad_input_spec_dm_6() {
         assert!(matches!(e, Some(Error::Malformed(_))), "{e:?}");
         assert_eq!(e.unwrap().class(), ErrorClass::BadInput);
     }
-    // in an ephemeral commit, which has no chunks, it stays inline
+    // in an ephemeral commit too: its large values are chunked like durable ones
     b.header.ephemeral = Some(EphClass::Plain);
-    check(&mut b, &long).unwrap();
+    assert!(matches!(check(&mut b, &long), Err(Error::Malformed(_))));
     b.header.ephemeral = None;
     // just at the threshold
     let at_most = Value::Str("x".repeat(CHUNK_THRESHOLD - 5));

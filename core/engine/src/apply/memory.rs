@@ -9,6 +9,7 @@ use crate::engine::{Engine, MemoryDrop, Tx};
 use crate::error::{Error, Result};
 use osis_base::{Ak, CommitId, Tid};
 use osis_commit::{CommitBlob, Form};
+
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Copies a holder keeps of a received part's writes, each counted by the node cap: the
@@ -59,10 +60,12 @@ pub(crate) fn part_bound(p: &osis_commit::Part) -> Result<u64> {
     Ok(part_charge(heap, p.delta.len()))
 }
 
-/// `part_bound` of the pages and link pages a paged part's `delta` links that are held here
-/// (spec/crdt.md §8), each by its plaintext's heads; one not held is not counted (its commit
-/// waits for it). Only blobs of the commit's chunk list (`listed`) are followed: a value's link
-/// to another blob (a durable chunk tree) is no page of it.
+/// `part_bound` of the pages and link pages a paged part's `delta` links (spec/crdt.md §8),
+/// each by its plaintext's heads. Only blobs of the commit's chunk list (`listed`) are followed:
+/// a page outside it is bad input (`osis_commit::verify_part`), and a value's link to another
+/// blob (a durable chunk tree) is no page of it. A listed value tree's node (and so its chunks)
+/// is never decoded into state: held as bytes, charged as an entry. Every listed blob is held
+/// (`memory_gate`).
 fn pages_bound(tx: &mut Tx<'_>, delta: &[u8], listed: &BTreeSet<osis_base::BlobId>) -> Result<u64> {
     let limits = |b: &[u8]| osis_base::Limits { max_depth: osis_base::format::MAX_OBJECT_DEPTH, max_bytes: b.len() };
     let mut stack = Vec::new();
@@ -75,6 +78,9 @@ fn pages_bound(tx: &mut Tx<'_>, delta: &[u8], listed: &BTreeSet<osis_base::BlobI
         }
         let Some(blob) = tx.blobs.get(&l.blob)? else { continue };
         let Ok((_, pt)) = osis_label::open(&blob, &osis_crypto::Secret32::from_bytes(l.key)) else { continue };
+        if osis_label::tree::parse_node(&pt).is_ok() {
+            continue;
+        }
         let heap = osis_crdt::decoded_bound(&pt).map_err(|_| Error::BadInput("ephemeral page not one CBOR value"))?;
         sum = sum.saturating_add(part_charge(heap, pt.len()));
         osis_base::visit_links(&pt, &limits(&pt), &mut |l| stack.push(l)).map_err(|_| Error::BadInput("ephemeral page not one CBOR value"))?;
@@ -83,7 +89,7 @@ fn pages_bound(tx: &mut Tx<'_>, delta: &[u8], listed: &BTreeSet<osis_base::BlobI
 }
 
 /// What the parts of `blob` not held or dropped here could cost decoded (`part_bound`, their
-/// held pages included): what ingesting it may decode.
+/// pages included): what ingesting it may decode.
 pub(crate) fn new_parts_bound(tx: &mut Tx<'_>, blob: &CommitBlob) -> Result<u64> {
     let known = tx.core.ix.commits.get(&blob.id()).map(|m| m.missing.clone());
     let listed: BTreeSet<osis_base::BlobId> = blob.header.chunks.iter().map(|ch| ch.blob).collect();
@@ -95,6 +101,53 @@ pub(crate) fn new_parts_bound(tx: &mut Tx<'_>, blob: &CommitBlob) -> Result<u64>
         sum = sum.saturating_add(part_bound(p)?).saturating_add(pages_bound(tx, &p.delta, &listed)?);
     }
     Ok(sum)
+}
+
+/// What a received memory commit meets before anything of it is decoded (spec/sync.md §9 Caps):
+/// its header lists resolved and every blob its chunk list names held (pages and value trees
+/// alike), else it waits for them, nothing decoded (`Some(Pending)`); then its
+/// `new_parts_bound` within the room node-sync gave (`Core::memory_room`), else `TooLarge` and
+/// nothing of it kept. Without a room (a re-examination) it is left waiting: node-sync applies
+/// waiting memory commits itself, each within the room its label has then
+/// (`Engine::apply_waiting_memory`). `None`: go on.
+pub(crate) fn memory_gate(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId) -> Result<Option<crate::Ingested>> {
+    let pending = tx.core.ix.pending.get(id).cloned();
+    if !blob.header.is_resolved() {
+        // no dedup secret: examine finds it unjudgeable before it decodes anything
+        let Some(dedup) = tx.core.dedup(&blob.header.actor) else { return Ok(None) };
+        match blob.header.resolve(&mut crate::engine::blobs::TxBlobs::new(&mut tx.blobs, true), &dedup) {
+            Ok(()) => {}
+            Err(e) if super::is_missing_page(&e) => return wait(tx, blob, id).map(Some),
+            Err(e) => return Err(e.into()),
+        }
+    }
+    // a held commit's late parts: its blobs came with it (a page not held makes the part wait
+    // alone, `examine`, decoded no further than the held pages `pages_bound` counts)
+    let held = tx.core.ix.commits.contains_key(id);
+    for ch in blob.header.chunks.iter().filter(|_| !held) {
+        if !tx.blobs.held(&ch.blob)? {
+            return wait(tx, blob, id).map(Some);
+        }
+    }
+    let Some(room) = tx.core.memory_room else {
+        return Ok(Some(crate::Ingested::Pending(*id, pending.unwrap_or(crate::Reason::Unexamined))));
+    };
+    if new_parts_bound(tx, blob)? > room {
+        if pending.is_some() {
+            crate::retention::forget_waiting_leftovers(tx, id)?;
+            tx.txn.remove_pending(id, osis_store::Shred::Yes)?;
+            tx.core.ix.pending.remove(id);
+            super::keys::forget_unchecked(tx, id)?;
+        }
+        return Ok(Some(crate::Ingested::TooLarge(*id)));
+    }
+    Ok(None)
+}
+
+/// Memory commit `id` waits for blobs its header names, nothing of it decoded.
+fn wait(tx: &mut Tx<'_>, blob: &CommitBlob, id: &CommitId) -> Result<crate::Ingested> {
+    super::pend(tx, id, osis_store::PendingKind::Pending, &blob.encode(), crate::Reason::WaitBlobs)?;
+    Ok(crate::Ingested::Pending(*id, crate::Reason::WaitBlobs))
 }
 
 /// The bytes of the page blobs held here that commit `h` lists for its delta on aspect `ai`

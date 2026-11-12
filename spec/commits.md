@@ -47,7 +47,7 @@ Encoding: spec/wire.md §4. Fields:
 
   With the relay marker instead it is **relay-only**: writes of ephemeral signal (`+~`) aspects, commit form, snapshot deltas with empty tables. For an ephemeral commit of either form and any marker:
   - **Records**: it carries no creation record; its things' records come in durable commits, and a part on a thing whose record is not held waits for it (§4).
-  - **Shape**: every delta has retention `writer` (§5). Its values are inline (no chunk trees), and it has no purge or list by link. Its deltas page as a durable commit's (spec/crdt.md §8), its chunk list naming the pages. A relay-only commit's deltas never page (each must fit a blob alone, its chunk list is empty), and it carries no `expires` and no `undoes`.
+  - **Shape**: every delta has retention `writer` (§5). It has no purge or list by link. Its large values are chunk trees and its deltas page as a durable commit's (spec/data-model.md §6, spec/crdt.md §8); its chunk list names every ephemeral blob its deltas link: its pages and trees, and those of other commits it links (a reused chunk, a tree a snapshot carries). A relay-only commit's deltas never page (each must fit a blob alone, its chunk list is empty), and it carries no `expires` and no `undoes`.
   - **Holding**: nodes and hosts hold ephemeral commits in memory only (spec/sync.md §4, §9). Nothing of them joins durable state.
   - **Receiving**: a receiver verifies, judges and applies it as the durable commit of its kind (§4, spec/permissions.md §5.2):
     - a content commit as one, with pending, apply and un-merge;

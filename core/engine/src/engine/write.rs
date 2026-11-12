@@ -10,7 +10,7 @@ use super::secrets::CommitSecrets;
 use super::{Core, Engine, Tx};
 use crate::error::{Error, Result};
 use osis_commit::{AspectWrite, CommitBuilder, Form, Kind, PurgeItem, writer_ctx};
-use osis_base::{Ak, ChainStep, CommitId, CreationRecord, Role, Tid, Ts, Value, WallMs, record_chain};
+use osis_base::{Ak, BlobId, ChainStep, CommitId, CreationRecord, Role, Tid, Ts, Value, WallMs, record_chain};
 use osis_crdt::{AnyView, Batch, CounterRange, Delta, Fragment, Op, PathOp, Source, View, Writer, encode_delta};
 use osis_label::{BlobWriter, Framing};
 use osis_perm::At;
@@ -636,32 +636,38 @@ pub(crate) fn build_and_apply(tx: &mut Tx<'_>, plan: CommitPlan, deltas: Vec<Res
         let mut blobs = TxBlobs::new(&mut tx.blobs, tx.txn.is_memory());
         let mut nonce = [0u8; osis_crdt::NONCE_LEN];
         tx.rng.fill_bytes(&mut nonce);
-        let mut bw = BlobWriter::new(&framing, &mut blobs, &mut *tx.rng).with_page_params(if tx.txn.is_memory() { osis_crdt::PageParams::EPHEMERAL } else { osis_crdt::PageParams::FORMAT });
+        let mut bw = BlobWriter::new(&framing, &mut blobs, &mut *tx.rng);
         let fragment = d.fragment;
         let encoded = match d.frontiers {
             Some((frontiers, absorbed)) => osis_crdt::encode_snapshot(&osis_crdt::Snapshot { nonce, fragment, frontiers, absorbed }, &cx, Some(&mut bw)),
             None => encode_delta(&Delta { nonce, fragment }, &cx, Some(&mut bw)),
         };
-        let bytes = match encoded {
-            Ok(b) => b,
-            // an ephemeral value is inline, so one past a blob makes a page past it: refused
-            // (spec/sync.md §9; issues/eph-parity.md Large values)
-            Err(_) if tx.txn.is_memory() => return Err(Error::Misuse("an ephemeral commit does not fit a blob")),
-            Err(e) => return Err(e.into()),
-        };
+        let bytes = encoded?;
         let mut chunks = std::mem::take(&mut blobs.written);
         // trees written for values the resolved delta does not hold (an edit's item paired
         // with one deleted concurrently) are neither listed nor kept
         let mut own = d.chunks;
+        let memory = tx.txn.is_memory();
+        let linked = if !own.is_empty() || memory { super::large::delta_links(tx, &framing.dedup, &bytes)? } else { BTreeSet::new() };
         if !own.is_empty() {
-            let linked = super::large::delta_links(tx, &framing.dedup, &bytes)?;
             let (keep, drop): (Vec<_>, Vec<_>) = own.into_iter().partition(|id| linked.contains(id));
             for id in &drop {
-                tx.blobs.release(id, tx.txn.is_memory())?;
+                tx.blobs.release(id, memory)?;
             }
             own = keep;
         }
         chunks.extend(own);
+        // a memory commit lists every memory blob its delta links (a reused chunk, a tree a
+        // snapshot or an undo carries): what it lists is held with it and fetched before it
+        // applies, and a blob goes here only once no held commit lists it (`unindex_commit`)
+        if memory {
+            let listed: BTreeSet<BlobId> = chunks.iter().copied().collect();
+            for b in linked.into_iter().filter(|b| !listed.contains(b)) {
+                if tx.blobs.get(&b)?.is_some_and(|x| osis_label::Prefix::parse(&x).is_ok_and(|p| p.class() == osis_label::Class::Ephemeral)) {
+                    chunks.push(b);
+                }
+            }
+        }
         if plan.form.counted() && plan.kind.has_own_writes() {
             let first = tx.txn.reserve_counters(&d.tid, &d.ak, &nonce_of(plan.form), d.hi.saturating_sub(d.lo))?;
             if first != d.lo {
@@ -887,22 +893,26 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
             _ => None,
         };
         // what the ops address (map keys, fields, set values: a large one by its link, as the
-        // state holds it); a memory commit holds every value inline (no chunk trees)
-        let paths = match (&framing, memory) {
-            (Some(f), false) => super::pages::op_paths(&am.ops, &mut |v| super::large::lookup_form(v, &f.dedup))?,
-            _ => super::pages::op_paths(&am.ops, &mut |v| Ok(v.clone()))?,
+        // state holds it)
+        let paths = match &framing {
+            Some(f) => super::pages::op_paths(&am.ops, &mut |v| super::large::lookup_form(v, &f.dedup))?,
+            None => super::pages::op_paths(&am.ops, &mut |v| Ok(v.clone()))?,
         };
         // a list edit's items by content hash and its window (what the pages it needs follow from)
-        let edits = match (&framing, memory) {
-            (Some(f), false) => super::large::list_edits(&am.ops, am.schema.as_deref(), ak.as_str(), &f.dedup)?,
-            _ => Vec::new(),
+        let edits = match &framing {
+            Some(f) => super::large::list_edits(&am.ops, am.schema.as_deref(), ak.as_str(), &f.dedup)?,
+            None => Vec::new(),
         };
         let attached = tx.load_for_ops(&tid, &ak, paths, &am.ops, &edits)?;
-        // large atomic values become chunk trees before the ops resolve
+        // large atomic values become chunk trees before the ops resolve, a memory commit's held
+        // in memory (spec/data-model.md §6)
         let mut chunks = Vec::new();
-        if memory {
-        } else if let Some(framing) = &framing {
-            chunks = super::large::chunk_ops(tx, &tid, &ak, &mut am.ops, &edits, am.schema.as_deref(), framing, &m.fresh)?;
+        if let Some(framing) = &framing {
+            let mut framing = framing.clone();
+            if memory {
+                framing.class = osis_label::Class::Ephemeral;
+            }
+            chunks = super::large::chunk_ops(tx, &tid, &ak, &mut am.ops, &edits, am.schema.as_deref(), &framing, &m.fresh)?;
         }
         let lo = match form {
             Form::Commit => next_ctr,

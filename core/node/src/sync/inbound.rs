@@ -1933,7 +1933,9 @@ impl SyncEngine {
     /// Commits wait for pages: fetch the blobs their headers list that are not held (pages
     /// before apply, spec/sync.md §6; the chunks of other large values stay lazy).
     fn fetch_waiting(&mut self, conn: ConnId, l: LabelId, out: &mut Vec<super::Action>) -> Result<()> {
-        let missing = self.waiting_blobs()?;
+        // a page refused for the label's ephemeral cap waits for room as any entry does
+        // (`retry_refused`), and its commit with it
+        let missing: Vec<BlobId> = self.waiting_blobs()?.into_iter().filter(|b| !self.memory_skips(&l, b)).collect();
         self.fetch_on(conn, l, missing, out)
     }
 

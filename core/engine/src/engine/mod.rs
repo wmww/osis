@@ -1156,6 +1156,12 @@ pub struct Core {
     pub memory_generation: u64,
     /// The running transaction is a memory one (`Tx::set_memory`).
     pub memory_tx: bool,
+    /// The room node-sync gave the memory commit being ingested (spec/sync.md §9 Caps,
+    /// `apply::memory::memory_gate`); `None` outside `ingest_memory`/`apply_waiting_memory`.
+    pub memory_room: Option<u64>,
+    /// Pending commits known to be memory commits, which `reexamine` leaves to node-sync (a
+    /// cache of what their stored copies say; pruned to the pending set at each reexamine).
+    pub memory_waits: BTreeSet<CommitId>,
     /// Labels this node made, not yet seen by node-sync (`take_made_labels`).
     pub made_labels: Vec<osis_base::LabelId>,
     /// Debug builds: the cache hits compared with a fresh read at this point of the store
@@ -1290,6 +1296,8 @@ impl Core {
             role_generation: self.role_generation.clone(),
             memory_generation: self.memory_generation.clone(),
             memory_tx: self.memory_tx.clone(),
+            memory_room: self.memory_room,
+            memory_waits: self.memory_waits.clone(),
             made_labels: self.made_labels.clone(),
             #[cfg(debug_assertions)]
             rechecked: self.rechecked.clone(),
@@ -1778,6 +1786,10 @@ impl Core {
             memory_tx: _,
             made_labels: _,
             dirty: _,
+            // a call's parameter (`memory_room`) and a cache true of the store whatever a
+            // rollback undoes (`memory_waits`: a pending row's class never changes)
+            memory_room: _,
+            memory_waits: _,
             // memos: each answer holds while what it read does (`memo`); the stamps of what a
             // rollback restores move
             states_read: _,
@@ -2063,6 +2075,8 @@ impl Core {
             role_generation: 0,
             memory_generation: 0,
             memory_tx: false,
+            memory_room: None,
+            memory_waits: BTreeSet::new(),
             made_labels: Vec::new(),
             #[cfg(debug_assertions)]
             rechecked: Default::default(),

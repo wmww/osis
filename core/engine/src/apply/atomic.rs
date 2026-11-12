@@ -199,7 +199,6 @@ pub(super) fn in_order(parts: &Parts) -> Vec<(usize, PartRef<'_>)> {
 struct SharedPages<'c, 't, 'a> {
     tx: &'c RefCell<&'t mut Tx<'a>>,
     dedup: &'c osis_crypto::Secret32,
-    params: osis_crdt::PageParams,
 }
 
 impl osis_crdt::PageSource for SharedPages<'_, '_, '_> {
@@ -207,10 +206,7 @@ impl osis_crdt::PageSource for SharedPages<'_, '_, '_> {
         let mut tx = self.tx.try_borrow_mut().map_err(|_| osis_crdt::PageError::Storage)?;
         let tx = &mut **tx;
         let mut blobs = crate::engine::blobs::TxBlobs::new(&mut tx.blobs, tx.txn.is_memory());
-        osis_label::BlobReader::new(self.dedup, &mut blobs).with_page_params(self.params).get(link)
-    }
-    fn params(&self) -> osis_crdt::PageParams {
-        self.params
+        osis_label::BlobReader::new(self.dedup, &mut blobs).get(link)
     }
 }
 
@@ -237,7 +233,7 @@ pub(super) fn each_piece(tx: &mut Tx<'_>, h: &Header, id: &CommitId, blob: &Comm
 pub(super) fn stream_stored(tx: &mut Tx<'_>, h: &Header, id: &CommitId, ai: usize, delta: osis_crdt::Checked<'_>, dedup: &osis_crypto::Secret32, f: &mut dyn FnMut(&mut Tx<'_>, Fragment) -> Result<()>) -> Result<Option<Gives>> {
     let cell = RefCell::new(tx);
     let mut failed = None;
-    let mut pages = SharedPages { tx: &cell, dedup, params: crate::engine::blobs::page_params(h) };
+    let mut pages = SharedPages { tx: &cell, dedup };
     let source: &mut dyn osis_crdt::PageSource = &mut pages;
     let mut interner = osis_crdt::Interner::new();
     let r = osis_commit::read_part(h, id, ai, delta, &mut interner, Some(source), &mut |piece| {

@@ -186,12 +186,6 @@ impl Drop for Cipher<'_> {
     }
 }
 
-/// The page parameters of commit `h`'s deltas (spec/crdt.md §8: an ephemeral one's items per
-/// blob unchecked).
-pub(crate) fn page_params(h: &osis_commit::Header) -> osis_crdt::PageParams {
-    if h.ephemeral.is_some() { osis_crdt::PageParams::EPHEMERAL } else { osis_crdt::PageParams::FORMAT }
-}
-
 /// Blobs of one transaction; records what it wrote.
 pub struct TxBlobs<'t, 'a> {
     pub blobs: &'t mut Cipher<'a>,
