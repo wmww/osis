@@ -7,3 +7,4 @@
 - Also setup 913562411000 seed 913562411001 (storm on `s:reg.0`/`s:count.0` content, node s0 deleting each fresh copy).
 - Start at: why node 1 judges the copy must-not-hold while node 2 re-places it (spec/sync.md §6 verdicts), as in the work_sets issue.
 - Also sim `team_reads_member_thing` setup 72407225782 seed 72407225794 (on main alike): message storm at step 160, node 0 deleting and re-adding `Content` copies of two commits of one thing under two labels. Repro: `cargo run --bin sim-sweep -- --seeds 1 --from 72407225794 --setup 72407225782 --only team_reads_member_thing`.
+- Also `snapshot_rights` setup 731400 seed 731412 (on main alike): storm at step 40, host s0 deleting copies of one `Content` commit on `s:reg.0` and `s:count.0`. Repro: `cargo run --bin sim-sweep -- --seeds 1 --from 731412 --setup 731400 --only snapshot_rights`.
