@@ -780,17 +780,19 @@ fn stream_run(seed: u64, paged: bool) {
 // judges caught up holds nothing it lacks, across restarts, record loss, outages and joins
 #[test]
 fn stream_differential_no_write_dropped_spec_sync_10() {
-    for seed in 1..=6 {
-        stream_run(seed, false);
-    }
+    stream_runs("stream::stream_differential_no_write_dropped_spec_sync_10", 1..=6, false);
+}
+
+/// `stream_run` over `seeds` on the seed runner (a thread per core).
+fn stream_runs(name: &str, seeds: std::ops::RangeInclusive<u64>, paged: bool) {
+    let seeds: Vec<u64> = seeds.collect();
+    osis_base::testenv::run_seeds(name, &seeds, false, |_| format!("cargo test -p osis-node --test it -- --exact {name}"), |seed| stream_run(seed, paged));
 }
 
 // The same invariant with every reply paged (the smallest `max_reply`, announcements only)
 #[test]
 fn stream_differential_paged_spec_sync_10() {
-    for seed in 1..=3 {
-        stream_run(seed, true);
-    }
+    stream_runs("stream::stream_differential_paged_spec_sync_10", 1..=3, true);
 }
 
 /// A tamper making every Pull ask announcements only: bodies come by fetches.

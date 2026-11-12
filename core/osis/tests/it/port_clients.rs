@@ -1292,9 +1292,8 @@ impl Rng {
 // spec/sync.md §10, spec/wire.md §11.2, notes/client-port.md §3 (Invariant: every client-session row runs as the client's actor; authority ends at revocation), spec/permissions.md §1: a random walk of grants, lowered roles, secret rotations, expiries and removals against a model of plain grants: at every step every read answers what the model says the actor may read, as an unknown tid otherwise, and every write succeeds exactly when the model says it may write
 #[test]
 fn client_session_differential_against_grants() {
-    for seed in 0..3 {
-        walk(seed);
-    }
+    let name = "port_clients::client_session_differential_against_grants";
+    osis_base::testenv::run_seeds(name, &[0, 1, 2], false, |_| format!("cargo test -p osis --test it -- --exact {name}"), walk);
 }
 
 fn walk(seed: u64) {
