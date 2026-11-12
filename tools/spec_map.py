@@ -129,7 +129,7 @@ RULES = [
     ("spec/crdt.md", "4.6", "undo needs kept history", "MUST NOT undo a delta whose inverse **restores** replaced content"),
     ("spec/crypto.md", "1", "batch verification", "Batch and single verification MUST agree"),
     ("spec/crypto.md", "4", "encrypt under covering epoch", "MUST NOT **encrypt under**"),
-    ("spec/crypto.md", "4", "covers by names", "**covers** a departure that concerns r when"),
+    ("spec/crypto.md", "4", "covers by names", "**covers** a departure of M that concerns r when"),
     ("spec/crypto.md", "3", "fresh deposit seed", "MUST write a fresh one in each rotation of the sync role"),
     ("spec/data-model.md", "5", "cbor profile", "A decoder MUST reject anything outside it"),
     ("spec/data-model.md", "6", "chunk threshold", "MUST be chunked; one at or below it MUST NOT be"),
