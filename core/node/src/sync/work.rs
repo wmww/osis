@@ -1,5 +1,5 @@
 //! Pass work sets (spec/sync.md §6, §7; spec/requirements.md, Scale): what a pass at one host,
-//! or a local pass of a label served with no host (`SyncEngine::local_work`), judges again. A verdict on a commit's bodies and entries changes only through a trigger:
+//! or a local pass of a label served with no host (`SyncEngine::work`), judges again. A verdict on a commit's bodies and entries changes only through a trigger:
 //! its entries or their presence or certificate records changed (`State::touch`),
 //! the engine marked it changed (`Engine::take_changed`: applied, late parts, a drop, a fired
 //! timer, its thing's creation record, its validity flipped, it may have been replaced), a snapshot or a
@@ -14,7 +14,7 @@
 
 use super::pass::{is_card, is_snapshot};
 use super::state::{Kind, Touch};
-use super::{ConnId, SyncEngine};
+use super::SyncEngine;
 use crate::error::Result;
 use crate::labeling::{Body, BodyCtx, HeadKeys};
 use osis_base::{Ak, BlobId, CommitId, LabelId, Tid};
@@ -630,13 +630,9 @@ impl SyncEngine {
 
     /// Takes in what changed during this pass so far (entries opened, copies placed): judged
     /// in the rest of the pass, and again by the next.
-    /// `conn` `None`: the label's local pass (`SyncEngine::local_work`).
-    pub(super) fn pull(&mut self, conn: Option<ConnId>, g: &Tid, l: LabelId, scope: &mut Scope, w: &mut Work) {
+    pub(super) fn pull(&mut self, g: &Tid, l: LabelId, scope: &mut Scope, w: &mut Work) {
         self.spread_touches();
-        let meanwhile = match conn {
-            Some(conn) => self.lc(conn, &l).map(|lc| &lc.work),
-            None => self.local_work.get(&l),
-        };
+        let meanwhile = self.work.get(&l);
         let Some((mut cs, bs)) = meanwhile.map(|w| (w.touched.commits.clone(), w.touched.blobs.clone())) else { return };
         cs.extend(self.commits_of(&l, &bs));
         self.aggregate(g, &l, w, &cs, &bs);

@@ -17,6 +17,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 /// A host, by its static key (its address key).
 pub type HostKey = [u8; 32];
+/// An outbox key: (its destination's key, label, blob).
+pub type OutKey = (HostKey, LabelId, BlobId);
 
 const ENTRY: &[u8] = b"y/e";
 const PRESENT: &[u8] = b"y/p";

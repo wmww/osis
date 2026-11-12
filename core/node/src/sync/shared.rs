@@ -454,7 +454,7 @@ impl SyncEngine {
         self.stream_bind(conn, id, rec.cursor, &pulled, &members);
         self.unread_restream()?;
         if restored {
-            self.local_dirty = true;
+            self.pass_due = true;
             self.suspects_due = true;
         }
         self.shared_send(conn, Message::Digest { digest }, out)?;
@@ -1063,26 +1063,27 @@ impl SyncEngine {
         Ok(if self.charge_deposit(conn, l, blob_id, blob.len() as u64) { Code::OK } else { Code::BUDGET_FULL })
     }
 
-    /// Queued deposits for an inbox's nodes (`Dest::Nodes`) go as Deposit items, one unanswered
-    /// per connection, each only on a connection where J of the inbox's actor is holder and the
-    /// peer has not refused it, after the peer's digest (issues/net-shared-set.md, Deposits).
+    /// Queued deposits go as Deposit items (spec/sync.md §10, Deposit items), one Offer of them
+    /// unanswered per connection, after the peer's digest, never to a peer that refused one:
+    /// those for a node keeping the label (`Dest::Host`) on a connection to it, those for an
+    /// inbox's nodes (`Dest::Nodes`) where J of the inbox's actor is holder.
     pub(super) fn shared_deposits(&mut self, out: &mut Vec<Action>) -> Result<()> {
-        use super::state::{Dest, INBOX_NODES};
+        use super::state::{Dest, OutKey};
         let now = self.now();
         // one in flight on a connection gone (dialed or served) goes again
-        for (_, o) in self.outbox.iter_mut().filter(|(k, _)| k.0 == INBOX_NODES) {
+        for o in self.outbox.values_mut() {
             if o.sent.is_some_and(|c| !self.records.shared.contains_key(&c)) {
                 o.sent = None;
             }
         }
-        let mut due: Vec<((LabelId, BlobId), Tid)> = Vec::new();
-        for (k, o) in &self.outbox {
-            if k.0 != INBOX_NODES || o.sent.is_some() || o.after > now {
+        let ready: Vec<OutKey> = self.outbox.iter().filter(|(_, o)| o.sent.is_none() && o.after <= now).map(|(k, _)| *k).collect();
+        let mut due: Vec<(OutKey, Dest)> = Vec::new();
+        for k in ready {
+            let Some((to, d)) = self.state.outbox.get(&k).map(|r| (r.to.clone(), r.delivery)) else { continue };
+            if d.is_some_and(|d| self.names_label_opening(&d)) {
                 continue;
             }
-            if let Some(Dest::Nodes(a)) = self.state.outbox.get(k).map(|r| &r.to) {
-                due.push(((k.1, k.2), *a));
-            }
+            due.push((k, to));
         }
         if due.is_empty() {
             return Ok(());
@@ -1090,25 +1091,94 @@ impl SyncEngine {
         let conns: Vec<ConnId> = self.records.shared.iter().filter(|(_, s)| s.digest_read && !s.deposit_out).map(|(c, _)| *c).collect();
         for conn in conns {
             let Some(actors) = self.connection_proven(conn).map(Proven::all) else { continue };
+            let host = self.conns.get(&conn).map(|c| c.host);
             let Some(s) = self.records.shared.get(&conn) else { continue };
             let mut judge = self.engine.core.judge(actors);
-            let pick = due.iter().find(|(k, a)| {
-                self.outbox.get(&(INBOX_NODES, k.0, k.1)).is_some_and(|o| o.sent.is_none()) && !s.deposits_refused.contains(k) && judge.of(a) == super::credentials::Judgment::Holder
-            });
-            let Some(((l, b), _)) = pick.copied() else { continue };
+            let picked: Vec<OutKey> = due
+                .iter()
+                .filter(|(k, to)| {
+                    self.outbox.get(k).is_some_and(|o| o.sent.is_none())
+                        && !s.deposits_refused.contains(&(k.1, k.2))
+                        && match to {
+                            Dest::Host(a) => host == Some(a.key),
+                            Dest::Nodes(a) => judge.of(a) == super::credentials::Judgment::Holder,
+                        }
+                })
+                .map(|(k, _)| *k)
+                .take(MAX_SHARED_ITEMS)
+                .collect();
             drop(judge);
-            let Some(r) = self.state.outbox.get(&(INBOX_NODES, l, b)) else { continue };
-            let item = OfferItem::Deposit { label: l, blob: r.blob.clone(), wrap: r.wrap, sig: r.sig };
-            if let Some(o) = self.outbox.get_mut(&(INBOX_NODES, l, b)) {
-                o.sent = Some(conn);
+            if picked.is_empty() {
+                continue;
+            }
+            let (mut items, mut asked) = (Vec::new(), Vec::new());
+            for k in picked {
+                let Some(r) = self.state.outbox.get(&k) else { continue };
+                items.push(OfferItem::Deposit { label: r.label, blob: r.blob.clone(), wrap: r.wrap, sig: r.sig });
+                asked.push(AskedItem::Deposit(k.1, k.2));
+                if let Some(o) = self.outbox.get_mut(&k) {
+                    o.sent = Some(conn);
+                }
             }
             if let Some(s) = self.records.shared.get_mut(&conn) {
                 s.deposit_out = true;
             }
-            self.stats.deposits_sent += 1;
-            self.shared_send_offer(conn, vec![item], vec![AskedItem::Deposit(l, b)], out)?;
+            self.stats.deposits_sent += items.len() as u64;
+            self.shared_send_offer(conn, items, asked, out)?;
         }
         Ok(())
+    }
+
+    /// This node's deposits under `l` that source `conn` lacks (spec/sync.md §5, Sending), as
+    /// Deposit items of one Offer under the source's head deposit key (`p`): its own role writes
+    /// through the outbox (kept until taken, `queue_deposit`), any other body it must hold and
+    /// judges valid directly, again `RESEND_MS` after while the source still lacks it.
+    pub(super) fn deposit_items(&mut self, conn: ConnId, p: &super::pass::Head, ids: Vec<BlobId>, out: &mut Vec<Action>) -> Result<()> {
+        let (Some(d), l) = (p.keys.deposit.clone(), p.l) else { return Ok(()) };
+        let Some((host, address)) = self.conns.get(&conn).map(|c| (c.host, c.address.clone())) else { return Ok(()) };
+        let now = self.now();
+        let (mut items, mut asked, mut queued) = (Vec::new(), Vec::new(), false);
+        for id in ids {
+            if self.state.outbox.contains_key(&(host, l, id)) {
+                continue;
+            }
+            let Some(e) = self.state.entries.get(&(l, id)).cloned() else { continue };
+            let Some(blob) = self.engine.blob(&id)? else { continue };
+            if !e.cert && matches!(e.kind, super::state::Kind::Commit { .. }) && self.mine(&e) {
+                // this node's own write placed for deposit: queued, so neither a crash nor
+                // forgetting the label recalls it
+                self.queue_deposit(l, std::slice::from_ref(&address), &d, blob, e.wrap, None);
+                queued = true;
+                continue;
+            }
+            // a body only while this node judges it valid: one it judges invalid no writer
+            // promotes and nobody deletes (spec/permissions.md §6), so it would hold the label's
+            // deposit budget for good
+            if let super::state::Kind::Commit { commit, parts, .. } = &e.kind
+                && !e.cert
+                && !self.engine.judged_valid(commit, parts)
+            {
+                continue;
+            }
+            let busy = self.conns.get(&conn).is_some_and(|c| super::in_flight(c, &c.req.sent, (l, id), now));
+            if busy || items.len() == MAX_SHARED_ITEMS {
+                continue;
+            }
+            let sig = osis_label::sign_deposit(&d, &l, &id, &e.wrap);
+            items.push(OfferItem::Deposit { label: l, blob, wrap: e.wrap, sig });
+            asked.push(AskedItem::Deposit(l, id));
+            if let Some(c) = self.conns.get_mut(&conn) {
+                c.req.sent.insert((l, id), (now, 0));
+            }
+        }
+        if queued {
+            self.send_outbox(out)?;
+        }
+        if items.is_empty() {
+            return Ok(());
+        }
+        self.stats.deposits_sent += items.len() as u64;
+        self.shared_send_offer(conn, items, asked, out)
     }
 
     /// The peer's answer to Deposit item `(l, b)`: taken, it leaves the outbox (the pending
@@ -1116,21 +1186,21 @@ impl SyncEngine {
     /// it is signed again with the current deposit key if that differs and offered again, else
     /// not offered on this connection again until what this node holds changes.
     fn shared_deposit_answered(&mut self, conn: ConnId, l: LabelId, b: BlobId, code: Code) -> Result<()> {
-        use super::state::INBOX_NODES;
-        let k = (INBOX_NODES, l, b);
         if let Some(s) = self.records.shared.get_mut(&conn) {
             s.deposit_out = false;
         }
+        // a queued one sent on this connection, else a pass's (in flight until `RESEND_MS`)
+        let Some(k) = self.outbox.iter().find(|(k, o)| k.1 == l && k.2 == b && o.sent == Some(conn)).map(|(k, _)| *k) else { return Ok(()) };
         let Some(o) = self.outbox.get_mut(&k) else { return Ok(()) };
         o.sent = None;
         if code == Code::OK {
             self.outbox.remove(&k);
-            self.state.remove_out(&INBOX_NODES, &l, &b);
+            self.state.remove_out(&k.0, &l, &b);
             return Ok(());
         }
-        if self.deposit_moot(&INBOX_NODES, &l, &b) {
+        if self.deposit_moot(&k.0, &l, &b) {
             self.outbox.remove(&k);
-            self.state.remove_out(&INBOX_NODES, &l, &b);
+            self.state.remove_out(&k.0, &l, &b);
             return Ok(());
         }
         if matches!(code, Code::BUDGET_FULL | Code::RATE_LIMITED | Code::STORAGE_CAP) {
@@ -1144,7 +1214,7 @@ impl SyncEngine {
             }
             return Ok(());
         }
-        if !self.resign_deposit(&INBOX_NODES, &l, &b)?
+        if !self.resign_deposit(&k.0, &l, &b)?
             && let Some(s) = self.records.shared.get_mut(&conn)
         {
             s.deposits_refused.insert((l, b));
@@ -1156,7 +1226,7 @@ impl SyncEngine {
     fn shared_open(&mut self, conn: ConnId, l: LabelId, class: u8, beacon: Option<[u8; 32]>, out: &mut Vec<Action>) -> Result<()> {
         // the first sync ID shared here: what this node holds of labels synced with no host is
         // placed for its readers from now on (`serves_readers`)
-        self.local_dirty |= class != SYNC && self.records.shared.values().all(Shared::is_empty);
+        self.pass_due |= class != SYNC && self.records.shared.values().all(Shared::is_empty);
         let Some(s) = self.records.shared.get_mut(&conn) else { return Ok(()) };
         s.members.insert(l, Member { class, beacon, until: None });
         // kept unread: served to the peer from the hub's store, and pulled from it by the store's

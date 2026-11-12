@@ -82,9 +82,9 @@ impl SyncEngine {
     /// `None`: this node's own served state.
     pub(super) fn deletable(&mut self, at: &At, id: &BlobId, e: &Entry, desired: &Desired, carrier: bool, note: &mut Note) -> Result<Fate> {
         let Some((Hold::MustNot(why), live, aspects)) = self.judge(at, id, e, desired, note)? else { return Ok(Fate::Keep) };
-        let (carried, need, via) = match why {
-            _ if !live => (true, Vec::new(), None),
-            Why::Duplicate | Why::StrictSubset => (true, Vec::new(), None),
+        let (carried, need) = match why {
+            _ if !live => (true, Vec::new()),
+            Why::Duplicate | Why::StrictSubset => (true, Vec::new()),
             _ => self.carried(at, e)?,
         };
         if !may_delete(live, carried) {
@@ -95,9 +95,9 @@ impl SyncEngine {
             note.waits.extend(aspects);
             return Ok(Fate::Wait);
         }
-        // a Delete needs every commitment group signed, a Replace (`via`) one (spec/sync.md §5)
-        Ok(match self.delete_for(at.keys, &at.l, id, e, via.is_none())? {
-            Some(item) => Fate::Delete(why, item, via),
+        // a Delete needs every commitment group signed (spec/sync.md §5)
+        Ok(match self.delete_for(at.keys, &at.l, id, e, true)? {
+            Some(item) => Fate::Delete(why, item),
             None => {
                 note.keyless = true;
                 Fate::Wait
@@ -468,8 +468,6 @@ impl SyncEngine {
         let mut sent: BTreeSet<BlobId> = BTreeSet::new();
         let busy = |s: &Self, sent: &BTreeSet<BlobId>, id: &BlobId| sent.contains(id) || s.conns.get(&conn).is_some_and(|c| crate::sync::in_flight(c, &c.req.deleting, (l, *id), now));
         let mut items = Vec::new();
-        // capped rewrites to upload again, each replacing the bodies it carries
-        let mut replace: BTreeMap<BlobId, Vec<osis_label::DeleteItem>> = BTreeMap::new();
         let mut note = Note::default();
         for id in &ids {
             let id = *id;
@@ -482,14 +480,11 @@ impl SyncEngine {
             }
             match fate {
                 Fate::Keep | Fate::Wait => {}
-                Fate::Delete(_, item, via) => {
+                Fate::Delete(_, item) => {
                     left.commits.insert(commit);
                     if !busy(self, &sent, &id) {
                         sent.insert(id);
-                        match via {
-                            Some(q) => replace.entry(q).or_default().push(item),
-                            None => items.push(item),
-                        }
+                        items.push(item);
                     }
                 }
             }
@@ -570,40 +565,9 @@ impl SyncEngine {
             if !items.is_empty() {
                 self.command(conn, Command::Delete { label: l, items }, out)?;
             }
-            self.replace_sends(conn, keys, l, replace, out)?;
         }
         // tags this pass's earlier requests too (`clear_deposits`' deletes)
         self.given(conn);
-        Ok(())
-    }
-
-    /// Uploads this node's rewrites the host refused for the label's cap again, each naming
-    /// the bodies it carries as replaced with their delete items (spec/sync.md §5, §7): the
-    /// host admits it in the room they free and removes them in the same step, so the label
-    /// never lacks the kept live writes.
-    fn replace_sends(&mut self, conn: ConnId, keys: &HeadKeys, l: LabelId, replace: BTreeMap<BlobId, Vec<osis_label::DeleteItem>>, out: &mut Vec<crate::sync::Action>) -> Result<()> {
-        let now = self.now();
-        let mut uploads = Vec::new();
-        for (q, items) in replace {
-            let Some(mut e) = self.state.entries.get(&(l, q)).cloned() else { continue };
-            let Some(blob) = self.engine.blob(&q)? else { continue };
-            let stamp = match (&keys.write, e.stamp) {
-                (Some(w), _) => osis_label::sign_stamp(w, &l, &q, &e.wrap),
-                (None, Some(s)) => s,
-                (None, None) => continue,
-            };
-            e.stamp = Some(stamp);
-            let wrap = e.wrap;
-            self.state.set_entry(l, q, e);
-            if let Some(c) = self.conns.get_mut(&conn) {
-                c.req.sent.insert((l, q), (now, crate::sync::UNTAGGED));
-                c.req.replacing.insert((l, q), (items.iter().map(|i| i.blob).collect(), crate::sync::UNTAGGED));
-            }
-            uploads.push(osis_proto::Entry { blob, wrap, stamp, replaces: items });
-        }
-        if !uploads.is_empty() {
-            self.command(conn, Command::Upload { label: l, entries: uploads }, out)?;
-        }
         Ok(())
     }
 
@@ -624,10 +588,9 @@ impl SyncEngine {
     /// node's rewrite, `carried_by`) or a snapshot covering it; none is ever asked for: the
     /// rewrite is this node's to place. A dropped delta's: the snapshot that covered it when it
     /// was dropped.
-    /// With a carrier that is this node's rewrite refused for the cap (`rewrite_capped`): it.
     fn carried(&mut self, at: &At, e: &Entry) -> Result<Carriage> {
         let (g, l, host) = (&at.g, &at.l, at.host.as_ref());
-        let Kind::Commit { commit, parts, .. } = &e.kind else { return Ok((false, Vec::new(), None)) };
+        let Kind::Commit { commit, parts, .. } = &e.kind else { return Ok((false, Vec::new())) };
         // a forgotten memory commit: carried once an entry of what covered or superseded it is
         // held at the host (spec/sync.md §9); nothing here to snapshot for it
         if self.memory.forgotten.contains_key(commit) {
@@ -635,14 +598,11 @@ impl SyncEngine {
             // it was placed, covered by a later snapshot) stands for what covers that
             let by = self.carriers_of_forgotten(commit);
             let carried = by.iter().any(|s| self.state.entries_of(l, s).any(|(b, _)| host.is_none_or(|host| self.state.holds_at(host, l, &b))));
-            // a coverer the host refused for the label's cap goes up again replacing this
-            // body, in the room it frees (spec/sync.md §5, §7)
-            let via = if carried { None } else { host.and_then(|s| by.iter().flat_map(|c| self.state.entries_of(l, c).map(|(b, _)| b)).find(|b| self.capped.contains(&(*s, *l, *b)))) };
-            return Ok((carried || via.is_some(), Vec::new(), via));
+            return Ok((carried, Vec::new()));
         }
-        let Some(m) = self.engine.core.ix.commits.get(commit).cloned() else { return Ok((false, Vec::new(), None)) };
+        let Some(m) = self.engine.core.ix.commits.get(commit).cloned() else { return Ok((false, Vec::new())) };
         let x = self.engine.group_actor(g);
-        let (mut all, mut need, mut via) = (true, Vec::new(), None);
+        let (mut all, mut need) = (true, Vec::new());
         for &ai in parts {
             let Some(a) = m.header.aspects.get(ai) else { continue };
             let (t, a) = (a.tid, a.ak.clone());
@@ -654,15 +614,6 @@ impl SyncEngine {
             if !dropped && self.carried_by(host, l, commit, &[ai]) || self.snapshot_carries(at, commit, &t, &a, dropped)? {
                 continue;
             }
-            // this node's rewrite, refused at the host for the label's cap: it goes up again
-            // replacing this body, in the room it frees (else a full label would keep a purged
-            // body for good)
-            if !dropped
-                && let Some(q) = host.and_then(|s| self.rewrite_capped(s, l, commit, parts, ai))
-            {
-                via = via.or(Some(q));
-                continue;
-            }
             all = false;
             // a kept delta's carrier is the rewrite this node places (spec/sync.md §7, No
             // carrier): only a dropped delta's live writes need a snapshot
@@ -670,20 +621,7 @@ impl SyncEngine {
                 need.push((t, a));
             }
         }
-        Ok((all, need, via))
-    }
-
-    /// A blob of commit `c` under `l` holding its delta on aspect `ai`, a strict subset of `parts` (so smaller
-    /// than the body it would carry), that is this node's upload `host` refused for the
-    /// label's cap (`SyncEngine::capped`).
-    fn rewrite_capped(&mut self, host: &HostKey, l: &LabelId, c: &CommitId, parts: &[usize], ai: usize) -> Option<BlobId> {
-        let ids: Vec<BlobId> = self
-            .state
-            .entries_of(l, c)
-            .filter(|(id, e)| !e.cert && self.capped.contains(&(*host, *l, *id)) && matches!(&e.kind, Kind::Commit { parts: q, .. } if q.contains(&ai) && q.len() < parts.len() && q.iter().all(|x| parts.contains(x)) && !self.holds_nothing(c, q)))
-            .map(|(id, _)| id)
-            .collect();
-        ids.into_iter().find(|id| self.genuine(id))
+        Ok((all, need))
     }
 
     /// Whether a later snapshot of `(t, a)` under the label at the host carries body `body`'s

@@ -4,19 +4,12 @@
 use super::*;
 
 impl SyncEngine {
-    /// The open, synced labels marked dirty that may pass now.
-    pub(super) fn dirty_labels(&self) -> Vec<(ConnId, LabelId)> {
-        let todo: Vec<(ConnId, LabelId)> = self
-            .conns
-            .iter()
-            .flat_map(|(id, c)| c.labels.iter().filter(|(_, l)| l.dirty && l.phase == Phase::Open && l.ready()).map(move |(lid, _)| (*id, *lid)))
-            .collect();
-        // no pass before a fill has what judging needs, on any connection: it would ask what it
-        // lacks at once, out of the fill's order (`read_first`)
-        todo.into_iter().filter(|(_, l)| !self.fill_first_waits(l)).collect()
+    /// Whether a pass is due (`passes`).
+    pub(crate) fn passes_due(&self) -> bool {
+        self.pass_due || !self.due_labels.is_empty() || !self.fill_due.is_empty()
     }
 
-    /// Runs passes for open, synced labels marked dirty.
+    /// Runs the passes when one is due.
     pub(super) fn run_dirty(&mut self, out: &mut Vec<Action>) -> Result<()> {
         self.vet_inbox_hints()?;
         self.add_new_labels(out)?;
@@ -28,14 +21,8 @@ impl SyncEngine {
             }
         }
         self.end_idle_links();
-        for (conn, label) in self.dirty_labels() {
-            if let Some(l) = self.lc_mut(conn, &label) {
-                l.dirty = false;
-            }
-            self.pass(conn, label, out)?;
-        }
-        if self.local_dirty {
-            self.local_passes()?;
+        if self.passes_due() {
+            self.passes(out)?;
         }
         Ok(())
     }
@@ -44,7 +31,7 @@ impl SyncEngine {
     pub(super) fn timers(&mut self, out: &mut Vec<Action>) -> Result<()> {
         let now = self.now();
         // the clock went back: resyncs count from now, not from a time still ahead
-        self.local_last = self.local_last.min(now);
+        self.passed_at = self.passed_at.min(now);
         for l in self.conns.values_mut().flat_map(|c| c.labels.values_mut()) {
             l.last_sync = l.last_sync.min(now);
         }
@@ -69,13 +56,6 @@ impl SyncEngine {
         }
         self.stream_retry(out)?;
         self.shared_retry(out)?;
-        let resync: Vec<(ConnId, LabelId)> = self
-            .conns
-            .iter()
-            .flat_map(|(id, c)| {
-                c.labels.iter().filter(|(_, l)| l.phase == Phase::Open && l.last_sync.saturating_add(self.cfg.resync_ms) <= now).map(move |(lid, _)| (*id, *lid))
-            })
-            .collect();
         // labels no key opened, and registrations refused for now once their back-off passed: try
         // again from scratch
         let again = |l: &LConn| match l.phase {
@@ -99,19 +79,14 @@ impl SyncEngine {
             }
             self.start_label(conn, g, label, out)?;
         }
-        if self.local_any && self.local_last.saturating_add(self.cfg.resync_ms) <= now && (self.local_work.is_empty() || self.local_work.values().any(|w| w.resync_due(now))) {
-            self.local_dirty = true;
-        }
-        for (conn, label) in resync {
-            // an upload the host refused for the label's cap goes again once per resync while the
-            // body is held (spec/sync.md §9: room appears there without a word to anyone)
-            let capped = self.conns.get(&conn).is_some_and(|c| self.capped.range((c.host, label, osis_base::BlobId([0; 32]))..=(c.host, label, osis_base::BlobId([0xff; 32]))).next().is_some());
-            if let Some(l) = self.lc_mut(conn, &label) {
-                // a pass when something waits for it (`Work::resync_due`: what a pass left, a
-                // timed bound); the stream brings what the peer gets
-                l.last_sync = now;
-                l.dirty |= l.fill.is_some() || l.work.resync_due(now) || capped;
-            }
+        // a pass when something waits for it (`Work::resync_due`: what a pass left, a timed
+        // bound), or a fill under way; the streams bring what peers get
+        let filling = self.conns.values().any(|c| c.labels.values().any(|l| l.fill.is_some()));
+        if self.passing && self.passed_at.saturating_add(self.cfg.resync_ms) <= now && (self.work.is_empty() || filling || self.work.values().any(|w| w.resync_due(now))) {
+            self.pass_due = true;
+            // a fill under way passes at each resync (`passes`)
+            let filling: Vec<LabelId> = self.conns.values().flat_map(|c| c.labels.iter().filter(|(_, x)| x.fill.is_some()).map(|(l, _)| *l)).collect();
+            self.fill_due.extend(filling);
         }
         Ok(())
     }
@@ -126,7 +101,7 @@ impl SyncEngine {
         let mut t: Option<u64> = None;
         let mut at = |x: u64| t = Some(t.map_or(x, |y: u64| y.min(x)));
         let resync = self.cfg.resync_ms;
-        if self.local_any || self.conns.values().any(|c| !c.labels.is_empty()) {
+        if self.passing || self.conns.values().any(|c| !c.labels.is_empty()) {
             at(self.last_tick.saturating_add(resync));
         }
         for c in self.conns.values() {
@@ -136,7 +111,7 @@ impl SyncEngine {
             for l in c.labels.values() {
                 // a label waiting for a reply re-syncs after it; a quiet one needs no time of its
                 // own, what comes due for it waits for the next tick
-                if (l.phase == Phase::Open && (l.fill.is_some() || !l.work.quiet())) || l.phase == Phase::Failed {
+                if (l.phase == Phase::Open && l.fill.is_some()) || l.phase == Phase::Failed {
                     at(l.last_sync.saturating_add(resync));
                 }
                 if let Phase::Refused { retry_at } = l.phase {
@@ -199,12 +174,7 @@ impl SyncEngine {
                 self.diag(format!("sync: {e}"));
             }
         }
-        let open: Vec<(ConnId, LabelId)> = self.conns.iter().flat_map(|(id, c)| c.labels.iter().filter(|(_, l)| l.phase == Phase::Open).map(move |(lid, _)| (*id, *lid))).collect();
-        for (conn, label) in open {
-            if let Some(l) = self.lc_mut(conn, &label) {
-                l.dirty = true;
-            }
-        }
+        self.pass_due = true;
         out.extend(self.handle(Event::Local));
         out
     }

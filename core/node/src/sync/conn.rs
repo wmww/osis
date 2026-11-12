@@ -60,8 +60,6 @@ pub(crate) struct LConn {
     pub sync_seq: u64,
     /// The stream read it to the peer's end since it last joined there (`stream_read`).
     pub synced: bool,
-    /// A pass is wanted once the running exchange ends.
-    pub dirty: bool,
     /// The label's first sync at this host is under way (`fill`).
     pub fill: Option<fill::Fill>,
     /// A child step sent for registration.
@@ -71,8 +69,6 @@ pub(crate) struct LConn {
     /// Child steps refused in a row (the back-off doubles per refusal; an open or a registered
     /// step resets it).
     pub step_refusals: u32,
-    /// What the next pass judges (`work`).
-    pub work: work::Work,
     pub last_sync: u64,
     pub path: Vec<Step>,
     /// A hinted open walked to an unverified step: the host's path is checked after the open.
@@ -101,15 +97,9 @@ impl LConn {
         self.phase == Phase::Open && self.fill.as_ref().is_some_and(|f| !f.first_done)
     }
 
-    /// A pass is wanted; a fill's at its next due (`timers`), its end or this node's own next
-    /// write, not per batch applied.
-    pub(super) fn want_pass(&mut self) {
-        self.dirty |= self.fill.is_none();
-    }
-
-    /// Ready, with no pass wanted and no fill under way.
+    /// Ready, with no fill under way.
     pub(super) fn idle(&self) -> bool {
-        self.ready() && !self.dirty && self.fill.is_none()
+        self.ready() && self.fill.is_none()
     }
 }
 
@@ -448,12 +438,10 @@ impl SyncEngine {
             E::Step { label, step } => self.stale_step(conn, label, step, out)?,
             E::Registered { label } => self.registered(conn, label, out)?,
             E::PathSteps { label, steps, more } => self.path_steps(conn, label, steps, more, out)?,
-            E::EntryStatus { label, blob_ids, codes } => self.entry_status(conn, label, blob_ids, codes)?,
             E::DeleteStatus { label, blob_ids, codes } => self.delete_status(conn, label, blob_ids, codes)?,
-            E::Budget { label, blob_id, code, budget } => self.budget(conn, label, blob_id, code, budget.map(|b| b.0))?,
-            // what a host's cursor sync, subscription or reconciliation brings: none is asked (a
-            // host's entries come by its stream, `stream_apply`)
-            E::Events { .. } | E::Want { .. } | E::Synced { .. } | E::NeedReconcile { .. } | E::Reconciled { .. } | E::Subscribed { .. } => self.diag("host sent what no request asked".into()),
+            // what an upload, deposit, cursor sync, subscription or reconciliation brings: none is
+            // asked (a source's entries come by its stream, `stream_apply`; it pulls this node's)
+            E::EntryStatus { .. } | E::Budget { .. } | E::Events { .. } | E::Want { .. } | E::Synced { .. } | E::NeedReconcile { .. } | E::Reconciled { .. } | E::Subscribed { .. } => self.diag("peer sent what no request asked".into()),
             E::Fetched { label, items } => {
                 // asked for and not there: not asked again on this connection
                 let mut gone = false;
@@ -461,8 +449,8 @@ impl SyncEngine {
                     self.fetched(&f.blob_id);
                     gone |= self.conns.get_mut(&conn).is_some_and(|c| c.req.missing.insert(f.blob_id));
                 }
-                if gone && let Some(lc) = self.lc_mut(conn, &label) {
-                    lc.dirty = true;
+                if gone {
+                    self.mark_labels(&[label]);
                 }
                 let evs: Vec<osis_proto::Event> = items.into_iter().filter_map(|f| f.entry.map(|(blob, wrap, stamp)| osis_proto::Event::Added { blob_id: f.blob_id, blob: Some(blob), wrap, stamp })).collect();
                 if !evs.is_empty() {

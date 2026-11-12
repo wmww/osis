@@ -98,8 +98,11 @@ impl SyncEngine {
     pub(crate) fn fill_listed(&mut self, conn: ConnId, l: LabelId, out: &mut Vec<super::Action>) -> Result<bool> {
         let Some(f) = self.lc_mut(conn, &l).and_then(|x| x.fill.as_mut()) else { return Ok(false) };
         f.listed = true;
-        if let Some(lc) = self.lc_mut(conn, &l) {
-            lc.synced = true;
+        // listed: the label's work set judges everything at its next pass (`stream_read`)
+        if let Some(lc) = self.lc_mut(conn, &l)
+            && !std::mem::replace(&mut lc.synced, true)
+        {
+            self.work_mut(l).touched.full = true;
         }
         self.fill_more(conn, l, out)?;
         Ok(true)
@@ -122,7 +125,7 @@ impl SyncEngine {
         if !out_at.is_empty() {
             if !f.first_done && out_at.iter().all(|at| at.saturating_add(STALL_TIMEOUT_MS) <= now) {
                 f.first_done = true;
-                lc.dirty = true;
+                self.fill_due.insert(l);
             }
             lc.fill = Some(f);
             return Ok(());
@@ -166,8 +169,8 @@ impl SyncEngine {
         if ids.is_empty() {
             if let Some(lc) = self.lc_mut(conn, &l) {
                 lc.fill = None;
-                lc.dirty = true;
             }
+            self.fill_due.insert(l);
             self.state.set_filling(host, l, false);
             // its end is the pass's; the stream's bodies come inline from here on
             self.stream_read(conn, l, out)?;
@@ -176,7 +179,9 @@ impl SyncEngine {
         f.asked = ids.clone();
         if let Some(lc) = self.lc_mut(conn, &l) {
             lc.fill = Some(f);
-            lc.dirty |= first_now;
+        }
+        if first_now {
+            self.fill_due.insert(l);
         }
         // looked at again when the batch goes stale (`timers`), if no answer came first
         self.settle_by(now.saturating_add(STALL_TIMEOUT_MS), l);

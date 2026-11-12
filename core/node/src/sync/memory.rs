@@ -11,18 +11,16 @@
 //! delivered and passed on, held by nobody).
 
 use super::state::{Entry, HostKey, Kind};
-use super::work::Left;
-use super::{Action, ConnId, Phase, SyncEngine};
+use super::{Action, ConnId, SyncEngine};
 use crate::engine::MemoryDrop;
 use crate::error::Result;
 use crate::events::{Diagnostic, DiagnosticKind};
-use crate::labeling::{Body, BodyCtx, HeadKeys};
+use crate::labeling::Body;
 use crate::Ingested;
 use osis_base::{BlobId, CommitId, LabelId, Tid};
-use osis_commit::{CommitBlob, EphClass, Form};
+use osis_commit::{CommitBlob, EphClass};
 use osis_crypto::Signature;
 use osis_label::Class;
-use osis_proto::{Code, Command};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -189,16 +187,6 @@ pub(crate) struct Memory {
     pub reported: BTreeSet<LabelId>,
     /// Forgotten memory commits with entries still known (`Engine::take_memory_drops`).
     pub forgotten: BTreeMap<CommitId, Forgotten>,
-    /// The pages of the forgotten memory commits (their chunk lists): deleted at hosts once no
-    /// entry of their commit is known (`dropped_chunks`).
-    pub forgotten_pages: BTreeMap<BlobId, CommitId>,
-    /// Uploads of this node's own memory bodies unanswered per connection and label: its later
-    /// own writes there wait (`coalesce_own`, spec/sync.md §9).
-    pub own_uploads: BTreeSet<(ConnId, LabelId, BlobId)>,
-    /// Own commits a coalescing snapshot was made of: never coalesced again (one the snapshot
-    /// could not cover, behind an invalid body of its session, goes as it is, else a snapshot
-    /// per pass spun). Trimmed to the commits held.
-    pub coalesced: BTreeSet<CommitId>,
     /// Relay-only entries received (`RelaySeen`).
     pub relays: RelaySeen,
     /// Memory commits from others charged their bytes while they wait (pending: their blobs,
@@ -207,11 +195,6 @@ pub(crate) struct Memory {
 }
 
 impl SyncEngine {
-    /// Open connections with label `l` (connection, host key, keys).
-    fn open_conns(&self, l: &LabelId) -> Vec<(ConnId, HostKey, HeadKeys)> {
-        self.conns.iter().filter_map(|(id, c)| c.labels.get(l).filter(|x| x.phase == Phase::Open && c.up).map(|x| (*id, c.host, x.keys.clone()))).collect()
-    }
-
     /// Per step, before the engine's changes are drained: the aspects whose memory snapshot
     /// fell invalid have their labels' memory entries listed again by every stream carrying them
     /// (a writer wrote a fresh snapshot, an own commit the passes place), the commits the engine
@@ -250,7 +233,6 @@ impl SyncEngine {
         for c in signals {
             self.place_relay(c.id, c.blob, out)?;
         }
-        self.memory.coalesced.retain(|c| self.engine.holds_memory(c));
         Ok(())
     }
 
@@ -732,96 +714,6 @@ impl SyncEngine {
         }
     }
 
-    /// Before a pass sends under `l` on `conn` (spec/sync.md §9 Sending): this node's own memory
-    /// bodies not yet placed under `l` (writes and snapshots) wait while an own upload of the
-    /// label is unanswered on the connection (judged again once it is); otherwise two or more
-    /// of this session's plain writes on one aspect are replaced by one snapshot of their join
-    /// (`Engine::coalesce`): covered here, never uploaded, so an aspect goes up as about one
-    /// entry per round trip whatever the write rate. A body the snapshot could not cover (behind
-    /// an invalid one of its session) and a snapshot among them go as they are. `bodies` is
-    /// brought up to date.
-    pub(super) fn coalesce_own(&mut self, conn: ConnId, l: LabelId, ctx: &BodyCtx, snaps: &super::pass::Snaps, bodies: &mut Vec<Body>, left: &mut Left) -> Result<()> {
-        let nonce = self.engine.core.session.nonce;
-        let mut own: BTreeMap<(Tid, osis_base::Ak), (Vec<CommitId>, bool)> = BTreeMap::new();
-        let mut fresh = BTreeSet::new();
-        for b in bodies.iter() {
-            let Some((plain, compaction, aspects)) = self.engine.core.ix.commits.get(&b.commit).filter(|m| m.view.memory).map(|m| (matches!(m.view.form, Form::Session(n) if n == nonce) && !m.view.kind.is_compaction(), m.view.kind.is_compaction(), b.parts.iter().filter_map(|ai| m.view.aspects.get(*ai)).map(|a| (a.tid, a.ak.clone())).collect::<Vec<_>>())) else { continue };
-            if !self.own(&b.commit) || self.state.entries_of(&l, &b.commit).next().is_some() {
-                continue;
-            }
-            // one a snapshot under the label covers is not placed (may-hold, spec/sync.md §6):
-            // not this round's either (an own body stays held under another's snapshot)
-            let mut covered = false;
-            for (t, a) in &aspects {
-                for s in snaps.get(&(*t, a.clone())).cloned().into_iter().flatten() {
-                    if s != b.commit && self.engine.covered(&s, &b.commit, t, a)? == Some(true) {
-                        covered = true;
-                    }
-                }
-            }
-            if covered {
-                continue;
-            }
-            fresh.insert(b.commit);
-            // only this session's plain writes and own snapshots coalesce (an earlier session's
-            // or an expiring write goes as it is), each once
-            if (!plain && !compaction) || self.memory.coalesced.contains(&b.commit) {
-                continue;
-            }
-            for (t, a) in aspects {
-                let e = own.entry((t, a)).or_default();
-                if !e.0.contains(&b.commit) {
-                    e.0.push(b.commit);
-                }
-                e.1 |= !plain;
-            }
-        }
-        if fresh.is_empty() {
-            return Ok(());
-        }
-        let busy = self.memory.own_uploads.range((conn, l, BlobId([0; 32]))..=(conn, l, BlobId([0xff; 32]))).next().is_some();
-        if busy {
-            bodies.retain(|b| !fresh.contains(&b.commit));
-            left.commits.extend(fresh);
-            return Ok(());
-        }
-        let mut moved = BTreeSet::new();
-        for ((tid, ak), (ids, whole)) in own {
-            // a snapshot among them (the trigger's, or an earlier coalescing's that did not
-            // cover a body behind an invalid one): all go as they are, so coalescing ends after
-            // one snapshot per round and never spins
-            if ids.len() < 2 || whole {
-                continue;
-            }
-            self.memory.coalesced.extend(ids.iter().copied());
-            if let Some(s) = self.engine.coalesce(&tid, &ak, &ids)? {
-                moved.extend(ids);
-                moved.insert(s);
-            }
-        }
-        if moved.is_empty() {
-            return Ok(());
-        }
-        // the coalesced commits' bodies as they are now (a part on another aspect stays held),
-        // and the snapshots'
-        bodies.retain(|b| !moved.contains(&b.commit));
-        for c in moved {
-            if self.engine.holds_memory(&c) {
-                bodies.extend(self.engine.commit_bodies_under(ctx, &c)?);
-            }
-        }
-        Ok(())
-    }
-
-    /// Notes an upload of `b` under `l` on `conn` when it is this node's own memory body (a
-    /// write or a snapshot of its own: `own_uploads`).
-    pub(super) fn note_own_upload(&mut self, conn: ConnId, l: LabelId, b: BlobId) {
-        let Some(Entry { kind: Kind::Commit { commit, .. }, memory: true, .. }) = self.state.entries.get(&(l, b)) else { return };
-        if self.own(commit) {
-            self.memory.own_uploads.insert((conn, l, b));
-        }
-    }
-
     /// A connection ended: what waited on it goes with it. A memory entry counts as present at a
     /// peer that cannot read L only as learned on the connection up now (spec/sync.md §9: a
     /// restarted peer lost them, and its durable log says nothing of it; the next connection's
@@ -831,7 +723,7 @@ impl SyncEngine {
         for (l, b) in gone {
             self.state.set_present(host, l, b, false);
         }
-        self.memory.own_uploads.retain(|(c, _, _)| *c != conn);
+        let _ = conn;
         Ok(())
     }
 
@@ -873,24 +765,16 @@ impl SyncEngine {
         Ok(())
     }
 
-    /// A write key for `l` of `g`: an open connection's, else the head this node serves the
-    /// label at.
+    /// The write key of the head this node serves `l` of `g` at.
     fn relay_stamp_key(&mut self, g: &Tid, l: &LabelId) -> Option<osis_crypto::SigningSecret> {
-        for c in self.conns.values() {
-            if let Some(x) = c.labels.get(l).filter(|x| x.phase == Phase::Open)
-                && let Some(w) = &x.keys.write
-            {
-                return Some(w.clone());
-            }
-        }
         let served = self.served_labels();
         let head = served.get(l)?.head()?.clone();
         let index = self.group_label(g, l).map(|gl| gl.index)?;
         self.engine.head_keys(g, index, &head).ok()?.write
     }
 
-    /// Sends a relay-only entry on every host connection where `l` is open, to each reader
-    /// sharing `l` (`stream_relay`) and to the served sessions, stamped.
+    /// Sends a relay-only entry to every peer sharing `l` (`stream_relay`): a reader, or a peer
+    /// that cannot read `l`, which takes it stamped through its relay gate.
     fn send_relay(&mut self, l: LabelId, blob: Vec<u8>, wrap: [u8; osis_crypto::WRAP_LEN], stamp: Option<Signature>, out: &mut Vec<Action>) -> Result<()> {
         let blob_id = osis_label::blob_id(&blob);
         if blob.len() > osis_base::format::MAX_RELAY_BLOB {
@@ -901,23 +785,14 @@ impl SyncEngine {
         let t = osis_label::Prefix::parse(&blob).ok().and_then(|p| p.expiry()).map_or(0, |t| t.0);
         let now = self.now();
         self.memory.relays.first(l, blob_id, t, now);
-        for (conn, _, keys) in self.open_conns(&l) {
-            let st = match (stamp, &keys.write) {
-                (Some(s), _) => s,
-                (None, Some(w)) => osis_label::sign_stamp(w, &l, &blob_id, &wrap),
-                (None, None) => continue,
-            };
-            self.command(conn, Command::Upload { label: l, entries: vec![osis_proto::Entry { blob: blob.clone(), wrap, stamp: st, replaces: Vec::new() }] }, out)?;
-        }
         self.stream_relay(None, l, blob_id, &blob, wrap, stamp, out)?;
         Ok(())
     }
 
     /// A relay-only entry (a push, a fetch, a served session's upload, a reader's stream; `from`
     /// where it came from): dropped unopened when too large, outside its prefix window or seen
-    /// before (`RelaySeen`); else verified and its signals delivered once, then passed on as a
-    /// host would: to the readers sharing the label and the sessions this node serves, and,
-    /// from one of those, to the hosts it syncs the label with (spec/sync.md §5, §9).
+    /// before (`RelaySeen`); else verified and its signals delivered once, then passed on to
+    /// every other peer sharing the label (spec/sync.md §5, §9).
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn relay_in(&mut self, from: RelayFrom, l: LabelId, b: BlobId, blob: Vec<u8>, wrap: [u8; osis_crypto::WRAP_LEN], stamp: Option<Signature>, out: &mut Vec<Action>) -> Result<()> {
         if blob.len() > osis_base::format::MAX_RELAY_BLOB {
@@ -956,24 +831,7 @@ impl SyncEngine {
             _ => None,
         };
         self.stream_relay(reader, l, b, &blob, wrap, stamp, out)?;
-        let Some(stamp) = stamp else { return Ok(()) };
-        if let RelayFrom::Served(_) | RelayFrom::Reader(_) = from {
-            for (conn, _, _) in self.open_conns(&l) {
-                self.command(conn, Command::Upload { label: l, entries: vec![osis_proto::Entry { blob: blob.clone(), wrap, stamp, replaces: Vec::new() }] }, out)?;
-            }
-        }
         Ok(())
-    }
-
-    /// Statuses of relay-only uploads need nothing; a code other than OK is noted.
-    pub(crate) fn relay_status(&mut self, b: &BlobId, code: Code) -> bool {
-        if self.state.blobs.contains_key(b) || self.state.named(b) {
-            return false;
-        }
-        if code != Code::OK {
-            self.diag(format!("relay-only upload refused: code {}", code.0));
-        }
-        true
     }
 
     /// Tests: compacts every memory aspect held here now (forced) and runs the passes that place

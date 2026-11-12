@@ -407,7 +407,7 @@ impl SyncEngine {
     }
 
     /// Whether this node placed the entry (its certificates, role writes).
-    pub(super) fn mine(&self, e: &Entry) -> bool {
+    pub(crate) fn mine(&self, e: &Entry) -> bool {
         e.cert || matches!(&e.kind, Kind::Commit { commit, .. } if self.own(commit))
     }
 
@@ -445,7 +445,7 @@ impl SyncEngine {
         let entries: Vec<(BlobId, Entry)> = self.state.label_entries(l).map(|(b, e)| (b, e.clone())).collect();
         let at = At { g, l: *l, host: Some(*host), keys: &keys, snaps: &snaps, settled: unsettled.is_empty(), roles_behind: false };
         for (id, e) in entries {
-            if let Fate::Delete(why, _, _) = self.deletable(&at, &id, &e, &desired, false, &mut note)? {
+            if let Fate::Delete(why, _) = self.deletable(&at, &id, &e, &desired, false, &mut note)? {
                 v.must_not.push((id, format!("{why:?}")));
             }
         }

@@ -202,7 +202,6 @@ impl SyncEngine {
             keys: HeadKeys::default(),
             sync_seq: 0,
             synced: false,
-            dirty: false,
             fill: None,
             registering: None,
             step_retry: 0,
@@ -214,7 +213,6 @@ impl SyncEngine {
             relisted: None,
             entry_box: None,
             writers: Vec::new(),
-            work: super::work::Work::fresh(),
         };
         if let Some(c) = self.conns.get_mut(&conn) {
             c.labels.insert(l, lc);
@@ -592,8 +590,8 @@ impl SyncEngine {
                     lc.registering = None;
                     lc.step_retry = now.saturating_add(backoff(first, cap, lc.step_refusals));
                     lc.step_refusals = lc.step_refusals.saturating_add(1);
-                    lc.dirty = true;
                     let at = lc.step_retry;
+                    self.mark_labels(&[l]);
                     self.settle_by(at, l);
                 }
                 self.diag(format!("label {l:?}: step refused for now (code {})", code.0));
@@ -741,8 +739,8 @@ impl SyncEngine {
         if let Some(lc) = self.lc_mut(conn, &l) {
             lc.head = Some(step);
             lc.keys = keys;
-            lc.dirty = true;
         }
+        self.mark_labels(&[l]);
         Ok(())
     }
 

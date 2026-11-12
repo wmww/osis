@@ -9,7 +9,6 @@ use crate::error::{Error, Result};
 use osis_base::{Ak, BlobId, CommitId, LabelId, Role, Tid, Ts};
 use osis_label::{Address, InboxLabel, InboxPayload, InboxThing};
 use osis_perm::At;
-use osis_proto::Command;
 use osis_schema::core_types as ct;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -647,7 +646,7 @@ impl SyncEngine {
     /// is there, and try again only after a back-off (a new chat's first invite). Ends with the
     /// reply on a live connection (a host silent to it while alive holds only what it alone could
     /// serve), and no connection holds nothing back: spec/sync.md §3.
-    fn names_label_opening(&mut self, d: &(Tid, CommitId)) -> bool {
+    pub(crate) fn names_label_opening(&mut self, d: &(Tid, CommitId)) -> bool {
         let Some(things) = self.state.sent_inbox.get(d).map(|s| s.things.clone()) else { return false };
         let labels = self.labels();
         labels.iter().filter(|(g, l)| things.contains(g) && !l.replaced).any(|(_, l)| {
@@ -656,47 +655,14 @@ impl SyncEngine {
         })
     }
 
-    /// Sends queued deposits on connections to their hosts (no open needed), and logs those
-    /// for labels synced with nobody here.
+    /// Sends queued deposits as Deposit items (`shared_deposits`), and logs those for labels
+    /// synced with nobody here.
     pub(crate) fn send_outbox(&mut self, out: &mut Vec<Action>) -> Result<()> {
         for (l, blob, wrap) in std::mem::take(&mut self.local_inbox) {
             let blob_id = osis_label::blob_id(&blob);
             self.log_events(None, l, vec![osis_proto::Event::Added { blob_id, blob: Some(blob), wrap, stamp: None }], out)?;
         }
-        let ready: Vec<(ConnId, [u8; 32])> = self.conns.iter().filter(|(_, c)| c.session.is_ready()).map(|(id, c)| (*id, c.host)).collect();
-        let now = self.now();
-        let due: Vec<((HostKey, LabelId, BlobId), ConnId)> = self
-            .outbox
-            .iter()
-            .filter(|(k, o)| k.0 != super::state::INBOX_NODES && o.sent.is_none() && o.after <= now)
-            .filter_map(|(k, _)| ready.iter().find(|(_, s)| *s == k.0).map(|(c, _)| (*k, *c)))
-            .collect();
-        // what the host last said fits (`deposit_room`, unknown: all), with one unanswered at any
-        // time to find out when a full budget frees: a deposit is its whole body, and a refused
-        // one costs that again. A host lying low only slows its own label to one per round trip.
-        let mut unanswered: BTreeMap<(HostKey, LabelId), u64> = BTreeMap::new();
-        for k in self.outbox.iter().filter(|(_, o)| o.sent.is_some()).map(|(k, _)| k) {
-            *unanswered.entry((k.0, k.1)).or_default() += 1;
-        }
-        for (k, conn) in due {
-            let Some(o) = self.state.outbox.get(&k) else { continue };
-            if o.delivery.is_some_and(|d| self.names_label_opening(&d)) {
-                continue;
-            }
-            let at = (k.0, k.1);
-            let n = unanswered.entry(at).or_default();
-            if *n > 0 && *n >= self.deposit_room.get(&at).copied().unwrap_or(u64::MAX) {
-                continue;
-            }
-            *n += 1;
-            let Some(o) = self.state.outbox.get(&k) else { continue };
-            let cmd = Command::Deposit { label: o.label, blob: o.blob.clone(), wrap: o.wrap, sig: o.sig };
-            if let Some(m) = self.outbox.get_mut(&k) {
-                m.sent = Some(conn);
-            }
-            self.command(conn, cmd, out)?;
-        }
-        // those for an inbox's nodes go as Deposit items on the shared sets
+        // as Deposit items on the shared sets
         self.shared_deposits(out)
     }
 }

@@ -14,17 +14,16 @@ use super::*;
 const INBOX_COPY_MIN_LEFT: u64 = osis_base::format::INBOX_LIFETIME_MS / 2;
 
 impl SyncEngine {
-    /// A writer stamps in place the inbox blobs handled here (spec/sync.md §5; `inbox_stampable`).
-    /// Each leaves the deposit budget and stays readable for the actor's other nodes until it
-    /// expires.
-    pub(super) fn stamp_inbox(&mut self, conn: ConnId, host: HostKey, l: LabelId, write: &osis_crypto::SigningSecret, uploads: &mut Vec<osis_proto::Entry>) -> Result<()> {
-        for (id, e) in self.due_entries(conn, host, l) {
+    /// A writer stamps in its store the deposited inbox blobs of `scope` it would stamp
+    /// (`inbox_stampable`; spec/sync.md §3, Stamping in place): its sources pull the stamp.
+    pub(super) fn stamp_inbox(&mut self, l: LabelId, scope: &Scope, write: &osis_crypto::SigningSecret) -> Result<()> {
+        for id in self.scope_entries(&l, scope) {
+            let Some(e) = self.state.entries.get(&(l, id)).cloned() else { continue };
             let Kind::Inbox(Some(c)) = e.kind else { continue };
-            if !self.inbox_stampable(&l, &id, &c)? {
+            if e.stamp.is_some() || !self.inbox_stampable(&l, &id, &c)? {
                 continue;
             }
-            let Some(blob) = self.engine.blob(&id)? else { continue };
-            uploads.push(self.stamped_upload(l, id, e, blob, write));
+            self.stamp_entry(l, id, e, write);
         }
         Ok(())
     }

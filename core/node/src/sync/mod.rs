@@ -209,13 +209,18 @@ pub struct SyncEngine {
     /// When a certificate left to its author (`SETTLE_MS`), or another node's body or deposit
     /// left to a co-writer (`RELAY_MIN_MS`), is due again (wall ms).
     pub(crate) settle_at: BTreeMap<u64, BTreeSet<LabelId>>,
-    /// Labels synced with nobody want a local pass (`local_passes`); when the last ran (raw
-    /// ms), and whether there were any (the periodic pass's wake).
-    pub(crate) local_dirty: bool,
-    pub(crate) local_last: u64,
-    pub(crate) local_any: bool,
-    /// The work sets of the local passes, by label (`LConn::work` for a label served here).
-    pub(crate) local_work: BTreeMap<osis_base::LabelId, work::Work>,
+    /// Every label wants a pass (`passes`), or these do; this node wrote (a label filling at a
+    /// source passes too); labels filling at a source whose fill wants a pass (its first batch
+    /// done, its end, a resync). When the last passes ran (raw ms), and whether there were any
+    /// labels (the periodic pass's wake).
+    pub(crate) pass_due: bool,
+    pub(crate) due_labels: BTreeSet<osis_base::LabelId>,
+    pub(crate) own_wrote: bool,
+    pub(crate) fill_due: BTreeSet<osis_base::LabelId>,
+    pub(crate) passed_at: u64,
+    pub(crate) passing: bool,
+    /// The work sets of the passes, by label.
+    pub(crate) work: BTreeMap<osis_base::LabelId, work::Work>,
     /// When this node first saw each entry deposited at a host (wall ms; the promotion wait).
     pub(crate) deposit_seen: BTreeMap<(HostKey, LabelId, osis_base::BlobId), u64>,
     /// This node's uploads a host refused for the label's cap (code 12), until taken there
@@ -432,10 +437,13 @@ impl SyncEngine {
             inbox_plain: BTreeMap::new(),
             unchecked_swept: None,
             settle_at: BTreeMap::new(),
-            local_dirty: true,
-            local_last: 0,
-            local_any: false,
-            local_work: BTreeMap::new(),
+            pass_due: true,
+            due_labels: BTreeSet::new(),
+            own_wrote: false,
+            fill_due: BTreeSet::new(),
+            passed_at: 0,
+            passing: false,
+            work: BTreeMap::new(),
             deposit_seen: BTreeMap::new(),
             capped: BTreeSet::new(),
             stranded_sent: BTreeSet::new(),
@@ -649,7 +657,7 @@ impl SyncEngine {
         // what the passes marked (a refetch applied commits, an admin recorded a step) passes now,
         // not at whatever event comes next; a step that failed (a store gone) tries no more
         for _ in 0..PASS_AGAIN {
-            if !ok || self.dirty_labels().is_empty() {
+            if !ok || !self.passes_due() {
                 break;
             }
             ok = self.settled_step(Event::Local, &mut out);

@@ -48,62 +48,32 @@ impl SyncEngine {
         !self.engine.keys_write_pending(&a).unwrap_or(true)
     }
 
-    /// Re-registration (spec/sync.md §5): an admin holding the head's epochs and a newer
-    /// established one, once the step may go (a recorded child, or `step_settled`), uploads the
-    /// actor's role commits the host lacks and has not in flight under the head's keys, then
-    /// registers a child step; the rest of the pass runs once it is registered, or under the
-    /// host's head while the step waits or is refused for now. True while the step is in flight.
+    /// Re-registration at a source (spec/sync.md §5): an admin holding the source's head epochs
+    /// and a newer established one, once the step may go (a recorded child, or `step_settled`),
+    /// registers a child step (the actor's role commits are in this node's store, which the
+    /// source pulls); the rest of the pass runs once it is registered, or under the source's head
+    /// while the step waits or is refused for now. True while the step is in flight.
     pub(super) fn reregister(&mut self, conn: ConnId, l: LabelId, out: &mut Vec<crate::sync::Action>) -> Result<bool> {
-        let Some(c) = self.conns.get(&conn) else { return Ok(false) };
-        let host = c.host;
-        let Some(lc) = c.labels.get(&l) else { return Ok(false) };
+        let Some(lc) = self.lc(conn, &l) else { return Ok(false) };
         let (g, keys, head, retry) = (lc.group, lc.keys.clone(), lc.head.clone(), lc.step_retry);
         // a replaced label is never stepped again (spec/sync.md §2: its replacement carries on)
         if !self.step_due(&g, &l, &keys) {
             return Ok(false);
         }
         // a step refused for now goes again only after its back-off; meanwhile the pass runs
-        // under the host's head: what it uploads is wrapped under the newest read epoch, so a
+        // under the source's head: what it places is wrapped under the newest read epoch, so a
         // removed holder still opening that head gets nothing it can read (spec/sync.md §5)
         if retry > self.now() {
             return Ok(false);
         }
-        let (Some(write), Some(head)) = (keys.write.clone(), head) else { return Ok(false) };
+        let (Some(_), Some(head)) = (&keys.write, head) else { return Ok(false) };
         // a child of the host's head already recorded in `label.0` (this node's local step,
         // another admin's) is registered first: the walk down the recorded path issues nothing;
-        // else a step goes only once settled, and nothing is uploaded for one that cannot go
+        // else a step goes only once settled
         let recorded = self.recorded_child(&g, &l, &head.id());
         if recorded.is_none() && !self.step_settled(&g, l) {
             return Ok(false);
         }
-        let a = self.keys_actor(&g);
-        let core = &self.engine.core;
-        let ids: Vec<CommitId> = core.on_thing(&a).filter(|c| core.ix.commits.get(c).is_some_and(|m| m.view.kind.is_role())).collect();
-        let now = self.now();
-        let mut uploads = Vec::new();
-        let ctx = self.engine.body_ctx(&g);
-        for id in ids {
-            let Some(mut b) = self.engine.body(&id)? else { continue };
-            b.parts = self.engine.readable_parts(&ctx, &id, &b.parts);
-            b.plaintext = Vec::new();
-            if b.parts.is_empty() {
-                continue;
-            }
-            let bid = match self.entry_for(Some(&host), &l, &b) {
-                Some(x) => x,
-                None => match self.place(&g, l, &b, false)? {
-                    Some(x) => x,
-                    None => continue,
-                },
-            };
-            if self.state.is_present(&host, &l, &bid) || self.upload_busy(conn, l, bid, now) {
-                continue;
-            }
-            let (Some(en), Some(blob)) = (self.state.entries.get(&(l, bid)).cloned(), self.engine.blob(&bid)?) else { continue };
-            let stamp = osis_label::sign_stamp(&write, &l, &bid, &en.wrap);
-            uploads.push(osis_proto::Entry { blob, wrap: en.wrap, stamp, replaces: Vec::new() });
-        }
-        self.upload(conn, l, uploads, out)?;
         let (step, set) = match recorded {
             Some(x) => x,
             None => {

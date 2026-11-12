@@ -239,8 +239,8 @@ impl SyncEngine {
             // an entry this node deleted or saw deleted, announced again within its tombstone
             // (a host an upload reached, its answer lost, a stale push crossing the deletion, a
             // peer echoing an announcement): not stored, fetched or served on, as a host's
-            // tombstone keeps the identical blob out (spec/sync.md §5); a host's is recorded as
-            // present there as it was (`host_holds`), so the pass judges it there as any. Bytes
+            // tombstone keeps the identical blob out (spec/sync.md §5); a source's is recorded as
+            // present there as it was, so the pass judges it there as any. Bytes
             // it sends give only their salt (a delete-key signature's, fetched for it)
             if let LogEvent::Added { blob_id, blob, .. } = &ev
                 && self.state.tombs.contains_key(&(l, *blob_id))
@@ -248,10 +248,20 @@ impl SyncEngine {
                 if let Some(c) = conn.and_then(|c| self.conns.get_mut(&c)) {
                     c.req.fetching.remove(blob_id);
                 }
-                if let Some(s) = host
-                    && self.host_holds(s, l, *blob_id)
-                {
-                    touched.push(*blob_id);
+                // recorded again as it was, quietly (not fetched, not served on), so the pass
+                // judges it there as any present entry, whatever its kind (spec/sync.md §6
+                // Tombstones)
+                if let Some(s) = host {
+                    if !self.state.entries.contains_key(&(l, *blob_id))
+                        && let Some(t) = self.state.tombs.get(&(l, *blob_id)).cloned()
+                    {
+                        let memory = self.state.is_memory(&l, blob_id);
+                        self.state.set_entry_quiet(l, *blob_id, Entry { wrap: t.wrap, stamp: None, cert: t.cert, salt: t.salt, expires: t.expires, size: None, kind: t.kind, source: None, memory });
+                    }
+                    if self.state.entries.contains_key(&(l, *blob_id)) && !self.state.is_present(&s, &l, blob_id) {
+                        self.state.set_present(s, l, *blob_id, true);
+                        touched.push(*blob_id);
+                    }
                 }
                 if let Some(bytes) = blob {
                     self.keep_salts(blob_id, Some(bytes))?;
@@ -458,11 +468,8 @@ impl SyncEngine {
         // a push to a stream read to its end brings the log to its end: a pass end
         let pushed = conn.and_then(|c| self.conns.get(&c)).and_then(|c| c.labels.get(&l)).is_some_and(|x| x.synced && x.fill.is_none());
         // the label changed under us: a pass decides again (carriers, retags); not per batch of a fill
-        if (!touched.is_empty() || announced)
-            && !filling
-            && let Some(lc) = conn.and_then(|c| self.conns.get_mut(&c)).and_then(|c| c.labels.get_mut(&l))
-        {
-            lc.dirty = true;
+        if (!touched.is_empty() || announced) && !filling {
+            self.mark_labels(&[l]);
         }
         // bodies waiting for a linked blob upload it now it is here (`Left::links`)
         self.touched.blobs.extend(blobs.iter().map(|(b, _)| *b));
@@ -1898,11 +1905,13 @@ impl SyncEngine {
         // it holds there: one with no body here to come (its commit forgotten, or known only for
         // a part dropped while invalid; not one opened and not fetched yet) that it lacks has
         // nothing to put up, so it goes once held nowhere (`absent_at`)
-        // read there to its end the first time since it joined: a pass judges it (later ends
-        // bring nothing a pass waits for: what arrived marked it already, `log_events`)
-        if let Some(lc) = self.lc_mut(conn, &l) {
-            lc.dirty |= !lc.synced;
-            lc.synced = true;
+        // read to its end the first time since it joined (from the start, a listing): the
+        // label's work set judges everything at its next pass
+        if let Some(lc) = self.lc_mut(conn, &l)
+            && !std::mem::replace(&mut lc.synced, true)
+        {
+            self.work_mut(l).touched.full = true;
+            self.mark_labels(&[l]);
         }
         self.engine_events()?;
         let sent = self.lc(conn, &l).map_or(u64::MAX, |x| x.sync_seq);
@@ -2202,134 +2211,8 @@ impl SyncEngine {
         self.fetch(&ids)
     }
 
-    /// Host `s` reports holding entry `b` of `l` (an announcement, an upload answered OK): it is
-    /// present there. One this node tombstoned is recorded again as it was, quietly (not
-    /// fetched, not served on), so the pass judges it there as any present entry, whatever its
-    /// kind (spec/sync.md §6 Tombstones): an upload's answer lost or late leaves no copy behind.
-    /// One this node does not know gets no record. Whether the presence is new.
-    pub(crate) fn host_holds(&mut self, s: HostKey, l: LabelId, b: BlobId) -> bool {
-        if !self.state.entries.contains_key(&(l, b)) {
-            let Some(t) = self.state.tombs.get(&(l, b)).cloned() else { return false };
-            let memory = self.state.is_memory(&l, &b);
-            self.state.set_entry_quiet(l, b, Entry { wrap: t.wrap, stamp: None, cert: t.cert, salt: t.salt, expires: t.expires, size: None, kind: t.kind, source: None, memory });
-        }
-        let new = !self.state.is_present(&s, &l, &b);
-        self.state.set_present(s, l, b, true);
-        new
-    }
-
-    /// Upload or Sync statuses. Code 9 (signed under a key older than the head's) needs nothing
-    /// here: the node uploads only where the label is open, so the new head comes by push or
-    /// the next Sync (spec/sync.md §5), and its pass signs again under the new keys.
-    pub(crate) fn entry_status(&mut self, conn: ConnId, l: LabelId, ids: Vec<BlobId>, codes: Vec<Code>) -> Result<()> {
-        let Some(host) = self.conns.get(&conn).map(|c| c.host) else { return Ok(()) };
-        let mut grew = false;
-        for (b, code) in ids.into_iter().zip(codes) {
-            // an own memory upload taken: the label's own writes held back go (`coalesce_own`)
-            if self.memory.own_uploads.remove(&(conn, l, b)) && code == Code::OK {
-                grew = true;
-            }
-            // a relay-only upload: nothing is held of it
-            if self.relay_status(&b, code) {
-                continue;
-            }
-            // the replacing upload's status only once its command is answered: an earlier plain
-            // upload of the same blob is answered first
-            let replaced = self.conns.get_mut(&conn).and_then(|c| {
-                // taken: in flight until the stream shows it (`RESEND_MS`, then sent again)
-                if code != Code::OK {
-                    c.req.sent.remove(&(l, b));
-                }
-                let mine = c.req.replacing.get(&(l, b)).is_some_and(|(_, tag)| c.session.answered(*tag));
-                if mine { c.req.replacing.remove(&(l, b)).map(|(x, _)| x) } else { None }
-            });
-            // a memory entry refused for the host's cap or rate waits its resend time, as if in
-            // flight, before a pass sends it again: room appears by others' expiries and
-            // compactions, not by asking again at once (one refused under an older head, code 9,
-            // goes again as soon as the new head is known, as a durable one); one of a body
-            // forgotten meanwhile that no host holds goes
-            if code != Code::OK && self.state.is_memory(&l, &b) {
-                let dead = matches!(self.state.entries.get(&(l, b)), Some(Entry { kind: Kind::Commit { commit, .. }, .. }) if !self.engine.memory_body_held(commit));
-                if dead && !self.state.present_anywhere(&l, &b) {
-                    self.absent_at(None, l, b)?;
-                } else if matches!(code, Code::STORAGE_CAP | Code::RATE_LIMITED) {
-                    let now = self.now();
-                    if let Some(c) = self.conns.get_mut(&conn) {
-                        c.req.sent.insert((l, b), (now, super::UNTAGGED));
-                    }
-                }
-                if code == Code::STORAGE_CAP && !self.capped.contains(&(host, l, b)) {
-                    self.memory_report(&l, "a host's ephemeral cap was reached: an entry stays out there until room appears (sent again later)");
-                }
-            }
-            // what it replaced went with it (spec/sync.md §5); else those deletes may go again
-            for p in replaced.into_iter().flatten() {
-                if let Some(c) = self.conns.get_mut(&conn) {
-                    c.req.deleting.remove(&(l, p));
-                }
-                if code == Code::OK {
-                    self.absent_at(Some(host), l, p)?;
-                    grew = true;
-                }
-            }
-            if code == Code::STORAGE_CAP {
-                self.capped.retain(|(s, l, b)| self.state.entries.contains_key(&(*l, *b)) && !self.state.is_present(s, l, b));
-                // the bodies it would carry are judged again (`carried`), in a pass now
-                if self.capped.insert((host, l, b)) {
-                    self.state.touch(l, b);
-                    grew = true;
-                }
-            } else {
-                self.capped.remove(&(host, l, b));
-            }
-            match code {
-                // presence comes with the peer's stream showing it (`log_events_from`)
-                Code::OK => {}
-                Code::TOMBSTONED => {
-                    self.tombstoned(host, l, b)?;
-                    if let Some(lc) = self.lc_mut(conn, &l) {
-                        lc.dirty = true;
-                    }
-                }
-                Code::NOT_HEAD => {}
-                c => self.diag(format!("upload refused: code {}", c.0)),
-            }
-            // a refused promotion waits again (`RELAY_MIN_MS`): co-writers refused alike (a step
-            // registered meanwhile) would otherwise all send it at the next pass
-            if code != Code::OK {
-                let now = self.now();
-                if let Some(t) = self.deposit_seen.get_mut(&(host, l, b)) {
-                    *t = now;
-                }
-            }
-        }
-        // carriers just went up (or were refused for the cap): deletions waiting for them may go now
-        if grew && let Some(lc) = self.lc_mut(conn, &l) {
-            lc.dirty = true;
-        }
-        Ok(())
-    }
-
-    /// A host refused entry `b` under `l` as tombstoned: gone there. This node's certificate copy
-    /// reused from another label meets a deletion there this node never saw (one blob serves
-    /// every label needing its parts, `State::own_copy`): it goes from `l` as deleted and a fresh
-    /// copy of its parts takes its place. A copy named under `l` alone (a fresh one, linked
-    /// chunks, list and record blobs) stays gone, so a host refusing every upload costs one fresh
-    /// copy, not one per pass.
-    fn tombstoned(&mut self, host: HostKey, l: LabelId, b: BlobId) -> Result<()> {
-        self.state.set_gone(host, l, b);
-        let Some(Entry { cert: true, kind: Kind::Commit { commit, parts, .. }, .. }) = self.state.entries.get(&(l, b)).cloned() else { return Ok(()) };
-        if !self.state.labels_of(&b).iter().any(|x| *x != l) || !self.absent_at(Some(host), l, b)? {
-            return Ok(());
-        }
-        let Some(g) = self.group_of(&l, None) else { return Ok(()) };
-        let Some(hosts) = self.engine.group_labels(&g)?.into_iter().find(|x| x.id == l).map(|x| x.hosts) else { return Ok(()) };
-        let seed = self.cert_seed(&g, &commit)?;
-        self.place_cert_at(&g, l, &hosts, &commit, &parts.into_iter().collect(), seed.as_ref())?;
-        Ok(())
-    }
-
-    /// Delete statuses; code 9 as for `entry_status`.
+    /// Delete statuses. Code 9 (signed under a key older than the head's) needs nothing here:
+    /// the new head comes by the stream, and the pass signs again under its keys.
     pub(crate) fn delete_status(&mut self, conn: ConnId, l: LabelId, ids: Vec<BlobId>, codes: Vec<Code>) -> Result<()> {
         let Some(host) = self.conns.get(&conn).map(|c| c.host) else { return Ok(()) };
         for (b, code) in ids.into_iter().zip(codes) {
@@ -2347,9 +2230,8 @@ impl SyncEngine {
         // a replaced label is judged done after its deletions (`retire_at`): pass again
         if let Some(g) = self.lc(conn, &l).map(|x| x.group)
             && self.is_replaced(&g, &l)
-            && let Some(lc) = self.lc_mut(conn, &l)
         {
-            lc.dirty = true;
+            self.mark_labels(&[l]);
         }
         Ok(())
     }
@@ -2367,69 +2249,5 @@ impl SyncEngine {
         let things: BTreeSet<Tid> = h.aspects.iter().map(|a| a.tid).collect();
         let holding = self.state.labels_of_commit(&commit);
         self.mark_things(&things, &holding);
-    }
-
-    /// A deposit's answer; `entries_left` only when the host checked its signature under the
-    /// head (a stale one learns nothing: the head comes by the open connection, spec/sync.md §5).
-    pub(crate) fn budget(&mut self, conn: ConnId, l: LabelId, b: BlobId, code: Code, entries_left: Option<u64>) -> Result<()> {
-        let Some(c) = self.conns.get_mut(&conn) else { return Ok(()) };
-        let host = c.host;
-        c.req.sent.remove(&(l, b));
-        if let Some(n) = entries_left {
-            self.deposit_room.insert((host, l), n);
-        }
-        // a queued deposit's answer
-        let now = self.now();
-        if let Some(o) = self.outbox.get_mut(&(host, l, b)).filter(|o| o.sent.is_some()) {
-            // refused for now (not registered yet, rate limit, budget full while the label's
-            // writers are away, the host at a storage cap): sent again until taken or moot; signed by an earlier deposit key
-            // (a refreshed deposit seed): the same bytes never verify, so signed again first
-            o.tries = o.tries.saturating_add(1);
-            o.sent = None;
-            let tries = o.tries;
-            let resigned = code == Code::NOT_HEAD && self.resign_deposit(&host, &l, &b)?;
-            let retry = matches!(code, Code::UNKNOWN_LABEL | Code::RATE_LIMITED | Code::BUDGET_FULL | Code::STORAGE_CAP) || resigned;
-            if retry && !self.deposit_moot(&host, &l, &b) {
-                // re-signed: at once
-                let back = if resigned { 0 } else { self.deposit_back_off(tries) };
-                if let Some(o) = self.outbox.get_mut(&(host, l, b)) {
-                    o.after = now.saturating_add(back);
-                }
-                // a full budget refuses the rest as well: they wait with this one, bodies unsent
-                if code == Code::BUDGET_FULL {
-                    let span = (host, l, BlobId([0; 32]))..=(host, l, BlobId([0xff; 32]));
-                    for o in self.outbox.range_mut(span).map(|(_, o)| o).filter(|o| o.sent.is_none()) {
-                        o.after = o.after.max(now.saturating_add(back));
-                    }
-                }
-            } else {
-                if retry || code == Code::NOT_HEAD {
-                    self.diag(format!("deposit under {l:?} moot after {tries} refusals (code {})", code.0));
-                }
-                self.outbox.remove(&(host, l, b));
-                self.state.remove_out(&host, &l, &b);
-            }
-        }
-        let span = (host, l, BlobId([0; 32]))..=(host, l, BlobId([0xff; 32]));
-        if self.outbox.range(span).next().is_none() {
-            self.deposit_room.remove(&(host, l));
-        }
-        match code {
-            Code::OK => {
-                // room there: what waits at this host and label goes now, not at its back-off (the
-                // host does not say when a budget frees)
-                let span = (host, l, BlobId([0; 32]))..=(host, l, BlobId([0xff; 32]));
-                for o in self.outbox.range_mut(span).map(|(_, o)| o) {
-                    o.tries = 0;
-                    o.after = 0;
-                }
-                self.state.set_present(host, l, b, true);
-                self.reached(&l, &b);
-            }
-            Code::NOT_HEAD => {}
-            Code::TOMBSTONED => self.tombstoned(host, l, b)?,
-            c => self.diag(format!("deposit refused: code {}", c.0)),
-        }
-        Ok(())
     }
 }

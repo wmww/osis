@@ -181,13 +181,13 @@ impl SyncEngine {
 
     /// The most any label's work set holds waiting for its pass (`SyncConfig::work_max`).
     pub fn work_waiting(&self) -> usize {
-        self.conns.values().flat_map(|c| c.labels.values().map(|l| &l.work)).chain(self.local_work.iter().map(|x| x.1)).map(|w| w.touched.size()).max().unwrap_or(0)
+        self.work.values().map(|w| w.touched.size()).max().unwrap_or(0)
     }
 
     /// Whether every open label on every connection has completed a pass and nothing is
     /// outstanding (tests, simulator quiescence).
     pub fn is_idle(&self) -> bool {
-        self.conns.values().all(|c| c.session.outstanding() == 0 && c.labels.values().all(|l| l.phase != Phase::Open || l.idle()))
+        !self.passes_due() && self.conns.values().all(|c| c.session.outstanding() == 0 && c.labels.values().all(|l| l.phase != Phase::Open || l.idle()))
     }
 
     /// A one-line summary of each label on each connection (tests, diagnostics).
@@ -196,10 +196,9 @@ impl SyncEngine {
         for (id, c) in &self.conns {
             for (l, x) in &c.labels {
                 v.push(format!(
-                    "conn {id} {l:?}: {:?} synced {} dirty {} registering {} writer {} sync {} outstanding {} head {:?}",
+                    "conn {id} {l:?}: {:?} synced {} registering {} writer {} sync {} outstanding {} head {:?}",
                     x.phase,
                     x.synced,
-                    x.dirty,
                     x.registering.is_some(),
                     x.keys.is_writer(),
                     x.keys.epochs[0].is_some(),

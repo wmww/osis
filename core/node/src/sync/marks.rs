@@ -173,12 +173,8 @@ impl SyncEngine {
             }
         }
         let cs = ch.commits;
-        // this node's own write passes a filling label too (`LConn::want_pass`)
-        if own {
-            for l in self.conns.values_mut().flat_map(|c| c.labels.values_mut()) {
-                l.dirty |= l.fill.is_some();
-            }
-        }
+        // this node's own write passes a filling label too (`passes`)
+        self.own_wrote |= own;
         if changed {
             scoped.extend(narrow.iter().filter(|(_, a)| !narrow_aspect(a)).map(|x| x.0));
             for t in self.engine.core.ix.held.reach(&scoped) {
@@ -228,8 +224,7 @@ impl SyncEngine {
         t.commits.append(&mut self.state.touched_commits);
         let max = self.cfg.work_max;
         let elsewhere = t.size();
-        let conns = self.conns.values_mut().flat_map(|c| c.labels.iter_mut().map(|(l, lc)| (l, &mut lc.work)));
-        for (l, w) in conns.chain(self.local_work.iter_mut()) {
+        for (l, w) in self.work.iter_mut() {
             w.again |= w.woken_by(&t);
             w.touched.absorb(&t);
             for (_, x) in st.range((*l, state::Touch::Commit(osis_base::CommitId([0; 32])))..).take_while(|(x, _)| x == l) {
@@ -258,52 +253,32 @@ impl SyncEngine {
         out
     }
 
-    /// `mark_dirty`, of the labels on connections whose closure holds one of `things`, and the
-    /// local ones: a write on one thing leaves a label of another nothing new to judge: what it
-    /// took in waits for its next pass (`Work::quiet`). O(labels), a set lookup each.
+    /// The labels whose closure holds one of `things` want a pass: a write on one thing leaves a
+    /// label of another nothing new to judge, and what it took in waits for its next pass
+    /// (`Work::quiet`). O(labels), a set lookup each.
     pub(crate) fn mark_dirty_of(&mut self, things: &BTreeSet<Tid>) {
         if self.cfg.full_passes {
             return self.mark_dirty();
         }
-        self.local_dirty = true;
         let mut groups: BTreeSet<Tid> = things.clone();
         for t in things {
             groups.extend(self.engine.groups_of(t));
         }
-        #[cfg(debug_assertions)]
-        for l in self.conns.values().flat_map(|c| c.labels.values()) {
-            assert!(groups.contains(&l.group) || !self.engine.closure(&l.group).iter().any(|t| things.contains(t)), "groups.of misses {:?}", l.group);
-        }
-        for c in self.conns.values_mut() {
-            for l in c.labels.values_mut() {
-                if groups.contains(&l.group) {
-                    l.want_pass();
-                }
-            }
-        }
+        let labels: Vec<LabelId> = self.labels().into_iter().filter(|(g, _)| groups.contains(g)).map(|(_, l)| l.id).collect();
+        self.mark_labels(&labels);
     }
 
-    /// These labels want a pass on every connection (`LConn::want_pass`).
-    pub(crate) fn mark_labels<'a>(&mut self, ids: impl IntoIterator<Item = &'a LabelId> + Clone) {
+    /// These labels want a pass.
+    pub(crate) fn mark_labels<'a>(&mut self, ids: impl IntoIterator<Item = &'a LabelId>) {
         if self.cfg.full_passes {
             return self.mark_dirty();
         }
-        self.local_dirty = true;
-        for c in self.conns.values_mut() {
-            for id in ids.clone() {
-                if let Some(l) = c.labels.get_mut(id) {
-                    l.want_pass();
-                }
-            }
-        }
+        self.due_labels.extend(ids);
     }
 
-    /// Every label on every connection wants a pass (`LConn::want_pass`).
+    /// Every label wants a pass.
     pub(crate) fn mark_dirty(&mut self) {
-        self.local_dirty = true;
-        for l in self.conns.values_mut().flat_map(|c| c.labels.values_mut()) {
-            l.want_pass();
-        }
+        self.pass_due = true;
     }
 
     /// After role commits or placements on `things`: the labels they can concern (`downstream`)

@@ -4,55 +4,6 @@
 use super::*;
 
 impl SyncEngine {
-    /// Deposited commit entries at `host` a writer may promote now: past this node's wait
-    /// (`RELAY_MIN_MS`: a co-writer may promote it first), not in flight.
-    pub(super) fn due_entries(&mut self, conn: ConnId, host: HostKey, l: LabelId) -> Vec<(BlobId, Entry)> {
-        let ids: Vec<(BlobId, Entry)> = self.state.deposited_at(&host, &l).into_iter().filter_map(|b| self.state.entries.get(&(l, b)).map(|e| (b, e.clone()))).collect();
-        let now = self.now();
-        self.deposit_seen.retain(|k, _| self.state.deposited.contains(k));
-        let mut out = Vec::new();
-        for (id, e) in ids {
-            if self.conns.get(&conn).is_some_and(|c| crate::sync::in_flight(c, &c.req.sent, (l, id), now)) {
-                continue;
-            }
-            let seen = *self.deposit_seen.entry((host, l, id)).or_insert(now);
-            // by what it carries: a blob's ID is the luck of its sealing
-            let due = seen.saturating_add(match &e.kind {
-                Kind::Commit { commit, .. } => self.relay_delay(&commit.0),
-                _ => self.relay_delay(&id.0),
-            });
-            if now < due {
-                self.settle_by(due, l);
-                continue;
-            }
-            out.push((id, e));
-        }
-        out
-    }
-
-    /// The commit deposits among `due_entries` this writer would promote (`would_promote`).
-    pub(super) fn due_deposits(&mut self, conn: ConnId, host: HostKey, g: &Tid, l: LabelId) -> Result<Vec<Deposit>> {
-        let mut out = Vec::new();
-        for (id, e) in self.due_entries(conn, host, l) {
-            let Kind::Commit { commit, parts, .. } = &e.kind else { continue };
-            let (commit, parts) = (*commit, parts.clone());
-            if self.would_promote(g, l, Some(&host), &id)? {
-                out.push((id, e, commit, parts));
-            }
-        }
-        Ok(out)
-    }
-
-    /// Whether deposited entry `b` under `l` (of `g`) at `host` is one a writer may yet promote:
-    /// a commit it would promote (`would_promote`), or one parked.
-    pub(super) fn promotable(&mut self, g: &Tid, l: LabelId, host: &HostKey, b: &BlobId) -> Result<bool> {
-        match self.state.entries.get(&(l, *b)).map(|e| &e.kind) {
-            Some(Kind::Parked(_)) => Ok(true),
-            Some(Kind::Commit { .. }) => self.would_promote(g, l, Some(host), b),
-            _ => Ok(false),
-        }
-    }
-
     /// Whether this writer promotes deposited entry `id` under `l` (of `g`) at `host` (`None`:
     /// its served state; spec/sync.md §5 Promotion): a commit it applied with a valid part the
     /// label must hold that no stamped copy there holds yet (`stamped_parts`). By part, not
@@ -123,17 +74,6 @@ impl SyncEngine {
             }
         }
         Ok(held)
-    }
-
-    /// A promoter completes the chain it holds (spec/sync.md §5; spec/permissions.md §4): for
-    /// each deposit due for promotion whose commit this writer applied, the parts of its
-    /// author's chain no entry under `l` holds go up as this node's certificate copies, when it
-    /// holds them all (else the deposit stays unpromoted).
-    pub(super) fn complete_chains(&mut self, conn: ConnId, host: HostKey, g: &Tid, l: LabelId) -> Result<()> {
-        for (_, _, c, parts) in self.due_deposits(conn, host, g, l)? {
-            self.complete_chain(Some(host), g, l, &c, &parts)?;
-        }
-        Ok(())
     }
 
     /// Places the parts of the author's chain for `parts` of `c` that no entry under `l` holds
@@ -263,23 +203,6 @@ impl SyncEngine {
         }
         if !items.is_empty() {
             self.command(conn, Command::Delete { label: l, items }, out)?;
-        }
-        Ok(())
-    }
-
-    /// A writer re-uploads stamped the deposited entries it verified (spec/sync.md §5): applied
-    /// commits whose author's chain is under the label (`complete_chains` placed what it held
-    /// of it); per host (a blob may be deposited at several).
-    pub(super) fn promote(&mut self, conn: ConnId, host: HostKey, g: &Tid, l: LabelId, write: &osis_crypto::SigningSecret, uploads: &mut Vec<osis_proto::Entry>) -> Result<()> {
-        for (id, e, c, parts) in self.due_deposits(conn, host, g, l)? {
-            // one promoted just now may hold its parts already (`stamp_entry`)
-            if uploads.iter().any(|u| osis_label::blob_id(&u.blob) == id) || !self.would_promote(g, l, Some(&host), &id)? || !self.chain_missing(Some(host), g, l, &c, &parts)?.is_some_and(|m| m.is_empty()) {
-                continue;
-            }
-            let Some(blob) = self.engine.blob(&id)? else { continue };
-            uploads.push(self.stamped_upload(l, id, e, blob, write));
-            // still deposited there until the host takes the stamped upload (a refusal, say a
-            // step registered meanwhile, leaves it for the next pass)
         }
         Ok(())
     }
