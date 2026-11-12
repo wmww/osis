@@ -1683,9 +1683,15 @@ fn demoted_unaware() -> (LocalPeer, Tid, Vec<Tid>, BTreeSet<osis_base::CommitId>
 
 /// Whether A (peer 0) may encrypt under an epoch of `g` that M (2) opens from `from`'s state.
 fn removed_reader_reads(lp: &mut LocalPeer, g: Tid, tids: &[Tid], from: usize) -> bool {
+    removed_opens(lp, g, tids, from, Role::Read)
+}
+
+/// Whether A (peer 0) may encrypt under an epoch of role `r` of `g` that M (2) opens from
+/// `from`'s state.
+fn removed_opens(lp: &mut LocalPeer, g: Tid, tids: &[Tid], from: usize, r: Role) -> bool {
     assert!(lp.peers[0].engine.core.role_now(&tids[2], &g).is_none(), "M removed at A");
-    let newest = newest_read(lp, 0, g);
-    !blocked_at(lp, 0, g).contains(&Role::Read) && newest.is_some_and(|n| openable(lp, from, &[g], tids[2], BTreeSet::new()).contains(&(g, Role::Read, n)))
+    let newest = lp.peers[0].engine.epochs(&g).and_then(|e| e.role(r).newest_held().map(|x| x.0));
+    !blocked_at(lp, 0, g).contains(&r) && newest.is_some_and(|n| openable(lp, from, &[g], tids[2], BTreeSet::new()).contains(&(g, r, n)))
 }
 
 // spec/crypto.md §4 (Lowering: a raise applying nothing here): a2, holding L but not D,
@@ -1842,9 +1848,15 @@ fn raise_invalid_through_holder_actor_resealed_spec_crypto_4() {
 // G2 but not G3 or T, rotates naming L and G2 as a raise. R (3) holds L, D, G2 and G3, not T:
 // G2 applies nothing there, so A's names are met, but G3 holds M a reader there, and R re-seals
 // M at A's epoch. At A, once T and G3 arrive, G3 is a raise applying nothing too: A must not
-// encrypt under an epoch M opens.
+// encrypt under an epoch M opens. Alike with M re-granted sync.
 #[test]
 fn raise_name_over_older_raise_resealed_spec_crypto_4() {
+    for r in [Role::Read, Role::Sync] {
+        raise_name_over_older_raise_resealed(r);
+    }
+}
+
+fn raise_name_over_older_raise_resealed(r: Role) {
     let (mut lp, g, tids) = granted(6, &[(1, Role::Admin), (2, Role::Read), (3, Role::Admin), (4, Role::Admin), (5, Role::Admin)]);
     lp.peers[0].engine.demote(&g, &Demotion { holder: tids[2], new: None, retain: None }).unwrap();
     lp.peers[0].clock.advance(1_000);
@@ -1858,26 +1870,26 @@ fn raise_name_over_older_raise_resealed_spec_crypto_4() {
     }
     send_skipping(&mut lp, 0, 3, &BTreeSet::new());
     lp.peers[4].clock.advance(3_000);
-    lp.peers[4].engine.grant(&g, &tids[2], &edge(Role::Read)).unwrap();
+    lp.peers[4].engine.grant(&g, &tids[2], &edge(r)).unwrap();
     send_skipping(&mut lp, 4, 3, &BTreeSet::new());
     lp.peers[1].clock.advance(5_000);
-    lp.peers[1].engine.grant(&g, &tids[2], &edge(Role::Read)).unwrap();
+    lp.peers[1].engine.grant(&g, &tids[2], &edge(r)).unwrap();
     send_skipping(&mut lp, 1, 0, &BTreeSet::new());
     send_skipping(&mut lp, 1, 3, &BTreeSet::new());
     assert!(lp.peers[0].engine.core.role_now(&tids[2], &g).is_none(), "G2 applies nothing at A");
     lp.peers[0].clock.advance(10_000);
     assert!(!lp.peers[0].engine.ensure_rotated(&g).unwrap().0.commits.is_empty(), "A rotates for G2");
-    assert!(!removed_reader_reads(&mut lp, g, &tids, 0), "A's own rotation boxes M");
+    assert!(!removed_opens(&mut lp, g, &tids, 0, r), "{r:?}: A's own rotation boxes M");
     send_skipping(&mut lp, 0, 3, &BTreeSet::new());
-    assert_eq!(lp.peers[3].engine.core.role_now(&tids[2], &g), Some(Role::Read), "G3 holds M at R");
+    assert_eq!(lp.peers[3].engine.core.role_now(&tids[2], &g), Some(r), "G3 holds M at R");
     assert!(!lp.peers[3].engine.reseal_due(&g, &Pass).unwrap().commits.is_empty(), "R re-seals M at A's epoch");
     send_skipping(&mut lp, 3, 0, &BTreeSet::new());
     send_skipping(&mut lp, 5, 0, &BTreeSet::new());
-    assert!(!removed_reader_reads(&mut lp, g, &tids, 0), "A encrypts under an epoch M opens");
+    assert!(!removed_opens(&mut lp, g, &tids, 0, r), "{r:?}: A encrypts under an epoch M opens");
     lp.sync_all().unwrap();
     let rounds = rounds_to_settle(&mut lp, g);
     assert_eq!(rounds.last(), Some(&0), "settles: {rounds:?}");
-    assert!(!removed_reader_reads(&mut lp, g, &tids, 0), "settled: A encrypts under an epoch M opens");
+    assert!(!removed_opens(&mut lp, g, &tids, 0, r), "{r:?} settled: A encrypts under an epoch M opens");
 }
 
 // spec/crypto.md §4 (Covers; a drop over an older raise): g's first admin is O (A's group, W
