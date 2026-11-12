@@ -1,0 +1,6 @@
+# Durable: a fallen snapshot's covered bodies stay blocked by the node's own tombstones
+> Summary: when a held durable snapshot turns invalid, its covered parts go missing and `reopen_undropped` sets their known entries unopened, but an entry this node deleted at hosts under that snapshot has only a tombstone (`TOMBSTONE_LIFETIME_MS`): announcements and reconcile needs of it are skipped (`memory_skips`, `shared.rs` tomb checks), so a copy another host or holder still has is not fetched. The memory class lifts such tombstones and reconciles (`memory_reconcile_thing`); durable should follow the same rule.
+> Priority: normal
+> Tags: sync, retention
+
+Reached only where the node deleted at a host under the snapshot: durable deletes wait `MAX_DRIFT` past establishment and need the purge right, so rare today; automatic durable compaction (branch `durable-compaction`, issues/eph-unify.md E) makes it ordinary. One rule for both classes: on a fall, lift this node's tombstones of the entries of commits whose parts went missing again (`Changed::undropped`), and reconcile the labels so a host's copy the cursor passed is named again (durable presence is in the log, so a deleted entry has no record to refetch from). A body deleted everywhere still comes back only as a holder's upload (spec/sync.md §7 Live writes).
