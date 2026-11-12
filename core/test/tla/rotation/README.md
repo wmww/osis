@@ -134,9 +134,9 @@ notes/crypto.md (The pin); spec/crypto.md §4 (Edge writes, Names, Met, Covers).
 | cfg | instance | result | states | time |
 |---|---|---|---|---|
 | `T_raise2`, `T_fin2` | as T_raise, T_fin with 2 writes (run.sh); with `Live` | pass | 2,592; 3,840 | 3 s, 10 s (1 worker) |
-| `T_raise` | by hand: values none/read/write, two invalidators, 3 writes, starts none/read | pass | 46,656 | 50 s |
-| `T_raise4` | by hand: as T_raise with 4 writes, one invalidator | pass | 82,944 | 276 s |
-| `T_fin` | by hand: values none/read, timed grants, finalizes, one invalidator, 3 writes | pass | 107,520 | 72 s |
+| `T_raise` | by hand: values none/read/write, two invalidators, 3 writes, starts none/read; with `Live` | pass | 46,656 | 142 s |
+| `T_raise4` | by hand: as T_raise with 4 writes, one invalidator; with `Live` | pass | 82,944 | 317 s |
+| `T_fin` | by hand: values none/read, timed grants, finalizes, one invalidator, 3 writes; with `Live` | pass | 107,520 | 314 s |
 | `T_raise_old`, `T_fin_old` | the per-event attribution rule (negative controls) | **fail** `Safe` (a later removal voided by its author's demotion still covered: a node holding that demotion but not the first removal re-seals; engine `removal_by_demoted_admin_pins_nothing_spec_crypto_4`) | | 10 s, 5 s |
 | `T_chain` | 2 writes, values none/read/write, one invalidator that may be voided by another (run.sh) | pass | 2,304 | 3 s (1 worker) |
 | `T_chain_commit` | as T_chain, `MetBy = "commit"` | **fails** `Safe` (V lacking what voids the demotion of a removal's author judges the removal void, meets the names and boxes M; engine `applied_name_void_elsewhere_through_holder_actor_spec_crypto_4`, `departs_mark_void_elsewhere_through_holder_actor_spec_crypto_4`) | | 1 s |
