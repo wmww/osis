@@ -728,63 +728,40 @@ fn removed_writer_ephemeral_unmerged_spec_permissions_5_2() {
     assert_eq!(notes(&mut net, a, w), map(&[("a", "1")]));
 }
 
-// notes/ephemeral.md Bounds (host ephemeral bytes per label): past the cap uploads are refused;
-// the writer compacts, deletes what the compaction covers and the label syncs again
+// spec/sync.md §9 (caps), §10 (a peer that cannot read L takes what it pulls within its own
+// caps and sends no refusal): writes past a peer's ephemeral cap for the label, small and then
+// past what the writer's compactions bring the state down to: the peer stays within its cap,
+// everything settles (no compaction of the cover into the next cover forever), the writer keeps
+// every write, and its status shows the label not caught up there
 #[test]
-fn host_cap_compaction_frees_it_spec_sync_5() {
-    let mut net = Net::new();
-    // a few entries with their per-entry overhead (about 900 bytes each); tuned so one upload is
-    // refused and the writer's own compaction later makes room (a refused write left alone with
-    // no compaction due stays refused)
-    let host = net.add_host_with(osis_host::HostPolicy { ephemeral_bytes: 6_300, ..osis_host::HostPolicy::default() });
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let g = net.group(a, &[(b, Role::Write)], &[host]);
-    net.run();
-    let w = window(&mut net, a, g, "busy");
-    net.run();
-    for i in 0..30 {
-        note(&mut net, a, w, &format!("k{i}"), "v");
+fn ephemeral_writes_past_a_peers_cap_stay_with_the_writer_spec_sync_9() {
+    for (cap, value) in [(6_300, "v"), (2_500, "vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv")] {
+        let mut net = Net::new();
+        let host = net.add_host_with(osis_host::HostPolicy { ephemeral_bytes: cap, ..osis_host::HostPolicy::default() });
+        let a = net.node(1, &[host]);
+        let b = net.node(2, &[host]);
+        let g = net.group(a, &[(b, Role::Write)], &[host]);
         net.run();
+        let w = window(&mut net, a, g, "busy");
+        net.run();
+        let l = net.label(a);
+        for i in 0..30 {
+            note(&mut net, a, w, &format!("k{i}"), value);
+            net.run();
+            assert!(net.hosts[host].hub.store().ephemeral_bytes(&l) <= cap, "cap {cap}: the peer stays within it");
+        }
+        net.advance(61_000);
+        let want: BTreeMap<String, String> = (0..30).map(|i| (format!("k{i}"), value.to_string())).collect();
+        assert_eq!(notes(&mut net, a, w), want, "cap {cap}: the writer keeps every write");
+        assert!(net.lags(a, &l), "cap {cap}: the writer's status shows the peer lacking some");
     }
-    let l = net.label(a);
-    assert!(net.hosts[host].hub.store().ephemeral_bytes(&l) <= 6_300);
-    assert!(net.engine(a).memory_commits().len() < 30, "compacted: {}", net.engine(a).memory_commits().len());
-    let want: BTreeMap<String, String> = (0..30).map(|i| (format!("k{i}"), "v".to_string())).collect();
-    assert_eq!(notes(&mut net, b, w), want);
-    // a node arriving now gets the whole state from what the host kept
-    net.restart(b, 23);
-    net.advance(10_000);
-    assert_eq!(notes(&mut net, b, w), want);
 }
 
-// a host cap too small for the compacted state: the writer compacts, the cover is refused, and
-// it reports instead of compacting the cover into the next cover forever (a livelock found while
-// charging per-entry overhead at hosts)
+// spec/sync.md §9 (caps), §10: one write larger than a peer's whole ephemeral cap stays out of
+// it (the writer keeps it, its status shows the gap); later writes that fit still reach the
+// other writer through that peer
 #[test]
-fn host_cap_below_state_reports_spec_sync_5() {
-    let mut net = Net::new();
-    let host = net.add_host_with(osis_host::HostPolicy { ephemeral_bytes: 2_500, ..osis_host::HostPolicy::default() });
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let g = net.group(a, &[(b, Role::Write)], &[host]);
-    net.run();
-    let rx = net.listen(a);
-    let w = window(&mut net, a, g, "busy");
-    net.run();
-    for i in 0..30 {
-        note(&mut net, a, w, &format!("k{i}"), "vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv");
-        net.run();
-    }
-    let refused = rx.try_iter().any(|e| matches!(e, osis_node::Event::Diagnostic(d) if d.kind == osis_node::DiagnosticKind::EphemeralRefused));
-    assert!(refused, "reported");
-}
-
-// notes/ephemeral.md Bounds (host cap): one write too large for the cap has nothing to compact
-// (one held part): the label reports and that write stays out of the host, the defined outcome;
-// later writes that fit still sync
-#[test]
-fn host_cap_one_huge_write_reports_spec_sync_5() {
+fn a_write_past_a_peers_whole_cap_stays_out_and_later_ones_sync_spec_sync_9() {
     let mut net = Net::new();
     // room for the window's two entries (its membership and its state) and a note, not for the
     // 6000-byte write
@@ -795,15 +772,16 @@ fn host_cap_one_huge_write_reports_spec_sync_5() {
     net.run();
     let w = window(&mut net, a, g, "w");
     net.run();
-    let rx = net.listen(a);
+    let l = net.label(a);
     let mut m = Mutation::new();
     m.op(w, &eph("win:big+.0"), PathOp { path: Vec::new(), op: Op::Set(s(&"x".repeat(6_000))) }).unwrap();
     net.engine(a).write(m).unwrap();
     local(&mut net, a);
     net.run();
-    let refused = rx.try_iter().any(|e| matches!(e, osis_node::Event::Diagnostic(d) if d.kind == osis_node::DiagnosticKind::EphemeralRefused));
-    assert!(refused, "reported");
+    assert!(net.hosts[host].hub.store().ephemeral_bytes(&l) <= 8_000, "the peer stays within its cap");
     assert_eq!(net.eph_read(b, w, "win:big+.0"), None);
+    assert!(net.eph_read(a, w, "win:big+.0").is_some(), "the writer keeps it");
+    assert!(net.lags(a, &l), "the writer's status shows the peer lacking it");
     note(&mut net, a, w, "k", "v");
     net.run();
     assert_eq!(notes(&mut net, b, w), map(&[("k", "v")]), "a later write that fits syncs");
@@ -2859,8 +2837,8 @@ fn announced_ephemeral_leaves_no_sync_record_spec_sync_4() {
     assert_eq!(rows(&mut net), before, "ephemeral entries left stored sync records");
 }
 
-/// Bytes nodes send to the host while `b` writes 20 notes one by one, after `a` wrote `stuck`
-/// bytes in one write (`a` holds an own entry the host refuses for good when it exceeds the cap).
+/// Bytes nodes send while `b` writes 20 notes one by one, after `a` wrote `stuck` bytes in one
+/// write (past the cap of the peer that cannot read the label, `a` keeps an own entry it lacks).
 fn bytes_under_stuck_entry(stuck: usize) -> usize {
     let (mut net, (_, a, b, _, w)) = Net::cached("ephemeral::stuck_entry", || {
         let mut net = Net::new();
@@ -2888,56 +2866,13 @@ fn bytes_under_stuck_entry(stuck: usize) -> usize {
     net.sent_bytes - before
 }
 
-// spec/sync.md §5 (a refusal triggers nothing but the periodic retry): an own entry the host
-// refuses for good (one write over the cap) is not re-uploaded at every other node's write (it
-// was, by the compaction a refusal triggered: 5.5x the bytes)
+// spec/sync.md §9, §10: an own entry a peer lacks for good (one write past its cap) costs no
+// bytes at every other node's write (it did, by the compaction a refusal triggered: 5.5x)
 #[test]
-fn host_cap_stuck_entry_no_churn_spec_sync_9() {
+fn an_entry_past_a_peers_cap_costs_no_churn_spec_sync_9() {
     let fits = bytes_under_stuck_entry(100);
     let stuck = bytes_under_stuck_entry(13_000);
     assert!(stuck < fits + fits / 4, "{stuck} bytes sent with a refused entry held, {fits} without");
-}
-
-/// Node `n` sets `ak` of `w` to `len` bytes, expiring `ms` from now (never compacted).
-fn expiring(net: &mut Net, n: usize, w: Tid, ak: &str, len: usize, ms: u64) {
-    let mut m = Mutation::new();
-    m.set(w, &eph(ak), &s(&"x".repeat(len))).unwrap();
-    m.expires(w, &eph(ak), osis_base::WallMs(net.now() + ms)).unwrap();
-    net.engine(n).write(m).unwrap();
-    local(net, n);
-}
-
-// spec/sync.md §9 (holders upload what a host lacks): an entry a full host refused, that no
-// compaction can cover (it expires), goes up again once room is made without a deletion (b's
-// entries expire there), at the periodic pass (it stayed out until a reconnect: sim
-// `ephemeral_capped` seed 14)
-#[test]
-fn host_cap_refused_entry_retried_spec_sync_9() {
-    let cap = 8_000;
-    let mut net = Net::new();
-    let host = net.add_host_with(osis_host::HostPolicy { ephemeral_bytes: cap, ..osis_host::HostPolicy::default() });
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let g = net.group(a, &[(b, Role::Write)], &[host]);
-    let t = net.item(a, g, g, "x");
-    net.run();
-    let l = net.label(a);
-    let held = |net: &Net| net.hosts[host].hub.store().ephemeral_bytes(&l);
-    // b fills it with entries that expire soon, until one is refused
-    for i in 0.. {
-        assert!(i < 20, "nothing refused under a {cap} B cap");
-        let before = held(&net);
-        expiring(&mut net, b, t, &format!("win:b{i}+.0"), 1_500, 20_000);
-        net.run();
-        if held(&net) == before {
-            break;
-        }
-    }
-    expiring(&mut net, a, t, "win:a+.0", 1_500, 600_000);
-    net.run();
-    assert!(net.eph_read(b, t, "win:a+.0").is_none(), "refused ({} B held, cap {cap})", held(&net));
-    net.advance(61_000);
-    assert!(net.eph_read(b, t, "win:a+.0").is_some(), "a's write reached b");
 }
 
 // spec/sync.md §9, §10 (presence at a peer that cannot read L is what its stream showed; random
@@ -2975,13 +2910,13 @@ fn uploads_sent(net: &Net) -> usize {
 /// `authors` nodes in one group move their cursors every 33 ms (30 a second) for `secs`
 /// simulated seconds, each move a fresh entry under the author's own key of one cursor map
 /// expiring 30 s out (what `osis::KeepAlive::set` writes), messages taking one 33 ms round per hop
-/// (a 66 ms round trip), at a host whose delete rates and ephemeral cap are the defaults scaled
-/// to the run (the rates to its share of their minute window, the cap to its share of the
-/// expiry, what the entries of a run that short would fill): no upload is refused, every author
-/// stays visible at every node throughout, and at the end every node reads every author's latest
-/// cursor and the host holds one entry per author. Returns (uploads, deletes, the host's peak
-/// ephemeral bytes, its cap).
-fn many_authors_run(authors: usize, secs: u64) -> (usize, usize, u64, u64) {
+/// (a 66 ms round trip), through a peer that cannot read the label whose delete rates and
+/// ephemeral cap are the defaults scaled to the run (the rates to its share of their minute
+/// window, the cap to its share of the expiry, what the entries of a run that short would fill):
+/// every author stays visible at every node throughout, and at the end every node reads every
+/// author's latest cursor and the peer holds one entry per author, its deletes within their
+/// rate and its bytes within its cap. Returns (deletes, the peer's peak ephemeral bytes, its cap).
+fn many_authors_run(authors: usize, secs: u64) -> (usize, u64, u64) {
     const E: u64 = 30_000;
     let mut net = Net::new();
     let window_ms = secs * 1000;
@@ -2997,8 +2932,8 @@ fn many_authors_run(authors: usize, secs: u64) -> (usize, usize, u64, u64) {
     let l = net.label(ns[0]);
     let live = |net: &Net| osis_proto::LabelStore::live_ids(&*net.hosts[host].hub.store(), &l).unwrap().len();
     let held = live(&net);
-    let up_del = |net: &Net| (uploads_sent(net), net.sent_kinds.get(&14).copied().unwrap_or(0));
-    let (up, del) = up_del(&net);
+    let dels = |net: &Net| net.sent_kinds.get(&14).copied().unwrap_or(0);
+    let del = dels(&net);
     let keys: Vec<Value> = ns.iter().map(|n| s(&net.tid(*n).to_string())).collect();
     let cursor_of = |net: &mut Net, x: usize, k: &Value| match net.eph_read(x, t, CURSOR) {
         Some(Value::Map(m)) => m.get(k).cloned(),
@@ -3026,7 +2961,7 @@ fn many_authors_run(authors: usize, secs: u64) -> (usize, usize, u64, u64) {
         }
     }
     net.run();
-    let (up2, del2) = up_del(&net);
+    let del2 = dels(&net);
     for x in &ns {
         for (n, k) in ns.iter().zip(&keys) {
             assert_eq!(cursor_of(&mut net, *x, k), Some(s(&format!("{n}@{}", rounds - 1))), "author {n} at {x}");
@@ -3034,31 +2969,28 @@ fn many_authors_run(authors: usize, secs: u64) -> (usize, usize, u64, u64) {
     }
     assert_eq!(live(&net), held + authors, "one entry per author\n{}", net.sync(ns[0]).ephemeral_dump(&l));
     assert!(((del2 - del) as u64) < u64::from(deletes), "{} deletes against a limit of {deletes}", del2 - del);
-    // at most one commit per author per round trip (two rounds), and one more at the end
-    let most = authors * (rounds as usize / 2 + 2);
-    assert!(up2 - up <= most, "{} uploads: more than one per round trip ({most})", up2 - up);
-    assert!(peak < cap, "the host's ephemeral bytes reached {peak} of its cap {cap}");
-    (up2 - up, del2 - del, peak, cap)
+    assert!(peak < cap, "the peer's ephemeral bytes reached {peak} of its cap {cap}");
+    (del2 - del, peak, cap)
 }
 
 // spec/sync.md §9 (an expiring commit superseded by its author's later writes is dropped and its
-// author deletes it, coalescing while an upload is in flight), §5 (hosts rate-limit deletes and
-// cap ephemeral bytes per label): 4 authors at 30 cursor moves a second, scaled to a 1 s window
-// (10 authors took 4.5-12 s: by hand below)
+// author deletes it), §5 (a peer that cannot read L rate-limits deletes and caps ephemeral bytes
+// per label), §10 Bodies (an author pushes its own memory entries inline): 4 authors at 30 cursor
+// moves a second, scaled to a 1 s window (10 authors took 4.5-12 s: by hand below)
 #[test]
-fn many_authors_under_host_rates_spec_sync_9() {
-    let (up, del, peak, cap) = many_authors_run(4, 1);
-    eprintln!("4 authors, 1 s: {up} uploads, {del} deletes, peak {peak} of {cap} ephemeral bytes");
+fn many_authors_under_a_peers_rates_spec_sync_9() {
+    let (del, peak, cap) = many_authors_run(4, 1);
+    eprintln!("4 authors, 1 s: {del} deletes, peak {peak} of {cap} ephemeral bytes");
 }
 
 // by hand: 10 authors for 1 s, then for a whole simulated minute at the default policy
 #[test]
 #[ignore]
-fn many_authors_under_host_rates_by_hand() {
-    let (up, del, peak, cap) = many_authors_run(10, 1);
-    eprintln!("10 authors, 1 s: {up} uploads, {del} deletes, peak {peak} of {cap} ephemeral bytes");
-    let (up, del, peak, cap) = many_authors_run(10, 60);
-    eprintln!("10 authors, 60 s: {up} uploads, {del} deletes, peak {peak} of {cap} ephemeral bytes");
+fn many_authors_under_a_peers_rates_by_hand() {
+    let (del, peak, cap) = many_authors_run(10, 1);
+    eprintln!("10 authors, 1 s: {del} deletes, peak {peak} of {cap} ephemeral bytes");
+    let (del, peak, cap) = many_authors_run(10, 60);
+    eprintln!("10 authors, 60 s: {del} deletes, peak {peak} of {cap} ephemeral bytes");
 }
 
 // spec/sync.md §9 (an unsent write superseded by a later one expiring no earlier is not sent):

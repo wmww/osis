@@ -1780,6 +1780,12 @@ impl Net {
         self.hosts[s].hub.store().live_ids(l).unwrap()
     }
 
+    /// Whether node `n`'s status shows label `l` not caught up at a source it has (a peer lacks
+    /// something `n` placed there): sources, none of them stranded, and fewer idle.
+    pub fn lags(&mut self, n: usize, l: &osis_base::LabelId) -> bool {
+        self.sync(n).label_status().into_iter().find(|s| s.label == *l).is_some_and(|s| !s.stranded && s.sources > 0 && s.idle < s.sources)
+    }
+
     /// Node `n`'s connection to host `s`, if up (to inject a hostile host's frames).
     pub fn conn_to(&self, n: usize, s: usize) -> Option<ConnId> {
         self.links.iter().find(|((x, _), (y, _))| *x == n && *y == s).map(|((_, c), _)| *c)

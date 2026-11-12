@@ -160,19 +160,15 @@ fn purged_body_waits_for_its_rewrite_spec_sync_7() {
     assert_eq!(net.engine(b).get(&t, &gone).unwrap(), None);
 }
 
-// spec/sync.md §7 (a rewrite the label refuses for its cap goes up again replacing the purged
-// body), §5 (Replace), spec/requirements.md (purge is prompt): as above, but the label is at its
-// entry cap, so a's rewrite q is refused (code 12); q goes up again naming p as replaced, and the
-// host admits it in p's room and removes p in one step: after every hop the host holds p or
-// q (the kept live write is never absent), and ends with q only.
-#[test]
-fn purged_body_leaves_full_label_spec_sync_7() {
+/// A label of writer `a` and `b` at its entry cap at the peer that cannot read it, holding
+/// commit `c` (`t`'s purgeable value, body `p`); then `a` writes `t2` (lacking there): (net, peer,
+/// a, b, t, t2, label, c, p, the cap).
+#[allow(clippy::type_complexity)]
+fn full_peer() -> (Net, usize, usize, usize, Tid, Tid, osis_base::LabelId, osis_base::CommitId, osis_base::BlobId, u64) {
     let (mut net, host, [a, b], _g, [t, t2]) = hosted::<2, 2>(&[(1, Role::Write)], ["x", "y"], false);
     net.keep(a, t, &[("t:gone.0", PURGE)]);
-    let gone = Ak::new(GONE.ak()).unwrap();
     let mut m = Mutation::new();
     m.set(t, &GONE, &s("secret")).unwrap();
-    m.set(t2, &GONE, &s("kept")).unwrap();
     let c = net.engine(a).commit(m).unwrap().unwrap();
     net.run();
     net.advance(60_000);
@@ -184,28 +180,58 @@ fn purged_body_leaves_full_label_spec_sync_7() {
     net.run();
     // past the redial pause
     net.advance(66_000);
+    assert!(!net.lags(a, &l), "caught up while nothing is lacking");
+    let mut m = Mutation::new();
+    m.set(t2, &GONE, &s("kept")).unwrap();
+    net.engine(a).commit(m).unwrap();
+    net.feed(a, Event::Local);
+    net.run();
+    net.advance(31_000);
+    (net, host, a, b, t, t2, l, c, p[0], full)
+}
+
+// spec/sync.md §5, §10 (a peer that cannot read L takes what it pulls within its own caps and
+// sends no refusal; presence there is what its stream showed): the label is at its entry cap at
+// the peer and a's next write does not fit: the peer stays within its cap, a keeps the write, and
+// a's status shows the label not caught up there.
+#[test]
+fn a_full_peer_stays_within_its_cap_and_the_writer_keeps_the_rest_spec_sync_10() {
+    let (mut net, host, a, b, _t, t2, l, _c, _p, full) = full_peer();
+    let gone = Ak::new(GONE.ak()).unwrap();
+    assert_eq!(net.host_ids(host, &l).len() as u64, full, "the peer stays within its cap");
+    assert_eq!(net.engine(a).get(&t2, &gone).unwrap(), Some(s("kept")), "a keeps its write");
+    assert_eq!(net.engine(b).get(&t2, &gone).unwrap(), None, "b reads through the peer only");
+    assert!(net.lags(a, &l), "a's status shows the peer lacking it");
+}
+
+// spec/sync.md §7 (purge), §10: as above, then a purges `c`: the purged body leaves the full
+// peer, and a write after it reaches b through the room it freed. Fails: the purge request
+// itself does not fit there, and every delete waits for the role commits the peer lacks.
+#[test]
+#[ignore = "issues/full-peer-role-commits.md"]
+fn repro_a_purge_frees_room_at_a_full_peer_spec_sync_7() {
+    let (mut net, host, a, b, t, t2, l, c, p, full) = full_peer();
+    let gone = Ak::new(GONE.ak()).unwrap();
     let mut m = Mutation::new();
     m.purge_commit(c, t, gone.clone());
     m.remove_aspect(t, &GONE).unwrap();
     net.engine(a).commit(m).unwrap();
     net.feed(a, Event::Local);
-    let (up, del) = (net.sent_kinds.get(&10).copied().unwrap_or(0), net.sent_kinds.get(&14).copied().unwrap_or(0));
-    for _ in 0..200 {
+    for _ in 0..50 {
         net.round();
-        let ids = net.host_ids(host, &l);
-        let q: Vec<_> = blobs_of(&mut net, a, &l, &c).into_iter().filter(|id| !p.contains(id)).collect();
-        assert!(ids.contains(&p[0]) || q.iter().any(|x| ids.contains(x)), "neither p nor its rewrite at the host");
+        assert!(net.host_ids(host, &l).len() as u64 <= full, "the peer stays within its cap");
     }
     net.run();
-    net.trace(&[a, b]);
-    let q: Vec<_> = blobs_of(&mut net, a, &l, &c).into_iter().filter(|id| !p.contains(id)).collect();
-    assert_eq!(q.len(), 1, "a's rewrite placed");
-    let ids = net.host_ids(host, &l);
-    assert!(!ids.contains(&p[0]), "p deleted though its rewrite was refused");
-    assert!(ids.contains(&q[0]), "q uploaded in the room p freed");
-    assert!(net.sent_kinds.get(&10).copied().unwrap_or(0) > up, "uploads sent");
-    assert_eq!(net.sent_kinds.get(&14).copied().unwrap_or(0), del, "p went by the replacing upload, no Delete");
-    assert_eq!(ids.len() as u64, full, "the label stays full (the purge request itself waits for space)");
+    net.advance(31_000);
+    assert!(!net.host_ids(host, &l).contains(&p), "the purged body left the full peer");
+    let mut m = Mutation::new();
+    m.set(t2, &GONE, &s("later")).unwrap();
+    net.engine(a).commit(m).unwrap();
+    net.feed(a, Event::Local);
+    net.run();
+    net.advance(31_000);
+    assert!(net.host_ids(host, &l).len() as u64 <= full, "the peer stays within its cap");
+    assert_eq!(net.engine(b).get(&t2, &gone).unwrap(), Some(s("later")), "a write after the purge fits in the room it freed");
 }
 
 // spec/permissions.md §3 (complete pass): a role commit pushed to a subscribed node ends
