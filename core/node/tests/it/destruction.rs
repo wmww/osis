@@ -1358,9 +1358,10 @@ fn a_fallen_destruction_walks_only_the_things_authority_spec_permissions_6() {
 }
 
 // spec/commits.md §5 (Destruction, Limit): a reader of g mints a purged t again `nobody`, which the
-// request has no right over; b, not having heard of the destruction, writes t after it. Brought back, t
-// is live again: its roster stands and b's late write shows, at every node whatever the order c
-// took the three in
+// request has no right over; b, not having heard of the destruction, writes t after it, and its write
+// reaches the peer before b hears of the destruction (brought back is only what a copy is still held
+// of). Brought back, t is live again: its roster stands and b's late write shows, at every node
+// whatever the order c took the three in
 #[test]
 fn a_minting_again_the_request_cannot_drop_brings_back_a_live_thing_alike_spec_commits_5() {
     for order in [[0, 2, 1], [1, 0, 2]] {
@@ -1388,7 +1389,11 @@ fn a_minting_again_the_request_cannot_drop_brings_back_a_live_thing_alike_spec_c
             let _ = net.engine(c).ingest(lots[i], Vec::new());
             net.engine(c).reexamine().unwrap();
         }
-        for n in [a, b, c, r] {
+        // b's write reaches the peer before b hears of the destruction: a destruction drops what
+        // was written after it, and brought back is only what a copy is still held of (Limit)
+        net.set_online(b, true);
+        net.advance(70_000);
+        for n in [a, c, r] {
             net.set_online(n, true);
         }
         for _ in 0..3 {
