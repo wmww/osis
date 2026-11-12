@@ -76,7 +76,8 @@ fn large_value_read_work_is_linear() {
     };
     let (small, big) = (run(1), run(10));
     assert_eq!((small.0, big.0), (chunks(1), chunks(10)), "each chunk fetched once");
-    assert!(small.1.max(big.1) <= 320 * 1024, "held {} at 1 MiB, {} at 10", small.1, big.1);
+    // one chunk at its largest plus room for the tree path
+    assert!(small.1.max(big.1) <= osis_base::ChunkParams::FORMAT.max + 64 * 1024, "held {} at 1 MiB, {} at 10", small.1, big.1);
     assert!(big.2 <= 2 * small.2 + 2, "tail MiB fetched {} chunks at 1 MiB, {} at 10", small.2, big.2);
 }
 

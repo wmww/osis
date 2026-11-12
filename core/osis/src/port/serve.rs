@@ -572,14 +572,14 @@ impl Worker {
             method::WRITE => {
                 let nonce = a.uint()?;
                 let rest = a.rest();
-                return self.once(db, conn, nonce, || Ok(c::opt(db.replay(rest)?, |x| c::v(&x))));
+                return self.once(db, conn, nonce, || Ok(c::v(&db.replay(rest)?)));
             }
-            method::UNDO_TARGET => c::opt(db.undo_target(&a.get()?)?.as_ref(), c::v),
-            method::REDO_TARGET => c::opt(db.redo_target(&a.get()?)?.as_ref(), c::v),
+            method::UNDO_TARGET => c::v(&db.undo_target(&a.get()?)?),
+            method::REDO_TARGET => c::v(&db.redo_target(&a.get()?)?),
             method::UNDO | method::REDO => {
                 let nonce = a.uint()?;
                 let scope = a.get()?;
-                return self.once(db, conn, nonce, || Ok(c::opt(if m == method::UNDO { db.undo(&scope)? } else { db.redo(&scope)? }, |x| c::v(&x))));
+                return self.once(db, conn, nonce, || Ok(c::v(&if m == method::UNDO { db.undo(&scope)? } else { db.redo(&scope)? })));
             }
             method::REVERT => {
                 let nonce = a.uint()?;
@@ -599,7 +599,7 @@ impl Worker {
                 if at.things().iter().any(|t| !db.is_local(*t)) {
                     return Err(unsupported("commits of a group this node reads at another node"));
                 }
-                c::opt(db.commit_told_here(&at, id, None)?.as_ref(), c::v)
+                c::v(&db.commit_told_here(&at, id, None)?)
             }
             method::BACKLINKS => {
                 let (t, q) = (a.tid()?, a.get()?);
@@ -641,7 +641,7 @@ impl Worker {
                 let (actor, secret) = db.add_client(until)?;
                 Value::List(vec![Value::Tid(actor), Value::bytes(secret.expose())])
             }
-            method::CLIENTS => Value::List(db.clients()?.iter().map(|x| Value::List(vec![Value::Tid(x.actor), c::opt(x.until, |w| Value::uint(w.0))])).collect()),
+            method::CLIENTS => Value::List(db.clients()?.iter().map(|x| Value::List(vec![Value::Tid(x.actor), c::v(&x.until)])).collect()),
             method::REMOVE_CLIENT => b(db.remove_client(a.tid()?)?),
             method::ROTATE_CLIENT_SECRET => Value::bytes(db.rotate_client_secret(a.tid()?)?.expose()),
             method::RETAINED_COPIES => Value::List(db.retained_copies()?.into_iter().map(Value::Tid).collect()),
@@ -692,7 +692,7 @@ impl Worker {
                 Value::List(vec![Value::Tid(node), Value::Str(reply.to_string()), Value::Bytes(pad)])
             }
             method::CONTACT_CARD => Value::Str(db.contact_card()?.to_string()),
-            method::PROFILE_OF => c::opt(db.profile_of(a.tid()?)?, Value::Tid),
+            method::PROFILE_OF => c::v(&db.profile_of(a.tid()?)?),
             method::INVITE_REQUESTS => Value::List(db.invite_requests()?.iter().map(|i| Value::bytes(i.bytes())).collect()),
             method::ACCEPT_INVITE => {
                 db.accept_invite(crate::InviteId::from_bytes(&a.bytes()?)?)?;
@@ -1064,7 +1064,7 @@ fn due(db: &Osis, kind: &Kind, g: &Pending) -> Vec<(Value, Option<crate::watch::
         Kind::Commits(at) => {
             for id in g.commits.iter().take(COMMIT_SEND) {
                 let Ok(e) = db.commit_told_here(at, *id, None) else { continue };
-                out.push((Value::List(vec![c::v(id), c::opt(e.as_ref(), c::v)]), None));
+                out.push((Value::List(vec![c::v(id), c::v(&e)]), None));
             }
         }
         Kind::Grants(t) if g.dirty => out.push((c::v(&db.read_local(|r| r.grants(*t))), None)),

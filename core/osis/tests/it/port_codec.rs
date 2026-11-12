@@ -101,6 +101,8 @@ fn tagged_enums_read_as_case_and_payload() {
         same::<Scope>(s.clone());
         refused::<Scope>(longer(s));
     }
+    assert!(matches!(same::<Scope>(scopes[0].clone()), Scope::Thing(_)));
+    assert!(matches!(same::<Scope>(scopes[2].clone()), Scope::Group(_)));
 
     let addresses = [l(vec![u(0), l(vec![u(2), t(1)])]), l(vec![u(1), t(1), ak()]), l(vec![u(2), t(1), ak(), id(3)])];
     for a in &addresses {
@@ -152,6 +154,7 @@ fn structs_read_as_their_positions() {
     let full = l(vec![l(vec![u(2), ts(), id(1)]), l(vec![u(4)]), l(vec![t(1)]), l(vec![u(1), u(3)]), l(vec![id(2)]), l(vec![id(3)]), l(vec![Value::Bool(false)])]);
     let q = same::<CommitQuery>(full.clone());
     assert_eq!((q.limit, q.kinds, q.in_effect), (Some(4), vec![CommitKind::Revert, CommitKind::Snapshot], Some(false)));
+    assert_eq!((q.reverts.map(|c| c.to_port()), q.reverted_by.map(|c| c.to_port())), (Some(id(2)), Some(id(3))));
     refused::<CommitQuery>(longer(&full));
     let empty = l(vec![l(vec![u(0)]), l(vec![]), l(vec![]), l(vec![]), l(vec![]), l(vec![]), l(vec![])]);
     assert_eq!(same::<CommitQuery>(empty), CommitQuery::default());
