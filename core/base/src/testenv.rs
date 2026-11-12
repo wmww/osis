@@ -148,6 +148,70 @@ pub fn par_map<T: Send>(items: &[u64], threads: usize, f: impl Fn(u64) -> T + Sy
     out.into_iter().map(|x| x.1).collect()
 }
 
+/// Work running at once across every pooled run in the process (`Permit`): a thread per core
+/// (`OSIS_SEED_THREADS` overrides), so concurrent tests, and a run's seeds and their parts, share
+/// the cores instead of each starting a busy thread per core.
+fn permits() -> &'static (std::sync::Mutex<usize>, std::sync::Condvar) {
+    static P: std::sync::OnceLock<(std::sync::Mutex<usize>, std::sync::Condvar)> = std::sync::OnceLock::new();
+    P.get_or_init(|| (std::sync::Mutex::new(threads("OSIS_SEED_THREADS")), std::sync::Condvar::new()))
+}
+
+thread_local! {
+    /// This thread holds a permit.
+    static HOLDS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+fn take_permit() {
+    assert!(!HOLDS.get(), "a thread holds one permit at most");
+    let (m, cv) = permits();
+    let mut free = cv.wait_while(m.lock().unwrap_or_else(|e| e.into_inner()), |n| *n == 0).unwrap_or_else(|e| e.into_inner());
+    *free -= 1;
+    HOLDS.set(true);
+}
+
+fn give_permit() {
+    let (m, cv) = permits();
+    *m.lock().unwrap_or_else(|e| e.into_inner()) += 1;
+    HOLDS.set(false);
+    cv.notify_one();
+}
+
+/// One of the process's permits (`permits`), held until dropped (a panic included).
+pub struct Permit(());
+
+impl Permit {
+    pub fn take() -> Permit {
+        take_permit();
+        Permit(())
+    }
+}
+
+impl Drop for Permit {
+    fn drop(&mut self) {
+        give_permit();
+    }
+}
+
+/// `f` over `items` on up to `threads` threads, each call holding a permit (`Permit`), results in
+/// order. A caller holding a permit gives it up until every call is done, so a pooled run's seeds
+/// can spread their parts over the pool's threads without holding more than their share.
+pub fn pooled_map<T: Send>(items: &[u64], threads: usize, f: impl Fn(u64) -> T + Sync) -> Vec<T> {
+    struct Back;
+    impl Drop for Back {
+        fn drop(&mut self) {
+            take_permit();
+        }
+    }
+    let _back = HOLDS.get().then(|| {
+        give_permit();
+        Back
+    });
+    par_map(items, threads, |x| {
+        let _p = Permit::take();
+        f(x)
+    })
+}
+
 /// `f`, a panic as an error.
 pub fn caught<T>(f: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).unwrap_or_else(|e| {

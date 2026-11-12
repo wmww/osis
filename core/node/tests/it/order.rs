@@ -22,7 +22,7 @@
 
 use crate::common;
 use common::*;
-use osis_base::testenv::{caught, par_map, threads};
+use osis_base::testenv::{Permit, caught, par_map, pooled_map, threads};
 use osis_base::{Ak, CommitId, Role, Tid, Value, WallMs};
 use osis_crdt::{Op, PathOp, PathSeg};
 use osis_node::Mutation;
@@ -686,14 +686,13 @@ fn noting<E>(r: Result<Option<CommitId>, E>, unchecked: &mut BTreeSet<CommitId>)
 
 /// A fresh node under test: it answers removals with no addenda, so what it reads is a function
 /// of the commits it received alone (`Engine::write_addenda`; the witness rule has its own tests).
-/// Its account is forked from one made per thread (making one costs a tenth of
+/// Its account is forked from one made once per process (making one costs about a tenth of
 /// `held_set_decides`), so it starts opened over that account; each held set's oracle (`made`)
 /// made its own, so every order is also compared against a node that never opened.
 fn fresh(now: WallMs) -> Peer {
-    thread_local! {
-        static BASE: Peer = Peer::new(FRESH, ACCOUNT_AT).unwrap();
-    }
-    under_test(BASE.with(|b| b.fork(FRESH)).unwrap(), now)
+    static BASE: std::sync::OnceLock<std::sync::Mutex<Peer>> = std::sync::OnceLock::new();
+    let base = BASE.get_or_init(|| std::sync::Mutex::new(Peer::new(FRESH, ACCOUNT_AT).unwrap()));
+    under_test(base.lock().unwrap_or_else(|e| e.into_inner()).fork(FRESH).unwrap(), now)
 }
 
 /// `fresh`, its account made here rather than forked.
@@ -2106,11 +2105,6 @@ struct Cfg {
     /// How many of each held set's orders are tried again at an earlier clock (`Clock`): as made
     /// and reversed, then a sample spread evenly over the rest.
     clock: usize,
-    /// A seed's orders are independent tasks (each late-parts order split by its own rng), run
-    /// on `threads` threads; else they run in turn, split by one rng.
-    par_orders: bool,
-    /// Set by `held_set_decides_at`: the threads a seed's orders share (cores over the seeds run at once).
-    threads: usize,
     /// Fresh nodes sync things, by seed (`with_syncs`).
     sync: bool,
     /// With `sync`: fresh nodes learn what they sync at varying points (`Syncs::Late`), whatever
@@ -2132,7 +2126,7 @@ struct Cfg {
 /// whole set of at most 4 commits after the setup, shuffles, two partial held sets, two orders
 /// each with late parts and at an earlier clock; every node judged by held-model too. Sizes
 /// change the counts (`Size`), never the kinds.
-const ORDERS: Cfg = Cfg { all_up_to: 4, every_held: false, random: 2, subsets: 2, split: 2, clock: 2, par_orders: false, threads: 1, sync: true, late: false, settled: false, model: true, addenda: false, away: false };
+const ORDERS: Cfg = Cfg { all_up_to: 4, every_held: false, random: 2, subsets: 2, split: 2, clock: 2, sync: true, late: false, settled: false, model: true, addenda: false, away: false };
 
 /// A hand-written history's orders, none shuffled or drawn: as made, reversed and as a first
 /// sync fetches it, of the whole set and two first-sync prefixes.
@@ -2359,10 +2353,19 @@ impl Seen {
 /// Checks one history: what it reached, or the first mismatch found, described (a panic counts,
 /// so it shrinks).
 fn check(seed: u64, steps: &[Step], cfg: Cfg) -> Result<Seen, String> {
-    caught(|| check_orders(seed, steps, cfg))
+    check_on(1, seed, steps, cfg)
 }
 
-fn check_orders(seed: u64, steps: &[Step], cfg: Cfg) -> Result<Seen, String> {
+/// `check` with its orders on up to `threads` threads, each holding a permit
+/// (`testenv::pooled_map`), the seed's own steps holding one.
+fn check_on(threads: usize, seed: u64, steps: &[Step], cfg: Cfg) -> Result<Seen, String> {
+    caught(|| {
+        let _p = Permit::take();
+        check_orders(threads, seed, steps, cfg)
+    })
+}
+
+fn check_orders(threads: usize, seed: u64, steps: &[Step], cfg: Cfg) -> Result<Seen, String> {
     let played = play_with(seed, steps, cfg.addenda);
     let played = if cfg.settled { settling(played, steps) } else { played };
     let played = if cfg.sync { with_syncs(played, seed, cfg) } else { played };
@@ -2378,16 +2381,6 @@ fn check_orders(seed: u64, steps: &[Step], cfg: Cfg) -> Result<Seen, String> {
     for held in held_sets(played, cfg.subsets, &mut rng).into_iter().take(if cfg.settled { 1 } else { usize::MAX }) {
         let of = format!("held {held:?} of {n} commits (base {})", played.base);
         let o = oracle(played, &held);
-        // a partial set, then the rest (both ways), ends as the whole set's node
-        if let Some(f) = full.as_ref() {
-            let rest: Vec<usize> = (0..n).filter(|i| !held.contains(i)).collect();
-            for order in [held.iter().chain(&rest).copied().collect::<Vec<_>>(), held.iter().chain(rest.iter().rev()).copied().collect()] {
-                let mut p = deliver(played, &order);
-                if let Some(d) = node_checks(&mut p, played, f).err() {
-                    return Err(format!("{of}, then the rest: order {order:?}: {d}"));
-                }
-            }
-        }
         let orders = orders(played, &held, cfg, &mut rng);
         seen.orders += orders.len();
         // the reference, as made: tallies
@@ -2481,46 +2474,46 @@ fn check_orders(seed: u64, steps: &[Step], cfg: Cfg) -> Result<Seen, String> {
                 })
                 .map_err(|d| format!("{of}: order #{k} at an earlier clock {c:?} {order:?}: {d}"))
         };
-        // late parts only matter when a commit has parts on several aspects; without one the
-        // sequential modes still deliver the first two again and re-examine
-        let splits = if split || !cfg.par_orders { cfg.split.min(orders.len()) } else { 0 };
+        // late parts only matter when a commit has parts on several aspects
+        let splits = if split { cfg.split.min(orders.len()) } else { 0 };
         seen.orders += clocks;
         seen.clocked += clocks as u64;
-        if cfg.par_orders {
-            // tasks: orders 0.. as they are, then 0.. with late parts, each split by its own rng,
-            // then 0.. at an earlier clock
-            let tasks: Vec<u64> = (0..orders.len() + splits + clocks).map(|x| x as u64).collect();
-            let base = rng.0;
-            let errs = par_map(&tasks, cfg.threads, |x| {
-                let x = x as usize;
-                caught(|| match x {
-                    x if x < orders.len() => one(x, None),
-                    x if x < orders.len() + splits => one(x - orders.len(), Some(&mut Rng(base ^ (x as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1))),
-                    x => clocked(x - orders.len() - splits),
-                })
-            });
-            if let Some(e) = errs.into_iter().find_map(Result::err) {
-                return Err(e);
+        // a partial set, then the rest (both ways), ends as the whole set's node
+        let rests: Vec<Vec<usize>> = full.as_ref().map_or(Vec::new(), |_| {
+            let rest: Vec<usize> = (0..n).filter(|i| !held.contains(i)).collect();
+            vec![held.iter().chain(&rest).copied().collect(), held.iter().chain(rest.iter().rev()).copied().collect()]
+        });
+        let then_rest = |order: &[usize]| -> Result<(), String> {
+            let mut p = deliver(played, order);
+            node_checks(&mut p, played, full.as_ref().unwrap()).map_err(|d| format!("{of}, then the rest: order {order:?}: {d}"))
+        };
+        // a node reopening after every ingest (its clock moving) reads as one that never did
+        let reopens = if held == whole && played.settle_from.is_none() { 2.min(orders.len()) } else { 0 };
+        // tasks, each holding a permit: orders 0.. as they are, then 0.. with late parts, each split by
+        // its own rng, then 0.. at an earlier clock, then the rest after the partial set, then the
+        // first orders reopening after every ingest
+        let counts = [orders.len(), splits, clocks, rests.len(), reopens];
+        let tasks: Vec<u64> = (0..counts.iter().sum::<usize>() as u64).collect();
+        let base = rng.0;
+        let errs = pooled_map(&tasks, threads, |x| {
+            let (mut kind, mut k) = (0, x as usize);
+            while k >= counts[kind] {
+                k -= counts[kind];
+                kind += 1;
             }
-        } else {
-            for k in 0..orders.len() {
-                one(k, None)?;
-            }
-            for k in 0..splits {
-                one(k, Some(&mut rng))?;
-            }
-            for k in 0..clocks {
-                clocked(k)?;
-            }
+            caught(|| match kind {
+                0 => one(k, None),
+                1 => one(k, Some(&mut Rng(base ^ x.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1))),
+                2 => clocked(k),
+                3 => then_rest(&rests[k]),
+                _ => reopens_alike(played, &orders[k]).map_err(|d| format!("{of}, order {:?} reopened after every ingest: {d}", orders[k])),
+            })
+        });
+        if let Some(e) = errs.into_iter().find_map(Result::err) {
+            return Err(e);
         }
+        seen.reopened += reopens as u64;
         if held == whole {
-            if played.settle_from.is_none() {
-                // a node reopening after every ingest (its clock moving) reads as one that never did
-                for order in &orders[..2] {
-                    reopens_alike(played, order).map_err(|d| format!("{of}, order {order:?} reopened after every ingest: {d}"))?;
-                    seen.reopened += 1;
-                }
-            }
             if cfg.away {
                 seen.covered_away += covered_away(played, &o).map_err(|d| format!("{of} without what its snapshots cover: {d}"))? as u64;
             }
@@ -2543,14 +2536,14 @@ fn check_orders(seed: u64, steps: &[Step], cfg: Cfg) -> Result<Seen, String> {
 
 /// Drops steps while the history still fails; the shortest failing history found. A `settled`
 /// history keeps its settling tail whole: one cut short settles nothing.
-fn shrink(seed: u64, mut steps: Vec<Step>, cfg: Cfg) -> (Vec<Step>, String) {
-    let mut err = check(seed, &steps, cfg).unwrap_err();
+fn shrink(threads: usize, seed: u64, mut steps: Vec<Step>, cfg: Cfg) -> (Vec<Step>, String) {
+    let mut err = check_on(threads, seed, &steps, cfg).unwrap_err();
     let tail = if cfg.settled { settled(Vec::new()).len() } else { 0 };
     let mut i = 0;
     while i + tail < steps.len() {
         let mut fewer = steps.clone();
         fewer.remove(i);
-        match check(seed, &fewer, cfg) {
+        match check_on(threads, seed, &fewer, cfg) {
             Err(e) => {
                 steps = fewer;
                 err = e;
@@ -2831,10 +2824,9 @@ fn plain() -> Size {
 }
 
 /// Every order of the whole set and of every held set, each with late parts, of histories of at
-/// most 6 commits after the setup (720 orders), 24 of them at an earlier clock; a seed's orders
-/// run on a thread each.
+/// most 6 commits after the setup (720 orders), 24 of them at an earlier clock.
 fn exhaustive() -> Size {
-    from_env("exhaustive", 0..80, 40, Cfg { all_up_to: 6, every_held: true, random: 0, subsets: 2, split: usize::MAX, clock: 24, par_orders: true, ..ORDERS }, Some(6))
+    from_env("exhaustive", 0..80, 40, Cfg { all_up_to: 6, every_held: true, random: 0, subsets: 2, split: usize::MAX, clock: 24, ..ORDERS }, Some(6))
 }
 
 impl Size {
@@ -2858,25 +2850,28 @@ fn held_set_decides_at(sizes: Vec<Size>) {
     let mut by: BTreeMap<String, Seen> = BTreeMap::new();
     let mut open = Seen::default();
     let mut fails = Vec::new();
+    let threads = threads("OSIS_SEED_THREADS");
     for size in &sizes {
         let t0 = std::time::Instant::now();
-        // seeds on a thread per core; with fewer seeds than cores, a seed's orders share the rest
-        let outer = threads("OSIS_ORDER_THREADS").min(size.seeds.len()).max(1);
-        let inner = if size.cfg.par_orders { threads("OSIS_ORDER_THREADS").div_ceil(outer) } else { 1 };
-        let results = par_map(&size.seeds, outer, |seed| {
+        // up to a seed per thread in flight, each seed's orders on every thread, all of it holding
+        // the process's permits (`testenv::pooled_map`)
+        let results = par_map(&size.seeds, threads, |seed| {
             let (e, steps) = generate(seed, size.len);
-            let cfg = Cfg { threads: inner, ..cfg_of(e, size.cfg) };
+            let cfg = cfg_of(e, size.cfg);
             let steps = match size.exhaustive {
-                Some(max) => cap(seed, &steps, cfg.addenda, max),
+                Some(max) => {
+                    let _p = Permit::take();
+                    cap(seed, &steps, cfg.addenda, max)
+                }
                 None => steps,
             };
             if std::env::var("OSIS_ORDER_STATS").is_ok() {
                 eprintln!("seed {seed} ({e:?}): vec!{steps:?}");
             }
-            let r = check(seed, &steps, cfg).map(|s| Seen { emphases: BTreeMap::from([(format!("{e:?}"), 1)]), ..s });
+            let r = check_on(threads, seed, &steps, cfg).map(|s| Seen { emphases: BTreeMap::from([(format!("{e:?}"), 1)]), ..s });
             let fail = r.as_ref().is_err().then(|| {
                 let shrunk = u64_var("OSIS_ORDER_SHRINK").is_some_and(|n| n != 0);
-                let (steps, err) = if shrunk { shrink(seed, steps, cfg) } else { (steps, r.clone().unwrap_err()) };
+                let (steps, err) = if shrunk { shrink(threads, seed, steps, cfg) } else { (steps, r.clone().unwrap_err()) };
                 let what = if shrunk { "shrunk" } else { "as made; OSIS_ORDER_SHRINK=1 shrinks it" };
                 let msg = format!("seed {seed}, {e:?} (replay: {}; {what}, for check({seed}, &h, {cfg:?})): h = vec!{steps:?}\n{err}", size.replay(seed));
                 eprintln!("{msg}\n");

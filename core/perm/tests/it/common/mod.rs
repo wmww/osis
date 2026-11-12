@@ -303,44 +303,14 @@ pub fn seeded(seed: u64) -> u64 {
 /// fixed, so a failure's seed is the same on every machine.
 pub const SHARDS: u64 = 16;
 
-/// Shards running at once across every `sharded` run in the process: a thread per core
-/// (`OSIS_PERM_THREADS` overrides), so concurrent tests share the cores instead of each
-/// starting 16 busy threads.
-fn shard_permits() -> &'static (std::sync::Mutex<usize>, std::sync::Condvar) {
-    static P: std::sync::OnceLock<(std::sync::Mutex<usize>, std::sync::Condvar)> = std::sync::OnceLock::new();
-    P.get_or_init(|| {
-        let n = osis_base::testenv::u64_var("OSIS_PERM_THREADS").map_or_else(|| std::thread::available_parallelism().map_or(1, |n| n.get()), |n| n as usize);
-        (std::sync::Mutex::new(n.max(1)), std::sync::Condvar::new())
-    })
-}
-
-/// A held shard permit, returned on drop (a panicking shard included).
-struct Permit;
-
-impl Permit {
-    fn take() -> Permit {
-        let (m, cv) = shard_permits();
-        let mut free = cv.wait_while(m.lock().unwrap_or_else(|e| e.into_inner()), |n| *n == 0).unwrap_or_else(|e| e.into_inner());
-        *free -= 1;
-        Permit
-    }
-}
-
-impl Drop for Permit {
-    fn drop(&mut self) {
-        let (m, cv) = shard_permits();
-        *m.lock().unwrap_or_else(|e| e.into_inner()) += 1;
-        cv.notify_one();
-    }
-}
-
 /// The seed of shard `i` of a run seeded `seed` (before `seeded`).
 pub fn shard_seed(seed: u64, i: u64) -> u64 {
     seed ^ (i << 40)
 }
 
 /// Runs `run(samples, seed)` as `SHARDS` shards of `samples / SHARDS` (at least one) on
-/// scoped threads, each running once it holds a permit (`shard_permits`), shard i seeded
+/// scoped threads, each running once it holds a permit (`osis_base::testenv::Permit`: concurrent
+/// tests share the cores), shard i seeded
 /// `shard_seed(seed, i)`; returns their results in shard order. A panicking shard panics the
 /// run (its message is printed by the shard's thread).
 pub fn sharded<T: Send>(samples: u64, seed: u64, run: impl Fn(u64, u64) -> T + Sync) -> Vec<T> {
@@ -350,7 +320,7 @@ pub fn sharded<T: Send>(samples: u64, seed: u64, run: impl Fn(u64, u64) -> T + S
         let hs: Vec<_> = (0..SHARDS)
             .map(|i| {
                 s.spawn(move || {
-                    let _p = Permit::take();
+                    let _p = osis_base::testenv::Permit::take();
                     run(per, shard_seed(seed, i))
                 })
             })
