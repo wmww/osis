@@ -508,6 +508,7 @@ impl Engine {
     }
 
     /// `grant`, signed as a held key actor (a link key).
+    #[cfg(test)]
     pub fn grant_as(&mut self, signer: &Tid, target: &Tid, holder: &Tid, edge: &Edge) -> Result<Done> {
         self.grant_signed(Some(*signer), *target, *holder, edge, false)
     }
@@ -595,20 +596,10 @@ impl Engine {
     /// self-removal. The rotation of the roles the holder left goes in the same commit (while Seal
     /// waits, none: it stays due).
     pub fn demote(&mut self, target: &Tid, d: &Demotion) -> Result<Done> {
-        self.demote_signed(None, target, d)
+        self.remove_signed(None, target, d, &[])
     }
 
-    /// `demote`, signed as a held key actor (a sharer
-    /// finalizing a link is the node itself).
-    pub fn demote_as(&mut self, signer: &Tid, target: &Tid, d: &Demotion) -> Result<Done> {
-        self.demote_signed(Some(*signer), target, d)
-    }
-
-    fn demote_signed(&mut self, signer: Option<Tid>, target: &Tid, d: &Demotion) -> Result<Done> {
-        self.remove_signed(signer, target, d, &[])
-    }
-
-    /// `demote_signed` that also removes `others` in the same commit under one rotation
+    /// `demote` that also removes `others` in the same commit under one rotation
     /// (spec/commits.md §2); `d.new` must then be `None`.
     pub(crate) fn remove_signed(&mut self, signer: Option<Tid>, target: &Tid, d: &Demotion, others: &[Tid]) -> Result<Done> {
         let who = signer.unwrap_or(self.core.writer()?);

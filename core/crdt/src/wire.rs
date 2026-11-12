@@ -61,6 +61,7 @@ impl Frontiers {
     }
     /// Entries with a counter: tests comparing a snapshot with its decoding, which lists every
     /// source of the fragment.
+    #[cfg(test)]
     pub fn without_zeros(mut self) -> Frontiers {
         self.sessions.retain(|_, c| *c > 0);
         self

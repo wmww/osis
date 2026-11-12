@@ -236,6 +236,7 @@ impl Fragment {
     /// Whether some write's origin dot (as `writes` lists them) lies in a range `owned(src, lo,
     /// hi)` accepts (any counter in `lo..hi` owned); stops at the first, and never expands range
     /// records.
+    #[cfg(test)]
     pub fn holds_owned(&self, owned: &dyn Fn(&Source, u64, u64) -> bool) -> bool {
         walk(&mut Any(owned, false), self)
     }

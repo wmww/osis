@@ -1,0 +1,83 @@
+# pub items tools/dead_pub.py finds used only by their own crate's tests, or not at all, kept on purpose.
+# `<crate>::<name>  <reason>`; `deferred:` = left for the branch working in that area (remove or keep then).
+# Kinds of reason: public API (the `osis` crate's surface for apps), test hook (an integration test in
+# tests/ needs it, where #[cfg(test)] cannot reach), table (one of a uniform set).
+
+osis::byte_len  public API
+osis::disconnect_node  public API
+osis::on_dispute  public API
+osis::retaining  public API
+osis::kept_writes  test hook (internals)
+osis::port_commit_address  test hook (internals)
+osis::stream_work  test hook (internals)
+
+osis-base::TAG_STRUCT_RESERVED  table: the spec's reserved CBOR tags, named for the codec tests
+osis-crdt::cut_dots  the spec's Paste op (§5.7) takes its dots; the API's cut/paste is deferred (issues/api-deferred.md)
+osis-schema::GROUPS  table: one handle per core aspect
+osis-schema::TID  table: one handle per core aspect
+
+osis-perm::applied_on_built  test hook: counts index builds
+osis-perm::certificate_set  test hook: certificate records as a held set
+osis-perm::force_shadow_guard  test hook: walks both shadow paths
+osis-perm::kept_end  test hook: the retain value a removal writes
+osis-perm::may_purge  test hook: §6 purge rights at a point (the engine asks `purge_stands`)
+osis-perm::set_general_only  test hook: the general path against the fast one
+osis-perm::trusted_active  test hook: trusted ops in force
+osis-proto::drop_claim_set  test hook: a claim set gone as after ROLE_KEEP
+osis-proto::remembered  test hook: relay memory size
+osis-store::record_lag  test hook: reads a lag without spending it (`record_take_lag`)
+osis-store::records_total  test hook: bytes RECORD_BUDGET bounds
+osis-transport::ADDRESS  table: the NAT kinds
+osis-transport::CONN_MEMORY  test hook: the resource bound the quic tests check
+osis-transport::is_relayed  test hook
+osis-transport::relayed_keys  test hook
+osis-transport::set_faults  test hook: memory network faults
+osis-transport::set_max_steps  test hook: scheduler step cap
+osis-transport::close_gracefully  deferred: the dialer's graceful close, called only by the transport tests; node sync (3h2) decides whether sessions use it
+
+osis-base::into_vec  deferred: eph-paging (core/base/src/cbor.rs); no uses
+osis-engine::seal_plaintext  deferred: eph-paging (labeling/blobs.rs); no uses
+osis-engine::memory_pending  deferred: eph-paging (apply/memory.rs); no uses
+osis-engine::body_min_ts  deferred: durable-compaction/chunk-blind (retention/bounds.rs)
+osis-host::claim_set_bytes  deferred: eph-paging (host/src/store.rs); unit tests only
+osis-host::unlimited  deferred: eph-paging (host/src/store.rs); test hook
+osis-engine::rotate_eagerly  deferred: Fathom (rotation); no uses
+osis-engine::ever_holders  deferred: Fathom (held_trees)
+osis-keys::MemoryGraph  deferred: Fathom (keys)
+osis-keys::lost_access  deferred: Fathom (keys)
+osis-keys::may_encrypt_under  deferred: Fathom (keys)
+
+# core/node/src/sync/ (3h2): mostly test hooks
+osis-node::compact_ephemeral_now  deferred: 3h2
+osis-node::conn_groups  deferred: 3h2
+osis-node::connection_record  deferred: 3h2
+osis-node::deliver_inbox  deferred: 3h2
+osis-node::entry_meta  deferred: 3h2
+osis-node::ephemeral_dump  deferred: 3h2
+osis-node::ephemeral_entries  deferred: 3h2
+osis-node::ephemeral_entry_events  deferred: 3h2; no uses
+osis-node::ephemeral_held_from_others  deferred: 3h2
+osis-node::fetch_tree  deferred: 3h2
+osis-node::hub_conn  deferred: 3h2
+osis-node::inbox_deliveries  deferred: 3h2
+osis-node::judgments  deferred: 3h2
+osis-node::memory_kept  deferred: 3h2
+osis-node::pass_source_held  deferred: 3h2
+osis-node::proven_connections  deferred: 3h2
+osis-node::record_lookups  deferred: 3h2
+osis-node::served_conn  deferred: 3h2
+osis-node::set_peers  deferred: 3h2; no uses
+osis-node::shared_admit  deferred: 3h2
+osis-node::shared_drop  deferred: 3h2
+osis-node::shared_listed  deferred: 3h2
+osis-node::shared_lost_cursor  deferred: 3h2
+osis-node::shared_work  deferred: 3h2
+osis-node::stranded_at  deferred: 3h2
+osis-node::stream_caught_up  deferred: 3h2
+osis-node::stream_cursor  deferred: 3h2
+osis-node::stream_pulls  deferred: 3h2; no uses
+osis-node::stream_waiting  deferred: 3h2
+osis-node::sync_row_sizes  deferred: 3h2
+osis-node::sync_rows  deferred: 3h2
+osis-node::unplaced_memory_commits  deferred: 3h2
+osis-node::work_waiting  deferred: 3h2

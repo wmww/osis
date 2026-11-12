@@ -217,13 +217,6 @@ impl DeleteItem {
         self.by.iter().map(|(l, _)| *l).collect()
     }
 
-    /// The same delete signed again by label key `key` (a later head's, the delete-key
-    /// signatures kept: they do not depend on the head).
-    pub fn resign(&self, key: &SigningSecret, label: &LabelId) -> Result<DeleteItem, Error> {
-        let d = delete_digest(label, &self.blob, &self.levels())?;
-        Ok(DeleteItem { sig: key.sign(Domain::Delete, &d), ..self.clone() })
-    }
-
     /// Host check against its head and the entry's blob prefix (none: unknown framing, no
     /// commitments): without levels the delete key; with them, each delete-key signature under
     /// a group's commitment at its level, every group covered by one (`every`: a Delete) or at

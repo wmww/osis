@@ -442,6 +442,7 @@ impl Fragment {
     /// position or flag write. Unlike `holds_dots`, a record keyed by `s`'s dot whose creation
     /// is gone (a removed entry kept for its reset) does not count, nor another write sharing
     /// the dot.
+    #[cfg(test)]
     pub fn holds_stamp(&self, s: &Stamp) -> bool {
         walk(&mut HoldsStamp(s), self)
     }
@@ -459,6 +460,7 @@ impl Fragment {
 
     /// Whether a write of the delta carrying dot `d` is here: a write stamped with its dot or a
     /// record's creation; unlike `holds_dots`, a tombstone keyed by `d` (the remover's) is not.
+    #[cfg(test)]
     pub fn holds_write(&self, d: &Dot) -> bool {
         walk(&mut HoldsWrite(d), self)
     }
@@ -489,8 +491,10 @@ impl Visit for OriginDots<'_> {
 }
 
 /// `Fragment::holds_write`.
+#[cfg(test)]
 struct HoldsWrite<'a>(&'a Dot);
 
+#[cfg(test)]
 impl Visit for HoldsWrite<'_> {
     fn stamp(&mut self, s: &Stamp) -> bool {
         s.dot.origin() == self.0
@@ -521,8 +525,10 @@ impl Visit for KeyedResets {
 }
 
 /// `Fragment::holds_stamp`.
+#[cfg(test)]
 struct HoldsStamp<'a>(&'a Stamp);
 
+#[cfg(test)]
 impl Visit for HoldsStamp<'_> {
     fn stamp(&mut self, x: &Stamp) -> bool {
         x == self.0

@@ -434,14 +434,6 @@ impl Engine {
         self.core.rebuilds
     }
 
-    /// Commits with a dropped part, commits with an invalid part, and snapshots kept for their
-    /// dropped parts standing in (`Dropped::stands_in`). Tests: what a random history reached.
-    #[doc(hidden)]
-    pub fn drop_counts(&self) -> [usize; 3] {
-        let ms = || self.core.ix.commits.values();
-        [ms().filter(|m| !m.dropped.is_empty()).count(), ms().filter(|m| m.valid.contains(&false)).count(), self.core.ix.dropped_snapshots.values().map(|v| v.len()).sum()]
-    }
-
     /// How many held `retention^.0` parts are invalid.
     #[doc(hidden)]
     pub fn fallen_settings(&self) -> usize {
@@ -512,29 +504,6 @@ impl Engine {
     #[doc(hidden)]
     pub fn perm_digest(&self, from_scratch: bool) -> String {
         self.core.perm_digest(from_scratch)
-    }
-
-    /// The drop set D of every held thing's timeline (spec/permissions.md §5.1): each dropped
-    /// write with the point of the demotion whose audit dropped it and the edge it writes
-    /// (target, holder). Tests: judgment vectors.
-    #[doc(hidden)]
-    pub fn drop_set(&self) -> Vec<DropEntry> {
-        let mut out = BTreeMap::new();
-        for t in osis_perm::HeldSet::things(&self.core.ix.held) {
-            let Some(tl) = self.core.timelines.get(&t) else { continue };
-            for (w, p) in tl.dropped() {
-                if let Some(o) = tl.role_commit(&w.0).and_then(|rc| rc.ops.get(w.1 as usize)) {
-                    out.insert(*w, (*p, (o.target, o.holder)));
-                }
-            }
-        }
-        out.into_iter().map(|(w, (p, e))| (w, p, e)).collect()
-    }
-
-    /// Whether an edge write of commit `c` applies in `t`'s timeline (tests).
-    #[doc(hidden)]
-    pub fn edge_applied(&self, t: &Tid, c: &CommitId) -> bool {
-        self.core.timelines.get(t).is_some_and(|tl| tl.applied().keys().any(|w| w.0 == *c))
     }
 
     /// Whether an edge write of commit `c` on `t` applies in the settled walk (tests).
@@ -608,13 +577,6 @@ impl Engine {
             let t = tx.txn.index(EDGES)?;
             Ok(tx.txn.table_range(t, &[], None, 1 << 20)?)
         })
-    }
-
-    /// Headers decoded so far of commits without a list by link (tests: an open from the index
-    /// decodes none; those with one are resolved from blobs at open).
-    #[doc(hidden)]
-    pub fn headers_decoded(&self) -> usize {
-        self.core.ix.commits.values().filter(|m| !m.view.linked && m.header.is_decoded()).count()
     }
 
     /// The first held commit whose flags differ from what judging it now gives (tests: after an
@@ -844,11 +806,6 @@ pub struct CommitDigest {
     /// Received time, origin and view, as text.
     pub rest: String,
 }
-
-#[doc(hidden)]
-/// A write of the drop set D, the point of the demotion that dropped it, and for an edge op
-/// its edge (target, holder) (`Engine::drop_set`).
-pub type DropEntry = (osis_perm::WriteId, osis_perm::Point, (Tid, Tid));
 
 /// Where two `IndexDigest`s differ: one entry per commit, thing, snapshot or named index.
 #[doc(hidden)]

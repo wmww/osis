@@ -7,7 +7,8 @@ osis-host cannot reach decryption (`host_blind`), and no test can bind the real 
 announce on the real LAN (`real_lan_tests`), and world copies stay test-only (`test_copies`), and only the engine's `apply::checked`
 vouches for checked delta bytes (`checked_bytes`), and every tools/known_failures.txt line names
 an existing issue file, an existing test or sim scenario and a valid pattern (`known_failures`),
-and no code names a thing's destruction by the old word "ended" (`ended_names`).
+and no code names a thing's destruction by the old word "ended" (`ended_names`), and no core `pub`
+item is used only by its own crate's tests or not at all unless tools/dead_pub_allow.txt lists it (tools/dead_pub.py).
 Usage: python3 tools/policy.py   (every workspace member, the GUI's included; vendored crates under
 libs/kit/patches/ are not ours and are skipped; exit 1 on any violation)"""
 import glob, os, re, sys, tomllib
@@ -376,7 +377,13 @@ def ended_names():
                     if m:
                         yield f"{rel}:{n}: `{m.group(0)}`: a thing is destroyed, not ended (issues/deprecated-terms.md)"
 
+def dead_pub():
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    import dead_pub
+    yield from dead_pub.check()
+
 errs.extend(ended_names())
+errs.extend(dead_pub())
 errs.extend(known_failures())
 errs.extend(test_copies())
 errs.extend(checked_bytes())

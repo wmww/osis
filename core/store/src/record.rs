@@ -50,8 +50,6 @@ pub struct Record {
     pub actors: Vec<Tid>,
     /// Node log position below which nothing is pending for this peer.
     pub acked_pos: u64,
-    /// Node log position up to which S was re-judged.
-    pub judged_pos: u64,
     /// Opaque position in the peer's node log.
     pub cursor: Option<Vec<u8>>,
     /// This side's filter as sent to the peer (issues/net-shared-set.md, Messages).
@@ -150,7 +148,7 @@ impl Record {
         for a in &self.actors {
             w.raw(a.as_bytes());
         }
-        w.u64(self.acked_pos).u64(self.judged_pos).u64(self.used).u64(self.member_bytes);
+        w.u64(self.acked_pos).u64(self.used).u64(self.member_bytes);
         opt_bytes(&mut w, &self.cursor);
         self.own.encode(&mut w);
         self.peer.encode(&mut w);
@@ -165,11 +163,11 @@ impl Record {
         for _ in 0..n {
             actors.push(Tid::from_bytes(r.array()?));
         }
-        let (acked_pos, judged_pos, used, member_bytes) = (r.u64()?, r.u64()?, r.u64()?, r.u64()?);
+        let (acked_pos, used, member_bytes) = (r.u64()?, r.u64()?, r.u64()?);
         let cursor = read_opt_bytes(&mut r)?;
         let (own, peer) = (Filter::decode(&mut r)?, Filter::decode(&mut r)?);
         r.end()?;
-        Ok(Record { id, r: key, actors, acked_pos, judged_pos, cursor, own, peer, used, member_bytes })
+        Ok(Record { id, r: key, actors, acked_pos, cursor, own, peer, used, member_bytes })
     }
 
     /// The bytes this record's rows take: what `RECORD_BUDGET` counts.
@@ -280,7 +278,7 @@ impl Transaction<'_> {
         let mut id = [0u8; 16];
         self.rng().fill_bytes(&mut id);
         let used = self.record_next_used()?;
-        let rec = Record { id, r, actors: actors.to_vec(), acked_pos: 0, judged_pos: 0, cursor: None, own: Filter::default(), peer: Filter::default(), used, member_bytes: 0 };
+        let rec = Record { id, r, actors: actors.to_vec(), acked_pos: 0, cursor: None, own: Filter::default(), peer: Filter::default(), used, member_bytes: 0 };
         for a in actors {
             self.cat_put_to(&actor_key(a, &id), Vec::new(), Shred::No, false)?;
         }
@@ -353,17 +351,6 @@ impl Transaction<'_> {
             self.record_store(&rec, before)?;
         }
         Ok(rec.acked_pos)
-    }
-
-    /// `judged_pos` rises to `pos`.
-    pub fn record_rise_judged(&mut self, id: &RecordId, pos: u64) -> Result<(), Error> {
-        let Some(mut rec) = self.record(id)? else { return Err(Error::Corrupt("peer record")) };
-        if pos > rec.judged_pos {
-            let before = rec.cost();
-            rec.judged_pos = pos;
-            self.record_store(&rec, before)?;
-        }
-        Ok(())
     }
 
     /// Opens `l` in S, or replaces its member row. Row and index in this one transaction.

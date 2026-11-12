@@ -501,13 +501,6 @@ impl LocalPeer {
         }
     }
 
-    /// Sends everything `from` holds to `to` sealed (`deliver_sealed`); the IDs that did not open.
-    pub fn sync_sealed(&mut self, from: usize, to: usize) -> Result<Vec<CommitId>> {
-        let ids = self.peers.get_mut(from).map(|p| p.engine.commit_ids()).unwrap_or_default();
-        let pks = self.sealed(from, &ids)?;
-        self.deliver_sealed(to, &pks)
-    }
-
     /// Sends everything `from` holds to `to` (in `ts` order).
     pub fn sync(&mut self, from: usize, to: usize) -> Result<()> {
         self.sync_changed(from, to).map(|_| ())

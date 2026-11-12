@@ -25,11 +25,6 @@ pub struct ThingList {
     pub salt: [u8; 16],
 }
 
-/// The canonical bytes of a list's commit IDs (`[commit_id*]`, ascending and distinct).
-pub fn ids_bytes(ids: &[CommitId]) -> Vec<u8> {
-    osis_base::encode(&Value::List(ids.iter().map(|c| Value::bytes(&c.0)).collect()))
-}
-
 /// Reads `[commit_id*]` bytes: ascending and distinct, else bad input.
 pub fn read_ids(bytes: &[u8]) -> Result<Vec<CommitId>, Error> {
     let v = osis_base::decode(bytes, &LIMITS)?;

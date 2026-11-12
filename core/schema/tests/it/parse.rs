@@ -19,7 +19,7 @@ fn err(body: &str) -> ParseError {
 #[test]
 fn core_schema_parses_spec_data_model_9() {
     let s = core_schema();
-    assert!(core_static().error().is_none(), "{:?}", core_static().error());
+    assert!(CORE.error().is_none(), "{:?}", CORE.error());
     assert!(s.declares_core());
     let aks: Vec<&str> = s.aspects.keys().map(String::as_str).collect();
     for ak in [

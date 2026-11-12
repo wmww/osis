@@ -49,8 +49,3 @@ pub static CORE: StaticSchema = StaticSchema::new("core.osis", CORE_SRC);
 pub fn core_schema() -> &'static Schema {
     CORE.get()
 }
-
-/// The core schema as a `StaticSchema` (for typed keys).
-pub fn core_static() -> &'static StaticSchema {
-    &CORE
-}

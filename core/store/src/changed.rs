@@ -1,6 +1,6 @@
 //! `changed_at` (issues/net-reconnect.md, Changes): per sync ID a position of its own sequence
 //! that moves when the sync ID's fingerprint (its credentials and who reaches it) changes.
-//! Only the per-peer records' `acked_pos` and `judged_pos` (record.rs, the same store) compare
+//! Only the per-peer records' `acked_pos` (record.rs, the same store) compares
 //! with it; it shares no positions with the node log, which may live in another store.
 //!
 //! Rows, catalog rows under `kind::CHANGED`: `n` the sequence's end; `c label` a sync ID's

@@ -85,10 +85,6 @@ impl Type {
         cases.insert(1, Case { name: "some".into(), payload: Some(t), succeeds: BTreeSet::new(), doc: None });
         Type::Enum(EnumType { cases, reserved: BTreeSet::new() })
     }
-    /// Encoding wrapper (counter, max, min, text); `markdown` is one too once expanded.
-    pub fn is_wrapper(&self) -> bool {
-        matches!(self, Type::Counter(_) | Type::Max(_) | Type::Min(_) | Type::Text)
-    }
     /// The type expressions directly inside this one: element, key and value types, named
     /// types' arguments, field types, case payloads.
     pub fn children(&self) -> Vec<&Type> {

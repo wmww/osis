@@ -153,6 +153,7 @@ fn minus(a: &[BlobId], b: &[BlobId]) -> Vec<BlobId> {
 
 /// The responder's answer to one Reconcile message (spec/wire.md §11.3). Mode 2 is never sent
 /// to a responder.
+#[cfg(test)]
 pub fn respond(own: &[BlobId], ranges: &[Range]) -> Result<Vec<Range>, Error> {
     let mine: Vec<&[BlobId]> = ranges.iter().map(|r| slice(own, &r.lower, &r.upper)).collect();
     respond_in(ranges, &mine)
