@@ -381,6 +381,21 @@ pub struct NetSim {
     pub lan_drop_pct: u32,
 }
 
+/// Stream events in short: per event its label's first bytes, then `+id` (an Added; `s` stamped,
+/// `b` with its bytes), `-id` (a Deleted) or `head`.
+fn events(evs: &[(osis_base::LabelId, osis_proto::Event)]) -> String {
+    let short = |x: &[u8]| x.iter().take(3).map(|b| format!("{b:02x}")).collect::<String>();
+    let v: Vec<String> = evs
+        .iter()
+        .map(|(l, e)| match e {
+            osis_proto::Event::Added { blob_id, blob, stamp, .. } => format!("{}+{}{}{}", short(&l.0), short(&blob_id.0), if stamp.is_some() { "s" } else { "" }, if blob.is_some() { "b" } else { "" }),
+            osis_proto::Event::Deleted(b) => format!("{}-{}", short(&l.0), short(&b.0)),
+            osis_proto::Event::Head(_) => format!("{} head", short(&l.0)),
+        })
+        .collect();
+    v.join(" ")
+}
+
 /// The proto messages in a run of bytes, shortened (trace only).
 fn frames(b: &[u8]) -> String {
     let mut d = osis_proto::FrameDecoder::default();
@@ -394,10 +409,14 @@ fn frames(b: &[u8]) -> String {
                 format!("Upload {label:?} {es:?}")
             }
             Ok(osis_proto::Message::Deposit { id, label, blob, .. }) => format!("Deposit {id} {label:?} {:?} {:?} {} B", osis_label::blob_id(&blob), osis_label::Prefix::parse(&blob).map(|p| p.class()), blob.len()),
+            // stream events by blob ID: Added (+, `s` stamped, `b` with its bytes), Deleted (-), a new head
+            Ok(osis_proto::Message::Stream(st)) => format!("Stream {}", events(&st.events)),
+            Ok(osis_proto::Message::PullReply(r)) => format!("PullReply {} more {} {}", r.id, r.more, events(&r.events)),
             Ok(m) => format!("{m:?}"),
             Err(_) => format!("<{} bytes>", f.len()),
         };
-        v.push(s.chars().take(160).collect::<String>());
+        let max = if s.starts_with("Stream ") || s.starts_with("PullReply ") { 4000 } else { 160 };
+        v.push(s.chars().take(max).collect::<String>());
     }
     if v.is_empty() { format!("<{} bytes>", b.len()) } else { v.join(" | ") }
 }
