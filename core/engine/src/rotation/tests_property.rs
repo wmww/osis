@@ -209,14 +209,11 @@ impl Run {
     }
 
     /// Whether keyset `k` of role `r` of holder actor `m` is superseded where the commits `held`
-    /// are: a held valid keyset of `m` lists it (spec/crypto.md §4, Stale), its rotation commit
-    /// and those of the epochs it lists among `held`, valid as peer `o` judges them settled.
+    /// are: the supersedes list of a keyset of `m` written by a held rotation commit, valid as
+    /// peer `o` judges it settled, names it (spec/crypto.md §4, Stale).
     fn superseded(&self, o: usize, held: &BTreeSet<CommitId>, m: Tid, r: Role, k: &Epoch) -> bool {
-        let core = &self.lp.peers[o].engine.core;
-        let Some(ep) = core.epochs(&m) else { return false };
-        let ep = ep.role(r);
-        let held_epoch = |y: &Epoch| core.ix.epoch_intro.get(&(m, r, *y)).is_some_and(|x| held.contains(&x.1)) || ep.epochs().any(|(x, info)| x == y && info.rotations.keys().any(|c| held.contains(c)));
-        ep.epochs().any(|(_, info)| info.rotations.iter().any(|(c, list)| list.contains(k) && held.contains(c) && list.iter().all(held_epoch)))
+        let Some(ep) = self.lp.peers[o].engine.core.epochs(&m) else { return false };
+        ep.role(r).epochs().any(|(_, info)| info.rotations.iter().any(|(c, list)| held.contains(c) && list.contains(k)))
     }
 
     /// Whether a box to holder actor `m` at keyset `k` of role `r`, sealed by a rotator lacking
@@ -228,7 +225,8 @@ impl Run {
     /// judged by order alone (the limit for an epoch whose secret the node lacks): within it
     /// unless the rotator held `d`'s departure from `m` (its last write in the settled timeline)
     /// and `k`'s rotation is ordered before it. Boxes a later grant or re-seal of `m` writes at
-    /// `k`, and keysets held invalid or tainted (Stale too), are not read: wider than Seal there.
+    /// `k`, keysets held invalid or tainted (Stale too) and superseding keysets held only by a
+    /// compaction snapshot are not read: wider than Seal there.
     fn excused(&self, o: usize, held: &BTreeSet<CommitId>, m: Tid, r: Role, k: &Epoch, d: usize) -> bool {
         let core = &self.lp.peers[o].engine.core;
         let Some((_, c)) = core.ix.epoch_intro.get(&(m, r, *k)) else { return true };
