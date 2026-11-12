@@ -1041,6 +1041,21 @@ pub(crate) fn check_rebuilt(tx: &mut Tx<'_>) -> Result<TxChange> {
                 debug_assert_eq!(on, 0, "{c:?} on {tid:?} {ak:?}: held with values, its writes value-less");
             }
         }
+        // every held snapshot is indexed with a bound holding each write its body holds valued
+        // (`retention::snapshot::Carried`): a write missed would expire in place past its copy
+        for c in tx.core.ix.by_aspect.get(&k).map(|s| s.iter().map(|(_, c)| *c).collect::<Vec<_>>()).unwrap_or_default() {
+            let Some(ai) = tx.core.ix.commits.get(&c).filter(|m| !m.header.kind.has_own_writes()).and_then(|m| m.aspect(&tid, &ak)) else { continue };
+            let mut held = Carried::default();
+            let gives = crate::costs::paused(|| super::each_held_piece(tx, &c, ai, &mut |_, f| {
+                held.add(&f);
+                Ok(())
+            }))?;
+            if !matches!(gives, Some(Some(_))) {
+                continue;
+            }
+            let bound = tx.core.ix.snapshots.get(&k).and_then(|v| v.iter().find(|x| x.1 == c)).map(|x| x.4.clone());
+            debug_assert!(bound.is_some_and(|b| b.holds(&held)), "held snapshot {c:?} on {tid:?} {ak:?}: its carried bound misses a valued write it holds");
+        }
         let cached = (tx.core.states.get(&k).cloned(), tx.core.pages.get(&k).cloned());
         let (want, got) = crate::costs::paused(|| -> Result<_> { Ok((rebuilt(tx, &tid, &ak, None)?, tx.state(&tid, &ak)?.cloned())) })?;
         // and the reference index, derived from it

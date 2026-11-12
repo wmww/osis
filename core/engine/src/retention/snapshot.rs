@@ -39,6 +39,11 @@ impl Carried {
             Owned::Dots { src, ctrs } => hull(src).is_some_and(|(a, b)| ctrs.iter().any(|c| (a..=b).contains(c))),
         })
     }
+    /// Whether this bound holds every write `o` bounds.
+    #[cfg(debug_assertions)]
+    pub(crate) fn holds(&self, o: &Carried) -> bool {
+        o.0.iter().all(|(s, (lo, hi))| self.0.get(s).is_some_and(|(a, b)| a <= lo && hi <= b))
+    }
     /// Its sources, each one entry.
     pub(crate) fn len(&self) -> usize {
         self.0.len()
