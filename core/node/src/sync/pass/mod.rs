@@ -130,8 +130,8 @@ pub(crate) struct Head {
 }
 
 impl Head {
-    fn at<'a>(&'a self, snaps: &'a Snaps, settled: bool, roles_behind: bool) -> At<'a> {
-        At { g: self.g, l: self.l, host: self.host, keys: &self.keys, snaps, settled, roles_behind }
+    fn at<'a>(&'a self, snaps: &'a Snaps, settled: bool, behind: bool) -> At<'a> {
+        At { g: self.g, l: self.l, host: self.host, keys: &self.keys, snaps, settled, behind }
     }
 }
 
@@ -145,9 +145,10 @@ struct At<'a> {
     keys: &'a HeadKeys,
     snaps: &'a Snaps,
     settled: bool,
-    /// A role commit or request this node must hold under the label is not at the source yet
-    /// (its relay waits, or the source has not pulled it): deletions there wait (`deletions`).
-    roles_behind: bool,
+    /// A body this node places there that the source takes now (a role commit or request, or
+    /// one stamped for its head) is not at the source yet (its relay waits, or the source has
+    /// not pulled it): deletions there wait (`deletions`), as an upload went before a delete.
+    behind: bool,
 }
 
 pub(super) fn is_snapshot(k: CKind) -> bool {
@@ -579,7 +580,8 @@ impl SyncEngine {
         self.refetch(conn, host, l, w, out)?;
         let p = Head { g, l, host: Some(host), id: head.id(), stamps: head.keys.write, keys, read_ok };
         let lacks = |s: &Self, id: &BlobId| !s.state.is_present(&host, &l, id) && !s.state.is_gone_at(&host, &l, id);
-        let mut roles_behind = behind;
+        let mut behind_here = behind;
+        let full = self.lc(conn, &l).is_some_and(|x| x.full);
         let mut deposits = Vec::new();
         let on_head = p.id == own.id;
         let again = self.encrypt_again(host, own, (sends, behind), bodies, snaps, left)?;
@@ -594,11 +596,14 @@ impl SyncEngine {
             let stamped = e.stamp.is_some_and(|s| osis_label::verify_stamp(&p.stamps, &l, &o.id, &e.wrap, &s).is_ok());
             // what it pulls once it reads it: stamped for its head now or by this pass (a
             // deposit is the outbox's to wait for)
-            lacking += usize::from(stamped || (own.keys.write.is_some() && (on_head || !self.stamp_serves_a_source(l, o.id, &e))));
-            // a role commit the source takes once it pulls it; at a source on an older head
-            // (its step waits or was refused for now) nothing waits for the step, deletes
-            // included (they may be what frees room for it)
-            roles_behind |= o.prio <= 1 && p.keys.is_writer() && on_head;
+            let takes = stamped || (own.keys.write.is_some() && (on_head || !self.stamp_serves_a_source(l, o.id, &e)));
+            lacking += usize::from(takes);
+            // a role commit the source takes once it pulls it, or a body stamped for its head:
+            // deletes wait for it (a delete of what it supersedes, read there first, shows the
+            // source's other readers a value gone that is live for them, and a large value's
+            // chunks are written again, `relink_lost`). Not at a full source (deletes may be
+            // what frees room) nor one on an older head (nothing waits for its step)
+            behind_here |= on_head && !full && ((o.prio <= 1 && p.keys.is_writer()) || takes);
             match &own.keys.write {
                 Some(wk) if on_head && !stamped => {
                     self.stamp_entry(l, o.id, e, wk, o.prio <= 1);
@@ -626,7 +631,7 @@ impl SyncEngine {
         self.deposit_items(conn, &p, deposits, out)?;
         self.clear_deposits(conn, host, &p, out)?;
         let quiet = self.is_replaced(&g, &l) && sends.iter().all(|o| !lacks(self, &o.id));
-        self.deletions(conn, &p.at(snaps, settled, roles_behind), bodies, scope, left, out)?;
+        self.deletions(conn, &p.at(snaps, settled, behind_here), bodies, scope, left, out)?;
         if quiet && settled {
             self.retire_at(host, &g, l)?;
         }

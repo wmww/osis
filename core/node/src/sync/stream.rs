@@ -1570,15 +1570,18 @@ impl SyncEngine {
         let l = f.label;
         let answered: BTreeSet<BlobId> = items.iter().map(|f| f.blob_id).collect();
         let none = items.is_empty();
-        self.stream_fetched(conn, l, items, out)?;
         let rest: Vec<BlobId> = f.ids.into_iter().filter(|b| !answered.contains(b)).collect();
-        if rest.is_empty() {
-            Ok(())
-        } else if none && f.max_reply >= osis_proto::serving::REPLY_BUDGET as u64 {
-            self.stream_unfetched(conn, l, rest, out)
-        } else {
-            self.stream_fetch(conn, l, rest, Some(f.at), out)
+        // the rest is asked again before what came is applied: applying asks for what is still
+        // lacking, at `FIRST_REPLY`, which a body past it never fits (a storm)
+        let unfetched = none && f.max_reply >= osis_proto::serving::REPLY_BUDGET as u64;
+        if !rest.is_empty() && !unfetched {
+            self.stream_fetch(conn, l, rest.clone(), Some(f.at), out)?;
         }
+        self.stream_fetched(conn, l, items, out)?;
+        if !rest.is_empty() && unfetched {
+            return self.stream_unfetched(conn, l, rest, out);
+        }
+        Ok(())
     }
 
     fn stream_fetched(&mut self, conn: ConnId, l: LabelId, items: Vec<osis_proto::msg::Fetched>, out: &mut Vec<Action>) -> Result<()> {

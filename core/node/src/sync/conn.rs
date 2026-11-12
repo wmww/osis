@@ -83,6 +83,7 @@ pub(crate) struct LConn {
     /// Child steps refused in a row (the back-off doubles per refusal; an open or a registered
     /// step resets it).
     pub step_refusals: u32,
+    /// Failed: when it failed; Testing: when it was last walked (each again `resync_ms` on).
     pub last_sync: u64,
     pub path: Vec<Step>,
     /// A hinted open walked to an unverified step: the host's path is checked after the open.
@@ -160,6 +161,9 @@ pub(crate) struct Requests {
     /// Labels walked because they were not members after a filter arrival, with that arrival's
     /// number: once per arrival (`shared_unopened`).
     pub walked: BTreeMap<LabelId, u64>,
+    /// Sync-key credentials whose Hit the peer refused since its last filter arrival: not shown
+    /// to the walk (a filter keeps a moved head's entries until a whole one is sent).
+    pub refused: BTreeSet<(LabelId, [u8; 32])>,
 }
 
 impl Requests {
@@ -169,6 +173,7 @@ impl Requests {
         self.deleting.retain(|(l, _), _| !gone(l));
         self.reopens.retain(|l, _| !gone(l));
         self.walked.retain(|l, _| !gone(l));
+        self.refused.retain(|(l, _)| !gone(l));
     }
 
     /// The commands carrying the `UNTAGGED` requests were given, the last tagged `tag`.

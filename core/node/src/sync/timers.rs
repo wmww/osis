@@ -57,6 +57,22 @@ impl SyncEngine {
         }
         self.stream_retry(out)?;
         self.shared_retry(out)?;
+        // a label still waiting at a host connection `resync_ms` after its walk is tested and
+        // walked again: a refused Hit or an ended registration need not change the peer's filter
+        let rewalk: Vec<ConnId> = self
+            .conns
+            .iter_mut()
+            .filter_map(|(id, c)| {
+                let due: Vec<LabelId> = c.labels.iter().filter(|(_, l)| l.phase == Phase::Testing && l.registering.is_none() && l.last_sync.saturating_add(self.cfg.resync_ms) <= now).map(|(l, _)| *l).collect();
+                for l in &due {
+                    c.req.walked.remove(l);
+                }
+                (!due.is_empty()).then_some(*id)
+            })
+            .collect();
+        for conn in rewalk {
+            self.shared_retest(conn, out)?;
+        }
         // labels no key opened, and registrations refused for now once their back-off passed: try
         // again from scratch
         let again = |l: &LConn| match l.phase {
@@ -112,7 +128,7 @@ impl SyncEngine {
             for l in c.labels.values() {
                 // a label waiting for a reply re-syncs after it; a quiet one needs no time of its
                 // own, what comes due for it waits for the next tick
-                if (l.phase == Phase::Open && l.fill.is_some()) || l.phase == Phase::Failed {
+                if (l.phase == Phase::Open && l.fill.is_some()) || l.phase == Phase::Failed || (l.phase == Phase::Testing && l.registering.is_none()) {
                     at(l.last_sync.saturating_add(resync));
                 }
                 if let Phase::Refused { retry_at } = l.phase {

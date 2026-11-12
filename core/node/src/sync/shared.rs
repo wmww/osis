@@ -763,6 +763,9 @@ impl SyncEngine {
         s.test_due = true;
         let record = s.record;
         self.stats.filters_received += 1;
+        if let Some(c) = self.conns.get_mut(&conn) {
+            c.req.refused.clear();
+        }
         // the peer's filter is the record's: kept so a reconnect sends additions only
         if let Some(rid) = record {
             self.engine.run(|tx| Ok(tx.txn.record_put_peer_filter(&rid, whole, stored, row)?))?;
@@ -887,7 +890,9 @@ impl SyncEngine {
     /// arrival (issues/net-one-peer.md 3h2, Stale head): the credentials of its recorded steps,
     /// newest first, but the one this arrival tested, against the same filter; the first shown is
     /// Hit, none shown registers the recorded path. Every move of a peer's head changes its
-    /// filter, so an arrival follows each. O(labels on `conn`), and O(steps) per label walked.
+    /// filter, so an arrival follows each; one still waiting `resync_ms` after its walk (a Hit
+    /// refused, a registration ended, the filter unchanged) is tested and walked again
+    /// (`timers`). O(labels on `conn`), and O(steps) per label walked.
     fn shared_unopened(&mut self, conn: ConnId, out: &mut Vec<Action>) -> Result<()> {
         let Some(s) = self.records.shared.get(&conn).filter(|s| s.peer.is_some() && !s.test_due && s.pending.offers_unanswered == 0) else { return Ok(()) };
         let arrival = s.arrivals;
@@ -897,14 +902,20 @@ impl SyncEngine {
             return Ok(());
         }
         let tested = self.peer_creds(conn, &unopened);
+        let now = self.now();
         for l in unopened {
             if let Some(c) = self.conns.get_mut(&conn) {
                 c.req.walked.insert(l, arrival);
+                // walked again `resync_ms` on if still waiting (`timers`)
+                if let Some(x) = c.labels.get_mut(&l) {
+                    x.last_sync = now;
+                }
             }
             if self.strands(conn, l, out)? {
                 continue;
             }
-            let candidates = self.walk_candidates(conn, l, tested.get(&l).map(|x| x.0))?;
+            let refused = |s: &Self, k: &[u8; 32]| s.conns.get(&conn).is_some_and(|c| c.req.refused.contains(&(l, *k)));
+            let candidates: Vec<_> = self.walk_candidates(conn, l, tested.get(&l).map(|x| x.0))?.into_iter().filter(|(_, k)| !refused(self, &k.verifying_key().to_bytes())).collect();
             let Some(s) = self.records.shared.get(&conn) else { return Ok(()) };
             let Some(peer) = &s.peer else { return Ok(()) };
             let shown = candidates.into_iter().find(|(_, k)| peer.values.binary_search(&beacon_value(&beacon(&k.verifying_key().to_bytes(), &l.0, &s.r), peer.f)).is_ok());
@@ -1614,6 +1625,13 @@ impl SyncEngine {
                         {
                             let hit = beacon_hit(&c.value, &c.label.0, &c.beacon, (s.by_listener, &s.key, &s.dialer, &s.listener));
                             s.offered.remove(&hit);
+                            // not shown until the next arrival: the walk passes it
+                            if let Some(x) = self.conns.get_mut(&conn) {
+                                x.req.refused.insert((c.label, c.value));
+                                if let Some(lc) = x.labels.get_mut(&c.label).filter(|lc| lc.shown.as_ref().is_some_and(|(_, k)| k.verifying_key().to_bytes() == c.value)) {
+                                    lc.shown = None;
+                                }
+                            }
                         }
                         continue;
                     }
@@ -1644,10 +1662,16 @@ impl SyncEngine {
                             if granted && now.iter().any(|x| x.value == c.value) {
                                 self.shared_open(conn, c.label, c.class, Some(c.beacon), out)?;
                             } else {
-                                // a failed grant's Hit stays answered, as a refused one, so a
-                                // forged grant buys no loop
-                                if !granted && let Some(s) = self.records.shared.get_mut(&conn) {
-                                    s.offered.insert(beacon_hit(&c.value, &c.label.0, &c.beacon, (s.by_listener, &s.key, &s.dialer, &s.listener)));
+                                // offered again once it is this side's credential again (a
+                                // step registered under the same sync key); a failed grant's Hit
+                                // stays answered, as a refused one, so a forged grant buys no loop
+                                if let Some(s) = self.records.shared.get_mut(&conn) {
+                                    let hit = beacon_hit(&c.value, &c.label.0, &c.beacon, (s.by_listener, &s.key, &s.dialer, &s.listener));
+                                    if granted {
+                                        s.offered.remove(&hit);
+                                    } else {
+                                        s.offered.insert(hit);
+                                    }
                                 }
                                 stale.push(c.label);
                             }

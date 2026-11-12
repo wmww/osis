@@ -198,8 +198,11 @@ impl SyncEngine {
             return self.open_label(conn, g, l, out);
         }
         let index = self.group_label(&g, &l).map_or(0, |gl| gl.index);
+        let now = self.now();
         if let Some(c) = self.conns.get_mut(&conn) {
-            c.labels.insert(l, Self::new_lc(g, index, Phase::Testing, Vec::new()));
+            let mut lc = Self::new_lc(g, index, Phase::Testing, Vec::new());
+            lc.last_sync = now;
+            c.labels.insert(l, lc);
             // a start (or a retry once a back-off passed) walks against the latest filter
             c.req.walked.remove(&l);
         }

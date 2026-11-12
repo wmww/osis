@@ -557,13 +557,13 @@ impl SyncEngine {
         }
         // a delete is judged by this node's role view (a carrier's validity, a purge's or a
         // compaction's rights); the label's other holders at the host judge by what the host
-        // holds. While a role commit this node holds there is still on its way, a holder lacking
-        // it may still hold what goes: a body it places again under a fresh encryption past the
-        // tombstone, every pass; a large value's chunks it writes again re-encrypted
-        // (`relink_lost`), reviving a purged value. So every delete waits until the host holds
-        // the role commits this node does (at most the relay delay and a round trip; `relay_at`
-        // schedules the pass)
-        if !at.roles_behind {
+        // holds. While a role commit or a superseding body this node holds there is still on
+        // its way, a holder lacking it may still hold what goes: a body it places again under a
+        // fresh encryption past the tombstone, every pass; a large value's chunks it writes again
+        // re-encrypted (`relink_lost`), reviving a purged or replaced value. So every delete
+        // waits until the source holds what this node places there (`At::behind`; at most the
+        // relay delay and a pull; `relay_at` schedules the pass)
+        if !at.behind {
             if let Some(c) = self.conns.get_mut(&conn) {
                 for id in &sent {
                     c.req.deleting.insert((l, *id), (now, crate::sync::UNTAGGED));

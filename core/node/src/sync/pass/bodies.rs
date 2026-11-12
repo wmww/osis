@@ -9,7 +9,7 @@ impl SyncEngine {
     /// state, any entry), else a fresh placement when this node may upload or deposit it, with
     /// the blobs it links when this node writes. Another node's body not at `host` waits for
     /// its author or a co-writer (`relay_at`). `behind`: this node writes here and a must-hold role
-    /// commit not at the host waits for its relay (`At::roles_behind`).
+    /// commit not at the host waits for its relay (`At::behind`).
     pub(super) fn body_sends(&mut self, p: &Head, bodies: &[Body], snaps: &Snaps, snapping: &Unsettled, left: &mut Left, behind: &mut bool) -> Result<Vec<Out>> {
         let (g, l, keys, read_ok, host) = (&p.g, p.l, &p.keys, p.read_ok, p.host.as_ref());
         let mut sends = Vec::new();
@@ -447,7 +447,7 @@ impl SyncEngine {
     }
 
     /// Body `b` is what deletes are judged by: a role commit or a request (a source holds it
-    /// before them, `At::roles_behind`).
+    /// before them, `At::behind`).
     pub(super) fn judges_deletes(&self, b: &Body) -> bool {
         b.role_commit || self.engine.core.ix.commits.get(&b.commit).is_some_and(|m| m.view.purges)
     }
@@ -478,7 +478,7 @@ impl SyncEngine {
         }
         let desired = desired(&bodies);
         let entries: Vec<(BlobId, Entry)> = self.state.label_entries(l).map(|(b, e)| (b, e.clone())).collect();
-        let at = At { g, l: *l, host: Some(*host), keys: &keys, snaps: &snaps, settled: unsettled.is_empty(), roles_behind: false };
+        let at = At { g, l: *l, host: Some(*host), keys: &keys, snaps: &snaps, settled: unsettled.is_empty(), behind: false };
         for (id, e) in entries {
             if let Fate::Delete(why, _) = self.deletable(&at, &id, &e, &desired, false, &mut note)? {
                 v.must_not.push((id, format!("{why:?}")));
