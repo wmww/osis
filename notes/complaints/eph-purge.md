@@ -5,3 +5,4 @@
 - Review: the branch's own-cover drop in `settle_none` reached memory snapshots too; no test held an author's live memory snapshot against another writer's cover, so nothing caught it.
 - Net tests: an admin set offline before a purge still holds the purged write whole and re-uploads it once back online; to test a fall with no copy left, deliver the demotion's packages straight to the holder's engine instead.
 - Review: forgetting ran one transaction per commit, so an aspect's n leftovers forgotten at one Tick rebuilt it n times; the engine's `rebuilds()` counter counts batched requests too, so it hid the fix (count the `rebuild` cost span instead).
+- Gate at load 33: over its limits (hold wall 272/177 s, gate wall 398/220 s, CPU 3367/3008 s); load, not this branch's tests (default tests 1106/3718 CPU-s).
