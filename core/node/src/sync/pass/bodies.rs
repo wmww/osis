@@ -30,8 +30,8 @@ impl SyncEngine {
             if snapping.contains(&None) {
                 left.waits.held_back.insert(b.commit);
             }
-            let entry = self.entry_for(host, &l, b);
             let Some(needed) = needed else { continue };
+            let entry = self.entry_for(host, &l, b);
             // another blob of the commit holding every needed delta holds it (a rewrite a
             // right holder dropped covered deltas from, a superset), unless it is must-not-hold
             // (`holds_nothing`, spec/sync.md §6)
