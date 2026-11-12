@@ -527,8 +527,14 @@ impl SyncEngine {
             }
             return self.stranded(conn, g, l, out);
         }
-        // registering there: what this pass would act on there waits for the next one
-        if self.reregister(conn, l, out)? {
+        // registering there: what this pass would act on there waits for the next one. A step
+        // goes once the source has read, under its head, the role commits it lacks (a removed
+        // reader reads its removal only there); the rest of the pass runs meanwhile
+        let unreported = self.roles_unreported(conn, l, sends)?;
+        if let Some(lc) = self.lc_mut(conn, &l) {
+            lc.report_at = unreported;
+        }
+        if unreported.is_none() && self.reregister(conn, l, out)? {
             leave_all(sends, left);
             return Ok(());
         }
@@ -576,6 +582,30 @@ impl SyncEngine {
             self.retire_at(host, &g, l)?;
         }
         Ok(())
+    }
+
+    /// The node log position source `conn` must report reading `l` to before a step is
+    /// registered there: the last first-logged position of a role commit it lacks; `None` when it
+    /// read them all (taken, or refused: a full peer's step must not wait for room).
+    fn roles_unreported(&mut self, conn: ConnId, l: LabelId, sends: &[Out]) -> Result<Option<u64>> {
+        let Some(host) = self.conns.get(&conn).map(|c| c.host) else { return Ok(None) };
+        let lacking: Vec<BlobId> = sends.iter().filter(|o| o.prio <= 1 && !self.state.is_present(&host, &l, &o.id) && !self.state.is_gone_at(&host, &l, &o.id)).map(|o| o.id).collect();
+        if lacking.is_empty() {
+            return Ok(None);
+        }
+        let reported = self.stream_reported(conn, &l);
+        // placed this pass: logged now, so their positions are known
+        self.state.flush(&mut self.engine)?;
+        let at = self.engine.run(|tx| {
+            let mut at = None;
+            for b in &lacking {
+                if let Some(p) = super::state::hub(tx)?.node_log(|t| t.log_entry_first(&l, b))? {
+                    at = at.max(Some(p));
+                }
+            }
+            Ok(at)
+        })?;
+        Ok(at.filter(|p| reported.is_none_or(|r| r < *p)))
     }
 
     /// Whether entry `id`'s stamp verifies under the head of a source of `l`.

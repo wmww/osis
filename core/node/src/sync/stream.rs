@@ -469,6 +469,7 @@ impl SyncEngine {
                     s.serving.reported(&cursor);
                 }
                 self.note_waiting(conn)?;
+                self.reports_reached(conn);
                 self.shared_until_due(conn, out)
             }
             Message::Stranded { id, label, holder, keys } => {
@@ -490,6 +491,20 @@ impl SyncEngine {
                 self.shared_message(conn, Message::Error { id, code }, out)
             }
             m => self.shared_message(conn, m, out),
+        }
+    }
+
+    /// `conn`'s requester reported positions: a step waiting there for them passes its label
+    /// again (`LConn::report_at`).
+    fn reports_reached(&mut self, conn: ConnId) {
+        let waiting: Vec<(LabelId, u64)> = self.conns.get(&conn).map(|c| c.labels.iter().filter_map(|(l, x)| x.report_at.map(|a| (*l, a))).collect()).unwrap_or_default();
+        for (l, at) in waiting {
+            if self.stream_reported(conn, &l).is_some_and(|r| r >= at) {
+                if let Some(x) = self.lc_mut(conn, &l) {
+                    x.report_at = None;
+                }
+                self.mark_labels(&[l]);
+            }
         }
     }
 

@@ -212,6 +212,7 @@ impl SyncEngine {
             open_key: None,
             relisted: None,
             entry_box: None,
+            report_at: None,
             writers: Vec::new(),
         };
         if let Some(c) = self.conns.get_mut(&conn) {
