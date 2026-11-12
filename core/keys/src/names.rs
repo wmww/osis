@@ -1,8 +1,10 @@
-//! A rotation's names (spec/crypto.md §4): the departures from the actor its rotator held, read
-//! from its own role timeline and carried in every history box the rotation writes; the keyset
-//! commits to them by their digest, so an entry counts only as its rotation commit's. An epoch
-//! whose secret a node holds is established there only once some history entry of it has its
-//! names met, so a node never uses an epoch while it lacks a departure the epoch's rotator held.
+//! A rotation's names (spec/crypto.md §4): the edge writes on the actor its rotator held that
+//! pin a holder below a role (each applied write lowering a holder, and each write giving a
+//! holder a role that applied nothing there, marked void), read from its own role timeline and
+//! carried in every history box the rotation writes; the keyset commits to them by their digest,
+//! so an entry counts only as its rotation commit's. An epoch whose secret a node holds is
+//! established there only once some history entry of it has its names met, so a node never uses
+//! an epoch while it judges a named write otherwise than the epoch's rotator did.
 
 use osis_base::{CommitId, Role, Tid, Value};
 use std::collections::BTreeSet;
@@ -15,20 +17,24 @@ pub struct Key {
     pub commit: CommitId,
 }
 
-/// One named departure: the thing whose `roles.0` part of the commit is met, and its commit's key;
-/// `raised`: for a raise that applied nothing at the rotator (spec/crypto.md §4, Lowering), the
-/// holder it raised, so it never reads as the same commit applied as a lowering.
+/// One named edge write on the actor: its commit's key and the holder whose edge it writes;
+/// `void`: it applied nothing at the rotator (else it applied, lowering the holder).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Name {
-    pub thing: Tid,
     pub key: Key,
-    pub raised: Option<Tid>,
+    pub holder: Tid,
+    pub void: bool,
 }
 
 impl Name {
-    /// The name of the commit at `key` on `thing`, a lowering applied there.
-    pub fn of(thing: Tid, key: Key) -> Name {
-        Name { thing, key, raised: None }
+    /// The write of the commit at `key` on `holder`'s edge, applied.
+    pub fn applied(key: Key, holder: Tid) -> Name {
+        Name { key, holder, void: false }
+    }
+
+    /// The write of the commit at `key` on `holder`'s edge, applying nothing.
+    pub fn void(key: Key, holder: Tid) -> Name {
+        Name { key, holder, void: true }
     }
 }
 
@@ -49,8 +55,8 @@ impl Own {
     }
 }
 
-/// What one history entry names: the departure commits its rotator held, and the rotation
-/// commit itself when it departs a holder.
+/// What one history entry names: the edge writes its rotator held that pin a holder below a
+/// role, and the rotation commit itself when it departs a holder.
 #[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Names {
     pub list: BTreeSet<Name>,
@@ -61,13 +67,13 @@ pub struct Names {
 pub type NamesDigest = [u8; 32];
 
 impl Names {
-    /// `[[name*], Opt([ts, author, blind])]`, each name `[thing, ts, author, commit]`, a raised
-    /// holder's tid appended, ascending (spec/wire.md §7).
+    /// `[[name*], Opt([ts, author, blind])]`, each name `[ts, author, commit, holder, void]`,
+    /// ascending (spec/wire.md §7).
     pub fn to_value(&self) -> Value {
         let list = self
             .list
             .iter()
-            .map(|n| Value::List([Value::bytes(n.thing.as_bytes()), Value::uint(n.key.ts), Value::bytes(n.key.node.as_bytes()), Value::bytes(&n.key.commit.0)].into_iter().chain(n.raised.map(|h| Value::bytes(h.as_bytes()))).collect()))
+            .map(|n| Value::List(vec![Value::uint(n.key.ts), Value::bytes(n.key.node.as_bytes()), Value::bytes(&n.key.commit.0), Value::bytes(n.holder.as_bytes()), Value::Bool(n.void)]))
             .collect();
         let own = self.departs.iter().map(|o| Value::List(vec![Value::uint(o.ts), Value::bytes(o.author.as_bytes()), Value::bytes(&o.blind)])).collect();
         Value::List(vec![Value::List(list), Value::List(own)])
@@ -90,16 +96,11 @@ impl Names {
         let mut last: Option<Name> = None;
         for it in items {
             let Value::List(x) = it else { return None };
-            let (head, raised) = match x.as_slice() {
-                [a, b, c, d] => ([a, b, c, d], None),
-                [a, b, c, d, Value::Bytes(h)] => ([a, b, c, d], Some(Tid::from_bytes(h.as_slice().try_into().ok()?))),
-                _ => return None,
-            };
-            let [Value::Bytes(thing), Value::Int(ts), Value::Bytes(node), Value::Bytes(commit)] = head else { return None };
+            let [Value::Int(ts), Value::Bytes(node), Value::Bytes(commit), Value::Bytes(holder), Value::Bool(void)] = x.as_slice() else { return None };
             let n = Name {
-                thing: Tid::from_bytes(thing.as_slice().try_into().ok()?),
                 key: Key { ts: u64::try_from(*ts).ok()?, node: Tid::from_bytes(node.as_slice().try_into().ok()?), commit: CommitId(commit.as_slice().try_into().ok()?) },
-                raised,
+                holder: Tid::from_bytes(holder.as_slice().try_into().ok()?),
+                void: *void,
             };
             if last.is_some_and(|l| l >= n) {
                 return None;
@@ -124,8 +125,8 @@ impl Names {
 
 /// What a node holds for judging names (spec/crypto.md §4), for one actor.
 pub trait Held {
-    /// `n`'s commit is applied here with its part on `n.thing`, every entry its edge writes reset
-    /// known.
+    /// `n`'s commit is applied here with its `roles.0` part on the actor, every entry its edge
+    /// writes reset known; for a void name, its write on `n.holder`'s edge applies nothing here.
     fn met(&self, n: &Name) -> bool;
     /// `node` holds role `r` on the actor now, for keys (spec/crypto.md §4, Holds): a departure
     /// a rotation commit itself makes is covered by it while its signer does.

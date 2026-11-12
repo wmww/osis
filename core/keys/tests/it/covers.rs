@@ -7,8 +7,8 @@ use common::*;
 use osis_base::{Role, Tid};
 use osis_crypto::Secret32;
 use osis_keys::{
-    ActorEpochs, AllHeld, Departure, Holder, HolderKeys, Key, Maker, Name, Names, Opener, Recipient, box_holder, fork_merger, ingest, merge_due, reseal_needed, uncovered,
-    roles_up_to, rotate,
+    ActorEpochs, AllHeld, Departure, EdgeLog, EdgeWrite, Holder, HolderKeys, Key, Maker, Name, Names, Opener, Own, Recipient, box_holder, fork_merger, ingest, merge_due, pins,
+    reseal_needed, roles_up_to, rotate, uncovered,
 };
 use osis_schema::core_types::Secrets;
 use std::collections::BTreeSet;
@@ -22,9 +22,15 @@ fn read() -> BTreeSet<Role> {
     [Role::Sync, Role::Read].into_iter().collect()
 }
 
-/// A departure's name: commit `b`'s key, on `thing`.
-fn name(thing: Tid, b: u8) -> Name {
-    Name::of(thing, Key { ts: u64::from(b), node: tid(9), commit: osis_base::CommitId([b; 32]) })
+/// Commit `b`'s key.
+fn key(b: u8) -> Key {
+    Key { ts: u64::from(b), node: tid(9), commit: osis_base::CommitId([b; 32]) }
+}
+
+/// Reader `m` removed by commit `b`: its departure, and the name a rotation knowing it writes.
+fn removal(m: Tid, b: u8) -> (Departure, Name) {
+    let edge = EdgeLog { start: Some(Role::Read), writes: vec![EdgeWrite { key: key(b), role: None, applied: true, takes: true, counts: false }] };
+    (Departure::holder(m, Role::Sync).upto(Role::Read).edge(edge), Name::applied(key(b), m))
 }
 
 fn naming(n: Name) -> Names {
@@ -79,23 +85,23 @@ fn rotation_held_before_the_removal() {
     let (pe, me) = (person(0x20), person(0x30));
     let (view, base) = switched(a, p, &pe, &[actor_rcpt(m, Role::Read, &me)], rg);
     let with_m = [admin_rcpt(p, &pe), actor_rcpt(m, Role::Read, &me)];
-    let removed = name(a, 7);
+    let (dep, removed) = removal(m, 7);
     let eager = rotate(&a, &read(), &view, &base, &with_m, &Names::default(), &mut *rg).unwrap();
-    let removal = rotate(&a, &read(), &view, &base, &with_m[..1], &naming(removed), &mut *rg).unwrap();
+    let remover = rotate(&a, &read(), &view, &base, &with_m[..1], &naming(removed), &mut *rg).unwrap();
     // Before the removal: only the eager rotation held, no departure known.
     let (mut s, mut v) = (base.clone(), view.clone());
     eager.secrets.apply(&mut s);
     v = eager.preview(&v).unwrap();
     let e2 = eager.role(Role::Read).unwrap().epoch;
-    assert!(uncovered(&a, &v, Role::Read, &e2, &[], &AllHeld).is_empty());
+    assert!(uncovered(&v, Role::Read, &e2, &[], &AllHeld).is_empty());
     // The removal commit arrives with its rotation.
-    removal.secrets.apply(&mut s);
-    v = removal.preview(&v).unwrap();
-    let e2r = removal.role(Role::Read).unwrap().epoch;
-    let deps = [Departure::holder(m, Role::Read).at(Some(removed))];
-    assert!(!uncovered(&a, &v, Role::Read, &e2, &deps, &AllHeld).is_empty());
-    assert!(uncovered(&a, &v, Role::Read, &e2r, &deps, &AllHeld).is_empty());
-    assert!(merge_due(&a, &v, Role::Read, &deps, &AllHeld), "the eager fork is current, whichever is newest");
+    remover.secrets.apply(&mut s);
+    v = remover.preview(&v).unwrap();
+    let e2r = remover.role(Role::Read).unwrap().epoch;
+    let deps = [dep];
+    assert!(!uncovered(&v, Role::Read, &e2, &deps, &AllHeld).is_empty());
+    assert!(uncovered(&v, Role::Read, &e2r, &deps, &AllHeld).is_empty());
+    assert!(merge_due(&v, Role::Read, &deps, &AllHeld), "the eager fork is current, whichever is newest");
     // Rotating past both forks excludes M.
     let heal = rotate(&a, &read(), &v, &s, &with_m[..1], &naming(removed), &mut *rg).unwrap();
     let history: BTreeSet<_> = v.read.held_established().map(|x| x.0).collect();
@@ -104,8 +110,8 @@ fn rotation_held_before_the_removal() {
     heal.secrets.apply(&mut s);
     v = heal.preview(&v).unwrap();
     let e3 = heal.role(Role::Read).unwrap().epoch;
-    assert!(uncovered(&a, &v, Role::Read, &e3, &deps, &AllHeld).is_empty());
-    assert!(!merge_due(&a, &v, Role::Read, &deps, &AllHeld));
+    assert!(uncovered(&v, Role::Read, &e3, &deps, &AllHeld).is_empty());
+    assert!(!merge_due(&v, Role::Read, &deps, &AllHeld));
     let mut mv = ActorEpochs::default();
     ingest(&a, &s, &Opener::Actor { holder: m, epochs: &me }, &mut mv, None).unwrap();
     assert!(mv.read.secret(&e3).is_none());
@@ -113,8 +119,8 @@ fn rotation_held_before_the_removal() {
     let (k, seed) = (tid(6), Secret32::from_bytes([0x60; 32]));
     let w = box_holder(&a, &v, &hist(&a, &v, &s), &key_rcpt(k, Role::Write, &seed), &roles_up_to(Role::Write), &mut *rg).unwrap().unwrap();
     w.apply(&mut s);
-    let kdep = [Departure::holder(k, Role::Read).at(Some(name(a, 10)))];
-    assert!(!uncovered(&a, &v, Role::Read, &e3, &kdep, &AllHeld).is_empty());
+    let kdep = [removal(k, 10).0];
+    assert!(!uncovered(&v, Role::Read, &e3, &kdep, &AllHeld).is_empty());
     assert!(reseal_needed(&s, &v, &[Holder { holder: k, role: Role::Write }]).is_empty());
 }
 
@@ -157,14 +163,14 @@ fn missing_box_covers_nothing() {
     let rot = rotate(&a, &read(), &view, &base, &[admin_rcpt(p, &pe)], &Names::default(), &mut *rg).unwrap();
     let v = rot.preview(&view).unwrap();
     let e1 = rot.role(Role::Read).unwrap().epoch;
-    let removed = name(a, 7);
-    let dep = [Departure::holder(m, Role::Read).at(Some(removed))];
-    assert!(!uncovered(&a, &v, Role::Read, &e1, &dep, &AllHeld).is_empty());
-    assert!(merge_due(&a, &v, Role::Read, &dep, &AllHeld));
+    let (d, removed) = removal(m, 7);
+    let dep = [d];
+    assert!(!uncovered(&v, Role::Read, &e1, &dep, &AllHeld).is_empty());
+    assert!(merge_due(&v, Role::Read, &dep, &AllHeld));
     let named = rotate(&a, &read(), &v, &base, &[admin_rcpt(p, &pe)], &naming(removed), &mut *rg).unwrap();
     let v2 = named.preview(&v).unwrap();
     let e2 = named.role(Role::Read).unwrap().epoch;
-    assert!(uncovered(&a, &v2, Role::Read, &e2, &dep, &AllHeld).is_empty());
+    assert!(uncovered(&v2, Role::Read, &e2, &dep, &AllHeld).is_empty());
     struct Unmet;
     impl osis_keys::Held for Unmet {
         fn met(&self, _: &Name) -> bool {
@@ -183,6 +189,78 @@ fn missing_box_covers_nothing() {
             true
         }
     }
-    assert!(!osis_keys::covers(&a, &v2, Role::Read, &e2, &dep[0], &Unmet));
-    assert!(!uncovered(&a, &v2, Role::Read, &e2, &[Departure::holder(m, Role::Read)], &AllHeld).is_empty());
+    assert!(!osis_keys::covers(&v2, Role::Read, &e2, &dep[0], &Unmet));
+    assert!(!uncovered(&v2, Role::Read, &e2, &[Departure::holder(m, Role::Read)], &AllHeld).is_empty());
+}
+
+/// Held writes `ws` (commit, role, applied, takes, counts) on holder `m`'s edge (`start` its
+/// grant before them): its departure from every role above `now`.
+fn edge_dep(m: Tid, start: Option<Role>, ws: &[(u8, Option<Role>, bool, bool, bool)]) -> Departure {
+    let writes = ws.iter().map(|(b, role, applied, takes, counts)| EdgeWrite { key: key(*b), role: *role, applied: *applied, takes: *takes, counts: *counts }).collect();
+    let edge = EdgeLog { start, writes };
+    let from = match edge.now() {
+        None => Role::Sync,
+        Some(Role::Sync) => Role::Read,
+        Some(Role::Read) => Role::Write,
+        _ => Role::Admin,
+    };
+    Departure::holder(m, from).upto(Role::Admin).edge(edge)
+}
+
+/// Marks every key whose `ts` is 9 (the rotation commit's own writes).
+struct Marking;
+
+impl osis_keys::Held for Marking {
+    fn met(&self, _: &Name) -> bool {
+        true
+    }
+    fn holds(&self, _: &Tid, _: Role) -> bool {
+        true
+    }
+    fn departed(&self, _: &Own) -> bool {
+        true
+    }
+    fn marks(&self, o: &Own, k: &Key) -> bool {
+        o.ts == k.ts
+    }
+    fn publishes(&self, _: Role, _: &osis_crypto::Epoch, _: &osis_keys::NamesDigest) -> bool {
+        true
+    }
+}
+
+// spec/crypto.md §4 (Covers: an entry pins M below r over its tail): what the names must hold,
+// write by write. M a reader (start), removed by L (1) and raised by G (2, applying nothing,
+// counting): pinned only by names holding L applied and G void; G alone (its rotator never held
+// L, so boxed M) or L alone (a node judging G valid re-seals M) pins nothing. A write that does
+// not count (its author a reader at its point) is not pinned: the stated limit. With no write
+// giving M the role applied (start none), the void tail alone pins (the start holds M out
+// everywhere). A second removal F (9) applying nothing here pins only where it would apply over
+// the edge before L (a second finalize of the grant L ended), named applied by a rotator that
+// lacked L or by the rotation commit's own mark; voided by its author's demotion here, it pins
+// nothing (a node holding that demotion but not L holds M a reader).
+#[test]
+fn pins_hold_the_tail_spec_crypto_4() {
+    let m = tid(3);
+    let (l, g) = (Name::applied(key(1), m), Name::void(key(2), m));
+    let names = |ns: &[Name]| Names { list: ns.iter().copied().collect(), departs: None };
+    let raised = edge_dep(m, Some(Role::Read), &[(1, None, true, true, false), (2, Some(Role::Write), false, false, true)]);
+    assert!(pins(&names(&[l, g]), Role::Read, &raised, &AllHeld));
+    assert!(!pins(&names(&[g]), Role::Read, &raised, &AllHeld), "the void raise alone");
+    assert!(!pins(&names(&[l]), Role::Read, &raised, &AllHeld), "the removal alone");
+    let junk = edge_dep(m, Some(Role::Read), &[(1, None, true, true, false), (2, Some(Role::Write), false, false, false)]);
+    assert!(pins(&names(&[l]), Role::Read, &junk, &AllHeld), "a raise that does not count");
+    let dropped = edge_dep(m, None, &[(2, Some(Role::Read), false, false, true)]);
+    assert!(pins(&names(&[g]), Role::Read, &dropped, &AllHeld));
+    assert!(!pins(&names(&[]), Role::Read, &dropped, &AllHeld));
+    let f = Name::applied(key(9), m);
+    let twice = edge_dep(m, Some(Role::Read), &[(1, None, true, true, false), (9, None, false, true, false)]);
+    assert!(pins(&names(&[f]), Role::Read, &twice, &AllHeld), "F named by a rotator lacking L");
+    let marked = Names { list: BTreeSet::new(), departs: Some(Own { ts: 9, author: tid(9), blind: [0; 16] }) };
+    assert!(pins(&marked, Role::Read, &twice, &Marking), "F is the rotation commit's own write");
+    let voided = edge_dep(m, Some(Role::Read), &[(1, None, true, true, false), (9, None, false, false, true)]);
+    assert!(!pins(&names(&[f]), Role::Read, &voided, &AllHeld) && !pins(&marked, Role::Read, &voided, &Marking), "F voided by its author's demotion");
+    // L, F, then G raising M back (void, counting): F pins nothing without G void
+    let back = edge_dep(m, Some(Role::Read), &[(1, None, true, true, false), (9, None, false, true, false), (12, Some(Role::Read), false, false, true)]);
+    assert!(!pins(&marked, Role::Read, &back, &Marking));
+    assert!(pins(&Names { list: [Name::void(key(12), m)].into(), ..marked }, Role::Read, &back, &Marking));
 }

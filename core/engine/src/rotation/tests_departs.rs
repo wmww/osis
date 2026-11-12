@@ -3,8 +3,8 @@
 //! holds the role. A writer leaving by self-removal (which carries no rotation,
 //! spec/permissions.md §3) holds the current epochs' secrets and may put history entries there,
 //! backdate commits (it was a writer then) and rotate; none of it may cover its own departure,
-//! or no node rotates and it keeps reading new content. Also the attribution of a departure
-//! (spec/crypto.md §4, Attributes) and the self-removal reading (spec/permissions.md §2).
+//! or no node rotates and it keeps reading new content. Also which write takes a departed holder
+//! down (spec/crypto.md §4, Covers) and the self-removal reading (spec/permissions.md §2).
 
 #![allow(clippy::unwrap_used)]
 use super::tests::{edge, group, newest_read, send_skipping, synced};
@@ -106,11 +106,11 @@ pub(super) fn leave(lp: &mut LocalPeer, i: usize, g: Tid, how: Forge) -> crate::
             m.ts = Some(t1);
             match how {
                 Forge::Listed => {
-                    let name = osis_keys::Name::of(g, osis_keys::Key { ts: ts.to_u64(), node: me, commit: c.unwrap() });
+                    let name = osis_keys::Name::applied(osis_keys::Key { ts: ts.to_u64(), node: me, commit: c.unwrap() }, me);
                     forged_entry(tx, &mut m, g, &Names { list: [name].into(), departs: None })?;
                 }
                 _ => {
-                    // its names list the self-removal: the newest lowering write on its edge
+                    // its names list the self-removal: an applied write lowering its edge
                     let holders = super::recipients(tx, &me, &g, &[])?.ok_or(super::SEAL_WAITS)?;
                     let rot = super::rotation_into(tx, &mut m, g, &[Role::Read, Role::Write].into(), &held, &holders, false)?;
                     if !rot.names.list.iter().any(|n| n.key.commit == c.unwrap()) {
@@ -206,13 +206,13 @@ fn reader_self_removal_listed_entry_spec_crypto_4() {
     leaver_uncovered_as(Role::Read, Forge::Listed);
 }
 
-// spec/crypto.md §4 (attributes: a departure goes to the newest commit at whose point the holder
-// was lowered for keys; an audit drop that raises it is no event). Admin P4 demotes admin P1 to read (K); P1, not knowing,
+// spec/crypto.md §4 (Covers: the tail write taking the holder below the role is one that applies;
+// a dropped write lowering it applies nothing and pins nothing). Admin P4 demotes admin P1 to read (K); P1, not knowing,
 // self-removes (S); the first admin, not knowing K, demotes P4 to read (D), whose audit drops K. Admin
 // Q holds K and D but not S: P1 is admin again there, and Q's rotation for P4 boxes P1, naming D.
 // At the first admin P1's departure is S's, which Q's epochs do not name: the first admin rotates.
 #[test]
-fn departure_attributed_to_its_lowering_not_a_later_drop_spec_crypto_4() {
+fn dropped_lowering_takes_nothing_spec_crypto_4() {
     let (o, p1, p4, q) = (0, 1, 2, 3);
     let none = BTreeSet::new();
     let mut lp = synced(4);
@@ -224,7 +224,6 @@ fn departure_attributed_to_its_lowering_not_a_later_drop_spec_crypto_4() {
     lp.sync_all().unwrap();
     lp.peers[p4].engine.demote(&g, &Demotion { holder: tids[p1], new: Some(edge(Role::Read)), retain: None }).unwrap();
     let p1_held = leave(&mut lp, p1, g, Forge::None).unwrap();
-    // D is the newest event on P1's edge
     lp.peers[o].clock.advance(1_000);
     lp.peers[o].engine.demote(&g, &Demotion { holder: tids[p4], new: Some(edge(Role::Read)), retain: None }).unwrap();
     send_skipping(&mut lp, p4, q, &none);
@@ -238,8 +237,9 @@ fn departure_attributed_to_its_lowering_not_a_later_drop_spec_crypto_4() {
     send_skipping(&mut lp, p1, o, &none);
     assert!(lp.peers[o].engine.core.role_now(&tids[p1], &g).is_none(), "P1 left");
     let deps = lp.peers[o].engine.departures(&g).unwrap();
-    let d = deps.iter().find(|d| d.holder == tids[p1]).unwrap();
-    assert_eq!(d.at.map(|n| n.key.node), Some(tids[p1]), "attributed to P1's self-removal");
+    let d = deps.iter().find(|d| d.holder == tids[p1] && d.edge.is_some()).unwrap();
+    let last = d.edge.as_ref().and_then(|e| e.writes.iter().rev().find(|w| w.applied));
+    assert!(last.is_some_and(|w| w.key.node == tids[p1] && w.role.is_none()), "shown by P1's self-removal: {d:?}");
     lp.peers[o].engine.ensure_rotated(&g).unwrap();
     let now = lp.peers[o].engine.epochs(&g).unwrap();
     let opens = super::tests::openable(&mut lp, o, &[g], tids[p1], p1_held.into_iter().map(|(r, e)| (g, r, e)).collect());
@@ -348,7 +348,7 @@ fn stripped_history_entry_leaves_nothing_spec_crypto_4() {
     let removal = lp.peers[A].engine.demote(&g, &Demotion { holder: tids[W], new: None, retain: None }).unwrap().commits;
     assert!(!removal.is_empty());
     lp.advance(1000);
-    let name = osis_keys::Name::of(g, osis_keys::Key { ts: 1, node: tids[W], commit: osis_base::CommitId([0x5a; 32]) });
+    let name = osis_keys::Name::applied(osis_keys::Key { ts: 1, node: tids[W], commit: osis_base::CommitId([0x5a; 32]) }, tids[W]);
     let odd = Names { list: [name].into(), departs: None };
     let entry = lp.peers[W]
         .engine

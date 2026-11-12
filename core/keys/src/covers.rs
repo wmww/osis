@@ -5,56 +5,93 @@
 
 use crate::aspects::box_key;
 use crate::epoch::{ActorEpochs, ROLES};
-use crate::names::{Held, Name, Names};
+use crate::names::{Held, Key, Name, Names};
 use osis_base::{Role, Tid};
 use osis_crypto::Epoch;
 use osis_schema::core_types::Secrets;
 use std::collections::BTreeSet;
 
 /// A departure from an actor A (spec/crypto.md §4): `holder` left roles `from` up to `upto` of A.
-/// `at`: the name a rotation knowing it writes (its newest lowering, the commit its timeline
-/// attributes it to); `None` when none does (a box holder the timeline never showed), so no
-/// epoch covers it. `later`: the held edge writes on the holder's edge ordered after that
-/// lowering (each holds it below `from`), which cover it alike (spec/crypto.md §4, Attributes).
-/// `since`: its lowerings ordered after the newest applied edge write on its edge that lowered it
-/// (drops and raises applying nothing, `at` among them when it is one), every one of which a
-/// covering rotation names too.
+/// `edge`: its edge into A as this node holds it, when that edge shows the departure; `None` for
+/// a box holder or maker the edge does not show departed, which no epoch covers.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Departure {
     pub holder: Tid,
     pub from: Role,
     pub upto: Role,
-    pub at: Option<Name>,
-    pub later: Vec<Name>,
-    pub since: Vec<Name>,
+    pub edge: Option<EdgeLog>,
+}
+
+/// A holder's edge into an actor as a node holds it (spec/crypto.md §4, Edge writes): its grant
+/// for keys before the first held write (`start`: the record edge, else none) and the held
+/// writes on it, their commits resolved, in key order.
+#[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct EdgeLog {
+    pub start: Option<Role>,
+    pub writes: Vec<EdgeWrite>,
+}
+
+/// One held write on a holder's edge: its commit's key, the role it gives for keys (none for a
+/// removal or a retain value), whether it applies here; `takes`: it applies here, or would over
+/// the edge the newest write before it that applies here and gives more set (the start when
+/// none does: a second finalize of a grant another write removed first); `counts`: it applies
+/// nothing here and its author held write on the actor just before its point.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct EdgeWrite {
+    pub key: Key,
+    pub role: Option<Role>,
+    pub applied: bool,
+    pub takes: bool,
+    pub counts: bool,
+}
+
+impl EdgeLog {
+    /// The holder's grant for keys now: the role the newest applied write gives, else `start`.
+    pub fn now(&self) -> Option<Role> {
+        self.writes.iter().rev().find(|w| w.applied).map_or(self.start, |w| w.role)
+    }
+
+    /// The most the edge gave its holder: `start`, and each write that applies or counts.
+    pub fn most(&self) -> Option<Role> {
+        self.writes.iter().filter(|w| w.applied || w.counts).map(|w| w.role).fold(self.start, Option::max)
+    }
+
+    /// The names a rotation writes of this edge (spec/crypto.md §4, Names): each applied write
+    /// lowering the holder (giving less than the edge gave just before it), and each write that
+    /// applies nothing, counts and gives a role, void.
+    pub fn names(&self, holder: Tid) -> impl Iterator<Item = Name> + '_ {
+        let mut had = self.start;
+        self.writes.iter().filter_map(move |w| {
+            if w.applied {
+                let lowered = w.role < had;
+                had = w.role;
+                lowered.then_some(Name::applied(w.key, holder))
+            } else {
+                (w.counts && w.role.is_some()).then_some(Name::void(w.key, holder))
+            }
+        })
+    }
+
+    /// The tail for role `r` (spec/crypto.md §4, Covers): the writes after the newest applied
+    /// one giving `r` or more (all of them when none does), and whether one does or `start` gives
+    /// `r` (so a tail write must take the holder below `r`).
+    fn tail(&self, r: Role) -> (&[EdgeWrite], bool) {
+        match self.writes.iter().rposition(|w| w.applied && w.role >= Some(r)) {
+            Some(i) => (self.writes.get(i + 1..).unwrap_or_default(), true),
+            None => (&self.writes, self.start >= Some(r)),
+        }
+    }
 }
 
 impl Departure {
-    /// Holder `holder` of A removed or demoted below `from`; up to admin, no name yet.
+    /// Holder `holder` of A removed or demoted below `from`, up to admin; no edge shows it.
     pub fn holder(holder: Tid, from: Role) -> Departure {
-        Departure { holder, from, upto: Role::Admin, at: None, later: Vec::new(), since: Vec::new() }
+        Departure { holder, from, upto: Role::Admin, edge: None }
     }
 
-    /// The same departure attributed to `at`.
-    pub fn at(self, at: Option<Name>) -> Departure {
-        Departure { at, ..self }
-    }
-
-    /// The same departure also attributed to `later`, edge writes on its holder's edge ordered
-    /// after `at`.
-    pub fn later(self, later: Vec<Name>) -> Departure {
-        Departure { later, ..self }
-    }
-
-    /// The same departure requiring every name of `since` named too.
-    pub fn since(self, since: Vec<Name>) -> Departure {
-        Departure { since, ..self }
-    }
-
-    /// The names it is attributed to (`at`, then `later`; none without `at`): a rotation naming
-    /// any of them covers it.
-    pub fn names(&self) -> impl Iterator<Item = &Name> {
-        self.at.iter().chain(self.at.iter().flat_map(|_| self.later.iter()))
+    /// The same departure, shown by `edge`.
+    pub fn edge(self, edge: EdgeLog) -> Departure {
+        Departure { edge: Some(edge), ..self }
     }
 
     /// The same departure concerning roles up to `upto` only.
@@ -84,29 +121,43 @@ impl Departure {
     pub fn roles(&self) -> BTreeSet<Role> {
         ROLES.into_iter().filter(|r| self.concerns(*r)).collect()
     }
+
+    /// The newest write an epoch of `r` covering it names (spec/crypto.md §4, Covers): the latest
+    /// of the earliest tail write that may take the holder below `r` and every tail write giving
+    /// `r` or more that counts; `None` when no edge shows it or none is needed. An epoch whose
+    /// rotator held nothing ordered after it covers nothing.
+    pub fn newest_needed(&self, r: Role) -> Option<Key> {
+        let (tail, held) = self.edge.as_ref()?.tail(r);
+        let below = tail.iter().find(|w| w.role < Some(r) && w.takes).filter(|_| held).map(|w| w.key);
+        tail.iter().filter(|w| w.role >= Some(r) && w.counts).map(|w| w.key).chain(below).max()
+    }
 }
 
-/// Whether names `n` of an epoch of `actor` name `d` (spec/crypto.md §4): one of its names
-/// (`Departure::names`) is among them, or is a lowering on `actor` by the rotation commit itself
-/// (its departs mark, by the commit's `ts`, author and `blind`), that author holding `r` under
-/// `held`, and so is each name of its `since`. A raise the rotation commit carries applied where
-/// it was made: its mark names none.
+/// Whether names `n` of an epoch pin `d`'s holder below `r` (spec/crypto.md §4, Covers): over
+/// the tail of its edge for `r`, every write giving `r` or more that counts is named void, and,
+/// unless the edge held the holder below `r` before the tail, a tail write taking it below `r`
+/// (`EdgeWrite::takes`) is named applied, or is the rotation commit's own (its departs mark, by
+/// the commit's `ts`, author and `blind`), that author holding `r` under `held`.
 ///
-/// Invariant: a node where the names are met holds the holder on the word of no raise the
-/// rotator judged applying nothing. An applied edge write lowering the holder sets its edge
-/// wherever it applies, so raises before it hold nothing there; a drop or a raise applying
-/// nothing sets nothing, so a raise before it still holds the holder at a node judging that
-/// raise valid (one lacking what took its author's right): each is named, and a raise name is
-/// met only where its raise applies nothing (`Held::met`).
-pub fn named(n: &Names, actor: &Tid, r: Role, d: &Departure, held: &dyn Held) -> bool {
-    let one = |at: &Name| n.list.contains(at) || (at.thing == *actor && at.raised.is_none() && n.departs.is_some_and(|o| held.marks(&o, &at.key)) && held.holds(&at.key.node, r));
-    d.names().any(one) && d.since.iter().all(one)
+/// Invariant: a node where the names are met, the rotator included, holds the holder at `r` or
+/// more on nothing this node holds: it holds the write taking the holder below `r`, which
+/// applies there over whatever the tail leaves before it (or is invalid there for something
+/// this node has not received), and judges void every later write this node holds that would
+/// raise it back (a void name is met only where its write applies nothing). A write that does
+/// not count (its author held less than write at its point) is not pinned: a reader's writes
+/// force no rotation (the stated limit).
+pub fn pins(n: &Names, r: Role, d: &Departure, held: &dyn Held) -> bool {
+    let Some(edge) = &d.edge else { return false };
+    let (tail, held_r) = edge.tail(r);
+    let named = |w: &EdgeWrite| n.list.contains(&Name::applied(w.key, d.holder)) || (n.departs.is_some_and(|o| held.marks(&o, &w.key)) && held.holds(&w.key.node, r));
+    let below = !held_r || tail.iter().any(|w| w.role < Some(r) && w.takes && named(w));
+    below && tail.iter().filter(|w| w.role >= Some(r) && w.counts).all(|w| n.list.contains(&Name::void(w.key, d.holder)))
 }
 
 /// The covers rule (spec/crypto.md §4): epoch `e` of role `r` of `actor` covers `d` when `d`
 /// does not concern `r`, or a history entry of `e` bound to a held valid keyset of `e` by an
-/// author holding `r`, its names met (`EpochInfo::covering_names`), names `d`. Boxes decide
-/// nothing: an epoch is relied on only for what its rotator held.
+/// author holding `r`, its names met (`EpochInfo::covering_names`), pins `d`'s holder below `r`
+/// (`pins`). Boxes decide nothing: an epoch is relied on only for what its rotator held.
 ///
 /// Invariant: what covers a departure is unforgeable by the departed party. A history entry
 /// counts only as the keyset body (a rotation commit's, or a compaction snapshot's) that
@@ -116,13 +167,13 @@ pub fn named(n: &Names, actor: &Tid, r: Role, d: &Departure, held: &dyn Held) ->
 /// itself, and each is its own (so it must hold the role, which it does not), or nobody's (an
 /// entry no keyset commits to). A rotator that is no leaver naming a departure it holds while
 /// boxing the departed party could hand it the secret anyway (the stated limit).
-pub fn covers(actor: &Tid, epochs: &ActorEpochs, r: Role, e: &Epoch, d: &Departure, held: &dyn Held) -> bool {
-    !d.concerns(r) || epochs.role(r).get(e).is_some_and(|i| i.covering_names(r, e, held).any(|n| named(n, actor, r, d, held)))
+pub fn covers(epochs: &ActorEpochs, r: Role, e: &Epoch, d: &Departure, held: &dyn Held) -> bool {
+    !d.concerns(r) || epochs.role(r).get(e).is_some_and(|i| i.covering_names(r, e, held).any(|n| pins(n, r, d, held)))
 }
 
 /// The known departures epoch `e` of role `r` does not cover.
-pub fn uncovered<'a>(actor: &Tid, epochs: &ActorEpochs, r: Role, e: &Epoch, departures: &'a [Departure], held: &dyn Held) -> Vec<&'a Departure> {
-    departures.iter().filter(|d| !covers(actor, epochs, r, e, d, held)).collect()
+pub fn uncovered<'a>(epochs: &ActorEpochs, r: Role, e: &Epoch, departures: &'a [Departure], held: &dyn Held) -> Vec<&'a Departure> {
+    departures.iter().filter(|d| !covers(epochs, r, e, d, held)).collect()
 }
 
 /// Merge (spec/crypto.md §4, encrypting under), for any node that may rotate `r`: whether some
@@ -134,8 +185,8 @@ pub fn uncovered<'a>(actor: &Tid, epochs: &ActorEpochs, r: Role, e: &Epoch, depa
 /// current epoch with one rotation, so this ends once each knowing node's rotations are held.
 /// An epoch whose secret it lacks covers nothing here (its history box does not open): that
 /// rotation supersedes it too.
-pub fn merge_due(actor: &Tid, epochs: &ActorEpochs, r: Role, departures: &[Departure], held: &dyn Held) -> bool {
-    epochs.role(r).current().iter().any(|e| !uncovered(actor, epochs, r, e, departures, held).is_empty())
+pub fn merge_due(epochs: &ActorEpochs, r: Role, departures: &[Departure], held: &dyn Held) -> bool {
+    epochs.role(r).current().iter().any(|e| !uncovered(epochs, r, e, departures, held).is_empty())
 }
 
 /// The maker of an epoch as a node sees it (`fork_merger`): whether it is this node, and

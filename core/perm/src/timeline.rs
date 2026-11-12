@@ -740,6 +740,17 @@ impl Timeline {
     pub fn is_applied(&self, w: &WriteId) -> bool {
         self.walked.applied.contains_key(w)
     }
+    /// Whether held edge write `w` would apply at its point were its holder's edge `old` there
+    /// (the rest as the walk had it): its verdict over another state of its own edge, such as a
+    /// second removal of a holder another write removed first (spec/crypto.md §4, Covers). A
+    /// dropped write applies nowhere its audit is held.
+    pub fn applies_over(&self, w: &WriteId, old: Option<Edge>) -> bool {
+        let Some((c, op)) = self.edge_write(w).filter(|_| !self.dropped.contains_key(w)) else { return false };
+        let edges = self.edges_at(Some(c.point()));
+        let view = View::at(&edges, Some(c.ts)).patched(op.holder, op.target, old);
+        let best = view.roles_from(&c.author);
+        walk::judge(&view, old.as_ref(), c, w.1 as usize, &best).is_some()
+    }
     /// Explicit demotions of `node` on `thing` in timeline order (§5.2 input).
     pub fn demotions(&self, node: &Tid, thing: &Tid) -> &[Demotion] {
         self.walked.demotions.get(&(*node, *thing)).map_or(&[], |v| v.as_slice())

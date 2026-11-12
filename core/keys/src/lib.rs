@@ -19,7 +19,7 @@ pub mod possession;
 pub mod produce;
 pub mod wrap;
 
-pub use covers::{Departure, Holder, Maker, covers, fork_merger, merge_due, named, reseal_missing, reseal_needed, uncovered};
+pub use covers::{Departure, EdgeLog, EdgeWrite, Holder, Maker, covers, fork_merger, merge_due, pins, reseal_missing, reseal_needed, uncovered};
 pub use members::{Grant, Keysets, Seal, boxing_keyless, key_access, seal_keyset, stale};
 pub use account::{account_epoch, account_keysets};
 pub use aspects::{KeysWrite, SecretsWrite, keyset, may_compact_secrets, observe_secrets, snapshot_keyed};

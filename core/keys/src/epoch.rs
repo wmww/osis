@@ -725,7 +725,7 @@ mod tests {
     /// Names of the commits `cs`; `own`: the entry's rotation commit departs, by its `ts`.
     fn names(cs: &[u8], own: Option<u8>) -> Names {
         let t = Tid::from_bytes([5; 15]);
-        let list = cs.iter().map(|c| crate::Name::of(t, crate::Key { ts: u64::from(*c), node: t, commit: cid(*c) })).collect();
+        let list = cs.iter().map(|c| crate::Name::applied(crate::Key { ts: u64::from(*c), node: t, commit: cid(*c) }, t)).collect();
         Names { list, departs: own.map(|ts| crate::Own { ts: u64::from(ts), author: t, blind: [0; 16] }) }
     }
 

@@ -437,31 +437,30 @@ impl NamesHeld<'_> {
         !self.core.ix.unresolved.contains(c)
     }
 
-    /// Some edge write of commit `c` on `holder`'s edge into `thing` applies here.
-    fn raises(&self, c: &CommitId, thing: &Tid, holder: &Tid) -> bool {
-        let Some(tl) = self.core.timelines.get(thing) else { return false };
+    /// Some edge write of commit `c` on `holder`'s edge into the actor applies here.
+    fn applies(&self, c: &CommitId, holder: &Tid) -> bool {
+        let Some(tl) = self.core.timelines.get(&self.actor) else { return false };
         tl.role_commit(c).is_some_and(|mc| {
-            mc.ops.iter().enumerate().any(|(i, op)| op.target == *thing && op.holder == *holder && tl.is_applied(&osis_perm::WriteId(*c, i as u32)))
+            mc.ops.iter().enumerate().any(|(i, op)| op.target == self.actor && op.holder == *holder && tl.is_applied(&osis_perm::WriteId(*c, i as u32)))
         })
     }
 }
 
 impl osis_keys::Held for NamesHeld<'_> {
-    /// Applied: the commit held with its `roles.0` part on the name's thing, or, having none
-    /// there, its `keys.0` part (a copy of some of it, a certificate copy or another label's parts,
-    /// may lack the departure), and `resolved`; a raise named with its holder, only while none
-    /// of the commit's writes on that holder's edge applies here either.
+    /// Applied: the commit held with its `roles.0` part on the actor, if it has one (a copy of
+    /// some of it, a certificate copy or another label's parts, may lack the write), and
+    /// `resolved`; a void
+    /// name, only while the commit's write on its holder's edge applies nothing here either.
     ///
-    /// Invariant: a node using the epoch never holds the raised holder on the word of a raise
-    /// its rotator saw apply nothing, so it boxes it nothing there (a re-seal included): the
-    /// rotator's names hold every lowering on the actor it knew, but not what took the raise's
-    /// author's right elsewhere (a demotion on a holder actor it wrote through).
+    /// Invariant: a node using the epoch judges void every write its rotator judged void, so it
+    /// never holds a holder above what the rotator held it at on the word of one of them (a
+    /// re-seal included): the rotator held every other write its names pin, but not what
+    /// voided one (a demotion of its author on a holder actor it wrote through, an audit).
     fn met(&self, n: &Name) -> bool {
         let applied = self.core.ix.commits.get(&n.key.commit).is_some_and(|m| {
-            let part = |ak: &str| m.header.aspects.iter().position(|a| a.tid == n.thing && a.ak.as_str() == ak);
-            part("roles.0").or_else(|| part("keys.0")).is_none_or(|ai| !m.missing.contains(&ai))
+            m.header.aspects.iter().position(|a| a.tid == self.actor && a.ak.as_str() == "roles.0").is_none_or(|ai| !m.missing.contains(&ai))
         });
-        applied && self.resolved(&n.key.commit) && n.raised.is_none_or(|h| !self.raises(&n.key.commit, &n.thing, &h))
+        applied && self.resolved(&n.key.commit) && !(n.void && self.applies(&n.key.commit, &n.holder))
     }
     /// The author of held commit `c` holds `r` on the actor now, for keys (`At::KEYS`: every
     /// `until` disregarded), over its record chain and through holder actors alike.
@@ -905,7 +904,7 @@ mod tests {
         a.read.set_rotation(e2, osis_base::CommitId([9; 32]), [Epoch::new(1, [3; 32]).unwrap()].into());
         let k = |n: u8| osis_keys::Key { ts: u64::from(n), node: Tid::from_bytes([n; 15]), commit: osis_base::CommitId([n; 32]) };
         a.read.set_snapshot(e2, osis_base::CommitId([8; 32]));
-        a.read.set_history(e2, [osis_keys::Names { list: [Name::of(Tid::from_bytes([6; 15]), k(5))].into(), departs: Some(Own { ts: 7, author: Tid::from_bytes([7; 15]), blind: [0; 16] }) }].into(), [Epoch::new(1, [4; 32]).unwrap()]);
+        a.read.set_history(e2, [osis_keys::Names { list: [Name::void(k(5), Tid::from_bytes([6; 15]))].into(), departs: Some(Own { ts: 7, author: Tid::from_bytes([7; 15]), blind: [0; 16] }) }].into(), [Epoch::new(1, [4; 32]).unwrap()]);
         let b = decode_epochs(&encode_epochs(&a)).unwrap();
         assert_eq!(b, a);
         assert!(b.read.is_reading_only(&e2) && b.read.secret(&e2).is_none());
@@ -923,7 +922,7 @@ mod tests {
         let (held, unheld) = (Epoch::new(1, [1; 32]).unwrap(), Epoch::new(2, [2; 32]).unwrap());
         let mut seed = ActorEpochs::default();
         seed.read.set_secret(held, Secret32::from_bytes([1; 32]));
-        let n = osis_keys::Names { list: [Name::of(actor, osis_keys::Key { ts: 1, node: actor, commit: osis_base::CommitId([1; 32]) })].into(), departs: None };
+        let n = osis_keys::Names { list: [Name::applied(osis_keys::Key { ts: 1, node: actor, commit: osis_base::CommitId([1; 32]) }, actor)].into(), departs: None };
         seed.read.set_history(unheld, [n].into(), [held]);
         let core = &mut lp.peers[0].engine.core;
         core.ix.secrets.insert(actor, seed);

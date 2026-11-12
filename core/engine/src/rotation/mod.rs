@@ -142,14 +142,14 @@ pub(crate) fn keyset_departures(tx: &mut Tx<'_>, x: &Tid) -> Result<Vec<Departur
 /// `x` held is known to cover leaves `x` out until one is (a stranded report carries it,
 /// spec/permissions.md §4).
 fn uncovered(core: &Core, x: &Tid, r: Role, k: &osis_crypto::Epoch, deps: &[Departure]) -> bool {
-    let point = |n: &osis_keys::Name| osis_base::Ts::from_u64(n.key.ts).map(|ts| osis_perm::Point { ts, node: n.key.node, commit: n.key.commit });
-    let after = |before: &dyn Fn(&osis_perm::Point) -> bool| deps.iter().any(|d| d.concerns(r) && d.at.as_ref().and_then(point).is_some_and(|p| before(&p)));
+    let point = |k: osis_keys::Key| osis_base::Ts::from_u64(k.ts).map(|ts| osis_perm::Point { ts, node: k.node, commit: k.commit });
+    let after = |before: &dyn Fn(&osis_perm::Point) -> bool| deps.iter().any(|d| d.concerns(r) && d.newest_needed(r).and_then(point).is_some_and(|p| before(&p)));
     if core.is_account(x) {
         let Some(v) = core.account_view(x) else { return false };
         return after(&|p| v.minted_before(k, p));
     }
     match core.epochs(x).filter(|ep| ep.role(r).is_established(k) && ep.role(r).secret(k).is_some()) {
-        Some(epochs) => !osis_keys::uncovered(x, &epochs, r, k, deps, &core.names_held(x)).is_empty(),
+        Some(epochs) => !osis_keys::uncovered(&epochs, r, k, deps, &core.names_held(x)).is_empty(),
         None => core.ix.keysets.get(&(*x, r, *k)).is_some_and(|held| after(&|p| held.held_before(p))),
     }
 }
@@ -186,7 +186,7 @@ fn rotation_due(tx: &mut Tx<'_>, who: &Tid, a: &Tid) -> Result<BTreeSet<Role>> {
     let roles: Vec<Role> = ROLES.into_iter().filter(|r| may.contains(r) && !epochs.role(*r).current().is_empty()).collect();
     for r in roles {
         let held = tx.core.names_held(a);
-        let mut due = blocked.contains(&r) || osis_keys::merge_due(a, &epochs, r, &deps, &held) || osis_keys::fork_merger(&epochs, r, |e| maker(tx.core, who, a, r, e));
+        let mut due = blocked.contains(&r) || osis_keys::merge_due(&epochs, r, &deps, &held) || osis_keys::fork_merger(&epochs, r, |e| maker(tx.core, who, a, r, e));
         // judged from the state, so for current epochs whose secret this node lacks too
         for e in epochs.role(r).current() {
             due = due || members::keyless_at(tx, a, r, &e)? || members::stale_at(tx, a, r, &e)? || orphaned(tx, a, &epochs, r, &e)?;

@@ -26,7 +26,7 @@ fn read() -> BTreeSet<Role> {
 
 /// The name of a1's removal of m1 (`World::remove_m1`, commit `cid(4)`).
 fn r1_name(w: &World) -> osis_keys::Name {
-    osis_keys::Name::of(w.a, osis_keys::Key { ts: 4, node: tid(9), commit: cid(4) })
+    osis_keys::Name::applied(osis_keys::Key { ts: 4, node: tid(9), commit: cid(4) }, w.m1)
 }
 
 /// Holds the commits listed; every rotator holds its role.
@@ -170,10 +170,11 @@ fn r9_reseal_before_rotation_commit() {
     r1.secrets.apply(&mut s3);
     ingest(&w.a, &s3, &Opener::Actor { holder: w.a2, epochs: &w.a2e }, &mut a2v, None).unwrap();
     assert_eq!(a2v.read.provenance(&e1), Some(Provenance::Rotated));
-    let deps = [Departure::holder(w.m1, Role::Read).at(Some(r1_name(&w)))];
+    let removed = osis_keys::EdgeWrite { key: r1_name(&w).key, role: None, applied: true, takes: true, counts: false };
+    let deps = [Departure::holder(w.m1, Role::Sync).upto(Role::Read).edge(osis_keys::EdgeLog { start: Some(Role::Read), writes: vec![removed] })];
     let all = osis_keys::AllHeld;
-    assert!(!uncovered(&w.a, &a2v, Role::Read, &e2, &deps, &all).is_empty());
-    assert!(uncovered(&w.a, &a2v, Role::Read, &e1, &deps, &all).is_empty());
+    assert!(!uncovered(&a2v, Role::Read, &e2, &deps, &all).is_empty());
+    assert!(uncovered(&a2v, Role::Read, &e1, &deps, &all).is_empty());
 }
 
 // spec/crypto.md §4 (names), spec/permissions.md §3; TLC `MC_reorder`: a1 removes m1 (e1, commit

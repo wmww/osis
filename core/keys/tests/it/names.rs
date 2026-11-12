@@ -77,7 +77,7 @@ impl History {
         let c = &self.commits[i];
         let Kind::Rotation { departs, .. } = c.kind else { return Vec::new() };
         let own = departs.then_some(Own { ts: key(i).ts, author: key(i).node, blind: [0; 16] });
-        let names = |ks: &BTreeSet<usize>| Names { list: ks.iter().map(|k| Name::of(THING, key(*k))).collect(), departs: own };
+        let names = |ks: &BTreeSet<usize>| Names { list: ks.iter().map(|k| Name::applied(key(*k), THING)).collect(), departs: own };
         std::iter::once(names(&c.knew)).chain(c.forged.iter().map(|f| Names { departs: None, ..names(f) })).collect()
     }
 
@@ -312,7 +312,7 @@ fn forged_entry_by_a_holder_is_accepted() {
     r.set_rotation(e, cid(1), BTreeSet::new());
     r.set_secret(e, Secret32::from_bytes([1; 32]));
     let h = History { commits: Vec::new(), held: BTreeSet::new(), secrets: BTreeSet::new(), reading: BTreeSet::new(), snapshots: BTreeSet::new() };
-    let genuine = Names { list: [Name::of(THING, key(0))].into(), departs: None };
+    let genuine = Names { list: [Name::applied(key(0), THING)].into(), departs: None };
     r.set_history(e, [genuine.clone()].into(), []);
     r.establish(&Observer(&h));
     assert!(!r.is_established(&e));
@@ -321,17 +321,14 @@ fn forged_entry_by_a_holder_is_accepted() {
     assert!(r.is_established(&e));
 }
 
-// spec/wire.md §7 (names): a raise that applied nothing carries its holder; it decodes back, is
-// another name than the same commit's plain one, and the canonical order puts the plain one first.
+// spec/wire.md §7 (names): an applied and a void name of one write decode back, are other names
+// with other digests, and the canonical order puts the applied one first.
 #[test]
-fn raised_names_round_trip_apart_from_plain_ones_spec_wire_7() {
-    let plain = Name::of(THING, key(0));
-    let raised = Name { raised: Some(Tid::from_bytes([9; 15])), ..plain };
-    let n = Names { list: [plain, raised].into(), departs: None };
+fn void_names_round_trip_apart_from_applied_ones_spec_wire_7() {
+    let applied = Name::applied(key(0), Tid::from_bytes([9; 15]));
+    let void = Name::void(key(0), Tid::from_bytes([9; 15]));
+    let n = Names { list: [void, applied].into(), departs: None };
     assert_eq!(Names::from_value(&n.to_value()), Some(n.clone()));
-    assert_ne!(Names { list: [plain].into(), departs: None }.digest(), Names { list: [raised].into(), departs: None }.digest());
-    let osis_base::Value::List(f) = n.to_value() else { panic!() };
-    let Some(osis_base::Value::List(items)) = f.first() else { panic!() };
-    let lens: Vec<usize> = items.iter().map(|x| if let osis_base::Value::List(x) = x { x.len() } else { 0 }).collect();
-    assert_eq!(lens, [4, 5]);
+    assert_ne!(Names { list: [applied].into(), departs: None }.digest(), Names { list: [void].into(), departs: None }.digest());
+    assert_eq!(n.list.iter().next(), Some(&applied));
 }

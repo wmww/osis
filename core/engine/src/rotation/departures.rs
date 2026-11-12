@@ -1,21 +1,20 @@
 //! Departures from an actor (spec/permissions.md §3, spec/crypto.md §4): the ones this node
-//! knows of, read from the role timeline (the points at which a holder's grant for keys was
-//! lowered, by an edge write or a raise applying nothing here, whose holder holds less now) and from the
-//! `secrets.0` state (box holders at a current epoch that hold less than that role now), and
-//! the makers of current epochs that hold less than that role now by any path, each attributed
-//! to the name a rotation knowing it writes (`events`); the names rotations write (`names`). A
-//! departure from a holder actor of `a` is none of `a`'s (spec/crypto.md §4, Holder actors), but
-//! a maker whose role ran through one holds the epoch it made: its lowering departs `a`.
-//! Departures are recomputed on demand (O(edge history)) and cached per actor (`departures`),
-//! never stored. Keys read no clock: an edge counts by its role with its `until` disregarded
-//! (`key_role`), so an edge past its `until` departs only by its removal (a finalize,
-//! spec/permissions.md §2).
+//! knows of, read from the role timeline (each holder's edge into the actor as this node holds
+//! it, `EdgeLog`: a holder holding less now than its edge gave it) and from the `secrets.0`
+//! state (box holders at a current epoch that hold less than that role now), and the makers of
+//! current epochs that hold less than that role now by any path; the names rotations write
+//! (`names`), read from the same edges. A departure from a holder actor of `a` is none of `a`'s
+//! (spec/crypto.md §4, Holder actors), but a maker whose role ran through one holds the epoch
+//! it made: its lowering departs `a`. Departures are recomputed on demand (O(edge history)) and
+//! cached per actor (`departures`), never stored. Keys read no clock: an edge counts by its role
+//! with its `until` disregarded (`key_role`), so an edge past its `until` departs only by its
+//! removal (a finalize, spec/permissions.md §2).
 
 use crate::engine::{Core, Tx};
 use crate::error::Result;
 use crate::flows::{now_ts, secrets_in};
 use osis_base::{Role, Tid};
-use osis_keys::{Departure, Name};
+use osis_keys::{Departure, EdgeLog, EdgeWrite};
 use osis_perm::{At, EdgeOp, RoleCommit, Timeline, WriteId};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -53,187 +52,100 @@ fn key_of(p: &osis_perm::Point) -> osis_keys::Key {
     osis_keys::Key { ts: p.ts.to_u64(), node: p.node, commit: p.commit }
 }
 
+/// Each holder's edge into `a` as this node holds it (spec/crypto.md §4, Edge writes): the held
+/// writes on it whose commits are resolved (one that is not applies nothing until it is, like
+/// one not held), in key order, each applied or not; applying nothing, whether it would over
+/// the edge the newest applied write before it giving more set (`Timeline::applies_over`: a
+/// second finalize of a removed grant), and whether its author held write on `a` just before
+/// its point (`At::before`, as its authority is judged there: an author removed since still
+/// counts); its start is the edge before the first of them (the record edge). Only commits this
+/// node holds: names are met by holding them.
+fn edge_logs(core: &Core, tl: &Timeline, a: &Tid) -> BTreeMap<Tid, EdgeLog> {
+    let mut by: BTreeMap<Tid, Vec<(osis_perm::Point, WriteId, &RoleCommit, &EdgeOp)>> = BTreeMap::new();
+    for (w, mc, op) in tl.held_on(a) {
+        if op.holder == *a || !core.ix.commits.contains_key(&mc.id) || core.ix.unresolved.contains(&mc.id) {
+            continue;
+        }
+        by.entry(op.holder).or_default().push((mc.point(), w, mc, op));
+    }
+    by.into_iter()
+        .map(|(m, mut ws)| {
+            ws.sort_by_key(|x| x.0);
+            let first = ws.first().map(|x| x.0);
+            let start_edge = first.and_then(|p| tl.edges_at(Some(p)).get(&m, a).copied());
+            // the applied writes so far, each with the edge it set
+            let mut set: Vec<Option<osis_perm::Edge>> = Vec::new();
+            let mut writes = Vec::new();
+            for (p, w, mc, op) in ws {
+                let role = key_role(op.edge.as_ref());
+                let applied = tl.is_applied(&w);
+                let (takes, counts) = if applied {
+                    set.push(op.edge);
+                    (true, false)
+                } else {
+                    let over = set.iter().rev().copied().find(|e| key_role(e.as_ref()) > role).unwrap_or(start_edge);
+                    let takes = role < Some(Role::Admin) && tl.applies_over(&w, over);
+                    (takes, tl.role(&mc.author, a, At::before(p)) >= Some(Role::Write))
+                };
+                writes.push(EdgeWrite { key: key_of(&p), role, applied, takes, counts });
+            }
+            (m, EdgeLog { start: key_role(start_edge.as_ref()), writes })
+        })
+        .collect()
+}
+
 /// The names a rotation of `a` writes (spec/crypto.md §4), from this node's own timeline of `a`:
-/// every commit at whose point a holder's grant on `a` for keys was lowered (`lowerings`), on
-/// every thing it is named on. They are what an epoch covers (`osis_keys::covers`): every
-/// departure from `a` this node knows is attributed to one of them (`events`), so its own epochs
-/// cover what it knows (else a rotator could never cover what it knows: a livelock). `departs`:
-/// the rotation commit itself, when it departs a holder of `a` (it cannot name its own ID).
+/// per holder's edge (`edge_logs`), each applied write lowering it and each write applying
+/// nothing that counts and gives a role (`EdgeLog::names`). They are what an epoch covers
+/// (`osis_keys::pins`), read from the same edges as the departures this node knows, so its own
+/// epochs cover what it knows (else a rotator could never cover what it knows: a livelock).
+/// `departs`: the rotation commit itself, when it departs a holder of `a` (it cannot name its own
+/// ID).
 pub(crate) fn names(core: &Core, a: &Tid, departs: Option<osis_keys::Own>) -> osis_keys::Names {
     let mut list = BTreeSet::new();
     if let Some(tl) = core.timelines.get(a) {
-        for l in lowerings(core, tl, a) {
-            list.extend(l.names);
+        for (m, log) in edge_logs(core, tl, a) {
+            list.extend(log.names(m));
         }
     }
     osis_keys::Names { list, departs }
 }
 
-/// A point of `a`'s timeline at which some holder's grant on `a` for keys was lowered: by an
-/// applied edge write on `a` (a removal, demotion, self-removal or finalize), or by a raise
-/// that applies nothing here, at the point it stops applying: a demotion elsewhere whose audit
-/// dropped an edge write on `a` that had raised a holder, or a held edge write on `a` raising
-/// one that never applied (invalid at its point), by an author holding write on `a` there (a box
-/// written on that write's word is no longer the timeline's; a dropped lowering write raised
-/// nobody and lowers nobody by going).
-struct Lowering {
-    /// The holders lowered there (`Event`).
-    holders: Vec<Event>,
-    /// What a rotation names of it: on `a` for an applied edge write on `a`, on the targets of
-    /// its edge writes for a drop, on `a` with the holder it raised for a raise that never
-    /// applied (a rotator that applied that raise, as a lowering or not, never names that).
-    names: BTreeSet<Name>,
-}
-
-/// A holder lowered at a point: the roles it left (from, up to), the name its departure is
-/// attributed to, and whether an applied edge write on its own edge lowered it there (`set`:
-/// that write sets its edge wherever it applies; a drop or a raise applying nothing sets none).
-struct Event {
-    holder: Tid,
-    from: Role,
-    upto: Role,
-    name: Name,
-    set: bool,
-}
-
-/// At one point: the holders an applied edge write on `a` touches, and the holders raises
-/// applying nothing had raised, each with the roles it left: dropped ones (at the demotion),
-/// and the point's own invalid ones.
-#[derive(Default)]
-struct Touched {
-    written: BTreeSet<Tid>,
-    dropped: Vec<(Tid, Role, Role)>,
-    invalid: Vec<(Tid, Role, Role)>,
-}
-
-/// The lowerings on `a` this node holds (spec/crypto.md §4, Names): at each point where an
-/// applied edge write on `a` changes `a`'s edges, the holders holding less for keys just after
-/// it than just before (`a`'s edges are constant between such points); for each raise applying
-/// nothing here (its value above the holder's grant for keys just before its own point), the
-/// holder it raised, from sync up to that value: at the demotion whose audit dropped it, or, for
-/// a held resolved write that never applied, at its own point when its author held write on
-/// `a` there (`invalid_raises`). Only commits this node holds: names are met by holding them.
-fn lowerings(core: &Core, tl: &Timeline, a: &Tid) -> Vec<Lowering> {
-    let held = |c: &osis_base::CommitId| core.ix.commits.contains_key(c);
-    let raised = |mc: &RoleCommit, op: &EdgeOp| key_role(op.edge.as_ref()).filter(|put| key_role(tl.edges_at(Some(mc.point())).get(&op.holder, a)).is_none_or(|had| had < *put));
-    let mut points: BTreeMap<osis_perm::Point, Touched> = BTreeMap::new();
-    for (mc, op) in edge_writes(tl, a) {
-        points.entry(mc.point()).or_default().written.insert(op.holder);
-    }
-    for (w, p) in tl.dropped() {
-        let WriteId(c, i) = w;
-        let Some(mc) = tl.role_commit(c) else { continue };
-        let Some(op) = mc.ops.get(*i as usize).filter(|op| op.target == *a) else { continue };
-        if let Some(put) = raised(mc, op) {
-            points.entry(*p).or_default().dropped.push((op.holder, Role::Sync, put));
-        }
-    }
-    for (mc, op) in invalid_raises(core, tl, a) {
-        if let Some(put) = raised(mc, op) {
-            points.entry(mc.point()).or_default().invalid.push((op.holder, Role::Sync, put));
-        }
-    }
-    let pts: Vec<osis_perm::Point> = points.keys().copied().collect();
-    let mut out = Vec::new();
-    for (i, p) in pts.iter().enumerate() {
-        let Some(t) = points.get(p).filter(|_| held(&p.commit)) else { continue };
-        let key = key_of(p);
-        let before = tl.edges_at(Some(*p));
-        let after = tl.edges_at(pts.get(i + 1).copied());
-        let lowered: Vec<(Tid, Role, Role)> = t
-            .written
-            .iter()
-            .filter_map(|h| Departure::of_change(*h, key_role(before.get(h, a)), key_role(after.get(h, a))).map(|d| (*h, d.from, d.upto)))
-            .collect();
-        // an applied lowering and a drop at one point are one commit, its departures attributed
-        // to the greatest thing it is named on, so the choice never depends on order
-        let mut things = BTreeSet::new();
-        if !lowered.is_empty() {
-            things.insert(*a);
-        }
-        if !t.dropped.is_empty() {
-            things.extend(drop_things(tl, p, a));
-        }
-        let mut names: BTreeSet<Name> = things.iter().map(|x| Name::of(*x, key)).collect();
-        let mut holders = Vec::new();
-        if let Some(thing) = things.iter().next_back() {
-            let name = Name::of(*thing, key);
-            holders.extend(lowered.iter().map(|(h, from, upto)| Event { holder: *h, from: *from, upto: *upto, name, set: true }));
-            holders.extend(t.dropped.iter().map(|(h, from, upto)| Event { holder: *h, from: *from, upto: *upto, name, set: false }));
-        }
-        for (h, from, upto) in &t.invalid {
-            let name = Name { thing: *a, key, raised: Some(*h) };
-            names.insert(name);
-            holders.push(Event { holder: *h, from: *from, upto: *upto, name, set: false });
-        }
-        if !holders.is_empty() {
-            out.push(Lowering { holders, names });
-        }
-    }
-    out
-}
-
-/// The held edge writes on `a` that never applied here (invalid at their point: neither applied
-/// nor dropped), their commits resolved (one that is not applies nothing until it is, like one
-/// not held), by an author holding write on `a` just before its point (`At::before`, as its
-/// authority is judged there). Such a raise's boxes open for the holder it raised wherever its
-/// author held the epoch, and nothing on the timeline stands behind them; a rotator that applied
-/// it boxed that holder too, whatever befell the author after (a later removal of it keeps it a
-/// lowering). An author holding write there could have forced a rotation by that commit anyway,
-/// by a valid box to a non-holder; a reader's writes force nothing (spec/requirements.md:
-/// malicious readers only waste storage).
-fn invalid_raises<'t>(core: &'t Core, tl: &'t Timeline, a: &'t Tid) -> impl Iterator<Item = (&'t RoleCommit, &'t EdgeOp)> + 't {
-    tl.held_on(a)
-        .filter(|(w, mc, _)| !tl.is_applied(w) && !tl.dropped().contains_key(w) && !core.ix.unresolved.contains(&mc.id))
-        .filter(|(_, mc, _)| tl.role(&mc.author, a, At::before(mc.point())) >= Some(Role::Write))
-        .map(|(_, mc, op)| (mc, op))
-}
-
-/// The things a demotion at `p` that dropped an edge write on `a` is named on: the targets of
-/// its edge writes, else `a`.
-fn drop_things(tl: &Timeline, p: &osis_perm::Point, a: &Tid) -> BTreeSet<Tid> {
-    tl.role_commit(&p.commit).map(|mc| mc.ops.iter().map(|op| op.target).collect()).unwrap_or_else(|| BTreeSet::from([*a]))
-}
-
-/// The departure events on `a` (spec/crypto.md §4, Attributes): each lowering (`lowerings`)
-/// per holder it lowered.
-fn events(core: &Core, tl: &Timeline, a: &Tid) -> Vec<Event> {
-    lowerings(core, tl, a).into_iter().flat_map(|l| l.holders).collect()
-}
-
-/// Departures from `a` itself: holders that hold less now (`Core::key_holders`) than a departure event
-/// of theirs (`events`) or a box of the `secrets.0` state at a current epoch had them hold, and
-/// makers of a current epoch holding less than its role now (`Timeline::role` at `At::KEYS`,
-/// through holder actors alike) (spec/crypto.md §4), each concerning the roles above its current
-/// one up to the highest it left, and named by its newest event (a box holder or maker with none:
-/// by nothing, so no epoch covers it until a rotation supersedes the epoch).
+/// Departures from `a` itself (spec/crypto.md §4): each holder whose edge (`edge_logs`) gave it
+/// more than the edge holds it at now and than it holds now (`Core::key_holders`), shown by that
+/// edge (a destroyed holder actor's edge stands, and its departure is its box's); and, shown by nothing (no
+/// epoch covers them until a rotation supersedes the epoch), each holder with a box of the
+/// `secrets.0` state at a current epoch of a role it holds less than now, and each maker of a
+/// current epoch holding less than its role now (`Timeline::role` at `At::KEYS`, through holder
+/// actors alike). Each concerns the roles above its current one up to the highest it had.
 fn direct_departures(tx: &mut Tx<'_>, a: &Tid) -> Result<BTreeSet<Departure>> {
     let current: BTreeMap<Tid, Role> = tx.core.key_holders(a).into_iter().collect();
-    // per holder: the roles it left that it holds less than now, and its newest event
-    let mut left: BTreeMap<Tid, (Role, Role, Option<Name>)> = BTreeMap::new();
-    let mut note = |m: Tid, cur: Option<Role>, from: Role, upto: Role, at: Option<Name>| {
-        let Some(from) = above_role(cur).map(|x| x.max(from)).filter(|f| *f <= upto) else { return };
-        if m == *a {
-            return;
+    let mut out = BTreeSet::new();
+    if let Some(tl) = tx.core.timelines.get(a) {
+        for (m, log) in edge_logs(tx.core, tl, a) {
+            // what the edge holds it at now, or more by another path (a destroyed actor's stand-in)
+            let from = above_role(current.get(&m).copied().max(log.now()));
+            if let (Some(from), Some(upto)) = (from, log.most())
+                && from <= upto
+            {
+                out.insert(Departure::holder(m, from).upto(upto).edge(log));
+            }
         }
-        let x = left.entry(m).or_insert((from, upto, None));
-        x.0 = x.0.min(from);
-        x.1 = x.1.max(upto);
-        // the newest event by key (spec/permissions.md §5.1)
-        if at.map(|n| (n.key, n.thing, n.raised)) > x.2.map(|n| (n.key, n.thing, n.raised)) {
-            x.2 = at;
+    }
+    // per holder: the roles a box or a made epoch had it hold that it holds less than now
+    let mut left: BTreeMap<Tid, (Role, Role)> = BTreeMap::new();
+    let mut note = |m: Tid, cur: Option<Role>, upto: Role| {
+        if let Some(from) = above_role(cur).filter(|f| *f <= upto && m != *a) {
+            let x = left.entry(m).or_insert((from, upto));
+            *x = (x.0.min(from), x.1.max(upto));
         }
     };
-    let evs = tx.core.timelines.get(a).map(|tl| events(tx.core, tl, a)).unwrap_or_default();
-    for ev in &evs {
-        note(ev.holder, current.get(&ev.holder).copied(), ev.from, ev.upto, Some(ev.name));
-    }
     if let Some(epochs) = tx.core.epochs(a) {
         // from the `secrets.0` state: a box at a current epoch of a role its holder no longer holds
         let s = secrets_in(tx, a)?;
         for k in s.boxes.keys() {
             if osis_keys::aspects::from_schema(&k.epoch).is_ok_and(|e| epochs.role(k.role).is_current(&e)) {
-                note(k.holder, current.get(&k.holder).copied(), Role::Sync, k.role, None);
+                note(k.holder, current.get(&k.holder).copied(), k.role);
             }
         }
         // the maker of a current epoch holds its secret whatever the boxes say: one holding
@@ -243,43 +155,12 @@ fn direct_departures(tx: &mut Tx<'_>, a: &Tid) -> Result<BTreeSet<Departure>> {
         for r in osis_keys::ROLES {
             for e in epochs.role(r).current() {
                 let Some(author) = tx.core.ix.epoch_intro.get(&(*a, r, e)).and_then(|(_, c)| tx.core.ix.commits.get(c)).map(|m| m.view.author) else { continue };
-                note(author, tl.and_then(|tl| tl.role(&author, a, At::KEYS)), Role::Sync, r, None);
+                note(author, tl.and_then(|tl| tl.role(&author, a, At::KEYS)), r);
             }
         }
     }
-    let tl = tx.core.timelines.get(a);
-    Ok(left.into_iter().map(|(m, (from, upto, at))| Departure::holder(m, from).upto(upto).at(at).later(later_writes(tx.core, tl, a, &m, from, at)).since(since(&evs, &m, current.get(&m).copied()))).collect())
-}
-
-/// The names of `m`'s events that concern a role it holds less than now (`cur`) ordered after
-/// the newest applied edge write on its edge that lowered it (spec/crypto.md §4, Covers): drops
-/// and raises applying nothing set nothing, so a raise before one of them still holds `m` at a
-/// node judging that raise valid, and a rotation naming only the newer one covers nothing.
-fn since(evs: &[Event], m: &Tid, cur: Option<Role>) -> Vec<Name> {
-    let mine = || evs.iter().filter(|e| e.holder == *m);
-    let base = mine().filter(|e| e.set).map(|e| e.name.key).max();
-    let concerns = |e: &&Event| above_role(cur).is_some_and(|f| f.max(e.from) <= e.upto);
-    let out: BTreeSet<Name> = mine().filter(|e| !e.set && Some(e.name.key) > base).filter(concerns).map(|e| e.name).collect();
-    out.into_iter().collect()
-}
-
-/// The names of the held edge writes on `m`'s edge into `a`, applied or not, ordered after its
-/// newest lowering `at` that hold it below `from` (spec/crypto.md §4, Attributes): each was made
-/// knowing `m` out of those roles. Concurrent removals of one holder (every writer finalizing an
-/// ended grant) each lower it where made, but in the merged timeline only the first in order
-/// applies; a rotation carrying another (its departs mark) covers the departure alike, else
-/// each such rotation is uncovered wherever the first arrives and every rotator rotates again.
-/// Nothing held raises `m` back to `from` after `at`: an applied raise would leave `m` holding
-/// it or meet a newer lowering, and one applying nothing here is a newer lowering itself
-/// (`lowerings`), so a rotator naming one of them boxed `m` at none of those roles on the word
-/// of any raise this node holds.
-fn later_writes(core: &Core, tl: Option<&Timeline>, a: &Tid, m: &Tid, from: Role, at: Option<Name>) -> Vec<Name> {
-    let (Some(tl), Some(at)) = (tl, at) else { return Vec::new() };
-    let held = |c: &osis_base::CommitId| core.ix.commits.contains_key(c);
-    tl.held_on(a)
-        .filter(|(_, mc, op)| op.holder == *m && key_of(&mc.point()) > at.key && key_role(op.edge.as_ref()) < Some(from) && held(&mc.id))
-        .map(|(_, mc, _)| Name::of(*a, key_of(&mc.point())))
-        .collect()
+    out.extend(left.into_iter().map(|(m, (from, upto))| Departure::holder(m, from).upto(upto)));
+    Ok(out)
 }
 
 /// Every departure `a`'s epochs must cover: its own (`direct_departures`). A memo

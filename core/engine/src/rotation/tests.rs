@@ -945,8 +945,8 @@ fn rounds_to_settle(lp: &mut LocalPeer, g: Tid) -> Vec<usize> {
     }
 }
 
-// spec/crypto.md §4 (Attributes: every removal of one holder after its newest lowering covers its
-// departure; merge, merger): rotators removing one holder at once each rotate, and only the first
+// spec/crypto.md §4 (Covers: a later finalize of one grant takes its holder below the role as
+// the first does, by its rotation commit's mark; merge, merger): rotators removing one holder at once each rotate, and only the first
 // removal in order lowers it. Each removal's rotation covers the departure wherever the others
 // arrive, so the forks take one merge, by the merger, then nothing. Writer D's grant ends and
 // four rotators (two admins, two writers) finalize it before any sync; two admins demote writer
@@ -1142,11 +1142,11 @@ fn audit_dropped_grant_named_spec_crypto_4() {
     withheld_then_arrives(&mut lp, 3, g, e, &all, &dem);
 }
 
-// spec/crypto.md §4 (a node attributes a departure to the name of the newest of its events,
-// by key, whatever thing names it): A removes D from G (rotation e1 names that removal on G);
-// W, an admin of G's first admin O, grants D read on G again, boxing it at e1; A demotes W on O
-// without that grant, so the audit drops it (named on O). D's newest departure is the drop,
-// which e1 does not name: A must rotate before encrypting under e1, which D holds.
+// spec/crypto.md §4 (Covers: every void tail write named, an audit drop included): A removes D
+// from G (rotation e1 names that removal); W, an admin of G's first admin O, grants D read on G
+// again, boxing it at e1; A demotes W on O without that grant, so the audit drops it. The drop
+// is a tail write giving D read that e1 does not name void: A must rotate before encrypting
+// under e1, which D holds.
 #[test]
 fn newest_event_names_departure_spec_crypto_4() {
     for seed in 0..4 {
@@ -1694,10 +1694,10 @@ fn removed_opens(lp: &mut LocalPeer, g: Tid, tids: &[Tid], from: usize, r: Role)
     !blocked_at(lp, 0, g).contains(&r) && newest.is_some_and(|n| openable(lp, from, &[g], tids[2], BTreeSet::new()).contains(&(g, r, n)))
 }
 
-// spec/crypto.md §4 (Lowering: a raise applying nothing here): a2, holding L but not D,
-// re-grants M, boxing it at A's epoch e_L. At A the re-grant is ordered after D and applies
-// nothing (invalid, not audited): it is M's newest lowering, which e_L does not name, so A
-// rotates rather than encrypting under e_L, which M opens.
+// spec/crypto.md §4 (Covers: a void tail write named void): a2, holding L but not D, re-grants
+// M, boxing it at A's epoch e_L. At A the re-grant is ordered after D and applies nothing
+// (invalid, not audited): a tail write e_L does not name void, so A rotates rather than
+// encrypting under e_L, which M opens.
 #[test]
 fn regrant_invalid_here_boxes_removed_reader_spec_crypto_4() {
     let (mut lp, g, tids, dem) = demoted_unaware();
@@ -1707,10 +1707,9 @@ fn regrant_invalid_here_boxes_removed_reader_spec_crypto_4() {
     assert!(!removed_reader_reads(&mut lp, g, &tids, 0), "A encrypts under an epoch M opens");
 }
 
-// spec/crypto.md §4 (Lowering, Attributes: later writes): a2, holding neither L nor D, removes
-// M (W) and re-grants it (G); R, holding both, rotates naming W and boxing M. At A, W and G
-// apply nothing; G is M's newest lowering, after W, so R's epoch (naming W, not G) covers
-// nothing of M's departure and A rotates.
+// spec/crypto.md §4 (Covers): a2, holding neither L nor D, removes M (W) and re-grants it (G);
+// R, holding both, rotates naming W and boxing M. At A, W and G apply nothing: W takes nothing
+// (a2 a writer at its point) and G is a tail write R's epoch does not name void, so A rotates.
 #[test]
 fn later_removal_named_by_reraising_rotator_spec_crypto_4() {
     let (mut lp, g, tids, _) = demoted_unaware();
@@ -1724,10 +1723,9 @@ fn later_removal_named_by_reraising_rotator_spec_crypto_4() {
     assert!(!removed_reader_reads(&mut lp, g, &tids, 0), "A encrypts under R's epoch, which M opens");
 }
 
-// spec/crypto.md §4 (Lowering: a raise applying nothing here): a2, holding L but not D,
-// re-grants M (G); R, holding L and G but not D, rotates naming L and boxing M. At A, G applies
-// nothing and is M's newest lowering: R's epoch names L only, so A rotates rather than
-// encrypting under it.
+// spec/crypto.md §4 (Covers: a void tail write named void): a2, holding L but not D, re-grants
+// M (G); R, holding L and G but not D, rotates naming L and boxing M. At A, G applies nothing:
+// R's epoch names L only, not G void, so A rotates rather than encrypting under it.
 #[test]
 fn regrant_invalid_here_named_by_no_rotator_that_applied_it_spec_crypto_4() {
     let (mut lp, g, tids, dem) = demoted_unaware();
@@ -1744,12 +1742,12 @@ fn regrant_invalid_here_named_by_no_rotator_that_applied_it_spec_crypto_4() {
     assert!(!removed_reader_reads(&mut lp, g, &tids, 3), "A encrypts under R's epoch, which M opens");
 }
 
-// spec/crypto.md §4 (Names: a raise that never applied, named with its holder): peers A (0),
-// a2 (1), M (2, reader), R (3), a3 (4). A removes M (L) and demotes a2 and a3 to write (D, T);
-// a3, holding L but neither, raises M to write (W); a2, holding L but neither, not W, grants M
-// read (G, ordered after W). R holds L, W and G, not D or T: G lowers M from write there, so
-// R's rotation names G and boxes M as a reader. At A, W and G apply nothing and G is M's newest
-// lowering as a raise: R's name of G applied covers nothing of it, and A rotates.
+// spec/crypto.md §4 (Names: void, apart from applied): peers A (0), a2 (1), M (2, reader), R
+// (3), a3 (4). A removes M (L) and demotes a2 and a3 to write (D, T); a3, holding L but neither,
+// raises M to write (W); a2, holding L but neither, not W, grants M read (G, ordered after W).
+// R holds L, W and G, not D or T: G lowers M from write there, so R's rotation names G applied
+// and boxes M as a reader. At A, W and G apply nothing: tail writes R's epoch names not void
+// (G applied is another name), and A rotates.
 #[test]
 fn raise_applied_as_lowering_elsewhere_covers_nothing_spec_crypto_4() {
     let (mut lp, g, tids) = granted(5, &[(1, Role::Admin), (2, Role::Read), (3, Role::Admin), (4, Role::Admin)]);
@@ -1779,10 +1777,10 @@ fn raise_applied_as_lowering_elsewhere_covers_nothing_spec_crypto_4() {
     assert!(!removed_reader_reads(&mut lp, g, &tids, 3), "A encrypts under R's epoch, which M opens");
 }
 
-// spec/crypto.md §4 (Lowering: an author holding write at the raise's point): a2, holding L but
-// not D, re-grants M (G); R, holding G but not D, removes a2 (D2) and rotates, boxing M. At A, G
-// applies nothing and a2 holds nothing now: G is still M's newest lowering (a2 was a writer at
-// its point), which R's epoch does not name, so A rotates rather than encrypting under it.
+// spec/crypto.md §4 (Edge writes: a write counts by its author's write at its point): a2,
+// holding L but not D, re-grants M (G); R, holding G but not D, removes a2 (D2) and rotates,
+// boxing M. At A, G applies nothing and a2 holds nothing now: G still counts (a2 was a writer at
+// its point), and R's epoch does not name it void, so A rotates rather than encrypting under it.
 #[test]
 fn raise_by_author_removed_since_lowers_spec_crypto_4() {
     let (mut lp, g, tids, dem) = demoted_unaware();
@@ -1800,7 +1798,8 @@ fn raise_by_author_removed_since_lowers_spec_crypto_4() {
     assert!(!removed_reader_reads(&mut lp, g, &tids, 3), "A encrypts under R's epoch, which M opens");
 }
 
-// spec/crypto.md §4 (Lowering, Met; a raise invalid here through a holder actor's demotion): P
+// spec/crypto.md §4 (Met: a void name only where its write applies nothing; a raise void here
+// through a holder actor's demotion): P
 // is admin of g through group k (k admin on g). A removes M (L); Q demotes P to write on k (D).
 // P, holding L but not D, re-grants M on g (R); at A, R applies nothing (P writes g through k)
 // and A rotates g, naming R as a raise of M. A's names hold nothing on k: P, still lacking D,
@@ -1842,12 +1841,12 @@ fn raise_invalid_through_holder_actor_resealed_spec_crypto_4() {
     assert!(!removed_reader_reads(&mut lp, g, &tids, 0), "settled: A encrypts under an epoch M opens");
 }
 
-// spec/crypto.md §4 (Covers; a raise name over an older raise): A (0) removes M (2) (L) and
-// demotes a2 (1) to write (D); O2 (5) demotes a3 (4) to write (T), unseen by A. a3, holding L
-// but not T, re-grants M (G3); a2, holding L but not D, re-grants M after it (G2). A, holding
-// G2 but not G3 or T, rotates naming L and G2 as a raise. R (3) holds L, D, G2 and G3, not T:
-// G2 applies nothing there, so A's names are met, but G3 holds M a reader there, and R re-seals
-// M at A's epoch. At A, once T and G3 arrive, G3 is a raise applying nothing too: A must not
+// spec/crypto.md §4 (Covers: every void tail write named void, an older one included): A (0)
+// removes M (2) (L) and demotes a2 (1) to write (D); O2 (5) demotes a3 (4) to write (T), unseen
+// by A. a3, holding L but not T, re-grants M (G3); a2, holding L but not D, re-grants M after it
+// (G2). A, holding G2 but not G3 or T, rotates naming L and G2 void. R (3) holds L, D, G2 and
+// G3, not T: G2 applies nothing there, so A's names are met, but G3 holds M a reader there, and
+// R re-seals M at A's epoch. At A, once T and G3 arrive, G3 is a void tail write too: A must not
 // encrypt under an epoch M opens. Alike with M re-granted sync.
 #[test]
 fn raise_name_over_older_raise_resealed_spec_crypto_4() {
@@ -1895,9 +1894,9 @@ fn raise_name_over_older_raise_resealed(r: Role) {
 // spec/crypto.md §4 (Covers; a drop over an older raise): g's first admin is O (A's group, W
 // an admin of it). A (0) removes M (2) (L); O2 (5) demotes a3 (4) to write on g (T), unseen by
 // A. a3, holding L but not T, re-grants M (G3); W (1) grants M (C); A demotes W on O (X)
-// without C, so X's audit drops C. A, holding C but not G3 or T, rotates g naming L and X. R
-// (3) holds L, C, X and G3, not T: the drop sets nothing, so G3 holds M a reader there and R
-// re-seals M at A's epoch. At A, once T and G3 arrive, G3 is a raise applying nothing: A must
+// without C, so X's audit drops C. A, holding C but not G3 or T, rotates g naming L and C void. R
+// (3) holds L, C, X and G3, not T: C applies nothing there, so G3 holds M a reader there and R
+// re-seals M at A's epoch. At A, once T and G3 arrive, G3 is a void tail write: A must
 // not encrypt under an epoch M opens.
 #[test]
 fn drop_over_older_raise_resealed_spec_crypto_4() {
@@ -1942,4 +1941,83 @@ fn drop_over_older_raise_resealed_spec_crypto_4() {
     let rounds = rounds_to_settle(&mut lp, g);
     assert_eq!(rounds.last(), Some(&0), "settles: {rounds:?}");
     assert!(!removed_reader_reads(&mut lp, g, &tids, 0), "settled: A encrypts under an epoch M opens");
+}
+
+// spec/crypto.md §4 (Covers: the tail write taking M below r named, beside the void ones): A (0)
+// demotes a2 (1) to write (D), then removes reader M (2) (L). a2, holding neither, raises M to
+// write (W, ordered after L; it applies nothing where D is held). X (3, an admin) holds D and W
+// but not L: X sees M a reader, boxes it and names W void. At A, X's epoch names the void raise
+// after L but not L: a node where its names are met may lack L and hold M a reader, as X did.
+// A must not encrypt under it.
+#[test]
+fn raise_named_without_the_removal_before_it_spec_crypto_4() {
+    let (mut lp, g, tids) = granted(4, &[(1, Role::Admin), (2, Role::Read), (3, Role::Admin)]);
+    lp.peers[0].engine.demote(&g, &Demotion { holder: tids[1], new: Some(edge(Role::Write)), retain: None }).unwrap();
+    lp.sync(0, 3).unwrap();
+    lp.peers[0].clock.advance(1_000);
+    lp.peers[0].engine.demote(&g, &Demotion { holder: tids[2], new: None, retain: None }).unwrap();
+    lp.peers[1].clock.advance(5_000);
+    lp.peers[1].engine.grant(&g, &tids[2], &edge(Role::Write)).unwrap();
+    lp.sync(1, 3).unwrap();
+    assert_eq!(lp.peers[3].engine.core.role_now(&tids[2], &g), Some(Role::Read), "W applies nothing at X, M a reader");
+    lp.peers[3].clock.advance(10_000);
+    rotate_leaving_out(&mut lp, 3, g, &BTreeSet::from([Role::Read]), &[]);
+    let x = newest_read(&lp, 3, g).unwrap();
+    assert!(openable(&mut lp, 3, &[g], tids[2], BTreeSet::new()).contains(&(g, Role::Read, x)), "X's epoch boxes M");
+    lp.sync(1, 0).unwrap();
+    lp.sync(3, 0).unwrap();
+    assert!(lp.peers[0].engine.core.role_now(&tids[2], &g).is_none(), "M removed at A");
+    let me = tids[0];
+    let (established, blocked) = lp.peers[0]
+        .engine
+        .run(|tx| {
+            let deps = super::departures(tx, &g)?;
+            let est = tx.core.epochs(&g).is_some_and(|e| e.read.is_established(&x) && e.read.secret(&x).is_some());
+            Ok((est, super::blocked_epoch(tx, &me, &g, Role::Read, &x, &deps, super::Walk::Encrypt)?))
+        })
+        .unwrap();
+    assert!(established, "X's epoch established at A");
+    assert!(blocked, "A encrypts under X's epoch, which M opens");
+}
+
+// spec/crypto.md §4 (Covers: a tail write takes M below r only where it would apply): A (0)
+// demotes a2 (1) to write (D), then removes reader M (2) (L). a2, holding neither, removes M
+// too (L2, after both): at A, L2 applies nothing (a2 is a writer at its point) and would apply
+// over nothing. X (3, an admin) holds L2 but neither D nor L: L2 applies there, and X's
+// rotation names it, leaving M out. V (4, an admin) holds D, L2 and X's rotation, not L: M is a
+// reader there and V re-seals it at X's epoch. A, holding L2 and X's rotation but not yet the
+// re-seal, must not take L2 as taking M down.
+#[test]
+fn removal_by_demoted_admin_pins_nothing_spec_crypto_4() {
+    let (mut lp, g, tids) = granted(5, &[(1, Role::Admin), (2, Role::Read), (3, Role::Admin), (4, Role::Admin)]);
+    lp.peers[0].engine.demote(&g, &Demotion { holder: tids[1], new: Some(edge(Role::Write)), retain: None }).unwrap();
+    lp.peers[0].clock.advance(1_000);
+    let before = commit_ids(&mut lp, 0);
+    lp.peers[0].engine.demote(&g, &Demotion { holder: tids[2], new: None, retain: None }).unwrap();
+    let l: BTreeSet<_> = commit_ids(&mut lp, 0).difference(&before).copied().collect();
+    lp.peers[1].clock.advance(5_000);
+    lp.peers[1].engine.demote(&g, &Demotion { holder: tids[2], new: None, retain: None }).unwrap();
+    send_skipping(&mut lp, 1, 3, &BTreeSet::new());
+    lp.peers[3].clock.advance(10_000);
+    rotate_leaving_out(&mut lp, 3, g, &BTreeSet::from([Role::Read]), &[]);
+    let x = newest_read(&lp, 3, g).unwrap();
+    send_skipping(&mut lp, 0, 4, &l);
+    send_skipping(&mut lp, 1, 4, &BTreeSet::new());
+    send_skipping(&mut lp, 3, 4, &BTreeSet::new());
+    assert_eq!(lp.peers[4].engine.core.role_now(&tids[2], &g), Some(Role::Read), "L2 applies nothing at V, M a reader");
+    let _ = lp.peers[4].engine.reseal_due(&g, &Pass).unwrap();
+    assert!(openable(&mut lp, 4, &[g], tids[2], BTreeSet::new()).contains(&(g, Role::Read, x)), "V re-sealed M at X's epoch");
+    send_skipping(&mut lp, 1, 0, &BTreeSet::new());
+    send_skipping(&mut lp, 3, 0, &BTreeSet::new());
+    assert!(lp.peers[0].engine.core.role_now(&tids[2], &g).is_none(), "M removed at A");
+    let me = tids[0];
+    let blocked = lp.peers[0]
+        .engine
+        .run(|tx| {
+            let deps = super::departures(tx, &g)?;
+            assert!(tx.core.epochs(&g).is_some_and(|e| e.read.is_established(&x) && e.read.secret(&x).is_some()), "X's epoch established at A");
+            super::blocked_epoch(tx, &me, &g, Role::Read, &x, &deps, super::Walk::Encrypt)
+        })
+        .unwrap();
+    assert!(blocked, "A encrypts under X's epoch, which M opens");
 }

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Run one TLA+ module's TLC instances. Usage: run.sh <module> [cfg...]
-#   <module>: sync, sides, rotation, depth0, lockout, finalize, cover, authority, netstream, netshared, netblind
+#   <module>: sync, sides, rotation, depth0, lockout, finalize, cover, tail, authority, netstream, netshared, netblind
 #   no cfg: the module's instances listed below (each module under 3 min at
 #   one worker); with cfg names: those instances instead (the larger ones
 #   in the module's README, by hand), judged only if listed below.
@@ -52,15 +52,13 @@ instances=(
   "lockout rotation Lockout L_none.cfg fail"     # negative control: no re-key
   "finalize rotation Finalize F_named_bogus.cfg pass" # notes/permissions.md (Keys)
   "finalize rotation Finalize F_old_seed3.cfg fail"   # negative control: a name met by its commit alone
-  "cover rotation Cover C_drop.cfg pass"         # notes/crypto.md (Frozen coverage)
-  "cover rotation Cover C_drop_any.cfg fail"     # negative control: attribution to any audit drop
-  "cover rotation Cover C_dup.cfg pass"          # concurrent removals each cover (Attributes, later writes)
-  "cover rotation Cover C_dup_nolater.cfg fail"  # negative control: only the first removal attributed
-  "cover rotation Cover C_regrant_noraise.cfg fail" # negative control (C_regrant, by hand): the removal's epoch covers the re-granted holder
-  "cover rotation Cover C_regrant_reader.cfg fail" # the stated limit: a reader's raise forces nothing
-  "cover rotation Cover C_regrant_rot_noraise.cfg fail" # negative control
-  "cover rotation Cover C_regrant_rot_nomark.cfg fail" # negative control: a raise named as the commit applied
-  "cover rotation Cover C_regrant_own_noraise.cfg fail" # negative control
+  "cover rotation Cover C_drop.cfg pass"         # notes/crypto.md (The pin)
+  "cover rotation Cover C_dup.cfg pass"          # concurrent removals each pin
+  "tail rotation Tail T_raise2.cfg pass"         # the pin over every small edge history (raises; T_raise, T_raise4 by hand)
+  "tail rotation Tail T_fin2.cfg pass"           # ... (finalizes; T_fin by hand)
+  "tail rotation Tail T_raise_old.cfg fail"      # negative control: the per-event attribution rule
+  "tail rotation Tail T_fin_any.cfg fail"        # negative control: a named write pins without taking M down
+  "cover rotation Cover C_regrant_reader.cfg fail" # the stated limit: a reader's write does not count
   "authority rotation AuthorityMC A_order_nobase.cfg pass" # keysets read as of the commit's key (spec/crypto.md §4, Possession)
   "authority rotation AuthorityMC A_order_3.cfg pass"
   "authority rotation AuthorityMC A_held_nobase.cfg fail" # negative control: keysets read as held now give two fixpoints
@@ -126,7 +124,7 @@ for line in "${instances[@]}"; do
   [ "$m" = "$module" ] && dir=$d tla=$t
 done
 if [ -z "$dir" ]; then
-  echo "usage: $0 sync|sides|rotation|depth0|lockout|finalize|cover|authority|netstream|netshared|netblind [cfg...]" >&2
+  echo "usage: $0 sync|sides|rotation|depth0|lockout|finalize|cover|tail|authority|netstream|netshared|netblind [cfg...]" >&2
   exit 2
 fi
 
