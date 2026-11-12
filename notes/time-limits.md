@@ -43,3 +43,4 @@ Format: `- <date time> <box> `<limit>` [<test>] <CPU|wall> <measured>/<limit> s 
 One section per investigation: date and box, the trigger (hits or the run over 2x), what was tried, the outcome (fixed, or a raised limit with why no good solution was found). Tess reviews every raise.
 
 - 2026-11-10 ostrich, the gate against the 5-minute cap (`gate`, `gate.hold` 4.3x): issues/gate-five-minutes.md (what was measured and profiled, what was fixed, what each remaining fix would save). No limit raised.
+- 2026-11-11 ostrich `gate` CPU 7067/4094 s, wall 770/299 s; `gate.hold` CPU 6639/3795 s, wall 702/241 s at load 13: order-covered-held review (10 of 26 crates); persistent, issues/gate-five-minutes.md.
