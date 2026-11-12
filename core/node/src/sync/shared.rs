@@ -318,7 +318,7 @@ impl SyncEngine {
         self.conns.get(&conn).is_some_and(|c| !c.peer) && self.records.shared.get(&conn).is_some_and(|s| s.members.contains_key(l))
     }
 
-    /// `l` opened by Open on host connection `conn` (a head learned, or a new one): a sync-key
+    /// `l` opened by Open on `conn`, a peer that cannot read it (a head learned, or a new one): a sync-key
     /// open by an old head's key ends (`shared_rejudge`) and every head open there is tested
     /// against the peer's filter.
     pub(super) fn shared_head_opened(&mut self, conn: ConnId, out: &mut Vec<Action>) -> Result<()> {
@@ -461,7 +461,7 @@ impl SyncEngine {
         let restored = !s.members.is_empty();
         self.records.shared.insert(conn, s);
         for (l, _) in &members {
-            self.member_at_host(conn, *l, true, out)?;
+            self.member_unread_there(conn, *l, true, out)?;
         }
         // a sync ID it keeps unread is pulled from the start (`stream_join`)
         let unread = self.unread_heads()?;
@@ -886,7 +886,7 @@ impl SyncEngine {
     }
 
     /// The peer's latest filter was tested and every Offer of it answered: each label on this
-    /// host connection that is not open there, waiting for no Register, is walked, once per filter
+    /// connection to a peer that cannot read it, not open there, waiting for no Register, is walked, once per filter
     /// arrival (issues/net-one-peer.md 3h2, Stale head): the credentials of its recorded steps,
     /// newest first, but the one this arrival tested, against the same filter; the first shown is
     /// Hit, none shown registers the recorded path. Every move of a peer's head changes its
@@ -1283,7 +1283,7 @@ impl SyncEngine {
         self.pass_due |= class != SYNC && self.records.shared.values().all(Shared::is_empty);
         let Some(s) = self.records.shared.get_mut(&conn) else { return Ok(()) };
         s.members.insert(l, Member { class, beacon, until: None });
-        self.member_at_host(conn, l, false, out)?;
+        self.member_unread_there(conn, l, false, out)?;
         // kept unread: served to the peer from the hub's store, and pulled from it by the store's
         // rules (`unread_events`)
         if self.is_unread(&l)? {

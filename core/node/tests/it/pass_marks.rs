@@ -18,7 +18,7 @@ fn put_key(net: &mut Net, n: usize, t: Tid, asp: &osis_schema::Aspect<Value>, k:
 }
 
 /// Host entries of commit `c` under `l`, as node `n` knows them.
-fn at_host(net: &mut Net, n: usize, host: usize, l: &LabelId, c: &CommitId) -> usize {
+fn at_the_peer(net: &mut Net, n: usize, host: usize, l: &LabelId, c: &CommitId) -> usize {
     let ids = net.host_ids(host, l);
     net.sync(n).entries(l).into_iter().filter(|(id, k)| ids.contains(id) && matches!(k, EntryKind::Commit { commit, .. } if commit == c)).count()
 }
@@ -45,7 +45,7 @@ fn expiry_judges_only_the_expired_commit_spec_sync_5() {
     net.advance(1_800_000);
     let s1 = net.sync(a).pass_stats();
     assert_eq!(known(&mut net, a, &l, &x), 0, "the expired commit was judged: its entry is gone");
-    assert!(live.iter().all(|c| at_host(&mut net, a, host, &l, c) == 1), "the live ones stay");
+    assert!(live.iter().all(|c| at_the_peer(&mut net, a, host, &l, c) == 1), "the live ones stay");
     assert!(s1.passes > s0.passes);
     assert!(s1.bodies - s0.bodies < 6, "the aspect's live bodies are not judged again: {s0:?} -> {s1:?}");
 }
@@ -62,12 +62,12 @@ fn closure_reused_until_it_changes_spec_sync_3() {
     net.run();
     let s1 = net.sync(a).pass_stats();
     assert!(s1.passes > s0.passes);
-    assert_eq!(at_host(&mut net, a, host, &l, &c), 1);
+    assert_eq!(at_the_peer(&mut net, a, host, &l, &c), 1);
     let u = net.item(a, g, g, "u");
     net.run();
     let c = net.write(a, u, "u2");
     net.run();
-    assert_eq!(at_host(&mut net, a, host, &l, &c), 1, "the new thing's commits go up");
+    assert_eq!(at_the_peer(&mut net, a, host, &l, &c), 1, "the new thing's commits go up");
 }
 
 /// Commits one root op on map aspect `asp` of `t` at node `n`.
@@ -88,12 +88,12 @@ fn purge_on_replace_removed_entry_no_live_write_spec_commits_5() {
     net.run();
     net.advance(61_000);
     let l = net.label(a);
-    assert_eq!(at_host(&mut net, a, host, &l, &b), 1);
+    assert_eq!(at_the_peer(&mut net, a, host, &l, &b), 1);
     map_op(&mut net, a, t, &GONEMAP, osis_crdt::Op::Remove(s("k1")));
     net.run();
     let ak = osis_base::Ak::new(osis_schema::RawKey::ak(&GONEMAP)).unwrap();
     assert!(!net.engine(a).body_not_dropped(&b, &t, &ak) && !net.engine(a).delta_live(&b, &t, &ak).unwrap(), "dropped with the removal, no live write");
-    assert_eq!(at_host(&mut net, a, host, &l, &b), 0, "the body without a live write was deleted in the same sync");
+    assert_eq!(at_the_peer(&mut net, a, host, &l, &b), 0, "the body without a live write was deleted in the same sync");
 }
 
 // spec/sync.md §6: a body its thing's setting keeps for good is must-hold for good, but nothing is

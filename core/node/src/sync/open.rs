@@ -211,7 +211,7 @@ impl SyncEngine {
         }
         // open there already by the connection's restored record
         if self.shared_member(conn, &l) {
-            return self.member_at_host(conn, l, true, out);
+            return self.member_unread_there(conn, l, true, out);
         }
         self.shared_retest(conn, out)
     }
@@ -350,11 +350,11 @@ impl SyncEngine {
         }
     }
 
-    /// `l` became a member of `conn`'s shared set at a host connection where it waits for the
+    /// `l` became a member of `conn`'s shared set, its peer unable to read it, where it waits for the
     /// peer's filter (a Hit on this node's credential, a static entry's grant, the peer's own Hit,
     /// or a record restored on connecting): L is open there at the step it was tested at (the
     /// walk's, else the newest recorded), or, restored, at the head last known there.
-    pub(crate) fn member_at_host(&mut self, conn: ConnId, l: LabelId, restored: bool, out: &mut Vec<super::Action>) -> Result<()> {
+    pub(crate) fn member_unread_there(&mut self, conn: ConnId, l: LabelId, restored: bool, out: &mut Vec<super::Action>) -> Result<()> {
         let Some(c) = self.conns.get(&conn).filter(|c| !c.peer) else { return Ok(()) };
         let host = c.host;
         let Some(lc) = c.labels.get(&l).filter(|x| x.phase == Phase::Testing) else { return Ok(()) };
@@ -915,7 +915,7 @@ impl SyncEngine {
 
     /// `l` on `conn` waits for the peer's filter again, testing the newest recorded head's
     /// credential; a member of the connection's set already (the peer's Hit came while this node
-    /// registered L there, `member_at_host` waiting for no Testing then) is open there at once.
+    /// registered L there, `member_unread_there` waiting for no Testing then) is open there at once.
     pub(crate) fn retest_label(&mut self, conn: ConnId, l: LabelId, out: &mut Vec<super::Action>) -> Result<()> {
         if let Some(lc) = self.lc_mut(conn, &l) {
             lc.phase = Phase::Testing;
@@ -923,7 +923,7 @@ impl SyncEngine {
             lc.path.clear();
         }
         if self.shared_member(conn, &l) {
-            return self.member_at_host(conn, l, false, out);
+            return self.member_unread_there(conn, l, false, out);
         }
         self.shared_retest(conn, out)
     }

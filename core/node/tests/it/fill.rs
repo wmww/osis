@@ -194,8 +194,8 @@ fn own_writes_go_out_during_a_fill_spec_sync_6() {
     f.net.feed(c, osis_node::sync::Event::Local);
     f.until(|s| {
         assert!(s.held().len() < N, "before the fill ended");
-        let at_host: BTreeSet<BlobId> = s.net.host_ids(host, &l).into_iter().collect();
-        s.net.sync(c).entries(&l).into_iter().any(|(b, k)| at_host.contains(&b) && matches!(k, EntryKind::Commit { commit, .. } if commit == w))
+        let at_the_peer: BTreeSet<BlobId> = s.net.host_ids(host, &l).into_iter().collect();
+        s.net.sync(c).entries(&l).into_iter().any(|(b, k)| at_the_peer.contains(&b) && matches!(k, EntryKind::Commit { commit, .. } if commit == w))
     });
     // its pass asks for nothing out of order
     f.until(|s| {

@@ -1524,14 +1524,14 @@ fn a_destroyed_things_certificates_leave_the_label_with_its_last_dependent_spec_
     net.advance(10);
     let req = purge_thing(&mut net, a, t);
     net.run();
-    let at_host = |net: &mut Net, c: CommitId| {
+    let at_the_peer = |net: &mut Net, c: CommitId| {
         let host = net.host_ids(0, &l);
         net.sync(a).entries(&l).into_iter().any(|(id, k)| host.contains(&id) && matches!(k, osis_node::sync::EntryKind::Commit { commit, .. } if commit == c))
     };
     for _ in 0..3 {
         net.advance(70_000);
     }
-    assert!(at_host(&mut net, mint) && at_host(&mut net, req), "t's minting and destruction under g's label for x");
+    assert!(at_the_peer(&mut net, mint) && at_the_peer(&mut net, req), "t's minting and destruction under g's label for x");
     net.advance(10);
     purge_thing(&mut net, a, x);
     net.run();
@@ -1539,8 +1539,8 @@ fn a_destroyed_things_certificates_leave_the_label_with_its_last_dependent_spec_
         net.advance(70_000);
     }
     assert!(!net.engine(a).knows(&x), "x was destroyed");
-    assert!(!at_host(&mut net, mint), "t's minting header gone with its last dependent");
-    assert!(!at_host(&mut net, req), "the request destroying t gone with its last dependent");
+    assert!(!at_the_peer(&mut net, mint), "t's minting header gone with its last dependent");
+    assert!(!at_the_peer(&mut net, req), "the request destroying t gone with its last dependent");
 }
 
 // spec/commits.md §5 (Destruction: a release request): an admin's release of t is one commit of

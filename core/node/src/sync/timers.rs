@@ -60,7 +60,7 @@ impl SyncEngine {
         }
         self.stream_retry(out)?;
         self.shared_retry(out)?;
-        // a label still waiting at a host connection `resync_ms` after its walk is tested and
+        // a label still waiting at a peer that cannot read it `resync_ms` after its walk is tested and
         // walked again: a refused Hit or an ended registration need not change the peer's filter
         let rewalk: Vec<ConnId> = self
             .conns

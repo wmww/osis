@@ -113,15 +113,15 @@ fn promotion_waits_for_the_chain_at_the_host_spec_sync_5() {
     let mut cards = 0;
     for (id, k) in net.sync(r).entries(&l) {
         let EntryKind::Commit { commit, parts, .. } = k else { continue };
-        let at_host = osis_proto::LabelStore::entry(&*net.hosts[host].hub.store(), &l, &id).unwrap();
+        let at_the_peer = osis_proto::LabelStore::entry(&*net.hosts[host].hub.store(), &l, &id).unwrap();
         if keys.contains(&commit) {
-            assert!(at_host.is_none(), "the keyset never reached the host");
+            assert!(at_the_peer.is_none(), "the keyset never reached the host");
         }
         let h = net.engine(r).header(&commit).unwrap();
         if h.author != rn || !h.aspects.iter().any(|x| x.ak.as_str() == "node.0") {
             continue;
         }
-        let e = at_host.expect("the card deposited at the host");
+        let e = at_the_peer.expect("the card deposited at the host");
         assert!(net.engine(w).header(&commit).is_some() && !net.engine(w).pending().iter().any(|p| p.0 == commit), "w applied the card");
         let chain = net.engine(w).author_chain(&commit, &parts.iter().copied().collect()).unwrap();
         assert!(chain.commits.keys().any(|x| keys.contains(x)), "the keyset is in the card's chain at w");
@@ -271,8 +271,8 @@ fn stale_entry_after_fallback(age: bool, wipe: bool, restart: bool) -> (bool, bo
     assert_eq!(net.engine(b).get(&t, &ak).unwrap(), Some(s("v5")));
     let known: BTreeSet<_> = net.sync(b).entries(&l).into_iter().map(|(id, _)| id).collect();
     let kept = net.sync(b).entries(&l).into_iter().any(|(_, k)| matches!(k, EntryKind::Commit { commit, .. } if commit == v0));
-    let at_host: BTreeSet<_> = net.host_ids(host, &l).into_iter().collect();
-    (kept, known == at_host)
+    let at_the_peer: BTreeSet<_> = net.host_ids(host, &l).into_iter().collect();
+    (kept, known == at_the_peer)
 }
 
 // spec/sync.md §6, spec/wire.md §11.2 (code 15): a cursor the host's log was trimmed past
@@ -629,15 +629,15 @@ fn purge_shreds_only_unique_chunks_spec_sync_7() {
     assert!(shared.len() > unique.len() && !unique.is_empty(), "shared {} unique {}", shared.len(), unique.len());
     assert!(second.is_disjoint(&first), "reused chunks are not listed again");
     let l = net.label(a);
-    let at_host = |net: &Net| -> BTreeSet<osis_base::BlobId> { net.host_ids(host, &l).into_iter().collect() };
-    assert!(first.is_subset(&at_host(&net)));
+    let at_the_peer = |net: &Net| -> BTreeSet<osis_base::BlobId> { net.host_ids(host, &l).into_iter().collect() };
+    assert!(first.is_subset(&at_the_peer(&net)));
     let mut m = Mutation::new();
     m.set(t, &REG, &s("purged v1")).unwrap();
     m.purge_commit(c1, t, blob_ak.clone());
     net.engine(a).commit(m).unwrap().unwrap();
     net.run();
     net.trace(&[a, b]);
-    let held = at_host(&net);
+    let held = at_the_peer(&net);
     assert!(unique.is_disjoint(&held), "a chunk only the purged version reached is gone at the host");
     assert!(shared.is_subset(&held), "shared chunks stay");
     for id in &unique {
@@ -879,8 +879,8 @@ fn forged_certificate_copy_ignored_spec_commits_4() {
     net.run();
     let entries = net.sync(w).entries(&l);
     // bad input at the writer, or already cleared from the host as a junk deposit by the admin
-    let at_host = net.host_ids(host, &l);
-    assert!(forged.iter().all(|f| entries.iter().any(|(id, k)| id == f && *k == EntryKind::Bad) || !at_host.contains(f)), "the forged copies are bad input");
+    let at_the_peer = net.host_ids(host, &l);
+    assert!(forged.iter().all(|f| entries.iter().any(|(id, k)| id == f && *k == EntryKind::Bad) || !at_the_peer.contains(f)), "the forged copies are bad input");
     assert!(entries_of(&mut net, w, host, &l, &cc).iter().any(|(id, _)| !forged.contains(id)), "the writer placed its own card");
 }
 

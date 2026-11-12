@@ -914,7 +914,7 @@ pub fn snapshot_rights(s: Seeds) -> Res<Report> {
     let l = sim.sync(a)?.labels().into_iter().find(|x| x.0 == g).map(|x| x.1.id).ok_or_else(|| sim.fail("no label"))?;
     let live: BTreeSet<osis_base::BlobId> = sim.hub(s).ok_or_else(|| sim.fail("no hub"))?.store().live_ids(&l).map_err(|e| sim.fail(e.to_string()))?.into_iter().collect();
     let entries = sim.sync(a)?.entries(&l);
-    let at_host = |c: &osis_base::CommitId| entries.iter().any(|(id, x)| live.contains(id) && matches!(x, osis_node::sync::EntryKind::Commit { commit, .. } if commit == c));
+    let in_store = |c: &osis_base::CommitId| entries.iter().any(|(id, x)| live.contains(id) && matches!(x, osis_node::sync::EntryKind::Commit { commit, .. } if commit == c));
     // the live write is the one read (values are unique; every node reads alike, checked below),
     // and a register write is covered by a snapshot whose winning write is stamped no earlier
     // (spec/commits.md §5 Covered: joining it changes nothing), whichever node wrote it, the
@@ -947,8 +947,8 @@ pub fn snapshot_rights(s: Seeds) -> Res<Report> {
         // deletes it (purge on replace: gone everywhere once replaced); a body kept a while after
         // replaced may wait for the next snapshot, so only what stays is certain there
         let gone = !kept_live && (*explicit || dead);
-        if (gone && bound != 1 && at_host(c)) || (!may_go && !at_host(c)) {
-            return Err(sim.fail(format!("{by:?} bound {bound}: body of node {author} (live {is_live}) at the host {}, may go {may_go}, should be gone {gone}", at_host(c))));
+        if (gone && bound != 1 && in_store(c)) || (!may_go && !in_store(c)) {
+            return Err(sim.fail(format!("{by:?} bound {bound}: body of node {author} (live {is_live}) at the host {}, may go {may_go}, should be gone {gone}", in_store(c))));
         }
         for n in [a, b, w, fresh] {
             let e = sim.engine(n)?;

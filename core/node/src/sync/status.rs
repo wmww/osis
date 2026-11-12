@@ -42,7 +42,7 @@ impl SyncEngine {
             // up both ways (`stream_idle`); one still finding what it shares is opening: a
             // connection this node dialed, or one it serves whose shared set began. A peer
             // counts once whatever connections it has (`pass_source`).
-            // (a host connection is counted above: its stream reads it as a peer that cannot read L)
+            // (a connection to a peer that cannot read L is counted above: its stream reads it so)
             let host_conn = |id: &ConnId| self.conns.get(id).is_some_and(|c| !c.peer);
             let readers: BTreeSet<ConnId> = self.conns.iter().filter(|(_, c)| c.peer && c.up).map(|(id, _)| *id).chain(self.records.shared.keys().copied()).filter(|id| !host_conn(id)).collect();
             for id in readers {

@@ -72,15 +72,15 @@ fn purge_item(net: &mut Net, n: usize, t: Tid, item: PurgeItem, r: Retention) ->
     net.engine(n).commit_hostile(m).unwrap().unwrap()
 }
 
-/// `at_host`, each delta set cut to the parts on `t` (an entry also carrying a part on a thing
+/// `at_the_peer`, each delta set cut to the parts on `t` (an entry also carrying a part on a thing
 /// outside the label stands for the header alone there: the shared blob, spec/sync.md §3).
-fn at_host_on(net: &mut Net, n: usize, host: usize, l: &LabelId, c: CommitId, t: Tid) -> Vec<Vec<usize>> {
+fn at_peer_on(net: &mut Net, n: usize, host: usize, l: &LabelId, c: CommitId, t: Tid) -> Vec<Vec<usize>> {
     let on: Vec<usize> = net.engine(n).header(&c).map(|h| h.aspects.iter().enumerate().filter(|(_, a)| a.tid == t).map(|(i, _)| i).collect()).unwrap_or_default();
-    at_host(net, n, host, l, c).into_iter().map(|p| p.into_iter().filter(|i| on.contains(i)).collect()).collect()
+    at_the_peer(net, n, host, l, c).into_iter().map(|p| p.into_iter().filter(|i| on.contains(i)).collect()).collect()
 }
 
 /// The delta sets of commit `c`'s entries node `n` knows present at `host`.
-fn at_host(net: &mut Net, n: usize, host: usize, l: &LabelId, c: CommitId) -> Vec<Vec<usize>> {
+fn at_the_peer(net: &mut Net, n: usize, host: usize, l: &LabelId, c: CommitId) -> Vec<Vec<usize>> {
     let ids = net.host_ids(host, l);
     net.sync(n)
         .entries(l)
@@ -151,11 +151,11 @@ fn new_node_sees_a_purged_permanent_delta_spec_commits_5() {
         let Chat { mut net, host, a, b, n, t, l } = chat();
         let c = msg(&mut net, b, t, "SECRET", permanent());
         net.run();
-        let body = at_host(&mut net, a, host, &l, c);
+        let body = at_the_peer(&mut net, a, host, &l, c);
         assert!(body.iter().all(|x| !x.is_empty()) && !body.is_empty());
         let p = purge(&mut net, b, t, c, r);
         net.run();
-        assert_eq!(at_host(&mut net, a, host, &l, c), vec![Vec::<usize>::new()], "its header alone at the host");
+        assert_eq!(at_the_peer(&mut net, a, host, &l, c), vec![Vec::<usize>::new()], "its header alone at the host");
         net.set_online(n, true);
         net.run();
         let author = net.tid(b);
@@ -208,7 +208,7 @@ fn a_lost_tombstone_is_uploaded_again_spec_sync_6() {
     net.run();
     net.advance(120_000);
     net.run();
-    assert_eq!(at_host(&mut net, a, host, &l, c), vec![Vec::<usize>::new()]);
+    assert_eq!(at_the_peer(&mut net, a, host, &l, c), vec![Vec::<usize>::new()]);
     net.set_online(n, true);
     net.run();
     let author = net.tid(b);
@@ -229,7 +229,7 @@ fn other_retention_leaves_none_spec_commits_5() {
         net.run();
         purge(&mut net, b, t, c, Retention::default());
         net.run();
-        assert!(at_host(&mut net, a, host, &l, c).is_empty(), "{what}: left at the host");
+        assert!(at_the_peer(&mut net, a, host, &l, c).is_empty(), "{what}: left at the host");
         net.set_online(n, true);
         net.run();
         assert!(!net.engine(n).commit_ids().contains(&c), "{what}: reached a new node");
@@ -250,10 +250,10 @@ fn expired_write_leaves_none_spec_commits_6() {
     let h = net.engine(b).header(&c).unwrap();
     assert!(!h.aspects.iter().any(|x| net.engine(b).permanent(&h, x)));
     net.run();
-    assert!(!at_host(&mut net, a, host, &l, c).is_empty());
+    assert!(!at_the_peer(&mut net, a, host, &l, c).is_empty());
     net.advance(120_000);
     net.run();
-    assert!(at_host(&mut net, a, host, &l, c).is_empty());
+    assert!(at_the_peer(&mut net, a, host, &l, c).is_empty());
     net.set_online(n, true);
     net.run();
     assert!(!net.engine(n).commit_ids().contains(&c));
@@ -268,14 +268,14 @@ fn the_purge_request_stays_as_its_header_spec_commits_5() {
     net.run();
     let p = purge(&mut net, a, t, c, Retention::default());
     net.run();
-    assert!(at_host(&mut net, a, host, &l, p).iter().all(|x| !x.is_empty()));
+    assert!(at_the_peer(&mut net, a, host, &l, p).iter().all(|x| !x.is_empty()));
     // past its floor, a later write covering the purge commit's own delta
     cover(&mut net, a, t);
     net.write(a, t, "later");
     net.run();
     assert!(!net.engine(a).body_not_dropped(&p, &t, &own()), "the purge commit's body is covered and gone");
-    assert_eq!(at_host(&mut net, a, host, &l, p), vec![Vec::<usize>::new()], "its header stays");
-    assert_eq!(at_host(&mut net, a, host, &l, c), vec![Vec::<usize>::new()]);
+    assert_eq!(at_the_peer(&mut net, a, host, &l, p), vec![Vec::<usize>::new()], "its header stays");
+    assert_eq!(at_the_peer(&mut net, a, host, &l, c), vec![Vec::<usize>::new()]);
     net.set_online(n, true);
     net.run();
     let author = net.tid(b);
@@ -296,7 +296,7 @@ fn a_purge_of_other_retention_goes_spec_commits_5() {
     let p = purge(&mut net, a, t, c, Retention::default());
     net.run();
     cover(&mut net, a, t);
-    assert!(at_host(&mut net, a, host, &l, p).is_empty());
+    assert!(at_the_peer(&mut net, a, host, &l, p).is_empty());
 }
 
 // spec/commits.md §5: purge of a commit with other live parts: the blob of those parts carries the
@@ -313,7 +313,7 @@ fn other_live_parts_carry_the_header_spec_commits_5() {
     let p = purge(&mut net, a, t, c, permanent());
     net.run();
     let h = net.engine(a).header(&c).unwrap();
-    let held = at_host(&mut net, a, host, &l, c);
+    let held = at_the_peer(&mut net, a, host, &l, c);
     assert_eq!(held.len(), 1, "{held:?}");
     assert_eq!(h.aspects[held[0][0]].ak, Ak::new(LIST.ak()).unwrap());
     net.set_online(n, true);
@@ -326,7 +326,7 @@ fn other_live_parts_carry_the_header_spec_commits_5() {
     m.set(t, &LIST, &osis_base::Value::List(Vec::new())).unwrap();
     net.engine(a).commit(m).unwrap().unwrap();
     net.run();
-    assert_eq!(at_host(&mut net, a, host, &l, c), vec![Vec::<usize>::new()]);
+    assert_eq!(at_the_peer(&mut net, a, host, &l, c), vec![Vec::<usize>::new()]);
     net.advance(1_000);
     net.run();
     assert!(net.engine(n).commit_ids().contains(&c));
@@ -349,7 +349,7 @@ fn the_other_part_on_another_label_is_not_waited_for_spec_commits_4() {
     net.run();
     let p = purge(&mut net, a, t, c, permanent());
     net.run();
-    assert_eq!(at_host_on(&mut net, a, host, &l, c, t), vec![Vec::<usize>::new()], "under the purged delta's label");
+    assert_eq!(at_peer_on(&mut net, a, host, &l, c, t), vec![Vec::<usize>::new()], "under the purged delta's label");
     net.set_online(n, true);
     net.run();
     let author = net.tid(b);
@@ -368,9 +368,9 @@ fn a_flood_costs_a_header_per_write_spec_commits_5() {
     net.run();
     net.advance(1_000);
     net.run();
-    assert_eq!(at_host(&mut net, a, host, &l, c), vec![Vec::<usize>::new()]);
+    assert_eq!(at_the_peer(&mut net, a, host, &l, c), vec![Vec::<usize>::new()]);
     for p in ps {
-        assert_eq!(at_host(&mut net, a, host, &l, p).len(), 1);
+        assert_eq!(at_the_peer(&mut net, a, host, &l, p).len(), 1);
     }
 }
 
@@ -385,9 +385,9 @@ fn a_purge_without_the_right_is_no_witness_spec_commits_5() {
     net.run();
     assert!(net.engine(a).body_not_dropped(&c, &t, &k()));
     cover(&mut net, a, t);
-    assert!(at_host(&mut net, a, host, &l, p).is_empty(), "no lasting blob of the purge without the right");
-    assert_eq!(at_host(&mut net, a, host, &l, c).len(), 1);
-    assert!(!at_host(&mut net, a, host, &l, c)[0].is_empty());
+    assert!(at_the_peer(&mut net, a, host, &l, p).is_empty(), "no lasting blob of the purge without the right");
+    assert_eq!(at_the_peer(&mut net, a, host, &l, c).len(), 1);
+    assert!(!at_the_peer(&mut net, a, host, &l, c)[0].is_empty());
 }
 
 /// The compaction snapshots of `(t, k())` node `x` holds.
@@ -471,7 +471,7 @@ fn a_purged_value_leaves_its_chunks_spec_commits_5() {
     net.run();
     net.run();
     assert!(chunks.iter().all(|id| !net.host_ids(host, &l).contains(id)), "a purged chunk stayed");
-    assert_eq!(at_host(&mut net, a, host, &l, c), vec![Vec::<usize>::new()]);
+    assert_eq!(at_the_peer(&mut net, a, host, &l, c), vec![Vec::<usize>::new()]);
     net.set_online(n, true);
     net.run();
     let author = net.tid(b);
@@ -516,7 +516,7 @@ fn a_kicked_writers_tombstone_stays_spec_perm_5_1() {
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
     net.run();
-    assert_eq!(at_host(&mut net, a, host, &l, c), vec![Vec::<usize>::new()]);
+    assert_eq!(at_the_peer(&mut net, a, host, &l, c), vec![Vec::<usize>::new()]);
     // what `b` forgets, the note of what the purge dropped goes with
     net.engine(b).drop_lost_due().unwrap();
     assert_eq!(net.engine(b).named_permanent_count().unwrap(), 0);
@@ -670,7 +670,7 @@ fn a_purge_commit_does_not_wait_for_another_label_spec_commits_4() {
     let p = net.engine(a).commit(m).unwrap().unwrap();
     net.run();
     cover(&mut net, a, t);
-    assert_eq!(at_host_on(&mut net, a, host, &l, p, t), vec![Vec::<usize>::new()]);
+    assert_eq!(at_peer_on(&mut net, a, host, &l, p, t), vec![Vec::<usize>::new()]);
     net.set_online(n, true);
     net.run();
     assert_eq!(pending(&mut net, n), 0);
@@ -737,8 +737,8 @@ fn a_purge_purged_in_turn_spec_commits_5() {
         }
         net.advance(3_600_000);
         net.run();
-        assert_eq!(at_host(&mut net, a, host, &l, p1), vec![Vec::<usize>::new()]);
-        assert!(at_host(&mut net, a, host, &l, p2).is_empty());
+        assert_eq!(at_the_peer(&mut net, a, host, &l, p1), vec![Vec::<usize>::new()]);
+        assert!(at_the_peer(&mut net, a, host, &l, p2).is_empty());
         net.set_online(n, true);
         net.run();
         assert!(net.engine(n).commit_ids().contains(&c), "snap {snap}");
@@ -799,7 +799,7 @@ fn an_aspect_wide_request_lasts_by_what_it_dropped_spec_commits_5() {
         net.run();
         cover(&mut net, a, t);
         assert!(!net.engine(a).body_not_dropped(&p, &t, &own()));
-        assert_eq!(at_host(&mut net, a, host, &l, p), if admin { vec![Vec::<usize>::new()] } else { Vec::new() });
+        assert_eq!(at_the_peer(&mut net, a, host, &l, p), if admin { vec![Vec::<usize>::new()] } else { Vec::new() });
         net.set_online(n, true);
         net.run();
         // after a restart too: what it dropped is noted, not walked
@@ -807,7 +807,7 @@ fn an_aspect_wide_request_lasts_by_what_it_dropped_spec_commits_5() {
         net.run();
         net.advance(3_600_000);
         net.run();
-        assert_eq!(at_host(&mut net, a, host, &l, p), if admin { vec![Vec::<usize>::new()] } else { Vec::new() });
+        assert_eq!(at_the_peer(&mut net, a, host, &l, p), if admin { vec![Vec::<usize>::new()] } else { Vec::new() });
         assert_eq!(net.engine(n).purged_on(&t, &k()).unwrap().get(&c), admin.then_some(&p));
         assert_eq!(net.engine(n).body_not_dropped(&c, &t, &k()), !admin);
     }
@@ -891,8 +891,8 @@ fn a_header_only_some_judge_lasting_is_left_alone_spec_sync_6() {
         net.advance(120_000);
     }
     assert_eq!(known_entries(&mut net, a, host), before, "an upload and delete loop");
-    let l = net.labels_at(host).into_iter().find(|l| !at_host(&mut net, a, host, l, p).is_empty()).expect("the holders' copy stays");
-    assert_eq!(at_host(&mut net, a, host, &l, m), vec![Vec::<usize>::new()]);
+    let l = net.labels_at(host).into_iter().find(|l| !at_the_peer(&mut net, a, host, l, p).is_empty()).expect("the holders' copy stays");
+    assert_eq!(at_the_peer(&mut net, a, host, &l, m), vec![Vec::<usize>::new()]);
 }
 
 // spec/commits.md §5: a node with a slow clock purges a message a fast node stamped ahead of
@@ -964,7 +964,7 @@ fn a_fresh_node_demotes_and_nothing_comes_back_spec_perm_6() {
             assert!(!net.engine(n).body_not_dropped(&m, &t, &k()) || net.engine(n).core.ix.commits.get(&m).is_none_or(|c| c.missing_parts().next().is_some()), "node {n}: the body is back");
             assert_eq!(net.engine(n).purged_on(&t, &k()).unwrap().contains_key(&m), lasting, "node {n}: the tombstone");
         }
-        let at = at_host(&mut net, a, host, &l, m);
+        let at = at_the_peer(&mut net, a, host, &l, m);
         assert!(at.iter().all(Vec::is_empty), "a body at the host: {at:?}");
         assert_eq!(!at.is_empty(), lasting, "its header alone, while it lasts");
     }
@@ -1003,8 +1003,8 @@ fn a_lasting_request_applies_when_its_killer_left_spec_commits_4() {
         net.advance(120_000);
         net.run();
     }
-    assert_eq!(at_host(&mut net, a, host, &l, p), vec![Vec::<usize>::new()], "its header alone at the host");
-    assert!(at_host(&mut net, a, host, &l, killer).is_empty(), "the killer expired");
+    assert_eq!(at_the_peer(&mut net, a, host, &l, p), vec![Vec::<usize>::new()], "its header alone at the host");
+    assert!(at_the_peer(&mut net, a, host, &l, killer).is_empty(), "the killer expired");
     net.set_online(n, true);
     net.run();
     net.advance(120_000);

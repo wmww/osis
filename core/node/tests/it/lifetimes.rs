@@ -542,7 +542,7 @@ fn retained_in(net: &mut Net, n: usize, g: Tid) -> (Tid, Tid, CommitId) {
 }
 
 /// Whether host 0 holds under `l` a commit node `n` knows as matching `f`.
-fn at_host(net: &mut Net, n: usize, l: &osis_base::LabelId, f: impl Fn(CommitId, &osis_commit::Header) -> bool) -> bool {
+fn at_the_peer(net: &mut Net, n: usize, l: &osis_base::LabelId, f: impl Fn(CommitId, &osis_commit::Header) -> bool) -> bool {
     let host = net.host_ids(0, l);
     let held: Vec<CommitId> = net.sync(n).entries(l).into_iter().filter(|(id, _)| host.contains(id)).filter_map(|(_, k)| if let osis_node::sync::EntryKind::Commit { commit, .. } = k { Some(commit) } else { None }).collect();
     held.into_iter().any(|c| net.engine(n).header(&c).is_some_and(|h| f(c, &h)))
@@ -566,8 +566,8 @@ fn unreferencing_releases_at_every_node_once_heard_out() {
     let released = |_: CommitId, h: &osis_commit::Header| h.aspects.iter().any(|p| p.tid == x && p.ak.as_str() == ct::RELEASED.ak());
     // either node may release it: each knows the entries it placed
     loop {
-        let w_at = at_host(&mut net, a, &l, |c, _| c == w) || at_host(&mut net, b, &l, |c, _| c == w);
-        assert!(w_at || at_host(&mut net, a, &l, released) || at_host(&mut net, b, &l, released), "neither x's write nor the release request at the host");
+        let w_at = at_the_peer(&mut net, a, &l, |c, _| c == w) || at_the_peer(&mut net, b, &l, |c, _| c == w);
+        assert!(w_at || at_the_peer(&mut net, a, &l, released) || at_the_peer(&mut net, b, &l, released), "neither x's write nor the release request at the host");
         if !net.step() {
             break;
         }
@@ -581,9 +581,9 @@ fn unreferencing_releases_at_every_node_once_heard_out() {
         assert_eq!(e.lifetimes_due().unwrap(), (false, false), "node {n}: nothing queued or held");
     }
     for n in [a, b] {
-        assert!(!at_host(&mut net, n, &l, |c, _| c == w), "x's write deleted at the host");
+        assert!(!at_the_peer(&mut net, n, &l, |c, _| c == w), "x's write deleted at the host");
     }
-    assert!(at_host(&mut net, a, &l, released) || at_host(&mut net, b, &l, released), "the request at the host");
+    assert!(at_the_peer(&mut net, a, &l, released) || at_the_peer(&mut net, b, &l, released), "the request at the host");
 }
 
 // issues/thing-lifetimes.md (The release: When): a thing under no label is judged at once

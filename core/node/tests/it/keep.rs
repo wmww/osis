@@ -834,10 +834,10 @@ fn copy_is_not_synced_spec_perm_3() {
     assert_eq!(net.read(b, t), Some(s("before")), "the copy reads");
     assert!(net.group_labels(b).is_empty(), "no label synced");
     let l = net.label(a);
-    let at_host = net.host_ids(host, &l).len();
+    let at_the_peer = net.host_ids(host, &l).len();
     net.write(a, t, "after");
     net.run();
-    assert!(net.host_ids(host, &l).len() > at_host);
+    assert!(net.host_ids(host, &l).len() > at_the_peer);
     assert_eq!(net.read(b, t), Some(s("before")), "frozen");
     net.restart(b, 9402);
     net.run();

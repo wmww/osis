@@ -29,15 +29,15 @@ fn replaced_register_goes_under_its_cover_spec_sync_7() {
     let snapshots = net.sync(a).entries(&l).into_iter().filter(|(_, k)| matches!(k, EntryKind::Commit { commit, .. } if net.engine(a).header(commit).is_some_and(|h| h.kind == osis_commit::Kind::ContentSnapshot))).count();
     assert_eq!(snapshots, 1, "the cover");
     assert_eq!(net.host_ids(host, &l).len(), before, "the cover went up, the replaced body left");
-    assert!(at_host(&mut net, a, host, &l, &c1).is_empty(), "the replaced body left");
-    assert!(at_host(&mut net, a, host, &l, &c2).is_empty(), "the live body went under the cover");
+    assert!(at_the_peer(&mut net, a, host, &l, &c1).is_empty(), "the replaced body left");
+    assert!(at_the_peer(&mut net, a, host, &l, &c2).is_empty(), "the live body went under the cover");
     assert!(!net.engine(a).body_not_dropped(&c2, &t, &osis_base::Ak::new("t:gone.0").unwrap()));
     assert_eq!(net.read(a, t), Some(s("x")));
     assert_eq!(net.engine(a).get(&t, &osis_base::Ak::new("t:gone.0").unwrap()).unwrap(), Some(s("v2")));
 }
 
 /// Host entries of commit `c` under `l`, as node `n` knows them.
-fn at_host(net: &mut Net, n: usize, host: usize, l: &osis_base::LabelId, c: &osis_base::CommitId) -> Vec<osis_base::BlobId> {
+fn at_the_peer(net: &mut Net, n: usize, host: usize, l: &osis_base::LabelId, c: &osis_base::CommitId) -> Vec<osis_base::BlobId> {
     let ids = net.host_ids(host, l);
     net.sync(n).entries(l).into_iter().filter(|(id, k)| ids.contains(id) && matches!(k, EntryKind::Commit { commit, .. } if commit == c)).map(|(id, _)| id).collect()
 }
@@ -123,7 +123,7 @@ fn reader_applies_after_carrierless_delete(r: Option<osis_schema::Retention>, r2
     m.set(t, &REG, &s("k")).unwrap();
     let c1 = net.engine(a).commit(m).unwrap().unwrap();
     net.run();
-    assert_eq!(at_host(&mut net, a, host, &l, &c1).len(), 1, "one blob, two retention classes");
+    assert_eq!(at_the_peer(&mut net, a, host, &l, &c1).len(), 1, "one blob, two retention classes");
     net.advance(1_000);
     let mut m = Mutation::new();
     if let Some(r) = r2 {
@@ -136,7 +136,7 @@ fn reader_applies_after_carrierless_delete(r: Option<osis_schema::Retention>, r2
     let now = net.now();
     net.hosts[host].hub.tick(now);
     net.run();
-    assert_eq!(at_host(&mut net, a, host, &l, &c1).len(), 1, "c1's GONE body left the host");
+    assert_eq!(at_the_peer(&mut net, a, host, &l, &c1).len(), 1, "c1's GONE body left the host");
     let snapshots = net.sync(a).entries(&l).into_iter().filter(|(_, k)| matches!(k, EntryKind::Commit { commit, .. } if net.engine(a).header(commit).is_some_and(|h| h.kind == osis_commit::Kind::ContentSnapshot))).count();
     assert_eq!(snapshots, 1, "the writer's cover");
     net.set_online(b, true);
@@ -206,7 +206,7 @@ fn snapshot_dead_by_earlier_removal_leaves_no_wait_spec_commits_4() {
         assert!(!net.engine(n).body_not_dropped(&snap, &t, &gone), "dead, so gone");
     }
     let l = net.label(a);
-    assert!(at_host(&mut net, a, host, &l, &snap).is_empty(), "deleted at the host, no carrier");
+    assert!(at_the_peer(&mut net, a, host, &l, &snap).is_empty(), "deleted at the host, no carrier");
     net.set_online(late, true);
     net.run();
     net.advance(resync);
@@ -244,7 +244,7 @@ fn first_sync_waits_for_hidden_body_spec_commits_4() {
     m.set(t, &REG, &s("k")).unwrap();
     let c1 = net.engine(a).commit(m).unwrap().unwrap();
     net.run();
-    assert_eq!(at_host(&mut net, a, host, &l, &c1).len(), 1, "one blob, two retention classes");
+    assert_eq!(at_the_peer(&mut net, a, host, &l, &c1).len(), 1, "one blob, two retention classes");
     let h = net.engine(a).header(&c1).unwrap();
     let ai = h.aspects.iter().position(|x| x.ak == gone).unwrap();
     let hide: std::collections::BTreeSet<_> = net.sync(a).entries(&l).into_iter().filter(|(_, k)| matches!(k, EntryKind::Commit { commit, parts, .. } if *commit == c1 && parts.contains(&ai))).map(|(id, _)| id).collect();
@@ -291,7 +291,7 @@ fn pending_commit_holds_back_no_own_upload_spec_sync_6() {
     let made = e.commit(m).unwrap().unwrap();
     net.run();
     let l = net.label(a);
-    let hide: std::collections::BTreeSet<_> = at_host(&mut net, a, host, &l, &made).into_iter().collect();
+    let hide: std::collections::BTreeSet<_> = at_the_peer(&mut net, a, host, &l, &made).into_iter().collect();
     assert_eq!(hide.len(), 1);
     net.hide_blobs.insert(b, hide);
     let mut m = Mutation::new();
@@ -309,7 +309,7 @@ fn pending_commit_holds_back_no_own_upload_spec_sync_6() {
     let c2 = net.engine(b).commit(m).unwrap().unwrap();
     net.run();
     assert!(net.engine(b).core.ix.commits.get(&c1).is_some_and(|m| m.missing_parts().next().is_some()), "still awaiting");
-    assert!(!at_host(&mut net, b, host, &l, &c2).is_empty(), "b's own body held back behind a commit not judged");
+    assert!(!at_the_peer(&mut net, b, host, &l, &c2).is_empty(), "b's own body held back behind a commit not judged");
 }
 
 // spec/commits.md §4, spec/sync.md §3: a reader's first sync of a label, a commit across two of its

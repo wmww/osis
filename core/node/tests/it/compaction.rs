@@ -44,7 +44,7 @@ fn held(net: &mut Net, n: usize, t: Tid) -> (usize, usize) {
 }
 
 /// Entries the host holds under `l` of commits with a part on `(t, map)`, as node `n` names them.
-fn at_host(net: &mut Net, host: usize, n: usize, l: &LabelId, t: Tid) -> usize {
+fn at_the_peer(net: &mut Net, host: usize, n: usize, l: &LabelId, t: Tid) -> usize {
     let ids = net.host_ids(host, l);
     let ak = map_ak();
     let entries = net.sync(n).entries(l);
@@ -67,7 +67,7 @@ fn written_apart(n: usize) -> [(usize, usize); 4] {
     net.advance(10_000);
     net.run();
     let l = net.label(a);
-    let host_entries = at_host(&mut net, host, a, &l, t);
+    let host_entries = at_the_peer(&mut net, host, a, &l, t);
     net.blocked.clear();
     net.advance(10_000);
     net.run();
@@ -158,7 +158,7 @@ fn kept_history_never_compacted_spec_commits_5() {
     for n in [a, r] {
         assert_eq!(held(&mut net, n, t), (40, 0), "node {n}: every body kept, no snapshot");
     }
-    assert_eq!(at_host(&mut net, host, a, &l, t), 40);
+    assert_eq!(at_the_peer(&mut net, host, a, &l, t), 40);
     net.advance(2 * 86_400_000);
     net.run();
     put(&mut net, a, t, "late", "v");
@@ -325,7 +325,7 @@ fn fallen_own_snapshot_gets_back(forgotten: bool) {
     net.advance(osis_base::format::MAX_DRIFT_MS + 60_000);
     net.run();
     let l = net.label(b);
-    assert_eq!(at_host(&mut net, host, b, &l, t), 1, "y deleted at the host, S there");
+    assert_eq!(at_the_peer(&mut net, host, b, &l, t), 1, "y deleted at the host, S there");
     if forgotten {
         net.advance(osis_base::format::TOMBSTONE_LIFETIME_MS + 60_000);
         net.run();
@@ -425,7 +425,7 @@ fn tree_garbage(net: &mut Net, host: usize, n: usize, t: Tid, sizes: &mut std::c
 #[derive(Debug, Clone, Copy)]
 struct Rewritten {
     at_writer: usize,
-    at_host: usize,
+    at_the_peer: usize,
     deltas: usize,
     sized: f64,
     weighed: f64,
@@ -445,7 +445,7 @@ fn rewritten(chunks: usize, edits: usize) -> Rewritten {
     };
     write(&mut net, &x);
     let mut sizes = Default::default();
-    let mut out = Rewritten { at_writer: 0, at_host: 0, deltas: 0, sized: 0.0, weighed: 0.0 };
+    let mut out = Rewritten { at_writer: 0, at_the_peer: 0, deltas: 0, sized: 0.0, weighed: 0.0 };
     osis_node::costs::take();
     for i in 0..edits {
         let at = (i * 7919 * 65536 + 4099) % x.len();
@@ -454,7 +454,7 @@ fn rewritten(chunks: usize, edits: usize) -> Rewritten {
         let (n, h) = tree_garbage(&mut net, host, a, t, &mut sizes);
         let e = net.engine(a);
         let deltas = e.core.durable_on(&k).filter(|c| e.body_not_dropped(c, &k.0, &k.1) && e.header(c).is_some_and(|h| !h.kind.is_compaction())).count();
-        (out.at_writer, out.at_host, out.deltas) = (out.at_writer.max(n), out.at_host.max(h), out.deltas.max(deltas));
+        (out.at_writer, out.at_the_peer, out.deltas) = (out.at_writer.max(n), out.at_the_peer.max(h), out.deltas.max(deltas));
     }
     let costs = osis_node::costs::take();
     let per = |name: &str| costs.iter().find(|c| c.0 == name).map_or(0, |c| c.2) as f64 / edits as f64;
@@ -480,7 +480,7 @@ fn rewritten_value_leaves_bounded_tree_garbage_spec_sync_7() {
     let large = rewritten(24, 40);
     println!("4 edits {small:?}\n40 edits {large:?}");
     for (edits, r) in [(4, small), (40, large)] {
-        assert!(r.at_writer <= ONE_EDIT && r.at_host <= ONE_EDIT && r.deltas <= 1, "{edits} edits: {r:?}");
+        assert!(r.at_writer <= ONE_EDIT && r.at_the_peer <= ONE_EDIT && r.deltas <= 1, "{edits} edits: {r:?}");
     }
 }
 
@@ -496,7 +496,7 @@ fn trigger_work_flat_in_value_size_spec_sync_7() {
     assert!(small.sized > 0.0 && small.weighed > 0.0, "the trigger sized and weighed: {small:?}");
     assert!(large.sized <= small.sized * 1.5 + 1.0 && large.weighed <= small.weighed * 1.5 + 1.0, "work per edit grew with the value: {small:?} at 8 chunks, {large:?} at 80");
     for (chunks, r) in [(8, small), (80, large)] {
-        assert!(r.at_writer <= ONE_EDIT && r.at_host <= ONE_EDIT && r.deltas <= 1, "{chunks} chunks: {r:?}");
+        assert!(r.at_writer <= ONE_EDIT && r.at_the_peer <= ONE_EDIT && r.deltas <= 1, "{chunks} chunks: {r:?}");
     }
 }
 

@@ -962,8 +962,8 @@ fn chunks_purged(lost: bool, writer: bool) {
     net.run();
     let chunks: Vec<BlobId> = net.engine(w).header(&c).unwrap().chunks.iter().map(|ch| ch.blob).collect();
     assert!(!chunks.is_empty(), "a chunked value");
-    let at_host = |net: &mut Net| chunks.iter().filter(|id| net.host_ids(h, &l).contains(id)).count();
-    assert!(at_host(&mut net) > 0, "the host took chunks");
+    let at_the_peer = |net: &mut Net| chunks.iter().filter(|id| net.host_ids(h, &l).contains(id)).count();
+    assert!(at_the_peer(&mut net) > 0, "the host took chunks");
     if lost {
         net.blocked.insert((w, h));
         net.drop_link(w, h);
@@ -986,7 +986,7 @@ fn chunks_purged(lost: bool, writer: bool) {
         advance_unheld(&mut net, w, &chunks, 60_000);
         assert_eq!(chunk_copies(&mut net, w, &chunks), (0, 0), "the purged chunks' bytes are logged again");
     }
-    assert_eq!(at_host(&mut net), 0, "purged chunks stay at the host");
+    assert_eq!(at_the_peer(&mut net), 0, "purged chunks stay at the host");
     assert_eq!(known(&mut net), 0, "the node keeps records of the purged chunks");
     let fetched = net.fetched[&w].iter().filter(|b| chunks.contains(b)).count();
     assert_eq!(fetched, 0, "purged chunks fetched again (their salts were here)");
@@ -1068,8 +1068,8 @@ fn never_held_chunks_deleted(hostile: bool) {
         advance_unheld(&mut net, b, &chunks, 60_000);
         assert_eq!(chunk_copies(&mut net, b, &chunks), (0, 0), "the purged chunks' bytes are logged");
     }
-    let at_host = chunks.iter().filter(|id| net.host_ids(h, &l).contains(id)).count();
-    assert_eq!(at_host, 0, "purged chunks stay at the host");
+    let at_the_peer = chunks.iter().filter(|id| net.host_ids(h, &l).contains(id)).count();
+    assert_eq!(at_the_peer, 0, "purged chunks stay at the host");
     let fetched = net.fetched[&b].iter().filter(|x| chunks.contains(x)).count();
     assert!(fetched >= chunks.len(), "each chunk fetched for its salt ({fetched} of {})", chunks.len());
     assert_eq!(listed(&mut net, b, &l).into_iter().filter(|id| chunks.contains(id)).count(), 0, "the node keeps records of the purged chunks");
@@ -1154,8 +1154,8 @@ fn certificate_copy_answered_late(lost: bool) {
         net.advance(60_000);
         net.run();
     }
-    let at_host = |net: &mut Net| linked.iter().chain(&copy).filter(|id| net.host_ids(h, &l).contains(id)).count();
-    assert_eq!(at_host(&mut net), 0, "the purged copy or its linked blobs stay at the host");
+    let at_the_peer = |net: &mut Net| linked.iter().chain(&copy).filter(|id| net.host_ids(h, &l).contains(id)).count();
+    assert_eq!(at_the_peer(&mut net), 0, "the purged copy or its linked blobs stay at the host");
     assert_eq!(known(&mut net), 0, "the node keeps records of them");
 }
 

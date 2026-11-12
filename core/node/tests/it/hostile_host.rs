@@ -1,7 +1,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 //! A malicious host against a node's sync engine (spec/requirements.md: "Nothing trusts a
 //! host's word"; "Peer input never causes unbounded allocation, work, storage or
-//! diagnostics"): frames injected on a node's host connection, or a scripted host; plus
+//! diagnostics"): frames injected on a node's connection to a peer that cannot read the label, or a scripted one; plus
 //! what deletion must reach at a host.
 
 use crate::net::{hosted, hosted_nodes};

@@ -466,13 +466,13 @@ fn erasing_edit_covered_at_once_spec_commits_5() {
         let (mut net, host, a, c, g) = blocked_reader();
         let (t, ak, l, s1) = kept_record(&mut net, a, g, asp, "ERASED-7d1e", compact);
         let n = snapshots(&mut net, a, &t, &ak).len();
-        let at_host = blobs(&mut net, a, &l, &s1);
+        let at_the_peer = blobs(&mut net, a, &l, &s1);
         erase_secret(&mut net, a, t, asp);
         net.run();
         assert!(!net.engine(a).body_not_dropped(&s1, &t, &ak), "case {i}: dropped under the cover");
         assert_eq!(snapshots(&mut net, a, &t, &ak).len(), n + 1, "case {i}: one cover per erasing edit");
         let ids = net.host_ids(host, &l);
-        assert!(at_host.iter().all(|b| !ids.contains(b)), "case {i}: deleted at the host");
+        assert!(at_the_peer.iter().all(|b| !ids.contains(b)), "case {i}: deleted at the host");
         net.blocked.clear();
         net.advance(10_000);
         let ec = net.engine(c);
@@ -512,8 +512,8 @@ fn text_partly_erased_covered_at_once_spec_commits_5() {
     // (spec/sync.md §7 Trigger: five live bodies compact)
     let before = snapshots(&mut net, a, &t, &ak);
     let carriers: Vec<_> = ids.iter().chain(&before).flat_map(|c| blobs(&mut net, a, &l, c)).collect();
-    let at_host: Vec<_> = carriers.into_iter().filter(|b| net.host_ids(host, &l).contains(b)).collect();
-    assert!(!at_host.is_empty());
+    let at_the_peer: Vec<_> = carriers.into_iter().filter(|b| net.host_ids(host, &l).contains(b)).collect();
+    assert!(!at_the_peer.is_empty());
     let mut m = Mutation::new();
     m.op(t, &GONETEXT, PathOp { path: Vec::new(), op: Op::Delete { at: chunk + chunk / 2 - 10, len: marker.len() + 20 } }).unwrap();
     net.engine(a).commit(m).unwrap().unwrap();
@@ -521,7 +521,7 @@ fn text_partly_erased_covered_at_once_spec_commits_5() {
     assert!(snapshots(&mut net, a, &t, &ak).len() > before.len(), "a cover");
     assert!(!net.engine(a).body_not_dropped(&old, &t, &ak), "the partly erased body goes at its first death");
     let ids_now = net.host_ids(host, &l);
-    assert!(at_host.iter().all(|b| !ids_now.contains(b)), "and at the host");
+    assert!(at_the_peer.iter().all(|b| !ids_now.contains(b)), "and at the host");
     let want = net.engine(a).get(&t, &ak).unwrap().unwrap();
     net.blocked.clear();
     net.advance(10_000);
@@ -550,7 +550,7 @@ fn text_fully_erased_covered_at_once_spec_commits_5() {
     let typed = net.engine(a).commit(m).unwrap().unwrap();
     net.run();
     let l = net.label(a);
-    let at_host = blobs(&mut net, a, &l, &typed);
+    let at_the_peer = blobs(&mut net, a, &l, &typed);
     let mut m = Mutation::new();
     m.op(t, &GONETEXT, PathOp { path: Vec::new(), op: Op::Delete { at: 0, len: 6 } }).unwrap();
     net.engine(a).commit(m).unwrap().unwrap();
@@ -559,7 +559,7 @@ fn text_fully_erased_covered_at_once_spec_commits_5() {
     assert!(!net.engine(a).body_not_dropped(&typed, &t, &ak), "dropped at its first death");
     assert_eq!(snapshots(&mut net, a, &t, &ak).len(), 1, "one carrier of the anchors");
     let ids = net.host_ids(host, &l);
-    assert!(at_host.iter().all(|b| !ids.contains(b)), "deleted at the host");
+    assert!(at_the_peer.iter().all(|b| !ids.contains(b)), "deleted at the host");
     net.blocked.clear();
     net.advance(10_000);
     let ec = net.engine(c);
@@ -596,8 +596,8 @@ fn dropped_snapshot_waits_for_its_carrier_spec_sync_7() {
     assert_eq!(snaps.len(), 1, "the carrier of the word's rest");
     let s1 = snaps[0];
     let l = net.label(a);
-    let at_host = blobs(&mut net, a, &l, &s1);
-    assert!(!at_host.is_empty() && at_host.iter().all(|b| net.host_ids(host, &l).contains(b)), "the snapshot is at the host");
+    let at_the_peer = blobs(&mut net, a, &l, &s1);
+    assert!(!at_the_peer.is_empty() && at_the_peer.iter().all(|b| net.host_ids(host, &l).contains(b)), "the snapshot is at the host");
     edit(&mut net, Op::Insert { at: 0, items: vec![s("two")] });
     assert!(net.engine(a).body_not_dropped(&s1, &t, &ak) && net.engine(a).delta_live(&s1, &t, &ak).unwrap(), "the word's rest is live");
     net.blocked.insert((a, host));
@@ -613,14 +613,14 @@ fn dropped_snapshot_waits_for_its_carrier_spec_sync_7() {
     net.feed(a, osis_node::sync::Event::Local);
     while net.step() {
         let ids = net.host_ids(host, &l);
-        if at_host.iter().any(|b| !ids.contains(b)) {
+        if at_the_peer.iter().any(|b| !ids.contains(b)) {
             let carrier_blobs: Vec<osis_base::BlobId> = carriers.iter().flat_map(|c| blobs(&mut net, a, &l, c)).collect();
             assert!(carrier_blobs.iter().any(|b| ids.contains(b)), "deleted at the peer before a carrier is there");
         }
     }
     net.run();
     let ids = net.host_ids(host, &l);
-    assert!(at_host.iter().all(|b| !ids.contains(b)), "deleted once the carrier is there");
+    assert!(at_the_peer.iter().all(|b| !ids.contains(b)), "deleted once the carrier is there");
     let carried = snapshots(&mut net, a, &t, &ak).into_iter().filter(|c| *c != s1).any(|c| {
         let bs = blobs(&mut net, a, &l, &c);
         !bs.is_empty() && bs.iter().all(|b| ids.contains(b))
@@ -643,8 +643,8 @@ fn carrier_by_writer_without_schema_spec_commits_5() {
     let (t, ak, l, c0) = kept_record(&mut net, a, g, &GONEMAP, "ERASED-3c5f", false);
     net.run();
     let _gone = net.take(a);
-    let at_host = blobs(&mut net, b, &l, &c0);
-    assert!(!at_host.is_empty());
+    let at_the_peer = blobs(&mut net, b, &l, &c0);
+    assert!(!at_the_peer.is_empty());
     let n = snapshots(&mut net, b, &t, &ak).len();
     let mut m = Mutation::new();
     m.op(t, &ak, PathOp { path: Vec::new(), op: Op::Remove(s("secret")) }).unwrap();
@@ -655,7 +655,7 @@ fn carrier_by_writer_without_schema_spec_commits_5() {
     let snaps = snapshots(&mut net, b, &t, &ak);
     assert_eq!(snaps.len(), n + 1, "one cover");
     let ids = net.host_ids(host, &l);
-    assert!(at_host.iter().all(|x| !ids.contains(x)), "deleted at the host");
+    assert!(at_the_peer.iter().all(|x| !ids.contains(x)), "deleted at the host");
 }
 
 // spec/commits.md §5 (purge: a writer holding no covering snapshot after applying the request
@@ -690,9 +690,9 @@ fn purge_resnapshot_by_writer_without_schema_spec_commits_5() {
     let l = net.label(a);
     let s1 = snapshots(&mut net, a, &t, &ak)[0];
     let _gone = net.take(a);
-    let at_host: Vec<_> = [c1, s1].iter().flat_map(|x| blobs(&mut net, b, &l, x)).collect();
+    let at_the_peer: Vec<_> = [c1, s1].iter().flat_map(|x| blobs(&mut net, b, &l, x)).collect();
     assert!(!blobs(&mut net, b, &l, &s1).is_empty());
-    assert!(at_host.iter().all(|x| net.host_ids(host, &l).contains(x)));
+    assert!(at_the_peer.iter().all(|x| net.host_ids(host, &l).contains(x)));
     let mut m = Mutation::new();
     m.op(t, &ak, PathOp { path: Vec::new(), op: Op::Remove(s("secret")) }).unwrap();
     m.purge_commit(c1, t, ak.clone());
@@ -702,7 +702,7 @@ fn purge_resnapshot_by_writer_without_schema_spec_commits_5() {
     let snaps: Vec<_> = snapshots(&mut net, b, &t, &ak).into_iter().filter(|x| *x != s1).collect();
     assert_eq!(snaps.len(), 1, "re-snapshotted");
     let ids = net.host_ids(host, &l);
-    assert!(at_host.iter().all(|x| !ids.contains(x)), "the purged bodies left the host");
+    assert!(at_the_peer.iter().all(|x| !ids.contains(x)), "the purged bodies left the host");
     net.blocked.clear();
     net.advance(10_000);
     let ec = net.engine(c);
@@ -744,13 +744,13 @@ fn purged_delta_never_held_reads_as_purger_spec_commits_5() {
     let w = net.engine(b).commit(m).unwrap().unwrap();
     net.run();
     let l = net.label(a);
-    let at_host = blobs(&mut net, b, &l, &w);
-    assert!(!at_host.is_empty() && at_host.iter().all(|x| net.host_ids(host, &l).contains(x)));
+    let at_the_peer = blobs(&mut net, b, &l, &w);
+    assert!(!at_the_peer.is_empty() && at_the_peer.iter().all(|x| net.host_ids(host, &l).contains(x)));
     purge_reg(&mut net, b, t, w);
     net.run();
     net.advance(60_000);
     let ids = net.host_ids(host, &l);
-    assert!(at_host.iter().all(|x| !ids.contains(x)), "the purged body left the host");
+    assert!(at_the_peer.iter().all(|x| !ids.contains(x)), "the purged body left the host");
     let ak = Ak::new(REG.ak()).unwrap();
     assert_eq!(net.engine(b).get(&t, &ak).unwrap(), None, "the purged write wins value-less");
     assert_eq!(own_snapshots(&mut net, b, &t, &ak), 1, "the purger re-snapshotted");
@@ -1686,8 +1686,8 @@ fn edit_unseen(len: usize) -> (usize, usize, usize) {
     let need: usize = cuts(&v2).into_iter().filter(|c| !old.contains(c)).map(|c| c.len()).sum();
     // b replaces the value and compacts: every blob of the old value's tree leaves the host
     let tree = net.engine(b).live_trees(&t).unwrap().blobs;
-    let at_host: std::collections::BTreeSet<_> = net.host_ids(host, &l).into_iter().collect();
-    assert!(tree.iter().all(|x| at_host.contains(x)), "the value's blobs are at the host");
+    let at_the_peer: std::collections::BTreeSet<_> = net.host_ids(host, &l).into_iter().collect();
+    assert!(tree.iter().all(|x| at_the_peer.contains(x)), "the value's blobs are at the host");
     let mut m = Mutation::new();
     m.set(t, &BLOB, &osis_base::Value::Bytes(vec![1, 2, 3])).unwrap();
     net.engine(b).commit(m).unwrap().unwrap();
@@ -1696,8 +1696,8 @@ fn edit_unseen(len: usize) -> (usize, usize, usize) {
     net.actions(b, acts);
     net.advance(4_000_000);
     net.advance(4_000_000);
-    let at_host: std::collections::BTreeSet<_> = net.host_ids(host, &l).into_iter().collect();
-    let left = tree.iter().filter(|x| at_host.contains(x)).count();
+    let at_the_peer: std::collections::BTreeSet<_> = net.host_ids(host, &l).into_iter().collect();
+    let left = tree.iter().filter(|x| at_the_peer.contains(x)).count();
     assert_eq!(left, 0, "blobs of the replaced value left at the host, of {}", tree.len());
     (sent, need, cuts(&v1).len())
 }
@@ -1744,8 +1744,8 @@ fn chunks_outliving_their_introducer_leave_the_host_spec_commits_5() {
     net.run();
     net.advance(4_000_000);
     net.advance(4_000_000);
-    let at_host: std::collections::BTreeSet<_> = net.host_ids(host, &l).into_iter().collect();
-    let left = tree.iter().filter(|x| at_host.contains(x)).count();
+    let at_the_peer: std::collections::BTreeSet<_> = net.host_ids(host, &l).into_iter().collect();
+    let left = tree.iter().filter(|x| at_the_peer.contains(x)).count();
     assert_eq!(left, 0, "blobs of the replaced value left at the host, of {}", tree.len());
 }
 
@@ -1804,8 +1804,8 @@ fn chunk_delete_waits_for_its_role_commits_at_the_host_spec_sync_7() {
     net.run();
     let l = net.label(a);
     let chunks: Vec<osis_base::BlobId> = net.engine(b).header(&write).unwrap().chunks.iter().map(|ch| ch.blob).collect();
-    let at_host = |net: &Net| -> usize { let held = net.host_ids(host, &l); chunks.iter().filter(|x| held.contains(x)).count() };
-    assert!(!chunks.is_empty() && at_host(&net) == chunks.len(), "b's value is chunked, at the host");
+    let at_the_peer = |net: &Net| -> usize { let held = net.host_ids(host, &l); chunks.iter().filter(|x| held.contains(x)).count() };
+    assert!(!chunks.is_empty() && at_the_peer(&net) == chunks.len(), "b's value is chunked, at the host");
     net.blocked.insert((a, host));
     net.drop_link(a, host);
     net.run();
@@ -1823,13 +1823,13 @@ fn chunk_delete_waits_for_its_role_commits_at_the_host_spec_sync_7() {
     // several passes within the relay delay
     for _ in 0..5 {
         net.advance(1_000);
-        assert_eq!(at_host(&net), chunks.len(), "kept at the host while the promotion is on its way there");
+        assert_eq!(at_the_peer(&net), chunks.len(), "kept at the host while the promotion is on its way there");
         assert_eq!(dels(&net), 0, "no chunk delete sent meanwhile");
         assert_eq!(ups(&net), up0, "b writes nothing again");
     }
     net.advance(31_000);
     net.advance(1_000);
-    assert_eq!(at_host(&net), 0, "deleted once the promotion is there");
+    assert_eq!(at_the_peer(&net), 0, "deleted once the promotion is there");
     assert_eq!(dels(&net), chunks.len(), "each chunk deleted once");
     let me = net.engine(b).me();
     let ids = net.engine(c).commit_ids();
@@ -1910,8 +1910,8 @@ fn forged_listing_keeps(author: usize) {
     net.advance(4_000_000);
     net.advance(4_000_000);
     assert!(!net.engine(w).body_not_dropped(&forged, &t1, &Ak::new(REG.ak()).unwrap()), "the forged body dropped");
-    let at_host: std::collections::BTreeSet<_> = net.host_ids(host, &l).into_iter().collect();
-    let gone = tree.iter().filter(|x| !at_host.contains(x)).count();
+    let at_the_peer: std::collections::BTreeSet<_> = net.host_ids(host, &l).into_iter().collect();
+    let gone = tree.iter().filter(|x| !at_the_peer.contains(x)).count();
     assert_eq!(gone, 0, "node {author}: t2's blobs deleted at the host, of {}", tree.len());
     assert_eq!(net.engine(w).get_full(&t2, &Ak::new(BLOB.ak()).unwrap()).unwrap(), Some(osis_base::Value::Bytes(v1.clone())), "node {author} reads t2");
 }

@@ -163,8 +163,8 @@ impl SyncEngine {
     /// and this node, not reading those entries, cannot show it is not (a fresh encryption past
     /// that delete would be deleted again, forever).
     pub(super) fn delete_stands(&mut self, host: Option<&HostKey>, l: LabelId, b: &Body, parts: &[usize], snaps: &Snaps, note: &mut Note) -> Result<bool> {
-        let at_host = |s: &Self, h: &HostKey| s.state.entries_of(&l, &b.commit).any(|(id, e)| matches!(&e.kind, Kind::Commit { parts, .. } if *parts == b.parts) && s.state.is_gone_at(h, &l, &id) && !s.state.is_present(h, &l, &id));
-        if !self.state.body_deleted(l, b.commit, &b.parts) && !host.is_some_and(|h| at_host(self, h)) {
+        let deleted_there = |s: &Self, h: &HostKey| s.state.entries_of(&l, &b.commit).any(|(id, e)| matches!(&e.kind, Kind::Commit { parts, .. } if *parts == b.parts) && s.state.is_gone_at(h, &l, &id) && !s.state.is_present(h, &l, &id));
+        if !self.state.body_deleted(l, b.commit, &b.parts) && !host.is_some_and(|h| deleted_there(self, h)) {
             return Ok(false);
         }
         // expiring within the clock drift allowed: a holder whose clock is ahead took it at expiry

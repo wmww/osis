@@ -812,8 +812,8 @@ fn node_cap_bounds_decoded_size_spec_sync_9() {
         net.run();
     };
     tiny(&mut net, 0, 500);
-    let at_host = net.hosts[host].hub.store().ephemeral_bytes(&l);
-    assert!(at_host < 40_000, "{at_host} B at the host: fits the cap encoded");
+    let at_the_peer = net.hosts[host].hub.store().ephemeral_bytes(&l);
+    assert!(at_the_peer < 40_000, "{at_the_peer} B at the host: fits the cap encoded");
     assert_eq!(net.sync(b).ephemeral_bytes(&l), 0, "refused before decoding");
     assert_eq!(net.eph_read(b, t, NOTES), None);
     assert!(rx.try_iter().any(|e| matches!(e, osis_node::Event::Diagnostic(d) if d.kind == osis_node::DiagnosticKind::EphemeralRefused)), "reported");
@@ -3458,8 +3458,8 @@ fn large_value_chunks_syncs_and_goes_spec_data_model_6() {
     assert!(tree.iter().all(|t| net.engine(b).has_blob(t)), "b holds its tree");
     let l = net.label(a);
     assert!(net.sync(b).ephemeral_bytes(&l) > 20 << 20, "its tree counts at b");
-    let at_host: BTreeSet<osis_base::BlobId> = net.hosts[host].hub.store().ephemeral_ids(&l).into_iter().collect();
-    assert!(tree.is_subset(&at_host), "and is at the host, in memory");
+    let at_the_peer: BTreeSet<osis_base::BlobId> = net.hosts[host].hub.store().ephemeral_ids(&l).into_iter().collect();
+    assert!(tree.is_subset(&at_the_peer), "and is at the host, in memory");
     // replaced by a small value and compacted: the commit is forgotten, its tree with it
     let mut m = Mutation::new();
     m.op(w, &eph(NOTES), PathOp { path: vec![PathSeg::Key(s("big"))], op: Op::Set(s("small")) }).unwrap();
@@ -3476,8 +3476,8 @@ fn large_value_chunks_syncs_and_goes_spec_data_model_6() {
         assert!(tree.iter().all(|t| !net.engine(n).has_blob(t)), "node {n} holds none of its tree");
     }
     assert!(net.sync(b).ephemeral_bytes(&l) < 1 << 20, "its charge released at b");
-    let at_host: BTreeSet<osis_base::BlobId> = net.hosts[host].hub.store().ephemeral_ids(&l).into_iter().collect();
-    assert!(tree.is_disjoint(&at_host), "nor the host");
+    let at_the_peer: BTreeSet<osis_base::BlobId> = net.hosts[host].hub.store().ephemeral_ids(&l).into_iter().collect();
+    assert!(tree.is_disjoint(&at_the_peer), "nor the host");
 }
 
 // spec/crdt.md §8, spec/sync.md §5: a paged ephemeral commit reaches a co-reader peer by its

@@ -86,7 +86,7 @@ fn chain_commits(chain: Vec<osis_base::Value>) -> Vec<(Vec<u8>, osis_commit::Com
 pub(crate) enum Src {
     /// A file bundle.
     Bundle,
-    /// A host connection.
+    /// A connection to a peer that cannot read the label.
     Host(ConnId),
     /// A session this node serves, by an upload to it.
     Served(ConnId),

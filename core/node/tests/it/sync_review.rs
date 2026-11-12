@@ -822,8 +822,8 @@ fn deleted_body_withholds_only_itself_spec_sync_6() {
     net.run();
     net.advance(120_000);
     net.run();
-    let at_host = net.host_ids(host, &l);
-    assert!(reg_body(&mut net).iter().any(|id| at_host.contains(id)), "the register's body uploaded again");
+    let at_the_peer = net.host_ids(host, &l);
+    assert!(reg_body(&mut net).iter().any(|id| at_the_peer.contains(id)), "the register's body uploaded again");
 }
 
 fn carry(net: &mut Net, n: usize, done: osis_node::flows::Done) {

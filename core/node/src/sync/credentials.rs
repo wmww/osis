@@ -149,7 +149,7 @@ impl SyncEngine {
         Some(labels.iter().map(|l| (*l, things.get(l).map_or(Judgment::Unknown, |t| judge.of(t)))).collect())
     }
 
-    /// The credential this node tests of each of `labels` at host connection `conn`, with the key
+    /// The credential this node tests of each of `labels` at `conn`, a peer that cannot read them, with the key
     /// its Hit signs the open with (issues/net-one-peer.md 3h2, Credential): of the peer's head
     /// there once open, else of the step the walk found shown, else of the newest recorded head
     /// (`step_key`: the step's sync key when this node holds that epoch's secret, else its claim

@@ -584,14 +584,14 @@ impl Net {
     pub fn add_host_with(&mut self, policy: HostPolicy) -> usize {
         let i = self.hosts.len();
         let clock = Arc::new(NodeClock { base: self.clock.clone(), skew: 0.into() });
-        let host = self.host_on(i, (MemoryBackend::new(), MemoryRoot::new()), (MemoryBackend::new(), MemoryRoot::new()), clock, policy, 900 + i as u64, true);
+        let host = self.peer_on(i, (MemoryBackend::new(), MemoryRoot::new()), (MemoryBackend::new(), MemoryRoot::new()), clock, policy, 900 + i as u64, true);
         self.hosts.push(host);
         i
     }
 
     /// Host `i` over its devices (created when `new`, else opened), its engine on `clock`.
     #[allow(clippy::too_many_arguments)]
-    fn host_on(&self, i: usize, hub_disk: (MemoryBackend, MemoryRoot), engine_disk: (MemoryBackend, MemoryRoot), clock: Arc<NodeClock>, policy: HostPolicy, seed: u64, new: bool) -> Host {
+    fn peer_on(&self, i: usize, hub_disk: (MemoryBackend, MemoryRoot), engine_disk: (MemoryBackend, MemoryRoot), clock: Arc<NodeClock>, policy: HostPolicy, seed: u64, new: bool) -> Host {
         let c: Arc<dyn Clock> = clock.clone();
         let blobs = Net::hub_store(&hub_disk, c.clone(), seed);
         let (b, r) = (Box::new(engine_disk.0.clone()), Box::new(engine_disk.1.clone()));
@@ -621,7 +621,7 @@ impl Net {
     pub fn wipe_host(&mut self, s: usize) {
         self.close_host(s);
         let clock = self.hosts[s].clock.clone();
-        self.hosts[s] = self.host_on(s, (MemoryBackend::new(), MemoryRoot::new()), (MemoryBackend::new(), MemoryRoot::new()), clock, HostPolicy::default(), 990 + s as u64, true);
+        self.hosts[s] = self.peer_on(s, (MemoryBackend::new(), MemoryRoot::new()), (MemoryBackend::new(), MemoryRoot::new()), clock, HostPolicy::default(), 990 + s as u64, true);
     }
 
     /// A backup of peer `s`'s durable state (its hub's store and its engine's), as a backup
@@ -635,7 +635,7 @@ impl Net {
     pub fn restore_store(&mut self, s: usize, disk: StoreDisk) {
         self.close_host(s);
         let clock = self.hosts[s].clock.clone();
-        self.hosts[s] = self.host_on(s, disk.hub, disk.engine, clock, HostPolicy::default(), 970 + s as u64, false);
+        self.hosts[s] = self.peer_on(s, disk.hub, disk.engine, clock, HostPolicy::default(), 970 + s as u64, false);
     }
 
     /// Restarts host `s` over its durable state: its connections are gone, its in-memory
@@ -649,7 +649,7 @@ impl Net {
         self.close_host(s);
         let h = &self.hosts[s];
         let (hub_disk, engine_disk, clock) = ((h.backend.clone(), h.root.clone()), h.engine_disk.clone(), h.clock.clone());
-        self.hosts[s] = self.host_on(s, hub_disk, engine_disk, clock, policy, 980 + s as u64, false);
+        self.hosts[s] = self.peer_on(s, hub_disk, engine_disk, clock, policy, 980 + s as u64, false);
     }
 
     /// Every node's connection to host `s` ends (the host going away).
