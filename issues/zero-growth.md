@@ -1,28 +1,9 @@
-# Unbounded writes leave no per-write data
-> Summary: First target built: a writer's own whole replaces cover its older commits and nodes forget them (spec/commits.md §5 Own replaces, Forgetting; `growth::single_writer_replace_grows_nothing`, flat with writes and with idle time). Left: receipts for commits covered by another writer, keep-previous for snapshot chains.
+# Unbounded writes leave no per-write data: leftovers
+> Summary: Built: stored state stays flat with writes for one writer's whole replaces and for several writers under automatic compaction (spec/commits.md §5 Own replaces, Forgetting; `growth::single_writer_replace_grows_nothing`, `several_writers_grow_nothing`, `several_writers_expiring_grow_nothing`). Left: work per write grows with commits held whole for an uncovered part, very large fields, and the user-facing wording.
 > Priority: normal
-> Tags: engine, perm, spec
-
-## Rule
-- A removal lists what came after the removed writer's newest snapshot and names that snapshot. A node forgets a commit, ID included, once the author's own cover (snapshot or whole replaces) covers it and no write of it is live; a content snapshot is forgotten so under its author's later one; role, creation, lasting and purge-carrying commits stay.
-- Commits covered only by another writer's snapshot keep a receipt (ID, author, actor, thing, aspect, receive time; about 50 B).
-- Clients compact their own writes automatically. Own means same author: an account's devices are one author, since a reader cannot tell them apart.
-
-## Built
-One small aspect, whole replaces, no membership change: stored bytes do not grow with the writes (node, reader, host; test in core/node/tests/it/growth.rs). A plain whole replace is its own cover, no compaction step: any later own whole replace held valid here covers (`Indexes::own_replaces` by thing, aspect, author; a function of what is held), once two such exist; a commit with several parts goes only whole (a reader cannot rewrite its blob to relay the rest); forgetting runs on events (`State::forget_due`), not scans (spec/commits.md §5 Own replaces). Work per write is flat at n and 10n with three writers (`growth::own_cover_work_per_write_is_flat`). The writer's previous replace stays until the next lands; `roles-model` `forget.rs` (`OWN_PREV`, `previous_snapshot_bounds_the_loss`, search `forget-prev`) confirms a cover that reached a node before the removal's `ts` keeps what it carries; two late covers in a row lose what only they carried.
+> Tags: engine, node, spec
 
 ## Left
-- Receipts for commits another writer's cover covers (rule above, about 50 B); commits covered only by another writer stay whole.
-- The keep-previous rule for snapshot chains (an own snapshot drops under the next at once, and is forgotten with it).
-- A commit with a part no own cover covers (a part on an aspect another writer compacts, a part a setting keeps) stays whole, and is judged again on each later write of its covered aspects (`left.wait`): work per write grows with such commits held.
-
-## Accepted (Tess)
-Permission changes over inconsistent connections cannot all work out; this is one more minor concession, like dropping a removed node's commits it synced to nobody.
-- A snapshot that reaches a node before the removal naming none of it, and counts for nothing after: the writes only it carried are gone (`roles-model` `forget.rs`, late snapshot).
-- A snapshot standing only on an addendum that later falls.
-- At account level, a hostile device's snapshot can claim a sibling's edit without its value.
-
-## To check when building
-- A snapshot rewrites the whole field, so a very large field needs a snapshot that links existing pages (none allowed today).
-- spec/requirements.md states the visible guarantee and the best-effort goals, in user terms, never naming snapshots; wording goes to Tess.
-- The model: `roles-model` `forget.rs`, `forget_account.rs`.
+- A commit with a part no own replace covers (a part on an aspect another writer compacts, a part a setting keeps) stays whole until a snapshot covers that part too, and is judged again on each later own replace of its covered aspects (node-sync `drop_covered`, `left.wait`): work per write grows with such commits held. Storage does not: the next snapshot of the other aspect drops the part, and the commit is forgotten.
+- A snapshot rewrites the whole field, so a very large field needs a snapshot that links existing pages (none allowed today): each compaction of it writes and uploads the whole field.
+- spec/requirements.md should state the visible guarantee (storage follows live data and kept history, not the number of writes) and the best-effort limits, in user terms, never naming snapshots; wording goes to Tess.

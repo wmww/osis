@@ -21,6 +21,7 @@ fn main() {
         Some("forget") => roles_model::forget::exhaustive(),
         Some("forget-min") => roles_model::forget::minimal(),
         Some("forget-prev") => roles_model::forget::prev_search(),
+        Some("forget-any") => roles_model::forget::any_search(),
         Some("forget-costs") => roles_model::forget::costs(),
         Some("forget-account") => roles_model::forget_account::exhaustive(),
         Some("addenda") => roles_model::addenda::random(samples, 0x5eed).print(),

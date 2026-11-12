@@ -1247,9 +1247,9 @@ impl Engine {
     /// (spec/commits.md §5, Forgetting): nothing waiting, and either holding no part, known only
     /// for a part dropped while invalid (`kept_invalid`, either class: spec/permissions.md §6),
     /// holding only purged leftovers (`kept_purged`, either class: a fall then has nothing to fetch), or
-    /// a durable content commit or content snapshot (one dropped under its author's later one:
-    /// else each compaction would leave a header for good), every part dropped as covered by a
-    /// cover of its own author, no purge request.
+    /// a durable content commit or content snapshot every part of which dropped as covered, by
+    /// any writer's cover, no purge request (else each write another writer compacts, and each
+    /// snapshot under a later one, would leave a header for good: `growth::several_writers_grow_nothing`).
     pub fn forgettable(&self, c: &CommitId) -> bool {
         // counted: tests read how many commits forgetting looks at
         let _s = crate::costs::span("forgettable");
@@ -1264,8 +1264,7 @@ impl Engine {
         if m.view.memory {
             return false;
         }
-        let own_cover = |d: &Dropped| d.why == DropFor::Cover && d.covered_by.iter().any(|x| core.ix.commits.get(x).is_none_or(|s| s.view.author == m.view.author));
-        matches!(m.view.kind, Kind::Content | Kind::ContentSnapshot) && !m.view.purges && m.dropped.len() == m.view.aspects.len() && m.dropped.values().all(own_cover)
+        matches!(m.view.kind, Kind::Content | Kind::ContentSnapshot) && !m.view.purges && m.dropped.len() == m.view.aspects.len() && m.dropped.values().all(|d| d.why == DropFor::Cover)
     }
 
     /// Every commit `forgettable` holds true of (the first tick after an open: forgetting

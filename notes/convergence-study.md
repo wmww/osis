@@ -26,11 +26,11 @@ No removal rule removes the class: convergence is decided by what the node dropp
 Classes: **F** forged copies by an authenticated writer (bounded, out of scope by requirements; nodes converge whenever both hold the same valid snapshots); **C** clock or arrival, transient; **L** nodes read alike but something is lost or never applied.
 - Sticky drop in the role timeline: a drop whose cause is later dropped stays (D only grows within a walk); alike at every node holding the same role commits; a re-grant recovers (notes/permissions.md Role timeline). L, about 1e-4 of random histories with offline revokers.
 - A valid snapshot's copy differing from a held delta's (forged) joins by the copy order wherever held, so nodes holding the same bodies agree; the forger picks the value, no worse than writing it: the original's body stays held, uncovered by any snapshot holding another copy (notes/permissions.md Snapshots and history). F, no divergence.
-- Equivocation by a valid writer whose first commit's writes are all dead: nodes that held the first void both, nodes that forgot it count the second (issues/session-sources.md). F.
+- Equivocation by a valid writer whose first commit's writes are all dead: nodes that held the first void both, nodes that forgot it count the second (spec/commits.md §5 Forgetting). F.
 - A forged snapshot listing a part makes the commit show partly until the part arrives (notes/engine-validity.md Snapshot authority). F.
 - A keep-at-least bound or an edge's `until` straddled by two nodes' clocks: delete and re-place while clocks differ (notes/sync-convergence.md Limits). C, seconds.
 - A value reads past its T until the next call or Tick (notes/ephemeral.md Expiry). C. A relay-only signal delivered twice after a restart, or late within `MAX_DRIFT` (spec/sync.md §9). C.
-- Session-sources double removal: a write left out of A's frontier because Y's snapshot Z covered it, then Y removed by a frontier not covering Z: lost alike (issues/session-sources.md). L; a demoter listing every commit avoids it.
+- Session-sources double removal: a write left out of A's frontier because Y's snapshot Z covered it, then Y removed by a frontier not covering Z: lost alike (spec/commits.md §5 Forgetting, Limit; roles-model `forget-any`). L; a demoter listing every commit avoids it.
 - Writes the revoker had not received (unreachable peers, edits not yet synced, in transit): lost alike; a re-grant brings back only those some node still holds (spec/requirements.md Permissions). The designed semantics.
 - Every writer dropped what only a reader kept: lasts to the next write (spec/requirements.md Deterministic; notes/engine.md Suspect repair).
 

@@ -7,6 +7,9 @@
 //!   leaver's writes (`Kind::RemSnap`, standing exactly while the removal applies) and lists
 //!   nothing it carries; a node forgets what any valid held cover carries (`B_ANY`), or only
 //!   what a removal's snapshot carries (`B_AFTER`).
+//! - `ANY`, `ANY_PREV`: a node forgets what any valid held cover carries, no removal snapshot
+//!   (the engine's rule: spec/commits.md §5 Forgetting); `forget-any` finds what it loses
+//!   that `OWN` keeps: a cover whose author an admin who never received it removes.
 //! - `Policy::grace`: a node forgets only that long after receiving the cover.
 //!
 //! Layer 2 is `addenda::Ctx`, judged per node over what the node really holds. Per-node
@@ -77,7 +80,7 @@ pub struct Policy {
     pub removal_snapshot: bool,
     pub grace: u32,
     /// A writer's previous snapshot stays until its next one lands: forgotten only once two
-    /// newer own valid held snapshots cover it (`OWN_PREV`; issues/zero-growth.md).
+    /// newer own valid held snapshots cover it (`OWN_PREV`; not built: notes/engine-retention.md Own replaces and forgetting).
     pub keep_prev: bool,
 }
 
@@ -88,12 +91,16 @@ impl Policy {
     pub const OWN: Policy = Policy { name: "A own, forget", forget: Forget::Own, own_cover: true, removal_snapshot: false, grace: 0, keep_prev: false };
     /// `OWN` keeping each writer's previous snapshot until its next lands.
     pub const OWN_PREV: Policy = Policy { name: "A own, forget, previous snapshot kept", forget: Forget::Own, own_cover: true, removal_snapshot: false, grace: 0, keep_prev: true };
+    /// Forget under any writer's valid held cover, no removal snapshot (built: spec/commits.md §5 Forgetting).
+    pub const ANY: Policy = Policy { name: "any cover, forget", forget: Forget::Any, own_cover: true, removal_snapshot: false, grace: 0, keep_prev: false };
+    /// `ANY` keeping a snapshot until two later valid held snapshots, of any writer, cover it.
+    pub const ANY_PREV: Policy = Policy { name: "any cover, forget, previous snapshot kept", forget: Forget::Any, own_cover: true, removal_snapshot: false, grace: 0, keep_prev: true };
     pub const B_ANY: Policy = Policy { name: "B removal snapshot, forget any cover", forget: Forget::Any, own_cover: true, removal_snapshot: true, grace: 0, keep_prev: false };
     pub const B_AFTER: Policy = Policy { name: "B removal snapshot, forget at removals", forget: Forget::AfterRemoval, own_cover: true, removal_snapshot: true, grace: 0, keep_prev: false };
 }
 
 /// The candidates compared with `LIST_ALL`.
-pub const CANDIDATES: [Policy; 5] = [Policy::OWN_KEEP, Policy::OWN, Policy::OWN_PREV, Policy::B_ANY, Policy::B_AFTER];
+pub const CANDIDATES: [Policy; 7] = [Policy::OWN_KEEP, Policy::OWN, Policy::OWN_PREV, Policy::ANY, Policy::ANY_PREV, Policy::B_ANY, Policy::B_AFTER];
 
 /// A snapshot to write at `t` by `author`: carries what it reads then.
 #[derive(Clone, Debug)]
@@ -345,7 +352,8 @@ impl<'a> Run<'a> {
             let mut covered = vec![false; n];
             let mut forget_now: Vec<usize> = vec![];
             // own snapshots standing over each commit: a kept previous snapshot needs two
-            let own_covers = |r: &Run<'a>, c: usize| (0..n).filter(|&s| matches!(r.w.items[s].kind, Kind::Snap(_)) && hdr2[s] && e.valid[s] && r.body[v][s] && r.w.items[s].author == r.w.items[c].author && r.coverage(s).contains(&r.w.items[c].id)).count();
+            let any = self.p.forget == Forget::Any;
+            let own_covers = |r: &Run<'a>, c: usize| (0..n).filter(|&s| matches!(r.w.items[s].kind, Kind::Snap(_)) && hdr2[s] && e.valid[s] && r.body[v][s] && (any || r.w.items[s].author == r.w.items[c].author) && r.coverage(s).contains(&r.w.items[c].id)).count();
             for s in 0..n {
                 let si = &self.w.items[s];
                 if !matches!(si.kind, Kind::Snap(_) | Kind::RemSnap { .. }) || !hdr2[s] || !e.valid[s] || !self.body[v][s] {
@@ -750,6 +758,36 @@ pub fn prev_search() {
     println!("{worlds} worlds: writes lost at a node {lost_uncovered}; lost though a carrying snapshot arrived before the removal's ts: {held_in_time_lost}");
     if let Some(s) = ex {
         print_min(Policy::OWN_PREV, "held in time, lost", &s);
+    }
+}
+
+/// What forgetting under any writer's cover (`ANY`) loses that forgetting under own covers
+/// (`OWN`) keeps, in a slice of the member family (one world in 200): counts, and the smallest
+/// example.
+pub fn any_search() {
+    let (mut worlds, mut extra) = (0u64, 0u64);
+    let mut ex: Option<Script> = None;
+    member_family((0, 200), |s| {
+        worlds += 1;
+        let (b, o, a) = (run(&s, Policy::LIST_ALL), run(&s, Policy::OWN), run(&s, Policy::ANY));
+        if (0..FRANK).any(|v| diff(&b, &a, v).0.len() > diff(&b, &o, v).0.len()) {
+            extra += 1;
+            if ex.is_none() {
+                ex = Some(s);
+            }
+        }
+    });
+    println!("{worlds} worlds; ANY loses more than OWN in {extra}");
+    if let Some(s) = ex {
+        let bad = |s: &Script| {
+            let (b, o, a) = (run(s, Policy::LIST_ALL), run(s, Policy::OWN), run(s, Policy::ANY));
+            (0..FRANK).any(|v| diff(&b, &a, v).0.len() > diff(&b, &o, v).0.len())
+        };
+        let m = minimize(s, &bad);
+        println!("{}", show(&m));
+        for v in 0..FRANK {
+            println!("  node {v}: list all {:?}, own {:?}, any {:?}", run(&m, Policy::LIST_ALL).visible[v], run(&m, Policy::OWN).visible[v], run(&m, Policy::ANY).visible[v]);
+        }
     }
 }
 
@@ -1259,6 +1297,21 @@ mod tests {
         s.remove(1001, ALICE, DAVE, 9, &[(CAROL, 11), (DAVE, 11), (EVE, 11), (BOB, 11)]);
         assert!(reads(&s, Policy::LIST_ALL, C));
         assert!(!reads(&s, Policy::B_ANY, C));
+    }
+
+    /// `ANY` (the engine's rule): Alice forgets Bob's edit under her own snapshot and removes
+    /// Bob, listing nothing; Carol, who never received the snapshot, had removed Alice first, so
+    /// the snapshot counts for nothing and the edit is lost. `OWN` keeps the header and lists
+    /// it. The accepted limit: a cover that later counts for nothing gives nothing back.
+    #[test]
+    fn any_loses_with_a_cover_whose_author_falls() {
+        let mut s = Script::new();
+        s.write(C, BOB, 1, &[(ALICE, 2)]);
+        s.snap(100, ALICE, 3, &[]);
+        s.remove(1000, ALICE, BOB, 6, &[]);
+        s.remove(1001, CAROL, ALICE, 5, &[]);
+        assert!(reads(&s, Policy::LIST_ALL, C) && reads(&s, Policy::OWN, C));
+        assert!(!reads(&s, Policy::ANY, C));
     }
 
     /// The removed writer gains nothing: Bob signs a backdated plain commit on a covered

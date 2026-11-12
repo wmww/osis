@@ -291,3 +291,74 @@ fn a_writer_without_the_right_stays_flat() {
         assert_eq!(net.engine(n).held_bodies(&t, &reg), 3, "node {n}: the creating commit and b's last two");
     }
 }
+
+// spec/commits.md §5 (Covered, Forgetting), notes/growth.md row 1: three writers replacing one
+// register in turn under automatic compaction (spec/sync.md §7 Trigger), each writer's
+// snapshot covering the others' commits and the snapshots before it, store the same rows and
+// bytes at every writer, a reader and their host after n and 10n more writes, each step ending with
+// a month of no writes. Writes go on to the same point of the trigger's cycle (as many bodies
+// held), so what is compared is what stays.
+#[test]
+fn several_writers_grow_nothing() {
+    several_writers(false);
+}
+
+// As `several_writers_grow_nothing`, each write expiring an hour out (spec/commits.md §6): an
+// expired write's leftover goes under the next snapshot past its expiry, and its commit with it.
+#[test]
+fn several_writers_expiring_grow_nothing() {
+    several_writers(true);
+}
+
+fn several_writers(expiring: bool) {
+    let mut net = Net::new();
+    let h = net.add_host();
+    let ws: Vec<usize> = (1..=3).map(|i| net.node(i, &[h])).collect();
+    let r = net.node(4, &[h]);
+    let g = net.group(ws[0], &[(ws[1], Role::Write), (ws[2], Role::Write), (r, Role::Read)], &[h]);
+    let t = net.item(ws[0], g, g, "first");
+    net.run();
+    let reg = osis_base::Ak::new("t:reg.0").unwrap();
+    let host = |net: &mut Net| {
+        let mut c: BTreeMap<String, (usize, usize)> = BTreeMap::new();
+        for (k, v) in net.hosts[h].hub.store().all_rows().unwrap() {
+            let e = c.entry(String::from_utf8_lossy(&k[..1.min(k.len())]).into_owned()).or_default();
+            e.0 += 1;
+            e.1 += k.len() + v.len();
+        }
+        c
+    };
+    let mut i = 0;
+    let mut step = |net: &mut Net, n: usize, held: Option<usize>| {
+        let end = i + n;
+        while i < end || held.is_some_and(|x| net.engine(ws[0]).held_bodies(&t, &reg) != x && i < end + 30) {
+            let mut m = osis_node::Mutation::new();
+            m.set(t, &reg, &s(&format!("v{i:08}"))).unwrap();
+            if expiring {
+                m.expires(t, &reg, osis_base::WallMs(net.now() + 3_600_000)).unwrap();
+            }
+            net.engine(ws[i % 3]).commit(m).unwrap().unwrap();
+            i += 1;
+            net.advance(1_000);
+            net.run();
+        }
+        let bodies = net.engine(ws[0]).held_bodies(&t, &reg);
+        net.advance(32 * 24 * 3600 * 1000);
+        net.run();
+        let mut c: Vec<_> = ws.iter().chain([&r]).map(|n| net.engine(*n).local_census().unwrap()).collect();
+        c.push(host(net));
+        (bodies, c, i)
+    };
+    // the first writes settle what is kept once (an expiring aspect's value-less list)
+    step(&mut net, 20, None);
+    let (bodies, c1, _) = step(&mut net, 20, None);
+    let (bodies2, c2, last) = step(&mut net, 180, Some(bodies));
+    assert_eq!(bodies, bodies2, "the same point of the trigger's cycle");
+    let newest = if expiring { None } else { Some(s(&format!("v{:08}", last - 1))) };
+    for n in ws.iter().chain([&r]) {
+        assert_eq!(net.read(*n, t), newest, "node {n} reads the newest");
+    }
+    for (who, (x1, x2)) in ["writer 1", "writer 2", "writer 3", "reader", "host"].into_iter().zip(c1.iter().zip(&c2)) {
+        flat(who, "n to 10n writes", x1, x2);
+    }
+}
