@@ -18,7 +18,8 @@ impl SyncEngine {
     }
 
     /// This node's chain certificates and node card under `l` (spec/permissions.md §4): the
-    /// aspects no entry under the label holds yet, as a fresh encryption per label. Another
+    /// aspects no entry under the label holds yet, as this node's one copy of those parts
+    /// (`place`, `State::own_copy`). Another
     /// node's entry counts only when this node checked it genuine (`genuine`), it is present at
     /// every host this node syncs the label with (the decision is the label's, not one
     /// host's), and a newcomer can open it: one granted after a rotation gets the history

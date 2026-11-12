@@ -211,8 +211,8 @@ impl SyncEngine {
     }
 
     /// Places commit `c`'s deltas on `aspects` as a certificate copy under every label of `g`
-    /// (spec/permissions.md §3, §4): a fresh encryption per label, uploaded or deposited at the
-    /// label's next pass.
+    /// (spec/permissions.md §3, §4): one blob of those parts, wrapped per label (spec/sync.md §3),
+    /// uploaded or deposited at the label's next pass.
     pub fn place_certificate(&mut self, g: &Tid, c: &CommitId, aspects: &BTreeSet<usize>) -> Result<Vec<Action>> {
         self.place_certificate_in(g, c, aspects, None)?;
         Ok(self.handle(super::Event::Local))
@@ -235,8 +235,7 @@ impl SyncEngine {
             self.deferred.push((*g, *c, aspects.clone(), owed));
             return Ok(());
         }
-        let own = self.engine.core.ix.commits.get(c).is_some_and(|m| m.origin == crate::events::Origin::Local);
-        let seed = if own && self.engine.role_on(&self.engine.group_actor(g)) < Some(Role::Write) { self.engine.deposit_seed(g)? } else { None };
+        let seed = self.cert_seed(g, c)?;
         let want = self.engine.header(c).map(|h| super::pass::parts_of(&h, |i| aspects.contains(&i))).unwrap_or_default();
         let mut unwrapped = false;
         for (l, hosts) in labels {
@@ -247,28 +246,9 @@ impl SyncEngine {
                 continue;
             }
             let parts: BTreeSet<usize> = want.difference(&mine).copied().collect();
-            let deposit = seed.as_ref().map(|s| osis_crypto::deposit_key(s, &l));
-            // nothing to place once its parts are dropped here (`State::sweep_certs`)
-            let Some(b) = self.engine.part_body(c, &parts)? else { continue };
-            // one blob of these parts, wrapped per label (`place`); a rotation-carrying copy is
-            // wrapped like the body (spec/crypto.md §5): other holders take it as the body's entry
-            let Some(id) = self.place(g, l, &b, true)? else {
+            if !self.place_cert_at(g, l, &hosts, c, &parts, seed.as_ref())? {
                 unwrapped = true;
                 continue;
-            };
-            if let Some(d) = &deposit
-                && let (Some(wrap), Some(blob)) = (self.state.entries.get(&(l, id)).map(|e| e.wrap), self.engine.blob(&id)?)
-            {
-                self.queue_deposit(l, &hosts, d, blob, wrap, None);
-            }
-            self.place_linked(l, c, &parts)?;
-            if let Some(d) = &deposit {
-                for id in self.engine.linked_blobs(c, &parts)? {
-                    let wrap = self.state.entries.get(&(l, id)).map(|e| e.wrap);
-                    if let (Some(wrap), Some(blob)) = (wrap, self.engine.blob(&id)?) {
-                        self.queue_deposit(l, &hosts, d, blob, wrap, None);
-                    }
-                }
             }
             self.state.add_cert(l, *c);
         }
@@ -279,6 +259,39 @@ impl SyncEngine {
             self.deferred.push((*g, *c, aspects.clone(), owed));
         }
         Ok(())
+    }
+
+    /// The deposit seed of `g` when commit `c` is this node's own write under a group it does
+    /// not write: its certificate copies there also go as deposits (`place_certificate_in`).
+    pub(crate) fn cert_seed(&mut self, g: &Tid, c: &CommitId) -> Result<Option<osis_crypto::Secret32>> {
+        let own = self.engine.core.ix.commits.get(c).is_some_and(|m| m.origin == crate::events::Origin::Local);
+        if own && self.engine.role_on(&self.engine.group_actor(g)) < Some(Role::Write) { self.engine.deposit_seed(g) } else { Ok(None) }
+    }
+
+    /// Places `parts` of `c` as a certificate copy under label `l` of `g` with the blobs it
+    /// links, queued as deposits too under `seed` (`cert_seed`). False when nothing wrapped it
+    /// (no current read secret); true too when its parts are dropped here (`State::sweep_certs`).
+    pub(crate) fn place_cert_at(&mut self, g: &Tid, l: LabelId, hosts: &[Address], c: &CommitId, parts: &BTreeSet<usize>, seed: Option<&osis_crypto::Secret32>) -> Result<bool> {
+        let deposit = seed.map(|s| osis_crypto::deposit_key(s, &l));
+        let Some(b) = self.engine.part_body(c, parts)? else { return Ok(true) };
+        // one blob of these parts, wrapped per label (`place`); a rotation-carrying copy is
+        // wrapped like the body (spec/crypto.md §5): other holders take it as the body's entry
+        let Some(id) = self.place(g, l, &b, true)? else { return Ok(false) };
+        if let Some(d) = &deposit
+            && let (Some(wrap), Some(blob)) = (self.state.entries.get(&(l, id)).map(|e| e.wrap), self.engine.blob(&id)?)
+        {
+            self.queue_deposit(l, hosts, d, blob, wrap, None);
+        }
+        self.place_linked(l, c, parts)?;
+        if let Some(d) = &deposit {
+            for id in self.engine.linked_blobs(c, parts)? {
+                let wrap = self.state.entries.get(&(l, id)).map(|e| e.wrap);
+                if let (Some(wrap), Some(blob)) = (wrap, self.engine.blob(&id)?) {
+                    self.queue_deposit(l, hosts, d, blob, wrap, None);
+                }
+            }
+        }
+        Ok(true)
     }
 
     /// After a settled pass of replaced label `l` of `g` at `host` that had nothing left to

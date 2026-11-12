@@ -2284,14 +2284,21 @@ impl SyncEngine {
     }
 
     /// A host refused entry `b` under `l` as tombstoned: gone there. This node's certificate copy
-    /// goes from the label as deleted: one blob serves every label needing its parts, so a reused
-    /// one can meet a deletion this node never saw; a pass places it again fresh where it must
-    /// (`State::own_copy` skips it while tombstoned here).
+    /// reused from another label meets a deletion there this node never saw (one blob serves
+    /// every label needing its parts, `State::own_copy`): it goes from `l` as deleted and a fresh
+    /// copy of its parts takes its place. A copy named under `l` alone (a fresh one, linked
+    /// chunks, list and record blobs) stays gone, so a host refusing every upload costs one fresh
+    /// copy, not one per pass.
     fn tombstoned(&mut self, host: HostKey, l: LabelId, b: BlobId) -> Result<()> {
         self.state.set_gone(host, l, b);
-        if self.state.entries.get(&(l, b)).is_some_and(|e| e.cert) {
-            self.absent_at(Some(host), l, b)?;
+        let Some(Entry { cert: true, kind: Kind::Commit { commit, parts, .. }, .. }) = self.state.entries.get(&(l, b)).cloned() else { return Ok(()) };
+        if !self.state.labels_of(&b).iter().any(|x| *x != l) || !self.absent_at(Some(host), l, b)? {
+            return Ok(());
         }
+        let Some(g) = self.group_of(&l, None) else { return Ok(()) };
+        let Some(hosts) = self.engine.group_labels(&g)?.into_iter().find(|x| x.id == l).map(|x| x.hosts) else { return Ok(()) };
+        let seed = self.cert_seed(&g, &commit)?;
+        self.place_cert_at(&g, l, &hosts, &commit, &parts.into_iter().collect(), seed.as_ref())?;
         Ok(())
     }
 

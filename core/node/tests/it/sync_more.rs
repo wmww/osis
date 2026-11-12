@@ -1722,3 +1722,37 @@ fn chain_copy_shared_reader_of_one_label_spec_sync_3() {
     assert_eq!(net.read(c, gs[1]), None, "nothing of the group c does not read");
     assert!(net.group_labels(c).iter().all(|(g, _)| *g != gs[1]), "nor its label");
 }
+
+// spec/sync.md §3 (one certificate copy across labels), §6 (Tombstones): `a`'s chain copies are
+// tombstoned under a second label's host before `a` joins it (as after a removal and re-grant
+// within the tombstone's life), so the reused blobs meet a deletion `a` never saw. `a` places
+// fresh copies of every one there, its account card too (placed once, not by a pass), and later
+// passes seal none.
+#[test]
+fn reused_chain_copy_tombstoned_placed_fresh_spec_sync_3() {
+    let (mut net, a, b, _, host, gs) = in_groups(1);
+    let g2 = net.group_seeded(b, &[], vec![net.address(host)], 7);
+    net.run();
+    let (_, old, _) = chain_blobs(&mut net, a, host, &gs);
+    let l2 = net.group_labels(b).into_iter().find(|(g, _)| *g == g2).map(|(_, l)| l.id).unwrap();
+    for id in &old {
+        let blob = osis_proto::LabelStore::blob(&*net.hosts[host].hub.store(), id).unwrap().unwrap();
+        let put = osis_proto::Put { blob_id: *id, blob: &blob, wrap: [7; osis_crypto::WRAP_LEN], stamp: None, expiry: None, ephemeral: false, replaces: &[], now: 0 };
+        osis_proto::LabelStore::put(&mut *net.hosts[host].hub.store(), &l2, put).unwrap();
+        let now = net.now_at(host);
+        osis_proto::LabelStore::delete(&mut *net.hosts[host].hub.store(), &l2, id, now).unwrap();
+        assert!(osis_proto::LabelStore::tombstoned(&*net.hosts[host].hub.store(), &l2, id).unwrap());
+    }
+    let ta = net.tid(a);
+    net.grant(b, g2, ta, Role::Write);
+    net.pair(b, a);
+    net.run();
+    let (commits, _, _) = chain_blobs(&mut net, a, host, &gs);
+    let live: BTreeSet<osis_base::BlobId> = net.host_ids(host, &l2).into_iter().collect();
+    let placed: BTreeSet<osis_base::CommitId> = net.sync(a).entries(&l2).into_iter().filter(|(id, _)| live.contains(id) && !old.contains(id)).filter_map(|(_, k)| if let EntryKind::Commit { commit, .. } = k { Some(commit) } else { None }).collect();
+    assert!(commits.iter().all(|c| placed.contains(c)), "a's chain under the second label as fresh copies");
+    osis_node::costs::take();
+    net.advance(60_000);
+    let sealed = osis_node::costs::take().into_iter().find(|x| x.0 == "copy sealed").map_or(0, |x| x.2);
+    assert_eq!(sealed, 0, "no copy sealed again");
+}
