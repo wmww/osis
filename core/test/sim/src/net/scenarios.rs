@@ -868,6 +868,22 @@ pub fn snapshot_rights(seed: u64) -> Res<Report> {
     let live: BTreeSet<osis_base::BlobId> = sim.hub(s).ok_or_else(|| sim.fail("no hub"))?.store().live_ids(&l).map_err(|e| sim.fail(e.to_string()))?.into_iter().collect();
     let entries = sim.sync(a)?.entries(&l);
     let at_host = |c: &osis_base::CommitId| entries.iter().any(|(id, x)| live.contains(id) && matches!(x, osis_node::sync::EntryKind::Commit { commit, .. } if commit == c));
+    // the compaction trigger writes snapshots of its own (spec/sync.md §7 Trigger): the latest
+    // snapshot stamp any node holds, and each written body's stamp where a node holds its header
+    let mut snap_ts = None;
+    let mut stamps = std::collections::BTreeMap::new();
+    for n in [a, b, w, fresh] {
+        let e = sim.engine(n)?;
+        for x in e.commit_ids() {
+            let Some(h) = e.header(&x) else { continue };
+            if h.kind == osis_commit::Kind::ContentSnapshot && h.aspects.iter().any(|y| y.tid == t && y.ak == k) {
+                snap_ts = snap_ts.max(Some(h.ts));
+            }
+            if written.iter().any(|w| w.0 == x) {
+                stamps.insert(x, h.ts);
+            }
+        }
+    }
     for (c, author, gone) in &written {
         // a live body is read on its own: no cover drops it (spec/commits.md §5 Covered). Purge on
         // replace: replaced at a (its write not live there), gone everywhere once the writers acted
@@ -883,9 +899,11 @@ pub fn snapshot_rights(seed: u64) -> Res<Report> {
         // two later commits, scenario or random (fresh writes as b's device)
         let later = sim.written.iter().skip_while(|x| x.1 != *c).skip(1).filter(|x| (if x.0 == fresh { b } else { x.0 }) == *author).count();
         let own = later >= 2;
-        let may_go = !is_live && (*gone || bound == 2 || fresh_compacted || own);
+        // a snapshot the trigger wrote after it covers it as an explicit one does
+        let snapped = stamps.get(c).is_some_and(|ts| snap_ts > Some(*ts));
+        let may_go = !is_live && (*gone || bound == 2 || fresh_compacted || own || snapped);
         if (*gone && bound != 1 && at_host(c)) || (!may_go && !at_host(c)) {
-            return Err(sim.fail(format!("{by:?} bound {bound}: body of node {author} at the host {}, should be gone {gone}", !*gone)));
+            return Err(sim.fail(format!("{by:?} bound {bound}: body of node {author} at the host {}, may go {may_go}, should be gone {gone}", at_host(c))));
         }
         for n in [a, b, w, fresh] {
             let e = sim.engine(n)?;
