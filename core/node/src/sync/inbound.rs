@@ -1354,44 +1354,85 @@ impl SyncEngine {
         Ok(())
     }
 
-    /// The holder keys a stranded report carried for `holder` (spec/wire.md §9): their records,
-    /// then their commits cut to `roles.0` and to `keys.0` on the holder and on the authors of
-    /// those writes (their cards), role commits first by `ts`, each judged like a chain
-    /// certificate, again while one that awaited something applies; what pends of them is kept
-    /// while the report is the newest naming `holder` on `l` (`State::reported`). No other
-    /// actor's keyset is taken from a report.
+    /// The holder keys a stranded report carried for `holder` (spec/wire.md §9), bounded by what
+    /// judging them needs (spec/permissions.md §4): `keys.0` deltas on the holder and on the
+    /// authors of those writes (their cards), and the records and `roles.0` deltas of the
+    /// holder's authority chain (`authority_chain`), taken as that chain grows from what they
+    /// bring; everything else is ignored. Each round takes records, then role commits first by
+    /// `ts`, each judged like a chain certificate, every one again while a round applies
+    /// something; what pends of them is kept while the report is the newest naming `holder` on `l`
+    /// (`State::reported`). No other actor's keyset is taken from a report.
     pub(super) fn take_holder_keys(&mut self, l: LabelId, holder: &Tid, keys: osis_label::HolderKeys) -> Result<()> {
-        self.engine.learn_records(keys.records)?;
         let on = |c: &osis_commit::CommitBlob, t: &dyn Fn(&Tid) -> bool| c.parts.iter().any(|p| c.header.aspects.get(p.ai).is_some_and(|a| a.ak.as_str() == "keys.0" && t(&a.tid)));
-        let mut todo = chain_commits(keys.commits);
-        let authors: BTreeSet<Tid> = todo.iter().filter(|(_, c)| on(c, &|t| t == holder)).map(|(_, c)| c.header.author).collect();
-        todo = todo
-            .into_iter()
-            .filter_map(|(_, mut c)| {
-                let aspects = &c.header.aspects;
-                c.parts.retain(|p| aspects.get(p.ai).is_some_and(|a| a.ak.as_str() == "roles.0" || a.tid == *holder || authors.contains(&a.tid)));
-                (!c.parts.is_empty()).then(|| (c.encode(), c))
-            })
-            .collect();
-        todo.sort_by_key(|(_, c)| (!c.header.kind.is_role(), c.header.ts));
-        // the report carries what pends of them (`sweep_pending`)
-        self.state.note_report(l, *holder, todo.iter().map(|(_, c)| c.id()).collect());
+        let mut rest = chain_commits(keys.commits);
+        let authors: BTreeSet<Tid> = rest.iter().filter(|(_, c)| on(c, &|t| t == holder)).map(|(_, c)| c.header.author).collect();
+        // what a part may be: `keys.0` on the holder or an author, `roles.0` on the chain
+        for (_, c) in &mut rest {
+            let aspects = &c.header.aspects;
+            c.parts.retain(|p| aspects.get(p.ai).is_some_and(|a| a.ak.as_str() == "roles.0" || a.tid == *holder || authors.contains(&a.tid)));
+        }
+        rest.retain(|(_, c)| !c.parts.is_empty());
+        rest.sort_by_key(|(_, c)| (!c.header.kind.is_role(), c.header.ts));
+        let mut records: BTreeMap<Tid, osis_base::CreationRecord> = keys.records.into_iter().map(|r| (r.tid(), r)).collect();
+        let mut taken: BTreeSet<CommitId> = BTreeSet::new();
+        // parts taken, tried again each round: one judged out for want of a record or an edge
+        // a later round takes applies then
+        let mut tried: Vec<osis_commit::CommitBlob> = Vec::new();
         for _ in 0..MAX_ROUNDS {
-            let mut later = Vec::new();
-            let mut progressed = false;
-            for (pt, c) in std::mem::take(&mut todo) {
-                match self.engine.ingest(&pt, Vec::new()) {
-                    Ok(Ingested::Awaits(..)) => later.push((pt, c)),
-                    Ok(_) => progressed = true,
-                    Err(e) => self.ingest_failed(&c, e)?,
+            let chain = self.authority_chain(holder);
+            let due: Vec<Tid> = records.keys().filter(|t| chain.contains(*t)).copied().collect();
+            let learn: Vec<osis_base::CreationRecord> = due.iter().filter_map(|t| records.remove(t)).collect();
+            let mut progressed = self.engine.learn_records(learn)? > 0;
+            let mut todo = std::mem::take(&mut tried);
+            for (_, c) in &mut rest {
+                let aspects = &c.header.aspects;
+                let due = |p: &osis_commit::Part| aspects.get(p.ai).is_some_and(|a| a.ak.as_str() != "roles.0" || chain.contains(&a.tid));
+                if !c.parts.iter().any(due) {
+                    continue;
                 }
+                let mut now = c.clone();
+                now.parts.retain(due);
+                c.parts.retain(|p| !due(p));
+                todo.push(now);
             }
-            if later.is_empty() || !progressed {
+            rest.retain(|(_, c)| !c.parts.is_empty());
+            todo.sort_by_key(|c| (!c.header.kind.is_role(), c.header.ts));
+            for c in todo {
+                taken.insert(c.id());
+                match self.engine.ingest(&c.encode(), Vec::new()) {
+                    Ok(Ingested::Applied(_)) => progressed = true,
+                    Ok(_) => {}
+                    Err(e) => {
+                        self.ingest_failed(&c, e)?;
+                        continue;
+                    }
+                }
+                tried.push(c);
+            }
+            if !progressed {
                 break;
             }
-            todo = later;
         }
+        // the report carries what pends of them (`sweep_pending`)
+        self.state.note_report(l, *holder, taken.into_iter().collect());
         self.engine.reexamine()
+    }
+
+    /// The things authority over `holder` comes from, as this node judges it now
+    /// (spec/permissions.md §1): `holder`, then each one's first admin and current holders,
+    /// transitively. Its records and edge writes are what verifying the holder's keys needs;
+    /// nobody outside it can add to it.
+    fn authority_chain(&self, holder: &Tid) -> BTreeSet<Tid> {
+        let (engine, core) = (&self.engine, &self.engine.core);
+        let mut out = BTreeSet::new();
+        let mut stack = vec![*holder];
+        while let Some(t) = stack.pop() {
+            if out.insert(t) {
+                stack.extend(engine.first_admin(&t));
+                stack.extend(core.current_holders(&t).into_iter().map(|x| x.0));
+            }
+        }
+        out
     }
 
     /// Whether an opened inbox blob carrying commit `c` is admitted (spec/sync.md §3, invite

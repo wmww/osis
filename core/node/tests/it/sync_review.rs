@@ -1261,6 +1261,91 @@ fn stranded_message_keys_pending_kept_spec_permissions_4() {
     assert!(net.engine(a).current_keys(&t).contains(&k), "applied once its time came");
 }
 
+/// Team T of node d's at a host neither admin `a` nor reader `c` of `stranded_pair` reaches, with
+/// node `e` its second admin, granted on g by `a`, which learns T only as d's keys show it (not
+/// e's edge nor e's record): (d, e, T).
+fn unreached_team(net: &mut Net, a: usize, c: usize, g: osis_base::Tid) -> (usize, usize, osis_base::Tid) {
+    let other = net.add_host();
+    let d = net.node(3, &[other]);
+    let e = net.node(4, &[other]);
+    for x in [a, c] {
+        for y in [d, e] {
+            net.blocked_peers.extend([(y, x), (x, y)]);
+        }
+    }
+    net.blocked.extend([(d, 0), (e, 0)]);
+    let t = net.group(d, &[(e, Role::Admin)], &[other]);
+    net.run();
+    let keys = net.sync(d).holder_keys(&t).unwrap();
+    net.engine(a).learn_records(keys.records).unwrap();
+    for v in keys.commits {
+        net.engine(a).ingest(&osis_base::encode(&v), Vec::new()).unwrap();
+    }
+    net.grant(a, g, t, Role::Read);
+    net.run();
+    (d, e, t)
+}
+
+// spec/permissions.md §4 (Stranded: the holder keys and the chain judging them): e, an admin of
+// team T that d made, rotates T where admin `a` knows neither e nor its edge. The report naming T
+// carries e's edge on T and e's record beside T's new keyset: `a` takes all three, the edge
+// because it is on T, the record once the edge names e among T's holders.
+#[test]
+fn stranded_message_brings_the_holders_authority_chain_spec_permissions_4() {
+    let (mut net, a, c, g, l, conn) = stranded_pair();
+    let (_, e, t) = unreached_team(&mut net, a, c, g);
+    let et = net.tid(e);
+    assert!(net.engine(a).core.created(&et).is_none(), "a lacks e's record");
+    let x = net.engine(e);
+    let rs = recipients_of(x, &[(et, Role::Admin)]);
+    let k = rotation(x, t, &rs, 44, false);
+    net.run();
+    let keys = net.sync(e).holder_keys(&t).unwrap();
+    net.inject(c, conn, &osis_proto::Message::Stranded { id: osis_proto::msg::NODE_IDS | 0x7400, label: l, holder: t, keys });
+    net.run();
+    assert!(net.engine(a).current_keys(&t).contains(&k), "T's new keyset taken with its chain");
+}
+
+/// The `roles.0` commits node `n` holds on `t`, whole, as plaintext values, and `t`'s record.
+fn role_history(net: &mut Net, n: usize, t: osis_base::Tid) -> (Vec<osis_base::Value>, osis_base::CreationRecord) {
+    let ids: Vec<osis_base::CommitId> = net.engine(n).core.ix.held.commits_on(&t).iter().map(|c| c.id).collect();
+    let limits = osis_base::Limits { max_depth: osis_base::format::MAX_OBJECT_DEPTH, max_bytes: osis_base::format::MAX_BLOB };
+    let vs = ids.iter().map(|x| osis_base::decode(&net.engine(n).run(|tx| tx.get_commit(x)).unwrap().unwrap().encode(), &limits).unwrap()).collect();
+    (vs, net.engine(n).core.created(&t).unwrap().clone())
+}
+
+// spec/requirements.md (peer input never causes unbounded storage), spec/permissions.md §4: a
+// stranded report brings only what judging the named holder's keys needs. Reports naming reader
+// c (a current holder) and carrying the role commits and records of team after team of d's,
+// nothing to do with c, leave admin `a` none of them, however many come; T's own, carried under
+// the name of c, are not taken either.
+#[test]
+fn stranded_reports_keep_nothing_beyond_the_holders_chain_spec_permissions_4() {
+    let (mut net, a, c, g, l, conn) = stranded_pair();
+    let (d, e, t) = unreached_team(&mut net, a, c, g);
+    let holder = net.tid(c);
+    let mut sent: Vec<(osis_base::Tid, Vec<osis_base::CommitId>)> = Vec::new();
+    for i in 0..4u32 {
+        let x = if i == 0 { t } else { net.group_seeded(d, &[(e, Role::Read)], Vec::new(), 100 + u64::from(i)) };
+        let (commits, record) = role_history(&mut net, d, x);
+        let ids = commits.iter().map(|v| osis_commit::CommitBlob::decode(&osis_base::encode(v)).unwrap().id()).collect();
+        sent.push((x, ids));
+        let keys = osis_label::HolderKeys { commits, records: vec![record] };
+        net.inject(c, conn, &osis_proto::Message::Stranded { id: osis_proto::msg::NODE_IDS | (0x7500 + i), label: l, holder, keys });
+        net.run();
+    }
+    for (i, (x, ids)) in sent.iter().enumerate() {
+        assert!(!ids.is_empty(), "report {i} carries role commits");
+        if i > 0 {
+            assert!(net.engine(a).core.created(x).is_none(), "report {i}: its record not kept");
+        }
+        for id in ids {
+            assert!(net.engine(a).header(id).is_none(), "report {i}: role commit {id:?} not kept");
+        }
+    }
+    assert!(net.engine(a).pending().is_empty(), "nothing pends");
+}
+
 // spec/permissions.md §4 (Stranded: to a connected peer that proved an account holding write or
 // above, else an inbox notice): a rotation leaves reader `c` out while it is away; back, stranded
 // at the host, it tells the admin it is connected to over the connection, once per step reached,
