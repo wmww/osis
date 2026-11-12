@@ -331,8 +331,8 @@ A commit of account P names the epoch it is signed at (spec/wire.md §4); §5.4 
 - At hosts a delete key proves the right as of the delta and the label key current roles (spec/sync.md §5). Limit: so a holder demoted since can still delete there what its old role allowed, until a writer holding the body uploads it again (spec/sync.md §6, After syncing; a reader's relay of the deleted blob meets its tombstone).
 - **Invalid deltas**: a node holds no delta it judges invalid past the transaction that judged it (spec/commits.md §5 Invalid). It keeps only:
   - a delta of a role commit: the timeline and the possible holders read every held edge write, of any validity (§5.1, spec/commits.md §4), and a label holds the commit whole (a deposit is promoted whole, spec/sync.md §5);
-  - a delta of its own commit: its user is told the write was refused and may write it again from it;
-  - an ephemeral part: its commit is forgotten once none of its parts is held (spec/sync.md §9), so it could not turn valid and come back.
+  - a delta of its own commit: its user is told the write was refused and may write it again from it.
+  - An ephemeral delta goes alike; its commit stays known while spec/sync.md §9 (Forgetting) keeps it.
   - A delta dropped so that turns valid again counts as never received and is fetched from any holder; with none it stays gone, at every node alike. The drop is no right's: no node deletes it at hosts for it (spec/sync.md §6).
 - What the right promises is that honest nodes keep the body. Which hosts carry it follows the thing's labels: a thing leaving a group leaves that label's hosts whatever its retention (spec/sync.md §6), and holders keep their copies.
 

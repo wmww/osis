@@ -357,11 +357,12 @@ A connection may subscribe to labels. The peer then pushes new log events (with 
 - **Holding**: every node holds the ephemeral commits it makes or receives, their blobs per label and their records, in memory only, never in its store or a bundle, until it restarts or they go (below).
   - **Verification**: a received one is verified as any commit (spec/commits.md §4) before its blob is kept, served or uploaded anywhere.
     - One whose author's record, a part's thing's record or a chain it needs is not held is unjudgeable (spec/commits.md §4): nothing of it is kept; its entry counts against the node's cap below until it is fetched again.
-    - Parts are judged (spec/permissions.md §5.2).
+    - Parts are judged (spec/permissions.md §5.2); an invalid part is dropped as a durable one (spec/permissions.md §6) and counts against no cap.
     - A session-form one applies atomically and an invalid part is un-merged (spec/crdt.md §4.6).
     - A part past its `expires` is held as its leftover, value-less, at every node (spec/crdt.md §4.7), one arriving past it included.
     - An ephemeral commit more than `MAX_DRIFT` ahead of the wall clock waits as a durable one does.
-  - **Forgetting**: a node forgets an ephemeral commit whole, header included, once none of its parts is held any more (each covered or superseded; a leftover is held until covered or superseded) and none waits, keeping of its header only what deleting its entries at hosts needs while it has any.
+  - **Forgetting**: a node forgets an ephemeral commit whole, header included, once none of its parts is held any more (each covered, superseded or dropped as invalid; a leftover is held until covered or superseded) and none waits, keeping of its header only what deleting its entries at hosts needs while it has any. One with a part dropped as invalid stays known, with no body, until no entry of it is known to the node and no delete of one is within its tombstone (`MAX_DRIFT`): a copy is not taken while it stays invalid, and valid again it is fetched again (spec/permissions.md §6).
+    - A peer asking for an entry the node listed as held there (§6) lacks it: one whose commit's body the node does not hold is absent there.
     - A copy of a forgotten commit arriving again applies and goes again by the same rules.
 - **Compaction**: any writer of the aspect compacts (spec/commits.md §2, §5).
   - **Trigger**: a node writes an ephemeral snapshot of an aspect once the session-form bodies it holds of it that a snapshot may cover (without `expires`, or held value-less past it), two at least, cost more than twice a snapshot of it, each counted as its deltas' bytes plus a per-part and a per-entry charge (local policy, what a holder's cap and a host charge). A host's refusal triggers nothing.

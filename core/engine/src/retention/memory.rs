@@ -30,13 +30,22 @@ pub(crate) fn vanish(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<Option<
 
 /// Forgets memory commit `c` once no part of it is held (each dropped or never received) and
 /// none waits: as if it had never applied (`unindex_commit`), its receipt kept. A copy arriving
-/// again applies again and goes again by the same rule.
+/// again applies again and goes again by the same rule. One with a part dropped while invalid
+/// stays known (`kept_invalid`): a copy is not taken while it stays invalid, and valid again it
+/// is fetched (`valid_again`); node-sync forgets it once it knows no entry of it
+/// (`Engine::forgettable`, spec/sync.md §9 Forgetting).
 pub(crate) fn forget_if_spent(tx: &mut Tx<'_>, c: &CommitId) -> Result<()> {
     let Some(m) = tx.core.ix.commits.get(c) else { return Ok(()) };
-    if !m.view.memory || m.dropped.is_empty() || (0..m.view.aspects.len()).any(|ai| m.holds(ai)) || tx.core.ix.pending.contains_key(c) {
+    if !m.view.memory || m.dropped.is_empty() || (0..m.view.aspects.len()).any(|ai| m.holds(ai)) || tx.core.ix.pending.contains_key(c) || kept_invalid(m) {
         return Ok(());
     }
     crate::apply::unindex_commit(tx, c)
+}
+
+/// Whether memory commit `m` holds no part and stays known only for a part dropped while
+/// invalid (`forget_if_spent`).
+pub(crate) fn kept_invalid(m: &crate::engine::Meta) -> bool {
+    m.view.memory && (0..m.view.aspects.len()).all(|ai| !m.holds(ai)) && m.dropped.keys().any(|ai| m.dropped_invalid(*ai))
 }
 
 /// A delete's ephemeral side (spec/commits.md §2, notes/ephemeral.md Deletion): every held part

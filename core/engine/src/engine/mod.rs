@@ -3169,13 +3169,11 @@ impl Engine {
                 }
                 // a body judged invalid goes at the end of the transaction that judged it
                 // (spec/permissions.md §6), after this node's addenda vouched for what they list;
-                // a memory transaction writes no durable row (and memory parts stay)
-                if !tx.txn.is_memory() {
-                    if r.is_ok() && !tx.core.drop_due.is_empty() {
-                        r = r.and_then(|v| crate::retention::drop_invalid(&mut tx).map(|_| v));
-                    }
-                    tx.core.drop_due.clear();
+                // a memory transaction drops memory parts only (`drop_invalid`)
+                if r.is_ok() && !tx.core.drop_due.is_empty() {
+                    r = r.and_then(|v| crate::retention::drop_invalid(&mut tx).map(|_| v));
                 }
+                tx.core.drop_due.clear();
                 if r.is_ok() && !tx.core.settings_due.is_empty() {
                     // the new timelines walk rows dated by this transaction's kills and
                     // validity changes: a row is never early (a superseder turning invalid moves

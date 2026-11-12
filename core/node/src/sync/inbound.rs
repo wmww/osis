@@ -2207,7 +2207,7 @@ impl SyncEngine {
             // goes again as soon as the new head is known, as a durable one); one of a body
             // forgotten meanwhile that no host holds goes
             if code != Code::OK && self.state.is_memory(&l, &b) {
-                let dead = matches!(self.state.entries.get(&(l, b)), Some(Entry { kind: Kind::Commit { commit, .. }, .. }) if !self.engine.holds_memory(commit));
+                let dead = matches!(self.state.entries.get(&(l, b)), Some(Entry { kind: Kind::Commit { commit, .. }, .. }) if !self.engine.memory_body_held(commit));
                 if dead && !self.state.present_anywhere(&l, &b) {
                     self.absent_at(None, l, b)?;
                 } else if matches!(code, Code::STORAGE_CAP | Code::RATE_LIMITED) {

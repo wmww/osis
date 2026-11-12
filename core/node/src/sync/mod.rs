@@ -95,7 +95,7 @@ pub(crate) type InboxPlain = (Vec<u8>, Vec<osis_base::Value>, Vec<osis_base::Cre
 /// The sync engine of one node.
 pub struct SyncEngine {
     pub(crate) engine: Engine,
-    /// Whether `forget_own_covered` has looked at every held commit since this open.
+    /// Whether `forget_forgettable` has looked at every held commit since this open.
     pub(crate) forget_seeded: bool,
     /// `sweep_pending` has looked at every pending commit since the start (a crash may have come
     /// between an entry leaving and its sweep).

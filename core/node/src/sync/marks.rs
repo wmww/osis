@@ -150,6 +150,12 @@ impl SyncEngine {
                 narrow.extend(h.aspects.iter().map(|a| (a.tid, a.ak.clone())));
             }
         }
+        // a memory commit kept only for a part dropped while invalid costs its label's cap nothing
+        for c in ch.commits.iter().filter(|c| self.engine.holds_memory(c) && !self.engine.memory_body_held(c)) {
+            for (l, b) in self.entries_of_commit(c) {
+                self.state.charge_memory(l, b, None);
+            }
+        }
         changed |= !ch.is_empty();
         wide |= !undropped.is_empty();
         narrow.extend(ch.aspects.iter().cloned());

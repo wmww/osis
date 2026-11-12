@@ -434,7 +434,7 @@ pub struct State {
     /// holder whose bounds are dated later re-uploads it every pass until its own bound, at
     /// infinity memory grows with deletions; live writes are carried either way).
     pub deleted: BTreeMap<DeletedBody, u64>,
-    /// Commits to look at for forgetting (`forget_own_covered`): one's last part dropped, entry
+    /// Commits to look at for forgetting (`forget_forgettable`): one's last part dropped, entry
     /// gone or tombstone expired.
     pub forget_due: BTreeSet<CommitId>,
     /// Commits with a row in `deleted`, and how many.

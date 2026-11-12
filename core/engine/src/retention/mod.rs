@@ -344,28 +344,36 @@ pub(crate) fn uncover(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
 /// Whether held part `ai` of `m` goes once judged invalid (spec/permissions.md §6): any but a
 /// role commit's (the role timeline and the possible holders read every held edge write, of any
 /// validity, spec/permissions.md §5.1, spec/commits.md §4; a label holds and promotes the commit
-/// whole, spec/sync.md §5), a part of this node's own commit (its user is
-/// told the write was refused and may write it again from it, `DiagnosticKind::OwnWriteInvalid`)
-/// and a memory part (forgotten with its commit once nothing of it is held, spec/sync.md §9, so it
-/// could not come back: notes/ephemeral.md What follows from memory).
+/// whole, spec/sync.md §5) and a part of this node's own commit (its user is told the write was
+/// refused and may write it again from it, `DiagnosticKind::OwnWriteInvalid`). A memory part
+/// goes as a durable one: its commit stays known while an entry of it is (`forgettable`).
 fn goes_invalid(core: &Core, m: &crate::engine::Meta, ai: usize) -> bool {
-    !m.valid_at(ai) && m.holds(ai) && !m.view.memory && Some(m.view.author) != core.me() && !m.view.kind.is_role()
+    !m.valid_at(ai) && m.holds(ai) && Some(m.view.author) != core.me() && !m.view.kind.is_role()
 }
 
 /// Drops every held part judged invalid in this transaction (`Core::drop_due`) but those
 /// `goes_invalid` keeps: its writes are none of the state's, so no read changes and no aspect is
 /// rebuilt (spec/crdt.md §4.6, spec/permissions.md §5.2). Run at the transaction's end, after
-/// this node's addenda (a witness lists what it received, `flows::addenda`).
+/// this node's addenda (a witness lists what it received, `flows::addenda`). A memory
+/// transaction writes no durable row: it drops memory parts only.
 pub(crate) fn drop_invalid(tx: &mut Tx<'_>) -> Result<()> {
+    let memory_only = tx.txn.is_memory();
     while !tx.core.drop_due.is_empty() {
-        let due = std::mem::take(&mut tx.core.drop_due);
+        let mut due = std::mem::take(&mut tx.core.drop_due);
+        if memory_only {
+            due.retain(|c| tx.core.ix.commits.get(c).is_some_and(|m| m.view.memory));
+        }
         crate::apply::run_batched(tx, |tx| {
             for c in &due {
                 let Some(m) = tx.core.ix.commits.get(c) else { continue };
                 let parts: Vec<usize> = (0..m.view.aspects.len()).filter(|ai| goes_invalid(tx.core, m, *ai)).collect();
-                for ai in parts {
-                    drop_part_for(tx, c, ai, DropFor::Invalid)?;
-                }
+                let memory = m.view.memory;
+                tx.in_class(memory, |tx| {
+                    for ai in parts {
+                        drop_part_for(tx, c, ai, DropFor::Invalid)?;
+                    }
+                    Ok(())
+                })?;
             }
             Ok(())
         })?;
@@ -426,9 +434,12 @@ pub(crate) fn valid_again(tx: &mut Tx<'_>, parts: &[(CommitId, usize)]) -> Resul
 fn reopen(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<Option<crate::engine::Meta>> {
     let Some(mut m) = tx.core.ix.commits.get(c).cloned() else { return Ok(None) };
     reopen_in(tx, c, &mut m, ai);
-    if let Some(blob) = tx.get_commit(c)? {
-        tx.put_commit(c, &blob, &m, Shred::No, None)?;
-    }
+    tx.in_class(m.view.memory, |tx| {
+        if let Some(blob) = tx.get_commit(c)? {
+            tx.put_commit(c, &blob, &m, Shred::No, None)?;
+        }
+        Ok(())
+    })?;
     tx.core.put_meta(*c, m.clone());
     Ok(Some(m))
 }
@@ -1092,16 +1103,24 @@ impl Engine {
         self.core.ix.commits.get(c).is_some_and(|m| m.holds(ai))
     }
 
-    /// Whether commit `c` may be forgotten, ID included (spec/commits.md §5, Forgetting): a
-    /// content commit, every part dropped as covered by a cover of its own author, no purge
-    /// request, nothing waiting.
+    /// Whether commit `c` may be forgotten, ID included, once node-sync knows no entry of it
+    /// (spec/commits.md §5, Forgetting): a content commit, every part dropped as covered by a
+    /// cover of its own author, no purge request, nothing waiting; or a memory commit holding no
+    /// part, nothing waiting, kept only for a part dropped while invalid (spec/sync.md §9
+    /// Forgetting, `memory::forget_if_spent`).
     pub fn forgettable(&self, c: &CommitId) -> bool {
         // counted: tests read how many commits forgetting looks at
         let _s = crate::costs::span("forgettable");
         let core = &self.core;
         let Some(m) = core.ix.commits.get(c) else { return false };
+        if core.ix.pending.contains_key(c) {
+            return false;
+        }
+        if m.view.memory {
+            return memory::kept_invalid(m);
+        }
         let own_cover = |d: &Dropped| d.why == DropFor::Cover && d.covered_by.iter().any(|x| core.ix.commits.get(x).is_none_or(|s| s.view.author == m.view.author));
-        !m.view.memory && m.view.kind == Kind::Content && !m.view.purges && m.dropped.len() == m.view.aspects.len() && m.dropped.values().all(own_cover) && !core.ix.pending.contains_key(c)
+        m.view.kind == Kind::Content && !m.view.purges && m.dropped.len() == m.view.aspects.len() && m.dropped.values().all(own_cover)
     }
 
     /// Every commit `forgettable` holds true of (the first tick after an open: forgetting

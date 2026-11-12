@@ -322,11 +322,13 @@ impl SyncEngine {
         out
     }
 
-    /// Forgets the durable commits awaiting it (`State::forget_due`) all of whose parts went as
-    /// covered by an own cover, once node-sync tracks no entry of them and no delete of a body of
-    /// them is within its tombstone (spec/commits.md §5, Forgetting). A commit becomes due when
+    /// Forgets the commits awaiting it (`State::forget_due`) the engine may forget
+    /// (`Engine::forgettable`: durable ones all of whose parts went as covered by an own cover,
+    /// memory ones known only for a part dropped while invalid), once node-sync tracks no entry
+    /// of them and no delete of a body of them is within its tombstone (spec/commits.md §5,
+    /// spec/sync.md §9 Forgetting). A commit becomes due when
     /// its last part is dropped, its last entry goes or its tombstone expires.
-    pub(crate) fn forget_own_covered(&mut self) -> Result<()> {
+    pub(crate) fn forget_forgettable(&mut self) -> Result<()> {
         if !self.forget_seeded {
             self.forget_seeded = true;
             self.state.forget_due.extend(self.engine.all_forgettable());
@@ -430,7 +432,7 @@ impl SyncEngine {
             Ok(Ingested::Applied(_)) => {}
             // a copy of a held commit is checked before it is kept or served on (a header with
             // junk parts would be served as the commit's)
-            Ok(Ingested::Duplicate(_)) if self.engine.holds_memory(&commit) => {
+            Ok(Ingested::Duplicate(_)) if self.engine.memory_body_held(&commit) => {
                 if self.engine.parts_genuine(cb) == Some(false) {
                     self.diag(format!("ephemeral commit {commit:?}: a copy that is not the commit's"));
                     return self.mark_bad(l, b);
@@ -458,6 +460,12 @@ impl SyncEngine {
                 self.diag(format!("ephemeral commit {commit:?}: {err}"));
                 return self.mark_bad(l, b);
             }
+        }
+        // every part invalid here (spec/permissions.md §6): no body held, nothing charged; the
+        // entry stays known, so the commit is (`Engine::forgettable`)
+        if self.engine.holds_memory(&commit) && !self.engine.memory_body_held(&commit) {
+            self.state.charge_memory(l, b, None);
+            return self.forget_blob(&b);
         }
         // counted as held in memory (decoded), not as its bytes, within the room given, so the
         // label stays under the cap
@@ -627,16 +635,18 @@ impl SyncEngine {
     }
 
     /// The peer wants gained entries: those are not present there (the pass uploads them); one
-    /// of a forgotten commit held nowhere goes (`absent_at`).
+    /// with no body here (its commit forgotten, or known only for a part dropped while invalid)
+    /// is absent there and goes once held nowhere (`absent_at`).
     pub(crate) fn memory_want(&mut self, conn: ConnId, l: LabelId, ids: &[BlobId]) -> Result<()> {
+        let Some(host) = self.conns.get(&conn).map(|c| c.host) else { return Ok(()) };
         let Some(mut g) = self.memory.gained.remove(&(conn, l)) else { return Ok(()) };
         for b in ids {
             if !g.remove(b) {
                 continue;
             }
-            let dead = matches!(self.state.entries.get(&(l, *b)), Some(Entry { kind: Kind::Commit { commit, .. }, .. }) if !self.engine.holds_memory(commit));
-            if dead && !self.state.present_anywhere(&l, b) {
-                self.absent_at(None, l, *b)?;
+            let dead = matches!(self.state.entries.get(&(l, *b)), Some(Entry { kind: Kind::Commit { commit, .. }, .. }) if !self.engine.memory_body_held(commit));
+            if dead {
+                self.absent_at(Some(host), l, *b)?;
             }
         }
         self.memory.gained.insert((conn, l), g);
@@ -934,7 +944,7 @@ impl SyncEngine {
 
     /// Memory entries held under `l` whose commit the engine holds (tests, diagnostics).
     pub fn ephemeral_entries(&self, l: &LabelId) -> usize {
-        self.memory_entries_of(l).filter(|(_, e)| matches!(&e.kind, Kind::Commit { commit, .. } if self.engine.holds_memory(commit))).count()
+        self.memory_entries_of(l).filter(|(_, e)| matches!(&e.kind, Kind::Commit { commit, .. } if self.engine.memory_body_held(commit))).count()
     }
 }
 

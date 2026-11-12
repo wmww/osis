@@ -122,6 +122,13 @@ impl Engine {
         self.core.ix.commits.get(id).is_some_and(|m| m.view.memory)
     }
 
+    /// Whether memory commit `id` is held with something of it to keep or serve: a part held,
+    /// or waiting. A commit known only for a part dropped while invalid holds nothing
+    /// (`retention::memory::kept_invalid`): its entries cost no cap and are served by nobody here.
+    pub fn memory_body_held(&self, id: &CommitId) -> bool {
+        self.core.ix.commits.get(id).is_some_and(|m| m.view.memory && !crate::retention::memory::kept_invalid(m)) || self.core.ix.pending.contains_key(id)
+    }
+
     /// Whether memory commit `id` waits here (pending or parked): not fully checked yet.
     pub fn memory_pending(&self, id: &CommitId) -> bool {
         self.core.ix.pending.contains_key(id)

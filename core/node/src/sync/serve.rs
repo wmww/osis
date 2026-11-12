@@ -659,7 +659,7 @@ impl SyncEngine {
             let ix = &self.engine.core.ix.commits;
             self.state.sweep_certs(|c| ix.get(c).is_some_and(|m| (0..m.header.aspects.len()).any(|ai| !m.body_gone(ai))));
         }
-        if let Err(e) = self.forget_own_covered() {
+        if let Err(e) = self.forget_forgettable() {
             self.diag(format!("forget: {e}"));
         }
         self.prune_charges();

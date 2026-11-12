@@ -714,12 +714,13 @@ fn removed_writer_ephemeral_unmerged_spec_permissions_5_2() {
     remove_holder(e, g, bt, &rs, 9);
     net.run();
     assert_eq!(notes(&mut net, a, w), map(&[("a", "1")]), "b's ephemeral write is un-merged");
-    // invalid now, they stay held and un-merged: memory parts are not dropped as invalid
-    // (spec/permissions.md §6; a later grant would re-merge them)
+    // invalid now, their bodies drop as durable ones do and cost the cap nothing; each stays
+    // known while an entry of it is (spec/permissions.md §6; valid again, it is fetched again)
     net.advance(60_000);
     for c in &theirs {
-        assert!(net.engine(a).holds_memory(c), "held, un-merged");
+        assert!(net.engine(a).holds_memory(c) && !net.engine(a).memory_body_held(c), "known, no body");
     }
+    assert_eq!(net.sync(a).ephemeral_bytes(&l), 0, "no charge left");
     assert_eq!(notes(&mut net, a, w), map(&[("a", "1")]));
 }
 
@@ -2467,6 +2468,59 @@ fn invalid_on_arrival_held_once_valid_spec_sync_9() {
     assert_eq!(notes(&mut net, d, w).get("r").map(String::as_str), Some("ok"), "valid now: joined; the earlier one still invalid");
 }
 
+// spec/permissions.md §6 (invalid deltas), spec/sync.md §9 Caps (security): a reader's flood of
+// ephemeral commits, each invalid on arrival, takes nothing of a writer's cap: their bodies are
+// dropped, each commit stays known (header only) while an entry of it is known here and is
+// forgotten with its last entry; another writer's ephemeral writes still reach it
+#[test]
+fn reader_flood_takes_no_cap_spec_permissions_6() {
+    let mut net = Net::new();
+    let s1 = net.add_host();
+    let a = net.node(1, &[s1]);
+    let cap = 200_000;
+    let b = net.add_node(2, SyncConfig { hosts: vec![net.address(s1)], ephemeral_bytes: cap, ..SyncConfig::default() });
+    let r = net.node(3, &[s1]);
+    let g = net.group(a, &[(b, Role::Write), (r, Role::Read)], &[s1]);
+    net.run();
+    let w = window(&mut net, a, g, "w");
+    net.run();
+    let l = net.label(a);
+    let wk = write_key(&mut net, a, g);
+    let ak = osis_base::Ak::new(NOTES).unwrap();
+    let used = net.sync(b).ephemeral_bytes(&l);
+    // twice the cap of small reader writes, as a host carrying the reader's deposits pushes them
+    let n = 200;
+    let mut flood = Vec::new();
+    for i in 0..n {
+        let c = forge_memory(&mut net, r, w, &ak, Value::Map(osis_base::ValueMap::from([(s(&format!("r{i}")), s("j"))])));
+        let (blob, ev) = sealed(&mut net, a, g, &c.blob, Some(&wk), 100 + i);
+        let acts = push(&mut net, b, s1, l, vec![ev]);
+        net.actions(b, acts);
+        flood.push((c.id, blob));
+    }
+    net.run();
+    assert_eq!(net.sync(b).ephemeral_bytes(&l), used, "the flood takes nothing of the cap");
+    let known: Vec<_> = net.engine(b).memory_commits().into_iter().filter(|(c, _, _)| flood.iter().any(|f| f.0 == *c)).collect();
+    assert!(known.iter().all(|(_, held, _)| *held == 0), "no body of the flood held");
+    assert!(known.len() <= n as usize, "at most a header per entry known");
+    // larger than any room a full cap leaves
+    let big = "a".repeat(8_000);
+    note(&mut net, a, w, "a", &big);
+    net.run();
+    assert!(notes(&mut net, b, w).get("a") == Some(&big), "a writer's write still applies");
+    assert!(notes(&mut net, b, w).keys().all(|k| !k.starts_with('r')), "the flood joins nothing");
+    // on the next connection the host lacks them (it never held them) and no body is here to
+    // upload, so the entries go; each header goes with its entry's tombstone (`MAX_DRIFT`)
+    net.set_online(b, false);
+    net.run();
+    net.set_online(b, true);
+    net.advance(15_000);
+    assert_eq!(net.sync(b).memory_kept()[6], 2, "no entry of the flood known");
+    net.advance(osis_base::format::MAX_DRIFT_MS);
+    let left = net.engine(b).memory_commits().into_iter().filter(|(c, _, _)| flood.iter().any(|f| f.0 == *c)).count();
+    assert_eq!(left, 0, "no header outlives its entries");
+}
+
 // notes/ephemeral.md Bounds, notes/ephemeral.md Memory commits: entries refused for a node's cap are
 // fetched again once its bytes drop (here another's write expires): the label is reconciled at
 // the next periodic pass instead of staying short until a restart. The cap fits the cursor and
@@ -3738,6 +3792,11 @@ fn holds_commit(lp: &osis_node::local_peer::LocalPeer, i: usize, id: &osis_base:
     lp.peers[i].engine.core.ix.commits.contains_key(id)
 }
 
+/// Whether peer `i` holds a part of commit `id` (a commit dropped while invalid is known, holding none).
+fn holds_body(lp: &osis_node::local_peer::LocalPeer, i: usize, id: &osis_base::CommitId) -> bool {
+    lp.peers[i].engine.memory_body_held(id)
+}
+
 // spec/crdt.md §4.7 (an expired delta goes value-less, its resets stay): 1's expiring replace
 // of the set 0 added to reads until T; past it the replace's element is gone and its reset stays
 // at its author, at 0 (held it at T) and at 2 (got it only after T, joined value-less): all
@@ -3840,8 +3899,12 @@ fn memory_superseded_once_superseder_valid_spec_sync_9() {
     memory_deliver(&mut lp, 2, &new);
     let valid = |lp: &osis_node::local_peer::LocalPeer, c: &osis_base::CommitId| lp.peers[2].engine.core.ix.commits.get(c).is_some_and(|m| m.valid.iter().all(|v| *v));
     assert!(holds_commit(&lp, 2, &old.0) && holds_commit(&lp, 2, &new.0) && !valid(&lp, &new.0), "both invalid at 2: neither supersedes");
+    assert!(!holds_body(&lp, 2, &old.0) && !holds_body(&lp, 2, &new.0), "dropped while invalid, known");
     lp.sync(0, 2).unwrap();
     assert!(valid(&lp, &new.0), "3's removal of 1 is invalid at 2");
+    // valid again: fetched again (spec/permissions.md §6), as node-sync does
+    memory_deliver(&mut lp, 2, &old);
+    memory_deliver(&mut lp, 2, &new);
     assert!(!holds_commit(&lp, 2, &old.0) && holds_commit(&lp, 2, &new.0), "the older move goes once the newer is valid");
     assert_eq!(lp.peers[2].engine.get(&d, &eph("t:big+.0")).unwrap(), Some(Value::Map([(me, s("c1"))].into())));
 }
@@ -4194,8 +4257,7 @@ fn memory_cover_invalidated_rejoins_spec_permissions_5_2() {
 // set adds and removals, and an admin demoting one writer mid-history, so memory snapshots turn
 // invalid after holders dropped and forgot what they covered; every blob is delivered again at
 // the end (to its author too: the B2 lane's job). Then every node reads alike and holds the same
-// memory commits, whatever arrived when (reads alike over 400 seeds; held sets differ at a few,
-// issues/eph-held-diverge.md)
+// memory commits, whatever arrived when (both checked over 400 seeds by hand)
 #[test]
 fn memory_random_snapshots_demotion_redelivered_alike_spec_permissions_5_2() {
     for seed in 0..5 {
@@ -4412,8 +4474,11 @@ fn memory_snapshot_turned_valid_covers_spec_sync_9() {
         memory_deliver(&mut lp, i, &c);
     }
     assert!(!holds_commit(&lp, 0, &x.0));
-    assert!(holds_commit(&lp, 2, &x.0), "invalid: covers nothing yet");
+    assert!(holds_commit(&lp, 2, &x.0) && !holds_body(&lp, 2, &x.0), "invalid: dropped, known, covers nothing");
     lp.deliver(2, &back).unwrap();
+    // valid again: both fetched again (spec/permissions.md §6), as node-sync does
+    memory_deliver(&mut lp, 2, &x);
+    memory_deliver(&mut lp, 2, &c);
     assert!(!holds_commit(&lp, 2, &x.0), "covered once valid");
     for i in 0..3 {
         assert_eq!(memory_tags(&mut lp, i, d), Some(Value::Set([s("X")].into())), "{i}");

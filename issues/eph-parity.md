@@ -1,7 +1,7 @@
 # Ephemeral data: differences from durable still to remove
-> Summary: Places where ephemeral data still differs from durable without following from "held in memory" (notes/ephemeral.md Principle): a delete's ephemeral state stays at other holders, purge is half-built, ephemeral deltas never page, invalid parts stay held (a reader can fill a holder's cap), host presence is relearned per connection, and an extra guard on deleting bodies outside the closure. Each has a plan below.
+> Summary: Places where ephemeral data still differs from durable without following from "held in memory" (notes/ephemeral.md Principle): a delete's ephemeral state stays at other holders, purge is half-built, ephemeral deltas never page, host presence is relearned per connection, and an extra guard on deleting bodies outside the closure. Each has a plan below.
 > Priority: normal
-> Tags: ephemeral, engine, sync, security, tess-call
+> Tags: ephemeral, engine, sync, tess-call
 
 ## Delete
 - Today (spec/sync.md §9 Sending, Delete; notes/ephemeral.md Deletion): `delete(T)` drops T's ephemeral state at the deleter only (`retention::memory::drop_things`); other holders keep it until they restart or it expires. Durable resets reach every holder.
@@ -23,11 +23,6 @@
 - At the default caps the node cap binds first (a state near a blob is charged far past 16 MiB, notes/ephemeral.md Bounds); a raised cap reaches the blob bound.
 - A size check at the writer cannot replace paging: received valid commits from others can grow the state past a blob, and a receiver may not refuse them by size.
 - Plan: pages on the memory path (memory page blobs in Core's overlay, placed and fetched as durable pages are), lifting both limits.
-
-## Invalid parts
-- Today (spec/permissions.md §6): a memory part judged invalid stays held until a restart, since its commit is forgotten once nothing of it is held and could not come back when valid again. Durable drops an invalid body and keeps its header.
-- Security: a reader's ephemeral commit, invalid on arrival, is held at the writer it reaches (checked by a probe of `reader_cannot_write_ephemeral_spec_permissions_1`); a demoted writer's later commits likewise. So a reader can fill a holder's per-label cap with invalid commits until the holder restarts, refusing other writers' ephemeral writes there.
-- Plan: drop an invalid memory part like a durable one and keep its commit known with no body (the header only, as the Purge plan keeps a purged part); a part that turns valid is fetched again (the drop deletes nothing at hosts). At least never hold a part invalid on arrival. Then remove the `!m.view.memory` exception in `retention::goes_invalid`.
 
 ## Presence at a host
 - Today (spec/sync.md §9 Held at a host, `MemorySync::memory_gained`): a node relearns which memory entries a host holds on every connection, listing them as `gained` in its first Sync. Past `MAX_GAINED` entries per label it lists none and uploads every held body again, on every reconnect.
