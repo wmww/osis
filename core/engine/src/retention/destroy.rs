@@ -348,15 +348,11 @@ fn every_creation_expired(tx: &Tx<'_>, t: &Tid) -> bool {
 /// holder), or for a key actor a held durable commit it signed or acted in has a part held on
 /// another thing (`Indexes::signed`).
 pub(crate) fn dependents(core: &crate::engine::Core, t: &Tid) -> bool {
-    if core.ix.held.named_on(t).any(|x| x != t) {
-        return true;
-    }
-    if !core.is_key_actor(t) {
-        return false;
-    }
-    let signed = core.ix.signed.get(t).is_some_and(|n| *n > 0);
-    debug_assert_eq!(signed, core.ix.commits.values().any(|m| !m.view.memory && (m.view.author == *t || m.view.actor == *t) && m.view.aspects.iter().enumerate().any(|(ai, a)| a.tid != *t && !m.dropped.contains_key(&ai))), "Indexes::signed of {t}");
-    signed
+    let key = core.is_key_actor(t);
+    let signed = key && core.ix.signed.get(t).is_some_and(|n| *n > 0);
+    // checked on every key actor judged, named or not
+    debug_assert!(!key || signed == core.ix.commits.values().any(|m| !m.view.memory && (m.view.author == *t || m.view.actor == *t) && m.view.aspects.iter().enumerate().any(|(ai, a)| a.tid != *t && !m.dropped.contains_key(&ai))), "Indexes::signed of {t}");
+    signed || core.ix.held.named_on(t).any(|x| x != t)
 }
 
 /// Drops everything of `t` (`apply_destructions`) but what it keeps (the module doc). Whether the role
