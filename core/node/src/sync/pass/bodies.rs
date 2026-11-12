@@ -478,7 +478,8 @@ impl SyncEngine {
         }
         let desired = desired(&bodies);
         let entries: Vec<(BlobId, Entry)> = self.state.label_entries(l).map(|(b, e)| (b, e.clone())).collect();
-        let at = At { g, l: *l, host: Some(*host), keys: &keys, snaps: &snaps, settled: unsettled.is_empty(), behind: false };
+        let full = self.conns.values().filter(|c| c.host == *host).any(|c| c.labels.get(l).is_some_and(|x| x.full));
+        let at = At { g, l: *l, host: Some(*host), keys: &keys, snaps: &snaps, settled: unsettled.is_empty(), behind: false, full };
         for (id, e) in entries {
             if let Fate::Delete(why, _) = self.deletable(&at, &id, &e, &desired, false, &mut note)? {
                 v.must_not.push((id, format!("{why:?}")));

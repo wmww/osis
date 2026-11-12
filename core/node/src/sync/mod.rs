@@ -229,9 +229,6 @@ pub struct SyncEngine {
     pub(crate) work: BTreeMap<osis_base::LabelId, work::Work>,
     /// When this node first saw each entry deposited at a host (wall ms; the promotion wait).
     pub(crate) deposit_seen: BTreeMap<(HostKey, LabelId, osis_base::BlobId), u64>,
-    /// This node's uploads a host refused for the label's cap (code 12), until taken there
-    /// or no longer held: a purged body they would carry goes first (spec/sync.md §7).
-    pub(crate) capped: BTreeSet<(HostKey, LabelId, osis_base::BlobId)>,
     /// Stranded reports sent (`reports::stranded`): (label, sync key of the step reached,
     /// recipient). In memory: after a restart each goes once more.
     pub(crate) stranded_sent: BTreeSet<(LabelId, [u8; 32], reports::To)>,
@@ -456,7 +453,6 @@ impl SyncEngine {
             passing: false,
             work: BTreeMap::new(),
             deposit_seen: BTreeMap::new(),
-            capped: BTreeSet::new(),
             stranded_sent: BTreeSet::new(),
             stranded_on: BTreeSet::new(),
             stranded_asks: BTreeMap::new(),

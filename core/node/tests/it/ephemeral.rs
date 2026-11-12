@@ -4624,6 +4624,37 @@ fn moving_cursor_one_entry_per_author_spec_sync_9() {
     assert_eq!(entries(&net), base);
 }
 
+// spec/sync.md §9 Superseded parts, §10 Full: a peer with room for one entry of a refreshed
+// cursor and not two refuses each refresh for room while the last one is there; the author deletes
+// the superseded entry anyway (the superseder waits there for that room), the peer pulls again and
+// takes the refresh, so the other holder reads each refresh before the last one expires
+#[test]
+fn refresh_reaches_a_peer_with_room_for_one_spec_sync_9() {
+    const E: u64 = 30_000;
+    let mut net = Net::new();
+    let host = net.add_host_with(osis_host::HostPolicy { ephemeral_bytes: 4_000, ..osis_host::HostPolicy::default() });
+    let a = net.node(1, &[host]);
+    let b = net.node(2, &[host]);
+    let g = net.group(a, &[(b, Role::Write)], &[host]);
+    net.run();
+    // the window's entry and one cursor's fit, not two cursors'
+    let w = window(&mut net, a, g, "w");
+    net.run();
+    let l = net.label(a);
+    let me = s(&net.tid(a).to_string());
+    for i in 0..3 {
+        let mut m = Mutation::new();
+        m.op(w, &eph(CURSOR), PathOp { path: vec![PathSeg::Key(me.clone())], op: Op::Put(s(&format!("c{i}"))) }).unwrap();
+        m.expires(w, &eph(CURSOR), osis_base::WallMs(net.now() + E)).unwrap();
+        net.engine(a).write(m).unwrap();
+        local(&mut net, a);
+        net.run();
+        assert!(net.hosts[host].hub.store().ephemeral_bytes(&l) <= 4_000, "refresh {i}: the peer stays within its cap");
+        assert_eq!(net.eph_read(b, w, CURSOR), Some(Value::Map([(me.clone(), s(&format!("c{i}")))].into())), "refresh {i}");
+        net.advance(E / 2);
+    }
+}
+
 // spec/crdt.md §4.7, §5.6 Live: b's `Set` into a's expiring entry carries the key as its own value
 // and keeps its own (later) expiry: past the entry's a and b, which held both, read the entry under
 // b's write; c, restarted after it, holds b's write without the entry's creation (gone at its

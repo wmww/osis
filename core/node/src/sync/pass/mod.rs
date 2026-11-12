@@ -131,8 +131,8 @@ pub(crate) struct Head {
 }
 
 impl Head {
-    fn at<'a>(&'a self, snaps: &'a Snaps, settled: bool, behind: bool) -> At<'a> {
-        At { g: self.g, l: self.l, host: self.host, keys: &self.keys, snaps, settled, behind }
+    fn at<'a>(&'a self, snaps: &'a Snaps, settled: bool, behind: bool, full: bool) -> At<'a> {
+        At { g: self.g, l: self.l, host: self.host, keys: &self.keys, snaps, settled, behind, full }
     }
 }
 
@@ -150,6 +150,9 @@ struct At<'a> {
     /// one stamped for its head) is not at the source yet (its relay waits, or the source has
     /// not pulled it): deletions there wait (`deletions`), as an upload went before a delete.
     behind: bool,
+    /// The source is full for the label (spec/sync.md §10 Full): it takes nothing until room
+    /// appears, so no delete waits for it to take a carrier.
+    full: bool,
 }
 
 pub(super) fn is_snapshot(k: CKind) -> bool {
@@ -573,7 +576,7 @@ impl SyncEngine {
         }
         if own {
             // what this node's store must not hold goes, whoever else holds the label
-            self.local_deletions(&p.at(&snaps, settled, false), &bodies, &scope, &mut left)?;
+            self.local_deletions(&p.at(&snaps, settled, false, false), &bodies, &scope, &mut left)?;
             self.reseal(&g, l)?;
         }
         w.leave(left);
@@ -682,7 +685,7 @@ impl SyncEngine {
         self.deposit_items(conn, &p, deposits, out)?;
         self.clear_deposits(conn, host, &p, out)?;
         let quiet = self.is_replaced(&g, &l) && sends.iter().all(|o| !lacks(self, &o.id));
-        self.deletions(conn, &p.at(snaps, settled, behind_here), bodies, scope, left, out)?;
+        self.deletions(conn, &p.at(snaps, settled, behind_here, full), bodies, scope, left, out)?;
         if quiet && settled {
             self.retire_at(host, &g, l)?;
         }

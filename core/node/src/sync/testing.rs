@@ -85,7 +85,6 @@ impl SyncEngine {
                 passing: self.passing.clone(),
                 work: self.work.clone(),
                 deposit_seen: self.deposit_seen.clone(),
-                capped: self.capped.clone(),
                 stranded_sent: self.stranded_sent.clone(),
                 stranded_on: self.stranded_on.clone(),
                 stranded_asks: self.stranded_asks.clone(),
