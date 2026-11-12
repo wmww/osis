@@ -44,13 +44,16 @@ pub(crate) fn part_bound(p: &osis_commit::Part) -> Result<u64> {
     Ok(part_charge(heap, p.delta.len()))
 }
 
+/// What `each_page` calls per page: its blob, its plaintext.
+pub(crate) type PageVisit<'a> = dyn FnMut(&[u8], &[u8]) -> Result<()> + 'a;
+
 /// Each page and link page a paged part's `delta` links (spec/crdt.md §8), with its plaintext:
 /// blobs of the commit's chunk list (`listed`) reached by a link from the delta or a page, held
 /// here. Only listed blobs are followed: a page outside it is bad input (`osis_commit::verify_part`),
 /// and a value's link to another blob (a durable chunk tree) is no page of it. A listed value
 /// tree's node (and so its chunks) is no page: neither visited nor followed. A delta or page that
 /// is not one CBOR value is `BadInput`.
-pub(crate) fn each_page(tx: &mut Tx<'_>, delta: &[u8], listed: &BTreeSet<osis_base::BlobId>, f: &mut dyn FnMut(&[u8], &[u8]) -> Result<()>) -> Result<()> {
+pub(crate) fn each_page(tx: &mut Tx<'_>, delta: &[u8], listed: &BTreeSet<osis_base::BlobId>, f: &mut PageVisit<'_>) -> Result<()> {
     let limits = |b: &[u8]| osis_base::Limits { max_depth: osis_base::format::MAX_OBJECT_DEPTH, max_bytes: b.len() };
     let mut stack = Vec::new();
     osis_base::visit_links(delta, &limits(delta), &mut |l| stack.push(l)).map_err(|_| Error::BadInput("part not one CBOR value"))?;

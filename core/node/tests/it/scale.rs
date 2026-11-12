@@ -1470,7 +1470,7 @@ fn chunk_drop(n: usize) -> (u64, u64) {
         m.set(t, &crate::net::BLOB, &Value::Bytes(v.clone())).unwrap();
         net.engine(a).commit(m).unwrap();
         net.run();
-        let acts = net.sync(a).compact(&t, &blob).unwrap();
+        let acts = net.sync(a).compact_now(&t, &blob).unwrap();
         net.actions(a, acts);
         net.advance(4_000_000);
     };
