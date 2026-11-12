@@ -45,6 +45,7 @@ Format: `- <date time> <box> `<limit>` [<test>] <CPU|wall> <measured>/<limit> s 
 - 2026-11-12 fastbox-0 `gate.hold` wall 240/177 s, `gate` wall 275/220 s at load 20, CPU within limits: chunked-header-drop review (osis-commit, -engine, -node changed), no lock wait; persistent, issues/gate-five-minutes.md.
 - 2026-11-12 fastbox-0 `gate.hold` wall 252/177 s, `gate` wall 312/220 s (1.42x) at load 25, CPU within limits: eph-reverts-seed review (osis-node changed), no lock wait; persistent, issues/gate-five-minutes.md.
 - 2026-11-11 20:44 ostrich `gate.hold` CPU 6594/3795 s, wall 695/241 s, and `gate` CPU 7165/4094 s, wall 809/299 s, at load 21: every crate selected (alloc-cut review: base, crdt, store reach everything); persistent, issues/gate-five-minutes.md.
+- 2026-11-12 04:43 fastbox-0 `gate.hold` wall 306/177 s, `gate` wall 418/220 s (164 s of it the heavy-lock wait) at load 17, CPU within limits, every stage within its own limit: eph-churn-loop review (osis-node changed); persistent, issues/gate-five-minutes.md.
 
 ## Investigations
 One section per investigation: date and box, the trigger (hits or the run over 2x), what was tried, the outcome (fixed, or a raised limit with why no good solution was found). Tess reviews every raise.
