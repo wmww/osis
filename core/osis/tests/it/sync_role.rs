@@ -169,3 +169,27 @@ fn a_reader_demoted_to_sync_keeps_the_sync_secret_alone_spec_permissions_3() {
     assert!(secrets(&bob, g, Role::Read).is_empty(), "the read secrets go");
     assert_eq!(bob.at(t, osis::DynamicAspectKey::untyped(ak("t:x.0"))).get().unwrap(), None, "what only they read goes");
 }
+
+// spec/sync.md §3, spec/permissions.md §3: a holder of sync alone reads no rotation under the
+// label (its commits open under read secrets), so a rotation boxing it reaches it by its inbox:
+// Bob derives the new sync key after Carol's removal.
+#[test]
+fn a_rotation_reaches_a_sync_only_holder_by_its_inbox_spec_sync_3() {
+    let (mut w, alice, others, ids) = common::people(2);
+    let (bob, carol) = (&others[0], &others[1]);
+    let g = group(&alice);
+    for id in &ids {
+        alice.grant(g, *id, Role::Sync, GrantOpts::default()).unwrap();
+    }
+    w.run();
+    assert_eq!(bob.role_on(g).unwrap(), Some(Role::Sync));
+    let sync0 = newest(&alice, g, Role::Sync);
+    alice.set_role(g, carol.me(), None, SetRoleOpts::default()).unwrap();
+    item(&alice, g, "after");
+    w.run();
+    assert_ne!(newest(&alice, g, Role::Sync), sync0, "sync rotated");
+    let keys = newest_step_keys(&alice, g);
+    let index = step_sync_keys(&alice, g)[0].0;
+    assert!(!keys.is_empty() && keys.is_subset(&derived(&secrets(bob, g, Role::Sync), index)), "Bob derives the new sync key");
+    assert!(keys.is_disjoint(&derived(&secrets(carol, g, Role::Sync), index)), "Carol does not");
+}
