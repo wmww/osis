@@ -1980,13 +1980,14 @@ fn raise_named_without_the_removal_before_it_spec_crypto_4() {
     assert!(blocked, "A encrypts under X's epoch, which M opens");
 }
 
-// spec/crypto.md §4 (Covers: a tail write takes M below r only where it would apply): A (0)
+// spec/crypto.md §4 (Met: an applied name only where its write stands): A (0)
 // demotes a2 (1) to write (D), then removes reader M (2) (L). a2, holding neither, removes M
 // too (L2, after both): at A, L2 applies nothing (a2 is a writer at its point) and would apply
 // over nothing. X (3, an admin) holds L2 but neither D nor L: L2 applies there, and X's
 // rotation names it, leaving M out. V (4, an admin) holds D, L2 and X's rotation, not L: M is a
-// reader there and V re-seals it at X's epoch. A, holding L2 and X's rotation but not yet the
-// re-seal, must not take L2 as taking M down.
+// reader there, and L2 does not stand there (a2 a writer at its point), so V does not
+// establish X's epoch and re-seals M at nothing of it. At A, L2 does not stand either: A must
+// not use X's epoch.
 #[test]
 fn removal_by_demoted_admin_pins_nothing_spec_crypto_4() {
     let (mut lp, g, tids) = granted(5, &[(1, Role::Admin), (2, Role::Read), (3, Role::Admin), (4, Role::Admin)]);
@@ -2006,18 +2007,97 @@ fn removal_by_demoted_admin_pins_nothing_spec_crypto_4() {
     send_skipping(&mut lp, 3, 4, &BTreeSet::new());
     assert_eq!(lp.peers[4].engine.core.role_now(&tids[2], &g), Some(Role::Read), "L2 applies nothing at V, M a reader");
     let _ = lp.peers[4].engine.reseal_due(&g, &Pass).unwrap();
-    assert!(openable(&mut lp, 4, &[g], tids[2], BTreeSet::new()).contains(&(g, Role::Read, x)), "V re-sealed M at X's epoch");
+    assert!(!openable(&mut lp, 4, &[g], tids[2], BTreeSet::new()).contains(&(g, Role::Read, x)), "V re-sealed M at X's epoch, L2 void there");
     send_skipping(&mut lp, 1, 0, &BTreeSet::new());
     send_skipping(&mut lp, 3, 0, &BTreeSet::new());
     assert!(lp.peers[0].engine.core.role_now(&tids[2], &g).is_none(), "M removed at A");
-    let me = tids[0];
-    let blocked = lp.peers[0]
-        .engine
-        .run(|tx| {
-            let deps = super::departures(tx, &g)?;
-            assert!(tx.core.epochs(&g).is_some_and(|e| e.read.is_established(&x) && e.read.secret(&x).is_some()), "X's epoch established at A");
-            super::blocked_epoch(tx, &me, &g, Role::Read, &x, &deps, super::Walk::Encrypt)
-        })
-        .unwrap();
-    assert!(blocked, "A encrypts under X's epoch, which M opens");
+    let established = lp.peers[0].engine.epochs(&g).is_some_and(|e| e.read.is_established(&x) && e.read.secret(&x).is_some());
+    assert!(!established, "X's epoch established at A, L2 void there");
+    assert!(!removed_reader_reads(&mut lp, g, &tids, 4), "A encrypts under an epoch M opens");
+}
+
+// spec/crypto.md §4 (Met: a name is met only where its write is judged as its rotator judged
+// it): Q is admin of g through group k (k's first admin O2, 5). O2 demotes Q to write on k (D).
+// Q, lacking D, removes admin P (1) from g (Rp); P, lacking Rp, removes reader M (2) (L). A (0)
+// holds all: Rp applies nothing (Q a writer through k), L applies, and A rotates naming L. V (4,
+// an admin) holds Rp, L and A's rotation, not D: Rp applies there, so L applies nothing and M
+// is a reader. L named applied must not be met there by its commit alone: V would establish
+// A's epoch and re-seal M at it.
+#[test]
+fn applied_name_void_elsewhere_through_holder_actor_spec_crypto_4() {
+    let mut lp = synced(6);
+    let tids: Vec<Tid> = (0..6).map(|i| lp.peers[i].engine.me()).collect();
+    let g = group(&mut lp, 0);
+    let k = group(&mut lp, 5);
+    lp.peers[5].engine.grant(&k, &tids[3], &edge(Role::Admin)).unwrap();
+    lp.sync_all().unwrap();
+    lp.peers[0].engine.grant(&g, &k, &edge(Role::Admin)).unwrap();
+    for (i, r) in [(1, Role::Admin), (2, Role::Read), (4, Role::Admin)] {
+        lp.peers[0].engine.grant(&g, &tids[i], &edge(r)).unwrap();
+    }
+    lp.sync_all().unwrap();
+    let before = commit_ids(&mut lp, 5);
+    lp.peers[5].engine.demote(&k, &Demotion { holder: tids[3], new: Some(edge(Role::Write)), retain: None }).unwrap();
+    let dem: BTreeSet<_> = commit_ids(&mut lp, 5).difference(&before).copied().collect();
+    lp.sync(5, 0).unwrap();
+    lp.peers[3].clock.advance(5_000);
+    lp.peers[3].engine.demote(&g, &Demotion { holder: tids[1], new: None, retain: None }).unwrap();
+    lp.peers[1].clock.advance(10_000);
+    lp.peers[1].engine.demote(&g, &Demotion { holder: tids[2], new: None, retain: None }).unwrap();
+    lp.sync(3, 0).unwrap();
+    lp.sync(1, 0).unwrap();
+    assert!(lp.peers[0].engine.core.role_now(&tids[1], &g).is_some(), "Rp applies nothing at A");
+    assert!(lp.peers[0].engine.core.role_now(&tids[2], &g).is_none(), "L applies at A");
+    lp.peers[0].clock.advance(20_000);
+    rotate_leaving_out(&mut lp, 0, g, &BTreeSet::from([Role::Read]), &[]);
+    let x = newest_read(&lp, 0, g).unwrap();
+    send_skipping(&mut lp, 3, 4, &dem);
+    send_skipping(&mut lp, 1, 4, &dem);
+    send_skipping(&mut lp, 0, 4, &dem);
+    assert!(lp.peers[4].engine.core.role_now(&tids[1], &g).is_none(), "Rp applies at V");
+    assert_eq!(lp.peers[4].engine.core.role_now(&tids[2], &g), Some(Role::Read), "L applies nothing at V");
+    let _ = lp.peers[4].engine.reseal_due(&g, &Pass).unwrap();
+    let opens = openable(&mut lp, 4, &[g], tids[2], BTreeSet::new()).contains(&(g, Role::Read, x));
+    assert!(!(opens && removed_reader_reads(&mut lp, g, &tids, 4)), "A encrypts under its epoch, which V re-sealed to M");
+}
+
+// spec/crypto.md §4 (Met: a departs mark only where its commit's writes take): as
+// `applied_name_void_elsewhere_through_holder_actor`, Q (lacking D) demotes P to write (Dp)
+// instead, and P's removal of M (L) carries its rotation, which names L by its departs mark. V,
+// holding Dp, not D, judges L void (P a writer at its point) while P's rotation stands (a
+// writer rotates read): the mark must not be met there by its commit alone.
+#[test]
+fn departs_mark_void_elsewhere_through_holder_actor_spec_crypto_4() {
+    let mut lp = synced(6);
+    let tids: Vec<Tid> = (0..6).map(|i| lp.peers[i].engine.me()).collect();
+    let g = group(&mut lp, 0);
+    let k = group(&mut lp, 5);
+    lp.peers[5].engine.grant(&k, &tids[3], &edge(Role::Admin)).unwrap();
+    lp.sync_all().unwrap();
+    lp.peers[0].engine.grant(&g, &k, &edge(Role::Admin)).unwrap();
+    for (i, r) in [(1, Role::Admin), (2, Role::Read), (4, Role::Admin)] {
+        lp.peers[0].engine.grant(&g, &tids[i], &edge(r)).unwrap();
+    }
+    lp.sync_all().unwrap();
+    let before = commit_ids(&mut lp, 5);
+    lp.peers[5].engine.demote(&k, &Demotion { holder: tids[3], new: Some(edge(Role::Write)), retain: None }).unwrap();
+    let dem: BTreeSet<_> = commit_ids(&mut lp, 5).difference(&before).copied().collect();
+    lp.sync(5, 0).unwrap();
+    lp.peers[3].clock.advance(5_000);
+    lp.peers[3].engine.demote(&g, &Demotion { holder: tids[1], new: Some(edge(Role::Write)), retain: None }).unwrap();
+    lp.peers[1].clock.advance(10_000);
+    lp.peers[1].engine.demote(&g, &Demotion { holder: tids[2], new: None, retain: None }).unwrap();
+    let x = newest_read(&lp, 1, g).unwrap();
+    lp.sync(3, 0).unwrap();
+    lp.sync(1, 0).unwrap();
+    assert_eq!(lp.peers[0].engine.core.role_now(&tids[1], &g), Some(Role::Admin), "Dp applies nothing at A");
+    assert!(lp.peers[0].engine.core.role_now(&tids[2], &g).is_none(), "L applies at A");
+    send_skipping(&mut lp, 3, 4, &dem);
+    send_skipping(&mut lp, 1, 4, &dem);
+    send_skipping(&mut lp, 0, 4, &dem);
+    assert_eq!(lp.peers[4].engine.core.role_now(&tids[1], &g), Some(Role::Write), "Dp applies at V");
+    assert_eq!(lp.peers[4].engine.core.role_now(&tids[2], &g), Some(Role::Read), "L applies nothing at V");
+    let _ = lp.peers[4].engine.reseal_due(&g, &Pass).unwrap();
+    let opens = openable(&mut lp, 4, &[g], tids[2], BTreeSet::new()).contains(&(g, Role::Read, x));
+    assert!(!(opens && removed_reader_reads(&mut lp, g, &tids, 4)), "A encrypts under P's epoch, which V re-sealed to M");
 }

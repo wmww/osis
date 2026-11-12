@@ -27,10 +27,16 @@
 (* NoVoid (void writes need no name),                                       *)
 (* NoMark (the mark pins nothing), FromAnchor (the tail starts after the     *)
 (* anchor, not after the newest write giving the role), MetHeld (a void name *)
-(* is met by holding its write). Written from spec/crypto.md §4.           *)
+(* is met by holding its write), MetBy "commit" (an applied name or the    *)
+(* mark met by holding its commit however judged: with Inv2, an invalidator *)
+(* voided where its own invalidator is held, a view lacking that judges a   *)
+(* write Z applies void) and "takes" (met only where it takes: fails Live), *)
+(* PinStands (a write standing at Z pins). Live: a view holding X's, it and *)
+(* X judging no held write void by its author, meets X's names. Written from*)
+(* spec/crypto.md §4.                                                       *)
 EXTENDS Integers, FiniteSets
 
-CONSTANTS N, Vals, Timed, Fins, Invs, Readers, Starts0, Rule, AnchorAny, NoVoid, NoMark, FromAnchor, MetHeld
+CONSTANTS N, Vals, Timed, Fins, Invs, Inv2, Readers, Starts0, Rule, AnchorAny, NoVoid, NoMark, FromAnchor, MetHeld, MetBy, PinStands
 
 W == 1 .. N
 R == 1                                   \* the role: read (values: 0 none, 1 read, 2 write)
@@ -39,17 +45,18 @@ FinSet == IF Fins THEN {[k |-> "fin", val |-> 0, timed |-> FALSE, ends |-> e] : 
 WriteSet == {[k |-> x.k, val |-> x.val, timed |-> x.timed, ends |-> x.ends, inv |-> i, rd |-> d] :
                x \in Sets \cup FinSet, i \in {0} \cup Invs, d \in (IF Readers THEN BOOLEAN ELSE {FALSE})}
 
-VARIABLES start, ws, z
-vars == <<start, ws, z>>
+VARIABLES start, ws, meta, z
+vars == <<start, ws, meta, z>>
 
-Items == W \cup Invs
+Items == W \cup Invs \cup Inv2
 Views == SUBSET Items
 
 \* ---- the walk at a view V ------------------------------------------------
 \* a finalize is resolved where the write it ends is held
 Res(V, i) == ws[i].k # "fin" \/ ws[i].ends = 0 \/ ws[i].ends \in V
 Held(V) == {i \in W \cap V : Res(V, i)}
-Valid(V, i) == ws[i].inv = 0 \/ ws[i].inv \notin V
+\* an invalidator voided where its own invalidator (meta) is held: validity is not monotone
+Valid(V, i) == ws[i].inv = 0 \/ ws[i].inv \notin V \/ meta[ws[i].inv] \in V
 Applies(V, st, i) == i \in Held(V) /\ Valid(V, i)
                      /\ (ws[i].k = "fin" => st.src = ws[i].ends /\ st.timed /\ st.val > 0)
 After(st, V, i) == IF Applies(V, st, i) THEN [val |-> ws[i].val, timed |-> ws[i].timed, src |-> i] ELSE st
@@ -65,6 +72,19 @@ Departed(V) == Role(V) < R
 Had(V) == start.val >= R \/ \E i \in Held(V) : ws[i].val >= R /\ (Applied(V, i) \/ Counts(V, i))
 
 \* ---- names --------------------------------------------------------------
+Newest(S) == IF S = {} THEN 0 ELSE CHOOSE i \in S : \A j \in S : j <= i
+\* it takes M there: it applies, or would over the edge the newest applied write before it
+\* giving more set (else the start)
+Over(Zv, i) == LET ps == {j \in Held(Zv) : j < i /\ Applied(Zv, j) /\ ws[j].val > ws[i].val}
+               IN IF ps = {} THEN EdgeTo(Zv, 0) ELSE EdgeTo(Zv, Newest(ps))
+Takes(Zv, i) == Applied(Zv, i) \/ Applies(Zv, Over(Zv, i), i)
+\* it stands there: it applies, or would over the start or the edge some applied write before it
+\* set (only the edge it meets differs: a finalize of a grant renewed since, a second removal)
+Stands(V, i) == Applied(V, i) \/ Applies(V, EdgeTo(V, 0), i)
+                \/ \E j \in Held(V) : j < i /\ Applied(V, j) /\ Applies(V, EdgeTo(V, j), i)
+\* how a named applied write (and the mark's) is met: "stands" (the rule), "takes", "commit"
+\* (held, however judged)
+MetOk(V, i) == CASE MetBy = "stands" -> Stands(V, i) [] MetBy = "takes" -> Takes(V, i) [] OTHER -> TRUE
 Plain(X) == {i \in Held(X) : Applied(X, i) /\ ws[i].val < EdgeTo(X, i - 1).val}
 \* a rotation commit cannot name itself
 PlainOf(X, m) == Plain(X) \ {m}
@@ -76,21 +96,17 @@ VoidOf(X) == IF Rule = "old" THEN OldVoid(X) ELSE Void(X)
 Marks(X) == {0} \cup {i \in Held(X) : Applied(X, i) /\ ws[i].val < R}
 \* (the mark's commit is held: its rotation may stay valid where its edge write is void, its
 \* author demoted to write)
-Met(V, X, m) == /\ \A i \in PlainOf(X, m) : i \in Held(V)
+\* each named write judged as X judged it: an applied one (and the mark's) standing at V, a void
+\* one applying nothing there
+Met(V, X, m) == /\ \A i \in PlainOf(X, m) : i \in Held(V) /\ MetOk(V, i)
                 /\ \A i \in VoidOf(X) : i \in Held(V) /\ (MetHeld \/ ~Applied(V, i))
-                /\ m # 0 => m \in Held(V)
+                /\ m # 0 => m \in Held(V) /\ MetOk(V, m)
 MarkOk(Zv, m) == m # 0 /\ m \in Held(Zv)
 
 \* ---- the pin -------------------------------------------------------------
-Newest(S) == IF S = {} THEN 0 ELSE CHOOSE i \in S : \A j \in S : j <= i
 \* the newest write applying at Z that gives the role or more (0: none)
 G(Zv) == Newest({i \in Held(Zv) : Applied(Zv, i) /\ ws[i].val >= R})
-\* it takes M there: it applies, or would over the edge the newest applied write before it
-\* giving more set (else the start)
-Over(Zv, i) == LET ps == {j \in Held(Zv) : j < i /\ Applied(Zv, j) /\ ws[j].val > ws[i].val}
-               IN IF ps = {} THEN EdgeTo(Zv, 0) ELSE EdgeTo(Zv, Newest(ps))
-Takes(Zv, i) == Applied(Zv, i) \/ Applies(Zv, Over(Zv, i), i)
-Anchor(Zv, X, m, i) == ws[i].val < R /\ (AnchorAny \/ Takes(Zv, i))
+Anchor(Zv, X, m, i) == ws[i].val < R /\ (AnchorAny \/ Takes(Zv, i) \/ (PinStands /\ Stands(Zv, i)))
                        /\ (i \in PlainOf(X, m) \/ (~NoMark /\ i = m /\ MarkOk(Zv, m)))
 Pins(Zv, X, m) ==
   LET g == G(Zv)
@@ -120,6 +136,7 @@ Covers(Zv, X, m) == Departed(Zv) /\ Had(Zv) /\ Met(Zv, X, m)
 \* ---- the search: every world and Z as an initial state; every X, mark and V in the invariants ----
 Init == /\ start \in [val : Starts0, timed : Timed]
         /\ ws \in [W -> WriteSet]
+        /\ meta \in [Invs -> {0} \cup Inv2]
         /\ \A i \in W : ws[i].ends < i
         /\ z \in Views
 Next == UNCHANGED vars
@@ -130,4 +147,8 @@ Own == (Departed(z) /\ Had(z)) => Covers(z, z, 0)
 Removals == {i \in W : ws[i].val < R /\ ws[i].inv = 0}
 Dup == \A X \in SUBSET z : \A m \in Marks(X) \ {0} :
          (z \ X \subseteq Removals /\ Departed(X) /\ Had(X)) => Covers(z, X, m)
+\* a view holding X's where neither judges a held write void by its author meets its names (an
+\* edge state X lacked, a renewal or another removal, does not hold the epoch back)
+Live == \A X \in Views : \A m \in Marks(X) : \A V \in Views :
+          (X \subseteq V /\ \A i \in Held(V) : Valid(V, i) /\ (i \in X => Valid(X, i))) => Met(V, X, m)
 =============================================================================

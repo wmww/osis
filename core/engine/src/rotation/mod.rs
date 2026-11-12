@@ -9,7 +9,7 @@
 //! actor: `departures`; holder actors (key access, keysets, sealing, staleness): `members`;
 //! dropping what this node lost read access to: `lost`.
 
-mod departures;
+pub(crate) mod departures;
 mod lost;
 mod members;
 #[cfg(test)]

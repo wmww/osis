@@ -34,14 +34,18 @@ pub struct EdgeLog {
 /// One held write on a holder's edge: its commit's key, the role it gives for keys (none for a
 /// removal or a retain value), whether it applies here; `takes`: it applies here, or would over
 /// the edge the newest write before it that applies here and gives more set (the start when
-/// none does: a second finalize of a grant another write removed first); `counts`: it applies
-/// nothing here and its author held write on the actor just before its point.
+/// none does: a second finalize of a grant another write removed first); `stands`: it
+/// applies here, or would over the start or the edge some applied write before it set (only
+/// the edge it meets differs: a finalize of a grant renewed since; how a named write is met,
+/// `Held::met`); `counts`: it applies nothing here and its author held write on the actor just
+/// before its point.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct EdgeWrite {
     pub key: Key,
     pub role: Option<Role>,
     pub applied: bool,
     pub takes: bool,
+    pub stands: bool,
     pub counts: bool,
 }
 

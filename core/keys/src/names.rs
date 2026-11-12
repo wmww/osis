@@ -126,7 +126,8 @@ impl Names {
 /// What a node holds for judging names (spec/crypto.md §4), for one actor.
 pub trait Held {
     /// `n`'s commit is applied here with its `roles.0` part on the actor, every entry its edge
-    /// writes reset known; for a void name, its write on `n.holder`'s edge applies nothing here.
+    /// writes reset known, and its write on `n.holder`'s edge judged as the rotator judged it:
+    /// standing here (`EdgeWrite::stands`) for an applied name, applying nothing for a void one.
     fn met(&self, n: &Name) -> bool;
     /// `node` holds role `r` on the actor now, for keys (spec/crypto.md §4, Holds): a departure
     /// a rotation commit itself makes is covered by it while its signer does.
@@ -136,7 +137,8 @@ pub trait Held {
     /// (spec/crypto.md §4, Names: the entry is bound to that body; Covers).
     fn publishes(&self, r: Role, e: &osis_crypto::Epoch, digest: &NamesDigest) -> bool;
     /// The commit `own` names (by `ts`, author and `blind`) is a role commit applied here with
-    /// its `roles.0` delta on the actor, resolved (spec/crypto.md §4, Met).
+    /// its `roles.0` delta on the actor, resolved, each of its edge writes on the actor standing
+    /// here (spec/crypto.md §4, Met).
     fn departed(&self, own: &Own) -> bool;
     /// Whether `own` is the departs mark of the held commit at `key` (`Own::is_of` its header).
     fn marks(&self, own: &Own, key: &Key) -> bool;

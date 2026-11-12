@@ -118,7 +118,7 @@ impl Core {
 
     /// What this node holds for judging the names of `actor`'s epochs (spec/crypto.md §4).
     pub(crate) fn names_held(&self, actor: &Tid) -> NamesHeld<'_> {
-        NamesHeld { core: self, actor: *actor }
+        NamesHeld { core: self, actor: *actor, logs: std::cell::OnceCell::new() }
     }
 
     /// The opened epochs of `tid` when they make it an actor with secrets of its own here: it is
@@ -419,6 +419,8 @@ pub(crate) enum SecretsRead<'a> {
 pub(crate) struct NamesHeld<'c> {
     core: &'c Core,
     actor: Tid,
+    /// Each holder's edge into the actor as this node holds it, read once (`departures::edge_logs`).
+    logs: std::cell::OnceCell<std::collections::BTreeMap<Tid, osis_keys::EdgeLog>>,
 }
 
 impl NamesHeld<'_> {
@@ -444,23 +446,35 @@ impl NamesHeld<'_> {
             mc.ops.iter().enumerate().any(|(i, op)| op.target == self.actor && op.holder == *holder && tl.is_applied(&osis_perm::WriteId(*c, i as u32)))
         })
     }
+
+    /// The held edge writes on the actor of the commit at `key` (on `holder`'s edge, or on any)
+    /// all stand here (`EdgeWrite::stands`: apply, or would over some edge before them; only
+    /// their author's authority is judged), and there is one.
+    fn stands(&self, key: &osis_keys::Key, holder: Option<&Tid>) -> bool {
+        let logs = self.logs.get_or_init(|| self.core.timelines.get(&self.actor).map(|tl| crate::rotation::departures::edge_logs(self.core, tl, &self.actor)).unwrap_or_default());
+        let mut ws = logs.iter().filter(|(m, _)| holder.is_none_or(|h| h == *m)).flat_map(|(_, l)| l.writes.iter()).filter(|w| w.key == *key).peekable();
+        ws.peek().is_some() && ws.all(|w| w.stands)
+    }
 }
 
 impl osis_keys::Held for NamesHeld<'_> {
     /// Applied: the commit held with its `roles.0` part on the actor, if it has one (a copy of
     /// some of it, a certificate copy or another label's parts, may lack the write), and
-    /// `resolved`; a void
-    /// name, only while the commit's write on its holder's edge applies nothing here either.
+    /// `resolved`; then judged as its rotator judged it: an applied name only while its write
+    /// on its holder's edge stands here (`EdgeWrite::stands`: applies, or would over some edge
+    /// before it: a finalize of a grant renewed since is met), a void name only while that
+    /// write applies nothing here.
     ///
-    /// Invariant: a node using the epoch judges void every write its rotator judged void, so it
-    /// never holds a holder above what the rotator held it at on the word of one of them (a
-    /// re-seal included): the rotator held every other write its names pin, but not what
-    /// voided one (a demotion of its author on a holder actor it wrote through, an audit).
+    /// Invariant: a node using the epoch judges each named write as its rotator did, so it
+    /// never holds a holder above what the rotator held it at on the word of a write judged
+    /// otherwise (a re-seal included): the rotator's names hold every write they pin, but not
+    /// what voided one, or what voided the write voiding a lowering (a demotion of its author
+    /// on a holder actor it wrote through, an audit).
     fn met(&self, n: &Name) -> bool {
         let applied = self.core.ix.commits.get(&n.key.commit).is_some_and(|m| {
             m.header.aspects.iter().position(|a| a.tid == self.actor && a.ak.as_str() == "roles.0").is_none_or(|ai| !m.missing.contains(&ai))
         });
-        applied && self.resolved(&n.key.commit) && !(n.void && self.applies(&n.key.commit, &n.holder))
+        applied && self.resolved(&n.key.commit) && if n.void { !self.applies(&n.key.commit, &n.holder) } else { self.stands(&n.key, Some(&n.holder)) }
     }
     /// The author of held commit `c` holds `r` on the actor now, for keys (`At::KEYS`: every
     /// `until` disregarded), over its record chain and through holder actors alike.
@@ -482,14 +496,17 @@ impl osis_keys::Held for NamesHeld<'_> {
         self.core.ix.keysets.get(&(self.actor, r, *e)).is_some_and(|k| k.names.iter().any(|(d, author)| d == digest && self.holder(author, r)))
     }
     /// The role commit by `own`'s `ts` and author among the held `roles.0` deltas of the actor,
-    /// resolved: an entry naming its own rotation commit is met only beside that commit's edge
-    /// writes, so a snapshot keying the epoch establishes it only once they are held. The mark
+    /// resolved, its edge writes on the actor each standing here (`NamesHeld::stands`, as for
+    /// an applied name): an entry naming its own rotation commit is met only beside that commit's
+    /// edge writes, so a snapshot keying the epoch establishes it only once they are held. The mark
     /// is predictable by its author, which forges nothing by it: coverage never reads it.
     fn departed(&self, own: &Own) -> bool {
         let Ok(roles) = osis_base::Ak::new("roles.0") else { return false };
         let Some(set) = self.core.ix.by_aspect.get(&(self.actor, roles)) else { return false };
         let ts = osis_base::Ts::from_u64(own.ts).unwrap_or_default();
-        set.range((ts, CommitId([0; 32]))..=(ts, CommitId([0xff; 32]))).any(|(_, c)| self.core.ix.commits.get(c).is_some_and(|m| m.view.author == own.author && m.view.kind.is_role() && m.header.blind == own.blind) && self.resolved(c))
+        set.range((ts, CommitId([0; 32]))..=(ts, CommitId([0xff; 32]))).any(|(_, c)| {
+            self.core.ix.commits.get(c).is_some_and(|m| m.view.author == own.author && m.view.kind.is_role() && m.header.blind == own.blind) && self.resolved(c) && self.stands(&osis_keys::Key { ts: own.ts, node: own.author, commit: *c }, None)
+        })
     }
     fn marks(&self, own: &Own, key: &osis_keys::Key) -> bool {
         self.core.ix.commits.get(&key.commit).is_some_and(|m| own.is_of(key, &m.header.blind))

@@ -58,6 +58,9 @@ instances=(
   "tail rotation Tail T_fin2.cfg pass"           # ... (finalizes; T_fin by hand)
   "tail rotation Tail T_raise_old.cfg fail"      # negative control: the per-event attribution rule
   "tail rotation Tail T_fin_any.cfg fail"        # negative control: a named write pins without taking M down
+  "tail rotation Tail T_chain.cfg pass"          # ... (an invalidator voided by another: validity not monotone)
+  "tail rotation Tail T_chain_commit.cfg fail"   # negative control: an applied name met by holding its commit
+  "tail rotation Tail T_fin_takes.cfg fail"      # negative control: an applied name met only where it takes (Live)
   "cover rotation Cover C_regrant_reader.cfg fail" # the stated limit: a reader's write does not count
   "authority rotation AuthorityMC A_order_nobase.cfg pass" # keysets read as of the commit's key (spec/crypto.md §4, Possession)
   "authority rotation AuthorityMC A_order_3.cfg pass"

@@ -56,11 +56,12 @@ fn key_of(p: &osis_perm::Point) -> osis_keys::Key {
 /// writes on it whose commits are resolved (one that is not applies nothing until it is, like
 /// one not held), in key order, each applied or not; applying nothing, whether it would over
 /// the edge the newest applied write before it giving more set (`Timeline::applies_over`: a
-/// second finalize of a removed grant), and whether its author held write on `a` just before
+/// second finalize of a removed grant), whether it would over the start or the edge any
+/// applied write before it set (it stands), and whether its author held write on `a` just before
 /// its point (`At::before`, as its authority is judged there: an author removed since still
 /// counts); its start is the edge before the first of them (the record edge). Only commits this
 /// node holds: names are met by holding them.
-fn edge_logs(core: &Core, tl: &Timeline, a: &Tid) -> BTreeMap<Tid, EdgeLog> {
+pub(crate) fn edge_logs(core: &Core, tl: &Timeline, a: &Tid) -> BTreeMap<Tid, EdgeLog> {
     let mut by: BTreeMap<Tid, Vec<(osis_perm::Point, WriteId, &RoleCommit, &EdgeOp)>> = BTreeMap::new();
     for (w, mc, op) in tl.held_on(a) {
         if op.holder == *a || !core.ix.commits.contains_key(&mc.id) || core.ix.unresolved.contains(&mc.id) {
@@ -79,15 +80,22 @@ fn edge_logs(core: &Core, tl: &Timeline, a: &Tid) -> BTreeMap<Tid, EdgeLog> {
             for (p, w, mc, op) in ws {
                 let role = key_role(op.edge.as_ref());
                 let applied = tl.is_applied(&w);
-                let (takes, counts) = if applied {
+                let (takes, stands, counts) = if applied {
                     set.push(op.edge);
-                    (true, false)
+                    (true, true, false)
                 } else {
                     let over = set.iter().rev().copied().find(|e| key_role(e.as_ref()) > role).unwrap_or(start_edge);
                     let takes = role < Some(Role::Admin) && tl.applies_over(&w, over);
-                    (takes, tl.role(&mc.author, a, At::before(p)) >= Some(Role::Write))
+                    let mut edges: Vec<Option<osis_perm::Edge>> = Vec::new();
+                    for e in std::iter::once(start_edge).chain(set.iter().copied()) {
+                        if !edges.contains(&e) {
+                            edges.push(e);
+                        }
+                    }
+                    let stands = takes || edges.into_iter().any(|e| tl.applies_over(&w, e));
+                    (takes, stands, tl.role(&mc.author, a, At::before(p)) >= Some(Role::Write))
                 };
-                writes.push(EdgeWrite { key: key_of(&p), role, applied, takes, counts });
+                writes.push(EdgeWrite { key: key_of(&p), role, applied, takes, stands, counts });
             }
             (m, EdgeLog { start: key_role(start_edge.as_ref()), writes })
         })
