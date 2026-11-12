@@ -16,6 +16,9 @@ use std::collections::BTreeSet;
 /// attributes it to); `None` when none does (a box holder the timeline never showed), so no
 /// epoch covers it. `later`: the held edge writes on the holder's edge ordered after that
 /// lowering (each holds it below `from`), which cover it alike (spec/crypto.md §4, Attributes).
+/// `since`: its lowerings ordered after the newest applied edge write on its edge that lowered it
+/// (drops and raises applying nothing, `at` among them when it is one), every one of which a
+/// covering rotation names too.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Departure {
     pub holder: Tid,
@@ -23,12 +26,13 @@ pub struct Departure {
     pub upto: Role,
     pub at: Option<Name>,
     pub later: Vec<Name>,
+    pub since: Vec<Name>,
 }
 
 impl Departure {
     /// Holder `holder` of A removed or demoted below `from`; up to admin, no name yet.
     pub fn holder(holder: Tid, from: Role) -> Departure {
-        Departure { holder, from, upto: Role::Admin, at: None, later: Vec::new() }
+        Departure { holder, from, upto: Role::Admin, at: None, later: Vec::new(), since: Vec::new() }
     }
 
     /// The same departure attributed to `at`.
@@ -40,6 +44,11 @@ impl Departure {
     /// after `at`.
     pub fn later(self, later: Vec<Name>) -> Departure {
         Departure { later, ..self }
+    }
+
+    /// The same departure requiring every name of `since` named too.
+    pub fn since(self, since: Vec<Name>) -> Departure {
+        Departure { since, ..self }
     }
 
     /// The names it is attributed to (`at`, then `later`; none without `at`): a rotation naming
@@ -80,9 +89,18 @@ impl Departure {
 /// Whether names `n` of an epoch of `actor` name `d` (spec/crypto.md §4): one of its names
 /// (`Departure::names`) is among them, or is a lowering on `actor` by the rotation commit itself
 /// (its departs mark, by the commit's `ts`, author and `blind`), that author holding `r` under
-/// `held`. A raise the rotation commit carries applied where it was made: its mark names none.
+/// `held`, and so is each name of its `since`. A raise the rotation commit carries applied where
+/// it was made: its mark names none.
+///
+/// Invariant: a node where the names are met holds the holder on the word of no raise the
+/// rotator judged applying nothing. An applied edge write lowering the holder sets its edge
+/// wherever it applies, so raises before it hold nothing there; a drop or a raise applying
+/// nothing sets nothing, so a raise before it still holds the holder at a node judging that
+/// raise valid (one lacking what took its author's right): each is named, and a raise name is
+/// met only where its raise applies nothing (`Held::met`).
 pub fn named(n: &Names, actor: &Tid, r: Role, d: &Departure, held: &dyn Held) -> bool {
-    d.names().any(|at| n.list.contains(at) || (at.thing == *actor && at.raised.is_none() && n.departs.is_some_and(|o| held.marks(&o, &at.key)) && held.holds(&at.key.node, r)))
+    let one = |at: &Name| n.list.contains(at) || (at.thing == *actor && at.raised.is_none() && n.departs.is_some_and(|o| held.marks(&o, &at.key)) && held.holds(&at.key.node, r));
+    d.names().any(one) && d.since.iter().all(one)
 }
 
 /// The covers rule (spec/crypto.md §4): epoch `e` of role `r` of `actor` covers `d` when `d`

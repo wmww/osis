@@ -1835,3 +1835,99 @@ fn raise_invalid_through_holder_actor_resealed_spec_crypto_4() {
     assert_eq!(rounds.last(), Some(&0), "settles: {rounds:?}");
     assert!(!removed_reader_reads(&mut lp, g, &tids, 0), "settled: A encrypts under an epoch M opens");
 }
+
+// spec/crypto.md §4 (Covers; a raise name over an older raise): A (0) removes M (2) (L) and
+// demotes a2 (1) to write (D); O2 (5) demotes a3 (4) to write (T), unseen by A. a3, holding L
+// but not T, re-grants M (G3); a2, holding L but not D, re-grants M after it (G2). A, holding
+// G2 but not G3 or T, rotates naming L and G2 as a raise. R (3) holds L, D, G2 and G3, not T:
+// G2 applies nothing there, so A's names are met, but G3 holds M a reader there, and R re-seals
+// M at A's epoch. At A, once T and G3 arrive, G3 is a raise applying nothing too: A must not
+// encrypt under an epoch M opens.
+#[test]
+fn raise_name_over_older_raise_resealed_spec_crypto_4() {
+    let (mut lp, g, tids) = granted(6, &[(1, Role::Admin), (2, Role::Read), (3, Role::Admin), (4, Role::Admin), (5, Role::Admin)]);
+    lp.peers[0].engine.demote(&g, &Demotion { holder: tids[2], new: None, retain: None }).unwrap();
+    lp.peers[0].clock.advance(1_000);
+    let before = commit_ids(&mut lp, 0);
+    lp.peers[0].engine.demote(&g, &Demotion { holder: tids[1], new: Some(edge(Role::Write)), retain: None }).unwrap();
+    let d: BTreeSet<_> = commit_ids(&mut lp, 0).difference(&before).copied().collect();
+    lp.peers[5].clock.advance(1_000);
+    lp.peers[5].engine.demote(&g, &Demotion { holder: tids[4], new: Some(edge(Role::Write)), retain: None }).unwrap();
+    for to in [1, 4] {
+        send_skipping(&mut lp, 0, to, &d);
+    }
+    send_skipping(&mut lp, 0, 3, &BTreeSet::new());
+    lp.peers[4].clock.advance(3_000);
+    lp.peers[4].engine.grant(&g, &tids[2], &edge(Role::Read)).unwrap();
+    send_skipping(&mut lp, 4, 3, &BTreeSet::new());
+    lp.peers[1].clock.advance(5_000);
+    lp.peers[1].engine.grant(&g, &tids[2], &edge(Role::Read)).unwrap();
+    send_skipping(&mut lp, 1, 0, &BTreeSet::new());
+    send_skipping(&mut lp, 1, 3, &BTreeSet::new());
+    assert!(lp.peers[0].engine.core.role_now(&tids[2], &g).is_none(), "G2 applies nothing at A");
+    lp.peers[0].clock.advance(10_000);
+    assert!(!lp.peers[0].engine.ensure_rotated(&g).unwrap().0.commits.is_empty(), "A rotates for G2");
+    assert!(!removed_reader_reads(&mut lp, g, &tids, 0), "A's own rotation boxes M");
+    send_skipping(&mut lp, 0, 3, &BTreeSet::new());
+    assert_eq!(lp.peers[3].engine.core.role_now(&tids[2], &g), Some(Role::Read), "G3 holds M at R");
+    assert!(!lp.peers[3].engine.reseal_due(&g, &Pass).unwrap().commits.is_empty(), "R re-seals M at A's epoch");
+    send_skipping(&mut lp, 3, 0, &BTreeSet::new());
+    send_skipping(&mut lp, 5, 0, &BTreeSet::new());
+    assert!(!removed_reader_reads(&mut lp, g, &tids, 0), "A encrypts under an epoch M opens");
+    lp.sync_all().unwrap();
+    let rounds = rounds_to_settle(&mut lp, g);
+    assert_eq!(rounds.last(), Some(&0), "settles: {rounds:?}");
+    assert!(!removed_reader_reads(&mut lp, g, &tids, 0), "settled: A encrypts under an epoch M opens");
+}
+
+// spec/crypto.md §4 (Covers; a drop over an older raise): g's first admin is O (A's group, W
+// an admin of it). A (0) removes M (2) (L); O2 (5) demotes a3 (4) to write on g (T), unseen by
+// A. a3, holding L but not T, re-grants M (G3); W (1) grants M (C); A demotes W on O (X)
+// without C, so X's audit drops C. A, holding C but not G3 or T, rotates g naming L and X. R
+// (3) holds L, C, X and G3, not T: the drop sets nothing, so G3 holds M a reader there and R
+// re-seals M at A's epoch. At A, once T and G3 arrive, G3 is a raise applying nothing: A must
+// not encrypt under an epoch M opens.
+#[test]
+fn drop_over_older_raise_resealed_spec_crypto_4() {
+    let mut lp = synced(6);
+    let tids: Vec<Tid> = (0..6).map(|i| lp.peers[i].engine.me()).collect();
+    let o = group(&mut lp, 0);
+    lp.peers[0].engine.grant(&o, &tids[1], &edge(Role::Admin)).unwrap();
+    let mut m = Mutation::new();
+    let g = lp.peers[0].engine.new_thing(&mut m, o);
+    lp.peers[0].commit(m).unwrap();
+    lp.peers[0].engine.give_own_secrets(&g).unwrap();
+    lp.peers[0].engine.grant(&g, &tids[2], &edge(Role::Read)).unwrap();
+    for h in [3, 4, 5] {
+        lp.peers[0].engine.grant(&g, &tids[h], &edge(Role::Admin)).unwrap();
+    }
+    lp.sync_all().unwrap();
+    lp.peers[0].engine.demote(&g, &Demotion { holder: tids[2], new: None, retain: None }).unwrap();
+    lp.sync_all().unwrap();
+    lp.peers[5].clock.advance(1_000);
+    let before = commit_ids(&mut lp, 5);
+    lp.peers[5].engine.demote(&g, &Demotion { holder: tids[4], new: Some(edge(Role::Write)), retain: None }).unwrap();
+    let t: BTreeSet<_> = commit_ids(&mut lp, 5).difference(&before).copied().collect();
+    lp.peers[4].clock.advance(3_000);
+    lp.peers[4].engine.grant(&g, &tids[2], &edge(Role::Read)).unwrap();
+    send_skipping(&mut lp, 4, 3, &BTreeSet::new());
+    lp.peers[1].clock.advance(4_000);
+    lp.peers[1].engine.grant(&g, &tids[2], &edge(Role::Read)).unwrap();
+    lp.peers[0].clock.advance(6_000);
+    lp.peers[0].engine.demote(&o, &Demotion { holder: tids[1], new: Some(edge(Role::Write)), retain: None }).unwrap();
+    send_skipping(&mut lp, 1, 0, &BTreeSet::new());
+    assert!(lp.peers[0].engine.core.role_now(&tids[2], &g).is_none(), "C audited away at A");
+    lp.peers[0].clock.advance(10_000);
+    assert!(!lp.peers[0].engine.ensure_rotated(&g).unwrap().0.commits.is_empty(), "A rotates for the drop");
+    assert!(!removed_reader_reads(&mut lp, g, &tids, 0), "A's own rotation boxes M");
+    send_skipping(&mut lp, 0, 3, &t);
+    assert_eq!(lp.peers[3].engine.core.role_now(&tids[2], &g), Some(Role::Read), "G3 holds M at R");
+    assert!(!lp.peers[3].engine.reseal_due(&g, &Pass).unwrap().commits.is_empty(), "R re-seals M at A's epoch");
+    send_skipping(&mut lp, 3, 0, &BTreeSet::new());
+    send_skipping(&mut lp, 5, 0, &BTreeSet::new());
+    assert!(!removed_reader_reads(&mut lp, g, &tids, 0), "A encrypts under an epoch M opens");
+    lp.sync_all().unwrap();
+    let rounds = rounds_to_settle(&mut lp, g);
+    assert_eq!(rounds.last(), Some(&0), "settles: {rounds:?}");
+    assert!(!removed_reader_reads(&mut lp, g, &tids, 0), "settled: A encrypts under an epoch M opens");
+}

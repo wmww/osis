@@ -77,13 +77,23 @@ pub(crate) fn names(core: &Core, a: &Tid, departs: Option<osis_keys::Own>) -> os
 /// written on that write's word is no longer the timeline's; a dropped lowering write raised
 /// nobody and lowers nobody by going).
 struct Lowering {
-    /// The holders lowered there, each with the roles it left (from, up to) and the name its
-    /// departure is attributed to.
-    holders: Vec<(Tid, Role, Role, Name)>,
+    /// The holders lowered there (`Event`).
+    holders: Vec<Event>,
     /// What a rotation names of it: on `a` for an applied edge write on `a`, on the targets of
     /// its edge writes for a drop, on `a` with the holder it raised for a raise that never
     /// applied (a rotator that applied that raise, as a lowering or not, never names that).
     names: BTreeSet<Name>,
+}
+
+/// A holder lowered at a point: the roles it left (from, up to), the name its departure is
+/// attributed to, and whether an applied edge write on its own edge lowered it there (`set`:
+/// that write sets its edge wherever it applies; a drop or a raise applying nothing sets none).
+struct Event {
+    holder: Tid,
+    from: Role,
+    upto: Role,
+    name: Name,
+    set: bool,
 }
 
 /// At one point: the holders an applied edge write on `a` touches, and the holders raises
@@ -147,12 +157,14 @@ fn lowerings(core: &Core, tl: &Timeline, a: &Tid) -> Vec<Lowering> {
         let mut names: BTreeSet<Name> = things.iter().map(|x| Name::of(*x, key)).collect();
         let mut holders = Vec::new();
         if let Some(thing) = things.iter().next_back() {
-            holders.extend(lowered.iter().chain(&t.dropped).map(|(h, from, upto)| (*h, *from, *upto, Name::of(*thing, key))));
+            let name = Name::of(*thing, key);
+            holders.extend(lowered.iter().map(|(h, from, upto)| Event { holder: *h, from: *from, upto: *upto, name, set: true }));
+            holders.extend(t.dropped.iter().map(|(h, from, upto)| Event { holder: *h, from: *from, upto: *upto, name, set: false }));
         }
         for (h, from, upto) in &t.invalid {
             let name = Name { thing: *a, key, raised: Some(*h) };
             names.insert(name);
-            holders.push((*h, *from, *upto, name));
+            holders.push(Event { holder: *h, from: *from, upto: *upto, name, set: false });
         }
         if !holders.is_empty() {
             out.push(Lowering { holders, names });
@@ -184,8 +196,8 @@ fn drop_things(tl: &Timeline, p: &osis_perm::Point, a: &Tid) -> BTreeSet<Tid> {
 }
 
 /// The departure events on `a` (spec/crypto.md §4, Attributes): each lowering (`lowerings`)
-/// per holder it lowered, with the roles it left and its name.
-fn events(core: &Core, tl: &Timeline, a: &Tid) -> Vec<(Tid, Role, Role, Name)> {
+/// per holder it lowered.
+fn events(core: &Core, tl: &Timeline, a: &Tid) -> Vec<Event> {
     lowerings(core, tl, a).into_iter().flat_map(|l| l.holders).collect()
 }
 
@@ -212,10 +224,9 @@ fn direct_departures(tx: &mut Tx<'_>, a: &Tid) -> Result<BTreeSet<Departure>> {
             x.2 = at;
         }
     };
-    if let Some(tl) = tx.core.timelines.get(a) {
-        for (m, from, upto, name) in events(tx.core, tl, a) {
-            note(m, current.get(&m).copied(), from, upto, Some(name));
-        }
+    let evs = tx.core.timelines.get(a).map(|tl| events(tx.core, tl, a)).unwrap_or_default();
+    for ev in &evs {
+        note(ev.holder, current.get(&ev.holder).copied(), ev.from, ev.upto, Some(ev.name));
     }
     if let Some(epochs) = tx.core.epochs(a) {
         // from the `secrets.0` state: a box at a current epoch of a role its holder no longer holds
@@ -237,7 +248,19 @@ fn direct_departures(tx: &mut Tx<'_>, a: &Tid) -> Result<BTreeSet<Departure>> {
         }
     }
     let tl = tx.core.timelines.get(a);
-    Ok(left.into_iter().map(|(m, (from, upto, at))| Departure::holder(m, from).upto(upto).at(at).later(later_writes(tx.core, tl, a, &m, from, at))).collect())
+    Ok(left.into_iter().map(|(m, (from, upto, at))| Departure::holder(m, from).upto(upto).at(at).later(later_writes(tx.core, tl, a, &m, from, at)).since(since(&evs, &m, current.get(&m).copied()))).collect())
+}
+
+/// The names of `m`'s events that concern a role it holds less than now (`cur`) ordered after
+/// the newest applied edge write on its edge that lowered it (spec/crypto.md §4, Covers): drops
+/// and raises applying nothing set nothing, so a raise before one of them still holds `m` at a
+/// node judging that raise valid, and a rotation naming only the newer one covers nothing.
+fn since(evs: &[Event], m: &Tid, cur: Option<Role>) -> Vec<Name> {
+    let mine = || evs.iter().filter(|e| e.holder == *m);
+    let base = mine().filter(|e| e.set).map(|e| e.name.key).max();
+    let concerns = |e: &&Event| above_role(cur).is_some_and(|f| f.max(e.from) <= e.upto);
+    let out: BTreeSet<Name> = mine().filter(|e| !e.set && Some(e.name.key) > base).filter(concerns).map(|e| e.name).collect();
+    out.into_iter().collect()
 }
 
 /// The names of the held edge writes on `m`'s edge into `a`, applied or not, ordered after its
