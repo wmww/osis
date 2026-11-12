@@ -1078,12 +1078,12 @@ fn text_diff(kept: &str, rebuilt: &str) -> String {
 /// judged again.
 ///
 /// Invariant (spec/crdt.md §4.7, spec/commits.md §5; `retention::strip_leftover`): no held body
-/// carries the value of a write this node holds value-less (expired, purged), its own or a copy
-/// under the original's dot (a snapshot's),
-/// and none loses a value of a write not so held. Kept where it can break: while the aspect's
-/// value-less list changed in this transaction, this walk reads every held body and holds each
-/// snapshot carrying a listed value as its leftover (`retention::strip_carried`, which lists nothing);
-/// a body arriving later is judged on its join (`retention::drop_gone`).
+/// carries the value of a write this node holds value-less (expired, purged), its own or a
+/// snapshot's copy of one of a delta with no expiry (`retention::carry_list`), and none loses a
+/// value of a write not so held. Kept where it can break: while the aspect's value-less list
+/// changed in this transaction, this walk reads every held body and holds each snapshot carrying
+/// such a value as its leftover (`retention::strip_carried`, which lists nothing); a body arriving
+/// later is judged on its join (`retention::drop_gone`).
 pub(crate) fn rebuild(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
     // a signal has no state: a validity change or a drop only changes which bodies count
     // (spec/commits.md §5 Signals)
@@ -1105,7 +1105,7 @@ pub(crate) fn rebuild(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
     }
     let _s = crate::costs::span("rebuild");
     crate::engine::listing::before_rebuild(tx, tid, ak)?;
-    let listed = tx.core.valueless_dirty.contains(&k).then(|| tx.core.ix.valueless.get(&k).cloned()).flatten().filter(|l| !l.is_empty());
+    let listed = tx.core.valueless_dirty.contains(&k).then(|| crate::retention::carry_list(tx.core, tid, ak)).filter(|l| !l.is_empty());
     let mut carriers = Vec::new();
     let st = rebuilt(tx, tid, ak, listed.as_deref().map(|l| (l, &mut carriers)))?;
     for (c, ai) in &carriers {
@@ -1117,6 +1117,56 @@ pub(crate) fn rebuild(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
         observe_state(tx, tid, ak)?;
     }
     crate::retention::mark_bounded(tx, tid, ak);
+    tx.core.mark_aspect_changed(tid, ak);
+    Ok(())
+}
+
+/// An expiry's change to `(tid, ak)` in place (spec/crdt.md §4.7: expiry of a delta equals the
+/// join with its values stripped, and strip commutes with join): the state held stripped of the
+/// values of `own`, the expired delta's writes, as a join changes it. The held set changed only by
+/// that delta's body turning its leftover, so this is `rebuild`'s result at O(the delta): `at`,
+/// its body before and after the strip, says where its writes sit (a paged state loads those
+/// pages). A rebuild asked in this batch already reads the leftover. A snapshot carrying a
+/// copy of one of those values keeps it in its body (`retention::carry_list`); the state, held
+/// stripped, never shows it.
+pub(crate) fn strip_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, at: &Fragment, own: &[Owned]) -> Result<()> {
+    if ak.signal() {
+        tx.core.mark_aspect_changed(tid, ak);
+        return Ok(());
+    }
+    let k = (*tid, ak.clone());
+    if tx.core.batched.as_ref().is_some_and(|b| b.contains_key(&k)) {
+        return Ok(());
+    }
+    let _s = crate::costs::span("expiry: strip");
+    tx.core.strips += 1;
+    // the state changes: held purge-on-replace bodies are judged again (`retention::settle_none`)
+    if crate::retention::history::of(tx.core, tid, ak).purges() {
+        tx.core.none_due.insert(k.clone());
+    }
+    tx.load_lazy(tid, ak)?;
+    let touch = crate::engine::pages::touch_of(at, tx.core.pages.get(&k));
+    tx.ensure_touch(tid, ak, &touch)?;
+    let Some(mut st) = tx.core.states.get_mut(&k).and_then(Option::take) else { return Ok(()) };
+    tx.core.touch();
+    tx.core.wrote(k.clone());
+    let refs = crate::engine::refs::indexed(ak).then(|| crate::engine::refs::Delta::reach(&st, at, -1));
+    let roots = crate::retention::compact::roots(ak, &st, at);
+    let set = OwnedSet::of(own);
+    st.strip(&|d| set.owns(d));
+    let refs = refs.map(|mut d| {
+        d.add(&st.reach(at), 1);
+        d
+    });
+    let after = crate::retention::compact::roots(ak, &st, at);
+    let st = tx.kept(tid, ak, st)?;
+    tx.set_state_touched(tid, ak, st, &touch, Shred::Yes)?;
+    crate::engine::refs::note(tx, tid, ak, refs.unwrap_or_default())?;
+    crate::retention::compact::Trigger::unlinked(tx, tid, ak, &roots, &after)?;
+    // members gone by expiry leave the group index with them
+    if ak.as_str() == "group.0" {
+        observe_state(tx, tid, ak)?;
+    }
     tx.core.mark_aspect_changed(tid, ak);
     Ok(())
 }

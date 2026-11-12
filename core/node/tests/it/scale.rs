@@ -1479,3 +1479,59 @@ fn chunk_drop_judgment_is_flat() {
     flat("chunk drop: parts read", small.0, big.0);
     flat("chunk drop: tree blobs", small.1, big.1);
 }
+
+/// A map of `n` entries, each its own commit expiring a second after the one before, and a
+/// snapshot over them (a disappearing chat): peer 1 given the commits newest first and the
+/// snapshot before them. The work of peer 0's tick as the first entry expires, then the second;
+/// both peers read alike after each.
+fn expiries(n: usize) -> [Work; 2] {
+    const HOUR: u64 = 3_600_000;
+    let mut lp = net(2, 0);
+    let t = shared_thing(&mut lp, &[Role::Write]);
+    let k = ak(BIG.ak());
+    let now0 = lp.peers[0].engine.now().0;
+    let mut ids = Vec::new();
+    for i in 0..n {
+        let mut m = Mutation::new();
+        m.expires(t, &k, osis_base::WallMs(now0 + HOUR + 500 + 1_000 * i as u64)).unwrap();
+        set_key(&mut m, t, &k, vec![PathSeg::Key(s(&format!("k{i:06}")))], long(i));
+        ids.push(lp.peers[0].commit(m).unwrap().unwrap());
+    }
+    ids.push(lp.peers[0].engine.snapshot(&t, &k).unwrap().unwrap());
+    let pks = lp.packages(0).unwrap();
+    for c in ids.iter().rev() {
+        lp.deliver(1, pks.iter().find(|p| p.id == *c).unwrap()).unwrap();
+    }
+    let mut out = Vec::new();
+    lp.advance(HOUR);
+    for step in 0..2 {
+        lp.advance(1_000);
+        let e = &lp.peers[0].engine;
+        let r0 = e.rebuilds();
+        let (_, mut w) = measured_at(&mut lp, 0, |lp| lp.peers[0].tick().unwrap());
+        let e = &lp.peers[0].engine;
+        w.spans.insert("rebuilds", e.rebuilds() - r0);
+        lp.peers[1].tick().unwrap();
+        let read = lp.peers[0].engine.get(&t, &k).unwrap();
+        assert_eq!(lp.peers[1].engine.get(&t, &k).unwrap(), read, "step {step}: peers read alike");
+        let Some(Value::Map(m)) = read else { panic!("step {step}: the map reads {read:?}") };
+        assert_eq!(m.len(), n - step - 1, "step {step}: entries left");
+        assert!(!m.contains_key(&s(&format!("k{step:06}"))), "step {step}: the expired entry goes");
+        out.push(w);
+    }
+    out.try_into().unwrap()
+}
+
+// spec/crdt.md §4.7, spec/requirements.md Scale: an expiry costs O(what expires): the state is
+// stripped in place (`apply::strip_state`), no body of the aspect read but the expiring one, its
+// pages alone loaded and written, at n and 10n held bodies. The debug build checks each against a
+// rebuild (`check_rebuilt`).
+#[test]
+fn expiry_is_flat_spec_crdt_4_7() {
+    let (small, big) = (expiries(40), expiries(400));
+    for i in 0..2 {
+        assert_eq!(big[i].n("rebuilds"), 0, "expiry {i} rebuilt the aspect");
+        assert_eq!(big[i].n("rebuild: body"), 0, "expiry {i} read the aspect's bodies");
+        all_flat(&format!("expiry {i}"), &small[i], &big[i]);
+    }
+}

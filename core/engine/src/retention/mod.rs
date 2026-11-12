@@ -655,8 +655,10 @@ pub(crate) fn reopen_late(tx: &mut Tx<'_>, c: &CommitId, ais: &BTreeSet<usize>) 
 
 /// Holds delta `ai` of `c` as its leftover from now on (spec/crdt.md §4.7): its own writes `o`
 /// (`writes_of`) go on the value-less list, and their values go from its body and the aspect's
-/// state, shredded (`strip_leftover`). A copy of a write listed later goes then
-/// (`apply::rebuild`).
+/// state, shredded (`strip_leftover`). `in_place` (an expiry): the state is stripped in place,
+/// O(the delta) (`apply::strip_state`); else rebuilt (`apply::rebuild`), which also holds a
+/// snapshot carrying a purged value as its leftover (`carry_list`). A copy of a write listed
+/// later goes on its join.
 ///
 /// The leftover is the body as held (whole, or a leftover already), `extra` (what a waiting part
 /// was stripped to, `pending::strip_purged`) or, dropped as covered, its held valid coverers'
@@ -666,11 +668,10 @@ pub(crate) fn reopen_late(tx: &mut Tx<'_>, c: &CommitId, ais: &BTreeSet<usize>) 
 /// `drop_gone`); one missing is dropped (a tombstone for a new node).
 ///
 /// Invariant: every write a node holds of a delta it holds value-less is in a held body, whole
-/// or leftover, never in the state alone (the leftover is stored before the state is rebuilt
-/// from the bodies), so an un-merge of a later write that superseded it gives it back
+/// or leftover, never in the state alone (the leftover is stored before the state changes), so an un-merge of a later write that superseded it gives it back
 /// (`apply::rebuilt`), whatever order the expiry, that write and its revocation came in.
 /// The aspect, when anything changed.
-fn make_leftover(tx: &mut Tx<'_>, c: &CommitId, ai: usize, o: &[Owned], extra: &[Fragment]) -> Result<Option<(Tid, Ak)>> {
+fn make_leftover(tx: &mut Tx<'_>, c: &CommitId, ai: usize, o: &[Owned], extra: &[Fragment], in_place: bool) -> Result<Option<(Tid, Ak)>> {
     let Some(mut m) = tx.core.ix.commits.get(c).cloned() else { return Ok(None) };
     let Some(a) = m.header.aspects.get(ai).cloned() else { return Ok(None) };
     if o.is_empty() {
@@ -730,11 +731,24 @@ fn make_leftover(tx: &mut Tx<'_>, c: &CommitId, ai: usize, o: &[Owned], extra: &
         }
         return Ok(Some(k));
     };
+    let mut at = in_place.then(|| body.clone());
     strip_leftover(tx.core, &m.header, ai, &mut body);
+    if let Some(at) = &mut at {
+        at.join(body.clone());
+    }
     put_leftover(tx, c, ai, m, body, gives)?;
-    // the one path (item 1): the state from the held bodies, the leftover among them, stripped
-    // by the list, shredded (every local copy of the values goes)
-    crate::apply::rebuild(tx, &a.tid, &a.ak)?;
+    match at {
+        // an expiry: the state stripped in place, the delta's body and leftover saying where
+        Some(at) => {
+            crate::apply::strip_state(tx, &a.tid, &a.ak, &at, o)?;
+            if !tx.is_memory_commit(c) {
+                tx.core.cover_candidates.entry(k.clone()).or_default().insert(*c);
+            }
+        }
+        // the one path (item 1): the state from the held bodies, the leftover among them,
+        // stripped by the list, shredded (every local copy of the values goes)
+        None => crate::apply::rebuild(tx, &a.tid, &a.ak)?,
+    }
     Ok(Some(k))
 }
 
@@ -769,8 +783,33 @@ pub(crate) fn hold_carrier(tx: &mut Tx<'_>, c: &CommitId, ai: usize, mut body: F
 /// not held value-less, but a carrier held through its purge's fall (`purge::rejudge_purges`).
 /// So every listed write loses its value (`Fragment::strip`), and a rebuild reads the same with it.
 fn strip_leftover(core: &Core, h: &Header, ai: usize, body: &mut Fragment) {
-    let Some(list) = h.aspects.get(ai).and_then(|a| core.ix.valueless.get(&(a.tid, a.ak.clone()))) else { return };
+    let Some(a) = h.aspects.get(ai) else { return };
+    if h.kind.is_compaction() {
+        let list = carry_list(core, &a.tid, &a.ak);
+        body.strip(&|d| sorted_owns(&list, d));
+        return;
+    }
+    let Some(list) = core.ix.valueless.get(&(a.tid, a.ak.clone())) else { return };
     body.strip(&|d| sorted_owns(list, d));
+}
+
+/// The writes of the value-less list of `(tid, ak)` a snapshot's copies are judged by (spec/crdt.md
+/// §4.7 Copies): those of deltas with no expiry (a copy of a commit not held, `Owned::Dots`,
+/// included). A snapshot carries an expiring delta's values value-less (§8); one carrying a copy
+/// of such a value keeps it in its body, and the state, stripped by the whole list, never shows
+/// it. So an expiry reads no snapshot (`apply::strip_state`), and what a node holds of a
+/// snapshot does not depend on when it arrived. Sorted, as the list.
+pub(crate) fn carry_list(core: &Core, tid: &Tid, ak: &Ak) -> Vec<Owned> {
+    let Some(list) = core.ix.valueless.get(&(*tid, ak.clone())) else { return Vec::new() };
+    let expiring = |c: Option<CommitId>| c.and_then(|c| core.ix.commits.get(&c)).is_some_and(|m| m.header.expires.is_some());
+    list.iter()
+        .filter(|o| match o {
+            Owned::Range { src, lo, .. } => !expiring(core.commit_of(tid, ak, &osis_crdt::Dot { src: src.clone(), ctr: *lo })),
+            Owned::Commit(c) => !expiring(Some(*c)),
+            Owned::Dots { .. } => true,
+        })
+        .cloned()
+        .collect()
 }
 
 /// Stores `body` as the leftover of part `ai` of `c` (meta `m`): a part held whole loses its body
@@ -862,7 +901,7 @@ fn hold_valueless(tx: &mut Tx<'_>, c: &CommitId, ai: usize, purged: bool, change
     }
     let Some(m) = tx.core.ix.commits.get(c).cloned() else { return Ok(()) };
     let own = writes_of(&m.header, c, ai);
-    if let Some(k) = make_leftover(tx, c, ai, &own, &[])? {
+    if let Some(k) = make_leftover(tx, c, ai, &own, &[], !purged)? {
         changed.insert(k);
     }
     // a memory commit's leftover may be superseded now (spec/sync.md §9), or covered by a
@@ -887,8 +926,11 @@ fn drop_gone(tx: &mut Tx<'_>, c: &CommitId, ai: usize, changed: &mut BTreeSet<(T
     let gone = gone_of(tx.core, &m.header, c, ai);
     if gone.is_empty() {
         let Some(k) = m.header.aspects.get(ai).map(|a| (a.tid, a.ak.clone())) else { return Ok(()) };
-        let Some(list) = tx.core.ix.valueless.get(&k).filter(|l| !l.is_empty() && m.header.kind.is_compaction()).cloned() else { return Ok(()) };
-        if crate::apply::carries_any(tx, c, ai, &list)? {
+        if !m.header.kind.is_compaction() {
+            return Ok(());
+        }
+        let list = carry_list(tx.core, &k.0, &k.1);
+        if !list.is_empty() && crate::apply::carries_any(tx, c, ai, &list)? {
             strip_carried(tx, c, ai)?;
             crate::apply::rebuild(tx, &k.0, &k.1)?;
             changed.insert(k);
@@ -896,7 +938,7 @@ fn drop_gone(tx: &mut Tx<'_>, c: &CommitId, ai: usize, changed: &mut BTreeSet<(T
         return Ok(());
     }
     strip_pending(tx, c, ai, true)?;
-    if let Some(k) = make_leftover(tx, c, ai, &gone, &[])? {
+    if let Some(k) = make_leftover(tx, c, ai, &gone, &[], false)? {
         changed.insert(k);
     }
     Ok(())
@@ -1121,7 +1163,8 @@ impl Engine {
             tx.core.compaction.passed(now);
             // the timers these put lower it again
             tx.core.timer_floor = next.min(next_leave).min(tx.core.compaction.next_at());
-            // their rebuilds once per aspect (`run_batched`: an expiry reads no state)
+            // their rebuilds once per aspect (`run_batched`); an expiry strips a state in place
+            // only while no rebuild of it is asked (`apply::strip_state`)
             crate::apply::run_batched(tx, |tx| {
                 for (k, c, ai, kind) in due {
                     // a memory commit's timer is memory work: what it writes stays in memory
