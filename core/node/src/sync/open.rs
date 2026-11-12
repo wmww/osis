@@ -560,10 +560,10 @@ impl SyncEngine {
     pub(crate) fn refused(&mut self, conn: ConnId, l: Option<LabelId>, kind: Request, code: Code, out: &mut Vec<super::Action>) -> Result<()> {
         let Some(l) = l else { return Ok(()) };
         // a delete refused whole goes again at a later pass
-        if let Some(c) = self.conns.get_mut(&conn) {
-            if kind == Request::Delete {
-                c.req.deleting.retain(|(x, _), _| *x != l);
-            }
+        if kind == Request::Delete
+            && let Some(c) = self.conns.get_mut(&conn)
+        {
+            c.req.deleting.retain(|(x, _), _| *x != l);
         }
         let phase = self.lc(conn, &l).map(|x| x.phase.clone());
         match (kind, phase) {
