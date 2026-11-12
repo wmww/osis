@@ -614,7 +614,7 @@ pub enum MemberCmd {
 
 #[derive(Subcommand, Debug)]
 pub enum LinkCmd {
-    /// Make a link giving ROLE on T, and sync T if it does not yet; prints the link
+    /// Make a link giving ROLE (read, write or admin) on T, and sync T if it does not yet; prints the link
     Make {
         t: String,
         role: String,

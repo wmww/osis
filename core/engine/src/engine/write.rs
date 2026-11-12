@@ -518,8 +518,9 @@ pub(crate) fn settle(core: &Core, memory: bool, kind: Kind, ts: Ts, tid: &Tid, a
 
 /// Blob framing of one aspect's delta in a commit of `plan` with retention `retention`
 /// (spec/crypto.md §7): its thing's dedup secret, the commit's expiry, the delete keys the
-/// retention calls for. `published`: [`super::secrets::published_keys`] of the commit's things.
-pub(crate) fn framing_for(core: &Core, plan: &CommitPlan, published: &BTreeMap<(Tid, osis_base::Role), osis_crypto::VerifyingKey>, tid: &Tid, retention: &Retention) -> Result<Framing> {
+/// retention calls for, of the class of `memory` (a memory commit's blobs are held in memory,
+/// spec/wire.md §5). `published`: [`super::secrets::published_keys`] of the commit's things.
+pub(crate) fn framing_for(core: &Core, memory: bool, plan: &CommitPlan, published: &BTreeMap<(Tid, osis_base::Role), osis_crypto::VerifyingKey>, tid: &Tid, retention: &Retention) -> Result<Framing> {
     // a role is of use once its delete keys are here (spec/crypto.md §7): until then this node
     // writes nothing on the thing, whatever the delta's retention (`Engine::holds_delete_keys`)
     if !super::secrets::holds_listed_keys(core, &plan.creates, published, tid) {
@@ -528,7 +529,8 @@ pub(crate) fn framing_for(core: &Core, plan: &CommitPlan, published: &BTreeMap<(
     let secrets = CommitSecrets { core, actor: plan.actor, created: &plan.creates, published };
     let keys = osis_commit::delete_keys(&secrets, tid, retention)?;
     let dedup = osis_commit::Secrets::dedup(&secrets, tid).ok_or(Error::UnknownThing(*tid))?;
-    Ok(Framing { thing: *tid, dedup, expiry: plan.expires.map(WallMs), class: osis_label::Class::Durable, keys: keys.iter().map(|k| Ok((k.level, k.verifying_key()?))).collect::<std::result::Result<_, osis_commit::Error>>()? })
+    let class = if memory { osis_label::Class::Ephemeral } else { osis_label::Class::Durable };
+    Ok(Framing { thing: *tid, dedup, expiry: plan.expires.map(WallMs), class, keys: keys.iter().map(|k| Ok((k.level, k.verifying_key()?))).collect::<std::result::Result<_, osis_commit::Error>>()? })
 }
 
 /// The chunk-list entry for a blob a commit links and does not introduce (spec/wire.md §4): its
@@ -562,10 +564,7 @@ pub(crate) fn snapshot_listed(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, node: Tid, de
     let published = super::secrets::published_keys(tx, &plan.creates, [*tid])?;
     let wanted = osis_commit::retention::snapshot_retention(ak.as_str());
     let Ok((retention, _)) = settle(tx.core, memory, kind, plan.ts, tid, ak, None, false, Some(wanted), None) else { return Ok(0) };
-    let Ok(mut framing) = framing_for(tx.core, &plan, &published, tid, &retention) else { return Ok(0) };
-    if memory {
-        framing.class = osis_label::Class::Ephemeral;
-    }
+    let Ok(framing) = framing_for(tx.core, memory, &plan, &published, tid, &retention) else { return Ok(0) };
     let mut n = 0;
     for l in super::large::delta_links(tx, &framing.dedup, delta)? {
         n += usize::from(linked_chunk(tx, &framing, &l)?.is_some());
@@ -669,11 +668,7 @@ pub(crate) fn build_and_apply(tx: &mut Tx<'_>, plan: CommitPlan, deltas: Vec<Res
         if expires != plan.expires && !plan.restores {
             return Err(Error::Misuse("a commit's deltas share one expiry"));
         }
-        let mut framing = framing_for(tx.core, &plan, &published, &d.tid, &retention)?;
-        // a memory commit's pages are of its class: held in memory (spec/wire.md §5)
-        if tx.txn.is_memory() {
-            framing.class = osis_label::Class::Ephemeral;
-        }
+        let framing = framing_for(tx.core, tx.txn.is_memory(), &plan, &published, &d.tid, &retention)?;
         let cx = writer_ctx(plan.form, plan.kind, plan.ts, node, d.lo, d.hi);
         let mut blobs = TxBlobs::new(&mut tx.blobs, tx.txn.is_memory());
         let mut nonce = [0u8; osis_crdt::NONCE_LEN];
@@ -939,7 +934,7 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
         }
         let retention = am.retention.unwrap_or_default();
         let framing = match kind {
-            Kind::Content => Some(framing_for(tx.core, &plan, &published, &tid, &retention)?),
+            Kind::Content => Some(framing_for(tx.core, memory, &plan, &published, &tid, &retention)?),
             _ => None,
         };
         // what the ops address (map keys, fields, set values: a large one by its link, as the
@@ -958,11 +953,7 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
         // in memory (spec/data-model.md §6)
         let mut chunks = Vec::new();
         if let Some(framing) = &framing {
-            let mut framing = framing.clone();
-            if memory {
-                framing.class = osis_label::Class::Ephemeral;
-            }
-            chunks = super::large::chunk_ops(tx, &tid, &ak, &mut am.ops, &edits, am.schema.as_deref(), &framing, &m.fresh)?;
+            chunks = super::large::chunk_ops(tx, &tid, &ak, &mut am.ops, &edits, am.schema.as_deref(), framing, &m.fresh)?;
         }
         let lo = match form {
             Form::Commit => next_ctr,
