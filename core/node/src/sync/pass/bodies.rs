@@ -157,7 +157,11 @@ impl SyncEngine {
     /// Whether a delete took body `b` from `l` (at `host`: an entry of it gone there, as the
     /// source's stream showed; else in this node's store) and it stays out: every one of its `parts` only a
     /// blob can carry (`must_carry`) is held there (at `host`) by another genuine blob of the
-    /// commit, and no purge that fell may have been what took it (spec/sync.md §6).
+    /// commit, and no purge that fell may have been what took it (spec/sync.md §6). A memory
+    /// body's delete stands too while memory entries this node refused for its cap are held
+    /// there (`refused_there`): a delete-key holder deletes only once the carrier is there, and
+    /// this node, not reading those entries, cannot show it is not (a fresh encryption past
+    /// that delete would be deleted again, forever).
     pub(super) fn delete_stands(&mut self, host: Option<&HostKey>, l: LabelId, b: &Body, parts: &[usize], snaps: &Snaps, note: &mut Note) -> Result<bool> {
         let there = host.is_some_and(|s| self.state.entries_of(&l, &b.commit).any(|(id, _)| self.state.is_gone_at(s, &l, &id)));
         if !there && !self.state.body_deleted(l, b.commit, &b.parts) {
@@ -165,8 +169,9 @@ impl SyncEngine {
         }
         let Some(h) = self.engine.header(&b.commit) else { return Ok(false) };
         let keeps = self.engine.part_keeps(&b.commit)?;
+        let unjudged = h.ephemeral.is_some() && self.refused_there(host, &l);
         for ai in parts {
-            if self.must_carry(&h, &b.commit, &keeps, *ai, snaps, note)? && !self.carried_by(host, &l, &b.commit, &[*ai]) {
+            if self.must_carry(&h, &b.commit, &keeps, *ai, snaps, note)? && !self.carried_by(host, &l, &b.commit, &[*ai]) && !unjudged {
                 return Ok(false);
             }
         }
@@ -211,6 +216,13 @@ impl SyncEngine {
             }
         }
         Ok(true)
+    }
+
+    /// Whether memory entries of `l` this node refused for its cap (unopened here, any of them a
+    /// possible carrier) are held at `host` (`None`: known anywhere).
+    fn refused_there(&self, host: Option<&HostKey>, l: &LabelId) -> bool {
+        let refused = |b: &BlobId| self.memory.unfit.contains(*l, *b) || self.memory.refused.get(l).is_some_and(|r| r.ids.contains(b));
+        self.memory_entries_of(l).any(|(b, _)| refused(&b) && host.is_none_or(|s| self.state.is_present(s, l, &b)))
     }
 
     /// Whether an entry of commit `c` holding `parts` is present at `host` under `l` (any
