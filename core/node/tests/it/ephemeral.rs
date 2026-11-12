@@ -1658,9 +1658,9 @@ fn sessions_of_one_node_never_collide_spec_crdt_2_1() {
     assert_eq!(items(&mut net, b, w), want, "a restarted holder, from the host");
 }
 
-// spec/sync.md §9 (what a cover absorbs is deleted at a host once the cover is held there):
-// the author crashes before its cover reaches the host; nothing was deleted, so the state
-// stays at the host for holders, a restarted holder and the author itself (deleting first
+// spec/sync.md §9 (what a cover absorbs is deleted at a peer once the cover is held there):
+// the author crashes before the peer pulls its cover; nothing was deleted, so the state
+// stays at the peer for holders, a restarted holder and the author itself (deleting first
 // lost those writes there for good: the tombstones keep holders from bringing them back)
 #[test]
 fn author_crash_before_cover_lands_keeps_state_spec_sync_9() {
@@ -1677,7 +1677,6 @@ fn author_crash_before_cover_lands_keeps_state_spec_sync_9() {
     let conn = net.conn_to(a, host).unwrap();
     let acts = net.sync(a).compact_ephemeral_now().unwrap();
     let frames = sent(&acts, conn);
-    assert!(frames.iter().any(|m| matches!(m, osis_proto::Message::Upload { .. })), "the cover goes up");
     assert!(!frames.iter().any(|m| matches!(m, osis_proto::Message::Delete { .. })), "nothing deleted before the cover is held there");
     // what it sent never arrives
     net.restart(a, 77);
