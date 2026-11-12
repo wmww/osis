@@ -101,12 +101,7 @@ pub struct CanonicalBytes {
 impl CanonicalBytes {
     /// Checks that `bytes` is exactly one value in the profile.
     pub fn parse(bytes: Vec<u8>, limits: &Limits) -> Result<CanonicalBytes, DecodeError> {
-        let mut d = Decoder::new(&bytes, limits);
-        d.check(0)?;
-        if d.pos != bytes.len() {
-            return Err(DecodeError::Trailing);
-        }
-        let depth = d.deepest;
+        let depth = Decoder::check_whole(&bytes, limits)?;
         Ok(CanonicalBytes { bytes, depth })
     }
     pub fn from_value(v: &Value) -> CanonicalBytes {
@@ -347,14 +342,10 @@ pub fn decode(input: &[u8], limits: &Limits) -> Result<Value, DecodeError> {
 }
 
 /// Whether `input` is exactly one value in the profile: `decode(input, limits)`, the same error
-/// included, without building the value (nothing is allocated).
+/// included, without building the value (nothing is allocated) unless a map or set has keys or
+/// elements holding links: then `decode` once.
 pub fn check(input: &[u8], limits: &Limits) -> Result<(), DecodeError> {
-    let mut d = Decoder::new(input, limits);
-    d.check(0)?;
-    if d.pos != input.len() {
-        return Err(DecodeError::Trailing);
-    }
-    Ok(())
+    Decoder::check_whole(input, limits).map(drop)
 }
 
 /// One value of bytes `check` accepted, read in place: nothing is copied or allocated, and a
@@ -537,7 +528,7 @@ fn checked_len(b: &[u8]) -> Option<usize> {
             MAJOR_BYTES | MAJOR_TEXT => pos = pos.checked_add(arg?)?,
             MAJOR_ARRAY => left = left.checked_add(arg?)?,
             MAJOR_MAP => left = left.checked_add(arg?.checked_mul(2)?)?,
-            MAJOR_TAG => left += 1,
+            MAJOR_TAG => left = left.checked_add(1)?,
             // integers, and major 7: a float's 8 bytes are its argument's
             _ => {}
         }
@@ -701,13 +692,15 @@ struct Decoder<'a> {
     deepest: usize,
     /// Items promised by the heads read so far.
     promised: usize,
+    /// `check` met a map or set of more than one key or element holding a link.
+    link_keys: bool,
 }
 
 impl<'a> Decoder<'a> {
     fn new(input: &'a [u8], limits: &Limits) -> Decoder<'a> {
         let cut = input.len() > limits.max_bytes;
         let buf = input.get(..limits.max_bytes).unwrap_or(input);
-        Decoder { buf, cut, pos: 0, max_depth: limits.max_depth, deepest: 0, promised: 0 }
+        Decoder { buf, cut, pos: 0, max_depth: limits.max_depth, deepest: 0, promised: 0, link_keys: false }
     }
 
     fn remaining(&self) -> usize {
@@ -867,10 +860,25 @@ impl<'a> Decoder<'a> {
         Ok(())
     }
 
-    /// `item` without building the value: the same checks in the same order, so the same result.
-    /// Returns whether a link occurs inside.
+    /// `decode`'s verdict and error on all of `input`, and its deepest nesting: `check`, then,
+    /// only when it met a map or set whose keys or elements hold links, `decode` itself for
+    /// `EqualLinks` (which needs the values, and whose error comes first where it applies). Once
+    /// for the whole input: once per such collection would decode nested ones once per level.
+    fn check_whole(input: &[u8], limits: &Limits) -> Result<usize, DecodeError> {
+        let mut d = Decoder::new(input, limits);
+        let checked = d.check(0);
+        if d.link_keys {
+            d = Decoder::new(input, limits);
+            d.item(0)?;
+        } else {
+            checked?;
+        }
+        if d.pos == input.len() { Ok(d.deepest) } else { Err(DecodeError::Trailing) }
+    }
+
+    /// `item` without building the value: the same checks in the same order, so the same result
+    /// but `EqualLinks` (`check_whole`). Returns whether a link occurs inside.
     fn check(&mut self, depth: usize) -> Result<bool, DecodeError> {
-        let at = self.pos;
         let ib = self.byte()?;
         match ib >> 5 {
             MAJOR_UINT | MAJOR_NINT => {
@@ -900,7 +908,6 @@ impl<'a> Decoder<'a> {
             MAJOR_MAP => {
                 self.enter(depth + 1)?;
                 let n = self.len(ib, 2)?;
-                let promised = self.promised;
                 self.promise(n * 2)?;
                 let (mut keys, mut values) = (false, false);
                 let buf = self.buf;
@@ -915,14 +922,12 @@ impl<'a> Decoder<'a> {
                     prev = raw;
                     values |= self.check(depth + 1)?;
                 }
-                if keys && n > 1 {
-                    self.equal_links(at, promised, depth)?;
-                }
+                self.link_keys |= keys && n > 1;
                 return Ok(keys || values);
             }
             MAJOR_TAG => {
                 let tag = self.arg(ib)?;
-                return self.check_tagged(tag, depth, at);
+                return self.check_tagged(tag, depth);
             }
             _ => match ib {
                 FALSE | TRUE => {}
@@ -936,8 +941,8 @@ impl<'a> Decoder<'a> {
         Ok(false)
     }
 
-    /// `tagged` without building the value (`check`); `at`: where the tag's head starts.
-    fn check_tagged(&mut self, tag: u64, depth: usize, at: usize) -> Result<bool, DecodeError> {
+    /// `tagged` without building the value (`check`).
+    fn check_tagged(&mut self, tag: u64, depth: usize) -> Result<bool, DecodeError> {
         let inner = depth + 1;
         self.enter(inner)?;
         match tag {
@@ -948,7 +953,6 @@ impl<'a> Decoder<'a> {
                     return Err(DecodeError::TagContent(tag));
                 }
                 let n = self.len(ib, 1)?;
-                let promised = self.promised;
                 self.promise(n)?;
                 let buf = self.buf;
                 let mut prev: &[u8] = &[];
@@ -962,9 +966,7 @@ impl<'a> Decoder<'a> {
                     }
                     prev = raw;
                 }
-                if link && n > 1 {
-                    self.equal_links(at, promised, depth)?;
-                }
+                self.link_keys |= link && n > 1;
                 Ok(link)
             }
             TAG_TID => self.fixed_bytes::<TID_LEN>(tag).map(|_| false),
@@ -991,14 +993,6 @@ impl<'a> Decoder<'a> {
                 Ok(link)
             }
         }
-    }
-
-    /// `check`'s rare path: the map or set whose head starts at `at` (its promise taken at
-    /// `promised`), its keys or elements holding a link, decoded again for `decode`'s check
-    /// that no two are links of one content hash (`EqualLinks`).
-    fn equal_links(&mut self, at: usize, promised: usize, depth: usize) -> Result<(), DecodeError> {
-        (self.pos, self.promised) = (at, promised);
-        self.item(depth).map(drop)
     }
 
     /// One item inside `depth` arrays, maps and tags.

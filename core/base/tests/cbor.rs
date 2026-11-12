@@ -122,6 +122,7 @@ fn check_mutation(v: &Value, ops: &[(u8, usize, u8)]) -> Result<(), TestCaseErro
     let b = mutate(encode(v), ops);
     if let Ok(w) = d(&b) {
         prop_assert_eq!(&encode(&w), &b);
+        reads_as(Item::parse(&b, &Limits::DEFAULT).unwrap(), &w)?;
     }
     if let Ok((w, used)) = decode_prefix(&b, &Limits::DEFAULT) {
         prop_assert_eq!(encode(&w), used.to_vec());
@@ -294,6 +295,20 @@ fn links_equal_by_hash() {
         map.push(v);
     }
     assert_eq!(d(&map), Err(DecodeError::EqualLinks));
+    // the first error decode meets wins, a later one of another kind included
+    let mut then_bad = vec![0x82];
+    then_bad.extend(&map);
+    then_bad.push(0xfc);
+    assert_eq!(d(&then_bad), Err(DecodeError::EqualLinks));
+    // link-keyed maps nested deep: accepted, with decode's depth
+    let mut deep = Value::Int(0);
+    for _ in 0..200 {
+        deep = Value::Map([(a.clone(), deep), (Value::link(Link { hash: [7; 32], blob: BlobId([2; 32]), suite: 1, key: [3; 32] }), Value::Int(1))].into_iter().collect());
+    }
+    let lim = Limits { max_depth: 512, max_bytes: usize::MAX };
+    let b = encode(&deep);
+    assert_eq!(CanonicalBytes::parse(b.clone(), &lim).unwrap().depth(), deep.depth());
+    assert_eq!(dl(&b, &lim), Ok(deep));
 }
 
 // §5: with links of one content hash, Ord and byte order differ ([LA, 3] < [LB, 5] by value while
