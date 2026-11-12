@@ -272,14 +272,24 @@ fn a_report_lost_with_its_connection_is_repaired_by_the_next_pull_spec_sync_10()
 }
 
 // issues/net-shared-set.md (Opens: the event that ends sharing is still sent): a rotation while
-// apart is served to the ended member however often its entry was logged again since (here: the
-// host's stamp coming back), or a holder J judges unknown could never learn the new epoch here
+// apart is served to the ended member however often its entry was logged again since (here: b
+// rotates cut off from the peer that cannot read the label, so its own head moves by a local
+// step, and stamps the rotation again for that peer's older head once it is back), or a holder J
+// judges unknown could never learn the new epoch here
 #[test]
 fn a_rotation_logged_again_while_apart_is_still_served_spec_sync_10() {
     let Setup { mut net, b, a, g, l, r, p, cursor } = opened_at(true);
     net.hand_close(b, p.hc);
+    net.set_online(b, false);
+    net.blocked.insert((b, 0));
+    net.set_online(b, true);
     let c = rotate(&mut net, b, g);
     net.run();
+    net.advance(61_000);
+    net.blocked.remove(&(b, 0));
+    for _ in 0..3 {
+        net.advance(61_000);
+    }
     let rotated = entries_of(&mut net, b, l, c);
     assert!(!rotated.is_empty());
     let until = net.engine(b).run(|tx| Ok(tx.txn.records_holding(&l)?)).unwrap().into_iter().find_map(|(rec, m)| (rec.r == r).then_some(m.until)).flatten().expect("ended while apart");
