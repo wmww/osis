@@ -260,7 +260,7 @@ impl Engine {
     /// history judges its right), and a header-only blob has no prefix expiry, so a release's
     /// copy outlives the request's own blobs (spec/sync.md §1). Each with its author's chains to
     /// `t` and to its actor. Once per `out`: its mintings among `out`'s headers.
-    fn minting_evidence(&mut self, t: &Tid, out: &mut Certs) {
+    pub fn minting_evidence(&mut self, t: &Tid, out: &mut Certs) {
         let mintings: Vec<CommitId> = self.core.mintings(t).map(|(c, _)| c).collect();
         if mintings.iter().all(|c| out.headers.contains(c)) {
             return;

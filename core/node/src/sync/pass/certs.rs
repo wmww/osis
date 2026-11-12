@@ -31,7 +31,13 @@ impl SyncEngine {
         let _s = crate::costs::span("pass: certificates");
         let closure = self.engine.closure(g);
         let mut wanted = self.engine.certificates(g);
-        wanted.extend(self.inbox_certificates(g, l)?);
+        // an inbox payload's records go raw, so with their mintings as every record does
+        let inbox = self.inbox_certificates(g, l)?;
+        let raw = inbox.records.clone();
+        wanted.extend(inbox);
+        for t in &raw {
+            self.engine.minting_evidence(t, &mut wanted);
+        }
         // revokes about authors seen under the label (spec/permissions.md
         // §4), so its verifiers judge their writes as this node does: authors of an entry
         // judged invalid here or not judged yet (`Engine::judged_valid`); a revoke changes no
@@ -62,7 +68,8 @@ impl SyncEngine {
         }
         // the records, raw: they outlive the commits that minted them (spec/permissions.md §4)
         self.place_records(g, l, &wanted.records, false)?;
-        let copied: BTreeSet<CommitId> = wanted.commits.keys().copied().collect();
+        // the commits copied with parts, so carrying their header (but those with nothing left to copy)
+        let mut copied: BTreeSet<CommitId> = wanted.commits.keys().copied().collect();
         for (c, want) in wanted.commits {
             let (mine, have) = self.held_parts(g, l, &c)?;
             // what the label's closure bodies carry is never copied (a copy duplicating closure
@@ -90,7 +97,10 @@ impl SyncEngine {
                 continue;
             }
             // nothing to place once its parts are dropped here (`State::sweep_certs`)
-            let Some(body) = self.engine.part_body(&c, &missing)? else { continue };
+            let Some(body) = self.engine.part_body(&c, &missing)? else {
+                copied.remove(&c);
+                continue;
+            };
             self.place_copy(g, l, &c, &missing, body)?;
         }
         // headers alone (the mintings of things whose records go)
