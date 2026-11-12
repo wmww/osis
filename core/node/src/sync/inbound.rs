@@ -206,6 +206,8 @@ impl SyncEngine {
         let mut fresh_here = Vec::new();
         let mut blobs = Vec::new();
         let mut memory_blobs = Vec::new();
+        // memory blobs new here: one that opens to no commit (a page) is charged its bytes
+        let mut fresh_memory: Vec<(BlobId, usize)> = Vec::new();
         let mut touched = Vec::new();
         let mut fetch: Vec<BlobId> = Vec::new();
         // the wraps of a reader's announcements that make no row (their bytes not held)
@@ -390,12 +392,20 @@ impl SyncEngine {
                                 continue;
                             }
                         }
+                        // a page of a memory commit forgotten here (not arrived again): its bytes
+                        // are not kept
+                        Some(_) if memory && self.forgotten_page(&blob_id) => {
+                            self.fetched(&blob_id);
+                        }
                         Some(b) if memory => {
                             self.fetched(&blob_id);
                             // a host's unstamped junk in the ephemeral class is judged as its
                             // durable junk is (`drop_unvouched`: opened under nothing, its bytes go)
                             if host.is_some() && !vouched && stamp.is_none() && !self.engine.has_blob(&blob_id) {
                                 unvouched.push((blob_id, true));
+                            }
+                            if !self.engine.has_blob(&blob_id) {
+                                fresh_memory.push((blob_id, b.len()));
                             }
                             memory_blobs.push((blob_id, b));
                         }
@@ -462,6 +472,9 @@ impl SyncEngine {
         }
         self.engine.put_memory_blobs(memory_blobs)?;
         self.open_entries(conn, l, &touched)?;
+        for (b, n) in fresh_memory {
+            self.ingest_memory_blob(l, b, n)?;
+        }
         if let Some(s) = host {
             self.drop_unvouched(conn, s, l, &unvouched)?;
         }

@@ -660,3 +660,33 @@ fn encoded_len_at_head_widths() {
         assert_eq!(encoded_len(&v), encode(&v).len());
     }
 }
+
+fn links_of(v: &Value, out: &mut Vec<Link>) {
+    match v {
+        Value::Link(l) => out.push(**l),
+        Value::List(l) => l.iter().for_each(|x| links_of(x, out)),
+        Value::Set(s) => s.iter().for_each(|x| links_of(x, out)),
+        Value::Map(m) => m.iter().for_each(|(k, x)| {
+            links_of(k, out);
+            links_of(x, out);
+        }),
+        Value::Enum(_, Some(p)) => links_of(p, out),
+        // an unknown tag's content is walked too
+        Value::Unknown(u) => links_of(&d(u.content().as_bytes()).unwrap(), out),
+        _ => {}
+    }
+}
+
+proptest! {
+    // `visit_links` finds by heads alone the links a whole decode holds (inside unknown tags
+    // too), in encoded order
+    #[test]
+    fn visit_links_matches_decode(v in value()) {
+        let bytes = encode(&v);
+        let mut want = Vec::new();
+        links_of(&d(&bytes).unwrap(), &mut want);
+        let mut got = Vec::new();
+        osis_base::visit_links(&bytes, &Limits::DEFAULT, &mut |l| got.push(l)).unwrap();
+        prop_assert_eq!(got, want);
+    }
+}

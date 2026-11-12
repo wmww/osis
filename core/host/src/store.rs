@@ -1060,6 +1060,12 @@ impl HostStore {
         self.eph.labels.get(label).map_or(0, |e| e.bytes)
     }
 
+    /// The ephemeral entries held under `label` (tests, diagnostics).
+    #[doc(hidden)]
+    pub fn ephemeral_ids(&self, label: &LabelId) -> Vec<BlobId> {
+        self.eph.labels.get(label).map(|e| e.entries.keys().copied().collect()).unwrap_or_default()
+    }
+
     /// Whether a new plain ephemeral entry of `size` blob bytes would fit under `label`'s cap,
     /// every log record trimmed as an upload would (tests: a refusal is genuine).
     pub fn ephemeral_fits(&self, label: &LabelId, size: u64) -> bool {

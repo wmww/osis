@@ -74,12 +74,14 @@ impl SyncEngine {
                     }
                 }
                 linked.extend(self.body_blobs(&l, b, left)?);
+                // a memory commit's pages are of its class (spec/wire.md §5)
+                let memory = self.engine.header(&b.commit).is_some_and(|h| h.ephemeral.is_some());
                 for cb in linked {
                     let fresh = !self.state.entries.contains_key(&(l, cb));
                     if fresh {
                         let wrap = osis_crypto::filler_wrap(&mut *self.rng);
                         let expires = self.held_expiry(&cb)?;
-                        self.state.set_entry(l, cb, Entry { wrap, stamp: None, cert: false, salt: None, expires, size: None, kind: Kind::Unknown, source: None, memory: false });
+                        self.state.set_entry(l, cb, Entry { wrap, stamp: None, cert: false, salt: None, expires, size: None, kind: Kind::Unknown, source: None, memory });
                     }
                     sends.push(Out { prio, id: cb, fresh, of });
                 }

@@ -53,21 +53,56 @@ pub(crate) fn part_weight(bytes: usize) -> usize {
 
 /// An upper bound on `part_charge` of part `p` once decoded, from its bytes alone
 /// (`osis_crdt::decoded_bound`): a part of tiny map entries decodes to about 200 times its size.
+/// Its pages are not counted (`pages_bound`).
 pub(crate) fn part_bound(p: &osis_commit::Part) -> Result<u64> {
     let heap = osis_crdt::decoded_bound(&p.delta).map_err(|_| Error::BadInput("ephemeral part not one CBOR value"))?;
     Ok(part_charge(heap, p.delta.len()))
 }
 
-/// What the parts of `blob` not held or dropped here could cost decoded (`part_bound`): what
-/// ingesting it may decode.
-pub(crate) fn new_parts_bound(tx: &Tx<'_>, blob: &CommitBlob) -> Result<u64> {
-    let known = tx.core.ix.commits.get(&blob.id());
+/// `part_bound` of the pages and link pages a paged part's `delta` links that are held here
+/// (spec/crdt.md §8), each by its plaintext's heads; one not held is not counted (its commit
+/// waits for it).
+fn pages_bound(tx: &mut Tx<'_>, delta: &[u8]) -> Result<u64> {
+    let limits = |b: &[u8]| osis_base::Limits { max_depth: osis_base::format::MAX_OBJECT_DEPTH, max_bytes: b.len() };
+    let mut stack = Vec::new();
+    osis_base::visit_links(delta, &limits(delta), &mut |l| stack.push(l)).map_err(|_| Error::BadInput("ephemeral part not one CBOR value"))?;
+    let mut seen = BTreeSet::new();
     let mut sum = 0u64;
-    for p in &blob.parts {
-        if known.is_some_and(|m| !m.missing.contains(&p.ai)) {
+    while let Some(l) = stack.pop() {
+        if !seen.insert(l.blob) {
             continue;
         }
-        sum = sum.saturating_add(part_bound(p)?);
+        let Some(blob) = tx.blobs.get(&l.blob)? else { continue };
+        let Ok((_, pt)) = osis_label::open(&blob, &osis_crypto::Secret32::from_bytes(l.key)) else { continue };
+        let heap = osis_crdt::decoded_bound(&pt).map_err(|_| Error::BadInput("ephemeral page not one CBOR value"))?;
+        sum = sum.saturating_add(part_charge(heap, pt.len()));
+        osis_base::visit_links(&pt, &limits(&pt), &mut |l| stack.push(l)).map_err(|_| Error::BadInput("ephemeral page not one CBOR value"))?;
+    }
+    Ok(sum)
+}
+
+/// What the parts of `blob` not held or dropped here could cost decoded (`part_bound`, their
+/// held pages included): what ingesting it may decode.
+pub(crate) fn new_parts_bound(tx: &mut Tx<'_>, blob: &CommitBlob) -> Result<u64> {
+    let known = tx.core.ix.commits.get(&blob.id()).map(|m| m.missing.clone());
+    let mut sum = 0u64;
+    for p in &blob.parts {
+        if known.as_ref().is_some_and(|missing| !missing.contains(&p.ai)) {
+            continue;
+        }
+        sum = sum.saturating_add(part_bound(p)?).saturating_add(pages_bound(tx, &p.delta)?);
+    }
+    Ok(sum)
+}
+
+/// The bytes of the page blobs held here that commit `h` lists for its delta on aspect `ai`
+/// (the chunk list entries under that delta's delete keys; spec/commits.md §1): what the part
+/// weighs beside its root.
+fn page_bytes(tx: &mut Tx<'_>, h: &osis_commit::Header, ai: usize) -> Result<usize> {
+    let Some(a) = h.aspects.get(ai) else { return Ok(0) };
+    let mut sum = 0usize;
+    for ch in h.chunks.iter().filter(|ch| ch.keys == a.keys) {
+        sum = sum.saturating_add(tx.blobs.get(&ch.blob)?.map_or(0, |b| b.len()));
     }
     Ok(sum)
 }
@@ -270,7 +305,7 @@ impl Engine {
                     continue;
                 }
                 let Some(blob) = tx.get_commit(c)? else { continue };
-                let bytes: usize = blob.parts.iter().filter(|p| p.ai == *ai).map(|p| p.delta.len()).sum();
+                let bytes = blob.parts.iter().filter(|p| p.ai == *ai).map(|p| p.delta.len()).sum::<usize>().saturating_add(page_bytes(tx, &blob.header, *ai)?);
                 let cost = part_weight(bytes).saturating_add(ENTRY_CHARGE);
                 sum = sum.saturating_add(cost);
                 largest = largest.max(cost);
@@ -281,7 +316,7 @@ impl Engine {
     }
 
     /// What a snapshot of memory aspect `(tid, ak)` would cost as a held body: its state (the
-    /// expiring writes value-less) encoded unpaged, weighed as a part plus `ENTRY_CHARGE`.
+    /// expiring writes value-less) encoded unpaged (about its root and pages together), weighed as a part plus `ENTRY_CHARGE`.
     fn snapshot_cost(&mut self, tid: &Tid, ak: &Ak) -> Result<Option<usize>> {
         let (tid, ak) = (*tid, ak.clone());
         let me = self.core.writer_for(&tid)?;

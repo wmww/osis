@@ -349,6 +349,18 @@ pub fn visit_items(input: &[u8], limits: &Limits, visit: &mut dyn FnMut(Place, u
     Ok(())
 }
 
+/// Calls `f` for each link (a `TAG_LINK` item, an unknown tag's content included) inside the one
+/// value spanning all of `input`, in order, by its heads alone: nothing else is decoded or
+/// allocated.
+pub fn visit_links(input: &[u8], limits: &Limits, f: &mut dyn FnMut(Link)) -> Result<(), DecodeError> {
+    let mut d = Decoder::new(input, limits);
+    d.links(0, f)?;
+    if d.pos != input.len() {
+        return Err(DecodeError::Trailing);
+    }
+    Ok(())
+}
+
 /// Reads a value of a known shape head by head, under the profile's rules (shortest heads, integers
 /// within i64, valid UTF-8), allocating nothing: a caller holds what it builds to what the bytes
 /// can pay for, where `decode` of hostile bytes costs about 56 B per byte.
@@ -552,6 +564,34 @@ impl<'a> Decoder<'a> {
     /// Steps over one item inside `depth` arrays, maps and tags.
     fn skip(&mut self, depth: usize) -> Result<(), DecodeError> {
         self.walk(depth, Place::Other, &mut |_, _, _| {})
+    }
+
+    /// `skip`, calling `f` for each link stepped over (`visit_links`).
+    fn links(&mut self, depth: usize, f: &mut dyn FnMut(Link)) -> Result<(), DecodeError> {
+        let Some(ib) = self.buf.get(self.pos).copied() else { return Err(self.short()) };
+        match ib >> 5 {
+            MAJOR_ARRAY | MAJOR_MAP => {
+                self.pos += 1;
+                self.enter(depth + 1)?;
+                let per = if ib >> 5 == MAJOR_MAP { 2 } else { 1 };
+                let n = self.len(ib, per)?;
+                for _ in 0..n * per {
+                    self.links(depth + 1, f)?;
+                }
+            }
+            MAJOR_TAG => {
+                self.pos += 1;
+                let tag = self.arg(ib)?;
+                self.enter(depth + 1)?;
+                if tag == TAG_LINK {
+                    f(self.link_content()?);
+                } else {
+                    self.links(depth + 1, f)?;
+                }
+            }
+            _ => self.skip(depth)?,
+        }
+        Ok(())
     }
 
     /// `skip`, calling `visit` for each item stepped over (`visit_items`).

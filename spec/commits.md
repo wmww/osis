@@ -21,7 +21,7 @@ Encoding: spec/wire.md §4. Fields:
 - **Delta** bytes: spec/crdt.md §3. **Delta hash** = `kdf("delta", dedup secret of tid, delta bytes)` (spec/crypto.md §6).
 - A commit may touch any things, of any reader sets.
 - A commit's size is bounded by its one blob (spec/sync.md §3):
-  - a delta pages (spec/crdt.md §8), but an ephemeral commit's deltas never page;
+  - a delta pages (spec/crdt.md §8), but a relay-only commit's deltas never page;
   - the header's lists go by link, each at most `MAX_LIST_BYTES`;
   - the whole commit, its paged deltas' roots included, fits `MAX_BLOB` (spec/data-model.md §6), or the writer refuses it. Paging and chunking keep every page within a blob.
 
@@ -47,7 +47,7 @@ Encoding: spec/wire.md §4. Fields:
 
   With the relay marker instead it is **relay-only**: writes of ephemeral signal (`+~`) aspects, commit form, snapshot deltas with empty tables. For an ephemeral commit of either form and any marker:
   - **Records**: it carries no creation record; its things' records come in durable commits, and a part on a thing whose record is not held waits for it (§4).
-  - **Shape**: every delta has retention `writer` (§5). It has no chunks, pages (each delta must fit a blob alone, spec/crdt.md §8), purge or list by link. A relay-only commit carries no `expires` and no `undoes`.
+  - **Shape**: every delta has retention `writer` (§5). Its values are inline (no chunk trees), and it has no purge or list by link. Its deltas page as a durable commit's (spec/crdt.md §8), its chunk list naming the pages. A relay-only commit's deltas never page (each must fit a blob alone, its chunk list is empty), and it carries no `expires` and no `undoes`.
   - **Holding**: nodes and hosts hold ephemeral commits in memory only (spec/sync.md §4, §9). Nothing of them joins durable state.
   - **Receiving**: a receiver verifies, judges and applies it as the durable commit of its kind (§4, spec/permissions.md §5.2):
     - a content commit as one, with pending, apply and un-merge;

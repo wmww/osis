@@ -46,13 +46,16 @@ pub struct PageParams {
 
 impl PageParams {
     pub const FORMAT: PageParams = PageParams { target: PAGE_TARGET, cut: ChunkParams::FORMAT, fanout: TREE_FANOUT, max_items: MAX_PAGE_ITEMS };
-    /// Never pages: ephemeral deltas (spec/crdt.md §8), bounded by the blob alone (and at the
-    /// receiver by `decoded_bound` against its cap).
+    /// Ephemeral deltas (spec/crdt.md §8): paged as durable ones, items per blob unchecked (their
+    /// values are inline, not chunked; a receiver bounds decoding by `decoded_bound` against its
+    /// cap).
+    pub const EPHEMERAL: PageParams = PageParams { max_items: usize::MAX, ..PageParams::FORMAT };
+    /// Never pages: relay-only deltas (spec/commits.md §2), bounded by the blob alone.
     pub const UNPAGED: PageParams = PageParams { target: usize::MAX, max_items: usize::MAX, ..PageParams::FORMAT };
 }
 
-/// The page plug of a delta that is never paged (ephemeral deltas, spec/crdt.md §8): encodes
-/// every array inline; a link to a page is bad input.
+/// The page plug of a delta that is never paged (relay-only deltas, spec/commits.md §2):
+/// encodes every array inline; a link to a page is bad input.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct Unpaged;
 

@@ -11,7 +11,7 @@ use super::{Core, Engine, Tx};
 use crate::error::{Error, Result};
 use osis_commit::{AspectWrite, CommitBuilder, Form, Kind, PurgeItem, writer_ctx};
 use osis_base::{Ak, ChainStep, CommitId, CreationRecord, Role, Tid, Ts, Value, WallMs, record_chain};
-use osis_crdt::{AnyView, Batch, CounterRange, Delta, Fragment, Op, PathOp, Source, Unpaged, View, Writer, encode_delta};
+use osis_crdt::{AnyView, Batch, CounterRange, Delta, Fragment, Op, PathOp, Source, View, Writer, encode_delta};
 use osis_label::{BlobWriter, Framing};
 use osis_perm::At;
 use osis_schema::core_types::{CREATED, is_role_class};
@@ -528,7 +528,7 @@ pub(crate) fn framing_for(core: &Core, plan: &CommitPlan, published: &BTreeMap<(
     let secrets = CommitSecrets { core, actor: plan.actor, created: &plan.creates, published };
     let keys = osis_commit::delete_keys(&secrets, tid, retention)?;
     let dedup = osis_commit::Secrets::dedup(&secrets, tid).ok_or(Error::UnknownThing(*tid))?;
-    Ok(Framing { dedup, expiry: plan.expires.map(WallMs), blind: plan.blind, keys: keys.iter().map(|k| Ok((k.level, k.verifying_key()?))).collect::<std::result::Result<_, osis_commit::Error>>()? })
+    Ok(Framing { dedup, expiry: plan.expires.map(WallMs), blind: plan.blind, class: osis_label::Class::Durable, keys: keys.iter().map(|k| Ok((k.level, k.verifying_key()?))).collect::<std::result::Result<_, osis_commit::Error>>()? })
 }
 
 /// A creation takes its commit's other deltas' expiry (a one-commit disappearing message).
@@ -627,24 +627,26 @@ pub(crate) fn build_and_apply(tx: &mut Tx<'_>, plan: CommitPlan, deltas: Vec<Res
         if expires != plan.expires && !plan.restores {
             return Err(Error::Misuse("a commit's deltas share one expiry"));
         }
-        let framing = framing_for(tx.core, &plan, &published, &d.tid, &retention)?;
+        let mut framing = framing_for(tx.core, &plan, &published, &d.tid, &retention)?;
+        // a memory commit's pages are of its class: held in memory (spec/wire.md §5)
+        if tx.txn.is_memory() {
+            framing.class = osis_label::Class::Ephemeral;
+        }
         let cx = writer_ctx(plan.form, plan.kind, plan.ts, node, d.lo, d.hi);
-        let memory = tx.txn.is_memory();
         let mut blobs = TxBlobs::new(&mut tx.blobs, tx.txn.is_memory());
         let mut nonce = [0u8; osis_crdt::NONCE_LEN];
         tx.rng.fill_bytes(&mut nonce);
-        // a memory delta is never paged (spec/crdt.md §8): it must fit a blob alone
-        let mut bw = BlobWriter::new(&framing, &mut blobs, &mut *tx.rng);
-        let sink: &mut dyn osis_crdt::PageSink = if memory { &mut Unpaged } else { &mut bw };
+        let mut bw = BlobWriter::new(&framing, &mut blobs, &mut *tx.rng).with_page_params(if tx.txn.is_memory() { osis_crdt::PageParams::EPHEMERAL } else { osis_crdt::PageParams::FORMAT });
         let fragment = d.fragment;
         let encoded = match d.frontiers {
-            Some((frontiers, absorbed)) => osis_crdt::encode_snapshot(&osis_crdt::Snapshot { nonce, fragment, frontiers, absorbed }, &cx, Some(sink)),
-            None => encode_delta(&Delta { nonce, fragment }, &cx, Some(sink)),
+            Some((frontiers, absorbed)) => osis_crdt::encode_snapshot(&osis_crdt::Snapshot { nonce, fragment, frontiers, absorbed }, &cx, Some(&mut bw)),
+            None => encode_delta(&Delta { nonce, fragment }, &cx, Some(&mut bw)),
         };
         let bytes = match encoded {
             Ok(b) => b,
-            // past what one unpaged delta may hold (spec/commits.md §2): refused
-            Err(_) if memory => return Err(Error::Misuse("an ephemeral delta does not fit a blob")),
+            // an ephemeral value is inline, so one past a blob makes a page past it: refused
+            // (spec/sync.md §9; issues/eph-parity.md Large values)
+            Err(_) if tx.txn.is_memory() => return Err(Error::Misuse("an ephemeral commit does not fit a blob")),
             Err(e) => return Err(e.into()),
         };
         let mut chunks = std::mem::take(&mut blobs.written);
@@ -697,9 +699,9 @@ pub(crate) fn build_and_apply(tx: &mut Tx<'_>, plan: CommitPlan, deltas: Vec<Res
         b.build(signing, &secrets, &mut sink, &mut *tx.rng)
     };
     let built = match built {
-        // an ephemeral commit past a blob, or a delta past what one unpaged delta may hold, is
-        // refused (spec/commits.md §2, spec/sync.md §9): no page carries it
-        Err(osis_commit::Error::Build(osis_commit::COMMIT_PAST_BLOB) | osis_commit::Error::Delta(_)) if tx.txn.is_memory() => return Err(Error::Misuse("an ephemeral commit does not fit a blob")),
+        // an ephemeral commit past a blob is refused (spec/sync.md §9): its values are inline, so
+        // one past a page makes its delta's root too large (issues/eph-parity.md Large values)
+        Err(osis_commit::Error::Build(osis_commit::COMMIT_PAST_BLOB)) if tx.txn.is_memory() => return Err(Error::Misuse("an ephemeral commit does not fit a blob")),
         b => b?,
     };
     let id = built.commit.id();

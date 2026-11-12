@@ -117,7 +117,7 @@ pub fn read_part_whole<'a>(h: &Header, id: &CommitId, ai: usize, delta: Checked<
 fn check_fragment(h: &Header, ak: &str, f: &osis_crdt::Fragment) -> Result<(), Error> {
     check_entry_keys(ak, f)?;
     check_types(ak, f)?;
-    // only durable content chunks (spec/data-model.md §6): an ephemeral commit has no chunks and a
+    // only durable content chunks (spec/data-model.md §6): an ephemeral value is inline and a
     // role-class value stays inline. Role kinds write only role-class aspects and `created.0`, a
     // record far below the threshold; content kinds write no role-class one (`Header::validate`).
     if h.ephemeral.is_none() && !osis_schema::core_types::is_role_class(ak) && f.holds_unchunked() {

@@ -64,6 +64,11 @@ pub(crate) fn unindex_commit(tx: &mut Tx<'_>, id: &CommitId) -> Result<()> {
     super::validity::forget_addenda(core, id, &v.aspects);
     for b in &v.chunks {
         core.ix.by_chunk.remove(b, id);
+        // a memory commit's pages go with it here, unless another held commit lists them (its
+        // entries at hosts are node-sync's, `dropped_chunks`)
+        if v.memory && !core.ix.by_chunk.contains_key(b) {
+            tx.blobs.release(b, true)?;
+        }
     }
     core.ix.void.remove(id);
     core.ix.pending.remove(id);

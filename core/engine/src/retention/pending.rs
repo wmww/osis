@@ -74,9 +74,8 @@ fn strip_purged(tx: &mut Tx<'_>, id: &CommitId, blob: &mut osis_commit::CommitBl
     let Some(p) = blob.parts.iter_mut().find(|p| p.ai == ai && p.delta != emptied()) else { return Ok(()) };
     let mut interner = osis_crdt::Interner::new();
     let mut blobs = crate::engine::blobs::TxBlobs::new(&mut tx.blobs, tx.txn.is_memory());
-    let mut paged = osis_label::BlobReader::new(&dedup, &mut blobs);
-    let mut unpaged = osis_crdt::Unpaged;
-    let reader: &mut dyn osis_crdt::PageSource = if h.ephemeral.is_some() { &mut unpaged } else { &mut paged };
+    let mut paged = osis_label::BlobReader::new(&dedup, &mut blobs).with_page_params(crate::engine::blobs::page_params(h));
+    let reader: &mut dyn osis_crdt::PageSource = &mut paged;
     // done: stripped and emptied; else it goes
     let done = match osis_commit::verify_part(h, id, p, &dedup, &mut interner, Some(reader)) {
         Ok(Decoded::Delta(mut d)) => {

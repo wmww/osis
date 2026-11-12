@@ -156,8 +156,12 @@ impl Header {
             if !matches!(kind, Kind::Content | Kind::ContentSnapshot) {
                 return Err(Error::Invalid("ephemeral commit neither a content commit nor a content snapshot"));
             }
-            if !self.chunks.is_empty() || !self.purge.is_empty() || self.links != crate::header::Links::default() {
-                return Err(Error::Invalid("ephemeral commit with chunks, a purge or linked lists"));
+            if !self.purge.is_empty() || self.links != crate::header::Links::default() {
+                return Err(Error::Invalid("ephemeral commit with a purge or linked lists"));
+            }
+            // a relay-only commit's deltas never page (spec/commits.md §2)
+            if c != crate::header::EphClass::Plain && !self.chunks.is_empty() {
+                return Err(Error::Invalid("relay-only commit with chunks"));
             }
             if self.aspects.iter().any(|a| a.retention != EPHEMERAL_RETENTION) {
                 return Err(Error::Invalid("ephemeral commit with a retention other than writer"));

@@ -608,10 +608,8 @@ fn judge_part(tx: &mut Tx<'_>, h: &Header, id: &CommitId, p: &osis_commit::Part,
         minted_record(h, id, p, &a.tid, interner)?;
     }
     let mut blobs = TxBlobs::new(&mut tx.blobs, tx.txn.is_memory());
-    let mut paged = BlobReader::new(dedup, &mut blobs);
-    // a memory commit's parts hold everything inline (spec/crdt.md §8)
-    let mut unpaged = osis_crdt::Unpaged;
-    let reader: &mut dyn osis_crdt::PageSource = if h.ephemeral.is_some() { &mut unpaged } else { &mut paged };
+    let mut paged = BlobReader::new(dedup, &mut blobs).with_page_params(crate::engine::blobs::page_params(h));
+    let reader: &mut dyn osis_crdt::PageSource = &mut paged;
     // a snapshot's carried writes stamped after the commit (spec/crdt.md §8: a node's next stamp
     // exceeds every stamp it holds, §2.2)
     let carries = h.kind.delta_kind() == osis_crdt::DeltaKind::Snapshot;
@@ -1938,9 +1936,8 @@ fn examine_stored(tx: &mut Tx<'_>, blob: &CommitBlob, id: &CommitId) -> Result<V
         let a = h.aspects.get(p.ai).ok_or(Error::Corrupt("part index"))?;
         let dedup = tx.core.dedup(&a.tid).ok_or(Error::Corrupt("dedup"))?;
         let mut blobs = TxBlobs::new(&mut tx.blobs, tx.txn.is_memory());
-        let mut paged = BlobReader::new(&dedup, &mut blobs);
-        let mut unpaged = osis_crdt::Unpaged;
-        let reader: &mut dyn osis_crdt::PageSource = if h.ephemeral.is_some() { &mut unpaged } else { &mut paged };
+        let mut paged = BlobReader::new(&dedup, &mut blobs).with_page_params(crate::engine::blobs::page_params(&h));
+        let reader: &mut dyn osis_crdt::PageSource = &mut paged;
         out.push((p.ai, osis_commit::read_part_whole(&h, id, p.ai, checked(&p.delta), &mut interner, Some(reader)).map_err(|_| Error::Corrupt("stored delta"))?));
     }
     Ok(out)

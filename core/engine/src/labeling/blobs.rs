@@ -661,13 +661,11 @@ impl Engine {
 }
 
 impl Engine {
-    /// The delete secrets this node holds for chunk entry `ch` of commit `c` (spec/crypto.md
+    /// The delete secrets this node holds for chunk entry `ch` of header `h` (spec/crypto.md
     /// §7: per delete key of the delta that created it), with their levels.
-    pub fn chunk_delete_secrets(&mut self, c: &CommitId, ch: &osis_commit::ChunkEntry) -> Vec<(u8, DeleteSecret)> {
-        let Some(h) = self.header(c) else { return Vec::new() };
+    pub fn chunk_delete_secrets(&self, h: &osis_commit::Header, ch: &osis_commit::ChunkEntry) -> Vec<(u8, DeleteSecret)> {
         let Some(a) = h.aspects.iter().find(|a| a.keys == ch.keys) else { return Vec::new() };
-        let tid = a.tid;
-        self.delete_secrets(&h, &tid, &ch.keys)
+        self.delete_secrets(h, &a.tid, &ch.keys)
     }
 }
 

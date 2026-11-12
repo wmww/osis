@@ -15,8 +15,8 @@ use osis_crypto::{CryptoRngCore, SUITE_1, Secret32, VerifyingKey, commitment, li
 use std::collections::{BTreeSet, HashMap};
 
 /// How the chunk, tree-node and page blobs of one delta (or one header list) are framed: the
-/// thing's dedup secret keys the content hashes; expiry and delete keys go into each prefix
-/// (spec/wire.md §5, spec/crypto.md §7).
+/// thing's dedup secret keys the content hashes; expiry, delete keys and class go into each
+/// prefix (spec/wire.md §5, spec/crypto.md §7).
 #[derive(Clone)]
 pub struct Framing {
     pub dedup: Secret32,
@@ -25,6 +25,9 @@ pub struct Framing {
     pub keys: Vec<(Level, VerifyingKey)>,
     /// The blind of the commit's header (spec/crypto.md §7).
     pub blind: [u8; 16],
+    /// The class of the commit the blobs belong to (spec/wire.md §5): an ephemeral commit's
+    /// pages are ephemeral.
+    pub class: crate::blob::Class,
 }
 
 impl Framing {
@@ -145,7 +148,7 @@ impl<'a> BlobWriter<'a> {
     /// Frames `plaintext` as a blob whose link carries `hash`.
     pub fn put_blob(&mut self, hash: [u8; 32], plaintext: &[u8]) -> Result<Link, Error> {
         let salt = Prefix::random_salt(self.rng);
-        let prefix = Prefix::for_keys(salt, &self.framing.blind, self.framing.expiry, &self.framing.keys)?;
+        let prefix = Prefix::for_keys(salt, &self.framing.blind, self.framing.expiry, &self.framing.keys)?.with_class(self.framing.class);
         let (key, blob) = frame(&prefix, plaintext, self.rng)?;
         let id = crate::blob::blob_id(&blob);
         self.store.put(id, blob)?;
@@ -347,7 +350,7 @@ mod tests {
     }
 
     fn framing() -> Framing {
-        Framing { dedup: Secret32::from_bytes([7; 32]), expiry: Some(WallMs(99)), keys: vec![(1, dk(1)), (3, dk(3))], blind: [4; 16] }
+        Framing { dedup: Secret32::from_bytes([7; 32]), expiry: Some(WallMs(99)), keys: vec![(1, dk(1)), (3, dk(3))], blind: [4; 16], class: crate::blob::Class::Durable }
     }
 
     fn dk(b: u8) -> osis_crypto::VerifyingKey {

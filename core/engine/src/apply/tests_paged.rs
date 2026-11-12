@@ -557,7 +557,7 @@ fn forge_snapshot(w: &mut World, by: usize, ak: &Ak, ts: osis_base::Ts, f: osis_
     let retention = osis_commit::retention::snapshot_retention(ak.as_str());
     let keys = osis_commit::delete_keys(&sec, &t, &retention).unwrap();
     let blind = [9u8; 16];
-    let framing = osis_label::Framing { dedup: osis_commit::Secrets::dedup(&sec, &t).unwrap(), expiry: None, keys: keys.iter().map(|k| (k.level, k.verifying_key().unwrap())).collect(), blind };
+    let framing = osis_label::Framing { dedup: osis_commit::Secrets::dedup(&sec, &t).unwrap(), expiry: None, keys: keys.iter().map(|k| (k.level, k.verifying_key().unwrap())).collect(), blind, class: osis_label::Class::Durable };
     let mut blobs = osis_label::MemoryBlobs::default();
     let mut rng = osis_crypto::SeededRng::from_u64(0);
     let snap = osis_crdt::Snapshot { absorbed: Default::default(), nonce: [7; 16], fragment: f, frontiers: Default::default() };

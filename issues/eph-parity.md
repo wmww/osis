@@ -1,5 +1,5 @@
 # Ephemeral data: differences from durable still to remove
-> Summary: Places where ephemeral data still differs from durable without following from "held in memory" (notes/ephemeral.md Principle): a delete's ephemeral state stays at other holders, purge is half-built, ephemeral deltas never page, host presence is relearned per connection, and an extra guard on deleting bodies outside the closure. Each has a plan below.
+> Summary: Places where ephemeral data still differs from durable without following from "held in memory" (notes/ephemeral.md Principle): a delete's ephemeral state stays at other holders, purge is half-built, ephemeral values are never chunked, host presence is relearned per connection, and an extra guard on deleting bodies outside the closure. Each has a plan below.
 > Priority: normal
 > Tags: ephemeral, engine, sync, tess-call
 
@@ -18,11 +18,9 @@
 - The plan must also say whether a snapshot's frontier passes a purged body: memory compacts automatically, so a snapshot written after the purge would cover the restored body without its content (the cost issues/eph-unify.md E names for durable compaction). Stopping frontiers below a purged body, as below an invalid one, avoids it.
 - Tests: a purge of an ephemeral write whose right later falls reads the value again at every holder that can fetch it; a purge reaching a waiting ephemeral part reads alike in every arrival order.
 
-## Paging
-- Ephemeral deltas never page (`Unpaged`, spec/crdt.md §8, spec/commits.md §2), so a commit whose delta on one aspect does not fit a blob is refused whole (`Engine::write` maps the build error to `Misuse`, test `ephemeral::delta_past_a_blob_refused_spec_commits_2`; an undo whose inverse does not fit fails with the build error), and a memory snapshot or coalesced snapshot of a state past a blob cannot be built: `memory_compactions` reports nothing and weighs the aspect again once its held cost doubles, and writes keep going as separate entries until the node and host caps refuse them.
-- At the default caps the node cap binds first (a state near a blob is charged far past 16 MiB, notes/ephemeral.md Bounds); a raised cap reaches the blob bound.
-- A size check at the writer cannot replace paging: received valid commits from others can grow the state past a blob, and a receiver may not refuse them by size.
-- Plan: pages on the memory path (memory page blobs in Core's overlay, placed and fetched as durable pages are), lifting both limits.
+## Large values
+- Today: an ephemeral write's values are inline (`engine::write::commit_in` skips `chunk_ops` in memory; spec/commits.md §2 Shape). Durable values above `CHUNK_THRESHOLD` become chunk trees. So one ephemeral value past a blob (8 MiB) cannot be written (`Misuse`, `large_write_pages_and_syncs_spec_crdt_8`), and memory pages skip the `MAX_PAGE_ITEMS` check (`PageParams::EPHEMERAL`), which an inline string past 2 MiB would fail.
+- Plan: chunk large ephemeral values into memory blobs as pages are (class ephemeral, held, placed, fetched and deleted with their commit), then pages take `PageParams::FORMAT`. Needs the reuse and lazy-fetch paths (`large.rs`, `held_trees`) to work on memory blobs.
 
 ## Presence at a host
 - Today (spec/sync.md §9 Held at a host, `MemorySync::memory_gained`): a node relearns which memory entries a host holds on every connection, listing them as `gained` in its first Sync. Past `MAX_GAINED` entries per label it lists none and uploads every held body again, on every reconnect.

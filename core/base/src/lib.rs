@@ -23,7 +23,7 @@ mod sorted;
 mod value;
 
 pub use chain::{ChainStep, RecordLink, RecordChain, record_chain};
-pub use cbor::{CanonicalBytes, DecodeError, Limits, Place, Reader, decode, decode_prefix, encode, item_prefix, visit_items};
+pub use cbor::{CanonicalBytes, DecodeError, Limits, Place, Reader, decode, decode_prefix, encode, item_prefix, visit_items, visit_links};
 pub use chunker::{ChunkParams, Chunker, PageCutter};
 pub use error::{Classified, ErrorClass};
 pub use ids::{Ak, AkError, BlobId, CommitId, CreationRecord, LabelId, Link, Markers, PurgeBy, Role, SIGNING_KEY_ED25519, Tid, TidParseError};

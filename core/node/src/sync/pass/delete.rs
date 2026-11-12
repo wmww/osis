@@ -774,6 +774,18 @@ impl SyncEngine {
             let listers: Vec<CommitId> = self.engine.core.ix.by_chunk.get(b).into_iter().flatten().copied().collect();
             let mut first = None;
             let mut live = false;
+            // a forgotten memory commit's page goes once no entry of the commit is known here
+            // (its entries at hosts were deleted: no copy fetched there wants it)
+            if listers.is_empty()
+                && self.forgotten_page(b)
+                && let Some(c) = self.memory.forgotten_pages.get(b).copied()
+                && let Some(ch) = self.memory.forgotten.get(&c).and_then(|f| f.header.chunks.iter().find(|ch| ch.blob == *b).cloned())
+            {
+                if !self.entries_of_commit(&c).is_empty() {
+                    continue;
+                }
+                first = Some((c, ch));
+            }
             for id in listers {
                 let Some(m) = self.engine.core.ix.commits.get(&id) else { continue };
                 let h = &m.header;
@@ -828,9 +840,11 @@ impl SyncEngine {
             self.fetch_on(conn, *l, [*id], out)?;
             return Ok(None);
         };
-        // a chunk's prefix has one group: its creating delta's keys
-        let dks = vec![self.engine.chunk_delete_secrets(c, ch)];
-        let Some(hb) = self.engine.header(c).map(|h| h.blind) else { return Ok(None) };
+        // a chunk's prefix has one group: its creating delta's keys (a forgotten memory commit's
+        // in the header kept for it)
+        let Some(h) = self.engine.header(c).or_else(|| self.memory.forgotten.get(c).map(|f| f.header.clone())) else { return Ok(None) };
+        let dks = vec![self.engine.chunk_delete_secrets(&h, ch)];
+        let hb = h.blind;
         Ok(delete_item(keys, l, *id, Some((&salt, &hb)), &dks, true))
     }
 

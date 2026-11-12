@@ -189,6 +189,9 @@ pub(crate) struct Memory {
     pub reported: BTreeSet<LabelId>,
     /// Forgotten memory commits with entries still known (`Engine::take_memory_drops`).
     pub forgotten: BTreeMap<CommitId, Forgotten>,
+    /// The pages of the forgotten memory commits (their chunk lists): deleted at hosts once no
+    /// entry of their commit is known (`dropped_chunks`).
+    pub forgotten_pages: BTreeMap<BlobId, CommitId>,
     /// Uploads of this node's own memory bodies unanswered per connection and label: its later
     /// own writes there wait (`coalesce_own`, spec/sync.md §9).
     pub own_uploads: BTreeSet<(ConnId, LabelId, BlobId)>,
@@ -198,6 +201,9 @@ pub(crate) struct Memory {
     pub coalesced: BTreeSet<CommitId>,
     /// Relay-only entries received (`RelaySeen`).
     pub relays: RelaySeen,
+    /// Memory commits from others charged their bytes while they waited (pending: a page, a
+    /// record, drift): charged as held once they apply (`recharge_applied`).
+    pub waiting: BTreeSet<CommitId>,
 }
 
 impl SyncEngine {
@@ -239,6 +245,7 @@ impl SyncEngine {
         for (t, ak) in invalidated {
             self.memory_relist_thing(&t, &ak, out)?;
         }
+        self.recharge_applied()?;
         self.retry_refused();
         let signals = self.engine.take_signals();
         for c in signals {
@@ -293,6 +300,17 @@ impl SyncEngine {
                 self.state.charge_memory(*l, *b, None);
                 self.state.touch(*l, *b);
                 labels.insert(*l);
+            }
+            // its pages go with it (their bytes went with the commit, `unindex_commit`)
+            if header.ephemeral.is_some() {
+                for ch in &header.chunks {
+                    self.memory.forgotten_pages.insert(ch.blob, *c);
+                    for l in self.state.labels_of(&ch.blob) {
+                        self.state.charge_memory(l, ch.blob, None);
+                        self.state.touch(l, ch.blob);
+                        labels.insert(l);
+                    }
+                }
             }
             // a durable commit forgotten whole (a released thing's): its header is kept over a
             // restart while its entries are, so they are still deleted at hosts
@@ -368,7 +386,9 @@ impl SyncEngine {
         // kept while an entry of the commit is known or one of its bodies left a label by a
         // delete within the tombstone (a host that got it late announces it again)
         let deleted: BTreeSet<CommitId> = self.state.deleted.keys().map(|(_, c, _)| *c).collect();
-        let mut keep: BTreeSet<CommitId> = self.memory.forgotten.keys().filter(|c| !self.engine.holds_memory(c) && (self.has_entries(c) || deleted.contains(c))).copied().collect();
+        // or while an entry of one of its pages is (`dropped_chunks` deletes them by it)
+        let pages_known = |f: &Forgotten| f.header.ephemeral.is_some() && f.header.chunks.iter().any(|ch| self.state.named(&ch.blob));
+        let mut keep: BTreeSet<CommitId> = self.memory.forgotten.iter().filter(|(c, f)| !self.engine.holds_memory(c) && (self.has_entries(c) || deleted.contains(c) || pages_known(f))).map(|(c, _)| *c).collect();
         let mut stack: Vec<CommitId> = keep.iter().copied().collect();
         while let Some(c) = stack.pop() {
             for x in self.memory.forgotten.get(&c).map(|f| f.why.by()).unwrap_or_default() {
@@ -379,9 +399,42 @@ impl SyncEngine {
         }
         let gone: Vec<CommitId> = self.memory.forgotten.keys().filter(|c| !keep.contains(c)).copied().collect();
         for c in gone {
-            self.memory.forgotten.remove(&c);
+            if let Some(f) = self.memory.forgotten.remove(&c) {
+                for ch in &f.header.chunks {
+                    if self.memory.forgotten_pages.get(&ch.blob) == Some(&c) {
+                        self.memory.forgotten_pages.remove(&ch.blob);
+                    }
+                }
+            }
             self.state.del_forgotten(&c);
         }
+    }
+
+    /// Whether `b` is a page of a memory commit forgotten here and not held again (a copy
+    /// arriving again applies, pending until its pages come).
+    pub(crate) fn forgotten_page(&self, b: &BlobId) -> bool {
+        self.memory.forgotten_pages.get(b).is_some_and(|c| !self.engine.memory_body_held(c))
+    }
+
+    /// Memory commits that waited and applied since are charged what they cost held
+    /// (`Engine::memory_charge`, their pages' decoded content included), as an arrival that
+    /// applied at once is; those forgotten or still waiting are left.
+    fn recharge_applied(&mut self) -> Result<()> {
+        let done: Vec<CommitId> = self.memory.waiting.iter().filter(|c| !self.engine.memory_pending(c)).copied().collect();
+        for c in done {
+            self.memory.waiting.remove(&c);
+            if !self.engine.memory_body_held(&c) {
+                continue;
+            }
+            let charge = self.engine.memory_charge(&c)?;
+            for (l, b) in self.entries_of_commit(&c) {
+                if self.state.memory_charge.contains_key(&(l, b)) {
+                    let size = self.state.memory_sizes.get(&(l, b)).copied().unwrap_or(0) as u64;
+                    self.state.charge_memory(l, b, Some(charge.max(size)));
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Entries refused for a label's cap or share are fetched again where room appeared: their
@@ -457,6 +510,7 @@ impl SyncEngine {
             // held by the engine, pending (drift, parked): its bytes take their room
             Ok(Ingested::Pending(..)) => {
                 self.state.charge_memory(l, b, Some(size));
+                self.memory.waiting.insert(commit);
                 return Ok(());
             }
             // nothing kept: the entry takes its bytes' worth of the cap until fetched again
@@ -486,6 +540,27 @@ impl SyncEngine {
         // label stays under the cap
         let charge = self.engine.memory_charge(&commit)?.max(size);
         self.state.charge_memory(l, b, Some(charge));
+        Ok(())
+    }
+
+    /// Memory blob `b` of `l`, `size` bytes, new here: one that opened to no commit (a page of a
+    /// memory commit, spec/crdt.md §8, or one under a secret not held yet) is charged its bytes
+    /// against the label's cap like any memory entry, or refused past the room left (its pages'
+    /// decoded content is charged with their commit, `Engine::memory_charge`).
+    pub(crate) fn ingest_memory_blob(&mut self, l: LabelId, b: BlobId, size: usize) -> Result<()> {
+        if !self.state.entries.get(&(l, b)).is_some_and(|e| e.memory && e.kind == Kind::Unknown) || !self.engine.has_blob(&b) {
+            return Ok(());
+        }
+        let (size, cap) = (size as u64, self.cfg.ephemeral_bytes);
+        if size > cap {
+            return self.refuse_memory(l, b, true);
+        }
+        let used = self.state.memory_bytes.get(&l).copied().unwrap_or(0);
+        if size > cap.saturating_sub(used) {
+            return self.refuse_memory(l, b, false);
+        }
+        self.state.charge_memory(l, b, Some(size));
+        self.state.note_memory_size(l, b, size as usize);
         Ok(())
     }
 
