@@ -32,9 +32,9 @@ impl Engine {
     /// The frontier a demotion stamped now must embed (spec/permissions.md §5.1), by commit ID:
     /// per aspect the scope puts in question and per demoted node, that node's commits this
     /// node received by `as_of` (at their meta's receipt time; bodies held, dropped or compacted
-    /// alike; memory commits as durable ones, a forgotten one not received); and, where it falls below write, its held commits acting for that thing; and every
-    /// purge request whose right may rest on a role it puts in question
-    /// (`retention::requests_resting_on`). This node's own receipts only. A demotion stamps it as
+    /// alike; memory commits as durable ones, a forgotten one not received); and, where it falls
+    /// below write, its held commits acting for that thing; and every purge request whose right
+    /// may rest on a role it puts in question (`retention::requests_resting_on`). This node's own receipts only. A demotion stamps it as
     /// of now; an earlier `as_of` gives the frontier as of then.
     pub fn frontier(&mut self, scope: &DemotionScope, as_of: WallMs) -> Result<Frontier> {
         Ok(self.frontier_and_requests(scope, as_of)?.0)

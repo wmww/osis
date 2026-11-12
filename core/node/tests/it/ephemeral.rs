@@ -630,12 +630,25 @@ fn bridge_node_carries_between_hosts_spec_sync_6() {
     assert_eq!(notes(&mut net, c, w), want);
 }
 
+/// Admin `a` demotes `b` to read on `g` and carries the demotion out.
+fn demote_to_read(net: &mut Net, a: usize, b: usize, g: Tid) {
+    let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
+    let d = osis_node::flows::Demotion { holder: net.tid(b), new: Some(edge), retain: None };
+    let done = net.engine(a).demote(&g, &d).unwrap();
+    let acts = net.sync(a).carry_out(done).unwrap();
+    net.actions(a, acts);
+}
+
 // spec/permissions.md §5.1, §5.2: a demotion's frontier lists the ephemeral commits its author
 // received, as durable ones: a demoted writer's note the admin held stays at every holder; one it
-// wrote offline, which nobody received before the demotion, shows nowhere
+// wrote offline, which nobody received before the demotion, shows nowhere (no addenda: the
+// frontier alone decides)
 #[test]
 fn demoted_writer_received_ephemeral_write_stays_spec_permissions_5_2() {
     let (mut net, _host, [a, b, c], g, []) = hosted::<3, 0>(&[(1, Role::Write), (2, Role::Write)], [], true);
+    for n in [a, b, c] {
+        net.engine(n).write_addenda(false);
+    }
     let w = window(&mut net, a, g, "w");
     net.run();
     note(&mut net, b, w, "b", "1");
@@ -643,16 +656,38 @@ fn demoted_writer_received_ephemeral_write_stays_spec_permissions_5_2() {
     assert_eq!(notes(&mut net, c, w), map(&[("b", "1")]));
     net.set_online(b, false);
     note(&mut net, b, w, "late", "2");
-    let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
-    let d = osis_node::flows::Demotion { holder: net.tid(b), new: Some(edge), retain: None };
-    let done = net.engine(a).demote(&g, &d).unwrap();
-    let acts = net.sync(a).carry_out(done).unwrap();
-    net.actions(a, acts);
+    demote_to_read(&mut net, a, b, g);
     net.run();
     net.set_online(b, true);
     net.run();
     net.advance(60_000);
     for n in [a, c] {
+        assert_eq!(notes(&mut net, n, w), map(&[("b", "1")]), "{n}");
+    }
+}
+
+// spec/permissions.md §5.2 (Addenda): a writer's addendum vouches for an ephemeral write as for a
+// durable one: the admin, offline, demotes b before receiving its note; c, a writer that received
+// it, lists it in its addendum, and the note stays at every holder
+#[test]
+fn addendum_keeps_demoted_writers_ephemeral_write_spec_permissions_5_2() {
+    let (mut net, _host, [a, b, c], g, []) = hosted::<3, 0>(&[(1, Role::Write), (2, Role::Write)], [], true);
+    let w = window(&mut net, a, g, "w");
+    net.run();
+    net.set_online(a, false);
+    note(&mut net, b, w, "b", "1");
+    net.run();
+    assert_eq!(notes(&mut net, c, w), map(&[("b", "1")]));
+    net.advance(10);
+    let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
+    let d = osis_node::flows::Demotion { holder: net.tid(b), new: Some(edge), retain: None };
+    let done = net.engine(a).demote(&g, &d).unwrap();
+    net.set_online(a, true);
+    let acts = net.sync(a).carry_out(done).unwrap();
+    net.actions(a, acts);
+    net.run();
+    net.advance(60_000);
+    for n in [a, b, c] {
         assert_eq!(notes(&mut net, n, w), map(&[("b", "1")]), "{n}");
     }
 }
@@ -3572,8 +3607,6 @@ fn assert_no_durable_trace(e: &mut osis_node::Engine, ids: &[osis_base::CommitId
     assert!(hits.is_empty(), "durable rows naming a memory commit: {hits:?}");
 }
 
-/// Peers 0, 1 and 2, durable state synced; 0 is first admin of `d` and grants 1 and 2 write. Returns `d`.
-/// Built once (`LocalPeer::cached`).
 /// Peer 0 removes `holder` from `d` by a frontier listing none of its commits, no peer answering
 /// with addenda, so every commit of the holder falls (spec/permissions.md §5.2), as durable ones
 /// would: the removal's package.
@@ -3585,6 +3618,8 @@ fn remove_listing_none(lp: &mut osis_node::local_peer::LocalPeer, d: Tid, holder
     lp.peers[0].engine.package(&r).unwrap().unwrap()
 }
 
+/// Peers 0, 1 and 2, durable state synced; 0 is first admin of `d` and grants 1 and 2 write. Returns `d`.
+/// Built once (`LocalPeer::cached`).
 fn memory_trio() -> (osis_node::local_peer::LocalPeer, Tid) {
     osis_node::local_peer::LocalPeer::cached("ephemeral::memory_trio", || {
         let mut lp = crate::common::net(3, 0);
@@ -4159,7 +4194,8 @@ fn memory_cover_invalidated_rejoins_spec_permissions_5_2() {
 // set adds and removals, and an admin demoting one writer mid-history, so memory snapshots turn
 // invalid after holders dropped and forgot what they covered; every blob is delivered again at
 // the end (to its author too: the B2 lane's job). Then every node reads alike and holds the same
-// memory commits, whatever arrived when (400 seeds in review)
+// memory commits, whatever arrived when (reads alike over 400 seeds; held sets differ at a few,
+// issues/eph-held-diverge.md)
 #[test]
 fn memory_random_snapshots_demotion_redelivered_alike_spec_permissions_5_2() {
     for seed in 0..5 {
@@ -4188,7 +4224,18 @@ fn memory_random_demotion(seed: u64) {
         if step == demote_at {
             let who = 1 + rnd(3) as usize;
             let holder = lp.peers[who].engine.me();
-            let rp = remove_listing_none(&mut lp, d, holder);
+            // odd seeds: the admin's own demotion, listing what it received (no addenda: this
+            // harness delivers none); even seeds: a removal listing nothing
+            let rp = if seed % 2 == 1 {
+                for p in lp.peers.iter_mut() {
+                    p.engine.write_addenda(false);
+                }
+                let dm = osis_node::flows::Demotion { holder, new: None, retain: None };
+                let r = *lp.peers[0].engine.demote(&d, &dm).unwrap().commits.last().unwrap();
+                lp.peers[0].engine.package(&r).unwrap().unwrap()
+            } else {
+                remove_listing_none(&mut lp, d, holder)
+            };
             log.push(format!("{step}: demote {who}"));
             for to in 1..4 {
                 dq.push((step + rnd(8), to, rp.clone()));

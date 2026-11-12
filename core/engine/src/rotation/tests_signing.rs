@@ -121,6 +121,32 @@ fn removal_rotates_the_account_and_its_lists_keep_its_writes_spec_permissions_5_
     assert_eq!(read(&mut lp, 2, t), Some(Value::Str("sibling".into())));
 }
 
+// spec/permissions.md §5.5: a rotation's list names ephemeral commits as durable ones: a
+// sibling's ephemeral write the rotator held still counts at an outsider once the rotation
+// closes its epoch; one the removed node writes after it does not
+#[test]
+fn rotation_lists_name_ephemeral_writes_spec_permissions_5_5() {
+    let (mut lp, a, t) = world(3, 2);
+    let k = Ak::new("x:e+.0").unwrap();
+    let eph = |lp: &mut LocalPeer, v: &str| {
+        let mut m = crate::Mutation::new();
+        m.set(t, &k, &Value::Str(v.into())).unwrap();
+        let id = lp.peers[1].engine.commit_in_memory(m).unwrap().unwrap();
+        lp.peers[1].engine.package(&id).unwrap().unwrap()
+    };
+    let pk = eph(&mut lp, "sibling");
+    for to in [0, 2] {
+        lp.peers[to].engine.ingest_memory(&pk.bytes, u64::MAX).unwrap();
+    }
+    assert_eq!(lp.peers[2].engine.get(&t, &k).unwrap(), Some(Value::Str("sibling".into())));
+    let done = remove(&mut lp, 0, a.devices, 1);
+    send(&mut lp, 0, 2, &done.commits[1..]);
+    assert_eq!(lp.peers[2].engine.get(&t, &k).unwrap(), Some(Value::Str("sibling".into())), "listed by the rotation");
+    let late = eph(&mut lp, "removed");
+    lp.peers[2].engine.ingest_memory(&late.bytes, u64::MAX).unwrap();
+    assert_eq!(lp.peers[2].engine.get(&t, &k).unwrap(), Some(Value::Str("sibling".into())), "a later write at the closed epoch counts for nothing");
+}
+
 fn seeds(lp: &LocalPeer, peer: usize, p: Tid) -> usize {
     lp.peers[peer].engine.core.accounts.get(&p).map_or(0, |a| a.keys.len())
 }
