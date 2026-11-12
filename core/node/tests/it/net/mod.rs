@@ -1908,3 +1908,19 @@ fn rotation_ops(e: &mut Engine, m: &mut Mutation, a: Tid, recipients: &[Recipien
 pub fn recipients_of(e: &mut Engine, holders: &[(Tid, Role)]) -> Vec<Recipient> {
     holders.iter().map(|(t, r)| recipient(e, *t, *r)).collect()
 }
+
+/// `holder`'s recipient for `role` with its KEM keys swapped for this engine's own: the box is
+/// there, and `holder` cannot open it (a key it no longer holds, as after its own rotation).
+pub fn unopenable_recipient(e: &mut Engine, holder: Tid, role: Role) -> Recipient {
+    let wrong = e.identity().keys().kem.public().clone();
+    let mut r = recipient(e, holder, role);
+    match &mut r.keys {
+        HolderKeys::KeyActor { kem, seed } => (*kem, *seed) = (wrong, None),
+        HolderKeys::Account { kem, keys, .. } => (*kem, *keys) = (wrong, None),
+        HolderKeys::Actor { keysets, own } => {
+            keysets.values_mut().for_each(|k| k.1 = wrong.clone());
+            own.clear();
+        }
+    }
+    r
+}

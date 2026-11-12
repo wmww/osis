@@ -1413,16 +1413,18 @@ fn stranded_reports_keep_no_removed_admins_writes_spec_permissions_4() {
 }
 
 // spec/permissions.md §4 (Stranded: to a connected peer that proved an account holding write or
-// above, else an inbox notice): a rotation leaves reader `c` out while it is away; back, stranded
-// at the host, it tells the admin it is connected to over the connection, once per step reached,
-// deposits no notice, and is re-sealed.
+// above, else an inbox notice): a rotation boxes reader `c` under a key it does not hold while it
+// is away (a box it cannot open, which no admin can tell from a good one); back, stranded at a
+// peer that cannot read the label, it tells the admin it is connected to over the connection,
+// once per step reached, deposits no notice, and is re-sealed.
 #[test]
 fn stranded_goes_to_a_connected_admin_spec_permissions_4() {
     let (mut net, a, c, g, l, _) = stranded_pair();
     net.set_online(c, false);
-    let at = net.tid(a);
+    let (at, ct) = (net.tid(a), net.tid(c));
     let e = net.engine(a);
-    let rs = recipients_of(e, &[(at, Role::Admin)]);
+    let mut rs = recipients_of(e, &[(at, Role::Admin)]);
+    rs.push(unopenable_recipient(e, ct, Role::Read));
     rotation(e, g, &rs, 41, false);
     net.run();
     net.advance(61_000);
@@ -1469,3 +1471,5 @@ fn demoted_writers_refused_writes_take_no_deposit_budget_spec_sync_5() {
     assert_eq!(net.read(a, t), Some(s("t")));
     assert_eq!(osis_proto::LabelStore::budget(&*net.hosts[host].hub.store(), &l).unwrap(), before);
 }
+
+
