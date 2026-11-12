@@ -62,7 +62,6 @@ prop_compose! {
             rotation: None,
         };
         // the lists' rule: sorted and distinct
-        let by_item = |b: Value| osis_base::encode(&b);
         for a in &mut h.aspects {
             a.keys.sort();
             a.keys.dedup();
@@ -75,7 +74,7 @@ prop_compose! {
         }
         h.chunks.sort_by_key(|c| c.blob);
         h.chunks.dedup_by_key(|c| c.blob);
-        h.purge.sort_by_key(|p| by_item(crate::header::purge_value(p)));
+        h.purge.sort_by_key(crate::header::purge_bytes);
         h.purge.dedup();
         h.keys.sort_by_key(crate::header::key_bytes);
         h.keys.dedup();

@@ -156,7 +156,7 @@ fn validate_expiry_purge_retention() {
     x.validate().unwrap();
     assert_eq!(purge_keep_until(&x), Some(x.ts.wall_ms().0 + osis_base::format::ROLE_KEEP_MS));
     x.purge.push(PurgeItem::Aspect { tid: t(3), ak: Ak::new("roles.0").unwrap() });
-    x.purge.sort_by_key(|p| osis_base::encode(&crate::header::purge_value(p)));
+    x.purge.sort_by_key(crate::header::purge_bytes);
     assert!(invalid(&x).to_string().contains("role-class"));
 }
 

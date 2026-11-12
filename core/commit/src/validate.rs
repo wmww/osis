@@ -1,7 +1,7 @@
 //! Structural validation of a resolved header (spec/wire.md §4, spec/commits.md §2, §5, §6).
 
 use crate::cbor::strictly_ascending;
-use crate::header::{FOREVER, Header, Kind, aspect_key, key_bytes, purge_value};
+use crate::header::{FOREVER, Header, Kind, aspect_key, key_bytes, purge_bytes};
 use crate::retention::{CREATED, EPHEMERAL_RETENTION, RELEASED, RETENTION, delete_levels, fixed_retention, release_expires};
 use crate::Error;
 use osis_base::format::{DELETE_AUTHOR, FORMAT_VERSION};
@@ -23,7 +23,7 @@ impl Header {
         ord(!self.aspects.is_empty(), "no aspects")?;
         ord(strictly_ascending(&self.aspects, |a| aspect_key(&a.tid, &a.ak)), "aspects not sorted and distinct")?;
         ord(strictly_ascending(&self.chunks, |c| c.blob), "chunks not sorted and distinct")?;
-        ord(strictly_ascending(&self.purge, |p| osis_base::encode(&purge_value(p))), "purge not sorted and distinct")?;
+        ord(strictly_ascending(&self.purge, purge_bytes), "purge not sorted and distinct")?;
         ord(strictly_ascending(&self.keys, key_bytes), "delete keys not sorted and distinct")?;
 
         let kind = self.kind;

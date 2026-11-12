@@ -2,7 +2,7 @@
 
 use crate::Error;
 use osis_base::format::TID_LEN;
-use osis_base::{Ak, Tid, Value};
+use osis_base::{Tid, Value};
 
 /// A uint in a structure. Every uint we write is below 2^63 (times, counters, indices).
 pub(crate) fn uint(n: u64) -> Value {
@@ -28,10 +28,6 @@ pub(crate) fn tid(t: &Tid) -> Value {
 
 pub(crate) fn as_tid(v: &Value) -> Result<Tid, Error> {
     Ok(Tid::from_bytes(as_bytes::<TID_LEN>(v)?))
-}
-
-pub(crate) fn ak(a: &Ak) -> Value {
-    Value::Str(a.as_str().to_owned())
 }
 
 /// Strictly ascending (sorted, distinct) by a key.

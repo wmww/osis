@@ -2,12 +2,16 @@
 //! as a value tree and serialized; blobs decoded to a tree, read from it, then re-encoded to
 //! check their canonical form. `direct_*` tests hold the direct codec to it.
 
-use crate::cbor::{ak, as_bytes, as_list, as_tid, as_uint, strictly_ascending, tid, uint};
-use crate::header::{LIMITS, purge_value};
+use crate::cbor::{as_bytes, as_list, as_tid, as_uint, strictly_ascending, tid, uint};
+use crate::header::LIMITS;
 use crate::*;
 use osis_base::cbor::{encode_into, put_array, put_uint};
-use osis_base::{CommitId, SIGNING_KEY_ED25519, Ts, Value};
+use osis_base::{Ak, CommitId, SIGNING_KEY_ED25519, Ts, Value};
 use osis_crypto::{KemPublicKey, Signature, VerifyingKey};
+
+fn ak(a: &Ak) -> Value {
+    Value::Str(a.as_str().to_owned())
+}
 
 fn uidx(n: usize) -> Value {
     uint(n as u64)
@@ -71,6 +75,21 @@ fn aspect_value(a: &AspectEntry) -> Value {
         Value::bytes(&a.hash),
         Value::List(a.replaces.iter().map(|c| Value::bytes(&c.0)).collect()),
     ])
+}
+
+fn purge_value(p: &PurgeItem) -> Value {
+    match p {
+        PurgeItem::Commit { tid: t, ak: a, ts, src } => {
+            let src = match src.kind() {
+                osis_crdt::SourceKind::Session(s) => s.to_bytes().to_vec(),
+                osis_crdt::SourceKind::Commit(c) => c.0.to_vec(),
+                osis_crdt::SourceKind::Derived(_) => Vec::new(),
+            };
+            Value::List(vec![tid(t), ak(a), uint(ts.to_u64()), Value::Bytes(src)])
+        }
+        PurgeItem::Aspect { tid: t, ak: a } => Value::List(vec![tid(t), ak(a)]),
+        PurgeItem::Author { tid: t, ak: a, actor } => Value::List(vec![tid(t), ak(a), tid(actor)]),
+    }
 }
 
 fn key_value(t: &DeleteKey) -> Value {

@@ -2,7 +2,7 @@
 //! spec/commits.md §1, spec/crypto.md §2).
 
 use crate::Error;
-use crate::cbor::{ak, item, tid, uint};
+use crate::cbor::item;
 use osis_base::cbor::{Item, encode_into, put_array, put_bytes, put_link, put_text, put_uint};
 use osis_base::format::{CHUNK_THRESHOLD, DELETE_ADMIN, DELETE_WRITER, FORMAT_VERSION, MAX_BLOB, MAX_OBJECT_DEPTH, TAG_SET, TID_LEN};
 use osis_base::{Ak, BlobId, CommitId, Limits, Link, Reader, Tid, Ts, Value};
@@ -384,19 +384,38 @@ fn put_chunk(out: &mut Vec<u8>, c: &ChunkEntry) {
     put_bytes(out, &c.blind);
 }
 
-pub(crate) fn purge_value(p: &PurgeItem) -> Value {
+fn put_purge(out: &mut Vec<u8>, p: &PurgeItem) {
     match p {
-        PurgeItem::Commit { tid: t, ak: a, ts, src } => {
-            let src = match src.kind() {
-                osis_crdt::SourceKind::Session(s) => s.to_bytes().to_vec(),
-                osis_crdt::SourceKind::Commit(c) => c.0.to_vec(),
-                osis_crdt::SourceKind::Derived(_) => Vec::new(),
-            };
-            Value::List(vec![tid(t), ak(a), uint(ts.to_u64()), Value::Bytes(src)])
+        PurgeItem::Commit { tid, ak, ts, src } => {
+            put_array(out, 4);
+            put_tid_bytes(out, tid);
+            put_text(out, ak.as_str());
+            put_uint(out, ts.to_u64());
+            match src.kind() {
+                osis_crdt::SourceKind::Session(s) => put_bytes(out, &s.to_bytes()),
+                osis_crdt::SourceKind::Commit(c) => put_bytes(out, &c.0),
+                osis_crdt::SourceKind::Derived(_) => put_bytes(out, &[]),
+            }
         }
-        PurgeItem::Aspect { tid: t, ak: a } => Value::List(vec![tid(t), ak(a)]),
-        PurgeItem::Author { tid: t, ak: a, actor } => Value::List(vec![tid(t), ak(a), tid(actor)]),
+        PurgeItem::Aspect { tid, ak } => {
+            put_array(out, 2);
+            put_tid_bytes(out, tid);
+            put_text(out, ak.as_str());
+        }
+        PurgeItem::Author { tid, ak, actor } => {
+            put_array(out, 3);
+            put_tid_bytes(out, tid);
+            put_text(out, ak.as_str());
+            put_tid_bytes(out, actor);
+        }
     }
+}
+
+/// Canonical bytes of a purge item, its sort key.
+pub(crate) fn purge_bytes(p: &PurgeItem) -> Vec<u8> {
+    let mut out = Vec::new();
+    put_purge(&mut out, p);
+    out
 }
 
 /// Canonical bytes of `[tid, ak]`, the aspect sort key.
@@ -431,7 +450,7 @@ impl Header {
             }
             ListField::Purge => {
                 put_array(out, self.purge.len());
-                self.purge.iter().for_each(|p| encode_into(&purge_value(p), out));
+                self.purge.iter().for_each(|p| put_purge(out, p));
             }
             ListField::Keys => {
                 put_array(out, self.keys.len());

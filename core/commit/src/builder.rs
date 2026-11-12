@@ -1,7 +1,7 @@
 //! The commit builder (spec/commits.md §1, spec/wire.md §4).
 
 use crate::blob::{CommitBlob, Part, Sigs};
-use crate::header::{AspectEntry, ChunkEntry, DeleteKey, Form, Header, Kind, Links, ListField, PurgeItem, RotationHeader, aspect_key, key_bytes, purge_value};
+use crate::header::{AspectEntry, ChunkEntry, DeleteKey, Form, Header, Kind, Links, ListField, PurgeItem, RotationHeader, aspect_key, key_bytes, purge_bytes};
 use crate::groups::check_fits;
 use crate::keys::{Prefix, Secrets, delete_keys};
 use crate::lists::{BlobSink, write_list};
@@ -182,7 +182,7 @@ impl CommitBuilder {
         chunks.sort_by_key(|c| c.blob);
         chunks.dedup_by_key(|c| c.blob);
         let mut purge = std::mem::take(&mut self.purge);
-        purge.sort_by_cached_key(|p| osis_base::encode(&purge_value(p)));
+        purge.sort_by_cached_key(purge_bytes);
 
         let mut header = Header {
             version: FORMAT_VERSION,
