@@ -1346,6 +1346,39 @@ fn stranded_reports_keep_nothing_beyond_the_holders_chain_spec_permissions_4() {
     assert!(net.engine(a).pending().is_empty(), "nothing pends");
 }
 
+// spec/permissions.md §4 (Stranded: no other actor's keyset is taken): a report takes the cards
+// only of authors in the holder's authority chain. x, an account admin `a` knows, rotates unseen
+// by `a`; a report naming c carries x's rotation beside a `keys.0` write on c under x's name (no
+// valid write, but its author counts as a writer of c's keys): `a` keeps no keyset of x's.
+#[test]
+fn stranded_report_takes_no_keyset_off_the_holders_chain_spec_permissions_4() {
+    let (mut net, a, c, _, l, conn) = stranded_pair();
+    let other = net.add_host();
+    let x = net.node(6, &[other]);
+    for y in [a, c] {
+        net.blocked_peers.extend([(x, y), (y, x)]);
+    }
+    net.blocked.insert((x, 0));
+    net.run();
+    let xt = net.tid(x);
+    let rec = net.engine(x).core.created(&xt).unwrap().clone();
+    net.engine(a).learn_records(vec![rec]).unwrap();
+    let k = net.engine(x).rotate_boxing_only(&[xt], &[Role::Read], &[]).unwrap().unwrap();
+    net.run();
+    assert!(net.engine(a).header(&k).is_none(), "a knows x, not its rotation");
+    let ct = net.tid(c);
+    let limits = osis_base::Limits { max_depth: osis_base::format::MAX_OBJECT_DEPTH, max_bytes: osis_base::format::MAX_BLOB };
+    let mut keys = net.sync(c).holder_keys(&ct).unwrap();
+    let mut forged = keys.commits.iter().map(|v| osis_commit::CommitBlob::decode(&osis_base::encode(v)).unwrap()).find(|b| b.header.aspects.iter().any(|a| a.tid == ct && a.ak.as_str() == "keys.0")).expect("c's keys");
+    forged.header.author = xt;
+    keys.commits.push(osis_base::decode(&forged.encode(), &limits).unwrap());
+    let rot = net.engine(x).run(|tx| tx.get_commit(&k)).unwrap().unwrap();
+    keys.commits.push(osis_base::decode(&rot.encode(), &limits).unwrap());
+    net.inject(c, conn, &osis_proto::Message::Stranded { id: osis_proto::msg::NODE_IDS | 0x7600, label: l, holder: ct, keys });
+    net.run();
+    assert!(net.engine(a).header(&k).is_none(), "x's keyset not taken");
+}
+
 // spec/requirements.md (peer input never causes unbounded storage), spec/permissions.md §4: a
 // report keeps only edge writes that hold here. e, offline, keeps granting on team T after d
 // removed it; `a` holds the removal. Reports naming T (a current holder of g, on its own chain)

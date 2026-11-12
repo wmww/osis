@@ -1356,8 +1356,8 @@ impl SyncEngine {
 
     /// The holder keys a stranded report carried for `holder` (spec/wire.md §9), bounded by what
     /// judging them needs (spec/permissions.md §4): `keys.0` deltas on the holder and on the
-    /// authors of those writes (their cards), and the records and `roles.0` deltas of the
-    /// holder's authority chain (`authority_chain`), taken as that chain grows from what they
+    /// authors of those writes in the holder's authority chain (their cards), and the records and
+    /// `roles.0` deltas of that chain (`authority_chain`), taken as that chain grows from what they
     /// bring; everything else is ignored. Each round takes records, then role commits first by
     /// `ts`, each judged like a chain certificate, every one again while a round applies
     /// something; what pends of them is kept while the report is the newest naming `holder` on `l`
@@ -1386,7 +1386,9 @@ impl SyncEngine {
             let mut todo = std::mem::take(&mut tried);
             for (_, c) in &mut rest {
                 let aspects = &c.header.aspects;
-                let due = |p: &osis_commit::Part| aspects.get(p.ai).is_some_and(|a| a.ak.as_str() != "roles.0" || chain.contains(&a.tid));
+                // a part on the chain (the holder among it): an author's card only once it is
+                // there, so a commit naming anyone as author takes no keyset of theirs
+                let due = |p: &osis_commit::Part| aspects.get(p.ai).is_some_and(|a| chain.contains(&a.tid));
                 if !c.parts.iter().any(due) {
                     continue;
                 }
