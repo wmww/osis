@@ -19,7 +19,8 @@
   - It is re-encrypted when one of these holds:
     - its expiry is earlier than the new delta's;
     - its commitments to the thing's delete keys (levels 1 and 3) are not exactly those of the keys the reusing delta lists;
-    - it commits to a level-2 key other than the reusing delta's, and that delta lists no level-2 key or only a level-2 key.
+    - it commits to a level-2 key other than the reusing delta's, and that delta lists no level-2 key or only a level-2 key;
+    - its link's salt or delete keys are not what its prefix bears (spec/data-model.md §6): a reused link is copied verbatim.
   - Beside a level-1 or level-3 key an author-chain commitment need not match.
   - The link alone decides it: its link blind and the thing give the commitments (spec/crypto.md §7), whichever commit introduced the chunk and whether the node ever held that commit.
 - **Repair** of a chunk or tree node blob:

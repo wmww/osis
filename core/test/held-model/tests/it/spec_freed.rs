@@ -5,15 +5,26 @@ use held_model::freed::*;
 use held_model::gen::Rng;
 use std::collections::BTreeSet;
 
-/// Drops interleaved with freed-set steps until nothing moves; checks at every accepted delete
-/// that no source the deleter holds of the piece's thing reaches it (P1) and that the blob bears
-/// the key under the thing it was signed for (P3).
+/// Drops, and bodies held again (fetched again, or arriving anew), interleaved with freed-set
+/// steps until nothing moves; checks at every accepted delete that no source the deleter holds
+/// of the piece's thing reaches it (P1) and that the blob bears the key under the thing it was
+/// signed for (P3). A body held again while its links wait is what judging at the drop, rather
+/// than when the delete is sent, gets wrong.
 fn run(w: &mut World, rng: &mut Rng, drops: &mut Vec<(usize, usize)>) {
+    let mut again = Vec::new();
     loop {
         let pending: Vec<(usize, Thing, Link)> = w.nodes.iter().enumerate().flat_map(|(n, s)| s.freed.iter().map(move |(t, l)| (n, *t, l.clone()))).collect();
         if !drops.is_empty() && (pending.is_empty() || rng.chance(30)) {
             let (n, s) = drops.remove(rng.below(drops.len() as u64) as usize);
             w.drop_source(n, s);
+            if rng.chance(25) {
+                again.push((n, s));
+            }
+            continue;
+        }
+        if !again.is_empty() && rng.chance(20) {
+            let (n, s) = again.remove(rng.below(again.len() as u64) as usize);
+            w.nodes[n].held.insert(s);
             continue;
         }
         let before = w.deleted.len();
@@ -31,7 +42,7 @@ fn run(w: &mut World, rng: &mut Rng, drops: &mut Vec<(usize, usize)>) {
                 assert!(p.thing == d.thing && p.group.contains(&d.key), "P3: a delete through a link its blob does not bear");
             }
         }
-        if !moved && drops.is_empty() {
+        if !moved && drops.is_empty() && again.is_empty() {
             break;
         }
         let _ = before;
@@ -135,6 +146,23 @@ fn reuse_by_another_author_keeps_the_piece_while_a_held_body_links_it() {
     w.drop_source(0, 1);
     w.settle(&mut Rng::new(1));
     assert!(w.entries.is_empty(), "{:?}", w.entries);
+}
+
+// A body dropped and held again before its links' deletes are sent keeps its pieces: the link
+// is judged when its delete is sent, not at the drop.
+#[test]
+fn body_held_again_before_the_delete_keeps_its_pieces() {
+    let mut w = base();
+    let k = [(1, 10)];
+    let c = piece(&mut w, 1, &k, vec![]);
+    let n = piece(&mut w, 1, &k, vec![c.clone()]);
+    w.sources = vec![Source { thing: 1, links: vec![n.clone()] }];
+    w.nodes = vec![node(&w, &[0], &[(1, 10)], &[1, 2])];
+    w.drop_source(0, 0);
+    w.nodes[0].held.insert(0);
+    w.settle(&mut Rng::new(1));
+    assert_eq!(w.entries.len(), 4, "{:?}", w.entries);
+    assert!(w.nodes[0].freed.is_empty());
 }
 
 // A writer of thing 1 links thing 2's chunk: dropping its body deletes nothing of thing 2, and
