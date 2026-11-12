@@ -108,28 +108,41 @@ pub(crate) fn frontiers_upto(tx: &Tx<'_>, tid: &Tid, ak: &Ak, memory: bool, vali
             },
             None => u64::MAX,
         };
-        let mut next = frontiers.of(n).saturating_add(1);
-        for ((lo, c), hi) in ranges {
-            if *lo > max {
-                break;
-            }
-            // below a snapshot's frontier: reflected by it
-            if *hi <= next {
-                reflected.insert(*c);
-                continue;
-            }
-            let joins = *lo <= next || (!memory && own_replace(tx.core, c, tid, ak));
-            if !joins || !valid_on(c) {
-                break;
-            }
-            next = *hi;
-            reflected.insert(*c);
-        }
+        let (next, _) = walk_source(tx.core, tid, ak, memory, valid_on, ranges.iter(), frontiers.of(n).saturating_add(1), max, &mut |c| {
+            reflected.insert(c);
+        });
         if next > 1 {
             frontiers.insert(n, next - 1);
         }
     }
     (frontiers, reflected)
+}
+
+/// One session source's frontier walk on `(tid, ak)` (`frontiers_upto`), from `next`, its first
+/// counter not reflected, through `ranges` (its held ranges by start, `Indexes::ranges`, from
+/// any start on) up to start `max`: a range below `next` is reflected (by a snapshot's
+/// frontier); one that joins (starts at or below `next`, or is a durable own whole replace,
+/// whose reset passes a hole below it) and that `valid_on` passes is reflected and moves `next`
+/// past it; the first other stops the walk. `reflected` gets each one reflected. Returns `next`
+/// and whether a range stopped the walk (the source has held ranges behind a gap at `next`).
+pub(crate) fn walk_source<'r>(core: &Core, tid: &Tid, ak: &Ak, memory: bool, valid_on: &dyn Fn(&CommitId) -> bool, ranges: impl Iterator<Item = (&'r (u64, CommitId), &'r u64)>, mut next: u64, max: u64, reflected: &mut dyn FnMut(CommitId)) -> (u64, bool) {
+    for ((lo, c), hi) in ranges {
+        if *lo > max {
+            break;
+        }
+        // below a snapshot's frontier: reflected by it
+        if *hi <= next {
+            reflected(*c);
+            continue;
+        }
+        let joins = *lo <= next || (!memory && own_replace(core, c, tid, ak));
+        if !joins || !valid_on(c) {
+            return (next, true);
+        }
+        next = *hi;
+        reflected(*c);
+    }
+    (next, false)
 }
 
 /// What delta `a` of a commit with header `h` is judged by in a purge (spec/crdt.md §8 `Facts`):

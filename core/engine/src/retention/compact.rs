@@ -37,15 +37,14 @@ pub(crate) fn compactable(ak: &Ak) -> bool {
 }
 
 /// The trigger's state per aspect, in memory. An aspect is weighed (its bodies read) only once
-/// what it may hold (`held`: the cost found when last weighed plus every body applied since)
-/// passes `FACTOR` times the snapshot cost last found, so the work of weighing is O(1) per byte
-/// written, amortized; a change that may let bodies count without a write (a validity flip, an
-/// expiry, a setting) asks for a weighing (`weigh`).
+/// what it may hold (`Est::held`: the cost found when last weighed plus every body counted
+/// since) passes `FACTOR` times the snapshot cost last found, so the work of weighing is O(1)
+/// per byte written, amortized; a change that may let bodies count without a write (a validity
+/// flip, an expiry, a setting) asks for a weighing (`weigh`). Bodies held behind a gap in their
+/// session count once a held body or snapshot passes it (`Est::stops`, `Trigger::gap_passed`).
 #[derive(Clone, Debug, Default)]
 pub struct Trigger {
-    /// Per aspect: the held cost found when last weighed (0 after a snapshot) plus the cost of
-    /// every body applied since, and the snapshot cost then.
-    est: BTreeMap<(Tid, Ak), (usize, usize)>,
+    est: BTreeMap<(Tid, Ak), Est>,
     /// Aspects whose `est` grew, or asked to be weighed, since the last step.
     due: BTreeSet<(Tid, Ak)>,
     /// Aspects weighed at the next step whatever their `est`.
@@ -55,30 +54,129 @@ pub struct Trigger {
     at: BTreeMap<u64, BTreeSet<(Tid, Ak)>>,
 }
 
+/// What the trigger knows of an aspect (`Trigger::est`).
+#[derive(Clone, Debug, Default)]
+struct Est {
+    /// The held cost found when last weighed (0 after a snapshot) plus the cost of every body
+    /// counted since.
+    held: usize,
+    /// The snapshot cost found then.
+    snapshot: usize,
+    /// Per session source with bodies held behind a gap when last weighed: the first counter its
+    /// frontier walk did not pass (`snapshot::walk_source`; a missing, invalid or purged body, or
+    /// counters not held). A body behind it counts for nothing (no snapshot drops it) until a
+    /// held body or snapshot passes the gap (`Trigger::gap_passed`), which counts every body the walk
+    /// then passes: O(the bodies that start to count), so a gap that stays costs writes nothing
+    /// and one closed bit by bit costs each body once.
+    stops: Stops,
+}
+
 impl Trigger {
-    /// Notes the bodies of applied commit `blob` (header `h`): each compactable aspect it writes
-    /// may hold their cost more. A snapshot adds nothing: only writes make one stale, and only
-    /// what they add makes the trigger weigh (so two writers never compact each other's
-    /// snapshots in turn).
+    /// Notes the bodies of applied commit `blob` (`id`, header `h`): each part on a compactable
+    /// aspect is held (`part_held`).
     pub(crate) fn applied(tx: &mut Tx<'_>, id: &CommitId, h: &Header, blob: &CommitBlob) -> Result<()> {
-        if h.kind.is_compaction() || !h.kind.has_own_writes() {
-            return Ok(());
-        }
-        let now = tx.now().0;
-        for (ai, a) in h.aspects.iter().enumerate() {
-            if !compactable(&a.ak) {
-                continue;
-            }
-            // a live body its setting keeps (spec/commits.md §5 Kept while live) is no snapshot's
-            // to drop: it counts once it leaves history (`leaving::left`) or the live bound passes
-            let live = super::history::of(tx.core, &a.tid, &a.ak).live_until();
-            if live > now {
-                Trigger::live_until(tx, (a.tid, a.ak.clone()), live);
-                continue;
-            }
-            Trigger::counts(tx, id, &a.tid, &a.ak, blob, ai)?;
+        for ai in 0..h.aspects.len() {
+            Trigger::part_held(tx, id, h, blob, ai)?;
         }
         Ok(())
+    }
+
+    /// Part `ai` of commit `id` (header `h`, blob `blob`) is held from now on, applied or late:
+    /// what its aspect may hold grows by its cost (`counts`). A snapshot adds nothing of its own:
+    /// only writes make one stale, and only what they add makes the trigger weigh (so two
+    /// writers never compact each other's snapshots in turn); but its frontier may pass a gap
+    /// bodies were held behind, and a body may fill one: those bodies count then (`gap_passed`). A
+    /// body behind a gap counts for nothing.
+    pub(crate) fn part_held(tx: &mut Tx<'_>, id: &CommitId, h: &Header, blob: &CommitBlob, ai: usize) -> Result<()> {
+        let Some(a) = h.aspects.get(ai) else { return Ok(()) };
+        if !compactable(&a.ak) {
+            return Ok(());
+        }
+        let k = (a.tid, a.ak.clone());
+        if h.kind.is_compaction() {
+            return Trigger::snapshot_held(tx, id, &k);
+        }
+        if !h.kind.has_own_writes() {
+            return Ok(());
+        }
+        if let Some(crate::engine::Owned::Range { src, lo, hi }) = crate::engine::Owned::of(h, id, ai)
+            && let Some(stop) = tx.core.compaction.est.get(&k).and_then(|e| e.stops.get(&src)).copied()
+        {
+            // it fills the gap (holds its first counter), or passes it as a durable own whole
+            // replace: the walk goes on from it
+            let fills = lo <= stop && stop < hi || lo > stop && !a.ak.ephemeral() && super::snapshot::own_replace(tx.core, id, &k.0, &k.1);
+            if fills {
+                return Trigger::gap_passed(tx, &k, &src, stop, lo, Some((id, blob)));
+            }
+            if lo > stop {
+                return Ok(());
+            }
+        }
+        Trigger::held_counts(tx, id, &k, blob, ai)
+    }
+
+    /// Snapshot `s` on `k` is held: each source whose gap its frontier passes counts the bodies
+    /// held behind it (`gap_passed`).
+    fn snapshot_held(tx: &mut Tx<'_>, s: &CommitId, k: &(Tid, Ak)) -> Result<()> {
+        let Some(stops) = tx.core.compaction.est.get(k).map(|e| e.stops.clone()).filter(|x| !x.is_empty()) else { return Ok(()) };
+        if !super::snapshot::claims(tx.core, s, &k.0, &k.1, tx.now().0) {
+            return Ok(());
+        }
+        let Some(fr) = tx.core.ix.snapshots.get(k).and_then(|v| v.iter().find(|x| x.1 == *s)).map(|x| x.2.clone()) else { return Ok(()) };
+        for (src, stop) in stops {
+            let f = fr.of(&src);
+            if f >= stop {
+                Trigger::gap_passed(tx, k, &src, f.saturating_add(1), stop, None)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// A gap of session `src` on `k` is passed: its frontier walk goes on from `next` (its first
+    /// counter not reflected now) through the held ranges starting at `from` on
+    /// (`snapshot::walk_source`, the writer's own walk). Each body it passes counts
+    /// (`held_counts`; `filler`, the one passing it, by its blob in hand), and the source's stop
+    /// moves to where the walk stops, if it does. O(the bodies passed).
+    fn gap_passed(tx: &mut Tx<'_>, k: &(Tid, Ak), src: &osis_crdt::Source, next: u64, from: u64, filler: Option<(&CommitId, &CommitBlob)>) -> Result<()> {
+        let now = tx.now().0;
+        let mut passed = Vec::new();
+        let (stop, stopped) = {
+            let core = &*tx.core;
+            let valid_on = |c: &CommitId| super::snapshot::claims(core, c, &k.0, &k.1, now);
+            let ranges = core.ix.ranges.get(&(k.0, k.1.clone(), src.clone())).into_iter().flat_map(|r| r.range((from, CommitId([0; 32]))..));
+            super::snapshot::walk_source(core, &k.0, &k.1, k.1.ephemeral(), &valid_on, ranges, next, u64::MAX, &mut |c| passed.push(c))
+        };
+        if let Some(e) = tx.core.compaction.est.get_mut(k) {
+            if stopped {
+                e.stops.insert(src.clone(), stop);
+            } else {
+                e.stops.remove(src);
+            }
+        }
+        for c in passed {
+            let Some(ai) = tx.core.ix.commits.get(&c).and_then(|m| m.aspect(&k.0, &k.1)) else { continue };
+            match filler {
+                Some((f, b)) if *f == c => Trigger::held_counts(tx, &c, k, b, ai)?,
+                _ => {
+                    if let Some(b) = tx.get_commit(&c)? {
+                        Trigger::held_counts(tx, &c, k, &b, ai)?;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// `counts` for a held part, unless its setting keeps it while live (spec/commits.md §5 Kept
+    /// while live): no snapshot's to drop, it counts once it leaves history (`leaving::left`) or
+    /// the live bound passes.
+    fn held_counts(tx: &mut Tx<'_>, c: &CommitId, k: &(Tid, Ak), blob: &CommitBlob, ai: usize) -> Result<()> {
+        let live = super::history::of(tx.core, &k.0, &k.1).live_until();
+        if live > tx.now().0 {
+            Trigger::live_until(tx, k.clone(), live);
+            return Ok(());
+        }
+        Trigger::counts(tx, c, &k.0, &k.1, blob, ai)
     }
 
     /// Part `ai` of `blob` (commit `c`) on `(tid, ak)` may count for the trigger from now on
@@ -89,10 +187,16 @@ impl Trigger {
     /// unlinks from the value it replaces (a changed chunk and its path to the root), which a
     /// drop then frees: so what is held grows by them, read by length, O(the blobs it lists).
     /// A snapshot (out of history) grows it by its tree blobs alone, as the weighing counts it
-    /// (`Candidate::body`).
+    /// (`Candidate::body`); a body behind a gap of its session (`Est::stops`) by nothing.
     pub(crate) fn counts(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak, blob: &CommitBlob, ai: usize) -> Result<()> {
         let now = tx.now().0;
         if !compactable(ak) || tx.core.ix.commits.get(c).is_some_and(|m| !super::drops_as_covered(m, ai, now)) {
+            return Ok(());
+        }
+        let k = (*tid, ak.clone());
+        if let Some(crate::engine::Owned::Range { src, lo, .. }) = crate::engine::Owned::of(&blob.header, c, ai)
+            && tx.core.compaction.est.get(&k).and_then(|e| e.stops.get(&src)).is_some_and(|stop| lo > *stop)
+        {
             return Ok(());
         }
         let w = body_bytes(tx, blob, ai)?;
@@ -106,7 +210,7 @@ impl Trigger {
 
     fn add(&mut self, k: (Tid, Ak), cost: usize) {
         let e = self.est.entry(k.clone()).or_default();
-        e.0 = e.0.saturating_add(cost);
+        e.held = e.held.saturating_add(cost);
         self.due.insert(k);
     }
 
@@ -231,11 +335,13 @@ fn held_bytes<'b>(tx: &mut Tx<'_>, blobs: impl Iterator<Item = &'b BlobId>) -> R
 /// `Absorbed` lists them: `snapshot::claims`, the writer's own judgment; not one behind an
 /// invalid, missing or purged body of its session), and not ones with an expiry before it,
 /// which a snapshot covers only as their leftover. Counted otherwise, a body no snapshot drops
-/// would fire the trigger at every step. A leftover counts as a part with no delta bytes. Whether each is past its keep bound is the caller's (`Load::of`). Where
+/// would fire the trigger at every step. A leftover counts as a part with no delta bytes. Also,
+/// per session source with a body held behind a gap its walk did not pass, where it stopped
+/// (`Est::stops`). Whether each is past its keep bound is the caller's (`Load::of`). Where
 /// the setting keeps live bodies, only bodies out of history and leftovers are looked at
 /// (`droppable`): kept ones are neither read nor walked past, so a weighing costs what it may
 /// drop, not the kept history.
-fn candidates(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, me: Tid) -> Result<Vec<Candidate>> {
+fn candidates(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, me: Tid) -> Result<(Vec<Candidate>, Stops)> {
     let memory = ak.ephemeral();
     let now = tx.now().0;
     let pool = droppable(tx, tid, ak);
@@ -263,7 +369,8 @@ fn candidates(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, me: Tid) -> Result<Vec<Candid
         }
     }
     let valid_on = |c: &CommitId| super::snapshot::claims(tx.core, c, tid, ak, now);
-    let (_, reflected) = super::snapshot::frontiers_upto(tx, tid, ak, memory, &valid_on, Some(&upto));
+    let (frontiers, reflected) = super::snapshot::frontiers_upto(tx, tid, ak, memory, &valid_on, Some(&upto));
+    let mut stops = Stops::new();
     // (commit, part, its weight, a snapshot)
     let mut weighed = Vec::new();
     for (c, ai, by_id, snapshot) in ids {
@@ -276,6 +383,10 @@ fn candidates(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, me: Tid) -> Result<Vec<Candid
             continue;
         }
         if !snapshot && !by_id && !reflected.contains(&c) {
+            if let Some(crate::engine::Owned::Range { src, .. }) = tx.core.ix.commits.get(&c).and_then(|m| crate::engine::Owned::of(&m.header, &c, ai)) {
+                let stop = frontiers.of(&src).saturating_add(1);
+                stops.insert(src, stop);
+            }
             continue;
         }
         let Some(blob) = tx.get_commit(&c)? else { continue };
@@ -301,8 +412,11 @@ fn candidates(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, me: Tid) -> Result<Vec<Candid
             out.push(Candidate { c, ai, cost, body: !snapshot });
         }
     }
-    Ok(out)
+    Ok((out, stops))
 }
+
+/// Per session source, the first counter its frontier walk did not pass (`Est::stops`).
+type Stops = BTreeMap<osis_crdt::Source, u64>;
 
 /// What a snapshot written now would drop of one held body (`candidates`).
 struct Candidate {
@@ -385,14 +499,15 @@ impl Load {
     /// What the bodies held of `(tid, ak)` a snapshot written now would drop cost (`candidates`
     /// past their keep-at-least bound, a live one kept while live included, read from the
     /// per-commit memo: one judgment per commit), and what the snapshot would, in the class of
-    /// its aspect. `None`: no state.
-    fn of(e: &mut Engine, tid: &Tid, ak: &Ak, me: Tid) -> Result<Option<Load>> {
+    /// its aspect, with where its sources' walks stopped short of held bodies (`Est::stops`).
+    /// `None`: no state.
+    fn of(e: &mut Engine, tid: &Tid, ak: &Ak, me: Tid) -> Result<Option<(Load, Stops)>> {
         let class = |tx: &mut Tx<'_>| {
             if ak.ephemeral() {
                 tx.set_memory();
             }
         };
-        let cands = e.run(|tx| {
+        let (cands, stops) = e.run(|tx| {
             class(tx);
             candidates(tx, tid, ak, me)
         })?;
@@ -415,7 +530,7 @@ impl Load {
         else {
             return Ok(None);
         };
-        Ok(Some(Load { tid: *tid, ak: ak.clone(), held, snapshot, largest, bodies }))
+        Ok(Some((Load { tid: *tid, ak: ak.clone(), held, snapshot, largest, bodies }, stops)))
     }
 }
 
@@ -431,7 +546,7 @@ impl Engine {
         let forced = std::mem::take(&mut self.core.compaction.forced);
         let mut out = Vec::new();
         for k in due {
-            let (est, last) = self.core.compaction.est.get(&k).copied().unwrap_or_default();
+            let (est, last) = self.core.compaction.est.get(&k).map_or((0, 0), |e| (e.held, e.snapshot));
             if !forced.contains(&k) && est <= FACTOR.saturating_mul(last) {
                 continue;
             }
@@ -451,7 +566,7 @@ impl Engine {
             }
             // counted: tests read how often the trigger weighs and fires per write
             crate::costs::count("compact: aspects weighed", 1);
-            let Some(l) = Load::of(self, &tid, &ak, me)? else {
+            let Some((l, stops)) = Load::of(self, &tid, &ak, me)? else {
                 self.core.compaction.est.remove(&k);
                 continue;
             };
@@ -472,7 +587,7 @@ impl Engine {
             if self.core.ix.by_aspect.get(&k).is_none_or(|s| s.len() <= 1) {
                 self.core.compaction.est.remove(&k);
             } else {
-                self.core.compaction.est.insert(k, (held, l.snapshot));
+                self.core.compaction.est.insert(k, Est { held, snapshot: l.snapshot, stops });
             }
         }
         Ok(out)
@@ -488,7 +603,7 @@ impl Engine {
                 continue;
             }
             let Ok(me) = self.core.writer_for(&tid) else { continue };
-            let Some(l) = Load::of(self, &tid, &ak, me)? else { continue };
+            let Some((l, _)) = Load::of(self, &tid, &ak, me)? else { continue };
             if l.bodies == 0 {
                 continue;
             }
@@ -511,7 +626,7 @@ impl Engine {
                 continue;
             }
             let Ok(me) = self.core.writer_for(&tid) else { continue };
-            if let Some(l) = Load::of(self, &tid, &ak, me)? {
+            if let Some((l, _)) = Load::of(self, &tid, &ak, me)? {
                 out.push(l);
             }
         }
@@ -526,6 +641,112 @@ mod tests {
     use crate::local_peer::LocalPeer;
     use crate::Mutation;
     use osis_base::Value;
+
+    /// Sets key `k` of thing `t`'s ephemeral `x:m+.0` to `v`.
+    fn put(e: &mut Engine, t: Tid, k: &str, v: &str) -> CommitId {
+        let mut m = Mutation::new();
+        m.op(t, &Ak::new("x:m+.0").unwrap(), osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(Value::Str(k.into()))], op: osis_crdt::Op::Set(Value::Str(v.into())) }).unwrap();
+        e.commit_in_memory(m).unwrap().unwrap()
+    }
+
+    fn gap_load(e: &mut Engine) -> Load {
+        e.compaction_load().unwrap().into_iter().find(|l| l.ak.as_str() == "x:m+.0").unwrap()
+    }
+
+    /// The trigger's step at `e`: (aspects weighed, snapshots written).
+    fn step(e: &mut Engine) -> (u64, u64) {
+        crate::costs::take();
+        e.compactions().unwrap();
+        let c = crate::costs::take();
+        let get = |k: &str| c.iter().find(|x| x.0 == k).map_or(0, |x| x.2);
+        (get("compact: aspects weighed"), get("compact: snapshots written"))
+    }
+
+    /// A writer of ephemeral `x:m+.0` with its own session's bodies back after a restart, each
+    /// setting key `k` to a new value: `n` bodies, a first snapshot of the first when `snap`.
+    /// Returns the peer and the packed snapshot (if any) and bodies, in order, none ingested.
+    fn restarted(n: usize, snap: bool) -> (LocalPeer, Option<Vec<u8>>, Vec<Vec<u8>>) {
+        let mut lp = LocalPeer::fresh(1, osis_base::WallMs(1_700_000_000_000));
+        let p = &mut lp.peers[0];
+        let me = p.engine.me();
+        let mut m = Mutation::new();
+        let t = p.engine.new_thing(&mut m, me);
+        p.commit(m).unwrap();
+        let mut s = None;
+        if snap {
+            put(&mut p.engine, t, "k0", "v");
+            let c = p.engine.compact_memory_now().unwrap();
+            assert_eq!(c.len(), 1, "the first body covered");
+            s = Some(p.engine.package(&c[0]).unwrap().unwrap().bytes);
+        }
+        let ids: Vec<CommitId> = (0..n).map(|i| put(&mut p.engine, t, "k", &format!("v{i}"))).collect();
+        let bodies = ids.iter().map(|c| p.engine.package(c).unwrap().unwrap().bytes).collect();
+        p.restart(7).unwrap();
+        (lp, s, bodies)
+    }
+
+    // spec/sync.md §7 (Trigger): bodies held behind a gap in their session no frontier passes
+    // (the author restarted: its first body went with the snapshot that covered it) count for
+    // nothing, and writes behind the gap weigh nothing; once the snapshot that reaches the gap
+    // arrives, though it adds nothing of its own and no write follows, they count and the writer
+    // compacts them, so what it holds stays within `FACTOR` times a snapshot and one body.
+    #[test]
+    fn bodies_behind_a_gap_count_once_a_snapshot_passes_it_spec_sync_7() {
+        let (mut lp, snap, bodies) = restarted(8, true);
+        let e = &mut lp.peers[0].engine;
+        let mut weighed = 0;
+        for (i, b) in bodies.iter().enumerate() {
+            e.ingest_memory(b, u64::MAX).unwrap();
+            let (w, s) = step(e);
+            assert_eq!(s, 0, "no frontier passes the gap");
+            // the first two weigh (one body is nothing to compact; then the gap is found)
+            if i >= 2 {
+                weighed += w;
+            }
+        }
+        assert_eq!(weighed, 0, "bodies behind a known gap weigh nothing");
+        assert_eq!(gap_load(e).bodies, 0, "nothing counts behind the gap");
+        e.ingest_memory(&snap.unwrap(), u64::MAX).unwrap();
+        let l = gap_load(e);
+        assert!(l.bodies == 8 && l.held > FACTOR * l.snapshot + l.largest, "the eight count now: {l:?}");
+        assert_eq!(step(e), (1, 1), "weighed and compacted at the next step");
+        let l = gap_load(e);
+        assert!(l.held <= FACTOR * l.snapshot + l.largest, "{l:?}");
+    }
+
+    // spec/sync.md §7 (Trigger): a gap closed by its missing body is noticed as it arrives: the
+    // bodies held behind it count then and are compacted at the next step. With a body missing
+    // at every other counter, filling the gaps one by one counts each body once: the trigger
+    // weighs about once per snapshot's worth of bodies passed, not at each fill, at n and 10n.
+    #[test]
+    fn a_gap_filled_by_its_body_counts_what_it_passes_spec_sync_7() {
+        let (mut lp, _, bodies) = restarted(3, false);
+        let e = &mut lp.peers[0].engine;
+        for b in &bodies[1..] {
+            e.ingest_memory(b, u64::MAX).unwrap();
+            e.compactions().unwrap();
+        }
+        assert_eq!(gap_load(e).bodies, 0, "behind the gap");
+        e.ingest_memory(&bodies[0], u64::MAX).unwrap();
+        assert_eq!(step(e), (1, 1), "the gap filled: weighed and compacted at the next step");
+        for n in [10, 100] {
+            let (mut lp, _, bodies) = restarted(2 * n, false);
+            let e = &mut lp.peers[0].engine;
+            for b in bodies.iter().skip(1).step_by(2) {
+                e.ingest_memory(b, u64::MAX).unwrap();
+                e.compactions().unwrap();
+            }
+            let (mut weighed, mut written) = (0, 0);
+            for b in bodies.iter().step_by(2) {
+                e.ingest_memory(b, u64::MAX).unwrap();
+                let (w, s) = step(e);
+                (weighed, written) = (weighed + w, written + s);
+            }
+            let l = gap_load(e);
+            assert!(l.held <= FACTOR * l.snapshot + l.largest, "n={n}: {l:?}");
+            assert!(written >= 1 && weighed <= n as u64 / 2, "n={n}: {weighed} weighings, {written} snapshots over {n} fills");
+        }
+    }
 
     /// A thing whose durable aspect `x:big.0` holds a chunked value of `n` × 64 KiB and whose
     /// ephemeral aspect `x:cur+.0` holds that value's link: (peer, thing, the tree's blobs).

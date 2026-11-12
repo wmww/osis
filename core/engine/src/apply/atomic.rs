@@ -745,6 +745,10 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
     if !flipped.is_empty() {
         tx.core.events.queue(Event::Changed { cause: Cause::Validity, changed: flipped });
     }
+    // the late parts count for the compaction trigger as an applied commit's do
+    for ai in &late {
+        crate::retention::compact::Trigger::part_held(tx, id, &h, merged, *ai)?;
+    }
     // a memory commit whose late parts went at once (expired, superseded)
     crate::retention::memory::forget_if_spent(tx, id)
 }

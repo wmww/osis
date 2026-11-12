@@ -12,5 +12,4 @@ sim-sweep:label_replacement_offline 911499435371/911499435371 issues/label-repla
 sim-sweep:evil_host_drops 472765857787/472765857787 issues/evil-host-drops-seed-787.md not quiescent after \d+ rounds
 order::held_set_decides_plain OSIS_ORDER_SEED=62510 issues/order-settled-seed-62510.md ^seed 62510, Settled .*settled: shows other than the node keeping every body
 rotation::tests_property::rotation_holds_large_spec_crypto_4 OSIS_ROTATION_START=780551881542 issues/rotation-departed-opens-seed-542.md made by a rotator that saw it depart
-ephemeral::random_window_one_capped_host_large OSIS_EPH_START=780551881510 issues/eph-capped-host-compaction-load-seed-510.md node \d+ holds \d+ B of .*, snapshot \d+ B
 order::held_set_decides_plain OSIS_ORDER_SEED=38534 issues/order-settled-roster-seed-38534.md ^seed 38534, Settled .*settled: shows other than the node keeping every body
