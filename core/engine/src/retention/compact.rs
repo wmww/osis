@@ -102,11 +102,12 @@ impl Trigger {
         if let Some(crate::engine::Owned::Range { src, lo, hi }) = crate::engine::Owned::of(h, id, ai)
             && let Some(stop) = tx.core.compaction.est.get(&k).and_then(|e| e.stops.get(&src)).copied()
         {
-            // it fills the gap (holds its first counter), or passes it as a durable own whole
-            // replace: the walk goes on from it
+            // it fills the gap (holds its first counter), or may pass it as a durable own whole
+            // replace: the walk goes on from the gap (a replace passes it only as the first
+            // range held past it, as in the writer's walk)
             let fills = lo <= stop && stop < hi || lo > stop && !a.ak.ephemeral() && super::snapshot::own_replace(tx.core, id, &k.0, &k.1);
             if fills {
-                return Trigger::gap_passed(tx, &k, &src, stop, lo, Some((id, blob)));
+                return Trigger::gap_passed(tx, &k, &src, stop, lo.min(stop), Some((id, blob)));
             }
             if lo > stop {
                 return Ok(());
