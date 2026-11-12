@@ -1680,10 +1680,12 @@ impl SyncEngine {
                 }
                 // this tester's credential is gone (issues/net-shared-set.md, Divergence), unless
                 // another Hit on L opened it (the same Offer's, read after) or still may (one
-                // unanswered): the peer opened L for that one too, and a Lost would close it
+                // unanswered): the peer opened L for that one too, and a Lost would close it.
+                // Closed here first, so L is pending again (Re-marking) and tested anew
                 stale.dedup();
                 for l in stale {
                     if !self.shared_member(conn, &l) && !self.shared_hit_out(conn, &l) {
+                        self.shared_close(conn, &l, super::stream::Stop::Here)?;
                         self.shared_lost_send(conn, l, out)?;
                     }
                 }
