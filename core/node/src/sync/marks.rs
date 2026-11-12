@@ -150,8 +150,11 @@ impl SyncEngine {
                 narrow.extend(h.aspects.iter().map(|a| (a.tid, a.ak.clone())));
             }
         }
-        // a memory commit kept only for a part dropped while invalid costs its label's cap nothing
+        // a memory commit kept only for a part dropped while invalid or to be fetched costs its
+        // label's cap nothing, and is looked at for forgetting: with no entry of it known, no
+        // entry's leaving would bring it to `forget_forgettable`
         for c in ch.commits.iter().filter(|c| self.engine.holds_memory(c) && !self.engine.memory_body_held(c)) {
+            self.state.forget_due.insert(*c);
             for (l, b) in self.entries_of_commit(c) {
                 self.state.charge_memory(l, b, None);
             }

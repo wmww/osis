@@ -1331,7 +1331,8 @@ pub struct Changed {
     /// un-merge, expiry, purge, a late delta): what waits on the state is judged again.
     pub aspects: BTreeSet<(Tid, Ak)>,
     /// Commits with a part missing again (a cover that no longer carries it, `retention::uncover`;
-    /// a purge's fall, `purge::rejudge_purges`): node-sync fetches its entries again.
+    /// a purge's fall, `purge::rejudge_purges`; valid again, `retention::valid_again`): node-sync
+    /// fetches its entries again.
     pub undropped: BTreeSet<CommitId>,
     /// (holder, target) edges whose current value changed (`osis_perm::Changed::edges`).
     pub edges: BTreeSet<(Tid, Tid)>,
