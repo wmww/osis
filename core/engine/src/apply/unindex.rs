@@ -5,13 +5,14 @@
 use crate::engine::records;
 use crate::engine::Tx;
 use crate::error::Result;
-use osis_base::CommitId;
+use osis_base::{Ak, CommitId, Tid};
 use osis_store::Shred;
 use std::collections::BTreeSet;
 
 /// Removes commit `id` from every index applying it added to and its records from the store:
 /// the mirror of `index_commit` and the rest of `apply_verified`.
 pub(crate) fn unindex_commit(tx: &mut Tx<'_>, id: &CommitId) -> Result<()> {
+    hand_down(tx, id)?;
     let core = &mut *tx.core;
     let Some(m) = core.take_meta(id) else { return Ok(()) };
     let v = &m.view;
@@ -98,6 +99,37 @@ pub(crate) fn unindex_commit(tx: &mut Tx<'_>, id: &CommitId) -> Result<()> {
         }
     }
     tx.remove_commit(id)
+}
+
+/// Coverer `id` forgotten: each part dropped under it is dropped from then on under what `id`'s
+/// part on that aspect dropped under, so its chain of covers (`retention::coverers`) runs past
+/// `id` as it did while `id` was known (spec/permissions.md §5.2). O(the commits naming `id`,
+/// `Indexes::covered_under`).
+fn hand_down(tx: &mut Tx<'_>, id: &CommitId) -> Result<()> {
+    let Some(sm) = tx.core.ix.commits.get(id) else { return Ok(()) };
+    let up: Vec<(Tid, Ak, BTreeSet<CommitId>)> = sm.view.aspects.iter().enumerate().map(|(ai, a)| (a.tid, a.ak.clone(), sm.dropped(ai).map(|d| d.covered_by.clone()).unwrap_or_default())).collect();
+    let under: Vec<CommitId> = tx.core.ix.covered_under.get(id).into_iter().flatten().copied().collect();
+    for c in under {
+        let Some(mut m) = tx.core.ix.commits.get(&c).cloned() else { continue };
+        for ai in 0..m.view.aspects.len() {
+            let Some(a) = m.view.aspects.get(ai).map(|a| (a.tid, a.ak.clone())) else { continue };
+            let Some(d) = m.dropped_mut(ai) else { continue };
+            if d.covered_by.remove(id) {
+                // counted: tests read how many parts a forget hands down to
+                crate::costs::count("forget: handed down", 1);
+                let by = up.iter().filter(|x| (x.0, &x.1) == (a.0, &a.1)).flat_map(|x| x.2.iter().copied());
+                d.covered_by.extend(by.filter(|x| *x != c));
+            }
+        }
+        tx.in_class(m.view.memory, |tx| {
+            if let Some(blob) = tx.get_commit(&c)? {
+                tx.put_commit(&c, &blob, &m, Shred::No, None)?;
+            }
+            tx.core.put_meta(c, m);
+            Ok(())
+        })?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -237,3 +269,4 @@ mod tests {
         assert_eq!(rows.len(), 1, "{rows:?}");
     }
 }
+

@@ -134,7 +134,8 @@ pub enum DropFor {
 /// What a dropped part keeps in its commit record (spec/commits.md §5).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Dropped {
-    /// The held valid snapshots that covered its body when it dropped: their copies of its
+    /// The held valid snapshots that covered its body when it dropped, a forgotten one replaced
+    /// by what it dropped under (`apply::unindex::hand_down`): their copies of its
     /// writes are its writes (`apply::rebuild`); once none carries it, a part dropped as
     /// covered is missing again (`retention::uncover`).
     pub covered_by: BTreeSet<CommitId>,
@@ -233,6 +234,11 @@ impl std::fmt::Debug for Verdicts {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("Verdicts")
     }
+}
+
+/// The coverers the dropped parts of `m` name (`Dropped::covered_by`).
+fn covers_of(m: &Meta) -> BTreeSet<CommitId> {
+    m.dropped_parts().flat_map(|(_, d)| d.covered_by.iter().copied()).collect()
 }
 
 impl Dropped {
@@ -771,6 +777,10 @@ indexes! {
     /// Snapshots per aspect whose dropped part still stands in (`Dropped::stands_in`; derived at
     /// open, not persisted).
     pub dropped_snapshots: JSetMap<(Tid, Ak), CommitId>,
+    /// Per coverer, the commits with a dropped part naming it (`Dropped::covered_by`;
+    /// derived, as `Core::put_meta` keeps it): what a coverer forgotten hands its own covers
+    /// down to (`apply::unindex_commit`).
+    pub covered_under: JSetMap<CommitId, CommitId>,
     /// Per aspect the newest `ts` of a commit forgotten here with a valid part on it
     /// (`apply::unindex_commit`): what stands for the forgotten parts an undo may have replaced
     /// (`undo::replaced_kept`). A durable commit's row persists (`records::FORGOTTEN`).
@@ -2349,6 +2359,8 @@ impl Core {
         let was = self.ix.commits.get(&id).map(signers_elsewhere).unwrap_or_default();
         self.note_signed(&was, &signers_elsewhere(&m));
         self.index_own(&id, &m, true);
+        let had = self.ix.commits.get(&id).map(covers_of).unwrap_or_default();
+        self.index_covers(&id, &had, &covers_of(&m));
         // a part held invalid (a late part joining, a leftover kept) goes at the transaction's end
         if (0..m.valid.len()).any(|ai| !m.valid_at(ai) && m.holds(ai)) {
             self.drop_due.insert(id);
@@ -2364,9 +2376,20 @@ impl Core {
         self.note_signed(&signers_elsewhere(&m), &[]);
         self.note_rotation(&m);
         self.index_own(id, &m, false);
+        self.index_covers(id, &covers_of(&m), &BTreeSet::new());
         self.note_none(&m);
         self.touches.note(id, &m);
         Some(m)
+    }
+
+    /// Moves commit `id` in `Indexes::covered_under` from coverers `was` to `now` (`covers_of`).
+    fn index_covers(&mut self, id: &CommitId, was: &BTreeSet<CommitId>, now: &BTreeSet<CommitId>) {
+        for s in was.difference(now) {
+            self.ix.covered_under.remove(s, id);
+        }
+        for s in now.difference(was) {
+            self.ix.covered_under.insert(*s, *id);
+        }
     }
 
     /// Moves `Indexes::signed` from a commit's signers `was` to `now` (`signers_elsewhere`). A

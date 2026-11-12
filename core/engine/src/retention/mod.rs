@@ -1978,4 +1978,107 @@ mod tests {
         assert_eq!(lp.peers[2].engine.get(&t, &reg).unwrap(), Some(Value::Int(2)));
         lp.peers[2].engine.check_index();
     }
+
+    // spec/permissions.md §5.2, spec/commits.md §5 Forgetting: a coverer forgotten while a body
+    // dropped under it is still known (its entries not deleted yet) leaves that body under the
+    // covers it dropped under: a snapshot falling invalid later uncovers nothing a held valid one
+    // still carries. Reader R drops W's C under A's S1, S1 under A's S2, forgets S1; W's
+    // snapshot falls invalid at R (A removed W not having heard of it): C stays dropped,
+    // nothing is fetched, no flag.
+    #[test]
+    fn forgotten_coverer_hands_down_its_covers_spec_permissions_5_2() {
+        let mut lp = LocalPeer::fresh(3, WallMs(1_700_000_000_000));
+        lp.sync_all().unwrap();
+        let (a, w, r) = (lp.peers[0].engine.me(), lp.peers[1].engine.me(), lp.peers[2].engine.me());
+        let reg = Ak::new("x:a.0").unwrap();
+        let mut m = Mutation::new();
+        let t = lp.peers[0].engine.new_thing(&mut m, a);
+        lp.peers[0].commit(m).unwrap();
+        let edge = |role| ct::Edge { role, until: None, invite: None, tied: None };
+        lp.peers[0].engine.grant(&t, &w, &edge(Role::Write)).unwrap();
+        lp.peers[0].engine.grant(&t, &r, &edge(Role::Read)).unwrap();
+        lp.sync_all().unwrap();
+        let set = |lp: &mut LocalPeer, p: usize, v: i64| {
+            lp.advance(10);
+            let mut m = Mutation::new();
+            m.set(t, &reg, &Value::Int(v)).unwrap();
+            lp.peers[p].commit(m).unwrap().unwrap()
+        };
+        let c = set(&mut lp, 1, 1);
+        lp.sync_all().unwrap();
+        lp.advance(10);
+        let s1 = lp.peers[0].engine.snapshot(&t, &reg).unwrap().unwrap();
+        lp.sync_all().unwrap();
+        lp.peers[2].engine.drop_body(&c, &t, &reg).unwrap();
+        set(&mut lp, 0, 2);
+        lp.advance(10);
+        lp.peers[0].engine.snapshot(&t, &reg).unwrap().unwrap();
+        lp.sync_all().unwrap();
+        let e = &mut lp.peers[2].engine;
+        e.drop_body(&s1, &t, &reg).unwrap();
+        assert!(e.forgettable(&s1));
+        e.forget_commits(&[s1]).unwrap();
+        // what S1 handed down is stored: the same after a restart
+        lp.peers[2].restart(0).unwrap();
+        lp.peers[2].engine.check_index();
+        lp.advance(10);
+        let sw = lp.peers[1].engine.snapshot(&t, &reg).unwrap().unwrap();
+        let sw = lp.peers[1].engine.package(&sw).unwrap().unwrap();
+        lp.advance(10);
+        let d = lp.peers[0].engine.demote(&t, &Demotion { holder: w, new: None, retain: None }).unwrap();
+        let ds: Vec<_> = d.commits.iter().map(|c| lp.peers[0].engine.package(c).unwrap().unwrap()).collect();
+        lp.deliver(2, &sw).unwrap();
+        lp.peers[2].engine.take_changed();
+        for d in &ds {
+            lp.deliver(2, d).unwrap();
+        }
+        let e = &mut lp.peers[2].engine;
+        assert!(!e.core.ix.commits[&sw.id].valid_at(0), "W's snapshot fell");
+        assert_eq!(e.take_changed().undropped.len(), 0, "nothing fetched again: {}", e.aspect_dump(&t, &reg));
+        assert!(matches!(e.core.ix.commits[&c].hold[0], Hold::Dropped(_)), "S2 carries C");
+        assert!(e.suspects().unwrap().is_empty(), "no flag");
+        assert_eq!(e.get(&t, &reg).unwrap(), Some(Value::Int(2)));
+        e.check_index();
+    }
+
+    // spec/permissions.md §5.2, scale: a body dropped under a snapshot that drops under the next
+    // and is forgotten, n times over, names the newest alone: each forget hands down to what
+    // dropped under it, O(1) here, and the chain `uncover` walks stays one link, at n and 10n.
+    #[test]
+    fn forgotten_coverers_keep_the_chain_short_spec_permissions_5_2() {
+        let work = |n: i64| {
+            let mut lp = LocalPeer::fresh(1, WallMs(1_700_000_000_000));
+            let e = &mut lp.peers[0].engine;
+            let me = e.me();
+            let reg = Ak::new("x:a.0").unwrap();
+            let mut m = Mutation::new();
+            let t = e.new_thing(&mut m, me);
+            m.set(t, &reg, &Value::Int(0)).unwrap();
+            let c = e.commit(m).unwrap().unwrap();
+            let mut last: Option<CommitId> = None;
+            crate::costs::take();
+            for v in 1..=n {
+                lp.advance(10);
+                let e = &mut lp.peers[0].engine;
+                let mut m = Mutation::new();
+                m.set(t, &reg, &Value::Int(v)).unwrap();
+                e.commit(m).unwrap();
+                let s = e.snapshot(&t, &reg).unwrap().unwrap();
+                match last {
+                    None => e.drop_body(&c, &t, &reg).unwrap(),
+                    Some(p) => {
+                        e.drop_body(&p, &t, &reg).unwrap();
+                        e.forget_commits(&[p]).unwrap();
+                    }
+                }
+                last = Some(s);
+            }
+            let handed = crate::costs::take().iter().find(|x| x.0 == "forget: handed down").map_or(0, |x| x.2);
+            let e = &mut lp.peers[0].engine;
+            assert_eq!(e.coverers_of(&c, &t, &reg), vec![last.unwrap()], "the newest alone");
+            e.check_index();
+            handed
+        };
+        assert_eq!((work(4), work(40)), (3, 39), "one hand-down per forget");
+    }
 }
