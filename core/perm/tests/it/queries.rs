@@ -388,6 +388,25 @@ fn rotation_rights() {
     assert_eq!(tl.may_rotate(&n[3], &x, At::END), Vec::<Role>::new());
 }
 
+/// §1: an effective role is the least along the chain, sync included: a holder of sync on a
+/// team holding read on G holds sync on G, and so does one holding read on a team that holds
+/// sync on G.
+#[test]
+fn sync_runs_through_a_holder_actor_spec_permissions_1() {
+    let mut w = World::new();
+    let n = w.nodes(3);
+    let (team, other, g) = (w.thing(n[0]), w.thing(n[0]), w.thing(n[0]));
+    let all: Vec<(Tid, u64)> = n.iter().map(|y| (*y, 0)).collect();
+    w.set(n[0], g, team, edge(Read), 0, &all);
+    w.set(n[0], team, n[1], edge(Role::Sync), 0, &all);
+    w.set(n[0], g, other, edge(Role::Sync), 0, &all);
+    w.set(n[0], other, n[2], edge(Read), 0, &all);
+    let tl = Timeline::evaluate(&w.held());
+    assert_eq!(tl.role(&n[1], &g, At::END), Some(Role::Sync));
+    assert_eq!(tl.role(&n[2], &g, At::END), Some(Role::Sync));
+    assert_eq!(tl.role(&n[1], &g, At::now(ts(1))), Some(Role::Sync));
+}
+
 /// `Timeline::demotion_scope` of `author` setting `holder`'s edge on `target` to `new` at `t`,
 /// with an empty frontier.
 fn scope_of(tl: &Timeline, author: Tid, holder: Tid, target: Tid, new: Option<Edge>, t: u64) -> osis_perm::DemotionScope {

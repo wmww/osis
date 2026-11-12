@@ -100,7 +100,7 @@ struct Touched {
 /// applied edge write on `a` changes `a`'s edges, the holders holding less for keys just after
 /// it than just before (`a`'s edges are constant between such points); for each raise applying
 /// nothing here (its value above the holder's grant for keys just before its own point), the
-/// holder it raised, from read up to that value: at the demotion whose audit dropped it, or, for
+/// holder it raised, from sync up to that value: at the demotion whose audit dropped it, or, for
 /// a held resolved write that never applied, at its own point when its author held write on
 /// `a` there (`invalid_raises`). Only commits this node holds: names are met by holding them.
 fn lowerings(core: &Core, tl: &Timeline, a: &Tid) -> Vec<Lowering> {
@@ -115,12 +115,12 @@ fn lowerings(core: &Core, tl: &Timeline, a: &Tid) -> Vec<Lowering> {
         let Some(mc) = tl.role_commit(c) else { continue };
         let Some(op) = mc.ops.get(*i as usize).filter(|op| op.target == *a) else { continue };
         if let Some(put) = raised(mc, op) {
-            points.entry(*p).or_default().dropped.push((op.holder, Role::Read, put));
+            points.entry(*p).or_default().dropped.push((op.holder, Role::Sync, put));
         }
     }
     for (mc, op) in invalid_raises(core, tl, a) {
         if let Some(put) = raised(mc, op) {
-            points.entry(mc.point()).or_default().invalid.push((op.holder, Role::Read, put));
+            points.entry(mc.point()).or_default().invalid.push((op.holder, Role::Sync, put));
         }
     }
     let pts: Vec<osis_perm::Point> = points.keys().copied().collect();
@@ -222,7 +222,7 @@ fn direct_departures(tx: &mut Tx<'_>, a: &Tid) -> Result<BTreeSet<Departure>> {
         let s = secrets_in(tx, a)?;
         for k in s.boxes.keys() {
             if osis_keys::aspects::from_schema(&k.epoch).is_ok_and(|e| epochs.role(k.role).is_current(&e)) {
-                note(k.holder, current.get(&k.holder).copied(), Role::Read, k.role, None);
+                note(k.holder, current.get(&k.holder).copied(), Role::Sync, k.role, None);
             }
         }
         // the maker of a current epoch holds its secret whatever the boxes say: one holding
@@ -232,7 +232,7 @@ fn direct_departures(tx: &mut Tx<'_>, a: &Tid) -> Result<BTreeSet<Departure>> {
         for r in osis_keys::ROLES {
             for e in epochs.role(r).current() {
                 let Some(author) = tx.core.ix.epoch_intro.get(&(*a, r, e)).and_then(|(_, c)| tx.core.ix.commits.get(c)).map(|m| m.view.author) else { continue };
-                note(author, tl.and_then(|tl| tl.role(&author, a, At::KEYS)), Role::Read, r, None);
+                note(author, tl.and_then(|tl| tl.role(&author, a, At::KEYS)), Role::Sync, r, None);
             }
         }
     }

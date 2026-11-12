@@ -460,7 +460,7 @@ impl Dense {
         *best.get_mut(xi)? = Some(Role::Admin);
         let mut reached = vec![xi];
         let mut expires: Option<WallMs> = None;
-        for level in [Role::Admin, Role::Write, Role::Read] {
+        for level in Role::ALL.into_iter().rev() {
             let mut stack: Vec<usize> = reached.iter().copied().filter(|i| best.get(*i).copied().flatten() == Some(level)).collect();
             while let Some(e) = stack.pop() {
                 for (t, edge) in self.out.get(e).into_iter().flatten() {
@@ -660,7 +660,7 @@ impl<'a> View<'a> {
         let through = |t: &Tid| avoid.is_none_or(|a| !a.contains(t));
         let mut expires: Option<WallMs> = None;
         let mut best: BTreeMap<Tid, Role> = BTreeMap::from([(*x, Role::Admin)]);
-        for level in [Role::Admin, Role::Write, Role::Read] {
+        for level in Role::ALL.into_iter().rev() {
             let mut stack: Vec<Tid> = best.iter().filter(|&(t, &r)| r == level && through(t)).map(|(t, _)| *t).collect();
             while let Some(e) = stack.pop() {
                 self.each_target(&e, |t, edge| {

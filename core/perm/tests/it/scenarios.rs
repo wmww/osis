@@ -687,6 +687,25 @@ fn ended_gives_the_last_applied_word_spec_permissions_3() {
     assert!(!tl.ended(&g, ts(100)).contains_key(&n[1]), "alive");
 }
 
+// spec/permissions.md §3, Retain: an ended grant gives the role it last gave, a removal's value
+// saying retain none of its own: a way retains only from read up, so a sync grant ended is none.
+#[test]
+fn ended_gives_the_role_before_the_end_spec_permissions_3() {
+    let (mut w, n, g) = group();
+    let z = w.nodes_salted(3, 80);
+    w.set(n[0], g, z[0], edge(Role::Sync), 2, &[]);
+    w.set(n[0], g, z[0], says_retain(), 3, &[]);
+    w.set(n[0], g, z[1], edge(Read), 2, &[]);
+    w.set(n[0], g, z[1], edge(Role::Sync), 3, &[]);
+    w.set(n[0], g, z[1], says_retain(), 4, &[]);
+    w.set(n[0], g, z[2], edge(Write), 2, &[]);
+    w.set(n[0], g, z[2], says_retain(), 3, &[]);
+    let ended = eval(&w).ended(&g, ts(100));
+    assert_eq!(ended.get(&z[0]).map(|x| (x.0, x.2)), Some((EdgeEnd::Said(true), Role::Sync)));
+    assert_eq!(ended.get(&z[1]).map(|x| x.2), Some(Role::Sync), "demoted to sync before it ended");
+    assert_eq!(ended.get(&z[2]).map(|x| x.2), Some(Write));
+}
+
 // spec/permissions.md §2, §3: a holder's self-removal says retain whatever anyone wants, no authority on
 // the target needed; a stranger's removal of it decides nothing.
 #[test]

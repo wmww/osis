@@ -366,7 +366,8 @@ fn ways(core: &Core, actors: &BTreeSet<Tid>) -> BTreeMap<Tid, BTreeMap<Tid, Way>
                 osis_perm::EdgeEnd::Said(k) => k,
                 osis_perm::EdgeEnd::Until(key) => crate::apply::validity::retain_in_force(core, a, &key),
             };
-            w.extend(tl.ended(a, ts).into_iter().map(|(h, (e, end))| (h, Way { retain: says(e), end })));
+            // an ended grant of sync read nothing to keep
+            w.extend(tl.ended(a, ts).into_iter().filter(|(_, (_, _, r))| *r >= Role::Read).map(|(h, (e, end, _))| (h, Way { retain: says(e), end })));
         }
         // the roster now at read or above (a grant of sync reads nothing to keep), its record
         // edge included while it stands
@@ -387,7 +388,7 @@ fn keeps(core: &Core, lost: &BTreeSet<Tid>, marks: &BTreeMap<Tid, BTreeSet<Tid>>
     let ways = ways(core, &all);
     let read_then = |a: &Tid, h: &Tid, end: Option<osis_perm::Point>| {
         let Some(p) = end else { return true };
-        own(h) || core.timelines.get(a).is_some_and(|tl| me.iter().chain(core.key_actors.keys()).any(|x| tl.role(x, h, At::before(p)).is_some()))
+        own(h) || core.timelines.get(a).is_some_and(|tl| me.iter().chain(core.key_actors.keys()).any(|x| tl.role(x, h, At::before(p)) >= Some(Role::Read)))
     };
     let mut kept: BTreeMap<Tid, BTreeSet<Tid>> = BTreeMap::new();
     loop {

@@ -228,8 +228,8 @@ fn forged_entry_box_teaches_nothing_spec_sync_5() {
     let keys = osis_crypto::KeyActorKeys::from_seed(&seed);
     // the host's own label, its genesis boxing a secret of its choice to the key actor
     let b = 0x60u8;
-    let (read, write, admin, dep) = (Secret32::from_bytes([b; 32]), Secret32::from_bytes([b + 1; 32]), Secret32::from_bytes([b + 2; 32]), Secret32::from_bytes([b + 3; 32]));
-    let skeys = StepKeys::derive(&read, &write, &admin, 0, &dep, &genesis_label(&admin, 0));
+    let (read, write, admin, dep, sync) = (Secret32::from_bytes([b; 32]), Secret32::from_bytes([b + 1; 32]), Secret32::from_bytes([b + 2; 32]), Secret32::from_bytes([b + 3; 32]), Secret32::from_bytes([b + 4; 32]));
+    let skeys = StepKeys::derive(&sync, &write, &admin, 0, &dep, &genesis_label(&admin, 0));
     let delete = label_role_key(LabelRole::Delete, &admin, 0);
     let reader = osis_label::Reader::Static { signing: keys.signing.verifying_key(), kem: keys.kem.public() };
     let (fake, set) = register(Parent::Genesis(&delete), skeys, &[reader], (&ka, Epoch::derive(&ka, Role::Read, 0, &read).unwrap(), &read), (Epoch::derive(&ka, Role::Sync, 0, &read).unwrap(), &read), &mut SeededRng::from_u64(0)).unwrap();
@@ -269,10 +269,10 @@ fn forged_entry_box_teaches_nothing_spec_sync_5() {
     assert_eq!(held(&se), before, "a forged head's box teaches nothing");
 }
 
-// spec/sync.md §2 (a step's entry box carries the read secret of its epoch, whose sync key the
-// step registers), spec/crypto.md §4 (sealed boxes are unauthenticated): a genuine head with a
+// spec/sync.md §2 (a step's entry box carries the read secret of its epoch and the sync secret
+// whose key the step registers), spec/crypto.md §4 (sealed boxes are unauthenticated): a genuine head with a
 // substituted entry box (sealed by the host to the key actor's public KEM key) teaches no
-// secret: one that does not derive the head's sync key is refused.
+// secret: one whose sync secret does not derive the head's sync key is refused.
 #[test]
 fn substituted_entry_box_teaches_nothing_spec_sync_2() {
     let (mut net, host, [a]) = hosted_nodes::<1>();
@@ -281,13 +281,13 @@ fn substituted_entry_box_teaches_nothing_spec_sync_2() {
     let held = |se: &SyncEngine| se.engine().epochs(&ka).is_some_and(|e| e.read.held_newest_first().iter().any(|(_, s)| s.expose() == &[0x99; 32]));
     let keys = osis_crypto::KeyActorKeys::from_seed(&seed);
     let b = 0x70u8;
-    let (read, write, admin, dep) = (Secret32::from_bytes([b; 32]), Secret32::from_bytes([b + 1; 32]), Secret32::from_bytes([b + 2; 32]), Secret32::from_bytes([b + 3; 32]));
-    let skeys = StepKeys::derive(&read, &write, &admin, 0, &dep, &genesis_label(&admin, 0));
+    let (read, write, admin, dep, sync) = (Secret32::from_bytes([b; 32]), Secret32::from_bytes([b + 1; 32]), Secret32::from_bytes([b + 2; 32]), Secret32::from_bytes([b + 3; 32]), Secret32::from_bytes([b + 4; 32]));
+    let skeys = StepKeys::derive(&sync, &write, &admin, 0, &dep, &genesis_label(&admin, 0));
     let delete = label_role_key(LabelRole::Delete, &admin, 0);
     let reader = || osis_label::Reader::Static { signing: keys.signing.verifying_key(), kem: keys.kem.public() };
     let e1 = Epoch::derive(&ka, Role::Read, 1, &read).unwrap();
     // the genuine genesis (its path verifies), and a box for its slot carrying another secret
-    let (head, _) = register(Parent::Genesis(&delete), skeys, &[reader()], (&ka, e1, &read), (Epoch::derive(&ka, Role::Sync, 1, &read).unwrap(), &read), &mut SeededRng::from_u64(0)).unwrap();
+    let (head, _) = register(Parent::Genesis(&delete), skeys, &[reader()], (&ka, e1, &read), (Epoch::derive(&ka, Role::Sync, 1, &sync).unwrap(), &sync), &mut SeededRng::from_u64(0)).unwrap();
     let slot = osis_crypto::BoxSlot::Entry { label: head.label, step_key: head.step_key, group: ka };
     let other = Secret32::from_bytes([0x99; 32]);
     let item = osis_crypto::EntryItem { epoch: Epoch::derive(&ka, Role::Read, 1, &other).unwrap(), secret: other.clone(), earlier: None, sync: (Epoch::derive(&ka, Role::Sync, 1, &other).unwrap(), other) };

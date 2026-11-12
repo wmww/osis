@@ -116,7 +116,7 @@ impl Held {
 
     /// Everyone named as a holder on `t`, of any validity and whatever followed.
     pub fn named_holders(&self, t: &Tid) -> Vec<Tid> {
-        self.named_with(t, Role::Read).map(|(_, h)| h).collect()
+        self.named_with(t, Role::Sync).map(|(_, h)| h).collect()
     }
 
     /// `from` and everything authority comes to them from: their first admins and the

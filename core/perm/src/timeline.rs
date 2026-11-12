@@ -861,16 +861,18 @@ impl Timeline {
     }
 
     /// The holders with no edge alive on `thing` at `ts` that the walk saw one of: how each one's
-    /// edge ended and the point of its last write (`None`: its record edge, never written).
+    /// edge ended, the point of its last write (`None`: its record edge, never written) and the
+    /// role the edge last gave (a removal's value saying retain gives none: the role before it).
     /// O(the walk's history): only a node that lost access asks (spec/permissions.md §3, Retain).
-    pub fn ended(&self, thing: &Tid, ts: Ts) -> BTreeMap<Tid, (EdgeEnd, Option<Point>)> {
-        let mut out: BTreeMap<Tid, (EdgeEnd, Option<Point>)> = self.input.records.first_admin(thing).map(|a| (a, (EdgeEnd::of(&RECORD_EDGE, None), None))).into_iter().collect();
+    pub fn ended(&self, thing: &Tid, ts: Ts) -> BTreeMap<Tid, (EdgeEnd, Option<Point>, Role)> {
+        let mut out: BTreeMap<Tid, (EdgeEnd, Option<Point>, Role)> = self.input.records.first_admin(thing).map(|a| (a, (EdgeEnd::of(&RECORD_EDGE, None), None, RECORD_EDGE.role))).into_iter().collect();
         for c in self.walked.history.iter().filter(|c| c.target == *thing) {
             match (c.edge, out.get_mut(&c.holder)) {
-                (Some(e), _) => {
-                    out.insert(c.holder, (EdgeEnd::of(&e, Some(c.point)), Some(c.point)));
+                (Some(e), x) => {
+                    let role = x.filter(|_| e.says_retain()).map_or(e.role, |x| x.2);
+                    out.insert(c.holder, (EdgeEnd::of(&e, Some(c.point)), Some(c.point), role));
                 }
-                (None, Some(x)) => *x = (EdgeEnd::Said(false), Some(c.point)),
+                (None, Some(x)) => (x.0, x.1) = (EdgeEnd::Said(false), Some(c.point)),
                 (None, None) => {}
             }
         }

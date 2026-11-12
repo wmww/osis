@@ -4,7 +4,7 @@
 ## 1. Concepts
 - **Terms**:
   - Rights are **roles** (sync < read < write < admin) given by **role grants** (**grants**; "edge" in rule text means a grant). An actor with a role on a thing is a **holder** of that role on it.
-  - **Sync** gives the sync secret (§3) and nothing to read: its holder derives the thing's label sync key (spec/sync.md §2), so it holds and serves the thing's labels, and opens no section, roster or content of it.
+  - **Sync** gives the sync secret (§3) and nothing to read: its holder derives the thing's label sync key (spec/sync.md §2), so it holds and serves the thing's labels, and opens no section, roster or content of it (it learns only the author's chain of each commit sent to it, spec/wire.md §9).
   - A **role commit** (spec/commits.md §2) carries writes of **role-class aspects** (spec/data-model.md §9).
   - The **role timeline** (§5.1) orders edge writes.
   - A **co-reader open** (spec/sync.md §5) is a label open by a connection's shared set (spec/sync.md §10, Shared set).
@@ -133,12 +133,12 @@
   - One that lost it by an `until` passing alone (a finalize counting as its `until`) drops as §2 says.
 - **Retain**: a node that lost read access to actor A retains a read-only copy of A's things when one of its ways to A retains.
   - A **way** is a holder H of A, in one of these forms (a record edge is a grant here):
-    - a grant of H on A that ended saying retain, the node holding a role on H just before the write that last changed it;
+    - a grant of H on A at read or above that ended saying retain (its role the last value's before a removal), the node holding read or above on H just before the write that last changed it;
     - a grant of H on A at read or above alive.
   - An ended grant says what the last write on it on the timeline (§5.1, the writes that applied) says:
     - a removal, for itself (§2);
     - a value with another `until`, passed: the thing's default in force at its key (first `ts` at `until`, the zero tid and commit ID, or the write's key if later).
-  - It retains only while the node has H: it is H, holds a role on H now, or retains H itself (least fixpoint, so holders cannot retain each other).
+  - It retains only while the node has H: it is H, holds read or above on H now, or retains H itself (least fixpoint, so holders cannot retain each other).
   - Everything else erases: a removal saying so, no default, a write that did not apply. A default set later changes no removal or ending before it.
   - **The copy** is what the node held when it dropped: state, bodies and their timers.
     - Its secrets and `secrets.0` go as above, and so does what it held of the things' labels: it syncs none of them, uploads and serves nothing of it, and cannot write it.

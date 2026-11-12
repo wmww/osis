@@ -275,12 +275,13 @@ pub(crate) fn fresh_deposit_seed(tx: &mut Tx<'_>, m: &mut Mutation, a: Tid) -> R
 }
 
 /// Whether a rotation of `roles` of `a` by `who` also refreshes `a`'s deposit seed (spec/crypto.md
-/// §3): it rotates read for a departure, so the departed party (which read the seed in `keys.0`)
-/// can no longer deposit under `a`'s labels, and `who` is an admin (the seed is admin-written).
+/// §3): it rotates sync (every departure from sync or above does), so the departed party (which
+/// read the seed in `keys.0`, a holder of sync alone included) can no longer deposit under `a`'s
+/// labels, and `who` is an admin (the seed is admin-written).
 /// A devices actor's labels derive deposit keys from its account's inbox seed, which anyone may
 /// deposit by: none to refresh.
 pub(crate) fn refreshes_deposit(core: &Core, who: &Tid, a: &Tid, roles: &BTreeSet<Role>) -> bool {
-    roles.contains(&Role::Read) && may_rotate(core, who, a).contains(&Role::Admin) && core.devices_of(a).is_none()
+    roles.contains(&Role::Sync) && may_rotate(core, who, a).contains(&Role::Admin) && core.devices_of(a).is_none()
 }
 
 /// The rotation of `roles` of `a` (boxes and left-out records from `recipients`), written into `m`, its
