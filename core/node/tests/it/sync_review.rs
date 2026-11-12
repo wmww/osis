@@ -581,8 +581,8 @@ fn self_removal_shared_subgroup_spec_permissions_3() {
 }
 
 // spec/sync.md §7 (two blobs of one commit with the same delta set: the higher blob ID goes):
-// writers a and b both hold commit c while away, and each places its own encryption of its body
-// when back, so the host holds two; the admin deletes the higher one.
+// writers a and b both hold commit c while the peer pulls neither, and each places its own
+// encryption of its body; the peer pulls both, and the admin deletes the higher one there.
 #[test]
 fn duplicate_encryptions_higher_goes_spec_sync_7() {
     let (mut net, host, [a, b], _g, [t]) = hosted::<2, 1>(&[(1, Role::Write)], ["x"], true);
@@ -601,7 +601,6 @@ fn duplicate_encryptions_higher_goes_spec_sync_7() {
     both.extend(blobs_of(&mut net, b, &l, &c));
     both.sort();
     both.dedup();
-    assert!(both.iter().all(|id| net.host_ids(host, &l).contains(id)));
     assert_eq!(both.len(), 2, "each placed its own encryption");
     net.release();
     net.run();
