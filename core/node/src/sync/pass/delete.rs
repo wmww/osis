@@ -281,11 +281,6 @@ impl SyncEngine {
         Ok(Some((hold, hold != Hold::MustNot(Why::Outside), aspects)))
     }
 
-    /// An entry of a memory commit the engine forgot whole (spec/sync.md §9: covered,
-    /// superseded, expired, freed): must-not-hold, with live writes to carry when a snapshot or
-    /// superseder covers it (`carried`), none otherwise. Judged again every pass until it goes
-    /// (`unsure`: what it waits for is the carrier's presence at the host, no state change here).
-    /// A superseded body is its author's to delete, nobody else's.
     /// Whether a header alone of commit `c` (header `h`) under `l` is a superseded minting of the
     /// things it mints, all outside `g`'s closure (spec/commits.md §5, A thing's mintings travel
     /// with its record): standing lower than each one's witness. `Some(true)`: the label holds each witness (or
@@ -343,6 +338,11 @@ impl SyncEngine {
         (!about.is_empty()).then_some(about)
     }
 
+    /// An entry of a memory commit the engine forgot whole (spec/sync.md §9: covered,
+    /// superseded, expired, freed): must-not-hold, with live writes to carry when a snapshot or
+    /// superseder covers it (`carried`), none otherwise. Judged again every pass until it goes
+    /// (`unsure`: what it waits for is the carrier's presence at the host, no state change here).
+    /// A superseded body is its author's to delete, nobody else's.
     fn judge_forgotten(&mut self, commit: &CommitId, parts: &[usize], note: &mut Note) -> Option<Judged> {
         let f = self.memory.forgotten.get(commit)?;
         let aspects: Vec<(Tid, Ak)> = parts.iter().filter_map(|ai| f.header.aspects.get(*ai)).map(|a| (a.tid, a.ak.clone())).collect();
