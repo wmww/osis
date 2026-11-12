@@ -1842,12 +1842,17 @@ impl SyncEngine {
         let Some(host) = self.conns.get(&conn).map(|c| c.host) else { return Ok(()) };
         // read there to its end the first time since it joined, which listed the memory entries
         // it holds there: one with no body here (its commit forgotten, or known only for a part
-        // dropped while invalid) that it lacks has nothing to put up, so it goes once held
-        // nowhere (`absent_at`)
+        // dropped while invalid; not one opened and not fetched yet) that it lacks has nothing to
+        // put up, so it goes once held nowhere, untombstoned: nothing deleted it, and one put up
+        // again is fetched again (a tombstone kept a part valid again from ever arriving)
         if self.lc(conn, &l).is_some_and(|x| !x.synced) {
-            let dead: Vec<BlobId> = self.memory_entries_of(&l).filter(|(b, e)| !self.state.is_present(&host, &l, b) && matches!(&e.kind, Kind::Commit { commit, .. } if !self.engine.memory_body_held(commit))).map(|(b, _)| b).collect();
-            for b in dead {
-                self.absent_at(None, l, b)?;
+            let dead = |s: &Self, c: &CommitId| s.memory.forgotten.contains_key(c) || (s.engine.holds_memory(c) && !s.engine.memory_body_held(c));
+            let gone: Vec<BlobId> = self.memory_entries_of(&l).filter(|(b, e)| !self.state.is_present(&host, &l, b) && matches!(&e.kind, Kind::Commit { commit, .. } if dead(self, commit))).map(|(b, _)| b).collect();
+            for b in gone {
+                if !self.state.present_anywhere(&l, &b) {
+                    self.state.drop_entry(l, b);
+                    self.forget_blob(&b)?;
+                }
             }
         }
         if self.lc(conn, &l).is_some_and(|x| x.fill.is_some()) {
@@ -1877,9 +1882,9 @@ impl SyncEngine {
             }
         }
         // read there to its end the first time since it joined, which listed the memory entries
-        // it holds there: one with no body here (its commit forgotten, or known only for a part
-        // dropped while invalid) that it lacks has nothing to put up, so it goes once held
-        // nowhere (`absent_at`)
+        // it holds there: one with no body here to come (its commit forgotten, or known only for
+        // a part dropped while invalid; not one opened and not fetched yet) that it lacks has
+        // nothing to put up, so it goes once held nowhere (`absent_at`)
         // read there to its end the first time since it joined: a pass judges it (later ends
         // bring nothing a pass waits for: what arrived marked it already, `log_events`)
         if let Some(lc) = self.lc_mut(conn, &l) {
