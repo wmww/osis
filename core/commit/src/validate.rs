@@ -118,8 +118,9 @@ impl Header {
         }
         for c in &self.chunks {
             ord(strictly_ascending(&c.keys, |i| *i), "chunk delete keys not ascending")?;
-            if c.keys.iter().any(|i| *i >= self.keys.len()) {
-                return Err(Error::Malformed("chunk delete key index out of range"));
+            let a = self.aspects.get(c.ai).ok_or(Error::Malformed("chunk aspect index out of range"))?;
+            if c.keys.iter().any(|i| !a.keys.contains(i)) {
+                return Err(Error::Malformed("chunk delete key not of its aspect"));
             }
         }
         if !self.purge.is_empty() {

@@ -47,7 +47,7 @@ prop_compose! {
             form: if form { Form::Commit } else { SESSION },
             expires,
             aspects,
-            chunks: chunks.into_iter().map(|(b, keys)| ChunkEntry { blob: BlobId(b), keys, blind: [b[0]; 16] }).collect(),
+            chunks: chunks.into_iter().map(|(b, keys)| ChunkEntry { blob: BlobId(b), ai: 0, keys, blind: [b[0]; 16] }).collect(),
             purge: purge.into_iter().map(|(c, tid)| match c {
                 Some(c) => PurgeItem::Commit { commit: CommitId(c), tid, ak: Ak::new("p.0").unwrap() },
                 None if tid.as_bytes()[0] % 2 == 0 => PurgeItem::Aspect { tid, ak: Ak::new("p.0").unwrap() },

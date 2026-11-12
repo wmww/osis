@@ -89,6 +89,17 @@ pub fn link_blind(key: &[u8; 32]) -> [u8; 16] {
     b
 }
 
+/// The blind a linked blob's commitments use: the first 16 bytes of `kdf("thing blind",
+/// link blind, tid)`, `thing` the thing whose dedup secret keys the blob's link. A chunk list
+/// entry carries the link blind; whoever deletes through it binds the entry's thing, so an entry
+/// naming a blob of another thing names commitments the blob does not bear (spec/crypto.md §7).
+pub fn thing_blind(link_blind: &[u8; 16], thing: &[u8]) -> [u8; 16] {
+    let k = kdf(kdf::THING_BLIND, link_blind, thing);
+    let mut b = [0u8; 16];
+    b.copy_from_slice(&k.expose()[..16]);
+    b
+}
+
 /// Prefix commitment `level || blind(vk, salt, hb)`; level 1..=3.
 pub fn commitment(level: u8, vk: &VerifyingKey, salt: &[u8; 16], hb: &[u8; 16]) -> Result<[u8; 33], crate::Error> {
     if !(1..=3).contains(&level) {
@@ -147,5 +158,7 @@ mod tests {
         assert_eq!(link_blind(&[1; 32]), link_blind(&[1; 32]));
         assert_ne!(link_blind(&[1; 32]), link_blind(&[2; 32]));
         assert_ne!(link_blind(&[1; 32])[..], [1u8; 32][..16]);
+        assert_ne!(thing_blind(&[1; 16], &[2; 15]), thing_blind(&[1; 16], &[3; 15]));
+        assert_ne!(thing_blind(&[1; 16], &[2; 15]), [1; 16]);
     }
 }

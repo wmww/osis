@@ -17,7 +17,7 @@ use super::state::{BlobRec, Entry, Kind, HostKey, Touch};
 use super::work::{Inputs, Left, Note, Scope, Work};
 use super::{ConnId, SyncEngine};
 use crate::error::Result;
-use crate::labeling::{Body, BodyCtx, Facts, HeadKeys, Hold, Parts, Why, classify, delete_item, may_delete};
+use crate::labeling::{Body, BodyCtx, Facts, HeadKeys, Hold, Parts, Why, classify, delete_item, delete_item_by_level, may_delete};
 use osis_commit::Kind as CKind;
 use osis_base::{Ak, BlobId, CommitId, LabelId, Role, Tid, WallMs};
 use osis_proto::Command;
@@ -63,8 +63,9 @@ struct Out {
     of: Option<Touch>,
 }
 
-/// Chunks of dropped deltas with the commit and chunk entry listing them (`dropped_chunks`).
-type DroppedChunks = BTreeMap<BlobId, (CommitId, osis_commit::ChunkEntry)>;
+/// Chunks of dropped deltas with the commit and chunk entry listing them, and whether the
+/// blob's held prefix bears the entry (`dropped_chunks`).
+type DroppedChunks = BTreeMap<BlobId, (CommitId, osis_commit::ChunkEntry, bool)>;
 
 /// The bodies wanted under a label, by commit (`judge`).
 type Desired = BTreeMap<CommitId, Vec<Vec<usize>>>;

@@ -425,8 +425,9 @@ fn header_list_chunks_level_2_only_spec_wire_5() {
     let gl = net.group_labels(a).into_iter().find(|(x, _)| *x == g).unwrap().1;
     let head = net.host_path(host, &l).last().unwrap().clone();
     let sync = net.engine(a).head_keys(&g, gl.index, &head).unwrap().sync.unwrap();
-    // each blob's commitments are blinded by its link blind (spec/crypto.md §7): the header's
-    // link to the list's tree, and the tree's nodes, give every blob's key
+    // each blob's commitments are blinded by its link blind bound to the header's actor
+    // (spec/crypto.md §7): the header's link to the list's tree, and the tree's nodes, give
+    // every blob's key
     let mut keys = std::collections::BTreeMap::new();
     let mut stack = vec![h.links.aspects.unwrap()];
     while let Some(link) = stack.pop() {
@@ -445,7 +446,7 @@ fn header_list_chunks_level_2_only_spec_wire_5() {
             let p = osis_label::Prefix::parse(&bytes).unwrap();
             assert_eq!(p.commitments().count(), level2, "level-2 commitments only");
             assert!(p.commitments().all(|x| x[0] == 2));
-            items.push(osis_label::DeleteItem::sign_by(&sync, &[(level, dk)], p.salt(), &osis_crypto::link_blind(&keys[b]), &l, *b).unwrap());
+            items.push(osis_label::DeleteItem::sign_by(&sync, &[(level, dk)], p.salt(), &osis_crypto::thing_blind(&osis_crypto::link_blind(&keys[b]), h.actor.as_bytes()), &l, *b).unwrap());
         }
         let conn = net.conn_to(a, host).expect("connected");
         net.actions(a, vec![Action::Send { conn, bytes: frame(Message::Delete { id, label: l, items }) }]);

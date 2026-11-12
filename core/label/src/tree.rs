@@ -9,19 +9,22 @@ pub use osis_commit::tree::{HashSink, Kid, LinkSource, TreeReader, TreeSink, Tre
 use crate::blob::{Level, Prefix, frame_under, open};
 use crate::Error;
 use osis_base::format::DELETE_AUTHOR;
-use osis_base::{BlobId, ChunkParams, Link, WallMs};
+use osis_base::{BlobId, ChunkParams, Link, Tid, WallMs};
 use osis_crdt::{PageError, PageParams, PageSink, PageSource};
-use osis_crypto::{BlobKey, CryptoRngCore, SUITE_1, Secret32, VerifyingKey, commitment, link_blind, link_hash};
+use osis_crypto::{BlobKey, CryptoRngCore, SUITE_1, Secret32, VerifyingKey, commitment, link_blind, link_hash, thing_blind};
 use std::collections::{BTreeSet, HashMap};
 
 /// How the chunk, tree-node and page blobs of one delta (or one header list) are framed: the
 /// thing's dedup secret keys the content hashes; expiry, delete keys and class go into each
-/// prefix (spec/wire.md §5, spec/crypto.md §7).
+/// prefix, blinded by each blob's link blind bound to the thing (spec/wire.md §5, spec/crypto.md
+/// §7).
 #[derive(Clone)]
 pub struct Framing {
+    /// The thing whose dedup secret `dedup` is (a header list's: its header's actor).
+    pub thing: Tid,
     pub dedup: Secret32,
     pub expiry: Option<WallMs>,
-    /// `(level, delete key)`, blinded by each blob's salt and link blind.
+    /// `(level, delete key)`, blinded by each blob's salt and thing blind (`Framing::blind`).
     pub keys: Vec<(Level, VerifyingKey)>,
     /// The class of the commit the blobs belong to (spec/wire.md §5): an ephemeral commit's
     /// pages are ephemeral.
@@ -29,14 +32,20 @@ pub struct Framing {
 }
 
 impl Framing {
+    /// The blind of a blob of this framing whose link blind is `link_blind`: bound to its thing.
+    pub fn blind(&self, link_blind: &[u8; 16]) -> [u8; 16] {
+        thing_blind(link_blind, self.thing.as_bytes())
+    }
+
     /// Whether a blob framed earlier keeps its encryption when a delta framed with `self` reuses
     /// it (spec/sync.md §1): its expiry is not earlier than this one's, and its commitments to
     /// the thing's delete keys (levels 1 and 3) are exactly this framing's under its salt and
-    /// `blind`, its link blind (the link alone decides). An author-chain commitment need not
+    /// the thing blind of `link_blind` (the link alone decides). An author-chain commitment need not
     /// match while this delta lists another level-2 key beside an admin or writer one; else (no
     /// level-2 key, or author-only) only its own key's stays: that author could delete a blob this
     /// delta's retention gives it no right over.
-    pub fn keeps(&self, prefix: &Prefix, blind: &[u8; 16]) -> bool {
+    pub fn keeps(&self, prefix: &Prefix, link_blind: &[u8; 16]) -> bool {
+        let blind = &self.blind(link_blind);
         let expiry_ok = match (prefix.expiry(), self.expiry) {
             (None, _) => true,
             (Some(_), None) => false,
@@ -144,10 +153,10 @@ impl<'a> BlobWriter<'a> {
     }
 
     /// Frames `plaintext` as a blob whose link carries `hash`, its commitments blinded by the
-    /// link blind of the fresh key (spec/crypto.md §7).
+    /// thing blind of the fresh key's link blind (spec/crypto.md §7).
     pub fn put_blob(&mut self, hash: [u8; 32], plaintext: &[u8]) -> Result<Link, Error> {
         let (salt, key, blind) = linked_prefix_inputs(self.rng);
-        let prefix = Prefix::for_keys(salt, &blind, self.framing.expiry, &self.framing.keys)?.with_class(self.framing.class);
+        let prefix = Prefix::for_keys(salt, &self.framing.blind(&blind), self.framing.expiry, &self.framing.keys)?.with_class(self.framing.class);
         let (key, blob) = frame_under(key, &prefix, plaintext)?;
         let id = crate::blob::blob_id(&blob);
         self.store.put(id, blob)?;
@@ -353,7 +362,7 @@ mod tests {
     }
 
     fn framing() -> Framing {
-        Framing { dedup: Secret32::from_bytes([7; 32]), expiry: Some(WallMs(99)), keys: vec![(1, dk(1)), (3, dk(3))], class: crate::blob::Class::Durable }
+        Framing { thing: Tid::from_bytes([5; 15]), dedup: Secret32::from_bytes([7; 32]), expiry: Some(WallMs(99)), keys: vec![(1, dk(1)), (3, dk(3))], class: crate::blob::Class::Durable }
     }
 
     fn dk(b: u8) -> osis_crypto::VerifyingKey {
@@ -362,7 +371,7 @@ mod tests {
 
     // spec/wire.md §6, spec/crypto.md §6, §7: chunk and node blobs round trip through framing; the
     // reader verifies blob IDs and content hashes; prefixes carry expiry and the keys blinded by
-    // each blob's link blind, which its link alone gives.
+    // each blob's link blind bound to its thing, which its link and thing alone give.
     #[test]
     fn blob_round_trip() {
         let f = framing();
@@ -377,7 +386,10 @@ mod tests {
             let p = Prefix::parse(&store.0[&wr.id]).unwrap();
             assert_eq!(p.expiry(), Some(WallMs(99)));
             assert_eq!(p.commitments().count(), 2);
-            assert_eq!(p.key_at(0, 3), Some(osis_crypto::blind(&f.keys[1].1, p.salt(), &wr.blind).to_bytes()));
+            assert_eq!(p.key_at(0, 3), Some(osis_crypto::blind(&f.keys[1].1, p.salt(), &f.blind(&wr.blind)).to_bytes()));
+            // another thing's blind names other commitments
+            let other = Framing { thing: Tid::from_bytes([6; 15]), ..f.clone() };
+            assert_ne!(p.key_at(0, 3), Some(osis_crypto::blind(&f.keys[1].1, p.salt(), &other.blind(&wr.blind)).to_bytes()));
         }
         assert_eq!(written.iter().find(|w| w.id == root.blob).map(|w| w.blind), Some(link_blind(&root.key)));
         assert_eq!(written.iter().map(|w| w.blind).collect::<std::collections::BTreeSet<_>>().len(), written.len());

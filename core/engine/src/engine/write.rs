@@ -528,13 +528,14 @@ pub(crate) fn framing_for(core: &Core, plan: &CommitPlan, published: &BTreeMap<(
     let secrets = CommitSecrets { core, actor: plan.actor, created: &plan.creates, published };
     let keys = osis_commit::delete_keys(&secrets, tid, retention)?;
     let dedup = osis_commit::Secrets::dedup(&secrets, tid).ok_or(Error::UnknownThing(*tid))?;
-    Ok(Framing { dedup, expiry: plan.expires.map(WallMs), class: osis_label::Class::Durable, keys: keys.iter().map(|k| Ok((k.level, k.verifying_key()?))).collect::<std::result::Result<_, osis_commit::Error>>()? })
+    Ok(Framing { thing: *tid, dedup, expiry: plan.expires.map(WallMs), class: osis_label::Class::Durable, keys: keys.iter().map(|k| Ok((k.level, k.verifying_key()?))).collect::<std::result::Result<_, osis_commit::Error>>()? })
 }
 
 /// The chunk-list entry for a blob a commit links and does not introduce (spec/wire.md §4): its
-/// link blind and the levels of `framing`'s keys its held prefix commits to; `None` when the blob
-/// is not held here or is of the other class (a memory value's link to a durable tree is no
-/// blob of it).
+/// link blind and the levels of `framing`'s keys its held prefix commits to (under the blind
+/// bound to `framing`'s thing); `None` when the blob is not held here or is of the other class
+/// (a memory value's link to a durable tree is no blob of it), or, in a durable commit, commits
+/// to none of them: an entry naming no commitment the blob bears deletes nothing (spec/sync.md §7).
 fn linked_chunk(tx: &mut Tx<'_>, framing: &Framing, l: &osis_base::Link) -> Result<Option<ChunkWrite>> {
     let Some(head) = tx.blobs.read(&l.blob, 0, osis_label::LINKED_PREFIX_MAX)? else { return Ok(None) };
     let Ok(prefix) = osis_label::Prefix::parse(&head) else { return Ok(None) };
@@ -543,7 +544,10 @@ fn linked_chunk(tx: &mut Tx<'_>, framing: &Framing, l: &osis_base::Link) -> Resu
     }
     let blind = osis_crypto::link_blind(&l.key);
     let theirs: BTreeSet<&[u8; 33]> = prefix.commitments().collect();
-    let levels = framing.keys.iter().filter(|(lv, k)| osis_crypto::commitment(*lv, k, prefix.salt(), &blind).is_ok_and(|c| theirs.contains(&c))).map(|(lv, _)| *lv).collect();
+    let levels: Vec<u8> = framing.keys.iter().filter(|(lv, k)| osis_crypto::commitment(*lv, k, prefix.salt(), &framing.blind(&blind)).is_ok_and(|c| theirs.contains(&c))).map(|(lv, _)| *lv).collect();
+    if levels.is_empty() && framing.class == osis_label::Class::Durable {
+        return Ok(None);
+    }
     Ok(Some(ChunkWrite { blob: l.blob, blind, levels: Some(levels) }))
 }
 
@@ -699,6 +703,7 @@ pub(crate) fn build_and_apply(tx: &mut Tx<'_>, plan: CommitPlan, deltas: Vec<Res
         }
         // hostile test authors only (`Engine::commit_forged`): the header hashes what is sent
         let bytes = if tx.core.forge_bad.contains(&(d.tid, d.ak.clone())) { osis_base::encode(&osis_base::Value::List(vec![osis_base::Value::Int(1)])) } else { bytes };
+        chunks.extend(std::mem::take(&mut tx.core.forge_chunks));
         writes.push(AspectWrite { tid: d.tid, ak: d.ak, lo: d.lo, hi: d.hi, delta: bytes, retention, chunks, replaces: d.replaces });
     }
     let mut b = CommitBuilder::new(plan.kind, plan.ts, node, plan.actor, plan.form);

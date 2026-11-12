@@ -142,7 +142,7 @@ fn list_over_the_bound_refused_at_the_author() {
     assert!(matches!(build(over, &mut sink), Err(Error::TooLarge("header list"))));
     // a hand-built commit past the bound is bad input at every receiver, not a local refusal
     let d = sec(0xd0, &t(1));
-    let mut prefix = || crate::keys::Prefix { salt: [7; 16], expiry: None, keys: Vec::new() };
+    let mut prefix = || crate::keys::Prefix { salt: [7; 16], thing: osis_base::Tid::from_bytes([0; 15]), expiry: None, keys: Vec::new() };
     let big = write_list(&osis_base::encode(&of(room + 1)), &d, &mut sink, &mut prefix).unwrap();
     let mut h = built.commit.header.clone();
     h.frontier = None;
@@ -163,7 +163,7 @@ fn small_linked_list_rejected() {
     let mut salt = 0u8;
     let link = write_list(&bytes, &d, &mut sink, &mut || {
         salt += 1;
-        Prefix { salt: [salt; 16], expiry: None, keys: vec![] }
+        Prefix { salt: [salt; 16], thing: osis_base::Tid::from_bytes([0; 15]), expiry: None, keys: vec![] }
     })
     .unwrap();
     assert_eq!(read_list(&link, &d, &mut sink, MAX_LIST_BYTES).unwrap(), bytes);

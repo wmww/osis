@@ -150,9 +150,12 @@ impl DeleteKey {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ChunkEntry {
     pub blob: BlobId,
-    /// Ascending indices into the header's delete keys.
+    /// Index into the header's aspects: the delta whose blob it is (its thing binds the blob's
+    /// commitments, spec/crypto.md §7).
+    pub ai: usize,
+    /// Ascending indices into the header's delete keys, among those of aspect `ai`.
     pub keys: Vec<usize>,
-    /// The blob's link blind: its commitments' blind.
+    /// The blob's link blind: its commitments' blind, bound to the thing of aspect `ai`.
     pub blind: [u8; 16],
 }
 
@@ -346,7 +349,7 @@ pub(crate) fn key_value(t: &DeleteKey) -> Value {
 }
 
 fn chunk_value(c: &ChunkEntry) -> Value {
-    Value::List(vec![Value::bytes(&c.blob.0), Value::List(c.keys.iter().map(|i| uidx(*i)).collect()), Value::bytes(&c.blind)])
+    Value::List(vec![Value::bytes(&c.blob.0), uidx(c.ai), Value::List(c.keys.iter().map(|i| uidx(*i)).collect()), Value::bytes(&c.blind)])
 }
 
 pub(crate) fn purge_value(p: &PurgeItem) -> Value {
@@ -449,7 +452,7 @@ pub fn verify_merge(id: &CommitId, sig: &Signature, fork_key: &VerifyingKey) -> 
 // About the fewest bytes an item takes: what a list reserves for by its count, so a count the bytes
 // cannot pay for reserves nothing. A wrong value only costs a reallocation.
 const MIN_ASPECT: usize = 58;
-const MIN_CHUNK: usize = 52;
+const MIN_CHUNK: usize = 53;
 const MIN_PURGE: usize = 20;
 const MIN_KEY: usize = 35;
 const MIN_ID: usize = 33;
@@ -518,10 +521,12 @@ fn read_key(r: &mut Reader<'_>, check: bool) -> Result<DeleteKey, Error> {
 }
 
 fn read_chunk(r: &mut Reader<'_>) -> Result<ChunkEntry, Error> {
-    if r.array()? != 3 {
+    if r.array()? != 4 {
         return Err(Error::Malformed("chunk arity"));
     }
-    Ok(ChunkEntry { blob: BlobId(r.fixed()?), keys: read_idxs(r)?, blind: r.fixed()? })
+    let blob = BlobId(r.fixed()?);
+    let ai = usize::try_from(r.uint()?).map_err(|_| Error::Malformed("chunk aspect index"))?;
+    Ok(ChunkEntry { blob, ai, keys: read_idxs(r)?, blind: r.fixed()? })
 }
 
 fn read_purge(r: &mut Reader<'_>) -> Result<PurgeItem, Error> {

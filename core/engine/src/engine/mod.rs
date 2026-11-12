@@ -996,6 +996,9 @@ pub struct Core {
     pub(crate) pended: BTreeSet<CommitId>,
     /// Aspects whose deltas `Engine::commit_forged` replaces by bytes that do not decode.
     pub(crate) forge_bad: BTreeSet<(Tid, Ak)>,
+    /// Blobs `Engine::commit_listing` adds to its commit's chunk list, beside what its deltas
+    /// introduce (a hostile writer listing another thing's chunks).
+    pub(crate) forge_chunks: Vec<osis_commit::ChunkWrite>,
     /// Tests: the running transaction writes states no held body gives (`Engine::damage_index`:
     /// another build's rules), so the rebuild check (`apply::check_rebuilt`) skips it.
     #[cfg(debug_assertions)]
@@ -1241,6 +1244,7 @@ impl Core {
             to_date: self.to_date.clone(),
             redeliver: self.redeliver.clone(),
             forge_bad: self.forge_bad.clone(),
+            forge_chunks: self.forge_chunks.clone(),
             #[cfg(debug_assertions)]
             unchecked_tx: self.unchecked_tx.clone(),
             #[cfg(debug_assertions)]
@@ -1863,6 +1867,7 @@ impl Core {
             refs_watched: _,
             commit_listeners: _,
             forge_bad: _,
+            forge_chunks: _,
             forged: _,
             header_fault: _,
             key_actors: _,
@@ -2018,6 +2023,7 @@ impl Core {
             redeliver: BTreeSet::new(),
             pended: BTreeSet::new(),
             forge_bad: BTreeSet::new(),
+            forge_chunks: Vec::new(),
             #[cfg(debug_assertions)]
             unchecked_tx: false,
             #[cfg(debug_assertions)]

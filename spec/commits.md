@@ -9,7 +9,7 @@ Encoding: spec/wire.md §4. Fields:
 - `ts` (spec/crdt.md §2.2) and the dot form, commit or session (§3).
 - Optional `expires` (§6), the expiry of every delta of the commit.
 - Aspect list: per touched `(tid, ak)`: counter range `[lo, hi)`, retention (§5), the delta hash of its one delta, and for a durable signal's delta optionally the fire it `replaces` (§5 Signals).
-- Chunk list: the chunk, tree-node and page blobs the deltas introduce, and in a compaction snapshot or an ephemeral commit every other blob of its class its deltas link (§2), each with the indices of the delete keys it commits to and its link blind (spec/crypto.md §7): a node holding the header can delete it at hosts once no held body links it (spec/sync.md §7), and an ephemeral commit applies once it holds them.
+- Chunk list: the chunk, tree-node and page blobs the deltas introduce, and in a compaction snapshot or an ephemeral commit every other blob of its class its deltas link (§2), each with its delta, the indices of the delete keys it commits to and its link blind (spec/crypto.md §7): a node holding the header can delete it at hosts once no held body links it (spec/sync.md §7), and an ephemeral commit applies once it holds them.
 - Optional purge request (§5), optional `undoes: commit ID` (§7).
 - A 16-byte random blind (the commit blob's, spec/crypto.md §7) and the delete keys with their levels; per aspect, the indices of the keys its deltas call for.
 - Explicit removals and edge writes that audit only: the frontier (spec/permissions.md §5.1 step 4), inline or as a link to a chunk tree when it exceeds `CHUNK_THRESHOLD` (spec/data-model.md §6).

@@ -462,7 +462,7 @@ pub(crate) fn tree_blobs(tx: &mut Tx<'_>, dedup: &Secret32, roots: &[Link], out:
 }
 
 /// `tree_blobs`, calling `seen` once per blob added to `out` with the link it was reached by.
-fn walk_trees(tx: &mut Tx<'_>, dedup: &Secret32, roots: &[Link], out: &mut Trees, seen: &mut dyn FnMut(&Link)) -> Result<()> {
+pub(crate) fn walk_trees(tx: &mut Tx<'_>, dedup: &Secret32, roots: &[Link], out: &mut Trees, seen: &mut dyn FnMut(&Link)) -> Result<()> {
     // (link, whether it is known to be a chunk)
     let mut stack: Vec<(Link, bool)> = roots.iter().map(|l| (*l, false)).collect();
     let mut blobs = TxBlobs::new(&mut tx.blobs, tx.txn.is_memory());

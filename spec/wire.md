@@ -75,7 +75,7 @@ Header    := [version, author, actor, kind, ts, form, expires, aspects, chunks,
 Aspect    := [tid, ak, lo, hi, Retention, keys, hash, replaces]
 Retention := by
 DeleteKey := [level, pk]
-Chunk     := [blob_id, [ki*], blind]
+Chunk     := [blob_id, ai, [ki*], blind]
 PurgeItem := [commit_id, tid, ak] | [tid, ak] | [tid, ak, actor]
 Rotation  := [signing_key, kem_key, [epoch_id+], [commit_id*], list_root]
 CommitBlobPlaintext := [Header, signature, Opt(inner), [signature*], [Section*]]
@@ -89,7 +89,7 @@ Header fields by position:
 4. `ts` (spec/crdt.md §2.2). 5. `form`: 0 commit form, or `[1, nonce]` session form with the session's 16-byte nonce (spec/commits.md §3).
 6. `expires`: `Opt(T)`, the commit's expiry, wall ms (spec/commits.md §6).
 7. `aspects`: `[Aspect+]` sorted by the canonical bytes of `[tid, ak]`, distinct.
-8. `chunks`: `[Chunk*]` sorted by blob ID, distinct: every chunk, tree-node and page blob the deltas introduce and, in a compaction snapshot (`kind` 2, 3) or an ephemeral commit, every other blob of the commit's class its deltas link (through their trees and pages) that the writer holds (a link to a blob of the other class is not its blob, spec/commits.md §2); `ki` are indices into `keys`, ascending: the delete keys of the delta that created the blob, or for a blob the commit did not introduce those of its delta's keys the blob's prefix commits to (possibly none); `blind`: the blob's 16-byte link blind (spec/crypto.md §7). A writer rule: a receiver does not check them.
+8. `chunks`: `[Chunk*]` sorted by blob ID, distinct: every chunk, tree-node and page blob the deltas introduce and, in a compaction snapshot (`kind` 2, 3) or an ephemeral commit, every other blob of the commit's class its deltas link (through their trees and pages) that the writer holds (a link to a blob of the other class is not its blob, spec/commits.md §2), a durable commit's only where its prefix commits to one of that delta's keys; `ai` indexes `aspects`: the delta whose blob it is (that introduced it, or that links it), an index out of range is bad input; `ki` are indices into `keys`, ascending, each among `aspects[ai]`'s `keys` (else bad input): those of the delta that created the blob, or for a blob the commit did not introduce those of its delta's keys the blob's prefix commits to (an ephemeral commit's possibly none); `blind`: the blob's 16-byte link blind (spec/crypto.md §7). Beyond those checks a writer rule: a receiver does not check what a blob's prefix commits to (spec/sync.md §7).
 9. `purge`: `[PurgeItem*]` sorted by canonical bytes, distinct; empty when there is no purge request. `[commit_id, tid, ak]` names that commit's deltas on that aspect; `[tid, ak]` names every delta on that aspect of every commit with a smaller `ts`; `[tid, ak, actor]` those of them whose commit's purge actor is `actor` (spec/permissions.md §6: the actor its header names). The second place tells the three-item forms apart: a tid, or an AK's text.
 10. `undoes`: `Opt(commit_id)`.
 11. `blind`: 16 random bytes (spec/crypto.md §7).
@@ -151,7 +151,7 @@ A blob is `prefix || ciphertext`, at most `MAX_BLOB` bytes. The prefix is a fixe
 - **Padding** (Padmé; Nikitin et al., PURBs): for a plaintext P, let `L = len(P) + 1`, `E = floor(log2 L)`; if `E = 0`, `padme(L) = L`; else with `S` the bit length of `E` and `m = 2^(E - S) - 1`, `padme(L) = (L + m) & ~m`. The padded plaintext is `P || 0x80 || 0x00^(padme(L) - L)`. To unpad: strip trailing `0x00` bytes, then one `0x80`, which MUST be present; the padded length MUST equal `padme(len(P) + 1)`. Anything else is bad input.
 - Plaintext per blob kind: commit blob `CommitBlobPlaintext` (§4); chunk: the raw chunk bytes; tree node and link page: §6; page: §6; inbox blob: §9 (its ciphertext is a sealed box, not the AEAD above).
 - Class: a commit blob's class is that of its header's ephemeral marker (none: durable, 0: ephemeral, 1: relay-only); a mismatch is bad input. Inbox blobs are durable; a chunk, tree node, page or link page has the class of the commit whose delta introduced it. A relay-only commit blob's expiry `T` is its header's `ts` (wall ms) plus `MAX_DRIFT` (its header carries no `expires`); any other is bad input.
-- Commitments, blinded by the blob's own salt and its blind (a commit blob: its header's; a chunk, tree node, page or link page: its link blind), one per level within a group (spec/crypto.md §7):
+- Commitments, blinded by the blob's own salt and its blind (a commit blob: its header's; a chunk, tree node, page or link page: its thing blind), one per level within a group (spec/crypto.md §7):
   - a commit blob carries one group per distinct delete-key set among the aspects its sections list (opened or not), each group the keys of that set in header key order, groups in order of their first aspect; a `nobody` aspect's set is empty, so its group is (a Delete by level then never verifies, spec/sync.md §5); a header-only blob carries no group;
   - a chunk, tree node or page carries one group: the delete keys of the delta that created it;
   - a chunk or tree node of a linked header list (§4) carries one group holding the commitment of the commit's level-2 key only (empty when the header lists none); its expiry is the commit's `expires`.

@@ -150,7 +150,7 @@ mod tests {
     }
 
     fn framing() -> Framing {
-        Framing { dedup: Secret32::from_bytes([7; 32]), expiry: Some(WallMs(99)), keys: vec![(3, dk(3))], class: crate::blob::Class::Durable }
+        Framing { thing: osis_base::Tid::from_bytes([5; 15]), dedup: Secret32::from_bytes([7; 32]), expiry: Some(WallMs(99)), keys: vec![(3, dk(3))], class: crate::blob::Class::Durable }
     }
 
     fn dk(b: u8) -> osis_crypto::VerifyingKey {
@@ -357,7 +357,7 @@ mod tests {
     // that author could delete a blob the delta's retention gives it no right over.
     #[test]
     fn reencryption_rule() {
-        let fr = |expiry: Option<u64>, keys: Vec<(u8, u8)>| Framing { dedup: Secret32::from_bytes([7; 32]), expiry: expiry.map(WallMs), keys: keys.into_iter().map(|(l, b)| (l, dk(b))).collect(), class: crate::blob::Class::Durable };
+        let fr = |expiry: Option<u64>, keys: Vec<(u8, u8)>| Framing { thing: osis_base::Tid::from_bytes([5; 15]), dedup: Secret32::from_bytes([7; 32]), expiry: expiry.map(WallMs), keys: keys.into_iter().map(|(l, b)| (l, dk(b))).collect(), class: crate::blob::Class::Durable };
         let base = fr(Some(100), vec![(1, 1), (2, 2), (3, 3)]);
         let d = data(5_000, 0);
         let cases = [

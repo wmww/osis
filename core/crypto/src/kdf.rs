@@ -76,6 +76,8 @@ pub const DELETE_BLIND: &str = "delete blind";
 pub const DELETE_NONCE: &str = "delete nonce";
 /// A linked blob's blind, from its blob key (spec/crypto.md §7).
 pub const LINK_BLIND: &str = "link blind";
+/// A linked blob's commitments' blind, from its link blind and its thing (spec/crypto.md §7).
+pub const THING_BLIND: &str = "thing blind";
 /// A keyset's possession key (spec/crypto.md §4, Holder actors).
 pub const POSSESSION: &str = "possession key";
 /// Label role keys (spec/sync.md §2).
@@ -97,9 +99,9 @@ pub const BEACON_HIT: &str = "beacon hit";
 pub const BEACON_REPLY: &str = "beacon reply";
 
 /// Every kdf purpose, for distinctness checks and vectors.
-pub const PURPOSES: [&str; 36] = [
+pub const PURPOSES: [&str; 37] = [
     THING_SYNC, THING_READ, THING_WRITE, THING_ADMIN, ROLE_SYNC, ROLE_READ, ROLE_WRITE, ROLE_ADMIN, SIGN, KEM, CREATION_NONCE, BOX, HISTORY, EPOCH, WRAP, SECTION,
-    DELTA, LINK, LINK_TREE, DELETE_KEY, DELETE_BLIND, DELETE_NONCE, LINK_BLIND, LABEL_SYNC, LABEL_WRITE, LABEL_DELETE, LABEL_DEPOSIT, LABEL_CLAIM, LAN_TAG, LAN_SIG,
+    DELTA, LINK, LINK_TREE, DELETE_KEY, DELETE_BLIND, DELETE_NONCE, LINK_BLIND, THING_BLIND, LABEL_SYNC, LABEL_WRITE, LABEL_DELETE, LABEL_DEPOSIT, LABEL_CLAIM, LAN_TAG, LAN_SIG,
     POSSESSION, INNER_SECRET, INNER, BEACON, BEACON_HIT, BEACON_REPLY,
 ];
 

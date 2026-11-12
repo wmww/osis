@@ -4,6 +4,7 @@
 
 use super::*;
 use crate::engine::MemoryDrop;
+use std::sync::Arc;
 
 impl SyncEngine {
     /// The deletion step of a local pass, under every label, over the entries of `scope` no host
@@ -760,14 +761,16 @@ impl SyncEngine {
         None
     }
 
-    /// Chunk, tree-node and page blobs among `cands` whose creating deltas this node dropped
-    /// (purge, expiry, compaction), by the commit and chunk entry that list them,
-    /// unless a commit whose creating deltas are not all dropped lists them too (chunk reuse,
-    /// spec/sync.md §1). A chunk's creating deltas are those whose delete-key indices are its own
-    /// (one class); with no such delta, every delta of the commit. Nor those a tree of a held
-    /// body or live state of the thing links (`Engine::tree_refs`; spec/sync.md §7: reused
-    /// chunks and the chunks of compacted values are not in the linking commit's list): those
-    /// are returned apart, judged again while trees may link them.
+    /// Chunk, tree-node and page blobs among `cands` whose deltas this node dropped (purge,
+    /// expiry, compaction), by the commit and chunk entry that list them and whether the blob's
+    /// held prefix bears that entry's commitments, unless a commit whose delta of the blob (the
+    /// entry's aspect) is not dropped lists them too (chunk reuse, spec/sync.md §1). Of the
+    /// dropped listings, one the blob's held prefix bears (spec/sync.md §7: an entry naming a
+    /// blob of another thing names commitments it does not bear, and deletes nothing); a blob not
+    /// held here goes by the first, its delete keys checked by the host. Nor those a tree of a
+    /// held body or live state of the blob's thing links (`Engine::tree_refs`; spec/sync.md §7:
+    /// reused chunks and the chunks of compacted values are not in the linking commit's list):
+    /// those are returned apart, judged again while trees may link them.
     pub(crate) fn dropped_chunks(&mut self, cands: &BTreeSet<BlobId>) -> Result<(DroppedChunks, BTreeSet<BlobId>)> {
         let mut out = BTreeMap::new();
         if cands.is_empty() {
@@ -775,43 +778,58 @@ impl SyncEngine {
         }
         for b in cands {
             let listers: Vec<CommitId> = self.engine.core.ix.by_chunk.get(b).into_iter().flatten().copied().collect();
-            let mut first = None;
+            let mut dropped: Vec<(CommitId, Arc<osis_commit::Header>, osis_commit::ChunkEntry)> = Vec::new();
             let mut live = false;
             // a forgotten memory commit's page goes once no entry of the commit is known here
             // (its entries at hosts were deleted: no copy fetched there wants it)
             if listers.is_empty()
                 && self.forgotten_page(b)
                 && let Some(c) = self.memory.forgotten_pages.get(b).copied()
-                && let Some(ch) = self.memory.forgotten.get(&c).and_then(|f| f.header.chunks.iter().find(|ch| ch.blob == *b).cloned())
+                && let Some(f) = self.memory.forgotten.get(&c)
+                && let Some(ch) = f.header.chunks.iter().find(|ch| ch.blob == *b).cloned()
             {
                 if !self.entries_of_commit(&c).is_empty() {
                     continue;
                 }
-                first = Some((c, ch));
+                dropped.push((c, f.header.clone(), ch));
             }
             for id in listers {
                 let Some(m) = self.engine.core.ix.commits.get(&id) else { continue };
-                let h = &m.header;
+                let Some(h) = m.header.decoded() else { continue };
                 for ch in h.chunks.iter().filter(|ch| ch.blob == *b) {
-                    let class: Vec<usize> = h.aspects.iter().enumerate().filter(|(_, a)| a.keys == ch.keys).map(|(ai, _)| ai).collect();
-                    let ais: Vec<usize> = if class.is_empty() { (0..h.aspects.len()).collect() } else { class };
-                    let parts = parts_of(h, |i| ais.contains(&i));
-                    let dropped = parts.iter().all(|p| m.body_gone(*p)) && parts.iter().any(|p| !self.engine.left_at_hosts(&id, *p));
-                    if dropped {
-                        first.get_or_insert((id, ch.clone()));
+                    let gone = m.body_gone(ch.ai) && !self.engine.left_at_hosts(&id, ch.ai);
+                    if gone {
+                        dropped.push((id, h.clone(), ch.clone()));
                     } else {
                         live = true;
                     }
                 }
             }
-            if let (false, Some(x)) = (live, first) {
+            if live {
+                continue;
+            }
+            let mut pick = None;
+            for (c, h, ch) in dropped {
+                match self.engine.chunk_entry_borne(&h, &ch)? {
+                    Some(true) => {
+                        pick = Some((c, ch, true));
+                        break;
+                    }
+                    Some(false) => {}
+                    None => {
+                        pick.get_or_insert((c, ch, false));
+                    }
+                }
+            }
+            if let Some(x) = pick {
                 out.insert(*b, x);
             }
         }
-        // the things of the listing commits: reuse and snapshots link within a thing
+        // the blob's thing: reuse and snapshots link within a thing
         let mut by_thing: BTreeMap<Tid, BTreeSet<BlobId>> = BTreeMap::new();
-        for (b, (c, _)) in &out {
-            for a in self.engine.header(c).map(|h| h.aspects.clone()).unwrap_or_default() {
+        for (b, (c, ch, _)) in &out {
+            let h = self.engine.header(c).or_else(|| self.memory.forgotten.get(c).map(|f| f.header.clone()));
+            if let Some(a) = h.as_ref().and_then(|h| h.aspects.get(ch.ai)) {
                 by_thing.entry(a.tid).or_default().insert(*b);
             }
         }
@@ -831,11 +849,12 @@ impl SyncEngine {
         Ok((out, waiting))
     }
 
-    /// A delete item for a dropped chunk: the label delete key, else a delete key of its delta,
-    /// signed for its entry's salt (`Entry::salt`; one never here is fetched for it, its bytes
-    /// kept nowhere: `log_events`).
-    fn chunk_delete(&mut self, conn: ConnId, keys: &HeadKeys, l: &LabelId, id: &BlobId, (c, ch): &(CommitId, osis_commit::ChunkEntry), out: &mut Vec<crate::sync::Action>) -> Result<Option<osis_label::DeleteItem>> {
-        if keys.delete.is_some() {
+    /// A delete item for a dropped chunk: the label delete key when its held prefix bears the
+    /// listing's entry, else a delete key of its delta, signed for its entry's salt
+    /// (`Entry::salt`; one never here is fetched for it, its bytes kept nowhere: `log_events`)
+    /// and the entry's blind bound to its thing, which the host checks against the prefix.
+    fn chunk_delete(&mut self, conn: ConnId, keys: &HeadKeys, l: &LabelId, id: &BlobId, (c, ch, borne): &(CommitId, osis_commit::ChunkEntry, bool), out: &mut Vec<crate::sync::Action>) -> Result<Option<osis_label::DeleteItem>> {
+        if keys.delete.is_some() && *borne {
             return Ok(delete_item(keys, l, *id, None, &[], true));
         }
         self.keep_salts(id, None)?;
@@ -843,12 +862,14 @@ impl SyncEngine {
             self.fetch_on(conn, *l, [*id], out)?;
             return Ok(None);
         };
-        // a chunk's prefix has one group, blinded by its link blind (spec/crypto.md §7), which the
-        // listing commit names with the keys it commits to (a forgotten memory commit's in the
-        // header kept for it)
+        // a chunk's prefix has one group, blinded by its link blind bound to its thing
+        // (spec/crypto.md §7), which the listing commit names with the keys it commits to (a
+        // forgotten memory commit's in the header kept for it)
         let Some(h) = self.engine.header(c).or_else(|| self.memory.forgotten.get(c).map(|f| f.header.clone())) else { return Ok(None) };
+        let Some(a) = h.aspects.get(ch.ai) else { return Ok(None) };
+        let blind = osis_crypto::thing_blind(&ch.blind, a.tid.as_bytes());
         let dks = vec![self.engine.chunk_delete_secrets(&h, ch)];
-        Ok(delete_item(keys, l, *id, Some((&salt, &ch.blind)), &dks, true))
+        Ok(delete_item_by_level(keys, l, *id, (&salt, &blind), &dks, true))
     }
 
     /// A delete item for an entry: the label delete key, else delete keys this node holds, one

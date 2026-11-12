@@ -1833,3 +1833,75 @@ fn local(net: &mut Net, n: usize) {
     let acts = net.sync(n).handle(osis_node::sync::Event::Local);
     net.actions(n, acts);
 }
+
+// spec/sync.md §7 (a chunk goes only once nothing held links it), spec/crypto.md §7 (a linked
+// blob's commitments name its thing), spec/requirements.md Threat model: a writer of thing t1
+// who reads t2 lists t2's live chunks in a t1 commit. Once that commit drops at t2's author (its
+// own copies of t2's listing commits dropped under its replaces and forgotten), the author deletes
+// nothing of t2: not as label admin (label delete key), not as a writer sharing t1's delete keys
+// (one delete base); t2 still reads.
+#[test]
+fn chunks_listed_by_another_thing_stay_spec_crypto_7() {
+    for author in [0, 1] {
+        forged_listing_keeps(author);
+    }
+}
+
+/// `chunks_listed_by_another_thing_stay_spec_crypto_7` with t2 written and t1 compacted by node
+/// `author` (0: the group admin, holding the label delete key; 1: a writer, deleting by delete
+/// key), node 2 the forger.
+fn forged_listing_keeps(author: usize) {
+    let (mut net, host, [a, b, c], g, [t1, t2]) = hosted::<3, 2>(&[(1, Role::Write), (2, Role::Write)], ["x", "y"], true);
+    let l = net.group_labels(a).into_iter().find(|(x, _)| *x == g).unwrap().1.id;
+    let w = [a, b][author];
+    if w != a {
+        // the label admin is away: the writer deletes by delete key alone
+        net.set_online(a, false);
+    }
+    let noise = |n: usize, seed: u64| {
+        let mut v = vec![0u8; n];
+        osis_crypto::RngCore::fill_bytes(&mut osis_crypto::SeededRng::from_u64(seed), &mut v);
+        v
+    };
+    // t2's value by own replaces reusing its chunks, no snapshot (`chunks_outliving_their_introducer_leave_the_host_spec_commits_5`)
+    let v1 = noise(2560 << 10, 1);
+    let mut v2 = v1.clone();
+    v2.splice(1000..1000, noise(50, 2));
+    let mut v3 = v2.clone();
+    v3.splice(2000..2000, noise(50, 3));
+    for v in [&v1, &v2, &v3] {
+        let mut m = Mutation::new();
+        m.op(t2, &BLOB, osis_crdt::PathOp { path: vec![], op: osis_crdt::Op::Replace(osis_base::Value::Bytes(v.clone())) }).unwrap();
+        net.engine(w).commit(m).unwrap();
+        net.run();
+    }
+    let tree = net.engine(w).live_trees(&t2).unwrap().blobs;
+    // c lists them in a t1 commit
+    let fetch = net.sync(c).fetch_missing();
+    net.actions(c, fetch);
+    net.run();
+    let held = net.engine(c).live_trees(&t2).unwrap();
+    assert!(held.missing.is_empty() && held.blobs == tree, "the forger holds t2's tree");
+    let mut m = Mutation::new();
+    m.set(t1, &REG, &s("forged")).unwrap();
+    let forged = net.engine(c).commit_listing(m, &t2).unwrap().unwrap();
+    net.run();
+    assert!(net.engine(w).header(&forged).is_some_and(|h| tree.iter().all(|x| h.chunks.iter().any(|ch| ch.blob == *x))));
+    // the author's own listings of t2's chunks drop under its replaces and are forgotten
+    net.advance(osis_base::format::TOMBSTONE_LIFETIME_MS + 60_000);
+    net.advance(osis_base::format::TOMBSTONE_LIFETIME_MS + 60_000);
+    // the author covers the forged commit by a snapshot of t1
+    let mut m = Mutation::new();
+    m.set(t1, &REG, &s("again")).unwrap();
+    net.engine(w).commit(m).unwrap();
+    net.run();
+    let acts = net.sync(w).compact_now(&t1, &Ak::new(REG.ak()).unwrap()).unwrap();
+    net.actions(w, acts);
+    net.advance(4_000_000);
+    net.advance(4_000_000);
+    assert!(!net.engine(w).body_not_dropped(&forged, &t1, &Ak::new(REG.ak()).unwrap()), "the forged body dropped");
+    let at_host: std::collections::BTreeSet<_> = net.host_ids(host, &l).into_iter().collect();
+    let gone = tree.iter().filter(|x| !at_host.contains(x)).count();
+    assert_eq!(gone, 0, "node {author}: t2's blobs deleted at the host, of {}", tree.len());
+    assert_eq!(net.engine(w).get_full(&t2, &Ak::new(BLOB.ak()).unwrap()).unwrap(), Some(osis_base::Value::Bytes(v3.clone())), "node {author} reads t2");
+}

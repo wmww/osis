@@ -643,11 +643,24 @@ impl Engine {
 
 impl Engine {
     /// The delete secrets this node holds for chunk entry `ch` of header `h` (spec/crypto.md
-    /// §7: per delete key it commits to, those of a delta of the commit that lists them all),
-    /// with their levels.
+    /// §7: per delete key it commits to, those of its delta), with their levels.
     pub fn chunk_delete_secrets(&self, h: &osis_commit::Header, ch: &osis_commit::ChunkEntry) -> Vec<(u8, DeleteSecret)> {
-        let Some(a) = h.aspects.iter().find(|a| ch.keys.iter().all(|i| a.keys.contains(i))) else { return Vec::new() };
+        let Some(a) = h.aspects.get(ch.ai) else { return Vec::new() };
         self.delete_secrets(h, &a.tid, &ch.keys)
+    }
+
+    /// Whether blob `ch.blob`'s prefix bears a commitment chunk entry `ch` of header `h` names:
+    /// one of its keys blinded by the prefix salt and the entry's link blind bound to its
+    /// aspect's thing (spec/crypto.md §7); `None` when the blob is not held here. An entry
+    /// naming a blob of another thing names none (spec/sync.md §7).
+    pub fn chunk_entry_borne(&mut self, h: &osis_commit::Header, ch: &osis_commit::ChunkEntry) -> Result<Option<bool>> {
+        let id = ch.blob;
+        let Some(head) = self.run(|tx| tx.blobs.read(&id, 0, osis_label::LINKED_PREFIX_MAX))? else { return Ok(None) };
+        let Ok(prefix) = osis_label::Prefix::parse(&head) else { return Ok(Some(false)) };
+        let Some(a) = h.aspects.get(ch.ai) else { return Ok(Some(false)) };
+        let blind = osis_crypto::thing_blind(&ch.blind, a.tid.as_bytes());
+        let theirs: BTreeSet<&[u8; 33]> = prefix.commitments().collect();
+        Ok(Some(ch.keys.iter().filter_map(|i| h.keys.get(*i)).any(|k| k.verifying_key().ok().and_then(|vk| osis_crypto::commitment(k.level, &vk, prefix.salt(), &blind).ok()).is_some_and(|c| theirs.contains(&c)))))
     }
 }
 

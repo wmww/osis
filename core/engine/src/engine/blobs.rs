@@ -213,7 +213,7 @@ impl osis_label::BlobFetch for TxBlobs<'_, '_> {
 }
 
 /// Header-list chunk trees (osis-commit's traits): frames under the given prefix inputs, blinded
-/// by each blob's link blind (spec/crypto.md §7).
+/// by each blob's link blind bound to the header's actor (spec/crypto.md §7).
 pub struct ListBlobs<'t, 'a, 'r> {
     pub blobs: TxBlobs<'t, 'a>,
     pub rng: &'r mut dyn CryptoRngCore,
@@ -222,7 +222,7 @@ pub struct ListBlobs<'t, 'a, 'r> {
 impl osis_commit::BlobSink for ListBlobs<'_, '_, '_> {
     fn put(&mut self, prefix: &osis_commit::Prefix, plaintext: &[u8]) -> Result<(BlobId, [u8; 32]), osis_commit::Error> {
         let (_, key, blind) = osis_label::linked_prefix_inputs(self.rng);
-        let p = osis_label::Prefix::for_delete_keys(prefix.salt, &blind, prefix.expiry.map(WallMs), std::slice::from_ref(&prefix.keys)).map_err(|_| osis_commit::Error::Storage("prefix"))?;
+        let p = osis_label::Prefix::for_delete_keys(prefix.salt, &osis_crypto::thing_blind(&blind, prefix.thing.as_bytes()), prefix.expiry.map(WallMs), std::slice::from_ref(&prefix.keys)).map_err(|_| osis_commit::Error::Storage("prefix"))?;
         let (key, blob) = osis_label::frame_under(key, &p, plaintext).map_err(|_| osis_commit::Error::Storage("frame"))?;
         let id = osis_label::blob_id(&blob);
         osis_label::BlobSink::put(&mut self.blobs, id, blob).map_err(|_| osis_commit::Error::Storage("blob"))?;

@@ -91,6 +91,32 @@ impl Engine {
         Ok(r?.zip(forged))
     }
 
+    /// `commit_hostile` whose chunk list also names every blob of the trees `from`'s live states
+    /// link, each with its link blind and every key of the commit's first delta: a writer
+    /// listing another thing's chunks, to test what nodes delete under such a listing.
+    #[doc(hidden)]
+    pub fn commit_listing(&mut self, m: crate::Mutation, from: &Tid) -> Result<Option<CommitId>> {
+        let aks = self.aspects(from)?;
+        let from = *from;
+        let listed = self.run(|tx| {
+            let Some(dedup) = tx.core.dedup(&from) else { return Ok(Vec::new()) };
+            let mut roots = Vec::new();
+            for ak in &aks {
+                if let Some(v) = tx.state(&from, ak)?.and_then(osis_crdt::Fragment::read) {
+                    super::large::links_in(&v, &mut roots);
+                }
+            }
+            let mut out = super::large::Trees::default();
+            let mut links = Vec::new();
+            super::large::walk_trees(tx, &dedup, &roots, &mut out, &mut |l| links.push(*l))?;
+            Ok(links.into_iter().map(|l| osis_commit::ChunkWrite::introduced(l.blob, osis_crypto::link_blind(&l.key))).collect::<Vec<_>>())
+        })?;
+        self.core.forge_chunks = listed;
+        let r = self.commit_hostile(m);
+        self.core.forge_chunks.clear();
+        r
+    }
+
     /// Rotates `roles` of each of `actors` in one commit as a hostile writer would: boxing only
     /// those of its current holders in `boxed` (itself alone locks out the rest: notes/crypto.md,
     /// Lockouts).

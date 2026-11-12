@@ -6,7 +6,7 @@ use super::{FixedRng, case, generated_header, s32};
 use crate::file::{Record, VecFile};
 use crate::hex;
 use osis_base::{Link, Value, WallMs, encode};
-use osis_crypto::{DeleteSecret, SUITE_1, aead, link_blind, link_hash, link_tree_hash, pad};
+use osis_crypto::{DeleteSecret, SUITE_1, aead, link_blind, link_hash, link_tree_hash, pad, thing_blind};
 use osis_label::{Error, Prefix, frame, open, tree::node_plaintext};
 
 const SPEC: &str = "spec/wire.md §5";
@@ -116,9 +116,10 @@ pub fn blobs() -> VecFile {
     let salt = [0x27; 16];
     let secret = s32(0x26);
     let dk = DeleteSecret::derive(&secret).verifying_key();
-    // its commitment is blinded by the link blind of its blob key (spec/crypto.md §7)
+    // its commitment is blinded by the link blind of its blob key bound to its thing (spec/crypto.md §7)
+    let thing = [0x2b; 15];
     let lb = link_blind(&[0x28; 32]);
-    let p = Prefix::for_keys(salt, &lb, Some(WallMs(1_800_000_000_000)), &[(1, dk)]).unwrap();
+    let p = Prefix::for_keys(salt, &thing_blind(&lb, &thing), Some(WallMs(1_800_000_000_000)), &[(1, dk)]).unwrap();
     let chunk = b"osis chunk bytes".to_vec();
     let (r, l1) = blob_case("chunk blob", "spec/wire.md §6", &p, &chunk, [0x28; 32], link_hash(&dedup, &chunk));
     cases.push(
@@ -126,11 +127,13 @@ pub fn blobs() -> VecFile {
             .with("delete-secret", hex(secret.expose()))
             .with("delete-level", "1")
             .with("delete-key", hex(&dk.to_bytes()))
-            .with("link-blind", hex(&lb)),
+            .with("link-blind", hex(&lb))
+            .with("thing", hex(&thing))
+            .with("thing-blind", hex(&thing_blind(&lb, &thing))),
     );
     // Tree node over that chunk, with its length.
     let node = node_plaintext(1, &[(l1, chunk.len() as u64)]).unwrap();
-    let p = Prefix::for_keys(salt, &link_blind(&[0x29; 32]), Some(WallMs(1_800_000_000_000)), &[(1, dk)]).unwrap();
+    let p = Prefix::for_keys(salt, &thing_blind(&link_blind(&[0x29; 32]), &thing), Some(WallMs(1_800_000_000_000)), &[(1, dk)]).unwrap();
     let (r, _) = blob_case("tree node blob", "spec/wire.md §6", &p, &node, [0x29; 32], link_tree_hash(&dedup, 1, &[(l1.hash, chunk.len() as u64)]));
     cases.push(r.with("dedup", hex(dedup.expose())));
     // Page: the canonical array of its elements.

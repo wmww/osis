@@ -38,11 +38,13 @@ pub fn delete_keys(s: &dyn Secrets, tid: &Tid, r: &Retention) -> Result<Vec<Dele
 }
 
 /// Clear blob prefix inputs of a linked blob (spec/wire.md §5): osis-label commits to `keys`,
-/// each blinded by `salt` and the blob's link blind (spec/crypto.md §7: from the key it draws),
-/// and lays the prefix out.
+/// each blinded by `salt` and the thing blind of the blob's link blind (spec/crypto.md §7: from
+/// the key it draws), and lays the prefix out.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Prefix {
     pub salt: [u8; 16],
+    /// The thing whose dedup secret keys the blob's link (a header list's: the header's actor).
+    pub thing: Tid,
     /// Expiry `T`, wall ms.
     pub expiry: Option<u64>,
     pub keys: Vec<DeleteKey>,

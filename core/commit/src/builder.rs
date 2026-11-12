@@ -166,7 +166,7 @@ impl CommitBuilder {
         let keys: Vec<DeleteKey> = table.into_values().collect();
         let positions: BTreeMap<DeleteKey, usize> = keys.iter().enumerate().map(|(i, t)| (*t, i)).collect();
         let mut chunks = Vec::new();
-        for ((entry, cs), ks) in entries.iter_mut().zip(&aspect_keys) {
+        for (ai, ((entry, cs), ks)) in entries.iter_mut().zip(&aspect_keys).enumerate() {
             let mut idx = ks.iter().map(|k| positions.get(k).copied().ok_or(Error::Build("delete key table"))).collect::<Result<Vec<_>, _>>()?;
             idx.sort_unstable();
             for c in cs.iter() {
@@ -174,7 +174,7 @@ impl CommitBuilder {
                     None => idx.clone(),
                     Some(levels) => ks.iter().filter(|k| levels.contains(&k.level)).map(|k| positions.get(k).copied().ok_or(Error::Build("delete key table"))).collect::<Result<std::collections::BTreeSet<_>, _>>()?.into_iter().collect(),
                 };
-                chunks.push(ChunkEntry { blob: c.blob, keys, blind: c.blind });
+                chunks.push(ChunkEntry { blob: c.blob, ai, keys, blind: c.blind });
             }
             entry.keys = idx;
         }
@@ -233,7 +233,7 @@ impl CommitBuilder {
             let mut prefix = || {
                 let mut salt = [0u8; 16];
                 rng.fill_bytes(&mut salt);
-                Prefix { salt, expiry: header.expires, keys: list_keys.clone() }
+                Prefix { salt, thing: self.actor, expiry: header.expires, keys: list_keys.clone() }
             };
             let mut rec = Recording { sink: &mut *sink, written: &mut written };
             let link = write_list(&bytes, &dedup, &mut rec, &mut prefix)?;
