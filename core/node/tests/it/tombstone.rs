@@ -72,6 +72,13 @@ fn purge_item(net: &mut Net, n: usize, t: Tid, item: PurgeItem, r: Retention) ->
     net.engine(n).commit_hostile(m).unwrap().unwrap()
 }
 
+/// `at_host`, each delta set cut to the parts on `t` (an entry also carrying a part on a thing
+/// outside the label stands for the header alone there: the shared blob, spec/sync.md §3).
+fn at_host_on(net: &mut Net, n: usize, host: usize, l: &LabelId, c: CommitId, t: Tid) -> Vec<Vec<usize>> {
+    let on: Vec<usize> = net.engine(n).header(&c).map(|h| h.aspects.iter().enumerate().filter(|(_, a)| a.tid == t).map(|(i, _)| i).collect()).unwrap_or_default();
+    at_host(net, n, host, l, c).into_iter().map(|p| p.into_iter().filter(|i| on.contains(i)).collect()).collect()
+}
+
 /// The delta sets of commit `c`'s entries node `n` knows present at `host`.
 fn at_host(net: &mut Net, n: usize, host: usize, l: &LabelId, c: CommitId) -> Vec<Vec<usize>> {
     let ids = net.host_ids(host, l);
@@ -342,7 +349,7 @@ fn the_other_part_on_another_label_is_not_waited_for_spec_commits_4() {
     net.run();
     let p = purge(&mut net, a, t, c, permanent());
     net.run();
-    assert_eq!(at_host(&mut net, a, host, &l, c), vec![Vec::<usize>::new()], "under the purged delta's label");
+    assert_eq!(at_host_on(&mut net, a, host, &l, c, t), vec![Vec::<usize>::new()], "under the purged delta's label");
     net.set_online(n, true);
     net.run();
     let author = net.tid(b);
@@ -663,7 +670,7 @@ fn a_purge_commit_does_not_wait_for_another_label_spec_commits_4() {
     let p = net.engine(a).commit(m).unwrap().unwrap();
     net.run();
     cover(&mut net, a, t);
-    assert_eq!(at_host(&mut net, a, host, &l, p), vec![Vec::<usize>::new()]);
+    assert_eq!(at_host_on(&mut net, a, host, &l, p, t), vec![Vec::<usize>::new()]);
     net.set_online(n, true);
     net.run();
     assert_eq!(pending(&mut net, n), 0);

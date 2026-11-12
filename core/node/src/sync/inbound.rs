@@ -378,7 +378,9 @@ impl SyncEngine {
                             }
                             self.state.set_entry(l, blob_id, Entry { wrap, stamp, cert: false, salt: None, expires: None, size: None, kind: Kind::Unknown, source: None, memory: false })
                         }
-                        Some(mut e) if e.wrap != wrap || (stamp.is_some() && e.stamp != stamp) => {
+                        // of two stamps of one entry (two writers stamped it, one as a role
+                        // entry: spec/sync.md §5) the lower is kept, so every holder settles on one
+                        Some(mut e) if e.wrap != wrap || stamp.is_some_and(|s| e.stamp.is_none_or(|h| s.0 < h.0)) => {
                             if self.take_wrap(conn, host, l, blob_id, &mut e, &wrap, stamp.is_some(), held_stamped) {
                                 e.wrap = wrap;
                                 if stamp.is_some() {
