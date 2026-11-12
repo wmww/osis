@@ -438,7 +438,7 @@ pub const HUB_BASE: ConnId = 1 << 40;
 /// limit (random churn seed 460971879377: 32 CPU-s to fail here). The node tests' settles
 /// take at most about 210 rounds (random churn and window seeds 90). Minor consequence,
 /// test-only: near 0 every settle fails; at infinity a loop runs to the seed's CPU timeout.
-const SETTLE_ROUNDS: usize = 2_000;
+const SETTLE_ROUNDS: usize = 200;
 
 /// What a peer that cannot read `l` streams to a reader: `events` of `l` at a position `at`
 /// names (a hostile peer's push, or a replay).
@@ -1592,8 +1592,7 @@ impl Net {
         self.group_seeded(admin, holders, addrs, 1)
     }
 
-    /// `group_at` with the rotation's rng seed: groups of one admin need distinct seeds, or they
-    /// get equal secrets and so one label ID.
+    /// `group_at` with the rotation's rng seed (mixed with the group's ID by `rotation`).
     pub fn group_seeded(&mut self, admin: usize, holders: &[(usize, Role)], addrs: Vec<Address>, rng: u64) -> Tid {
         for (m, _) in holders {
             self.pair(*m, admin);
@@ -1842,6 +1841,14 @@ fn rotation_ops(e: &mut Engine, m: &mut Mutation, a: Tid, recipients: &[Recipien
     let roles = BTreeSet::from(Role::ALL);
     let view = e.epochs(&a).unwrap();
     let state = e.get_typed(&a, &ct::SECRETS).unwrap().unwrap_or_default();
+    // seeded per thing too: two things rotated with one seed get distinct secrets (equal ones
+    // would give their labels one ID)
+    let rng = {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        (a, rng).hash(&mut h);
+        h.finish()
+    };
     let r = rotate(&a, &roles, &view, &state, recipients, names, &mut SeededRng::from_u64(rng)).unwrap();
     for (k, b) in &r.secrets.boxes {
         m.op(a, &ct::SECRETS, PathOp { path: vec![PathSeg::Field(0), PathSeg::Key(k.to_value())], op: Op::Set(b.to_value()) }).unwrap();
