@@ -1959,6 +1959,9 @@ fn lane_dump(net: &mut Net, nodes: &[usize], hosts: &[usize], l: &osis_base::Lab
             let h = e.header(&id).unwrap();
             out.push_str(&format!("  held {id:?} by {:?} {:?} own {own} {bytes} B\n", h.author, h.ephemeral));
         }
+        for ak in [CURSOR, FLAG] {
+            out.push_str(&format!("  {ak}:\n{}", e.aspect_dump(&w, &eph(ak))));
+        }
     }
     for host in hosts {
         out.push_str(&format!("host {host} holds {:?}, {} B\n", net.host_ids(*host, l), net.hosts[*host].hub.store().ephemeral_bytes(l)));
