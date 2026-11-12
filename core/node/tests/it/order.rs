@@ -2128,32 +2128,37 @@ struct Cfg {
 enum Twins {
     /// The first n (as made, reversed, ...; `usize::MAX`: every one).
     First(usize),
-    /// `TWIN_SHARE` of them rounded up, so at least one, drawn from the seed (`twins`).
+    /// The named three (as made, reversed, as fetched: of an exhaustive size's orders only the
+    /// last two reorder the setup) and `TWIN_SHARE` of the rest rounded up, drawn from the seed
+    /// (`twins`).
     Share,
 }
 
-/// The share of a held set's orders `Twins::Share` tries again with late parts. Minor
-/// consequence: a twin differs from its order only in which parts come first and its late parts
-/// at the end, and is about as costly as the order and its checks together (late-part ingest
-/// wakes and judges again what waited on it). A quarter: the twins' half of the exhaustive size
-/// drops to an eighth (8 seeds 2170 -> 1250 G) while a held set of 720 orders still gets 180
-/// twins and every held set with a multi-part commit at least one, each gate's fresh seeds drawing
-/// other orders. At 0 every such held set still gets one (rounded up); at 1 every order does.
+/// The share of a held set's enumerated orders (past the named three) `Twins::Share` tries
+/// again with late parts. Minor consequence: a twin differs from its order only in which parts
+/// come first and its late parts at the end, and is about as costly as the order and its checks
+/// together (late-part ingest wakes and judges again what waited on it). A quarter: the twins'
+/// half of the exhaustive size drops to an eighth (8 seeds 2170 -> 1250 G) while a held set of
+/// 723 orders still gets 183 twins, each gate's fresh seeds drawing other orders. At 0 each held
+/// set with a multi-part commit gets the named three only; at 1 every order.
 const TWIN_SHARE: f64 = 0.25;
 
-/// The indices of `n` orders `split` tries again with late parts; `Share` a seeded draw.
+/// The indices of `n` orders `split` tries again with late parts; `Share` a seeded draw past the
+/// named three.
 fn twins(split: Twins, n: usize, rng: &mut Rng) -> Vec<usize> {
     match split {
         Twins::First(m) => (0..m.min(n)).collect(),
         Twins::Share => {
-            let mut all: Vec<usize> = (0..n).collect();
-            let m = ((n as f64 * TWIN_SHARE).ceil() as usize).clamp(n.min(1), n);
+            let named = 3.min(n);
+            let mut rest: Vec<usize> = (named..n).collect();
+            let m = ((rest.len() as f64 * TWIN_SHARE).ceil() as usize).min(rest.len());
             for i in 0..m {
-                all.swap(i, i + rng.below((n - i) as u64) as usize);
+                let j = i + rng.below((rest.len() - i) as u64) as usize;
+                rest.swap(i, j);
             }
-            let mut out = all[..m].to_vec();
-            out.sort();
-            out
+            rest.truncate(m);
+            rest.sort();
+            (0..named).chain(rest).collect()
         }
     }
 }
