@@ -703,6 +703,7 @@ fn fill_with_a_trickling_host(hosts: usize, batch: Option<usize>, trickle: bool,
         net.trickle_hosts.insert((h1, c), (0, Vec::new()));
         net.held_hosts.extend(&hs[1..]);
     }
+    let passes = net.sync(c).label_passes(&l);
     net.set_online(c, true);
     net.run();
     // what the trickling host answers first (whole frames, before it starts)
@@ -726,7 +727,7 @@ fn fill_with_a_trickling_host(hosts: usize, batch: Option<usize>, trickle: bool,
         if x.trickled.is_none() && !asked_first.is_empty() && asked_first.iter().all(|b| f.net.engine(c).has_blob(b)) {
             x.trickled = Some(now);
         }
-        if x.passed.is_none() && f.net.sync(c).pass_stats().passes > 0 {
+        if x.passed.is_none() && f.net.sync(c).label_passes(&l) > passes {
             x.passed = Some(now);
         }
         if x.read.is_none() && f.held().len() == N {

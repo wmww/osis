@@ -260,6 +260,7 @@ impl SyncEngine {
     fn begin(&mut self, g: &Tid, l: &LabelId, w: &mut Work, closure: &std::sync::Arc<BTreeSet<Tid>>) -> (bool, Scope) {
         let full = self.prepare(g, l, w, closure);
         self.stats.passes += 1;
+        w.passes += 1;
         let scope = if full { Scope::All } else { Scope::Some { commits: std::mem::take(&mut w.touched.commits), blobs: std::mem::take(&mut w.touched.blobs) } };
         (full, scope)
     }
@@ -908,3 +909,6 @@ impl SyncEngine {
         Ok((all, snaps))
     }
 }
+
+
+

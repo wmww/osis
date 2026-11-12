@@ -179,6 +179,12 @@ impl SyncEngine {
         PassStats { examined: self.engine.examined(), ..self.stats }
     }
 
+    /// Passes of label `l` so far (tests).
+    #[doc(hidden)]
+    pub fn label_passes(&self, l: &LabelId) -> u64 {
+        self.work.get(l).map_or(0, |w| w.passes)
+    }
+
     /// The most any label's work set holds waiting for its pass (`SyncConfig::work_max`).
     pub fn work_waiting(&self) -> usize {
         self.work.values().map(|w| w.touched.size()).max().unwrap_or(0)

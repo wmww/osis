@@ -266,6 +266,8 @@ pub(crate) struct Work {
     /// judges everything, so what a source missed while it was none (registering, opening
     /// again, being read) reaches it.
     pub acted: BTreeSet<super::ConnId>,
+    /// Passes of the label so far (`SyncEngine::label_passes`).
+    pub passes: u64,
 }
 
 impl Work {
