@@ -1607,3 +1607,59 @@ fn linked_header_reopens_past_its_expiry_spec_commits_6() {
     assert_eq!(net.engine(a).get(&t, &aks[0]).unwrap(), Some(s("w")));
     assert_eq!(net.engine(a).get(&t, &aks[1]).unwrap(), None, "expired");
 }
+
+// spec/sync.md §7 Role view first, for every delete a pass sends: c, promoted again by a while
+// a is cut from the host, holds the promotion before the host does (its relay waits,
+// `relay_at`) and purges b's large value meanwhile. b, still judging c a reader, holds the
+// purge invalid and the value live: had c deleted the chunks, b would write them again
+// re-encrypted (`relink_lost`), a new write of the value c purged, and both would read it
+// again. So c's chunk deletes wait for the promotion at the host, as its body deletes do; then
+// b applies the purge first and the chunks go, once each
+#[test]
+fn chunk_delete_waits_for_its_role_commits_at_the_host_spec_sync_7() {
+    let (mut net, host, [a, b, c], g, [t]) = hosted::<3, 1>(&[(1, Role::Write), (2, Role::Write)], ["x"], true);
+    let tc = net.tid(c);
+    demote(&mut net, a, g, tc, Role::Read);
+    net.run();
+    let big: String = (0..300_000u32).map(|i| char::from(b'a' + (i.wrapping_mul(2654435761) >> 27) as u8 % 26)).collect();
+    let write = with_retention(&mut net, b, t, &big, osis_schema::Retention { by: osis_schema::PurgeBy::Writer });
+    net.run();
+    let l = net.label(a);
+    let chunks: Vec<osis_base::BlobId> = net.engine(b).header(&write).unwrap().chunks.iter().map(|ch| ch.blob).collect();
+    let at_host = |net: &Net| -> usize { let held = net.host_ids(host, &l); chunks.iter().filter(|x| held.contains(x)).count() };
+    assert!(!chunks.is_empty() && at_host(&net) == chunks.len(), "b's value is chunked, at the host");
+    net.blocked.insert((a, host));
+    net.drop_link(a, host);
+    net.run();
+    let edge = ct::Edge { role: Role::Write, until: None, invite: None, tied: None };
+    let done = net.engine(a).grant(&g, &tc, &edge).unwrap();
+    let _ = net.sync(a).carry_out(done).unwrap();
+    net.pair(a, c);
+    let ups = |net: &Net| -> usize { net.uploaded.iter().filter(|((n, x, _, _), _)| *n == b && *x == l).map(|(_, k)| k).sum() };
+    let dels = |net: &Net| -> usize { net.deleted.iter().filter(|((n, x, id), _)| *n == c && *x == l && chunks.contains(id)).map(|(_, k)| k).sum() };
+    let up0 = ups(&net);
+    purge_reg(&mut net, c, t, write);
+    local(&mut net, c);
+    net.run();
+    // several passes within the relay delay
+    for _ in 0..5 {
+        net.advance(1_000);
+        assert_eq!(at_host(&net), chunks.len(), "kept at the host while the promotion is on its way there");
+        assert_eq!(dels(&net), 0, "no chunk delete sent meanwhile");
+        assert_eq!(ups(&net), up0, "b writes nothing again");
+    }
+    net.advance(31_000);
+    net.advance(1_000);
+    assert_eq!(at_host(&net), 0, "deleted once the promotion is there");
+    assert_eq!(dels(&net), chunks.len(), "each chunk deleted once");
+    let me = net.engine(b).me();
+    let ids = net.engine(c).commit_ids();
+    assert_eq!(ids.into_iter().filter(|x| net.engine(c).header(x).is_some_and(|h| h.author == me && !h.chunks.is_empty())).count(), 1, "b re-encrypted no chunks");
+    assert_eq!(net.read(b, t), None);
+    assert_eq!(net.read(c, t), None);
+}
+
+fn local(net: &mut Net, n: usize) {
+    let acts = net.sync(n).handle(osis_node::sync::Event::Local);
+    net.actions(n, acts);
+}

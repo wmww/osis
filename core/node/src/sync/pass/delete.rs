@@ -406,14 +406,11 @@ impl SyncEngine {
         };
         self.stats.entries += ids.len() as u64;
         let desired = desired(bodies);
-        // deletes in flight on this connection are not sent again (`RESEND_MS`)
+        // deletes in flight on this connection are not sent again (`RESEND_MS`), nor one twice in
+        // a pass (`sent`)
         let now = self.now();
-        let busy = |s: &Self, id: &BlobId| s.conns.get(&conn).is_some_and(|c| crate::sync::in_flight(c, &c.req.deleting, (l, *id), now));
-        let send = |s: &mut Self, id: BlobId| {
-            if let Some(c) = s.conns.get_mut(&conn) {
-                c.req.deleting.insert((l, id), (now, crate::sync::UNTAGGED));
-            }
-        };
+        let mut sent: BTreeSet<BlobId> = BTreeSet::new();
+        let busy = |s: &Self, sent: &BTreeSet<BlobId>, id: &BlobId| sent.contains(id) || s.conns.get(&conn).is_some_and(|c| crate::sync::in_flight(c, &c.req.deleting, (l, *id), now));
         let mut items = Vec::new();
         // capped rewrites to upload again, each replacing the bodies it carries
         let mut replace: BTreeMap<BlobId, Vec<osis_label::DeleteItem>> = BTreeMap::new();
@@ -429,19 +426,10 @@ impl SyncEngine {
             }
             match fate {
                 Fate::Keep | Fate::Wait => {}
-                // a delete is judged by this node's role view (a carrier's validity, the rights
-                // behind it); the label's other holders at the host judge by what the host holds.
-                // While a role commit this node holds there is still on its way, a holder lacking
-                // it may judge the carrier invalid and place the body again, under a fresh
-                // encryption past the tombstone, every pass: deletes wait until the host holds
-                // the role commits this node does (at most the relay delay and a round trip)
-                Fate::Delete(..) if at.roles_behind => {
-                    left.commits.insert(commit);
-                }
                 Fate::Delete(_, item, via) => {
                     left.commits.insert(commit);
-                    if !busy(self, &id) {
-                        send(self, id);
+                    if !busy(self, &sent, &id) {
+                        sent.insert(id);
                         match via {
                             Some(q) => replace.entry(q).or_default().push(item),
                             None => items.push(item),
@@ -460,11 +448,11 @@ impl SyncEngine {
         self.fetch_on(conn, l, wants, out)?;
         for (id, chunk) in &chunks {
             left.blobs.insert(*id);
-            if busy(self, id) {
+            if busy(self, &sent, id) {
                 continue;
             }
             if let Some(item) = self.chunk_delete(conn, keys, &l, id, chunk, out)? {
-                send(self, *id);
+                sent.insert(*id);
                 items.push(item);
             }
         }
@@ -472,11 +460,11 @@ impl SyncEngine {
         // (spec/sync.md §2: only role-class commits and certificates stay)
         if keys.delete.is_some() && self.is_replaced(g, &l) {
             for b in self.replaced_leftovers(&host, &l) {
-                if busy(self, &b) {
+                if busy(self, &sent, &b) {
                     continue;
                 }
                 if let Some(item) = delete_item(keys, &l, b, None, &[], true) {
-                    send(self, b);
+                    sent.insert(b);
                     items.push(item);
                 }
             }
@@ -491,7 +479,7 @@ impl SyncEngine {
             for b in self.copy_links(&l, copied)? {
                 if self.state.is_present(&host, &l, &b) {
                     left.blobs.insert(b);
-                    if !busy(self, &b) {
+                    if !busy(self, &sent, &b) {
                         gone.insert(b);
                     }
                 }
@@ -504,9 +492,25 @@ impl SyncEngine {
             }
             for b in gone {
                 if let Some(item) = delete_item(keys, &l, b, None, &[], true) {
-                    send(self, b);
+                    sent.insert(b);
                     items.push(item);
                 }
+            }
+        }
+        // a delete is judged by this node's role view (a carrier's validity, a purge's or a
+        // compaction's rights); the label's other holders at the host judge by what the host
+        // holds. While a role commit this node holds there is still on its way, a holder lacking
+        // it may still hold what goes: a body it places again under a fresh encryption past the
+        // tombstone, every pass; a large value's chunks it writes again re-encrypted
+        // (`relink_lost`), reviving a purged value. So every delete waits until the host holds
+        // the role commits this node does (at most the relay delay and a round trip; `relay_at`
+        // schedules the pass)
+        if at.roles_behind {
+            return Ok(());
+        }
+        if let Some(c) = self.conns.get_mut(&conn) {
+            for id in &sent {
+                c.req.deleting.insert((l, *id), (now, crate::sync::UNTAGGED));
             }
         }
         if !items.is_empty() {
