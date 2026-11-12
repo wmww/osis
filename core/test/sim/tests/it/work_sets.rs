@@ -16,11 +16,11 @@ use std::io::Write;
 type Run = (Result<Report, Failure>, Arrivals);
 
 /// One scenario run with work sets and with full passes.
-fn both(name: &str, seed: u64) -> (Run, Run) {
+fn both(name: &str, setup: u64, seed: u64) -> (Run, Run) {
     // the two runs on two threads (`with_full_passes` is per thread)
     std::thread::scope(|s| {
-        let full = s.spawn(|| with_arrivals(|| with_full_passes(|| replay(name, seed))));
-        (with_arrivals(|| replay(name, seed)), full.join().unwrap())
+        let full = s.spawn(|| with_arrivals(|| with_full_passes(|| replay(name, setup, seed))));
+        (with_arrivals(|| replay(name, setup, seed)), full.join().unwrap())
     })
 }
 
@@ -50,7 +50,7 @@ fn parted((work, at): (&Report, &Arrivals), (full, ref_at): (&Report, &Arrivals)
 }
 
 fn same(name: &str, seed: u64) {
-    let ((work, at), (full, ref_at)) = both(name, seed);
+    let ((work, at), (full, ref_at)) = both(name, 0, seed);
     let (work, full) = (work.unwrap_or_else(|f| panic!("{f}")), full.unwrap_or_else(|f| panic!("full passes: {f}")));
     let apart = parted((&work, &at), (&full, &ref_at));
     assert!(apart.is_empty(), "{name} seed {seed}: {apart:#?}");
@@ -67,7 +67,7 @@ fn work_sets_purge_on_replace() {
 // the same run on another stream is no difference.
 #[test]
 fn compared_runs_ignore_the_random_stream() {
-    let run = |other: bool| with_arrivals(|| if other { osis_sim::net::with_other_stream(|| replay("purge_on_replace", 0)) } else { replay("purge_on_replace", 0) });
+    let run = |other: bool| with_arrivals(|| if other { osis_sim::net::with_other_stream(|| replay("purge_on_replace", 0, 0)) } else { replay("purge_on_replace", 0, 0) });
     let ((a, at), (b, bt)) = (run(false), run(true));
     let (a, b) = (a.unwrap_or_else(|f| panic!("{f}")), b.unwrap_or_else(|f| panic!("{f}")));
     assert_ne!(a.digest, b.digest, "the streams differ");
@@ -76,21 +76,22 @@ fn compared_runs_ignore_the_random_stream() {
 }
 
 // spec/sync.md §6, §7: every scenario (`OSIS_SIM_ONLY=a,b` narrows them), 20 seeds
-// (`OSIS_SIM_SEEDS`) from 0 (`OSIS_SIM_FROM`): work sets give the full passes' run. A line to
-// stderr gives the count either way.
+// (`OSIS_SIM_SEEDS`) from 0 (`OSIS_SIM_FROM`) over the setup of `OSIS_SIM_SETUP` (default
+// `OSIS_SIM_FROM`): work sets give the full passes' run. A line to stderr gives the count either way.
 #[test]
 #[ignore = "by hand"]
 fn work_sets_match_full_passes() {
     let seeds = osis_base::testenv::Seeds::from_env("OSIS_SIM_FROM", "OSIS_SIM_SEEDS", 0..20);
     seeds.announce("work_sets_match_full_passes");
+    let setup = osis_sim::setup_seed(seeds.range.start);
     let only: Vec<String> = std::env::var("OSIS_SIM_ONLY").map(|s| s.split(',').map(String::from).collect()).unwrap_or_default();
     let jobs: Vec<(&str, u64)> = osis_sim::SCENARIOS.iter().filter(|(n, _)| osis_sim::blocked(n).is_none() && (only.is_empty() || only.iter().any(|o| o == n))).flat_map(|(n, _)| seeds.range.clone().map(move |s| (*n, s))).collect();
     let runs = jobs.len();
     // two threads per job: half a thread per core. A job past `OSIS_SEED_TIMEOUT_SECS` is named
     // hung: its thread's CPU time, or none at all while it waits on the full passes' thread
     let threads = osis_base::testenv::threads("OSIS_SEED_THREADS").div_ceil(2);
-    let label = |(n, s): &(&str, u64)| format!("{n} seed {s} (replay: OSIS_SIM_ONLY={n} OSIS_SIM_FROM={s} OSIS_SIM_SEEDS=1)");
-    let results = osis_base::testenv::run_jobs("work_sets_match_full_passes", &jobs, threads, true, label, |&(name, seed)| match both(name, seed) {
+    let label = |(n, s): &(&str, u64)| format!("{n} seed {s} (replay: OSIS_SIM_ONLY={n} OSIS_SIM_FROM={s} OSIS_SIM_SEEDS=1 OSIS_SIM_SETUP={setup})");
+    let results = osis_base::testenv::run_jobs("work_sets_match_full_passes", &jobs, threads, true, label, |&(name, seed)| match both(name, setup, seed) {
         ((Ok(work), at), (Ok(full), ref_at)) => {
             let lines = parted((&work, &at), (&full, &ref_at));
             if lines.is_empty() { Ok(None) } else { Ok(Some(format!("{name} seed {seed}: {} differences, first {:#?}", lines.len(), &lines[..lines.len().min(5)]))) }

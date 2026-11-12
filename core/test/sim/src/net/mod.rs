@@ -23,7 +23,7 @@ pub mod skew;
 
 use crate::check::Checker;
 use crate::dice::Dice;
-use crate::harness::{ClockSpec, Failure, Report, Res, T0, wall_of};
+use crate::harness::{ClockSpec, Failure, Report, Res, Seeds, T0, wall_of};
 use crate::workload;
 use osis_base::{Clock, CommitId, LabelId, ManualClock, Role, Tid, WallMs};
 use osis_crypto::SeededRng;
@@ -273,6 +273,7 @@ impl End {
     }
 }
 
+#[derive(Clone)]
 struct Link {
     dialer: End,
     acceptor: End,
@@ -282,12 +283,14 @@ struct Link {
     route: Option<Route>,
 }
 
+#[derive(Clone)]
 enum Payload {
     Up,
     Bytes(Vec<u8>),
     Down,
 }
 
+#[derive(Clone)]
 struct Msg {
     link: u64,
     to: End,
@@ -491,8 +494,148 @@ impl NetSim {
         }
     }
 
+    /// Scenario `name`'s calm setup (notes/testing.md, Sim setups): `build` on
+    /// `NetSim::new(name, s.setup, cfg)`, built once per process per (name, `params`, setup seed,
+    /// run mode) and copied for each run, the copy going on from `s.seed` (`copy`). `params` names
+    /// what the seed picks that the setup depends on (a topology). `build` takes no scheduler
+    /// step: everything from the first `run` on is the seed's.
+    pub fn setup<T: Clone + Send + 'static>(name: &str, params: &str, s: Seeds, cfg: NetConfig, build: impl FnOnce(&mut NetSim) -> Res<T>) -> Res<(NetSim, T)> {
+        let (full, other, compared) = (FULL_PASSES.with(|x| x.get()), OTHER_STREAM.with(|x| x.get()), compared());
+        let key = format!("osis_sim::NetSim::setup/{name}/{params}/{}/{full}/{other}/{compared}", s.setup);
+        let (r, at) = osis_base::copying::cached(&key, || {
+            // what reached the hosts during the setup, given to every copy's arrivals
+            let outer = ARRIVALS.with(|a| a.replace(compared.then(Arrivals::new)));
+            let mut sim = NetSim::new(name, s.setup, cfg);
+            let r = build(&mut sim).and_then(|t| if sim.report.steps == 0 { Ok((sim, t)) } else { Err(sim.fail("the setup took a scheduler step")) });
+            (r, ARRIVALS.with(|a| a.replace(outer)).unwrap_or_default())
+        }, |(r, at)| {
+            let r = match r {
+                Ok((sim, t)) => sim.copy(s.seed).map(|c| (c, t.clone())),
+                Err(f) => Err(f.clone()),
+            };
+            (r, at.clone())
+        });
+        ARRIVALS.with(|a| {
+            if let Some(a) = a.borrow_mut().as_mut() {
+                for (k, t) in at {
+                    a.entry(k).or_insert(t);
+                }
+            }
+        });
+        r
+    }
+
+    /// A copy of this sim going on from `seed`: every node and host as it stands
+    /// (`SyncEngine::test_copy`, `Hub::test_copy`, their stores and fault plans), each seeded
+    /// generator in them drawing a stream of `seed` (`copying_reseeded`), the scheduler's dice
+    /// and every keyed roll (boots, links, releases) of `seed`. The original's event receivers are
+    /// replaced by ones holding what they had not read, as the copy's hold it.
+    fn copy(&mut self, seed: u64) -> Res<NetSim> {
+        let copied = osis_base::copying::copying_reseeded(seed, || -> Result<NetSim, String> {
+            let host_clock = Arc::new(ManualClock::new(self.host_clock.now_wall_ms()));
+            let hc: Arc<dyn Clock> = host_clock.clone();
+            let mut nodes = Vec::new();
+            for (i, n) in self.nodes.iter_mut().enumerate() {
+                let clock = Arc::new(ManualClock::new(n.clock.now_wall_ms()));
+                let c: Arc<dyn Clock> = clock.clone();
+                let mut sync = n.sync.as_mut().map(|x| x.test_copy(c.clone())).transpose().map_err(|e| format!("node {i}: {e}"))?;
+                let events = match (n.events.as_mut(), n.sync.as_mut(), sync.as_mut()) {
+                    (Some(ev), Some(old), Some(new)) => {
+                        let pending: Vec<osis_node::Event> = ev.try_iter().collect();
+                        *ev = old.engine_mut().test_subscribe_with(pending.clone(), false);
+                        Some(new.engine_mut().test_subscribe_with(pending, false))
+                    }
+                    _ => None,
+                };
+                let hub = n.hub.as_ref().map(|h| h.test_copy(c.clone())).transpose().map_err(|e| format!("node {i} hub: {e}"))?;
+                nodes.push(NetNode {
+                    sync,
+                    events,
+                    backend: n.backend.test_copy(),
+                    root: n.root.test_copy(),
+                    hub_disk: (n.hub_disk.0.test_copy(), n.hub_disk.1.test_copy()),
+                    faults: n.faults.test_copy(),
+                    clock,
+                    spec: n.spec,
+                    cfg: n.cfg.clone(),
+                    wake: n.wake,
+                    up: n.up,
+                    lost: n.lost,
+                    tid: n.tid,
+                    sent_bytes: n.sent_bytes,
+                    hub,
+                });
+            }
+            let mut hosts = Vec::new();
+            for (i, h) in self.hosts.iter_mut().enumerate() {
+                let sync = h.sync.as_mut().map(|x| x.test_copy(hc.clone())).transpose().map_err(|e| format!("host {i}: {e}"))?;
+                let hub = h.hub.as_ref().map(|x| x.test_copy(hc.clone())).transpose().map_err(|e| format!("host {i} hub: {e}"))?;
+                hosts.push(NetHost {
+                    hub,
+                    sync,
+                    engine_disk: (h.engine_disk.0.test_copy(), h.engine_disk.1.test_copy(), h.engine_disk.2),
+                    wake: h.wake,
+                    backend: h.backend.test_copy(),
+                    root: h.root.test_copy(),
+                    faults: h.faults.test_copy(),
+                    key: h.key,
+                    address: h.address.clone(),
+                    peers: h.peers.clone(),
+                    up: h.up,
+                    evil: h.evil,
+                    sent: h.sent.clone(),
+                    policy: h.policy.clone(),
+                    slow: h.slow,
+                });
+            }
+            Ok(NetSim {
+                scenario: self.scenario.clone(),
+                seed,
+                dice: Dice::new(seed),
+                elapsed: self.elapsed,
+                net: self.net,
+                host_clock,
+                nodes,
+                hosts,
+                groups: self.groups.clone(),
+                cfg: self.cfg.clone(),
+                report: self.report.clone(),
+                written: self.written.clone(),
+                calm: self.calm,
+                links: self.links.clone(),
+                next_link: self.next_link,
+                next_hub_conn: self.next_hub_conn,
+                queue: self.queue.clone(),
+                seq: self.seq,
+                blocked: self.blocked.clone(),
+                unreachable: self.unreachable.clone(),
+                trace: self.trace.clone(),
+                check: self.check.clone(),
+                known: self.known.clone(),
+                purged: self.purged.clone(),
+                tombs: self.tombs.clone(),
+                excused: self.excused.clone(),
+                account_of: self.account_of.clone(),
+                verbose: self.verbose,
+                watch: self.watch,
+                dishonest: self.dishonest.clone(),
+                parked_ok: self.parked_ok.clone(),
+                uploads: self.uploads.clone(),
+                count_uploads: self.count_uploads,
+                held: self.held.clone(),
+                names: self.names.clone(),
+                watched: self.watched.clone(),
+                sent_watched: self.sent_watched,
+                eph: self.eph.clone(),
+                reach: self.reach.clone(),
+                lan_drop_pct: self.lan_drop_pct,
+            })
+        });
+        copied.map_err(|e| self.fail(format!("setup copy: {e}")))
+    }
+
     pub fn fail(&self, what: impl Into<String>) -> Failure {
-        Failure { scenario: self.scenario.clone(), seed: self.seed, step: self.report.steps, what: what.into(), trace: self.trace.iter().cloned().collect() }
+        Failure { scenario: self.scenario.clone(), setup: self.seed, seed: self.seed, step: self.report.steps, what: what.into(), trace: self.trace.iter().cloned().collect() }
     }
 
     pub fn note(&mut self, s: String) {

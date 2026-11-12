@@ -4,10 +4,10 @@
 //! writes and compaction.
 
 use super::library::{add_tag, tags};
-use super::scenarios::{ak, clock, persons, shared_group, sim};
+use super::scenarios::{ak, clock, persons, setup, shared_group};
 use super::{NetSim, NetWeights, Party};
 use crate::dice::Dice;
-use crate::harness::{Report, Res};
+use crate::harness::{Report, Res, Seeds};
 use osis_base::{BlobId, CommitId, LabelId, Role, Value};
 use osis_crypto::SeededRng;
 use osis_node::Mutation;
@@ -70,29 +70,31 @@ fn future_commit(sim: &mut NetSim, n: usize, c: &CommitId) -> Res<(Vec<u8>, Comm
 /// stores it parked (pending, not read, no failure); a reader relays it to a host the writer
 /// does not reach; an old writer compacting the aspect and deleting what its snapshot covers
 /// leaves it at the hosts (an old writer never destroys what it cannot read).
-pub fn future_format(seed: u64) -> Res<Report> {
-    let mut d = Dice::new(seed ^ 0xf5);
-    let mut sim = sim("future_format", seed, NetWeights::default());
-    let s0 = sim.add_host()?;
-    let s1 = sim.add_host()?;
-    let a = sim.add_node(&[s0], clock(&mut d))?;
-    let w = sim.add_node(&[s0], clock(&mut d))?;
-    let r = sim.add_node(&[s0, s1], clock(&mut d))?;
-    let c = sim.add_node(&[s0, s1], clock(&mut d))?;
-    let [pa, pw, pr, pc] = persons(&mut sim, [a, w, r, c], [s0, s0, s0, s1])?;
-    let g = shared_group(&mut sim, a, pa, &[s0, s1], &[(pw, Role::Write), (pr, Role::Read), (pc, Role::Read)])?;
-    let t = sim.item(a, g)?;
-    sim.quiet(40)?;
-    // from here the writers reach s0 only and c reaches s1 only (the grants went through first)
-    for n in [a, w] {
-        sim.sever(Party::N(n), Party::S(s1));
-    }
-    sim.sever(Party::N(c), Party::S(s0));
-    sim.reconnect_all();
-    sim.quiet(40)?;
-    add_tag(&mut sim, a, t, "old")?;
-    let base = add_tag(&mut sim, w, t, "base")?;
-    sim.quiet(40)?;
+pub fn future_format(s: Seeds) -> Res<Report> {
+    let (mut sim, (s0, s1, [a, w, r, c], g, t, base)) = setup("future_format", s, NetWeights::default(), |sim| {
+        let mut d = Dice::new(sim.seed ^ 0xf5);
+        let s0 = sim.add_host()?;
+        let s1 = sim.add_host()?;
+        let a = sim.add_node(&[s0], clock(&mut d))?;
+        let w = sim.add_node(&[s0], clock(&mut d))?;
+        let r = sim.add_node(&[s0, s1], clock(&mut d))?;
+        let c = sim.add_node(&[s0, s1], clock(&mut d))?;
+        let [pa, pw, pr, pc] = persons(sim, [a, w, r, c], [s0, s0, s0, s1])?;
+        let g = shared_group(sim, a, pa, &[s0, s1], &[(pw, Role::Write), (pr, Role::Read), (pc, Role::Read)])?;
+        let t = sim.item(a, g)?;
+        sim.quiet(40)?;
+        // from here the writers reach s0 only and c reaches s1 only (the grants went through first)
+        for n in [a, w] {
+            sim.sever(Party::N(n), Party::S(s1));
+        }
+        sim.sever(Party::N(c), Party::S(s0));
+        sim.reconnect_all();
+        sim.quiet(40)?;
+        add_tag(sim, a, t, "old")?;
+        let base = add_tag(sim, w, t, "base")?;
+        sim.quiet(40)?;
+        Ok((s0, s1, [a, w, r, c], g, t, base))
+    })?;
     // the newer build's commit, uploaded by its writer
     let (pt, fid) = future_commit(&mut sim, w, &base)?;
     let k = sim.label_keys(w, s0, &g)?;
@@ -144,24 +146,26 @@ pub fn future_format(seed: u64) -> Res<Report> {
 /// with a default, a new aspect); the old node reads what it knows, writes its version-1 struct
 /// and compacts. Expected: the new field and aspect survive at every node (open structs; a
 /// writer never removes data its schema cannot read).
-pub fn newer_schema(seed: u64) -> Res<Report> {
-    let mut d = Dice::new(seed ^ 0x5c);
-    let mut sim = sim("newer_schema", seed, NetWeights::default());
-    let s = sim.add_host()?;
-    let a = sim.add_node(&[s], clock(&mut d))?;
-    let n = sim.add_node(&[s], clock(&mut d))?;
-    let [pa, pn] = persons(&mut sim, [a, n], [s, s])?;
-    let g = shared_group(&mut sim, a, pa, &[s], &[(pn, Role::Write)])?;
-    let t = sim.item(a, g)?;
-    sim.reconnect_all();
-    sim.quiet(40)?;
-    // separate commits: compacting k:rec.0 then drops whole commits
-    let mut m = Mutation::new();
-    m.set(t, &REC2, &rec(&[(0, "n"), (1, "nb")])).map_err(|e| sim.fail(e.to_string()))?;
-    sim.commit(n, m)?;
-    let mut m = Mutation::new();
-    m.set(t, &NEW2, &Value::Str("fresh".into())).map_err(|e| sim.fail(e.to_string()))?;
-    sim.commit(n, m)?;
+pub fn newer_schema(s: Seeds) -> Res<Report> {
+    let (mut sim, (a, n, t)) = setup("newer_schema", s, NetWeights::default(), |sim| {
+        let mut d = Dice::new(sim.seed ^ 0x5c);
+        let s = sim.add_host()?;
+        let a = sim.add_node(&[s], clock(&mut d))?;
+        let n = sim.add_node(&[s], clock(&mut d))?;
+        let [pa, pn] = persons(sim, [a, n], [s, s])?;
+        let g = shared_group(sim, a, pa, &[s], &[(pn, Role::Write)])?;
+        let t = sim.item(a, g)?;
+        sim.reconnect_all();
+        sim.quiet(40)?;
+        // separate commits: compacting k:rec.0 then drops whole commits
+        let mut m = Mutation::new();
+        m.set(t, &REC2, &rec(&[(0, "n"), (1, "nb")])).map_err(|e| sim.fail(e.to_string()))?;
+        sim.commit(n, m)?;
+        let mut m = Mutation::new();
+        m.set(t, &NEW2, &Value::Str("fresh".into())).map_err(|e| sim.fail(e.to_string()))?;
+        sim.commit(n, m)?;
+        Ok((a, n, t))
+    })?;
     sim.run(40)?;
     sim.quiet(40)?;
     let rk = osis_base::Ak::new(REC1.ak()).map_err(|e| sim.fail(e.to_string()))?;

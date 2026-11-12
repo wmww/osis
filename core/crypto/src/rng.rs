@@ -18,7 +18,7 @@ pub trait NodeRng: rand_core::CryptoRngCore + Send {
 
 impl NodeRng for SeededRng {
     fn test_copy(&self) -> Box<dyn NodeRng> {
-        Box::new(SeededRng(self.0.clone()))
+        Box::new(SeededRng::test_copy(self))
     }
 }
 
@@ -29,10 +29,18 @@ impl NodeRng for rand_core::OsRng {
 }
 
 impl SeededRng {
-    /// Tests only: `NodeRng::test_copy` unboxed.
+    /// Tests only: `NodeRng::test_copy` unboxed. Inside `osis_base::copying::copying_reseeded`
+    /// a new stream instead, keyed by the salt and this stream's next 32 bytes (this one does
+    /// not move).
     #[doc(hidden)]
     pub fn test_copy(&self) -> SeededRng {
-        SeededRng(self.0.clone())
+        let mut same = SeededRng(self.0.clone());
+        let Some(salt) = osis_base::copying::reseed() else { return same };
+        let mut key = [0u8; 32];
+        same.fill_bytes(&mut key);
+        let mut h = blake3::Hasher::new_keyed(&key);
+        h.update(&salt.to_le_bytes());
+        SeededRng(h.finalize_xof())
     }
 }
 
@@ -88,5 +96,17 @@ mod tests {
         let (mut a, mut b) = (SeededRng::from_u64(0), SeededRng::from_u64(0));
         assert_eq!(a.next_u64(), b.next_u64());
         assert_ne!(SeededRng::from_u64(1).next_u64(), SeededRng::from_u64(0).next_u64());
+    }
+
+    // spec: none (notes/testing.md, Copied worlds): a copy goes on with the same stream; a
+    // reseeded copy with a stream of its salt, the same for the same salt, the original unmoved
+    #[test]
+    fn reseeded_copy_draws_the_salts_stream() {
+        let mut a = SeededRng::from_u64(7);
+        let same = a.test_copy().next_u64();
+        let draw = |salt| osis_base::copying::copying_reseeded(salt, || a.test_copy().next_u64());
+        let (x, x2, y) = (draw(1), draw(1), draw(2));
+        assert!(x == x2 && x != y && x != same);
+        assert_eq!(a.next_u64(), same);
     }
 }

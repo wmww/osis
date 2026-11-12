@@ -18,10 +18,10 @@
 //! by its last write's expiry) and `signal_reaches` (an ephemeral signal reaches each connected reader
 //! once).
 
-use super::scenarios::{clock, persons, shared_group, sim};
-use super::{NetSim, NetWeights, Party};
+use super::scenarios::{clock, lossy, persons, shared_group};
+use super::{NetConfig, NetSim, NetWeights, Party};
 use crate::dice::Dice;
-use crate::harness::{Report, Res};
+use crate::harness::{Report, Res, Seeds};
 use osis_host::HostPolicy;
 use osis_base::{Ak, Role, Tid, Value, WallMs};
 use osis_crdt::{Op, PathOp, PathSeg};
@@ -541,27 +541,32 @@ fn random_cap(d: &mut Dice) -> u64 {
 /// ephemeral (expiring ones included) and signal writes amid durable writes, lossy links, node
 /// and host crashes (mid-write too), partitions and slow hosts; then the quiescent
 /// invariants, an author refreshing its cursor and leaving, and a signal to everyone connected.
-pub fn ephemeral(seed: u64) -> Res<Report> {
-    let mut d = Dice::new(seed ^ 0xe9);
+pub fn ephemeral(s: Seeds) -> Res<Report> {
     let w = NetWeights { write: 1, ephemeral: 5, crash: 1, restart: 2, host_crash: 1, host_restart: 2, partition: 1, heal: 2, slow: 1, ..NetWeights::default() };
-    let mut sim = sim("ephemeral", seed, w);
-    let cap = if seed % 2 == 1 { HostPolicy { ephemeral_bytes: random_cap(&mut d), ..sim.cfg.policy.clone() } } else { sim.cfg.policy.clone() };
-    let s0 = sim.add_host_with(cap)?;
-    let s1 = sim.add_host()?;
-    sim.replicate(s0, s1)?;
-    let a = sim.add_node(&[s0, s1], clock(&mut d))?;
-    let b = sim.add_node(&[s0, s1], clock(&mut d))?;
-    let c = sim.add_node(&[s0], clock(&mut d))?;
-    let e = sim.add_node(&[s1], clock(&mut d))?;
-    sim.sever(Party::N(c), Party::S(s1));
-    sim.sever(Party::N(e), Party::S(s0));
-    let [pa, pb, pc, pe] = persons(&mut sim, [a, b, c, e], [s0, s0, s0, s1])?;
-    let g = shared_group(&mut sim, a, pa, &[s0, s1], &[(pb, Role::Write), (pc, Role::Write), (pe, Role::Read)])?;
-    let t = sim.item(a, g)?;
-    sim.track_ephemeral(t, g);
-    sim.quiet(40)?;
-    sim.window(a, g)?;
-    sim.quiet(40)?;
+    let cfg = NetConfig { faults: lossy(), weights: w, ..NetConfig::default() };
+    // the seed's cap: a setup of each
+    let cap = (s.seed % 2 == 1).then(|| random_cap(&mut Dice::new(s.seed ^ 0xe9)));
+    let (mut sim, (a, b, c, g)) = NetSim::setup("ephemeral", &format!("{cap:?}"), s, cfg, |sim| {
+        let mut d = Dice::new(sim.seed ^ 0xe9);
+        let policy = HostPolicy { ephemeral_bytes: cap.unwrap_or(sim.cfg.policy.ephemeral_bytes), ..sim.cfg.policy.clone() };
+        let s0 = sim.add_host_with(policy)?;
+        let s1 = sim.add_host()?;
+        sim.replicate(s0, s1)?;
+        let a = sim.add_node(&[s0, s1], clock(&mut d))?;
+        let b = sim.add_node(&[s0, s1], clock(&mut d))?;
+        let c = sim.add_node(&[s0], clock(&mut d))?;
+        let e = sim.add_node(&[s1], clock(&mut d))?;
+        sim.sever(Party::N(c), Party::S(s1));
+        sim.sever(Party::N(e), Party::S(s0));
+        let [pa, pb, pc, pe] = persons(sim, [a, b, c, e], [s0, s0, s0, s1])?;
+        let g = shared_group(sim, a, pa, &[s0, s1], &[(pb, Role::Write), (pc, Role::Write), (pe, Role::Read)])?;
+        let t = sim.item(a, g)?;
+        sim.track_ephemeral(t, g);
+        sim.quiet(40)?;
+        sim.window(a, g)?;
+        sim.quiet(40)?;
+        Ok((a, b, c, g))
+    })?;
     sim.run(150)?;
     // a second window made amid the faults (the first may be lost by then)
     sim.window_by_any(&[a, b, c], g)?;
@@ -576,22 +581,26 @@ pub fn ephemeral(seed: u64) -> Res<Report> {
 /// writers exchange (no other path): three
 /// writers write a window and a durable item ephemerally under link faults, node crashes and
 /// host restarts (which lose every ephemeral entry), with the host at times slow.
-pub fn ephemeral_capped(seed: u64) -> Res<Report> {
-    let mut d = Dice::new(seed ^ 0xec);
+pub fn ephemeral_capped(s: Seeds) -> Res<Report> {
     let w = NetWeights { write: 1, ephemeral: 6, crash: 1, restart: 2, host_crash: 1, host_restart: 2, partition: 1, heal: 2, slow: 1, ..NetWeights::default() };
-    let mut sim = sim("ephemeral_capped", seed, w);
-    let cap = random_cap(&mut d);
-    let s = sim.add_host_with(HostPolicy { ephemeral_bytes: cap, ..sim.cfg.policy.clone() })?;
-    let a = sim.add_node(&[s], clock(&mut d))?;
-    let b = sim.add_node(&[s], clock(&mut d))?;
-    let c = sim.add_node(&[s], clock(&mut d))?;
-    let [pa, pb, pc] = persons(&mut sim, [a, b, c], [s, s, s])?;
-    let g = shared_group(&mut sim, a, pa, &[s], &[(pb, Role::Write), (pc, Role::Write)])?;
-    let t = sim.item(a, g)?;
-    sim.track_ephemeral(t, g);
-    sim.quiet(40)?;
-    sim.window(b, g)?;
-    sim.quiet(40)?;
+    let cfg = NetConfig { faults: lossy(), weights: w, ..NetConfig::default() };
+    // the seed's cap: a setup of each
+    let cap = random_cap(&mut Dice::new(s.seed ^ 0xec));
+    let (mut sim, (a, b, c, g)) = NetSim::setup("ephemeral_capped", &cap.to_string(), s, cfg, |sim| {
+        let mut d = Dice::new(sim.seed ^ 0xec);
+        let s = sim.add_host_with(HostPolicy { ephemeral_bytes: cap, ..sim.cfg.policy.clone() })?;
+        let a = sim.add_node(&[s], clock(&mut d))?;
+        let b = sim.add_node(&[s], clock(&mut d))?;
+        let c = sim.add_node(&[s], clock(&mut d))?;
+        let [pa, pb, pc] = persons(sim, [a, b, c], [s, s, s])?;
+        let g = shared_group(sim, a, pa, &[s], &[(pb, Role::Write), (pc, Role::Write)])?;
+        let t = sim.item(a, g)?;
+        sim.track_ephemeral(t, g);
+        sim.quiet(40)?;
+        sim.window(b, g)?;
+        sim.quiet(40)?;
+        Ok((a, b, c, g))
+    })?;
     sim.run(150)?;
     sim.window_by_any(&[a, b, c], g)?;
     sim.run(150)?;

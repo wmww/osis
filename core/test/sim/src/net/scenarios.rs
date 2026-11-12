@@ -1,11 +1,12 @@
 //! Phase B scenarios: sync engines and hosts under message faults, partitions,
-//! crashes and data loss. Each is a function of the seed; `crate::replay` reruns any. Setup runs
-//! calm (no faults) and settles with `quiet`; `run` is the faulty random schedule; every
-//! scenario ends with `run_until_quiescent` (the invariants of `check`).
+//! crashes and data loss. Each is a function of its seeds; `crate::replay` reruns any. The setup
+//! runs calm (no faults), settles with `quiet` and is shared by a sweep's seeds (`setup`,
+//! `NetSim::setup`); `run` is the faulty random schedule; every scenario ends with
+//! `run_until_quiescent` (the invariants of `check`).
 
 use super::{LinkFaults, NetConfig, NetSim, NetWeights, Party};
 use crate::dice::Dice;
-use crate::harness::{ClockSpec, Report, Res};
+use crate::harness::{ClockSpec, Report, Res, Seeds};
 use crate::reach::Uplink;
 use crate::workload;
 use osis_base::format::ROLE_KEEP_MS;
@@ -25,8 +26,14 @@ pub fn clock(d: &mut Dice) -> ClockSpec {
     ClockSpec { skew_ms: d.range_i64(-20_000, 20_000), drift_ppm: d.range_i64(-100, 100) }
 }
 
+/// A sim under `weights` and lossy links.
 pub fn sim(name: &str, seed: u64, weights: NetWeights) -> NetSim {
     NetSim::new(name, seed, NetConfig { faults: lossy(), weights, ..NetConfig::default() })
+}
+
+/// Scenario `name`'s calm setup (`NetSim::setup`) under `weights` and lossy links.
+pub fn setup<T: Clone + Send + 'static>(name: &str, s: Seeds, weights: NetWeights, build: impl FnOnce(&mut NetSim) -> Res<T>) -> Res<(NetSim, T)> {
+    NetSim::setup(name, "", s, NetConfig { faults: lossy(), weights, ..NetConfig::default() }, build)
 }
 
 pub fn ak(sim: &NetSim, a: &osis_schema::Aspect<Value>) -> Res<Ak> {
@@ -87,22 +94,24 @@ pub fn write_gone(sim: &mut NetSim, n: usize, t: Tid, v: &str) -> Res<osis_base:
 /// Two nodes of one account through one host (spec/sync.md §2, §6): the account's
 /// home label, the second node paired; both write items of the account's group under a lossy
 /// network with crashes mid-write.
-pub fn two_nodes_host(seed: u64) -> Res<Report> {
-    two_nodes_host_under(seed, lossy())
+pub fn two_nodes_host(s: Seeds) -> Res<Report> {
+    two_nodes_host_under(s, lossy())
 }
 
 /// `two_nodes_host` under link faults `faults`.
-pub fn two_nodes_host_under(seed: u64, faults: LinkFaults) -> Res<Report> {
-    let mut d = Dice::new(seed ^ 0xb2);
-    let mut sim = sim("two_nodes_host", seed, NetWeights { crash: 1, restart: 2, ..NetWeights::default() });
+pub fn two_nodes_host_under(s: Seeds, faults: LinkFaults) -> Res<Report> {
+    let (mut sim, ()) = setup("two_nodes_host", s, NetWeights { crash: 1, restart: 2, ..NetWeights::default() }, |sim| {
+        let mut d = Dice::new(sim.seed ^ 0xb2);
+        let s = sim.add_host()?;
+        let d0 = sim.add_node(&[s], clock(&mut d))?;
+        let d1 = sim.add_node(&[s], clock(&mut d))?;
+        let p = sim.account(d0, &[s])?.devices;
+        sim.pair(d0, d1)?;
+        sim.item(d0, p)?;
+        sim.item(d0, p)?;
+        Ok(())
+    })?;
     sim.cfg.faults = faults;
-    let s = sim.add_host()?;
-    let d0 = sim.add_node(&[s], clock(&mut d))?;
-    let d1 = sim.add_node(&[s], clock(&mut d))?;
-    let p = sim.account(d0, &[s])?.devices;
-    sim.pair(d0, d1)?;
-    sim.item(d0, p)?;
-    sim.item(d0, p)?;
     sim.run(200)?;
     sim.run_until_quiescent(40)?;
     sim.finish()
@@ -111,23 +120,24 @@ pub fn two_nodes_host_under(seed: u64, faults: LinkFaults) -> Res<Report> {
 /// Three accounts share a group through two replicating hosts (spec/sync.md §5 replication,
 /// §6): A (admin, reaches both), B (writer, s0 only), C (reader, s1 only); grants by inbox;
 /// host crashes mid-write, partitions.
-pub fn three_accounts_two_hosts(seed: u64) -> Res<Report> {
-    let mut d = Dice::new(seed ^ 0x3b);
+pub fn three_accounts_two_hosts(s: Seeds) -> Res<Report> {
     let w = NetWeights { host_crash: 1, host_restart: 2, partition: 1, heal: 2, ..NetWeights::default() };
-    let mut sim = sim("three_accounts_two_hosts", seed, w);
-    let s0 = sim.add_host()?;
-    let s1 = sim.add_host()?;
-    sim.replicate(s0, s1)?;
-    let a = sim.add_node(&[s0, s1], clock(&mut d))?;
-    let b = sim.add_node(&[s0], clock(&mut d))?;
-    let c = sim.add_node(&[s1], clock(&mut d))?;
-    sim.sever(Party::N(b), Party::S(s1));
-    sim.sever(Party::N(c), Party::S(s0));
-    let [pa, pb, pc] = persons(&mut sim, [a, b, c], [s0, s0, s1])?;
-    let g = shared_group(&mut sim, a, pa, &[s0, s1], &[(pb, Role::Write), (pc, Role::Read)])?;
-    sim.item(a, g)?;
-    sim.item(a, g)?;
-    sim.quiet(40)?;
+    let (mut sim, ()) = setup("three_accounts_two_hosts", s, w, |sim| {
+        let mut d = Dice::new(sim.seed ^ 0x3b);
+        let s0 = sim.add_host()?;
+        let s1 = sim.add_host()?;
+        sim.replicate(s0, s1)?;
+        let a = sim.add_node(&[s0, s1], clock(&mut d))?;
+        let b = sim.add_node(&[s0], clock(&mut d))?;
+        let c = sim.add_node(&[s1], clock(&mut d))?;
+        sim.sever(Party::N(b), Party::S(s1));
+        sim.sever(Party::N(c), Party::S(s0));
+        let [pa, pb, pc] = persons(sim, [a, b, c], [s0, s0, s1])?;
+        let g = shared_group(sim, a, pa, &[s0, s1], &[(pb, Role::Write), (pc, Role::Read)])?;
+        sim.item(a, g)?;
+        sim.item(a, g)?;
+        sim.quiet(40)
+    })?;
     sim.run(200)?;
     sim.run_until_quiescent(60)?;
     sim.finish()
@@ -137,17 +147,19 @@ pub fn three_accounts_two_hosts(seed: u64) -> Res<Report> {
 /// §5): W writes a writer-purgeable aspect, the admin removes W, then a remaining writer (no
 /// delete key) purges W's body while the admin is away; it is gone from the host and from
 /// every honest node.
-pub fn removed_writer(seed: u64) -> Res<Report> {
-    let mut d = Dice::new(seed ^ 0x7e);
-    let mut sim = sim("removed_writer", seed, NetWeights::default());
-    let s = sim.add_host()?;
-    let a = sim.add_node(&[s], clock(&mut d))?;
-    let b = sim.add_node(&[s], clock(&mut d))?;
-    let w = sim.add_node(&[s], clock(&mut d))?;
-    let [pa, pb, pw] = persons(&mut sim, [a, b, w], [s, s, s])?;
-    let g = shared_group(&mut sim, a, pa, &[s], &[(pb, Role::Write), (pw, Role::Write)])?;
-    let t = sim.item(a, g)?;
-    sim.quiet(40)?;
+pub fn removed_writer(s: Seeds) -> Res<Report> {
+    let (mut sim, (a, b, w, pw, g, t)) = setup("removed_writer", s, NetWeights::default(), |sim| {
+        let mut d = Dice::new(sim.seed ^ 0x7e);
+        let s = sim.add_host()?;
+        let a = sim.add_node(&[s], clock(&mut d))?;
+        let b = sim.add_node(&[s], clock(&mut d))?;
+        let w = sim.add_node(&[s], clock(&mut d))?;
+        let [pa, pb, pw] = persons(sim, [a, b, w], [s, s, s])?;
+        let g = shared_group(sim, a, pa, &[s], &[(pb, Role::Write), (pw, Role::Write)])?;
+        let t = sim.item(a, g)?;
+        sim.quiet(40)?;
+        Ok((a, b, w, pw, g, t))
+    })?;
     sim.run(50)?;
     sim.quiet(40)?;
     let cw = write_gone(&mut sim, w, t, "by w")?;
@@ -181,16 +193,18 @@ pub fn removed_writer(seed: u64) -> Res<Report> {
 /// Compaction, then deletion (spec/sync.md §7): two writers compact aspects while writing;
 /// covered bodies are deleted at the host once the snapshot is there; then a purge; no
 /// ping-pong.
-pub fn compaction(seed: u64) -> Res<Report> {
-    let mut d = Dice::new(seed ^ 0xc0);
-    let mut sim = sim("compaction", seed, NetWeights::default());
-    let s = sim.add_host()?;
-    let a = sim.add_node(&[s], clock(&mut d))?;
-    let b = sim.add_node(&[s], clock(&mut d))?;
-    let [pa, pb] = persons(&mut sim, [a, b], [s, s])?;
-    let g = shared_group(&mut sim, a, pa, &[s], &[(pb, Role::Write)])?;
-    let t = sim.item(a, g)?;
-    sim.quiet(40)?;
+pub fn compaction(s: Seeds) -> Res<Report> {
+    let (mut sim, (s, a, b, t)) = setup("compaction", s, NetWeights::default(), |sim| {
+        let mut d = Dice::new(sim.seed ^ 0xc0);
+        let s = sim.add_host()?;
+        let a = sim.add_node(&[s], clock(&mut d))?;
+        let b = sim.add_node(&[s], clock(&mut d))?;
+        let [pa, pb] = persons(sim, [a, b], [s, s])?;
+        let g = shared_group(sim, a, pa, &[s], &[(pb, Role::Write)])?;
+        let t = sim.item(a, g)?;
+        sim.quiet(40)?;
+        Ok((s, a, b, t))
+    })?;
     sim.run(60)?;
     sim.quiet(40)?;
     let deleted0 = deletions(&sim, s);
@@ -229,19 +243,21 @@ fn deletions(sim: &NetSim, s: usize) -> usize {
 /// only s0, a reader both, a second reader only s1; the second reader reads the writer's content
 /// carried by the first. The readers open the label while the admin registers the steps of the
 /// grants' rotations (an open answered with the old head follows the new one).
-pub fn reader_relays(seed: u64) -> Res<Report> {
-    let mut d = Dice::new(seed ^ 0x2e);
-    let mut sim = sim("reader_relays", seed, NetWeights::default());
-    let s0 = sim.add_host()?;
-    let s1 = sim.add_host()?;
-    let a = sim.add_node(&[s0, s1], clock(&mut d))?;
-    let r = sim.add_node(&[s0, s1], clock(&mut d))?;
-    let c = sim.add_node(&[s1], clock(&mut d))?;
-    sim.sever(Party::N(c), Party::S(s0));
-    let [pa, pr, pc] = persons(&mut sim, [a, r, c], [s0, s0, s1])?;
-    let g = shared_group(&mut sim, a, pa, &[s0, s1], &[(pr, Role::Read), (pc, Role::Read)])?;
-    sim.item(a, g)?;
-    sim.quiet(40)?;
+pub fn reader_relays(s: Seeds) -> Res<Report> {
+    let (mut sim, (a, s1)) = setup("reader_relays", s, NetWeights::default(), |sim| {
+        let mut d = Dice::new(sim.seed ^ 0x2e);
+        let s0 = sim.add_host()?;
+        let s1 = sim.add_host()?;
+        let a = sim.add_node(&[s0, s1], clock(&mut d))?;
+        let r = sim.add_node(&[s0, s1], clock(&mut d))?;
+        let c = sim.add_node(&[s1], clock(&mut d))?;
+        sim.sever(Party::N(c), Party::S(s0));
+        let [pa, pr, pc] = persons(sim, [a, r, c], [s0, s0, s1])?;
+        let g = shared_group(sim, a, pa, &[s0, s1], &[(pr, Role::Read), (pc, Role::Read)])?;
+        sim.item(a, g)?;
+        sim.quiet(40)?;
+        Ok((a, s1))
+    })?;
     // from now on the writer reaches s0 only
     sim.sever(Party::N(a), Party::S(s1));
     sim.run(120)?;
@@ -253,19 +269,21 @@ pub fn reader_relays(seed: u64) -> Res<Report> {
 /// an account is off while two others are removed (the account rotates twice, the home label steps
 /// twice) and stays off past `ROLE_KEEP`, so the host dropped the claim set it needs; it
 /// cannot read the new epoch; re-paired over a direct connection it does.
-pub fn stranded_reseal(seed: u64) -> Res<Report> {
-    let mut d = Dice::new(seed ^ 0x5d);
-    let mut sim = sim("stranded_reseal", seed, NetWeights::default());
-    let s = sim.add_host()?;
-    let d0 = sim.add_node(&[s], clock(&mut d))?;
-    let d1 = sim.add_node(&[s], clock(&mut d))?;
-    let d2 = sim.add_node(&[s], clock(&mut d))?;
-    let d3 = sim.add_node(&[s], clock(&mut d))?;
-    let p = sim.account(d0, &[s])?.devices;
-    for x in [d1, d2, d3] {
-        sim.pair(d0, x)?;
-    }
-    sim.item(d0, p)?;
+pub fn stranded_reseal(s: Seeds) -> Res<Report> {
+    let (mut sim, (d0, d1, d2, d3, p)) = setup("stranded_reseal", s, NetWeights::default(), |sim| {
+        let mut d = Dice::new(sim.seed ^ 0x5d);
+        let s = sim.add_host()?;
+        let d0 = sim.add_node(&[s], clock(&mut d))?;
+        let d1 = sim.add_node(&[s], clock(&mut d))?;
+        let d2 = sim.add_node(&[s], clock(&mut d))?;
+        let d3 = sim.add_node(&[s], clock(&mut d))?;
+        let p = sim.account(d0, &[s])?.devices;
+        for x in [d1, d2, d3] {
+            sim.pair(d0, x)?;
+        }
+        sim.item(d0, p)?;
+        Ok((d0, d1, d2, d3, p))
+    })?;
     sim.run(60)?;
     sim.quiet(40)?;
     let before = newest_read(&mut sim, d1, &p)?;
@@ -303,16 +321,18 @@ pub fn stranded_reseal(seed: u64) -> Res<Report> {
 /// A host loses its data (spec/sync.md §6: a writer uploads every must-hold body the label
 /// lacks): writers re-register the labels and re-upload; the quiescent check finds every
 /// must-hold body back.
-pub fn host_loses_data(seed: u64) -> Res<Report> {
-    let mut d = Dice::new(seed ^ 0x10);
-    let mut sim = sim("host_loses_data", seed, NetWeights { crash: 1, restart: 2, ..NetWeights::default() });
-    let s = sim.add_host()?;
-    let a = sim.add_node(&[s], clock(&mut d))?;
-    let b = sim.add_node(&[s], clock(&mut d))?;
-    let [pa, pb] = persons(&mut sim, [a, b], [s, s])?;
-    let g = shared_group(&mut sim, a, pa, &[s], &[(pb, Role::Write)])?;
-    sim.item(a, g)?;
-    sim.quiet(40)?;
+pub fn host_loses_data(s: Seeds) -> Res<Report> {
+    let (mut sim, s) = setup("host_loses_data", s, NetWeights { crash: 1, restart: 2, ..NetWeights::default() }, |sim| {
+        let mut d = Dice::new(sim.seed ^ 0x10);
+        let s = sim.add_host()?;
+        let a = sim.add_node(&[s], clock(&mut d))?;
+        let b = sim.add_node(&[s], clock(&mut d))?;
+        let [pa, pb] = persons(sim, [a, b], [s, s])?;
+        let g = shared_group(sim, a, pa, &[s], &[(pb, Role::Write)])?;
+        sim.item(a, g)?;
+        sim.quiet(40)?;
+        Ok(s)
+    })?;
     sim.run(120)?;
     sim.wipe_host(s)?;
     sim.run(120)?;
@@ -324,18 +344,20 @@ pub fn host_loses_data(seed: u64) -> Res<Report> {
 /// off while the admin removes a reader and then a writer (two rotations, two steps) and keeps
 /// writing; back online it walks by its stale sync key and reads; the removed holders hold no
 /// later epoch.
-pub fn offline_rotation(seed: u64) -> Res<Report> {
-    let mut d = Dice::new(seed ^ 0x0f);
-    let mut sim = sim("offline_rotation", seed, NetWeights::default());
-    let s = sim.add_host()?;
-    let a = sim.add_node(&[s], clock(&mut d))?;
-    let b = sim.add_node(&[s], clock(&mut d))?;
-    let c = sim.add_node(&[s], clock(&mut d))?;
-    let e = sim.add_node(&[s], clock(&mut d))?;
-    let [pa, pb, pc, pe] = persons(&mut sim, [a, b, c, e], [s, s, s, s])?;
-    let g = shared_group(&mut sim, a, pa, &[s], &[(pb, Role::Read), (pc, Role::Read), (pe, Role::Write)])?;
-    sim.item(a, g)?;
-    sim.quiet(40)?;
+pub fn offline_rotation(s: Seeds) -> Res<Report> {
+    let (mut sim, (a, b, c, e, pb, pe, g)) = setup("offline_rotation", s, NetWeights::default(), |sim| {
+        let mut d = Dice::new(sim.seed ^ 0x0f);
+        let s = sim.add_host()?;
+        let a = sim.add_node(&[s], clock(&mut d))?;
+        let b = sim.add_node(&[s], clock(&mut d))?;
+        let c = sim.add_node(&[s], clock(&mut d))?;
+        let e = sim.add_node(&[s], clock(&mut d))?;
+        let [pa, pb, pc, pe] = persons(sim, [a, b, c, e], [s, s, s, s])?;
+        let g = shared_group(sim, a, pa, &[s], &[(pb, Role::Read), (pc, Role::Read), (pe, Role::Write)])?;
+        sim.item(a, g)?;
+        sim.quiet(40)?;
+        Ok((a, b, c, e, pb, pe, g))
+    })?;
     sim.run(30)?;
     sim.quiet(40)?;
     sim.node_down(c)?;
@@ -365,20 +387,22 @@ pub fn offline_rotation(seed: u64) -> Res<Report> {
 /// A grant to a group (spec/sync.md §3): a thing granted to group H, with H's admin away at the
 /// grant, reaches H's readers through the copy under H's label, a later reader too; a reader
 /// removed from H holds no later epoch of the thing, the others do.
-pub fn grant_to_group(seed: u64) -> Res<Report> {
-    let mut d = Dice::new(seed ^ 0x93);
-    let mut sim = sim("grant_to_group", seed, NetWeights::default());
-    let s = sim.add_host()?;
-    let a = sim.add_node(&[s], clock(&mut d))?;
-    let b = sim.add_node(&[s], clock(&mut d))?;
-    let c = sim.add_node(&[s], clock(&mut d))?;
-    let e = sim.add_node(&[s], clock(&mut d))?;
-    let [pa, pb, pc, pe] = persons(&mut sim, [a, b, c, e], [s, s, s, s])?;
-    let h = shared_group(&mut sim, a, pa, &[s], &[(pb, Role::Read), (pc, Role::Read)])?;
-    let t = sim.group_with(a, pa, &[s], true)?;
-    sim.item(a, t)?;
-    sim.quiet(40)?;
-    sim.grant(a, t, h, Role::Read)?;
+pub fn grant_to_group(s: Seeds) -> Res<Report> {
+    let (mut sim, (a, b, c, e, pa, pb, pe, h, t)) = setup("grant_to_group", s, NetWeights::default(), |sim| {
+        let mut d = Dice::new(sim.seed ^ 0x93);
+        let s = sim.add_host()?;
+        let a = sim.add_node(&[s], clock(&mut d))?;
+        let b = sim.add_node(&[s], clock(&mut d))?;
+        let c = sim.add_node(&[s], clock(&mut d))?;
+        let e = sim.add_node(&[s], clock(&mut d))?;
+        let [pa, pb, pc, pe] = persons(sim, [a, b, c, e], [s, s, s, s])?;
+        let h = shared_group(sim, a, pa, &[s], &[(pb, Role::Read), (pc, Role::Read)])?;
+        let t = sim.group_with(a, pa, &[s], true)?;
+        sim.item(a, t)?;
+        sim.quiet(40)?;
+        sim.grant(a, t, h, Role::Read)?;
+        Ok((a, b, c, e, pa, pb, pe, h, t))
+    })?;
     sim.run(30)?;
     sim.node_down(a)?;
     sim.run(20)?;
@@ -423,15 +447,17 @@ pub fn grant_to_group(seed: u64) -> Res<Report> {
 /// writing (random writes too) until its commits reached the host, then its store is replaced by
 /// the backup and it writes at once, before any pass. The pass brings the lost commits; no
 /// commit anywhere is void (spec/commits.md §4: overlapping counters void both).
-pub fn restore_backup(seed: u64) -> Res<Report> {
-    let mut d = Dice::new(seed ^ 0x8b);
-    let mut sim = sim("restore_backup", seed, NetWeights::default());
-    let s = sim.add_host()?;
-    let d0 = sim.add_node(&[s], clock(&mut d))?;
-    let d1 = sim.add_node(&[s], clock(&mut d))?;
-    let p = sim.account(d0, &[s])?.devices;
-    sim.pair(d0, d1)?;
-    let items = [sim.item(d0, p)?, sim.item(d0, p)?];
+pub fn restore_backup(s: Seeds) -> Res<Report> {
+    let (mut sim, (d0, d1, items)) = setup("restore_backup", s, NetWeights::default(), |sim| {
+        let mut d = Dice::new(sim.seed ^ 0x8b);
+        let s = sim.add_host()?;
+        let d0 = sim.add_node(&[s], clock(&mut d))?;
+        let d1 = sim.add_node(&[s], clock(&mut d))?;
+        let p = sim.account(d0, &[s])?.devices;
+        sim.pair(d0, d1)?;
+        let items = [sim.item(d0, p)?, sim.item(d0, p)?];
+        Ok((d0, d1, items))
+    })?;
     sim.run(80)?;
     sim.quiet(40)?;
     let backup = sim.backup_node(d0)?;
@@ -464,16 +490,18 @@ fn set_all(sim: &mut NetSim, n: usize, items: &[Tid], v: &str) -> Res<()> {
 
 /// A grant whose inbox deposit is lost (spec/sync.md §3, §5): the admin's node crashes right
 /// after granting, before the deposit reached the host; the grant reaches the grantee once the restarted node re-sends it.
-pub fn grant_lost_on_crash(seed: u64) -> Res<Report> {
-    let mut d = Dice::new(seed ^ 0x9c);
-    let mut sim = sim("grant_lost_on_crash", seed, NetWeights::default());
-    let s = sim.add_host()?;
-    let a = sim.add_node(&[s], clock(&mut d))?;
-    let b = sim.add_node(&[s], clock(&mut d))?;
-    let [pa, pb] = persons(&mut sim, [a, b], [s, s])?;
-    let g = sim.group(a, pa, &[s])?;
-    sim.item(a, g)?;
-    sim.quiet(40)?;
+pub fn grant_lost_on_crash(s: Seeds) -> Res<Report> {
+    let (mut sim, (a, pb, g)) = setup("grant_lost_on_crash", s, NetWeights::default(), |sim| {
+        let mut d = Dice::new(sim.seed ^ 0x9c);
+        let s = sim.add_host()?;
+        let a = sim.add_node(&[s], clock(&mut d))?;
+        let b = sim.add_node(&[s], clock(&mut d))?;
+        let [pa, pb] = persons(sim, [a, b], [s, s])?;
+        let g = sim.group(a, pa, &[s])?;
+        sim.item(a, g)?;
+        sim.quiet(40)?;
+        Ok((a, pb, g))
+    })?;
     sim.grant(a, g, pb, Role::Read)?;
     sim.node_down(a)?;
     sim.restart_node(a)?;
@@ -504,16 +532,20 @@ fn new_chunk_bytes(old: &[u8], new: &[u8]) -> u64 {
 /// chunk reuse): each reads the value whole (fetching the chunks it lacks), changes a few
 /// bytes and writes it back; what it uploads per edit stays within 1.2x of the chunks the
 /// edit changed, plus the tree's root node and a fixed allowance for the commit and protocol.
-pub fn large_edits(seed: u64) -> Res<Report> {
+pub fn large_edits(s: Seeds) -> Res<Report> {
+    let seed = s.seed;
+    let (mut sim, (d0, d1, t)) = NetSim::setup("large_edits", "", s, NetConfig::default(), |sim| {
+        let mut d = Dice::new(sim.seed ^ 0x1a);
+        let s = sim.add_host()?;
+        let d0 = sim.add_node(&[s], clock(&mut d))?;
+        let d1 = sim.add_node(&[s], clock(&mut d))?;
+        let p = sim.account(d0, &[s])?.devices;
+        sim.pair(d0, d1)?;
+        let t = sim.item(d0, p)?;
+        sim.quiet(40)?;
+        Ok((d0, d1, t))
+    })?;
     let mut d = Dice::new(seed ^ 0x1a);
-    let mut sim = NetSim::new("large_edits", seed, NetConfig::default());
-    let s = sim.add_host()?;
-    let d0 = sim.add_node(&[s], clock(&mut d))?;
-    let d1 = sim.add_node(&[s], clock(&mut d))?;
-    let p = sim.account(d0, &[s])?.devices;
-    sim.pair(d0, d1)?;
-    let t = sim.item(d0, p)?;
-    sim.quiet(40)?;
     let file = Ak::new("app:file.0").map_err(|e| sim.fail(e.to_string()))?;
     let mut cur = vec![0u8; 8 << 20];
     osis_crypto::RngCore::fill_bytes(&mut osis_crypto::SeededRng::from_u64(seed), &mut cur);
@@ -559,24 +591,27 @@ pub fn large_edits(seed: u64) -> Res<Report> {
 /// and two writers writing at random under faults, then compactions (snapshots), purge-on-replace
 /// and expiring writes, a purge, a demotion of a writer, time past the bounds. Run as is and
 /// under `with_full_passes`, it must give the same run (`core/test/sim/tests/it/work_sets.rs`).
-pub fn work_sets(seed: u64) -> Res<Report> {
-    let mut d = Dice::new(seed ^ 0x3e7);
-    let mut sim = sim("work_sets", seed, NetWeights { partition: 1, heal: 2, ..NetWeights::default() });
-    let s0 = sim.add_host()?;
-    let s1 = sim.add_host()?;
-    sim.replicate(s0, s1)?;
-    let a = sim.add_node(&[s0, s1], clock(&mut d))?;
-    let b = sim.add_node(&[s0, s1], clock(&mut d))?;
-    let c = sim.add_node(&[s1], clock(&mut d))?;
-    let [pa, pb, pc] = persons(&mut sim, [a, b, c], [s0, s0, s1])?;
-    let g = shared_group(&mut sim, a, pa, &[s0, s1], &[(pb, Role::Write), (pc, Role::Write)])?;
-    let t = sim.item(a, g)?;
-    sim.item(b, g)?;
-    let mut m = Mutation::new();
-    let latest = ak(&sim, &workload::LATEST)?;
-    m.set(t, &osis_schema::core_types::RETENTION, &osis_schema::core_types::RetentionSetting::of(latest, osis_schema::History::PurgeOnReplace)).map_err(|e| sim.fail(e.to_string()))?;
-    sim.commit(a, m)?;
-    sim.quiet(40)?;
+pub fn work_sets(s: Seeds) -> Res<Report> {
+    let (mut sim, (a, b, c, pc, g, t)) = setup("work_sets", s, NetWeights { partition: 1, heal: 2, ..NetWeights::default() }, |sim| {
+        let mut d = Dice::new(sim.seed ^ 0x3e7);
+        let s0 = sim.add_host()?;
+        let s1 = sim.add_host()?;
+        sim.replicate(s0, s1)?;
+        let a = sim.add_node(&[s0, s1], clock(&mut d))?;
+        let b = sim.add_node(&[s0, s1], clock(&mut d))?;
+        let c = sim.add_node(&[s1], clock(&mut d))?;
+        let [pa, pb, pc] = persons(sim, [a, b, c], [s0, s0, s1])?;
+        let g = shared_group(sim, a, pa, &[s0, s1], &[(pb, Role::Write), (pc, Role::Write)])?;
+        let t = sim.item(a, g)?;
+        sim.item(b, g)?;
+        let mut m = Mutation::new();
+        let latest = ak(sim, &workload::LATEST)?;
+        m.set(t, &osis_schema::core_types::RETENTION, &osis_schema::core_types::RetentionSetting::of(latest, osis_schema::History::PurgeOnReplace)).map_err(|e| sim.fail(e.to_string()))?;
+        sim.commit(a, m)?;
+        sim.quiet(40)?;
+        Ok((a, b, c, pc, g, t))
+    })?;
+    let mut d = Dice::new(s.seed ^ 0x3e7);
     sim.run(60)?;
     for k in 0..4u64 {
         let n = match d.below(3) {
@@ -623,29 +658,33 @@ pub fn work_sets(seed: u64) -> Res<Report> {
 /// a guest whose grant ends by the clock, a node paired to a member, a change of role, two
 /// admins adding apart while one is removed (writes late, mid-history, flipped), a removal and a
 /// new add of the one removed.
-pub fn member_churn(seed: u64) -> Res<Report> {
+pub fn member_churn(s: Seeds) -> Res<Report> {
+    let seed = s.seed;
+    let (mut sim, (s, ns, [pb, pc, pe, pf, ph], g, t)) = setup("member_churn", s, NetWeights { partition: 1, heal: 2, ..NetWeights::default() }, |sim| {
+        let mut d = Dice::new(sim.seed ^ 0xadd);
+        let s = sim.add_host()?;
+        let ns: [usize; 6] = [
+            sim.add_node(&[s], clock(&mut d))?,
+            sim.add_node(&[s], clock(&mut d))?,
+            sim.add_node(&[s], clock(&mut d))?,
+            sim.add_node(&[s], clock(&mut d))?,
+            sim.add_node(&[s], clock(&mut d))?,
+            sim.add_node(&[s], clock(&mut d))?,
+        ];
+        let [pa, pb, pc, pe, pf, ph] = persons(sim, ns, [s; 6])?;
+        let g = shared_group(sim, ns[0], pa, &[s], &[(pb, Role::Admin)])?;
+        let t = sim.item(ns[0], g)?;
+        sim.quiet(40)?;
+        Ok((s, ns, [pb, pc, pe, pf, ph], g, t))
+    })?;
     let mut d = Dice::new(seed ^ 0xadd);
-    let mut sim = sim("member_churn", seed, NetWeights { partition: 1, heal: 2, ..NetWeights::default() });
-    let s = sim.add_host()?;
-    let ns: [usize; 6] = [
-        sim.add_node(&[s], clock(&mut d))?,
-        sim.add_node(&[s], clock(&mut d))?,
-        sim.add_node(&[s], clock(&mut d))?,
-        sim.add_node(&[s], clock(&mut d))?,
-        sim.add_node(&[s], clock(&mut d))?,
-        sim.add_node(&[s], clock(&mut d))?,
-    ];
     let [a, b, c, e, f, h] = ns;
-    let [pa, pb, pc, pe, pf, ph] = persons(&mut sim, ns, [s; 6])?;
-    let g = shared_group(&mut sim, a, pa, &[s], &[(pb, Role::Admin)])?;
-    let t = sim.item(a, g)?;
     let write = |sim: &mut NetSim, d: &mut Dice, n: usize, k: u64| -> Res<()> {
         let mut m = Mutation::new();
         m.set(t, &workload::REG, &Value::Str(format!("n{n} {k}"))).map_err(|e| sim.fail(e.to_string()))?;
         sim.commit(n, m)?;
         sim.run(d.below(4))
     };
-    sim.quiet(40)?;
     // added one by one, with writes between
     for (i, (p, n)) in [(pc, c), (pe, e)].into_iter().enumerate() {
         write(&mut sim, &mut d, a, i as u64)?;
@@ -713,17 +752,19 @@ pub fn member_churn(seed: u64) -> Res<Report> {
 /// (S2 lists it, spec/commits.md §4). A snapshot of A's or W's after S1 (W's own trigger before
 /// the removal reached it, over S2 then valid) carries S1's writes and may keep S1 dropped at W:
 /// then A and W must read alike.
-pub fn coverer_revoked(seed: u64) -> Res<Report> {
-    let mut d = Dice::new(seed ^ 0xc5);
-    let mut sim = sim("coverer_revoked", seed, NetWeights::default());
-    let s = sim.add_host()?;
-    let a = sim.add_node(&[s], clock(&mut d))?;
-    let c = sim.add_node(&[s], clock(&mut d))?;
-    let w = sim.add_node(&[s], clock(&mut d))?;
-    let [pa, pc, pw] = persons(&mut sim, [a, c, w], [s, s, s])?;
-    let g = shared_group(&mut sim, a, pa, &[s], &[(pc, Role::Write), (pw, Role::Write)])?;
-    let t = sim.item(a, g)?;
-    sim.quiet(40)?;
+pub fn coverer_revoked(s: Seeds) -> Res<Report> {
+    let (mut sim, (s, a, c, w, pc, g, t)) = setup("coverer_revoked", s, NetWeights::default(), |sim| {
+        let mut d = Dice::new(sim.seed ^ 0xc5);
+        let s = sim.add_host()?;
+        let a = sim.add_node(&[s], clock(&mut d))?;
+        let c = sim.add_node(&[s], clock(&mut d))?;
+        let w = sim.add_node(&[s], clock(&mut d))?;
+        let [pa, pc, pw] = persons(sim, [a, c, w], [s, s, s])?;
+        let g = shared_group(sim, a, pa, &[s], &[(pc, Role::Write), (pw, Role::Write)])?;
+        let t = sim.item(a, g)?;
+        sim.quiet(40)?;
+        Ok((s, a, c, w, pc, g, t))
+    })?;
     sim.run(40)?;
     let k = ak(&sim, &workload::TAGS)?;
     let add = |sim: &mut NetSim, n: usize, v: &str| -> Res<()> {
@@ -790,10 +831,22 @@ pub fn coverer_revoked(seed: u64) -> Res<Report> {
 /// leaves the host (a node that never held that snapshot, superseded early, may keep its copy).
 /// Everyone reads alike, the fresh node too, whichever bodies it got; the labels go quiet
 /// (`finish`: no upload and delete loop).
-pub fn snapshot_rights(seed: u64) -> Res<Report> {
+pub fn snapshot_rights(s: Seeds) -> Res<Report> {
     use osis_proto::LabelStore;
     use osis_schema::{History, PurgeBy, Retention};
-    let mut d = Dice::new(seed ^ 0x5a9);
+    let (mut sim, (s, a, b, w, pa, pb, pw, g, t)) = setup("snapshot_rights", s, NetWeights::default(), |sim| {
+        let mut d = Dice::new(sim.seed ^ 0x5a9);
+        let s = sim.add_host()?;
+        let a = sim.add_node(&[s], clock(&mut d))?;
+        let b = sim.add_node(&[s], clock(&mut d))?;
+        let w = sim.add_node(&[s], clock(&mut d))?;
+        let [pa, pb, pw] = persons(sim, [a, b, w], [s, s, s])?;
+        let g = shared_group(sim, a, pa, &[s], &[(pb, Role::Write), (pw, Role::Write)])?;
+        let t = sim.item(a, g)?;
+        sim.quiet(40)?;
+        Ok((s, a, b, w, pa, pb, pw, g, t))
+    })?;
+    let mut d = Dice::new(sim.seed ^ 0x5a9);
     let by = PurgeBy::from_id(1 + d.below(3)).unwrap_or_default();
     // the thing's setting for the aspect (spec/commits.md §5 The setting): 0 no history promised;
     // 1 kept a while after replaced; 2 purge on replace
@@ -804,15 +857,6 @@ pub fn snapshot_rights(seed: u64) -> Res<Report> {
         _ => None,
     };
     let keep = Retention { by };
-    let mut sim = sim("snapshot_rights", seed, NetWeights::default());
-    let s = sim.add_host()?;
-    let a = sim.add_node(&[s], clock(&mut d))?;
-    let b = sim.add_node(&[s], clock(&mut d))?;
-    let w = sim.add_node(&[s], clock(&mut d))?;
-    let [pa, pb, pw] = persons(&mut sim, [a, b, w], [s, s, s])?;
-    let g = shared_group(&mut sim, a, pa, &[s], &[(pb, Role::Write), (pw, Role::Write)])?;
-    let t = sim.item(a, g)?;
-    sim.quiet(40)?;
     let k = ak(&sim, &workload::REG)?;
     if let Some(h) = history {
         let mut m = Mutation::new();
@@ -981,21 +1025,25 @@ pub fn peer_group(sim: &mut NetSim, ns: &[usize]) -> Res<Tid> {
 /// spec/requirements.md (Decentralization), spec/sync.md §5, §10: holders with no host at all
 /// sync a group over peer links, by the seed's topology (one LAN, public addresses, relayed behind
 /// symmetric NATs, punched behind cone NATs), under link faults, partitions and crashes.
-pub fn no_host(seed: u64) -> Res<Report> {
-    let mut d = Dice::new(seed ^ 0x9e);
-    let weights = NetWeights { crash: 1, restart: 2, partition: 1, heal: 2, lan: 3, ..NetWeights::default() };
-    let mut sim = sim("no_host", seed, weights);
-    let ns = [sim.add_node(&[], clock(&mut d))?, sim.add_node(&[], clock(&mut d))?, sim.add_node(&[], clock(&mut d))?];
-    let t = match d.below(4) {
+pub fn no_host(s: Seeds) -> Res<Report> {
+    // the seed's topology: a setup of each
+    let t = match Dice::new(s.seed ^ 0x9e).below(4) {
         0 => Topology::Lan,
         1 => Topology::Public,
         2 => Topology::Relayed,
         _ => Topology::Punched,
     };
-    sim.note(format!("topology {t:?}"));
-    place_nodes(&mut sim, &ns, t)?;
-    peer_group(&mut sim, &ns)?;
-    sim.quiet(40)?;
+    let weights = NetWeights { crash: 1, restart: 2, partition: 1, heal: 2, lan: 3, ..NetWeights::default() };
+    let cfg = NetConfig { faults: lossy(), weights, ..NetConfig::default() };
+    let (mut sim, ns) = NetSim::setup("no_host", &format!("{t:?}"), s, cfg, |sim| {
+        let mut d = Dice::new(sim.seed ^ 0x9e);
+        let ns = [sim.add_node(&[], clock(&mut d))?, sim.add_node(&[], clock(&mut d))?, sim.add_node(&[], clock(&mut d))?];
+        sim.note(format!("topology {t:?}"));
+        place_nodes(sim, &ns, t)?;
+        peer_group(sim, &ns)?;
+        sim.quiet(40)?;
+        Ok(ns)
+    })?;
     sim.run(150)?;
     sim.run_until_quiescent(40)?;
     peers_carry(&mut sim, &ns)?;
@@ -1017,17 +1065,19 @@ fn peers_carry(sim: &mut NetSim, ns: &[usize]) -> Res<()> {
 
 /// spec/requirements.md (Decentralization: through any willing node): holders on two LANs joined
 /// only by a holder on both, with no host: what either end writes reaches the other through it.
-pub fn no_host_chain(seed: u64) -> Res<Report> {
-    let mut d = Dice::new(seed ^ 0xc4);
+pub fn no_host_chain(s: Seeds) -> Res<Report> {
     let weights = NetWeights { crash: 1, restart: 2, partition: 1, heal: 2, lan: 3, ..NetWeights::default() };
-    let mut sim = sim("no_host_chain", seed, weights);
-    let ns = [sim.add_node(&[], clock(&mut d))?, sim.add_node(&[], clock(&mut d))?, sim.add_node(&[], clock(&mut d))?];
-    let [a, b, c] = ns;
-    sim.reach.place(a, &[1], Uplink::None, &[]);
-    sim.reach.place(b, &[1, 2], Uplink::None, &[]);
-    sim.reach.place(c, &[2], Uplink::None, &[]);
-    peer_group(&mut sim, &ns)?;
-    sim.quiet(40)?;
+    let (mut sim, ns) = setup("no_host_chain", s, weights, |sim| {
+        let mut d = Dice::new(sim.seed ^ 0xc4);
+        let ns = [sim.add_node(&[], clock(&mut d))?, sim.add_node(&[], clock(&mut d))?, sim.add_node(&[], clock(&mut d))?];
+        let [a, b, c] = ns;
+        sim.reach.place(a, &[1], Uplink::None, &[]);
+        sim.reach.place(b, &[1, 2], Uplink::None, &[]);
+        sim.reach.place(c, &[2], Uplink::None, &[]);
+        peer_group(sim, &ns)?;
+        sim.quiet(40)?;
+        Ok(ns)
+    })?;
     sim.run(150)?;
     sim.run_until_quiescent(40)?;
     peers_carry(&mut sim, &ns)?;

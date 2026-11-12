@@ -3,5 +3,5 @@
 > Priority: normal
 > Tags: sync, tests
 
-- Repro: `cargo run --bin sim-sweep -- --only evil_host_drops --seeds 1 --from 472765857787` (1 s); `osis_sim::replay("evil_host_drops", 472765857787)`.
+- Repro: `cargo run --bin sim-sweep -- --only evil_host_drops --seeds 1 --from 472765857787` (1 s); `osis_sim::replay("evil_host_drops", 472765857787, 472765857787)` (setup: `--from`).
 - The churn is at s0, the honest host. The evil host 1 drops messages and closes stalled connections. So some node may keep uploading and deleting at s0 as its view of host 1 flips each round.

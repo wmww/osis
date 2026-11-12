@@ -3,5 +3,5 @@
 > Priority: normal
 > Tags: sync, tests
 
-- Repro: `cargo run --bin sim-sweep -- --only label_replacement_offline --seeds 1 --from 911499435371` (0.5 s); `osis_sim::replay("label_replacement_offline", 911499435371)`.
+- Repro: `cargo run --bin sim-sweep -- --only label_replacement_offline --seeds 1 --from 911499435371` (0.5 s); `osis_sim::replay("label_replacement_offline", 911499435371, 911499435371)` (setup: `--from`).
 - The run: link cuts, writes by both nodes, node 1 restarts at step 100 (node 0 logs `host: proto: malformed reply to no request` twice), then quiescent; the check at step 100 finds the old label not emptied.

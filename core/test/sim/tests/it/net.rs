@@ -1,12 +1,12 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 //! Phase B (sync engines and hosts engine to engine): what the sweeps (every scenario at 15 seeds at the
 //! gate, 150 periodic) do not check: that a scenario's faults happen, replay exactness, and examples.
-//! A failure prints its seed and the `osis_sim::replay` call that reproduces it.
+//! A failure prints its seeds and the `osis_sim::replay` call that reproduces it. Runs use setup 0.
 
 use osis_sim::{Report, replay};
 
 fn ok(name: &str, seed: u64) -> Report {
-    let r = replay(name, seed).unwrap_or_else(|f| panic!("{f}"));
+    let r = replay(name, 0, seed).unwrap_or_else(|f| panic!("{f}"));
     eprintln!("{name} {seed}: {r:?}");
     r
 }
@@ -19,7 +19,7 @@ fn two_nodes_host() {
     assert!(r.writes > 5 && r.crashes > 0 && r.held_checked > 0, "{r:?}");
     // every link cut in every window: the run surely loses messages on the way
     let faults = osis_sim::net::LinkFaults { cut_pct: 100, ..osis_sim::net::scenarios::lossy() };
-    let r = osis_sim::net::scenarios::two_nodes_host_under(0, faults).unwrap_or_else(|f| panic!("{f}"));
+    let r = osis_sim::net::scenarios::two_nodes_host_under(osis_sim::Seeds { setup: 0, seed: 0 }, faults).unwrap_or_else(|f| panic!("{f}"));
     assert!(r.writes > 5 && r.crashes > 0 && r.dropped > 0 && r.held_checked > 0, "{r:?}");
 }
 
@@ -32,10 +32,13 @@ fn three_accounts_two_hosts() {
     assert!(r.writes > 10 && r.held_checked > 0 && r.partitions > 0, "{r:?}");
 }
 
-// spec: none (replay): the same (scenario, seed) gives the same run, digest included.
+// spec: none (replay): the same (scenario, setup, seed) gives the same run, digest included;
+// seeds over one setup run apart (the seed drives everything after it).
 #[test]
 fn replay_is_exact() {
-    assert_eq!(ok("two_nodes_host", 0), ok("two_nodes_host", 0));
+    let r = ok("two_nodes_host", 0);
+    assert_eq!(r, ok("two_nodes_host", 0));
+    assert_ne!(r.digest, ok("two_nodes_host", 1).digest);
 }
 
 // notes/ephemeral.md, spec/sync.md §9: ephemeral (expiring ones included) and signal writes on a

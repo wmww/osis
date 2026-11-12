@@ -9,10 +9,10 @@
 
 use super::library::{add_tag, tags};
 use super::rogue::LabelKeys;
-use super::scenarios::{clock, persons, purge, shared_group, sim, write_gone};
+use super::scenarios::{clock, persons, purge, setup, shared_group, write_gone};
 use super::{Evil, NetSim, NetWeights, Party};
 use crate::dice::Dice;
-use crate::harness::{Report, Res};
+use crate::harness::{Report, Res, Seeds};
 use osis_base::{BlobId, CommitId, Role, Tid};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -56,30 +56,32 @@ pub fn codes(evs: &[ClientEvent]) -> Vec<Code> {
 /// for availability only): of two hosts holding every label, one holds back (reorders within a
 /// stream) and replays its messages. Expected: honest nodes converge through the honest one (the
 /// label invariants judge only it) and survive the protocol violations.
-pub fn evil_host(seed: u64) -> Res<Report> {
-    evil("evil_host", seed, Evil { drop_pct: 0, hold_pct: 10, replay_pct: 5 })
+pub fn evil_host(s: Seeds) -> Res<Report> {
+    evil("evil_host", s, Evil { drop_pct: 0, hold_pct: 10, replay_pct: 5 })
 }
 
 /// `evil_host` also silently dropping messages on open streams. Expected: a request whose
 /// reply never comes times out, the node redials, everything converges and goes idle.
-pub fn evil_host_drops(seed: u64) -> Res<Report> {
-    evil("evil_host_drops", seed, Evil { drop_pct: 10, hold_pct: 10, replay_pct: 5 })
+pub fn evil_host_drops(s: Seeds) -> Res<Report> {
+    evil("evil_host_drops", s, Evil { drop_pct: 10, hold_pct: 10, replay_pct: 5 })
 }
 
-fn evil(name: &str, seed: u64, e: Evil) -> Res<Report> {
-    let mut d = Dice::new(seed ^ 0xe7);
-    let mut sim = sim(name, seed, NetWeights::default());
-    let s0 = sim.add_host()?;
-    let s1 = sim.add_host()?;
-    let a = sim.add_node(&[s0, s1], clock(&mut d))?;
-    let b = sim.add_node(&[s0, s1], clock(&mut d))?;
-    let c = sim.add_node(&[s0, s1], clock(&mut d))?;
-    let [pa, pb, pc] = persons(&mut sim, [a, b, c], [s0, s0, s0])?;
-    let g = shared_group(&mut sim, a, pa, &[s0, s1], &[(pb, Role::Write), (pc, Role::Read)])?;
-    sim.item(a, g)?;
-    sim.item(a, g)?;
-    sim.reconnect_all();
-    sim.quiet(40)?;
+fn evil(name: &str, s: Seeds, e: Evil) -> Res<Report> {
+    let (mut sim, s1) = setup(name, s, NetWeights::default(), |sim| {
+        let mut d = Dice::new(sim.seed ^ 0xe7);
+        let s0 = sim.add_host()?;
+        let s1 = sim.add_host()?;
+        let a = sim.add_node(&[s0, s1], clock(&mut d))?;
+        let b = sim.add_node(&[s0, s1], clock(&mut d))?;
+        let c = sim.add_node(&[s0, s1], clock(&mut d))?;
+        let [pa, pb, pc] = persons(sim, [a, b, c], [s0, s0, s0])?;
+        let g = shared_group(sim, a, pa, &[s0, s1], &[(pb, Role::Write), (pc, Role::Read)])?;
+        sim.item(a, g)?;
+        sim.item(a, g)?;
+        sim.reconnect_all();
+        sim.quiet(40)?;
+        Ok(s1)
+    })?;
     if let Some(x) = sim.hosts.get_mut(s1) {
         x.evil = Some(e);
     }
@@ -105,20 +107,22 @@ fn evil(name: &str, seed: u64, e: Evil) -> Res<Report> {
 /// and deposits a commit it wrote offline after the removal. Expected: the stale step and the
 /// purged blob are refused, no honest node reads the post-removal write, honest nodes converge;
 /// colluding with the host, M's secrets open no body made after its removal.
-pub fn removed_replayer(seed: u64) -> Res<Report> {
-    let mut d = Dice::new(seed ^ 0x4e);
-    let mut sim = sim("removed_replayer", seed, NetWeights::default());
-    let s = sim.add_host()?;
-    let a = sim.add_node(&[s], clock(&mut d))?;
-    let b = sim.add_node(&[s], clock(&mut d))?;
-    let m = sim.add_node(&[s], clock(&mut d))?;
-    let [pa, pb, pm] = persons(&mut sim, [a, b, m], [s, s, s])?;
-    let g = shared_group(&mut sim, a, pa, &[s], &[(pb, Role::Write), (pm, Role::Write)])?;
-    let t = sim.item(a, g)?;
-    sim.reconnect_all();
-    sim.quiet(40)?;
-    let gone = write_gone(&mut sim, a, t, "secret")?;
-    add_tag(&mut sim, m, t, "m-before")?;
+pub fn removed_replayer(s: Seeds) -> Res<Report> {
+    let (mut sim, (s, a, b, m, pm, g, t, gone)) = setup("removed_replayer", s, NetWeights::default(), |sim| {
+        let mut d = Dice::new(sim.seed ^ 0x4e);
+        let s = sim.add_host()?;
+        let a = sim.add_node(&[s], clock(&mut d))?;
+        let b = sim.add_node(&[s], clock(&mut d))?;
+        let m = sim.add_node(&[s], clock(&mut d))?;
+        let [pa, pb, pm] = persons(sim, [a, b, m], [s, s, s])?;
+        let g = shared_group(sim, a, pa, &[s], &[(pb, Role::Write), (pm, Role::Write)])?;
+        let t = sim.item(a, g)?;
+        sim.reconnect_all();
+        sim.quiet(40)?;
+        let gone = write_gone(sim, a, t, "secret")?;
+        add_tag(sim, m, t, "m-before")?;
+        Ok((s, a, b, m, pm, g, t, gone))
+    })?;
     sim.run(40)?;
     sim.quiet(40)?;
     // what M keeps: the keys at the current head, every live entry
@@ -260,19 +264,21 @@ fn run_noting(sim: &mut NetSim, n: u64, nodes: [usize; 2], g: Tid, holder: Tid, 
 /// real commit under a prefix that disagrees with its header, a wrap for another blob. Expected:
 /// the host keeps them (it cannot judge them), honest nodes reject them without failing, keep
 /// syncing and converge.
-pub fn malformed_blobs(seed: u64) -> Res<Report> {
-    let mut d = Dice::new(seed ^ 0x6a);
-    let mut sim = sim("malformed_blobs", seed, NetWeights::default());
-    let s = sim.add_host()?;
-    let a = sim.add_node(&[s], clock(&mut d))?;
-    let b = sim.add_node(&[s], clock(&mut d))?;
-    let m = sim.add_node(&[s], clock(&mut d))?;
-    let [pa, pb, pm] = persons(&mut sim, [a, b, m], [s, s, s])?;
-    let g = shared_group(&mut sim, a, pa, &[s], &[(pb, Role::Write), (pm, Role::Write)])?;
-    let t = sim.item(a, g)?;
-    sim.reconnect_all();
-    sim.quiet(40)?;
-    let c = add_tag(&mut sim, m, t, "real")?;
+pub fn malformed_blobs(s: Seeds) -> Res<Report> {
+    let (mut sim, (s, a, b, m, g, t, c)) = setup("malformed_blobs", s, NetWeights::default(), |sim| {
+        let mut d = Dice::new(sim.seed ^ 0x6a);
+        let s = sim.add_host()?;
+        let a = sim.add_node(&[s], clock(&mut d))?;
+        let b = sim.add_node(&[s], clock(&mut d))?;
+        let m = sim.add_node(&[s], clock(&mut d))?;
+        let [pa, pb, pm] = persons(sim, [a, b, m], [s, s, s])?;
+        let g = shared_group(sim, a, pa, &[s], &[(pb, Role::Write), (pm, Role::Write)])?;
+        let t = sim.item(a, g)?;
+        sim.reconnect_all();
+        sim.quiet(40)?;
+        let c = add_tag(sim, m, t, "real")?;
+        Ok((s, a, b, m, g, t, c))
+    })?;
     sim.run(30)?;
     sim.quiet(40)?;
     let k = sim.label_keys(m, s, &g)?;
@@ -320,18 +326,20 @@ pub fn malformed_blobs(seed: u64) -> Res<Report> {
 /// holding the deposit key deposits hundreds of fresh encryptions of a body of the label.
 /// Expected: bounded: the host accepts at most the label's deposit budget and refuses the rest;
 /// honest nodes delete the duplicates, keep writing and converge.
-pub fn deposit_flood(seed: u64) -> Res<Report> {
-    let mut d = Dice::new(seed ^ 0xf1);
-    let mut sim = sim("deposit_flood", seed, NetWeights::default());
-    let s = sim.add_host()?;
-    let a = sim.add_node(&[s], clock(&mut d))?;
-    let b = sim.add_node(&[s], clock(&mut d))?;
-    let f = sim.add_node(&[s], clock(&mut d))?;
-    let [pa, pb, pf] = persons(&mut sim, [a, b, f], [s, s, s])?;
-    let g = shared_group(&mut sim, a, pa, &[s], &[(pb, Role::Write), (pf, Role::Read)])?;
-    let t = sim.item(a, g)?;
-    sim.reconnect_all();
-    sim.quiet(40)?;
+pub fn deposit_flood(s: Seeds) -> Res<Report> {
+    let (mut sim, (s, a, b, f, g, t)) = setup("deposit_flood", s, NetWeights::default(), |sim| {
+        let mut d = Dice::new(sim.seed ^ 0xf1);
+        let s = sim.add_host()?;
+        let a = sim.add_node(&[s], clock(&mut d))?;
+        let b = sim.add_node(&[s], clock(&mut d))?;
+        let f = sim.add_node(&[s], clock(&mut d))?;
+        let [pa, pb, pf] = persons(sim, [a, b, f], [s, s, s])?;
+        let g = shared_group(sim, a, pa, &[s], &[(pb, Role::Write), (pf, Role::Read)])?;
+        let t = sim.item(a, g)?;
+        sim.reconnect_all();
+        sim.quiet(40)?;
+        Ok((s, a, b, f, g, t))
+    })?;
     let k = sim.label_keys(f, s, &g)?;
     let dk = k.deposit.clone().ok_or_else(|| sim.fail("the reader holds no deposit key"))?;
     let read = k.read.clone().ok_or_else(|| sim.fail("the reader holds no read secret"))?;
@@ -407,20 +415,22 @@ impl osis_commit::Secrets for Dedup {
 /// `c1` on an aspect, then signs a second commit `c2` reusing that commit's counters on the
 /// same aspect, outside its engine, and uploads it stamped under the label. Expected: every
 /// node, B's own included, ends up reading neither write, holds both commits, and converges.
-pub fn equivocating_writer(seed: u64) -> Res<Report> {
+pub fn equivocating_writer(s: Seeds) -> Res<Report> {
     use osis_commit::{AspectWrite, CommitBuilder, Kind, MemoryBlobs, writer_ctx};
     use osis_crdt::{AnyView, Delta, Writer, create, encode_delta};
-    let mut d = Dice::new(seed ^ 0xe9);
-    let mut sim = sim("equivocating_writer", seed, NetWeights::default());
-    let s = sim.add_host()?;
-    let a = sim.add_node(&[s], clock(&mut d))?;
-    let b = sim.add_node(&[s], clock(&mut d))?;
-    let c = sim.add_node(&[s], clock(&mut d))?;
-    let [pa, pb, pc] = persons(&mut sim, [a, b, c], [s, s, s])?;
-    let g = shared_group(&mut sim, a, pa, &[s], &[(pb, Role::Write), (pc, Role::Read)])?;
-    let t = sim.item(a, g)?;
-    sim.reconnect_all();
-    sim.quiet(40)?;
+    let (mut sim, (s, a, b, c, g, t)) = setup("equivocating_writer", s, NetWeights::default(), |sim| {
+        let mut d = Dice::new(sim.seed ^ 0xe9);
+        let s = sim.add_host()?;
+        let a = sim.add_node(&[s], clock(&mut d))?;
+        let b = sim.add_node(&[s], clock(&mut d))?;
+        let c = sim.add_node(&[s], clock(&mut d))?;
+        let [pa, pb, pc] = persons(sim, [a, b, c], [s, s, s])?;
+        let g = shared_group(sim, a, pa, &[s], &[(pb, Role::Write), (pc, Role::Read)])?;
+        let t = sim.item(a, g)?;
+        sim.reconnect_all();
+        sim.quiet(40)?;
+        Ok((s, a, b, c, g, t))
+    })?;
     let eq = osis_base::Ak::new("x:eq.0").map_err(|e| sim.fail(e.to_string()))?;
     let mut m = osis_node::Mutation::new();
     m.set(t, &eq, &osis_base::Value::Str("c1".into())).map_err(|e| sim.fail(e.to_string()))?;
@@ -482,19 +492,21 @@ pub fn equivocating_writer(seed: u64) -> Res<Report> {
 /// wrap and stamp as they were, to every node on its open connections. Expected: no node takes
 /// the body back (purged bodies at no honest node, the purged value stays gone), no node
 /// uploads or deposits it again (counted as nodes send, since the host's tombstone would refuse it), everything converges.
-pub fn tombstone_liar(seed: u64) -> Res<Report> {
-    let mut d = Dice::new(seed ^ 0x7b);
-    let mut sim = sim("tombstone_liar", seed, NetWeights::default());
-    let s = sim.add_host()?;
-    let a = sim.add_node(&[s], clock(&mut d))?;
-    let b = sim.add_node(&[s], clock(&mut d))?;
-    let c = sim.add_node(&[s], clock(&mut d))?;
-    let [pa, pb, pc] = persons(&mut sim, [a, b, c], [s, s, s])?;
-    let g = shared_group(&mut sim, a, pa, &[s], &[(pb, Role::Write), (pc, Role::Read)])?;
-    let t = sim.item(a, g)?;
-    sim.reconnect_all();
-    sim.quiet(40)?;
-    let gone = write_gone(&mut sim, a, t, "secret")?;
+pub fn tombstone_liar(s: Seeds) -> Res<Report> {
+    let (mut sim, (s, a, b, c, g, t, gone)) = setup("tombstone_liar", s, NetWeights::default(), |sim| {
+        let mut d = Dice::new(sim.seed ^ 0x7b);
+        let s = sim.add_host()?;
+        let a = sim.add_node(&[s], clock(&mut d))?;
+        let b = sim.add_node(&[s], clock(&mut d))?;
+        let c = sim.add_node(&[s], clock(&mut d))?;
+        let [pa, pb, pc] = persons(sim, [a, b, c], [s, s, s])?;
+        let g = shared_group(sim, a, pa, &[s], &[(pb, Role::Write), (pc, Role::Read)])?;
+        let t = sim.item(a, g)?;
+        sim.reconnect_all();
+        sim.quiet(40)?;
+        let gone = write_gone(sim, a, t, "secret")?;
+        Ok((s, a, b, c, g, t, gone))
+    })?;
     sim.run(20)?;
     sim.quiet(40)?;
     sim.observe()?;

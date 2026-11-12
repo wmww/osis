@@ -80,7 +80,7 @@ Every timed run has a CPU limit (tight: other work on the box barely moves CPU-s
 | `gate.unify` | 200 | 60 | the unification check (a manifest changed): 1770 / 116 s when the GUI builds anew |
 | `gate.deny` | 10 | 10 | schema check, deny, core bans: 5 / 4 s |
 | `gate.properties` | 1700 | 175 | the selected properties, every crate: 3600 / 352 s at load 17 (35 tests) |
-| `gate.sim` | 1250 | 150 | the sim scenarios at 15 seeds: about 2540 / 297 s at load 17 (52 scenarios) |
+| `gate.sim` | 1250 | 150 | the sim scenarios at 15 seeds: 1510 / 98 s at load 20 (52 scenarios, setups shared: notes/testing.md Shared setups; 3000 G instructions) |
 | `gate.gui-tests` | 100 | 60 | GUI tests, when libs/kit/ or app/ changed |
 | `gate.hold` | 1650 | 105 | the gate's one heavy-lock hold, every crate selected: 10,240 / 1048 s at load 17 (issues/gate-five-minutes.md) |
 | `gate` | 1780 | 130 | the whole gate but its lock wait: 5 minutes, Tess's cap (wall); its CPU what 5 minutes at the box's usual 85% busy allows. Every-crate gate: about 1300 s |
@@ -133,7 +133,7 @@ Warm worktree. Rows marked (load N) are recent measurements at that load with sy
 | gate, warm, every crate selected (a manifest touched) | load 13-90, median 22: unlocked, instant checks 22 s / 16 CPU-s, selection 2 / 2, clippy 33 / 41, GUI lint 18 / 17, test builds 13 / 40 (built just before), unification 86 / 309, schema and deny 3 / 3; then 761 s waiting for the lock behind another branch; the hold: default tests 518 / 5257, 35 properties 775 / 5860 (osis-node's 18: 547 s), sim 15 seeds 348 / about 3800 (timed alone after the run failed on a property): about 1640 s / 14,900 CPU-s held, about 30 min without the wait. A branch reaching fewer crates runs fewer properties and maybe no sim; the default tests always run |
 | GUI tests after an osis-engine edit, `cargo test -p osis-kit -p osis-app` | 73 s, 140 CPU-s at load 23 (kit and app recompile; 131 tests, about 35 s of it running) |
 | first GUI build, `cargo build --workspace --all-targets` on a built core | 183 s, 1240 CPU-s at load 20 (168 units, none of them core) |
-| sim sweep 5 / 15 (the gate's) / 30 / 300 seeds | 38 s, 600 CPU-s / 348 s, about 3800 CPU-s at load 20 / 2.2 min / about 20 min; heaviest per seed `concurrent_writers`, `future_format`, `work_sets`, `link_race` about 2.5 CPU-s; 30 seeds 6-10 min at load 30-36 |
+| sim sweep 5 / 15 (the gate's) / 30 / 300 seeds | 38 s, 600 CPU-s / 98 s, 1510 CPU-s at load 20 / 2.2 min / about 20 min; heaviest per seed `concurrent_writers`, `future_format`, `work_sets`, `link_race` about 2.5 CPU-s; 30 seeds 6-10 min at load 30-36 |
 | `core/test/tla/run.sh <module>` | under a minute each at one worker on a quiet box (depth0 the largest, 55 s; about twice that at load 10) |
 | release `cargo test --release --no-run`: clean / after an edit (thin LTO relinks every test binary) | about 5 / 4 min at load 10-16 |
 | release `cargo test --release -p osis-node --test it --no-run` clean / after an osis-node edit | 2.9 / 1.7 min at load 20-30; 11.7 / 6.7 min at load 40-45 |

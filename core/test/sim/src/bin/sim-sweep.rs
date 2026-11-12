@@ -1,15 +1,16 @@
-//! `sim-sweep`: runs many seeds of every simulator scenario (notes/testing.md, Simulator), in
+//! `sim-sweep`: runs many seeds of every simulator scenario (notes/testing.md, Simulator) over
+//! one setup per scenario (of `--setup`, by default `--from`: notes/testing.md, Sim setups), in
 //! parallel (`osis_base::testenv::run_jobs`: a seed past `OSIS_SEED_TIMEOUT_SECS` CPU-seconds is
 //! named hung), within a time budget; prints each failing seed with its replay call and exits 1 if
 //! any failed. Blocked scenarios (`osis_sim::BLOCKED`, a known engine bug each) are skipped
 //! unless `--blocked`.
 //!
-//! sim-sweep [--seeds N] [--from S] [--only a,b] [--blocked] [--budget-secs T] [--jobs J]
-//!           [--out DIR] [--list]
+//! sim-sweep [--seeds N] [--from S] [--setup U] [--only a,b] [--blocked] [--budget-secs T]
+//!           [--jobs J] [--out DIR] [--list]
 #![forbid(unsafe_code)]
 
 use osis_base::testenv::run_jobs;
-use osis_sim::{SCENARIOS, blocked, run};
+use osis_sim::{SCENARIOS, Seeds, blocked, run};
 use std::collections::BTreeMap;
 use std::io::Write;
 use std::process::ExitCode;
@@ -18,6 +19,7 @@ use std::time::{Duration, Instant};
 struct Args {
     seeds: u64,
     from: u64,
+    setup: Option<u64>,
     only: Option<Vec<String>>,
     blocked: bool,
     budget: Option<Duration>,
@@ -26,9 +28,11 @@ struct Args {
     list: bool,
 }
 
-const USAGE: &str = "usage: sim-sweep [--seeds N] [--from S] [--only a,b] [--blocked] [--budget-secs T] [--jobs J] [--out DIR] [--list]
+const USAGE: &str = "usage: sim-sweep [--seeds N] [--from S] [--setup U] [--only a,b] [--blocked] [--budget-secs T] [--jobs J] [--out DIR] [--list]
   --seeds N        seeds per scenario (default 100)
   --from S         first seed (default 0)
+  --setup U        the seed of every scenario's setup, built once and copied into each seed
+                   (default: S)
   --only a,b       only these scenarios (default: all but blocked ones)
   --blocked        include blocked scenarios (a known engine bug each)
   --budget-secs T  stop starting seeds after T s (seed-major, so scenarios get about as many each)
@@ -37,11 +41,12 @@ const USAGE: &str = "usage: sim-sweep [--seeds N] [--from S] [--only a,b] [--blo
   --list           print every scenario (blocked ones marked) and exit
 A seed whose thread uses OSIS_SEED_TIMEOUT_SECS CPU-seconds (default 600) fails as hung; one
 still running at the end exits the process (101) after naming it. Exits 1 if any seed failed,
-2 on bad arguments. Replay a failure: osis_sim::replay(name, seed); OSIS_SIM_TRACE=1 traces it.";
+2 on bad arguments. Replay a failure: osis_sim::replay(name, setup, seed), or
+sim-sweep --seeds 1 --from SEED --setup SETUP --only NAME; OSIS_SIM_TRACE=1 traces it.";
 
 /// `Ok(None)`: `--help` asked.
 fn parse() -> Result<Option<Args>, String> {
-    let mut a = Args { seeds: 100, from: 0, only: None, blocked: false, budget: None, jobs: std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1), out: None, list: false };
+    let mut a = Args { seeds: 100, from: 0, setup: None, only: None, blocked: false, budget: None, jobs: std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1), out: None, list: false };
     let mut it = std::env::args().skip(1);
     while let Some(k) = it.next() {
         let mut val = || it.next().ok_or(format!("{k} needs a value"));
@@ -49,6 +54,7 @@ fn parse() -> Result<Option<Args>, String> {
         match k.as_str() {
             "--seeds" => a.seeds = num(val()?)?,
             "--from" => a.from = num(val()?)?,
+            "--setup" => a.setup = Some(num(val()?)?),
             "--only" => a.only = Some(val()?.split(',').map(str::to_string).collect()),
             "--blocked" => a.blocked = true,
             "--budget-secs" => a.budget = Some(Duration::from_secs(num(val()?)?)),
@@ -111,19 +117,20 @@ fn main() -> ExitCode {
         eprintln!("sim-sweep: nothing to run");
         return ExitCode::from(2);
     }
-    eprintln!("sim-sweep: {} scenarios, seeds {}..{}, {} jobs{}", chosen.len(), args.from, args.from.saturating_add(args.seeds), args.jobs, args.budget.map(|b| format!(", budget {} s", b.as_secs())).unwrap_or_default());
+    let setup = args.setup.unwrap_or(args.from);
+    eprintln!("sim-sweep: {} scenarios, setup {setup}, seeds {}..{}, {} jobs{}", chosen.len(), args.from, args.from.saturating_add(args.seeds), args.jobs, args.budget.map(|b| format!(", budget {} s", b.as_secs())).unwrap_or_default());
     // failures carry the panic text; the default hook would print every one twice
     std::panic::set_hook(Box::new(|_| {}));
     let start = Instant::now();
     // a seed past `OSIS_SEED_TIMEOUT_SECS` CPU-seconds is named hung, not waited for
-    let label = |(n, s): &(&'static str, u64)| format!("osis_sim::replay(\"{n}\", {s})");
+    let label = |(n, s): &(&'static str, u64)| format!("osis_sim::replay(\"{n}\", {setup}, {s})");
     let results = run_jobs("sim-sweep", &work, args.jobs, true, label, |&(name, seed)| {
         // past the budget: not started
         if args.budget.is_some_and(|b| start.elapsed() > b) {
             return None;
         }
         let f = SCENARIOS.iter().find(|s| s.0 == name).map(|s| s.1)?;
-        let r = run(name, seed, f);
+        let r = run(name, Seeds { setup, seed }, f);
         if let Err(e) = &r {
             eprintln!("FAIL {e}");
         }
@@ -156,7 +163,7 @@ fn main() -> ExitCode {
     for l in &lines {
         let mut p = l.splitn(3, ' ');
         let (n, s) = (p.next().unwrap_or(""), p.next().unwrap_or(""));
-        println!("failing: osis_sim::replay(\"{n}\", {s})");
+        println!("failing: osis_sim::replay(\"{n}\", {setup}, {s})  (sim-sweep --seeds 1 --from {s} --setup {setup} --only {n})");
     }
     println!("elapsed {} s", start.elapsed().as_secs());
     if let Some(dir) = &args.out

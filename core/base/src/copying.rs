@@ -2,10 +2,11 @@
 //! the original (notes/testing.md, Copied worlds). Inside `copying`, `remap` gives each shared
 //! handle (`Arc`) of the original one new handle, so what two parts of the original share (a
 //! device's fault plan, a store's data behind two backend handles, a memo's stamp table) the
-//! copy's parts share too, and nothing of the copy points at the original.
+//! copy's parts share too, and nothing of the copy points at the original. `copying_reseeded`
+//! makes a copy whose seeded generators draw new streams: the same world going on otherwise.
 
 use std::any::Any;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -13,6 +14,7 @@ type Map = HashMap<usize, (Arc<dyn Any + Send + Sync>, Arc<dyn Any + Send + Sync
 
 thread_local! {
     static WORLD: RefCell<Option<Map>> = const { RefCell::new(None) };
+    static RESEED: Cell<Option<u64>> = const { Cell::new(None) };
 }
 
 /// Runs `f`, a copy of a world: every `remap` inside it, at any depth, maps one original handle
@@ -22,6 +24,7 @@ pub fn copying<T>(f: impl FnOnce() -> T) -> T {
     impl Drop for Close {
         fn drop(&mut self) {
             WORLD.with(|w| *w.borrow_mut() = None);
+            RESEED.with(|r| r.set(None));
         }
     }
     if in_copy() {
@@ -30,6 +33,26 @@ pub fn copying<T>(f: impl FnOnce() -> T) -> T {
     WORLD.with(|w| *w.borrow_mut() = Some(HashMap::new()));
     let _close = Close;
     f()
+}
+
+/// `copying`, every seeded generator copied in it (`osis_crypto::SeededRng::test_copy`) drawing
+/// a new stream keyed by `salt` and its own: a copy that goes on as the original would but for
+/// its random draws, which differ by `salt` (the simulator's sweep: one setup, a seed per copy).
+/// Not inside another `copying`.
+#[allow(clippy::panic)]
+pub fn copying_reseeded<T>(salt: u64, f: impl FnOnce() -> T) -> T {
+    if in_copy() {
+        panic!("copying_reseeded inside a copy");
+    }
+    copying(|| {
+        RESEED.with(|r| r.set(Some(salt)));
+        f()
+    })
+}
+
+/// The salt of the `copying_reseeded` running on this thread.
+pub fn reseed() -> Option<u64> {
+    RESEED.with(Cell::get)
 }
 
 /// Whether a `copying` runs on this thread.

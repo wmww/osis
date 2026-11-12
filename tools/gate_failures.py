@@ -30,7 +30,7 @@ HINT = re.compile(r"^error: (?:doc)?test failed, to rerun pass `(.*)`$")
 TARGETS = re.compile(r"^error: (\d+) targets? failed:$")
 # `seed N (replay: CMD): why` (osis_base::testenv) or `seed N, EMPHASIS (replay: CMD; ...` (order)
 SEED = re.compile(r"\b(seed \d+[^()\n]*?) \(replay: ([^;)\n]*)")
-SIM_FAILING = re.compile(r'^failing: osis_sim::replay\("(\w+)", (\d+)\)$')
+SIM_FAILING = re.compile(r'^failing: osis_sim::replay\("(\w+)", (\d+), (\d+)\)')
 SIM_TALLY = re.compile(r"^(\w+) (\d+) (\d+)$")
 
 
@@ -146,14 +146,14 @@ def sim_failures(text):
         return [(None, "sim-sweep ended without its tally (a build error, a crash, a hung-seed exit): read its output", [])]
     t = lines.index("scenario seeds failed")
     tally = sum(int(m.group(3)) for l in lines[t + 1:] if (m := SIM_TALLY.match(l)))
-    seeds = sorted({(m.group(1), int(m.group(2))) for l in lines if (m := SIM_FAILING.match(l))})
+    seeds = sorted({(m.group(1), int(m.group(2)), int(m.group(3))) for l in lines if (m := SIM_FAILING.match(l))})
     out = []
     if tally != len(seeds):
         out.append((None, f"sim-sweep's tally counts {tally} failing seeds, its failing list {len(seeds)}: read its output", []))
     by = collections.defaultdict(list)
-    for n, s in seeds:
-        mine = [l for l in lines if f'replay("{n}", {s})' in l or f"scenario `{n}`, seed {s}," in l]
-        by[n].append(("\n".join(mine), f'seed {s} (replay: osis_sim::replay("{n}", {s}))'))
+    for n, u, s in seeds:
+        mine = [l for l in lines if f'replay("{n}", {u}, {s})' in l or f"scenario `{n}`, setup {u}, seed {s}," in l]
+        by[n].append(("\n".join(mine), f'seed {s} (replay: osis_sim::replay("{n}", {u}, {s}))'))
     for n, us in by.items():
         out.append((f"sim-sweep:{n}", [u for u, _ in us], [s for _, s in us]))
     return out

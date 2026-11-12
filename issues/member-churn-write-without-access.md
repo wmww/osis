@@ -3,4 +3,4 @@
 > Priority: normal
 > Tags: tests, sim
 
-`osis_sim::replay("member_churn", 1527650006)`: on main "no permission to write", on expiry-7 "unknown thing" at the same step. Found by the expiry-7 review; not caused by it.
+`osis_sim::replay("member_churn", 1527650006, 1527650006)` (passes at main 066310a12: the seed came from an older harness): on main "no permission to write", on expiry-7 "unknown thing" at the same step. Found by the expiry-7 review; not caused by it.

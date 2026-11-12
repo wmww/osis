@@ -18,7 +18,7 @@ pub type Reads = Vec<(Tid, Ak, Option<Value>)>;
 type Ranges = BTreeMap<u64, (u64, CommitId)>;
 
 /// State carried across steps.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct Checker {
     seen: BTreeSet<CommitId>,
     /// Session-form ranges per (session source, tid, ak): lo -> (hi, commit).

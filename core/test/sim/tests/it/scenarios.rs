@@ -1,14 +1,14 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 //! Phase A: what the sweeps (`sim-sweep`: every scenario at 15 seeds at the gate, 150 periodic) do
 //! not check: that a scenario's faults happen, and examples; slower ones by hand (`#[ignore]`).
-//! A failure prints its seed and the `osis_sim::replay` call that reproduces it.
+//! A failure prints its seeds and the `osis_sim::replay` call that reproduces it. Runs use setup 0.
 
 use osis_base::{CommitId, Role, Value};
 use osis_node::Mutation;
 use osis_sim::{Config, Report, SCENARIOS, Sim, replay, workload};
 
 fn ok(name: &str, seed: u64) -> Report {
-    replay(name, seed).unwrap_or_else(|f| panic!("{f}"))
+    replay(name, 0, seed).unwrap_or_else(|f| panic!("{f}"))
 }
 
 // spec/requirements.md (convergence under any delivery order, duplicates, partial receipt);
@@ -90,17 +90,19 @@ fn drift_parks_until_clock_catches_up() {
 // spec: none (replay by name)
 #[test]
 fn unknown_scenario_fails() {
-    assert!(replay("nope", 0).is_err());
+    assert!(replay("nope", 0, 0).is_err());
 }
 
 // spec/requirements.md (convergence); spec/commits.md §4; spec/crdt.md §2.2, §2.3: a small
-// sweep, `OSIS_SIM_SEEDS` seeds per scenario (default 100) from `OSIS_SIM_FROM` (default 0), `OSIS_SIM_ONLY` a comma list of
+// sweep, `OSIS_SIM_SEEDS` seeds per scenario (default 100) from `OSIS_SIM_FROM` (default 0) over
+// the setup of `OSIS_SIM_SETUP` (default `OSIS_SIM_FROM`), `OSIS_SIM_ONLY` a comma list of
 // scenario names (default all but the blocked ones). The nightly sweep is the `sim-sweep` binary.
 #[test]
 #[ignore]
 fn sweep() {
     let seeds = osis_base::testenv::Seeds::from_env("OSIS_SIM_FROM", "OSIS_SIM_SEEDS", 0..100);
     seeds.announce("sim sweep");
+    let setup = osis_sim::setup_seed(seeds.range.start);
     let mut failed = Vec::new();
     let only: Option<Vec<String>> = std::env::var("OSIS_SIM_ONLY").ok().map(|s| s.split(',').map(str::to_string).collect());
     for (name, _) in SCENARIOS {
@@ -112,7 +114,7 @@ fn sweep() {
             continue;
         }
         for seed in seeds.range.clone() {
-            if let Err(f) = replay(name, seed) {
+            if let Err(f) = replay(name, setup, seed) {
                 eprintln!("{f}");
                 failed.push((*name, seed));
             }
