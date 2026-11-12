@@ -1585,7 +1585,7 @@ fn held_snapshot_keeps_the_chunks_it_links_spec_sync_7() {
         net.advance(4_000_000);
     };
     compact(&mut net);
-    let snap = net.engine(a).commit_ids().into_iter().find(|c| net.engine(a).header(c).is_some_and(|h| h.kind.is_compaction())).unwrap();
+    let snap = net.engine(a).commit_ids().into_iter().find(|c| net.engine(a).header(c).is_some_and(|h| h.kind.is_compaction()) && net.engine(a).body_not_dropped(c, &t, &ak)).unwrap();
     let tree = net.engine(a).live_trees(&t).unwrap().blobs;
     let mut m = Mutation::new();
     m.set(t, &BLOB, &osis_base::Value::Bytes(vec![1, 2, 3])).unwrap();
@@ -1704,8 +1704,9 @@ fn chunks_outliving_their_introducer_leave_the_host_spec_commits_5() {
         osis_crypto::RngCore::fill_bytes(&mut osis_crypto::SeededRng::from_u64(seed), &mut v);
         v
     };
-    // large enough that a snapshot, listing its chunks, costs more than the three bodies: none
-    // is written (spec/sync.md §7 Trigger)
+    // no snapshot: the trigger writes none only for a value of about 700 chunks and up
+    // (`Engine::pause_compaction`)
+    net.engine(a).pause_compaction(true);
     let v1 = noise(2560 << 10, 1);
     let mut v2 = v1.clone();
     v2.splice(1000..1000, noise(50, 2));
@@ -1730,6 +1731,8 @@ fn chunks_outliving_their_introducer_leave_the_host_spec_commits_5() {
     assert!(!net.engine(a).body_not_dropped(&first, &t, &Ak::new(BLOB.ak()).unwrap()), "the first write dropped under the replaces");
     let h = net.engine(a).header(&first).expect("kept for the chunks it alone lists");
     assert!(h.chunks.iter().any(|c| tree.contains(&c.blob)), "the replaces reuse chunks of the first write");
+    // a small write, compacted
+    net.engine(a).pause_compaction(false);
     let mut m = Mutation::new();
     m.set(t, &BLOB, &osis_base::Value::Bytes(vec![1, 2, 3])).unwrap();
     net.engine(a).commit(m).unwrap();
@@ -1864,6 +1867,9 @@ fn forged_listing_keeps(author: usize) {
         v
     };
     // t2's value by own replaces reusing its chunks, no snapshot (`chunks_outliving_their_introducer_leave_the_host_spec_commits_5`)
+    for n in [a, b, c] {
+        net.engine(n).pause_compaction(true);
+    }
     let v1 = noise(2560 << 10, 1);
     let mut v2 = v1.clone();
     v2.splice(1000..1000, noise(50, 2));
@@ -1926,6 +1932,10 @@ fn losing_a_thing_keeps_chunks_another_thing_links_spec_sync_7() {
         x
     };
     // t2's value by own replaces reusing its chunks, no snapshot
+    // (`chunks_outliving_their_introducer_leave_the_host_spec_commits_5`)
+    for n in [a, v, f] {
+        net.engine(n).pause_compaction(true);
+    }
     let v1 = noise(2560 << 10, 1);
     let mut v2 = v1.clone();
     v2.splice(1000..1000, noise(50, 2));

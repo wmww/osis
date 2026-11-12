@@ -75,6 +75,11 @@ impl<'a> Cipher<'a> {
         Ok(self.tx().read(id, offset, len)?)
     }
 
+    /// Blob `id`'s byte length, held by the engine or kept by the store for others, unread.
+    pub fn len(&mut self, id: &BlobId) -> crate::error::Result<Option<u64>> {
+        Ok(self.tx().len(id)?)
+    }
+
     /// The engine holds `id` (`memory`: in memory only); whether it did not before.
     pub fn hold(&mut self, id: &BlobId, blob: Vec<u8>, memory: bool) -> crate::error::Result<bool> {
         if let Some(m) = self.releases.remove(id) {

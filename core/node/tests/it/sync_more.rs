@@ -604,6 +604,8 @@ fn noise(n: usize, seed: u64) -> Vec<u8> {
 fn purge_shreds_only_unique_chunks_spec_sync_7() {
     let (mut net, host, [a, b], _g, [t]) = hosted::<2, 1>(&[(1, Role::Read)], ["x"], false);
     let blob_ak = Ak::new(BLOB.ak()).unwrap();
+    // v1 kept in history once replaced: no snapshot drops it before the purge
+    net.keep(a, t, &[(BLOB.ak(), crate::common::DAY)]);
     let v1 = noise(1 << 20, 7);
     let mut m = Mutation::new();
     m.set(t, &BLOB, &Value::Bytes(v1.clone())).unwrap();
@@ -714,6 +716,8 @@ fn removal_placed_first_under_every_label_spec_perm_3() {
 fn reused_blob(net: &mut Net, a: usize, b: usize, role: Role, host: usize) -> (osis_base::Tid, Ak, [osis_base::CommitId; 2], Vec<u8>, BTreeSet<osis_base::BlobId>, BTreeSet<osis_base::BlobId>) {
     let g = net.group(a, &[(b, role)], &[host]);
     let t = net.item(a, g, g, "x");
+    // the first version kept in history once replaced: no snapshot drops it
+    net.keep(a, t, &[(BLOB.ak(), crate::common::DAY)]);
     let v1 = noise(1 << 20, 7);
     let mut m = Mutation::new();
     m.set(t, &BLOB, &Value::Bytes(v1.clone())).unwrap();

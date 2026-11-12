@@ -146,6 +146,8 @@ pub(crate) fn join_into_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, mut delta: Fr
     // the reference index: the tids at the join's reach, before and after
     let refs = crate::engine::refs::indexed(ak).then(|| (crate::engine::refs::Delta::reach(&st, &delta, -1), delta.clone()));
     let before = dead.as_ref().map(|_| (Killed::before(&st, &delta), delta.clone()));
+    // the large values at the join's reach, before and after (the compaction trigger's estimate)
+    let roots = Some(crate::retention::compact::roots(ak, &st, &delta)).filter(|b| !b.is_empty()).map(|b| (b, delta.clone()));
     let ch = st.join(delta);
     let refs = refs.filter(|_| ch.is_changed()).map(|(mut d, x)| {
         d.add(&st.reach(&x), 1);
@@ -154,6 +156,7 @@ pub(crate) fn join_into_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, mut delta: Fr
     if let (Some(dead), Some((w, d))) = (dead, before) {
         dead.note(&w, &st, &d);
     }
+    let roots = roots.map(|(b, d)| (b, crate::retention::compact::roots(ak, &st, &d)));
     let secrets = secrets.and_then(|(mut read, d)| super::keys::secrets_patch(std::sync::Arc::make_mut(&mut read), &d, &st).then_some(read));
     let st = tx.kept(tid, ak, st)?;
     if ch.is_changed() {
@@ -164,6 +167,9 @@ pub(crate) fn join_into_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, mut delta: Fr
     }
     if let Some(read) = secrets {
         tx.core.secrets_read.amend(tid, read);
+    }
+    if let Some((b, a)) = roots {
+        crate::retention::compact::Trigger::unlinked(tx, tid, ak, &b, &a)?;
     }
     Ok(ch)
 }

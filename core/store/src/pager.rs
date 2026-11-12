@@ -816,6 +816,17 @@ impl Pager {
         Ok(self.backend.read_blob(id, offset, len)?)
     }
 
+    /// The byte length of a blob as the transaction sees it, without reading it.
+    pub fn txn_blob_len(&self, d: &Dirty, id: &BlobId) -> Result<Option<u64>, Error> {
+        self.check()?;
+        match d.blobs.get(id) {
+            Some(None) => return Ok(None),
+            Some(Some(b)) => return Ok(Some(b.len() as u64)),
+            None => {}
+        }
+        Ok(self.backend.blob_len(id)?)
+    }
+
     /// `seal`, the key noted to the backend in debug builds (the forensic attack,
     /// `Backend::note_sealed`).
     fn seal(&self, key: &Secret32, row: &[u8], plaintext: &[u8], rng: &mut dyn CryptoRngCore) -> Result<Vec<u8>, Error> {

@@ -1,16 +1,16 @@
 //! The compaction trigger (spec/sync.md §7 Trigger), one for durable and ephemeral aspects: a
 //! node that may write a content aspect writes a snapshot of it once the bodies it holds of it
 //! that the snapshot would drop, two at least, cost more than `FACTOR` times the snapshot. What a
-//! body costs is what holders and hosts pay for it: its deltas' bytes, an ephemeral one's pages
-//! (`body_bytes`), `PART_OVERHEAD` per part
-//! (`apply::memory::part_weight`, what the node cap charges) and `ENTRY_CHARGE`. Bodies kept by
-//! history (a replaced one in history, a live one kept while live, spec/commits.md §5) are not
-//! counted: no snapshot drops them.
+//! body costs is what dropping it frees, what holders and hosts pay for it: its deltas' bytes,
+//! the pages they link, the tree blobs it lists that no live state links (`body_bytes`,
+//! `Weighed::tree`), `PART_OVERHEAD` per part (`apply::memory::part_weight`, what the node cap
+//! charges) and `ENTRY_CHARGE`. Bodies kept by history (a replaced one in history, a live one
+//! kept while live, spec/commits.md §5) are not counted: no snapshot drops them.
 
 use crate::apply::memory::{each_page, part_weight};
 use crate::engine::{Engine, Tx};
 use crate::error::{Error, Result};
-use osis_base::{Ak, CommitId, Tid};
+use osis_base::{Ak, BlobId, CommitId, Link, Tid};
 use osis_commit::{CommitBlob, Form, Header};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -53,6 +53,8 @@ pub struct Trigger {
     /// By wall ms, aspects whose live bodies a setting keeps until then (a `keep` until T
     /// alone): uncounted when applied, weighed once the bound passes (`Engine::tick`).
     at: BTreeMap<u64, BTreeSet<(Tid, Ak)>>,
+    /// Tests: nothing is weighed (`Engine::pause_compaction`).
+    paused: bool,
 }
 
 impl Trigger {
@@ -82,20 +84,51 @@ impl Trigger {
     }
 
     /// Part `ai` of `blob` on `(tid, ak)` may count for the trigger from now on (applied, or out
-    /// of history): what `(tid, ak)` may hold grows by its cost.
+    /// of history): what `(tid, ak)` may hold grows by its cost, every tree blob it lists counted.
+    /// A live value links its own tree, but a write lists the tree blobs it adds, about those it
+    /// unlinks from the value it replaces (a changed chunk and its path to the root), which a
+    /// drop then frees: so what is held grows by them, read by length, O(the blobs it lists).
     pub(crate) fn counts(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, blob: &CommitBlob, ai: usize) -> Result<()> {
         if !compactable(ak) {
             return Ok(());
         }
-        let bytes = body_bytes(tx, blob, ai)?;
-        tx.core.compaction.grow((*tid, ak.clone()), bytes);
+        let w = body_bytes(tx, blob, ai)?;
+        let tree = held_bytes(tx, w.tree.iter())?;
+        tx.core.compaction.grow((*tid, ak.clone()), w.bytes.saturating_add(tree));
         Ok(())
     }
 
     fn grow(&mut self, k: (Tid, Ak), bytes: usize) {
+        self.add(k, part_weight(bytes).saturating_add(ENTRY_CHARGE));
+    }
+
+    fn add(&mut self, k: (Tid, Ak), cost: usize) {
         let e = self.est.entry(k.clone()).or_default();
-        e.0 = e.0.saturating_add(part_weight(bytes).saturating_add(ENTRY_CHARGE));
+        e.0 = e.0.saturating_add(cost);
         self.due.insert(k);
+    }
+
+    /// A join on `(tid, ak)` turned the large values its reach linked from `before` to `after`
+    /// (`roots`): where the values it unlinked are longer than those it linked, what `(tid, ak)`
+    /// may hold grows by the difference (a large value set to a small one unlinks a tree its
+    /// write lists nothing of, `counts`). O(the roots at the join's reach): each root's length
+    /// is read from its node.
+    pub(crate) fn unlinked(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, before: &BTreeMap<BlobId, Link>, after: &BTreeMap<BlobId, Link>) -> Result<()> {
+        if before.keys().all(|b| after.contains_key(b)) {
+            return Ok(());
+        }
+        let mut len = |m: &BTreeMap<BlobId, Link>, o: &BTreeMap<BlobId, Link>| -> Result<u64> {
+            let mut sum = 0u64;
+            for l in m.values().filter(|l| !o.contains_key(&l.blob)) {
+                sum = sum.saturating_add(crate::engine::large::tree_len(tx, l)?);
+            }
+            Ok(sum)
+        };
+        let (gone, new) = (len(before, after)?, len(after, before)?);
+        if gone > new {
+            tx.core.compaction.add((*tid, ak.clone()), usize::try_from(gone - new).unwrap_or(usize::MAX));
+        }
+        Ok(())
     }
 
     /// `k` keeps its live bodies until wall ms `live` (past the clock): weighed then, unless
@@ -129,14 +162,33 @@ impl Trigger {
     }
 }
 
-/// The bytes part `ai` of `blob` weighs: what dropping it frees. Its deltas and the pages held
-/// here they link (`apply::memory::each_page`), either class. Not its large values' trees: the
-/// live state, so the snapshot, links them while they are live (a replaced value's tree a drop
-/// frees goes uncounted, issues/replaced-trees-unweighed.md). A delta that is not one CBOR value
-/// weighs its bytes.
-fn body_bytes(tx: &mut Tx<'_>, blob: &CommitBlob, ai: usize) -> Result<usize> {
-    let listed: BTreeSet<osis_base::BlobId> = blob.header.chunks.iter().map(|ch| ch.blob).collect();
+/// The large values state `st` links at delta `d`'s reach, by root (`Trigger::unlinked`); none
+/// where `ak` is not compactable.
+pub(crate) fn roots(ak: &Ak, st: &osis_crdt::Fragment, d: &osis_crdt::Fragment) -> BTreeMap<BlobId, Link> {
+    let mut v = Vec::new();
+    if compactable(ak) {
+        st.reach(d).values(&mut |x| crate::engine::large::links_in(x, &mut v));
+    }
+    v.into_iter().map(|l| (l.blob, l)).collect()
+}
+
+/// What part `ai` of a body weighs before its tree (`body_bytes`).
+struct Weighed {
+    /// Its deltas' bytes and the pages held here they link.
+    bytes: usize,
+    /// The other blobs its chunk list names for the part: a large value's tree nodes and chunks.
+    /// A drop frees those no live state links (spec/sync.md §7): the trigger counts them so, by
+    /// length (`held_bytes`).
+    tree: BTreeSet<BlobId>,
+}
+
+/// What part `ai` of `blob` weighs: its deltas and the pages held here they link
+/// (`apply::memory::each_page`), either class, and the tree blobs it lists. A delta that is not
+/// one CBOR value weighs its bytes.
+fn body_bytes(tx: &mut Tx<'_>, blob: &CommitBlob, ai: usize) -> Result<Weighed> {
+    let listed: BTreeSet<BlobId> = blob.header.chunks.iter().map(|ch| ch.blob).collect();
     let mut sum = 0usize;
+    let mut pages = BTreeSet::new();
     for p in blob.parts.iter().filter(|p| p.ai == ai) {
         sum = sum.saturating_add(p.delta.len());
         if listed.is_empty() {
@@ -144,6 +196,7 @@ fn body_bytes(tx: &mut Tx<'_>, blob: &CommitBlob, ai: usize) -> Result<usize> {
         }
         let r = each_page(tx, &p.delta, &listed, &mut |b, _| {
             sum = sum.saturating_add(b.len());
+            pages.insert(osis_label::blob_id(b));
             Ok(())
         });
         match r {
@@ -151,6 +204,22 @@ fn body_bytes(tx: &mut Tx<'_>, blob: &CommitBlob, ai: usize) -> Result<usize> {
             Err(e) => return Err(e),
         }
     }
+    let tree = blob.header.chunks.iter().filter(|ch| ch.ai == ai && !pages.contains(&ch.blob)).map(|ch| ch.blob).collect();
+    Ok(Weighed { bytes: sum, tree })
+}
+
+/// The bytes of the blobs among `blobs` held here, by length (none read).
+fn held_bytes<'b>(tx: &mut Tx<'_>, blobs: impl Iterator<Item = &'b BlobId>) -> Result<usize> {
+    let mut sum = 0usize;
+    let mut n = 0u64;
+    for b in blobs {
+        n += 1;
+        if tx.blobs.held(b)? {
+            sum = sum.saturating_add(tx.blobs.len(b)?.map_or(0, |l| usize::try_from(l).unwrap_or(usize::MAX)));
+        }
+    }
+    // counted: tests read that the trigger's work per write is flat in a value's size
+    crate::costs::count("compact: tree blobs sized", n);
     Ok(sum)
 }
 
@@ -162,7 +231,7 @@ fn body_bytes(tx: &mut Tx<'_>, blob: &CommitBlob, ai: usize) -> Result<usize> {
 /// the setting keeps live bodies, only bodies out of history and leftovers are looked at
 /// (`droppable`): kept ones are neither read nor walked past, so a weighing costs what it may
 /// drop, not the kept history.
-fn candidates(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Vec<(CommitId, usize, usize)>> {
+fn candidates(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, me: Tid) -> Result<Vec<Candidate>> {
     let memory = ak.ephemeral();
     let pool = droppable(tx, tid, ak);
     // (commit, part, judged by ID, a snapshot)
@@ -190,18 +259,54 @@ fn candidates(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Vec<(CommitId, usiz
     }
     let valid_on = |c: &CommitId| tx.core.ix.commits.get(c).is_some_and(|m| m.aspect(tid, ak).is_some_and(|ai| m.valid_at(ai) && !m.missing.contains(&ai)));
     let (_, reflected) = super::snapshot::frontiers_upto(tx, tid, ak, memory, &valid_on, Some(&upto));
-    let mut out = Vec::new();
+    // (commit, part, its weight, a snapshot)
+    let mut weighed = Vec::new();
     for (c, ai, by_id, snapshot) in ids {
-        // not snapshots: each author keeps its own ephemeral one until its next (spec/sync.md §9),
-        // so two authors' would make each compact the other's forever
-        if snapshot || (!by_id && !reflected.contains(&c)) {
+        // a snapshot is no body the trigger counts: each author keeps its own ephemeral one until
+        // its next (spec/sync.md §9), so two authors' would make each compact the other's forever.
+        // But the tree blobs it lists that no live state links go with it when the new snapshot
+        // covers it (durable; ephemeral, the author's own): the bulk of a large value's replaced
+        // tree, listed by the snapshot that last carried it
+        if snapshot && memory && tx.core.ix.commits.get(&c).is_none_or(|m| m.header.author != me) {
+            continue;
+        }
+        if !snapshot && !by_id && !reflected.contains(&c) {
             continue;
         }
         let Some(blob) = tx.get_commit(&c)? else { continue };
-        let bytes = body_bytes(tx, &blob, ai)?;
-        out.push((c, ai, part_weight(bytes).saturating_add(ENTRY_CHARGE)));
+        weighed.push((c, ai, body_bytes(tx, &blob, ai)?, snapshot));
+    }
+    // the tree blobs a drop frees: those no live state of the thing links (the tree memo,
+    // `tree_refs::state_refs_in`), none while a tree is not all held (as `chunks::released`)
+    let listed: BTreeSet<BlobId> = weighed.iter().flat_map(|(_, _, w, _)| w.tree.iter().copied()).collect();
+    let mut freed = BTreeSet::new();
+    if !listed.is_empty() {
+        let linked = crate::engine::tree_refs::state_refs_in(tx, tid, &listed)?;
+        if linked.missing.is_empty() {
+            freed = listed.difference(&linked.blobs).copied().collect();
+        }
+    }
+    let mut out = Vec::new();
+    for (c, ai, w, snapshot) in weighed {
+        // a blob two bodies list is freed once
+        let mine: Vec<BlobId> = w.tree.iter().filter(|b| freed.remove(b)).copied().collect();
+        let tree = held_bytes(tx, mine.iter())?;
+        let cost = if snapshot { tree } else { part_weight(w.bytes.saturating_add(tree)).saturating_add(ENTRY_CHARGE) };
+        if cost > 0 {
+            out.push(Candidate { c, ai, cost, body: !snapshot });
+        }
     }
     Ok(out)
+}
+
+/// What a snapshot written now would drop of one held body (`candidates`).
+struct Candidate {
+    c: CommitId,
+    ai: usize,
+    /// What the drop frees.
+    cost: usize,
+    /// A body the trigger counts (not a snapshot: only its replaced tree blobs count).
+    body: bool,
 }
 
 /// The held bodies of `(tid, ak)` a snapshot may drop now. Where its setting keeps live bodies
@@ -284,17 +389,19 @@ impl Load {
         };
         let cands = e.run(|tx| {
             class(tx);
-            candidates(tx, tid, ak)
+            candidates(tx, tid, ak, me)
         })?;
         let now = e.now().0;
         let (mut held, mut largest, mut bodies) = (0usize, 0usize, 0usize);
-        for (c, ai, cost) in cands {
+        for Candidate { c, ai, cost, body } in cands {
             if e.part_keeps(&c)?.get(ai).copied().unwrap_or(0) > now {
                 continue;
             }
             held = held.saturating_add(cost);
-            largest = largest.max(cost);
-            bodies += 1;
+            if body {
+                largest = largest.max(cost);
+                bodies += 1;
+            }
         }
         let Some(snapshot) = e.run(|tx| {
             class(tx);
@@ -315,6 +422,9 @@ impl Engine {
     /// snapshots written, by aspect: an ephemeral one's covered bodies are dropped as it applies
     /// (`retention::memory::drop_covered`), a durable one's by node-sync.
     pub fn compactions(&mut self) -> Result<Vec<(Tid, Ak, CommitId)>> {
+        if self.core.compaction.paused {
+            return Ok(Vec::new());
+        }
         let due = std::mem::take(&mut self.core.compaction.due);
         let forced = std::mem::take(&mut self.core.compaction.forced);
         let mut out = Vec::new();
@@ -361,6 +471,15 @@ impl Engine {
             }
         }
         Ok(out)
+    }
+
+    /// Tests: while `paused`, the trigger writes no snapshot (what is due waits). Reaches cheaply
+    /// what the trigger leaves only at sizes a test cannot afford: a large value's replaced
+    /// chunks outweigh twice its snapshot's chunk list below about 700 chunks, so its own
+    /// replaces drop its first write under no snapshot only past that.
+    #[doc(hidden)]
+    pub fn pause_compaction(&mut self, paused: bool) {
+        self.core.compaction.paused = paused;
     }
 
     /// Tests: snapshots every ephemeral aspect held here with a body a snapshot may cover, now.

@@ -53,8 +53,9 @@ fn trees_of(tx: &mut Tx<'_>, t: &Tid, s: &Source) -> Result<Trees> {
     Ok(out)
 }
 
-/// Every source of thing `t`: each aspect with a state or a held commit, each commit held on it.
-fn sources(tx: &mut Tx<'_>, t: &Tid) -> Result<BTreeSet<Source>> {
+/// Every source of thing `t`: each aspect with a state or a held commit, each commit held on it
+/// unless `states` (the states alone).
+fn sources(tx: &mut Tx<'_>, t: &Tid, states: bool) -> Result<BTreeSet<Source>> {
     let mut out = BTreeSet::new();
     let prefix = [records::ASPECTS, t.as_bytes()].concat();
     tx.scan(&prefix, |k, _| {
@@ -63,7 +64,9 @@ fn sources(tx: &mut Tx<'_>, t: &Tid) -> Result<BTreeSet<Source>> {
     })?;
     for ((_, ak), cs) in tx.core.aspects_of(t) {
         out.insert(Source::State(ak.clone()));
-        out.extend(cs.iter().map(|(_, c)| Source::Body(*c)));
+        if !states {
+            out.extend(cs.iter().map(|(_, c)| Source::Body(*c)));
+        }
     }
     Ok(out)
 }
@@ -81,9 +84,19 @@ fn answer(trees: impl IntoIterator<Item = Arc<Trees>>, blobs: &BTreeSet<BlobId>)
 
 /// `Engine::tree_refs` in transaction `tx`.
 pub(crate) fn tree_refs_in(tx: &mut Tx<'_>, t: &Tid, blobs: &BTreeSet<BlobId>) -> Result<Trees> {
+    refs_in(tx, t, blobs, false)
+}
+
+/// `tree_refs_in` of the live states of `t` alone: what a drop of every body linking the rest
+/// would leave linked (the compaction trigger's weighing, `retention::compact`).
+pub(crate) fn state_refs_in(tx: &mut Tx<'_>, t: &Tid, blobs: &BTreeSet<BlobId>) -> Result<Trees> {
+    refs_in(tx, t, blobs, true)
+}
+
+fn refs_in(tx: &mut Tx<'_>, t: &Tid, blobs: &BTreeSet<BlobId>, states: bool) -> Result<Trees> {
     let t = *t;
     let mut got = Vec::new();
-    for s in sources(tx, &t)? {
+    for s in sources(tx, &t, states)? {
         let k = (t, s);
         // a node a kept walk lacked, held now
         if let Some(x) = tx.core.tree_refs.held(&k) {
@@ -104,7 +117,7 @@ pub(crate) fn tree_refs_in(tx: &mut Tx<'_>, t: &Tid, blobs: &BTreeSet<BlobId>) -
         let fresh = crate::costs::paused(|| {
             crate::engine::memo::unrecorded(|| -> Result<Trees> {
                 let mut all = Vec::new();
-                for s in sources(tx, &t)? {
+                for s in sources(tx, &t, states)? {
                     all.push(Arc::new(trees_of(tx, &t, &s)?));
                 }
                 Ok(answer(all, blobs))

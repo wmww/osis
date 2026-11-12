@@ -40,6 +40,13 @@ impl CipherHost for HostStore {
         self.db.get_mut().run(|t, _| t.read_blob(id, offset, len))
     }
 
+    fn len(&mut self, id: &BlobId) -> Result<Option<u64>, Error> {
+        if let Some(b) = self.engine_mem.get(id) {
+            return Ok(Some(b.len() as u64));
+        }
+        self.db.get_mut().run(|t, _| t.blob_len(id))
+    }
+
     fn hold(&mut self, id: &BlobId, blob: Vec<u8>, memory: bool) -> Result<bool, Error> {
         if self.held(id)? {
             return Ok(false);

@@ -45,6 +45,8 @@ pub trait CipherTx {
     fn held(&mut self, id: &BlobId) -> Result<bool, Error>;
     /// Bytes `offset..offset+len` of blob `id`, held by the engine or not.
     fn read(&mut self, id: &BlobId, offset: u64, len: usize) -> Result<Option<Vec<u8>>, Error>;
+    /// Blob `id`'s byte length, held by the engine or not, without reading it.
+    fn len(&mut self, id: &BlobId) -> Result<Option<u64>, Error>;
     /// The engine holds `id` with bytes `blob` (stored unless held already; `memory`: in memory
     /// only, never on disk); whether it did not before.
     fn hold(&mut self, id: &BlobId, blob: Vec<u8>, memory: bool) -> Result<bool, Error>;
@@ -78,6 +80,7 @@ pub trait CipherHost: Send + Any {
     fn begin(&mut self) {}
     fn held(&mut self, id: &BlobId) -> Result<bool, Error>;
     fn read(&mut self, id: &BlobId, offset: u64, len: usize) -> Result<Option<Vec<u8>>, Error>;
+    fn len(&mut self, id: &BlobId) -> Result<Option<u64>, Error>;
     fn hold(&mut self, id: &BlobId, blob: Vec<u8>, memory: bool) -> Result<bool, Error>;
     fn release(&mut self, id: &BlobId, memory: bool) -> Result<(), Error>;
     /// Applies a removal of the store's own rows its holder deferred (`CipherTx::finish`): none
@@ -159,6 +162,9 @@ impl<T: CipherHost> CipherTx for HostTx<'_, T> {
     }
     fn read(&mut self, id: &BlobId, offset: u64, len: usize) -> Result<Option<Vec<u8>>, Error> {
         self.g.read(id, offset, len)
+    }
+    fn len(&mut self, id: &BlobId) -> Result<Option<u64>, Error> {
+        self.g.len(id)
     }
     fn hold(&mut self, id: &BlobId, blob: Vec<u8>, memory: bool) -> Result<bool, Error> {
         self.g.hold(id, blob, memory)
@@ -267,6 +273,13 @@ impl CipherHost for BlobArea {
             return Ok(Some(crate::backend::blob_slice(b, offset, len)));
         }
         self.run(|t| t.read_blob(id, offset, len))
+    }
+
+    fn len(&mut self, id: &BlobId) -> Result<Option<u64>, Error> {
+        if let Some(b) = self.mem.get(id) {
+            return Ok(Some(b.len() as u64));
+        }
+        self.run(|t| t.blob_len(id))
     }
 
     fn hold(&mut self, id: &BlobId, blob: Vec<u8>, memory: bool) -> Result<bool, Error> {

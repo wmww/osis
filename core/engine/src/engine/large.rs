@@ -446,6 +446,15 @@ fn below(blobs: &mut TxBlobs<'_, '_>, dedup: &Secret32, link: &Link) -> Result<O
     Ok(Some((false, out)))
 }
 
+/// The bytes under tree root `link` as its node states them (0 when the node is not held or is
+/// no tree node): the compaction trigger's estimate (`retention::compact::Trigger::unlinked`),
+/// so the node's hash goes unchecked.
+pub(crate) fn tree_len(tx: &mut Tx<'_>, link: &Link) -> Result<u64> {
+    let Some(blob) = tx.blobs.get(&link.blob)? else { return Ok(0) };
+    let Ok((_, pt)) = osis_label::open(&blob, &Secret32::from_bytes(link.key)) else { return Ok(0) };
+    Ok(osis_label::tree::parse_node(&pt).map_or(0, |(_, kids)| kids.iter().fold(0u64, |a, (_, n)| a.saturating_add(*n))))
+}
+
 /// Blob IDs of the trees under some roots (`Engine::live_trees`, `Engine::tree_refs`).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Trees {

@@ -331,3 +331,134 @@ fn fallen_own_snapshot_lifts_own_tombstone_spec_sync_7() {
     net.run();
     assert_eq!(map_of(&mut net, b, t), want, "b got y back");
 }
+
+/// Bytes of blobs listed on `t`'s blob aspect that node `n`'s live trees no longer link: (held by
+/// `n`, kept by the host under `n`'s label). `sizes`: every listed blob's length, filled as seen.
+fn tree_garbage(net: &mut Net, host: usize, n: usize, t: Tid, sizes: &mut std::collections::BTreeMap<osis_base::BlobId, usize>) -> (usize, usize) {
+    let k = (t, Ak::new(BLOB.ak()).unwrap());
+    let e = net.engine(n);
+    let on: Vec<CommitId> = e.core.durable_on(&k).collect();
+    for c in on {
+        for ch in e.header(&c).map(|h| h.chunks.clone()).unwrap_or_default() {
+            if !sizes.contains_key(&ch.blob)
+                && let Some(b) = e.blob(&ch.blob).unwrap()
+            {
+                sizes.insert(ch.blob, b.len());
+            }
+        }
+    }
+    let live = e.live_trees(&t).unwrap().blobs;
+    let dead: Vec<(osis_base::BlobId, usize)> = sizes.iter().filter(|(b, _)| !live.contains(b)).map(|(b, l)| (*b, *l)).collect();
+    let at_node = dead.iter().filter(|(b, _)| e.has_blob(b)).map(|x| x.1).sum();
+    let l = net.label(n);
+    let hosted: std::collections::BTreeSet<osis_base::BlobId> = net.host_ids(host, &l).into_iter().collect();
+    (at_node, dead.iter().filter(|(b, _)| hosted.contains(b)).map(|x| x.1).sum())
+}
+
+/// What `edits` one-byte edits of a value of `chunks` × 64 KiB (random bytes) at spread positions
+/// leave, the value written once and synced first. After any edit, the most: tree garbage at the writer and
+/// at the host (`tree_garbage`), plain deltas the writer holds on the aspect; and the trigger's
+/// tree blobs sized and bodies weighed per edit.
+#[derive(Debug, Clone, Copy)]
+struct Rewritten {
+    at_writer: usize,
+    at_host: usize,
+    deltas: usize,
+    sized: f64,
+    weighed: f64,
+}
+
+fn rewritten(chunks: usize, edits: usize) -> Rewritten {
+    let (mut net, host, [a, r], _g, [t]) = hosted::<2, 1>(&[(1, Role::Read)], ["x"], true);
+    let k = (t, Ak::new(BLOB.ak()).unwrap());
+    let mut x = vec![0u8; chunks * 65536];
+    osis_crypto::RngCore::fill_bytes(&mut osis_crypto::SeededRng::from_u64(7), &mut x);
+    let write = |net: &mut Net, x: &[u8]| {
+        let mut m = Mutation::new();
+        m.set(t, &BLOB, &Value::Bytes(x.to_vec())).unwrap();
+        net.engine(a).commit(m).unwrap().unwrap();
+        net.advance(1_000);
+        net.run();
+    };
+    write(&mut net, &x);
+    let mut sizes = Default::default();
+    let mut out = Rewritten { at_writer: 0, at_host: 0, deltas: 0, sized: 0.0, weighed: 0.0 };
+    osis_node::costs::take();
+    for i in 0..edits {
+        let at = (i * 7919 * 65536 + 4099) % x.len();
+        x[at] ^= 0x5a;
+        write(&mut net, &x);
+        let (n, h) = tree_garbage(&mut net, host, a, t, &mut sizes);
+        let e = net.engine(a);
+        let deltas = e.core.durable_on(&k).filter(|c| e.body_not_dropped(c, &k.0, &k.1) && e.header(c).is_some_and(|h| !h.kind.is_compaction())).count();
+        (out.at_writer, out.at_host, out.deltas) = (out.at_writer.max(n), out.at_host.max(h), out.deltas.max(deltas));
+    }
+    let costs = osis_node::costs::take();
+    let per = |name: &str| costs.iter().find(|c| c.0 == name).map_or(0, |c| c.2) as f64 / edits as f64;
+    (out.sized, out.weighed) = (per("compact: tree blobs sized"), per("compact: bodies weighed"));
+    assert_eq!(net.engine(r).get_full(&t, &k.1).unwrap(), Some(Value::Bytes(x)), "the reader reads the value");
+    out
+}
+
+/// What one edit's replaced tree may hold: the trigger needs two bodies, so one edit's replaced
+/// chunks wait for the next; a one-byte edit replaces one chunk, two where it moves a boundary,
+/// and the nodes above them.
+const ONE_EDIT: usize = 2 * osis_base::format::CHUNK_MAX + 16 * 1024;
+
+// spec/sync.md §7 Trigger (a body weighs what dropping it frees, a replaced value's tree blobs
+// no live state links included): a large value edited in place n and 10n times leaves, after
+// any edit, one edit's replaced tree blobs at most at the writer and the host, and one delta
+// held: each edit's replaced chunk outweighs twice the snapshot (a value under about 700
+// chunks), so the trigger compacts at every second edit, not once enough edits outweigh the
+// snapshot's chunk list.
+#[test]
+fn rewritten_value_leaves_bounded_tree_garbage_spec_sync_7() {
+    let small = rewritten(24, 4);
+    let large = rewritten(24, 40);
+    println!("4 edits {small:?}\n40 edits {large:?}");
+    for (edits, r) in [(4, small), (40, large)] {
+        assert!(r.at_writer <= ONE_EDIT && r.at_host <= ONE_EDIT && r.deltas <= 1, "{edits} edits: {r:?}");
+    }
+}
+
+// spec/sync.md §7 Trigger, notes/coordination.md (count work): the trigger's work per edit of a
+// large value is flat at n and 10n chunks (it sizes the blobs an edit lists and the replaced
+// ones a weighing finds, never the value's whole tree), and an edit's replaced tree blobs wait
+// for one more edit at most, at either size.
+#[test]
+fn trigger_work_flat_in_value_size_spec_sync_7() {
+    let small = rewritten(8, 6);
+    let large = rewritten(80, 6);
+    println!("8 chunks {small:?}\n80 chunks {large:?}");
+    assert!(small.sized > 0.0 && small.weighed > 0.0, "the trigger sized and weighed: {small:?}");
+    assert!(large.sized <= small.sized * 1.5 + 1.0 && large.weighed <= small.weighed * 1.5 + 1.0, "work per edit grew with the value: {small:?} at 8 chunks, {large:?} at 80");
+    for (chunks, r) in [(8, small), (80, large)] {
+        assert!(r.at_writer <= ONE_EDIT && r.at_host <= ONE_EDIT && r.deltas <= 1, "{chunks} chunks: {r:?}");
+    }
+}
+
+// spec/sync.md §7 Trigger: a large value set to a small one unlinks a tree its write lists none
+// of; the trigger counts it all the same (the estimate grows by what the write unlinked past
+// what it linked), so the whole tree goes from the writer and the host as soon as two bodies
+// are held, here by the next small write, not once enough small writes outweigh the
+// snapshot's chunk list.
+#[test]
+fn shrunk_value_tree_goes_by_the_next_write_spec_sync_7() {
+    let (mut net, host, [a, _r], _g, [t]) = hosted::<2, 1>(&[(1, Role::Read)], ["x"], true);
+    let mut x = vec![0u8; 80 * 65536];
+    osis_crypto::RngCore::fill_bytes(&mut osis_crypto::SeededRng::from_u64(7), &mut x);
+    let mut sizes = Default::default();
+    // an edit first: compacted, the snapshot lists the tree
+    let mut y = x.clone();
+    y[4099] ^= 0x5a;
+    for v in [x, y, vec![1], vec![2]] {
+        let mut m = Mutation::new();
+        m.set(t, &BLOB, &Value::Bytes(v)).unwrap();
+        net.engine(a).commit(m).unwrap().unwrap();
+        net.advance(1_000);
+        net.run();
+        tree_garbage(&mut net, host, a, t, &mut sizes);
+    }
+    assert!(sizes.len() > 40, "the value went up in chunks");
+    assert_eq!(tree_garbage(&mut net, host, a, t, &mut sizes), (0, 0), "the replaced tree is gone");
+}

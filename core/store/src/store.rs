@@ -680,6 +680,13 @@ impl Transaction<'_> {
         }
         self.pager.txn_get_blob(&self.d, id, offset, len)
     }
+    /// A blob's byte length, without reading it.
+    pub fn blob_len(&mut self, id: &BlobId) -> Result<Option<u64>, Error> {
+        if let Some(b) = self.mem.o.blobs.get(id) {
+            return Ok(Some(b.len() as u64));
+        }
+        self.pager.txn_blob_len(&self.d, id)
+    }
 }
 
 fn decode_pending(v: &[u8]) -> Result<(PendingKind, Vec<u8>), Error> {
