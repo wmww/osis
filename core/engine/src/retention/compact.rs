@@ -897,6 +897,37 @@ mod tests {
         }
     }
 
+    // spec/permissions.md §5.2, spec/sync.md §9 (covered; random churn seed 913562400022 shrunk):
+    // a snapshot whose writer held a body behind a gap in its session carries the body's writes
+    // past its own frontier. A node holding the body judges it covered by the join, as a node
+    // that dropped it under a cover that snapshot covers judges by its chain of covers; judged
+    // uncovered by the frontier, the body's author placed it again at every pass for the others
+    // to delete.
+    #[test]
+    fn held_memory_body_past_a_snapshot_frontier_judged_by_the_join_spec_permissions_5_2() {
+        use osis_base::Role;
+        use osis_schema::core_types as ct;
+        let mut lp = LocalPeer::fresh(2, osis_base::WallMs(1_700_000_000_000));
+        lp.sync_all().unwrap();
+        let [a, b] = [0, 1].map(|i| lp.peers[i].engine.me());
+        let (t, _) = lp.peers[0].engine.create_with_admin(&a).unwrap();
+        lp.peers[0].engine.grant(&t, &b, &ct::Edge { role: Role::Write, until: None, invite: None, tied: None }).unwrap();
+        lp.sync_all().unwrap();
+        let ak = Ak::new("x:m+.0").unwrap();
+        let w: Vec<CommitId> = ["k1", "k2", "k3"].iter().map(|k| put(&mut lp.peers[0].engine, t, k, "v")).collect();
+        // b holds the first and the third: a gap at the second
+        for c in [w[0], w[2]] {
+            let bytes = lp.peers[0].engine.package(&c).unwrap().unwrap().bytes;
+            lp.peers[1].engine.ingest_memory(&bytes, u64::MAX).unwrap();
+        }
+        let s = lp.peers[1].engine.snapshot(&t, &ak).unwrap().unwrap();
+        let bytes = lp.peers[1].engine.package(&s).unwrap().unwrap().bytes;
+        lp.peers[0].engine.ingest_memory(&bytes, u64::MAX).unwrap();
+        let e = &mut lp.peers[0].engine;
+        assert_eq!(e.covered(&s, &w[2], &t, &ak).unwrap(), Some(true), "its writes are in the snapshot");
+        assert_eq!(e.covered(&s, &w[1], &t, &ak).unwrap(), Some(false), "the gap's are not");
+    }
+
     /// A thing whose durable aspect `x:big.0` holds a chunked value of `n` × 64 KiB and whose
     /// ephemeral aspect `x:cur+.0` holds that value's link: (peer, thing, the tree's blobs).
     fn linked(n: usize) -> (LocalPeer, Tid, usize) {

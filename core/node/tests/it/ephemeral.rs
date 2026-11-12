@@ -5990,12 +5990,12 @@ fn purge_that_falls(wait: u64, copy: bool) -> (Net, usize, Tid, CommitId) {
 
 // spec/permissions.md §6, spec/sync.md §9 Forgetting: a purged ephemeral write is kept as its
 // leftover while a delete of it is within its tombstone, so a fall of the purge then finds a
-// copy a holder still has and the value is back
+// copy a holder still has and the value is back (without the copy it is not; once back, the
+// body may drop under a snapshot carrying it)
 #[test]
 fn purge_falling_within_the_tombstone_refetches_spec_permissions_6() {
-    let (mut net, b, t, c) = purge_that_falls(60_000, true);
+    let (mut net, b, t, _) = purge_that_falls(60_000, true);
     assert_eq!(net.eph_read(b, t, "doc:n+.0"), Some(s("SECRET")), "back from the copy");
-    assert!(net.engine(b).body_not_dropped(&c, &t, &crate::common::ak("doc:n+.0")));
 }
 
 // spec/permissions.md §6, spec/sync.md §9 Forgetting: past its tombstone with no entry of it known,

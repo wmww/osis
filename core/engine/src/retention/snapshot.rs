@@ -455,9 +455,13 @@ pub(crate) fn covered_join(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Ti
         return Ok(None);
     }
     let Some(m) = tx.core.ix.commits.get(c).cloned() else { return Ok(None) };
-    // a memory body the snapshot's frontier (indexed) does not reach: judged before either
-    // body is decoded (a memory apply weighs every held body against every held snapshot)
-    if m.header.ephemeral.is_some()
+    // a memory body not held that the snapshot's frontier (indexed) does not reach: judged
+    // before the snapshot is read, as below. A held body is judged by the join alone: a
+    // snapshot that covered a coverer of it carries its writes past its own frontier, and
+    // saying otherwise here breaks the chain of covers (`hand_down`) a node with the body
+    // dropped judges by (a holder places it again, every pass, for that node to delete)
+    if (m.is_dropped(cai) || m.missing(cai))
+        && m.header.ephemeral.is_some()
         && m.header.form.counted()
         && m.header.kind.has_own_writes()
         && let Some(a) = m.header.aspects.get(cai)
