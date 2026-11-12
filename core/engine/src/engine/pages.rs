@@ -1777,7 +1777,7 @@ mod tests {
         assert!(key_dots(&mut txn, &tid, &ak, &set, &Value::Int(5)).unwrap().is_empty());
         assert_eq!(key_dots(&mut txn, &tid, &ak, &set, &Value::Int(6)).unwrap().len(), 1);
         // links: by content hash, whatever blob holds the value
-        let link = |b: u8| Value::link(osis_base::Link { hash: [7; 32], blob: osis_base::BlobId([b; 32]), suite: 1, key: [b; 32] });
+        let link = |b: u8| Value::link(osis_base::Link { hash: [7; 32], blob: osis_base::BlobId([b; 32]), suite: 1, key: [b; 32], salt: [0; 16], del: osis_base::Del::NONE });
         assert_eq!(link(1), link(2));
         assert_eq!(key_row(&set, &link(1), None), key_row(&set, &link(2), None));
         assert_eq!(key_row(&set, &Value::List(vec![link(1)]), None), key_row(&set, &Value::List(vec![link(2)]), None));
@@ -1799,7 +1799,7 @@ mod tests {
         let mut store = Store::create(Box::new(MemoryBackend::new()), Box::new(MemoryRoot::new()), StoreConfig::default(), &mut rng).unwrap();
         let (tid, ak) = (Tid::from_bytes([3; 15]), osis_base::Ak::new("app:s.0").unwrap());
         let nodes = [sess(1), sess(2)];
-        let link = |h: u8, b: u8| Value::link(osis_base::Link { hash: [h; 32], blob: osis_base::BlobId([b; 32]), suite: 1, key: [b; 32] });
+        let link = |h: u8, b: u8| Value::link(osis_base::Link { hash: [h; 32], blob: osis_base::BlobId([b; 32]), suite: 1, key: [b; 32], salt: [0; 16], del: osis_base::Del::NONE });
         let pool = |i: u64| -> Value {
             match i % 14 {
                 0 => Value::Float(Float::new(0.0)),

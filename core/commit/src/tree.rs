@@ -334,7 +334,7 @@ impl HashSink {
 }
 
 fn hash_link(hash: [u8; 32]) -> Link {
-    Link { hash, blob: BlobId([0; 32]), suite: SUITE_1, key: [0; 32] }
+    Link { hash, blob: BlobId([0; 32]), suite: SUITE_1, key: [0; 32], salt: [0; 16], del: osis_base::Del::NONE }
 }
 
 impl TreeSink for HashSink {

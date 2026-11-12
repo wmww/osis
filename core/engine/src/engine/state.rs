@@ -19,7 +19,7 @@ impl PageSink for LocalPages {
         self.1 += 1;
         let mut id = hash.to_vec();
         id.extend(self.1.to_le_bytes());
-        Ok(Link { hash, blob: BlobId(osis_base::hash::hash(&id)), suite: 1, key: [0; 32] })
+        Ok(Link { hash, blob: BlobId(osis_base::hash::hash(&id)), suite: 1, key: [0; 32], salt: [0; 16], del: osis_base::Del::NONE })
     }
 }
 

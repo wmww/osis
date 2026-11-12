@@ -401,6 +401,27 @@ mod tests {
         assert_eq!((written, n > 0), (0, true));
     }
 
+    // spec/data-model.md §5, spec/sync.md §1: a written link carries its blob's prefix salt and
+    // its framing's keys as Del; a link whose salt or Del the blob's prefix does not bear is
+    // never reused (the reuser copies links verbatim), its blob written afresh.
+    #[test]
+    fn link_carries_salt_and_del_and_reuse_checks_them() {
+        let f = Framing { keys: vec![(1, dk(1)), (2, dk(2))], ..framing() };
+        let mut store = MemoryBlobs::default();
+        let d = data(20_000, 0);
+        let (root, n, _) = rewrite(&mut store, &f, 1, &d, None);
+        let p = crate::blob::Prefix::parse(&store.0[&root.blob]).unwrap();
+        assert_eq!(root.salt, *p.salt());
+        assert_eq!(root.del, f.del().unwrap());
+        assert!(crate::tree::bears(&p, &root.del, &f.blind(&osis_crypto::link_blind(&root.key))));
+        assert_eq!(rewrite(&mut store, &f, 2, &d, Some(root)).0, root, "an honest link is reused");
+        for (i, forged) in [Link { del: osis_base::Del::from_keys([(1, dk(1).to_bytes())]).unwrap(), ..root }, Link { salt: [9; 16], ..root }].into_iter().enumerate() {
+            let (again, written, reused) = rewrite(&mut store, &f, 3, &d, Some(forged));
+            assert_ne!(again.blob, root.blob, "case {i}");
+            assert!(written >= 1 && written < n && reused > 0, "case {i}: the root afresh, the honest links below it reused: {written} of {n}");
+        }
+    }
+
     proptest! {
         // spec/data-model.md §6: round trip for random sizes around and above the threshold.
         #[test]

@@ -5,7 +5,7 @@
 use super::{FixedRng, case, generated_header, s32};
 use crate::file::{Record, VecFile};
 use crate::hex;
-use osis_base::{Link, Value, WallMs, encode};
+use osis_base::{Del, Link, Value, WallMs, encode};
 use osis_crypto::{DeleteSecret, SUITE_1, aead, link_blind, link_hash, link_tree_hash, pad, thing_blind};
 use osis_label::{Error, Prefix, frame, open, tree::node_plaintext};
 
@@ -94,7 +94,7 @@ pub fn prefixes() -> VecFile {
     VecFile { header: generated_header("blob", SPEC), cases }
 }
 
-fn blob_case(name: &str, spec: &str, prefix: &Prefix, plaintext: &[u8], key: [u8; 32], hash: [u8; 32]) -> (Record, Link) {
+fn blob_case(name: &str, spec: &str, prefix: &Prefix, del: Del, plaintext: &[u8], key: [u8; 32], hash: [u8; 32]) -> (Record, Link) {
     let (k, blob) = frame(prefix, plaintext, &mut FixedRng::new(&[&key])).unwrap();
     assert_eq!(open(&blob, &k).unwrap().1, plaintext);
     let id = osis_label::blob_id(&blob);
@@ -106,7 +106,7 @@ fn blob_case(name: &str, spec: &str, prefix: &Prefix, plaintext: &[u8], key: [u8
         .with("blob", hex(&blob))
         .with("blob-id", hex(&id.0))
         .with("link-hash", hex(&hash));
-    (r, Link { hash, blob: id, suite: SUITE_1, key })
+    (r, Link { hash, blob: id, suite: SUITE_1, key, salt: *prefix.salt(), del })
 }
 
 pub fn blobs() -> VecFile {
@@ -121,7 +121,7 @@ pub fn blobs() -> VecFile {
     let lb = link_blind(&[0x28; 32]);
     let p = Prefix::for_keys(salt, &thing_blind(&lb, &thing), Some(WallMs(1_800_000_000_000)), &[(1, dk)]).unwrap();
     let chunk = b"osis chunk bytes".to_vec();
-    let (r, l1) = blob_case("chunk blob", "spec/wire.md §6", &p, &chunk, [0x28; 32], link_hash(&dedup, &chunk));
+    let (r, l1) = blob_case("chunk blob", "spec/wire.md §6", &p, Del::from_keys([(1, dk.to_bytes())]).unwrap(), &chunk, [0x28; 32], link_hash(&dedup, &chunk));
     cases.push(
         r.with("dedup", hex(dedup.expose()))
             .with("delete-secret", hex(secret.expose()))
@@ -134,12 +134,12 @@ pub fn blobs() -> VecFile {
     // Tree node over that chunk, with its length.
     let node = node_plaintext(1, &[(l1, chunk.len() as u64)]).unwrap();
     let p = Prefix::for_keys(salt, &thing_blind(&link_blind(&[0x29; 32]), &thing), Some(WallMs(1_800_000_000_000)), &[(1, dk)]).unwrap();
-    let (r, _) = blob_case("tree node blob", "spec/wire.md §6", &p, &node, [0x29; 32], link_tree_hash(&dedup, 1, &[(l1.hash, chunk.len() as u64)]));
+    let (r, _) = blob_case("tree node blob", "spec/wire.md §6", &p, Del::from_keys([(1, dk.to_bytes())]).unwrap(), &node, [0x29; 32], link_tree_hash(&dedup, 1, &[(l1.hash, chunk.len() as u64)]));
     cases.push(r.with("dedup", hex(dedup.expose())));
     // Page: the canonical array of its elements.
     let page = encode(&Value::List(vec![Value::Int(1), Value::Str("two".into())]));
     let p0 = Prefix::new(salt, None, vec![]).unwrap();
-    let (r, _) = blob_case("page blob", "spec/wire.md §6", &p0, &page, [0x2a; 32], link_hash(&dedup, &page));
+    let (r, _) = blob_case("page blob", "spec/wire.md §6", &p0, Del::NONE, &page, [0x2a; 32], link_hash(&dedup, &page));
     cases.push(r.with("dedup", hex(dedup.expose())));
     cases.push(case("commit blob", SPEC).with("pending", "osis-commit (CommitBlobPlaintext)"));
     // Bad padding: a valid AEAD over a plaintext without the 0x80 marker.

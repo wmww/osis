@@ -3,7 +3,7 @@
 use crate::header::DeleteKey;
 use crate::retention::delete_levels;
 use crate::Error;
-use osis_base::Tid;
+use osis_base::{Del, Tid};
 use osis_base::format::{DELETE_ADMIN, DELETE_AUTHOR};
 use osis_crypto::{Secret32, VerifyingKey};
 use osis_schema::Retention;
@@ -48,4 +48,11 @@ pub struct Prefix {
     /// Expiry `T`, wall ms.
     pub expiry: Option<u64>,
     pub keys: Vec<DeleteKey>,
+}
+
+impl Prefix {
+    /// The keys as a link's Del (spec/data-model.md §5): one per level.
+    pub fn del(&self) -> Result<Del, Error> {
+        Del::from_keys(self.keys.iter().map(|k| (k.level, k.key))).ok_or(Error::Malformed("two delete keys at one level"))
+    }
 }

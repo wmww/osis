@@ -41,8 +41,8 @@ fn put_links(out: &mut Vec<u8>, links: &[Link]) {
 }
 
 /// `put_links(links).len()`.
-fn links_len(n: usize) -> usize {
-    head_len(n as u64).saturating_add(n.saturating_mul(link_len()))
+fn links_len(links: &[Link]) -> usize {
+    head_len(links.len() as u64).saturating_add(links.iter().map(link_len).sum())
 }
 
 /// An element array (or, `map`, a struct's field map or an enum's payload map) as written (§8,
@@ -215,18 +215,18 @@ impl Pager {
 /// `[Link+]` of an array's pages, or of link pages when that list is above the target (§8,
 /// spec/wire.md §6: the tree-node grouping rule, level 1 only).
 fn link_list(sink: Option<&mut dyn PageSink>, links: &[Link], params: PageParams, out: &mut Vec<u8>) -> Result<(), Error> {
-    if links_len(links.len()) <= params.target {
+    if links_len(links) <= params.target {
         put_links(out, links);
         return Ok(());
     }
     let sink = sink.ok_or(Error::Mismatch("a paged array needs a page sink"))?;
     let mut top = Vec::new();
     for g in link_groups(links, params.fanout) {
-        let mut page = Vec::with_capacity(links_len(g.len()));
+        let mut page = Vec::with_capacity(links_len(g));
         put_links(&mut page, g);
         top.push(sink.put(&page)?);
     }
-    if links_len(top.len()) > params.target {
+    if links_len(&top) > params.target {
         return Err(Error::Mismatch("fragment needs a third page level"));
     }
     put_links(out, &top);
@@ -1101,7 +1101,7 @@ pub mod oracle {
         fn put(&mut self, p: &[u8]) -> Result<osis_base::Link, PageError> {
             self.pages.push(p.to_vec());
             let hash = osis_base::hash::hash(p);
-            Ok(osis_base::Link { hash, blob: osis_base::BlobId(hash), suite: 1, key: [0; 32] })
+            Ok(osis_base::Link { hash, blob: osis_base::BlobId(hash), suite: 1, key: [0; 32], salt: [0; 16], del: osis_base::Del::NONE })
         }
         fn params(&self) -> PageParams {
             self.params

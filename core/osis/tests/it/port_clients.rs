@@ -1045,7 +1045,7 @@ fn a_client_writes_no_link() {
     x.n.commit_set(x.out, osis::DynamicAspectKey::untyped(name.clone()), &Value::Str("q".repeat(1 << 20))).unwrap();
     let hidden = x.n.engine(|e| e.get(&x.out, &name)).unwrap().unwrap();
     assert!(matches!(hidden, Value::Link(_)));
-    let bogus = Value::link(osis_base::Link { hash: [3; 32], blob: osis_base::BlobId([4; 32]), suite: 1, key: [5; 32] });
+    let bogus = Value::link(osis_base::Link { hash: [3; 32], blob: osis_base::BlobId([4; 32]), suite: 1, key: [5; 32], salt: [0; 16], del: osis_base::Del::NONE });
     let n = Value::Int;
     let in_list = Value::List(vec![bogus.clone()]);
     let in_map = Value::Map([(bogus.clone(), n(1))].into_iter().collect());

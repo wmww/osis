@@ -248,7 +248,7 @@ fn same_stamp_copies_converge_spec_4_1() {
         assert_eq!(x.read(), want);
     }
     // links as keys: equal as `Value`s (by hash), copies by their bytes
-    let link = |b: u8| Value::link(Link { hash: [9; 32], blob: osis_base::BlobId([b; 32]), suite: 1, key: [b; 32] });
+    let link = |b: u8| Value::link(Link { hash: [9; 32], blob: osis_base::BlobId([b; 32]), suite: 1, key: [b; 32], salt: [0; 16], del: osis_base::Del::NONE });
     let (a, b) = (mk(Value::Map([(link(1), Value::Int(9))].into_iter().collect())), mk(Value::Map([(link(2), Value::Int(9))].into_iter().collect())));
     let mut x = a.clone();
     x.join(b.clone());

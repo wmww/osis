@@ -35,7 +35,7 @@ impl PageSink for Blobs {
         let mut blob = [0u8; 32];
         blob[..8].copy_from_slice(&(self.pages.len() as u64).to_le_bytes());
         self.pages.push(p.to_vec());
-        Ok(Link { hash: osis_base::hash::hash(p), blob: BlobId(blob), suite: 1, key: [0; 32] })
+        Ok(Link { hash: osis_base::hash::hash(p), blob: BlobId(blob), suite: 1, key: [0; 32], salt: [0; 16], del: osis_base::Del::NONE })
     }
     fn params(&self) -> PageParams {
         self.params
@@ -459,7 +459,7 @@ fn stream_recut_pages_spec_8() {
                     3 => b.clear(),
                     4 => std::mem::swap(&mut a, &mut b),
                     _ => {
-                        let l = Link { hash: osis_base::hash::hash(&q.pages[k]), blob: BlobId([0; 32]), suite: 1, key: [0; 32] };
+                        let l = Link { hash: osis_base::hash::hash(&q.pages[k]), blob: BlobId([0; 32]), suite: 1, key: [0; 32], salt: [0; 16], del: osis_base::Del::NONE };
                         q.pages[k - 1] = osis_base::encode(&V::List(vec![V::link(l)]));
                         let m = Input { root: i.root.clone(), pages: Some(q), cx: i.cx.clone(), snapshot: i.snapshot };
                         if m.agree().unwrap() { n.0 += 1 } else { n.1 += 1 }

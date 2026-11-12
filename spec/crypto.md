@@ -223,7 +223,7 @@ A **holder actor** of A is a holder for keys of A (its first admin included whil
   - delta hash `kdf("delta", dedup secret, delta bytes)`;
   - link content hash of a chunk, page or tree node: spec/wire.md §6;
   - a suspect entry's state digest `kdf("state", dedup secret, ak || 0x00 || state bytes)` cut to 16 bytes (spec/permissions.md §4).
-- **Link**: (link content hash 32, blob ID 32, suite byte || blob key 33).
+- **Link**: (link content hash 32, blob ID 32, suite byte || blob key 33, prefix salt 16, delete keys): the delete keys are those of the blob's one commitment group (§7), by level ascending (none for a `nobody` delta's blob), as its writer claims them: a holder of the blob checks them against its prefix before using them (spec/sync.md §1).
 
 ## 7. Delete keys
 - **Levels** of a delta, by its retention (spec/commits.md §5), one per member of its set:

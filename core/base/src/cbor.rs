@@ -2,7 +2,7 @@
 //! Accepted bytes are canonical, so they are hashed and stored as received, never re-encoded.
 
 use crate::format::{MAX_VALUE_BYTES, MAX_VALUE_DEPTH, TAG_ENUM, TAG_LINK, TAG_SET, TAG_TID, TID_LEN};
-use crate::ids::{BlobId, Link, Tid};
+use crate::ids::{BlobId, Del, Link, Tid};
 use crate::sorted::{ValueMap, ValueSet};
 use crate::value::{Float, Unknown, Value};
 use crate::{Classified, ErrorClass};
@@ -162,7 +162,7 @@ pub fn encoded_len(v: &Value) -> usize {
         Value::Map(m) => head_len(m.len() as u64) + m.iter().map(|(k, v)| encoded_len(k) + encoded_len(v)).sum::<usize>(),
         Value::List(l) => head_len(l.len() as u64) + l.iter().map(encoded_len).sum::<usize>(),
         Value::Set(s) => head_len(TAG_SET) + head_len(s.len() as u64) + s.iter().map(encoded_len).sum::<usize>(),
-        Value::Link(l) => head_len(TAG_LINK) + 1 + bytes(l.hash.len()) + bytes(l.blob.0.len()) + bytes(1 + l.key.len()),
+        Value::Link(l) => link_len(l),
         Value::Unknown(u) => head_len(u.tag()) + u.content().as_bytes().len(),
     }
 }
@@ -238,17 +238,31 @@ pub fn put_tid(out: &mut Vec<u8>, t: &Tid) {
 
 pub fn put_link(out: &mut Vec<u8>, l: &Link) {
     head(out, MAJOR_TAG, TAG_LINK);
-    head(out, MAJOR_ARRAY, 3);
+    head(out, MAJOR_ARRAY, 5);
     put_bytes(out, &l.hash);
     put_bytes(out, &l.blob.0);
     head(out, MAJOR_BYTES, 33);
     out.push(l.suite);
     out.extend_from_slice(&l.key);
+    put_bytes(out, &l.salt);
+    head(out, MAJOR_ARRAY, l.del.len() as u64);
+    for (level, key) in l.del.iter() {
+        head(out, MAJOR_ARRAY, 2);
+        head(out, MAJOR_UINT, u64::from(level));
+        put_bytes(out, &key);
+    }
 }
 
-/// The length of every link's encoding (`put_link`).
-pub fn link_len() -> usize {
-    head_len(TAG_LINK) + 1 + 2 * (head_len(32) + 32) + head_len(33) + 33
+/// A link's encoding (`put_link`).
+pub fn link_bytes(l: &Link) -> Vec<u8> {
+    let mut out = Vec::with_capacity(link_len(l));
+    put_link(&mut out, l);
+    out
+}
+
+/// The length of a link's encoding (`put_link`).
+pub fn link_len(l: &Link) -> usize {
+    head_len(TAG_LINK) + 1 + 2 * (head_len(32) + 32) + head_len(33) + 33 + head_len(16) + 16 + 1 + l.del.len() * (1 + 1 + head_len(32) + 32)
 }
 
 pub fn encode_into(v: &Value, out: &mut Vec<u8>) {
@@ -665,7 +679,7 @@ impl<'a> Reader<'a> {
 
     pub fn link(&mut self) -> Result<Link, DecodeError> {
         self.tag(TAG_LINK)?;
-        self.0.link_content()
+        self.0.link_content(1)
     }
 
     /// The bytes of the next item, found by its heads alone: nothing inside it is decoded or
@@ -808,7 +822,8 @@ impl<'a> Decoder<'a> {
                 let tag = self.arg(ib)?;
                 self.enter(depth + 1)?;
                 if tag == TAG_LINK {
-                    f(self.link_content()?);
+                    self.enter(depth + 2)?;
+                    f(self.link_content(depth + 2)?);
                 } else {
                     self.links(depth + 1, f)?;
                 }
@@ -984,7 +999,7 @@ impl<'a> Decoder<'a> {
             }
             TAG_LINK => {
                 self.enter(inner + 1)?;
-                self.link_content().map(|_| true)
+                self.link_content(inner + 1).map(|_| true)
             }
             _ => {
                 let saved = std::mem::take(&mut self.deepest);
@@ -1064,15 +1079,37 @@ impl<'a> Decoder<'a> {
         }
     }
 
-    /// What follows a link's tag.
-    fn link_content(&mut self) -> Result<Link, DecodeError> {
-        if self.expect(MAJOR_ARRAY, TAG_LINK)? != 3 {
-            return Err(DecodeError::TagContent(TAG_LINK));
+    /// What follows a link's tag, the link's array at nesting `level`: `[hash, blob ID, suite ||
+    /// key, salt, [[level, key]*]]`, delete keys by level ascending, levels 1 to 3.
+    fn link_content(&mut self, level: usize) -> Result<Link, DecodeError> {
+        const T: DecodeError = DecodeError::TagContent(TAG_LINK);
+        if self.expect(MAJOR_ARRAY, TAG_LINK)? != 5 {
+            return Err(T);
         }
         let hash = self.fixed_bytes::<32>(TAG_LINK)?;
         let blob = BlobId(self.fixed_bytes::<32>(TAG_LINK)?);
         let [suite, key @ ..] = self.fixed_bytes::<33>(TAG_LINK)?;
-        Ok(Link { hash, blob, suite, key })
+        let salt = self.fixed_bytes::<16>(TAG_LINK)?;
+        self.enter(level + 1)?;
+        let n = self.expect(MAJOR_ARRAY, TAG_LINK)?;
+        if n > 3 {
+            return Err(T);
+        }
+        let mut keys = Vec::with_capacity(3);
+        for _ in 0..n {
+            self.enter(level + 2)?;
+            if self.expect(MAJOR_ARRAY, TAG_LINK)? != 2 {
+                return Err(T);
+            }
+            let l = self.expect(MAJOR_UINT, TAG_LINK)?;
+            let k = self.fixed_bytes::<32>(TAG_LINK)?;
+            if !(1..=3).contains(&l) || keys.last().is_some_and(|(p, _)| u64::from(*p) >= l) {
+                return Err(T);
+            }
+            keys.push((l as u8, k));
+        }
+        let del = Del::from_keys(keys).ok_or(T)?;
+        Ok(Link { hash, blob, suite, key, salt, del })
     }
 
     fn tagged(&mut self, tag: u64, depth: usize) -> Result<Value, DecodeError> {
@@ -1117,7 +1154,7 @@ impl<'a> Decoder<'a> {
             }
             TAG_LINK => {
                 self.enter(inner + 1)?;
-                self.link_content().map(Value::link)
+                self.link_content(inner + 1).map(Value::link)
             }
             _ => {
                 let start = self.pos;

@@ -129,7 +129,7 @@ impl PageSink for MemoryPages {
             *b = x;
         }
         self.pages.insert(hash, plaintext.to_vec());
-        Ok(Link { hash, blob: BlobId(blob), suite: 1, key: [0; 32] })
+        Ok(Link { hash, blob: BlobId(blob), suite: 1, key: [0; 32], salt: [0; 16], del: osis_base::Del::NONE })
     }
     fn params(&self) -> PageParams {
         self.params

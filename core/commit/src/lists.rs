@@ -7,7 +7,7 @@ use crate::keys::Prefix;
 use crate::tree::{self, LinkSource, TreeSink, node_plaintext};
 use crate::Error;
 use osis_base::format::{CHUNK_THRESHOLD, MAX_LIST_BYTES};
-use osis_base::{BlobId, ChunkParams, Link};
+use osis_base::{BlobId, ChunkParams, Del, Link};
 use osis_crypto::{Secret32, link_hash};
 use std::collections::HashMap;
 
@@ -54,8 +54,9 @@ struct ListSink<'a> {
 
 impl ListSink<'_> {
     fn put(&mut self, hash: [u8; 32], plaintext: &[u8]) -> Result<Link, Error> {
-        let (blob, key) = self.sink.put(&(self.prefix)(), plaintext)?;
-        Ok(Link { hash, blob, suite: 1, key })
+        let prefix = (self.prefix)();
+        let (blob, key) = self.sink.put(&prefix, plaintext)?;
+        Ok(Link { hash, blob, suite: 1, key, salt: prefix.salt, del: prefix.del()? })
     }
 }
 
@@ -68,10 +69,15 @@ impl TreeSink for ListSink<'_> {
     }
 }
 
-struct ListSource<'a>(&'a mut dyn BlobSource);
+/// Every link of a list's tree names its root's delete keys (spec/wire.md §5: the list's blobs
+/// share one commitment group).
+struct ListSource<'a>(&'a mut dyn BlobSource, Del);
 
 impl LinkSource for ListSource<'_> {
     fn plaintext(&mut self, link: &Link) -> Result<Vec<u8>, Error> {
+        if link.del != self.1 {
+            return Err(Error::Malformed("header list link Del other than its root's"));
+        }
         self.0.get(link)
     }
 }
@@ -86,7 +92,7 @@ pub fn write_list(bytes: &[u8], dedup: &Secret32, sink: &mut dyn BlobSink, prefi
 /// non-final chunk below `CHUNK_MIN` is bad input; output above `max` bytes is refused
 /// (`TooLarge`), which also bounds the chunks visited.
 pub fn read_list(root: &Link, dedup: &Secret32, src: &mut dyn BlobSource, max: usize) -> Result<Vec<u8>, Error> {
-    tree::read_tree(root, dedup, &mut ListSource(src), ChunkParams::FORMAT, max)
+    tree::read_tree(root, dedup, &mut ListSource(src, root.del), ChunkParams::FORMAT, max)
 }
 
 impl Header {

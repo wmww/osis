@@ -478,3 +478,50 @@ fn section_key_filter_keeps_the_key() {
     }
     assert!(wrong < 64, "{wrong} of {} wrong keys pass", 6 * 64);
 }
+
+// spec/wire.md §4-§5: a linked list's links name the header's level-2 key alone (nothing without
+// one); a root naming other keys, or a link inside the list's tree naming other keys than its
+// root, is bad input.
+#[test]
+fn header_list_link_del_is_the_level_2_key() {
+    let at = ts(1_000_000);
+    let mut b = CommitBuilder::new(Kind::Role, at, t(1), t(1), Form::Commit);
+    let mut a = AspectWrite::new(t(3), Ak::new("roles.0").unwrap(), 1, 2, register_delta(t(1), at, 1, "a"));
+    a.retention = retention::ROLE_RETENTION;
+    b.aspects.push(a);
+    // several chunks under one node
+    let ids = (0..20_000u32).map(|i| Value::bytes(&osis_base::hash::hash(&i.to_le_bytes()))).collect();
+    b.frontier = Some(Value::Map([(Value::Int(0), Value::Set(ids))].into_iter().collect()));
+    let mut sink = MemoryBlobs::default();
+    let built = build(b, &mut sink).unwrap();
+    let d = sec(0xd0, &t(1));
+    let link = built.commit.header.links.frontier.expect("linked");
+    let level2 = osis_base::Del::from_keys(built.commit.header.keys.iter().filter(|k| k.level == 2).map(|k| (k.level, k.key))).unwrap();
+    assert_eq!(link.del, level2);
+    let resolved = |h: &Header, sink: &mut MemoryBlobs| {
+        let mut back = Header::decode(&h.encode())?;
+        back.resolve(sink, &d)?;
+        back.validate()
+    };
+    resolved(&built.commit.header, &mut sink).unwrap();
+    // a root naming another key
+    let mut h = built.commit.header.clone();
+    let mut wrong = link;
+    wrong.del = osis_base::Del::from_keys([(1, [9; 32])]).unwrap();
+    h.links.frontier = Some(wrong);
+    assert!(matches!(resolved(&h, &mut sink), Err(Error::Malformed(_))));
+    // a tree whose chunks name other keys than its root
+    let bytes = built.commit.header.list_bytes(ListField::Frontier).unwrap();
+    let mut n = 0u8;
+    let keys = built.commit.header.keys.iter().filter(|k| k.level == 2).copied().collect::<Vec<_>>();
+    let mixed = write_list(&bytes, &d, &mut sink, &mut || {
+        n += 1;
+        let keys = if n == 1 { vec![crate::DeleteKey { level: 1, key: [9; 32] }] } else { keys.clone() };
+        Prefix { salt: [n; 16], thing: t(1), expiry: None, keys }
+    })
+    .unwrap();
+    assert_eq!(mixed.del, level2, "the root is written last");
+    let mut h = built.commit.header.clone();
+    h.links.frontier = Some(mixed);
+    assert!(matches!(resolved(&h, &mut sink), Err(Error::Malformed(_))));
+}

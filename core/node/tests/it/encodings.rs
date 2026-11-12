@@ -136,7 +136,7 @@ fn large_value_spec_dm_6() {
 // missing`, or a decode failure: no group, no membership, nothing to sync).
 #[test]
 fn ill_typed_core_element_refused_spec_crdt_3_3() {
-    let bogus = Value::link(osis_base::Link { hash: [3; 32], blob: osis_base::BlobId([4; 32]), suite: 1, key: [5; 32] });
+    let bogus = Value::link(osis_base::Link { hash: [3; 32], blob: osis_base::BlobId([4; 32]), suite: 1, key: [5; 32], salt: [0; 16], del: osis_base::Del::NONE });
     for bad in [bogus, Value::Int(5)] {
         let mut lp = net(2, 0);
         let t = new_thing(&mut lp, 0);

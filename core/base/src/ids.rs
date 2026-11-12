@@ -421,8 +421,9 @@ byte_id!(
     LabelId, 16
 );
 
-/// Link to a chunk-tree node or page (spec/data-model.md §6, spec/crypto.md §6): 97 bytes of
-/// payload. `Debug` hides the blob key.
+/// Link to a chunk, tree node or page (spec/data-model.md §5-§6, spec/crypto.md §6): what reads
+/// the blob (content hash, blob ID, suite and key) and what deletes it (the prefix salt and the
+/// delete keys its commitments bear, the writer's claim). `Debug` hides the blob key.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Link {
     /// Keyed content hash of the canonical value the subtree encodes.
@@ -430,11 +431,61 @@ pub struct Link {
     pub blob: BlobId,
     pub suite: u8,
     pub key: [u8; 32],
+    /// The blob's prefix salt.
+    pub salt: [u8; 16],
+    pub del: Del,
 }
 
 impl fmt::Debug for Link {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Link({:?}, suite {}, key ..)", self.blob, self.suite)
+        write!(f, "Link({:?}, suite {}, key .., del {:?})", self.blob, self.suite, self.del)
+    }
+}
+
+/// The delete keys a linked blob's one commitment group bears, at most one per level 1 to 3
+/// (spec/crypto.md §7), as its writer claims them: `[DeleteKey*]` by level ascending.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct Del([Option<[u8; 32]>; 3]);
+
+impl Del {
+    /// No keys (a `nobody` delta's blob, a header list of a header without a level-2 key).
+    pub const NONE: Del = Del([None; 3]);
+
+    /// From `(level, key)` pairs in any order; `None` for a level outside 1 to 3 or a level twice.
+    pub fn from_keys(keys: impl IntoIterator<Item = (u8, [u8; 32])>) -> Option<Del> {
+        let mut d = Del::NONE;
+        for (level, key) in keys {
+            let slot = d.0.get_mut(usize::from(level).checked_sub(1)?)?;
+            if slot.replace(key).is_some() {
+                return None;
+            }
+        }
+        Some(d)
+    }
+
+    /// The key at `level`, if any.
+    pub fn get(&self, level: u8) -> Option<&[u8; 32]> {
+        self.0.get(usize::from(level).checked_sub(1)?)?.as_ref()
+    }
+
+    /// `(level, key)` by level ascending.
+    pub fn iter(&self) -> impl Iterator<Item = (u8, [u8; 32])> + '_ {
+        (1u8..).zip(self.0.iter()).filter_map(|(l, k)| k.map(|k| (l, k)))
+    }
+
+    pub fn len(&self) -> usize {
+        self.0.iter().flatten().count()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
+impl fmt::Debug for Del {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let levels: Vec<u8> = self.iter().map(|(l, _)| l).collect();
+        write!(f, "Del{levels:?}")
     }
 }
 
@@ -670,7 +721,19 @@ mod tests {
 
     #[test]
     fn link_debug_hides_key() {
-        let l = Link { hash: [1; 32], blob: BlobId([2; 32]), suite: 1, key: [0xab; 32] };
+        let l = Link { hash: [1; 32], blob: BlobId([2; 32]), suite: 1, key: [0xab; 32], salt: [0; 16], del: Del::NONE };
         assert!(!format!("{l:?}").contains("abab"));
+    }
+
+    // spec/data-model.md §5: Del holds at most one key per level 1 to 3, read back by level.
+    #[test]
+    fn del_levels() {
+        let d = Del::from_keys([(3, [3; 32]), (1, [1; 32])]).unwrap();
+        assert_eq!(d.iter().collect::<Vec<_>>(), vec![(1, [1; 32]), (3, [3; 32])]);
+        assert_eq!((d.len(), d.get(2), d.get(3)), (2, None, Some(&[3; 32])));
+        assert_eq!(Del::from_keys([(1, [1; 32]), (1, [2; 32])]), None);
+        assert_eq!(Del::from_keys([(0, [1; 32])]), None);
+        assert_eq!(Del::from_keys([(4, [1; 32])]), None);
+        assert!(Del::NONE.is_empty());
     }
 }

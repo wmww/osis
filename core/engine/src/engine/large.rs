@@ -195,7 +195,7 @@ pub(crate) fn list_edits(ops: &[PathOp], schema: Option<&Schema>, ak: &str, dedu
 
 /// `v` with every link reduced to its content hash.
 fn hash_only(v: &Value) -> Value {
-    map_links(v, &|l| Value::link(Link { hash: l.hash, blob: BlobId([0; 32]), suite: 0, key: [0; 32] }))
+    map_links(v, &|l| Value::link(Link { hash: l.hash, blob: BlobId([0; 32]), suite: 0, key: [0; 32], salt: [0; 16], del: osis_base::Del::NONE }))
 }
 
 /// `v` with every link replaced by `f`'s value for it.

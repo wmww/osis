@@ -64,7 +64,7 @@ Values are CBOR (RFC 8949) restricted to the following profile. A decoder MUST r
 | set | tag 258 around an array sorted by canonical encoded bytes of the elements |
 | tid | tag 1616 (TID) around a 15-byte byte string |
 | enum | tag 1617 (ENUM) around `[case_id]` or `[case_id, payload]`; `case_id` a major-0 integer at most 2^63 - 1 |
-| link | tag 1618 (LINK) around `[content hash, blob ID, suite byte || key]` (§6) |
+| link | tag 1618 (LINK) around `[content hash, blob ID, suite byte || key, salt, [[level, pk]*]]` (§6) |
 
 - Tag numbers TID = 1616, ENUM = 1617, LINK = 1618 (unassigned in the IANA CBOR tags registry); 1619 (STRUCT) is reserved, unused. Each encodes as `0xd9` plus two big-endian bytes.
 - RFC 8949 §4.2.1 core deterministic rules: shortest integer and length heads, definite lengths only, sorted map keys, no duplicate keys. Deviation: floats are always 8 bytes, so a float's bytes are its bit pattern.
@@ -80,7 +80,7 @@ Values are CBOR (RFC 8949) restricted to the following profile. A decoder MUST r
   - A role-class aspect's values (§9) stay inline, whatever their size (a `label.0` claim set, a `secrets.0` history box).
   - A delta on any other aspect holding such a value unchunked is bad by itself (spec/commits.md §4), judged without its type: a `Str` or `Bytes` in a register value, a set or bag element's whole value, a map key.
 - Chunking: content-defined boundaries over the canonical bytes, chunker of spec/wire.md §6, giving a tree: leaves are chunks, interior nodes hold links with the plaintext length under each; the value's place in the enclosing CBOR holds the root link. Chunker, tree shape and node layout: spec/wire.md §6.
-- Every chunk and interior node is a separate blob encrypted under a fresh random key (spec/sync.md §1). A **link** = (keyed content hash of the subtree, blob ID, suite byte || 32-byte blob key), 97 bytes of payload (spec/crypto.md §6); the root's content hash is a function of the value's canonical bytes alone (spec/wire.md §6).
+- Every chunk and interior node is a separate blob encrypted under a fresh random key (spec/sync.md §1). A **link** = (keyed content hash of the subtree, blob ID, suite byte || 32-byte blob key, the blob's 16-byte prefix salt, its delete keys: `[level, pk]` pairs, levels 1 to 3 strictly ascending, `pk` 32 bytes) (spec/crypto.md §6, §7): what reads the blob and what deletes it. A decoder rejects any other shape (as tag content); a link's salt and delete keys are its writer's claim, never checked when reading; the root's content hash is a function of the value's canonical bytes alone (spec/wire.md §6).
 - Equality of a large value is equality of its keyed content hash, never of its link bytes.
 - A link stands only where the type takes one: a blob, string or `any` position, or a set element or map key (or a position inside one) whose type is not **small**.
   - Small types can never exceed `CHUNK_THRESHOLD`: `bool`, `int`, `float`, `tid`, counter, max, min, and an enum whose cases carry no payload.

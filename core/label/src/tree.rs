@@ -9,7 +9,7 @@ pub use osis_commit::tree::{HashSink, Kid, LinkSource, TreeReader, TreeSink, Tre
 use crate::blob::{Level, Prefix, frame_under, open};
 use crate::Error;
 use osis_base::format::DELETE_AUTHOR;
-use osis_base::{BlobId, ChunkParams, Link, Tid, WallMs};
+use osis_base::{BlobId, ChunkParams, Del, Link, Tid, WallMs};
 use osis_crdt::{PageError, PageParams, PageSink, PageSource};
 use osis_crypto::{BlobKey, CryptoRngCore, SUITE_1, Secret32, VerifyingKey, commitment, link_blind, link_hash, thing_blind};
 use std::collections::{BTreeSet, HashMap};
@@ -37,15 +37,21 @@ impl Framing {
         thing_blind(link_blind, self.thing.as_bytes())
     }
 
-    /// Whether a blob framed earlier keeps its encryption when a delta framed with `self` reuses
-    /// it (spec/sync.md §1): its expiry is not earlier than this one's, and its commitments to
-    /// the thing's delete keys (levels 1 and 3) are exactly this framing's under its salt and
-    /// the thing blind of `link_blind` (the link alone decides). An author-chain commitment need not
-    /// match while this delta lists another level-2 key beside an admin or writer one; else (no
-    /// level-2 key, or author-only) only its own key's stays: that author could delete a blob this
-    /// delta's retention gives it no right over.
-    pub fn keeps(&self, prefix: &Prefix, link_blind: &[u8; 16]) -> bool {
-        let blind = &self.blind(link_blind);
+    /// The delete keys as a link's Del (spec/data-model.md §5).
+    pub fn del(&self) -> Result<Del, Error> {
+        Del::from_keys(self.keys.iter().map(|(l, k)| (*l, k.to_bytes()))).ok_or(Error::Malformed("two delete keys at one level"))
+    }
+
+    /// Whether the blob `link` reaches, framed earlier, keeps its encryption when a delta framed
+    /// with `self` reuses it (spec/sync.md §1): its expiry is not earlier than this one's, and its
+    /// commitments to the thing's delete keys (levels 1 and 3) are exactly this framing's under
+    /// its salt and the thing blind of the link's link blind (the link alone decides). An
+    /// author-chain commitment need not match while this delta lists another level-2 key beside
+    /// an admin or writer one; else (no level-2 key, or author-only) only its own key's stays:
+    /// that author could delete a blob this delta's retention gives it no right over. The link
+    /// carries over verbatim, so its salt and Del must be what the prefix bears.
+    pub fn keeps(&self, prefix: &Prefix, link: &Link) -> bool {
+        let blind = &self.blind(&link_blind(&link.key));
         let expiry_ok = match (prefix.expiry(), self.expiry) {
             (None, _) => true,
             (Some(_), None) => false,
@@ -57,8 +63,16 @@ impl Framing {
         let author: Result<BTreeSet<[u8; 33]>, _> = self.keys.iter().filter(|(l, _)| *l == DELETE_AUTHOR).map(|(l, k)| commitment(*l, k, salt, blind)).collect();
         let shared = self.keys.iter().any(|(l, _)| *l == DELETE_AUTHOR) && self.keys.iter().any(|(l, _)| *l != DELETE_AUTHOR);
         let author_ok = shared || author.is_ok_and(|a| prefix.commitments().filter(|c| c[0] == DELETE_AUTHOR).all(|c| a.contains(c)));
-        expiry_ok && author_ok && mine.is_ok_and(|m| m == theirs)
+        expiry_ok && author_ok && mine.is_ok_and(|m| m == theirs) && link.salt == *salt && bears(prefix, &link.del, blind)
     }
+}
+
+/// Whether `prefix` commits to exactly the keys of `del` (its one group), under its salt and
+/// `blind`: a link's Del is its writer's claim, checked before use.
+pub fn bears(prefix: &Prefix, del: &Del, blind: &[u8; 16]) -> bool {
+    let claimed: Result<BTreeSet<[u8; 33]>, ()> = del.iter().map(|(l, k)| VerifyingKey::from_bytes(&k).map_err(|_| ()).and_then(|vk| commitment(l, &vk, prefix.salt(), blind).map_err(|_| ()))).collect();
+    let borne: BTreeSet<[u8; 33]> = prefix.commitments().copied().collect();
+    claimed.is_ok_and(|c| c == borne)
 }
 
 /// One blob written (the header's chunk list, spec/wire.md §4).
@@ -143,7 +157,7 @@ impl<'a> BlobWriter<'a> {
     fn reuse_chunk(&mut self, hash: &[u8; 32], bytes: &[u8]) -> Result<Option<Link>, Error> {
         let Some(old) = self.reuse.and_then(|r| r.chunks.get(hash)).copied() else { return Ok(None) };
         Ok(match open_held(self.store, &old)? {
-            Some((prefix, pt)) if pt == bytes && self.framing.keeps(&prefix, &link_blind(&old.key)) => Some(old),
+            Some((prefix, pt)) if pt == bytes && self.framing.keeps(&prefix, &old) => Some(old),
             _ => None,
         })
     }
@@ -161,7 +175,7 @@ impl<'a> BlobWriter<'a> {
         let id = crate::blob::blob_id(&blob);
         self.store.put(id, blob)?;
         self.written.push(Written { id, blind });
-        Ok(Link { hash, blob: id, suite: SUITE_1, key: *key.expose() })
+        Ok(Link { hash, blob: id, suite: SUITE_1, key: *key.expose(), salt, del: self.framing.del()? })
     }
 }
 
@@ -224,7 +238,7 @@ fn open_held(fetch: &mut dyn BlobFetch, link: &Link) -> Result<Option<(Prefix, V
 fn kids_digest(kids: &[Kid]) -> [u8; 32] {
     let mut h = osis_base::hash::Hasher::new();
     for (l, _) in kids {
-        h.update(&l.hash).update(&l.blob.0).update(&[l.suite]).update(&l.key);
+        h.update(&osis_base::cbor::link_bytes(l));
     }
     h.finalize()
 }
@@ -255,7 +269,7 @@ impl Reuse {
                 continue;
             }
             let Some((prefix, level, kids)) = Self::node(&r.framing, fetch, &link, expect)? else { continue };
-            if r.framing.keeps(&prefix, &link_blind(&link.key)) {
+            if r.framing.keeps(&prefix, &link) {
                 r.nodes.insert(link.hash, (link, kids_digest(&kids)));
             }
             for (l, _) in kids.into_iter().rev() {

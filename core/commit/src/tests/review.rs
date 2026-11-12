@@ -20,14 +20,14 @@ fn list_reader_bounds() {
     let none = Prefix { salt: [0; 16], thing: osis_base::Tid::from_bytes([0; 15]), expiry: None, keys: vec![] };
     let chunk = vec![7u8; 1024];
     let (cid, _) = m.put(&none, &chunk).unwrap();
-    let cl = Link { hash: link_hash(&d, &chunk), blob: cid, suite: 1, key: [0; 32] };
+    let cl = Link { hash: link_hash(&d, &chunk), blob: cid, suite: 1, key: [0; 32], salt: [0; 16], del: osis_base::Del::NONE };
     let min = vec![0u8; osis_base::format::CHUNK_MIN];
     let (mid, _) = m.put(&Prefix { salt: [3; 16], ..none.clone() }, &min).unwrap();
-    let ml = Link { hash: link_hash(&d, &min), blob: mid, suite: 1, key: [0; 32] };
+    let ml = Link { hash: link_hash(&d, &min), blob: mid, suite: 1, key: [0; 32], salt: [0; 16], del: osis_base::Del::NONE };
     let mut root = |kids: &[(Link, u64)], salt: u8| {
         let (nid, _) = m.put(&Prefix { salt: [salt; 16], ..none.clone() }, &crate::tree::node_plaintext(1, kids).unwrap()).unwrap();
         let hashes: Vec<_> = kids.iter().map(|(l, n)| (l.hash, *n)).collect();
-        Link { hash: link_tree_hash(&d, 1, &hashes), blob: nid, suite: 1, key: [0; 32] }
+        Link { hash: link_tree_hash(&d, 1, &hashes), blob: nid, suite: 1, key: [0; 32], salt: [0; 16], del: osis_base::Del::NONE }
     };
     let repeated = root(&vec![(cl, 1024); 512], 1);
     let single = root(&[(cl, 1024)], 2);
@@ -315,7 +315,7 @@ fn list_items_ascend_and_frontier_shape() {
 #[test]
 fn node_by_shape() {
     let d = sec(0xd0, &t(2));
-    let ca = Link { hash: link_hash(&d, b"x"), blob: osis_base::BlobId([1; 32]), suite: 1, key: [2; 32] };
+    let ca = Link { hash: link_hash(&d, b"x"), blob: osis_base::BlobId([1; 32]), suite: 1, key: [2; 32], salt: [0; 16], del: osis_base::Del::NONE };
     let good = crate::tree::node_plaintext(1, &[(ca, 1), (ca, 1)]).unwrap();
     assert_eq!(crate::tree::parse_node(&good).unwrap(), (1, vec![(ca, 1), (ca, 1)]));
     let mut long = good.clone();

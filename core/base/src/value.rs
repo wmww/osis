@@ -175,7 +175,8 @@ impl Value {
         match self {
             Value::Int(_) | Value::Float(_) | Value::Bool(_) | Value::Str(_) | Value::Bytes(_) => 0,
             Value::Tid(_) => 1,
-            Value::Enum(_, None) | Value::Link(_) => 2,
+            Value::Enum(_, None) => 2,
+            Value::Link(l) => 3 + usize::from(!l.del.is_empty()),
             Value::Enum(_, Some(p)) => 2 + p.depth(),
             Value::List(l) => 1 + max(l.iter().map(Value::depth)),
             Value::Map(m) => 1 + max(m.iter().map(|(k, v)| k.depth().max(v.depth()))),
@@ -191,7 +192,8 @@ impl Value {
         match self {
             Value::Int(_) | Value::Float(_) | Value::Bool(_) | Value::Str(_) | Value::Bytes(_) => false,
             Value::Tid(_) => max < 1,
-            Value::Enum(_, None) | Value::Link(_) => max < 2,
+            Value::Enum(_, None) => max < 2,
+            Value::Link(l) => max < 3 + usize::from(!l.del.is_empty()),
             Value::Enum(_, Some(p)) => below(p, 2),
             Value::List(l) => max < 1 || l.iter().any(|v| below(v, 1)),
             Value::Map(m) => max < 1 || m.iter().any(|(k, v)| below(k, 1) || below(v, 1)),

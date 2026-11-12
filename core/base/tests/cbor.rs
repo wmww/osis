@@ -67,6 +67,11 @@ fn floats() -> impl Strategy<Value = Value> {
     ]
 }
 
+/// A Del holding a key at each level whose bit is set in `levels`.
+fn del_of(levels: u8, key: [u8; 32]) -> osis_base::Del {
+    osis_base::Del::from_keys((1..=3u8).filter(|l| levels & (1 << (l - 1)) != 0).map(|l| (l, key))).unwrap()
+}
+
 fn leaf() -> impl Strategy<Value = Value> {
     prop_oneof![
         any::<i64>().prop_map(Value::Int),
@@ -77,8 +82,8 @@ fn leaf() -> impl Strategy<Value = Value> {
         prop::collection::vec(any::<char>(), 0..6).prop_map(|c| Value::Str(c.into_iter().collect())),
         prop::collection::vec(any::<u8>(), 0..30).prop_map(Value::Bytes),
         any::<[u8; 15]>().prop_map(|b| Value::Tid(Tid::from_bytes(b))),
-        (any::<[u8; 32]>(), any::<[u8; 32]>(), any::<u8>(), any::<[u8; 32]>())
-            .prop_map(|(hash, blob, suite, key)| Value::link(Link { hash, blob: BlobId(blob), suite, key })),
+        (any::<[u8; 32]>(), any::<[u8; 32]>(), any::<u8>(), any::<[u8; 32]>(), any::<[u8; 16]>(), 0u8..8)
+            .prop_map(|(hash, blob, suite, key, salt, levels)| Value::link(Link { hash, blob: BlobId(blob), suite, key, salt, del: del_of(levels, key) })),
         prop_oneof![Just(0u64), Just(23), Just(300), Just(i64::MAX as u64)].prop_map(|c| Value::Enum(c, None)),
     ]
 }
@@ -259,10 +264,19 @@ fn known_encodings() {
     let e = Value::Enum(3, Some(Box::new(Value::Bool(true))));
     assert_eq!(encode(&e), hex(&format!("{} 82 03 f5", tag_head(TAG_ENUM))));
     assert_eq!(encode(&Value::Enum(0, None)), hex(&format!("{} 81 00", tag_head(TAG_ENUM))));
-    let l = Value::link(Link { hash: [1; 32], blob: BlobId([2; 32]), suite: 1, key: [3; 32] });
-    let lh = format!("{} 83 5820{} 5820{} 5821 01{}", tag_head(TAG_LINK), "01".repeat(32), "02".repeat(32), "03".repeat(32));
+    let del = osis_base::Del::from_keys([(1, [5; 32]), (2, [6; 32])]).unwrap();
+    let l = Value::link(Link { hash: [1; 32], blob: BlobId([2; 32]), suite: 1, key: [3; 32], salt: [4; 16], del });
+    let lh = format!("{} 85 5820{} 5820{} 5821 01{} 50{} 82 82 01 5820{} 82 02 5820{}", tag_head(TAG_LINK), "01".repeat(32), "02".repeat(32), "03".repeat(32), "04".repeat(16), "05".repeat(32), "06".repeat(32));
     assert_eq!(encode(&l), hex(&lh));
-    assert!(matches!(d(&hex(&lh)), Ok(Value::Link(x)) if Value::Link(x.clone()) == l && x.blob == BlobId([2; 32]) && x.key == [3; 32]));
+    assert!(matches!(d(&hex(&lh)), Ok(Value::Link(x)) if *x == Link { hash: [1; 32], blob: BlobId([2; 32]), suite: 1, key: [3; 32], salt: [4; 16], del }));
+    assert_eq!(l.depth(), 4);
+    // a link without delete keys: an empty Del array
+    let bare = Value::link(Link { hash: [1; 32], blob: BlobId([2; 32]), suite: 1, key: [3; 32], salt: [4; 16], del: osis_base::Del::NONE });
+    assert_eq!(encode(&bare), hex(&format!("{} 85 5820{} 5820{} 5821 01{} 50{} 80", tag_head(TAG_LINK), "01".repeat(32), "02".repeat(32), "03".repeat(32), "04".repeat(16))));
+    assert_eq!(bare.depth(), 3);
+    // §6: equality and order of links are by content hash, whatever the rest of the link
+    assert_eq!(bare, l);
+    assert_eq!(bare.cmp(&l), std::cmp::Ordering::Equal);
     // §5: unknown tags keep tag and content.
     let u = hex("c2 4101");
     let v = d(&u).unwrap();
@@ -278,9 +292,9 @@ fn known_encodings() {
 #[test]
 fn links_equal_by_hash() {
     use std::hash::{BuildHasher, RandomState};
-    let a = Value::link(Link { hash: [1; 32], blob: BlobId([2; 32]), suite: 1, key: [3; 32] });
-    let b = Value::link(Link { hash: [1; 32], blob: BlobId([4; 32]), suite: 1, key: [5; 32] });
-    let c = Value::link(Link { hash: [6; 32], blob: BlobId([2; 32]), suite: 1, key: [3; 32] });
+    let a = Value::link(Link { hash: [1; 32], blob: BlobId([2; 32]), suite: 1, key: [3; 32], salt: [0; 16], del: osis_base::Del::NONE });
+    let b = Value::link(Link { hash: [1; 32], blob: BlobId([4; 32]), suite: 1, key: [5; 32], salt: [0; 16], del: osis_base::Del::NONE });
+    let c = Value::link(Link { hash: [6; 32], blob: BlobId([2; 32]), suite: 1, key: [3; 32], salt: [0; 16], del: osis_base::Del::NONE });
     assert_eq!(a, b);
     assert_ne!(a, c);
     let rs = RandomState::new();
@@ -303,7 +317,7 @@ fn links_equal_by_hash() {
     // link-keyed maps nested deep: accepted, with decode's depth
     let mut deep = Value::Int(0);
     for _ in 0..200 {
-        deep = Value::Map([(a.clone(), deep), (Value::link(Link { hash: [7; 32], blob: BlobId([2; 32]), suite: 1, key: [3; 32] }), Value::Int(1))].into_iter().collect());
+        deep = Value::Map([(a.clone(), deep), (Value::link(Link { hash: [7; 32], blob: BlobId([2; 32]), suite: 1, key: [3; 32], salt: [0; 16], del: osis_base::Del::NONE }), Value::Int(1))].into_iter().collect());
     }
     let lim = Limits { max_depth: 512, max_bytes: usize::MAX };
     let b = encode(&deep);
@@ -316,8 +330,8 @@ fn links_equal_by_hash() {
 // byte-sorted input re-encodes to itself.
 #[test]
 fn links_sort_by_bytes() {
-    let la = Value::link(Link { hash: [1; 32], blob: BlobId([9; 32]), suite: 1, key: [0; 32] });
-    let lb = Value::link(Link { hash: [1; 32], blob: BlobId([2; 32]), suite: 1, key: [0; 32] });
+    let la = Value::link(Link { hash: [1; 32], blob: BlobId([9; 32]), suite: 1, key: [0; 32], salt: [0; 16], del: osis_base::Del::NONE });
+    let lb = Value::link(Link { hash: [1; 32], blob: BlobId([2; 32]), suite: 1, key: [0; 32], salt: [0; 16], del: osis_base::Del::NONE });
     let x = Value::List(vec![la, Value::Int(3)]);
     let y = Value::List(vec![lb, Value::Int(5)]);
     assert_eq!(x.cmp(&y), std::cmp::Ordering::Less);
@@ -406,6 +420,14 @@ fn rejections() {
         (format!("{en} 01"), TagContent(TAG_ENUM)),
         (format!("{ln} 82 5820{} 5820{}", "00".repeat(32), "00".repeat(32)), TagContent(TAG_LINK)),
         (format!("{ln} 83 5820{} 5820{} 5820{}", "00".repeat(32), "00".repeat(32), "00".repeat(32)), TagContent(TAG_LINK)),
+        // a link of the old three-item shape, or with its Del out of rule
+        (format!("{ln} 83 5820{} 5820{} 5821{}", "00".repeat(32), "00".repeat(32), "00".repeat(33)), TagContent(TAG_LINK)),
+        (format!("{ln} 85 5820{z} 5820{z} 5821{} 50{} 81 82 04 5820{z}", "00".repeat(33), "00".repeat(16), z = "00".repeat(32)), TagContent(TAG_LINK)),
+        (format!("{ln} 85 5820{z} 5820{z} 5821{} 50{} 81 82 00 5820{z}", "00".repeat(33), "00".repeat(16), z = "00".repeat(32)), TagContent(TAG_LINK)),
+        (format!("{ln} 85 5820{z} 5820{z} 5821{} 50{} 82 82 02 5820{z} 82 01 5820{z}", "00".repeat(33), "00".repeat(16), z = "00".repeat(32)), TagContent(TAG_LINK)),
+        (format!("{ln} 85 5820{z} 5820{z} 5821{} 50{} 82 82 02 5820{z} 82 02 5820{z}", "00".repeat(33), "00".repeat(16), z = "00".repeat(32)), TagContent(TAG_LINK)),
+        (format!("{ln} 85 5820{z} 5820{z} 5821{} 4f{} 80", "00".repeat(33), "00".repeat(15), z = "00".repeat(32)), TagContent(TAG_LINK)),
+        (format!("{ln} 85 5820{z} 5820{z} 5821{} 50{} 81 82 01 581f{}", "00".repeat(33), "00".repeat(16), "00".repeat(31), z = "00".repeat(32)), TagContent(TAG_LINK)),
         // Truncation and trailing bytes.
         ("".into(), Truncated),
         ("19 01".into(), Truncated),
@@ -674,7 +696,7 @@ proptest! {
     fn sorted_containers_match_btree(ops in proptest::collection::vec((0u8..4, 0u8..12, any::<u8>()), 0..200)) {
         use std::collections::{BTreeMap, BTreeSet};
         // a key: an int, or a link of hash `k % 3` with a blob telling equal ones apart
-        let key = |k: u8, v: u8| if k < 6 { Value::Int(k.into()) } else { Value::link(Link { hash: [k % 3; 32], blob: BlobId([v; 32]), suite: 1, key: [0; 32] }) };
+        let key = |k: u8, v: u8| if k < 6 { Value::Int(k.into()) } else { Value::link(Link { hash: [k % 3; 32], blob: BlobId([v; 32]), suite: 1, key: [0; 32], salt: [0; 16], del: osis_base::Del::NONE }) };
         let bytes = |v: &Value| encode(v);
         let (mut m, mut bm) = (osis_base::ValueMap::new(), BTreeMap::new());
         let (mut s, mut bs) = (osis_base::ValueSet::new(), BTreeSet::new());
@@ -769,9 +791,10 @@ proptest! {
         prop_assert_eq!(w(&|o| put_text(o, &s)), encode(&Value::Str(s.clone())));
         prop_assert_eq!(w(&|o| put_bool(o, n % 2 == 0)), encode(&Value::Bool(n % 2 == 0)));
         prop_assert_eq!(w(&|o| put_tid(o, &Tid::from_bytes(t))), encode(&Value::Tid(Tid::from_bytes(t))));
-        let l = Link { hash, blob: BlobId(hash), suite, key: hash };
+        let l = Link { hash, blob: BlobId(hash), suite, key: hash, salt: [suite; 16], del: del_of(suite, hash) };
         prop_assert_eq!(w(&|o| put_link(o, &l)), encode(&Value::link(l)));
-        prop_assert_eq!(link_len(), encode(&Value::link(l)).len());
+        prop_assert_eq!(link_len(&l), encode(&Value::link(l)).len());
+        prop_assert!(matches!(d(&link_bytes(&l)), Ok(Value::Link(x)) if *x == l));
         let len = (n % 70_000) as usize;
         prop_assert_eq!(w(&|o| put_array(o, len)), encode(&Value::List(vec![Value::Int(0); len]))[..head_len(len as u64)].to_vec());
     }

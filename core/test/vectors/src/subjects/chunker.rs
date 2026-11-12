@@ -67,7 +67,7 @@ struct PageRec {
 impl osis_crdt::PageSink for PageRec {
     fn put(&mut self, plaintext: &[u8]) -> Result<osis_base::Link, osis_crdt::PageError> {
         self.pages.push(plaintext.to_vec());
-        Ok(osis_base::Link { hash: osis_crypto::link_hash(&self.dedup, plaintext), blob: osis_base::BlobId([0; 32]), suite: 1, key: [0; 32] })
+        Ok(osis_base::Link { hash: osis_crypto::link_hash(&self.dedup, plaintext), blob: osis_base::BlobId([0; 32]), suite: 1, key: [0; 32], salt: [0; 16], del: osis_base::Del::NONE })
     }
 }
 

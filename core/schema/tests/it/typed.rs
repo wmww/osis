@@ -281,7 +281,7 @@ type pair = struct { who 0: tid, note 1: string };
 aspect n:a.0: struct { tids 0: set<tid>, ints 1: set<int>, roles 2: set<role>, strs 3: set<string>, pairs 4: set<pair>, by 5: map<tid, string>, named 6: map<string, int>, one 7: tid, text 8: string };",
     );
     let ty = sc.aspects["n:a.0"].ty.clone();
-    let link = Value::link(osis_base::Link { hash: [3; 32], blob: osis_base::BlobId([4; 32]), suite: 1, key: [5; 32] });
+    let link = Value::link(osis_base::Link { hash: [3; 32], blob: osis_base::BlobId([4; 32]), suite: 1, key: [5; 32], salt: [0; 16], del: osis_base::Del::NONE });
     let set = |v: Value| Value::Set([v].into_iter().collect());
     let map = |k: Value, v: Value| Value::Map([(k, v)].into_iter().collect());
     let cases = [

@@ -23,7 +23,7 @@ fn aspect() -> impl Strategy<Value = AspectEntry> {
 }
 
 fn link() -> impl Strategy<Value = Link> {
-    (any::<[u8; 32]>(), any::<[u8; 32]>()).prop_map(|(hash, b)| Link { hash, blob: BlobId(b), suite: 1, key: [7; 32] })
+    (any::<[u8; 32]>(), any::<[u8; 32]>()).prop_map(|(hash, b)| Link { hash, blob: BlobId(b), suite: 1, key: [7; 32], salt: [0; 16], del: osis_base::Del::NONE })
 }
 
 prop_compose! {
@@ -171,7 +171,7 @@ proptest! {
             }
             let e = edited(&node, s);
             if let Ok((level, kids)) = tree::parse_node(&e) {
-                prop_assert!(osis_base::decode(&e, &osis_base::Limits { max_depth: 4, max_bytes: e.len() }).is_ok(), "{:02x?}", e);
+                prop_assert!(osis_base::decode(&e, &osis_base::Limits { max_depth: 6, max_bytes: e.len() }).is_ok(), "{:02x?}", e);
                 prop_assert_eq!(tree::node_plaintext(level, &kids).unwrap(), e);
             }
         }

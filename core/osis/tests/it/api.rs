@@ -118,7 +118,7 @@ fn link_where_the_type_takes_none_reads_absent_spec_dm_6() {
             tx.send(d).unwrap();
         }
     }).unwrap();
-    let bogus = Value::link(osis::internals::schema::osis_base::Link { hash: [3; 32], blob: osis::internals::schema::osis_base::BlobId([4; 32]), suite: 1, key: [5; 32] });
+    let bogus = Value::link(osis::internals::schema::osis_base::Link { hash: [3; 32], blob: osis::internals::schema::osis_base::BlobId([4; 32]), suite: 1, key: [5; 32], salt: [0; 16], del: osis::internals::schema::osis_base::Del::NONE });
     db.commit_set(n, osis::DynamicAspectKey::untyped(ak("note:pinned.0")), &Value::Map([(bogus, Value::Int(1))].into_iter().collect())).unwrap();
     assert_eq!(db.at(n, example::PINNED).get().unwrap(), None, "absent, not an error");
     assert!(matches!(recv(&diags), osis::Diagnostic::Mismatch { thing, .. } if thing == n));
@@ -152,7 +152,7 @@ fn unreadable_link_reads_absent_at_its_position_spec_dm_6() {
     assert_eq!(recv(&changes), Ok(Some(tasks.clone())));
     let Some(Value::List(mut raw)) = db.at(n, osis::DynamicAspectKey::untyped(ak("note:tasks.0"))).get().unwrap() else { panic!() };
     let Value::Map(first) = &mut raw[0] else { panic!() };
-    let bogus = Value::link(Link { hash: [3; 32], blob: BlobId([4; 32]), suite: 1, key: [5; 32] });
+    let bogus = Value::link(Link { hash: [3; 32], blob: BlobId([4; 32]), suite: 1, key: [5; 32], salt: [0; 16], del: osis_base::Del::NONE });
     // and a held blob of another thing's large value: under that thing's dedup secret
     let mut w = db.write();
     let m = w.create().unwrap();
@@ -176,7 +176,7 @@ fn unreadable_link_reads_absent_at_its_position_spec_dm_6() {
     assert_eq!(watch.current(), Ok(Some(want)));
     // at the aspect root: the aspect reads absent, not an error
     let k = ak("t:x.0");
-    db.commit_set(n, osis::DynamicAspectKey::untyped(k.clone()), &Value::link(Link { hash: [6; 32], blob: BlobId([7; 32]), suite: 1, key: [8; 32] })).unwrap();
+    db.commit_set(n, osis::DynamicAspectKey::untyped(k.clone()), &Value::link(Link { hash: [6; 32], blob: BlobId([7; 32]), suite: 1, key: [8; 32], salt: [0; 16], del: osis_base::Del::NONE })).unwrap();
     assert_eq!(db.at(n, osis::DynamicAspectKey::untyped(k)).get().unwrap(), None);
 }
 

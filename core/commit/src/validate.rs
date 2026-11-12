@@ -25,6 +25,15 @@ impl Header {
         ord(strictly_ascending(&self.chunks, |c| c.blob), "chunks not sorted and distinct")?;
         ord(strictly_ascending(&self.purge, purge_bytes), "purge not sorted and distinct")?;
         ord(strictly_ascending(&self.keys, key_bytes), "delete keys not sorted and distinct")?;
+        // a linked list's blobs commit to the level-2 key alone (spec/wire.md §5): its links
+        // name that key, or nothing without one (`Header::resolve` holds every link of a list
+        // tree to its root's Del)
+        let list_del = osis_base::Del::from_keys(self.keys.iter().filter(|k| k.level == DELETE_AUTHOR).map(|k| (k.level, k.key)));
+        for f in crate::header::ListField::ALL {
+            if let Some(l) = self.links.get(f) {
+                ord(Some(l.del) == list_del, "header list link Del other than the level-2 key")?;
+            }
+        }
 
         let kind = self.kind;
         use crate::header::Form;
