@@ -651,7 +651,8 @@ pub fn disappearing(seed: u64) -> Res<Report> {
         // are two commits (spec/commits.md §6)
         let mut m = Mutation::new();
         let t = e.new_thing(&mut m, g);
-        if sim.write(n, m)?.is_empty() {
+        // a crash after the record's commit (a later store write) leaves the node down
+        if sim.write(n, m)?.is_empty() || !sim.is_up(n) {
             continue;
         }
         let mut m = Mutation::new();
