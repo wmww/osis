@@ -79,7 +79,7 @@ Format: `file:line test | action | why safe | confidence`.
 - `stream_differential_no_write_dropped` + `_paged`: keep apart; each is over the per-test time limit, so one test would only make the longest test longer, for about six lines
 
 **node `sync_review.rs`, `deletion.rs`**
-- `deletion.rs:1425` | merge into `ending.rs:84` | low-medium
+- `deletion.rs:1425` | merge into `destruction.rs:84` | low-medium
 
 **node, from issues/tests-4x.md pattern 5 (all confirmed)**
 - `write.rs:591` + `:673` | one paged-text script | medium

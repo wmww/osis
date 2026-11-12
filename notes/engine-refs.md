@@ -17,8 +17,8 @@ A row says exactly what the source's held state on that aspect holds: it changes
 ## Keeping it
 - A join (`atomic::join_into_state`, the oracle's): the tids at the delta's reach (`Fragment::reach`, all a join can change) before and after, the difference noted (`refs::note`). O(the reach): a path write reads the entries it writes and replaces, no other.
 - A paged reset joined page by page (`pages::join_reset`): the skeleton and each page it rewrites, before (as a load reads it) and after; laid out whole instead, as a whole write.
-- A whole write (`Tx::set_state`: every rebuild, so validity flips, un-merges, expiry, purge, a part dropped, ending): the whole state against the stored rows (`refs::resync`). `Tx::write_state` is the same write without it, for a join's caller that noted its difference.
-- A dropped aspect (ending, forgetting): its rows cleared before `drop_aspect`.
+- A whole write (`Tx::set_state`: every rebuild, so validity flips, un-merges, expiry, purge, a part dropped, destruction): the whole state against the stored rows (`refs::resync`). `Tx::write_state` is the same write without it, for a join's caller that noted its difference.
+- A dropped aspect (destruction, forgetting): its rows cleared before `drop_aspect`.
 - Rollback: the store's savepoint, like any row.
 - Check: `apply::check_rebuilt` (debug, end of transaction, sampled like the state check) asserts each checked aspect's rows equal its whole state's count (`refs::check`).
 
