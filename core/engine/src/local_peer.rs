@@ -83,8 +83,8 @@ pub struct Discarded {
     /// `None`: a part of an applied commit (`Wakes::woken`).
     pub awaits: Option<Tid>,
     /// A copy carrying a pending commit, as node-sync keeps its entry: delivered again when the
-    /// engine names the commit (`Engine::take_redeliver`, or `Wakes::woken` once it applied with a
-    /// part it threw out), kept while the commit pends.
+    /// engine names the commit (`Engine::take_redeliver`), kept while the commit pends; once the
+    /// commit applied, kept as a copy of a part it misses (`awaits` `None`).
     carries: bool,
 }
 
@@ -93,6 +93,11 @@ impl Discarded {
     pub fn carries(&self) -> bool {
         self.carries
     }
+}
+
+/// Whether `bytes` carry a part applied commit `id` misses (decoded only then).
+fn misses(core: &crate::engine::Core, id: &CommitId, bytes: &[u8]) -> bool {
+    core.ix.commits.get(id).is_some_and(|m| !m.missing.is_empty() && CommitBlob::decode(bytes).is_ok_and(|b| b.parts.iter().any(|p| m.missing.contains(&p.ai))))
 }
 
 impl Peer {
@@ -148,6 +153,7 @@ impl Peer {
             Ingested::Awaits(_, crate::Reason::MissingChain(t) | crate::Reason::UnknownCreated(t)) if applied.is_none() => Some(*t),
             // the blob decoded only where a held commit misses a part
             _ if applied.is_some_and(|m| m.missing_parts().next().is_some() && CommitBlob::decode(bytes).is_ok_and(|b| b.parts.iter().any(|p| m.missing(p.ai)))) => None,
+            _ if misses(&self.engine.core, &id, bytes) => None,
             _ => return,
         };
         self.discards += 1;
@@ -160,13 +166,19 @@ impl Peer {
             let w = self.engine.take_wakes();
             let again = self.engine.take_redeliver();
             let core = &self.engine.core;
-            // a carrier goes once its commit pends no more, unless named to deliver again or
-            // applied with a part it threw out woken (node-sync reopens its entries)
-            let named = |d: &Discarded| again.contains(&d.commit) || w.woken.contains(&d.commit);
-            self.discarded.retain(|d| !d.carries || core.ix.pending.contains_key(&d.commit) || named(d));
+            // a carrier whose commit pends no more and is not named to deliver again is a copy of
+            // a part the applied commit misses, or goes (node-sync keeps the entry, fetched again
+            // when the commit is woken: `reopen_undropped`)
+            self.discarded.retain_mut(|d| {
+                if !d.carries || core.ix.pending.contains_key(&d.commit) || again.contains(&d.commit) {
+                    return true;
+                }
+                d.carries = false;
+                misses(core, &d.commit, &d.bytes)
+            });
             let due = |d: &Discarded| {
                 if d.carries {
-                    return named(d);
+                    return again.contains(&d.commit);
                 }
                 w.reopen_awaits || w.reread.contains(&d.commit) || match &d.awaits {
                     Some(t) => w.records.contains(t) || (w.moved && core.exists(t)),

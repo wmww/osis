@@ -3905,9 +3905,9 @@ fn record_from_drift_parked_creation_wakes_thrown_out_write_spec_commits_4() {
 }
 
 /// `h` played, then a node whose clock is just past `MAX_DRIFT` behind the history's `ts`es given
-/// `first`, then `then` (both waiting for their `ts`); its clock catches up: it shows what the node
-/// given everything on time does.
-fn caught_up(h: &[Step], first: usize, then: usize) {
+/// `first`, then `then` (both waiting for their `ts`, or `then` only once the clock caught up when
+/// `late`); its clock catches up: it shows what the node given everything on time does.
+fn caught_up(h: &[Step], first: usize, then: usize, late: bool) {
     let played = play(0, h);
     let (a, b) = (&played.packs[played.base + first], &played.packs[played.base + then]);
     let ts = |pk: &Package| osis_commit::CommitBlob::decode_stored(&pk.bytes).unwrap().header.ts.wall_ms().0;
@@ -3917,9 +3917,14 @@ fn caught_up(h: &[Step], first: usize, then: usize) {
     }
     p.clock.set(WallMs(ts(a).min(ts(b)) - osis_base::format::MAX_DRIFT_MS - 1));
     assert!(matches!(p.receive(&a.bytes, a.blobs.clone()).unwrap(), osis_node::Ingested::Pending(..)), "a part thrown out, the rest waits for its `ts`");
-    assert!(matches!(p.receive(&b.bytes, b.blobs.clone()).unwrap(), osis_node::Ingested::Pending(..)));
+    if !late {
+        assert!(matches!(p.receive(&b.bytes, b.blobs.clone()).unwrap(), osis_node::Ingested::Pending(..)));
+    }
     p.clock.set(played.now);
     p.tick().unwrap();
+    if late {
+        p.receive(&b.bytes, b.blobs.clone()).unwrap();
+    }
     let all: Vec<usize> = (0..played.packs.len()).collect();
     assert_eq!(shown(&mut p, &played.things), shown(&mut deliver(&played, &all), &played.things));
 }
@@ -3931,7 +3936,7 @@ fn caught_up(h: &[Step], first: usize, then: usize) {
 #[test]
 fn record_held_when_a_waiting_commit_applies_fetches_its_thrown_out_part_spec_commits_4() {
     use Step::*;
-    caught_up(&[NewTop { by: 0 }, Two { by: 0, a: 0, b: 1, v: 3 }], 1, 0);
+    caught_up(&[NewTop { by: 0 }, Two { by: 0, a: 0, b: 1, v: 3 }], 1, 0, false);
 }
 
 // spec/commits.md §4 (Unjudgeable): as above for a role commit (edges on G and a new thing), which
@@ -3940,7 +3945,7 @@ fn record_held_when_a_waiting_commit_applies_fetches_its_thrown_out_part_spec_co
 #[test]
 fn record_after_a_waiting_role_commit_applies_fetches_its_thrown_out_part_spec_commits_4() {
     use Step::*;
-    caught_up(&[NewTop { by: 0 }, TwoEdges { by: 0, a: 0, b: 1, holder: 1, role: Role::Write }], 1, 0);
+    caught_up(&[NewTop { by: 0 }, TwoEdges { by: 0, a: 0, b: 1, holder: 1, role: Role::Write }], 1, 0, false);
 }
 
 // The order harness's parts-away node (`covered_away`) leaves out what the keep-everything node's
@@ -4007,3 +4012,12 @@ fn a_superseder_turning_invalid_dates_its_victim_before_the_timeline_walks_spec_
     assert_eq!(order_checks(&played, &order), Ok(()));
 }
 
+// spec/commits.md §4 (Unjudgeable): as above, the creation arriving only after the waiting commit
+// applied without its part on the thing: the record wakes the part, fetched again from the copy the
+// node kept of the commit (node-sync keeps its entry, `reopen_undropped`).
+#[test]
+fn record_after_a_waiting_commit_applied_fetches_its_thrown_out_part_spec_commits_4() {
+    use Step::*;
+    caught_up(&[NewTop { by: 0 }, Two { by: 0, a: 0, b: 1, v: 3 }], 1, 0, true);
+    caught_up(&[NewTop { by: 0 }, TwoEdges { by: 0, a: 0, b: 1, holder: 1, role: Role::Write }], 1, 0, true);
+}
