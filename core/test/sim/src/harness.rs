@@ -13,7 +13,7 @@ use osis_node::{Engine, Ingested, Mutation};
 use osis_schema::Codec;
 use osis_schema::core_types as ct;
 use osis_store::{Fault, Faults, MemoryBackend, MemoryRoot};
-use std::collections::{BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt;
 use std::sync::Arc;
 
@@ -161,6 +161,8 @@ pub struct Sim {
     queue: Vec<Msg>,
     trace: VecDeque<String>,
     check: Checker,
+    /// Each node's held set and reads at its last convergence check.
+    views: BTreeMap<usize, check::View>,
 }
 
 fn boot(seed: u64, t: WallMs) -> osis_node::Result<(Peer, Faults)> {
@@ -192,6 +194,7 @@ impl Sim {
             queue: Vec::new(),
             trace: VecDeque::new(),
             check: Checker::default(),
+            views: BTreeMap::new(),
         };
         for i in 0..s.cfg.nodes {
             let clock = s.cfg.clocks.get(i).copied().unwrap_or_default();
@@ -569,8 +572,8 @@ impl Sim {
 
     /// spec/requirements.md (convergence) over the nodes that are up.
     pub fn check_convergence(&mut self) -> Res<()> {
-        let mut es: Vec<(usize, &mut Engine)> = self.nodes.iter_mut().enumerate().filter(|(_, n)| n.up).map(|(i, n)| (i, &mut n.peer.engine)).collect();
-        let r = check::convergence(&mut es);
+        let mut es: Vec<(usize, u64, &mut Engine)> = self.nodes.iter_mut().enumerate().filter(|(_, n)| n.up).map(|(i, n)| (i, n.peer.restarts, &mut n.peer.engine)).collect();
+        let r = check::convergence(&mut es, &mut self.views);
         r.map_err(|w| self.fail(w))
     }
 

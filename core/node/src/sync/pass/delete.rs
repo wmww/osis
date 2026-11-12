@@ -177,8 +177,7 @@ impl SyncEngine {
             // and goes itself once there is one, whatever its ID
             let useless = host.is_some_and(|s| self.state.is_gone_at(s, l, id));
             let same: Vec<BlobId> = self.state.entries_of(l, commit).filter(|(b, o)| (b < id || (useless && b != id)) && !o.cert && matches!(&o.kind, Kind::Commit { .. }) && host.is_none_or(|s| self.state.holds_at(s, l, b))).map(|(b, _)| b).collect();
-            let lower: Vec<BlobId> = same.into_iter().filter(|b| self.others_readable(g, l, b) == *parts).collect();
-            f.duplicate_higher = lower.into_iter().any(|b| self.genuine(&b));
+            f.duplicate_higher = same.into_iter().any(|b| self.others_readable(g, l, &b) == *parts && self.genuine(&b));
         } else if desired.iter().any(|d| d.iter().all(|p| parts.contains(p))) {
             // a superset: more of the commit than the label's bodies ask for holds them too
             f.required = true;
