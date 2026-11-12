@@ -9,3 +9,4 @@ rotation::tests_property::rotation_holds_large_spec_crypto_4 OSIS_ROTATION_START
 ephemeral::random_churn_converges_large OSIS_EPH_START=807204137843 issues/churn-seed-843-diverge.md node \d+ reads .*, node \d+ 
 sim-sweep:label_replacement_offline 911499435371 issues/label-replacement-offline-seed-371.md the replaced label still holds \d+ content entries
 apply::tests_paged::paged_apply_matches_whole_large_spec_crdt_8 OSIS_PAGED_APPLY_START=33767158382 issues/paged-apply-seed-382-snapshot.md page-by-page apply differs from whole
+sim-sweep:evil_host_drops 472765857787 issues/evil-host-drops-seed-787.md not quiescent after \d+ rounds
