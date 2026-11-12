@@ -81,7 +81,14 @@ impl Winners {
     }
     /// The writes here that do not win in `o`.
     pub fn minus(&self, o: &Winners) -> BTreeSet<Won> {
-        self.iter().filter(|w| !o.contains(w)).collect()
+        let mut out = BTreeSet::new();
+        for (p, s) in &self.0 {
+            let theirs = o.0.get(p);
+            for w in s.iter().filter(|w| theirs.is_none_or(|t| !t.contains(w))) {
+                out.insert(Won { path: p.clone(), kind: w.0, stamp: w.1.clone() });
+            }
+        }
+        out
     }
     pub fn extend(&mut self, o: Winners) {
         for (p, s) in o.0 {
@@ -196,7 +203,11 @@ trait Sink {
 impl Sink for Winners {
     const ALL: bool = false;
     fn put(&mut self, path: &[Place], kind: Kind, s: &Stamp) {
-        self.0.entry(path.to_vec()).or_default().insert((kind, s.clone()));
+        let w = (kind, s.clone());
+        match self.0.get_mut(path) {
+            Some(at) => at.insert(w),
+            None => self.0.entry(path.to_vec()).or_default().insert(w),
+        };
     }
 }
 
