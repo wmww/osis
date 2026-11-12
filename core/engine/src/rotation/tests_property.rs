@@ -4,11 +4,11 @@
 //! demotions, `until`s finalized, self-removals forging what a writer can), vandals (a rotation
 //! boxing nobody), re-grants, invalid rotations (a rotator demoted unaware), compactions, holder
 //! actors in cycles (a peer reading G only through them leaves the last), a rotator lacking a
-//! role's secret, and an admin acting while some departures are withheld from it. Forgers and vandals are hostile: their nodes act no more, and an honest
-//! admin removes them (and the actors they are first admin of) before settling, the re-key
-//! from their lockouts. Every node settles under the walk's side of each admin dispute. The
-//! seed picks an emphasis (seed mod 4: forks, departures, forgeries, cycles); every feature stays
-//! on its own draws.
+//! role's secret, and an admin acting while some departures are withheld from it. Forgers and
+//! vandals are hostile: their nodes act no more, and an honest admin removes them (and the
+//! actors they are first admin of) before settling, the re-key from their lockouts. Every node
+//! settles under the walk's side of each admin dispute. The seed picks an emphasis (seed mod 4:
+//! forks, departures, forgeries, cycles); every feature stays on its own draws.
 
 #![allow(clippy::unwrap_used)]
 use super::tests::{Key, Pass, Rng, edge, group, openable, opens_in};
@@ -132,33 +132,20 @@ impl Run {
         }
     }
 
-    /// Peer `i` granted peer `j` role `r` on `t` (`hand_on`).
+    /// Peer `i` granted peer `j` role `r` on `t`: notes what that handed `j` (`handed`), on `t`
+    /// and, through boxes to `t` as a holder actor, on the actors `t` holds a role on.
     fn grant(&mut self, i: usize, j: usize, t: Tid, r: Role) {
-        let to = self.tids[j];
-        self.hand_on(i, t, &[(j, r)], |run| run.lp.peers[i].engine.grant(&t, &to, &edge(r)).is_ok());
-    }
-
-    /// Peer `i` writes boxes of `t` by `f` (a grant or re-seal) to peers `js`, each at the role it
-    /// holds in `i`'s view: notes what that handed each (`handed`), on `t` up to that role and,
-    /// through boxes to `t` as a holder actor, on the actors `t` holds a role on: what `i` held of
-    /// `t` after `f` (the epochs a rotation `f` made first included) and the earlier secrets of
-    /// their roles (history boxes).
-    fn hand_on(&mut self, i: usize, t: Tid, js: &[(usize, Role)], f: impl FnOnce(&mut Run) -> bool) {
+        let had: BTreeSet<Key> = self.held(i).into_iter().filter(|k| k.0 == t).collect();
         // the actors `i` may read
         let all: Vec<Tid> = self.all().into_iter().filter(|a| self.lp.peers[i].engine.get_typed(a, &ct::SECRETS).is_ok()).collect();
-        let before: Vec<BTreeSet<Key>> = js.iter().map(|(j, _)| openable(&mut self.lp, i, &all, self.tids[*j], BTreeSet::new())).collect();
-        if !f(self) {
-            return;
-        }
-        let held: BTreeSet<Key> = self.held(i).into_iter().filter(|k| k.0 == t).collect();
-        for ((j, r), before) in js.iter().zip(before) {
-            let had: BTreeSet<Key> = held.iter().filter(|k| k.1 <= *r).copied().collect();
-            let after = openable(&mut self.lp, i, &all, self.tids[*j], BTreeSet::new());
+        let before = openable(&mut self.lp, i, &all, self.tids[j], BTreeSet::new());
+        if self.lp.peers[i].engine.grant(&t, &self.tids[j], &edge(r)).is_ok() {
+            let after = openable(&mut self.lp, i, &all, self.tids[j], BTreeSet::new());
             let boxed: BTreeSet<Key> = after.difference(&before).filter(|k| had.contains(k)).copied().collect();
             let carried = had.iter().filter(|k| boxed.iter().any(|b| b.1 == k.1 && k.2.n() < b.2.n()));
             let above = after.difference(&before).filter(|k| k.0 != t);
-            for k in boxed.iter().chain(carried).chain(above).filter(|k| !self.ever[*j].contains(k)) {
-                self.handed[*j].entry(*k).or_insert(self.log.len());
+            for k in boxed.iter().chain(carried).chain(above).filter(|k| !self.ever[j].contains(k)) {
+                self.handed[j].entry(*k).or_insert(self.log.len());
             }
         }
     }
@@ -524,9 +511,7 @@ fn rotation_history(seed: u64, every_tx: bool) -> Reached {
     for _ in 0..2 {
         let before = run.before(x);
         for t in run.all() {
-            // re-seals to the peers it reads as holders, some departed in the settled history
-            let js: Vec<(usize, Role)> = (0..N).filter(|j| *j != x).filter_map(|j| run.key_role(x, &t, j).map(|r| (j, r))).collect();
-            run.hand_on(x, t, &js, |run| run.reseal(x, t).is_ok());
+            let _ = run.reseal(x, t);
             run.note();
             let made = run.lp.peers[x].engine.ensure_rotated(&t).is_ok_and(|d| !d.0.commits.is_empty());
             run.rotated(x, t, made);
@@ -769,21 +754,16 @@ fn departure(run: &Run, o: usize, t: Tid, d: usize) -> Option<CommitId> {
     departure_point(run, o, t, d).map(|p| p.commit)
 }
 
-/// The commit at which peer `d` last lost access to role `r` of `t` (`access_at`) in peer
-/// `o`'s settled timelines, by an edge write on any actor: the newest write whose point has it
-/// reading `t` just before and not just after.
+/// The edge write (on any actor) at which peer `d` last lost role `r` of `t` by every path in
+/// peer `o`'s settled timelines (`access_at`): the newest applied write with `d` reading `t` just
+/// before it and not just after.
 fn path_loss(run: &Run, o: usize, d: usize, t: Tid, r: Role) -> Option<CommitId> {
     let core = &run.lp.peers[o].engine.core;
-    let points: BTreeSet<osis_perm::Point> = run.all().iter().filter_map(|a| core.timelines.get(a)).flat_map(|tl| tl.applied().values().map(|a| a.point).collect::<Vec<_>>()).collect();
-    let points: Vec<osis_perm::Point> = points.into_iter().collect();
-    let mut out = None;
-    for (n, p) in points.iter().enumerate() {
-        let next = points.get(n + 1).copied().unwrap_or(osis_perm::Point { commit: CommitId([0xff; 32]), ..*p });
-        if access_at(run, o, d, t, r, Some(*p)) && !access_at(run, o, d, t, r, Some(next)) {
-            out = Some(p.commit);
-        }
-    }
-    out
+    let points: BTreeSet<osis_perm::Point> = run.all().iter().filter_map(|a| core.timelines.get(a)).flat_map(|tl| tl.applied().values().map(|a| a.point)).collect();
+    let last = points.last().map(|p| osis_perm::Point { commit: CommitId([0xff; 32]), ..*p });
+    // whether `d` reads `t` just before each point, then just after the last
+    let reads: Vec<bool> = points.iter().copied().chain(last).map(|p| access_at(run, o, d, t, r, Some(p))).collect();
+    points.iter().zip(reads.windows(2)).filter(|(_, w)| w[0] && !w[1]).map(|(p, _)| p.commit).next_back()
 }
 
 /// `departure`, at its point in the key order.
