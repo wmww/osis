@@ -3130,7 +3130,8 @@ fn sync_learned_after_part_reads_alike_spec_commits_4() {
 
 
 /// `h`, then every peer holds what the others do, takes the walk's side in each dispute (as the
-/// judged nodes do) and compacts every aspect of every thing it may write: spec/commits.md §5's waiting part past its expiry and spec/requirements.md
+/// judged nodes do), fetches again what it dropped while invalid on its first side (a snapshot
+/// written without it would not carry it) and compacts every aspect of every thing it may write: spec/commits.md §5's waiting part past its expiry and spec/requirements.md
 /// Deterministic's limits last until a writer next compacts or writes, so a node given the
 /// compactions last (each counting when it arrives: one dropped while it did not count repairs
 /// nothing, spec/commits.md §5 Invalid) shows what the keep-everything node does before its sync
@@ -3148,6 +3149,7 @@ fn settled(mut h: Vec<Step>) -> Vec<Step> {
     sync(&mut h);
     sync(&mut h);
     h.push(WalkSides);
+    sync(&mut h);
     for t in 0..12 {
         for op in [0, 1, 3, 6, 8, 10, 12, 13, 14, 15, 16, 17, 18, 19, 21, 22, 27, 28, 29, 32, 35] {
             h.extend((0..3).map(|by| Compact { by, t, op }));
@@ -3180,6 +3182,28 @@ fn settling(mut played: Played, steps: &[Step]) -> Played {
     let required: BTreeSet<String> = played.packs[played.base..].iter().filter_map(|pk| osis_commit::CommitBlob::decode_stored(&pk.bytes).ok()).flat_map(|b| b.header.aspects.iter().filter(|a| a.ak.as_str() == "retention^.0").map(|a| format!("{:?}", a.tid)).collect::<Vec<_>>()).collect();
     played.settled_last.retain(|k| !required.contains(&k.0));
     Played { settle_from: Some(from), ..played }
+}
+
+// spec/commits.md §5 Invalid: 2 writes G's register ("v5") while 0 and 2 dispute their roles (2
+// removes 0 on a thing, 0 lowers 2 on G). Writers 0 and 1, on their first sides, drop the write as
+// invalid; on the walk's side it is valid again and missing. A writer compacting before it fetches
+// the write again writes a snapshot without it, so `settled` fetches first: a node given the
+// history newest first (dropping the write while invalid) and the compactions last reads "v5" as
+// the node keeping every body does, before its sync exchange too.
+#[test]
+fn settled_writers_fetch_what_their_first_side_dropped_before_compacting() {
+    use Step::*;
+    let aim = |x: Step| Aim(Box::new(x));
+    let h = vec![NewTop { by: 2 }, aim(Undo { by: 0, back: 0 }), aim(New { by: 0, parent: 3, write: false }), aim(RemoveFlow { by: 2, t: 2, holder: 0, lower: false }), aim(PurgeSet { by: 2, t: 0, op: 11, v: 5, fits: true }), aim(Demote { by: 0, t: 2, holder: 2, at: 2, to_read: false }), aim(Demote { by: 0, t: 6, holder: 2, at: 0, to_read: true })];
+    let h = settled(h);
+    let played = settling(play(0, &h), &h);
+    let g = (format!("{:?}", played.things[0]), "t:reg.0".to_string());
+    assert!(played.settled_last.contains(&g), "1 compacts G last: {:?}", played.tally);
+    let all: Vec<usize> = (0..played.packs.len()).collect();
+    assert_eq!(oracle(&played, &all).now[&g], "Ok(Some(Str(\"v5\")))");
+    let f = played.settle_from.unwrap();
+    let order: Vec<usize> = (0..f).rev().chain(f..played.packs.len()).collect();
+    order_checks(&played, &order).unwrap();
 }
 
 // spec/commits.md §5 Invalid, spec/sync.md §7: a body dropped while invalid and valid again is
@@ -3880,6 +3904,45 @@ fn record_from_drift_parked_creation_wakes_thrown_out_write_spec_commits_4() {
     assert_eq!(shown(&mut p, &played.things), shown(&mut deliver(&played, &all), &played.things));
 }
 
+/// `h` played, then a node whose clock is just past `MAX_DRIFT` behind the history's `ts`es given
+/// `first`, then `then` (both waiting for their `ts`); its clock catches up: it shows what the node
+/// given everything on time does.
+fn caught_up(h: &[Step], first: usize, then: usize) {
+    let played = play(0, h);
+    let (a, b) = (&played.packs[played.base + first], &played.packs[played.base + then]);
+    let ts = |pk: &Package| osis_commit::CommitBlob::decode_stored(&pk.bytes).unwrap().header.ts.wall_ms().0;
+    let mut p = fresh(played.now);
+    for pk in &played.packs[..played.base] {
+        p.receive(&pk.bytes, pk.blobs.clone()).unwrap();
+    }
+    p.clock.set(WallMs(ts(a).min(ts(b)) - osis_base::format::MAX_DRIFT_MS - 1));
+    assert!(matches!(p.receive(&a.bytes, a.blobs.clone()).unwrap(), osis_node::Ingested::Pending(..)), "a part thrown out, the rest waits for its `ts`");
+    assert!(matches!(p.receive(&b.bytes, b.blobs.clone()).unwrap(), osis_node::Ingested::Pending(..)));
+    p.clock.set(played.now);
+    p.tick().unwrap();
+    let all: Vec<usize> = (0..played.packs.len()).collect();
+    assert_eq!(shown(&mut p, &played.things), shown(&mut deliver(&played, &all), &played.things));
+}
+
+// spec/commits.md §4 (Unjudgeable): a content commit on G and a new thing, its `ts` ahead, comes
+// before the thing's creation (also ahead): its part on the thing is thrown out and the rest waits.
+// When the clock catches up the creation applies first (by `ts`) and the commit after it in the same
+// pass, the record already held: the thrown-out part is fetched again all the same.
+#[test]
+fn record_held_when_a_waiting_commit_applies_fetches_its_thrown_out_part_spec_commits_4() {
+    use Step::*;
+    caught_up(&[NewTop { by: 0 }, Two { by: 0, a: 0, b: 1, v: 3 }], 1, 0);
+}
+
+// spec/commits.md §4 (Unjudgeable): as above for a role commit (edges on G and a new thing), which
+// a pass applies before the creation: its part on the thing waits as a slot, and the creation's
+// record wakes it.
+#[test]
+fn record_after_a_waiting_role_commit_applies_fetches_its_thrown_out_part_spec_commits_4() {
+    use Step::*;
+    caught_up(&[NewTop { by: 0 }, TwoEdges { by: 0, a: 0, b: 1, holder: 1, role: Role::Write }], 1, 0);
+}
+
 // The order harness's parts-away node (`covered_away`) leaves out what the keep-everything node's
 // snapshots cover, judged on the walk's side of the admin dispute the history makes, as every node
 // checked is (`disputes::walk_sides`): on its default side a snapshot valid there covered a write
@@ -3943,3 +4006,4 @@ fn a_superseder_turning_invalid_dates_its_victim_before_the_timeline_walks_spec_
     let order: Vec<usize> = (0..n).filter(|i| !demote.contains(i)).chain(demote.iter().copied()).collect();
     assert_eq!(order_checks(&played, &order), Ok(()));
 }
+

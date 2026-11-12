@@ -83,7 +83,8 @@ pub struct Discarded {
     /// `None`: a part of an applied commit (`Wakes::woken`).
     pub awaits: Option<Tid>,
     /// A copy carrying a pending commit, as node-sync keeps its entry: delivered again when the
-    /// engine names the commit (`Engine::take_redeliver`), kept while the commit pends.
+    /// engine names the commit (`Engine::take_redeliver`, or `Wakes::woken` once it applied with a
+    /// part it threw out), kept while the commit pends.
     carries: bool,
 }
 
@@ -159,11 +160,13 @@ impl Peer {
             let w = self.engine.take_wakes();
             let again = self.engine.take_redeliver();
             let core = &self.engine.core;
-            // a carrier goes once its commit pends no more, unless named to deliver again
-            self.discarded.retain(|d| !d.carries || core.ix.pending.contains_key(&d.commit) || again.contains(&d.commit));
+            // a carrier goes once its commit pends no more, unless named to deliver again or
+            // applied with a part it threw out woken (node-sync reopens its entries)
+            let named = |d: &Discarded| again.contains(&d.commit) || w.woken.contains(&d.commit);
+            self.discarded.retain(|d| !d.carries || core.ix.pending.contains_key(&d.commit) || named(d));
             let due = |d: &Discarded| {
                 if d.carries {
-                    return again.contains(&d.commit);
+                    return named(d);
                 }
                 w.reopen_awaits || w.reread.contains(&d.commit) || match &d.awaits {
                     Some(t) => w.records.contains(t) || (w.moved && core.exists(t)),

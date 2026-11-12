@@ -803,7 +803,13 @@ fn ingest_class(tx: &mut Tx<'_>, mut blob: CommitBlob, origin: Origin) -> Result
             unpend(tx, &id)?;
             apply_verified(tx, &blob, parts, origin, received)?;
             if thrown {
-                waits |= settle_waits(tx, &id, &missing_unjudged(tx.core, &id));
+                let still = missing_unjudged(tx.core, &id);
+                // a thrown-out part whose record came in this same pass (no wake saw the commit
+                // pending): its carriers bring it again now
+                if tx.core.ix.commits.get(&id).is_some_and(|m| m.missing.iter().any(|ai| !m.forgot.contains(ai) && !still.contains_key(ai))) {
+                    tx.core.redeliver.insert(id);
+                }
+                waits |= settle_waits(tx, &id, &still);
             }
             // what a part still waiting read of its boxes may be what opens what it waits for
             match w {

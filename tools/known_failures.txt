@@ -10,6 +10,4 @@ rotation::tests_property::rotation_holds_large_spec_crypto_4 OSIS_ROTATION_START
 ephemeral::random_churn_converges_large OSIS_EPH_START=807204137843 issues/churn-seed-843-diverge.md node \d+ reads .*, node \d+ 
 sim-sweep:label_replacement_offline 911499435371/911499435371 issues/label-replacement-offline-seed-371.md the replaced label still holds \d+ content entries
 sim-sweep:evil_host_drops 472765857787/472765857787 issues/evil-host-drops-seed-787.md not quiescent after \d+ rounds
-order::held_set_decides_plain OSIS_ORDER_SEED=62510 issues/order-settled-seed-62510.md ^seed 62510, Settled .*settled: shows other than the node keeping every body
-order::held_set_decides_plain OSIS_ORDER_SEED=38534 issues/order-settled-roster-seed-38534.md ^seed 38534, Settled .*settled: shows other than the node keeping every body
 sim-sweep:concurrent_writers 892962858361/892962858375 issues/concurrent-writers-storage-seed-375.md stores \d+ B; must hold .* over the bound
