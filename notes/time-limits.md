@@ -75,6 +75,7 @@ Format: `- <date time> <box> `<limit>` [<test>] <CPU|wall> <measured>/<limit> s 
 - 2026-11-12 ostrich `gate.hold` CPU 5994/3795 s, wall 457/241 s and `gate` CPU 7939/4094 s, wall 872/299 s at load 17-19, 483 s lock wait (outside the limit): rotation-excuse-tight review, 9 of 26 crates (osis-engine changed); sim 124 s; persistent, issues/gate-five-minutes.md.
 - 2026-11-12 07:20 ostrich `gate.hold` CPU 6487/3795 s (1.71x), wall 653/241 s (2.70x); `gate` CPU 7354/4094 s (1.80x), wall 897/299 s (3.00x) at load 29, every stage within its own limit: held-trees-drop review (osis-engine, osis-node changed), 385 s lock wait outside; persistent, issues/gate-five-minutes.md.
 - 2026-11-12 fastbox-0 `gate.hold` CPU 2998/2788 s, wall 300/177 s; `gate` CPU 3158/3008 s, wall 330/220 s at load 25, 25 of 26 crates: net-6a rebase re-gate, no lock wait; persistent, issues/gate-five-minutes.md.
+- 2026-11-12 09:07 fastbox-0 `gate.hold` CPU 2797/2788 s (1.00x), wall 359/177 s (2.02x); `gate` CPU 2907/3008 s, wall 400/220 s (1.82x) at load 32, every stage within its own limit (default tests 163/439 s, properties 89/296 s, sim 107/254 s): sync-followups review, 9 of 26 crates (osis-engine, osis-node, osis changed), no lock wait; persistent, issues/gate-five-minutes.md.
 
 ## Investigations
 One section per investigation: date and box, the trigger (hits or the run over 2x), what was tried, the outcome (fixed, or a raised limit with why no good solution was found). Tess reviews every raise.
