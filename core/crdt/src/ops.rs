@@ -319,6 +319,24 @@ pub(crate) fn key_state(m: &Map, ids: &[&Eid]) -> Option<Fragment> {
     out
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Stored map keys and set elements `diff` matched new keys and items against (tests).
+    static VISITED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Notes `n` stored keys or elements visited (`VISITED`).
+fn visited(_n: usize) {
+    #[cfg(test)]
+    VISITED.with(|v| v.set(v.get() + _n));
+}
+
+/// Stored keys and elements `diff` visited on this thread since the last call; resets (tests).
+#[cfg(test)]
+pub(crate) fn visited_probe() -> usize {
+    VISITED.with(|v| v.replace(0))
+}
+
 fn projected<V: View>(view: &V, v: &Value) -> Option<Value> {
     view.project(v).map(|c| c.into_owned())
 }
@@ -388,8 +406,10 @@ pub fn diff<V: View>(w: &mut Writer, st: Option<&Fragment>, view: &V, v: &Value)
         (Encoding::Set, Fragment::Set(s), Value::Set(items)) => {
             let ev = view.element().ok_or(Error::Mismatch("set without element type"))?;
             let live: Vec<(&Dot, Option<Value>)> = live_elems(&s.elems).into_iter().map(|(d, x)| (d, projected(&ev, &x))).collect();
+            let held: BTreeSet<&Value> = live.iter().filter_map(|(_, p)| p.as_ref()).collect();
             let mut elems = BTreeMap::new();
             let r = w.delta_stamp();
+            visited(live.len());
             for (d, p) in &live {
                 // opaque elements are never removed (§9)
                 if p.as_ref().is_some_and(|p| !items.contains(p)) {
@@ -397,7 +417,7 @@ pub fn diff<V: View>(w: &mut Writer, st: Option<&Fragment>, view: &V, v: &Value)
                 }
             }
             for it in items {
-                if !live.iter().any(|(_, p)| p.as_ref() == Some(it)) {
+                if !held.contains(it) {
                     let (d, e) = set_elem(w, it.clone());
                     elems.insert(d, e);
                 }
@@ -407,32 +427,39 @@ pub fn diff<V: View>(w: &mut Writer, st: Option<&Fragment>, view: &V, v: &Value)
         (Encoding::Map, Fragment::Map(m), Value::Map(kv)) => {
             let kview = view.key().ok_or(Error::Mismatch("map without key type"))?;
             let vview = view.element().ok_or(Error::Mismatch("map without value type"))?;
-            let live = live_entries(m);
-            // (projected key, stored key, live records); a stored key is immutable (§5.6)
-            let keyed: Vec<(Option<Value>, &Value, &Vec<&Eid>)> = live.iter().map(|(k, ds)| (projected(&kview, k), *k, ds)).collect();
+            // projected key to the live records of each stored key projecting to it, in stored
+            // key order; a stored key is immutable (§5.6); opaque keys project to nothing
+            let mut keyed: BTreeMap<Value, Vec<Vec<&Eid>>> = BTreeMap::new();
+            for (k, ids) in live_entries(m) {
+                if let Some(p) = projected(&kview, k) {
+                    keyed.entry(p).or_default().push(ids);
+                }
+            }
             let mut entries = BTreeMap::new();
             let r = w.delta_stamp();
-            for (k, _, ids) in &keyed {
-                if k.as_ref().is_some_and(|k| !kv.contains_key(k)) {
-                    for id in ids.iter() {
-                        entries.insert(w.removal(id), Entry::tomb(&r));
-                    }
+            for (k, ids) in &keyed {
+                visited(ids.len());
+                if kv.contains_key(k) {
+                    continue;
+                }
+                for id in ids.iter().flatten() {
+                    entries.insert(w.removal(id), Entry::tomb(&r));
                 }
             }
             for (k, val) in kv {
-                let mut matched = false;
                 // every stored key the view projects to `k` is written, each into its lowest live dot,
                 // against what it reads as
-                for (_, _, ids) in keyed.iter().filter(|(p, _, _)| p.as_ref() == Some(k)) {
-                    matched = true;
+                let Some(stored) = keyed.get(k) else {
+                    entries.extend(new_entry(w, k.clone(), |w| create(w, &vview, val).map(Some))?);
+                    continue;
+                };
+                visited(stored.len());
+                for ids in stored {
                     let Some(id) = ids.first() else { continue };
                     let cur = key_state(m, ids);
                     if let Some(delta) = diff(w, cur.as_ref(), &vview, val)? {
                         entries.insert((*id).clone(), Entry { reset: None, frag: Some(Box::new(delta)), created: None });
                     }
-                }
-                if !matched {
-                    entries.extend(new_entry(w, k.clone(), |w| create(w, &vview, val).map(Some))?);
                 }
             }
             Fragment::Map(Map::new(Meta::default(), entries))

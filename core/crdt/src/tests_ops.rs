@@ -787,3 +787,32 @@ proptest! {
         prop_assert_eq!(out, b);
     }
 }
+
+/// spec/requirements.md, Scale: a `set` of a whole map or set over one of n keys or elements
+/// matches each new key or item against the stored ones it projects to, not against all of
+/// them: stored keys and elements visited at n and 10n, rewriting every value and replacing
+/// half of the items; the diff reaches the value.
+#[test]
+fn whole_collection_diff_is_linear_spec_9() {
+    let run = |n: i64| {
+        let node = sess(Tid::from_bytes([7; 15]));
+        let map = |x: i64| Value::Map((0..n).map(|i| (Value::Int(i), Value::Int(i * x))).collect());
+        let set = |off: i64| Value::Set((off..n + off).map(Value::Int).collect());
+        let mut out = Vec::new();
+        for (old, new) in [(map(1), map(2)), (set(0), set(n / 2))] {
+            let mut w = Writer::new(ts(1 << 16), node.clone(), 1);
+            let mut state = create(&mut w, &AnyView, &old).unwrap();
+            let mut w = Writer::new(ts(2 << 16), node.clone(), w.range().hi);
+            crate::ops::visited_probe();
+            let d = diff(&mut w, Some(&state), &AnyView, &new).unwrap().unwrap();
+            out.push(crate::ops::visited_probe() as u64);
+            state.join(d);
+            assert_eq!(read(&state).as_ref(), Some(&new));
+        }
+        out
+    };
+    let (small, big) = (run(1000), run(10_000));
+    for (i, what) in ["map", "set"].iter().enumerate() {
+        assert!(big[i] <= 15 * small[i] + 15, "{what}: {} visited at n, {} at 10n", small[i], big[i]);
+    }
+}
