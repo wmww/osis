@@ -112,9 +112,10 @@ fn no_history_no_undo_spec_commits_7() {
     assert_eq!(b.revert(x), Err(gone(x)));
 }
 
-// spec/crdt.md §4.6: with history kept the replaced value comes back from it: after a reopen, and
-// from a second node of the account that holds the commits; past the keep bound it is
-// `NotUndoable` by age.
+// spec/crdt.md §4.6 (undo needs kept history): with history kept the replaced value comes back
+// from it: after a reopen, and from a second node of the account that holds the commits; past the
+// keep bound of the value it replaced (the undone set itself kept while live) it is `NotUndoable`
+// by age.
 #[test]
 fn register_with_history_undoes_anywhere_spec_crdt_4_6() {
     let c = clock();
@@ -397,8 +398,8 @@ fn undo_needing_two_expiries_waits_spec_crdt_4_6() {
 
 // spec/commits.md §7: a memory commit forgotten here (an expiring write superseded by its
 // author's next one vanishes, spec/sync.md §9) still counts as a part the undone write may have
-// replaced: undoing the second of two expiring sets keeping no history is `NotUndoable`, never
-// the field emptied.
+// replaced: two expiring sets keeping no history, then a setting keeping the aspect (the second
+// set now kept while live): undoing it is `NotUndoable`, never the field emptied.
 #[test]
 fn undo_over_forgotten_ephemeral_part_not_undoable_spec_commits_7() {
     let db = osis::internals::create(cfg(0, MemStore::new(), &clock())).unwrap();
@@ -407,6 +408,7 @@ fn undo_over_forgotten_ephemeral_part_not_undoable_spec_commits_7() {
     let first = sets(&db, t, "app:xe+.0", &[1]);
     let last = sets(&db, t, "app:xe+.0", &[2]);
     assert!(!db.engine(|e| e.holds_memory(&first.raw())), "the first set forgotten");
+    keep_day(&db, t, &["app:xe+.0"]);
     let scope = Scope::Aspects(vec![(t, ak("app:xe+.0"))]);
     assert_eq!(db.undo_target(&scope), Err(gone(last)));
     assert_eq!(db.undo(&scope), Err(gone(last)));

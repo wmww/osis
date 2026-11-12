@@ -21,7 +21,7 @@ pub enum Error {
     Unsynced { tid: Tid, group: Tid },
     /// No commit with this ID is held (or its body was dropped).
     UnknownCommit(CommitId),
-    /// Undoing this commit writes back content no kept history holds (spec/crdt.md §4.6). Local.
+    /// Undoing this commit needs a part or content not in kept history (spec/commits.md §7, spec/crdt.md §4.6). Local.
     NotKept(CommitId),
     /// Peer data violating a rule node-core checks. BadInput.
     BadInput(&'static str),
