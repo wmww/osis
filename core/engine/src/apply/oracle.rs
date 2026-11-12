@@ -1,54 +1,20 @@
-//! The join of a commit's parts before streaming (issues/durable-decode-bound.md step 3), kept
-//! as the oracle of `atomic::joins`: every part decoded whole (`examine` under
+//! The join of a part before streaming (issues/durable-decode-bound.md step 3), kept as the
+//! oracle of `atomic::join_into_state`: every part decoded whole (`examine` under
 //! `Core::whole_apply`), joined whole, a reset or encoding change of a paged collection loading
 //! and rewriting the whole state. `tests_paged` requires both to leave the same.
 
-use super::Parts;
-use super::atomic::{Joins, note_snapshot, strip_valueless};
-use crate::engine::{Gives, Tx};
+use super::atomic::strip_valueless;
+use crate::engine::Tx;
 use crate::retention::Killed;
 use crate::error::Result;
-use osis_base::{Ak, CommitId, Tid};
-use osis_commit::{Decoded, Header};
+use osis_base::{Ak, Tid};
 use osis_crdt::{Changes, Fragment};
 use osis_store::Shred;
 
-fn fragment(d: Decoded) -> (Fragment, Option<Gives>) {
-    match d {
-        Decoded::Delta(x) => (x.fragment, None),
-        Decoded::Snapshot(x) => (x.fragment, Some((x.frontiers, x.absorbed.into_iter().collect()))),
-    }
-}
-
-pub(super) fn joins(tx: &mut Tx<'_>, h: &Header, id: &CommitId, parts: &Parts, valid: &[bool], j: &mut Joins) -> Result<()> {
-    for (ai, d) in &parts.whole {
-        let (ai, d) = (*ai, d.clone());
-        let Some(a) = h.aspects.get(ai) else { continue };
-        let (f, fr) = fragment(d);
-        // a signal joins no state (`join_part`)
-        if a.ak.signal() {
-            continue;
-        }
-        // every held snapshot's frontiers, whatever its validity
-        if let Some(fr) = fr {
-            note_snapshot(tx.core, &a.tid, &a.ak, h.ts, id, fr);
-        }
-        // an invalid part joins nothing (`atomic::join_part`)
-        if !valid.get(ai).copied().unwrap_or(false) {
-            continue;
-        }
-        j.touched.note(&a.tid, &a.ak, &f);
-        let mut dead = Killed::default();
-        let ch = join_into_state(tx, &a.tid, &a.ak, f, &mut dead)?;
-        if ch.is_changed() {
-            j.changed.insert((a.tid, a.ak.clone()));
-        }
-        j.joined.push((a.tid, a.ak.clone(), dead));
-    }
-    Ok(())
-}
-
-fn join_into_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, mut delta: Fragment, dead: &mut Killed) -> Result<Changes> {
+/// Joins `delta` into `(tid, ak)` whole (`atomic::join_part` under `Core::whole_apply`, in place
+/// of `atomic::join_into_state`): the state loaded and rewritten as before streaming. Only the
+/// join differs: every other decision of a part's apply is `join_part`'s in both worlds.
+pub(super) fn join_into_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, mut delta: Fragment, dead: Option<&mut Killed>) -> Result<Changes> {
     tx.load_lazy(tid, ak)?;
     strip_valueless(tx.core, tid, ak, &mut delta);
     let touch = crate::engine::pages::touch_of(&delta, tx.core.pages.get(&(*tid, ak.clone())));
@@ -66,7 +32,9 @@ fn join_into_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, mut delta: Fragment, dea
         d.add(&st.reach(&x), 1);
         d
     });
-    dead.note(&before, &st, &d);
+    if let Some(dead) = dead {
+        dead.note(&before, &st, &d);
+    }
     let after = crate::retention::compact::roots(ak, &st, &d);
     let st = tx.kept(tid, ak, st)?;
     if ch.is_changed() {

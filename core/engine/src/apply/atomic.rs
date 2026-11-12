@@ -277,21 +277,16 @@ pub(super) struct Joins {
     pub joined: Vec<(Tid, Ak, Killed)>,
 }
 
-/// Joins every part of commit `id` (`valid`: per aspect), in part order, a piece at a time (tests under `Core::whole_apply`: `oracle::joins`).
+/// Joins every part of commit `id` (`valid`: per aspect), in part order, a piece at a time.
 ///
-/// Invariant (the differential `tests_paged` checks it against `oracle::joins`, which decodes
-/// and joins every part whole): joining a delta a piece at a time, each piece's state pages
+/// Invariant (the differential `tests_paged` checks it against `Core::whole_apply`, where every
+/// part decodes whole and joins by `oracle::join_into_state`, all else of `join_part` the same): joining a delta a piece at a time, each piece's state pages
 /// written to the store and dropped from the cache before the next, leaves exactly the state,
 /// snapshot records and outcomes that joining it whole does. Pieces split a delta by
 /// element (§8), and what is judged of a whole delta is judged of its pieces: un-merging,
 /// vouching and holding value-less per write, superseded writes per join.
 fn joins(tx: &mut Tx<'_>, h: &Header, id: &CommitId, blob: &CommitBlob, parts: &Parts, valid: &[bool]) -> Result<Joins> {
     let mut j = Joins::default();
-    #[cfg(test)]
-    if tx.core.whole_apply {
-        super::oracle::joins(tx, h, id, parts, valid, &mut j)?;
-        return Ok(j);
-    }
     for (ai, part) in in_order(parts) {
         join_part(tx, h, id, blob, ai, part, valid.get(ai).copied().unwrap_or(false), &mut j)?;
     }
@@ -347,6 +342,12 @@ fn join_part(tx: &mut Tx<'_>, h: &Header, id: &CommitId, blob: &CommitBlob, ai: 
             return Ok(());
         }
         j.touched.note(&tid, &ak, &f);
+        // the oracle world joins whole (`tests_paged`): only the join differs
+        #[cfg(test)]
+        if tx.core.whole_apply {
+            ch.merge(super::oracle::join_into_state(tx, &tid, &ak, f, bounded.then_some(&mut dead))?);
+            return Ok(());
+        }
         ch.merge(join_into_state(tx, &tid, &ak, f, bounded.then_some(&mut dead))?);
         tx.evict_pages(&tid, &ak);
         Ok(())

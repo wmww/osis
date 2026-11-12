@@ -1,7 +1,8 @@
 //! Applying a delta a piece at a time leaves what applying it whole does (issues/
 //! durable-decode-bound.md step 3; spec/crdt.md §8): the same random history runs in two worlds
 //! of four nodes, one applying every part decoded whole through the pre-streaming join
-//! (`Core::whole_apply`, `oracle::joins`), and after every step each node's ingest outcomes,
+//! (`Core::whole_apply`, `oracle::join_into_state`; every other decision of a part's apply is
+//! `atomic::join_part`'s in both worlds), and after every step each node's ingest outcomes,
 //! states and indexes must agree, and after the last when each body was replaced. Histories: paged maps and sets filled, edited and
 //! replaced (root resets), turned into registers (encoding changes), a map with a paged part
 //! and unpaged entries in one aspect, multi-aspect commits, compaction snapshots, writes by a
@@ -478,6 +479,37 @@ fn paged_and_unpaged_parts_spec_crdt_8() {
     });
     let (pieces, loads) = (c.get("apply: piece").copied().unwrap_or(0), c.get("state page load").copied().unwrap_or(0));
     assert!(pieces > 2 && loads > pieces, "{c:?}");
+}
+
+/// Node 3's own write on the purge-on-replace register is replaced by node 1's second register
+/// write, which arrives without node 1's first (seed 33767158382 of the large differential): the
+/// later write is an own whole replace, so node 3's cover passes the hole below it, listing node
+/// 1's session to its counter 2. Applied whole, the part must stand as an own replace too: each
+/// world makes every decision of a part's apply but the join itself in one place (`join_part`).
+#[test]
+fn own_replace_passes_hole_whole_or_paged_spec_crdt_8() {
+    let script = |w: &mut World| {
+        let (t, reg) = (w.t, aks()[3].clone());
+        let mut m = Mutation::new();
+        m.set(t, &reg, &Value::Int(0)).unwrap();
+        w.lp.peers[3].commit(m).unwrap().unwrap();
+        let mut last = None;
+        for g in 1..=2 {
+            let mut m = Mutation::new();
+            m.set(t, &reg, &Value::Int(g)).unwrap();
+            last = w.lp.peers[1].commit(m).unwrap();
+        }
+        packages(w, 1, &[last.unwrap()])
+    };
+    both(script);
+    let mut w = world(false);
+    let pks = script(&mut w);
+    w.lp.deliver(3, &pks[0]).unwrap();
+    let e = &w.lp.peers[3].engine;
+    let me = e.me();
+    let held = e.core.ix.snapshots.get(&(w.t, aks()[3].clone())).cloned().unwrap_or_default();
+    let cover = held.iter().find(|(_, c, _, _)| e.core.ix.commits.get(c).is_some_and(|m| m.view.author == me)).expect("node 3 covers its replaced write");
+    assert!(cover.2.sources().any(|(_, f)| f == 2), "the cover passes the hole below node 1's replace: {:?}", cover.2);
 }
 
 /// Node 3 gets node 1's rewrite of a map held in a map entry, large enough to page, before the
