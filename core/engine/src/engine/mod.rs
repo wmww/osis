@@ -478,8 +478,7 @@ pub(crate) fn decode_stored_header(id: &CommitId, bytes: &[u8]) -> Option<Header
     if osis_base::hash::hash(bytes) != id.0 {
         return None;
     }
-    let lim = osis_base::Limits { max_depth: osis_base::format::MAX_OBJECT_DEPTH, max_bytes: bytes.len() };
-    Header::from_stored_value(&osis_base::decode(bytes, &lim).ok()?).ok()
+    Header::decode_stored(bytes).ok()
 }
 
 fn fallback_header(v: &View) -> Header {

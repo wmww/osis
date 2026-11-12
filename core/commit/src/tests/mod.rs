@@ -1,9 +1,11 @@
 //! Unit tests (spec/wire.md §4, spec/commits.md): header round trips here, one module per area.
 
 mod build;
-mod prop;
+mod direct;
+pub(crate) mod prop;
 mod review;
 mod validate;
+mod value_header;
 mod verify;
 
 use crate::*;
@@ -93,14 +95,19 @@ fn rotation_header_spec_wire_4() {
     assert!(r.validate().is_err(), "supersedes not ascending");
 }
 
-// spec/wire.md §4: a stored header (verified on arrival) reads back as `from_value` reads it,
+// spec/wire.md §4: a stored header (verified on arrival) reads back as `decode` reads it,
 // without the delete keys' point checks
 #[test]
 fn stored_header_reads_alike_spec_wire_4() {
     let h = sample_header();
-    let v = h.to_value();
-    assert_eq!(Header::from_stored_value(&v).unwrap(), Header::from_value(&v).unwrap());
-    assert_eq!(Header::from_stored_value(&v).unwrap(), h);
+    let b = h.encode();
+    assert_eq!(Header::decode_stored(&b).unwrap(), Header::decode(&b).unwrap());
+    assert_eq!(Header::decode_stored(&b).unwrap(), h);
+}
+
+/// A header's value tree, to edit into malformed headers.
+pub(crate) fn header_value(h: &Header) -> Value {
+    osis_base::decode(&h.encode(), &osis_base::Limits::DEFAULT).unwrap()
 }
 
 // spec/wire.md §4: a field change changes the commit ID.
@@ -148,7 +155,7 @@ fn signature_binds_inner_and_merge_spec_crypto_2() {
 #[test]
 fn version_parks() {
     use osis_base::{Classified, ErrorClass};
-    let mut v = sample_header().to_value();
+    let mut v = header_value(&sample_header());
     if let Value::List(items) = &mut v {
         items[0] = Value::Int(2);
         items.push(Value::Int(0));
@@ -165,7 +172,7 @@ fn version_parks() {
 // spec/versioning.md §2 (reject malformed)
 #[test]
 fn header_rejects_malformed() {
-    let good = sample_header().to_value();
+    let good = header_value(&sample_header());
     let Value::List(items) = good else { unreachable!() };
     let mutate = |i: usize, x: Value| {
         let mut it = items.clone();

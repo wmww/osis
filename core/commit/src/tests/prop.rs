@@ -27,7 +27,7 @@ fn link() -> impl Strategy<Value = Link> {
 }
 
 prop_compose! {
-    fn header()(
+    pub(crate) fn header()(
         author in tid(), actor in tid(), kind in 0u64..4, wall in 0u64..1 << 46, form in any::<bool>(), expires in proptest::option::of(0u64..1 << 50),
         aspects in proptest::collection::vec(aspect(), 0..4),
         chunks in proptest::collection::vec((any::<[u8; 32]>(), proptest::collection::vec(0usize..5, 0..3)), 0..3),
@@ -77,7 +77,7 @@ prop_compose! {
         h.chunks.dedup_by_key(|c| c.blob);
         h.purge.sort_by_key(|p| by_item(crate::header::purge_value(p)));
         h.purge.dedup();
-        h.keys.sort_by_key(|k| by_item(crate::header::key_value(k)));
+        h.keys.sort_by_key(crate::header::key_bytes);
         h.keys.dedup();
         // a linked list's items are not in the header bytes
         for f in ListField::ALL {
@@ -148,7 +148,7 @@ fn reader_agrees(h: &Header, f: ListField, bytes: &[u8]) -> Result<(), TestCaseE
     let v = osis_base::decode(bytes, &osis_base::Limits { max_depth: osis_base::format::MAX_OBJECT_DEPTH, max_bytes: bytes.len() });
     prop_assert!(v.is_ok(), "{f:?} {bytes:02x?}: {v:?}");
     prop_assert_eq!(osis_base::encode(&v.unwrap()), bytes);
-    prop_assert_eq!(osis_base::encode(&x.list_value(f).unwrap()), bytes, "{:?}", f);
+    prop_assert_eq!(x.list_bytes(f).unwrap(), bytes, "{:?}", f);
     Ok(())
 }
 
@@ -159,8 +159,8 @@ proptest! {
     fn reader_accepts_only_what_decode_does(h in header(), ids in proptest::collection::btree_set(any::<[u8; 32]>(), 0..4), kids in proptest::collection::vec((link(), 0u64..1 << 20), 1..4), seed in 1u64..) {
         let frontier = Value::Map([(Value::Int(0), Value::Set(ids.iter().map(|i| Value::bytes(i)).collect()))].into_iter().collect());
         let lists: Vec<(ListField, Vec<u8>)> = ListField::ALL.into_iter().map(|f| {
-            let v = if f == ListField::Frontier { frontier.clone() } else { h.list_value(f).unwrap() };
-            (f, osis_base::encode(&v))
+            let b = if f == ListField::Frontier { osis_base::encode(&frontier) } else { h.list_bytes(f).unwrap() };
+            (f, b)
         }).collect();
         let node = tree::node_plaintext(3, &kids).unwrap();
         prop_assert_eq!(tree::parse_node(&node).unwrap(), (3, kids));

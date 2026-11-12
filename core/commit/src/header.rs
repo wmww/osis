@@ -2,7 +2,8 @@
 //! spec/commits.md §1, spec/crypto.md §2).
 
 use crate::Error;
-use crate::cbor::{ak, as_bytes, as_list, as_opt, as_tid, as_uint, tid, uidx, uint};
+use crate::cbor::{ak, item, tid, uint};
+use osis_base::cbor::{Item, encode_into, put_array, put_bytes, put_link, put_text, put_uint};
 use osis_base::format::{CHUNK_THRESHOLD, DELETE_ADMIN, DELETE_WRITER, FORMAT_VERSION, MAX_BLOB, MAX_OBJECT_DEPTH, TAG_SET, TID_LEN};
 use osis_base::{Ak, BlobId, CommitId, Limits, Link, Reader, Tid, Ts, Value};
 use osis_crdt::DeltaKind;
@@ -90,21 +91,25 @@ impl Form {
         !matches!(self, Form::Commit)
     }
 
-    fn value(&self) -> Value {
+    fn put(&self, out: &mut Vec<u8>) {
         match self {
-            Form::Commit => uint(0),
-            Form::Session(n) => Value::List(vec![uint(1), Value::bytes(n)]),
+            Form::Commit => put_uint(out, 0),
+            Form::Session(n) => {
+                put_array(out, 2);
+                put_uint(out, 1);
+                put_bytes(out, n);
+            }
         }
     }
 
-    fn from_value(v: &Value) -> Result<Form, Error> {
-        if let Value::List(l) = v {
-            return match l.as_slice() {
-                [k, n] if as_uint(k)? == 1 => Ok(Form::Session(as_bytes(n)?)),
+    fn read(v: Item) -> Result<Form, Error> {
+        if let Some(l) = v.as_list() {
+            return match l.tuple() {
+                Some([k, n]) if item::uint(k)? == 1 => Ok(Form::Session(item::bytes(n)?)),
                 _ => Err(Error::Malformed("dot form")),
             };
         }
-        match as_uint(v)? {
+        match item::uint(v)? {
             0 => Ok(Form::Commit),
             _ => Err(Error::Malformed("dot form")),
         }
@@ -306,51 +311,77 @@ pub struct RotationHeader {
 }
 
 impl RotationHeader {
-    fn to_value(&self) -> Value {
-        let ids = |v: &[CommitId]| Value::List(v.iter().map(|c| Value::bytes(&c.0)).collect());
-        Value::List(vec![Value::Enum(SIGNING_KEY_ED25519, Some(Box::new(Value::bytes(&self.signing_key.to_bytes())))), self.kem_key.to_value(), ids(&self.supersedes), ids(&self.names), Value::bytes(&self.list_root)])
+    fn put(&self, out: &mut Vec<u8>) {
+        let ids = |out: &mut Vec<u8>, v: &[CommitId]| {
+            put_array(out, v.len());
+            v.iter().for_each(|c| put_bytes(out, &c.0));
+        };
+        put_array(out, 5);
+        encode_into(&Value::Enum(SIGNING_KEY_ED25519, Some(Box::new(Value::bytes(&self.signing_key.to_bytes())))), out);
+        encode_into(&self.kem_key.to_value(), out);
+        ids(out, &self.supersedes);
+        ids(out, &self.names);
+        put_bytes(out, &self.list_root);
     }
 
-    fn from_value(v: &Value) -> Result<RotationHeader, Error> {
-        let [sk, kem, sup, names, root] = as_list(v)? else { return Err(Error::Malformed("rotation arity")) };
-        let signing_key = match sk {
+    fn read(v: Item) -> Result<RotationHeader, Error> {
+        let Some([sk, kem, sup, names, root]) = item::list(v)?.tuple() else { return Err(Error::Malformed("rotation arity")) };
+        let signing_key = match sk.to_value()? {
             Value::Enum(SIGNING_KEY_ED25519, Some(b)) => match b.as_ref() {
                 Value::Bytes(k) => VerifyingKey::from_slice(k).map_err(|_| Error::Malformed("rotation signing key"))?,
                 _ => return Err(Error::Malformed("rotation signing key")),
             },
             _ => return Err(Error::Malformed("rotation signing key")),
         };
-        let kem_key = KemPublicKey::from_value(kem).map_err(|_| Error::Malformed("rotation kem key"))?;
-        let ids = |v: &Value| -> Result<Vec<CommitId>, Error> { as_list(v)?.iter().map(|c| as_bytes(c).map(CommitId)).collect() };
-        Ok(RotationHeader { signing_key, kem_key, supersedes: ids(sup)?, names: ids(names)?, list_root: as_bytes(root)? })
+        let kem_key = KemPublicKey::from_value(&kem.to_value()?).map_err(|_| Error::Malformed("rotation kem key"))?;
+        let ids = |v: Item| -> Result<Vec<CommitId>, Error> { item::list(v)?.iter().map(|c| item::bytes(c).map(CommitId)).collect() };
+        Ok(RotationHeader { signing_key, kem_key, supersedes: ids(sup)?, names: ids(names)?, list_root: item::bytes(root)? })
     }
 }
 
 // ---- encode
 
-pub(crate) fn retention_value(r: &Retention) -> Value {
-    uint(r.by as u64)
+fn put_tid_bytes(out: &mut Vec<u8>, t: &Tid) {
+    put_bytes(out, t.as_bytes());
 }
 
-fn aspect_value(a: &AspectEntry) -> Value {
-    Value::List(vec![
-        tid(&a.tid),
-        ak(&a.ak),
-        uint(a.lo),
-        uint(a.hi),
-        retention_value(&a.retention),
-        Value::List(a.keys.iter().map(|i| uidx(*i)).collect()),
-        Value::bytes(&a.hash),
-        Value::List(a.replaces.iter().map(|c| Value::bytes(&c.0)).collect()),
-    ])
+fn put_idxs(out: &mut Vec<u8>, v: &[usize]) {
+    put_array(out, v.len());
+    v.iter().for_each(|i| put_uint(out, *i as u64));
 }
 
-pub(crate) fn key_value(t: &DeleteKey) -> Value {
-    Value::List(vec![uint(u64::from(t.level)), Value::bytes(&t.key)])
+fn put_aspect(out: &mut Vec<u8>, a: &AspectEntry) {
+    put_array(out, 8);
+    put_tid_bytes(out, &a.tid);
+    put_text(out, a.ak.as_str());
+    put_uint(out, a.lo);
+    put_uint(out, a.hi);
+    put_uint(out, a.retention.by as u64);
+    put_idxs(out, &a.keys);
+    put_bytes(out, &a.hash);
+    put_array(out, usize::from(a.replaces.is_some()));
+    a.replaces.iter().for_each(|c| put_bytes(out, &c.0));
 }
 
-fn chunk_value(c: &ChunkEntry) -> Value {
-    Value::List(vec![Value::bytes(&c.blob.0), uidx(c.ai), Value::List(c.keys.iter().map(|i| uidx(*i)).collect()), Value::bytes(&c.blind)])
+fn put_key(out: &mut Vec<u8>, t: &DeleteKey) {
+    put_array(out, 2);
+    put_uint(out, u64::from(t.level));
+    put_bytes(out, &t.key);
+}
+
+/// Canonical bytes of a delete key, its sort key.
+pub(crate) fn key_bytes(t: &DeleteKey) -> Vec<u8> {
+    let mut out = Vec::new();
+    put_key(&mut out, t);
+    out
+}
+
+fn put_chunk(out: &mut Vec<u8>, c: &ChunkEntry) {
+    put_array(out, 4);
+    put_bytes(out, &c.blob.0);
+    put_uint(out, c.ai as u64);
+    put_idxs(out, &c.keys);
+    put_bytes(out, &c.blind);
 }
 
 pub(crate) fn purge_value(p: &PurgeItem) -> Value {
@@ -370,55 +401,97 @@ pub(crate) fn purge_value(p: &PurgeItem) -> Value {
 
 /// Canonical bytes of `[tid, ak]`, the aspect sort key.
 pub(crate) fn aspect_key(t: &Tid, a: &Ak) -> Vec<u8> {
-    osis_base::encode(&Value::List(vec![tid(t), ak(a)]))
+    let mut out = Vec::new();
+    put_array(&mut out, 2);
+    put_tid_bytes(&mut out, t);
+    put_text(&mut out, a.as_str());
+    out
+}
+
+/// `Opt(X)` of `x`, written by `put`.
+fn put_opt<T>(out: &mut Vec<u8>, x: Option<T>, put: impl FnOnce(&mut Vec<u8>, T)) {
+    put_array(out, usize::from(x.is_some()));
+    if let Some(x) = x {
+        put(out, x);
+    }
 }
 
 impl Header {
-    /// The list's (or frontier's) value as it would sit inline; `None` for an absent frontier.
-    pub fn list_value(&self, f: ListField) -> Option<Value> {
-        Some(match f {
-            ListField::Aspects => Value::List(self.aspects.iter().map(aspect_value).collect()),
-            ListField::Chunks => Value::List(self.chunks.iter().map(chunk_value).collect()),
-            ListField::Purge => Value::List(self.purge.iter().map(purge_value).collect()),
-            ListField::Keys => Value::List(self.keys.iter().map(key_value).collect()),
-            ListField::Frontier => return self.frontier.clone(),
-        })
-    }
-
-    fn position(&self, f: ListField) -> Value {
-        match (f, self.links.get(f)) {
-            (ListField::Frontier, Some(l)) => Value::opt(Some(Value::link(*l))),
-            (ListField::Frontier, None) => Value::opt(self.frontier.clone()),
-            (_, Some(l)) => Value::link(*l),
-            (_, None) => self.list_value(f).unwrap_or(Value::List(Vec::new())),
+    /// Appends list `f` (or the frontier's value) as it would sit inline; false for an absent
+    /// frontier.
+    fn put_list(&self, out: &mut Vec<u8>, f: ListField) -> bool {
+        match f {
+            ListField::Aspects => {
+                put_array(out, self.aspects.len());
+                self.aspects.iter().for_each(|a| put_aspect(out, a));
+            }
+            ListField::Chunks => {
+                put_array(out, self.chunks.len());
+                self.chunks.iter().for_each(|c| put_chunk(out, c));
+            }
+            ListField::Purge => {
+                put_array(out, self.purge.len());
+                self.purge.iter().for_each(|p| encode_into(&purge_value(p), out));
+            }
+            ListField::Keys => {
+                put_array(out, self.keys.len());
+                self.keys.iter().for_each(|k| put_key(out, k));
+            }
+            ListField::Frontier => match &self.frontier {
+                Some(v) => encode_into(v, out),
+                None => return false,
+            },
         }
+        true
     }
 
-    pub fn to_value(&self) -> Value {
-        Value::List(vec![
-            uint(self.version),
-            tid(&self.author),
-            tid(&self.actor),
-            uint(self.kind.id()),
-            uint(self.ts.to_u64()),
-            self.form.value(),
-            Value::opt(self.expires.map(uint)),
-            self.position(ListField::Aspects),
-            self.position(ListField::Chunks),
-            self.position(ListField::Purge),
-            Value::opt(self.undoes.map(|c| Value::bytes(&c.0))),
-            Value::bytes(&self.blind),
-            self.position(ListField::Keys),
-            self.position(ListField::Frontier),
-            Value::opt(self.ephemeral.map(|c| uint(c as u64))),
-            Value::opt(self.epoch.map(|c| Value::bytes(&c.0))),
-            Value::opt(self.rotation.as_ref().map(RotationHeader::to_value)),
-        ])
+    /// The canonical bytes of list `f` (or the frontier's value) as it would sit inline; `None`
+    /// for an absent frontier.
+    pub fn list_bytes(&self, f: ListField) -> Option<Vec<u8>> {
+        let mut out = Vec::new();
+        self.put_list(&mut out, f).then_some(out)
+    }
+
+    fn put_position(&self, out: &mut Vec<u8>, f: ListField) {
+        match (f, self.links.get(f)) {
+            (ListField::Frontier, Some(l)) => {
+                put_array(out, 1);
+                put_link(out, l);
+            }
+            (ListField::Frontier, None) => put_opt(out, self.frontier.as_ref(), |out, v| encode_into(v, out)),
+            (_, Some(l)) => put_link(out, l),
+            (_, None) => {
+                self.put_list(out, f);
+            }
+        }
     }
 
     /// Canonical bytes of the header.
     pub fn encode(&self) -> Vec<u8> {
-        osis_base::encode(&self.to_value())
+        let mut out = Vec::new();
+        self.encode_into(&mut out);
+        out
+    }
+
+    pub(crate) fn encode_into(&self, out: &mut Vec<u8>) {
+        put_array(out, 17);
+        put_uint(out, self.version);
+        put_tid_bytes(out, &self.author);
+        put_tid_bytes(out, &self.actor);
+        put_uint(out, self.kind.id());
+        put_uint(out, self.ts.to_u64());
+        self.form.put(out);
+        put_opt(out, self.expires, put_uint);
+        self.put_position(out, ListField::Aspects);
+        self.put_position(out, ListField::Chunks);
+        self.put_position(out, ListField::Purge);
+        put_opt(out, self.undoes, |out, c| put_bytes(out, &c.0));
+        put_bytes(out, &self.blind);
+        self.put_position(out, ListField::Keys);
+        self.put_position(out, ListField::Frontier);
+        put_opt(out, self.ephemeral, |out, c| put_uint(out, c as u64));
+        put_opt(out, self.epoch, |out, c| put_bytes(out, &c.0));
+        put_opt(out, self.rotation.as_ref(), |out, r| r.put(out));
     }
 
     /// Commit ID = BLAKE3(canonical header bytes).
@@ -556,10 +629,6 @@ fn read_purge(r: &mut Reader<'_>) -> Result<PurgeItem, Error> {
     }
 }
 
-fn as_ts(v: &Value) -> Result<Ts, Error> {
-    Ts::from_u64(as_uint(v)?).ok_or(Error::Malformed("ts out of range"))
-}
-
 /// The value of a linked frontier's bytes: exactly `{0: set<32-byte ID>}` (spec/wire.md §4).
 pub fn frontier_value(bytes: &[u8]) -> Result<Value, Error> {
     let mut r = Reader::new(bytes);
@@ -569,7 +638,7 @@ pub fn frontier_value(bytes: &[u8]) -> Result<Value, Error> {
     r.tag(TAG_SET)?;
     let ids = read_items(&mut r, MIN_ID, |r| Ok(Value::bytes(&r.fixed::<32>()?)))?;
     r.end()?;
-    Ok(Value::Map([(uint(0), Value::Set(ids.into_iter().collect()))].into_iter().collect()))
+    Ok(Value::Map([(Value::Int(0), Value::Set(ids.into_iter().collect()))].into_iter().collect()))
 }
 
 impl Header {
@@ -591,73 +660,65 @@ impl Header {
         Ok(r.end()?)
     }
 
-    fn take_position(&mut self, f: ListField, v: &Value, stored: bool) -> Result<(), Error> {
+    fn take_position(&mut self, f: ListField, v: Item, stored: bool) -> Result<(), Error> {
         let inner = if f == ListField::Frontier {
-            match as_opt(v)? {
+            match item::opt(v)? {
                 None => return Ok(()),
                 Some(x) => x,
             }
         } else {
             v
         };
-        if let Value::Link(l) = inner {
-            self.links.set(f, Some(**l));
+        if let Some(l) = inner.as_link() {
+            self.links.set(f, Some(l));
             return Ok(());
         }
-        let bytes = osis_base::encode(inner);
+        let bytes = inner.bytes();
         if !stored && bytes.len() > CHUNK_THRESHOLD {
             return Err(Error::Malformed("inline list above CHUNK_THRESHOLD"));
         }
         // an inline frontier is judged whole, by its type (`validity::header_frontier`)
         if f == ListField::Frontier {
-            self.frontier = Some(inner.clone());
+            self.frontier = Some(inner.to_value()?);
             return Ok(());
         }
-        self.read_list(f, &bytes, !stored)
+        self.read_list(f, bytes, !stored)
     }
 
-    /// Reads a header from its value. Linked lists stay unresolved.
-    pub fn from_value(v: &Value) -> Result<Header, Error> {
-        Header::from_value_as(v, false)
-    }
-
-    /// `from_value` of a header this node verified when it arrived (a stored commit record):
-    /// without the checks that cost (delete keys' points, inline list sizes); the same header.
-    pub fn from_stored_value(v: &Value) -> Result<Header, Error> {
-        Header::from_value_as(v, true)
-    }
-
-    fn from_value_as(v: &Value, stored: bool) -> Result<Header, Error> {
-        let items = as_list(v)?;
-        let version = as_uint(items.first().ok_or(Error::Malformed("empty header"))?)?;
+    /// Reads a header from its value. Linked lists stay unresolved. `stored`: one this node
+    /// verified when it arrived (a stored commit record), read without the checks that cost
+    /// (delete keys' points, inline list sizes); the same header.
+    pub(crate) fn read(v: Item, stored: bool) -> Result<Header, Error> {
+        let items = item::list(v)?;
+        let version = item::uint(items.first().ok_or(Error::Malformed("empty header"))?)?;
         if version > FORMAT_VERSION {
             return Err(Error::UnknownVersion(version));
         }
         if version != FORMAT_VERSION {
             return Err(Error::Malformed("format version"));
         }
-        let [_, author, actor, kind, ts, form, expires, aspects, chunks, purge, undoes, blind, keys, frontier, ephemeral, epoch, rotation] = items else {
+        let Some([_, author, actor, kind, ts, form, expires, aspects, chunks, purge, undoes, blind, keys, frontier, ephemeral, epoch, rotation]) = items.tuple() else {
             return Err(Error::Malformed("header arity"));
         };
         let mut h = Header {
             version,
-            author: as_tid(author)?,
-            actor: as_tid(actor)?,
-            kind: Kind::from_id(as_uint(kind)?).ok_or(Error::Malformed("kind"))?,
-            ts: as_ts(ts)?,
-            form: Form::from_value(form)?,
-            expires: as_opt(expires)?.map(as_uint).transpose()?,
+            author: item::tid(author)?,
+            actor: item::tid(actor)?,
+            kind: Kind::from_id(item::uint(kind)?).ok_or(Error::Malformed("kind"))?,
+            ts: Ts::from_u64(item::uint(ts)?).ok_or(Error::Malformed("ts out of range"))?,
+            form: Form::read(form)?,
+            expires: item::opt(expires)?.map(item::uint).transpose()?,
             aspects: Vec::new(),
             chunks: Vec::new(),
             purge: Vec::new(),
-            undoes: as_opt(undoes)?.map(|c| as_bytes(c).map(CommitId)).transpose()?,
-            blind: as_bytes(blind)?,
+            undoes: item::opt(undoes)?.map(|c| item::bytes(c).map(CommitId)).transpose()?,
+            blind: item::bytes(blind)?,
             keys: Vec::new(),
             frontier: None,
             links: Links::default(),
-            ephemeral: as_opt(ephemeral)?.map(|c| EphClass::from_id(as_uint(c)?).ok_or(Error::Malformed("ephemeral marker"))).transpose()?,
-            epoch: as_opt(epoch)?.map(|c| as_bytes(c).map(CommitId)).transpose()?,
-            rotation: as_opt(rotation)?.map(RotationHeader::from_value).transpose()?,
+            ephemeral: item::opt(ephemeral)?.map(|c| EphClass::from_id(item::uint(c)?).ok_or(Error::Malformed("ephemeral marker"))).transpose()?,
+            epoch: item::opt(epoch)?.map(|c| item::bytes(c).map(CommitId)).transpose()?,
+            rotation: item::opt(rotation)?.map(RotationHeader::read).transpose()?,
         };
         h.take_position(ListField::Aspects, aspects, stored)?;
         h.take_position(ListField::Chunks, chunks, stored)?;
@@ -670,11 +731,16 @@ impl Header {
     /// Decodes canonical header bytes (structure only: [`Header::validate`] checks the rules
     /// once linked lists are resolved).
     pub fn decode(b: &[u8]) -> Result<Header, Error> {
-        let v = osis_base::decode(b, &LIMITS)?;
-        let h = Header::from_value(&v)?;
+        let h = Header::read(Item::parse(b, &LIMITS)?, false)?;
         if h.encode() != b {
             return Err(Error::Malformed("not canonical"));
         }
         Ok(h)
+    }
+
+    /// `decode` of a header this node verified when it arrived (`read`'s `stored`): no canonical
+    /// re-encode.
+    pub fn decode_stored(b: &[u8]) -> Result<Header, Error> {
+        Header::read(Item::parse(b, &LIMITS)?, true)
     }
 }

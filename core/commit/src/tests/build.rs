@@ -158,7 +158,7 @@ fn small_linked_list_rejected() {
     let mut sink = MemoryBlobs::default();
     let built = build(content(2), &mut sink).unwrap();
     let mut h = built.commit.header.clone();
-    let bytes = osis_base::encode(&h.list_value(ListField::Aspects).unwrap());
+    let bytes = h.list_bytes(ListField::Aspects).unwrap();
     let d = sec(0xd0, &t(2));
     let mut salt = 0u8;
     let link = write_list(&bytes, &d, &mut sink, &mut || {

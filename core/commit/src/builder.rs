@@ -1,7 +1,7 @@
 //! The commit builder (spec/commits.md §1, spec/wire.md §4).
 
 use crate::blob::{CommitBlob, Part, Sigs};
-use crate::header::{AspectEntry, ChunkEntry, DeleteKey, Form, Header, Kind, Links, ListField, PurgeItem, RotationHeader, aspect_key, key_value, purge_value};
+use crate::header::{AspectEntry, ChunkEntry, DeleteKey, Form, Header, Kind, Links, ListField, PurgeItem, RotationHeader, aspect_key, key_bytes, purge_value};
 use crate::groups::check_fits;
 use crate::keys::{Prefix, Secrets, delete_keys};
 use crate::lists::{BlobSink, write_list};
@@ -161,7 +161,7 @@ impl CommitBuilder {
         // delete keys: one per distinct (level, key), sorted by canonical bytes
         let mut table: BTreeMap<Vec<u8>, DeleteKey> = BTreeMap::new();
         for k in aspect_keys.iter().flatten() {
-            table.insert(osis_base::encode(&key_value(k)), *k);
+            table.insert(key_bytes(k), *k);
         }
         let keys: Vec<DeleteKey> = table.into_values().collect();
         let positions: BTreeMap<DeleteKey, usize> = keys.iter().enumerate().map(|(i, t)| (*t, i)).collect();
@@ -214,8 +214,7 @@ impl CommitBuilder {
         // header-list chunks and tree nodes: the commit's level-2 key only (spec/wire.md §5)
         let list_keys: Vec<DeleteKey> = header.keys.iter().filter(|k| k.level == DELETE_AUTHOR).copied().collect();
         for f in ListField::ALL {
-            let Some(v) = header.list_value(f) else { continue };
-            let bytes = osis_base::encode(&v);
+            let Some(bytes) = header.list_bytes(f) else { continue };
             if bytes.len() <= CHUNK_THRESHOLD {
                 continue;
             }

@@ -13,10 +13,10 @@
 //!   size, nothing else, and copies it verbatim into a fresh encryption (`seal_commit`'s
 //!   `extra`).
 
-use crate::cbor::{as_idx, as_list, strictly_ascending, uidx};
+use crate::cbor::{item, strictly_ascending};
 use crate::header::{Header, LIMITS};
 use crate::Error;
-use osis_base::cbor::{MAJOR_ARRAY, MAJOR_UINT, encode_into, head};
+use osis_base::cbor::{Item, MAJOR_ARRAY, MAJOR_UINT, encode_into, head, put_array, put_bytes, put_uint};
 use osis_base::{CommitId, Tid, Value};
 use osis_crypto::{CryptoRngCore, Domain, INNER_LEN, SECTION_WRAP_LEN, Secret32, Signature, SigningSecret};
 use std::collections::BTreeMap;
@@ -89,10 +89,10 @@ impl Sigs {
         encode_into(&Value::List(self.merge.iter().map(Signature::to_value).collect()), out);
     }
 
-    fn from_values(sv: &Value, iv: &Value, mv: &Value) -> Result<Sigs, Error> {
-        let signature = Signature::from_value(sv)?;
-        let inner = crate::cbor::as_opt(iv)?.map(crate::cbor::as_bytes::<INNER_LEN>).transpose()?;
-        let merge = as_list(mv)?.iter().map(Signature::from_value).collect::<Result<Vec<_>, _>>()?;
+    fn read(sv: Item, iv: Item, mv: Item) -> Result<Sigs, Error> {
+        let signature = Signature::from_value(&sv.to_value()?)?;
+        let inner = item::opt(iv)?.map(item::bytes::<INNER_LEN>).transpose()?;
+        let merge = item::list(mv)?.iter().map(|s| Ok(Signature::from_value(&s.to_value()?)?)).collect::<Result<Vec<_>, Error>>()?;
         Ok(Sigs { signature, inner, merge })
     }
 }
@@ -106,7 +106,7 @@ impl CommitBlob {
     pub fn encode(&self) -> Vec<u8> {
         let mut out = Vec::new();
         head(&mut out, MAJOR_ARRAY, 5);
-        out.extend_from_slice(&self.header.encode());
+        self.header.encode_into(&mut out);
         self.sigs.encode_into(&mut out);
         encode_parts(&self.parts, &mut out);
         out
@@ -115,10 +115,9 @@ impl CommitBlob {
     /// Decodes the opened form. Linked header lists stay unresolved; part indices are checked
     /// against the header by [`crate::verify_part`].
     pub fn decode(b: &[u8]) -> Result<CommitBlob, Error> {
-        let v = osis_base::decode(b, &LIMITS)?;
-        let [hv, sv, iv, mv, pv] = as_list(&v)? else { return Err(Error::Malformed("commit blob arity")) };
-        let header = Header::from_value(hv)?;
-        let sigs = Sigs::from_values(sv, iv, mv)?;
+        let Some([hv, sv, iv, mv, pv]) = item::list(Item::parse(b, &LIMITS)?)?.tuple() else { return Err(Error::Malformed("commit blob arity")) };
+        let header = Header::read(hv, false)?;
+        let sigs = Sigs::read(sv, iv, mv)?;
         let parts = decode_parts(pv)?;
         let blob = CommitBlob { header, sigs, parts };
         if blob.encode() != b {
@@ -138,9 +137,9 @@ impl CommitBlob {
         if r.array()? != 5 {
             return Err(Error::Malformed("commit blob arity"));
         }
-        let mut next = || -> Result<Value, Error> { Ok(osis_base::decode(r.item()?, &LIMITS)?) };
-        let header = Header::from_stored_value(&next()?)?;
-        let sigs = Sigs::from_values(&next()?, &next()?, &next()?)?;
+        let mut next = || -> Result<Item, Error> { Ok(Item::parse(r.item()?, &LIMITS)?) };
+        let header = Header::read(next()?, true)?;
+        let sigs = Sigs::read(next()?, next()?, next()?)?;
         let mut parts = Vec::new();
         for _ in 0..r.array()? {
             if r.array()? != 2 {
@@ -182,14 +181,14 @@ pub(crate) fn part_len(p: &Part) -> usize {
 }
 
 /// The parts of a `[Part*]` value: sorted by `ai`, distinct.
-fn decode_parts(pv: &Value) -> Result<Vec<Part>, Error> {
+fn decode_parts(pv: Item) -> Result<Vec<Part>, Error> {
     let mut parts = Vec::new();
-    for p in as_list(pv)? {
-        let [ai, d] = as_list(p)? else { return Err(Error::Malformed("part arity")) };
-        if !matches!(d, Value::List(_)) {
+    for p in item::list(pv)? {
+        let Some([ai, d]) = item::list(p)?.tuple() else { return Err(Error::Malformed("part arity")) };
+        if d.as_list().is_none() {
             return Err(Error::Malformed("part delta"));
         }
-        parts.push(Part { ai: as_idx(ai)?, delta: osis_base::encode(d) });
+        parts.push(Part { ai: item::idx(ai)?, delta: d.bytes().to_vec() });
     }
     if !strictly_ascending(&parts, |p| p.ai) {
         return Err(Error::Malformed("parts not sorted and distinct"));
@@ -224,17 +223,23 @@ impl Section {
         false
     }
 
-    fn to_value(&self) -> Value {
-        Value::List(vec![Value::List(self.ais.iter().map(|a| uidx(*a)).collect()), Value::List(self.chain.iter().map(crate::cbor::tid).collect()), Value::bytes(&self.wrap), Value::bytes(&self.ciphertext)])
+    fn put(&self, out: &mut Vec<u8>) {
+        put_array(out, 4);
+        put_array(out, self.ais.len());
+        self.ais.iter().for_each(|a| put_uint(out, *a as u64));
+        put_array(out, self.chain.len());
+        self.chain.iter().for_each(|t| put_bytes(out, t.as_bytes()));
+        put_bytes(out, &self.wrap);
+        put_bytes(out, &self.ciphertext);
     }
 
-    fn from_value(v: &Value) -> Result<Section, Error> {
-        let [ais, chain, wrap, ct] = as_list(v)? else { return Err(Error::Malformed("section arity")) };
-        let ais = as_list(ais)?.iter().map(as_idx).collect::<Result<Vec<_>, _>>()?;
+    fn read(v: Item) -> Result<Section, Error> {
+        let Some([ais, chain, wrap, ct]) = item::list(v)?.tuple() else { return Err(Error::Malformed("section arity")) };
+        let ais = item::list(ais)?.iter().map(item::idx).collect::<Result<Vec<_>, _>>()?;
         if ais.is_empty() || !strictly_ascending(&ais, |a| *a) {
             return Err(Error::Malformed("section aspects not ascending and distinct"));
         }
-        let chain = as_list(chain)?.iter().map(crate::cbor::as_tid).collect::<Result<Vec<_>, _>>()?;
+        let chain = item::list(chain)?.iter().map(item::tid).collect::<Result<Vec<_>, _>>()?;
         if chain.len() > osis_base::format::MAX_CHAIN_DEPTH {
             return Err(Error::Malformed("section chain too deep"));
         }
@@ -268,8 +273,7 @@ impl Section {
     pub fn open(&self, commit: &CommitId, secrets: &[Secret32]) -> Result<Option<Vec<Part>>, Error> {
         let Some(key) = secrets.iter().find_map(|s| osis_crypto::unwrap_section(s, commit, &self.wrap).ok()) else { return Ok(None) };
         let pt = osis_crypto::open_section(commit, &key, &self.ciphertext)?;
-        let v = osis_base::decode(&pt, &LIMITS)?;
-        let parts = decode_parts(&v)?;
+        let parts = decode_parts(Item::parse(&pt, &LIMITS)?)?;
         if !parts.iter().map(|p| p.ai).eq(self.ais.iter().copied()) {
             return Err(Error::Malformed("section parts disagree with its aspect list"));
         }
@@ -311,20 +315,20 @@ impl Envelope {
     pub fn encode(&self) -> Vec<u8> {
         let mut out = Vec::new();
         head(&mut out, MAJOR_ARRAY, 5);
-        out.extend_from_slice(&self.header.encode());
+        self.header.encode_into(&mut out);
         self.sigs.encode_into(&mut out);
-        encode_into(&Value::List(self.sections.iter().map(Section::to_value).collect()), &mut out);
+        put_array(&mut out, self.sections.len());
+        self.sections.iter().for_each(|s| s.put(&mut out));
         out
     }
 
     /// Decodes a commit blob plaintext. Linked header lists stay unresolved; aspect indices
     /// are checked against the header once resolved (`prefix_groups`).
     pub fn decode(b: &[u8]) -> Result<Envelope, Error> {
-        let v = osis_base::decode(b, &LIMITS)?;
-        let [hv, sv, iv, mv, ss] = as_list(&v)? else { return Err(Error::Malformed("commit blob arity")) };
-        let header = Header::from_value(hv)?;
-        let sigs = Sigs::from_values(sv, iv, mv)?;
-        let sections = as_list(ss)?.iter().map(Section::from_value).collect::<Result<Vec<_>, _>>()?;
+        let Some([hv, sv, iv, mv, ss]) = item::list(Item::parse(b, &LIMITS)?)?.tuple() else { return Err(Error::Malformed("commit blob arity")) };
+        let header = Header::read(hv, false)?;
+        let sigs = Sigs::read(sv, iv, mv)?;
+        let sections = item::list(ss)?.iter().map(Section::read).collect::<Result<Vec<_>, _>>()?;
         if !strictly_ascending(&sections, |s| s.ais.first().copied()) {
             return Err(Error::Malformed("sections not sorted by first aspect"));
         }

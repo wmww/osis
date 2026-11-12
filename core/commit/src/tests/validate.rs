@@ -171,7 +171,7 @@ fn retention_encoding_spec_wire_4() {
         assert_eq!(Header::decode(&x.encode()).unwrap(), x);
     }
     for bad in [Value::Int(4), Value::List(vec![Value::Int(2), Value::Int(0)])] {
-        let mut v = h.to_value();
+        let mut v = crate::tests::header_value(&h);
         if let Value::List(items) = &mut v
             && let Some(Value::List(aspects)) = items.get_mut(7)
             && let Some(Value::List(a)) = aspects.first_mut()
@@ -272,11 +272,11 @@ fn session_form_spec_commits_3() {
     let own = h.form.own_source(h.author, h.id());
     assert_eq!(own.as_session(), Some(osis_crdt::Session { node: h.author, nonce: [6; 16] }));
     // another form value is malformed
-    let mut v = h.to_value();
+    let mut v = crate::tests::header_value(&h);
     if let Value::List(items) = &mut v {
         items[5] = Value::List(vec![Value::Int(2), Value::bytes(&[6; 16])]);
     }
-    assert!(Header::from_value(&v).is_err());
+    assert!(Header::decode(&osis_base::encode(&v)).is_err());
 }
 
 // spec/commits.md §5 (Destruction: a release request), spec/wire.md §4: `released.0` stands only in a

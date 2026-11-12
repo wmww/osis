@@ -113,7 +113,7 @@ impl Header {
     /// The canonical bytes of each linked list of a resolved header: what a node keeps with
     /// the header, so holding it never needs the list blobs (their life is the sync rules').
     pub fn linked_lists(&self) -> Vec<(ListField, Vec<u8>)> {
-        ListField::ALL.into_iter().filter(|f| self.links.get(*f).is_some()).filter_map(|f| self.list_value(f).map(|v| (f, osis_base::encode(&v)))).collect()
+        ListField::ALL.into_iter().filter(|f| self.links.get(*f).is_some()).filter_map(|f| self.list_bytes(f).map(|b| (f, b))).collect()
     }
 
     /// Fills linked list `f` from the bytes `linked_lists` gave for it (a header this node

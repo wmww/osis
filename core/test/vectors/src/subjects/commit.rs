@@ -294,7 +294,7 @@ fn more_accepted() -> Vec<Record> {
         .with("dedup", hex(s32(0x30).expose()))
         .with("delete-secrets", format!("1:{} 2:{} 3:{}", hex(s32(0x31).expose()), hex(s32(0x32).expose()), hex(s32(0x33).expose())))
         .with("randomness", hex(&rec.1))
-        .with("aspect-list-blake3", hex(&osis_base::hash::hash(&osis_base::encode(&c.header.list_value(ListField::Aspects).unwrap()))));
+        .with("aspect-list-blake3", hex(&osis_base::hash::hash(&c.header.list_bytes(ListField::Aspects).unwrap())));
     for (i, id) in bl.list_blobs.iter().enumerate() {
         let (p, plain) = &sink.blobs[id];
         // level-2 commitments only (spec/wire.md §5), under the link blind of the blob key the
@@ -363,7 +363,7 @@ fn more_rejected(content: &Header) -> Vec<Record> {
     x.aspects[0].keys.truncate(1);
     x.keys.truncate(1);
     out.push(reject("session-form ephemeral commit not purgeable by writer", "spec/commits.md §2", &x, "ephemeral"));
-    let mut v = s.to_value();
+    let mut v = osis_base::decode(&s.encode(), &osis_base::Limits::DEFAULT).unwrap();
     if let Value::List(items) = &mut v {
         items[5] = Value::List(vec![Value::Int(2), Value::Bytes(vec![0x28; 16])]);
     }
@@ -373,7 +373,7 @@ fn more_rejected(content: &Header) -> Vec<Record> {
     let mut x = ephemeral(osis_commit::EphClass::Relay).header;
     x.expires = Some(x.ts.wall_ms().0 + 1);
     out.push(reject("relay-only commit with an expiry", "spec/commits.md §2", &x, "ephemeral"));
-    let mut v = e.to_value();
+    let mut v = osis_base::decode(&e.encode(), &osis_base::Limits::DEFAULT).unwrap();
     if let Value::List(items) = &mut v
         && let Some(m) = items.last_mut()
     {

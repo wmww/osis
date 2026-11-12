@@ -144,7 +144,7 @@ fn expiry_range() {
 fn one_level_2_key() {
     let mut h = sample_header();
     h.keys.push(crate::tests::dkey(2, 9));
-    h.keys.sort_by_key(|k| osis_base::encode(&crate::header::key_value(k)));
+    h.keys.sort_by_key(crate::header::key_bytes);
     let i = h.keys.iter().position(|k| *k == crate::tests::dkey(1, 1)).unwrap();
     let j = h.keys.iter().position(|k| *k == crate::tests::dkey(2, 2)).unwrap();
     let k = h.keys.iter().position(|k| *k == crate::tests::dkey(2, 9)).unwrap();
