@@ -2410,11 +2410,10 @@ fn superseded_part_beside_one_valid_again_fetched_spec_permissions_6() {
 
 // spec/sync.md §7 (a delete waits for the role commits it is judged by; random churn seed
 // 460971879377 shrunk): writer c is promoted again while writer b reaches only host 0 and the
-// admin only host 1, so b still judges c a reader. c's snapshot covers b's write, but c's
-// relay of the promotion to host 0 waits (`relay_at`): a delete there now would meet b judging
-// the snapshot invalid and placing its write again, under a fresh encryption past the
-// tombstone, at every pass until the promotion arrives (the seed's storm). So c's deletes at
-// host 0 wait for the promotion there; once it arrives, the write goes and both read alike
+// admin only host 1, so b judges c a reader until the promotion reaches host 0. c's snapshot
+// covers b's write; c holds the promotion, so host 0 pulls it from c with the snapshot: b never
+// judges the snapshot invalid and places its write again (one encryption of it ever), the write
+// leaves host 0, and both read alike
 #[test]
 fn delete_waits_for_its_role_commits_at_the_host_spec_sync_7() {
     let (mut net, (hosts, nodes, g, w)) = churn_world();
@@ -2454,10 +2453,9 @@ fn delete_waits_for_its_role_commits_at_the_host_spec_sync_7() {
     let acts = net.sync(c).compact_ephemeral_now().unwrap();
     net.actions(c, acts);
     net.run();
-    assert_eq!(at0(&mut net), held, "kept at host 0 while the promotion is on its way there");
-    net.advance(31_000);
-    net.advance(1_000);
-    assert_eq!(at0(&mut net), 0, "deleted once the promotion is there");
+    assert_eq!(at0(&mut net), 0, "deleted at host 0 with the promotion there");
+    let encryptions = net.sync(b).entries(&l).into_iter().filter(|(_, k)| matches!(k, osis_node::sync::EntryKind::Commit { commit, .. } if *commit == write)).count();
+    assert!(encryptions <= 1, "b placed its write again: {encryptions} encryptions");
     assert_eq!(net.eph_read(b, w, CURSOR), net.eph_read(c, w, CURSOR));
 }
 

@@ -724,17 +724,23 @@ impl SyncEngine {
         self.run_dirty(out)
     }
 
-    /// Takes `step` as the head of `l` on `conn`: its keys derived, recorded for the host, a
-    /// pass wanted.
+    /// Takes `step` as the head of `l` on `conn`: its keys derived, recorded for the peer, a
+    /// pass wanted (judging everything when the head moved).
     pub(crate) fn set_head(&mut self, conn: ConnId, l: LabelId, step: Step) -> Result<()> {
         let Some(host) = self.conns.get(&conn).map(|c| c.host) else { return Ok(()) };
         let Some(lc) = self.lc(conn, &l) else { return Ok(()) };
         let (g, index) = (lc.group, lc.index);
         let keys = self.engine.head_keys(&g, index, &step)?;
         self.state.set_head(host, l, &step);
+        let mut moved = false;
         if let Some(lc) = self.lc_mut(conn, &l) {
+            moved = lc.head.as_ref().is_some_and(|h| h.id() != step.id());
             lc.head = Some(step);
             lc.keys = keys;
+        }
+        // the stamps the peer takes changed: every entry is judged against them again
+        if moved {
+            self.work_mut(l).touched.full = true;
         }
         self.mark_labels(&[l]);
         Ok(())

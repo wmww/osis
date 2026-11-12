@@ -174,6 +174,25 @@ fn inside(h: &osis_commit::Header, closure: &BTreeSet<Tid>) -> BTreeSet<usize> {
     h.aspects.iter().enumerate().filter(|(_, a)| closure.contains(&a.tid)).map(|(i, _)| i).collect()
 }
 
+/// Send `o` is judged again by the next pass.
+fn leave(o: &Out, left: &mut Left) {
+    match o.of {
+        Some(Touch::Commit(c)) => {
+            left.commits.insert(c);
+        }
+        Some(Touch::Blob(b)) => {
+            left.blobs.insert(b);
+        }
+        None => left.again = true,
+    }
+}
+
+fn leave_all(sends: &[Out], left: &mut Left) {
+    for o in sends {
+        leave(o, left);
+    }
+}
+
 impl SyncEngine {
     /// When time alone next wants a pass of `l` (`Work::pass_at`): a due time of the work set or
     /// the roster's clock horizon; with neither, none (a label passes when marked).
@@ -432,8 +451,11 @@ impl SyncEngine {
         let (full, scope) = self.begin(&g, &l, w, &ctx.closure);
         let J { mut scope, mut left, snaps, mut bodies, judged, unsettled, snapping, replaced } = self.judging(p, ctx, w, scope, full)?;
         let mut sends = Vec::new();
+        // a role commit this node must hold waits for its relay (`relay_at`): no source has it
+        // from here yet
+        let mut behind = false;
         if own {
-            sends = self.body_sends(p, &bodies, &snaps, &snapping, &mut left, &mut false)?;
+            sends = self.body_sends(p, &bodies, &snaps, &snapping, &mut left, &mut behind)?;
             let ours: BTreeSet<BlobId> = sends.iter().filter(|o| o.fresh).map(|o| o.id).collect();
             if !replaced {
                 let authors: BTreeSet<Tid> = w.unjudged.values().copied().collect();
@@ -464,7 +486,7 @@ impl SyncEngine {
         let settled = unsettled.is_empty();
         self.judge_touched(ctx, &g, &l, &scope, &judged, &mut bodies)?;
         for conn in self.sources(&l) {
-            self.at_source(conn, p, w, &sends, &bodies, &snaps, &scope, settled, &mut left, out)?;
+            self.at_source(conn, p, w, (&sends, behind), &bodies, &snaps, &scope, settled, &mut left, out)?;
         }
         if own {
             // what this node's store must not hold goes, whoever else holds the label
@@ -483,7 +505,7 @@ impl SyncEngine {
     /// it keeps waiting are cleared, and must-not-hold entries it holds deleted by a delete-key
     /// holder, once it holds the role commits this node must hold there.
     #[allow(clippy::too_many_arguments)]
-    fn at_source(&mut self, conn: ConnId, own: &Head, w: &Work, sends: &[Out], bodies: &[Body], snaps: &Snaps, scope: &Scope, settled: bool, left: &mut Left, out: &mut Vec<super::Action>) -> Result<()> {
+    fn at_source(&mut self, conn: ConnId, own: &Head, w: &Work, (sends, behind): (&[Out], bool), bodies: &[Body], snaps: &Snaps, scope: &Scope, settled: bool, left: &mut Left, out: &mut Vec<super::Action>) -> Result<()> {
         let (g, l) = (own.g, own.l);
         let Some(c) = self.conns.get(&conn) else { return Ok(()) };
         let host = c.host;
@@ -499,17 +521,20 @@ impl SyncEngine {
         // stranded only once nothing more here opens
         if keys.epochs[0].is_none() {
             if self.read_first(conn, host, &g, l, out)? {
+                leave_all(sends, left);
                 return Ok(());
             }
             return self.stranded(conn, g, l, out);
         }
+        // registering there: what this pass would act on there waits for the next one
         if self.reregister(conn, l, out)? {
+            leave_all(sends, left);
             return Ok(());
         }
         self.refetch(conn, host, l, w, out)?;
         let p = Head { g, l, host: Some(host), id: head.id(), stamps: head.keys.write, keys, read_ok };
         let lacks = |s: &Self, id: &BlobId| !s.state.is_present(&host, &l, id) && !s.state.is_gone_at(&host, &l, id);
-        let mut roles_behind = false;
+        let mut roles_behind = behind;
         let mut deposits = Vec::new();
         let on_head = p.id == own.id;
         for o in sends {
@@ -517,15 +542,8 @@ impl SyncEngine {
                 continue;
             }
             // judged again next pass until the source has it
-            match o.of {
-                Some(Touch::Commit(c)) => left.commits.insert(c),
-                Some(Touch::Blob(b)) => left.blobs.insert(b),
-                None => {
-                    left.again = true;
-                    false
-                }
-            };
-            roles_behind |= o.prio <= 1 && p.keys.is_writer();
+            leave(o, left);
+            roles_behind |= o.prio <= 1;
             let Some(e) = self.state.entries.get(&(l, o.id)).cloned() else { continue };
             let stamped = e.stamp.is_some_and(|s| osis_label::verify_stamp(&p.stamps, &l, &o.id, &e.wrap, &s).is_ok());
             match &own.keys.write {
