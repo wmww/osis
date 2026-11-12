@@ -558,3 +558,42 @@ fn a_hit_declined_after_its_answer_opens_again_spec_sync_10() {
         assert!(synced(&mut x), "taken back after {k} messages: {:?}", x.sync(a).label_status());
     }
 }
+
+// issues/net-shared-set.md, Reply and Divergence: a peer answering a static entry's Hit with a
+// grant that does not verify is told Lost, and the Hit is not sent again on that connection
+// until something else re-marks it: a forged grant buys no loop
+#[test]
+fn a_forged_grant_is_not_offered_again_spec_sync_10() {
+    let (mut net, _, a, _, (k, kl, _, seed)) = crate::net_judgment::linked();
+    let t = net.node(3, &[]);
+    let held = net.engine(t).hold_key_actor(seed.clone()).unwrap();
+    let acts = net.sync(t).follow(held, k, kl, vec![]);
+    net.actions(t, acts);
+    net.run();
+    let ch = [9; 32];
+    let mut p = dial_as(&mut net, a, t, ch);
+    let mut msgs = shared_of(&send(&mut net, t, &mut p, Message::NoRecord { id: 1 << 31 }));
+    let pair = *osis_crypto::kdf::pair_key(&ch, &p.hello).expose();
+    let entry = osis_crypto::static_entry(&kl, &osis_engine::Identity::from_seed(seed).keys().signing.verifying_key());
+    let bcn = beacon(&entry, &kl.0, &pair);
+    let f = filter_width(1);
+    msgs.extend(shared_of(&send(&mut net, t, &mut p, Message::Beacons { id: 40, generation: 1, base: None, f, lo: 0, hi: 1 << f, gcs: encode_gcs(&[beacon_value(&bcn, f)], 0), more: false })));
+    let tag = beacon_reply(&entry, &kl.0, &bcn, (false, &LISTENER, &ch, &p.hello));
+    let forged = osis_proto::msg::EntryGrant {
+        entry_box: osis_proto::msg::SecretBox::Symmetric(osis_schema::core_types::SymmetricBox { epoch: osis_schema::core_types::Epoch { n: 1, nonce: [8; 32] }, wrap: vec![1; 48], possession: None }),
+        path: vec![crate::hostile_host::foreign_step(3)],
+    };
+    let mut hits = 0;
+    let mut losts = 0;
+    for _ in 0..8 {
+        let Some(Message::Offer { id, items }) = msgs.iter().find(|m| matches!(m, Message::Offer { .. })).cloned() else { break };
+        msgs.retain(|m| m.id() != id);
+        hits += items.iter().filter(|i| matches!(i, OfferItem::Hit(..))).count();
+        let codes = items.iter().map(|_| (Code::OK, Some(tag), Some(Box::new(forged.clone())))).collect();
+        let back = shared_of(&send(&mut net, t, &mut p, Message::Shared { id, codes }));
+        losts += back.iter().filter(|m| matches!(m, Message::Lost { .. })).count();
+        msgs.extend(back);
+    }
+    assert_eq!((hits, losts), (1, 1), "{msgs:?}");
+    assert!(net.sync(t).shared_members(p.conn).is_empty());
+}

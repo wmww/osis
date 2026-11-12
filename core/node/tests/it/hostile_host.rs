@@ -38,7 +38,7 @@ fn sent(acts: &[Action], conn: ConnId) -> Vec<Message> {
 }
 
 /// A valid genesis step of some other label.
-fn foreign_step(b: u8) -> osis_label::Step {
+pub(crate) fn foreign_step(b: u8) -> osis_label::Step {
     let (read, write, admin, dep) = (Secret32::from_bytes([b; 32]), Secret32::from_bytes([b + 1; 32]), Secret32::from_bytes([b + 2; 32]), Secret32::from_bytes([b + 3; 32]));
     let keys = StepKeys::derive(&read, &write, &admin, 0, &dep, &genesis_label(&admin, 0));
     let delete = label_role_key(LabelRole::Delete, &admin, 0);

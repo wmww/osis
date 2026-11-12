@@ -1543,9 +1543,14 @@ impl SyncEngine {
                             if granted && now.iter().any(|x| x.value == c.value) {
                                 self.shared_open(conn, c.label, c.class, Some(c.beacon), out)?;
                             } else if !self.shared_member(conn, &c.label) {
-                                // this tester's credential is gone (issues/net-shared-set.md, Divergence):
-                                // closed and re-marked as any Lost sent, so it is offered again if it returns
+                                // this tester's credential is gone (issues/net-shared-set.md, Divergence), or
+                                // the peer's grant failed: closed and re-marked as any Lost sent, so a
+                                // credential that returns is offered again; a failed grant's Hit stays
+                                // answered, as a refused one, so a forged grant buys no loop
                                 self.shared_close(conn, &c.label, super::stream::Stop::Here)?;
+                                if !granted && let Some(s) = self.records.shared.get_mut(&conn) {
+                                    s.offered.insert(beacon_hit(&c.value, &c.label.0, &c.beacon, (s.by_listener, &s.key, &s.dialer, &s.listener)));
+                                }
                                 self.shared_lost_send(conn, c.label, out)?;
                             }
                         }
