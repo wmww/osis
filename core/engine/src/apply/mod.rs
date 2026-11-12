@@ -1200,6 +1200,38 @@ impl Engine {
         self.ingest_from(bytes, blobs, None)
     }
 
+    /// `ingest` of a commit taken only for what it proves here (a stranded report's holder keys,
+    /// spec/permissions.md §4): one that applies with a part it brings judged invalid or an edge
+    /// write not applied (`judged_valid`) keeps nothing, as if never received (`None`), and so
+    /// does one this build would park.
+    pub fn ingest_valid(&mut self, bytes: &[u8]) -> Result<Option<Ingested>> {
+        let blob = match CommitBlob::decode(bytes) {
+            Ok(b) if b.header.ephemeral.is_none() => b,
+            Ok(_) => return Err(Error::BadInput("an ephemeral commit on the durable path")),
+            Err(e) if e.class() == ErrorClass::Parked => return Ok(None),
+            Err(e) => return Err(e.into()),
+        };
+        let id = blob.id();
+        let ais: Vec<usize> = blob.parts.iter().map(|p| p.ai).collect();
+        let mut refused = false;
+        let r = self.run(|tx| {
+            let out = ingest_blob(tx, blob, Origin::Remote)?;
+            refused = matches!(out, Ingested::Parked(_)) || (matches!(out, Ingested::Applied(_)) && !crate::labeling::judged_valid(tx.core, &id, &ais));
+            if refused {
+                // rolled back
+                return Err(Error::Misuse("refused"));
+            }
+            Ok(out)
+        });
+        if refused {
+            return Ok(None);
+        }
+        if let Ok(Ingested::Applied(_)) = &r {
+            self.reexamine()?;
+        }
+        r.map(Some)
+    }
+
     /// Receives raw creation records (a record blob, an inbox payload's, spec/permissions.md §4):
     /// a record proves itself by its hash, so it needs no commit. Returns how many were new; what
     /// awaited them is judged again.

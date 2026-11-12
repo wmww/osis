@@ -6,6 +6,7 @@
 mod actors;
 mod blobs;
 mod certs;
+pub(crate) use certs::judged_valid;
 mod judge;
 mod proofs;
 pub mod converge;

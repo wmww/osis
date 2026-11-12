@@ -390,19 +390,7 @@ impl Engine {
     }
 
     pub fn judged_valid(&self, c: &CommitId, parts: &[usize]) -> bool {
-        let Some(m) = self.core.ix.commits.get(c) else { return false };
-        if self.core.ix.pending.contains_key(c) || parts.iter().any(|ai| !m.valid_at(*ai)) {
-            return false;
-        }
-        if !m.header.kind.is_role() {
-            return true;
-        }
-        let targets: BTreeSet<Tid> = m.header.aspects.iter().filter(|a| crate::apply::validity::edge_ak(a.ak.as_str())).map(|a| a.tid).collect();
-        targets.iter().all(|t| {
-            let Some(tl) = self.core.timelines.get(t) else { return true };
-            let Some(mc) = tl.role_commit(c) else { return true };
-            mc.ops.iter().enumerate().filter(|(_, op)| op.target == *t).all(|(i, _)| u32::try_from(i).is_ok_and(|i| tl.is_applied(&osis_perm::WriteId(*c, i))))
-        })
+        judged_valid(&self.core, c, parts)
     }
 
     /// Revokes about `authors` (of entries seen under a label), with what a verifier needs to judge
@@ -540,6 +528,24 @@ impl Engine {
         out.extend(found);
         Ok(out)
     }
+}
+
+/// `Engine::judged_valid`: parts `parts` of `c` are valid here and, for a role commit, every edge
+/// write it makes is applied.
+pub(crate) fn judged_valid(core: &crate::engine::Core, c: &CommitId, parts: &[usize]) -> bool {
+    let Some(m) = core.ix.commits.get(c) else { return false };
+    if core.ix.pending.contains_key(c) || parts.iter().any(|ai| !m.valid_at(*ai)) {
+        return false;
+    }
+    if !m.header.kind.is_role() {
+        return true;
+    }
+    let targets: BTreeSet<Tid> = m.header.aspects.iter().filter(|a| crate::apply::validity::edge_ak(a.ak.as_str())).map(|a| a.tid).collect();
+    targets.iter().all(|t| {
+        let Some(tl) = core.timelines.get(t) else { return true };
+        let Some(mc) = tl.role_commit(c) else { return true };
+        mc.ops.iter().enumerate().filter(|(_, op)| op.target == *t).all(|(i, _)| u32::try_from(i).is_ok_and(|i| tl.is_applied(&osis_perm::WriteId(*c, i))))
+    })
 }
 
 #[cfg(test)]

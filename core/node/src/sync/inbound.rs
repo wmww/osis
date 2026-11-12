@@ -1399,8 +1399,9 @@ impl SyncEngine {
             todo.sort_by_key(|c| (!c.header.kind.is_role(), c.header.ts));
             for c in todo {
                 taken.insert(c.id());
-                match self.engine.ingest(&c.encode(), Vec::new()) {
-                    Ok(Ingested::Applied(_)) => progressed = true,
+                // a part judged invalid here proves nothing: refused, kept for the next round
+                match self.engine.ingest_valid(&c.encode()) {
+                    Ok(Some(Ingested::Applied(_))) => progressed = true,
                     Ok(_) => {}
                     Err(e) => {
                         self.ingest_failed(&c, e)?;

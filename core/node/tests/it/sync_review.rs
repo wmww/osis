@@ -1346,6 +1346,43 @@ fn stranded_reports_keep_nothing_beyond_the_holders_chain_spec_permissions_4() {
     assert!(net.engine(a).pending().is_empty(), "nothing pends");
 }
 
+// spec/requirements.md (peer input never causes unbounded storage), spec/permissions.md §4: a
+// report keeps only edge writes that hold here. e, offline, keeps granting on team T after d
+// removed it; `a` holds the removal. Reports naming T (a current holder of g, on its own chain)
+// carry e's later grants: `a` keeps none of them, however many come.
+#[test]
+fn stranded_reports_keep_no_removed_admins_writes_spec_permissions_4() {
+    let (mut net, a, c, g, l, conn) = stranded_pair();
+    let (d, e, t) = unreached_team(&mut net, a, c, g);
+    let (dt, et, en) = (net.tid(d), net.tid(e), net.node_tid(e));
+    net.set_online(e, false);
+    let removal = osis_node::flows::Demotion { holder: et, new: None, retain: None };
+    let done = net.engine(d).demote(&t, &removal).unwrap();
+    let acts = net.sync(d).carry_out(done).unwrap();
+    net.actions(d, acts);
+    net.run();
+    let (history, _) = role_history(&mut net, d, t);
+    let records: Vec<osis_base::CreationRecord> = [dt, et].iter().map(|x| net.engine(d).core.created(x).unwrap().clone()).collect();
+    net.engine(a).learn_records(records).unwrap();
+    for v in history {
+        net.engine(a).ingest(&osis_base::encode(&v), Vec::new()).unwrap();
+    }
+    assert!(net.engine(a).core.current_holders(&t).iter().all(|h| h.0 != et), "a holds e's removal");
+    let mut sent = Vec::new();
+    for i in 0..3u32 {
+        net.advance(1_000);
+        let id = net.grant(e, t, en, [Role::Read, Role::Write, Role::Admin][i as usize]);
+        let v = osis_base::decode(&net.engine(e).run(|tx| tx.get_commit(&id)).unwrap().unwrap().encode(), &osis_base::Limits { max_depth: osis_base::format::MAX_OBJECT_DEPTH, max_bytes: osis_base::format::MAX_BLOB }).unwrap();
+        let keys = osis_label::HolderKeys { commits: vec![v], records: Vec::new() };
+        net.inject(c, conn, &osis_proto::Message::Stranded { id: osis_proto::msg::NODE_IDS | (0x7600 + i), label: l, holder: t, keys });
+        net.run();
+        sent.push(id);
+    }
+    for id in sent {
+        assert!(net.engine(a).header(&id).is_none(), "e's grant {id:?} not kept");
+    }
+}
+
 // spec/permissions.md §4 (Stranded: to a connected peer that proved an account holding write or
 // above, else an inbox notice): a rotation leaves reader `c` out while it is away; back, stranded
 // at the host, it tells the admin it is connected to over the connection, once per step reached,
