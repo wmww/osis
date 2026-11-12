@@ -9,7 +9,6 @@ use crate::hello::{Hello, OFFSET_DIAGNOSTIC_MS, OffsetSample, PROTOCOL_VERSION, 
 use crate::msg::*;
 use osis_base::format::MAX_MESSAGE;
 use osis_base::{BlobId, LabelId};
-use osis_crypto::SigningSecret;
 use std::collections::{BTreeMap, VecDeque};
 
 /// Pings sent when the session starts (clock offset samples, spec/sync.md §6).
@@ -62,8 +61,8 @@ pub fn allowance(msg: &Message) -> usize {
         M::Prove { .. } => MAX_MESSAGE,
         M::Fetch { max_reply, .. } | M::Call { max_reply, .. } | M::Sub { max_reply, .. } => usize::try_from(*max_reply).unwrap_or(usize::MAX),
         M::Pull(p) => usize::try_from(p.max_reply).unwrap_or(usize::MAX),
-        M::Ping { .. } | M::Path { .. } | M::Open { .. } | M::Register { .. } | M::Delete { .. } | M::Auth { .. } | M::Unsub { .. } | M::Resume { .. } | M::Beacons { .. } | M::Offer { .. } | M::Lost { .. } | M::NoRecord { .. } | M::Stranded { .. } | M::Suspect { .. } => SMALL_REPLY,
-        M::Error { .. } | M::Ok { .. } | M::Pong { .. } | M::Opened { .. } | M::Step { .. } | M::PathReply { .. } | M::Status { .. } | M::FetchReply { .. } | M::Reply { .. } | M::Notify { .. } | M::Proved { .. } | M::Resumed { .. } | M::Shared { .. } | M::PullReply(_) | M::Stream(_) | M::Applied { .. } | M::Digest { .. } | M::Members { .. } => 0,
+        M::Ping { .. } | M::Register { .. } | M::Delete { .. } | M::Auth { .. } | M::Unsub { .. } | M::Resume { .. } | M::Beacons { .. } | M::Offer { .. } | M::Lost { .. } | M::NoRecord { .. } | M::Stranded { .. } | M::Suspect { .. } => SMALL_REPLY,
+        M::Error { .. } | M::Ok { .. } | M::Pong { .. } | M::Status { .. } | M::FetchReply { .. } | M::Reply { .. } | M::Notify { .. } | M::Proved { .. } | M::Resumed { .. } | M::Shared { .. } | M::PullReply(_) | M::Stream(_) | M::Applied { .. } | M::Digest { .. } | M::Members { .. } => 0,
     }
 }
 /// A requester's window (spec/sync.md §6): requests go in the order made while the bytes in
@@ -245,21 +244,10 @@ pub struct ClientConfig {
     pub challenge: [u8; 32],
 }
 
-/// The key an Open is signed with (spec/sync.md §5).
-#[derive(Clone)]
-pub enum OpenKey {
-    /// A sync key, at the step it is for when known (spec/sync.md §5).
-    Sync { step: Option<StepId>, key: SigningSecret },
-    Claim { step: StepId, key: SigningSecret },
-    /// A key actor's signing key (its static entry).
-    Static(SigningSecret),
-}
-
 /// What the node asks of the session.
 #[derive(Clone)]
 #[allow(clippy::large_enum_variant)] // steps carry parsed keys; boxing buys nothing here
 pub enum Command {
-    Open { label: LabelId, key: OpenKey },
     /// This node's connection proofs (spec/sync.md §10): the peer's come back as `Proved`.
     Prove(Vec<crate::Prover>),
     /// This node's records for the peer (spec/sync.md §10, Pair key): answered by `Resumed`.
@@ -269,11 +257,7 @@ pub enum Command {
     /// own): the node answers these itself.
     Peer(Box<Message>),
     Register { label: LabelId, step: Step, claim_set: Option<ClaimSet> },
-    /// The registration path after `after` (from the genesis step when none), all pages.
-    Path { label: LabelId, after: Option<StepId> },
     Delete { label: LabelId, items: Vec<DeleteItem> },
-    /// Stop following a label's Path pages (the node no longer wants them).
-    StopPath { label: LabelId },
     /// Client port (notes/client-port.md §2): `token` is the caller's, echoed in the events.
     /// Auth with the client's session id: a main session's without a secret, a thin client's
     /// with its bearer secret.
@@ -306,12 +290,7 @@ pub enum ClientEvent {
     Ready { version: u64 },
     /// Peer clock minus ours; `diagnostic` above `OFFSET_DIAGNOSTIC_MS`.
     ClockOffset { offset_ms: i64, diagnostic: bool },
-    Opened { label: LabelId, head: Step, entry_box: Option<SecretBox> },
-    /// An Open matched a superseded step: its child on the path. Verify it under that step's
-    /// delete key before use (`Step::verify_child`).
-    Step { label: LabelId, step: Step },
     Registered { label: LabelId },
-    PathSteps { label: LabelId, steps: Vec<Step>, more: bool },
     DeleteStatus { label: LabelId, blob_ids: Vec<BlobId>, codes: Vec<Code> },
     /// A request was answered by Error, or could not be sent (code 2: a delete item whose time
     /// cannot be encoded). `fetch`: a Fetch's blob IDs left unanswered (empty for other kinds).
@@ -353,9 +332,7 @@ impl From<Vec<u8>> for ClientOutput {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Request {
     Ping,
-    Open,
     Register,
-    Path,
     Delete,
     /// A client-port request.
     Api,
@@ -368,11 +345,7 @@ enum Pending {
     Prove,
     Resume,
     Ping { sent: u64 },
-    Open(LabelId),
     Register(LabelId),
-    Path(LabelId),
-    /// A Path exchange the node stopped: its reply is dropped.
-    PathStopped(LabelId),
     Delete(LabelId, Vec<BlobId>),
     /// An Auth, Call or Sub with its token.
     Api(u64),
@@ -383,7 +356,7 @@ enum Pending {
 impl Pending {
     fn label(&self) -> Option<LabelId> {
         match self {
-            Pending::Open(l) | Pending::Register(l) | Pending::Path(l) | Pending::PathStopped(l) | Pending::Delete(l, _) => Some(*l),
+            Pending::Register(l) | Pending::Delete(l, _) => Some(*l),
             Pending::Prove | Pending::Resume | Pending::Ping { .. } | Pending::Api(_) | Pending::ApiUnsub(_) => None,
         }
     }
@@ -391,11 +364,9 @@ impl Pending {
     fn kind(&self) -> Request {
         match self {
             Pending::Ping { .. } => Request::Ping,
-            Pending::Open(_) => Request::Open,
             Pending::Prove => Request::Prove,
             Pending::Resume => Request::Resume,
             Pending::Register(_) => Request::Register,
-            Pending::Path(_) | Pending::PathStopped(_) => Request::Path,
             Pending::Delete(..) => Request::Delete,
             Pending::Api(_) | Pending::ApiUnsub(_) => Request::Api,
         }
@@ -658,16 +629,6 @@ impl ClientSession {
 
     fn command(&mut self, c: Command, out: &mut Vec<ClientOutput>) {
         match c {
-            Command::Open { label, key } => {
-                let Some(peer) = &self.peer else { return };
-                let (ch, sk) = (peer.challenge, self.cfg.peer_static_key);
-                let proof = match &key {
-                    OpenKey::Sync { step, key } => Proof::sync(*step, key, &label, &ch, &sk),
-                    OpenKey::Claim { step, key } => Proof::claim(*step, key, &label, &ch, &sk),
-                    OpenKey::Static(k) => Proof::static_entry(k, &label, &ch, &sk),
-                };
-                self.request(|id| Message::Open { id, label, proof }, Pending::Open(label));
-            }
             Command::Prove(provers) => {
                 let Some(peer) = &self.peer else { return };
                 // the listener's Hello challenge and its key, the key this side chose to dial
@@ -686,7 +647,6 @@ impl ClientSession {
             Command::Peer(m) if m.is_request() => self.window.queue(*m),
             Command::Peer(m) => send(out, *m),
             Command::Register { label, step, claim_set } => self.request(|id| Message::Register { id, label, step, claim_set }, Pending::Register(label)),
-            Command::Path { label, after } => self.request(|id| Message::Path { id, label, after }, Pending::Path(label)),
             Command::Delete { label, items } => {
                 let (items, bad): (Vec<DeleteItem>, Vec<DeleteItem>) = items.into_iter().partition(|i| i.to_value().is_ok());
                 if !bad.is_empty() {
@@ -695,13 +655,6 @@ impl ClientSession {
                 for chunk in items.chunks(MAX_ITEMS) {
                     let ids = chunk.iter().map(|i| i.blob).collect();
                     self.request(|id| Message::Delete { id, label, items: chunk.to_vec() }, Pending::Delete(label, ids));
-                }
-            }
-            Command::StopPath { label } => {
-                for r in self.pending.values_mut() {
-                    if matches!(r.p, Pending::Path(l) if l == label) {
-                        r.p = Pending::PathStopped(label);
-                    }
                 }
             }
             Command::Auth { token, session, secret } => {
@@ -842,19 +795,7 @@ impl ClientSession {
             }
             (Pending::Resume, M::Resumed { nonce, tag, .. }) => event(out, E::Resumed { nonce, tag }),
             (p, M::Error { code, .. }) => event(out, E::Refused { label: p.label(), kind: p.kind(), code, fetch: Vec::new() }),
-            (Pending::Open(label), M::Opened { head, entry_box, .. }) => event(out, E::Opened { label, head, entry_box }),
-            (Pending::Open(label), M::Step { step, .. }) => event(out, E::Step { label, step }),
             (Pending::Register(label), M::Ok { .. }) => event(out, E::Registered { label }),
-            (Pending::PathStopped(_), M::PathReply { .. }) => {}
-            (Pending::Path(label), M::PathReply { steps, more, .. }) => {
-                let last = steps.last().map(Step::id);
-                event(out, E::PathSteps { label, steps, more });
-                match (more, last) {
-                    (true, Some(after)) => self.request(|id| Message::Path { id, label, after: Some(after) }, Pending::Path(label)),
-                    (true, None) => event(out, E::PeerError(Error::Malformed("path page without steps"))),
-                    _ => {}
-                }
-            }
             (Pending::Delete(label, blob_ids), M::Status { codes, .. }) if codes.len() == blob_ids.len() => event(out, E::DeleteStatus { label, blob_ids, codes }),
             (_, _) => event(out, E::PeerError(Error::Malformed("reply of the wrong kind"))),
         }

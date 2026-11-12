@@ -903,8 +903,8 @@ fn hint_at_a_silent_host_does_not_hold_off_the_group_spec_sync_3() {
 }
 
 // spec/sync.md §3, §5: nor by naming it at a host of its own that holds the label's real path
-// (a past reader's), answers the hinted open with a step and takes the claim, on a connection
-// older than the real host's: the label is open under the hinted thing there, and what the real
+// (a past reader's) and none of its entries, on a connection older than the real host's: the
+// label is open under the hinted thing there, and what the real
 // host sends still reads under the group that opened it there, with no message loop; once the
 // group's `label.0` is held, the label leaves that connection.
 #[test]
@@ -948,20 +948,19 @@ fn hint_at_a_claiming_host_does_not_hold_off_the_group_spec_sync_3() {
     assert_eq!(net.sync(b).conn_groups(&gl.id), vec![g]);
 }
 
-/// Host `evil` holds `l`'s path at `host` with its claim sets (a past reader's) and answers
-/// every open of `l` by sync key with the head, so a hinted open walks there and claims.
+/// Host `evil` holds `l`'s path at `host` with its claim sets (a past reader's) and none of its
+/// entries, so a hinted label opens there by its sync key.
 fn claiming_host(net: &mut Net, evil: usize, host: usize, l: &LabelId) {
     let path = net.host_path(host, l);
     for st in &path {
         let set = osis_proto::LabelStore::claim_set(&*net.hosts[host].hub.store(), l, &st.id()).unwrap().map(|x| (*x).clone());
         osis_proto::LabelStore::push_step(&mut *net.hosts[evil].hub.store(), l, st.clone(), set).unwrap();
     }
-    net.walk_to.insert(evil, (*l, path.last().unwrap().clone()));
 }
 
 /// One seed of `hint_turns`: blobs naming `g`'s label under other things (some at a wrong index),
-/// at any of the real host, hosts that never answer, hosts that hold its real path, walk a hinted
-/// open to its head and take the claim, and hosts without the label, in any order with the
+/// at any of the real host, hosts that never answer, hosts that hold its real path and none of
+/// its entries, and hosts without the label, in any order with the
 /// group's own grant, while time passes and the real host's replies lag.
 fn hint_turns_seed(seed: u64) {
     let mut x = seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1;

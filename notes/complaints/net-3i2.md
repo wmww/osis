@@ -1,0 +1,7 @@
+# net-3i2
+> Summary: test net's `drop_link` drops the node's actions (a lost redial leaves a dial that never comes up); hint labels at peers that cannot read had no test before Open went; link redemption leaned on Open's speed.
+
+- Test net `drop_link` (and so `set_online(false)`, `cut`-style helpers) handles the node's `Down` but throws its actions away: a redial it made is lost and the node keeps a connection that never comes up, so a node brought back online never dials that host again. Cost about an hour on `unread::a_peer_on_an_older_head_is_moved_by_any_reader_spec_sync_5` (tracing it with `OSIS_SYNC_TRACE`). Running the actions broke `leaving::` tests, so the harness is unchanged and the test avoids dropped links (`blocked` from the start).
+- osis link redemption passed only because Open by static entry ran right after Hello, before the sharer's next step (which no longer lists the link key) reached the host; the filter path takes several round trips and loses that race.
+- A label known by a hint (an inbox grant) at a peer that cannot read it was opened by Open in every test; nothing exercised the filter path for it, so its failure (the hint key not the head's epoch, the open ending on a head move) showed only as six unrelated-looking `inbox_life` failures.
+- The serving session's flow-control tests used Path pages as their big reply; with Path gone only Pings and Status are left, so `pipelined_replies_bounded` needs about 3 M Pings (fast, but the bound it checks is now hard to reach by any honest request).

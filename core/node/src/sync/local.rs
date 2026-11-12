@@ -706,7 +706,7 @@ impl SyncEngine {
         let labels = self.labels();
         labels.iter().filter(|(g, l)| things.contains(g) && !l.replaced).any(|(_, l)| {
             let phases = || self.conns.values().filter(|c| c.session.is_ready() && l.hosts.iter().any(|a| a.key == c.host)).map(|c| c.labels.get(&l.id).map(|x| &x.phase));
-            phases().any(|p| p.is_none_or(|x| matches!(x, Phase::Testing | Phase::Opening | Phase::Registering))) && !phases().any(|p| matches!(p, Some(Phase::Open | Phase::Verifying)))
+            phases().any(|p| p.is_none_or(|x| matches!(x, Phase::Testing | Phase::Registering | Phase::Behind))) && !phases().any(|p| matches!(p, Some(Phase::Open)))
         })
     }
 

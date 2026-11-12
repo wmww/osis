@@ -6,7 +6,7 @@ use osis_base::{ManualClock, WallMs};
 use osis_crypto::SeededRng;
 use osis_proto::MemoryLabelStore;
 use osis_proto::examples::Fixture;
-use osis_store::{Backend, BackendError, MemoryBackend, MemoryRoot, StoreConfig, WriteBatch};
+use osis_store::{Backend, MemoryBackend, MemoryRoot, StoreConfig};
 use proptest::prelude::*;
 
 const T0: u64 = 1_700_000_000_000;
@@ -197,7 +197,7 @@ fn ephemeral_deposits_share_the_budget() {
 fn storage_cap() {
     // the genesis step and its claim set count too
     let f = Fixture::new(0x10);
-    let genesis = f.genesis.to_bytes().len() as u64 + claim_set_bytes(&f.label, &f.genesis.id(), &f.genesis_claims);
+    let genesis = f.genesis.to_bytes().len() as u64 + claim_set_bytes(&f.genesis_claims);
     let mut e = env(HostPolicy { cap_entries: 2, cap_bytes: genesis + 1000, ..HostPolicy::default() });
     let l = e.f.label;
     assert_eq!(e.store.put(&l, put(&blob(1), true, None)).unwrap(), Code::OK);
@@ -633,8 +633,8 @@ fn steps_count_toward_byte_caps() {
     let set = e.f.child_claims.clone();
     let step = e.f.child.to_bytes().len() as u64;
     // a set counts the same at every step of a label (its index keys are as long)
-    let one = step + claim_set_bytes(&e.f.label, &e.f.child.id(), &set);
-    let genesis = e.f.genesis.to_bytes().len() as u64 + claim_set_bytes(&e.f.label, &e.f.genesis.id(), &e.f.genesis_claims);
+    let one = step + claim_set_bytes(&set);
+    let genesis = e.f.genesis.to_bytes().len() as u64 + claim_set_bytes(&e.f.genesis_claims);
     assert_eq!(e.store.totals().unwrap().bytes, genesis);
     // room for two children with sets and one more step
     let room = genesis + 2 * one + step;
@@ -721,91 +721,11 @@ fn registers_rate_limited() {
     assert_eq!(e.store.head(&l).unwrap(), Some(t.id()));
 }
 
-/// Counts the bytes reads return.
-#[derive(Clone)]
-struct Reads {
-    inner: MemoryBackend,
-    read: Arc<std::sync::atomic::AtomicUsize>,
-}
-
-impl Backend for Reads {
-    fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, BackendError> {
-        let v = self.inner.get(key)?;
-        self.read.fetch_add(v.as_ref().map_or(0, Vec::len), std::sync::atomic::Ordering::Relaxed);
-        Ok(v)
-    }
-    fn scan(&self, start: &[u8], end: Option<&[u8]>, limit: usize) -> Result<Vec<KeyValue>, BackendError> {
-        let v = self.inner.scan(start, end, limit)?;
-        self.read.fetch_add(v.iter().map(|(k, v)| k.len() + v.len()).sum(), std::sync::atomic::Ordering::Relaxed);
-        Ok(v)
-    }
-    fn commit(&mut self, batch: WriteBatch) -> Result<(), BackendError> {
-        self.inner.commit(batch)
-    }
-    fn get_blob(&self, id: &BlobId) -> Result<Option<Vec<u8>>, BackendError> {
-        self.inner.get_blob(id)
-    }
-    fn read_blob(&self, id: &BlobId, offset: u64, len: usize) -> Result<Option<Vec<u8>>, BackendError> {
-        self.inner.read_blob(id, offset, len)
-    }
-    fn blob_len(&self, id: &BlobId) -> Result<Option<u64>, BackendError> {
-        self.inner.blob_len(id)
-    }
-}
-
-// spec/sync.md §5 (Open by claim or static entry), spec/requirements.md (peer input never causes
-// unbounded work): an Open looks its key up in the claim index, reading one path of store pages
-// however large the set (here MAX_CLAIMS keys, 2 MiB); the index goes with the set when the
-// sweep drops it, in budgeted steps, and its bytes leave the totals
-#[test]
-fn claim_lookup_reads_no_set() {
-    let clock = Arc::new(ManualClock::new(WallMs(T0)));
-    let (reads, root) = (Reads { inner: MemoryBackend::new(), read: Arc::default() }, MemoryRoot::new());
-    let mut store = open(reads.clone(), &root, clock.clone(), HostPolicy::default(), 0);
-    let f = Fixture::new(0x10);
-    let l = f.label;
-    let g = f.genesis.id();
-    let mut set = f.genesis_claims.clone();
-    let mut n = 0u64;
-    while set.claims.len() < osis_base::format::MAX_CLAIMS {
-        n += 1;
-        set.claims.push(osis_base::hash::hash(&n.to_be_bytes()));
-    }
-    assert_eq!(store.push_step(&l, f.genesis.clone(), Some(set.clone())).unwrap(), Code::OK);
-    let (holder, stat) = (set.claims[0], *set.entries.keys().next().unwrap());
-    let lookups = [(holder, Some(set.entries.get(&holder).cloned())), (stat, Some(set.entries.get(&stat).cloned())), ([0xee; 32], None)];
-    for (k, want) in &lookups {
-        // cold caches: a lookup reads one path of table pages and key-tree nodes (about 9 KB
-        // here), never the set's 2 MiB unit
-        drop(store);
-        store = open(reads.clone(), &root, clock.clone(), HostPolicy::default(), 0);
-        reads.read.store(0, std::sync::atomic::Ordering::Relaxed);
-        assert_eq!(store.claim(&l, &g, k).unwrap(), *want);
-        assert!(reads.read.load(std::sync::atomic::Ordering::Relaxed) < 32 << 10, "{} bytes read", reads.read.load(std::sync::atomic::Ordering::Relaxed));
-    }
-    // superseded and swept: the index rows go over several budgeted sweeps, then the set
-    let step = f.genesis.to_bytes().len() as u64;
-    assert_eq!(store.totals().unwrap().bytes, step + claim_set_bytes(&l, &g, &set));
-    let child = { let mut s = f.genesis.clone(); s.prev = Some(g); s };
-    store.push_step(&l, child.clone(), None).unwrap();
-    let mut sweeps = 0;
-    loop {
-        sweeps += 1;
-        if !store.sweep(T0 + ROLE_KEEP_MS, SWEEP_TEST_BUDGET).unwrap().more {
-            break;
-        }
-    }
-    assert!(sweeps > osis_base::format::MAX_CLAIMS / SWEEP_TEST_BUDGET, "{sweeps} sweeps");
-    assert_eq!(store.claim(&l, &g, &holder).unwrap(), None);
-    assert!(store.claim_set(&l, &g).unwrap().is_none());
-    assert_eq!(store.totals().unwrap().bytes, step + child.to_bytes().len() as u64);
-}
-
 const SWEEP_TEST_BUDGET: usize = 1024;
 
-// spec/wire.md §8 (a set may list a key more than once): a repeated key is one index row and
-// counts once, so the totals return to the steps alone when the set is dropped (counted per
-// listing, a hostile set left up to 6 MiB of phantom bytes in the node total per step)
+// spec/wire.md §8 (a set may list a key more than once), spec/sync.md §5 (Storage caps): a set
+// listing a key many times counts its bytes once, and the totals return to the steps alone when
+// the sweep drops it
 #[test]
 fn repeated_claims_count_once() {
     let mut e = env(HostPolicy::default());
@@ -818,13 +738,12 @@ fn repeated_claims_count_once() {
     }
     let before = e.store.totals().unwrap().bytes;
     assert_eq!(e.store.push_step(&l, child.clone(), Some(set.clone())).unwrap(), Code::OK);
-    assert_eq!(e.store.totals().unwrap().bytes, before + child.to_bytes().len() as u64 + claim_set_bytes(&l, &child.id(), &set));
+    assert_eq!(e.store.totals().unwrap().bytes, before + child.to_bytes().len() as u64 + claim_set_bytes(&set));
     let mut grand = child.clone();
     grand.prev = Some(child.id());
     assert_eq!(e.store.push_step(&l, grand.clone(), None).unwrap(), Code::OK);
     while e.store.sweep(T0 + 2 * ROLE_KEEP_MS, SWEEP_TEST_BUDGET).unwrap().more {}
     assert!(e.store.claim_set(&l, &child.id()).unwrap().is_none());
-    assert_eq!(e.store.claim(&l, &child.id(), &k).unwrap(), None);
     let steps = (child.to_bytes().len() + grand.to_bytes().len()) as u64;
     // the genesis set is dropped too (superseded by `child`)
     let g = e.f.genesis.to_bytes().len() as u64;

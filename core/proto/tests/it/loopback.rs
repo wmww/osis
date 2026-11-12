@@ -124,9 +124,10 @@ impl Net {
         assert_eq!(self.store.put(&l.id, put).unwrap(), Code::OK);
     }
 
+    /// Node sync's open of `l` on connection `i` (a sync-key or static-entry Hit there).
     fn open(&mut self, i: usize, l: &Label) {
-        let ev = self.run(i, Command::Open { label: l.id, key: OpenKey::Sync { step: None, key: l.head_keys().sync.clone() } });
-        assert!(matches!(&ev[..], [ClientEvent::Opened { .. }]), "{ev:?}");
+        let so = self.hosts[i].handle(self.now + self.host_skew, &mut self.store, ServingInput::Open(l.id));
+        self.host_out(i, so);
     }
 }
 
@@ -156,64 +157,22 @@ fn handshake_and_clock_offset() {
     assert!(out.iter().any(|o| matches!(o, ClientOutput::SetTimer(t) if *t > T0)));
 }
 
-// spec/sync.md §5: a superseded sync key gets the child step and nothing else; the child verifies under its parent's delete key
-// spec/sync.md §5 (stale sync key), §5 (register)
+// spec/sync.md §5 (Register): a step that is no child of the head is refused with code 9 alone,
+// never the head; the head itself is answered Ok
 #[test]
-fn stale_sync_key_gets_one_signed_step() {
+fn a_step_off_the_head_is_refused_9_alone_spec_sync_5() {
     let mut net = Net::new(1, 0);
     let mut l = Label::new(3);
     net.setup(&l);
-    let old = l.head_keys().clone();
     let (child, cs) = l.rotate(20);
     let ev = net.run(0, Command::Register { label: l.id, step: child.clone(), claim_set: Some(cs) });
     assert_eq!(ev, vec![ClientEvent::Registered { label: l.id }]);
-    let ev = net.run(0, Command::Open { label: l.id, key: OpenKey::Sync { step: None, key: old.sync.clone() } });
-    let [ClientEvent::Step { step, .. }] = &ev[..] else { panic!("{ev:?}") };
-    assert_eq!(step, &child);
-    step.verify_child(&l.steps[0]).unwrap();
-    // not opened: reads refused
-    let ev = net.run(0, Command::Path { label: l.id, after: None });
-    assert!(matches!(&ev[..], [ClientEvent::Refused { kind: osis_proto::Request::Path, code: Code::NOT_OPENED, .. }]), "{ev:?}");
-    let ev = net.run(0, Command::Open { label: l.id, key: OpenKey::Sync { step: None, key: SigningSecret::from_seed(&s32(99)) } });
-    assert!(matches!(&ev[..], [ClientEvent::Refused { code: Code::REFUSED, .. }]));
-    // a step on another branch is refused with code 9 alone, never the head (spec/sync.md §5)
+    let ev = net.run(0, Command::Register { label: l.id, step: child, claim_set: None });
+    assert_eq!(ev, vec![ClientEvent::Registered { label: l.id }]);
     let mut fork = Label::new(3);
     let (other, _) = fork.rotate(40);
     let ev = net.run(0, Command::Register { label: l.id, step: other, claim_set: None });
     assert!(matches!(&ev[..], [ClientEvent::Refused { kind: osis_proto::Request::Register, code: Code::NOT_HEAD, .. }]), "{ev:?}");
-    net.open(0, &l);
-    let ev = net.run(0, Command::Path { label: l.id, after: None });
-    assert_eq!(ev, vec![ClientEvent::PathSteps { label: l.id, steps: l.steps.clone(), more: false }]);
-    let ev = net.run(0, Command::Path { label: l.id, after: Some(l.steps[0].id()) });
-    assert_eq!(ev, vec![ClientEvent::PathSteps { label: l.id, steps: vec![child], more: false }]);
-}
-
-// spec/sync.md §5: claim keys open at the head or get the child; static entries open with the entry box; a dropped set serves no claims
-// spec/sync.md §5 (claim refusals), §5 (dropped claim set)
-#[test]
-fn claim_and_static_opens() {
-    let mut net = Net::new(1, 0);
-    let mut l = Label::new(3);
-    net.setup(&l);
-    let claim = |l: &Label, i: usize| Command::Open { label: l.id, key: OpenKey::Claim { step: l.steps[i].id(), key: l.steps[i].claim_key(&l.reader).unwrap() } };
-    let ev = net.run(0, claim(&l, 0));
-    assert!(matches!(&ev[..], [ClientEvent::Opened { entry_box: None, .. }]), "{ev:?}");
-    let ev = net.run(0, Command::Open { label: l.id, key: OpenKey::Static(l.key_actor.clone()) });
-    let want_box = l.sets[0].entry_box(&l.id, &l.key_actor.verifying_key()).cloned();
-    assert!(want_box.is_some());
-    assert!(matches!(&ev[..], [ClientEvent::Opened { entry_box, .. }] if *entry_box == want_box), "{ev:?}");
-    let ev = net.run(0, Command::Open { label: l.id, key: OpenKey::Claim { step: l.steps[0].id(), key: SigningSecret::from_seed(&s32(0x77)) } });
-    assert!(matches!(&ev[..], [ClientEvent::Refused { code: Code::REFUSED, .. }]));
-    let (child, _) = l.rotate(20);
-    net.run(0, Command::Register { label: l.id, step: child.clone(), claim_set: None });
-    let ev = net.run(0, claim(&l, 0));
-    assert!(matches!(&ev[..], [ClientEvent::Step { step, .. }] if *step == child), "{ev:?}");
-    // the head was registered without its set; then the genesis set is dropped
-    let ev = net.run(0, claim(&l, 1));
-    assert!(matches!(&ev[..], [ClientEvent::Refused { code: Code::REFUSED, .. }]));
-    net.store.drop_claim_set(&l.id, &l.steps[0].id());
-    let ev = net.run(0, claim(&l, 0));
-    assert!(matches!(&ev[..], [ClientEvent::Refused { code: Code::REFUSED, .. }]));
 }
 
 // spec/sync.md §5, spec/crypto.md §7: deletes by key and by a level's delete key (level 3 write key, levels 1-2 sync key)
@@ -246,42 +205,52 @@ fn deletes() {
     }
 }
 
-// spec/sync.md §5 (an open holds under the head's sync key): a head with another sync key
-// ends the label's opens on every connection, the registrar's included: every read refused 8
-// until opened again under the new key. A step keeping the sync key keeps them.
+// spec/sync.md §5 (Delete, an open holds under the head's sync key): a Delete is taken only
+// where node sync opened the label by a sync-key or static-entry Hit; a head with another sync
+// key ends that open on every connection, the registrar's included, until node sync opens it
+// again. A step keeping the sync key keeps them; Register needs no open.
+// spec/sync.md §5 (delete opened)
 #[test]
-fn new_sync_key_ends_opens_spec_sync_5() {
+fn deletes_need_an_open_under_the_heads_sync_key_spec_sync_5() {
     let mut net = Net::new(2, 0);
     let mut l = Label::new(3);
     net.setup(&l);
-    let id = l.id;
-    let path = |net: &mut Net, i: usize| net.run(i, Command::Path { label: id, after: None });
+    let mut n = 0;
+    let mut delete = |net: &mut Net, i: usize, l: &Label| {
+        n += 1;
+        let b = blob(100 + n);
+        net.hold(l, &b);
+        let item = DeleteItem::sign(&l.head_keys().delete, &l.id, osis_label::blob_id(&b)).unwrap();
+        net.run(i, Command::Delete { label: l.id, items: vec![item] })
+    };
+    let refused = |ev: &[ClientEvent]| matches!(ev, [ClientEvent::Refused { kind: Request::Delete, code: Code::NOT_OPENED, .. }]);
+    let ev = delete(&mut net, 0, &l);
+    assert!(refused(&ev), "not opened: {ev:?}");
     for i in 0..2 {
         net.open(i, &l);
     }
     // a step without a read rotation: the opens hold
     let (same, cs) = l.rotate(1);
     assert_eq!(same.keys.sync, l.steps[0].keys.sync);
-    net.run(0, Command::Register { label: l.id, step: same.clone(), claim_set: Some(cs) });
+    net.run(0, Command::Register { label: l.id, step: same, claim_set: Some(cs) });
     for i in 0..2 {
-        let ev = path(&mut net, i);
-        assert!(matches!(&ev[..], [ClientEvent::PathSteps { steps, .. }] if steps.len() == 2), "{ev:?}");
+        assert_eq!(statuses(&delete(&mut net, i, &l)), vec![Code::OK]);
     }
     // a read rotation, registered by client 0: both opens end
     let (child, cs) = l.rotate(20);
-    let ev = net.run(0, Command::Register { label: l.id, step: child.clone(), claim_set: Some(cs) });
+    let ev = net.run(0, Command::Register { label: l.id, step: child, claim_set: Some(cs) });
     assert_eq!(ev, vec![ClientEvent::Registered { label: l.id }]);
     for i in 0..2 {
-        let ev = path(&mut net, i);
-        assert!(matches!(&ev[..], [ClientEvent::Refused { kind: Request::Path, code: Code::NOT_OPENED, .. }]), "{ev:?}");
+        let ev = delete(&mut net, i, &l);
+        assert!(refused(&ev), "{ev:?}");
     }
-    assert_eq!(net.hosts[1].opened().count(), 0);
-    // the old key gets the child only; the new one opens and reads again
-    let ev = net.run(1, Command::Open { label: l.id, key: OpenKey::Sync { step: None, key: l.keys[0].sync.clone() } });
-    assert!(matches!(&ev[..], [ClientEvent::Step { .. }]), "{ev:?}");
+    // opened again under the new key; a shut one refuses again
     net.open(1, &l);
-    let ev = path(&mut net, 1);
-    assert_eq!(ev, vec![ClientEvent::PathSteps { label: l.id, steps: l.steps.clone(), more: false }]);
+    assert_eq!(statuses(&delete(&mut net, 1, &l)), vec![Code::OK]);
+    let so = net.hosts[1].handle(net.now, &mut net.store, ServingInput::Shut(l.id));
+    net.host_out(1, so);
+    let ev = delete(&mut net, 1, &l);
+    assert!(refused(&ev), "{ev:?}");
 }
 
 // spec/wire.md §11.1, §11.2: unknown kind gets Error 11, a malformed request Error 2 (both sides), a bad frame Error 2 and close
@@ -614,19 +583,17 @@ fn a_listener_request_stalls_while_the_dialer_answers_nothing_spec_sync_6() {
 
 // spec/sync.md §6 (flow control): a client within its window never sends more unanswered
 // requests than `MAX_UNANSWERED`, so a host delivering everything it sent in one input (as
-// `pump` does) closes nothing: paths, deletes and pings past a window's worth queued at once
-// all complete
+// `pump` does) closes nothing: deletes past a window's worth queued at once all complete
 #[test]
 fn queued_requests_stay_within_the_unanswered_bound() {
     let mut net = Net::new(2, 0);
     let l = Label::new(3);
     net.setup(&l);
     net.open(1, &l);
-    let n = 2 * client::WINDOW / SMALL_REPLY;
+    let n = 4 * client::WINDOW / SMALL_REPLY;
     let mut co = Vec::new();
     for k in 0..n as u64 {
         let c = &mut net.clients[1];
-        co.extend(c.handle(net.now, ClientInput::Command(Command::Path { label: l.id, after: None })));
         let item = DeleteItem::sign(&l.head_keys().delete, &l.id, bid(k)).unwrap();
         co.extend(c.handle(net.now, ClientInput::Command(Command::Delete { label: l.id, items: vec![item] })));
     }
@@ -635,7 +602,6 @@ fn queued_requests_stay_within_the_unanswered_bound() {
     net.pump();
     assert!(!net.hosts[1].is_closed());
     let ev = std::mem::take(&mut net.events[1]);
-    assert_eq!(ev.iter().filter(|e| matches!(e, ClientEvent::PathSteps { .. })).count(), n, "paths");
     assert_eq!(ev.iter().filter(|e| matches!(e, ClientEvent::DeleteStatus { .. })).count(), n, "deletes");
     assert_eq!(net.clients[1].outstanding(), 0);
 }

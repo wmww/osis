@@ -273,14 +273,21 @@ impl World {
         std::mem::take(&mut self.events[c])
     }
 
+    /// Registers `l`'s genesis step by client `c`, and opens it on `c`'s connection.
     pub fn setup(&mut self, c: usize, l: &Label) {
         let ev = self.run(c, l.register_cmd(0));
         assert_eq!(ev, vec![ClientEvent::Registered { label: l.id }]);
+        self.open(c, l);
     }
 
+    /// Node sync's open of `l` on client `c`'s connection (a sync-key Hit there): its Deletes
+    /// are taken.
     pub fn open(&mut self, c: usize, l: &Label) {
-        let ev = self.run(c, Command::Open { label: l.id, key: OpenKey::Sync { step: None, key: l.head_keys().sync.clone() } });
-        assert!(matches!(&ev[..], [ClientEvent::Opened { .. }]), "{ev:?}");
+        let (h, conn) = self.links.iter().find_map(|k| match (k.a, k.b) {
+            (End::Client(x), End::Hub(h, conn)) if x == c => Some((h, conn)),
+            _ => None,
+        }).expect("a client's link");
+        self.down(h, vec![(conn, Down::Open(l.id))]);
     }
 }
 

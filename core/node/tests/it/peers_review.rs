@@ -6,10 +6,10 @@ use crate::net::{hosted_nodes, local_nodes};
 use crate::net;
 use net::*;
 use osis_base::{LabelId, Role};
-use osis_crypto::{Secret32, SigningSecret};
+use osis_crypto::SigningSecret;
 use osis_label::Address;
 use osis_node::sync::{Action, ConnId, EntryKind, Event, SyncConfig};
-use osis_proto::{ClientConfig, ClientEvent, ClientInput, ClientOutput, ClientSession, Command, OpenKey};
+use osis_proto::{ClientConfig, ClientEvent, ClientInput, ClientOutput, ClientSession, Command};
 
 const LOCAL: [u8; 32] = [0x42; 32];
 
@@ -410,24 +410,6 @@ fn reader_flood_of_invalid_commits_bounded_spec_sync_5() {
     }
 }
 
-// spec/sync.md §5: a stranger without the label's sync key opens nothing.
-// spec/sync.md §5 (co-reader peer)
-#[test]
-fn stranger_refused_spec_sync_5() {
-    let (mut net, [a, b]) = local_nodes::<2>();
-    reach(&mut net, a, 0xa1);
-    reach(&mut net, b, 0xb1);
-    net.group_at(a, &[(b, Role::Write)], vec![]);
-    net.run();
-    let l: LabelId = net.label(b);
-    let (mut p, _) = dial_in(&mut net, b);
-    let key = SigningSecret::from_seed(&Secret32::from_bytes([0x99; 32]));
-    let evs = command(&mut net, b, &mut p, Command::Open { label: l, key: OpenKey::Sync { step: None, key } });
-    assert!(evs.iter().any(|e| matches!(e, ClientEvent::Refused { .. })), "{evs:?}");
-    assert!(!evs.iter().any(|e| matches!(e, ClientEvent::Opened { .. })));
-    assert!(net.sync(b).served_opened()[&p.conn].is_empty());
-}
-
 // spec/sync.md §5, spec/permissions.md §3: a removed holder's node is not dialed (its old
 // `reach.0` is held, it may not read now) and, once the label has a new step, opens nothing
 // served.
@@ -593,8 +575,7 @@ fn lan_route_proven_by_up_spec_sync_10() {
 }
 
 // spec/sync.md §10 (Shared set): what a session serves is its shared set's, and once the proved
-// node is removed from the group its member closes (issues/net-shared-set.md, Opens); a session
-// with no member opens nothing by a key it does not hold
+// node is removed from the group its member closes (issues/net-shared-set.md, Opens)
 #[test]
 fn a_member_closes_with_the_right_spec_sync_10() {
     let (mut net, [a, b]) = local_nodes::<2>();
@@ -605,10 +586,6 @@ fn a_member_closes_with_the_right_spec_sync_10() {
     let l: LabelId = net.label(a);
     let p = member_session(&mut net, a, b, l);
     assert!(net.sync(a).served_opened()[&p.conn].contains(&l));
-    let (mut q, _) = dial_in(&mut net, a);
-    let stranger = SigningSecret::from_seed(&Secret32::from_bytes([0x99; 32]));
-    let evs = command(&mut net, a, &mut q, Command::Open { label: l, key: OpenKey::Sync { step: None, key: stranger } });
-    assert!(evs.iter().any(|e| matches!(e, ClientEvent::Refused { .. })), "{evs:?}");
     // b removed from g
     let (ta, tb) = (net.tid(a), net.tid(b));
     let e = net.engine(a);

@@ -5,7 +5,6 @@
 use crate::common;
 
 use common::*;
-use osis_base::LabelId;
 use osis_proto::msg::DeleteItem;
 use osis_proto::*;
 use osis_host::HostPolicy;
@@ -24,11 +23,10 @@ fn world() -> (World, usize) {
 /// A header blind (spec/crypto.md §7).
 const HB: [u8; 16] = [0x4b; 16];
 
-// spec/sync.md §5 Open: an ex-holder's superseded sync key gets the child step and nothing else;
-// an entry stamped under a superseded write key gets code 9 alone
-
+// spec/sync.md §5 (Taking a stamped entry): an entry stamped under a superseded write key gets
+// code 9 alone
 #[test]
-fn stale_sync_key_gets_exactly_one_step() {
+fn a_superseded_write_key_gets_9_spec_sync_5() {
     let (mut w, c) = world();
     let mut l = Label::new(3);
     w.setup(c, &l);
@@ -38,10 +36,6 @@ fn stale_sync_key_gets_exactly_one_step() {
     w.run(c, Command::Register { label: l.id, step: s1.clone(), claim_set: Some(cs1) });
     let (s2, cs2) = l.rotate(40);
     w.run(c, Command::Register { label: l.id, step: s2, claim_set: Some(cs2) });
-    let ev = w.run(c, Command::Open { label: l.id, key: OpenKey::Sync { step: None, key: old.sync.clone() } });
-    assert!(matches!(&ev[..], [ClientEvent::Step { step, .. }] if *step == s1), "{ev:?}");
-    let ev = w.run(c, Command::Path { label: l.id, after: None });
-    assert!(matches!(&ev[..], [ClientEvent::Refused { code: Code::NOT_OPENED, .. }]), "{ev:?}");
     assert_eq!(pull(&w, H, &l, &l.entry_by(blob(2), &old.write)), Code::NOT_HEAD);
 }
 
@@ -100,8 +94,7 @@ fn delete_key_deletes_only_its_own_body() {
     assert_eq!(live(&w, H, &l2), vec![osis_label::blob_id(&mine)]);
 }
 
-// spec/sync.md §5: deposits over the budget and tombstoned IDs are refused; an unknown label does
-// not open
+// spec/sync.md §5: deposits over the budget and tombstoned IDs are refused
 // spec/sync.md §5 (deposit refusals)
 #[test]
 fn budget_and_tombstone() {
@@ -118,8 +111,6 @@ fn budget_and_tombstone() {
     assert_eq!(statuses(&w.run(c, Command::Delete { label: l.id, items: vec![item] })), vec![Code::OK]);
     assert_eq!(deposit(&w, H, l.deposit(blob(0), &dk)), Code::TOMBSTONED);
     assert_eq!(pull_all(&w, H, &l, [0]), vec![Code::TOMBSTONED]);
-    let ev = w.run(c, Command::Open { label: LabelId([0xee; 16]), key: OpenKey::Sync { step: None, key: l.head_keys().sync.clone() } });
-    assert!(matches!(&ev[..], [ClientEvent::Refused { code: Code::UNKNOWN_LABEL, .. }]), "{ev:?}");
 }
 
 // spec/sync.md §5: a genesis step for an existing label (another admin's) is refused (code 9, without the head); only a child of the head is accepted

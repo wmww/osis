@@ -222,7 +222,6 @@ pub fn messages() -> Vec<(&'static str, Message)> {
     let entry = f.entry(Fixture::blob(1));
     let added = Event::Added { blob_id: osis_label::blob_id(&entry.blob), blob: Some(entry.blob.clone()), wrap: entry.wrap, stamp: Some(entry.stamp) };
     let entry_box = f.genesis_claims.entry_box(&l, &f.key_actor.verifying_key()).cloned();
-    let claim = f.genesis.claim_key(&f.reader).expect("claim key");
     let deposited = Fixture::blob(2);
     let dep_wrap = [0x78; WRAP_LEN];
     let dep_sig = osis_label::sign_deposit(&f.deposit, &l, &osis_label::blob_id(&deposited), &dep_wrap, false);
@@ -232,15 +231,7 @@ pub fn messages() -> Vec<(&'static str, Message)> {
         ("ok", Message::Ok { id: 2 }),
         ("ping", Message::Ping { id: 3, wall_ms: 1_700_000_000_000 }),
         ("pong", Message::Pong { id: 3, wall_ms: 1_700_000_000_123 }),
-        ("open sync key", Message::Open { id: 4, label: l, proof: Proof::sync(None, &f.sync, &l, &CHALLENGE, &STATIC_KEY) }),
-        ("open claim key", Message::Open { id: 5, label: l, proof: Proof::claim(f.genesis.id(), &claim, &l, &CHALLENGE, &STATIC_KEY) }),
-        ("open static entry", Message::Open { id: 6, label: l, proof: Proof::static_entry(&f.key_actor, &l, &CHALLENGE, &STATIC_KEY) }),
-        ("opened", Message::Opened { id: 4, head: f.child.clone(), entry_box: None }),
-        ("opened with entry box", Message::Opened { id: 6, head: f.genesis.clone(), entry_box: entry_box.clone() }),
-        ("step", Message::Step { id: 4, step: f.child.clone() }),
         ("register", Message::Register { id: 7, label: l, step: f.genesis.clone(), claim_set: Some(f.genesis_claims.clone()) }),
-        ("path", Message::Path { id: 8, label: l, after: Some(f.genesis.id()) }),
-        ("path reply", Message::PathReply { id: 8, steps: vec![f.genesis.clone(), f.child.clone()], more: false }),
         ("status", Message::Status { id: 10, codes: vec![Code::OK, Code::NOT_HEAD] }),
         ("delete", Message::Delete { id: 14, label: l, items: vec![DeleteItem::sign(&f.delete, &l, id(0xd1)).expect("fixed delete"), DeleteItem::sign_by(&f.sync, &[(2, &dk)], &[0x7d; 16], &[0x7e; 16], &l, id(0xd2)).expect("fixed delete")] }),
         ("fetch", Message::Fetch { id: crate::msg::NODE_IDS | 19, label: l, max_reply: 32_768, ids: vec![id(0xb2), id(0xb5)] }),
@@ -261,9 +252,12 @@ pub fn messages() -> Vec<(&'static str, Message)> {
         ("beacons", Message::Beacons { id: 30, generation: 1, base: None, f: 9, lo: 0, hi: 512, gcs: vec![0, 1, 2], more: false }),
         ("offer", Message::Offer { id: 31, items: vec![crate::msg::OfferItem::Hit([9; 32], None), crate::msg::OfferItem::Hit([10; 32], Some(osis_crypto::Signature([11; 64]))), crate::msg::OfferItem::ByRole(l, vec![[8; 32]])] }),
         ("offer with a deposit", Message::Offer { id: 34, items: vec![crate::msg::OfferItem::Deposit { label: l, blob: deposited, wrap: dep_wrap, sig: dep_sig }] }),
+        ("offer static", Message::Offer { id: 36, items: vec![crate::msg::OfferItem::Static { hit: [12; 32], key: f.key_actor.verifying_key().to_bytes(), sig: osis_crypto::sign_open(&f.key_actor, &l, &CHALLENGE, &STATIC_KEY) }] }),
+        ("offer behind", Message::Offer { id: 35, items: vec![crate::msg::OfferItem::Behind { label: l, step: Some(f.genesis.id()), key: f.sync.verifying_key().to_bytes(), sig: osis_crypto::sign_open(&f.sync, &l, &CHALLENGE, &STATIC_KEY) }, crate::msg::OfferItem::Behind { label: l, step: None, key: f.sync.verifying_key().to_bytes(), sig: osis_crypto::sign_open(&f.sync, &l, &CHALLENGE, &STATIC_KEY) }] }),
         ("lost", Message::Lost { id: 32, items: vec![(l, None)] }),
         ("shared", Message::Shared { id: 31, codes: vec![(Code::OK, Some([7; 32]), None), (Code::NOT_ADMITTED, None, None)] }),
-        ("shared with an entry grant", Message::Shared { id: 32, codes: vec![(Code::OK, Some([7; 32]), Some(Box::new(crate::msg::EntryGrant { entry_box: entry_box.clone().expect("the key actor is listed"), path: vec![f.genesis.clone(), f.child.clone()] })))] }),
+        ("shared with an entry grant", Message::Shared { id: 32, codes: vec![(Code::OK, Some([7; 32]), Some(Box::new(crate::msg::Grant { entry_box: Some(entry_box.expect("the key actor is listed")), steps: vec![f.genesis.clone(), f.child.clone()] })))] }),
+        ("shared with a child step", Message::Shared { id: 35, codes: vec![(Code::OK, None, Some(Box::new(crate::msg::Grant { entry_box: None, steps: vec![f.child.clone()] })))] }),
         ("no record", Message::NoRecord { id: 33 }),
         (
             "pull",

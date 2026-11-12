@@ -338,8 +338,8 @@ fn a_key_actors_static_entry_opens_an_unread_label_with_its_grant_spec_sync_10()
     let (code, tag, grant) = &codes[0];
     assert_eq!((*code, tag.is_some()), (Code::OK, true));
     let grant = grant.as_ref().expect("a grant");
-    assert_eq!(grant.path, s.l.steps, "the path from genesis");
-    assert_eq!(Some(&grant.entry_box), s.l.sets[0].entries.get(&entry), "the head's box for the entry");
+    assert_eq!(grant.steps, s.l.steps, "the path from genesis");
+    assert_eq!(grant.entry_box.as_ref(), s.l.sets[0].entries.get(&entry), "the head's box for the entry");
     assert!(s.net.sync(s.b).shared_members(q.conn).contains(&l));
 }
 
@@ -765,4 +765,224 @@ fn a_body_refused_for_a_tombstone_holds_no_delete_back_spec_sync_10() {
     let held = net.host_ids(host, &l);
     assert!(purged.iter().all(|id| !held.contains(id)), "the purged body went from the peer");
     assert!(of(&mut net, kept).iter().any(|id| held.contains(id)), "the kept body is at the peer again, under a new encryption");
+}
+
+/// A Behind item on `l` by step `i`'s sync key, naming that step or (`named` false) none, signed
+/// over the listener's challenge and key (or `sig` given).
+fn behind_item(p: &Dialer, l: &Label, i: usize, named: bool) -> OfferItem {
+    let k = &l.keys[i].sync;
+    OfferItem::Behind { label: l.id, step: named.then(|| l.steps[i].id()), key: k.verifying_key().to_bytes(), sig: osis_crypto::sign_open(k, &l.id, &p.hello, &LISTENER) }
+}
+
+/// The answers to an Offer of `items`: each code and the child step carried, if any.
+fn behind_answers(s: &mut Setup, items: Vec<OfferItem>) -> Vec<(Code, Option<osis_label::Step>)> {
+    let msgs = shared_of(&send(&mut s.net, s.b, &mut s.p, Message::Offer { id: 77, items }));
+    let Some(Message::Shared { codes, .. }) = msgs.iter().find(|m| m.id() == 77) else { panic!("{msgs:?}") };
+    codes.iter().map(|(c, _, g)| (*c, g.as_ref().map(|g| { assert!(g.entry_box.is_none() && g.steps.len() == 1, "a child step alone"); g.steps[0].clone() }))).collect()
+}
+
+// spec/sync.md §5 (Behind), spec/wire.md §11.2 (Offer): a node keeping L unread answers a Behind
+// item by the sync key of a step on its path other than its head with that step's child, which
+// verifies under the step; naming no step, the newest step bearing the key answers. One on the
+// head, by a key the step does not bear, with a signature over another connection's challenge,
+// or on a label not kept here is refused (14), carrying nothing; nothing opens.
+// spec/sync.md §5 (behind)
+#[test]
+fn a_behind_item_gets_its_steps_child_spec_sync_5() {
+    let mut s = setup();
+    for b in [0x61, 0x62] {
+        s.l.rotate(b);
+        let i = s.l.steps.len() - 1;
+        command(&mut s.net, s.b, &mut s.p, s.l.register_cmd(i));
+    }
+    let (p, l) = (&s.p, &s.l);
+    let mut wrong_key = behind_item(p, l, 0, true);
+    if let OfferItem::Behind { key, .. } = &mut wrong_key {
+        *key = l.keys[2].sync.verifying_key().to_bytes();
+    }
+    let mut elsewhere = behind_item(p, l, 0, true);
+    if let OfferItem::Behind { sig, .. } = &mut elsewhere {
+        *sig = osis_crypto::sign_open(&l.keys[0].sync, &l.id, &[1; 32], &LISTENER);
+    }
+    let unknown = Label::new(0x52);
+    let items = vec![behind_item(p, l, 0, true), behind_item(p, l, 1, false), behind_item(p, l, 2, true), wrong_key, elsewhere, behind_item(p, &unknown, 0, true)];
+    let steps = l.steps.clone();
+    let ans = behind_answers(&mut s, items);
+    let l = &s.l;
+    assert_eq!(ans[0], (Code::OK, Some(steps[1].clone())), "step 0's child");
+    steps[1].verify_child(&l.steps[0]).unwrap();
+    assert_eq!(ans[1], (Code::OK, Some(steps[2].clone())), "naming none: the newest step bearing the key");
+    for (i, a) in ans.iter().enumerate().skip(2) {
+        assert_eq!(*a, (Code::NOT_ADMITTED, None), "item {i}");
+    }
+    assert!(s.net.sync(s.b).shared_members(s.p.conn).is_empty(), "nothing opens");
+    assert_eq!(s.net.sync(s.b).pass_stats().behind_answered, 2);
+}
+
+// spec/sync.md §5 (Delete): a node keeping L unread takes a Delete of it only on a connection
+// where L opened by a Hit on its head's sync key (or a static entry), and while the head bears
+// that key: before the open, and after a step with another sync key, it is refused whole (8)
+// spec/sync.md §5 (delete opened)
+#[test]
+fn a_delete_is_taken_only_under_an_open_spec_sync_5() {
+    let mut s = setup();
+    let l = s.l.id;
+    let delete = |s: &mut Setup, n: u64| {
+        let item = DeleteItem::sign(&s.l.head_keys().delete, &l, osis_label::blob_id(&blob(n))).unwrap();
+        command(&mut s.net, s.b, &mut s.p, Command::Delete { label: l, items: vec![item] })
+    };
+    let refused = |ev: &[ClientEvent]| ev.iter().any(|e| matches!(e, ClientEvent::Refused { code: Code::NOT_OPENED, .. }));
+    let ev = delete(&mut s, 1);
+    assert!(refused(&ev), "not opened: {ev:?}");
+    let held = |s: &mut Setup, n: u64| osis_proto::LabelStore::entry(&*s.net.sync(s.b).hub_store().lock().unwrap(), &l, &osis_label::blob_id(&blob(n))).unwrap().is_some();
+    assert!(held(&mut s, 1), "kept");
+    opened(&mut s);
+    let ev = delete(&mut s, 1);
+    assert!(ev.iter().any(|e| matches!(e, ClientEvent::DeleteStatus { codes, .. } if codes == &[Code::OK])), "{ev:?}");
+    assert!(!held(&mut s, 1), "deleted");
+    // a step with another sync key ends the open
+    s.l.rotate(0x61);
+    command(&mut s.net, s.b, &mut s.p, s.l.register_cmd(1));
+    let ev = delete(&mut s, 2);
+    assert!(refused(&ev), "the open ended with the head's sync key: {ev:?}");
+}
+
+/// Cuts node `n` off peer `s` (no dial reaches it) until `rejoin`.
+fn cut(net: &mut Net, n: usize, s: usize) {
+    net.blocked.insert((n, s));
+    net.drop_link(n, s);
+}
+
+fn rejoin(net: &mut Net, n: usize, s: usize) {
+    net.blocked.remove(&(n, s));
+}
+
+// spec/sync.md §5 (Register: relayable by any node), issues/net-one-peer.md 3h2 (Stale head): a
+// rotation while a peer that cannot read L is away leaves it on the old head (the child step
+// registered at another); a reader that is no admin, holding the recorded child, moves it there
+// by its walk (L opens at the old step it still shows) and registration; a reader added after
+// the rotation, holding the new epoch alone, then reads L through that peer with every other
+// node offline.
+#[test]
+fn a_peer_on_an_older_head_is_moved_by_any_reader_spec_sync_5() {
+    let mut net = Net::new();
+    let s = net.add_host();
+    let s2 = net.add_host();
+    let a = net.node(1, &[s2]);
+    let b = net.node(2, &[s2]);
+    let x = net.node(3, &[s2]);
+    // c reaches no peer until the end (no link of it is ever dropped)
+    let c = net.node(4, &[]);
+    net.blocked.extend([(c, s), (c, s2)]);
+    let g = net.group(a, &[(b, Role::Write), (x, Role::Read)], &[s, s2]);
+    let t = net.item(a, g, g, "before");
+    net.run();
+    assert_eq!(net.read(b, t), Some(net::s("before")));
+    let l = net.label(a);
+    assert_eq!(net.host_path(s, &l).len(), 1);
+    for n in [a, b] {
+        cut(&mut net, n, s);
+    }
+    // the rotation's step registered at s2 alone; c granted after it
+    let (at, bt, xt, ct_) = (net.tid(a), net.tid(b), net.tid(x), net.tid(c));
+    let e = net.engine(a);
+    let rs = recipients_of(e, &[(at, Role::Admin), (bt, Role::Write)]);
+    remove_holder(e, g, xt, &rs, 45);
+    net.run();
+    net.advance(61_000);
+    assert_eq!(net.host_path(s2, &l).len(), 2, "a child registered at s2");
+    // c granted after the rotation, the grant handed over directly, then a's write
+    net.pair(c, a);
+    net.grant(a, g, ct_, Role::Read);
+    net.run();
+    net.pair(a, c);
+    assert!(net.engine(c).role_on(&g).is_some(), "c holds g");
+    net.write(a, t, "after");
+    net.run();
+    net.advance(61_000);
+    assert_eq!(net.read(b, t), Some(net::s("after")));
+    assert_eq!(net.host_path(s, &l).len(), 1, "s missed the step");
+    net.set_online(a, false);
+    // b, a writer and no admin, moves s to the recorded child
+    assert!(net.engine(b).role_on(&g) < Some(Role::Admin));
+    cut(&mut net, b, s2);
+    rejoin(&mut net, b, s);
+    for _ in 0..3 {
+        net.advance(61_000);
+    }
+    assert_eq!(net.host_path(s, &l).len(), 2, "b registered the recorded child");
+    net.set_online(b, false);
+    assert_ne!(net.read(c, t), Some(net::s("after")), "c has not read it yet");
+    net.blocked.remove(&(c, s));
+    for _ in 0..3 {
+        net.advance(61_000);
+    }
+    assert_eq!(net.read(c, t), Some(net::s("after")), "c reads through s alone: {:?}", net.sync(c).label_status());
+}
+
+// spec/sync.md §5 (Register: relayable by any node), issues/net-one-peer.md 3h2 (Stale head): a
+// peer listed for L (in `label.0`) that lacks L entirely gets the recorded path, genesis first,
+// from a reader that is no admin: its walk finds no credential shown, a Behind item on its
+// newest step is refused there, and it registers the path; L then opens there at its head.
+#[test]
+fn a_listed_peer_without_l_gets_the_recorded_path_spec_sync_5() {
+    let mut net = Net::new();
+    let s = net.add_host();
+    let s2 = net.add_host();
+    let a = net.node(1, &[s]);
+    let b = net.node(2, &[s]);
+    let x = net.node(3, &[s]);
+    // nobody reaches s2 yet
+    for n in [a, b, x] {
+        net.blocked.insert((n, s2));
+    }
+    let g = net.group(a, &[(b, Role::Read), (x, Role::Read)], &[s, s2]);
+    let t = net.item(a, g, g, "item");
+    let (at, bt, xt) = (net.tid(a), net.tid(b), net.tid(x));
+    let e = net.engine(a);
+    let rs = recipients_of(e, &[(at, Role::Admin), (bt, Role::Read)]);
+    remove_holder(e, g, xt, &rs, 45);
+    net.run();
+    net.advance(61_000);
+    let l = net.label(a);
+    let path = net.host_path(s, &l);
+    assert_eq!(path.len(), 2, "two steps recorded and registered at s");
+    assert!(net.host_path(s2, &l).is_empty(), "s2 lacks L");
+    assert_eq!(net.read(b, t), Some(net::s("item")));
+    assert!(net.engine(b).role_on(&g) < Some(Role::Admin));
+    net.set_online(a, false);
+    let behind = net.sync(b).pass_stats().behind_sent;
+    net.blocked.remove(&(b, s2));
+    for _ in 0..3 {
+        net.advance(61_000);
+    }
+    assert_eq!(net.host_path(s2, &l), path, "b registered the recorded path at s2");
+    assert_eq!(net.sync(b).pass_stats().behind_sent - behind, 1, "one Behind item, refused");
+    let conn = net.conn_to(b, s2).expect("connected");
+    assert!(net.sync(b).shared_members(conn).contains(&l), "L open at s2");
+}
+
+// spec/sync.md §10 (Shared set), issues/net-one-peer.md 3h2 (Stale head: found only at a peer
+// listed for L): a reader connected to a peer that keeps nothing of L and is not listed for it
+// registers nothing of L there, sends it no Behind item, and opens nothing.
+#[test]
+fn an_unlisted_peer_gets_no_register_spec_sync_10() {
+    let mut net = Net::new();
+    let s = net.add_host();
+    let s2 = net.add_host();
+    let a = net.node(1, &[s]);
+    let b = net.node(2, &[s, s2]);
+    let g = net.group(a, &[(b, Role::Read)], &[s]);
+    let t = net.item(a, g, g, "item");
+    net.run();
+    let behind = net.sync(b).pass_stats().behind_sent;
+    for _ in 0..3 {
+        net.advance(61_000);
+    }
+    assert_eq!(net.read(b, t), Some(net::s("item")));
+    let l = net.label(a);
+    let conn = net.conn_to(b, s2).expect("b keeps a connection to s2");
+    assert!(net.host_path(s2, &l).is_empty(), "no Register of L reached s2");
+    assert_eq!(net.sync(b).pass_stats().behind_sent, behind, "no Behind item");
+    assert!(!net.sync(b).shared_members(conn).contains(&l));
 }

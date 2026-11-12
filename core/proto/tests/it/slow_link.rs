@@ -240,7 +240,7 @@ fn held_back_requests_count_unanswered_spec_sync_6() {
     c.handle(T0, ClientInput::Start);
     let l = Label::new(1);
     // given before the Hellos
-    c.handle(T0, ClientInput::Command(Command::Path { label: l.id, after: None }));
+    c.handle(T0, ClientInput::Command(Command::Register { label: l.id, step: l.steps[0].clone(), claim_set: None }));
     let first = c.commands();
     assert!(!c.answered(first));
     let sent = |out: &[ClientOutput]| out.iter().filter_map(|o| if let ClientOutput::Send(f) = o { Message::decode(&f[4..]).ok() } else { None }).collect::<Vec<_>>();
@@ -251,7 +251,7 @@ fn held_back_requests_count_unanswered_spec_sync_6() {
         let fetch = Message::Fetch { id: NODE_IDS | k, label: l.id, max_reply: REPLY_BUDGET as u64, ids: vec![osis_label::blob_id(&k.to_le_bytes())] };
         pending.extend(sent(&c.handle(T0, ClientInput::Command(Command::Peer(Box::new(fetch))))));
     }
-    pending.extend(sent(&c.handle(T0, ClientInput::Command(Command::Path { label: l.id, after: None }))));
+    pending.extend(sent(&c.handle(T0, ClientInput::Command(Command::Register { label: l.id, step: l.steps[0].clone(), claim_set: None }))));
     let big = c.commands();
     assert!(c.unsent() > 0);
     // answer every request sent, an hour later each time, until the queue drains
@@ -263,7 +263,7 @@ fn held_back_requests_count_unanswered_spec_sync_6() {
         let reply = match m {
             Message::Fetch { id, .. } => Message::FetchReply { id, items: vec![] },
             Message::Ping { id, .. } => Message::Pong { id, wall_ms: now },
-            Message::Path { id, .. } => Message::Error { id, code: Code::REFUSED },
+            Message::Register { id, .. } => Message::Error { id, code: Code::REFUSED },
             _ => continue,
         };
         let out = c.handle(now, ClientInput::Bytes(encode_frame(&reply.encode())));

@@ -94,6 +94,9 @@ enum AskedItem {
     ByRole(LabelId),
     /// A queued deposit for an inbox's nodes (`Dest::Nodes`), by its outbox key's label and blob.
     Deposit(LabelId, BlobId),
+    /// A Behind item on this step of the label (none: a hint's, naming no step;
+    /// `SyncEngine::behind`).
+    Behind(LabelId, Option<Box<osis_label::Step>>),
 }
 
 /// What a request of this side waits for.
@@ -180,8 +183,8 @@ pub(crate) struct Shared {
     peer: Option<PeerFilter>,
     /// A filter of the peer's arrived on this connection.
     arrived: bool,
-    /// The peer's filter arrivals on this connection: a label Open opened at a peer that cannot
-    /// read it is opened again at most once per arrival (`shared_unopened`).
+    /// The peer's filter arrivals on this connection: a label not open at a peer that cannot read
+    /// it is walked at most once per arrival (`shared_unopened`).
     pub(crate) arrivals: u64,
     /// A filter arrived since the sync keys were last tested: a peer that cannot read tests
     /// nothing, so its filter gaining a head's sync key is found by this side testing every
@@ -318,9 +321,9 @@ impl SyncEngine {
         self.conns.get(&conn).is_some_and(|c| !c.peer) && self.records.shared.get(&conn).is_some_and(|s| s.members.contains_key(l))
     }
 
-    /// `l` opened by Open on `conn`, a peer that cannot read it (a head learned, or a new one): a sync-key
-    /// open by an old head's key ends (`shared_rejudge`) and every head open there is tested
-    /// against the peer's filter.
+    /// A head of a label on `conn`, a peer that cannot read it, moved: a sync-key open by an old
+    /// head's key ends (`shared_rejudge`) and every head open there is tested against the peer's
+    /// filter.
     pub(super) fn shared_head_opened(&mut self, conn: ConnId, out: &mut Vec<Action>) -> Result<()> {
         self.shared_rejudge(conn, out)?;
         self.shared_retest(conn, out)
@@ -368,7 +371,7 @@ impl SyncEngine {
     /// Closes member `l` of `conn` here and tells the peer (tests: a close crossing the peer's).
     #[doc(hidden)]
     pub fn shared_drop(&mut self, conn: ConnId, l: LabelId, out: &mut Vec<Action>) -> Result<()> {
-        self.shared_close(conn, &l, super::stream::Stop::Here)?;
+        self.shared_close(conn, &l, super::stream::Stop::Here, out)?;
         self.shared_lost_send(conn, l, out)
     }
 
@@ -463,8 +466,11 @@ impl SyncEngine {
         for (l, _) in &members {
             self.member_unread_there(conn, *l, true, out)?;
         }
-        // a sync ID it keeps unread is pulled from the start (`stream_join`)
+        // a sync ID it keeps unread is pulled from the start (`stream_join`), its Deletes taken
         let unread = self.unread_heads()?;
+        for (l, _) in members.iter().filter(|(l, _)| unread.contains_key(l)) {
+            self.hub_down(conn, osis_host::Down::Open(*l), out);
+        }
         let pulled: Vec<(LabelId, osis_store::Member)> = members.iter().map(|(l, m)| if unread.contains_key(l) { (*l, osis_store::Member { at: At::Join(None), ..m.clone() }) } else { (*l, m.clone()) }).collect();
         self.stream_bind(conn, id, rec.cursor, &pulled, &members);
         self.unread_restream()?;
@@ -789,9 +795,14 @@ impl SyncEngine {
             // a member is skipped below: no credential is built for it
             let member = |l: &LabelId| self.records.shared.get(&conn).is_some_and(|s| s.members.contains_key(l));
             let rest: BTreeSet<LabelId> = self.conns.get(&conn).map(|c| c.labels.keys().filter(|l| !labels.contains(l) && !member(l)).copied().collect()).unwrap_or_default();
-            creds.extend(self.shared_creds(conn, Some(&rest), Which { read: false, unread: false, sync: true })?.into_iter().filter(|c| c.class == SYNC));
+            // and a link's key actor's static entry, which only the peer's filter gaining it
+            // shows (a hint's label is pending here once)
+            let via: BTreeSet<LabelId> = rest.iter().filter(|l| self.state.hints.get(l).is_some_and(|h| h.via.is_some())).copied().collect();
+            creds.extend(self.shared_creds(conn, Some(&rest), Which { read: !via.is_empty(), unread: false, sync: true })?.into_iter().filter(|c| c.class == SYNC || (c.class == STATIC && via.contains(&c.label))));
         }
         let signing = self.peer_creds(conn, &creds.iter().filter(|c| c.class == SYNC).map(|c| c.label).collect::<Vec<_>>());
+        // the key actors held: a static entry of one goes as a Static item, signed by it
+        let signers: Vec<osis_crypto::SigningSecret> = self.engine.core.key_actors.values().map(|id| id.keys().signing.clone()).collect();
         self.stats.tests += 1;
         self.stats.tested += creds.len() as u64;
         let Some(s) = self.records.shared.get_mut(&conn) else { return Ok(()) };
@@ -833,7 +844,11 @@ impl SyncEngine {
                 _ => None,
             };
             s.offered.insert(hit);
-            items.push(OfferItem::Hit(hit, proof));
+            let signer = (c.class == STATIC).then(|| signers.iter().find(|k| osis_crypto::static_entry(&c.label, &k.verifying_key()) == c.value)).flatten();
+            match signer {
+                Some(k) => items.push(OfferItem::Static { hit, key: k.verifying_key().to_bytes(), sig: osis_crypto::sign_open(k, &c.label, &peer_challenge, &s.key) }),
+                None => items.push(OfferItem::Hit(hit, proof)),
+            }
             asked.push(AskedItem::Hit(c));
         }
         s.test_due = more;
@@ -850,6 +865,32 @@ impl SyncEngine {
         s.asked.insert(id, Asked::Offer(asked));
         s.pending.offers_unanswered += 1;
         self.shared_send(conn, Message::Offer { id, items }, out)
+    }
+
+    /// Sends Behind items on `l`, each a step (none: a hint's, naming none) and its sync key,
+    /// signed by that key over the peer's Hello challenge and the listener's key (spec/sync.md §5,
+    /// Behind), in one Offer. False where no Offer may go (no shared set, the peer's digest not
+    /// read).
+    pub(super) fn shared_behind(&mut self, conn: ConnId, l: LabelId, asks: Vec<(Option<osis_label::Step>, osis_crypto::SigningSecret)>, out: &mut Vec<Action>) -> Result<bool> {
+        let Some(s) = self.records.shared.get(&conn).filter(|s| s.digest_read) else { return Ok(false) };
+        let peer_challenge = if s.by_listener { s.dialer } else { s.listener };
+        let mut items = Vec::new();
+        let mut asked = Vec::new();
+        for (step, key) in asks {
+            let sig = osis_crypto::sign_open(&key, &l, &peer_challenge, &s.key);
+            items.push(OfferItem::Behind { label: l, step: step.as_ref().map(osis_label::Step::id), key: key.verifying_key().to_bytes(), sig });
+            asked.push(AskedItem::Behind(l, step.map(Box::new)));
+        }
+        self.stats.behind_sent += items.len() as u64;
+        self.shared_send_offer(conn, items, asked, out)?;
+        Ok(true)
+    }
+
+    /// Whether the peer's latest filter on `conn` shows credential `value` of `l`.
+    pub(super) fn shared_shows(&self, conn: ConnId, l: &LabelId, value: &[u8; 32]) -> bool {
+        let Some(s) = self.records.shared.get(&conn) else { return false };
+        let Some(peer) = &s.peer else { return false };
+        peer.values.binary_search(&beacon_value(&beacon(value, &l.0, &s.r), peer.f)).is_ok()
     }
 
     /// ByRole items once the Hits were answered: for L not open that J judges the peer holds
@@ -914,6 +955,18 @@ impl SyncEngine {
             if self.strands(conn, l, out)? {
                 continue;
             }
+            // a hint's label knowing no step: a held sync key the filter shows that this arrival
+            // did not test (another epoch's, the tested one refused) is tested now
+            if self.newest_known(conn, &l).is_none()
+                && let Some((g, index)) = self.lc(conn, &l).map(|x| (x.group, x.index))
+                && let Some(k) = self.hint_key(conn, &l, &g, index)
+            {
+                let v = k.verifying_key().to_bytes();
+                if tested.get(&l).is_none_or(|t| t.0 != v) && self.shared_shows(conn, &l, &v) {
+                    self.shared_retest(conn, out)?;
+                    continue;
+                }
+            }
             let refused = |s: &Self, k: &[u8; 32]| s.conns.get(&conn).is_some_and(|c| c.req.refused.contains(&(l, *k)));
             let candidates: Vec<_> = self.walk_candidates(conn, l, tested.get(&l).map(|x| x.0))?.into_iter().filter(|(_, k)| !refused(self, &k.verifying_key().to_bytes())).collect();
             let Some(s) = self.records.shared.get(&conn) else { return Ok(()) };
@@ -974,6 +1027,13 @@ impl SyncEngine {
         p.signing.values().any(|k| osis_crypto::VerifyingKey::from_slice(k).is_ok_and(|pk| osis_crypto::static_entry(l, &pk) == *value))
     }
 
+    /// Whether `key` is the key actor of static entry `c` and `sig` its open signature over this
+    /// side's Hello challenge and the listener's key (a Static item, spec/sync.md §10).
+    fn static_signed(s: &Shared, c: &Cred, key: &[u8; 32], sig: &osis_crypto::Signature) -> bool {
+        let challenge = if s.by_listener { &s.listener } else { &s.dialer };
+        osis_crypto::VerifyingKey::from_slice(key).is_ok_and(|pk| osis_crypto::static_entry(&c.label, &pk) == c.value && osis_crypto::verify_open(&pk, &c.label, challenge, &s.key, sig).is_ok())
+    }
+
     /// Whether a Hit on credential `c` shows its class's proof (issues/net-shared-set.md, Offer):
     /// a read secret's beacon is its own; a static entry's key actor is a proven actor of this
     /// connection; a sync key's open signature (`proof`) verifies under it over this side's Hello
@@ -984,8 +1044,8 @@ impl SyncEngine {
         match c.class {
             READ => true,
             // a key actor's static entry by its proven actor; a claim of a head kept unread by
-            // its open signature, as an Open by claim does (spec/sync.md §5; a static entry is a
-            // hash, which no one signs under)
+            // its open signature (spec/sync.md §5 Opens; a static entry is a hash, which no one
+            // signs under)
             STATIC => self.shared_static_proved(conn, &c.label, &c.value) || signed(),
             SYNC => signed(),
             _ => false,
@@ -1005,11 +1065,20 @@ impl SyncEngine {
         // static-entry Hits on sync IDs kept unread: (index of the answer, label, entry), their
         // grant from the hub's store
         let mut unread_grants = Vec::new();
+        // Behind items: (index of the answer, label, step, signature), answered from the hub's
+        // store
+        let mut behinds = Vec::new();
         let Some(s) = self.records.shared.get(&conn) else { return Ok(()) };
         for item in items {
+            // a Hit's credential, its proof shown
+            let hit = match &item {
+                OfferItem::Hit(hit, proof) => s.table.as_ref().and_then(|t| t.get(hit)).filter(|c| self.shared_hit_proved(conn, s, c, proof.as_ref())),
+                OfferItem::Static { hit, key, sig } => s.table.as_ref().and_then(|t| t.get(hit)).filter(|c| c.class == STATIC && Self::static_signed(s, c, key, sig)),
+                _ => None,
+            };
             let answer = match item {
-                OfferItem::Hit(hit, proof) => match s.table.as_ref().and_then(|t| t.get(&hit)) {
-                    Some(c) if self.shared_hit_proved(conn, s, c, proof.as_ref()) => {
+                OfferItem::Hit(..) | OfferItem::Static { .. } => match hit {
+                    Some(c) => {
                         let tag = beacon_reply(&c.value, &c.label.0, &c.beacon, s.side(s.by_listener));
                         opens.push((c.label, c.class, Some(c.beacon)));
                         // a key actor's node learns the read secret from the head's box for it
@@ -1037,10 +1106,23 @@ impl SyncEngine {
                     deposits.push((codes.len(), label, blob, wrap, sig));
                     (Code::NOT_ADMITTED, None, None)
                 }
+                OfferItem::Behind { label, step, key, sig } => {
+                    behinds.push((codes.len(), label, step, key, sig));
+                    (Code::NOT_ADMITTED, None, None)
+                }
             };
             codes.push(answer);
         }
         drop(judge);
+        let (challenge, listener) = (if s.by_listener { s.listener } else { s.dialer }, s.key);
+        for (i, l, step, key, sig) in behinds {
+            if let Some(child) = self.unread_behind(&l, step.as_ref(), &key, &sig, &challenge, &listener)?
+                && let Some(c) = codes.get_mut(i)
+            {
+                self.stats.behind_answered += 1;
+                *c = (Code::OK, None, Some(Box::new(osis_proto::msg::Grant { entry_box: None, steps: vec![child] })));
+            }
+        }
         for (i, l, entry) in unread_grants {
             let grant = self.unread_grant(&l, &entry)?.map(Box::new);
             if let Some(c) = codes.get_mut(i) {
@@ -1285,8 +1367,9 @@ impl SyncEngine {
         s.members.insert(l, Member { class, beacon, until: None });
         self.member_unread_there(conn, l, false, out)?;
         // kept unread: served to the peer from the hub's store, and pulled from it by the store's
-        // rules (`unread_events`)
+        // rules (`unread_events`); the peer's Deletes of it are taken (spec/sync.md §5, Delete)
         if self.is_unread(&l)? {
+            self.hub_down(conn, osis_host::Down::Open(l), out);
             self.unread_restream()?;
             return self.stream_join(conn, l, osis_store::Member { class, beacon, until: None, at: At::Join(None) }, out);
         }
@@ -1298,17 +1381,20 @@ impl SyncEngine {
     /// L leaves S on this side (a Lost, a judgment, a digest difference) and is pending again
     /// for this record (issues/net-shared-set.md, Re-marking), whether or not it was a member:
     /// nothing more is served or pulled for it, and its stream position is kept as `stop` says.
-    fn shared_close(&mut self, conn: ConnId, l: &LabelId, stop: super::stream::Stop) -> Result<()> {
+    fn shared_close(&mut self, conn: ConnId, l: &LabelId, stop: super::stream::Stop, out: &mut Vec<Action>) -> Result<()> {
         // a sync ID not held here has nothing pending: nothing is re-marked
         let at = self.engine.run(|tx| Ok(tx.txn.changed_at(l)?))?.unwrap_or(u64::MAX);
         let Some(s) = self.records.shared.get_mut(&conn) else { return Ok(()) };
-        s.members.remove(l);
+        let was = s.members.remove(l).is_some();
         s.by_role.remove(l);
         s.offered.clear();
         s.pending.remark(at);
         s.acked_pos = s.acked_pos.min(at.saturating_sub(1));
         s.test_due = true;
         self.stream_leave(conn, l, at, stop)?;
+        if was && self.is_unread(l)? {
+            self.hub_down(conn, osis_host::Down::Shut(*l), out);
+        }
         self.unread_restream()
     }
 
@@ -1406,13 +1492,13 @@ impl SyncEngine {
             let mut items = Vec::with_capacity(gone.len());
             for l in &gone {
                 let c = self.shared_stopped(conn, l)?;
-                self.shared_close(conn, l, super::stream::Stop::Here)?;
+                self.shared_close(conn, l, super::stream::Stop::Here, out)?;
                 items.push((*l, c));
             }
             self.shared_send_lost(conn, items, out)?;
         }
         // at a host, such a label leaves the connection: no stream reads it there any more, so it
-        // would never read to its end (nor Hit again by the head Open opened)
+        // would never read to its end (nor be Hit again there)
         if let Some(c) = self.conns.get_mut(&conn).filter(|c| !c.peer) {
             for l in &unsynced {
                 c.labels.remove(l);
@@ -1465,7 +1551,7 @@ impl SyncEngine {
         let mut items = Vec::with_capacity(due.len());
         for (l, _) in due {
             let c = self.shared_stopped(conn, &l)?;
-            self.shared_close(conn, &l, super::stream::Stop::Here)?;
+            self.shared_close(conn, &l, super::stream::Stop::Here, out)?;
             items.push((l, c));
         }
         self.shared_send_lost(conn, items, out)?;
@@ -1575,7 +1661,7 @@ impl SyncEngine {
                 if self.records.shared.get(&conn).and_then(|s| s.members.get(&l)).is_some_and(|m| m.until.is_some()) {
                     back.push((l, self.shared_stopped(conn, &l)?));
                 }
-                self.shared_close(conn, &l, super::stream::Stop::Lost(c))?;
+                self.shared_close(conn, &l, super::stream::Stop::Lost(c), out)?;
             } else {
                 self.stream_lost_closed(conn, &l, c)?;
             }
@@ -1624,9 +1710,16 @@ impl SyncEngine {
                 let mut stale = Vec::new();
                 // failed grants' Hits: answered for good, after the close below re-marks L
                 let mut declined = Vec::new();
+                // Behind items' answers per label, in order: the first child answered settles it
+                let mut behinds: Vec<(LabelId, Option<osis_label::Step>, Option<osis_label::Step>)> = Vec::new();
                 for (item, (code, tag, grant)) in items.into_iter().zip(codes) {
                     if let AskedItem::Deposit(l, b) = item {
                         self.shared_deposit_answered(conn, l, b, code)?;
+                        continue;
+                    }
+                    if let AskedItem::Behind(l, step) = item {
+                        let child = grant.filter(|_| code == Code::OK).and_then(|g| g.steps.into_iter().next());
+                        behinds.push((l, step.map(|x| *x), child));
                         continue;
                     }
                     if code != Code::OK {
@@ -1658,7 +1751,7 @@ impl SyncEngine {
                                 self.shared_open(conn, l, JUDGED, None, out)?;
                             }
                         }
-                        AskedItem::Deposit(..) => {}
+                        AskedItem::Deposit(..) | AskedItem::Behind(..) => {}
                         AskedItem::Hit(c) => {
                             let Some(s) = self.records.shared.get(&conn) else { return Ok(()) };
                             let expect = beacon_reply(&c.value, &c.label.0, &c.beacon, s.side(!s.by_listener));
@@ -1667,7 +1760,7 @@ impl SyncEngine {
                             }
                             // a static entry's grant gives the read secret, or opens nothing
                             let granted = match &grant {
-                                Some(g) if c.class == STATIC => self.granted(c.label, &c.value, g)?,
+                                Some(g) if c.class == STATIC => self.granted(conn, c.label, &c.value, g)?,
                                 _ => true,
                             };
                             // still admissible when the answer came?
@@ -1691,6 +1784,12 @@ impl SyncEngine {
                         }
                     }
                 }
+                let mut done: BTreeSet<LabelId> = BTreeSet::new();
+                for (l, step, child) in behinds.iter().filter(|x| x.2.is_some()).chain(behinds.iter().filter(|x| x.2.is_none())) {
+                    if done.insert(*l) {
+                        self.behind_answered(conn, *l, step.clone(), child.clone(), out)?;
+                    }
+                }
                 // this tester's credential is gone (issues/net-shared-set.md, Divergence), unless
                 // another Hit on L opened it (the same Offer's, read after) or still may (one
                 // unanswered): the peer opened L for that one too, and a Lost would close it.
@@ -1698,7 +1797,7 @@ impl SyncEngine {
                 stale.dedup();
                 for l in stale {
                     if !self.shared_member(conn, &l) && !self.shared_hit_out(conn, &l) {
-                        self.shared_close(conn, &l, super::stream::Stop::Here)?;
+                        self.shared_close(conn, &l, super::stream::Stop::Here, out)?;
                         self.shared_lost_send(conn, l, out)?;
                     }
                 }
@@ -1775,7 +1874,7 @@ impl SyncEngine {
         s.agreed = true;
         for l in mine.symmetric_difference(&theirs) {
             let stop = if mine.contains(l) { super::stream::Stop::Listing } else { super::stream::Stop::Here };
-            self.shared_close(conn, l, stop)?;
+            self.shared_close(conn, l, stop, out)?;
         }
         self.shared_test(conn, out)?;
         self.stream_ask(conn, false, out)

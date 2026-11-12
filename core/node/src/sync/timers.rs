@@ -85,9 +85,6 @@ impl SyncEngine {
         };
         let reopen: Vec<(ConnId, LabelId, Tid)> = self.conns.iter().flat_map(|(id, c)| c.labels.iter().filter(|(_, l)| again(l)).map(move |(lid, l)| (*id, *lid, l.group))).collect();
         for (conn, label, g) in reopen {
-            if let Some(c) = self.conns.get_mut(&conn) {
-                c.req.reopens.remove(&label);
-            }
             // every thing a hint names this label under gets a new turn; not at a refusal's
             // retry (its back-off is short, and a host named by a sender could cut every round)
             if self.lc(conn, &label).is_some_and(|x| x.phase == Phase::Failed) {

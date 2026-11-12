@@ -90,6 +90,11 @@ pub enum Down {
     Notify(Vec<(osis_proto::msg::Id, osis_proto::Payload)>),
     /// Pushes wait: `Up::Room` when the session's push rule allows.
     WantRoom,
+    /// Node sync opened the label here by a sync-key or static-entry Hit: the session takes its
+    /// Deletes (`ServingInput::Open`).
+    Open(osis_base::LabelId),
+    /// That open ended.
+    Shut(osis_base::LabelId),
     /// Close the connection.
     Close,
 }
@@ -320,6 +325,8 @@ impl Hub {
                     Down::Reply { id: r, reply } => h.serve(st, now, id, ServingInput::Reply { id: r, reply }, out),
                     Down::Notify(n) => h.serve(st, now, id, ServingInput::Notify(n), out),
                     Down::WantRoom => h.serve(st, now, id, ServingInput::WantRoom, out),
+                    Down::Open(l) => h.serve(st, now, id, ServingInput::Open(l), out),
+                    Down::Shut(l) => h.serve(st, now, id, ServingInput::Shut(l), out),
                     Down::Close => {
                         h.remove(id);
                         out.push(HubOutput::Close(id));

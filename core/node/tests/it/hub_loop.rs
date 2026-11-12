@@ -1,5 +1,5 @@
 //! The hub in the node driver's loop over osis-transport's `InProcess` (perfect network: under
-//! tokio nothing needs stepping): a node hosting by its `host^.0` serves scripted host clients
+//! tokio nothing needs stepping): a node keeping labels by its `host^.0` serves scripted clients
 //! (osis-proto `ClientSession`) end to end, with node sync above every hub session (proofs, the
 //! shared set, the stream), and serves connections in turns (spec/sync.md §5-§10).
 //! Event-driven only: a timeout guards against a hang. The slow-reader cap is a unit test of
@@ -9,7 +9,7 @@ use crate::net::{Net, T0};
 use crate::peers::reach_ed;
 use crate::shared::read_value;
 use osis_base::{BlobId, Clock, LabelId, Role};
-use osis_crypto::kdf::{beacon, beacon_hit, pair_key};
+use osis_crypto::kdf::{beacon, beacon_hit, beacon_reply, pair_key};
 use osis_proto::msg::{NODE_IDS, OfferItem, Pull};
 use osis_label::Address;
 use osis_node::sync::driver::{self, Control, Shared};
@@ -104,12 +104,14 @@ struct Client {
     s: ClientSession,
     link: Link,
     events: Vec<ClientEvent>,
+    /// The connection's shared set started (its NoRecord answered).
+    shared: bool,
 }
 
 impl Client {
     async fn start(link: Link, key: [u8; 32]) -> Client {
         assert_eq!(link.peer_key, key);
-        let mut c = Client { s: ClientSession::new(ClientConfig { peer_static_key: key, challenge: [9; 32] }), link, events: vec![] };
+        let mut c = Client { s: ClientSession::new(ClientConfig { peer_static_key: key, challenge: [9; 32] }), link, events: vec![], shared: false };
         let out = c.s.handle(T0, ClientInput::Start);
         c.out(out);
         while !c.s.is_ready() {
@@ -154,6 +156,36 @@ impl Client {
             self.recv().await;
         }
         std::mem::take(&mut self.events)
+    }
+
+    /// A Hit on `l`'s head sync key with its open signature, as a reader opens a label the node
+    /// keeps unread (spec/sync.md §10, Shared set); the shared set started first. Its answer.
+    async fn hit(&mut self, l: &Label, id: u32) -> osis_proto::msg::SharedCode {
+        if !self.shared {
+            let got = self.peer(Message::NoRecord { id: NODE_IDS }).await;
+            assert!(matches!(got.last(), Some(Message::Shared { codes, .. }) if codes[0].0 == Code::OK), "{got:?}");
+            self.shared = true;
+        }
+        let (dialer, listener, key) = self.s.binding().unwrap();
+        let r = *pair_key(&dialer, &listener).expose();
+        let sync = l.head_keys().sync.clone();
+        let value = sync.verifying_key().to_bytes();
+        let b = beacon(&value, &l.id.0, &r);
+        let hit = beacon_hit(&value, &l.id.0, &b, (false, &key, &dialer, &listener));
+        let sig = osis_crypto::sign_open(&sync, &l.id, &listener, &key);
+        let got = self.peer(Message::Offer { id: NODE_IDS | id, items: vec![OfferItem::Hit(hit, Some(sig))] }).await;
+        let Some(Message::Shared { codes, .. }) = got.last() else { panic!("{got:?}") };
+        let code = codes[0].clone();
+        if code.0 == Code::OK {
+            assert_eq!(code.1, Some(beacon_reply(&value, &l.id.0, &b, (true, &key, &dialer, &listener))), "tagged");
+        }
+        code
+    }
+
+    /// Opens `l` here by a Hit (`hit`): its Deletes are taken.
+    async fn open(&mut self, l: &Label) {
+        let code = self.hit(l, 7).await;
+        assert_eq!(code.0, Code::OK, "{code:?}");
     }
 
     /// Sends a node-kind message; returns the node-kind messages that came, up to its answer.
@@ -203,12 +235,14 @@ async fn take(host: &Host, l: &Label, blobs: Vec<Vec<u8>>) {
     .await;
 }
 
-fn open(l: &Label) -> Command {
-    Command::Open { label: l.id, key: OpenKey::Sync { step: None, key: l.head_keys().sync.clone() } }
+/// A Register of `l`'s head again: answered Ok, a probe that reads nothing much.
+fn probe(l: &Label) -> Command {
+    Command::Register { label: l.id, step: l.steps.last().unwrap().clone(), claim_set: None }
 }
 
 // spec/sync.md §5, §10: clients of a node keeping a label it cannot read (multi-thread runtime:
-// hub calls in block_in_place): register, open, its path, a delete by the delete key
+// hub calls in block_in_place): register, a delete refused unopened, open by a Hit, a delete by
+// the delete key
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn clients_end_to_end() {
     let tnet = osis_transport::Net::new(0);
@@ -219,15 +253,14 @@ async fn clients_end_to_end() {
     let (mut a, mut b) = (host.client(&clients).await, host.client(&clients).await);
     let l = Label::new(3);
     assert_eq!(a.run(l.register_cmd(0)).await, vec![ClientEvent::Registered { label: l.id }]);
-    for c in [&mut a, &mut b] {
-        let ev = c.run(open(&l)).await;
-        assert!(matches!(&ev[..], [ClientEvent::Opened { .. }]), "{ev:?}");
-    }
-    let ev = b.run(Command::Path { label: l.id, after: None }).await;
-    assert!(matches!(&ev[..], [ClientEvent::PathSteps { steps, more: false, .. }] if steps.len() == 1), "{ev:?}");
     take(&host, &l, (0..3).map(blob).collect()).await;
     assert_eq!(held(&host, l.id).await, sorted((0..3).map(bid).collect()));
     let item = osis_label::DeleteItem::sign(&l.head_keys().delete, &l.id, bid(1)).unwrap();
+    let ev = b.run(Command::Delete { label: l.id, items: vec![item.clone()] }).await;
+    assert!(matches!(&ev[..], [ClientEvent::Refused { code: Code::NOT_OPENED, .. }]), "{ev:?}");
+    for c in [&mut a, &mut b] {
+        c.open(&l).await;
+    }
     let ev = a.run(Command::Delete { label: l.id, items: vec![item] }).await;
     assert!(matches!(&ev[..], [ClientEvent::DeleteStatus { codes, .. }] if codes == &[Code::OK]), "{ev:?}");
     assert_eq!(held(&host, l.id).await, sorted([0, 2].into_iter().map(bid).collect()));
@@ -249,7 +282,7 @@ async fn stopping_closes_what_opened_the_host_store() {
     let mut idle = host.client(&clients).await;
     let l = Label::new(3);
     a.run(l.register_cmd(0)).await;
-    a.run(open(&l)).await;
+    a.open(&l).await;
     host.call(|s: &mut SyncEngine| {
         let me = s.engine_mut().tid();
         let mut m = osis_node::Mutation::new();
@@ -260,15 +293,14 @@ async fn stopping_closes_what_opened_the_host_store() {
     // the session with an open is closed
     assert!(tokio::time::timeout(GUARD, async { while a.link.rx.recv().await.is_some() {} }).await.is_ok());
     // the other stays, and finds nothing: not hosting, no label
-    let ev = idle.run(open(&l)).await;
-    assert!(matches!(&ev[..], [ClientEvent::Refused { .. }]), "{ev:?}");
+    assert_eq!(idle.hit(&l, 8).await.0, Code::NOT_ADMITTED);
     host.stop().await;
 }
 
 // spec: none (driver policy, notes/flow-control.md Hub stall bounds): connections take turns per input,
 // so one connection's backlog of inputs does not delay another's request: an opener writes a
 // flood of deletes at once (many 64 KiB reads queued behind its reader, each 16 KiB frame removing
-// one held entry and checking more signatures); a reader's Path, sent while the flood runs,
+// one held entry and checking more signatures); a reader's Register, sent while the flood runs,
 // waits a few of its inputs, not the backlog
 #[tokio::test]
 async fn flood_does_not_delay_others() {
@@ -280,10 +312,10 @@ async fn flood_does_not_delay_others() {
     let l = Label::new(3);
     let mut a = host.client(&tnet.endpoint("a")).await;
     a.run(l.register_cmd(0)).await;
+    a.open(&l).await;
     take(&host, &l, (0..FLOOD).map(|n| blob(1000 + n)).collect()).await;
     let mut b = host.client(&tnet.endpoint("b")).await;
-    b.run(open(&l)).await;
-    let probe = || Command::Path { label: l.id, after: None };
+    let probe = || probe(&l);
     let done = |held: usize| FLOOD - held as u64;
     // the flood: one delete frame per held entry, padded with items to 16 KiB, written at once,
     // its replies never read
@@ -309,7 +341,7 @@ async fn flood_does_not_delay_others() {
 
 
 // issues/net-one-peer.md 3c, spec/sync.md §5, §10: node sync above the hub. One connection to the
-// key of a node carries a label the node keeps and cannot read (Register, Open, Path: the hub's
+// key of a node carries a label the node keeps and cannot read (Register, a Hit, Delete: the hub's
 // store) and a group the node reads (proofs, NoRecord, a Hit, the stream: node sync), each
 // answered by its layer
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -333,12 +365,13 @@ async fn one_connection_serves_hosted_and_read_labels() {
     // L, which the node cannot read: the hub's store
     let l = Label::new(3);
     assert_eq!(c.run(l.register_cmd(0)).await, vec![ClientEvent::Registered { label: l.id }]);
-    assert!(matches!(&c.run(open(&l)).await[..], [ClientEvent::Opened { .. }]));
     // M, which it reads: node sync proves to a dialer it knows and runs the shared set
     let ev = c.run(Command::Prove(provers)).await;
     assert!(matches!(&ev[..], [ClientEvent::Proved { proofs }] if !proofs.is_empty()), "{ev:?}");
     let got = c.peer(Message::NoRecord { id: 1 << 31 }).await;
     assert!(matches!(got.last(), Some(Message::Shared { codes, .. }) if codes[0].0 == Code::OK), "{got:?}");
+    c.shared = true;
+    c.open(&l).await;
     let (dialer, listener, key) = c.s.binding().unwrap();
     let r = *pair_key(&dialer, &listener).expose();
     let hit = beacon_hit(&value, &m.0, &beacon(&value, &m.0, &r), (false, &key, &dialer, &listener));
@@ -371,9 +404,10 @@ async fn one_connection_serves_hosted_and_read_labels() {
     .await
     .unwrap();
     assert!(pushed.iter().any(|(x, e)| *x == m && matches!(e, osis_proto::Event::Added { blob_id, .. } if !held.contains(blob_id))), "{pushed:?}");
-    // and L still, on the same connection
-    let ev = c.run(Command::Path { label: l.id, after: None }).await;
-    assert!(matches!(&ev[..], [ClientEvent::PathSteps { .. }]), "{ev:?}");
+    // and L still, on the same connection: open there (its Deletes taken)
+    let item = osis_label::DeleteItem::sign(&l.head_keys().delete, &l.id, bid(5)).unwrap();
+    let ev = c.run(Command::Delete { label: l.id, items: vec![item] }).await;
+    assert!(matches!(&ev[..], [ClientEvent::DeleteStatus { .. }]), "{ev:?}");
     host.stop().await;
 }
 

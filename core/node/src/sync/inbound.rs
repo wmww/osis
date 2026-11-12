@@ -1846,25 +1846,38 @@ impl SyncEngine {
     /// A new head in the log of a peer that cannot read `l`: a child of the current one or a
     /// recorded step moves on; when its credential is another (a new sync key, or the open was
     /// by a claim, which is the old step's) the open by the old one ends, and the next filter
-    /// shows the new one's (`shared_head_opened`). A head off the recorded path is walked by Open
-    /// (issues/net-one-peer.md 3h2, interim). An open in flight learns the head itself.
+    /// shows the new one's (`shared_head_opened`). A head past both is walked to by Behind items
+    /// from the current one (spec/sync.md §5, Behind). A hint's label opened knowing no step takes
+    /// the first head bearing the sync key it opened by (the peer's word: a hint's key opens only
+    /// a head of that key). A label not open there learns the head where it opens.
     pub(crate) fn new_head(&mut self, conn: ConnId, l: LabelId, step: Step, out: &mut Vec<super::Action>) -> Result<()> {
         let Some(lc) = self.lc(conn, &l) else { return Ok(()) };
-        if matches!(lc.phase, super::Phase::Testing | super::Phase::Opening | super::Phase::Verifying | super::Phase::Registering) {
+        if lc.phase != super::Phase::Open {
             return Ok(());
         }
         let cur = lc.head.clone();
         if cur.as_ref().is_some_and(|h| h.id() == step.id()) {
             return Ok(());
         }
-        let (g, open, claimed) = (lc.group, lc.phase == super::Phase::Open, lc.keys.sync.is_none());
+        let (g, claimed, hit) = (lc.group, lc.keys.sync.is_none(), lc.hit_key.as_ref().map(|k| k.verifying_key()));
+        let Some(h) = cur else {
+            if hit == Some(step.keys.sync) {
+                return self.set_head(conn, l, step);
+            }
+            // past the key it opened by: tested again by the hint's keys
+            if let Some(lc) = self.lc_mut(conn, &l) {
+                lc.phase = super::Phase::Testing;
+                lc.hit_key = None;
+            }
+            return self.shared_head_opened(conn, out);
+        };
         let recorded = self.group_label(&g, &l).is_some_and(|gl| gl.steps.contains_key(&step.id()));
-        let child = cur.as_ref().is_some_and(|h| step.verify_child(h).is_ok());
+        let child = step.verify_child(&h).is_ok();
         if !child && !recorded {
-            return self.reopen(conn, l, out);
+            return self.behind(conn, l, Some(step.id()), out);
         }
-        let ended = open && (cur.as_ref().is_none_or(|h| step.keys.sync != h.keys.sync) || claimed);
-        if let Some(h) = cur.filter(|_| child) {
+        let ended = step.keys.sync != h.keys.sync || claimed;
+        if child {
             self.record_steps(&g, &l, &[h, step.clone()], None)?;
         }
         self.set_head(conn, l, step)?;

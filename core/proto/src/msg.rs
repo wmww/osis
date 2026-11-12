@@ -8,7 +8,7 @@ use crate::dec::{self, Fields};
 use osis_base::format::{MAX_BLOB, MAX_MESSAGE};
 use osis_base::{BlobId, LabelId, Limits, Value, cbor};
 pub use osis_crypto::Signature;
-pub use osis_label::{ClaimSet, DeleteItem, Proof, Step, StepId};
+pub use osis_label::{ClaimSet, DeleteItem, Step, StepId};
 use osis_schema::Codec;
 pub use osis_schema::core_types::SecretBox;
 
@@ -17,9 +17,6 @@ pub type Wrap = [u8; WRAP_LEN];
 
 /// Per-message caps (spec/wire.md §11.2).
 pub const MAX_ITEMS: usize = 1024;
-pub const MAX_PATH_STEPS: usize = 48;
-/// Open labels per connection a peer may refuse to exceed (code 4).
-pub const MAX_OPEN_LABELS: usize = 4096;
 /// A canonical `Step` is at most this long (spec/wire.md §8: nine fixed-size items).
 pub const MAX_STEP_BYTES: usize = 323;
 /// Request ids are below 2^32 (spec/wire.md §11.1).
@@ -86,17 +83,13 @@ pub struct Fetched {
 
 /// Every v1 message after Hello.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[allow(clippy::large_enum_variant)] // a Register's step carries parsed keys; one per message
 pub enum Message {
     Error { id: Id, code: Code },
     Ok { id: Id },
     Ping { id: Id, wall_ms: u64 },
     Pong { id: Id, wall_ms: u64 },
-    Open { id: Id, label: LabelId, proof: Proof },
-    Opened { id: Id, head: Step, entry_box: Option<SecretBox> },
-    Step { id: Id, step: Step },
     Register { id: Id, label: LabelId, step: Step, claim_set: Option<ClaimSet> },
-    Path { id: Id, label: LabelId, after: Option<StepId> },
-    PathReply { id: Id, steps: Vec<Step>, more: bool },
     /// One code per item of a Delete, in order.
     Status { id: Id, codes: Vec<Code> },
     /// Items with `at` above 2^63 - 1 cannot be encoded (check with `osis_label::delete_digest`).
@@ -222,6 +215,13 @@ pub enum OfferItem {
     /// An inbox blob for inbox sync ID `label`, its wrap and the deposit key's signature, as a
     /// Deposit carries them, to a peer the sender judged a holder of the inbox.
     Deposit { label: LabelId, blob: Vec<u8>, wrap: Wrap, sig: Signature },
+    /// A Hit on a static entry with its key actor's signing key and an open signature by it
+    /// (spec/sync.md §10, Shared set): opens where the key's static entry is the credential hit.
+    Static { hit: [u8; 32], key: [u8; 32], sig: Signature },
+    /// The sender is behind the peer's head of `label`: it holds sync key `key` of step `step`
+    /// (none: the newest step bearing it), proven by an open signature by that key (spec/sync.md
+    /// §5, Behind). Answered with the step's child.
+    Behind { label: LabelId, step: Option<StepId>, key: [u8; 32], sig: Signature },
 }
 
 /// Most items in one Offer or Lost.
@@ -229,17 +229,17 @@ pub const MAX_SHARED_ITEMS: usize = 1024;
 /// Most sync IDs in one Members page.
 pub const MAX_MEMBERS: usize = 4096;
 
-/// One item's answer in a Shared: its code, the tag of an accepted Hit, and for an accepted Hit
-/// on the tester's static entry the head's entry box for it (spec/sync.md §10, Shared set).
-pub type SharedCode = (Code, Option<[u8; 32]>, Option<Box<EntryGrant>>);
+/// One item's answer in a Shared: its code, the tag of an accepted Hit, and the steps it carries
+/// (spec/sync.md §10, Shared set).
+pub type SharedCode = (Code, Option<[u8; 32]>, Option<Box<Grant>>);
 
-/// What a static entry's holder needs to read the label: the box the head's claim set keeps
-/// for that entry, and the label's path from its genesis step to that head (without claim
-/// sets), which the box is checked against as an Open's is (spec/sync.md §5).
+/// Steps an answer carries: for an accepted Hit on the tester's static entry, the box the head's
+/// claim set keeps for that entry and the label's path from its genesis step to that head; for
+/// an accepted Behind item, the step's child alone (both without claim sets).
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct EntryGrant {
-    pub entry_box: SecretBox,
-    pub path: Vec<Step>,
+pub struct Grant {
+    pub entry_box: Option<SecretBox>,
+    pub steps: Vec<Step>,
 }
 /// Most epochs a ByRole lists.
 pub const MAX_BYROLE_HITS: usize = 256;
@@ -294,15 +294,15 @@ pub fn peek_head(body: &[u8]) -> Option<(u64, Id)> {
 }
 
 /// Kinds that answer a request, by its id: every kind with an id that is no request (Notify
-/// and the stream's Stream, Applied, Digest and Members answer none). Retired kinds (10, 12,
-/// 13, 15-18, 21-23) are neither.
+/// and the stream's Stream, Applied, Digest and Members answer none). Retired kinds (4-6,
+/// 8-10, 12, 13, 15-18, 21-23) are neither.
 pub fn is_reply_kind(kind: u64) -> bool {
-    kind <= 46 && !is_request_kind(kind) && !matches!(kind, 10 | 12 | 13 | 15..=18 | 21..=23 | 29 | 43..=46)
+    kind <= 46 && !is_request_kind(kind) && !matches!(kind, 4..=6 | 8..=10 | 12 | 13 | 15..=18 | 21..=23 | 29 | 43..=46)
 }
 
 /// Kinds that are requests (spec/wire.md §11.2: those with `->`).
 pub fn is_request_kind(kind: u64) -> bool {
-    matches!(kind, 2 | 4 | 7 | 8 | 14 | 19 | 24 | 25 | 27 | 28 | 30 | 31 | 32 | 34 | 36 | 37 | 38 | 40 | 41)
+    matches!(kind, 2 | 7 | 14 | 19 | 24 | 25 | 27 | 28 | 30 | 31 | 32 | 34 | 36 | 37 | 38 | 40 | 41)
 }
 
 impl OfferItem {
@@ -311,6 +311,8 @@ impl OfferItem {
             OfferItem::Hit(h, proof) => Value::List(vec![Value::uint(0), Value::bytes(h), Value::opt(proof.as_ref().map(|s| Value::bytes(&s.0)))]),
             OfferItem::ByRole(l, hits) => Value::List(vec![Value::uint(1), Value::bytes(&l.0), Value::List(hits.iter().map(|h| Value::bytes(h)).collect())]),
             OfferItem::Deposit { label, blob, wrap, sig } => Value::List(vec![Value::uint(2), Value::bytes(&label.0), Value::bytes(blob), Value::bytes(wrap), Value::bytes(&sig.0)]),
+            OfferItem::Static { hit, key, sig } => Value::List(vec![Value::uint(4), Value::bytes(hit), Value::bytes(key), Value::bytes(&sig.0)]),
+            OfferItem::Behind { label, step, key, sig } => Value::List(vec![Value::uint(3), Value::bytes(&label.0), Value::opt(step.as_ref().map(|s| Value::bytes(&s.0))), Value::bytes(key), Value::bytes(&sig.0)]),
         }
     }
 }
@@ -321,6 +323,8 @@ fn offer_item(v: Value) -> Result<OfferItem, Error> {
         0 => OfferItem::Hit(f.fixed()?, f.opt()?.map(|v| dec::fixed(v, "open signature").map(Signature)).transpose()?),
         1 => OfferItem::ByRole(LabelId(f.fixed()?), f.list(1, MAX_BYROLE_HITS, "hits")?.into_iter().map(|v| dec::fixed(v, "hit")).collect::<Result<_, _>>()?),
         2 => OfferItem::Deposit { label: LabelId(f.fixed()?), blob: f.bytes(MAX_BLOB)?, wrap: f.fixed()?, sig: Signature(f.fixed()?) },
+        4 => OfferItem::Static { hit: f.fixed()?, key: f.fixed()?, sig: Signature(f.fixed()?) },
+        3 => OfferItem::Behind { label: LabelId(f.fixed()?), step: f.opt()?.map(|v| dec::fixed(v, "behind step").map(StepId)).transpose()?, key: f.fixed()?, sig: Signature(f.fixed()?) },
         _ => return Err(Error::Malformed("offer item")),
     };
     if f.remaining() != 0 {
@@ -349,12 +353,7 @@ impl Message {
             Ok { .. } => 1,
             Ping { .. } => 2,
             Pong { .. } => 3,
-            Open { .. } => 4,
-            Opened { .. } => 5,
-            Step { .. } => 6,
             Register { .. } => 7,
-            Path { .. } => 8,
-            PathReply { .. } => 9,
             Status { .. } => 11,
             Delete { .. } => 14,
             Fetch { .. } => 19,
@@ -389,7 +388,7 @@ impl Message {
     pub fn id(&self) -> Id {
         use Message::*;
         match self {
-            Error { id, .. } | Ok { id } | Ping { id, .. } | Pong { id, .. } | Open { id, .. } | Opened { id, .. } | Step { id, .. } | Register { id, .. } | Path { id, .. } | PathReply { id, .. } | Status { id, .. } | Delete { id, .. } | Fetch { id, .. } | FetchReply { id, .. } | Auth { id, .. } | Call { id, .. } | Reply { id, .. } | Sub { id, .. } | Unsub { id, .. } | Stranded { id, .. } | Suspect { id, .. } | Prove { id, .. } | Proved { id, .. } | Resume { id, .. } | Resumed { id, .. } | Beacons { id, .. } | Offer { id, .. } | Lost { id, .. } | Shared { id, .. } | NoRecord { id } => *id,
+            Error { id, .. } | Ok { id } | Ping { id, .. } | Pong { id, .. } | Register { id, .. } | Status { id, .. } | Delete { id, .. } | Fetch { id, .. } | FetchReply { id, .. } | Auth { id, .. } | Call { id, .. } | Reply { id, .. } | Sub { id, .. } | Unsub { id, .. } | Stranded { id, .. } | Suspect { id, .. } | Prove { id, .. } | Proved { id, .. } | Resume { id, .. } | Resumed { id, .. } | Beacons { id, .. } | Offer { id, .. } | Lost { id, .. } | Shared { id, .. } | NoRecord { id } => *id,
             Pull(p) => p.id,
             PullReply(r) => r.id,
             Notify { .. } | Stream(_) | Applied { .. } | Digest { .. } | Members { .. } => 0,
@@ -420,13 +419,8 @@ impl Message {
             M::Error { code, .. } => vec![k, id, Value::uint(code.0)],
             M::Ok { .. } => vec![k, id],
             M::Ping { wall_ms, .. } | M::Pong { wall_ms, .. } => vec![k, id, Value::uint(*wall_ms)],
-            M::Open { label, proof, .. } => vec![k, id, l(label), proof.to_value()],
-            M::Opened { head, entry_box, .. } => vec![k, id, step_value(head), Value::opt(entry_box.as_ref().map(|e| Value::Bytes(box_bytes(e))))],
-            M::Step { step, .. } => vec![k, id, step_value(step)],
             M::Register { label, step, claim_set, .. } => vec![k, id, l(label), step_value(step), Value::opt(claim_set.as_ref().map(|c| Value::Bytes(c.to_bytes())))],
-            M::Path { label, after, .. } => vec![k, id, l(label), Value::opt(after.as_ref().map(|a| Value::bytes(&a.0)))],
             M::Status { codes, .. } => vec![k, id, Value::List(codes.iter().map(|c| Value::uint(c.0)).collect())],
-            M::PathReply { steps, more, .. } => vec![k, id, Value::List(steps.iter().map(step_value).collect()), Value::Bool(*more)],
             // An unencodable item (at above 2^63 - 1) becomes `[]`, which the peer rejects.
             M::Delete { label, items, .. } => vec![k, id, l(label), Value::List(items.iter().map(|i| i.to_value().unwrap_or(Value::List(vec![]))).collect())],
             M::Fetch { label, max_reply, ids, .. } => vec![k, id, l(label), Value::uint(*max_reply), ids_value(ids)],
@@ -455,7 +449,7 @@ impl Message {
             M::NoRecord { .. } => vec![k, id],
             M::Offer { items, .. } => vec![k, id, Value::List(items.iter().map(OfferItem::to_value).collect())],
             M::Lost { items, .. } => vec![k, id, Value::List(items.iter().map(|(l, c)| Value::List(vec![Value::bytes(&l.0), Value::opt(c.as_ref().map(|c| Value::bytes(c)))])).collect())],
-            M::Shared { codes, .. } => vec![k, id, Value::List(codes.iter().map(|(c, t, g)| Value::List(vec![Value::uint(c.0), Value::opt(t.as_ref().map(|t| Value::bytes(t))), Value::opt(g.as_ref().map(|g| Value::List(vec![Value::Bytes(box_bytes(&g.entry_box)), Value::List(g.path.iter().map(step_value).collect())])))])).collect())],
+            M::Shared { codes, .. } => vec![k, id, Value::List(codes.iter().map(|(c, t, g)| Value::List(vec![Value::uint(c.0), Value::opt(t.as_ref().map(|t| Value::bytes(t))), Value::opt(g.as_ref().map(|g| Value::List(vec![Value::opt(g.entry_box.as_ref().map(|e| Value::Bytes(box_bytes(e)))), Value::List(g.steps.iter().map(step_value).collect())])))])).collect())],
             M::Pull(p) => vec![k, id, opt_cursor(&p.cursor), joins_value(&p.joins), Value::uint(p.inline_limit), Value::uint(p.max_reply), Value::Bool(p.follow), Value::Bool(p.ephemeral)],
             M::PullReply(r) => vec![k, id, stream_events_value(&r.events), opt_cursor(&r.cursor), Value::Bool(r.whole), Value::Bool(r.trimmed), Value::Bool(r.more), Value::Bool(r.report), joins_value(&r.joins)],
             M::Stream(s) => vec![k, id, stream_events_value(&s.events), opt_cursor(&s.cursor), Value::Bool(s.report)],
@@ -500,8 +494,8 @@ impl Message {
 fn decode_body(kind: u64, id: Id, v: Value) -> Result<Message, Error> {
     let n = match kind {
         1 | 40 => 2,
-        0 | 2 | 3 | 6 | 11 | 20 | 26 | 28 | 32 | 33 | 37 | 38 | 39 | 44 | 45 => 3,
-        4 | 5 | 8 | 9 | 14 | 24 | 27 | 29 | 31 | 34 | 35 => 4,
+        0 | 2 | 3 | 11 | 20 | 26 | 28 | 32 | 33 | 37 | 38 | 39 | 44 | 45 => 3,
+        14 | 24 | 27 | 29 | 31 | 34 | 35 => 4,
         7 | 19 | 25 => 5,
         30 => 6,
         41 => 8,
@@ -526,15 +520,7 @@ fn decode_body(kind: u64, id: Id, v: Value) -> Result<Message, Error> {
         1 => Message::Ok { id },
         2 => Message::Ping { id, wall_ms: f.uint()? },
         3 => Message::Pong { id, wall_ms: f.uint()? },
-        4 => Message::Open { id, label: label(&mut f)?, proof: Proof::from_value(&f.next()?)? },
-        5 => Message::Opened { id, head: step(&mut f)?, entry_box: f.opt()?.map(entry_box).transpose()? },
-        6 => Message::Step { id, step: step(&mut f)? },
         7 => Message::Register { id, label: label(&mut f)?, step: step(&mut f)?, claim_set: f.opt()?.map(claim_set).transpose()? },
-        8 => Message::Path { id, label: label(&mut f)?, after: f.opt()?.map(|v| dec::fixed(v, "path after").map(StepId)).transpose()? },
-        9 => {
-            let steps = f.list(0, MAX_PATH_STEPS, "path steps")?.into_iter().map(step_of).collect::<Result<_, _>>()?;
-            Message::PathReply { id, steps, more: f.bool()? }
-        }
         11 => Message::Status { id, codes: f.list(1, usize::MAX, "status codes")?.into_iter().map(|v| dec::uint(v, "code").map(Code)).collect::<Result<_, _>>()? },
         14 => {
             let label = label(&mut f)?;
@@ -621,7 +607,7 @@ fn decode_body(kind: u64, id: Id, v: Value) -> Result<Message, Error> {
                     let mut g = Fields::exact(v, 3, "code")?;
                     let c = Code(g.uint()?);
                     let t = g.opt()?.map(|v| dec::fixed(v, "tag")).transpose()?;
-                    let e = g.opt()?.map(entry_grant).transpose()?.map(Box::new);
+                    let e = g.opt()?.map(grant).transpose()?.map(Box::new);
                     Ok((c, t, e))
                 })
                 .collect::<Result<_, Error>>()?,
@@ -674,11 +660,11 @@ fn claim_set(v: Value) -> Result<ClaimSet, Error> {
     Ok(ClaimSet::parse(&dec::bytes(v, osis_label::step::MAX_CLAIM_SET, "claim set")?)?)
 }
 
-fn entry_grant(v: Value) -> Result<EntryGrant, Error> {
-    let mut f = Fields::exact(v, 2, "entry grant")?;
-    let entry_box = entry_box(f.next()?)?;
-    let path = f.list(1, usize::MAX, "grant path")?.into_iter().map(step_of).collect::<Result<_, _>>()?;
-    Ok(EntryGrant { entry_box, path })
+fn grant(v: Value) -> Result<Grant, Error> {
+    let mut f = Fields::exact(v, 2, "grant")?;
+    let entry_box = f.opt()?.map(entry_box).transpose()?;
+    let steps = f.list(1, usize::MAX, "grant steps")?.into_iter().map(step_of).collect::<Result<_, _>>()?;
+    Ok(Grant { entry_box, steps })
 }
 
 /// A `box` value as canonical bytes; it must re-encode to itself.

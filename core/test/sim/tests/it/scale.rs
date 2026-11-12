@@ -188,7 +188,7 @@ fn counted_work(dbs: &[&Osis], f: impl FnOnce()) -> osis_node::sync::PassStats {
         out.passes += y.passes - x.passes;
         out.label_reads += y.label_reads - x.label_reads;
         out.vets += y.vets - x.vets;
-        out.claim_lists += y.claim_lists - x.claim_lists;
+        out.claim_keys += y.claim_keys - x.claim_keys;
         out.inbox_keys += y.inbox_keys - x.inbox_keys;
         out.examined += y.examined.saturating_sub(x.examined);
     }
@@ -223,7 +223,7 @@ fn label_costs_do_not_grow_with_labels() {
     assert!(large.0.label_reads <= small.0.label_reads + 8, "share: {} label reads against {}", large.0.label_reads, small.0.label_reads);
     assert!(large.0.inbox_keys <= small.0.inbox_keys, "share: {} inbox keys against {}", large.0.inbox_keys, small.0.inbox_keys);
     assert!(large.1.passes <= small.1.passes, "write: {} passes against {}", large.1.passes, small.1.passes);
-    assert_eq!(large.2.claim_lists, 0, "connect: the held sync keys open every label");
+    assert_eq!(large.2.claim_keys, 0, "connect: the held sync keys open every label");
     assert!(large.2.label_reads <= small.2.label_reads + 8, "connect: {} label reads against {}", large.2.label_reads, small.2.label_reads);
 }
 

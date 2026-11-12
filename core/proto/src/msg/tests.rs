@@ -41,7 +41,7 @@ fn unknown_at_every_arity(kind: u64) -> bool {
 }
 
 /// Retired kinds (spec/wire.md §11.2): never decoded, never reused.
-const RETIRED: [u64; 10] = [10, 12, 13, 15, 16, 17, 18, 21, 22, 23];
+const RETIRED: [u64; 15] = [4, 5, 6, 8, 9, 10, 12, 13, 15, 16, 17, 18, 21, 22, 23];
 
 // spec/wire.md §11.2: a retired kind number is no message: it decodes as an unknown kind (a
 // request of it is answered Error 11), is neither request nor reply, and names no kind again
@@ -104,12 +104,11 @@ fn a_stream_with_no_events_round_trips_spec_wire_11_2() {
 fn caps() {
     let ms: std::collections::BTreeMap<_, _> = messages().into_iter().collect();
     let m = |n: &str| ms[n].clone();
-    for (name, cap) in [("delete", MAX_ITEMS), ("fetch", MAX_ITEMS), ("path reply", MAX_PATH_STEPS), ("fetch reply", MAX_ITEMS)] {
+    for (name, cap) in [("delete", MAX_ITEMS), ("fetch", MAX_ITEMS), ("fetch reply", MAX_ITEMS)] {
         assert!(Message::decode(&enc(with_list(m(name), cap))).is_ok(), "{name} at cap");
         assert_eq!(rejected(with_list(m(name), cap + 1)).error, Error::Cap(match name {
             "delete" => "delete items",
             "fetch" => "fetch ids",
-            "path reply" => "path steps",
             _ => "fetch items",
         }), "{name}");
     }
@@ -160,7 +159,7 @@ fn field_sizes() {
         assert!(Message::decode(&enc(with(pos, Value::Bytes(vec![0; len])))).is_err(), "pos {pos}");
     }
     assert_eq!(rejected(with(2, Value::Bytes(vec![0; MAX_BLOB + 1]))).error, Error::Cap("offer item"));
-    let st = |n: usize| Value::List(vec![Value::Int(6), Value::Int(1), Value::Bytes(vec![0; n])]);
+    let st = |n: usize| Value::List(vec![Value::Int(7), Value::Int(1), Value::Bytes(vec![0; 16]), Value::Bytes(vec![0; n]), Value::opt(None)]);
     assert_eq!(rejected(st(MAX_STEP_BYTES + 1)).error, Error::Cap("step"));
     // a step must parse: 323 zero bytes do not
     assert!(matches!(rejected(st(MAX_STEP_BYTES)).error, Error::Label(_)));

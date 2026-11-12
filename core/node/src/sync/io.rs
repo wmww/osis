@@ -165,15 +165,17 @@ pub struct PassStats {
     /// Passes at hosts and local passes (labels served with no host), and how many judged
     /// everything.
     pub passes: u64,
-    /// `labels()` computed anew, inbox hints vetted, claim try lists made and the claim keys in
-    /// them (recorded steps and walked ones), inbox keys tried.
+    /// `labels()` computed anew, inbox hints vetted, claim keys made to test a step's credential
+    /// by (`step_keys`), inbox keys tried.
     pub label_reads: u64,
     pub vets: u64,
-    pub claim_lists: u64,
     pub claim_keys: u64,
     pub inbox_keys: u64,
     /// Credentials of earlier recorded steps a walk tested against a peer's filter.
     pub walk_tests: u64,
+    /// Behind items sent, and answered with a child step (spec/sync.md §5, Behind).
+    pub behind_sent: u64,
+    pub behind_answered: u64,
     /// `changed_at` passes and the labels they fingerprinted (`stamp_changes`).
     pub changed_passes: u64,
     pub changed_labels: u64,

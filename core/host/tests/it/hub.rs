@@ -30,10 +30,10 @@ fn register_and_open() {
     assert!(matches!(&ev[..], [ClientEvent::Refused { code: Code::MALFORMED, .. }]), "{ev:?}");
 }
 
-// spec/sync.md §5: a claim set must hash to the step's; claims and static entries open at the head
+// spec/sync.md §5 (Register): a claim set must hash to the step's
 // spec/sync.md §5 (claim set hash)
 #[test]
-fn claims_and_static_entries() {
+fn claim_set_must_hash_to_the_steps_spec_sync_5() {
     let mut w = World::new();
     let h = w.add_hub(HostPolicy::default());
     let a = w.connect(h);
@@ -41,12 +41,6 @@ fn claims_and_static_entries() {
     let ev = w.run(a, Command::Register { label: l.id, step: l.steps[0].clone(), claim_set: Some(Label::new(4).sets[0].clone()) });
     assert!(matches!(&ev[..], [ClientEvent::Refused { code: Code::MALFORMED, .. }]), "{ev:?}");
     w.setup(a, &l);
-    let claim = l.steps[0].claim_key(&l.reader).unwrap();
-    let ev = w.run(a, Command::Open { label: l.id, key: OpenKey::Claim { step: l.steps[0].id(), key: claim } });
-    assert!(matches!(&ev[..], [ClientEvent::Opened { entry_box: None, .. }]), "{ev:?}");
-    let ka = SigningSecret::from_seed(&s32(0x32));
-    let ev = w.run(a, Command::Open { label: l.id, key: OpenKey::Static(ka) });
-    assert!(matches!(&ev[..], [ClientEvent::Opened { entry_box: Some(_), .. }]), "{ev:?}");
 }
 
 // spec/sync.md §5: deposits by the deposit key within the budget; refused under another key

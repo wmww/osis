@@ -167,11 +167,43 @@ impl SyncEngine {
 
     /// What a holder of static entry `entry` needs to read unread `l` (a static entry's Hit): the
     /// head's entry box for it and the path from the genesis step to the head.
-    pub(crate) fn unread_grant(&mut self, l: &LabelId, entry: &[u8; 32]) -> Result<Option<osis_proto::msg::EntryGrant>> {
+    pub(crate) fn unread_grant(&mut self, l: &LabelId, entry: &[u8; 32]) -> Result<Option<osis_proto::msg::Grant>> {
         let heads = self.unread_heads()?;
         let Some(entry_box) = heads.get(l).and_then(|h| h.claims.as_ref()).and_then(|c| c.entries.get(entry)).cloned() else { return Ok(None) };
-        let path = self.hub().path(l).map_err(hub_err)?;
-        Ok(Some(osis_proto::msg::EntryGrant { entry_box, path }))
+        let steps = self.hub().path(l).map_err(hub_err)?;
+        Ok(Some(osis_proto::msg::Grant { entry_box: Some(entry_box), steps }))
+    }
+
+    /// The answer to a Behind item on unread `l` (spec/sync.md §5, Behind): the child of `step`
+    /// (none: of the newest step bearing `key`), a step of the hub store's path other than its
+    /// head that bears sync key `key`, when `sig` is an open signature by that key over this side's
+    /// Hello challenge and the listener's key (`challenge`, `listener`); else none. Index lookups
+    /// and two step reads, whatever the path's length.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn unread_behind(&mut self, l: &LabelId, step: Option<&osis_label::StepId>, key: &[u8; 32], sig: &Signature, challenge: &[u8; 32], listener: &[u8; 32]) -> Result<Option<Step>> {
+        if !self.is_unread(l)? {
+            return Ok(None);
+        }
+        let Ok(pk) = osis_crypto::VerifyingKey::from_slice(key) else { return Ok(None) };
+        if osis_crypto::verify_open(&pk, l, challenge, listener, sig).is_err() {
+            return Ok(None);
+        }
+        let hub = self.hub();
+        let id = match step {
+            Some(s) => *s,
+            None => match hub.step_with_sync(l, &pk).map_err(hub_err)? {
+                Some(s) => s,
+                None => return Ok(None),
+            },
+        };
+        if hub.head(l).map_err(hub_err)?.is_none_or(|h| h == id) {
+            return Ok(None);
+        }
+        if hub.step(l, &id).map_err(hub_err)?.is_none_or(|at| at.keys.sync != pk) {
+            return Ok(None);
+        }
+        let Some(child) = hub.child(l, Some(&id)).map_err(hub_err)? else { return Ok(None) };
+        hub.step(l, &child).map_err(hub_err)
     }
 
     /// Where a member of unread `l` opened by a credential its head no longer bears ends

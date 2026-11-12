@@ -21,7 +21,7 @@ pub mod serving;
 pub mod store;
 
 pub use api::{ApiCode, MAX_SUBS, Outcome, Payload};
-pub use client::{ClientConfig, ClientEvent, ClientInput, ClientOutput, ClientSession, Command, OpenKey, Request};
+pub use client::{ClientConfig, ClientEvent, ClientInput, ClientOutput, ClientSession, Command, Request};
 pub use error::Error;
 pub use serving::{Relayed, ServingConfig, ServingSession, ServingInput, ServingOutput};
 pub use relay::{RelayGate, RelayLimits, RelayVerdict};

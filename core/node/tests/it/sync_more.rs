@@ -1802,11 +1802,11 @@ fn reused_chain_copy_tombstoned_placed_fresh_spec_sync_3() {
     assert_eq!(sealed, 0, "no copy sealed again");
 }
 
-// spec/sync.md §10 (Shared set), §5 (Register): a reader away while the peer that cannot read L
-// moved its head past the reader's newest recorded step (the peer's filter shows only the new
-// head's sync key) opens L there again and reads it at the new head: its walk finds no recorded
-// step shown, the recorded path's registration is answered 9 (the head is off it), and one Open
-// walk finds the new head (issues/net-one-peer.md 3h2, interim).
+// spec/sync.md §10 (Shared set), §5 (Register, Behind): a reader away while the peer that cannot
+// read L moved its head past the reader's newest recorded step (the peer's filter shows only the
+// new head's sync key) opens L there again and reads it at the new head: its walk finds no
+// recorded step shown, the recorded path's registration is answered 9 (the head is past it), and
+// one Behind item on the old head's sync key, answered with its child, finds the new head.
 #[test]
 fn a_head_moved_past_while_away_is_opened_again_spec_sync_10() {
     let (mut net, host, [a, b, x], g, []) = hosted::<3, 0>(&[(1, Role::Read), (2, Role::Read)], [], true);
@@ -1820,13 +1820,12 @@ fn a_head_moved_past_while_away_is_opened_again_spec_sync_10() {
     net.run();
     assert_eq!(net.host_path(host, &l).len(), 2, "the new step landed");
     net.set_online(a, false);
-    let opens = net.sent_kinds.get(&4).copied().unwrap_or(0);
+    let behind = net.sync(b).pass_stats().behind_sent;
     net.set_online(b, true);
     net.advance(61_000);
     net.set_online(a, true);
     let t = net.item(a, g, g, "after");
     net.advance(61_000);
     assert_eq!(net.read(b, t), Some(s("after")), "b reads L at the new head");
-    // the old head's sync key, answered with its child, then the new head's
-    assert_eq!(net.sent_kinds.get(&4).copied().unwrap_or(0) - opens, 2, "one Open walk");
+    assert_eq!(net.sync(b).pass_stats().behind_sent - behind, 1, "one Behind item");
 }

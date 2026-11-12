@@ -2,11 +2,9 @@
 //! unbounded allocation, work, storage or diagnostics"): replies scripted frame by frame.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
-use osis_base::LabelId;
 use osis_proto::*;
 
 const T0: u64 = 1_700_000_000_000;
-const L: LabelId = LabelId([7; 16]);
 
 fn ready() -> ClientSession {
     let mut c = ClientSession::new(ClientConfig { peer_static_key: [1; 32], challenge: [2; 32] });
@@ -21,20 +19,6 @@ fn sent(out: &[ClientOutput]) -> Vec<Message> {
 
 fn reply(c: &mut ClientSession, m: Message) -> Vec<ClientOutput> {
     c.handle(T0, ClientInput::Bytes(encode_frame(&m.encode())))
-}
-
-// spec/wire.md §11.2 (Path `more`), spec/requirements.md (no unbounded work): a Path exchange the
-// node stopped is not followed
-#[test]
-fn stopped_path_not_followed_spec_wire_11_2() {
-    let mut c = ready();
-    let out = c.handle(T0, ClientInput::Command(Command::Path { label: L, after: None }));
-    let rid = sent(&out).into_iter().find_map(|m| if let Message::Path { id, .. } = m { Some(id) } else { None }).unwrap();
-    c.handle(T0, ClientInput::Command(Command::StopPath { label: L }));
-    let step = examples::Fixture::new(1).genesis.clone();
-    let out = reply(&mut c, Message::PathReply { id: rid, steps: vec![step], more: true });
-    assert!(sent(&out).is_empty(), "no next page asked");
-    assert!(!out.iter().any(|o| matches!(o, ClientOutput::Event(ClientEvent::PathSteps { .. }))));
 }
 
 fn prover(seed: u8) -> Prover {

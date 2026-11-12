@@ -28,18 +28,16 @@ pub(crate) enum Phase {
     /// the walk found shown, `LConn::shown`) is tested at each arrival, and a Hit opens it
     /// (issues/net-one-peer.md 3h2, Stale head).
     Testing,
-    /// Trying open keys in order (Open: a label with no recorded path, or a peer whose head is
-    /// off it).
-    Opening,
-    /// Registering the recorded path at a host that lacks the label.
+    /// Registering the recorded path at a peer that lacks the label.
     Registering,
-    /// Waiting for the host's path to verify its head.
-    Verifying,
+    /// The peer's head is past the newest step this node knows: a Behind item asks for the
+    /// next step (`SyncEngine::behind`).
+    Behind,
     Open,
     /// No key opens it here.
     Failed,
-    /// The host refused registering it for now (not admitted, full, the rate) or does not hold it
-    /// and this node cannot register it: opened again from scratch at `retry_at` (wall ms).
+    /// The peer refused registering it for now (not admitted, full, the rate) or does not hold it
+    /// and this node cannot register it: tested again from scratch at `retry_at` (wall ms).
     Refused { retry_at: u64 },
 }
 
@@ -50,9 +48,6 @@ pub(crate) struct LConn {
     /// The label's index (recorded, or the hint's).
     pub index: u64,
     pub phase: Phase,
-    pub tries: Vec<open::Try>,
-    /// The host refused this node's static entry (`SyncEngine::static_entry_refused`).
-    pub static_refused: bool,
     pub head: Option<Step>,
     pub keys: HeadKeys,
     /// `SyncEngine::seq` when the connection's last Pull was sent: its end is no pass end after
@@ -88,22 +83,24 @@ pub(crate) struct LConn {
     pub step_refusals: u32,
     /// Failed: when it failed; Testing: when it was last walked (each again `resync_ms` on).
     pub last_sync: u64,
+    /// The recorded path's steps whose registration is not answered yet.
     pub path: Vec<Step>,
-    /// A hinted open walked to an unverified step: the host's path is checked after the open.
+    /// A verified step of the peer's path past `label.0`'s (a static entry's grant's head, or
+    /// where a Behind walk got to): the newest step known there (`SyncEngine::newest_known`).
     pub walk: Option<Step>,
+    /// The head the peer's stream named past the open head, which Behind items walk to.
+    pub walk_to: Option<osis_label::StepId>,
     /// A recorded step and the key of its credential the peer's filter showed when the newest
     /// recorded head's was not: it is Hit, and L opens at that step (`walked`).
     pub shown: Option<(Step, osis_crypto::SigningSecret)>,
     /// A listing from the start under way here: what was present here before it, and whether
     /// the peer marked it trimmed (`known_join`, `stream_read`).
     pub relisted: Option<(BTreeSet<osis_base::BlobId>, bool)>,
-    /// The key whose open signature opened the head here (a sync key, or a claim's): what reads
-    /// the label there when this node holds no secret of the head yet (`reader_sync_keys`).
-    pub open_key: Option<osis_crypto::SigningSecret>,
-    /// A static-entry open's entry box, opened once the host's path verified the head.
-    pub entry_box: Option<osis_schema::core_types::SecretBox>,
-    /// Write keys of a host path verified here (a label not recorded in `label.0`): stamps
-    /// under them vouch for an entry.
+    /// The key whose open signature this node's Hit opened the label by here (a sync key, or a
+    /// claim's): what it tests there while it holds no secret of the head yet (`peer_creds`).
+    pub hit_key: Option<osis_crypto::SigningSecret>,
+    /// Write keys of steps verified here that `label.0` does not record (a grant's path, a
+    /// Behind walk's): stamps under them vouch for an entry.
     pub writers: Vec<osis_crypto::VerifyingKey>,
 }
 
@@ -159,8 +156,6 @@ pub(crate) struct Requests {
     pub deleting: BTreeMap<(LabelId, osis_base::BlobId), (u64, u64)>,
     /// Blobs the host did not deliver when fetched (since it last announced them).
     pub missing: BTreeSet<osis_base::BlobId>,
-    /// Reopens in a row per label.
-    pub reopens: BTreeMap<LabelId, u32>,
     /// Labels walked because they were not members after a filter arrival, with that arrival's
     /// number: once per arrival (`shared_unopened`).
     pub walked: BTreeMap<LabelId, u64>,
@@ -179,7 +174,6 @@ impl Requests {
     pub fn forget(&mut self, gone: impl Fn(&LabelId) -> bool) {
         self.sent.retain(|(l, _), _| !gone(l));
         self.deleting.retain(|(l, _), _| !gone(l));
-        self.reopens.retain(|l, _| !gone(l));
         self.walked.retain(|l, _| !gone(l));
         self.registered.retain(|l, _| !gone(l));
         self.refused.retain(|(l, _)| !gone(l));
@@ -416,10 +410,7 @@ impl SyncEngine {
                     self.engine.core.events.flush();
                 }
             }
-            E::Opened { label, head, entry_box } => self.opened(conn, label, head, entry_box, out)?,
-            E::Step { label, step } => self.stale_step(conn, label, step, out)?,
             E::Registered { label } => self.registered(conn, label, out)?,
-            E::PathSteps { label, steps, more } => self.path_steps(conn, label, steps, more, out)?,
             E::DeleteStatus { label, blob_ids, codes } => self.delete_status(conn, label, blob_ids, codes)?,
             // the listener keeps no record of this side (it refused the proofs or the Resume): the
             // set still runs
@@ -471,7 +462,7 @@ impl SyncEngine {
         for (conn, host) in conns {
             for (g, l, hosts) in &labels {
                 // failed under another thing or a hint's other index (a hint's sender named this
-                // label so): no Open is in flight, so it starts again as what wants it now
+                // label so): it starts again as what wants it now
                 let index = self.state.hints.get(l).filter(|h| h.via.is_none() && h.thing == *g).map(|h| h.index);
                 let known = self.conns.get(&conn).and_then(|c| c.labels.get(l)).is_some_and(|x| (x.group == *g && index.is_none_or(|i| i == x.index)) || !matches!(x.phase, Phase::Failed | Phase::Refused { .. }));
                 if !known && hosts.contains(&host) {

@@ -39,10 +39,10 @@ impl ServedLabel {
 
     /// What a holder of static entry `entry` needs to read the label (spec/sync.md §10, Shared
     /// set): the head's entry box for it and the path to the head.
-    pub(crate) fn grant(&self, entry: &[u8; 32]) -> Option<osis_proto::msg::EntryGrant> {
+    pub(crate) fn grant(&self, entry: &[u8; 32]) -> Option<osis_proto::msg::Grant> {
         let head = self.path.last()?;
         let entry_box = self.claims.get(&head.id())?.entries.get(entry)?.clone();
-        Some(osis_proto::msg::EntryGrant { entry_box, path: self.path.clone() })
+        Some(osis_proto::msg::Grant { entry_box: Some(entry_box), steps: self.path.clone() })
     }
 
     /// The path to the deepest step of `steps` (the lowest ID among equals).

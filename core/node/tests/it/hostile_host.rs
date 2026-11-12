@@ -4,15 +4,15 @@
 //! diagnostics"): frames injected on a node's connection to a peer that cannot read the label, or a scripted one; plus
 //! what deletion must reach at a host.
 
-use crate::net::{hosted, hosted_nodes};
+use crate::net::hosted;
 use crate::net;
 use net::*;
 use osis_base::format::MAX_DRIFT_MS;
 use osis_base::{Ak, LabelId, Role, Value};
 use osis_crypto::{Epoch, LabelRole, Secret32, SeededRng, label_role_key};
 use osis_label::{Parent, StepKeys, genesis_label, register};
-use osis_node::sync::{Action, ConnId, Event, SyncEngine};
-use osis_proto::{FrameDecoder, Hello, Message, encode_frame};
+use osis_node::sync::{Action, ConnId, Event};
+use osis_proto::{FrameDecoder, Message, encode_frame};
 
 fn frame(m: Message) -> Vec<u8> {
     encode_frame(&m.encode())
@@ -63,34 +63,6 @@ fn unsolicited_push_stores_nothing_spec_wire_11_2() {
     for b in &blobs {
         assert!(!net.sync(a).holds_blob(&osis_label::blob_id(b)), "no blob stored");
     }
-}
-
-// spec/sync.md §5 (walk: "verifying each step under its parent's delete key, the genesis step
-// against the label ID"), spec/requirements.md (no unbounded allocation): a host path that
-// does not verify is refused at its first page, not buffered until the host ends it. A label
-// known by its ID and hosts alone (a hint: no recorded path) is walked by Open from the start.
-#[test]
-fn bad_path_refused_at_first_page_spec_sync_5() {
-    let (mut net, host, [a], g, []) = hosted::<1, 0>(&[], [], false);
-    let hosts = vec![net.address(host)];
-    // the host's head for the hint: under the sync key the node tries (g's), on no path it holds
-    let gl = net.group_labels(a).into_iter().find(|(t, _)| *t == g).expect("g's label").1;
-    let mut head = gl.steps.values().next().expect("a step").0.clone();
-    head.label = LabelId([0x55; 16]);
-    let mut se: SyncEngine = net.take(a);
-    let hint = LabelId([0x55; 16]);
-    let acts = se.follow(g, g, hint, hosts);
-    let conn = acts.iter().find_map(|x| if let Action::Dial { conn, .. } = x { Some(*conn) } else { None }).expect("dial");
-    se.handle(Event::Up { conn });
-    let acts = se.handle(Event::Bytes { conn, bytes: encode_frame(&Hello::new(net.now(), [9; 32]).encode()) });
-    let (id, label) = sent(&acts, conn).into_iter().find_map(|m| if let Message::Open { id, label, .. } = m { (label == hint).then_some((id, label)) } else { None }).expect("open");
-    // an unrecorded head: the node asks for the path to verify it
-    let acts = se.handle(Event::Bytes { conn, bytes: frame(Message::Opened { id, head, entry_box: None }) });
-    let pid = sent(&acts, conn).into_iter().find_map(|m| if let Message::Path { id, label: l, .. } = m { (l == label).then_some(id) } else { None }).expect("path");
-    se.take_diagnostics();
-    se.handle(Event::Bytes { conn, bytes: frame(Message::PathReply { id: pid, steps: vec![foreign_step(50); 4], more: true }) });
-    let d = se.take_diagnostics();
-    assert!(d.iter().any(|x| x.contains("host path does not verify")), "refused at the first page: {d:?}");
 }
 
 /// The first relay-only entry sent on `conn` (a cursorless Stream carrying its bytes): its label
@@ -167,39 +139,6 @@ fn junk_relays_raise_no_floor_spec_sync_9() {
     assert_eq!(fired(&rx).len(), 1, "the real signal fires");
 }
 
-// spec/requirements.md (a node serving data it cannot read must not learn node identities; groups unlinkable beyond
-// their overlap), spec/sync.md §2 (a key actor reads a label as a listed reader): a node holding a
-// key actor (a link key) never presents its signing key at a label whose group does
-// not list it, however its other opens fare.
-#[test]
-fn key_actor_not_presented_elsewhere_spec_sync_5() {
-    let (mut net, _host, [a], _g, []) = hosted::<1, 0>(&[], [], false);
-    let ka = net.engine(a).hold_key_actor(Secret32::from_bytes([0x3c; 32])).unwrap();
-    assert!(net.engine(a).held_key_actors() > 0, "{ka}");
-    let signing = osis_crypto::KeyActorKeys::from_seed(&Secret32::from_bytes([0x3c; 32])).signing.verifying_key();
-    let mut se: SyncEngine = net.take(a);
-    let acts = se.handle(Event::Local);
-    let conn = acts.iter().find_map(|x| if let Action::Dial { conn, .. } = x { Some(*conn) } else { None }).expect("dial");
-    se.handle(Event::Up { conn });
-    let mut acts = se.handle(Event::Bytes { conn, bytes: encode_frame(&Hello::new(net.now(), [9; 32]).encode()) });
-    // every open refused: the node goes through all its tries
-    for _ in 0..64 {
-        let opens: Vec<Message> = sent(&acts, conn).into_iter().filter(|m| matches!(m, Message::Open { .. })).collect();
-        if opens.is_empty() {
-            break;
-        }
-        let mut next = Vec::new();
-        for m in opens {
-            let Message::Open { id, proof, .. } = m else { continue };
-            if let osis_label::Proof::Static { signing: pk, .. } = proof {
-                assert_ne!(pk, signing, "the key actor's signing key went to a label it does not read");
-            }
-            next.extend(se.handle(Event::Bytes { conn, bytes: frame(Message::Error { id, code: osis_proto::Code::REFUSED }) }));
-        }
-        acts = next;
-    }
-}
-
 // spec/requirements.md (peer input never causes unbounded storage), spec/sync.md §3 (only writers
 // add stamped entries; deposits are readable by co-readers): a host's made-up unstamped
 // entries under an opened label that open under nothing held leave no blob, and only a capped
@@ -223,120 +162,6 @@ fn junk_under_opened_label_kept_nowhere_spec_sync_3() {
     // past the cap not even the entry: a host's endless junk leaves bounded metadata
     let n = net.sync(a).entries(&l).len();
     assert!(n <= before + 50, "{n}");
-}
-
-// spec/sync.md §2, §5 (a key actor claims the current step by its static entry; the step's entry
-// box carries the read secret; walks verify each step under its parent, the genesis against the
-// label ID), spec/crypto.md §4 (sealed boxes are unauthenticated): a host's forged head and
-// entry box teach the key actor no secret.
-#[test]
-fn forged_entry_box_teaches_nothing_spec_sync_5() {
-    let (mut net, host, [a]) = hosted_nodes::<1>();
-    let seed = Secret32::from_bytes([0x3c; 32]);
-    let ka = net.engine(a).hold_key_actor(seed.clone()).unwrap();
-    let held = |se: &SyncEngine| se.engine().epochs(&ka).map(|e| e.read.held_newest_first().len()).unwrap_or(0);
-    let keys = osis_crypto::KeyActorKeys::from_seed(&seed);
-    // the host's own label, its genesis boxing a secret of its choice to the key actor
-    let b = 0x60u8;
-    let (read, write, admin, dep, sync) = (Secret32::from_bytes([b; 32]), Secret32::from_bytes([b + 1; 32]), Secret32::from_bytes([b + 2; 32]), Secret32::from_bytes([b + 3; 32]), Secret32::from_bytes([b + 4; 32]));
-    let skeys = StepKeys::derive(&sync, &write, &admin, 0, &dep, &genesis_label(&admin, 0));
-    let delete = label_role_key(LabelRole::Delete, &admin, 0);
-    let reader = osis_label::Reader::Static { signing: keys.signing.verifying_key(), kem: keys.kem.public() };
-    let (fake, set) = register(Parent::Genesis(&delete), skeys, &[reader], (&ka, Epoch::derive(&ka, Role::Read, 0, &read).unwrap(), &read), (Epoch::derive(&ka, Role::Sync, 0, &read).unwrap(), &read), &mut SeededRng::from_u64(0)).unwrap();
-    let entry_box = set.entry_box(&fake.label, &keys.signing.verifying_key()).cloned().expect("entry box");
-    let target = LabelId([0x42; 16]);
-    let addr = net.address(host);
-    let mut se: SyncEngine = net.take(a);
-    let before = held(&se);
-    let acts = se.follow(ka, ka, target, vec![addr]);
-    let conn = acts.iter().find_map(|x| if let Action::Dial { conn, .. } = x { Some(*conn) } else { None }).expect("dial");
-    se.handle(Event::Up { conn });
-    let mut acts = se.handle(Event::Bytes { conn, bytes: encode_frame(&Hello::new(net.now(), [9; 32]).encode()) });
-    let mut path = None;
-    for _ in 0..64 {
-        let opens: Vec<Message> = sent(&acts, conn).into_iter().filter(|m| matches!(m, Message::Open { label, .. } if *label == target)).collect();
-        if opens.is_empty() {
-            break;
-        }
-        let mut next = Vec::new();
-        for m in opens {
-            let Message::Open { id, proof, .. } = m else { continue };
-            let reply = match proof {
-                osis_label::Proof::Static { .. } => Message::Opened { id, head: fake.clone(), entry_box: Some(entry_box.clone()) },
-                _ => Message::Error { id, code: osis_proto::Code::REFUSED },
-            };
-            let r = se.handle(Event::Bytes { conn, bytes: frame(reply) });
-            path = path.or_else(|| sent(&r, conn).into_iter().find_map(|m| if let Message::Path { id, label, .. } = m { (label == target).then_some(id) } else { None }));
-            next.extend(r);
-        }
-        acts = next;
-    }
-    assert_eq!(held(&se), before, "nothing learned before the path verified");
-    let pid = path.expect("the head's path is asked for");
-    se.take_diagnostics();
-    se.handle(Event::Bytes { conn, bytes: frame(Message::PathReply { id: pid, steps: vec![fake.clone()], more: false }) });
-    assert!(se.take_diagnostics().iter().any(|x| x.contains("host path does not verify")));
-    assert_eq!(held(&se), before, "a forged head's box teaches nothing");
-}
-
-// spec/sync.md §2 (a step's entry box carries the read secret of its epoch and the sync secret
-// whose key the step registers), spec/crypto.md §4 (sealed boxes are unauthenticated): a genuine head with a
-// substituted entry box (sealed by the host to the key actor's public KEM key) teaches no
-// secret: one whose sync secret does not derive the head's sync key is refused.
-#[test]
-fn substituted_entry_box_teaches_nothing_spec_sync_2() {
-    let (mut net, host, [a]) = hosted_nodes::<1>();
-    let seed = Secret32::from_bytes([0x3d; 32]);
-    let ka = net.engine(a).hold_key_actor(seed.clone()).unwrap();
-    let held = |se: &SyncEngine| se.engine().epochs(&ka).is_some_and(|e| e.read.held_newest_first().iter().any(|(_, s)| s.expose() == &[0x99; 32]));
-    let keys = osis_crypto::KeyActorKeys::from_seed(&seed);
-    let b = 0x70u8;
-    let (read, write, admin, dep, sync) = (Secret32::from_bytes([b; 32]), Secret32::from_bytes([b + 1; 32]), Secret32::from_bytes([b + 2; 32]), Secret32::from_bytes([b + 3; 32]), Secret32::from_bytes([b + 4; 32]));
-    let skeys = StepKeys::derive(&sync, &write, &admin, 0, &dep, &genesis_label(&admin, 0));
-    let delete = label_role_key(LabelRole::Delete, &admin, 0);
-    let reader = || osis_label::Reader::Static { signing: keys.signing.verifying_key(), kem: keys.kem.public() };
-    let e1 = Epoch::derive(&ka, Role::Read, 1, &read).unwrap();
-    // the genuine genesis (its path verifies), and a box for its slot carrying another secret
-    let (head, _) = register(Parent::Genesis(&delete), skeys, &[reader()], (&ka, e1, &read), (Epoch::derive(&ka, Role::Sync, 1, &sync).unwrap(), &sync), &mut SeededRng::from_u64(0)).unwrap();
-    let slot = osis_crypto::BoxSlot::Entry { label: head.label, step_key: head.step_key, group: ka };
-    let other = Secret32::from_bytes([0x99; 32]);
-    let item = osis_crypto::EntryItem { epoch: Epoch::derive(&ka, Role::Read, 1, &other).unwrap(), secret: other.clone(), earlier: None, sync: (Epoch::derive(&ka, Role::Sync, 1, &other).unwrap(), other) };
-    let sealed = osis_crypto::seal_entry(keys.kem.public(), &slot, &item, &mut SeededRng::from_u64(1)).unwrap();
-    use osis_schema::core_types as ct;
-    let forged = ct::SecretBox::Sealed(ct::SealedBox { keyset: None, suite: u64::from(osis_crypto::SUITE_1), sealed: ct::Sealed::X25519MlKem768(sealed) });
-    let target = head.label;
-    let addr = net.address(host);
-    let mut se: SyncEngine = net.take(a);
-    let before = held(&se);
-    let acts = se.follow(ka, ka, target, vec![addr]);
-    let conn = acts.iter().find_map(|x| if let Action::Dial { conn, .. } = x { Some(*conn) } else { None }).expect("dial");
-    se.handle(Event::Up { conn });
-    let mut acts = se.handle(Event::Bytes { conn, bytes: encode_frame(&Hello::new(net.now(), [9; 32]).encode()) });
-    let mut path = None;
-    for _ in 0..64 {
-        let opens: Vec<Message> = sent(&acts, conn).into_iter().filter(|m| matches!(m, Message::Open { label, .. } if *label == target)).collect();
-        if opens.is_empty() {
-            break;
-        }
-        let mut next = Vec::new();
-        for m in opens {
-            let Message::Open { id, proof, .. } = m else { continue };
-            let reply = match proof {
-                osis_label::Proof::Static { .. } => Message::Opened { id, head: head.clone(), entry_box: Some(forged.clone()) },
-                _ => Message::Error { id, code: osis_proto::Code::REFUSED },
-            };
-            let r = se.handle(Event::Bytes { conn, bytes: frame(reply) });
-            path = path.or_else(|| sent(&r, conn).into_iter().find_map(|m| if let Message::Path { id, label, .. } = m { (label == target).then_some(id) } else { None }));
-            next.extend(r);
-        }
-        acts = next;
-    }
-    let pid = path.expect("the head's path is asked for");
-    se.take_diagnostics();
-    se.handle(Event::Bytes { conn, bytes: frame(Message::PathReply { id: pid, steps: vec![head.clone()], more: false }) });
-    let diags = se.take_diagnostics();
-    assert_eq!(held(&se), before, "a substituted box teaches nothing");
-    assert!(diags.iter().any(|x| x.contains("does not derive the head's sync key")), "{diags:?}");
 }
 
 // spec/requirements.md, Deletion ("an admin's [purge of a large value] removes all of [its
@@ -742,181 +567,6 @@ fn outside_delete_waits_for_settled_view_spec_sync_6() {
     net.settle(10_000);
     net.advance(61_000);
     assert!(ids.iter().all(|i| !net.host_ids(host, &old).contains(i)), "content kept under the replaced label on a settled view");
-}
-
-// spec/requirements.md (Data a node cannot read: no link between groups), spec/sync.md §2, §5: a hinted
-// open (a link's label) presents only the static entry of the key actor it
-// follows for, never another held key actor's signing key.
-#[test]
-fn hinted_open_presents_only_its_key_actor_spec_sync_5() {
-    let (mut net, host, [a]) = hosted_nodes::<1>();
-    let (s1, s2) = (Secret32::from_bytes([0x3d; 32]), Secret32::from_bytes([0x3e; 32]));
-    let k1 = net.engine(a).hold_key_actor(s1.clone()).unwrap();
-    net.engine(a).hold_key_actor(s2.clone()).unwrap();
-    let (v1, v2) = (osis_crypto::KeyActorKeys::from_seed(&s1).signing.verifying_key(), osis_crypto::KeyActorKeys::from_seed(&s2).signing.verifying_key());
-    let target = LabelId([0x43; 16]);
-    let addr = net.address(host);
-    let mut se: SyncEngine = net.take(a);
-    let acts = se.follow(k1, k1, target, vec![addr]);
-    let conn = acts.iter().find_map(|x| if let Action::Dial { conn, .. } = x { Some(*conn) } else { None }).expect("dial");
-    se.handle(Event::Up { conn });
-    let mut acts = se.handle(Event::Bytes { conn, bytes: encode_frame(&Hello::new(net.now(), [9; 32]).encode()) });
-    let mut statics = Vec::new();
-    for _ in 0..64 {
-        let opens: Vec<Message> = sent(&acts, conn).into_iter().filter(|m| matches!(m, Message::Open { label, .. } if *label == target)).collect();
-        if opens.is_empty() {
-            break;
-        }
-        let mut next = Vec::new();
-        for m in opens {
-            let Message::Open { id, proof, .. } = m else { continue };
-            if let osis_label::Proof::Static { signing, .. } = proof {
-                statics.push(signing);
-            }
-            next.extend(se.handle(Event::Bytes { conn, bytes: frame(Message::Error { id, code: osis_proto::Code::REFUSED }) }));
-        }
-        acts = next;
-    }
-    assert!(statics.contains(&v1), "the followed key actor tries its static entry");
-    assert!(!statics.contains(&v2), "another held key actor is never named to the host");
-}
-
-// spec/sync.md §3: a host answering a hinted open by sync key with a head of another key does not
-// open the label under the hinted thing (it would read as that thing's at every host).
-#[test]
-fn hinted_open_needs_a_head_of_its_sync_key_spec_sync_3() {
-    let (mut net, host, [a], g, []) = hosted::<1, 0>(&[], [], true);
-    let head = foreign_step(0x51);
-    let target = head.label;
-    let addr = net.address(host);
-    let conn = net.conn_to(a, host).expect("connected");
-    let mut se: SyncEngine = net.take(a);
-    let acts = se.follow(g, g, target, vec![addr]);
-    let opens: Vec<Message> = sent(&acts, conn).into_iter().filter(|m| matches!(m, Message::Open { label, .. } if *label == target)).collect();
-    let Some(Message::Open { id, .. }) = opens.first() else { panic!("the hint opens by its sync key") };
-    let acts = se.handle(Event::Bytes { conn, bytes: frame(Message::Opened { id: *id, head, entry_box: None }) });
-    assert!(!sent(&acts, conn).iter().any(|m| matches!(m, Message::Path { label, .. } if *label == target)), "the head is not taken up");
-}
-
-// spec/sync.md §5 (a superseded step's child is verified under its parent; a hinted label has
-// none recorded), spec/requirements.md (a peer serving data it cannot read cannot link labels or recognise
-// nodes): a host answering a hinted label's open with a step of its choosing gets claims
-// only by the actors the hint is for (the thing's holders this node is), never by another
-// actor this node holds secrets of.
-#[test]
-fn hinted_walk_claims_only_for_its_actors_spec_sync_5() {
-    let (mut net, host, [a, b]) = hosted_nodes::<2>();
-    // a is a holder of g (b's group) and admin of its own g2
-    let g = net.group(b, &[(a, Role::Read)], &[host]);
-    let g2 = net.group_seeded(a, &[], vec![net.address(host)], 7);
-    let k = net.engine(a).hold_key_actor(Secret32::from_bytes([0x3f; 32])).unwrap();
-    let held = |net: &mut Net, t| net.engine(a).epochs(&t).unwrap().read.held_newest_first().into_iter().map(|(_, s)| osis_crypto::role_kem(s).x25519().clone()).collect::<Vec<_>>();
-    let others: Vec<osis_crypto::X25519Secret> = held(&mut net, g2).into_iter().chain(held(&mut net, g)).collect();
-    assert!(!others.is_empty());
-    let me = net.tid(a);
-    let own = net.engine(a).account_kems(&me)[0].x25519().clone();
-    let target = LabelId([0x44; 16]);
-    let addr = net.address(host);
-    let mut se: SyncEngine = net.take(a);
-    let acts = se.follow(k, g, target, vec![addr]);
-    let conn = acts.iter().find_map(|x| if let Action::Dial { conn, .. } = x { Some(*conn) } else { None }).expect("dial");
-    se.handle(Event::Up { conn });
-    let mut acts = se.handle(Event::Bytes { conn, bytes: encode_frame(&Hello::new(net.now(), [9; 32]).encode()) });
-    let forged = foreign_step(60);
-    let (mut walked, mut claims) = (false, Vec::new());
-    for _ in 0..64 {
-        let opens: Vec<Message> = sent(&acts, conn).into_iter().filter(|m| matches!(m, Message::Open { label, .. } if *label == target)).collect();
-        if opens.is_empty() {
-            break;
-        }
-        let mut next = Vec::new();
-        for m in opens {
-            let Message::Open { id, proof, .. } = m else { continue };
-            let reply = match proof {
-                // the first guessed sync key is answered with the host's own "next step"
-                osis_label::Proof::Sync { .. } if !walked => {
-                    walked = true;
-                    Message::Step { id, step: forged.clone() }
-                }
-                osis_label::Proof::Claim { pk, .. } => {
-                    claims.push(pk);
-                    Message::Error { id, code: osis_proto::Code::REFUSED }
-                }
-                _ => Message::Error { id, code: osis_proto::Code::REFUSED },
-            };
-            next.extend(se.handle(Event::Bytes { conn, bytes: frame(reply) }));
-        }
-        acts = next;
-    }
-    assert!(walked, "the hinted open was answered with a step");
-    assert_eq!(claims, vec![forged.claim_key(&own).unwrap().verifying_key()], "claims by this node's own key only (a's edge on g)");
-    for x in &others {
-        assert!(!claims.contains(&forged.claim_key(x).unwrap().verifying_key()), "another actor's pseudonym went to the host");
-    }
-}
-
-// spec/sync.md §5 (claims by the keys a step's claim set lists: holders' read-role KEM keys),
-// spec/crypto.md §4 (boxes): a node that reads the hinted thing through an actor a rotation
-// boxed, with no `roles.0` edge of it held, still claims by that actor's key, and by no other.
-#[test]
-fn hinted_walk_claims_for_boxed_actor_spec_sync_5() {
-    let (mut net, host, [a, b]) = hosted_nodes::<2>();
-    // P and g2: a's groups; g: b's, its rotation boxing P with no edge of P on g
-    let p = net.group_seeded(a, &[], vec![net.address(host)], 5);
-    let g2 = net.group_seeded(a, &[], vec![net.address(host)], 7);
-    net.pair(a, b);
-    let g = net.group_seeded(b, &[], vec![net.address(host)], 3);
-    let bt = net.tid(b);
-    let e = net.engine(b);
-    let rcpt = recipients_of(e, &[(bt, Role::Admin), (p, Role::Read)]);
-    rotation(e, g, &rcpt, 11, false);
-    net.pair(b, a);
-    assert!(net.engine(a).epochs(&g).is_some_and(|x| x.read.holds_any()), "a reads g through P's box");
-    assert!(!net.engine(a).get_typed(&g, &osis_schema::core_types::ROLES).unwrap().unwrap_or_default().contains_key(&p), "no edge of P on g");
-    let k = net.engine(a).hold_key_actor(Secret32::from_bytes([0x40; 32])).unwrap();
-    let kem = |net: &mut Net, t| net.engine(a).epochs(&t).unwrap().read.held_newest_first().into_iter().map(|(_, s)| osis_crypto::role_kem(s).x25519().clone()).collect::<Vec<_>>();
-    let ps = kem(&mut net, p);
-    let others: Vec<osis_crypto::X25519Secret> = kem(&mut net, g2).into_iter().chain(kem(&mut net, g)).collect();
-    let own = net.engine(a).identity().keys().kem.x25519().clone();
-    let target = LabelId([0x45; 16]);
-    let addr = net.address(host);
-    let mut se: SyncEngine = net.take(a);
-    let acts = se.follow(k, g, target, vec![addr]);
-    let conn = acts.iter().find_map(|x| if let Action::Dial { conn, .. } = x { Some(*conn) } else { None }).expect("dial");
-    se.handle(Event::Up { conn });
-    let mut acts = se.handle(Event::Bytes { conn, bytes: encode_frame(&Hello::new(net.now(), [9; 32]).encode()) });
-    let forged = foreign_step(70);
-    let (mut walked, mut claims) = (false, Vec::new());
-    for _ in 0..64 {
-        let opens: Vec<Message> = sent(&acts, conn).into_iter().filter(|m| matches!(m, Message::Open { label, .. } if *label == target)).collect();
-        if opens.is_empty() {
-            break;
-        }
-        let mut next = Vec::new();
-        for m in opens {
-            let Message::Open { id, proof, .. } = m else { continue };
-            let reply = match proof {
-                osis_label::Proof::Sync { .. } if !walked => {
-                    walked = true;
-                    Message::Step { id, step: forged.clone() }
-                }
-                osis_label::Proof::Claim { pk, .. } => {
-                    claims.push(pk);
-                    Message::Error { id, code: osis_proto::Code::REFUSED }
-                }
-                _ => Message::Error { id, code: osis_proto::Code::REFUSED },
-            };
-            next.extend(se.handle(Event::Bytes { conn, bytes: frame(reply) }));
-        }
-        acts = next;
-    }
-    assert!(walked);
-    let want: Vec<_> = ps.iter().map(|x| forged.claim_key(x).unwrap().verifying_key()).collect();
-    assert!(!want.is_empty() && want.iter().all(|k| claims.contains(k)), "claims by P's keys");
-    assert!(!claims.contains(&forged.claim_key(&own).unwrap().verifying_key()), "not by the node's own key (no edge of it on g)");
-    for x in &others {
-        assert!(!claims.contains(&forged.claim_key(x).unwrap().verifying_key()), "another actor's pseudonym went to the host");
-    }
 }
 
 // spec/crypto.md §7, spec/sync.md §5, spec/permissions.md §6: a thing's admin who is no admin of

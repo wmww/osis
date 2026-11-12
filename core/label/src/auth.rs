@@ -1,137 +1,15 @@
-//! Signatures of label operations and their checks at a host (spec/sync.md §5, spec/wire.md
-//! §9, §11.2): open proofs and their evaluation against a registration path, stamps, deposits,
-//! deletes by the label delete key or by a delete-key signature.
+//! Signatures of label operations and their checks at a node that cannot read the label
+//! (spec/sync.md §5, spec/wire.md §9, §11.2): stamps, deposits, deletes by the label delete key
+//! or by a delete-key signature.
 
 use crate::blob::{Level, Prefix};
-use crate::cbor::{get_bytes, get_key, get_uint};
-use crate::step::{Step, StepId};
+use crate::cbor::{get_bytes, get_uint};
+use crate::step::Step;
 use crate::Error;
 use osis_base::cbor::encode;
 use osis_base::format::{DELETE_ADMIN, DELETE_WRITER};
 use osis_base::{BlobId, LabelId, Value};
-use osis_crypto::{DeleteSecret, Domain, LabelRole, Signature, SigningSecret, VerifyingKey, sign_open, static_entry, verify_delete, verify_open};
-use osis_schema::core_types::SecretBox;
-
-/// Open proof (spec/wire.md §11.2): `[0, Opt(step_id), sync_pk, sig] | [1, step_id, claim_pk,
-/// sig] | [2, signing_pk, sig] | [3]`.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Proof {
-    /// A sync key, at the step it is for when the opener holds one (a hint's holds none).
-    Sync { step: Option<StepId>, pk: VerifyingKey, sig: Signature },
-    Claim { step: StepId, pk: VerifyingKey, sig: Signature },
-    Static { signing: VerifyingKey, sig: Signature },
-}
-
-impl Proof {
-    pub fn sync(step: Option<StepId>, key: &SigningSecret, label: &LabelId, challenge: &[u8; 32], static_key: &[u8; 32]) -> Proof {
-        Proof::Sync { step, pk: key.verifying_key(), sig: sign_open(key, label, challenge, static_key) }
-    }
-    pub fn claim(step: StepId, key: &SigningSecret, label: &LabelId, challenge: &[u8; 32], static_key: &[u8; 32]) -> Proof {
-        Proof::Claim { step, pk: key.verifying_key(), sig: sign_open(key, label, challenge, static_key) }
-    }
-    /// By a key actor's signing key (its static entry).
-    pub fn static_entry(signing: &SigningSecret, label: &LabelId, challenge: &[u8; 32], static_key: &[u8; 32]) -> Proof {
-        Proof::Static { signing: signing.verifying_key(), sig: sign_open(signing, label, challenge, static_key) }
-    }
-
-    pub fn to_value(&self) -> Value {
-        Value::List(match self {
-            Proof::Sync { step, pk, sig } => vec![Value::Int(0), Value::List(step.iter().map(|s| Value::bytes(&s.0)).collect()), Value::bytes(&pk.to_bytes()), Value::bytes(&sig.0)],
-            Proof::Claim { step, pk, sig } => vec![Value::Int(1), Value::bytes(&step.0), Value::bytes(&pk.to_bytes()), Value::bytes(&sig.0)],
-            Proof::Static { signing, sig } => vec![Value::Int(2), Value::bytes(&signing.to_bytes()), Value::bytes(&sig.0)],
-        })
-    }
-
-    pub fn from_value(v: &Value) -> Result<Proof, Error> {
-        let Value::List(items) = v else { return Err(Error::Malformed("proof")) };
-        let key = |v: &Value| get_key(v, "proof key");
-        let sig = |v: &Value| get_bytes(v, "proof signature").map(Signature);
-        Ok(match items.as_slice() {
-            [Value::Int(0), Value::List(step), pk, s] => {
-                let step = match step.as_slice() {
-                    [] => None,
-                    [id] => Some(StepId(get_bytes(id, "proof step")?)),
-                    _ => return Err(Error::Malformed("proof step")),
-                };
-                Proof::Sync { step, pk: key(pk)?, sig: sig(s)? }
-            }
-            [Value::Int(1), step, pk, s] => Proof::Claim { step: StepId(get_bytes(step, "proof step")?), pk: key(pk)?, sig: sig(s)? },
-            [Value::Int(2), pk, s] => Proof::Static { signing: key(pk)?, sig: sig(s)? },
-            _ => return Err(Error::Malformed("proof")),
-        })
-    }
-
-    /// The signature over (label ID, challenge, static key) of the opened side.
-    pub fn verify_sig(&self, label: &LabelId, challenge: &[u8; 32], static_key: &[u8; 32]) -> Result<(), Error> {
-        let (Proof::Sync { pk, sig, .. } | Proof::Claim { pk, sig, .. } | Proof::Static { signing: pk, sig }) = self;
-        verify_open(pk, label, challenge, static_key, sig).map_err(|_| Error::Verify("open signature"))
-    }
-}
-
-/// What a host answers an open with (spec/sync.md §5).
-#[derive(Clone, Debug, PartialEq, Eq)]
-#[allow(clippy::large_enum_variant)] // one per Open, consumed at once
-pub enum OpenOutcome {
-    /// The label is open on the connection; for a static proof, with the head's entry box.
-    Opened(Option<SecretBox>),
-    /// A match at a superseded step: its child on the path (sent without its claim set).
-    Child(Step),
-    /// Refused like an unknown key.
-    Refused,
-}
-
-/// What `evaluate_open` reads of a host's path besides its head: indexes the store keeps as
-/// steps are added, so an open costs a constant number of lookups however long the path.
-pub trait PathIndex {
-    type Error;
-    /// The newest step on the path registering sync key `pk`.
-    fn step_with_sync(&self, pk: &VerifyingKey) -> Result<Option<StepId>, Self::Error>;
-    /// Step `step` when it is on the path.
-    fn step(&self, step: &StepId) -> Result<Option<Step>, Self::Error>;
-    /// Whether `key` (a claim key or a static entry) is in the held claim set of step `step` on
-    /// the path, with its entry box if it has one; none if not, or the set is not held. A
-    /// lookup, never a whole set: a stranger's Open must not cost a claim set's size.
-    fn claim(&self, step: &StepId, key: &[u8; 32]) -> Result<Option<Option<SecretBox>>, Self::Error>;
-    /// The child on the path of a step on it; none past the head.
-    fn child(&self, step: &StepId) -> Result<Option<Step>, Self::Error>;
-}
-
-/// Evaluates an open against a host's head and its path indexes. The signature is checked
-/// first. A sync key matches the head, else the superseded step it names when it bears that
-/// key (steps without a rotation share it, so only the step says which child the opener can
-/// verify), else, naming none, the newest superseded step bearing it; a claim at
-/// step j needs V in j's set (head: open; on the path: its child); a static proof needs the
-/// key's static entry in the head's set. At most three lookups.
-pub fn evaluate_open<I: PathIndex>(head: &Step, index: &I, proof: &Proof, challenge: &[u8; 32], static_key: &[u8; 32]) -> Result<OpenOutcome, I::Error> {
-    if proof.verify_sig(&head.label, challenge, static_key).is_err() {
-        return Ok(OpenOutcome::Refused);
-    }
-    let child_of = |s: &StepId| Ok(index.child(s)?.map_or(OpenOutcome::Refused, OpenOutcome::Child));
-    match proof {
-        Proof::Sync { pk, .. } if head.keys.sync == *pk => Ok(OpenOutcome::Opened(None)),
-        Proof::Sync { step: Some(step), pk, .. } => match index.step(step)? {
-            Some(s) if s.keys.sync == *pk => child_of(step),
-            _ => Ok(OpenOutcome::Refused),
-        },
-        Proof::Sync { step: None, pk, .. } => match index.step_with_sync(pk)? {
-            Some(s) => child_of(&s),
-            None => Ok(OpenOutcome::Refused),
-        },
-        Proof::Claim { step, pk, .. } => {
-            if index.claim(step, &pk.to_bytes())?.is_none() {
-                return Ok(OpenOutcome::Refused);
-            }
-            if *step == head.id() { Ok(OpenOutcome::Opened(None)) } else { child_of(step) }
-        }
-        Proof::Static { signing, .. } => {
-            let e = static_entry(&head.label, signing);
-            Ok(match index.claim(&head.id(), &e)? {
-                Some(entry_box) => OpenOutcome::Opened(entry_box),
-                None => OpenOutcome::Refused,
-            })
-        }
-    }
-}
+use osis_crypto::{DeleteSecret, Domain, LabelRole, Signature, SigningSecret, VerifyingKey, verify_delete};
 
 /// Digest of a stamp, deposit or publish authorization: BLAKE3 of canonical
 /// `[label_id, blob_id, wrap]`.
@@ -303,106 +181,12 @@ pub fn by_from_value(v: &Value) -> Result<Vec<(Level, Signature)>, Error> {
 mod tests {
     use super::*;
     use crate::step::tests::{Group, TG};
-    use crate::step::{ClaimSet, Parent, Reader, register};
-    use std::sync::Arc;
-    use osis_crypto::{Epoch, KeyActorKeys, SeededRng, Secret32, X25519Secret, label_role_key};
+    use crate::step::{Parent, register};
+    use osis_crypto::{Epoch, SeededRng, Secret32, label_role_key};
     use proptest::prelude::*;
-
-    /// A path and its held claim sets, indexed by scanning (`PathIndex` for tests).
-    struct Slice<'a> {
-        path: &'a [Step],
-        sets: Vec<(StepId, Arc<ClaimSet>)>,
-    }
-
-    impl PathIndex for Slice<'_> {
-        type Error = std::convert::Infallible;
-        fn step_with_sync(&self, pk: &VerifyingKey) -> Result<Option<StepId>, Self::Error> {
-            Ok(self.path.iter().rev().find(|s| s.keys.sync == *pk).map(|s| s.id()))
-        }
-        fn step(&self, step: &StepId) -> Result<Option<Step>, Self::Error> {
-            Ok(self.path.iter().find(|s| s.id() == *step).cloned())
-        }
-        fn claim(&self, step: &StepId, key: &[u8; 32]) -> Result<Option<Option<SecretBox>>, Self::Error> {
-            Ok(self.sets.iter().find(|(id, _)| id == step).and_then(|(_, c)| c.contains(key).then(|| c.entries.get(key).cloned())))
-        }
-        fn child(&self, step: &StepId) -> Result<Option<Step>, Self::Error> {
-            Ok(self.path.iter().position(|s| s.id() == *step).and_then(|i| self.path.get(i + 1)).cloned())
-        }
-    }
 
     fn epoch(n: u64) -> Epoch {
         Epoch::new(n, [n as u8; 32]).unwrap()
-    }
-
-    // spec/sync.md §5, spec/wire.md §11.2: opens by sync key (head or superseded: child), by
-    // claim (head, path, dropped set, unknown key), by static entry (with the entry box); the
-    // signature binds challenge and static key.
-    #[test]
-    fn open_evaluation() {
-        let mut rng = SeededRng::from_u64(0);
-        let (g, g2) = (Group::new(10), Group::new(20));
-        let m = X25519Secret::random(&mut rng);
-        let card = KeyActorKeys::from_seed(&Secret32::from_bytes([4; 32]));
-        let readers = [Reader::Dh(m.public()), Reader::Static { signing: card.signing.verifying_key(), kem: card.kem.public() }];
-        let (s0, c0) = register(Parent::Genesis(&g.delete(0)), g.keys(0), &readers, (&TG, Epoch::derive(&TG, osis_base::Role::Read, 0, &g.read).unwrap(), &g.read), g.sync_at(), &mut rng).unwrap();
-        let k1 = crate::StepKeys::derive(&g2.sync, &g2.write, &g2.admin, 0, &g.deposit, &s0.label);
-        let (s1, c1) = register(Parent::Child { step: &s0, delete: &g.delete(0) }, k1, &readers, (&TG, Epoch::derive(&TG, osis_base::Role::Read, 1, &g2.read).unwrap(), &g2.read), g2.sync_at(), &mut rng).unwrap();
-        let path = vec![s0.clone(), s1.clone()];
-        let sets = Slice { path: &path, sets: vec![(s0.id(), Arc::new(c0.clone())), (s1.id(), Arc::new(c1.clone()))] };
-        let evaluate_open = |p: &[Step], ix: &Slice<'_>, pr: &Proof, ch: &[u8; 32], sk: &[u8; 32]| evaluate_open(p.last().unwrap(), ix, pr, ch, sk).unwrap();
-        let (ch, sk) = ([1; 32], [2; 32]);
-        let l = s0.label;
-        let sync1 = label_role_key(LabelRole::Sync, &g2.sync, 0);
-        let sync0 = label_role_key(LabelRole::Sync, &g.sync, 0);
-        assert_eq!(evaluate_open(&path, &sets, &Proof::sync(None, &sync1, &l, &ch, &sk), &ch, &sk), OpenOutcome::Opened(None));
-        assert_eq!(evaluate_open(&path, &sets, &Proof::sync(None, &sync0, &l, &ch, &sk), &ch, &sk), OpenOutcome::Child(s1.clone()));
-        assert_eq!(evaluate_open(&path, &sets, &Proof::sync(None, &sync1, &l, &[9; 32], &sk), &ch, &sk), OpenOutcome::Refused);
-        assert_eq!(evaluate_open(&path, &sets, &Proof::sync(None, &sync1, &l, &ch, &[9; 32]), &ch, &sk), OpenOutcome::Refused);
-        let cl0 = s0.claim_key(&m).unwrap();
-        let cl1 = s1.claim_key(&m).unwrap();
-        assert_eq!(evaluate_open(&path, &sets, &Proof::claim(s0.id(), &cl0, &l, &ch, &sk), &ch, &sk), OpenOutcome::Child(s1.clone()));
-        assert_eq!(evaluate_open(&path, &sets, &Proof::claim(s1.id(), &cl1, &l, &ch, &sk), &ch, &sk), OpenOutcome::Opened(None));
-        assert_eq!(evaluate_open(&path, &sets, &Proof::claim(s1.id(), &cl0, &l, &ch, &sk), &ch, &sk), OpenOutcome::Refused);
-        let dropped = Slice { path: &path, sets: vec![(s1.id(), Arc::new(c1.clone()))] };
-        assert_eq!(evaluate_open(&path, &dropped, &Proof::claim(s0.id(), &cl0, &l, &ch, &sk), &ch, &sk), OpenOutcome::Refused);
-        let p = Proof::static_entry(&card.signing, &l, &ch, &sk);
-        assert_eq!(evaluate_open(&path, &sets, &p, &ch, &sk), OpenOutcome::Opened(c1.entry_box(&l, &card.signing.verifying_key()).cloned()));
-        let stranger = KeyActorKeys::from_seed(&Secret32::from_bytes([5; 32]));
-        assert_eq!(evaluate_open(&path, &sets, &Proof::static_entry(&stranger.signing, &l, &ch, &sk), &ch, &sk), OpenOutcome::Refused);
-        for pr in [Proof::sync(None, &sync0, &l, &ch, &sk), Proof::claim(s0.id(), &cl0, &l, &ch, &sk), p] {
-            assert_eq!(Proof::from_value(&pr.to_value()).unwrap(), pr);
-        }
-        assert!(Proof::from_value(&Value::List(vec![Value::Int(3)])).is_err(), "no proof 3");
-    }
-
-    // spec/sync.md §5, spec/wire.md §11.2: a sync key at a superseded step it bears is answered
-    // with that step's child, which verifies under it, also where a later step without a rotation
-    // bears the key too; a step that does not bear the key, or one off the path, is refused;
-    // naming no step, the newest step bearing the key answers
-    #[test]
-    fn sync_key_open_at_its_step_spec_sync_5() {
-        let mut rng = SeededRng::from_u64(0);
-        let (g, g2) = (Group::new(40), Group::new(50));
-        let rd = |n: u64, s: &Secret32| Epoch::derive(&TG, osis_base::Role::Read, n, s).unwrap();
-        let (s0, _) = register(Parent::Genesis(&g.delete(0)), g.keys(0), &[], (&TG, rd(0, &g.read), &g.read), g.sync_at(), &mut rng).unwrap();
-        // a step without a rotation (a reader listed since), then a rotation
-        let (s1, _) = register(Parent::Child { step: &s0, delete: &g.delete(0) }, g.keys(0), &[], (&TG, rd(0, &g.read), &g.read), g.sync_at(), &mut rng).unwrap();
-        let k2 = crate::StepKeys::derive(&g2.sync, &g2.write, &g2.admin, 0, &g.deposit, &s0.label);
-        let (s2, _) = register(Parent::Child { step: &s1, delete: &g.delete(0) }, k2, &[], (&TG, rd(1, &g2.read), &g2.read), g2.sync_at(), &mut rng).unwrap();
-        let path = vec![s0.clone(), s1.clone(), s2.clone()];
-        let ix = Slice { path: &path, sets: Vec::new() };
-        let (ch, sk) = ([1; 32], [2; 32]);
-        let l = s0.label;
-        let sync0 = label_role_key(LabelRole::Sync, &g.sync, 0);
-        let open = |step: Option<StepId>| evaluate_open(&s2, &ix, &Proof::sync(step, &sync0, &l, &ch, &sk), &ch, &sk).unwrap();
-        assert_eq!(open(Some(s0.id())), OpenOutcome::Child(s1.clone()));
-        s1.verify_child(&s0).unwrap();
-        assert_eq!(open(Some(s1.id())), OpenOutcome::Child(s2.clone()));
-        assert_eq!(open(None), OpenOutcome::Child(s2.clone()), "no step named: the newest bearing the key");
-        assert_eq!(open(Some(s2.id())), OpenOutcome::Refused, "the head does not bear it");
-        assert_eq!(open(Some(StepId([7; 32]))), OpenOutcome::Refused, "off the path");
-        let at = Proof::sync(Some(s1.id()), &sync0, &l, &ch, &sk);
-        assert_eq!(Proof::from_value(&at.to_value()).unwrap(), at);
     }
 
     // spec/sync.md §5, spec/wire.md §11.2: stamps and deposits verify

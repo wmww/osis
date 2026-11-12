@@ -13,13 +13,12 @@
 //! Rows, in one table of the store (encrypted under the host store's own key tree; what a host
 //! sees anyway, blobs are ciphertext):
 //! `L label` meta; `K label` the head's earlier role keys (`HeadKeys`); `S label step`
-//! step; `C label step` claim set, `H label step key` each of its keys (the entry box or empty:
-//! an Open looks one key up instead of loading the set); path indexes `V label sync_key` the newest step registering
-//! that sync key, `W label` the genesis step and `W label step` its child (an Open or a Path page
-//! reads no path); `E label blob` entry;
+//! step; `C label step` claim set; path indexes `V label sync_key` the newest step registering
+//! that sync key, `W label` the genesis step and `W label step` its child (a Behind item reads no
+//! path); `E label blob` entry;
 //! `T label blob` tombstone time; `R blob` reference count and the blob's prefix bytes
 //! (`blob_prefix`); sweep indexes `X t label blob` (expiry), `Y t label blob` (tombstone drop),
-//! `Z t label step` (claim-set drop, with its `H` rows); `N` host-wide totals (labels, entries,
+//! `Z t label step` (claim-set drop); `N` host-wide totals (labels, entries,
 //! bytes); `B blob` the engine's hold (`engine.rs`), `n label` node sync's (`reader.rs`).
 //!
 //! Ephemeral entries (blob prefix class ephemeral, spec/sync.md §4) are held in memory only:
@@ -28,7 +27,7 @@
 use osis_base::format::{MAX_DRIFT_MS, ROLE_KEEP_MS, TOMBSTONE_LIFETIME_MS};
 use osis_base::{BlobId, Clock, LabelId};
 use osis_crypto::Signature;
-use osis_proto::msg::{ClaimSet, Code, SecretBox, Step, StepId, WRAP_LEN};
+use osis_proto::msg::{ClaimSet, Code, Step, StepId, WRAP_LEN};
 use osis_proto::{EntryMeta, HeadKeys, LabelStore, Put, StoreError};
 use osis_store::{KeyValue, Shred, Store, Suspended, Table, Transaction};
 use crate::{Admission, LabelCaps};
@@ -687,23 +686,9 @@ pub struct Swept {
     pub more: bool,
 }
 
-/// A held claim set's rows: the set (`C`) and its index (`H`, a key and its entry box or empty),
-/// one row per distinct key (a set may list a key more than once; counting each listing would
-/// leave bytes in the totals the sweep never frees).
-fn set_rows(label: &LabelId, id: &StepId, c: &ClaimSet) -> (Vec<u8>, Vec<KeyValue>) {
-    let index = c.claims.iter().collect::<BTreeSet<_>>().into_iter().map(|k| (key(b'H', &[&label.0, &id.0, k]), c.entries.get(k).map(osis_label::step::entry_box_bytes).unwrap_or_default())).collect();
-    (c.to_bytes(), index)
-}
-
-fn rows_bytes((set, index): &(Vec<u8>, Vec<KeyValue>)) -> u64 {
-    (set.len() + index.iter().map(|(k, v)| k.len() + v.len()).sum::<usize>()) as u64
-}
-
-/// The bytes step `id`'s claim set `c` counts toward the byte caps while held: the set and its
-/// index rows.
-#[cfg(test)]
-pub fn claim_set_bytes(label: &LabelId, id: &StepId, c: &ClaimSet) -> u64 {
-    rows_bytes(&set_rows(label, id, c))
+/// The bytes a held claim set counts toward the byte caps: its one row (`C`).
+pub fn claim_set_bytes(c: &ClaimSet) -> u64 {
+    c.to_bytes().len() as u64
 }
 
 /// `LabelStore` over a `Store`. Holds the store, the clock for rate windows and supersession
@@ -804,8 +789,8 @@ impl HostStore {
         };
         let step_bytes = step.to_bytes();
         let id = step.id();
-        let set_rows = claim_set.as_ref().map(|c| set_rows(label, &id, c));
-        let size = step_bytes.len() as u64 + set_rows.as_ref().map_or(0, rows_bytes);
+        let set = claim_set.as_ref().map(ClaimSet::to_bytes);
+        let size = (step_bytes.len() + set.as_ref().map_or(0, Vec::len)) as u64;
         let (entries, bytes) = meta.capped();
         let mut tx = Tx { label: *label, before: (entries, bytes, new), meta, batch: Writes::default() };
         tx.meta.bytes = tx.meta.bytes.saturating_add(size);
@@ -822,11 +807,8 @@ impl HostStore {
         tx.batch.put(key(b'S', &[&label.0, &id.0]), step_bytes);
         tx.batch.put(key(b'V', &[&label.0, &step.keys.sync.to_bytes()]), id.0.to_vec());
         tx.batch.put(key(b'W', &[&label.0, step.prev.as_ref().map_or(&[][..], |p| &p.0[..])]), id.0.to_vec());
-        if let Some((c, index)) = set_rows {
+        if let Some(c) = set {
             tx.batch.put(key(b'C', &[&label.0, &id.0]), c);
-            for (k, v) in index {
-                tx.batch.put(k, v);
-            }
         }
         tx.batch.log(Write::LogHead(*label, id));
         // any head: the unread ones' credentials are in node sync's filters
@@ -1473,9 +1455,7 @@ impl HostStore {
             }
             b.delete(k);
         }
-        // a dropped claim set's bytes, its index rows' included, leave the label's and the
-        // host's totals; each index row counts against the budget (a set has up to `MAX_CLAIMS`
-        // keys), so a set may go over several sweeps, its `Z` row kept until the last
+        // a dropped claim set's bytes leave the label's and the host's totals
         for (k, rest, _) in self.due(b'Z', now, left)? {
             if left == 0 {
                 break;
@@ -1488,20 +1468,11 @@ impl HostStore {
                     continue;
                 }
             };
-            let index = self.scan_prefix(&key(b'H', &[&rest]), left)?;
-            let all = index.len() < left;
-            left -= index.len();
-            let mut freed: usize = index.iter().map(|(k, v)| k.len() + v.len()).sum();
             let mut batch = Writes::default();
-            for (h, _) in index {
-                batch.delete(h);
-            }
-            if all {
-                let c = key(b'C', &[&rest]);
-                freed += self.get(&c)?.map_or(0, |set| set.len());
-                batch.delete(c);
-                batch.delete(k);
-            }
+            let c = key(b'C', &[&rest]);
+            let freed = self.get(&c)?.map_or(0, |set| set.len());
+            batch.delete(c);
+            batch.delete(k);
             match self.tx(&label) {
                 Ok(mut tx) => {
                     tx.meta.bytes = tx.meta.bytes.saturating_sub(freed as u64);
@@ -1568,15 +1539,6 @@ impl LabelStore for HostStore {
         ClaimSet::parse(&b).map(|c| Some(Arc::new(c))).map_err(|_| corrupt("claim set"))
     }
 
-    /// One `H` row read: an Open by claim or static entry costs a lookup, not the set's size.
-    fn claim(&self, label: &LabelId, id: &StepId, k: &[u8; 32]) -> Result<Option<Option<SecretBox>>, StoreError> {
-        let Some(b) = self.get(&key(b'H', &[&label.0, &id.0, k]))? else { return Ok(None) };
-        if b.is_empty() {
-            return Ok(Some(None));
-        }
-        osis_label::step::parse_entry_box(&b).map(|e| Some(Some(e))).map_err(|_| corrupt("entry box"))
-    }
-
     fn head_keys(&self, label: &LabelId) -> Result<Option<HeadKeys>, StoreError> {
         let Some(head) = self.head(label)? else { return Ok(None) };
         let step = self.step(label, &head)?.ok_or_else(|| corrupt("head step"))?;
@@ -1618,8 +1580,7 @@ impl LabelStore for HostStore {
             return Ok(Code::OK);
         }
         let (meta, new) = self.meta_or_new(label)?;
-        let id = step.id();
-        let set_bytes = claim_set.as_ref().map_or(0, |c| rows_bytes(&set_rows(label, &id, c)));
+        let set_bytes = claim_set.as_ref().map_or(0, claim_set_bytes);
         let step_bytes = step.to_bytes().len() as u64;
         let cap_bytes = self.label_caps(label).1;
         let fits = |n: u64, total: u64| meta.capped().1.saturating_add(n) <= cap_bytes && total.saturating_add(n) <= self.policy.max_bytes;

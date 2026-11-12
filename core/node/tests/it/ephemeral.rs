@@ -4054,18 +4054,17 @@ fn drift_waiting_commit_room_checked_spec_sync_9() {
     }
 }
 
-// spec/sync.md §5 (a new sync key ends an open), §6: a Sync refused 8 because a read rotation
-// landed between its Open and it: the pass after the reopen on the same connection still
-// uploads b's offline note (once it counted the refused Sync's list as held there and never did).
+// spec/sync.md §5 (a new sync key ends an open), §6: a read rotation landing while b reconnects
+// with an offline note: the pass after the reopen on the same connection still places it where c
+// reads it.
 #[test]
-fn offline_note_uploaded_after_refused_sync_spec_sync_5() {
+fn offline_note_placed_across_a_rotation_on_reconnect_spec_sync_5() {
     let (mut net, host, [a, b, c, x], g, []) = hosted::<4, 0>(&[(1, Role::Write), (2, Role::Write), (3, Role::Read)], [], true);
     let w = window(&mut net, a, g, "w");
     net.run();
     net.set_online(b, false);
     net.run();
     note(&mut net, b, w, "b", "1");
-    net.hold_opened.insert(b);
     net.set_online(b, true);
     net.advance(10_000);
     let conn = net.conn_to(b, host);
@@ -4073,8 +4072,6 @@ fn offline_note_uploaded_after_refused_sync_spec_sync_5() {
     let e = net.engine(a);
     let rs = recipients_of(e, &[(at, Role::Admin), (bt, Role::Write), (ct, Role::Write)]);
     remove_holder(e, g, xt, &rs, 9);
-    net.run();
-    net.release();
     net.run();
     assert_eq!(net.conn_to(b, host), conn, "same connection");
     net.advance(60_000);

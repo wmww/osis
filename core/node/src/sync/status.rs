@@ -29,7 +29,7 @@ impl SyncEngine {
                 if x.phase == Phase::Failed && host.is_some() {
                     failed.insert(c.host);
                 }
-                st.opening += usize::from(c.up && matches!(x.phase, Phase::Testing | Phase::Opening) && host.is_some());
+                st.opening += usize::from(c.up && matches!(x.phase, Phase::Testing | Phase::Behind) && host.is_some());
                 // a host the label no longer names is on its way out: no source of it
                 if c.up && x.phase == Phase::Open && host.is_some() {
                     st.sources += 1;
@@ -80,8 +80,7 @@ impl SyncEngine {
         let routes = self.wanted_labels().into_iter().find(|(_, x, _)| x == l).map_or(Vec::new(), |(_, _, r)| r);
         let on: Vec<&LConn> = self.conns.values().filter_map(|c| c.labels.get(l)).collect();
         let failed = |h: &state::HostKey| self.conns.values().any(|c| c.host == *h && c.labels.get(l).is_some_and(|x| x.phase == Phase::Failed));
-        let refused = on.iter().any(|x| x.static_refused) || self.shared_static_missing(l);
-        routes.iter().all(failed) && on.iter().all(|x| x.phase == Phase::Failed) && refused
+        routes.iter().all(failed) && on.iter().all(|x| x.phase == Phase::Failed) && self.shared_static_missing(l)
     }
 
     /// Sync connections up, whichever side dialed: a client's session is none.

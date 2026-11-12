@@ -579,16 +579,16 @@ fn a_forged_grant_is_not_offered_again_spec_sync_10() {
     let f = filter_width(1);
     msgs.extend(shared_of(&send(&mut net, t, &mut p, Message::Beacons { id: 40, generation: 1, base: None, f, lo: 0, hi: 1 << f, gcs: encode_gcs(&[beacon_value(&bcn, f)], 0), more: false })));
     let tag = beacon_reply(&entry, &kl.0, &bcn, (false, &LISTENER, &ch, &p.hello));
-    let forged = osis_proto::msg::EntryGrant {
-        entry_box: osis_proto::msg::SecretBox::Symmetric(osis_schema::core_types::SymmetricBox { epoch: osis_schema::core_types::Epoch { n: 1, nonce: [8; 32] }, wrap: vec![1; 48], possession: None }),
-        path: vec![crate::hostile_host::foreign_step(3)],
+    let forged = osis_proto::msg::Grant {
+        entry_box: Some(osis_proto::msg::SecretBox::Symmetric(osis_schema::core_types::SymmetricBox { epoch: osis_schema::core_types::Epoch { n: 1, nonce: [8; 32] }, wrap: vec![1; 48], possession: None })),
+        steps: vec![crate::hostile_host::foreign_step(3)],
     };
     let mut hits = 0;
     let mut losts = 0;
     for _ in 0..8 {
         let Some(Message::Offer { id, items }) = msgs.iter().find(|m| matches!(m, Message::Offer { .. })).cloned() else { break };
         msgs.retain(|m| m.id() != id);
-        hits += items.iter().filter(|i| matches!(i, OfferItem::Hit(..))).count();
+        hits += items.iter().filter(|i| matches!(i, OfferItem::Hit(..) | OfferItem::Static { .. })).count();
         let codes = items.iter().map(|_| (Code::OK, Some(tag), Some(Box::new(forged.clone())))).collect();
         let back = shared_of(&send(&mut net, t, &mut p, Message::Shared { id, codes }));
         losts += back.iter().filter(|m| matches!(m, Message::Lost { .. })).count();
@@ -596,4 +596,76 @@ fn a_forged_grant_is_not_offered_again_spec_sync_10() {
     }
     assert_eq!((hits, losts), (1, 1), "{msgs:?}");
     assert!(net.sync(t).shared_members(p.conn).is_empty());
+}
+
+/// Node `t` follows the link of `linked()` by its key actor; a scripted peer proving `a` shows the
+/// key actor's static entry in its filter and answers `t`'s Hit with `grant` (made from `a`, the
+/// label, its thing and the key actor's seed), tagged. The
+/// diagnostics `t` logged, and the read secrets of the link's thing it held before and after.
+fn answer_static_hit(grant: impl FnOnce(&mut Net, usize, LabelId, osis_base::Tid, &osis_crypto::Secret32) -> osis_proto::msg::Grant) -> (Vec<String>, usize, usize) {
+    let (mut net, _, a, _, (k, kl, _, seed)) = crate::net_judgment::linked();
+    let t = net.node(3, &[]);
+    let ka = net.engine(t).hold_key_actor(seed.clone()).unwrap();
+    let held = |net: &mut Net| net.engine(t).epochs(&k).map_or(0, |e| e.read.held_newest_first().len());
+    let before = held(&mut net);
+    let acts = net.sync(t).follow(ka, k, kl, vec![]);
+    net.actions(t, acts);
+    net.run();
+    let ch = [9; 32];
+    let mut p = dial_as(&mut net, a, t, ch);
+    let mut msgs = shared_of(&send(&mut net, t, &mut p, Message::NoRecord { id: 1 << 31 }));
+    let pair = *osis_crypto::kdf::pair_key(&ch, &p.hello).expose();
+    let entry = osis_crypto::static_entry(&kl, &osis_engine::Identity::from_seed(seed.clone()).keys().signing.verifying_key());
+    let bcn = beacon(&entry, &kl.0, &pair);
+    let f = filter_width(1);
+    msgs.extend(shared_of(&send(&mut net, t, &mut p, Message::Beacons { id: 40, generation: 1, base: None, f, lo: 0, hi: 1 << f, gcs: encode_gcs(&[beacon_value(&bcn, f)], 0), more: false })));
+    let tag = beacon_reply(&entry, &kl.0, &bcn, (false, &LISTENER, &ch, &p.hello));
+    let grant = grant(&mut net, a, kl, k, &seed);
+    let Some(Message::Offer { id, items }) = msgs.iter().find(|m| matches!(m, Message::Offer { .. })).cloned() else { panic!("t Hits its static entry: {msgs:?}") };
+    net.sync(t).take_diagnostics();
+    let codes = items.iter().map(|_| (Code::OK, Some(tag), Some(Box::new(grant.clone())))).collect();
+    send(&mut net, t, &mut p, Message::Shared { id, codes });
+    let diags = net.sync(t).take_diagnostics();
+    let after = held(&mut net);
+    (diags, before, after)
+}
+
+// spec/sync.md §10 Shared set (a static entry's grant: the path verified from its genesis step),
+// spec/crypto.md §4 (sealed boxes are unauthenticated): a peer's forged head and entry box, its
+// path not the label's, teach the key actor no secret.
+#[test]
+fn a_forged_head_and_box_teach_nothing_spec_sync_10() {
+    let (diags, before, after) = answer_static_hit(|_, _, _, _, _| osis_proto::msg::Grant {
+        entry_box: Some(osis_proto::msg::SecretBox::Symmetric(osis_schema::core_types::SymmetricBox { epoch: osis_schema::core_types::Epoch { n: 1, nonce: [8; 32] }, wrap: vec![1; 48], possession: None })),
+        steps: vec![crate::hostile_host::foreign_step(3)],
+    });
+    assert!(diags.iter().any(|x| x.contains("granted path does not verify")), "{diags:?}");
+    assert_eq!(after, before, "a forged head's box teaches nothing");
+}
+
+// spec/sync.md §2 (a step's entry box carries the read secret of its epoch and the sync secret
+// whose key the step registers), spec/crypto.md §4 (sealed boxes are unauthenticated): the
+// label's genuine path with a substituted entry box (sealed by the peer to the key actor's public
+// KEM key) teaches no secret: its sync secret does not derive the head's sync key.
+#[test]
+fn a_substituted_box_teaches_nothing_spec_sync_2() {
+    let (diags, before, after) = answer_static_hit(|net, a, kl, group, seed| {
+        // the link's label as its holder `a` records it, genesis first
+        let gl = net.group_labels(a).into_iter().find(|(_, x)| x.id == kl).expect("a records the link's label").1;
+        let mut steps: Vec<osis_label::Step> = Vec::new();
+        while let Some(next) = gl.steps.values().map(|x| &x.0).find(|s| s.prev == steps.last().map(|p| p.id())) {
+            steps.push(next.clone());
+        }
+        let head = steps.last().expect("the label's head").clone();
+        let keys = osis_crypto::KeyActorKeys::from_seed(seed);
+        let slot = osis_crypto::BoxSlot::Entry { label: kl, step_key: head.step_key, group };
+        let other = osis_crypto::Secret32::from_bytes([0x99; 32]);
+        let item = osis_crypto::EntryItem { epoch: osis_crypto::Epoch::derive(&group, Role::Read, 1, &other).unwrap(), secret: other.clone(), earlier: None, sync: (osis_crypto::Epoch::derive(&group, Role::Sync, 1, &other).unwrap(), other) };
+        let sealed = osis_crypto::seal_entry(keys.kem.public(), &slot, &item, &mut osis_crypto::SeededRng::from_u64(1)).unwrap();
+        use osis_schema::core_types as ct;
+        let entry_box = ct::SecretBox::Sealed(ct::SealedBox { keyset: None, suite: u64::from(osis_crypto::SUITE_1), sealed: ct::Sealed::X25519MlKem768(sealed) });
+        osis_proto::msg::Grant { entry_box: Some(entry_box), steps }
+    });
+    assert!(diags.iter().any(|x| x.contains("does not derive the head's sync key")), "{diags:?}");
+    assert_eq!(after, before, "a substituted box teaches nothing");
 }

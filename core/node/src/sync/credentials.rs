@@ -151,25 +151,30 @@ impl SyncEngine {
 
     /// The credential this node tests of each of `labels` at `conn`, a peer that cannot read them, with the key
     /// its Hit signs the open with (issues/net-one-peer.md 3h2, Credential): of the peer's head
-    /// there once open, else of the step the walk found shown, else of the newest recorded head
-    /// (`step_key`: the step's sync key when this node holds that epoch's secret, else its claim
-    /// key while the step's claim set is held). A static entry is a reader's credential already,
-    /// the same at every step. None on any other connection: a reader opens to a reader by its
-    /// read credentials.
+    /// there once open, else of the step the walk found shown, else of the newest step known
+    /// there (`newest_known`; `step_key`: the step's sync key when this node holds that epoch's
+    /// secret, else its claim key while the step's claim set is held), else, knowing none (a
+    /// hint), the hint's sync key. A static entry is a reader's credential already, the same at
+    /// every step. None on any other connection: a reader opens to a reader by its read
+    /// credentials.
     pub(super) fn peer_creds(&mut self, conn: ConnId, labels: &[LabelId]) -> BTreeMap<LabelId, ([u8; 32], osis_crypto::SigningSecret)> {
         let mut out = BTreeMap::new();
         for l in labels {
             let Some(lc) = self.conns.get(&conn).filter(|c| !c.peer).and_then(|c| c.labels.get(l)) else { continue };
             let (g, index) = (lc.group, lc.index);
             let key = match lc.phase {
-                super::Phase::Open => match (lc.keys.sync.clone(), lc.head.clone(), lc.open_key.clone()) {
+                super::Phase::Open => match (lc.keys.sync.clone(), lc.head.clone(), lc.hit_key.clone()) {
                     (Some(k), ..) => Some(k),
-                    (None, Some(h), open) => self.step_key(&g, index, l, &h).or(open),
-                    (None, None, open) => open,
+                    (None, Some(h), hit) => self.step_key(&g, index, l, &h).or(hit),
+                    (None, None, hit) => hit,
                 },
-                super::Phase::Testing => match lc.shown.clone() {
+                // a failed one too: what it holds may have changed since (`member_unread_there`)
+                super::Phase::Testing | super::Phase::Failed => match lc.shown.clone() {
                     Some((_, k)) => Some(k),
-                    None => self.newest_step(&g, l).and_then(|s| self.step_key(&g, index, l, &s)),
+                    None => match self.newest_known(conn, l) {
+                        Some(s) => self.step_key(&g, index, l, &s),
+                        None => self.hint_key(conn, l, &g, index),
+                    },
                 },
                 _ => None,
             };

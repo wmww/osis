@@ -437,6 +437,7 @@ fn failed_commit_sends_nothing() {
         assert_eq!(pull_all(&w, h, &l, [n, n + 1]), vec![Code::OK; 2]);
         // client index = link index
         let a = w.connect(h);
+        w.open(a, &l);
         w.faults[h].at(at, Fault::Fail);
         let items = ids.iter().map(|id| DeleteItem::sign(&key, &l.id, *id).unwrap()).collect();
         let ev = w.run(a, Command::Delete { label: l.id, items });
@@ -447,6 +448,7 @@ fn failed_commit_sends_nothing() {
         assert_eq!(held, if at < 2 { 2 } else { 0 }, "write {at}");
     }
     let a3 = w.connect(h);
+    w.open(a3, &l);
     let item = DeleteItem::sign(&key, &l.id, osis_label::blob_id(&blob(10))).unwrap();
     assert_eq!(statuses(&w.run(a3, Command::Delete { label: l.id, items: vec![item] })), vec![Code::OK]);
     assert!(!live(&w, h, &l).contains(&osis_label::blob_id(&blob(10))));

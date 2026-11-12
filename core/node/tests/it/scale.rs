@@ -1652,3 +1652,102 @@ fn role_entries_follow_role_churn() {
     println!("role entries: {small:?} at n, {big:?} at 10n");
     flat("role entries a churn adds", small[1] - small[0], big[1] - big[0]);
 }
+
+/// Reader `b` and admin `a` of a group kept at a peer `s` that cannot read it, its label past
+/// `steps` rotations (each registered there); b on the newest step.
+fn rotated(steps: usize) -> (crate::net::Net, usize, usize, usize, Tid) {
+    let (net, (s, a, b, g)) = crate::net::Net::cached(&format!("scale::rotated/{steps}"), || {
+        let (net, s, a, b, g) = rotate_n(steps);
+        (net, (s, a, b, g))
+    });
+    (net, s, a, b, g)
+}
+
+fn rotate_n(steps: usize) -> (crate::net::Net, usize, usize, usize, Tid) {
+    use crate::net::{recipients_of, rotation};
+    let mut net = crate::net::Net::new();
+    let s = net.add_host();
+    let a = net.node(1, &[s]);
+    let b = net.node(2, &[s]);
+    let g = net.group(a, &[(b, Role::Read)], &[s]);
+    net.run();
+    let (at, bt) = (net.tid(a), net.tid(b));
+    for i in 0..steps {
+        let e = net.engine(a);
+        let rs = recipients_of(e, &[(at, Role::Admin), (bt, Role::Read)]);
+        rotation(e, g, &rs, 100 + i as u64, false);
+        net.run();
+    }
+    let l = net.label(a);
+    assert_eq!(net.host_path(s, &l).len(), steps + 1, "a step per rotation");
+    (net, s, a, b, g)
+}
+
+/// The credentials reader b tests per filter arrival of the peer on a fresh connection, past
+/// `steps` rotations.
+fn tests_per_arrival(steps: usize) -> (u64, u64) {
+    let (mut net, s, _, b, _) = rotated(steps);
+    let before = net.sync(b).pass_stats();
+    net.drop_link(b, s);
+    for _ in 0..2 {
+        net.advance(61_000);
+    }
+    let after = net.sync(b).pass_stats();
+    let arrivals = after.filters_received - before.filters_received;
+    assert!(arrivals > 0, "a filter arrived");
+    ((after.tested - before.tested) / arrivals, after.walk_tests - before.walk_tests)
+}
+
+// issues/net-one-peer.md 3h2 (Stale head: cost), spec/requirements.md (Scale): a reader on the
+// newest head tests one credential per sync ID at each arrival of a peer's filter whatever the
+// number of steps the label went through (n and 10n rotations), and walks nothing.
+#[test]
+fn filter_tests_per_arrival_do_not_grow_with_steps() {
+    let (small, big) = (tests_per_arrival(1), tests_per_arrival(10));
+    assert_eq!(small, big, "tests per arrival and walk tests at 1 and 10 steps");
+    assert_eq!(big.1, 0, "a reader on the head walks nothing");
+}
+
+/// Behind items reader b sent, those the peer answered with a child and the Registers b sent,
+/// catching up `crossed` steps it missed (holding their secrets, not their `label.0`) past
+/// `steps` earlier ones.
+fn catch_up(steps: usize, crossed: usize) -> (u64, u64, usize) {
+    use crate::net::{recipients_of, rotation};
+    let (mut net, s, a, b, g) = rotated(steps);
+    let (at, bt) = (net.tid(a), net.tid(b));
+    net.blocked.insert((b, s));
+    net.drop_link(b, s);
+    for i in 0..crossed {
+        let e = net.engine(a);
+        let rs = recipients_of(e, &[(at, Role::Admin), (bt, Role::Read)]);
+        let c = rotation(e, g, &rs, 500 + i as u64, false);
+        // b gets the rotation's secrets by hand, not the step a records once it registered it
+        let pk = net.engine(a).package(&c).unwrap().unwrap();
+        net.engine(b).ingest(&pk.bytes, pk.blobs).unwrap();
+        net.run();
+    }
+    let l = net.label(a);
+    assert_eq!(net.host_path(s, &l).len(), steps + crossed + 1);
+    assert_eq!(net.group_labels(b).into_iter().find(|(x, _)| *x == g).unwrap().1.steps.len(), steps + 1, "b records none of the new steps");
+    net.set_online(a, false);
+    let (sent, answered, registers) = (net.sync(b).pass_stats().behind_sent, net.hosts[s].sync.as_mut().unwrap().pass_stats().behind_answered, net.sent_kinds.get(&7).copied().unwrap_or(0));
+    net.blocked.remove(&(b, s));
+    for _ in 0..3 {
+        net.advance(61_000);
+    }
+    let conn = net.conn_to(b, s).expect("connected");
+    assert!(net.sync(b).shared_members(conn).contains(&l), "b caught up and opened L at the head");
+    (net.sync(b).pass_stats().behind_sent - sent, net.hosts[s].sync.as_mut().unwrap().pass_stats().behind_answered - answered, net.sent_kinds.get(&7).copied().unwrap_or(0) - registers)
+}
+
+// spec/sync.md §5 (Behind), spec/requirements.md (Scale): a reader behind a peer's head by k
+// steps catches up with one Behind item and one answer per step crossed, and registers nothing,
+// whether the label's history holds n or 10n steps before them.
+#[test]
+fn a_catch_up_answers_once_per_step_crossed_spec_sync_5() {
+    for crossed in [1, 3] {
+        let (small, big) = (catch_up(1, crossed), catch_up(10, crossed));
+        assert_eq!(small, big, "{crossed} crossed: at 1 and 10 earlier steps");
+        assert_eq!(small, (crossed as u64, crossed as u64, 0), "{crossed} crossed: one answer per step crossed, no Register");
+    }
+}
