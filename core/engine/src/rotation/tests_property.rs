@@ -560,7 +560,8 @@ fn access(run: &Run, at: usize, d: usize, t: Tid, r: Role) -> bool {
     access_at(run, at, d, t, r, None)
 }
 
-/// `access` as the rosters stood just before `point` (`None`: now).
+/// `access` as the rosters stood just before `point` (`None`: now), key access as `at` judges
+/// it now.
 fn access_at(run: &Run, at: usize, d: usize, t: Tid, r: Role, point: Option<osis_perm::Point>) -> bool {
     let core = &run.lp.peers[at].engine.core;
     let holders_of = |a: &Tid| -> Vec<(Tid, Role)> {
