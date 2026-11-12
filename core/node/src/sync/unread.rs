@@ -180,7 +180,8 @@ impl SyncEngine {
     /// write key); a relay-only one passes the store's relay gate and goes on to the other members
     /// sharing `l`. A deposited entry (no stamp) is not taken: it carries no deposit signature,
     /// so deposits reach this node only as Deposit items. Deletions and heads do nothing (a
-    /// delete comes by a delete-key holder's Delete, a head by Register). Returns the stamped
+    /// delete comes by a delete-key holder's Delete, a head by Register). One refused for this
+    /// store's tombstone is told to the reader as a Deleted event. Returns the stamped
     /// entries announced without bytes that the store lacks: owed until fetched.
     pub(crate) fn unread_events(&mut self, conn: ConnId, l: LabelId, events: Vec<osis_proto::Event>, out: &mut Vec<Action>) -> Result<BTreeSet<BlobId>> {
         let now = self.now();
@@ -190,6 +191,7 @@ impl SyncEngine {
         let mut taken = Vec::new();
         let mut pending = Vec::new();
         let mut refused = Vec::new();
+        let mut tombstoned = Vec::new();
         // refused for room while full: announced again, the reader is told (a new connection)
         let was_refused = self.unread.full.get(&l).map(|f| f.refused.clone()).unwrap_or_default();
         {
@@ -209,6 +211,10 @@ impl SyncEngine {
                     Some(_) => continue,
                     None => match hub.blob(&blob_id).map_err(hub_err)? {
                         Some(b) => b,
+                        None if osis_proto::store::LabelStore::tombstoned(&*hub, &l, &blob_id).map_err(hub_err)? => {
+                            tombstoned.push(blob_id);
+                            continue;
+                        }
                         None => {
                             owed.insert(blob_id);
                             pending.push((blob_id, wrap, stamp));
@@ -226,6 +232,8 @@ impl SyncEngine {
                         } else if c == Code::STORAGE_CAP {
                             let memory = osis_label::Prefix::parse(&bytes).is_ok_and(|p| p.class().in_memory());
                             refused.push((blob_id, Some(hub.room(&l, memory).map_err(hub_err)?)));
+                        } else if c == Code::TOMBSTONED {
+                            tombstoned.push(blob_id);
                         }
                     }
                 }
@@ -236,6 +244,12 @@ impl SyncEngine {
         }
         if !refused.is_empty() {
             self.unread_refused(conn, l, refused, out)?;
+        }
+        // refused for this store's tombstone: the reader is told it is deleted here, as the
+        // deletion's event would have (one it never read: it lists no such entry here)
+        if !tombstoned.is_empty() {
+            let events = tombstoned.into_iter().map(|b| (l, osis_proto::Event::Deleted(b))).collect();
+            self.shared_send(conn, osis_proto::Message::Stream(Box::new(osis_proto::msg::Stream { events, cursor: None, report: false })), out)?;
         }
         if changed {
             self.hub_down(conn, osis_host::Down::Changed(l), out);
@@ -324,13 +338,14 @@ impl SyncEngine {
     }
 
     /// Whether this node wants the bytes of unread `l`'s entry `b`: its store holds neither the
-    /// entry stamped nor the blob, and did not refuse it for room while `l` is full here.
+    /// entry stamped nor the blob, holds no tombstone of it, and did not refuse it for room while
+    /// `l` is full here.
     pub(crate) fn unread_wants(&mut self, l: &LabelId, b: &BlobId) -> Result<bool> {
         if self.unread.full.get(l).is_some_and(|f| f.refused.contains(b)) {
             return Ok(false);
         }
         let hub = self.hub();
-        Ok(!hub.entry(l, b).map_err(hub_err)?.is_some_and(|m| m.stamp.is_some()) && hub.blob(b).map_err(hub_err)?.is_none())
+        Ok(!hub.entry(l, b).map_err(hub_err)?.is_some_and(|m| m.stamp.is_some()) && hub.blob(b).map_err(hub_err)?.is_none() && !osis_proto::store::LabelStore::tombstoned(&*hub, l, b).map_err(hub_err)?)
     }
 
     /// A Deposit item for unread inbox `l` (issues/net-shared-set.md, Deposits): taken as a

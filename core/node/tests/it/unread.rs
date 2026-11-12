@@ -695,3 +695,60 @@ fn an_edit_in_a_group_nested_in_three_crosses_its_bytes_once_spec_sync_3() {
     assert!(one >= 16 * 1024, "the edit's bytes crossed: {one}");
     assert_eq!(one, three, "bytes at 1 and 3 enclosing groups");
 }
+
+// spec/sync.md §5 (Deletes wait while a source lacks a body it takes now), §10 (Stream: a body a
+// peer that cannot read L refuses for its tombstone is told deleted there): the peer dropped a
+// writer's kept body on its own and the writer never read that deletion in the peer's log
+// (its events of it lost on the way), so the writer, listing the peer from the start after a
+// restart, judges the peer lacking a body it takes;
+// the peer, pulling the writer from the start, refuses that body for its tombstone and says
+// so, the writer places it anew, and its deletes (a purged body) go there instead of waiting
+// for good.
+#[test]
+fn a_body_refused_for_a_tombstone_holds_no_delete_back_spec_sync_10() {
+    let mut net = Net::new();
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let g = net.group(a, &[], &[host]);
+    let t = net.item(a, g, g, "t");
+    let u = net.item(a, g, g, "u");
+    net.keep(a, u, &[("t:gone.0", PURGE)]);
+    net.run();
+    let kept = net.write(a, t, "kept");
+    let mut m = Mutation::new();
+    m.set(u, &GONE, &s("old")).unwrap();
+    let old = net.engine(a).commit(m).unwrap().unwrap();
+    net.feed(a, osis_node::sync::Event::Local);
+    net.run();
+    net.advance(61_000);
+    let l = net.label(a);
+    let of = |net: &mut Net, c: osis_base::CommitId| -> Vec<BlobId> { net.sync(a).entries(&l).into_iter().filter(|(_, k)| matches!(k, osis_node::sync::EntryKind::Commit { commit, .. } if *commit == c)).map(|(id, _)| id).collect() };
+    let (x, purged) = (of(&mut net, kept), of(&mut net, old));
+    assert!(!x.is_empty() && x.iter().chain(&purged).all(|id| net.host_ids(host, &l).contains(id)), "both at the peer");
+    // the peer's log events deleting the kept body never reach a (a peer's own tell, a Stream
+    // with no cursor, does)
+    let lost: BTreeSet<BlobId> = x.iter().copied().collect();
+    let strip = move |evs: &[(LabelId, Ev)]| -> Vec<(LabelId, Ev)> { evs.iter().filter(|(_, e)| !matches!(e, Ev::Deleted(b) if lost.contains(b))).cloned().collect() };
+    net.host_tamper = Some(Box::new(move |m| match m {
+        Message::Stream(st) if st.cursor.is_some() => Some(Message::Stream(Box::new(osis_proto::msg::Stream { events: strip(&st.events), ..(**st).clone() }))),
+        Message::PullReply(r) => Some(Message::PullReply(Box::new(PullReply { events: strip(&r.events), ..(**r).clone() }))),
+        _ => None,
+    }));
+    let now = net.now();
+    for id in &x {
+        osis_proto::LabelStore::delete(&mut *net.hosts[host].hub.store(), &l, id, now).unwrap();
+    }
+    let mut m = Mutation::new();
+    m.set(u, &GONE, &s("new")).unwrap();
+    net.engine(a).commit(m).unwrap().unwrap();
+    // a restarts: it lists the peer from the start, which shows the kept body nowhere
+    net.restart(a, 9);
+    for _ in 0..3 {
+        net.run();
+        net.advance(61_000);
+    }
+    net.host_tamper = None;
+    let held = net.host_ids(host, &l);
+    assert!(purged.iter().all(|id| !held.contains(id)), "the purged body went from the peer");
+    assert!(of(&mut net, kept).iter().any(|id| held.contains(id)), "the kept body is at the peer again, under a new encryption");
+}
