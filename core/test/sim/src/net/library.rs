@@ -124,7 +124,7 @@ fn revocation(name: &str, s: Seeds, carol: bool) -> Res<Report> {
     sim.run(40)?;
     sim.quiet(40)?;
     // which blobs carry which commits, recorded as nodes send them
-    sim.count_uploads = true;
+    sim.count_placed = true;
     // Tue: Bob (and Carol) offline
     sim.sever(Party::N(b), Party::S(s));
     if carol {
@@ -160,7 +160,7 @@ fn revocation(name: &str, s: Seeds, carol: bool) -> Res<Report> {
     expect_tags(&mut sim, &[a, c], t, &["mon", "x", "y"], first)?;
     // a re-grant validates the gap (§5.2) for what some node still holds: no node keeps an
     // invalid body but its author, who forgot the doc, so a host that received it
-    sim.count_uploads = false;
+    sim.count_placed = false;
     let hosted = hosted_commits(&mut sim)?;
     sim.grant(a, g, pb, Role::Write)?;
     sim.excused.remove(&b);
@@ -1015,11 +1015,12 @@ fn purge_falls_how(name: &str, s: Seeds, churn: bool) -> Res<Report> {
 /// Writers online together (spec/sync.md §5, §6): an admin and three writers of one group, all
 /// online, while two readers are granted at once and the admin writes items; time moves a
 /// second at a time (continuous enough for the relay wait). Expected: each content body the
-/// admin wrote goes up as one blob, by the admin alone; no blob is uploaded by all four
-/// writers, and at most a quarter by more than one (a reader deposit is promoted by one writer,
-/// rarely by one more whose view lagged); then the quiescent invariants.
+/// admin wrote is placed as one blob, by the admin alone (the first stream to show the peer the
+/// blob); no blob is placed by all four writers, and at most a quarter by more than one (a
+/// reader deposit is promoted by one writer, rarely by one more whose view lagged); then the
+/// quiescent invariants.
 pub fn concurrent_writers(s: Seeds) -> Res<Report> {
-    let (mut sim, (a, r1, r2, q1, q2, g)) = NetSim::setup("concurrent_writers", "", s, NetConfig::default(), |sim| {
+    let (mut sim, (a, pa, r1, r2, q1, q2, g)) = NetSim::setup("concurrent_writers", "", s, NetConfig::default(), |sim| {
         let mut d = Dice::new(sim.seed ^ 0xc0);
         let s = sim.add_host()?;
         let ns: Vec<usize> = (0..6).map(|_| sim.add_node(&[s], clock(&mut d))).collect::<Res<_>>()?;
@@ -1027,9 +1028,9 @@ pub fn concurrent_writers(s: Seeds) -> Res<Report> {
         let [pa, p1, p2, p3, q1, q2] = persons(sim, [a, w1, w2, w3, r1, r2], [s; 6])?;
         let g = shared_group(sim, a, pa, &[s], &[(p1, Role::Write), (p2, Role::Write), (p3, Role::Write)])?;
         sim.quiet(40)?;
-        Ok((a, r1, r2, q1, q2, g))
+        Ok((a, pa, r1, r2, q1, q2, g))
     })?;
-    sim.count_uploads = true;
+    sim.count_placed = true;
     sim.grant(a, g, q1, Role::Read)?;
     sim.grant(a, g, q2, Role::Read)?;
     let mut items = Vec::new();
@@ -1041,10 +1042,10 @@ pub fn concurrent_writers(s: Seeds) -> Res<Report> {
         sim.advance(1_000)?;
     }
     sim.settle()?;
-    sim.count_uploads = false;
+    sim.count_placed = false;
     sim.observe()?;
     let mut by_blob: std::collections::BTreeMap<(osis_base::LabelId, osis_base::BlobId), BTreeSet<usize>> = Default::default();
-    for (n, l, b) in std::mem::take(&mut sim.uploads) {
+    for (n, l, b) in std::mem::take(&mut sim.placed) {
         by_blob.entry((l, b)).or_default().insert(n);
     }
     type BodyKey = (osis_base::LabelId, CommitId, Vec<usize>);
@@ -1061,20 +1062,24 @@ pub fn concurrent_writers(s: Seeds) -> Res<Report> {
                 Some((c, _)) => sim.engine(a)?.header(c).map(|h| (h.author, h.kind, h.aspects.iter().map(|x| x.ak.as_str().to_string()).collect::<Vec<_>>())),
                 None => None,
             };
-            return Err(sim.fail(format!("blob {b:?} under {l:?} uploaded by nodes {who:?} ({twice} of {} blobs by two nodes): {what:?} {author:?}", by_blob.len())));
+            return Err(sim.fail(format!("blob {b:?} under {l:?} placed by nodes {who:?} ({twice} of {} blobs by two nodes): {what:?} {author:?}", by_blob.len())));
         }
         if let Some((c, parts)) = sim.known.get(&(*l, *b)).cloned() {
             per_body.entry((*l, c, parts)).or_default().insert(*b);
         }
     }
-    let at = sim.tid(a)?;
+    let mut checked = 0;
     for ((l, c, _), blobs) in per_body {
         let h = sim.engine(a)?.header(&c);
-        let Some(h) = h.filter(|h| h.kind == osis_commit::Kind::Content && h.author == at && h.aspects.iter().any(|x| items.contains(&x.tid))) else { continue };
+        let Some(h) = h.filter(|h| h.kind == osis_commit::Kind::Content && h.author == pa && h.aspects.iter().any(|x| items.contains(&x.tid))) else { continue };
         let up: BTreeSet<usize> = blobs.iter().filter_map(|b| by_blob.get(&(l, *b))).flatten().copied().collect();
         if blobs.len() > 1 || up != BTreeSet::from([a]) {
-            return Err(sim.fail(format!("commit {c:?} ({} aspects) went up as {} blobs by nodes {up:?}", h.aspects.len(), blobs.len())));
+            return Err(sim.fail(format!("commit {c:?} ({} aspects) placed as {} blobs by nodes {up:?}", h.aspects.len(), blobs.len())));
         }
+        checked += 1;
+    }
+    if checked < items.len() {
+        return Err(sim.fail(format!("{checked} of the {} items' creations seen placed", items.len())));
     }
     for (n, p) in [(r1, q1), (r2, q2)] {
         if sim.engine(n)?.role_on(&g) != Some(Role::Read) {

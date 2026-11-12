@@ -297,12 +297,12 @@ fn removal_racing_a_destruction_converges_in_both_orders_spec_commits_5() {
             assert_eq!(net.read(n, t), Some(s("x")), "destruction first {destruction_first}: node {n}");
         }
         assert!(!net.engine(a).core.destroyed(&t), "destruction first {destruction_first}: it fell at a too");
-        let churn = |net: &Net| net.sent_kinds.get(&10).copied().unwrap_or(0) + net.sent_kinds.get(&14).copied().unwrap_or(0);
+        let churn = |net: &Net| net.shown.values().sum::<usize>() + net.sent_kinds.get(&14).copied().unwrap_or(0);
         let settled = churn(&net);
         for _ in 0..4 {
             net.advance(120_000);
         }
-        assert_eq!(churn(&net), settled, "destruction first {destruction_first}: uploads and deletes go on");
+        assert_eq!(churn(&net), settled, "destruction first {destruction_first}: entries shown and deletes go on");
     }
 }
 

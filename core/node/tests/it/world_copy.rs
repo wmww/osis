@@ -25,7 +25,7 @@ fn further(net: &mut Net, g: Tid, t: Tid) {
 /// What a test could compare: each node's reads, indexes, timelines, stored bytes and
 /// diagnostics; each host's labels and entries and stored bytes; the net's counters.
 fn observe(net: &mut Net, t: Tid) -> Vec<String> {
-    let mut out = vec![format!("{:?} {:?} {:?} {} {:?} {} {}", net.sent_kinds, net.uploaded, net.peer_kinds, net.sent_bytes, net.dialed, net.steps, net.queue_len())];
+    let mut out = vec![format!("{:?} {:?} {:?} {} {:?} {} {}", net.sent_kinds, net.shown, net.peer_kinds, net.sent_bytes, net.dialed, net.steps, net.queue_len())];
     for n in 0..net.nodes.len() {
         out.push(format!("{:?} {:?}", net.read(n, t), net.diagnostics(n)));
         let sync = net.sync(n);

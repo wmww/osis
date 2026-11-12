@@ -174,7 +174,7 @@ fn a_readers_fresh_things_are_not_promoted_spec_sync_5() {
 
 // spec/sync.md §5 (Promotion: a key actor's newest card only): reader `r` rewrites its own node's
 // `reach.0` twenty times with 4 KB of its choosing each and deposits them: no older rewrite is
-// ever uploaded stamped.
+// ever shown a peer stamped.
 #[test]
 fn a_readers_own_card_rewrites_are_not_promoted_spec_sync_5() {
     let (mut net, host, _, r, g, l) = reader_of_a_group();
@@ -196,10 +196,11 @@ fn a_readers_own_card_rewrites_are_not_promoted_spec_sync_5() {
     for _ in 0..5 {
         net.advance(60_000);
     }
-    // uploaded stamped by anyone, whatever deleted it since (a superseded card goes)
+    // shown stamped by anyone, whatever deleted it since (a superseded card goes)
     let older: BTreeSet<&BlobId> = ids.iter().filter(|(c, _)| Some(**c) != newest).flat_map(|(_, x)| x).collect();
-    let n = net.uploaded.keys().filter(|(_, ul, b, _)| *ul == l && older.contains(b)).count();
-    assert_eq!(n, 0, "{n} stamped uploads of {} older rewrites", older.len());
+    let n = net.shown.keys().filter(|(_, ul, b, stamp)| *ul == l && older.contains(b) && stamp.is_some()).count();
+    assert!(net.shown.keys().any(|(_, ul, b, _)| *ul == l && older.contains(b)), "the older rewrites reach the peer deposited");
+    assert_eq!(n, 0, "{n} stamped showings of {} older rewrites", older.len());
 }
 
 // spec/requirements.md (read access never stores arbitrary content at a node that cannot read

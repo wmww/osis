@@ -24,8 +24,12 @@ use std::sync::mpsc::Receiver;
 
 pub const T0: u64 = 1_700_000_000_000;
 
-/// A backup of a host's durable state (`Net::backup_host`).
-pub struct HostDisk {
+/// Per (node, label, blob ID, stamp; none: deposited), how often a node's stream showed a peer
+/// that entry (`Net::shown`).
+pub type Shown = BTreeMap<(usize, osis_base::LabelId, osis_base::BlobId, Option<[u8; 64]>), usize>;
+
+/// A backup of a peer's store and engine, its durable state (`Net::backup_store`).
+pub struct StoreDisk {
     hub: (MemoryBackend, MemoryRoot),
     engine: (MemoryBackend, MemoryRoot),
 }
@@ -117,9 +121,14 @@ pub struct Net {
     held_messages: Vec<Msg>,
     /// Message kinds nodes sent to hosts, by kind.
     pub sent_kinds: BTreeMap<u64, usize>,
-    /// Entries nodes uploaded to hosts, by (node, label, blob, stamp): how often each went (the
-    /// same stamp twice: sent again with nothing changed).
-    pub uploaded: BTreeMap<(usize, osis_base::LabelId, osis_base::BlobId, [u8; 64]), usize>,
+    /// Entries nodes' streams showed the peers they connect to (Added events, by stamp; Deposit
+    /// items, stampless), by (node, label, blob, stamp): how often each went (the same stamp twice:
+    /// shown again with nothing changed).
+    pub shown: Shown,
+    /// Of `shown`'s Added events in follow pushes (Stream: a log event, not a page of a join
+    /// from the start), those showing the peer an entry it held already with that wrap and stamp
+    /// when it was sent: logged again with nothing changed for it.
+    pub shown_held: Shown,
     /// Delete items nodes sent to hosts, by (node, label, blob): how often each went.
     pub deleted: BTreeMap<(usize, osis_base::LabelId, osis_base::BlobId), usize>,
     /// Messages sent on peer links, by sender and kind.
@@ -221,7 +230,8 @@ struct Parts {
     held: BTreeSet<(usize, usize)>,
     held_messages: Vec<Msg>,
     sent_kinds: BTreeMap<u64, usize>,
-    uploaded: BTreeMap<(usize, osis_base::LabelId, osis_base::BlobId, [u8; 64]), usize>,
+    shown: Shown,
+    shown_held: Shown,
     deleted: BTreeMap<(usize, osis_base::LabelId, osis_base::BlobId), usize>,
     peer_kinds: BTreeMap<(usize, u64), usize>,
     sent_bytes: usize,
@@ -260,12 +270,12 @@ struct Parts {
 impl Net {
     fn into_parts(self) -> Parts {
         assert!(self.tamper.is_none() && self.host_tamper.is_none(), "a tamper cannot be kept");
-        Parts { clock: self.clock, nodes: self.nodes, hosts: self.hosts, links: self.links, queue: self.queue, next_hub_conn: self.next_hub_conn, steps: self.steps, blocked: self.blocked, plinks: self.plinks, blocked_peers: self.blocked_peers, lan_keys: self.lan_keys, held: self.held, held_messages: self.held_messages, sent_kinds: self.sent_kinds, uploaded: self.uploaded, deleted: self.deleted, peer_kinds: self.peer_kinds, sent_bytes: self.sent_bytes, crossed: self.crossed, dialed: self.dialed, full_passes: self.full_passes, bare: self.bare, home_at_hosts: self.home_at_hosts, unpulled: self.unpulled, unpulled_at: self.unpulled_at, lose_deposits: self.lose_deposits, held_hosts: self.held_hosts, busy: self.busy, hub_busy: self.hub_busy, told: self.told, fetched: self.fetched, deaf: self.deaf, hold_opened: self.hold_opened, held_to: self.held_to, gained: self.gained, hold_blobs: self.hold_blobs, hide_blobs: self.hide_blobs, bare_blobs: self.bare_blobs, walk_to: self.walk_to, tamper_link: self.tamper_link, silent: self.silent, trickle: self.trickle, trickle_hosts: self.trickle_hosts, batch_reads: self.batch_reads, peer_closes: self.peer_closes, next_node_hub: self.next_node_hub, hands: self.hands, port: self.port }
+        Parts { clock: self.clock, nodes: self.nodes, hosts: self.hosts, links: self.links, queue: self.queue, next_hub_conn: self.next_hub_conn, steps: self.steps, blocked: self.blocked, plinks: self.plinks, blocked_peers: self.blocked_peers, lan_keys: self.lan_keys, held: self.held, held_messages: self.held_messages, sent_kinds: self.sent_kinds, shown: self.shown, shown_held: self.shown_held, deleted: self.deleted, peer_kinds: self.peer_kinds, sent_bytes: self.sent_bytes, crossed: self.crossed, dialed: self.dialed, full_passes: self.full_passes, bare: self.bare, home_at_hosts: self.home_at_hosts, unpulled: self.unpulled, unpulled_at: self.unpulled_at, lose_deposits: self.lose_deposits, held_hosts: self.held_hosts, busy: self.busy, hub_busy: self.hub_busy, told: self.told, fetched: self.fetched, deaf: self.deaf, hold_opened: self.hold_opened, held_to: self.held_to, gained: self.gained, hold_blobs: self.hold_blobs, hide_blobs: self.hide_blobs, bare_blobs: self.bare_blobs, walk_to: self.walk_to, tamper_link: self.tamper_link, silent: self.silent, trickle: self.trickle, trickle_hosts: self.trickle_hosts, batch_reads: self.batch_reads, peer_closes: self.peer_closes, next_node_hub: self.next_node_hub, hands: self.hands, port: self.port }
     }
 
     fn from_parts(p: Parts) -> Net {
-        let Parts { clock, nodes, hosts, links, queue, next_hub_conn, steps, blocked, plinks, blocked_peers, lan_keys, held, held_messages, sent_kinds, uploaded, deleted, peer_kinds, sent_bytes, crossed, dialed, full_passes, bare, home_at_hosts, unpulled, unpulled_at, lose_deposits, held_hosts, busy, hub_busy, told, fetched, deaf, hold_opened, held_to, gained, hold_blobs, hide_blobs, bare_blobs, walk_to, tamper_link, silent, trickle, trickle_hosts, batch_reads, peer_closes, next_node_hub, hands, port } = p;
-        Net { clock, nodes, hosts, links, queue, next_hub_conn, steps, blocked, plinks, blocked_peers, lan_keys, held, held_messages, sent_kinds, uploaded, deleted, peer_kinds, sent_bytes, crossed, dialed, full_passes, bare, home_at_hosts, unpulled, unpulled_at, lose_deposits, held_hosts, busy, hub_busy, told, fetched, deaf, hold_opened, held_to, gained, hold_blobs, hide_blobs, bare_blobs, walk_to, tamper_link, silent, trickle, trickle_hosts, batch_reads, peer_closes, next_node_hub, hands, port, tamper: None, host_tamper: None }
+        let Parts { clock, nodes, hosts, links, queue, next_hub_conn, steps, blocked, plinks, blocked_peers, lan_keys, held, held_messages, sent_kinds, shown, shown_held, deleted, peer_kinds, sent_bytes, crossed, dialed, full_passes, bare, home_at_hosts, unpulled, unpulled_at, lose_deposits, held_hosts, busy, hub_busy, told, fetched, deaf, hold_opened, held_to, gained, hold_blobs, hide_blobs, bare_blobs, walk_to, tamper_link, silent, trickle, trickle_hosts, batch_reads, peer_closes, next_node_hub, hands, port } = p;
+        Net { clock, nodes, hosts, links, queue, next_hub_conn, steps, blocked, plinks, blocked_peers, lan_keys, held, held_messages, sent_kinds, shown, shown_held, deleted, peer_kinds, sent_bytes, crossed, dialed, full_passes, bare, home_at_hosts, unpulled, unpulled_at, lose_deposits, held_hosts, busy, hub_busy, told, fetched, deaf, hold_opened, held_to, gained, hold_blobs, hide_blobs, bare_blobs, walk_to, tamper_link, silent, trickle, trickle_hosts, batch_reads, peer_closes, next_node_hub, hands, port, tamper: None, host_tamper: None }
     }
 }
 
@@ -461,7 +471,7 @@ pub fn host_key(i: usize) -> [u8; 32] {
 impl Net {
     /// A network whose new nodes are each their own account's only node.
     pub fn new() -> Net {
-        Net { bare: false, home_at_hosts: false, clock: Arc::new(ManualClock::new(WallMs(T0))), nodes: vec![], hosts: vec![], links: BTreeMap::new(), queue: VecDeque::new(), next_hub_conn: 1, next_node_hub: HUB_BASE, steps: 0, blocked: BTreeSet::new(), plinks: BTreeMap::new(), blocked_peers: BTreeSet::new(), lan_keys: BTreeMap::new(), held: BTreeSet::new(), held_messages: Vec::new(), sent_kinds: BTreeMap::new(), uploaded: BTreeMap::new(), deleted: BTreeMap::new(), peer_kinds: BTreeMap::new(), sent_bytes: 0, crossed: BTreeMap::new(), dialed: Vec::new(), full_passes: false, unpulled: BTreeSet::new(), unpulled_at: BTreeSet::new(), lose_deposits: BTreeSet::new(), held_hosts: BTreeSet::new(), busy: BTreeMap::new(), hub_busy: std::time::Duration::ZERO, told: BTreeMap::new(), fetched: BTreeMap::new(), deaf: BTreeSet::new(), hold_opened: BTreeSet::new(), held_to: BTreeSet::new(), gained: BTreeMap::new(), hold_blobs: BTreeSet::new(), hide_blobs: BTreeMap::new(), bare_blobs: BTreeMap::new(), walk_to: BTreeMap::new(), tamper: None, tamper_link: None, host_tamper: None, silent: BTreeSet::new(), trickle: BTreeMap::new(), trickle_hosts: BTreeMap::new(), batch_reads: false, peer_closes: 0, hands: BTreeMap::new(), port: Vec::new() }
+        Net { bare: false, home_at_hosts: false, clock: Arc::new(ManualClock::new(WallMs(T0))), nodes: vec![], hosts: vec![], links: BTreeMap::new(), queue: VecDeque::new(), next_hub_conn: 1, next_node_hub: HUB_BASE, steps: 0, blocked: BTreeSet::new(), plinks: BTreeMap::new(), blocked_peers: BTreeSet::new(), lan_keys: BTreeMap::new(), held: BTreeSet::new(), held_messages: Vec::new(), sent_kinds: BTreeMap::new(), shown: BTreeMap::new(), shown_held: BTreeMap::new(), deleted: BTreeMap::new(), peer_kinds: BTreeMap::new(), sent_bytes: 0, crossed: BTreeMap::new(), dialed: Vec::new(), full_passes: false, unpulled: BTreeSet::new(), unpulled_at: BTreeSet::new(), lose_deposits: BTreeSet::new(), held_hosts: BTreeSet::new(), busy: BTreeMap::new(), hub_busy: std::time::Duration::ZERO, told: BTreeMap::new(), fetched: BTreeMap::new(), deaf: BTreeSet::new(), hold_opened: BTreeSet::new(), held_to: BTreeSet::new(), gained: BTreeMap::new(), hold_blobs: BTreeSet::new(), hide_blobs: BTreeMap::new(), bare_blobs: BTreeMap::new(), walk_to: BTreeMap::new(), tamper: None, tamper_link: None, host_tamper: None, silent: BTreeSet::new(), trickle: BTreeMap::new(), trickle_hosts: BTreeMap::new(), batch_reads: false, peer_closes: 0, hands: BTreeMap::new(), port: Vec::new() }
     }
 
     /// An exact copy of this network as it stands (notes/testing.md, Copied worlds): every node
@@ -517,7 +527,8 @@ impl Net {
                 held: self.held.clone(),
                 held_messages: self.held_messages.clone(),
                 sent_kinds: self.sent_kinds.clone(),
-                uploaded: self.uploaded.clone(),
+                shown: self.shown.clone(),
+                shown_held: self.shown_held.clone(),
                 deleted: self.deleted.clone(),
                 peer_kinds: self.peer_kinds.clone(),
                 sent_bytes: self.sent_bytes.clone(),
@@ -613,15 +624,15 @@ impl Net {
         self.hosts[s] = self.host_on(s, (MemoryBackend::new(), MemoryRoot::new()), (MemoryBackend::new(), MemoryRoot::new()), clock, HostPolicy::default(), 990 + s as u64, true);
     }
 
-    /// A backup of host `s`'s durable state (its hub's store and its engine's), as a backup
-    /// takes it (`restore_host`).
-    pub fn backup_host(&self, s: usize) -> HostDisk {
+    /// A backup of peer `s`'s durable state (its hub's store and its engine's), as a backup
+    /// takes it (`restore_store`).
+    pub fn backup_store(&self, s: usize) -> StoreDisk {
         let h = &self.hosts[s];
-        HostDisk { hub: (h.backend.copy(), h.root.copy()), engine: (h.engine_disk.0.copy(), h.engine_disk.1.copy()) }
+        StoreDisk { hub: (h.backend.copy(), h.root.copy()), engine: (h.engine_disk.0.copy(), h.engine_disk.1.copy()) }
     }
 
-    /// Restarts host `s` over `disk` (a backup of its durable state): its connections are gone.
-    pub fn restore_host(&mut self, s: usize, disk: HostDisk) {
+    /// Restarts peer `s` over `disk` (a backup of its durable state): its connections are gone.
+    pub fn restore_store(&mut self, s: usize, disk: StoreDisk) {
         self.close_host(s);
         let clock = self.hosts[s].clock.clone();
         self.hosts[s] = self.host_on(s, disk.hub, disk.engine, clock, HostPolicy::default(), 970 + s as u64, false);
@@ -1060,9 +1071,23 @@ impl Net {
                                 osis_proto::Message::PullReply(r) => &r.events[..],
                                 _ => &[],
                             };
-                            for (_, e) in events {
-                                if let osis_proto::Event::Added { blob_id, blob: Some(b), .. } = e {
-                                    *self.crossed.entry(*blob_id).or_default() += b.len();
+                            for (label, e) in events {
+                                if let osis_proto::Event::Added { blob_id, blob, wrap, stamp } = e {
+                                    *self.shown.entry((n, *label, *blob_id, stamp.map(|x| x.0))).or_default() += 1;
+                                    let held = self.links.get(&(n, conn)).and_then(|(s, _)| osis_proto::LabelStore::entry(&*self.hosts[*s].hub.store(), label, blob_id).ok().flatten());
+                                    if matches!(m, osis_proto::Message::Stream(_)) && held.is_some_and(|h| h.wrap == *wrap && h.stamp == *stamp) {
+                                        *self.shown_held.entry((n, *label, *blob_id, stamp.map(|x| x.0))).or_default() += 1;
+                                    }
+                                    if let Some(b) = blob {
+                                        *self.crossed.entry(*blob_id).or_default() += b.len();
+                                    }
+                                }
+                            }
+                            if let osis_proto::Message::Offer { items, .. } = &m {
+                                for i in items {
+                                    if let osis_proto::msg::OfferItem::Deposit { label, blob, .. } = i {
+                                        *self.shown.entry((n, *label, osis_label::blob_id(blob), None)).or_default() += 1;
+                                    }
                                 }
                             }
                             if let osis_proto::Message::FetchReply { items, .. } = &m {
@@ -1070,11 +1095,6 @@ impl Net {
                                     if let Some((b, ..)) = &f.entry {
                                         *self.crossed.entry(f.blob_id).or_default() += b.len();
                                     }
-                                }
-                            }
-                            if let osis_proto::Message::Upload { label, entries, .. } = &m {
-                                for e in entries {
-                                    *self.uploaded.entry((n, *label, osis_label::blob_id(&e.blob), e.stamp.0)).or_default() += 1;
                                 }
                             }
                             if let osis_proto::Message::Delete { label, items, .. } = &m {
@@ -1807,13 +1827,13 @@ impl Net {
         self.hosts[s].hub.store().live_ids(l).unwrap()
     }
 
-    /// The entries of `l` host `s`'s caps count (its role entries are outside them).
-    pub fn host_capped(&self, s: usize, l: &osis_base::LabelId) -> u64 {
+    /// The entries of `l` peer `s`'s store counts against its caps (role entries are outside them).
+    pub fn capped_entries(&self, s: usize, l: &osis_base::LabelId) -> u64 {
         self.hosts[s].hub.store().capped(l).unwrap().0
     }
 
-    /// The bytes of `l` host `s`'s caps count.
-    pub fn host_capped_bytes(&self, s: usize, l: &osis_base::LabelId) -> u64 {
+    /// The bytes of `l` peer `s`'s store counts against its caps.
+    pub fn capped_bytes(&self, s: usize, l: &osis_base::LabelId) -> u64 {
         self.hosts[s].hub.store().capped(l).unwrap().1
     }
 

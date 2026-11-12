@@ -354,13 +354,13 @@ fn a_write_reaches_a_peer_that_cannot_read_by_its_pull_spec_sync_10() {
 fn a_peer_restored_from_a_backup_pulls_again_spec_sync_10() {
     let (mut net, host, [a, b], g, []) = hosted::<2, 0>(&[(1, Role::Read)], [], true);
     net.set_online(b, false);
-    let backup = net.backup_host(host);
+    let backup = net.backup_store(host);
     let t = net.item(a, g, g, "again");
     net.run();
     let l = net.label(a);
     let before = net.host_ids(host, &l).len();
     // the peer's store as it was before the write
-    net.restore_host(host, backup);
+    net.restore_store(host, backup);
     assert!(net.host_ids(host, &l).len() < before, "rolled back");
     for _ in 0..3 {
         net.advance(61_000);

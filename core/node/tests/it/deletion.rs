@@ -334,26 +334,30 @@ fn reregistration_after_rotation_spec_sync_5() {
 
 // spec/sync.md §5 (re-registration): two admins holding epochs newer than the head while one's
 // rotation is fresh (a grant, then at once a demotion with no rotation, whose rotation of g
-// rotates t at once too): neither uploads for a step that cannot go yet, and nothing is sent
-// again unchanged (same entry, same stamp), so the role commits travel once and no admin places
-// its own copy of another's (deleted again as a duplicate).
+// rotates t at once too): no stream shows the peer an entry again that it holds unchanged (same
+// wrap, same stamp), so the role commits travel once and no admin places its own copy of
+// another's (deleted again as a duplicate).
 #[test]
 fn reregistration_waits_and_sends_once_spec_sync_5() {
     let (mut net, _host, [a, _b, c], g, [t]) = hosted::<3, 1>(&[(1, Role::Write), (2, Role::Admin)], ["x"], true);
     let tc = net.tid(c);
     net.sent_kinds.clear();
-    net.uploaded.clear();
+    let before: std::collections::BTreeSet<_> = net.shown.keys().map(|(_, l, b, _)| (*l, *b)).collect();
+    net.shown.clear();
+    net.shown_held.clear();
     net.grant(a, t, tc, Role::Admin);
     // a demotion with no rotation (a hand-built edge write): g's rotation stays due
     let read = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
     crate::common::set_edge(net.engine(a), g, tc, Some(read), None);
     net.run();
-    let again: Vec<_> = net.uploaded.iter().filter(|(_, n)| **n > 1).collect();
-    assert!(again.is_empty(), "sent again unchanged: {again:?}");
+    // (every reader's stream shows what it holds, so a peer is shown one entry by each reader,
+    // and again in the pages of each join from the start)
+    let again: Vec<_> = net.shown_held.keys().filter(|k| net.shown[*k] > 1).collect();
+    assert!(again.is_empty(), "shown again unchanged: {again:?}");
+    // a copy an admin placed of another's would be deleted again as a duplicate
     assert_eq!(net.sent_kinds.get(&14), None, "no duplicate entries to delete");
-    // the role commits the grant and the rotations it causes write, each once per label
-    let uploads = net.sent_kinds.get(&10).copied().unwrap_or(0);
-    assert!(uploads <= 30, "{uploads} uploads");
+    let placed: std::collections::BTreeSet<_> = net.shown.keys().map(|(_, l, b, _)| (*l, *b)).filter(|x| !before.contains(x)).collect();
+    assert!(!placed.is_empty(), "the grant's role commits reach the peer");
     assert_eq!(net.read(c, t), Some(s("x")));
 }
 
@@ -1809,9 +1813,10 @@ fn chunk_delete_waits_for_its_role_commits_at_the_host_spec_sync_7() {
     let done = net.engine(a).grant(&g, &tc, &edge).unwrap();
     let _ = net.sync(a).carry_out(done).unwrap();
     net.pair(a, c);
-    let ups = |net: &Net| -> usize { net.uploaded.iter().filter(|((n, x, _, _), _)| *n == b && *x == l).map(|(_, k)| k).sum() };
+    let ups = |net: &Net| -> usize { net.shown.iter().filter(|((n, x, _, _), _)| *n == b && *x == l).map(|(_, k)| k).sum() };
     let dels = |net: &Net| -> usize { net.deleted.iter().filter(|((n, x, id), _)| *n == c && *x == l && chunks.contains(id)).map(|(_, k)| k).sum() };
     let up0 = ups(&net);
+    assert!(up0 > 0, "b's write reached the peer by b's stream");
     purge_reg(&mut net, c, t, write);
     local(&mut net, c);
     net.run();

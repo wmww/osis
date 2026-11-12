@@ -175,7 +175,7 @@ fn full_peer() -> (Net, usize, usize, usize, Tid, Tid, osis_base::LabelId, osis_
     let l = net.label(a);
     let p = blobs_of(&mut net, a, &l, &c);
     assert_eq!(p.len(), 1);
-    let full = net.host_capped_bytes(host, &l);
+    let full = net.capped_bytes(host, &l);
     net.restart_host_with(host, osis_host::HostPolicy { cap_bytes: full, ..osis_host::HostPolicy::default() });
     net.run();
     // past the redial pause
@@ -198,7 +198,7 @@ fn full_peer() -> (Net, usize, usize, usize, Tid, Tid, osis_base::LabelId, osis_
 fn a_full_peer_stays_within_its_cap_and_the_writer_keeps_the_rest_spec_sync_10() {
     let (mut net, host, a, b, _t, t2, l, _c, _p, full) = full_peer();
     let gone = Ak::new(GONE.ak()).unwrap();
-    assert_eq!(net.host_capped_bytes(host, &l), full, "the peer stays within its cap");
+    assert_eq!(net.capped_bytes(host, &l), full, "the peer stays within its cap");
     assert_eq!(net.engine(a).get(&t2, &gone).unwrap(), Some(s("kept")), "a keeps its write");
     assert_eq!(net.engine(b).get(&t2, &gone).unwrap(), None, "b reads through the peer only");
     assert!(net.refused_at(a, &l), "a's status shows the peer full");
@@ -221,7 +221,7 @@ fn a_purge_frees_room_at_a_full_peer_spec_sync_7() {
     net.feed(a, Event::Local);
     for _ in 0..50 {
         net.round();
-        assert!(net.host_capped_bytes(host, &l) <= full, "the peer stays within its cap");
+        assert!(net.capped_bytes(host, &l) <= full, "the peer stays within its cap");
     }
     net.run();
     net.advance(31_000);
@@ -232,7 +232,7 @@ fn a_purge_frees_room_at_a_full_peer_spec_sync_7() {
     assert!(after.iter().any(|x| !before.contains(x) && !request.contains(x)), "a body it lacked took the room freed");
     assert_eq!(net.engine(b).get(&t2, &gone).unwrap(), Some(s("kept")), "the write that did not fit reaches b through the peer");
     assert!(!net.refused_at(a, &l), "nothing lacked there any more");
-    assert!(net.host_capped_bytes(host, &l) <= full, "within its cap");
+    assert!(net.capped_bytes(host, &l) <= full, "within its cap");
 }
 
 // spec/permissions.md §3 (complete pass): a role commit pushed to a subscribed node ends

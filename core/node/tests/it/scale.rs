@@ -1622,7 +1622,7 @@ fn role_entries_under_churn(n: usize, churn: usize) -> [u64; 2] {
     net.advance(61_000);
     net.run();
     let l = net.group_labels(a).into_iter().find(|(t, _)| *t == g).unwrap().1.id;
-    let role = |net: &crate::net::Net| net.host_ids(host, &l).len() as u64 - net.host_capped(host, &l);
+    let role = |net: &crate::net::Net| net.host_ids(host, &l).len() as u64 - net.capped_entries(host, &l);
     let before = role(&net);
     for i in 0..churn {
         let f = net.group_seeded(a, &[], vec![], 10_000 + i as u64);

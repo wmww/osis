@@ -361,15 +361,17 @@ pub struct NetSim {
     pub dishonest: BTreeSet<usize>,
     /// Commits expected to stay parked at quiescence (version skew: a newer format).
     pub parked_ok: BTreeSet<CommitId>,
-    /// Entries each node sent by Upload while `count_uploads` is on: (node, label, blob); `known`
-    /// is then recorded after every node call.
-    pub uploads: Vec<(usize, LabelId, osis_base::BlobId)>,
-    pub count_uploads: bool,
+    /// Entries each node's stream showed a peer that cannot read the label lacking it when sent
+    /// (Added events, Deposit items) while `count_placed` is on: (node, label, blob), what the
+    /// node placed there; `known` is then recorded after every node call.
+    pub placed: Vec<(usize, LabelId, osis_base::BlobId)>,
+    pub count_placed: bool,
     /// Held-back messages of evil hosts per connection.
     held: BTreeMap<(usize, u64), Vec<u8>>,
     /// What a commit blob is, when noting arrivals (`Arrivals`), from what senders held.
     names: BTreeMap<osis_base::BlobId, Vec<u8>>,
-    /// Blobs whose uploads and deposits by nodes are counted in `sent_watched` (adversaries).
+    /// Blobs whose entries nodes show peers (Added events, Deposit items, Fetch replies) are
+    /// counted in `sent_watched` (adversaries).
     pub watched: BTreeSet<osis_base::BlobId>,
     pub sent_watched: u64,
     /// What scenarios wrote ephemerally, for the ephemeral invariants (`ephemeral::check`).
@@ -436,20 +438,29 @@ fn sent_events(b: &[u8]) -> u64 {
     n.max(1)
 }
 
-/// Uploads and deposits of `watched` blobs among the frames in `b`.
-fn watched_in(watched: &BTreeSet<osis_base::BlobId>, b: &[u8]) -> u64 {
+/// The entries the frames in `b` show their receiver: stream Added events, Offer Deposit items
+/// and Fetch reply entries (no label named), as (label, blob ID).
+fn shown_in(b: &[u8]) -> Vec<(Option<LabelId>, osis_base::BlobId)> {
     let mut d = osis_proto::FrameDecoder::default();
     d.push(b);
-    let mut n = 0u64;
+    let mut out = Vec::new();
     while let Ok(Some(f)) = d.next_frame() {
-        let blobs: Vec<Vec<u8>> = match osis_proto::Message::decode(&f) {
-            Ok(osis_proto::Message::Upload { entries, .. } | osis_proto::Message::Sync { entries, .. }) => entries.into_iter().map(|e| e.blob).collect(),
-            Ok(osis_proto::Message::Deposit { blob, .. }) => vec![blob],
-            _ => Vec::new(),
-        };
-        n += blobs.iter().filter(|x| watched.contains(&osis_label::blob_id(x))).count() as u64;
+        let added = |events: Vec<(LabelId, osis_proto::Event)>| events.into_iter().filter_map(|(l, e)| match e {
+            osis_proto::Event::Added { blob_id, .. } => Some((Some(l), blob_id)),
+            _ => None,
+        });
+        match osis_proto::Message::decode(&f) {
+            Ok(osis_proto::Message::Stream(st)) => out.extend(added(st.events)),
+            Ok(osis_proto::Message::PullReply(r)) => out.extend(added(r.events)),
+            Ok(osis_proto::Message::Offer { items, .. }) => out.extend(items.into_iter().filter_map(|i| match i {
+                osis_proto::msg::OfferItem::Deposit { label, blob, .. } => Some((Some(label), osis_label::blob_id(&blob))),
+                _ => None,
+            })),
+            Ok(osis_proto::Message::FetchReply { items, .. }) => out.extend(items.into_iter().filter(|i| i.entry.is_some()).map(|i| (None, i.blob_id))),
+            _ => {}
+        }
     }
-    n
+    out
 }
 
 pub fn host_key(i: usize) -> [u8; 32] {
@@ -516,8 +527,8 @@ impl NetSim {
             watch: false,
             dishonest: BTreeSet::new(),
             parked_ok: BTreeSet::new(),
-            uploads: Vec::new(),
-            count_uploads: false,
+            placed: Vec::new(),
+            count_placed: false,
             held: BTreeMap::new(),
             names: BTreeMap::new(),
             watched: BTreeSet::new(),
@@ -654,8 +665,8 @@ impl NetSim {
                 watch: self.watch,
                 dishonest: self.dishonest.clone(),
                 parked_ok: self.parked_ok.clone(),
-                uploads: self.uploads.clone(),
-                count_uploads: self.count_uploads,
+                placed: self.placed.clone(),
+                count_placed: self.count_placed,
                 held: self.held.clone(),
                 names: self.names.clone(),
                 watched: self.watched.clone(),
@@ -883,7 +894,7 @@ impl NetSim {
     /// After any call into node `n`: checker events, diagnostics, a crash, then its actions.
     pub fn after_node(&mut self, n: usize, acts: Vec<Action>) -> Res<()> {
         self.drain(n)?;
-        if self.watch || self.count_uploads {
+        if self.watch || self.count_placed {
             self.observe_node(n);
         }
         if self.nodes.get(n).is_some_and(|x| x.faults.crashed()) {
@@ -928,19 +939,19 @@ impl NetSim {
                     if let Some(x) = self.nodes.get_mut(n) {
                         x.sent_bytes = x.sent_bytes.saturating_add(bytes.len() as u64);
                     }
-                    if self.count_uploads {
-                        let mut d = osis_proto::FrameDecoder::new();
-                        d.push(&bytes);
-                        while let Ok(Some(body)) = d.next_frame() {
-                            if let Ok(osis_proto::Message::Upload { label, entries, .. }) = osis_proto::Message::decode(&body) {
-                                self.uploads.extend(entries.iter().map(|e| (n, label, osis_label::blob_id(&e.blob))));
-                            }
-                        }
+                    let end = self.peer_end(End::Node(n, conn));
+                    if self.count_placed
+                        && let Some((_, End::Hub(s, _))) = end
+                    {
+                        let lacks = |l: &LabelId, b: &osis_base::BlobId| self.hub(s).is_none_or(|h| osis_proto::LabelStore::entry(&*h.store(), l, b).ok().flatten().is_none());
+                        let placed: Vec<_> = shown_in(&bytes).into_iter().filter_map(|(l, b)| Some((n, l?, b))).filter(|(_, l, b)| lacks(l, b)).collect();
+                        self.placed.extend(placed);
                     }
                     if !self.watched.is_empty() {
-                        self.sent_watched = self.sent_watched.saturating_add(watched_in(&self.watched, &bytes));
+                        let k = shown_in(&bytes).iter().filter(|(_, b)| self.watched.contains(b)).count() as u64;
+                        self.sent_watched = self.sent_watched.saturating_add(k);
                     }
-                    if let Some((id, to)) = self.peer_end(End::Node(n, conn)) {
+                    if let Some((id, to)) = end {
                         self.send(id, to, Payload::Bytes(bytes));
                     }
                 }

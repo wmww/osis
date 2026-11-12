@@ -557,7 +557,7 @@ pub fn tombstone_liar(s: Seeds) -> Res<Report> {
             }
         }
     }
-    // the honest host would refuse a re-upload (tombstoned): count the attempts instead
+    // the honest peer would refuse it again (tombstoned): count what nodes show of it instead
     if sim.sent_watched > 0 {
         return Err(sim.fail(format!("nodes sent the purged body {} times after the lie", sim.sent_watched)));
     }

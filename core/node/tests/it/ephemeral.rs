@@ -2896,16 +2896,17 @@ fn a_memory_entry_announced_without_bytes_stays_present_where_shown_spec_sync_9(
             assert_eq!(at.into_iter().collect::<BTreeSet<_>>(), keys, "node {n}: present at both hosts");
         }
     }
-    let before = uploads_sent(&net);
+    let before = shown(&net);
+    assert!(before > 0);
     for _ in 0..3 {
         net.advance(15_000);
     }
-    assert_eq!(uploads_sent(&net), before, "nothing goes up again");
+    assert_eq!(shown(&net), before, "nothing shown again");
 }
 
-/// Upload messages nodes sent so far (osis-proto message kind 10).
-fn uploads_sent(net: &Net) -> usize {
-    net.sent_kinds.get(&10).copied().unwrap_or(0)
+/// Entries nodes' streams showed the peers so far (Added events, Deposit items).
+fn shown(net: &Net) -> usize {
+    net.shown.values().sum()
 }
 
 /// `authors` nodes in one group move their cursors every 33 ms (30 a second) for `secs`
