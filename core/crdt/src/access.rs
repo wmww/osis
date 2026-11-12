@@ -111,6 +111,13 @@ impl Fragment {
         }
     }
 
+    /// The value of the live element created at `dot` in the set at struct field `field` of this
+    /// state (§5.5); `None` when it is not live here.
+    pub fn set_elem_value(&self, field: u64, dot: &Dot) -> Option<Value> {
+        let (set, _) = self.struct_set(field)?;
+        set?.elems.get(dot)?.frag.as_deref()?.read()
+    }
+
     /// The greatest creation stamp of a live element of value `v` in the set at struct field
     /// `field` of this state (§5.5).
     pub fn set_live_elem(&self, field: u64, v: &Value) -> Option<Stamp> {
