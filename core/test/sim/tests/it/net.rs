@@ -33,12 +33,13 @@ fn three_accounts_two_hosts() {
 }
 
 // spec: none (replay): the same (scenario, setup, seed) gives the same run, digest included;
-// seeds over one setup run apart (the seed drives everything after it).
+// seeds over one setup run apart (the seed drives everything after it), and a run of another
+// seed between two runs of one seed leaves the shared setup as it was.
 #[test]
 fn replay_is_exact() {
     let r = ok("two_nodes_host", 0);
-    assert_eq!(r, ok("two_nodes_host", 0));
     assert_ne!(r.digest, ok("two_nodes_host", 1).digest);
+    assert_eq!(r, ok("two_nodes_host", 0));
 }
 
 // notes/ephemeral.md, spec/sync.md §9: ephemeral (expiring ones included) and signal writes on a
