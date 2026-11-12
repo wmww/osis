@@ -15,3 +15,4 @@ ephemeral::random_window_one_capped_host_large OSIS_EPH_START=1811714465 issues/
 runtime::a_paired_peer_serves_what_it_reads_in_process_spec_data_model_9 - issues/paired-peer-runtime-flake.md Unsynced \{ groups
 order::held_set_decides_plain OSIS_ORDER_SEED=7310 issues/covered-under-stripped-cover.md ^seed 7310, Settled .*after the sync exchange: shows other than the node keeping every body
 sim-sweep:snapshot_rights 896215582406/896215582419 issues/snapshot-rights-delete-storm.md message storm: .*kind Some\(Content\)
+ephemeral::random_churn_converges_large OSIS_EPH_START=913562400022 issues/churn-seed-022-loop.md no quiescence after \d+ rounds

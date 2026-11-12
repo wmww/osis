@@ -4,4 +4,5 @@
 > Tags: sync, tests
 
 - Repro: `cargo run --bin sim-sweep -- --seeds 1 --from 896215582419 --setup 896215582406 --only snapshot_rights`; `OSIS_SIM_TRACE=1` shows node 2's `Stream L+X L-W`, node 1's `Fetch X` then `Delete X`, round after round. Nodes 1 and 2 print `delete refused: code 1` earlier in the run.
+- Also setup 913562411000 seed 913562411001 (storm on `s:reg.0`/`s:count.0` content, node s0 deleting each fresh copy).
 - Start at: why node 1 judges the copy must-not-hold while node 2 re-places it (spec/sync.md §6 verdicts), as in the work_sets issue.
