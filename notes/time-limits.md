@@ -34,6 +34,7 @@ Format: `- <date time> <box> `<limit>` [<test>] <CPU|wall> <measured>/<limit> s 
 - 2026-11-12 00:57 fastbox-0 `gate.hold` wall 229/177 s, `gate` wall 298/220 s at load 17: port-codec review, 13 crates selected, 57 s of it a rebuild after the reviewer's edits; persistent, issues/gate-five-minutes.md.
 - 2026-11-12 fastbox-0 `gate.hold` CPU 2815/2788 s, wall 309/177 s and `gate` wall 335/220 s at load 27: unmerge-nested review, no lock wait; persistent, issues/gate-five-minutes.md.
 - 2026-11-11 16:43 ostrich `heavy` CPU 6136/5060 s, wall 713/598 s at load 23: slow-tests worker's A/B of the order properties (base and branch, two offsets, in one hold; each exhaustive run about 1100 CPU-s); a by-hand measurement, one hold per run would have kept each under the limit.
+- 2026-11-11 17:51 ostrich `gate.hold` CPU 7322/3795 s, wall 729/241 s and `gate` CPU 8765/4094 s, wall 1086/299 s at load 19 (736 s more waiting for the lock): slow-tests review, 23 of 26 crates selected (osis-base changed); properties stage 253 s (plain 117, exhaustive 146 beside the rest); persistent, issues/gate-five-minutes.md.
 
 ## Investigations
 One section per investigation: date and box, the trigger (hits or the run over 2x), what was tried, the outcome (fixed, or a raised limit with why no good solution was found). Tess reviews every raise.
