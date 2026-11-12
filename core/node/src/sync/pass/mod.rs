@@ -594,6 +594,10 @@ impl SyncEngine {
                         self.stamp_entry(l, o.id, e, wk);
                     }
                 }
+                // stamped for its head: one it read before its head moved here was refused under
+                // the old head's keys (a stamp for a step not registered there yet), so it is
+                // shown again, once per head move
+                Some(_) if stamped => self.relog_for_head(conn, l, o.id)?,
                 Some(_) => {}
                 None if !stamped && (self.mine(&e) || matches!(o.of, Some(Touch::Commit(_)))) => deposits.push(o.id),
                 None => {}
@@ -631,6 +635,18 @@ impl SyncEngine {
             Ok(at)
         })?;
         Ok(at.filter(|p| reported.is_none_or(|r| r < *p)))
+    }
+
+    /// Entry `id` of `l` shown again to source `conn` (`State::relog`) when its latest event is
+    /// before the source's head last moved (`LConn::head_moved_at`).
+    fn relog_for_head(&mut self, conn: ConnId, l: LabelId, id: BlobId) -> Result<()> {
+        let Some(moved) = self.lc(conn, &l).and_then(|x| x.head_moved_at) else { return Ok(()) };
+        self.state.flush(&mut self.engine)?;
+        let latest = self.engine.run(|tx| { let p = super::state::hub(tx)?.node_log(|t| t.log_entry_latest(&l, &id))?; Ok(p) })?;
+        if latest.is_some_and(|p| p < moved) {
+            self.state.relog(l, id);
+        }
+        Ok(())
     }
 
     /// Whether entry `id`'s stamp verifies under the head of a source of `l`.

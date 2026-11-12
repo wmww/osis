@@ -61,13 +61,20 @@ impl HostStore {
     /// its row, blob reference and node log `Added`, written into the open transaction. Whether
     /// anything changed (a row with the same wrap and stamp is left alone).
     pub fn reader_put(&mut self, label: &LabelId, blob: &BlobId, wrap: [u8; WRAP_LEN], stamp: Option<Signature>) -> Result<bool, StoreError> {
-        self.own(|s| s.own_put(label, blob, wrap, stamp))
+        self.own(|s| s.own_put(label, blob, wrap, stamp, false))
     }
 
-    fn own_put(&mut self, label: &LabelId, blob: &BlobId, wrap: [u8; WRAP_LEN], stamp: Option<Signature>) -> Result<bool, StoreError> {
+    /// Logs node sync's row of `blob` under `label` again, unchanged, so its streams show it
+    /// again (a peer that refused it under an older head). Whether there was one.
+    pub fn reader_relog(&mut self, label: &LabelId, blob: &BlobId) -> Result<bool, StoreError> {
+        let Some(r) = self.row(label, blob)? else { return Ok(false) };
+        self.own(|s| s.own_put(label, blob, r.meta.wrap, r.meta.stamp, true))
+    }
+
+    fn own_put(&mut self, label: &LabelId, blob: &BlobId, wrap: [u8; WRAP_LEN], stamp: Option<Signature>, again: bool) -> Result<bool, StoreError> {
         let (meta, new) = self.meta_or_new(label)?;
         let held = self.row(label, blob)?;
-        if held.as_ref().is_some_and(|r| r.meta.wrap == wrap && r.meta.stamp == stamp) {
+        if !again && held.as_ref().is_some_and(|r| r.meta.wrap == wrap && r.meta.stamp == stamp) {
             return Ok(false);
         }
         let mut tx = Tx { label: *label, before: (meta.entries, meta.bytes, new), meta, batch: Writes::default() };

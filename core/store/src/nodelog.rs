@@ -261,6 +261,12 @@ impl Transaction<'_> {
         self.log_place(entry_slot(&l, &b), NodeEvent::Added(l, b), first_logged)
     }
 
+    /// The position of an entry's latest event (`None` with none in the log).
+    pub fn log_entry_latest(&mut self, l: &LabelId, b: &BlobId) -> Result<Option<u64>, Error> {
+        let Some(v) = self.cat_get(&entry_slot(l, b))? else { return Ok(None) };
+        Ok(Some(pos_value(v.get(..8).ok_or(Error::Corrupt("node log slot"))?)?))
+    }
+
     /// The position an entry was first logged at, kept while its slot is (its later events move
     /// only the latest): `None` with none in the log. What a member ended at `until` is served
     /// (issues/net-reconnect.md, Joining and rejoining).

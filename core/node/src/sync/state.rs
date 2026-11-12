@@ -114,6 +114,8 @@ pub enum Kind {
 #[derive(Clone, Copy, Debug)]
 enum LogWrite {
     Added(LabelId, BlobId),
+    /// An entry shown again unchanged (`relog`).
+    Again(LabelId, BlobId),
     Deleted(LabelId, BlobId, bool),
 }
 
@@ -1287,7 +1289,7 @@ impl State {
             let mut gone = BTreeSet::new();
             for e in &log {
                 match *e {
-                    LogWrite::Added(..) => {}
+                    LogWrite::Added(..) | LogWrite::Again(..) => {}
                     LogWrite::Deleted(l, b, tomb) => {
                         let here = self.entries.get(&(l, b)).is_some_and(|e| !e.memory);
                         if !here && gone.insert((l, b)) && hub(tx)?.reader_entry(&l, &b).map_err(hub_err)?.is_some() {
@@ -1300,6 +1302,11 @@ impl State {
                 let Some(e) = self.entries.get(&(l, b)).filter(|e| !e.memory) else { continue };
                 if tx.blobs.held(&b)? {
                     hub(tx)?.reader_put(&l, &b, e.wrap, e.stamp).map_err(hub_err)?;
+                }
+            }
+            for e in &log {
+                if let LogWrite::Again(l, b) = *e {
+                    hub(tx)?.reader_relog(&l, &b).map_err(hub_err)?;
                 }
             }
             Ok(!stored.is_empty())
@@ -1372,6 +1379,15 @@ impl State {
 
     pub fn set_entry(&mut self, l: LabelId, b: BlobId, e: Entry) {
         self.set_entry_fed(l, b, e, true);
+    }
+
+    /// Announces entry `b` of `l` again to the streams this node serves, unchanged.
+    pub fn relog(&mut self, l: LabelId, b: BlobId) {
+        match self.entries.get(&(l, b)) {
+            Some(e) if e.memory => self.mem_log.added(l, b, self.now),
+            Some(_) => self.log.push(LogWrite::Again(l, b)),
+            None => {}
+        }
     }
 
     /// `set_entry` without announcing the entry to the streams this node serves (node log,
