@@ -239,8 +239,8 @@ pub(crate) fn judge(tx: &mut Tx<'_>, things: Option<&BTreeSet<Tid>>) -> Result<J
 /// freed sets go (a party removed cannot delete), and of the pieces `roots` reach through held
 /// node blobs, those no remaining source of their thing reaches and whose prefix bears their
 /// link are this node's to drop. The blobs to release.
-/// `gone`: the forgotten aspects and commits, sources no more though still indexed meanwhile.
-pub(crate) fn lost(tx: &mut Tx<'_>, things: &BTreeSet<Tid>, roots: BTreeMap<Tid, Vec<Link>>, gone: (&BTreeSet<(Tid, Ak)>, &BTreeMap<CommitId, BTreeSet<usize>>)) -> Result<BTreeSet<BlobId>> {
+/// `aspects`, `parts`: those forgotten, sources no more though still indexed meanwhile.
+pub(crate) fn lost(tx: &mut Tx<'_>, things: &BTreeSet<Tid>, roots: BTreeMap<Tid, Vec<Link>>, aspects: &BTreeSet<(Tid, Ak)>, parts: &BTreeMap<CommitId, BTreeSet<usize>>) -> Result<BTreeSet<BlobId>> {
     for f in rows(tx, records::FREED)? {
         if things.contains(&f.tid) {
             remove(tx, &f)?;
@@ -255,7 +255,6 @@ pub(crate) fn lost(tx: &mut Tx<'_>, things: &BTreeSet<Tid>, roots: BTreeMap<Tid,
             let blobs: BTreeSet<BlobId> = todo.iter().map(|l| l.blob).collect();
             let refs = {
                 use crate::engine::tree_refs::{Source, kept_refs_in, sources_of};
-                let (aspects, parts) = gone;
                 let srcs = sources_of(tx, &t)?;
                 let core = &*tx.core;
                 // a body none of whose held parts on `t` is kept
