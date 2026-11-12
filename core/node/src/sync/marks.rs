@@ -159,6 +159,9 @@ impl SyncEngine {
                 self.state.charge_memory(l, b, None);
             }
         }
+        for c in &ch.commits {
+            self.settle_leftover_charge(c)?;
+        }
         changed |= !ch.is_empty();
         wide |= !undropped.is_empty();
         narrow.extend(ch.aspects.iter().cloned());

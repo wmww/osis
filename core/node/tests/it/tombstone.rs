@@ -1000,3 +1000,31 @@ fn a_lasting_request_applies_when_its_killer_left_spec_commits_4() {
     assert!(net.engine(n).header(&p).is_some() && net.engine(n).header(&c).is_some());
     assert_eq!(net.engine(n).purged_on(&t, &k()).unwrap().get(&c), Some(&p));
 }
+
+// spec/commits.md §5 Forgetting (purged leftovers), spec/requirements.md (peer input never causes
+// unbounded storage): a durable write purged under no history promised is held as its leftover
+// while a delete of it is within its tombstone, then forgotten at each holder, the purger
+// included, as at a node that never received it; a permanent one stays, its header lasting
+#[test]
+fn a_purged_write_is_forgotten_past_its_tombstone_spec_commits_5() {
+    for kept in [false, true] {
+        let Chat { mut net, a, b, t, .. } = chat();
+        if !kept {
+            net.keep(a, t, &[(GONE.ak(), History::PurgeOnReplace)]);
+        }
+        net.run();
+        let c = msg(&mut net, b, t, "SECRET", Retention::default());
+        net.run();
+        purge(&mut net, a, t, c, Retention::default());
+        net.run();
+        for n in [a, b] {
+            assert!(net.engine(n).commit_ids().contains(&c), "kept {kept}: {n} holds its leftover");
+            assert_eq!(net.engine(n).kept_purged(&c), !kept, "kept {kept}: {n}");
+        }
+        net.advance(osis_base::format::TOMBSTONE_LIFETIME_MS + 60_000);
+        for n in [a, b] {
+            assert_eq!(net.engine(n).commit_ids().contains(&c), kept, "kept {kept}: at {n}");
+            assert_ne!(net.read(n, t), Some(s("SECRET")), "kept {kept}: at {n}");
+        }
+    }
+}

@@ -500,6 +500,11 @@ pub struct State {
     /// per label; the same for entries whose commit waits unverified (the pending share).
     pub memory_charge: BTreeMap<(LabelId, BlobId), u64>,
     pub memory_bytes: BTreeMap<LabelId, u64>,
+    /// Memory commits from others held only as purged leftovers (`Engine::kept_purged`): each
+    /// charged its own bytes against the caps of the labels its entries were charged under, until
+    /// it is forgotten or held otherwise; its entries are charged nothing meanwhile, so the
+    /// purger's deletes at hosts do not uncharge it.
+    pub leftover_charge: BTreeMap<CommitId, (BTreeSet<LabelId>, u64)>,
     /// Encoded size of each memory entry's blob while held here (tests, diagnostics).
     pub memory_sizes: BTreeMap<(LabelId, BlobId), usize>,
     /// Memory entries judged or placed while their body was in the label's closure here: only
@@ -1419,6 +1424,26 @@ impl State {
         if *total == 0 {
             self.memory_bytes.remove(&l);
         }
+    }
+
+    /// Charges memory commit `c` `n` against the cap of each of `labels` (replacing any earlier
+    /// charge of it), or releases it (`None`): a commit held only as purged leftovers
+    /// (`leftover_charge`).
+    pub fn charge_leftover(&mut self, c: CommitId, labels: BTreeSet<LabelId>, n: Option<u64>) {
+        if let Some((old, m)) = self.leftover_charge.remove(&c) {
+            for l in old {
+                let total = self.memory_bytes.entry(l).or_default();
+                *total = total.saturating_sub(m);
+                if *total == 0 {
+                    self.memory_bytes.remove(&l);
+                }
+            }
+        }
+        let Some(n) = n.filter(|_| !labels.is_empty()) else { return };
+        for l in &labels {
+            *self.memory_bytes.entry(*l).or_default() += n;
+        }
+        self.leftover_charge.insert(c, (labels, n));
     }
 
     /// Whether a body of commit `c` sharing a delta with `parts` (sorted) left `l` by a delete

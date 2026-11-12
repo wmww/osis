@@ -302,6 +302,7 @@ impl SyncEngine {
         let mut labels = BTreeSet::new();
         for (c, header, why) in dropped {
             let entries: Vec<(LabelId, BlobId)> = self.entries_of_commit(c);
+            self.state.charge_leftover(*c, BTreeSet::new(), None);
             for (l, b) in &entries {
                 self.state.charge_memory(*l, *b, None);
                 self.state.touch(*l, *b);
@@ -499,8 +500,48 @@ impl SyncEngine {
             self.state.charge_memory(l, b, None);
             return self.forget_blob(&b);
         }
+        // held only as purged leftovers: the commit is charged, not its entries
+        if let Some((mut labels, n)) = self.state.leftover_charge.get(&c).cloned() {
+            self.state.charge_memory(l, b, None);
+            if labels.insert(l) {
+                self.state.charge_leftover(c, labels, Some(n));
+            }
+            return Ok(());
+        }
         let charge = self.engine.memory_charge(&c)?.max(size);
         self.state.charge_memory(l, b, Some(charge));
+        Ok(())
+    }
+
+    /// Memory commit `c` changed here: held only as purged leftovers (`Engine::kept_purged`), it
+    /// is charged its own bytes against the labels its entries were charged under, its entries
+    /// nothing (the purger deletes them at hosts; spec/sync.md §9 Caps), until it is forgotten
+    /// (`memory_dropped`) or held otherwise (a fall: its charge is its entries' again once a copy
+    /// applies). An own commit, charged nowhere, stays so.
+    /// Either class, it is looked at for forgetting: with no entry of it known, no entry's
+    /// leaving would bring it to `forget_forgettable`.
+    pub(crate) fn settle_leftover_charge(&mut self, c: &CommitId) -> Result<()> {
+        let kept = self.engine.kept_purged(c);
+        if kept {
+            self.state.forget_due.insert(*c);
+        }
+        if !(kept && self.engine.holds_memory(c)) {
+            if self.state.leftover_charge.contains_key(c) {
+                self.state.charge_leftover(*c, BTreeSet::new(), None);
+            }
+            return Ok(());
+        }
+        let charged: Vec<(LabelId, BlobId)> = self.entries_of_commit(c).into_iter().filter(|e| self.state.memory_charge.contains_key(e)).collect();
+        let mut labels = self.state.leftover_charge.get(c).map(|x| x.0.clone()).unwrap_or_default();
+        labels.extend(charged.iter().map(|e| e.0));
+        if labels.is_empty() {
+            return Ok(());
+        }
+        for (l, b) in charged {
+            self.state.charge_memory(l, b, None);
+        }
+        let n = self.engine.memory_charge(c)?;
+        self.state.charge_leftover(*c, labels, Some(n));
         Ok(())
     }
 

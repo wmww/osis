@@ -362,6 +362,23 @@ pub(crate) fn kept_invalid(m: &crate::engine::Meta) -> bool {
     (0..m.view.aspects.len()).all(|ai| !m.holds(ai)) && (!m.to_fetch.is_empty() || m.dropped.keys().any(|ai| m.dropped_invalid(*ai)))
 }
 
+/// Whether content commit `c` holds nothing but purged leftovers, one at least (each held
+/// value-less for a purge request, `held_purged`), no permanent delta (a lasting header stays,
+/// spec/commits.md §5) and no `created.0` delta (a thing's first commit stays): kept only so that
+/// a fall of the request finds its writes again (`unstrip`) and a copy is fetched, as one
+/// `kept_invalid` is. Either class: node-sync forgets it by the same rule
+/// (`Engine::forgettable`); a memory one is charged its own bytes until then.
+pub(crate) fn kept_purged(core: &Core, c: &CommitId, m: &crate::engine::Meta, now: u64) -> bool {
+    if m.stripped.is_empty() || m.view.purges || m.view.kind != Kind::Content || core.ix.pending.contains_key(c) {
+        return false;
+    }
+    let purged = |ai: usize| m.bare(ai) && m.header.aspects.get(ai).is_some_and(|a| held_purged(core, c, &a.tid, &a.ak, ai, now));
+    let n = m.view.aspects.len();
+    // a thing's first commit stays (its `created.0` part never drops)
+    let kept = |a: &osis_commit::AspectEntry| a.ak.as_str() == osis_commit::retention::CREATED || history::permanent(core, &m.header, a, now);
+    (0..n).any(purged) && (0..n).all(|ai| !m.holds(ai) || purged(ai)) && !m.header.aspects.iter().any(kept)
+}
+
 /// Drops every held part judged invalid in this transaction (`Core::drop_due`) but those
 /// `goes_invalid` keeps: its writes are none of the state's, so no read changes and no aspect is
 /// rebuilt (spec/crdt.md §4.6, spec/permissions.md §5.2). Run at the transaction's end, after
@@ -1164,9 +1181,17 @@ impl Engine {
         self.core.ix.commits.get(c).is_some_and(kept_invalid)
     }
 
+    /// Whether commit `c` is held only as purged leftovers (`kept_purged`): a memory one is
+    /// charged its own bytes against its labels' caps until it is forgotten, not through its
+    /// entries, which the purger deletes at hosts.
+    pub fn kept_purged(&self, c: &CommitId) -> bool {
+        self.core.ix.commits.get(c).is_some_and(|m| kept_purged(&self.core, c, m, self.now().0))
+    }
+
     /// Whether commit `c` may be forgotten, ID included, once node-sync knows no entry of it
     /// (spec/commits.md §5, Forgetting): nothing waiting, and either holding no part, known only
-    /// for a part dropped while invalid (`kept_invalid`, either class: spec/permissions.md §6), or
+    /// for a part dropped while invalid (`kept_invalid`, either class: spec/permissions.md §6),
+    /// holding only purged leftovers (`kept_purged`, either class: a fall then has nothing to fetch), or
     /// a durable content commit or content snapshot (one dropped under its author's later one:
     /// else each compaction would leave a header for good), every part dropped as covered by a
     /// cover of its own author, no purge request.
@@ -1178,7 +1203,7 @@ impl Engine {
         if core.ix.pending.contains_key(c) {
             return false;
         }
-        if kept_invalid(m) {
+        if kept_invalid(m) || kept_purged(core, c, m, self.now().0) {
             return true;
         }
         if m.view.memory {
@@ -1194,13 +1219,25 @@ impl Engine {
         self.core.ix.commits.keys().copied().filter(|c| self.forgettable(c)).collect()
     }
 
-    /// Forgets commit `c`, ID included: as if it had never applied (`apply::unindex_commit`).
+    /// Forgets commit `c`, ID included: as if it had never applied (`apply::unindex_commit`). Its
+    /// leftovers held (`kept_purged`) go first, their aspects rebuilt without their value-less
+    /// writes, as at a node that never received it.
     pub fn forget_commit(&mut self, c: &CommitId) -> Result<()> {
         let c = *c;
         // a memory commit's is memory work (`forgettable`: one kept for an invalid part)
         self.run(|tx| {
             let memory = tx.is_memory_commit(&c);
-            tx.in_class(memory, |tx| crate::apply::unindex_commit(tx, &c))
+            tx.in_class(memory, |tx| {
+                crate::apply::run_batched(tx, |tx| {
+                    let Some(m) = tx.core.ix.commits.get(&c) else { return Ok(()) };
+                    let held: Vec<(usize, Tid, Ak)> = m.stripped.iter().filter_map(|ai| m.header.aspects.get(*ai).map(|a| (*ai, a.tid, a.ak.clone()))).collect();
+                    for (ai, tid, ak) in held {
+                        drop_part_for(tx, &c, ai, DropFor::Destroyed)?;
+                        crate::apply::rebuild(tx, &tid, &ak)?;
+                    }
+                    crate::apply::unindex_commit(tx, &c)
+                })
+            })
         })
     }
 

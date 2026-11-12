@@ -5701,3 +5701,136 @@ fn demoted_writer_deposits_none_of_its_writes_spec_sync_5() {
     // deletes it, so it would hold the deposit budget for good
     assert_eq!(osis_proto::LabelStore::budget(&*net.hosts[host].hub.store(), &l).unwrap(), room);
 }
+
+/// What `purge_rounds` saw: per round (bytes held, leftovers held), then leftovers held after.
+type Rounds = (Vec<(u64, usize)>, usize);
+
+/// `rounds` rounds of writer `a` writing `K` ephemeral values of `t`, purging them with one
+/// request and deleting them at the host, held at reader `b` whose cap is `cap`: per round, the
+/// memory `b` holds of others' commits (each held commit's `memory_charge`) and how many of those
+/// are content commits (purged leftovers: snapshots aside). Then the label is idle past a tombstone: what `b` holds of them then.
+fn purge_rounds(rounds: usize, cap: u64) -> Rounds {
+    const K: usize = 4;
+    let mut net = Net::new();
+    let s1 = net.add_host();
+    let a = net.node(1, &[s1]);
+    let b = net.add_node(2, SyncConfig { hosts: vec![net.address(s1)], ephemeral_bytes: cap, ..SyncConfig::default() });
+    let g = net.group(a, &[(b, Role::Read)], &[s1]);
+    let t = net.item(a, g, g, "doc");
+    net.run();
+    let aks: Vec<osis_base::Ak> = (0..K).map(|j| crate::common::ak(&format!("doc:n{j}+.0"))).collect();
+    let held = |net: &mut Net| {
+        let cs: Vec<CommitId> = net.engine(b).memory_commits().into_iter().filter(|(_, n, own)| *n > 0 && !own).map(|x| x.0).collect();
+        let bytes = cs.iter().map(|c| net.engine(b).memory_charge(c).unwrap()).sum::<u64>();
+        // every value written is purged by the end of its round: a content commit held is a leftover
+        (bytes, cs.iter().filter(|c| net.engine(b).header(c).is_some_and(|h| h.kind == osis_commit::Kind::Content)).count())
+    };
+    let mut out = Vec::new();
+    for r in 0..rounds {
+        for k in &aks {
+            net.eph_write(a, t, k, s(&format!("{r}{}", "v".repeat(200))));
+        }
+        net.run();
+        let mut m = Mutation::new();
+        for k in &aks {
+            m.purge(osis_commit::PurgeItem::Aspect { tid: t, ak: k.clone() });
+        }
+        m.set(t, &REG, &s(&format!("round {r}"))).unwrap();
+        net.engine(a).write(m).unwrap();
+        net.feed(a, Event::Local);
+        net.run();
+        net.advance(1_000);
+        out.push(held(&mut net));
+    }
+    net.advance(osis_base::format::MAX_DRIFT_MS + 60_000);
+    (out, held(&mut net).1)
+}
+
+// spec/sync.md §9 Forgetting and Caps, spec/requirements.md (peer input never causes unbounded
+// storage; security): a writer's rounds of ephemeral writes it purges and deletes at the host
+// leave a holder within its cap, at n rounds as at 10n: a purged leftover is charged its own
+// bytes, not through the entries the purger deletes, so once leftovers fill the cap new writes
+// are refused there; each is forgotten once no entry of it is known and no delete of one is within
+// its tombstone, after which none is held.
+#[test]
+fn purged_ephemeral_rounds_stay_within_the_cap_spec_sync_9() {
+    let cap = 60_000;
+    let runs: Vec<(usize, Rounds)> = [5, 50].into_iter().map(|n| (n, purge_rounds(n, cap))).collect();
+    for (rounds, (per_round, _)) in &runs {
+        for (r, (bytes, _)) in per_round.iter().enumerate() {
+            assert!(*bytes <= cap, "{rounds} rounds: round {r} holds {bytes} B of others' memory past the cap {cap}");
+        }
+        assert!(per_round.iter().any(|x| x.1 > 0), "{rounds} rounds: leftovers are held a while");
+    }
+    for (rounds, (_, after)) in &runs {
+        assert_eq!(*after, 0, "{rounds} rounds: no leftover outlives its tombstone");
+    }
+    let most: Vec<usize> = runs.iter().map(|(_, (p, _))| p.iter().map(|x| x.1).max().unwrap()).collect();
+    assert!(most[1] <= most[0] + 4, "leftovers held do not grow with rounds: {most:?}");
+}
+
+/// A purge of writer `w`'s ephemeral write by writer `x`, whose demotion (by admin `a`, offline,
+/// its frontier not listing the request) writer `h` holds offline, together with the write: held
+/// as a purged leftover at reader `b`, deleted at the host. `wait` ms later the demotion reaches
+/// `b`, and `h` comes online if `copy`: (net, b, t, the write).
+fn purge_that_falls(wait: u64, copy: bool) -> (Net, usize, Tid, CommitId) {
+    let mut net = Net::new();
+    let host = net.add_host();
+    let [a, w, x, b, h] = [1, 2, 3, 4, 5].map(|i| net.node(i, &[host]));
+    let g = net.group(a, &[(w, Role::Write), (x, Role::Write), (b, Role::Read), (h, Role::Write)], &[host]);
+    let t = net.item(a, g, g, "doc");
+    net.run();
+    let k = crate::common::ak("doc:n+.0");
+    net.eph_write(w, t, &k, s("SECRET"));
+    net.run();
+    let c = net.engine(w).memory_commits().into_iter().find(|x| x.2).unwrap().0;
+    assert!(net.engine(b).body_not_dropped(&c, &t, &k) && net.engine(h).body_not_dropped(&c, &t, &k));
+    net.set_online(a, false);
+    net.set_online(h, false);
+    let xt = net.tid(x);
+    net.engine(a).demote(&g, &osis_node::flows::Demotion { holder: xt, new: None, retain: None }).unwrap();
+    let packs: Vec<_> = net.engine(a).commit_ids().into_iter().filter_map(|id| net.engine(a).package(&id).unwrap()).collect();
+    for pk in &packs {
+        let _ = net.engine(h).ingest(&pk.bytes, pk.blobs.clone());
+    }
+    net.advance(5_000);
+    let mut m = Mutation::new();
+    m.purge(osis_commit::PurgeItem::Commit { commit: c, tid: t, ak: k.clone() });
+    m.set(t, &REG, &s("purging")).unwrap();
+    net.engine(x).write(m).unwrap();
+    net.feed(x, Event::Local);
+    net.run();
+    assert_eq!(net.eph_read(b, t, "doc:n+.0"), None, "purged");
+    assert!(net.engine(b).kept_purged(&c), "held as its leftover");
+    net.advance(wait);
+    // the demotion reaches b alone (a, offline, also holds the write whole)
+    for pk in &packs {
+        let _ = net.engine(b).ingest(&pk.bytes, pk.blobs.clone());
+    }
+    net.feed(b, Event::Local);
+    net.set_online(h, copy);
+    net.run();
+    net.advance(120_000);
+    (net, b, t, c)
+}
+
+// spec/permissions.md §6, spec/sync.md §9 Forgetting: a purged ephemeral write is kept as its
+// leftover while a delete of it is within its tombstone, so a fall of the purge then finds a
+// copy a holder still has and the value is back
+#[test]
+fn purge_falling_within_the_tombstone_refetches_spec_permissions_6() {
+    let (mut net, b, t, c) = purge_that_falls(60_000, true);
+    assert_eq!(net.eph_read(b, t, "doc:n+.0"), Some(s("SECRET")), "back from the copy");
+    assert!(net.engine(b).body_not_dropped(&c, &t, &crate::common::ak("doc:n+.0")));
+}
+
+// spec/permissions.md §6, spec/sync.md §9 Forgetting: past its tombstone with no entry of it known,
+// a purged ephemeral write is forgotten, so a fall of the purge then finds it never received
+// there: not known, nothing to fetch, read as a node that never held it
+#[test]
+fn purge_falling_past_the_tombstone_reads_as_never_received_spec_permissions_6() {
+    let (mut net, b, t, c) = purge_that_falls(osis_base::format::MAX_DRIFT_MS + 60_000, false);
+    assert!(!net.engine(b).holds_memory(&c), "forgotten: unknown here");
+    assert_eq!(net.eph_read(b, t, "doc:n+.0"), None);
+    assert!(net.engine(b).purged_on(&t, &crate::common::ak("doc:n+.0")).unwrap().is_empty(), "the purge fell");
+}
