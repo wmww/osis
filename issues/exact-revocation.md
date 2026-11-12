@@ -1,7 +1,7 @@
 # Exact revocation through snapshots
 > Summary: Judging each write a snapshot carries as its claimed author's (no vouching) cannot be built on today's formats: frontiers and addenda name commits by ID, a carried session-form write names only its dot, and a node holding only the snapshot cannot map the one to the other. Doing it needs frontiers by dot range or snapshots naming each carried write's commit, plus a receipt rule for writes received only through a snapshot.
 > Priority: low
-> Tags: permissions, crdt, tess-call
+> Tags: permissions, crdt
 
 Today a valid snapshot vouches for every write it carries (spec/permissions.md §5.2; notes/permissions.md Snapshots vouch), so a removed writer's late write stays wherever a co-writer's earlier compaction carries it, and goes where none does. spec/requirements.md Permissions states this as a Limit. The proposal: judge a carried write as its author's write at its own stamp, as if it arrived alone. Tried and stopped before changing anything, because:
 
