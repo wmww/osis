@@ -460,7 +460,7 @@ fn one_more_write_at(k: usize) -> ([u64; 5], [u64; 5]) {
     (pass_work(before.0, net.sync(a).pass_stats()), pass_work(before.1, net.sync(b).pass_stats()))
 }
 
-// issues/net-one-peer.md 3h2 (one pass per label), spec/requirements.md, Scale: a write to a
+// spec/sync.md §6, §10; issues/net-one-peer.md 3h2 (one pass per label): a write to a
 // label kept at 1 and at 3 peers that cannot read it costs each node the same full passes and
 // bodies judged: the own part judges the change once, whatever the number of sources; only the
 // per-source check of what each lacks or holds grows with them. Fails: each source's echo of
