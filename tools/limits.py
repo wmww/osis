@@ -51,7 +51,7 @@ def tables():
                 if kind == "units":
                     units[cells[0]] = float(cells[1])
                 else:
-                    limits[cells[0]] = (float(cells[1]), float(cells[2]), cells[3] or None)
+                    limits[cells[0]] = (float(cells[1]), float(cells[2]), cells[3] if len(cells) > 3 and cells[3] else None)
             except (IndexError, ValueError):
                 continue
     return units, limits
@@ -93,11 +93,11 @@ def check(name, cpu, wall, what="", quiet=False, since=None):
         far = " (over 2x: an investigation, notes/coordination.md Time limits)" if v > FAR * l else ""
         print(f"LIMIT {label} {k} {v:.0f} s > {l:.0f} s ({v / l:.2f}x) on {BOX} at load {os.getloadavg()[0]:.0f}{far}: "
               f"report why (notes/time-limits.md)")
-    if over:
-        shares(name, since if since is not None else time.time() - wall - 1)
     log(dict(t=round(time.time()), box=BOX, name=name, what=what, cpu=round(cpu, 1), wall=round(wall, 1),
              cpu_lim=round(lim[0], 1), wall_lim=round(lim[1], 1), load=round(os.getloadavg()[0], 1),
              over=[k for k, _, _ in over], who=os.getcwd()))
+    if over:
+        shares(name, since if since is not None else time.time() - wall - 1)
     return over
 
 

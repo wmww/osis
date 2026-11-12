@@ -187,6 +187,7 @@ instant() {
   step sh tools/gate_select_test.sh
   step python3 tools/test_select_test.py
   step python3 tools/gate_failures_test.py
+  step python3 tools/limits_test.py
   step python3 tools/limits.py split
   step python3 tools/spec_map.py --uncited
   step python3 tools/spec_map.py --gaps
