@@ -101,7 +101,7 @@ impl LConn {
         self.phase == Phase::Open && self.fill.as_ref().is_some_and(|f| !f.first_done)
     }
 
-    /// A pass is wanted; a fill's at its next due (`sync_label`), its end or this node's own next
+    /// A pass is wanted; a fill's at its next due (`timers`), its end or this node's own next
     /// write, not per batch applied.
     pub(super) fn want_pass(&mut self) {
         self.dirty |= self.fill.is_none();
