@@ -516,10 +516,10 @@ fn remove_client_revokes() {
     let node_thing = x.n.node();
     let clients = Scope::Aspects(vec![(node_thing, ak("clients^.0"))]);
     let (tx, rx) = std::sync::mpsc::channel();
+    // every commit it hears, as it reads by then: the node's compaction, a step of the same
+    // write, may have dropped it already (`commit: None`)
     let sub = x.n.on_write(&clients, move |_, e| {
-        if let osis::CommitEvent::Commit { id, commit: Some(c) } = e
-            && c.kind == osis::CommitKind::Content
-        {
+        if let osis::CommitEvent::Commit { id, .. } = e {
             let _ = tx.send(id);
         }
     })
@@ -535,12 +535,17 @@ fn remove_client_revokes() {
     x.until(|_| matches!(c.at(x.t, osis::DynamicAspectKey::untyped(ak("t:name.0"))).get(), Err(Error::Refused(_))));
     assert!(matches!(c.on_diagnostic(|_, _| {}), Err(Error::Refused(_))));
     // no setting keeps `clients^.0`: the entry's removal is never undone, on any node, held or
-    // not (spec/commits.md §7); a half removal revives under no clock
-    // (half_removed_client_stays_ended)
-    // heard on the dispatcher: wait for it before the subscription goes
-    let removal = rx.recv_timeout(std::time::Duration::from_secs(60)).expect("the removal was heard");
+    // not (spec/commits.md §7): no commit heard there reverts, and undo finds none; a half
+    // removal revives under no clock (half_removed_client_stays_ended)
+    x.n.settle();
     drop(sub);
-    assert_eq!(x.n.revert(removal), Err(Error::NotUndoable { commit: removal, reason: osis::NotUndoableReason::NotKept }));
+    let heard: Vec<_> = rx.try_iter().collect();
+    assert!(heard.len() >= 2, "the end and the removal were heard: {heard:?}");
+    for id in heard {
+        assert!(matches!(x.n.revert(id), Err(Error::NotUndoable { reason: osis::NotUndoableReason::NotKept, .. } | Error::Invalid(_))), "{id:?}");
+    }
+    assert!(matches!(x.n.undo(&clients), Ok(None) | Err(Error::NotUndoable { reason: osis::NotUndoableReason::NotKept, .. })));
+    assert!(x.n.clients().unwrap().is_empty());
     assert!(matches!(x.connect(&s), Err(Error::Refused(_))));
     assert!(!x.n.remove_client(a).unwrap());
     assert!(!x.n.remove_client(x.n.me()).unwrap(), "only a registered client: never a role removal of something else");
