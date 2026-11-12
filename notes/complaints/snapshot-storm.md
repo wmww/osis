@@ -1,0 +1,4 @@
+# snapshot-storm
+- `wt claim snapshot-storm` checked out a stale local branch of that name (an older, unmerged task from early November, 4 commits off an old main) instead of a fresh one on main; renamed it `snapshot-storm-nov4` and branched anew. `wt claim` could refuse or warn when the branch exists and is not on main.
+- `OSIS_*` env vars are checked against a known list (`testenv`): a debug var named `OSIS_DBG` silently made sim-sweep print one line and exit 0. Use another prefix for throwaway debug vars.
+- Net-harness reproducers for "a node judges while its view is unsettled" are hard: pushes inline every blob (`inline_limit` = `MAX_BLOB`), so a connected node never has a fetch out; `trickle_hosts`/`bare_blobs` did not leave one asked at a pass either. Two of the three rules here are covered only by sim seeds (issues/unsettled-judgment-tests.md).
