@@ -186,11 +186,11 @@ fn quiet(r: Result<()>) -> Result<()> {
     }
 }
 
-/// The kept walk of commit `id` (stored as `blob`), taken on to what is held now. A first walk,
-/// and of a waiting commit (not `trees`) one that lacks nothing while it still waits, is done
-/// whole.
+/// The kept walk of commit `id` (stored as `blob`), taken on to what is held now. A first walk
+/// (a walk kept while it waited stops at roots: applied, its trees are walked afresh), and of a
+/// waiting commit (not `trees`) one that lacks nothing while it still waits, is done whole.
 fn kept(tx: &mut Tx<'_>, id: &CommitId, blob: &CommitBlob, trees: bool) -> Result<Walk> {
-    let (mut w, fresh) = match tx.core.walks.walks.remove(id) {
+    let (mut w, fresh) = match tx.core.walks.walks.remove(id).filter(|w| w.trees == trees) {
         Some(mut w) => {
             quiet(refresh(tx, &mut w))?;
             (w, false)

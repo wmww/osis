@@ -4000,6 +4000,27 @@ fn value_past_the_room_refused_at_its_root_spec_sync_9() {
     assert_eq!(lp.peers[1].engine.get_full(&w, &ak).unwrap(), full, "reads alike");
 }
 
+// spec/sync.md §9 Caps: a memory commit that waited for its root and then applied has its tree
+// wanted after, as one applied at arrival does (the walk kept while it waited stops at roots)
+#[test]
+fn value_applied_after_waiting_wants_its_tree_spec_sync_9() {
+    let (mut lp, w) = memory_pair();
+    let big: String = (0..2u32 << 20).map(|i| char::from(b'a' + (i.wrapping_mul(2_654_435_761) >> 27) as u8 % 26)).collect();
+    let id = memory_write(&mut lp, 0, w, &big);
+    let bytes = lp.peers[0].engine.package(&id).unwrap().unwrap().bytes;
+    let tree = lp.peers[0].engine.live_trees(&w).unwrap().blobs;
+    let blob = |lp: &mut osis_node::local_peer::LocalPeer, b: &osis_base::BlobId| (*b, lp.peers[0].engine.blob(b).unwrap().unwrap());
+    let e1 = |lp: &mut osis_node::local_peer::LocalPeer| lp.peers[1].engine.blob_wants().unwrap();
+    assert!(matches!(lp.peers[1].engine.ingest_memory(&bytes, u64::MAX).unwrap(), osis_node::Ingested::Pending(_, osis_node::Reason::WaitBlobs)));
+    let root: Vec<_> = e1(&mut lp).missing.iter().map(|b| blob(&mut lp, b)).collect();
+    assert_eq!(root.len(), 1, "its root");
+    lp.peers[1].engine.put_memory_blobs(root).unwrap();
+    let out = lp.peers[1].engine.apply_waiting_memory(&id, u64::MAX).unwrap();
+    assert!(matches!(out, Some(osis_node::Ingested::Applied(_))), "{out:?}");
+    let want = e1(&mut lp).missing;
+    assert!(!want.is_empty() && want.is_subset(&tree), "its tree is wanted: {}", want.len());
+}
+
 // spec/sync.md §9 Caps: a memory commit waiting for its `ts` (past MAX_DRIFT ahead) is checked
 // against the room its holder has when its wait ends, before anything of it is decoded: re-
 // examination leaves it waiting, and applied within too small a room it is refused, nothing
