@@ -345,14 +345,16 @@ fn reregistration_waits_and_sends_once_spec_sync_5() {
     let before: std::collections::BTreeSet<_> = net.shown.keys().map(|(_, l, b, _)| (*l, *b)).collect();
     net.shown.clear();
     net.shown_held.clear();
+    net.pushed.clear();
     net.grant(a, t, tc, Role::Admin);
     // a demotion with no rotation (a hand-built edge write): g's rotation stays due
     let read = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
     crate::common::set_edge(net.engine(a), g, tc, Some(read), None);
     net.run();
     // (every reader's stream shows what it holds, so a peer is shown one entry by each reader,
-    // and again in the pages of each join from the start)
-    let again: Vec<_> = net.shown_held.keys().filter(|k| net.shown[*k] > 1).collect();
+    // and again in the pages of each join from the start: a node pushing it twice, the peer
+    // holding it unchanged, is what counts)
+    let again: Vec<_> = net.shown_held.keys().filter(|k| net.pushed[*k] > 1).collect();
     assert!(again.is_empty(), "shown again unchanged: {again:?}");
     // a copy an admin placed of another's would be deleted again as a duplicate
     assert_eq!(net.sent_kinds.get(&14), None, "no duplicate entries to delete");

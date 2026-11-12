@@ -129,6 +129,8 @@ pub struct Net {
     /// from the start), those showing the peer an entry it held already with that wrap and stamp
     /// when it was sent: logged again with nothing changed for it.
     pub shown_held: Shown,
+    /// Of `shown`'s Added events, those in follow pushes (Stream).
+    pub pushed: Shown,
     /// Delete items nodes sent to hosts, by (node, label, blob): how often each went.
     pub deleted: BTreeMap<(usize, osis_base::LabelId, osis_base::BlobId), usize>,
     /// Messages sent on peer links, by sender and kind.
@@ -232,6 +234,7 @@ struct Parts {
     sent_kinds: BTreeMap<u64, usize>,
     shown: Shown,
     shown_held: Shown,
+    pushed: Shown,
     deleted: BTreeMap<(usize, osis_base::LabelId, osis_base::BlobId), usize>,
     peer_kinds: BTreeMap<(usize, u64), usize>,
     sent_bytes: usize,
@@ -270,12 +273,12 @@ struct Parts {
 impl Net {
     fn into_parts(self) -> Parts {
         assert!(self.tamper.is_none() && self.host_tamper.is_none(), "a tamper cannot be kept");
-        Parts { clock: self.clock, nodes: self.nodes, hosts: self.hosts, links: self.links, queue: self.queue, next_hub_conn: self.next_hub_conn, steps: self.steps, blocked: self.blocked, plinks: self.plinks, blocked_peers: self.blocked_peers, lan_keys: self.lan_keys, held: self.held, held_messages: self.held_messages, sent_kinds: self.sent_kinds, shown: self.shown, shown_held: self.shown_held, deleted: self.deleted, peer_kinds: self.peer_kinds, sent_bytes: self.sent_bytes, crossed: self.crossed, dialed: self.dialed, full_passes: self.full_passes, bare: self.bare, home_at_hosts: self.home_at_hosts, unpulled: self.unpulled, unpulled_at: self.unpulled_at, lose_deposits: self.lose_deposits, held_hosts: self.held_hosts, busy: self.busy, hub_busy: self.hub_busy, told: self.told, fetched: self.fetched, deaf: self.deaf, hold_opened: self.hold_opened, held_to: self.held_to, gained: self.gained, hold_blobs: self.hold_blobs, hide_blobs: self.hide_blobs, bare_blobs: self.bare_blobs, walk_to: self.walk_to, tamper_link: self.tamper_link, silent: self.silent, trickle: self.trickle, trickle_hosts: self.trickle_hosts, batch_reads: self.batch_reads, peer_closes: self.peer_closes, next_node_hub: self.next_node_hub, hands: self.hands, port: self.port }
+        Parts { clock: self.clock, nodes: self.nodes, hosts: self.hosts, links: self.links, queue: self.queue, next_hub_conn: self.next_hub_conn, steps: self.steps, blocked: self.blocked, plinks: self.plinks, blocked_peers: self.blocked_peers, lan_keys: self.lan_keys, held: self.held, held_messages: self.held_messages, sent_kinds: self.sent_kinds, shown: self.shown, shown_held: self.shown_held, pushed: self.pushed, deleted: self.deleted, peer_kinds: self.peer_kinds, sent_bytes: self.sent_bytes, crossed: self.crossed, dialed: self.dialed, full_passes: self.full_passes, bare: self.bare, home_at_hosts: self.home_at_hosts, unpulled: self.unpulled, unpulled_at: self.unpulled_at, lose_deposits: self.lose_deposits, held_hosts: self.held_hosts, busy: self.busy, hub_busy: self.hub_busy, told: self.told, fetched: self.fetched, deaf: self.deaf, hold_opened: self.hold_opened, held_to: self.held_to, gained: self.gained, hold_blobs: self.hold_blobs, hide_blobs: self.hide_blobs, bare_blobs: self.bare_blobs, walk_to: self.walk_to, tamper_link: self.tamper_link, silent: self.silent, trickle: self.trickle, trickle_hosts: self.trickle_hosts, batch_reads: self.batch_reads, peer_closes: self.peer_closes, next_node_hub: self.next_node_hub, hands: self.hands, port: self.port }
     }
 
     fn from_parts(p: Parts) -> Net {
-        let Parts { clock, nodes, hosts, links, queue, next_hub_conn, steps, blocked, plinks, blocked_peers, lan_keys, held, held_messages, sent_kinds, shown, shown_held, deleted, peer_kinds, sent_bytes, crossed, dialed, full_passes, bare, home_at_hosts, unpulled, unpulled_at, lose_deposits, held_hosts, busy, hub_busy, told, fetched, deaf, hold_opened, held_to, gained, hold_blobs, hide_blobs, bare_blobs, walk_to, tamper_link, silent, trickle, trickle_hosts, batch_reads, peer_closes, next_node_hub, hands, port } = p;
-        Net { clock, nodes, hosts, links, queue, next_hub_conn, steps, blocked, plinks, blocked_peers, lan_keys, held, held_messages, sent_kinds, shown, shown_held, deleted, peer_kinds, sent_bytes, crossed, dialed, full_passes, bare, home_at_hosts, unpulled, unpulled_at, lose_deposits, held_hosts, busy, hub_busy, told, fetched, deaf, hold_opened, held_to, gained, hold_blobs, hide_blobs, bare_blobs, walk_to, tamper_link, silent, trickle, trickle_hosts, batch_reads, peer_closes, next_node_hub, hands, port, tamper: None, host_tamper: None }
+        let Parts { clock, nodes, hosts, links, queue, next_hub_conn, steps, blocked, plinks, blocked_peers, lan_keys, held, held_messages, sent_kinds, shown, shown_held, pushed, deleted, peer_kinds, sent_bytes, crossed, dialed, full_passes, bare, home_at_hosts, unpulled, unpulled_at, lose_deposits, held_hosts, busy, hub_busy, told, fetched, deaf, hold_opened, held_to, gained, hold_blobs, hide_blobs, bare_blobs, walk_to, tamper_link, silent, trickle, trickle_hosts, batch_reads, peer_closes, next_node_hub, hands, port } = p;
+        Net { clock, nodes, hosts, links, queue, next_hub_conn, steps, blocked, plinks, blocked_peers, lan_keys, held, held_messages, sent_kinds, shown, shown_held, pushed, deleted, peer_kinds, sent_bytes, crossed, dialed, full_passes, bare, home_at_hosts, unpulled, unpulled_at, lose_deposits, held_hosts, busy, hub_busy, told, fetched, deaf, hold_opened, held_to, gained, hold_blobs, hide_blobs, bare_blobs, walk_to, tamper_link, silent, trickle, trickle_hosts, batch_reads, peer_closes, next_node_hub, hands, port, tamper: None, host_tamper: None }
     }
 }
 
@@ -471,7 +474,7 @@ pub fn host_key(i: usize) -> [u8; 32] {
 impl Net {
     /// A network whose new nodes are each their own account's only node.
     pub fn new() -> Net {
-        Net { bare: false, home_at_hosts: false, clock: Arc::new(ManualClock::new(WallMs(T0))), nodes: vec![], hosts: vec![], links: BTreeMap::new(), queue: VecDeque::new(), next_hub_conn: 1, next_node_hub: HUB_BASE, steps: 0, blocked: BTreeSet::new(), plinks: BTreeMap::new(), blocked_peers: BTreeSet::new(), lan_keys: BTreeMap::new(), held: BTreeSet::new(), held_messages: Vec::new(), sent_kinds: BTreeMap::new(), shown: BTreeMap::new(), shown_held: BTreeMap::new(), deleted: BTreeMap::new(), peer_kinds: BTreeMap::new(), sent_bytes: 0, crossed: BTreeMap::new(), dialed: Vec::new(), full_passes: false, unpulled: BTreeSet::new(), unpulled_at: BTreeSet::new(), lose_deposits: BTreeSet::new(), held_hosts: BTreeSet::new(), busy: BTreeMap::new(), hub_busy: std::time::Duration::ZERO, told: BTreeMap::new(), fetched: BTreeMap::new(), deaf: BTreeSet::new(), hold_opened: BTreeSet::new(), held_to: BTreeSet::new(), gained: BTreeMap::new(), hold_blobs: BTreeSet::new(), hide_blobs: BTreeMap::new(), bare_blobs: BTreeMap::new(), walk_to: BTreeMap::new(), tamper: None, tamper_link: None, host_tamper: None, silent: BTreeSet::new(), trickle: BTreeMap::new(), trickle_hosts: BTreeMap::new(), batch_reads: false, peer_closes: 0, hands: BTreeMap::new(), port: Vec::new() }
+        Net { bare: false, home_at_hosts: false, clock: Arc::new(ManualClock::new(WallMs(T0))), nodes: vec![], hosts: vec![], links: BTreeMap::new(), queue: VecDeque::new(), next_hub_conn: 1, next_node_hub: HUB_BASE, steps: 0, blocked: BTreeSet::new(), plinks: BTreeMap::new(), blocked_peers: BTreeSet::new(), lan_keys: BTreeMap::new(), held: BTreeSet::new(), held_messages: Vec::new(), sent_kinds: BTreeMap::new(), shown: BTreeMap::new(), shown_held: BTreeMap::new(), pushed: BTreeMap::new(), deleted: BTreeMap::new(), peer_kinds: BTreeMap::new(), sent_bytes: 0, crossed: BTreeMap::new(), dialed: Vec::new(), full_passes: false, unpulled: BTreeSet::new(), unpulled_at: BTreeSet::new(), lose_deposits: BTreeSet::new(), held_hosts: BTreeSet::new(), busy: BTreeMap::new(), hub_busy: std::time::Duration::ZERO, told: BTreeMap::new(), fetched: BTreeMap::new(), deaf: BTreeSet::new(), hold_opened: BTreeSet::new(), held_to: BTreeSet::new(), gained: BTreeMap::new(), hold_blobs: BTreeSet::new(), hide_blobs: BTreeMap::new(), bare_blobs: BTreeMap::new(), walk_to: BTreeMap::new(), tamper: None, tamper_link: None, host_tamper: None, silent: BTreeSet::new(), trickle: BTreeMap::new(), trickle_hosts: BTreeMap::new(), batch_reads: false, peer_closes: 0, hands: BTreeMap::new(), port: Vec::new() }
     }
 
     /// An exact copy of this network as it stands (notes/testing.md, Copied worlds): every node
@@ -529,6 +532,7 @@ impl Net {
                 sent_kinds: self.sent_kinds.clone(),
                 shown: self.shown.clone(),
                 shown_held: self.shown_held.clone(),
+                pushed: self.pushed.clone(),
                 deleted: self.deleted.clone(),
                 peer_kinds: self.peer_kinds.clone(),
                 sent_bytes: self.sent_bytes.clone(),
@@ -1075,6 +1079,9 @@ impl Net {
                                 if let osis_proto::Event::Added { blob_id, blob, wrap, stamp } = e {
                                     *self.shown.entry((n, *label, *blob_id, stamp.map(|x| x.0))).or_default() += 1;
                                     let held = self.links.get(&(n, conn)).and_then(|(s, _)| osis_proto::LabelStore::entry(&*self.hosts[*s].hub.store(), label, blob_id).ok().flatten());
+                                    if matches!(m, osis_proto::Message::Stream(_)) {
+                                        *self.pushed.entry((n, *label, *blob_id, stamp.map(|x| x.0))).or_default() += 1;
+                                    }
                                     if matches!(m, osis_proto::Message::Stream(_)) && held.is_some_and(|h| h.wrap == *wrap && h.stamp == *stamp) {
                                         *self.shown_held.entry((n, *label, *blob_id, stamp.map(|x| x.0))).or_default() += 1;
                                     }

@@ -711,13 +711,13 @@ impl SyncEngine {
     }
 
     /// Entry `id` of `l` shown again to source `conn` (`State::relog`) when its latest event is
-    /// before the source's head last moved (`LConn::head_moved_at`) and the source reported
-    /// reading past it without showing it.
+    /// before the source's head last moved (`LConn::head_moved_at`) and the source had reported
+    /// reading past it by then (`LConn::head_moved_read`).
     fn relog_for_head(&mut self, conn: ConnId, l: LabelId, id: BlobId) -> Result<()> {
         let Some(moved) = self.lc(conn, &l).and_then(|x| x.head_moved_at) else { return Ok(()) };
-        // read there and not shown back: refused (a source shows what it takes on its stream
-        // before it reports reading past it); one not read yet there comes as any
-        let Some(read) = self.stream_reported(conn, &l) else { return Ok(()) };
+        // read there under the old head: reported read when the head moved (one read after it
+        // was taken, or comes as any; its echo may lag the source's reports)
+        let Some(read) = self.lc(conn, &l).and_then(|x| x.head_moved_read) else { return Ok(()) };
         self.state.flush(&mut self.engine)?;
         let latest = self.engine.run(|tx| { let p = super::state::hub(tx)?.node_log(|t| t.log_entry_latest(&l, &id))?; Ok(p) })?;
         if latest.is_some_and(|p| p < moved && p <= read) {

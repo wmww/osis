@@ -70,6 +70,9 @@ pub(crate) struct LConn {
     /// This node's log end when the peer's head here last moved: entries logged before then the
     /// peer may have read and refused under the old head's keys (`relog_for_head`).
     pub head_moved_at: Option<u64>,
+    /// How far the peer had reported reading this node's log when its head here last moved:
+    /// what it read up to there it read under the old head (`relog_for_head`).
+    pub head_moved_read: Option<u64>,
     /// The peer said it refused an entry of the label it pulled for room and has none again
     /// yet (spec/sync.md §10, Full): what it lacks it lacks, and nothing waits for it to take
     /// it.
