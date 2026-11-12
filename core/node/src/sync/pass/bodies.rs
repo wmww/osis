@@ -56,7 +56,7 @@ impl SyncEngine {
             };
             let prio = if self.first.contains(&b.commit) {
                 0
-            } else if b.role_commit {
+            } else if self.judges_deletes(b) {
                 1
             } else {
                 3
@@ -412,9 +412,15 @@ impl SyncEngine {
     }
 
     /// A non-writer deposits its own role writes (an invite grant, a self-removal,
-    /// spec/sync.md §3).
+    /// spec/sync.md §3) and requests (a destruction by an admin of the thing alone).
     pub(super) fn may_deposit(&self, keys: &HeadKeys, b: &Body) -> bool {
-        keys.deposit.is_some() && b.role_commit && self.own(&b.commit)
+        keys.deposit.is_some() && self.judges_deletes(b) && self.own(&b.commit)
+    }
+
+    /// Body `b` is what deletes are judged by: a role commit or a request (a source holds it
+    /// before them, `At::roles_behind`).
+    pub(super) fn judges_deletes(&self, b: &Body) -> bool {
+        b.role_commit || self.engine.core.ix.commits.get(&b.commit).is_some_and(|m| m.view.purges)
     }
 
     /// This node's verdicts on label `l` at `host` under the keys its last pass there used

@@ -259,6 +259,9 @@ pub struct SyncEngine {
     pub(crate) tied: deliver::TiedWork,
     /// Commits placed before any other upload (`Delivery::First`).
     pub(crate) first: BTreeSet<osis_base::CommitId>,
+    /// Labels whose role commits are placed without their relay wait at the next pass: a source
+    /// deleted a body this node must hold (`encrypt_again`).
+    pub(crate) relay_now: BTreeSet<LabelId>,
     /// Lost access may wait for this node's own self-removal to be placed (`drop_left`): set
     /// at start, by a self-removal and when the trigger leaves a loss to it; cleared once nothing
     /// lost waits or may come to.
@@ -412,6 +415,7 @@ impl SyncEngine {
             left: Some(deliver::LeftCheck::default()),
             lifetimes_heard: None,
             first: BTreeSet::new(),
+            relay_now: BTreeSet::new(),
             tree_wants: BTreeSet::new(),
             body_links: BTreeMap::new(),
             inbox_opened: BTreeMap::new(),

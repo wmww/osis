@@ -145,8 +145,8 @@ struct At<'a> {
     keys: &'a HeadKeys,
     snaps: &'a Snaps,
     settled: bool,
-    /// A role commit this node must hold under the label waits for its relay to the host
-    /// (`body_sends`): its entry deletions wait (`deletions`).
+    /// A role commit or request this node must hold under the label is not at the source yet
+    /// (its relay waits, or the source has not pulled it): deletions there wait (`deletions`).
     roles_behind: bool,
 }
 
@@ -456,6 +456,7 @@ impl SyncEngine {
         let mut behind = false;
         if own {
             sends = self.body_sends(p, &bodies, &snaps, &snapping, &mut left, &mut behind)?;
+            self.relay_now.remove(&l);
             let ours: BTreeSet<BlobId> = sends.iter().filter(|o| o.fresh).map(|o| o.id).collect();
             if !replaced {
                 let authors: BTreeSet<Tid> = w.unjudged.values().copied().collect();
@@ -537,7 +538,8 @@ impl SyncEngine {
         let mut roles_behind = behind;
         let mut deposits = Vec::new();
         let on_head = p.id == own.id;
-        for o in sends {
+        let again = self.encrypt_again(host, own, (sends, behind), bodies, snaps, left)?;
+        for o in sends.iter().chain(&again) {
             if !lacks(self, &o.id) {
                 continue;
             }
@@ -563,6 +565,41 @@ impl SyncEngine {
             self.retire_at(host, &g, l)?;
         }
         Ok(())
+    }
+
+    /// Must-hold bodies whose entry source `host` deleted while this node's judgment finds the
+    /// delete does not stand (`delete_stands`): the source refuses that blob ID while its
+    /// tombstone lasts, so each is encrypted again (`place`) and the old entry dropped here; the
+    /// source pulls the new one. While a role commit this node must hold waits for its relay
+    /// (`behind`), the deleter may judge by an older role view: nothing is encrypted again and
+    /// the label's role commits are placed at once instead (`relay_now`), so the source learns
+    /// them first (issues: churn seed 361's storm).
+    fn encrypt_again(&mut self, host: HostKey, own: &Head, (sends, behind): (&[Out], bool), bodies: &[Body], snaps: &Snaps, left: &mut Left) -> Result<Vec<Out>> {
+        let (g, l) = (own.g, own.l);
+        let mut again = Vec::new();
+        let mut note = Note::default();
+        for o in sends {
+            let Some(Touch::Commit(c)) = o.of else { continue };
+            if self.state.is_present(&host, &l, &o.id) || !self.state.is_gone_at(&host, &l, &o.id) {
+                continue;
+            }
+            let Some(Kind::Commit { parts, .. }) = self.state.entries.get(&(l, o.id)).map(|e| e.kind.clone()) else { continue };
+            let readable = self.readable(&g, &c, &parts);
+            let Some(b) = bodies.iter().find(|b| b.commit == c && b.parts == readable).cloned() else { continue };
+            if self.delete_stands(Some(&host), l, &b, &b.parts, snaps, &mut note)? {
+                continue;
+            }
+            note.leave(c, left);
+            left.commits.insert(c);
+            if behind {
+                self.relay_now.insert(l);
+                continue;
+            }
+            let Some(id) = self.place(&g, l, &b, false)? else { continue };
+            self.state.drop_entry(l, o.id);
+            again.push(Out { prio: o.prio, id, fresh: true, of: o.of });
+        }
+        Ok(again)
     }
 
     /// The entries under `l` in `scope`: every one, or those of its commits and its blobs.

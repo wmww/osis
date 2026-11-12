@@ -441,6 +441,11 @@ impl SyncEngine {
                 // a reader's deletion says only that it no longer has the entry
                 LogEvent::Deleted(_) if reader.is_some() => {}
                 LogEvent::Deleted(b) => {
+                    // the peer refuses this blob ID while its tombstone lasts: a body it must
+                    // hold goes there under another encryption (`encrypt_again`)
+                    if let Some(s) = host {
+                        self.state.set_gone(s, l, b);
+                    }
                     self.memory_entry_gone(l, b);
                     // gone from every host of the label: a chunk an own commit may link
                     let chunk = !self.state.blobs.contains_key(&b);

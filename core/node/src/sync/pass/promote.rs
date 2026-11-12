@@ -269,7 +269,7 @@ impl SyncEngine {
     /// first by a flow) at once, another node's once `relay_delay` has passed since it arrived here.
     pub(super) fn relay_at(&mut self, l: LabelId, c: &CommitId) -> Option<u64> {
         let m = self.engine.core.ix.commits.get(c)?;
-        if m.origin == crate::events::Origin::Local || self.first.contains(c) {
+        if m.origin == crate::events::Origin::Local || self.first.contains(c) || m.header.kind.is_role() && self.relay_now.contains(&l) {
             return None;
         }
         let due = m.received.0.saturating_add(self.relay_delay(&c.0));

@@ -98,6 +98,7 @@ impl SyncEngine {
                 joined_failed: self.joined_failed.clone(),
                 tied: self.tied.clone(),
                 first: self.first.clone(),
+                relay_now: self.relay_now.clone(),
                 left: self.left.clone(),
                 lifetimes_heard: self.lifetimes_heard.clone(),
                 synced: self.synced.clone(),
