@@ -29,7 +29,7 @@ Terms:
 - Convergence under any delivery order, duplicates and partial receipt. No ordered delivery.
 - Deterministic: what a node reads and which writes it counts as valid are functions of the data it holds and its trust set (Permissions). Nodes holding the same data and trust sets read alike; a node missing some data reads as if it never had it until it arrives.
 - What a node holds generally does not depend on arrival order either. Limit: data a node dropped because it did not count then (an edit judged invalid, a removed holder's edit) or because a write it later judged invalid let it, comes back once it counts again only as copies arrive, and with no copy left is gone at every node; an expiring edit still incomplete at a node when it expires never applies there, so that node may read what came before it, and so may a node that never held an expiring or purged edit. Nodes can read differently until a writer of that data next writes it or notices the difference.
-- A commit may touch any number of things, of any reader sets, up to a fixed maximum size (about 140 GB). A node applies all the parts of a commit it may read on things it holds at once, or none; a part on a thing it starts holding later joins then.
+- A commit may touch any number of things, of any reader sets, up to a fixed maximum size (about 95 GB). A node applies all the parts of a commit it may read on things it holds at once, or none; a part on a thing it starts holding later joins then.
 - Each part of a commit is authorized on its own thing. Revoking the author on one thing removes only that part.
 - A wrong local clock harms only that node's own writes.
 
