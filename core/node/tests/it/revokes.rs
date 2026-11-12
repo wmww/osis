@@ -202,5 +202,7 @@ fn others_writes_in_an_invalid_record_read_alike_spec_crdt_4_6() {
         net.advance(31_000);
     }
     assert!(net.engine(a).header(&e).is_none() && net.engine(c).header(&e).is_some(), "only C holds B's delta");
-    assert_eq!(net.engine(c).get(&t, &map).unwrap(), net.engine(a).get(&t, &map).unwrap(), "A and C read alike");
+    let read = net.engine(c).get(&t, &map).unwrap();
+    assert_eq!(read, net.engine(a).get(&t, &map).unwrap(), "A and C read alike");
+    assert!(!format!("{read:?}").contains("ash"), "the record shows nowhere: {read:?}");
 }

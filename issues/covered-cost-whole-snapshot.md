@@ -5,7 +5,7 @@
 
 No counted repro yet: a check's cost spans are the same at 8 and 80 bodies (one `apply: piece`, whatever its size), so a fix starts by counting what a check decodes and walks (bytes or copies) and asserting it flat at n and 10n bodies (notes/testing.md Scale checks).
 
-Gone: `Fragment::part_at` kept a sequence whole, so a check joined and encoded all of it twice (now `Seq::footprint`, the records holding the body's dots; a law in `tests_laws` says a sequence's part judges as the whole, `part_at_a_sequence_is_the_deltas_records` counts); `copy_index` indexed every write of the piece (now `copy_index_in`, the body's ranges).
+Gone: `Fragment::part_at` kept a sequence whole, so a check joined and encoded all of it twice (now `Seq::footprint`, the records holding the body's dots; a law in `tests_laws` says a sequence's part judges as the whole, `part_at_a_sequence_is_the_deltas_records` counts).
 
 Left, of the 138 ms: about 46 ms in the piece callback (`copies` walks every element to pick the body's), the rest decoding and hashing the snapshot's pieces. `drop_covered` settles each pair once, but `must_hold` and `carried` judge bodies per pass.
 

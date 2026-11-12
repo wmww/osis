@@ -523,6 +523,17 @@ fn unmerge_and_strip(c: &Case, reference: &MFrag) {
     let ours = unmerged(&mut c.deltas.iter());
     assert_eq!(ours, ostate(&model), "un-merged bodies equal the model's");
     assert_eq!(ours, unmerged(&mut c.deltas.iter().rev()), "un-merge order-independent");
+    // an invalid delta changes nothing (§4.6): where every body is a writer's own delta, holding
+    // the invalid author's bodies un-merged equals never holding them
+    if c.mode != Mode::Twins && c.deltas.iter().all(|(_, w)| w.is_some()) {
+        let mut never = Fragment::default();
+        for (d, w) in &c.deltas {
+            if w.as_ref().is_some_and(|w| w.source != c.bad) {
+                never.join(frag(d));
+            }
+        }
+        assert_eq!(ours, never, "un-merged equals never held");
+    }
     let exp = c.gone.ours();
     let mut late = frag(reference);
     late.strip(&exp);
