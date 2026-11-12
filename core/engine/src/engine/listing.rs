@@ -389,7 +389,7 @@ impl Engine {
             }
             if let Some(h) = self.held_part(tid, ak, &p.id, budget)? {
                 used = used.saturating_add(match &h.body {
-                    PartBody::Held(Some(v)) => osis_base::cbor::encode(v).len(),
+                    PartBody::Held(Some(v)) => osis_base::cbor::encoded_len(v),
                     PartBody::TooLarge => usize::MAX,
                     _ => 0,
                 });

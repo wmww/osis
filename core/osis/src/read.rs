@@ -123,7 +123,7 @@ fn read_link(e: &mut Engine, tid: &Tid, l: &osis_base::Link, limit: usize, budge
         }
         Err(other) => return Err(other.into()),
     };
-    let n = osis_base::cbor::encode(&x).len();
+    let n = osis_base::cbor::encoded_len(&x);
     *budget = budget.checked_sub(n).ok_or(too_large)?;
     Ok(Some(x))
 }
@@ -162,7 +162,7 @@ fn materialize_in(e: &mut Engine, tid: &Tid, v: Value, limit: usize, budget: &mu
 fn materialize(e: &mut Engine, tid: &Tid, v: Value, limit: usize, bad: &mut Vec<osis_label::Error>) -> Result<Option<Value>> {
     let mut budget = limit;
     let v = materialize_in(e, tid, v, limit, &mut budget, bad)?;
-    if v.as_ref().is_some_and(|v| osis_base::cbor::encode(v).len() > limit) {
+    if v.as_ref().is_some_and(|v| osis_base::cbor::encoded_len(v) > limit) {
         return Err(Error::TooLarge { limit });
     }
     Ok(v)

@@ -825,7 +825,7 @@ impl Worker {
         // the subscription lapses
         let held2 = held.clone();
         let queue = move |g: &mut Pending, v: Value| {
-            let n = osis_base::cbor::encode(&v).len();
+            let n = osis_base::cbor::encoded_len(&v);
             if held.load(Ordering::Acquire).saturating_add(n) > PUSH_BYTES {
                 g.lapsed = true;
             } else {

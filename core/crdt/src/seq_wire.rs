@@ -129,7 +129,7 @@ impl Runs {
             // run fits a page; content-carrying list elements are single-element records
             if let (false, SeqContent::Frag(f)) = (self.text, &e.content) {
                 let v = cx.fragment(f)?;
-                o.size += osis_base::encode(&v).len();
+                o.size += osis_base::cbor::encoded_len(&v);
                 o.fs.push(v);
                 if o.size >= CHUNK_MAX {
                     self.chunk(cx, out)?;

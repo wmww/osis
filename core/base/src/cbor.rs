@@ -141,9 +141,31 @@ impl fmt::Debug for CanonicalBytes {
 
 /// Canonical encoding of a value.
 pub fn encode(v: &Value) -> Vec<u8> {
-    let mut out = Vec::new();
+    let n = encoded_len(v);
+    let mut out = Vec::with_capacity(n);
     encode_into(v, &mut out);
+    debug_assert_eq!(out.len(), n, "encoded_len");
     out
+}
+
+/// `encode(v).len()`, without encoding.
+pub fn encoded_len(v: &Value) -> usize {
+    let bytes = |n: usize| head_len(n as u64) + n;
+    match v {
+        Value::Int(i) if *i >= 0 => head_len(*i as u64),
+        Value::Int(i) => head_len(!*i as u64),
+        Value::Float(_) => 9,
+        Value::Bool(_) => 1,
+        Value::Str(s) => bytes(s.len()),
+        Value::Bytes(b) => bytes(b.len()),
+        Value::Tid(t) => head_len(TAG_TID) + bytes(t.as_bytes().len()),
+        Value::Enum(case, payload) => head_len(TAG_ENUM) + 1 + head_len(*case) + payload.as_deref().map_or(0, encoded_len),
+        Value::Map(m) => head_len(m.len() as u64) + m.iter().map(|(k, v)| encoded_len(k) + encoded_len(v)).sum::<usize>(),
+        Value::List(l) => head_len(l.len() as u64) + l.iter().map(encoded_len).sum::<usize>(),
+        Value::Set(s) => head_len(TAG_SET) + head_len(s.len() as u64) + s.iter().map(encoded_len).sum::<usize>(),
+        Value::Link(l) => head_len(TAG_LINK) + 1 + bytes(l.hash.len()) + bytes(l.blob.0.len()) + bytes(1 + l.key.len()),
+        Value::Unknown(u) => head_len(u.tag()) + u.content().as_bytes().len(),
+    }
 }
 
 /// Appends the canonical (shortest) head of an item of major type `major` with argument `arg`.

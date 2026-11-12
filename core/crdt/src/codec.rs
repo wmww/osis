@@ -112,10 +112,10 @@ impl Pager {
         if !self.keep {
             return Ok(());
         }
-        let bytes = item.bytes();
         self.count += 1;
-        self.size = self.size.saturating_add(bytes.len());
+        self.size = self.size.saturating_add(item.len());
         if self.paging {
+            let bytes = item.bytes();
             return self.feed(sink, item, &bytes);
         }
         self.items.push(item);
@@ -227,10 +227,18 @@ impl Item {
         match self {
             Item::Elem(v) => osis_base::encode(v),
             Item::Field(k, v) => {
-                let mut b = osis_base::encode(k);
-                b.extend(osis_base::encode(v));
+                let mut b = Vec::with_capacity(self.len());
+                osis_base::cbor::encode_into(k, &mut b);
+                osis_base::cbor::encode_into(v, &mut b);
                 b
             }
+        }
+    }
+    /// `bytes().len()`.
+    fn len(&self) -> usize {
+        match self {
+            Item::Elem(v) => osis_base::cbor::encoded_len(v),
+            Item::Field(k, v) => osis_base::cbor::encoded_len(k) + osis_base::cbor::encoded_len(v),
         }
     }
 }

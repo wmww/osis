@@ -129,8 +129,8 @@ impl Engine {
 /// hostile holder's flood is what it received last). What is over `max` without them stays over:
 /// `build` refuses it.
 pub(crate) fn fit(f: &mut Frontier, out: &[CommitId], max: usize) {
-    let size = |f: &Frontier| osis_base::encode(&osis_schema::Codec::to_value(f)).len();
-    let each = osis_base::encode(&osis_base::Value::bytes(&[0u8; 32])).len();
+    let size = |f: &Frontier| osis_base::cbor::encoded_len(&osis_schema::Codec::to_value(f));
+    let each = osis_base::cbor::encoded_len(&osis_base::Value::bytes(&[0u8; 32]));
     let mut left = out.iter();
     let mut now = size(f);
     while now > max {
@@ -156,7 +156,7 @@ mod tests {
             b[..4].copy_from_slice(&i.to_be_bytes());
             CommitId(b)
         };
-        let size = |f: &Frontier| osis_base::encode(&osis_schema::Codec::to_value(f)).len();
+        let size = |f: &Frontier| osis_base::cbor::encoded_len(&osis_schema::Codec::to_value(f));
         let all = Frontier { commits: (0..2000).map(id).collect() };
         let requests: Vec<CommitId> = (1000..2000).rev().map(id).collect();
         let mut f = all.clone();

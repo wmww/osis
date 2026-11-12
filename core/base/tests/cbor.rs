@@ -107,6 +107,7 @@ proptest! {
     #[test]
     fn round_trip(v in value()) {
         let b = encode(&v);
+        prop_assert_eq!(osis_base::cbor::encoded_len(&v), b.len());
         prop_assert_eq!(d(&b), Ok(v.clone()));
         let c = CanonicalBytes::parse(b.clone(), &Limits::DEFAULT).unwrap();
         prop_assert_eq!(c.depth(), v.depth());

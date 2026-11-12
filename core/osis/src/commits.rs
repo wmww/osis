@@ -214,7 +214,7 @@ impl Commit {
     fn bytes(&self) -> usize {
         self.parts.iter().fold(0usize, |n, (_, _, p)| {
             n.saturating_add(match &p.body {
-                Body::Held(Some(v)) => osis_base::cbor::encode(v).len(),
+                Body::Held(Some(v)) => osis_base::cbor::encoded_len(v),
                 Body::TooLarge { .. } => usize::MAX,
                 _ => 0,
             })
