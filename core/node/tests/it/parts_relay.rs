@@ -346,10 +346,13 @@ fn relay_seed(seed: u64) {
     }
     x.net.feed(b, Event::Local);
     x.net.settle(10_000);
-    // what was thrown out comes back from a host still listing it (entries here are pushed, no host
-    // holds them): each is offered again until it is judged (spec/commits.md §4, Unjudgeable)
+    // what was thrown out comes back from a peer still listing it (entries here are pushed, the
+    // peer's store holds none, so a restart's listing from the start shows none of them and the
+    // node drops what it holds no bytes of): each is offered again until it is judged
+    // (spec/commits.md §4, Unjudgeable)
     for round in 0..8u64 {
-        let due: Vec<_> = originals.iter().filter(|(id, _)| x.net.sync(b).entries(&l).iter().any(|(e, k)| e == id && matches!(k, osis_node::sync::EntryKind::Unknown | osis_node::sync::EntryKind::Awaits { .. }))).map(|(_, e)| e.clone()).collect();
+        let held = x.net.sync(b).entries(&l);
+        let due: Vec<_> = originals.iter().filter(|(id, _)| held.iter().find(|(e, _)| e == id).is_none_or(|(_, k)| matches!(k, osis_node::sync::EntryKind::Unknown | osis_node::sync::EntryKind::Awaits { .. }))).map(|(_, e)| e.clone()).collect();
         if due.is_empty() {
             break;
         }
