@@ -3404,6 +3404,31 @@ fn large_write_pages_and_syncs_spec_crdt_8() {
     assert_eq!(net.eph_read(a, w, STATE), Some(s("w")), "nothing of the batch applied");
 }
 
+// spec/crdt.md §8, spec/sync.md §9 Caps: a receiver's pre-decode bound counts the pages an
+// ephemeral commit lists, not a blob a value links: a note holding a link to a large durable
+// value the receiver holds applies there as any small note does
+#[test]
+fn value_link_is_no_page_spec_crdt_8() {
+    let (mut net, (_, a, b, _, w)) = windowed();
+    let v: Vec<u8> = (0..700_000u32).map(|i| (i % 251) as u8).collect();
+    let mut m = Mutation::new();
+    m.set(w, &BLOB, &Value::Bytes(v)).unwrap();
+    net.engine(a).commit(m).unwrap();
+    local(&mut net, a);
+    net.run();
+    let Some(link @ Value::Link(_)) = net.engine(a).get(&w, &osis_base::Ak::new(osis_schema::RawKey::ak(&BLOB)).unwrap()).unwrap() else { panic!("a link") };
+    let mut m = Mutation::new();
+    m.op(w, &eph(NOTES), PathOp { path: vec![PathSeg::Key(s("file"))], op: Op::Set(link.clone()) }).unwrap();
+    net.engine(b).write(m).unwrap();
+    local(&mut net, b);
+    net.run();
+    let held = |net: &mut Net, n: usize| match net.eph_read(n, w, NOTES) {
+        Some(Value::Map(m)) => m.get(&s("file")).cloned(),
+        _ => None,
+    };
+    assert_eq!(held(&mut net, a), Some(link), "a, holding the value's tree, applies the note");
+}
+
 // spec/crdt.md §8, spec/sync.md §9 Compaction: an ephemeral map grown past a blob by several
 // writers' valid commits (each fitting a blob) still compacts: the snapshot pages, every holder
 // reads alike, others' covered bodies and their pages go at every node and at the host

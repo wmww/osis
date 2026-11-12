@@ -887,7 +887,7 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
             _ => None,
         };
         // what the ops address (map keys, fields, set values: a large one by its link, as the
-        // state holds it); a memory commit holds every value inline (no chunks, no pages)
+        // state holds it); a memory commit holds every value inline (no chunk trees)
         let paths = match (&framing, memory) {
             (Some(f), false) => super::pages::op_paths(&am.ops, &mut |v| super::large::lookup_form(v, &f.dedup))?,
             _ => super::pages::op_paths(&am.ops, &mut |v| Ok(v.clone()))?,

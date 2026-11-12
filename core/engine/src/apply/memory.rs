@@ -61,15 +61,16 @@ pub(crate) fn part_bound(p: &osis_commit::Part) -> Result<u64> {
 
 /// `part_bound` of the pages and link pages a paged part's `delta` links that are held here
 /// (spec/crdt.md §8), each by its plaintext's heads; one not held is not counted (its commit
-/// waits for it).
-fn pages_bound(tx: &mut Tx<'_>, delta: &[u8]) -> Result<u64> {
+/// waits for it). Only blobs of the commit's chunk list (`listed`) are followed: a value's link
+/// to another blob (a durable chunk tree) is no page of it.
+fn pages_bound(tx: &mut Tx<'_>, delta: &[u8], listed: &BTreeSet<osis_base::BlobId>) -> Result<u64> {
     let limits = |b: &[u8]| osis_base::Limits { max_depth: osis_base::format::MAX_OBJECT_DEPTH, max_bytes: b.len() };
     let mut stack = Vec::new();
     osis_base::visit_links(delta, &limits(delta), &mut |l| stack.push(l)).map_err(|_| Error::BadInput("ephemeral part not one CBOR value"))?;
     let mut seen = BTreeSet::new();
     let mut sum = 0u64;
     while let Some(l) = stack.pop() {
-        if !seen.insert(l.blob) {
+        if !listed.contains(&l.blob) || !seen.insert(l.blob) {
             continue;
         }
         let Some(blob) = tx.blobs.get(&l.blob)? else { continue };
@@ -85,12 +86,13 @@ fn pages_bound(tx: &mut Tx<'_>, delta: &[u8]) -> Result<u64> {
 /// held pages included): what ingesting it may decode.
 pub(crate) fn new_parts_bound(tx: &mut Tx<'_>, blob: &CommitBlob) -> Result<u64> {
     let known = tx.core.ix.commits.get(&blob.id()).map(|m| m.missing.clone());
+    let listed: BTreeSet<osis_base::BlobId> = blob.header.chunks.iter().map(|ch| ch.blob).collect();
     let mut sum = 0u64;
     for p in &blob.parts {
         if known.as_ref().is_some_and(|missing| !missing.contains(&p.ai)) {
             continue;
         }
-        sum = sum.saturating_add(part_bound(p)?).saturating_add(pages_bound(tx, &p.delta)?);
+        sum = sum.saturating_add(part_bound(p)?).saturating_add(pages_bound(tx, &p.delta, &listed)?);
     }
     Ok(sum)
 }
