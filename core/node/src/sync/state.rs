@@ -435,10 +435,10 @@ pub struct State {
     /// The node log's memory part: memory entries' events, which the durable log never holds.
     pub mem_log: super::stream::MemLog,
     /// Entries this node dropped (`remove_entry`): refused from peers for `TOMBSTONE_LIFETIME`
-    /// (spec/sync.md §5), so a peer cannot replay a deleted body, with what the entry was: a host
-    /// reporting it within that time (one an upload reached, its answer lost or late) gets it
+    /// (spec/sync.md §5), so a peer cannot replay a deleted body, with what the entry was: a
+    /// source's stream showing it within that time (one it pulled before the delete) gets it
     /// recorded again as present there without a fetch, so the pass judges it there as any
-    /// (`SyncEngine::host_holds`).
+    /// (`SyncEngine::log_events_from`).
     pub tombs: BTreeMap<(LabelId, BlobId), Tomb>,
     /// Bodies (commit and delta set) whose entry (not a certificate copy) left a label by a
     /// delete, by when (`remove_entry`): such a body (or one it is a purge rewrite of,
@@ -1599,7 +1599,8 @@ impl State {
         for (l, b) in old {
             self.del_of(&l, &b, key(TOMB, &[&l.0, &b.0]));
             self.tombs.remove(&(l, b));
-            // an entry recorded again (`SyncEngine::host_holds`) keeps its class
+            // an entry recorded again from its tombstone (`SyncEngine::log_events_from`) keeps
+            // its class
             if !self.entries.contains_key(&(l, b)) {
                 self.memory_entries.remove(&(l, b));
             }

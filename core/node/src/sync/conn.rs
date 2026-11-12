@@ -3,8 +3,9 @@
 
 use super::*;
 
-/// An upload, deposit or delete whose request was answered without settling it (a refusal, an
-/// entry the reply did not mark) goes again at the first pass this long after it was given (ms).
+/// A Deposit item or delete whose request was answered without settling it (a refusal, an entry
+/// the source's stream does not show) goes again at the first pass this long after it was given
+/// (ms).
 /// Minor consequence: pacing of retries only (an unanswered request never goes again: a slow
 /// link only queues the copy behind the first, and a dead one closes at `STALL_TIMEOUT_MS`);
 /// 0 retries at every pass, infinity never retries on this connection (the next one does).
@@ -18,12 +19,6 @@ pub(crate) const UNTAGGED: u64 = u64::MAX;
 /// before `now`.
 pub(crate) fn in_flight(c: &Conn, m: &BTreeMap<(LabelId, osis_base::BlobId), (u64, u64)>, k: (LabelId, osis_base::BlobId), now: u64) -> bool {
     m.get(&k).is_some_and(|(t, tag)| now < t.saturating_add(RESEND_MS) || !c.session.answered(*tag))
-}
-
-/// Whether `OSIS_TRACE_UPLOADS` asks for the upload trace (`SyncEngine::trace`).
-fn tracing() -> bool {
-    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var_os("OSIS_TRACE_UPLOADS").is_some())
 }
 
 /// Open state of a label on a connection.
@@ -126,17 +121,11 @@ pub(crate) struct Conn {
 /// with the connection (asked again on the next one).
 #[derive(Clone, Default)]
 pub(crate) struct Requests {
-    /// Entries uploaded or deposited, with when (wall ms) and the tag of the command carrying them
-    /// (`ClientSession::commands`): passes skip them while unanswered or within `RESEND_MS`
-    /// (`in_flight`).
+    /// Bodies sent to this connection's source as Deposit items (`deposit_items`), with when
+    /// (wall ms): passes skip them within `RESEND_MS` (`in_flight`).
     pub sent: BTreeMap<(LabelId, osis_base::BlobId), (u64, u64)>,
     /// Deletes sent, likewise.
     pub deleting: BTreeMap<(LabelId, osis_base::BlobId), (u64, u64)>,
-    /// Uploads sent replacing entries (spec/sync.md §5), with the tag of the command carrying
-    /// each: those are gone once it is answered OK. A plain upload of the same blob waits
-    /// meanwhile; one sent before it is answered first (statuses come in order: `entry_status`
-    /// takes the one whose command is answered).
-    pub replacing: BTreeMap<(LabelId, osis_base::BlobId), (Vec<osis_base::BlobId>, u64)>,
     /// Blobs asked for and not received yet, with when (wall ms; `SyncEngine::asked`).
     pub fetching: BTreeMap<osis_base::BlobId, u64>,
     /// Blobs the host did not deliver when fetched (since it last announced them).
@@ -153,7 +142,6 @@ impl Requests {
     pub fn forget(&mut self, gone: impl Fn(&LabelId) -> bool) {
         self.sent.retain(|(l, _), _| !gone(l));
         self.deleting.retain(|(l, _), _| !gone(l));
-        self.replacing.retain(|(l, _), _| !gone(l));
         self.reopens.retain(|l, _| !gone(l));
         self.reopened.retain(|l, _| !gone(l));
     }
@@ -161,11 +149,6 @@ impl Requests {
     /// The commands carrying the `UNTAGGED` requests were given, the last tagged `tag`.
     pub fn given(&mut self, tag: u64) {
         for v in self.sent.values_mut().chain(self.deleting.values_mut()) {
-            if v.1 == UNTAGGED {
-                v.1 = tag;
-            }
-        }
-        for v in self.replacing.values_mut() {
             if v.1 == UNTAGGED {
                 v.1 = tag;
             }
@@ -364,9 +347,6 @@ impl SyncEngine {
     /// Sends a command on a connection.
     pub(crate) fn command(&mut self, conn: ConnId, cmd: Command, out: &mut Vec<Action>) -> Result<()> {
         let now = self.now();
-        if tracing() {
-            self.trace(conn, &cmd);
-        }
         let Some(c) = self.conns.get_mut(&conn) else { return Ok(()) };
         let o = c.session.handle(now, ClientInput::Command(cmd));
         self.outputs(conn, o, out)
@@ -377,35 +357,6 @@ impl SyncEngine {
         if let Some(c) = self.conns.get_mut(&conn) {
             let tag = c.session.commands();
             c.req.given(tag);
-        }
-    }
-
-    /// One stderr line per entry sent (cost attribution, `OSIS_TRACE_UPLOADS`): node, group,
-    /// how, bytes, what the entry is (commit, kind, certificate copy, aspects).
-    pub(super) fn trace(&self, conn: ConnId, cmd: &Command) {
-        let short = |b: &[u8]| b.iter().take(3).map(|x| format!("{x:02x}")).collect::<String>();
-        let t4 = |t: &Tid| t.to_string().chars().take(4).collect::<String>();
-        let sent: Vec<(LabelId, osis_base::BlobId, usize, &str)> = match cmd {
-            Command::Upload { label, entries } | Command::Sync { label, entries, .. } => entries.iter().map(|e| (*label, osis_label::blob_id(&e.blob), e.blob.len(), "up")).collect(),
-            Command::Deposit { label, blob, .. } => vec![(*label, osis_label::blob_id(blob), blob.len(), "dep")],
-            _ => return,
-        };
-        let group = |l: &LabelId| self.conns.get(&conn).and_then(|c| c.labels.get(l)).map(|x| t4(&x.group)).unwrap_or_default();
-        for (l, id, n, how) in sent {
-            let what = match self.state.entries.get(&(l, id)) {
-                Some(e) => match &e.kind {
-                    state::Kind::Commit { commit, parts, .. } => {
-                        let h = self.engine.header(commit);
-                        let aspects: Vec<String> = parts.iter().filter_map(|ai| h.as_ref().and_then(|h| h.aspects.get(*ai))).map(|a| format!("{}{}", t4(&a.tid), a.ak.as_str())).collect();
-                        let kind = h.as_ref().map(|h| format!("{:?}", h.kind)).unwrap_or_default();
-                        let author = h.as_ref().map(|h| t4(&h.author)).unwrap_or_default();
-                        format!("commit {} {kind} by {author}{} [{}]", short(&commit.0), if e.cert { " cert" } else { "" }, aspects.join(" "))
-                    }
-                    k => format!("{k:?}"),
-                },
-                None => "unknown".into(),
-            };
-            eprintln!("TRACE node {} group {} {how} {n} B blob {}: {what}", t4(&self.engine.tid()), group(&l), short(&id.0));
         }
     }
 

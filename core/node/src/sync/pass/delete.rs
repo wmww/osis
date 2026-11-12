@@ -7,9 +7,9 @@ use crate::engine::MemoryDrop;
 use std::sync::Arc;
 
 impl SyncEngine {
-    /// The deletion step of a local pass, under every label, over the entries of `scope` no host
-    /// or peer holds (those go by their deletions, spec/sync.md §5-§7; one whose upload a host
-    /// takes after this is recorded again from its tombstone, `host_holds`): a commit entry goes
+    /// The deletion step of a pass's own part, over the entries of `scope` no source holds (those
+    /// go by their deletions there, spec/sync.md §5-§7; one a source pulled before this is
+    /// recorded again from its tombstone when its stream shows it): a commit entry goes
     /// as `deletable` says
     /// (a live body only with a carrier, a covering snapshot asked for meanwhile, even when its
     /// bytes are gone); any other entry whose bytes this node no longer holds serves nothing and
