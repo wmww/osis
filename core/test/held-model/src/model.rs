@@ -639,9 +639,9 @@ fn judge(h: &Held) -> Outcome {
         contrib.insert((t, a), bodies);
     }
 
-    // Replaced bodies (spec/commits.md §5 Bodies and deaths): a held valid body holding a write the
-    // state does not hold, joining into the state leaving it unchanged (the write is dead, not
-    // un-merged). An expiring delta is judged with its values value-less on both sides (a
+    // Replaced bodies (spec/commits.md §5 Bodies and deaths): a held valid body holding a write
+    // dead in the state (not held there, or held there and not winning, spec/crdt.md §4.8),
+    // joining into the state leaving it unchanged (the write is dead, not un-merged). An expiring delta is judged with its values value-less on both sides (a
     // snapshot carries them so, spec/crdt.md §8): replaced only once none of its values lives.
     for c in view.iter().filter(|c| !c.is_role()) {
         for (i, p) in c.parts.iter().enumerate() {
@@ -667,8 +667,11 @@ fn judge(h: &Held) -> Outcome {
             let own = |x: CommitId| vl(x, t, a) || (x == c.id && c.expires.is_some());
             let b = dots.strip(t, a, f, &own);
             let st = if c.expires.is_some() { dots.strip(t, a, st, &own) } else { st.clone() };
-            let held = keys(&st);
-            let gone: Vec<(Name, Frag)> = writes(&b).into_iter().filter(|(n, _)| !holds(&held, n)).collect();
+            // a write it holds that is dead in the state: not held there, or winning in the body
+            // and held there but not winning (spec/crdt.md §4.8: a text element's creation under
+            // a winning delete, a position write beaten by a move)
+            let (held, won, wins) = (keys(&st), winning(&st), winning(&b));
+            let gone: Vec<(Name, Frag)> = writes(&b).into_iter().filter(|(n, _)| !holds(&held, n) || [&held, &wins].iter().all(|x| x.contains(&death::key(n))) && !won.contains(&death::key(n))).collect();
             if gone.is_empty() || !covers(&st, &b) {
                 continue;
             }

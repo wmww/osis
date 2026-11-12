@@ -14,3 +14,5 @@ sim-sweep:evil_host_drops 472765857787/472765857787 issues/evil-host-drops-seed-
 sim-sweep:work_sets 7000/7010 issues/work-sets-snapshot-storm.md message storm: .*kind Some\(ContentSnapshot\)
 ephemeral::random_window_one_capped_host_large OSIS_EPH_START=1811714465 issues/capped-host-stale-ephemeral-entry.md the full host keeps entries .* no node holds
 runtime::a_paired_peer_serves_what_it_reads_in_process_spec_data_model_9 - issues/paired-peer-runtime-flake.md Unsynced \{ groups
+sim-sweep:concurrent_writers 892962858361/892962858375 issues/concurrent-writers-storage-seed-375.md stores \d+ B; must hold .* over the bound
+order::held_set_decides_plain OSIS_ORDER_SEED=7310 issues/order-cover-then-fallen-purge.md ^seed 7310, Settled .*after the sync exchange: shows other than the node keeping every body

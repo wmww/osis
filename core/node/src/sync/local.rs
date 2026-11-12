@@ -92,15 +92,61 @@ impl SyncEngine {
     /// not when the snapshot or the body arrived. Only the bodies `only` names when given (a
     /// pass's work set: the others were judged before and nothing changed for them); what is
     /// judged again later goes into `left` (not established yet: next pass; keep-at-least: at
-    /// its bound). Returns the bodies dropped.
+    /// its bound). Returns the bodies dropped (`CoverPass::drop_covered`), each
+    /// forgotten later with `s` its carrier.
     pub(crate) fn drop_covered(&mut self, t: &Tid, ak: &Ak, s: &CommitId, only: Option<&[CommitId]>, left: &mut super::work::Left) -> Result<Vec<CommitId>> {
+        let mut dropped = Vec::new();
+        let r = CoverPass { engine: &mut self.engine, covered_judged: &mut self.covered_judged }.drop_covered(t, ak, s, only, left, &mut dropped);
+        for c in &dropped {
+            self.state.forget_due.insert(*c);
+            self.state.set_carrier(*c, *s);
+            self.touched.commits.insert(*c);
+        }
+        r.map(|_| dropped)
+    }
+}
+
+/// Tests only: node-sync's covered drops over bare engine `e` (`CoverPass`, as a full pass's
+/// `drop_label_covered` runs them for every snapshot it holds): every durable aspect's held
+/// content snapshots judge each body of it, its own replaces their author's older commits.
+/// Returns the bodies dropped; what node-sync would judge again later is judged at the next call.
+#[doc(hidden)]
+pub fn drop_all_covered(e: &mut osis_engine::Engine) -> Result<Vec<CommitId>> {
+    let aspects: Vec<(Tid, Ak)> = e.core.ix.by_aspect.keys().filter(|k| !k.1.ephemeral()).cloned().collect();
+    let (mut judged, mut left, mut dropped) = (BTreeSet::new(), super::work::Left::default(), Vec::new());
+    for (t, a) in aspects {
+        let covers: Vec<(CommitId, bool)> = e.core.durable_on(&(t, a.clone())).filter_map(|s| {
+            let snapshot = e.core.ix.commits.get(&s).is_some_and(|m| m.header.kind == osis_commit::Kind::ContentSnapshot);
+            (snapshot || e.own_replace(&s, &t, &a)).then_some((s, snapshot))
+        }).collect();
+        for (s, snapshot) in covers {
+            let only = (!snapshot).then(|| e.own_held_before(&s, &t, &a));
+            if only.as_ref().is_some_and(|o| o.is_empty()) {
+                continue;
+            }
+            CoverPass { engine: e, covered_judged: &mut judged }.drop_covered(&t, &a, &s, only.as_deref(), &mut left, &mut dropped)?;
+        }
+    }
+    Ok(dropped)
+}
+
+/// `SyncEngine::drop_covered`'s judgment over the engine alone and the settled pairs it keeps
+/// (`covered_judged`); node-sync's bookkeeping of each drop is the caller's. Tests run it over a
+/// bare engine too (`drop_all_covered`).
+pub(crate) struct CoverPass<'a> {
+    pub engine: &'a mut osis_engine::Engine,
+    pub covered_judged: &'a mut BTreeSet<(CommitId, CommitId, Tid, Ak)>,
+}
+
+impl CoverPass<'_> {
+    /// `SyncEngine::drop_covered`, each body dropped pushed to `dropped` as it goes.
+    fn drop_covered(&mut self, t: &Tid, ak: &Ak, s: &CommitId, only: Option<&[CommitId]>, left: &mut super::work::Left, dropped: &mut Vec<CommitId>) -> Result<()> {
         let s = *s;
         let now = self.engine.now();
         let held: Vec<CommitId> = match only {
             Some(o) => o.to_vec(),
             None => self.engine.core.durable_on(&(*t, ak.clone())).collect(),
         };
-        let mut dropped = Vec::new();
         for c in held {
             if c == s {
                 continue;
@@ -205,12 +251,9 @@ impl SyncEngine {
                 continue;
             }
             self.engine.drop_body(&c, t, ak)?;
-            self.state.forget_due.insert(c);
-            self.state.set_carrier(c, s);
-            self.touched.commits.insert(c);
             dropped.push(c);
         }
-        Ok(dropped)
+        Ok(())
     }
 
     /// Whether every part of `c` still held may drop under own replaces (spec/commits.md §5):
@@ -235,6 +278,13 @@ impl SyncEngine {
         Ok(Some(due))
     }
 
+    /// Whether this node wrote `c` (`SyncEngine::own`).
+    fn own(&self, c: &CommitId) -> bool {
+        self.engine.core.ix.commits.get(c).is_some_and(|m| m.origin == crate::events::Origin::Local)
+    }
+}
+
+impl SyncEngine {
     /// Places commit `c`'s deltas on `aspects` as a certificate copy under every label of `g`
     /// (spec/permissions.md §3, §4): one blob of those parts, wrapped per label (spec/sync.md §3),
     /// uploaded or deposited at the label's next pass.

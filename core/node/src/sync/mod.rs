@@ -58,6 +58,7 @@ pub(crate) use conn::{Conn, LConn, Phase, UNTAGGED, in_flight};
 pub use host::{host_policy, host_policy_known, hub_store, hub_store_on};
 pub use osis_host::HostPolicy;
 pub use io::{Action, ConnId, Event, LabelStatus, MAX_CONNS_PER_CLIENT, PassStats, SyncConfig, Tier};
+pub use local::drop_all_covered;
 pub use pass::Verdicts;
 pub use state::Kind as EntryKind;
 

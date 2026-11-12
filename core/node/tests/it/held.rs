@@ -31,7 +31,7 @@
 //! settings, fed as `Delta::Retention` (spec/commits.md §5 The setting). Which other bodies a node holds,
 //! and when it dates a death, are its own. Every difference is tallied by kind
 //! (`Coverage::differs`); the first is reported. The order harness also compares after every
-//! ingest of its clocked deliveries, between ticks.
+//! ingest of its clocked deliveries, between ticks, judging the drops since (`Drops`).
 //!
 //! A body the node dropped other than as covered (a part missing when purged) is fed as missing;
 //! one dropped as covered as `Body::Dropped(cover)`.
@@ -603,12 +603,38 @@ fn held_body(e: &Engine, c: &CommitId, ai: usize) -> bool {
     e.core.ix.commits.get(c).is_some_and(|m| !m.is_dropped(ai) && !m.missing(ai))
 }
 
-/// What `compare` remembers of one node between its judgments, for judging its drops: each held
-/// body as last seen (the model dates a body only while it is held), and the drops judged.
+/// What `compare` remembers of one node between its judgments, for judging its drops: each
+/// part as last seen (`Seen`), and the drops judged.
 #[derive(Default)]
 pub(crate) struct Drops {
-    bodies: BTreeMap<(CommitId, usize), hm::Body>,
+    seen: BTreeMap<(CommitId, usize), Seen>,
     judged: BTreeSet<(CommitId, usize)>,
+}
+
+impl Drops {
+    /// Notes, just before a drop pass, the parts `e` holds other than whole (missing, or a
+    /// leftover holding no value of its own writes): what `compare` judges a drop of them by.
+    pub(crate) fn before(&mut self, e: &Engine) {
+        for (c, m) in e.core.ix.commits.iter() {
+            for ai in 0..m.view.aspects.len() {
+                if m.missing(ai) {
+                    self.seen.insert((*c, ai), Seen::Not);
+                } else if m.bare(ai) {
+                    self.seen.insert((*c, ai), Seen::Bare);
+                }
+            }
+        }
+    }
+}
+
+/// A part as `compare` last saw it.
+enum Seen {
+    /// Held whole by an applied commit, its body as fed (the model dates a body only while held).
+    Held(Box<hm::Body>),
+    /// Held as a leftover holding no value of its own writes (expired, purged).
+    Bare,
+    /// Neither (missing, waiting, dropped).
+    Not,
 }
 
 /// Converts what `e` holds, runs the model and compares (see the module doc); the first
@@ -751,31 +777,57 @@ pub(crate) fn compare(e: &mut Engine, hist: &History, cov: &mut Coverage, drops:
             }
         }
     }
-    // covered drops since the last judgment, each against the settings held now, the body as
-    // last seen held, with every fresh drop held: in history, or dated ahead of the clock where
-    // a setting keeps the aspect, it was kept (spec/commits.md §5 Keep bounds); live, before its
-    // aspect's live bound, it was kept too (Kept while live). A covered drop
-    // redates nothing in history (notes/engine-retention.md Replaced, When), so the step's
-    // drops are judged together
+    // covered drops since the last judgment, each against the settings held now, the part as
+    // last seen, with every fresh drop held: in history, or dated ahead of the clock where a
+    // setting keeps the aspect, it was kept (spec/commits.md §5 Keep bounds); live, before its
+    // aspect's live bound, it was kept too (Kept while live). A covered drop redates nothing in
+    // history (notes/engine-retention.md Replaced, When), so the step's drops are judged
+    // together. A leftover holding no value of its own writes is never dropped for keep bounds:
+    // past its expiry it drops as covered, purged it does not (spec/commits.md §5 Purge, Dropping
+    // a body); a body past its commit's expiry left by expiry, its leftover with it. A part last
+    // seen missing or waiting, or on an aspect out of scope, is not judged
     if let Some(d) = drops {
         let mut back = input.held.clone();
         let mut fresh = Vec::new();
+        let now = input.held.now;
         for (ci, c) in back.commits.iter_mut().enumerate().filter(|(_, c)| !c.is_role()) {
-            let id = input.commits[&c.id].0;
+            let (id, applied) = input.commits[&c.id];
+            let expired = hist.headers.get(&id).and_then(|h| h.expires).is_some_and(|x| x <= now);
+            let meta = e.core.ix.commits.get(&id);
             for (i, p) in c.parts.iter_mut().enumerate() {
-                if matches!(p.body, hm::Body::Held(_)) {
-                    d.bodies.insert((id, i), p.body.clone());
-                } else if matches!(p.body, hm::Body::Dropped(_)) && by_part.contains_key(&(p.thing, p.aspect)) && d.judged.insert((id, i))
-                    && let Some(b) = d.bodies.get(&(id, i))
-                {
-                    p.body = b.clone();
-                    fresh.push((ci, c.id, i, id, p.thing, p.aspect));
+                if !matches!(p.body, hm::Body::Dropped(_)) {
+                    let bare = meta.is_some_and(|m| m.bare(i));
+                    let seen = match &p.body {
+                        hm::Body::Held(_) if bare => Seen::Bare,
+                        hm::Body::Held(_) if applied => Seen::Held(Box::new(p.body.clone())),
+                        _ => Seen::Not,
+                    };
+                    d.seen.insert((id, i), seen);
+                    continue;
+                }
+                if !d.judged.insert((id, i)) {
+                    continue;
+                }
+                let Some((t, a)) = by_part.get(&(p.thing, p.aspect)) else {
+                    reach_n(cov, "covered drops unjudged", 1);
+                    continue;
+                };
+                match d.seen.get(&(id, i)) {
+                    Some(Seen::Held(_)) | Some(Seen::Bare) if expired => reach_n(cov, "leftover drops judged", 1),
+                    Some(Seen::Bare) => {
+                        reach_n(cov, "leftover drops judged", 1);
+                        diffs.push(("dropped a purged leftover as covered".into(), differ(format!("commit {id:?} (#{}) on {t:?} {}: its leftover dropped as covered at {now}, not past its expiry", c.id, a.as_str()), &[p.thing])));
+                    }
+                    Some(Seen::Held(b)) => {
+                        p.body = (**b).clone();
+                        fresh.push((ci, c.id, i, id, p.thing, p.aspect));
+                    }
+                    _ => reach_n(cov, "covered drops unjudged", 1),
                 }
             }
         }
         if !fresh.is_empty() {
             let ob = hm::evaluate(&back);
-            let now = input.held.now;
             for &(ci, cid, i, id, thing, aspect) in &fresh {
                 let (t, a) = &by_part[&(thing, aspect)];
                 // a live delta is kept to its aspect's live bound (spec/commits.md §5 Kept while live)

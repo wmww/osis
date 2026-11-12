@@ -1,6 +1,6 @@
 //! spec/commits.md §4 (apply), §5 (retention, purge), §6 (expiry).
 use crate::util::*;
-use held_model::gen::{MAP, REG};
+use held_model::gen::{MAP, REG, TEXT};
 use held_model::*;
 
 const OTHER: Aspect = Aspect::plain(5);
@@ -495,4 +495,21 @@ fn a_later_snapshot_carrying_a_dead_write_holds_its_history_spec_commits_5() {
     assert_eq!((o.replaced_at[&(12, 0)], o.replaced_at[&(13, 0)]), (None, Some(at(4))));
     assert!(o.history[&(T, MAP)].iter().any(|(s, c)| *c == 13 && s.dot == dot(10, 1)));
     assert_eq!(o.fates[&(12, 0)], Fate::MayDrop(DropWhy::Covered { by: 13 }));
+}
+
+// spec/commits.md §5 Bodies and deaths, spec/crdt.md §4.8: a text body whose char a later delete
+// hides is replaced at the delete's `ts`, though the state still holds the element's record (its
+// creation under a winning delete is dead); so it is no live delta kept to the aspect's live bound
+#[test]
+fn text_body_replaced_by_a_delete_spec_commits_5() {
+    let cs = vec![
+        setting(1, 0, TEXT, keep_after(5)),
+        content(10, FIRST_ADMIN, 2, vec![part(TEXT, Retention::PLAIN, vec![ins(2, 10, 1, None, Some(1))])]),
+        content(11, FIRST_ADMIN, 3, vec![part(TEXT, Retention::PLAIN, vec![del(3, 11, 10)])]),
+    ];
+    let h = held(4, cs);
+    let o = evaluate(&h);
+    assert_eq!(read(&h, TEXT), text(&[]));
+    assert_eq!(o.replaced_at[&(10, 0)], Some(at(3)));
+    assert!(!o.live_delta(&h.commits.iter().find(|c| c.id == 10).unwrap().clone(), 0));
 }

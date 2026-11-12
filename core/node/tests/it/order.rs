@@ -557,6 +557,8 @@ pub(crate) struct Played {
     judged: std::sync::Arc<[std::sync::atomic::AtomicU64; 2]>,
     /// Deliveries at an earlier clock whose move to `now` changed a state or a body (`Clock`).
     moved: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    /// Bodies the judged nodes dropped as covered (`drop_covered`).
+    dropped: std::sync::Arc<std::sync::atomic::AtomicU64>,
     /// How many commits were made before each step.
     steps_at: Vec<usize>,
     /// A `settled` history: its settling tail's first commit (`settling`). Every order delivers
@@ -1394,7 +1396,7 @@ pub(crate) fn play_with(seed: u64, steps: &[Step], addenda: bool) -> Played {
             pk.bytes = b.clone();
         }
     }
-    Played { packs, authors, base, things, now, tally, sync: Syncs::None, restored: Default::default(), judged: Default::default(), moved: Default::default(), steps_at, settle_from: None, settled_last, withheld: 0, model: None, setups: Setups::default() }
+    Played { packs, authors, base, things, now, tally, sync: Syncs::None, restored: Default::default(), judged: Default::default(), moved: Default::default(), dropped: Default::default(), steps_at, settle_from: None, settled_last, withheld: 0, model: None, setups: Setups::default() }
 }
 
 /// Per body (commit, thing, aspect): when it was replaced, for keep-for-D (spec/commits.md §5).
@@ -1630,6 +1632,7 @@ fn node_checks(p: &mut Peer, played: &Played, o: &Oracle) -> Result<(), String> 
     at(p, &o.now, "now")?;
     p.clock.set(later_than(played));
     p.tick().unwrap();
+    drop_covered(played, p);
     at(p, &o.later, "later")
 }
 
@@ -1652,8 +1655,8 @@ fn reopens_alike(played: &Played, order: &[usize]) -> Result<(), String> {
         let now = p.engine.now();
         p.clock.set(WallMs(now.0 + 1));
     };
-    let mut r = deliver_with(played, order, None, None, &mut |p| tick(p));
-    let mut p = deliver_with(played, order, None, None, &mut |p| {
+    let mut r = deliver_with(played, order, None, None, None, &mut |p| tick(p));
+    let mut p = deliver_with(played, order, None, None, None, &mut |p| {
         tick(p);
         p.engine.reload().unwrap();
     });
@@ -1838,7 +1841,7 @@ fn deliver(played: &Played, order: &[usize]) -> Peer {
     } else {
         (first_of(played, order, 0), 0)
     };
-    deliver_from(played, order, start, None, None, &mut |_| {})
+    deliver_from(played, order, start, None, None, None, &mut |_| {})
 }
 
 /// A fresh node given the first `n` of `order` as `deliver_with` gives them with no late parts
@@ -1853,6 +1856,7 @@ fn first_of(played: &Played, order: &[usize], n: usize) -> Peer {
         let pk = &played.packs[i];
         let _ = p.receive(&pk.bytes, pk.blobs.clone());
         crate::disputes::walk_sides(&mut p);
+        drop_covered(played, &mut p);
     }
     p
 }
@@ -1862,7 +1866,7 @@ fn first_of(played: &Played, order: &[usize], n: usize) -> Peer {
 /// settled history's settling tail), in reverse (spec/commits.md §4: a late delta joins on
 /// arrival).
 fn deliver_split(played: &Played, order: &[usize], rng: &mut Rng) -> Peer {
-    deliver_with(played, order, Some(rng), None, &mut |_| {})
+    deliver_with(played, order, Some(rng), None, None, &mut |_| {})
 }
 
 /// A delivery's clock (`deliver_with`): the first `at` ingests at wall time `early`, then the
@@ -1893,6 +1897,14 @@ fn clock_of(played: &Played, order: &[usize], rng: &mut Rng) -> Clock {
     Clock { at, early: WallMs(early.min(played.now.0)) }
 }
 
+/// node-sync's covered drops (`osis_node::sync::drop_all_covered`), run where a node runs a
+/// sync step: after each ingest and each tick, so the judged nodes drop what the snapshots and
+/// own replaces they hold let them, and held-model judges each drop (`held::compare`).
+fn drop_covered(played: &Played, p: &mut Peer) {
+    let n = osis_node::sync::drop_all_covered(&mut p.engine).unwrap().len();
+    played.dropped.fetch_add(n as u64, std::sync::atomic::Ordering::Relaxed);
+}
+
 /// A `Clock`'s move: node `p`'s clock to `played.now` and what is due run, counted in
 /// `played.moved` when a state or the index changed (a coverage tally, compared nowhere).
 fn move_clock(played: &Played, p: &mut Peer) {
@@ -1910,16 +1922,22 @@ fn move_clock(played: &Played, p: &mut Peer) {
 /// and its clock set back, so its own things are the same as every fresh node's. Before every
 /// `each` the node takes the walk's side in each dispute it detected (`disputes::walk_sides`),
 /// so its trust set is empty wherever it is judged (spec/permissions.md §5.1).
-fn deliver_with(played: &Played, order: &[usize], rng: Option<&mut Rng>, clock: Option<Clock>, each: &mut dyn FnMut(&mut Peer)) -> Peer {
-    deliver_from(played, order, (first_of(played, order, 0), 0), rng, clock, each)
+fn deliver_with(played: &Played, order: &[usize], rng: Option<&mut Rng>, clock: Option<Clock>, drops: Option<&std::cell::RefCell<crate::held::Drops>>, each: &mut dyn FnMut(&mut Peer)) -> Peer {
+    deliver_from(played, order, (first_of(played, order, 0), 0), rng, clock, drops, each)
 }
 
 /// `deliver_with` from node `p` given the first `start` of `order` (`first_of`; with `rng` or
-/// `clock`, none).
-fn deliver_from(played: &Played, order: &[usize], (mut p, start): (Peer, usize), mut rng: Option<&mut Rng>, clock: Option<Clock>, each: &mut dyn FnMut(&mut Peer)) -> Peer {
+/// `clock`, none). Before each step's covered drops (`drop_covered`), `drops` notes the parts
+/// the node holds other than whole (`held::Drops::before`), so held-model judges each drop by the
+/// part as it was just before.
+fn deliver_from(played: &Played, order: &[usize], (mut p, start): (Peer, usize), mut rng: Option<&mut Rng>, clock: Option<Clock>, drops: Option<&std::cell::RefCell<crate::held::Drops>>, each: &mut dyn FnMut(&mut Peer)) -> Peer {
     assert!(start == 0 || (rng.is_none() && clock.is_none()), "`first_of` gives no late parts and no clock");
     let mut each = |p: &mut Peer| {
         crate::disputes::walk_sides(p);
+        if let Some(d) = drops {
+            d.borrow_mut().before(&p.engine);
+        }
+        drop_covered(played, p);
         each(p)
     };
     if let Some(c) = clock {
@@ -2064,7 +2082,7 @@ fn dump_order(played: &Played, order: &[usize]) {
     let _ = writeln!(out, "--- order {order:?}: reads as they change");
     let mut last = Shown::new();
     let mut n = 0;
-    deliver_with(played, order, None, None, &mut |p| {
+    deliver_with(played, order, None, None, None, &mut |p| {
         let step = order.get(n).map_or("end".to_string(), |i| format!("#{i}"));
         n += 1;
         for (k, v) in shown(p, &played.things) {
@@ -2285,6 +2303,8 @@ struct Seen {
     /// Deliveries at an earlier clock (`Clock`), and those whose move changed a state or a body.
     clocked: u64,
     moved: u64,
+    /// Bodies the judged nodes dropped as covered (`drop_covered`).
+    dropped: u64,
     /// Orders delivered reopening after every ingest (`reopens_alike`).
     reopened: u64,
     /// Held sets with a multi-part commit, those of them given late-parts orders, and those
@@ -2314,6 +2334,7 @@ impl Seen {
         }
         self.clocked += o.clocked;
         self.moved += o.moved;
+        self.dropped += o.dropped;
         self.reopened += o.reopened;
         self.twins = (self.twins.0 + o.twins.0, self.twins.1 + o.twins.1, self.twins.2 + o.twins.2);
         self.covered_away += o.covered_away;
@@ -2355,7 +2376,7 @@ impl Seen {
             (Emphasis::RecordOnly, "a first admin's record edge removed", |s| s.tally.kinds.get("RemoveFlow(record)").is_some_and(|x| x.1 > 0)),
             (Emphasis::Lists, "list elements written, some by a writer predating the undo expiry rule", |s| s.aspects.contains_key("t:listtext.0") && s.tally.kinds.iter().any(|(k, x)| k.ends_with("(old)") && x.1 > 0)),
             (Emphasis::PartsAway, "parts held away and parts left out as covered", |s| s.withheld > 0 && s.covered_away > 0),
-            (Emphasis::Settled, "a settled history judged before its exchange", |s| s.settled > 0),
+            (Emphasis::Settled, "a settled history judged before its exchange, and held-model judging a live body dropped as covered", |s| s.settled > 0 && s.model.reached.get("live drops judged").is_some_and(|n| *n > 0)),
             (Emphasis::Addenda, "an addendum written", |s| s.aspects.contains_key(osis_schema::core_types::ADDENDA_AK)),
         ];
         for (e, what, reached) in checks {
@@ -2512,11 +2533,11 @@ fn check_orders(threads: usize, seed: u64, steps: &[Step], cfg: Cfg) -> Result<S
             // only between ticks)
             let mut early: Option<String> = None;
             let mut done = 0;
-            let mut drops = crate::held::Drops::default();
-            let mut p = deliver_with(played, order, None, Some(c), &mut |p| {
+            let drops = std::cell::RefCell::new(crate::held::Drops::default());
+            let mut p = deliver_with(played, order, None, Some(c), Some(&drops), &mut |p| {
                 done += 1;
                 if early.is_none() {
-                    early = model_differs(p, played, Some(&mut drops)).map(|d| format!("after {done} ingests at {:?}: {d}", p.engine.now()));
+                    early = model_differs(p, played, Some(&mut drops.borrow_mut())).map(|d| format!("after {done} ingests at {:?}: {d}", p.engine.now()));
                     if let Some(d) = &early {
                         explain(played, &held, p, d);
                     }
@@ -2594,6 +2615,7 @@ fn check_orders(threads: usize, seed: u64, steps: &[Step], cfg: Cfg) -> Result<S
     }
     seen.restored = played.restored.load(std::sync::atomic::Ordering::Relaxed);
     seen.moved = played.moved.load(std::sync::atomic::Ordering::Relaxed);
+    seen.dropped = played.dropped.load(std::sync::atomic::Ordering::Relaxed);
     seen.judged = std::array::from_fn(|i| played.judged[i].load(std::sync::atomic::Ordering::Relaxed));
     Ok(seen)
 }
@@ -2965,7 +2987,7 @@ fn held_set_decides_at(sizes: Vec<Size>) {
         fails.extend(failed);
     }
     if std::env::var("OSIS_ORDER_STATS").is_ok() {
-        eprintln!("{}\nemphases {:?}, pending {:?}, invalid {}, aspects {:?}, judged {:?}, {} of {} early clocks moved, model reached {:?}, skipped {:?}", seen.tally.show(), seen.emphases, seen.pending, seen.invalid, seen.aspects, seen.judged, seen.moved, seen.clocked, seen.model.reached, seen.model.skipped);
+        eprintln!("{}\nemphases {:?}, pending {:?}, invalid {}, aspects {:?}, judged {:?}, {} of {} early clocks moved, {} bodies dropped as covered, model reached {:?}, skipped {:?}", seen.tally.show(), seen.emphases, seen.pending, seen.invalid, seen.aspects, seen.judged, seen.moved, seen.clocked, seen.dropped, seen.model.reached, seen.model.skipped);
     }
     assert!(fails.is_empty(), "{} histories judged differently by what was held:\n{}", fails.len(), fails.join("\n\n"));
     seen.floors(&open, &by);
@@ -3786,7 +3808,7 @@ fn judged_under_the_walks_side_after_every_ingest_spec_permissions_5_1() {
     let played = Played { model: Some(std::sync::Arc::new((crate::held::History::new(&played.packs), Default::default()))), ..played };
     let n = played.packs.len();
     let (mut disputes, mut differs) = (0, None);
-    deliver_with(&played, &(0..n).rev().collect::<Vec<_>>(), None, None, &mut |p| {
+    deliver_with(&played, &(0..n).rev().collect::<Vec<_>>(), None, None, None, &mut |p| {
         disputes += crate::disputes::walk_sides(p);
         differs = differs.take().or_else(|| model_differs(p, &played, None));
     });
@@ -3824,7 +3846,9 @@ fn harness_flags_a_covered_drop_in_history_spec_commits_5() {
 // The harness's covered-drop check also catches a node dropping a live body before its live
 // bound (spec/commits.md §5 Kept while live): a kept register write (kept 30 min after replaced,
 // so live for good) and a plain one (no history, no bound), each under a snapshot covering it,
-// both dropped by hand: the kept one is flagged, the plain one judged and spared.
+// both dropped by hand: the kept one is flagged, the plain one judged and spared. The snapshots
+// arrive outside a delivery, so node-sync's
+// covered drops (`drop_covered`) do not run first.
 #[test]
 fn harness_flags_a_live_drop_before_its_live_bound_spec_commits_5() {
     use Step::*;
@@ -3832,7 +3856,11 @@ fn harness_flags_a_live_drop_before_its_live_bound_spec_commits_5() {
     let played = play(0, &h);
     let hist = crate::held::History::new(&played.packs);
     let n = played.packs.len();
-    let mut p = deliver(&played, &(0..n).collect::<Vec<_>>());
+    assert!(played.packs[n - 2..].iter().all(|pk| osis_commit::CommitBlob::decode(&pk.bytes).unwrap().header.kind.is_compaction()));
+    let mut p = deliver(&played, &(0..n - 2).collect::<Vec<_>>());
+    for pk in &played.packs[n - 2..] {
+        p.receive(&pk.bytes, pk.blobs.clone()).unwrap();
+    }
     let t = played.things[0];
     let write = |a: &Ak| -> Vec<CommitId> { played.packs[played.base..].iter().map(|pk| osis_commit::CommitBlob::decode(&pk.bytes).unwrap()).filter(|b| !b.header.kind.is_compaction() && b.header.aspects.iter().any(|x| x.tid == t && x.ak == *a)).map(|b| b.id()).collect() };
     let (kept, plain) = (aspect_of(16), aspect_of(0));
