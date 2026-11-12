@@ -171,11 +171,13 @@ fn delete_resent_after_cut_spec_sync_7() {
     assert!(first.iter().all(|x| !at.contains(x)), "the delete went again on the next connection");
 }
 
-// spec/sync.md §5 (deposits): deposits not answered yet are not sent again by later passes.
+// spec/sync.md §5 (deposits), §10 (Deposit items): deposits not answered yet are not offered
+// again by later passes.
 #[test]
 fn deposits_in_flight_not_resent_spec_sync_5() {
     let (mut net, _host, [a, r], _g, [t]) = hosted::<2, 1>(&[(1, Role::Read)], ["v1"], true);
-    net.sent_kinds.clear();
+    let sent = |net: &mut Net| net.sync(r).pass_stats().deposits_sent;
+    let before = sent(&mut net);
     // the reader's card changes: its next pass deposits it (no tick: nothing else moves)
     crate::peers::reach_ed(&mut net, r);
     // a burst of commits reaching the reader, a pass after each, nothing answered in between
@@ -186,9 +188,9 @@ fn deposits_in_flight_not_resent_spec_sync_5() {
         let acts = net.sync(r).handle(Event::Local);
         net.actions(r, acts);
     }
-    let burst = net.sent_kinds.get(&12).copied().unwrap_or(0);
+    let burst = sent(&mut net) - before;
     net.run();
-    let total = net.sent_kinds.get(&12).copied().unwrap_or(0);
+    let total = sent(&mut net) - before;
     assert!((1..=2).contains(&burst), "deposits re-sent in the burst: {burst}");
     assert!(total <= burst + 3, "{total}");
 }
