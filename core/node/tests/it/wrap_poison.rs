@@ -289,7 +289,7 @@ fn useless_entry_found_late_still_goes_spec_sync_7() {
 }
 
 // spec/sync.md §5: a node holding no key keeps a wrap that opens over a stamped one that does not
-// (the first host's reply lost, the second host's wrap garbage: it must fetch again), and takes a
+// (the first peer's reply lost, the second wrap garbage: it must fetch again), and takes a
 // stamped wrap over a deposited one when neither opens.
 #[test]
 fn keyless_node_keeps_the_wrap_that_opens_spec_sync_5() {
@@ -321,7 +321,10 @@ fn keyless_node_keeps_the_wrap_that_opens_spec_sync_5() {
     assert_eq!(push(&mut fx.net, other, [1; WRAP_LEN], false), [1; WRAP_LEN]);
     assert_eq!(push(&mut fx.net, other, [2; WRAP_LEN], true), [2; WRAP_LEN]);
     assert_eq!(push(&mut fx.net, other, [3; WRAP_LEN], true), [2; WRAP_LEN]);
+    // the peer answered f's fetches with nothing while hidden: f asks it again once it lists the
+    // entries again (a new connection), and the wrap kept opens them
     fx.net.hide_blobs.remove(&f);
+    connect(&mut fx, &[host], 34);
     fx.net.advance(600_000);
     assert_eq!(fx.net.read(f, t), Some(s("message")));
 }

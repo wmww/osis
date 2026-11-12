@@ -167,13 +167,10 @@ impl SyncEngine {
                     (None, Some(h), open) => self.step_key(&g, index, l, &h).or(open),
                     (None, None, open) => open,
                 },
-                super::Phase::Testing => {
-                    let step = match lc.shown.clone() {
-                        Some(s) => Some(s),
-                        None => self.newest_step(&g, l),
-                    };
-                    step.and_then(|s| self.step_key(&g, index, l, &s))
-                }
+                super::Phase::Testing => match lc.shown.clone() {
+                    Some((_, k)) => Some(k),
+                    None => self.newest_step(&g, l).and_then(|s| self.step_key(&g, index, l, &s)),
+                },
                 _ => None,
             };
             if let Some(k) = key {

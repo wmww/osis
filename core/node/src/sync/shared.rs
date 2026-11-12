@@ -901,12 +901,14 @@ impl SyncEngine {
             if let Some(c) = self.conns.get_mut(&conn) {
                 c.req.walked.insert(l, arrival);
             }
+            if self.strands(conn, l, out)? {
+                continue;
+            }
             let candidates = self.walk_candidates(conn, l, tested.get(&l).map(|x| x.0))?;
             let Some(s) = self.records.shared.get(&conn) else { return Ok(()) };
             let Some(peer) = &s.peer else { return Ok(()) };
-            let nc = candidates.len();
-            let shown = candidates.into_iter().find(|(_, v)| peer.values.binary_search(&beacon_value(&beacon(v, &l.0, &s.r), peer.f)).is_ok());
-            self.walked(conn, l, shown.map(|x| x.0), out)?;
+            let shown = candidates.into_iter().find(|(_, k)| peer.values.binary_search(&beacon_value(&beacon(&k.verifying_key().to_bytes(), &l.0, &s.r), peer.f)).is_ok());
+            self.walked(conn, l, shown, out)?;
         }
         Ok(())
     }

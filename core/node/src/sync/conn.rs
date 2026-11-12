@@ -87,9 +87,9 @@ pub(crate) struct LConn {
     pub path: Vec<Step>,
     /// A hinted open walked to an unverified step: the host's path is checked after the open.
     pub walk: Option<Step>,
-    /// An earlier recorded step whose credential the peer's filter showed when the newest
-    /// recorded head's was not: its credential is Hit, and L opens at it (`walk`).
-    pub shown: Option<Step>,
+    /// A recorded step and the key of its credential the peer's filter showed when the newest
+    /// recorded head's was not: it is Hit, and L opens at that step (`walked`).
+    pub shown: Option<(Step, osis_crypto::SigningSecret)>,
     /// A listing from the start under way here: what was present here before it, and whether
     /// the peer marked it trimmed (`known_join`, `stream_read`).
     pub relisted: Option<(BTreeSet<osis_base::BlobId>, bool)>,
