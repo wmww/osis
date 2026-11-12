@@ -2142,3 +2142,51 @@ fn departs_mark_void_elsewhere_through_holder_actor_spec_crypto_4() {
     let opens = openable(&mut lp, 4, &[g], tids[2], BTreeSet::new()).contains(&(g, Role::Read, x));
     assert!(!(opens && removed_reader_reads(&mut lp, g, &tids, 4)), "A encrypts under P's epoch, which V re-sealed to M");
 }
+
+// spec/crypto.md §4 (orphaned): a rotation due only because an epoch is orphaned is made only
+// when its new epoch boxes a holder that may rotate the role, so orphaned rotations do not trade
+// back and forth. D's admin is T, a thing of team H with no keyset (granted past the writer
+// rules: a plain holder actor, as a thing whose only keyset part turned invalid is), so every
+// rotation leaves T out; H's writers W1, W2 read D directly and write it through T. D's maker
+// leaves: W1 rotates (its departure), a write epoch boxed to nobody that may rotate write, so
+// orphaned at W2, whose rotation would be orphaned at W1 again.
+#[test]
+fn orphaned_rotations_do_not_trade_spec_crypto_4() {
+    let mut lp = synced(3);
+    let (o, w1, w2) = (lp.peers[0].engine.me(), lp.peers[1].engine.me(), lp.peers[2].engine.me());
+    let h = group(&mut lp, 0);
+    lp.peers[0].engine.grant(&h, &w1, &edge(Role::Write)).unwrap();
+    lp.peers[0].engine.grant(&h, &w2, &edge(Role::Write)).unwrap();
+    let t = {
+        let mut m = Mutation::new();
+        let t = lp.peers[0].engine.new_thing(&mut m, h);
+        lp.peers[0].commit(m).unwrap();
+        t
+    };
+    let d = group(&mut lp, 0);
+    lp.peers[0].engine.grant(&d, &w1, &edge(Role::Read)).unwrap();
+    lp.peers[0].engine.grant(&d, &w2, &edge(Role::Read)).unwrap();
+    lp.peers[0]
+        .engine
+        .run(|tx| {
+            let mut m = Mutation::new();
+            crate::flows::put_edge(&mut m, d, t, &edge(Role::Admin))?;
+            tx.core.skip_writer_rules = true;
+            let c = crate::engine::Engine::commit_tx(tx, m);
+            tx.core.skip_writer_rules = false;
+            c.map(|_| ())
+        })
+        .unwrap();
+    lp.peers[0].engine.demote(&d, &Demotion { holder: o, new: None, retain: None }).unwrap();
+    lp.sync_all().unwrap();
+    assert!(!lp.peers[1].engine.core.has_own_secrets(&t), "T is plain");
+    let mut made = 0;
+    for _ in 0..4 {
+        for i in [1, 2] {
+            made += lp.peers[i].engine.ensure_rotated(&d).unwrap().0.commits.len();
+            lp.sync_all().unwrap();
+        }
+    }
+    assert!(made >= 1, "W1 rotates for the maker's departure");
+    assert!(made <= 2, "{made} rotations: orphaned epochs traded back and forth");
+}
