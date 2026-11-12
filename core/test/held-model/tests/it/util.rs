@@ -1,7 +1,7 @@
 //! Builders for hand-made held sets: commit-form fragments of single writes (crdt-model's). spec: none
 #![allow(dead_code)]
 use crdt_model::state::{Anchor, Content, Entry, SeqElem};
-use held_model::gen::{creations, RECORDS};
+use held_model::gen::{creations, CREATIONS, RECORDS};
 use held_model::*;
 use std::collections::BTreeMap;
 
@@ -122,6 +122,16 @@ pub fn purge(id: CommitId, author: NodeId, h: u64, item: PurgeItem) -> Commit {
 /// What node 0 holds at hour `now_h`: `commits` and the things' creations (`gen::creations`)
 /// `commits` does not give.
 pub fn held(now_h: u64, mut commits: Vec<Commit>) -> Held {
+    // a hand-made creation of a fixture thing replaces the fixture's: it must mint the same record
+    for c in &commits {
+        for p in &c.parts {
+            let Body::Held(Delta::Created(link)) = &p.body else { continue };
+            let fixture = CREATIONS.iter().map(|x| (x.0, x.1)).chain(RECORDS.iter().map(|r| (r.id, r.link))).find(|x| x.0 == p.thing);
+            if let Some((_, l)) = fixture {
+                assert_eq!(*link, l, "thing {} is a fixture thing (gen::CREATIONS, RECORDS): pick another id", p.thing);
+            }
+        }
+    }
     let more: Vec<Commit> = creations().into_iter().filter(|x| !commits.iter().any(|c| c.id == x.id)).collect();
     commits.extend(more);
     Held { now: at(now_h), me: FIRST_ADMIN, records: RECORDS.to_vec(), commits, dots: vec![] }
