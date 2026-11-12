@@ -13,10 +13,13 @@ impl SyncEngine {
     pub(super) fn run_dirty(&mut self, out: &mut Vec<Action>) -> Result<()> {
         self.vet_inbox_hints()?;
         self.add_new_labels(out)?;
-        // a hint is done once the thing's `label.0` names the label
+        // a hint is done once the thing syncs the label (its `label.0` names it and this node
+        // syncs the thing): a `label.0` kept from an earlier hold (a link redeemed before, its
+        // read access lost since) names it with nothing synced, and the hint's open goes on
+        let synced: BTreeSet<(Tid, LabelId)> = self.labels().into_iter().map(|(t, l)| (t, l.id)).collect();
         let hints: Vec<(LabelId, Tid)> = self.state.hints.iter().map(|(l, h)| (*l, h.thing)).collect();
         for (l, t) in hints {
-            if self.engine.labels_of(&t).iter().any(|x| x.id == l) {
+            if synced.contains(&(t, l)) {
                 self.state.remove_hint(&l);
             }
         }
