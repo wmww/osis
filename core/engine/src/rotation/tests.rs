@@ -1666,3 +1666,56 @@ fn epochs_are_derived_once_per_change_of_what_they_read() {
     lp.peers[0].engine.grant(&t, &w, &edge(Role::Write)).unwrap();
     assert!(derived(&mut lp) > 0, "a grant on it");
 }
+
+/// Peers: 0 = first admin A of `g`, 1 = admin a2, 2 = reader M, 3 = admin R. A removes M (L),
+/// then demotes a2 to write (D); a2 has not seen D, so what it writes on `g`'s edges after
+/// it applies nowhere that holds D.
+fn demoted_unaware() -> (LocalPeer, Tid, Vec<Tid>, BTreeSet<osis_base::CommitId>) {
+    let (mut lp, g, tids) = granted(4, &[(1, Role::Admin), (2, Role::Read), (3, Role::Admin)]);
+    lp.peers[0].engine.demote(&g, &Demotion { holder: tids[2], new: None, retain: None }).unwrap();
+    lp.peers[0].clock.advance(1_000);
+    let before = commit_ids(&mut lp, 0);
+    lp.peers[0].engine.demote(&g, &Demotion { holder: tids[1], new: Some(edge(Role::Write)), retain: None }).unwrap();
+    let dem: BTreeSet<_> = commit_ids(&mut lp, 0).difference(&before).copied().collect();
+    lp.peers[1].clock.advance(5_000);
+    (lp, g, tids, dem)
+}
+
+/// Whether A (peer 0) may encrypt under an epoch of `g` that M (2) opens from `from`'s state.
+fn removed_reader_reads(lp: &mut LocalPeer, g: Tid, tids: &[Tid], from: usize) -> bool {
+    assert!(lp.peers[0].engine.core.role_now(&tids[2], &g).is_none(), "M removed at A");
+    let newest = newest_read(lp, 0, g);
+    !blocked_at(lp, 0, g).contains(&Role::Read) && newest.is_some_and(|n| openable(lp, from, &[g], tids[2], BTreeSet::new()).contains(&(g, Role::Read, n)))
+}
+
+// spec/crypto.md §4 (Attributes, Covers; issues/raise-invalid-here-covered.md): a2, holding L
+// but not D, re-grants M, boxing it at A's epoch e_L. At A the re-grant is ordered after D and
+// applies nothing (not audited, so no drop event): M's departure is attributed to L, which e_L
+// names, and A goes on encrypting under e_L, which M opens.
+#[test]
+#[ignore = "issues/raise-invalid-here-covered.md"]
+fn regrant_invalid_here_boxes_removed_reader_spec_crypto_4() {
+    let (mut lp, g, tids, dem) = demoted_unaware();
+    send_skipping(&mut lp, 0, 1, &dem);
+    lp.peers[1].engine.grant(&g, &tids[2], &edge(Role::Read)).unwrap();
+    lp.sync(1, 0).unwrap();
+    assert!(!removed_reader_reads(&mut lp, g, &tids, 0), "A encrypts under an epoch M opens");
+}
+
+// spec/crypto.md §4 (Attributes: later writes; issues/raise-invalid-here-covered.md): a2,
+// holding neither L nor D, removes M (W) and re-grants it (G); R, holding both, rotates naming
+// W and boxing M. At A, W and G apply nothing; W is a later write of M's departure, so R's
+// epoch covers it and A encrypts under it.
+#[test]
+#[ignore = "issues/raise-invalid-here-covered.md"]
+fn later_removal_named_by_reraising_rotator_spec_crypto_4() {
+    let (mut lp, g, tids, _) = demoted_unaware();
+    lp.peers[1].engine.demote(&g, &Demotion { holder: tids[2], new: None, retain: None }).unwrap();
+    lp.peers[1].clock.advance(1_000);
+    lp.peers[1].engine.grant(&g, &tids[2], &edge(Role::Read)).unwrap();
+    lp.sync(1, 3).unwrap();
+    lp.peers[3].clock.advance(10_000);
+    rotate_leaving_out(&mut lp, 3, g, &BTreeSet::from([Role::Read]), &[]);
+    lp.sync(3, 0).unwrap();
+    assert!(!removed_reader_reads(&mut lp, g, &tids, 0), "A encrypts under R's epoch, which M opens");
+}

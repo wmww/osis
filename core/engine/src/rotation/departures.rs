@@ -210,8 +210,9 @@ fn direct_departures(tx: &mut Tx<'_>, a: &Tid) -> Result<BTreeSet<Departure>> {
 /// ended grant) each lower it where made, but in the merged timeline only the first in order
 /// applies; a rotation carrying another (its departs mark) covers the departure alike, else
 /// each such rotation is uncovered wherever the first arrives and every rotator rotates again.
-/// Nothing applied raises `m` back to `from` after `at` (that would be a newer lowering, or `m`
-/// would hold `from`), so no rotator naming one of them boxed `m` at those roles.
+/// Nothing applied here raises `m` back to `from` after `at` (that would be a newer lowering, or
+/// `m` would hold `from`), so a rotator naming one of them boxed `m` at those roles only on a
+/// raise that applies nothing here (issues/raise-invalid-here-covered.md, as for `at` itself).
 fn later_writes(core: &Core, tl: Option<&Timeline>, a: &Tid, m: &Tid, from: Role, at: Option<Name>) -> Vec<Name> {
     let (Some(tl), Some(at)) = (tl, at) else { return Vec::new() };
     let held = |c: &osis_base::CommitId| core.ix.commits.contains_key(c);
