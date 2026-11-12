@@ -42,7 +42,7 @@ fn flood(net: &mut Net, r: usize, (host, g, l): (usize, Tid, LabelId), commits: 
     for (c, parts) in commits {
         let Some(body) = net.engine(r).part_body(c, &parts.iter().copied().collect()).unwrap() else { continue };
         for _ in 0..n {
-            let s = net.engine(r).seal_to(&body, osis_label::Class::Durable, &secret, &mut rng).unwrap().unwrap();
+            let s = net.engine(r).seal_to(&body, osis_label::Class::Durable, &mut rng).unwrap().unwrap();
             let wrap = osis_crypto::wrap(&secret, &s.id, &s.key, body.order).unwrap();
             let sig = osis_label::sign_deposit(&deposit, &l, &s.id, &wrap);
             out.entry(*c).or_insert_with(Vec::new).push(s.id);

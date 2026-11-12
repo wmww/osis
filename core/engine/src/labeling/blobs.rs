@@ -30,11 +30,11 @@ pub struct Body {
     pub role_commit: bool,
     /// Its wrap's fetch order (`fetch_order`).
     pub order: u64,
-    /// Sealed per label in one section of `parts` under the label's actor (`Engine::seal_to`),
-    /// never shared with another label (spec/sync.md §3): a role commit with a part on a thing
-    /// other than the actor (its boxes give the readers that thing's secrets), or a part whose
-    /// thing's read secret derives from neither the actor nor an actor of its closure (a
-    /// cross-published `created.0`, a thing added from another actor's tree, read by role).
+    /// A per-label copy: `parts` in one section under the blob key (`Engine::seal_to`), never
+    /// shared with another label (spec/sync.md §3): a role commit with a part on a thing other
+    /// than the actor (its boxes give the readers that thing's secrets), or a part whose thing's
+    /// read secret derives from neither the actor nor an actor of its closure (a cross-published
+    /// `created.0`, a thing added from another actor's tree, read by role).
     pub to_label: bool,
 }
 
@@ -65,8 +65,8 @@ pub struct OpenedBlob {
     pub commit: CommitBlob,
     pub ais: Vec<usize>,
     pub sealed: Vec<Section>,
-    /// A section on a thing other than the label's group opened under the group's secret and
-    /// none of the thing's: a per-label copy (`seal_to`), of use under no other label.
+    /// A section opened under the blob key: a copy (`seal_to`), never copied into another
+    /// encryption.
     pub copy: bool,
 }
 
@@ -77,22 +77,28 @@ impl OpenedBlob {
     }
 }
 
-/// Frames the opened form of a commit as a blob whose every part is in one section under
-/// `secret` (tests and tools: a node seals with `Engine::seal`, per reader actor).
-pub fn seal_plain(plaintext: &[u8], secret: &Secret32, class: osis_label::Class, rng: &mut dyn CryptoRngCore) -> Result<Sealed> {
+/// Frames the opened form of a commit as a copy: every part in one section under the blob key
+/// (tests and tools: a node seals with `Engine::seal`, per reader actor, or `Engine::seal_to`).
+pub fn seal_plain(plaintext: &[u8], class: osis_label::Class, rng: &mut dyn CryptoRngCore) -> Result<Sealed> {
     let c = CommitBlob::decode(plaintext)?;
-    let env = osis_commit::seal_commit(&c, |_| (), |_, _| Some((secret.clone(), Vec::new())), &[], rng)?;
-    frame_envelope(&env, &c.header, class, rng, &c)
+    let key = osis_crypto::BlobKey::fresh(rng);
+    let env = osis_commit::seal_commit(&c, |_| (), |_, _| Some((key.secret().clone(), Vec::new())), &[], rng)?;
+    framed(key, &env, &c.header, class, rng, &c)
 }
 
 /// Frames an envelope: random salt and key, prefix from the header and the sections' aspects
 /// (spec/sync.md §1, spec/wire.md §5).
 pub fn frame_envelope(env: &Envelope, resolved: &osis_commit::Header, class: osis_label::Class, rng: &mut dyn CryptoRngCore, from: &CommitBlob) -> Result<Sealed> {
+    framed(osis_crypto::BlobKey::fresh(rng), env, resolved, class, rng, from)
+}
+
+/// `frame_envelope` under `key`.
+fn framed(key: osis_crypto::BlobKey, env: &Envelope, resolved: &osis_commit::Header, class: osis_label::Class, rng: &mut dyn CryptoRngCore, from: &CommitBlob) -> Result<Sealed> {
     let ais = env.ais();
     let groups = osis_commit::prefix_groups(resolved, ais.iter().copied())?;
     let salt = osis_label::Prefix::random_salt(rng);
     let prefix = osis_label::Prefix::for_delete_keys(salt, &env.header.blind, osis_commit::prefix_expiry(resolved, &ais).map(WallMs), &groups)?.with_class(class);
-    let (key, blob) = osis_label::frame(&prefix, &env.encode(), rng)?;
+    let (key, blob) = osis_label::frame_under(key, &prefix, &env.encode())?;
     let parts = from.parts.iter().filter(|p| ais.contains(&p.ai)).map(|p| p.ai).collect();
     Ok(Sealed { id: osis_label::blob_id(&blob), blob, key, salt, ais, parts })
 }
@@ -208,18 +214,21 @@ impl Engine {
         self.seal(&b, class, &[], rng)
     }
 
-    /// Seals a body's parts (`b.parts` alone) as a fresh blob of one section under `secret`,
-    /// the read secret the label's wrap goes under (spec/sync.md §3): a certificate copy or a
-    /// per-label copy (`Body::to_label`), readable by whoever opens the label.
-    pub fn seal_to(&mut self, b: &Body, class: osis_label::Class, secret: &Secret32, rng: &mut dyn CryptoRngCore) -> Result<Option<Sealed>> {
+    /// Seals a body's parts (`b.parts` alone) as a copy (spec/sync.md §3): a fresh blob of one
+    /// section under its own blob key (spec/wire.md §4), so whoever opens a wrap of it reads it: a
+    /// certificate copy, wrapped under every label needing exactly those parts, or a per-label
+    /// copy (`Body::to_label`).
+    pub fn seal_to(&mut self, b: &Body, class: osis_label::Class, rng: &mut dyn CryptoRngCore) -> Result<Option<Sealed>> {
         let pt = self.body_plaintext(b)?;
         if pt.is_empty() {
             return Ok(None);
         }
+        crate::costs::count("copy sealed", 1);
         let c = osis_commit::rewrite(&CommitBlob::decode_stored(&pt)?, |ai| !b.parts.contains(&ai));
         let resolved = self.resolved_header(&c);
-        let env = osis_commit::seal_commit(&c, |_| (), |_, _| Some((secret.clone(), Vec::new())), &[], rng)?;
-        frame_envelope(&env, &resolved, class, rng, &c).map(Some)
+        let key = osis_crypto::BlobKey::fresh(rng);
+        let env = osis_commit::seal_commit(&c, |_| (), |_, _| Some((key.secret().clone(), Vec::new())), &[], rng)?;
+        framed(key, &env, &resolved, class, rng, &c).map(Some)
     }
 
     /// The derivation chain a section lists for thing `t` (spec/wire.md §4): from its first admin
@@ -311,9 +320,9 @@ impl Engine {
     /// Opens a commit blob (spec/wire.md §4): each section under the read secrets of its thing
     /// (own, or derived from its base actor's; `read_secrets`, newest first), those derived through
     /// the derivation chain the section lists (the thing's record may be inside the section) and
-    /// `label`'s group's own (a per-label copy's, `seal_to`), the rest left sealed; checks the
-    /// prefix against the header and the sections' aspects (spec/commits.md §4).
-    pub fn open_commit(&mut self, blob: &[u8], key: &Secret32, label: Option<&Tid>) -> Result<OpenedBlob> {
+    /// the blob key (a copy's, `seal_to`), the rest left sealed; checks the prefix against the
+    /// header and the sections' aspects (spec/commits.md §4).
+    pub fn open_commit(&mut self, blob: &[u8], key: &Secret32) -> Result<OpenedBlob> {
         let (prefix, pt) = osis_label::open(blob, key)?;
         let env = Envelope::decode(&pt)?;
         let id = env.id();
@@ -341,7 +350,6 @@ impl Engine {
                 return Err(Error::BadInput("blob prefix disagrees with its header"));
             }
         }
-        let of_label: Vec<Secret32> = label.map(|g| self.read_secrets(g)).unwrap_or_default();
         let thing_of = |sec: &Section| header.as_ref().and_then(|h| sec.ais.first().and_then(|ai| h.aspects.get(*ai)).map(|a| a.tid));
         let last = std::cell::RefCell::new(None);
         let own = |sec: &Section| -> Vec<Secret32> {
@@ -352,13 +360,12 @@ impl Engine {
             }
             v
         };
+        let copy = env.sections.iter().any(|sec| osis_crypto::unwrap_section(key, &id, &sec.wrap).is_ok());
         let opened = env.open(|sec| {
             let mut v = own(sec);
-            let more: Vec<Secret32> = of_label.iter().filter(|s| !v.iter().any(|x| x.expose() == s.expose())).cloned().collect();
-            v.extend(more);
+            v.push(key.clone());
             v
         })?;
-        let copy = env.sections.iter().filter(|sec| !opened.sealed.iter().any(|x| x.ais == sec.ais)).any(|sec| thing_of(sec).is_some_and(|t| label != Some(&t)) && !own(sec).iter().any(|s| osis_crypto::unwrap_section(s, &id, &sec.wrap).is_ok()));
         Ok(OpenedBlob { plaintext: opened.commit.encode(), commit: opened.commit, ais, sealed: opened.sealed, copy })
     }
 

@@ -338,7 +338,7 @@ impl Engine {
         let mut out = Vec::new();
         for e in &pk.entries {
             let Some(key) = e.wraps.iter().find_map(|(a, w)| osis_label::unwrap_any(self.read_secrets(a).iter(), &e.id, w).map(|x| x.1)) else { continue };
-            let o = self.open_commit(&e.blob, &key, None)?;
+            let o = self.open_commit(&e.blob, &key)?;
             if o.commit.parts.is_empty() {
                 continue;
             }

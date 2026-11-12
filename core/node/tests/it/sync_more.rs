@@ -861,9 +861,9 @@ fn forged_certificate_copy_ignored_spec_commits_4() {
         for p in &mut blob.parts {
             p.delta = osis_base::encode(&osis_base::Value::List(vec![osis_base::Value::Bytes(vec![9; 40])]));
         }
-        // a certificate copy: one section under the label's secret (`seal_to`)
+        // a certificate copy: one section under the blob key (`seal_to`)
         let fake = osis_node::labeling::Body { plaintext: blob.encode(), ..b };
-        let s = net.engine(w).seal_to(&fake, osis_label::Class::Durable, &secret, &mut osis_crypto::SeededRng::from_u64(0)).unwrap().unwrap();
+        let s = net.engine(w).seal_to(&fake, osis_label::Class::Durable, &mut osis_crypto::SeededRng::from_u64(0)).unwrap().unwrap();
         let wrap = osis_crypto::wrap(&secret, &s.id, &s.key, 1).unwrap();
         let put = osis_proto::Put { blob_id: s.id, blob: &s.blob, wrap, stamp: None, expiry: None, ephemeral: false, replaces: &[], now: 0 };
         osis_proto::LabelStore::put(&mut *net.hosts[host].hub.store(), &l, put).unwrap();
@@ -1648,3 +1648,77 @@ fn card_waits_for_a_wrap_spec_permissions_4() {
     assert!(under.iter().any(|(_, au, aks)| *au == tn && aks.contains("node.0")), "c's card: {under:?}");
 }
 
+/// Node `a`'s account granted write on `k` groups of node `b`'s at one host, plus node `c`'s
+/// account reading the first alone: (net, a, b, c, host, the groups).
+fn in_groups(k: usize) -> (Net, usize, usize, usize, usize, Vec<osis_base::Tid>) {
+    let (mut net, host, [a, b, c]) = hosted_nodes::<3>();
+    let addr = net.address(host);
+    let mut gs = Vec::new();
+    for i in 0..k {
+        let holders: &[(usize, Role)] = if i == 0 { &[(a, Role::Write), (c, Role::Read)] } else { &[(a, Role::Write)] };
+        gs.push(net.group_seeded(b, holders, vec![addr.clone()], i as u64 + 1));
+    }
+    net.run();
+    (net, a, b, c, host, gs)
+}
+
+/// The commits of `a`'s chain certificates (its account's and node's) under `gs[0]` and, over
+/// every label of `gs`, the blobs `a` holds of them live at `host` and the entries carrying them.
+fn chain_blobs(net: &mut Net, a: usize, host: usize, gs: &[osis_base::Tid]) -> (BTreeSet<osis_base::CommitId>, BTreeSet<osis_base::BlobId>, usize) {
+    let mine = [net.tid(a), net.node_tid(a)];
+    let all: Vec<osis_base::CommitId> = net.engine(a).certificates(&gs[0]).commits.into_keys().collect();
+    let commits: BTreeSet<osis_base::CommitId> = all.into_iter().filter(|c| net.engine(a).header(c).is_some_and(|h| mine.contains(&h.author))).collect();
+    let labels: Vec<osis_base::LabelId> = net.group_labels(a).into_iter().filter(|(g, _)| gs.contains(g)).map(|(_, l)| l.id).collect();
+    assert_eq!(labels.len(), gs.len(), "a label per group");
+    let (mut blobs, mut entries) = (BTreeSet::new(), 0);
+    for l in labels {
+        let live: BTreeSet<osis_base::BlobId> = net.host_ids(host, &l).into_iter().collect();
+        for (id, k) in net.sync(a).entries(&l) {
+            if live.contains(&id) && matches!(k, EntryKind::Commit { commit, .. } if commits.contains(&commit)) {
+                blobs.insert(id);
+                entries += 1;
+            }
+        }
+    }
+    (commits, blobs, entries)
+}
+
+// spec/sync.md §3 (Certificate blobs: copies with the same parts are one blob, a wrap per label):
+// an account in 10 groups seals and stores its chain certificates once, as in 1 group, with one
+// entry (a wrap) per label. Counts, not time.
+#[test]
+fn chain_copies_one_blob_across_labels_spec_sync_3() {
+    let mut counts = Vec::new();
+    for k in [1, 10] {
+        osis_node::costs::take();
+        let (mut net, a, _, _, host, gs) = in_groups(k);
+        let sealed = osis_node::costs::take().into_iter().find(|x| x.0 == "copy sealed").map_or(0, |x| x.2);
+        let (commits, blobs, entries) = chain_blobs(&mut net, a, host, &gs);
+        assert!(!commits.is_empty(), "a's chain goes under the groups");
+        assert_eq!(entries, k * blobs.len(), "{k} groups: one entry per label of each copy");
+        counts.push((sealed, blobs.len() as u64));
+    }
+    let [(s1, b1), (s10, b10)] = counts[..] else { unreachable!() };
+    println!("copies sealed by every node: {s1} in 1 group, {s10} in 10; a's chain blobs at the host: {b1}, {b10}");
+    assert_eq!(b10, b1, "a's chain copies are stored once whatever the number of groups");
+    assert_eq!(s10, s1, "no copy is sealed per group");
+}
+
+// spec/sync.md §3, spec/wire.md §4 (a copy's section opens with the blob key): `c` reads only the
+// first of `a`'s groups. It opens `a`'s chain copies there, the very blobs the other labels carry,
+// and nothing of the other groups: no label of them, none of their content.
+#[test]
+fn chain_copy_shared_reader_of_one_label_spec_sync_3() {
+    let (mut net, a, b, c, host, gs) = in_groups(2);
+    net.write(b, gs[0], "first");
+    net.write(b, gs[1], "second");
+    net.run();
+    let (commits, blobs, _) = chain_blobs(&mut net, a, host, &gs);
+    let l0 = net.group_labels(c).into_iter().find(|(g, _)| *g == gs[0]).map(|(_, l)| l.id).unwrap();
+    let opened: BTreeSet<osis_base::BlobId> = net.sync(c).entries(&l0).into_iter().filter(|(id, k)| blobs.contains(id) && matches!(k, EntryKind::Commit { commit, .. } if commits.contains(commit))).map(|(id, _)| id).collect();
+    assert_eq!(opened, blobs, "c opens every copy of a's chain under the label it reads");
+    assert!(commits.iter().all(|x| net.engine(c).header(x).is_some()), "c holds a's chain");
+    assert_eq!(net.read(c, gs[0]), Some(s("first")));
+    assert_eq!(net.read(c, gs[1]), None, "nothing of the group c does not read");
+    assert!(net.group_labels(c).iter().all(|(g, _)| *g != gs[1]), "nor its label");
+}

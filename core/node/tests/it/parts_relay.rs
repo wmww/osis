@@ -18,10 +18,9 @@ fn frame(m: Message) -> Vec<u8> {
 
 /// One sealed entry under `l`, readable by `g`'s read secret held at `from`.
 pub(crate) fn entry(net: &mut Net, _from: usize, keys: usize, g: Tid, plaintext: Vec<u8>, _c: &CommitId, seed: u64) -> (osis_base::BlobId, osis_proto::Event) {
-    // one section under the label's secret (a per-label copy's shape: the forged things may
-    // have no secret here)
+    // one section under the blob key (a copy's shape: the forged things may have no secret here)
     let secret = net.engine(keys).wrap_secret(&g, None).unwrap().unwrap();
-    let sealed = osis_node::labeling::seal_plain(&plaintext, &secret, osis_label::Class::Durable, &mut SeededRng::from_u64(seed)).unwrap();
+    let sealed = osis_node::labeling::seal_plain(&plaintext, osis_label::Class::Durable, &mut SeededRng::from_u64(seed)).unwrap();
     let wrap = osis_crypto::wrap(&secret, &sealed.id, &sealed.key, 1).unwrap();
     (sealed.id, osis_proto::Event::Added { blob_id: sealed.id, blob: Some(sealed.blob), wrap, stamp: None })
 }
@@ -37,7 +36,7 @@ fn push(net: &mut Net, n: usize, host: usize, l: LabelId, e: osis_proto::Event, 
 fn every_body(net: &mut Net, from: usize, keys: usize, g: Tid, n: usize, host: usize, l: LabelId, c: &CommitId, seed: u64) {
     let secret = net.engine(keys).wrap_secret(&g, None).unwrap().unwrap();
     let Some(body) = net.engine(from).body(c).unwrap() else { return };
-    let sealed = osis_node::labeling::seal_plain(&body.plaintext, &secret, osis_label::Class::Durable, &mut SeededRng::from_u64(seed)).unwrap();
+    let sealed = osis_node::labeling::seal_plain(&body.plaintext, osis_label::Class::Durable, &mut SeededRng::from_u64(seed)).unwrap();
     let wrap = osis_crypto::wrap(&secret, &sealed.id, &sealed.key, 1).unwrap();
     push(net, n, host, l, osis_proto::Event::Added { blob_id: sealed.id, blob: Some(sealed.blob), wrap, stamp: None }, seed);
 }
@@ -286,7 +285,7 @@ fn relay_seed(seed: u64) {
     let secret = x.net.engine(a).wrap_secret(&g, None).unwrap().unwrap();
     let mut entries: Vec<(osis_base::BlobId, osis_proto::Event)> = Vec::new();
     let mut seal = |_x: &mut Case, _from: usize, plaintext: &[u8], at: u64| {
-        let sealed = osis_node::labeling::seal_plain(plaintext, &secret, osis_label::Class::Durable, &mut SeededRng::from_u64(at)).unwrap();
+        let sealed = osis_node::labeling::seal_plain(plaintext, osis_label::Class::Durable, &mut SeededRng::from_u64(at)).unwrap();
         let wrap = osis_crypto::wrap(&secret, &sealed.id, &sealed.key, 1).unwrap();
         entries.push((sealed.id, osis_proto::Event::Added { blob_id: sealed.id, blob: Some(sealed.blob), wrap, stamp: None }));
     };

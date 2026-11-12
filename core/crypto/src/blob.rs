@@ -53,15 +53,33 @@ pub fn blob_len(prefix: usize, plaintext: usize) -> usize {
 /// Encrypts `plaintext` under a fresh random key: `prefix || AEAD(key, nonce 0, AD prefix,
 /// pad(plaintext))`. Returns the blob key and the blob; `TooLarge` above `MAX_BLOB`.
 pub fn encrypt_blob(prefix: &[u8], plaintext: &[u8], rng: &mut dyn CryptoRngCore) -> Result<(Secret32, Vec<u8>), Error> {
-    let total = blob_len(prefix.len(), plaintext.len());
-    if total > MAX_BLOB {
-        return Err(Error::TooLarge);
+    BlobKey::fresh(rng).encrypt(prefix, plaintext)
+}
+
+/// A fresh random blob key, known before its one blob is encrypted (a copy's section opens with
+/// it, spec/wire.md §4); `encrypt` consumes it, so it encrypts that blob and nothing else.
+pub struct BlobKey(Secret32);
+
+impl BlobKey {
+    pub fn fresh(rng: &mut dyn CryptoRngCore) -> BlobKey {
+        BlobKey(Secret32::random(rng))
     }
-    let key = Secret32::random(rng);
-    let mut blob = Vec::with_capacity(total);
-    blob.extend_from_slice(prefix);
-    blob.extend_from_slice(&aead::seal(key.expose(), &ZERO_NONCE, prefix, &pad(plaintext))?);
-    Ok((key, blob))
+
+    pub fn secret(&self) -> &Secret32 {
+        &self.0
+    }
+
+    /// `encrypt_blob` under this key.
+    pub fn encrypt(self, prefix: &[u8], plaintext: &[u8]) -> Result<(Secret32, Vec<u8>), Error> {
+        let total = blob_len(prefix.len(), plaintext.len());
+        if total > MAX_BLOB {
+            return Err(Error::TooLarge);
+        }
+        let mut blob = Vec::with_capacity(total);
+        blob.extend_from_slice(prefix);
+        blob.extend_from_slice(&aead::seal(self.0.expose(), &ZERO_NONCE, prefix, &pad(plaintext))?);
+        Ok((self.0, blob))
+    }
 }
 
 /// Decrypts a blob whose clear prefix is its first `prefix_len` bytes; returns the unpadded plaintext.

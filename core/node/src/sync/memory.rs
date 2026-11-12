@@ -790,7 +790,7 @@ impl SyncEngine {
         let Some(g) = self.group_of(&l, None) else { return Ok(()) };
         let secrets = self.read_secrets(&g);
         let Some((_, key)) = osis_label::unwrap_any(secrets.iter(), &b, &wrap) else { return Ok(()) };
-        let cb = match self.engine.open_commit(&blob, &key, Some(&g)) {
+        let cb = match self.engine.open_commit(&blob, &key) {
             Ok(o) => o.commit,
             Err(e) => {
                 self.diag(format!("relay-only blob {b:?}: {e}"));

@@ -250,24 +250,17 @@ impl SyncEngine {
             let deposit = seed.as_ref().map(|s| osis_crypto::deposit_key(s, &l));
             // nothing to place once its parts are dropped here (`State::sweep_certs`)
             let Some(b) = self.engine.part_body(c, &parts)? else { continue };
-            // a rotation-carrying copy is wrapped like the body (spec/crypto.md §5): other
-            // holders take it as the body's entry
-            let Some(secret) = self.engine.wrap_secret(g, Some((&b.commit, &b.parts)))? else {
+            // one blob of these parts, wrapped per label (`place`); a rotation-carrying copy is
+            // wrapped like the body (spec/crypto.md §5): other holders take it as the body's entry
+            let Some(id) = self.place(g, l, &b, true)? else {
                 unwrapped = true;
                 continue;
             };
-            let Some(s) = self.engine.seal_to(&b, osis_label::Class::Durable, &secret, &mut *self.rng)? else {
-                unwrapped = true;
-                continue;
-            };
-            let wrap = osis_crypto::wrap(&secret, &s.id, &s.key, b.order)?;
-            let expires = osis_label::Prefix::parse(&s.blob).ok().and_then(|p| p.expiry()).map(|t| t.0);
-            if let Some(d) = &deposit {
-                self.queue_deposit(l, &hosts, d, s.blob.clone(), wrap, None);
+            if let Some(d) = &deposit
+                && let (Some(wrap), Some(blob)) = (self.state.entries.get(&(l, id)).map(|e| e.wrap), self.engine.blob(&id)?)
+            {
+                self.queue_deposit(l, &hosts, d, blob, wrap, None);
             }
-            self.engine.put_blobs(vec![(s.id, s.blob)])?;
-            self.state.add_blob(s.id, super::state::BlobRec { commit: b.commit, parts: b.parts.clone(), ais: s.ais.clone(), key: s.key.clone(), cert: true, memory: false });
-            self.state.set_entry(l, s.id, Entry { wrap, stamp: None, cert: true, salt: Some(s.salt), expires, size: None, kind: Kind::Commit { commit: b.commit, parts: b.parts.clone(), ais: s.ais }, memory: false });
             self.place_linked(l, c, &parts)?;
             if let Some(d) = &deposit {
                 for id in self.engine.linked_blobs(c, &parts)? {

@@ -453,9 +453,8 @@ pub fn equivocating_writer(seed: u64) -> Res<Report> {
     let built = cb.build(&forge_key, &Dedup(rec), &mut MemoryBlobs::default(), &mut SeededRng::from_u64(sim.dice.u64())).map_err(|e| sim.fail(e.to_string()))?;
     let c2 = built.commit.id();
     let k = sim.label_keys(b, s, &g)?;
-    let read = k.read.clone().ok_or_else(|| sim.fail("no read secret held"))?;
     let mut rng = SeededRng::from_u64(sim.dice.u64());
-    let sealed = osis_node::labeling::seal_plain(&built.commit.encode(), &read, osis_label::Class::Durable, &mut rng).map_err(|e| sim.fail(e.to_string()))?;
+    let sealed = osis_node::labeling::seal_plain(&built.commit.encode(), osis_label::Class::Durable, &mut rng).map_err(|e| sim.fail(e.to_string()))?;
     let entries = vec![stamped(&sim, &k, &sealed.id, sealed.blob, &sealed.key)?];
     sim.equivocation(c2);
     let mut r = sim.rogue(s)?;

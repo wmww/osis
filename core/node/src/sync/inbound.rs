@@ -1064,8 +1064,7 @@ impl SyncEngine {
                     continue;
                 }
                 let Some(bytes) = self.engine.blob(&b)? else { continue };
-                let g = self.state.labels_of(&b).into_iter().find_map(|l| self.group_of(&l, None));
-                let Ok(o) = self.engine.open_commit(&bytes, &key, g.as_ref()) else { continue };
+                let Ok(o) = self.engine.open_commit(&bytes, &key) else { continue };
                 let opened = o.parts();
                 if opened.len() > parts.len() {
                     self.state.note_opened(&b, &opened, o.copy);
@@ -1258,7 +1257,7 @@ impl SyncEngine {
             if !self.engine.core.ix.syncing.contains(&g) {
                 self.engine.set_syncing(g, true)?;
             }
-            match self.engine.open_commit(&bytes, &key, Some(&g)) {
+            match self.engine.open_commit(&bytes, &key) {
                 Ok(o) => {
                     let parts = o.parts();
                     let commit = o.commit.id();
@@ -1957,8 +1956,7 @@ impl SyncEngine {
         // a copy not held here holds nothing a redelivery could read
         let applied = self.engine.core.ix.commits.contains_key(&r.commit);
         let Some(bytes) = self.engine.blob(b)? else { return Ok(applied) };
-        let g = self.state.labels_of(b).into_iter().find_map(|l| self.group_of(&l, None));
-        let Ok(o) = self.engine.open_commit(&bytes, &r.key, g.as_ref()) else { return Ok(applied) };
+        let Ok(o) = self.engine.open_commit(&bytes, &r.key) else { return Ok(applied) };
         self.engine.spent_copy(&r.commit, &o.commit)
     }
 
@@ -2261,7 +2259,7 @@ impl SyncEngine {
                     self.state.set_deposited(host, l, b, false);
                 }
                 Code::TOMBSTONED => {
-                    self.state.set_gone(host, l, b);
+                    self.tombstoned(host, l, b)?;
                     if let Some(lc) = self.lc_mut(conn, &l) {
                         lc.dirty = true;
                     }
@@ -2281,6 +2279,18 @@ impl SyncEngine {
         // carriers just went up (or were refused for the cap): deletions waiting for them may go now
         if grew && let Some(lc) = self.lc_mut(conn, &l) {
             lc.dirty = true;
+        }
+        Ok(())
+    }
+
+    /// A host refused entry `b` under `l` as tombstoned: gone there. This node's certificate copy
+    /// goes from the label as deleted: one blob serves every label needing its parts, so a reused
+    /// one can meet a deletion this node never saw; a pass places it again fresh where it must
+    /// (`State::own_copy` skips it while tombstoned here).
+    fn tombstoned(&mut self, host: HostKey, l: LabelId, b: BlobId) -> Result<()> {
+        self.state.set_gone(host, l, b);
+        if self.state.entries.get(&(l, b)).is_some_and(|e| e.cert) {
+            self.absent_at(Some(host), l, b)?;
         }
         Ok(())
     }
@@ -2383,7 +2393,7 @@ impl SyncEngine {
                 self.reached(&l, &b);
             }
             Code::NOT_HEAD => {}
-            Code::TOMBSTONED => self.state.set_gone(host, l, b),
+            Code::TOMBSTONED => self.tombstoned(host, l, b)?,
             c => self.diag(format!("deposit refused: code {}", c.0)),
         }
         Ok(())

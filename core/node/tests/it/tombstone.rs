@@ -529,9 +529,9 @@ fn header_only_prefix_is_checked_spec_sync_1() {
         osis_label::frame(&prefix, &env.encode(), rng).unwrap()
     };
     let (key, good) = frame(None, &mut rng);
-    assert!(net.engine(b).open_commit(&good, &key, None).is_ok());
+    assert!(net.engine(b).open_commit(&good, &key).is_ok());
     let (key, bad) = frame(Some(FOREVER), &mut rng);
-    assert!(net.engine(b).open_commit(&bad, &key, None).is_err());
+    assert!(net.engine(b).open_commit(&bad, &key).is_err());
 }
 
 fn pending(net: &mut Net, n: usize) -> usize {

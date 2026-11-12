@@ -64,7 +64,7 @@ fn one_blob_prefix_groups_per_key_set_spec_wire_5() {
     assert_eq!(p.expiry(), body.expires.map(WallMs));
     assert_eq!(p.groups().len(), sets.len(), "one group per distinct key set");
     assert!(p.groups().len() >= 2);
-    let o = net.engine(a).open_commit(&sealed.blob, &sealed.key, None).unwrap();
+    let o = net.engine(a).open_commit(&sealed.blob, &sealed.key).unwrap();
     assert_eq!(o.parts(), body.parts);
     assert!(o.sealed.is_empty());
     assert_eq!(o.ais, vec![0, 1, 2]);

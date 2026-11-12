@@ -892,6 +892,14 @@ impl Net {
 
     pub fn set_online(&mut self, n: usize, on: bool) {
         if !on {
+            // closes already sent reach it first: a real transport tells a node of a dead
+            // connection, while an offline node here hears nothing (a served session it never
+            // ended would win a later dial's record as a duplicate)
+            let (closes, rest): (VecDeque<Msg>, VecDeque<Msg>) = std::mem::take(&mut self.queue).into_iter().partition(|m| matches!(m, Msg::Close(x, ..) if *x == n));
+            self.queue = rest;
+            for m in closes {
+                self.deliver(m);
+            }
             self.disconnect(n);
         }
         self.nodes[n].online = on;

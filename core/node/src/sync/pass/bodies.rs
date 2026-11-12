@@ -253,8 +253,7 @@ impl SyncEngine {
             }
             let Some(key) = self.state.blobs.get(&id).map(|r| r.key.clone()) else { continue };
             let Some(bytes) = self.engine.blob(&id)? else { continue };
-            let g = self.state.labels_of(&id).into_iter().find_map(|l| self.group_of(&l, None));
-            let Ok(o) = self.engine.open_commit(&bytes, &key, g.as_ref()) else { continue };
+            let Ok(o) = self.engine.open_commit(&bytes, &key) else { continue };
             for s in o.sealed {
                 if !out.iter().any(|x| x.ais == s.ais) {
                     out.push(s);
@@ -290,8 +289,7 @@ impl SyncEngine {
         }
         let Some(key) = self.state.blobs.get(id).map(|r| r.key.clone()) else { return false };
         let Ok(Some(bytes)) = self.engine.blob(id) else { return false };
-        let g = self.state.labels_of(id).into_iter().find_map(|l| self.group_of(&l, None));
-        let verdict = match self.engine.open_commit(&bytes, &key, g.as_ref()) {
+        let verdict = match self.engine.open_commit(&bytes, &key) {
             Ok(o) => self.engine.parts_genuine(&o.commit),
             Err(_) => Some(false),
         };
@@ -310,28 +308,36 @@ impl SyncEngine {
         v
     }
 
-    /// Places a body under `l`: an encryption of it this node holds (never a certificate
-    /// copy's, never one tombstoned there), else a fresh one (`Engine::seal`: every held part
-    /// in sections, the sections this node could not open copied verbatim); wrapped for the
-    /// label.
-    pub(super) fn place(&mut self, g: &Tid, l: LabelId, b: &Body, cert: bool) -> Result<Option<BlobId>> {
+    /// Places a body under `l`: an encryption of it this node holds (never a copy's, never one
+    /// tombstoned there; for a certificate copy, this node's own copy of exactly its parts), else
+    /// a fresh one (`Engine::seal`: every held part in sections, the sections this node could not
+    /// open copied verbatim; a copy: `Engine::seal_to`); wrapped for the label.
+    pub(crate) fn place(&mut self, g: &Tid, l: LabelId, b: &Body, cert: bool) -> Result<Option<BlobId>> {
         let Some(secret) = self.engine.wrap_secret(g, Some((&b.commit, &b.parts)))? else { return Ok(None) };
         // a memory commit's blobs carry its class and live in memory (spec/sync.md §9)
         let class = self.engine.header(&b.commit).map_or(osis_label::Class::Durable, |h| osis_label::Class::of_marker(h.ephemeral));
         let memory = class != osis_label::Class::Durable;
-        // what the blob carries: every held part (a copy: the body's own)
-        // a per-label copy (a certificate, a cross-published `label.0`) is sealed in one section
-        // under the label's wrap secret and shared with no other label (spec/sync.md §3)
+        // what the blob carries: every held part (a copy: the body's own, in one section under
+        // the blob key, spec/sync.md §3); a per-label copy (a cross-published `label.0`) is
+        // shared with no other label, a certificate copy with every label needing its parts
         let own = cert || b.to_label;
         let held: Vec<usize> = if own { b.parts.clone() } else { self.engine.body(&b.commit)?.map(|x| x.parts).unwrap_or_default() };
         // a held encryption carrying the body's parts and nothing not held any more (the
         // fullest; one sealed here may lack parts this node holds no secret for)
-        let reuse = if own { None } else { self.state.blob_for(&b.commit, &b.parts, &held, |id| self.state.is_gone(&l, id) || self.state.entries.contains_key(&(l, *id))) };
+        let skip = |id: &BlobId| self.state.is_gone(&l, id) || self.state.entries.contains_key(&(l, *id));
+        let reuse = if b.to_label {
+            None
+        } else if cert {
+            // not one deleted under `l` (a host refuses it while its tombstone lasts)
+            self.state.own_copy(&b.commit, &b.parts, |id| skip(id) || self.state.tombs.contains_key(&(l, *id)))
+        } else {
+            self.state.blob_for(&b.commit, &b.parts, &held, skip)
+        };
         let (id, key, parts, ais) = match reuse.and_then(|id| self.state.blobs.get(&id).map(|r| (id, r.key.clone(), r.parts.clone(), r.ais.clone()))) {
             Some(x) => x,
             None => {
                 let sealed = if own {
-                    self.engine.seal_to(b, class, &secret, &mut *self.rng)?
+                    self.engine.seal_to(b, class, &mut *self.rng)?
                 } else {
                     let extra = self.sealed_sections(&b.commit)?;
                     self.engine.seal(b, class, &extra, &mut *self.rng)?
@@ -342,7 +348,7 @@ impl SyncEngine {
                 } else {
                     self.engine.put_blobs(vec![(s.id, s.blob)])?;
                 }
-                // a per-label copy is recorded as one: never reused under another label
+                // a copy is recorded as one: never reused for a body (`blob_for`)
                 self.state.add_blob(s.id, BlobRec { commit: b.commit, parts: s.parts.clone(), ais: s.ais.clone(), key: s.key.clone(), cert: own, memory });
                 (s.id, s.key, s.parts, s.ais)
             }

@@ -151,10 +151,11 @@ fn stored_sizes_are_padme() {
     assert!(sizes.len() <= 5, "48 value lengths in {} size classes: {sizes:?}", sizes.len());
 }
 
-// spec/sync.md §1, §3 (certificate blobs): two labels of one writer share no blob ID, salt or
-// wrap; the commits under both (the node card, chain certificates) are fresh encryptions per label
+// spec/sync.md §1, §3 (certificate blobs), spec/crypto.md §5: two labels of one writer reuse no
+// wrap, and distinct blobs no salt; the certificate copies both need (the node card, chain
+// certificates) are one blob under both, wrapped per label
 #[test]
-fn no_linkage_across_labels() {
+fn labels_share_no_wrap_or_salt() {
     let (mut net, host, [a, b]) = hosted_nodes::<2>();
     let addr = vec![net.address(host)];
     let g1 = net.group_seeded(a, &[(b, Role::Write)], addr.clone(), 11);
@@ -170,15 +171,10 @@ fn no_linkage_across_labels() {
     let wraps1: BTreeSet<[u8; osis_crypto::WRAP_LEN]> = of(l1).map(|x| x.3).collect();
     assert!(ids1.len() > 3);
     for (_, id, b, w) in of(l2) {
-        assert!(!ids1.contains(id), "a blob shared by both labels");
-        assert!(!salts1.contains(&b[1..17]), "a salt reused across labels");
         assert!(!wraps1.contains(w), "a wrap reused across labels");
+        assert!(ids1.contains(id) || !salts1.contains(&b[1..17]), "a salt reused across labels");
     }
-    let commits = |net: &mut Net, l: LabelId| -> BTreeSet<CommitId> {
-        net.sync(a).entries(&l).into_iter().filter_map(|(_, k)| if let EntryKind::Commit { commit, .. } = k { Some(commit) } else { None }).collect()
-    };
-    let (c1, c2) = (commits(&mut net, l1), commits(&mut net, l2));
-    assert!(c1.intersection(&c2).next().is_some(), "certificate commits travel under both labels (as distinct blobs)");
+    assert!(of(l2).any(|x| ids1.contains(&x.1)), "certificate copies are one blob under both labels");
 }
 
 // spec/sync.md §2 (claim set), notes/unreadable-data.md: claim sets are padded

@@ -4,7 +4,7 @@
 use crate::Error;
 use osis_base::format::{BLOB_FRAMING_VERSION, COMMITMENT_LEN, DELETE_ADMIN, DELETE_WRITER, MAX_BLOB, PREFIX_FIXED_LEN};
 use osis_base::{BlobId, WallMs};
-use osis_crypto::{CryptoRngCore, Secret32, VerifyingKey, commitment, decrypt_blob, encrypt_blob};
+use osis_crypto::{CryptoRngCore, Secret32, VerifyingKey, commitment, decrypt_blob};
 
 /// At most one commitment per level in a group.
 const MAX_LEVELS: usize = 3;
@@ -262,7 +262,12 @@ pub fn check_size(blob: &[u8]) -> Result<(), Error> {
 /// Encrypts `plaintext` behind `prefix` under a fresh key (spec/crypto.md §5). Returns the blob
 /// key and the blob; `TooLarge` above `MAX_BLOB`.
 pub fn frame(prefix: &Prefix, plaintext: &[u8], rng: &mut dyn CryptoRngCore) -> Result<(Secret32, Vec<u8>), Error> {
-    encrypt_blob(&prefix.to_bytes(), plaintext, rng).map_err(|e| match e {
+    frame_under(osis_crypto::BlobKey::fresh(rng), prefix, plaintext)
+}
+
+/// `frame` under a fresh key made beforehand (a copy's section opens with it, spec/wire.md §4).
+pub fn frame_under(key: osis_crypto::BlobKey, prefix: &Prefix, plaintext: &[u8]) -> Result<(Secret32, Vec<u8>), Error> {
+    key.encrypt(&prefix.to_bytes(), plaintext).map_err(|e| match e {
         osis_crypto::Error::TooLarge => Error::TooLarge("blob above MAX_BLOB"),
         e => Error::Crypto(e),
     })

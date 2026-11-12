@@ -193,7 +193,8 @@ pub struct BlobRec {
     /// The aspects every section lists (`Kind::Commit`).
     pub ais: Vec<usize>,
     pub key: Secret32,
-    /// A certificate encryption (never shared with another label).
+    /// A copy (`Engine::seal_to`): never reused for a body (`blob_for`); this node's own
+    /// certificate copy goes under every label needing its parts (`own_copy`).
     pub cert: bool,
     /// A memory commit's blob (`Entry::memory`): the record lives in memory only.
     pub memory: bool,
@@ -1962,10 +1963,17 @@ impl State {
         }
     }
 
-    /// The blob this node holds for exactly these parts of a commit (not a certificate
-    /// encryption), if any.
+    /// The fullest blob this node holds of a commit carrying the `needed` parts and none not
+    /// `held` (not a copy), if any.
     pub fn blob_for(&self, c: &CommitId, needed: &[usize], held: &[usize], skip: impl Fn(&BlobId) -> bool) -> Option<BlobId> {
         self.by_commit.get(c)?.iter().filter(|b| !skip(b)).filter_map(|b| self.blobs.get(b).filter(|r| !r.cert && needed.iter().all(|p| r.parts.contains(p)) && r.parts.iter().all(|p| held.contains(p))).map(|r| (r.parts.len(), *b))).max().map(|x| x.1)
+    }
+
+    /// This node's own certificate copy of exactly `parts` of a commit (an entry of it is this
+    /// node's certificate), placed under another label: one blob, a wrap per label
+    /// (spec/sync.md §3).
+    pub fn own_copy(&self, c: &CommitId, parts: &[usize], skip: impl Fn(&BlobId) -> bool) -> Option<BlobId> {
+        self.by_commit.get(c)?.iter().copied().filter(|b| !skip(b)).find(|b| self.blobs.get(b).is_some_and(|r| r.cert && r.parts == parts && r.ais == parts) && self.labels_of(b).iter().any(|l| self.entries.get(&(*l, *b)).is_some_and(|e| e.cert)))
     }
 }
 
