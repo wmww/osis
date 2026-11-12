@@ -806,7 +806,7 @@ fn ingest_class(tx: &mut Tx<'_>, mut blob: CommitBlob, origin: Origin) -> Result
                 let still = missing_unjudged(tx.core, &id);
                 // a thrown-out part whose record came in this same pass (no wake saw the commit
                 // pending): its carriers bring it again now
-                if tx.core.ix.commits.get(&id).is_some_and(|m| m.missing.iter().any(|ai| !m.forgot.contains(ai) && !still.contains_key(ai))) {
+                if tx.core.ix.commits.get(&id).is_some_and(|m| m.missing_parts().any(|ai| m.missing_as(ai) != Some(crate::engine::Missing::Forgot) && !still.contains_key(&ai))) {
                     tx.core.redeliver.insert(id);
                 }
                 waits |= settle_waits(tx, &id, &still);

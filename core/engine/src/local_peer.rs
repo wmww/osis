@@ -97,7 +97,7 @@ impl Discarded {
 
 /// Whether `bytes` carry a part applied commit `id` misses (decoded only then).
 fn misses(core: &crate::engine::Core, id: &CommitId, bytes: &[u8]) -> bool {
-    core.ix.commits.get(id).is_some_and(|m| !m.missing.is_empty() && CommitBlob::decode(bytes).is_ok_and(|b| b.parts.iter().any(|p| m.missing.contains(&p.ai))))
+    core.ix.commits.get(id).is_some_and(|m| m.missing_parts().next().is_some() && CommitBlob::decode(bytes).is_ok_and(|b| b.parts.iter().any(|p| m.missing(p.ai))))
 }
 
 impl Peer {
