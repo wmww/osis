@@ -1966,5 +1966,16 @@ mod tests {
         assert!(lp.peers[2].engine.take_changed().undropped.contains(&c0), "and fetched");
         assert_eq!(lp.peers[2].engine.get(&t, &reg).unwrap(), Some(Value::Int(2)));
         lp.peers[2].engine.check_index();
+        // the cycle ends: C2 and C0 fetched back, C0 drops again under C2, C3 and stays dropped
+        lp.sync_all().unwrap();
+        assert!(matches!(hold(&lp, &c2), Hold::Body { whole: true }), "C2 back whole");
+        lp.peers[2].engine.drop_body(&c0, &t, &reg).unwrap();
+        assert!(matches!(hold(&lp, &c0), Hold::Dropped(_)), "covered by C2, C3 again");
+        lp.peers[2].engine.take_changed();
+        lp.sync_all().unwrap();
+        assert!(matches!(hold(&lp, &c0), Hold::Dropped(_)), "nothing fetches it back");
+        assert!(!lp.peers[2].engine.take_changed().undropped.contains(&c0));
+        assert_eq!(lp.peers[2].engine.get(&t, &reg).unwrap(), Some(Value::Int(2)));
+        lp.peers[2].engine.check_index();
     }
 }
