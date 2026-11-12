@@ -1605,6 +1605,8 @@ fn expiry_is_flat_spec_crdt_4_7() {
         assert_eq!(big[i].n("rebuild: body"), 0, "expiry {i} read the aspect's bodies");
         all_flat(&format!("expiry {i}"), &small[i], &big[i]);
     }
+}
+
 /// Role entries (count) at the group's peer that cannot read its label: after a group of n member
 /// groups settles, then after `churn` rounds of one member granted and one removed.
 fn role_entries_under_churn(n: usize, churn: usize) -> [u64; 2] {
