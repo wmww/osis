@@ -14,10 +14,11 @@ use osis_base::{Ak, CommitId, Tid, Ts};
 use osis_crdt::{Pos, Seg};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-/// Approximate bytes the undo indexes hold (`approx`). Performance switch: checked before an
-/// aspect is indexed, past it every index is forgotten, so memory stays under it plus one
-/// aspect's index. 0: every undo check reads every held part of its aspect, as with no index;
-/// infinity: every aspect checked since the open stays indexed.
+/// Approximate bytes the undo indexes hold (`approx`; a map key's value is shared with held
+/// bodies, not counted). Performance switch: checked at each check's start, past it every index
+/// is forgotten, so memory stays under it plus one aspect's index. 0: every undo check reads
+/// every held part of its aspect, as with no index; infinity: every aspect checked since the
+/// open stays indexed.
 const TOUCHES_MAX: usize = 16 << 20;
 
 /// A part's place in its aspect: `ts`, commit.
@@ -99,12 +100,12 @@ impl Touches {
 /// Indexes `(tid, ak)`: built from its held parts on first use, else what is due read again.
 pub(crate) fn ensure(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
     let k = (*tid, ak.clone());
+    if tx.core.touches.bytes > TOUCHES_MAX {
+        tx.core.touches.clear();
+    }
     let due: Vec<Place> = match tx.core.touches.aspects.get_mut(&k) {
         Some(a) => std::mem::take(&mut a.due).into_iter().collect(),
         None => {
-            if tx.core.touches.bytes > TOUCHES_MAX {
-                tx.core.touches.clear();
-            }
             tx.core.touches.aspects.insert(k.clone(), Aspect::default());
             tx.core.ix.by_aspect.get(&k).into_iter().flatten().copied().collect()
         }
@@ -126,12 +127,13 @@ fn examine(tx: &mut Tx<'_>, k: &(Tid, Ak), place: Place) -> Result<()> {
     let Some(ai) = m.aspect(&k.0, &k.1) else { return Ok(()) };
     let (snap, missing, holds) = (m.view.kind.is_compaction(), m.missing.contains(&ai), m.holds(ai));
     let Some(a) = tx.core.touches.aspects.get_mut(k) else { return Ok(()) };
+    // a snapshot not fetched yet blocks a restoring undo too (`undo::replaced_kept`)
+    if missing {
+        a.missing.insert(place);
+    }
     if snap {
         a.snaps.insert(place);
         return Ok(());
-    }
-    if missing {
-        a.missing.insert(place);
     }
     if !holds {
         return Ok(());

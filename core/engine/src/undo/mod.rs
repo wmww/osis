@@ -852,6 +852,50 @@ mod tests {
         lp.peers[who].commit(m).unwrap().unwrap()
     }
 
+    // The state before is joined only at the undone delta's positions and the presence of the
+    // composites above (spec/crdt.md §4.3): a key new to field `m` reads the aspect present
+    // through field `l`'s writes alone, which no position of the delta names, and a removal in
+    // `l` the join leaves out cannot make it absent. Each revert is checked against the whole join.
+    #[test]
+    fn pre_state_presence_from_other_positions() {
+        static TS: osis_schema::StaticSchema = osis_schema::StaticSchema::new("t.osis", "revision 1; purgeable_by(author, admin) aspect k:s.0: struct { m 0: map<string, int>, l 1: list<int> };\n");
+        let key: osis_schema::Aspect<Value> = osis_schema::Aspect::new("k:s.0", &TS);
+        let x = Ak::new("k:s.0").unwrap();
+        let keep = osis_schema::Retention { by: osis_schema::PurgeBy::Writer };
+        let (m_k, l) = (|| vec![osis_crdt::PathSeg::Field(0), osis_crdt::PathSeg::Key(Value::Str("k".into()))], || vec![osis_crdt::PathSeg::Field(1)]);
+        let k = || Value::Str("k".into());
+        for removed_k in [false, true] {
+            let mut lp = LocalPeer::fresh(1, WallMs(1_700_000_000_000));
+            let me = lp.peers[0].engine.me();
+            let (t, _) = lp.peers[0].engine.create_with_admin(&me).unwrap();
+            let mut m = Mutation::new();
+            m.set(t, &ct::RETENTION, &ct::RetentionSetting::of(x.clone(), osis_schema::History::Keep { until: Some(4_000_000_000_000), after: None })).unwrap();
+            lp.peers[0].commit(m).unwrap();
+            let step = |lp: &mut LocalPeer, ops: Vec<PathOp>| {
+                lp.advance(10);
+                let mut m = Mutation::new();
+                for op in ops {
+                    m.op(t, &key, op).unwrap();
+                }
+                m.retention(t, &x, keep).unwrap();
+                lp.peers[0].commit(m).unwrap().unwrap()
+            };
+            let mut first = vec![PathOp { path: l(), op: Op::Insert { at: 0, items: vec![Value::Int(5)] } }];
+            if removed_k {
+                first.push(PathOp { path: m_k(), op: Op::Set(Value::Int(1)) });
+            }
+            step(&mut lp, first);
+            step(&mut lp, vec![PathOp { path: l(), op: Op::Delete { at: 0, len: 1 } }]);
+            if removed_k {
+                step(&mut lp, vec![PathOp { path: vec![osis_crdt::PathSeg::Field(0)], op: Op::Remove(k()) }]);
+            }
+            let before = lp.peers[0].engine.get(&t, &x).unwrap();
+            let last = step(&mut lp, vec![PathOp { path: m_k(), op: Op::Set(Value::Int(2)) }]);
+            lp.peers[0].engine.revert(&last).unwrap().unwrap();
+            assert_eq!(lp.peers[0].engine.get(&t, &x).unwrap(), before, "removed_k {removed_k}");
+        }
+    }
+
     // spec/crdt.md §4.2: a reset prunes by stamp, so the walk stops at the newest kept reset
     // whichever writes are concurrent with it, and a write stamped after it stays in. Each
     // revert also runs `kept_before`'s check against the whole join.
@@ -1200,3 +1244,4 @@ mod tests {
         }
     }
 }
+
