@@ -116,7 +116,7 @@ fn snapshot() -> CommitBlob {
     let mut w = Writer::new(ts(1_700_000_000_000), own(SESSION), 1);
     let fragment = create(&mut w, &AnyView, &Value::Str("hello".into())).unwrap();
     let frontiers = Frontiers { sessions: [(osis_crdt::Session { node: AUTHOR, nonce: NONCE }, 1)].into_iter().collect() };
-    let s = Snapshot { absorbed: Default::default(), nonce: [4; 16], fragment, frontiers };
+    let s = Snapshot { absorbed: Default::default(), facts: Default::default(), nonce: [4; 16], fragment, frontiers };
     let bytes = encode_snapshot(&s, &writer_ctx(Form::Commit, Kind::ContentSnapshot, at, AUTHOR, 0, 0), None).unwrap();
     let mut b = CommitBuilder::new(Kind::ContentSnapshot, at, AUTHOR, ACTOR, Form::Commit);
     let mut a = AspectWrite::new(THING, Ak::new("app:title.0").unwrap(), 0, 0, bytes);
@@ -133,7 +133,7 @@ fn ephemeral(class: osis_commit::EphClass) -> CommitBlob {
     let mut w = Writer::new(ts(1_700_000_003_500), Source::session(session), 1);
     let fragment = create(&mut w, &AnyView, &Value::Str("typing".into())).unwrap();
     let frontiers = Frontiers { sessions: [(session, 1)].into_iter().collect() };
-    let s = Snapshot { absorbed: Default::default(), nonce: [6; 16], fragment, frontiers };
+    let s = Snapshot { absorbed: Default::default(), facts: Default::default(), nonce: [6; 16], fragment, frontiers };
     let bytes = encode_snapshot(&s, &writer_ctx(Form::Commit, Kind::ContentSnapshot, at, AUTHOR, 0, 0), None).unwrap();
     let mut b = CommitBuilder::new(Kind::ContentSnapshot, at, AUTHOR, ACTOR, Form::Commit);
     let mut a = AspectWrite::new(THING, Ak::new("app:state.0").unwrap(), 0, 0, bytes);
@@ -247,7 +247,7 @@ fn more_accepted() -> Vec<Record> {
     b.aspects.push(AspectWrite::new(THING, Ak::new("app:body.0").unwrap(), 1, 2, delta(SESSION, Kind::Content, at, 1, Value::Str("".into()), 8)));
     b.purge = vec![
         PurgeItem::Aspect { tid: THING, ak: Ak::new("app:body.0").unwrap() },
-        PurgeItem::Commit { commit: CommitId([0x2d; 32]), tid: THING, ak: Ak::new("app:title.0").unwrap() },
+        PurgeItem::Commit { tid: THING, ak: Ak::new("app:title.0").unwrap(), ts: osis_base::Ts::from_u64(0x1234_0000).unwrap(), src: osis_crdt::Source::commit(CommitId([0x2d; 32])) },
     ];
     out.push(record("purge request beside a creation", "spec/wire.md §4; spec/commits.md §5", &built(b)));
     // a fire replacing an earlier one, expiring, with a purge request naming it
@@ -258,7 +258,7 @@ fn more_accepted() -> Vec<Record> {
     a.replaces = Some(CommitId([0x2f; 32]));
     b.aspects.push(a);
     b.expires = Some(at.wall_ms().0 + 86_400_000);
-    b.purge = vec![PurgeItem::Commit { commit: CommitId([0x2f; 32]), tid: THING, ak: Ak::new("app:msg~0").unwrap() }];
+    b.purge = vec![PurgeItem::Commit { tid: THING, ak: Ak::new("app:msg~0").unwrap(), ts: osis_base::Ts::from_u64(0x1234_0000).unwrap(), src: osis_crdt::Source::commit(CommitId([0x2f; 32])) }];
     out.push(record("signal fire replacing another, expiring, purging it", "spec/wire.md §4; spec/commits.md §5 Signals, Purge", &built(b)));
     // role commit with a frontier
     let at = ts(1_700_000_006_000);

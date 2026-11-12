@@ -2754,7 +2754,7 @@ fn a_purge_stamped_before_the_named_commit_names_nothing_spec_commits_5() {
     m.set(t, &REG, &s("kept")).unwrap();
     let c = lp.peers[2].commit(m).unwrap().unwrap();
     let mut m = Mutation::new();
-    m.purge(osis_commit::PurgeItem::Commit { commit: c, tid: t, ak: k.clone() });
+    m.purge(lp.peers[2].engine.purge_item(&c, t, k.clone()).unwrap());
     m.set(t, &REG, &s("forged")).unwrap();
     let p = lp.peers[1].commit(m).unwrap().unwrap();
     assert!(lp.peers[1].engine.header(&p).unwrap().ts < lp.peers[2].engine.header(&c).unwrap().ts);

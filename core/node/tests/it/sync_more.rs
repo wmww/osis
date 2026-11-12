@@ -631,7 +631,7 @@ fn purge_shreds_only_unique_chunks_spec_sync_7() {
     assert!(first.is_subset(&at_host(&net)));
     let mut m = Mutation::new();
     m.set(t, &REG, &s("purged v1")).unwrap();
-    m.purge(osis_commit::PurgeItem::Commit { commit: c1, tid: t, ak: blob_ak.clone() });
+    m.purge_commit(c1, t, blob_ak.clone());
     net.engine(a).commit(m).unwrap().unwrap();
     net.run();
     net.trace(&[a, b]);
@@ -747,7 +747,7 @@ fn reused_chunks_follow_a_new_label_spec_sync_3() {
     let (t, blob_ak, [c1, _], v2, shared, _) = reused_blob(&mut net, a, b, Role::Read, host);
     let mut m = Mutation::new();
     m.set(t, &REG, &s("purged v1")).unwrap();
-    m.purge(osis_commit::PurgeItem::Commit { commit: c1, tid: t, ak: blob_ak.clone() });
+    m.purge_commit(c1, t, blob_ak.clone());
     net.engine(a).commit(m).unwrap().unwrap();
     net.run();
     let g = net.engine(a).groups_of(&t).into_iter().next().unwrap();
@@ -814,7 +814,7 @@ fn lazy_node_shreds_dropped_chunks_spec_sync_7() {
     net.set_online(a, false);
     let mut m = Mutation::new();
     m.set(t, &REG, &s("purged v1")).unwrap();
-    m.purge(osis_commit::PurgeItem::Commit { commit: c1, tid: t, ak: blob_ak.clone() });
+    m.purge_commit(c1, t, blob_ak.clone());
     net.engine(b).commit(m).unwrap().unwrap();
     net.run();
     net.run();
@@ -998,7 +998,7 @@ fn purged_chunk_reused_concurrently_is_reencrypted_spec_sync_1() {
     assert!(!reused.is_empty());
     let mut m = Mutation::new();
     m.set(t, &REG, &s("purged v1")).unwrap();
-    m.purge(osis_commit::PurgeItem::Commit { commit: c1, tid: t, ak: blob_ak.clone() });
+    m.purge_commit(c1, t, blob_ak.clone());
     net.engine(a).commit(m).unwrap().unwrap();
     net.run();
     let l = net.label(a);
@@ -1061,7 +1061,7 @@ fn reuse_race(expires: Option<u64>, keep: bool) -> (Net, [usize; 3], osis_base::
     net.engine(b).commit(m).unwrap().unwrap();
     let mut m = Mutation::new();
     m.set(t, &REG, &s("purged v1")).unwrap();
-    m.purge(osis_commit::PurgeItem::Commit { commit: c1, tid: t, ak: doc.clone() });
+    m.purge_commit(c1, t, doc.clone());
     net.engine(a).commit(m).unwrap().unwrap();
     net.run();
     // a's concurrent edit of another position, older than b's repair, unseen by b

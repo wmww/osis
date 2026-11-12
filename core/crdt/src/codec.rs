@@ -464,7 +464,7 @@ fn encode_snapshot_in(s: &Snapshot, cx: &DeltaCtx, pages: Option<&mut dyn PageSi
     frontiers_traced(&enc, s)?;
     let fr = fr.unwrap_or(Value::List(Vec::new()));
     let absorbed = absorbed_value(&s.absorbed);
-    let top = vec![Value::Bytes(s.nonce.to_vec()), enc.sources_value(), enc.commits_value(), frag, fr, absorbed];
+    let top = vec![Value::Bytes(s.nonce.to_vec()), enc.sources_value(), enc.commits_value(), frag, fr, absorbed, enc.facts_value(&s.facts)];
     Ok(osis_base::encode(&Value::List(top)))
 }
 
@@ -980,7 +980,7 @@ pub fn decode_delta<'a>(bytes: &[u8], cx: &DeltaCtx, interner: &'a mut Interner,
 pub fn decode_snapshot<'a>(bytes: &[u8], cx: &DeltaCtx, interner: &'a mut Interner, pages: Option<&'a mut dyn PageSource>) -> Result<Snapshot, Error> {
     let mut whole = crate::stream::Whole::default();
     let head = crate::stream::stream(bytes, cx, interner, pages, true, true, &mut |p| whole.add(p))?;
-    Ok(Snapshot { nonce: head.nonce, fragment: whole.done(), frontiers: head.frontiers, absorbed: head.absorbed })
+    Ok(Snapshot { nonce: head.nonce, fragment: whole.done(), frontiers: head.frontiers, absorbed: head.absorbed, facts: head.facts })
 }
 
 /// `[nonce, Sources, Commits]` of a delta or snapshot root into `dec`.
@@ -992,7 +992,7 @@ pub(crate) fn root_tables(dec: &mut Dec, sources: &Value, commits: &Value) -> Re
 /// A snapshot's `Frontiers` and `Absorbed` (§8): one frontier entry per `Session` source of the
 /// table, in table order, 0 included (a source with no write in the fragment has none, so an
 /// absent source is one the snapshot holds nothing of).
-pub(crate) fn snapshot_tail(dec: &Dec, fr: &Value, ab: &Value) -> Result<(Frontiers, BTreeMap<osis_base::CommitId, osis_base::Tid>), Error> {
+pub(crate) fn snapshot_tail(dec: &Dec, fr: &Value, ab: &Value, fa: &Value) -> Result<(Frontiers, BTreeMap<osis_base::CommitId, osis_base::Tid>, crate::wire::Facts), Error> {
     let mut frontiers = Frontiers::default();
     let mut counted = dec.sources().filter(|s| matches!(s.kind(), SourceKind::Session(_)));
     for e in as_array(fr)? {
@@ -1015,7 +1015,8 @@ pub(crate) fn snapshot_tail(dec: &Dec, fr: &Value, ab: &Value) -> Result<(Fronti
             return Err(Error::Malformed("absorbed commit repeated"));
         }
     }
-    Ok((frontiers, absorbed))
+    let facts = dec.load_facts(fa, &absorbed)?;
+    Ok((frontiers, absorbed, facts))
 }
 
 /// The absorbed table as written (§8).
@@ -1132,7 +1133,7 @@ pub mod oracle {
         let (enc, frag, fr) = encode_top(cx, &s.fragment, Some(&s.frontiers), pages)?;
         super::frontiers_traced(&enc, s)?;
         let fr = fr.unwrap_or(Value::List(Vec::new()));
-        let top = vec![Value::Bytes(s.nonce.to_vec()), enc.sources_value(), enc.commits_value(), frag, fr, absorbed_value(&s.absorbed)];
+        let top = vec![Value::Bytes(s.nonce.to_vec()), enc.sources_value(), enc.commits_value(), frag, fr, absorbed_value(&s.absorbed), enc.facts_value(&s.facts)];
         Ok(osis_base::encode(&Value::List(top)))
     }
 
@@ -1158,13 +1159,13 @@ pub mod oracle {
     pub fn decode_snapshot<'a>(bytes: &[u8], cx: &DeltaCtx, interner: &'a mut Interner, pages: Option<&'a mut dyn PageSource>) -> Result<Snapshot, Error> {
         check_root(bytes, pages.as_deref())?;
         let top = osis_base::decode(bytes, &LIMITS)?;
-        let [n, sources, commits, frag, fr, ab] = as_array(&top)? else { return Err(Error::Malformed("snapshot arity")) };
+        let [n, sources, commits, frag, fr, ab, fa] = as_array(&top)? else { return Err(Error::Malformed("snapshot arity")) };
         let mut dec = Dec::new(cx, interner, pages);
         root_tables(&mut dec, sources, commits)?;
         let fragment = decode_fragment(&mut dec, frag, true)?;
-        let (frontiers, absorbed) = snapshot_tail(&dec, fr, ab)?;
+        let (frontiers, absorbed, facts) = snapshot_tail(&dec, fr, ab, fa)?;
         let mut replay = replay(&mut dec);
-        let s = Snapshot { nonce: nonce(n)?, fragment, frontiers, absorbed };
+        let s = Snapshot { nonce: nonce(n)?, fragment, frontiers, absorbed, facts };
         canonical(bytes, self::encode_snapshot(&s, cx, Some(&mut replay)))?;
         Ok(Snapshot { fragment: prune_stable(&s.fragment, None)?, ..s })
     }

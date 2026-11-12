@@ -655,7 +655,7 @@ fn check_snapshot_bound(f: Fragment) -> bool {
     use crate::codec::{decode_snapshot, encode_snapshot};
     use crate::wire::{DeltaCtx, DeltaKind, Snapshot};
     let cx = DeltaCtx { ts: ts(1 << 40), own: sess(Tid::from_bytes([9; 15])), range: CounterRange::EMPTY, kind: DeltaKind::Snapshot };
-    let s = Snapshot { absorbed: Default::default(), nonce: [0; 16], fragment: f, frontiers: Default::default() };
+    let s = Snapshot { absorbed: Default::default(), facts: Default::default(), nonce: [0; 16], fragment: f, frontiers: Default::default() };
     let Ok(bytes) = encode_snapshot(&s, &cx, None) else { return false };
     let back = decode_snapshot(&bytes, &cx, &mut crate::stamp::Interner::new(), None).unwrap();
     crate::testutil::check_bound(&bytes, &back.fragment);

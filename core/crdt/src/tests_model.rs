@@ -445,7 +445,7 @@ fn snapshots(st: &MFrag, mfr: &[(MSource, u64)], gone: &Gone, honest: bool, twin
         for (s, c) in mfr {
             assert!(frontiers.insert(&source(s), *c), "a session frontier");
         }
-        let s = Snapshot { absorbed: Default::default(), nonce: [3; 16], fragment: frag(st), frontiers };
+        let s = Snapshot { absorbed: Default::default(), facts: Default::default(), nonce: [3; 16], fragment: frag(st), frontiers };
         let sbytes = encode_snapshot(&s, &snap_cx(), None).unwrap();
         assert_eq!(sbytes, msnap, "{what} snapshot bytes equal the model's");
         let mback = crdt_model::wire::decode_snapshot(&sbytes, &mut snap_mcx()).map(|x| frag(&x.0));
@@ -667,7 +667,7 @@ fn implied_creation_pos_decodes_back_spec_3_3() {
     let mut pruned = f.clone();
     pruned.prune(None, &mut crate::Changes::new());
     assert_eq!(pruned, f, "canonical");
-    let s = Snapshot { absorbed: Default::default(), nonce: [3; 16], fragment: f.clone(), frontiers: Frontiers::default() };
+    let s = Snapshot { absorbed: Default::default(), facts: Default::default(), nonce: [3; 16], fragment: f.clone(), frontiers: Frontiers::default() };
     let bytes = encode_snapshot(&s, &snap_cx(), None).unwrap();
     let back = decode_snapshot(&bytes, &snap_cx(), &mut Interner::new(), None).unwrap();
     assert_eq!(back.fragment, f, "a canonical state's snapshot decodes back to it");

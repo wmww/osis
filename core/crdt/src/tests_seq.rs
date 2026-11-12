@@ -71,7 +71,7 @@ proptest! {
         for c in &commits {
             full.join(frag(&c.delta));
         }
-        let snap = Snapshot { absorbed: Default::default(), nonce: [0; 16], fragment: full.clone(), frontiers: Frontiers::default() };
+        let snap = Snapshot { absorbed: Default::default(), facts: Default::default(), nonce: [0; 16], fragment: full.clone(), frontiers: Frontiers::default() };
         let bytes = encode_snapshot(&snap, &snap_cx(), None).unwrap();
         let mut boot = decode_snapshot(&bytes, &snap_cx(), &mut Interner::new(), None).unwrap().fragment;
         let Fragment::Seq(sq) = &full else { return Ok(()) };
@@ -207,7 +207,7 @@ pub(crate) fn snapshot_then_edit(mut r: crate::testutil::SeedRng, upgraded: bool
     for d in &deltas {
         full.join(frag(d));
     }
-    let snap = Snapshot { absorbed: Default::default(), nonce: [0; 16], fragment: full, frontiers: Frontiers::default() };
+    let snap = Snapshot { absorbed: Default::default(), facts: Default::default(), nonce: [0; 16], fragment: full, frontiers: Frontiers::default() };
     let bytes = encode_snapshot(&snap, &snap_cx(), None).unwrap();
     let mut ours = decode_snapshot(&bytes, &snap_cx(), &mut Interner::new(), None).unwrap().fragment;
     let mut f = Follows::default();
@@ -386,7 +386,7 @@ fn bootstrapped_undelete_of_embedded_char_spec_4_6() {
     let st = m.as_ref().unwrap();
     assert!(matches!(st, MFrag::Slots { .. }));
     let msnap = m_encode_snapshot(st, &[], [3; 16], &mut Ctx::new(1 << 40, MSource::session(250, 0), 1));
-    let s = Snapshot { absorbed: Default::default(), nonce: [3; 16], fragment: frag(st), frontiers: Frontiers::default() };
+    let s = Snapshot { absorbed: Default::default(), facts: Default::default(), nonce: [3; 16], fragment: frag(st), frontiers: Frontiers::default() };
     let bytes = encode_snapshot(&s, &snap_cx(), None).unwrap();
     assert_eq!(bytes, msnap);
     let back = decode_snapshot(&bytes, &snap_cx(), &mut Interner::new(), None).unwrap().fragment;
@@ -400,7 +400,7 @@ fn bootstrapped_undelete_of_embedded_char_spec_4_6() {
     assert_eq!(j, s.fragment);
     let full = frag(m.as_ref().unwrap());
     let snap = |f: &Fragment| {
-        let s = Snapshot { absorbed: Default::default(), nonce: [3; 16], fragment: f.clone(), frontiers: Frontiers::default() };
+        let s = Snapshot { absorbed: Default::default(), facts: Default::default(), nonce: [3; 16], fragment: f.clone(), frontiers: Frontiers::default() };
         let bytes = encode_snapshot(&s, &snap_cx(), None).unwrap();
         decode_snapshot(&bytes, &snap_cx(), &mut Interner::new(), None).unwrap().fragment
     };
@@ -782,7 +782,7 @@ fn text_pages_spec_8() {
         e.deleted = Some((crate::stamp::Stamp::new(ts((k as u64 + 2) << 16), b.clone(), k as u64 + 1), true));
     }
     let mut pages = MemoryPages::with_params(params);
-    let snap = Snapshot { absorbed: Default::default(), nonce: [0; 16], fragment: st.clone(), frontiers: Frontiers::default() };
+    let snap = Snapshot { absorbed: Default::default(), facts: Default::default(), nonce: [0; 16], fragment: st.clone(), frontiers: Frontiers::default() };
     let bytes = encode_snapshot(&snap, &snap_cx(), Some(&mut pages)).unwrap();
     assert!(!pages.is_empty());
     let got = decode_snapshot(&bytes, &snap_cx(), &mut Interner::new(), Some(&mut pages)).unwrap();
@@ -832,7 +832,7 @@ fn expanded(f: &Fragment) -> Fragment {
     Fragment::Seq(Seq::new(s.text, s.meta.clone(), expand(s.elems().clone())))
 }
 fn snapshot_of(f: &Fragment) -> Vec<u8> {
-    encode_snapshot(&Snapshot { absorbed: Default::default(), nonce: [0; 16], fragment: f.clone(), frontiers: Frontiers::default() }, &snap_cx(), None).unwrap()
+    encode_snapshot(&Snapshot { absorbed: Default::default(), facts: Default::default(), nonce: [0; 16], fragment: f.clone(), frontiers: Frontiers::default() }, &snap_cx(), None).unwrap()
 }
 
 /// §3.2 Run, issue run amplification: a snapshot run of `MAX_RUN` - 1 deleted elements is a few
@@ -1163,7 +1163,7 @@ fn moved_row_keeps_key_spec_6_1() {
 /// `Parts::kills`, spec/commits.md §5), and the part of paged pieces is the part of their join: for
 /// any shape of delta, forged ones included. A false "joins unchanged" would lose history.
 pub(crate) fn part_judges_as_whole(st: &Fragment, d: &Fragment, r: &mut crdt_model::r#gen::Rng) {
-    let enc = |f: &Fragment| encode_snapshot(&Snapshot { absorbed: Default::default(), nonce: [3; 16], fragment: f.clone(), frontiers: Frontiers::default() }, &snap_cx(), None).unwrap();
+    let enc = |f: &Fragment| encode_snapshot(&Snapshot { absorbed: Default::default(), facts: Default::default(), nonce: [3; 16], fragment: f.clone(), frontiers: Frontiers::default() }, &snap_cx(), None).unwrap();
     let joined = |a: &Fragment, b: &Fragment| {
         let mut x = a.clone();
         x.join(b.clone());
@@ -1260,7 +1260,7 @@ fn long_runs_match_model_spec_3_3() {
         let st = state.as_ref().unwrap();
         let msnap = m_encode_snapshot(st, &[], [3; 16], &mut Ctx::new(1 << 40, MSource::session(250, 0), 1));
         let ours = frag(st);
-        let s = Snapshot { absorbed: Default::default(), nonce: [3; 16], fragment: ours.clone(), frontiers: Frontiers::default() };
+        let s = Snapshot { absorbed: Default::default(), facts: Default::default(), nonce: [3; 16], fragment: ours.clone(), frontiers: Frontiers::default() };
         let sbytes = encode_snapshot(&s, &snap_cx(), None).unwrap();
         assert!(sbytes == msnap, "snapshot bytes equal the model's (reset {reset})");
         let back = decode_snapshot(&sbytes, &snap_cx(), &mut Interner::new(), None).unwrap();

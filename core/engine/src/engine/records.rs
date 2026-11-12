@@ -115,9 +115,23 @@ pub fn aspect_key(prefix: &[u8], tid: &Tid, ak: &Ak) -> Vec<u8> {
     k
 }
 
-pub fn purges_named_key(tid: &Tid, ak: &Ak, id: &CommitId) -> Vec<u8> {
-    [aspect_key(PURGES_NAMED, tid, ak).as_slice(), &id.0[..]].concat()
+/// The `PURGES_NAMED` key of the commit stamped `ts` with own source `src` on `(tid, ak)`: the
+/// aspect key, then `STAMP_KEY` bytes (`ts`, the source's kind, its bytes zero-padded to 32).
+pub fn purges_named_key(tid: &Tid, ak: &Ak, ts: osis_base::Ts, src: &osis_crdt::Source) -> Vec<u8> {
+    let (kind, bytes) = match src.kind() {
+        osis_crdt::SourceKind::Session(s) => (0u8, s.to_bytes().to_vec()),
+        osis_crdt::SourceKind::Commit(c) => (1, c.0.to_vec()),
+        osis_crdt::SourceKind::Derived(_) => (2, Vec::new()),
+    };
+    let mut padded = [0u8; 32];
+    for (p, b) in padded.iter_mut().zip(&bytes) {
+        *p = *b;
+    }
+    [aspect_key(PURGES_NAMED, tid, ak).as_slice(), &ts.to_u64().to_be_bytes(), &[kind], &padded].concat()
 }
+
+/// The length of the stamp after the aspect key in a `PURGES_NAMED` key.
+pub const STAMP_KEY: usize = 8 + 1 + 32;
 
 pub fn leftover_key(tid: &Tid, ak: &Ak, id: &CommitId, ai: usize) -> Vec<u8> {
     [aspect_key(LEFTOVER, tid, ak), id.0.to_vec(), (ai as u32).to_be_bytes().to_vec()].concat()

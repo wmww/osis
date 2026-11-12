@@ -234,8 +234,9 @@ fn purge_commit(lp: &mut LocalPeer, i: usize, d: Tid, items: Vec<PurgeItem>) -> 
     lp.peers[i].commit(m).unwrap().unwrap()
 }
 
-fn named(d: Tid, c: CommitId) -> PurgeItem {
-    PurgeItem::Commit { commit: c, tid: d, ak: log() }
+/// The item naming `c`'s delta on `(d, log())` by its stamp, from a peer holding its header.
+fn named(lp: &LocalPeer, d: Tid, c: CommitId) -> PurgeItem {
+    lp.peers.iter().find_map(|p| p.engine.purge_item(&c, d, log())).unwrap()
 }
 
 // spec/commits.md §5 Signals, Purge: a purge takes only what it names; a purged newest version
@@ -248,7 +249,8 @@ fn a_purge_takes_only_what_it_names_spec_commits_5() {
     let v = edit(&mut lp, 0, d, r, "two", o);
     lp.sync_all().unwrap();
     // purging the newest version: older text does not come back
-    let rq = purge_commit(&mut lp, 0, d, vec![named(d, v)]);
+    let items = vec![named(&lp, d, v)];
+    let rq = purge_commit(&mut lp, 0, d, items);
     lp.sync_all().unwrap();
     assert_eq!(list(&mut lp, 1, d), vec![(o, Some(v), PartBody::Purged(rq))]);
     // an edit's own purge of the original leaves the edit honored
@@ -258,7 +260,7 @@ fn a_purge_takes_only_what_it_names_spec_commits_5() {
     m.retention(d, &log(), r).unwrap();
     m.set(d, &log(), &s("two")).unwrap();
     m.replaces(d, &log(), o).unwrap();
-    m.purge(named(d, o));
+    m.purge(named(&lp, d, o));
     let v = lp.peers[0].commit(m).unwrap().unwrap();
     lp.sync_all().unwrap();
     for i in 0..2 {
@@ -267,7 +269,8 @@ fn a_purge_takes_only_what_it_names_spec_commits_5() {
     // a purge of the original alone leaves a version written after it
     let (mut lp, d, _) = setup();
     let o = fire(&mut lp, 0, d, r, "one");
-    let rq = purge_commit(&mut lp, 0, d, vec![named(d, o)]);
+    let items = vec![named(&lp, d, o)];
+    let rq = purge_commit(&mut lp, 0, d, items);
     let v = edit(&mut lp, 0, d, r, "two", o);
     lp.sync_all().unwrap();
     assert_eq!(list(&mut lp, 1, d), vec![(o, Some(v), body("two"))]);
@@ -385,7 +388,7 @@ fn an_expiring_request_reaches_only_earlier_expiries_spec_commits_5() {
     m.retention(d, &log(), r).unwrap();
     m.set(d, &log(), &s("edit")).unwrap();
     for c in [permanent, brief, later] {
-        m.purge(named(d, c));
+        m.purge(named(&lp, d, c));
     }
     m.expires_all(WallMs(t + 2 * HOUR));
     // a writer refuses a request naming what it would not reach: this one is written anyway
@@ -433,7 +436,8 @@ fn a_folded_version_ending_with_its_fire_is_not_told_spec_commits_5() {
     let v = edit(&mut lp, 0, d, r, "two", o);
     let rx = lp.peers[0].engine.subscribe();
     lp.peers[0].engine.watch_commits();
-    purge_commit(&mut lp, 0, d, vec![named(d, v), named(d, o)]);
+    let items = vec![named(&lp, d, v), named(&lp, d, o)];
+    purge_commit(&mut lp, 0, d, items);
     assert_eq!(told(&rx, d), vec![o], "a delete: one change of the fire");
     let (mut lp, d, _) = setup();
     let t = lp.peers[0].engine.now().0;
@@ -583,13 +587,13 @@ fn incremental_equals_rebuilt_and_every_order_reads_alike_spec_commits_5() {
                     m.set(d, &log(), &s(&format!("e{step}"))).unwrap();
                     m.replaces(d, &log(), of).unwrap();
                     if g.below(3) == 0 {
-                        m.purge(named(d, fires[g.below(fires.len())]));
+                        m.purge(named(&lp, d, fires[g.below(fires.len())]));
                     }
                 }
                 4 if !fires.is_empty() => {
                     m = Mutation::new();
                     m.set(d, &ct::PURGE, &lp.peers[who].engine.now()).unwrap();
-                    m.purge(named(d, fires[g.below(fires.len())]));
+                    m.purge(named(&lp, d, fires[g.below(fires.len())]));
                 }
                 5 => {
                     if bob_in {

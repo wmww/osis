@@ -189,7 +189,7 @@ fn differential(seed: u64, types: &[Ty], per: usize) -> Result<(), String> {
         mapply(&mut state, c.delta.clone());
     }
     if let Some(st) = &state {
-        let s = Snapshot { absorbed: Default::default(), nonce: [3; 16], fragment: frag(st), frontiers: Frontiers::default() };
+        let s = Snapshot { absorbed: Default::default(), facts: Default::default(), nonce: [3; 16], fragment: frag(st), frontiers: Frontiers::default() };
         let bytes = encode_snapshot(&s, &snap_cx(), None).map_err(|e| e.to_string())?;
         same_snapshot(&bytes)?;
         for _ in 0..per * 4 {
@@ -243,7 +243,8 @@ fn snapshot_write_below_own_reset_rejected_spec_3_3() {
         let run = l(vec![l(vec![int(1), int(2)]), int(1), l(vec![int(0), l(vec![l(vec![int(1), int(1)])])]), Value::Str("a".into()), l(vec![l(vec![int(0), int(2), int(0)])]), l(vec![])]);
         let text = l(vec![int(9), l(vec![int(1)]), l(vec![]), l(vec![run])]);
         let frontiers = l(vec![l(vec![int(1), int(0)]), l(vec![int(2), int(0)])]);
-        osis_base::encode(&l(vec![Value::Bytes(vec![3; 16]), l(vec![session(1), session(3)]), commits, text, frontiers, l(vec![])]))
+        let facts = crate::testutil::narrowest_facts(&commits);
+        osis_base::encode(&l(vec![Value::Bytes(vec![3; 16]), l(vec![session(1), session(3)]), commits, text, frontiers, l(vec![]), facts]))
     };
     let both = |b: &[u8]| {
         let imp = decode_snapshot(b, &snap_cx(), &mut Interner::new(), None).is_ok();
@@ -259,7 +260,8 @@ fn snapshot_write_below_own_reset_rejected_spec_3_3() {
         let run = l(vec![l(vec![int(2), int(2)]), int(1), l(vec![int(0), l(vec![l(vec![int(3), int(1)])])]), l(vec![]), l(vec![]), l(vec![l(vec![int(0), int(0), int(2), Value::Bool(true)])])]);
         let text = l(vec![int(9), l(vec![int(1)]), l(vec![]), l(vec![run])]);
         let frontiers = l(vec![l(vec![int(1), int(0)]), l(vec![int(2), int(0)])]);
-        osis_base::encode(&l(vec![Value::Bytes(vec![3; 16]), l(vec![session(1), session(3)]), commits, text, frontiers, l(vec![])]))
+        let facts = crate::testutil::narrowest_facts(&commits);
+        osis_base::encode(&l(vec![Value::Bytes(vec![3; 16]), l(vec![session(1), session(3)]), commits, text, frontiers, l(vec![]), facts]))
     };
     assert_eq!(both(&deleted(3)), (true, true), "creation above the reset");
     assert_eq!(both(&deleted(7)), (false, false), "deleted element's creation below the reset");
@@ -354,7 +356,8 @@ fn derived_register_write_rejected_spec_3_3() {
         let commits = l(vec![l(vec![int(src), l(vec![l(vec![int(2), int(0), int(ctr)])])])]);
         let reg = l(vec![int(0), l(vec![]), int(1), int(5)]);
         let frontiers = l(vec![l(vec![int(1), int(0)])]);
-        osis_base::encode(&l(vec![Value::Bytes(vec![3; 16]), l(sources), commits, reg, frontiers, l(vec![])]))
+        let facts = crate::testutil::narrowest_facts(&commits);
+        osis_base::encode(&l(vec![Value::Bytes(vec![3; 16]), l(sources), commits, reg, frontiers, l(vec![]), facts]))
     };
     let both = |b: &[u8]| {
         let imp = decode_snapshot(b, &snap_cx(), &mut Interner::new(), None).is_ok();

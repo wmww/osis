@@ -132,6 +132,75 @@ pub(crate) fn frontiers_upto(tx: &Tx<'_>, tid: &Tid, ak: &Ak, memory: bool, vali
     (frontiers, reflected)
 }
 
+/// What delta `a` of a commit with header `h` is judged by in a purge (spec/crdt.md §8 `Facts`):
+/// its purgeable-by, and its actor where that is not its author.
+pub(crate) fn header_fact(h: &Header, a: &osis_commit::AspectEntry) -> osis_crdt::Fact {
+    osis_crdt::Fact { by: a.retention.by, actor: (h.actor != h.author).then_some(h.actor) }
+}
+
+/// The held commit on `(tid, ak)` stamped `ts` whose own writes are `src`'s (spec/crdt.md §2.1:
+/// one commit per `ts` and source on an aspect; equivocating ones are all held), with its
+/// aspect index.
+pub(crate) fn held_by_stamp(core: &Core, tid: &Tid, ak: &Ak, ts: Ts, src: &osis_crdt::Source) -> Vec<(CommitId, usize)> {
+    let lo = (ts, CommitId([0; 32]));
+    let hi = (ts, CommitId([0xff; 32]));
+    let on = core.ix.by_aspect.get(&(*tid, ak.clone())).into_iter().flat_map(|s| s.range(lo..=hi));
+    on.filter_map(|(_, c)| {
+        let m = core.ix.commits.get(c)?;
+        let ai = m.aspect(tid, ak)?;
+        (m.header.kind.has_own_writes() && m.header.form.own_source(m.header.author, *c) == *src).then_some((*c, ai))
+    })
+    .collect()
+}
+
+/// The facts of the commits whose stamps `st` carries (spec/crdt.md §8 `Facts`): a held
+/// commit's from its header, else as a held valid snapshot of the aspect states them (the
+/// first by `(ts, ID)`). One neither gives (none should be) is left to `Fact::NARROWEST`.
+pub(crate) fn facts_of(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, st: &Fragment) -> Result<osis_crdt::Facts> {
+    let carried: BTreeSet<(Ts, osis_crdt::Source)> = st.writes().into_iter().filter_map(|(d, ts)| Some((ts?, osis_crdt::fact_source(&d.src)))).collect();
+    let mut out = osis_crdt::Facts::new();
+    let mut rest = BTreeSet::new();
+    for (ts, src) in carried {
+        let held = held_by_stamp(tx.core, tid, ak, ts, &src);
+        let fact = held.first().and_then(|(c, ai)| {
+            let m = tx.core.ix.commits.get(c)?;
+            Some(header_fact(&m.header, m.header.aspects.get(*ai)?))
+        });
+        match fact {
+            Some(f) => {
+                out.insert((ts, src), f);
+            }
+            None => {
+                rest.insert((ts, src));
+            }
+        }
+    }
+    if rest.is_empty() {
+        out.retain(|_, f| *f != osis_crdt::Fact::NARROWEST);
+        return Ok(out);
+    }
+    let snaps: Vec<CommitId> = tx.core.ix.snapshots.get(&(*tid, ak.clone())).into_iter().flatten().map(|x| x.1).collect();
+    for s in snaps {
+        if rest.is_empty() {
+            break;
+        }
+        let Some(sai) = super::held_part(tx.core, &s, tid, ak) else { continue };
+        if !crate::apply::copies::snapshot_valid(tx.core, &s, tid, ak) {
+            continue;
+        }
+        let Some(Some((_, _, facts))) = crate::apply::each_held_piece(tx, &s, sai, &mut |_, _| Ok(()))? else { continue };
+        rest.retain(|k| match facts.get(k) {
+            Some(f) => {
+                out.insert(k.clone(), *f);
+                false
+            }
+            None => true,
+        });
+    }
+    out.retain(|_, f| *f != osis_crdt::Fact::NARROWEST);
+    Ok(out)
+}
+
 /// Whether a commit's own writes are judged by its ID (commit form: a snapshot lists those whose
 /// writes it holds as absorbed) rather than by counters under a frontier.
 pub(super) fn by_id(kind: Kind, form: Form) -> bool {
@@ -260,7 +329,12 @@ pub(crate) fn covered_join(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Ti
         return Ok(Some(false));
     }
     let is_snapshot = m.header.kind.is_compaction();
-    let mut body: Option<Fragment> = crate::apply::held_fragment(tx, c, cai)?;
+    let decoded = crate::apply::held_part(tx, c, cai)?;
+    let body_facts = match &decoded {
+        Some(osis_commit::Decoded::Snapshot(x)) => Some(x.facts.clone()),
+        _ => None,
+    };
+    let mut body: Option<Fragment> = decoded.map(osis_commit::Decoded::into_fragment);
     // a snapshot never carries an expiring delta's values (spec/crdt.md §8): held with its
     // values, the join below judges it (covered once no value of it lives); not held and not
     // value-less, the frontier alone would wrongly say covered
@@ -296,8 +370,18 @@ pub(crate) fn covered_join(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Ti
     };
     // the snapshot not held: nothing is established
     let Some(g) = &gives else { return Ok(None) };
-    if let Some((fr, abs)) = g {
+    if let Some((fr, abs, facts)) = g {
         let h = &m.header;
+        // the snapshot states what a purge judges the body's writes by as the body does
+        // (spec/commits.md §5 Covered): a cover never leaves another class or actor standing
+        // for them where the header is not held
+        let same = match &body_facts {
+            Some(bf) => bf.iter().all(|(k, f)| facts.get(k).is_none_or(|x| x == f)),
+            None => h.aspects.get(cai).is_none_or(|a| facts.get(&(h.ts, h.form.own_source(h.author, *c))).is_none_or(|x| *x == header_fact(h, a))),
+        };
+        if held && !same {
+            return Ok(Some(false));
+        }
         // a held body is judged by the join below whatever the tables say; its session listed
         // short of it only says what the writer had applied, and the writer may never get it
         if !held && h.aspects.get(cai).is_some_and(|a| unseen_by(fr, h, c, a.hi)) {
@@ -406,9 +490,10 @@ pub(crate) fn write_snapshot(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, memory: bool) 
     let traced = osis_crdt::sources_of(&st, &osis_commit::writer_ctx(Form::Commit, kind, ts, node, 0, 0))?;
     frontiers.retain(&traced);
     absorbed.retain(|c, _| traced.contains(&osis_crdt::Source::commit(*c)));
+    let facts = facts_of(tx, &tid, &ak, &st)?;
     let retention = osis_commit::retention::snapshot_retention(ak.as_str());
     let plan = CommitPlan { kind, ts, actor: node, form: Form::Commit, creates: Default::default(), purge: Vec::new(), undoes: None, frontier: None, signer: node, blind: crate::engine::write::draw_blind(&mut *tx.rng), expires: None, restores: false, rotation: None };
-    let d = Resolved { tid, ak, fragment: st, lo: 0, hi: 0, schema: None, retention: Some(retention), expires: None, replaces: None, frontiers: Some((frontiers, absorbed)), chunks: Vec::new() };
+    let d = Resolved { tid, ak, fragment: st, lo: 0, hi: 0, schema: None, retention: Some(retention), expires: None, replaces: None, frontiers: Some((frontiers, absorbed, facts)), chunks: Vec::new() };
     build_and_apply(tx, plan, vec![d]).map(Some)
 }
 
@@ -486,9 +571,10 @@ impl Engine {
                 frontiers.insert(&own, hi - 1);
             }
             frontiers.retain(&traced);
+            let facts = facts_of(tx, &tid, &ak, &st)?;
             let retention = osis_commit::retention::snapshot_retention(ak.as_str());
             let plan = CommitPlan { kind, ts, actor: node, form: Form::Commit, creates: Default::default(), purge: Vec::new(), undoes: None, frontier: None, signer: node, blind: crate::engine::write::draw_blind(&mut *tx.rng), expires: None, restores: false, rotation: None };
-            let d = Resolved { tid, ak, fragment: st, lo: 0, hi: 0, schema: None, retention: Some(retention), expires: None, replaces: None, frontiers: Some((frontiers, std::collections::BTreeMap::new())), chunks: Vec::new() };
+            let d = Resolved { tid, ak, fragment: st, lo: 0, hi: 0, schema: None, retention: Some(retention), expires: None, replaces: None, frontiers: Some((frontiers, std::collections::BTreeMap::new(), facts)), chunks: Vec::new() };
             build_and_apply(tx, plan, vec![d]).map(Some)
         })
     }

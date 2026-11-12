@@ -8,7 +8,6 @@ use crate::dice::Dice;
 use crate::harness::{ClockSpec, Report, Res};
 use crate::reach::Uplink;
 use crate::workload;
-use osis_commit::PurgeItem;
 use osis_base::format::ROLE_KEEP_MS;
 use osis_base::{Ak, Role, Tid, Value, WallMs};
 use osis_node::Mutation;
@@ -71,7 +70,7 @@ pub fn purge(sim: &mut NetSim, n: usize, c: osis_base::CommitId, t: Tid) -> Res<
     sim.observe()?;
     let gone = ak(sim, &workload::GONE)?;
     let mut m = Mutation::new();
-    m.purge(PurgeItem::Commit { commit: c, tid: t, ak: gone.clone() });
+    m.purge_commit(c, t, gone.clone());
     m.remove_aspect(t, &workload::GONE).map_err(|e| sim.fail(e.to_string()))?;
     sim.commit(n, m)?;
     sim.purged.push((c, t, gone));

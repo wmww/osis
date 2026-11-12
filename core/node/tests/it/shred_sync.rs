@@ -8,7 +8,6 @@ use crate::net::hosted_nodes;
 use crate::net;
 use net::*;
 use osis_base::{Ak, Role};
-use osis_commit::PurgeItem;
 use osis_node::Mutation;
 use osis_schema::RawKey;
 use osis_node::sync::Event;
@@ -40,7 +39,7 @@ fn synced(f: &Faults) -> (Net, usize, osis_base::Tid, osis_base::CommitId) {
 
 fn purge(net: &mut Net, b: usize, t: osis_base::Tid, c: osis_base::CommitId) -> osis_node::Result<()> {
     let mut m = Mutation::new();
-    m.purge(PurgeItem::Commit { commit: c, tid: t, ak: gone() });
+    m.purge_commit(c, t, gone());
     m.remove_aspect(t, &GONE).unwrap();
     net.engine(b).commit(m).map(|_| ())
 }
@@ -188,7 +187,7 @@ fn purge_leaves_reaction_through_hosts_spec_crdt_4_7() {
     net.advance(5);
     let mut m = Mutation::new();
     m.op(t, &MAP, PathOp { path: vec![PathSeg::Key(s("other"))], op: Op::Set(item("w", 3)) }).unwrap();
-    m.purge(PurgeItem::Commit { commit: e, tid: t, ak: Ak::new(MAP.ak()).unwrap() });
+    m.purge_commit(e, t, Ak::new(MAP.ak()).unwrap());
     net.engine(b).commit(m).unwrap().unwrap();
     net.run();
     net.engine(a).snapshot(&t, &Ak::new(MAP.ak()).unwrap()).unwrap();

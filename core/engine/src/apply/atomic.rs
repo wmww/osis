@@ -18,7 +18,7 @@ use std::sync::Arc;
 use crate::engine::Gives;
 
 /// Notes a held compaction snapshot of `(tid, ak)` with its frontiers and `Absorbed`.
-pub(crate) fn note_snapshot(core: &mut Core, tid: &Tid, ak: &Ak, ts: osis_base::Ts, id: &CommitId, (fr, abs): Gives) {
+pub(crate) fn note_snapshot(core: &mut Core, tid: &Tid, ak: &Ak, ts: osis_base::Ts, id: &CommitId, (fr, abs, _): Gives) {
     // kept in (`ts`, ID) order, so arrival order (a rebuild's is the store's) does not show
     let v = core.ix.snapshots.entry_or_default((*tid, ak.clone()));
     if !v.iter().any(|x| x.1 == *id) {
@@ -185,7 +185,7 @@ impl PartRef<'_> {
     /// A snapshot's frontiers and `Absorbed`.
     fn gives(&self) -> Option<Gives> {
         match self {
-            PartRef::Whole(Decoded::Snapshot(x)) => Some((x.frontiers.clone(), x.absorbed.clone().into_iter().collect())),
+            PartRef::Whole(Decoded::Snapshot(x)) => Some((x.frontiers.clone(), x.absorbed.clone().into_iter().collect(), x.facts.clone())),
             PartRef::Whole(Decoded::Delta(_)) => None,
             PartRef::Streamed(s) => s.gives.clone(),
         }
@@ -263,7 +263,7 @@ pub(super) fn stream_stored(tx: &mut Tx<'_>, h: &Header, id: &CommitId, ai: usiz
         return Err(e);
     }
     let head = r.map_err(|_| Error::Corrupt("a verified delta failed to decode again"))?;
-    Ok(head.map(|x| (x.frontiers, x.absorbed.into_iter().collect())))
+    Ok(head.map(|x| (x.frontiers, x.absorbed.into_iter().collect(), x.facts)))
 }
 
 /// What the joins of a commit's parts leave for the rest of apply.

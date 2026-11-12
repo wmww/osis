@@ -529,7 +529,7 @@ fn purged_list_element_keeps_edit_in_any_order_spec_crdt_4_7() {
     let e = lp.peers[0].commit(m).unwrap().unwrap();
     lp.advance(5);
     let mut m = Mutation::new();
-    m.purge(osis_commit::PurgeItem::Commit { commit: c, tid: t, ak: k.clone() });
+    m.purge_commit(c, t, k.clone());
     m.set(t, &REG, &s("beside")).unwrap();
     let p = lp.peers[0].commit(m).unwrap().unwrap();
     let body = lp.peers[1].engine.package(&c).unwrap().unwrap();
@@ -721,7 +721,7 @@ fn purged_hidden_edit_leaves_no_key_spec_sync_7() {
     lp.sync_all().unwrap();
     lp.advance(10);
     let mut m = Mutation::new();
-    m.purge(osis_commit::PurgeItem::Commit { commit: edit, tid: t, ak: gk.clone() });
+    m.purge_commit(edit, t, gk.clone());
     m.set(t, &REG, &s("beside")).unwrap();
     lp.peers[1].commit(m).unwrap().unwrap();
     lp.sync_all().unwrap();

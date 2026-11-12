@@ -545,3 +545,17 @@ pub fn check_bound(bytes: &[u8], f: &Fragment) {
     let bound = crate::decoded_bound(bytes).unwrap();
     assert!(f.approx_bytes() <= bound, "{} > bound {bound}", f.approx_bytes());
 }
+
+/// A hand-built snapshot's `Facts` (§8): the narrowest, one per entry of `commits` (a
+/// `Commits` table value).
+pub fn narrowest_facts(commits: &Value) -> Value {
+    let Value::List(groups) = commits else { return Value::List(Vec::new()) };
+    let n = groups.iter().map(|g| match g {
+        Value::List(x) => match x.get(1) {
+            Some(Value::List(e)) => e.len(),
+            _ => 0,
+        },
+        _ => 0,
+    });
+    Value::List(std::iter::repeat_n(Value::Int(1), n.sum()).collect())
+}

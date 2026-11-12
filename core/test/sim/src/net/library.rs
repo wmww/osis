@@ -842,7 +842,7 @@ pub fn purge_tombstones(seed: u64) -> Res<Report> {
             // the author, or admin `a`, which holds the message by now
             let by = if d.pct(50) { author } else { a };
             let mut m = Mutation::new();
-            m.purge(osis_commit::PurgeItem::Commit { commit: c, tid: t, ak: k.clone() });
+            m.purge_commit(c, t, k.clone());
             m.set(t, &workload::NOTE, &Value::Str(format!("message {said}"))).map_err(|x| sim.fail(x.to_string()))?;
             if sim.commit(by, m)?.is_some() {
                 purged.insert(c);
@@ -927,7 +927,7 @@ fn purge_falls_how(name: &str, seed: u64, churn: bool) -> Res<Report> {
     }
     let purge = |sim: &mut NetSim| -> Res<()> {
         let mut m = Mutation::new();
-        m.purge(osis_commit::PurgeItem::Commit { commit: c, tid: t, ak: k.clone() });
+        m.purge_commit(c, t, k.clone());
         m.set(t, &workload::NOTE, &Value::Str("purged".into())).map_err(|e| sim.fail(e.to_string()))?;
         sim.commit(x, m)?.ok_or_else(|| sim.fail("wrote nothing"))?;
         Ok(())

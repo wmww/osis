@@ -744,7 +744,7 @@ mod tests {
                 "purged" => {
                     lp.advance(10);
                     let mut m = Mutation::new();
-                    m.purge(osis_commit::PurgeItem::Commit { commit: r, tid: t, ak: x.clone() }).op(t, &x, PathOp { path: vec![], op: Op::Replace(map_of(&[("p", 1)])) }).unwrap().retention(t, &x, keep).unwrap();
+                    m.purge_commit(r, t, x.clone()).op(t, &x, PathOp { path: vec![], op: Op::Replace(map_of(&[("p", 1)])) }).unwrap().retention(t, &x, keep).unwrap();
                     lp.peers[0].commit(m).unwrap();
                 }
                 _ => {

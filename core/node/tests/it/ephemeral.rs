@@ -5795,7 +5795,7 @@ fn purge_that_falls(wait: u64, copy: bool) -> (Net, usize, Tid, CommitId) {
     }
     net.advance(5_000);
     let mut m = Mutation::new();
-    m.purge(osis_commit::PurgeItem::Commit { commit: c, tid: t, ak: k.clone() });
+    m.purge_commit(c, t, k.clone());
     m.set(t, &REG, &s("purging")).unwrap();
     net.engine(x).write(m).unwrap();
     net.feed(x, Event::Local);

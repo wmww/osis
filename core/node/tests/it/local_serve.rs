@@ -57,7 +57,7 @@ fn purged_chunks_leave_local_label_spec_sync_5() {
     let ids = listed(&mut net, a, &l);
     assert!(chunks.iter().all(|id| ids.contains(id)), "chunks served");
     let mut m = osis_node::Mutation::new();
-    m.purge(osis_commit::PurgeItem::Commit { commit: c, tid: t, ak: Ak::new(GONE.ak()).unwrap() });
+    m.purge_commit(c, t, Ak::new(GONE.ak()).unwrap());
     m.remove_aspect(t, &GONE).unwrap();
     net.engine(a).commit(m).unwrap();
     net.run();
@@ -312,7 +312,7 @@ fn local_run(full: bool) -> (Vec<Vec<String>>, Vec<(u64, u64)>) {
     let c = net.engine(a).commit(m).unwrap().unwrap();
     step(&mut net);
     let mut m = osis_node::Mutation::new();
-    m.purge(osis_commit::PurgeItem::Commit { commit: c, tid: u, ak: Ak::new(GONE.ak()).unwrap() });
+    m.purge_commit(c, u, Ak::new(GONE.ak()).unwrap());
     m.remove_aspect(u, &GONE).unwrap();
     net.engine(a).commit(m).unwrap();
     step(&mut net);
@@ -968,7 +968,7 @@ fn chunks_answered_late(lost: bool, writer: bool) {
         net.release_host(h);
     }
     let mut m = osis_node::Mutation::new();
-    m.purge(osis_commit::PurgeItem::Commit { commit: c, tid: t, ak: Ak::new(GONE.ak()).unwrap() });
+    m.purge_commit(c, t, Ak::new(GONE.ak()).unwrap());
     m.remove_aspect(t, &GONE).unwrap();
     net.fetched.insert(w, Vec::new());
     net.engine(w).commit(m).unwrap();
@@ -1041,7 +1041,7 @@ fn never_held_chunks_deleted(hostile: bool) {
     net.bare_blobs.remove(&b);
     net.fetched.insert(b, Vec::new());
     let mut m = osis_node::Mutation::new();
-    m.purge(osis_commit::PurgeItem::Commit { commit: c, tid: t, ak: Ak::new(GONE.ak()).unwrap() });
+    m.purge_commit(c, t, Ak::new(GONE.ak()).unwrap());
     m.remove_aspect(t, &GONE).unwrap();
     if hostile {
         assert!(chunks.len() > 1, "chunks to swap");
@@ -1142,7 +1142,7 @@ fn certificate_copy_answered_late(lost: bool) {
         net.run();
     }
     let mut m = osis_node::Mutation::new();
-    m.purge(osis_commit::PurgeItem::Commit { commit: c, tid: u, ak: ak.clone() });
+    m.purge_commit(c, u, ak.clone());
     m.remove_aspect(u, &ak).unwrap();
     net.engine(a).commit(m).unwrap();
     net.feed(a, Event::Local);

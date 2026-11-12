@@ -31,7 +31,7 @@ fn ts(t: u64) -> Ts {
 
 fn snapshot(state: &Fragment, pages: &mut Seen) -> usize {
     let cx = DeltaCtx { ts: ts(1 << 30), own: Source::session(osis_crdt::Session { node: Tid::from_bytes([9; 15]), nonce: [0; osis_crdt::SESSION_NONCE_LEN] }), range: CounterRange::EMPTY, kind: DeltaKind::Snapshot };
-    let s = Snapshot { absorbed: Default::default(), nonce: [0; 16], fragment: state.clone(), frontiers: Frontiers::default() };
+    let s = Snapshot { absorbed: Default::default(), facts: Default::default(), nonce: [0; 16], fragment: state.clone(), frontiers: Frontiers::default() };
     encode_snapshot(&s, &cx, Some(pages)).unwrap().len()
 }
 

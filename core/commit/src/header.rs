@@ -3,7 +3,6 @@
 
 use crate::Error;
 use crate::cbor::{ak, as_bytes, as_list, as_opt, as_tid, as_uint, tid, uidx, uint};
-use osis_base::cbor::MAJOR_BYTES;
 use osis_base::format::{CHUNK_THRESHOLD, DELETE_ADMIN, DELETE_WRITER, FORMAT_VERSION, MAX_BLOB, MAX_OBJECT_DEPTH, TAG_SET, TID_LEN};
 use osis_base::{Ak, BlobId, CommitId, Limits, Link, Reader, Tid, Ts, Value};
 use osis_crdt::DeltaKind;
@@ -162,8 +161,10 @@ pub struct ChunkEntry {
 /// A purge request item (spec/wire.md §4).
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum PurgeItem {
-    /// That commit's deltas on that aspect.
-    Commit { commit: CommitId, tid: Tid, ak: Ak },
+    /// The delta on that aspect of the commit stamped `ts` whose own writes are `src`'s (its session,
+    /// or a commit-form commit's ID): one commit per stamp and source on an aspect, so it names
+    /// that commit's delta where its header is not held too (spec/commits.md §5 Purge).
+    Commit { tid: Tid, ak: Ak, ts: Ts, src: osis_crdt::Source },
     /// Every delta on that aspect of every commit with a smaller `ts`.
     Aspect { tid: Tid, ak: Ak },
     /// Every delta on that aspect of every commit with a smaller `ts` whose header actor is
@@ -354,7 +355,14 @@ fn chunk_value(c: &ChunkEntry) -> Value {
 
 pub(crate) fn purge_value(p: &PurgeItem) -> Value {
     match p {
-        PurgeItem::Commit { commit, tid: t, ak: a } => Value::List(vec![Value::bytes(&commit.0), tid(t), ak(a)]),
+        PurgeItem::Commit { tid: t, ak: a, ts, src } => {
+            let src = match src.kind() {
+                osis_crdt::SourceKind::Session(s) => s.to_bytes().to_vec(),
+                osis_crdt::SourceKind::Commit(c) => c.0.to_vec(),
+                osis_crdt::SourceKind::Derived(_) => Vec::new(),
+            };
+            Value::List(vec![tid(t), ak(a), uint(ts.to_u64()), Value::Bytes(src)])
+        }
         PurgeItem::Aspect { tid: t, ak: a } => Value::List(vec![tid(t), ak(a)]),
         PurgeItem::Author { tid: t, ak: a, actor } => Value::List(vec![tid(t), ak(a), tid(actor)]),
     }
@@ -532,16 +540,17 @@ fn read_chunk(r: &mut Reader<'_>) -> Result<ChunkEntry, Error> {
 fn read_purge(r: &mut Reader<'_>) -> Result<PurgeItem, Error> {
     match r.array()? {
         2 => Ok(PurgeItem::Aspect { tid: read_tid(r)?, ak: read_ak(r)? }),
-        3 => {
-            let first = r.bytes()?;
-            // the second place tells them apart: a tid, or an aspect key's text
-            if r.peek_major() == Some(MAJOR_BYTES) {
-                let commit = first.try_into().map(CommitId).map_err(|_| Error::Malformed("purge commit"))?;
-                Ok(PurgeItem::Commit { commit, tid: read_tid(r)?, ak: read_ak(r)? })
-            } else {
-                let tid = first.try_into().map(Tid::from_bytes).map_err(|_| Error::Malformed("purge tid"))?;
-                Ok(PurgeItem::Author { tid, ak: read_ak(r)?, actor: read_tid(r)? })
-            }
+        3 => Ok(PurgeItem::Author { tid: read_tid(r)?, ak: read_ak(r)?, actor: read_tid(r)? }),
+        4 => {
+            let (tid, ak) = (read_tid(r)?, read_ak(r)?);
+            let ts = Ts::from_u64(r.uint()?).ok_or(Error::Malformed("purge ts"))?;
+            let b = r.bytes()?;
+            let src = match b.len() {
+                31 => osis_crdt::Source::session(osis_crdt::Session::from_bytes(b.try_into().map_err(|_| Error::Malformed("purge source"))?)),
+                32 => osis_crdt::Source::commit(CommitId(b.try_into().map_err(|_| Error::Malformed("purge source"))?)),
+                _ => return Err(Error::Malformed("purge source")),
+            };
+            Ok(PurgeItem::Commit { tid, ak, ts, src })
         }
         _ => Err(Error::Malformed("purge item arity")),
     }

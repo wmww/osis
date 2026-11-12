@@ -145,7 +145,7 @@ fn frag(f: &Fragment) -> Result<hm::Frag, String> {
     let own = crdt_model::stamp::Source::session(250, 0);
     let crdt_model::stamp::Source::Session(own_bytes) = &own else { unreachable!() };
     let cx = osis_crdt::DeltaCtx { ts: osis_base::Ts::from_u64(ts).unwrap(), own: Source::session(osis_crdt::Session::from_bytes(own_bytes)), range: osis_crdt::CounterRange::EMPTY, kind: osis_crdt::DeltaKind::Snapshot };
-    let snap = osis_crdt::Snapshot { nonce: [0; 16], fragment: f.clone(), frontiers: Default::default(), absorbed: Default::default() };
+    let snap = osis_crdt::Snapshot { nonce: [0; 16], fragment: f.clone(), frontiers: Default::default(), absorbed: Default::default(), facts: Default::default() };
     let bytes = osis_crdt::encode_snapshot(&snap, &cx, None).map_err(|e| format!("encode: {e:?}"))?;
     crdt_model::wire::decode_snapshot(&bytes, &mut crdt_model::wire::Ctx::new(ts, own, 1)).map(|x| x.0).map_err(|e| format!("crdt-model decode: {e:?}"))
 }
@@ -517,7 +517,15 @@ fn convert(e: &mut Engine, hist: &History) -> Input {
             .map(|p| {
                 let (thing, aspect) = (cv.id(p.tid()), cv.aspect(p.ak().as_str()));
                 match p {
-                    osis_commit::PurgeItem::Commit { commit, .. } => hm::PurgeItem::Commit { commit: cv.commit(commit), thing, aspect },
+                    osis_commit::PurgeItem::Commit { ts, src, .. } => {
+                        // the commit of that stamp in the history (one per stamp and source)
+                        let named = cv.hist.headers.iter().find(|(c, h)| h.ts == *ts && h.form.own_source(h.author, **c) == *src).map(|x| *x.0);
+                        let commit = match named {
+                            Some(c) => cv.commit(&c),
+                            None => cv.extra(format!("{ts:?} {src:?}")),
+                        };
+                        hm::PurgeItem::Commit { commit, thing, aspect }
+                    }
                     osis_commit::PurgeItem::Aspect { .. } => hm::PurgeItem::Aspect { thing, aspect },
                     osis_commit::PurgeItem::Author { actor, .. } => hm::PurgeItem::Author { thing, aspect, author: cv.id(actor) },
                 }

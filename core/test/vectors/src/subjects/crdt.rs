@@ -142,7 +142,7 @@ fn head(name: &str, spec: &str, kind: &str, w: &W, range: Option<CounterRange>) 
 fn snapshot_case(name: &str, spec: &str, state: &Fragment, frontiers: Frontiers, absorbed: BTreeMap<CommitId, Tid>) -> Record {
     let w = writer(9, 100, 0);
     let cx = DeltaCtx { ts: w.ts, own: w.own.clone(), range: CounterRange::EMPTY, kind: DeltaKind::Snapshot };
-    let snap = Snapshot { nonce: [3; 16], fragment: state.clone(), frontiers, absorbed };
+    let snap = Snapshot { nonce: [3; 16], fragment: state.clone(), frontiers, absorbed, facts: Default::default() };
     let mut pages = Pages::default();
     let bytes = encode_snapshot(&snap, &cx, Some(&mut pages)).unwrap();
     let back = decode_snapshot(&bytes, &cx, &mut Interner::new(), Some(&mut pages.1)).unwrap();

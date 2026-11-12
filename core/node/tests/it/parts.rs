@@ -897,7 +897,7 @@ fn parked_part_goes_at_its_purge_spec_commits_5() {
         let mut m = Mutation::new();
         let now = f.lp.peers[0].engine.now();
         m.set(x, &osis_schema::core_types::PURGE, &now).unwrap();
-        m.purge(osis_commit::PurgeItem::Commit { commit: b.id(), tid: x, ak: ak("t:future.0") });
+        m.purge(crate::common::stamp_item(&b.header, b.id(), x, ak("t:future.0")));
         let rq = f.lp.peers[0].commit(m).unwrap().unwrap();
         let rq = f.lp.peers[0].engine.package(&rq).unwrap().unwrap();
         let mut p = crate::flows::forensic_peer(87, &osis_store::Faults::new());

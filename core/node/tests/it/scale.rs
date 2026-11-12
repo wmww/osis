@@ -991,7 +991,6 @@ fn judging_every_body_reads_each_once_spec_commits_5() {
 /// of them each: (a join of a new writer, X's removal (the requests fall), X's re-grant (they
 /// rise)) at the first admin.
 fn purge_rejudge(n: usize) -> [Work; 3] {
-    use osis_commit::PurgeItem;
     use osis_schema::{Aspect, StaticSchema};
     static S: StaticSchema = StaticSchema::new("purgecost.osis", "revision 1; purgeable_by(author, admin) aspect l:msg.0: string;\n");
     const MSG: Aspect<Value> = Aspect::new("l:msg.0", &S);
@@ -1011,7 +1010,7 @@ fn purge_rejudge(n: usize) -> [Work; 3] {
     let mut pks = Vec::new();
     for i in 0..r {
         let mut m = Mutation::new();
-        m.purge(PurgeItem::Commit { commit: ids[i * n / r], tid: t, ak: k.clone() });
+        m.purge(lp.peers[0].engine.purge_item(&ids[i * n / r], t, k.clone()).unwrap());
         m.set(t, &MSG, &Value::Str(format!("p{i}"))).unwrap();
         let c = lp.peers[1].commit(m).unwrap().unwrap();
         pks.push(lp.peers[1].engine.package(&c).unwrap().unwrap());

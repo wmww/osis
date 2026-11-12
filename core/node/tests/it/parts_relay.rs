@@ -183,7 +183,7 @@ fn purged_part_leaves_its_blob_spec_commits_5() {
     x.net.advance(10);
     let mut m = osis_node::Mutation::new();
     m.set(h, &REG, &Value::Str("public".into())).unwrap();
-    m.purge(osis_commit::PurgeItem::Commit { commit: c, tid: h, ak: osis_base::Ak::new("t:reg.0").unwrap() });
+    m.purge_commit(c, h, osis_base::Ak::new("t:reg.0").unwrap());
     let p = x.net.engine(a).commit(m).unwrap().unwrap();
     let (host, l) = (x.host, x.l);
     push(&mut x.net, b, host, l, e, 100);

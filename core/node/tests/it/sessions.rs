@@ -293,7 +293,7 @@ fn untraced_frontier_entry_is_bad_input_spec_crdt_8() {
     let author = lp.peers[0].engine.me();
     let f = lp.peers[0].engine.state(&t, &reg).unwrap().unwrap().clone();
     let cx = osis_commit::writer_ctx(osis_commit::Form::Commit, osis_commit::Kind::ContentSnapshot, now, author, 0, 0);
-    let sound = osis_crdt::encode_snapshot(&osis_crdt::Snapshot { absorbed: Default::default(), nonce: [7; 16], fragment: f, frontiers: Default::default() }, &cx, None).unwrap();
+    let sound = osis_crdt::encode_snapshot(&osis_crdt::Snapshot { absorbed: Default::default(), facts: Default::default(), nonce: [7; 16], fragment: f, frontiers: Default::default() }, &cx, None).unwrap();
     let tamper = |edit: &dyn Fn(&mut Vec<Value>)| {
         let Value::List(mut top) = osis_base::decode(&sound, &osis_base::Limits::DEFAULT).unwrap() else { panic!() };
         edit(&mut top);

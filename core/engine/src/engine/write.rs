@@ -46,6 +46,8 @@ pub struct Mutation {
     /// Commit-form dots (spec/commits.md §3); else session form.
     pub(crate) commit_form: bool,
     pub(crate) purge: Vec<PurgeItem>,
+    /// Purge items by commit ID, named by their stamp at commit (`Core::purge_item`).
+    pub(crate) purge_named: Vec<(CommitId, Tid, Ak)>,
     pub(crate) undoes: Option<CommitId>,
     pub(crate) frontier: Option<Value>,
     /// Role flows judge their own authority (invite grants, self-removals).
@@ -95,7 +97,7 @@ fn ak_of<K: RawKey>(key: &K) -> Result<Ak> {
 
 impl Mutation {
     pub fn new() -> Mutation {
-        Mutation { creates: Creates::new(), aspects: BTreeMap::new(), actor: None, confined: false, commit_form: false, purge: Vec::new(), undoes: None, frontier: None, unchecked: false, signer: None, dead_resets: BTreeMap::new(), fresh_resets: BTreeMap::new(), sweeps: BTreeSet::new(), fresh: Default::default(), deleting: Default::default(), ts: None, blind: None, synced: Vec::new(), kept: Vec::new(), references: Vec::new(), rotation: None }
+        Mutation { creates: Creates::new(), aspects: BTreeMap::new(), actor: None, confined: false, commit_form: false, purge: Vec::new(), purge_named: Vec::new(), undoes: None, frontier: None, unchecked: false, signer: None, dead_resets: BTreeMap::new(), fresh_resets: BTreeMap::new(), sweeps: BTreeSet::new(), fresh: Default::default(), deleting: Default::default(), ts: None, blind: None, synced: Vec::new(), kept: Vec::new(), references: Vec::new(), rotation: None }
     }
 
     /// The actor this node acts for (header field 2); default the node itself.
@@ -249,6 +251,13 @@ impl Mutation {
         self
     }
 
+    /// A purge request item naming commit `c`'s delta on `(tid, ak)` by its stamp
+    /// (`PurgeItem::Commit`): `UnknownCommit` at commit unless its header is held here.
+    pub fn purge_commit(&mut self, c: CommitId, tid: Tid, ak: Ak) -> &mut Self {
+        self.purge_named.push((c, tid, ak));
+        self
+    }
+
     /// Makes this an undo of `target` (spec/commits.md §7) acting as the mutation's actor; the
     /// mutation may carry no other ops (`Misuse` at commit).
     pub fn undo(&mut self, target: CommitId) -> &mut Self {
@@ -269,7 +278,7 @@ impl Mutation {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.creates.is_empty() && self.aspects.is_empty() && self.purge.is_empty() && self.undoes.is_none() && self.deleting.is_empty()
+        self.creates.is_empty() && self.aspects.is_empty() && self.purge.is_empty() && self.purge_named.is_empty() && self.undoes.is_none() && self.deleting.is_empty()
     }
 }
 
@@ -439,8 +448,8 @@ pub(crate) struct Resolved {
     pub expires: Option<u64>,
     /// The fire this delta replaces (spec/commits.md §5 Signals).
     pub replaces: Option<CommitId>,
-    /// A snapshot delta's frontiers and absorbed commits (spec/crdt.md §8).
-    pub frontiers: Option<(osis_crdt::Frontiers, std::collections::BTreeMap<osis_base::CommitId, Tid>)>,
+    /// A snapshot delta's frontiers, absorbed commits and facts (spec/crdt.md §8).
+    pub frontiers: Option<(osis_crdt::Frontiers, std::collections::BTreeMap<osis_base::CommitId, Tid>, osis_crdt::Facts)>,
     /// Chunk blobs of large values the delta introduces.
     pub chunks: Vec<osis_label::Written>,
 }
@@ -676,7 +685,7 @@ pub(crate) fn build_and_apply(tx: &mut Tx<'_>, plan: CommitPlan, deltas: Vec<Res
         let mut bw = BlobWriter::new(&framing, &mut blobs, &mut *tx.rng);
         let fragment = d.fragment;
         let encoded = match d.frontiers {
-            Some((frontiers, absorbed)) => osis_crdt::encode_snapshot(&osis_crdt::Snapshot { nonce, fragment, frontiers, absorbed }, &cx, Some(&mut bw)),
+            Some((frontiers, absorbed, facts)) => osis_crdt::encode_snapshot(&osis_crdt::Snapshot { nonce, fragment, frontiers, absorbed, facts }, &cx, Some(&mut bw)),
             None => encode_delta(&Delta { nonce, fragment }, &cx, Some(&mut bw)),
         };
         let bytes = encoded?;
@@ -804,7 +813,7 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
         }
         None => tx.core.writer()?,
     };
-    if m.undoes.is_some() && !(m.creates.is_empty() && m.aspects.is_empty() && m.purge.is_empty() && m.frontier.is_none()) {
+    if m.undoes.is_some() && !(m.creates.is_empty() && m.aspects.is_empty() && m.purge.is_empty() && m.purge_named.is_empty() && m.frontier.is_none()) {
         return Err(Error::Misuse("an undo mutation carries no other ops"));
     }
     let core_schema = Arc::new(osis_schema::core_schema().clone());
@@ -856,6 +865,10 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
             Error::Misuse("nothing to undo") => Ok(None),
             e => Err(e),
         });
+    }
+    for (c, tid, ak) in std::mem::take(&mut m.purge_named) {
+        let item = tx.core.purge_item(&c, tid, ak).ok_or(Error::UnknownCommit(c))?;
+        m.purge.push(item);
     }
     let base = CommitPlan { kind, ts, actor: m.actor.unwrap_or(node), form: Form::Commit, creates: std::mem::take(&mut m.creates), purge: std::mem::take(&mut m.purge), undoes: None, frontier: m.frontier.take(), signer: node, blind: m.blind.unwrap_or_else(|| draw_blind(&mut *tx.rng)), expires: None, restores: false, rotation: m.rotation.take() };
     if !m.unchecked {

@@ -135,7 +135,7 @@ pub fn read_part_whole<'a>(h: &Header, id: &CommitId, ai: usize, delta: Checked<
     let cx = delta_ctx(h, id, ai, interner)?;
     let (head, fragment) = decode_checked(delta, &cx, interner, pages)?;
     Ok(match cx.kind {
-        DeltaKind::Snapshot => Decoded::Snapshot(Snapshot { nonce: head.nonce, fragment, frontiers: head.frontiers, absorbed: head.absorbed }),
+        DeltaKind::Snapshot => Decoded::Snapshot(Snapshot { nonce: head.nonce, fragment, frontiers: head.frontiers, absorbed: head.absorbed, facts: head.facts }),
         DeltaKind::Writer => Decoded::Delta(Delta { nonce: head.nonce, fragment }),
     })
 }

@@ -208,8 +208,10 @@ fn purged_and_dropped_parts_read_as_such_spec_commits_5() {
     let a = write(&mut lp, 1, d, r, "a");
     let b = write(&mut lp, 3, d, r, "b");
     lp.sync_all().unwrap();
-    let first = purge(&mut lp, 0, PurgeItem::Commit { commit: b, tid: d, ak: reg() });
-    let second = purge(&mut lp, 2, PurgeItem::Commit { commit: b, tid: d, ak: reg() });
+    let item = lp.peers.iter().find_map(|p| p.engine.purge_item(&b, d, reg())).unwrap();
+    let first = purge(&mut lp, 0, item);
+    let item = lp.peers.iter().find_map(|p| p.engine.purge_item(&b, d, reg())).unwrap();
+    let second = purge(&mut lp, 2, item);
     let expiring = {
         let mut m = Mutation::new();
         m.set(d, &reg(), &s("gone soon")).unwrap();
@@ -246,7 +248,8 @@ fn expired_then_purged_tells_the_watch_spec_commits_5() {
     lp.peers[1].tick().unwrap();
     lp.peers[1].engine.watch_commits();
     lp.peers[1].drain_events();
-    let rq = purge(&mut lp, 0, PurgeItem::Commit { commit: c, tid: d, ak: reg() });
+    let item = lp.peers.iter().find_map(|p| p.engine.purge_item(&c, d, reg())).unwrap();
+    let rq = purge(&mut lp, 0, item);
     lp.sync_all().unwrap();
     assert_eq!(held(&mut lp.peers[1], d, &c).body, PartBody::Purged(rq));
     assert!(told_of(&mut lp.peers[1], d).contains(&c), "its meta did not change, its part did");
@@ -325,7 +328,8 @@ fn events_per_commit_exact() {
     lp.peers[1].receive(&pk.bytes, pk.blobs.clone()).unwrap();
     assert_eq!(told_of(&mut lp.peers[1], d), vec![older], "the arrival alone");
     // purged: that one
-    let pc = purge(&mut lp, 0, PurgeItem::Commit { commit: c, tid: d, ak: reg() });
+    let item = lp.peers.iter().find_map(|p| p.engine.purge_item(&c, d, reg())).unwrap();
+    let pc = purge(&mut lp, 0, item);
     let pp = pack(&mut lp, 0, &pc);
     lp.peers[1].drain_events();
     let pk = pack(&mut lp, 1, &c);
@@ -359,7 +363,8 @@ fn purge_aspect_compacts_spec_commits_5() {
     let a = write(&mut lp, 1, d, Retention::default(), "one");
     lp.sync_all().unwrap();
     let k = ak("purge.0");
-    let rq = purge(&mut lp, 0, PurgeItem::Commit { commit: a, tid: d, ak: reg() });
+    let item = lp.peers.iter().find_map(|p| p.engine.purge_item(&a, d, reg())).unwrap();
+    let rq = purge(&mut lp, 0, item);
     purge(&mut lp, 0, PurgeItem::Author { tid: d, ak: reg(), actor: ids[3] });
     let snap = lp.peers[0].engine.snapshot(&d, &k).unwrap().unwrap();
     let h = lp.peers[0].engine.header(&snap).unwrap();
@@ -528,7 +533,7 @@ fn purge_request_floor_holds_purge_on_replace_spec_commits_5() {
     let mut m = Mutation::new();
     keep_in(&mut m, d, &setting(&[("t:reg.0", osis_schema::History::PurgeOnReplace)]));
     m.retention(d, &reg(), Retention { by: PurgeBy::Writer }).unwrap();
-    m.purge(PurgeItem::Commit { commit: w, tid: d, ak: reg() });
+    m.purge_commit(w, d, reg());
     m.set(d, &reg(), &s("p")).unwrap();
     let p = lp.peers[0].commit(m).unwrap().unwrap();
     lp.advance(1_000);
@@ -615,7 +620,7 @@ fn purge_floor_part_told_at_its_floor_spec_commits_5() {
     m.set(d, &reg(), &s("x")).unwrap();
     let now = lp.peers[0].engine.now();
     m.set(d, &ct::PURGE, &now).unwrap();
-    m.purge(PurgeItem::Commit { commit: other, tid: d, ak: reg() });
+    m.purge_commit(other, d, reg());
     let c = lp.peers[0].commit(m).unwrap().unwrap();
     lp.advance(1_000);
     write(&mut lp, 0, d, crate::common::purgeable_by(PurgeBy::AuthorOrAdmin), "y");

@@ -142,7 +142,7 @@ pub struct Delta {
     pub fragment: Fragment,
 }
 
-/// `[nonce, Sources, Commits, Fragment, Frontiers, Absorbed]` (§8).
+/// `[nonce, Sources, Commits, Fragment, Frontiers, Absorbed, Facts]` (§8).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Snapshot {
     pub nonce: [u8; NONCE_LEN],
@@ -151,6 +151,36 @@ pub struct Snapshot {
     /// Commit-form commits whose writes in this aspect the
     /// writer had applied, with their author nodes (§8).
     pub absorbed: BTreeMap<CommitId, Tid>,
+    /// The purge facts of the commits whose stamps the fragment carries, by `(ts, source)`
+    /// (§8 `Facts`), but `Fact::NARROWEST`, which a missing one stands for.
+    pub facts: Facts,
+}
+
+/// A carried commit's facts a purge judges it by where its header is not held (§8 `Facts`,
+/// spec/commits.md §5 Purge): its purgeable-by class on the aspect, and its header actor where
+/// that is not its author.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Fact {
+    pub by: osis_base::PurgeBy,
+    pub actor: Option<Tid>,
+}
+
+impl Fact {
+    /// `admin`, no other actor: what only admins may purge, whoever wrote it.
+    pub const NARROWEST: Fact = Fact { by: osis_base::PurgeBy::Admin, actor: None };
+}
+
+/// A snapshot's facts per `Commits` entry `(ts, source)`; a commit is judged by its origin
+/// source's entry (`fact_source`).
+pub type Facts = BTreeMap<(Ts, Source), Fact>;
+
+/// The source a carried commit's facts are keyed by: a `Derived` one's origin (§2.1: its writes
+/// belong to the commit of the dot it derives from).
+pub fn fact_source(src: &Source) -> Source {
+    match src.kind() {
+        SourceKind::Derived(d) => fact_source(&d.src),
+        _ => src.clone(),
+    }
 }
 
 /// A non-negative integer as a value. Counters and `ts` stay below 2^63 (decoded ones are `Int`).
@@ -512,6 +542,19 @@ impl<'p> Enc<'p> {
     /// `ctr` 0 for a source `fr` has none for (§8; after the collecting pass).
     pub(crate) fn frontiers_value(&self, fr: &Frontiers) -> Value {
         let entries = self.sources.iter().enumerate().filter(|(_, s)| matches!(s.kind(), SourceKind::Session(_))).map(|(i, s)| Value::List(vec![uint(i as u64 + 1), uint(fr.of(s))]));
+        Value::List(entries.collect())
+    }
+
+    /// `Facts := [Fact*]`, `Fact := by | [by, actor]` (§8): one per `Commits` entry, in table
+    /// order; a commit `facts` misses gets `Fact::NARROWEST`.
+    pub(crate) fn facts_value(&self, facts: &Facts) -> Value {
+        let entries = self.commits.iter().map(|c| {
+            let f = facts.get(&(c.ts, c.src.clone())).copied().unwrap_or(Fact::NARROWEST);
+            match f.actor {
+                None => uint(f.by as u64),
+                Some(a) => Value::List(vec![uint(f.by as u64), Value::Tid(a)]),
+            }
+        });
         Value::List(entries.collect())
     }
 
@@ -922,6 +965,40 @@ impl<'a> Dec<'a> {
             }
         }
         Ok(())
+    }
+
+    /// Reads `Facts` (§8): one per `Commits` entry, a purgeable-by class (0 to 3), an actor only
+    /// where it is not the commit's author (its session's tid; a commit-form one's `Absorbed`
+    /// author where listed). The narrowest are left out of the map.
+    pub(crate) fn load_facts(&self, v: &Value, absorbed: &BTreeMap<CommitId, Tid>) -> Result<Facts, Error> {
+        let items = as_array(v)?;
+        if items.len() != self.commits.len() {
+            return Err(Error::Malformed("facts not one per commit entry"));
+        }
+        let mut out = Facts::new();
+        for (c, f) in self.commits.iter().zip(items) {
+            let (by, actor) = match f {
+                Value::List(x) => match x.as_slice() {
+                    [by, Value::Tid(a)] => (as_uint(by)?, Some(*a)),
+                    _ => return Err(Error::Malformed("fact")),
+                },
+                by => (as_uint(by)?, None),
+            };
+            let by = osis_base::PurgeBy::from_id(by).ok_or(Error::Malformed("fact class"))?;
+            let author = match fact_source(&c.src).kind() {
+                SourceKind::Session(s) => Some(s.node),
+                SourceKind::Commit(id) => absorbed.get(id).copied(),
+                SourceKind::Derived(_) => None,
+            };
+            if actor.is_some() && actor == author {
+                return Err(Error::Malformed("fact actor is the author"));
+            }
+            let f = Fact { by, actor };
+            if f != Fact::NARROWEST {
+                out.insert((c.ts, c.src.clone()), f);
+            }
+        }
+        Ok(out)
     }
 
     /// An encoder in check mode over this delta's tables (`stream`): streamed positions

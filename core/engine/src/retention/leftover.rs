@@ -12,7 +12,7 @@ use osis_base::{Ak, CommitId, Tid, Value};
 use osis_crdt::Fragment;
 use osis_store::Shred;
 
-/// A leftover: the stripped fragment and, a snapshot's, its frontiers and `Absorbed`.
+/// A leftover: the stripped fragment and, a snapshot's, its frontiers, `Absorbed` and facts.
 pub(crate) struct Leftover {
     pub fragment: Fragment,
     pub gives: Option<Gives>,
@@ -23,7 +23,7 @@ impl Leftover {
         let body = Value::Bytes(crate::engine::state::encode(&self.fragment)?);
         let v = match &self.gives {
             None => Value::List(vec![Value::Int(0), body]),
-            Some((fr, abs)) => Value::List(vec![Value::Int(1), fr.to(), abs.to(), body]),
+            Some((fr, abs, facts)) => Value::List(vec![Value::Int(1), fr.to(), abs.to(), facts.to(), body]),
         };
         Ok(osis_base::encode(&v))
     }
@@ -34,7 +34,7 @@ impl Leftover {
         let Value::List(items) = &v else { return Err(bad()) };
         let (gives, body) = match items.as_slice() {
             [Value::Int(0), Value::Bytes(b)] => (None, b),
-            [Value::Int(1), fr, abs, Value::Bytes(b)] => (Some((Rec::from(fr).ok_or_else(bad)?, Rec::from(abs).ok_or_else(bad)?)), b),
+            [Value::Int(1), fr, abs, facts, Value::Bytes(b)] => (Some((Rec::from(fr).ok_or_else(bad)?, Rec::from(abs).ok_or_else(bad)?, Rec::from(facts).ok_or_else(bad)?)), b),
             _ => return Err(bad()),
         };
         Ok(Leftover { fragment: crate::engine::state::decode(body)?, gives })

@@ -56,8 +56,14 @@ fn purge(net: &mut Net, n: usize, t: Tid, c: CommitId, r: Retention) -> CommitId
 
 /// A purge of `c`'s part on `ak`, its own delta on `own()` under `r`.
 fn purge_on(net: &mut Net, n: usize, t: Tid, c: CommitId, ak: Ak, r: Retention) -> CommitId {
+    let item = net.engine(n).purge_item(&c, t, ak).unwrap();
+    purge_item(net, n, t, item, r)
+}
+
+/// A purge request carrying `item`, its own delta on `own()` under `r`.
+fn purge_item(net: &mut Net, n: usize, t: Tid, item: PurgeItem, r: Retention) -> CommitId {
     let mut m = Mutation::new();
-    m.purge(PurgeItem::Commit { commit: c, tid: t, ak });
+    m.purge(item);
     m.retention(t, &GONE, r).unwrap();
     // a value of its own: writing the same value again is no write
     static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -651,7 +657,7 @@ fn a_purge_commit_does_not_wait_for_another_label_spec_commits_4() {
     let c = msg(&mut net, b, t, "SECRET", permanent());
     net.run();
     let mut m = Mutation::new();
-    m.purge(PurgeItem::Commit { commit: c, tid: t, ak: k() });
+    m.purge_commit(c, t, k());
     m.set(t, &GONE, &s("after")).unwrap();
     m.set(u, &LIST, &osis_base::Value::List(vec![s("elsewhere")])).unwrap();
     let p = net.engine(a).commit(m).unwrap().unwrap();
@@ -970,7 +976,7 @@ fn a_lasting_request_applies_when_its_killer_left_spec_commits_4() {
     net.run();
     net.advance(1_000);
     let mut m = Mutation::new();
-    m.purge(PurgeItem::Commit { commit: c, tid: t, ak: k() });
+    m.purge_commit(c, t, k());
     m.set(t, &GONE, &s("g1")).unwrap();
     let p = net.engine(a).commit(m).unwrap().unwrap();
     net.run();
@@ -1061,4 +1067,49 @@ fn forget_rebuilds(n: usize) -> u64 {
 fn forgetting_purged_leftovers_rebuilds_once_spec_commits_5() {
     let (small, large) = (forget_rebuilds(10), forget_rebuilds(40));
     assert!(large <= small + 2, "rebuilds grow with the leftovers forgotten: {small} at 10, {large} at 40");
+}
+
+/// Writer `b` writes `v1` then `SECRET` on the register (no history kept: `REG` has no setting)
+/// and compacts it: `b`'s own cover, so every node forgets the commit of `SECRET`
+/// (spec/commits.md §5 Forgetting). That commit, and the item naming it by its stamp.
+fn forgotten_write(net: &mut Net, b: usize, t: Tid) -> (CommitId, PurgeItem) {
+    msg(net, b, t, "v1", Retention::default());
+    net.run();
+    net.advance(1_000);
+    let c = msg(net, b, t, "SECRET", Retention::default());
+    net.run();
+    let item = net.engine(b).purge_item(&c, t, k()).unwrap();
+    let acts = net.sync(b).compact_now(&t, &k()).unwrap();
+    net.actions(b, acts);
+    net.run();
+    net.advance(3_600_000);
+    net.run();
+    (c, item)
+}
+
+// spec/commits.md §5 Purge (Without the header), spec/crdt.md §4.7 Copies: a purge takes the value
+// from every copy a snapshot carries, by stamp or by author, at nodes that forgot the named
+// commit under its author's cover (the purger and the author too) and at a node that never held
+// it, which comes up after the purge
+#[test]
+fn a_purge_reaches_copies_of_a_forgotten_commit_spec_commits_5() {
+    for author in [false, true] {
+        let Chat { mut net, a, b, n, t, .. } = chat();
+        net.keep(a, t, &[(GONE.ak(), History::PurgeOnReplace)]);
+        net.run();
+        let (c, stamp) = forgotten_write(&mut net, b, t);
+        assert_eq!(net.read(a, t), Some(s("SECRET")));
+        for x in [a, b] {
+            assert!(!net.engine(x).commit_ids().contains(&c), "node {x} forgot the commit under its author's cover");
+        }
+        let item = if author { PurgeItem::Author { tid: t, ak: k(), actor: net.tid(b) } } else { stamp };
+        purge_item(&mut net, a, t, item, Retention::default());
+        net.run();
+        for x in [a, b] {
+            assert_ne!(net.read(x, t), Some(s("SECRET")), "by author {author}: node {x} reads the purged value");
+        }
+        net.set_online(n, true);
+        net.run();
+        assert_ne!(net.read(n, t), Some(s("SECRET")), "by author {author}: a new node reads the purged value");
+    }
 }

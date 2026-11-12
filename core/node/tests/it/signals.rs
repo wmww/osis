@@ -4,7 +4,6 @@
 
 use crate::common::*;
 use osis_base::{Ak, CommitId, Role, Tid};
-use osis_commit::PurgeItem;
 use osis_node::engine::listing::{CommitFrom, PartBody};
 use osis_node::local_peer::LocalPeer;
 use osis_node::{Event, Mutation};
@@ -187,7 +186,7 @@ fn signal_purge_and_expiry_per_write_spec_commits_5() {
     lp.advance(1_000);
     let mut m = Mutation::new();
     m.set(d, &ct::PURGE, &lp.peers[0].engine.now()).unwrap();
-    m.purge(PurgeItem::Commit { commit: gone, tid: d, ak: log() });
+    m.purge_commit(gone, d, log());
     let p = lp.peers[0].commit(m).unwrap().unwrap();
     lp.advance(2 * HOUR);
     lp.sync_all().unwrap();
@@ -415,7 +414,7 @@ fn signal_past_its_bound_never_missing_again_spec_commits_5() {
     lp.sync_all().unwrap();
     let mut m = Mutation::new();
     m.set(d, &ct::PURGE, &lp.peers[2].engine.now()).unwrap();
-    m.purge(PurgeItem::Commit { commit: c, tid: d, ak: brief() });
+    m.purge_commit(c, d, brief());
     let p = lp.peers[2].commit(m).unwrap().unwrap();
     lp.sync_all().unwrap();
     assert_eq!(body(&mut lp, 0, d, &c), PartBody::Purged(p));

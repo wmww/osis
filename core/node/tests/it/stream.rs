@@ -1345,7 +1345,7 @@ fn purged_chunks_served(local: bool) -> (usize, usize) {
     }));
     net.tamper_link = Some((b, a));
     let mut m = osis_node::Mutation::new();
-    m.purge(osis_commit::PurgeItem::Commit { commit: c, tid: t, ak: Ak::new(GONE.ak()).unwrap() });
+    m.purge_commit(c, t, Ak::new(GONE.ak()).unwrap());
     m.remove_aspect(t, &GONE).unwrap();
     net.engine(b).commit(m).unwrap();
     if local {

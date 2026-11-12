@@ -6,7 +6,6 @@
 
 use crate::common;
 use common::*;
-use osis_commit::PurgeItem;
 use osis_base::{Clock, ManualClock, Tid, Value};
 use osis_crypto::SeededRng;
 use osis_node::{Config, Engine, Mutation};
@@ -62,7 +61,7 @@ fn setup(dev: &Dev) -> (Engine, Tid, osis_base::CommitId) {
 fn purge(t: Tid, secret: osis_base::CommitId) -> Mutation {
     let mut m = Mutation::new();
     m.set(t, &REG, &s("public")).unwrap();
-    m.purge(PurgeItem::Commit { commit: secret, tid: t, ak: ak("t:reg.0") });
+    m.purge_commit(secret, t, ak("t:reg.0"));
     m
 }
 

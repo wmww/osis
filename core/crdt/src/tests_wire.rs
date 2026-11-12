@@ -234,7 +234,7 @@ fn snapshot_frontiers_spec_8() {
     let fragment = Fragment::Set(Set { meta: Meta::default(), elems });
     let first = crate::Session { node: tid(5), nonce: [0; crate::SESSION_NONCE_LEN] };
     let frontiers = Frontiers { sessions: BTreeMap::from([(first, 7)]) };
-    let s = Snapshot { absorbed: Default::default(), nonce: [0; 16], fragment, frontiers };
+    let s = Snapshot { absorbed: Default::default(), facts: Default::default(), nonce: [0; 16], fragment, frontiers };
     let b = encode_snapshot(&s, &scx, None).unwrap();
     let back = decode_snapshot(&b, &scx, &mut Interner::new(), None).unwrap();
     assert!(back.frontiers.lists(&Source::session(session)) && back.frontiers.of(&Source::session(session)) == 0, "the session is listed with 0");
@@ -337,7 +337,9 @@ fn snap(more_src: Vec<Value>, more_commits: Vec<Value>, f: Value) -> (Vec<u8>, D
     let commits = [vec![l(vec![i(1), l(vec![l(vec![i(5), i(0), i(3)])])])], more_commits].concat();
     // one frontier entry per session source of the table (§8), claiming nothing
     let fr: Vec<Value> = srcs.iter().enumerate().filter(|(_, s)| matches!(s, Value::Bytes(b) if b.len() == 15 || b.len() == 31)).map(|(k, _)| l(vec![i(k as i64 + 1), i(0)])).collect();
-    let b = osis_base::encode(&l(vec![Value::Bytes(vec![0; 16]), l(srcs), l(commits), f, l(fr), l(vec![])]));
+    let commits = l(commits);
+    let facts = crate::testutil::narrowest_facts(&commits);
+    let b = osis_base::encode(&l(vec![Value::Bytes(vec![0; 16]), l(srcs), commits, f, l(fr), l(vec![]), facts]));
     (b, scx)
 }
 
@@ -391,7 +393,7 @@ fn rejects_set_value_of_another_source_spec_5_5() {
     use crate::stamp::{Dot, Stamp};
     let reg = Fragment::Register(Register { reset: None, write: Some(RegWrite { stamp: Stamp::new(ts(5 << 16), sess(tid(3)), 1), value: Some(i(1)) }) });
     let f = Fragment::Set(Set { meta: Meta::default(), elems: BTreeMap::from([(Dot::new(sess(tid(1)), 3), Elem { reset: None, frag: Some(Box::new(reg)) })]) });
-    let b = encode_snapshot(&Snapshot { absorbed: Default::default(), nonce: [0; 16], fragment: f, frontiers: Frontiers::default() }, &cx, None).unwrap();
+    let b = encode_snapshot(&Snapshot { absorbed: Default::default(), facts: Default::default(), nonce: [0; 16], fragment: f, frontiers: Frontiers::default() }, &cx, None).unwrap();
     assert!(!snap_ok(&b, &cx), "node 3 wrote node 1's element value");
 }
 
@@ -508,7 +510,7 @@ fn links_compare_by_bytes_spec_3_3() {
     let entries: BTreeMap<Eid, Entry> = [(Eid::new(dot.clone(), Some(b.clone())), valued), (Eid::new(dot, Some(a.clone())), created)].into_iter().collect();
     assert_eq!(entries.keys().map(|e| e.key().cloned()).collect::<Vec<_>>(), vec![Some(a), Some(b)]);
     let scx = DeltaCtx { ts: ts(9 << 16), own: sess(tid(2)), range: CounterRange::EMPTY, kind: DeltaKind::Snapshot };
-    let snap = Snapshot { absorbed: Default::default(), nonce: [0; 16], fragment: Fragment::Map(Map::new(Meta::default(), entries)), frontiers: Frontiers::default() };
+    let snap = Snapshot { absorbed: Default::default(), facts: Default::default(), nonce: [0; 16], fragment: Fragment::Map(Map::new(Meta::default(), entries)), frontiers: Frontiers::default() };
     let bytes = encode_snapshot(&snap, &scx, None).unwrap();
     let mut back = decode_snapshot(&bytes, &scx, &mut Interner::new(), None).unwrap();
     back.frontiers = back.frontiers.without_zeros();

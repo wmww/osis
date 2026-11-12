@@ -3,7 +3,7 @@
 
 use crate::common;
 use common::*;
-use osis_commit::{CommitBlob, PurgeItem};
+use osis_commit::CommitBlob;
 use osis_base::{Role, Value};
 use osis_crdt::{Op, PathOp, PathSeg};
 use osis_node::local_peer::Package;
@@ -124,7 +124,7 @@ fn purge_drops_snapshots_spec_commits_5() {
     lp.advance(5);
     let mut m = Mutation::new();
     m.set(t, &REG, &s("public")).unwrap();
-    m.purge(PurgeItem::Commit { commit: secret, tid: t, ak: ak("t:reg.0") });
+    m.purge_commit(secret, t, ak("t:reg.0"));
     lp.peers[0].commit(m).unwrap();
     assert!(!lp.peers[0].engine.body_not_dropped(&secret, &t, &ak("t:reg.0")));
     assert!(!lp.peers[0].engine.body_not_dropped(&snap, &t, &ak("t:reg.0")));
@@ -132,7 +132,7 @@ fn purge_drops_snapshots_spec_commits_5() {
     // writer refuses one naming a delta beyond it
     let mut m = Mutation::new();
     m.set(t, &BRIEF, &s("x")).unwrap();
-    m.purge(PurgeItem::Commit { commit: secret, tid: t, ak: ak("t:reg.0") });
+    m.purge_commit(secret, t, ak("t:reg.0"));
     assert!(matches!(lp.peers[0].commit(m), Err(osis_node::Error::Clash(_))));
 }
 
@@ -151,7 +151,7 @@ fn purge_drops_late_snapshot_spec_commits_5() {
     lp.advance(5);
     let mut m = Mutation::new();
     m.set(t, &REG, &s("public")).unwrap();
-    m.purge(PurgeItem::Commit { commit: secret, tid: t, ak: reg.clone() });
+    m.purge_commit(secret, t, reg.clone());
     lp.peers[0].commit(m).unwrap();
     let rest: Vec<Package> = packages(&mut lp, 0).into_iter().filter(|p| p.id != snap && p.id != secret).collect();
     let check = |e: &mut osis_node::Engine, why: &str| {

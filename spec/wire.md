@@ -76,7 +76,7 @@ Aspect    := [tid, ak, lo, hi, Retention, keys, hash, replaces]
 Retention := by
 DeleteKey := [level, pk]
 Chunk     := [blob_id, ai, [ki*], blind]
-PurgeItem := [commit_id, tid, ak] | [tid, ak] | [tid, ak, actor]
+PurgeItem := [tid, ak] | [tid, ak, actor] | [tid, ak, ts, source]
 Rotation  := [signing_key, kem_key, [epoch_id+], [commit_id*], list_root]
 CommitBlobPlaintext := [Header, signature, Opt(inner), [signature*], [Section*]]
 Section   := [[ai*], [chain*], wrap, ciphertext]
@@ -90,7 +90,7 @@ Header fields by position:
 6. `expires`: `Opt(T)`, the commit's expiry, wall ms (spec/commits.md §6).
 7. `aspects`: `[Aspect+]` sorted by the canonical bytes of `[tid, ak]`, distinct.
 8. `chunks`: `[Chunk*]` sorted by blob ID, distinct: every chunk, tree-node and page blob the deltas introduce and, in a compaction snapshot (`kind` 2, 3) or an ephemeral commit, every other blob of the commit's class its deltas link (through their trees and pages) that the writer holds (a link to a blob of the other class is not its blob, spec/commits.md §2), a durable commit's only where its prefix commits to one of that delta's keys; `ai` indexes `aspects`: the delta whose blob it is (that introduced it, or that links it), an index out of range is bad input; `ki` are indices into `keys`, ascending, each among `aspects[ai]`'s `keys` (else bad input): those of the delta that created the blob, or for a blob the commit did not introduce those of its delta's keys the blob's prefix commits to (an ephemeral commit's possibly none); `blind`: the blob's 16-byte link blind (spec/crypto.md §7). Beyond those checks a writer rule: a receiver does not check what a blob's prefix commits to (spec/sync.md §7).
-9. `purge`: `[PurgeItem*]` sorted by canonical bytes, distinct; empty when there is no purge request. `[commit_id, tid, ak]` names that commit's deltas on that aspect; `[tid, ak]` names every delta on that aspect of every commit with a smaller `ts`; `[tid, ak, actor]` those of them whose commit's purge actor is `actor` (spec/permissions.md §6: the actor its header names). The second place tells the three-item forms apart: a tid, or an AK's text.
+9. `purge`: `[PurgeItem*]` sorted by canonical bytes, distinct; empty when there is no purge request. `[tid, ak]` names every delta on that aspect of every commit with a smaller `ts`; `[tid, ak, actor]` those of them whose commit's purge actor is `actor` (spec/permissions.md §6: the actor its header names); `[tid, ak, ts, source]` the delta on that aspect of the commit stamped `ts` whose own writes are `source`'s (spec/crdt.md §2.1: 31 bytes, a session; 32, a commit-form commit's ID; else bad input), one commit per stamp and source on an aspect (spec/commits.md §5 Purge).
 10. `undoes`: `Opt(commit_id)`.
 11. `blind`: 16 random bytes (spec/crypto.md §7).
 12. `keys`: `[DeleteKey*]` sorted by canonical bytes, distinct: the delete keys of the commit's deltas (spec/crypto.md §7), `pk` a valid Ed25519 key (§1, spec/crypto.md §1), at most one at level 2 (the author chain); a key no aspect lists is bad input.

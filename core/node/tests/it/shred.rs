@@ -92,7 +92,7 @@ fn purged_body_unrecoverable_spec_commits_5() {
     lp.advance(5);
     let mut m = Mutation::new();
     m.set(t, &REG, &s("public")).unwrap();
-    m.purge(PurgeItem::Commit { commit: secret, tid: t, ak: ak("t:reg.0") });
+    m.purge_commit(secret, t, ak("t:reg.0"));
     lp.peers[0].commit(m).unwrap();
     assert!(!lp.peers[0].engine.body_not_dropped(&secret, &t, &ak("t:reg.0")));
     assert!(!recoverable(&mut lp.peers[0], marker.as_bytes()), "purged content recovered");
@@ -252,7 +252,7 @@ fn purged_large_value_unrecoverable_spec_commits_5() {
     lp.advance(5);
     let mut m = Mutation::new();
     m.set(t, &BLOB, &Value::Bytes(b"small".to_vec())).unwrap();
-    m.purge(PurgeItem::Commit { commit: secret, tid: t, ak: ak("t:blob.0") });
+    m.purge_commit(secret, t, ak("t:blob.0"));
     lp.peers[0].commit(m).unwrap();
     assert!(!lp.peers[0].engine.body_not_dropped(&secret, &t, &ak("t:blob.0")));
     assert!(!opens(&mut lp.peers[0]), "a purged chunk opened");
@@ -318,7 +318,7 @@ fn removed_map_key_gone_after_purge_spec_crdt_5_6() {
     lp.advance(5);
     let mut m = Mutation::new();
     m.op(t, &BIG, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(s("other"))], op: osis_crdt::Op::Set(s("w")) }).unwrap();
-    m.purge(PurgeItem::Commit { commit: c, tid: t, ak: k.clone() });
+    m.purge_commit(c, t, k.clone());
     lp.peers[0].commit(m).unwrap();
     lp.peers[0].engine.snapshot(&t, &k).unwrap().unwrap();
     lp.sync(0, 1).unwrap();
@@ -421,7 +421,7 @@ fn purge_of_a_waiting_part_reads_alike_spec_commits_5() {
         let mut m = Mutation::new();
         m.set(t3, &REG, &s("other3")).unwrap();
         for a in &aspects {
-            m.purge(PurgeItem::Commit { commit: c, tid: t, ak: a.clone() });
+            m.purge_commit(c, t, a.clone());
         }
         let p = lp.peers[0].commit(m).unwrap().unwrap();
         let request = lp.peers[0].engine.package(&p).unwrap().unwrap();
@@ -485,7 +485,7 @@ fn purge_of_a_part_waiting_aside_reads_alike_spec_commits_5() {
         lp.advance(5);
         let mut m = Mutation::new();
         m.set(t3, &REG, &s("other3")).unwrap();
-        m.purge(PurgeItem::Commit { commit: c, tid: t, ak: ak("t:reg.0") });
+        m.purge_commit(c, t, ak("t:reg.0"));
         let p = lp.peers[0].commit(m).unwrap().unwrap();
         let request = lp.peers[0].engine.package(&p).unwrap().unwrap();
         let mut part = osis_commit::CommitBlob::decode(&whole.bytes).unwrap();
@@ -550,7 +550,7 @@ fn stripped_delta_goes_with_its_part_past_expiry_spec_commits_5() {
     lp.advance(5);
     let mut m = Mutation::new();
     m.set(q, &REG, &s("q")).unwrap();
-    m.purge(PurgeItem::Commit { commit: c, tid: t, ak: ak("t:reg.0") });
+    m.purge_commit(c, t, ak("t:reg.0"));
     let p = lp.peers[0].commit(m).unwrap().unwrap();
     let request = lp.peers[0].engine.package(&p).unwrap().unwrap();
     lp.deliver(1, &request).unwrap();
@@ -649,7 +649,7 @@ fn past_expiry_and_purge_alike(every: bool) {
     lp.advance(5);
     let mut m = Mutation::new();
     m.set(t3, &REG, &s("other3")).unwrap();
-    m.purge(PurgeItem::Commit { commit: c, tid: t, ak: ak("t:reg.0") });
+    m.purge_commit(c, t, ak("t:reg.0"));
     let p = lp.peers[0].commit(m).unwrap().unwrap();
     let request = lp.peers[0].engine.package(&p).unwrap().unwrap();
     let ids: std::collections::BTreeSet<_> = lp.packages(0).unwrap().iter().map(|p| p.id).collect();
@@ -782,7 +782,7 @@ fn tombstone_alike(stride: u64) {
     let whole = lp.peers[0].engine.package(&c).unwrap().unwrap();
     lp.advance(5);
     let mut m = Mutation::new();
-    m.purge(PurgeItem::Commit { commit: c, tid: t, ak: ak("t:reg.0") });
+    m.purge_commit(c, t, ak("t:reg.0"));
     m.set(t, &REG, &s("after")).unwrap();
     let pc = lp.peers[0].commit(m).unwrap().unwrap();
     let request = lp.peers[0].engine.package(&pc).unwrap().unwrap();
@@ -865,7 +865,7 @@ fn request_is_judged_again_when_the_named_delta_arrives_spec_sync_6() {
     let body = lp.peers[0].engine.package(&c).unwrap().unwrap();
     lp.advance(5);
     let mut m = Mutation::new();
-    m.purge(PurgeItem::Commit { commit: c, tid: t, ak: ak("t:reg.0") });
+    m.purge_commit(c, t, ak("t:reg.0"));
     m.set(t, &REG, &s("after")).unwrap();
     let pc = lp.peers[0].commit(m).unwrap().unwrap();
     let request = lp.peers[0].engine.package(&pc).unwrap().unwrap();
@@ -901,7 +901,7 @@ fn purged_page_away(lp: &mut LocalPeer, marker: &str) -> (Tid, osis_base::Commit
     lp.advance(5);
     let mut m = Mutation::new();
     m.set(t, &REG, &s("public")).unwrap();
-    m.purge(PurgeItem::Commit { commit: c, tid: t, ak: a });
+    m.purge_commit(c, t, a);
     let p = lp.peers[0].commit(m).unwrap().unwrap();
     let request = lp.peers[0].engine.package(&p).unwrap().unwrap();
     lp.peers[1].receive(&whole.bytes, held).unwrap();
@@ -981,7 +981,7 @@ fn snapshot_leftover_stripped_again_unrecoverable_spec_commits_5() {
     let purge = |lp: &mut LocalPeer, c, key: &str| {
         let mut m = Mutation::new();
         m.op(t, &BIG, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(s(key))], op: osis_crdt::Op::Set(s("w")) }).unwrap();
-        m.purge(PurgeItem::Commit { commit: c, tid: t, ak: k.clone() });
+        m.purge_commit(c, t, k.clone());
         lp.peers[0].commit(m).unwrap().unwrap();
     };
     purge(&mut lp, cx, "ox");
@@ -1059,7 +1059,7 @@ fn big_put(lp: &mut LocalPeer, i: usize, t: Tid, key: &str, val: &str, purge: Op
     let mut m = Mutation::new();
     m.op(t, &BIG, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(s(key))], op: osis_crdt::Op::Set(s(val)) }).unwrap();
     if let Some(c) = purge {
-        m.purge(PurgeItem::Commit { commit: c, tid: t, ak: ak("t:big.0") });
+        m.purge_commit(c, t, ak("t:big.0"));
     }
     lp.peers[i].commit(m).unwrap().unwrap()
 }
@@ -1122,7 +1122,7 @@ fn purge_leaves_later_edits_own_key_spec_crdt_4_7() {
     let purge = |lp: &mut LocalPeer, c: osis_base::CommitId, other: &str| {
         let mut m = Mutation::new();
         m.op(t, &MAP, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(s(other))], op: osis_crdt::Op::Set(item("w", 3)) }).unwrap();
-        m.purge(PurgeItem::Commit { commit: c, tid: t, ak: k.clone() });
+        m.purge_commit(c, t, k.clone());
         lp.peers[0].commit(m).unwrap();
         lp.sync(0, 1).unwrap();
     };
@@ -1195,7 +1195,7 @@ fn undelete_chars_are_their_own_values_spec_crdt_4_7() {
     lp.advance(5);
     let mut m = Mutation::new();
     m.set(t, &REG, &s("x")).unwrap();
-    m.purge(PurgeItem::Commit { commit: made, tid: t, ak: k.clone() });
+    m.purge_commit(made, t, k.clone());
     lp.peers[0].commit(m).unwrap();
     lp.sync(0, 1).unwrap();
     for i in [0, 1] {
@@ -1204,7 +1204,7 @@ fn undelete_chars_are_their_own_values_spec_crdt_4_7() {
     lp.advance(5);
     let mut m = Mutation::new();
     m.set(t, &REG, &s("y")).unwrap();
-    m.purge(PurgeItem::Commit { commit: undo, tid: t, ak: k.clone() });
+    m.purge_commit(undo, t, k.clone());
     lp.peers[0].commit(m).unwrap();
     lp.sync(0, 1).unwrap();
     for i in [0, 1] {
@@ -1238,7 +1238,7 @@ fn undo_revives_no_purged_value_spec_crdt_4_6() {
     lp.advance(5);
     let mut m = Mutation::new();
     m.set(t, &TEXT, &s("x")).unwrap();
-    m.purge(PurgeItem::Commit { commit: made, tid: t, ak: k.clone() });
+    m.purge_commit(made, t, k.clone());
     lp.peers[0].commit(m).unwrap();
     lp.advance(5);
     let mut m = Mutation::new();
@@ -1285,7 +1285,7 @@ fn purge_spares_other_values_of_a_carrier_spec_commits_5() {
     lp.advance(5);
     let mut m = Mutation::new();
     m.op(t, &MAP, PathOp { path: vec![PathSeg::Key(s("other"))], op: Op::Set(item("w", 3)) }).unwrap();
-    m.purge(PurgeItem::Commit { commit: e, tid: t, ak: k.clone() });
+    m.purge_commit(e, t, k.clone());
     lp.peers[1].commit(m).unwrap();
     lp.sync(1, 0).unwrap();
     for i in [0, 1] {

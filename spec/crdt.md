@@ -92,7 +92,7 @@ An `any` position (spec/data-model.md §3) has no encoding of its own: a write c
 ### 3.2 Grammar
 ```
 Delta    := [nonce, Sources, Commits, Fragment]
-Snapshot := [nonce, Sources, Commits, Fragment, Frontiers, Absorbed]   ; snapshot deltas, §8
+Snapshot := [nonce, Sources, Commits, Fragment, Frontiers, Absorbed, Facts]   ; snapshot deltas, §8
 Sources  := [Source*]                    ; foreign sources, §3.3 rule 1
 Source   := bytes(31) | bytes(32) | [Src, ctr]   ; Session tid ‖ nonce | Commit ID | Derived of a dot whose source is Session or Commit
 Commits  := [[Src, [[dwall, logical, base]*]]*]   ; §3.3 rule 1
@@ -523,12 +523,13 @@ Principle: deltas, state and snapshots are the same grammar, so any fragment's e
   - one per byte of each text string's content (a byte string's content counts nothing).
   - A reader counts them from the heads before decoding the blob and rejects the delta above it (a blob that is not canonical CBOR is bad input anyway).
 - **Join** of a fragment with links: the reader fetches every page before its commit is applied (spec/commits.md §4) and joins their elements. A page's elements are all keyed by dot, so pages are joined independently, streaming.
-- **Snapshot deltas** have the `Snapshot` form of §3.2, with `Frontiers := [[Src, ctr]*]` and `Absorbed := [[bytes(32), tid]*]`.
+- **Snapshot deltas** have the `Snapshot` form of §3.2, with `Frontiers := [[Src, ctr]*]`, `Absorbed := [[bytes(32), tid]*]` and `Facts := [Fact*]`, `Fact := by | [by, tid]`.
   - `Frontiers` holds exactly one entry per `Session` source of `Sources` (the sources that **occur** in the fragment: a stamp, an element or entry dot, an anchor or a sibling key names it, value-less writes and tombstones included, §3.3 rule 1), in table order.
   - `ctr` ≥ 0 is the largest counter such that the writer has applied all of that source's writes in this aspect up to it (those a held valid snapshot's frontier reaches, and those below a held valid delta of the source resetting the aspect's root or writing it as a register, count as applied: the fragment reflects them; 0: none; parked commits are not applied, §2.2; nor is a delta its commit applied without, spec/commits.md §4, until it joins, unless it has an expiry; nor is one the writer holds value-less for a purge request, unless past its expiry). The fragment reflects every write in those ranges.
   - Bad input: an entry missing, repeated, out of order, or naming a source of another kind; a snapshot carrying a stamp whose `ts` is above the snapshot's own `ts`.
   - `Commit` sources have no frontier. `Absorbed` (commit ID, then the author as a TID-tagged value, spec/data-model.md §5), sorted by commit ID, lists every commit-form commit whose writes in this aspect the writer had applied (as `ctr` counts applied: not one held value-less for a purge request, unless past its expiry) and whose source occurs in the fragment.
   - **Absence.** A session or commit-form commit the tables do not name left no write in the fragment: a reader takes its absence for that, never for "not received". An entry of 0 says the writer applied none of the source's writes contiguously, though some of them are in the fragment.
+  - `Facts` holds one entry per `Commits` entry, in table order: what a purge judges that commit's writes by where its header is not held (spec/commits.md §5 Purge): `by`, its purgeable-by class on this aspect (spec/wire.md §1), and its header actor where that is not its author (a session's tid; a commit-form commit's `Absorbed` author). A writer states them from the commit's header, else as a held valid snapshot carrying its writes states them. A reader judges a commit by its origin source's entry (a `Derived` source's states nothing, §2.1). Bad input: a class above 3, an actor equal to the author.
   - Frontiers and `Absorbed` are no receipts (spec/permissions.md §5.1): they serve covering (spec/commits.md §5).
 - **Values.** Snapshots never carry the values of writes from deltas with an expiry, expired or not, or of writes named by a purge request the writer holds (§4.7): those writes go value-less, and a delta with an expiry is covered only once none of its values lives (spec/commits.md §5). Live content of any other delta is carried as usual, whatever its retention.
 

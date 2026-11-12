@@ -155,7 +155,7 @@ fn inputs(seed: u64, types: &[Ty], params: Option<PageParams>) -> (Vec<Input>, V
         mapply(&mut state, c.delta.clone());
     }
     if let Some(st) = &state {
-        let s = Snapshot { absorbed: Default::default(), nonce: [3; 16], fragment: frag(st), frontiers: Frontiers::default() };
+        let s = Snapshot { absorbed: Default::default(), facts: Default::default(), nonce: [3; 16], fragment: frag(st), frontiers: Frontiers::default() };
         let mut pages = params.map(Blobs::new);
         if let Ok(root) = encode_snapshot(&s, &snap_cx(), pages.as_mut().map(|p| p as &mut dyn PageSink)) {
             out.push(Input { root, pages, cx: snap_cx(), snapshot: true });
@@ -337,7 +337,7 @@ fn stream_check_matches_whole_large_spec_8() {
 #[test]
 fn stream_seams_spec_8() {
     let st = crate::tests_life::big_set(400, 5);
-    let s = Snapshot { absorbed: Default::default(), nonce: [0; 16], fragment: st.clone(), frontiers: Frontiers::default() };
+    let s = Snapshot { absorbed: Default::default(), facts: Default::default(), nonce: [0; 16], fragment: st.clone(), frontiers: Frontiers::default() };
     let mut pages = Blobs::new(SMALL);
     let root = encode_snapshot(&s, &snap_cx(), Some(&mut pages)).unwrap();
     let ok = Input { root: root.clone(), pages: Some(pages.clone()), cx: snap_cx(), snapshot: true };
@@ -528,7 +528,7 @@ fn chunk_cut_case(nested: bool) {
     mapply(&mut state, d);
     let st = state.unwrap();
     let mbytes = crdt_model::wire::encode_snapshot(&st, &[], [3; 16], &mut crdt_model::wire::Ctx::new(1 << 40, MSource::session(250, 0), 1));
-    let s = Snapshot { absorbed: Default::default(), nonce: [3; 16], fragment: frag(&st), frontiers: Frontiers::default() };
+    let s = Snapshot { absorbed: Default::default(), facts: Default::default(), nonce: [3; 16], fragment: frag(&st), frontiers: Frontiers::default() };
     let mut flat = Blobs::new(PageParams { target: usize::MAX, ..PageParams::FORMAT });
     let bytes = encode_snapshot(&s, &snap_cx(), Some(&mut flat)).unwrap();
     assert_eq!(bytes, mbytes, "the model's bytes");
@@ -636,7 +636,7 @@ fn stream_memory_big_map() {
     let (d, cx, _) = big_map();
     let mut pages = Blobs::new(PageParams::FORMAT);
     let delta = encode_delta(&Delta { nonce: [0; 16], fragment: d.clone() }, &cx, Some(&mut pages)).unwrap();
-    let snap = encode_snapshot(&Snapshot { absorbed: Default::default(), nonce: [0; 16], fragment: d, frontiers: Frontiers::default() }, &snap_cx(), Some(&mut pages)).unwrap();
+    let snap = encode_snapshot(&Snapshot { absorbed: Default::default(), facts: Default::default(), nonce: [0; 16], fragment: d, frontiers: Frontiers::default() }, &snap_cx(), Some(&mut pages)).unwrap();
     let largest = pages.pages.iter().map(Vec::len).max().unwrap_or(0);
     println!("MEM inputs: delta {} B, snapshot {} B, {} pages, largest {} B", delta.len(), snap.len(), pages.pages.len(), largest);
     std::fs::write(dir.join("delta"), &delta).unwrap();
@@ -688,7 +688,7 @@ fn map_dot_prunes_across_pages_spec_3_3() {
             let x = Dot::new(node.clone(), n + 1);
             entries.insert(Eid::erased(x.clone()), Entry { reset: Some(st(reset_t, 1)), frag: None, created: None });
             entries.insert(Eid::new(x.clone(), Some(Value::Str("k".into()))), Entry { reset: None, frag: Some(reg(st(5, n + 1))), created: Some(st(5, n + 1)) });
-            let s = Snapshot { absorbed: Default::default(), nonce: [0; 16], fragment: Fragment::Map(Map::new(Meta::default(), entries)), frontiers: Frontiers::default() };
+            let s = Snapshot { absorbed: Default::default(), facts: Default::default(), nonce: [0; 16], fragment: Fragment::Map(Map::new(Meta::default(), entries)), frontiers: Frontiers::default() };
             let mut pages = Blobs::new(TINY);
             let bytes = encode_snapshot(&s, &snap_cx(), Some(&mut pages)).unwrap();
             let streamed = decode_snapshot(&bytes, &snap_cx(), &mut Interner::new(), Some(&mut pages.clone())).is_ok();

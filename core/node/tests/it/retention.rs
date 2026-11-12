@@ -127,7 +127,7 @@ fn purge_sets_any_order_spec_perm_6() {
             lp.advance(5);
             let mut m = Mutation::new();
             m.set(t, &REG, &s("later")).unwrap();
-            m.purge(PurgeItem::Commit { commit: c, tid: t, ak: ak("t:reg.0") });
+            m.purge_commit(c, t, ak("t:reg.0"));
             let pc = lp.peers[who].engine.commit_hostile(m).unwrap().unwrap();
             sync(&mut lp, who, 1 - who);
             let holds = |lp: &mut osis_node::local_peer::LocalPeer, n: usize| lp.peers[n].engine.body_not_dropped(&c, &t, &ak("t:reg.0"));
@@ -198,7 +198,7 @@ fn purge_rights(orders: &[[usize; 3]]) {
             }
             let mut m = Mutation::new();
             m.set(t, &REG, &s("later")).unwrap();
-            m.purge(PurgeItem::Commit { commit: c, tid: t, ak: ak("t:reg.0") });
+            m.purge_commit(c, t, ak("t:reg.0"));
             let pc = lp.peers[who].engine.commit_hostile(m).unwrap().unwrap();
             late.push(lp.peers[who].engine.package(&pc).unwrap().unwrap());
             let pks = lp.packages(0).unwrap();
@@ -257,7 +257,7 @@ fn unlisted() -> Unlisted {
     sync(&mut lp, 2, 1);
     lp.advance(5);
     let mut m = Mutation::new();
-    m.purge(PurgeItem::Commit { commit: c, tid: t, ak: ak("t:reg.0") });
+    m.purge_commit(c, t, ak("t:reg.0"));
     m.set(t, &LIST, &Value::List(vec![s("beside")])).unwrap();
     let p = lp.peers[1].commit(m).unwrap().unwrap();
     lp.advance(5);
@@ -361,7 +361,7 @@ fn fallen_purge_of_list_element_comes_back_spec_perm_6() {
     sync(&mut lp, 2, 1);
     lp.advance(5);
     let mut m = Mutation::new();
-    m.purge(PurgeItem::Commit { commit: c, tid: t, ak: k.clone() });
+    m.purge_commit(c, t, k.clone());
     m.set(t, &REG, &s("beside")).unwrap();
     let p = lp.peers[1].commit(m).unwrap().unwrap();
     lp.advance(5);
@@ -398,7 +398,7 @@ fn regrant_gives_purge_right_back_spec_perm_6() {
         let rm = set_edge(&mut lp.peers[0].engine, t, x, None, None);
         lp.advance(5);
         let mut m = Mutation::new();
-        m.purge(PurgeItem::Commit { commit: c, tid: t, ak: ak("t:reg.0") });
+        m.purge_commit(c, t, ak("t:reg.0"));
         m.set(t, &LIST, &Value::List(vec![s("beside")])).unwrap();
         let p = lp.peers[1].commit(m).unwrap().unwrap();
         lp.advance(5);
@@ -440,7 +440,7 @@ fn purge_stands_again_when_its_demotion_falls_spec_perm_6() {
         sync(&mut lp, 3, 2);
         lp.advance(5);
         let mut m = Mutation::new();
-        m.purge(PurgeItem::Commit { commit: c, tid: t, ak: ak("t:reg.0") });
+        m.purge_commit(c, t, ak("t:reg.0"));
         m.set(t, &LIST, &Value::List(vec![s("beside")])).unwrap();
         let p = lp.peers[2].commit(m).unwrap().unwrap();
         lp.advance(5);
@@ -483,7 +483,7 @@ fn snapshot_stripped_for_a_fallen_purge_gives_the_value_again_spec_perm_6() {
     sync(&mut lp, 2, 1);
     lp.advance(5);
     let mut m = Mutation::new();
-    m.purge(PurgeItem::Commit { commit: c, tid: t, ak: k.clone() });
+    m.purge_commit(c, t, k.clone());
     m.set(t, &LIST, &Value::List(vec![s("beside")])).unwrap();
     let p = lp.peers[1].commit(m).unwrap().unwrap();
     let pp = lp.peers[1].engine.package(&p).unwrap().unwrap();
@@ -535,7 +535,7 @@ fn part_of_a_fallen_purge_comes_back_spec_perm_6() {
     sync(&mut lp, 2, 1);
     lp.advance(5);
     let mut m = Mutation::new();
-    m.purge(PurgeItem::Commit { commit: c, tid: t, ak: k.clone() });
+    m.purge_commit(c, t, k.clone());
     m.set(t, &KEPT, &s("beside")).unwrap();
     let p = lp.peers[1].commit(m).unwrap().unwrap();
     let pp = lp.peers[1].engine.package(&p).unwrap().unwrap();
@@ -663,7 +663,7 @@ fn purge_spec_commits_5() {
     lp.advance(5);
     let mut m = Mutation::new();
     m.set(t, &REG, &s("b's")).unwrap();
-    m.purge(PurgeItem::Commit { commit: secret, tid: t, ak: ak("t:reg.0") });
+    m.purge_commit(secret, t, ak("t:reg.0"));
     assert!(matches!(lp.peers[1].commit(m.clone()), Err(osis_node::Error::Permission { tid }) if tid == t), "refused by its writer");
     lp.peers[1].engine.commit_hostile(m).unwrap();
     assert!(lp.peers[1].engine.body_not_dropped(&secret, &t, &ak("t:reg.0")));
@@ -671,7 +671,7 @@ fn purge_spec_commits_5() {
     lp.advance(5);
     let mut m = Mutation::new();
     m.set(t, &REG, &s("public")).unwrap();
-    m.purge(PurgeItem::Commit { commit: secret, tid: t, ak: ak("t:reg.0") });
+    m.purge_commit(secret, t, ak("t:reg.0"));
     let pc = lp.peers[0].commit(m).unwrap().unwrap();
     assert!(!lp.peers[0].engine.body_not_dropped(&secret, &t, &ak("t:reg.0")));
     sync(&mut lp, 0, 1);
@@ -1952,7 +1952,7 @@ fn rightful_built(beside: bool) -> (LocalPeer, osis_base::Tid, osis_base::Commit
     lp.sync_all().unwrap();
     lp.advance(5);
     let mut m = Mutation::new();
-    m.purge(PurgeItem::Commit { commit: c, tid: t, ak: ak("t:reg.0") });
+    m.purge_commit(c, t, ak("t:reg.0"));
     if beside {
         m.set(t, &LIST, &Value::List(vec![s("beside")])).unwrap();
     } else {
@@ -2060,7 +2060,7 @@ fn snapshot_of_two_purges_one_falls_spec_perm_6() {
     lp.advance(5);
     let purge = |lp: &mut LocalPeer, i: usize, c: osis_base::CommitId| {
         let mut m = Mutation::new();
-        m.purge(PurgeItem::Commit { commit: c, tid: t, ak: ak("t:map.0") });
+        m.purge(lp.peers[2].engine.purge_item(&c, t, ak("t:map.0")).unwrap());
         m.set(t, &LIST, &Value::List(vec![s("beside")])).unwrap();
         let p = lp.peers[i].commit(m).unwrap().unwrap();
         lp.peers[i].engine.package(&p).unwrap().unwrap()
@@ -2122,7 +2122,7 @@ fn honest_demotion_of_a_path_keeps_rightful_purges_spec_perm_6() {
         lp.sync_all().unwrap();
         lp.advance(5);
         let mut m = Mutation::new();
-        m.purge(PurgeItem::Commit { commit: c, tid: t, ak: ak("t:reg.0") });
+        m.purge_commit(c, t, ak("t:reg.0"));
         m.set(t, &REG, &s("after")).unwrap();
         lp.peers[1].commit(m).unwrap().unwrap();
         lp.sync_all().unwrap();
@@ -2154,7 +2154,7 @@ fn demotion_lists_the_message_omits_the_delete_spec_perm_6() {
         lp.sync_all().unwrap();
         lp.advance(5);
         let mut m = Mutation::new();
-        m.purge(PurgeItem::Commit { commit: c, tid: t, ak: k.clone() });
+        m.purge_commit(c, t, k.clone());
         m.set(t, &LIST, &Value::List(vec![s("beside")])).unwrap();
         let p = lp.peers[1].commit(m).unwrap().unwrap();
         let pp = lp.peers[1].engine.package(&p).unwrap().unwrap();
@@ -2214,7 +2214,7 @@ fn honest_demotion_keeps_a_request_resting_on_the_account_spec_perm_6() {
     crate::flows::spread(&mut lp);
     lp.advance(5);
     let mut m = Mutation::new();
-    m.purge(PurgeItem::Commit { commit: c, tid: t, ak: ak("t:reg.0") });
+    m.purge_commit(c, t, ak("t:reg.0"));
     m.set(t, &LIST, &Value::List(vec![s("beside")])).unwrap();
     lp.peers[1].commit(m).unwrap().unwrap();
     crate::flows::spread(&mut lp);
@@ -2252,7 +2252,7 @@ fn covered_part_purged_fallen_and_purged_again_reads_alike_spec_perm_6() {
     sync(&mut lp, 3, 2);
     lp.advance(5);
     let mut m = Mutation::new();
-    m.purge(PurgeItem::Commit { commit: c, tid: t, ak: k.clone() });
+    m.purge_commit(c, t, k.clone());
     m.set(t, &LIST, &Value::List(vec![s("beside")])).unwrap();
     let p = lp.peers[2].commit(m).unwrap().unwrap();
     lp.advance(5);
@@ -2300,7 +2300,7 @@ fn frontier_at_the_bound_leaves_out_the_last_requests_spec_perm_5_1() {
         for (i, c) in posts.iter().enumerate() {
             lp.advance(5);
             let mut m = Mutation::new();
-            m.purge(PurgeItem::Commit { commit: *c, tid: t, ak: k.clone() });
+            m.purge_commit(*c, t, k.clone());
             m.set(t, &LIST, &Value::List(vec![s(&format!("b{i}"))])).unwrap();
             lp.peers[1].commit(m).unwrap().unwrap();
             sync(&mut lp, 1, 0);
@@ -2413,7 +2413,7 @@ fn second_request_keeps_covered_leftover_spec_crdt_4_7() {
     packs.extend([old.clone(), cp, s1, xp, s2]);
     for v in ["one", "two"] {
         let mut m = Mutation::new();
-        m.purge(PurgeItem::Commit { commit: c, tid: t, ak: k.clone() });
+        m.purge_commit(c, t, k.clone());
         m.set(t, &KEPT, &s(v)).unwrap();
         let p = lp.peers[0].commit(m).unwrap().unwrap();
         packs.push(pack(&mut lp, 0, &p));
@@ -2558,7 +2558,7 @@ fn fall_rig_built(expires: Option<u64>) -> (LocalPeer, Tid, [osis_node::local_pe
     sync(&mut lp, 3, 2);
     lp.advance(5);
     let mut m = Mutation::new();
-    m.purge(PurgeItem::Commit { commit: c, tid: t, ak: k.clone() });
+    m.purge_commit(c, t, k.clone());
     m.set(t, &LIST, &Value::List(vec![s("beside")])).unwrap();
     let p = lp.peers[2].commit(m).unwrap().unwrap();
     lp.advance(5);
@@ -2685,7 +2685,7 @@ fn group_index_follows_a_member_gone_by_retention_spec_commits_5() {
     assert!(lp.peers[0].engine.closure(&g).contains(&x));
     let mut m = Mutation::new();
     m.op(g, &osis_schema::core_types::PURGE, PathOp { path: Vec::new(), op: Op::Replace(lp.peers[0].engine.now().to_value()) }).unwrap();
-    m.purge(PurgeItem::Commit { commit: c, tid: g, ak: osis_base::Ak::new("group.0").unwrap() });
+    m.purge_commit(c, g, osis_base::Ak::new("group.0").unwrap());
     lp.peers[0].commit(m).unwrap().unwrap();
     gone(&mut lp, 0, g, x, stays);
 
@@ -3096,7 +3096,7 @@ fn coverer_named_by_a_purge_keeps_carrying_spec_commits_5() {
     lp.peers[0].engine.drop_body(&c, &t, &reg).unwrap();
     lp.advance(5);
     let mut m = Mutation::new();
-    m.purge(PurgeItem::Commit { commit: snap, tid: t, ak: reg.clone() });
+    m.purge_commit(snap, t, reg.clone());
     m.set(t, &KEPT, &s("p")).unwrap();
     lp.peers[0].commit(m).unwrap().unwrap();
     let e = &mut lp.peers[0].engine;
@@ -3308,7 +3308,7 @@ fn bare_leftover_stays_copy_leftover_goes_spec_commits_5() {
     let set_purging = |lp: &mut LocalPeer, v: &str, purged: osis_base::CommitId| {
         let mut m = Mutation::new();
         m.set(t, &GONE, &s(v)).unwrap();
-        m.purge(PurgeItem::Commit { commit: purged, tid: t, ak: k.clone() });
+        m.purge_commit(purged, t, k.clone());
         lp.peers[0].commit(m).unwrap().unwrap()
     };
     let c1 = set(&mut lp, 0, t, &GONE, "a");
@@ -3513,7 +3513,7 @@ fn fallen_purge_of_ephemeral_write_comes_back_spec_perm_6() {
     }
     lp.advance(5);
     let mut m = Mutation::new();
-    m.purge(PurgeItem::Commit { commit: c, tid: t, ak: k.clone() });
+    m.purge_commit(c, t, k.clone());
     m.set(t, &LIST, &Value::List(vec![s("beside")])).unwrap();
     let p = lp.peers[1].commit(m).unwrap().unwrap();
     let request = lp.peers[1].engine.package(&p).unwrap().unwrap();
@@ -3564,7 +3564,7 @@ fn purge_of_waiting_ephemeral_part_reads_alike_spec_commits_5() {
         rest.parts.retain(|q| q.ai != ai);
         lp.advance(5);
         let mut m = Mutation::new();
-        m.purge(PurgeItem::Commit { commit: c, tid: t, ak: a.clone() });
+        m.purge(crate::common::stamp_item(&whole.header, c, t, a.clone()));
         m.set(t, &LIST, &Value::List(vec![s("beside")])).unwrap();
         let p = lp.peers[0].commit(m).unwrap().unwrap();
         let request = lp.peers[0].engine.package(&p).unwrap().unwrap();
@@ -3638,7 +3638,7 @@ fn snapshot_after_purge_leaves_the_write_to_come_back_spec_crdt_8() {
     lp.peers[1].engine.ingest_memory(&copy, u64::MAX).unwrap();
     lp.advance(5);
     let mut m = Mutation::new();
-    m.purge(PurgeItem::Commit { commit: c, tid: t, ak: k.clone() });
+    m.purge_commit(c, t, k.clone());
     m.set(t, &LIST, &Value::List(vec![s("beside")])).unwrap();
     let p = lp.peers[1].commit(m).unwrap().unwrap();
     let request = lp.peers[1].engine.package(&p).unwrap().unwrap();

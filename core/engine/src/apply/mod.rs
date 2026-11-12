@@ -670,7 +670,7 @@ fn judge_part(tx: &mut Tx<'_>, h: &Header, id: &CommitId, p: &osis_commit::Part,
             Ok(())
         };
         osis_commit::stream_part(h, id, p, dedup, interner, Some(reader), &mut each)
-            .map(|gives| Judged::Streamed(Streamed { ai: p.ai, dedup: dedup.clone(), gives: gives.map(|x| (x.frontiers, x.absorbed.into_iter().collect())) }))
+            .map(|gives| Judged::Streamed(Streamed { ai: p.ai, dedup: dedup.clone(), gives: gives.map(|x| (x.frontiers, x.absorbed.into_iter().collect(), x.facts)) }))
     };
     let judged = match r {
         Ok(d) => d,
@@ -2102,7 +2102,7 @@ pub(crate) fn held_parts_at(tx: &mut Tx<'_>, id: &CommitId, keep: &dyn Fn(usize)
         let Some(l) = crate::retention::leftover::get(tx, &a.tid, &a.ak, id, ai)? else { return Err(Error::Corrupt("leftover missing")) };
         let d = match l.gives {
             None => Decoded::Delta(osis_crdt::Delta { nonce: [0; osis_crdt::NONCE_LEN], fragment: l.fragment }),
-            Some((frontiers, absorbed)) => Decoded::Snapshot(osis_crdt::Snapshot { nonce: [0; osis_crdt::NONCE_LEN], fragment: l.fragment, frontiers, absorbed: absorbed.into_iter().collect() }),
+            Some((frontiers, absorbed, facts)) => Decoded::Snapshot(osis_crdt::Snapshot { nonce: [0; osis_crdt::NONCE_LEN], fragment: l.fragment, frontiers, absorbed: absorbed.into_iter().collect(), facts }),
         };
         let at = out.partition_point(|x| x.0 < ai);
         out.insert(at, (ai, d));

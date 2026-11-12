@@ -5,7 +5,6 @@
 use crate::net::{hosted, hosted_nodes};
 use crate::net;
 use net::*;
-use osis_commit::PurgeItem;
 use osis_base::{Ak, Role, Tid, WallMs};
 use osis_node::Mutation;
 use osis_node::sync::{EntryKind, Event, SyncConfig};
@@ -67,7 +66,7 @@ fn purge_leaves_no_copy_spec_commits_5() {
     // the admin is away: the writer purges, and deletes by delete key
     net.set_online(a, false);
     let mut m = Mutation::new();
-    m.purge(PurgeItem::Commit { commit: c, tid: t, ak: Ak::new(GONE.ak()).unwrap() });
+    m.purge_commit(c, t, Ak::new(GONE.ak()).unwrap());
     m.remove_aspect(t, &GONE).unwrap();
     net.engine(b).commit(m).unwrap();
     net.run();
@@ -100,7 +99,7 @@ fn purged_superset_holds_nothing_spec_sync_6() {
     assert_eq!(blobs_of(&mut net, b, &l, &c), p, "b holds p");
     net.set_online(b, false);
     let mut m = Mutation::new();
-    m.purge(PurgeItem::Commit { commit: c, tid: t, ak: gone.clone() });
+    m.purge_commit(c, t, gone.clone());
     m.remove_aspect(t, &GONE).unwrap();
     net.engine(a).commit(m).unwrap();
     net.feed(a, Event::Local);
@@ -141,7 +140,7 @@ fn purged_body_waits_for_its_rewrite_spec_sync_7() {
     assert_eq!(p.len(), 1);
     net.lose_uploads.insert(a);
     let mut m = Mutation::new();
-    m.purge(PurgeItem::Commit { commit: c, tid: t, ak: gone.clone() });
+    m.purge_commit(c, t, gone.clone());
     m.remove_aspect(t, &GONE).unwrap();
     net.engine(a).commit(m).unwrap();
     net.run();
@@ -188,7 +187,7 @@ fn purged_body_leaves_full_label_spec_sync_7() {
     // past the redial pause
     net.advance(66_000);
     let mut m = Mutation::new();
-    m.purge(PurgeItem::Commit { commit: c, tid: t, ak: gone.clone() });
+    m.purge_commit(c, t, gone.clone());
     m.remove_aspect(t, &GONE).unwrap();
     net.engine(a).commit(m).unwrap();
     net.feed(a, Event::Local);
@@ -386,7 +385,7 @@ fn purge_crash_before_sync_forget_leaves_no_copy_spec_commits_5() {
         assert!(!ids.is_empty() && ids.iter().all(|id| net.sync(b).holds_blob(id)));
         net.set_online(b, false);
         let mut m = Mutation::new();
-        m.purge(PurgeItem::Commit { commit: c, tid: t, ak: Ak::new(GONE.ak()).unwrap() });
+        m.purge_commit(c, t, Ak::new(GONE.ak()).unwrap());
         m.remove_aspect(t, &GONE).unwrap();
         net.engine(b).commit(m).unwrap();
         if crash {
@@ -659,7 +658,7 @@ fn strict_subset_needs_superset_at_that_host_spec_sync_6() {
     net.blocked.insert((a, h2));
     net.set_online(b, false);
     let mut m = Mutation::new();
-    m.purge(PurgeItem::Commit { commit: c, tid: t, ak: gone.clone() });
+    m.purge_commit(c, t, gone.clone());
     m.remove_aspect(t, &GONE).unwrap();
     let pc = net.engine(a).commit(m).unwrap().unwrap();
     net.feed(a, Event::Local);

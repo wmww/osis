@@ -562,7 +562,7 @@ fn useless_superset_does_not_cost_a_rewrite_spec_sync_6() {
     net.set_online(b, false);
     // `a` purges one delta: its rewrite `q` goes up, at `r` too, and `a` leaves before deleting
     let mut m = osis_node::Mutation::new();
-    m.purge(osis_commit::PurgeItem::Commit { commit: c, tid: t, ak: gone.clone() });
+    m.purge_commit(c, t, gone.clone());
     m.remove_aspect(t, &GONE).unwrap();
     let pc = net.engine(a).commit(m).unwrap().unwrap();
     net.feed(a, osis_node::sync::Event::Local);

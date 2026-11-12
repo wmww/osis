@@ -105,7 +105,7 @@ fn delta_seeds() -> Vec<Vec<u8>> {
         let mut st = Fragment::default();
         st.join(fragment);
         let cx = DeltaCtx { ts, own: Source::session(osis_crdt::Session { node: Tid::from_bytes([9; 15]), nonce: [0; osis_crdt::SESSION_NONCE_LEN] }), range: CounterRange::EMPTY, kind: DeltaKind::Snapshot };
-        let snap = Snapshot { absorbed: Default::default(), nonce: [2; 16], fragment: st, frontiers: Frontiers::default() };
+        let snap = Snapshot { absorbed: Default::default(), facts: Default::default(), nonce: [2; 16], fragment: st, frontiers: Frontiers::default() };
         if let Ok(b) = encode_snapshot(&snap, &cx, None) {
             out.push([vec![1], b].concat());
         }

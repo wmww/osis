@@ -951,6 +951,12 @@ fn on_parts(tx: &mut Tx<'_>, id: &CommitId, h: &Header, ais: &BTreeSet<usize>, p
             }
         }
         purge::purge_arrived(tx, id, h, ai, purged)?;
+        // a snapshot's copies of commits not held here, judged by its facts
+        if h.kind.is_compaction()
+            && let Some(a) = h.aspects.get(ai)
+        {
+            purge::rejudge_carried(tx, &a.tid, &a.ak, purged)?;
+        }
         drop_gone(tx, id, ai, purged)?;
         // a value part a purge request's header keeps listed to its floor, replaced or not by then,
         // whatever its aspect keeps: told when the floor passes (`listing::kept_passed`)
@@ -1226,11 +1232,13 @@ impl Engine {
     pub fn forget_commits(&mut self, cs: &[CommitId]) -> Result<()> {
         self.run(|tx| {
             crate::apply::run_batched(tx, |tx| {
+                let mut aspects = BTreeSet::new();
                 for c in cs {
                     // a memory commit's is memory work (`forgettable`: one kept for an invalid part)
                     let memory = tx.is_memory_commit(c);
                     tx.in_class(memory, |tx| {
                         let Some(m) = tx.core.ix.commits.get(c) else { return Ok(()) };
+                        aspects.extend(m.header.aspects.iter().map(|a| (memory, a.tid, a.ak.clone())));
                         let held: Vec<(usize, Tid, Ak)> = m.stripped.iter().filter_map(|ai| m.header.aspects.get(*ai).map(|a| (*ai, a.tid, a.ak.clone()))).collect();
                         for (ai, tid, ak) in held {
                             drop_part_for(tx, c, ai, DropFor::Destroyed)?;
@@ -1239,6 +1247,12 @@ impl Engine {
                         crate::apply::unindex_commit(tx, c)
                     })?;
                 }
+                // its copies a held snapshot carries are judged as a commit not held from now on
+                let mut changed = BTreeSet::new();
+                for (memory, tid, ak) in aspects {
+                    tx.in_class(memory, |tx| purge::rejudge_carried(tx, &tid, &ak, &mut changed))?;
+                }
+                purged_changed(tx, changed, &mut BTreeSet::new());
                 Ok(())
             })
         })
@@ -1262,6 +1276,8 @@ impl Engine {
 
 #[cfg(test)]
 mod tests_own;
+#[cfg(test)]
+mod tests_carried;
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
@@ -1745,7 +1761,7 @@ mod tests {
         let c = lp.peers[0].commit(m).unwrap().unwrap();
         lp.advance(10);
         let mut m = Mutation::new();
-        m.purge(osis_commit::PurgeItem::Commit { commit: c, tid: t, ak: reg.clone() });
+        m.purge_commit(c, t, reg.clone());
         m.set(t, &other, &Value::Int(1)).unwrap();
         lp.peers[0].commit(m).unwrap().unwrap();
         let e = &mut lp.peers[0].engine;

@@ -4,7 +4,6 @@
 use crate::common::*;
 use crate::flows::{big, edge_of, forensic_peer, hosts, reopen, send, spread, thing_of};
 use osis_base::{Role, Tid, Value};
-use osis_commit::PurgeItem;
 use osis_node::flows::Demotion;
 use osis_node::local_peer::LocalPeer;
 use osis_node::Mutation;
@@ -241,7 +240,7 @@ fn removal_vs_purge_every_order_spec_perm_3() {
         send(&mut x.lp, 0, 1, &[body]);
         assert!(found(&mut x.lp, LATE_MARK));
         let mut m = Mutation::new();
-        m.purge(PurgeItem::Commit { commit: body, tid: d, ak: ak("t:reg.0") });
+        m.purge_commit(body, d, ak("t:reg.0"));
         m.remove_aspect(d, &REG).unwrap();
         let purge = x.lp.peers[0].engine.commit(m).unwrap().unwrap();
         let rm = *x.lp.peers[0].engine.demote(&d, &remove(pb)).unwrap().commits.last().unwrap();
@@ -269,7 +268,7 @@ fn a_purge_carries_no_content_into_a_copy_spec_perm_3() {
     removed(&mut x);
     let mut m = Mutation::new();
     m.set(d, &REG, &s(&big(LATE_MARK))).unwrap();
-    m.purge(PurgeItem::Commit { commit: osis_base::CommitId([9; 32]), tid: d, ak: ak("t:reg.0") });
+    m.purge(osis_commit::PurgeItem::Commit { tid: d, ak: ak("t:reg.0"), ts: osis_base::Ts::from_u64(1).unwrap(), src: osis_crdt::Source::commit(osis_base::CommitId([9; 32])) });
     let c = x.lp.peers[0].engine.commit(m).unwrap().unwrap();
     send(&mut x.lp, 0, 1, &[c]);
     assert_kept(&mut x);
@@ -734,7 +733,7 @@ fn a_stripped_waiting_part_stays_out_spec_perm_3() {
     send(&mut x.lp, 2, 0, &[body]);
     send(&mut x.lp, 2, 1, &[body]);
     let mut m = Mutation::new();
-    m.purge(PurgeItem::Commit { commit: body, tid: d, ak: ak("t:reg.0") });
+    m.purge_commit(body, d, ak("t:reg.0"));
     m.remove_aspect(d, &REG).unwrap();
     let purge = x.lp.peers[0].engine.commit(m).unwrap().unwrap();
     send(&mut x.lp, 0, 1, &[purge]);

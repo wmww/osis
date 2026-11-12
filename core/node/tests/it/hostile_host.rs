@@ -352,7 +352,7 @@ fn purged_chunks_leave_the_host_spec_sync_5() {
     assert!(!chunks.is_empty(), "a chunked value");
     assert!(chunks.iter().all(|id| net.host_ids(host, &l).contains(id)), "chunks uploaded");
     let mut m = osis_node::Mutation::new();
-    m.purge(osis_commit::PurgeItem::Commit { commit: c, tid: t, ak: Ak::new(GONE.ak()).unwrap() });
+    m.purge_commit(c, t, Ak::new(GONE.ak()).unwrap());
     m.remove_aspect(t, &GONE).unwrap();
     net.engine(a).commit(m).unwrap();
     net.run();
@@ -386,7 +386,7 @@ fn writer_purge_deletes_chunks_by_delete_key_spec_crypto_7() {
     // the admin (holder of the delete key) is gone: only the writer's delete key can delete
     net.set_online(a, false);
     let mut m = osis_node::Mutation::new();
-    m.purge(osis_commit::PurgeItem::Commit { commit: c, tid: t, ak: Ak::new(GONE.ak()).unwrap() });
+    m.purge_commit(c, t, Ak::new(GONE.ak()).unwrap());
     m.remove_aspect(t, &GONE).unwrap();
     net.engine(b).commit(m).unwrap();
     net.feed(b, Event::Local);
@@ -986,7 +986,7 @@ fn thing_admin_deletes_writer_blobs_by_delete_key_spec_crypto_7() {
     net.set_online(a, false);
     net.set_online(w, false);
     let mut m = osis_node::Mutation::new();
-    m.purge(osis_commit::PurgeItem::Commit { commit: cw, tid: t, ak: Ak::new(REG.ak()).unwrap() });
+    m.purge_commit(cw, t, Ak::new(REG.ak()).unwrap());
     m.remove_aspect(t, &REG).unwrap();
     net.engine(c).commit(m).unwrap();
     net.feed(c, Event::Local);

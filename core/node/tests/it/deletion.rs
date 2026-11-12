@@ -687,7 +687,7 @@ fn purge_resnapshot_by_writer_without_schema_spec_commits_5() {
     assert!(at_host.iter().all(|x| net.host_ids(host, &l).contains(x)));
     let mut m = Mutation::new();
     m.op(t, &ak, PathOp { path: Vec::new(), op: Op::Remove(s("secret")) }).unwrap();
-    m.purge(osis_commit::PurgeItem::Commit { commit: c1, tid: t, ak: ak.clone() });
+    m.purge_commit(c1, t, ak.clone());
     net.engine(b).commit(m).unwrap().unwrap();
     net.run();
     assert!(!net.engine(b).body_not_dropped(&s1, &t, &ak), "the snapshot carrying the secret dropped");
@@ -707,7 +707,8 @@ fn purge_reg(net: &mut Net, n: usize, t: osis_base::Tid, c: osis_base::CommitId)
     let mut m = Mutation::new();
     let now = net.engine(n).now();
     m.set(t, &ct::PURGE, &now).unwrap();
-    m.purge(osis_commit::PurgeItem::Commit { commit: c, tid: t, ak: Ak::new(REG.ak()).unwrap() });
+    let item = (0..net.nodes.len()).find_map(|x| net.engine(x).purge_item(&c, t, Ak::new(REG.ak()).unwrap())).unwrap();
+    m.purge(item);
     net.engine(n).commit(m).unwrap().unwrap()
 }
 
@@ -1252,7 +1253,7 @@ fn purge_naming_a_cover_keeps_its_writes_spec_commits_5() {
     let snap = snapshots(&mut net, a, &t, &ak)[0];
     assert!(!net.engine(a).body_not_dropped(&c, &t, &ak), "dropped as covered");
     let mut m = Mutation::new();
-    m.purge(osis_commit::PurgeItem::Commit { commit: snap, tid: t, ak: ak.clone() });
+    m.purge_commit(snap, t, ak.clone());
     m.set(t, &GONE, &s("p")).unwrap();
     net.engine(a).commit(m).unwrap().unwrap();
     net.run();
@@ -1289,7 +1290,7 @@ fn purge_fall_after_cover_reads_alike_spec_perm_6() {
     assert_eq!(net.engine(r).get_typed(&t, &SEQ).unwrap(), Some(s("v2")));
     net.set_online(a, false);
     let mut m = Mutation::new();
-    m.purge(osis_commit::PurgeItem::Commit { commit: c, tid: t, ak: ak.clone() });
+    m.purge_commit(c, t, ak.clone());
     m.set(t, &GONE, &s("p")).unwrap();
     net.engine(x).commit(m).unwrap().unwrap();
     net.run();
@@ -1546,7 +1547,7 @@ fn purge_beside_invalid_delta_leaves_host_spec_perm_6() {
         }
         net.set_online(b, false);
         let mut m = Mutation::new();
-        m.purge(osis_commit::PurgeItem::Commit { commit: cm, tid: t, ak: good.clone() });
+        m.purge_commit(cm, t, good.clone());
         m.remove_aspect(t, &good).unwrap();
         net.engine(a).commit(m).unwrap().unwrap();
         settle(&mut net);

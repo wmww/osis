@@ -632,7 +632,7 @@ fn pct(x: u64, of: u64) -> String {
 /// The commits `item` names on `(t, a)` whose header `e` holds, and of them those applied here.
 fn named_held(e: &osis_node::Engine, item: &osis_commit::PurgeItem, t: Tid, a: &Ak) -> (Vec<CommitId>, Vec<CommitId>) {
     let named = |c: &CommitId, m: &osis_node::engine::Meta| match item {
-        osis_commit::PurgeItem::Commit { commit, .. } => c == commit,
+        osis_commit::PurgeItem::Commit { ts, src, .. } => m.header.ts == *ts && m.header.form.own_source(m.header.author, *c) == *src,
         osis_commit::PurgeItem::Aspect { .. } => true,
         osis_commit::PurgeItem::Author { actor, .. } => m.view.actor == *actor,
     };
@@ -953,7 +953,7 @@ pub(crate) fn play_with(seed: u64, steps: &[Step], addenda: bool) -> Played {
                 if let Some(commit) = own[of].len().checked_sub(1 + back as usize).and_then(|i| own[of].get(i)).copied() {
                     let mut m = Mutation::new();
                     let a = purged_ak(&lp.peers[by].engine, &commit, t);
-                    let item = osis_commit::PurgeItem::Commit { commit, tid: t, ak: a.clone() };
+                    let item = lp.peers.iter().find_map(|p| p.engine.purge_item(&commit, t, a.clone())).unwrap();
                     let held = named_held(&lp.peers[by].engine, &item, t, &a);
                     m.purge(item);
                     m.set(t, &REG, &s(&format!("p{v}"))).unwrap();
@@ -973,7 +973,7 @@ pub(crate) fn play_with(seed: u64, steps: &[Step], addenda: bool) -> Played {
                     None => k,
                 };
                 let item = match named {
-                    Some(commit) => osis_commit::PurgeItem::Commit { commit, tid: t, ak: a.clone() },
+                    Some(commit) => lp.peers.iter().find_map(|p| p.engine.purge_item(&commit, t, a.clone())).unwrap(),
                     None => osis_commit::PurgeItem::Aspect { tid: t, ak: a.clone() },
                 };
                 let held = named_held(&lp.peers[by].engine, &item, t, &a);
@@ -3266,7 +3266,7 @@ fn register_deaths_purged_killer_spec_crdt_4_8() {
         lp.advance(1_000);
         let mut m = Mutation::new();
         if let Some(commit) = purge {
-            m.purge(osis_commit::PurgeItem::Commit { commit, tid: t, ak: ak("t:kept.0") });
+            m.purge_commit(commit, t, ak("t:kept.0"));
         }
         m.set(t, &KEPT, &s(v)).unwrap();
         let id = lp.peers[0].commit(m).unwrap().unwrap();
@@ -3428,7 +3428,7 @@ fn purged_covered_leftover_survives_unmerge_spec_crdt_4_6() {
     lp.advance(10);
     let mut m = Mutation::new();
     m.set(g, &KEPT, &s("k2")).unwrap();
-    m.purge(osis_commit::PurgeItem::Commit { commit: c, tid: g, ak: ak("t:reg.0") });
+    m.purge_commit(c, g, ak("t:reg.0"));
     lp.peers[0].commit(m).unwrap().unwrap();
     let purge = take(&mut lp, 0);
     let now = lp.peers.iter().map(|p| p.engine.now()).max().unwrap();
@@ -3486,7 +3486,7 @@ fn cover_leftover_outlives_its_cover_spec_perm_5_2() {
     lp.advance(10);
     let mut m = Mutation::new();
     m.set(g, &KEPT, &s("k2")).unwrap();
-    m.purge(osis_commit::PurgeItem::Commit { commit: c, tid: g, ak: ak("t:reg.0") });
+    m.purge_commit(c, g, ak("t:reg.0"));
     let purge = lp.peers[0].commit(m).unwrap().unwrap();
     lp.advance(10);
     // peer 2 demoted as of before its snapshot: it turns invalid

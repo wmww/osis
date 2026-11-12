@@ -267,7 +267,7 @@ pub fn forge_snapshot_with(lp: &mut LocalPeer, by: usize, t: Tid, a: &osis_base:
 pub fn forge_snapshot_absorbing(lp: &mut LocalPeer, by: usize, t: Tid, a: &osis_base::Ak, ts: osis_base::Ts, f: osis_crdt::Fragment, frontiers: osis_crdt::Frontiers, absorbed: std::collections::BTreeMap<osis_base::CommitId, Tid>) -> Vec<u8> {
     use osis_commit::{Form, Kind, writer_ctx};
     let author = lp.peers[by].engine.me();
-    let snap = osis_crdt::Snapshot { absorbed, nonce: [7; 16], fragment: f, frontiers };
+    let snap = osis_crdt::Snapshot { absorbed, facts: Default::default(), nonce: [7; 16], fragment: f, frontiers };
     let bytes = osis_crdt::encode_snapshot(&snap, &writer_ctx(Form::Commit, Kind::ContentSnapshot, ts, author, 0, 0), None).unwrap();
     forge_snapshot_bytes(lp, by, t, a, ts, bytes)
 }
@@ -344,4 +344,9 @@ pub fn grant_ts(bytes: &[u8]) -> osis_base::WallMs {
 pub fn part_keep(e: &mut Engine, c: &CommitId, t: &Tid, a: &Ak) -> u64 {
     let ai = e.header(c).unwrap().aspects.iter().position(|x| x.tid == *t && x.ak == *a).unwrap();
     e.part_keeps(c).unwrap()[ai]
+}
+
+/// The purge item naming commit `c`'s delta on `(tid, ak)` by its stamp, from its header `h`.
+pub fn stamp_item(h: &osis_commit::Header, c: CommitId, tid: Tid, ak: osis_base::Ak) -> osis_commit::PurgeItem {
+    osis_commit::PurgeItem::Commit { tid, ak, ts: h.ts, src: h.form.own_source(h.author, c) }
 }

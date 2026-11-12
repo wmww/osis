@@ -66,7 +66,7 @@ impl Replica {
 /// `f` through a snapshot: deleted chars dropped, uniform stretches as range records (§3.3).
 fn rebooted(f: &Fragment) -> Fragment {
     let cx = crate::tests_wire::snap_cx();
-    let snap = crate::wire::Snapshot { absorbed: Default::default(), nonce: [0; 16], fragment: f.clone(), frontiers: Default::default() };
+    let snap = crate::wire::Snapshot { absorbed: Default::default(), facts: Default::default(), nonce: [0; 16], fragment: f.clone(), frontiers: Default::default() };
     let bytes = crate::encode_snapshot(&snap, &cx, None).unwrap();
     crate::decode_snapshot(&bytes, &cx, &mut Interner::new(), None).unwrap().fragment
 }

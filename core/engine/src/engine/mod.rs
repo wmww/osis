@@ -275,7 +275,7 @@ impl HeldKeyset {
 }
 
 /// A snapshot part's frontiers and `Absorbed` (commit, author).
-pub(crate) type Gives = (osis_crdt::Frontiers, Vec<(CommitId, Tid)>);
+pub(crate) type Gives = (osis_crdt::Frontiers, Vec<(CommitId, Tid)>, osis_crdt::Facts);
 
 /// A snapshot's held part on one aspect, as `apply::each_held_piece` streams it: (snapshot, its
 /// aspect index, the pieces, what it gives).

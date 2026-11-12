@@ -197,7 +197,7 @@ pub(crate) fn bootstrap_check(seed: u64, ty: &Ty) {
     for c in &commits {
         assert!(received.frontier(&source(&c.w.source)) >= c.w.hi() - 1);
     }
-    let snap = |f: &Fragment, fr: Frontiers| encode_snapshot(&Snapshot { absorbed: Default::default(), nonce: [0; 16], fragment: f.clone(), frontiers: fr }, &scx(), None).unwrap();
+    let snap = |f: &Fragment, fr: Frontiers| encode_snapshot(&Snapshot { absorbed: Default::default(), facts: Default::default(), nonce: [0; 16], fragment: f.clone(), frontiers: fr }, &scx(), None).unwrap();
     // frontiers of the sources left in the state only (§8)
     let traced = |f: &Fragment, mut fr: Frontiers| {
         fr.retain(&crate::sources_of(f, &scx()).unwrap());
@@ -254,7 +254,7 @@ pub(crate) fn big_set(n: usize, order_seed: u64) -> Fragment {
 }
 
 fn snap(f: &Fragment) -> Snapshot {
-    Snapshot { absorbed: Default::default(), nonce: [0; 16], fragment: f.clone(), frontiers: Frontiers::default() }
+    Snapshot { absorbed: Default::default(), facts: Default::default(), nonce: [0; 16], fragment: f.clone(), frontiers: Frontiers::default() }
 }
 
 fn scx() -> DeltaCtx {
@@ -399,7 +399,7 @@ fn page_items_cap_spec_8() {
     let root = |val: Value, snapshot: bool| {
         let mut top = vec![Value::Bytes(vec![0; 16]), none(), none(), Value::List(vec![Value::Int(0), none(), Value::Int(0), val])];
         if snapshot {
-            top.extend([none(), none()]);
+            top.extend([none(), none(), none()]);
         }
         osis_base::encode(&Value::List(top))
     };
@@ -427,7 +427,7 @@ fn page_items_cap_spec_8() {
     for (n, capped) in [(MAX_PAGE_ITEMS, true), (MAX_PAGE_ITEMS - 1, false)] {
         let mut pages = MemoryPages::new();
         let link = pages.put(&osis_base::encode(&zeros(n))).unwrap();
-        let top = Value::List(vec![Value::Bytes(vec![0; 16]), none(), none(), Value::List(vec![Value::Int(6), none(), none(), Value::List(vec![Value::link(link)])]), none(), none()]);
+        let top = Value::List(vec![Value::Bytes(vec![0; 16]), none(), none(), Value::List(vec![Value::Int(6), none(), none(), Value::List(vec![Value::link(link)])]), none(), none(), none()]);
         let e = decode_snapshot(&osis_base::encode(&top), &scx(), &mut Interner::new(), Some(&mut pages)).unwrap_err();
         assert_eq!(is_cap(&e), capped, "{e}");
     }

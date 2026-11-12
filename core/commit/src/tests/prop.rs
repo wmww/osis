@@ -49,7 +49,7 @@ prop_compose! {
             aspects,
             chunks: chunks.into_iter().map(|(b, keys)| ChunkEntry { blob: BlobId(b), ai: 0, keys, blind: [b[0]; 16] }).collect(),
             purge: purge.into_iter().map(|(c, tid)| match c {
-                Some(c) => PurgeItem::Commit { commit: CommitId(c), tid, ak: Ak::new("p.0").unwrap() },
+                Some(c) => PurgeItem::Commit { tid, ak: Ak::new("p.0").unwrap(), ts: ts(c[0] as u64), src: if c[1] % 2 == 0 { osis_crdt::Source::commit(CommitId(c)) } else { osis_crdt::Source::session(osis_crdt::Session { node: tid, nonce: [c[2]; 16] }) } },
                 None if tid.as_bytes()[0] % 2 == 0 => PurgeItem::Aspect { tid, ak: Ak::new("p.0").unwrap() },
                 None => PurgeItem::Author { tid, ak: Ak::new("p.0").unwrap(), actor: tid },
             }).collect(),

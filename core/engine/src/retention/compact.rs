@@ -351,7 +351,7 @@ fn droppable(tx: &Tx<'_>, tid: &Tid, ak: &Ak) -> BTreeSet<CommitId> {
 fn snapshot_cost(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, me: Tid) -> Result<Option<usize>> {
     let Some(st) = super::snapshot_state(tx, tid, ak)? else { return Ok(None) };
     let cx = osis_commit::writer_ctx(Form::Commit, osis_commit::Kind::ContentSnapshot, osis_base::Ts::default(), me, 0, 0);
-    let s = osis_crdt::Snapshot { nonce: [0; osis_crdt::NONCE_LEN], fragment: st, frontiers: osis_crdt::Frontiers::default(), absorbed: BTreeMap::new() };
+    let s = osis_crdt::Snapshot { nonce: [0; osis_crdt::NONCE_LEN], fragment: st, frontiers: osis_crdt::Frontiers::default(), absorbed: BTreeMap::new(), facts: Default::default() };
     // encoding fails only on a malformed fragment: counted as nothing
     let bytes = osis_crdt::encode_snapshot(&s, &cx, Some(&mut osis_crdt::Unpaged)).unwrap_or_default();
     let listed = crate::engine::write::snapshot_listed(tx, tid, ak, me, &bytes)?;
@@ -552,7 +552,7 @@ mod tests {
             }
             let st = super::super::snapshot_state(tx, &t, &ak)?.unwrap();
             let cx = osis_commit::writer_ctx(Form::Commit, osis_commit::Kind::ContentSnapshot, osis_base::Ts::default(), me, 0, 0);
-            let s = osis_crdt::Snapshot { nonce: [0; osis_crdt::NONCE_LEN], fragment: st, frontiers: osis_crdt::Frontiers::default(), absorbed: BTreeMap::new() };
+            let s = osis_crdt::Snapshot { nonce: [0; osis_crdt::NONCE_LEN], fragment: st, frontiers: osis_crdt::Frontiers::default(), absorbed: BTreeMap::new(), facts: Default::default() };
             let bytes = osis_crdt::encode_snapshot(&s, &cx, Some(&mut osis_crdt::Unpaged)).unwrap();
             let cost = snapshot_cost(tx, &t, &ak, me)?.unwrap();
             Ok((cost - part_weight(bytes.len()) - ENTRY_CHARGE) / LISTED_BLOB_BYTES)

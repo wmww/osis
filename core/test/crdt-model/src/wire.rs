@@ -1253,10 +1253,11 @@ pub fn decode_delta(bytes: &[u8], cx: &mut Ctx) -> Result<Frag, Error> {
     }
 }
 
-/// Snapshot delta: `[nonce, Sources, Commits, Fragment, Frontiers, Absorbed]`, `Frontiers := [[Src, ctr]*]`, one
+/// Snapshot delta: `[nonce, Sources, Commits, Fragment, Frontiers, Absorbed, Facts]`, `Frontiers := [[Src, ctr]*]`, one
 /// entry per `Session` source of `Sources` in table order, `ctr` 0 where `frontiers` has none (§8). Every
 /// source `frontiers` names must occur in the fragment. The caller strips the values of expiring deltas first
-/// (§4.7). `Absorbed` (absorbed commit-form commits) is always empty here: the model keeps no per-commit receipts.
+/// (§4.7). `Absorbed` (absorbed commit-form commits) is always empty here, and every `Facts` entry written the
+/// narrowest (`admin`, 1): the model keeps no per-commit receipts.
 pub fn encode_snapshot(f: &Frag, frontiers: &[(Source, u64)], nonce: [u8; 16], cx: &mut Ctx) -> Vec<u8> {
     cx.collect(f);
     for (s, c) in frontiers {
@@ -1266,7 +1267,8 @@ pub fn encode_snapshot(f: &Frag, frontiers: &[(Source, u64)], nonce: [u8; 16], c
     let frag = encode(f, cx);
     let fr: Vec<(u64, u64)> = cx.sources.iter().enumerate().filter(|(_, s)| matches!(s, Source::Session(_))).map(|(i, s)| (i as u64 + 1, frontiers.iter().find(|x| x.0 == *s).map_or(0, |x| x.1))).collect();
     let fr = Item::Array(fr.into_iter().map(|(i, c)| Item::Array(vec![u(i), u(c)])).collect());
-    let top = vec![Item::Bytes(nonce.to_vec()), cx.sources_item(), cx.commits_item(), frag, fr, Item::Array(Vec::new())];
+    let facts = Item::Array(cx.commits.iter().map(|_| u(1)).collect());
+    let top = vec![Item::Bytes(nonce.to_vec()), cx.sources_item(), cx.commits_item(), frag, fr, Item::Array(Vec::new()), facts];
     cbor::encode(&Item::Array(top))
 }
 
@@ -1278,14 +1280,24 @@ pub fn sources_of(f: &Frag, cx: &mut Ctx) -> Vec<Source> {
 
 pub fn decode_snapshot(bytes: &[u8], cx: &mut Ctx) -> Result<(Frag, Vec<(Source, u64)>), Error> {
     let it = cbor::decode(bytes)?;
-    let [n, sources, commits, f, fr, ab] = it.array()? else { return Err(Error::Bad("snapshot")) };
+    let [n, sources, commits, f, fr, ab, fa] = it.array()? else { return Err(Error::Bad("snapshot")) };
     if !ab.array()?.is_empty() {
         return Err(Error::Bad("absorbed commits (not modeled)"));
     }
+    let facts = fa.array()?;
     match (n, sources, commits, f, fr) {
         (Item::Bytes(n), sources, commits, f, fr) if n.len() == 16 => {
             cx.load_sources(sources)?;
             cx.load_commits(commits)?;
+            // one per commit entry: a class, with an actor where not the author (not modeled)
+            let class = |x: &Item| x.uint().is_ok_and(|c| c <= 3);
+            let fact = |x: &Item| match x {
+                Item::Array(v) => matches!(v.as_slice(), [c, Item::Tag(crate::value::TAG_TID, t)] if class(c) && matches!(&**t, Item::Bytes(b) if b.len() == 15)),
+                x => class(x),
+            };
+            if facts.len() != cx.commits.len() || !facts.iter().all(fact) {
+                return Err(Error::Bad("facts"));
+            }
             let frag = decode(f, cx)?;
             // one entry per session source of the table, in table order (§8)
             let mut out = Vec::new();

@@ -73,6 +73,7 @@ pub struct Head {
     pub nonce: [u8; NONCE_LEN],
     pub frontiers: Frontiers,
     pub absorbed: BTreeMap<CommitId, Tid>,
+    pub facts: crate::wire::Facts,
 }
 
 /// A path's steps with their entry keys and creations (`Fragment::wrap`).
@@ -130,7 +131,7 @@ pub(crate) fn stream<'a>(bytes: &[u8], cx: &DeltaCtx, interner: &'a mut Interner
     let top = osis_base::decode(bytes, &LIMITS)?;
     let (n, sources, commits, frag, tail) = match (snapshot, as_array(&top)?) {
         (false, [n, s, c, f]) => (n, s, c, f, None),
-        (true, [n, s, c, f, fr, ab]) => (n, s, c, f, Some((fr, ab))),
+        (true, [n, s, c, f, fr, ab, fa]) => (n, s, c, f, Some((fr, ab, fa))),
         (false, _) => return Err(Error::Malformed("delta arity")),
         (true, _) => return Err(Error::Malformed("snapshot arity")),
     };
@@ -140,8 +141,8 @@ pub(crate) fn stream<'a>(bytes: &[u8], cx: &DeltaCtx, interner: &'a mut Interner
     let skeleton = decode_fragment(&mut dec, frag, true);
     let mut found = dec.streaming.take().map(|x| x.1).unwrap_or_default();
     let skeleton = skeleton?;
-    let (frontiers, absorbed) = match tail {
-        Some((fr, ab)) => snapshot_tail(&dec, fr, ab)?,
+    let (frontiers, absorbed, facts) = match tail {
+        Some((fr, ab, fa)) => snapshot_tail(&dec, fr, ab, fa)?,
         None => Default::default(),
     };
     let nonce = nonce(n)?;
@@ -156,7 +157,7 @@ pub(crate) fn stream<'a>(bytes: &[u8], cx: &DeltaCtx, interner: &'a mut Interner
             let (w, e) = wraps.get(&path).ok_or(NOT_CANONICAL)?;
             position(&mut dec, None, &d, w, e.as_ref(), each)?;
         }
-        return Ok(Head { nonce, frontiers, absorbed });
+        return Ok(Head { nonce, frontiers, absorbed, facts });
     }
 
     // the root with the input's tables, streamed positions as written
@@ -164,7 +165,7 @@ pub(crate) fn stream<'a>(bytes: &[u8], cx: &DeltaCtx, interner: &'a mut Interner
     let again = encode_fragment(&mut enc, &skeleton).map(|f| {
         let mut root = vec![Value::Bytes(nonce.to_vec()), enc.sources_value(), enc.commits_value(), f];
         if snapshot {
-            root.extend([enc.frontiers_value(&frontiers), absorbed_value(&absorbed)]);
+            root.extend([enc.frontiers_value(&frontiers), absorbed_value(&absorbed), enc.facts_value(&facts)]);
         }
         osis_base::encode(&Value::List(root))
     });
@@ -192,7 +193,7 @@ pub(crate) fn stream<'a>(bytes: &[u8], cx: &DeltaCtx, interner: &'a mut Interner
     if !found.is_empty() || !enc.check_tables() {
         return Err(NOT_CANONICAL);
     }
-    Ok(Head { nonce, frontiers, absorbed })
+    Ok(Head { nonce, frontiers, absorbed, facts })
 }
 
 /// Entry steps with their keys and the skeleton's creations (`Fragment::wrap`).

@@ -123,7 +123,8 @@ fn snapshot_with(elems: Value) -> Vec<u8> {
     let source = Value::Bytes([[0; 14].as_slice(), &[1], &[0; 16]].concat());
     let commits = l(vec![l(vec![Value::Int(1), l(vec![l(vec![Value::Int(5), Value::Int(0), Value::Int(1)])])])]);
     let frontiers = l(vec![l(vec![Value::Int(1), Value::Int(0)])]);
-    osis_base::encode(&l(vec![Value::Bytes(vec![0; 16]), l(vec![source]), commits, l(vec![Value::Int(6), l(vec![]), l(vec![]), elems]), frontiers, l(vec![])]))
+    let facts = crate::testutil::narrowest_facts(&commits);
+    osis_base::encode(&l(vec![Value::Bytes(vec![0; 16]), l(vec![source]), commits, l(vec![Value::Int(6), l(vec![]), l(vec![]), elems]), frontiers, l(vec![]), facts]))
 }
 
 fn rejects(bytes: &[u8], pages: &mut MemoryPages, why: &str) {
@@ -165,7 +166,7 @@ fn paging_limits_accept_valid_spec_8() {
         s.join(create(&mut w, &AnyView, &Value::Set([Value::Str(format!("item {i}"))].into_iter().collect())).unwrap());
     }
     let mut pages = MemoryPages::with_params(SMALL);
-    let snap = Snapshot { absorbed: Default::default(), nonce: [0; 16], fragment: s.clone(), frontiers: Frontiers::default() };
+    let snap = Snapshot { absorbed: Default::default(), facts: Default::default(), nonce: [0; 16], fragment: s.clone(), frontiers: Frontiers::default() };
     let bytes = encode_snapshot(&snap, &scx(), Some(&mut pages)).unwrap();
     assert_eq!(decode_snapshot(&bytes, &scx(), &mut Interner::new(), Some(&mut pages)).unwrap().fragment, s);
 }
@@ -344,7 +345,7 @@ fn forged_creation_ts_snapshot_round_trip_spec_5_7() {
     // the cycle x -> y -> x demotes x (t7 < t9) to END, not to the dropped lesser creation's HEAD
     assert_eq!(f.read(), Some(Value::Str("zxy".into())));
     let cx = DeltaCtx { ts: ts(1 << 40), own: sess(Tid::from_bytes([9; 15])), range: CounterRange::EMPTY, kind: DeltaKind::Snapshot };
-    let snap = Snapshot { absorbed: Default::default(), nonce: [0; 16], fragment: f.clone(), frontiers: Frontiers::default() };
+    let snap = Snapshot { absorbed: Default::default(), facts: Default::default(), nonce: [0; 16], fragment: f.clone(), frontiers: Frontiers::default() };
     let bytes = encode_snapshot(&snap, &cx, None).unwrap();
     let back = decode_snapshot(&bytes, &cx, &mut Interner::new(), None).unwrap().fragment;
     assert_eq!(back, f, "the snapshot carries the state");
@@ -488,7 +489,7 @@ fn creationless_text_char_spec_5_7() {
     let made = mk(SeqElem { created: Some((s1.clone(), Anchor::Head)), content: SeqContent::Char('a'), pos: vec![(s1.clone(), Anchor::Head, None)], ..SeqElem::bare() });
     let bad = mk(SeqElem { content: SeqContent::Char('z'), pos: vec![(st(2, 9, 1), Anchor::Head, None)], ..SeqElem::bare() });
     let cx = DeltaCtx { ts: ts(1 << 40), own: sess(Tid::from_bytes([9; 15])), range: CounterRange::EMPTY, kind: DeltaKind::Snapshot };
-    let snap = Snapshot { absorbed: Default::default(), nonce: [0; 16], fragment: bad.clone(), frontiers: Frontiers::default() };
+    let snap = Snapshot { absorbed: Default::default(), facts: Default::default(), nonce: [0; 16], fragment: bad.clone(), frontiers: Frontiers::default() };
     let bytes = encode_snapshot(&snap, &cx, None).unwrap();
     assert!(decode_snapshot(&bytes, &cx, &mut Interner::new(), None).is_err());
     all_orders(&[made, bad], Some(Value::Str("a".into())));
@@ -513,7 +514,7 @@ fn text_flag_below_creation_loses_spec_5_7() {
         // a node that held the bodies, its local chars dropped, and one booted from a snapshot of them
         let mut held = created.clone();
         held.join(deleted);
-        let snap = Snapshot { absorbed: Default::default(), nonce: [0; 16], fragment: held.clone(), frontiers: Frontiers::default() };
+        let snap = Snapshot { absorbed: Default::default(), facts: Default::default(), nonce: [0; 16], fragment: held.clone(), frontiers: Frontiers::default() };
         let bytes = encode_snapshot(&snap, &scx(), None).unwrap();
         let mut booted = decode_snapshot(&bytes, &scx(), &mut Interner::new(), None).unwrap().fragment;
         held.drop_local_chars();
@@ -584,7 +585,7 @@ fn lone_creation_on_the_wire_spec_5_6() {
     let shell = shells(1);
     assert_eq!(shell.read(), Some(Value::Map(Default::default())));
     assert!(shell.written().is_some() && shell.present(), "the creation is a write inside the map");
-    let snap = |fragment: Fragment| Snapshot { absorbed: Default::default(), nonce: [0; 16], fragment, frontiers: Frontiers::default() };
+    let snap = |fragment: Fragment| Snapshot { absorbed: Default::default(), facts: Default::default(), nonce: [0; 16], fragment, frontiers: Frontiers::default() };
     let bytes = encode_snapshot(&snap(shell.clone()), &scx(), None).unwrap();
     assert_eq!(decode_snapshot(&bytes, &scx(), &mut Interner::new(), None).unwrap().fragment, shell);
     let many = shells(600);
@@ -624,7 +625,7 @@ fn expired_undelete_hides_alike_spec_5_7() {
     let dy = one(el(false, Some((Stamp { ts: ts(3), dot: Dot::new(y.clone(), 1) }, false)), Some('a')));
     let mut deleted = dx.clone();
     deleted.join(dz);
-    let snap = Snapshot { absorbed: Default::default(), nonce: [0; 16], fragment: deleted.clone(), frontiers: Frontiers::default() };
+    let snap = Snapshot { absorbed: Default::default(), facts: Default::default(), nonce: [0; 16], fragment: deleted.clone(), frontiers: Frontiers::default() };
     let bytes = encode_snapshot(&snap, &crate::tests_wire::snap_cx(), None).unwrap();
     let booted = decode_snapshot(&bytes, &crate::tests_wire::snap_cx(), &mut Interner::new(), None).unwrap().fragment;
     let past = |mut f: Fragment| {

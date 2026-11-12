@@ -597,7 +597,7 @@ fn forge_snapshot_in(w: &mut World, by: usize, ak: &Ak, ts: osis_base::Ts, f: os
     let framing = osis_label::Framing { thing: t, dedup: osis_commit::Secrets::dedup(&sec, &t).unwrap(), expiry: None, keys: keys.iter().map(|k| (k.level, k.verifying_key().unwrap())).collect(), class: if memory { osis_label::Class::Ephemeral } else { osis_label::Class::Durable } };
     let mut blobs = osis_label::MemoryBlobs::default();
     let mut rng = osis_crypto::SeededRng::from_u64(0);
-    let snap = osis_crdt::Snapshot { absorbed: Default::default(), nonce: [7; 16], fragment: f, frontiers: Default::default() };
+    let snap = osis_crdt::Snapshot { absorbed: Default::default(), facts: Default::default(), nonce: [7; 16], fragment: f, frontiers: Default::default() };
     let (bytes, written) = {
         let mut sink = Mutating { inner: osis_label::BlobWriter::new(&framing, &mut blobs, &mut rng), n: 0, mutate };
         let b = osis_crdt::encode_snapshot(&snap, &writer_ctx(Form::Commit, Kind::ContentSnapshot, ts, author, 0, 0), Some(&mut sink)).unwrap();
@@ -1134,7 +1134,7 @@ fn covered_paged_fill_purged_spec_commits_5() {
         let pks = packages(&mut w, 0, &[fill, snap]);
         let mut m = Mutation::new();
         m.set(t, &aks()[3], &Value::Int(9)).unwrap();
-        m.purge(osis_commit::PurgeItem::Commit { commit: fill, tid: t, ak: a.clone() });
+        m.purge_commit(fill, t, a.clone());
         let purge = w.lp.peers[0].commit(m).unwrap().unwrap();
         let purge = packages(&mut w, 0, &[purge]);
         for pk in pks.iter().chain(&purge) {

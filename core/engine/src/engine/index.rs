@@ -259,6 +259,23 @@ impl Rec for osis_crdt::Frontiers {
         Some(out)
     }
 }
+impl Rec for osis_crdt::Facts {
+    fn to(&self) -> Value {
+        let row = |((ts, src), f): (&(Ts, osis_crdt::Source), &osis_crdt::Fact)| Value::List(vec![ts.to(), src.to(), Value::uint(f.by as u64), f.actor.to()]);
+        Value::List(self.iter().map(row).collect())
+    }
+    fn from(v: &Value) -> Option<Self> {
+        let Value::List(x) = v else { return None };
+        let mut out = osis_crdt::Facts::new();
+        for e in x {
+            let Value::List(r) = e else { return None };
+            let [ts, src, by, actor] = r.as_slice() else { return None };
+            let by = osis_base::PurgeBy::from_id(<u64 as Rec>::from(by)?)?;
+            out.insert((<Ts as Rec>::from(ts)?, <osis_crdt::Source as Rec>::from(src)?), osis_crdt::Fact { by, actor: Rec::from(actor)? });
+        }
+        Some(out)
+    }
+}
 impl<T: Rec> Rec for Vec<T> {
     fn to(&self) -> Value {
         Value::List(self.iter().map(Rec::to).collect())

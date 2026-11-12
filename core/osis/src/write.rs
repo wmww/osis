@@ -514,9 +514,9 @@ impl<'d> Write<'d> {
                     // a fire's replacements held here go with it: a purge of a message purges
                     // every version of it
                     for v in r.e.claims_on(&tid, &ak, &commit) {
-                        b.m.purge(PurgeItem::Commit { commit: v, tid, ak: ak.clone() });
+                        b.m.purge_commit(v, tid, ak.clone());
                     }
-                    b.m.purge(PurgeItem::Commit { commit, tid, ak });
+                    b.m.purge_commit(commit, tid, ak);
                 }
                 WriteOp::PurgeAuthor { tid, key: k, actor } => {
                     b.m.op(tid, &osis_schema::core_types::PURGE, PathOp { path: Vec::new(), op: Op::Replace(r.e.now().to_value()) })?;

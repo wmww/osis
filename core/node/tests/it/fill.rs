@@ -639,7 +639,7 @@ fn a_purge_comes_with_order_0_spec_crypto_5() {
         f.net.engine(a).commit(m).unwrap().unwrap()
     };
     let mut m = Mutation::new();
-    m.purge(osis_commit::PurgeItem::Commit { commit: target, tid: t, ak: Ak::new("f:msg.0").unwrap() });
+    m.purge_commit(target, t, Ak::new("f:msg.0").unwrap());
     m.set(t, &crate::net::REG, &net::s("p")).unwrap();
     let purge = f.net.engine(a).commit(m).unwrap().unwrap();
     for i in N..N + 2 * FILL_BATCH {
