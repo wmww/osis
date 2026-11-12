@@ -15,3 +15,5 @@ order::held_set_decides_plain OSIS_ORDER_SEED=7310 issues/covered-under-stripped
 sim-sweep:snapshot_rights 896215582406/896215582419 issues/snapshot-rights-delete-storm.md message storm: .*kind Some\(Content\)
 ephemeral::random_churn_converges_large OSIS_EPH_START=913562400022 issues/churn-seed-022-loop.md no quiescence after \d+ rounds
 sim-sweep:work_sets 963785799942/963785799948 issues/work-sets-snapshot-storm.md message storm: .*kind Some\(Content\)
+sim-sweep:member_churn 313462591648/313462591652 issues/rotation-storm-after-grant-end.md message storm: .*kind Some\(Role\)
+sim-sweep:member_churn 313462591648/313462591654 issues/member-churn-label-not-open.md not open at host \d+ at quiescence

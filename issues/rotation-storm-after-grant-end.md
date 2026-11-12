@@ -12,3 +12,4 @@
 
 ## Question
 No rule over the forks a node holds is independent of which it holds. Options: merge only where a fork matters (a holder actor whose anchors fork, Seal), since the merge rule already handles a fork missing a departure; or a deterministic merger over the forks' makers that does not depend on the forks seen (e.g. the lowest maker by tid among those that may rotate), so a node whose view lacks a fork waits for it.
+- Also storms: sim `member_churn` setup 313462591648 seed 313462591652, step 111 (5000 deliveries of `keys.0`/`secrets.0` role commits on one group; on main alike).
