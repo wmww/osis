@@ -3,10 +3,10 @@
 # Kinds of reason: public API (the `osis` crate's surface for apps), test hook (an integration test in
 # tests/ needs it, where #[cfg(test)] cannot reach), table (one of a uniform set).
 
-osis::byte_len  public API
-osis::disconnect_node  public API
-osis::on_dispute  public API
-osis::retaining  public API
+osis::byte_len  public API: a large value's size without reading it (notes/api.md)
+osis::disconnect_node  public API: ends what `connect_node` (the CLI's) opened
+osis::on_dispute  public API: the dispute listener (crate docs, notes/listener-design.md)
+osis::retaining  public API: keeps a thing alive from an aspect (the crate docs' example)
 osis::kept_writes  test hook (internals)
 osis::port_commit_address  test hook (internals)
 osis::stream_work  test hook (internals)
@@ -24,7 +24,6 @@ osis-perm::may_purge  test hook: §6 purge rights at a point (the engine asks `p
 osis-perm::set_general_only  test hook: the general path against the fast one
 osis-perm::trusted_active  test hook: trusted ops in force
 osis-proto::drop_claim_set  test hook: a claim set gone as after ROLE_KEEP
-osis-proto::remembered  test hook: relay memory size
 osis-store::record_lag  test hook: reads a lag without spending it (`record_take_lag`)
 osis-store::records_total  test hook: bytes RECORD_BUDGET bounds
 osis-transport::ADDRESS  table: the NAT kinds

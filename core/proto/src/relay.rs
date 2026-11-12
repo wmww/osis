@@ -109,6 +109,7 @@ impl RelayGate {
     }
 
     /// Pairs remembered (tests).
+    #[cfg(test)]
     pub fn remembered(&self) -> usize {
         self.seen.len()
     }
