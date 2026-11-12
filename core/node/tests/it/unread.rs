@@ -11,7 +11,8 @@ use crate::connection_proofs::{CHALLENGE, Dialer, LISTENER, dial_with, pump};
 use crate::net;
 use crate::shared::{offer, send, shared_of};
 use net::*;
-use osis_base::{BlobId, LabelId, Role};
+use osis_base::{BlobId, LabelId, Role, Tid};
+use osis_node::Mutation;
 use osis_crypto::kdf::{beacon, beacon_hit, pair_key};
 use osis_proto::examples::{Label, blob};
 use osis_proto::filter::{beacon_value, decode_gcs};
@@ -493,4 +494,204 @@ fn undelivered_blob_fetched_again_once_announced_spec_sync_6() {
         net.advance(61_000);
     }
     assert_eq!(net.read(b, t), Some(s("y")), "fetched once announced again");
+}
+
+// spec/sync.md §10 (Shared set: a reader opens a peer that cannot read L by a Hit on its head's
+// credential; Open only walks a head off the recorded path): readers whose recorded path ends at
+// the peer's head reconnect, write and read through it with no Open sent.
+#[test]
+fn no_open_reaches_a_peer_on_the_newest_head_spec_sync_10() {
+    let (mut net, _host, [a, b], g, [t]) = hosted::<2, 1>(&[(1, Role::Read)], ["x"], true);
+    net.advance(61_000);
+    net.sent_kinds.clear();
+    for n in [a, b] {
+        net.set_online(n, false);
+    }
+    net.run();
+    for n in [a, b] {
+        net.set_online(n, true);
+    }
+    net.advance(61_000);
+    let t2 = net.item(a, g, g, "after");
+    net.write(a, t, "y");
+    net.run();
+    net.advance(61_000);
+    net.set_online(a, false);
+    net.set_online(b, false);
+    net.set_online(b, true);
+    net.advance(61_000);
+    assert_eq!(net.read(b, t2), Some(s("after")));
+    assert_eq!(net.read(b, t), Some(s("y")));
+    assert_eq!(net.sent_kinds.get(&4).copied().unwrap_or(0), 0, "no Open");
+}
+
+// spec/sync.md §5 (Delete: signed by the head's delete key or level keys), §10 (a reader acts
+// on a peer that cannot read L by deletes alone): a writer's purge-on-replace write reaches the
+// peer through a reader while the writer cannot reach it; the reader, holding no delete key,
+// sends no Delete and the purged body stays there; once the writer (its level-3 key) reaches
+// the peer, the body goes, and the admin, back alone, reads the new value through the peer.
+#[test]
+fn deletes_reach_a_peer_only_from_a_delete_key_holder_spec_sync_5() {
+    use crate::common::GONE;
+    let mut net = Net::new();
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let w = net.node(2, &[host]);
+    let r = net.node(3, &[host]);
+    // r dials w directly
+    let acts = net.sync(w).publish_reach([0xb2; 32], Vec::new()).unwrap();
+    net.actions(w, acts);
+    let g = net.group(a, &[(w, Role::Write), (r, Role::Read)], &[host]);
+    let t = net.item(a, g, g, "x");
+    net.keep(a, t, &[("t:gone.0", PURGE)]);
+    net.run();
+    let mut m = Mutation::new();
+    m.set(t, &GONE, &s("old")).unwrap();
+    let old = net.engine(w).commit(m).unwrap().unwrap();
+    net.feed(w, osis_node::sync::Event::Local);
+    net.run();
+    net.advance(61_000);
+    let l = net.label(a);
+    let purged: Vec<BlobId> = net.sync(w).entries(&l).into_iter().filter(|(_, k)| matches!(k, osis_node::sync::EntryKind::Commit { commit, .. } if *commit == old)).map(|(id, _)| id).collect();
+    assert!(!purged.is_empty() && purged.iter().all(|id| net.host_ids(host, &l).contains(id)), "the old value at the peer");
+    assert_eq!(net.engine(r).get_typed(&t, &GONE).unwrap(), Some(s("old")));
+    // the admin away, the writer reaching the peer through r alone
+    net.set_online(a, false);
+    net.blocked.insert((w, host));
+    net.drop_link(w, host);
+    net.run();
+    let before: BTreeSet<BlobId> = net.host_ids(host, &l).into_iter().collect();
+    let mut m = Mutation::new();
+    m.set(t, &GONE, &s("new")).unwrap();
+    net.engine(w).commit(m).unwrap().unwrap();
+    net.feed(w, osis_node::sync::Event::Local);
+    for _ in 0..3 {
+        net.run();
+        net.advance(61_000);
+    }
+    assert_eq!(net.engine(r).get_typed(&t, &GONE).unwrap(), Some(s("new")), "r read the new value from w");
+    let held = net.host_ids(host, &l);
+    assert!(held.iter().any(|id| !before.contains(id)), "what carries the new value reached the peer through r");
+    assert!(purged.iter().all(|id| held.contains(id)), "the purged body stays: r holds no key");
+    assert!(net.deleted.keys().all(|(n, x, _)| *n != r || *x != l), "r sent no Delete under L");
+    // the writer reaches the peer: its level-3 key deletes the purged body
+    net.blocked.remove(&(w, host));
+    net.set_online(w, false);
+    net.set_online(w, true);
+    for _ in 0..3 {
+        net.run();
+        net.advance(61_000);
+    }
+    let held = net.host_ids(host, &l);
+    assert!(purged.iter().all(|id| !held.contains(id)), "the purged body went");
+    assert!(net.deleted.keys().any(|(n, x, b)| *n == w && *x == l && purged.contains(b)), "by w's Delete");
+    net.set_online(w, false);
+    net.set_online(r, false);
+    net.set_online(a, true);
+    for _ in 0..3 {
+        net.run();
+        net.advance(61_000);
+    }
+    assert_eq!(net.engine(a).get_typed(&t, &GONE).unwrap(), Some(s("new")), "the admin reads the new value through the peer");
+}
+
+// spec/sync.md §5 (Sending: every deposit a Deposit item), §10: A grants B while B is offline;
+// A's grant lands as a Deposit item in B's inbox at the peer that keeps it, and B, connecting
+// only to that peer with A offline, sees the grant and reads the group.
+#[test]
+fn a_deposit_for_an_offline_recipient_lands_where_its_inbox_is_kept_spec_sync_10() {
+    let mut net = Net::new();
+    net.home_at_hosts = true;
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let b = net.node(2, &[host]);
+    net.run();
+    // A knows B's account (a contact)
+    net.pair(b, a);
+    let g = net.group(a, &[], &[host]);
+    let t = net.item(a, g, g, "for b");
+    net.run();
+    net.set_online(b, false);
+    net.sent_kinds.clear();
+    let bt = net.tid(b);
+    net.grant(a, g, bt, Role::Read);
+    for _ in 0..2 {
+        net.run();
+        net.advance(61_000);
+    }
+    assert_eq!(net.sent_kinds.get(&12).copied().unwrap_or(0), 0, "no Deposit message: a Deposit item");
+    net.set_online(a, false);
+    net.set_online(b, true);
+    for _ in 0..3 {
+        net.run();
+        net.advance(61_000);
+    }
+    assert!(net.engine(b).roster(&g).contains_key(&bt), "B sees the grant");
+    assert_eq!(net.read(b, t), Some(s("for b")), "and reads the group through the peer");
+}
+
+/// A writer `a` and a reader at one peer that cannot read; a thing with secrets of its own, read
+/// by `k` groups of a's (the reader holding each) and listed in them; one edit of it with a 16 KB
+/// value: the bytes of the edit's blobs nodes sent the peer.
+fn edit_bytes(k: usize) -> usize {
+    use osis_schema::core_types as ct;
+    let (mut net, host, [a, b]) = hosted_nodes::<2>();
+    let gs: Vec<Tid> = (0..k).map(|_| net.group(a, &[(b, Role::Read)], &[host])).collect();
+    net.run();
+    let me = net.tid(a);
+    let e = net.engine(a);
+    let mut m = osis_engine::Mutation::new();
+    let t = e.new_thing(&mut m, me);
+    m.set(t, &ct::GROUP, &ct::Group::default()).unwrap();
+    e.commit(m).unwrap();
+    let done = net.engine(a).give_own_secrets(&t).unwrap();
+    let acts = net.sync(a).carry_out(done).unwrap();
+    net.actions(a, acts);
+    let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
+    for g in &gs {
+        let done = net.engine(a).grant(&t, g, &edge).unwrap();
+        let acts = net.sync(a).carry_out(done).unwrap();
+        net.actions(a, acts);
+        let e = net.engine(a);
+        let mut x = e.get_typed(g, &ct::GROUP).unwrap().unwrap_or_default();
+        x.items.insert(t);
+        let mut m = osis_engine::Mutation::new();
+        m.set(*g, &ct::GROUP, &x).unwrap();
+        e.commit(m).unwrap();
+    }
+    net.run();
+    net.advance(61_000);
+    net.run();
+    net.crossed.clear();
+    let big = "e".repeat(16 * 1024);
+    let c = net.write(a, t, &big);
+    net.run();
+    net.advance(61_000);
+    net.run();
+    assert_eq!(net.read(b, t), Some(s(&big)));
+    let mut blobs = BTreeSet::new();
+    for g in &gs {
+        let l = net.engine(a).labels_of(g)[0].id;
+        let mine: Vec<BlobId> = net.sync(a).entries(&l).into_iter().filter(|(_, k)| matches!(k, osis_node::sync::EntryKind::Commit { commit, .. } if *commit == c)).map(|(id, _)| id).collect();
+        assert!(!mine.is_empty(), "the edit is under {l:?}");
+        let held = net.host_ids(host, &l);
+        assert!(mine.iter().all(|id| held.contains(id)), "the peer holds it under {l:?}");
+        blobs.extend(mine);
+    }
+    assert_eq!(blobs.len(), 1, "one blob under every group");
+    // the edit's commit blob and the chunks it lists
+    let l0 = net.engine(a).labels_of(&gs[0])[0].id;
+    let listed: BTreeSet<BlobId> = net.sync(a).entries(&l0).into_iter().map(|(id, _)| id).collect();
+    net.crossed.iter().filter(|(id, _)| listed.contains(id)).map(|(_, n)| *n).sum()
+}
+
+// spec/sync.md §3 (bytes cross once), §10 (Bodies: only blob IDs the store lacks are fetched):
+// an edit of a thing listed in three groups a peer that cannot read them keeps crosses to it
+// as many bytes as in one.
+#[test]
+fn an_edit_in_a_group_nested_in_three_crosses_its_bytes_once_spec_sync_3() {
+    let (one, three) = (edit_bytes(1), edit_bytes(3));
+    println!("bytes crossed at 1 and 3 groups: {one} / {three}");
+    assert!(one >= 16 * 1024, "the edit's bytes crossed: {one}");
+    assert_eq!(one, three, "bytes at 1 and 3 enclosing groups");
 }

@@ -433,6 +433,51 @@ fn sync_pass_is_flat() {
     }
 }
 
+/// A writer and a reader of a label holding 20 content commits on 10 things, at `k` peers that
+/// cannot read it, settled: the pass work one more write causes at (the writer, the reader).
+fn one_more_write_at(k: usize) -> ([u64; 5], [u64; 5]) {
+    let mut net = crate::net::Net::new();
+    let hosts: Vec<usize> = (0..k).map(|_| net.add_host()).collect();
+    let a = net.node(1, &hosts);
+    let b = net.node(2, &hosts);
+    let g = net.group(a, &[(b, Role::Read)], &hosts);
+    let things: Vec<Tid> = (0..10).map(|i| net.item(a, g, g, &format!("t{i}"))).collect();
+    for i in 0..20 {
+        net.write(a, things[i % things.len()], &format!("v{i}"));
+    }
+    net.run();
+    net.advance(61_000);
+    let before = (net.sync(a).pass_stats(), net.sync(b).pass_stats());
+    let c = net.write(a, things[0], "one more");
+    net.run();
+    assert_eq!(net.read(b, things[0]), Some(crate::net::s("one more")));
+    let l = net.label(a);
+    let mine: Vec<osis_base::BlobId> = net.sync(a).entries(&l).into_iter().filter(|(_, x)| matches!(x, osis_node::sync::EntryKind::Commit { commit, .. } if *commit == c)).map(|(id, _)| id).collect();
+    for h in &hosts {
+        let held = net.host_ids(*h, &l);
+        assert!(!mine.is_empty() && mine.iter().all(|id| held.contains(id)), "{k} peers: peer {h} pulled the write");
+    }
+    (pass_work(before.0, net.sync(a).pass_stats()), pass_work(before.1, net.sync(b).pass_stats()))
+}
+
+// issues/net-one-peer.md 3h2 (one pass per label), spec/requirements.md, Scale: a write to a
+// label kept at 1 and at 3 peers that cannot read it costs each node the same full passes and
+// bodies judged: the own part judges the change once, whatever the number of sources; only the
+// per-source check of what each lacks or holds grows with them. Fails: each source's echo of
+// the write passes the label and judges its bodies again (issues/pass-per-source-echo.md).
+#[test]
+#[ignore]
+fn repro_one_pass_judges_a_change_for_every_source() {
+    let (one, three) = (one_more_write_at(1), one_more_write_at(3));
+    println!("(passes, full, bodies, entries, examined) writer {:?} / {:?}, reader {:?} / {:?}", one.0, three.0, one.1, three.1);
+    for (who, x, y) in [("writer", one.0, three.0), ("reader", one.1, three.1)] {
+        for i in [1, 2] {
+            assert_eq!(x[i], y[i], "{who}: {} at 1 and 3 sources", PASS[i]);
+        }
+        assert!(y[3] <= 3 * x[3].max(1), "{who}: entries judged per source: {} / {}", x[3], y[3]);
+    }
+}
+
 /// A fresh reader syncing n kept content commits on 10 things through one host: (commits it gained,
 /// commits examined, bodies judged and entries judged by both nodes' passes).
 fn first_sync(n: usize) -> [u64; 4] {
