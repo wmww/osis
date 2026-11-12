@@ -74,18 +74,18 @@ impl SyncEngine {
         Ok(())
     }
 
-    /// What may become of entry `id` under `l` (spec/sync.md §6, §7): `judge`, then a live
-    /// body goes only with a carrier (`carried`; else a covering snapshot is asked for,
+    /// What may become of entry `id` under `l` (spec/sync.md §6, §7): `judge`, then a body
+    /// with a delta to carry goes only with a carrier (`carried`; else a covering snapshot is asked for,
     /// `snapshot_first`, when `carrier`) and by a delete item this node can make. `host`
     /// `None`: this node's own served state.
     pub(super) fn deletable(&mut self, at: &At, id: &BlobId, e: &Entry, desired: &Desired, carrier: bool, note: &mut Note) -> Result<Fate> {
-        let Some((Hold::MustNot(why), live, aspects)) = self.judge(at, id, e, desired, note)? else { return Ok(Fate::Keep) };
+        let Some((Hold::MustNot(why), to_carry, aspects)) = self.judge(at, id, e, desired, note)? else { return Ok(Fate::Keep) };
         let (carried, need) = match why {
-            _ if !live => (true, Vec::new()),
+            _ if !to_carry => (true, Vec::new()),
             Why::Duplicate | Why::StrictSubset => (true, Vec::new()),
             _ => self.carried(at, e)?,
         };
-        if !may_delete(live, carried) {
+        if !may_delete(to_carry, carried) {
             if carrier && let Kind::Commit { commit, .. } = &e.kind {
                 self.snapshot_first(&need, commit)?;
             }
@@ -157,12 +157,13 @@ impl SyncEngine {
                 note.at(from);
                 return Ok(None);
             }
-            // every delta's live writes count, the kept ones' too (spec/sync.md §7, `carried`);
-            // under a replaced label no content entry stays, carried there or not: its
-            // replacement holds the content (spec/sync.md §2)
+            // every delta only a blob carries counts, the kept ones too (spec/sync.md §7,
+            // `carried`); under a replaced label no content entry stays, carried there or not:
+            // its replacement holds the content (spec/sync.md §2)
             let content_gone = self.is_replaced(g, l) && super::replaced_content(opened.iter().filter_map(|ai| h.aspects.get(*ai)).map(|a| &a.ak));
-            let live = !content_gone && opened.iter().any(|ai| self.part_live(&h, commit, *ai));
-            return Ok(Some((Hold::MustNot(Why::Dropped), live, aspects)));
+            let keeps = self.engine.part_keeps(commit)?;
+            let to_carry = !content_gone && opened.iter().any(|ai| self.part_to_carry(commit, &m, &keeps, *ai, note));
+            return Ok(Some((Hold::MustNot(Why::Dropped), to_carry, aspects)));
         }
         // a delta dropped here while invalid: no right deletes it (spec/permissions.md §6), so
         // the hosts keep the copy a re-grant fetches, unless a right dropped another (above)
@@ -236,7 +237,12 @@ impl SyncEngine {
                     }
                 }
             }
-            if sup {
+            if sup && !settled {
+                // "covered by no snapshot" needs a settled view, as must-hold's uncovered does
+                // (spec/sync.md §6): an entry being fetched may be the snapshot covering the
+                // extra delta, which a co-writer that dropped it judged by
+                return Ok(None);
+            } else if sup {
                 f.required = true;
                 f.strict_subset = true;
             } else if desired.iter().any(|d| parts.iter().all(|p| d.contains(p))) {
@@ -594,10 +600,22 @@ impl SyncEngine {
         self.engine.delta_live(c, &a.tid, &a.ak).unwrap_or(true)
     }
 
-    /// Whether other entries under the label at the host carry every live write of
-    /// must-not-hold entry `e` the label's actor may read (spec/sync.md §7), and the aspects only
-    /// a snapshot this node writes can carry.
-    /// A kept delta's: a blob of the commit holding it that is not must-not-hold (the dropping
+    /// Whether part `ai` of a commit (`m`, its `Engine::part_keeps` `keeps`) leaves a label only
+    /// with a carrier there (spec/sync.md §7): holding a live write; held and before its
+    /// keep-at-least bound (must-hold whatever covers it: the deleter's side of `must_carry`,
+    /// what a holder would place again); or dropped as covered (its cover is why it goes, and a
+    /// holder lacking the cover judges it uncovered, so the cover goes up first).
+    fn part_to_carry(&mut self, c: &CommitId, m: &crate::engine::Meta, keeps: &[u64], ai: usize, note: &mut Note) -> bool {
+        if m.body_gone(ai) {
+            return m.dropped(ai).is_some_and(|d| d.why == crate::engine::DropFor::Cover) || self.part_live(&m.header, c, ai);
+        }
+        self.part_live(&m.header, c, ai) || self.part_kept(keeps, ai, note)
+    }
+
+    /// Whether other entries under the label at the host carry every delta of must-not-hold
+    /// entry `e` the label's actor may read that needs a carrier (`part_to_carry`, spec/sync.md
+    /// §7 Carriers), and the aspects only a snapshot this node writes can carry.
+    /// A held delta's: a blob of the commit holding it that is not must-not-hold (the dropping
     /// node's rewrite, `carried_by`) or a snapshot covering it; none is ever asked for: the
     /// rewrite is this node's to place. A dropped delta's: the snapshot that covered it when it
     /// was dropped.
@@ -627,11 +645,12 @@ impl SyncEngine {
         // as the account), as the label's bodies are: a delta it may not read is carried under
         // its readers' labels
         let readable = self.readable(g, commit, parts);
+        let keeps = self.engine.part_keeps(commit)?;
         let (mut all, mut need) = (true, Vec::new());
         for &ai in parts {
             let Some(a) = m.header.aspects.get(ai) else { continue };
             let (t, a) = (a.tid, a.ak.clone());
-            if !readable.contains(&ai) || !self.part_live(&m.header, commit, ai) {
+            if !readable.contains(&ai) || !self.part_to_carry(commit, &m, &keeps, ai, &mut Note::default()) {
                 continue;
             }
             let dropped = m.body_gone(ai);

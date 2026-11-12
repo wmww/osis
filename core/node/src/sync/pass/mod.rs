@@ -94,7 +94,8 @@ enum Fate {
 /// Aspects not settled yet (`None`: every aspect; `SyncEngine::unsettled_sets`).
 pub(crate) type Unsettled = BTreeSet<Option<(Tid, Ak)>>;
 
-/// A judged entry: the rule's answer, whether it may carry live writes, its aspects.
+/// A judged entry: the rule's answer, whether it holds a delta to carry (`part_to_carry`), its
+/// aspects.
 type Judged = (Hold, bool, Vec<(Tid, Ak)>);
 
 /// What a pass judges once its scope is taken (`SyncEngine::judging`).

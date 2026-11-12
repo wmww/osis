@@ -2043,3 +2043,35 @@ fn unrelated_writes_judge_no_waiting_freed_link_spec_sync_7() {
     assert!(n10 >= 5 * n, "pieces: {n} and {n10}");
     assert!(small <= 10 && big <= 10, "rows judged by 10 writes: {small} at {n} pieces, {big} at {n10}");
 }
+
+// spec/sync.md §6, §7: a delta before its keep-at-least bound is must-hold whatever covers it, so
+// a writer deleting a blob of its commit for another delta it dropped as covered waits until
+// another blob carries the kept one, as the author holding the blob would place it again
+// (`delete_stands`): one judgment per delta on both sides, no delete-and-place loop.
+#[test]
+fn kept_delta_waits_for_its_carrier_spec_sync_7() {
+    let (mut net, host, [a, b], _g, [t]) = hosted::<2, 1>(&[(1, Role::Write)], ["x"], true);
+    net.keep(a, t, &[("t:gone.0", osis_schema::History::Keep { until: None, after: Some(1_800_000) })]);
+    net.run();
+    let mut m = Mutation::new();
+    m.set(t, &GONE, &s("g1")).unwrap();
+    m.set(t, &REG, &s("r1")).unwrap();
+    let c = net.engine(b).commit(m).unwrap().unwrap();
+    net.run();
+    // c's GONE delta dies and stays kept for half an hour
+    let mut m = Mutation::new();
+    m.set(t, &GONE, &s("g2")).unwrap();
+    net.engine(b).commit(m).unwrap().unwrap();
+    net.run();
+    // a covers REG and drops c's REG delta; b keeps its own (spec/sync.md §7 Own bodies)
+    let (reg, gone) = (Ak::new(REG.ak()).unwrap(), Ak::new(GONE.ak()).unwrap());
+    let acts = net.sync(a).compact_now(&t, &reg).unwrap();
+    net.actions(a, acts);
+    net.run();
+    assert!(!net.engine(a).body_not_dropped(&c, &t, &reg) && net.engine(b).body_not_dropped(&c, &t, &reg));
+    let ai = net.engine(a).header(&c).unwrap().aspects.iter().position(|x| x.tid == t && x.ak == gone).unwrap();
+    let l = net.label(a);
+    let ids = net.host_ids(host, &l);
+    let kept = net.sync(a).entries(&l).into_iter().any(|(id, k)| ids.contains(&id) && matches!(k, EntryKind::Commit { commit, parts, .. } if commit == c && parts.contains(&ai)));
+    assert!(kept, "the kept delta stays under the label");
+}

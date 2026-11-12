@@ -128,7 +128,7 @@ impl SyncEngine {
     /// Whether part `p` of commit `c` is kept whatever covers it (spec/sync.md §6): before its
     /// keep-at-least bound (noted when that ends; never for one kept for good). `keeps`: the
     /// commit's `Engine::part_keeps`, read once per commit judged.
-    fn part_kept(&self, keeps: &[u64], ai: usize, note: &mut Note) -> bool {
+    pub(super) fn part_kept(&self, keeps: &[u64], ai: usize, note: &mut Note) -> bool {
         let Some(k) = keeps.get(ai).copied() else { return false };
         let kept = k > self.now();
         if kept && k < osis_commit::FOREVER {

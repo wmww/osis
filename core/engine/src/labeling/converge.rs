@@ -61,11 +61,12 @@ pub fn classify(f: &Facts) -> Hold {
     if f.before_at_least || f.covered == Some(false) { Hold::Must } else { Hold::May }
 }
 
-/// Whether a must-not-hold body may go now (spec/sync.md §7): one with live writes only while
-/// other entries under the label carry them. An expired one is no body here: node sync drops
+/// Whether a must-not-hold body may go now (spec/sync.md §7 Carriers): one with a delta to
+/// carry (a live write, kept, or dropped as covered) only while other entries under the label
+/// carry it. An expired one is no body here: node sync drops
 /// every entry at its prefix expiry before judging any (`SyncEngine::expire_entries`).
-pub fn may_delete(live_writes: bool, carried: bool) -> bool {
-    !live_writes || carried
+pub fn may_delete(to_carry: bool, carried: bool) -> bool {
+    !to_carry || carried
 }
 
 #[cfg(test)]
