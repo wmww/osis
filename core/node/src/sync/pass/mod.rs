@@ -131,8 +131,8 @@ struct Head {
 }
 
 impl Head {
-    fn at<'a>(&'a self, snaps: &'a Snaps, settled: bool) -> At<'a> {
-        At { g: self.g, l: self.l, host: self.host, keys: &self.keys, snaps, settled }
+    fn at<'a>(&'a self, snaps: &'a Snaps, settled: bool, roles_behind: bool) -> At<'a> {
+        At { g: self.g, l: self.l, host: self.host, keys: &self.keys, snaps, settled, roles_behind }
     }
 }
 
@@ -146,6 +146,9 @@ struct At<'a> {
     keys: &'a HeadKeys,
     snaps: &'a Snaps,
     settled: bool,
+    /// A role commit this node must hold under the label waits for its relay to the host
+    /// (`body_sends`): its entry deletions wait (`deletions`).
+    roles_behind: bool,
 }
 
 /// A deposited entry due for promotion: (blob, entry, commit, its parts).
@@ -291,7 +294,8 @@ impl SyncEngine {
         // own memory writes wait while an own upload is in flight, then go coalesced
         // (spec/sync.md §9)
         self.coalesce_own(conn, l, ctx, &snaps, &mut bodies, &mut left)?;
-        let mut sends: Vec<Out> = self.body_sends(p, &bodies, &snaps, &snapping, &mut left)?;
+        let mut roles_behind = false;
+        let mut sends: Vec<Out> = self.body_sends(p, &bodies, &snaps, &snapping, &mut left, &mut roles_behind)?;
         // parked commits travel like at a host: stamped entries are relayed (spec/versioning.md §2)
         for id in self.state.of_kind(&l, Kind::TAG_PARKED) {
             if self.state.entries.get(&(l, id)).is_some_and(|e| e.stamp.is_some()) {
@@ -325,7 +329,7 @@ impl SyncEngine {
         let settled = unsettled.is_empty();
         self.pull(Some(conn), &g, l, &mut scope, w);
         self.judge_touched(ctx, &g, &l, &scope, &judged, &mut bodies)?;
-        self.deletions(conn, &p.at(&snaps, settled), &bodies, &scope, &mut left, out)?;
+        self.deletions(conn, &p.at(&snaps, settled, roles_behind), &bodies, &scope, &mut left, out)?;
         if quiet && settled {
             self.retire_at(host, &g, l)?;
         }
@@ -640,7 +644,7 @@ impl SyncEngine {
         let (g, l, keys) = (p.g, p.l, &p.keys);
         let (full, scope) = self.begin(&g, &l, w, &ctx.closure);
         let J { mut scope, mut left, snaps, mut bodies, judged, snapping, .. } = self.judging(None, p, ctx, w, scope, full)?;
-        let sends = self.body_sends(p, &bodies, &snaps, &snapping, &mut left)?;
+        let sends = self.body_sends(p, &bodies, &snaps, &snapping, &mut left, &mut false)?;
         let ours: BTreeSet<BlobId> = sends.iter().filter(|o| o.fresh).map(|o| o.id).collect();
         let authors: BTreeSet<Tid> = w.unjudged.values().copied().collect();
         self.certificates(&g, l, &authors)?;
@@ -666,7 +670,7 @@ impl SyncEngine {
         // no host took meets no host's deletion
         let settled = self.unsettled_sets(!w.unopened.is_empty(), false)?.0.is_empty();
         self.judge_touched(ctx, &g, &l, &scope, &judged, &mut bodies)?;
-        self.local_deletions(&p.at(&snaps, settled), &bodies, &scope, &mut left)?;
+        self.local_deletions(&p.at(&snaps, settled, false), &bodies, &scope, &mut left)?;
         if host {
             // a node serving the label alone decides here: nobody runs a pass at a host for it
             self.reseal(&g, l)?;

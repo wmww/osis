@@ -8,8 +8,9 @@ impl SyncEngine {
     /// each body (at `host` if there, else any genuine one; `None`: this node's own served
     /// state, any entry), else a fresh placement when this node may upload or deposit it, with
     /// the blobs it links when this node writes. Another node's body not at `host` waits for
-    /// its author or a co-writer (`relay_at`).
-    pub(super) fn body_sends(&mut self, p: &Head, bodies: &[Body], snaps: &Snaps, snapping: &Unsettled, left: &mut Left) -> Result<Vec<Out>> {
+    /// its author or a co-writer (`relay_at`). `behind`: this node writes here and a must-hold role
+    /// commit not at the host waits for its relay (`At::roles_behind`).
+    pub(super) fn body_sends(&mut self, p: &Head, bodies: &[Body], snaps: &Snaps, snapping: &Unsettled, left: &mut Left, behind: &mut bool) -> Result<Vec<Out>> {
         let (g, l, keys, read_ok, host) = (&p.g, p.l, &p.keys, p.read_ok, p.host.as_ref());
         let mut sends = Vec::new();
         self.stats.bodies += bodies.len() as u64;
@@ -42,6 +43,7 @@ impl SyncEngine {
             // another node's commit not at this host: its author (or a co-writer) first
             if !here && self.relay_at(p.l, &b.commit).is_some() {
                 left.commits.insert(b.commit);
+                *behind |= b.role_commit && keys.is_writer();
                 continue;
             }
             let (id, fresh) = match entry {
@@ -436,7 +438,7 @@ impl SyncEngine {
         }
         let desired = desired(&bodies);
         let entries: Vec<(BlobId, Entry)> = self.state.label_entries(l).map(|(b, e)| (b, e.clone())).collect();
-        let at = At { g, l: *l, host: Some(*host), keys: &keys, snaps: &snaps, settled: unsettled.is_empty() };
+        let at = At { g, l: *l, host: Some(*host), keys: &keys, snaps: &snaps, settled: unsettled.is_empty(), roles_behind: false };
         for (id, e) in entries {
             if let Fate::Delete(why, _, _) = self.deletable(&at, &id, &e, &desired, false, &mut note)? {
                 v.must_not.push((id, format!("{why:?}")));

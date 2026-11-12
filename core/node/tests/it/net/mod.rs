@@ -417,6 +417,14 @@ pub fn fetched_ids(b: &[u8]) -> Vec<osis_base::BlobId> {
 /// Node hubs' connection IDs start here (engine connection IDs stay below).
 pub const HUB_BASE: ConnId = 1 << 40;
 
+/// Rounds of messages one `Net::settle` delivers at most before it fails as a loop. The clock
+/// stands still within a settle, so nothing timed ends a loop there; its messages grow costly
+/// (a loop holds more each round), and the message cap alone let one run past the seed's CPU
+/// limit (random churn seed 460971879377: 32 CPU-s to fail here). The node tests' settles
+/// take at most about 210 rounds (random churn and window seeds 90). Minor consequence,
+/// test-only: near 0 every settle fails; at infinity a loop runs to the seed's CPU timeout.
+const SETTLE_ROUNDS: usize = 2_000;
+
 pub fn host_key(i: usize) -> [u8; 32] {
     [0x50 + i as u8; 32]
 }
@@ -1388,14 +1396,21 @@ impl Net {
         self.queue.extend(go);
     }
 
-    /// Delivers queued messages until none are left (at most `max`).
+    /// Delivers queued messages until none are left (at most `max`, and `SETTLE_ROUNDS` rounds:
+    /// what the messages of one round cause is the next).
     pub fn settle(&mut self, max: usize) {
         let mut i = 0;
+        let (mut round, mut ends) = (0usize, self.queue.len());
         while let Some(m) = self.queue.pop_front() {
             i += 1;
             self.steps += 1;
             assert!(i < max, "no quiescence after {max} messages");
             self.deliver(m);
+            if i >= ends {
+                round += 1;
+                ends = i + self.queue.len();
+                assert!(round < SETTLE_ROUNDS, "no quiescence after {SETTLE_ROUNDS} rounds ({i} messages): a loop");
+            }
         }
     }
 

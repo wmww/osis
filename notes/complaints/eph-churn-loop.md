@@ -1,0 +1,3 @@
+- gdb cannot attach (ptrace_scope) and `perf` call graphs lack frames, so a hung seed's loop was found only by eprintln tracing (uploads, deletes, cover judgments) through several rebuilds.
+- The issue's mechanism (a compaction storm) was stale: the hang was a delete/re-place storm between two writers with different role views. Issue mechanisms, like seeds, go stale silently.
+- A loop inside one `Net::settle` (clock still) runs far past 600 CPU-s before the 200,000-message cap: per-message cost grows with the loop (a fresh encryption record per round at the re-placer), so a message cap is no fast guard.

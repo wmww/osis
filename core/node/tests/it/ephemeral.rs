@@ -2273,6 +2273,60 @@ fn random_churn_converges_large() {
     eph_seeds().run(name, |seed| eph_replay(name, seed), random_churn_run);
 }
 
+// spec/sync.md §7 (a delete waits for the role commits it is judged by; random churn seed
+// 460971879377 shrunk): writer c is promoted again while writer b reaches only host 0 and the
+// admin only host 1, so b still judges c a reader. c's snapshot covers b's write, but c's
+// relay of the promotion to host 0 waits (`relay_at`): a delete there now would meet b judging
+// the snapshot invalid and placing its write again, under a fresh encryption past the
+// tombstone, at every pass until the promotion arrives (the seed's storm). So c's deletes at
+// host 0 wait for the promotion there; once it arrives, the write goes and both read alike
+#[test]
+fn delete_waits_for_its_role_commits_at_the_host_spec_sync_7() {
+    let (mut net, (hosts, nodes, g, w)) = churn_world();
+    let (a, b, c) = (nodes[0], nodes[1], nodes[2]);
+    net.set_online(nodes[3], false);
+    let tc = net.tid(c);
+    let edge = |role| osis_schema::core_types::Edge { role, until: None, invite: None, tied: None };
+    let demote = osis_node::flows::Demotion { holder: tc, new: Some(edge(Role::Read)), retain: None };
+    let done = net.engine(a).demote(&g, &demote).unwrap();
+    let acts = net.sync(a).carry_out(done).unwrap();
+    net.actions(a, acts);
+    net.advance(1_000);
+    let put = |net: &mut Net, n: usize, v: &str| -> CommitId {
+        let mut m = Mutation::new();
+        m.op(w, &eph(CURSOR), PathOp { path: vec![PathSeg::Key(s("k"))], op: Op::Put(s(v)) }).unwrap();
+        let id = net.engine(n).write(m).unwrap().unwrap().id;
+        local(net, n);
+        id
+    };
+    let write = put(&mut net, b, "b");
+    net.run();
+    let l = net.label(a);
+    // the entries of b's write at host 0
+    let mine: Vec<osis_base::BlobId> = net.sync(b).entries(&l).into_iter().filter(|(_, k)| matches!(k, osis_node::sync::EntryKind::Commit { commit, .. } if *commit == write)).map(|(x, _)| x).collect();
+    let at0 = |net: &Net| -> usize { let held = net.host_ids(hosts[0], &l); mine.iter().filter(|x| held.contains(x)).count() };
+    let held = at0(&net);
+    assert!(held > 0, "b's write is at host 0");
+    for (n, h) in [(a, hosts[0]), (b, hosts[1])] {
+        net.blocked.insert((n, h));
+        net.drop_link(n, h);
+    }
+    net.run();
+    let done = net.engine(a).grant(&g, &tc, &edge(Role::Write)).unwrap();
+    let acts = net.sync(a).carry_out(done).unwrap();
+    net.actions(a, acts);
+    net.run();
+    put(&mut net, c, "c");
+    let acts = net.sync(c).compact_ephemeral_now().unwrap();
+    net.actions(c, acts);
+    net.run();
+    assert_eq!(at0(&net), held, "kept at host 0 while the promotion is on its way there");
+    net.advance(31_000);
+    net.advance(1_000);
+    assert_eq!(at0(&net), 0, "deleted once the promotion is there");
+    assert_eq!(net.eph_read(b, w, CURSOR), net.eph_read(c, w, CURSOR));
+}
+
 // spec/sync.md §6 (a writer stamps every ephemeral entry it uploads; held at a host only as
 // learned on the current connection; random churn seed 154 shrunk): a restarted author's
 // commit, invalid while it is demoted, is fetched back by the holders to wait apart; the hosts

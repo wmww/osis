@@ -429,6 +429,15 @@ impl SyncEngine {
             }
             match fate {
                 Fate::Keep | Fate::Wait => {}
+                // a delete is judged by this node's role view (a carrier's validity, the rights
+                // behind it); the label's other holders at the host judge by what the host holds.
+                // While a role commit this node holds there is still on its way, a holder lacking
+                // it may judge the carrier invalid and place the body again, under a fresh
+                // encryption past the tombstone, every pass: deletes wait until the host holds
+                // the role commits this node does (at most the relay delay and a round trip)
+                Fate::Delete(..) if at.roles_behind => {
+                    left.commits.insert(commit);
+                }
                 Fate::Delete(_, item, via) => {
                     left.commits.insert(commit);
                     if !busy(self, &id) {

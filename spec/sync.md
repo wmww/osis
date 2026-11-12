@@ -324,6 +324,7 @@ Each operation names a label. Writes are signed with the role keys of the host's
   - **No carrier**: a right holder that must delete a body with live writes and finds no carrier uploads a covering snapshot first when it may write the aspect, unless it holds a blob of the commit that will carry them (a purge's rewrite).
     - A host refusing that blob, a strict subset of the body, for the label's cap (code 12): it is uploaded again naming the body as replaced (§5).
   - A chunk, tree-node or page blob of a dropped body goes only once no body the node holds of the thing (delta, snapshot or leftover) and no live state of it links it.
+  - **Role view first**: a writer holding back another node's must-hold role commit from a host that lacks it (a relay delay, §6 Writer) deletes no entry there meanwhile.
   - Two snapshots covering each other (equal `ts`, spec/commits.md §5) are covered-equal; a compactor drops the one with the higher commit ID.
 - No node snapshots a signal (spec/commits.md §5 Signals): its bodies leave by expiry, purge, as invalid, or out of history.
 - **Sweep**: before a snapshot of a durable content aspect (not role-class, not `retention^.0`), a node resets, in one ordinary content commit, each map entry and list element (at any depth below live ones) that is not live (spec/crdt.md §5.6, §5.7) and holds a write beside its removal or an expiry or purge it holds of its creation.
