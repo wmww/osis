@@ -608,13 +608,15 @@ impl SyncEngine {
             return Ok((carried, Vec::new()));
         }
         let Some(m) = self.engine.core.ix.commits.get(commit).cloned() else { return Ok((false, Vec::new())) };
-        let x = self.engine.group_actor(g);
+        // judged on what the label's actor reads (`readable`, an account's devices actor reading
+        // as the account), as the label's bodies are: a delta it may not read is carried under
+        // its readers' labels
+        let readable = self.readable(g, commit, parts);
         let (mut all, mut need) = (true, Vec::new());
         for &ai in parts {
             let Some(a) = m.header.aspects.get(ai) else { continue };
             let (t, a) = (a.tid, a.ak.clone());
-            // a delta the label's actor may not read is carried under its readers' labels
-            if !self.engine.core.may_read(&x, &self.engine.core.reader_of(&t)) || !self.part_live(&m.header, commit, ai) {
+            if !readable.contains(&ai) || !self.part_live(&m.header, commit, ai) {
                 continue;
             }
             let dropped = m.body_gone(ai);
