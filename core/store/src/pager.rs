@@ -92,6 +92,11 @@ struct Node {
 }
 
 impl Node {
+    /// Its encoded length: sized up front, a buffer holding keys is never reallocated (a
+    /// reallocation frees a copy unwiped).
+    fn len(&self) -> usize {
+        4 + self.entries.len() * (4 + 32 + 8)
+    }
     fn encode(&self, w: &mut W) {
         w.u32(self.entries.len() as u32);
         for (i, e) in &self.entries {
@@ -130,6 +135,7 @@ pub(crate) struct Meta {
 }
 
 impl Meta {
+    const LEN: usize = 3 * 4 + 3 * 8;
     fn encode(&self, w: &mut W) {
         w.u32(self.arity).u32(self.depth).u32(self.page_max).u64(self.next_slot).u64(self.next_ver).u64(self.catalog);
     }
@@ -934,8 +940,9 @@ impl Pager {
                         _ => Secret32::random(rng),
                     };
                     let row = node_row(level, idx, ver);
-                    let mut w = W::new();
+                    let mut w = W(Vec::with_capacity(node.len()));
                     node.encode(&mut w);
+                    debug_assert_eq!(w.0.len(), node.len());
                     let plain = Zeroizing::new(w.0);
                     batch.put(row.clone(), self.seal(&key, &row, &plain, rng)?);
                     j.new_rows.push(row);
@@ -963,9 +970,10 @@ impl Pager {
         let meta = Meta { next_ver: ver + 1, ..d.meta };
         let top_key = if rotating { Secret32::random(rng) } else { self.root_key.clone() };
         let top_row = top_row(ver);
-        let mut w = W::new();
+        let mut w = W(Vec::with_capacity(Meta::LEN + top.len()));
         meta.encode(&mut w);
         top.encode(&mut w);
+        debug_assert_eq!(w.0.len(), Meta::LEN + top.len());
         let plain = Zeroizing::new(w.0);
         batch.put(top_row.clone(), self.seal(&top_key, &top_row, &plain, rng)?);
         j.new_rows.push(top_row);

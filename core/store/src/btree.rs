@@ -98,7 +98,7 @@ impl Page {
         }
     }
     pub(crate) fn encode(&self) -> Vec<u8> {
-        let mut w = W::new();
+        let mut w = W(Vec::with_capacity(self.size()));
         match self {
             Page::Leaf(es) => {
                 w.u8(0).u32(es.len() as u32);
