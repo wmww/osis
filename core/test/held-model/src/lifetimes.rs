@@ -165,7 +165,9 @@ pub fn view_of(n: usize, held: &[&Commit]) -> View {
 pub enum Event {
     List(T, Option<Set>),
     Refs(T, Set),
-    /// Erased by someone else: a purge of the creation, kept for good.
+    /// Erased by someone else: a purge of the creation. Its evidence goes past the request's window
+    /// as any destruction's, but its verdict stays for good (spec/commits.md §5, destroyed for good),
+    /// so it reads destroyed whatever `Forget`, stale copy or minting follows.
     Purge(T),
     /// The thing's every minting expired: a destruction whose evidence (the minting headers) is
     /// forgotten as a release request's is.
@@ -196,7 +198,8 @@ pub struct Node {
     pub view: View,
     pub rights: Set,
     pub pending: Set,
-    /// Destroyed things whose destruction is forgotten in time (expiry, release); a purge is kept.
+    /// Destroyed things whose destruction is forgotten in time (expiry, release); a purge's verdict
+    /// is kept for good.
     forgettable: Set,
     queue: Vec<T>,
     /// Released by this node's own `Release`, reported by the next `settle`.

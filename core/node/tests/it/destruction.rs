@@ -2271,3 +2271,69 @@ fn a_destroyed_thing_leaves_nothing_once_its_last_dependent_lets_go_spec_commits
         }
     }
 }
+
+/// How a minting of a thing destroyed for good comes back.
+#[derive(Clone, Copy, Debug)]
+enum Minted {
+    /// A copy of its creation, held from before the purge.
+    Stale,
+    /// A new minting by a node that holds its record.
+    Fresh,
+}
+
+// spec/commits.md §5 (Destruction: destroyed for good), spec/requirements.md (a destroyed thing's later
+// writes are ignored): past a purge request's window every node keeps only the verdict, so a minting
+// arriving later, a stale copy of the creation or a new one by a node holding the record, is dropped
+// everywhere, a newcomer granted the group after the window included, before and after a restart.
+// `by_grant`: the purger's right came from a grant on t itself (else from g, t's first admin), which
+// no node holds past the window
+#[test]
+fn a_minting_of_a_thing_purged_past_its_window_is_dropped_everywhere_spec_commits_5() {
+    for by_grant in [true, false] {
+        for how in [Minted::Stale, Minted::Fresh] {
+            let Setup { mut net, a, b, c, g } = setup();
+            let (t, creation) = made(&mut net, a, g);
+            let tb = net.tid(b);
+            net.grant(a, t, tb, Role::Admin);
+            net.run();
+            let stale = net.engine(a).package(&creation).unwrap().unwrap();
+            let rec = net.engine(c).core.created(&t).cloned().unwrap();
+            purge_thing(&mut net, if by_grant { b } else { a }, t);
+            for _ in 0..3 {
+                net.advance(70_000);
+            }
+            net.advance(osis_base::format::ROLE_KEEP_MS);
+            let d = granted_later(&mut net, a, g);
+            for n in [a, b, c, d] {
+                gone(&mut net, n, t);
+                assert_eq!(leftovers(&mut net, n, t), 0, "{by_grant} {how:?} node {n}: nothing kept past the window");
+            }
+            match how {
+                Minted::Stale => {
+                    let _ = net.engine(c).ingest(&stale.bytes, stale.blobs.clone());
+                }
+                Minted::Fresh => {
+                    let mut m = Mutation::new();
+                    m.create(rec);
+                    let _ = net.engine(c).commit_hostile(m);
+                }
+            }
+            for _ in 0..3 {
+                net.advance(70_000);
+            }
+            for n in [a, b, c, d] {
+                gone(&mut net, n, t);
+                assert_eq!(leftovers(&mut net, n, t), 0, "{by_grant} {how:?} node {n}: the minting is dropped");
+            }
+            net.restart(b, 79);
+            let _ = net.engine(b).ingest(&stale.bytes, stale.blobs);
+            for _ in 0..3 {
+                net.advance(70_000);
+            }
+            for n in [a, b, c, d] {
+                gone(&mut net, n, t);
+                assert_eq!(leftovers(&mut net, n, t), 0, "{by_grant} {how:?} node {n}: dropped after a restart");
+            }
+        }
+    }
+}

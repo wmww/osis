@@ -705,6 +705,8 @@ indexes! {
     /// spec/permissions.md §7, Bearer use).
     pub bearers: JSet<Tid>,
     pub void: JSet<CommitId>,
+    /// Things destroyed for good here (`records::DESTROYED`, `retention::destroy::keeps`).
+    pub destroyed_for_good: JSet<Tid>,
     /// Deltas whose value-carrying writes are held value-less (expired, purged).
     pub valueless: JMap<(Tid, Ak), Vec<Owned>>,
     /// Actors with secrets of their own whose epochs this node holds.
@@ -1601,10 +1603,13 @@ impl Core {
         }
     }
 
-    /// Whether `t` is destroyed: a minting of it was held (`mintings`), and each is held value-less or
-    /// dropped by a purge or the destruction (`retention::destroy`). One missing may yet come. A thing never
-    /// held is unknown, not destroyed.
+    /// Whether `t` is destroyed: destroyed for good (`Indexes::destroyed_for_good`), or a minting of it
+    /// was held (`mintings`), and each is held value-less or dropped by a purge or the destruction
+    /// (`retention::destroy`). One missing may yet come. A thing never held is unknown, not destroyed.
     pub fn destroyed(&self, t: &Tid) -> bool {
+        if self.ix.destroyed_for_good.contains(t) {
+            return true;
+        }
         let mut any = false;
         self.mintings(t).all(|(c, ai)| {
             any = true;

@@ -258,7 +258,7 @@ fn losing_a_thing_never_adds_a_release() {
 }
 
 /// A destruction held is final against any later list, reference, stale copy or minting until it is
-/// forgotten; a purge is never forgotten.
+/// forgotten; a purge's verdict is never forgotten (destroyed for good).
 #[test]
 fn a_destruction_held_is_final_until_forgotten() {
     const N: usize = 4;

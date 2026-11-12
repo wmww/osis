@@ -15,7 +15,8 @@
 //! whenever one of those lets go, however: a reference or list going (`refs::note`), a record or
 //! edge naming it going (`Held::take_unnamed`), a key actor's last commit held elsewhere going
 //! (`Indexes::signed`), a request's window ending (its part's `T_KEPT` timer, or its part expiring). A
-//! destroyed thing that keeps nothing leaves only the commits' headers.
+//! destroyed thing that keeps nothing leaves only the commits' headers and, once a purge request
+//! destroying it is past its window, the verdict alone (`keeps`: destroyed for good).
 //! What a dependent needs travels with the dependent: its holders place the record and frozen
 //! history under its labels (`Engine::destroyed_upstream`), and a node that kept nothing takes them
 //! again when it opens them (`takes_late`), so it judges a dependent reaching it later as the
@@ -221,11 +222,21 @@ fn in_force(tx: &Tx<'_>, t: &Tid) -> bool {
 
 /// Whether destroyed `t` keeps its record and what tells it was destroyed: while a held thing needs
 /// it (`needs_evidence`, noted in `Core::destroyed_kept`) or a request destroying it is in force
-/// (`in_force`).
+/// (`in_force`). A purge request standing past its window cannot fall here any more: `t` is
+/// marked destroyed for good (`Indexes::destroyed_for_good`), the verdict kept without its
+/// evidence, so no minting of it arriving later is taken (`apply::thing_wait`). Erasure's tombstone
+/// (notes/deletion.md); a release leaves none, an expiry needs none (a copy carries its `expires`).
 fn keeps(tx: &mut Tx<'_>, t: &Tid) -> Result<bool> {
     let needs = needs_evidence(tx, t)?;
     tx.core.note_destroyed_kept(t, needs);
-    Ok(needs || in_force(tx, t))
+    if in_force(tx, t) {
+        return Ok(true);
+    }
+    let purged = destroying_requests(tx.core, t).iter().any(|pc| tx.core.ix.commits.get(pc).is_some_and(|m| !m.header.is_release()));
+    if purged && tx.core.ix.destroyed_for_good.insert(*t) {
+        tx.txn.put_local(&[records::DESTROYED, t.as_bytes()].concat(), &[], Shred::No)?;
+    }
+    Ok(needs)
 }
 
 /// Ends the things a value-less list changed on in this transaction (`Core::valueless_dirty`,

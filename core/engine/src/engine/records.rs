@@ -46,6 +46,9 @@ pub const LEAVING: &[u8] = b"hr/";
 pub const LEAVE_FROM: &[u8] = b"hf/";
 /// Things this node syncs: `s/` + tid.
 pub const SYNCING: &[u8] = b"s/";
+/// Things destroyed for good here: a purge request destroying them is past its window
+/// (`retention::destroy::keeps`), so no minting of them is taken again: `td/` + tid. Kept for good.
+pub const DESTROYED: &[u8] = b"td/";
 /// Commits voided by overlapping session ranges: `o/` + commit ID.
 pub const VOID: &[u8] = b"o/";
 /// `ad/<commit>`: explicit demotions this node has not answered with addenda yet

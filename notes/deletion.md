@@ -4,7 +4,7 @@
 ## Erasure: the data is gone for good
 - **Purge** and **expiry**. After them the data is gone at every node and stays gone; a stale copy never brings it back.
 - A tombstone is allowed where the guarantee needs one. A purge is a separate request, so the request is kept to purge late copies. Expiry needs none: the `expires` field travels in the commit's own header, so a late copy is already expired when it arrives.
-- Erasing a thing is purging or expiring its creation (`created.0`). After that the thing never comes back, not even by a new creation: the kept request covers every creation of the thing. Expiry is purge on a timer and promises the same for the commits it covers.
+- Erasing a thing is purging or expiring its creation (`created.0`). After that the thing never comes back, not even by a new creation: the request covers every creation of the thing while in its window, and past it each node keeps the verdict alone (the thing's tid, destroyed for good), dropping every later creation. Expiry is purge on a timer and promises the same for the commits it covers.
 
 ## Storage reclaim: nothing builds up, no trace
 - **History leaving** under its thing's `retention^.0` setting (a keep window passing or shortened, no history promised, purge on replace: notes/engine-retention.md History), and **releasing a thing** (thing lifetimes, issues/thing-lifetimes.md).
