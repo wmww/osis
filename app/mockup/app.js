@@ -8,19 +8,28 @@
   };
 
 
+  // theme colours are #rrggbb or #rrggbbaa; splitHex gives the opaque part and the alpha (0..1)
+  const isHex = v => /^#([0-9a-f]{6}|[0-9a-f]{8})$/i.test(v);
+  const splitHex = v => [v.slice(0, 7), v.length === 9 ? parseInt(v.slice(7), 16) / 255 : 1];
+  const joinHex = (hex, a) => a >= 1 ? hex : hex + Math.round(a * 255).toString(16).padStart(2, '0');
+
   const things = DATA.things;
   const byId = new Map(things.map(t => [t.id, t]));
   const get = id => byId.get(id);
   let favs = store.get('favs', DATA.favorites).filter(id => byId.has(id));
   // themes: the built-ins plus one custom theme made by editing any of them (themes.js)
   // a custom theme saved before a parameter existed takes that parameter from the first built-in
+  // (as does a value of the wrong shape, e.g. an enum value that no longer exists)
+  const validParam = (p, v) => p.opts ? p.opts.includes(v) : p.type === 'color' ? isHex(v?.light) && isHex(v?.dark) && typeof v.dynamic === 'number' : typeof v === 'number';
   let custom = store.get('custom', null);
-  if (custom) custom = { ...THEMES[0], ...custom, id: 'custom' };
-  // ...and an enum value that no longer exists falls back the same way
-  if (custom) for (const p of THEME_PARAMS) if (p.opts && !p.opts.includes(custom[p.k])) custom[p.k] = THEMES[0][p.k];
+  if (custom) {
+    const saved = custom;
+    custom = { id: 'custom', name: saved.name || 'Custom', desc: saved.desc || '' };
+    for (const p of THEME_PARAMS) custom[p.k] = structuredClone(validParam(p, saved[p.k]) ? saved[p.k] : THEMES[0][p.k]);
+  }
   const themes = () => custom ? [...THEMES, custom] : THEMES;
-  let themeId = store.get('theme', 'frost');
-  if (!themes().some(x => x.id === themeId)) themeId = 'frost';
+  let themeId = store.get('theme', 'clarity');
+  if (!themes().some(x => x.id === themeId)) themeId = 'clarity';
   const theme = () => themes().find(x => x.id === themeId);
   let editOpen = store.get('editOpen', false);
   let looksOpen = store.get('looksOpen', true);
@@ -80,12 +89,9 @@
     const g = tagsOf(t)[0];
     return g ? g.color : null;
   }
-  const tintStyle = t => { const c = tintOf(t); return c ? ` style="--tint:${c}"` : ''; };
+  // a sub-view standing for a thing with a colour is a colour context of its own (engine.css)
+  const tintStyle = t => { const c = tintOf(t); return c ? ` style="--tint:${c}; --main:${c}" data-ctx` : ''; };
   const iconFor = t => t.kind === 'view' ? t.view : t.kind;
-  function kindLabel(t) {
-    if (t.kind === 'event') return t.body ? 'Event · Note' : 'Event';
-    return { note: 'Note', contact: 'Person', tag: 'Tag', view: 'View' }[t.kind];
-  }
   const when = e => `${fmtDay.format(e.start)} · ${fmtTime.format(e.start)}–${fmtTime.format(e.end)}`;
   const firstLine = s => (s || '').split('\n').find(l => l.trim()) || '';
   function subtitle(t) {
@@ -183,14 +189,14 @@
         <button class="rail-new" data-act="new">${icon('plus')}<span>New note</span></button>
       </nav>
       <section class="pane">
-        <header class="pane-bar">
+        <header class="pane-bar narrow-only">
           <a class="icon-btn back" href="#/" aria-label="Back">${icon('back')}</a>
-          <span class="pane-kind"${tintStyle(t)}>${icon(iconFor(t))}${kindLabel(t)}</span>
           <span class="spacer"></span>
-          <button class="icon-btn star${fav ? ' on' : ''}" data-act="fav" aria-pressed="${fav}" aria-label="Favorite" title="Favorite">${icon('star')}</button>
-          <button class="icon-btn narrow-only" data-act="search" aria-label="Search">${icon('search')}</button>
+          <button class="icon-btn" data-act="search" aria-label="Search">${icon('search')}</button>
         </header>
-        <div class="pane-body panel">${body(t)}</div>
+        <div class="pane-body panel">
+          <button class="icon-btn star pane-star${fav ? ' on' : ''}" data-act="fav" aria-pressed="${fav}" aria-label="Favorite" title="Favorite">${icon('star')}</button>
+          ${body(t)}</div>
       </section>
     </div>`;
   }
@@ -218,7 +224,7 @@
 
   function thingView(t) {
     return `<article class="thing"><div class="thing-main">
-      <input class="title-input" data-field="name" value="${esc(t.name)}" placeholder="Untitled" spellcheck="false">
+      <div class="title-row"><input class="title-input" data-field="name" value="${esc(t.name)}" placeholder="Untitled" spellcheck="false"></div>
       ${t.kind === 'event' ? `<div class="inset facet-event">${icon('event')}<div><div class="when">${esc(when(t))}</div>${t.place ? `<div class="muted small">${esc(t.place)}</div>` : ''}</div></div>` : ''}
       <div class="chips">${tagsOf(t).map(chip).join('')}<button class="chip chip-add" data-act="noop">${icon('plus')}Tag</button></div>
       <textarea class="body-input" data-field="body" placeholder="Write something…">${esc(t.body || '')}</textarea>
@@ -228,7 +234,7 @@
   function contactView(t) {
     const first = (t.name || '').split(' ')[0] || 'them';
     return `<article class="thing"><div class="thing-main">
-      <div class="person-head"><span class="avatar"${tintStyle(t)}>${initials(t)}</span>
+      <div class="person-head"><span class="avatar"${tintStyle(t)}><b>${initials(t)}</b></span>
         <div class="grow"><input class="title-input" data-field="name" value="${esc(t.name)}" placeholder="Name"><div class="muted">${esc(t.role || '')}</div></div></div>
       <dl class="fields inset">
         ${t.email ? `<dt>Email</dt><dd>${esc(t.email)}</dd>` : ''}
@@ -384,20 +390,26 @@
   });
 
   // ---------- theme: enums go on body[data-*], numbers and colours on --p-*; engine.css does the rest
+  const kebab = k => k.replace(/[A-Z]/g, c => '-' + c.toLowerCase());
   function applyTheme() {
     const th = theme(), b = document.body;
     for (const p of THEME_PARAMS) {
       if (p.opts) b.dataset[p.k] = th[p.k];
-      else for (const k of p.keys || [p.k]) b.style.setProperty('--p-' + k.replace(/[A-Z]/g, c => '-' + c.toLowerCase()), th[k]);
+      else if (p.type === 'color') {
+        for (const m of ['light', 'dark']) { const [hex, a] = splitHex(th[p.k][m]); b.style.setProperty(`--p-${kebab(p.k)}-${m}`, hex); b.style.setProperty(`--p-${kebab(p.k)}-${m}-a`, a); }
+        b.style.setProperty(`--p-${kebab(p.k)}-dyn`, th[p.k].dynamic);
+      } else b.style.setProperty('--p-' + kebab(p.k), th[p.k]);
     }
     applyBg(current());
   }
   function setTheme(id) { themeId = id; store.set('theme', id); applyTheme(); renderLooks(); }
-  // editing a built-in theme forks it into the custom theme
+  // editing a built-in theme forks it into the custom theme; a colour field is set as 'name.field'
   function setParam(k, v) {
     const fork = theme() !== custom;
-    if (fork) { custom = { ...theme(), id: 'custom', name: 'Custom', desc: 'Your edit of ' + theme().name + '.' }; themeId = 'custom'; store.set('theme', 'custom'); }
-    custom[k] = v; store.set('custom', custom);
+    if (fork) { custom = { ...structuredClone(theme()), id: 'custom', name: 'Custom', desc: 'Your edit of ' + theme().name + '.' }; themeId = 'custom'; store.set('theme', 'custom'); }
+    const [name, field] = k.split('.');
+    if (field) custom[name][field] = v; else custom[name] = v;
+    store.set('custom', custom);
     applyTheme();
     if (fork) renderLooks();
   }
@@ -408,8 +420,10 @@
   const resolvedMode = () => mode === 'auto' ? (darkMq.matches ? 'dark' : 'light') : mode;
   function setMode(m) { mode = m; store.set('mode', m); renderLooks(); }
   darkMq.addEventListener('change', () => { if (mode === 'auto') renderLooks(); });
-  // colours come in light and dark pairs; a swatch opens a hue/saturation/lightness picker below its row
+  // a colour has a light and a dark value (each a swatch that opens a hue/saturation/lightness/alpha picker below its
+  // row) and a dynamic slider; pickOpen is 'name.light' or 'name.dark'
   let pickOpen = null;
+  const colorAt = (th, k) => { const [n, f] = k.split('.'); return th[n][f]; };
   function hexToHsl(hex) {
     const n = parseInt(hex.slice(1), 16), [r, g, b] = [n >> 16, n >> 8 & 255, n & 255].map(v => v / 255);
     const mx = Math.max(r, g, b), mn = Math.min(r, g, b), d = mx - mn, l = (mx + mn) / 2;
@@ -422,22 +436,26 @@
     const f = n => { const k = (n + h / 30) % 12, a = sat * Math.min(l, 1 - l); return Math.round(255 * (l - a * Math.max(-1, Math.min(k - 3, 9 - k, 1)))); };
     return '#' + [f(0), f(8), f(4)].map(v => v.toString(16).padStart(2, '0')).join('');
   }
-  const isHex = v => /^#[0-9a-f]{6}$/i.test(v);
+  // checkerboard under a swatch so its alpha shows
+  const swatchBg = c => `linear-gradient(${c}, ${c}), repeating-conic-gradient(#999 0 25%, #ddd 0 50%) 0 0 / 8px 8px`;
   function pickerTracks(h, sat, l) {
     return [`linear-gradient(90deg, ${[0, 60, 120, 180, 240, 300, 360].map(x => `hsl(${x} ${sat}% ${l}%)`).join(', ')})`,
       `linear-gradient(90deg, hsl(${h} 0% ${l}%), hsl(${h} 100% ${l}%))`,
-      `linear-gradient(90deg, #000, hsl(${h} ${sat}% 50%), #fff)`];
+      `linear-gradient(90deg, #000, hsl(${h} ${sat}% 50%), #fff)`,
+      `linear-gradient(90deg, transparent, hsl(${h} ${sat}% ${l}%)), repeating-conic-gradient(#999 0 25%, #ddd 0 50%) 0 0 / 8px 8px`];
   }
   function picker(k, v) {
-    const hsl = hexToHsl(v), tr = pickerTracks(...hsl);
-    return `<div class="lk-picker" data-for="${k}">${['H', 'S', 'L'].map((n, i) => `<label><span>${n}</span><input type="range" class="lk-hsl" data-hsl="${k}" min="0" max="${i ? 100 : 360}" value="${hsl[i]}" style="background:${tr[i]}"></label>`).join('')}
-      <input class="lk-hex" data-hex="${k}" value="${v}" spellcheck="false" maxlength="7"></div>`;
+    const [hex, a] = splitHex(v), hsla = [...hexToHsl(hex), Math.round(a * 100)], tr = pickerTracks(...hsla);
+    return `<div class="lk-picker" data-for="${k}">${['H', 'S', 'L', 'A'].map((n, i) => `<label><span>${n}</span><input type="range" class="lk-hsl" data-hsl="${k}" min="0" max="${i ? 100 : 360}" value="${hsla[i]}" style="background:${tr[i]}"></label>`).join('')}
+      <input class="lk-hex" data-hex="${k}" value="${v}" spellcheck="false" maxlength="9"></div>`;
   }
   function control(p, v) {
     if (p.opts) return `<select data-p="${p.k}">${p.opts.map(o => `<option${o === v ? ' selected' : ''}>${o}</option>`).join('')}</select>`;
-    if (p.type === 'color2') return `<span class="lk-color">${p.keys.map((k, i) => `<span class="lk-sw-l">${i ? 'dark' : 'light'}</span><button class="lk-sw${pickOpen === k ? ' on' : ''}" data-lk="pick-${k}" style="background:${v[i]}" aria-label="Pick ${esc(p.label)} (${i ? 'dark' : 'light'})"></button>`).join('')}</span>`;
+    if (p.type === 'color') return `<span class="lk-color">${['light', 'dark'].map(m => `<button class="lk-sw${pickOpen === p.k + '.' + m ? ' on' : ''}" data-lk="pick-${p.k}.${m}" style="background:${swatchBg(v[m])}" title="${m}" aria-label="Pick ${esc(p.label)} (${m})"></button>`).join('')}
+      <span class="lk-range"><input type="range" data-p="${p.k}.dynamic" min="0" max="1" step=".05" value="${v.dynamic}" title="dynamic: how much the open thing's colour mixes in" aria-label="${esc(p.label)} dynamic"><output>${v.dynamic}</output></span></span>`;
     return `<span class="lk-range"><input type="range" data-p="${p.k}" min="${p.min}" max="${p.max}" step="${p.step}" value="${v}"><output>${v}</output></span>`;
   }
+  const paramRows = (th, params) => params.map(p => `<div class="lk-row"><span>${p.label}</span>${control(p, th[p.k])}</div>${pickOpen?.split('.')[0] === p.k ? picker(pickOpen, colorAt(th, pickOpen)) : ''}`).join('');
   function renderLooks() {
     const th = theme(), rm = resolvedMode(), scroll = looksEl.querySelector('.lk-params')?.scrollTop;
     document.body.dataset.mode = rm;
@@ -448,7 +466,7 @@
         <div class="lk-list">${themes().map((x, i) => `<button class="lk-opt${x === th ? ' on' : ''}" data-lk="theme-${x.id}"><span class="lk-n">${i + 1}</span><span>${esc(x.name)}</span></button>`).join('')}</div>
         <p class="lk-desc">${esc(th.desc)}</p>
         <button class="lk-edit" data-lk="edit" aria-expanded="${editOpen}">${editOpen ? '▾' : '▸'} Edit parameters${th === custom ? '' : ' (makes a custom copy)'}</button>
-        ${editOpen ? `<div class="lk-params">${THEME_PARAMS.map(p => `<div class="lk-row"><span>${p.label}</span>${control(p, p.keys ? p.keys.map(k => th[k]) : th[p.k])}</div>${p.keys?.includes(pickOpen) && isHex(th[pickOpen]) ? picker(pickOpen, th[pickOpen]) : ''}`).join('')}</div>
+        ${editOpen ? `<div class="lk-params">${THEME_SECTIONS.map(sec => `<div class="lk-row lk-sec"><span>${sec.title}</span><span>${sec.params.some(p => p.type === 'color') ? 'light · dark · dynamic' : ''}</span></div>${paramRows(th, sec.params)}`).join('')}</div>
           <button class="lk-copy" data-lk="copy">Copy theme as JSON</button>` : ''}
         <p class="lk-keys">Keys: 1–7 or [ ] themes · d light/dark · / search</p>
       </div>`;
@@ -468,17 +486,18 @@
   looksEl.addEventListener('input', e => {
     const el = e.target, d = el.dataset;
     if (d.hsl) {
-      const box = el.closest('.lk-picker'), [h, sat, l] = [...box.querySelectorAll('.lk-hsl')].map(x => +x.value), hex = hslToHex(h, sat, l);
+      const box = el.closest('.lk-picker'), [h, sat, l, a] = [...box.querySelectorAll('.lk-hsl')].map(x => +x.value);
+      const hex = joinHex(hslToHex(h, sat, l), a / 100);
       pickerTracks(h, sat, l).forEach((t, i) => { box.querySelectorAll('.lk-hsl')[i].style.background = t; });
       box.querySelector('.lk-hex').value = hex;
-      looksEl.querySelector(`[data-lk="pick-${d.hsl}"]`).style.background = hex;
+      looksEl.querySelector(`[data-lk="pick-${d.hsl}"]`).style.background = swatchBg(hex);
       return setParam(d.hsl, hex);
     }
     if (d.hex) { if (isHex(el.value)) setParam(d.hex, el.value.toLowerCase()); return; }
-    const p = THEME_PARAMS.find(x => x.k === d.p); if (!p) return;
-    const v = p.type === 'range' ? Number(el.value) : el.value;
+    const p = THEME_PARAMS.find(x => x.k === d.p.split('.')[0]); if (!p) return;
+    const v = p.opts ? el.value : Number(el.value);
     if (el.nextElementSibling?.tagName === 'OUTPUT') el.nextElementSibling.textContent = v;
-    setParam(p.k, v);
+    setParam(d.p, v);
   });
   // a typed hex moves the picker's sliders
   looksEl.addEventListener('change', e => { if (e.target.dataset.hex && isHex(e.target.value)) renderLooks(); });

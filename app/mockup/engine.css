@@ -1,21 +1,26 @@
 /* Theme engine: turns a theme's parameters (themes.js) into the tokens style.css uses. Every theme is only data:
    enums arrive as body[data-*] attributes, numbers and colours as --p-* properties, and the content's colour as --main
    (a soft grey when the screen has none). Each enum value is implemented once here; a toolkit implements the same list.
-   Background rule: --p-bg-tint mixes --main into the whole background colour (0: none at all); every background
-   decoration is a lighter or darker shade of that colour (--deco, --deco-hi), so it is never tinted on its own.
+   Colours: each theme colour N arrives as --p-N-light/-dark (#rrggbb), their alphas (-a) and --p-N-dyn; the mode picks
+   one, --main mixes in by dyn, and the theme's alpha is kept: --c-N. bg1 is drawn opaque (nothing is behind it).
+   Backgrounds use only bg1 (--bg-color) and bg2 (--deco), at varying opacity; no derived shades.
+   Context: --main is the contextual colour, the open thing's on body; a sub-view that stands for a thing of its own
+   (a tile, chip, avatar: [data-ctx], with --main set to that thing's colour) re-derives every colour token below with it,
+   so dynamic mixes in that thing's colour there.
    Rule: anything that mixes in --tint goes in an element rule (.tile, .tile-ic, ...), because a custom property
    resolves where it is declared. */
 
-body {
+body, [data-ctx] {
   --r: calc(var(--p-radius) * 1px);
   /* spacing (a factor): every padding, gap and margin in the layout scales with it */
   --sp: var(--p-spacing); --gap: calc(12px * var(--sp)); --shell-gap: calc(16px * var(--sp)); --shell-pad: calc(16px * var(--sp));
-  --ow: calc(var(--p-outline) * 1px);
-  --pa: calc(var(--p-panel-opacity) * 100%);
-  --ink: var(--outline-c);
+  --ow: calc(var(--p-outline-width) * 1px);
+  /* panel opacity is the panel colour's alpha */
+  --pa: calc(var(--panel-a) * 100%);
+  --ink: var(--c-outline);
   --sd: calc(var(--p-shadow-distance) * 1px); --sb: calc(var(--p-shadow-blur) * 1px);
   --sx: calc(cos(var(--p-shadow-angle) * 1deg) * var(--sd)); --sy: calc(sin(var(--p-shadow-angle) * 1deg) * var(--sd));
-  --sh: color-mix(in oklab, var(--shadow-c) calc(var(--p-shadow-opacity) * var(--sh-boost, 100%)), transparent);
+  --sh: var(--c-shadow);
   --el-tile: var(--sx) var(--sy) var(--sb) calc(var(--sb) * -.5) var(--sh);
   --el-row: calc(var(--sx) * .75) calc(var(--sy) * .75) var(--sb) calc(var(--sb) * -.5) var(--sh);
   --el-panel: calc(var(--sx) * 1.5) calc(var(--sy) * 1.5) calc(var(--sb) * 2.5) calc(var(--sb) * -1.2) color-mix(in oklab, var(--sh) var(--pa), transparent);
@@ -24,86 +29,104 @@ body {
   --row-radius: calc(var(--r) * .55); --inset-radius: calc(var(--r) * .8); --btn-radius: calc(var(--r) * .6); --chip-radius: calc(var(--r) * 100);
   /* panels fade out as a whole: fill, outline and shadow follow the opacity */
   --panel-ink: color-mix(in oklab, var(--ink) var(--pa), transparent);
-  --panel-bg: color-mix(in oklab, var(--surface) var(--pa), transparent);
-  --panel-bg-strong: color-mix(in oklab, var(--surface) max(var(--pa), 88%), transparent);
+  --panel-bg: var(--c-panel);
+  --panel-bg-strong: rgb(from var(--c-panel) r g b / max(alpha, .88));
   --panel-border: var(--ow) solid var(--panel-ink);
   --glass-filter: blur(calc(var(--p-panel-blur) * 1px)) saturate(calc(100% + var(--p-panel-blur) * 2%));
-  /* a card on an opaque panel steps away from the panel's surface (darker in light, lighter in dark) */
-  --card-surface: color-mix(in oklab, var(--surface) calc(100% - var(--p-panel-opacity) * 5%), var(--card-step));
-  --tile-base: color-mix(in oklab, var(--card-surface) calc(62% + var(--p-panel-opacity) * 38%), transparent);
-  --field-bg: color-mix(in oklab, var(--surface) calc(62% + var(--p-panel-opacity) * 38%), transparent);
+  /* panels are one colour; cards (tiles, the selected row, chips) run from card top to card bottom, the
+     change centred at --p-grad-pos (0 top .. 1 bottom) over --p-grad-spread of the height (0: a hard line) */
+  --surface: rgb(from var(--c-panel) r g b / 1);
+  --grad-a: calc((var(--p-grad-pos) - var(--p-grad-spread) / 2) * 100%); --grad-b: calc((var(--p-grad-pos) + var(--p-grad-spread) / 2) * 100%);
+  --tile-base: var(--c-card-bottom);
+  --card-grad: linear-gradient(180deg, var(--c-card-top) var(--grad-a), var(--c-card-bottom) var(--grad-b));
+  /* fields stand for no thing: the panel colour, at least 62% opaque so they show on see-through panels */
+  --field-bg: rgb(from var(--c-panel) r g b / max(alpha, .62));
   --field-bg-solid: var(--surface);
   --bar-bg: color-mix(in oklab, var(--bg-color) 90%, transparent);
   /* outlines go on panels and fields; tiles, chips and the selection are cards and have none */
   --field-border: var(--ow) solid var(--ink);
   --tile-border: 0; --chip-border: 0; --row-border: 0;
-  --panel-shadow: inset 0 1px 0 var(--gl-line), inset 0 1px 1px color-mix(in oklab, var(--hi) calc(var(--p-panel-blur) * 4%), transparent), var(--el-panel);
-  --tile-shadow: inset 0 1px 0 var(--gl-line), var(--el-tile);
-  --field-shadow: inset 0 2px 3px color-mix(in oklab, black calc(var(--p-gloss) * 18%), transparent), var(--el-tile);
+  --panel-shadow: inset 0 1px 1px color-mix(in oklab, var(--hi) calc(var(--p-panel-blur) * 4%), transparent), var(--el-panel);
+  --tile-shadow: var(--el-tile);
+  --field-shadow: var(--el-tile);
   --btn-bg: transparent; --btn-border: 0;
-  /* weight: the accent sets each role's base; --p-weight (-1..1) shifts headings (titles most, labels less, names a
-     little); body text keeps the accent's weight */
-  --title-weight: clamp(100, calc(var(--w-title) + var(--p-weight) * 300), 900); --brand-weight: var(--title-weight);
-  --label-weight: clamp(100, calc(var(--w-label) + var(--p-weight) * 200), 900);
-  --name-weight: clamp(400, calc(var(--w-name) + var(--p-weight) * 75), 800);
-  font-weight: var(--w-body);
+  /* text and heading each have a font, colour, size (a factor: --ts, --hs) and weight; names are text a step bolder */
+  --ts: var(--p-text-size); --hs: var(--p-heading-size);
+  --title-weight: var(--p-heading-weight); --brand-weight: var(--title-weight);
+  --name-weight: min(900, calc(var(--p-text-weight) + 220));
+  font-weight: var(--p-text-weight);
   --title-ls: -.015em;
   --star: var(--main); --focus: var(--main); --link: var(--accent);
   --inset-bg: color-mix(in oklab, var(--fg) 4%, transparent); --inset-border: 0;
   --row-amt: 0%; --row-amt-hover: 0%; --row-fg: var(--fg); --row-muted: var(--muted);
-  --chip-amt: 20%; --chip-base: var(--tile-base);
   --scrim: color-mix(in oklab, var(--bg-color) 60%, transparent);
   --hover: color-mix(in oklab, var(--fg) 7%, transparent);
-  /* gloss (0..1): a hard highlight line across fills and a lit top edge */
-  --gl-line: color-mix(in oklab, white calc(var(--p-gloss) * 18%), transparent);
-  --gloss: linear-gradient(180deg, color-mix(in oklab, white calc(var(--p-gloss) * 50%), transparent) 0%, color-mix(in oklab, white calc(var(--p-gloss) * 16%), transparent) 48%, transparent 50%, color-mix(in oklab, white calc(var(--p-gloss) * 10%), transparent) 100%);
-  /* fill (0..1): how much of its colour a tile takes; past about half, text and icons turn white */
-  --fill: calc(5% + var(--p-fill) * 95%);
-  --on: clamp(0, (var(--p-fill) - .55) * 1000, 1);
-  --sel-amt: max(var(--fill), 20%);
+  /* text and icons on cards turn white once card bottom takes more than about half of its thing's colour */
+  --on: clamp(0, (var(--p-card-bottom-dyn) - .55) * 1000, 1);
   --tile-fg: color-mix(in oklab, white calc(var(--on) * 100%), var(--fg));
   --tile-muted: color-mix(in oklab, rgba(255, 255, 255, .82) calc(var(--on) * 100%), var(--muted));
   --ic-amt: calc(100% - var(--on) * 100%); --ic-base: rgba(255, 255, 255, .22); --ic-fg: #fff;
-  --bg-color: color-mix(in oklab, var(--main) calc(var(--p-bg-tint) * 100%), var(--bg-base));
+  --bg-color: rgb(from var(--c-bg1) r g b / 1);
+  --fg: var(--c-text); --muted: color-mix(in oklab, var(--c-text) 58%, transparent); --accent: var(--c-accent);
+  --brand-color: var(--c-heading);
+  --c-bg1: rgb(from color-mix(in oklab, var(--main) calc(var(--p-bg1-dyn) * 100%), var(--bg1-base)) r g b / var(--bg1-a));
+  --c-bg2: rgb(from color-mix(in oklab, var(--main) calc(var(--p-bg2-dyn) * 100%), var(--bg2-base)) r g b / var(--bg2-a));
+  --c-panel: rgb(from color-mix(in oklab, var(--main) calc(var(--p-panel-dyn) * 100%), var(--panel-base)) r g b / var(--panel-a));
+  --c-card-top: rgb(from color-mix(in oklab, var(--main) calc(var(--p-card-top-dyn) * 100%), var(--card-top-base)) r g b / var(--card-top-a));
+  --c-card-bottom: rgb(from color-mix(in oklab, var(--main) calc(var(--p-card-bottom-dyn) * 100%), var(--card-bottom-base)) r g b / var(--card-bottom-a));
+  --c-text: rgb(from color-mix(in oklab, var(--main) calc(var(--p-text-dyn) * 100%), var(--text-base)) r g b / var(--text-a));
+  --c-heading: rgb(from color-mix(in oklab, var(--main) calc(var(--p-heading-dyn) * 100%), var(--heading-base)) r g b / var(--heading-a));
+  --c-accent: rgb(from color-mix(in oklab, var(--main) calc(var(--p-accent-dyn) * 100%), var(--accent-base)) r g b / var(--accent-a));
+  --c-outline: rgb(from color-mix(in oklab, var(--main) calc(var(--p-outline-dyn) * 100%), var(--outline-base)) r g b / var(--outline-a));
+  --c-shadow: rgb(from color-mix(in oklab, var(--main) calc(var(--p-shadow-dyn) * 100%), var(--shadow-base)) r g b / var(--shadow-a));
 }
+.title-input, .view-title { color: var(--c-heading); }
 
-/* ---------- mode: each theme gives background and surface colours for both */
+/* ---------- mode: picks each colour's light or dark value */
 [data-mode="light"] {
   color-scheme: light;
-  --bg-base: var(--p-bg-light); --surface: var(--p-surface-light); --outline-c: var(--p-outline-light); --shadow-c: var(--p-shadow-light);
-  --fg: #16151c; --muted: color-mix(in oklab, #16151c 58%, transparent); --neutral: #8f92a3;
-  --accent: color-mix(in oklab, var(--main) 80%, black);
-  --deco: oklch(from var(--bg-color) calc(l - .1) calc(c * 1.6) h); --deco-hi: oklch(from var(--bg-color) calc(l + .1) calc(c * .6) h);
-  --hi: rgba(255, 255, 255, .75); --card-step: #3a3f55;
+  --bg1-base: var(--p-bg1-light); --bg1-a: var(--p-bg1-light-a); --bg2-base: var(--p-bg2-light); --bg2-a: var(--p-bg2-light-a);
+  --panel-base: var(--p-panel-light); --panel-a: var(--p-panel-light-a); --card-top-base: var(--p-card-top-light); --card-top-a: var(--p-card-top-light-a);
+  --card-bottom-base: var(--p-card-bottom-light); --card-bottom-a: var(--p-card-bottom-light-a); --text-base: var(--p-text-light); --text-a: var(--p-text-light-a);
+  --heading-base: var(--p-heading-light); --heading-a: var(--p-heading-light-a); --accent-base: var(--p-accent-light); --accent-a: var(--p-accent-light-a);
+  --outline-base: var(--p-outline-light); --outline-a: var(--p-outline-light-a); --shadow-base: var(--p-shadow-light); --shadow-a: var(--p-shadow-light-a);
+  --neutral: #8f92a3;
+  --deco: var(--c-bg2);
+  --hi: rgba(255, 255, 255, .75);
 }
 [data-mode="dark"] {
   color-scheme: dark;
-  --bg-base: var(--p-bg-dark); --surface: var(--p-surface-dark); --outline-c: var(--p-outline-dark); --shadow-c: var(--p-shadow-dark);
-  --fg: #f1f1f6; --muted: color-mix(in oklab, #f1f1f6 60%, transparent); --neutral: #626577;
-  --accent: color-mix(in oklab, var(--main) 65%, white);
-  --deco: oklch(from var(--bg-color) calc(l + .1) calc(c * 1.6) h); --deco-hi: oklch(from var(--bg-color) calc(l + .18) calc(c * 1.2) h);
-  --hi: rgba(255, 255, 255, .14); --sh-boost: 180%; --card-step: white;
+  --bg1-base: var(--p-bg1-dark); --bg1-a: var(--p-bg1-dark-a); --bg2-base: var(--p-bg2-dark); --bg2-a: var(--p-bg2-dark-a);
+  --panel-base: var(--p-panel-dark); --panel-a: var(--p-panel-dark-a); --card-top-base: var(--p-card-top-dark); --card-top-a: var(--p-card-top-dark-a);
+  --card-bottom-base: var(--p-card-bottom-dark); --card-bottom-a: var(--p-card-bottom-dark-a); --text-base: var(--p-text-dark); --text-a: var(--p-text-dark-a);
+  --heading-base: var(--p-heading-dark); --heading-a: var(--p-heading-dark-a); --accent-base: var(--p-accent-dark); --accent-a: var(--p-accent-dark-a);
+  --outline-base: var(--p-outline-dark); --outline-a: var(--p-outline-dark-a); --shadow-base: var(--p-shadow-dark); --shadow-a: var(--p-shadow-dark-a);
+  --neutral: #626577;
+  --deco: var(--c-bg2);
+  --hi: rgba(255, 255, 255, .14);
 }
-/* ---------- finish: flat | gloss (a hard highlight line on fills) | bevel (raised edges, pressed when active) */
-/* ---------- cards: tiles and sidebar rows draw their fill on a layer behind the content, slanted by --p-slant (deg).
-   One fill for tiles (their own colour) and the selected sidebar row (the screen's colour). */
+/* ---------- cards: tiles, the selected sidebar row and chips draw card top to card bottom (in their own context) on a
+   layer behind the content, slanted by --p-slant (deg) */
+:where([data-ctx]) { color: var(--fg); }
 .tile:not(.tile-new) { background: none; box-shadow: none; isolation: isolate; overflow: visible; --card: none; --card-shadow: 0 0 0 transparent; }
 .tile:not(.tile-new)::before { content: ""; position: absolute; inset: 0; z-index: -1; border-radius: inherit; transform: skewX(calc(var(--p-slant) * -1deg)); background: var(--card); box-shadow: var(--card-shadow); }
 .tile:not(.row):not(.tile-new) {
-  --card: var(--gloss), linear-gradient(180deg, color-mix(in oklab, color-mix(in oklab, var(--tint) 88%, white) var(--fill), var(--tile-base)), color-mix(in oklab, var(--tint) var(--fill), var(--tile-base)));
+  --card: var(--card-grad);
   --card-shadow: var(--tile-shadow);
-  text-shadow: 0 1px 1px color-mix(in oklab, rgba(0, 20, 50, .4) calc(var(--on) * var(--p-gloss) * 100%), transparent);
 }
 .tile:not(.row):not(.tile-new):hover { filter: brightness(1.04); }
 .tile.row:hover, .tile.row[aria-current] { background: none; }
 .tile.row:hover { --card: var(--hover); }
 .tile.row[aria-current] {
-  --card: var(--gloss), linear-gradient(180deg, color-mix(in oklab, color-mix(in oklab, var(--main) 88%, white) var(--sel-amt), var(--tile-base)), color-mix(in oklab, var(--main) var(--sel-amt), var(--tile-base)));
-  --card-shadow: inset 0 1px 0 var(--gl-line), var(--el-row); color: var(--tile-fg);
+  --card: var(--card-grad);
+  --card-shadow: var(--el-row); color: var(--tile-fg);
 }
 .tile.row[aria-current] .tile-sub { color: var(--tile-muted); }
 .tile.row[aria-current] .tile-ic { box-shadow: 0 0 0 2px color-mix(in oklab, rgba(255, 255, 255, .8) calc(var(--on) * 100%), transparent); }
-.tile-ic, .swatch, .avatar { background-image: var(--gloss); }
+/* icon backgrounds lean with slant like cards, their glyph upright; near-round icons straighten up (full slant at
+   roundness .75, none at 1: a leaning circle reads as a squashed one) */
+.tile-ic, .swatch, .avatar { --ic-slant: calc(var(--p-slant) * clamp(0, (1 - var(--p-icon-round)) * 4, 1)); transform: skewX(calc(var(--ic-slant) * -1deg)); }
+:is(.tile-ic, .swatch, .avatar) > * { transform: skewX(calc(var(--ic-slant) * 1deg)); }
 /* the new-note placeholder and the search fields lean too, with their outline on the slanted layer */
 .tile.tile-new { border-color: transparent; overflow: visible; isolation: isolate; }
 .tile.tile-new::before { content: ""; position: absolute; inset: -1.5px; z-index: -1; border-radius: inherit; transform: skewX(calc(var(--p-slant) * -1deg)); border: var(--new-border, 1.5px dashed color-mix(in oklab, currentColor 40%, transparent)); }
@@ -112,41 +135,32 @@ body {
 .spot .search-field { background: none; }
 .spot .search-field::before { background: var(--field-bg-solid); }
 .tile.row:not([aria-current]) .tile-ic { background-color: var(--tint); }
-.chip:not(.chip-add) { --chip-amt: max(20%, var(--fill)); color: var(--tile-fg); }
+.chip:not(.chip-add) { color: var(--tile-fg); background: var(--card-grad); }
 
-/* ---------- font: system (the platform's, not shipped) or one of these, all OFL so they can ship */
-[data-font="system"] { --font: -apple-system, "SF Pro Text", "Segoe UI Variable Text", system-ui, sans-serif; --font-display: -apple-system, "SF Pro Display", "Segoe UI Variable Display", system-ui, sans-serif; }
-[data-font="inter"] { --font: "Inter", sans-serif; --font-display: var(--font); }
-[data-font="dm-sans"] { --font: "DM Sans", sans-serif; --font-display: var(--font); }
-[data-font="figtree"] { --font: "Figtree", sans-serif; --font-display: var(--font); }
-[data-font="lexend"] { --font: "Lexend", sans-serif; --font-display: var(--font); }
-[data-font="atkinson"] { --font: "Atkinson Hyperlegible Next", sans-serif; --font-display: var(--font); }
-[data-font="nunito"] { --font: "Nunito", sans-serif; --font-display: var(--font); }
-[data-font="literata"] { --font: "Literata", serif; --font-display: var(--font); }
+/* ---------- fonts: text and heading each pick one; system is the platform's (not shipped), the rest are OFL so they can ship */
+[data-text-font="system"] { --font: -apple-system, "SF Pro Text", "Segoe UI Variable Text", system-ui, sans-serif; }
+[data-heading-font="system"] { --font-display: -apple-system, "SF Pro Display", "Segoe UI Variable Display", system-ui, sans-serif; }
+[data-text-font="inter"] { --font: "Inter", sans-serif; } [data-heading-font="inter"] { --font-display: "Inter", sans-serif; }
+[data-text-font="dm-sans"] { --font: "DM Sans", sans-serif; } [data-heading-font="dm-sans"] { --font-display: "DM Sans", sans-serif; }
+[data-text-font="figtree"] { --font: "Figtree", sans-serif; } [data-heading-font="figtree"] { --font-display: "Figtree", sans-serif; }
+[data-text-font="lexend"] { --font: "Lexend", sans-serif; } [data-heading-font="lexend"] { --font-display: "Lexend", sans-serif; }
+[data-text-font="atkinson"] { --font: "Atkinson Hyperlegible Next", sans-serif; } [data-heading-font="atkinson"] { --font-display: "Atkinson Hyperlegible Next", sans-serif; }
+[data-text-font="nunito"] { --font: "Nunito", sans-serif; } [data-heading-font="nunito"] { --font-display: "Nunito", sans-serif; }
+[data-text-font="literata"] { --font: "Literata", serif; } [data-heading-font="literata"] { --font-display: "Literata", serif; }
+[data-text-font="jetbrains-mono"] { --font: "JetBrains Mono", monospace; } [data-heading-font="jetbrains-mono"] { --font-display: "JetBrains Mono", monospace; }
 
-/* ---------- accent, a package of label style and marks:
-   plain | caps | bar (mono labels, title bars in the main colour, a stripe on tiles) | rule (big light labels, a line atop the pane)
-   | slash (caps labels, slashes, underlined titles, a corner flag on tiles) */
-[data-accent="plain"] { --w-title: 700; --w-label: 650; --w-name: 640; --w-body: 400; --label-case: none; --label-ls: 0; --label-size: 14px; --label-color: color-mix(in oklab, var(--fg) 72%, transparent); }
-[data-accent="caps"], [data-accent="slash"] { --w-title: 800; --w-label: 800; --w-name: 690; --w-body: 400; --label-case: uppercase; --label-ls: .06em; --label-size: 12.5px; --label-color: var(--fg); }
-[data-accent="rule"] { --w-title: 300; --w-label: 300; --w-name: 600; --w-body: 400; --label-case: lowercase; --label-ls: 0; --label-size: 22px; --label-color: var(--fg); }
-[data-accent="bar"] { --w-title: 700; --w-label: 700; --w-name: 700; --w-body: 400; --label-case: uppercase; --label-ls: .12em; --label-size: 11px; --label-color: var(--accent); --label-font: "JetBrains Mono", monospace; }
-[data-accent="rule"] .pane-kind { text-transform: lowercase; font-size: 15px; font-weight: 400; }
-[data-accent="bar"] .tile-sub, [data-accent="bar"] .cal-day h3 { font-family: var(--label-font); font-size: 11.5px; }
-[data-accent="bar"] .brand { font-family: var(--label-font); text-transform: uppercase; letter-spacing: .3em; }
-[data-accent="bar"] .tile:not(.row):not(.tile-new)::before { border-left: 9px solid color-mix(in oklab, var(--tint) 70%, black); }
-[data-accent="slash"] .tile:not(.row):not(.tile-new) { --card: linear-gradient(135deg, transparent 0 calc(100% - 26px), var(--tint) 0) top right / 52px 52px no-repeat, var(--gloss), color-mix(in oklab, var(--tint) var(--fill), var(--tile-base)); }
-[data-accent="bar"] .pane-bar { background: linear-gradient(90deg, color-mix(in oklab, var(--main) 80%, #0a0630), var(--main)); color: #fff; padding: 3px 4px 3px 10px; min-height: 0; border: var(--ow) solid var(--ink); box-shadow: inset 1px 1px 0 rgba(255, 255, 255, .35); }
-[data-accent="bar"] .pane-bar .pane-kind, [data-accent="bar"] .pane-bar .icon-btn { color: #fff; }
-[data-accent="bar"] .pane-bar .icon-btn { width: 30px; height: 26px; }
-[data-accent="bar"] .pane { gap: 0; }
-[data-accent="bar"] .rail { padding-top: 0; }
-[data-accent="bar"] .rail-brand { margin: 0 -10px 10px; padding: 5px 10px; font-size: 13px; background: linear-gradient(90deg, color-mix(in oklab, var(--main) 80%, #0a0630), var(--main)); color: #fff; }
-[data-accent="rule"] .pane-body { border-top: 4px solid var(--main); }
-[data-accent="slash"] .section-label > span:first-child::before { content: ""; display: inline-block; width: 6px; height: 1em; margin-right: 8px; vertical-align: -2px; background: var(--main); transform: skewX(-18deg); }
-[data-accent="slash"] .title-input, [data-accent="slash"] .view-title { text-decoration: underline; text-decoration-color: color-mix(in oklab, var(--main) 55%, transparent); text-decoration-thickness: .22em; text-underline-offset: -.04em; text-decoration-skip-ink: none; }
-[data-accent="slash"] .brand::after { content: ""; display: inline-block; width: .3em; height: .3em; margin-left: .08em; border-radius: 50%; background: var(--main); }
-[data-accent="slash"] .pane-kind { color: var(--main); }
+/* ---------- labels (section labels, meta headings) take the heading's font, colour, weight and size; label case */
+body, [data-ctx] { --label-font: var(--font-display); --label-weight: var(--title-weight); --label-color: var(--c-heading); --label-size: calc(13px * var(--hs)); }
+[data-label-case="none"] { --label-case: none; --label-ls: 0; } [data-label-case="upper"] { --label-case: uppercase; --label-ls: .08em; } [data-label-case="lower"] { --label-case: lowercase; --label-ls: 0; }
+
+/* ---------- heading mark, in the main colour: none | underline (titles) | slash (a bar leaning with slant, upright at 0) | dot.
+   slash and dot go before section labels and before titles that have nothing else there (no icon or avatar); dot also after the brand */
+[data-mark="underline"] .title-input, [data-mark="underline"] .view-title { text-decoration: underline; text-decoration-color: color-mix(in oklab, var(--main) 55%, transparent); text-decoration-thickness: .22em; text-underline-offset: -.04em; text-decoration-skip-ink: none; }
+[data-mark="slash"] :is(.section-label > span:first-child, .title-row)::before { content: ""; display: inline-block; flex: none; width: max(4px, .2em); height: .85em; margin-right: calc(.5em * var(--sp)); vertical-align: -.1em; background: var(--main); transform: skewX(calc(var(--p-slant) * -1deg)); }
+[data-mark="dot"] :is(.section-label > span:first-child, .title-row)::before { content: ""; display: inline-block; flex: none; width: .5em; height: .5em; margin-right: calc(.6em * var(--sp)); vertical-align: .1em; border-radius: 50%; background: var(--main); }
+.title-row::before { font-size: calc(clamp(26px, 3.4vw, 36px) * var(--hs)); }
+[data-mark="dot"] .brand::after { content: ""; display: inline-block; width: .3em; height: .3em; margin-left: .08em; border-radius: 50%; background: var(--main); }
+
 .icon-btn:hover { background: var(--hover); filter: none; }
 .cal-day.today { outline: 0; box-shadow: inset 0 0 0 2px var(--main); }
 
@@ -155,22 +169,20 @@ body {
 [data-background] { --bg-image: none; }
 [data-background="field"] {
   --bg-image:
-    radial-gradient(55% 45% at calc(10% + var(--s1) * 45%) calc(var(--s2) * 35%), color-mix(in oklab, var(--deco-hi) 45%, transparent), transparent 70%),
+    radial-gradient(55% 45% at calc(10% + var(--s1) * 45%) calc(var(--s2) * 35%), color-mix(in oklab, var(--deco) 45%, transparent), transparent 70%),
     radial-gradient(60% 55% at calc(45% + var(--s3) * 55%) calc(55% + var(--s4) * 45%), color-mix(in oklab, var(--deco) 40%, transparent), transparent 72%);
 }
 /* two large soft sheets, one light and one dark, curving across */
 [data-background="curves"] #bg i:nth-child(-n+2) { display: block; width: 110vmax; height: 34vmax; border-radius: 50%; }
-[data-background="curves"] #bg i:nth-child(1) { left: -30vmax; top: calc(4vh + var(--s2) * 30vh); transform: rotate(calc(-22deg + var(--s3) * 18deg)); background: linear-gradient(180deg, color-mix(in oklab, var(--deco-hi) 40%, transparent), transparent 65%); }
+[data-background="curves"] #bg i:nth-child(1) { left: -30vmax; top: calc(4vh + var(--s2) * 30vh); transform: rotate(calc(-22deg + var(--s3) * 18deg)); background: linear-gradient(180deg, color-mix(in oklab, var(--deco) 40%, transparent), transparent 65%); }
 [data-background="curves"] #bg i:nth-child(2) { right: -40vmax; top: calc(48vh + var(--s4) * 26vh); transform: rotate(calc(-12deg + var(--k) * 24deg)); background: linear-gradient(180deg, color-mix(in oklab, var(--deco) 16%, transparent), transparent 65%); }
 [data-background="sky"] {
   --bg-image:
-    radial-gradient(60% 40% at calc(25% + var(--s1) * 50%) -6%, color-mix(in oklab, var(--deco-hi) 70%, transparent), transparent 70%),
-    linear-gradient(180deg, oklch(from var(--bg-color) calc(l - .3) calc(c * 1.3) h) 0%, var(--bg-color) calc(40% + var(--k) * 10%), oklch(from var(--bg-color) calc(l + .06) c h) 85%);
+    radial-gradient(60% 40% at calc(25% + var(--s1) * 50%) -6%, color-mix(in oklab, var(--deco) 70%, transparent), transparent 70%),
+    linear-gradient(180deg, var(--deco) 0%, var(--bg-color) calc(55% + var(--k) * 15%));
 }
-[data-background="sky"][data-mode="dark"] { --bg-image: radial-gradient(60% 40% at calc(25% + var(--s1) * 50%) -6%, color-mix(in oklab, var(--deco) 40%, transparent), transparent 70%), linear-gradient(180deg, oklch(from var(--bg-color) calc(l - .04) c h), oklch(from var(--bg-color) calc(l + .08) calc(c * 1.2) h) calc(55% + var(--k) * 10%), var(--bg-color)); }
-[data-background="sky"] #bg::before { left: -20vw; right: -20vw; top: calc(50vh + var(--s3) * 15vh); bottom: auto; height: 70vh; border-radius: 50%; border-top: 2px solid color-mix(in oklab, var(--deco-hi) 80%, transparent); background: linear-gradient(color-mix(in oklab, var(--deco-hi) 30%, transparent), transparent 25%); transform: rotate(calc(-7deg + var(--s1) * 8deg)); }
-[data-background="sky"][data-mode="light"] .home .brand, [data-background="sky"][data-mode="light"] .home .section-label, [data-background="sky"][data-mode="light"] .pane-bar .pane-kind, [data-background="sky"][data-mode="light"] .pane-bar > .icon-btn:not(.back) { color: #fff; text-shadow: 0 1px 2px rgba(0, 20, 50, .45); }
-[data-background="sky"] .pane-bar .pane-kind svg { color: inherit; }
+[data-background="sky"] #bg::before { left: -20vw; right: -20vw; top: calc(50vh + var(--s3) * 15vh); bottom: auto; height: 70vh; border-radius: 50%; border-top: 2px solid color-mix(in oklab, var(--deco) 80%, transparent); background: linear-gradient(color-mix(in oklab, var(--deco) 30%, transparent), transparent 25%); transform: rotate(calc(-7deg + var(--s1) * 8deg)); }
+[data-background="sky"][data-mode="light"] .home .brand, [data-background="sky"][data-mode="light"] .home .section-label { color: #fff; text-shadow: 0 1px 2px rgba(0, 20, 50, .45); }
 [data-background="grid"] { --bg-image: linear-gradient(color-mix(in oklab, var(--deco) 45%, transparent) 1px, transparent 1px) 0 0 / 40px 40px, linear-gradient(90deg, color-mix(in oklab, var(--deco) 45%, transparent) 1px, transparent 1px) 0 0 / 40px 40px; }
 [data-background="dots"] { --bg-image: radial-gradient(var(--deco) 1.3px, transparent 1.7px) 0 0 / 22px 22px; }
 /* three outlined shapes in surface and shades */
@@ -190,9 +202,9 @@ body {
 [data-background="beams"] #bg::before {
   inset: 0; filter: blur(5px); opacity: .6;
   background:
-    repeating-conic-gradient(from calc(140deg + var(--s4) * 30deg) at calc(15% + var(--s2) * 70%) -25%, transparent 0deg 8deg, color-mix(in oklab, var(--deco-hi) 50%, transparent) 9deg 10deg, transparent 11.5deg 23deg),
-    repeating-conic-gradient(from calc(150deg + var(--s1) * 30deg) at calc(15% + var(--s2) * 70%) -25%, transparent 0deg 3deg, color-mix(in oklab, var(--deco-hi) 75%, transparent) 4deg 5.5deg, transparent 7deg 11deg),
-    repeating-conic-gradient(from calc(160deg + var(--s3) * 30deg) at calc(15% + var(--s2) * 70%) -25%, transparent 0deg 5deg, color-mix(in oklab, var(--deco-hi) 45%, transparent) 6deg 9deg, transparent 10.5deg 17deg);
+    repeating-conic-gradient(from calc(140deg + var(--s4) * 30deg) at calc(15% + var(--s2) * 70%) -25%, transparent 0deg 8deg, color-mix(in oklab, var(--deco) 50%, transparent) 9deg 10deg, transparent 11.5deg 23deg),
+    repeating-conic-gradient(from calc(150deg + var(--s1) * 30deg) at calc(15% + var(--s2) * 70%) -25%, transparent 0deg 3deg, color-mix(in oklab, var(--deco) 75%, transparent) 4deg 5.5deg, transparent 7deg 11deg),
+    repeating-conic-gradient(from calc(160deg + var(--s3) * 30deg) at calc(15% + var(--s2) * 70%) -25%, transparent 0deg 5deg, color-mix(in oklab, var(--deco) 45%, transparent) 6deg 9deg, transparent 10.5deg 17deg);
   -webkit-mask: linear-gradient(180deg, #000, transparent calc(60% + var(--s4) * 25%)); mask: linear-gradient(180deg, #000, transparent calc(60% + var(--s4) * 25%));
 }
 /* tall grass: two layers of blades rising from the bottom, shades of the background */
