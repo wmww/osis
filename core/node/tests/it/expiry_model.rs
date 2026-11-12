@@ -228,3 +228,73 @@ fn expiry_takes_only_its_commits_values_spec_crdt_4_7() {
         }
     }
 }
+
+// spec/crdt.md §4.7 Copies, §8: writer Mallory's snapshot carries a valued copy of Alice's
+// expiring write under its stamp inside other entries of a paged map, on pages the expiring
+// write does not touch (forged: an honest snapshot carries it value-less). Once the write
+// expires no copy shows, at every holder, also after a restart (debug builds: the state equals
+// a rebuild).
+#[test]
+fn forged_copy_of_expiring_write_goes_at_expiry_spec_crdt_4_7() {
+    let mut lp = net(3, 0);
+    let t = new_thing(&mut lp, 0);
+    let (m_id, r_id) = (lp.peers[1].engine.me(), lp.peers[2].engine.me());
+    set_edge(&mut lp.peers[0].engine, t, m_id, Some(edge(osis_base::Role::Write)), None);
+    set_edge(&mut lp.peers[0].engine, t, r_id, Some(edge(osis_base::Role::Read)), None);
+    lp.sync_all().unwrap();
+    let k = Ak::new(osis_schema::RawKey::ak(&BIG)).unwrap();
+    // Mallory's filler pages the map
+    for i in 0..400 {
+        let mut m = Mutation::new();
+        m.op(t, &k, PathOp { path: vec![PathSeg::Key(s(&format!("m{i:04}")))], op: Op::Set(s(&format!("{i:08}{}", "v".repeat(192)))) }).unwrap();
+        lp.peers[1].commit(m).unwrap().unwrap();
+    }
+    lp.sync_all().unwrap();
+    lp.advance(1_000);
+    let now0 = lp.peers[0].engine.now().0;
+    let mut m = Mutation::new();
+    m.expires(t, &k, WallMs(now0 + HOUR)).unwrap();
+    m.op(t, &k, PathOp { path: vec![PathSeg::Key(s("m0399"))], op: Op::Set(s("secret")) }).unwrap();
+    let c = lp.peers[0].commit(m).unwrap().unwrap();
+    lp.sync_all().unwrap();
+    let h = lp.peers[0].engine.header(&c).unwrap();
+    let x = h.aspects.iter().find(|x| x.tid == t && x.ak == k).unwrap();
+    let asrc = h.form.own_source(h.author, CommitId([0; 32]));
+    // its write copied into filler entries spread over the pages
+    let st = lp.peers[1].engine.state(&t, &k).unwrap().unwrap();
+    let mut v = lp.peers[1].engine.get(&t, &k).unwrap().unwrap();
+    let Value::Map(vm) = &mut v else { panic!() };
+    for j in 0..8 {
+        vm.insert(s(&format!("m{:04}", j * 50)), s("zzz secret"));
+    }
+    let mut w = osis_crdt::Writer::new(h.ts, asrc, x.lo);
+    let f = osis_crdt::diff(&mut w, Some(&st), &osis_crdt::AnyView, &v).unwrap().unwrap();
+    lp.advance(1_000);
+    let now = osis_base::Ts::make(lp.peers[1].engine.now(), 0).unwrap();
+    let forged = forge_snapshot(&mut lp, 1, t, &k, now, f);
+    for i in 0..3 {
+        assert!(matches!(lp.peers[i].receive(&forged, Vec::new()), Ok(osis_node::Ingested::Applied(_))), "peer {i}: the snapshot applies");
+    }
+    let read = |lp: &mut LocalPeer, i: usize| match lp.peers[i].engine.get(&t, &k).unwrap() {
+        Some(Value::Map(m)) => m,
+        other => panic!("{other:?}"),
+    };
+    let before = read(&mut lp, 2);
+    let forged_keys: Vec<_> = (0..8).map(|j| s(&format!("m{:04}", j * 50))).collect();
+    let secret = |m: &osis_base::ValueMap| forged_keys.iter().filter(|k| m.get(k) == Some(&s("zzz secret"))).count();
+    assert_eq!(secret(&before), 8, "before T the copies win (spec/crdt.md §4.1 copy order)");
+    lp.advance(HOUR);
+    for i in 0..3 {
+        lp.peers[i].tick().unwrap();
+    }
+    for i in 0..3 {
+        let m = read(&mut lp, i);
+        assert_ne!(m.get(&s("m0399")), Some(&s("secret")), "peer {i}: the expired write goes");
+        assert_eq!(secret(&m), 0, "peer {i}: the forged copies go");
+    }
+    for i in 0..3 {
+        lp.peers[i].restart(0x7e00 + i as u64).unwrap();
+        let m = read(&mut lp, i);
+        assert_eq!(secret(&m), 0, "peer {i}: the forged copies go, after a restart");
+    }
+}
