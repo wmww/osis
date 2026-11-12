@@ -5106,6 +5106,9 @@ fn ephemeral_revert_needs_write_spec_crdt_4_6() {
     let addr = net.hosts[host].address.clone();
     let keep = net.group_seeded(a, &[(b, Role::Write)], vec![addr], 2);
     let t = net.item(a, g, g, "t");
+    // kept history: only rights refuse these reverts (spec/commits.md §7)
+    net.keep(a, t, &[(FLAG, crate::common::DAY)]);
+    net.keep(a, keep, &[("group.0", crate::common::DAY)]);
     net.run();
     let tb = net.tid(b);
     // a creation, then an ephemeral write on the thing

@@ -667,7 +667,7 @@ pub(crate) fn error_of(code: u64, detail: Vec<Value>) -> Error {
             ApiCode::PERMISSION => Error::Permission { tid: a.tid()?, needs: a.get()? },
             ApiCode::TYPE => Error::Type { path: a.get()?, reason: a.text()? },
             ApiCode::TOO_LARGE => Error::TooLarge { limit: usize::try_from(a.uint()?).unwrap_or(usize::MAX) },
-            ApiCode::NOT_UNDOABLE => Error::NotUndoable { commit: a.get()?, reason: if a.uint()? == 1 { NotUndoableReason::Superseded } else { NotUndoableReason::ContentGone } },
+            ApiCode::NOT_UNDOABLE => Error::NotUndoable { commit: a.get()?, reason: if a.uint()? == 1 { NotUndoableReason::Superseded } else { NotUndoableReason::NotKept } },
             ApiCode::UNSYNCED => Error::Unsynced { groups: a.get()? },
             ApiCode::INVALID => Error::Invalid(text(&mut a)),
             ApiCode::STORAGE => Error::Storage(text(&mut a)),

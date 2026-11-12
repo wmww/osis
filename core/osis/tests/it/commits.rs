@@ -102,9 +102,9 @@ fn undo_blocked_by_dropped_body_spec_commits_7() {
         e.drop_body(&newest, &t, &b)
     })
     .unwrap();
-    assert_eq!(db.undo(&Scope::Thing(t)), Err(Error::NotUndoable { commit: osis::CommitId::from(newest), reason: NotUndoableReason::ContentGone }));
+    assert_eq!(db.undo(&Scope::Thing(t)), Err(Error::NotUndoable { commit: osis::CommitId::from(newest), reason: NotUndoableReason::NotKept }));
     assert_eq!(db.at(t, osis::DynamicAspectKey::untyped(a)).get().unwrap(), Some(Value::Int(1)));
-    assert_eq!(db.revert(osis::CommitId::from(newest)), Err(Error::NotUndoable { commit: osis::CommitId::from(newest), reason: NotUndoableReason::ContentGone }));
+    assert_eq!(db.revert(osis::CommitId::from(newest)), Err(Error::NotUndoable { commit: osis::CommitId::from(newest), reason: NotUndoableReason::NotKept }));
 }
 
 // notes/engine.md: an undo mutation carries nothing else.

@@ -22,7 +22,7 @@ pub enum Error {
     /// No commit with this ID is held (or its body was dropped).
     UnknownCommit(CommitId),
     /// Undoing this commit writes back content no kept history holds (spec/crdt.md §4.6). Local.
-    ContentGone(CommitId),
+    NotKept(CommitId),
     /// Peer data violating a rule node-core checks. BadInput.
     BadInput(&'static str),
     /// Caller misuse or an unsupported request. Local.
@@ -44,7 +44,7 @@ osis_base::impl_error!(Error {
     UnknownThing(t) => ("unknown thing {t}"),
     Unsynced { tid, group } => ("{tid} placed in {group}, whose own data syncs but whose items reach no synced group"),
     UnknownCommit(c) => ("unknown commit {c:?}"),
-    ContentGone(c) => ("undoing {c:?} writes back content no kept history holds"),
+    NotKept(c) => ("undoing {c:?} needs content not in kept history"),
     BadInput(m) => ("bad input: {m}"),
     Misuse(m) => ("misuse: {m}"),
     Clash(m) => ("{m}"),
@@ -61,7 +61,7 @@ impl Classified for Error {
             Error::Crypto(e) => e.class(),
             Error::Path(e) => e.class(),
             Error::BadInput(_) => ErrorClass::BadInput,
-            Error::Permission { .. } | Error::UnknownThing(_) | Error::Unsynced { .. } | Error::UnknownCommit(_) | Error::ContentGone(_) | Error::Misuse(_) | Error::Clash(_) | Error::Corrupt(_) => ErrorClass::Local,
+            Error::Permission { .. } | Error::UnknownThing(_) | Error::Unsynced { .. } | Error::UnknownCommit(_) | Error::NotKept(_) | Error::Misuse(_) | Error::Clash(_) | Error::Corrupt(_) => ErrorClass::Local,
         }
     }
 }

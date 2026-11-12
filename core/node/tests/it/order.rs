@@ -1289,6 +1289,10 @@ pub(crate) fn play_with(seed: u64, steps: &[Step], addenda: bool) -> Played {
                     lp.peers[p].commit(m).unwrap().expect("a write")
                 };
                 let mut sent = vec![made];
+                // history kept on the list and text: only kept writes are undone (spec/commits.md §7)
+                let mut m = Mutation::new();
+                m.set(t, &osis_schema::core_types::RETENTION, &base_setting(lp.peers[by].engine.now(), false)).unwrap();
+                sent.push(lp.peers[by].commit(m).unwrap().expect("a setting writes"));
                 sent.push(one(&mut lp, by, &TAGS, po(vec![], Op::Add(tag.clone()))));
                 sent.push(one(&mut lp, by, &LIST, po(vec![], Op::Insert { at: 0, items: vec![s(&format!("a{v}")), s("b")] })));
                 sent.push(one(&mut lp, by, &TEXT, po(vec![], Op::Insert { at: 0, items: vec![s("abcd")] })));

@@ -244,10 +244,9 @@
 //! # Commits, undo, redo, revert
 //! `writes` lists the commits in a scope, anyone's, each with its parts: those still in the read or
 //! kept by history (`fired` lists a signal's). `undo` and `redo` revert this actor's own newest
-//! commit or undo in a scope; `revert` reverts any commit. Writing back what a write replaced needs
-//! that kept (the thing's setting, `core::RETENTION`, set by its admins); without it such an undo
-//! is `NotUndoable`, and only an undo that takes away what the write added (an insert, an add, a
-//! new entry) goes through.
+//! commit or undo in a scope; `revert` reverts any commit. Only a commit in kept history is undone
+//! (the thing's setting, `core::RETENTION`, set by its admins), and only from kept history is
+//! anything written back: without a setting keeping it, any undo is `NotUndoable`, on every node.
 //! ```
 //! # use osis::{Config, MemStore, Osis, Store, Value, Scope, CommitQuery, CommitKind, History, Time};
 //! # use osis::core::{RETENTION, RetentionEntry, RetentionSetting};

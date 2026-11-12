@@ -30,7 +30,7 @@ fn purge_on_replace_spec_commits_5() {
     let e = &mut lp.peers[0].engine;
     assert!(!e.body_not_dropped(&c1, &t, &ak("t:gone.0")));
     assert_eq!(e.get(&t, &ak("t:gone.0")).unwrap(), Some(s("final")));
-    assert!(matches!(e.revert(&c1), Err(osis_node::Error::ContentGone(_))));
+    assert!(matches!(e.revert(&c1), Err(osis_node::Error::NotKept(_))));
     // a writer receiving the kill with its cover drops it at once
     sync(&mut lp, 0, 1);
     assert!(!lp.peers[1].engine.body_not_dropped(&c1, &t, &ak("t:gone.0")));
@@ -745,8 +745,8 @@ fn compaction_snapshot_spec_commits_5() {
     assert_eq!(lp.peers[0].engine.replaced_at(&bodies[1], &t, &ak("t:keptset.0")).unwrap(), Some(ts));
 }
 
-// spec/commits.md §7, spec/crdt.md §4.6: revert, redo as a revert of the revert; the held
-// commits list them; an admin reverts another's change.
+// spec/commits.md §7, spec/crdt.md §4.6: revert, redo as a revert of the revert, of writes the
+// setting keeps; the held commits list them; an admin reverts another's change.
 #[test]
 fn undo_redo_spec_commits_7() {
     let mut lp = net(2, 0);
@@ -755,12 +755,12 @@ fn undo_redo_spec_commits_7() {
     set(&mut lp, 0, t, &KEPT, "a");
     let c2 = set(&mut lp, 0, t, &KEPT, "b");
     let mut m = Mutation::new();
-    m.op(t, &TAGS, PathOp { path: Vec::new(), op: Op::Add(s("x")) }).unwrap();
+    m.op(t, &KEPTSET, PathOp { path: Vec::new(), op: Op::Add(s("x")) }).unwrap();
     let c3 = lp.peers[0].commit(m).unwrap().unwrap();
-    let scope = [(t, ak("t:kept.0")), (t, ak("t:tags.0"))];
+    let scope = [(t, ak("t:kept.0")), (t, ak("t:keptset.0"))];
     assert_eq!(lp.peers[0].engine.held_commits(Some(&scope))[0].id, c3);
     let u3 = lp.peers[0].engine.revert(&c3).unwrap().unwrap();
-    assert_eq!(lp.peers[0].engine.get(&t, &ak("t:tags.0")).unwrap(), None, "exact: the set was absent before");
+    assert_eq!(lp.peers[0].engine.get(&t, &ak("t:keptset.0")).unwrap(), None, "exact: the set was absent before");
     let u2 = lp.peers[0].engine.revert(&c2).unwrap().unwrap();
     assert_eq!(lp.peers[0].engine.get(&t, &ak("t:kept.0")).unwrap(), Some(s("a")));
     let held: Vec<_> = lp.peers[0].engine.held_commits(Some(&scope)).into_iter().map(|c| (c.id, c.header.undoes)).collect();
@@ -771,7 +771,7 @@ fn undo_redo_spec_commits_7() {
     // undo replicates like any commit
     sync(&mut lp, 0, 1);
     assert_eq!(lp.peers[1].engine.get(&t, &ak("t:kept.0")).unwrap(), Some(s("b")));
-    assert_eq!(lp.peers[1].engine.get(&t, &ak("t:tags.0")).unwrap(), None);
+    assert_eq!(lp.peers[1].engine.get(&t, &ak("t:keptset.0")).unwrap(), None);
     // an admin undoes another's change
     let b = lp.peers[1].engine.me();
     set_edge(&mut lp.peers[0].engine, t, b, Some(edge(Role::Write)), None);
@@ -3434,10 +3434,10 @@ fn destruction_in_any_arrival_order_spec_commits_5() {
     }
 }
 
-// spec/commits.md §7 (a kept part supersedes it): the thing keeps no history, so Bob's put of
-// `k`, replaced by Alice's removal, is in no history; undoing the removal is refused while
-// nothing kept reaches that part, and succeeds when Carol's snapshot (kept: it holds the live
-// `j`), written after Bob's put, reaches it
+// spec/commits.md §7 (a kept part supersedes it): the thing keeps history only from after
+// Alice's removal of `k` (kept while live), so Bob's put of `k`, replaced by the removal, is in
+// no history; undoing the removal is refused while nothing kept reaches that part, and succeeds
+// when Carol's snapshot (kept: it holds the live `j`), written after Bob's put, reaches it
 #[test]
 fn snapshot_excuses_only_what_it_reaches_spec_commits_7() {
     for snap in [false, true] {
@@ -3467,9 +3467,12 @@ fn snapshot_excuses_only_what_it_reaches_spec_commits_7() {
         let mut m = Mutation::new();
         m.op(t, &x, PathOp { path: Vec::new(), op: Op::Remove(s("k")) }).unwrap();
         let rm = lp.peers[0].commit(m).unwrap().unwrap();
+        lp.advance(10);
+        set_setting(&mut lp, 0, t, &setting(&[("x:m.0", DAY)]));
+        lp.advance(10);
         let e = &mut lp.peers[0].engine;
         match e.revert(&rm) {
-            Err(osis_node::Error::ContentGone(_)) => assert!(!snap, "the snapshot reaches the unkept part"),
+            Err(osis_node::Error::NotKept(_)) => assert!(!snap, "the snapshot reaches the unkept part"),
             Ok(Some(_)) => {
                 assert!(snap, "undone though no kept part reaches the unkept part");
                 assert_eq!(e.get(&t, &x).unwrap(), before);

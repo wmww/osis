@@ -1,4 +1,4 @@
-//! Undo, redo and revert write back only kept history (spec/crdt.md §4.6, spec/commits.md §7,
+//! Undo, redo and revert touch only kept history (spec/crdt.md §4.6, spec/commits.md §7,
 //! notes/listener-design.md): whether an undo works, and what it writes, follows from the
 //! history setting and the edit's age alone, durable and ephemeral alike, never from what a node
 //! happens to hold.
@@ -57,7 +57,7 @@ fn int(n: i64) -> Option<Value> {
 }
 
 fn gone(c: osis::CommitId) -> Error {
-    Error::NotUndoable { commit: c, reason: NotUndoableReason::ContentGone }
+    Error::NotUndoable { commit: c, reason: NotUndoableReason::NotKept }
 }
 
 /// `t`'s `name` set to each of `vs` in turn, a commit each; the last commit.
@@ -70,31 +70,46 @@ fn sets(db: &Osis, t: osis::Tid, name: &str, vs: &[i64]) -> osis::CommitId {
     last.unwrap()
 }
 
-// spec/crdt.md §4.6 (undo needs kept history): a register set twice with no history kept: its undo would write back the
-// replaced value, which no kept history holds: `NotUndoable{ContentGone}`, from `undo_target` as
-// from `undo`, nothing written; the same after a reopen. A first set replaced nothing: it undoes to
-// absent, and its redo, which needs the unkept set back, is `NotUndoable`.
+// spec/commits.md §7 (Tess: undo touches only kept history): on an aspect no setting keeps, no
+// write is undone, a first set and an insert (which take nothing back) included: refused at once,
+// its body held, by `undo_target`, `undo` and `revert` alike, nothing written; the same from a
+// second node of the account holding the commits, and after a reopen; ephemeral writes alike.
 #[test]
-fn register_without_history_not_undoable_spec_crdt_4_6() {
+fn no_history_no_undo_spec_commits_7() {
     let c = clock();
     let store = MemStore::new();
     let db = osis::internals::create(cfg(1, store.clone(), &c)).unwrap();
     db.register_schema("undo.osis", SCHEMA).unwrap();
     let t = kept_thing(&db);
-    sets(&db, t, "app:n.0", &[1]);
-    let scope = Scope::Aspects(vec![(t, ak("app:n.0"))]);
-    let u = db.undo(&scope).unwrap().unwrap();
-    assert_eq!(db.at(t, key(&db, "app:n.0")).get().unwrap(), None, "a first set undone");
-    assert_eq!(db.redo(&scope), Err(gone(u.stamp.id)), "its redo");
-    let second = sets(&db, t, "app:n.0", &[2]);
-    let marks = db.engine(|e| e.commit_ids().len());
-    assert_eq!(db.undo_target(&scope), Err(gone(second)));
-    assert_eq!(db.undo(&scope), Err(gone(second)));
-    assert_eq!(db.revert(second), Err(gone(second)));
-    assert_eq!((db.engine(|e| e.commit_ids().len()), db.at(t, key(&db, "app:n.0")).get().unwrap()), (marks, int(2)), "nothing written");
+    let first = sets(&db, t, "app:n.0", &[1]);
+    let insert = commit_with(&db, |w| w.at(t, key(&db, "app:l.0")).path(osis::p![]).splice(0..0, &[Value::Int(2)])).stamp.id;
+    for (x, a) in [(first, "app:n.0"), (insert, "app:l.0")] {
+        assert!(db.engine(|e| e.body_not_dropped(&x.raw(), &t, &ak(a))), "{a}: held, not compacted");
+        let scope = Scope::Aspects(vec![(t, ak(a))]);
+        let marks = db.engine(|e| e.commit_ids().len());
+        assert_eq!(db.undo_target(&scope), Err(gone(x)), "{a}");
+        assert_eq!(db.undo(&scope), Err(gone(x)), "{a}");
+        assert_eq!(db.revert(x), Err(gone(x)), "{a}");
+        assert_eq!(db.engine(|e| e.commit_ids().len()), marks, "{a}: nothing written");
+    }
+    let eph = sets(&db, t, "app:ne+.0", &[1]);
+    assert_eq!(db.undo(&Scope::Aspects(vec![(t, ak("app:ne+.0"))])), Err(gone(eph)), "an ephemeral first write alike");
+    assert_eq!(db.at(t, key(&db, "app:n.0")).get().unwrap(), int(1));
     drop(db);
     let db = osis::internals::open(cfg(2, store, &c)).unwrap();
-    assert_eq!(db.undo(&scope), Err(gone(second)), "after a reopen");
+    assert_eq!(db.undo(&Scope::Aspects(vec![(t, ak("app:n.0"))])), Err(gone(first)), "after a reopen");
+    // a second node
+    let (a, b, _) = paired();
+    for n in [&a, &b] {
+        n.register_schema("undo.osis", SCHEMA).unwrap();
+    }
+    let t = kept_thing(&a);
+    let x = sets(&a, t, "app:n.0", &[1]);
+    deliver(&a, &b);
+    assert_eq!(b.at(t, key(&b, "app:n.0")).get().unwrap(), int(1), "b holds it");
+    let scope = Scope::Aspects(vec![(t, ak("app:n.0"))]);
+    assert_eq!(b.undo_target(&scope), Err(gone(x)), "from a second node");
+    assert_eq!(b.revert(x), Err(gone(x)));
 }
 
 // spec/crdt.md §4.6: with history kept the replaced value comes back from it: after a reopen, and
@@ -179,46 +194,41 @@ fn undo_alike_held_or_compacted_spec_crdt_4_6() {
     }
 }
 
-// spec/crdt.md §4.6, spec/commits.md §7 (undo needs kept history), spec/sync.md §7 Trigger:
-// what only takes away what it made undoes with no history kept (a list insert, a map entry's
-// first creation) while its body is held: no setting keeps a live write, so once the trigger
-// compacts the aspect its undo is refused. Redoing such an undo writes the taken value back, so
-// needs the undo's body held the same way: the list's three bodies (set, insert, undo) compact,
-// so its redo is refused; a removed map entry keeps nothing to write back, so `NotUndoable`.
-// With history a first register set undoes to absent and redoes.
+// spec/commits.md §7 (Tess: undo touches only kept history): what only takes away what it made
+// (a list insert) undoes and redoes while the setting keeps it, and is refused once it leaves
+// history by the setting's bound (the list is kept until a time `T`), its body still held: the
+// setting decides, never compaction. With history a first register set undoes to absent and
+// redoes.
 #[test]
-fn takings_undo_without_history_redo_needs_it_spec_crdt_4_6() {
-    let db = setup(0);
-    let t = kept_thing(&db);
-    let (l, m) = (key(&db, "app:l.0"), key(&db, "app:m.0"));
+fn takings_undo_while_kept_spec_commits_7() {
+    let c = clock();
+    let db = osis::internals::create(cfg(0, MemStore::new(), &c)).unwrap();
+    db.register_schema("undo.osis", SCHEMA).unwrap();
+    let until = osis::History::Keep { until: osis::Time(T0 + 60_000), after_replaced: std::time::Duration::ZERO };
+    let x = setting(&[("app:l.0", until), ("app:k.0", crate::common::DAY)]);
+    let t = db.commit_with(|w| {
+        let t = w.create()?;
+        w.at(t, osis::core::RETENTION).set(&x)?;
+        Ok(t)
+    })
+    .unwrap();
+    let l = key(&db, "app:l.0");
     let la = ak("app:l.0");
-    let held = |c: osis::CommitId| db.engine(|e| e.body_not_dropped(&c.raw(), &t, &la));
     let list = Scope::Aspects(vec![(t, la.clone())]);
     let get = || db.at(t, l.clone()).get().unwrap();
     let ints = |xs: &[i64]| Some(Value::List(xs.iter().map(|x| Value::Int(*x)).collect()));
-    let set = commit_with(&db, |w| w.at(t, l.clone()).set(&Value::List(vec![Value::Int(1)]))).stamp.id;
-    let insert = commit_with(&db, |w| w.at(t, l.clone()).path(osis::p![]).splice(1..1, &[Value::Int(2)])).stamp.id;
-    assert!(held(set) && held(insert), "two bodies: not compacted yet");
-    let undo = db.undo(&list).unwrap().unwrap().stamp.id;
-    assert_eq!(get(), ints(&[1]), "the insert undone while its body is held");
-    // three bodies: the trigger compacted them into a snapshot
-    assert!(!held(set) && !held(insert) && !held(undo), "compacted");
-    assert_eq!(db.redo(&list), Err(gone(undo)), "the redo needs the undo's body");
-    assert_eq!(get(), ints(&[1]));
-    // an insert compacted before its undo: refused
-    let late = commit_with(&db, |w| w.at(t, l.clone()).path(osis::p![]).splice(1..1, &[Value::Int(3)])).stamp.id;
-    assert!(held(late));
-    commit_with(&db, |w| w.at(t, l.clone()).path(osis::p![]).splice(2..2, &[Value::Int(4)]));
-    commit_with(&db, |w| w.at(t, l.clone()).path(osis::p![]).splice(3..3, &[Value::Int(5)]));
-    assert!(!held(late), "compacted");
-    assert_eq!(db.revert(late), Err(gone(late)), "the insert's undo after compaction");
-    assert_eq!(get(), ints(&[1, 3, 4, 5]));
-    commit_with(&db, |w| w.at(t, m.clone()).path(osis::p!["a"]).set(&Value::Int(1)));
-    let map = Scope::Aspects(vec![(t, ak("app:m.0"))]);
-    let undo = db.undo(&map).unwrap().unwrap();
-    assert_eq!(db.at(t, m).get().unwrap(), None, "the first entry undone");
-    assert_eq!(db.redo_target(&map), Err(gone(undo.stamp.id)));
-    assert_eq!(db.redo(&map), Err(gone(undo.stamp.id)), "a redo writes the entry back");
+    commit_with(&db, |w| w.at(t, l.clone()).set(&Value::List(vec![Value::Int(1)])));
+    commit_with(&db, |w| w.at(t, l.clone()).path(osis::p![]).splice(1..1, &[Value::Int(2)]));
+    db.undo(&list).unwrap().unwrap();
+    assert_eq!(get(), ints(&[1]), "the insert undone");
+    db.redo(&list).unwrap().unwrap();
+    assert_eq!(get(), ints(&[1, 2]), "and redone");
+    let late = commit_with(&db, |w| w.at(t, l.clone()).path(osis::p![]).splice(2..2, &[Value::Int(3)])).stamp.id;
+    c.advance(61_000);
+    assert!(db.engine(|e| e.body_not_dropped(&late.raw(), &t, &la)), "held");
+    assert_eq!(db.undo_target(&list), Err(gone(late)), "past T");
+    assert_eq!(db.revert(late), Err(gone(late)));
+    assert_eq!(get(), ints(&[1, 2, 3]));
     let k = key(&db, "app:k.0");
     sets(&db, t, "app:k.0", &[7]);
     let kept = Scope::Aspects(vec![(t, ak("app:k.0"))]);

@@ -534,12 +534,12 @@ fn remove_client_revokes() {
     // the session is over for good, and a listener on it would never hear anything: it says so
     x.until(|_| matches!(c.at(x.t, osis::DynamicAspectKey::untyped(ak("t:name.0"))).get(), Err(Error::Refused(_))));
     assert!(matches!(c.on_diagnostic(|_, _| {}), Err(Error::Refused(_))));
-    // the entry's removal writes back what `clients^.0` keeps no history of: not undone, its
-    // body compacted away or not (spec/commits.md §7); a half removal revives under no clock
+    // no setting keeps `clients^.0`: the entry's removal is never undone, on any node, held or
+    // not (spec/commits.md §7); a half removal revives under no clock
     // (half_removed_client_stays_ended)
     drop(sub);
     let removal = rx.try_recv().expect("the removal was heard");
-    assert_eq!(x.n.revert(removal), Err(Error::NotUndoable { commit: removal, reason: osis::NotUndoableReason::ContentGone }));
+    assert_eq!(x.n.revert(removal), Err(Error::NotUndoable { commit: removal, reason: osis::NotUndoableReason::NotKept }));
     assert!(matches!(x.connect(&s), Err(Error::Refused(_))));
     assert!(!x.n.remove_client(a).unwrap());
     assert!(!x.n.remove_client(x.n.me()).unwrap(), "only a registered client: never a role removal of something else");

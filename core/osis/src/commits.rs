@@ -366,7 +366,7 @@ impl ReadOnly {
     }
 
     /// The commit `undo` of `scope` would revert now: none or one. Fails as `undo` would
-    /// (`NotUndoable`: it writes back content no kept history holds, or it would write nothing;
+    /// (`NotUndoable`: it needs content not in kept history, or it would write nothing;
     /// nothing older instead), so a UI can disable its Undo by it.
     pub fn undo_target(&self, scope: &Scope) -> Result<Option<Commit>> {
         self.target(scope, false)
@@ -539,7 +539,7 @@ impl Osis {
             match r {
                 Reverted::Written(w) => written_in(&mut Reader { e: l.engine(), limit: mat, actor }, w, me),
                 Reverted::Superseded => Err(blocked(NotUndoableReason::Superseded)),
-                Reverted::ContentGone => Err(blocked(NotUndoableReason::ContentGone)),
+                Reverted::NotKept => Err(blocked(NotUndoableReason::NotKept)),
             }
         })?;
         Ok(c.reporting(self))
@@ -570,10 +570,10 @@ pub(crate) fn written_in(r: &mut Reader<'_>, w: osis_node::Written, actor: Tid) 
 /// Why a commit cannot be reverted.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NotUndoableReason {
-    /// Reverting it writes back content no kept history holds: what it replaced (a register or
-    /// value set), with no history kept or past its keep bound, or what it wrote itself is no
-    /// longer here (tidied up, or purged).
-    ContentGone,
+    /// Reverting it needs content not in kept history (the thing's `retention^.0` setting): what
+    /// it wrote itself, or what it replaced (a register or value set), with no history kept or
+    /// past its keep bound, or purged. Alike on every node, whatever is still held.
+    NotKept,
     /// Reverting it writes nothing: everything it wrote was overwritten since, or is a fire of a
     /// signal (a signal reads absent before and after it).
     Superseded,
@@ -666,7 +666,7 @@ impl crate::handle::ReadOnly {
             match r {
                 Ok(true) => Ok(Some(c)),
                 Ok(false) => Err(blocked(NotUndoableReason::Superseded)),
-                Err(osis_node::Error::ContentGone(_)) => Err(blocked(NotUndoableReason::ContentGone)),
+                Err(osis_node::Error::NotKept(_)) => Err(blocked(NotUndoableReason::NotKept)),
                 Err(x) => Err(x.into()),
             }
         })

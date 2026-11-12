@@ -223,7 +223,7 @@ fn trigger_work_flat_under_kept_history_spec_sync_7() {
 
 // spec/commits.md §7 Kept history only, §5 Kept while live: undo of a live put works for as long
 // as its aspect keeps it, however much was written beside it; where no setting keeps the aspect
-// the trigger compacts it, and its undo is refused (no history promised), never wrong.
+// its undo is refused at once, its body held, and alike once the trigger compacted it.
 #[test]
 fn undo_within_kept_history_spec_commits_7() {
     let (mut net, _host, [a, r], _g, [t, u]) = hosted::<2, 2>(&[(1, Role::Read)], ["x", "y"], true);
@@ -237,10 +237,13 @@ fn undo_within_kept_history_spec_commits_7() {
         let Some(Value::Map(m)) = map_of(&mut net, n, t) else { panic!() };
         assert!(!m.contains_key(&s("k0")) && m.len() == 29, "node {n}: the first put undone");
     }
-    // no setting on `u`: its first put compacted away, its undo refused
-    let first = put_apart(&mut net, a, u, 30)[0];
+    // no setting on `u`: its first put's undo refused while its body is held, and once compacted
+    let first = put(&mut net, a, u, "first", "v");
+    assert!(net.engine(a).body_not_dropped(&first, &u, &map_ak()), "held");
+    assert!(matches!(net.engine(a).revert_commit(first, me), Ok(osis_node::ephemeral::Reverted::NotKept)));
+    put_apart(&mut net, a, u, 30);
     assert!(!net.engine(a).body_not_dropped(&first, &u, &map_ak()) || net.engine(a).header(&first).is_none(), "compacted");
-    assert!(matches!(net.engine(a).revert_commit(first, me), Ok(osis_node::ephemeral::Reverted::ContentGone)));
+    assert!(matches!(net.engine(a).revert_commit(first, me), Ok(osis_node::ephemeral::Reverted::NotKept)));
     assert_eq!(map_of(&mut net, r, u), map_of(&mut net, a, u));
 }
 

@@ -292,9 +292,10 @@ fn commits_undo_redo_plan_cli_4() {
     assert_eq!(s.code(&["writes", "--thing", &t, "--kind", "nope"]), 2);
     s.ok(&["set", &t, "a:x.0", "3"]);
     assert_eq!(s.code(&["redo", "--thing", &t]), 3, "nothing to redo after a new change");
-    // without a setting nothing replaced is kept: an undo writing it back is refused
+    // without a setting no write is undone, a first set included
     let t = s.thing();
     s.ok(&["set", &t, "a:x.0", "1"]);
+    assert_eq!(s.code(&["undo", "--aspect", &t, "a:x.0"]), 1, "NotUndoable");
     s.ok(&["set", &t, "a:x.0", "2"]);
     assert_eq!(s.code(&["undo", "--aspect", &t, "a:x.0"]), 1, "NotUndoable");
     assert_eq!(s.ok(&["get", &t, "a:x.0"]).line(), "2");

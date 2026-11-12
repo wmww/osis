@@ -99,7 +99,7 @@ impl Engine {
         self.as_actor(id, actor, |e| e.revert_inner(id, actor, true))
     }
 
-    /// What `revert_as` fails with before writing anything (`Permission`, then `ContentGone`),
+    /// What `revert_as` fails with before writing anything (`Permission`, then `NotKept`),
     /// named as it would, and whether it writes anything (`Engine::check_revertible`).
     pub fn check_revertible_as(&mut self, id: CommitId, actor: Tid) -> Result<bool> {
         self.as_actor(id, actor, |e| e.check_revert(id, actor, true))

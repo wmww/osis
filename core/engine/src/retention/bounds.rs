@@ -55,6 +55,20 @@ pub(crate) fn body_history_keep(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &A
     Ok(h.aspects.get(ai).map_or(0, |a| kept_until(tx.core, &h, a, r)))
 }
 
+/// Whether part `ai` of `c` is in kept history by its thing's setting alone at wall ms `now`
+/// (spec/commits.md §7 Undo): replaced, while in history (`Kept::leaves_at`); live, while kept
+/// while live (`live_keep`). Neither the purge floor nor the clock counts, nor whether the body
+/// is still held: what undo may take back is the setting's alone.
+pub(crate) fn setting_keeps(tx: &mut Tx<'_>, c: &CommitId, ai: usize, now: u64) -> Result<bool> {
+    let h = tx.core.ix.commits.get(c).ok_or(Error::UnknownCommit(*c))?.header.clone();
+    let Some(a) = h.aspects.get(ai) else { return Ok(false) };
+    let until = match part_replaced_at(tx, &h, c, ai)? {
+        Some(r) => super::history::of(tx.core, &a.tid, &a.ak).leaves_at(Some(r.wall_ms().0)),
+        None => live_keep(tx.core, c, ai, a),
+    };
+    Ok(until > now)
+}
+
 /// A body replaced at wall ms `replaced` after the node's clock is kept until the clock reaches it
 /// (spec/commits.md §5 Keep bounds: a body leaves history no earlier than replaced). Only a dated
 /// part has a `replaced` (`part_replaced_at`): where no setting keeps history for its aspect nothing is

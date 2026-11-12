@@ -28,6 +28,11 @@ fn history() -> (LocalPeer, Tid, Ak) {
     let x = Ak::new("x:m.0").unwrap();
     let me = lp.peers[0].engine.me();
     let (t, _) = lp.peers[0].engine.create_with_admin(&me).unwrap();
+    // history kept, so the further steps' undo has a kept write to revert
+    let day = osis_schema::History::Keep { until: None, after: Some(86_400_000) };
+    let mut m = Mutation::new();
+    m.set(t, &ct::RETENTION, &ct::RetentionSetting::of(x.clone(), day)).unwrap();
+    lp.peers[0].commit(m).unwrap();
     let (w, a) = (lp.peers[1].engine.me(), lp.peers[2].engine.me());
     lp.peers[0].engine.grant(&t, &w, &edge(Role::Write)).unwrap();
     lp.peers[0].engine.grant(&t, &a, &edge(Role::Admin)).unwrap();

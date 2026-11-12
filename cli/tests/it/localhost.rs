@@ -106,7 +106,9 @@ fn two_accounts_three_nodes_one_peer_localhost() {
     // Alice shares a group by link; Bob redeems it
     let g = osis(&a1, &["create", "--in", "me", "t:made.0", "true"]);
     osis(&a1, &["group", "sync", &g]);
-    let t = osis(&a1, &["create", "--admin", &g, "--in", &g, "t:x.0", "\"hello\""]);
+    // its setting keeps history for good: only kept writes are undone (below)
+    let keep = "{rules: {}, retain: false, default: #some({history: #some(#keep({until: #some(9223372036854775807), after: #none})), expires: #none, final: false})}";
+    let t = osis(&a1, &["create", "--admin", &g, "--in", &g, "t:x.0", "\"hello\"", "retention^.0", keep]);
     let link = osis(&a1, &["link", "make", &g, "write"]);
     osis(&a1, &["sync"]);
     // Alice's nodes are all closed now: the link works from the peer alone

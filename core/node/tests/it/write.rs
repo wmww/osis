@@ -600,6 +600,8 @@ fn paged_text_edits_by_index_and_undo_spec_crdt_6_1() {
     let a = ak("w:text.0");
     let mut m = Mutation::new();
     let t = p.engine.new_thing(&mut m, me);
+    // history kept: only kept writes are undone (spec/commits.md §7)
+    crate::common::keep_in(&mut m, t, &crate::common::day_setting());
     // 4-byte chars: the state is above PAGE_TARGET, so the text is paged
     let mut model: Vec<char> = (0..20_000u32).map(|i| char::from_u32(0x1F600 + i % 64).unwrap()).collect();
     m.set(t, &TEXT_AK, &Value::Str(model.iter().collect())).unwrap();
@@ -766,6 +768,7 @@ fn undo_into_paged_field_keeps_later_entries_spec_crdt_4_6() {
     let (key, a) = (&common::BOOK, ak("t:book.0"));
     let mut m = Mutation::new();
     let t = p.engine.new_thing(&mut m, me);
+    crate::common::keep_in(&mut m, t, &crate::common::day_setting());
     m.op(t, key, PathOp { path: vec![PathSeg::Field(1)], op: Op::Set(Value::Str("n".into())) }).unwrap();
     p.commit(m).unwrap().unwrap();
     let put = |m: &mut Mutation, k: String, v: String| m.op(t, key, PathOp { path: vec![PathSeg::Field(0), PathSeg::Key(Value::Str(k))], op: Op::Set(Value::Str(v)) }).map(|_| ()).unwrap();

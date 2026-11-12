@@ -542,7 +542,7 @@ fn purge_request_floor_holds_purge_on_replace_spec_commits_5() {
 
 // spec/commits.md §7, notes/listener-design.md (a kept part not fetched yet): Bob holds the
 // header of Alice's kept set of the register and not its part. Undoing his own later set
-// would replace it, so it is `ContentGone` until the part arrives, never the field emptied;
+// would replace it, so it is `NotKept` until the part arrives, never the field emptied;
 // then it undoes back to Alice's value.
 #[test]
 fn undo_over_not_fetched_kept_part_waits_spec_commits_7() {
@@ -561,7 +561,7 @@ fn undo_over_not_fetched_kept_part_waits_spec_commits_7() {
     let mine = write(&mut lp, 1, d, Retention::default(), "bob");
     let mut m = Mutation::new();
     m.undo(mine);
-    assert!(matches!(lp.peers[1].engine.write(m), Err(osis_node::Error::ContentGone(x)) if x == mine));
+    assert!(matches!(lp.peers[1].engine.write(m), Err(osis_node::Error::NotKept(x)) if x == mine));
     assert_eq!(lp.peers[1].engine.get(&d, &reg()).unwrap(), Some(s("bob")), "nothing written");
     lp.peers[1].receive(&pk.bytes, pk.blobs.clone()).unwrap();
     let mut m = Mutation::new();
@@ -570,21 +570,28 @@ fn undo_over_not_fetched_kept_part_waits_spec_commits_7() {
     assert_eq!(lp.peers[1].engine.get(&d, &reg()).unwrap(), Some(s("alice")));
 }
 
-// spec/commits.md §7, spec/crdt.md §4.6: a first set keeping no history replaced nothing this
-// node holds, so it undoes to absent. Bob's earlier-stamped set held first is a part it may
-// have replaced: `ContentGone`. One arriving only after the undo is below the undo's reset:
-// both nodes read absent alike (the SHOULD's concurrent writes arriving later are wiped).
+// spec/commits.md §7, spec/crdt.md §4.6: with history kept, a first set undoes to what it
+// replaced: Bob's earlier-stamped set held first comes back. One arriving only after the undo is
+// below the undo's reset: both nodes read absent alike (the SHOULD's concurrent writes arriving
+// later are wiped).
 #[test]
 fn first_set_undo_with_concurrent_set_spec_commits_7() {
     let none = || Retention { by: PurgeBy::Writer };
+    let kept = |lp: &mut LocalPeer, d: Tid| {
+        crate::common::set_setting(lp, 0, d, &crate::common::setting(&[("t:reg.0", crate::common::DAY)]));
+        lp.sync_all().unwrap();
+    };
     let (mut lp, d, _) = setup();
+    kept(&mut lp, d);
     write(&mut lp, 1, d, none(), "bob");
     lp.sync_all().unwrap();
     let a = write(&mut lp, 0, d, none(), "alice");
     let mut m = Mutation::new();
     m.undo(a);
-    assert!(matches!(lp.peers[0].engine.write(m), Err(osis_node::Error::ContentGone(x)) if x == a), "bob's set held");
+    lp.peers[0].engine.write(m).unwrap();
+    assert_eq!(lp.peers[0].engine.get(&d, &reg()).unwrap(), Some(s("bob")), "bob's set held and kept");
     let (mut lp, d, _) = setup();
+    kept(&mut lp, d);
     write(&mut lp, 1, d, none(), "bob");
     let a = write(&mut lp, 0, d, none(), "alice");
     let mut m = Mutation::new();

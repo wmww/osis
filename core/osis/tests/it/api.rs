@@ -1570,11 +1570,13 @@ fn a_lasting_member_outlives_an_expiring_first() {
     assert_eq!(db.members(g).unwrap(), vec![osis::Member::Item(y)]);
 }
 
-// spec/commits.md §7: a revert of a first member takes that member alone
+// spec/commits.md §7: a revert of a first member takes that member alone (the groups keep
+// history: only kept writes are undone)
 #[test]
 fn a_revert_of_a_first_member_takes_only_it() {
     let (a, b, _) = paired();
     let (g, x, y) = (made(&a), made(&a), made(&a));
+    crate::common::keep_day(&a, g, &["group.0"]);
     deliver(&a, &b);
     let done = commit_with(&a, |w| w.group(g).add(osis::Member::Item(x)));
     b.commit_with(|w| w.group(g).add(osis::Member::Item(y))).unwrap();
@@ -1585,6 +1587,7 @@ fn a_revert_of_a_first_member_takes_only_it() {
     assert_eq!(a.members(g).unwrap(), vec![osis::Member::Item(y)]);
     assert_eq!(b.members(g).unwrap(), vec![osis::Member::Item(y)]);
     let only = made(&a);
+    crate::common::keep_day(&a, only, &["group.0"]);
     let done = commit_with(&a, |w| w.group(only).add(osis::Member::Item(x)));
     a.revert(done.stamp.id).unwrap();
     assert!(a.members(only).unwrap().is_empty());

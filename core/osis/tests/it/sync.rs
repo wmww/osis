@@ -982,6 +982,8 @@ fn restored_store_writes_at_once_spec_crdt_2_1() {
     let form = |db: &Osis, c| db.engine(|e| e.header(&c).unwrap().form);
     assert!(matches!(form(&b, first), osis_commit::Form::Session(_)));
     // an undo before the pass too: of a creation, which also edits the home group's `group.0`
+    // (kept: only kept writes are undone)
+    crate::common::keep_day(&b, b.home(), &["group.0"]);
     let v = item(&b, b.me(), b.home(), "made after the restore");
     let undo = b.undo(&osis::Scope::Thing(v)).unwrap().unwrap().stamp.id.raw();
     assert!(matches!(form(&b, undo), osis_commit::Form::Session(_)));
