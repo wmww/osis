@@ -137,8 +137,9 @@ pub struct Net {
     /// Nodes whose entries peers that cannot read never pull: the entries their streams show
     /// those peers and the bytes they fetch from them are lost on the way.
     pub unpulled: BTreeSet<usize>,
-    /// Deposits (to a host) of blobs carrying these commits, by any node's entry for the blob,
-    /// are lost on the way (answered rate-limited), and a reader's stream and fetches drop them.
+    /// Blobs carrying these commits (by any node's entry for the blob) never reach a peer that
+    /// cannot read the label: Deposits and Deposit items of them are lost on the way, and the
+    /// streams and fetch replies it pulls drop them; a reader's stream and fetches drop them too.
     pub lose_deposits: BTreeSet<CommitId>,
     /// Hosts whose messages to nodes are held back until `release` (a slow host).
     pub held_hosts: BTreeSet<usize>,
@@ -1091,7 +1092,24 @@ impl Net {
                                         kept.extend(osis_proto::encode_frame(&osis_proto::Message::PullReply(r).encode()));
                                         continue;
                                     }
-                                    osis_proto::Message::Offer { ref items, .. } if !items.is_empty() && items.iter().all(|i| matches!(i, osis_proto::msg::OfferItem::Deposit { label, blob, .. } if lost(label, &osis_label::blob_id(blob)))) => continue,
+                                    osis_proto::Message::Offer { id, mut items } if items.iter().any(|i| matches!(i, osis_proto::msg::OfferItem::Deposit { label, blob, .. } if lost(label, &osis_label::blob_id(blob)))) => {
+                                        items.retain(|i| !matches!(i, osis_proto::msg::OfferItem::Deposit { label, blob, .. } if lost(label, &osis_label::blob_id(blob))));
+                                        if !items.is_empty() {
+                                            kept.extend(osis_proto::encode_frame(&osis_proto::Message::Offer { id, items }.encode()));
+                                        }
+                                        continue;
+                                    }
+                                    // or as fetched bodies
+                                    osis_proto::Message::FetchReply { id, mut items } => {
+                                        let labels = self.nodes[n].sync.as_ref().map(|s| s.shared_members(conn)).unwrap_or_default();
+                                        for f in &mut items {
+                                            if labels.iter().any(|l| lost(l, &f.blob_id)) {
+                                                f.entry = None;
+                                            }
+                                        }
+                                        kept.extend(osis_proto::encode_frame(&osis_proto::Message::FetchReply { id, items }.encode()));
+                                        continue;
+                                    }
                                     _ => {}
                                 }
                             }
