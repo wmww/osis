@@ -630,8 +630,35 @@ fn bridge_node_carries_between_hosts_spec_sync_6() {
     assert_eq!(notes(&mut net, c, w), want);
 }
 
-// spec/permissions.md §5.2 (ephemeral commits judged as snapshots: by commit ID, so a demotion's
-// frontier, which lists none, covers none): a removed writer's ephemeral writes are un-merged
+// spec/permissions.md §5.1, §5.2: a demotion's frontier lists the ephemeral commits its author
+// received, as durable ones: a demoted writer's note the admin held stays at every holder; one it
+// wrote offline, which nobody received before the demotion, shows nowhere
+#[test]
+fn demoted_writer_received_ephemeral_write_stays_spec_permissions_5_2() {
+    let (mut net, _host, [a, b, c], g, []) = hosted::<3, 0>(&[(1, Role::Write), (2, Role::Write)], [], true);
+    let w = window(&mut net, a, g, "w");
+    net.run();
+    note(&mut net, b, w, "b", "1");
+    net.run();
+    assert_eq!(notes(&mut net, c, w), map(&[("b", "1")]));
+    net.set_online(b, false);
+    note(&mut net, b, w, "late", "2");
+    let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
+    let d = osis_node::flows::Demotion { holder: net.tid(b), new: Some(edge), retain: None };
+    let done = net.engine(a).demote(&g, &d).unwrap();
+    let acts = net.sync(a).carry_out(done).unwrap();
+    net.actions(a, acts);
+    net.run();
+    net.set_online(b, true);
+    net.run();
+    net.advance(60_000);
+    for n in [a, c] {
+        assert_eq!(notes(&mut net, n, w), map(&[("b", "1")]), "{n}");
+    }
+}
+
+// spec/permissions.md §5.2: a removed writer's ephemeral writes that its removal's frontier does
+// not list (and no addendum vouches for) are un-merged, as durable ones are
 #[test]
 fn removed_writer_ephemeral_unmerged_spec_permissions_5_2() {
     let (mut net, _host, [a, b], g, []) = hosted::<2, 0>(&[(1, Role::Write)], [], true);
@@ -648,6 +675,7 @@ fn removed_writer_ephemeral_unmerged_spec_permissions_5_2() {
     let me = net.tid(a);
     let e = net.engine(a);
     let rs = recipients_of(e, &[(me, Role::Admin)]);
+    e.write_addenda(false);
     remove_holder(e, g, bt, &rs, 9);
     net.run();
     assert_eq!(notes(&mut net, a, w), map(&[("a", "1")]), "b's ephemeral write is un-merged");
@@ -1419,6 +1447,10 @@ fn snapshot_survives_rebuild_spec_crdt_4_6() {
     net.run();
     let ct = net.tid(c);
     let bt = net.tid(b);
+    // a removal listing none of c's writes, no addendum vouching for them
+    for n in [a, b] {
+        net.engine(n).write_addenda(false);
+    }
     let e = net.engine(a);
     let rs = recipients_of(e, &[(at, Role::Admin), (bt, Role::Write)]);
     remove_holder(e, g, ct, &rs, 9);
@@ -2222,6 +2254,12 @@ fn random_churn_converges_large() {
 fn promoted_after_hosts_restart_reaches_hosts_spec_sync_6() {
     let (mut net, (hosts, nodes, g, w)) = churn_world();
     let (a, b, d) = (nodes[0], nodes[1], nodes[3]);
+    // the admin never receives the write before it demotes b, and no writer vouches for it, so the
+    // demotion invalidates it (spec/permissions.md §5.2)
+    for n in &nodes {
+        net.engine(*n).write_addenda(false);
+    }
+    net.set_online(a, false);
     let mut m = Mutation::new();
     m.set(w, &eph(FLAG), &s("kept")).unwrap();
     net.engine(b).write(m).unwrap();
@@ -2241,6 +2279,7 @@ fn promoted_after_hosts_restart_reaches_hosts_spec_sync_6() {
     let edge = |role| osis_schema::core_types::Edge { role, until: None, invite: None, tied: None };
     let demote = osis_node::flows::Demotion { holder: tb, new: Some(edge(Role::Read)), retain: None };
     let done = net.engine(a).demote(&g, &demote).unwrap();
+    net.set_online(a, true);
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
     for _ in 0..3 {
@@ -3294,10 +3333,10 @@ fn memory_commit_session_form_spec_commits_3() {
     assert_eq!((a.lo, a.hi), (2, 3), "counters per aspect and session, from 1");
     let osis_commit::Form::Session(nonce) = h.form else { panic!("{:?}", h.form) };
     let src = osis_crdt::Source::session(osis_crdt::Session { node: me, nonce });
-    // a demotion's frontier lists no memory commit (spec/permissions.md §5.2)
+    // a demotion's frontier lists memory commits as durable ones (spec/permissions.md §5.1)
     let scope = osis_perm::DemotionScope { roles: Default::default(), content: [(me, [t].into())].into() };
     let now = e.now();
-    assert!(e.frontier(&scope, now).unwrap().commits.iter().all(|c| !ids.contains(c)));
+    assert!(ids.iter().all(|c| e.frontier(&scope, now).unwrap().commits.contains(c)));
     assert_eq!(e.core.commit_of(&t, &reg, &osis_crdt::Dot::new(src.clone(), 1)), Some(ids[0]));
     assert_eq!(e.core.commit_of(&t, &reg, &osis_crdt::Dot::new(src, 2)), Some(ids[1]));
     assert_eq!(e.get(&t, &reg).unwrap(), Some(Value::Set([Value::Str("v1".into())].into())));
@@ -3306,7 +3345,7 @@ fn memory_commit_session_form_spec_commits_3() {
 // issues/eph-unify.md step 3: a memory commit is nothing durable to node-sync: marked changed
 // (its bodies travel like any commit's, spec/sync.md §9) but no generation step, not among
 // `commit_ids` or a thing's durable commits, an `Ephemeral` event (none on a durable
-// subscription), no demotion frontier entry. spec: none (internal)
+// subscription). spec: none (internal)
 #[test]
 fn memory_commit_not_durable_to_sync() {
     let mut lp = crate::common::net(1, 0);
@@ -3535,6 +3574,17 @@ fn assert_no_durable_trace(e: &mut osis_node::Engine, ids: &[osis_base::CommitId
 
 /// Peers 0, 1 and 2, durable state synced; 0 is first admin of `d` and grants 1 and 2 write. Returns `d`.
 /// Built once (`LocalPeer::cached`).
+/// Peer 0 removes `holder` from `d` by a frontier listing none of its commits, no peer answering
+/// with addenda, so every commit of the holder falls (spec/permissions.md §5.2), as durable ones
+/// would: the removal's package.
+fn remove_listing_none(lp: &mut osis_node::local_peer::LocalPeer, d: Tid, holder: Tid) -> osis_node::local_peer::Package {
+    for p in lp.peers.iter_mut() {
+        p.engine.write_addenda(false);
+    }
+    let r = crate::common::set_edge(&mut lp.peers[0].engine, d, holder, None, Some(osis_schema::Codec::to_value(&ct::Frontier::default())));
+    lp.peers[0].engine.package(&r).unwrap().unwrap()
+}
+
 fn memory_trio() -> (osis_node::local_peer::LocalPeer, Tid) {
     osis_node::local_peer::LocalPeer::cached("ephemeral::memory_trio", || {
         let mut lp = crate::common::net(3, 0);
@@ -3606,21 +3656,23 @@ fn durable_part_on_ephemeral_key_dropped_spec_commits_2() {
     }
 }
 
-// spec/permissions.md §5.2 (a removed writer's writes un-merged; a demotion frontier lists no
-// session source): a writer's received memory commits are valid while it may write, and their
-// writes go when it is removed
+// spec/permissions.md §5.1, §5.2: a demotion's frontier lists the demoted writer's memory commits
+// received by its time, as durable ones; a removal stamped before one arrived does not, and its
+// writes go
 #[test]
 fn removed_writer_memory_commits_unmerged_spec_permissions_5_2() {
     let (mut lp, d) = memory_pair();
     memory_write(&mut lp, 0, d, "own");
     let id = memory_write(&mut lp, 1, d, "theirs");
-    let pk = lp.peers[1].engine.package(&id).unwrap().unwrap();
-    assert!(matches!(lp.peers[0].engine.ingest_memory(&pk.bytes, u64::MAX).unwrap(), osis_node::Ingested::Applied(_)));
-    assert_eq!(memory_tags(&mut lp, 0, d), Some(Value::Set([s("own"), s("theirs")].into())));
     let b = lp.peers[1].engine.me();
     let scope = osis_perm::DemotionScope { roles: BTreeMap::from([(b, BTreeSet::from([d]))]), content: BTreeMap::from([(b, BTreeSet::from([d]))]) };
     let now = lp.peers[0].engine.now();
     let f = lp.peers[0].engine.frontier(&scope, now).unwrap();
+    let pk = lp.peers[1].engine.package(&id).unwrap().unwrap();
+    assert!(matches!(lp.peers[0].engine.ingest_memory(&pk.bytes, u64::MAX).unwrap(), osis_node::Ingested::Applied(_)));
+    assert_eq!(memory_tags(&mut lp, 0, d), Some(Value::Set([s("own"), s("theirs")].into())));
+    let now = lp.peers[0].engine.now();
+    assert!(lp.peers[0].engine.frontier(&scope, now).unwrap().commits.contains(&id), "listed once received");
     crate::common::set_edge(&mut lp.peers[0].engine, d, b, None, Some(osis_schema::Codec::to_value(&f)));
     assert_eq!(memory_tags(&mut lp, 0, d), Some(Value::Set([s("own")].into())), "the removed writer's memory writes go");
     assert!(lp.peers[0].engine.core.ix.commits.get(&id).is_some_and(|m| m.valid.iter().all(|v| !v)));
@@ -4013,7 +4065,7 @@ fn memory_snapshot_covers_held_bodies_spec_sync_9() {
     for i in 0..3 {
         for c in [&a1, &a2, &b1] {
             // an author keeps its own body until one of its own snapshots covers it
-            // (issues/eph-unify.md decision 1)
+            // (notes/ephemeral.md, covers drop live bodies)
             assert_eq!(holds_commit(&lp, i, &c.0), i == 1 && c.0 == b1.0, "{i}: covered, forgotten");
         }
         assert!(holds_commit(&lp, i, &snap.0) && holds_commit(&lp, i, &e1.0), "{i}");
@@ -4042,7 +4094,7 @@ fn memory_snapshot_covers_held_bodies_spec_sync_9() {
 
 // spec/sync.md §7 (covered-equal snapshots: only the higher commit ID goes), memory class: two
 // writers snapshot the same state; a holder keeps the lower one; each writer keeps its own
-// (until one of its own snapshots covers it, issues/eph-unify.md decision 1) and the other's
+// (until one of its own snapshots covers it, notes/ephemeral.md, covers drop live bodies) and the other's
 // when it is the lower
 #[test]
 fn memory_covered_equal_snapshots_keep_lower_spec_sync_7() {
@@ -4136,9 +4188,7 @@ fn memory_random_demotion(seed: u64) {
         if step == demote_at {
             let who = 1 + rnd(3) as usize;
             let holder = lp.peers[who].engine.me();
-            let dm = osis_node::flows::Demotion { holder, new: None, retain: None };
-            let r = *lp.peers[0].engine.demote(&d, &dm).unwrap().commits.last().unwrap();
-            let rp = lp.peers[0].engine.package(&r).unwrap().unwrap();
+            let rp = remove_listing_none(&mut lp, d, holder);
             log.push(format!("{step}: demote {who}"));
             for to in 1..4 {
                 dq.push((step + rnd(8), to, rp.clone()));
@@ -4219,7 +4269,7 @@ fn memory_random_demotion(seed: u64) {
         let reads: Vec<_> = (0..4).map(|i| aks.iter().map(|ak| lp.peers[i].engine.get(&d, &eph(ak)).unwrap()).collect::<Vec<_>>()).collect();
         assert!(reads.iter().all(|r| *r == reads[0]), "seed {seed} round {round}: {reads:?}\n{}", log.join("\n"));
         // alike at every node but an author's own bodies, which it keeps until its own snapshot
-        // covers them (issues/eph-unify.md decision 1): per author, the other nodes agree
+        // covers them (notes/ephemeral.md, covers drop live bodies): per author, the other nodes agree
         let held: Vec<BTreeMap<Tid, BTreeSet<osis_base::CommitId>>> = (0..4)
             .map(|i| {
                 let mut by: BTreeMap<Tid, BTreeSet<osis_base::CommitId>> = BTreeMap::new();
@@ -4238,11 +4288,10 @@ fn memory_random_demotion(seed: u64) {
     }
 }
 
-// spec/permissions.md §5.2 (an explicit demotion invalidates all the demoted node's ephemeral
-// commits, its memory snapshots included), spec/requirements.md Convergence (eph-unify-b review,
-// pinned for B2): 2 writes X; 1 snapshots it and every holder, 2 included, drops X as covered
-// and forgets it; the admin then removes 1. X, a valid write of a node still writing, must still
-// read; today it is gone everywhere with no copy left to bring it back
+// spec/permissions.md §5.2 (a snapshot its demotion does not list falls), spec/sync.md §9 (an
+// author drops its own body only under its own snapshot): 2 writes X; 1 snapshots it and every
+// holder but 2 drops X as covered and forgets it; the admin then removes 1 by a frontier listing
+// none of its commits. X, a valid write of a node still writing, still reads everywhere
 #[test]
 fn memory_compactor_demoted_keeps_others_writes_spec_permissions_5_2() {
     let (mut lp, d) = memory_trio();
@@ -4255,12 +4304,10 @@ fn memory_compactor_demoted_keeps_others_writes_spec_permissions_5_2() {
     memory_deliver(&mut lp, 0, &c);
     memory_deliver(&mut lp, 2, &c);
     lp.advance(10);
-    let dm = osis_node::flows::Demotion { holder: w1, new: None, retain: None };
-    let r = *lp.peers[0].engine.demote(&d, &dm).unwrap().commits.last().unwrap();
-    let rp = lp.peers[0].engine.package(&r).unwrap().unwrap();
+    let rp = remove_listing_none(&mut lp, d, w1);
     lp.deliver(1, &rp).unwrap();
     lp.deliver(2, &rp).unwrap();
-    // the author kept its own body (issues/eph-unify.md decision 1): X reads there, and
+    // the author kept its own body: X reads there, and
     // everywhere again once its copy arrives (the lane reconciles the label,
     // `Engine::take_memory_invalidated`)
     assert!(holds_commit(&lp, 2, &x.0) && !holds_commit(&lp, 0, &x.0), "the author alone kept X");
@@ -4327,8 +4374,8 @@ fn memory_snapshot_turned_valid_covers_spec_sync_9() {
 }
 
 // spec/sync.md §9 (Compaction, memory class), spec/crdt.md §2.1, spec/permissions.md §5.2: 1 is
-// demoted and granted write again with an `until` (no re-grant: its earlier memory body stays
-// invalid, a demotion lists no memory commit); what it writes after that goes under a fresh
+// removed by a frontier listing none of its commits and granted write again with an `until` (no
+// re-grant: its earlier memory body stays invalid); what it writes after that goes under a fresh
 // session (`Core::fresh_session`), so snapshots' frontiers pass it and every holder drops it as
 // covered. Under the old session it stayed held uncovered at every holder until 1 restarted
 #[test]
@@ -4341,9 +4388,7 @@ fn memory_regranted_writer_covered_spec_sync_9() {
     }
     let session = lp.peers[1].engine.ephemeral_session();
     lp.advance(10);
-    let dm = osis_node::flows::Demotion { holder: n1, new: None, retain: None };
-    let r = *lp.peers[0].engine.demote(&d, &dm).unwrap().commits.last().unwrap();
-    let gone = lp.peers[0].engine.package(&r).unwrap().unwrap();
+    let gone = remove_listing_none(&mut lp, d, n1);
     lp.advance(10);
     let until = osis_base::WallMs(lp.peers[0].engine.now().0 + 86_400_000);
     let id = crate::common::set_edge(&mut lp.peers[0].engine, d, n1, Some(ct::Edge { until: Some(until), ..crate::common::edge(Role::Write) }), None);
@@ -4421,9 +4466,10 @@ fn ephemeral_revert_needs_write_spec_crdt_4_6() {
     net.run();
     net.advance(15_000);
     let held = memory_ids(&mut net, b);
-    // its own ephemeral write went with its demotion (spec/sync.md §9): nothing left to undo
+    // its own ephemeral write, listed by the demotion, stays; a reader may not revert it
+    assert_eq!(net.eph_read(a, t, FLAG), Some(s("f")), "the demotion listed it");
     let r = net.engine(b).revert_commit(wrote, tb);
-    assert!(matches!(r, Ok(osis_node::ephemeral::Reverted::Superseded)), "{r:?}");
+    assert!(matches!(r, Err(osis_node::Error::Permission { .. })), "{r:?}");
     let r = net.engine(b).revert_commit(unmake, tb);
     assert!(matches!(r, Err(osis_node::Error::Permission { .. })), "{r:?}");
     assert!(net.engine(b).groups_of(&lost).contains(&g), "the thing stays");

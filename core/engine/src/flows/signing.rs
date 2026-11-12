@@ -230,7 +230,7 @@ pub(crate) fn answer_rotations(tx: &mut Tx<'_>) -> Result<()> {
 /// The commits of account `p` at `epochs` the cutoff lets this node name (spec/permissions.md
 /// §5.5, Cutoff) that no word held names: received before the earliest closer of their epoch held
 /// (at an epoch with none, every one received), or (`own`) made by this node, per its inner
-/// signature. Rotations count by the chain; ephemeral commits are never named.
+/// signature. Rotations count by the chain; ephemeral commits are named as durable ones.
 fn nameable(tx: &mut Tx<'_>, p: &Tid, v: &super::account::AccountView, epochs: &[CommitId], own: bool) -> Result<Vec<(CommitId, crate::engine::Meta)>> {
     let me = tx.core.id.tid();
     let mut out = Vec::new();
@@ -241,7 +241,7 @@ fn nameable(tx: &mut Tx<'_>, p: &Tid, v: &super::account::AccountView, epochs: &
         let at: Vec<CommitId> = tx.core.ix.by_epoch.get(&(*p, *e)).into_iter().flatten().copied().collect();
         for c in at {
             let Some(m) = tx.core.ix.commits.get(&c).cloned() else { continue };
-            if m.view.memory || v.is_rotation(&c) || !open && tx.core.standing(&c, &m.view) == osis_perm::EpochStanding::Counts {
+            if v.is_rotation(&c) || !open && tx.core.standing(&c, &m.view) == osis_perm::EpochStanding::Counts {
                 continue;
             }
             let cut = closers.is_empty() || earliest.is_some_and(|x| m.received < x);

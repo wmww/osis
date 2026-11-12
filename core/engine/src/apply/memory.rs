@@ -155,7 +155,7 @@ impl Engine {
     }
 
     /// Memory aspects a held memory snapshot of which turned invalid since the last take (a
-    /// compactor's demotion: its frontier lists no memory commit, spec/permissions.md §5.2). The
+    /// compactor's demotion not listing it, spec/permissions.md §5.2). The
     /// bodies it covered were forgotten here (durable's residual) and deleted at hosts by any
     /// writer, so a holder of nothing else reads nothing until the authors' copies come back
     /// (they keep their own bodies under others' snapshots, `drop_covered`). A writer that still

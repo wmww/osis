@@ -32,8 +32,7 @@ impl Engine {
     /// The frontier a demotion stamped now must embed (spec/permissions.md §5.1), by commit ID:
     /// per aspect the scope puts in question and per demoted node, that node's commits this
     /// node received by `as_of` (at their meta's receipt time; bodies held, dropped or compacted
-    /// alike), memory commits
-    /// never; and, where it falls below write, its held commits acting for that thing; and every
+    /// alike; memory commits as durable ones, a forgotten one not received); and, where it falls below write, its held commits acting for that thing; and every
     /// purge request whose right may rest on a role it puts in question
     /// (`retention::requests_resting_on`). This node's own receipts only. A demotion stamps it as
     /// of now; an earlier `as_of` gives the frontier as of then.
@@ -76,7 +75,7 @@ impl Engine {
             let mut content: Vec<(std::cmp::Reverse<u64>, CommitId)> = Vec::new();
             for (node, t, ak) in aspects.iter().cloned() {
                 let plain = !admin_class(&ak);
-                for c in tx.core.durable_on(&(t, ak.clone())) {
+                for c in tx.core.held_on(&(t, ak.clone())) {
                     let Some(m) = tx.core.ix.commits.get(&c) else { continue };
                     if m.view.author == node && m.received.0 <= as_of.0 {
                         f.commits.insert(c);
@@ -92,7 +91,7 @@ impl Engine {
                 for t in things {
                     for c in tx.core.ix.by_actor.get(&(*t, *node)).into_iter().flatten() {
                         let Some(m) = tx.core.ix.commits.get(c) else { continue };
-                        if !m.view.memory && m.received.0 <= as_of.0 {
+                        if m.received.0 <= as_of.0 {
                             f.commits.insert(*c);
                             if m.view.kind != osis_commit::Kind::Role && !m.view.purges {
                                 content.push((std::cmp::Reverse(m.received.0), *c));

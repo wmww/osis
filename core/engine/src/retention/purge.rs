@@ -407,7 +407,7 @@ impl AspectRequests {
 /// as its leftover (spec/permissions.md §6); no request names a snapshot (`names`). Cost: the aspect's requests
 /// and what they name, its snapshots' views, and with an aspect-wide request a walk of its parts, as
 /// `validity::rejudge_once` walks them (`scale::purge_rejudge_is_linear_in_requests_spec_permissions_6`). A memory delta purged stays
-/// purged: no fall restores it (a divergence, notes/ephemeral.md Divergences left).
+/// purged: no fall restores it (a divergence, issues/eph-parity.md Purge).
 pub(crate) fn rejudge_purges(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, changed: &mut BTreeSet<(Tid, Ak)>) -> Result<()> {
     if tx.txn.is_memory_aspect(tid, ak) {
         return Ok(());

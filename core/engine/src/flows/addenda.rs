@@ -91,7 +91,7 @@ fn answer(tx: &mut Tx<'_>, r: &CommitId, me: Tid) -> Result<Option<BTreeMap<Tid,
             let v = &cm.view;
             // rule 4: plain content only (no role commit, no snapshot); rule 2: received by the demotion's `ts`, ordered
             // before it; what the frontier lists needs no witness
-            if v.memory || v.purges || v.kind != osis_commit::Kind::Content || frontier.covers(c) || cm.received.0 > wall || (Point { ts: v.ts, node: v.author, commit: *c }) >= point {
+            if v.purges || v.kind != osis_commit::Kind::Content || frontier.covers(c) || cm.received.0 > wall || (Point { ts: v.ts, node: v.author, commit: *c }) >= point {
                 continue;
             }
             // a part on n (an acting commit's part on n is its Acting check), rule 3: what this

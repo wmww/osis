@@ -347,7 +347,7 @@ pub(crate) fn uncover(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
 /// whole, spec/sync.md §5), a part of this node's own commit (its user is
 /// told the write was refused and may write it again from it, `DiagnosticKind::OwnWriteInvalid`)
 /// and a memory part (forgotten with its commit once nothing of it is held, spec/sync.md §9, so it
-/// could not come back: notes/ephemeral.md Divergences left).
+/// could not come back: notes/ephemeral.md What follows from memory).
 fn goes_invalid(core: &Core, m: &crate::engine::Meta, ai: usize) -> bool {
     !m.valid_at(ai) && m.holds(ai) && !m.view.memory && Some(m.view.author) != core.me() && !m.view.kind.is_role()
 }

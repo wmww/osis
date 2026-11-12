@@ -155,11 +155,11 @@ fn drop_superseded_of(tx: &mut Tx<'_>, cands: BTreeSet<CommitId>, keep: Option<&
 /// body against it and it against the others): whether one body is covered by one snapshot
 /// depends on those two alone. The commits dropped from.
 ///
-/// An author keeps its own bodies until one of its own snapshots covers them
-/// (issues/eph-unify.md decision 1): a demotion's frontier lists no memory commit
-/// (spec/permissions.md §5.2), so a compactor's demotion invalidates every snapshot it made and
-/// what those covered is gone at every holder; each author then still holds its own writes and
-/// uploads them again where the lane reconciles (`MemorySync::invalidated`).
+/// An author keeps its own bodies until one of its own snapshots covers them (notes/ephemeral.md
+/// What follows from memory): a cover drops live bodies, and a snapshot its compactor's demotion
+/// does not list falls (spec/permissions.md §5.2), so what it covered would be gone at every
+/// holder; each author then still holds its own writes and uploads them again where the lane
+/// reconciles (`MemorySync::invalidated`).
 pub(crate) fn drop_covered(tx: &mut Tx<'_>, aspects: &BTreeSet<(Tid, Ak)>, keep: Option<&CommitId>, new: Option<&CommitId>) -> Result<BTreeSet<CommitId>> {
     let mut dropped = BTreeSet::new();
     let me = tx.core.me();
