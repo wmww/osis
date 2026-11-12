@@ -1,4 +1,4 @@
-//! Forgetting a commit (memory: expired, superseded, covered; durable: its author's own cover,
+//! Forgetting a commit (memory: expired, superseded, covered; durable: covered, purged or invalid,
 //! `Engine::forgettable`): `unindex_commit`, the mirror of
 //! what applying a commit indexes (`tests::forget_equals_never_indexed`).
 

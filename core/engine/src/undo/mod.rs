@@ -203,7 +203,7 @@ fn kept_all(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, at: (Ts, CommitId), strip: Stri
 /// wrote it. Any other part counts unless it is `kept` or, held or dropped, its retention would
 /// keep it now had this write replaced it (then, not kept, it was replaced earlier). A part not
 /// fetched yet counts (notes/listener-design.md), and so does a commit forgotten here
-/// (`Indexes::forgotten`: memory, or durable under its author's own cover) unless a reset
+/// (`Indexes::forgotten`: memory, or durable once covered) unless a reset
 /// stamped after it is kept: its header is gone, so no snapshot can be shown to reach it. By headers and kept history
 /// alone, never by a body held but not kept.
 fn replaced_kept(tx: &mut Tx<'_>, h: &Header, id: &CommitId, a: &osis_commit::AspectEntry, now: u64) -> Result<bool> {
