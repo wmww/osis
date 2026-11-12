@@ -10,6 +10,7 @@ rotation::tests_property::rotation_holds_large_spec_crypto_4 OSIS_ROTATION_START
 ephemeral::random_churn_converges_large OSIS_EPH_START=807204138389 issues/expired-leftover-residue.md node \d+ reads .*, node \d+ 
 ephemeral::random_churn_converges_large OSIS_EPH_START=807204137413 issues/churn-seed-413-loop.md no quiescence after \d+ rounds
 sim-sweep:evil_host_drops 472765857787/472765857787 issues/evil-host-drops-seed-787.md not quiescent after \d+ rounds
+sim-sweep:evil_host_drops 899326633465/899326633475 issues/evil-host-drops-seed-787.md labels changed after quiescence \(ping-pong\): \["s0 LabelId
 sim-sweep:work_sets 7000/7010 issues/work-sets-snapshot-storm.md message storm: .*kind Some\(ContentSnapshot\)
 ephemeral::random_window_one_capped_host_large OSIS_EPH_START=1811714465 issues/capped-host-stale-ephemeral-entry.md the full host keeps entries .* no node holds
 runtime::a_paired_peer_serves_what_it_reads_in_process_spec_data_model_9 - issues/paired-peer-runtime-flake.md Unsynced \{ groups
