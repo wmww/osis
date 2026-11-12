@@ -2170,8 +2170,12 @@ impl SyncEngine {
                 self.drop_blob(&id)?;
             }
         }
-        // the pieces dropped bodies freed, judged (their bytes go, `freed_now`)
-        self.freed_now()?;
+        // the pieces dropped bodies freed, released (`freed_now`); all of them when judging
+        // everything
+        match commits {
+            Some(_) => self.freed_now([]).map(|_| ())?,
+            None => self.freed_sweep()?,
+        }
         Ok(())
     }
 

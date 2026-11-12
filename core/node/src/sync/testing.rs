@@ -50,7 +50,6 @@ impl SyncEngine {
                 diagnostics: self.diagnostics.clone(),
                 outbox: self.outbox.clone(),
                 local_inbox: self.local_inbox.clone(),
-                tree_wants: self.tree_wants.clone(),
                 body_links: self.body_links.clone(),
                 inbox_opened: self.inbox_opened.clone(),
                 vetted: self.vetted.clone(),

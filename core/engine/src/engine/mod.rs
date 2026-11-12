@@ -1238,9 +1238,15 @@ pub struct Core {
     /// Commits with a part judged invalid this transaction (`Core::index_validity`): dropped at
     /// its end where held (`retention::drop_invalid`).
     pub drop_due: BTreeSet<CommitId>,
-    /// Things whose freed sets took links this transaction: judged at its end, once their
-    /// states are rebuilt (`retention::freed::settle_due`).
-    pub freed_due: BTreeSet<Tid>,
+    /// Freed rows (thing, blob) added this transaction: judged at its end, once their states are
+    /// rebuilt (`retention::freed::settle_due`).
+    pub freed_due: BTreeSet<(Tid, osis_base::BlobId)>,
+    /// Freed rows (thing, blob) whose judgment waits for a node blob not held, by that blob:
+    /// judged again once it is (`retention::freed`). Memory only: a start judges every row.
+    pub freed_waits: BTreeMap<osis_base::BlobId, BTreeSet<(Tid, osis_base::BlobId)>>,
+    /// Blobs judged freed since node-sync last took them (`Engine::take_freed_new`): their
+    /// bytes go and their entries are judged again.
+    pub freed_new: BTreeSet<osis_base::BlobId>,
     /// Subgroups cut this transaction from under a synced group (`Core::note_cut`): what they
     /// held is reported at its end where nothing carries it now (`Core::report_cut`); forgotten with
     /// the journal.
@@ -1419,6 +1425,8 @@ impl Core {
             cover_candidates: self.cover_candidates.clone(),
             drop_due: self.drop_due.clone(),
             freed_due: self.freed_due.clone(),
+            freed_waits: self.freed_waits.clone(),
+            freed_new: self.freed_new.clone(),
             cut_subs: self.cut_subs.clone(),
             refold: self.refold.clone(),
             changed: self.changed.clone(),
@@ -1972,6 +1980,8 @@ impl Core {
             // entry against the restored state), and what a step only moves forward
             drop_due: _,
             freed_due: _,
+            freed_waits: _,
+            freed_new: _,
             cut_subs: _,
             refold: _,
             none_due: _,
@@ -2212,6 +2222,8 @@ impl Core {
             settings_due: BTreeSet::new(),
             drop_due: BTreeSet::new(),
             freed_due: BTreeSet::new(),
+            freed_waits: BTreeMap::new(),
+            freed_new: BTreeSet::new(),
             cut_subs: BTreeSet::new(),
             refold: BTreeSet::new(),
             changed: None,
@@ -3001,7 +3013,7 @@ impl Tx<'_> {
 }
 
 /// Rows read per store call by the scans.
-const SCAN_PAGE: usize = 256;
+pub(crate) const SCAN_PAGE: usize = 256;
 
 /// Calls `f` on every row of table `t` from `start` up to `end` (exclusive), a page of rows
 /// per store call.

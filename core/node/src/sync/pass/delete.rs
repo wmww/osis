@@ -1,6 +1,6 @@
 //! A pass's deletion judgment (spec/sync.md §5-§7): which entries under the label are
 //! must-not-hold and may go now (`judge`, `deletable`), carriers first, by the label delete key
-//! or a delete key, freed links (`freed_now`); at a host (`deletions`) and in this node's own served state (`local_deletions`).
+//! or a delete key, freed links of the scope (`freed_now`); at a host (`deletions`) and in this node's own served state (`local_deletions`).
 
 use super::*;
 use crate::engine::MemoryDrop;
@@ -22,7 +22,8 @@ impl SyncEngine {
         let desired = desired(bodies);
         // freed links (spec/sync.md §7), first: tombstoned, whether or not their bytes are here
         // (those went when judged, `freed_now`), never taken below as an entry serving nothing
-        for f in self.freed_now()? {
+        let all = self.scope_entries(&l, scope);
+        for f in self.freed_now(all)? {
             let b = f.link.blob;
             if self.state.entries.contains_key(&(l, b)) && !self.state.present_anywhere(&l, &b) {
                 self.state.remove_entry(l, b);
@@ -497,8 +498,12 @@ impl SyncEngine {
         }
         // freed links, judged now (spec/sync.md §7: a piece no held source of its thing links),
         // deleted where present; the node blobs a judgment waits for fetched from here
-        let freed = self.freed_now()?;
-        let wants: Vec<BlobId> = std::mem::take(&mut self.tree_wants).into_iter().filter(|b| self.state.is_present(&host, &l, b)).collect();
+        // of the scope, those whose delete is in flight wait for their resend, unjudged: a
+        // judgment costs what the pass may send
+        let (waiting, judged): (Vec<BlobId>, Vec<BlobId>) = ids.iter().partition(|id| busy(self, &BTreeSet::new(), id));
+        left.blobs.extend(waiting);
+        let freed = self.freed_now(judged)?;
+        let wants: Vec<BlobId> = self.engine.freed_wants().filter(|b| self.state.is_present(&host, &l, b)).copied().collect();
         left.blobs.extend(wants.iter().copied());
         self.fetch_on(conn, l, wants, out)?;
         for f in &freed {
@@ -770,17 +775,48 @@ impl SyncEngine {
         None
     }
 
-    /// The freed links judged now (`Engine::judge_freed`, spec/sync.md §7): the bytes still held
-    /// here go (their salts kept with the entries naming them, a memory entry's charge released)
-    /// and their entries are judged again; the node blobs a judgment waits for are fetched where
-    /// present (`tree_wants`); those no label entry known here names leave the set. The rest, to
-    /// delete where an entry of them is present.
-    pub(crate) fn freed_now(&mut self) -> Result<Vec<crate::retention::freed::Freed>> {
-        let j = self.engine.judge_freed()?;
+    /// The freed links among `scope`'s blobs and those freed since the last call, judged now
+    /// (`Engine::judge_freed`, spec/sync.md §7), never the whole set: those freed for the first
+    /// time are released (`freed_release`); those no label entry known here names leave the set.
+    /// The rest, to delete where an entry of them is present.
+    pub(crate) fn freed_now(&mut self, scope: impl IntoIterator<Item = BlobId>) -> Result<Vec<crate::retention::freed::Freed>> {
+        let new = self.engine.take_freed_new();
+        let blobs: BTreeSet<BlobId> = new.iter().copied().chain(scope).collect();
+        let mut j = self.engine.judge_freed(&blobs)?;
+        j.fresh.extend(new);
+        self.freed_release(j)
+    }
+
+    /// Every freed link judged, a page at a time (at start, a crash may have come between a
+    /// judgment and its release; a judgment of everything).
+    pub(crate) fn freed_sweep(&mut self) -> Result<()> {
+        let mut from = Vec::new();
+        loop {
+            let (mut j, next) = self.engine.judge_freed_page(&from)?;
+            // a link judged before a crash may still have its bytes here
+            let held: Vec<BlobId> = j.freed.iter().map(|f| f.link.blob).filter(|b| !self.state.blobs.contains_key(b) && self.engine.has_blob(b)).collect();
+            j.fresh.extend(held);
+            self.freed_release(j)?;
+            match next {
+                Some(n) => from = n,
+                None => return Ok(()),
+            }
+        }
+    }
+
+    /// Of judgment `j`: the bytes of the freed links judged for the first time still held here
+    /// go (their salts kept with the entries naming them, a memory entry's charge released) and
+    /// their entries are judged again; those no label entry known here names leave the set.
+    /// The rest.
+    fn freed_release(&mut self, j: crate::retention::freed::Judgment) -> Result<Vec<crate::retention::freed::Freed>> {
         let mut labels = BTreeSet::new();
         let (mut durable, mut memory) = (Vec::new(), Vec::new());
-        for f in &j.freed {
+        for f in j.freed.iter().filter(|f| j.fresh.contains(&f.link.blob)) {
             let b = f.link.blob;
+            for l in self.state.labels_of(&b) {
+                self.state.touch(l, b);
+                labels.insert(l);
+            }
             if self.state.blobs.contains_key(&b) || !self.engine.has_blob(&b) {
                 continue;
             }
@@ -788,8 +824,6 @@ impl SyncEngine {
             if f.memory() { &mut memory } else { &mut durable }.push(b);
             for l in self.state.labels_of(&b) {
                 self.state.charge_memory(l, b, None);
-                self.state.touch(l, b);
-                labels.insert(l);
             }
         }
         self.delete_blobs_of(&durable, false)?;
@@ -797,7 +831,6 @@ impl SyncEngine {
         if !labels.is_empty() {
             self.mark_labels(labels.iter());
         }
-        self.tree_wants.extend(j.wants);
         let (gone, out): (Vec<_>, Vec<_>) = j.freed.into_iter().partition(|f| !self.state.named(&f.link.blob));
         self.engine.freed_done(&gone.iter().map(|f| (f.tid, f.link.blob)).collect::<Vec<_>>())?;
         Ok(out)

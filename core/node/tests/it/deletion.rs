@@ -2004,3 +2004,42 @@ fn freed_judgment_linear_in_pieces_spec_sync_7() {
     assert!(n10 >= 5 * n, "pieces: {n} and {n10}");
     assert!(small > 0 && big * n <= 2 * small * n10, "rows judged: {small} for {n} pieces, {big} for {n10}");
 }
+
+// spec/sync.md §7 Freed links, notes/coordination.md (check scaling): with the host away, a
+// purged large value's freed links wait to be deleted there; ten unrelated small writes meanwhile
+// judge none of them (a judgment covers what changed, never the whole set), at n and 10n pieces.
+#[test]
+fn unrelated_writes_judge_no_waiting_freed_link_spec_sync_7() {
+    let run = |bytes: usize| {
+        let (mut net, h, [a], _g, [t]) = hosted::<1, 1>(&[], ["x"], true);
+        net.keep(a, t, &[("t:gone.0", PURGE)]);
+        net.run();
+        let mut x = vec![0u8; bytes];
+        osis_crypto::RngCore::fill_bytes(&mut osis_crypto::SeededRng::from_u64(5), &mut x);
+        let x: String = x.into_iter().map(|b| char::from(b'a' + b % 26)).collect();
+        let mut m = Mutation::new();
+        m.set(t, &GONE, &s(&x)).unwrap();
+        let c = net.engine(a).commit(m).unwrap().unwrap();
+        net.run();
+        let pieces = net.engine(a).live_trees(&t).unwrap().blobs.len();
+        net.blocked.insert((a, h));
+        net.drop_link(a, h);
+        let mut m = Mutation::new();
+        m.purge_commit(c, t, Ak::new(GONE.ak()).unwrap());
+        m.remove_aspect(t, &GONE).unwrap();
+        net.engine(a).commit(m).unwrap();
+        net.run();
+        net.advance(60_000);
+        osis_node::costs::take();
+        for i in 0..10 {
+            net.write(a, t, &format!("w{i}"));
+            net.run();
+        }
+        let judged = osis_node::costs::take().into_iter().find(|(k, ..)| *k == "freed: rows judged").map_or(0, |(_, _, c)| c);
+        (pieces, judged)
+    };
+    let (n, small) = run(1 << 20);
+    let (n10, big) = run(10 << 20);
+    assert!(n10 >= 5 * n, "pieces: {n} and {n10}");
+    assert!(small <= 10 && big <= 10, "rows judged by 10 writes: {small} at {n} pieces, {big} at {n10}");
+}
