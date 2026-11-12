@@ -115,6 +115,13 @@ impl CanonicalBytes {
     pub fn as_bytes(&self) -> &[u8] {
         &self.bytes
     }
+    pub fn into_bytes(self) -> Vec<u8> {
+        self.bytes
+    }
+    /// The value, read in place.
+    pub fn item(&self) -> Item<'_> {
+        Item(&self.bytes)
+    }
     pub fn depth(&self) -> usize {
         self.depth
     }
@@ -475,8 +482,6 @@ impl<'a> Iterator for List<'a> {
         (self.len, Some(self.len))
     }
 }
-
-impl ExactSizeIterator for List<'_> {}
 
 /// Decodes one value from the start of `input`; returns it with the bytes it spans.
 pub fn decode_prefix<'a>(input: &'a [u8], limits: &Limits) -> Result<(Value, &'a [u8]), DecodeError> {

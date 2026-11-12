@@ -7,6 +7,7 @@ use crate::stamp::{Dot, Stamp};
 use osis_base::Ts;
 use crate::wire::{Dec, DeltaKind, Enc, MAX_RUN, as_array, as_uint, uint};
 use osis_base::Value;
+use osis_base::cbor::{Item, List};
 use osis_base::format::{CHUNK_MAX, MAX_DELTA_BARE};
 
 /// Content goes on the wire for text elements not deleted (rule 5) and for list elements whose
@@ -202,7 +203,7 @@ fn encode_run(text: bool, parts: &[Part], content: Option<Vec<Value>>, valueless
             let mut segs: Vec<(u64, u64)> = Vec::new();
             for p in parts {
                 let Some((st, _)) = &p.created else { continue };
-                let ci = as_uint(&cx.commit_of(st)).unwrap_or(0);
+                let ci = cx.commit_of(st).as_uint().unwrap_or(0);
                 match segs.last_mut() {
                     Some((c, x)) if *c == ci => *x += p.len,
                     _ => segs.push((ci, p.len)),
@@ -260,20 +261,20 @@ fn encode_run(text: bool, parts: &[Part], content: Option<Vec<Value>>, valueless
     Ok(Value::List(vec![first, uint(n), creation, content, Value::List(posw), Value::List(fw)]))
 }
 
-fn index(v: &Value, n: u64) -> Result<u64, Error> {
+fn index(v: Item, n: u64) -> Result<u64, Error> {
     Some(as_uint(v)?).filter(|i| *i < n).ok_or(Error::Malformed("run index out of range"))
 }
 
-fn dec_anchor(cx: &Dec, v: &Value) -> Result<Anchor, Error> {
+fn dec_anchor(cx: &Dec, v: Item) -> Result<Anchor, Error> {
     Ok(cx.anchor(v)?.map_or(Anchor::Head, Anchor::Dot))
 }
 
 /// Reads runs (one page or the whole array) into `s`; the canonical re-encode checks the rest.
 /// Allocates per run, not per element: uniform content-less stretches become range records.
-pub(crate) fn decode_elems(s: &mut Seq, runs: &[Value], cx: &mut Dec) -> Result<(), Error> {
+pub(crate) fn decode_elems(s: &mut Seq, runs: List, cx: &mut Dec) -> Result<(), Error> {
     let writer = cx.kind() == DeltaKind::Writer;
     for r in runs {
-        let [d, n, creation, content, posw, flagw] = as_array(r)? else { return Err(Error::Malformed("run")) };
+        let Some([d, n, creation, content, posw, flagw]) = as_array(r)?.tuple() else { return Err(Error::Malformed("run")) };
         let first = cx.dot(d)?;
         let n = as_uint(n)?;
         if n == 0 || n > MAX_RUN {
@@ -282,11 +283,10 @@ pub(crate) fn decode_elems(s: &mut Seq, runs: &[Value], cx: &mut Dec) -> Result<
         let last = first.ctr.checked_add(n - 1).ok_or(Error::Malformed("run counter overflow"))?;
         // before allocating: no run without a write, content-less elements bounded outside a
         // snapshot (rule 7)
-        let empty = |v: &Value| matches!(v, Value::List(x) if x.is_empty());
-        if empty(creation) && empty(content) && empty(posw) && empty(flagw) {
+        if [creation, content, posw, flagw].iter().all(|v| v.is_empty_list()) {
             return Err(Error::Malformed("run without a write"));
         }
-        if cx.kind() != DeltaKind::Snapshot && empty(content) {
+        if cx.kind() != DeltaKind::Snapshot && content.is_empty_list() {
             cx.bare = cx.bare.saturating_add(n);
             if cx.bare > MAX_DELTA_BARE {
                 return Err(Error::Malformed("more than MAX_DELTA_BARE elements without content"));
@@ -300,12 +300,13 @@ pub(crate) fn decode_elems(s: &mut Seq, runs: &[Value], cx: &mut Dec) -> Result<
         let mut anchor0 = Anchor::Head;
         let mut segs: Vec<(u64, u64, Ts)> = Vec::new();
         let mut valueless = false;
-        match as_array(creation)? {
-            [] => {}
-            [a, ss] | [a, ss, _] => {
-                match as_array(creation)?.get(2) {
+        let mut cr = as_array(creation)?;
+        match (cr.len(), cr.next(), cr.next()) {
+            (0, _, _) => {}
+            (2 | 3, Some(a), Some(ss)) => {
+                match cr.next() {
                     None => {}
-                    Some(Value::Bool(false)) if !s.text => valueless = true,
+                    Some(f) if f.as_bool() == Some(false) && !s.text => valueless = true,
                     Some(_) => return Err(Error::Malformed("creation")),
                 }
                 if writer && first.src.is_derived() {
@@ -315,7 +316,7 @@ pub(crate) fn decode_elems(s: &mut Seq, runs: &[Value], cx: &mut Dec) -> Result<
                 let mut i = 0u64;
                 let mut last_ci = None;
                 for seg in as_array(ss)? {
-                    let [ci, k] = as_array(seg)? else { return Err(Error::Malformed("segment")) };
+                    let Some([ci, k]) = as_array(seg)?.tuple() else { return Err(Error::Malformed("segment")) };
                     let k = as_uint(k)?;
                     if k == 0 || last_ci == Some(ci) {
                         return Err(Error::Malformed("non-canonical segments"));
@@ -347,9 +348,10 @@ pub(crate) fn decode_elems(s: &mut Seq, runs: &[Value], cx: &mut Dec) -> Result<
         }
         let mut pws: Vec<(u64, PosW)> = Vec::new();
         for p in as_array(posw)? {
-            let (i, st, a, key) = match as_array(p)? {
-                [i, st, a] => (i, st, a, None),
-                [i, st, a, k] => (i, st, a, Some(k)),
+            let p = as_array(p)?;
+            let (i, st, a, key) = match (p.tuple(), p.tuple()) {
+                (Some([i, st, a]), _) => (i, st, a, None),
+                (_, Some([i, st, a, k])) => (i, st, a, Some(k)),
                 _ => return Err(Error::Malformed("position write")),
             };
             let i = index(i, n)?;
@@ -368,14 +370,15 @@ pub(crate) fn decode_elems(s: &mut Seq, runs: &[Value], cx: &mut Dec) -> Result<
         // flag writes; an undelete's chars, one per element of its range, with it (§5.7)
         let mut fws: Vec<FlagRun> = Vec::new();
         for f in as_array(flagw)? {
-            let (i, j, st, b, u) = match as_array(f)? {
-                [i, j, st, b] => (i, j, st, b, None),
-                [i, j, st, b, Value::Str(u)] => (i, j, st, b, Some(u)),
+            let f = as_array(f)?;
+            let (i, j, st, b, u) = match (f.tuple(), f.tuple()) {
+                (Some([i, j, st, b]), _) => (i, j, st, b, None),
+                (_, Some([i, j, st, b, u])) if u.as_str().is_some() => (i, j, st, b, u.as_str()),
                 _ => return Err(Error::Malformed("flag write")),
             };
             let (i, j) = (index(i, n)?, index(j, n)?);
             let st = cx.level_stamp(st)?;
-            let Value::Bool(b) = b else { return Err(Error::Malformed("flag")) };
+            let Some(b) = b.as_bool() else { return Err(Error::Malformed("flag")) };
             if i > j {
                 return Err(Error::Malformed("flag range"));
             }
@@ -384,7 +387,7 @@ pub(crate) fn decode_elems(s: &mut Seq, runs: &[Value], cx: &mut Dec) -> Result<
             }
             let u = match u {
                 None => None,
-                Some(_) if *b => return Err(Error::Malformed("chars on a delete")),
+                Some(_) if b => return Err(Error::Malformed("chars on a delete")),
                 Some(u) => {
                     let cs: Vec<char> = u.chars().collect();
                     if cs.len() as u64 != j - i + 1 {
@@ -397,14 +400,14 @@ pub(crate) fn decode_elems(s: &mut Seq, runs: &[Value], cx: &mut Dec) -> Result<
             if fws.last().is_some_and(|x| i <= x.1) {
                 return Err(Error::Malformed("overlapping flag writes"));
             }
-            fws.push((i, j, (st, *b), u));
+            fws.push((i, j, (st, b), u));
         }
         // content: one char per element not deleted (text), one fragment per element (list)
         let mut chars: Option<std::str::Chars> = None;
-        let mut frags: Option<std::slice::Iter<Value>> = None;
-        match (content, s.text) {
-            (Value::List(v), _) if v.is_empty() => {}
-            (Value::Str(cs), true) => {
+        let mut frags: Option<List> = None;
+        match (content.as_str(), content.as_list(), s.text) {
+            (_, Some(v), _) if v.is_empty() => {}
+            (Some(cs), _, true) => {
                 // a text char is the creation's payload (an undelete's rides its `FlagW`)
                 if segs.is_empty() {
                     return Err(Error::Malformed("text content without a creation"));
@@ -418,11 +421,11 @@ pub(crate) fn decode_elems(s: &mut Seq, runs: &[Value], cx: &mut Dec) -> Result<
                 }
                 chars = Some(cs.chars());
             }
-            (Value::List(fs), false) => {
+            (_, Some(fs), false) => {
                 if fs.len() as u64 != n {
                     return Err(Error::Malformed("content length differs from the run"));
                 }
-                frags = Some(fs.iter());
+                frags = Some(fs);
             }
             _ => return Err(Error::Malformed("content")),
         }

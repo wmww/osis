@@ -16,7 +16,7 @@
 //! the root decode met them, which for canonical bytes is the order the check's root re-encode
 //! meets them.
 
-use crate::codec::{Pager, absorbed_value, canonical, check_root, decode_entries, decode_elem_items, decode_fields, decode_fragment, derived_ok, encode_elem, encode_entry, encode_field, encode_fragment, fetch_page, links, nonce, prune_stable, root_tables, snapshot_tail, LIMITS};
+use crate::codec::{Pager, leaf_items, absorbed_value, canonical, check_root, decode_entries, decode_elem_items, decode_fields, decode_fragment, derived_ok, encode_elem, encode_entry, encode_field, encode_fragment, fetch_page, links, nonce, prune_stable, root_tables, snapshot_tail, LIMITS};
 use crate::error::Error;
 use crate::fragment::{Bag, Eid, Encoding, Entry, Enum, Fragment, Map, Meta, Set, Struct};
 use crate::page::{PageParams, PageSource};
@@ -25,13 +25,14 @@ use crate::seq::Seq;
 use crate::seq_wire::Runs;
 use crate::stamp::{Dot, Interner, Stamp, max_opt};
 use crate::wire::{Dec, DeltaCtx, DeltaKind, Enc, Ev, Frontiers, NONCE_LEN, Track, as_array};
-use osis_base::{CommitId, Tid, Value};
+use osis_base::cbor::Item;
+use osis_base::{CanonicalBytes, CommitId, Tid, Value};
 use std::collections::BTreeMap;
 
 /// A paged collection of the root left for streaming: its link list as written, its encoding,
 /// its fragment nesting.
 pub(crate) struct Deferred {
-    pub(crate) top: Value,
+    pub(crate) top: Vec<u8>,
     pub(crate) enc: Encoding,
     pub(crate) depth: usize,
     /// Where the root decode met it among the root's paged positions: wire order.
@@ -128,12 +129,12 @@ const NOT_CANONICAL: Error = Error::Malformed("not canonical");
 /// so a decode-only read of bytes that changed fails, bounded, rather than trusting them.
 pub(crate) fn stream<'a>(bytes: &[u8], cx: &DeltaCtx, interner: &'a mut Interner, pages: Option<&'a mut dyn PageSource>, snapshot: bool, check: bool, each: &mut dyn FnMut(Raw) -> Result<(), Error>) -> Result<Head, Error> {
     check_root(bytes, pages.as_deref())?;
-    let top = osis_base::decode(bytes, &LIMITS)?;
-    let (n, sources, commits, frag, tail) = match (snapshot, as_array(&top)?) {
-        (false, [n, s, c, f]) => (n, s, c, f, None),
-        (true, [n, s, c, f, fr, ab, fa]) => (n, s, c, f, Some((fr, ab, fa))),
-        (false, _) => return Err(Error::Malformed("delta arity")),
-        (true, _) => return Err(Error::Malformed("snapshot arity")),
+    let top = as_array(Item::parse(bytes, &LIMITS)?)?;
+    let (n, sources, commits, frag, tail) = match (snapshot, top.tuple(), top.tuple()) {
+        (false, Some([n, s, c, f]), _) => (n, s, c, f, None),
+        (true, _, Some([n, s, c, f, fr, ab, fa])) => (n, s, c, f, Some((fr, ab, fa))),
+        (false, _, _) => return Err(Error::Malformed("delta arity")),
+        (true, _, _) => return Err(Error::Malformed("snapshot arity")),
     };
     let mut dec = Dec::new(cx, interner, pages);
     root_tables(&mut dec, sources, commits)?;
@@ -161,7 +162,11 @@ pub(crate) fn stream<'a>(bytes: &[u8], cx: &DeltaCtx, interner: &'a mut Interner
     }
 
     // the root with the input's tables, streamed positions as written
-    let mut enc = dec.checker(cx, found.iter().map(|(p, d)| (p.clone(), d.top.clone())).collect());
+    let mut streams = BTreeMap::new();
+    for (p, d) in &found {
+        streams.insert(p.clone(), osis_base::decode(&d.top, &LIMITS)?);
+    }
+    let mut enc = dec.checker(cx, streams);
     let again = encode_fragment(&mut enc, &skeleton).map(|f| {
         let mut root = vec![Value::Bytes(nonce.to_vec()), enc.sources_value(), enc.commits_value(), f];
         if snapshot {
@@ -264,22 +269,22 @@ fn prune_page(f: &Fragment, e: Option<&Stamp>, carry: &mut Vec<(Eid, Entry)>) ->
 /// link list as written (spec/wire.md §6: paged, leaf order, link pages).
 fn position(dec: &mut Dec, mut enc: Option<&mut Enc>, d: &Deferred, wrap: &WrapPath, e: Option<&Stamp>, each: &mut dyn FnMut(Raw) -> Result<(), Error>) -> Result<(), Error> {
     let params = dec.pages.as_ref().map_or(PageParams::FORMAT, |p| p.params());
-    if osis_base::encode(&d.top).len() > params.target {
+    if d.top.len() > params.target {
         return Err(Error::Malformed("link list above the page target"));
     }
-    let top = links(as_array(&d.top)?)?.unwrap_or_default();
+    let top = links(as_array(Item::parse(&d.top, &LIMITS)?)?)?.unwrap_or_default();
     let mut out = Out::new(d.enc, params);
     let mut carry = Vec::new();
-    let mut leaf = |dec: &mut Dec, enc: Option<&mut Enc>, page: Value, bytes: Vec<u8>, l: osis_base::Link| -> Result<(), Error> {
+    let mut leaf = |dec: &mut Dec, enc: Option<&mut Enc>, page: CanonicalBytes, l: osis_base::Link| -> Result<(), Error> {
         let before = std::mem::take(&mut dec.fetched);
         dec.depth = d.depth;
-        let inner = decode_page(dec, &page, d.enc);
+        let inner = decode_page(dec, page.item(), d.enc);
         dec.depth = 0;
         let inner = inner?;
         let nested = std::mem::take(&mut dec.fetched);
         if let Some(enc) = enc {
             if let Some(c) = enc.check.as_mut() {
-                c.replay.extend(vec![(bytes, l)]);
+                c.replay.extend(vec![(page.into_bytes(), l)]);
                 c.replay.extend(before);
                 c.replay.extend(nested);
             }
@@ -289,33 +294,27 @@ fn position(dec: &mut Dec, mut enc: Option<&mut Enc>, d: &Deferred, wrap: &WrapP
         each(Raw::Page(wrap, inner))
     };
     for l in &top {
-        let (page, bytes) = fetch_page(dec, l)?;
-        let inner = match &page {
-            Value::List(items) => links(items)?,
-            _ => None,
-        };
-        let Some(inner) = inner else {
-            leaf(dec, enc.as_deref_mut(), page, bytes, *l)?;
+        let page = fetch_page(dec, l)?;
+        let Some(inner) = page.item().as_list().map_or(Ok(None), links)? else {
+            leaf(dec, enc.as_deref_mut(), page, *l)?;
             continue;
         };
         if inner.len() > params.fanout {
             return Err(Error::Malformed("link page above the fan-out"));
         }
         if let Some(c) = enc.as_mut().and_then(|enc| enc.check.as_mut()) {
-            c.replay.extend(vec![(bytes, *l)]);
+            c.replay.extend(vec![(page.into_bytes(), *l)]);
         }
         for l in &inner {
-            let (page, bytes) = fetch_page(dec, l)?;
-            if let Value::List(items) = &page
-                && links(items)?.is_some()
-            {
+            let page = fetch_page(dec, l)?;
+            if page.item().as_list().map_or(Ok(None), links)?.is_some() {
                 return Err(Error::Malformed("a third page level"));
             }
-            leaf(dec, enc.as_deref_mut(), page, bytes, *l)?;
+            leaf(dec, enc.as_deref_mut(), page, *l)?;
         }
     }
     if let Some(enc) = enc
-        && out.finish(enc)? != d.top
+        && osis_base::encode(&out.finish(enc)?) != d.top
     {
         return Err(NOT_CANONICAL);
     }
@@ -324,19 +323,25 @@ fn position(dec: &mut Dec, mut enc: Option<&mut Enc>, d: &Deferred, wrap: &WrapP
 
 /// One leaf page of a collection of encoding `e`, as that collection holding only its elements
 /// (no reset, no `W`).
-fn decode_page(dec: &mut Dec, page: &Value, e: Encoding) -> Result<Fragment, Error> {
-    let items = || match page {
-        Value::List(items) if !items.is_empty() => Ok(items.as_slice()),
-        _ => Err(Error::Malformed("page is not a non-empty array")),
-    };
+fn decode_page(dec: &mut Dec, page: Item, e: Encoding) -> Result<Fragment, Error> {
+    let items = || leaf_items(page);
     let meta = Meta::default();
+    let mut elems = BTreeMap::new();
     let f = match e {
         Encoding::Counter | Encoding::Max | Encoding::Min => {
             let kind = e.bag_kind().ok_or(Error::Malformed("bag"))?;
-            Fragment::Bag(Bag { kind, meta, elems: decode_elem_items(dec, items()?)? })
+            decode_elem_items(dec, items()?, &mut elems)?;
+            Fragment::Bag(Bag { kind, meta, elems })
         }
-        Encoding::Set => Fragment::Set(Set { meta, elems: decode_elem_items(dec, items()?)? }),
-        Encoding::Map => Fragment::Map(Map::new(meta, decode_entries(dec, items()?)?)),
+        Encoding::Set => {
+            decode_elem_items(dec, items()?, &mut elems)?;
+            Fragment::Set(Set { meta, elems })
+        }
+        Encoding::Map => {
+            let mut entries = BTreeMap::new();
+            decode_entries(dec, items()?, &mut entries)?;
+            Fragment::Map(Map::new(meta, entries))
+        }
         Encoding::List | Encoding::Text => {
             let mut s = Seq::new(e == Encoding::Text, meta, BTreeMap::new());
             crate::seq::decode_elems(&mut s, items()?, dec)?;

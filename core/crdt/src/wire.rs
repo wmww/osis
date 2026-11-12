@@ -9,6 +9,7 @@ use crate::error::Error;
 use crate::fragment::Fragment;
 use crate::page::{PageSink, PageSource};
 use crate::stamp::{CounterRange, Dot, Interner, Session, Source, SourceKind, Stamp};
+use osis_base::cbor::{Item, List};
 use osis_base::{CommitId, Tid, Ts, Value, WallMs};
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap};
@@ -189,13 +190,13 @@ pub(crate) fn uint(n: u64) -> Value {
     Value::uint(n)
 }
 
-/// A non-negative integer from a value.
-pub(crate) fn as_uint(v: &Value) -> Result<u64, Error> {
+/// A non-negative integer.
+pub(crate) fn as_uint(v: Item) -> Result<u64, Error> {
     v.as_uint().ok_or(Error::Malformed("expected an unsigned integer"))
 }
 
 /// An array's items.
-pub(crate) fn as_array(v: &Value) -> Result<&[Value], Error> {
+pub(crate) fn as_array(v: Item) -> Result<List, Error> {
     v.as_list().ok_or(Error::Malformed("expected an array"))
 }
 
@@ -783,11 +784,11 @@ impl<'a> Dec<'a> {
         self.sources.get(i).cloned().ok_or(Error::Malformed("source index out of range"))
     }
 
-    pub fn src(&self, v: &Value) -> Result<Source, Error> {
+    pub fn src(&self, v: Item) -> Result<Source, Error> {
         self.source(as_uint(v)?)
     }
 
-    fn counter(v: &Value) -> Result<u64, Error> {
+    fn counter(v: Item) -> Result<u64, Error> {
         match as_uint(v)? {
             0 => Err(Error::Malformed("counter 0")),
             c => Ok(c),
@@ -796,19 +797,19 @@ impl<'a> Dec<'a> {
 
     /// `Dot := ctr | [Src, ctr]`. In a writer's delta an own-source dot names an element created
     /// here or earlier: its counter is below `hi` (§2.3).
-    pub fn dot(&self, v: &Value) -> Result<Dot, Error> {
-        let d = match v {
-            Value::Int(_) => Dot::new(self.own.clone(), Self::counter(v)?),
-            Value::List(a) => match a.as_slice() {
-                [s, c] => {
+    pub fn dot(&self, v: Item) -> Result<Dot, Error> {
+        let d = if v.is_int() {
+            Dot::new(self.own.clone(), Self::counter(v)?)
+        } else {
+            match v.as_list().map(List::tuple) {
+                Some(Some([s, c])) => {
                     if as_uint(s)? == 0 {
                         return Err(Error::Malformed("own dot in array form"));
                     }
                     Dot::new(self.src(s)?, Self::counter(c)?)
                 }
                 _ => return Err(Error::Malformed("dot")),
-            },
-            _ => return Err(Error::Malformed("dot")),
+            }
         };
         if self.kind == DeltaKind::Writer && d.src == self.own && d.ctr >= self.range.hi {
             return Err(Error::Malformed("own dot above the counter range"));
@@ -817,8 +818,8 @@ impl<'a> Dec<'a> {
     }
 
     /// `Anchor := 0 | Dot`; `None` is HEAD.
-    pub fn anchor(&self, v: &Value) -> Result<Option<Dot>, Error> {
-        if matches!(v, Value::Int(0)) { Ok(None) } else { self.dot(v).map(Some) }
+    pub fn anchor(&self, v: Item) -> Result<Option<Dot>, Error> {
+        if v.as_uint() == Some(0) { Ok(None) } else { self.dot(v).map(Some) }
     }
 
     fn commit(&self, ci: u64) -> Result<(Ts, Source, u64), Error> {
@@ -835,7 +836,7 @@ impl<'a> Dec<'a> {
 
     /// `Stamp := Ci | [Ci, ctr]`. In a writer's delta every write stamp is this commit's and
     /// inside `[lo, hi)`.
-    pub fn stamp(&self, v: &Value) -> Result<Stamp, Error> {
+    pub fn stamp(&self, v: Item) -> Result<Stamp, Error> {
         let s = self.key_stamp(v)?;
         if self.kind == DeltaKind::Writer && (s.ts != self.ts || s.dot.src != self.own) {
             // the commit table names only sibling keys' commits (§3.3 rule 7)
@@ -849,14 +850,13 @@ impl<'a> Dec<'a> {
 
     /// A stamp that names no write of this delta (a position write's sibling key, §5.7): any
     /// commit's, in a writer's delta too.
-    pub fn key_stamp(&self, v: &Value) -> Result<Stamp, Error> {
-        let s = match v {
-            Value::Int(_) => {
-                let (ts, src, base) = self.commit(as_uint(v)?)?;
-                Stamp::new(ts, src, base)
-            }
-            Value::List(a) => match a.as_slice() {
-                [ci, c] => {
+    pub fn key_stamp(&self, v: Item) -> Result<Stamp, Error> {
+        let s = if v.is_int() {
+            let (ts, src, base) = self.commit(as_uint(v)?)?;
+            Stamp::new(ts, src, base)
+        } else {
+            match v.as_list().map(List::tuple) {
+                Some(Some([ci, c])) => {
                     let (ts, src, base) = self.commit(as_uint(ci)?)?;
                     let ctr = Self::counter(c)?;
                     if ctr == base {
@@ -868,14 +868,13 @@ impl<'a> Dec<'a> {
                     Stamp::new(ts, src, ctr)
                 }
                 _ => return Err(Error::Malformed("stamp")),
-            },
-            _ => return Err(Error::Malformed("stamp")),
+            }
         };
         Ok(s)
     }
 
     /// A commit-level write's stamp (§2.3): in a writer's delta the delta stamp `(ts, own, lo)`.
-    pub(crate) fn level_stamp(&self, v: &Value) -> Result<Stamp, Error> {
+    pub(crate) fn level_stamp(&self, v: Item) -> Result<Stamp, Error> {
         let s = self.stamp(v)?;
         if self.kind == DeltaKind::Writer && s.dot.ctr != self.range.lo {
             return Err(Error::Malformed("commit-level write off the delta stamp"));
@@ -884,37 +883,34 @@ impl<'a> Dec<'a> {
     }
 
     /// `Opt(Stamp)` of a commit-level write (`level_stamp`); every `Opt(Stamp)` is one.
-    pub(crate) fn opt_level_stamp(&self, v: &Value) -> Result<Option<Stamp>, Error> {
-        match as_array(v)? {
-            [] => Ok(None),
-            [s] => self.level_stamp(s).map(Some),
-            _ => Err(Error::Malformed("Opt(Stamp)")),
+    pub(crate) fn opt_level_stamp(&self, v: Item) -> Result<Option<Stamp>, Error> {
+        let a = as_array(v)?;
+        match a.tuple() {
+            _ if a.is_empty() => Ok(None),
+            Some([s]) => self.level_stamp(s).map(Some),
+            None => Err(Error::Malformed("Opt(Stamp)")),
         }
     }
 
-
     /// Reads `Sources` (§3.2).
-    pub(crate) fn load_sources(&mut self, v: &Value) -> Result<(), Error> {
+    pub(crate) fn load_sources(&mut self, v: Item) -> Result<(), Error> {
         self.sources.clear();
         for s in as_array(v)? {
-            let src = match s {
-                Value::Bytes(b) => {
-                    if let Ok(x) = <[u8; 31]>::try_from(b.as_slice()) {
+            let src = match (s.as_bytes(), s.as_list().map(List::tuple)) {
+                (Some(b), _) => {
+                    if let Ok(x) = <[u8; 31]>::try_from(b) {
                         Source::session(Session::from_bytes(&x))
-                    } else if let Ok(c) = <[u8; 32]>::try_from(b.as_slice()) {
+                    } else if let Ok(c) = <[u8; 32]>::try_from(b) {
                         Source::commit(CommitId(c))
                     } else {
                         return Err(Error::Malformed("source length"));
                     }
                 }
-                Value::List(a) => match a.as_slice() {
-                    [i, c] => {
-                        // a Derived source names an earlier entry or own (§3.3 rule 1)
-                        let dot = Dot::new(self.src(i)?, Self::counter(c)?);
-                        Source::derived(dot).ok_or(Error::Malformed("Derived of a Derived source"))?
-                    }
-                    _ => return Err(Error::Malformed("source")),
-                },
+                (None, Some(Some([i, c]))) => {
+                    // a Derived source names an earlier entry or own (§3.3 rule 1)
+                    let dot = Dot::new(self.src(i)?, Self::counter(c)?);
+                    Source::derived(dot).ok_or(Error::Malformed("Derived of a Derived source"))?
+                }
                 _ => return Err(Error::Malformed("source")),
             };
             if src == self.own || self.sources.contains(&src) {
@@ -929,12 +925,12 @@ impl<'a> Dec<'a> {
     /// Reads `Commits` (§3.2): groups by strictly ascending `Src`, entries by strictly ascending
     /// `ts`. A writer's delta lists only its sibling keys' commits (§3.3 rule 7, checked per
     /// stamp; the re-encoding drops unused entries).
-    pub(crate) fn load_commits(&mut self, v: &Value) -> Result<(), Error> {
+    pub(crate) fn load_commits(&mut self, v: Item) -> Result<(), Error> {
         self.commits.clear();
         let groups = as_array(v)?;
         let mut last_src: Option<u64> = None;
         for g in groups {
-            let [s, entries] = as_array(g)? else { return Err(Error::Malformed("commit group")) };
+            let Some([s, entries]) = as_array(g)?.tuple() else { return Err(Error::Malformed("commit group")) };
             let si = as_uint(s)?;
             if last_src.is_some_and(|l| si <= l) {
                 return Err(Error::Malformed("commit groups out of order"));
@@ -947,7 +943,7 @@ impl<'a> Dec<'a> {
             }
             let mut prev: Option<(u64, Ts)> = None;
             for e in entries {
-                let [dwall, logical, base] = as_array(e)? else { return Err(Error::Malformed("commit entry")) };
+                let Some([dwall, logical, base]) = as_array(e)?.tuple() else { return Err(Error::Malformed("commit entry")) };
                 let dwall = as_uint(dwall)?;
                 let wall = match prev {
                     None => dwall,
@@ -970,19 +966,17 @@ impl<'a> Dec<'a> {
     /// Reads `Facts` (§8): one per `Commits` entry, a purgeable-by class (0 to 3), an actor only
     /// where it is not the commit's author (its session's tid; a commit-form one's `Absorbed`
     /// author where listed). The narrowest are left out of the map.
-    pub(crate) fn load_facts(&self, v: &Value, absorbed: &BTreeMap<CommitId, Tid>) -> Result<Facts, Error> {
+    pub(crate) fn load_facts(&self, v: Item, absorbed: &BTreeMap<CommitId, Tid>) -> Result<Facts, Error> {
         let items = as_array(v)?;
         if items.len() != self.commits.len() {
             return Err(Error::Malformed("facts not one per commit entry"));
         }
         let mut out = Facts::new();
         for (c, f) in self.commits.iter().zip(items) {
-            let (by, actor) = match f {
-                Value::List(x) => match x.as_slice() {
-                    [by, Value::Tid(a)] => (as_uint(by)?, Some(*a)),
-                    _ => return Err(Error::Malformed("fact")),
-                },
-                by => (as_uint(by)?, None),
+            let (by, actor) = match f.as_list().map(List::tuple) {
+                Some(Some([by, a])) if a.as_tid().is_some() => (as_uint(by)?, a.as_tid()),
+                Some(_) => return Err(Error::Malformed("fact")),
+                None => (as_uint(f)?, None),
             };
             let by = osis_base::PurgeBy::from_id(by).ok_or(Error::Malformed("fact class"))?;
             let author = match fact_source(&c.src).kind() {
@@ -1030,7 +1024,7 @@ impl<'a> Dec<'a> {
     }
 
     /// Decodes a nested fragment (no own reset on a register, §3.3 rule 7).
-    pub fn fragment(&mut self, v: &Value) -> Result<Fragment, Error> {
+    pub fn fragment(&mut self, v: Item) -> Result<Fragment, Error> {
         crate::codec::decode_fragment(self, v, false)
     }
 }
@@ -1046,6 +1040,11 @@ mod tests {
     }
     fn sess(n: u8) -> Source {
         Source::session(Session { node: tid(n), nonce: [n; crate::SESSION_NONCE_LEN] })
+    }
+    /// `f` of `v` read in place.
+    fn with<T>(v: &Value, f: impl FnOnce(Item) -> T) -> T {
+        let b = osis_base::encode(v);
+        f(Item::parse(&b, &osis_base::Limits::DEFAULT).unwrap())
     }
     fn ts(wall: u64, logical: u64) -> Ts {
         Ts::make(WallMs(wall), logical).unwrap()
@@ -1104,13 +1103,13 @@ mod tests {
             assert_eq!(out[6], Value::List(vec![Value::Int(2), Value::Int(1)]));
             let mut interner = Interner::new();
             let mut dec = Dec::new(&cx, &mut interner, None);
-            dec.load_sources(&sources).unwrap();
-            dec.load_commits(&commits).unwrap();
+            with(&sources, |i| dec.load_sources(i)).unwrap();
+            with(&commits, |i| dec.load_commits(i)).unwrap();
             for (s, v) in stamps.iter().zip(&out) {
-                assert_eq!(&dec.stamp(v).unwrap(), s);
+                assert_eq!(&with(v, |i| dec.stamp(i)).unwrap(), s);
             }
             for (d, v) in dots.iter().zip(&out[stamps.len()..]) {
-                assert_eq!(&dec.dot(v).unwrap(), d);
+                assert_eq!(&with(v, |i| dec.dot(i)).unwrap(), d);
             }
         }
     }
@@ -1123,18 +1122,18 @@ mod tests {
         let cx = DeltaCtx { ts: ts(100, 0), own, range: CounterRange { lo: 5, hi: 7 }, kind: DeltaKind::Writer };
         let mut interner = Interner::new();
         let mut dec = Dec::new(&cx, &mut interner, None);
-        assert_eq!(dec.stamp(&Value::Int(0)).unwrap().dot.ctr, 5);
-        assert_eq!(dec.stamp(&Value::List(vec![Value::Int(0), Value::Int(6)])).unwrap().dot.ctr, 6);
-        assert!(dec.stamp(&Value::List(vec![Value::Int(0), Value::Int(5)])).is_err()); // not bare
-        assert!(dec.stamp(&Value::List(vec![Value::Int(0), Value::Int(7)])).is_err()); // above hi
-        assert!(dec.stamp(&Value::Int(1)).is_err());
-        assert!(dec.dot(&Value::Int(2)).is_ok());
-        assert!(dec.dot(&Value::Int(7)).is_err());
-        assert!(dec.dot(&Value::Int(0)).is_err());
+        assert_eq!(with(&Value::Int(0), |i| dec.stamp(i)).unwrap().dot.ctr, 5);
+        assert_eq!(with(&Value::List(vec![Value::Int(0), Value::Int(6)]), |i| dec.stamp(i)).unwrap().dot.ctr, 6);
+        assert!(with(&Value::List(vec![Value::Int(0), Value::Int(5)]), |i| dec.stamp(i)).is_err()); // not bare
+        assert!(with(&Value::List(vec![Value::Int(0), Value::Int(7)]), |i| dec.stamp(i)).is_err()); // above hi
+        assert!(with(&Value::Int(1), |i| dec.stamp(i)).is_err());
+        assert!(with(&Value::Int(2), |i| dec.dot(i)).is_ok());
+        assert!(with(&Value::Int(7), |i| dec.dot(i)).is_err());
+        assert!(with(&Value::Int(0), |i| dec.dot(i)).is_err());
         let foreign = Value::List(vec![Value::List(vec![Value::Int(0), Value::List(vec![Value::List(vec![Value::Int(1), Value::Int(0), Value::Int(1)])])])]);
-        dec.load_commits(&foreign).unwrap();
-        assert!(dec.stamp(&Value::Int(1)).is_err()); // a write of another commit
-        assert_eq!(dec.key_stamp(&Value::Int(1)).unwrap().ts, ts(1, 0));
+        with(&foreign, |i| dec.load_commits(i)).unwrap();
+        assert!(with(&Value::Int(1), |i| dec.stamp(i)).is_err()); // a write of another commit
+        assert_eq!(with(&Value::Int(1), |i| dec.key_stamp(i)).unwrap().ts, ts(1, 0));
     }
 
     /// §2.3, §3.3 rule 6: a writer's own counter claimed twice is refused, in any claim order

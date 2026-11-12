@@ -12,8 +12,8 @@ use crate::seq::{self, Seq};
 use crate::stamp::{Dot, Interner, Source, SourceKind, Stamp};
 use crate::wire::{Dec, Delta, DeltaCtx, DeltaKind, Enc, Frontiers, NONCE_LEN, Snapshot, as_array, as_uint, uint};
 use osis_base::format::{MAX_BLOB, MAX_OBJECT_DEPTH, MAX_VALUE_DEPTH};
-use osis_base::{Limits, PageCutter, Value};
-use std::borrow::Cow;
+use osis_base::cbor::{Item, List};
+use osis_base::{CanonicalBytes, Limits, PageCutter, Value};
 use std::collections::{BTreeMap, BTreeSet};
 
 pub(crate) const LIMITS: Limits = Limits { max_depth: MAX_OBJECT_DEPTH, max_bytes: MAX_BLOB };
@@ -51,7 +51,7 @@ pub(crate) struct Pager {
     params: PageParams,
     cutter: PageCutter,
     /// Elements not yet in a closed page: a list element, or a field's key and value.
-    items: Vec<Item>,
+    items: Vec<Held>,
     /// Elements and their encoded bytes so far: paged once the plain form passes the target.
     count: usize,
     size: usize,
@@ -100,15 +100,15 @@ impl Pager {
 
     /// The next list element.
     pub(crate) fn push(&mut self, sink: Option<&mut dyn PageSink>, v: Value) -> Result<(), Error> {
-        self.add(sink, Item::Elem(v))
+        self.add(sink, Held::Elem(v))
     }
 
     /// The next field (`map`).
     pub(crate) fn push_field(&mut self, sink: Option<&mut dyn PageSink>, k: Value, v: Value) -> Result<(), Error> {
-        self.add(sink, Item::Field(k, v))
+        self.add(sink, Held::Field(k, v))
     }
 
-    fn add(&mut self, mut sink: Option<&mut dyn PageSink>, item: Item) -> Result<(), Error> {
+    fn add(&mut self, mut sink: Option<&mut dyn PageSink>, item: Held) -> Result<(), Error> {
         if !self.keep {
             return Ok(());
         }
@@ -131,18 +131,18 @@ impl Pager {
         Ok(())
     }
 
-    fn feed(&mut self, sink: Option<&mut dyn PageSink>, item: Item, bytes: &[u8]) -> Result<(), Error> {
+    fn feed(&mut self, sink: Option<&mut dyn PageSink>, item: Held, bytes: &[u8]) -> Result<(), Error> {
         self.items.push(item);
         self.cutter.feed(bytes);
         if self.cutter.end_element() { self.put_page(sink) } else { Ok(()) }
     }
 
-    fn whole(&self, items: Vec<Item>) -> Value {
+    fn whole(&self, items: Vec<Held>) -> Value {
         let it = items.into_iter();
         if self.map {
-            Value::Map(it.filter_map(|i| if let Item::Field(k, v) = i { Some((k, v)) } else { None }).collect())
+            Value::Map(it.filter_map(|i| if let Held::Field(k, v) = i { Some((k, v)) } else { None }).collect())
         } else {
-            Value::List(it.filter_map(|i| if let Item::Elem(v) = i { Some(v) } else { None }).collect())
+            Value::List(it.filter_map(|i| if let Held::Elem(v) = i { Some(v) } else { None }).collect())
         }
     }
 
@@ -175,7 +175,7 @@ impl Pager {
         if cx.collecting() {
             return Ok(self.whole(items));
         }
-        let encoded = items.iter().map(Item::bytes).collect();
+        let encoded = items.iter().map(Held::bytes).collect();
         oracle::paged(cx.sink(), items, encoded, |v| self.whole(v))
     }
 
@@ -216,17 +216,17 @@ fn re<'s>(sink: &'s mut Option<&mut dyn PageSink>) -> Option<&'s mut dyn PageSin
 }
 
 /// A `Pager` element: a list element, or a field's key and value.
-enum Item {
+enum Held {
     Elem(Value),
     Field(Value, Value),
 }
 
-impl Item {
+impl Held {
     /// Its bytes as the cutter reads them.
     fn bytes(&self) -> Vec<u8> {
         match self {
-            Item::Elem(v) => osis_base::encode(v),
-            Item::Field(k, v) => {
+            Held::Elem(v) => osis_base::encode(v),
+            Held::Field(k, v) => {
                 let mut b = Vec::with_capacity(self.len());
                 osis_base::cbor::encode_into(k, &mut b);
                 osis_base::cbor::encode_into(v, &mut b);
@@ -237,8 +237,8 @@ impl Item {
     /// `bytes().len()`.
     fn len(&self) -> usize {
         match self {
-            Item::Elem(v) => osis_base::cbor::encoded_len(v),
-            Item::Field(k, v) => osis_base::cbor::encoded_len(k) + osis_base::cbor::encoded_len(v),
+            Held::Elem(v) => osis_base::cbor::encoded_len(v),
+            Held::Field(k, v) => osis_base::cbor::encoded_len(k) + osis_base::cbor::encoded_len(v),
         }
     }
 }
@@ -470,11 +470,12 @@ fn encode_snapshot_in(s: &Snapshot, cx: &DeltaCtx, pages: Option<&mut dyn PageSi
 
 // ---- decode
 
-fn opt_stamp_only<T>(v: &Value, f: impl FnOnce(&Value) -> Result<T, Error>) -> Result<Option<T>, Error> {
-    match as_array(v)? {
-        [] => Ok(None),
-        [x] => f(x).map(Some),
-        _ => Err(Error::Malformed("expected Opt(X)")),
+fn opt_stamp_only<'a, T>(v: Item<'a>, f: impl FnOnce(Item<'a>) -> Result<T, Error>) -> Result<Option<T>, Error> {
+    let a = as_array(v)?;
+    match a.tuple() {
+        _ if a.is_empty() => Ok(None),
+        Some([x]) => f(x).map(Some),
+        None => Err(Error::Malformed("expected Opt(X)")),
     }
 }
 
@@ -498,15 +499,15 @@ fn head_depth(e: Option<Encoding>) -> usize {
     }
 }
 
-pub(crate) fn links(items: &[Value]) -> Result<Option<Vec<osis_base::Link>>, Error> {
-    let n = items.iter().filter(|i| matches!(i, Value::Link(_))).count();
+pub(crate) fn links(items: List) -> Result<Option<Vec<osis_base::Link>>, Error> {
+    let n = items.iter().filter(|i| i.as_link().is_some()).count();
     if n == 0 {
         return Ok(None);
     }
     if n != items.len() {
         return Err(Error::Malformed("links mixed with elements"));
     }
-    Ok(Some(items.iter().filter_map(|i| if let Value::Link(l) = i { Some(**l) } else { None }).collect()))
+    Ok(Some(items.iter().filter_map(Item::as_link).collect()))
 }
 
 /// Pages of one paged position (plaintext, link) in the order the encoder puts them: leaf pages,
@@ -515,77 +516,78 @@ pub(crate) fn links(items: &[Value]) -> Result<Option<Vec<osis_base::Link>>, Err
 /// plaintexts their links back in place.
 pub(crate) type Fetched = Vec<(Vec<u8>, osis_base::Link)>;
 
-/// Fetches a page. Each blob is read once per delta, so expansion is bounded by the distinct
-/// pages that exist.
-pub(crate) fn fetch_page(cx: &mut Dec, link: &osis_base::Link) -> Result<(Value, Vec<u8>), Error> {
+/// Fetches a page, checked. Each blob is read once per delta, so expansion is bounded by the
+/// distinct pages that exist.
+pub(crate) fn fetch_page(cx: &mut Dec, link: &osis_base::Link) -> Result<CanonicalBytes, Error> {
     if !cx.links_seen.insert(link.blob) {
         return Err(Error::Malformed("a page linked twice"));
     }
     let src = cx.pages.as_mut().ok_or(Error::Page(PageError::Missing))?;
     let bytes = src.get(link)?;
     check_items(&bytes, src.params())?;
-    let v = osis_base::decode(&bytes, &LIMITS)?;
-    Ok((v, bytes))
+    Ok(CanonicalBytes::parse(bytes, &LIMITS)?)
 }
 
-/// The leaf pages under a paged position `v` holding links `top`, link pages resolved (§8, at
-/// most two levels).
-fn leaf_pages(cx: &mut Dec, v: &Value, top: &[osis_base::Link]) -> Result<(Vec<Value>, Fetched), Error> {
+/// A page's links when it is a link page.
+fn page_links(page: &CanonicalBytes) -> Result<Option<Vec<osis_base::Link>>, Error> {
+    page.item().as_list().map_or(Ok(None), links)
+}
+
+/// The leaf pages under a paged position `v` holding links `top`, in order, and its link pages
+/// (§8, at most two levels).
+fn leaf_pages(cx: &mut Dec, v: Item, top: &[osis_base::Link]) -> Result<(Vec<(CanonicalBytes, osis_base::Link)>, Fetched), Error> {
     let params = cx.pages.as_ref().map_or(PageParams::FORMAT, |p| p.params());
-    if osis_base::encode(v).len() > params.target {
+    if v.bytes().len() > params.target {
         return Err(Error::Malformed("link list above the page target"));
     }
-    let (mut out, mut leaves, mut link_pages) = (Vec::new(), Vec::new(), Vec::new());
+    let (mut leaves, mut link_pages) = (Vec::new(), Vec::new());
     for l in top {
-        let (page, bytes) = fetch_page(cx, l)?;
-        let inner = match &page {
-            Value::List(items) => links(items)?,
-            _ => None,
-        };
-        let Some(inner) = inner else {
-            out.push(page);
-            leaves.push((bytes, *l));
+        let page = fetch_page(cx, l)?;
+        let Some(inner) = page_links(&page)? else {
+            leaves.push((page, *l));
             continue;
         };
-        link_pages.push((bytes, *l));
+        link_pages.push((page.into_bytes(), *l));
         if inner.len() > params.fanout {
             return Err(Error::Malformed("link page above the fan-out"));
         }
         for l in &inner {
-            let (page, bytes) = fetch_page(cx, l)?;
-            if let Value::List(items) = &page
-                && links(items)?.is_some()
-            {
+            let page = fetch_page(cx, l)?;
+            if page_links(&page)?.is_some() {
                 return Err(Error::Malformed("a third page level"));
             }
-            out.push(page);
-            leaves.push((bytes, *l));
+            leaves.push((page, *l));
         }
     }
-    leaves.extend(link_pages);
-    Ok((out, leaves))
+    Ok((leaves, link_pages))
 }
 
-/// The items of an element array, pages and link pages resolved (§8), and its pages for
-/// `Dec::done` once the items are decoded.
-pub(crate) fn elem_items<'v>(cx: &mut Dec, v: &'v Value) -> Result<(Cow<'v, [Value]>, Fetched), Error> {
+/// A leaf page's items: a non-empty array.
+pub(crate) fn leaf_items(page: Item) -> Result<List, Error> {
+    page.as_list().filter(|l| !l.is_empty()).ok_or(Error::Malformed("page is not a non-empty array"))
+}
+
+/// The items of an element array through `each`, inline or a leaf page at a time, link pages
+/// resolved (§8); then its pages to `Dec::done`.
+pub(crate) fn elem_items(cx: &mut Dec, v: Item, each: &mut dyn FnMut(&mut Dec, List) -> Result<(), Error>) -> Result<(), Error> {
     let items = as_array(v)?;
-    let Some(top) = links(items)? else { return Ok((Cow::Borrowed(items), Vec::new())) };
-    let mut out = Vec::new();
-    let (pages, fetched) = leaf_pages(cx, v, &top)?;
-    for page in pages {
-        match page {
-            Value::List(items) if !items.is_empty() => out.extend(items),
-            _ => return Err(Error::Malformed("page is not a non-empty array")),
-        }
+    let Some(top) = links(items)? else { return each(cx, items) };
+    let (leaves, link_pages) = leaf_pages(cx, v, &top)?;
+    for (p, _) in &leaves {
+        leaf_items(p.item())?;
     }
-    Ok((Cow::Owned(out), fetched))
+    for (p, _) in &leaves {
+        each(cx, leaf_items(p.item())?)?;
+    }
+    cx.done(leaves, link_pages);
+    Ok(())
 }
 
 impl Dec<'_> {
-    /// Records a position's pages after its items are decoded (`Fetched`).
-    pub(crate) fn done(&mut self, f: Fetched) {
-        self.fetched.extend(f);
+    /// Records a position's pages after its items are decoded (`Fetched`): its leaf pages, then
+    /// its link pages.
+    pub(crate) fn done(&mut self, leaves: Vec<(CanonicalBytes, osis_base::Link)>, link_pages: Fetched) {
+        self.fetched.extend(leaves.into_iter().map(|(p, l)| (p.into_bytes(), l)).chain(link_pages));
     }
 
     /// Paged collections left for streaming so far (`defer`).
@@ -615,26 +617,24 @@ pub(crate) fn prune_stable(f: &Fragment, e: Option<&Stamp>) -> Result<Fragment, 
     if p.carried() == f.carried() { Ok(p) } else { Err(Error::Malformed("carries a write its own pruning drops")) }
 }
 
-fn decode_meta(cx: &mut Dec, r: &Value, w: &Value) -> Result<Meta, Error> {
-    let (w, w_valueless) = match as_array(w)? {
-        [s, Value::Bool(false)] => (Some(cx.level_stamp(s)?), true),
+fn decode_meta(cx: &mut Dec, r: Item, w: Item) -> Result<Meta, Error> {
+    let (w, w_valueless) = match as_array(w)?.tuple() {
+        Some([s, f]) if f.as_bool() == Some(false) => (Some(cx.level_stamp(s)?), true),
         _ => (cx.opt_level_stamp(w)?, false),
     };
     Ok(Meta { reset: cx.opt_level_stamp(r)?, w, w_valueless })
 }
 
-fn decode_elems(cx: &mut Dec, v: &Value) -> Result<BTreeMap<Dot, Elem>, Error> {
-    let (items, fetched) = elem_items(cx, v)?;
-    let out = decode_elem_items(cx, &items)?;
-    cx.done(fetched);
+fn decode_elems(cx: &mut Dec, v: Item) -> Result<BTreeMap<Dot, Elem>, Error> {
+    let mut out = BTreeMap::new();
+    elem_items(cx, v, &mut |cx, items| decode_elem_items(cx, items, &mut out))?;
     Ok(out)
 }
 
-/// Bag or set elements.
-pub(crate) fn decode_elem_items(cx: &mut Dec, items: &[Value]) -> Result<BTreeMap<Dot, Elem>, Error> {
-    let mut out = BTreeMap::new();
+/// Bag or set elements into `out`.
+pub(crate) fn decode_elem_items(cx: &mut Dec, items: List, out: &mut BTreeMap<Dot, Elem>) -> Result<(), Error> {
     for e in items {
-        let [d, r, f] = as_array(e)? else { return Err(Error::Malformed("element")) };
+        let Some([d, r, f]) = as_array(e)?.tuple() else { return Err(Error::Malformed("element")) };
         let dot = cx.dot(d)?;
         let reset = cx.opt_level_stamp(r)?;
         let frag = opt_stamp_only(f, |x| cx.fragment(x))?.map(Box::new);
@@ -654,39 +654,34 @@ pub(crate) fn decode_elem_items(cx: &mut Dec, items: &[Value]) -> Result<BTreeMa
         }
         out.insert(dot, Elem { reset, frag });
     }
-    Ok(out)
+    Ok(())
 }
 
 /// A field or payload map, inline or paged (§8); fields ascend across pages (the re-encode
 /// check then pins the cuts).
-fn decode_children(cx: &mut Dec, v: &Value, step: fn(u64) -> Step) -> Result<BTreeMap<u64, Fragment>, Error> {
+fn decode_children(cx: &mut Dec, v: Item, step: fn(u64) -> Step) -> Result<BTreeMap<u64, Fragment>, Error> {
     let mut out = BTreeMap::new();
-    let paged;
-    let mut fetched = Vec::new();
-    let pages = match v {
-        Value::Map(_) => std::slice::from_ref(v),
-        Value::List(items) => {
-            let top = links(items)?.ok_or(Error::Malformed("expected a map or links"))?;
-            (paged, fetched) = leaf_pages(cx, v, &top)?;
-            paged.as_slice()
-        }
-        _ => return Err(Error::Malformed("expected a map")),
-    };
-    let is_paged = matches!(v, Value::List(_));
-    for page in pages {
-        decode_fields(cx, page, is_paged, step, &mut out)?;
+    if v.as_map().is_some() {
+        decode_fields(cx, v, false, step, &mut out)?;
+        return Ok(out);
     }
-    cx.done(fetched);
+    let items = v.as_list().ok_or(Error::Malformed("expected a map"))?;
+    let top = links(items)?.ok_or(Error::Malformed("expected a map or links"))?;
+    let (leaves, link_pages) = leaf_pages(cx, v, &top)?;
+    for (page, _) in &leaves {
+        decode_fields(cx, page.item(), true, step, &mut out)?;
+    }
+    cx.done(leaves, link_pages);
     Ok(out)
 }
 
 /// The fields of one field map or page of one (`paged`: not empty) into `out`, ascending.
-pub(crate) fn decode_fields(cx: &mut Dec, page: &Value, paged: bool, step: fn(u64) -> Step, out: &mut BTreeMap<u64, Fragment>) -> Result<(), Error> {
-    let Value::Map(m) = page else { return Err(Error::Malformed("page is not a map")) };
+pub(crate) fn decode_fields(cx: &mut Dec, page: Item, paged: bool, step: fn(u64) -> Step, out: &mut BTreeMap<u64, Fragment>) -> Result<(), Error> {
+    let Some(mut m) = page.as_map() else { return Err(Error::Malformed("page is not a map")) };
     if paged && m.is_empty() {
         return Err(Error::Malformed("empty page"));
     }
-    for (k, f) in m {
+    while let (Some(k), Some(f)) = (m.next(), m.next()) {
         let k = as_uint(k)?;
         if out.last_key_value().is_some_and(|(l, _)| *l >= k) {
             return Err(Error::Malformed("fields out of order across pages"));
@@ -700,21 +695,19 @@ pub(crate) fn decode_fields(cx: &mut Dec, page: &Value, paged: bool, step: fn(u6
 }
 
 /// Map entry records.
-pub(crate) fn decode_entries(cx: &mut Dec, items: &[Value]) -> Result<BTreeMap<Eid, Entry>, Error> {
-    let mut entries = BTreeMap::new();
+pub(crate) fn decode_entries(cx: &mut Dec, items: List, entries: &mut BTreeMap<Eid, Entry>) -> Result<(), Error> {
     for e in items {
         // `[Dot, Ci?, R, Key?, Opt(Fragment)]`: a `Ci` is an int, an `R` an array
-        let (d, ci, rest) = match as_array(e)? {
-            [d, ci @ Value::Int(_), rest @ ..] => (d, Some(ci), rest),
-            [d, rest @ ..] => (d, None, rest),
-            [] => return Err(Error::Malformed("entry")),
-        };
-        let (r, key, f) = match rest {
-            [r, f] => (r, None, f),
-            [r, k, f] => (r, Some(k), f),
+        let mut rest = as_array(e)?;
+        let d = rest.next().ok_or(Error::Malformed("entry"))?;
+        let ci = if rest.first().is_some_and(Item::is_int) { rest.next() } else { None };
+        let (r, key, f) = match (rest.tuple(), rest.tuple()) {
+            (Some([r, f]), _) => (r, None, f),
+            (_, Some([r, k, f])) => (r, Some(k), f),
             _ => return Err(Error::Malformed("entry")),
         };
-        let id = Eid::new(cx.dot(d)?, key.cloned());
+        let key = key.map(Item::to_value).transpose()?;
+        let id = Eid::new(cx.dot(d)?, key.clone());
         let dot = &id.dot;
         let reset = cx.opt_level_stamp(r)?;
         cx.step(|| Step::Entry(id.clone()));
@@ -724,7 +717,7 @@ pub(crate) fn decode_entries(cx: &mut Dec, items: &[Value]) -> Result<BTreeMap<E
         let paged = cx.deferred() > paged;
         cx.step_done();
         let frag = frag?.map(Box::new);
-        if let Some(k) = key {
+        if let Some(k) = &key {
             check_value(cx, k)?;
         }
         if frag.is_some() {
@@ -749,38 +742,36 @@ pub(crate) fn decode_entries(cx: &mut Dec, items: &[Value]) -> Result<BTreeMap<E
         }
         entries.insert(id, Entry { reset, frag, created });
     }
-    Ok(entries)
+    Ok(())
 }
 
 /// While a root is decoded for streaming, a paged collection reached through steps is left
 /// undecoded (true) and recorded with its link list (`stream`).
-fn defer(cx: &mut Dec, v: &Value, enc: Encoding) -> Result<bool, Error> {
+fn defer(cx: &mut Dec, v: Item, enc: Encoding) -> Result<bool, Error> {
     let depth = cx.depth;
     let Some((t, found)) = cx.streaming.as_mut().filter(|(t, _)| t.on) else { return Ok(false) };
-    let Value::List(items) = v else { return Ok(false) };
+    let Some(items) = v.as_list() else { return Ok(false) };
     if links(items)?.is_none() {
         return Ok(false);
     }
     let order = found.len();
-    found.insert(t.path.clone(), crate::stream::Deferred { top: v.clone(), enc, depth, order });
+    found.insert(t.path.clone(), crate::stream::Deferred { top: v.bytes().to_vec(), enc, depth, order });
     Ok(true)
 }
 
-fn decode_register(cx: &mut Dec, a: &[Value], may_reset: bool) -> Result<Register, Error> {
-    let (r, rest) = match a {
-        [_, r, rest @ ..] => (r, rest),
-        _ => return Err(Error::Malformed("register")),
-    };
+fn decode_register(cx: &mut Dec, mut a: List, may_reset: bool) -> Result<Register, Error> {
+    let (Some(_), Some(r)) = (a.next(), a.next()) else { return Err(Error::Malformed("register")) };
     let reset = cx.opt_level_stamp(r)?;
     if reset.is_some() && !may_reset {
         return Err(Error::Malformed("nested register with a reset"));
     }
-    let write = match rest {
-        [] => None,
-        [s] => Some(RegWrite { stamp: cx.level_stamp(s)?, value: None }),
-        [s, v] => {
-            check_value(cx, v)?;
-            Some(RegWrite { stamp: cx.level_stamp(s)?, value: Some(v.clone()) })
+    let write = match (a.is_empty(), a.tuple(), a.tuple()) {
+        (true, _, _) => None,
+        (_, Some([s]), _) => Some(RegWrite { stamp: cx.level_stamp(s)?, value: None }),
+        (_, _, Some([s, v])) => {
+            let v = v.to_value()?;
+            check_value(cx, &v)?;
+            Some(RegWrite { stamp: cx.level_stamp(s)?, value: Some(v) })
         }
         _ => return Err(Error::Malformed("register arity")),
     };
@@ -788,10 +779,10 @@ fn decode_register(cx: &mut Dec, a: &[Value], may_reset: bool) -> Result<Registe
 }
 
 /// Decodes a fragment; `may_reset` where a register may carry a reset (root, a `Slots` slot).
-pub(crate) fn decode_fragment(cx: &mut Dec, v: &Value, may_reset: bool) -> Result<Fragment, Error> {
+pub(crate) fn decode_fragment(cx: &mut Dec, v: Item, may_reset: bool) -> Result<Fragment, Error> {
     // read depth counts across pages too (a page's fragments may hold paged arrays), so every
     // page level adds one; within a blob the CBOR depth bounds the recursion
-    let up = head_depth(v.as_list().and_then(|a| a.first()).and_then(Value::as_uint).and_then(Encoding::from_id));
+    let up = head_depth(v.as_list().and_then(List::first).and_then(Item::as_uint).and_then(Encoding::from_id));
     if cx.depth + up > MAX_VALUE_DEPTH {
         return Err(Error::Malformed("fragment reads deeper than MAX_VALUE_DEPTH"));
     }
@@ -831,60 +822,66 @@ pub(crate) fn derived_ok(f: &Fragment) -> bool {
     }
 }
 
-fn decode_fragment_at(cx: &mut Dec, v: &Value, may_reset: bool) -> Result<Fragment, Error> {
+fn decode_fragment_at(cx: &mut Dec, v: Item, may_reset: bool) -> Result<Fragment, Error> {
     let a = as_array(v)?;
     let id = as_uint(a.first().ok_or(Error::Malformed("empty fragment"))?)?;
     let enc = Encoding::from_id(id).ok_or(Error::UnknownEncoding(id))?;
-    Ok(match (enc, a) {
-        (Encoding::Register, _) => Fragment::Register(decode_register(cx, a, may_reset)?),
-        (Encoding::Counter | Encoding::Max | Encoding::Min, [_, r, w, e]) => {
+    const ARITY: Error = Error::Malformed("fragment arity");
+    Ok(match enc {
+        Encoding::Register => Fragment::Register(decode_register(cx, a, may_reset)?),
+        Encoding::Counter | Encoding::Max | Encoding::Min => {
+            let Some([_, r, w, e]) = a.tuple() else { return Err(ARITY) };
             let kind = enc.bag_kind().ok_or(Error::Malformed("bag"))?;
             let meta = decode_meta(cx, r, w)?;
             let elems = if defer(cx, e, enc)? { BTreeMap::new() } else { decode_elems(cx, e)? };
             Fragment::Bag(Bag { kind, meta, elems })
         }
-        (Encoding::Set, [_, r, w, e]) => {
+        Encoding::Set => {
+            let Some([_, r, w, e]) = a.tuple() else { return Err(ARITY) };
             let meta = decode_meta(cx, r, w)?;
             let elems = if defer(cx, e, enc)? { BTreeMap::new() } else { decode_elems(cx, e)? };
             Fragment::Set(Set { meta, elems })
         }
-        (Encoding::Struct, [_, r, w, c]) => {
+        Encoding::Struct => {
+            let Some([_, r, w, c]) = a.tuple() else { return Err(ARITY) };
             let meta = decode_meta(cx, r, w)?;
             let fields = if defer(cx, c, enc)? { BTreeMap::new() } else { decode_children(cx, c, Step::Field)? };
             Fragment::Struct(Struct { meta, fields })
         }
-        (Encoding::Enum, [_, r, w, k, c]) => {
+        Encoding::Enum => {
+            let Some([_, r, w, k, c]) = a.tuple() else { return Err(ARITY) };
             let meta = decode_meta(cx, r, w)?;
-            let case = opt_stamp_only(k, |c| match as_array(c)? {
-                [s] => Ok(CaseWrite { stamp: cx.level_stamp(s)?, case: None }),
-                [s, id] => Ok(CaseWrite { stamp: cx.level_stamp(s)?, case: Some(as_uint(id)?) }),
-                _ => Err(Error::Malformed("case")),
+            let case = opt_stamp_only(k, |c| {
+                let c = as_array(c)?;
+                match (c.tuple(), c.tuple()) {
+                    (Some([s]), _) => Ok(CaseWrite { stamp: cx.level_stamp(s)?, case: None }),
+                    (_, Some([s, id])) => Ok(CaseWrite { stamp: cx.level_stamp(s)?, case: Some(as_uint(id)?) }),
+                    _ => Err(Error::Malformed("case")),
+                }
             })?;
             let payloads = if defer(cx, c, enc)? { BTreeMap::new() } else { decode_children(cx, c, Step::Case)? };
             Fragment::Enum(Enum { meta, case, payloads })
         }
-        (Encoding::Map, [_, r, w, es]) => {
+        Encoding::Map => {
+            let Some([_, r, w, es]) = a.tuple() else { return Err(ARITY) };
             let meta = decode_meta(cx, r, w)?;
-            if defer(cx, es, enc)? {
-                return Ok(Fragment::Map(Map::new(meta, BTreeMap::new())));
+            let mut entries = BTreeMap::new();
+            if !defer(cx, es, enc)? {
+                elem_items(cx, es, &mut |cx, items| decode_entries(cx, items, &mut entries))?;
             }
-            let (items, fetched) = elem_items(cx, es)?;
-            let entries = decode_entries(cx, &items)?;
-            cx.done(fetched);
             Fragment::Map(Map::new(meta, entries))
         }
-        (Encoding::List | Encoding::Text, [_, r, w, es]) => {
+        Encoding::List | Encoding::Text => {
+            let Some([_, r, w, es]) = a.tuple() else { return Err(ARITY) };
             let meta = decode_meta(cx, r, w)?;
             let mut s = Seq::new(enc == Encoding::Text, meta, BTreeMap::new());
-            if defer(cx, es, enc)? {
-                return Ok(Fragment::Seq(s));
+            if !defer(cx, es, enc)? {
+                elem_items(cx, es, &mut |cx, runs| seq::decode_elems(&mut s, runs, cx))?;
             }
-            let (runs, fetched) = elem_items(cx, es)?;
-            seq::decode_elems(&mut s, &runs, cx)?;
-            cx.done(fetched);
             Fragment::Seq(s)
         }
-        (Encoding::Slots, [_, reg, ms]) => {
+        Encoding::Slots => {
+            let Some([_, reg, ms]) = a.tuple() else { return Err(ARITY) };
             if cx.kind() == DeltaKind::Writer {
                 return Err(Error::Malformed("slots in a writer's delta"));
             }
@@ -920,11 +917,10 @@ fn decode_fragment_at(cx: &mut Dec, v: &Value, may_reset: bool) -> Result<Fragme
             }
             pruned
         }
-        _ => return Err(Error::Malformed("fragment arity")),
     })
 }
 
-pub(crate) fn nonce(v: &Value) -> Result<[u8; NONCE_LEN], Error> {
+pub(crate) fn nonce(v: Item) -> Result<[u8; NONCE_LEN], Error> {
     v.as_array().ok_or(Error::Malformed("nonce"))
 }
 
@@ -984,7 +980,7 @@ pub fn decode_snapshot<'a>(bytes: &[u8], cx: &DeltaCtx, interner: &'a mut Intern
 }
 
 /// `[nonce, Sources, Commits]` of a delta or snapshot root into `dec`.
-pub(crate) fn root_tables(dec: &mut Dec, sources: &Value, commits: &Value) -> Result<(), Error> {
+pub(crate) fn root_tables(dec: &mut Dec, sources: Item, commits: Item) -> Result<(), Error> {
     dec.load_sources(sources)?;
     dec.load_commits(commits)
 }
@@ -992,11 +988,11 @@ pub(crate) fn root_tables(dec: &mut Dec, sources: &Value, commits: &Value) -> Re
 /// A snapshot's `Frontiers` and `Absorbed` (§8): one frontier entry per `Session` source of the
 /// table, in table order, 0 included (a source with no write in the fragment has none, so an
 /// absent source is one the snapshot holds nothing of).
-pub(crate) fn snapshot_tail(dec: &Dec, fr: &Value, ab: &Value, fa: &Value) -> Result<(Frontiers, BTreeMap<osis_base::CommitId, osis_base::Tid>, crate::wire::Facts), Error> {
+pub(crate) fn snapshot_tail(dec: &Dec, fr: Item, ab: Item, fa: Item) -> Result<(Frontiers, BTreeMap<osis_base::CommitId, osis_base::Tid>, crate::wire::Facts), Error> {
     let mut frontiers = Frontiers::default();
     let mut counted = dec.sources().filter(|s| matches!(s.kind(), SourceKind::Session(_)));
     for e in as_array(fr)? {
-        let [i, c] = as_array(e)? else { return Err(Error::Malformed("frontier")) };
+        let Some([i, c]) = as_array(e)?.tuple() else { return Err(Error::Malformed("frontier")) };
         let src = dec.src(i)?;
         if counted.next() != Some(&src) {
             return Err(Error::Malformed("frontier entries not the fragment's session sources in order"));
@@ -1008,10 +1004,10 @@ pub(crate) fn snapshot_tail(dec: &Dec, fr: &Value, ab: &Value, fa: &Value) -> Re
     }
     let mut absorbed = BTreeMap::new();
     for e in as_array(ab)? {
-        let [c, a] = as_array(e)? else { return Err(Error::Malformed("absorbed commit")) };
-        let (Value::Bytes(c), Value::Tid(a)) = (c, a) else { return Err(Error::Malformed("absorbed commit")) };
-        let c = <[u8; 32]>::try_from(c.as_slice()).map_err(|_| Error::Malformed("absorbed commit ID"))?;
-        if absorbed.insert(osis_base::CommitId(c), *a).is_some() {
+        let Some([c, a]) = as_array(e)?.tuple() else { return Err(Error::Malformed("absorbed commit")) };
+        let (Some(c), Some(a)) = (c.as_bytes(), a.as_tid()) else { return Err(Error::Malformed("absorbed commit")) };
+        let c = <[u8; 32]>::try_from(c).map_err(|_| Error::Malformed("absorbed commit ID"))?;
+        if absorbed.insert(osis_base::CommitId(c), a).is_some() {
             return Err(Error::Malformed("absorbed commit repeated"));
         }
     }
@@ -1145,8 +1141,8 @@ pub mod oracle {
 
     pub fn decode_delta<'a>(bytes: &[u8], cx: &DeltaCtx, interner: &'a mut Interner, pages: Option<&'a mut dyn PageSource>) -> Result<Delta, Error> {
         check_root(bytes, pages.as_deref())?;
-        let top = osis_base::decode(bytes, &LIMITS)?;
-        let [n, sources, commits, frag] = as_array(&top)? else { return Err(Error::Malformed("delta arity")) };
+        let top = Item::parse(bytes, &LIMITS)?;
+        let Some([n, sources, commits, frag]) = as_array(top)?.tuple() else { return Err(Error::Malformed("delta arity")) };
         let mut dec = Dec::new(cx, interner, pages);
         root_tables(&mut dec, sources, commits)?;
         let fragment = decode_fragment(&mut dec, frag, true)?;
@@ -1158,8 +1154,8 @@ pub mod oracle {
 
     pub fn decode_snapshot<'a>(bytes: &[u8], cx: &DeltaCtx, interner: &'a mut Interner, pages: Option<&'a mut dyn PageSource>) -> Result<Snapshot, Error> {
         check_root(bytes, pages.as_deref())?;
-        let top = osis_base::decode(bytes, &LIMITS)?;
-        let [n, sources, commits, frag, fr, ab, fa] = as_array(&top)? else { return Err(Error::Malformed("snapshot arity")) };
+        let top = Item::parse(bytes, &LIMITS)?;
+        let Some([n, sources, commits, frag, fr, ab, fa]) = as_array(top)?.tuple() else { return Err(Error::Malformed("snapshot arity")) };
         let mut dec = Dec::new(cx, interner, pages);
         root_tables(&mut dec, sources, commits)?;
         let fragment = decode_fragment(&mut dec, frag, true)?;
