@@ -6,7 +6,7 @@
 Kept by design: memory storage itself, presence (author tie), ephemeral signals (relay-only), the restart reconcile, a node cap and host caps. What differs from durable: a memory commit's header is forgotten once spent (spec/commits.md §5); the rest is in notes/ephemeral.md (Divergences left).
 
 ## E. Durable automatic compaction
-Durable has only explicit `compact`; ephemeral aspects compact automatically (the memory trigger, `Engine::memory_compactions`). A durable policy changes host storage and purge timing for durable data: Tess's decision, so `tess-call` belongs on its own issue when someone picks it up.
+Durable data never compacts into snapshots: no API asks for it, and `SyncEngine::compact` is a hook only the sim calls. Its storage stays proportional to live data by the cover rule (an overwrite drops the bodies it covers), but each live write keeps its own body, while ephemeral aspects merge them into one snapshot automatically (the memory trigger, `Engine::memory_compactions`). The cost of doing the same for durable data: a snapshot cannot give back what it replaced (spec/commits.md §5 Covered, Limit), so a purge that later falls (its author's right judged invalid by a late role change) or another later correction could no longer restore the originals once they are compacted away. Tess's decision; give it its own `tess-call` issue when someone picks it up. Whether the sim-only hook stays is a test-tool question.
 
 ## Residuals
 - **Reconnect burst**: over `MAX_GAINED` memory entries per label a new connection lists no `gained`, so every held body goes up again there once (a cap-sized burst per reconnect).
