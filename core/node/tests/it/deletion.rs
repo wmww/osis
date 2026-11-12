@@ -357,37 +357,33 @@ fn reregistration_waits_and_sends_once_spec_sync_5() {
     assert_eq!(net.read(c, t), Some(s("x")));
 }
 
-// spec/sync.md §5 (re-registration): an admin that uploaded another admin's rotation while its
-// step waited to settle does not upload it again while that upload is unanswered, once the
-// step may go
+// spec/sync.md §5 (re-registration): another admin's rotation reaches the peer from an admin
+// holding it, under the peer's head, while that admin's own step waits to settle; the step goes
+// once, once settled
 #[test]
-fn reregistration_skips_uploads_in_flight_spec_sync_5() {
+fn rotation_reaches_the_peer_before_the_step_spec_sync_5() {
     let (mut net, host, [a]) = hosted_nodes::<1>();
     let c = net.node(3, &[host]);
     let g = net.group(a, &[(c, Role::Admin)], &[host]);
     net.run();
+    let l = net.label(a);
     let (at, ct_) = (net.tid(a), net.tid(c));
-    // c rotates g away from every host; a gets it directly: its step waits for c's
+    // c rotates g away from every peer; a gets it directly: its step waits for c's
     net.set_online(c, false);
     let e = net.engine(c);
     let rs = recipients_of(e, &[(at, Role::Admin), (ct_, Role::Admin)]);
-    rotation(e, g, &rs, 7, false);
+    let rot = rotation(e, g, &rs, 7, false);
     net.pair(c, a);
-    // a's uploads stay unanswered; it relays c's rotation before its step may go
-    net.held_to.insert(a);
     net.sent_kinds.clear();
-    net.uploaded.clear();
     net.run();
     net.advance(29_999);
-    assert!(!net.uploaded.is_empty(), "a relayed c's rotation under the head");
+    let held = net.host_ids(host, &l);
+    let at_peer = net.sync(a).entries(&l).into_iter().any(|(id, k)| matches!(k, EntryKind::Commit { commit, .. } if commit == rot) && held.contains(&id));
+    assert!(at_peer, "c's rotation reached the peer from a");
     assert_eq!(net.sent_kinds.get(&7), None, "a's step waits");
     net.advance(2_000);
-    assert_eq!(net.sent_kinds.get(&7), Some(&1), "a's step went once settled");
-    let again: Vec<_> = net.uploaded.iter().filter(|(_, n)| **n > 1).collect();
-    assert!(again.is_empty(), "sent again while in flight: {again:?}");
-    net.release();
     net.run();
-    let l = net.label(a);
+    assert_eq!(net.sent_kinds.get(&7), Some(&1), "a's step went once settled");
     assert_eq!(net.host_path(host, &l).len(), 2, "a's step registered");
 }
 

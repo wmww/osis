@@ -547,13 +547,21 @@ impl SyncEngine {
             leave(o, left);
             let Some(e) = self.state.entries.get(&(l, o.id)).cloned() else { continue };
             let stamped = e.stamp.is_some_and(|s| osis_label::verify_stamp(&p.stamps, &l, &o.id, &e.wrap, &s).is_ok());
-            // a role commit the source takes once it pulls it (stamped for its head, or stamped
-            // here for it now); one under a newer head waits for that head's step, which holds
-            // nothing else back
-            roles_behind |= o.prio <= 1 && p.keys.is_writer() && (on_head || stamped);
+            // a role commit the source takes once it pulls it; at a source on an older head
+            // (its step waits or was refused for now) nothing waits for the step, deletes
+            // included (they may be what frees room for it)
+            roles_behind |= o.prio <= 1 && p.keys.is_writer() && on_head;
             match &own.keys.write {
                 Some(wk) if on_head && !stamped => {
                     self.stamp_entry(l, o.id, e, wk);
+                }
+                // a source on an older head (its step refused for now, spec/sync.md §5) takes
+                // what is stamped for its head: stamped for it unless the stamp already serves
+                // another source, which keeps it (its head moving judges everything again)
+                Some(_) if !stamped && !self.stamp_serves_a_source(l, o.id, &e) => {
+                    if let Some(wk) = &p.keys.write {
+                        self.stamp_entry(l, o.id, e, wk);
+                    }
                 }
                 Some(_) => {}
                 None if !stamped && (self.mine(&e) || matches!(o.of, Some(Touch::Commit(_)))) => deposits.push(o.id),
@@ -568,6 +576,12 @@ impl SyncEngine {
             self.retire_at(host, &g, l)?;
         }
         Ok(())
+    }
+
+    /// Whether entry `id`'s stamp verifies under the head of a source of `l`.
+    fn stamp_serves_a_source(&self, l: LabelId, id: BlobId, e: &Entry) -> bool {
+        let Some(stamp) = e.stamp else { return false };
+        self.sources(&l).iter().filter_map(|c| self.lc(*c, &l)?.head.as_ref().map(|h| h.keys.write)).any(|k| osis_label::verify_stamp(&k, &l, &id, &e.wrap, &stamp).is_ok())
     }
 
     /// Must-hold bodies whose entry source `host` deleted while this node's judgment finds the
