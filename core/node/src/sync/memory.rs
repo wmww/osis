@@ -187,6 +187,9 @@ pub(crate) struct Memory {
     pub reported: BTreeSet<LabelId>,
     /// Forgotten memory commits with entries still known (`Engine::take_memory_drops`).
     pub forgotten: BTreeMap<CommitId, Forgotten>,
+    /// The pages of the forgotten memory commits (their chunk lists): deleted at sources once no
+    /// entry of their commit is known (`dropped_chunks`).
+    pub forgotten_pages: BTreeMap<BlobId, CommitId>,
     /// Relay-only entries received (`RelaySeen`).
     pub relays: RelaySeen,
     /// Memory commits from others charged their bytes while they wait (pending: their blobs,
