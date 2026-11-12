@@ -63,11 +63,6 @@ pub(crate) fn unindex_commit(tx: &mut Tx<'_>, id: &CommitId) -> Result<()> {
     super::validity::forget_addenda(core, id, &v.aspects);
     for b in &v.chunks {
         core.ix.by_chunk.remove(b, id);
-        // a memory commit's pages go with it here, unless another held commit lists them (its
-        // entries at hosts are node-sync's, `dropped_chunks`)
-        if v.memory && !core.ix.by_chunk.contains_key(b) {
-            tx.blobs.release(b, true)?;
-        }
     }
     core.ix.void.remove(id);
     core.ix.pending.remove(id);
@@ -93,6 +88,13 @@ pub(crate) fn unindex_commit(tx: &mut Tx<'_>, id: &CommitId) -> Result<()> {
                 e.memory |= v.memory;
             }
             None => crate::retention::off_valueless(tx, &a.tid, &a.ak, &owned),
+        }
+    }
+    // a memory commit's pages go with it here, by the one release rule (`retention::chunks`;
+    // its entries at hosts are node-sync's, `dropped_chunks`)
+    if m.view.memory && !m.header.chunks.is_empty() {
+        for b in crate::retention::chunks::released(tx, &[(*id, &m.header)], &|_| false)? {
+            tx.blobs.release(&b, true)?;
         }
     }
     tx.remove_commit(id)

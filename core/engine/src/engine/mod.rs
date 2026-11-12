@@ -22,7 +22,7 @@ pub mod refs;
 pub mod records;
 pub(crate) mod secrets;
 pub(crate) mod state;
-mod tree_refs;
+pub(crate) mod tree_refs;
 mod testing;
 pub mod write;
 

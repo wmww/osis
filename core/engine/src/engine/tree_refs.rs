@@ -79,45 +79,48 @@ fn answer(trees: impl IntoIterator<Item = Arc<Trees>>, blobs: &BTreeSet<BlobId>)
     out
 }
 
+/// `Engine::tree_refs` in transaction `tx`.
+pub(crate) fn tree_refs_in(tx: &mut Tx<'_>, t: &Tid, blobs: &BTreeSet<BlobId>) -> Result<Trees> {
+    let t = *t;
+    let mut got = Vec::new();
+    for s in sources(tx, &t)? {
+        let k = (t, s);
+        // a node a kept walk lacked, held now
+        if let Some(x) = tx.core.tree_refs.held(&k) {
+            for b in &x.missing {
+                if tx.blobs.held(b)? {
+                    tx.core.tree_refs.forget(&k);
+                    break;
+                }
+            }
+        }
+        got.push(Memo::get_in(tx, |tx| &tx.core.tree_refs, &k, |tx| trees_of(tx, &k.0, &k.1).map(Arc::new))?);
+    }
+    let out = answer(got, blobs);
+    // debug builds, at every question: a kept answer that differs from a fresh read leaves
+    // a linked chunk unprotected (questions come with dropped chunks, rarely)
+    #[cfg(debug_assertions)]
+    {
+        let fresh = crate::costs::paused(|| {
+            crate::engine::memo::unrecorded(|| -> Result<Trees> {
+                let mut all = Vec::new();
+                for s in sources(tx, &t)? {
+                    all.push(Arc::new(trees_of(tx, &t, &s)?));
+                }
+                Ok(answer(all, blobs))
+            })
+        })?;
+        assert_eq!(out, fresh, "tree refs of {t:?} kept apart from a fresh read");
+    }
+    Ok(out)
+}
+
 impl super::Engine {
     /// The blobs among `blobs` that a tree of `tid`'s live states or of a body held on it links
     /// (deltas, snapshots, leftovers), and the node blobs those trees link and this node does not
     /// hold (`missing`: what lies below them is unknown until they are fetched). Costs a memo hit
     /// per source and a lookup per blob, plus a read of each source that moved.
     pub fn tree_refs(&mut self, tid: &Tid, blobs: &BTreeSet<BlobId>) -> Result<Trees> {
-        let t = *tid;
-        self.run(|tx| {
-            let mut got = Vec::new();
-            for s in sources(tx, &t)? {
-                let k = (t, s);
-                // a node a kept walk lacked, held now
-                if let Some(x) = tx.core.tree_refs.held(&k) {
-                    for b in &x.missing {
-                        if tx.blobs.held(b)? {
-                            tx.core.tree_refs.forget(&k);
-                            break;
-                        }
-                    }
-                }
-                got.push(Memo::get_in(tx, |tx| &tx.core.tree_refs, &k, |tx| trees_of(tx, &k.0, &k.1).map(Arc::new))?);
-            }
-            let out = answer(got, blobs);
-            // debug builds, at every question: a kept answer that differs from a fresh read leaves
-            // a linked chunk unprotected (questions come with dropped chunks, rarely)
-            #[cfg(debug_assertions)]
-            {
-                let fresh = crate::costs::paused(|| {
-                    crate::engine::memo::unrecorded(|| -> Result<Trees> {
-                        let mut all = Vec::new();
-                        for s in sources(tx, &t)? {
-                            all.push(Arc::new(trees_of(tx, &t, &s)?));
-                        }
-                        Ok(answer(all, blobs))
-                    })
-                })?;
-                assert_eq!(out, fresh, "tree refs of {t:?} kept apart from a fresh read");
-            }
-            Ok(out)
-        })
+        self.run(|tx| tree_refs_in(tx, tid, blobs))
     }
 }

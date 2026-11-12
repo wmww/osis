@@ -42,6 +42,7 @@ mod oracle;
 pub(crate) mod destroy;
 pub mod lifetimes;
 pub(crate) mod forget;
+pub(crate) mod chunks;
 pub(crate) mod memory;
 pub(crate) use snapshot::{reaches, snapshot_state};
 #[cfg(test)]

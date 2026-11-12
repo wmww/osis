@@ -1905,3 +1905,65 @@ fn forged_listing_keeps(author: usize) {
     assert_eq!(gone, 0, "node {author}: t2's blobs deleted at the host, of {}", tree.len());
     assert_eq!(net.engine(w).get_full(&t2, &Ak::new(BLOB.ak()).unwrap()).unwrap(), Some(osis_base::Value::Bytes(v3.clone())), "node {author} reads t2");
 }
+
+// spec/sync.md §7 (a chunk goes only through an entry its prefix bears), spec/permissions.md §3
+// (a node drops what it lost read access to, nothing it still reads): a writer of t1 who reads t2
+// lists t2's chunks in a t1 commit. A node removed from t1's group, still reading t2 (whose own
+// listings of those chunks it forgot under t2's author's replaces), keeps them: offline, it reads
+// t2 whole.
+#[test]
+fn losing_a_thing_keeps_chunks_another_thing_links_spec_sync_7() {
+    let (mut net, host, [a, v, f]) = hosted_nodes::<3>();
+    let at = vec![net.address(host)];
+    let g1 = net.group_seeded(a, &[(v, Role::Write), (f, Role::Write)], at.clone(), 1);
+    let g2 = net.group_seeded(a, &[(v, Role::Read), (f, Role::Write)], at, 2);
+    let t1 = net.item(a, g1, g1, "x");
+    let t2 = net.item(a, g2, g2, "y");
+    net.run();
+    let noise = |n: usize, seed: u64| {
+        let mut x = vec![0u8; n];
+        osis_crypto::RngCore::fill_bytes(&mut osis_crypto::SeededRng::from_u64(seed), &mut x);
+        x
+    };
+    // t2's value by own replaces reusing its chunks, no snapshot
+    let v1 = noise(2560 << 10, 1);
+    let mut v2 = v1.clone();
+    v2.splice(1000..1000, noise(50, 2));
+    let mut v3 = v2.clone();
+    v3.splice(2000..2000, noise(50, 3));
+    for x in [&v1, &v2, &v3] {
+        let mut m = Mutation::new();
+        m.op(t2, &BLOB, osis_crdt::PathOp { path: vec![], op: osis_crdt::Op::Replace(osis_base::Value::Bytes(x.clone())) }).unwrap();
+        net.engine(a).commit(m).unwrap();
+        net.run();
+    }
+    let tree = net.engine(a).live_trees(&t2).unwrap().blobs;
+    for n in [v, f] {
+        let fetch = net.sync(n).fetch_missing();
+        net.actions(n, fetch);
+        net.run();
+        assert!(net.engine(n).live_trees(&t2).unwrap().blobs == tree, "node {n} holds t2's tree");
+    }
+    let mut m = Mutation::new();
+    m.set(t1, &REG, &s("forged")).unwrap();
+    let forged = net.engine(f).commit_listing(m, &t2).unwrap().unwrap();
+    net.run();
+    assert!(net.engine(v).header(&forged).is_some_and(|h| tree.iter().all(|x| h.chunks.iter().any(|ch| ch.blob == *x))), "v holds the forged listing");
+    // t2's listings of the reused chunks drop under its author's replaces and are forgotten: the
+    // forged one is the only listing of most
+    net.advance(osis_base::format::TOMBSTONE_LIFETIME_MS + 60_000);
+    net.advance(osis_base::format::TOMBSTONE_LIFETIME_MS + 60_000);
+    let ids = net.engine(v).commit_ids();
+    let alone = tree.iter().filter(|x| !ids.iter().any(|c| *c != forged && net.engine(v).header(c).is_some_and(|h| h.chunks.iter().any(|ch| ch.blob == **x)))).count();
+    assert!(alone > 0, "the forged commit alone lists some of t2's chunks at v");
+    let (ta, tf, tv) = (net.tid(a), net.tid(f), net.tid(v));
+    let rec = recipients_of(net.engine(a), &[(ta, Role::Admin), (tf, Role::Write)]);
+    remove_holder(net.engine(a), g1, tv, &rec, 7);
+    net.run();
+    assert_eq!(net.read(v, t1), None, "v forgot t1");
+    net.blocked.insert((v, host));
+    net.drop_link(v, host);
+    let held = tree.iter().filter(|x| net.engine(v).has_blob(x)).count();
+    assert_eq!(held, tree.len(), "v keeps t2's blobs");
+    assert_eq!(net.engine(v).get_full(&t2, &Ak::new(BLOB.ak()).unwrap()).unwrap(), Some(osis_base::Value::Bytes(v3)), "v reads t2 offline");
+}
