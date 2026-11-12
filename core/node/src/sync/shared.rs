@@ -1144,20 +1144,20 @@ impl SyncEngine {
             }
             let Some(e) = self.state.entries.get(&(l, id)).cloned() else { continue };
             let Some(blob) = self.engine.blob(&id)? else { continue };
+            // a body only while this node judges it valid, its own too (a demoted writer's
+            // write): one it judges invalid no writer promotes and nobody deletes
+            // (spec/permissions.md §6), so it would hold the label's deposit budget for good
+            if let super::state::Kind::Commit { commit, parts, .. } = &e.kind
+                && !e.cert
+                && !self.engine.judged_valid(commit, parts)
+            {
+                continue;
+            }
             if !e.cert && matches!(e.kind, super::state::Kind::Commit { .. }) && self.mine(&e) {
                 // this node's own write placed for deposit: queued, so neither a crash nor
                 // forgetting the label recalls it
                 self.queue_deposit(l, std::slice::from_ref(&address), &d, blob, e.wrap, None);
                 queued = true;
-                continue;
-            }
-            // a body only while this node judges it valid: one it judges invalid no writer
-            // promotes and nobody deletes (spec/permissions.md §6), so it would hold the label's
-            // deposit budget for good
-            if let super::state::Kind::Commit { commit, parts, .. } = &e.kind
-                && !e.cert
-                && !self.engine.judged_valid(commit, parts)
-            {
                 continue;
             }
             let busy = self.conns.get(&conn).is_some_and(|c| super::in_flight(c, &c.req.sent, (l, id), now));
