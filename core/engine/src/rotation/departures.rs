@@ -125,7 +125,11 @@ pub(crate) fn names(core: &Core, a: &Tid, departs: Option<osis_keys::Own>) -> os
 /// epoch covers them until a rotation supersedes the epoch), each holder with a box of the
 /// `secrets.0` state at a current epoch of a role it holds less than now, and each maker of a
 /// current epoch holding less than its role now (`Timeline::role` at `At::KEYS`, through holder
-/// actors alike). Each concerns the roles above its current one up to the highest it had.
+/// actors alike). An edge departure concerns the roles above its current one up to the highest
+/// it had; a box or maker departure that role alone (an epoch of another role it neither made
+/// nor holds a box at is no concern of it: counted, a link maker that left kept the link's
+/// admin epoch, which nobody may rotate, uncovered, and so every role of the link and of what it
+/// holds, for good: osis `sharing::leave_of_a_links_maker_gives_up_the_link`).
 fn direct_departures(tx: &mut Tx<'_>, a: &Tid) -> Result<BTreeSet<Departure>> {
     let current: BTreeMap<Tid, Role> = tx.core.key_holders(a).into_iter().collect();
     let mut out = BTreeSet::new();
@@ -140,12 +144,12 @@ fn direct_departures(tx: &mut Tx<'_>, a: &Tid) -> Result<BTreeSet<Departure>> {
             }
         }
     }
-    // per holder: the roles a box or a made epoch had it hold that it holds less than now
-    let mut left: BTreeMap<Tid, (Role, Role)> = BTreeMap::new();
-    let mut note = |m: Tid, cur: Option<Role>, upto: Role| {
-        if let Some(from) = above_role(cur).filter(|f| *f <= upto && m != *a) {
-            let x = left.entry(m).or_insert((from, upto));
-            *x = (x.0.min(from), x.1.max(upto));
+    // per holder: each role a box or a made epoch had it hold that it holds less than now (that
+    // role only: its other roles' epochs it neither made nor holds a box at)
+    let mut left: BTreeSet<(Tid, Role)> = BTreeSet::new();
+    let mut note = |m: Tid, cur: Option<Role>, r: Role| {
+        if cur < Some(r) && m != *a {
+            left.insert((m, r));
         }
     };
     if let Some(epochs) = tx.core.epochs(a) {
@@ -167,7 +171,7 @@ fn direct_departures(tx: &mut Tx<'_>, a: &Tid) -> Result<BTreeSet<Departure>> {
             }
         }
     }
-    out.extend(left.into_iter().map(|(m, (from, upto))| Departure::holder(m, from).upto(upto)));
+    out.extend(left.into_iter().map(|(m, r)| Departure::holder(m, r).upto(r)));
     Ok(out)
 }
 
