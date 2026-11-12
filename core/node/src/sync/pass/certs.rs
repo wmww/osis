@@ -62,6 +62,7 @@ impl SyncEngine {
         }
         // the records, raw: they outlive the commits that minted them (spec/permissions.md §4)
         self.place_records(g, l, &wanted.records, false)?;
+        let copied: BTreeSet<CommitId> = wanted.commits.keys().copied().collect();
         for (c, want) in wanted.commits {
             let (mine, have) = self.held_parts(g, l, &c)?;
             // what the label's closure bodies carry is never copied (a copy duplicating closure
@@ -92,11 +93,17 @@ impl SyncEngine {
             let Some(body) = self.engine.part_body(&c, &missing)? else { continue };
             self.place_copy(g, l, &c, &missing, body)?;
         }
-        // headers alone (a destroyed actor's mintings)
+        // headers alone (the mintings of things whose records go)
         let hosts = self.counted_at(g, l);
         for c in wanted.headers {
-            // this node's own copy placed before and gone since is not placed again
-            if self.state.certs.contains(&(l, c)) || self.header_held_at(l, &c, hosts.as_deref()) {
+            // none where the label carries the header already: a durable commit copied with
+            // parts (an account's minting is its card's commit), a live closure thing's minting
+            // (a body there); nor this node's own copy placed before and gone since
+            let Some(h) = self.engine.header(&c) else { continue };
+            let durable = h.expires.is_none();
+            let core = &self.engine.core;
+            let in_bodies = h.aspects.iter().filter(|a| a.ak.as_str() == osis_commit::retention::CREATED).all(|a| closure.contains(&a.tid) && !core.destroyed(&a.tid)) && h.requests().is_empty();
+            if copied.contains(&c) && durable || in_bodies || self.state.certs.contains(&(l, c)) || self.header_held_at(l, &c, hosts.as_deref()) {
                 continue;
             }
             let Some(body) = self.engine.header_body(&c) else { continue };

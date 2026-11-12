@@ -920,6 +920,69 @@ fn a_durable_minting_again_keeps_an_expiring_thing_but_not_its_content_spec_comm
     }
 }
 
+// spec/commits.md §5 (A thing's mintings travel with its record, Limit): t, durable, made by a under
+// its account, is first admin of x, an item of g that g reads, so r, a reader of g, knows t by its
+// record alone. c, a reader of t, mints t again expiring and hands r the commit, before and after
+// its expiry: r holds t's own minting too (it travels with the record), so t lives at r past the
+// forged expiry, and a's admin on x through t stands there
+#[test]
+fn a_forged_expiring_minting_destroys_no_live_thing_known_by_its_record_spec_commits_5() {
+    for late in [false, true] {
+        let (Setup { mut net, a, b, c, g }, r) = setup_reader();
+        let mut m = Mutation::new();
+        let ta = net.tid(a);
+        let t = net.engine(a).new_thing(&mut m, ta);
+        m.set(t, &REG, &s("t")).unwrap();
+        net.engine(a).commit(m).unwrap().unwrap();
+        net.run();
+        let x = net.item(a, g, t, "x");
+        net.run();
+        net.grant(a, x, g, Role::Read);
+        for _ in 0..3 {
+            net.advance(70_000);
+        }
+        assert_eq!(net.read(r, x), Some(s("x")), "late {late}: r reads x");
+        assert!(net.engine(r).core.created(&t).is_some(), "late {late}: r holds t's record");
+        assert_eq!(net.read(r, t), None, "late {late}: r reads nothing of t");
+        let a_on_x = |net: &mut Net, n: usize| {
+            let ts = osis_base::Ts::make(osis_base::WallMs(net.now()), 0).unwrap();
+            osis_engine::engine::write::role_of(&net.engine(n).core, &ta, &x, ts)
+        };
+        assert_eq!(a_on_x(&mut net, r), Some(Role::Admin), "late {late}: a administers x through t");
+        // c, a reader of t, mints it again expiring (any edge leading to t's record chain lets a
+        // minting apply), and hands r the commit with c's grant on t as its chain
+        let tc = net.tid(c);
+        let grant = net.grant(a, t, tc, Role::Read);
+        let grant = net.engine(a).package(&grant).unwrap().unwrap().bytes;
+        for n in [c, r] {
+            let _ = net.engine(n).ingest(&grant, Vec::new());
+            net.engine(n).reexamine().unwrap();
+        }
+        let rec = net.engine(c).core.created(&t).cloned().unwrap();
+        let mut m = Mutation::new();
+        m.create(rec);
+        m.expires(t, &ct::CREATED, osis_base::WallMs(net.now() + 5_000)).unwrap();
+        let fid = net.engine(c).commit_hostile(m).unwrap().unwrap();
+        let forged = net.engine(c).take_forged().unwrap_or_else(|| net.engine(c).package(&fid).unwrap().unwrap().bytes);
+        if !late {
+            let _ = net.engine(r).ingest(&forged, Vec::new());
+            net.engine(r).reexamine().unwrap();
+        }
+        for _ in 0..2 {
+            net.advance(70_000);
+        }
+        if late {
+            let _ = net.engine(r).ingest(&forged, Vec::new());
+            net.engine(r).reexamine().unwrap();
+        }
+        net.engine(r).tick().unwrap();
+        for n in [a, b, r] {
+            assert!(!net.engine(n).core.destroyed(&t), "late {late}: node {n}: t lives");
+            assert_eq!(a_on_x(&mut net, n), Some(Role::Admin), "late {late}: node {n}: a administers x through t");
+        }
+    }
+}
+
 // spec/commits.md §5 (Destruction: nobody writes a thing after its destruction): t, first admin of x, is
 // purged; c, an admin of t that has not heard of it, grants r admin on t afterwards. r gains nothing on x through t at b whether the grant reaches it before or after the
 // destruction, nor anywhere once all have synced
@@ -1193,7 +1256,7 @@ fn removing_a_destroyed_only_admin_of_a_plain_thing_is_refused_spec_permissions_
     assert!(matches!(err, Some(osis_node::Error::Misuse(m)) if m.contains("no admin")), "refused: {err:?}");
 }
 
-// spec/commits.md §5 (The destruction travels with the record), spec/permissions.md §4: t, first admin
+// spec/commits.md §5 (A thing's mintings travel with its record), spec/permissions.md §4: t, first admin
 // of x and outside g's closure, is purged; time passes, so every node judges what sits under g's
 // label, and then a node is granted g. The request destroying t stays there for x's sake (every node
 // holding x needs it), so the newcomer reads t as destroyed as the others do
@@ -1226,7 +1289,7 @@ fn a_destruction_by_purge_stays_under_a_dependents_label_for_a_newcomer_spec_com
     assert_eq!(net.engine(d).roster(&x), net.engine(a).roster(&x), "d: x's roster as at a");
 }
 
-// spec/commits.md §5 (The destruction travels with the record), spec/permissions.md §4, notes/growth.md:
+// spec/commits.md §5 (A thing's mintings travel with its record), spec/permissions.md §4, notes/growth.md:
 // the certificates of a destroyed thing outside the closure (its minting's header, the request destroying
 // it) stay under g's label while x, a dependent of it, is in the closure, and go once x is destroyed: no
 // node finds a dependent there any more

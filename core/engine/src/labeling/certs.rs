@@ -19,7 +19,7 @@ const CARD: [&str; 3] = ["keys.0", "node.0", "reach.0"];
 pub type Parts = BTreeSet<usize>;
 
 /// Chain material a verifier needs (spec/permissions.md §4): parts of commits to copy, commits
-/// to copy as headers alone (a destroyed actor's mintings), and raw creation records (a record
+/// to copy as headers alone (the mintings of things whose records go), and raw creation records (a record
 /// blob's), which outlive the commits that minted them.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Certs {
@@ -199,10 +199,10 @@ impl Engine {
             let certs = self.chain_to(&me, a);
             self.cert_parts(&certs, &mut out);
         }
-        // every destroyed thing whose record goes, with what tells it was destroyed
-        let destroyed: Vec<Tid> = out.records.iter().filter(|t| self.core.destroyed(t)).copied().collect();
-        for t in destroyed {
-            self.destruction_evidence(&t, &mut out);
+        // every thing whose record goes, with its mintings (and a destroyed one's destruction)
+        let records: Vec<Tid> = out.records.iter().copied().collect();
+        for t in records {
+            self.minting_evidence(&t, &mut out);
         }
         out.records.retain(|t| self.core.created(t).is_some());
         out
@@ -251,15 +251,16 @@ impl Engine {
         Ok(out)
     }
 
-    /// What tells that actor `t` was destroyed, added to `out` (spec/commits.md §5 Destruction): whatever
-    /// lets a node judge `t`'s frozen history also tells it the destruction (`cert_parts` adds it
-    /// for every destroyed thing whose record goes). Each held minting and each held request
-    /// dropping one, as a header alone: a minting's `expires` dates an expiry (a value-less part
+    /// What goes with `t`'s record, added to `out` (spec/commits.md §5, A thing's mintings travel
+    /// with its record; `cert_parts` adds it for every thing whose record goes): each held minting
+    /// of `t` and, destroyed, each held request dropping one, as a header alone. A node knowing `t`
+    /// by its record so holds `t`'s own minting beside any minting again: one expiring is no
+    /// destruction while another is not value-less. A minting's `expires` dates an expiry (a value-less part
     /// is never uploaded), a request's header names what it destroys (`Header::requests`; `t`'s frozen
     /// history judges its right), and a header-only blob has no prefix expiry, so a release's
     /// copy outlives the request's own blobs (spec/sync.md §1). Each with its author's chains to
     /// `t` and to its actor. Once per `out`: its mintings among `out`'s headers.
-    fn destruction_evidence(&mut self, t: &Tid, out: &mut Certs) {
+    fn minting_evidence(&mut self, t: &Tid, out: &mut Certs) {
         let mintings: Vec<CommitId> = self.core.mintings(t).map(|(c, _)| c).collect();
         if mintings.iter().all(|c| out.headers.contains(c)) {
             return;
@@ -270,7 +271,9 @@ impl Engine {
         for c in mintings.iter().chain(&requests) {
             let Some(h) = self.header(c) else { continue };
             for x in [*t, h.actor, h.author] {
-                let cs = self.chain_to(&h.author, &x);
+                // a header is judged by its author's edges and records; no keyset judges it
+                let mut cs = self.chain_to(&h.author, &x);
+                cs.keys.clear();
                 self.cert_parts(&cs, out);
             }
         }
@@ -373,9 +376,8 @@ impl Engine {
                 out.add(c, self.parts_of(&c, &BTreeSet::from([*t]), &["keys.0"]));
             }
         }
-        let destroyed: Vec<Tid> = certs.created.iter().filter(|t| self.core.destroyed(t)).copied().collect();
-        for t in destroyed {
-            self.destruction_evidence(&t, out);
+        for t in &certs.created {
+            self.minting_evidence(t, out);
         }
     }
 
@@ -493,7 +495,7 @@ impl Engine {
         }))
     }
 
-    /// A header-only copy of held commit `c` (a destroyed actor's minting, `destruction_evidence`): no
+    /// A header-only copy of held commit `c` (a minting or a destroying request, `minting_evidence`): no
     /// part, so no expiry or commitments in its prefix (spec/sync.md §1), ordered by its `ts`
     /// (spec/crypto.md §5).
     pub fn header_body(&self, c: &CommitId) -> Option<Body> {

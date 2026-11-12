@@ -38,7 +38,7 @@ pub fn blob_expiry(h: &Header) -> Option<u64> {
 
 /// The prefix expiry of a blob of `h` whose sections list `ais`: `blob_expiry`, but none for a
 /// header-only blob (no section: spec/sync.md §1), which outlives the commit's expiry (a lasting
-/// header, a destroyed actor's minting).
+/// header, a minting's copy travelling with its record).
 pub fn prefix_expiry(h: &Header, ais: &[usize]) -> Option<u64> {
     if ais.is_empty() { None } else { blob_expiry(h) }
 }
