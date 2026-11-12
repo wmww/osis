@@ -8,7 +8,7 @@ use osis::internals::Internals as _;
 use osis::{Ak, CommitQuery, DynamicAspectKey, GrantOpts, LinkOpts, MemStore, Osis, Role, Scope, SetRoleOpts, Store, SyncScope, SyncState, Tid, Value};
 use osis_sim::ClockSpec;
 use osis_sim::reach::{PORT, Route, Uplink};
-use osis_sim::world::World;
+use osis_sim::world::{STORM, World};
 use osis_transport::nat::Nat;
 use std::future::Future;
 use std::net::{IpAddr, SocketAddr};
@@ -1134,6 +1134,42 @@ fn repro_row37_another_node_of_the_sharer_finalizes_a_link() {
     w.set_online(&a, false);
     w.advance(2 * LONG_MS);
     assert!(!a2.grants(g).unwrap().contains_key(&k), "still not finalized");
+}
+
+// spec/permissions.md §7 (Finalized: with no host, at once by the node that wrote the seed thing):
+// a direct link expires while its maker and another node of the account stay online with no
+// saved peer. Both stop listing it, every settle ends, and once the finalize has settled a tick
+// moves no more than an idle one did before expiry.
+#[test]
+fn a_link_expiring_with_both_sharer_nodes_online_settles_spec_permissions_7() {
+    let mut w = World::new();
+    let r = w.reach.add_relay(None);
+    let a = w.account(1, &[]);
+    w.place(&a, &[], Uplink::Public, &[r]);
+    w.run();
+    let a2 = pair(&w, &a, 2);
+    w.place(&a2, &[], Uplink::Public, &[r]);
+    w.run();
+    w.advance(pause_ms());
+    let g = group(&a);
+    w.advance(pause_ms());
+    let until = osis::Time(a.now().unwrap().0 + LONG_MS);
+    a.make_link(g, Role::Read, LinkOpts { direct: true, until: Some(until), single_use: false }).unwrap();
+    w.advance(pause_ms());
+    let listed = |n: &Osis| n.links().unwrap().iter().any(|l| l.target == g);
+    assert!(listed(&a) && listed(&a2), "both nodes list the link");
+    // rounds until nothing moves; a settle that does not end in `STORM` rounds fails
+    let settle = |w: &mut World, ms: u64| {
+        w.tick(ms);
+        let n = (0..STORM).take_while(|_| w.step(None)).count();
+        assert!(n < STORM, "no settle in {STORM} rounds");
+        n
+    };
+    let idle = settle(&mut w, STEP_MS);
+    // past `until`: the maker finalizes, the other node takes it, then quiet
+    let rounds: Vec<usize> = (0..4).map(|_| settle(&mut w, LONG_MS)).collect();
+    assert!(rounds[2..].iter().all(|n| *n <= idle), "still moving after the finalize settled: {rounds:?}, idle {idle}");
+    assert!(!listed(&a) && !listed(&a2), "an expired link is listed nowhere");
 }
 
 // issues/net-one-peer.md step 1, spec/sync.md §10 (One key): a node that serves is a saved peer by

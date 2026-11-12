@@ -9,6 +9,7 @@
 - A grant to an account whose inbox lists no host goes as a Deposit item to a connected node proved a holder of the inbox, and stays pending, shown, until one takes it (row 9; notes/inbox.md Deposit items). An inbox listing hosts still goes to them.
 - Redeem by bundle alone times out (row 21). The format already carries claim sets with their entry boxes (spec/wire.md §8, §12), so the cause is elsewhere; not traced.
 - With no host only the node that wrote the seed thing finalizes an ended link (row 37; spec/permissions.md §7 Finalized).
+  Its repro (core/test/sim/tests/it/no_server.rs `repro_row37_...`) cannot pass as written: `k` there is K (`LinkId::actor`), whose grant on the target has no `until` and never ends; and `grants` hides an expired edge whether finalized or not. It needs an observable of the finalize itself.
 
 ## Design
 Connecting is issues/net-connect.md's; what two connected nodes open is issues/net-shared-set.md's. First contact adds no path of its own: it only needs those two to cover a link key and a depositor.
