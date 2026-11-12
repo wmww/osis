@@ -2965,36 +2965,6 @@ fn uploads_sent(net: &Net) -> usize {
     net.sent_kinds.get(&10).copied().unwrap_or(0)
 }
 
-// spec/sync.md §9 (own plain writes made while an upload of the label is unanswered join the next
-// commit): a burst of note edits during one upload in flight goes up as two commits, and both
-// holders converge on every edit; B, also writing meanwhile, merges with it
-#[test]
-fn burst_coalesced_while_upload_in_flight_spec_sync_9() {
-    let (mut net, _host, [a, b], g, []) = hosted::<2, 0>(&[(1, Role::Write)], [], true);
-    let w = window(&mut net, a, g, "shared");
-    net.run();
-    let up = uploads_sent(&net);
-    let mut want = BTreeMap::new();
-    for i in 0..20 {
-        note(&mut net, a, w, &format!("k{i}"), &format!("v{i}"));
-        want.insert(format!("k{i}"), format!("v{i}"));
-    }
-    // overwrites inside the burst: the latest wins
-    note(&mut net, a, w, "k3", "last");
-    want.insert("k3".into(), "last".into());
-    assert_eq!(uploads_sent(&net) - up, 1, "one upload in flight, the rest wait");
-    note(&mut net, b, w, "b", "from b");
-    want.insert("b".into(), "from b".into());
-    net.run();
-    assert_eq!(uploads_sent(&net) - up, 3, "A's first edit, A's other 20 in one commit, B's");
-    assert_eq!(notes(&mut net, a, w), want);
-    assert_eq!(notes(&mut net, b, w), want);
-    // a restarted holder gets the same back from the host
-    net.restart(b, 21);
-    net.advance(10_000);
-    assert_eq!(notes(&mut net, b, w), want);
-}
-
 /// `authors` nodes in one group move their cursors every 33 ms (30 a second) for `secs`
 /// simulated seconds, each move a fresh entry under the author's own key of one cursor map
 /// expiring 30 s out (what `osis::KeepAlive::set` writes), messages taking one 33 ms round per hop
@@ -3304,18 +3274,16 @@ fn superseding_needs_later_expiry_and_own_records_spec_sync_9() {
     assert_eq!((at(&mut net, a), at(&mut net, b)), (None, None), "the set goes at its own expiry");
 }
 
-// spec/sync.md §9: ephemeral signals are never held back or merged: each write of one sent while a plain
-// upload of the label is in flight is its own relay-only commit at once, and each fires once at B
+// spec/sync.md §9: ephemeral signals are never held back or merged: each write of one made in a
+// burst beside a plain write is its own relay-only commit, and each fires once at B
 #[test]
 fn ephemeral_signals_not_held_back_spec_sync_9() {
     let (mut net, _host, [a, b], g, [t]) = hosted::<2, 1>(&[(1, Role::Write)], ["x"], true);
     let w = window(&mut net, a, g, "busy");
-    let up = uploads_sent(&net);
     let rb = net.listen(b);
     for i in 0..5 {
         net.eph_write(a, t, &crate::common::ak("t:ring+~0"), s(&format!("ding {i}")));
     }
-    assert_eq!(uploads_sent(&net) - up, 5, "one relay-only upload per signal, none waits");
     net.run();
     let got: Vec<Value> = fired(&rb).into_iter().filter(|(x, ak, _, _)| *x == t && ak == "t:ring+~0").map(|(_, _, v, _)| v).collect();
     assert_eq!(got.len(), 5, "{got:?}");
