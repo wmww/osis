@@ -118,13 +118,7 @@ Expiry stops changing winners (stamps stay), so it can be an in-place strip of o
 - **text-creation-undelete-dating**: unaffected, stays.
 - **subgroup-expiry-strands-silently**: stays. An ended group thing strands items the same way, and the same fix (the engine reports at expiry) covers it.
 
-## 5. Requirements wording (needs Tess's sign-off)
-- Data model: in place of "A write inside a map entry, list element or enum case shows only while that entry, element or case is live (its creation or case write survives). A write never brings back what was removed, expired or switched away from":
-  > A write inside a map entry or list element shows while the entry is not removed and holds content from any write; an expired or purged write takes only its own content. A write never brings back what was removed or switched away from; only a new creation does.
-- Deletion, new: "Purging or expiring a thing's creation ends the thing: every node drops it and ignores later writes to it."
-- Dependents (Tess decided B; wording pending her sign-off): "Things it created live on: what others also run keeps running, and what an ended account wrote still shows as its own." spec/requirements.md says "Things it created live on."
-
-## 6. Build plan (one worker plus a reviewer each, in order)
+## 5. Build plan (one worker plus a reviewer each, in order)
 Model first: crdt-model for steps 1-3, held-model (liveness through crdt-model, then records and waits) for steps 3, 5-7.
 1. **Records with no write go.** Built (models, osis-crdt, engine rebuild stop, spec).
 2. **Element rule in the models and spec.** Built (branch `expiry-2`): crdt-model `element_rule_spec_4_7`, `map_dot_records_one_entry_spec_5_6`; held-model; spec/crdt.md §4.3, §4.7, §5.6, §5.7.
