@@ -81,6 +81,47 @@ fn commit_blob_round_trip() {
     assert_eq!(empty.id(), b.id());
 }
 
+// spec/wire.md §4, spec/data-model.md §5: a header, commit blob or blob plaintext decodes only
+// from its canonical bytes (one commit ID per header): every one-byte change of valid bytes is
+// refused or is the canonical bytes of what it decodes to; widened heads, an indefinite array
+// and trailing bytes are refused.
+#[test]
+fn commit_decoders_accept_only_canonical_bytes() {
+    let (b, _) = one_commit();
+    let secret = Secret32::from_bytes([7; 32]);
+    let env = seal_commit(&b, |_| 0, |_, _| Some((secret.clone(), vec![])), &[], &mut crate::tests::build::rng()).unwrap();
+    type Decode<'a> = &'a dyn Fn(&[u8]) -> Option<Vec<u8>>;
+    let canonical: [(&str, Vec<u8>, Decode); 3] = [
+        ("header", b.header.encode(), &|x| Header::decode(x).ok().map(|h| h.encode())),
+        ("blob", b.encode(), &|x| CommitBlob::decode(x).ok().map(|c| c.encode())),
+        ("envelope", env.encode(), &|x| Envelope::decode(x).ok().map(|e| e.encode())),
+    ];
+    for (name, good, decode) in canonical {
+        assert_eq!(decode(&good).as_ref(), Some(&good), "{name}");
+        for i in 0..good.len() {
+            let mut variants = vec![good[..i].to_vec(), [&good[..i], &[0u8][..], &good[i..]].concat()];
+            for x in [0x01, 0x20, 0x80, 0xff] {
+                let mut m = good.clone();
+                m[i] ^= x;
+                variants.push(m);
+            }
+            for m in variants {
+                if let Some(again) = decode(&m) {
+                    assert_eq!(again, m, "{name}: byte {i} changed, accepted, not canonical");
+                }
+            }
+        }
+        // the outer array head (5 or 17 items) widened to two bytes; as an indefinite array
+        let n = good[0] & 31;
+        let wide = [&[0x98, n][..], &good[1..]].concat();
+        let indefinite = [&[0x9f][..], &good[1..], &[0xff][..]].concat();
+        let trailing = [&good[..], &[0][..]].concat();
+        for bad in [wide, indefinite, trailing] {
+            assert_eq!(decode(&bad), None, "{name}");
+        }
+    }
+}
+
 // spec/commits.md §2: an ephemeral commit holds no `created.0` aspect.
 #[test]
 fn ephemeral_commit_holds_no_record_spec_commits_2() {
