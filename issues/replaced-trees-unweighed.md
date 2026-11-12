@@ -3,6 +3,6 @@
 > Priority: low
 > Tags: engine, retention
 
-The trigger (`retention/compact.rs` `body_bytes`, spec/sync.md §7 Trigger) weighs a body by what dropping it frees: its deltas and their pages (`apply::memory::each_page`: listed blobs reached from the delta that are not tree nodes). A large value's tree is skipped, since the live state, so the snapshot, keeps linking it while the value is live (counting it made every large-value write fire the trigger). Once the value is replaced a drop frees its tree, uncounted.
+The trigger (`retention/compact.rs` `body_bytes`, spec/sync.md §7 Trigger) weighs a body by what dropping it frees: its deltas and their pages (`apply::memory::each_page`: listed blobs reached from the delta that are not tree nodes). A large value's tree is skipped, since the live state, so the snapshot, keeps linking it while the value is live (counting it made every large-value write fire the trigger). Once the value is replaced a drop frees its tree, uncounted, while a snapshot's cost counts its chunk list (`LISTED_BLOB_BYTES` per linked blob): for a large value the trigger waits about `2 * 56 B * chunks / body weight` edits, each leaving its old root path and changed chunks at hosts (about a fifth of the value's size per cycle at 1 GB and at 10 GB).
 
 The exact rule is "listed blobs no live state links": exclude the blobs the snapshot being weighed links (`large::delta_links` of its encoding) at weighing, and count a replaced value's tree when its body leaves history or is replaced (`Trigger::counts`).
