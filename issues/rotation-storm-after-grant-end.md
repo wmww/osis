@@ -10,6 +10,8 @@
 - Shape at node a after the run (role commits carrying g's `keys.0` 52, `roles.0` only 8, `secrets.0` only 51; 111 in all, the same with and without rotation-lows' rules): write epochs by n `{8: 5, 9: 4, 10: 3, 11: 4, 12: 3, 13: 3, 14: 2}`, read and sync alike from n 7: the finalizes' fork at n 8 is merged by several mergers at each n in turn, and each round of forks brings its history adds and re-seals (the `secrets.0`-only half).
 - Tried: merging a fork only where it matters (pass-end merge also requires an actor above g anchoring g at keysets Seal cannot pass, `seal_keyset` Wait; spec §4 already gives that as the merge's reason). The seed then stops quiescing at step 52: node 1 never completes a pass of g's label (`synced false`, no traffic), cause not traced. Persistent forks touch more than Seal (label passes, re-seals, history adds), so this needs its own design pass.
 
+- Seen as a storm: `member_churn` setup 670640340529, seeds 670640340531, 670640340533, 670640340543 run to the 5000-delivery cutoff at steps 115-119 on main alike, the queue full of g's role commits (`keys.0`, `secrets.0`).
+
 ## Question
 No rule over the forks a node holds is independent of which it holds. Options: merge only where a fork matters (a holder actor whose anchors fork, Seal), since the merge rule already handles a fork missing a departure; or a deterministic merger over the forks' makers that does not depend on the forks seen (e.g. the lowest maker by tid among those that may rotate), so a node whose view lacks a fork waits for it.
 - Also storms: sim `member_churn` setup 313462591648 seed 313462591652, step 111 (5000 deliveries of `keys.0`/`secrets.0` role commits on one group; on main alike).
