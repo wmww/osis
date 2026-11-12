@@ -433,8 +433,9 @@ pub(crate) fn covered(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Tid, ak
 }
 
 /// The body whole against the snapshot's part at the body's positions (`apply::held_part_at`).
-/// Cost: the body and that part, about twice the body, plus the snapshot streamed once per
-/// write of its record while it fits `CARRIED_MAX` (above it, once per judgment).
+/// Cost: the body and that part, about twice the body, plus the snapshot's root and the pages
+/// at the body's positions (`PageIndex`, kept per write of its record): flat in the snapshot's
+/// size past one page.
 pub(crate) fn covered_join(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<Option<bool>> {
     // counted: tests read how many pairs are joined
     let _s = crate::costs::span("covered: join");
@@ -457,10 +458,11 @@ pub(crate) fn covered_join(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Ti
     let Some(m) = tx.core.ix.commits.get(c).cloned() else { return Ok(None) };
     // a memory body not held that the snapshot's frontier (indexed) does not reach: judged
     // before the snapshot is read, as below. A held body is judged by the join alone: a
-    // snapshot that covered a coverer of it carries its writes past its own frontier, and
-    // saying otherwise here breaks the chain of covers (`hand_down`) a node with the body
-    // dropped judges by (a holder places it again, every pass, for that node to delete)
-    if (m.is_dropped(cai) || m.missing(cai))
+    // snapshot whose writer held it behind a gap in its session carries its writes past its
+    // own frontier, and saying otherwise here breaks the chain of covers (`hand_down`) a node
+    // with the body dropped judges by (a holder places it again, every pass, for that node to
+    // delete)
+    if !m.holds(cai)
         && m.header.ephemeral.is_some()
         && m.header.form.counted()
         && m.header.kind.has_own_writes()
