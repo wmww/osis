@@ -57,7 +57,7 @@ fn purge_leaves_no_copy_spec_commits_5() {
     let (mut net, host, [a, b, r], _g, [t]) = hosted::<3, 1>(&[(1, Role::Write), (2, Role::Read)], ["x"], false);
     net.keep(a, t, &[("t:gone.0", PURGE)]);
     let mut m = Mutation::new();
-    m.set(t, &GONE, &s("secret")).unwrap();
+    m.set(t, &GONE, &s(&"secret".repeat(500))).unwrap();
     let c = net.engine(a).commit(m).unwrap().unwrap();
     net.run();
     let l = net.label(a);
@@ -160,23 +160,23 @@ fn purged_body_waits_for_its_rewrite_spec_sync_7() {
     assert_eq!(net.engine(b).get(&t, &gone).unwrap(), None);
 }
 
-/// A label of writer `a` and `b` at its entry cap at the peer that cannot read it, holding
-/// commit `c` (`t`'s purgeable value, body `p`); then `a` writes `t2` (lacking there): (net, peer,
-/// a, b, t, t2, label, c, p, the cap).
+/// A label of writer `a` and `b` at its byte cap at the peer that cannot read it, holding
+/// commit `c` (`t`'s purgeable value of about 3 KB, body `p`); then `a` writes `t2` (lacking
+/// there): (net, peer, a, b, t, t2, label, c, p, the cap in bytes).
 #[allow(clippy::type_complexity)]
 fn full_peer() -> (Net, usize, usize, usize, Tid, Tid, osis_base::LabelId, osis_base::CommitId, osis_base::BlobId, u64) {
     let (mut net, host, [a, b], _g, [t, t2]) = hosted::<2, 2>(&[(1, Role::Write)], ["x", "y"], false);
     net.keep(a, t, &[("t:gone.0", PURGE)]);
     let mut m = Mutation::new();
-    m.set(t, &GONE, &s("secret")).unwrap();
+    m.set(t, &GONE, &s(&"secret".repeat(500))).unwrap();
     let c = net.engine(a).commit(m).unwrap().unwrap();
     net.run();
     net.advance(60_000);
     let l = net.label(a);
     let p = blobs_of(&mut net, a, &l, &c);
     assert_eq!(p.len(), 1);
-    let full = net.host_capped(host, &l);
-    net.restart_host_with(host, osis_host::HostPolicy { cap_entries: full, ..osis_host::HostPolicy::default() });
+    let full = net.host_capped_bytes(host, &l);
+    net.restart_host_with(host, osis_host::HostPolicy { cap_bytes: full, ..osis_host::HostPolicy::default() });
     net.run();
     // past the redial pause
     net.advance(66_000);
@@ -191,14 +191,14 @@ fn full_peer() -> (Net, usize, usize, usize, Tid, Tid, osis_base::LabelId, osis_
 }
 
 // spec/sync.md §5, §10 (a peer that cannot read L takes what it pulls within its own caps and
-// says when it is full; presence there is what its stream showed): the label is at its entry cap at
+// says when it is full; presence there is what its stream showed): the label is at its byte cap at
 // the peer and a's next write does not fit: the peer stays within its cap, a keeps the write, and
 // a's status shows the peer full.
 #[test]
 fn a_full_peer_stays_within_its_cap_and_the_writer_keeps_the_rest_spec_sync_10() {
     let (mut net, host, a, b, _t, t2, l, _c, _p, full) = full_peer();
     let gone = Ak::new(GONE.ak()).unwrap();
-    assert_eq!(net.host_capped(host, &l), full, "the peer stays within its cap");
+    assert_eq!(net.host_capped_bytes(host, &l), full, "the peer stays within its cap");
     assert_eq!(net.engine(a).get(&t2, &gone).unwrap(), Some(s("kept")), "a keeps its write");
     assert_eq!(net.engine(b).get(&t2, &gone).unwrap(), None, "b reads through the peer only");
     assert!(net.refused_at(a, &l), "a's status shows the peer full");
@@ -206,8 +206,9 @@ fn a_full_peer_stays_within_its_cap_and_the_writer_keeps_the_rest_spec_sync_10()
 
 // spec/sync.md §5 (an entry deletes are judged by is taken outside the caps), §7 (purge), §10:
 // as above, then a purges `c`: the purge request reaches the full peer, the purged body leaves
-// it, and the room freed takes the backlog the peer lacked, a's write that did not fit: b,
-// reading through the peer only, reads it, and the peer stays within its cap.
+// it, and the room freed takes the backlog the peer lacked, the purge-on-replace snapshot of the
+// emptied aspect and a's write that did not fit: b, reading through the peer only, reads it,
+// and the peer stays within its cap.
 #[test]
 fn a_purge_frees_room_at_a_full_peer_spec_sync_7() {
     let (mut net, host, a, b, t, t2, l, c, p, full) = full_peer();
@@ -220,7 +221,7 @@ fn a_purge_frees_room_at_a_full_peer_spec_sync_7() {
     net.feed(a, Event::Local);
     for _ in 0..50 {
         net.round();
-        assert!(net.host_capped(host, &l) <= full, "the peer stays within its cap");
+        assert!(net.host_capped_bytes(host, &l) <= full, "the peer stays within its cap");
     }
     net.run();
     net.advance(31_000);
@@ -231,7 +232,7 @@ fn a_purge_frees_room_at_a_full_peer_spec_sync_7() {
     assert!(after.iter().any(|x| !before.contains(x) && !request.contains(x)), "a body it lacked took the room freed");
     assert_eq!(net.engine(b).get(&t2, &gone).unwrap(), Some(s("kept")), "the write that did not fit reaches b through the peer");
     assert!(!net.refused_at(a, &l), "nothing lacked there any more");
-    assert_eq!(net.host_capped(host, &l), full, "within its cap");
+    assert!(net.host_capped_bytes(host, &l) <= full, "within its cap");
 }
 
 // spec/permissions.md §3 (complete pass): a role commit pushed to a subscribed node ends

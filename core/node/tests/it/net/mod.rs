@@ -1790,6 +1790,11 @@ impl Net {
         self.hosts[s].hub.store().capped(l).unwrap().0
     }
 
+    /// The bytes of `l` host `s`'s caps count.
+    pub fn host_capped_bytes(&self, s: usize, l: &osis_base::LabelId) -> u64 {
+        self.hosts[s].hub.store().capped(l).unwrap().1
+    }
+
     /// Whether node `n`'s status shows label `l` not caught up at a source it has (a peer lacks
     /// something `n` placed there): sources, none of them stranded, and fewer idle.
     pub fn lags(&mut self, n: usize, l: &osis_base::LabelId) -> bool {
