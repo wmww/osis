@@ -387,18 +387,9 @@ impl SyncEngine {
                         self.keep_salts(&blob_id, Some(b))?;
                     }
                     match blob {
-                        // a chunk of dropped deltas (spec/commits.md §5): only its salt is kept
-                        // (fetched for a delete-key signature, or brought by anyone); one with
-                        // no salt to read (bad input) wakes no pass
-                        Some(_) if !memory && !self.engine.has_blob(&blob_id) && self.dropped_chunk(&blob_id)? => {
-                            if self.state.entries.get(&(l, blob_id)).is_none_or(|e| e.salt.is_none()) {
-                                continue;
-                            }
-                        }
-                        // a page of a memory commit forgotten here (not arrived again): its bytes
-                        // are not kept
-                        Some(_) if memory && self.forgotten_page(&blob_id) => {
-                        }
+                        // a piece judged freed here (spec/sync.md §7): its bytes are not kept,
+                        // whoever brings them
+                        Some(_) if !self.engine.has_blob(&blob_id) && self.engine.is_freed(&blob_id)? => {}
                         Some(b) if memory => {
                             // a host's unstamped junk in the ephemeral class is judged as its
                             // durable junk is (`drop_unvouched`: opened under nothing, its bytes go)
@@ -419,7 +410,7 @@ impl SyncEngine {
                         }
                         // nothing to open: only the entry changed (one refused for the node's
                         // ephemeral cap waits for room, `memory_skips`)
-                        None if !self.engine.has_blob(&blob_id) && !self.memory_skips(&l, &blob_id) => {
+                        None if !self.engine.has_blob(&blob_id) && !self.memory_skips(&l, &blob_id) && !self.engine.is_freed(&blob_id)? => {
                             fetch.push(blob_id);
                             announced = true;
                             continue;
@@ -694,11 +685,16 @@ impl SyncEngine {
 
     /// Deletes the bytes of blobs `ids` from the store.
     pub(crate) fn delete_blobs(&mut self, ids: &[BlobId]) -> Result<()> {
+        self.delete_blobs_of(ids, false)
+    }
+
+    /// `delete_blobs` of memory blobs (`memory`: an ephemeral piece's bytes, held in memory).
+    pub(crate) fn delete_blobs_of(&mut self, ids: &[BlobId], memory: bool) -> Result<()> {
         if ids.is_empty() {
             return Ok(());
         }
         let named: Vec<(LabelId, BlobId)> = ids.iter().flat_map(|b| self.state.labels_of(b).into_iter().map(move |l| (l, *b))).collect();
-        self.engine.run(|tx| {
+        self.engine.run(|tx| tx.in_class(memory, |tx| {
             // the entry rows of bytes no longer held go with them (the hub's store holds rows
             // with bytes only), once the engine's store committed
             for (l, b) in &named {
@@ -711,7 +707,7 @@ impl SyncEngine {
                 tx.blobs.release(b, memory)?;
             }
             Ok(())
-        })
+        }))
     }
 
     /// Held read secrets of a group (`Engine::read_secrets`).
@@ -2030,8 +2026,6 @@ impl SyncEngine {
         if self.state.present_anywhere(&l, &b) {
             return Ok(false);
         }
-        // a dropped chunk's bytes go first: its salt goes into the tombstone (`keep_salts`)
-        self.forget_chunk(&b)?;
         self.state.remove_entry(l, b);
         self.forget_blob(&b)?;
         Ok(true)
@@ -2121,26 +2115,6 @@ impl SyncEngine {
         Ok(())
     }
 
-    /// Drops the bytes of a chunk of dropped deltas (spec/commits.md §5), whatever names it:
-    /// its prefix salt stays with the entries that do (`keep_salts`), for the delete-key
-    /// signatures that remove it at hosts.
-    pub(crate) fn forget_chunk(&mut self, b: &BlobId) -> Result<()> {
-        // cheapest first: commit blobs have their own record, most deleted bytes are gone already
-        if self.state.blobs.contains_key(b) || !self.engine.has_blob(b) || !self.dropped_chunk(b)? {
-            return Ok(());
-        }
-        self.keep_salts(b, None)?;
-        self.delete_blobs(&[*b])
-    }
-
-    /// Whether `b` is a chunk, tree node or page of deltas this node dropped (`dropped_chunks`):
-    /// its bytes are not kept, whoever brings them.
-    pub(crate) fn dropped_chunk(&mut self, b: &BlobId) -> Result<bool> {
-        let ix = &self.engine.core.ix;
-        let listed = ix.by_chunk.get(b).is_some_and(|cs| cs.iter().any(|c| ix.commits.get(c).is_some_and(|m| m.any_body_gone())));
-        Ok(listed && self.dropped_chunks(&BTreeSet::from([*b]))?.0.contains_key(b))
-    }
-
     /// Records blob `b`'s prefix salt (spec/sync.md §6 Tombstones), expiry (§5: it goes then,
     /// `expire_entries`) and size (§5 Clearing deposits) with every entry naming it that lacks them, from `bytes` (checked to be `b`'s,
     /// `log_events_from`) or the bytes held here: both outlive the bytes.
@@ -2196,20 +2170,9 @@ impl SyncEngine {
                 self.drop_blob(&id)?;
             }
         }
-        // chunks of dropped deltas, their salts kept (`forget_chunk`)
-        let listed: BTreeSet<BlobId> = match commits {
-            None => self.engine.core.ix.commits.values().filter(|m| m.any_body_gone()).flat_map(|m| m.view.chunks.iter().copied()).collect(),
-            Some(cs) => cs.iter().filter_map(|c| self.engine.core.ix.commits.get(c)).filter(|m| m.any_body_gone()).flat_map(|m| m.view.chunks.iter().copied()).collect(),
-        };
-        let held: BTreeSet<BlobId> = listed.into_iter().filter(|b| !self.state.blobs.contains_key(b) && self.engine.has_blob(b)).collect();
-        if held.is_empty() {
-            return Ok(());
-        }
-        let gone: Vec<BlobId> = self.dropped_chunks(&held)?.0.into_keys().collect();
-        for b in &gone {
-            self.keep_salts(b, None)?;
-        }
-        self.delete_blobs(&gone)
+        // the pieces dropped bodies freed, judged (their bytes go, `freed_now`)
+        self.freed_now()?;
+        Ok(())
     }
 
     /// Fetches blobs by ID from an open label holding them (lazy chunk reads), but those in

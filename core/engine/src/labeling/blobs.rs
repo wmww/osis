@@ -641,21 +641,6 @@ impl Engine {
     }
 }
 
-impl Engine {
-    /// The delete secrets this node holds for chunk entry `ch` of header `h` (spec/crypto.md
-    /// §7: per delete key it commits to, those of its delta), with their levels.
-    pub fn chunk_delete_secrets(&self, h: &osis_commit::Header, ch: &osis_commit::ChunkEntry) -> Vec<(u8, DeleteSecret)> {
-        let Some(a) = h.aspects.get(ch.ai) else { return Vec::new() };
-        self.delete_secrets(h, &a.tid, &ch.keys)
-    }
-
-    /// Whether blob `ch.blob`'s prefix bears a commitment chunk entry `ch` of header `h` names
-    /// (`retention::chunks::entry_borne`); `None` when the blob is not held here.
-    pub fn chunk_entry_borne(&mut self, h: &osis_commit::Header, ch: &osis_commit::ChunkEntry) -> Result<Option<bool>> {
-        self.run(|tx| crate::retention::chunks::entry_borne(tx, h, ch))
-    }
-}
-
 /// A delete item for an entry: by the label delete key when held, else by delete keys of
 /// levels (`groups`: the secrets held per commitment group, for the blob's prefix salt and its
 /// header's blind) and the label key those levels need (spec/sync.md §5), under established

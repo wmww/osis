@@ -13,6 +13,12 @@ use std::collections::BTreeSet;
 /// the mirror of `index_commit` and the rest of `apply_verified`.
 pub(crate) fn unindex_commit(tx: &mut Tx<'_>, id: &CommitId) -> Result<()> {
     hand_down(tx, id)?;
+    // a memory commit's held parts go with it: what they link joins the freed sets
+    // (`retention::freed`), memory rows; node-sync deletes the pieces as durable ones
+    let held: Vec<usize> = tx.core.ix.commits.get(id).filter(|m| m.view.memory).map(|m| (0..m.header.aspects.len()).filter(|ai| m.holds(*ai)).collect()).unwrap_or_default();
+    for ai in held {
+        crate::retention::freed::free_part(tx, id, ai)?;
+    }
     let core = &mut *tx.core;
     let Some(m) = core.take_meta(id) else { return Ok(()) };
     let v = &m.view;
@@ -89,13 +95,6 @@ pub(crate) fn unindex_commit(tx: &mut Tx<'_>, id: &CommitId) -> Result<()> {
                 e.memory |= v.memory;
             }
             None => crate::retention::off_valueless(tx, &a.tid, &a.ak, &owned),
-        }
-    }
-    // a memory commit's pages go with it here, by the one release rule (`retention::chunks`;
-    // its entries at hosts are node-sync's, `dropped_chunks`)
-    if m.view.memory && !m.header.chunks.is_empty() {
-        for b in crate::retention::chunks::released(tx, &[(*id, &m.header)], false)? {
-            tx.blobs.release(&b, true)?;
         }
     }
     tx.remove_commit(id)

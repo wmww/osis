@@ -399,12 +399,12 @@ pub(crate) fn delta_links(tx: &mut Tx<'_>, dedup: &Secret32, delta: &[u8]) -> Re
     Ok(links)
 }
 
-/// The root links in a delta's canonical bytes (none if they do not decode).
-fn delta_roots(delta: &[u8]) -> Vec<Link> {
+/// The root links in a delta's canonical bytes (none if they do not decode): its values' tree
+/// roots and its pages.
+pub(crate) fn delta_roots(delta: &[u8]) -> Vec<Link> {
     let mut roots = Vec::new();
-    if let Ok(v) = osis_base::decode(delta, &osis_base::Limits { max_depth: osis_base::format::MAX_OBJECT_DEPTH, max_bytes: delta.len() }) {
-        links_in(&v, &mut roots);
-    }
+    // by heads alone: a snapshot's frontiers and facts are no values
+    let _ = osis_base::visit_links(delta, &osis_base::Limits { max_depth: osis_base::format::MAX_OBJECT_DEPTH, max_bytes: delta.len() }, &mut |l| roots.push(l));
     roots
 }
 
@@ -428,22 +428,29 @@ pub(crate) fn links_in(v: &Value, out: &mut Vec<Link>) {
 /// `Err(Missing)` when the blob is not held.
 fn below(blobs: &mut TxBlobs<'_, '_>, dedup: &Secret32, link: &Link) -> Result<Option<(bool, Vec<Link>)>> {
     let blob = blobs.fetch(&link.blob)?;
-    if osis_label::blob_id(&blob) != link.blob {
-        return Ok(None);
+    Ok(kids_of(Some(dedup), link, &blob))
+}
+
+/// `below` of the held bytes `blob` of `link`: `None` for a chunk, or bytes that are not the
+/// node or page the link names (its content hash under `dedup`, unchecked without one: a thing
+/// forgotten here, whose pieces are only deleted).
+pub(crate) fn kids_of(dedup: Option<&Secret32>, link: &Link, blob: &[u8]) -> Option<(bool, Vec<Link>)> {
+    if osis_label::blob_id(blob) != link.blob {
+        return None;
     }
-    let Ok((_, pt)) = osis_label::open(&blob, &Secret32::from_bytes(link.key)) else { return Ok(None) };
+    let (_, pt) = osis_label::open(blob, &Secret32::from_bytes(link.key)).ok()?;
     if let Ok((level, kids)) = osis_label::tree::parse_node(&pt)
-        && osis_label::tree::node_hash(dedup, level, &kids) == link.hash
+        && dedup.is_none_or(|d| osis_label::tree::node_hash(d, level, &kids) == link.hash)
     {
-        return Ok(Some((level <= 1, kids.into_iter().map(|(l, _)| l).collect())));
+        return Some((level <= 1, kids.into_iter().map(|(l, _)| l).collect()));
     }
-    if osis_crypto::link_hash(dedup, &pt) != link.hash {
-        return Ok(None);
+    if dedup.is_some_and(|d| osis_crypto::link_hash(d, &pt) != link.hash) {
+        return None;
     }
-    let Ok(v) = osis_base::decode(&pt, &osis_base::Limits { max_depth: osis_base::format::MAX_OBJECT_DEPTH, max_bytes: pt.len() }) else { return Ok(None) };
+    let v = osis_base::decode(&pt, &osis_base::Limits { max_depth: osis_base::format::MAX_OBJECT_DEPTH, max_bytes: pt.len() }).ok()?;
     let mut out = Vec::new();
     links_in(&v, &mut out);
-    Ok(Some((false, out)))
+    Some((false, out))
 }
 
 /// The bytes under tree root `link` as its node states them (0 when the node is not held or is

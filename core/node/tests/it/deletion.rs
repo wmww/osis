@@ -1704,10 +1704,10 @@ fn edit_unseen(len: usize) -> (usize, usize, usize) {
     (sent, need, cuts(&v1).len())
 }
 
-// spec/commits.md §5 Forgetting (a blob a commit's chunk list alone names keeps it), spec/sync.md
-// §7: a value's chunks reused by the author's own replaces outlive the commit that introduced
-// them, dropped under those replaces with its tombstones aged out; once a later write stops
-// linking them they still leave the host, deleted under the introducer's listing.
+// spec/sync.md §7 Freed links (a piece goes once no held source of its thing links it, by the
+// keys its link names): a value's chunks reused by the author's own replaces outlive the commit
+// that introduced them, dropped under those replaces and forgotten with its tombstones aged
+// out; once a later write stops linking them they still leave the host.
 #[test]
 fn chunks_outliving_their_introducer_leave_the_host_spec_commits_5() {
     let (mut net, host, [a], g, [t]) = hosted::<1, 1>(&[], ["x"], true);
@@ -1737,8 +1737,7 @@ fn chunks_outliving_their_introducer_leave_the_host_spec_commits_5() {
     let tree = net.engine(a).live_trees(&t).unwrap().blobs;
     assert!(net.engine(a).commit_ids().iter().all(|c| !net.engine(a).header(c).unwrap().kind.is_compaction()), "no snapshot");
     assert!(!net.engine(a).body_not_dropped(&first, &t, &Ak::new(BLOB.ak()).unwrap()), "the first write dropped under the replaces");
-    let h = net.engine(a).header(&first).expect("kept for the chunks it alone lists");
-    assert!(h.chunks.iter().any(|c| tree.contains(&c.blob)), "the replaces reuse chunks of the first write");
+    assert!(net.engine(a).header(&first).is_none(), "the introducer is forgotten");
     // a small write, compacted
     let mut m = Mutation::new();
     m.set(t, &BLOB, &osis_base::Value::Bytes(vec![1, 2, 3])).unwrap();
@@ -1845,29 +1844,27 @@ fn local(net: &mut Net, n: usize) {
     net.actions(n, acts);
 }
 
-// spec/sync.md §7 (a chunk goes only once nothing held links it), spec/crypto.md §7 (a linked
-// blob's commitments name its thing), spec/requirements.md Threat model: a writer of thing t1
-// who reads t2 lists t2's live chunks in a t1 commit. Once that commit drops at t2's author (its
-// own copies of t2's listing commits dropped under its replaces and forgotten), the author deletes
-// nothing of t2: not as label admin (label delete key), not as a writer sharing t1's delete keys
-// (one delete base); t2 still reads.
+// spec/sync.md §7 Freed links (a link is judged under its own thing), spec/crypto.md §7 (a
+// linked blob's commitments name its thing), spec/requirements.md Threat model: a writer of
+// thing t1 who reads t2 sets a t1 value to t2's value link verbatim. Once that body drops at
+// t2's author (its own copies of t2's earlier bodies dropped under its replaces and forgotten),
+// the author deletes nothing of t2: not as label admin (label delete key), not as a writer
+// sharing t1's delete keys (one delete base); t2 still reads.
 #[test]
-fn chunks_listed_by_another_thing_stay_spec_crypto_7() {
+fn chunks_linked_from_another_thing_stay_spec_crypto_7() {
     for author in [0, 1] {
-        forged_listing_keeps(author);
+        forged_link_keeps(author);
     }
 }
 
-/// `chunks_listed_by_another_thing_stay_spec_crypto_7` with t2 written and t1 compacted by node
-/// `author` (0: the group admin, holding the label delete key; 1: a writer, deleting by delete
-/// key), node 2 the forger.
-fn forged_listing_keeps(author: usize) {
+/// `chunks_linked_from_another_thing_stay_spec_crypto_7` with t2 written and t1 compacted by
+/// node `author` (0: the group admin, holding the label delete key; 1: a writer, deleting by
+/// delete key), node 2 the forger.
+fn forged_link_keeps(author: usize) {
     let (mut net, host, [a, b, c], g, [t1, t2]) = hosted::<3, 2>(&[(1, Role::Write), (2, Role::Write)], ["x", "y"], true);
     let l = net.group_labels(a).into_iter().find(|(x, _)| *x == g).unwrap().1.id;
     let w = [a, b][author];
-    // the forger's t1 commit lists t2's chunks, which no state of t1 links: weighed as what its
-    // drop frees, it would have the forger compact t1 before anyone holds it (spec/sync.md §7
-    // Trigger); t1 keeps its writes for a month
+    // t1 keeps its writes for a month
     net.keep(a, t1, &[(REG.ak(), osis_schema::History::Keep { until: Some(net.now() + osis_base::format::TOMBSTONE_LIFETIME_MS), after: None })]);
     net.run();
     if w != a {
@@ -1888,17 +1885,13 @@ fn forged_listing_keeps(author: usize) {
         net.run();
     }
     let tree = net.engine(w).live_trees(&t2).unwrap().blobs;
-    // c lists them in a t1 commit
-    let fetch = net.sync(c).fetch_missing();
-    net.actions(c, fetch);
-    net.run();
-    let held = net.engine(c).live_trees(&t2).unwrap();
-    assert!(held.missing.is_empty() && held.blobs == tree, "the forger holds t2's tree");
+    // c links t2's value from t1
+    let Some(osis_base::Value::Link(root)) = net.engine(c).get(&t2, &Ak::new(BLOB.ak()).unwrap()).unwrap() else { panic!("t2 holds a large value") };
     let mut m = Mutation::new();
-    m.set(t1, &REG, &s("forged")).unwrap();
-    let forged = net.engine(c).commit_listing(m, &t2).unwrap().unwrap();
+    m.set(t1, &REG, &osis_base::Value::Link(root.clone())).unwrap();
+    let forged = net.engine(c).commit(m).unwrap().unwrap();
     net.run();
-    assert!(net.engine(w).header(&forged).is_some_and(|h| tree.iter().all(|x| h.chunks.iter().any(|ch| ch.blob == *x))));
+    assert_eq!(net.engine(w).get(&t1, &Ak::new(REG.ak()).unwrap()).unwrap(), Some(osis_base::Value::Link(root)), "t1 links t2's value");
     // the author's own listings of t2's chunks drop under its replaces and are forgotten
     net.advance(osis_base::format::TOMBSTONE_LIFETIME_MS + 60_000);
     net.advance(osis_base::format::TOMBSTONE_LIFETIME_MS + 60_000);
@@ -1918,10 +1911,10 @@ fn forged_listing_keeps(author: usize) {
     assert_eq!(net.engine(w).get_full(&t2, &Ak::new(BLOB.ak()).unwrap()).unwrap(), Some(osis_base::Value::Bytes(v1.clone())), "node {author} reads t2");
 }
 
-// spec/sync.md §7 (a chunk goes only through an entry its prefix bears), spec/permissions.md §3
-// (a node drops what it lost read access to, nothing it still reads): a writer of t1 who reads t2
-// lists t2's chunks in a t1 commit. A node removed from t1's group, still reading t2 (whose own
-// listings of those chunks it forgot under t2's author's replaces), keeps them: offline, it reads
+// spec/sync.md §7 Freed links (a piece goes only by a link its prefix bears), spec/permissions.md
+// §3 (a node drops what it lost read access to, nothing it still reads): a writer of t1 who reads
+// t2 sets a t1 value to t2's value link. A node removed from t1's group, still reading t2 (whose
+// earlier bodies it dropped under t2's author's replaces), keeps t2's blobs: offline, it reads
 // t2 whole.
 #[test]
 fn losing_a_thing_keeps_chunks_another_thing_links_spec_sync_7() {
@@ -1931,7 +1924,7 @@ fn losing_a_thing_keeps_chunks_another_thing_links_spec_sync_7() {
     let g2 = net.group_seeded(a, &[(v, Role::Read), (f, Role::Write)], at, 2);
     let t1 = net.item(a, g1, g1, "x");
     let t2 = net.item(a, g2, g2, "y");
-    // the forged t1 commit kept while t1 is held (`chunks_listed_by_another_thing_stay_spec_crypto_7`)
+    // the forged t1 commit kept while t1 is held (`chunks_linked_from_another_thing_stay_spec_crypto_7`)
     net.keep(a, t1, &[(REG.ak(), osis_schema::History::FOREVER)]);
     net.run();
     let noise = |n: usize, seed: u64| {
@@ -1955,18 +1948,15 @@ fn losing_a_thing_keeps_chunks_another_thing_links_spec_sync_7() {
         net.run();
         assert!(net.engine(n).live_trees(&t2).unwrap().blobs == tree, "node {n} holds t2's tree");
     }
+    let Some(osis_base::Value::Link(root)) = net.engine(f).get(&t2, &Ak::new(BLOB.ak()).unwrap()).unwrap() else { panic!("t2 holds a large value") };
     let mut m = Mutation::new();
-    m.set(t1, &REG, &s("forged")).unwrap();
-    let forged = net.engine(f).commit_listing(m, &t2).unwrap().unwrap();
+    m.set(t1, &REG, &osis_base::Value::Link(root.clone())).unwrap();
+    net.engine(f).commit(m).unwrap().unwrap();
     net.run();
-    assert!(net.engine(v).header(&forged).is_some_and(|h| tree.iter().all(|x| h.chunks.iter().any(|ch| ch.blob == *x))), "v holds the forged listing");
-    // t2's listings of the reused chunks drop under its author's replaces and are forgotten: the
-    // forged one is the only listing of most
+    assert_eq!(net.engine(v).get(&t1, &Ak::new(REG.ak()).unwrap()).unwrap(), Some(osis_base::Value::Link(root)), "v holds t1's link to t2's value");
+    // t2's earlier bodies drop under its author's replaces and are forgotten
     net.advance(osis_base::format::TOMBSTONE_LIFETIME_MS + 60_000);
     net.advance(osis_base::format::TOMBSTONE_LIFETIME_MS + 60_000);
-    let ids = net.engine(v).commit_ids();
-    let alone = tree.iter().filter(|x| !ids.iter().any(|c| *c != forged && net.engine(v).header(c).is_some_and(|h| h.chunks.iter().any(|ch| ch.blob == **x)))).count();
-    assert!(alone > 0, "the forged commit alone lists some of t2's chunks at v");
     let (ta, tf, tv) = (net.tid(a), net.tid(f), net.tid(v));
     let rec = recipients_of(net.engine(a), &[(ta, Role::Admin), (tf, Role::Write)]);
     remove_holder(net.engine(a), g1, tv, &rec, 7);

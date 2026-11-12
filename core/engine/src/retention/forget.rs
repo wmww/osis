@@ -24,7 +24,7 @@ use crate::engine::{Core, Tx};
 use crate::error::Result;
 use crate::events::{Cause, Event};
 use osis_commit::{CommitBlob, Header};
-use osis_base::{Ak, BlobId, CommitId, LabelId, Tid};
+use osis_base::{Ak, CommitId, LabelId, Tid};
 use osis_store::Shred;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -136,8 +136,8 @@ pub(crate) fn forget(tx: &mut Tx<'_>, lost: &[Tid], held: &BTreeMap<Tid, u64>) -
     }
     // commit records: forgotten parts out, shredded; a commit left with none is deleted
     let mut parts: BTreeMap<CommitId, BTreeSet<usize>> = BTreeMap::new();
-    // commits deleted whole, with their headers: what their chunk lists name may go
-    let mut going: Vec<(CommitId, crate::engine::LazyHeader)> = Vec::new();
+    // the links of the parts forgotten, by thing: the pieces they reach may go (`freed::lost`)
+    let mut links: BTreeMap<Tid, Vec<osis_base::Link>> = BTreeMap::new();
     // rare (lost access): decodes every header
     let ids: Vec<CommitId> = tx.core.ix.commits.keys().copied().collect();
     for id in ids {
@@ -147,10 +147,15 @@ pub(crate) fn forget(tx: &mut Tx<'_>, lost: &[Tid], held: &BTreeMap<Tid, u64>) -
             continue;
         }
         let Some(blob) = tx.get_commit(&id)? else { continue };
+        for ai in ais.iter().copied().filter(|ai| m.holds(*ai)) {
+            if let Some(a) = m.header.aspects.get(ai) {
+                let l = super::freed::part_links(tx, &id, ai)?;
+                links.entry(a.tid).or_default().extend(l);
+            }
+        }
         let rest = osis_commit::rewrite(&blob, |ai| ais.contains(&ai));
         if rest.parts.is_empty() {
             tx.remove_commit(&id)?;
-            going.push((id, m.header.clone()));
             out.commits.insert(id);
         } else if rest.parts.len() < blob.parts.len() {
             tx.put_commit(&id, &rest, &m, Shred::Yes, None)?;
@@ -265,20 +270,14 @@ pub(crate) fn forget(tx: &mut Tx<'_>, lost: &[Tid], held: &BTreeMap<Tid, u64>) -
     for g in out.things.clone() {
         out.labels.extend(crate::flows::labels::labels_in(tx, &g)?);
     }
-    // the chunks the deleted commits list that go by the one release rule (an entry naming
-    // another thing's blob releases nothing, `retention::chunks`), then the sync records and the
-    // blob ciphertexts nothing kept names
-    let listings: Vec<(CommitId, &Header)> = going.iter().map(|(c, h)| (*c, &**h)).collect();
-    let chunks = super::chunks::released(tx, &listings, true)?;
-    let listed: BTreeSet<BlobId> = listings.iter().flat_map(|(_, h)| h.chunks.iter().map(|c| c.blob)).collect();
+    // the pieces the forgotten parts reach that no kept source of their thing links (a link
+    // its blob does not bear releases nothing, `freed::lost`; their freed sets go), then the
+    // sync records and the blob ciphertexts nothing kept names
+    let pieces = super::freed::lost(tx, &out.things, links)?;
     let gone = match tx.core.sync_records {
-        Some(r) => r.forget(tx, &out.labels, &out.things, &out.commits, &parts, chunks.clone())?,
-        None => chunks.clone(),
+        Some(r) => r.forget(tx, &out.labels, &out.things, &out.commits, &parts, pieces.clone())?,
+        None => pieces.clone(),
     };
-    // a blob a kept commit lists stays, and one a deleted commit lists goes only by the rule
-    let core = &*tx.core;
-    let still = |b: &BlobId| core.ix.by_chunk.get(b).is_some_and(|cs| cs.iter().any(|c| !out.commits.contains(c)));
-    let gone: Vec<BlobId> = gone.into_iter().filter(|b| !still(b) && (!listed.contains(b) || chunks.contains(b))).collect();
     for b in &gone {
         tx.blobs.release(b, tx.txn.is_memory())?;
     }

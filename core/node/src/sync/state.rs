@@ -455,9 +455,6 @@ pub struct State {
     /// Commits to look at for forgetting (`forget_forgettable`): one's last part dropped, entry
     /// gone or tombstone expired.
     pub forget_due: BTreeSet<CommitId>,
-    /// Unopened blobs whose last entry went: the commits listing them are looked at for
-    /// forgetting (`forget_forgettable`).
-    pub unnamed_chunks: BTreeSet<BlobId>,
     /// Commits with a row in `deleted`, and how many.
     pub deleted_commits: BTreeMap<CommitId, usize>,
     /// Inbox blobs not yet answered by their host, by (host, blob).
@@ -1141,9 +1138,6 @@ impl State {
             set(&mut self.cert_entries, (l, b), add);
         }
         set(&mut self.blob_labels, (b, l), add);
-        if !add && e.kind == Kind::Unknown && !self.named(&b) {
-            self.unnamed_chunks.insert(b);
-        }
     }
 
     /// One more (or one fewer) entry carries commit `c`; the last gone, it is swept.

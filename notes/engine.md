@@ -70,4 +70,4 @@ A map by area, not a full list (rustdoc has that).
 - notes/engine-lifetimes.md: lifetime judgment by reference, release requests, forgetting at their expiry.
 - notes/engine-lost-access.md: the lost-access trigger, forgetting, kept copies, bearers, self-removal drops.
 - notes/engine-refs.md: the reference index (rows, how each state change keeps them, costs).
-- notes/engine-paged.md: paged state, sequence placement, streamed apply and readers, large values, dropped chunks and their repair, costs.
+- notes/engine-paged.md: paged state, sequence placement, streamed apply and readers, large values, freed links and repair, costs.

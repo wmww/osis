@@ -9,7 +9,7 @@ Encoding: spec/wire.md §4. Fields:
 - `ts` (spec/crdt.md §2.2) and the dot form, commit or session (§3).
 - Optional `expires` (§6), the expiry of every delta of the commit.
 - Aspect list: per touched `(tid, ak)`: counter range `[lo, hi)`, retention (§5), the delta hash of its one delta, and for a durable signal's delta optionally the fire it `replaces` (§5 Signals).
-- Chunk list: the chunk, tree-node and page blobs the deltas introduce, and in a compaction snapshot or an ephemeral commit every other blob of its class its deltas link (§2), each with its delta, the indices of the delete keys it commits to and its link blind (spec/crypto.md §7): a node holding the header can delete it at hosts once no held body links it (spec/sync.md §7), and an ephemeral commit applies once it holds them.
+- Chunk list: the chunk, tree-node and page blobs the deltas introduce, and in a compaction snapshot or an ephemeral commit every other blob of its class its deltas link (§2), each with its delta, the indices of the delete keys it commits to and its link blind (spec/crypto.md §7): an ephemeral commit applies once it holds them. Deleting goes by link, not by this list (spec/sync.md §7 Freed links).
 - Optional purge request (§5), optional `undoes: commit ID` (§7).
 - A 16-byte random blind (the commit blob's, spec/crypto.md §7) and the delete keys with their levels; per aspect, the indices of the keys its deltas call for.
 - Explicit removals and edge writes that audit only: the frontier (spec/permissions.md §5.1 step 4), inline or as a link to a chunk tree when it exceeds `CHUNK_THRESHOLD` (spec/data-model.md §6).
@@ -181,7 +181,7 @@ Every delta carries **retention** on the wire: who may purge it (its purgeable-b
 - A delta with an expiry is judged by the join, not by its own lifetime: a later own whole replace covers it whether its values have expired or not.
 
 ### Forgetting
-- A node forgets a durable content commit or content compaction snapshot, header and ID included, once every part of it dropped as covered (under any held valid writer's compaction snapshot, or its author's own replaces) and no entry of a blob of it, or of one its chunk list names (§1) that no other held commit lists, is known and no delete of one of its own blobs is within `TOMBSTONE_LIFETIME`.
+- A node forgets a durable content commit or content compaction snapshot, header and ID included, once every part of it dropped as covered (under any held valid writer's compaction snapshot, or its author's own replaces) and no entry of a blob of it is known and no delete of one of its own blobs is within `TOMBSTONE_LIFETIME`.
 - A node forgets a commit of either class, header and ID included, once it holds no part of it, some part was dropped as invalid (spec/permissions.md §6), nothing of it waits, and no entry of a blob of it is known and no delete of one is within its tombstone.
 - A node forgets a content commit of either class, header and ID included, once it holds of it only parts held value-less for a purge request (Purge; not past its `expires`), one at least, none permanent, none a `created.0` delta, nothing of it waits, and no entry of a blob of it is known and no delete of one is within its tombstone. Its value-less writes go from the state with it.
 - Otherwise kept: role commits, a thing's first commit (its `created.0` part never drops), a lasting commit, a commit carrying a request (a purge or a release), a compaction snapshot not so covered.

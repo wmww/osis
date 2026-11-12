@@ -187,9 +187,6 @@ pub(crate) struct Memory {
     pub reported: BTreeSet<LabelId>,
     /// Forgotten memory commits with entries still known (`Engine::take_memory_drops`).
     pub forgotten: BTreeMap<CommitId, Forgotten>,
-    /// The pages of the forgotten memory commits (their chunk lists): deleted at sources once no
-    /// entry of their commit is known (`dropped_chunks`).
-    pub forgotten_pages: BTreeMap<BlobId, CommitId>,
     /// Relay-only entries received (`RelaySeen`).
     pub relays: RelaySeen,
     /// Memory commits from others charged their bytes while they wait (pending: their blobs,
@@ -293,17 +290,6 @@ impl SyncEngine {
                 self.state.touch(*l, *b);
                 labels.insert(*l);
             }
-            // its pages go with it (their bytes went with the commit, `unindex_commit`)
-            if header.ephemeral.is_some() {
-                for ch in &header.chunks {
-                    self.memory.forgotten_pages.insert(ch.blob, *c);
-                    for l in self.state.labels_of(&ch.blob) {
-                        self.state.charge_memory(l, ch.blob, None);
-                        self.state.touch(l, ch.blob);
-                        labels.insert(l);
-                    }
-                }
-            }
             // a durable commit forgotten whole (a released thing's): its header is kept over a
             // restart while its entries are, so they are still deleted at hosts
             if *why == MemoryDrop::Gone && entries.iter().any(|e| !self.state.memory_entries.contains(e)) {
@@ -328,13 +314,6 @@ impl SyncEngine {
         self.state.commit_labels.range((*c, LabelId([0; 16]))..=(*c, LabelId([0xff; 16]))).next().is_some()
     }
 
-    /// Whether a blob commit `c`'s chunk list names has an entry here and no other held commit
-    /// but those in `going` lists it (a snapshot listing the blobs it links takes over).
-    fn lists_named(&self, c: &CommitId, going: &BTreeSet<CommitId>) -> bool {
-        let ix = &self.engine.core.ix;
-        ix.commits.get(c).is_some_and(|m| m.header.chunks.iter().any(|ch| self.state.named(&ch.blob) && ix.by_chunk.get(&ch.blob).is_none_or(|cs| cs.iter().all(|x| x == c || going.contains(x)))))
-    }
-
     /// The commits that carry forgotten commit `c`'s writes now: those its drop named, each
     /// forgotten in turn (superseded or covered before it was placed) replaced by what carries
     /// it, to the commits held or with entries here.
@@ -357,23 +336,20 @@ impl SyncEngine {
     /// Forgets the commits awaiting it (`State::forget_due`) the engine may forget
     /// (`Engine::forgettable`: durable ones all of whose parts went as covered by an own cover,
     /// memory ones known only for a part dropped while invalid), once node-sync tracks no entry
-    /// of them or of a blob their chunk list alone names (whose delete needs the blind and keys
-    /// it lists) and no delete of a body of them is within its tombstone (spec/commits.md §5,
-    /// spec/sync.md §9 Forgetting). A commit becomes due when its last part is dropped, its last
-    /// entry or that of a blob it lists goes, or its tombstone expires.
+    /// of them and no delete of a body of them is within its tombstone (spec/commits.md §5,
+    /// spec/sync.md §9 Forgetting; what its bodies linked is deleted by the freed sets, needing
+    /// no header). A commit becomes due when its last part is dropped, its last entry goes, or
+    /// its tombstone expires.
     pub(crate) fn forget_forgettable(&mut self) -> Result<()> {
         if !self.forget_seeded {
             self.forget_seeded = true;
             self.state.forget_due.extend(self.engine.all_forgettable());
         }
-        for b in std::mem::take(&mut self.state.unnamed_chunks) {
-            self.state.forget_due.extend(self.engine.core.ix.by_chunk.get(&b).into_iter().flatten().copied());
-        }
         // judged in turn, each as if those before it were gone, then forgotten in one
         // transaction: an aspect rebuilt once however many of its leftovers go
         let mut going = BTreeSet::new();
         for c in std::mem::take(&mut self.state.forget_due) {
-            if self.engine.forgettable(&c) && !self.has_entries(&c) && !self.lists_named(&c, &going) && !self.state.deleted_commit(&c) && !self.state.by_commit.contains_key(&c) {
+            if self.engine.forgettable(&c) && !self.has_entries(&c) && !self.state.deleted_commit(&c) && !self.state.by_commit.contains_key(&c) {
                 going.insert(c);
             }
         }
@@ -398,9 +374,7 @@ impl SyncEngine {
         // kept while an entry of the commit is known or one of its bodies left a label by a
         // delete within the tombstone (a host that got it late announces it again)
         let deleted: BTreeSet<CommitId> = self.state.deleted.keys().map(|(_, c, _)| *c).collect();
-        // or while an entry of one of its pages is (`dropped_chunks` deletes them by it)
-        let pages_known = |f: &Forgotten| f.header.ephemeral.is_some() && f.header.chunks.iter().any(|ch| self.state.named(&ch.blob));
-        let mut keep: BTreeSet<CommitId> = self.memory.forgotten.iter().filter(|(c, f)| !self.engine.holds_memory(c) && (self.has_entries(c) || deleted.contains(c) || pages_known(f))).map(|(c, _)| *c).collect();
+        let mut keep: BTreeSet<CommitId> = self.memory.forgotten.iter().filter(|(c, _)| !self.engine.holds_memory(c) && (self.has_entries(c) || deleted.contains(c))).map(|(c, _)| *c).collect();
         let mut stack: Vec<CommitId> = keep.iter().copied().collect();
         while let Some(c) = stack.pop() {
             for x in self.memory.forgotten.get(&c).map(|f| f.why.by()).unwrap_or_default() {
@@ -411,21 +385,9 @@ impl SyncEngine {
         }
         let gone: Vec<CommitId> = self.memory.forgotten.keys().filter(|c| !keep.contains(c)).copied().collect();
         for c in gone {
-            if let Some(f) = self.memory.forgotten.remove(&c) {
-                for ch in &f.header.chunks {
-                    if self.memory.forgotten_pages.get(&ch.blob) == Some(&c) {
-                        self.memory.forgotten_pages.remove(&ch.blob);
-                    }
-                }
-            }
+            self.memory.forgotten.remove(&c);
             self.state.del_forgotten(&c);
         }
-    }
-
-    /// Whether `b` is a page of a memory commit forgotten here and not held again (a copy
-    /// arriving again applies, pending until its pages come).
-    pub(crate) fn forgotten_page(&self, b: &BlobId) -> bool {
-        self.memory.forgotten_pages.get(b).is_some_and(|c| !self.engine.memory_body_held(c))
     }
 
     /// Memory commits from others that wait (for their blobs, their `ts`, an epoch) are applied

@@ -731,7 +731,6 @@ pub(crate) fn build_and_apply(tx: &mut Tx<'_>, plan: CommitPlan, deltas: Vec<Res
         }
         // hostile test authors only (`Engine::commit_forged`): the header hashes what is sent
         let bytes = if tx.core.forge_bad.contains(&(d.tid, d.ak.clone())) { osis_base::encode(&osis_base::Value::List(vec![osis_base::Value::Int(1)])) } else { bytes };
-        chunks.extend(std::mem::take(&mut tx.core.forge_chunks));
         writes.push(AspectWrite { tid: d.tid, ak: d.ak, lo: d.lo, hi: d.hi, delta: bytes, retention, chunks, replaces: d.replaces });
     }
     let mut b = CommitBuilder::new(plan.kind, plan.ts, node, plan.actor, plan.form);

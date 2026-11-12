@@ -391,10 +391,6 @@ impl Meta {
     pub fn body_gone(&self, ai: usize) -> bool {
         matches!(self.hold.get(ai), Some(Hold::Dropped(_) | Hold::Leftover { .. }))
     }
-    /// Whether some part has no body to upload or keep at hosts (`body_gone`).
-    pub fn any_body_gone(&self) -> bool {
-        (0..self.hold.len()).any(|ai| self.body_gone(ai))
-    }
     /// Whether part `ai` was dropped while invalid (`DropFor::Invalid`).
     pub fn dropped_invalid(&self, ai: usize) -> bool {
         self.dropped(ai).is_some_and(|d| d.why == DropFor::Invalid)
@@ -1123,9 +1119,6 @@ pub struct Core {
     pub(crate) pended: BTreeSet<CommitId>,
     /// Aspects whose deltas `Engine::commit_forged` replaces by bytes that do not decode.
     pub(crate) forge_bad: BTreeSet<(Tid, Ak)>,
-    /// Blobs `Engine::commit_listing` adds to its commit's chunk list, beside what its deltas
-    /// introduce (a hostile writer listing another thing's chunks).
-    pub(crate) forge_chunks: Vec<osis_commit::ChunkWrite>,
     /// Tests: the running transaction writes states no held body gives (`Engine::damage_index`:
     /// another build's rules), so the rebuild check (`apply::check_rebuilt`) skips it.
     #[cfg(debug_assertions)]
@@ -1245,6 +1238,9 @@ pub struct Core {
     /// Commits with a part judged invalid this transaction (`Core::index_validity`): dropped at
     /// its end where held (`retention::drop_invalid`).
     pub drop_due: BTreeSet<CommitId>,
+    /// Things whose freed sets took links this transaction: judged at its end, once their
+    /// states are rebuilt (`retention::freed::settle_due`).
+    pub freed_due: BTreeSet<Tid>,
     /// Subgroups cut this transaction from under a synced group (`Core::note_cut`): what they
     /// held is reported at its end where nothing carries it now (`Core::report_cut`); forgotten with
     /// the journal.
@@ -1377,7 +1373,6 @@ impl Core {
             to_date: self.to_date.clone(),
             redeliver: self.redeliver.clone(),
             forge_bad: self.forge_bad.clone(),
-            forge_chunks: self.forge_chunks.clone(),
             #[cfg(debug_assertions)]
             unchecked_tx: self.unchecked_tx.clone(),
             #[cfg(debug_assertions)]
@@ -1423,6 +1418,7 @@ impl Core {
             settings_due: self.settings_due.clone(),
             cover_candidates: self.cover_candidates.clone(),
             drop_due: self.drop_due.clone(),
+            freed_due: self.freed_due.clone(),
             cut_subs: self.cut_subs.clone(),
             refold: self.refold.clone(),
             changed: self.changed.clone(),
@@ -1975,6 +1971,7 @@ impl Core {
             // work lists and hints a superset of which is harmless (the consumer re-checks each
             // entry against the restored state), and what a step only moves forward
             drop_due: _,
+            freed_due: _,
             cut_subs: _,
             refold: _,
             none_due: _,
@@ -2009,7 +2006,6 @@ impl Core {
             refs_watched: _,
             commit_listeners: _,
             forge_bad: _,
-            forge_chunks: _,
             forged: _,
             header_fault: _,
             key_actors: _,
@@ -2167,7 +2163,6 @@ impl Core {
             redeliver: BTreeSet::new(),
             pended: BTreeSet::new(),
             forge_bad: BTreeSet::new(),
-            forge_chunks: Vec::new(),
             #[cfg(debug_assertions)]
             unchecked_tx: false,
             #[cfg(debug_assertions)]
@@ -2216,6 +2211,7 @@ impl Core {
             cover_candidates: BTreeMap::new(),
             settings_due: BTreeSet::new(),
             drop_due: BTreeSet::new(),
+            freed_due: BTreeSet::new(),
             cut_subs: BTreeSet::new(),
             refold: BTreeSet::new(),
             changed: None,
@@ -3419,6 +3415,11 @@ impl Engine {
                     r = r.and_then(|v| edits::settle(&mut tx).map(|_| v));
                 }
                 tx.core.refold.clear();
+                // freed links judged once every rebuild ran: a judged one keeps no key here
+                if r.is_ok() && !tx.core.freed_due.is_empty() {
+                    r = r.and_then(|v| crate::retention::freed::settle_due(&mut tx).map(|_| v));
+                }
+                tx.core.freed_due.clear();
                 if r.is_ok() {
                     r = r.and_then(|v| listing::listing_moved(&mut tx).map(|_| v));
                 }

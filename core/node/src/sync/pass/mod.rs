@@ -64,10 +64,6 @@ struct Out {
     of: Option<Touch>,
 }
 
-/// Chunks of dropped deltas with the commit and chunk entry listing them, and whether the
-/// blob's held prefix bears the entry (`dropped_chunks`).
-type DroppedChunks = BTreeMap<BlobId, (CommitId, osis_commit::ChunkEntry, bool)>;
-
 /// The bodies wanted under a label, by commit (`judge`).
 type Desired = BTreeMap<CommitId, Vec<Vec<usize>>>;
 
@@ -800,19 +796,6 @@ impl SyncEngine {
         match scope {
             Scope::All => self.state.label_entries(l).map(|(b, _)| b).collect(),
             Scope::Some { commits, blobs } => commits.iter().flat_map(|c| self.state.entries_of(l, c).map(|(b, _)| b)).chain(blobs.iter().copied()).collect(),
-        }
-    }
-
-    /// Unopened entries under `l` in `scope` that `keep` admits, as chunk candidates
-    /// (`dropped_chunks`): every one, or those its commits list and its blobs.
-    fn chunk_entries(&self, l: &LabelId, scope: &Scope, keep: impl Fn(&Self, &BlobId) -> bool) -> BTreeSet<BlobId> {
-        match scope {
-            Scope::All => self.state.of_kind(l, Kind::TAG_UNKNOWN).into_iter().filter(|b| keep(self, b)).collect(),
-            Scope::Some { commits, blobs } => {
-                // a forgotten memory commit lists its pages by the header kept for it
-                let listed = commits.iter().filter_map(|c| self.engine.header(c).or_else(|| self.memory.forgotten.get(c).map(|f| f.header.clone()))).flat_map(|h| h.chunks.iter().map(|ch| ch.blob).collect::<Vec<_>>());
-                listed.chain(blobs.iter().copied()).filter(|b| self.state.entries.get(&(*l, *b)).is_some_and(|e| e.kind == Kind::Unknown) && keep(self, b)).collect()
-            }
         }
     }
 

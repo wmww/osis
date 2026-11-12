@@ -43,7 +43,7 @@ pub(crate) mod destroy;
 pub use destroy::{End, Minting, Standing};
 pub mod lifetimes;
 pub(crate) mod forget;
-pub(crate) mod chunks;
+pub mod freed;
 pub(crate) mod memory;
 pub(crate) use snapshot::{reaches, snapshot_state};
 #[cfg(test)]
@@ -242,6 +242,11 @@ fn drop_part_for(tx: &mut Tx<'_>, c: &CommitId, ai: usize, why: DropFor) -> Resu
     let role_bodies: Vec<Fragment> = if is_role_class(a.ak.as_str()) { crate::apply::held_fragment(tx, c, ai)?.into_iter().collect() } else { Vec::new() };
     let keysets = crate::apply::keys::keysets_of(&m.header, ai, &role_bodies);
     let shown = tx.core.ix.shown.get(&(*c, ai)).cloned();
+    // what it links joins its thing's freed set first; an invalid body's stays at hosts with its
+    // pieces, a refetch source (spec/permissions.md §6)
+    if !invalid {
+        freed::free_part(tx, c, ai)?;
+    }
     if stripped {
         leftover::remove(tx, &a.tid, &a.ak, c, ai)?;
     }
@@ -814,6 +819,10 @@ fn put_leftover(tx: &mut Tx<'_>, c: &CommitId, ai: usize, mut m: crate::engine::
     // body is held)
     if osis_schema::core_types::is_addenda(a.ak.as_str()) {
         crate::apply::validity::forget_addendum_body(tx.core, c, &a.tid);
+    }
+    // its delta's links join the freed set: the leftover still links what it keeps
+    if fresh {
+        freed::free_part(tx, c, ai)?;
     }
     if let Some(blob) = tx.get_commit(c)? {
         // its body goes: the blob without the slot, shredded

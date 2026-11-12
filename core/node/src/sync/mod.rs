@@ -147,8 +147,8 @@ pub struct SyncEngine {
     /// Deposits for a label this node syncs with nobody: logged here, as a peer's deposit would
     /// be (`send_outbox`).
     pub(crate) local_inbox: Vec<(LabelId, Vec<u8>, [u8; osis_crypto::WRAP_LEN])>,
-    /// Tree node blobs a judgment of dropped chunks waits for (`dropped_chunks`); a pass
-    /// fetches those its host holds.
+    /// Node blobs a freed-set judgment waits for (`freed_now`); a pass fetches those its host
+    /// holds.
     pub(crate) tree_wants: BTreeSet<osis_base::BlobId>,
     /// Blobs each body's deltas link (`pass::body_blobs`), once the walk was complete: a body
     /// never changes.

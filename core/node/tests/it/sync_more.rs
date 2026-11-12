@@ -618,6 +618,53 @@ fn purge_shreds_only_unique_chunks_spec_sync_7() {
     assert_eq!(net.engine(b).get_full(&t, &blob_ak).unwrap(), Some(Value::Bytes(v2)));
 }
 
+// spec/sync.md §7 Freed links (no node deletes a piece a held source of its thing links), §1
+// (reuse across authors keeps the blob): b edits a's large value, reusing most of its pieces
+// under a's links; a purges its own version. The pieces only it reached go at the host; those
+// b's version links stay, at the host and at both nodes, and b's value reads whole.
+#[test]
+fn another_authors_reuse_keeps_the_piece_spec_sync_7() {
+    let (mut net, host, [a, b]) = hosted_nodes::<2>();
+    let g = net.group(a, &[(b, Role::Write)], &[host]);
+    let t = net.item(a, g, g, "x");
+    net.keep(a, t, &[(BLOB.ak(), crate::common::DAY)]);
+    net.run();
+    let blob_ak = Ak::new(BLOB.ak()).unwrap();
+    let v1 = noise(1 << 20, 7);
+    let mut m = Mutation::new();
+    m.set(t, &BLOB, &Value::Bytes(v1.clone())).unwrap();
+    let c1 = net.engine(a).commit(m).unwrap().unwrap();
+    net.run();
+    let acts = net.sync(b).fetch_missing();
+    net.actions(b, acts);
+    net.run();
+    let mut v2 = v1;
+    v2.splice(600_000..600_000, noise(100, 8));
+    let mut m = Mutation::new();
+    m.set(t, &BLOB, &Value::Bytes(v2.clone())).unwrap();
+    net.engine(b).commit(m).unwrap().unwrap();
+    net.run();
+    let first: BTreeSet<_> = net.engine(a).package(&c1).unwrap().unwrap().blobs.into_iter().map(|(id, _)| id).collect();
+    let live = net.engine(b).live_trees(&t).unwrap().blobs;
+    let shared: BTreeSet<_> = first.intersection(&live).copied().collect();
+    let unique: BTreeSet<_> = first.difference(&live).copied().collect();
+    assert!(!shared.is_empty() && !unique.is_empty(), "b's version reuses a's pieces: shared {} unique {}", shared.len(), unique.len());
+    let l = net.label(a);
+    let mut m = Mutation::new();
+    m.set(t, &REG, &s("purged v1")).unwrap();
+    m.purge_commit(c1, t, blob_ak.clone());
+    net.engine(a).commit(m).unwrap().unwrap();
+    net.run();
+    net.settle(100_000);
+    let held: BTreeSet<_> = net.host_ids(host, &l).into_iter().collect();
+    assert!(unique.is_disjoint(&held), "a piece only the purged version reached is gone at the host");
+    assert!(shared.is_subset(&held), "pieces b's version links stay at the host");
+    for n in [a, b] {
+        assert!(shared.iter().all(|x| net.engine(n).has_blob(x)), "node {n} keeps the shared pieces");
+        assert_eq!(net.engine(n).get_full(&t, &blob_ak).unwrap(), Some(Value::Bytes(v2.clone())), "node {n} reads b's value");
+    }
+}
+
 /// Commits in the order host `s`'s node log shows their blobs under `l` (blob IDs mapped through
 /// node `n`'s entries; first appearance).
 fn logged_commits(net: &mut Net, s: usize, n: usize, l: &osis_base::LabelId) -> Vec<osis_base::CommitId> {

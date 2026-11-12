@@ -54,6 +54,8 @@ fn purged_chunks_leave_local_label_spec_sync_5() {
     net.run();
     let chunks: Vec<BlobId> = net.engine(a).header(&c).unwrap().chunks.iter().map(|ch| ch.blob).collect();
     assert!(!chunks.is_empty(), "a chunked value");
+    let Some(osis_base::Value::Link(root)) = net.engine(a).get(&t, &Ak::new(GONE.ak()).unwrap()).unwrap() else { panic!("a large value") };
+    assert!(chunks.len() > 1 && chunks.contains(&root.blob), "a root node over chunks");
     let ids = listed(&mut net, a, &l);
     assert!(chunks.iter().all(|id| ids.contains(id)), "chunks served");
     let mut m = osis_node::Mutation::new();
@@ -1012,11 +1014,12 @@ fn purged_chunks_leave_a_peer_by_delete_key_spec_sync_6() {
     chunks_purged(false, true);
 }
 
-// spec/sync.md §6 (Tombstones: a delete needs only the salt), spec/commits.md §5: a writer (no
-// label delete key) purging another's large value whose chunks it never held deletes them at the
-// host by its delta's delete key: it fetches each for the salt that signs, and stores, logs and
-// serves none of them. `hostile`: the host first answers those fetches with another chunk's
-// bytes (a wrong salt), then honestly: no wrong salt sticks, so the deletes go through.
+// spec/sync.md §7 Freed links (a link carries its blob's salt and delete keys), spec/commits.md
+// §5: a writer (no label delete key) purging another's large value whose blobs it never held
+// deletes them at the host by the delete keys their links name: it fetches the tree's node to
+// walk it and no chunk, and stores, logs and serves none of them. `hostile`: the host first
+// answers those fetches with another blob's bytes, then honestly: wrong bytes walk nothing, so
+// the deletes go through once honest ones come.
 fn never_held_chunks_deleted(hostile: bool) {
     let (mut net, h, [a, b], _g, [t]) = hosted::<2, 1>(&[(1, Role::Write)], ["x"], true);
     net.keep(a, t, &[("t:gone.0", PURGE)]);
@@ -1028,6 +1031,8 @@ fn never_held_chunks_deleted(hostile: bool) {
     let c = net.engine(a).commit(m).unwrap().unwrap();
     let chunks: Vec<BlobId> = net.engine(a).header(&c).unwrap().chunks.iter().map(|ch| ch.blob).collect();
     assert!(!chunks.is_empty(), "a chunked value");
+    let Some(osis_base::Value::Link(root)) = net.engine(a).get(&t, &Ak::new(GONE.ak()).unwrap()).unwrap() else { panic!("a large value") };
+    assert!(chunks.len() > 1 && chunks.contains(&root.blob), "a root node over chunks");
     // b hears of the chunks and never gets their bytes
     net.bare_blobs.insert(b, chunks.iter().copied().collect());
     net.run();
@@ -1070,8 +1075,8 @@ fn never_held_chunks_deleted(hostile: bool) {
     }
     let at_the_peer = chunks.iter().filter(|id| net.host_ids(h, &l).contains(id)).count();
     assert_eq!(at_the_peer, 0, "purged chunks stay at the host");
-    let fetched = net.fetched[&b].iter().filter(|x| chunks.contains(x)).count();
-    assert!(fetched >= chunks.len(), "each chunk fetched for its salt ({fetched} of {})", chunks.len());
+    let fetched: std::collections::BTreeSet<BlobId> = net.fetched[&b].iter().filter(|x| chunks.contains(x)).copied().collect();
+    assert_eq!(fetched, std::collections::BTreeSet::from([root.blob]), "the node alone fetched, to walk it");
     assert_eq!(listed(&mut net, b, &l).into_iter().filter(|id| chunks.contains(id)).count(), 0, "the node keeps records of the purged chunks");
 }
 
@@ -1080,10 +1085,11 @@ fn purged_chunks_never_held_are_deleted_by_delete_key_unstored_spec_sync_6() {
     never_held_chunks_deleted(false);
 }
 
-// spec/sync.md §6 (Tombstones), spec/crypto.md §7: a host's wrong bytes for a chunk fetched for
-// its salt give no salt (they are not that blob), so the delete is signed once honest bytes come
+// spec/sync.md §7 Freed links, spec/crypto.md §7: a host's wrong bytes for a node fetched to
+// walk it give no children (they are not that blob), so its chunks are deleted once honest bytes
+// come
 #[test]
-fn wrong_bytes_for_a_chunk_give_no_salt_spec_sync_6() {
+fn wrong_bytes_for_a_node_walk_nothing_spec_sync_7() {
     never_held_chunks_deleted(true);
 }
 

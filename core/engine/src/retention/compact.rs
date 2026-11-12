@@ -447,7 +447,7 @@ fn candidates(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, me: Tid) -> Result<(Vec<Candi
         weighed.push((c, ai, body_bytes(tx, &blob, ai)?, snapshot, leftover));
     }
     // the tree blobs a drop frees: those no live state of the thing links (the tree memo,
-    // `tree_refs::state_refs_in`), none while a tree is not all held (as `chunks::released`)
+    // `tree_refs::state_refs_in`), none while a tree is not all held (as `retention::freed` judges)
     let listed: BTreeSet<BlobId> = weighed.iter().flat_map(|(_, _, w, _, _)| w.tree.iter().copied()).collect();
     let mut freed = BTreeSet::new();
     if !listed.is_empty() {

@@ -3618,6 +3618,57 @@ fn large_value_chunks_syncs_and_goes_spec_data_model_6() {
     assert!(tree.is_disjoint(&at_the_peer), "nor the host");
 }
 
+// spec/sync.md §7 Freed links, §9: an ephemeral value's tree carried by another writer's snapshot
+// (b compacts over a's write), then replaced and compacted by a: its pieces are freed under their
+// own links' keys (the introducer's, whichever commit carried them last), so none of its blobs
+// stays at the host or at a; b keeps them while it holds its own snapshot carrying them, until
+// its next one (an ephemeral author's own cover)
+#[test]
+fn large_value_carried_by_anothers_snapshot_goes_spec_sync_7() {
+    let mut net = Net::new();
+    let (host, n) = roomy(&mut net, &[1, 2]);
+    let (a, b) = (n[0], n[1]);
+    let g = net.group(a, &[(b, Role::Write)], &[host]);
+    net.run();
+    let w = window(&mut net, a, g, "w");
+    net.run();
+    let big: String = (0..20u32 << 20).map(|i| char::from(b'a' + (i.wrapping_mul(2_654_435_761) >> 27) as u8 % 26)).collect();
+    let mut m = Mutation::new();
+    m.op(w, &eph(NOTES), PathOp { path: vec![PathSeg::Key(s("big"))], op: Op::Set(s(&big)) }).unwrap();
+    let id = net.engine(a).write(m).unwrap().unwrap().id;
+    let tree: BTreeSet<osis_base::BlobId> = net.engine(a).header(&id).unwrap().chunks.iter().map(|ch| ch.blob).collect();
+    local(&mut net, a);
+    net.run();
+    assert!(tree.iter().all(|t| net.engine(b).has_blob(t)), "b holds its tree");
+    let l = net.label(a);
+    let at_host = |net: &Net| -> usize { net.hosts[host].hub.store().ephemeral_ids(&l).into_iter().filter(|x| tree.contains(x)).count() };
+    // b writes beside it and compacts: its snapshot carries a's tree
+    let note = |net: &mut Net, n: usize, k: &str, v: &str| {
+        let mut m = Mutation::new();
+        m.op(w, &eph(NOTES), PathOp { path: vec![PathSeg::Key(s(k))], op: Op::Set(s(v)) }).unwrap();
+        net.engine(n).write(m).unwrap();
+        local(net, n);
+        net.run();
+        let acts = net.sync(n).compact_ephemeral_now().unwrap();
+        net.actions(n, acts);
+        net.run();
+        net.advance(10_000);
+    };
+    note(&mut net, b, "other", "b");
+    assert_eq!(at_host(&net), tree.len(), "b's snapshot carries the tree");
+    // a replaces it by a small value and compacts
+    note(&mut net, a, "big", "small");
+    assert_eq!(at_host(&net), 0, "none of the tree at the host");
+    assert!(tree.iter().all(|t| !net.engine(a).has_blob(t)), "a holds none of its tree");
+    // b's next snapshot drops its own carrier
+    note(&mut net, b, "other", "b2");
+    for n in [a, b] {
+        assert_eq!(notes(&mut net, n, w).get("big").map(String::as_str), Some("small"), "node {n}");
+        assert!(tree.iter().all(|t| !net.engine(n).has_blob(t)), "node {n} holds none of its tree");
+    }
+    assert_eq!(at_host(&net), 0, "nor the host");
+}
+
 // spec/crdt.md §8, spec/sync.md §5: a paged ephemeral commit reaches a co-reader peer by its
 // stream (no host), pages charged there
 #[test]

@@ -252,7 +252,7 @@ A **holder actor** of A is a holder for keys of A (its first admin included whil
 - **Delete signature** for a blob: Ed25519 (RFC 8032 signing) over `"osis v1 delete" || digest` (§2, spec/wire.md §11.2) with secret scalar h·a mod ℓ, nonce prefix `kdf("delete nonce", seed, prefix salt || blind)` (seed: the delete key's RFC 8032 seed), and public key A'.
   - It verifies strictly under A' (§1).
   - A host checks it against the blob prefix's commitment at its level in a group, one per group for a Delete, and requires the label signature the levels call for (spec/sync.md §5).
-- A holder tries every epoch it holds of the level's secret up the thing's record chain (a thing that got secrets of its own keeps its earlier content under its former base's keys) and signs with the one whose key the header lists.
+- A holder tries every epoch it holds of the level's secret up the thing's record chain (a thing that got secrets of its own keeps its earlier content under its former base's keys) and signs with the one whose key the header lists, or, for a linked blob, the link names (spec/sync.md §7 Freed links; level 2 along the chain of the dropped body's author).
 
 ## 8. Agility
 - Keys, signatures, KEM public keys and sealed boxes are enums (`signing_key`, `signature`, `kem_key`, `sealed`) with one case today. Cases are never removed; a new primitive is a new case.

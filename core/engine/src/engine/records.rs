@@ -36,6 +36,9 @@ pub const PURGES_NAMED: &[u8] = b"pn/";
 /// Per aspect, the newest `ts` of a durable commit forgotten on it (`Indexes::forgotten`):
 /// `f/` + aspect key (`aspect_key`), gone with the thing.
 pub const FORGOTTEN: &[u8] = b"f/";
+/// Freed links (`retention::freed`): `fl/` + blob ID + tid, flags, the author's tid and the link,
+/// in the class of the body that freed them.
+pub const FREED: &[u8] = b"fl/";
 /// Timers: `x/` + T (8 bytes, big endian) + commit ID + aspect index (4 bytes).
 pub const TIMER: &[u8] = b"x/";
 /// History rows (`Indexes::leaving`): `hr/` + aspect key + replaced-at (`Ts`, 8 bytes) +
