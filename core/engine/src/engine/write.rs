@@ -663,7 +663,7 @@ pub(crate) fn build_and_apply(tx: &mut Tx<'_>, plan: CommitPlan, deltas: Vec<Res
         if memory {
             let listed: BTreeSet<BlobId> = chunks.iter().copied().collect();
             for b in linked.into_iter().filter(|b| !listed.contains(b)) {
-                if tx.blobs.get(&b)?.is_some_and(|x| osis_label::Prefix::parse(&x).is_ok_and(|p| p.class() == osis_label::Class::Ephemeral)) {
+                if tx.blobs.read(&b, 0, osis_base::format::PREFIX_FIXED_LEN)?.is_some_and(|x| osis_label::blob_class(&x) == Some(osis_label::Class::Ephemeral)) {
                     chunks.push(b);
                 }
             }

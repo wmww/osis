@@ -226,6 +226,16 @@ impl Prefix {
     }
 }
 
+/// The class of the blob whose first `PREFIX_FIXED_LEN` bytes (or more) are `head`: what a
+/// reader that needs only the class reads of it. `None` for anything `Prefix::parse` would not
+/// take that far.
+pub fn blob_class(head: &[u8]) -> Option<Class> {
+    if head.first() != Some(&BLOB_FRAMING_VERSION) {
+        return None;
+    }
+    head.get(1 + 16 + 8).and_then(|b| Class::from_byte(*b))
+}
+
 /// The bytes of a blob's prefix (what a host keeps to check delete signatures): the parsed
 /// prefix, or the version byte alone for a framing version this build does not know.
 pub fn prefix_bytes(blob: &[u8]) -> &[u8] {

@@ -465,7 +465,10 @@ impl SyncEngine {
                     }
                 }
             }
-            self.memory.waiting.remove(&c);
+            // applied with parts still waiting (`pend_aside`): those wait on
+            if !self.engine.memory_pending(&c) {
+                self.memory.waiting.remove(&c);
+            }
         }
         Ok(())
     }
@@ -544,7 +547,12 @@ impl SyncEngine {
         match self.engine.ingest_memory(pt, room) {
             // held, or applied and dropped at once (covered by a held snapshot, superseded,
             // expired): the drop the engine reports deletes it where it is
-            Ok(Ingested::Applied(_)) => {}
+            // parts of it left waiting (`pend_aside`) apply as a waiting commit does
+            Ok(Ingested::Applied(_)) => {
+                if self.engine.memory_pending(&commit) {
+                    self.memory.waiting.insert(commit);
+                }
+            }
             // a copy of a held commit is checked before it is kept or served on (a header with
             // junk parts would be served as the commit's)
             Ok(Ingested::Duplicate(_)) if self.engine.memory_body_held(&commit) => {

@@ -395,32 +395,6 @@ fn page_outside_chunk_list_refused_spec_wire_4() {
     assert_eq!(osis_base::Classified::class(&err), osis_base::ErrorClass::BadInput, "{err}");
 }
 
-// spec/crdt.md §8: an ephemeral delta's pages count at most MAX_PAGE_ITEMS items as a durable
-// one's do: a page past it is refused before it is decoded
-#[test]
-fn ephemeral_page_items_bounded_spec_crdt_8() {
-    use osis_crdt::MemoryPages;
-    let at = ts(1_000_000);
-    let v = Value::Map([(Value::Str("k".into()), Value::Str("t".repeat(osis_base::format::MAX_PAGE_ITEMS + 1)))].into_iter().collect());
-    let mut w = Writer::new(at, SESSION.own_source(t(1), CommitId([0; 32])), 1);
-    let fragment = create(&mut w, &AnyView, &v).unwrap();
-    let hi = w.range().hi;
-    let mut pages = MemoryPages::new();
-    let delta = encode_delta(&Delta { nonce: [1; 16], fragment }, &writer_ctx(SESSION, Kind::Content, at, t(1), 1, hi), Some(&mut pages)).unwrap();
-    let mut links = Vec::new();
-    osis_base::visit_links(&delta, &osis_base::Limits { max_depth: osis_base::format::MAX_OBJECT_DEPTH, max_bytes: delta.len() }, &mut |l| links.push(l.blob)).unwrap();
-    assert_eq!(links.len(), 1, "one page");
-    let mut b = CommitBuilder::new(Kind::Content, at, t(1), t(2), SESSION);
-    b.ephemeral = Some(EphClass::Plain);
-    let mut a = AspectWrite::new(t(3), Ak::new("app:w+.0").unwrap(), 1, hi, delta);
-    a.retention = Retention { by: PurgeBy::Writer };
-    a.chunks = links;
-    b.aspects.push(a);
-    let c = build(b, &mut MemoryBlobs::default()).unwrap().commit;
-    let err = verify_blob(&c, &key().verifying_key(), &dedup, Some(&mut pages)).unwrap_err().to_string();
-    assert!(err.contains("MAX_PAGE_ITEMS"), "{err}");
-}
-
 // spec/commits.md §5: a purge rewrite keeps header and commit ID, drops bodies, may be
 // header-only; its prefix inputs follow the remaining parts.
 #[test]

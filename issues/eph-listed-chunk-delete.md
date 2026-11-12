@@ -4,6 +4,7 @@
 > Tags: ephemeral, node
 
 - Where: `pass/delete.rs` `dropped_chunks`/`chunk_delete` (a forgotten memory commit's `ChunkEntry` keys sign the delete), `engine/write.rs` `build_and_apply` (a memory commit lists the memory blobs it links).
+- Reuse alike: `chunk_ops` takes a held chunk's blind from the greatest commit listing it (`by_chunk`), so once a later commit lists an ephemeral chunk (an edit reusing it, a snapshot carrying it) a further edit may check its commitments under the wrong blind and write it afresh (`Framing::keeps`); after a compaction forgets the introducer, every edit does. Costs bytes, never correctness.
 - Locally nothing leaks: a node releases a blob once no held commit lists it (`unindex_commit`).
 - Fix direction: per-blob delete authority not tied to the introducing header (branch `chunk-blind`: a linked blob's blind comes from its blob key, and a snapshot lists every blob it links); once it is in, the delete of such a blob verifies and this issue goes.
 - Test: a 20 MiB ephemeral value carried by a snapshot of another writer (reuse or compaction), then replaced and compacted again: none of its blobs is at the host.

@@ -397,6 +397,25 @@ fn retry_pending(tx: &mut Tx<'_>, id: CommitId, b: CommitBlob) -> Result<Option<
     }
 }
 
+/// Whether pending commit `b` still waits for what can make it wait without anything else
+/// arriving: a blob its chunk list names, its `ts`, its author's epoch. `false` when it may apply
+/// (or be refused) now.
+fn still_waits(tx: &mut Tx<'_>, b: &CommitBlob) -> Result<bool> {
+    if !b.header.is_resolved() {
+        return Ok(false);
+    }
+    for ch in &b.header.chunks {
+        if !tx.blobs.held(&ch.blob)? {
+            return Ok(true);
+        }
+    }
+    if b.header.ts.wall_ms().0 > tx.now().0.saturating_add(MAX_DRIFT_MS) {
+        return Ok(true);
+    }
+    let Some(author) = tx.core.created(&b.header.author) else { return Ok(false) };
+    Ok(matches!(author_key(tx.core, &b.header, &b.sigs, author), Ok(None)))
+}
+
 /// Checks a commit and decodes its parts, or says why it waits.
 ///
 /// Invariant (delivery-shape independence, spec/commits.md §4): what applies is a function of the
@@ -1491,6 +1510,11 @@ impl Engine {
         let r = self.run(|tx| {
             tx.set_memory();
             let Some(b) = read_pending(tx, &id)? else { return Ok(None) };
+            // one whose wait cannot be over is not tried: a commit that keeps waiting costs a
+            // step no examination, store write or cache
+            if still_waits(tx, &b)? {
+                return Ok(Some(Ingested::Pending(id, tx.core.ix.pending.get(&id).cloned().unwrap_or(Reason::Unexamined))));
+            }
             tx.core.touch();
             retry_pending(tx, id, b)
         });

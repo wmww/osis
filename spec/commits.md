@@ -9,7 +9,7 @@ Encoding: spec/wire.md §4. Fields:
 - `ts` (spec/crdt.md §2.2) and the dot form, commit or session (§3).
 - Optional `expires` (§6), the expiry of every delta of the commit.
 - Aspect list: per touched `(tid, ak)`: counter range `[lo, hi)`, retention (§5), the delta hash of its one delta, and for a durable signal's delta optionally the fire it `replaces` (§5 Signals).
-- Chunk list: the chunk, tree-node and page blobs the deltas introduce, each with the indices of the delete keys of the delta that created it (spec/crypto.md §7).
+- Chunk list: the chunk, tree-node and page blobs the deltas introduce (an ephemeral commit: every ephemeral blob they link, §2), each with the indices of the delete keys of the delta that created it (spec/crypto.md §7).
 - Optional purge request (§5), optional `undoes: commit ID` (§7).
 - A 16-byte random blind and the delete keys with their levels (spec/crypto.md §7); per aspect, the indices of the keys its deltas call for.
 - Explicit removals and edge writes that audit only: the frontier (spec/permissions.md §5.1 step 4), inline or as a link to a chunk tree when it exceeds `CHUNK_THRESHOLD` (spec/data-model.md §6).

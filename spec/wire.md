@@ -89,7 +89,7 @@ Header fields by position:
 4. `ts` (spec/crdt.md §2.2). 5. `form`: 0 commit form, or `[1, nonce]` session form with the session's 16-byte nonce (spec/commits.md §3).
 6. `expires`: `Opt(T)`, the commit's expiry, wall ms (spec/commits.md §6).
 7. `aspects`: `[Aspect+]` sorted by the canonical bytes of `[tid, ak]`, distinct.
-8. `chunks`: `[Chunk*]` sorted by blob ID, distinct: every chunk, tree-node and page blob the deltas introduce; `ki` are indices into `keys`, ascending: the delete keys of the delta that created the blob.
+8. `chunks`: `[Chunk*]` sorted by blob ID, distinct: every chunk, tree-node and page blob the deltas introduce, and in an ephemeral commit every ephemeral blob its deltas link (spec/commits.md §2); `ki` are indices into `keys`, ascending: the delete keys of the delta that created the blob.
 9. `purge`: `[PurgeItem*]` sorted by canonical bytes, distinct; empty when there is no purge request. `[commit_id, tid, ak]` names that commit's deltas on that aspect; `[tid, ak]` names every delta on that aspect of every commit with a smaller `ts`; `[tid, ak, actor]` those of them whose commit's purge actor is `actor` (spec/permissions.md §6: the actor its header names). The second place tells the three-item forms apart: a tid, or an AK's text.
 10. `undoes`: `Opt(commit_id)`.
 11. `blind`: 16 random bytes (spec/crypto.md §7).

@@ -549,6 +549,11 @@ impl osis_crdt::PageSink for Mutating<'_, '_> {
 /// A content snapshot of `(w.t, ak)` by peer `by` at `ts` carrying `f`, paged, each page first
 /// changed by `mutate` (hand-built, unchecked).
 fn forge_snapshot(w: &mut World, by: usize, ak: &Ak, ts: osis_base::Ts, f: osis_crdt::Fragment, mutate: &dyn Fn(usize, &mut Vec<u8>)) -> Package {
+    forge_snapshot_in(w, by, ak, ts, f, mutate, false)
+}
+
+/// `forge_snapshot`, an ephemeral commit if `memory` (its pages ephemeral blobs).
+fn forge_snapshot_in(w: &mut World, by: usize, ak: &Ak, ts: osis_base::Ts, f: osis_crdt::Fragment, mutate: &dyn Fn(usize, &mut Vec<u8>), memory: bool) -> Package {
     use osis_commit::{AspectWrite, CommitBuilder, Form, Kind, writer_ctx};
     let t = w.t;
     let rec = w.lp.peers[0].engine.get_typed(&t, &ct::CREATED).unwrap().unwrap();
@@ -557,7 +562,7 @@ fn forge_snapshot(w: &mut World, by: usize, ak: &Ak, ts: osis_base::Ts, f: osis_
     let retention = osis_commit::retention::snapshot_retention(ak.as_str());
     let keys = osis_commit::delete_keys(&sec, &t, &retention).unwrap();
     let blind = [9u8; 16];
-    let framing = osis_label::Framing { dedup: osis_commit::Secrets::dedup(&sec, &t).unwrap(), expiry: None, keys: keys.iter().map(|k| (k.level, k.verifying_key().unwrap())).collect(), blind, class: osis_label::Class::Durable };
+    let framing = osis_label::Framing { dedup: osis_commit::Secrets::dedup(&sec, &t).unwrap(), expiry: None, keys: keys.iter().map(|k| (k.level, k.verifying_key().unwrap())).collect(), blind, class: if memory { osis_label::Class::Ephemeral } else { osis_label::Class::Durable } };
     let mut blobs = osis_label::MemoryBlobs::default();
     let mut rng = osis_crypto::SeededRng::from_u64(0);
     let snap = osis_crdt::Snapshot { absorbed: Default::default(), nonce: [7; 16], fragment: f, frontiers: Default::default() };
@@ -571,6 +576,9 @@ fn forge_snapshot(w: &mut World, by: usize, ak: &Ak, ts: osis_base::Ts, f: osis_
     let mut cb = CommitBuilder::new(Kind::ContentSnapshot, ts, author, author, Form::Commit);
     cb.aspects.push(aw);
     cb.blind = Some(blind);
+    if memory {
+        cb.ephemeral = Some(osis_commit::EphClass::Plain);
+    }
     let forge_key = w.lp.peers[by].engine.sign_forged(&mut cb);
     let c = cb.build(&forge_key, &sec, &mut osis_commit::MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(0)).unwrap().commit;
     Package { id: c.id(), bytes: c.encode(), blobs: blobs.0.into_iter().collect(), lists: Vec::new() }
@@ -625,6 +633,49 @@ fn unknown_encoding(p: &mut Vec<u8>) {
     let mut v = osis_base::decode(p, &lim).unwrap();
     assert!(walk(&mut v), "no register in the page");
     *p = osis_base::encode(&v);
+}
+
+/// spec/crdt.md §8, spec/sync.md §9 Caps: an ephemeral delta's page counts at most
+/// `MAX_PAGE_ITEMS` items as a durable one's does: a received memory snapshot whose page holds
+/// more (a string of that many bytes) is bad input at the engine, refused before it is decoded.
+#[test]
+fn ephemeral_page_past_items_refused_spec_crdt_8() {
+    let mut w = world(false);
+    let ak = Ak::new("t:big+.0").unwrap();
+    let now = osis_base::Ts::make(w.lp.peers[0].engine.now(), 0).unwrap();
+    let mut wr = osis_crdt::Writer::new(now, made_up(0x80), 1 << 40);
+    let v = Value::Map(osis_base::ValueMap::from([(Value::Int(1), Value::Str("t".repeat(osis_base::format::MAX_PAGE_ITEMS + 1)))]));
+    let f = osis_crdt::create(&mut wr, &osis_crdt::AnyView, &v).unwrap();
+    let pk = forge_snapshot_in(&mut w, 1, &ak, now, f, &|_, _| {}, true);
+    assert_eq!(pk.blobs.len(), 1, "one page");
+    let e = &mut w.lp.peers[3].engine;
+    e.put_memory_blobs(pk.blobs.clone()).unwrap();
+    let err = e.ingest_memory(&pk.bytes, u64::MAX).unwrap_err();
+    assert_eq!(osis_base::Classified::class(&err), osis_base::ErrorClass::BadInput, "{err}");
+    assert!(err.to_string().contains("MAX_PAGE_ITEMS"), "{err}");
+    assert!(!e.holds_memory(&pk.id) && !e.memory_pending(&pk.id), "nothing kept");
+}
+
+/// spec/sync.md §9 Caps, notes/ephemeral.md Bounds: a received memory commit waits for the blobs
+/// its chunk list names only once its author's signature checks: a false one is bad input at
+/// once, nothing kept waiting (charged against the label's cap); a true one waits undecoded.
+#[test]
+fn memory_commit_waits_only_signed_spec_sync_9() {
+    let mut w = world(false);
+    let ak = Ak::new("t:big+.0").unwrap();
+    let now = osis_base::Ts::make(w.lp.peers[0].engine.now(), 0).unwrap();
+    let pk = forge_snapshot_in(&mut w, 1, &ak, now, forged_map(now, ENTRIES, 0x80), &|_, _| {}, true);
+    assert!(pk.blobs.len() >= 2, "paged");
+    let mut forged = osis_commit::CommitBlob::decode(&pk.bytes).unwrap();
+    forged.sigs = osis_commit::Sigs::signed(&pk.id, &osis_crypto::SigningSecret::from_seed(&osis_crypto::Secret32::from_bytes([5; 32])), forged.sigs.inner, Vec::new());
+    let e = &mut w.lp.peers[3].engine;
+    let err = e.ingest_memory(&forged.encode(), u64::MAX).unwrap_err();
+    assert_eq!(osis_base::Classified::class(&err), osis_base::ErrorClass::BadInput, "{err}");
+    assert!(!e.memory_pending(&pk.id), "nothing kept waiting");
+    crate::costs::take();
+    let out = e.ingest_memory(&pk.bytes, u64::MAX).unwrap();
+    assert_eq!(out, crate::Ingested::Pending(pk.id, crate::Reason::WaitBlobs));
+    assert!(!crate::costs::take().iter().any(|x| x.0 == "examine"), "nothing of it examined");
 }
 
 /// Hostile paged snapshots with several problems each (a carried write stamped after the
