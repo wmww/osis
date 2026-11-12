@@ -112,10 +112,34 @@ pub fn misplaced_link(schema: &Schema, v: &Value, ty: &Type, atomic: bool) -> bo
     }
 }
 
-struct Walk<'s> {
+struct Walk<'s, 'v> {
     schema: &'s Schema,
     mode: Mode,
-    path: Vec<Step>,
+    /// Where the walk is, borrowing the keys and elements stepped through: a `Path` is made only
+    /// for an error.
+    path: Vec<At<'v>>,
+}
+
+/// A `Step` borrowing its value.
+#[derive(Clone, Copy)]
+enum At<'v> {
+    Field(u64),
+    Case(u64),
+    Key(&'v Value),
+    Index(usize),
+    Elem(&'v Value),
+}
+
+impl At<'_> {
+    fn step(self) -> Step {
+        match self {
+            At::Field(id) => Step::Field(id),
+            At::Case(id) => Step::Case(id),
+            At::Key(k) => Step::Key(k.clone()),
+            At::Index(i) => Step::Index(i),
+            At::Elem(e) => Step::Elem(e.clone()),
+        }
+    }
 }
 
 fn kind_name(t: &Type) -> &'static str {
@@ -135,19 +159,19 @@ fn kind_name(t: &Type) -> &'static str {
     }
 }
 
-impl Walk<'_> {
+impl<'v> Walk<'_, 'v> {
     fn err(&self, k: K) -> PathError {
-        PathError::new(Path(self.path.clone()), k)
+        PathError::new(Path(self.path.iter().map(|a| a.step()).collect()), k)
     }
 
-    fn nested(&mut self, s: Step, v: &Value, ty: &Type, atomic: bool) -> Result<Value, PathError> {
+    fn nested(&mut self, s: At<'v>, v: &'v Value, ty: &Type, atomic: bool) -> Result<Value, PathError> {
         self.path.push(s);
         let r = self.walk(v, ty, atomic);
         self.path.pop();
         r
     }
 
-    fn walk(&mut self, v: &Value, ty: &Type, atomic: bool) -> Result<Value, PathError> {
+    fn walk(&mut self, v: &'v Value, ty: &Type, atomic: bool) -> Result<Value, PathError> {
         let t = self.schema.expand(ty).map_err(|e| self.err(K::Schema(e)))?;
         let t = t.as_ref();
         match (t, v) {
@@ -173,14 +197,14 @@ impl Walk<'_> {
             (Type::List(e), Value::List(items)) => {
                 let mut out = Vec::with_capacity(items.len());
                 for (i, x) in items.iter().enumerate() {
-                    out.push(self.nested(Step::Index(i), x, e, atomic)?);
+                    out.push(self.nested(At::Index(i), x, e, atomic)?);
                 }
                 Ok(Value::List(out))
             }
             (Type::Set(e), Value::Set(items)) => {
                 let mut out = Vec::with_capacity(items.len());
                 for x in items {
-                    out.push(self.nested(Step::Elem(x.clone()), x, e, true)?);
+                    out.push(self.nested(At::Elem(x), x, e, true)?);
                 }
                 // Distinct elements may project to one value (unknown fields dropped): the
                 // projection holds the first once, as the set read would. Dropped fields can reorder
@@ -190,8 +214,8 @@ impl Walk<'_> {
             (Type::Map(kt, vt), Value::Map(m)) => {
                 let mut out = Vec::with_capacity(m.len());
                 for (k, x) in m {
-                    let k2 = self.nested(Step::Key(k.clone()), k, kt, true)?;
-                    let x2 = self.nested(Step::Key(k.clone()), x, vt, atomic)?;
+                    let k2 = self.nested(At::Key(k), k, kt, true)?;
+                    let x2 = self.nested(At::Key(k), x, vt, atomic)?;
                     out.push((k2, x2));
                 }
                 // Keys projecting to one value: the later entry wins in the projection. Only for
@@ -213,7 +237,7 @@ impl Walk<'_> {
                 for (id, f) in &st.fields {
                     let key = Value::Int(i64::try_from(*id).map_err(|_| self.err(K::Schema("field ID out of range".into())))?);
                     let x = match m.get(&key) {
-                        Some(x) => self.nested(Step::Field(*id), x, &f.ty, atomic)?,
+                        Some(x) => self.nested(At::Field(*id), x, &f.ty, atomic)?,
                         None if self.mode == Mode::Read => match self.schema.default_of(f) {
                             Some(d) => d,
                             None => return Err(self.err(K::MissingField(*id))),
@@ -228,7 +252,7 @@ impl Walk<'_> {
                 let case = en.cases.get(c).ok_or_else(|| self.err(K::UnknownCase(*c)))?;
                 match (&case.payload, p) {
                     (None, None) => Ok(v.clone()),
-                    (Some(pt), Some(x)) => Ok(Value::Enum(*c, Some(Box::new(self.nested(Step::Case(*c), x, pt, atomic)?)))),
+                    (Some(pt), Some(x)) => Ok(Value::Enum(*c, Some(Box::new(self.nested(At::Case(*c), x, pt, atomic)?)))),
                     (Some(_), None) => Err(self.err(K::MissingPayload(*c))),
                     (None, Some(_)) => Err(self.err(K::UnexpectedPayload(*c))),
                 }
