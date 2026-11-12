@@ -269,4 +269,3 @@ mod tests {
         assert_eq!(rows.len(), 1, "{rows:?}");
     }
 }
-
