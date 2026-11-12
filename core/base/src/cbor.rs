@@ -115,9 +115,6 @@ impl CanonicalBytes {
     pub fn as_bytes(&self) -> &[u8] {
         &self.bytes
     }
-    pub fn into_vec(self) -> Vec<u8> {
-        self.bytes
-    }
     pub fn depth(&self) -> usize {
         self.depth
     }

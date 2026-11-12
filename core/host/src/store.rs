@@ -778,6 +778,7 @@ fn rows_bytes((set, index): &(Vec<u8>, Vec<KeyValue>)) -> u64 {
 
 /// The bytes step `id`'s claim set `c` counts toward the byte caps while held: the set and its
 /// index rows.
+#[cfg(test)]
 pub fn claim_set_bytes(label: &LabelId, id: &StepId, c: &ClaimSet) -> u64 {
     rows_bytes(&set_rows(label, id, c))
 }

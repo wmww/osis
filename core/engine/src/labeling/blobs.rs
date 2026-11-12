@@ -196,24 +196,6 @@ impl Engine {
         }
     }
 
-    /// `seal` of an opened form given as bytes (tests and tools: a copy, a forgery): a body
-    /// built from it, with the commit's expiry and order from its header as held here.
-    pub fn seal_plaintext(&mut self, plaintext: &[u8], class: osis_label::Class, rng: &mut dyn CryptoRngCore) -> Result<Option<Sealed>> {
-        let c = CommitBlob::decode(plaintext)?;
-        let resolved = self.resolved_header(&c);
-        let b = Body {
-            commit: c.id(),
-            parts: c.parts.iter().map(|p| p.ai).collect(),
-            expires: osis_commit::blob_expiry(&resolved),
-            blind: c.header.blind,
-            plaintext: plaintext.to_vec(),
-            role_commit: c.header.kind.is_role(),
-            order: fetch_order(&resolved),
-            to_label: false,
-        };
-        self.seal(&b, class, &[], rng)
-    }
-
     /// Seals a body's parts (`b.parts` alone) as a copy (spec/sync.md §3): a fresh blob of one
     /// section under its own blob key (spec/wire.md §4), so whoever opens a wrap of it reads it: a
     /// certificate copy, wrapped under every label needing exactly those parts, or a per-label
