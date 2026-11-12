@@ -138,7 +138,7 @@ Format: `file:line test | action | why safe | confidence`.
 - node `encodings.rs:99 sequences_converge` | delete | `held_set_decides` and `crdt_equals_model` | medium
 - node `encodings.rs:27 every_encoding_converges` | keep unless held-model is shown to reach enum and bounded counters | medium-low
 - sim `no_server.rs:329` (row 15) | delete | covered by osis `sync::wait_synced_waits_on_a_group_with_nobody_connected`; update row 15 of issues/no-server-audit.md | medium
-- node `retention.rs:1872` vs engine `retention/mod.rs:1182 body_live_follows_validity` | the same scenario at two layers; add `body_live` asserts to the node test and drop the engine one | low
+- node `retention.rs:1872` vs engine `retention/mod.rs:1182 delta_live_follows_validity` | the same scenario at two layers; add `delta_live` asserts to the node test and drop the engine one | low
 - node `validity::carol_variant` first half duplicates engine `tests_addenda::unsynced_removal_witnessed_by_a_writer` | trim the node half, keep the engine one (the precise test) | medium
 
 Kept on purpose: perm scenarios (seed-named minimal reproducers; the properties don't reliably hit them), engine rotation tests (model-case and churn reproducers), `tests_paged` and `engine::pages` (store internals the upper layers cannot see), and node `keep` vs osis `keep_clients` (the node tests pin plaintexts and dates the API doesn't show). osis tied grants, links and routing have no lower-layer tests, so there is nothing duplicated there.

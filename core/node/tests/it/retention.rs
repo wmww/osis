@@ -1117,7 +1117,7 @@ fn deaths_dated_from_first_superseder_held_spec_commits_5() {
     let e = &mut lp.peers[0].engine;
     assert_eq!(e.replaced_at(&ids[0], &t, &a).unwrap(), Some(ts[1]));
     assert_eq!(e.replaced_at(&ids[2], &t, &a).unwrap(), None);
-    assert_eq!(body_keep(e, &ids[0], &t, &a), ts[1].wall_ms().0 + 86_400_000);
+    assert_eq!(part_keep(e, &ids[0], &t, &a), ts[1].wall_ms().0 + 86_400_000);
     assert!(e.body_not_dropped(&ids[0], &t, &a));
     let pks = packages(&mut lp, 0);
     let pk = |c: &osis_base::CommitId| pks.iter().find(|p| p.id == *c).unwrap().clone();
@@ -1132,7 +1132,7 @@ fn deaths_dated_from_first_superseder_held_spec_commits_5() {
         let e = &mut lp.peers[to].engine;
         for (i, x) in ids[..2].iter().enumerate() {
             assert_eq!(e.replaced_at(x, &t, &a).unwrap(), Some(ts[i + 1]), "node {to}");
-            assert_eq!(body_keep(e, x, &t, &a), ts[i + 1].wall_ms().0 + 86_400_000, "node {to}");
+            assert_eq!(part_keep(e, x, &t, &a), ts[i + 1].wall_ms().0 + 86_400_000, "node {to}");
         }
         assert_eq!(e.replaced_at(&ids[2], &t, &a).unwrap(), None);
     }
@@ -1183,7 +1183,7 @@ fn snapshot_of_removed_entry_no_live_write_spec_commits_5() {
     let snap = lp.peers[0].engine.snapshot(&t, &a).unwrap().unwrap();
     lp.advance(5);
     let e = &mut lp.peers[0].engine;
-    assert!(e.body_live(&snap, &t, &a).unwrap(), "carries the entry");
+    assert!(e.delta_live(&snap, &t, &a).unwrap(), "carries the entry");
     let mut m = Mutation::new();
     m.op(t, &GONEMAP, PathOp { path: Vec::new(), op: Op::Remove(s("k1")) }).unwrap();
     lp.peers[0].commit(m).unwrap().unwrap();
@@ -3287,13 +3287,13 @@ fn remover_reset_is_live_until_superseded_spec_commits_5() {
     lp.advance(5);
     let r1 = remove(&mut lp);
     let e = &mut lp.peers[0].engine;
-    assert!(!e.body_live(&c, &t, &k).unwrap(), "the value's write is gone");
-    assert!(e.body_live(&r1, &t, &k).unwrap(), "the reset is the state's");
+    assert!(!e.delta_live(&c, &t, &k).unwrap(), "the value's write is gone");
+    assert!(e.delta_live(&r1, &t, &k).unwrap(), "the reset is the state's");
     lp.advance(5);
     let r2 = remove(&mut lp);
     let e = &mut lp.peers[0].engine;
-    assert!(!e.body_live(&r1, &t, &k).unwrap(), "a later reset superseded it");
-    assert!(e.body_live(&r2, &t, &k).unwrap());
+    assert!(!e.delta_live(&r1, &t, &k).unwrap(), "a later reset superseded it");
+    assert!(e.delta_live(&r2, &t, &k).unwrap());
 }
 
 // spec/commits.md §5 (Dropping a body): a leftover with no value of its own (purged) is never

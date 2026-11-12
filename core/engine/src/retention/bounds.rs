@@ -1,6 +1,6 @@
 //! A held body's keep-at-least bound and whether it holds a live write (spec/commits.md §5).
 
-use super::{aspect_index, body_class, body_classes, bounded, gone_of, held_part, known_part, writes_of};
+use super::{aspect_index, bounded, gone_of, held_part, known_part, writes_of};
 #[cfg(test)]
 use super::oracle;
 use crate::engine::{Core, Engine, Tx};
@@ -11,27 +11,13 @@ use osis_crdt::{ByWrite, Fragment, Winners, Won};
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
-/// `Engine::body_live` in `tx`: any delta of the body's class live (`delta_live`).
-pub(crate) fn body_live(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<bool> {
-    // an unknown commit counts live (its apply may change nothing here)
-    let Some(ai) = aspect_index(tx.core, c, tid, ak) else { return Ok(true) };
-    let Some(h) = tx.core.ix.commits.get(c).map(|m| m.header.clone()) else { return Ok(true) };
-    for x in body_class(tx.core, &h, ai) {
-        let Some(a) = h.aspects.get(x) else { continue };
-        if delta_live(tx, c, &a.tid, &a.ak)? {
-            return Ok(true);
-        }
-    }
-    Ok(false)
-}
-
 /// Whether something reads part `(tid, ak)` of `c` on its own, so no cover drops it (spec/commits.md
 /// §5 Covered): a cover drops a part when it carries every live write of it and nothing reads the
 /// part alone. A held durable delta none of whose writes is dead is read alone (a purge by name,
 /// a fallen purge bringing it back, listings); one with a dead write (`replace::replaced`), a
 /// compaction snapshot (its writes are copies) and an in-memory part (no purge, host copy or
-/// listing of its own) are not. Judged per part, as a cover drops one part (`drop_part_for`); the
-/// other parts of its body class are judged by their own aspects. A delta found read alone leaves
+/// listing of its own) are not. Judged per part, as a cover drops one part (`drop_part_for`). A
+/// delta found read alone leaves
 /// `Core::cover_candidates`. Cost: the part read once against the state's part it meets.
 pub(crate) fn read_alone(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<bool> {
     let Some(ai) = held_part(tx.core, c, tid, ak) else { return Ok(false) };
@@ -64,7 +50,7 @@ pub(crate) fn delta_live(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak) -> R
     Ok(r)
 }
 
-/// Before which wall ms a body of `h` holding deltas of aspect `a`'s class leaves only by purge
+/// Before which wall ms delta `a` of `h` leaves only by purge
 /// request or expiry (spec/commits.md §5 Keep bounds; 0: no floor): the later of when it leaves
 /// history (`history::Kept::leaves_at`, replaced at wall ms `replaced`; `None`: not replaced) and
 /// the purge-request floor.
@@ -72,13 +58,13 @@ pub(crate) fn kept_until(core: &Core, h: &Header, a: &osis_commit::AspectEntry, 
     super::history::of(core, &a.tid, &a.ak).leaves_at(replaced).max(osis_commit::retention::purge_keep_until(h).unwrap_or(0))
 }
 
-/// `Engine::body_keep` in `tx`: before which wall ms the body leaves only by purge or expiry, a
-/// replacement dated ahead of the clock included (`clock_keep`): from then any node may drop it
-/// as covered (spec/commits.md §5 Keep bounds).
-pub(crate) fn body_keep(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<u64> {
+/// `Engine::part_keeps` of part `(tid, ak)` of `c` in `tx`: before which wall ms it leaves only
+/// by purge or expiry, a replacement dated ahead of the clock included (`clock_keep`): from then
+/// any node may drop it as covered (spec/commits.md §5 Keep bounds).
+pub(crate) fn part_keep(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<u64> {
     let (ai, h) = known_part(tx.core, c, tid, ak)?;
-    let holders = body_class(tx.core, &h, ai);
-    let b = class_bounds(tx, &h, c, &holders)?;
+    tx.core.replaced_reads += 1;
+    let b = part_bounds(tx, &h, c, ai)?;
     Ok(at_clock(tx.core, b))
 }
 
@@ -100,43 +86,32 @@ fn clock_keep(core: &Core, replaced: Option<u64>) -> u64 {
     replaced.filter(|r| *r > core.now().0).unwrap_or(0)
 }
 
-/// The keep bound of the body class `holders` of `c` (its parts go together, `body_class`) but
-/// for the clock: the latest of its parts' own, each its own aspect's timeline at its own
+/// The keep bound of part `ai` of `c` but for the clock: its own aspect's timeline at its own
 /// replacement (`part_replaced_at`, spec/commits.md §5 Dated only where history is kept), and
-/// the latest replacement (wall ms, 0: none) for `clock_keep`. A part's date and keep read only
-/// its aspect's writes and setting, so a covered drop on one aspect moves no other part's bound,
-/// and a part on an aspect no setting keeps adds none.
-fn class_bounds(tx: &mut Tx<'_>, h: &Header, c: &CommitId, holders: &[usize]) -> Result<(u64, u64)> {
-    tx.core.replaced_reads += 1;
-    let (mut k, mut last) = (0, 0);
-    for x in holders {
-        let Some(a) = h.aspects.get(*x) else { continue };
-        let r = part_replaced_at(tx, h, c, *x)?.map(|t| t.wall_ms().0);
-        k = k.max(kept_until(tx.core, h, a, r));
-        last = last.max(r.unwrap_or(0));
-    }
-    Ok((k, last))
+/// that replacement (wall ms, 0: none) for `clock_keep`. A part's date and keep read only its
+/// aspect's writes and setting, so no other part of its commit keeps it (a purge-on-replace part
+/// goes under its cover whatever its commit's kept parts keep), a covered drop on one aspect
+/// moves no other part's bound, and a part on an aspect no setting keeps has none.
+fn part_bounds(tx: &mut Tx<'_>, h: &Header, c: &CommitId, ai: usize) -> Result<(u64, u64)> {
+    let Some(a) = h.aspects.get(ai) else { return Ok((0, 0)) };
+    let r = part_replaced_at(tx, h, c, ai)?.map(|t| t.wall_ms().0);
+    Ok((kept_until(tx.core, h, a, r), r.unwrap_or(0)))
 }
 
-/// A keep bound and latest replacement (`class_bounds`) at the node's clock: their later when
+/// A keep bound and replacement (`part_bounds`) at the node's clock: their later when
 /// the replacement is ahead of it (`clock_keep`).
 fn at_clock(core: &Core, (k, last): (u64, u64)) -> u64 {
     k.max(clock_keep(core, (last > 0).then_some(last)))
 }
 
-/// `class_bounds` of each body of `c`, by aspect index (`Engine::body_keeps`): each body's parts
-/// judged once. A memo (`Core::body_bounds`): the clock is read after it, so a bound holds while
-/// what it read does.
-fn body_bounds(tx: &mut Tx<'_>, c: &CommitId) -> Result<Arc<Vec<(u64, u64)>>> {
+/// `part_bounds` of every part of `c`, by aspect index (`Engine::part_keeps`). A memo
+/// (`Core::part_bounds`): the clock is read after it, so a bound holds while what it read does.
+fn commit_bounds(tx: &mut Tx<'_>, c: &CommitId) -> Result<Arc<Vec<(u64, u64)>>> {
     let h = tx.core.ix.commits.get(c).ok_or(Error::UnknownCommit(*c))?.header.clone();
-    let mut out = vec![(0, 0); h.aspects.len()];
-    for holders in body_classes(tx.core, &h) {
-        let b = class_bounds(tx, &h, c, &holders)?;
-        for x in holders {
-            if let Some(o) = out.get_mut(x) {
-                *o = b;
-            }
-        }
+    tx.core.replaced_reads += 1;
+    let mut out = Vec::with_capacity(h.aspects.len());
+    for ai in 0..h.aspects.len() {
+        out.push(part_bounds(tx, &h, c, ai)?);
     }
     Ok(Arc::new(out))
 }
@@ -451,15 +426,6 @@ pub(crate) fn mark_bounded(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) {
     }
 }
 
-/// From when any node may drop held body `(tid, ak)` of `c` under a held valid writer's cover
-/// (spec/commits.md §5 Out of history, spec/sync.md §7): its keep-at-least bound on this node's
-/// clock (a local drop changes only this node's reads, which follow its clock; deleting it at
-/// hosts waits `MAX_DRIFT` more, `Dropped::hosts_from`). Out of history nothing promises to keep
-/// it, so the cover's writer need not hold the purge right.
-pub(crate) fn drop_from(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<u64> {
-    body_keep(tx, c, tid, ak)
-}
-
 /// `Engine::delta_live` of delta `ai` of `c`, judged against the state in
 /// `tx`: a function of the commits applied (the join's), so alike at nodes that applied the
 /// same ones.
@@ -486,7 +452,7 @@ pub(super) fn live(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<bool> {
     Ok(live)
 }
 
-/// Whether a compaction snapshot carries a write still live in this node's state (`body_live`;
+/// Whether a compaction snapshot carries a write still live in this node's state (`delta_live`;
 /// live writes as for deltas, `Fragment::live_writes`: no element or entry tombstone): held, a
 /// write it carries (by dot) is there, judged a piece of it at a time against the state's part
 /// it meets. Not held (dropped or never received), which writes it carried are not known here: it
@@ -517,10 +483,10 @@ pub(super) fn snapshot_live(tx: &mut Tx<'_>, h: &Header, c: &CommitId, ai: usize
 }
 
 impl Engine {
-    /// Keep-at-least bound (wall ms, 0: none) of the body holding each part of known commit `c`,
-    /// by aspect index: judged once per body, so a commit's judgment costs O(parts) death reads.
-    pub fn body_keeps(&mut self, c: &CommitId) -> Result<Vec<u64>> {
-        let b = crate::engine::memo::Memo::get_in(self, |e| &e.core.body_bounds, c, |e| e.run(|tx| body_bounds(tx, c)))?;
+    /// Keep-at-least bound (wall ms, 0: none) of each part of known commit `c`, by aspect index
+    /// (`part_keep`): a commit's judgment costs O(parts) death reads.
+    pub fn part_keeps(&mut self, c: &CommitId) -> Result<Vec<u64>> {
+        let b = crate::engine::memo::Memo::get_in(self, |e| &e.core.part_bounds, c, |e| e.run(|tx| commit_bounds(tx, c)))?;
         Ok(b.iter().map(|x| at_clock(&self.core, *x)).collect())
     }
 
@@ -537,11 +503,15 @@ impl Engine {
         !h.purge.is_empty() || h.aspects.iter().any(|a| a.tid == *t && super::history::permanent(&self.core, h, a, now)) && !super::end::released(&self.core, t, now)
     }
 
-    /// From when any node may drop held body `(tid, ak)` of `c` as covered (`drop_from`), under a
-    /// snapshot or its author's own whole replaces.
+    /// From when any node may drop held part `(tid, ak)` of `c` under a held valid writer's
+    /// cover or its author's own whole replaces (spec/commits.md §5 Out of history, spec/sync.md
+    /// §7): its keep-at-least bound on this node's clock (`part_keep`; a local drop changes only
+    /// this node's reads, which follow its clock; deleting it at hosts waits `MAX_DRIFT` more,
+    /// `Dropped::hosts_from`). Out of history nothing promises to keep it, so the cover's writer
+    /// need not hold the purge right.
     pub fn drop_from(&mut self, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<u64> {
         let (c, tid, ak) = (*c, *tid, ak.clone());
-        self.run(|tx| drop_from(tx, &c, &tid, &ak))
+        self.run(|tx| part_keep(tx, &c, &tid, &ak))
     }
 
     /// Whether something reads the body holding `(tid, ak)` of `c` on its own, so no cover drops
@@ -562,22 +532,14 @@ impl Engine {
         })
     }
 
-    /// Whether a write of the body holding aspect `ak` of `c` is still in this node's state (a
-    /// dot its deltas own survives there; unknown counts as live). A
-    /// body without one needs no carrier before it leaves a label (spec/sync.md §7); one with one
-    /// goes only after its carrier (spec/commits.md §5). Writes the state does not hold count
-    /// dead: superseded, purged or expired ones, and those of deltas invalid here or undone (they
-    /// are stripped from the state; they count live again once a validity flip or a redo puts
-    /// them back). Any write counts: resets (a tombstone's, for its remover) and value-less writes too. Any
-    /// delta of the body's class live (`delta_live`).
-    pub fn body_live(&mut self, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<bool> {
-        let (c, tid, ak) = (*c, *tid, ak.clone());
-        self.run(|tx| body_live(tx, &c, &tid, &ak))
-    }
-
-    /// Whether a write of `c`'s delta on `(tid, ak)` itself is still in this node's state, as
-    /// `body_live` asks of the body: what only a blob of `c` can carry (spec/sync.md §6, §7).
-    /// Kept until the aspect's state changes (`Core::live_bodies`).
+    /// Whether a write of `c`'s delta on `(tid, ak)` is still in this node's state (a dot it owns
+    /// survives there; unknown counts as live): what only a blob of `c` can carry (spec/sync.md
+    /// §6, §7). A delta without one needs no carrier before it leaves a label (spec/sync.md §7);
+    /// one with one goes only after its carrier (spec/commits.md §5). Writes the state does not
+    /// hold count dead: superseded, purged or expired ones, and those of deltas invalid here or
+    /// undone (stripped from the state; live again once a validity flip or a redo puts them
+    /// back). Any write counts: resets (a tombstone's, for its remover) and value-less writes
+    /// too. Kept until the aspect's state changes (`Core::live_bodies`).
     pub fn delta_live(&mut self, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<bool> {
         if let Some(v) = self.core.live_bodies.get(c).and_then(|m| m.get(&(*tid, ak.clone()))) {
             return Ok(*v);

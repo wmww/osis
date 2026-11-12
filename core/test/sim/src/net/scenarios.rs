@@ -768,7 +768,7 @@ pub fn coverer_revoked(seed: u64) -> Res<Report> {
     // A uploads S1 again only while it has a live write (spec/sync.md §6): random writes may
     // have removed them all
     let p = part(&mut sim)?;
-    let live = sim.engine(a)?.body_live(&s1, &t, &k).map_err(|e| sim.fail(e.to_string()))?;
+    let live = sim.engine(a)?.delta_live(&s1, &t, &k).map_err(|e| sim.fail(e.to_string()))?;
     if p != Some((false, false)) && live {
         return Err(sim.fail(format!("W never got S1 back: {p:?}")));
     }
@@ -865,7 +865,7 @@ pub fn snapshot_rights(seed: u64) -> Res<Report> {
         // a live body is read on its own: no cover drops it (spec/commits.md §5 Covered). Purge on
         // replace: replaced at a (its write not live there), gone everywhere once the writers acted
         let e = sim.engine(a)?;
-        let is_live = e.body_live(c, &t, &k).map_err(|x| sim.fail(x.to_string()))?;
+        let is_live = e.delta_live(c, &t, &k).map_err(|x| sim.fail(x.to_string()))?;
         let dead = bound == 2 && !is_live;
         let gone = &(!is_live && (*gone || dead));
         // under keep at least a compacter's snapshot may be superseded before the bound passes: the

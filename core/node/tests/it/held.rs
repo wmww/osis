@@ -795,7 +795,7 @@ pub(crate) fn compare(e: &mut Engine, hist: &History, cov: &mut Coverage, drops:
 
 /// Keep for D (spec/commits.md §5), for the scripted examples of its dating rule only (the order
 /// oracle compares no death dates): on in-scope aspects, every applied content part of `e`
-/// replaced as held-model dates it, in history then, has a keep bound (`Engine::body_keeps`, what
+/// replaced as held-model dates it, in history then, has a keep bound (`Engine::part_keeps`, what
 /// compaction drops by) no earlier than when the model's settings end it (`Outcome::out`). How
 /// many were judged, how many the node dates later than the model (it keeps them longer), and the
 /// first dated early.
@@ -815,7 +815,7 @@ pub(crate) fn keep_for_d(e: &mut Engine, hist: &History) -> (usize, usize, Optio
                 continue;
             }
             judged += 1;
-            let keep = e.body_keeps(&id).unwrap().get(ai).copied().unwrap_or(0);
+            let keep = e.part_keeps(&id).unwrap().get(ai).copied().unwrap_or(0);
             if e.replaced_at(&id, t, a).unwrap().is_none_or(|x| x.wall_ms().0 > *r) {
                 later += 1;
             }

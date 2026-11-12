@@ -96,7 +96,7 @@ impl SyncEngine {
         let mut before = false;
         let mut covered = !aspects.is_empty();
         let mut needed = Vec::new();
-        let keeps = self.engine.body_keeps(&b.commit)?;
+        let keeps = self.engine.part_keeps(&b.commit)?;
         for (ai, (t, a)) in b.parts.iter().zip(&aspects) {
             let kept = self.part_kept(&keeps, *ai, note);
             before |= kept;
@@ -126,7 +126,7 @@ impl SyncEngine {
 
     /// Whether part `p` of commit `c` is kept whatever covers it (spec/sync.md §6): before its
     /// keep-at-least bound (noted when that ends; never for one kept for good). `keeps`: the
-    /// commit's `Engine::body_keeps`, read once per commit judged.
+    /// commit's `Engine::part_keeps`, read once per commit judged.
     fn part_kept(&self, keeps: &[u64], ai: usize, note: &mut Note) -> bool {
         let Some(k) = keeps.get(ai).copied() else { return false };
         let kept = k > self.now();
@@ -145,7 +145,7 @@ impl SyncEngine {
     /// a right holder may drop a covered body as past keep-at-least while a holder of other bodies
     /// judges it replaced later, or not at all, and kept. Both sides read the covering snapshot under the
     /// label alike, so a covered part is never one only a blob carries.
-    /// `keeps`: the commit's `Engine::body_keeps`.
+    /// `keeps`: the commit's `Engine::part_keeps`.
     pub(super) fn must_carry(&mut self, h: &osis_commit::Header, c: &CommitId, keeps: &[u64], ai: usize, snaps: &Snaps, note: &mut Note) -> Result<bool> {
         if !self.part_kept(keeps, ai, note) && !self.part_live(h, c, ai) {
             return Ok(false);
@@ -161,7 +161,7 @@ impl SyncEngine {
             return Ok(false);
         }
         let Some(h) = self.engine.header(&b.commit) else { return Ok(false) };
-        let keeps = self.engine.body_keeps(&b.commit)?;
+        let keeps = self.engine.part_keeps(&b.commit)?;
         for ai in parts {
             if self.must_carry(&h, &b.commit, &keeps, *ai, snaps, note)? && !self.carried_by(host, &l, &b.commit, &[*ai]) {
                 return Ok(false);

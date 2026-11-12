@@ -573,12 +573,12 @@ fn dropped_snapshot_waits_for_lost_carrier_spec_sync_7() {
     let at_host = blobs(&mut net, a, &l, &s1);
     assert!(!at_host.is_empty() && at_host.iter().all(|b| net.host_ids(host, &l).contains(b)), "the snapshot is at the host");
     edit(&mut net, Op::Insert { at: 0, items: vec![s("two")] });
-    assert!(net.engine(a).body_not_dropped(&s1, &t, &ak) && net.engine(a).body_live(&s1, &t, &ak).unwrap(), "the word's rest is live");
+    assert!(net.engine(a).body_not_dropped(&s1, &t, &ak) && net.engine(a).delta_live(&s1, &t, &ak).unwrap(), "the word's rest is live");
     net.lose_uploads.insert(a);
     // "twoECRET": the `E` goes
     edit(&mut net, Op::Delete { at: 3, len: 1 });
     assert!(!net.engine(a).body_not_dropped(&s1, &t, &ak), "dropped at its first death");
-    assert!(net.engine(a).body_live(&s1, &t, &ak).unwrap(), "dropped live, the rest still in the state");
+    assert!(net.engine(a).delta_live(&s1, &t, &ak).unwrap(), "dropped live, the rest still in the state");
     assert!(snapshots(&mut net, a, &t, &ak).len() > 1, "a carrier written");
     let ids = net.host_ids(host, &l);
     assert!(at_host.iter().all(|b| ids.contains(b)), "kept at the host while the carrier is not there");

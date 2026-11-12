@@ -231,13 +231,12 @@ fn snapshot_frontier_valid_only_spec_crdt_8() {
     assert!(!lp2.peers[0].engine.frontier(&scope, now).unwrap().commits.contains(&bs));
 }
 
-// spec/commits.md §5 (a body's live writes span every aspect of its class): a body on two
-// aspects asked by one of them, then changed through the other, is judged afresh whichever
-// aspect is asked (liveness is not cached per asked aspect alone: a stale answer gave a host
-// delete with no carrier, or a carrier for nothing). The node keeps every body, so nothing
-// covers the body away.
+// spec/commits.md §5 (a delta's live writes are its own): of a commit on two aspects, the part
+// whose write is replaced is dead while the other lives, and that one is judged afresh once its
+// own aspect changes (a stale cached answer gave a host delete with no carrier, or a carrier for
+// nothing). The node keeps every body, so nothing covers the body away.
 #[test]
-fn body_live_spans_its_class_spec_commits_5() {
+fn delta_live_per_part_spec_commits_5() {
     let mut lp = net(1, 0);
     lp.peers[0].engine.keep_bodies(true);
     let t = new_thing(&mut lp, 0);
@@ -249,10 +248,10 @@ fn body_live_spans_its_class_spec_commits_5() {
     set(&mut lp, 0, t, &GONE, "b");
     let (a1, a2) = (ak("t:gone.0"), ak("t:gone2.0"));
     let e = &mut lp.peers[0].engine;
-    assert!(e.body_live(&c, &t, &a1).unwrap(), "its t:gone2.0 write is live");
+    assert!(!e.delta_live(&c, &t, &a1).unwrap(), "replaced");
+    assert!(e.delta_live(&c, &t, &a2).unwrap(), "its t:gone2.0 write is live");
     lp.advance(10);
     set(&mut lp, 0, t, &GONE2, "b2");
     let e = &mut lp.peers[0].engine;
-    assert!(!e.body_live(&c, &t, &a2).unwrap());
-    assert!(!e.body_live(&c, &t, &a1).unwrap(), "asked by the other aspect of the body");
+    assert!(!e.delta_live(&c, &t, &a2).unwrap(), "judged afresh once its aspect changed");
 }

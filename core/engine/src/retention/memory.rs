@@ -219,7 +219,7 @@ pub(crate) fn drop_covered(tx: &mut Tx<'_>, aspects: &BTreeSet<(Tid, Ak)>, keep:
                         continue;
                     }
                     // kept history stays to its keep bound (spec/commits.md §5)
-                    if super::bounds::body_keep(tx, &c, tid, ak)? > tx.now().0 {
+                    if super::bounds::part_keep(tx, &c, tid, ak)? > tx.now().0 {
                         break;
                     }
                     if is_snapshot && c < *s && super::covered(tx, &c, s, tid, ak)? == Some(true) {

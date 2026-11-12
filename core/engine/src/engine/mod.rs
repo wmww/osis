@@ -1081,9 +1081,9 @@ pub struct Core {
     /// When each held part was replaced, per (commit, aspect index)
     /// (`retention::bounds::dated_replaced_at`, `memo`).
     pub(crate) replaced_dates: memo::Memo<(CommitId, usize), Option<osis_base::Ts>>,
-    /// `Engine::body_keeps` per commit but for the clock (`retention::bounds::body_bounds`,
+    /// `Engine::part_keeps` per commit but for the clock (`retention::bounds::commit_bounds`,
     /// `memo`).
-    pub(crate) body_bounds: memo::Memo<CommitId, Arc<Vec<(u64, u64)>>>,
+    pub(crate) part_bounds: memo::Memo<CommitId, Arc<Vec<(u64, u64)>>>,
     /// At or before the earliest retention timer held (wall ms; `u64::MAX`: none): set by
     /// `tick` and at open, lowered by every timer put (`Engine::timers_due`).
     pub timer_floor: u64,
@@ -1130,7 +1130,7 @@ pub struct Core {
     /// `Engine::delta_live` per delta, forgotten per aspect when its state changes (`forget_live`)
     /// and wholly on rollback.
     pub live_bodies: BTreeMap<CommitId, BTreeMap<(Tid, Ak), bool>>,
-    /// Bodies judged for when they were replaced (`retention::bounds::part_replaced_at`, `class_keep`), for cost
+    /// Keep-bound judgments (`retention::bounds::part_keep`, `commit_bounds`: a commit's parts at once), for cost
     /// tests (`Engine::replaced_reads`).
     pub replaced_reads: u64,
     /// Held parts walked for their winners judging deaths (`retention::bounds::winners_of`), for
@@ -1264,7 +1264,7 @@ impl Core {
             cover_cache: self.cover_cache.clone(),
             held_writes: self.held_writes.clone(),
             replaced_dates: self.replaced_dates.clone(),
-            body_bounds: self.body_bounds.clone(),
+            part_bounds: self.part_bounds.clone(),
             timer_floor: self.timer_floor.clone(),
             none_due: self.none_due.clone(),
             settings_due: self.settings_due.clone(),
@@ -1790,7 +1790,7 @@ impl Core {
             links: _,
             held_writes: _,
             replaced_dates: _,
-            body_bounds: _,
+            part_bounds: _,
             departures: _,
             reseal_scans: _,
             // caches, dropped when anything changed (`states` and `pages` per written aspect)
@@ -2035,7 +2035,7 @@ impl Core {
             cover_cache: None,
             held_writes: memo::Memo::new("held writes"),
             replaced_dates: memo::Memo::new("replaced at"),
-            body_bounds: memo::Memo::new("body bounds"),
+            part_bounds: memo::Memo::new("body bounds"),
             timer_floor: 0,
             none_due: BTreeSet::new(),
             cover_candidates: BTreeMap::new(),

@@ -160,7 +160,7 @@ pub(crate) fn settle_none(tx: &mut Tx<'_>) -> Result<()> {
             // carrying a purge request keeps its blobs to the floor (spec/commits.md §5): judged
             // again then; out of history any writer's cover drops it (as `bounds::drop_from`)
             let now = tx.now().0;
-            let floor = super::bounds::body_keep(tx, &c, &tid, &ak)?;
+            let floor = super::bounds::part_keep(tx, &c, &tid, &ak)?;
             if floor > now {
                 if floor < osis_commit::FOREVER {
                     tx.put_timer(floor, &c, ai, super::T_FLOOR)?;

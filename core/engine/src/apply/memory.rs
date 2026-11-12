@@ -259,7 +259,7 @@ impl Engine {
             let now = tx.now().0;
             let (mut sum, mut largest, mut bodies) = (0usize, 0usize, 0usize);
             for (c, ai) in ids.iter().filter(|(c, _)| reflected.contains(c)) {
-                if crate::retention::bounds::body_keep(tx, c, &tid, &ak)? > now {
+                if crate::retention::bounds::part_keep(tx, c, &tid, &ak)? > now {
                     continue;
                 }
                 let Some(blob) = tx.get_commit(c)? else { continue };

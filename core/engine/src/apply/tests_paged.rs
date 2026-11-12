@@ -1035,7 +1035,7 @@ fn unmerge_emptying_skeleton_keeps_paged_entry_spec_perm_5_2() {
 /// and node 0's snapshot of it, drops the fill as covered, then gets node 0's purge of it: the
 /// snapshot carrying purged values is stripped, and the fill's leftover comes from the coverer's
 /// pieces. By pieces and whole alike, the streamed readers checked against the whole ones on
-/// the way (`retention::oracle`: `covered`, `body_live`).
+/// the way (`retention::oracle`: `covered`, `live`).
 #[test]
 fn covered_paged_fill_purged_spec_commits_5() {
     let a = aks()[1].clone();

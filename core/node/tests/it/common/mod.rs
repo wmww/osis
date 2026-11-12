@@ -340,8 +340,8 @@ pub fn grant_ts(bytes: &[u8]) -> osis_base::WallMs {
     osis_commit::CommitBlob::decode(bytes).unwrap().header.ts.wall_ms()
 }
 
-/// The keep-at-least bound of the body holding part `(t, a)` of `c` (`Engine::body_keeps`).
-pub fn body_keep(e: &mut Engine, c: &CommitId, t: &Tid, a: &Ak) -> u64 {
+/// The keep-at-least bound of part `(t, a)` of `c` (`Engine::part_keeps`).
+pub fn part_keep(e: &mut Engine, c: &CommitId, t: &Tid, a: &Ak) -> u64 {
     let ai = e.header(c).unwrap().aspects.iter().position(|x| x.tid == *t && x.ak == *a).unwrap();
-    e.body_keeps(c).unwrap()[ai]
+    e.part_keeps(c).unwrap()[ai]
 }

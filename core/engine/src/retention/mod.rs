@@ -13,9 +13,9 @@
 //! it was replaced, and liveness. `replace`: purge on
 //! replace. `leftover`: the rows.
 //!
-//! A body here is one retention class of a commit (`body_class`): it is judged over the class,
-//! and a part drops with the rest of its class. The class depends on what is held (`reader`), so
-//! nothing kept may be keyed by it.
+//! Each part of a body is judged on its own: its keep bound by its own aspect (`bounds::part_keep`),
+//! its liveness by its own writes (`bounds::read_alone`); a part drops alone, and the blob is
+//! rewritten without it (`drop_part_for`).
 
 use crate::engine::records::{self, Rd, Wr};
 use crate::engine::{Core, DropFor, Dropped, Engine, Owned, Tx};
@@ -64,7 +64,7 @@ const T_FLOOR: u8 = 2;
 pub(crate) const T_KEPT: u8 = 3;
 
 /// A signal delta's keep bound, wall ms (spec/commits.md §5 Signals): any body's keep at least
-/// (`body_keep`), replaced when written; `None`: kept for good.
+/// (`bounds::part_keep`), replaced when written; `None`: kept for good.
 pub(crate) fn signal_bound(core: &Core, h: &Header, a: &osis_commit::AspectEntry) -> Option<u64> {
     let t = bounds::kept_until(core, h, a, Some(h.ts.wall_ms().0));
     (t < osis_commit::FOREVER).then_some(t)
@@ -151,38 +151,6 @@ fn known_part(core: &Core, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<(usize, c
     Ok((m.aspect(tid, ak).ok_or(Error::UnknownCommit(*c))?, m.header.clone()))
 }
 
-/// The aspects of the retention class holding aspect `ai` of a commit (spec/commits.md §5: reader
-/// actor and retention class). A class moves as records and keys arrive (the reader actor,
-/// `Core::reader_of`), so nothing kept may be keyed by it.
-pub(crate) fn body_class(core: &Core, h: &Header, ai: usize) -> Vec<usize> {
-    let Some(me) = h.aspects.get(ai) else { return vec![ai] };
-    let k = class_key(core, me);
-    h.aspects.iter().enumerate().filter(|(_, a)| class_key(core, a) == k).map(|(i, _)| i).collect()
-}
-
-/// What groups a commit's deltas into bodies (`body_class`).
-fn class_key(core: &Core, a: &osis_commit::AspectEntry) -> (Tid, osis_schema::Retention, Vec<usize>, bool) {
-    // a signal's body is replaced when written, the others' when their writes die: never one class
-    (core.reader_of(&a.tid), a.retention, a.keys.clone(), a.ak.signal())
-}
-
-/// Every retention class of header `h` (`body_class`), as the aspect indexes each holds, keyed
-/// once per aspect: grouping all of a commit's parts costs O(parts), not O(parts²).
-pub(crate) fn body_classes(core: &Core, h: &Header) -> Vec<Vec<usize>> {
-    let mut at: std::collections::HashMap<_, usize> = std::collections::HashMap::new();
-    let mut out: Vec<Vec<usize>> = Vec::new();
-    for (i, a) in h.aspects.iter().enumerate() {
-        let n = *at.entry(class_key(core, a)).or_insert_with(|| {
-            out.push(Vec::new());
-            out.len() - 1
-        });
-        if let Some(v) = out.get_mut(n) {
-            v.push(i);
-        }
-    }
-    out
-}
-
 /// Whether the bodies of `(tid, ak)` have a relative keep bound (spec/commits.md §5): only then is
 /// when a body was replaced asked (`bounds::part_replaced_at`).
 pub(crate) fn bounded(core: &Core, tid: &Tid, ak: &Ak) -> bool {
@@ -226,7 +194,7 @@ fn drop_part_for(tx: &mut Tx<'_>, c: &CommitId, ai: usize, why: DropFor) -> Resu
         return Ok(());
     }
     // its keep-at-least bound, judged while it is held: hosts delete it `MAX_DRIFT` past
-    let keep = if why == DropFor::Cover { bounds::body_keep(tx, c, &a.tid, &a.ak)? } else { 0 };
+    let keep = if why == DropFor::Cover { bounds::part_keep(tx, c, &a.tid, &a.ak)? } else { 0 };
     let hosts_from = if keep == 0 { 0 } else { keep.saturating_add(osis_base::format::MAX_DRIFT_MS) };
     // a setting not held is in no timeline (spec/commits.md §5 In force)
     if a.ak.as_str() == osis_commit::retention::RETENTION {
@@ -1232,7 +1200,7 @@ mod tests {
         write(&mut lp, &x, 2);
         let judged = |lp: &mut LocalPeer| {
             crate::costs::take();
-            let k = lp.peers[0].engine.body_keeps(&first).unwrap();
+            let k = lp.peers[0].engine.part_keeps(&first).unwrap();
             let n = |name: &str, c: &[(&str, std::time::Duration, u64)]| c.iter().filter(|x| x.0 == name).map(|x| x.2).sum::<u64>();
             let c = crate::costs::take();
             (k, n("body bounds", &c) + n("replaced at", &c) + n("held writes", &c) + n("deaths: a body", &c))
@@ -1277,12 +1245,12 @@ mod tests {
             let mut prev = write_x(&mut lp, t, &x, 0);
             for v in 1..=n {
                 let c = write_x(&mut lp, t, &x, v);
-                lp.peers[0].engine.body_keeps(&prev).unwrap();
+                lp.peers[0].engine.part_keeps(&prev).unwrap();
                 prev = c;
             }
             crate::costs::take();
             write_x(&mut lp, t, &x, n + 1);
-            assert!(lp.peers[0].engine.body_keeps(&prev).unwrap().iter().any(|k| *k > 0), "dated");
+            assert!(lp.peers[0].engine.part_keeps(&prev).unwrap().iter().any(|k| *k > 0), "dated");
             let c = crate::costs::take();
             let count = |name: &str| c.iter().filter(|s| s.0 == name).map(|s| s.2).sum::<u64>();
             (count("deaths: a body"), count("held writes"))
@@ -1526,41 +1494,26 @@ mod tests {
         let mut lp = LocalPeer::fresh(2, WallMs(1_700_000_000_000));
         lp.sync_all().unwrap();
         let (a, b) = (lp.peers[0].engine.me(), lp.peers[1].engine.me());
-        let x = Ak::new("x:a.0").unwrap();
         let e = &mut lp.peers[0].engine;
         let p = e.create_with_admin(&a).unwrap().0;
         let r = e.create_with_admin(&p).unwrap().0;
         let mut m = Mutation::new();
         let q = e.new_thing(&mut m, p);
         let s = e.new_thing(&mut m, a);
-        for t in [p, q, r, s] {
-            m.set(t, &x, &Value::Int(1)).unwrap();
-        }
-        let c = lp.peers[0].commit(m).unwrap().unwrap();
-        // the things whose write of `x` in `c` is in the body class of its write on P
-        let class = |e: &crate::Engine| {
-            let h = e.core.ix.commits.get(&c).unwrap().header.clone();
-            let ai = h.aspects.iter().position(|y| y.tid == p && y.ak == x).unwrap();
-            let mut ts: Vec<_> = super::body_class(&e.core, &h, ai).iter().map(|i| &h.aspects[*i]).filter(|y| y.ak == x).map(|y| y.tid).collect();
-            ts.sort();
-            ts
-        };
-        let mut all = vec![p, q, r, s];
-        all.sort();
-        assert_eq!(class(&lp.peers[0].engine), all, "plain: every reader actor is A");
+        lp.peers[0].commit(m).unwrap().unwrap();
+        let readers = |e: &crate::Engine| [p, q, r, s].map(|t| e.core.reader_of(&t));
+        assert_eq!(readers(&lp.peers[0].engine), [a; 4], "plain: every reader actor is A");
         let e = &mut lp.peers[0].engine;
         e.grant(&p, &b, &ct::Edge { role: Role::Read, until: None, invite: None, tied: None }).unwrap();
         assert!(e.core.ix.own_keys.contains(&p), "the grant gave P secrets of its own");
-        let mut own = vec![p, q, r];
-        own.sort();
-        assert_eq!(class(&lp.peers[0].engine), own, "P's own, S still A's");
+        assert_eq!(readers(&lp.peers[0].engine), [p, p, p, a], "P's own, S still A's");
     }
 
     // spec/sync.md §7 (a body with live writes needs a carrier), spec/permissions.md §5.2: a
     // write made invalid (its author's removal by an admin that had not received it) counts
     // dead; a re-grant that makes it valid again counts it live again.
     #[test]
-    fn body_live_follows_validity_spec_sync_7() {
+    fn delta_live_follows_validity_spec_sync_7() {
         let mut lp = LocalPeer::fresh(3, WallMs(1_700_000_000_000));
         lp.sync_all().unwrap();
         let (a, w, x) = (lp.peers[0].engine.me(), lp.peers[1].engine.me(), lp.peers[2].engine.me());
@@ -1579,19 +1532,19 @@ mod tests {
         m.set(t, &ak, &Value::Int(1)).unwrap();
         let c = lp.peers[1].commit(m).unwrap().unwrap();
         lp.sync(1, 0).unwrap();
-        assert!(lp.peers[0].engine.body_live(&c, &t, &ak).unwrap(), "W's write is the value");
+        assert!(lp.peers[0].engine.delta_live(&c, &t, &ak).unwrap(), "W's write is the value");
         // no addendum of A's would list it
         lp.peers[0].engine.core.addenda_on = false;
         lp.advance(1_000);
         lp.peers[2].engine.demote(&t, &Demotion { holder: w, new: None, retain: None }).unwrap();
         lp.sync(2, 0).unwrap();
         let e = &mut lp.peers[0].engine;
-        assert!(!e.body_live(&c, &t, &ak).unwrap(), "invalid after a removal not listing it: dead");
+        assert!(!e.delta_live(&c, &t, &ak).unwrap(), "invalid after a removal not listing it: dead");
         assert!(!e.core.ix.commits[&c].holds(0), "dropped while invalid");
         e.grant(&t, &w, &write).unwrap();
         assert!(e.core.ix.commits[&c].missing.contains(&0), "valid again after the re-grant: missing, fetched");
         lp.sync(1, 0).unwrap();
-        assert!(lp.peers[0].engine.body_live(&c, &t, &ak).unwrap(), "fetched from its author: live");
+        assert!(lp.peers[0].engine.delta_live(&c, &t, &ak).unwrap(), "fetched from its author: live");
     }
 
     // spec/commits.md §5 live writes, by dot, and a delta stamp marks many positions: C's snapshot,
@@ -1628,7 +1581,7 @@ mod tests {
         lp.sync(0, 1).unwrap();
         let e = &mut lp.peers[1].engine;
         assert_eq!(e.body_valid(&snap, &t, &ak), Some(false), "the snapshot is invalid here");
-        assert!(e.body_live(&snap, &t, &ak).unwrap(), "its stamp is live at field 1");
+        assert!(e.delta_live(&snap, &t, &ak).unwrap(), "its stamp is live at field 1");
     }
 
     // spec/crdt.md §4.6 Un-merge, §4.7, issues/drop-rejoin-robust.md item 2 (leftovers are

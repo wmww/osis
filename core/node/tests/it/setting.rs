@@ -308,15 +308,14 @@ fn purge_on_replace_never_listed_ahead_of_the_clock_spec_commits_5() {
     assert!(!listed(&mut p, &v1, d), "never history");
 }
 
-// spec/commits.md §5 Dated only where history is kept: each part of a body class is dated by its
-// own writes and kept by its own aspect's setting, and the body stays until the latest of them.
-// One commit writes the register (kept an hour) and another aspect (no history) in one class.
-// Replacing only the other aspect dates nothing: the kept part is current (so the body stays for
-// that), and the unkept part adds no bound; spec/commits.md §7 Listed parts: the unkept part is
-// not listed (current by its own writes only). Replacing the kept part then keeps the body an
-// hour from that part's own replacement.
+// spec/commits.md §5 Dated only where history is kept: each part of a body is dated by its own
+// writes and kept by its own aspect's setting alone. One commit writes the register (kept an
+// hour) and another aspect (no history). Replacing only the other aspect dates nothing: the kept
+// part is current, and the unkept part has no bound; spec/commits.md §7 Listed parts: the unkept
+// part is not listed (current by its own writes only). Replacing the kept part then keeps that
+// part an hour from its own replacement, and the other part none.
 #[test]
-fn a_body_class_keeps_by_its_kept_aspect_spec_commits_5() {
+fn a_part_keeps_by_its_own_aspect_spec_commits_5() {
     for (kept, other) in [("t:b.0", "t:a.0"), ("t:a.0", "t:b.0")] {
         let (mut lp, d) = setup();
         set(&mut lp, 0, d, &setting(&[(kept, keep(HOUR))]));
@@ -326,16 +325,16 @@ fn a_body_class_keeps_by_its_kept_aspect_spec_commits_5() {
         m.set(d, &ak(other), &s("x")).unwrap();
         let c = lp.peers[1].commit(m).unwrap().unwrap();
         lp.advance(1_000);
-        assert_eq!(lp.peers[1].engine.body_keeps(&c).unwrap(), vec![0, 0], "{kept}: not replaced");
+        assert_eq!(lp.peers[1].engine.part_keeps(&c).unwrap(), vec![0, 0], "{kept}: not replaced");
         let mut m = Mutation::new();
         m.set(d, &ak(other), &s("y")).unwrap();
         lp.peers[1].commit(m).unwrap().unwrap();
         lp.advance(1_000);
         let e = &mut lp.peers[1].engine;
-        assert_eq!(e.body_keeps(&c).unwrap(), vec![0, 0], "{kept}: the other aspect's death dates no kept part");
+        assert_eq!(e.part_keeps(&c).unwrap(), vec![0, 0], "{kept}: the other aspect's death dates no kept part");
         assert_eq!(e.replaced_at(&c, &d, &ak(other)).unwrap(), None, "{kept}: no history on the other aspect");
-        assert!(e.body_live(&c, &d, &ak(kept)).unwrap(), "{kept}: the kept part is current");
-        // listing is per part: the kept part's live write keeps the bytes, not the other part's listing
+        assert!(e.delta_live(&c, &d, &ak(kept)).unwrap(), "{kept}: the kept part is current");
+        // listing is per part: the kept part's live write keeps no other part listed
         assert!(e.listed_at(&c, &[(d, ak(kept))]).unwrap(), "{kept}: the current part listed");
         assert!(!e.listed_at(&c, &[(d, ak(other))]).unwrap(), "{kept}: the replaced unkept part not listed");
         let mut m = Mutation::new();
@@ -343,8 +342,36 @@ fn a_body_class_keeps_by_its_kept_aspect_spec_commits_5() {
         lp.peers[1].commit(m).unwrap().unwrap();
         let r = lp.peers[1].engine.now().0;
         lp.advance(1_000);
-        assert_eq!(lp.peers[1].engine.body_keeps(&c).unwrap(), vec![r + HOUR, r + HOUR], "{kept}: kept by its kept part's own replacement");
+        let e = &mut lp.peers[1].engine;
+        assert_eq!((part_keep(e, &c, &d, &ak(kept)), part_keep(e, &c, &d, &ak(other))), (r + HOUR, 0), "{kept}: kept by its own replacement alone");
     }
+}
+
+// spec/requirements.md Purge on replace, spec/commits.md §5 Keep bounds (each delta kept by its
+// own aspect's setting alone): one commit writes a kept aspect and a purge-on-replace one in one
+// body; replacing both, the writer covers the purge-on-replace part and it goes at once, while
+// the kept part stays an hour from its own replacement.
+#[test]
+fn purge_on_replace_part_goes_whatever_its_commit_keeps_spec_commits_5() {
+    let (kept, gone) = ("t:a.0", "t:b.0");
+    let (mut lp, d) = setup();
+    set(&mut lp, 0, d, &setting(&[(kept, keep(HOUR)), (gone, History::PurgeOnReplace)]));
+    lp.sync_all().unwrap();
+    let both = |lp: &mut LocalPeer, v: &str| {
+        let mut m = Mutation::new();
+        m.set(d, &ak(kept), &s(v)).unwrap();
+        m.set(d, &ak(gone), &s(v)).unwrap();
+        let c = lp.peers[1].commit(m).unwrap().unwrap();
+        lp.advance(1_000);
+        c
+    };
+    let c = both(&mut lp, "one");
+    both(&mut lp, "two");
+    let r = lp.peers[1].engine.now().0 - 1_000;
+    let e = &mut lp.peers[1].engine;
+    assert!(e.body_not_dropped(&c, &d, &ak(kept)), "the kept part stays");
+    assert_eq!(part_keep(e, &c, &d, &ak(kept)), r + HOUR, "kept by its own replacement");
+    assert!(!e.body_not_dropped(&c, &d, &ak(gone)), "the purge-on-replace part is gone");
 }
 
 // spec/commits.md §5 In force: two admins' settings at one wall ms are ordered by key, whatever
@@ -391,12 +418,12 @@ fn a_covered_drop_redates_nothing_spec_commits_5() {
     lp.peers[0].tick().unwrap();
     let e = &mut lp.peers[0].engine;
     assert!(e.body_not_dropped(&x1, &d, &ak(A)) && e.body_not_dropped(&x2, &d, &ak(A)));
-    let keep = e.body_keeps(&x1).unwrap();
+    let keep = e.part_keeps(&x1).unwrap();
     assert!(!listed(&mut lp.peers[0], &x1, d), "out of history 10 minutes after x2");
     let e = &mut lp.peers[0].engine;
     e.drop_body(&x2, &d, &ak(A)).unwrap();
     assert!(!e.body_not_dropped(&x2, &d, &ak(A)), "x2 is live and covered: in no history, it drops");
-    assert_eq!(e.body_keeps(&x1).unwrap(), keep, "x1's keep stays");
+    assert_eq!(e.part_keeps(&x1).unwrap(), keep, "x1's keep stays");
     assert!(!listed(&mut lp.peers[0], &x1, d), "x1 is not listed again");
 }
 
@@ -409,7 +436,7 @@ fn drop_allowed(p: &mut Peer, d: Tid, a: &str, s: CommitId, order: &[CommitId], 
     let k = ak(a);
     let listed = |p: &mut Peer| -> Vec<Option<(bool, bool)>> {
         let now = p.engine.now().0;
-        watch.iter().map(|c| p.engine.body_not_dropped(c, &d, &k).then(|| (p.engine.listed_at(c, &[(d, k.clone())]).unwrap(), p.engine.body_keeps(c).unwrap().iter().any(|x| *x > now)))).collect()
+        watch.iter().map(|c| p.engine.body_not_dropped(c, &d, &k).then(|| (p.engine.listed_at(c, &[(d, k.clone())]).unwrap(), p.engine.part_keeps(c).unwrap().iter().any(|x| *x > now)))).collect()
     };
     let before = listed(p);
     let mut dropped = Vec::new();
@@ -538,17 +565,17 @@ fn standing(p: &mut Peer, c: &CommitId, d: Tid, a: &str) -> Option<Standing> {
     if !p.engine.body_not_dropped(c, &d, &ak(a)) {
         return None;
     }
-    let keeps = p.engine.body_keeps(c).unwrap();
+    let keeps = p.engine.part_keeps(c).unwrap();
     let kept = keeps.iter().any(|x| *x > now);
     let bound = kept.then(|| (keeps, p.engine.replaced_at(c, &d, &ak(a)).unwrap()));
     Some((p.engine.listed_at(c, &[(d, ak(a))]).unwrap(), kept, bound))
 }
 
 /// One history of `covered_drops_move_nothing_*`: writes by Alice, Bob and Carol on a register
-/// `A` kept ten minutes, on `B` no setting keeps, or on both in one commit (one body class),
+/// `A` kept ten minutes, on `B` no setting keeps, or on both in one commit,
 /// syncs, Alice's snapshots of either, and maybe Bob removed with none of his writes counting
 /// (so snapshots vouch for them), at random gaps; then at a node holding all of it every part
-/// some held snapshot covers and whose body's keep bound passed is dropped, in random order.
+/// some held snapshot covers and whose keep bound passed is dropped, in random order.
 /// The covered drops `seed`'s history made, each checked.
 fn covered_drops_history(seed: u64) -> usize {
     let mut r = seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1;
@@ -634,7 +661,7 @@ fn covered_drops_history(seed: u64) -> usize {
 
 // notes/engine-retention.md Replaced (the covered-drop invariant), spec/crdt.md §4.8 When,
 // spec/commits.md §5 Dated only where history is kept: random small histories on a kept and an
-// unkept aspect, some commits writing both in one body class, every covered part past its body's
+// unkept aspect, some commits writing both, every covered part past its
 // keep bound dropped in random order; no drop moves the listing, in-history status, keep bounds
 // or replaced-at of a held body in history.
 #[test]
@@ -658,13 +685,13 @@ fn covered_drops_replay(s: u64) -> String {
 }
 
 // spec/commits.md §5 Dated only where history is kept, notes/engine-retention.md Replaced (the
-// covered-drop invariant): W writes a kept aspect (10 minutes) and an unkept one in one body
-// class; B replaces the unkept write, E replaces B fifteen minutes later. W's unkept part is
+// covered-drop invariant): W writes a kept aspect (10 minutes) and an unkept one in one
+// commit; B replaces the unkept write, E replaces B fifteen minutes later. W's unkept part is
 // dated by nothing (no history on its aspect), so B, also undated, drops at once under a
-// snapshot and moves none of W's bounds. Dated across the class, W was out by B's date and came
+// snapshot and moves none of W's bounds. Dated across the commit, W was out by B's date and came
 // back into history at E's.
 #[test]
-fn an_unkept_part_dates_no_class_spec_commits_5() {
+fn an_unkept_part_dates_no_other_part_spec_commits_5() {
     let (kept, other) = ("t:b.0", "t:a.0");
     let (mut lp, d) = setup();
     set(&mut lp, 0, d, &setting(&[(kept, keep(10 * 60_000))]));
@@ -685,10 +712,10 @@ fn an_unkept_part_dates_no_class_spec_commits_5() {
     e.keep_bodies(true);
     let snap = e.snapshot(&d, &ak(other)).unwrap().unwrap();
     assert!(e.covered(&snap, &b, &d, &ak(other)).unwrap() == Some(true) && e.drop_from(&b, &d, &ak(other)).unwrap() <= e.now().0);
-    let before = (e.body_keeps(&w).unwrap(), e.replaced_at(&w, &d, &ak(kept)).unwrap(), e.replaced_at(&w, &d, &ak(other)).unwrap());
+    let before = (e.part_keeps(&w).unwrap(), e.replaced_at(&w, &d, &ak(kept)).unwrap(), e.replaced_at(&w, &d, &ak(other)).unwrap());
     assert_eq!(before, (vec![0, 0], None, None), "W's kept part current, its other part undated");
     e.drop_body(&b, &d, &ak(other)).unwrap();
-    assert_eq!((e.body_keeps(&w).unwrap(), e.replaced_at(&w, &d, &ak(kept)).unwrap(), e.replaced_at(&w, &d, &ak(other)).unwrap()), before, "a covered drop moved W");
+    assert_eq!((e.part_keeps(&w).unwrap(), e.replaced_at(&w, &d, &ak(kept)).unwrap(), e.replaced_at(&w, &d, &ak(other)).unwrap()), before, "a covered drop moved W");
 }
 
 /// Peer `p` listens for commit events on every thing.

@@ -232,8 +232,8 @@ fn one_own_replace_left_covers_nothing_spec_commits_5() {
 }
 
 // spec/sync.md §6, §7 (only a blob carries a delta kept or holding a live write): a delta's
-// liveness is its own writes', not its body's: C writes x:a and x:b in one body; once x:a is
-// replaced, C's x:a delta has no live write while the body (x:b) still has one.
+// liveness is its own writes', whatever its commit's other deltas hold: C writes x:a and x:b in
+// one body; once x:a is replaced, C's x:a delta has no live write while its x:b delta still has.
 #[test]
 fn delta_live_is_the_deltas_own_spec_sync_7() {
     let (mut lp, t) = thing();
@@ -248,8 +248,7 @@ fn delta_live_is_the_deltas_own_spec_sync_7() {
     replaces(&mut lp, t, &a, 2..3);
     let e = &mut lp.peers[0].engine;
     assert!(!e.delta_live(&c, &t, &a).unwrap(), "x:a replaced");
-    assert!(e.delta_live(&c, &t, &b).unwrap());
-    assert!(e.body_live(&c, &t, &a).unwrap(), "the body's x:b write lives");
+    assert!(e.delta_live(&c, &t, &b).unwrap(), "the x:b write lives");
 }
 
 // spec/commits.md §5 Own replaces: what stays dropped under own replaces is a function of what

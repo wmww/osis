@@ -159,8 +159,7 @@ impl Outcome {
     /// until it is out of history on the node's clock (spec/commits.md §5 Keep bounds: never
     /// before the clock reaches `r`); elsewhere nothing is dated and a covered body drops at
     /// once, whatever the thing's other aspects keep. Per part: `r` is the part's own
-    /// replacement, so another part of its commit, kept or not, neither dates nor keeps it (the
-    /// engine keeps a body class until the latest of its parts' bounds, a keep at least on top).
+    /// replacement, so another part of its commit, kept or not, neither dates nor keeps it.
     /// Listing follows history.
     pub fn kept(&self, t: ThingId, a: Aspect, r: u64, now: u64) -> bool {
         self.in_history(t, a, r, now) || now < r && self.aspect_keeps(t, a)

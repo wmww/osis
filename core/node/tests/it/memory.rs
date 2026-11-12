@@ -238,7 +238,7 @@ fn big_map_apply_memory() {
             let (fill, snap) = (pks.last().unwrap().id, target.id);
             p.engine.ingest(&target.bytes, target.blobs.clone()).unwrap();
             step(&format!("n={n} judge the commit covered"), &mut || assert_eq!(p.engine.covered(&snap, &fill, t, &a).unwrap(), Some(true)));
-            step(&format!("n={n} judge the snapshot live"), &mut || assert!(p.engine.body_live(&snap, t, &a).unwrap()));
+            step(&format!("n={n} judge the snapshot live"), &mut || assert!(p.engine.delta_live(&snap, t, &a).unwrap()));
             step(&format!("n={n} drop the covered commit"), &mut || p.engine.drop_body(&fill, t, &a).unwrap());
             assert_eq!(p.engine.get_at(t, &a, &[PathSeg::Key(Value::Int(7))]).unwrap(), Some(Value::Int(7)));
             return;

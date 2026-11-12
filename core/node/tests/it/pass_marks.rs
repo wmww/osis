@@ -92,7 +92,7 @@ fn purge_on_replace_removed_entry_no_live_write_spec_commits_5() {
     map_op(&mut net, a, t, &GONEMAP, osis_crdt::Op::Remove(s("k1")));
     net.run();
     let ak = osis_base::Ak::new(osis_schema::RawKey::ak(&GONEMAP)).unwrap();
-    assert!(!net.engine(a).body_not_dropped(&b, &t, &ak) && !net.engine(a).body_live(&b, &t, &ak).unwrap(), "dropped with the removal, no live write");
+    assert!(!net.engine(a).body_not_dropped(&b, &t, &ak) && !net.engine(a).delta_live(&b, &t, &ak).unwrap(), "dropped with the removal, no live write");
     assert_eq!(at_host(&mut net, a, host, &l, &b), 0, "the body without a live write was deleted in the same sync");
 }
 
@@ -123,9 +123,9 @@ fn kept_for_good_bodies_not_judged_again_spec_sync_6() {
 }
 
 // spec/requirements.md Scale (a body's judgment costs O(its parts)), spec/sync.md §6, spec/commits.md
-// §5: one body of many parts kept at least is judged once per body, at its author and a reader,
-// written and then wholly replaced (each part's keep judged over the whole body would cost
-// parts²).
+// §5: one body of many parts kept at least is judged once per commit, at its author and a reader,
+// written and then wholly replaced (its parts judged in one call per commit, never a call per
+// part).
 #[test]
 fn body_judged_once_per_body_spec_requirements_scale() {
     use osis_schema::core_types as ct;
