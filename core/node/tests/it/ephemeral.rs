@@ -3404,6 +3404,35 @@ fn large_write_pages_and_syncs_spec_crdt_8() {
     assert_eq!(net.eph_read(a, w, STATE), Some(s("w")), "nothing of the batch applied");
 }
 
+// spec/crdt.md §8, spec/sync.md §5: a paged ephemeral commit reaches a co-reader peer by its
+// stream (no host), pages charged there
+#[test]
+fn paged_write_over_peer_link_spec_crdt_8() {
+    let (mut net, [a, b]) = local_nodes::<2>();
+    for (n, k) in [(a, 0xa7), (b, 0xb7)] {
+        let acts = net.sync(n).publish_reach([k; 32], vec!["https://relay.example".into()]).unwrap();
+        net.actions(n, acts);
+    }
+    let g = net.group_at(a, &[(b, Role::Write)], vec![]);
+    net.run();
+    let w = window(&mut net, a, g, "w");
+    net.run();
+    let big = big_notes(6, 3 << 19, "k");
+    let mut m = Mutation::new();
+    for (k, v) in &big {
+        m.op(w, &eph(NOTES), PathOp { path: vec![PathSeg::Key(s(k))], op: Op::Set(s(v)) }).unwrap();
+    }
+    net.engine(a).write(m).unwrap();
+    assert!(eph_pages(&mut net, a, w) >= 6, "paged");
+    local(&mut net, a);
+    net.run();
+    let want: BTreeMap<String, String> = big.into_iter().collect();
+    assert_eq!(shape(&notes(&mut net, b, w)), shape(&want), "b reads it by a's stream");
+    assert!(eph_pages(&mut net, b, w) >= 6, "b holds the paged commit");
+    let l = net.label(a);
+    assert!(net.sync(b).ephemeral_bytes(&l) > 9 << 20, "its pages count at b");
+}
+
 // spec/crdt.md §8, spec/sync.md §9 Caps: a receiver's pre-decode bound counts the pages an
 // ephemeral commit lists, not a blob a value links: a note holding a link to a large durable
 // value the receiver holds applies there as any small note does
