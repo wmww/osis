@@ -287,6 +287,9 @@ impl Ui {
         let layout = Layout { t: sh.t, home: sh.home, narrow: self.narrow };
         let rebuild = force || self.built.as_ref() != Some(&layout) || look != *self.look;
         self.searching = sh.searching;
+        // a rebuild for another reason (a synced theme, a new width class) keeps the typing in
+        // the search field it was in
+        let in_search = rr.focused_widget().and_then(|f| self.search_ids.iter().position(|i| *i == f));
         if rebuild {
             self.look = Arc::new(look);
             // before the new screen's slots exist: what leaves takes its slot along
@@ -300,7 +303,15 @@ impl Ui {
             let title = std::mem::take(&mut self.focus_title).then(|| self.acts.editor_of(layout.t, "name.0")).flatten();
             self.keyboard_request |= title.is_some();
             let id = if layout.home { self.search_ids.first().copied() } else { title };
-            rr.focus_on(id);
+            let kept = in_search.and_then(|i| self.search_ids.get(i).copied());
+            rr.focus_on(kept.or(id));
+            if let Some(input) = kept {
+                rr.edit_widget(input, |mut w| {
+                    let mut a = w.downcast::<TextArea<true>>();
+                    let end = a.widget.text().to_string().len();
+                    TextArea::select_byte_range(&mut a, end, end);
+                });
+            }
             self.show_status(rr);
         } else {
             for &id in &self.search_stacks {
