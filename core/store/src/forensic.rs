@@ -11,7 +11,7 @@
 //! - takes every random-looking 32 bytes of anything it recovered as a candidate key, and tries
 //!   each on every blob (link keys, node-sync's blob keys, anything else);
 //! - reads table pages as entries (overflow values joined from their units) and, for each entry
-//!   whose key holds a blob's ID, tries the start of its value as that blob's wrap (store wraps,
+//!   whose key holds a blob's ID, tries the start of its value as that blob's wrap (hub store and
 //!   node-sync entries) under every candidate key as a label read secret, opening the blob with
 //!   what unwraps.
 //!

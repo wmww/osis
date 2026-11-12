@@ -6,7 +6,7 @@
 use crate::common;
 
 use common::*;
-use osis_base::{BlobId, CommitId, LabelId};
+use osis_base::{BlobId, CommitId};
 use osis_crypto::SeededRng;
 use osis_store::{AspectUnit, Evidence, PendingKind, Shred, Store};
 
@@ -24,8 +24,6 @@ fn recoverable(s: &mut Store, dev: &MemDevice, marker: &[u8]) -> bool {
     attack(s, dev).iter().any(|p| contains(p, marker))
 }
 
-const LABEL: LabelId = LabelId([4; 16]);
-
 /// Writes `marker` into every kind of unit, then rewrites some of them without shredding so old
 /// versions pile up in the history.
 fn plant(s: &mut Store, rng: &mut SeededRng, marker: &[u8]) {
@@ -33,9 +31,8 @@ fn plant(s: &mut Store, rng: &mut SeededRng, marker: &[u8]) {
     let mut t = s.transaction(rng).unwrap();
     let unit = AspectUnit { state: [b"live:", marker].concat() };
     t.put_aspect(&t1, &a, &unit, Shred::No).unwrap();
-    t.put_wrap(&LABEL, &BlobId([1; 32]), &[marker, b"wrap"].concat()).unwrap();
-    t.put_wrap(&LABEL, &BlobId([2; 32]), b"other wrap").unwrap();
-    t.put_secrets(&tid(9), &[b"secrets:", marker].concat(), Shred::No).unwrap();
+    t.put_local(b"local/1", &[marker, b"local"].concat(), Shred::No).unwrap();
+    t.put_local(b"local/2", b"other local", Shred::No).unwrap();
     let big = t.create_table(&t1, &ak("big.0"), 0).unwrap();
     for i in 0..300u32 {
         t.table_put(big, &i.to_be_bytes(), format!("element {i}").into_bytes(), Shred::No).unwrap();
@@ -59,15 +56,14 @@ fn shred_all(s: &mut Store, rng: &mut SeededRng) {
     let (t1, a) = (tid(1), ak("doc.0"));
     let mut t = s.transaction(rng).unwrap();
     t.put_aspect(&t1, &a, &AspectUnit { state: b"live".to_vec() }, Shred::Yes).unwrap();
-    assert!(t.drop_wrap(&LABEL, &BlobId([1; 32])).unwrap());
-    assert!(t.drop_actor_secrets(&tid(9)).unwrap());
+    assert!(t.remove_local(b"local/1", Shred::Yes).unwrap());
     let big = t.table(&t1, &ak("big.0"), 0).unwrap().unwrap();
     t.table_put(big, &150u32.to_be_bytes(), b"element 150".to_vec(), Shred::Yes).unwrap();
     assert!(t.remove_pending(&CommitId([3; 32]), Shred::Yes).unwrap());
     t.commit().unwrap();
 }
 
-// spec/commits.md §5: dropping a body destroys every local copy so that later compromise recovers nothing; aspect units, wraps, secrets, pages likewise.
+// spec/commits.md §5: dropping a body destroys every local copy so that later compromise recovers nothing; aspect units, catalog records, table pages and pending commits likewise.
 #[test]
 fn shredded_content_is_unrecoverable() {
     let dev = MemDevice::new();
@@ -81,9 +77,9 @@ fn shredded_content_is_unrecoverable() {
     assert!(!recoverable(&mut s, &dev, marker), "shredded content recovered");
     // Live content is still readable, and still found by the attack.
     let mut t = s.transaction(&mut rng).unwrap();
-    assert_eq!(t.get_wrap(&LABEL, &BlobId([2; 32])).unwrap(), Some(b"other wrap".to_vec()));
+    assert_eq!(t.get_local(b"local/2").unwrap(), Some(b"other local".to_vec()));
     drop(t);
-    assert!(recoverable(&mut s, &dev, b"other wrap"));
+    assert!(recoverable(&mut s, &dev, b"other local"));
     // Backends hold ciphertext only.
     assert!(dev.backend.history().iter().all(|(k, v)| !contains(k, marker) && !contains(v, marker)));
 }
@@ -245,8 +241,8 @@ fn file_backend_holds_no_plaintext() {
     assert!(!contains(&raw, b"element 1"));
     let mut s = reopen(&dev);
     let mut t = s.transaction(&mut rng).unwrap();
-    assert_eq!(t.get_wrap(&LABEL, &BlobId([1; 32])).unwrap(), None);
-    assert_eq!(t.get_wrap(&LABEL, &BlobId([2; 32])).unwrap(), Some(b"other wrap".to_vec()));
+    assert_eq!(t.get_local(b"local/1").unwrap(), None);
+    assert_eq!(t.get_local(b"local/2").unwrap(), Some(b"other local".to_vec()));
 }
 
 /// Blobs as osis-label frames them, without a prefix: enough for the attack's blob paths.
@@ -278,7 +274,7 @@ fn blob_keys_and_wraps_dropped_leave_the_blob_unopenable() {
     let mut t = s.transaction(&mut rng).unwrap();
     t.put_blob(&inner, ib).unwrap();
     t.put_blob(&wrapped, wb).unwrap();
-    t.put_wrap(&LABEL, &wrapped, &osis_crypto::wrap(&secret, &wrapped, &wkey, 1).unwrap()).unwrap();
+    t.put_local(&[b"wrap/".as_slice(), &wrapped.0].concat(), &osis_crypto::wrap(&secret, &wrapped, &wkey, 1).unwrap(), Shred::No).unwrap();
     t.put_blob(&keyed, kb).unwrap();
     t.put_local(&[b"blobkey/".as_slice(), &keyed.0].concat(), kkey.expose(), Shred::No).unwrap();
     t.commit().unwrap();
@@ -290,7 +286,7 @@ fn blob_keys_and_wraps_dropped_leave_the_blob_unopenable() {
     assert_eq!(found(&mut s, b"KEYED-BLOB-MARK"), vec![osis_store::Source::Blob { id: keyed, wrapped: false }]);
     assert_eq!(found(&mut s, b"INNER-BLOB-MARK"), vec![osis_store::Source::Blob { id: inner, wrapped: false }]);
     let mut t = s.transaction(&mut rng).unwrap();
-    assert!(t.drop_wrap(&LABEL, &wrapped).unwrap());
+    assert!(t.remove_local(&[b"wrap/".as_slice(), &wrapped.0].concat(), Shred::Yes).unwrap());
     assert!(t.remove_local(&[b"blobkey/".as_slice(), &keyed.0].concat(), Shred::Yes).unwrap());
     t.delete_blob(&wrapped);
     t.delete_blob(&keyed);

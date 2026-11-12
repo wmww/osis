@@ -4,7 +4,7 @@
 use crate::common;
 
 use common::*;
-use osis_base::{BlobId, CommitId, LabelId};
+use osis_base::{BlobId, CommitId};
 use osis_crypto::SeededRng;
 use osis_store::{AspectUnit, Error, Fault, MemoryBackend, MemoryRoot, PendingKind, Shred, Store, StoreConfig};
 
@@ -25,13 +25,13 @@ fn transactions_commit_or_abort() {
         let mut t = s.transaction(&mut rng).unwrap();
         assert_eq!(t.get_aspect(&t1, &a).unwrap(), None);
         t.put_aspect(&t1, &a, &unit, Shred::No).unwrap();
-        t.put_secrets(&tid(2), b"secret", Shred::No).unwrap();
+        t.put_local(b"secret", b"secret", Shred::No).unwrap();
         t.commit().unwrap();
         drop(s);
         let mut s = reopen(&*dev);
         let mut t = s.transaction(&mut rng).unwrap();
         assert_eq!(t.get_aspect(&t1, &a).unwrap(), Some(unit), "{}", dev.name());
-        assert_eq!(t.get_secrets(&tid(2)).unwrap(), Some(b"secret".to_vec()));
+        assert_eq!(t.get_local(b"secret").unwrap(), Some(b"secret".to_vec()));
         assert_eq!(t.get_aspect(&t1, &ak("other.0")).unwrap(), None);
     }
 }
@@ -87,48 +87,44 @@ fn pending_commits() {
     assert_eq!(t.pending(None, 100).unwrap().len(), 9);
 }
 
-// spec/commits.md §5: dropping destroys every local copy; notes/local-store.md, Units: wraps live in label pages; dropping one shreds its page.
+// spec/commits.md §5: dropping destroys every local copy; notes/local-store.md, Units: the
+// shredded drops of one transaction rewrite their pages under one key-tree rotation.
 #[test]
-fn wraps_and_secrets() {
+fn shredded_drops_rotate_once() {
     let dev = MemDevice::new();
     let mut rng = SeededRng::from_u64(0);
     let mut s = create(&dev, &mut rng);
-    let (l1, l2) = (LabelId([1; 16]), LabelId([2; 16]));
     let mut t = s.transaction(&mut rng).unwrap();
     for b in 0..20u8 {
-        t.put_wrap(&l1, &BlobId([b; 32]), &[b; 49]).unwrap();
+        t.put_local(&[b"a/", &[b][..]].concat(), &[b; 49], Shred::No).unwrap();
     }
-    t.put_wrap(&l2, &BlobId([0; 32]), &[0xee; 49]).unwrap();
-    t.put_secrets(&tid(7), b"role secrets", Shred::No).unwrap();
+    t.put_local(b"b/0", &[0xee; 49], Shred::No).unwrap();
     t.commit().unwrap();
     let e = s.epoch();
     let mut t = s.transaction(&mut rng).unwrap();
-    assert!(t.drop_wrap(&l1, &BlobId([3; 32])).unwrap());
-    assert!(t.drop_actor_secrets(&tid(7)).unwrap());
+    assert!(t.remove_local(b"a/\x03", Shred::Yes).unwrap());
+    assert!(t.remove_local(b"b/0", Shred::Yes).unwrap());
     t.commit().unwrap();
     assert_eq!(s.epoch(), e + 1, "one rotation for the whole transaction");
     let mut t = s.transaction(&mut rng).unwrap();
-    assert_eq!(t.get_wrap(&l1, &BlobId([3; 32])).unwrap(), None);
-    assert_eq!(t.get_wrap(&l1, &BlobId([4; 32])).unwrap(), Some(vec![4; 49]));
-    assert_eq!(t.wraps(&l1, None, 100).unwrap().len(), 19);
-    assert_eq!(t.wraps(&l2, None, 100).unwrap(), vec![(BlobId([0; 32]), vec![0xee; 49])]);
-    assert_eq!(t.get_secrets(&tid(7)).unwrap(), None);
+    assert_eq!(t.get_local(b"a/\x03").unwrap(), None);
+    assert_eq!(t.get_local(b"a/\x04").unwrap(), Some(vec![4; 49]));
+    assert_eq!(t.scan_local(b"a/", b"", 100).unwrap().len(), 19);
+    assert_eq!(t.scan_local(b"b/", b"", 100).unwrap(), vec![]);
 }
 
-// spec: none (node-local bookkeeping); notes/local-store.md, Units: cursor logs and the IDs-gained list.
+// spec: none (node-local bookkeeping); notes/local-store.md, Units: `*_local` records.
 #[test]
-fn cursors_logs_local() {
+fn local_records() {
     let dev = MemDevice::new();
     let mut rng = SeededRng::from_u64(0);
     let mut s = create(&dev, &mut rng);
     let mut t = s.transaction(&mut rng).unwrap();
-    t.put_cursor(b"host", b"c1").unwrap();
     t.put_local(b"roster/1", b"a", Shred::No).unwrap();
     t.put_local(b"roster/2", b"b", Shred::No).unwrap();
     t.put_local(b"zzz", b"c", Shred::No).unwrap();
     t.commit().unwrap();
     let mut t = s.transaction(&mut rng).unwrap();
-    assert_eq!(t.get_cursor(b"host").unwrap(), Some(b"c1".to_vec()));
     assert_eq!(t.scan_local(b"roster/", b"", 10).unwrap(), vec![(b"roster/1".to_vec(), b"a".to_vec()), (b"roster/2".to_vec(), b"b".to_vec())]);
     assert!(t.remove_local(b"zzz", Shred::No).unwrap());
 }

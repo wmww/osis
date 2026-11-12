@@ -454,12 +454,6 @@ impl World {
         self.index(db).and_then(|i| self.busy.get(i).copied()).unwrap_or_default()
     }
 
-    /// Time every node spent so far, by start order.
-    pub fn busy_all(&mut self) -> Vec<Duration> {
-        self.dbs();
-        self.busy.clone()
-    }
-
     /// Time host hubs spent so far.
     pub fn hub_busy(&self) -> Duration {
         self.hub_busy

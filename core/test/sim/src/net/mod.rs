@@ -352,8 +352,6 @@ pub struct NetSim {
     pub account_of: BTreeMap<usize, Tid>,
     /// Print every trace line (`OSIS_SIM_TRACE`).
     pub verbose: bool,
-    /// Invariants switched off for a scenario, each naming the issue that breaks it.
-    pub waivers: BTreeSet<&'static str>,
     /// Record entry kinds after every node call (failure detail).
     watch: bool,
     /// Hosts whose stores the label invariants do not judge (adversaries).
@@ -478,7 +476,6 @@ impl NetSim {
             excused: BTreeSet::new(),
             account_of: BTreeMap::new(),
             verbose: std::env::var_os("OSIS_SIM_TRACE").is_some(),
-            waivers: BTreeSet::new(),
             watch: false,
             dishonest: BTreeSet::new(),
             parked_ok: BTreeSet::new(),
@@ -511,10 +508,6 @@ impl NetSim {
 
     pub fn now(&self) -> u64 {
         T0.saturating_add(self.elapsed)
-    }
-
-    pub fn waived(&self, issue: &str) -> bool {
-        self.waivers.contains(issue)
     }
 
     // ---- hosts

@@ -11,7 +11,7 @@ use crate::overlay::{MEM_TABLE, MemTxn, Overlay};
 use crate::pager::{Dirty, DirtyMark, Pager, StoreConfig};
 use crate::root::{RootStorage, RootTier};
 use crate::{Error, KeyValue};
-use osis_base::{Ak, BlobId, CommitId, LabelId, Tid};
+use osis_base::{Ak, BlobId, CommitId, Tid};
 use osis_crypto::CryptoRngCore;
 
 /// Whether an overwrite or removal must make the previous bytes unrecoverable once committed
@@ -50,9 +50,6 @@ pub enum PendingKind {
 pub(crate) mod kind {
     pub const ASPECT: u8 = 1;
     pub const TABLE: u8 = 3;
-    pub const WRAP: u8 = 4;
-    pub const SECRETS: u8 = 5;
-    pub const CURSOR: u8 = 6;
     pub const LOG: u8 = 7;
     pub const RECORD: u8 = 8;
     pub const COUNTER: u8 = 9;
@@ -581,51 +578,6 @@ impl Transaction<'_> {
         Ok(names)
     }
 
-    // Label wraps.
-
-    pub fn put_wrap(&mut self, label: &LabelId, blob: &BlobId, wrap: &[u8]) -> Result<(), Error> {
-        let key = W::new().u8(kind::WRAP).raw(&label.0).raw(&blob.0).take();
-        self.cat_put(&key, wrap.to_vec(), Shred::No)
-    }
-    pub fn get_wrap(&mut self, label: &LabelId, blob: &BlobId) -> Result<Option<Vec<u8>>, Error> {
-        self.cat_get(&W::new().u8(kind::WRAP).raw(&label.0).raw(&blob.0).take())
-    }
-    /// A label's wraps by blob ID, after `after` (exclusive).
-    pub fn wraps(&mut self, label: &LabelId, after: Option<&BlobId>, limit: usize) -> Result<Vec<(BlobId, Vec<u8>)>, Error> {
-        let prefix = W::new().u8(kind::WRAP).raw(&label.0).take();
-        let from = after.map(|b| [&b.0[..], &[0]].concat()).unwrap_or_default();
-        self.cat_scan(&prefix, &from, limit)?.into_iter().map(|(k, v)| Ok((BlobId(tail(&k)?), v))).collect()
-    }
-    /// Removes a wrap, shredded: its page is rewritten under a fresh key.
-    pub fn drop_wrap(&mut self, label: &LabelId, blob: &BlobId) -> Result<bool, Error> {
-        self.cat_remove(&W::new().u8(kind::WRAP).raw(&label.0).raw(&blob.0).take(), Shred::Yes)
-    }
-
-    // Actor secrets.
-
-    pub fn put_secrets(&mut self, actor: &Tid, bytes: &[u8], shred: Shred) -> Result<(), Error> {
-        self.cat_put(&W::new().u8(kind::SECRETS).raw(actor.as_bytes()).take(), bytes.to_vec(), shred)
-    }
-    pub fn get_secrets(&mut self, actor: &Tid) -> Result<Option<Vec<u8>>, Error> {
-        self.cat_get(&W::new().u8(kind::SECRETS).raw(actor.as_bytes()).take())
-    }
-    /// Drops an actor's secrets, shredded.
-    pub fn drop_actor_secrets(&mut self, actor: &Tid) -> Result<bool, Error> {
-        self.cat_remove(&W::new().u8(kind::SECRETS).raw(actor.as_bytes()).take(), Shred::Yes)
-    }
-
-    // Cursors.
-
-    pub fn put_cursor(&mut self, name: &[u8], bytes: &[u8]) -> Result<(), Error> {
-        self.cat_put(&named_key(kind::CURSOR, name), bytes.to_vec(), Shred::No)
-    }
-    pub fn get_cursor(&mut self, name: &[u8]) -> Result<Option<Vec<u8>>, Error> {
-        self.cat_get(&named_key(kind::CURSOR, name))
-    }
-    pub fn remove_cursor(&mut self, name: &[u8]) -> Result<bool, Error> {
-        self.cat_remove(&named_key(kind::CURSOR, name), Shred::No)
-    }
-
     // Counters per (aspect, this session): memory rows only (spec/crdt.md §2.1: a session's
     // counters start from 1 at each open and never reach the disk), rolled back with an aborted
     // transaction, so a session leaves no gap.
@@ -666,11 +618,6 @@ impl Transaction<'_> {
                 Ok((CommitId(tail(&k)?), pk, b))
             })
             .collect()
-    }
-    /// The pending commits held in the memory overlay, by ID.
-    pub fn memory_pending(&self) -> Result<Vec<(CommitId, Vec<u8>)>, Error> {
-        let p = [kind::PENDING];
-        self.mem.o.cat.range(p.to_vec()..).take_while(|(k, _)| k.starts_with(&p)).map(|(k, v)| Ok((CommitId(tail(k)?), decode_pending(v)?.1))).collect()
     }
     /// Removes a pending commit; `Shred::Yes` when its content is being purged rather than applied.
     pub fn remove_pending(&mut self, id: &CommitId, shred: Shred) -> Result<bool, Error> {
