@@ -843,12 +843,12 @@ impl SyncEngine {
             self.fetch_on(conn, *l, [*id], out)?;
             return Ok(None);
         };
-        // a chunk's prefix has one group: its creating delta's keys (a forgotten memory commit's
-        // in the header kept for it)
+        // a chunk's prefix has one group, blinded by its link blind (spec/crypto.md §7), which the
+        // listing commit names with the keys it commits to (a forgotten memory commit's in the
+        // header kept for it)
         let Some(h) = self.engine.header(c).or_else(|| self.memory.forgotten.get(c).map(|f| f.header.clone())) else { return Ok(None) };
         let dks = vec![self.engine.chunk_delete_secrets(&h, ch)];
-        let hb = h.blind;
-        Ok(delete_item(keys, l, *id, Some((&salt, &hb)), &dks, true))
+        Ok(delete_item(keys, l, *id, Some((&salt, &ch.blind)), &dks, true))
     }
 
     /// A delete item for an entry: the label delete key, else delete keys this node holds, one

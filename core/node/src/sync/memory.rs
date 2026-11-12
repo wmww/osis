@@ -342,6 +342,13 @@ impl SyncEngine {
         self.state.commit_labels.range((*c, LabelId([0; 16]))..=(*c, LabelId([0xff; 16]))).next().is_some()
     }
 
+    /// Whether a blob commit `c`'s chunk list names has an entry here and no other held commit
+    /// lists it (a snapshot listing the blobs it links takes over).
+    fn lists_named(&self, c: &CommitId) -> bool {
+        let ix = &self.engine.core.ix;
+        ix.commits.get(c).is_some_and(|m| m.header.chunks.iter().any(|ch| self.state.named(&ch.blob) && ix.by_chunk.get(&ch.blob).is_none_or(|cs| cs.iter().all(|x| x == c))))
+    }
+
     /// The commits that carry forgotten commit `c`'s writes now: those its drop named, each
     /// forgotten in turn (superseded or covered before it was placed) replaced by what carries
     /// it, to the commits held or with entries here.
@@ -364,16 +371,20 @@ impl SyncEngine {
     /// Forgets the commits awaiting it (`State::forget_due`) the engine may forget
     /// (`Engine::forgettable`: durable ones all of whose parts went as covered by an own cover,
     /// memory ones known only for a part dropped while invalid), once node-sync tracks no entry
-    /// of them and no delete of a body of them is within its tombstone (spec/commits.md §5,
-    /// spec/sync.md §9 Forgetting). A commit becomes due when
-    /// its last part is dropped, its last entry goes or its tombstone expires.
+    /// of them or of a blob their chunk list alone names (whose delete needs the blind and keys
+    /// it lists) and no delete of a body of them is within its tombstone (spec/commits.md §5,
+    /// spec/sync.md §9 Forgetting). A commit becomes due when its last part is dropped, its last
+    /// entry or that of a blob it lists goes, or its tombstone expires.
     pub(crate) fn forget_forgettable(&mut self) -> Result<()> {
         if !self.forget_seeded {
             self.forget_seeded = true;
             self.state.forget_due.extend(self.engine.all_forgettable());
         }
+        for b in std::mem::take(&mut self.state.unnamed_chunks) {
+            self.state.forget_due.extend(self.engine.core.ix.by_chunk.get(&b).into_iter().flatten().copied());
+        }
         for c in std::mem::take(&mut self.state.forget_due) {
-            if self.engine.forgettable(&c) && !self.has_entries(&c) && !self.state.deleted_commit(&c) && !self.state.by_commit.contains_key(&c) {
+            if self.engine.forgettable(&c) && !self.has_entries(&c) && !self.lists_named(&c) && !self.state.deleted_commit(&c) && !self.state.by_commit.contains_key(&c) {
                 self.engine.forget_commit(&c)?;
                 self.state.forget_carrier(&c);
                 self.touched.commits.insert(c);

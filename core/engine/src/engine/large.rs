@@ -13,7 +13,7 @@ use crate::error::{Error, Result};
 use osis_base::{Ak, BlobId, ChunkParams, CommitId, Link, Tid, Value};
 use osis_crdt::{Fragment, Op, PathOp, PathSeg};
 use osis_crypto::Secret32;
-use osis_label::{BlobFetch, BlobReader, BlobWriter, Framing, HashSink, LargeParams, Reuse};
+use osis_label::{BlobFetch, BlobReader, BlobWriter, Framing, HashSink, LargeParams, Reuse, Written};
 use osis_schema::{Large, Path, Schema, Step, Type, large_positions, type_at};
 use osis_schema::core_types::is_role_class;
 use std::collections::{BTreeSet, HashMap};
@@ -354,26 +354,22 @@ pub(crate) fn lookup_form(v: &Value, dedup: &Secret32) -> Result<Value> {
 
 /// Chunks the large positions of `ops` on `(tid, ak)` under `framing`, reusing the tree each
 /// position holds now (spec/sync.md §1: a reused chunk keeps its blob unless the re-encryption
-/// rule says otherwise; one this node no longer holds is written afresh). Returns the blobs
-/// written: the delta's chunk list; reused blobs are not in it. `fresh`: blobs
-/// never reused.
+/// rule says otherwise, judged by each old link's blind; one this node no longer holds is
+/// written afresh). Returns the blobs written: the delta's chunk list; reused blobs are not in
+/// it. `fresh`: blobs never reused.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn chunk_ops(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, ops: &mut [PathOp], edits: &[Option<ListEdit>], schema: Option<&Schema>, framing: &Framing, fresh: &BTreeSet<BlobId>) -> Result<Vec<BlobId>> {
+pub(crate) fn chunk_ops(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, ops: &mut [PathOp], edits: &[Option<ListEdit>], schema: Option<&Schema>, framing: &Framing, fresh: &BTreeSet<BlobId>) -> Result<Vec<Written>> {
     // what the ops address is loaded (`commit_in`)
     tx.load_lazy(tid, ak)?;
     let state = tx.core.states.get(&(*tid, ak.clone())).and_then(Option::as_ref);
-    // the blind of the header that introduced a held commit's chunk: a reused blob's
-    // commitments are checked under it (spec/sync.md §1); of several listing it, the greatest ID
-    // (`by_chunk`: one header decoded)
-    let core = &*tx.core;
-    let mut blind_of = |b: &BlobId| -> Option<[u8; 16]> { core.ix.by_chunk.get(b)?.iter().next_back().and_then(|c| core.ix.commits.get(c)).map(|m| m.header.blind) };
     let mut blobs = TxBlobs::new(&mut tx.blobs, tx.txn.is_memory());
     let rng = &mut *tx.rng;
     let max = usize::try_from(MAX_REUSE).unwrap_or(usize::MAX);
+    let mut written = Vec::new();
     let mut put = |v: &Value, base: Option<&Link>| -> Result<Value> {
         let reuse = match base {
             Some(b) => {
-                let mut r = Reuse::index(b, framing.clone(), &mut blobs, &mut blind_of, ChunkParams::FORMAT, max)?;
+                let mut r = Reuse::index(b, framing.clone(), &mut blobs, ChunkParams::FORMAT, max)?;
                 fresh.iter().for_each(|x| r.exclude(x));
                 Some(r)
             }
@@ -383,21 +379,24 @@ pub(crate) fn chunk_ops(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, ops: &mut [PathOp],
             Some(r) => BlobWriter::reusing(r, &mut blobs, rng),
             None => BlobWriter::new(framing, &mut blobs, rng),
         };
-        Ok(osis_label::chunk_value(&mut bw, LargeParams::FORMAT, v)?)
+        let out = osis_label::chunk_value(&mut bw, LargeParams::FORMAT, v)?;
+        written.extend_from_slice(bw.written());
+        Ok(out)
     };
     let mut hash = |v: &Value| hashed(v, &framing.dedup);
     for (i, op) in ops.iter_mut().enumerate() {
         chunk_op(op, schema, ak.as_str(), state, edits.get(i).and_then(Option::as_ref), &mut put, &mut hash)?;
     }
-    Ok(blobs.written)
+    Ok(written)
 }
 
-/// Blob IDs a delta's canonical bytes link (its values' trees, its pages), through the held
-/// node and page blobs.
-pub(crate) fn delta_links(tx: &mut Tx<'_>, dedup: &Secret32, delta: &[u8]) -> Result<BTreeSet<BlobId>> {
+/// The links a delta's canonical bytes reach (its values' trees, its pages), through the held
+/// node and page blobs, one per blob.
+pub(crate) fn delta_links(tx: &mut Tx<'_>, dedup: &Secret32, delta: &[u8]) -> Result<Vec<Link>> {
     let mut out = Trees::default();
-    tree_blobs(tx, dedup, &delta_roots(delta), &mut out)?;
-    Ok(out.blobs)
+    let mut links = Vec::new();
+    walk_trees(tx, dedup, &delta_roots(delta), &mut out, &mut |l| links.push(*l))?;
+    Ok(links)
 }
 
 /// The root links in a delta's canonical bytes (none if they do not decode).
@@ -459,11 +458,20 @@ pub struct Trees {
 /// The trees (and pages) under `roots`, through the node and page blobs this node holds,
 /// added to `out`.
 pub(crate) fn tree_blobs(tx: &mut Tx<'_>, dedup: &Secret32, roots: &[Link], out: &mut Trees) -> Result<()> {
+    walk_trees(tx, dedup, roots, out, &mut |_| {})
+}
+
+/// `tree_blobs`, calling `seen` once per blob added to `out` with the link it was reached by.
+fn walk_trees(tx: &mut Tx<'_>, dedup: &Secret32, roots: &[Link], out: &mut Trees, seen: &mut dyn FnMut(&Link)) -> Result<()> {
     // (link, whether it is known to be a chunk)
     let mut stack: Vec<(Link, bool)> = roots.iter().map(|l| (*l, false)).collect();
     let mut blobs = TxBlobs::new(&mut tx.blobs, tx.txn.is_memory());
     while let Some((l, leaf)) = stack.pop() {
-        if !out.blobs.insert(l.blob) || leaf {
+        if !out.blobs.insert(l.blob) {
+            continue;
+        }
+        seen(&l);
+        if leaf {
             continue;
         }
         match below(&mut blobs, dedup, &l) {

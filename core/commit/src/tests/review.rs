@@ -17,7 +17,7 @@ use osis_schema::{AspectDefaults, PurgeBy, Retention};
 fn list_reader_bounds() {
     let d = sec(0xd0, &t(2));
     let mut m = MemoryBlobs::default();
-    let none = Prefix { salt: [0; 16], blind: [0; 16], expiry: None, keys: vec![] };
+    let none = Prefix { salt: [0; 16], expiry: None, keys: vec![] };
     let chunk = vec![7u8; 1024];
     let (cid, _) = m.put(&none, &chunk).unwrap();
     let cl = Link { hash: link_hash(&d, &chunk), blob: cid, suite: 1, key: [0; 32] };
@@ -163,7 +163,7 @@ fn linked_as(f: ListField, bytes: &[u8], d: &osis_crypto::Secret32, m: &mut Memo
         salt += 1;
         let mut s = [0; 16];
         s[..8].copy_from_slice(&salt.to_be_bytes());
-        Prefix { salt: s, blind: [0; 16], expiry: None, keys: vec![] }
+        Prefix { salt: s, expiry: None, keys: vec![] }
     })
     .unwrap();
     let mut h = sample_header();
@@ -251,7 +251,7 @@ fn list_items_cost_at_most_their_bytes_times_six() {
     };
     let lists = [
         (ListField::Aspects, array(n / 57, |i| [&[0x88][..], &tid(i), &[0x63, b'a', b'.', b'0', 1, 2, 0, 0x80], &id(0), &[0x80]].concat())),
-        (ListField::Chunks, array(n / 36, |i| [&[0x82][..], &id(i), &[0x80]].concat())),
+        (ListField::Chunks, array(n / 53, |i| [&[0x83][..], &id(i), &[0x80, 0x50], &[0; 16]].concat())),
         (ListField::Purge, array(n / 21, |i| [&[0x82][..], &tid(i), &[0x63, b'a', b'.', b'0']].concat())),
     ];
     for (f, bytes) in lists {
@@ -271,13 +271,14 @@ fn list_items_ascend_and_frontier_shape() {
     let d = sec(0xd0, &t(2));
     let mut m = MemoryBlobs::default();
     let item = |i: usize| {
-        let mut b = vec![0x82, 0x58, 32];
+        let mut b = vec![0x83, 0x58, 32];
         b.extend(&(i as u64).to_be_bytes());
         b.extend([0; 24]);
-        b.push(0x80);
+        b.extend([0x80, 0x50]);
+        b.extend([0; 16]);
         b
     };
-    let n = (CHUNK_THRESHOLD_PLUS + 100) / 36;
+    let n = (CHUNK_THRESHOLD_PLUS + 100) / 53;
     let ok = array(n, item);
     let mut h = linked_as(ListField::Chunks, &ok, &d, &mut m);
     h.resolve(&mut m, &d).unwrap();

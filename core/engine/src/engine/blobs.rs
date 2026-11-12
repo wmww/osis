@@ -186,24 +186,22 @@ impl Drop for Cipher<'_> {
     }
 }
 
-/// Blobs of one transaction; records what it wrote.
+/// Blobs of one transaction.
 pub struct TxBlobs<'t, 'a> {
     pub blobs: &'t mut Cipher<'a>,
     memory: bool,
-    pub written: Vec<BlobId>,
 }
 
 impl<'t, 'a> TxBlobs<'t, 'a> {
     /// `memory`: the transaction works on memory data (`Transaction::is_memory`).
     pub fn new(blobs: &'t mut Cipher<'a>, memory: bool) -> TxBlobs<'t, 'a> {
-        TxBlobs { blobs, memory, written: Vec::new() }
+        TxBlobs { blobs, memory }
     }
 }
 
 impl osis_label::BlobSink for TxBlobs<'_, '_> {
     fn put(&mut self, id: BlobId, blob: Vec<u8>) -> Result<(), osis_label::Error> {
         self.blobs.hold(&id, blob, self.memory).map_err(|_| osis_label::Error::Missing)?;
-        self.written.push(id);
         Ok(())
     }
 }
@@ -214,7 +212,8 @@ impl osis_label::BlobFetch for TxBlobs<'_, '_> {
     }
 }
 
-/// Header-list chunk trees (osis-commit's traits): frames under the given prefix.
+/// Header-list chunk trees (osis-commit's traits): frames under the given prefix inputs, blinded
+/// by each blob's link blind (spec/crypto.md §7).
 pub struct ListBlobs<'t, 'a, 'r> {
     pub blobs: TxBlobs<'t, 'a>,
     pub rng: &'r mut dyn CryptoRngCore,
@@ -222,8 +221,9 @@ pub struct ListBlobs<'t, 'a, 'r> {
 
 impl osis_commit::BlobSink for ListBlobs<'_, '_, '_> {
     fn put(&mut self, prefix: &osis_commit::Prefix, plaintext: &[u8]) -> Result<(BlobId, [u8; 32]), osis_commit::Error> {
-        let p = osis_label::Prefix::for_delete_keys(prefix.salt, &prefix.blind, prefix.expiry.map(WallMs), std::slice::from_ref(&prefix.keys)).map_err(|_| osis_commit::Error::Storage("prefix"))?;
-        let (key, blob) = osis_label::frame(&p, plaintext, self.rng).map_err(|_| osis_commit::Error::Storage("frame"))?;
+        let (_, key, blind) = osis_label::linked_prefix_inputs(self.rng);
+        let p = osis_label::Prefix::for_delete_keys(prefix.salt, &blind, prefix.expiry.map(WallMs), std::slice::from_ref(&prefix.keys)).map_err(|_| osis_commit::Error::Storage("prefix"))?;
+        let (key, blob) = osis_label::frame_under(key, &p, plaintext).map_err(|_| osis_commit::Error::Storage("frame"))?;
         let id = osis_label::blob_id(&blob);
         osis_label::BlobSink::put(&mut self.blobs, id, blob).map_err(|_| osis_commit::Error::Storage("blob"))?;
         Ok((id, *key.expose()))

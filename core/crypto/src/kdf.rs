@@ -72,6 +72,8 @@ pub const LINK_TREE: &str = "link tree";
 pub const DELETE_KEY: &str = "delete key";
 pub const DELETE_BLIND: &str = "delete blind";
 pub const DELETE_NONCE: &str = "delete nonce";
+/// A linked blob's blind, from its blob key (spec/crypto.md §7).
+pub const LINK_BLIND: &str = "link blind";
 /// A keyset's possession key (spec/crypto.md §4, Holder actors).
 pub const POSSESSION: &str = "possession key";
 /// Label role keys (spec/sync.md §2).
@@ -93,9 +95,9 @@ pub const BEACON_HIT: &str = "beacon hit";
 pub const BEACON_REPLY: &str = "beacon reply";
 
 /// Every kdf purpose, for distinctness checks and vectors.
-pub const PURPOSES: [&str; 33] = [
+pub const PURPOSES: [&str; 34] = [
     THING_READ, THING_WRITE, THING_ADMIN, ROLE_READ, ROLE_WRITE, ROLE_ADMIN, SIGN, KEM, CREATION_NONCE, BOX, HISTORY, EPOCH, WRAP, SECTION,
-    DELTA, LINK, LINK_TREE, DELETE_KEY, DELETE_BLIND, DELETE_NONCE, LABEL_SYNC, LABEL_WRITE, LABEL_DELETE, LABEL_DEPOSIT, LABEL_CLAIM, LAN_TAG, LAN_SIG,
+    DELTA, LINK, LINK_TREE, DELETE_KEY, DELETE_BLIND, DELETE_NONCE, LINK_BLIND, LABEL_SYNC, LABEL_WRITE, LABEL_DELETE, LABEL_DEPOSIT, LABEL_CLAIM, LAN_TAG, LAN_SIG,
     POSSESSION, INNER_SECRET, INNER, BEACON, BEACON_HIT, BEACON_REPLY,
 ];
 
@@ -220,7 +222,7 @@ mod tests {
         all.extend(Domain::ALL.iter().map(|d| d.as_str().to_string()));
         let set: BTreeSet<&String> = all.iter().collect();
         assert_eq!(set.len(), all.len());
-        assert_eq!(all.len(), 33 + 5 + 11);
+        assert_eq!(all.len(), 34 + 5 + 11);
     }
 
     // spec/crypto.md §1: kdf = keyed_hash(derive_key("osis v1 " + purpose, secret), input).

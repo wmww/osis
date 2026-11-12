@@ -101,10 +101,10 @@ fn list_overflow_links() {
     assert!(!built.list_blobs.is_empty());
     assert_eq!(built.list_blobs.len(), sink.blobs.len());
     assert!(h.encode().len() < CHUNK_THRESHOLD);
-    // header-list blobs carry the level-2 commitment only (spec/wire.md §5), under the header's blind
+    // header-list blobs carry the level-2 commitment only (spec/wire.md §5), under their own
+    // link blinds (the sink draws each key)
     for (p, _) in sink.blobs.values() {
         assert_eq!(p.keys.iter().map(|k| k.level).collect::<Vec<_>>(), vec![2]);
-        assert_eq!(p.blind, h.blind);
     }
     let bytes = built.commit.encode();
     let mut back = CommitBlob::decode(&bytes).unwrap();
@@ -142,7 +142,7 @@ fn list_over_the_bound_refused_at_the_author() {
     assert!(matches!(build(over, &mut sink), Err(Error::TooLarge("header list"))));
     // a hand-built commit past the bound is bad input at every receiver, not a local refusal
     let d = sec(0xd0, &t(1));
-    let mut prefix = || crate::keys::Prefix { salt: [7; 16], blind: [0; 16], expiry: None, keys: Vec::new() };
+    let mut prefix = || crate::keys::Prefix { salt: [7; 16], expiry: None, keys: Vec::new() };
     let big = write_list(&osis_base::encode(&of(room + 1)), &d, &mut sink, &mut prefix).unwrap();
     let mut h = built.commit.header.clone();
     h.frontier = None;
@@ -163,7 +163,7 @@ fn small_linked_list_rejected() {
     let mut salt = 0u8;
     let link = write_list(&bytes, &d, &mut sink, &mut || {
         salt += 1;
-        Prefix { salt: [salt; 16], blind: [0; 16], expiry: None, keys: vec![] }
+        Prefix { salt: [salt; 16], expiry: None, keys: vec![] }
     })
     .unwrap();
     assert_eq!(read_list(&link, &d, &mut sink, MAX_LIST_BYTES).unwrap(), bytes);
@@ -386,7 +386,7 @@ fn page_outside_chunk_list_refused_spec_wire_4() {
     let commit = |chunks: &[osis_base::BlobId]| {
         let mut b = CommitBuilder::new(Kind::Content, at, t(1), t(2), SESSION);
         let mut a = AspectWrite::new(t(3), Ak::new("app:w.0").unwrap(), 1, hi, delta.clone());
-        a.chunks = chunks.to_vec();
+        a.chunks = chunks.iter().map(|c| crate::ChunkWrite::introduced(*c, [0; 16])).collect();
         b.aspects.push(a);
         build(b, &mut MemoryBlobs::default()).unwrap().commit
     };
@@ -412,20 +412,32 @@ fn purge_rewrite() {
 }
 
 // spec/wire.md §4, §5: the chunk list holds, per introduced blob, the indices of its delta's
-// delete keys in the header.
+// delete keys in the header and its link blind; a blob listed with some levels (a snapshot's
+// linked one) indexes those keys alone.
 #[test]
 fn chunk_list() {
     let mut b = content(1);
     b.aspects[0].retention = Retention { by: PurgeBy::Writer };
-    b.aspects[0].chunks = vec![osis_base::BlobId([9; 32]), osis_base::BlobId([3; 32])];
+    b.aspects[0].chunks = vec![
+        crate::ChunkWrite::introduced(osis_base::BlobId([9; 32]), [9; 16]),
+        crate::ChunkWrite::introduced(osis_base::BlobId([3; 32]), [3; 16]),
+        crate::ChunkWrite { blob: osis_base::BlobId([5; 32]), blind: [5; 16], levels: Some(vec![1, 3]) },
+    ];
     let built = build(b, &mut MemoryBlobs::default()).unwrap();
     let h = &built.commit.header;
-    assert_eq!(h.chunks.iter().map(|c| c.blob.0[0]).collect::<Vec<_>>(), vec![3, 9]);
+    assert_eq!(h.chunks.iter().map(|c| c.blob.0[0]).collect::<Vec<_>>(), vec![3, 5, 9]);
     for c in &h.chunks {
-        assert_eq!(c.keys, h.aspects[0].keys);
-        let keys: Vec<DeleteKey> = c.keys.iter().map(|i| h.keys[*i]).collect();
-        assert_eq!(keys.iter().map(|k| k.level).collect::<Vec<_>>(), vec![1, 2, 3]);
+        assert_eq!(c.blind, [c.blob.0[0]; 16]);
+        let levels: Vec<u8> = c.keys.iter().map(|i| h.keys[*i].level).collect();
+        if c.blob.0[0] == 5 {
+            assert_eq!(levels, vec![1, 3]);
+        } else {
+            assert_eq!(c.keys, h.aspects[0].keys);
+            assert_eq!(levels, vec![1, 2, 3]);
+        }
     }
+    let back = Header::decode(&h.encode()).unwrap();
+    assert_eq!(back.chunks, h.chunks);
 }
 
 // spec/commits.md §1 (the whole commit fits `MAX_BLOB`, or the writer refuses it): the

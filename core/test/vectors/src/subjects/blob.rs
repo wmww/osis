@@ -6,7 +6,7 @@ use super::{FixedRng, case, generated_header, s32};
 use crate::file::{Record, VecFile};
 use crate::hex;
 use osis_base::{Link, Value, WallMs, encode};
-use osis_crypto::{DeleteSecret, SUITE_1, aead, link_hash, link_tree_hash, pad};
+use osis_crypto::{DeleteSecret, SUITE_1, aead, link_blind, link_hash, link_tree_hash, pad};
 use osis_label::{Error, Prefix, frame, open, tree::node_plaintext};
 
 const SPEC: &str = "spec/wire.md §5";
@@ -116,8 +116,9 @@ pub fn blobs() -> VecFile {
     let salt = [0x27; 16];
     let secret = s32(0x26);
     let dk = DeleteSecret::derive(&secret).verifying_key();
-    let hb = [0x2c; 16];
-    let p = Prefix::for_keys(salt, &hb, Some(WallMs(1_800_000_000_000)), &[(1, dk)]).unwrap();
+    // its commitment is blinded by the link blind of its blob key (spec/crypto.md §7)
+    let lb = link_blind(&[0x28; 32]);
+    let p = Prefix::for_keys(salt, &lb, Some(WallMs(1_800_000_000_000)), &[(1, dk)]).unwrap();
     let chunk = b"osis chunk bytes".to_vec();
     let (r, l1) = blob_case("chunk blob", "spec/wire.md §6", &p, &chunk, [0x28; 32], link_hash(&dedup, &chunk));
     cases.push(
@@ -125,10 +126,11 @@ pub fn blobs() -> VecFile {
             .with("delete-secret", hex(secret.expose()))
             .with("delete-level", "1")
             .with("delete-key", hex(&dk.to_bytes()))
-            .with("header-blind", hex(&hb)),
+            .with("link-blind", hex(&lb)),
     );
     // Tree node over that chunk, with its length.
     let node = node_plaintext(1, &[(l1, chunk.len() as u64)]).unwrap();
+    let p = Prefix::for_keys(salt, &link_blind(&[0x29; 32]), Some(WallMs(1_800_000_000_000)), &[(1, dk)]).unwrap();
     let (r, _) = blob_case("tree node blob", "spec/wire.md §6", &p, &node, [0x29; 32], link_tree_hash(&dedup, 1, &[(l1.hash, chunk.len() as u64)]));
     cases.push(r.with("dedup", hex(dedup.expose())));
     // Page: the canonical array of its elements.

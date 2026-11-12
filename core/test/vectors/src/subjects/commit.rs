@@ -234,7 +234,7 @@ fn more_accepted() -> Vec<Record> {
     let mut a = AspectWrite::new(THING, Ak::new("app:title.0").unwrap(), 1, 2, delta(Form::Commit, Kind::Content, at, 1, Value::Str("typed".into()), 6));
     b.expires = Some(at.wall_ms().0 + 86_400_000);
     a.retention = Retention { by: PurgeBy::Writer };
-    a.chunks = vec![BlobId([0x28; 32]), BlobId([0x2a; 32])];
+    a.chunks = vec![osis_commit::ChunkWrite::introduced(BlobId([0x28; 32]), [0x29; 16]), osis_commit::ChunkWrite::introduced(BlobId([0x2a; 32]), [0x2b; 16])];
     b.aspects.push(a);
     b.undoes = Some(CommitId([0x2c; 32]));
     let c = built(b);
@@ -297,8 +297,9 @@ fn more_accepted() -> Vec<Record> {
         .with("aspect-list-blake3", hex(&osis_base::hash::hash(&osis_base::encode(&c.header.list_value(ListField::Aspects).unwrap()))));
     for (i, id) in bl.list_blobs.iter().enumerate() {
         let (p, plain) = &sink.blobs[id];
-        // level-2 commitments only (spec/wire.md §5)
-        let framed = osis_label::Prefix::for_delete_keys(p.salt, &p.blind, p.expiry.map(WallMs), std::slice::from_ref(&p.keys)).unwrap();
+        // level-2 commitments only (spec/wire.md §5), under the link blind of the blob key the
+        // test sink returns (zero)
+        let framed = osis_label::Prefix::for_delete_keys(p.salt, &osis_crypto::link_blind(&[0; 32]), p.expiry.map(WallMs), std::slice::from_ref(&p.keys)).unwrap();
         assert!(framed.commitments().count() == 1 && framed.commitments().all(|x| x[0] == 2));
         r = r.with(&format!("list-blob-{i}"), format!("{} {} {} {}", hex(&id.0), hex(&p.salt), hex(&framed.commitments().copied().collect::<Vec<_>>().concat()), hex(plain)));
     }
@@ -322,10 +323,10 @@ fn more_rejected(content: &Header) -> Vec<Record> {
     x.frontier = frontier;
     out.push(reject("frontier on a role compaction snapshot", "spec/wire.md §4", &x, "frontier"));
     let mut x = content.clone();
-    x.chunks.push(ChunkEntry { blob: osis_base::BlobId([1; 32]), keys: vec![1, 0] });
+    x.chunks.push(ChunkEntry { blob: osis_base::BlobId([1; 32]), keys: vec![1, 0], blind: [0; 16] });
     out.push(reject("chunk delete keys out of order", "spec/wire.md §4", &x, "chunk-keys"));
     let mut x = content.clone();
-    x.chunks.push(ChunkEntry { blob: osis_base::BlobId([1; 32]), keys: vec![9] });
+    x.chunks.push(ChunkEntry { blob: osis_base::BlobId([1; 32]), keys: vec![9], blind: [0; 16] });
     out.push(reject("chunk delete key index out of range", "spec/wire.md §4", &x, "chunk-keys"));
     let mut x = content.clone();
     x.aspects[0].retention = retention::KEPT_RETENTION;

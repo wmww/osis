@@ -150,7 +150,7 @@ mod tests {
     }
 
     fn framing() -> Framing {
-        Framing { dedup: Secret32::from_bytes([7; 32]), expiry: Some(WallMs(99)), keys: vec![(3, dk(3))], blind: [4; 16], class: crate::blob::Class::Durable }
+        Framing { dedup: Secret32::from_bytes([7; 32]), expiry: Some(WallMs(99)), keys: vec![(3, dk(3))], class: crate::blob::Class::Durable }
     }
 
     fn dk(b: u8) -> osis_crypto::VerifyingKey {
@@ -313,7 +313,7 @@ mod tests {
     /// Writes `d` as a blob value with `f`, reusing from the tree under `old` if given; returns
     /// the root, blobs written and blobs reused.
     fn rewrite(store: &mut MemoryBlobs, f: &Framing, seed: u64, d: &[u8], old: Option<Link>) -> (Link, usize, usize) {
-        let reuse = old.map(|o| crate::tree::Reuse::index(&o, f.clone(), store, &mut |_| Some([4; 16]), SMALL.chunk, usize::MAX).unwrap());
+        let reuse = old.map(|o| crate::tree::Reuse::index(&o, f.clone(), store, SMALL.chunk, usize::MAX).unwrap());
         let mut rng = SeededRng::from_u64(seed);
         let mut bw = match &reuse {
             Some(r) => BlobWriter::reusing(r, store, &mut rng),
@@ -357,7 +357,7 @@ mod tests {
     // that author could delete a blob the delta's retention gives it no right over.
     #[test]
     fn reencryption_rule() {
-        let fr = |expiry: Option<u64>, keys: Vec<(u8, u8)>| Framing { dedup: Secret32::from_bytes([7; 32]), expiry: expiry.map(WallMs), keys: keys.into_iter().map(|(l, b)| (l, dk(b))).collect(), blind: [4; 16], class: crate::blob::Class::Durable };
+        let fr = |expiry: Option<u64>, keys: Vec<(u8, u8)>| Framing { dedup: Secret32::from_bytes([7; 32]), expiry: expiry.map(WallMs), keys: keys.into_iter().map(|(l, b)| (l, dk(b))).collect(), class: crate::blob::Class::Durable };
         let base = fr(Some(100), vec![(1, 1), (2, 2), (3, 3)]);
         let d = data(5_000, 0);
         let cases = [

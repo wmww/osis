@@ -241,15 +241,25 @@ fn droppable(tx: &Tx<'_>, tid: &Tid, ak: &Ak) -> BTreeSet<CommitId> {
 }
 
 /// What a snapshot of `(tid, ak)` would cost as a held body: its state (the expiring writes
-/// value-less) encoded, weighed as a part plus `ENTRY_CHARGE`. `None`: no state.
+/// value-less) encoded, weighed as a part plus `ENTRY_CHARGE`, plus its chunk list
+/// (`LISTED_BLOB_BYTES` per blob its large values link: a snapshot lists them, spec/wire.md §4).
+/// `None`: no state.
 fn snapshot_cost(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, me: Tid) -> Result<Option<usize>> {
     let Some(st) = super::snapshot_state(tx, tid, ak)? else { return Ok(None) };
     let cx = osis_commit::writer_ctx(Form::Commit, osis_commit::Kind::ContentSnapshot, osis_base::Ts::default(), me, 0, 0);
     let s = osis_crdt::Snapshot { nonce: [0; osis_crdt::NONCE_LEN], fragment: st, frontiers: osis_crdt::Frontiers::default(), absorbed: BTreeMap::new() };
     // encoding fails only on a malformed fragment: counted as nothing
-    let len = osis_crdt::encode_snapshot(&s, &cx, Some(&mut osis_crdt::Unpaged)).map_or(0, |b| b.len());
-    Ok(Some(part_weight(len).saturating_add(ENTRY_CHARGE)))
+    let bytes = osis_crdt::encode_snapshot(&s, &cx, Some(&mut osis_crdt::Unpaged)).unwrap_or_default();
+    let listed = match tx.core.dedup(tid) {
+        Some(d) => crate::engine::large::delta_links(tx, &d, &bytes)?.len(),
+        _ => 0,
+    };
+    Ok(Some(part_weight(bytes.len()).saturating_add(ENTRY_CHARGE).saturating_add(listed.saturating_mul(LISTED_BLOB_BYTES))))
 }
+
+/// About what one blob costs in a snapshot's chunk list (spec/wire.md §4): its ID, key indices
+/// and link blind, encoded. Measured, not picked.
+const LISTED_BLOB_BYTES: usize = 56;
 
 /// An aspect's load at this node (`Engine::compaction_load`): what the bodies held of it a
 /// snapshot would drop cost (`held`), what the snapshot would (`snapshot`), the costliest body and

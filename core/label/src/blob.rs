@@ -8,6 +8,8 @@ use osis_crypto::{CryptoRngCore, Secret32, VerifyingKey, commitment, decrypt_blo
 
 /// At most one commitment per level in a group.
 const MAX_LEVELS: usize = 3;
+/// Longest prefix of a chunk, tree node or page: one group of at most three commitments.
+pub const LINKED_PREFIX_MAX: usize = PREFIX_FIXED_LEN + 1 + MAX_LEVELS * COMMITMENT_LEN;
 /// Most groups a prefix lists: its le16 count (spec/wire.md §5).
 pub const MAX_GROUPS: usize = u16::MAX as usize;
 
@@ -75,7 +77,7 @@ impl Prefix {
 
     /// Prefix of a chunk, tree node or page serving deltas whose delete keys are `keys`: one
     /// group, one commitment per `(level, key)`, the key blinded by this prefix's salt and the
-    /// header's blind `hb` (spec/crypto.md §7). A repeated pair gives one commitment.
+    /// blob's blind `hb` (its link blind, spec/crypto.md §7). A repeated pair gives one commitment.
     pub fn for_keys(salt: [u8; 16], hb: &[u8; 16], expiry: Option<WallMs>, keys: &[(Level, VerifyingKey)]) -> Result<Prefix, Error> {
         Prefix::for_groups(salt, hb, expiry, &[keys.to_vec()])
     }

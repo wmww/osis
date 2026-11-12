@@ -198,7 +198,8 @@ impl DeleteItem {
     }
 
     /// Signed by the delete keys `dks` (one per level used, levels distinct) under the blob's
-    /// prefix `salt` and its header's blind `hb`, and by the label key `key_for_levels` names.
+    /// prefix `salt` and its blind `hb` (a commit blob's header blind, a linked blob's link
+    /// blind), and by the label key `key_for_levels` names.
     #[allow(clippy::too_many_arguments)]
     pub fn sign_by(key: &SigningSecret, dks: &[(Level, &DeleteSecret)], salt: &[u8; 16], hb: &[u8; 16], label: &LabelId, blob: BlobId) -> Result<DeleteItem, Error> {
         let mut dks: Vec<(Level, &DeleteSecret)> = dks.to_vec();

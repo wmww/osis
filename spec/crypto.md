@@ -240,7 +240,7 @@ A **holder actor** of A is a holder for keys of A (its first admin included whil
 - Every delta lists exactly the levels its retention calls for (spec/wire.md §4).
 - **Commitment** in a blob prefix = level byte || A' = h·A, h = `kdf("delete blind", A, prefix salt || blind)` read as 64 XOF bytes, little-endian, mod ℓ (the order of B).
   - A is taken as its 32-byte encoding.
-  - `blind` is the 16 random bytes of the header that lists A, or for a chunk, tree node or page of the header that introduced it.
+  - `blind` of a commit blob is the 16 random bytes of its header. A blob reached by a link (a chunk, tree node, page or link page, of a value or of a header list) has its own **link blind**, the first 16 bytes of `kdf("link blind", blob key)`: whoever holds a link to the blob can compute its commitments, nobody else.
   - A blob commits to the delete keys of the deltas it serves, in groups, one per distinct delete-key set (spec/wire.md §5).
 - **Delete signature** for a blob: Ed25519 (RFC 8032 signing) over `"osis v1 delete" || digest` (§2, spec/wire.md §11.2) with secret scalar h·a mod ℓ, nonce prefix `kdf("delete nonce", seed, prefix salt || blind)` (seed: the delete key's RFC 8032 seed), and public key A'.
   - It verifies strictly under A' (§1).

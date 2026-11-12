@@ -1602,6 +1602,145 @@ fn held_snapshot_keeps_the_chunks_it_links_spec_sync_7() {
     assert_eq!(kept, 0, "blobs nothing held links kept, of {}", tree.len());
 }
 
+// spec/sync.md §1 (chunk reuse: the link alone decides), §7, spec/wire.md §4 (a snapshot lists
+// the blobs it links): a node that never received the commit introducing a value's chunks (its
+// author compacted it and deleted it at the host first) reuses them on its next edit, uploading
+// the changed chunks and the root's links whatever the value's size, and once nothing it holds
+// links them deletes them at the host by its own delete keys.
+#[test]
+fn chunks_of_a_commit_never_received_reused_and_deleted_spec_sync_1() {
+    let (sent, need, n) = edit_unseen(256 << 10);
+    let (sent10, need10, n10) = edit_unseen(2560 << 10);
+    assert!(n >= 2 && n10 >= 8 * n, "chunks {n}, {n10}");
+    // the changed chunks, the root (about 110 B per link) and a fixed allowance for the commit
+    for (sent, need, n) in [(sent, need, n), (sent10, need10, n10)] {
+        assert!(sent <= need * 12 / 10 + n * 120 + (32 << 10), "sent {sent} B for {need} B of new chunks, {n} chunks");
+    }
+}
+
+/// `chunks_of_a_commit_never_received_reused_and_deleted_spec_sync_1` at a value of about `len`
+/// bytes: (bytes the editing node sent, bytes of its new chunks, the value's chunks).
+fn edit_unseen(len: usize) -> (usize, usize, usize) {
+    let (mut net, host, a, b, _) = net::account_pair();
+    let g = net.group(a, &[], &[host]);
+    let t = net.item(a, g, g, "x");
+    net.run();
+    let l = net.group_labels(a).into_iter().find(|(x, _)| *x == g).unwrap().1.id;
+    let ak = Ak::new(BLOB.ak()).unwrap();
+    let noise = |n: usize, seed: u64| {
+        let mut v = vec![0u8; n];
+        osis_crypto::RngCore::fill_bytes(&mut osis_crypto::SeededRng::from_u64(seed), &mut v);
+        v
+    };
+    // a writes the value and compacts at once: the introducing commit leaves the host
+    net.set_online(b, false);
+    let v1 = noise(len, 1);
+    let mut m = Mutation::new();
+    m.set(t, &BLOB, &osis_base::Value::Bytes(v1.clone())).unwrap();
+    let first = net.engine(a).commit(m).unwrap().unwrap();
+    net.run();
+    let acts = net.sync(a).compact_now(&t, &ak).unwrap();
+    net.actions(a, acts);
+    net.advance(4_000_000);
+    net.advance(4_000_000);
+    net.set_online(a, false);
+    net.set_online(b, true);
+    net.run();
+    let acts = net.sync(b).fetch_missing();
+    net.actions(b, acts);
+    net.run();
+    assert!(net.engine(b).header(&first).is_none(), "b never received the introducing commit");
+    assert_eq!(net.engine(b).get_full(&t, &ak).unwrap(), Some(osis_base::Value::Bytes(v1.clone())));
+    // b's edit reuses them
+    let mut v2 = v1.clone();
+    v2.splice(len / 2..len / 2, noise(100, 2));
+    let sent0 = net.sent_bytes;
+    let mut m = Mutation::new();
+    m.set(t, &BLOB, &osis_base::Value::Bytes(v2.clone())).unwrap();
+    net.engine(b).commit(m).unwrap().unwrap();
+    net.run();
+    let sent = net.sent_bytes - sent0;
+    let cuts = |d: &[u8]| -> Vec<Vec<u8>> {
+        let e = osis_base::encode(&osis_base::Value::Bytes(d.to_vec()));
+        let mut rest = e.as_slice();
+        let mut out = Vec::new();
+        for n in osis_base::chunker::chunk_lengths(&e, osis_base::ChunkParams::FORMAT) {
+            let (c, r) = rest.split_at(n.min(rest.len()));
+            out.push(c.to_vec());
+            rest = r;
+        }
+        out
+    };
+    let old: std::collections::BTreeSet<Vec<u8>> = cuts(&v1).into_iter().collect();
+    let need: usize = cuts(&v2).into_iter().filter(|c| !old.contains(c)).map(|c| c.len()).sum();
+    // b replaces the value and compacts: every blob of the old value's tree leaves the host
+    let tree = net.engine(b).live_trees(&t).unwrap().blobs;
+    let at_host: std::collections::BTreeSet<_> = net.host_ids(host, &l).into_iter().collect();
+    assert!(tree.iter().all(|x| at_host.contains(x)), "the value's blobs are at the host");
+    let mut m = Mutation::new();
+    m.set(t, &BLOB, &osis_base::Value::Bytes(vec![1, 2, 3])).unwrap();
+    net.engine(b).commit(m).unwrap().unwrap();
+    net.run();
+    let acts = net.sync(b).compact_now(&t, &ak).unwrap();
+    net.actions(b, acts);
+    net.advance(4_000_000);
+    net.advance(4_000_000);
+    let at_host: std::collections::BTreeSet<_> = net.host_ids(host, &l).into_iter().collect();
+    let left = tree.iter().filter(|x| at_host.contains(x)).count();
+    assert_eq!(left, 0, "blobs of the replaced value left at the host, of {}", tree.len());
+    (sent, need, cuts(&v1).len())
+}
+
+// spec/commits.md §5 Forgetting (a blob a commit's chunk list alone names keeps it), spec/sync.md
+// §7: a value's chunks reused by the author's own replaces outlive the commit that introduced
+// them, dropped under those replaces with its tombstones aged out; once a later write stops
+// linking them they still leave the host, deleted under the introducer's listing.
+#[test]
+fn chunks_outliving_their_introducer_leave_the_host_spec_commits_5() {
+    let (mut net, host, [a], g, [t]) = hosted::<1, 1>(&[], ["x"], true);
+    let l = net.group_labels(a).into_iter().find(|(x, _)| *x == g).unwrap().1.id;
+    let noise = |n: usize, seed: u64| {
+        let mut v = vec![0u8; n];
+        osis_crypto::RngCore::fill_bytes(&mut osis_crypto::SeededRng::from_u64(seed), &mut v);
+        v
+    };
+    // large enough that a snapshot, listing its chunks, costs more than the three bodies: none
+    // is written (spec/sync.md §7 Trigger)
+    let v1 = noise(2560 << 10, 1);
+    let mut v2 = v1.clone();
+    v2.splice(1000..1000, noise(50, 2));
+    let mut v3 = v2.clone();
+    v3.splice(2000..2000, noise(50, 3));
+    let mut first = None;
+    // two later own replaces cover the first (spec/commits.md §5 Own bodies)
+    for v in [&v1, &v2, &v3] {
+        let mut m = Mutation::new();
+        m.op(t, &BLOB, osis_crdt::PathOp { path: vec![], op: osis_crdt::Op::Replace(osis_base::Value::Bytes(v.clone())) }).unwrap();
+        first = first.or(net.engine(a).commit(m).unwrap());
+        net.run();
+    }
+    let first = first.unwrap();
+    // the introducer is dropped under the replace, deleted at the host, its tombstone aged out
+    net.advance(osis_base::format::TOMBSTONE_LIFETIME_MS + 60_000);
+    net.run();
+    net.advance(osis_base::format::TOMBSTONE_LIFETIME_MS + 60_000);
+    net.run();
+    let tree = net.engine(a).live_trees(&t).unwrap().blobs;
+    assert!(net.engine(a).commit_ids().iter().all(|c| !net.engine(a).header(c).unwrap().kind.is_compaction()), "no snapshot");
+    assert!(!net.engine(a).body_not_dropped(&first, &t, &Ak::new(BLOB.ak()).unwrap()), "the first write dropped under the replaces");
+    let h = net.engine(a).header(&first).expect("kept for the chunks it alone lists");
+    assert!(h.chunks.iter().any(|c| tree.contains(&c.blob)), "the replaces reuse chunks of the first write");
+    let mut m = Mutation::new();
+    m.set(t, &BLOB, &osis_base::Value::Bytes(vec![1, 2, 3])).unwrap();
+    net.engine(a).commit(m).unwrap();
+    net.run();
+    net.advance(4_000_000);
+    net.advance(4_000_000);
+    let at_host: std::collections::BTreeSet<_> = net.host_ids(host, &l).into_iter().collect();
+    let left = tree.iter().filter(|x| at_host.contains(x)).count();
+    assert_eq!(left, 0, "blobs of the replaced value left at the host, of {}", tree.len());
+}
+
 // spec/commits.md §6 (the chunks of a commit's linked header lists go at its expiry; a node
 // holding the header keeps its lists): a commit whose aspect list goes by link, one part dropped
 // as covered before its expiry, the rest past it: the node reopens and holds the header whole.

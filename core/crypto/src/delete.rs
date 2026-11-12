@@ -79,6 +79,16 @@ pub fn blind(vk: &VerifyingKey, salt: &[u8; 16], hb: &[u8; 16]) -> VerifyingKey 
     VerifyingKey(ed25519_dalek::VerifyingKey::from(p))
 }
 
+/// The blind of a blob reached by a link (a chunk, tree node or page): the first 16 bytes of
+/// `kdf("link blind", blob key)`, so whoever holds a link to the blob can compute its
+/// commitments, and nobody else (spec/crypto.md §7).
+pub fn link_blind(key: &[u8; 32]) -> [u8; 16] {
+    let k = kdf(kdf::LINK_BLIND, key, b"");
+    let mut b = [0u8; 16];
+    b.copy_from_slice(&k.expose()[..16]);
+    b
+}
+
 /// Prefix commitment `level || blind(vk, salt, hb)`; level 1..=3.
 pub fn commitment(level: u8, vk: &VerifyingKey, salt: &[u8; 16], hb: &[u8; 16]) -> Result<[u8; 33], crate::Error> {
     if !(1..=3).contains(&level) {
@@ -129,5 +139,13 @@ mod tests {
         assert_eq!((c[0], &c[1..]), (2, &b1.to_bytes()[..]));
         assert!(commitment(0, &vk, &s1, &hb).is_err() && commitment(4, &vk, &s1, &hb).is_err());
         assert_eq!(format!("{k:?}"), format!("DeleteSecret({vk:?})"));
+    }
+
+    // spec/crypto.md §7: a link blind is a function of the blob key alone, distinct per key
+    #[test]
+    fn link_blinds() {
+        assert_eq!(link_blind(&[1; 32]), link_blind(&[1; 32]));
+        assert_ne!(link_blind(&[1; 32]), link_blind(&[2; 32]));
+        assert_ne!(link_blind(&[1; 32])[..], [1u8; 32][..16]);
     }
 }

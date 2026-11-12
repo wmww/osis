@@ -26,9 +26,10 @@ pub struct AspectWrite {
     /// Resolved retention ([`crate::retention`] helpers: fixed, override, schema default,
     /// untyped default; snapshot).
     pub retention: Retention,
-    /// Chunk, tree-node and page blobs the deltas introduce (framed with this aspect's delete
-    /// keys, [`delete_keys`]).
-    pub chunks: Vec<BlobId>,
+    /// The delta's chunk list (spec/wire.md §4): the chunk, tree-node and page blobs it
+    /// introduces (framed with this aspect's delete keys, [`delete_keys`]), and for a compaction
+    /// snapshot the other blobs it links.
+    pub chunks: Vec<ChunkWrite>,
     /// The fire this delta claims to replace (spec/commits.md §5 Signals).
     pub replaces: Option<CommitId>,
 }
@@ -37,6 +38,24 @@ impl AspectWrite {
     /// One delta with untyped defaults; set the other fields as needed.
     pub fn new(tid: Tid, ak: Ak, lo: u64, hi: u64, delta: Vec<u8>) -> AspectWrite {
         AspectWrite { tid, ak, lo, hi, delta, retention: Retention::default(), chunks: Vec::new(), replaces: None }
+    }
+}
+
+/// One blob of an aspect's chunk list (spec/wire.md §4).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ChunkWrite {
+    pub blob: BlobId,
+    /// Its link blind (spec/crypto.md §7).
+    pub blind: [u8; 16],
+    /// The levels of the aspect's delete keys the blob commits to; `None`: every one (a blob the
+    /// delta introduces).
+    pub levels: Option<Vec<u8>>,
+}
+
+impl ChunkWrite {
+    /// A blob the delta introduces.
+    pub fn introduced(blob: BlobId, blind: [u8; 16]) -> ChunkWrite {
+        ChunkWrite { blob, blind, levels: None }
     }
 }
 
@@ -58,8 +77,8 @@ pub struct CommitBuilder {
     pub undoes: Option<CommitId>,
     /// The frontier value of an explicit demotion (spec/permissions.md §5).
     pub frontier: Option<Value>,
-    /// The header's blind (spec/crypto.md §7): given when chunks were framed under it, else
-    /// drawn at build.
+    /// The header's blind (spec/crypto.md §7): given when taken before the build (a rotation's
+    /// departs mark names it), else drawn at build.
     pub blind: Option<[u8; 16]>,
     /// The ephemeral marker (an ephemeral commit, spec/commits.md §2).
     pub ephemeral: Option<crate::header::EphClass>,
@@ -150,12 +169,18 @@ impl CommitBuilder {
         for ((entry, cs), ks) in entries.iter_mut().zip(&aspect_keys) {
             let mut idx = ks.iter().map(|k| positions.get(k).copied().ok_or(Error::Build("delete key table"))).collect::<Result<Vec<_>, _>>()?;
             idx.sort_unstable();
-            for blob in cs.iter() {
-                chunks.push(ChunkEntry { blob: *blob, keys: idx.clone() });
+            for c in cs.iter() {
+                let keys = match &c.levels {
+                    None => idx.clone(),
+                    Some(levels) => ks.iter().filter(|k| levels.contains(&k.level)).map(|k| positions.get(k).copied().ok_or(Error::Build("delete key table"))).collect::<Result<std::collections::BTreeSet<_>, _>>()?.into_iter().collect(),
+                };
+                chunks.push(ChunkEntry { blob: c.blob, keys, blind: c.blind });
             }
             entry.keys = idx;
         }
+        // a blob two deltas list goes once, as the first lists it
         chunks.sort_by_key(|c| c.blob);
+        chunks.dedup_by_key(|c| c.blob);
         let mut purge = std::mem::take(&mut self.purge);
         purge.sort_by_cached_key(|p| osis_base::encode(&purge_value(p)));
 
@@ -208,7 +233,7 @@ impl CommitBuilder {
             let mut prefix = || {
                 let mut salt = [0u8; 16];
                 rng.fill_bytes(&mut salt);
-                Prefix { salt, blind, expiry: header.expires, keys: list_keys.clone() }
+                Prefix { salt, expiry: header.expires, keys: list_keys.clone() }
             };
             let mut rec = Recording { sink: &mut *sink, written: &mut written };
             let link = write_list(&bytes, &dedup, &mut rec, &mut prefix)?;

@@ -145,12 +145,15 @@ impl DeleteKey {
     }
 }
 
-/// A chunk, tree-node or page blob the deltas introduce, with the delete keys its prefix commits to.
+/// A chunk, tree-node or page blob the deltas introduce (a snapshot: link), with the delete keys
+/// its prefix commits to and its link blind (spec/wire.md §4, spec/crypto.md §7).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ChunkEntry {
     pub blob: BlobId,
     /// Ascending indices into the header's delete keys.
     pub keys: Vec<usize>,
+    /// The blob's link blind: its commitments' blind.
+    pub blind: [u8; 16],
 }
 
 /// A purge request item (spec/wire.md §4).
@@ -343,7 +346,7 @@ pub(crate) fn key_value(t: &DeleteKey) -> Value {
 }
 
 fn chunk_value(c: &ChunkEntry) -> Value {
-    Value::List(vec![Value::bytes(&c.blob.0), Value::List(c.keys.iter().map(|i| uidx(*i)).collect())])
+    Value::List(vec![Value::bytes(&c.blob.0), Value::List(c.keys.iter().map(|i| uidx(*i)).collect()), Value::bytes(&c.blind)])
 }
 
 pub(crate) fn purge_value(p: &PurgeItem) -> Value {
@@ -446,7 +449,7 @@ pub fn verify_merge(id: &CommitId, sig: &Signature, fork_key: &VerifyingKey) -> 
 // About the fewest bytes an item takes: what a list reserves for by its count, so a count the bytes
 // cannot pay for reserves nothing. A wrong value only costs a reallocation.
 const MIN_ASPECT: usize = 58;
-const MIN_CHUNK: usize = 35;
+const MIN_CHUNK: usize = 52;
 const MIN_PURGE: usize = 20;
 const MIN_KEY: usize = 35;
 const MIN_ID: usize = 33;
@@ -515,10 +518,10 @@ fn read_key(r: &mut Reader<'_>, check: bool) -> Result<DeleteKey, Error> {
 }
 
 fn read_chunk(r: &mut Reader<'_>) -> Result<ChunkEntry, Error> {
-    if r.array()? != 2 {
+    if r.array()? != 3 {
         return Err(Error::Malformed("chunk arity"));
     }
-    Ok(ChunkEntry { blob: BlobId(r.fixed()?), keys: read_idxs(r)? })
+    Ok(ChunkEntry { blob: BlobId(r.fixed()?), keys: read_idxs(r)?, blind: r.fixed()? })
 }
 
 fn read_purge(r: &mut Reader<'_>) -> Result<PurgeItem, Error> {

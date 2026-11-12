@@ -43,4 +43,4 @@ A Replace needs one group's delete signature and the host cannot see what the re
 ## Consequences of spec/commits.md §5
 - Purge on replace only under `writer`: whoever replaces a body must be able to cover it.
 - Dropping a body destroys every local copy so that later compromise of the node recovers nothing (mechanism: notes/local-store.md).
-- Derived limits (spec/requirements.md): about 140 GB of chunks per commit (64 MiB of list at about 38 B per chunk entry, chunks about 80 KB); a removal listing at most about 1.9 million writes (a frontier is one 64 MiB header list at about 34 B per commit ID).
+- Derived limits (spec/requirements.md): about 95 GB of chunks per commit (64 MiB of list at about 55 B per chunk entry, chunks about 80 KB), and so per aspect a compaction snapshot can list (it lists every blob it links: an aspect linking more cannot be compacted); a removal listing at most about 1.9 million writes (a frontier is one 64 MiB header list at about 34 B per commit ID).
