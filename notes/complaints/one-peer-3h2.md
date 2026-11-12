@@ -13,3 +13,6 @@
 - Probes need the node's identity: two nodes print the same lines, and a pointer hash (`self as *const _`) was the quickest tag.
 - (sim fork) The sim trace cut every message at 160 characters, so a Stream's entries never showed; fixed in the branch (events in short). The trace also stops recording long before a scenario ends in some runs, so late hub decisions needed env-guarded `eprintln!` probes in pass code.
 - (sim fork) `osis_sim::replay` has no test entry: a scratch `tests/it` module reading the scenario and seed from env vars, removed before each commit, was the working replay tool.
+- (full-peer round) Counting what a source lacks in its idle state made a hidden storm visible at once (a paired node's duplicate-cert drops made its owner copy the cert again, about 500 copies in a 1 s test): before, waits ignored it. A sim quiescence check that also counted lacking bodies would have found it long ago.
+- (full-peer round) Optimized test builds inline frames away, so `Backtrace::force_capture` from a probe names only the driver: a caller probe at each call site was the working tool.
+- (full-peer round) A signature-domain choice that differs between two writers is a storm when a reader takes whichever stamp it is shown last; the rule "keep the lower" had to be added. Any per-node choice baked into a signed, logged value needs a total order.

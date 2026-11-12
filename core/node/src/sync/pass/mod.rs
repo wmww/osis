@@ -590,9 +590,11 @@ impl SyncEngine {
             }
             // judged again next pass until the source has it
             leave(o, left);
-            lacking += 1;
             let Some(e) = self.state.entries.get(&(l, o.id)).cloned() else { continue };
             let stamped = e.stamp.is_some_and(|s| osis_label::verify_stamp(&p.stamps, &l, &o.id, &e.wrap, &s).is_ok());
+            // what it pulls once it reads it: stamped for its head now or by this pass (a
+            // deposit is the outbox's to wait for)
+            lacking += usize::from(stamped || (own.keys.write.is_some() && (on_head || !self.stamp_serves_a_source(l, o.id, &e))));
             // a role commit the source takes once it pulls it; at a source on an older head
             // (its step waits or was refused for now) nothing waits for the step, deletes
             // included (they may be what frees room for it)

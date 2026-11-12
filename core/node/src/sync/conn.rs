@@ -69,8 +69,9 @@ pub(crate) struct LConn {
     /// yet (spec/sync.md §10, Full): what it lacks it lacks, and nothing waits for it to take
     /// it.
     pub full: bool,
-    /// Bodies this node places that the last pass found the peer lacking (it pulls them): while
-    /// any is and the peer is not full, the label is not caught up there (`label_status`).
+    /// Bodies this node places, stamped for the peer's head, that the last pass found the peer
+    /// lacking (it pulls them): while any is and the peer is not full, the label is not caught
+    /// up there (`label_status`).
     pub lacking: usize,
     /// A child step refused for now: no pass registers one before this (wall ms).
     pub step_retry: u64,
@@ -105,9 +106,14 @@ impl LConn {
         self.phase == Phase::Open && self.fill.as_ref().is_some_and(|f| !f.first_done)
     }
 
-    /// Ready, with no fill under way, and lacking nothing this node places unless full.
+    /// Ready, with no fill under way: nothing to do here until something changes.
+    pub(super) fn settled(&self) -> bool {
+        self.ready() && self.fill.is_none()
+    }
+
+    /// Settled, and lacking nothing this node places unless full: caught up there.
     pub(super) fn idle(&self) -> bool {
-        self.ready() && self.fill.is_none() && (self.lacking == 0 || self.full)
+        self.settled() && (self.lacking == 0 || self.full)
     }
 }
 
