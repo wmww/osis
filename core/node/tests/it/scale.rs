@@ -433,7 +433,7 @@ fn sync_pass_is_flat() {
     }
 }
 
-/// A fresh reader syncing n kept content commits on 10 things through one host: (commits ingested,
+/// A fresh reader syncing n kept content commits on 10 things through one host: (commits it gained,
 /// commits examined, bodies judged and entries judged by both nodes' passes).
 fn first_sync(n: usize) -> [u64; 4] {
     let mut net = crate::net::Net::new();
@@ -450,26 +450,24 @@ fn first_sync(n: usize) -> [u64; 4] {
     for i in 0..n {
         net.write(a, things[i % things.len()], &format!("v{i}"));
     }
-    let before = (net.sync(a).pass_stats(), net.sync(b).pass_stats(), net.engine(b).examined());
-    osis_node::costs::take();
+    let before = (net.sync(a).pass_stats(), net.sync(b).pass_stats(), net.engine(b).examined(), net.engine(b).core.ix.commits.len() as u64);
     net.set_online(b, true);
     net.run();
-    let spans: BTreeMap<_, _> = osis_node::costs::take().into_iter().map(|(k, _, c)| (k, c)).collect();
     assert_eq!(net.read(b, things[(n - 1) % 10]), Some(crate::net::s(&format!("v{}", n - 1))));
     let (wa, rb) = (pass_work(before.0, net.sync(a).pass_stats()), pass_work(before.1, net.sync(b).pass_stats()));
-    [spans.get("ingest").copied().unwrap_or(0), net.engine(b).examined() - before.2, wa[2] + rb[2], wa[3] + rb[3]]
+    [net.engine(b).core.ix.commits.len() as u64 - before.3, net.engine(b).examined() - before.2, wa[2] + rb[2], wa[3] + rb[3]]
 }
 
 // spec/sync.md §6; spec/requirements.md, Scale: a first sync of N commits costs O(N): the
-// commits ingested, pending commits read again, bodies and entries judged grow linearly from n
+// commits taken, pending commits read again, bodies and entries judged grow linearly from n
 // to 10n.
 #[test]
 fn first_sync_is_linear() {
     let (small, big) = (first_sync(30), first_sync(300));
-    for (i, what) in ["commits ingested", "commits examined", "bodies judged", "entries judged"].iter().enumerate() {
+    for (i, what) in ["commits taken", "commits examined", "bodies judged", "entries judged"].iter().enumerate() {
         linear(what, small[i], big[i]);
     }
-    assert!(big[0] >= 300, "every commit ingested: {big:?}");
+    assert!(big[0] >= 300, "every commit taken: {big:?}");
 }
 
 /// Sets keys `ks` of map aspect `asp` of `t` to `v` at node `n`, one commit.
@@ -578,6 +576,9 @@ fn role_passes(n: usize) -> [([u64; 5], [u64; 5]); 2] {
     let u = e.new_thing(&mut m, me);
     m.set(u, &ct::GROUP, &ct::Group::default()).unwrap();
     e.commit(m).unwrap();
+    // labeled by its first holder: the edge measured below changes no label's closure
+    let tb = net.tid(b);
+    net.grant(a, u, tb, Role::Read);
     net.run();
     let mut out = [([0; 5], [0; 5]); 2];
     for (k, on) in [u, groups[0]].into_iter().enumerate() {
@@ -592,8 +593,9 @@ fn role_passes(n: usize) -> [([u64; 5], [u64; 5]); 2] {
 
 // spec/sync.md §6, §7; spec/permissions.md §4; spec/requirements.md, Scale: a role change
 // re-judges only the labels whose verdicts can read it. Three labels of n and 10n commits: an
-// edge on an actor no closure reaches judges no body and entries flat in n; one on a label's
-// group re-judges that label alone, so its entries stay within that label's commits.
+// edge on an actor no other closure reaches (labeled, under the account) judges its own label's
+// and the account's bodies alone, flat in n; one on a label's group re-judges that label alone,
+// so its entries stay within that label's commits.
 #[test]
 fn role_change_judges_its_labels_only() {
     let (n, small, big) = (10u64, role_passes(10), role_passes(100));
@@ -603,7 +605,7 @@ fn role_change_judges_its_labels_only() {
         linear(&format!("related edge, writer: {p}"), small[1].0[i], big[1].0[i]);
         linear(&format!("related edge, reader: {p}"), small[1].1[i], big[1].1[i]);
     }
-    assert_eq!((big[0].0[2], big[0].1[2]), (0, 0), "no body judged for an unrelated edge");
+    assert_eq!((big[0].0[1], big[0].1[2]), (0, 0), "no full pass for an unrelated edge, no body judged by the reader");
     for (k, w) in [(n, small[1]), (10 * n, big[1])] {
         // one label's commits and its things' creations, not three labels'
         assert!(w.0[3] <= 2 * k + 20 && w.1[3] <= 2 * k + 20, "related edge at {k} commits a label: entries judged {:?}", (w.0[3], w.1[3]));

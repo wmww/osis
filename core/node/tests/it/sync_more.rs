@@ -1273,8 +1273,9 @@ fn inbox_hints_only_from_admin_grants_spec_crypto_7() {
 }
 
 // spec/sync.md §3, §6; spec/permissions.md §4: a role change re-judges only the labels
-// whose verdicts can read it: a new holder, on an actor no closure reaches or on a label's group,
-// judges no body and no pass judges everything.
+// whose verdicts can read it: a new holder, on an actor no other closure reaches (u, labeled by
+// its first holder) or on a label's group, judges no body of another label and no pass judges
+// everything.
 #[test]
 fn role_change_judges_only_its_labels_spec_sync_6() {
     let (mut net, host, [a, b, c]) = hosted_nodes::<3>();
@@ -1295,12 +1296,16 @@ fn role_change_judges_only_its_labels_spec_sync_6() {
     let u = e.new_thing(&mut m, me);
     m.set(u, &ct::GROUP, &ct::Group::default()).unwrap();
     e.commit(m).unwrap();
+    net.grant(a, u, other, Role::Read);
     net.advance(61_000);
     let s0 = net.sync(a).pass_stats();
-    net.grant(a, u, other, Role::Read);
+    let tb = net.tid(b);
+    net.grant(a, u, tb, Role::Read);
     net.run();
     let s1 = net.sync(a).pass_stats();
-    assert_eq!((s1.passes - s0.passes, s1.full - s0.full, s1.bodies - s0.bodies), (0, 0, 0), "an unrelated edge starts no pass");
+    // u's own label and a's account's (u is in its closure) alone
+    assert_eq!((s1.passes - s0.passes, s1.full - s0.full), (2, 0), "an unrelated edge passes no other label");
+    assert!(s1.bodies - s0.bodies < 8, "u's bodies alone: {}", s1.bodies - s0.bodies);
     net.advance(61_000);
     let s2 = net.sync(a).pass_stats();
     net.grant(a, g0, other, Role::Read);
@@ -1704,16 +1709,23 @@ fn chain_blobs(net: &mut Net, a: usize, host: usize, gs: &[osis_base::Tid]) -> (
 fn chain_copies_one_blob_across_labels_spec_sync_3() {
     let mut counts = Vec::new();
     for k in [1, 10] {
-        osis_node::costs::take();
         let (mut net, a, _, _, host, gs) = in_groups(k);
-        let sealed = osis_node::costs::take().into_iter().find(|x| x.0 == "copy sealed").map_or(0, |x| x.2);
         let (commits, blobs, entries) = chain_blobs(&mut net, a, host, &gs);
         assert!(!commits.is_empty(), "a's chain goes under the groups");
         assert_eq!(entries, k * blobs.len(), "{k} groups: one entry per label of each copy");
-        counts.push((sealed, blobs.len() as u64));
+        // every blob a ever placed of its chain, under any label: the copies it sealed
+        let mut sealed = BTreeSet::new();
+        for (_, l) in net.group_labels(a) {
+            for (id, kind) in net.sync(a).entries(&l.id) {
+                if matches!(kind, EntryKind::Commit { commit, .. } if commits.contains(&commit)) {
+                    sealed.insert(id);
+                }
+            }
+        }
+        counts.push((sealed.len() as u64, blobs.len() as u64));
     }
     let [(s1, b1), (s10, b10)] = counts[..] else { unreachable!() };
-    println!("copies sealed by every node: {s1} in 1 group, {s10} in 10; a's chain blobs at the host: {b1}, {b10}");
+    println!("a's chain copies sealed: {s1} in 1 group, {s10} in 10; at the host: {b1}, {b10}");
     assert_eq!(b10, b1, "a's chain copies are stored once whatever the number of groups");
     assert_eq!(s10, s1, "no copy is sealed per group");
 }

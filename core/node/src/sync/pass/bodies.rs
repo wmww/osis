@@ -19,7 +19,11 @@ impl SyncEngine {
         // this node has sent: its own writes go out meanwhile
         let filling = self.filling(&l);
         let own_snapping: Unsettled = snapping.iter().flatten().cloned().map(Some).collect();
-        for b in bodies {
+        // placed by priority: a source pulls this node's store in the order it logged them, so a
+        // removal goes before the content placed beside it (spec/permissions.md §3)
+        let mut ordered: Vec<(u8, &Body)> = bodies.iter().map(|b| (self.prio(b), b)).collect();
+        ordered.sort_by_key(|(p, _)| *p);
+        for (prio, b) in ordered {
             let snapping_b = if filling && self.own(&b.commit) { &own_snapping } else { snapping };
             let needed = self.must_hold(b, snaps, snapping_b, &mut note)?;
             note.leave(b.commit, left);
@@ -53,13 +57,6 @@ impl SyncEngine {
                     None => continue,
                 },
                 None => continue,
-            };
-            let prio = if self.first.contains(&b.commit) {
-                0
-            } else if self.judges_deletes(b) {
-                1
-            } else {
-                3
             };
             let of = Some(Touch::Commit(b.commit));
             sends.push(Out { prio, id, fresh, of });
@@ -415,6 +412,18 @@ impl SyncEngine {
     /// spec/sync.md §3) and requests (a destruction by an admin of the thing alone).
     pub(super) fn may_deposit(&self, keys: &HeadKeys, b: &Body) -> bool {
         keys.deposit.is_some() && self.judges_deletes(b) && self.own(&b.commit)
+    }
+
+    /// A body's place in a pass's order: placed first by a flow, then what deletes are judged
+    /// by, then the rest (certificates are 2, `cert_sends`).
+    fn prio(&self, b: &Body) -> u8 {
+        if self.first.contains(&b.commit) {
+            0
+        } else if self.judges_deletes(b) {
+            1
+        } else {
+            3
+        }
     }
 
     /// Body `b` is what deletes are judged by: a role commit or a request (a source holds it

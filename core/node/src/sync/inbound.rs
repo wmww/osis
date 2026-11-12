@@ -442,15 +442,28 @@ impl SyncEngine {
                 LogEvent::Deleted(_) if reader.is_some() => {}
                 LogEvent::Deleted(b) => {
                     // the peer refuses this blob ID while its tombstone lasts: a body it must
-                    // hold goes there under another encryption (`encrypt_again`)
+                    // hold goes there under another encryption (`encrypt_again`); this node's
+                    // certificate copy it never showed (its tombstone came first) is copied again
+                    let mut copy = None;
                     if let Some(s) = host {
+                        if let Some(Entry { cert: true, kind: Kind::Commit { commit, parts, .. }, .. }) = self.state.entries.get(&(l, b))
+                            && !self.state.is_present(&s, &l, &b)
+                        {
+                            copy = Some((*commit, parts.iter().copied().collect::<BTreeSet<usize>>()));
+                        }
                         self.state.set_gone(s, l, b);
+                        if self.state.entries.contains_key(&(l, b)) {
+                            self.mark_labels(&[l]);
+                        }
                     }
                     self.memory_entry_gone(l, b);
                     // gone from every host of the label: a chunk an own commit may link
                     let chunk = !self.state.blobs.contains_key(&b);
                     if self.absent_at(host, l, b)? && chunk {
                         lost.insert(b);
+                    }
+                    if let Some((c, parts)) = copy {
+                        self.copy_again(l, conn, &c, &parts)?;
                     }
                 }
                 LogEvent::Head(step) => {
@@ -1986,6 +1999,16 @@ impl SyncEngine {
     /// Entry `b` under `l` is no longer at `host`: once no host holds it, the entry goes
     /// (tombstoned) with the blob's record and bytes where nothing else needs them. Whether it
     /// went.
+    /// This node's certificate copy of `parts` of `c` under `l` met a tombstone at a peer: a
+    /// fresh copy (`place_cert_at`; its old blob ID is gone there).
+    fn copy_again(&mut self, l: LabelId, conn: Option<ConnId>, c: &CommitId, parts: &BTreeSet<usize>) -> Result<()> {
+        let Some(g) = self.group_of(&l, conn) else { return Ok(()) };
+        let Some(hosts) = self.engine.group_labels(&g)?.into_iter().find(|x| x.id == l).map(|x| x.hosts) else { return Ok(()) };
+        let seed = self.cert_seed(&g, c)?;
+        self.place_cert_at(&g, l, &hosts, c, parts, seed.as_ref())?;
+        Ok(())
+    }
+
     pub(crate) fn absent_at(&mut self, host: Option<HostKey>, l: LabelId, b: BlobId) -> Result<bool> {
         if let Some(s) = host {
             self.state.set_present(s, l, b, false);

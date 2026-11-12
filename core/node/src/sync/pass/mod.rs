@@ -583,20 +583,32 @@ impl SyncEngine {
             if self.state.is_present(&host, &l, &o.id) || !self.state.is_gone_at(&host, &l, &o.id) {
                 continue;
             }
-            let Some(Kind::Commit { parts, .. }) = self.state.entries.get(&(l, o.id)).map(|e| e.kind.clone()) else { continue };
-            let readable = self.readable(&g, &c, &parts);
-            let Some(b) = bodies.iter().find(|b| b.commit == c && b.parts == readable).cloned() else { continue };
-            if self.delete_stands(Some(&host), l, &b, &b.parts, snaps, &mut note)? {
-                continue;
-            }
-            note.leave(c, left);
+            let Some((Kind::Commit { parts, .. }, cert)) = self.state.entries.get(&(l, o.id)).map(|e| (e.kind.clone(), e.cert)) else { continue };
+            // a certificate copy: another copy of the same parts (its deletion was not this
+            // node's to judge); a body: when its delete does not stand
+            let b = if cert {
+                let Some(h) = self.engine.header(&c) else { continue };
+                Body { commit: c, parts: parts.clone(), expires: None, blind: h.blind, plaintext: Vec::new(), role_commit: h.kind.is_role(), order: h.ts.to_u64().max(1), to_label: false }
+            } else {
+                let readable = self.readable(&g, &c, &parts);
+                let Some(b) = bodies.iter().find(|b| b.commit == c && b.parts == readable).cloned() else { continue };
+                if self.delete_stands(Some(&host), l, &b, &b.parts, snaps, &mut note)? {
+                    continue;
+                }
+                note.leave(c, left);
+                b
+            };
             left.commits.insert(c);
             if behind {
                 self.relay_now.insert(l);
                 continue;
             }
-            let Some(id) = self.place(&g, l, &b, false)? else { continue };
             self.state.drop_entry(l, o.id);
+            let Some(id) = self.place(&g, l, &b, cert)? else { continue };
+            if cert {
+                self.place_linked(l, &c, &parts.iter().copied().collect())?;
+                self.state.add_cert(l, c);
+            }
             again.push(Out { prio: o.prio, id, fresh: true, of: o.of });
         }
         Ok(again)

@@ -1075,6 +1075,26 @@ impl Net {
                                 self.queue.push_back(Msg::ToNode(n, self.nodes[n].life, conn, osis_proto::encode_frame(&e.encode())));
                                 continue;
                             }
+                            // a node's deposited entries reach the peer by its stream, or as Deposit
+                            // items: lost there
+                            if !self.lose_deposits.is_empty() {
+                                let lost = |l: &osis_base::LabelId, b: &osis_base::BlobId| self.carries(l, b, &self.lose_deposits);
+                                let added = |(l, e): &(osis_base::LabelId, osis_proto::Event)| matches!(e, osis_proto::Event::Added { blob_id, .. } if lost(l, blob_id));
+                                match m {
+                                    osis_proto::Message::Stream(mut x) if x.events.iter().any(added) => {
+                                        x.events.retain(|x| !added(x));
+                                        kept.extend(osis_proto::encode_frame(&osis_proto::Message::Stream(x).encode()));
+                                        continue;
+                                    }
+                                    osis_proto::Message::PullReply(mut r) if r.events.iter().any(added) => {
+                                        r.events.retain(|x| !added(x));
+                                        kept.extend(osis_proto::encode_frame(&osis_proto::Message::PullReply(r).encode()));
+                                        continue;
+                                    }
+                                    osis_proto::Message::Offer { ref items, .. } if !items.is_empty() && items.iter().all(|i| matches!(i, osis_proto::msg::OfferItem::Deposit { label, blob, .. } if lost(label, &osis_label::blob_id(blob)))) => continue,
+                                    _ => {}
+                                }
+                            }
                             if self.lose_uploads.contains(&n)
                                 && let osis_proto::Message::Upload { id, .. } = m
                             {
