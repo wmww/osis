@@ -270,6 +270,11 @@ fn delete_for_everyone_spec_commits_5() {
     assert_eq!(texts(&b2, c), ["<deleted>"; 3], "tombstones on a new node");
     assert_eq!(newest(&b2, c).stamp.actor, bob);
     assert_eq!(by(&b2, his), Some(bob), "on a new node too");
+    // with no expiry the chat keeps them as its setting says: for good
+    w.advance(400 * 86_400_000);
+    w.run();
+    assert_eq!(texts(&b2, c), ["<deleted>"; 3]);
+    assert_eq!(texts(&a, c), ["<deleted>"; 3]);
 }
 
 // spec/permissions.md §6: purge sets: admin only keeps an author out; author or admin lets both;
@@ -387,9 +392,15 @@ fn disappearing_spec_commits_6() {
     edit(&a, c, brief, "brief!").unwrap();
     w.run();
     assert_eq!(texts(&b, c), ["<deleted>", "brief!"]);
+    let (_s, rx) = watch(&a, c);
     w.advance(31_000);
     w.run();
-    assert!(!texts(&b, c).iter().any(|t| t.starts_with("brief")), "{:?}", texts(&b, c));
+    a.settle();
+    // a deleted message goes at its expiry as it would undeleted: its tombstone and its versions'
+    assert!(texts(&a, c).is_empty() && texts(&b, c).is_empty(), "{:?}", texts(&b, c));
+    assert!(versions(&b, c, o).is_empty() && find(&b, c, o).is_none());
+    let got: Vec<_> = rx.try_iter().collect();
+    assert!(got.iter().any(|e| matches!(e, CommitEvent::Commit { id, commit: None } if *id == o)), "a watch hears the tombstone go: {o:?} {got:?}");
 }
 
 // notes/api.md Signals: a watch hears a post; its edit once, as the message under its id with the new text (the old text's purge in the same commit no event of its own); a deletion under the same id

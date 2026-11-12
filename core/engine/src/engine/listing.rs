@@ -5,8 +5,8 @@
 //!
 //! The listing rule, one at every address: a part is listed while it is in its aspect's read (a
 //! write of its own live, `delta_live`) or kept by its own aspect's history until its keep bound
-//! (`body_history_keep`), a purge
-//! tombstone (its value-less writes are judged alike), or this node's own invalid write. Replaced
+//! (`body_history_keep`), a purge tombstone while the part would be listed unpurged (its
+//! value-less writes are judged alike, never past its expiry), or this node's own invalid write. Replaced
 //! with no history kept, expired, dropped (compacted), another node's invalid write: not listed,
 //! whatever this node still holds. So every node holding the same commits lists the same ones.
 
@@ -172,9 +172,10 @@ fn listed_part(tx: &mut Tx<'_>, c: &CommitId, ai: usize, budget: usize, itself: 
 }
 
 /// Whether part `ai` of `c` is listed, with its validity and what is here of it; its body not
-/// read. A purged part is judged as if the purge had replaced it: in the read by its value-less
-/// writes, else kept by its keep rule counted from the request's `ts` (its body is gone, so no
-/// death of its writes can be judged from it).
+/// read. A purged part is listed while it would be unpurged, judged as if the purge had replaced
+/// it: not past its expiry, and in the read by its value-less writes or kept by its keep rule
+/// counted from the request's `ts` (its body is gone, so no death of its writes can be judged
+/// from it).
 pub(super) fn listed(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<Option<(bool, Here)>> {
     let me = tx.core.me();
     let Some(m) = tx.core.ix.commits.get(c) else { return Ok(None) };
@@ -188,16 +189,29 @@ pub(super) fn listed(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<Option<
     let kept = match &here {
         Here::Dropped => false,
         _ if !valid => true,
-        Here::Purged(by) => now < purged_keep(tx, c, ai, by) || crate::retention::bounds::delta_live(tx, c, &tid, &ak)?,
+        Here::Purged(by) => {
+            let due = tx.core.ix.commits.get(c).is_some_and(|m| past_due(tx.core, &m.header, ai, now));
+            !due && (now < purged_keep(tx, c, ai, by) || crate::retention::bounds::delta_live(tx, c, &tid, &ak)?)
+        }
         _ => in_kept_history(tx, c, &tid, &ak, now)?,
     };
     Ok(kept.then_some((valid, here)))
 }
 
-/// The keep bound of part `ai` of `c` purged by `by`: its keep rule counted from the request's `ts`.
+/// Whether part `ai` of `c` is listed (`listed`).
+pub(crate) fn is_listed(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<bool> {
+    Ok(listed(tx, c, ai)?.is_some())
+}
+
+/// The keep bound of part `ai` of `c` purged by `by`: its keep rule counted from the request's
+/// `ts`, never past its own expiry or (a signal's) keep bound, where it would leave unpurged.
 pub(super) fn purged_keep(tx: &Tx<'_>, c: &CommitId, ai: usize, by: &CommitId) -> u64 {
-    let Some(a) = tx.core.ix.commits.get(c).and_then(|m| m.view.aspects.get(ai)) else { return 0 };
-    crate::retention::history::of(tx.core, &a.tid, &a.ak).leaves_at(tx.core.ix.commits.get(by).map(|m| m.view.ts.wall_ms().0))
+    let Some(m) = tx.core.ix.commits.get(c) else { return 0 };
+    let Some(a) = m.view.aspects.get(ai) else { return 0 };
+    let keep = crate::retention::history::of(tx.core, &a.tid, &a.ak).leaves_at(tx.core.ix.commits.get(by).map(|m| m.view.ts.wall_ms().0));
+    let h = &m.header;
+    let due = h.expires.into_iter().chain(h.aspects.get(ai).filter(|a| a.ak.signal()).and_then(|a| crate::retention::signal_bound(tx.core, h, a))).min();
+    due.map_or(keep, |t| keep.min(t))
 }
 
 /// The wall ms before which part `ai` of `c` is listed by its keep bound alone; `None` when no

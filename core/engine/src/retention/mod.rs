@@ -1091,6 +1091,16 @@ fn run_timer(tx: &mut Tx<'_>, key: &[u8], c: &CommitId, ai: usize, kind: u8, cha
     } else {
         hold_valueless(tx, c, ai, false, &mut ch)?;
     }
+    // the bound may have ended the part's listing with nothing held changing (a purge
+    // tombstone's): its fold under its original judged again, and told (an event repeating a
+    // page is harmless)
+    if !crate::engine::listing::is_listed(tx, c, ai)?
+        && let Some(a) = tx.core.ix.commits.get(c).and_then(|m| m.view.aspects.get(ai))
+    {
+        let (tid, ak) = (a.tid, a.ak.clone());
+        tx.core.commits_named(tid, ak, *c);
+        crate::engine::edits::time_passed(tx, c, ai);
+    }
     memory::forget_if_spent(tx, c)?;
     for (t, a) in &ch {
         tx.core.mark_aspect_changed(t, a);

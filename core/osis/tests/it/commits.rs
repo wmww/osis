@@ -638,3 +638,45 @@ fn one_moment_many_commits_lose_none_api_commits() {
     }
     assert_eq!(seen, made.iter().map(|m| m.stamp.id).collect::<Vec<_>>());
 }
+
+// spec/commits.md §7 (Listed parts), notes/api.md Commits: a purged part is listed while it would
+// be unpurged: on an aspect keeping history for good, a purged expiring write lists as purged until
+// its expiry and not after, a purged permanent one for good; undo reads kept history alone, so its
+// answer is the same either side of the expiry
+#[test]
+fn purged_part_lists_until_its_expiry_spec_commits_7() {
+    let c = clock();
+    let db = osis::internals::create(cfg(0, MemStore::new(), &c)).unwrap();
+    typed_any(&db, &["t:x.0"]);
+    let k = ak("t:x.0");
+    let t = db.commit_with(|w| w.create()).unwrap();
+    db.commit_with(|w| w.at(t, osis::core::RETENTION).set(&setting(&[("t:x.0", osis::History::FOREVER)]))).unwrap();
+    let set = |v: i64, expires: bool| {
+        let mut w = db.write();
+        if expires {
+            w.expires(osis::Expiry::In(std::time::Duration::from_secs(60)));
+        }
+        w.at(t, kept(&db, &k)).set(&Value::Int(v)).unwrap();
+        w.commit().unwrap().unwrap().stamp.id
+    };
+    let (lasting, brief) = (set(0, false), set(1, true));
+    set(2, false);
+    for id in [lasting, brief] {
+        db.commit_with(|w| w.at(t, kept(&db, &k)).purge(osis::Purge::Commit(id))).unwrap();
+    }
+    let listed = |db: &Osis| {
+        let h = db.writes(&Scope::Aspects(vec![(t, k.clone())]), &CommitQuery::default()).unwrap().commits;
+        h.iter().filter(|e| [lasting, brief].contains(&e.stamp.id)).map(|e| (e.stamp.id, matches!(part(e, t, &k).body, osis::Body::Purged { .. }))).collect::<Vec<_>>()
+    };
+    let scope = Scope::Aspects(vec![(t, k.clone())]);
+    let undo = |db: &Osis| format!("{:?}", db.undo_target(&scope).map(|c| c.map(|c| c.stamp.id)));
+    assert_eq!(listed(&db), [(brief, true), (lasting, true)]);
+    let before = undo(&db);
+    c.advance(61_000);
+    db.engine(|e| e.tick().unwrap());
+    assert_eq!(listed(&db), [(lasting, true)], "the expired one's tombstone goes with it");
+    assert_eq!(undo(&db), before, "undo is unaffected");
+    c.advance(400 * 86_400_000);
+    db.engine(|e| e.tick().unwrap());
+    assert_eq!(listed(&db), [(lasting, true)], "a permanent one's for good");
+}
