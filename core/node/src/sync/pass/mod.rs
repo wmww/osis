@@ -642,10 +642,14 @@ impl SyncEngine {
                 continue;
             }
             let Some((Kind::Commit { parts, .. }, cert)) = self.state.entries.get(&(l, o.id)).map(|e| (e.kind.clone(), e.cert)) else { continue };
-            // a certificate copy: another copy of the same parts (its deletion was not this
-            // node's to judge); a body: when its delete does not stand and no other encryption
-            // held there carries it
+            // a certificate copy: another copy of the same parts unless a genuine entry held
+            // there carries them (the delete stands: a duplicate went); a body: when its delete
+            // does not stand and no other encryption held there carries it
             let b = if cert {
+                let held: Vec<BlobId> = self.state.entries_of(&l, &c).filter(|(id, e)| matches!(&e.kind, Kind::Commit { parts: p, .. } if parts.iter().all(|x| p.contains(x))) && self.state.holds_at(&host, &l, id)).map(|(id, _)| id).collect();
+                if held.into_iter().any(|id| self.genuine(&id)) {
+                    continue;
+                }
                 let Some(h) = self.engine.header(&c) else { continue };
                 Body { commit: c, parts: parts.clone(), expires: None, blind: h.blind, plaintext: Vec::new(), role_commit: h.kind.is_role(), order: h.ts.to_u64().max(1), to_label: false }
             } else {
