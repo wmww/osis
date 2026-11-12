@@ -1543,7 +1543,9 @@ fn purge_beside_invalid_delta_leaves_host_spec_perm_6() {
         }
         let cm = net.engine(b).commit_hostile(m).unwrap().unwrap();
         settle(&mut net);
-        let new: std::collections::BTreeSet<_> = net.host_ids(host, &l).into_iter().filter(|x| !before.contains(x)).collect();
+        // the commit's entries at the peer (a records certificate about the author may come too)
+        let of_cm: Vec<_> = net.sync(b).entries(&l).into_iter().filter(|(_, k)| matches!(k, EntryKind::Commit { commit, .. } if *commit == cm)).map(|(id, _)| id).collect();
+        let new: std::collections::BTreeSet<_> = net.host_ids(host, &l).into_iter().filter(|x| !before.contains(x) && of_cm.contains(x)).collect();
         assert!(!new.is_empty());
         assert_eq!(net.engine(a).get(&t, &good).unwrap(), Some(s("good")));
         if with_bad {
