@@ -1783,42 +1783,31 @@ fn reused_chain_copy_tombstoned_placed_fresh_spec_sync_3() {
     assert_eq!(sealed, 0, "no copy sealed again");
 }
 
-// spec/sync.md §10 (Shared set): a reader whose Open and Path were answered at a head the peer
-// that cannot read L moved past before its first filter came (the filter shows only the new
-// head's sync key, and nothing reads L there to bring the new head) opens L there again and reads
-// it at the new head.
+// spec/sync.md §10 (Shared set), §5 (Register): a reader away while the peer that cannot read L
+// moved its head past the reader's newest recorded step (the peer's filter shows only the new
+// head's sync key) opens L there again and reads it at the new head: its walk finds no recorded
+// step shown, the recorded path's registration is answered 9 (the head is off it), and one Open
+// walk finds the new head (issues/net-one-peer.md 3h2, interim).
 #[test]
-fn a_head_moved_past_before_the_first_filter_is_opened_again_spec_sync_10() {
-    use osis_proto::{Code, Message};
+fn a_head_moved_past_while_away_is_opened_again_spec_sync_10() {
     let (mut net, host, [a, b, x], g, []) = hosted::<3, 0>(&[(1, Role::Read), (2, Role::Read)], [], true);
     let l = net.label(a);
     net.set_online(b, false);
     net.run();
-    // b's Open is answered at the old head; what follows it waits
-    net.hold_opened.insert(b);
-    net.set_online(b, true);
-    net.advance(10_000);
     let (at, bt, xt) = (net.tid(a), net.tid(b), net.tid(x));
     let e = net.engine(a);
     let rs = recipients_of(e, &[(at, Role::Admin), (bt, Role::Read)]);
     remove_holder(e, g, xt, &rs, 45);
     net.run();
     assert_eq!(net.host_path(host, &l).len(), 2, "the new step landed");
-    // b's Path after the old head is answered as it was before the step landed (nothing after
-    // it), and the first filter comes after
-    net.host_tamper = Some(Box::new(|m| match m {
-        Message::Error { id, code } if *code == Code::NOT_OPENED => Some(Message::PathReply { id: *id, steps: Vec::new(), more: false }),
-        _ => None,
-    }));
+    net.set_online(a, false);
     let opens = net.sent_kinds.get(&4).copied().unwrap_or(0);
-    net.release();
-    net.round();
-    net.round();
-    net.host_tamper = None;
-    net.run();
+    net.set_online(b, true);
+    net.advance(61_000);
+    net.set_online(a, true);
     let t = net.item(a, g, g, "after");
-    net.run();
+    net.advance(61_000);
     assert_eq!(net.read(b, t), Some(s("after")), "b reads L at the new head");
-    // once: at the old head, answered with its child, then at the new head
-    assert_eq!(net.sent_kinds.get(&4).copied().unwrap_or(0) - opens, 2, "L opened again once");
+    // the old head's sync key, answered with its child, then the new head's
+    assert_eq!(net.sent_kinds.get(&4).copied().unwrap_or(0) - opens, 2, "one Open walk");
 }

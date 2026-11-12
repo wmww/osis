@@ -1578,15 +1578,21 @@ impl SyncEngine {
     fn stream_fetched(&mut self, conn: ConnId, l: LabelId, items: Vec<osis_proto::msg::Fetched>, out: &mut Vec<Action>) -> Result<()> {
         let mut evs = Vec::new();
         let mut failed = Vec::new();
+        // bytes that are not the blob asked for: the source may hold the honest ones
+        let mut wrong = Vec::new();
         for f in items {
             match f.entry {
                 Some((blob, wrap, stamp)) if osis_label::blob_id(&blob) == f.blob_id => evs.push(Event::Added { blob_id: f.blob_id, blob: Some(blob), wrap, stamp }),
-                _ => failed.push(f.blob_id),
+                Some(_) => wrong.push(f.blob_id),
+                None => failed.push(f.blob_id),
             }
         }
         // a peer that cannot read L: what it did not deliver is not asked there again until it
         // announces it, and what it delivered is applied as its stream's events are
         if self.read_as_host(conn, &l) {
+            for b in &wrong {
+                self.fetched(b);
+            }
             let mut gone = false;
             for b in &failed {
                 self.fetched(b);
@@ -1612,6 +1618,7 @@ impl SyncEngine {
             let unkept: BTreeSet<(LabelId, BlobId)> = delivered.into_iter().filter(|b| self.wants(&l, b)).map(|b| (l, b)).collect();
             self.stream_unowe(conn, &unkept);
         }
+        failed.extend(wrong);
         if failed.is_empty() {
             return Ok(());
         }

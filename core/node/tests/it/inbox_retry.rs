@@ -108,7 +108,8 @@ fn invite_goes_after_the_labels_registration_spec_sync_3() {
     assert!(net.engine(b).role_on(&g).is_some() || net.sync(b).invite_requests().unwrap().len() == 1);
 }
 
-// spec/sync.md §3: a host of the label silent to its Open holds no invite back while another connected host has it
+// spec/sync.md §3: a peer of the label silent to its registration (its answers held) holds no
+// invite back while another connected peer has it
 #[test]
 fn silent_host_of_the_label_holds_no_invite_back_spec_sync_3() {
     let mut net = Net::bare();
@@ -141,7 +142,7 @@ fn silent_host_of_the_label_holds_no_invite_back_spec_sync_3() {
     net.actions(a, acts);
     net.run();
     assert!(net.labels_at(host).contains(&l));
-    assert!(!net.labels_at(silent).contains(&l));
+    assert!(net.sync(a).label_status().iter().any(|s| s.label == l && s.hosts == 2 && s.sources == 1), "open at one peer only");
     assert!(net.host_ids(host, &inbox).iter().any(|b| !held.contains(b)), "the invite went");
 }
 
