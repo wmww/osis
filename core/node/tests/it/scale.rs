@@ -1025,27 +1025,18 @@ fn purge_rejudge(n: usize) -> [Work; 3] {
 
 // spec/permissions.md §6 (a request counts while its requester's right stands); spec/
 // requirements.md, Scale: on an aspect of n and 10n kept commits with n/10 named purge requests,
-// a join with no request does flat work; the requester's removal and re-grant re-judge the
-// requests' commits linearly (the rebuilds they cause: `repro_purge_flip_rebuilds_once`).
+// a join with no request does flat work; the requester's removal and re-grant, which make every
+// request fall or rise together, rebuild the aspect once (after every verdict, not once per
+// request), and every counted phase (bodies read by that rebuild, commits re-judged, store
+// bytes) grows at most linearly.
 #[test]
 fn purge_rejudge_is_linear_in_requests_spec_permissions_6() {
     let (a, b) = (purge_rejudge(30), purge_rejudge(300));
     all_flat("a join", &a[0], &b[0]);
     for (k, what) in [(1, "the requests falling"), (2, "the requests rising")] {
-        linear(&format!("{what}: commits re-judged"), a[k].n("rejudge: a commit"), b[k].n("rejudge: a commit"));
-        linear(&format!("{what}: store bytes written"), a[k].io.written_bytes, b[k].io.written_bytes);
+        assert_eq!((a[k].n("rebuild"), b[k].n("rebuild")), (1, 1), "{what}: rebuilds at n, 10n");
+        all_linear(what, &a[k], &b[k]);
     }
-}
-
-// issues/purge-flip-rebuilds-per-request.md; spec/permissions.md §6; spec/requirements.md, Scale: the requests of a
-// requester removed or re-granted fall or rise together, yet the aspect is rebuilt about once
-// per request, each reading every held body: O(requests x bodies).
-#[test]
-#[ignore = "issues/purge-flip-rebuilds-per-request.md"]
-fn repro_purge_flip_rebuilds_once() {
-    let (a, b) = (purge_rejudge(30), purge_rejudge(300));
-    all_linear("the requests falling", &a[1], &b[1]);
-    all_linear("the requests rising", &a[2], &b[2]);
 }
 
 /// B (1) gets the first admin's writes of one purge-on-replace key only through k snapshots,

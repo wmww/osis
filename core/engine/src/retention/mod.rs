@@ -264,15 +264,13 @@ fn drop_part_for(tx: &mut Tx<'_>, c: &CommitId, ai: usize, why: DropFor) -> Resu
     crate::apply::keys::forget_dropped(tx, &header, ai, &role_bodies)?;
     // a snapshot dropped other than as covered carries nothing: the parts dropped under its
     // cover alone are missing again
-    let uncovered = stands_in || (own_cover && why != DropFor::Cover);
-    if uncovered {
-        uncover(tx, &a.tid, &a.ak)?;
-    }
+    let uncovered = (stands_in || (own_cover && why != DropFor::Cover)) && uncover(tx, &a.tid, &a.ak)?;
     // the one path (issues/drop-rejoin-robust.md item 1): the aspect is rebuilt from what is
     // held now, shredded (every local copy of the body goes,
     // spec/commits.md §5). A valid snapshot dropped vouches no more for invalid deltas' writes
     // it carried (spec/permissions.md §5.2). A destroyed thing's aspects rebuild once, after its last part (`retention::destroy`).
-    // An invalid part gave nothing (`apply::rebuilt`): its drop leaves the state as it is.
+    // An invalid part gave nothing (`apply::rebuilt`): its drop leaves the state as it is
+    // unless it uncovered a part.
     if why == DropFor::Destroyed || (invalid && !uncovered) {
         return Ok(());
     }
@@ -305,8 +303,8 @@ pub(crate) fn coverers(core: &Core, c: &CommitId, ai: usize) -> Vec<CommitId> {
 /// dropped other than as covered, by a purge) are missing again (spec/permissions.md §5.2): they
 /// give nothing, as at a node that never held them, until the body arrives again (a node still
 /// holding it finds it uncovered and re-uploads it, spec/sync.md §6; node-sync fetches it again,
-/// `Changed::undropped`). The caller rebuilds the aspect.
-pub(crate) fn uncover(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
+/// `Changed::undropped`). The caller rebuilds the aspect. Whether any part went missing.
+pub(crate) fn uncover(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<bool> {
     let core = &*tx.core;
     let carries = |s: &CommitId| {
         let Some(m) = core.ix.commits.get(s) else { return false };
@@ -341,7 +339,7 @@ pub(crate) fn uncover(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
     if any && ak.as_str() == "keys.0" {
         crate::apply::keys::rebuild_keysets(tx, &BTreeSet::from([*tid]))?;
     }
-    Ok(())
+    Ok(any)
 }
 
 /// Whether held part `ai` of `m` goes once judged invalid (spec/permissions.md §6): any but a

@@ -1164,37 +1164,49 @@ fn rejudge_once(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak)>> {
     for (tid, ak) in &flipped {
         tx.core.mark_aspect_changed(tid, ak);
     }
-    if rebuild {
-        for (tid, ak) in &flipped {
-            // a memory aspect's rebuild is memory work, whatever transaction re-judges it
-            let memory = tx.txn.is_memory_aspect(tid, ak);
-            tx.in_class(memory, |tx| {
-                let k = (*tid, ak.clone());
-                // a snapshot turned invalid gives nothing (its writer no longer vouches for it,
-                // spec/permissions.md §5.2): parts dropped under its cover alone are missing again
-                // (an own replace likewise, spec/commits.md §5 Own replaces)
-                let snaps = fell.get(&k).into_iter().flatten().any(|(c, _)| tx.core.ix.commits.get(c).is_some_and(|m| m.view.kind.is_compaction() || !m.whole.is_empty()));
-                let _s = crate::costs::span("rejudge: rebuild");
-                if snaps {
-                    crate::retention::uncover(tx, tid, ak)?;
-                }
-                // the one path (issues/drop-rejoin-robust.md item 1): the aspect rebuilt from
-                // what is held
-                super::atomic::rebuild(tx, tid, ak)
-            })?;
+    // each aspect rebuilt once, after its flips and every purge request's verdict on it (a
+    // requester's flip moves all its requests: one rebuild per request read the aspect's bodies
+    // once each). Nothing in it reads a state (`run_batched`).
+    super::run_batched(tx, |tx| {
+        if rebuild {
+            for (tid, ak) in &flipped {
+                // a memory aspect's rebuild is memory work, whatever transaction re-judges it
+                let memory = tx.txn.is_memory_aspect(tid, ak);
+                tx.in_class(memory, |tx| {
+                    let k = (*tid, ak.clone());
+                    // a snapshot turned invalid gives nothing (its writer no longer vouches for it,
+                    // spec/permissions.md §5.2): parts dropped under its cover alone are missing again
+                    // (an own replace likewise, spec/commits.md §5 Own replaces)
+                    let snaps = fell.get(&k).into_iter().flatten().any(|(c, _)| tx.core.ix.commits.get(c).is_some_and(|m| m.view.kind.is_compaction() || !m.whole.is_empty()));
+                    let _s = crate::costs::span("rejudge: rebuild");
+                    if snaps {
+                        crate::retention::uncover(tx, tid, ak)?;
+                    }
+                    // the one path (issues/drop-rejoin-robust.md item 1): the aspect rebuilt from
+                    // what is held
+                    super::atomic::rebuild(tx, tid, ak)
+                })?;
+            }
+            // memory parts turned valid may supersede held ones (spec/sync.md §9)
+            let memory: BTreeSet<(Tid, Ak)> = rose.iter().filter(|(t, a)| tx.txn.is_memory_aspect(t, a)).cloned().collect();
+            if !memory.is_empty() {
+                let gone = tx.in_class(true, |tx| {
+                    let gone = crate::retention::memory::drop_superseded(tx, &memory)?;
+                    // and snapshots turned valid cover held bodies
+                    crate::retention::memory::drop_covered(tx, &memory, None, None)?;
+                    Ok(gone)
+                })?;
+                flipped.extend(gone);
+            }
+            // a request's right rests on the same timelines (spec/permissions.md §6)
+            let things: BTreeSet<Tid> = things.union(&under).copied().collect();
+            for (tid, ak) in crate::retention::purged_aspects(tx, &things, &whole)? {
+                crate::retention::rejudge_purges(tx, &tid, &ak, &mut flipped)?;
+            }
         }
-        // memory parts turned valid may supersede held ones (spec/sync.md §9)
-        let memory: BTreeSet<(Tid, Ak)> = rose.iter().filter(|(t, a)| tx.txn.is_memory_aspect(t, a)).cloned().collect();
-        if !memory.is_empty() {
-            let gone = tx.in_class(true, |tx| {
-                let gone = crate::retention::memory::drop_superseded(tx, &memory)?;
-                // and snapshots turned valid cover held bodies
-                crate::retention::memory::drop_covered(tx, &memory, None, None)?;
-                Ok(gone)
-            })?;
-            flipped.extend(gone);
-        }
-    }
+        Ok(())
+    })?;
+    // after the rebuilds: a keyset or secrets flip reads its aspect's state
     super::keys::rebuild_keysets(tx, &keyset_flips)?;
     super::keys::refresh_own_keys(tx, &keyset_flips, true)?;
     for (c, ai, now_valid) in secrets_flips {
@@ -1202,13 +1214,6 @@ fn rejudge_once(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak)>> {
             super::keys::revalidated(tx, &c, ai)?;
         } else {
             super::keys::invalidated(tx, &c, ai)?;
-        }
-    }
-    // a request's right rests on the same timelines (spec/permissions.md §6)
-    if rebuild {
-        let things: BTreeSet<Tid> = things.union(&under).copied().collect();
-        for (tid, ak) in crate::retention::purged_aspects(tx, &things, &whole)? {
-            crate::retention::rejudge_purges(tx, &tid, &ak, &mut flipped)?;
         }
     }
     Ok(flipped.into_iter().collect())

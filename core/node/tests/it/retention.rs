@@ -1753,8 +1753,8 @@ fn uncovered_part_judged_anew() {
     lp.peers[2].engine.check_index();
 }
 
-// spec/crdt.md §4.6, spec/permissions.md §6: many deltas falling at once rebuild the aspect once,
-// and once more as their bodies go.
+// spec/crdt.md §4.6, spec/permissions.md §6: many deltas falling at once rebuild the aspect once;
+// their bodies going rebuilds nothing (an invalid body gave nothing, and uncovers nothing here).
 #[test]
 fn fall_of_many_one_pass_spec_crdt_4_6() {
     let mut lp = net(2, 0);
@@ -1776,7 +1776,7 @@ fn fall_of_many_one_pass_spec_crdt_4_6() {
     let n = passes();
     assert_eq!(lp.peers[0].engine.invalid_writes(&t, &ak("t:reg.0")).len(), 50);
     assert_eq!(lp.peers[0].engine.get(&t, &ak("t:reg.0")).unwrap(), Some(s("winner")));
-    assert_eq!(n, 2, "rebuilds");
+    assert_eq!(n, 1, "rebuilds");
 }
 
 /// A thing of peer 0 and peer 1 holding write on it, both synced.
