@@ -55,7 +55,7 @@ Terms:
 ## Data a node cannot read
 - Holding and serving data it cannot read is a first-class feature of every node; one node may read some groups and not others.
 - For such data a node may learn volume and the structure selective sync needs: which opaque groups each stored item is in and how groups overlap (a commit spanning groups links them), counts, padded sizes, timing, addresses, and what it must act on: each item's expiry, whether it is durable, ephemeral or only relayed, which kinds of right may delete it, and whether someone without write left it. It must not learn identifiers, keys, values, authors, role grants, node identities, or structure beyond that.
-- Nothing stored or relayed links different groups of one actor beyond their overlap and the commits that span them. What a connection reveals (its address, the groups it opens) is network metadata, hidden only by routing through a relay or an anonymity network.
+- What a connection reveals (its address, the groups it opens) is network metadata, hidden only by routing through a relay or an anonymity network.
 - One protocol for all nodes. Peers differ only in which keys they hold.
 - A node that cannot read data may hold its only copy. Reading never allows deleting data or forcing a re-upload.
 - For data it cannot read, a node knows no role holders and never waits on their liveness.
