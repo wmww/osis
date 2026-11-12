@@ -1717,12 +1717,7 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
             #[cfg(debug_assertions)]
             let _ = tx.recheck(format!("commit record {id:?}"));
             tx.core.decoded.keep_record(id, stored.clone(), &bytes);
-            let mut blob = Arc::unwrap_or_clone(stored);
-            if !blob.header.is_resolved()
-                && let Some(dedup) = tx.core.dedup(&blob.header.actor)
-            {
-                blob.header.resolve(&mut TxBlobs::new(&mut tx.blobs, tx.txn.is_memory()), &dedup).map_err(|_| Error::Corrupt("header lists"))?;
-            }
+            let blob = Arc::unwrap_or_clone(stored);
             if blob.id() != id {
                 return Err(Error::Corrupt("commit record key"));
             }

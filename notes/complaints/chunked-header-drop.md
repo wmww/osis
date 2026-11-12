@@ -1,0 +1,3 @@
+# chunked-header-drop
+- The debug reopen check (`Engine::check_index`) runs after sampled transactions only, so a store that cannot reopen passed every test on main: `local_serve::local_work_sets_match_full_passes_*` held a linked-list header past its expiry for many steps and the sample missed it. A reproducer must call `check_index` (or `Net::restart`) where its point is.
+- The issue's suspect (`dropped_chunks` deleting list blobs) was wrong: header-list blobs are never in a chunk list. The cause was their prefix expiry (spec/wire.md §5) deleting them while the header stayed; no compaction needed.

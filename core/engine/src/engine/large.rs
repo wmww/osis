@@ -395,7 +395,7 @@ pub(crate) fn chunk_ops(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, ops: &mut [PathOp],
 /// Blob IDs a delta's canonical bytes link (its values' trees, its pages), through the held
 /// node and page blobs.
 pub(crate) fn delta_links(tx: &mut Tx<'_>, dedup: &Secret32, delta: &[u8]) -> Result<BTreeSet<BlobId>> {
-    let mut out = LiveTrees::default();
+    let mut out = Trees::default();
     tree_blobs(tx, dedup, &delta_roots(delta), &mut out)?;
     Ok(out.blobs)
 }
@@ -447,9 +447,9 @@ fn below(blobs: &mut TxBlobs<'_, '_>, dedup: &Secret32, link: &Link) -> Result<O
     Ok(Some((false, out)))
 }
 
-/// Blob IDs of the trees a thing's live states link (`Engine::live_trees`).
+/// Blob IDs of the trees under some roots (`Engine::live_trees`, `Engine::held_trees`).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct LiveTrees {
+pub struct Trees {
     /// Nodes and chunks reached through the node blobs held, and the roots.
     pub blobs: BTreeSet<BlobId>,
     /// Node blobs linked and not held: what lies below them is unknown until they are fetched.
@@ -458,7 +458,7 @@ pub struct LiveTrees {
 
 /// The trees (and pages) under `roots`, through the node and page blobs this node holds,
 /// added to `out`.
-pub(crate) fn tree_blobs(tx: &mut Tx<'_>, dedup: &Secret32, roots: &[Link], out: &mut LiveTrees) -> Result<()> {
+pub(crate) fn tree_blobs(tx: &mut Tx<'_>, dedup: &Secret32, roots: &[Link], out: &mut Trees) -> Result<()> {
     // (link, whether it is known to be a chunk)
     let mut stack: Vec<(Link, bool)> = roots.iter().map(|l| (*l, false)).collect();
     let mut blobs = TxBlobs::new(&mut tx.blobs, tx.txn.is_memory());
@@ -481,7 +481,7 @@ pub(crate) fn tree_blobs(tx: &mut Tx<'_>, dedup: &Secret32, roots: &[Link], out:
 
 /// Whether the trees under `roots`, as far as the held node blobs go, hold one of `blobs`.
 fn tree_hits(tx: &mut Tx<'_>, dedup: &Secret32, roots: &[Link], blobs: &BTreeSet<BlobId>) -> Result<bool> {
-    let mut out = LiveTrees::default();
+    let mut out = Trees::default();
     tree_blobs(tx, dedup, roots, &mut out)?;
     Ok(!out.blobs.is_disjoint(blobs))
 }
@@ -492,30 +492,54 @@ impl Engine {
         self.read_large_max(tid, link, MAX_READ)
     }
 
-    /// The chunk trees the live states of `tid`'s aspects link (spec/sync.md §3, §7: chunk
-    /// blobs still linked from a retained version are kept and belong to the closure; a reused
-    /// chunk is not in the reusing commit's chunk list). Complete when no node blob is
-    /// `missing`. Cached until the next change or blob arrival.
-    pub fn live_trees(&mut self, tid: &Tid) -> Result<LiveTrees> {
-        if let Some(x) = self.core.live_trees.get(tid) {
+    /// The chunk trees the live states of `tid`'s aspects link. Complete when no node blob is
+    /// `missing`.
+    pub fn live_trees(&mut self, tid: &Tid) -> Result<Trees> {
+        self.trees_of(tid, false)
+    }
+
+    /// The chunk trees `tid`'s live states and every body held on its aspects link (deltas,
+    /// snapshots, leftovers): what a dropped body's chunks are judged against (spec/sync.md §1,
+    /// §7: a blob goes only when nothing held links it; a reused chunk or a snapshot's value is
+    /// not in the linking commit's chunk list). Complete when no node blob is `missing`. Cached
+    /// until the next change or blob arrival.
+    pub fn held_trees(&mut self, tid: &Tid) -> Result<Trees> {
+        if let Some(x) = self.core.held_trees.get(tid) {
             return Ok(x.clone());
         }
+        let r = self.trees_of(tid, true)?;
+        self.core.held_trees.insert(*tid, r.clone());
+        Ok(r)
+    }
+
+    fn trees_of(&mut self, tid: &Tid, bodies: bool) -> Result<Trees> {
         let aks = self.aspects(tid)?;
         let tid = *tid;
-        let r = self.run(|tx| {
-            let mut out = LiveTrees::default();
+        self.run(|tx| {
+            let mut out = Trees::default();
             let Some(dedup) = tx.core.dedup(&tid) else { return Ok(out) };
             let mut roots = Vec::new();
             for ak in &aks {
                 if let Some(v) = tx.state(&tid, ak)?.and_then(Fragment::read) {
                     links_in(&v, &mut roots);
                 }
+                if !bodies {
+                    continue;
+                }
+                let held: Vec<CommitId> = tx.core.ix.by_aspect.get(&(tid, ak.clone())).into_iter().flatten().map(|x| x.1).collect();
+                for c in held {
+                    let Some(h) = tx.core.ix.commits.get(&c).map(|m| m.header.clone()) else { continue };
+                    let on = |ai: usize| h.aspects.get(ai).is_some_and(|a| a.tid == tid && a.ak == *ak);
+                    for (_, d) in crate::apply::held_parts_at(tx, &c, &on)? {
+                        d.fragment().values(&mut |v| links_in(v, &mut roots));
+                    }
+                }
             }
+            roots.sort_unstable_by_key(|l| l.blob);
+            roots.dedup();
             tree_blobs(tx, &dedup, &roots, &mut out)?;
             Ok(out)
-        })?;
-        self.core.live_trees.insert(tid, r.clone());
-        Ok(r)
+        })
     }
 
     /// Chunks or tree nodes `lost`, gone from every host of a label, that this node's own
@@ -638,11 +662,11 @@ impl Engine {
     /// The blobs the deltas of a body (`plaintext`: its commit blob plaintext) link, through
     /// held node and page blobs: the trees of its values and the pages of its fragments, listed
     /// by its commit or not (spec/sync.md §3 closure). Complete when nothing is `missing`.
-    pub fn body_links(&mut self, plaintext: &[u8]) -> Result<LiveTrees> {
-        let Ok(cb) = osis_commit::CommitBlob::decode(plaintext) else { return Ok(LiveTrees::default()) };
-        let Some(h) = self.header(&cb.id()) else { return Ok(LiveTrees::default()) };
+    pub fn body_links(&mut self, plaintext: &[u8]) -> Result<Trees> {
+        let Ok(cb) = osis_commit::CommitBlob::decode(plaintext) else { return Ok(Trees::default()) };
+        let Some(h) = self.header(&cb.id()) else { return Ok(Trees::default()) };
         self.run(|tx| {
-            let mut out = LiveTrees::default();
+            let mut out = Trees::default();
             for p in &cb.parts {
                 let Some(dedup) = h.aspects.get(p.ai).and_then(|a| tx.core.dedup(&a.tid)) else { continue };
                 tree_blobs(tx, &dedup, &delta_roots(&p.delta), &mut out)?;
@@ -685,7 +709,7 @@ impl Engine {
         let (tid, link) = (*tid, *link);
         self.run(|tx| {
             let dedup = tx.core.dedup(&tid).ok_or(Error::UnknownThing(tid))?;
-            let mut out = LiveTrees::default();
+            let mut out = Trees::default();
             tree_blobs(tx, &dedup, &[link], &mut out)?;
             let mut v: Vec<BlobId> = out.missing.into_iter().collect();
             for b in out.blobs {

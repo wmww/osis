@@ -583,13 +583,28 @@ pub(crate) fn load_edges(tx: &mut Tx<'_>) -> Result<BTreeMap<CommitId, crate::ap
 }
 
 /// What of a commit its record holds ahead of its blob (version 1): received, origin, dropped
-/// parts and what each keeps (`Meta::dropped`).
+/// parts and what each keeps (`Meta::dropped`), and the header's linked lists (a held header is
+/// whole on its own: the list blobs live by the sync rules, gone at the commit's expiry).
 pub(crate) struct RecordHead {
     pub received: WallMs,
     pub origin: Origin,
     pub dropped: BTreeMap<usize, super::Dropped>,
     pub stripped: BTreeSet<usize>,
     pub valued: BTreeSet<usize>,
+    pub lists: Vec<(osis_commit::ListField, Vec<u8>)>,
+}
+
+impl RecordHead {
+    /// Fills `h`'s linked lists from the record (`Corrupt` when one is missing there).
+    pub fn resolve(&self, h: &mut osis_commit::Header) -> Result<()> {
+        for (f, b) in &self.lists {
+            h.fill_stored_list(*f, b).map_err(|_| Error::Corrupt("header lists"))?;
+        }
+        if !h.is_resolved() {
+            return Err(Error::Corrupt("header lists"));
+        }
+        Ok(())
+    }
 }
 
 pub(crate) fn record_head(m: &Meta) -> Vec<u8> {
@@ -637,6 +652,13 @@ pub(crate) fn record_head(m: &Meta) -> Vec<u8> {
     w = w.u32(m.stripped.len() as u32);
     for a in &m.stripped {
         w = w.u32(*a as u32).u8(u8::from(m.valued.contains(a)));
+    }
+    // a header applies resolved (spec/commits.md §4)
+    debug_assert!(m.header.is_resolved(), "record of an unresolved header");
+    let lists = m.header.linked_lists();
+    w = w.u8(lists.len() as u8);
+    for (f, b) in &lists {
+        w = w.u8(osis_commit::ListField::ALL.iter().position(|x| x == f).unwrap_or_default() as u8).bytes(b);
     }
     w.take()
 }
@@ -839,7 +861,12 @@ pub(crate) fn parse_head(v: &[u8]) -> Result<(RecordHead, &[u8])> {
             valued.insert(a);
         }
     }
-    Ok((RecordHead { received, origin, dropped, stripped, valued }, r.rest()))
+    let mut lists = Vec::new();
+    for _ in 0..r.u8()? {
+        let f = *osis_commit::ListField::ALL.get(<usize as From<u8>>::from(r.u8()?)).ok_or(Error::Corrupt("header list field"))?;
+        lists.push((f, r.bytes()?.to_vec()));
+    }
+    Ok((RecordHead { received, origin, dropped, stripped, valued, lists }, r.rest()))
 }
 
 /// Writes the given changes (`all`: everything) of the indexes to the persisted index.
@@ -1031,13 +1058,9 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
         }
         let view = Arc::new(view);
         let header = if view.linked {
-            // lists by link resolve from blobs now
+            // lists by link from the record now
             let mut h = super::decode_stored_header(&id, &bytes).ok_or(Error::Corrupt("commit record header"))?;
-            if !h.is_resolved()
-                && let Some(dedup) = tx.core.dedup(&h.actor)
-            {
-                h.resolve(&mut super::blobs::TxBlobs::new(&mut tx.blobs, tx.txn.is_memory()), &dedup).map_err(|_| Error::Corrupt("header lists"))?;
-            }
+            head.resolve(&mut h)?;
             debug_assert_eq!(super::View::of(&h), *view, "meta row of {id:?} is stale");
             super::LazyHeader::ready(Arc::new(h))
         } else {

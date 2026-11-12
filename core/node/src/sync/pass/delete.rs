@@ -748,9 +748,10 @@ impl SyncEngine {
     /// (purge, expiry, compaction), by the commit and chunk entry that list them,
     /// unless a commit whose creating deltas are not all dropped lists them too (chunk reuse,
     /// spec/sync.md §1). A chunk's creating deltas are those whose delete-key indices are its own
-    /// (one class); with no such delta, every delta of the commit. Nor those a live tree links
-    /// (spec/sync.md §7: reused chunks and the chunks of compacted values are not in the
-    /// linking commit's list): those are returned apart, judged again while trees may link them.
+    /// (one class); with no such delta, every delta of the commit. Nor those a tree of a held
+    /// body or live state of the thing links (`Engine::held_trees`; spec/sync.md §7: reused
+    /// chunks and the chunks of compacted values are not in the linking commit's list): those
+    /// are returned apart, judged again while trees may link them.
     pub(crate) fn dropped_chunks(&mut self, cands: &BTreeSet<BlobId>) -> Result<(DroppedChunks, BTreeSet<BlobId>)> {
         let mut out = BTreeMap::new();
         if cands.is_empty() {
@@ -790,7 +791,7 @@ impl SyncEngine {
         for (t, bs) in by_thing {
             // a tree not all held here may link any of them: its missing nodes are fetched
             // (`tree_wants`) and the chunks judged once they are here
-            let linked = self.engine.live_trees(&t)?;
+            let linked = self.engine.held_trees(&t)?;
             for b in &bs {
                 if !linked.missing.is_empty() || linked.blobs.contains(b) {
                     waiting.insert(*b);

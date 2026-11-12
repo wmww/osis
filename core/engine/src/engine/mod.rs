@@ -27,7 +27,7 @@ pub mod write;
 
 #[doc(hidden)]
 pub use testing::{CommitDigest, IndexDigest, IndexField};
-pub use large::LiveTrees;
+pub use large::Trees;
 pub use write::Mutation;
 
 use crate::apply::Reason;
@@ -1112,9 +1112,9 @@ pub struct Core {
     /// What changed since node-sync last took it (`Engine::take_changed`; `None`: no
     /// node-sync, nothing kept). A mark from an aborted transaction stays: one extra judgment.
     pub changed: Option<Changed>,
-    /// `Engine::live_trees` per thing, cleared by every transaction that changes the indexes or
+    /// `Engine::held_trees` per thing, cleared by every transaction that changes the indexes or
     /// a state (`touch`, `rollback`) and when blobs arrive (`put_blobs`).
-    pub live_trees: BTreeMap<Tid, LiveTrees>,
+    pub held_trees: BTreeMap<Tid, Trees>,
     /// Aspects (`None`) and commits' parts (`Some`, that change's) a read found a link of whose
     /// blob is not held (`Engine::missed_blob`): the next blob stored re-delivers them to watches
     /// (`Tx::store_blobs`: `Cause::Fetched`, `Event::Commits`). Bounded by the aspects and entries
@@ -1273,7 +1273,7 @@ impl Core {
             cut_subs: self.cut_subs.clone(),
             refold: self.refold.clone(),
             changed: self.changed.clone(),
-            live_trees: self.live_trees.clone(),
+            held_trees: self.held_trees.clone(),
             missed: self.missed.clone(),
             bodies: self.bodies.clone(),
             live_bodies: self.live_bodies.clone(),
@@ -1650,7 +1650,7 @@ impl Core {
 
     /// Notes that the running transaction changes the indexes or a state (drops derived caches).
     pub fn touch(&mut self) {
-        self.live_trees.clear();
+        self.held_trees.clear();
         if self.memory_tx {
             self.memory_generation += 1;
         } else {
@@ -1704,7 +1704,7 @@ impl Core {
         self.sides.rollback_to(m.sides);
         // a record written alone (`put_commit`, `leftover::put`) changes no index: its stamp says
         if self.dirty || self.written.len() > m.written || self.ix.mark() != m.ix || self.records_read.changes() != m.records {
-            self.live_trees.clear();
+            self.held_trees.clear();
             self.live_bodies.clear();
             self.bodies.clear();
             self.decoded.clear();
@@ -1799,7 +1799,7 @@ impl Core {
             rotation_seq: _,
             epochs_judged_from: _,
             waits: _,
-            live_trees: _,
+            held_trees: _,
             live_bodies: _,
             bodies: _,
             decoded: _,
@@ -2045,7 +2045,7 @@ impl Core {
             refold: BTreeSet::new(),
             changed: None,
             sync_records: None,
-            live_trees: BTreeMap::new(),
+            held_trees: BTreeMap::new(),
             missed: BTreeSet::new(),
             bodies: BTreeMap::new(),
             live_bodies: BTreeMap::new(),
@@ -2829,7 +2829,8 @@ pub(crate) fn clear_table(txn: &mut Transaction<'_>, t: osis_store::Table, start
 /// `(head, blob)`.
 pub(crate) fn decode_commit_record(v: &[u8]) -> Result<CommitRecord> {
     let (head, rest) = index::parse_head(v)?;
-    let blob = CommitBlob::decode_stored(rest).map_err(|_| Error::Corrupt("commit blob"))?;
+    let mut blob = CommitBlob::decode_stored(rest).map_err(|_| Error::Corrupt("commit blob"))?;
+    head.resolve(&mut blob.header)?;
     Ok((head, blob))
 }
 

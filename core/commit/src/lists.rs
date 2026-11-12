@@ -109,4 +109,19 @@ impl Header {
         }
         Ok(())
     }
+
+    /// The canonical bytes of each linked list of a resolved header: what a node keeps with
+    /// the header, so holding it never needs the list blobs (their life is the sync rules').
+    pub fn linked_lists(&self) -> Vec<(ListField, Vec<u8>)> {
+        ListField::ALL.into_iter().filter(|f| self.links.get(*f).is_some()).filter_map(|f| self.list_value(f).map(|v| (f, osis_base::encode(&v)))).collect()
+    }
+
+    /// Fills linked list `f` from the bytes `linked_lists` gave for it (a header this node
+    /// verified when it arrived: delete keys' points not checked again).
+    pub fn fill_stored_list(&mut self, f: ListField, bytes: &[u8]) -> Result<(), Error> {
+        if self.links.get(f).is_none() {
+            return Err(Error::Malformed("no linked list there"));
+        }
+        self.read_list(f, bytes, false)
+    }
 }

@@ -1525,3 +1525,85 @@ fn purge_beside_invalid_delta_leaves_host_spec_perm_6() {
         assert!(left.is_empty(), "with_bad {with_bad}: the purged blob stays at the host: {left:?}");
     }
 }
+
+// spec/sync.md §7 (a dropped body's chunk goes only once nothing held links it): a held
+// snapshot's value reuses chunks of the covered bodies it dropped; a later write that no
+// longer links them leaves them while the snapshot is held, and they go with it.
+#[test]
+fn held_snapshot_keeps_the_chunks_it_links_spec_sync_7() {
+    let (mut net, _host, [a], _g, [t]) = hosted::<1, 1>(&[], ["x"], false);
+    let ak = Ak::new(BLOB.ak()).unwrap();
+    let noise = |n: usize, seed: u64| {
+        let mut v = vec![0u8; n];
+        osis_crypto::RngCore::fill_bytes(&mut osis_crypto::SeededRng::from_u64(seed), &mut v);
+        v
+    };
+    let v1 = noise(1 << 20, 1);
+    let mut v2 = v1.clone();
+    v2.splice(500_000..500_000, noise(50, 2));
+    // v2 reuses v1's chunks: they are in v1's chunk list only
+    for v in [&v1, &v2] {
+        let mut m = Mutation::new();
+        m.set(t, &BLOB, &osis_base::Value::Bytes(v.clone())).unwrap();
+        net.engine(a).commit(m).unwrap();
+        net.run();
+    }
+    let compact = |net: &mut Net| {
+        let acts = net.sync(a).compact(&t, &ak).unwrap();
+        net.actions(a, acts);
+        net.advance(4_000_000);
+    };
+    compact(&mut net);
+    let snap = net.engine(a).commit_ids().into_iter().find(|c| net.engine(a).header(c).is_some_and(|h| h.kind.is_compaction())).unwrap();
+    let tree = net.engine(a).live_trees(&t).unwrap().blobs;
+    let mut m = Mutation::new();
+    m.set(t, &BLOB, &osis_base::Value::Bytes(vec![1, 2, 3])).unwrap();
+    net.engine(a).commit(m).unwrap();
+    net.advance(4_000_000);
+    assert!(net.engine(a).body_not_dropped(&snap, &t, &ak), "the snapshot is held");
+    let gone = tree.iter().filter(|b| !net.engine(a).has_blob(b)).count();
+    assert_eq!(gone, 0, "blobs of the held snapshot's value gone, of {}", tree.len());
+    // a later snapshot covers it: its value's blobs go
+    compact(&mut net);
+    net.advance(4_000_000);
+    assert!(!net.engine(a).body_not_dropped(&snap, &t, &ak));
+    let kept = tree.iter().filter(|b| net.engine(a).has_blob(b)).count();
+    assert_eq!(kept, 0, "blobs nothing held links kept, of {}", tree.len());
+}
+
+// spec/commits.md §6 (the chunks of a commit's linked header lists go at its expiry; a node
+// holding the header keeps its lists): a commit whose aspect list goes by link, one part dropped
+// as covered before its expiry, the rest past it: the node reopens and holds the header whole.
+#[test]
+fn linked_header_reopens_past_its_expiry_spec_commits_6() {
+    let (mut net, _host, [a], _g, [t]) = hosted::<1, 1>(&[], ["x"], false);
+    let aks: Vec<Ak> = (0..160).map(|i| Ak::new(format!("u:{}{i:05}.0", "a".repeat(900))).unwrap()).collect();
+    let at = osis_base::WallMs(net.now() + 40_000);
+    let mut m = Mutation::new();
+    for ak in &aks {
+        m.set(t, ak, &s("v")).unwrap();
+        m.expires(t, ak, at).unwrap();
+    }
+    let c = net.engine(a).commit(m).unwrap().unwrap();
+    net.run();
+    let lists = net.engine(a).linked_blobs(&c, &std::collections::BTreeSet::new()).unwrap();
+    assert!(net.engine(a).header(&c).unwrap().links.aspects.is_some() && !lists.is_empty(), "the aspect list goes by link");
+    // one part dropped on its own (covered by the next write's snapshot)
+    let mut m = Mutation::new();
+    m.set(t, &aks[0], &s("w")).unwrap();
+    net.engine(a).commit(m).unwrap();
+    let acts = net.sync(a).compact(&t, &aks[0]).unwrap();
+    net.actions(a, acts);
+    net.run();
+    net.engine(a).check_index();
+    net.advance(50_000);
+    net.advance(31_000);
+    assert!(lists.iter().all(|b| !net.engine(a).has_blob(b)), "the list blobs went at the expiry");
+    assert_eq!(net.engine(a).header(&c).map(|h| h.aspects.len()), Some(160), "the header is held");
+    net.engine(a).check_index();
+    net.restart(a, 9);
+    net.run();
+    assert_eq!(net.engine(a).header(&c).map(|h| h.aspects.len()), Some(160), "held whole after a restart");
+    assert_eq!(net.engine(a).get(&t, &aks[0]).unwrap(), Some(s("w")));
+    assert_eq!(net.engine(a).get(&t, &aks[1]).unwrap(), None, "expired");
+}
