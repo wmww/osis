@@ -343,7 +343,15 @@ fn exact_undo_spec_crdt_4_6() {
         d.register_schema("doc.osis", DOC_SCHEMA).unwrap();
     }
     let doc = ak("x:doc.0");
-    let t = a.commit_with(|w| w.create()).unwrap();
+    // kept history: undo writes back what the undone write replaced, which no compaction may drop
+    // first (spec/commits.md §7)
+    let t = a
+        .commit_with(|w| {
+            let t = w.create()?;
+            w.at(t, osis::core::RETENTION).set(&crate::common::setting(&[("x:doc.0", crate::common::DAY)]))?;
+            Ok(t)
+        })
+        .unwrap();
     a.commit_with(|w| {
         w.at(t, osis::DynamicAspectKey::untyped(doc.clone())).path(osis::Path(vec![field(0)])).set(&"n".to_string())?;
         w.at(t, osis::DynamicAspectKey::untyped(doc.clone())).path(osis::Path(vec![field(2)])).set(&Value::Enum(1, Some(Box::new(Value::Map(Default::default())))))

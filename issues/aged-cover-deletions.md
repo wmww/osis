@@ -1,0 +1,8 @@
+# A cover's deletions aged out of a peer's log never reach a node without the delete right
+> Summary: A node away while a co-reader drops bodies under a compaction snapshot and deletes their entries, back after that peer's log dropped the deletions (`TOMBSTONE_LIFETIME`), keeps the old entries in its own store for good: it dropped the same parts itself (holds the snapshot), so they are must-not-hold there, but it holds no delete key for them. Expiry deletions converge by each node's own judgment; cover deletions only by the right holder's.
+> Priority: normal
+> Tags: node, sync
+
+Found on branch durable-compaction: `stream::back_after_aged_deletions_converges_in_one_stream_spec_sync_10` without its `group.0` keep setting. b (admin) creates two items in group g (each creation writes g's `group.0`), the trigger compacts `group.0`, b rewrites the creation commits' blobs without the dropped part and deletes the whole ones; a, a writer offline for 32 days, comes back and still serves the whole blobs (`group.0` dropped at a too, one snapshot held). Entries differ between a and b for good.
+
+Options: a node may drop from its own store an entry of its own placement judged must-not-hold whatever its delete rights (it is not a host for others' data in that sense), or the stream carries a cover's deletions past the log as it does expiry, by judgment. Automatic compaction makes this the common case for any node away more than a tombstone lifetime.

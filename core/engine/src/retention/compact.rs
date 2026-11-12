@@ -100,13 +100,12 @@ fn body_bytes(tx: &mut Tx<'_>, blob: &CommitBlob, ai: usize) -> Result<usize> {
     Ok(deltas.saturating_add(page_bytes(tx, &blob.header, ai)?))
 }
 
-/// What the bodies held of `(tid, ak)` a snapshot written now would cover and drop cost (not
-/// snapshots; not ones within their keep-at-least bound, a live one kept while live included;
-/// not ones with an expiry before it, which a snapshot covers only as their leftover; not one
-/// behind an invalid or missing body of its session, which its frontier cannot pass: counted,
-/// it would fire the trigger at every step): (their sum, the costliest, how many). A leftover
-/// counts as a part with no delta bytes.
-fn held_cost(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<(usize, usize, usize)> {
+/// The bodies held of `(tid, ak)` a snapshot written now would cover (not snapshots; not ones
+/// with an expiry before it, which a snapshot covers only as their leftover; not one behind an
+/// invalid or missing body of its session, which its frontier cannot pass: counted, it would
+/// fire the trigger at every step), with their part and its cost. A leftover counts as a part
+/// with no delta bytes. Whether each is past its keep bound is the caller's (`Load::of`).
+fn candidates(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Vec<(CommitId, usize, usize)>> {
     let memory = ak.ephemeral();
     // (commit, part, judged by ID, a snapshot)
     let ids: Vec<(CommitId, usize, bool, bool)> = tx
@@ -125,25 +124,18 @@ fn held_cost(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<(usize, usize, usize
         .collect();
     let valid_on = |c: &CommitId| tx.core.ix.commits.get(c).is_some_and(|m| m.aspect(tid, ak).is_some_and(|ai| m.valid_at(ai) && !m.missing.contains(&ai)));
     let (_, reflected) = super::snapshot::frontiers_now(tx, tid, ak, memory, &valid_on);
-    let now = tx.now().0;
-    let (mut sum, mut largest, mut bodies) = (0usize, 0usize, 0usize);
+    let mut out = Vec::new();
     for (c, ai, by_id, snapshot) in ids {
         // not snapshots: each author keeps its own ephemeral one until its next (spec/sync.md §9),
         // so two authors' would make each compact the other's forever
         if snapshot || (!by_id && !reflected.contains(&c)) {
             continue;
         }
-        if super::bounds::part_keep(tx, &c, tid, ak)? > now {
-            continue;
-        }
         let Some(blob) = tx.get_commit(&c)? else { continue };
         let bytes = body_bytes(tx, &blob, ai)?;
-        let cost = part_weight(bytes).saturating_add(ENTRY_CHARGE);
-        sum = sum.saturating_add(cost);
-        largest = largest.max(cost);
-        bodies += 1;
+        out.push((c, ai, part_weight(bytes).saturating_add(ENTRY_CHARGE)));
     }
-    Ok((sum, largest, bodies))
+    Ok(out)
 }
 
 /// What a snapshot of `(tid, ak)` would cost as a held body: its state (the expiring writes
@@ -170,14 +162,40 @@ pub struct Load {
     pub bodies: usize,
 }
 
-/// `held_cost` and `snapshot_cost` of `(tid, ak)` in the class of its aspect.
-fn load(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, me: Tid) -> Result<Option<Load>> {
-    if ak.ephemeral() {
-        tx.set_memory();
+impl Load {
+    /// What the bodies held of `(tid, ak)` a snapshot written now would drop cost (`candidates`
+    /// past their keep-at-least bound, a live one kept while live included, read from the
+    /// per-commit memo: one judgment per commit), and what the snapshot would, in the class of
+    /// its aspect. `None`: no state.
+    fn of(e: &mut Engine, tid: &Tid, ak: &Ak, me: Tid) -> Result<Option<Load>> {
+        let class = |tx: &mut Tx<'_>| {
+            if ak.ephemeral() {
+                tx.set_memory();
+            }
+        };
+        let cands = e.run(|tx| {
+            class(tx);
+            candidates(tx, tid, ak)
+        })?;
+        let now = e.now().0;
+        let (mut held, mut largest, mut bodies) = (0usize, 0usize, 0usize);
+        for (c, ai, cost) in cands {
+            if e.part_keeps(&c)?.get(ai).copied().unwrap_or(0) > now {
+                continue;
+            }
+            held = held.saturating_add(cost);
+            largest = largest.max(cost);
+            bodies += 1;
+        }
+        let Some(snapshot) = e.run(|tx| {
+            class(tx);
+            snapshot_cost(tx, tid, ak, me)
+        })?
+        else {
+            return Ok(None);
+        };
+        Ok(Some(Load { tid: *tid, ak: ak.clone(), held, snapshot, largest, bodies }))
     }
-    let (held, largest, bodies) = held_cost(tx, tid, ak)?;
-    let Some(snapshot) = snapshot_cost(tx, tid, ak, me)? else { return Ok(None) };
-    Ok(Some(Load { tid: *tid, ak: ak.clone(), held, snapshot, largest, bodies }))
 }
 
 impl Engine {
@@ -197,7 +215,8 @@ impl Engine {
                 continue;
             }
             let (tid, ak) = k.clone();
-            if self.core.created(&tid).is_none() {
+            // an aspect of one body or none has nothing to compact: weighed again at its next write
+            if self.core.created(&tid).is_none() || self.core.ix.by_aspect.get(&k).is_none_or(|s| s.len() <= 1) {
                 self.core.compaction.est.remove(&k);
                 continue;
             }
@@ -209,7 +228,7 @@ impl Engine {
                 self.core.compaction.est.remove(&k);
                 continue;
             }
-            let Some(l) = self.run(|tx| load(tx, &tid, &ak, me))? else {
+            let Some(l) = Load::of(self, &tid, &ak, me)? else {
                 self.core.compaction.est.remove(&k);
                 continue;
             };
@@ -245,7 +264,7 @@ impl Engine {
                 continue;
             }
             let Ok(me) = self.core.writer_for(&tid) else { continue };
-            let Some(l) = self.run(|tx| load(tx, &tid, &ak, me))? else { continue };
+            let Some(l) = Load::of(self, &tid, &ak, me)? else { continue };
             if l.bodies == 0 {
                 continue;
             }
@@ -268,7 +287,7 @@ impl Engine {
                 continue;
             }
             let Ok(me) = self.core.writer_for(&tid) else { continue };
-            if let Some(l) = self.run(|tx| load(tx, &tid, &ak, me))? {
+            if let Some(l) = Load::of(self, &tid, &ak, me)? {
                 out.push(l);
             }
         }

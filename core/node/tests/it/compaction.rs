@@ -94,6 +94,49 @@ fn map_written_apart_holds_bounded_bodies_spec_sync_7() {
     }
 }
 
+// spec/crdt.md §8 (Frontiers), spec/commits.md §5 Forgetting, spec/sync.md §7 Trigger: commits a
+// writer forgot under its own covers leave its session's counters with a hole no held commit
+// fills, yet its later writes keep compacting. On a map whose commits are forgettable (default
+// retention): whole replaces its own replaces cover, then keys put apart, each compaction
+// snapshot forgotten under the next. The writer holds a bounded number of bodies at n and 10n
+// puts, and keeps a bounded number of commits once tombstones age out.
+#[test]
+fn writes_after_forgotten_ones_compact_spec_crdt_8() {
+    let run = |n: usize| {
+        let (mut net, _h, [a, r], _g, [t]) = hosted::<2, 1>(&[(1, Role::Read)], ["x"], true);
+        let big = Ak::new(BIG.ak()).unwrap();
+        for i in 0..4 {
+            let mut m = Mutation::new();
+            m.op(t, &BIG, PathOp { path: vec![], op: Op::Replace(Value::Map(Default::default())) }).unwrap();
+            m.op(t, &BIG, PathOp { path: vec![PathSeg::Key(s(&format!("r{i}")))], op: Op::Set(s("v")) }).unwrap();
+            net.engine(a).commit(m).unwrap().unwrap();
+            net.advance(1_000);
+            net.run();
+        }
+        for i in 0..n {
+            let mut m = Mutation::new();
+            m.op(t, &BIG, PathOp { path: vec![PathSeg::Key(s(&format!("k{i}")))], op: Op::Set(s("v")) }).unwrap();
+            net.engine(a).commit(m).unwrap().unwrap();
+            net.advance(1_000);
+            net.run();
+        }
+        // deletes at the host settle and their tombstones age out (spec/commits.md §5 Forgetting)
+        net.advance(osis_base::format::TOMBSTONE_LIFETIME_MS + 60_000);
+        net.run();
+        net.advance(osis_base::format::TOMBSTONE_LIFETIME_MS + 60_000);
+        net.run();
+        let want = net.engine(a).get(&t, &big).unwrap();
+        let Some(Value::Map(m)) = &want else { panic!("no map") };
+        assert_eq!(m.len(), n + 1);
+        assert_eq!(net.engine(r).get(&t, &big).unwrap(), want, "the reader reads the writer's map");
+        (net.engine(a).held_bodies(&t, &big), net.engine(a).local_census().unwrap().get("c/").map_or(0, |x| x.0))
+    };
+    let (small, large) = (run(12), run(120));
+    assert!(large.0 <= 4 && small.0 <= 4, "bodies held: {small:?} at 12 puts, {large:?} at 120");
+    // beside the bodies held: the commits whose bodies are gone stay as many
+    assert!(large.1 - large.0 <= small.1 - small.0, "commits kept grew: {small:?} at 12 puts, {large:?} at 120");
+}
+
 // spec/commits.md §5 Kept while live, Keep bounds: under a keep-for-D setting the live puts are
 // kept history, so the trigger compacts none of them (and writes no snapshot over them: nothing it
 // would drop), and a replaced one stays to its bound; past it the replaced bodies compact away and

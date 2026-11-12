@@ -1,10 +1,10 @@
 # Unbounded writes leave no per-write data
-> Summary: First target built: a writer's own whole replaces cover its older commits and nodes forget them (spec/commits.md §5 Own replaces, Forgetting; `growth::single_writer_replace_grows_nothing`, flat with writes and with idle time). Left: receipts for commits covered by another writer, forgetting compaction snapshots, keep-previous for snapshot chains, automatic client compaction.
+> Summary: First target built: a writer's own whole replaces cover its older commits and nodes forget them (spec/commits.md §5 Own replaces, Forgetting; `growth::single_writer_replace_grows_nothing`, flat with writes and with idle time). Left: receipts for commits covered by another writer, keep-previous for snapshot chains.
 > Priority: normal
 > Tags: engine, perm, spec
 
 ## Rule
-- A removal lists what came after the removed writer's newest snapshot and names that snapshot. A node forgets a commit, ID included, once the author's own cover (snapshot or whole replaces) covers it and no write of it is live; role, creation, lasting, purge-carrying and snapshot commits stay.
+- A removal lists what came after the removed writer's newest snapshot and names that snapshot. A node forgets a commit, ID included, once the author's own cover (snapshot or whole replaces) covers it and no write of it is live; a content snapshot is forgotten so under its author's later one; role, creation, lasting and purge-carrying commits stay.
 - Commits covered only by another writer's snapshot keep a receipt (ID, author, actor, thing, aspect, receive time; about 50 B).
 - Clients compact their own writes automatically. Own means same author: an account's devices are one author, since a reader cannot tell them apart.
 
@@ -13,9 +13,8 @@ One small aspect, whole replaces, no membership change: stored bytes do not grow
 
 ## Left
 - Receipts for commits another writer's cover covers (rule above, about 50 B); commits covered only by another writer stay whole.
-- Forgetting compaction snapshots, and the keep-previous rule for snapshot chains (an own snapshot still drops under the next at once).
-- Clients compact their own writes automatically: nothing runs compaction for non-replace writes.
-- A commit with a part no own replace covers (a second aspect, a path write) stays whole for good, and is judged again on each later write of its covered aspects (`left.wait`): work per write grows with such commits held.
+- The keep-previous rule for snapshot chains (an own snapshot drops under the next at once, and is forgotten with it).
+- A commit with a part no own cover covers (a part on an aspect another writer compacts, a part a setting keeps) stays whole, and is judged again on each later write of its covered aspects (`left.wait`): work per write grows with such commits held.
 
 ## Accepted (Tess)
 Permission changes over inconsistent connections cannot all work out; this is one more minor concession, like dropping a removed node's commits it synced to nobody.

@@ -1085,10 +1085,12 @@ fn one_group_built(dead: bool) -> OneGroup {
     net.run();
     net.pair(c, w);
     assert_eq!(net.read(d, u), Some(s("u0")), "d reads u");
-    if dead {
-        net.keep(a, u, &[(osis_schema::RawKey::ak(&REG), History::Keep { until: None, after: Some(1_800_000) })]);
-        net.run();
-    }
+    // t's and u's writes are kept history, so no compaction snapshot rewrites the commit's
+    // parts apart (spec/commits.md §5 Kept while live): its blob spans both groups
+    let after = if dead { 1_800_000 } else { 86_400_000 };
+    net.keep(c, t, &[(osis_schema::RawKey::ak(&REG), History::Keep { until: None, after: Some(86_400_000) })]);
+    net.keep(a, u, &[(osis_schema::RawKey::ak(&REG), History::Keep { until: None, after: Some(after) })]);
+    net.run();
     net.set_online(d, false);
     let mut m = osis_node::Mutation::new();
     m.set(t, &REG, &s("on t")).unwrap();

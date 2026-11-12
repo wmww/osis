@@ -23,6 +23,12 @@ fn setup(db: Osis) -> (Osis, Tid, DynamicAspectKey) {
     (db, t, k)
 }
 
+/// `t`'s setting keeps the body's history a day: its commits stay commits of their own (no
+/// compaction snapshot stands for them, spec/sync.md §7 Trigger), and undo has what it needs.
+fn keep_body(db: &Osis, t: Tid) {
+    db.commit_with(|w| w.at(t, osis::core::RETENTION).set(&crate::common::setting(&[("n:body.0", crate::common::DAY)]))).unwrap();
+}
+
 fn open(db: &Osis, t: Tid, k: &DynamicAspectKey) -> TextSession {
     db.at(t, k.clone()).path(osis::p![]).edit_text().unwrap()
 }
@@ -110,6 +116,7 @@ fn text_own_commit_reports_and_commits_nothing() {
 #[test]
 fn text_undo_shows_in_open_session() {
     let (db, t, k) = setup(db(0));
+    keep_body(&db, t);
     let s = open(&db, t, &k);
     let (_m, merged) = merges(&s);
     s.edit("", "hello").unwrap();
@@ -181,6 +188,7 @@ fn text_typing_during_a_merge_goes_round_again() {
         }
     }));
     let (db, t, k) = setup(osis::internals::create(c).unwrap());
+    keep_body(&db, t);
     let s = open(&db, t, &k);
     let (_m, merged) = merges(&s);
     let (_c, listed) = commits(&db, t, &k);

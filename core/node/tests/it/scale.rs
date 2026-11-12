@@ -437,7 +437,7 @@ fn sync_pass_is_flat() {
     }
 }
 
-/// A fresh reader syncing n content commits on 10 things through one host: (commits ingested,
+/// A fresh reader syncing n kept content commits on 10 things through one host: (commits ingested,
 /// commits examined, bodies judged and entries judged by both nodes' passes).
 fn first_sync(n: usize) -> [u64; 4] {
     let mut net = crate::net::Net::new();
@@ -446,6 +446,10 @@ fn first_sync(n: usize) -> [u64; 4] {
     let b = net.node(2, &[host]);
     let g = net.group(a, &[(b, Role::Read)], &[host]);
     let things: Vec<Tid> = (0..10).map(|i| net.item(a, g, g, &format!("t{i}"))).collect();
+    // every write kept history: none compacts, so the reader syncs all n commits
+    for t in &things {
+        net.keep(a, *t, &[(osis_schema::RawKey::ak(&crate::net::REG), osis_schema::History::FOREVER)]);
+    }
     net.set_online(b, false);
     for i in 0..n {
         net.write(a, things[i % things.len()], &format!("v{i}"));

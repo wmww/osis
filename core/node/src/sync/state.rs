@@ -1950,21 +1950,41 @@ impl State {
 
     /// Forgets the carriers no body needs any more (spec/sync.md §7: they decide whether a
     /// dropped body's entry may go): kept for a body with an entry under some label or deleted
-    /// from one within `TOMBSTONE_LIFETIME`, for one set within that time (an entry of the body
-    /// may still be learned), and for every carrier those reach (`carrier_of` follows dropped
-    /// carriers to theirs). One the sweep forgot costs at most a fresh covering snapshot when an
-    /// entry of its body turns up later (`snapshot_first`). The wait is `TOMBSTONE_LIFETIME`:
-    /// past it an entry comes back only by a stale relay or bundle; at 0 a body dropped before
-    /// its entries are learned would cost that snapshot, at infinity carriers stay for good.
+    /// from one within `TOMBSTONE_LIFETIME`, and for one set within that time (an entry of the
+    /// body may still be learned). A kept body's carrier that was dropped in turn and is not kept
+    /// itself is replaced in its list by its own carriers (what `carrier_of` would follow it to),
+    /// so a body that keeps its entry for good (a creation commit) holds one row, not a chain
+    /// growing by one per compaction. One the sweep forgot costs at most a fresh covering
+    /// snapshot when an entry of its body turns up later (`snapshot_first`). The wait is
+    /// `TOMBSTONE_LIFETIME`: past it an entry comes back only by a stale relay or bundle; at 0 a
+    /// body dropped before its entries are learned would cost that snapshot, at infinity
+    /// carriers stay for good.
     pub fn sweep_carriers(&mut self, now: u64) {
         let life = |memory: bool| if memory { osis_base::format::MAX_DRIFT_MS } else { osis_base::format::TOMBSTONE_LIFETIME_MS };
         let mut keep: BTreeSet<CommitId> = self.by_label_commit.keys().map(|(_, c)| *c).chain(self.deleted.keys().map(|(_, c, _)| *c)).collect();
         keep.extend(self.carriers.iter().filter(|(_, c)| c.at.saturating_add(life(c.memory)) > now).map(|(b, _)| *b));
-        let mut todo: Vec<CommitId> = keep.iter().copied().collect();
-        while let Some(b) = todo.pop() {
-            for c in self.carriers.get(&b).map(|c| c.by.clone()).unwrap_or_default() {
-                if keep.insert(c) {
-                    todo.push(c);
+        let kept: Vec<CommitId> = self.carriers.keys().filter(|b| keep.contains(b)).copied().collect();
+        for b in kept {
+            let Some(by) = self.carriers.get(&b).map(|c| c.by.clone()) else { continue };
+            let mut seen = BTreeSet::from([b]);
+            let mut out: Vec<CommitId> = Vec::new();
+            let mut todo: Vec<CommitId> = by.iter().rev().copied().collect();
+            while let Some(c) = todo.pop() {
+                if !seen.insert(c) {
+                    continue;
+                }
+                match self.carriers.get(&c).filter(|_| !keep.contains(&c)) {
+                    Some(x) => todo.extend(x.by.iter().rev().copied()),
+                    None => out.push(c),
+                }
+            }
+            if out != by
+                && let Some(c) = self.carriers.get_mut(&b)
+            {
+                c.by = out;
+                if !c.memory {
+                    let v = [Wr::new().u64(c.at).take(), encode_commits(&c.by)].concat();
+                    self.put(key(CARRIER, &[&b.0]), v);
                 }
             }
         }
@@ -2479,8 +2499,8 @@ mod tests {
 
     // spec/sync.md §5, §7 (growth, notes/growth.md): a host's tombstoned answer is forgotten
     // after `TOMBSTONE_LIFETIME`, a dropped
-    // body's carriers once no entry of it (or of a body they carry) is left and they are that
-    // old, a certificate placement once its commit's parts are all dropped; each round trips
+    // body's carriers once no entry of it is left and they are that old (a kept body's dropped
+    // carrier gives way to its own carrier), a certificate placement once its commit's parts are all dropped; each round trips
     // until then.
     #[test]
     fn records_dropped_after_their_lifecycle_spec_sync_7() {
@@ -2514,8 +2534,8 @@ mod tests {
         s.sweep_carriers(1_000 + life);
         s.sweep_certs(|c| *c == body);
         s.flush(e).unwrap();
-        assert_eq!((rows(e, GONE), rows(e, CARRIER), rows(e, CERT)), (0, 2, 1), "body's chain kept, other's carrier and certificate gone");
-        assert!(s.carriers.contains_key(&body) && s.carriers.contains_key(&mid));
+        assert_eq!((rows(e, GONE), rows(e, CARRIER), rows(e, CERT)), (0, 1, 1), "body's carrier kept, through mid to snap; other's carrier and certificate gone");
+        assert_eq!(s.carriers.get(&body).map(|c| c.by.clone()), Some(vec![snap]));
         s.drop_entry(l, BlobId([9; 32]));
         s.sweep_carriers(1_000 + life);
         s.sweep_certs(|_| false);

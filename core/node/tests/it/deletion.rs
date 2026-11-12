@@ -62,7 +62,8 @@ fn expired_leftover_dropped_once_covered_spec_commits_5() {
 // spec/sync.md §7, spec/commits.md §5: compaction uploads the snapshot first, then drops and
 // deletes the covered bodies (the live one too: no setting keeps it while live, the snapshot
 // carries it), and the snapshot stays; a holder joining later reads the live value; the carriers go
-// `TOMBSTONE_LIFETIME` after the deletions.
+// `TOMBSTONE_LIFETIME` after the deletions, and a body that keeps its entry keeps one carrier row
+// across later compactions (notes/growth.md).
 #[test]
 fn compaction_then_deletion_spec_sync_7() {
     let (mut net, host, [a]) = hosted_nodes::<1>();
@@ -105,6 +106,20 @@ fn compaction_then_deletion_spec_sync_7() {
     net.advance(60_000);
     assert_eq!(net.sync(a).sync_rows(b's'), 1, "only the carrier of a body with an entry left");
     assert_eq!(net.read(a, t), Some(s("v4")));
+    // each later compaction drops the snapshot before it: the creation commit's carrier follows
+    // to the newest, one row however many snapshots came and went
+    for i in 0..4 {
+        for v in ["w", "x", "y"] {
+            net.write(a, t, &format!("{v}{i}"));
+        }
+        net.run();
+        let acts = net.sync(a).compact_now(&t, &ak).unwrap();
+        net.actions(a, acts);
+        net.run();
+        net.advance(osis_base::format::TOMBSTONE_LIFETIME_MS + 60_000);
+        assert_eq!(net.sync(a).sync_rows(b's'), 1, "compaction {i}: one carrier row");
+    }
+    assert_eq!(net.read(c, t), Some(s("y3")));
 }
 
 // spec/sync.md §5 Register: at a host past its byte caps a child step is still taken, once per
@@ -1156,8 +1171,9 @@ fn fresh_snapshot_covers_past_a_gap_spec_commits_5() {
     assert_eq!(net.engine(f).get_typed(&t, &SEQ).unwrap(), net.engine(a).get_typed(&t, &SEQ).unwrap());
 }
 
-// spec/commits.md §5, spec/sync.md §7: past a frontier gap the join decides what is covered, not who
-// may drop it: an admin's fresh snapshot drops nothing the thing's setting keeps in history.
+// spec/commits.md §5, spec/sync.md §7: the join decides what is covered, the setting whether it may
+// drop: an admin that was away through a writer's compaction writes a fresh snapshot covering the
+// writer's replaced write, and drops it only where the thing's setting keeps no history.
 #[test]
 fn gap_covers_nothing_kept_spec_commits_5() {
     for kept in [true, false] {
@@ -1182,7 +1198,6 @@ fn gap_covers_nothing_kept_spec_commits_5() {
         net.run();
         let c = net.write(b, t, "old");
         net.run();
-        // b's session stays in the state, so a snapshot lists it, short of what b dropped
         net.write(b, t, "new");
         net.run();
         net.set_online(f, true);
@@ -1190,10 +1205,11 @@ fn gap_covers_nothing_kept_spec_commits_5() {
         let acts = net.sync(f).compact_now(&t, &k).unwrap();
         net.actions(f, acts);
         net.run();
-        let h = net.engine(f).header(&c).unwrap();
-        let (src, hi) = (h.form.own_source(h.author, c), h.aspects.iter().find(|x| x.tid == t && x.ak == k).unwrap().hi);
-        let short = net.engine(f).core.ix.snapshots.get(&(t, k.clone())).into_iter().flatten().any(|x| x.2.lists(&src) && x.2.of(&src) + 1 < hi);
-        assert!(!goes || short, "a snapshot short of the body");
+        let fs = net.tid(f);
+        let e = net.engine(f);
+        let snaps: Vec<osis_base::CommitId> = e.core.ix.snapshots.get(&(t, k.clone())).into_iter().flatten().map(|x| x.1).collect();
+        let snap = snaps.into_iter().find(|x| e.header(x).is_some_and(|h| h.author == fs)).expect("f's snapshot");
+        assert_eq!(net.engine(f).covered(&snap, &c, &t, &k).unwrap(), Some(true), "kept {kept}: f's snapshot covers the replaced write");
         net.advance(2 * 3_600_000);
         net.run();
         assert_eq!(net.engine(f).body_not_dropped(&c, &t, &k), !goes, "kept {kept}");

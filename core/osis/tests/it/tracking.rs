@@ -315,6 +315,8 @@ fn listing_moved_counts_touched_commits_at_n_and_10n() {
         let db = pumped(0);
         let t = thing(&db);
         typed_any(&db, &["t:k.0"]);
+        // kept history: the n commits stay held (no compaction snapshot stands for them)
+        keep_day(&db, t, &["t:k.0"]);
         let k = kept(&db, &ak("t:k.0"));
         for i in 0..n {
             db.commit_set(t, k.clone(), &Value::Int(i)).unwrap();

@@ -267,15 +267,18 @@ impl SyncEngine {
         Ok(out)
     }
 
-    /// The genuine entry under `l` holding exactly this body, not tombstoned at `host`, whoever
-    /// placed it (a certificate copy of the same parts holds it too: other nodes see one entry).
+    /// The genuine entry under `l` holding exactly this body, not tombstoned at `host` (with no
+    /// host: whose bytes this node holds), whoever placed it (a certificate copy of the same parts holds it too: other nodes see one entry).
     /// One present at `host` first: the label then holds the body (spec/sync.md §6), and
     /// uploading another encryption (this node's own, whose upload was lost) would only add a
     /// duplicate for the tiebreak of §7 to delete. `None`: any entry (this node's served state).
     pub(super) fn entry_for(&mut self, host: Option<&HostKey>, l: &LabelId, b: &Body) -> Option<BlobId> {
         let g = self.group_of(l, None)?;
         let cands: Vec<(BlobId, Vec<usize>)> = self.state.entries_of(l, &b.commit).filter(|(id, e)| matches!(&e.kind, Kind::Commit { .. }) && host.is_none_or(|s| !self.state.is_gone_at(s, l, id))).filter_map(|(id, e)| if let Kind::Commit { parts, .. } = &e.kind { Some((id, parts.clone())) } else { None }).collect();
-        let mut ids: Vec<BlobId> = cands.into_iter().filter(|(_, parts)| self.readable(&g, &b.commit, parts) == b.parts).map(|(id, _)| id).collect();
+        // this node's served state (`host` `None`) serves only what it holds: an entry whose
+        // bytes it dropped (a snapshot dropped a part of the blob it does not serve here, on
+        // another thing) is no entry of the body, which is placed again as a blob of its own
+        let mut ids: Vec<BlobId> = cands.into_iter().filter(|(id, parts)| self.readable(&g, &b.commit, parts) == b.parts && (host.is_some() || self.engine.has_blob(id))).map(|(id, _)| id).collect();
         if let Some(host) = host {
             ids.sort_by_key(|id| !self.state.is_present(host, l, id));
         }

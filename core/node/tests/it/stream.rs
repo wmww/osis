@@ -22,6 +22,9 @@ fn mesh() -> (Net, [usize; 3], Tid) {
         reach_ed(&mut net, b);
         reach_ed(&mut net, c);
         let g = net.group_seeded(b, &[(a, Role::Write), (c, Role::Write)], vec![], 10);
+        // each item's creation writes g's `group.0`: kept history, so no compaction snapshot
+        // stands in for the bodies a test fetches (spec/sync.md §7 Trigger)
+        net.keep(b, g, &[("group.0", osis_schema::History::FOREVER)]);
         net.pair(c, a);
         net.pair(b, c);
         net.run();
@@ -596,6 +599,9 @@ fn back_after_aging(n: usize) -> (usize, bool, bool, usize) {
     let (mut net, a, b, gs) = paired(n);
     let day = 86_400_000;
     for (i, g) in gs.iter().enumerate() {
+        // the items' creations write g's `group.0`: kept history, so no compaction deletes
+        // there while `a` is away (issues/aged-cover-deletions.md)
+        net.keep(b, *g, &[("group.0", osis_schema::History::FOREVER)]);
         let t = net.item(b, *g, *g, &format!("keep{i}"));
         let gone = net.item(b, *g, *g, "gone");
         let mut m = osis_node::Mutation::new();
@@ -959,6 +965,8 @@ fn a_join_pages_behind_the_stream_spec_sync_10() {
     // a group shared with `a` once its entries are written and the stream moved past them
     let g = net.group_seeded(b, &[], vec![], 50);
     let t = net.item(b, g, g, "early");
+    // kept history: every write keeps its own entry (no compaction snapshot stands for them)
+    net.keep(b, t, &[(osis_schema::RawKey::ak(&REG), osis_schema::History::FOREVER)]);
     for i in 0..300 {
         net.write(b, t, &format!("early{i}"));
     }

@@ -7,8 +7,8 @@ use std::collections::BTreeMap;
 
 // spec/commits.md §5 (Own replaces, Forgetting), notes/growth.md row 1: one writer replacing
 // one small register n and 10n times, no membership change, stores the same bytes and rows at
-// the writer, a reader and their host once tombstones have aged out; the writer keeps its newest
-// body and the one before. Each step ends with a month of no writes. A further month with no
+// the writer, a reader and their host once tombstones have aged out; the writer's snapshot holds
+// the newest. Each step ends with a month of no writes. A further month with no
 // writes at all holds steady too.
 #[test]
 fn single_writer_replace_grows_nothing() {
@@ -41,7 +41,9 @@ fn single_writer_replace_grows_nothing() {
     // a month settles the last write's deletes at the host, then a month alone adds nothing
     let (a2b, b2b, h2b, _) = at(&mut net, 200, 200);
     let (a3, b3, h3, _) = at(&mut net, 200, 200);
-    assert_eq!(held, 3, "the newest body, the writer's previous and the creating commit, whole");
+    // the trigger compacts the register (spec/sync.md §7 Trigger): one snapshot holds the newest,
+    // and the creating commit's part on it went under it
+    assert_eq!(held, 1, "one snapshot");
     assert_eq!(net.read(a, t), Some(s("v00000199")), "writer reads the newest");
     assert_eq!(net.read(b, t), Some(s("v00000199")), "reader reads the newest");
     for (who, x1, x2, x2b, x3) in [("writer", &a1, &a2, &a2b, &a3), ("reader", &b1, &b2, &b2b, &b3), ("host", &h1, &h2, &h2b, &h3)] {
@@ -96,36 +98,55 @@ fn replace_census_probe() {
 
 // spec/commits.md §5 (Own replaces): a writer's path write does not replace the aspect, so it covers
 // nothing and every body stays; another writer's whole replace covers none of a first's bodies.
+// Both below the compaction trigger (spec/sync.md §7 Trigger), which would drop them all under a
+// snapshot: the path writes are large (their snapshot costs about what they do), and the
+// register writes expire a year out (the trigger counts an expiring body only as its leftover).
 #[test]
 fn only_a_whole_own_replace_covers() {
     let (mut net, _h, [a, b], _g, [t]) = hosted::<2, 1>(&[(1, Role::Write)], ["first"], true);
     let bag = osis_base::Ak::new("t:big.0").unwrap();
     for i in 0..4 {
         let mut m = osis_node::Mutation::new();
-        m.op(t, &bag, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(s(&format!("k{i}")))], op: osis_crdt::Op::Put(s("x")) }).unwrap();
+        m.op(t, &bag, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(s(&format!("k{i}")))], op: osis_crdt::Op::Put(s(&"x".repeat(4_000))) }).unwrap();
         net.engine(a).commit(m).unwrap();
-        net.advance(1_000);
-    }
-    assert_eq!(net.engine(a).held_bodies(&t, &bag), 4, "path writes replace nothing");
-    let reg = osis_base::Ak::new("t:reg.0").unwrap();
-    for i in 0..4 {
-        let n = if i % 2 == 0 { a } else { b };
-        net.write(n, t, &format!("v{i}"));
         net.advance(1_000);
         net.run();
     }
-    // the creating commit stays whole; a's first write goes (two newer own replaces cover it);
-    // a's two newest and b's two stay: an own replace covers nothing of the other writer's
+    assert_eq!(net.engine(a).held_bodies(&t, &bag), 4, "path writes replace nothing");
+    let reg = osis_base::Ak::new("t:reg.0").unwrap();
+    let year = osis_base::WallMs(net.now() + 365 * 24 * 3_600_000);
+    for i in 0..4 {
+        let n = if i % 2 == 0 { a } else { b };
+        let mut m = osis_node::Mutation::new();
+        m.set(t, &reg, &s(&format!("v{i}"))).unwrap();
+        m.expires(t, &reg, year).unwrap();
+        net.engine(n).commit(m).unwrap().unwrap();
+        net.advance(1_000);
+        net.run();
+    }
+    // the creating commit stays whole; each writer's writes stay: neither has two own replaces
+    // after any of its writes, and an own replace covers nothing of the other writer's
     assert_eq!(net.engine(a).held_bodies(&t, &reg), 5);
+    // a's two more replaces cover its earlier ones: its v0 and v2 go
+    for i in 4..6 {
+        let mut m = osis_node::Mutation::new();
+        m.set(t, &reg, &s(&format!("v{i}"))).unwrap();
+        m.expires(t, &reg, year).unwrap();
+        net.engine(a).commit(m).unwrap().unwrap();
+        net.advance(1_000);
+        net.run();
+    }
+    assert_eq!(net.engine(a).held_bodies(&t, &reg), 5, "the creating commit, b's two, a's two newest");
 }
 
 
 // spec/commits.md §5 (Own replaces), spec/sync.md §6: a commit with a part own replaces cover and
 // a part they do not stays whole: nothing the host holds is judged must-not, and every node
-// can still relay its other part.
+// can still relay its other part. A snapshot then drops the covered part alone (spec/sync.md
+// §7), and still nothing is must-not.
 #[test]
 fn own_replace_of_one_part_keeps_the_other() {
-    let (mut net, h, [a, _b], _g, [t]) = hosted::<2, 1>(&[(1, Role::Read)], ["first"], true);
+    let (mut net, h, [a, b], _g, [t]) = hosted::<2, 1>(&[(1, Role::Read)], ["first"], true);
     let reg = osis_base::Ak::new("t:reg.0").unwrap();
     let other = osis_base::Ak::new("t:other.0").unwrap();
     let mut m = osis_node::Mutation::new();
@@ -133,8 +154,14 @@ fn own_replace_of_one_part_keeps_the_other() {
     m.set(t, &other, &s("o")).unwrap();
     net.engine(a).commit(m).unwrap().unwrap();
     net.run();
+    // expiring a year out: below the compaction trigger, which counts an expiring body only as
+    // its leftover (a snapshot would drop the mixed commit's reg part alone, spec/sync.md §7)
+    let year = osis_base::WallMs(net.now() + 365 * 24 * 3_600_000);
     for i in 1..=3 {
-        net.write(a, t, &format!("v{i}"));
+        let mut m = osis_node::Mutation::new();
+        m.set(t, &reg, &s(&format!("v{i}"))).unwrap();
+        m.expires(t, &reg, year).unwrap();
+        net.engine(a).commit(m).unwrap().unwrap();
         net.advance(1_000);
         net.run();
     }
@@ -145,6 +172,20 @@ fn own_replace_of_one_part_keeps_the_other() {
     let l = net.label(a);
     let v = net.sync(a).verdicts(&key, &l).unwrap().unwrap();
     assert!(v.must_not.is_empty(), "nothing must-not at the host: {:?}", v.must_not);
+    // a snapshot drops parts alone: the mixed commit's reg part goes, its other part stays held
+    // and readable, and still nothing is must-not
+    let acts = net.sync(a).compact_now(&t, &reg).unwrap();
+    net.actions(a, acts);
+    net.run();
+    net.advance(60_000);
+    net.run();
+    assert_eq!(net.engine(a).held_bodies(&t, &reg), 2, "the snapshot and the creating commit");
+    let v = net.sync(a).verdicts(&key, &l).unwrap().unwrap();
+    assert!(v.must_not.is_empty(), "after the snapshot: {:?}", v.must_not);
+    for n in [a, b] {
+        assert_eq!(net.engine(n).get(&t, &other).unwrap(), Some(s("o")), "node {n}: the other part stays");
+        assert_eq!(net.engine(n).get(&t, &reg).unwrap(), Some(s("v3")));
+    }
 }
 
 // spec/commits.md §5 (Own replaces, Forgetting), spec/sync.md §6: a reader offline through the
@@ -208,12 +249,17 @@ fn own_cover_work_per_write_is_flat() {
         let n = |k: &str| c.iter().find(|x| x.0 == k).map_or(0, |x| x.2);
         (n("covered: join"), n("forgettable"))
     };
-    count(&mut net, 0, 6);
-    let (j1, f1) = count(&mut net, 6, 12);
-    count(&mut net, 12, 120);
+    // the trigger and own replaces settle the register's bodies first
+    count(&mut net, 0, 12);
+    let (j1, f1) = count(&mut net, 12, 18);
+    count(&mut net, 18, 120);
     let (j2, f2) = count(&mut net, 120, 126);
     assert!(j1 > 0, "covers are judged");
     assert!(j2 <= j1 + j1 / 2 && f2 <= f1 + f1 / 2 + 3, "work per write grew with history: joins {j1} -> {j2}, forget checks {f1} -> {f2}");
+    let reg = osis_base::Ak::new("t:reg.0").unwrap();
+    for w in &ws {
+        assert!(net.engine(*w).held_bodies(&t, &reg) <= 4, "node {w}: bodies held stay bounded");
+    }
 }
 
 
@@ -225,11 +271,15 @@ fn a_writer_without_the_right_stays_flat() {
     let (mut net, _h, [_a, b, r], _g, [t]) = hosted::<3, 1>(&[(1, Role::Write), (2, Role::Read)], ["first"], true);
     let reg = osis_base::Ak::new("t:reg.0").unwrap();
     let kept = osis_base::Ak::new("t:kept.0").unwrap();
+    // expiring a year out: below the compaction trigger, which counts an expiring body only as
+    // its leftover (spec/sync.md §7), so own replaces alone drop
+    let year = osis_base::WallMs(net.now() + 365 * 24 * 3_600_000);
     for i in 0..6 {
         let mut m = osis_node::Mutation::new();
         m.set(t, &reg, &s(&format!("v{i}"))).unwrap();
         m.retention(t, &kept, osis_schema::Retention { by: osis_schema::PurgeBy::Admin }).unwrap();
         m.set(t, &kept, &s(&format!("k{i}"))).unwrap();
+        m.expires_all(year);
         net.engine(b).commit(m).unwrap().unwrap();
         net.advance(1_000);
         net.run();

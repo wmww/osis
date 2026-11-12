@@ -562,10 +562,13 @@ impl Engine {
     }
 
     /// `relink` of one field: its ops, with the retention, expiry and schema of the newest held
-    /// commit whose valid delta links a `held` blob (the value rewritten), if a commit of `me` links one
-    /// too; `None` when there is nothing to do here.
+    /// commit or snapshot whose valid delta links a `held` blob (the value rewritten; a snapshot
+    /// gives the field's default retention, and no expiry: it carries no expiring value), if one of
+    /// `me` links one too; `None` when there is nothing to do here.
     fn relink_field(&mut self, tid: &Tid, ak: &Ak, held: &BTreeSet<BlobId>, me: Tid, now: u64) -> Result<Option<super::write::AspectMut>> {
-        let commits: Vec<CommitId> = self.core.ix.by_aspect.get(&(*tid, ak.clone())).map(|s| s.iter().rev().map(|x| x.1).filter(|c| self.core.ix.commits.get(c).is_some_and(|m| m.header.kind == osis_commit::Kind::Content)).collect()).unwrap_or_default();
+        // a compaction snapshot links too: the reusing commit may have dropped under it and been
+        // forgotten (spec/commits.md §5 Forgetting), the snapshot then the only own linker
+        let commits: Vec<CommitId> = self.core.ix.by_aspect.get(&(*tid, ak.clone())).map(|s| s.iter().rev().map(|x| x.1).filter(|c| self.core.ix.commits.get(c).is_some_and(|m| matches!(m.header.kind, osis_commit::Kind::Content | osis_commit::Kind::ContentSnapshot))).collect()).unwrap_or_default();
         let (k, held2) = ((*tid, ak.clone()), held.clone());
         // (newest linking commit and its aspect index, whether an own commit links one)
         let found = self.run(|tx| {
@@ -595,7 +598,7 @@ impl Engine {
             Ok((newest, false))
         })?;
         let (Some((c, ai)), true) = found else { return Ok(None) };
-        let Some((a, expires)) = self.core.ix.commits.get(&c).and_then(|m| Some((m.header.aspects.get(ai).cloned()?, m.header.expires))) else { return Ok(None) };
+        let Some((a, expires, snapshot)) = self.core.ix.commits.get(&c).and_then(|m| Some((m.header.aspects.get(ai).cloned()?, m.header.expires, m.header.kind.is_compaction()))) else { return Ok(None) };
         if expires.is_some_and(|t| t <= now) {
             return Ok(None);
         }
@@ -627,7 +630,9 @@ impl Engine {
         if ops.is_empty() {
             return Ok(None);
         }
-        Ok(Some(super::write::AspectMut { ops, schema, retention: Some(a.retention), expires, ..Default::default() }))
+        // a snapshot's retention is its own (`snapshot_retention`): the field's default then
+        let retention = (!snapshot).then_some(a.retention);
+        Ok(Some(super::write::AspectMut { ops, schema, retention, expires, ..Default::default() }))
     }
 
     /// The blobs the deltas of a body (`plaintext`: its commit blob plaintext) link, through

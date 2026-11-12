@@ -699,6 +699,16 @@ fn own_write_placed_under_a_hosted_label_with_no_host_connected_spec_sync_5() {
     assert!(placed.iter().all(|b| net.host_ids(h, &l).contains(b)), "the host pass uploads that entry");
 }
 
+/// Node `n` writes `v` to `t`'s register, expiring a year out: below the compaction trigger,
+/// which counts an expiring body only as its leftover (spec/sync.md §7 Trigger), so only own
+/// replaces cover these writes, two later ones each (spec/commits.md §5 Own replaces).
+fn overwrite(net: &mut Net, n: usize, t: osis_base::Tid, v: &str) -> osis_base::CommitId {
+    let mut m = osis_node::Mutation::new();
+    m.set(t, &REG, &s(v)).unwrap();
+    m.expires(t, &REG, osis_base::WallMs(net.now() + 365 * 86_400_000)).unwrap();
+    net.engine(n).commit(m).unwrap().unwrap()
+}
+
 // spec/sync.md §5 (Placed, deletion), notes/growth.md: a node overwriting a register under a
 // label with a host while that host is away places each write in its own store; what its own
 // replaces cover leaves that store before any host takes it, so its entries for the label stay
@@ -717,7 +727,7 @@ fn own_entries_covered_while_the_host_is_away_leave_spec_sync_5() {
     let mut last = None;
     let mut at = |net: &mut Net, from: usize, to: usize| {
         for i in from..to {
-            last = Some(net.write(a, t, &format!("v{i:08}")));
+            last = Some(overwrite(net, a, t, &format!("v{i:08}")));
             net.advance(1_000);
             net.run();
         }
@@ -746,17 +756,17 @@ fn covered_own_entry_mid_upload_leaves_the_host_too_spec_sync_5() {
     net.actions(a, acts);
     net.run();
     let l = net.label(a);
-    net.write(a, t, "v1");
+    overwrite(&mut net, a, t, "v1");
     net.run();
     net.held_hosts.insert(h);
-    let c2 = net.write(a, t, "v2");
+    let c2 = overwrite(&mut net, a, t, "v2");
     net.advance(1_000);
     net.run();
     let of = |net: &mut Net, c| net.sync(a).entries(&l).into_iter().filter(|(_, k)| matches!(k, EntryKind::Commit { commit, .. } if *commit == c)).map(|(id, _)| id).collect::<Vec<_>>();
     let e2 = of(&mut net, c2);
     assert_eq!(e2.len(), 1, "v2 placed");
     for v in ["v3", "v4"] {
-        net.write(a, t, v);
+        overwrite(&mut net, a, t, v);
         net.advance(1_000);
         net.run();
     }
@@ -847,10 +857,10 @@ fn lost_answer(restart: bool, days: u64) {
     net.actions(a, acts);
     net.run();
     let l = net.label(a);
-    net.write(a, t, "v1");
+    overwrite(&mut net, a, t, "v1");
     net.run();
     net.held_hosts.insert(h);
-    let c2 = net.write(a, t, "v2");
+    let c2 = overwrite(&mut net, a, t, "v2");
     net.advance(1_000);
     net.run();
     let of = |net: &mut Net, c| net.sync(a).entries(&l).into_iter().filter(|(_, k)| matches!(k, EntryKind::Commit { commit, .. } if *commit == c)).map(|(id, _)| id).collect::<Vec<_>>();
@@ -862,7 +872,7 @@ fn lost_answer(restart: bool, days: u64) {
     // its answers, held, are for a connection gone
     net.release_host(h);
     for v in ["v3", "v4", "v5"] {
-        net.write(a, t, v);
+        overwrite(&mut net, a, t, v);
         net.advance(1_000);
         net.run();
     }

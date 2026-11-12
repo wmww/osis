@@ -10,9 +10,12 @@ use osis_schema::core_types as ct;
 const HOURS_2: i64 = 2 * 3_600_000;
 
 /// Node `r` writes its own card's `reach.0` `n` times, `HOURS_2` ahead: each a commit others hold
-/// pending for drift, deposited (a reader's own write) under the labels it syncs.
+/// pending for drift, deposited (a reader's own write) under the labels it syncs. The card keeps
+/// history of `reach.0`, so `r` compacts none of them into a snapshot (spec/sync.md §7 Trigger).
 fn cards_ahead(net: &mut Net, r: usize, n: u8) {
     let node = net.node_tid(r);
+    net.keep(r, node, &[(osis_schema::RawKey::ak(&ct::REACH), osis_schema::History::FOREVER)]);
+    net.run();
     net.set_skew(r, HOURS_2);
     for i in 0..n {
         let mut reach = net.engine(r).get_typed(&node, &ct::REACH).unwrap().unwrap_or(ct::Reach { dialable: [0; 32], items: Vec::new(), lan_secret: [0; 32], account: None });

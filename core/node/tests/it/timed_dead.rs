@@ -8,9 +8,10 @@ use net::*;
 use osis_node::Mutation;
 use osis_node::sync::EntryKind;
 
-// spec/commits.md §5 (purge on replace), spec/sync.md §7: a register purged on replace and
-// replaced whole goes under the writer's one cover, here and at the host in the same sync; the
-// replacing body, live, is read on its own and stays.
+// spec/commits.md §5 (purge on replace, Kept while live), spec/sync.md §7: a register purged on
+// replace and replaced whole goes under the writer's one cover, here and at the host in the same
+// sync; the cover carries the replacing write too, and no setting keeps a live write under purge
+// on replace, so the replacing body goes under it as well: the cover alone holds the value.
 #[test]
 fn replaced_register_goes_under_its_cover_spec_sync_7() {
     let (mut net, host, [a], _g, [t]) = hosted::<1, 1>(&[], ["x"], false);
@@ -27,9 +28,12 @@ fn replaced_register_goes_under_its_cover_spec_sync_7() {
     net.run();
     let snapshots = net.sync(a).entries(&l).into_iter().filter(|(_, k)| matches!(k, EntryKind::Commit { commit, .. } if net.engine(a).header(commit).is_some_and(|h| h.kind == osis_commit::Kind::ContentSnapshot))).count();
     assert_eq!(snapshots, 1, "the cover");
-    assert_eq!(net.host_ids(host, &l).len(), before + 1, "the cover and the live body went up, the replaced body left");
+    assert_eq!(net.host_ids(host, &l).len(), before, "the cover went up, the replaced body left");
     assert!(at_host(&mut net, a, host, &l, &c1).is_empty(), "the replaced body left");
-    assert!(!at_host(&mut net, a, host, &l, &c2).is_empty(), "the live body stays");
+    assert!(at_host(&mut net, a, host, &l, &c2).is_empty(), "the live body went under the cover");
+    assert!(!net.engine(a).body_not_dropped(&c2, &t, &osis_base::Ak::new("t:gone.0").unwrap()));
+    assert_eq!(net.read(a, t), Some(s("x")));
+    assert_eq!(net.engine(a).get(&t, &osis_base::Ak::new("t:gone.0").unwrap()).unwrap(), Some(s("v2")));
 }
 
 /// Host entries of commit `c` under `l`, as node `n` knows them.
@@ -274,6 +278,8 @@ fn pending_commit_holds_back_no_own_upload_spec_sync_6() {
     let b = net.node(75, &[host]);
     let g = net.group(a, &[(b, Role::Write)], &[host]);
     let t = net.item(a, g, g, "x");
+    // kept history: b's write stays a body of its own (no compaction snapshot stands for it)
+    net.keep(a, t, &[("t:reg.0", osis_schema::History::FOREVER)]);
     net.run();
     net.set_online(b, false);
     let e = net.engine(a);

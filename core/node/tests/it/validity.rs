@@ -1972,9 +1972,8 @@ fn snapshot_differing_copy_never_covers_body_spec_commits_5() {
 
 // spec/commits.md §5 (covering copies), spec/permissions.md §5.2: writer W's snapshot
 // carries co-writer X's write to a kept register (relative keep-at-least, X's write live, past
-// MAX_DRIFT) with a greater value. It wins the copy order, but X's body is not covered by it, so
-// a right holder's compaction keeps it; once W is removed with a frontier not listing the
-// snapshot, X's write reads again.
+// MAX_DRIFT) with a greater value. It wins the copy order, but X's body is not covered by it,
+// and is kept; once W is removed with a frontier not listing the snapshot, X's write reads again.
 #[test]
 fn greater_forged_copy_keeps_original_body_spec_commits_5() {
     let (mut lp, d, x, w) = setup();
@@ -1998,11 +1997,10 @@ fn greater_forged_copy_keeps_original_body_spec_commits_5() {
     };
     let e = &mut lp.peers[0].engine;
     assert_eq!(e.get(&d, &kept).unwrap(), Some(s("zzz forged")), "the greater copy wins");
-    // a compaction drop (sync `drop_covered`): the bound, covered
-    assert!(e.drop_from(&c, &d, &kept).unwrap() <= e.now().0, "past its relative bound");
-    if e.covered(&f, &c, &d, &kept).unwrap() == Some(true) {
-        e.drop_body(&c, &d, &kept).unwrap();
-    }
+    // the greater copy covers nothing (judged by the join with the copies under X's dots
+    // stripped); X's live write is kept history anyway (spec/commits.md §5 Kept while live)
+    assert_eq!(e.covered(&f, &c, &d, &kept).unwrap(), Some(false), "the forged copy does not cover X's body");
+    assert!(e.drop_from(&c, &d, &kept).unwrap() > e.now().0, "kept while live");
     assert!(e.body_not_dropped(&c, &d, &kept), "X's body kept");
     let fr = osis_schema::core_types::Frontier { commits: BTreeSet::new() };
     set_edge(&mut lp.peers[0].engine, d, w, None, Some(fr.to_value()));

@@ -1137,8 +1137,9 @@ impl Engine {
     /// Whether commit `c` may be forgotten, ID included, once node-sync knows no entry of it
     /// (spec/commits.md §5, Forgetting): nothing waiting, and either holding no part, known only
     /// for a part dropped while invalid (`kept_invalid`, either class: spec/permissions.md §6), or
-    /// a durable content commit, every part dropped as covered by a cover of its own author, no
-    /// purge request.
+    /// a durable content commit or content snapshot (one dropped under its author's later one:
+    /// else each compaction would leave a header for good), every part dropped as covered by a
+    /// cover of its own author, no purge request.
     pub fn forgettable(&self, c: &CommitId) -> bool {
         // counted: tests read how many commits forgetting looks at
         let _s = crate::costs::span("forgettable");
@@ -1154,7 +1155,7 @@ impl Engine {
             return false;
         }
         let own_cover = |d: &Dropped| d.why == DropFor::Cover && d.covered_by.iter().any(|x| core.ix.commits.get(x).is_none_or(|s| s.view.author == m.view.author));
-        m.view.kind == Kind::Content && !m.view.purges && m.dropped.len() == m.view.aspects.len() && m.dropped.values().all(own_cover)
+        matches!(m.view.kind, Kind::Content | Kind::ContentSnapshot) && !m.view.purges && m.dropped.len() == m.view.aspects.len() && m.dropped.values().all(own_cover)
     }
 
     /// Every commit `forgettable` holds true of (the first tick after an open: forgetting

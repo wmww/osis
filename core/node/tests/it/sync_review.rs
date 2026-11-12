@@ -757,12 +757,12 @@ fn reader_copy_after_rotation_goes_as_a_deposit_durable_spec_sync_5() {
 
 // spec/sync.md §6 (no upload of a body a delete removed, keyed per body): commit c writes a plain
 // register and a purge-on-replace one, two bodies; both are overwritten, the second's body is
-// deleted past its bound, and the host is wiped: the first's body (must-hold, uncovered) goes up
-// again though another body of c was deleted
+// deleted past its bound, and the host is wiped: the first's body (must-hold: kept history, so no
+// compaction snapshot covers it) goes up again though another body of c was deleted
 #[test]
 fn deleted_body_withholds_only_itself_spec_sync_6() {
     let (mut net, host, [a], _g, [t]) = hosted::<1, 1>(&[], ["v1"], false);
-    net.keep(a, t, &[("t:gone.0", PURGE)]);
+    net.keep(a, t, &[("t:gone.0", PURGE), ("t:reg.0", osis_schema::History::FOREVER)]);
     let both = |net: &mut Net, v: &str| {
         let mut m = Mutation::new();
         m.set(t, &REG, &s(v)).unwrap();

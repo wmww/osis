@@ -69,21 +69,24 @@ pub(crate) fn reaches((fr, abs): (&Frontiers, &[(CommitId, Tid)]), h: &Header, c
 }
 
 /// The frontiers a snapshot of `(tid, ak)` built now carries, and the session-form commits
-/// they reflect: per source the held valid commits in counter order from the
-/// held valid snapshots' frontiers on (memory: a covered commit is forgotten with its counters,
-/// so their frontiers count as reflected) while they join without a hole; an invalid or missing
-/// body stops its source's frontier below it (the snapshot does not carry its
-/// writes, so it must not claim them), and what follows in that source is not reflected.
+/// they reflect (spec/crdt.md §8: up to the largest counter below which this node applied every
+/// write of the source on the aspect). Per source: from the held valid snapshots' frontiers on
+/// (their writes are in this state; the commits they covered may be forgotten with their
+/// counters, spec/commits.md §5 Forgetting), the held valid commits in counter order while they
+/// join without a hole. A held valid own whole replace of the source's author (`own_replace`)
+/// passes a hole below it: its reset drops every earlier write of the author's session on the
+/// aspect (spec/crdt.md §1), so those writes are applied as dead, whether held, forgotten under
+/// own replaces, or never received. An invalid or missing body stops its source's frontier below
+/// it (the snapshot does not carry its writes, so it must not claim them), and what follows in
+/// that source is not reflected.
 pub(crate) fn frontiers_now(tx: &Tx<'_>, tid: &Tid, ak: &Ak, memory: bool, valid_on: &dyn Fn(&CommitId) -> bool) -> (Frontiers, BTreeSet<CommitId>) {
     let mut frontiers = Frontiers::default();
     let mut reflected = BTreeSet::new();
-    if memory {
-        for (_, s, fr, _) in tx.core.ix.snapshots.get(&(*tid, ak.clone())).into_iter().flatten() {
-            if valid_on(s) {
-                for (src, f) in fr.sources() {
-                    if f > frontiers.of(&src) {
-                        frontiers.insert(&src, f);
-                    }
+    for (_, s, fr, _) in tx.core.ix.snapshots.get(&(*tid, ak.clone())).into_iter().flatten() {
+        if valid_on(s) {
+            for (src, f) in fr.sources() {
+                if f > frontiers.of(&src) {
+                    frontiers.insert(&src, f);
                 }
             }
         }
@@ -92,11 +95,12 @@ pub(crate) fn frontiers_now(tx: &Tx<'_>, tid: &Tid, ak: &Ak, memory: bool, valid
     for ((_, _, n), ranges) in tx.core.ix.ranges.range(from..).take_while(|((t, a, _), _)| t == tid && a == ak) {
         let mut next = frontiers.of(n).saturating_add(1);
         for ((lo, c), hi) in ranges {
-            if memory && *hi <= next {
+            // below a snapshot's frontier: reflected by it
+            if *hi <= next {
+                reflected.insert(*c);
                 continue;
             }
-            // contiguous (a memory range may start below a snapshot's frontier)
-            let joins = *lo == next || (memory && *lo < next);
+            let joins = *lo <= next || (!memory && own_replace(tx.core, c, tid, ak));
             if !joins || !valid_on(c) {
                 break;
             }
@@ -363,11 +367,8 @@ pub(crate) fn write_snapshot(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, memory: bool) 
     // §4): an expiring one's writes would go value-less here anyway
     let valid_on = |c: &CommitId| tx.core.ix.commits.get(c).is_some_and(|m| m.aspect(&tid, &ak).is_some_and(|ai| m.valid_at(ai) && (!m.missing.contains(&ai) || m.header.aspects.get(ai).is_some_and(|_| m.header.expires.is_some()))));
     // frontiers cover only counters whose writes this state reflects: applied, valid, of
-    // the sessions that occur in it (spec/crdt.md §8:
-    // a session with no write left in the state is pruned with them). A memory commit
-    // is forgotten once covered, its counters with it: there the held valid snapshots'
-    // frontiers count as reflected (their writes are joined), and own ranges continue
-    // from them
+    // the sessions that occur in it (spec/crdt.md §8: a session with no write left in the
+    // state is pruned with them), from the held valid snapshots' frontiers on (`frontiers_now`)
     let (mut frontiers, _) = frontiers_now(tx, &tid, &ak, memory, &valid_on);
     // commit-form commits whose valid writes the state reflects
     let mut absorbed = std::collections::BTreeMap::new();
@@ -392,8 +393,7 @@ pub(crate) fn write_snapshot(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, memory: bool) 
 impl Engine {
     /// Writes a compaction snapshot of `(tid, ak)` from this node's whole state (spec/commits.md
     /// §2, spec/crdt.md §8): values of deltas with an expiry and of purged writes go
-    /// value-less; frontiers from what this node received. On a `+` aspect a memory commit, frontiers
-    /// continuing from the held valid memory snapshots'. `None`: no state to snapshot (a signal
+    /// value-less; frontiers from what this node applied (`frontiers_now`). On a `+` aspect a memory commit. `None`: no state to snapshot (a signal
     /// has none).
     pub fn snapshot(&mut self, tid: &Tid, ak: &Ak) -> Result<Option<CommitId>> {
         let (tid, ak) = (*tid, ak.clone());

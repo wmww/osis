@@ -23,10 +23,10 @@
   - Beside a level-1 or level-3 key an author-chain commitment need not match.
 - **Repair** of a chunk or tree node blob:
   - A node repairs the blob when all of these hold:
-    - a held, unexpired delta of the node's own commit links the blob through its large values' trees;
+    - a held, unexpired delta of the node's own commit or compaction snapshot links the blob through its large values' trees;
     - every host of a label it syncs has deleted the blob (a purger that had not seen the reuse);
     - the node may write the aspect and holds the blob.
-  - To repair, it writes each large position of the aspect's current value whose tree holds the blob again, whole and without a reset (`put_new`, spec/crdt.md §5.6), reusing every other chunk and re-encrypting that blob, with that delta's retention and expiry.
+  - To repair, it writes each large position of the aspect's current value whose tree holds the blob again, whole and without a reset (`put_new`, spec/crdt.md §5.6), reusing every other chunk and re-encrypting that blob, with that delta's retention and expiry (a snapshot's: the aspect's default retention, no expiry).
   - How often is local policy.
 
 ## 2. Labels

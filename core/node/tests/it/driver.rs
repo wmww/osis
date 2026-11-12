@@ -36,6 +36,25 @@ async fn applied(rx: Receiver<EngineEvent>, id: CommitId) -> Receiver<EngineEven
     .unwrap()
 }
 
+/// Waits until the node behind `ctl` reads `v` at `t`, looking again at each commit it applies
+/// from `rx` (the writer's compaction may carry the write in a snapshot instead of its commit).
+async fn reads(mut rx: Receiver<EngineEvent>, ctl: &mpsc::UnboundedSender<Control>, t: Tid, v: Value) -> Receiver<EngineEvent> {
+    loop {
+        if call(ctl, move |s| read(s, t)).await.as_ref() == Some(&v) {
+            return rx;
+        }
+        rx = tokio::task::spawn_blocking(move || {
+            loop {
+                if let EngineEvent::Applied { .. } = rx.recv_timeout(GUARD).expect("value never read") {
+                    return rx;
+                }
+            }
+        })
+        .await
+        .unwrap();
+    }
+}
+
 async fn call<R: Send + 'static>(ctl: &mpsc::UnboundedSender<Control>, f: impl FnOnce(&mut SyncEngine) -> R + Send + 'static) -> R {
     let (tx, rx) = oneshot::channel();
     let c: driver::Call = Box::new(move |s: &mut SyncEngine| {
@@ -323,9 +342,10 @@ async fn driver_relayed_becomes_direct_spec_sync_10() {
 
     // the relay goes: only a direct session can carry this
     tnet.kill("r");
-    let c = write("direct").await;
-    let _ = applied(brx, c).await;
-    assert_eq!(call(&bctl, move |s| read(s, t)).await, Some(s_("direct")));
+    // the third body on the register: a's trigger compacts it, so the write reaches b in a's
+    // snapshot, not as its own commit
+    write("direct").await;
+    let _ = reads(brx, &bctl, t, s_("direct")).await;
     for ctl in [&actl, &bctl] {
         assert!(ctl.send(Control::Shutdown).is_ok());
     }

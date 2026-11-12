@@ -87,9 +87,11 @@ fn snapshot_lists_only_traced_sessions_spec_crdt_8() {
 }
 
 // spec/commits.md §5: a held body is judged by the join, whatever the frontier. W gets only the later
-// of A's two writes per aspect, so its snapshots list A's session short of them. When the earlier writes
-// come, the dead register write is covered (holders must not keep uploading it for a right holder
-// to delete, `snapshot_rights`), and the live tag is not.
+// of A's two writes per aspect, so its tags snapshot lists A's session short of them; its register
+// snapshot passes the hole (spec/crdt.md §8: the later register write replaces the aspect whole, so
+// every earlier write of A's session there is applied, dead). When the earlier writes come, the
+// dead register write is covered (holders must not keep uploading it for a right holder to delete,
+// `snapshot_rights`), and the live tag is not.
 #[test]
 fn frontier_gap_covers_what_joins_unchanged_spec_commits_5() {
     let mut lp = net(2, 0);
@@ -117,8 +119,8 @@ fn frontier_gap_covers_what_joins_unchanged_spec_commits_5() {
     let snap = lp.peers[1].engine.snapshot(&t, &reg).unwrap().unwrap();
     let snap_tags = lp.peers[1].engine.snapshot(&t, &tags).unwrap().unwrap();
     let src = source_of(&lp, 0, &new);
-    // the register's first write is the thing's creation
-    for (z, a, stops) in [(&snap, &reg, 1), (&snap_tags, &tags, 0)] {
+    // the register's first write is the thing's creation: `old` is its second, `new` its third
+    for (z, a, stops) in [(&snap, &reg, 3), (&snap_tags, &tags, 0)] {
         let fr = frontiers_of(&lp.peers[1].engine, z, &t, a);
         assert!(fr.lists(&src) && fr.of(&src) == stops, "the session listed short of the earlier write");
     }
@@ -131,9 +133,9 @@ fn frontier_gap_covers_what_joins_unchanged_spec_commits_5() {
     assert_eq!(e.covered(&snap_tags, &new_tag, &t, &tags).unwrap(), Some(true));
 }
 
-// spec/commits.md §5: a later snapshot covers an earlier one by the join, whatever the frontiers. B
-// knows A's session only through A's snapshot, so its own lists it at 0, below A's. Each writer's
-// latest snapshot would otherwise stay beside the others' for good.
+// spec/commits.md §5, spec/crdt.md §8: a later snapshot covers an earlier one by the join. B knows
+// A's session only through A's snapshot; its own lists it from there (B applied A's write through
+// it), so each writer's latest snapshot does not stay beside the others' for good.
 #[test]
 fn snapshot_covers_one_reaching_further_spec_commits_5() {
     let mut lp = net(2, 0);
@@ -161,7 +163,7 @@ fn snapshot_covers_one_reaching_further_spec_commits_5() {
     let e = &mut lp.peers[1].engine;
     assert_eq!(frontiers_of(e, &z1, &t, &tags).of(&src), 1);
     let fr = frontiers_of(e, &zb, &t, &tags);
-    assert!(fr.lists(&src) && fr.of(&src) == 0);
+    assert!(fr.lists(&src) && fr.of(&src) == 1, "B's frontier continues from A's snapshot");
     assert_eq!(e.covered(&zb, &z1, &t, &tags).unwrap(), Some(true));
     assert_eq!(e.covered(&z1, &zb, &t, &tags).unwrap(), Some(false));
     assert_eq!(e.get(&t, &tags).unwrap(), Some(Value::Set([s("a"), s("b")].into())));

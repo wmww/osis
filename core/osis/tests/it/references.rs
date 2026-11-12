@@ -69,6 +69,8 @@ fn rows_follow_the_value_in_any_arrival_order() {
     for order in orders {
         let (a, b, _) = paired();
         let [r, x, y] = things(&a, 3)[..] else { panic!() };
+        // kept history: the three writes stay commits of their own (no compaction snapshot)
+        a.commit_with(|w| w.at(r, osis::core::RETENTION).set(&crate::common::setting(&[("t:a.0", crate::common::DAY)]))).unwrap();
         let before: std::collections::BTreeSet<_> = a.engine(|e| e.commit_ids()).into_iter().collect();
         let mine = [
             a.commit_with(|w| w.at(r, key("t:a.0")).set(&Value::Map([(Value::Int(1), Value::Tid(x)), (Value::Int(2), Value::Tid(x))].into_iter().collect()))).unwrap(),

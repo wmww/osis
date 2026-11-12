@@ -168,10 +168,12 @@ fn a_followed_member_gets_lost_after_its_rotation_spec_sync_10() {
     let rot = ps.iter().find(|s| s.report && events_of(&s.events, l) > 0).expect("the rotation is pushed, asking its report");
     assert!(ps.iter().all(|s| !s.report || !s.events.is_empty()), "no report asked of a push without events");
     assert!(losts(&msgs).is_empty(), "no Lost before the requester reported the rotation");
-    // more of g after the rotation: not pushed, and still no Lost
+    // more of g after the rotation: not pushed, and still no Lost. Its creation may compact g's
+    // `group.0` (spec/sync.md §7 Trigger), deleting entries held before the rotation: those
+    // later events of earlier entries are served (spec/sync.md §10 Lost), nothing added
     net.item(b, g, g, "after");
     let msgs = step(&mut net, b, &mut p);
-    assert!(pushes(&msgs).iter().all(|s| events_of(&s.events, l) == 0), "nothing of g past the rotation");
+    assert!(pushes(&msgs).iter().all(|s| s.events.iter().all(|(x, e)| *x != l || matches!(e, Ev::Deleted(_)))), "nothing of g past the rotation");
     assert!(losts(&msgs).is_empty(), "still no Lost");
     let at = rot.cursor.clone().unwrap();
     let msgs = shared_of(&send(&mut net, b, &mut p, Message::Applied { cursor: at.clone() }));
@@ -332,6 +334,8 @@ fn a_write_logged_after_the_rotation_in_its_step_is_not_served_spec_sync_10() {
     let held: BTreeSet<BlobId> = net.sync(b).entries(&l).into_iter().map(|(id, _)| id).collect();
     let c = rotate(&mut net, b, g);
     let t = net.item(b, g, g, "after");
+    // kept history: each write keeps its own entry (no compaction snapshot stands for them)
+    net.keep(b, t, &[("t:reg.0", osis_schema::History::FOREVER)]);
     for i in 0.. {
         if net.write(b, t, &format!("after {i}")) > c {
             break;

@@ -481,6 +481,8 @@ fn a_readers_invalid_fill_ends_with_an_admin_pass_spec_sync_5() {
     let c = net.node(3, &[host]);
     let g = net.group(a, &[(b, Role::Write), (c, Role::Read)], &[host]);
     let t = net.item(a, g, g, "t");
+    // b's writes are kept history: no compaction or own replace drops them before b deposits them
+    net.keep(a, t, &[(osis_schema::RawKey::ak(&REG), osis_schema::History::FOREVER)]);
     net.run();
     net.advance(15_000);
     let l = net.label(a);

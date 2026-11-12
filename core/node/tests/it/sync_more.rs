@@ -1024,10 +1024,15 @@ fn own_writes(net: &mut Net, n: usize, t: osis_base::Tid, ak: &Ak) -> Vec<Option
 }
 
 /// A writer `b` edits an untyped `{big, note}` value offline, reusing v1's chunks, while the
-/// admin `a` purges v1 (deleting every chunk at the host) and writes `note` offline.
-fn reuse_race(expires: Option<u64>) -> (Net, [usize; 3], osis_base::Tid, Ak, Vec<u8>) {
+/// admin `a` purges v1 (deleting every chunk at the host) and writes `note` offline. `keep`: the
+/// value keeps history, so each write keeps its own commit; else `b`'s edit compacts into its
+/// snapshot and is forgotten, the snapshot then the own commit linking the reused chunks.
+fn reuse_race(expires: Option<u64>, keep: bool) -> (Net, [usize; 3], osis_base::Tid, Ak, Vec<u8>) {
     let (mut net, _host, [a, b, c], _g, [t]) = hosted::<3, 1>(&[(1, Role::Admin), (2, Role::Read)], ["x"], false);
     let doc = Ak::new("u:doc.0").unwrap();
+    if keep {
+        net.keep(a, t, &[("u:doc.0", osis_schema::History::FOREVER)]);
+    }
     let k = |s: &str| Value::Str(s.into());
     // the entries come from a kept commit; the purged one overwrites `big` in place, so the
     // position stays live past the purge (a write into a purged entry would go with it,
@@ -1076,10 +1081,11 @@ fn reuse_race(expires: Option<u64>) -> (Net, [usize; 3], osis_base::Tid, Ak, Vec
 }
 
 // spec/sync.md §1: the reuser repairs only the large positions whose chunks are gone, so a
-// concurrent older edit of another position survives everywhere; the value reads whole.
+// concurrent older edit of another position survives everywhere; the value reads whole, also when
+// the reusing edit compacted into the reuser's snapshot before the repair.
 #[test]
 fn reencrypted_chunk_keeps_concurrent_edit_spec_sync_1() {
-    let (mut net, nodes, t, doc, v2) = reuse_race(None);
+    let (mut net, nodes, t, doc, v2) = reuse_race(None, false);
     let want: Value = Value::Map([(Value::Str("big".into()), Value::Bytes(v2)), (Value::Str("note".into()), Value::Str("y".into()))].into_iter().collect());
     for n in nodes {
         assert_eq!(net.engine(n).get_full(&t, &doc).unwrap(), Some(want.clone()), "node {n}");
@@ -1090,7 +1096,7 @@ fn reencrypted_chunk_keeps_concurrent_edit_spec_sync_1() {
 #[test]
 fn reencrypted_chunk_keeps_expiry_spec_sync_1() {
     let at = 1_700_000_000_000 + 30 * 86_400_000;
-    let (mut net, [_, b, _], t, doc, _) = reuse_race(Some(at));
+    let (mut net, [_, b, _], t, doc, _) = reuse_race(Some(at), false);
     let w = own_writes(&mut net, b, t, &doc);
     assert!(w.len() >= 2, "the edit and its repair: {w:?}");
     assert!(w.iter().all(|e| *e == Some(at)), "{w:?}");
@@ -1101,7 +1107,8 @@ fn reencrypted_chunk_keeps_expiry_spec_sync_1() {
 // what the back-off holds back is retried when it passes.
 #[test]
 fn reencrypt_loop_bounded_spec_sync_1() {
-    let (mut net, [a, b, _], t, doc, _) = reuse_race(None);
+    // kept history: each repair stays a commit of its own to count
+    let (mut net, [a, b, _], t, doc, _) = reuse_race(None, true);
     let repairs = |net: &mut Net| own_writes(net, b, t, &doc).len();
     let first = repairs(&mut net);
     let l = net.label(a);

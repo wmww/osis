@@ -190,13 +190,16 @@ fn takings_undo_without_history_redo_needs_it_spec_crdt_4_6() {
     let db = setup(0);
     let t = kept_thing(&db);
     let (l, m) = (key(&db, "app:l.0"), key(&db, "app:m.0"));
-    commit_with(&db, |w| w.at(t, l.clone()).set(&Value::List(vec![Value::Int(1)])));
-    commit_with(&db, |w| w.at(t, l.clone()).path(osis::p![]).splice(1..1, &[Value::Int(2)]));
+    // below the compaction trigger (spec/sync.md §7): the first write is large, so a snapshot
+    // costs about what both bodies do, and the undone insert keeps its own body
+    let first: Vec<Value> = (0..1_000).map(Value::Int).collect();
+    commit_with(&db, |w| w.at(t, l.clone()).set(&Value::List(first.clone())));
+    commit_with(&db, |w| w.at(t, l.clone()).path(osis::p![]).splice(1_000..1_000, &[Value::Int(2)]));
     let list = Scope::Aspects(vec![(t, ak("app:l.0"))]);
     db.undo(&list).unwrap().unwrap();
-    assert_eq!(db.at(t, l.clone()).get().unwrap(), Some(Value::List(vec![Value::Int(1)])), "the insert undone");
+    assert_eq!(db.at(t, l.clone()).get().unwrap(), Some(Value::List(first.clone())), "the insert undone");
     db.redo(&list).unwrap().unwrap();
-    assert_eq!(db.at(t, l.clone()).get().unwrap(), Some(Value::List(vec![Value::Int(1), Value::Int(2)])), "its element still in the read");
+    assert_eq!(db.at(t, l.clone()).get().unwrap(), Some(Value::List(first.iter().cloned().chain([Value::Int(2)]).collect())), "its element still in the read");
     commit_with(&db, |w| w.at(t, m.clone()).path(osis::p!["a"]).set(&Value::Int(1)));
     let map = Scope::Aspects(vec![(t, ak("app:m.0"))]);
     let undo = db.undo(&map).unwrap().unwrap();

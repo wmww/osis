@@ -137,6 +137,9 @@ fn stored_sizes_are_padme() {
         assert_eq!(osis_crypto::padme(n), n, "blob {id:?}: {n} bytes is not a Padmé length");
     }
     let l = label_of(&mut net, a, g);
+    // each write kept history, so each keeps its own blob (no compaction covers it)
+    net.keep(a, t, &[(osis_schema::RawKey::ak(&REG), osis_schema::History::FOREVER)]);
+    net.run();
     let mut sizes = BTreeSet::new();
     for len in 1..=48 {
         let c: CommitId = net.write(a, t, &"x".repeat(len));

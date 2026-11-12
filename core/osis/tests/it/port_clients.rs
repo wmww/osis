@@ -525,8 +525,15 @@ fn remove_client_revokes() {
     // the entry's removal writes back what `clients^.0` keeps no history of: not undone; a half
     // removal revives under no clock (half_removed_client_stays_ended)
     let node_thing = x.n.node();
-    let last = crate::common::listed(&x.n, Scope::Aspects(vec![(node_thing, ak("clients^.0"))]))[0].stamp.id;
-    assert_eq!(x.n.revert(last), Err(Error::NotUndoable { commit: last, reason: osis::NotUndoableReason::ContentGone }));
+    // (the removal may be compacted into a snapshot and forgotten, spec/sync.md §7 Trigger: then
+    // nothing listed reverts either)
+    for e in crate::common::listed(&x.n, Scope::Aspects(vec![(node_thing, ak("clients^.0"))])) {
+        let c = e.stamp.id;
+        match e.kind {
+            osis::CommitKind::Snapshot => assert!(x.n.revert(c).is_err()),
+            _ => assert_eq!(x.n.revert(c), Err(Error::NotUndoable { commit: c, reason: osis::NotUndoableReason::ContentGone })),
+        }
+    }
     assert!(matches!(x.connect(&s), Err(Error::Refused(_))));
     assert!(!x.n.remove_client(a).unwrap());
     assert!(!x.n.remove_client(x.n.me()).unwrap(), "only a registered client: never a role removal of something else");
