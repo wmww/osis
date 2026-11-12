@@ -30,8 +30,8 @@ impl SyncEngine {
             if snapping.contains(&None) {
                 left.waits.held_back.insert(b.commit);
             }
-            let Some(needed) = needed else { continue };
             let entry = self.entry_for(host, &l, b);
+            let Some(needed) = needed else { continue };
             // another blob of the commit holding every needed delta holds it (a rewrite a
             // right holder dropped covered deltas from, a superset), unless it is must-not-hold
             // (`holds_nothing`, spec/sync.md §6)
@@ -328,12 +328,12 @@ impl SyncEngine {
         let held: Vec<usize> = if own { b.parts.clone() } else { self.engine.body(&b.commit)?.map(|x| x.parts).unwrap_or_default() };
         // a held encryption carrying the body's parts and nothing not held any more (the
         // fullest; one sealed here may lack parts this node holds no secret for)
-        let skip = |id: &BlobId| self.state.is_gone(&l, id) || self.state.entries.contains_key(&(l, *id));
+        // not one deleted under `l` (a peer refuses it while its tombstone lasts)
+        let skip = |id: &BlobId| self.state.is_gone(&l, id) || self.state.entries.contains_key(&(l, *id)) || self.state.tombs.contains_key(&(l, *id));
         let reuse = if b.to_label {
             None
         } else if cert {
-            // not one deleted under `l` (a host refuses it while its tombstone lasts)
-            self.state.own_copy(&b.commit, &b.parts, |id| skip(id) || self.state.tombs.contains_key(&(l, *id)))
+            self.state.own_copy(&b.commit, &b.parts, skip)
         } else {
             self.state.blob_for(&b.commit, &b.parts, &held, skip)
         };
