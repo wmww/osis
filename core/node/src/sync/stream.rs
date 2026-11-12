@@ -347,6 +347,10 @@ pub(crate) struct Pulling {
     /// The next Pull goes at this time (wall ms): `resync_ms` after one answered Error, at once
     /// after a restart (`stream_restart_known`).
     retry_at: Option<u64>,
+    /// Members whose join the peer refused while they stay members here (its Hit on L, out
+    /// when the join came, opened L there since; else its `Lost` ends them here), joined again
+    /// at this time (wall ms), `resync_ms` on, as a refused Pull is asked again.
+    rejoin: BTreeMap<LabelId, u64>,
 }
 
 /// A Fetch of the stream not answered yet: its place in send order (`Pulling::sent`), the member,
@@ -960,6 +964,7 @@ impl SyncEngine {
         // page is not settled yet keeps no newer lag (read again from its last stored one, else
         // from the start)
         let named = p.unsettled_names(l);
+        p.rejoin.remove(l);
         let (was_in, join) = (p.in_stream.remove(l), p.joins.remove(l));
         let listing = matches!(stop, Stop::Listing);
         let lag = match (stop, was_in, join) {
@@ -1085,10 +1090,18 @@ impl SyncEngine {
     /// Asks again the streams whose Pull was answered Error once their time came.
     pub(super) fn stream_retry(&mut self, out: &mut Vec<Action>) -> Result<()> {
         let now = self.now();
-        let due: Vec<ConnId> = self.streams.iter().filter(|(_, s)| s.pulling.retry_at.is_some_and(|t| t <= now)).map(|(c, _)| *c).collect();
+        let due: Vec<ConnId> = self.streams.iter().filter(|(_, s)| s.pulling.retry_at.is_some_and(|t| t <= now) || s.pulling.rejoin.values().any(|t| *t <= now)).map(|(c, _)| *c).collect();
         for conn in due {
             if let Some(s) = self.streams.get_mut(&conn) {
-                s.pulling.retry_at = None;
+                let p = &mut s.pulling;
+                if p.retry_at.is_some_and(|t| t <= now) {
+                    p.retry_at = None;
+                }
+                let again: Vec<LabelId> = p.rejoin.iter().filter(|(_, t)| **t <= now).map(|(l, _)| *l).collect();
+                for l in again {
+                    p.rejoin.remove(&l);
+                    p.joins.insert(l, None);
+                }
             }
             self.stream_ask(conn, true, out)?;
         }
@@ -1118,7 +1131,7 @@ impl SyncEngine {
 
     /// When a refused Pull goes again (`next_wake`).
     pub(super) fn stream_wake(&self) -> Option<u64> {
-        self.streams.values().filter_map(|s| s.pulling.retry_at).min()
+        self.streams.values().flat_map(|s| s.pulling.retry_at.into_iter().chain(s.pulling.rejoin.values().copied())).min()
     }
 
     /// Asks every stream fresh: when the replies are in, this node has what its readers had.
@@ -1401,6 +1414,8 @@ impl SyncEngine {
             }
         }
         let owed = self.stream_apply(conn, r.events, out)?;
+        let members = self.shared_members(conn);
+        let rejoin_at = self.now().saturating_add(self.cfg.resync_ms);
         let Some(p) = self.streams.get_mut(&conn).map(|s| &mut s.pulling) else { return Ok(()) };
         let left: BTreeMap<LabelId, Option<Vec<u8>>> = r.joins.into_iter().collect();
         let (mut merged, mut paging) = (Vec::new(), Vec::new());
@@ -1413,9 +1428,13 @@ impl SyncEngine {
                     p.joins.insert(l, Some(c.clone()));
                     paging.push((l, c.clone()));
                 }
-                // not shared there: its `Lost` is on its way
+                // not shared there: its `Lost` is on its way, or its Hit on L was out and opens
+                // it there (joined again later while still a member here)
                 Some(None) => {
                     p.joins.remove(&l);
+                    if members.contains(&l) {
+                        p.rejoin.insert(l, rejoin_at);
+                    }
                 }
                 _ => {
                     p.joins.remove(&l);
