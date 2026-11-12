@@ -132,16 +132,15 @@ pub(crate) fn part_links(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<Vec
 
 /// Part `ai` of `c` drops (or its delta goes, held on as its leftover): the links it holds join
 /// its thing's freed set first, to be judged at the transaction's end. A link already in the set
-/// stays as it is.
+/// stays as it is, judged again then too (the source dropping may be what it waited for).
 pub(crate) fn free_part(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()> {
     let Some(m) = tx.core.ix.commits.get(c).cloned() else { return Ok(()) };
     let Some(a) = m.header.aspects.get(ai) else { return Ok(()) };
     let (tid, author, memory) = (a.tid, m.header.actor, m.view.memory);
     for link in part_links(tx, c, ai)? {
         let blob = link.blob;
-        if add(tx, Freed::new(tid, link, author, false, memory))? {
-            tx.core.freed_due.insert((tid, blob));
-        }
+        add(tx, Freed::new(tid, link, author, false, memory))?;
+        tx.core.freed_due.insert((tid, blob));
     }
     Ok(())
 }
@@ -160,14 +159,16 @@ fn add(tx: &mut Tx<'_>, f: Freed) -> Result<bool> {
 pub struct Judgment {
     /// Freed: to delete wherever an entry of it is.
     pub freed: Vec<Freed>,
-    /// Those of `freed` judged freed for the first time (walked, their keys gone): their bytes
-    /// go here.
+    /// Those of `freed` judged freed for the first time (walked, their keys gone) or judged again
+    /// as their wait ended: their bytes go here and their entries are judged again (a row judged
+    /// outside its label's pass is deleted by that label's next pass).
     pub fresh: BTreeSet<BlobId>,
 }
 
 /// The rows added this transaction, and the waiting rows of their things (a source dropped may
 /// be what they waited for), judged at its end: a judged one keeps no key. What it freed is
-/// handed to node-sync (`Core::freed_new`).
+/// handed to node-sync (`Core::freed_new`), waiting rows judged freed again included: no pass
+/// may have them in scope.
 pub(crate) fn settle_due(tx: &mut Tx<'_>) -> Result<()> {
     let mut due = std::mem::take(&mut tx.core.freed_due);
     let things: BTreeSet<Tid> = due.iter().map(|x| x.0).collect();
@@ -177,7 +178,7 @@ pub(crate) fn settle_due(tx: &mut Tx<'_>) -> Result<()> {
         fs.extend(rows(tx, &key(&b, &t))?);
     }
     let j = judge(tx, fs)?;
-    tx.core.freed_new.extend(j.fresh);
+    tx.core.freed_new.extend(j.freed.iter().map(|f| f.link.blob));
     Ok(())
 }
 
@@ -264,7 +265,7 @@ fn judge_blobs(tx: &mut Tx<'_>, blobs: &BTreeSet<BlobId>) -> Result<(Judgment, V
         }
     }
     let waits: Vec<BlobId> = tx.core.freed_waits.keys().copied().collect();
-    let mut woke = Vec::new();
+    let (mut woke, mut woken) = (Vec::new(), BTreeSet::new());
     for w in waits {
         if !tx.blobs.held(&w)? {
             continue;
@@ -272,11 +273,16 @@ fn judge_blobs(tx: &mut Tx<'_>, blobs: &BTreeSet<BlobId>) -> Result<(Judgment, V
         woke.push(w);
         for (t, b) in tx.core.freed_waits.get(&w).cloned().unwrap_or_default() {
             if seen.insert((t, b)) {
+                woken.insert(b);
                 fs.extend(rows(tx, &key(&b, &t))?);
             }
         }
     }
-    Ok((judge(tx, fs)?, woke))
+    let mut j = judge(tx, fs)?;
+    // a woken row may be another label's: its entries are judged again (`Judgment::fresh`)
+    let again: Vec<BlobId> = j.freed.iter().map(|f| f.link.blob).filter(|b| woken.contains(b)).collect();
+    j.fresh.extend(again);
+    Ok((j, woke))
 }
 
 /// The forgotten parts of things this node lost read access to (`retention::forget`): their
@@ -298,6 +304,11 @@ pub(crate) fn lost(tx: &mut Tx<'_>, things: &BTreeSet<Tid>, roots: BTreeMap<Tid,
     for k in gone {
         tx.txn.remove_local(&[records::FREED, &k].concat(), Shred::Yes)?;
     }
+    // their waits go too: nothing is fetched for a thing lost
+    tx.core.freed_waits.retain(|_, s| {
+        s.retain(|(t, _)| !things.contains(t));
+        !s.is_empty()
+    });
     let mut out = BTreeSet::new();
     for (t, mut todo) in roots {
         let dedup = tx.core.dedup(&t);
@@ -524,6 +535,30 @@ mod tests {
         let j = e.judge_freed(&BTreeSet::new()).unwrap();
         assert!(!j.freed.is_empty() && j.fresh.len() == j.freed.len(), "judged once the node came");
         assert_eq!(e.freed_wants().count(), 0);
+    }
+
+    // spec/sync.md §7 Freed links: a link judged freed whose next judgment waits for a held
+    // source's node (a co-writer's new tree not fetched yet) is handed on again once the node
+    // comes, as one judged anew: its entries are judged again under their own label, whichever
+    // pass woke it, so its delete at hosts is not stranded.
+    #[test]
+    fn a_judged_link_woken_from_a_wait_is_handed_on_spec_sync_7() {
+        let (mut lp, t, a, cs) = three_replaces();
+        let e = &mut lp.peers[0].engine;
+        e.drop_body(&cs[0], &t, &a).unwrap();
+        let freed = e.take_freed_new();
+        assert!(!freed.is_empty());
+        let root = e.run(|tx| part_links(tx, &cs[1], 0)).unwrap()[0];
+        let bytes = e.blob(&root.blob).unwrap().unwrap();
+        e.run(|tx| tx.blobs.release(&root.blob, false)).unwrap();
+        // a held source's node released (only a test does so): its kept walk is read anew
+        e.core.tree_refs = crate::engine::memo::Memo::new("tree refs");
+        assert!(judge_all(e).freed.is_empty(), "judged links wait while a held tree is unknown");
+        e.put_blobs(vec![(root.blob, bytes)]).unwrap();
+        let j = e.judge_freed(&BTreeSet::new()).unwrap();
+        let got: BTreeSet<BlobId> = j.freed.iter().map(|f| f.link.blob).collect();
+        assert_eq!(got, freed, "judged again once the node came");
+        assert_eq!(j.fresh, freed, "handed on so their labels judge them again");
     }
 
     // spec/crypto.md §7, spec/sync.md §7 Freed links (a link is judged under its own thing; a
