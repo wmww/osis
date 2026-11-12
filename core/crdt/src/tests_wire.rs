@@ -492,7 +492,7 @@ fn links_compare_by_bytes_spec_3_3() {
     let (a, b) = (l(vec![link(2), i(5)]), l(vec![link(3), i(3)]));
     assert_eq!(a.cmp(&b), Ordering::Greater);
     assert!(osis_base::encode(&a) < osis_base::encode(&b));
-    assert!(Key(a.clone()) < Key(b.clone()));
+    assert!(Key(a.clone().into()) < Key(b.clone().into()));
     let src = sess(tid(1));
     let s = Stamp::new(ts(5 << 16), src.clone(), 3);
     let reg = |v: &Value| Fragment::Register(Register { reset: None, write: Some(RegWrite { stamp: s.clone(), value: Some(v.clone()) }) });

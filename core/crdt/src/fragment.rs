@@ -5,6 +5,7 @@ use crate::seq::Seq;
 use crate::stamp::{Dot, Stamp};
 use osis_base::Value;
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 /// Merge encoding IDs (§3.1).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -129,9 +130,10 @@ impl Elem {
 }
 
 /// A map key as an entry's identity: compared by canonical encoding, bytewise (§3.3 rule 2;
-/// `Value` compares links by content hash alone).
+/// `Value` compares links by content hash alone). Shared: a key is held by its record, the key
+/// index and every copy of either.
 #[derive(Clone, Debug)]
-pub struct Key(pub Value);
+pub struct Key(pub Arc<Value>);
 
 impl Ord for Key {
     fn cmp(&self, o: &Key) -> std::cmp::Ordering {
@@ -165,14 +167,14 @@ pub struct Eid {
 
 impl Eid {
     pub fn new(dot: Dot, key: Option<Value>) -> Eid {
-        Eid { dot, key: key.map(Key) }
+        Eid { dot, key: key.map(|k| Key(Arc::new(k))) }
     }
     /// The key-erased record of `dot`, the lowest of its records.
     pub fn erased(dot: Dot) -> Eid {
         Eid { dot, key: None }
     }
     pub fn key(&self) -> Option<&Value> {
-        self.key.as_ref().map(|k| &k.0)
+        self.key.as_ref().map(|k| &*k.0)
     }
 }
 
@@ -261,7 +263,7 @@ pub struct Map {
     /// Local index, not part of the lattice: key -> the keyed records carrying it (by `Value`
     /// equality, so links by content hash). A superset (a record gone may linger), so lookups
     /// check the record.
-    pub(crate) keys: BTreeMap<Value, BTreeSet<Eid>>,
+    pub(crate) keys: BTreeMap<Arc<Value>, BTreeSet<Eid>>,
 }
 
 impl PartialEq for Map {
@@ -287,17 +289,17 @@ impl Map {
     pub(crate) fn reindex(&mut self) {
         self.keys.clear();
         for id in self.entries.keys() {
-            if let Some(k) = id.key() {
-                self.keys.entry(k.clone()).or_default().insert(id.clone());
+            if let Some(k) = &id.key {
+                self.keys.entry(k.0.clone()).or_default().insert(id.clone());
             }
         }
     }
     /// Lists keyed record `id` in the index.
     pub(crate) fn index_id(&mut self, id: &Eid) {
-        if let Some(k) = id.key()
-            && !self.keys.get(k).is_some_and(|s| s.contains(id))
+        if let Some(k) = &id.key
+            && !self.keys.get(&*k.0).is_some_and(|s| s.contains(id))
         {
-            self.keys.entry(k.clone()).or_default().insert(id.clone());
+            self.keys.entry(k.0.clone()).or_default().insert(id.clone());
         }
     }
     /// The records of `dot`, the key-erased one first.

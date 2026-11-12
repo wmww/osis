@@ -706,9 +706,10 @@ pub(crate) fn decode_entries(cx: &mut Dec, items: &[Value]) -> Result<BTreeMap<E
             [r, k, f] => (r, Some(k), f),
             _ => return Err(Error::Malformed("entry")),
         };
-        let dot = cx.dot(d)?;
+        let id = Eid::new(cx.dot(d)?, key.cloned());
+        let dot = &id.dot;
         let reset = cx.opt_level_stamp(r)?;
-        cx.step(|| Step::Entry(Eid::new(dot.clone(), key.cloned())));
+        cx.step(|| Step::Entry(id.clone()));
         let paged = cx.deferred();
         let frag = opt_stamp_only(f, |x| cx.fragment(x));
         // content left to its pages carries writes (a page is non-empty, its records hold some)
@@ -719,7 +720,7 @@ pub(crate) fn decode_entries(cx: &mut Dec, items: &[Value]) -> Result<BTreeMap<E
             check_value(cx, k)?;
         }
         if frag.is_some() {
-            cx.claim(&dot)?;
+            cx.claim(dot)?;
         }
         // the creation: carried by a snapshot; implied in a writer's delta for an
         // entry created here (own dot in the range)
@@ -738,7 +739,7 @@ pub(crate) fn decode_entries(cx: &mut Dec, items: &[Value]) -> Result<BTreeMap<E
         if reset.is_none() && created.is_none() && !paged && frag.as_deref().is_none_or(Fragment::is_empty) {
             return Err(Error::Malformed("record without a write"));
         }
-        entries.insert(Eid::new(dot, key.cloned()), Entry { reset, frag, created });
+        entries.insert(id, Entry { reset, frag, created });
     }
     Ok(entries)
 }
