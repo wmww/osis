@@ -142,11 +142,12 @@ t0=$(date +%s)
 # the selection (`run` lines: the test stages expected) and every test stage's result
 sel=$tmp/sel
 results=$sel.res
-# The whole gate against its limit (`gate`), its lock wait (seconds, $1) left out; then every test
-# stage's failure, KNOWN or NEW, and the pass line or the summary's exit.
+# The whole gate against its limit (`gate`), its lock wait (seconds, $1) left out, naming each
+# stage over its share when over; then every test stage's failure, KNOWN or NEW, and the pass
+# line or the summary's exit.
 passed() {
   cpu
-  python3 "$tools/limits.py" check gate "$cpu" $(( $(date +%s) - t0 - $1 )) || true
+  python3 "$tools/limits.py" check gate "$cpu" $(( $(date +%s) - t0 - $1 )) --since "$t0" || true
   # once a stage is expected (`$sel` exists), the summary decides: a hold that never ran (a
   # refused or failed tools/heavy) leaves its stages unrun, which the summary counts NEW
   if [ -e "$sel" ] || [ -e "$results" ]; then
@@ -186,6 +187,7 @@ instant() {
   step sh tools/gate_select_test.sh
   step python3 tools/test_select_test.py
   step python3 tools/gate_failures_test.py
+  step python3 tools/limits.py split
   step python3 tools/spec_map.py --uncited
   step python3 tools/spec_map.py --gaps
 }

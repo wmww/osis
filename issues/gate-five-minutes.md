@@ -1,10 +1,24 @@
 # The gate takes 30 minutes; Tess's limit is 5
-> Summary: The whole gate (default tests, every selected property, sim at 15 seeds) is to take 5 minutes, capped there, by fixing perf, not by shrinking sizes; on ostrich an every-crate gate holds the lock 17.5 min (10,240 CPU-s) and takes about 22 min in all. Where the time goes, what was fixed, and each remaining perf problem with what fixing it would save.
+> Summary: The whole gate (default tests, every selected property, sim at 15 seeds) is to take 5 minutes, capped there, by fixing perf, not by shrinking sizes; each stage's limit is its share of the cap. On ostrich a gate takes about 15 min (8000 CPU-s), its hold 11 min; every stage is about 2x its share, the builds after a rebase 7x. Where the time goes, what was fixed, and each remaining perf problem with what fixing it would save.
 > Priority: normal
 > Tags: tests, performance
 
 ## The budget
-5 minutes wall for the whole gate but its lock wait (notes/build.md Time limits, `gate`), on ostrich (16 threads): at most about 16 x 300 = 4800 CPU-s if every thread is busy, about 4000 at the box's usual 85%. The unlocked steps take 30-60 s warm (instant checks 3-14 s, clippy and the GUI lint a few s warm, builds 0-120 s after a rebase, deny 4 s; the unification check, when a manifest changed, 116 s / 1770 CPU-s with a GUI rebuild): so the hold gets about 4 minutes, 3500 CPU-s. Breadth that leaves the gate waits for release checks (notes/coordination.md), so sizes stay; the work per seed has to fall about 4x.
+5 minutes wall for the whole gate but its lock wait (notes/build.md Time limits, `gate`), on ostrich (16 threads): at most about 16 x 300 = 4800 CPU-s if every thread is busy, about 4000 at the box's usual 85%. Each gate stage's limit is its share of that cap (notes/build.md Time limits, `share of`): the hold gets 105 u (241 s, 3795 CPU-s), the steps outside it 24 u (about 55 s), so an over-cap gate names the stages over their share. Breadth that leaves the gate waits for release checks (notes/coordination.md), so sizes stay; the work per seed has to fall about 3x.
+
+## Each stage against its share (ostrich, the last day's gates, mostly not every crate; median, middle half; CPU-s / wall s)
+| stage | share | takes |
+|---|---|---|
+| default tests | 1610 / 115 | 2590 (2410-2860) / 261 (230-332) |
+| properties | 1220 / 78 | 2235 (1725-2590) / 192 (135-253), as selected |
+| sim, 15 seeds | 943 / 46 | 1510 / 98 with shared setups (2100 / 181 before) |
+| the hold | 3795 / 241 | 6660 (6450-7530) / 659 (545-752) |
+| builds | 126 / 23 | 930 (430-1490) / 157 (61-222) after a rebase |
+| clippy | 46 / 9 | 83 (40-126) / 29 (19-43) |
+| instant checks, GUI lint, deny | 36 / 11 | 22 / 19 |
+| the whole gate | 4094 / 299 | 8040 (7100-8690) / 884 (717-1090) |
+
+The hold is about 3x its share and every one of its stages about 2x theirs; outside it, the builds after a rebase are most of the overrun (7x).
 
 ## Where it goes (ostrich, main 7f0db4ff5 with the harness fixes below; CPU-s, wall at load 12-30)
 - Default tests: 4550-4730 CPU-s, 385-495 s (10,745 G instructions; 3479 tests, 35 binaries). CPU-bound: even alone on the box, at 16 threads it cannot go under about 290 s. Over the `test` limit alone (10 s CPU or 15 s wall): 5 tests, each multi-threaded, none over 11 s wall (notes/testing.md, Default-test cost); the biggest `order::held_set_decides` (144 CPU-s, 11 s wall). The long tail (3400 tests at 0.2-5 CPU-s) is most of it: per-change engine cost (issues/derived-state-recomputed.md) and the debug checks (notes/testing.md: index check about 10%, rebuild check 2.5% of osis-node `it`).

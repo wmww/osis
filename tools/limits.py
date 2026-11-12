@@ -2,12 +2,16 @@
 """Time limits (notes/build.md, Time limits): every timed run against its CPU and wall limit.
 
   tools/limits.py run NAME CMD...      run CMD, then check its CPU-s and wall against NAME's limits
-  tools/limits.py check NAME CPU WALL  check a measured run (gate.sh's steps)
+  tools/limits.py check NAME CPU WALL [--since T]
+                                       check a measured run (gate.sh's steps); over a limit with
+                                       shares, also its parts checked here since T (epoch s;
+                                       default: the run's start) that went over their share
   tools/limits.py summary [--since HOURS] [--all]
                                        this box's hits, the investigation triggers, and the hits
                                        notes/time-limits.md does not record yet (--all: every check)
   tools/limits.py unit                 measure this box's base unit (alone: take the heavy lock)
   tools/limits.py table                every limit in seconds on this box
+  tools/limits.py split                every whole's shares sum to at most it (exits 1 if not)
   tools/limits.py tests [--jobs N]     every default test against the `test` limit (under tools/heavy)
 
 Limits are multiples of the box's base unit u (tools/baseunit.c: the CPU-s of one fixed work
@@ -15,7 +19,9 @@ quantum with every hardware thread busy), both read from the tables in notes/bui
 is k u, a wall limit k u 16 / threads (16 quanta spread over the box's threads; ostrich has 16). A check never fails the run: it prints one line, and an over-limit line starting
 `LIMIT` for each limit exceeded, and appends the check to ~/.cache/osis/limits.log (JSON lines:
 time, box, name, cpu, wall, limits, the 1-minute load, over). Hits are copied to the committed
-notes/time-limits.md with the agent's reason (`summary` prints them in its format).
+notes/time-limits.md with the agent's reason (`summary` prints them in its format). A limit's
+`share of` cell names the whole it is a share of (a gate stage of `gate.hold` or `gate`): the
+shares of a whole sum to at most it, so a whole over its limit names its parts over their share.
 """
 import json, os, re, resource, socket, subprocess, sys, time
 
@@ -30,7 +36,7 @@ REPEAT, WINDOW_H, FAR = 5, 3, 2.0
 
 
 def tables():
-    """({box: unit}, {name: (cpu_units, wall_units)}) from notes/build.md."""
+    """({box: unit}, {name: (cpu_units, wall_units, whole or None)}) from notes/build.md."""
     units, limits, kind = {}, {}, None
     for line in open(NOTE):
         cells = [c.strip().strip("`") for c in line.strip().strip("|").split("|")]
@@ -45,7 +51,7 @@ def tables():
                 if kind == "units":
                     units[cells[0]] = float(cells[1])
                 else:
-                    limits[cells[0]] = (float(cells[1]), float(cells[2]))
+                    limits[cells[0]] = (float(cells[1]), float(cells[2]), cells[3] or None)
             except (IndexError, ValueError):
                 continue
     return units, limits
@@ -58,7 +64,7 @@ def limit(name):
         return None, f"no limit named {name} in notes/build.md"
     if BOX not in units:
         return None, f"no base unit for box {BOX}: tools/limits.py unit, then add it to notes/build.md"
-    u, (cl, wl) = units[BOX], limits[name]
+    u, (cl, wl, _) = units[BOX], limits[name]
     return (cl * u, wl * u * 16 / os.cpu_count()), None
 
 
@@ -71,8 +77,10 @@ def log(rec):
         print(f"limits: log: {e}", file=sys.stderr)
 
 
-def check(name, cpu, wall, what="", quiet=False):
-    """Check one run; `what` names it within `name` (a test). Returns the limits exceeded."""
+def check(name, cpu, wall, what="", quiet=False, since=None):
+    """Check one run; `what` names it within `name` (a test). Returns the limits exceeded. Over a
+    limit with shares, also prints its parts checked from here since `since` (default: the run's
+    start) that went over their share."""
     lim, why = limit(name)
     if lim is None:
         print(f"   limit {name}: unchecked ({why})")
@@ -85,10 +93,43 @@ def check(name, cpu, wall, what="", quiet=False):
         far = " (over 2x: an investigation, notes/coordination.md Time limits)" if v > FAR * l else ""
         print(f"LIMIT {label} {k} {v:.0f} s > {l:.0f} s ({v / l:.2f}x) on {BOX} at load {os.getloadavg()[0]:.0f}{far}: "
               f"report why (notes/time-limits.md)")
+    if over:
+        shares(name, since if since is not None else time.time() - wall - 1)
     log(dict(t=round(time.time()), box=BOX, name=name, what=what, cpu=round(cpu, 1), wall=round(wall, 1),
              cpu_lim=round(lim[0], 1), wall_lim=round(lim[1], 1), load=round(os.getloadavg()[0], 1),
              over=[k for k, _, _ in over], who=os.getcwd()))
     return over
+
+
+def shares(whole, since):
+    """The parts of `whole` checked from this directory since `since` that went over their share."""
+    parts = {n for n, (_, _, w) in tables()[1].items() if w == whole}
+    if not parts:
+        return
+    here = os.getcwd()
+    hit = [o for o in read_log(since) if o["name"] in parts and o.get("who") == here and o["over"]]
+    for o in hit:
+        print(f"   over its share of {whole}: " + hit_line(o).split(f" {o['box']} ", 1)[1])
+    if not hit:
+        print(f"   no part of {whole} over its share: the time between its parts, or parts unchecked")
+
+
+def split():
+    """Every whole's shares sum to at most it: 0 if so, else 1 with each whole over."""
+    _, limits = tables()
+    bad = 0
+    for whole in sorted({w for _, _, w in limits.values() if w}):
+        parts = [n for n, (_, _, w) in limits.items() if w == whole]
+        if whole not in limits:
+            print(f"{whole}: no such limit, yet {', '.join(parts)} share it")
+            bad = 1
+            continue
+        for i, k in ((0, "CPU"), (1, "wall")):
+            total = sum(limits[n][i] for n in parts)
+            ok = total <= limits[whole][i]
+            bad |= not ok
+            print(f"{whole} {k}: shares {total:g} of {limits[whole][i]:g} u{'' if ok else '  OVER'} ({', '.join(f'{n} {limits[n][i]:g}' for n in parts)})")
+    return bad
 
 
 def timed(cmd, cwd=None, env=None):
@@ -247,8 +288,8 @@ if __name__ == "__main__":
     a = sys.argv[1:]
     if a[:1] == ["run"] and len(a) > 2:
         sys.exit(run(a[1], a[2:]))
-    elif a[:1] == ["check"] and len(a) == 4:
-        check(a[1], float(a[2]), float(a[3]))
+    elif a[:1] == ["check"] and len(a) in (4, 6) and (len(a) == 4 or a[4] == "--since"):
+        check(a[1], float(a[2]), float(a[3]), since=float(a[5]) if len(a) == 6 else None)
     elif a[:1] == ["summary"]:
         h = float(a[a.index("--since") + 1]) if "--since" in a else 0
         summary(h, "--all" in a)
@@ -258,5 +299,7 @@ if __name__ == "__main__":
         unit()
     elif a == ["table"]:
         table()
+    elif a == ["split"]:
+        sys.exit(split())
     else:
         sys.exit(__doc__)
