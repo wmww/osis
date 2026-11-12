@@ -267,10 +267,9 @@ impl crate::engine::Engine {
     }
 
     /// After a transaction that stored a new blob (`Tx::store_blobs`) committed: what reads
-    /// noted missing was re-delivered, and a node blob may complete a tree walk that lacked it.
+    /// noted missing was re-delivered.
     pub fn blobs_stored(&mut self) {
         self.core.missed.clear();
-        self.core.held_trees.retain(|_, t| t.missing.is_empty());
     }
 
     /// A read of `tid`'s `ak` (its state, or with `entry` that commit's part) found a

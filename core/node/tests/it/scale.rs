@@ -1446,3 +1446,46 @@ fn kept_overwrite_reads_no_body_spec_commits_5() {
     }
     all_flat("an overwrite of a kept register", &a, &b);
 }
+
+/// A thing holding `n` bodies on other aspects and a large value: the work of judging the chunks
+/// one more write-and-compact of the value drops (parts read, tree blobs walked), after a first
+/// round asked about the thing once.
+fn chunk_drop(n: usize) -> (u64, u64) {
+    let (mut net, _host, [a], _g, [t]) = crate::net::hosted::<1, 1>(&[], ["x"], false);
+    let blob = Ak::new(crate::net::BLOB.ak()).unwrap();
+    let mut m = Mutation::new();
+    for i in 0..n {
+        m.set(t, &Ak::new(format!("u:other{i:04}.0")).unwrap(), &s("v")).unwrap();
+    }
+    net.engine(a).commit(m).unwrap();
+    let mut v = vec![0u8; 1 << 20];
+    osis_crypto::RngCore::fill_bytes(&mut SeededRng::from_u64(1), &mut v);
+    let mut round = |net: &mut crate::net::Net, at: usize| {
+        v.splice(at..at, [7u8; 50]);
+        let mut m = Mutation::new();
+        m.set(t, &crate::net::BLOB, &Value::Bytes(v.clone())).unwrap();
+        net.engine(a).commit(m).unwrap();
+        net.run();
+        let acts = net.sync(a).compact(&t, &blob).unwrap();
+        net.actions(a, acts);
+        net.advance(4_000_000);
+    };
+    round(&mut net, 100_000);
+    round(&mut net, 300_000);
+    osis_node::costs::take();
+    round(&mut net, 600_000);
+    let c: BTreeMap<_, _> = osis_node::costs::take().into_iter().map(|(k, _, c)| (k, c)).collect();
+    let n = |k: &str| c.get(k).copied().unwrap_or(0);
+    (n("tree refs: parts read"), n("tree refs: tree blobs"))
+}
+
+// spec/sync.md §7 (a dropped body's chunk goes once nothing held links it); spec/requirements.md,
+// Scale: judging the chunks a write-and-compact drops reads the sources that changed (the new
+// bodies, the value's state), not every body held on the thing.
+#[test]
+fn chunk_drop_judgment_is_flat() {
+    let (small, big) = (chunk_drop(10), chunk_drop(100));
+    assert!(small.0 > 0, "the round judged dropped chunks");
+    flat("chunk drop: parts read", small.0, big.0);
+    flat("chunk drop: tree blobs", small.1, big.1);
+}

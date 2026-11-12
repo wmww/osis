@@ -447,7 +447,7 @@ fn below(blobs: &mut TxBlobs<'_, '_>, dedup: &Secret32, link: &Link) -> Result<O
     Ok(Some((false, out)))
 }
 
-/// Blob IDs of the trees under some roots (`Engine::live_trees`, `Engine::held_trees`).
+/// Blob IDs of the trees under some roots (`Engine::live_trees`, `Engine::tree_refs`).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Trees {
     /// Nodes and chunks reached through the node blobs held, and the roots.
@@ -495,24 +495,6 @@ impl Engine {
     /// The chunk trees the live states of `tid`'s aspects link. Complete when no node blob is
     /// `missing`.
     pub fn live_trees(&mut self, tid: &Tid) -> Result<Trees> {
-        self.trees_of(tid, false)
-    }
-
-    /// The chunk trees `tid`'s live states and every body held on its aspects link (deltas,
-    /// snapshots, leftovers): what a dropped body's chunks are judged against (spec/sync.md §1,
-    /// §7: a blob goes only when nothing held links it; a reused chunk or a snapshot's value is
-    /// not in the linking commit's chunk list). Complete when no node blob is `missing`. Cached
-    /// until the next change or blob arrival.
-    pub fn held_trees(&mut self, tid: &Tid) -> Result<Trees> {
-        if let Some(x) = self.core.held_trees.get(tid) {
-            return Ok(x.clone());
-        }
-        let r = self.trees_of(tid, true)?;
-        self.core.held_trees.insert(*tid, r.clone());
-        Ok(r)
-    }
-
-    fn trees_of(&mut self, tid: &Tid, bodies: bool) -> Result<Trees> {
         let aks = self.aspects(tid)?;
         let tid = *tid;
         self.run(|tx| {
@@ -522,17 +504,6 @@ impl Engine {
             for ak in &aks {
                 if let Some(v) = tx.state(&tid, ak)?.and_then(Fragment::read) {
                     links_in(&v, &mut roots);
-                }
-                if !bodies {
-                    continue;
-                }
-                let held: Vec<CommitId> = tx.core.ix.by_aspect.get(&(tid, ak.clone())).into_iter().flatten().map(|x| x.1).collect();
-                for c in held {
-                    let Some(h) = tx.core.ix.commits.get(&c).map(|m| m.header.clone()) else { continue };
-                    let on = |ai: usize| h.aspects.get(ai).is_some_and(|a| a.tid == tid && a.ak == *ak);
-                    for (_, d) in crate::apply::held_parts_at(tx, &c, &on)? {
-                        d.fragment().values(&mut |v| links_in(v, &mut roots));
-                    }
                 }
             }
             roots.sort_unstable_by_key(|l| l.blob);
