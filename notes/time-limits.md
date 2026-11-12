@@ -6,6 +6,7 @@ Each box's checks go to its own `~/.cache/osis/limits.log`; `tools/limits.py sum
 ## Hits
 Format: `- <date time> <box> `<limit>` [<test>] <CPU|wall> <measured>/<limit> s at load <N>: <why>`.
 
+- 2026-11-12 00:02 ostrich `gate.hold` CPU 5902/3795 s, wall 456/241 s and `gate` CPU 6720/4094 s, wall 611/299 s at load 18, 605 s lock wait apart: dead-pub-fathom review, 10 of 26 crates selected (osis-engine, osis-keys, osis-node changed); persistent, issues/gate-five-minutes.md.
 - 2026-11-11 ostrich `gate.hold` CPU 6615/3795 s, wall 545/241 s and `gate` CPU 7456/4094 s, wall 704/299 s at load 18, no lock wait: rotation-storm review, 11 of 26 crates selected (osis-keys, osis-perm changed); persistent, issues/gate-five-minutes.md.
 - 2026-11-10 15:01 ostrich `gate.unify` CPU 1768/460 s at load 17: the GUI built anew in the unification check (a measurement run had cleaned the target); the warm check is about 300 CPU-s.
 - 2026-11-10 15:19 ostrich `gate.hold` CPU 10240/3795 s, wall 1048/242 s at load 17: every crate selected; persistent, issues/gate-five-minutes.md.
