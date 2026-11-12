@@ -602,9 +602,11 @@ impl SyncEngine {
     fn carried(&mut self, at: &At, e: &Entry) -> Result<Carriage> {
         let (g, l, host) = (&at.g, &at.l, at.host.as_ref());
         let Kind::Commit { commit, parts, .. } = &e.kind else { return Ok((false, Vec::new())) };
-        // a forgotten memory commit: carried once an entry of what covered or superseded it is
-        // held at the host (spec/sync.md §9); nothing here to snapshot for it
-        if self.memory.forgotten.contains_key(commit) {
+        // a forgotten memory commit not held again: carried once an entry of what covered or
+        // superseded it is held at the host (spec/sync.md §9); nothing here to snapshot for it.
+        // Held again, the join judges it like any held body (`judge`): the record of what
+        // covered it then may cover it no more (a validity flip since)
+        if self.memory.forgotten.contains_key(commit) && !self.engine.core.ix.commits.contains_key(commit) {
             // what covers or supersedes it now: a coverer forgotten in turn (superseded before
             // it was placed, covered by a later snapshot) stands for what covers that
             let by = self.carriers_of_forgotten(commit);

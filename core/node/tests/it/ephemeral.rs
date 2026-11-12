@@ -2584,6 +2584,52 @@ fn a_stale_deleter_meets_one_re_placement_spec_sync_7() {
     assert_eq!(net.eph_read(b, w, CURSOR), net.eph_read(d, w, CURSOR));
 }
 
+// spec/sync.md §7, §9 A snapshot turning invalid (random churn seed 807204137413 shrunk): admin
+// a writes X on the cursor and the flag, then is away; b snapshots the cursor, c the flag, and
+// the others forget X as covered by both. a, not having c's snapshot, demotes c: that snapshot
+// falls, so X's flag write is uncovered and a places X again. b and d hold X again with its
+// cursor part dropped under b's valid snapshot: the record of what covered X when they forgot it
+// no longer speaks for it (it names c's fallen snapshot), so they keep X, not delete it at each
+// placement, forever.
+#[test]
+fn held_again_judged_by_the_join_not_its_forgotten_cover_spec_sync_9() {
+    let (mut net, (hosts, nodes, g, w)) = churn_world();
+    let (a, b, c, d) = (nodes[0], nodes[1], nodes[2], nodes[3]);
+    let mut m = Mutation::new();
+    m.op(w, &eph(CURSOR), PathOp { path: vec![PathSeg::Key(s("k"))], op: Op::Put(s("a")) }).unwrap();
+    m.set(w, &eph(FLAG), &s("fa")).unwrap();
+    let x = net.engine(a).write(m).unwrap().unwrap().id;
+    local(&mut net, a);
+    net.run();
+    net.set_online(a, false);
+    for (n, ak) in [(b, CURSOR), (c, FLAG)] {
+        net.engine(n).snapshot(&w, &eph(ak)).unwrap().unwrap();
+        local(&mut net, n);
+    }
+    net.run();
+    for _ in 0..(osis_base::format::MAX_DRIFT_MS / 60_000 + 2) {
+        net.advance(60_000);
+    }
+    assert!(!net.engine(b).holds_memory(&x), "b forgot X under the two snapshots");
+    let edge = osis_schema::core_types::Edge { role: Role::Read, until: None, invite: None, tied: None };
+    let demote = osis_node::flows::Demotion { holder: net.tid(c), new: Some(edge), retain: None };
+    let done = net.engine(a).demote(&g, &demote).unwrap();
+    let acts = net.sync(a).carry_out(done).unwrap();
+    net.actions(a, acts);
+    net.set_online(a, true);
+    net.run();
+    for _ in 0..3 {
+        net.advance(31_000);
+    }
+    let l = net.label(a);
+    for h in hosts {
+        assert!(commit_entries_at(&mut net, h, a, &l, x) <= 1, "X held at host {h}");
+    }
+    for n in [b, c, d] {
+        assert_eq!(net.eph_read(n, w, FLAG), net.eph_read(a, w, FLAG), "node {n} reads the flag as a");
+    }
+}
+
 /// The entries at `host` of `n`'s commit `c` under `l`, as `n` knows them (fresh encryptions
 /// it placed included).
 fn commit_entries_at(net: &mut Net, host: usize, n: usize, l: &osis_base::LabelId, c: CommitId) -> usize {

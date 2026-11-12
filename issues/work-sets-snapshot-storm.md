@@ -5,3 +5,4 @@
 
 - Repro: `cargo run --bin sim-sweep -- --seeds 1 --from 7010 --setup 7000 --only work_sets` (main), `--from 736047789878 --setup 736047789870` (contact-card setup); `OSIS_SIM_TRACE=1` shows the loop: `Stream L+X` from the placer, the deleter's `Fetch X` then `Delete X`, the placer's `Stream L+Y L-X`.
 - Start at: why the deleter judges the copy must-not-hold while the placer re-places it (`encrypt_again` re-places where its delete does not stand; spec/sync.md §6 verdicts). The scenario compacts `s:reg.0` and `s:tags.0` under purge-on-replace retention.
+- Both listed repros (`--from 7010 --setup 7000`, `--from 736047789878 --setup 736047789870`) pass on main at 2f6cb5d04: a wider sweep should say whether the class is still live. Not the cause of churn seed 807204137413 (a held-again memory commit judged by its forgotten cover; this storm is on durable content).

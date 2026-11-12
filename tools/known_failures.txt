@@ -7,6 +7,7 @@ order::held_set_decides_plain OSIS_ORDER_START=539131766525 issues/order-require
 keep::any_order_until_keeps_no_more_large OSIS_KEEP_START=636109736897 issues/keep-until-order-seed.md kept only by order
 rotation::tests_property::rotation_holds_large_spec_crypto_4 OSIS_ROTATION_START=1044279127 issues/rotation-holder-lacks-box-seed.md with key access lacks a box
 ephemeral::random_churn_converges_large OSIS_EPH_START=807204137413 issues/churn-seed-413-loop.md no quiescence after \d+ rounds
+rotation::tests_property::rotation_holds_large_spec_crypto_4 OSIS_ROTATION_START=962141499239 issues/rotation-opens-departed-seed.md made by a rotator that saw it depart
 sim-sweep:evil_host_drops 472765857787/472765857787 issues/evil-host-drops-seed-787.md not quiescent after \d+ rounds
 sim-sweep:evil_host_drops 899326633465/899326633475 issues/evil-host-drops-seed-787.md labels changed after quiescence \(ping-pong\): \["s0 LabelId
 sim-sweep:work_sets 7000/7010 issues/work-sets-snapshot-storm.md message storm: .*kind Some\(ContentSnapshot\)
