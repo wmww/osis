@@ -60,7 +60,10 @@ pub type OpenBlob = fn(&[u8], &[u8; 32]) -> Option<Vec<u8>>;
 /// The sections of an opened commit blob plaintext, but those listed open already, that any
 /// of the candidates opens, as a read secret of their wrap or as their key: (section index,
 /// plaintext), one per section. Empty for any other plaintext.
-pub type OpenSections = fn(&[u8], &[Trial], &HashSet<usize>) -> Vec<(usize, Vec<u8>)>;
+pub type OpenSections = fn(&[u8], &[Trial], &HashSet<usize>) -> Opened;
+
+/// Sections opened: (section index, plaintext).
+pub type Opened = Vec<(usize, Vec<u8>)>;
 
 /// How blobs and sections open: the layers above the store define them (osis-label's frame,
 /// osis-commit's sections). A blob is a clear prefix and a ciphertext as
@@ -147,6 +150,43 @@ fn prepare(keys: &[[u8; 32]]) -> Vec<Trial> {
         let hs: Vec<_> = keys.chunks(keys.len().div_ceil(n).max(1)).map(|c| sc.spawn(move || c.iter().map(Trial::new).collect::<Vec<_>>())).collect();
         hs.into_iter().flat_map(|h| h.join().unwrap_or_else(|e| std::panic::resume_unwind(e))).collect()
     })
+}
+
+/// An opened commit blob plaintext: the blobs it opened from, and its sections opened so far.
+struct Envelope {
+    blobs: Vec<usize>,
+    plain: Vec<u8>,
+    opened: BTreeMap<usize, Vec<u8>>,
+    /// The trials its sections were tried under: the first this many.
+    tried: usize,
+}
+
+/// The sections of every envelope that the trials it was not tried under open
+/// (`Ciphers::sections`, one thread per envelope), each recovered from every blob of its
+/// envelope and `harvest`ed.
+fn open_sections(c: &Ciphers, envelopes: &mut [Envelope], trials: &[Trial], blobs: &[(BlobId, Vec<u8>)], out: &mut Vec<Recovered>, harvest: &mut dyn FnMut(&[u8])) {
+    // (envelope, plaintext, trials not tried yet, sections open)
+    type Job<'a> = (usize, &'a [u8], &'a [Trial], HashSet<usize>);
+    let jobs: Vec<Job> = envelopes.iter().enumerate().filter_map(|(i, e)| Some((i, &e.plain[..], trials.get(e.tried..).filter(|t| !t.is_empty())?, e.opened.keys().copied().collect()))).collect();
+    let opened: Vec<(usize, Opened)> = std::thread::scope(|sc| {
+        let hs: Vec<_> = jobs.iter().map(|(i, plain, trials, opened)| sc.spawn(move || (*i, (c.sections)(plain, trials, opened)))).collect();
+        hs.into_iter().map(|h| h.join().unwrap_or_else(|e| std::panic::resume_unwind(e))).collect()
+    });
+    for e in envelopes.iter_mut() {
+        e.tried = trials.len();
+    }
+    for (i, found) in opened {
+        let Some(e) = envelopes.get_mut(i) else { continue };
+        for (si, p) in found {
+            harvest(&p);
+            for b in &e.blobs {
+                if let Some((id, _)) = blobs.get(*b) {
+                    out.push(Recovered { from: Source::Blob { id: *id, wrapped: true }, plain: p.clone() });
+                }
+            }
+            e.opened.insert(si, p);
+        }
+    }
 }
 
 /// Everything the attacker recovers from `ev` (see the module doc); without `ciphers` blobs
@@ -253,26 +293,21 @@ pub fn attack(ev: &Evidence, ciphers: Option<&Ciphers>) -> Vec<Recovered> {
         return out;
     }
     let mut open_blobs = vec![false; blobs.len()];
-    // opened commit blobs: their plaintexts, with the sections opened so far
-    let mut envelopes: Vec<(usize, Vec<u8>, HashSet<usize>)> = Vec::new();
+    // opened commit blob plaintexts, each once (copies of one commit under several blobs open to
+    // the same bytes, so the same sections open under the same candidates)
+    let mut envelopes: Vec<Envelope> = Vec::new();
+    let mut by_plain: HashMap<Vec<u8>, usize> = HashMap::new();
     // the candidates prepared once each (`Trial`: a keystream, a wrap key)
     let mut trials: Vec<Trial> = Vec::new();
     let mut done = 0;
     while done < cands.len() {
+        // the candidates before `from` were tried on every blob
+        let from = done;
         trials.extend(prepare(cands.get(trials.len()..).unwrap_or_default()));
-        let batch = trials.get(done..).unwrap_or_default();
         done = cands.len();
         // sections of blobs opened before: every candidate as a read secret or section key
-        for (i, plain, opened) in &mut envelopes {
-            for (si, p) in (c.sections)(plain, batch, opened) {
-                if opened.insert(si)
-                    && let Some((id, _)) = blobs.get(*i)
-                {
-                    harvest(&p, &mut cands);
-                    out.push(Recovered { from: Source::Blob { id: *id, wrapped: true }, plain: p });
-                }
-            }
-        }
+        open_sections(c, &mut envelopes, &trials, &blobs, &mut out, &mut |p| harvest(p, &mut cands));
+        let batch = trials.get(from..).unwrap_or_default();
         // every candidate as the blob's key, then through every wrap of it as a read secret
         let try_blob = |i: usize| -> Option<(usize, Vec<u8>, bool)> {
             let (id, blob) = blobs.get(i)?;
@@ -295,20 +330,23 @@ pub fn attack(ev: &Evidence, ciphers: Option<&Ciphers>) -> Vec<Recovered> {
         for (i, p, wrapped) in found {
             if let (Some(o), Some((id, _))) = (open_blobs.get_mut(i), blobs.get(i)) {
                 *o = true;
-                harvest(&p, &mut cands);
-                // its sections under every candidate so far (a read secret seen before this blob's key)
-                trials.extend(prepare(cands.get(trials.len()..).unwrap_or_default()));
-                let mut opened = HashSet::new();
-                for (si, sp) in (c.sections)(&p, &trials, &HashSet::new()) {
-                    if opened.insert(si) {
-                        harvest(&sp, &mut cands);
-                        out.push(Recovered { from: Source::Blob { id: *id, wrapped: true }, plain: sp });
+                out.push(Recovered { from: Source::Blob { id: *id, wrapped }, plain: p.clone() });
+                if let Some(e) = by_plain.get(&p).and_then(|&e| envelopes.get_mut(e)) {
+                    // a copy of an envelope opened before: its sections, as opened so far
+                    e.blobs.push(i);
+                    for sp in e.opened.values() {
+                        out.push(Recovered { from: Source::Blob { id: *id, wrapped: true }, plain: sp.clone() });
                     }
+                    continue;
                 }
-                envelopes.push((i, p.clone(), opened));
-                out.push(Recovered { from: Source::Blob { id: *id, wrapped }, plain: p });
+                harvest(&p, &mut cands);
+                by_plain.insert(p.clone(), envelopes.len());
+                envelopes.push(Envelope { blobs: vec![i], plain: p, opened: BTreeMap::new(), tried: 0 });
             }
         }
+        // their sections under every candidate so far (a read secret seen before their keys)
+        trials.extend(prepare(cands.get(trials.len()..).unwrap_or_default()));
+        open_sections(c, &mut envelopes, &trials, &blobs, &mut out, &mut |p| harvest(p, &mut cands));
     }
     out
 }

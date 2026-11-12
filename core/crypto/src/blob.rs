@@ -151,12 +151,14 @@ pub struct Trial {
     key: Secret32,
     zero: aead::Keystream,
     wrap: Secret32,
+    /// Its section wrap key (`section_key`), derived when first tried on a section wrap.
+    section: std::sync::OnceLock<Secret32>,
 }
 
 impl Trial {
     pub fn new(key: &[u8; 32]) -> Trial {
         let key = Secret32::from_bytes(*key);
-        Trial { zero: aead::Keystream::new(key.expose(), &ZERO_NONCE), wrap: wrap_key(&key), key }
+        Trial { zero: aead::Keystream::new(key.expose(), &ZERO_NONCE), wrap: wrap_key(&key), section: std::sync::OnceLock::new(), key }
     }
 
     pub fn key(&self) -> &Secret32 {
@@ -180,6 +182,11 @@ impl Trial {
     pub fn unwraps(&self, id: &BlobId, wraps: &[Vec<u8>]) -> Vec<Secret32> {
         let k0 = aead::Keystream::new(self.wrap.expose(), &wrap_nonce(id)).byte(0);
         wraps.iter().filter(|w| w.len() == WRAP_LEN && w.first().map(|c| c ^ k0) == Some(SUITE_1)).filter_map(|w| unwrap_under(&self.wrap, id, w).ok().map(|x| x.0)).collect()
+    }
+
+    /// `unwrap_section` with this key as the read secret.
+    pub fn unwrap_section(&self, commit: &CommitId, wrap: &[u8]) -> Result<Secret32, Error> {
+        unwrap_section_under(self.section.get_or_init(|| section_key(&self.key)), commit, wrap)
     }
 }
 
@@ -209,7 +216,7 @@ pub fn open_section(commit: &CommitId, key: &Secret32, ciphertext: &[u8]) -> Res
 pub fn wrap_section(read_secret: &Secret32, commit: &CommitId, key: &Secret32, rng: &mut dyn CryptoRngCore) -> Result<[u8; SECTION_WRAP_LEN], Error> {
     let mut nonce = [0u8; aead::NONCE_LEN];
     rng.fill_bytes(&mut nonce);
-    let sealed = aead::seal(kdf(kdf::SECTION, read_secret.expose(), b"").expose(), &nonce, &commit.0, key.expose())?;
+    let sealed = aead::seal(section_key(read_secret).expose(), &nonce, &commit.0, key.expose())?;
     let mut out = [0u8; SECTION_WRAP_LEN];
     out.get_mut(..aead::NONCE_LEN).ok_or(Error::Malformed("section wrap length"))?.copy_from_slice(&nonce);
     out.get_mut(aead::NONCE_LEN..).ok_or(Error::Malformed("section wrap length"))?.copy_from_slice(&sealed);
@@ -219,12 +226,22 @@ pub fn wrap_section(read_secret: &Secret32, commit: &CommitId, key: &Secret32, r
 /// Opens a section wrap under a read secret; a reader tries the secrets of the section's
 /// reader actor newest first.
 pub fn unwrap_section(read_secret: &Secret32, commit: &CommitId, wrap: &[u8]) -> Result<Secret32, Error> {
+    unwrap_section_under(&section_key(read_secret), commit, wrap)
+}
+
+/// The key a read secret's section wraps are sealed under.
+fn section_key(read_secret: &Secret32) -> Secret32 {
+    kdf(kdf::SECTION, read_secret.expose(), b"")
+}
+
+/// `unwrap_section` under the read secret's `section_key`.
+fn unwrap_section_under(section_key: &Secret32, commit: &CommitId, wrap: &[u8]) -> Result<Secret32, Error> {
     if wrap.len() != SECTION_WRAP_LEN {
         return Err(Error::Malformed("section wrap length"));
     }
     let (nonce, sealed) = wrap.split_at_checked(aead::NONCE_LEN).ok_or(Error::Malformed("section wrap length"))?;
     let nonce: [u8; aead::NONCE_LEN] = nonce.try_into().map_err(|_| Error::Malformed("section wrap length"))?;
-    let pt = Zeroizing::new(aead::open(kdf(kdf::SECTION, read_secret.expose(), b"").expose(), &nonce, &commit.0, sealed)?);
+    let pt = Zeroizing::new(aead::open(section_key.expose(), &nonce, &commit.0, sealed)?);
     let k: [u8; 32] = pt[..].try_into().map_err(|_| Error::Decrypt)?;
     Ok(Secret32::from_bytes(k))
 }

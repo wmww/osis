@@ -904,7 +904,7 @@ const FORENSIC_CIPHERS: osis_store::Ciphers = osis_store::Ciphers {
             .filter_map(|(i, s)| {
                 keys.iter().find_map(|t| {
                     // as the key itself, only if its first plaintext bytes can begin a section
-                    let sk = match osis_crypto::unwrap_section(t.key(), &id, &s.wrap) {
+                    let sk = match t.unwrap_section(&id, &s.wrap) {
                         Ok(sk) => sk,
                         Err(_) if s.may_open_with(t.zero()) => t.key().clone(),
                         Err(_) => return None,

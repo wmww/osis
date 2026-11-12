@@ -300,9 +300,67 @@ fn depend(deps: &[Dep]) {
 #[derive(Clone)]
 struct Entry<V> {
     value: V,
+    /// What the answer read, those of one container side by side (`Entry::new`).
     deps: Arc<[Dep]>,
+    groups: Box<[Group]>,
     #[cfg(debug_assertions)]
     checks: Checks,
+}
+
+/// The reads `deps[start..end]` of an answer, all of one container, and that container's change
+/// count when they last all held (`None`: not looked at yet). While the count stands nothing in
+/// the container changed, so they hold without a key looked up: a hit costs a lock per
+/// container read, not a lookup per key, until the container changes.
+#[derive(Clone)]
+struct Group {
+    start: usize,
+    end: usize,
+    held_at: Cell<Option<u64>>,
+}
+
+impl<V> Entry<V> {
+    fn new(value: V, deps: Arc<[Dep]>) -> Entry<V> {
+        let mut deps = deps.to_vec();
+        deps.sort_by_key(|d| Arc::as_ptr(&d.table) as usize);
+        let deps: Arc<[Dep]> = deps.into();
+        let groups = groups(&deps);
+        Entry {
+            value,
+            #[cfg(debug_assertions)]
+            checks: Checks::new(&deps, &groups),
+            groups,
+            deps,
+        }
+    }
+
+    /// Whether every read still has the stamp it saw.
+    fn holds(&self) -> bool {
+        self.groups.iter().all(|g| {
+            let deps = self.deps.get(g.start..g.end).unwrap_or_default();
+            let Some(first) = deps.first() else { return true };
+            let t = lock(&first.table);
+            if g.held_at.get() == Some(t.ver) {
+                return true;
+            }
+            let holds = deps.iter().all(|d| t.stamp(d.key) == d.seen);
+            if holds {
+                g.held_at.set(Some(t.ver));
+            }
+            holds
+        })
+    }
+}
+
+/// The runs of `deps` reading one container (`Group`).
+fn groups(deps: &[Dep]) -> Box<[Group]> {
+    let mut out: Vec<Group> = Vec::new();
+    for (i, d) in deps.iter().enumerate() {
+        match out.last_mut() {
+            Some(g) if deps.get(g.start).is_some_and(|x| Arc::ptr_eq(&x.table, &d.table)) => g.end = i + 1,
+            _ => out.push(Group { start: i, end: i + 1, held_at: Cell::new(None) }),
+        }
+    }
+    out.into()
 }
 
 /// Debug builds: when a kept answer is compared with a fresh run (`Memo::compare`), to find a
@@ -327,19 +385,19 @@ struct Checks {
 
 #[cfg(debug_assertions)]
 impl Checks {
-    fn new(deps: &[Dep]) -> Checks {
-        Checks { at: moves(deps), moved: 0, hits: 0 }
+    fn new(deps: &[Dep], groups: &[Group]) -> Checks {
+        Checks { at: moves(deps, groups), moved: 0, hits: 0 }
     }
 
     /// A hit on an answer that read `deps` (`amended`: brought up to date at this hit): whether
     /// to compare it.
-    fn hit(&mut self, deps: &[Dep], amended: bool) -> bool {
+    fn hit(&mut self, deps: &[Dep], groups: &[Group], amended: bool) -> bool {
         if comparing() {
             return false;
         }
         self.hits += 1;
         let often = self.hits > 1 && self.hits.is_power_of_two() && self.hits.trailing_zeros().is_multiple_of(4);
-        let at = moves(deps);
+        let at = moves(deps, groups);
         if !amended && at == self.at {
             return often;
         }
@@ -349,11 +407,12 @@ impl Checks {
     }
 }
 
-/// The changes so far of the containers `deps` read, summed: it moves exactly when one of them
-/// changed (each count only grows; a dropped container's goes to `u64::MAX`).
+/// The changes so far of the containers an entry read (`deps` in its `groups`), summed: it moves
+/// exactly when one of them changed (each count only grows; a dropped container's goes to
+/// `u64::MAX`).
 #[cfg(debug_assertions)]
-fn moves(deps: &[Dep]) -> u128 {
-    deps.iter().map(|d| u128::from(lock(&d.table).ver)).sum()
+fn moves(deps: &[Dep], groups: &[Group]) -> u128 {
+    groups.iter().filter_map(|g| deps.get(g.start)).map(|d| u128::from(lock(&d.table).ver)).sum()
 }
 
 /// A function of `K` and of what it reads through stamped containers, computed again only when
@@ -483,7 +542,7 @@ impl<K: Hash + Eq + Clone, V: Clone + PartialEq + std::fmt::Debug> Memo<K, V> {
     /// The answer kept for `k` while it holds, read by a writer about to change what it was read
     /// from (`amend`): nothing computing depends on it.
     pub fn held(&self, k: &K) -> Option<V> {
-        self.entries.borrow().get(k).filter(|e| e.deps.iter().all(Dep::holds)).map(|e| e.value.clone())
+        self.entries.borrow().get(k).filter(|e| e.holds()).map(|e| e.value.clone())
     }
 
     /// Drops the answer kept for `k`: for an input no stamp covers that the asker checks of the
@@ -500,6 +559,7 @@ impl<K: Hash + Eq + Clone, V: Clone + PartialEq + std::fmt::Debug> Memo<K, V> {
         if let Some(e) = self.entries.borrow_mut().get_mut(k) {
             e.value = value;
             e.deps = e.deps.iter().map(|d| Dep { seen: lock(&d.table).stamp(d.key), ..d.clone() }).collect();
+            e.groups = groups(&e.deps);
         }
     }
 
@@ -507,9 +567,9 @@ impl<K: Hash + Eq + Clone, V: Clone + PartialEq + std::fmt::Debug> Memo<K, V> {
     /// a fresh run (debug builds, `Checks`).
     fn kept(&self, k: &K) -> Option<(V, Arc<[Dep]>, bool)> {
         let mut entries = self.entries.borrow_mut();
-        let e = entries.get_mut(k).filter(|e| e.deps.iter().all(Dep::holds))?;
+        let e = entries.get_mut(k).filter(|e| e.holds())?;
         #[cfg(debug_assertions)]
-        let check = e.checks.hit(&e.deps, false);
+        let check = e.checks.hit(&e.deps, &e.groups, false);
         #[cfg(not(debug_assertions))]
         let check = false;
         Some((e.value.clone(), e.deps.clone(), check))
@@ -520,11 +580,13 @@ impl<K: Hash + Eq + Clone, V: Clone + PartialEq + std::fmt::Debug> Memo<K, V> {
     fn keep_amended(&self, k: &K, value: &V, deps: Arc<[Dep]>) -> bool {
         let mut entries = self.entries.borrow_mut();
         let Some(e) = entries.get_mut(k) else { return false };
-        e.value = value.clone();
-        e.deps = deps;
+        #[cfg(debug_assertions)]
+        let checks = e.checks;
+        *e = Entry::new(value.clone(), deps);
         #[cfg(debug_assertions)]
         {
-            e.checks.hit(&e.deps, true)
+            e.checks = checks;
+            e.checks.hit(&e.deps, &e.groups, true)
         }
         #[cfg(not(debug_assertions))]
         false
@@ -532,14 +594,9 @@ impl<K: Hash + Eq + Clone, V: Clone + PartialEq + std::fmt::Debug> Memo<K, V> {
 
     fn keep(&self, k: &K, value: &V, deps: Arc<[Dep]>) {
         let mut entries = self.entries.borrow_mut();
-        entries.insert(k.clone(), Entry {
-            value: value.clone(),
-            #[cfg(debug_assertions)]
-            checks: Checks::new(&deps),
-            deps,
-        });
+        entries.insert(k.clone(), Entry::new(value.clone(), deps));
         if entries.len() >= SWEEP.saturating_mul(self.kept.get().max(1)) {
-            entries.retain(|_, e| e.deps.iter().all(Dep::holds));
+            entries.retain(|_, e| e.holds());
             self.kept.set(entries.len());
         }
     }
@@ -789,6 +846,34 @@ mod tests {
     // moved was only ever read inside `accounted`, and is again by the amend; a move of any other
     // read runs the function anew, as does an amend giving no answer, and so does a move of a
     // stamp read inside and outside `accounted` (as two keys sharing a hash share one).
+    // spec: none (engine internals): a hit looks up the keys an answer read only in containers
+    // that changed since they last held; an unchanged one holds whole, a moved key in either
+    // container runs it again, however often it was asked in between
+    #[test]
+    fn a_hit_looks_at_keys_only_where_their_container_moved() {
+        let mut m: JMap<u8, u8> = JMap::default();
+        let mut s: JSet<u8> = JSet::default();
+        let memo: Memo<u8, (Option<u8>, bool)> = Memo::new("test pair");
+        let ask = |m: &JMap<u8, u8>, s: &JSet<u8>, k: u8| memo.get(&k, || (m.get(&k).copied(), s.contains(&k)));
+        crate::costs::take();
+        assert_eq!(ask(&m, &s, 1), (None, false));
+        for (step, (mk, sk)) in [(Some(2), None), (None, Some(2)), (Some(2), Some(3)), (None, None)].into_iter().enumerate() {
+            if let Some(k) = mk {
+                m.insert(k, k);
+            }
+            if let Some(k) = sk {
+                s.insert(k);
+            }
+            assert_eq!((ask(&m, &s, 1), ask(&m, &s, 1)), ((None, false), (None, false)));
+            assert_eq!(runs("test pair"), u64::from(step == 0), "step {step}: only the first ask ran");
+        }
+        s.insert(1);
+        assert_eq!(ask(&m, &s, 1), (None, true));
+        m.insert(1, 7);
+        assert_eq!((ask(&m, &s, 1), ask(&m, &s, 1)), ((Some(7), true), (Some(7), true)));
+        assert_eq!(runs("test pair"), 2, "a key read moved in one container, then in the other");
+    }
+
     #[test]
     fn an_amend_is_kept_only_over_what_it_accounts_for() {
         let mut list: JMap<u8, Vec<u8>> = JMap::default();
