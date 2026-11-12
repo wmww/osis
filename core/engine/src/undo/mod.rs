@@ -802,6 +802,41 @@ mod tests {
         }
     }
 
+    // spec/crdt.md §4.6 (an invalid delta loses only its own writes), spec/commits.md §5
+    // Forgetting: a commit forgotten for a part dropped as invalid stands for nothing an undo may
+    // have replaced, as at a node that never received it. A puts `k` keeping history; R, a reader
+    // of the thing, writes `x` past its rules; A drops it invalid, forgets it, and still
+    // undoes its removal of `k`.
+    #[test]
+    fn forgotten_invalid_commit_blocks_no_undo_spec_crdt_4_6() {
+        let mut lp = LocalPeer::fresh(2, WallMs(1_700_000_000_000));
+        lp.sync_all().unwrap();
+        let a = lp.peers[0].engine.me();
+        let keep = osis_schema::Retention { by: osis_schema::PurgeBy::Writer };
+        let (t, _) = lp.peers[0].engine.create_with_admin(&a).unwrap();
+        let r = lp.peers[1].engine.me();
+        lp.peers[0].engine.grant(&t, &r, &ct::Edge { role: Role::Read, until: None, invite: None, tied: None }).unwrap();
+        let x = Ak::new("x:m.0").unwrap();
+        let day = osis_schema::History::Keep { until: None, after: Some(86_400_000) };
+        let mut m = Mutation::new();
+        m.set(t, &ct::RETENTION, &ct::RetentionSetting::of(x.clone(), day)).unwrap();
+        lp.peers[0].commit(m).unwrap();
+        let mut m = Mutation::new();
+        m.set(t, &x, &Value::Map([(Value::Str("k".into()), Value::Int(1))].into_iter().collect())).unwrap().retention(t, &x, keep).unwrap();
+        lp.peers[0].commit(m).unwrap().unwrap();
+        lp.sync_all().unwrap();
+        lp.advance(10);
+        let mut m = Mutation::new();
+        m.op(t, &x, PathOp { path: vec![osis_crdt::PathSeg::Key(Value::Str("j".into()))], op: Op::Put(Value::Int(2)) }).unwrap();
+        let bad = lp.peers[1].engine.commit_hostile(m).unwrap().unwrap();
+        let bytes = lp.peers[1].engine.take_forged().unwrap();
+        lp.peers[0].receive(&bytes, Vec::new()).unwrap();
+        let e = &mut lp.peers[0].engine;
+        assert!(e.forgettable(&bad), "R's commit kept for an invalid part only");
+        e.forget_commit(&bad).unwrap();
+        remove_k(&mut lp, t, &x, keep).unwrap().unwrap();
+    }
+
     // Delivers `from`'s commits `to` peer `to`, `id` without its parts on `leave`'s thing (held
     // as missing there).
     fn deliver_leaving(lp: &mut LocalPeer, from: usize, to: usize, id: osis_base::CommitId, leave: osis_base::Tid) {

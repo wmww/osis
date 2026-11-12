@@ -31,7 +31,7 @@ pub(crate) fn unindex_commit(tx: &mut Tx<'_>, id: &CommitId) -> Result<()> {
         core.memory.dropped.push((*id, m.header.arc(), why));
         core.memory.dirty.extend(v.aspects.iter().map(|a| (a.tid, a.ak.clone())));
     }
-    for a in &v.aspects {
+    for (ai, a) in v.aspects.iter().enumerate() {
         let k = (a.tid, a.ak.clone());
         core.ix.by_aspect.remove(&k, &(v.ts, *id));
         core.ix.invalid.remove(&k, id);
@@ -41,8 +41,9 @@ pub(crate) fn unindex_commit(tx: &mut Tx<'_>, id: &CommitId) -> Result<()> {
             core.ix.ranges.remove(&(a.tid, a.ak.clone(), v.form.own_source(v.author, *id)), &(a.lo, *id));
         }
         super::atomic::forget_snapshot(core, &a.tid, &a.ak, id);
-        // a memory commit's aspect holds no durable one (ephemeral aspects): one row per aspect
-        if core.ix.forgotten.get(&k).is_none_or(|t| *t < v.ts) {
+        // a memory commit's aspect holds no durable one (ephemeral aspects): one row per aspect;
+        // an invalid part replaced nothing (`undo::parts_before` skips it), so it stands for none
+        if m.valid_at(ai) && core.ix.forgotten.get(&k).is_none_or(|t| *t < v.ts) {
             if !v.memory {
                 tx.txn.put_local(&records::aspect_key(records::FORGOTTEN, &a.tid, &a.ak), &v.ts.to_u64().to_be_bytes(), Shred::No)?;
             }

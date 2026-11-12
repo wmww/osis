@@ -654,7 +654,7 @@ indexes! {
     /// Snapshots per aspect whose dropped part still stands in (`Dropped::stands_in`; derived at
     /// open, not persisted).
     pub dropped_snapshots: JSetMap<(Tid, Ak), CommitId>,
-    /// Per aspect the newest `ts` of a commit forgotten here with a part on it
+    /// Per aspect the newest `ts` of a commit forgotten here with a valid part on it
     /// (`apply::unindex_commit`): what stands for the forgotten parts an undo may have replaced
     /// (`undo::replaced_kept`). A durable commit's row persists (`records::FORGOTTEN`).
     pub forgotten: JMap<(Tid, Ak), Ts>,
