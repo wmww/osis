@@ -1,1 +1,2 @@
 - The repro for swept-hidden-write-uncoverable had stopped reproducing its issue: peer 1 compacted on receiving the removal (purge on replace) before peer 0 fetched the edit, so peer 0 only ever held the edit's header ("missing"), which `body_not_dropped` reports as not dropped. Read `aspect_dump` before trusting an ignored repro's failure text.
+- Review: `reflected`'s snapshot branch had no test (every test applied the creating delta at the sweeper); added `sweep_by_a_snapshots_frontier_spec_sync_7`, checked to fail with the branch disabled.

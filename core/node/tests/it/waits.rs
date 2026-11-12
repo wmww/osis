@@ -703,6 +703,56 @@ fn hidden_write_goes_at_compaction_spec_sync_7() {
     }
 }
 
+// spec/sync.md §7 (a creation is dead when a held valid snapshot's `Frontiers` reach its delta): a
+// node that never received the entry's creation, holding a snapshot past it and an edit into it,
+// sweeps the edit; without the snapshot it keeps it (the creation may arrive).
+#[test]
+fn sweep_by_a_snapshots_frontier_spec_sync_7() {
+    let k = GONEMAP.name();
+    for with_snapshot in [false, true] {
+        let (mut lp, t) = one_writer(3);
+        writer(&mut lp, t, 2);
+        lp.sync_all().unwrap();
+        let op = |lp: &mut LocalPeer, i: usize, path: Vec<osis_crdt::PathSeg>, op: osis_crdt::Op| {
+            let mut m = Mutation::new();
+            m.op(t, &GONEMAP, osis_crdt::PathOp { path, op }).unwrap();
+            lp.peers[i].commit(m).unwrap().unwrap()
+        };
+        let key = || vec![osis_crdt::PathSeg::Key(s("SECRETKEY"))];
+        // peer 0's entry reaches peer 1 only
+        let put = op(&mut lp, 0, key(), osis_crdt::Op::Set(s("first")));
+        let pk = lp.peers[0].engine.package(&put).unwrap().unwrap();
+        lp.deliver(1, &pk).unwrap();
+        lp.advance(10);
+        let after = Value::Map([(s("other"), s("x"))].into_iter().collect());
+        let over = op(&mut lp, 0, vec![], osis_crdt::Op::Replace(after.clone()));
+        lp.advance(10);
+        let edit = op(&mut lp, 1, key(), osis_crdt::Op::Set(s("HIDDENVAL")));
+        let snap = lp.peers[0].engine.snapshot(&t, &k).unwrap().unwrap();
+        let what = format!("snapshot {with_snapshot}");
+        let deliver = |lp: &mut LocalPeer, from: usize, c: &osis_base::CommitId| {
+            let pk = lp.peers[from].engine.package(c).unwrap().unwrap();
+            lp.deliver(2, &pk).unwrap();
+        };
+        if with_snapshot {
+            deliver(&mut lp, 0, &snap);
+        } else {
+            deliver(&mut lp, 0, &over);
+        }
+        deliver(&mut lp, 1, &edit);
+        let e = &mut lp.peers[2].engine;
+        assert!(!e.body_not_dropped(&put, &t, &k), "{what}: the creation's body never here");
+        assert_eq!(e.get(&t, &k).unwrap(), Some(after.clone()), "{what}");
+        let n = e.commit_ids().len();
+        let mine = e.snapshot(&t, &k).unwrap().unwrap();
+        assert_eq!(e.commit_ids().len(), n + 1 + usize::from(with_snapshot), "{what}: a sweep only past the snapshot");
+        assert_eq!(e.get(&t, &k).unwrap(), Some(after.clone()), "{what}");
+        let pk = e.package(&mine).unwrap().unwrap();
+        let carries = std::iter::once(&pk.bytes).chain(pk.blobs.iter().map(|(_, b)| b)).any(|b| b.windows(9).any(|x| x == b"HIDDENVAL"));
+        assert_eq!(carries, !with_snapshot, "{what}: the hidden value in the snapshot");
+    }
+}
+
 // spec/sync.md §7: a sweep's lookups are per hidden record (the creating delta of each record
 // lacking its creation), none for live ones; its walk is the state's, as the snapshot's.
 #[test]
