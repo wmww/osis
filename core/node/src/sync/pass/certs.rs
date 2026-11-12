@@ -83,17 +83,8 @@ impl SyncEngine {
             if missing.is_empty() || mine.is_empty() && self.state.certs.contains(&(l, c)) && !self.own_card_read(g, &c, &missing) {
                 continue;
             }
-            // another node's demotion or new `keys.0` received less than `SETTLE_MS` ago is its
-            // author's to place (spec/permissions.md §3, §4): holders that learn of it under
-            // another label first do not all copy it; a wake brings the pass back then. An author
-            // that does not read the label's actor places nothing: its copy just comes that late
-            let now = self.now();
-            let due = self.engine.core.ix.commits.get(&c).filter(|m| m.origin != crate::events::Origin::Local).map(|m| m.received.0.saturating_add(SETTLE_MS)).filter(|t| *t > now);
-            if let Some(t) = due
-                && let Some(h) = self.engine.header(&c)
-                && (h.frontier.is_some() || missing.iter().all(|ai| h.aspects.get(*ai).is_some_and(|a| a.ak.as_str() == "keys.0")))
-            {
-                self.settle_by(t, l);
+            // another node's card, `keys.0` or demotion is its maker's to place first
+            if self.authors_own(&c, &missing) && self.copy_due(l, &c) {
                 continue;
             }
             // nothing to place once its parts are dropped here (`State::sweep_certs`)
@@ -144,6 +135,35 @@ impl SyncEngine {
             self.place_copy(g, l, &c, &BTreeSet::new(), body)?;
         }
         self.place_lists(g, l, listed_things)
+    }
+
+    /// Whether `parts` of another node's commit `c` are what its maker places itself: its own
+    /// card or a `keys.0` (spec/permissions.md §4), or a demotion (§3).
+    pub(super) fn authors_own(&self, c: &CommitId, parts: &BTreeSet<usize>) -> bool {
+        let Some(h) = self.engine.header(c) else { return false };
+        h.frontier.is_some() || parts.iter().all(|ai| h.aspects.get(*ai).is_some_and(|a| a.ak.as_str() == "keys.0" || a.tid == h.author && is_card(a.ak.as_str())))
+    }
+
+    /// Whether this node leaves its copy of another node's commit `c` under `l` to that commit's
+    /// maker for now (spec/permissions.md §3, §4): every holder wants the same card and demotion
+    /// copies, so the maker places them at once and any other holder only `relay_delay` after it
+    /// received the commit and first passed the label, then just what is still lacking
+    /// (`settle_by` brings the pass back). A maker not reading the label places nothing: the
+    /// copy just comes that late.
+    pub(super) fn copy_due(&mut self, l: LabelId, c: &CommitId) -> bool {
+        if self.own(c) || self.first.contains(c) {
+            return false;
+        }
+        let received = self.engine.core.ix.commits.get(c).map_or(0, |m| m.received.0);
+        let since = self.held_since.get(&l).copied().unwrap_or(0);
+        let mut key = l.0.to_vec();
+        key.extend_from_slice(&c.0);
+        let due = received.max(since).saturating_add(self.relay_delay(&key));
+        if self.now() >= due {
+            return false;
+        }
+        self.settle_by(due, l);
+        true
     }
 
     /// The thing lists of this node's account's rotations for the things in `g`'s closure, those

@@ -210,9 +210,12 @@ pub struct SyncEngine {
     pub(crate) inbox_plain: BTreeMap<(LabelId, osis_base::BlobId), InboxPlain>,
     /// `state.version` the sweep of reading-only sources last ran at (`sweep_unchecked`).
     pub(crate) unchecked_swept: Option<u64>,
-    /// When a certificate left to its author (`SETTLE_MS`), or another node's body or deposit
-    /// left to a co-writer (`RELAY_MIN_MS`), is due again (wall ms).
+    /// When another node's certificate, body or deposit left to its author or a co-writer
+    /// (`relay_delay`) is due again (wall ms).
     pub(crate) settle_at: BTreeMap<u64, BTreeSet<LabelId>>,
+    /// When this node's passes first saw each label (wall ms; in memory: a start sees every
+    /// label anew): another node's card copies wait from then (`copy_due`).
+    pub(crate) held_since: BTreeMap<LabelId, u64>,
     /// Every label wants a pass (`passes`), or these do; this node wrote (a label filling at a
     /// source passes too); labels filling at a source whose fill wants a pass (its first batch
     /// done, its end, a resync). When the last passes ran (raw ms), and whether there were any
@@ -446,6 +449,7 @@ impl SyncEngine {
             inbox_plain: BTreeMap::new(),
             unchecked_swept: None,
             settle_at: BTreeMap::new(),
+            held_since: BTreeMap::new(),
             pass_due: true,
             due_labels: BTreeSet::new(),
             own_wrote: false,

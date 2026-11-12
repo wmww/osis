@@ -40,17 +40,18 @@ pub struct Verdicts {
     pub unsettled: Vec<Option<(Tid, Ak)>>,
 }
 
-/// How long another node's fresh demotion or `keys.0` is left to its author before this node
-/// places it as its own chain certificate, and a plain thing with a holder to the author of its
-/// newest edge write before this node gives it secrets of its own (ms; `settle_by` brings the
-/// pass back after). Minor consequence: at 0 nodes duplicate the work (a copy each, a fork of the
-/// thing's secrets each); at infinity what an absent author left is never done.
+/// How long a plain thing with a holder is left to the author of its newest edge write before
+/// this node gives it secrets of its own, and the most another node's commit is left to its
+/// author to place or relay (`relay_delay`) (ms; `settle_by` brings the pass back after). Minor
+/// consequence: at 0 nodes duplicate the work (a copy each, a fork of the thing's secrets each);
+/// at infinity what an absent author left is never done.
 const SETTLE_MS: u64 = 30_000;
 
-/// The least a writer waits, after receiving another node's commit or seeing a deposit, before
-/// it uploads or promotes it itself (ms); the most is `SETTLE_MS`. The point in between is this
-/// node's per blob (`relay_delay`), so the author or the first co-writer is usually done and the
-/// others skip it: writers online together otherwise each sent a copy (spec/sync.md §6, §7).
+/// The least a node waits, after receiving another node's commit or seeing a deposit, before
+/// it places, promotes or copies it itself (ms); the most is `SETTLE_MS`. The point in between
+/// is this node's per blob (`relay_delay`), so the author or the first co-writer is usually done
+/// and the others skip it: nodes online together otherwise each placed a copy (spec/sync.md §6,
+/// §7; spec/permissions.md §4).
 const RELAY_MIN_MS: u64 = 5_000;
 
 /// An entry to send, by priority (role and certificates before content).
@@ -399,9 +400,17 @@ impl SyncEngine {
             return Ok(());
         }
         let served = self.served_labels();
-        self.work.retain(|x, _| labels.iter().any(|(_, l, _)| l == x));
+        let ids: BTreeSet<LabelId> = labels.iter().map(|(_, l, _)| *l).collect();
+        self.work.retain(|x, _| ids.contains(x));
+        let now = self.now();
+        self.held_since.retain(|x, _| ids.contains(x));
+        for l in &ids {
+            self.held_since.entry(*l).or_insert(now);
+        }
         for (g, l, index) in labels {
-            if !all && !due.contains(&l) && !fill_due.contains(&l) {
+            // a label never passed here passes at the first passes it is in (its marks may have
+            // come while nothing passed)
+            if !all && !due.contains(&l) && !fill_due.contains(&l) && self.work.contains_key(&l) {
                 continue;
             }
             let Some(head) = served.get(&l).and_then(|s| s.head()) else { continue };

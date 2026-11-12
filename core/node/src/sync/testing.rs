@@ -77,6 +77,7 @@ impl SyncEngine {
                 inbox_plain: self.inbox_plain.clone(),
                 unchecked_swept: self.unchecked_swept.clone(),
                 settle_at: self.settle_at.clone(),
+                held_since: self.held_since.clone(),
                 pass_due: self.pass_due.clone(),
                 due_labels: self.due_labels.clone(),
                 own_wrote: self.own_wrote.clone(),

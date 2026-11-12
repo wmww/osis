@@ -1324,19 +1324,24 @@ fn a_change_costs_a_few_passes() {
             }
             // a full pass judges the label's bodies
             linear(&format!("{change:?}, node {k}: bodies judged"), small.0[k][2], big.0[k][2]);
-            // a change's passes: its own commits arriving, pushed back and settled. Grant and
-            // Edge give the thing secrets and a label of its own, which all three holders start
-            // at once; at node 0 (counted by cause: Grant 16, Edge 21) a pass per label its
-            // own commits touch (L, home, the new L': 3, Edge 5), per own role commit a source
-            // showed, of every label it concerns (`reached`: 5, Edge 8; these wake rotations
-            // and deletes waiting on it elsewhere), per stream push bringing the other holders'
-            // certificate and record copies of the new label (each places what the new label
-            // lacks before the others' copies are shown: 5), and once each for the new label's
-            // source opening, its head, and a report reached. Full passes: two, and for a new
-            // label also its first pass (a fresh work set)
-            let new_label = matches!(change, Change::Grant | Change::Edge);
-            let most = if new_label { 22 } else { 8 };
-            assert!(big.0[k][0] <= most && big.0[k][1] <= if new_label { 3 } else { 2 }, "{change:?}, node {k}: {:?} passes, full", big.0[k]);
+            // a change's passes, counted by cause at node 0 (the most): a pass per label its own
+            // commits touch (Write: L, home, and L once its stream shows them back: 3; Grant: L,
+            // home and the thing's new label L': 3; Edge: the edge write and the repair giving
+            // the thing secrets and L': 5); per own role commit a source showed, of the labels
+            // holding it and those whose rotations its placing unblocks (`reached`: Grant 3,
+            // Edge 5); for L': its source opening (a full pass), its head and a report reached
+            // with a push (3); L's report reached (1); and per stream push bringing the other
+            // two holders' own card, grant chain and record copies of L' (4: each holder's
+            // copies are its own, so none waits for another's). Raise: 4 at each node. Full
+            // passes: 3 where the change gives the thing a new label (its first pass, its source
+            // opening, the inputs its new secrets move), 1 at b for Raise
+            let (most, full) = match change {
+                Change::Write => (3, 0),
+                Change::Grant => (14, 3),
+                Change::Edge => (18, 3),
+                Change::Raise => (4, 1),
+            };
+            assert!(big.0[k][0] <= most && big.0[k][1] <= full, "{change:?}, node {k}: {:?} passes, full", big.0[k]);
         }
         // a rotation run per node and secret actor the change moved, not per pass (Grant and
         // Edge: g and the thing at each of three nodes, and the two accounts the edge names); keep

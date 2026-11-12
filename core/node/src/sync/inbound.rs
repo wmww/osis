@@ -2273,9 +2273,11 @@ impl SyncEngine {
         Ok(())
     }
 
-    /// Entry `b` under `l` reached a host: when it holds a body of a role commit of this node, the
-    /// labels it concerns and those with an entry of it pass again (its held copies may go now,
-    /// spec/sync.md §5). A certificate copy places nothing: the commit is placed by its bodies.
+    /// Entry `b` under `l` reached a source: when it holds a body of a role commit of this node,
+    /// the labels with an entry of it pass again (its held copies may go now, and deletes there
+    /// waited for it, spec/sync.md §5), and so do the labels whose rotations its placing unblocks
+    /// (`placing`: a self-removal from the label's keys actor counts once placed). A certificate
+    /// copy places nothing: the commit is placed by its bodies.
     fn reached(&mut self, l: &LabelId, b: &BlobId) {
         let Some(Entry { kind: Kind::Commit { commit, .. }, cert: false, .. }) = self.state.entries.get(&(*l, *b)) else { return };
         let commit = *commit;
@@ -2284,7 +2286,8 @@ impl SyncEngine {
         }
         let Some(h) = self.engine.header(&commit).filter(|h| h.kind.is_role()) else { return };
         let things: BTreeSet<Tid> = h.aspects.iter().map(|a| a.tid).collect();
-        let holding = self.state.labels_of_commit(&commit);
-        self.mark_things(&things, &holding);
+        let mut labels = self.state.labels_of_commit(&commit);
+        labels.extend(self.labels().into_iter().filter(|(g, _)| things.contains(&self.keys_actor(g))).map(|(_, gl)| gl.id));
+        self.mark_labels(&labels);
     }
 }
