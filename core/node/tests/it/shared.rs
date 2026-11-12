@@ -524,3 +524,37 @@ fn an_account_proved_at_an_open_epoch_gets_a_shared_set_spec_sync_10() {
     let msgs = shared_of(&send(&mut net, a, &mut p, Message::NoRecord { id: 1 << 31 }));
     assert!(msgs.iter().any(|m| matches!(m, Message::Beacons { .. })), "a filter goes out: {msgs:?}");
 }
+
+// spec/sync.md §10 Shared set, Re-marking: a Lost sent re-marks L, so a sync-key Hit the host
+// accepted after this node stopped syncing L (handed off) opens L again once it syncs L again,
+// at whatever point of its opening the hand-off fell (every interleaving, one message at a time)
+#[test]
+fn a_hit_declined_after_its_answer_opens_again_spec_sync_10() {
+    let (mut net, host, [a]) = hosted_nodes::<1>();
+    let g = net.group(a, &[], &[host]);
+    net.run();
+    let synced = |net: &mut Net| net.sync(a).label_status().iter().any(|s| s.group == g && s.sources == 1 && s.idle == 1);
+    assert!(synced(&mut net));
+    let hand = |net: &mut Net, on: bool| {
+        let acts = net.sync(a).set_handed_off(g, on);
+        net.actions(a, acts);
+    };
+    hand(&mut net, true);
+    net.run();
+    for k in 0.. {
+        let mut x = net.copy();
+        hand(&mut x, false);
+        let mut stepped = 0;
+        while stepped < k && x.step() {
+            stepped += 1;
+        }
+        if stepped < k {
+            break;
+        }
+        hand(&mut x, true);
+        x.run();
+        hand(&mut x, false);
+        x.run();
+        assert!(synced(&mut x), "taken back after {k} messages: {:?}", x.sync(a).label_status());
+    }
+}

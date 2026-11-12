@@ -1543,7 +1543,9 @@ impl SyncEngine {
                             if granted && now.iter().any(|x| x.value == c.value) {
                                 self.shared_open(conn, c.label, c.class, Some(c.beacon), out)?;
                             } else if !self.shared_member(conn, &c.label) {
-                                // this tester's credential is gone (issues/net-shared-set.md, Divergence)
+                                // this tester's credential is gone (issues/net-shared-set.md, Divergence):
+                                // closed and re-marked as any Lost sent, so it is offered again if it returns
+                                self.shared_close(conn, &c.label, super::stream::Stop::Here)?;
                                 self.shared_lost_send(conn, c.label, out)?;
                             }
                         }
