@@ -1,7 +1,7 @@
 # Chunk list into the tree: a link carries what deleting its blob needs
 > Summary: Design to drop the header's `chunks` list (and a snapshot's listing of every linked blob): every LINK carries its blob's prefix salt and delete keys, so whoever holds a link (a reader holding the body, state or parent tree node) deletes the piece by the per-piece signature its prefix already commits to. No list cap, small snapshots, nothing new reaches a node that cannot read.
 > Priority: normal
-> Tags: crypto, sync, engine, tess-call
+> Tags: crypto, sync, engine
 
 Tess's goals: no size cap from lists, small snapshots, a simpler design; a node that cannot read learns no tree shape (which pieces belong to which commit, which pieces edits share). Tess-call: the final nod on the design, and the requirements line on the maximum commit size (§7).
 
@@ -72,12 +72,12 @@ Size limit: none from lists. A commit is bounded by its aspect list (`MAX_LIST_B
 - **Snapshot alone stops listing, deltas keep their list**: keeps a per-commit cap and two mechanisms.
 - **Re-encrypting every reused piece** (each delta owns its pieces): O(value) per edit, ends reuse.
 
-## Open questions
-1. Requirements wording for the commit size (above). Tess.
-2. Salt in the link (recommended: deleting without the chunks) or not (about 17 B less per link, a fetch per piece to delete).
-3. Ephemeral apply: wait for every piece (recommended, as today) or apply after pages and roots, fetching chunks after.
-4. With keys in every link, the reuse rule could ask a level match instead of exact keys (any epoch of that level's secret): a thing's rotation then no longer re-encrypts every value at its next edit. Separate issue if wanted; who holds old epochs (grants carry history) decides it.
-5. Freed set size: one entry per freed link until every host acks; worth a scale check (a dropped 1 GB value: about 12 000 entries, then gone).
+## Decisions
+- Requirements wording (Tess): a commit is "up to about a million changes, of values of any size"; spec/requirements.md changes with step 4, when the list goes.
+- Ephemeral data is not special-cased unless it would clearly be wrong or worse otherwise (Tess). So an ephemeral commit applies, as a durable one does, once its pages and value roots are held and the staged gate admits it; its chunks are fetched after, charged on arrival.
+- The salt stays in the link: a node deletes a piece without fetching it.
+- Freed set size gets a scale check in step 2 (a dropped 1 GB value: about 12 000 entries until every host acks).
+- Later, its own issue: with keys in every link, reuse could ask a level match rather than exact keys, so a thing's rotation stops re-encrypting every value at its next edit.
 
 ## Build steps
 0. Model the freed judgment (held-model style): concurrent reuse by two authors, two labels, forged cross-thing links, a deleter lacking nodes. Properties: no node deletes a piece a held source of its thing links; a piece freed at every node is deleted where a right holder walked it; no delete through a link its blob does not bear.
