@@ -44,6 +44,7 @@ Format: `- <date time> <box> `<limit>` [<test>] <CPU|wall> <measured>/<limit> s 
 - 2026-11-12 fastbox-0 `gate.hold` CPU 3365/2788 s, wall 886/177 s; `gate` CPU 4043/3008 s, wall 1050/220 s; `gate.properties` wall 653/296 s at load 19: destroyed-rename review (every crate changed); `random_churn_converges_large` seed 460971879377 hung to its 600 CPU-s timeout (also on main, issues/eph-churn-delete-upload-loop.md), the rest persistent, issues/gate-five-minutes.md.
 - 2026-11-12 fastbox-0 `gate.hold` wall 240/177 s, `gate` wall 275/220 s at load 20, CPU within limits: chunked-header-drop review (osis-commit, -engine, -node changed), no lock wait; persistent, issues/gate-five-minutes.md.
 - 2026-11-12 fastbox-0 `gate.hold` wall 252/177 s, `gate` wall 312/220 s (1.42x) at load 25, CPU within limits: eph-reverts-seed review (osis-node changed), no lock wait; persistent, issues/gate-five-minutes.md.
+- 2026-11-11 20:44 ostrich `gate.hold` CPU 6594/3795 s, wall 695/241 s, and `gate` CPU 7165/4094 s, wall 809/299 s, at load 21: every crate selected (alloc-cut review: base, crdt, store reach everything); persistent, issues/gate-five-minutes.md.
 
 ## Investigations
 One section per investigation: date and box, the trigger (hits or the run over 2x), what was tried, the outcome (fixed, or a raised limit with why no good solution was found). Tess reviews every raise.
