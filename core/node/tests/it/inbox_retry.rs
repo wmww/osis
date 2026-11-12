@@ -488,22 +488,30 @@ fn a_readers_invalid_fill_ends_with_an_admin_pass_spec_sync_5() {
     let tb = net.tid(b);
     let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
     let d = osis_node::flows::Demotion { holder: tb, new: Some(edge), retain: None };
-    // b writes before it hears of its demotion: the host refuses them (code 9)
+    // b writes before it hears of its demotion: no peer takes them, stamped under a write key
+    // the demotion's step supersedes
     let room = osis_proto::LabelStore::budget(&*net.hosts[host].hub.store(), &l).unwrap().entries_left;
     let done = net.engine(a).demote(&g, &d).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
     let writes: Vec<_> = (0..2 * room).map(|i| net.write(b, t, &format!("x{i}"))).collect();
+    // their entries as b places them (b drops them once it hears of its demotion)
+    net.feed(b, osis_node::sync::Event::Local);
+    let mut sealed = Vec::new();
+    for w in &writes {
+        let ids: Vec<_> = net.sync(b).entries(&l).into_iter().filter(|(_, k)| matches!(k, osis_node::sync::EntryKind::Commit { commit, .. } if commit == w)).map(|x| x.0).collect();
+        for id in ids {
+            let (wrap, _) = net.sync(b).entry_meta(&l, &id).unwrap();
+            sealed.push((id, wrap, net.engine(b).blob(&id).unwrap().unwrap()));
+        }
+    }
     net.run();
     net.advance(60_000);
     net.set_online(a, false);
     // b's writes, judged invalid at b too, deposited by hand
     let mut filled = 0;
-    for w in &writes {
-        let ids: Vec<_> = net.sync(b).entries(&l).into_iter().filter(|(_, k)| matches!(k, osis_node::sync::EntryKind::Commit { commit, .. } if commit == w)).map(|x| x.0).collect();
-        for id in ids {
-            let (wrap, _) = net.sync(b).entry_meta(&l, &id).unwrap();
-            let blob = net.engine(b).blob(&id).unwrap().unwrap();
+    {
+        for (id, wrap, blob) in sealed {
             let put = osis_proto::Put { blob_id: id, blob: &blob, wrap, stamp: None, expiry: None, ephemeral: false, replaces: &[], now: net.now() };
             if osis_proto::LabelStore::put(&mut *net.hosts[host].hub.store(), &l, put).unwrap() == osis_proto::Code::OK {
                 filled += 1;
