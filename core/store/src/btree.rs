@@ -30,21 +30,24 @@ pub(crate) trait Units {
     fn page_max(&self) -> usize;
 }
 
+/// Entry bytes, shared: a transaction's copy of a page the pager caches copies pointers.
+type Bytes = Arc<[u8]>;
+
 #[derive(Clone)]
 pub(crate) enum Val {
-    Inline(Vec<u8>),
+    Inline(Bytes),
     Overflow { slot: u64, len: u64 },
 }
 
 #[derive(Clone)]
 pub(crate) struct LeafE {
-    key: Vec<u8>,
+    key: Bytes,
     val: Val,
 }
 
 #[derive(Clone)]
 pub(crate) struct InnerE {
-    key: Vec<u8>,
+    key: Bytes,
     child: u64,
     count: u64,
 }
@@ -84,12 +87,12 @@ impl Page {
             Page::Inner(es) => es.iter().fold(0u64, |a, e| a.saturating_add(e.count)),
         }
     }
-    fn first_key(&self) -> Vec<u8> {
+    fn first_key(&self) -> Bytes {
         match self {
             Page::Leaf(es) => es.first().map(|e| e.key.clone()),
             Page::Inner(es) => es.first().map(|e| e.key.clone()),
         }
-        .unwrap_or_default()
+        .unwrap_or_else(|| Arc::from([]))
     }
     fn is_empty(&self) -> bool {
         match self {
@@ -127,9 +130,9 @@ impl Page {
             0 => {
                 let mut es = Vec::new();
                 for _ in 0..n {
-                    let key = r.bytes()?.to_vec();
+                    let key = r.bytes()?.into();
                     let val = match r.u8()? {
-                        0 => Val::Inline(r.bytes()?.to_vec()),
+                        0 => Val::Inline(r.bytes()?.into()),
                         1 => Val::Overflow { slot: r.u64()?, len: r.u64()? },
                         _ => return Err(Error::Corrupt("table page")),
                     };
@@ -140,7 +143,7 @@ impl Page {
             1 => {
                 let mut es = Vec::new();
                 for _ in 0..n {
-                    es.push(InnerE { key: r.bytes()?.to_vec(), child: r.u64()?, count: r.u64()? });
+                    es.push(InnerE { key: r.bytes()?.into(), child: r.u64()?, count: r.u64()? });
                 }
                 Page::Inner(es)
             }
@@ -162,10 +165,10 @@ pub(crate) fn forensic_leaf(plain: &[u8]) -> Vec<(Vec<u8>, LeafValue)> {
             .into_iter()
             .map(|e| {
                 let v = match e.val {
-                    Val::Inline(v) => Ok(v),
+                    Val::Inline(v) => Ok(v.to_vec()),
                     Val::Overflow { slot, .. } => Err(slot),
                 };
-                (e.key, v)
+                (e.key.to_vec(), v)
             })
             .collect(),
         _ => Vec::new(),
@@ -174,7 +177,7 @@ pub(crate) fn forensic_leaf(plain: &[u8]) -> Vec<(Vec<u8>, LeafValue)> {
 
 fn resolve(u: &mut dyn Units, v: &Val) -> Result<Vec<u8>, Error> {
     match v {
-        Val::Inline(b) => Ok(b.clone()),
+        Val::Inline(b) => Ok(b.to_vec()),
         Val::Overflow { slot, .. } => u.read(*slot)?.ok_or(Error::Corrupt("overflow value missing")),
     }
 }
@@ -187,7 +190,7 @@ fn free_val(u: &mut dyn Units, v: &Val, shred: bool) {
 
 /// Index of the child whose key range holds `key`.
 fn child_index(es: &[InnerE], key: &[u8]) -> usize {
-    es.partition_point(|e| e.key.as_slice() <= key).saturating_sub(1)
+    es.partition_point(|e| &e.key[..] <= key).saturating_sub(1)
 }
 
 /// Splits entries in two at the byte midpoint (both halves non-empty when `es.len() >= 2`).
@@ -250,7 +253,7 @@ fn find(u: &mut dyn Units, root: u64, key: &[u8]) -> Result<Option<Val>, Error> 
         match &*u.page(slot)? {
             Page::Inner(es) => slot = es.get(child_index(es, key)).ok_or(Error::Corrupt("empty interior page"))?.child,
             Page::Leaf(es) => {
-                return Ok(match es.binary_search_by(|e| e.key.as_slice().cmp(key)) {
+                return Ok(match es.binary_search_by(|e| e.key[..].cmp(key)) {
                     Ok(i) => es.get(i).map(|e| e.val.clone()),
                     Err(_) => None,
                 });
@@ -273,7 +276,7 @@ pub(crate) fn put(u: &mut dyn Units, root: u64, key: &[u8], val: Vec<u8>, shred:
         u.write(slot, val, shred)?;
         Val::Overflow { slot, len }
     } else {
-        Val::Inline(val)
+        Val::Inline(val.into())
     };
     let (added, pieces) = insert(u, root, key, val, shred)?;
     if pieces.len() > 1 {
@@ -295,7 +298,7 @@ pub(crate) fn put(u: &mut dyn Units, root: u64, key: &[u8], val: Vec<u8>, shred:
 fn insert(u: &mut dyn Units, slot: u64, key: &[u8], val: Val, shred: bool) -> Result<(bool, Vec<InnerE>), Error> {
     let mut page = u.take_page(slot)?;
     let added = match &mut page {
-        Page::Leaf(es) => match es.binary_search_by(|e| e.key.as_slice().cmp(key)) {
+        Page::Leaf(es) => match es.binary_search_by(|e| e.key[..].cmp(key)) {
             Ok(i) => {
                 if let Some(e) = es.get_mut(i) {
                     let old = std::mem::replace(&mut e.val, val);
@@ -310,7 +313,7 @@ fn insert(u: &mut dyn Units, slot: u64, key: &[u8], val: Val, shred: bool) -> Re
                 false
             }
             Err(i) => {
-                es.insert(i, LeafE { key: key.to_vec(), val });
+                es.insert(i, LeafE { key: key.into(), val });
                 true
             }
         },
@@ -367,7 +370,7 @@ fn del(u: &mut dyn Units, slot: u64, key: &[u8], shred: bool) -> Result<Option<A
     let mut page = u.take_page(slot)?;
     match &mut page {
         Page::Leaf(es) => {
-            let Ok(i) = es.binary_search_by(|e| e.key.as_slice().cmp(key)) else { return Ok(None) };
+            let Ok(i) = es.binary_search_by(|e| e.key[..].cmp(key)) else { return Ok(None) };
             let e = es.remove(i);
             free_val(u, &e.val, shred);
         }
@@ -436,16 +439,16 @@ pub(crate) fn range(u: &mut dyn Units, root: u64, start: &[u8], end: Option<&[u8
 fn collect(u: &mut dyn Units, slot: u64, start: &[u8], end: Option<&[u8]>, limit: usize, out: &mut Vec<KeyValue>) -> Result<(), Error> {
     match &*u.page(slot)? {
         Page::Leaf(es) => {
-            for e in es.iter().skip(es.partition_point(|e| e.key.as_slice() < start)) {
-                if out.len() >= limit || end.is_some_and(|end| e.key.as_slice() >= end) {
+            for e in es.iter().skip(es.partition_point(|e| &e.key[..] < start)) {
+                if out.len() >= limit || end.is_some_and(|end| &e.key[..] >= end) {
                     break;
                 }
-                out.push((e.key.clone(), resolve(u, &e.val)?));
+                out.push((e.key.to_vec(), resolve(u, &e.val)?));
             }
         }
         Page::Inner(es) => {
             for e in es.iter().skip(child_index(es, start)) {
-                if out.len() >= limit || end.is_some_and(|end| e.key.as_slice() >= end) {
+                if out.len() >= limit || end.is_some_and(|end| &e.key[..] >= end) {
                     break;
                 }
                 collect(u, e.child, start, end, limit, out)?;
@@ -466,7 +469,7 @@ pub(crate) fn rank(u: &mut dyn Units, root: u64, key: &[u8]) -> Result<u64, Erro
     let mut acc = 0u64;
     loop {
         match &*u.page(slot)? {
-            Page::Leaf(es) => return Ok(acc.saturating_add(es.partition_point(|e| e.key.as_slice() < key) as u64)),
+            Page::Leaf(es) => return Ok(acc.saturating_add(es.partition_point(|e| &e.key[..] < key) as u64)),
             Page::Inner(es) => {
                 let i = child_index(es, key);
                 acc = es.iter().take(i).fold(acc, |a, e| a.saturating_add(e.count));
@@ -483,7 +486,7 @@ pub(crate) fn nth(u: &mut dyn Units, root: u64, mut i: u64) -> Result<Option<Key
         match &*u.page(slot)? {
             Page::Leaf(es) => {
                 let Some(e) = usize::try_from(i).ok().and_then(|i| es.get(i)) else { return Ok(None) };
-                return Ok(Some((e.key.clone(), resolve(u, &e.val)?)));
+                return Ok(Some((e.key.to_vec(), resolve(u, &e.val)?)));
             }
             Page::Inner(es) => {
                 let mut next = None;
