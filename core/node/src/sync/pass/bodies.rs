@@ -276,8 +276,10 @@ impl SyncEngine {
         // bytes it dropped (a snapshot dropped a part of the blob it does not serve here, on
         // another thing) is no entry of the body, which is placed again as a blob of its own
         let mut ids: Vec<BlobId> = cands.into_iter().filter(|(id, parts)| self.readable(&g, &b.commit, parts) == b.parts && (host.is_some() || self.engine.has_blob(id))).map(|(id, _)| id).collect();
-        if let Some(host) = host {
-            ids.sort_by_key(|id| !self.state.is_present(host, l, id));
+        match host {
+            Some(host) => ids.sort_by_key(|id| !self.state.is_present(host, l, id)),
+            // one useless at no source first
+            None => ids.sort_by_key(|id| self.state.useless_anywhere(l, id)),
         }
         ids.into_iter().find(|id| self.genuine(id))
     }

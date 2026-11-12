@@ -1962,6 +1962,12 @@ impl State {
         self.gone.contains_key(&(*s, *l, *b))
     }
 
+    /// Whether a peer holds entry `b` under a wrap of no use (present there and gone: `set_gone`
+    /// from its wrap, not a delete).
+    pub fn useless_anywhere(&self, l: &LabelId, b: &BlobId) -> bool {
+        self.gone_by.range((*l, *b, [0; 32])..=(*l, *b, [0xff; 32])).any(|(_, _, s)| self.is_present(s, l, b))
+    }
+
     pub fn is_gone(&self, l: &LabelId, b: &BlobId) -> bool {
         self.gone_by.range((*l, *b, [0; 32])..=(*l, *b, [0xff; 32])).next().is_some()
     }

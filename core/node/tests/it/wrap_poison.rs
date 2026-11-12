@@ -20,20 +20,26 @@ pub(crate) fn send(net: &mut Net, h: usize, host: usize, m: Message) {
     net.settle(10_000);
 }
 
-/// `h` uploads `id` through the real host engine with `wrap` and a valid stamp, or deposits it.
+/// `h`'s entry `id` with `wrap` reaches `host` first, taken by its store's rules: as pulled from
+/// `h` (`WRITER`: stamped with the head's write key) or as `h`'s Deposit item (`READER`).
 fn hostile_put(net: &mut Net, h: usize, host: usize, (g, l): (Tid, &LabelId), id: BlobId, wrap: [u8; WRAP_LEN], as_who: u8) {
     let (_, gl) = net.group_labels(h).into_iter().find(|(_, x)| x.id == *l).unwrap();
     let head = net.host_path(host, l).last().unwrap().clone();
     let keys = net.engine(h).head_keys(&g, gl.index, &head).unwrap();
     let blob = net.engine(h).blob(&id).unwrap().unwrap();
-    let m = if as_who == WRITER {
+    let now = net.now_at(host);
+    let mut store = net.hosts[host].hub.store();
+    let k = store.head_keys(l).unwrap().unwrap();
+    let mut struck = false;
+    if as_who == WRITER {
         let stamp = osis_label::sign_stamp(keys.write.as_ref().unwrap(), l, &id, &wrap);
-        Message::Upload { id: 0x4000_0000, label: *l, entries: vec![Entry { blob, wrap, stamp, replaces: Vec::new() }] }
+        osis_proto::serving::pulled(&mut *store, now, l, &k, &blob, wrap, stamp, &mut struck).unwrap();
     } else {
         let sig = osis_label::sign_deposit(keys.deposit.as_ref().unwrap(), l, &id, &wrap);
-        Message::Deposit { id: 0x4000_0001, label: *l, blob, wrap, sig }
-    };
-    send(net, h, host, m);
+        osis_proto::serving::deposit(&mut *store, now, l, &k, &blob, wrap, &sig, &mut struck).unwrap();
+    }
+    drop(store);
+    net.run();
 }
 
 /// The entries under `l` carrying `t`, at node `n`.
@@ -133,8 +139,10 @@ fn stamped_wrap_never_replaced_spec_sync_5() {
 /// cut off from `race`. The thing and its entries.
 fn race(fx: &mut Fx, race: usize, wrong: bool, who: u8) -> (Tid, Vec<BlobId>) {
     let (g, l, a, h) = (fx.g, fx.l, fx.a, fx.h);
-    fx.net.blocked.insert((a, race));
-    fx.net.drop_link(a, race);
+    for n in [a, h] {
+        fx.net.blocked.insert((n, race));
+        fx.net.drop_link(n, race);
+    }
     let t = fx.net.item(a, g, g, "message");
     fx.net.run();
     assert_eq!(fx.net.read(h, t), Some(s("message")));

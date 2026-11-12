@@ -615,8 +615,8 @@ impl SyncEngine {
     }
 
     /// Must-hold bodies whose entry source `host` deleted while this node's judgment finds the
-    /// delete does not stand (`delete_stands`): the source refuses that blob ID while its
-    /// tombstone lasts, so each is encrypted again (`place`) and the old entry dropped here; the
+    /// delete does not stand (`delete_stands`), or holds under a wrap of no use: the source
+    /// refuses that blob ID while its tombstone lasts, or keeps its stamped wrap, so each is encrypted again (`place`) and the old entry dropped here; the
     /// source pulls the new one. While a role commit this node must hold waits for its relay
     /// (`behind`), the deleter may judge by an older role view: nothing is encrypted again and
     /// the label's role commits are placed at once instead (`relay_now`), so the source learns
@@ -627,19 +627,21 @@ impl SyncEngine {
         let mut note = Note::default();
         for o in sends {
             let Some(Touch::Commit(c)) = o.of else { continue };
-            if self.state.is_present(&host, &l, &o.id) || !self.state.is_gone_at(&host, &l, &o.id) {
+            // gone there: deleted, or held under a wrap of no use (`set_gone`)
+            if !self.state.is_gone_at(&host, &l, &o.id) {
                 continue;
             }
             let Some((Kind::Commit { parts, .. }, cert)) = self.state.entries.get(&(l, o.id)).map(|e| (e.kind.clone(), e.cert)) else { continue };
             // a certificate copy: another copy of the same parts (its deletion was not this
-            // node's to judge); a body: when its delete does not stand
+            // node's to judge); a body: when its delete does not stand and no other encryption
+            // held there carries it
             let b = if cert {
                 let Some(h) = self.engine.header(&c) else { continue };
                 Body { commit: c, parts: parts.clone(), expires: None, blind: h.blind, plaintext: Vec::new(), role_commit: h.kind.is_role(), order: h.ts.to_u64().max(1), to_label: false }
             } else {
                 let readable = self.readable(&g, &c, &parts);
                 let Some(b) = bodies.iter().find(|b| b.commit == c && b.parts == readable).cloned() else { continue };
-                if self.delete_stands(Some(&host), l, &b, &b.parts, snaps, &mut note)? {
+                if self.delete_stands(Some(&host), l, &b, &b.parts, snaps, &mut note)? || self.entry_for(Some(&host), &l, &b).is_some_and(|x| self.state.is_present(&host, &l, &x)) {
                     continue;
                 }
                 note.leave(c, left);
@@ -650,11 +652,15 @@ impl SyncEngine {
                 self.relay_now.insert(l);
                 continue;
             }
-            self.state.drop_entry(l, o.id);
             let Some(id) = self.place(&g, l, &b, cert)? else { continue };
             if cert {
                 self.place_linked(l, &c, &parts.iter().copied().collect())?;
                 self.state.add_cert(l, c);
+            }
+            // a useless entry the source holds stays known until its delete there (`judge`: the
+            // useless one goes, whatever the IDs)
+            if !self.state.is_present(&host, &l, &o.id) {
+                self.state.drop_entry(l, o.id);
             }
             again.push(Out { prio: o.prio, id, fresh: true, of: o.of });
         }

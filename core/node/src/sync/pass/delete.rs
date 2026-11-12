@@ -185,8 +185,15 @@ impl SyncEngine {
             // (each encryption has its own salt), only a genuine one (a forged duplicate must not
             // get the real entry deleted); one whose wrap is of no use there counts as no copy,
             // and goes itself once there is one, whatever its ID
-            let useless = host.is_some_and(|s| self.state.is_gone_at(s, l, id));
-            let same: Vec<BlobId> = self.state.entries_of(l, commit).filter(|(b, o)| (b < id || (useless && b != id)) && !o.cert && matches!(&o.kind, Kind::Commit { .. }) && host.is_none_or(|s| self.state.holds_at(s, l, b))).map(|(b, _)| b).collect();
+            // (in this node's own store: useless at a source, where another encryption replaces it)
+            let useless = match host {
+                Some(s) => self.state.is_gone_at(s, l, id),
+                None => self.state.useless_anywhere(l, id),
+            };
+            let same: Vec<BlobId> = self.state.entries_of(l, commit).filter(|(b, o)| (b < id || (useless && b != id)) && !o.cert && matches!(&o.kind, Kind::Commit { .. }) && match host {
+                Some(s) => self.state.holds_at(s, l, b),
+                None => !self.state.useless_anywhere(l, b),
+            }).map(|(b, _)| b).collect();
             f.duplicate_higher = same.into_iter().any(|b| self.others_readable(g, l, &b) == *parts && self.genuine(&b));
         } else if desired.iter().any(|d| d.iter().all(|p| parts.contains(p))) {
             // a superset: more of the commit than the label's bodies ask for holds them too
@@ -480,7 +487,7 @@ impl SyncEngine {
             }
             match fate {
                 Fate::Keep | Fate::Wait => {}
-                Fate::Delete(_, item) => {
+                Fate::Delete(why, item) => {
                     left.commits.insert(commit);
                     if !busy(self, &sent, &id) {
                         sent.insert(id);
