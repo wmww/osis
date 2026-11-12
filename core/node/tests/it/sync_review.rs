@@ -1113,12 +1113,15 @@ fn a_node_judging_itself_out_claims_as_an_actor_a_held_write_names_spec_sync_5()
 
 // spec/permissions.md §3, §4 (stranded: the node cannot read the label's current epoch by any
 // key it holds, wherever its walk stopped; a stranded notice under the admins' inboxes), spec/sync.md
-// §5: X, reading as its account, bears a link (reads K through L's static entry) while the sharer
-// grants X's account on K, the grant not reaching X, and an admin read rotation of K leaves L out
-// and refreshes K's deposit seed. X's walk reaches K's new step with no actor it holds named on K
-// and L's entry gone: no key left to try, no claim tried. It is stranded all the same, with no
-// deposit key of the label and no peer connected: its stranded notice under the sharer's inbox
-// makes the sharer re-seal X's account, and K's label opens again.
+// §5: X, reading as its account, bears a link (reads K through L's static entry) while, X away,
+// the sharer grants X's account on K (delivered to its inbox), then removes L from K, rotating K
+// with X's account boxed at a key X cannot open (so the sharer holds it boxed and re-seals it
+// only on X's word), and rotates again with a fresh deposit seed. X, served K's stream through
+// the rotations under L's old entry, learns K's new step and holds no credential of it: L's entry
+// gone, no box it opens. It is stranded, with no deposit key of the label and no peer connected:
+// its stranded notice under the sharer's inbox makes the sharer re-seal X's account, and K's
+// label opens again. (A holder a rotation leaves out is re-sealed by the next admin's complete
+// pass, notice or not: no setup of that kind strands X.)
 #[test]
 fn walk_out_of_keys_is_stranded_spec_permissions_4() {
     let mut net = Net::new();
@@ -1152,14 +1155,17 @@ fn walk_out_of_keys_is_stranded_spec_permissions_4() {
     let lk = link.k_label;
     let e0 = net.engine(x).epochs(&k).unwrap().read.newest().unwrap();
     let head0 = net.host_path(s0, &lk).last().unwrap().keys.deposit;
-    // X away: the sharer grants X's account on K (its delivery lost), and K's admin read
-    // rotation boxes the sharer and X's account, not L, with a fresh deposit seed
+    // X away: the sharer grants X's account on K, removes L (X's account boxed at a key X cannot
+    // open), and rotates again with a fresh deposit seed
     net.set_online(x, false);
     let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
-    net.engine(a).grant(&k, &px, &edge).unwrap();
+    let gd = net.engine(a).grant(&k, &px, &edge).unwrap();
+    carry(&mut net, a, gd);
     let e = net.engine(a);
-    let rs = recipients_of(e, &[(pa, Role::Admin), (px, Role::Read)]);
-    rotation(e, k, &rs, 61, true);
+    let mut rs = recipients_of(e, &[(pa, Role::Admin)]);
+    rs.push(unopenable_recipient(e, px, Role::Read));
+    remove_holder(e, k, l, &rs, 61);
+    rotation(e, k, &rs, 62, true);
     for _ in 0..3 {
         net.run();
         net.advance(61_000);
