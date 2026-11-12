@@ -51,15 +51,19 @@ fn plant(s: &mut Store, rng: &mut SeededRng, marker: &[u8]) {
     }
 }
 
-/// The shredded drops of every unit kind holding the marker.
+/// The shredded drops of every unit kind holding the marker. The catalog record goes last, in a
+/// transaction of its own: a shredded drop rewrites its whole catalog page under a fresh key, so
+/// the earlier drops would otherwise erase the record's old copies whether it was shredded or not.
 fn shred_all(s: &mut Store, rng: &mut SeededRng) {
     let (t1, a) = (tid(1), ak("doc.0"));
     let mut t = s.transaction(rng).unwrap();
     t.put_aspect(&t1, &a, &AspectUnit { state: b"live".to_vec() }, Shred::Yes).unwrap();
-    assert!(t.remove_local(b"local/1", Shred::Yes).unwrap());
     let big = t.table(&t1, &ak("big.0"), 0).unwrap().unwrap();
     t.table_put(big, &150u32.to_be_bytes(), b"element 150".to_vec(), Shred::Yes).unwrap();
     assert!(t.remove_pending(&CommitId([3; 32]), Shred::Yes).unwrap());
+    t.commit().unwrap();
+    let mut t = s.transaction(rng).unwrap();
+    assert!(t.remove_local(b"local/1", Shred::Yes).unwrap());
     t.commit().unwrap();
 }
 
@@ -285,16 +289,21 @@ fn blob_keys_and_wraps_dropped_leave_the_blob_unopenable() {
     assert_eq!(found(&mut s, b"WRAPPED-BLOB-MARK"), vec![osis_store::Source::Blob { id: wrapped, wrapped: true }]);
     assert_eq!(found(&mut s, b"KEYED-BLOB-MARK"), vec![osis_store::Source::Blob { id: keyed, wrapped: false }]);
     assert_eq!(found(&mut s, b"INNER-BLOB-MARK"), vec![osis_store::Source::Blob { id: inner, wrapped: false }]);
+    // one drop per transaction, each judged before the next: a shredded drop rewrites the whole
+    // catalog page under a fresh key, erasing the other record's old copies too
     let mut t = s.transaction(&mut rng).unwrap();
-    assert!(t.remove_local(&[b"wrap/".as_slice(), &wrapped.0].concat(), Shred::Yes).unwrap());
     assert!(t.remove_local(&[b"blobkey/".as_slice(), &keyed.0].concat(), Shred::Yes).unwrap());
-    t.delete_blob(&wrapped);
     t.delete_blob(&keyed);
     t.delete_blob(&inner);
     t.commit().unwrap();
-    assert_eq!(found(&mut s, b"WRAPPED-BLOB-MARK"), vec![], "a dropped wrap opened its blob");
     assert_eq!(found(&mut s, b"KEYED-BLOB-MARK"), vec![], "a dropped key opened its blob");
     assert_eq!(found(&mut s, b"INNER-BLOB-MARK"), vec![], "a key inside a dropped blob opened its blob");
+    assert_eq!(found(&mut s, b"WRAPPED-BLOB-MARK").len(), 1, "the live wrap still opens its blob");
+    let mut t = s.transaction(&mut rng).unwrap();
+    assert!(t.remove_local(&[b"wrap/".as_slice(), &wrapped.0].concat(), Shred::Yes).unwrap());
+    t.delete_blob(&wrapped);
+    t.commit().unwrap();
+    assert_eq!(found(&mut s, b"WRAPPED-BLOB-MARK"), vec![], "a dropped wrap opened its blob");
     // the freed ciphertexts are still in the attacker's hands
     assert_eq!(dev.backend.blob_history().iter().filter(|(_, b)| b.is_some()).count(), 3);
 }

@@ -708,7 +708,7 @@ fn newest_delete_key(e: &ActorEpochs, r: Role) -> Option<VerifyingKey> {
     e.role(r).newest_held().map(|(_, s)| DeleteSecret::derive(s).verifying_key())
 }
 
-// ---- local encoding of held epochs (the store's actor secrets unit)
+// ---- local encoding of held epochs (local records `k/` + actor)
 
 /// Persisted: what establishment is computed from (rotation commits, snapshot, names) and the
 /// directly set `Fixed` provenance; `Rotated` and `Derived` are never stored (`Core::own_epochs`).
