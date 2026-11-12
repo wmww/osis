@@ -3,9 +3,12 @@
 //!
 //! A paged collection's leaves ascend by element (spec/crdt.md §8): a dot for a sequence, set,
 //! bag or map (a map's records by dot, a dot's records possibly straddling pages), a field ID for
-//! a struct. Each leaf's first element bounds what it holds, so the first elements found once,
-//! one per leaf, name the leaves holding any position. Where `part_at` takes a collection whole
-//! (below a map entry, an enum, a kind the two do not share) every leaf is named.
+//! a struct (the check's seams, `stream::Out`). Each leaf's first element bounds what it holds
+//! from below; a sequence's runs bound it from above too, by the furthest dot any run up to the
+//! leaf reaches (a run may cover dots another source's record sorts between, so a leaf's next
+//! does not bound it). So the elements found once, one or two per leaf, name the leaves holding
+//! any position. Where `part_at` takes a collection whole (below a map entry, an enum, a kind
+//! the two do not share) every leaf is named.
 
 use crate::fragment::{Encoding, Fragment};
 use crate::paging::Step;
@@ -21,11 +24,21 @@ enum First {
     Field(u64),
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Leaf {
+    at: PageAt,
+    first: First,
+    /// A sequence: the greatest dot the runs of this leaf and those before it cover.
+    reach: Option<Dot>,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct Leaves {
     enc: Option<Encoding>,
-    /// In wire order; `None`: an empty leaf (every leaf is named).
-    leaves: Vec<(PageAt, Option<First>)>,
+    /// A leaf with no first element was seen: every leaf is named.
+    empty: bool,
+    /// In wire order.
+    leaves: Vec<Leaf>,
 }
 
 /// The leaves of a streamed part's paged positions, by path, each with its first element:
@@ -68,12 +81,21 @@ impl PageIndex {
         let inner = path.iter().try_fold(fragment, |f, s| f.step(s));
         let l = self.paths.entry(path.clone()).or_default();
         l.enc = l.enc.or(inner.map(Fragment::encoding));
-        l.leaves.push((*at, inner.and_then(first)));
+        let Some(first) = inner.and_then(first) else {
+            l.empty = true;
+            return;
+        };
+        let end = match inner {
+            Some(Fragment::Seq(s)) => s.elems().iter().map(|(k, r)| nth(k, r.span.saturating_sub(1))).max(),
+            _ => None,
+        };
+        let reach = l.leaves.last().and_then(|x| x.reach.clone()).into_iter().chain(end).max();
+        l.leaves.push(Leaf { at: *at, first, reach });
     }
 
     /// About the bytes held (`Fragment::approx_bytes`'s measure).
     pub fn approx_bytes(&self) -> usize {
-        self.paths.iter().map(|(p, l)| size_of::<Leaves>() + p.len() * size_of::<Step>() + l.leaves.len() * size_of::<(PageAt, Option<First>)>()).sum()
+        self.paths.iter().map(|(p, l)| size_of::<Leaves>() + p.len() * size_of::<Step>() + l.leaves.len() * size_of::<Leaf>()).sum()
     }
 
     /// The leaves holding what `part_at(body)` takes of the part.
@@ -93,20 +115,23 @@ impl PageIndex {
 impl Leaves {
     /// The leaves holding the records `part_at(b)` takes here; `None`: every leaf.
     fn holding(&self, b: &Fragment) -> Option<BTreeSet<PageAt>> {
-        let firsts: Vec<&First> = self.leaves.iter().map(|x| x.1.as_ref()).collect::<Option<_>>()?;
+        if self.empty {
+            return None;
+        }
         // leaves whose first element is at most / below `k`
-        let le = |k: &First| firsts.partition_point(|f| *f <= k);
-        let lt = |k: &First| firsts.partition_point(|f| *f < k);
+        let le = |k: &First| self.leaves.partition_point(|x| x.first <= *k);
+        let lt = |k: &First| self.leaves.partition_point(|x| x.first < *k);
         let mut out = BTreeSet::new();
         // the leaves from the `lo`th through the one before the `hi`th
-        let mut take = |lo: usize, hi: usize| out.extend(self.leaves.get(lo..hi).into_iter().flatten().map(|x| x.0));
+        let mut take = |lo: usize, hi: usize| out.extend(self.leaves.get(lo..hi).into_iter().flatten().map(|x| x.at));
         let dot = |d: &Dot| First::Dot(d.clone());
         match (self.enc?, b) {
-            // the records holding a dot of the body's: the one holding its first, those starting
-            // in its span
+            // the records holding a dot of the body's span: from the first leaf whose runs reach
+            // its first dot through the last starting at most its last
             (e, Fragment::Seq(d)) if d.encoding() == e => {
                 for (k, r) in d.elems() {
-                    take(le(&dot(k)).saturating_sub(1), le(&dot(&nth(k, r.span.saturating_sub(1)))));
+                    let lo = self.leaves.partition_point(|x| x.reach.as_ref().is_none_or(|x| x < k));
+                    take(lo, le(&dot(&nth(k, r.span.saturating_sub(1)))));
                 }
             }
             // every record of a dot the body holds
@@ -149,5 +174,30 @@ fn first(f: &Fragment) -> Option<First> {
         Fragment::Map(m) => m.entries.keys().next().map(|e| First::Dot(e.dot.clone())),
         Fragment::Struct(crate::fragment::Struct { fields, .. }) | Fragment::Enum(crate::fragment::Enum { payloads: fields, .. }) => fields.keys().next().copied().map(First::Field),
         Fragment::Register(_) | Fragment::Slots(_) => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::seq::{Seq, SeqContent, SeqElem};
+    use crate::stamp::{Session, Source};
+
+    // A text page whose first record is another source's, sorting inside an earlier page's run
+    // (a `Derived` dot right after the dot it derives from, spec/crdt.md §2.2), does not hide that
+    // run: a read at a dot the run covers names its page (and the later one, harmless).
+    #[test]
+    fn a_run_reaching_past_the_next_pages_first_names_its_page_spec_crdt_8() {
+        let s = Source::session(Session { node: osis_base::Tid::from_bytes([1; 15]), nonce: [0; crate::stamp::SESSION_NONCE_LEN] });
+        let derived = Source::derived(Dot::new(s.clone(), 5)).unwrap();
+        let rec = |span| SeqElem { created: None, content: SeqContent::None, pos: Vec::new(), deleted: None, undel: None, valueless: false, span };
+        let seq = |d: Dot, span| Fragment::Seq(Seq::new(true, Default::default(), [(d, rec(span))].into()));
+        let mut ix = PageIndex::default();
+        ix.add(&Piece::Page { path: Vec::new(), at: (0, None), fragment: seq(Dot::new(s.clone(), 1), 10) });
+        ix.add(&Piece::Page { path: Vec::new(), at: (1, None), fragment: seq(Dot::new(derived, 1), 1) });
+        let w = ix.wanted(&seq(Dot::new(s.clone(), 7), 1));
+        assert!(w.wants(&[], (0, None)), "the page whose run covers (s, 7): {w:?}");
+        let w = ix.wanted(&seq(Dot::new(s, 11), 1));
+        assert!(!w.wants(&[], (0, None)) && !w.wants(&[], (1, None)), "a dot no record holds: no page: {w:?}");
     }
 }
