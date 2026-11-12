@@ -189,7 +189,10 @@ fn rotation_due(tx: &mut Tx<'_>, who: &Tid, a: &Tid, pass_end: bool) -> Result<B
     for r in roles {
         let held = tx.core.names_held(a);
         let mut due = blocked.contains(&r) || pass_end && osis_keys::fork_merger(&epochs, r, |e| maker(tx.core, who, a, r, e));
-        // judged from the state, so for current epochs whose secret this node lacks too; such an
+        // merge (rule 3): any current epoch, not only the newest, missing a known departure; a
+        // fork made unaware of it stays current otherwise and may win the (n, nonce) order, and a
+        // holder actor anchored on it never moves to the knowing one. Judged from the state, so
+        // for current epochs whose secret this node lacks too; such an
         // epoch covers nothing here, and one orphaned has no re-sealer: a rotation due only for
         // those is made where its new epoch reaches a rotator (`boxes_rotator`)
         let current: Vec<(osis_crypto::Epoch, bool)> = epochs.role(r).current().into_iter().map(|e| (e, !osis_keys::uncovered(&epochs, r, &e, &deps, &held).is_empty())).collect();

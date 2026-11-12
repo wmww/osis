@@ -75,7 +75,7 @@ pub enum Seal {
 /// keyset of M made without the knowledge an anchor was made with (a fork from an older keyset,
 /// made beside it, perhaps winning the (n, nonce) order) never replaces it: a party removed from
 /// M by the anchor's rotation never reads A's content through A's next epoch's history box. M's
-/// own merge (`covers::merge_due`) moves M onto a keyset that lists the fork. Leaving M out of a
+/// own merge (a rotation while a current epoch misses a known departure) moves M onto a keyset that lists the fork. Leaving M out of a
 /// rotation of A over forked anchors would drop them: the next re-seal, finding no box to M at
 /// A's current epochs, would seal M at its newest keyset, perhaps that fork (a Depth0.tla
 /// counterexample). A tainted keyset leaves M out instead: its re-key descends from it, and waiting

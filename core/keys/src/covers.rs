@@ -180,19 +180,6 @@ pub fn uncovered<'a>(epochs: &ActorEpochs, r: Role, e: &Epoch, departures: &'a [
     departures.iter().filter(|d| !covers(epochs, r, e, d, held)).collect()
 }
 
-/// Merge (spec/crypto.md §4, encrypting under), for any node that may rotate `r`: whether some
-/// current epoch of `r`, not only the newest, does not cover a known departure.
-///
-/// Invariant: a fork made by a rotator that did not know a departure stays current beside the
-/// knowing epoch, and may win the (n, nonce) order; a holder actor anchored on it (`members::
-/// seal_keyset`) never moves to the knowing one. A node knowing the departure supersedes every
-/// current epoch with one rotation, so this ends once each knowing node's rotations are held.
-/// An epoch whose secret it lacks covers nothing here (its history box does not open): that
-/// rotation supersedes it too.
-pub fn merge_due(epochs: &ActorEpochs, r: Role, departures: &[Departure], held: &dyn Held) -> bool {
-    epochs.role(r).current().iter().any(|e| !uncovered(epochs, r, e, departures, held).is_empty())
-}
-
 /// The maker of an epoch as a node sees it (`fork_merger`): whether it is this node, and
 /// whether it may rotate the role now.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

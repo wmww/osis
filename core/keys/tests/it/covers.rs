@@ -7,7 +7,7 @@ use common::*;
 use osis_base::{Role, Tid};
 use osis_crypto::Secret32;
 use osis_keys::{
-    ActorEpochs, AllHeld, Departure, EdgeLog, EdgeWrite, Holder, HolderKeys, Key, Maker, Name, Names, Opener, Own, Recipient, box_holder, fork_merger, ingest, merge_due, pins,
+    ActorEpochs, AllHeld, Departure, EdgeLog, EdgeWrite, Holder, HolderKeys, Key, Maker, Name, Names, Opener, Own, Recipient, box_holder, fork_merger, ingest, pins,
     reseal_needed, roles_up_to, rotate, uncovered,
 };
 use osis_schema::core_types::Secrets;
@@ -101,7 +101,7 @@ fn rotation_held_before_the_removal() {
     let deps = [dep];
     assert!(!uncovered(&v, Role::Read, &e2, &deps, &AllHeld).is_empty());
     assert!(uncovered(&v, Role::Read, &e2r, &deps, &AllHeld).is_empty());
-    assert!(merge_due(&v, Role::Read, &deps, &AllHeld), "the eager fork is current, whichever is newest");
+    assert!(merge_due_at(&v, Role::Read, &deps, &AllHeld), "the eager fork is current, whichever is newest");
     // Rotating past both forks excludes M.
     let heal = rotate(&a, &read(), &v, &s, &with_m[..1], &naming(removed), &mut *rg).unwrap();
     let history: BTreeSet<_> = v.read.held_established().map(|x| x.0).collect();
@@ -111,7 +111,7 @@ fn rotation_held_before_the_removal() {
     v = heal.preview(&v).unwrap();
     let e3 = heal.role(Role::Read).unwrap().epoch;
     assert!(uncovered(&v, Role::Read, &e3, &deps, &AllHeld).is_empty());
-    assert!(!merge_due(&v, Role::Read, &deps, &AllHeld));
+    assert!(!merge_due_at(&v, Role::Read, &deps, &AllHeld));
     let mut mv = ActorEpochs::default();
     ingest(&a, &s, &Opener::Actor { holder: m, epochs: &me }, &mut mv, None).unwrap();
     assert!(mv.read.secret(&e3).is_none());
@@ -166,7 +166,7 @@ fn missing_box_covers_nothing() {
     let (d, removed) = removal(m, 7);
     let dep = [d];
     assert!(!uncovered(&v, Role::Read, &e1, &dep, &AllHeld).is_empty());
-    assert!(merge_due(&v, Role::Read, &dep, &AllHeld));
+    assert!(merge_due_at(&v, Role::Read, &dep, &AllHeld));
     let named = rotate(&a, &read(), &v, &base, &[admin_rcpt(p, &pe)], &naming(removed), &mut *rg).unwrap();
     let v2 = named.preview(&v).unwrap();
     let e2 = named.role(Role::Read).unwrap().epoch;
@@ -263,4 +263,10 @@ fn pins_hold_the_tail_spec_crypto_4() {
     let back = edge_dep(m, Some(Role::Read), &[(1, None, true, true, false), (9, None, false, true, false), (12, Some(Role::Read), false, false, true)]);
     assert!(!pins(&marked, Role::Read, &back, &Marking));
     assert!(pins(&Names { list: [Name::void(key(12), m)].into(), ..marked }, Role::Read, &back, &Marking));
+}
+
+/// The merge rule (spec/crypto.md §4, Encrypting under) at a node that may rotate `r`: some
+/// current epoch of `r`, not only the newest, misses a known departure.
+fn merge_due_at(epochs: &ActorEpochs, r: Role, departures: &[Departure], held: &dyn osis_keys::Held) -> bool {
+    epochs.role(r).current().iter().any(|e| !uncovered(epochs, r, e, departures, held).is_empty())
 }
