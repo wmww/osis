@@ -711,7 +711,9 @@ pub fn member_churn(seed: u64) -> Res<Report> {
 /// invalid). S1 is missing again at W; A, holding it uncovered, uploads it again while it has a
 /// live write; W fetches it, and A and W read alike. Random writes while A is away: a part W
 /// dropped under S2 and deleted reaches A never, and its commit applies there without it
-/// (S2 lists it, spec/commits.md §4).
+/// (S2 lists it, spec/commits.md §4). A snapshot of A's or W's after S1 (W's own trigger before
+/// the removal reached it, over S2 then valid) carries S1's writes and may keep S1 dropped at W:
+/// then A and W must read alike.
 pub fn coverer_revoked(seed: u64) -> Res<Report> {
     let mut d = Dice::new(seed ^ 0xc5);
     let mut sim = sim("coverer_revoked", seed, NetWeights::default());
@@ -745,8 +747,10 @@ pub fn coverer_revoked(seed: u64) -> Res<Report> {
     // a write of C's first: S2 covers S1 strictly (of covered-equal ones the higher ID goes)
     add(&mut sim, c, "by c")?;
     sim.run(10)?;
+    let before_c = snaps(&mut sim, c)?;
     let acts = sim.sync(c)?.compact_now(&t, &k).map_err(|e| sim.fail(format!("node {c} compact: {e}")))?;
     sim.actions(c, acts)?;
+    let s2: BTreeSet<_> = snaps(&mut sim, c)?.difference(&before_c).copied().collect();
     sim.run(20)?;
     // past `MAX_DRIFT`: W drops S1 under S2 and deletes it at the host
     sim.advance(2 * 3_600_000)?;
@@ -769,7 +773,10 @@ pub fn coverer_revoked(seed: u64) -> Res<Report> {
     // have removed them all
     let p = part(&mut sim)?;
     let live = sim.engine(a)?.delta_live(&s1, &t, &k).map_err(|e| sim.fail(e.to_string()))?;
-    if p != Some((false, false)) && live {
+    let s1_ts = sim.engine(a)?.header(&s1).map(|h| h.ts);
+    let later = snaps(&mut sim, w)?.into_iter().any(|x| x != s1 && !s2.contains(&x) && sim.engine(w).ok().and_then(|e| e.header(&x)).is_some_and(|h| h.author != pc && Some(h.ts) > s1_ts));
+    let alike = sim.engine(a)?.get(&t, &k).ok() == sim.engine(w)?.get(&t, &k).ok();
+    if p != Some((false, false)) && live && !(later && alike) {
         return Err(sim.fail(format!("W never got S1 back: {p:?}")));
     }
     sim.finish()
