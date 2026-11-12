@@ -3,8 +3,8 @@
 //! mixes forks (rotations on stale states, leaving holders out), departures (removals,
 //! demotions, `until`s finalized, self-removals forging what a writer can), vandals (a rotation
 //! boxing nobody), re-grants, invalid rotations (a rotator demoted unaware), compactions, holder
-//! actors in cycles, a rotator lacking a role's secret, and an admin acting while some departures
-//! are withheld from it. Forgers and vandals are hostile: their nodes act no more, and an honest
+//! actors in cycles (a peer reading G only through them leaves the last), a rotator lacking a
+//! role's secret, and an admin acting while some departures are withheld from it. Forgers and vandals are hostile: their nodes act no more, and an honest
 //! admin removes them (and the actors they are first admin of) before settling, the re-key
 //! from their lockouts. Every node settles under the walk's side of each admin dispute. The
 //! seed picks an emphasis (seed mod 4: forks, departures, forgeries, cycles); every feature stays
@@ -36,6 +36,9 @@ struct Reached {
 }
 
 
+/// A box: (actor, role, epoch, holder).
+type BoxAt = (Tid, Role, Epoch, Tid);
+
 /// A rotator's view when it made an epoch.
 struct Made {
     /// The commits it held, the rotation commit included.
@@ -64,6 +67,9 @@ struct Run {
     /// (its author lowered concurrently) still opens (spec/crypto.md §4, Boxes).
     handed: Vec<BTreeMap<Key, usize>>,
     made: BTreeMap<Key, Made>,
+    /// Boxes a re-seal wrote to a holder actor at a keyset whose secret its writer lacked: the
+    /// box (actor, role, epoch, holder actor), the keyset, and the commits the writer held.
+    resealed: Vec<(BoxAt, Epoch, BTreeSet<CommitId>)>,
     rng: Rng,
     /// Peers that forged: their nodes no longer act, and nothing is checked of them.
     hostile: BTreeSet<usize>,
@@ -126,22 +132,57 @@ impl Run {
         }
     }
 
-    /// Peer `i` granted peer `j` role `r` on `t`: notes what that handed `j` (`handed`), on `t`
-    /// and, through boxes to `t` as a holder actor, on the actors `t` holds a role on.
+    /// Peer `i` granted peer `j` role `r` on `t` (`hand_on`).
     fn grant(&mut self, i: usize, j: usize, t: Tid, r: Role) {
-        let had: BTreeSet<Key> = self.held(i).into_iter().filter(|k| k.0 == t).collect();
+        let to = self.tids[j];
+        self.hand_on(i, t, &[(j, r)], |run| run.lp.peers[i].engine.grant(&t, &to, &edge(r)).is_ok());
+    }
+
+    /// Peer `i` writes boxes of `t` by `f` (a grant or re-seal) to peers `js`, each at the role it
+    /// holds in `i`'s view: notes what that handed each (`handed`), on `t` up to that role and,
+    /// through boxes to `t` as a holder actor, on the actors `t` holds a role on: what `i` held of
+    /// `t` after `f` (the epochs a rotation `f` made first included) and the earlier secrets of
+    /// their roles (history boxes).
+    fn hand_on(&mut self, i: usize, t: Tid, js: &[(usize, Role)], f: impl FnOnce(&mut Run) -> bool) {
         // the actors `i` may read
         let all: Vec<Tid> = self.all().into_iter().filter(|a| self.lp.peers[i].engine.get_typed(a, &ct::SECRETS).is_ok()).collect();
-        let before = openable(&mut self.lp, i, &all, self.tids[j], BTreeSet::new());
-        if self.lp.peers[i].engine.grant(&t, &self.tids[j], &edge(r)).is_ok() {
-            let after = openable(&mut self.lp, i, &all, self.tids[j], BTreeSet::new());
+        let before: Vec<BTreeSet<Key>> = js.iter().map(|(j, _)| openable(&mut self.lp, i, &all, self.tids[*j], BTreeSet::new())).collect();
+        if !f(self) {
+            return;
+        }
+        let held: BTreeSet<Key> = self.held(i).into_iter().filter(|k| k.0 == t).collect();
+        for ((j, r), before) in js.iter().zip(before) {
+            let had: BTreeSet<Key> = held.iter().filter(|k| k.1 <= *r).copied().collect();
+            let after = openable(&mut self.lp, i, &all, self.tids[*j], BTreeSet::new());
             let boxed: BTreeSet<Key> = after.difference(&before).filter(|k| had.contains(k)).copied().collect();
             let carried = had.iter().filter(|k| boxed.iter().any(|b| b.1 == k.1 && k.2.n() < b.2.n()));
             let above = after.difference(&before).filter(|k| k.0 != t);
-            for k in boxed.iter().chain(carried).chain(above).filter(|k| !self.ever[j].contains(k)) {
-                self.handed[j].entry(*k).or_insert(self.log.len());
+            for k in boxed.iter().chain(carried).chain(above).filter(|k| !self.ever[*j].contains(k)) {
+                self.handed[*j].entry(*k).or_insert(self.log.len());
             }
         }
+    }
+
+    /// Peer `p` re-seals what is due on `t`, noting the boxes it seals blind (`resealed`). How
+    /// many commits it wrote.
+    fn reseal(&mut self, p: usize, t: Tid) -> crate::Result<usize> {
+        let before = self.lp.peers[p].engine.get_typed(&t, &ct::SECRETS).ok().flatten().unwrap_or_default();
+        let n = self.lp.peers[p].engine.reseal_due(&t, &Pass)?.commits.len();
+        let after = self.lp.peers[p].engine.get_typed(&t, &ct::SECRETS).ok().flatten().unwrap_or_default();
+        let held = super::tests::commit_ids(&mut self.lp, p);
+        use osis_keys::aspects::from_schema;
+        for (k, b) in after.boxes.iter().filter(|(k, b)| before.boxes.get(k) != Some(b) && !self.tids.contains(&k.holder)) {
+            let via = match b {
+                ct::SecretBox::Sealed(sb) => sb.keyset.as_ref().and_then(|x| from_schema(x).ok()),
+                ct::SecretBox::Symmetric(sb) => from_schema(&sb.epoch).ok(),
+            };
+            if let (Some(via), Ok(e)) = (via, from_schema(&k.epoch))
+                && !self.ever[p].contains(&(k.holder, k.role, via))
+            {
+                self.resealed.push(((t, k.role, e, k.holder), via, held.clone()));
+            }
+        }
+        Ok(n)
     }
 
     fn key_role(&self, at: usize, t: &Tid, d: usize) -> Option<Role> {
@@ -331,9 +372,14 @@ fn rotation_history(seed: u64, every_tx: bool) -> Reached {
             }
         }
     }
-    for &(t, o) in &actors {
+    // every peer on G, and some on each other actor; with holder actors, in half the seeds a
+    // deep peer instead on the last actor alone: it reads G only through the chain of holder
+    // actors, so departs below G
+    let deep = (cycle && rng.next(2) == 0).then(|| 1 + rng.next(N as u64 - 1) as usize).filter(|p| actors.iter().all(|a| a.1 != *p));
+    for (ai, &(t, o)) in actors.iter().enumerate() {
         for p in (1..N).filter(|p| *p != o) {
-            if t == actors[0].0 || rng.next(3) == 0 {
+            let granted = if deep == Some(p) { ai == k - 1 } else { ai == 0 || rng.next(3) == 0 };
+            if granted {
                 let _ = lp.peers[o].engine.grant(&t, &tids[p], &edge(ROLES[rng.next(ROLES.len() as u64) as usize]));
                 if !hidden {
                     lp.sync_all().unwrap();
@@ -342,7 +388,7 @@ fn rotation_history(seed: u64, every_tx: bool) -> Reached {
         }
     }
     lp.sync_all().unwrap();
-    let mut run = Run { lp, tids, actors, ever: vec![BTreeSet::new(); N], handed: vec![BTreeMap::new(); N], made: BTreeMap::new(), states: Vec::new(), secrets: BTreeMap::new(), rng, hostile: BTreeSet::new(), log: Vec::new(), first: BTreeMap::new(), holder_rotated: false };
+    let mut run = Run { lp, tids, actors, ever: vec![BTreeSet::new(); N], handed: vec![BTreeMap::new(); N], made: BTreeMap::new(), resealed: Vec::new(), states: Vec::new(), secrets: BTreeMap::new(), rng, hostile: BTreeSet::new(), log: Vec::new(), first: BTreeMap::new(), holder_rotated: false };
     run.log.push(format!("actors {:?} (owners), peers {:?}", run.actors, run.tids));
     run.note();
     reached.cycle = k > 1;
@@ -442,6 +488,24 @@ fn rotation_history(seed: u64, every_tx: bool) -> Reached {
         run.sync_some(all);
         run.lp.advance(run.rng.next(2_000));
     }
+    // the deep peer leaves the last actor (its first admin removes it, half the time synced to
+    // everyone before X acts), so a blind sealer of G meets a stale box below what it seals
+    if let Some(d) = deep.filter(|d| !run.hostile.contains(d)) {
+        let (t, o) = run.actors[k - 1];
+        let before = run.before(o);
+        if run.lp.peers[o].engine.demote(&t, &Demotion { holder: run.tids[d], new: None, retain: None }).is_ok() {
+            reached.departed = true;
+            let now = super::tests::commit_ids(&mut run.lp, o);
+            departing.extend(now.difference(&before.1).copied());
+            run.log.push(format!("peer {o} removes deep peer {d} from actor {}", k - 1));
+            run.record(o, &before);
+            run.note();
+            if run.rng.next(2) == 0 {
+                run.lp.sync_all().unwrap();
+                run.note();
+            }
+        }
+    }
     // X: an admin of G that stays one at peer 0, given everything but some departing commits
     // (and, rarely, others), re-seals and rotates
     let g = run.actors[0].0;
@@ -460,7 +524,9 @@ fn rotation_history(seed: u64, every_tx: bool) -> Reached {
     for _ in 0..2 {
         let before = run.before(x);
         for t in run.all() {
-            let _ = run.lp.peers[x].engine.reseal_due(&t, &Pass);
+            // re-seals to the peers it reads as holders, some departed in the settled history
+            let js: Vec<(usize, Role)> = (0..N).filter(|j| *j != x).filter_map(|j| run.key_role(x, &t, j).map(|r| (j, r))).collect();
+            run.hand_on(x, t, &js, |run| run.reseal(x, t).is_ok());
             run.note();
             let made = run.lp.peers[x].engine.ensure_rotated(&t).is_ok_and(|d| !d.0.commits.is_empty());
             run.rotated(x, t, made);
@@ -532,7 +598,7 @@ fn settle(run: &mut Run, seed: u64, rotate: bool) {
                 if run.hostile.contains(&p) || run.lp.peers[p].engine.core.role_now(&run.tids[p], &t).is_none() {
                     continue;
                 }
-                let a = run.lp.peers[p].engine.reseal_due(&t, &Pass).unwrap().commits.len();
+                let a = run.reseal(p, t).unwrap();
                 if a > 0 {
                     run.note();
                 }
@@ -646,10 +712,13 @@ fn check(run: &mut Run, seed: u64, rotated: bool) {
             }
             // no departed holder reads later content: what a holder that may write encrypts
             // under opens to no peer without access, from all it ever held or made and every box;
-            // nor does any epoch made by a rotator that saw the peer depart, unless a grant
-            // (on the thing or on a holder actor of it) handed it on (its author's own departure
-            // then rotates the role, so the first holds) or the history of a later epoch the peer held as a holder in its rotator's view
-            // carried it (access regained, here or through a holder actor, reads earlier content)
+            // nor does any epoch made by a rotator that saw the peer lose access (it held the
+            // commit that cost the peer the thing, directly or below, and the peer reads it in
+            // none of the rotator's rosters), unless a grant (on the thing or on a holder actor
+            // of it) handed it on (its author's own departure then rotates the role, so the first
+            // holds), the history of a later epoch the peer held as a holder in its rotator's view
+            // carried it (access regained, here or through a holder actor, reads earlier
+            // content), or it opens only through boxes within the limits (`excused`)
             let gone: Vec<usize> = (0..N).filter(|d| !access(run, o, *d, t, r)).collect();
             for &d in &gone {
                 let opens = openable(&mut run.lp, o, &all, run.tids[d], run.ever[d].clone());
@@ -663,11 +732,15 @@ fn check(run: &mut Run, seed: u64, rotated: bool) {
                         assert!(!opens.contains(&(t, r, e)), "seed {seed}: peer {d} (now {:?}) opens {t:?} {r:?} epoch {e:?} peer {h} ({hr:?}) encrypts under", role(d));
                     }
                 }
-                let last = departure(run, o, t, d);
+                // the commits that cost it `t`: its departure from `t` itself, and the one that cut
+                // its last path to `t` (through holder actors too)
+                let lost: Vec<CommitId> = departure(run, o, t, d).into_iter().chain(path_loss(run, o, d, t, r)).collect();
                 let regained = |e: &Epoch| run.made.iter().any(|((t2, r2, e2), m)| *t2 == t && *r2 == r && !m.below.contains(&d) && m.carried.contains(e) && run.ever[d].contains(&(t, r, *e2)));
                 // the boxes within the limit for `d` (`excused`), in any epoch of the history: a
                 // cascade seals a holder actor blind in an epoch of an actor `t`'s epoch boxes
-                let limit: BTreeSet<(Tid, Role, Epoch, Tid)> = run.made.iter().flat_map(|((t2, r2, e2), m)| m.blind.iter().filter(|(bm, k)| run.excused(o, &m.held, *bm, *r2, k, d)).map(move |(bm, _)| (*t2, *r2, *e2, *bm))).collect();
+                let made = run.made.iter().flat_map(|((t2, r2, e2), m)| m.blind.iter().map(move |(bm, k)| ((*t2, *r2, *e2, *bm), *k, &m.held)));
+                let resealed = run.resealed.iter().map(|(b, k, held)| (*b, *k, held));
+                let limit: BTreeSet<BoxAt> = made.chain(resealed).filter(|(b, k, held)| run.excused(o, held, b.3, b.1, k, d)).map(|x| x.0).collect();
                 // from the secrets the peer held rightly (none of an epoch made with it below): what
                 // the settled boxes open to it without those within the limit, and what every
                 // state met opens with and without them
@@ -676,7 +749,7 @@ fn check(run: &mut Run, seed: u64, rotated: bool) {
                 let met = opens_in(&run.lp, &run.states, &run.secrets, run.tids[d], base.clone(), &BTreeSet::new());
                 let met_unlimited = opens_in(&run.lp, &run.states, &run.secrets, run.tids[d], base, &limit);
                 for ((mt, mr, e), Made { held, below, .. }) in &run.made {
-                    if *mt == t && *mr == r && below.contains(&d) && last.is_some_and(|c| held.contains(&c)) && !regained(e) {
+                    if *mt == t && *mr == r && below.contains(&d) && lost.iter().any(|c| held.contains(c)) && !regained(e) {
                         // excused only when boxes within the limit were its one way to it: a leak
                         // if the settled boxes open it without them, or it holds it and no state
                         // met opens it, or one opens it without them
@@ -694,6 +767,23 @@ fn check(run: &mut Run, seed: u64, rotated: bool) {
 /// or a later demotion whose audit dropped a write on it.
 fn departure(run: &Run, o: usize, t: Tid, d: usize) -> Option<CommitId> {
     departure_point(run, o, t, d).map(|p| p.commit)
+}
+
+/// The commit at which peer `d` last lost access to role `r` of `t` (`access_at`) in peer
+/// `o`'s settled timelines, by an edge write on any actor: the newest write whose point has it
+/// reading `t` just before and not just after.
+fn path_loss(run: &Run, o: usize, d: usize, t: Tid, r: Role) -> Option<CommitId> {
+    let core = &run.lp.peers[o].engine.core;
+    let points: BTreeSet<osis_perm::Point> = run.all().iter().filter_map(|a| core.timelines.get(a)).flat_map(|tl| tl.applied().values().map(|a| a.point).collect::<Vec<_>>()).collect();
+    let points: Vec<osis_perm::Point> = points.into_iter().collect();
+    let mut out = None;
+    for (n, p) in points.iter().enumerate() {
+        let next = points.get(n + 1).copied().unwrap_or(osis_perm::Point { commit: CommitId([0xff; 32]), ..*p });
+        if access_at(run, o, d, t, r, Some(*p)) && !access_at(run, o, d, t, r, Some(next)) {
+            out = Some(p.commit);
+        }
+    }
+    out
 }
 
 /// `departure`, at its point in the key order.
