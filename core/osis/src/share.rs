@@ -1303,8 +1303,10 @@ impl Osis {
                     }
                     let e = s.engine_mut();
                     let holds = e.roster(&p).contains_key(&k);
+                    // the account's keys here: a box to it can be sealed (a `keys.0` state alone
+                    // may lack its minting's part, known header-only)
                     if let (true, Some(first)) = (holds, e.first_admin(&p))
-                        && e.get_typed(&first, &ct::KEYS).ok().flatten().is_some()
+                        && e.account_holder_keys(&first).is_ok()
                     {
                         *crate::watch::lock(&f2) = Some(first);
                         return Some(Ok(()));

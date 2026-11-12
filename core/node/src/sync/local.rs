@@ -265,9 +265,12 @@ impl SyncEngine {
         let mut unwrapped = false;
         for (l, hosts) in labels {
             // by part: a chain may have copied this commit's edge here, and a later copy wants its
-            // boxes. A copy placed and gone since is not placed again
-            let mine: BTreeSet<usize> = self.state.entries_of(&l, c).filter(|(_, e)| e.cert).filter_map(|(_, e)| if let Kind::Commit { parts, .. } = &e.kind { Some(parts.clone()) } else { None }).flatten().collect();
-            if self.state.certs.contains(&(l, *c)) && (mine.is_empty() || want.is_subset(&mine)) {
+            // boxes. A copy placed and gone since is not placed again; an own header-only copy
+            // (a minting as its record's witness, placed by a pass before this flow) is no copy
+            // of these parts, but is not gone either
+            let own: Vec<Vec<usize>> = self.state.entries_of(&l, c).filter(|(_, e)| e.cert).filter_map(|(_, e)| if let Kind::Commit { parts, .. } = &e.kind { Some(parts.clone()) } else { None }).collect();
+            let mine: BTreeSet<usize> = own.iter().flatten().copied().collect();
+            if self.state.certs.contains(&(l, *c)) && (own.is_empty() || want.is_subset(&mine)) {
                 continue;
             }
             let parts: BTreeSet<usize> = want.difference(&mine).copied().collect();
