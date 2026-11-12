@@ -67,18 +67,25 @@ fn unsolicited_push_stores_nothing_spec_wire_11_2() {
 
 // spec/sync.md §5 (walk: "verifying each step under its parent's delete key, the genesis step
 // against the label ID"), spec/requirements.md (no unbounded allocation): a host path that
-// does not verify is refused at its first page, not buffered until the host ends it.
+// does not verify is refused at its first page, not buffered until the host ends it. A label
+// known by its ID and hosts alone (a hint: no recorded path) is walked by Open from the start.
 #[test]
 fn bad_path_refused_at_first_page_spec_sync_5() {
-    let (mut net, _host, [a], _g, []) = hosted::<1, 0>(&[], [], false);
+    let (mut net, host, [a], g, []) = hosted::<1, 0>(&[], [], false);
+    let hosts = vec![net.address(host)];
+    // the host's head for the hint: under the sync key the node tries (g's), on no path it holds
+    let gl = net.group_labels(a).into_iter().find(|(t, _)| *t == g).expect("g's label").1;
+    let mut head = gl.steps.values().next().expect("a step").0.clone();
+    head.label = LabelId([0x55; 16]);
     let mut se: SyncEngine = net.take(a);
-    let acts = se.handle(Event::Local);
+    let hint = LabelId([0x55; 16]);
+    let acts = se.follow(g, g, hint, hosts);
     let conn = acts.iter().find_map(|x| if let Action::Dial { conn, .. } = x { Some(*conn) } else { None }).expect("dial");
     se.handle(Event::Up { conn });
     let acts = se.handle(Event::Bytes { conn, bytes: encode_frame(&Hello::new(net.now(), [9; 32]).encode()) });
-    let (id, label) = sent(&acts, conn).into_iter().find_map(|m| if let Message::Open { id, label, .. } = m { Some((id, label)) } else { None }).expect("open");
+    let (id, label) = sent(&acts, conn).into_iter().find_map(|m| if let Message::Open { id, label, .. } = m { (label == hint).then_some((id, label)) } else { None }).expect("open");
     // an unrecorded head: the node asks for the path to verify it
-    let acts = se.handle(Event::Bytes { conn, bytes: frame(Message::Opened { id, head: foreign_step(40), entry_box: None }) });
+    let acts = se.handle(Event::Bytes { conn, bytes: frame(Message::Opened { id, head, entry_box: None }) });
     let pid = sent(&acts, conn).into_iter().find_map(|m| if let Message::Path { id, label: l, .. } = m { (l == label).then_some(id) } else { None }).expect("path");
     se.take_diagnostics();
     se.handle(Event::Bytes { conn, bytes: frame(Message::PathReply { id: pid, steps: vec![foreign_step(50); 4], more: true }) });
