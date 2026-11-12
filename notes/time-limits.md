@@ -39,6 +39,7 @@ Format: `- <date time> <box> `<limit>` [<test>] <CPU|wall> <measured>/<limit> s 
 - 2026-11-12 fastbox-0 `gate.hold` wall 245/177 s, `gate` wall 265/220 s at load 22, CPU within limits: unmerge-noops review, no lock wait; persistent, issues/gate-five-minutes.md.
 - 2026-11-12 fastbox-0 `gate` CPU 3097/3008 s, wall 337/220 s; `gate.hold` wall 281/177 s at load 24: cert-copies review (osis-crypto, -label, -engine, -node changed), no lock wait; persistent, issues/gate-five-minutes.md.
 - 2026-11-12 fastbox-0 `gate.hold` wall 252/177 s, `gate` wall 376/220 s at load 21, CPU within limits: release-expiry-everywhere review (osis-node changed), no lock wait; persistent, issues/gate-five-minutes.md.
+- 2026-11-11 ostrich `gate.hold` CPU 5892/3795 s, wall 583/241 s and `gate` CPU 5993/4094 s, wall 638/299 s at load 11, no lock wait: late-twin-share review, 8 of 26 crates selected (osis-node changed); default tests 303 s, properties stage 117 s / 1414 CPU-s (exhaustive 107 s beside plain 113 s), sim 163 s; persistent, issues/gate-five-minutes.md.
 
 ## Investigations
 One section per investigation: date and box, the trigger (hits or the run over 2x), what was tried, the outcome (fixed, or a raised limit with why no good solution was found). Tess reviews every raise.
