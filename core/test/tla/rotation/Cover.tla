@@ -21,15 +21,19 @@
 (* at its current epochs (P acts so even when not a writer, from what it     *)
 (* holds: PKnows at the start); both are ordered after Dp, so they apply     *)
 (* nothing where Dp is held (invalid, not audited). Raise: a held edge write *)
-(* raising its holder that applies nothing, by an author holding write, is   *)
-(* a lowering at its own point, named by itself as a raise ("^" before its   *)
-(* id: never the name of the same commit applied as a lowering; Marked       *)
-(* FALSE: the same name, the negative control).                              *)
+(* raising its holder that applies nothing, by an author holding write at   *)
+(* its point, is a lowering at that point, named by itself as a raise ("^"  *)
+(* before its id: never the name of the same commit applied as a lowering;  *)
+(* Marked FALSE: the same name, the negative control). Else: Dp takes P's   *)
+(* right through a holder actor, so no rotation of this actor names it, and *)
+(* honest writers re-seal holders they see unboxed at a current epoch they  *)
+(* hold. MetRaise: a raise name is met only where that raise applies nothing *)
+(* either (FALSE: the negative control).                                     *)
 (* Commits are delivered whole in any order; boxes are global (crypto is     *)
 (* access: a party's secrets are the closure over boxes to it and history).  *)
 EXTENDS Integers, FiniteSets, Sequences, TLC
 
-CONSTANTS Attr, Forge, Audit, Writers, MaxE, Later, Dup, Regrant, Raise, DemoteTo, Marked, PKnows
+CONSTANTS Attr, Forge, Audit, Writers, MaxE, Later, Dup, Regrant, Raise, DemoteTo, Marked, PKnows, Else, MetRaise
 
 Honest == Writers
 Members == {"P", "L", "Q"} \cup (IF Regrant THEN {"M"} ELSE {})
@@ -72,7 +76,7 @@ Sorted(X) == IF X = {} THEN <<>>
              ELSE LET m == CHOOSE c \in X : \A d \in X : c.ts <= d.ts
                   IN <<m>> \o Sorted(X \ {m})
 
-Init0 == [edge |-> [h \in Members |-> ADMIN], low |-> {}, unap |-> {}, attr |-> [h \in Members |-> "none"]]
+Init0 == [edge |-> [h \in Members |-> ADMIN], low |-> {}, unap |-> {}, ap |-> {}, attr |-> [h \in Members |-> "none"]]
 
 \* an explicit change applies by its author's admin (O always); a self-removal always
 Applies(st, c) == c.kind = "self" \/ c.author = "O" \/ st.edge[c.author] = ADMIN
@@ -82,7 +86,8 @@ Step(st, c) ==
       lowered == ok /\ new[c.h] < st.edge[c.h]
   IN [edge |-> new,
       low |-> st.low \cup (IF lowered THEN {c.id} ELSE {}),
-      unap |-> st.unap \cup (IF ~ok /\ c.val > st.edge[c.h] THEN {c.id} ELSE {}),
+      unap |-> st.unap \cup (IF ~ok /\ c.val > st.edge[c.h] /\ (c.author = "O" \/ st.edge[c.author] >= WRITE) THEN {c.id} ELSE {}),
+      ap |-> st.ap \cup (IF ok THEN {c.id} ELSE {}),
       attr |-> [h \in Members |-> IF lowered /\ h = c.h THEN c.id ELSE st.attr[h]]]
 
 RECURSIVE WalkSeq(_, _)
@@ -90,9 +95,8 @@ WalkSeq(st, s) == IF s = <<>> THEN st ELSE WalkSeq(Step(st, Head(s)), Tail(s))
 Edge(H) == {c \in cs : c.kind \in {"chg", "self"} /\ c.id \in H /\ ~Dropped(H, c)}
 Walk(H) == WalkSeq(Init0, Sorted(Edge(H)))
 
-\* a raise applying nothing at a node holding H, by an author holding write there (Raise)
-RaiseEv(H) == IF Raise THEN {id \in Walk(H).unap : CommitOf(id).author = "O" \/ Walk(H).edge[CommitOf(id).author] >= WRITE}
-              ELSE {}
+\* a raise applying nothing at a node holding H, by an author holding write at its point (Raise)
+RaiseEv(H) == IF Raise THEN Walk(H).unap ELSE {}
 \* its name, and the commit a name is of
 RName(id) == IF Marked THEN "^" \o id ELSE id
 OfName(x) == CHOOSE c \in cs : c.id = x \/ RName(c.id) = x
@@ -112,7 +116,7 @@ AttrSet(H, h) == LET a == AttrOf(H, h)
                     ELSE {a} \cup (IF Later THEN {c.id : c \in {d \in cs : d.id \in H /\ d.kind \in {"chg", "self"}
                                                       /\ d.h = h /\ d.val = NONE /\ d.ts > OfName(a).ts}} ELSE {})
 \* the names a rotation by a node holding H writes
-NamesOf(H) == Walk(H).low \cup {RName(id) : id \in RaiseEv(H)} \cup (IF Attr = "any" /\ \E h \in Members : DropsOn(H, h) THEN {"D"} ELSE {})
+NamesOf(H) == (Walk(H).low \ (IF Else THEN {"Dp"} ELSE {})) \cup {RName(id) : id \in RaiseEv(H)} \cup (IF Attr = "any" /\ \E h \in Members : DropsOn(H, h) THEN {"D"} ELSE {})
 
 \* ---- keys at a node ---------------------------------------------------------
 RECURSIVE Close(_)
@@ -120,7 +124,9 @@ Close(X) == LET T == X \cup UNION {Ep(e).hist : e \in X} \cup {p[2] : p \in {q \
             IN IF T = X THEN X ELSE Close(T)
 Sec(p) == Close({e \in EpIds : <<p, e>> \in boxes})
 
+IsRaise(x) == Marked /\ x # OfName(x).id
 Met(n, names) == \A x \in names : OfName(x).id \in held[n]
+                   /\ (MetRaise /\ IsRaise(x) => OfName(x).id \notin Walk(held[n]).ap)
 Est(n, e) == e = 0 \/ (Ep(e).commit \in held[n]
                        /\ (e \in Sec(n) => \E x \in ents : x.e = e /\ Met(n, x.names)))
 EstSet(n) == {e \in EpIds : Est(n, e)}
@@ -248,6 +254,14 @@ ReGrant ==
   /\ boxes' = boxes \cup {<<"M", e>> : e \in Current("P") \cap Sec("P")}
   /\ UNCHANGED <<eps, ents, adds, forged>>
 
+\* an honest writer re-seals a holder its view shows without a box at a current epoch it
+\* holds (Else)
+Reseal(n) ==
+  /\ Else /\ Role(n, n) >= WRITE
+  /\ \E e \in Current(n) \cap Sec(n) : \E p \in Holders(n) : <<p, e>> \notin boxes
+       /\ boxes' = boxes \cup {<<p, e>>}
+  /\ UNCHANGED <<cs, held, eps, ents, adds, forged>>
+
 \* each write: its epoch, the holders its writer saw departed, whether it held P's re-grant
 WritesNow == {<<Newest(n), Departed(n), "Gr" \in held[n]>> : n \in {m \in Honest : MayEncrypt(m)}}
 
@@ -260,7 +274,7 @@ Init == /\ cs = Static
         /\ adds = {}
         /\ wrote = {}
         /\ forged = {}
-Next == /\ \/ \E n \in Honest : Deliver(n) \/ Rotate(n) \/ HistAdd(n)
+Next == /\ \/ \E n \in Honest : Deliver(n) \/ Rotate(n) \/ HistAdd(n) \/ Reseal(n)
            \/ ForgeEntry \/ ForgeBackdated \/ SelfRot \/ DupRemoval \/ PRemove \/ ReGrant
         /\ wrote' = wrote \cup WritesNow
 Spec == Init /\ [][Next]_vars

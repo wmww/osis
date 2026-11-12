@@ -72,7 +72,7 @@ pub(crate) fn names(core: &Core, a: &Tid, departs: Option<osis_keys::Own>) -> os
 /// applied edge write on `a` (a removal, demotion, self-removal or finalize), or by a raise
 /// that applies nothing here, at the point it stops applying: a demotion elsewhere whose audit
 /// dropped an edge write on `a` that had raised a holder, or a held edge write on `a` raising
-/// one that never applied (invalid at its point), by an author holding write on `a` (a box
+/// one that never applied (invalid at its point), by an author holding write on `a` there (a box
 /// written on that write's word is no longer the timeline's; a dropped lowering write raised
 /// nobody and lowers nobody by going).
 struct Lowering {
@@ -100,8 +100,8 @@ struct Touched {
 /// it than just before (`a`'s edges are constant between such points); for each raise applying
 /// nothing here (its value above the holder's grant for keys just before its own point), the
 /// holder it raised, from read up to that value: at the demotion whose audit dropped it, or, for
-/// a held resolved write that never applied, at its own point when its author holds write on
-/// `a` (`invalid_raises`). Only commits this node holds: names are met by holding them.
+/// a held resolved write that never applied, at its own point when its author held write on
+/// `a` there (`invalid_raises`). Only commits this node holds: names are met by holding them.
 fn lowerings(core: &Core, tl: &Timeline, a: &Tid) -> Vec<Lowering> {
     let held = |c: &osis_base::CommitId| core.ix.commits.contains_key(c);
     let raised = |mc: &RoleCommit, op: &EdgeOp| key_role(op.edge.as_ref()).filter(|put| key_role(tl.edges_at(Some(mc.point())).get(&op.holder, a)).is_none_or(|had| had < *put));
@@ -162,15 +162,17 @@ fn lowerings(core: &Core, tl: &Timeline, a: &Tid) -> Vec<Lowering> {
 
 /// The held edge writes on `a` that never applied here (invalid at their point: neither applied
 /// nor dropped), their commits resolved (one that is not applies nothing until it is, like one
-/// not held), by an author holding write on `a` for keys (`At::KEYS`). Such a raise's boxes
-/// open for the holder it raised wherever its author held the epoch, and nothing on the timeline
-/// stands behind them; a rotator that applied it boxed that holder too. A reader's writes force
-/// nothing (spec/requirements.md: malicious readers only waste storage), and an author holding
-/// less than write could write no valid box at all: its own departure rotates what it holds.
+/// not held), by an author holding write on `a` just before its point (`At::before`, as its
+/// authority is judged there). Such a raise's boxes open for the holder it raised wherever its
+/// author held the epoch, and nothing on the timeline stands behind them; a rotator that applied
+/// it boxed that holder too, whatever befell the author after (a later removal of it keeps it a
+/// lowering). An author holding write there could have forced a rotation by that commit anyway,
+/// by a valid box to a non-holder; a reader's writes force nothing (spec/requirements.md:
+/// malicious readers only waste storage).
 fn invalid_raises<'t>(core: &'t Core, tl: &'t Timeline, a: &'t Tid) -> impl Iterator<Item = (&'t RoleCommit, &'t EdgeOp)> + 't {
     tl.held_on(a)
         .filter(|(w, mc, _)| !tl.is_applied(w) && !tl.dropped().contains_key(w) && !core.ix.unresolved.contains(&mc.id))
-        .filter(|(_, mc, _)| tl.role(&mc.author, a, At::KEYS) >= Some(Role::Write))
+        .filter(|(_, mc, _)| tl.role(&mc.author, a, At::before(mc.point())) >= Some(Role::Write))
         .map(|(_, mc, op)| (mc, op))
 }
 

@@ -1772,3 +1772,66 @@ fn raise_applied_as_lowering_elsewhere_covers_nothing_spec_crypto_4() {
     assert!(openable(&mut lp, 3, &[g], tids[2], BTreeSet::new()).contains(&(g, Role::Read, r)), "R's epoch boxes M");
     assert!(!removed_reader_reads(&mut lp, g, &tids, 3), "A encrypts under R's epoch, which M opens");
 }
+
+// spec/crypto.md §4 (Lowering: an author holding write at the raise's point): a2, holding L but
+// not D, re-grants M (G); R, holding G but not D, removes a2 (D2) and rotates, boxing M. At A, G
+// applies nothing and a2 holds nothing now: G is still M's newest lowering (a2 was a writer at
+// its point), which R's epoch does not name, so A rotates rather than encrypting under it.
+#[test]
+fn raise_by_author_removed_since_lowers_spec_crypto_4() {
+    let (mut lp, g, tids, dem) = demoted_unaware();
+    send_skipping(&mut lp, 0, 1, &dem);
+    send_skipping(&mut lp, 0, 3, &dem);
+    lp.peers[1].engine.grant(&g, &tids[2], &edge(Role::Read)).unwrap();
+    lp.sync(1, 3).unwrap();
+    lp.peers[3].clock.advance(10_000);
+    lp.peers[3].engine.demote(&g, &Demotion { holder: tids[1], new: None, retain: None }).unwrap();
+    let r = newest_read(&lp, 3, g).unwrap();
+    assert!(openable(&mut lp, 3, &[g], tids[2], BTreeSet::new()).contains(&(g, Role::Read, r)), "R's removal epoch boxes M");
+    lp.sync(1, 0).unwrap();
+    lp.sync(3, 0).unwrap();
+    assert!(lp.peers[0].engine.core.role_now(&tids[1], &g).is_none(), "a2 removed at A");
+    assert!(!removed_reader_reads(&mut lp, g, &tids, 3), "A encrypts under R's epoch, which M opens");
+}
+
+// spec/crypto.md §4 (Lowering, Met; a raise invalid here through a holder actor's demotion): P
+// is admin of g through group k (k admin on g). A removes M (L); Q demotes P to write on k (D).
+// P, holding L but not D, re-grants M on g (R); at A, R applies nothing (P writes g through k)
+// and A rotates g, naming R as a raise of M. A's names hold nothing on k: P, still lacking D,
+// re-seals M at A's epoch, and A must not then encrypt under an epoch M opens.
+#[test]
+fn raise_invalid_through_holder_actor_resealed_spec_crypto_4() {
+    let mut lp = synced(4);
+    let tids: Vec<Tid> = (0..4).map(|i| lp.peers[i].engine.me()).collect();
+    let g = group(&mut lp, 0);
+    let k = group(&mut lp, 3);
+    lp.peers[3].engine.grant(&k, &tids[1], &edge(Role::Admin)).unwrap();
+    lp.sync_all().unwrap();
+    lp.peers[0].engine.grant(&g, &k, &edge(Role::Admin)).unwrap();
+    lp.peers[0].engine.grant(&g, &tids[2], &edge(Role::Read)).unwrap();
+    lp.sync_all().unwrap();
+    lp.peers[0].engine.demote(&g, &Demotion { holder: tids[2], new: None, retain: None }).unwrap();
+    lp.sync_all().unwrap();
+    let before = commit_ids(&mut lp, 3);
+    lp.peers[3].engine.demote(&k, &Demotion { holder: tids[1], new: Some(edge(Role::Write)), retain: None }).unwrap();
+    let dem: BTreeSet<_> = commit_ids(&mut lp, 3).difference(&before).copied().collect();
+    lp.sync(3, 0).unwrap();
+    lp.peers[1].clock.advance(5_000);
+    lp.peers[1].engine.grant(&g, &tids[2], &edge(Role::Read)).unwrap();
+    assert!(lp.peers[1].engine.core.role_now(&tids[2], &g).is_some(), "R applies at P");
+    lp.sync(1, 0).unwrap();
+    assert!(lp.peers[0].engine.core.role_now(&tids[2], &g).is_none(), "R applies nothing at A");
+    lp.peers[0].clock.advance(10_000);
+    assert!(!lp.peers[0].engine.ensure_rotated(&g).unwrap().0.commits.is_empty(), "A rotates for R");
+    assert!(!removed_reader_reads(&mut lp, g, &tids, 0), "A's own rotation boxes M");
+    send_skipping(&mut lp, 0, 1, &dem);
+    send_skipping(&mut lp, 3, 1, &dem);
+    assert!(lp.peers[1].engine.core.role_now(&tids[2], &g).is_some(), "P still lacks D");
+    let _ = lp.peers[1].engine.reseal_due(&g, &Pass).unwrap();
+    lp.sync(1, 0).unwrap();
+    assert!(!removed_reader_reads(&mut lp, g, &tids, 0), "A encrypts under an epoch M opens");
+    lp.sync_all().unwrap();
+    let rounds = rounds_to_settle(&mut lp, g);
+    assert_eq!(rounds.last(), Some(&0), "settles: {rounds:?}");
+    assert!(!removed_reader_reads(&mut lp, g, &tids, 0), "settled: A encrypts under an epoch M opens");
+}

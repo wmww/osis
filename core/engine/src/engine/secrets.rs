@@ -436,18 +436,32 @@ impl NamesHeld<'_> {
     fn resolved(&self, c: &CommitId) -> bool {
         !self.core.ix.unresolved.contains(c)
     }
+
+    /// Some edge write of commit `c` on `holder`'s edge into `thing` applies here.
+    fn raises(&self, c: &CommitId, thing: &Tid, holder: &Tid) -> bool {
+        let Some(tl) = self.core.timelines.get(thing) else { return false };
+        tl.role_commit(c).is_some_and(|mc| {
+            mc.ops.iter().enumerate().any(|(i, op)| op.target == *thing && op.holder == *holder && tl.is_applied(&osis_perm::WriteId(*c, i as u32)))
+        })
+    }
 }
 
 impl osis_keys::Held for NamesHeld<'_> {
     /// Applied: the commit held with its `roles.0` part on the name's thing, or, having none
     /// there, its `keys.0` part (a copy of some of it, a certificate copy or another label's parts,
-    /// may lack the departure), and `resolved`.
+    /// may lack the departure), and `resolved`; a raise named with its holder, only while none
+    /// of the commit's writes on that holder's edge applies here either.
+    ///
+    /// Invariant: a node using the epoch never holds the raised holder on the word of a raise
+    /// its rotator saw apply nothing, so it boxes it nothing there (a re-seal included): the
+    /// rotator's names hold every lowering on the actor it knew, but not what took the raise's
+    /// author's right elsewhere (a demotion on a holder actor it wrote through).
     fn met(&self, n: &Name) -> bool {
         let applied = self.core.ix.commits.get(&n.key.commit).is_some_and(|m| {
             let part = |ak: &str| m.header.aspects.iter().position(|a| a.tid == n.thing && a.ak.as_str() == ak);
             part("roles.0").or_else(|| part("keys.0")).is_none_or(|ai| !m.missing.contains(&ai))
         });
-        applied && self.resolved(&n.key.commit)
+        applied && self.resolved(&n.key.commit) && n.raised.is_none_or(|h| !self.raises(&n.key.commit, &n.thing, &h))
     }
     /// The author of held commit `c` holds `r` on the actor now, for keys (`At::KEYS`: every
     /// `until` disregarded), over its record chain and through holder actors alike.
