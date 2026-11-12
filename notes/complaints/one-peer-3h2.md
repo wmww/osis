@@ -22,3 +22,5 @@
 - (re-walk round) The sim's node identities differ between runs of one seed once code changes (blob and commit IDs too), so a probe tag found in one run (`dialable_key()[0]`) must be read again after every rebuild.
 - (re-walk round) Comparing against an older commit of the branch was the fastest way to tell a regression from a known limit: a second `wt claim` on a temporary branch built the sim test binary in about 4 min.
 - (re-walk round) Three "host lacks a must-hold body" seeds had one cause visible only on the serving side (a refused join with no `Lost` after it); a sim check that the two sides' stream joins agree after each settle would have named it at once.
+- (node fork) Counting passes by cause needed a temporary `#[track_caller]` probe on `mark_labels`/`mark_dirty` plus a thread-local map read in `passes`: a debug `PassStats` breakdown by trigger (stream arrival, own role commit reached, source moved, fill, resync) would answer "why 18 passes" without editing pass code.
+- (node fork) `Engine::me()` panics on a hub's engine ("joined no account"), so a probe printing the node's tid in shared code crashes hub nodes; `engine.tid()` is the safe tag.
