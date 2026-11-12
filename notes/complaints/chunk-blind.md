@@ -7,3 +7,4 @@
 - Rebased by another agent onto durable-compaction while the reviewer held chunk-blind in wt12: a branch checked out in one worktree cannot be checked out in another, so the result sits on `chunk-blind-r` for the reviewer to take.
 - `git rebase ... | grep CONFLICT | tail -5` hid a sixth conflicting file, whose markers were committed; `git grep '^<<<<<<< '` before every rebase continue would catch it.
 - The 15-seed sim sweep ran outside `tools/heavy` by mistake.
+- Review: the stack's base branch was mid-review in another worktree while main had moved with conflicts in its commits, so the reviewer of the upper branch could not rebase or gate until the coordinator rebased the whole stack; a stacked reviewer brief should say who rebases the stack.
