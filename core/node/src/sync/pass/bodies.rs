@@ -154,11 +154,13 @@ impl SyncEngine {
         Ok(!self.parts_covered(snaps, c, h, &[ai], note)?)
     }
 
-    /// Whether a delete took body `b` from `l` and it stays out: every one of its `parts` only a
+    /// Whether a delete took body `b` from `l` (at `host`: an entry of it gone there, as the
+    /// source's stream showed; else in this node's store) and it stays out: every one of its `parts` only a
     /// blob can carry (`must_carry`) is held there (at `host`) by another genuine blob of the
     /// commit, and no purge that fell may have been what took it (spec/sync.md §6).
     pub(super) fn delete_stands(&mut self, host: Option<&HostKey>, l: LabelId, b: &Body, parts: &[usize], snaps: &Snaps, note: &mut Note) -> Result<bool> {
-        if !self.state.body_deleted(l, b.commit, &b.parts) {
+        let there = host.is_some_and(|s| self.state.entries_of(&l, &b.commit).any(|(id, _)| self.state.is_gone_at(s, &l, &id)));
+        if !there && !self.state.body_deleted(l, b.commit, &b.parts) {
             return Ok(false);
         }
         let Some(h) = self.engine.header(&b.commit) else { return Ok(false) };
@@ -526,3 +528,4 @@ impl SyncEngine {
         Ok(())
     }
 }
+
