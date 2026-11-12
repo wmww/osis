@@ -53,8 +53,6 @@ pub struct Trigger {
     /// By wall ms, aspects whose live bodies a setting keeps until then (a `keep` until T
     /// alone): uncounted when applied, weighed once the bound passes (`Engine::tick`).
     at: BTreeMap<u64, BTreeSet<(Tid, Ak)>>,
-    /// Tests: nothing is weighed (`Engine::pause_compaction`).
-    paused: bool,
 }
 
 impl Trigger {
@@ -422,9 +420,6 @@ impl Engine {
     /// snapshots written, by aspect: an ephemeral one's covered bodies are dropped as it applies
     /// (`retention::memory::drop_covered`), a durable one's by node-sync.
     pub fn compactions(&mut self) -> Result<Vec<(Tid, Ak, CommitId)>> {
-        if self.core.compaction.paused {
-            return Ok(Vec::new());
-        }
         let due = std::mem::take(&mut self.core.compaction.due);
         let forced = std::mem::take(&mut self.core.compaction.forced);
         let mut out = Vec::new();
@@ -471,15 +466,6 @@ impl Engine {
             }
         }
         Ok(out)
-    }
-
-    /// Tests: while `paused`, the trigger writes no snapshot (what is due waits). Reaches cheaply
-    /// what the trigger leaves only at sizes a test cannot afford: a large value's replaced
-    /// chunks outweigh twice its snapshot's chunk list below about 700 chunks, so its own
-    /// replaces drop its first write under no snapshot only past that.
-    #[doc(hidden)]
-    pub fn pause_compaction(&mut self, paused: bool) {
-        self.core.compaction.paused = paused;
     }
 
     /// Tests: snapshots every ephemeral aspect held here with a body a snapshot may cover, now.

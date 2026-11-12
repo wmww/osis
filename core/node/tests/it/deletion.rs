@@ -1704,17 +1704,12 @@ fn chunks_outliving_their_introducer_leave_the_host_spec_commits_5() {
         osis_crypto::RngCore::fill_bytes(&mut osis_crypto::SeededRng::from_u64(seed), &mut v);
         v
     };
-    // no snapshot: the trigger writes none only for a value of about 700 chunks and up
-    // (`Engine::pause_compaction`)
-    net.engine(a).pause_compaction(true);
+    // the value written again twice: the replaces list none of its blobs and replace no tree, so
+    // they weigh too little for a snapshot (spec/sync.md §7 Trigger)
     let v1 = noise(2560 << 10, 1);
-    let mut v2 = v1.clone();
-    v2.splice(1000..1000, noise(50, 2));
-    let mut v3 = v2.clone();
-    v3.splice(2000..2000, noise(50, 3));
     let mut first = None;
     // two later own replaces cover the first (spec/commits.md §5 Own bodies)
-    for v in [&v1, &v2, &v3] {
+    for v in [&v1, &v1, &v1] {
         let mut m = Mutation::new();
         m.op(t, &BLOB, osis_crdt::PathOp { path: vec![], op: osis_crdt::Op::Replace(osis_base::Value::Bytes(v.clone())) }).unwrap();
         first = first.or(net.engine(a).commit(m).unwrap());
@@ -1732,7 +1727,6 @@ fn chunks_outliving_their_introducer_leave_the_host_spec_commits_5() {
     let h = net.engine(a).header(&first).expect("kept for the chunks it alone lists");
     assert!(h.chunks.iter().any(|c| tree.contains(&c.blob)), "the replaces reuse chunks of the first write");
     // a small write, compacted
-    net.engine(a).pause_compaction(false);
     let mut m = Mutation::new();
     m.set(t, &BLOB, &osis_base::Value::Bytes(vec![1, 2, 3])).unwrap();
     net.engine(a).commit(m).unwrap();
@@ -1857,6 +1851,11 @@ fn forged_listing_keeps(author: usize) {
     let (mut net, host, [a, b, c], g, [t1, t2]) = hosted::<3, 2>(&[(1, Role::Write), (2, Role::Write)], ["x", "y"], true);
     let l = net.group_labels(a).into_iter().find(|(x, _)| *x == g).unwrap().1.id;
     let w = [a, b][author];
+    // the forger's t1 commit lists t2's chunks, which no state of t1 links: weighed as what its
+    // drop frees, it would have the forger compact t1 before anyone holds it (spec/sync.md §7
+    // Trigger); t1 keeps its writes for a month
+    net.keep(a, t1, &[(REG.ak(), osis_schema::History::Keep { until: Some(net.now() + osis_base::format::TOMBSTONE_LIFETIME_MS), after: None })]);
+    net.run();
     if w != a {
         // the label admin is away: the writer deletes by delete key alone
         net.set_online(a, false);
@@ -1867,15 +1866,8 @@ fn forged_listing_keeps(author: usize) {
         v
     };
     // t2's value by own replaces reusing its chunks, no snapshot (`chunks_outliving_their_introducer_leave_the_host_spec_commits_5`)
-    for n in [a, b, c] {
-        net.engine(n).pause_compaction(true);
-    }
     let v1 = noise(2560 << 10, 1);
-    let mut v2 = v1.clone();
-    v2.splice(1000..1000, noise(50, 2));
-    let mut v3 = v2.clone();
-    v3.splice(2000..2000, noise(50, 3));
-    for v in [&v1, &v2, &v3] {
+    for v in [&v1, &v1, &v1] {
         let mut m = Mutation::new();
         m.op(t2, &BLOB, osis_crdt::PathOp { path: vec![], op: osis_crdt::Op::Replace(osis_base::Value::Bytes(v.clone())) }).unwrap();
         net.engine(w).commit(m).unwrap();
@@ -1909,7 +1901,7 @@ fn forged_listing_keeps(author: usize) {
     let at_host: std::collections::BTreeSet<_> = net.host_ids(host, &l).into_iter().collect();
     let gone = tree.iter().filter(|x| !at_host.contains(x)).count();
     assert_eq!(gone, 0, "node {author}: t2's blobs deleted at the host, of {}", tree.len());
-    assert_eq!(net.engine(w).get_full(&t2, &Ak::new(BLOB.ak()).unwrap()).unwrap(), Some(osis_base::Value::Bytes(v3.clone())), "node {author} reads t2");
+    assert_eq!(net.engine(w).get_full(&t2, &Ak::new(BLOB.ak()).unwrap()).unwrap(), Some(osis_base::Value::Bytes(v1.clone())), "node {author} reads t2");
 }
 
 // spec/sync.md §7 (a chunk goes only through an entry its prefix bears), spec/permissions.md §3
@@ -1925,6 +1917,8 @@ fn losing_a_thing_keeps_chunks_another_thing_links_spec_sync_7() {
     let g2 = net.group_seeded(a, &[(v, Role::Read), (f, Role::Write)], at, 2);
     let t1 = net.item(a, g1, g1, "x");
     let t2 = net.item(a, g2, g2, "y");
+    // the forged t1 commit kept while t1 is held (`chunks_listed_by_another_thing_stay_spec_crypto_7`)
+    net.keep(a, t1, &[(REG.ak(), osis_schema::History::FOREVER)]);
     net.run();
     let noise = |n: usize, seed: u64| {
         let mut x = vec![0u8; n];
@@ -1933,15 +1927,8 @@ fn losing_a_thing_keeps_chunks_another_thing_links_spec_sync_7() {
     };
     // t2's value by own replaces reusing its chunks, no snapshot
     // (`chunks_outliving_their_introducer_leave_the_host_spec_commits_5`)
-    for n in [a, v, f] {
-        net.engine(n).pause_compaction(true);
-    }
     let v1 = noise(2560 << 10, 1);
-    let mut v2 = v1.clone();
-    v2.splice(1000..1000, noise(50, 2));
-    let mut v3 = v2.clone();
-    v3.splice(2000..2000, noise(50, 3));
-    for x in [&v1, &v2, &v3] {
+    for x in [&v1, &v1, &v1] {
         let mut m = Mutation::new();
         m.op(t2, &BLOB, osis_crdt::PathOp { path: vec![], op: osis_crdt::Op::Replace(osis_base::Value::Bytes(x.clone())) }).unwrap();
         net.engine(a).commit(m).unwrap();
@@ -1975,5 +1962,5 @@ fn losing_a_thing_keeps_chunks_another_thing_links_spec_sync_7() {
     net.drop_link(v, host);
     let held = tree.iter().filter(|x| net.engine(v).has_blob(x)).count();
     assert_eq!(held, tree.len(), "v keeps t2's blobs");
-    assert_eq!(net.engine(v).get_full(&t2, &Ak::new(BLOB.ak()).unwrap()).unwrap(), Some(osis_base::Value::Bytes(v3)), "v reads t2 offline");
+    assert_eq!(net.engine(v).get_full(&t2, &Ak::new(BLOB.ak()).unwrap()).unwrap(), Some(osis_base::Value::Bytes(v1)), "v reads t2 offline");
 }
