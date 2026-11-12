@@ -152,6 +152,8 @@ fn budget_across_restart(pending: bool, restart: bool) -> (usize, usize) {
     reach(&mut net, b, 0xb1);
     net.blocked_peers.insert((a, b));
     let g = net.group_at(a, &[(b, Role::Write)], vec![]);
+    // each write keeps its own commit and entry (else the trigger compacts them)
+    net.keep(a, g, &[(osis_schema::RawKey::ak(&crate::net::REG), osis_schema::History::FOREVER)]);
     net.run();
     let l = net.label(b);
     let mut events = Vec::new();
@@ -282,6 +284,8 @@ fn a_charged_source_costs_its_row_until_judged_spec_sync_5() {
         reach(&mut net, b, 0xb1);
         net.blocked_peers.insert((a, b));
         let g = net.group_at(a, &[(b, Role::Write)], vec![]);
+        // each write keeps its own commit and entry (else the trigger compacts them)
+        net.keep(a, g, &[(osis_schema::RawKey::ak(&crate::net::REG), osis_schema::History::FOREVER)]);
         net.run();
         let (l, la) = (net.label(b), net.label(a));
         net.set_skew(a, 2 * 3_600_000);

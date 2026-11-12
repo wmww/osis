@@ -1,8 +1,8 @@
 //! The compaction trigger (spec/sync.md §7 Trigger), one for durable and ephemeral aspects: a
 //! node that may write a content aspect writes a snapshot of it once the bodies it holds of it
 //! that the snapshot would drop, two at least, cost more than `FACTOR` times the snapshot. What a
-//! body costs is what holders and hosts pay for it: its deltas' bytes and those of the pages or
-//! chunks it lists for them (`apply::memory::page_bytes`), `PART_OVERHEAD` per part
+//! body costs is what holders and hosts pay for it: its deltas' bytes, an ephemeral one's pages
+//! (`body_bytes`), `PART_OVERHEAD` per part
 //! (`apply::memory::part_weight`, what the node cap charges) and `ENTRY_CHARGE`. Bodies kept by
 //! history (a replaced one in history, a live one kept while live, spec/commits.md §5) are not
 //! counted: no snapshot drops them.
@@ -93,11 +93,15 @@ impl Trigger {
     }
 }
 
-/// The bytes part `ai` of `blob` weighs: its deltas and the pages or chunks held here that the
-/// commit lists under that delta's delete keys.
+/// The bytes part `ai` of `blob` weighs: what dropping it frees. Its deltas, and for an
+/// ephemeral body the pages held here that the commit lists under that delta's delete keys
+/// (values are inline: every blob it lists is a page only it links). A durable body's listed
+/// blobs are mostly its large values' chunks, which a snapshot links and keeps, so they are not
+/// counted (issues/durable-pages-unweighed.md: a durable delta's own pages go uncounted too).
 fn body_bytes(tx: &mut Tx<'_>, blob: &CommitBlob, ai: usize) -> Result<usize> {
     let deltas: usize = blob.parts.iter().filter(|p| p.ai == ai).map(|p| p.delta.len()).sum();
-    Ok(deltas.saturating_add(page_bytes(tx, &blob.header, ai)?))
+    let pages = if blob.header.ephemeral.is_some() { page_bytes(tx, &blob.header, ai)? } else { 0 };
+    Ok(deltas.saturating_add(pages))
 }
 
 /// The bodies held of `(tid, ak)` a snapshot written now would cover (not snapshots; not ones
