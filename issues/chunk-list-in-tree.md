@@ -1,0 +1,88 @@
+# Chunk list into the tree: a link carries what deleting its blob needs
+> Summary: Design to drop the header's `chunks` list (and a snapshot's listing of every linked blob): every LINK carries its blob's prefix salt and delete keys, so whoever holds a link (a reader holding the body, state or parent tree node) deletes the piece by the per-piece signature its prefix already commits to. No list cap, small snapshots, nothing new reaches a node that cannot read.
+> Priority: normal
+> Tags: crypto, sync, engine, tess-call
+
+Tess's goals: no size cap from lists, small snapshots, a simpler design; a node that cannot read learns no tree shape (which pieces belong to which commit, which pieces edits share). Tess-call: the final nod on the design, and the requirements line on the maximum commit size (§7).
+
+## Principle
+A link is the whole authority to read and to delete its blob: whoever holds the link and knows its thing computes the blob's commitments (link blind, thing blind, as today) and, with the delete key of a level, signs its delete. A piece goes once no held body or live state of its thing links it (the judgment `Core::tree_refs` makes today). The storing node checks each delete against the prefix exactly as now.
+
+## 1. What a link carries
+`LINK := [content hash, blob ID, suite || key, salt, [DeleteKey*]]` (spec/data-model.md §5, §6; `DeleteKey := [level, pk]` as in the header), used everywhere a LINK stands: a value's root in a delta or state, a tree node's children, a fragment's page links, link pages, header lists, a linked frontier, a `ThingList`.
+- `salt`: the 16-byte prefix salt of the blob. `[DeleteKey*]` (**Del**): the keys of its one commitment group, by level ascending (empty for a `nobody` delta's blob).
+- Derived, not carried: the link blind (`kdf("link blind", blob key)`), the thing blind (the link blind and the tid of the thing whose dedup secret keys the link). The tid is known to whoever walks the link: it is the thing of the source it walks.
+- Not carried: expiry and class (the prefix's; a deleter needs neither).
+- Equality of large values stays by content hash; a tree node's content hash covers child content hashes and lengths only, so it is unchanged.
+- Cost: about 115 more bytes per link at three levels (about 220 B in all), about 0.15% of an average chunk; a full tree node about 110 KB, far under `MAX_BLOB`. A page fragment's `[Link+]` reaches `PAGE_TARGET` at about 290 links instead of about 650, then groups into link pages as now.
+- Why the salt: with it, a holder of the tree's interior nodes deletes every leaf without fetching any chunk (today a deleter lacking a salt fetches the blob). Deleting a dropped 1 GB value needs its node blobs (about 0.3% of its bytes).
+- Del is the writer's claim, never authority: a holder of the blob checks it against the prefix before using it (reuse, deleting by the label key, dropping its copy); a node not holding it deletes by level only and the host checks (§6).
+
+## 2. Reuse across edits, authors, epochs, retention
+- A reused piece keeps its blob, prefix and commitments. The new parent (the new tree node, or the delta's value for a reused root, a snapshot's included) copies the old link verbatim, Del and salt included. Nothing is listed anywhere else.
+- When to re-encrypt stays spec/sync.md §1 (expiry earlier than the new delta's; level 1 and 3 commitments not exactly the reusing delta's keys; a level-2 mismatch with no level 1 or 3 beside it), judged on the held prefix as today. The reuser also checks the old link's Del against that prefix (same multiplications); a link whose Del the prefix does not bear is re-encrypted. A piece not held is written afresh (as today).
+- A re-encrypted piece gets a new link with the reusing delta's keys and its new salt; the nodes above it are new blobs (their plaintext changed), as today.
+- Different authors: the copied Del may name the first author's level-2 key beside the thing's level-1/3 keys; deleting signs per group with whichever level the deleter holds (spec/sync.md §5), as with today's chunk list entries.
+
+## 3. A node holding the body but not the tree
+Only a node holding a tree's interior nodes deletes its pieces.
+- At a drop (cover, own replaces, purge, invalid, expiry handled by hosts) a node computes the **freed** links of the dropped body: its delta's links (roots, pages) not linked by another held body or live state of the thing, then down each freed node, stopping at any child another source links (a node is immutable: a linked node's whole subtree is linked).
+- It records them in a durable per-thing **freed set** (links, local only) before dropping the body; a freed node blob not held is fetched (it holds the link: blob ID, key), its link kept meanwhile. Chunk bytes of freed pieces are dropped at once, node bytes once walked.
+- Each freed link is deleted at every host of the thing's labels holding an entry of it, then leaves the set (gone there: deleted, tombstoned, or absent after the label's first sync).
+- Deletes go in shuffled batches, no level order (§Rejected). A freed node no reachable host or peer holds keeps its subtree undecided, as today's residue (engine-paged Dropped chunks).
+- The freed set replaces the kept header: a commit no longer waits for its chunks' entries to be forgotten.
+
+## 4. What replaces each use of the chunk list
+- **Fetch planning**: pages come from the opened fragment (at most two rounds: link pages, then pages), fetched before apply as now; trees by walking from the roots, lazily for durable values (spec/sync.md §6), as `tree_wants` already does. A reader's waiting commit (WaitBlobs) names what its opened fragment links.
+- **Memory gate** (spec/sync.md §9 Caps): staged instead of "nothing decoded before every listed blob is held". The commit blob's bytes are checked first; its fragment is then decoded (bounded by that blob); its pages' blob bytes are checked before they decode; each large value's root node is fetched and its lengths summed (the value's claimed size) and checked before its chunks are fetched. Lengths are claims a reader enforces as it resolves (spec/wire.md §6), so a liar is refused at its first mismatch, never over the admitted bound.
+- **"Links outside the chunk list refused"** (spec/crdt.md §8): goes, with nothing in its place but "a delta links each blob at most once". A delta linking another delta's page frees nothing it should not: the page goes only when no held body of the thing links it, and a page of another thing is not borne under this thing's blind (§6). What remains is junk a writer could upload anyway.
+- **Must-hold / upload**: a writer uploads with a body every held blob its deltas link (`Engine::body_links`, already a walk); the header's listed-but-not-here branch in `pass/bodies.rs` goes. Closure and required set are already by links (spec/sync.md §3).
+- **Header lists** (aspects, purge, keys, frontier, a `ThingList`): stay chunk trees with the new link; their Del is the header's level-2 key alone (empty without one), checked with the header. Their deletion rule is unchanged.
+- **Trigger weighing** (spec/sync.md §7): "the chunk and tree-node blobs it lists" becomes "it links", and "a snapshot costs also its chunk list" goes.
+- **Repair** (spec/sync.md §1): unchanged in rule; the code's `ix.by_chunk` lookup of the aspect becomes a local blob → thing index (the thing whose link the node wrote or fetched it by), then `tree_refs` of that thing.
+- **Dropped bytes not kept** (`dropped_chunk`): a blob in a freed set is not stored, whoever brings it.
+
+## 5. Ephemeral commits
+- They list nothing. An ephemeral commit applies once it holds every blob its deltas link, found by the walk, gated in stages as above (its pieces are memory-only at hosts, so they are fetched at once, not lazily).
+- Their pieces are freed and deleted as durable ones, under their own Del: the blob's own keys, so issues/eph-listed-chunk-delete.md (a later lister's keys signing the delete) cannot arise.
+- Relay-only commits link nothing (unchanged).
+
+## 6. Security, per class of attack
+- **Forged listing**: a writer of t1 reading t2 copies t2's link into a t1 value. The thing blind binds: under t1's tid the blob bears no commitment, so the host refuses a delete by level, and a holder of the blob checks before deleting by the label key or dropping its copy. The judgment is per thing, so t1's link keeps nothing of t2 alive either (today's forged-entry limit, a dead blob kept by a lister that never drops, goes). t1's content hash check fails on it anyway (another dedup secret).
+- **A hostile writer's tree claiming another author's piece**: its Del can only name keys; the host checks the delete against the prefix, so a false Del deletes nothing and a true one (a real reuse) deletes only what no held source of the thing links at that node. The co-writer race (another node holds a body still linking it) is today's residue, answered by repair.
+- **A deleter lacking the tree**: deletes nothing until it holds the nodes; it fetches them by the links it holds. If every copy of a node is gone, its subtree stays at hosts (until expiry or a label-key clear); deleters that walked already collected it durably.
+- **A reader removed mid-way**: deleting needs the current label key (sync or write) besides the delete key, as now; a removed party cannot open the label, and lost access discards its freed set. The other right holders reach the same freed judgment from their own drops. Its old links let it recognize pieces still reused after its removal, as today.
+- **What a storing node learns**: per-piece deletes, each under its own salt and thing blind, as now; timing as now (a drop's pieces go in one pass). Less than now: the commit blob no longer carries a list whose length tracks how many blobs the commit introduced, and a snapshot's size no longer tracks how many blobs the value links.
+- **Cross-group (Tess)**: confirmed. A piece of T under G1 and G2 is one blob at a host that reads neither (bytes once, kept while any label references them, spec/sync.md §4), with one entry per label. A Delete removes one entry and needs that label's key, so a G1 reader deleting removes G1's entry only; G2's stays. Unchanged here: deletes stay per entry.
+
+## 7. Removal audit and the size limit
+Goes:
+- spec/wire.md §4 `chunks` field and `Chunk`; §2 `MAX_LIST_BYTES` note "about 95 GB of chunks per commit"; spec/commits.md §1 chunk list bullet, §2 ephemeral listing, §5 Forgetting's wait on listed blobs; spec/sync.md §7 the listing-entry rules for chunks (rewritten over freed links), the trigger's list cost, §9 "every blob its chunk list names", "a forgotten commit's listed blobs"; spec/crdt.md §8 the chunk-list page rule; spec/crypto.md §7 wording on entries.
+- Code: `ChunkEntry`, `Header::chunks`, `ListField::Chunks`, builder and validation of it, `verify::Listed`; `ix.by_chunk`, `chunks::released`, `Engine::chunk_entry_borne`, `SyncEngine::lists_named`, `write::linked_chunk`, forget's listing wait, `compact.rs` listing reads, `DroppedChunks`/`chunk_entries` in node-sync, `waiting_blobs`/`drop_unvouched` header reads, `marks.rs` and `local_peer.rs` chunk reads. Vectors of headers and links.
+- Issues resolved by it: snapshot-past-list-bound.md, eph-listed-chunk-delete.md, chunk-of-forgotten-commit.md (piece entries judged by freed sets, not through a commit header). header-list-decode-memory.md loses one of its six lists.
+- Notes: crypto.md Delete keys (linked blobs paragraph), engine-paged.md Large values and Dropped chunks.
+
+Size limit: none from lists. A commit is bounded by its aspect list (`MAX_LIST_BYTES`, about 950 000 deltas) and each value by its tree (48 levels, u64 lengths). spec/requirements.md "up to a fixed maximum size (about 95 GB)" then needs rewording, e.g. "up to about a million (thing, aspect) changes, of values of any size" (tess-call: requirements).
+
+## Rejected
+- **Plain parent/child refcount at the storing node**: the host would learn tree shape, which pieces belong to which commit and which edits share pieces (spec/requirements.md, Data a node cannot read).
+- **Delete keys in a per-node table** (each tree node a key-set table, children an index): smaller nodes, but a value's root link and a fragment's page links need the same data, so either a second format or re-encrypting one root per large value in every snapshot (O(values) blobs per snapshot).
+- **Keys found by trial against the prefix** (no keys in the link): needs each piece's prefix (a fetch per chunk) and O(epochs) scalar multiplications per key set.
+- **Bottom-up delete rounds** (leaves acked before their parent, so a dead deleter leaves no unreachable piece): round timing shows a host which blobs are interior and at which level. Collecting the freed set durably before deleting covers the crash case; only a device lost for good mid-delete, with no other deleter, leaves pieces until expiry.
+- **Snapshot alone stops listing, deltas keep their list**: keeps a per-commit cap and two mechanisms.
+- **Re-encrypting every reused piece** (each delta owns its pieces): O(value) per edit, ends reuse.
+
+## Open questions
+1. Requirements wording for the commit size (above). Tess.
+2. Salt in the link (recommended: deleting without the chunks) or not (about 17 B less per link, a fetch per piece to delete).
+3. Ephemeral apply: wait for every piece (recommended, as today) or apply after pages and roots, fetching chunks after.
+4. With keys in every link, the reuse rule could ask a level match instead of exact keys (any epoch of that level's secret): a thing's rotation then no longer re-encrypts every value at its next edit. Separate issue if wanted; who holds old epochs (grants carry history) decides it.
+5. Freed set size: one entry per freed link until every host acks; worth a scale check (a dropped 1 GB value: about 12 000 entries, then gone).
+
+## Build steps
+0. Model the freed judgment (held-model style): concurrent reuse by two authors, two labels, forged cross-thing links, a deleter lacking nodes. Properties: no node deletes a piece a held source of its thing links; a piece freed at every node is deleted where a right holder walked it; no delete through a link its blob does not bear.
+1. **Link format**: LINK gains salt and Del; `BlobWriter`, framing (salt known before the link is made), readers, header-list Del rule; vectors regenerated. Tests: link round trip; equality by content hash whatever the Del; header list with a wrong Del is bad input.
+2. **Freed sets and deleting by link** beside the chunk list: drop computes freed links (walk with pruning at shared nodes), durable set, delete from Del and salt, fetch missing nodes. Tests: a dropped value's pieces deleted with no chunk held (count fetches: nodes only); `chunks_listed_by_another_thing_stay` as a forged link; reuse by another author keeps the piece while a held body links it; G1/G2 cross-label delete leaves G2's entry; deleter missing a node fetches it, then deletes.
+3. **Fetch and gate by walk**: pages from the fragment, ephemeral staged gate from blob bytes and root lengths, WaitBlobs from the opened fragment. Tests: an ephemeral value over the cap is refused after its root, before its chunks (count fetches); a root claiming a short length is bad input at the first chunk past it.
+4. **Remove the chunk list**: header field, builder, validation, `Listed`, `by_chunk`, forget's wait, compaction listing and trigger, node-sync reads, repair's lookup by the local blob → thing index. Tests: a snapshot of a value of n and 10n chunks has the same header size (count bytes); eph-listed-chunk-delete's scenario (20 MiB ephemeral value carried by another writer's snapshot, replaced, compacted: none of its blobs at the host); repair test unchanged.
+5. **Spec, notes, issues**: the sections in §7; delete the resolved issues; requirements line once Tess agrees.
