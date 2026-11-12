@@ -736,8 +736,8 @@ fn useless_certificate_copy_gets_another_spec_sync_5() {
 type Read = Option<osis_base::Value>;
 
 /// An honest wrap under an epoch the author does not hold yet: the other writer places the author's
-/// blob at the second host, under the new epoch, and the author comes back there alone. `lag`: the
-/// rotation has not reached that host, else it is in that host's log before the wrap. The blob's
+/// blob at the second host first, under the new epoch, and the author comes back there alone.
+/// `lag`: the rotation has not reached that host when the author is back, else it has. The blob's
 /// entries, the host's entries before the author is back and after all caught up, the author's
 /// entries of the blob's commit then, the reader's read.
 fn other_epoch(lag: bool) -> (Vec<BlobId>, Vec<BlobId>, Vec<BlobId>, Vec<BlobId>, Read) {
@@ -752,18 +752,17 @@ fn other_epoch(lag: bool) -> (Vec<BlobId>, Vec<BlobId>, Vec<BlobId>, Vec<BlobId>
     let g = net.group(d, &[(a, Role::Write), (w, Role::Write), (f, Role::Read), (x, Role::Read)], &hosts);
     net.run();
     let l = net.label(a);
-    net.blocked.insert((a, h2));
-    net.drop_link(a, h2);
+    // nobody reaches h2 while the blob spreads: it would pull the old wrap first
+    for n in [a, d, w, f, x] {
+        net.blocked.insert((n, h2));
+        net.drop_link(n, h2);
+    }
     let t = net.item(a, g, g, "message");
     net.run();
     assert_eq!(net.read(w, t), Some(s("message")));
     let ids = entries_of(&mut net, w, &l, t);
     assert!(!ids.is_empty());
     net.set_online(a, false);
-    if lag {
-        net.blocked.insert((d, h2));
-        net.drop_link(d, h2);
-    }
     // the admin removes a reader: a read epoch the author lacks
     let old = net.engine(w).wrap_secret(&g, None).unwrap().unwrap();
     let (ta, tw, tf, tx) = (net.tid(a), net.tid(w), net.tid(f), net.tid(x));
@@ -781,6 +780,14 @@ fn other_epoch(lag: bool) -> (Vec<BlobId>, Vec<BlobId>, Vec<BlobId>, Vec<BlobId>
         let wrap = osis_crypto::wrap(&new, id, &key, 1).unwrap();
         hostile_put(&mut net, w, h2, (g, &l), *id, wrap, WRITER);
         assert_eq!(stored_wrap(&net, h2, &l, id), Some(wrap), "first at that host");
+    }
+    // the rotation reaches h2 (from the admin, or from the writer when it lags)
+    for n in if lag { vec![w, f, x] } else { vec![d, w, f, x] } {
+        net.blocked.remove(&(n, h2));
+    }
+    if !lag {
+        net.restart(d, 30);
+        net.run();
     }
     let before = net.host_ids(h2, &l);
     if lag {
