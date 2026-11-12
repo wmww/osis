@@ -4,3 +4,4 @@
 - A probe printing the boxes and history keys that open the flagged epoch to the party (states, via keyset, `limit` membership) told leak from checker gap in one run for each seed.
 - `TLC_KEEP_LOGS=<dir>` must exist beforehand: run.sh stops at the first `cp` into a missing dir after the first instance.
 - The heavy lock waited ~9 min behind another all-core run for a 1 s TLC instance.
+- Reviewer: editing sources while a queued `tools/heavy` cargo run waits for the lock leaves unclear which build it ran; rerun after the last edit.

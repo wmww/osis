@@ -771,23 +771,17 @@ fn path_loss(run: &Run, o: usize, d: usize, t: Tid, r: Role) -> Option<CommitId>
 }
 
 /// Where peer `d`'s departure from role `r` of holder actor `m` is ordered for a keyset of `m`
-/// whose secret a sealer lacks (spec/crypto.md §4, Encrypting under: the earliest tail write
-/// giving it less than `r`, the write a covering epoch must name): the first applied write on
-/// its edge after the newest one giving `r` or more; else `departure_point`.
+/// whose secret a sealer lacks, in peer `o`'s settled timeline (spec/crypto.md §4, Encrypting
+/// under: the newest write a covering epoch must name, `Departure::newest_needed` over the edge
+/// writes as `o` holds them: the earliest tail write taking it below `r`, when one is needed, and
+/// every tail write giving `r` or more that counts); else `departure_point`.
 fn tail_departure_point(run: &Run, o: usize, m: Tid, d: usize, r: Role) -> Option<osis_perm::Point> {
-    let tl = run.lp.peers[o].engine.core.timelines.get(&m)?;
-    let mut ws: Vec<(osis_perm::Point, Option<Role>)> = tl
-        .applied()
-        .iter()
-        .filter(|(_, a)| a.target == m)
-        .filter_map(|(w, a)| {
-            let op = tl.role_commit(&w.0)?.ops.get(w.1 as usize)?;
-            (op.target == m && op.holder == run.tids[d]).then(|| (a.point, super::key_role(op.edge.as_ref())))
-        })
-        .collect();
-    ws.sort_by_key(|x| x.0);
-    let from = ws.iter().rposition(|x| x.1 >= Some(r)).map_or(0, |i| i + 1);
-    ws.get(from).map(|x| x.0).or_else(|| departure_point(run, o, m, d))
+    let core = &run.lp.peers[o].engine.core;
+    let tl = core.timelines.get(&m)?;
+    let log = super::departures::edge_logs(core, tl, &m).remove(&run.tids[d]);
+    let key = log.and_then(|l| osis_keys::Departure::holder(run.tids[d], r).edge(l).newest_needed(r));
+    let point = key.and_then(|k| Some(osis_perm::Point { ts: osis_base::Ts::from_u64(k.ts)?, node: k.node, commit: k.commit }));
+    point.or_else(|| departure_point(run, o, m, d))
 }
 
 /// `departure`, at its point in the key order.
