@@ -420,7 +420,8 @@ impl SyncEngine {
         let me = self.engine.tid();
         let aks: BTreeSet<&str> = parts.iter().filter_map(|ai| h.aspects.get(*ai)).filter(|a| a.tid == h.author).map(|a| a.ak.as_str()).collect();
         let all_card = parts.iter().filter_map(|ai| h.aspects.get(*ai)).all(|a| a.tid == h.author && is_card(a.ak.as_str()));
-        if h.author == me || aks.is_empty() || !all_card {
+        // a node's card: an account's `keys.0` is a chain certificate (spec/permissions.md §4)
+        if h.author == me || aks.is_empty() || !all_card || self.engine.core.is_account(&h.author) {
             return false;
         }
         // departed: it reads the actor no more, and an applied write removed an edge on its way
