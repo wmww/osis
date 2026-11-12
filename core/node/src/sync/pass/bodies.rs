@@ -154,17 +154,17 @@ impl SyncEngine {
         Ok(!self.parts_covered(snaps, c, h, &[ai], note)?)
     }
 
-    /// Whether a delete took body `b` from `l` (at `host`: an entry of it gone there, as the
-    /// source's stream showed; else in this node's store) and it stays out: every one of its `parts` only a
-    /// blob can carry (`must_carry`) is held there (at `host`) by another genuine blob of the
-    /// commit, and no purge that fell may have been what took it (spec/sync.md §6). A memory
-    /// body's delete stands too while memory entries this node refused for its cap are held
-    /// there (`refused_there`): a delete-key holder deletes only once the carrier is there, and
-    /// this node, not reading those entries, cannot show it is not (a fresh encryption past
+    /// Whether a delete took body `b` from `l` (from this node's store, or at `host`: an entry of
+    /// it gone there and not present, not a wrap of no use) and it stays out: every one of its
+    /// `parts` only a blob can carry (`must_carry`) is held there (at `host`) by another genuine
+    /// blob of the commit, and no purge that fell may have been what took it (spec/sync.md §6).
+    /// A memory body's delete stands too while memory entries this node refused for its cap are
+    /// held there (`refused_there`): a delete-key holder deletes only once the carrier is there,
+    /// and this node, not reading those entries, cannot show it is not (a fresh encryption past
     /// that delete would be deleted again, forever).
     pub(super) fn delete_stands(&mut self, host: Option<&HostKey>, l: LabelId, b: &Body, parts: &[usize], snaps: &Snaps, note: &mut Note) -> Result<bool> {
-        let there = host.is_some_and(|s| self.state.entries_of(&l, &b.commit).any(|(id, _)| self.state.is_gone_at(s, &l, &id)));
-        if !there && !self.state.body_deleted(l, b.commit, &b.parts) {
+        let at_host = |s: &Self, h: &HostKey| s.state.entries_of(&l, &b.commit).any(|(id, e)| matches!(&e.kind, Kind::Commit { parts, .. } if *parts == b.parts) && s.state.is_gone_at(h, &l, &id) && !s.state.is_present(h, &l, &id));
+        if !self.state.body_deleted(l, b.commit, &b.parts) && !host.is_some_and(|h| at_host(self, h)) {
             return Ok(false);
         }
         let Some(h) = self.engine.header(&b.commit) else { return Ok(false) };
