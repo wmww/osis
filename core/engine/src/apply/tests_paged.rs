@@ -690,7 +690,7 @@ fn ephemeral_page_past_items_refused_spec_crdt_8() {
 }
 
 /// spec/sync.md §9 Caps, notes/ephemeral.md Bounds: a received memory commit waits for the blobs
-/// its chunk list names only once its author's signature checks: a false one is bad input at
+/// its walk reaches (pages, value roots) only once its author's signature checks: a false one is bad input at
 /// once, nothing kept waiting (charged against the label's cap); a true one waits undecoded.
 #[test]
 fn memory_commit_waits_only_signed_spec_sync_9() {

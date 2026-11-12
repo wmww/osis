@@ -7,6 +7,7 @@ pub(crate) mod atomic;
 pub(crate) mod copies;
 pub(crate) mod unindex;
 pub(crate) mod memory;
+pub(crate) mod reach;
 mod waits;
 pub mod keys;
 pub(crate) mod receipt;
@@ -398,16 +399,15 @@ fn retry_pending(tx: &mut Tx<'_>, id: CommitId, b: CommitBlob) -> Result<Option<
 }
 
 /// Whether pending commit `b` still waits for what can make it wait without anything else
-/// arriving: a blob its chunk list names, its `ts`, its author's epoch. `false` when it may apply
-/// (or be refused) now.
+/// arriving: a blob its walk reaches (`reach::lacks`: header lists, pages, value roots), its
+/// `ts`, its author's epoch. `false` when it may apply (or be refused) now.
 fn still_waits(tx: &mut Tx<'_>, b: &CommitBlob) -> Result<bool> {
+    let id = b.id();
+    if tx.core.ix.pending.get(&id) == Some(&Reason::WaitBlobs) && reach::lacks(tx, &id, b)? {
+        return Ok(true);
+    }
     if !b.header.is_resolved() {
         return Ok(false);
-    }
-    for ch in &b.header.chunks {
-        if !tx.blobs.held(&ch.blob)? {
-            return Ok(true);
-        }
     }
     if b.header.ts.wall_ms().0 > tx.now().0.saturating_add(MAX_DRIFT_MS) {
         return Ok(true);
@@ -1413,9 +1413,10 @@ impl Engine {
 
     /// Receives a memory commit (session form, spec/commits.md §2-§3) through the commit path,
     /// every row it derives in memory. `room`: what holding it may cost, as `memory_charge`
-    /// counts it (the node cap, spec/sync.md §9 Caps): it waits undecoded until every blob its
-    /// chunk list names is held, and when its parts not held here could cost more decoded
-    /// (`memory::new_parts_bound`, from their bytes and their pages') it is `TooLarge`, nothing
+    /// counts it (the node cap, spec/sync.md §9 Caps): it waits undecoded until its header lists,
+    /// pages and value roots are held (`reach::walk`), and when its parts not held here could
+    /// cost more (`memory::new_parts_bound`, from their bytes, their pages' and their values'
+    /// roots) it is `TooLarge`, nothing
     /// of it decoded, held or kept waiting (`memory::memory_gate`). One that waits is applied
     /// only by `apply_waiting_memory`, within the room then. Hidden: no production caller until received ephemeral
     /// commits leave `ingest_ephemeral`; `ingest` refuses them so a

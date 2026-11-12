@@ -632,15 +632,8 @@ impl SyncEngine {
             return Ok(());
         }
         let secrets = self.group_of(&l, conn).map(|g| self.read_secrets(&g)).unwrap_or_default();
-        // pages and chunks a waiting commit lists (a reader's deposited commit) stay
-        let mut listed = BTreeSet::new();
-        for (c, r) in self.engine.pending() {
-            if r == crate::Reason::WaitBlobs
-                && let Some(h) = self.engine.commit_bytes(&c)?.and_then(|b| osis_commit::CommitBlob::decode_stored(&b).ok()).map(|cb| cb.header)
-            {
-                listed.extend(h.chunks.iter().map(|ch| ch.blob));
-            }
-        }
+        // what a waiting commit links (a reader's deposited commit's pages and roots) stays
+        let listed = self.engine.blob_wants()?.reached;
         // an inbox blob opens by its bytes (the read KEM key of an epoch learned later): kept,
         // under a smaller cap
         let inbox = !self.inbox_actors_at(&l).is_empty();
@@ -1969,8 +1962,9 @@ impl SyncEngine {
         Ok((self.seq, self.now()))
     }
 
-    /// Commits wait for pages: fetch the blobs their headers list that are not held (pages
-    /// before apply, spec/sync.md §6; the chunks of other large values stay lazy).
+    /// Commits wait for blobs: fetch what their walks reach and is not held (`Engine::blob_wants`:
+    /// header lists, pages and value roots before apply, spec/sync.md §6; an applied memory
+    /// commit's value trees, §9; the chunks of durable values stay lazy).
     fn fetch_waiting(&mut self, conn: ConnId, l: LabelId, out: &mut Vec<super::Action>) -> Result<()> {
         // a page refused for the label's ephemeral cap waits for room as any entry does
         // (`retry_refused`), and its commit with it
@@ -1978,18 +1972,11 @@ impl SyncEngine {
         self.fetch_on(conn, l, missing, out)
     }
 
-    /// The blobs commits waiting for pages list that are not held: asked of the label whether
-    /// or not an entry was seen (an unstamped one that opened under nothing is not kept,
-    /// `drop_unvouched`).
+    /// The blobs commits wait for that are not held (`Engine::blob_wants`): asked of the label
+    /// whether or not an entry was seen (an unstamped one that opened under nothing is not
+    /// kept, `drop_unvouched`).
     fn waiting_blobs(&mut self) -> Result<Vec<BlobId>> {
-        let waiting: Vec<osis_base::CommitId> = self.engine.pending().into_iter().filter(|(_, r)| *r == crate::Reason::WaitBlobs).map(|(c, _)| c).collect();
-        let mut missing = BTreeSet::new();
-        for c in waiting {
-            let Some(bytes) = self.engine.commit_bytes(&c)? else { continue };
-            let Ok(cb) = osis_commit::CommitBlob::decode_stored(&bytes) else { continue };
-            missing.extend(cb.header.chunks.iter().map(|ch| ch.blob).filter(|b| !self.engine.has_blob(b)));
-        }
-        Ok(missing.into_iter().collect())
+        Ok(self.engine.blob_wants()?.missing.into_iter().collect())
     }
 
     /// Fetches `ids` under `l` on `conn`, but those asked for already (`may_ask`) and those its

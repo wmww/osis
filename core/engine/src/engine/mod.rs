@@ -1299,6 +1299,8 @@ pub struct Core {
     /// Pending commits known to be memory commits, which `reexamine` leaves to node-sync (a
     /// cache of what their stored copies say; pruned to the pending set at each reexamine).
     pub memory_waits: BTreeSet<CommitId>,
+    /// Walks of what waiting commits link, kept for node-sync (`Engine::blob_wants`).
+    pub(crate) walks: crate::apply::reach::Walks,
     /// Labels this node made, not yet seen by node-sync (`take_made_labels`).
     pub made_labels: Vec<osis_base::LabelId>,
     /// Debug builds: the cache hits compared with a fresh read at this point of the store
@@ -1443,6 +1445,7 @@ impl Core {
             memory_tx: self.memory_tx.clone(),
             memory_room: self.memory_room,
             memory_waits: self.memory_waits.clone(),
+            walks: self.walks.clone(),
             made_labels: self.made_labels.clone(),
             #[cfg(debug_assertions)]
             rechecked: self.rechecked.clone(),
@@ -1936,10 +1939,12 @@ impl Core {
             memory_tx: _,
             made_labels: _,
             dirty: _,
-            // a call's parameter (`memory_room`) and a cache true of the store whatever a
-            // rollback undoes (`memory_waits`: a pending row's class never changes)
+            // a call's parameter (`memory_room`) and caches true of the store whatever a
+            // rollback undoes (`memory_waits`: a pending row's class never changes; `walks`
+            // checks what is held as it goes on)
             memory_room: _,
             memory_waits: _,
+            walks: _,
             // memos: each answer holds while what it read does (`memo`); the stamps of what a
             // rollback restores move
             states_read: _,
@@ -2241,6 +2246,7 @@ impl Core {
             memory_tx: false,
             memory_room: None,
             memory_waits: BTreeSet::new(),
+            walks: Default::default(),
             made_labels: Vec::new(),
             #[cfg(debug_assertions)]
             rechecked: Default::default(),

@@ -3618,6 +3618,48 @@ fn large_value_chunks_syncs_and_goes_spec_data_model_6() {
     assert!(tree.is_disjoint(&at_the_peer), "nor the host");
 }
 
+// spec/sync.md §6, §9 (walk cost): an edit of a large ephemeral value reusing its tree brings a
+// holder only what it changed: the blobs fetched and the blobs its walks open are the same for a
+// value of n and of 10n chunks (the gate and the tree fetch pass held nodes below a root by)
+#[test]
+fn edit_of_a_large_value_walks_what_it_changed_spec_sync_9() {
+    fn edit(mb: u32) -> (usize, u64, usize) {
+        let mut net = Net::new();
+        let (host, n) = roomy(&mut net, &[1, 2]);
+        let (a, b) = (n[0], n[1]);
+        let g = net.group(a, &[(b, Role::Write)], &[host]);
+        net.run();
+        let w = window(&mut net, a, g, "w");
+        net.run();
+        let mut big: String = (0..mb << 20).map(|i| char::from(b'a' + (i.wrapping_mul(2_654_435_761) >> 27) as u8 % 26)).collect();
+        let set = |net: &mut Net, v: &str| {
+            let mut m = Mutation::new();
+            m.op(w, &eph(NOTES), PathOp { path: vec![PathSeg::Key(s("big"))], op: Op::Set(s(v)) }).unwrap();
+            net.engine(a).write(m).unwrap();
+            local(net, a);
+            net.run();
+        };
+        set(&mut net, &big);
+        let tree = net.engine(b).live_trees(&w).unwrap().blobs.len();
+        big.push('!');
+        let before: BTreeSet<osis_base::BlobId> = net.engine(b).live_trees(&w).unwrap().blobs;
+        osis_node::costs::take();
+        set(&mut net, &big);
+        let costs = osis_node::costs::take();
+        let opened = costs.iter().find(|x| x.0 == "reach: blobs opened").map_or(0, |x| x.2);
+        let after = net.engine(b).live_trees(&w).unwrap();
+        assert!(after.missing.is_empty() && after.blobs.iter().all(|x| net.engine(b).has_blob(x)), "b holds the edited tree");
+        let want: BTreeMap<String, String> = [("big".to_string(), big)].into_iter().collect();
+        assert_eq!(shape(&notes(&mut net, b, w)), shape(&want), "b reads the edit");
+        (tree, opened, after.blobs.difference(&before).count())
+    }
+    let (n1, o1, f1) = edit(2);
+    let (n10, o10, f10) = edit(20);
+    assert!(n10 >= 8 * n1, "trees of n and 10n chunks: {n1}, {n10}");
+    assert!(o1 > 0 && f1 > 0, "{o1} {f1}");
+    assert_eq!((o10, f10), (o1, f1), "opened, new blobs at n: {o1}, {f1}; at 10n: {o10}, {f10}");
+}
+
 // spec/sync.md §7 Freed links, §9: an ephemeral value's tree carried by another writer's snapshot
 // (b compacts over a's write), then replaced and compacted by a: its pieces are freed under their
 // own links' keys (the introducer's, whichever commit carried them last), so none of its blobs
@@ -3911,6 +3953,51 @@ fn root_before_pages_decodes_within_cap_spec_sync_9() {
     assert!(notes(&mut net, b, w).is_empty());
     assert!(net.sync(b).ephemeral_bytes(&l) <= cap, "within b's cap");
     assert!(rx.try_iter().any(|e| matches!(e, osis_node::Event::Diagnostic(d) if d.kind == osis_node::DiagnosticKind::EphemeralRefused)), "reported");
+}
+
+// spec/sync.md §9 Caps, staged gate: a memory commit's large value is gated by its root: the
+// commit waits for the root alone (nothing of the tree below is wanted), then the root's
+// lengths, the value's claimed size, are checked against the room before any chunk is wanted:
+// past it the commit is refused, nothing of it kept and nothing more wanted. Within room it
+// applies with its root alone, and its tree is wanted after (fetched at once, §9)
+#[test]
+fn value_past_the_room_refused_at_its_root_spec_sync_9() {
+    let (mut lp, w) = memory_pair();
+    let big: String = (0..2u32 << 20).map(|i| char::from(b'a' + (i.wrapping_mul(2_654_435_761) >> 27) as u8 % 26)).collect();
+    let id = memory_write(&mut lp, 0, w, &big);
+    let bytes = lp.peers[0].engine.package(&id).unwrap().unwrap().bytes;
+    let Some(Value::Set(vals)) = memory_tags(&mut lp, 0, w) else { panic!("a set") };
+    let root = vals.iter().find_map(|v| match v { Value::Link(l) => Some(**l), _ => None }).expect("a large value");
+    let tree = lp.peers[0].engine.live_trees(&w).unwrap().blobs;
+    assert!(tree.len() > 4, "a tree of chunks: {}", tree.len());
+    let blob = |lp: &mut osis_node::local_peer::LocalPeer, b: &osis_base::BlobId| (*b, lp.peers[0].engine.blob(b).unwrap().unwrap());
+    let room: u64 = 1 << 20;
+    let e1 = |lp: &mut osis_node::local_peer::LocalPeer| lp.peers[1].engine.blob_wants().unwrap();
+    // waits for its root alone
+    assert!(matches!(lp.peers[1].engine.ingest_memory(&bytes, room).unwrap(), osis_node::Ingested::Pending(_, osis_node::Reason::WaitBlobs)));
+    assert_eq!(e1(&mut lp).missing, BTreeSet::from([root.blob]), "only the root is wanted");
+    let r = blob(&mut lp, &root.blob);
+    lp.peers[1].engine.put_memory_blobs(vec![r.clone()]).unwrap();
+    let out = lp.peers[1].engine.apply_waiting_memory(&id, room).unwrap();
+    assert!(matches!(out, Some(osis_node::Ingested::TooLarge(_))), "{out:?}");
+    assert!(!lp.peers[1].engine.memory_pending(&id) && !lp.peers[1].engine.holds_memory(&id), "nothing kept");
+    assert!(e1(&mut lp).missing.is_empty(), "no chunk wanted");
+    assert_eq!(tree.iter().filter(|b| **b != root.blob && lp.peers[1].engine.has_blob(b)).count(), 0, "no chunk fetched");
+    // within room: applies with its root alone, its tree wanted after
+    let out = lp.peers[1].engine.ingest_memory(&bytes, u64::MAX).unwrap();
+    assert!(matches!(out, osis_node::Ingested::Applied(_)), "{out:?}");
+    let want = e1(&mut lp).missing;
+    assert!(!want.is_empty() && want.is_subset(&tree), "its tree is wanted: {}", want.len());
+    for _ in 0..4 {
+        let got: Vec<_> = e1(&mut lp).missing.iter().map(|b| blob(&mut lp, b)).collect();
+        lp.peers[1].engine.put_memory_blobs(got).unwrap();
+    }
+    assert!(e1(&mut lp).missing.is_empty(), "the tree whole");
+    assert!(tree.iter().all(|b| lp.peers[1].engine.has_blob(b)));
+    let ak = crate::common::ak("t:tags+.0");
+    let full = lp.peers[0].engine.get_full(&w, &ak).unwrap();
+    assert!(full.is_some());
+    assert_eq!(lp.peers[1].engine.get_full(&w, &ak).unwrap(), full, "reads alike");
 }
 
 // spec/sync.md §9 Caps: a memory commit waiting for its `ts` (past MAX_DRIFT ahead) is checked

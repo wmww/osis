@@ -345,15 +345,11 @@ struct Weighed {
 /// (`apply::memory::each_page`), either class, and the tree blobs it lists. A delta that is not
 /// one CBOR value weighs its bytes.
 fn body_bytes(tx: &mut Tx<'_>, blob: &CommitBlob, ai: usize) -> Result<Weighed> {
-    let listed: BTreeSet<BlobId> = blob.header.chunks.iter().map(|ch| ch.blob).collect();
     let mut sum = 0usize;
     let mut pages = BTreeSet::new();
     for p in blob.parts.iter().filter(|p| p.ai == ai) {
         sum = sum.saturating_add(p.delta.len());
-        if listed.is_empty() {
-            continue;
-        }
-        let r = each_page(tx, &p.delta, &listed, &mut |b, _| {
+        let r = each_page(tx, &p.delta, &mut |b, _| {
             sum = sum.saturating_add(b.len());
             pages.insert(osis_label::blob_id(b));
             Ok(())

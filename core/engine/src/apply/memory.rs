@@ -44,68 +44,47 @@ pub(crate) fn part_bound(p: &osis_commit::Part) -> Result<u64> {
     Ok(part_charge(heap, p.delta.len()))
 }
 
-/// What `each_page` calls per page: its blob, its plaintext.
+/// What a walk calls per page reached (`reach::walk`): its blob, its plaintext.
 pub(crate) type PageVisit<'a> = dyn FnMut(&[u8], &[u8]) -> Result<()> + 'a;
 
-/// Each page and link page a paged part's `delta` links (spec/crdt.md §8), with its plaintext:
-/// blobs of the commit's chunk list (`listed`) reached by a link from the delta or a page, held
-/// here. Only listed blobs are followed: a page outside it is bad input (`osis_commit::verify_part`),
-/// and a value's link to another blob (a durable chunk tree) is no page of it. A listed value
-/// tree's node (and so its chunks) is no page: neither visited nor followed. A delta or page that
-/// is not one CBOR value is `BadInput`.
-pub(crate) fn each_page(tx: &mut Tx<'_>, delta: &[u8], listed: &BTreeSet<osis_base::BlobId>, f: &mut PageVisit<'_>) -> Result<()> {
-    let limits = |b: &[u8]| osis_base::Limits { max_depth: osis_base::format::MAX_OBJECT_DEPTH, max_bytes: b.len() };
-    let mut stack = Vec::new();
-    osis_base::visit_links(delta, &limits(delta), &mut |l| stack.push(l)).map_err(|_| Error::BadInput("part not one CBOR value"))?;
-    let mut seen = BTreeSet::new();
-    while let Some(l) = stack.pop() {
-        if !listed.contains(&l.blob) || !seen.insert(l.blob) {
-            continue;
-        }
-        let Some(blob) = tx.blobs.get(&l.blob)? else { continue };
-        let Ok((_, pt)) = osis_label::open(&blob, &osis_crypto::Secret32::from_bytes(l.key)) else { continue };
-        if osis_label::tree::parse_node(&pt).is_ok() {
-            continue;
-        }
-        f(&blob, &pt)?;
-        osis_base::visit_links(&pt, &limits(&pt), &mut |l| stack.push(l)).map_err(|_| Error::BadInput("page not one CBOR value"))?;
-    }
-    Ok(())
+/// Each page and link page held here that a paged part's `delta` links (spec/crdt.md §8), with
+/// its plaintext: a link from the delta or a page whose held blob is no tree node
+/// (`reach::walk`); a large value's root is no page, and nothing below it is visited. A delta
+/// or page that is not one CBOR value is `BadInput`.
+pub(crate) fn each_page(tx: &mut Tx<'_>, delta: &[u8], f: &mut PageVisit<'_>) -> Result<()> {
+    let limits = osis_base::Limits { max_depth: osis_base::format::MAX_OBJECT_DEPTH, max_bytes: delta.len() };
+    osis_base::visit_links(delta, &limits, &mut |_| {}).map_err(|_| Error::BadInput("part not one CBOR value"))?;
+    super::reach::walk_deltas(tx, &[delta], false, f).map(|_| ())
 }
 
-/// `part_bound` of the pages and link pages a paged part's `delta` links (`each_page`), each by
-/// its plaintext's heads. Every listed blob is held (`memory_gate`).
-fn pages_bound(tx: &mut Tx<'_>, delta: &[u8], listed: &BTreeSet<osis_base::BlobId>) -> Result<u64> {
+/// What the parts of `blob` not held or dropped here could cost decoded (`part_bound`), the
+/// pages held they link included (`each_page`, each by its plaintext's heads), and the bytes
+/// their large values may still bring (`reach::unheld_bytes`, from their roots' lengths): what
+/// ingesting it may decode and fetch.
+pub(crate) fn new_parts_bound(tx: &mut Tx<'_>, blob: &CommitBlob) -> Result<u64> {
+    let known = tx.core.ix.commits.get(&blob.id()).map(|m| m.missing_parts().collect::<BTreeSet<usize>>());
+    let parts: Vec<&osis_commit::Part> = blob.parts.iter().filter(|p| known.as_ref().is_none_or(|missing| missing.contains(&p.ai))).collect();
     let mut sum = 0u64;
-    each_page(tx, delta, listed, &mut |_, pt| {
+    for p in &parts {
+        sum = sum.saturating_add(part_bound(p)?);
+    }
+    let deltas: Vec<&[u8]> = parts.iter().map(|p| p.delta.as_slice()).collect();
+    let w = super::reach::walk_deltas(tx, &deltas, false, &mut |_, pt| {
         let heap = osis_crdt::decoded_bound(pt).map_err(|_| Error::BadInput("ephemeral page not one CBOR value"))?;
         sum = sum.saturating_add(part_charge(heap, pt.len()));
         Ok(())
     })?;
-    Ok(sum)
+    Ok(sum.saturating_add(super::reach::unheld_bytes(tx, &w.roots)?))
 }
 
-/// What the parts of `blob` not held or dropped here could cost decoded (`part_bound`, their
-/// pages included): what ingesting it may decode.
-pub(crate) fn new_parts_bound(tx: &mut Tx<'_>, blob: &CommitBlob) -> Result<u64> {
-    let known = tx.core.ix.commits.get(&blob.id()).map(|m| m.missing_parts().collect::<BTreeSet<usize>>());
-    let listed: BTreeSet<osis_base::BlobId> = blob.header.chunks.iter().map(|ch| ch.blob).collect();
-    let mut sum = 0u64;
-    for p in &blob.parts {
-        if known.as_ref().is_some_and(|missing| !missing.contains(&p.ai)) {
-            continue;
-        }
-        sum = sum.saturating_add(part_bound(p)?).saturating_add(pages_bound(tx, &p.delta, &listed)?);
-    }
-    Ok(sum)
-}
-
-/// What a received memory commit meets before anything of it is decoded (spec/sync.md §9 Caps):
-/// its header lists resolved and every blob its chunk list names held (pages and value trees
-/// alike), else it waits for them, nothing decoded (`Some(Pending)`); then its
-/// `new_parts_bound` within the room node-sync gave (`Core::memory_room`), else `TooLarge` and
-/// nothing of it kept. Without a room (a re-examination) it is left waiting: node-sync applies
-/// waiting memory commits itself, each within the room its label has then
+/// What a received memory commit meets before anything of it is decoded (spec/sync.md §9 Caps),
+/// in stages: its header lists resolved, then every page and large value root its parts link
+/// held (`reach::walk`), else it waits for them, nothing decoded (`Some(Pending)`); then its
+/// `new_parts_bound` (parts, pages, and what its values' roots say the rest of their trees
+/// holds) within the room node-sync gave (`Core::memory_room`), else `TooLarge` and nothing of
+/// it kept, no chunk of it fetched. Admitted, its value trees are fetched at once
+/// (`reach::Walks::trees_of`). Without a room (a re-examination) it is left waiting: node-sync
+/// applies waiting memory commits itself, each within the room its label has then
 /// (`Engine::apply_waiting_memory`). `None`: go on.
 pub(crate) fn memory_gate(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId) -> Result<Option<crate::Ingested>> {
     let pending = tx.core.ix.pending.get(id).cloned();
@@ -124,13 +103,11 @@ pub(crate) fn memory_gate(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId)
             Err(e) => return Err(e.into()),
         }
     }
-    // a held commit's late parts: its blobs came with it (a page not held makes the part wait
-    // alone, `examine`, decoded no further than the held pages `pages_bound` counts)
+    // a held commit's late parts wait alone for their pages (`examine`), decoded no further
+    // than the held pages `new_parts_bound` counts
     let held = tx.core.ix.commits.contains_key(id);
-    for ch in blob.header.chunks.iter().filter(|_| !held) {
-        if !tx.blobs.held(&ch.blob)? {
-            return wait(tx, blob, id).map(Some);
-        }
+    if !held && super::reach::walk(tx, blob, false, &mut |_, _| Ok(()))?.missing().next().is_some() {
+        return wait(tx, blob, id).map(Some);
     }
     let Some(room) = tx.core.memory_room else {
         return Ok(Some(crate::Ingested::Pending(*id, pending.unwrap_or(crate::Reason::Unexamined))));
@@ -144,6 +121,7 @@ pub(crate) fn memory_gate(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId)
         }
         return Ok(Some(crate::Ingested::TooLarge(*id)));
     }
+    tx.core.walks.trees_of(*id);
     Ok(None)
 }
 
