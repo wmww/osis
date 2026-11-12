@@ -212,9 +212,8 @@ pub struct LabelStatus {
     /// Nodes connected now with it open, whoever dialed, readers or not: a node both sides dialed
     /// counts once, by this node's own connection.
     pub sources: usize,
-    /// Of those, the ones this node's own pass ended with, nothing outstanding, nothing changed
-    /// since and nothing this node places lacking there. A session only the other side dialed
-    /// runs no pass here, so it is never among them.
+    /// Of those, the ones this node's own pass ended with, nothing outstanding and nothing changed
+    /// since. A session only the other side dialed runs no pass here, so it is never among them.
     pub idle: usize,
     /// Connections up and still opening it: passes about to run, not sources yet.
     pub opening: usize,
