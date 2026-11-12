@@ -253,21 +253,7 @@ pub(crate) fn lost(tx: &mut Tx<'_>, things: &BTreeSet<Tid>, roots: BTreeMap<Tid,
         while !todo.is_empty() {
             todo.retain(|l| seen.insert(l.blob));
             let blobs: BTreeSet<BlobId> = todo.iter().map(|l| l.blob).collect();
-            let refs = {
-                use crate::engine::tree_refs::{Source, kept_refs_in, sources_of};
-                let srcs = sources_of(tx, &t)?;
-                let core = &*tx.core;
-                // a body none of whose held parts on `t` is kept
-                let body_gone = |c: &CommitId| core.ix.commits.get(c).is_none_or(|m| m.header.aspects.iter().enumerate().filter(|(ai, a)| a.tid == t && m.holds(*ai)).all(|(ai, _)| parts.get(c).is_some_and(|w| w.contains(&ai))));
-                let skip: BTreeSet<Source> = srcs
-                    .into_iter()
-                    .filter(|s| match s {
-                        Source::State(ak) => aspects.contains(&(t, ak.clone())),
-                        Source::Body(c) => body_gone(c),
-                    })
-                    .collect();
-                kept_refs_in(tx, &t, &blobs, &|s| skip.contains(s))?
-            };
+            let refs = kept_refs(tx, &t, &blobs, aspects, parts)?;
             let mut next = Vec::new();
             for l in std::mem::take(&mut todo) {
                 if refs.blobs.contains(&l.blob) || !refs.missing.is_empty() {
@@ -287,6 +273,25 @@ pub(crate) fn lost(tx: &mut Tx<'_>, things: &BTreeSet<Tid>, roots: BTreeMap<Tid,
         }
     }
     Ok(out)
+}
+
+/// What the sources of `t` a lost-access forget keeps link among `blobs` (`tree_refs`): every
+/// source but the forgotten `aspects`' states and the bodies all of whose held parts on `t` are
+/// among the forgotten `parts` (still indexed while the forget runs).
+pub(crate) fn kept_refs(tx: &mut Tx<'_>, t: &Tid, blobs: &BTreeSet<BlobId>, aspects: &BTreeSet<(Tid, Ak)>, parts: &BTreeMap<CommitId, BTreeSet<usize>>) -> Result<crate::engine::large::Trees> {
+    use crate::engine::tree_refs::{Source, kept_refs_in, sources_of};
+    let t = *t;
+    let srcs = sources_of(tx, &t)?;
+    let core = &*tx.core;
+    let body_gone = |c: &CommitId| core.ix.commits.get(c).is_none_or(|m| m.header.aspects.iter().enumerate().filter(|(ai, a)| a.tid == t && m.holds(*ai)).all(|(ai, _)| parts.get(c).is_some_and(|w| w.contains(&ai))));
+    let skip: BTreeSet<Source> = srcs
+        .into_iter()
+        .filter(|s| match s {
+            Source::State(ak) => aspects.contains(&(t, ak.clone())),
+            Source::Body(c) => body_gone(c),
+        })
+        .collect();
+    kept_refs_in(tx, &t, blobs, &|s| skip.contains(s))
 }
 
 impl Engine {

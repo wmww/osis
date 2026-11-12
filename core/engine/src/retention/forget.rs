@@ -274,10 +274,19 @@ pub(crate) fn forget(tx: &mut Tx<'_>, lost: &[Tid], held: &BTreeMap<Tid, u64>) -
     // its blob does not bear releases nothing, `freed::lost`; their freed sets go), then the
     // sync records and the blob ciphertexts nothing kept names
     let pieces = super::freed::lost(tx, &out.things, links, &aspects, &parts)?;
-    let gone = match tx.core.sync_records {
+    let mut gone = match tx.core.sync_records {
         Some(r) => r.forget(tx, &out.labels, &out.things, &out.commits, &parts, pieces.clone())?,
         None => pieces.clone(),
     };
+    // a blob of a forgotten label that a kept source of a forgotten thing links stays (a kept
+    // copy's content, an erased thing's kept aspects): its labels gone, nothing fetches it again
+    for t in out.things.clone() {
+        if gone.is_empty() {
+            break;
+        }
+        let linked = super::freed::kept_refs(tx, &t, &gone, &aspects, &parts)?;
+        gone.retain(|b| !linked.blobs.contains(b));
+    }
     for b in &gone {
         tx.blobs.release(b, tx.txn.is_memory())?;
     }
