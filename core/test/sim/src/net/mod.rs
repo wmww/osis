@@ -422,6 +422,20 @@ fn frames(b: &[u8]) -> String {
     if v.is_empty() { format!("<{} bytes>", b.len()) } else { v.join(" | ") }
 }
 
+/// The messages in `b`, a stream push counted by its events (`Report::sent_events`).
+fn sent_events(b: &[u8]) -> u64 {
+    let mut d = osis_proto::FrameDecoder::default();
+    d.push(b);
+    let mut n = 0u64;
+    while let Ok(Some(f)) = d.next_frame() {
+        n += match osis_proto::Message::decode(&f) {
+            Ok(osis_proto::Message::Stream(st)) => st.events.len().max(1) as u64,
+            _ => 1,
+        };
+    }
+    n.max(1)
+}
+
 /// Uploads and deposits of `watched` blobs among the frames in `b`.
 fn watched_in(watched: &BTreeSet<osis_base::BlobId>, b: &[u8]) -> u64 {
     let mut d = osis_proto::FrameDecoder::default();
@@ -1165,6 +1179,13 @@ impl NetSim {
     /// Queues a message on a stream, through the faults.
     fn send(&mut self, id: u64, to: End, what: Payload) {
         self.report.sent = self.report.sent.saturating_add(1);
+        if compared() {
+            let n = match &what {
+                Payload::Bytes(b) => sent_events(b),
+                _ => 1,
+            };
+            self.report.sent_events = self.report.sent_events.saturating_add(n);
+        }
         if self.verbose
             && let Payload::Bytes(b) = &what
         {

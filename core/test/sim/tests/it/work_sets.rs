@@ -28,14 +28,17 @@ fn both(name: &str, setup: u64, seed: u64) -> (Run, Run) {
 fn parted((work, at): (&Report, &Arrivals), (full, ref_at): (&Report, &Arrivals)) -> Vec<String> {
     let mut out = Vec::new();
     // messages may differ: the counters of what the faults and the scenario did may not
-    let counters = |r: &Report| Report { sent: 0, delivered: 0, duplicated: 0, diagnostics: 0, digest: [0; 32], parts: Default::default(), ..r.clone() };
+    let counters = |r: &Report| Report { sent: 0, sent_events: 0, delivered: 0, duplicated: 0, diagnostics: 0, digest: [0; 32], parts: Default::default(), ..r.clone() };
     if counters(work) != counters(full) {
         out.push(format!("counters: work sets {:?}, full passes {:?}", counters(work), counters(full)));
     }
     // only of runs alike to the bit: another seal order alone moves the count, by a hundred
-    // messages in a run (`compared_runs_ignore_the_random_stream`)
-    if work.digest == full.digest && work.sent > full.sent {
-        out.push(format!("work sets send more: {} against {}", work.sent, full.sent));
+    // messages in a run (`compared_runs_ignore_the_random_stream`). A stream push counts by its
+    // events: two entries a pass sends apart (a delete as a request, the replacing snapshot by
+    // the peer's pull) reach a host in one handled event or two as the network's timing has it,
+    // and its pushes of them follow (`Report::sent_events`)
+    if work.digest == full.digest && work.sent_events > full.sent_events {
+        out.push(format!("work sets send more: {} against {} (stream events counted)", work.sent_events, full.sent_events));
     }
     let names: std::collections::BTreeSet<_> = work.parts.keys().chain(full.parts.keys()).collect();
     out.extend(names.into_iter().filter(|n| work.parts.get(*n) != full.parts.get(*n)).map(|n| format!("ends apart: {n}")));

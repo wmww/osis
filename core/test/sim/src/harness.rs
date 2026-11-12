@@ -127,6 +127,10 @@ pub struct Report {
     pub steps: u64,
     pub writes: u64,
     pub sent: u64,
+    /// In compared runs (`net::with_arrivals`): messages sent, a stream push counted by the
+    /// events it carries (how arrivals group into pushes is the network's timing, what is
+    /// pushed is not).
+    pub sent_events: u64,
     pub dropped: u64,
     pub delivered: u64,
     pub parked: u64,
