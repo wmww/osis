@@ -313,7 +313,7 @@ pub(crate) fn known_purged(tx: &mut Tx<'_>, ch: &Header, c: &CommitId, ai: usize
 }
 
 /// Whether a held purge request names delta `ai` of `c`, signed by one that could ever hold the
-/// right (`Held::ever_holders`). Unlike `known_purged` it reads no validity, so a demotion
+/// right (`Held::ever_admins`, `ever_writers`). Unlike `known_purged` it reads no validity, so a demotion
 /// arriving later changes nothing here.
 pub(crate) fn counts_as_purged(tx: &mut Tx<'_>, ch: &Header, c: &CommitId, ai: usize) -> Result<bool> {
     let Some(a) = ch.aspects.get(ai) else { return Ok(false) };

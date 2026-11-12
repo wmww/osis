@@ -36,11 +36,6 @@ osis-transport::set_max_steps  test hook: scheduler step cap
 osis-transport::close_gracefully  deferred: the dialer's graceful close, called only by the transport tests; node sync (3h2) decides whether sessions use it
 
 osis-engine::body_min_ts  deferred: durable-compaction/chunk-blind (retention/bounds.rs)
-osis-engine::rotate_eagerly  deferred: Fathom (rotation); no uses
-osis-engine::ever_holders  deferred: Fathom (held_trees)
-osis-keys::MemoryGraph  deferred: Fathom (keys)
-osis-keys::lost_access  deferred: Fathom (keys)
-osis-keys::may_encrypt_under  deferred: Fathom (keys)
 
 # core/node/src/sync/ (3h2): mostly test hooks
 osis-node::compact_ephemeral_now  deferred: 3h2

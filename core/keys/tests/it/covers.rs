@@ -7,7 +7,7 @@ use common::*;
 use osis_base::{Role, Tid};
 use osis_crypto::Secret32;
 use osis_keys::{
-    ActorEpochs, AllHeld, Departure, Holder, HolderKeys, Key, Maker, Name, Names, Opener, Recipient, box_holder, fork_merger, ingest, may_encrypt_under, merge_due, reseal_needed,
+    ActorEpochs, AllHeld, Departure, Holder, HolderKeys, Key, Maker, Name, Names, Opener, Recipient, box_holder, fork_merger, ingest, merge_due, reseal_needed, uncovered,
     roles_up_to, rotate,
 };
 use osis_schema::core_types::Secrets;
@@ -86,14 +86,14 @@ fn rotation_held_before_the_removal() {
     eager.secrets.apply(&mut s);
     v = eager.preview(&v).unwrap();
     let e2 = eager.rotated[0].epoch;
-    assert!(may_encrypt_under(&a, &v, Role::Read, &e2, &[], &AllHeld));
+    assert!(uncovered(&a, &v, Role::Read, &e2, &[], &AllHeld).is_empty());
     // The removal commit arrives with its rotation.
     removal.secrets.apply(&mut s);
     v = removal.preview(&v).unwrap();
     let e2r = removal.rotated[0].epoch;
     let deps = [Departure::holder(m, Role::Read).at(Some(removed))];
-    assert!(!may_encrypt_under(&a, &v, Role::Read, &e2, &deps, &AllHeld));
-    assert!(may_encrypt_under(&a, &v, Role::Read, &e2r, &deps, &AllHeld));
+    assert!(!uncovered(&a, &v, Role::Read, &e2, &deps, &AllHeld).is_empty());
+    assert!(uncovered(&a, &v, Role::Read, &e2r, &deps, &AllHeld).is_empty());
     assert!(merge_due(&a, &v, Role::Read, &deps, &AllHeld), "the eager fork is current, whichever is newest");
     // Rotating past both forks excludes M.
     let heal = rotate(&a, &read(), &v, &s, &with_m[..1], &naming(removed), &mut *rg).unwrap();
@@ -103,7 +103,7 @@ fn rotation_held_before_the_removal() {
     heal.secrets.apply(&mut s);
     v = heal.preview(&v).unwrap();
     let e3 = heal.rotated[0].epoch;
-    assert!(may_encrypt_under(&a, &v, Role::Read, &e3, &deps, &AllHeld));
+    assert!(uncovered(&a, &v, Role::Read, &e3, &deps, &AllHeld).is_empty());
     assert!(!merge_due(&a, &v, Role::Read, &deps, &AllHeld));
     let mut mv = ActorEpochs::default();
     ingest(&a, &s, &Opener::Actor { holder: m, epochs: &me }, &mut mv, None).unwrap();
@@ -113,7 +113,7 @@ fn rotation_held_before_the_removal() {
     let w = box_holder(&a, &v, &hist(&a, &v, &s), &key_rcpt(k, Role::Write, &seed), &roles_up_to(Role::Write), &mut *rg).unwrap().unwrap();
     w.apply(&mut s);
     let kdep = [Departure::holder(k, Role::Read).at(Some(name(a, 10)))];
-    assert!(!may_encrypt_under(&a, &v, Role::Read, &e3, &kdep, &AllHeld));
+    assert!(!uncovered(&a, &v, Role::Read, &e3, &kdep, &AllHeld).is_empty());
     assert!(reseal_needed(&s, &v, &[Holder { holder: k, role: Role::Write }]).is_empty());
 }
 
@@ -158,12 +158,12 @@ fn missing_box_covers_nothing() {
     let e1 = rot.rotated[0].epoch;
     let removed = name(a, 7);
     let dep = [Departure::holder(m, Role::Read).at(Some(removed))];
-    assert!(!may_encrypt_under(&a, &v, Role::Read, &e1, &dep, &AllHeld));
+    assert!(!uncovered(&a, &v, Role::Read, &e1, &dep, &AllHeld).is_empty());
     assert!(merge_due(&a, &v, Role::Read, &dep, &AllHeld));
     let named = rotate(&a, &read(), &v, &base, &[admin_rcpt(p, &pe)], &naming(removed), &mut *rg).unwrap();
     let v2 = named.preview(&v).unwrap();
     let e2 = named.rotated[0].epoch;
-    assert!(may_encrypt_under(&a, &v2, Role::Read, &e2, &dep, &AllHeld));
+    assert!(uncovered(&a, &v2, Role::Read, &e2, &dep, &AllHeld).is_empty());
     struct Unmet;
     impl osis_keys::Held for Unmet {
         fn met(&self, _: &Name) -> bool {
@@ -183,5 +183,5 @@ fn missing_box_covers_nothing() {
         }
     }
     assert!(!osis_keys::covers(&a, &v2, Role::Read, &e2, &dep[0], &Unmet));
-    assert!(!may_encrypt_under(&a, &v2, Role::Read, &e2, &[Departure::holder(m, Role::Read)], &AllHeld));
+    assert!(!uncovered(&a, &v2, Role::Read, &e2, &[Departure::holder(m, Role::Read)], &AllHeld).is_empty());
 }

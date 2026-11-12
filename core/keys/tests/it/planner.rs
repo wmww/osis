@@ -7,30 +7,29 @@ use common::*;
 use osis_base::{CommitId, CreationRecord, Role, Tid, Ts};
 use osis_crypto::{Epoch, Secret32, label_role_key};
 use osis_keys::{
-    ActorEpochs, Graph, MemoryGraph, PermGraph, label_role, lost_access, newer_than_head, reached,
+    ActorEpochs, Graph, PermGraph, label_role, newer_than_head, reached,
     registered_epoch, registration_epochs, roles_up_to, delete_candidates, delete_key, wrap_epoch,
 };
 use osis_perm::{At, Edge, EdgeOp, RoleCommit, MemoryHeldSet, Timeline};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 fn set(r: &[Role]) -> BTreeSet<Role> {
     r.iter().copied().collect()
 }
 
-// spec/permissions.md §3 (drop lost secrets): through a role cycle, a node that lost read
-// access drops the actor and what it reads by no other path.
-#[test]
-fn cycles_and_lost_access() {
-    let mut g = MemoryGraph::default();
-    let (a, b, c) = (tid(1), tid(2), tid(3));
-    g.edges.insert(a, vec![(b, Role::Admin)]);
-    g.edges.insert(b, vec![(a, Role::Read), (c, Role::Read)]);
-    let lost = lost_access(&g, b, &|t| *t == c);
-    assert_eq!(lost, vec![b, a]);
+/// A role graph held in memory.
+#[derive(Default)]
+struct MemoryGraph {
+    edges: BTreeMap<Tid, Vec<(Tid, Role)>>,
 }
 
-// spec/permissions.md §3: `reached` (the labels a removal is placed under, what a lost actor
-// drops) is the fixpoint of the things one hop from the start or from a thing reached, never
+impl Graph for MemoryGraph {
+    fn edges(&self, holder: &Tid) -> Vec<(Tid, Role)> {
+        self.edges.get(holder).cloned().unwrap_or_default()
+    }
+}
+
+// spec/permissions.md §3: `reached` (the labels a removal is placed under) is the fixpoint of the things one hop from the start or from a thing reached, never
 // through the avoided holder, on random graphs with cycles and first admins, and stays linear on
 // a lattice with 6^11 paths.
 #[test]

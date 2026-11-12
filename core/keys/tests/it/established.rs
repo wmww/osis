@@ -10,7 +10,7 @@ use osis_base::{Role, Tid};
 use osis_keys::aspects::{box_key, history_key, to_schema};
 use osis_keys::{
     ActorEpochs, Departure, KeysWrite, Holder, Names, Opener, Provenance, Recipient, Rotation, box_holder, ingest,
-    may_compact_secrets, may_encrypt_under, reseal_needed, roles_up_to, rotate, snapshot_keyed,
+    may_compact_secrets, reseal_needed, uncovered, roles_up_to, rotate, snapshot_keyed,
 };
 use osis_crypto::Epoch;
 use osis_schema::core_types::Secrets;
@@ -172,8 +172,8 @@ fn r9_reseal_before_rotation_commit() {
     assert_eq!(a2v.read.provenance(&e1), Some(Provenance::Rotated));
     let deps = [Departure::holder(w.m1, Role::Read).at(Some(r1_name(&w)))];
     let all = osis_keys::AllHeld;
-    assert!(!may_encrypt_under(&w.a, &a2v, Role::Read, &e2, &deps, &all));
-    assert!(may_encrypt_under(&w.a, &a2v, Role::Read, &e1, &deps, &all));
+    assert!(!uncovered(&w.a, &a2v, Role::Read, &e2, &deps, &all).is_empty());
+    assert!(uncovered(&w.a, &a2v, Role::Read, &e1, &deps, &all).is_empty());
 }
 
 // spec/crypto.md §4 (names), spec/permissions.md §3; TLC `MC_reorder`: a1 removes m1 (e1, commit

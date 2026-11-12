@@ -865,17 +865,6 @@ impl Engine {
         }
     }
 
-    /// Every rotation this node may make that a known departure requires, now (the eager
-    /// option).
-    pub fn rotate_eagerly(&mut self) -> Result<Done> {
-        let actors: Vec<Tid> = self.core.ix.own_keys.iter().copied().collect();
-        let mut done = Done::default();
-        for a in actors {
-            done.extend(self.ensure_rotated(&a)?.0);
-        }
-        Ok(done)
-    }
-
     /// The departures from `actor` its epochs must cover, as this node knows them.
     pub fn departures(&mut self, actor: &Tid) -> Result<Vec<Departure>> {
         let a = *actor;

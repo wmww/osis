@@ -210,12 +210,6 @@ impl Held {
         set
     }
 
-    /// `t`'s possible holders of `role` (spec/commits.md §4): possible admins for admin, possible
-    /// writers below.
-    pub fn ever_holders(&self, t: &Tid, role: Role) -> BTreeSet<Tid> {
-        if role == Role::Admin { self.ever_admins(t) } else { self.ever_writers(t) }
-    }
-
     fn set_created(&mut self, t: Tid, r: Option<CreationRecord>) -> Option<CreationRecord> {
         self.records_read.wrote(&t, r.is_some());
         self.rest_read.wrote_all();

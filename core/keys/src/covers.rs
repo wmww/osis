@@ -106,13 +106,6 @@ pub fn uncovered<'a>(actor: &Tid, epochs: &ActorEpochs, r: Role, e: &Epoch, depa
     departures.iter().filter(|d| !covers(actor, epochs, r, e, d, held)).collect()
 }
 
-/// Whether a node that may rotate `r` may encrypt under `e` as far as departures go: established
-/// and current (an epoch whose rotation commit is not applied, pending or invalid never is), and
-/// covering every known departure. Holder actors' keysets are `members::stale`'s.
-pub fn may_encrypt_under(actor: &Tid, epochs: &ActorEpochs, r: Role, e: &Epoch, departures: &[Departure], held: &dyn Held) -> bool {
-    epochs.role(r).is_current(e) && uncovered(actor, epochs, r, e, departures, held).is_empty()
-}
-
 /// Merge (spec/crypto.md §4, encrypting under), for any node that may rotate `r`: whether some
 /// current epoch of `r`, not only the newest, does not cover a known departure.
 ///
