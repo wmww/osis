@@ -436,10 +436,16 @@ struct Meta {
     records: u64,
     /// Wall ms before which a child step past a byte cap is refused (`HostPolicy::over_cap_step_ms`).
     over_cap_until: u64,
-    /// Role entries (`Put::role`) among `entries` and their bytes: outside the label's caps,
-    /// within a deposit budget of their own.
+    /// Role entries (`Put::role`) among `entries` and their bytes: outside the label's caps.
     role_n: u64,
     role_bytes: u64,
+}
+
+impl Meta {
+    /// The entries and bytes the label's and the host's caps count (role entries are outside them).
+    fn capped(&self) -> (u64, u64) {
+        (self.entries.saturating_sub(self.role_n), self.bytes.saturating_sub(self.role_bytes))
+    }
 }
 
 const META_LEN: usize = 16 + 1 + 32 + 8 * 12;
@@ -758,7 +764,7 @@ impl Tx {
 /// A due index row: (row key, rest after `t`, value).
 type Due = (Vec<u8>, Vec<u8>, Vec<u8>);
 
-/// Host-wide totals.
+/// Host-wide totals; entries and bytes as the caps count them (role entries outside).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Totals {
     pub labels: u64,
@@ -931,7 +937,8 @@ impl HostStore {
         let id = step.id();
         let set_rows = claim_set.as_ref().map(|c| set_rows(label, &id, c));
         let size = step_bytes.len() as u64 + set_rows.as_ref().map_or(0, rows_bytes);
-        let mut tx = Tx { label: *label, before: (meta.entries, meta.bytes, new), meta, batch: Writes::default() };
+        let (entries, bytes) = meta.capped();
+        let mut tx = Tx { label: *label, before: (entries, bytes, new), meta, batch: Writes::default() };
         tx.meta.bytes = tx.meta.bytes.saturating_add(size);
         if over {
             tx.meta.over_cap_until = self.now().saturating_add(self.policy.over_cap_step_ms);
@@ -1105,7 +1112,7 @@ impl HostStore {
 
     /// The entries and bytes of `label` its caps count (role entries are outside them).
     pub fn capped(&self, label: &LabelId) -> Result<(u64, u64), StoreError> {
-        Ok(self.raw_meta(label)?.map_or((0, 0), |m| (m.entries.saturating_sub(m.role_n), m.bytes.saturating_sub(m.role_bytes))))
+        Ok(self.raw_meta(label)?.map_or((0, 0), |m| m.capped()))
     }
 
     /// What `label`'s room of one kind (durable, or `memory`) found used: the label's and the
@@ -1117,7 +1124,8 @@ impl HostStore {
         } else {
             let m = self.raw_meta(label)?;
             let t = self.totals()?;
-            [m.as_ref().map_or(0, |m| m.entries), m.as_ref().map_or(0, |m| m.bytes), t.entries, t.bytes]
+            let (entries, bytes) = m.as_ref().map_or((0, 0), Meta::capped);
+            [entries, bytes, t.entries, t.bytes]
         };
         Ok(Room { memory, used })
     }
@@ -1298,16 +1306,12 @@ impl HostStore {
             None => {
                 let m = &tx.meta;
                 let p = &self.policy;
-                if put.role {
-                    // an entry deletes are judged by is outside the storage caps, within a
-                    // deposit budget of role entries: without it no purge or compaction frees
-                    // room here (spec/sync.md §5, Storage caps)
-                    let max = self.budget_max(m);
-                    if m.role_n.saturating_add(1) > max || m.role_bytes.saturating_add(size) > max.saturating_mul(DEPOSIT_ENTRY_BYTES) {
-                        return Ok(Code::STORAGE_CAP);
-                    }
-                } else {
-                    let (entries, bytes) = (m.entries.saturating_sub(m.role_n).saturating_sub(plan.entries), m.bytes.saturating_sub(m.role_bytes).saturating_sub(plan.bytes));
+                // an entry deletes are judged by is outside the storage caps, else no purge or
+                // compaction frees room here; a stamped one is a writer's, bounded by nothing
+                // more, a deposited one by the deposit budget below (spec/sync.md §5, Role entries)
+                if !put.role {
+                    let (entries, bytes) = m.capped();
+                    let (entries, bytes) = (entries.saturating_sub(plan.entries), bytes.saturating_sub(plan.bytes));
                     let (cap_entries, cap_bytes) = self.label_caps(label);
                     if entries.saturating_add(1) > cap_entries || bytes.saturating_add(size) > cap_bytes {
                         return Ok(Code::STORAGE_CAP);
@@ -1387,8 +1391,11 @@ impl HostStore {
                 plan.gone.push(b);
             } else if let Some(row) = self.row(label, &b)? {
                 seen.insert(b);
-                plan.entries += 1;
-                plan.bytes = plan.bytes.saturating_add(row.meta.size);
+                // a role entry frees no capped room
+                if !row.role {
+                    plan.entries += 1;
+                    plan.bytes = plan.bytes.saturating_add(row.meta.size);
+                }
                 plan.counted += 1;
                 plan.gone.push(b);
             }
@@ -1464,7 +1471,8 @@ impl HostStore {
 
     fn tx(&self, label: &LabelId) -> Result<Tx, StoreError> {
         let meta = self.meta(label)?.ok_or_else(unknown)?;
-        Ok(Tx { label: *label, before: (meta.entries, meta.bytes, false), meta, batch: Writes::default() })
+        let (entries, bytes) = meta.capped();
+        Ok(Tx { label: *label, before: (entries, bytes, false), meta, batch: Writes::default() })
     }
 
     /// Trims the log to `log_keep` durable records (in steps of 1/8 of it: the oldest `G` rows,
@@ -1489,12 +1497,13 @@ impl HostStore {
             *s = (*s).max(tx.meta.next_seq);
         }
         let (entries, bytes, new) = tx.before;
-        if new || entries != tx.meta.entries || bytes != tx.meta.bytes {
+        let (now_entries, now_bytes) = tx.meta.capped();
+        if new || entries != now_entries || bytes != now_bytes {
             let t = self.totals()?;
             let t = Totals {
                 labels: t.labels.saturating_add(u64::from(new)),
-                entries: t.entries.saturating_add(tx.meta.entries).saturating_sub(entries),
-                bytes: t.bytes.saturating_add(tx.meta.bytes).saturating_sub(bytes),
+                entries: t.entries.saturating_add(now_entries).saturating_sub(entries),
+                bytes: t.bytes.saturating_add(now_bytes).saturating_sub(bytes),
             };
             tx.batch.put(b"N".to_vec(), [be(t.labels), be(t.entries), be(t.bytes)].concat());
         }
@@ -1665,7 +1674,8 @@ impl HostStore {
             }
         }
         let t = self.totals()?;
-        let t = Totals { labels: t.labels.saturating_sub(1), entries: t.entries.saturating_sub(meta.entries), bytes: t.bytes.saturating_sub(meta.bytes) };
+        let (entries, bytes) = meta.capped();
+        let t = Totals { labels: t.labels.saturating_sub(1), entries: t.entries.saturating_sub(entries), bytes: t.bytes.saturating_sub(bytes) };
         w.put(b"N".to_vec(), [be(t.labels), be(t.entries), be(t.bytes)].concat());
         w.log(Write::LogForget(*l));
         self.write_open(w)?;
@@ -1957,7 +1967,7 @@ impl LabelStore for HostStore {
         let set_bytes = claim_set.as_ref().map_or(0, |c| rows_bytes(&set_rows(label, &id, c)));
         let step_bytes = step.to_bytes().len() as u64;
         let cap_bytes = self.label_caps(label).1;
-        let fits = |n: u64, total: u64| meta.bytes.saturating_add(n) <= cap_bytes && total.saturating_add(n) <= self.policy.max_bytes;
+        let fits = |n: u64, total: u64| meta.capped().1.saturating_add(n) <= cap_bytes && total.saturating_add(n) <= self.policy.max_bytes;
         let total = self.totals()?.bytes;
         let mut claim_set = claim_set;
         let mut over = false;

@@ -1545,4 +1545,48 @@ fn expiry_is_flat_spec_crdt_4_7() {
         assert_eq!(big[i].n("rebuild: body"), 0, "expiry {i} read the aspect's bodies");
         all_flat(&format!("expiry {i}"), &small[i], &big[i]);
     }
+/// Role entries (count) at the group's peer that cannot read its label: after a group of n member
+/// groups settles, then after `churn` rounds of one member granted and one removed.
+fn role_entries_under_churn(n: usize, churn: usize) -> [u64; 2] {
+    use osis_node::flows::Demotion;
+    let mut net = crate::net::Net::new();
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let b = net.node(2, &[host]);
+    let g = net.group(a, &[(b, Role::Write)], &[host]);
+    let mut members: Vec<Tid> = (0..n).map(|i| net.group_seeded(a, &[], vec![], 100 + i as u64)).collect();
+    for f in &members {
+        net.grant(a, g, *f, Role::Read);
+    }
+    net.item(a, g, g, "content");
+    net.run();
+    net.advance(61_000);
+    net.run();
+    let l = net.group_labels(a).into_iter().find(|(t, _)| *t == g).unwrap().1.id;
+    let role = |net: &crate::net::Net| net.host_ids(host, &l).len() as u64 - net.host_capped(host, &l);
+    let before = role(&net);
+    for i in 0..churn {
+        let f = net.group_seeded(a, &[], vec![], 10_000 + i as u64);
+        net.grant(a, g, f, Role::Read);
+        members.push(f);
+        let holder = members.remove(0);
+        let done = net.engine(a).demote(&g, &Demotion { holder, new: None, retain: None }).unwrap();
+        let acts = net.sync(a).carry_out(done).unwrap();
+        net.actions(a, acts);
+        net.run();
+        net.advance(61_000);
+        net.run();
+    }
+    assert!(!net.lags(a, &l), "the peer took every role entry at {n}");
+    [before, role(&net)]
+}
+
+// spec/sync.md §5 Role entries: a peer takes a writer's stamped role entries outside its caps with
+// no count of their own; what it holds grows with role churn, not with the members each change
+// boxes (the rotation's bytes do, its entries not)
+#[test]
+fn role_entries_follow_role_churn() {
+    let (small, big) = (role_entries_under_churn(3, 4), role_entries_under_churn(30, 4));
+    println!("role entries: {small:?} at n, {big:?} at 10n");
+    flat("role entries a churn adds", small[1] - small[0], big[1] - big[0]);
 }

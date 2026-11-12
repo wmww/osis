@@ -603,3 +603,34 @@ fn received_frames_stay_within_the_bound() {
     assert_eq!(closed(&hub.input(now, 2, upload(true, 600 << 10))).len(), 1);
     assert!(hub.buffered() <= mib && hub.held() <= mib);
 }
+
+// spec/sync.md §5 Role entries: a stamped role entry is taken past the label's and the host's
+// caps with no bound of its own; a deposited one is outside the caps too, within the deposit
+// budget; a plain entry still meets the cap
+#[test]
+fn role_entries_outside_the_caps_spec_sync_5() {
+    use osis_base::{ManualClock, WallMs};
+    use osis_crypto::{SeededRng, Signature};
+    use osis_proto::msg::WRAP_LEN;
+    let store = osis_store::Store::open_or_create(Box::new(osis_store::MemoryBackend::new()), Box::new(osis_store::MemoryRoot::new()), osis_store::StoreConfig::default(), &mut SeededRng::from_seed([1; 32])).unwrap();
+    let clock = std::sync::Arc::new(ManualClock::new(WallMs(T0)));
+    let policy = HostPolicy { cap_entries: 1, max_entries: 2, ..HostPolicy::unlimited() };
+    let mut s = osis_host::HostStore::open(store, clock, policy, Box::new(SeededRng::from_seed([2; 32]))).unwrap();
+    let f = osis_proto::examples::Fixture::new(0x10);
+    s.push_step(&f.label, f.genesis.clone(), Some(f.genesis_claims.clone())).unwrap();
+    let mut put = |n: u64, stamped: bool, role: bool| {
+        let b = blob(n);
+        let p = Put { blob_id: osis_label::blob_id(&b), blob: &b, wrap: [0; WRAP_LEN], stamp: stamped.then_some(Signature([1; 64])), expiry: None, ephemeral: false, replaces: &[], now: T0, role };
+        s.put(&f.label, p).unwrap()
+    };
+    let budget = 64 + 4 * f.genesis_claims.claims.len() as u64;
+    for n in 0..3 * budget {
+        assert_eq!(put(n, true, true), Code::OK, "stamped role entry {n}");
+    }
+    assert_eq!(put(10_000, true, false), Code::OK, "a plain entry within the cap");
+    assert_eq!(put(10_001, true, false), Code::STORAGE_CAP);
+    for n in 0..budget {
+        assert_eq!(put(20_000 + n, false, true), Code::OK, "deposited role entry {n}");
+    }
+    assert_eq!(put(30_000, false, true), Code::BUDGET_FULL);
+}
