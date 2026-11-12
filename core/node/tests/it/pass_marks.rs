@@ -97,29 +97,32 @@ fn purge_on_replace_removed_entry_no_live_write_spec_commits_5() {
 }
 
 // spec/sync.md §6: a body its thing's setting keeps for good is must-hold for good, but nothing is
-// due for it: passes do not judge it again.
+// due for it: passes do not judge it again. A later change elsewhere under the label judges as
+// many bodies whether 10 or 40 are kept.
 #[test]
 fn kept_for_good_bodies_not_judged_again_spec_sync_6() {
-    let (mut net, _host, [a, _b], g, [t]) = hosted::<2, 1>(&[(1, Role::Write)], ["x"], true);
-    net.keep(a, t, &[(osis_schema::RawKey::ak(&REG), osis_schema::History::FOREVER)]);
-    net.run();
-    let tags = |i: u32| format!("v{i}");
-    for i in 0..20 {
-        let mut m = Mutation::new();
-        m.set(t, &REG, &s(&tags(i))).unwrap();
-        net.engine(a).commit(m).unwrap();
+    let judged = |kept: u32| {
+        let (mut net, _host, [a, _b], g, [t]) = hosted::<2, 1>(&[(1, Role::Write)], ["x"], true);
+        net.keep(a, t, &[(osis_schema::RawKey::ak(&REG), osis_schema::History::FOREVER)]);
         net.run();
-    }
-    net.advance(61_000);
-    net.run();
-    let s0 = net.sync(a).pass_stats();
-    net.advance(61_000);
-    let t2 = net.item(a, g, g, "other");
-    net.write(a, t2, "more");
-    net.run();
-    let s1 = net.sync(a).pass_stats();
-    assert!(s1.passes > s0.passes);
-    assert!(s1.bodies - s0.bodies < 15, "the kept bodies are not judged again: {s0:?} -> {s1:?}");
+        for i in 0..kept {
+            let mut m = Mutation::new();
+            m.set(t, &REG, &s(&format!("v{i}"))).unwrap();
+            net.engine(a).commit(m).unwrap();
+            net.run();
+        }
+        net.advance(61_000);
+        net.run();
+        let s0 = net.sync(a).pass_stats();
+        net.advance(61_000);
+        let t2 = net.item(a, g, g, "other");
+        net.write(a, t2, "more");
+        net.run();
+        let s1 = net.sync(a).pass_stats();
+        assert!(s1.passes > s0.passes);
+        s1.bodies - s0.bodies
+    };
+    crate::scale::flat("bodies judged after a change elsewhere", judged(10), judged(40));
 }
 
 // spec/requirements.md Scale (a body's judgment costs O(its parts)), spec/sync.md §6, spec/commits.md
