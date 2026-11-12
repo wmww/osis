@@ -7,7 +7,9 @@
 //! history by its thing's setting (`bounds::setting_keeps`, held or not) or whose body is not
 //! held (purged, not fetched yet) is `NotKept`, as is an inverse writing back replaced content
 //! (`osis_crdt::restores`, by the writes' kinds) where a part it may have replaced is not kept
-//! (`replaced_kept`).
+//! (`replaced_kept`). Both read only the parts that matter to the undone delta (`touch`).
+
+pub(crate) mod touch;
 
 use crate::engine::write::{CommitPlan, Resolved, build_one, check_acts, check_authority};
 use crate::engine::{Core, Engine, Mutation, Tx};
@@ -55,38 +57,129 @@ fn kept(tx: &mut Tx<'_>, c: &CommitId, ci: usize, tid: &Tid, ak: &Ak, now: u64) 
     crate::engine::listing::in_kept_history(tx, c, tid, ak, now)
 }
 
-/// The state of `(tid, ak)` just before the commit at `at`, as kept history gives it: the join
-/// of the parts ordered before it that are `kept`, newest first and no further than the newest
-/// kept whole reset, which supersedes every write stamped before it (`resets_whole`). A part
-/// replaced and not kept is left out, held or not.
-fn kept_before(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, at: (Ts, CommitId)) -> Result<Fragment> {
-    let now = tx.now().0;
-    let mut f = Fragment::default();
-    let mut floor: Option<Ts> = None;
-    for (ts, c, ci) in parts_before(tx.core, tid, ak, at).into_iter().rev() {
-        if floor.is_some_and(|x| ts < x) {
-            break;
+/// Strips what an undo must not write back from a state before (`undo_writes`).
+type Strip<'a> = &'a dyn Fn(&Core, &mut Fragment);
+
+/// The join `kept_before` builds: parts newest first, down to the newest kept whole reset, which
+/// supersedes every write stamped before it (`resets_whole`).
+struct Before {
+    at: (Ts, CommitId),
+    f: Fragment,
+    floor: Option<Ts>,
+    seen: BTreeSet<CommitId>,
+}
+
+impl Before {
+    /// Joins part `(ts, c)` of `(tid, ak)` if it is a valid part ordered before `at` and kept;
+    /// `false` once past the floor (no older part counts).
+    fn add(&mut self, tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, (ts, c): (Ts, CommitId), now: u64) -> Result<bool> {
+        if self.floor.is_some_and(|x| ts < x) {
+            return Ok(false);
         }
+        let ci = tx.core.ix.commits.get(&c).and_then(|m| m.aspect(tid, ak).filter(|ci| m.valid_at(*ci)));
+        let Some(ci) = ci.filter(|_| (ts, c) < self.at && self.seen.insert(c)) else { return Ok(true) };
         if kept(tx, &c, ci, tid, ak, now)?
             && let Some(d) = crate::apply::held_part(tx, &c, ci)?
         {
-            if floor.is_none() && resets_whole(&d) {
-                floor = Some(ts);
+            if self.floor.is_none() && resets_whole(&d) {
+                self.floor = Some(ts);
             }
-            f.join(d.into_fragment());
+            self.f.join(d.into_fragment());
         }
+        Ok(true)
     }
-    #[cfg(test)]
-    {
-        let whole = crate::costs::paused(|| kept_join(tx, tid, ak, at, now))?;
-        assert_eq!(crate::engine::state::encode(&f)?, crate::engine::state::encode(&whole)?, "kept_before stopped at a reset: the whole join");
-    }
-    Ok(f)
 }
 
-/// Tests: `kept_before` joining every kept part.
-#[cfg(test)]
-fn kept_join(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, at: (Ts, CommitId), now: u64) -> Result<Fragment> {
+/// The state of `(tid, ak)` just before the commit at `at` where an undo of `delta` reads it, as
+/// kept history gives it, stripped by `strip`: the join of the kept parts ordered before it
+/// writing `delta`'s positions or the composites above them (`touch::candidates`), down to the
+/// newest kept whole reset, plus, at each composite above them that this leaves absent, kept parts
+/// writing inside it, newest first, until it is present (its presence is all an undo reads there,
+/// spec/crdt.md §4.3). Elsewhere it may differ from the whole join; the undo reads nothing there.
+/// A part replaced and not kept is left out, held or not.
+fn kept_before(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, at: (Ts, CommitId), delta: &Fragment, strip: Strip<'_>) -> Result<Fragment> {
+    let now = tx.now().0;
+    let mut need = osis_crdt::touches(delta);
+    need.sort();
+    need.dedup();
+    // the root's own writes: the whole state
+    if need.iter().any(Vec::is_empty) {
+        return kept_join(tx, tid, ak, at, now, strip);
+    }
+    touch::ensure(tx, tid, ak)?;
+    let mut b = Before { at, f: Fragment::default(), floor: None, seen: BTreeSet::new() };
+    for p in touch::candidates(tx.core, tid, ak, &need).range(..at).rev() {
+        if !b.add(tx, tid, ak, *p, now)? {
+            break;
+        }
+    }
+    strip(tx.core, &mut b.f);
+    // the composites above: struct fields and enum cases down from the root
+    let composite = |s: &osis_crdt::Seg| matches!(s, osis_crdt::Seg::Field(_) | osis_crdt::Seg::Case(_));
+    let above: BTreeSet<&[osis_crdt::Seg]> = need.iter().flat_map(|p| (0..p.len()).filter_map(|i| p.get(..i)).filter(|a| a.iter().all(composite))).collect();
+    for a in above {
+        match osis_crdt::present_at(&b.f, a) {
+            Some(true) => continue,
+            Some(false) => {}
+            None => return kept_join(tx, tid, ak, at, now, strip),
+        }
+        let k = (*tid, ak.clone());
+        let inside = (!a.is_empty()).then(|| touch::inside(tx.core, tid, ak, a));
+        let mut from = at;
+        loop {
+            // newest first, one at a time: the root's are every part of the aspect
+            let next = match &inside {
+                Some(s) => s.range(..from).next_back().copied(),
+                None => tx.core.ix.by_aspect.get(&k).and_then(|s| s.range(..from).next_back().copied()),
+            };
+            let Some(p) = next else { break };
+            from = p;
+            if b.seen.contains(&p.1) {
+                continue;
+            }
+            if !b.add(tx, tid, ak, p, now)? {
+                break;
+            }
+            strip(tx.core, &mut b.f);
+            if osis_crdt::present_at(&b.f, a) == Some(true) {
+                break;
+            }
+        }
+    }
+    Ok(b.f)
+}
+
+/// The join of every kept part of `(tid, ak)` ordered before `at`, newest first and down to the
+/// newest kept whole reset, stripped by `strip`.
+fn kept_join(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, at: (Ts, CommitId), now: u64, strip: Strip<'_>) -> Result<Fragment> {
+    let mut b = Before { at, f: Fragment::default(), floor: None, seen: BTreeSet::new() };
+    for p in parts_before(tx.core, tid, ak, at).into_iter().rev() {
+        if !b.add(tx, tid, ak, (p.0, p.1), now)? {
+            break;
+        }
+    }
+    strip(tx.core, &mut b.f);
+    Ok(b.f)
+}
+
+/// Debug builds: whether this undo is compared with the one from the whole join (`kept_all`):
+/// every one in this crate's tests, else the 1st, 2nd, 4th, ... on each thread.
+#[cfg(debug_assertions)]
+fn compared() -> bool {
+    thread_local! {
+        static N: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    }
+    let n = N.with(|n| {
+        n.set(n.get() + 1);
+        n.get()
+    });
+    cfg!(test) || n.is_power_of_two()
+}
+
+/// Debug builds: every kept part joined, past resets too: what `kept_before` stands for.
+#[cfg(debug_assertions)]
+fn kept_all(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, at: (Ts, CommitId), strip: Strip<'_>) -> Result<Fragment> {
+    let now = tx.now().0;
     let mut f = Fragment::default();
     for (_, c, ci) in parts_before(tx.core, tid, ak, at) {
         if kept(tx, &c, ci, tid, ak, now)?
@@ -95,6 +188,7 @@ fn kept_join(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, at: (Ts, CommitId), now: u64) 
             f.join(d.into_fragment());
         }
     }
+    strip(tx.core, &mut f);
     Ok(f)
 }
 
@@ -114,6 +208,14 @@ fn kept_join(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, at: (Ts, CommitId), now: u64) 
 /// alone, never by a body held but not kept.
 fn replaced_kept(tx: &mut Tx<'_>, h: &Header, id: &CommitId, a: &osis_commit::AspectEntry, now: u64) -> Result<bool> {
     let k = (a.tid, a.ak.clone());
+    // where this write's retention would keep what it replaced, a part not kept was replaced
+    // earlier, so only a part not fetched yet or forgotten counts: none, and nothing is walked
+    if keeps_now(tx.core, h, a, now) && tx.core.ix.forgotten.get(&k).is_none() {
+        touch::ensure(tx, &a.tid, &a.ak)?;
+        if !touch::missing_before(tx.core, &a.tid, &a.ak, (h.ts, *id)) {
+            return Ok(true);
+        }
+    }
     // the `ts` of the newest kept reset met: older parts are covered by it
     let mut floor: Option<Ts> = None;
     // the kept snapshots met
@@ -234,12 +336,20 @@ fn undo_writes(tx: &mut Tx<'_>, target: CommitId, actor: Tid, ts: Ts, confined: 
     let node = tx.core.writer()?;
     let made = made_by(&h, &m.valid);
     let writers: &[Tid] = if confined { &[node, actor] } else { &[node] };
-    // the parts it undoes, each with the state before it as kept history gives it
+    // the parts it undoes, each with the state before it as kept history gives it, without what
+    // the node holds value-less or what has expired by the undo's `ts`
+    let wall = ts.wall_ms().0;
     let mut parts = Vec::new();
     for (a, delta, source) in undone_parts(tx, &target, ts, writers)? {
-        let mut pre = kept_before(tx, &a.tid, &a.ak, (h.ts, target))?;
-        crate::apply::strip_valueless(tx.core, &a.tid, &a.ak, &mut pre);
-        parts.push((a, delta, source, pre));
+        let (tid, ak) = (a.tid, a.ak.clone());
+        let strip = move |core: &Core, f: &mut Fragment| {
+            crate::apply::strip_valueless(core, &tid, &ak, f);
+            f.strip(&|d| copied_expiry(core, &tid, &ak, d).is_some_and(|t| t <= wall));
+        };
+        let pre = kept_before(tx, &a.tid, &a.ak, (h.ts, target), &delta, &strip)?;
+        #[cfg(debug_assertions)]
+        let whole = if compared() { Some(crate::costs::paused(|| kept_all(tx, &a.tid, &a.ak, (h.ts, target), &strip))?) } else { None };
+        parts.push(Undoing { a, delta, source, pre, #[cfg(debug_assertions)] whole });
     }
     let [plain, expiring] = [tx.core.session.nonce, tx.core.expiring.nonce];
     let mut nonce = plain;
@@ -325,14 +435,27 @@ fn lists_only(tx: &mut Tx<'_>, h: &Header, target: &CommitId, ai: usize, made: &
     Ok(state.winners().iter().filter(|w| own.owns(&w.stamp.dot)).all(|w| listing(&w)))
 }
 
-/// The undo's deltas of `parts` (each undone delta with its writer's source and the state before
-/// it) and of the creations' undoing (`unmade`), stamped under session `nonce`, with the expiries
-/// of what they copy back.
-fn inverse(tx: &mut Tx<'_>, parts: &[(osis_commit::AspectEntry, Fragment, Source, Fragment)], mut unmade: BTreeMap<(Tid, Ak), Vec<PathOp>>, ts: Ts, nonce: [u8; osis_crdt::SESSION_NONCE_LEN]) -> Result<(Vec<Resolved>, Copies)> {
+/// A part an undo inverts: the undone delta with its writer's source, and the state before it
+/// where the undo reads it (`kept_before`).
+struct Undoing {
+    a: osis_commit::AspectEntry,
+    delta: Fragment,
+    source: Source,
+    pre: Fragment,
+    /// Debug builds, when `compared`: the whole join of kept history before it, which must give
+    /// the same undo.
+    #[cfg(debug_assertions)]
+    whole: Option<Fragment>,
+}
+
+/// The undo's deltas of `parts` and of the creations' undoing (`unmade`), stamped under session
+/// `nonce`, with the expiries of what they copy back.
+fn inverse(tx: &mut Tx<'_>, parts: &[Undoing], mut unmade: BTreeMap<(Tid, Ak), Vec<PathOp>>, ts: Ts, nonce: [u8; osis_crdt::SESSION_NONCE_LEN]) -> Result<(Vec<Resolved>, Copies)> {
     let own = Form::Session(nonce).own_source(tx.core.writer()?, CommitId([0; 32]));
     let mut deltas = Vec::new();
     let mut copies = Copies::new();
-    for (a, delta, source, pre) in parts {
+    for p in parts {
+        let Undoing { a, delta, source, pre, .. } = p;
         let undone = Undone { delta, source, range: CounterRange { lo: a.lo, hi: a.hi } };
         let schema = schema_of(tx.core, &a.ak);
         // the undo reads the current state along the delta's paths, or whole where the aspect was
@@ -356,6 +479,14 @@ fn inverse(tx: &mut Tx<'_>, parts: &[(osis_commit::AspectEntry, Fragment, Source
             let core = &*tx.core;
             let expiry = |d: &Dot| copied_expiry(core, &a.tid, &a.ak, d);
             let out = undo_expiring(w, &undone, state, pre.clone(), schema.as_deref(), &a.ak, ts.wall_ms().0, &expiry)?;
+            #[cfg(debug_assertions)]
+            if let Some(whole) = &p.whole {
+                let w = Writer::new(ts, own.clone(), lo).keyed_removals(osis_schema::core_types::is_role_class(a.ak.as_str()));
+                let all = crate::costs::paused(|| undo_expiring(w, &undone, state, whole.clone(), schema.as_deref(), &a.ak, ts.wall_ms().0, &expiry))?;
+                let enc = |o: &Option<(Fragment, CounterRange, Copies)>| o.as_ref().map(|(f, r, c)| (crate::engine::state::encode(f).ok(), r.lo, r.hi, c.clone()));
+                assert_eq!(enc(&out), enc(&all), "the undo from the state before at its positions differs from the whole join's");
+                assert_eq!(pre.present(), whole.present(), "the state before at its positions reads present otherwise");
+            }
             let pages = tx.core.pages.get(&(a.tid, a.ak.clone())).filter(|i| !i.whole());
             if whole || !out.as_ref().is_some_and(|x| pages.is_some() && x.0.has_position_reset() && crate::engine::pages::touch_of(&x.0, pages).is_none()) {
                 break out;
@@ -622,14 +753,18 @@ mod tests {
         p.engine.revert(&second).unwrap().unwrap();
     }
 
-    /// What one check of `shape`'s newest commit costs after `n` commits to a text field kept
-    /// past replacement (written whole: until a date; typing: for a while after replaced, the case that
-    /// judges each part against the state): right after a commit to the field (nothing about it known), as
-    /// `(commits read, whole states copied)`. The check agrees with the revert.
+    /// What one check of the newest commit costs on a text field after `n` commits to it, kept
+    /// past replacement (`whole`: each written whole, kept until a date; `typing`: one char each,
+    /// kept a day after replaced; `delete`: typing, then a delete of the first char, which writes
+    /// back replaced content; `map`: a map entry put each, the last two commits removing one each,
+    /// kept a day, so the first check dates the aspect's held writes, `bounds::held_writes`),
+    /// measured after a check of the commit before and the commit itself,
+    /// as an Undo button asks on each redraw: `(bodies read, whole states copied)`. The check
+    /// agrees with the revert.
     fn check_cost(shape: &str, n: usize) -> (u64, u64) {
         static TS: osis_schema::StaticSchema = osis_schema::StaticSchema::new("t.osis", "revision 1; purgeable_by(author, admin) aspect k:t.0: text;\n");
         let key: osis_schema::Aspect<Value> = osis_schema::Aspect::new("k:t.0", &TS);
-        let x = Ak::new("k:t.0").unwrap();
+        let x = Ak::new(if shape == "map" { "x:m.0" } else { "k:t.0" }).unwrap();
         let history = if shape == "whole" { osis_schema::History::Keep { until: Some(4_000_000_000_000), after: None } } else { osis_schema::History::Keep { until: None, after: Some(86_400_000) } };
         let keep = osis_schema::Retention { by: osis_schema::PurgeBy::Writer };
         let mut lp = LocalPeer::fresh(1, WallMs(1_700_000_000_000));
@@ -638,39 +773,61 @@ mod tests {
         let mut m = Mutation::new();
         m.set(t, &ct::RETENTION, &ct::RetentionSetting::of(x.clone(), history)).unwrap();
         lp.peers[0].commit(m).unwrap();
-        let (mut last, mut text) = (None, String::new());
-        for i in 0..n {
+        let mut text = String::new();
+        let write = |lp: &mut LocalPeer, i: usize, text: &mut String| {
             lp.advance(10);
-            text.push('a');
-            let op = if shape == "whole" { Op::Replace(Value::Str(text.clone())) } else { Op::Insert { at: i, items: vec![Value::Str("a".into())] } };
+            let op = match shape {
+                "whole" => {
+                    text.push('a');
+                    Op::Replace(Value::Str(text.clone()))
+                }
+                _ if shape == "delete" && i == n => {
+                    text.remove(0);
+                    Op::Delete { at: 0, len: 1 }
+                }
+                "map" if i + 1 >= n => Op::Remove(Value::Str((n - i).to_string())),
+                "map" => Op::Put(Value::Int(i as i64)),
+                _ => {
+                    text.push(char::from(b'a' + (i % 26) as u8));
+                    Op::Insert { at: i, items: vec![Value::Str(text[i..].into())] }
+                }
+            };
             let mut m = Mutation::new();
-            m.op(t, &key, PathOp { path: vec![], op }).unwrap().retention(t, &x, keep).unwrap();
-            last = lp.peers[0].commit(m).unwrap();
+            if shape == "map" {
+                let path = if i + 1 >= n { vec![] } else { vec![osis_crdt::PathSeg::Key(Value::Str(i.to_string()))] };
+                m.op(t, &x, PathOp { path, op }).unwrap().retention(t, &x, keep).unwrap();
+            } else {
+                m.op(t, &key, PathOp { path: vec![], op }).unwrap().retention(t, &x, keep).unwrap();
+            }
+            lp.peers[0].commit(m).unwrap().unwrap()
+        };
+        let mut last = None;
+        for i in 0..n {
+            last = Some(write(&mut lp, i, &mut text));
         }
-        let last = last.unwrap();
+        assert!(lp.peers[0].engine.check_revertible(&last.unwrap()).unwrap());
+        let before = lp.peers[0].engine.get(&t, &x).unwrap();
+        let last = write(&mut lp, n, &mut text);
         let e = &mut lp.peers[0].engine;
         crate::costs::take();
         assert!(e.check_revertible(&last).unwrap());
         let c = crate::costs::take();
         let count = |name: &str| c.iter().find(|x| x.0 == name).map_or(0, |x| x.2);
-        let cost = (count("commit read"), count("state copied whole"));
+        let cost = (count("part read"), count("state copied whole"));
         e.revert(&last).unwrap().unwrap();
-        text.pop();
-        assert_eq!(e.get(&t, &x).unwrap(), Some(Value::Str(text)));
+        assert_eq!(e.get(&t, &x).unwrap(), before);
         cost
     }
 
-    // The check never copies the state per part (quadratic in the history), a field written whole
-    // reads the same few commits however long its history, and typing reads each kept part
-    // a bounded number of times (issues/undo-target-cost.md: no index says which parts touch a
-    // position).
+    // An undo check reads the target and the few parts writing its positions: flat in the
+    // aspect's history, never a whole state copied per part.
     #[test]
     fn check_cost_scales() {
-        let [whole_small, whole_big] = [30, 120].map(|n| check_cost("whole", n));
-        assert_eq!(whole_small, whole_big, "written whole: the cost grows with the history");
-        let [typing_small, typing_big] = [30, 120].map(|n| check_cost("typing", n));
-        assert_eq!((typing_small.1, typing_big.1), (0, 0), "a whole state copied per part");
-        assert!(typing_big.0 <= 4 * typing_small.0 + 8, "typing: more than linear: {typing_small:?} {typing_big:?}");
+        for shape in ["whole", "typing", "delete", "map"] {
+            let [small, big] = [20, 200].map(|n| check_cost(shape, n));
+            assert_eq!(small, big, "{shape}: the cost grows with the history");
+            assert_eq!(small.1, 0, "{shape}: a whole state copied");
+        }
     }
 
     /// `f` is `Value::Map` of `(key, int)` pairs on aspect `x`.

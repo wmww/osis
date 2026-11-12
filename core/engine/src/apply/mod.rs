@@ -2229,6 +2229,8 @@ pub(crate) fn held_parts_at(tx: &mut Tx<'_>, id: &CommitId, keep: &dyn Fn(usize)
         };
         out.push((p.ai, (*d).clone()));
     }
+    // cost tests: bodies read, decoded or kept
+    crate::costs::count("part read", out.len() as u64);
     for ai in m.stripped.iter().copied().filter(|ai| keep(*ai)) {
         let Some(a) = m.header.aspects.get(ai) else { continue };
         let Some(l) = crate::retention::leftover::get(tx, &a.tid, &a.ak, id, ai)? else { return Err(Error::Corrupt("leftover missing")) };

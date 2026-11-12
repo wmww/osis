@@ -1098,6 +1098,8 @@ pub struct Core {
     /// While `Some` (a tick round's expiries): the rebuilds asked, one per aspect, run once
     /// when it ends (`apply::run_batched`).
     pub batched: Option<BTreeMap<(Tid, Ak), Batched>>,
+    /// Per aspect undo has checked, which held parts write each position (`undo::touch`).
+    pub(crate) touches: crate::undo::touch::Touches,
     /// What judging when bodies were replaced reads of an aspect's held bodies, per aspect
     /// (`retention::bounds::held_writes`, `memo`).
     pub(crate) held_writes: memo::Memo<(Tid, Ak), Arc<crate::retention::bounds::HeldWrites>>,
@@ -1299,6 +1301,7 @@ impl Core {
             destroyed_due: self.destroyed_due.clone(),
             destroyed_kept: self.destroyed_kept.clone(),
             batched: self.batched.clone(),
+            touches: self.touches.clone(),
             held_writes: self.held_writes.clone(),
             replaced_dates: self.replaced_dates.clone(),
             waiting_carries: self.waiting_carries.clone(),
@@ -1752,6 +1755,7 @@ impl Core {
             self.live_bodies.clear();
             self.bodies.clear();
             self.decoded.clear();
+            self.touches.clear();
             self.records_read.wrote_all();
             if self.memory_tx {
                 self.memory_generation += 1;
@@ -1853,6 +1857,7 @@ impl Core {
             live_bodies: _,
             bodies: _,
             decoded: _,
+            touches: _,
             generation: _,
             role_generation: _,
             memory_generation: _,
@@ -2089,6 +2094,7 @@ impl Core {
             destroyed_due: BTreeSet::new(),
             destroyed_kept: None,
             batched: None,
+            touches: Default::default(),
             held_writes: memo::Memo::new("held writes"),
             replaced_dates: memo::Memo::new("replaced at"),
             waiting_carries: memo::Memo::new("waiting snapshot: judged"),
@@ -2251,6 +2257,7 @@ impl Core {
         }
         self.note_none(&m);
         self.note_rotation(&m);
+        self.touches.note(&id, &m);
         self.ix.commits.insert(id, m);
     }
 
@@ -2260,6 +2267,7 @@ impl Core {
         self.note_rotation(&m);
         self.index_own(id, &m, false);
         self.note_none(&m);
+        self.touches.note(id, &m);
         Some(m)
     }
 

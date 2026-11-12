@@ -29,6 +29,7 @@ mod seq_span;
 mod seq_wire;
 mod stamp;
 mod stream;
+mod touch;
 mod state;
 mod undo;
 mod view;
@@ -77,6 +78,7 @@ pub use codec::{decoded_bound, decode_delta, decode_snapshot, encode_delta, enco
 pub use error::Error;
 pub use fragment::{BagKind, Bag, CaseWrite, Eid, Elem, Encoding, Entry, Key, Enum, Fragment, Map, Meta, RegWrite, Register, Set, Slots, Struct};
 pub use batch::Batch;
+pub use touch::{Pos, Seg, present_at, touches};
 pub use access::value_at;
 pub use ops::{Op, PathOp, PathSeg, Writer, create, diff, diff_values, remove, replace, reset_entries};
 pub use undo::{Undone, restores, undo};
