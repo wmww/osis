@@ -98,7 +98,7 @@ impl SyncEngine {
             return Ok(Fate::Wait);
         }
         // a Delete needs every commitment group signed (spec/sync.md §5)
-        Ok(match self.delete_for(at.keys, &at.l, id, e, true)? {
+        Ok(match self.delete_for(at.keys, &at.l, id, e)? {
             Some(item) => Fate::Delete(why, item),
             None => {
                 note.keyless = true;
@@ -525,7 +525,7 @@ impl SyncEngine {
                 if busy(self, &sent, &b) {
                     continue;
                 }
-                if let Some(item) = delete_item(keys, &l, b, None, &[], true) {
+                if let Some(item) = delete_item(keys, &l, b, None, &[]) {
                     sent.insert(b);
                     items.push(item);
                 }
@@ -553,7 +553,7 @@ impl SyncEngine {
                 }
             }
             for b in gone {
-                if let Some(item) = delete_item(keys, &l, b, None, &[], true) {
+                if let Some(item) = delete_item(keys, &l, b, None, &[]) {
                     sent.insert(b);
                     items.push(item);
                 }
@@ -858,7 +858,7 @@ impl SyncEngine {
     /// and the entry's blind bound to its thing, which the host checks against the prefix.
     fn chunk_delete(&mut self, conn: ConnId, keys: &HeadKeys, l: &LabelId, id: &BlobId, (c, ch, borne): &(CommitId, osis_commit::ChunkEntry, bool), out: &mut Vec<crate::sync::Action>) -> Result<Option<osis_label::DeleteItem>> {
         if keys.delete.is_some() && *borne {
-            return Ok(delete_item(keys, l, *id, None, &[], true));
+            return Ok(delete_item(keys, l, *id, None, &[]));
         }
         self.keep_salts(id, None)?;
         let Some(salt) = self.state.entries.get(&(*l, *id)).and_then(|e| e.salt) else {
@@ -872,14 +872,14 @@ impl SyncEngine {
         let Some(a) = h.aspects.get(ch.ai) else { return Ok(None) };
         let blind = osis_crypto::thing_blind(&ch.blind, a.tid.as_bytes());
         let dks = vec![self.engine.chunk_delete_secrets(&h, ch)];
-        Ok(delete_item_by_level(keys, l, *id, (&salt, &blind), &dks, true))
+        Ok(delete_item_by_level(keys, l, *id, (&salt, &blind), &dks))
     }
 
     /// A delete item for an entry: the label delete key, else delete keys this node holds, one
-    /// per commitment group of the blob (`every`: a Delete) or of any group (a Replace).
-    fn delete_for(&mut self, keys: &HeadKeys, l: &LabelId, id: &BlobId, e: &Entry, every: bool) -> Result<Option<osis_label::DeleteItem>> {
+    /// per commitment group of the blob.
+    fn delete_for(&mut self, keys: &HeadKeys, l: &LabelId, id: &BlobId, e: &Entry) -> Result<Option<osis_label::DeleteItem>> {
         if keys.delete.is_some() {
-            return Ok(delete_item(keys, l, *id, None, &[], true));
+            return Ok(delete_item(keys, l, *id, None, &[]));
         }
         let (Kind::Commit { commit, ais, .. }, Some(salt)) = (&e.kind, e.salt) else { return Ok(None) };
         // a forgotten memory commit's keys are in the header kept for it
@@ -887,7 +887,7 @@ impl SyncEngine {
             Some(f) => (self.engine.delete_secrets_by_group(&f.header, ais), Some(f.header.blind)),
             None => (self.engine.delete_secrets_of(commit, ais), self.engine.header(commit).map(|h| h.blind)),
         };
-        Ok(delete_item(keys, l, *id, hb.as_ref().map(|hb| (&salt, hb)), &dks, every))
+        Ok(delete_item(keys, l, *id, hb.as_ref().map(|hb| (&salt, hb)), &dks))
     }
 }
 

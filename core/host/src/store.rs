@@ -561,8 +561,8 @@ const ENTRY_OVERHEAD: u64 = 896;
 const TOMB_OVERHEAD: u64 = 160;
 
 /// How long a deleted ephemeral entry stays refused (its tombstone, in memory). Minor
-/// consequence: past it a holder that missed the deletion may upload the entry again, and the
-/// next writer that finds it covered deletes it again; 0: such re-uploads at once; infinity
+/// consequence: past it a holder that missed the deletion may bring the entry back, and the
+/// next writer that finds it covered deletes it again; 0: it comes back at once; infinity
 /// (the durable `TOMBSTONE_LIFETIME`, 30 days): memory grows with every ephemeral delete.
 const EPH_TOMBSTONE_MS: u64 = MAX_DRIFT_MS;
 

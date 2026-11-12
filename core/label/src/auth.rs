@@ -164,7 +164,7 @@ pub fn verify_deposit(head_deposit: &VerifyingKey, label: &LabelId, blob: &BlobI
     head_deposit.verify(Domain::Deposit, &d, sig).or_else(|_| head_deposit.verify(Domain::RoleEntry, &d, sig)).map_err(|_| Error::Verify("deposit"))
 }
 
-/// The signing domain of an entry's stamp or deposit signature (`plain`: `Upload` or
+/// The signing domain of an entry's stamp or deposit signature (`plain`: `Stamp` or
 /// `Deposit`): `RoleEntry` for one deletes are judged by.
 pub fn entry_domain(plain: Domain, role: bool) -> Domain {
     if role { Domain::RoleEntry } else { plain }
@@ -231,9 +231,9 @@ impl DeleteItem {
 
     /// Host check against its head and the entry's blob prefix (none: unknown framing, no
     /// commitments): without levels the delete key; with them, each delete-key signature under
-    /// a group's commitment at its level, every group covered by one (`every`: a Delete) or at
-    /// least one group (a Replace), and the label key the levels need (spec/sync.md §5).
-    pub fn verify(&self, head: &Step, prefix: Option<&Prefix>, every: bool) -> Result<(), Error> {
+    /// a group's commitment at its level, every group covered by one, and the label key the
+    /// levels need (spec/sync.md §5).
+    pub fn verify(&self, head: &Step, prefix: Option<&Prefix>) -> Result<(), Error> {
         let levels = self.levels();
         let d = delete_digest(&head.label, &self.blob, &levels)?;
         let role = key_for_levels(&levels)?;
@@ -256,7 +256,7 @@ impl DeleteItem {
                     return Err(Error::Verify("delete-key signature"));
                 }
             }
-            if every && !covered.iter().all(|c| *c) {
+            if !covered.iter().all(|c| *c) {
                 return Err(Error::Verify("a commitment group without a signature"));
             }
             if covered.is_empty() {
@@ -439,45 +439,43 @@ mod tests {
         let prefix = Prefix::for_keys(salt, &hb, None, &[(2, d2.verifying_key()), (3, d3.verifying_key())]).unwrap();
         let b = BlobId([9; 32]);
         let by = |key: &SigningSecret, dks: &[(Level, &DeleteSecret)], salt: &[u8; 16], hb: &[u8; 16]| DeleteItem::sign_by(key, dks, salt, hb, &l, b).unwrap();
-        DeleteItem::sign(&g.delete(0), &l, b).unwrap().verify(&s0, None, true).unwrap();
-        by(&sync, &[(2, &d2)], &salt, &hb).verify(&s0, Some(&prefix), true).unwrap();
-        by(&write, &[(3, &d3)], &salt, &hb).verify(&s0, Some(&prefix), true).unwrap();
+        DeleteItem::sign(&g.delete(0), &l, b).unwrap().verify(&s0, None).unwrap();
+        by(&sync, &[(2, &d2)], &salt, &hb).verify(&s0, Some(&prefix)).unwrap();
+        by(&write, &[(3, &d3)], &salt, &hb).verify(&s0, Some(&prefix)).unwrap();
         // level 3 needs the write key, level 2 the sync key; both levels at once the write key
-        assert!(by(&sync, &[(3, &d3)], &salt, &hb).verify(&s0, Some(&prefix), true).is_err());
-        assert!(by(&write, &[(2, &d2)], &salt, &hb).verify(&s0, Some(&prefix), true).is_err());
-        by(&write, &[(2, &d2), (3, &d3)], &salt, &hb).verify(&s0, Some(&prefix), true).unwrap();
-        assert!(by(&sync, &[(2, &d2), (3, &d3)], &salt, &hb).verify(&s0, Some(&prefix), true).is_err());
+        assert!(by(&sync, &[(3, &d3)], &salt, &hb).verify(&s0, Some(&prefix)).is_err());
+        assert!(by(&write, &[(2, &d2)], &salt, &hb).verify(&s0, Some(&prefix)).is_err());
+        by(&write, &[(2, &d2), (3, &d3)], &salt, &hb).verify(&s0, Some(&prefix)).unwrap();
+        assert!(by(&sync, &[(2, &d2), (3, &d3)], &salt, &hb).verify(&s0, Some(&prefix)).is_err());
         // a key at another level, a forged key, another salt, no prefix
-        assert!(by(&sync, &[(2, &d3)], &salt, &hb).verify(&s0, Some(&prefix), true).is_err());
-        assert!(by(&sync, &[(1, &d2)], &salt, &hb).verify(&s0, Some(&prefix), true).is_err());
+        assert!(by(&sync, &[(2, &d3)], &salt, &hb).verify(&s0, Some(&prefix)).is_err());
+        assert!(by(&sync, &[(1, &d2)], &salt, &hb).verify(&s0, Some(&prefix)).is_err());
         let forged = DeleteSecret::derive(&Secret32::from_bytes([3; 32]));
-        assert!(by(&sync, &[(2, &forged)], &salt, &hb).verify(&s0, Some(&prefix), true).is_err());
-        assert!(by(&sync, &[(2, &d2)], &[6; 16], &hb).verify(&s0, Some(&prefix), true).is_err());
-        assert!(by(&sync, &[(2, &d2)], &salt, &[9; 16]).verify(&s0, Some(&prefix), true).is_err(), "another header's blind");
-        assert!(by(&sync, &[(2, &d2)], &salt, &hb).verify(&s0, None, true).is_err());
+        assert!(by(&sync, &[(2, &forged)], &salt, &hb).verify(&s0, Some(&prefix)).is_err());
+        assert!(by(&sync, &[(2, &d2)], &[6; 16], &hb).verify(&s0, Some(&prefix)).is_err());
+        assert!(by(&sync, &[(2, &d2)], &salt, &[9; 16]).verify(&s0, Some(&prefix)).is_err(), "another header's blind");
+        assert!(by(&sync, &[(2, &d2)], &salt, &hb).verify(&s0, None).is_err());
         // a signature that verifies under no group, beside one that does, refuses the item
         let mut extra = by(&sync, &[(2, &d2)], &salt, &hb);
         extra.by.push((3, forged.sign(&salt, &hb, &[0; 32])));
-        assert!(extra.verify(&s0, Some(&prefix), true).is_err());
+        assert!(extra.verify(&s0, Some(&prefix)).is_err());
         // the label-key signature binds the levels: moved to level 3 it fails
         let mut moved = by(&sync, &[(2, &d2)], &salt, &hb);
         moved.by = moved.by.iter().map(|(_, s)| (3, *s)).collect();
-        assert!(moved.verify(&s0, Some(&prefix), true).is_err());
-        assert!(DeleteItem::sign(&sync, &l, b).unwrap().verify(&s0, None, true).is_err());
-        // groups (spec/sync.md §5): a Delete needs a signature under every group, a Replace one
-        // under any; an empty group blocks a Delete by level; the author key shared by both
+        assert!(moved.verify(&s0, Some(&prefix)).is_err());
+        assert!(DeleteItem::sign(&sync, &l, b).unwrap().verify(&s0, None).is_err());
+        // groups (spec/sync.md §5): a Delete needs a signature under every group; an empty group
+        // blocks a Delete by level; no group refuses one; the author key shared by both
         // groups covers both with one signature
         let d1 = DeleteSecret::derive(&Secret32::from_bytes([4; 32]));
         let two = Prefix::for_groups(salt, &hb, None, &[vec![(2, d2.verifying_key()), (3, d3.verifying_key())], vec![(1, d1.verifying_key()), (2, d2.verifying_key())]]).unwrap();
-        assert!(by(&write, &[(3, &d3)], &salt, &hb).verify(&s0, Some(&two), true).is_err());
-        by(&write, &[(3, &d3)], &salt, &hb).verify(&s0, Some(&two), false).unwrap();
-        by(&write, &[(1, &d1), (3, &d3)], &salt, &hb).verify(&s0, Some(&two), true).unwrap();
-        by(&sync, &[(2, &d2)], &salt, &hb).verify(&s0, Some(&two), true).unwrap();
+        assert!(by(&write, &[(3, &d3)], &salt, &hb).verify(&s0, Some(&two)).is_err());
+        by(&write, &[(1, &d1), (3, &d3)], &salt, &hb).verify(&s0, Some(&two)).unwrap();
+        by(&sync, &[(2, &d2)], &salt, &hb).verify(&s0, Some(&two)).unwrap();
         let nobody = Prefix::for_groups(salt, &hb, None, &[vec![(2, d2.verifying_key())], vec![]]).unwrap();
-        assert!(by(&sync, &[(2, &d2)], &salt, &hb).verify(&s0, Some(&nobody), true).is_err());
-        by(&sync, &[(2, &d2)], &salt, &hb).verify(&s0, Some(&nobody), false).unwrap();
+        assert!(by(&sync, &[(2, &d2)], &salt, &hb).verify(&s0, Some(&nobody)).is_err());
         let none = Prefix::new(salt, None, vec![]).unwrap();
-        assert!(by(&sync, &[(2, &d2)], &salt, &hb).verify(&s0, Some(&none), false).is_err());
+        assert!(by(&sync, &[(2, &d2)], &salt, &hb).verify(&s0, Some(&none)).is_err());
         let item = by(&sync, &[(2, &d2)], &salt, &hb);
         assert_eq!(DeleteItem::from_value(&item.to_value().unwrap()).unwrap(), item);
         let mut v = item.to_value().unwrap();

@@ -344,8 +344,7 @@ fn a_key_actors_static_entry_opens_an_unread_label_with_its_grant_spec_sync_10()
 }
 
 // spec/sync.md §10 (Stream: a node that cannot read L pulls it from every reader that opened it
-// there): a write reaches the peer that cannot read its group by the peer's pull alone (no
-// Upload is sent), and a second reader reads it through that peer with the writer offline.
+// there): a write reaches the peer that cannot read its group by the peer's pull alone, and a second reader reads it through that peer with the writer offline.
 #[test]
 fn a_write_reaches_a_peer_that_cannot_read_by_its_pull_spec_sync_10() {
     let (mut net, host, [a, b], g, []) = hosted::<2, 0>(&[(1, Role::Read)], [], true);

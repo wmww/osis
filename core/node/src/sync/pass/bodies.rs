@@ -139,8 +139,8 @@ impl SyncEngine {
 
     /// Whether only a blob of commit `c` can carry its part on aspect `ai` under the label (spec/sync.md §6):
     /// kept (`part_kept`) or holding a live write, and no snapshot under the label (`snaps`)
-    /// covers it. A blob missing such a part (a junk Replace's victim, a rewrite that dropped it)
-    /// is healed by an upload.
+    /// covers it. A blob missing such a part (a rewrite that dropped it) is healed by placing
+    /// the commit's blob again.
     /// Invariant: what one honest node deletes at a host no other's `must_carry` puts back.
     /// When a body was replaced is judged from the bodies each node holds (spec/commits.md §5), so
     /// a right holder may drop a covered body as past keep-at-least while a holder of other bodies

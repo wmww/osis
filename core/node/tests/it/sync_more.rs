@@ -1,6 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
-//! Certificates, suspect reports, pages and lazy chunks, reconciliation, inbox blobs through a
-//! host (spec/sync.md §3, §6; spec/permissions.md §4).
+//! Certificates, suspect reports, pages and lazy chunks, the deletion horizon, inbox blobs
+//! through a host (spec/sync.md §3, §6; spec/permissions.md §4).
 
 use crate::net::{hosted, hosted_nodes};
 use crate::net;
@@ -227,6 +227,8 @@ fn stale_entry_after_away(age: bool, wipe: bool, restart: bool) -> (bool, bool) 
     if age {
         net.advance(osis_base::format::TOMBSTONE_LIFETIME_MS);
         net.run();
+        let horizon = net.hosts[host].hub.store().node_log(|t| t.log_horizon()).unwrap();
+        assert!(horizon > 0, "the peer's sweep dropped the deletions");
     }
     if wipe {
         net.set_online(a, false);

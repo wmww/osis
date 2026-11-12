@@ -190,17 +190,17 @@ pub trait LabelStore {
     fn blob_prefix(&self, blob_id: &BlobId) -> Result<Option<Vec<u8>>, StoreError> {
         Ok(self.blob(blob_id)?.map(|b| osis_label::prefix_bytes(&b).to_vec()))
     }
-    /// Adds an entry; a stamped upload replaces a deposited entry's wrap and stamp, clearing its
+    /// Adds an entry; a stamped one replaces a deposited entry's wrap and stamp, clearing its
     /// flag. Anything else of a held blob changes nothing.
     /// Invariant (spec/sync.md §5): a stamped entry's wrap and stamp never change while it lives,
-    /// so no writer can take from readers a wrap they could open: only a first upload can place a
-    /// useless one, and nodes knowing the key place a fresh encryption past it.
+    /// so no writer can take from readers a wrap they could open: only the first stamped entry can
+    /// place a useless one, and nodes knowing the key place a fresh encryption past it.
     fn put(&mut self, label: &LabelId, put: Put<'_>) -> Result<Code, StoreError>;
     /// Removes an entry, leaving a tombstone (or refuses, e.g. code 4).
     fn delete(&mut self, label: &LabelId, blob_id: &BlobId, now: u64) -> Result<Code, StoreError>;
     /// IDs of the live entries, sorted.
     fn live_ids(&self, label: &LabelId) -> Result<Vec<BlobId>, StoreError>;
-    /// Admits a stamped relay-only upload (spec/sync.md §5; `RelayGate::admit`).
+    /// Admits a stamped relay-only entry (spec/sync.md §5; `RelayGate::admit`).
     fn relay(&mut self, label: &LabelId, blob_id: &BlobId, size: usize, expiry: Option<u64>, now: u64) -> Result<crate::RelayVerdict, StoreError>;
 }
 
@@ -231,9 +231,9 @@ impl LabelState {
 pub struct MemoryLabelStore {
     labels: BTreeMap<LabelId, LabelState>,
     blobs: HashMap<BlobId, (Vec<u8>, usize)>,
-    /// Entries per label beyond which uploads get code 12.
+    /// Entries per label beyond which puts get code 12.
     pub entry_cap: Option<usize>,
-    /// Ephemeral entry bytes per label beyond which ephemeral uploads get code 12.
+    /// Ephemeral entry bytes per label beyond which ephemeral puts get code 12.
     pub ephemeral_cap: Option<u64>,
     /// `blob` calls so far (cost tests).
     pub blob_reads: std::cell::Cell<u64>,

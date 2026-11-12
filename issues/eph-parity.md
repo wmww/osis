@@ -1,5 +1,5 @@
 # Ephemeral data: differences from durable still to remove
-> Summary: Places where ephemeral data still differs from durable without following from "held in memory" (notes/ephemeral.md Principle): a delete's ephemeral state stays at other holders, host presence is relearned per connection, and an extra guard on deleting bodies outside the closure. Each has a plan below.
+> Summary: Places where ephemeral data still differs from durable without following from "held in memory" (notes/ephemeral.md Principle): a delete's ephemeral state stays at other holders, presence at a peer that cannot read is relearned per connection, and an extra guard on deleting bodies outside the closure. Each has a plan below.
 > Priority: normal
 > Tags: ephemeral, engine, sync, tess-call
 
@@ -13,9 +13,9 @@
 - Tests: after a delete, every holder reads no ephemeral state of T, its own writes included; a thing removed from its only group and added back reads its ephemeral state again from the holders and hosts that kept it; a restarted node's partial closure drops nothing.
 
 ## Presence at a host
-- Today (spec/sync.md §9 Held at a host, `MemorySync::memory_gained`): a node relearns which memory entries a host holds on every connection, listing them as `gained` in its first Sync. Past `MAX_GAINED` entries per label it lists none and uploads every held body again, on every reconnect.
-- Only a host restart loses its entries; a reconnect to the same running host does not. And past the message bound durable falls back to range reconciliation (spec/sync.md §6), not to uploading everything.
-- Plan: relearn presence only when the host restarted (a cursor from another host run is invalid, as durable after a trimmed log), and past `MAX_GAINED` use durable's range reconciliation.
+- Today (spec/sync.md §9 Held at a peer that cannot read L, §10 Stream): a node relearns which memory entries such a peer holds on every connection, from each join's listing of its live ephemeral entries.
+- Only a peer restart loses them; a reconnect to the same running peer does not.
+- Plan: list them again only after the peer restarted.
 
 ## Unplaced bodies
 - Today (`State::memory_in_closure`, spec/sync.md §9 As durable bodies): a node deletes a memory body outside the closure only if it judged or placed it inside since it started. Durable deletes once it holds the body and its view is settled.

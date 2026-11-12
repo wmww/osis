@@ -313,7 +313,7 @@ fn mesh_bodies_of_many_labels_fetched_at_once_spec_sync_6() {
     }
 }
 
-// spec/wire.md §11.3 (Fetch: possibly none below `REPLY_BUDGET`), spec/sync.md §10 (Bodies: the
+// spec/wire.md §11.2 (Fetch: possibly none below `REPLY_BUDGET`), spec/sync.md §10 (Bodies: the
 // next source when one fails): a source answering every stream Fetch with nothing is asked
 // once more under `REPLY_BUDGET`, then failed, so the body comes from another source rather
 // than being asked of it without end

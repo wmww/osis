@@ -47,9 +47,10 @@ fn reader_relays_spec_sync_6() {
     assert_eq!(net.read(c, t), Some(s("relayed")), "the reader carried the writer's entries to the second host");
 }
 
-// spec/sync.md §8: a subscribed node gets new log events pushed without asking.
+// spec/sync.md §8, §10 (Stream, `follow`): a node pulling a peer's stream gets new log events
+// pushed without asking.
 #[test]
-fn subscription_push_spec_sync_8() {
+fn new_events_are_pushed_spec_sync_8() {
     let (mut net, _host, [a, b], _g, [t]) = hosted::<2, 1>(&[(1, Role::Write)], ["one"], true);
     assert_eq!(net.read(b, t), Some(s("one")));
     net.write(a, t, "two");

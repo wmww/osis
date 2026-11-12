@@ -306,6 +306,37 @@ fn bad_frames() {
     assert!(so.contains(&ServingOutput::Close));
 }
 
+// spec/wire.md §11.2 (retired kinds): a request of a retired kind in its old layout (an Upload
+// of a stamped entry, a Deposit, a Sync from no cursor, a Subscribe) on an opened label is
+// answered Error 11 and changes nothing: no entry, no event, no push
+#[test]
+fn retired_kinds_change_nothing_spec_wire_11_2() {
+    let mut net = Net::new(1, 0);
+    let l = Label::new(3);
+    net.setup(&l);
+    net.open(0, &l);
+    let b = blob(40);
+    let e = l.entry(b.clone());
+    let id = Value::bytes(&l.id.0);
+    let entry = Value::List(vec![Value::bytes(&b), Value::bytes(&e.wrap), Value::bytes(&e.stamp.0)]);
+    let dep = l.deposit(b.clone(), &l.head_keys().deposit.clone());
+    let osis_proto::msg::OfferItem::Deposit { wrap, sig, .. } = dep else { panic!("a deposit") };
+    let reqs = [
+        vec![Value::Int(10), Value::Int(5), id.clone(), Value::List(vec![entry.clone()])],
+        vec![Value::Int(12), Value::Int(6), id.clone(), Value::bytes(&b), Value::bytes(&wrap), Value::bytes(&sig.0)],
+        vec![Value::Int(15), Value::Int(7), id.clone(), Value::opt(None), Value::Int(0), Value::Int(SMALL_REPLY as i64), Value::List(vec![entry]), Value::List(vec![])],
+        vec![Value::Int(21), Value::Int(8), Value::List(vec![id])],
+    ];
+    let bytes: Vec<u8> = reqs.into_iter().flat_map(|r| encode_frame(&cbor::encode(&Value::List(r)))).collect();
+    let so = net.hosts[0].handle(T0, &mut net.store, ServingInput::Bytes(bytes));
+    let sent: Vec<Message> = so.iter().filter_map(|o| if let ServingOutput::Send(f) = o { Message::decode(&f[4..]).ok() } else { None }).collect();
+    assert_eq!(sent, (5..=8).map(|id| Message::Error { id, code: Code::UNSUPPORTED }).collect::<Vec<_>>());
+    assert!(so.iter().all(|o| matches!(o, ServingOutput::Send(_) | ServingOutput::PeerError(_))), "{so:?}");
+    assert_eq!(net.store.live_ids(&l.id).unwrap(), vec![]);
+    assert!(net.store.blob(&osis_label::blob_id(&b)).unwrap().is_none());
+    assert!(!net.hosts[0].is_closed());
+}
+
 /// The frames a session sent in `out`, decoded.
 fn sent_msgs<'a>(out: impl IntoIterator<Item = &'a ClientOutput>) -> Vec<Message> {
     out.into_iter().filter_map(|o| if let ClientOutput::Send(f) = o { Message::decode(&f[4..]).ok() } else { None }).collect()

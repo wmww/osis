@@ -89,11 +89,12 @@ fn evil(name: &str, s: Seeds, e: Evil) -> Res<Report> {
 }
 
 /// A removed holder replays what it kept (spec/sync.md §2, §5; spec/permissions.md §5): it keeps
-/// the label's old keys and step. After its removal (and a purge it saw) it opens with its old
-/// sync key and registers its old step by hand, then comes back with a commit it wrote offline
-/// after the removal. Expected: the stale step is refused, no honest node reads the post-removal
-/// write, honest nodes converge; colluding with the host, M's secrets open no body made after its
-/// removal.
+/// the label's old keys, step and entries. After its removal (and a purge it saw) it opens with
+/// its old sync key and registers its old step by hand, serves the host the entries it kept (the
+/// purged one included), then comes back with a commit it wrote offline after the removal.
+/// Expected: the stale step and the purged blob are refused, no honest node reads the
+/// post-removal write, honest nodes converge; colluding with the host, M's secrets open no body
+/// made after its removal.
 pub fn removed_replayer(s: Seeds) -> Res<Report> {
     let (mut sim, (s, a, b, m, pm, g, t, gone)) = setup("removed_replayer", s, NetWeights::default(), |sim| {
         let mut d = Dice::new(sim.seed ^ 0x4e);
@@ -112,8 +113,20 @@ pub fn removed_replayer(s: Seeds) -> Res<Report> {
     })?;
     sim.run(40)?;
     sim.quiet(40)?;
-    // what M keeps: the keys at the current head
+    // what M keeps: the keys at the current head, every live stamped entry
     let old = sim.label_keys(m, s, &g)?;
+    let kept: Vec<Stamped> = {
+        let hub = sim.hub(s).ok_or_else(|| sim.fail("host down"))?;
+        let st = hub.store();
+        let mut v = Vec::new();
+        for id in st.live_ids(&old.label).unwrap_or_default() {
+            let (Some(e), Some(blob)) = (st.entry(&old.label, &id).ok().flatten(), st.blob(&id).ok().flatten()) else { continue };
+            if let Some(stamp) = e.stamp {
+                v.push(Stamped { id, blob, wrap: e.wrap, stamp });
+            }
+        }
+        v
+    };
     // a purge M saw, then its removal while it is offline; it writes on
     purge(&mut sim, a, gone, t)?;
     sim.quiet(40)?;
@@ -136,6 +149,21 @@ pub fn removed_replayer(s: Seeds) -> Res<Report> {
         return Err(sim.fail(format!("the host accepted a stale step from the removed holder: {stale:?}; open {opened:?}")));
     }
     sim.rogue_close(&mut r);
+    // M serves the host what it kept, the purged blob included: the host's pull takes none of
+    // the purged one (its stamp under a superseded write key, its tombstone)
+    let purged_ids: Vec<BlobId> = sim.known.iter().filter(|(_, (c, _))| *c == gone).map(|(k, _)| k.1).collect();
+    if !kept.iter().any(|e| purged_ids.contains(&e.id)) {
+        return Err(sim.fail("M kept no entry of the purged commit"));
+    }
+    let mut codes = Vec::new();
+    for e in &kept {
+        codes.push(sim.host_put(s, old.label, e)?);
+    }
+    let hub = sim.hub(s).ok_or_else(|| sim.fail("host down"))?;
+    let live = hub.store().live_ids(&old.label).unwrap_or_default();
+    if let Some(id) = purged_ids.iter().find(|id| live.contains(id)) {
+        return Err(sim.fail(format!("the replay brought back the purged blob {id:?}: {codes:?}")));
+    }
     sim.unsever(Party::N(m), Party::S(s));
     run_noting(&mut sim, 60, [a, b], g, pm, &mut knew)?;
     sim.run_until_quiescent(40)?;
@@ -270,6 +298,63 @@ pub fn malformed_blobs(s: Seeds) -> Res<Report> {
     for n in [a, b, m] {
         if !tags(&mut sim, n, t)?.contains("real") {
             return Err(sim.fail(format!("node {n} lost the real write")));
+        }
+    }
+    sim.finish()
+}
+
+/// A flooding depositor (spec/sync.md §5, deposit budget; notes/serving.md, host policy): a reader
+/// holding the deposit key deposits hundreds of fresh encryptions of a body of the label at a host
+/// that cannot read it, as Deposit items its node sync takes (`host_deposit`). Expected: bounded:
+/// the host takes at most the label's deposit budget and refuses the rest; honest nodes delete the
+/// duplicates, keep writing and converge.
+pub fn deposit_flood(s: Seeds) -> Res<Report> {
+    let (mut sim, (s, a, b, f, g, t)) = setup("deposit_flood", s, NetWeights::default(), |sim| {
+        let mut d = Dice::new(sim.seed ^ 0xf1);
+        let s = sim.add_host()?;
+        let a = sim.add_node(&[s], clock(&mut d))?;
+        let b = sim.add_node(&[s], clock(&mut d))?;
+        let f = sim.add_node(&[s], clock(&mut d))?;
+        let [pa, pb, pf] = persons(sim, [a, b, f], [s, s, s])?;
+        let g = shared_group(sim, a, pa, &[s], &[(pb, Role::Write), (pf, Role::Read)])?;
+        let t = sim.item(a, g)?;
+        sim.reconnect_all();
+        sim.quiet(40)?;
+        Ok((s, a, b, f, g, t))
+    })?;
+    let k = sim.label_keys(f, s, &g)?;
+    let dk = k.keys.deposit.clone().ok_or_else(|| sim.fail("the reader holds no deposit key"))?;
+    let read = k.read.clone().ok_or_else(|| sim.fail("the reader holds no read secret"))?;
+    // fresh encryptions of a body of the label (valid duplicates: junk is malformed_blobs')
+    let body = sim.engine(f)?.label_bodies(&g).map_err(|e| sim.fail(e.to_string()))?.into_iter().next().ok_or_else(|| sim.fail("no body"))?;
+    let mut rng = SeededRng::from_u64(sim.dice.u64());
+    let budget = sim.host_deposit_budget(s, k.label)?;
+    let (mut ok, mut refused) = (0u64, 0u64);
+    for i in 0..400u64 {
+        let sealed = sim.engine(f)?.seal(&body, osis_label::Class::Durable, &[], &mut rng).map_err(|e| sim.fail(e.to_string()))?.ok_or_else(|| sim.fail("no secret to seal under"))?;
+        let (id, blob) = (sealed.id, sealed.blob);
+        let wrap = osis_crypto::wrap(&read, &id, &sealed.key, 1).map_err(|e| sim.fail(e.to_string()))?;
+        let sig = osis_label::sign_deposit(&dk, &k.label, &id, &wrap, false);
+        if sim.host_deposit(s, k.label, &blob, wrap, &sig)? == Code::OK {
+            ok += 1;
+        } else {
+            refused += 1;
+        }
+        if i % 50 == 0 {
+            sim.advance(1_000)?;
+        }
+    }
+    sim.note(format!("deposit flood: {ok} taken, {refused} refused (budget {budget})"));
+    if ok == 0 || ok > budget || refused == 0 {
+        return Err(sim.fail(format!("deposit flood: {ok} taken, {refused} refused (budget {budget})")));
+    }
+    sim.excused.insert(f);
+    add_tag(&mut sim, b, t, "still")?;
+    sim.run(60)?;
+    sim.run_until_quiescent(40)?;
+    for n in [a, b] {
+        if !tags(&mut sim, n, t)?.contains("still") {
+            return Err(sim.fail(format!("node {n} does not read the honest write after the flood")));
         }
     }
     sim.finish()

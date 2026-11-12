@@ -117,11 +117,11 @@ fn stamped_wrap_never_replaced_spec_sync_5() {
         assert_eq!(fx.net.read(h, t), Some(s("message")));
         for id in entries_of(&mut fx.net, h, &l, t) {
             let before = stored_wrap(&fx.net, host, &l, &id);
-            let logged = fx.net.logged_at(host, &l);
+            let logged = fx.net.log_end(host);
             let w = bad_wrap(&mut fx.net, h, g, &id, wrong);
             hostile_put(&mut fx.net, h, host, (g, &l), id, w, WRITER);
             assert_eq!(stored_wrap(&fx.net, host, &l, &id), before);
-            assert_eq!(fx.net.logged_at(host, &l), logged, "nothing logged");
+            assert_eq!(fx.net.log_end(host), logged, "nothing logged");
         }
         fx.net.run();
         connect(&mut fx, &[host], 33);

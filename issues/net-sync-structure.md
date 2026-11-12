@@ -44,7 +44,7 @@ A label with no non-`peer://` host gets a **local pass** (`local_passes`, pass/m
 Unblocks: issues/net-one-peer.md step 3.
 
 ## (f) One serving implementation
-Every served connection is a session of osis-host's `Hub` (issues/net-one-peer.md 3d, built), node sync above it. Left: the `Hub` over the node-wide durable log (issues/net-reconnect.md); the `Replicator` goes (replication is sync with a peer). tools/policy.py's `host_blind` keeps the serving crate without keys (issues/net-one-peer.md step 5).
+Every served connection is a session of osis-host's `Hub` (issues/net-one-peer.md 3d, built), node sync above it. Left: the `Hub` over the node-wide durable log (issues/net-reconnect.md). tools/policy.py's `host_blind` keeps the serving crate without keys (issues/net-one-peer.md step 5).
 Unblocks: issues/net-one-peer.md steps 3-4; issues/net-reconnect.md (the durable log is the hub's).
 
 ## Bugs in the code these replace (low; fixed by the item named, not before)

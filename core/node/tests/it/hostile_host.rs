@@ -45,8 +45,8 @@ pub(crate) fn foreign_step(b: u8) -> osis_label::Step {
     register(Parent::Genesis(&delete), keys, &[], (&osis_base::Tid::from_bytes([b; 15]), Epoch::new(0, [0; 32]).unwrap(), &read), (Epoch::new(0, [0; 32]).unwrap(), &read), &mut SeededRng::from_u64(b as u64)).unwrap().0
 }
 
-// spec/wire.md §11.2 (Push: "the peer then sends Push" for subscribed labels only), spec/
-// requirements.md (peer input never causes unbounded storage): a Push for a label the node never
+// spec/wire.md §11.2 (Pull: a stream carries the members of the connection's shared set), spec/
+// requirements.md (peer input never causes unbounded storage): a Stream for a label the node never
 // opened on that connection stores no entry and no blob.
 #[test]
 fn unsolicited_push_stores_nothing_spec_wire_11_2() {
@@ -1037,7 +1037,7 @@ fn removed_writer_stale_label_key_refused_spec_sync_5() {
     for ((b, _), salt) in blobs.iter().zip(&salts) {
         let item = osis_label::DeleteItem::sign_by(&sync, &[(level, &dk)], salt, &hb, &l, *b).unwrap();
         let prefix = osis_label::Prefix::parse(&net.engine(w).blob(b).unwrap().unwrap()).unwrap();
-        item.verify(&old_head, Some(&prefix), true).unwrap();
+        item.verify(&old_head, Some(&prefix)).unwrap();
     }
     // the admin removes w with a rotation and steps the label
     let (at, wt) = (net.tid(a), net.tid(w));

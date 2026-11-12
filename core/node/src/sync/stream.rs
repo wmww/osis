@@ -1546,7 +1546,7 @@ impl SyncEngine {
 
     /// Fetches the bodies `ids` of member `l` from `conn`'s peer, but those asked for already
     /// (`may_ask`): one source at a time per blob, a second only once the first is slower than
-    /// the stall time. As any Fetch (spec/wire.md §11.3): `FIRST_REPLY` per ID, or
+    /// the stall time. As any Fetch (spec/wire.md §11.2): `FIRST_REPLY` per ID, or
     /// `REPLY_BUDGET` for the rest of an answered one (`again`: when that one was asked, which the
     /// rest keeps, so answering one body at a time does not hold the others longer).
     pub(crate) fn stream_fetch(&mut self, conn: ConnId, l: LabelId, ids: Vec<BlobId>, again: Option<u64>, out: &mut Vec<Action>) -> Result<()> {

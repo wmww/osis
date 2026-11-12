@@ -235,8 +235,8 @@ fn a_purge_frees_room_at_a_full_peer_spec_sync_7() {
     assert!(net.capped_bytes(host, &l) <= full, "within its cap");
 }
 
-// spec/permissions.md §3 (complete pass): a role commit pushed to a subscribed node ends
-// with a pass: `complete_pass` holds without another Sync.
+// spec/permissions.md §3 (complete pass): a role commit pushed on a followed stream ends
+// with a pass: `complete_pass` holds without another Pull.
 #[test]
 fn complete_pass_after_push_spec_permissions_3() {
     let (mut net, host, [a, b]) = hosted_nodes::<2>();

@@ -1814,6 +1814,12 @@ impl Net {
         self.hosts[s].hub.store().live_ids(l).unwrap()
     }
 
+    /// Peer `s`'s node log end: the position its last event took (an entry's earlier event is
+    /// replaced by its next, so only this shows that something was logged).
+    pub fn log_end(&self, s: usize) -> u64 {
+        self.hosts[s].hub.store().node_log(|t| t.log_end()).unwrap()
+    }
+
     /// What peer `s`'s node log holds of `l`, in log order: the entries it shows added and
     /// those it shows removed (deletes and expiries; an entry's earlier events compact away).
     pub fn logged_at(&self, s: usize, l: &osis_base::LabelId) -> (Vec<osis_base::BlobId>, Vec<osis_base::BlobId>) {

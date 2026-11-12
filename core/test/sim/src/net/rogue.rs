@@ -1,8 +1,8 @@
 //! Hand-driven client sessions (adversaries): an osis-proto `ClientSession` connected straight to
 //! a host's `Hub`, its requests and the replies exchanged synchronously, no faults. Whatever
 //! keys and steps the scenario builds go on the wire as they are: a removed holder's stale opens
-//! and steps, frames that are no message. Entries a hostile writer would serve the host go in
-//! the host's store by the store's rules (`host_put`).
+//! and steps, frames that are no message. Entries a hostile writer would serve the host are
+//! taken into the host's store as its pull takes them (`host_put`).
 
 use super::{End, NetSim, Party, Payload};
 use crate::harness::Res;
@@ -10,7 +10,7 @@ use osis_base::{BlobId, LabelId, Tid};
 use osis_crypto::Secret32;
 use osis_label::Step;
 use osis_node::labeling::HeadKeys;
-use osis_proto::{ClientConfig, ClientEvent, ClientInput, ClientOutput, ClientSession, Code, Command, LabelStore, Put};
+use osis_proto::{ClientConfig, ClientEvent, ClientInput, ClientOutput, ClientSession, Code, Command, LabelStore};
 use osis_host::HubOutput;
 use std::collections::VecDeque;
 
@@ -90,17 +90,56 @@ impl NetSim {
         Ok(r)
     }
 
-    /// A stamped entry of `label` in host `s`'s store as its pull from the writer would take it
-    /// (the store's rules); its node sync then serves it. The store's code.
+    /// A stamped entry of `label` taken into host `s`'s store as its pull from the writer takes
+    /// one (`serving::pulled`: the stamp checked under the head's keys, then the store's rules);
+    /// its node sync then serves it. The code (a relay-only blob passed on: OK).
     pub fn host_put(&mut self, s: usize, label: LabelId, e: &Stamped) -> Res<Code> {
         let now = self.now();
         let hub = self.hub(s).ok_or_else(|| self.fail(format!("host {s} is down")))?;
-        let put = Put { blob_id: e.id, blob: &e.blob, wrap: e.wrap, stamp: Some(e.stamp), expiry: None, ephemeral: false, now, role: false };
-        let code = hub.store().put(&label, put);
-        let code = code.map_err(|x| self.fail(format!("host {s} put: {x}")))?;
+        let taken = {
+            let mut st = hub.store();
+            match st.head_keys(&label) {
+                Ok(Some(k)) => osis_proto::serving::pulled(&mut *st, now, &label, &k, &e.blob, e.wrap, e.stamp, &mut false),
+                Ok(None) => Ok(osis_proto::serving::Taken::Code(Code::UNKNOWN_LABEL)),
+                Err(x) => Err(x),
+            }
+        };
+        let code = match taken.map_err(|x| self.fail(format!("host {s} put: {x}")))? {
+            osis_proto::serving::Taken::Code(c) => c,
+            osis_proto::serving::Taken::Relay(_) => Code::OK,
+        };
         self.note(format!("host {s} took {:?} by hand: {code:?}", e.id));
         self.host_feed(s, osis_node::sync::Event::Local)?;
         Ok(code)
+    }
+
+    /// A Deposit item of `label` taken at host `s` as its node sync takes one from a peer
+    /// (`serving::deposit`: the signature under the head's deposit key, then the store's budget,
+    /// rates and caps). The code.
+    pub fn host_deposit(&mut self, s: usize, label: LabelId, blob: &[u8], wrap: osis_proto::msg::Wrap, sig: &osis_crypto::Signature) -> Res<Code> {
+        let now = self.now();
+        let hub = self.hub(s).ok_or_else(|| self.fail(format!("host {s} is down")))?;
+        let taken = {
+            let mut st = hub.store();
+            match st.head_keys(&label) {
+                Ok(Some(k)) => osis_proto::serving::deposit(&mut *st, now, &label, &k, blob, wrap, sig, &mut false).map(|x| x.0),
+                Ok(None) => Ok(Code::UNKNOWN_LABEL),
+                Err(x) => Err(x),
+            }
+        };
+        let code = taken.map_err(|x| self.fail(format!("host {s} deposit: {x}")))?;
+        self.host_feed(s, osis_node::sync::Event::Local)?;
+        Ok(code)
+    }
+
+    /// The deposit budget of `label` at host `s` in entries (spec/sync.md §5: its policy's
+    /// factor over the head's claims).
+    pub fn host_deposit_budget(&mut self, s: usize, label: LabelId) -> Res<u64> {
+        let hub = self.hub(s).ok_or_else(|| self.fail(format!("host {s} is down")))?;
+        let st = hub.store();
+        let head = st.head(&label).ok().flatten().ok_or_else(|| self.fail("no head"))?;
+        let claims = st.claim_set(&label, &head).ok().flatten().map_or(0, |c| c.claims.len() as u64);
+        Ok(st.policy().deposit_factor.max(1) * (64 + 4 * claims))
     }
 
     /// Sends one command; returns the events it caused.

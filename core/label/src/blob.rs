@@ -52,7 +52,7 @@ impl Class {
 pub type Group = Vec<[u8; COMMITMENT_LEN]>;
 
 /// The clear prefix of a blob: salt, optional expiry, class, commitment groups. A Delete needs
-/// a delete-key signature per group, a Replace one from any group (spec/sync.md §5): an empty
+/// a delete-key signature per group (spec/sync.md §5): an empty
 /// group (a `nobody` delta's) blocks deletion by level.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Prefix {

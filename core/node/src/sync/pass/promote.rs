@@ -205,7 +205,7 @@ impl SyncEngine {
             if crate::sync::in_flight(c, &c.req.deleting, (l, id), now) {
                 continue;
             }
-            if let Some(item) = delete_item(keys, &l, id, None, &[], true) {
+            if let Some(item) = delete_item(keys, &l, id, None, &[]) {
                 c.req.deleting.insert((l, id), (now, crate::sync::UNTAGGED));
                 items.push(item);
             }
