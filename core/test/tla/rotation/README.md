@@ -119,6 +119,9 @@ notes/crypto.md (Frozen coverage). One actor, read role; first admin O and admin
 |---|---|---|---|---|
 | `C_drop` | `Attr = "lowering"`, audit shape, writers O and Q, `MaxE = 3` (at 4: 28,180 states, 150 s) | pass | 7,962 | 17 s |
 | `C_drop_any` | as C_drop, `Attr = "any"` (negative control) | **fails** `NoLeak` (O, holding K and D, rotates naming D and boxing L, whose demotion D's audit dropped; O then learns S, attributes it to D and writes under that epoch, which L holds) | 106 | 3 s |
+| `C_dup` | `Later`, `Dup`: admin Q removes L concurrently with S, in a commit carrying its rotation (S2 applies nothing where S is held); writers O and Q, `MaxE = 3`; `NoLeak`, `DupCovers` (Q's epoch covers L's departure wherever S and S2 are held) | pass | 49 | 2 s |
+| `C_dup_audit` | by hand: as C_dup with the audit-drop shape | pass | 72,144 | 289 s quiet, 672 s at load |
+| `C_dup_nolater` | as C_dup without `Later` (negative control) | **fails** `DupCovers` (only S attributed: Q's epoch covers nothing where S arrives, so every knowing rotator rotates again) | 11 | 1 s |
 | `C_leaver` | by hand: every forgery, writers O and P, `MaxE = 6` | pass | 100,782 | 23 min (3 workers, load 25-30) |
 
 ## Lockouts (`Lockout.tla`)

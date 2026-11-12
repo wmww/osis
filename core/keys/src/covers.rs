@@ -12,25 +12,40 @@ use osis_schema::core_types::Secrets;
 use std::collections::BTreeSet;
 
 /// A departure from an actor A (spec/crypto.md §4): `holder` left roles `from` up to `upto` of A.
-/// `at`: the name a rotation knowing it writes (the commit its timeline attributes it to); `None`
-/// when none does (a box holder the timeline never showed), so no epoch covers it.
+/// `at`: the name a rotation knowing it writes (its newest lowering, the commit its timeline
+/// attributes it to); `None` when none does (a box holder the timeline never showed), so no
+/// epoch covers it. `later`: the held edge writes on the holder's edge ordered after that
+/// lowering (each holds it below `from`), which cover it alike (spec/crypto.md §4, Attributes).
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Departure {
     pub holder: Tid,
     pub from: Role,
     pub upto: Role,
     pub at: Option<Name>,
+    pub later: Vec<Name>,
 }
 
 impl Departure {
     /// Holder `holder` of A removed or demoted below `from`; up to admin, no name yet.
     pub fn holder(holder: Tid, from: Role) -> Departure {
-        Departure { holder, from, upto: Role::Admin, at: None }
+        Departure { holder, from, upto: Role::Admin, at: None, later: Vec::new() }
     }
 
     /// The same departure attributed to `at`.
     pub fn at(self, at: Option<Name>) -> Departure {
         Departure { at, ..self }
+    }
+
+    /// The same departure also attributed to `later`, edge writes on its holder's edge ordered
+    /// after `at`.
+    pub fn later(self, later: Vec<Name>) -> Departure {
+        Departure { later, ..self }
+    }
+
+    /// The names it is attributed to (`at`, then `later`; none without `at`): a rotation naming
+    /// any of them covers it.
+    pub fn names(&self) -> impl Iterator<Item = &Name> {
+        self.at.iter().chain(self.at.iter().flat_map(|_| self.later.iter()))
     }
 
     /// The same departure concerning roles up to `upto` only.
@@ -61,11 +76,12 @@ impl Departure {
     }
 }
 
-/// Whether names `n` of an epoch of `actor` name `d` (spec/crypto.md §4): its name is among
-/// them, or it is a departure from `actor` made by the rotation commit itself (its departs
-/// mark, by the commit's `ts`, author and `blind`), that author holding `r` under `held`.
+/// Whether names `n` of an epoch of `actor` name `d` (spec/crypto.md §4): one of its names
+/// (`Departure::names`) is among them, or is a commit on `actor` that is the rotation commit
+/// itself (its departs mark, by the commit's `ts`, author and `blind`), that author holding `r`
+/// under `held`.
 pub fn named(n: &Names, actor: &Tid, r: Role, d: &Departure, held: &dyn Held) -> bool {
-    d.at.is_some_and(|at| n.list.contains(&at) || (at.thing == *actor && n.departs.is_some_and(|o| held.marks(&o, &at.key)) && held.holds(&at.key.node, r)))
+    d.names().any(|at| n.list.contains(at) || (at.thing == *actor && n.departs.is_some_and(|o| held.marks(&o, &at.key)) && held.holds(&at.key.node, r)))
 }
 
 /// The covers rule (spec/crypto.md §4): epoch `e` of role `r` of `actor` covers `d` when `d`
@@ -129,8 +145,8 @@ pub struct Maker {
 /// its merger, so concurrent rotations take one merge however many forks they made: two nodes
 /// merging alike fork again (every maker of a non-newest epoch merging made two merges of three
 /// forks, then a third; the newest's maker merging beside them, a fork on every round of a sync
-/// delivering both merges together). The merges of nodes holding different forks fork again at
-/// most once per epoch made concurrently.
+/// delivering both merges together). Nodes holding different forks may each read as the merger,
+/// and their merges fork again while views differ (issues/rotation-storm-after-grant-end.md).
 pub fn fork_merger(epochs: &ActorEpochs, r: Role, maker: impl Fn(&Epoch) -> Option<Maker>) -> bool {
     let rs = epochs.role(r);
     let cur = rs.current();

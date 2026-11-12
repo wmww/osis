@@ -931,6 +931,73 @@ fn finalize_without_secret_rotates_history_added_spec_permissions_2() {
     assert!(lp.peers[2].engine.epochs(&g).unwrap().write.secret(&lacked).is_some(), "X holds it by history");
 }
 
+/// The rotations every peer of `lp` makes on `g` per round (`ensure_rotated` at each, then a
+/// sync), until a round makes none.
+fn rounds_to_settle(lp: &mut LocalPeer, g: Tid) -> Vec<usize> {
+    let mut out = Vec::new();
+    loop {
+        let n: usize = (0..lp.peers.len()).map(|p| lp.peers[p].engine.ensure_rotated(&g).unwrap().0.commits.len()).sum();
+        lp.sync_all().unwrap();
+        out.push(n);
+        if n == 0 || out.len() > 8 {
+            return out;
+        }
+    }
+}
+
+// spec/crypto.md §4 (Attributes: every removal of one holder after its newest lowering covers its
+// departure; merge, merger): rotators removing one holder at once each rotate, and only the first
+// removal in order lowers it. Each removal's rotation covers the departure wherever the others
+// arrive, so the forks take one merge, by the merger, then nothing. Writer D's grant ends and
+// four rotators (two admins, two writers) finalize it before any sync; two admins demote writer
+// D to read before any sync.
+#[test]
+fn concurrent_removals_take_one_merge_spec_crypto_4() {
+    let (mut lp, g, tids) = granted(5, &[(1, Role::Admin), (2, Role::Write), (3, Role::Write), (4, Role::Write)]);
+    let until = WallMs(lp.peers[0].engine.core.now().0 + 100);
+    lp.peers[0].engine.demote(&g, &Demotion { holder: tids[4], new: Some(ct::Edge { until: Some(until), ..edge(Role::Write) }), retain: None }).unwrap();
+    lp.sync_all().unwrap();
+    assert_eq!(rounds_to_settle(&mut lp, g), vec![0], "settled before the end");
+    for p in 0..5 {
+        lp.peers[p].clock.advance(1_000);
+    }
+    for p in 0..4 {
+        assert_eq!(lp.peers[p].engine.ensure_rotated(&g).unwrap().0.commits.len(), 1, "peer {p} finalizes D with its rotation");
+    }
+    lp.sync_all().unwrap();
+    one_merge_per_role(&mut lp, g, &[Role::Read, Role::Write], 4, "four finalizes");
+    for p in 0..4 {
+        assert!(lp.peers[p].engine.ensure_rotated(&g).unwrap().1.is_empty(), "peer {p}: covered");
+    }
+
+    let (mut lp, g, tids) = granted(3, &[(1, Role::Admin), (2, Role::Write)]);
+    for p in 0..2 {
+        lp.peers[p].engine.demote(&g, &Demotion { holder: tids[2], new: Some(edge(Role::Read)), retain: None }).unwrap();
+    }
+    lp.sync_all().unwrap();
+    one_merge_per_role(&mut lp, g, &[Role::Write], 2, "two demotions");
+}
+
+/// Peers `0..forks` of `lp`, each the maker of one of `forks` current epochs of each of `roles`
+/// of `g`, all held alike, settle in one round, each role by one merge: one epoch, one n
+/// above the forks'.
+fn one_merge_per_role(lp: &mut LocalPeer, g: Tid, roles: &[Role], forks: usize, what: &str) {
+    let before = lp.peers[0].engine.epochs(&g).unwrap();
+    let n: Vec<u64> = roles.iter().map(|r| before.role(*r).newest().unwrap().n()).collect();
+    for r in roles {
+        assert_eq!(before.role(*r).current().len(), forks, "{what}: {r:?} forks");
+    }
+    let rounds = rounds_to_settle(lp, g);
+    assert!(rounds.len() == 2 && rounds[0] <= roles.len(), "{what}: one round of merges, at most one commit per role: {rounds:?}");
+    for p in 0..forks {
+        let e = lp.peers[p].engine.epochs(&g).unwrap();
+        for (r, n) in roles.iter().zip(&n) {
+            let cur = e.role(*r).current();
+            assert!(cur.len() == 1 && cur[0].n() == n + 1, "{what}: peer {p} {r:?} merged once: {cur:?}");
+        }
+    }
+}
+
 // spec/crypto.md §4 (a name is met when its commit is applied with every entry it resets known),
 // spec/permissions.md §2: first admin A (0) sets an `until` on writer D's (1) edge (U); past it, A
 // finalizes D, rotating to e (its departs mark). X (2, an admin) holds the finalize but not U, the

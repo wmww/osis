@@ -200,7 +200,25 @@ fn direct_departures(tx: &mut Tx<'_>, a: &Tid) -> Result<BTreeSet<Departure>> {
             }
         }
     }
-    Ok(left.into_iter().map(|(m, (from, upto, at))| Departure::holder(m, from).upto(upto).at(at)).collect())
+    let tl = tx.core.timelines.get(a);
+    Ok(left.into_iter().map(|(m, (from, upto, at))| Departure::holder(m, from).upto(upto).at(at).later(later_writes(tx.core, tl, a, &m, from, at))).collect())
+}
+
+/// The names of the held edge writes on `m`'s edge into `a`, applied or not, ordered after its
+/// newest lowering `at` that hold it below `from` (spec/crypto.md §4, Attributes): each was made
+/// knowing `m` out of those roles. Concurrent removals of one holder (every writer finalizing an
+/// ended grant) each lower it where made, but in the merged timeline only the first in order
+/// applies; a rotation carrying another (its departs mark) covers the departure alike, else
+/// each such rotation is uncovered wherever the first arrives and every rotator rotates again.
+/// Nothing applied raises `m` back to `from` after `at` (that would be a newer lowering, or `m`
+/// would hold `from`), so no rotator naming one of them boxed `m` at those roles.
+fn later_writes(core: &Core, tl: Option<&Timeline>, a: &Tid, m: &Tid, from: Role, at: Option<Name>) -> Vec<Name> {
+    let (Some(tl), Some(at)) = (tl, at) else { return Vec::new() };
+    let held = |c: &osis_base::CommitId| core.ix.commits.contains_key(c);
+    tl.held_on(a)
+        .filter(|(mc, op)| op.holder == *m && key_of(&mc.point()) > at.key && key_role(op.edge.as_ref()) < Some(from) && held(&mc.id))
+        .map(|(mc, _)| Name { thing: *a, key: key_of(&mc.point()) })
+        .collect()
 }
 
 /// Every departure `a`'s epochs must cover: its own (`direct_departures`). A memo

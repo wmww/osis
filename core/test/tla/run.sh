@@ -54,6 +54,8 @@ instances=(
   "finalize rotation Finalize F_old_seed3.cfg fail"   # negative control: a name met by its commit alone
   "cover rotation Cover C_drop.cfg pass"         # notes/crypto.md (Frozen coverage)
   "cover rotation Cover C_drop_any.cfg fail"     # negative control: attribution to any audit drop
+  "cover rotation Cover C_dup.cfg pass"          # concurrent removals each cover (Attributes, later writes)
+  "cover rotation Cover C_dup_nolater.cfg fail"  # negative control: only the first removal attributed
   "authority rotation AuthorityMC A_order_nobase.cfg pass" # keysets read as of the commit's key (spec/crypto.md §4, Possession)
   "authority rotation AuthorityMC A_order_3.cfg pass"
   "authority rotation AuthorityMC A_held_nobase.cfg fail" # negative control: keysets read as held now give two fixpoints

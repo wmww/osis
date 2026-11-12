@@ -12,11 +12,15 @@
 (* Attr "any": a departure is attributed to the newest held commit that      *)
 (* lowered the holder or whose audit dropped a write on its edge; "lowering":*)
 (* to the newest at whose point the holder's grant for keys was lowered.     *)
+(* Later: also to each held commit after that one writing the holder's edge *)
+(* to none, applied or not; with Dup, Q removes L concurrently with S (S2,   *)
+(* carrying Q's rotation, which leaves L out), so S2 applies nothing where S *)
+(* is held and covers only by Later.                                         *)
 (* Commits are delivered whole in any order; boxes are global (crypto is     *)
 (* access: a party's secrets are the closure over boxes to it and history).  *)
 EXTENDS Integers, FiniteSets, Sequences, TLC
 
-CONSTANTS Attr, Forge, Audit, Writers, MaxE
+CONSTANTS Attr, Forge, Audit, Writers, MaxE, Later, Dup
 
 Honest == Writers
 Members == {"P", "L", "Q"}
@@ -81,6 +85,12 @@ AttrOf(H, h) == LET W == Walk(H)
                     cands == lowers \cup (IF Attr = "any" /\ DropsOn(H, h) THEN {"D"} ELSE {})
                 IN IF cands = {} THEN "none"
                    ELSE CHOOSE c \in cands : \A d \in cands : CommitOf(c).ts >= CommitOf(d).ts
+\* every name h's departure is attributed to at a node holding H (Later: the commits after
+\* AttrOf writing h's edge to none, applied or not)
+AttrSet(H, h) == LET a == AttrOf(H, h)
+                 IN IF a = "none" THEN {}
+                    ELSE {a} \cup (IF Later THEN {c.id : c \in {d \in cs : d.id \in H /\ d.kind \in {"chg", "self"}
+                                                      /\ d.h = h /\ d.val = NONE /\ d.ts > CommitOf(a).ts}} ELSE {})
 \* the names a rotation by a node holding H writes
 NamesOf(H) == Walk(H).low \cup (IF Attr = "any" /\ \E h \in Members : DropsOn(H, h) THEN {"D"} ELSE {})
 
@@ -105,12 +115,12 @@ Departed(n) == {h \in Members : Role(n, h) = NONE}
 \* Covers (spec/crypto.md §4): the departure of h, attributed at n, by epoch e; an epoch
 \* whose secret n lacks covers nothing (its history box is closed to it)
 Covers(n, e, h) ==
-  LET a == AttrOf(held[n], h)
+  LET A == AttrSet(held[n], h)
       ep == Ep(e)
-      ByEntry == \E x \in ents : x.e = e /\ Met(n, x.names) /\ a \in x.names
+      ByEntry == \E x \in ents : x.e = e /\ Met(n, x.names) /\ A \cap x.names # {}
                    /\ x.bound /\ Holds(n, ep.author)
-      BySelf == a = ep.commit /\ Holds(n, ep.author)
-  IN a # "none" /\ e \in Sec(n) /\ (ByEntry \/ BySelf)
+      BySelf == ep.commit \in A /\ Holds(n, ep.author)
+  IN A # {} /\ e \in Sec(n) /\ (ByEntry \/ BySelf)
 CoversAll(n, e) == \A h \in Departed(n) : Covers(n, e, h)
 NeedRot(n) == \E e \in Current(n) : ~CoversAll(n, e)
 HasCurrent(n) == Current(n) \cap Sec(n) # {}
@@ -128,8 +138,10 @@ Deliver(n) == \E c \in cs : c.id \notin held[n] /\ held' = [held EXCEPT ![n] = @
 \* rotating needs only the right to rotate (no current secret): the history box carries the
 \* established secrets n holds
 HonestRots == Cardinality({c \in cs : c.kind = "rot" /\ c.author \in Honest})
+\* a rotator holds the role in its own view (one that does not makes no valid rotation; a box it
+\* writes anyway carries only what it held, a stated limit)
 Rotate(n) ==
-  /\ NeedRot(n) /\ HonestRots < MaxE
+  /\ NeedRot(n) /\ HonestRots < MaxE /\ Role(n, n) = ADMIN
   /\ LET id == "R" \o ToString(Len(eps))
          e == NewEpoch(n, id, n)
      IN /\ cs' = cs \cup {[id |-> id, ts |-> 20 + Len(eps), author |-> n, kind |-> "rot"]}
@@ -189,6 +201,18 @@ SelfRot ==
         /\ forged' = forged \cup {<<"selfrot", 0>>}
   /\ UNCHANGED <<cs, held, adds>>
 
+\* Q removes L not knowing S (Dup), in a commit carrying its rotation: it boxes the holders
+\* its view shows but L; its departs mark names S2 itself
+DupRemoval ==
+  /\ Dup /\ "S2" \notin AllIds /\ "S" \notin held["Q"] /\ HasCurrent("Q") /\ Role("Q", "Q") = ADMIN
+  /\ LET e == NewEpoch("Q", "S2", "Q")
+     IN /\ cs' = cs \cup {[id |-> "S2", ts |-> 20 + Len(eps), author |-> "Q", h |-> "L", val |-> NONE, kind |-> "chg"]}
+        /\ held' = [held EXCEPT !["Q"] = @ \cup {"S2"}, !["L"] = @ \cup {"S2"}]
+        /\ eps' = Append(eps, e)
+        /\ ents' = ents \cup {[e |-> e.id, author |-> "Q", names |-> NamesOf(held["Q"]), bound |-> TRUE]}
+        /\ boxes' = boxes \cup {<<p, e.id>> : p \in Holders("Q") \ {"L"}}
+  /\ UNCHANGED <<forged, adds>>
+
 WritesNow == {<<Newest(n), Departed(n)>> : n \in {m \in Honest : MayEncrypt(m)}}
 
 E0 == [id |-> 0, num |-> 0, commit |-> "G", author |-> "O", lists |-> {}, hist |-> {}]
@@ -201,7 +225,7 @@ Init == /\ cs = Static
         /\ wrote = {}
         /\ forged = {}
 Next == /\ \/ \E n \in Honest : Deliver(n) \/ Rotate(n) \/ HistAdd(n)
-           \/ ForgeEntry \/ ForgeBackdated \/ SelfRot
+           \/ ForgeEntry \/ ForgeBackdated \/ SelfRot \/ DupRemoval
         /\ wrote' = wrote \cup WritesNow
 Spec == Init /\ [][Next]_vars
 
@@ -212,6 +236,10 @@ TrulyDeparted == {h \in Members : Walk(AllIds).edge[h] = NONE}
 \* another departed party reading an epoch L holds is no leak the rule judges
 NoLeak == \A w \in wrote \cup WritesNow : \A m \in w[2] \cap TrulyDeparted :
             w[1] \notin Sec(m) \/ (m # "L" /\ w[1] \in Sec("L"))
+\* Q's concurrent removal covers L's departure wherever S is held too (Dup; fails without Later:
+\* only S is attributed there, so every node knowing both rotates again)
+DupCovers == \A n \in Honest : \A e \in EpIds :
+               (Ep(e).commit = "S2" /\ {"S", "S2"} \subseteq held[n] /\ e \in Sec(n) /\ Holds(n, "Q")) => Covers(n, e, "L")
 \* Liveness is not modelled: a node holding everything covers all it knows by one rotation,
 \* so the honest rotations are bounded by the departures and forgeries each node learns of
 \* after the others' rotations; MaxE bounds them for the search.

@@ -13,5 +13,4 @@ head" one holds.
 That test's own scenario (a grant, then at once a demotion with no rotation) made c's uploads
 refused and sent again under t's next head only while t rotated seven times; with g's rotator
 rotating t at once (`rotation::rotate_above`) nothing is refused, so the refusal path lost its
-check. This scenario restores it once the duplicates are fixed. Rotation count in it:
-issues/concurrent-lowerings-merge-twice.md.
+check. This scenario restores it once the duplicates are fixed.

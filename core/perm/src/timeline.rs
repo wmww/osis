@@ -112,6 +112,8 @@ pub(crate) struct Memo {
     /// The edge writes applied, by their target; and the indexes built (a measure).
     pub on_target: std::sync::OnceLock<BTreeMap<Tid, Vec<WriteId>>>,
     pub on_target_built: std::sync::atomic::AtomicU64,
+    /// The edge writes held, applied or not, by their target.
+    pub held_on_target: std::sync::OnceLock<BTreeMap<Tid, Vec<WriteId>>>,
     /// `Timeline::disputes`.
     pub disputes: std::sync::OnceLock<Vec<Dispute>>,
 }
@@ -138,6 +140,7 @@ impl Clone for Memo {
             certs: self.certs.clone(),
             on_target: self.on_target.clone(),
             on_target_built: n(&self.on_target_built),
+            held_on_target: self.held_on_target.clone(),
             disputes: self.disputes.clone(),
         }
     }
@@ -506,6 +509,7 @@ impl Timeline {
         // chain certificates list held writes; what is ever reached and what lies below moves
         self.memo.certs = std::sync::OnceLock::new();
         self.memo.on_target = std::sync::OnceLock::new();
+        self.memo.held_on_target = std::sync::OnceLock::new();
         *self.memo.forward.get_mut().unwrap_or_else(|e| e.into_inner()) = BTreeMap::new();
         *self.memo.roles_now.get_mut().unwrap_or_else(|e| e.into_inner()) = BTreeMap::new();
         self.placed = 0;
@@ -707,6 +711,20 @@ impl Timeline {
         #[cfg(debug_assertions)]
         assert!(on.iter().eq(self.walked.applied.keys().filter(|w| self.edge_write(w).is_some_and(|(_, o)| o.target == *t))), "on_target of {t:?} went stale");
         on.iter().filter_map(|w| self.edge_write(w))
+    }
+    /// The edge writes held on `t`, applied or not (a write that applies to nothing, such as a
+    /// removal of an edge another write removed first, included), each with its commit and op.
+    pub fn held_on<'t>(&'t self, t: &Tid) -> impl Iterator<Item = (&'t RoleCommit, &'t EdgeOp)> + 't {
+        let index = self.memo.held_on_target.get_or_init(|| {
+            let mut by: BTreeMap<Tid, Vec<WriteId>> = BTreeMap::new();
+            for c in self.input.commits.values() {
+                for (i, o) in c.ops.iter().enumerate() {
+                    by.entry(o.target).or_default().push(WriteId(c.id, i as u32));
+                }
+            }
+            by
+        });
+        index.get(t).map_or(&[][..], Vec::as_slice).iter().filter_map(|w| self.edge_write(w))
     }
     /// The commit of the edge write in force on (`holder`, `target`): the last applied one, when
     /// it set a value (spec/permissions.md §2: the next edge write resets the entry it created).
