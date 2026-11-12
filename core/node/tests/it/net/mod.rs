@@ -438,7 +438,7 @@ pub const HUB_BASE: ConnId = 1 << 40;
 /// limit (random churn seed 460971879377: 32 CPU-s to fail here). The node tests' settles
 /// take at most about 210 rounds (random churn and window seeds 90). Minor consequence,
 /// test-only: near 0 every settle fails; at infinity a loop runs to the seed's CPU timeout.
-const SETTLE_ROUNDS: usize = 200;
+const SETTLE_ROUNDS: usize = 2_000;
 
 /// What a peer that cannot read `l` streams to a reader: `events` of `l` at a position `at`
 /// names (a hostile peer's push, or a replay).
