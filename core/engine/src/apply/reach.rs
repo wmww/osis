@@ -229,6 +229,10 @@ impl Engine {
     /// the last call, and a whole walk of a commit whose walk lacks nothing while it still waits.
     pub fn blob_wants(&mut self) -> Result<Wants> {
         let waiting: Vec<CommitId> = self.core.ix.pending.iter().filter(|(_, r)| **r == super::Reason::WaitBlobs).map(|(c, _)| *c).collect();
+        if waiting.is_empty() && self.core.walks.trees.is_empty() {
+            self.core.walks.walks.clear();
+            return Ok(Wants::default());
+        }
         self.run(|tx| {
             let mut out = Wants::default();
             let trees: Vec<CommitId> = tx.core.walks.trees.iter().copied().filter(|c| !waiting.contains(c)).collect();
