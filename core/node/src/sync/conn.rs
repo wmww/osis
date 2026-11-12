@@ -24,7 +24,12 @@ pub(crate) fn in_flight(c: &Conn, m: &BTreeMap<(LabelId, osis_base::BlobId), (u6
 /// Open state of a label on a connection.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Phase {
-    /// Trying open keys in order.
+    /// Waiting for the peer's filter: the credential of the newest recorded head (or of the step
+    /// the walk found shown, `LConn::shown`) is tested at each arrival, and a Hit opens it
+    /// (issues/net-one-peer.md 3h2, Stale head).
+    Testing,
+    /// Trying open keys in order (Open: a label with no recorded path, or a peer whose head is
+    /// off it).
     Opening,
     /// Registering the recorded path at a host that lacks the label.
     Registering,
@@ -82,6 +87,9 @@ pub(crate) struct LConn {
     pub path: Vec<Step>,
     /// A hinted open walked to an unverified step: the host's path is checked after the open.
     pub walk: Option<Step>,
+    /// An earlier recorded step whose credential the peer's filter showed when the newest
+    /// recorded head's was not: its credential is Hit, and L opens at it (`walk`).
+    pub shown: Option<Step>,
     /// A listing from the start under way here: what was present here before it, and whether
     /// the peer marked it trimmed (`known_join`, `stream_read`).
     pub relisted: Option<(BTreeSet<osis_base::BlobId>, bool)>,
@@ -151,9 +159,9 @@ pub(crate) struct Requests {
     pub missing: BTreeSet<osis_base::BlobId>,
     /// Reopens in a row per label.
     pub reopens: BTreeMap<LabelId, u32>,
-    /// Labels opened again because they were not members after a filter arrival, with that
-    /// arrival's number: once per arrival (`shared_unopened`).
-    pub reopened: BTreeMap<LabelId, u64>,
+    /// Labels walked because they were not members after a filter arrival, with that arrival's
+    /// number: once per arrival (`shared_unopened`).
+    pub walked: BTreeMap<LabelId, u64>,
 }
 
 impl Requests {
@@ -162,7 +170,7 @@ impl Requests {
         self.sent.retain(|(l, _), _| !gone(l));
         self.deleting.retain(|(l, _), _| !gone(l));
         self.reopens.retain(|l, _| !gone(l));
-        self.reopened.retain(|l, _| !gone(l));
+        self.walked.retain(|l, _| !gone(l));
     }
 
     /// The commands carrying the `UNTAGGED` requests were given, the last tagged `tag`.

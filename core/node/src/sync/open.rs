@@ -189,13 +189,33 @@ impl SyncEngine {
         self.handle(super::Event::Local)
     }
 
+    /// Starts `l` on `conn`: a label with a recorded path waits for the peer's filter to show the
+    /// newest recorded head's credential (`Phase::Testing`; holding none of it, sync key, claim
+    /// key or static entry, L is stranded here and nothing is tested); one with none (a hint)
+    /// is opened by Open.
     pub(crate) fn start_label(&mut self, conn: ConnId, g: Tid, l: LabelId, out: &mut Vec<super::Action>) -> Result<()> {
-        let Some(host) = self.conns.get(&conn).map(|c| c.host) else { return Ok(()) };
-        let (index, tries) = self.tries(&host, &g, &l);
-        let lc = LConn {
-            group: g,
+        let Some(newest) = self.newest_step(&g, &l) else { return self.open_label(conn, g, l, out) };
+        let index = self.group_label(&g, &l).map_or(0, |gl| gl.index);
+        let held = self.step_key(&g, index, &l, &newest).is_some() || self.static_listed_at(&g, &l, &newest);
+        if let Some(c) = self.conns.get_mut(&conn) {
+            c.labels.insert(l, Self::new_lc(g, index, Phase::Testing, Vec::new()));
+        }
+        if !held {
+            self.fail(conn, l);
+            return self.stranded(conn, g, l, out);
+        }
+        // open there already by the connection's restored record
+        if self.shared_member(conn, &l) {
+            return self.member_at_host(conn, l, true, out);
+        }
+        self.shared_retest(conn, out)
+    }
+
+    fn new_lc(group: Tid, index: u64, phase: Phase, tries: Vec<Try>) -> LConn {
+        LConn {
+            group,
             index,
-            phase: Phase::Opening,
+            phase,
             tries,
             static_refused: false,
             head: None,
@@ -209,6 +229,7 @@ impl SyncEngine {
             last_sync: 0,
             path: Vec::new(),
             walk: None,
+            shown: None,
             open_key: None,
             relisted: None,
             entry_box: None,
@@ -217,11 +238,113 @@ impl SyncEngine {
             lacking: 0,
             head_moved_at: None,
             writers: Vec::new(),
-        };
+        }
+    }
+
+    /// Opens `l` on `conn` by Open: a label with no recorded path (a hint), or one whose
+    /// registration from genesis found the peer's head off the recorded path (the interim Open
+    /// walk, kinds 4-5 kept for it alone until issues/net-one-peer.md 3i).
+    pub(crate) fn open_label(&mut self, conn: ConnId, g: Tid, l: LabelId, out: &mut Vec<super::Action>) -> Result<()> {
+        let Some(host) = self.conns.get(&conn).map(|c| c.host) else { return Ok(()) };
+        let (index, tries) = self.tries(&host, &g, &l);
         if let Some(c) = self.conns.get_mut(&conn) {
-            c.labels.insert(l, lc);
+            c.labels.insert(l, Self::new_lc(g, index, Phase::Opening, tries));
         }
         self.try_next(conn, l, out)
+    }
+
+    /// The newest recorded head of `l`: the tip of the served path (`deepest_path`).
+    pub(crate) fn newest_step(&mut self, g: &Tid, l: &LabelId) -> Option<Step> {
+        let gl = self.group_label(g, l)?;
+        deepest_path(&gl.steps)?.last().map(|(s, _)| s.clone())
+    }
+
+    /// The key a Hit on `step`'s credential signs with: its sync key when this node holds the
+    /// epoch's sync secret, else this node's claim key on it (as `claimants`) while the step's
+    /// claim set is held and lists it.
+    pub(crate) fn step_key(&mut self, g: &Tid, index: u64, l: &LabelId, step: &Step) -> Option<SigningSecret> {
+        if let Some(e) = self.engine.epochs(g)
+            && let Some(k) = e.sync.held_newest_first().into_iter().map(|(_, s)| label_role_key(LabelRole::Sync, s, index)).find(|k| k.verifying_key() == step.keys.sync)
+        {
+            return Some(k);
+        }
+        let set = self.group_label(g, l)?.steps.get(&step.id())?.1.clone()?;
+        let only = self.claimants(g, false).ok()?;
+        let xs = self.claim_keys_of(Some(&only));
+        xs.iter().filter_map(|x| step.claim_key(x).ok()).find(|k| set.contains(&k.verifying_key().to_bytes()))
+    }
+
+    /// Whether `step`'s held claim set lists the static entry of a key actor this node holds.
+    fn static_listed_at(&mut self, g: &Tid, l: &LabelId, step: &Step) -> bool {
+        let Some(set) = self.group_label(g, l).and_then(|gl| gl.steps.get(&step.id()).and_then(|x| x.1.clone())) else { return false };
+        self.engine.core.key_actors.values().any(|id| set.contains(&osis_crypto::static_entry(l, &id.keys().signing.verifying_key())))
+    }
+
+    /// The walk's credentials of `l` at `conn` (issues/net-one-peer.md 3h2, Stale head): of the
+    /// recorded path's steps, newest first, each distinct one once, but `tested` (what the
+    /// arrival's test offered). O(steps).
+    pub(crate) fn walk_candidates(&mut self, conn: ConnId, l: LabelId, tested: Option<[u8; 32]>) -> Result<Vec<(Step, [u8; 32])>> {
+        let Some((g, index)) = self.lc(conn, &l).map(|x| (x.group, x.index)) else { return Ok(Vec::new()) };
+        let Some(path) = self.group_label(&g, &l).and_then(|gl| deepest_path(&gl.steps).map(|p| p.into_iter().map(|(s, _)| s.clone()).collect::<Vec<_>>())) else { return Ok(Vec::new()) };
+        let mut seen: Vec<[u8; 32]> = tested.into_iter().collect();
+        let mut out = Vec::new();
+        for step in path.into_iter().rev() {
+            let Some(k) = self.step_key(&g, index, &l, &step) else { continue };
+            let v = k.verifying_key().to_bytes();
+            if seen.contains(&v) {
+                continue;
+            }
+            seen.push(v);
+            self.stats.walk_tests += 1;
+            out.push((step, v));
+        }
+        Ok(out)
+    }
+
+    /// The walk's outcome: the step whose credential the peer's filter showed is Hit, and L opens
+    /// at it; none shown: the recorded path is registered from genesis.
+    pub(crate) fn walked(&mut self, conn: ConnId, l: LabelId, shown: Option<Step>, out: &mut Vec<super::Action>) -> Result<()> {
+        match shown {
+            Some(step) => {
+                if let Some(lc) = self.lc_mut(conn, &l) {
+                    lc.phase = Phase::Testing;
+                    lc.shown = Some(step);
+                }
+                self.shared_retest(conn, out)
+            }
+            None => self.register_path(conn, l, out),
+        }
+    }
+
+    /// `l` became a member of `conn`'s shared set at a host connection where it waits for the
+    /// peer's filter (a Hit on this node's credential, a static entry's grant, the peer's own Hit,
+    /// or a record restored on connecting): L is open there at the step it was tested at (the
+    /// walk's, else the newest recorded), or, restored, at the head last known there.
+    pub(crate) fn member_at_host(&mut self, conn: ConnId, l: LabelId, restored: bool, out: &mut Vec<super::Action>) -> Result<()> {
+        let Some(c) = self.conns.get(&conn).filter(|c| !c.peer) else { return Ok(()) };
+        let host = c.host;
+        let Some(lc) = c.labels.get(&l).filter(|x| x.phase == Phase::Testing) else { return Ok(()) };
+        let (g, index, shown) = (lc.group, lc.index, lc.shown.clone());
+        let known = if restored { self.state.heads.get(&(host, l)).cloned() } else { None };
+        let Some(step) = shown.or(known).or_else(|| self.newest_step(&g, &l)) else { return Ok(()) };
+        let key = self.step_key(&g, index, &l, &step);
+        self.set_head(conn, l, step)?;
+        if let Some(c) = self.conns.get_mut(&conn) {
+            c.req.reopens.remove(&l);
+            self.refusals.remove(&(host, l));
+        }
+        if let Some(lc) = self.lc_mut(conn, &l) {
+            lc.phase = Phase::Open;
+            lc.shown = None;
+            lc.open_key = key;
+            (lc.step_retry, lc.step_refusals) = (0, 0);
+        }
+        self.stream_source_gained(conn, &l, out)?;
+        // a stream resumed by the record read it to the peer's end already: a pass end there
+        if self.stream_read_through(conn, &l) {
+            self.stream_read(conn, l, out)?;
+        }
+        Ok(())
     }
 
     /// Sends the next open attempt; none left: failed and stranded (spec/permissions.md §4: no
@@ -603,8 +726,22 @@ impl SyncEngine {
                 self.refused_for_now(conn, l, code);
                 Ok(())
             }
-            // the rest of that path's steps
-            (Request::Register, Some(Phase::Refused { .. })) => Ok(()),
+            // a step of the path before the peer's head (spec/sync.md §5: 9 for a step that is
+            // not a child of its head): the steps after it still register. The last answered
+            // 9: the peer's head is off the recorded path (ahead of it, or a fork), walked by
+            // Open
+            (Request::Register, Some(Phase::Registering)) if code == Code::NOT_HEAD => {
+                let Some(lc) = self.lc_mut(conn, &l) else { return Ok(()) };
+                if !lc.path.is_empty() {
+                    lc.path.remove(0);
+                }
+                if lc.path.is_empty() {
+                    return self.reopen(conn, l, out);
+                }
+                Ok(())
+            }
+            // the rest of a path's steps whose registration ended
+            (Request::Register, Some(Phase::Refused { .. } | Phase::Opening | Phase::Testing | Phase::Failed | Phase::Verifying)) => Ok(()),
             (Request::Register, _) => {
                 if let Some(lc) = self.lc_mut(conn, &l) {
                     lc.registering = None;
@@ -646,8 +783,8 @@ impl SyncEngine {
         self.diag(format!("label {l:?}: not opened for now (code {}), again in {} s", code.0, wait / 1000));
     }
 
-    /// Starts opening `l` on `conn` again from scratch.
-    /// More than `MAX_REOPENS` in a row (refused registrations, stale heads) waits for the
+    /// Opens `l` on `conn` again from scratch by Open (the interim walk of a peer whose head is
+    /// off the recorded path). More than `MAX_REOPENS` in a row (refused registrations, stale heads) waits for the
     /// retry timer instead.
     pub(crate) fn reopen(&mut self, conn: ConnId, l: LabelId, out: &mut Vec<super::Action>) -> Result<()> {
         let Some(lc) = self.lc(conn, &l) else { return Ok(()) };
@@ -665,7 +802,7 @@ impl SyncEngine {
             self.diag(format!("label {l:?}: reopened {MAX_REOPENS} times, retrying later"));
             return Ok(());
         }
-        self.start_label(conn, g, l, out)
+        self.open_label(conn, g, l, out)
     }
 
     /// The host does not hold the label: register the recorded path from the genesis step
@@ -704,7 +841,9 @@ impl SyncEngine {
                         o.after = 0;
                     }
                 }
-                return self.reopen(conn, l, out);
+                // the peer holds L at the recorded head: its next filter shows the head's
+                // credential
+                return self.retest_label(conn, l, out);
             }
             return Ok(());
         }
@@ -723,9 +862,21 @@ impl SyncEngine {
         self.record_steps(&g, &l, &steps, Some((step.id(), set)))?;
         self.set_head(conn, l, step)?;
         if ended {
-            return self.reopen(conn, l, out);
+            // the open by the old key ends; the next filter shows the new one's
+            self.shared_head_opened(conn, out)?;
         }
         self.run_dirty(out)
+    }
+
+    /// `l` on `conn` waits for the peer's filter again, testing the newest recorded head's
+    /// credential.
+    pub(crate) fn retest_label(&mut self, conn: ConnId, l: LabelId, out: &mut Vec<super::Action>) -> Result<()> {
+        if let Some(lc) = self.lc_mut(conn, &l) {
+            lc.phase = Phase::Testing;
+            lc.shown = None;
+            lc.path.clear();
+        }
+        self.shared_retest(conn, out)
     }
 
     /// Takes `step` as the head of `l` on `conn`: its keys derived, recorded for the peer, a

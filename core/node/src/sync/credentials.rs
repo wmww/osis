@@ -149,18 +149,38 @@ impl SyncEngine {
         Some(labels.iter().map(|l| (*l, things.get(l).map_or(Judgment::Unknown, |t| judge.of(t)))).collect())
     }
 
-    /// The sync key of the head each of `labels` is open at on host connection `conn` (by Open,
-    /// the write path until issues/net-one-peer.md 3h2), else the claim key the Open used, with
-    /// its secret: what reads it there, a Hit on that node's sync-key or claim entry with the open
-    /// signature (it cannot read the label). None on any other connection: a reader opens to a
-    /// reader by its read credentials.
-    pub(super) fn reader_sync_keys(&self, conn: ConnId, labels: &[LabelId]) -> BTreeMap<LabelId, ([u8; 32], osis_crypto::SigningSecret)> {
-        let Some(c) = self.conns.get(&conn) else { return BTreeMap::new() };
-        labels.iter().filter_map(|l| {
-            let lc = c.labels.get(l).filter(|x| x.phase == super::Phase::Open)?;
-            let key = lc.keys.sync.clone().or_else(|| lc.open_key.clone())?;
-            Some((*l, (key.verifying_key().to_bytes(), key)))
-        }).collect()
+    /// The credential this node tests of each of `labels` at host connection `conn`, with the key
+    /// its Hit signs the open with (issues/net-one-peer.md 3h2, Credential): of the peer's head
+    /// there once open, else of the step the walk found shown, else of the newest recorded head
+    /// (`step_key`: the step's sync key when this node holds that epoch's secret, else its claim
+    /// key while the step's claim set is held). A static entry is a reader's credential already,
+    /// the same at every step. None on any other connection: a reader opens to a reader by its
+    /// read credentials.
+    pub(super) fn peer_creds(&mut self, conn: ConnId, labels: &[LabelId]) -> BTreeMap<LabelId, ([u8; 32], osis_crypto::SigningSecret)> {
+        let mut out = BTreeMap::new();
+        for l in labels {
+            let Some(lc) = self.conns.get(&conn).filter(|c| !c.peer).and_then(|c| c.labels.get(l)) else { continue };
+            let (g, index) = (lc.group, lc.index);
+            let key = match lc.phase {
+                super::Phase::Open => match (lc.keys.sync.clone(), lc.head.clone(), lc.open_key.clone()) {
+                    (Some(k), ..) => Some(k),
+                    (None, Some(h), open) => self.step_key(&g, index, l, &h).or(open),
+                    (None, None, open) => open,
+                },
+                super::Phase::Testing => {
+                    let step = match lc.shown.clone() {
+                        Some(s) => Some(s),
+                        None => self.newest_step(&g, l),
+                    };
+                    step.and_then(|s| self.step_key(&g, index, l, &s))
+                }
+                _ => None,
+            };
+            if let Some(k) = key {
+                out.insert(*l, (k.verifying_key().to_bytes(), k));
+            }
+        }
+        out
     }
 
     /// This node's credentials of each of `labels`, as a reader or as the key actor its link or

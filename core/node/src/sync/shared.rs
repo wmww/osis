@@ -323,6 +323,12 @@ impl SyncEngine {
     /// against the peer's filter.
     pub(super) fn shared_head_opened(&mut self, conn: ConnId, out: &mut Vec<Action>) -> Result<()> {
         self.shared_rejudge(conn, out)?;
+        self.shared_retest(conn, out)
+    }
+
+    /// Every label on `conn` is tested against the peer's filter now (a label started there, a
+    /// step the walk found shown).
+    pub(super) fn shared_retest(&mut self, conn: ConnId, out: &mut Vec<Action>) -> Result<()> {
         let Some(s) = self.records.shared.get_mut(&conn) else { return Ok(()) };
         s.sync_due = true;
         s.test_due = true;
@@ -454,6 +460,9 @@ impl SyncEngine {
         s.members = members.iter().map(|(l, m)| (*l, Member { class: m.class, beacon: m.beacon, until: m.until })).collect();
         let restored = !s.members.is_empty();
         self.records.shared.insert(conn, s);
+        for (l, _) in &members {
+            self.member_at_host(conn, *l, true, out)?;
+        }
         // a sync ID it keeps unread is pulled from the start (`stream_join`)
         let unread = self.unread_heads()?;
         let pulled: Vec<(LabelId, osis_store::Member)> = members.iter().map(|(l, m)| if unread.contains_key(l) { (*l, osis_store::Member { at: At::Join(None), ..m.clone() }) } else { (*l, m.clone()) }).collect();
@@ -511,7 +520,7 @@ impl SyncEngine {
             creds.retain(|l, _| !things.contains_key(l));
         }
         if which.sync {
-            for (l, (k, _)) in self.reader_sync_keys(conn, &labels) {
+            for (l, (k, _)) in self.peer_creds(conn, &labels) {
                 creds.entry(l).or_default().push(Credential::SyncKey(k));
             }
         }
@@ -779,7 +788,7 @@ impl SyncEngine {
             let rest: BTreeSet<LabelId> = self.conns.get(&conn).map(|c| c.labels.keys().filter(|l| !labels.contains(l) && !member(l)).copied().collect()).unwrap_or_default();
             creds.extend(self.shared_creds(conn, Some(&rest), Which { read: false, unread: false, sync: true })?.into_iter().filter(|c| c.class == SYNC));
         }
-        let signing = self.reader_sync_keys(conn, &creds.iter().filter(|c| c.class == SYNC).map(|c| c.label).collect::<Vec<_>>());
+        let signing = self.peer_creds(conn, &creds.iter().filter(|c| c.class == SYNC).map(|c| c.label).collect::<Vec<_>>());
         self.stats.tests += 1;
         self.stats.tested += creds.len() as u64;
         let Some(s) = self.records.shared.get_mut(&conn) else { return Ok(()) };
@@ -873,24 +882,30 @@ impl SyncEngine {
         self.shared_unopened(conn, out)
     }
 
-    /// The peer's latest filter was tested and every Offer of it answered: each label Open opened
-    /// at this host connection that is not a member is opened again, once per filter arrival
-    /// (issues/net-one-peer.md, 3h1). The peer, which cannot read it, moved its head past the
-    /// one Open opened (its filter lacks that head's sync key, or the Hit was refused), and every
-    /// move of such a head changes the peer's filter, so an arrival follows each: whatever the
-    /// order of the move, Open's answer, the filter and the Hit, the next arrival finds the label
-    /// unopened and Open learns the head. One Open per arrival bounds it: an Open answered at a
-    /// head the filter does not show yet waits for the arrival that shows it. O(labels on `conn`).
+    /// The peer's latest filter was tested and every Offer of it answered: each label on this
+    /// host connection that is not open there, waiting for no Register, is walked, once per filter
+    /// arrival (issues/net-one-peer.md 3h2, Stale head): the credentials of its recorded steps,
+    /// newest first, but the one this arrival tested, against the same filter; the first shown is
+    /// Hit, none shown registers the recorded path. Every move of a peer's head changes its
+    /// filter, so an arrival follows each. O(labels on `conn`), and O(steps) per label walked.
     fn shared_unopened(&mut self, conn: ConnId, out: &mut Vec<Action>) -> Result<()> {
         let Some(s) = self.records.shared.get(&conn).filter(|s| s.peer.is_some() && !s.test_due && s.pending.offers_unanswered == 0) else { return Ok(()) };
         let arrival = s.arrivals;
         let Some(c) = self.conns.get(&conn).filter(|c| !c.peer) else { return Ok(()) };
-        let unopened: Vec<LabelId> = c.labels.iter().filter(|(l, x)| x.phase == super::Phase::Open && !s.members.contains_key(l) && c.req.reopened.get(l) != Some(&arrival)).map(|(l, _)| *l).collect();
+        let unopened: Vec<LabelId> = c.labels.iter().filter(|(l, x)| matches!(x.phase, super::Phase::Testing | super::Phase::Open) && x.registering.is_none() && !s.members.contains_key(l) && c.req.walked.get(l) != Some(&arrival)).map(|(l, _)| *l).collect();
+        if unopened.is_empty() {
+            return Ok(());
+        }
+        let tested = self.peer_creds(conn, &unopened);
         for l in unopened {
             if let Some(c) = self.conns.get_mut(&conn) {
-                c.req.reopened.insert(l, arrival);
+                c.req.walked.insert(l, arrival);
             }
-            self.reopen(conn, l, out)?;
+            let candidates = self.walk_candidates(conn, l, tested.get(&l).map(|x| x.0))?;
+            let Some(s) = self.records.shared.get(&conn) else { return Ok(()) };
+            let Some(peer) = &s.peer else { return Ok(()) };
+            let shown = candidates.into_iter().find(|(_, v)| peer.values.binary_search(&beacon_value(&beacon(v, &l.0, &s.r), peer.f)).is_ok());
+            self.walked(conn, l, shown.map(|x| x.0), out)?;
         }
         Ok(())
     }
@@ -1242,6 +1257,7 @@ impl SyncEngine {
         self.pass_due |= class != SYNC && self.records.shared.values().all(Shared::is_empty);
         let Some(s) = self.records.shared.get_mut(&conn) else { return Ok(()) };
         s.members.insert(l, Member { class, beacon, until: None });
+        self.member_at_host(conn, l, false, out)?;
         // kept unread: served to the peer from the hub's store, and pulled from it by the store's
         // rules (`unread_events`)
         if self.is_unread(&l)? {

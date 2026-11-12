@@ -172,6 +172,8 @@ pub struct PassStats {
     pub claim_lists: u64,
     pub claim_keys: u64,
     pub inbox_keys: u64,
+    /// Credentials of earlier recorded steps a walk tested against a peer's filter.
+    pub walk_tests: u64,
     /// `changed_at` passes and the labels they fingerprinted (`stamp_changes`).
     pub changed_passes: u64,
     pub changed_labels: u64,

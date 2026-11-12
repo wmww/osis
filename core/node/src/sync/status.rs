@@ -29,7 +29,7 @@ impl SyncEngine {
                 if x.phase == Phase::Failed && host.is_some() {
                     failed.insert(c.host);
                 }
-                st.opening += usize::from(c.up && x.phase == Phase::Opening && host.is_some());
+                st.opening += usize::from(c.up && matches!(x.phase, Phase::Testing | Phase::Opening) && host.is_some());
                 // a host the label no longer names is on its way out: no source of it
                 if c.up && x.phase == Phase::Open && host.is_some() {
                     st.sources += 1;

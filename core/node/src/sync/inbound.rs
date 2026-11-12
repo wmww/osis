@@ -1855,33 +1855,35 @@ impl SyncEngine {
         self.state.flush(&mut self.engine)
     }
 
-    /// A new head in a host's log: a child of the current one moves on, and reopens when its
-    /// sync key is another (the host ended the open, spec/sync.md §5); anything else reopens.
-    /// An open in flight learns the head itself (`accept_head` asks for the path after it).
+    /// A new head in the log of a peer that cannot read `l`: a child of the current one or a
+    /// recorded step moves on; when its credential is another (a new sync key, or the open was
+    /// by a claim, which is the old step's) the open by the old one ends, and the next filter
+    /// shows the new one's (`shared_head_opened`). A head off the recorded path is walked by Open
+    /// (issues/net-one-peer.md 3h2, interim). An open in flight learns the head itself.
     pub(crate) fn new_head(&mut self, conn: ConnId, l: LabelId, step: Step, out: &mut Vec<super::Action>) -> Result<()> {
         let Some(lc) = self.lc(conn, &l) else { return Ok(()) };
-        if matches!(lc.phase, super::Phase::Opening | super::Phase::Verifying | super::Phase::Registering) {
+        if matches!(lc.phase, super::Phase::Testing | super::Phase::Opening | super::Phase::Verifying | super::Phase::Registering) {
             return Ok(());
         }
         let cur = lc.head.clone();
         if cur.as_ref().is_some_and(|h| h.id() == step.id()) {
             return Ok(());
         }
-        // opened by a claim (no secret of the head held): the claim is the old step's, and what
-        // reads the label there now is a claim at the new one (`reader_sync_keys`)
         let (g, open, claimed) = (lc.group, lc.phase == super::Phase::Open, lc.keys.sync.is_none());
-        match cur {
-            Some(h) if step.verify_child(&h).is_ok() => {
-                let ended = open && (step.keys.sync != h.keys.sync || claimed);
-                self.record_steps(&g, &l, &[h, step.clone()], None)?;
-                self.set_head(conn, l, step)?;
-                if ended {
-                    return self.reopen(conn, l, out);
-                }
-                Ok(())
-            }
-            _ => self.reopen(conn, l, out),
+        let recorded = self.group_label(&g, &l).is_some_and(|gl| gl.steps.contains_key(&step.id()));
+        let child = cur.as_ref().is_some_and(|h| step.verify_child(h).is_ok());
+        if !child && !recorded {
+            return self.reopen(conn, l, out);
         }
+        let ended = open && (cur.as_ref().is_none_or(|h| step.keys.sync != h.keys.sync) || claimed);
+        if let Some(h) = cur.filter(|_| child) {
+            self.record_steps(&g, &l, &[h, step.clone()], None)?;
+        }
+        self.set_head(conn, l, step)?;
+        if ended {
+            self.shared_head_opened(conn, out)?;
+        }
+        Ok(())
     }
 
     /// The stream of the peer on `conn` (one that cannot read `l`) read `l` to its end (`stream_reply`): a pass end there,
@@ -2000,6 +2002,10 @@ impl SyncEngine {
         let missing = |s: &Self, b: &BlobId| s.conns.get(&conn).is_none_or(|c| c.req.missing.contains(b));
         let mut seen = BTreeSet::new();
         let ids: Vec<BlobId> = ids.into_iter().filter(|b| seen.insert(*b) && !missing(self, b) && self.may_ask(conn, l, b)).collect();
+        // open there by the shared set: fetched by its stream's Fetch
+        if self.read_as_host(conn, &l) {
+            return self.stream_fetch(conn, l, ids, None, out);
+        }
         let now = self.now();
         let Some(c) = self.conns.get_mut(&conn) else { return Ok(()) };
         c.req.fetching.extend(ids.iter().map(|b| (*b, now)));

@@ -1484,6 +1484,11 @@ impl SyncEngine {
         self.streams.values().flat_map(|s| s.pulling.fetching.values()).filter(|f| f.ids.contains(b)).map(|f| f.at)
     }
 
+    /// When `b` was asked of `conn`'s peer by a Fetch not answered yet.
+    pub(crate) fn stream_asked_at(streams: &BTreeMap<ConnId, ConnStream>, conn: ConnId, b: &BlobId) -> Option<u64> {
+        streams.get(&conn)?.pulling.fetching.values().find(|f| f.ids.contains(b)).map(|f| f.at)
+    }
+
     /// Whether `b` is asked of `conn`'s reader by a Fetch not answered yet.
     pub(crate) fn stream_asks_on(&self, conn: ConnId, b: &BlobId) -> bool {
         self.streams.get(&conn).is_some_and(|s| s.pulling.fetching.values().any(|f| f.ids.contains(b)))
@@ -1579,6 +1584,22 @@ impl SyncEngine {
                 _ => failed.push(f.blob_id),
             }
         }
+        // a peer that cannot read L: what it did not deliver is not asked there again until it
+        // announces it, and what it delivered is applied as its stream's events are
+        if self.read_as_host(conn, &l) {
+            let mut gone = false;
+            for b in &failed {
+                self.fetched(b);
+                gone |= self.conns.get_mut(&conn).is_some_and(|c| c.req.missing.insert(*b));
+            }
+            if gone {
+                self.mark_labels(&[l]);
+            }
+            if !evs.is_empty() {
+                self.received_from(conn, l);
+            }
+            return self.log_events(Some(conn), l, evs, out);
+        }
         if !evs.is_empty() && self.records.shared.get(&conn).is_some_and(|s| s.has(&l)) {
             let delivered: Vec<BlobId> = evs.iter().filter_map(|e| if let Event::Added { blob_id, .. } = e { Some(*blob_id) } else { None }).collect();
             if self.is_unread(&l)? {
@@ -1622,6 +1643,12 @@ impl SyncEngine {
     /// Whether `conn`'s stream read the peer's log to its end with nothing waiting (tests).
     pub fn stream_caught_up(&self, conn: ConnId) -> bool {
         self.streams.get(&conn).is_some_and(|s| s.pulling.caught_up && s.pulling.unsettled.is_empty())
+    }
+
+    /// Whether `conn`'s stream read member `l` to the peer's end with no Pull out: its last
+    /// reply's end was a pass end there.
+    pub(crate) fn stream_read_through(&self, conn: ConnId, l: &LabelId) -> bool {
+        self.streams.get(&conn).is_some_and(|s| s.pulling.caught_up && s.pulling.asked.is_none() && s.pulling.in_stream.contains(l))
     }
 
     /// Whether `conn`'s reader is caught up on member `l` both ways (`label_status`'s idle
