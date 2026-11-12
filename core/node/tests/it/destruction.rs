@@ -2146,3 +2146,128 @@ fn a_release_requests_entry_goes_where_it_is_held_unread_spec_sync_5() {
     let held = rows(&mut net, b, &old);
     assert!(!ids.iter().any(|i| held.contains(i) || net.sync(b).holds_blob(i)), "gone at b: no row, no bytes");
 }
+
+/// What node `n` keeps of destroyed `t`: its record, the edge commits on it, and its parts held
+/// (the value-less creation, `roles.0`, the destroying requests' parts).
+fn leftovers(net: &mut Net, n: usize, t: Tid) -> usize {
+    let e = net.engine(n);
+    let commits: Vec<CommitId> = e.core.on_thing(&t).collect();
+    let parts: usize = commits.iter().map(|c| e.header(c).map_or(0, |h| h.aspects.iter().enumerate().filter(|(ai, a)| a.tid == t && e.part_held(c, *ai)).count())).sum();
+    usize::from(e.core.created(&t).is_some()) + e.core.ix.held.commits_on(&t).len() + parts
+}
+
+// spec/commits.md §5 (Destruction: kept while a request destroying it is in force): a thing destroyed
+// by purge that nothing needs keeps what judges its destruction for `ROLE_KEEP` after the request, then
+// nothing, at every node; a stale copy of its creation arriving later, before or after a restart,
+// brings nothing back
+#[test]
+fn a_purged_thing_nothing_needs_keeps_nothing_past_its_requests_window_spec_commits_5() {
+    let Setup { mut net, a, b, c, g } = setup();
+    let (t, creation) = made(&mut net, a, g);
+    let tb = net.tid(b);
+    net.grant(a, t, tb, Role::Admin);
+    net.write(b, t, "y");
+    net.run();
+    let stale = net.engine(a).package(&creation).unwrap().unwrap();
+    purge_thing(&mut net, a, t);
+    for _ in 0..3 {
+        net.advance(70_000);
+    }
+    for n in [a, b, c] {
+        gone(&mut net, n, t);
+        // the record, the grant's edge commit, the value-less creation, its `roles.0` parts and the
+        // request's part
+        assert!(leftovers(&mut net, n, t) >= 4, "node {n}: what judges the destruction is kept in its window");
+    }
+    net.advance(osis_base::format::ROLE_KEEP_MS);
+    for n in [a, b, c] {
+        gone(&mut net, n, t);
+        assert_eq!(leftovers(&mut net, n, t), 0, "node {n}: nothing kept past the window");
+    }
+    let _ = net.engine(b).ingest(&stale.bytes, stale.blobs.clone());
+    net.run();
+    gone(&mut net, b, t);
+    assert_eq!(leftovers(&mut net, b, t), 0, "a stale copy brings nothing back");
+    net.restart(b, 79);
+    let _ = net.engine(b).ingest(&stale.bytes, stale.blobs);
+    net.advance(70_000);
+    for n in [a, b, c] {
+        gone(&mut net, n, t);
+        assert_eq!(leftovers(&mut net, n, t), 0, "node {n}: nothing back after a restart");
+    }
+}
+
+/// How the last dependent of a destroyed thing lets go of it.
+#[derive(Clone, Copy, Debug)]
+enum LetGo {
+    Expiry,
+    Purge,
+    /// The node loses read access to the dependent's group.
+    LostAccess,
+}
+
+// spec/commits.md §5 (Destruction: kept while a held thing needs it): t, purged, is referenced by x.
+// Past the request's window every node keeps what tells t was destroyed while x references it; once
+// that reference goes (it expires, is purged, or the node loses read access to x) nothing of t is left
+// there, and the same entries coming round again bring nothing back
+#[test]
+fn a_destroyed_thing_leaves_nothing_once_its_last_dependent_lets_go_spec_commits_5() {
+    let refs = Ak::new("t:refs.0").unwrap();
+    for how in [LetGo::Expiry, LetGo::Purge, LetGo::LostAccess] {
+        let Setup { mut net, a, b, c, g } = setup();
+        let (t, _) = made(&mut net, a, g);
+        let x = net.item(a, g, g, "x");
+        let mut m = Mutation::new();
+        m.set(x, &refs, &Value::Set([Value::Tid(t)].into())).unwrap();
+        if matches!(how, LetGo::Expiry) {
+            m.expires_all(osis_base::WallMs(net.now() + osis_base::format::ROLE_KEEP_MS + 600_000));
+        }
+        net.engine(a).commit(m).unwrap().unwrap();
+        net.run();
+        purge_thing(&mut net, a, t);
+        for _ in 0..3 {
+            net.advance(70_000);
+        }
+        net.advance(osis_base::format::ROLE_KEEP_MS);
+        for n in [a, b, c] {
+            gone(&mut net, n, t);
+            assert!(net.engine(n).core.created(&t).is_some(), "{how:?} node {n}: t's record kept while x references it");
+            assert!(leftovers(&mut net, n, t) >= 3, "{how:?} node {n}: its record, value-less creation and request part");
+        }
+        let at: Vec<usize> = match how {
+            LetGo::Expiry => {
+                net.advance(700_000);
+                vec![a, b, c]
+            }
+            LetGo::Purge => {
+                let mut m = Mutation::new();
+                m.set(x, &ct::PURGE, &osis_base::WallMs(net.now())).unwrap();
+                m.purge(PurgeItem::Aspect { tid: x, ak: refs.clone() });
+                net.engine(a).commit(m).unwrap().unwrap();
+                for _ in 0..3 {
+                    net.advance(70_000);
+                }
+                vec![a, b, c]
+            }
+            LetGo::LostAccess => {
+                let tb = net.tid(b);
+                net.engine(a).demote(&g, &osis_node::flows::Demotion { holder: tb, new: None, retain: Some(false) }).unwrap();
+                for _ in 0..3 {
+                    net.advance(70_000);
+                }
+                assert_eq!(net.engine(b).get(&x, &refs).unwrap(), None, "b forgot x's content");
+                vec![b]
+            }
+        };
+        for n in at {
+            gone(&mut net, n, t);
+            assert_eq!(leftovers(&mut net, n, t), 0, "{how:?} node {n}: nothing of t once x lets go");
+        }
+        for _ in 0..3 {
+            net.advance(70_000);
+        }
+        for n in [a, b, c] {
+            assert_eq!(net.engine(n).core.created(&t).is_some(), matches!(how, LetGo::LostAccess) && n != b, "{how:?} node {n}: nothing comes back");
+        }
+    }
+}

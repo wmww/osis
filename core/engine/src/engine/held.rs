@@ -43,6 +43,9 @@ pub struct Held {
     moved: BTreeSet<Tid>,
     /// Things whose creation record `create` added since `take_records`.
     records: Vec<Tid>,
+    /// Holders a thing stopped naming since `take_unnamed` (`retention::destroy`: a destroyed one may
+    /// have lost its last dependent).
+    unnamed: BTreeSet<Tid>,
     /// Role commits held that do not count (an account's at a closed epoch no word names):
     /// left out of what perm reads (`HeldSet::edge_commits`). By ID, whether held or not, so a
     /// commit re-derived (`add_commit`) keeps its standing.
@@ -262,6 +265,7 @@ impl Held {
                 *n = n.saturating_sub(1);
                 if *n == 0 {
                     e.remove(&t);
+                    self.unnamed.insert(m);
                     if let Some(x) = self.named.get_mut(&t) {
                         x.remove(&m);
                         if x.is_empty() {
@@ -382,6 +386,11 @@ impl Held {
     /// Things whose held inputs changed since the last call of this one (`apply::waits`).
     pub fn take_moved(&mut self) -> BTreeSet<Tid> {
         std::mem::take(&mut self.moved)
+    }
+
+    /// Holders some thing stopped naming since the last call.
+    pub fn take_unnamed(&mut self) -> BTreeSet<Tid> {
+        std::mem::take(&mut self.unnamed)
     }
 
     /// Things whose held inputs changed since the last `take_touched`.

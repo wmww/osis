@@ -481,6 +481,21 @@ pub(crate) fn decode_stored_header(id: &CommitId, bytes: &[u8]) -> Option<Header
     Header::decode_stored(bytes).ok()
 }
 
+/// The author and actor of a held durable commit with a part not dropped on a thing other than
+/// that signer (`Indexes::signed`).
+fn signers_elsewhere(m: &Meta) -> Vec<Tid> {
+    if m.view.memory {
+        return Vec::new();
+    }
+    let mut out: Vec<Tid> = Vec::new();
+    for k in [m.view.author, m.view.actor] {
+        if !out.contains(&k) && m.view.aspects.iter().enumerate().any(|(ai, a)| a.tid != k && !m.dropped.contains_key(&ai)) {
+            out.push(k);
+        }
+    }
+    out
+}
+
 fn fallback_header(v: &View) -> Header {
     Header {
         version: osis_base::format::FORMAT_VERSION,
@@ -675,6 +690,9 @@ indexes! {
     /// `validity::acts_for` when the actor's timeline changes, a demotion's frontier, the
     /// actors this node acts for (`Core::acting`).
     pub by_actor: JSetMap<(Tid, Tid), CommitId>,
+    /// Per author or actor, its held durable commits with a part not dropped on another thing
+    /// (`signers_elsewhere`): what a destroyed key actor's record verifies (`retention::destroy::dependents`).
+    pub signed: JMap<Tid, u64>,
     /// The commits whose header lists each chunk blob (`View::chunks`).
     pub by_chunk: JSetMap<osis_base::BlobId, CommitId>,
     /// Node- and session-form ranges per (tid, ak, own source): (lo, commit) -> hi. Keyed by
@@ -2229,6 +2247,8 @@ impl Core {
         // a part joined or dropped since is no longer marked forgotten
         m.forgot.retain(|ai| m.missing.contains(ai));
         m.to_fetch.retain(|ai| m.missing.contains(ai));
+        let was = self.ix.commits.get(&id).map(signers_elsewhere).unwrap_or_default();
+        self.note_signed(&was, &signers_elsewhere(&m));
         self.index_own(&id, &m, true);
         // a part held invalid (a late part joining, a leftover kept) goes at the transaction's end
         if (0..m.valid.len()).any(|ai| !m.valid_at(ai) && m.holds(ai)) {
@@ -2241,10 +2261,33 @@ impl Core {
 
     pub(crate) fn take_meta(&mut self, id: &CommitId) -> Option<Meta> {
         let m = self.ix.commits.remove(id)?;
+        self.note_signed(&signers_elsewhere(&m), &[]);
         self.note_rotation(&m);
         self.index_own(id, &m, false);
         self.note_none(&m);
         Some(m)
+    }
+
+    /// Moves `Indexes::signed` from a commit's signers `was` to `now` (`signers_elsewhere`). A
+    /// key actor left with none is judged again (`retention::destroy::apply_destructions`).
+    fn note_signed(&mut self, was: &[Tid], now: &[Tid]) {
+        for k in now.iter().filter(|k| !was.contains(k)) {
+            let n = self.ix.signed.get(k).copied().unwrap_or(0);
+            self.ix.signed.insert(*k, n + 1);
+        }
+        for k in was.iter().filter(|k| !now.contains(k)) {
+            match self.ix.signed.get(k).copied().unwrap_or(0) {
+                0 | 1 => {
+                    self.ix.signed.remove(k);
+                    if self.is_key_actor(k) {
+                        self.destroyed_due.insert(*k);
+                    }
+                }
+                n => {
+                    self.ix.signed.insert(*k, n - 1);
+                }
+            }
+        }
     }
 
     /// The aspects of meta `m` (put: it applied, joined, flipped or dropped; or forgotten) whose

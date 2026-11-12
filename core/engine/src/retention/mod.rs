@@ -1039,6 +1039,13 @@ fn due_timers(tx: &mut Tx<'_>) -> Result<(Vec<Due>, u64)> {
 /// aspects it changed go to `changed`.
 fn run_timer(tx: &mut Tx<'_>, key: &[u8], c: &CommitId, ai: usize, kind: u8, changed: &mut BTreeSet<(Tid, Ak)>) -> Result<()> {
     tx.txn.remove_local(key, Shred::No)?;
+    // a request's floor is its window on a thing it destroyed (`destroy::in_force`): its keep is
+    // judged again
+    if kind == T_KEPT
+        && let Some(a) = tx.core.ix.commits.get(c).and_then(|m| m.view.aspects.get(ai)).filter(|a| osis_commit::retention::destroying_request(a.ak.as_str()))
+    {
+        tx.core.destroyed_due.insert(a.tid);
+    }
     // a value part's keep bound changes nothing held, only its listing
     if kind == T_KEPT && tx.core.ix.commits.get(c).and_then(|m| m.view.aspects.get(ai)).is_some_and(|a| !a.ak.signal()) {
         return crate::engine::listing::kept_passed(tx, c, ai);

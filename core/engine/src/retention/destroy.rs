@@ -4,14 +4,18 @@
 //! bodies dropped (node-sync then deletes them at hosts by the dropped-body path), its states and
 //! per-aspect rows. Records are identity, `created.0` is existence: what the thing created lives
 //! on: authority that passed through it stands as its frozen history says. Its record, its
-//! value-less creation and its `roles.0` parts (no content) stay while it **keeps**: destroyed by
-//! purge (for good: the right to purge is read from them, and a removal arriving later may make
-//! it fall; a fall reopens what the destruction dropped, `reopen_fallen`), or with a dependent here
-//! (`dependents`): another held thing it is on an authority path of (a held record naming it
-//! first admin, a held edge write naming it holder), whose verdicts climb its record edge and
-//! frozen edges, or for a key actor a held commit it signed or acted in with a part held on
-//! another thing, which its record verifies. A destroyed thing that keeps nothing leaves only the
-//! commits' headers, and the destroyed actors named on it, kept only for it, go then too.
+//! value-less mintings, its `roles.0` parts (no content) and the destroying requests' parts stay
+//! while it **keeps** (`keeps`), by one rule: while something held needs them. A held thing it is
+//! on an authority path of (`dependents`: a held record naming it first admin, a held edge
+//! write naming it holder, whose verdicts climb its record edge and frozen edges; for a key actor
+//! a held commit it signed or acted in with a part held on another thing, which its record
+//! verifies), a held thing listing or referencing it (`needs_evidence`), or a held request
+//! destroying it while it may be judged again (`in_force`: `ROLE_KEEP` after it or to its expiry, as role history
+//! is kept; a removal ordered before it may make it fall, `reopen_fallen`). It is judged again
+//! whenever one of those lets go, however: a reference or list going (`refs::note`), a record or
+//! edge naming it going (`Held::take_unnamed`), a key actor's last commit held elsewhere going
+//! (`Indexes::signed`), a request's window ending (its part's `T_KEPT` timer, or its part expiring). A
+//! destroyed thing that keeps nothing leaves only the commits' headers.
 //! What a dependent needs travels with the dependent: its holders place the record and frozen
 //! history under its labels (`Engine::destroyed_upstream`), and a node that kept nothing takes them
 //! again when it opens them (`takes_late`), so it judges a dependent reaching it later as the
@@ -30,7 +34,6 @@ use osis_store::Shred;
 use std::collections::BTreeSet;
 
 const CREATED: &str = osis_commit::retention::CREATED;
-const RELEASED: &str = osis_commit::retention::RELEASED;
 const ROLES: &str = "roles.0";
 
 /// Aspects whose parts a destroyed thing still takes (`thing_wait`), so its destruction is judged alike:
@@ -198,14 +201,27 @@ pub(crate) fn needs_from(ak: &Ak) -> bool {
     !ak.ephemeral() && ak.as_str() != osis_schema::RawKey::ak(&osis_schema::core_types::GROUP)
 }
 
-/// Whether a request destroying `t` is still in force here: a purge for good, a release until its
-/// expiry; a destruction by expiry alone has none.
+/// Whether a request destroying `t` is in force here: until the latest held request standing
+/// over a minting of it passes `wall_ms(ts) + ROLE_KEEP` or its `expires`, the earlier (a release's
+/// `expires`; a purge's floor, `purge_keep_until`: while its blobs are kept for nodes that have not
+/// seen it, and a role write ordered before it may make it fall). Judging it reads `t`'s record and
+/// frozen edges. Judged again at that end: the request's part on `t` going value-less, or its floor's
+/// timer (`T_KEPT`). Not for a thing whose every creation is past its expiry: nothing can make that
+/// fall.
 fn in_force(tx: &Tx<'_>, t: &Tid) -> bool {
-    !every_creation_expired(tx, t) && release_state(tx.core, t, tx.now().0) != Some(true)
+    if every_creation_expired(tx, t) {
+        return false;
+    }
+    let now = tx.now().0;
+    destroying_requests(tx.core, t).iter().filter_map(|pc| tx.core.ix.commits.get(pc)).any(|m| {
+        let end = osis_commit::retention::release_expires(m.view.ts).min(m.header.expires.unwrap_or(u64::MAX));
+        end > now
+    })
 }
 
-/// Whether destroyed `t` keeps its record and what tells it was destroyed (`in_force`, `needs_evidence`),
-/// noting it in `Core::destroyed_kept` while something needs it.
+/// Whether destroyed `t` keeps its record and what tells it was destroyed: while a held thing needs
+/// it (`needs_evidence`, noted in `Core::destroyed_kept`) or a request destroying it is in force
+/// (`in_force`).
 fn keeps(tx: &mut Tx<'_>, t: &Tid) -> Result<bool> {
     let needs = needs_evidence(tx, t)?;
     tx.core.note_destroyed_kept(t, needs);
@@ -217,11 +233,14 @@ fn keeps(tx: &mut Tx<'_>, t: &Tid) -> Result<bool> {
 pub(crate) fn apply_destructions(tx: &mut Tx<'_>) -> Result<()> {
     let dirty: BTreeSet<Tid> = tx.core.valueless_dirty.iter().filter(|(_, ak)| ak.as_str() == CREATED).map(|(t, _)| *t).collect();
     let (due, fell): (BTreeSet<Tid>, BTreeSet<Tid>) = dirty.into_iter().partition(|t| tx.core.destroyed(t));
-    // destroyed things whose keep may have gone: a release request's part on it expired, or a
-    // thing needing its evidence let go of it (`Core::destroyed_due`)
-    let mut again: BTreeSet<Tid> = tx.core.valueless_dirty.iter().filter(|(_, ak)| ak.as_str() == RELEASED).map(|(t, _)| *t).collect();
+    // destroyed things whose keep may have gone: a destroying request's part on it expired, its
+    // window ended, or something that needed it let go of it (`Core::destroyed_due`: a reference
+    // or list went, a key actor's last commit held elsewhere; `Held::take_unnamed`: a record or
+    // edge naming it went)
+    let mut again: BTreeSet<Tid> = tx.core.valueless_dirty.iter().filter(|(_, ak)| osis_commit::retention::destroying_request(ak.as_str())).map(|(t, _)| *t).collect();
     again.extend(std::mem::take(&mut tx.core.destroyed_due));
-    again.retain(|t| !due.contains(t) && !fell.contains(t));
+    again.extend(tx.core.ix.held.take_unnamed());
+    again.retain(|t| !due.contains(t) && !fell.contains(t) && tx.core.created(t).is_some() && tx.core.destroyed(t));
     if due.is_empty() && fell.is_empty() && again.is_empty() {
         return Ok(());
     }
@@ -255,6 +274,7 @@ pub(crate) fn apply_destructions(tx: &mut Tx<'_>) -> Result<()> {
     // a kept destroyed thing goes once nothing keeps it (what that drops may let more go)
     loop {
         again.extend(std::mem::take(&mut tx.core.destroyed_due));
+        again.extend(tx.core.ix.held.take_unnamed());
         let Some(t) = again.pop_first() else { break };
         if tx.core.destroyed(&t) && tx.core.created(&t).is_some() && !keeps(tx, &t)? {
             held_changed |= destroy_thing(tx, &t, &mut changed)?;
@@ -325,9 +345,8 @@ fn every_creation_expired(tx: &Tx<'_>, t: &Tid) -> bool {
 
 /// Whether something held here depends on `t` (the module doc): `t` is on an authority path of
 /// another held thing (a held record names it first admin, or a held edge write names it
-/// holder), or for a key actor a held commit it signed or acted in has a part held on another
-/// thing. The last walks the commits: only a key actor's destruction asks it, which is rare
-/// (notes/coordination.md, Rare paths may be brute force).
+/// holder), or for a key actor a held durable commit it signed or acted in has a part held on
+/// another thing (`Indexes::signed`).
 pub(crate) fn dependents(core: &crate::engine::Core, t: &Tid) -> bool {
     if core.ix.held.named_on(t).any(|x| x != t) {
         return true;
@@ -335,7 +354,9 @@ pub(crate) fn dependents(core: &crate::engine::Core, t: &Tid) -> bool {
     if !core.is_key_actor(t) {
         return false;
     }
-    core.ix.commits.values().any(|m| (m.header.author == *t || m.header.actor == *t) && m.header.aspects.iter().enumerate().any(|(ai, a)| a.tid != *t && !m.dropped.contains_key(&ai)))
+    let signed = core.ix.signed.get(t).is_some_and(|n| *n > 0);
+    debug_assert_eq!(signed, core.ix.commits.values().any(|m| !m.view.memory && (m.view.author == *t || m.view.actor == *t) && m.view.aspects.iter().enumerate().any(|(ai, a)| a.tid != *t && !m.dropped.contains_key(&ai))), "Indexes::signed of {t}");
+    signed
 }
 
 /// Drops everything of `t` (`apply_destructions`) but what it keeps (the module doc). Whether the role
@@ -348,8 +369,6 @@ fn destroy_thing(tx: &mut Tx<'_>, t: &Tid, changed: &mut BTreeSet<(Tid, Ak)>) ->
         // what stays still reads as gone (`Core::exists`): observers hear it
         reads_again(t, changed);
     }
-    // the actors named on it (its first admin, its holders), read before its record and edges go
-    let ups: Vec<Tid> = if keep { Vec::new() } else { tx.core.ix.held.holders_of(t).copied().collect() };
     // the holders its `roles.0` entries keyed go with the entries: read while the parts are held
     // kept or not, an edge write on it stamped after its destruction goes (`Destruction::after`), judged
     // once while the late writes are still held
@@ -422,12 +441,8 @@ fn destroy_thing(tx: &mut Tx<'_>, t: &Tid, changed: &mut BTreeSet<(Tid, Ak)>) ->
         if forget {
             forget_released(tx, t)?;
         }
-        // the destroyed actors on its authority paths, kept for it alone, go too
-        for up in ups {
-            if up != *t && tx.core.created(&up).is_some() && tx.core.destroyed(&up) {
-                destroy_thing(tx, &up, changed)?;
-            }
-        }
+        // the destroyed actors on its authority paths, kept for it alone, go in
+        // `apply_destructions`'s loop: its record and edges going unname them (`Held::take_unnamed`)
     }
     tx.core.role_changed();
     Ok(held_changed || !keep)
