@@ -128,7 +128,7 @@ notes/crypto.md (Frozen coverage). One actor, read role; first admin O and admin
 | `C_regrant_else_nomet` | by hand: as C_regrant_else without `MetRaise` (negative control) | **fails** `NoLeak` (O rotates naming ^Gr; P, lacking Dp, holds Gr applied, establishes O's epoch and re-seals M at it; O writes under it) | 39,062 | 74 s (8 workers, load 15) |
 | `C_regrant_noraise` | as C_regrant without `Raise` (negative control) | **fails** `NoLeak` (O's epoch for Rm names Rm; P's re-grant boxed M at it; O, holding Gr, still encrypts under it) | 1,817 | 3 s |
 | `C_regrant_reader` | as C_regrant, P demoted to read (the stated limit: a reader's raise forces nothing) | **fails** `NoLeak` | 1,754 | 3 s |
-| `C_regrant_rot` | by hand: writers O and Q, P re-grants from Rm (`PKnows`); Q may hold Gr without Dp and box M | pass (with `Else`/`MetRaise` in the model: no violation in 1,388,717 states, stopped with 111,343 queued) | 1,430,307 | 31.5 min (8 workers, load 20-36) |
+| `C_regrant_rot` | by hand: writers O and Q, P re-grants from Rm (`PKnows`); Q may hold Gr without Dp and box M | pass | 1,430,307 | 30 min (12 workers, load 12) |
 | `C_regrant_rot_noraise` | as C_regrant_rot without `Raise` (negative control) | **fails** `NoLeak` | 2,777 | 3 s |
 | `C_regrant_rot_nomark` | as C_regrant_rot, the raise named as its commit (`Marked = FALSE`; negative control) | **fails** `NoLeak` (O, holding S and Gr but not Rm, applies Gr as a lowering of M from admin, names it and boxes M; once Rm and Dp arrive Gr applies nothing and that name covers it) | 7,346 | 4 s |
 | `C_regrant_own` | by hand: as C_regrant_rot, P holding nothing: it removes M itself (W) before re-granting; Q names W | pass | 1,472,612 | 26 min (12 workers, load 12) |
