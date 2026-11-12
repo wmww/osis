@@ -9,7 +9,7 @@ use net::*;
 use osis_base::{BlobId, LabelId, Role, Tid};
 use osis_crypto::{Secret32, WRAP_LEN};
 use osis_node::sync::{Action, EntryKind};
-use osis_proto::{Entry, LabelStore, Message, encode_frame};
+use osis_proto::{LabelStore, Message, encode_frame};
 
 const WRITER: u8 = 0;
 const READER: u8 = 1;

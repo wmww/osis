@@ -487,7 +487,7 @@ impl SyncEngine {
             }
             match fate {
                 Fate::Keep | Fate::Wait => {}
-                Fate::Delete(why, item) => {
+                Fate::Delete(_, item) => {
                     left.commits.insert(commit);
                     if !busy(self, &sent, &id) {
                         sent.insert(id);
