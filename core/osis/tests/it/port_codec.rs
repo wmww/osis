@@ -1,4 +1,4 @@
-//! The client port's values (notes/client-port.md §2, `port::codec`): every type the method table
+//! The client port's values (spec/wire.md §11.2 (client port), notes/client-port.md §2, `port::codec`): every type the method table
 //! carries reads from its layout and writes back the same value, with optional positions present
 //! and absent; a value of the wrong shape is refused. The literals are the layout.
 
