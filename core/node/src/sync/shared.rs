@@ -1002,8 +1002,9 @@ impl SyncEngine {
         }
         let mut takes = Vec::new();
         for (i, l, blob, wrap, sig) in deposits {
-            // at a sync ID kept unread, a Deposit by the hub's store's rules
-            let code = if !things.contains_key(&l) && self.is_unread(&l)? {
+            // at a sync ID this node does not read, a Deposit by the hub's store's rules (held
+            // unread, or not held yet)
+            let code = if !things.contains_key(&l) {
                 self.unread_deposit(conn, l, &blob, wrap, &sig, out)?
             } else {
                 let code = self.shared_deposit_verdict(conn, &served, &things, l, &blob, &wrap, &sig)?;

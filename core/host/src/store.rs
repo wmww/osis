@@ -937,6 +937,12 @@ impl HostStore {
         self.finish(tx)
     }
 
+    /// Whether this store would take `label`'s registration (`admit_label`, caps aside): one
+    /// node sync reads comes from `label.0` instead.
+    pub fn admits(&self, label: &LabelId) -> bool {
+        !self.reads(label) && self.admission.admits(label)
+    }
+
     pub fn set_admission(&mut self, admission: Admission, caps: BTreeMap<LabelId, LabelCaps>) {
         self.admission = admission;
         self.caps = caps;

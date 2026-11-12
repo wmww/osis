@@ -228,8 +228,9 @@ impl SyncEngine {
         let code = {
             let mut hub = self.hub();
             // a sync ID not held here (yet: a label is registered after its first deposits may
-            // go) is refused for now, as any Deposit before its label is (spec/sync.md §5)
-            let Some(k) = hub.head_keys(&l).map_err(hub_err)? else { return Ok(Code::RATE_LIMITED) };
+            // go) is refused for now where its registration would be taken, as any Deposit before
+            // its label is (spec/sync.md §5)
+            let Some(k) = hub.head_keys(&l).map_err(hub_err)? else { return Ok(if hub.admits(&l) { Code::RATE_LIMITED } else { Code::NOT_ADMITTED }) };
             let mut struck = false;
             let (code, signed) = osis_proto::serving::deposit(&mut *hub, now, &l, &k, blob, wrap, sig, &mut struck).map_err(hub_err)?;
             // refused for now passes on (spec/sync.md §10, Deposit items); any other refusal is 14

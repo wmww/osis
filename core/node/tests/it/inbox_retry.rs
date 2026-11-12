@@ -42,11 +42,10 @@ fn refused_inbox_deposit_retried_spec_sync_3() {
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
     net.run();
-    assert!(net.sync(a).take_diagnostics().iter().any(|d| d.contains("code 13")), "refused: no inbox label yet");
-    // Bob comes online: his inbox label registers; Alice deposits again after the back-off
+    assert_ne!(net.engine(b).role_on(&g), Some(Role::Read), "no inbox label yet");
+    assert_eq!(net.sync(a).deliveries_pending(), 1, "queued");
+    // Bob comes online: his inbox label registers; Alice's deposit goes once the peer shows it
     net.blocked.clear();
-    net.advance(1_000);
-    assert_ne!(net.engine(b).role_on(&g), Some(Role::Read), "not before the back-off");
     for _ in 0..3 {
         net.advance(10_000);
     }
@@ -196,7 +195,7 @@ fn persons(replaced: usize) -> (Net, usize, usize, osis_base::Tid, osis_base::Ti
 #[test]
 fn inbox_deposit_retried_for_hours_spec_sync_5() {
     let (mut net, a, b, _, g, item) = persons(0);
-    assert!(net.sync(a).take_diagnostics().iter().any(|d| d.contains("code 13")), "refused: no inbox label yet");
+    assert_ne!(net.engine(b).role_on(&g), Some(Role::Read), "no inbox label yet");
     for _ in 0..12 {
         net.advance(1_800_000);
     }
