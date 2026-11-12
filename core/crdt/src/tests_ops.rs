@@ -816,3 +816,65 @@ fn whole_collection_diff_is_linear_spec_9() {
         assert!(big[i] <= 15 * small[i] + 15, "{what}: {} visited at n, {} at 10n", small[i], big[i]);
     }
 }
+
+/// §9: under a view projecting several stored keys to one key, a `set` of the map writes every
+/// such stored key into its lowest live record and removes every live record of a stored key
+/// whose projection the value lacks; an opaque key is left alone.
+#[test]
+fn diff_writes_every_stored_key_of_a_projected_key_spec_9() {
+    /// Ints halved; 5 opaque.
+    #[derive(Clone, Copy)]
+    struct Halves;
+    impl crate::view::View for Halves {
+        fn encoding(&self) -> Option<crate::fragment::Encoding> {
+            None
+        }
+        fn project<'a>(&self, v: &'a Value) -> Option<std::borrow::Cow<'a, Value>> {
+            match v {
+                Value::Int(5) => None,
+                Value::Int(i) => Some(std::borrow::Cow::Owned(Value::Int(i / 2))),
+                _ => Some(std::borrow::Cow::Borrowed(v)),
+            }
+        }
+        fn field(&self, _: u64) -> Option<Self> {
+            Some(Halves)
+        }
+        fn field_default(&self, _: u64) -> Option<Value> {
+            None
+        }
+        fn case(&self, _: u64) -> Option<Self> {
+            Some(Halves)
+        }
+        fn element(&self) -> Option<Self> {
+            Some(Halves)
+        }
+        fn key(&self) -> Option<Self> {
+            Some(Halves)
+        }
+    }
+    let map = |ks: &[i64]| Value::Map(ks.iter().map(|&k| (Value::Int(k), Value::Str("old".into()))).collect());
+    // two sources create keys 0 and 2 concurrently: two live records each
+    let mut state = Fragment::default();
+    for (t, ks) in [(7u8, &[0, 1, 2, 5][..]), (8, &[0, 2])] {
+        let mut w = Writer::new(ts(1 << 16), sess(Tid::from_bytes([t; 15])), 1);
+        state.join(create(&mut w, &AnyView, &map(ks)).unwrap());
+    }
+    let Fragment::Map(m) = &state else { panic!("map") };
+    // stored key of each record
+    let key_of: std::collections::BTreeMap<Dot, Value> = m.entries.keys().map(|id| (id.dot.clone(), id.key().unwrap().clone())).collect();
+    let mut w = Writer::new(ts(2 << 16), sess(Tid::from_bytes([9; 15])), 1);
+    let v = Value::Map([(Value::Int(0), Value::Str("new".into()))].into());
+    let Some(Fragment::Map(d)) = diff(&mut w, Some(&state), &Halves, &v).unwrap() else { panic!("map delta") };
+    // (stored key, record, written: true / removed: false); removals are keyless (§5.6)
+    let got: Vec<(Value, Dot, bool)> = d.entries.iter().map(|(id, e)| (key_of[&id.dot].clone(), id.dot.clone(), e.frag.is_some())).collect();
+    let lowest = |k: i64| key_of.iter().find(|(_, x)| **x == Value::Int(k)).map(|(d, _)| d.clone()).unwrap();
+    let records = |k: i64| key_of.iter().filter(move |(_, x)| **x == Value::Int(k)).map(|(d, _)| d.clone());
+    let mut want: Vec<(Value, Dot, bool)> = vec![(Value::Int(0), lowest(0), true), (Value::Int(1), lowest(1), true)];
+    want.extend(records(2).map(|d| (Value::Int(2), d, false)));
+    let sort = |mut x: Vec<(Value, Dot, bool)>| {
+        x.sort();
+        x
+    };
+    assert_eq!((records(0).count(), records(2).count()), (2, 2));
+    assert_eq!(sort(got), sort(want));
+}
