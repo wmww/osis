@@ -85,11 +85,12 @@ fn a_readers_deletion_leaves_the_entry_spec_sync_10() {
     let t = net.item(b, gs[0], gs[0], "kept");
     net.run();
     let l = label_of(&mut net, b, gs[0]);
-    let held = |net: &mut Net| net.sync(a).entries(&l).into_iter().find_map(|(id, k)| match k {
+    // the item's entries under l (a later push may add another for part of the commit)
+    let held = |net: &mut Net| -> Vec<_> { net.sync(a).entries(&l).into_iter().filter_map(|(id, k)| match k {
         osis_node::sync::EntryKind::Commit { commit, .. } if net.engine(a).header(&commit).is_some_and(|h| h.aspects.iter().any(|x| x.tid == t)) => Some(id),
         _ => None,
-    });
-    let entry = held(&mut net).expect("a holds the item's entry");
+    }).collect() };
+    let entry = *held(&mut net).first().expect("a holds the item's entry");
     let sent = std::rc::Rc::new(std::cell::Cell::new(false));
     let carried = sent.clone();
     net.tamper = Some(Box::new(move |m| match m {
@@ -105,7 +106,7 @@ fn a_readers_deletion_leaves_the_entry_spec_sync_10() {
     net.item(b, gs[0], gs[0], "a push to carry the deletion");
     net.run();
     assert!(sent.get(), "a push carried the deletion");
-    assert_eq!(held(&mut net), Some(entry), "the entry stays");
+    assert!(held(&mut net).contains(&entry), "the entry stays");
     assert_eq!(net.read(a, t), Some(s("kept")));
 }
 
