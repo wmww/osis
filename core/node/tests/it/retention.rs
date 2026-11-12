@@ -168,14 +168,18 @@ fn purge_rights(orders: &[[usize; 3]]) {
                 (2, false) => by.writer(),
                 _ => false,
             };
-            let mut lp = net(3 + orders.len(), 0);
-            lp.sync_all().unwrap();
-            let t = new_thing(&mut lp, 0);
-            for i in [1, 2] {
-                let n = lp.peers[i].engine.me();
-                set_edge(&mut lp.peers[0].engine, t, n, Some(edge(Role::Write)), None);
-            }
-            lp.sync_all().unwrap();
+            // peers 1 and 2 writers of 0's new thing, synced: built once per node count
+            let (mut lp, t) = LocalPeer::cached(&format!("retention::purge_rights/{}", orders.len()), || {
+                let mut lp = net(3 + orders.len(), 0);
+                lp.sync_all().unwrap();
+                let t = new_thing(&mut lp, 0);
+                for i in [1, 2] {
+                    let n = lp.peers[i].engine.me();
+                    set_edge(&mut lp.peers[0].engine, t, n, Some(edge(Role::Write)), None);
+                }
+                lp.sync_all().unwrap();
+                (lp, t)
+            });
             lp.advance(5);
             let mut m = Mutation::new();
             m.retention(t, &REG, crate::common::purgeable_by(by)).unwrap();
