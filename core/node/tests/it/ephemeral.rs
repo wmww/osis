@@ -2462,6 +2462,11 @@ fn invalid_on_arrival_held_once_valid_spec_sync_9() {
     let ok = forge_memory(&mut net, r, w, &ak, Value::Map(osis_base::ValueMap::from([(s("r"), s("ok"))])));
     deliver(&mut net, d, &ok.blob);
     assert_eq!(notes(&mut net, d, w).get("r"), None, "promotion not seen here yet");
+    assert!(net.engine(d).holds_memory(&ok.id) && !net.engine(d).memory_body_held(&ok.id), "dropped while invalid, known");
+    // r uploads it and goes: the host is the one source left (spec/permissions.md §6)
+    net.feed(r, Event::Local);
+    net.run();
+    net.set_online(r, false);
     net.set_online(d, true);
     net.run();
     net.advance(60_000);
@@ -2494,12 +2499,15 @@ fn reader_flood_takes_no_cap_spec_permissions_6() {
     for i in 0..n {
         let c = forge_memory(&mut net, r, w, &ak, Value::Map(osis_base::ValueMap::from([(s(&format!("r{i}")), s("j"))])));
         let (blob, ev) = sealed(&mut net, a, g, &c.blob, Some(&wk), 100 + i);
-        let acts = push(&mut net, b, s1, l, vec![ev]);
+        // and a second encryption of it: a copy of a commit known with no body
+        let (again, ev2) = sealed(&mut net, a, g, &c.blob, Some(&wk), 10_000 + i);
+        let acts = push(&mut net, b, s1, l, vec![ev, ev2]);
         net.actions(b, acts);
-        flood.push((c.id, blob));
+        flood.push((c.id, blob, again));
     }
     net.run();
     assert_eq!(net.sync(b).ephemeral_bytes(&l), used, "the flood takes nothing of the cap");
+    assert!(flood.iter().all(|f| net.engine(b).blob(&f.1).unwrap().is_none() && net.engine(b).blob(&f.2).unwrap().is_none()), "no bytes of the flood kept");
     let known: Vec<_> = net.engine(b).memory_commits().into_iter().filter(|(c, _, _)| flood.iter().any(|f| f.0 == *c)).collect();
     assert!(known.iter().all(|(_, held, _)| *held == 0), "no body of the flood held");
     assert!(known.len() <= n as usize, "at most a header per entry known");

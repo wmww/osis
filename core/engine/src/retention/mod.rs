@@ -1132,7 +1132,11 @@ impl Engine {
     /// Forgets commit `c`, ID included: as if it had never applied (`apply::unindex_commit`).
     pub fn forget_commit(&mut self, c: &CommitId) -> Result<()> {
         let c = *c;
-        self.run(|tx| crate::apply::unindex_commit(tx, &c))
+        // a memory commit's is memory work (`forgettable`: one kept for an invalid part)
+        self.run(|tx| {
+            let memory = tx.is_memory_commit(&c);
+            tx.in_class(memory, |tx| crate::apply::unindex_commit(tx, &c))
+        })
     }
 
     /// Drops a body as covered (compaction, executed by node-sync): aspect `ak` of commit `c`.
