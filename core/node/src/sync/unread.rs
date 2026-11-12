@@ -36,6 +36,10 @@ pub(crate) struct Unread {
     streamed: BTreeSet<LabelId>,
     /// A head moved since the last step: its opens are judged before the step's event.
     pub(super) moved: bool,
+    /// Stamped entries announced without bytes while the store lacked the blob, with their wrap
+    /// and stamp: taken once the blob is held, whichever sync ID's fetch brought it
+    /// (`unread_take_held`); kept while some stream owes them.
+    pending: BTreeMap<(LabelId, BlobId), ([u8; WRAP_LEN], Signature)>,
 }
 
 impl SyncEngine {
@@ -172,6 +176,7 @@ impl SyncEngine {
         let mut changed = false;
         let mut relays = Vec::new();
         let mut taken = Vec::new();
+        let mut pending = Vec::new();
         {
             let mut hub = self.hub();
             let Some(k) = hub.head_keys(&l).map_err(hub_err)? else { return Ok(owed) };
@@ -187,6 +192,7 @@ impl SyncEngine {
                         Some(b) => b,
                         None => {
                             owed.insert(blob_id);
+                            pending.push((blob_id, wrap, stamp));
                             continue;
                         }
                     },
@@ -203,6 +209,9 @@ impl SyncEngine {
                 }
             }
         }
+        for (b, wrap, stamp) in pending {
+            self.unread.pending.insert((l, b), (wrap, stamp));
+        }
         if changed {
             self.hub_down(conn, osis_host::Down::Changed(l), out);
         }
@@ -211,6 +220,36 @@ impl SyncEngine {
             self.stream_relay(Some(conn), r.label, r.blob_id, &r.blob, r.wrap, Some(r.stamp), out)?;
         }
         Ok(owed)
+    }
+
+    /// Owed entries of unread sync IDs whose blob the store holds now (fetched under another
+    /// sync ID: bytes cross once) are taken by its Upload rules, as `unread_events` takes one
+    /// with its bytes.
+    pub(crate) fn unread_take_held(&mut self, conn: ConnId, owed: &BTreeSet<(LabelId, BlobId)>, out: &mut Vec<Action>) -> Result<()> {
+        let held: Vec<(LabelId, BlobId)> = {
+            let hub = self.hub();
+            let mut v = Vec::new();
+            for (l, b) in owed {
+                if self.unread.pending.contains_key(&(*l, *b)) && hub.blob(b).map_err(hub_err)?.is_some() {
+                    v.push((*l, *b));
+                }
+            }
+            v
+        };
+        let mut by_label: BTreeMap<LabelId, Vec<osis_proto::Event>> = BTreeMap::new();
+        for (l, b) in held {
+            let Some((wrap, stamp)) = self.unread.pending.remove(&(l, b)) else { continue };
+            by_label.entry(l).or_default().push(osis_proto::Event::Added { blob_id: b, blob: None, wrap, stamp: Some(stamp) });
+        }
+        for (l, evs) in by_label {
+            self.unread_events(conn, l, evs, out)?;
+        }
+        Ok(())
+    }
+
+    /// Drops what `unread_take_held` keeps for entries no stream owes any more.
+    pub(crate) fn unread_prune(&mut self, owed: &BTreeSet<(LabelId, BlobId)>) {
+        self.unread.pending.retain(|k, _| owed.contains(k));
     }
 
     /// Whether this node wants the bytes of unread `l`'s entry `b`: its store holds neither the

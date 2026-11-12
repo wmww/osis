@@ -369,3 +369,53 @@ fn a_peer_restored_from_a_backup_pulls_again_spec_sync_10() {
     net.advance(61_000);
     assert_eq!(net.read(b, t), Some(osis_base::Value::Str("again".into())));
 }
+
+// spec/sync.md §10 (Stream: bytes cross once): an edit of a thing two groups read and list is
+// one blob under both sync IDs; a peer that cannot read them, its bytes fetched under one, takes
+// it under both.
+#[test]
+fn a_blob_under_two_sync_ids_is_taken_under_both_spec_sync_10() {
+    use osis_schema::core_types as ct;
+    let (mut net, host, [a, b]) = hosted_nodes::<2>();
+    let g1 = net.group(a, &[(b, Role::Read)], &[host]);
+    let g2 = net.group(a, &[(b, Role::Read)], &[host]);
+    net.run();
+    // a thing with secrets of its own, read by both groups and listed in both
+    let me = net.tid(a);
+    let e = net.engine(a);
+    let mut m = osis_engine::Mutation::new();
+    let t = e.new_thing(&mut m, me);
+    m.set(t, &ct::GROUP, &ct::Group::default()).unwrap();
+    e.commit(m).unwrap();
+    let done = net.engine(a).give_own_secrets(&t).unwrap();
+    let acts = net.sync(a).carry_out(done).unwrap();
+    net.actions(a, acts);
+    let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
+    for g in [g1, g2] {
+        let done = net.engine(a).grant(&t, &g, &edge).unwrap();
+        let acts = net.sync(a).carry_out(done).unwrap();
+        net.actions(a, acts);
+        let e = net.engine(a);
+        let mut x = e.get_typed(&g, &ct::GROUP).unwrap().unwrap_or_default();
+        x.items.insert(t);
+        let mut m = osis_engine::Mutation::new();
+        m.set(g, &ct::GROUP, &x).unwrap();
+        e.commit(m).unwrap();
+    }
+    net.run();
+    net.advance(61_000);
+    let c = net.write(a, t, "under both");
+    net.run();
+    net.advance(61_000);
+    net.run();
+    let mut ids = BTreeSet::new();
+    for g in [g1, g2] {
+        let l = net.engine(a).labels_of(&g)[0].id;
+        let mine: Vec<BlobId> = net.sync(a).entries(&l).into_iter().filter(|(_, k)| matches!(k, osis_node::sync::EntryKind::Commit { commit, .. } if *commit == c)).map(|(id, _)| id).collect();
+        assert!(!mine.is_empty(), "the write is under {l:?}");
+        let held = net.host_ids(host, &l);
+        assert!(mine.iter().all(|id| held.contains(id)), "the peer holds it under {l:?}");
+        ids.extend(mine);
+    }
+    assert_eq!(ids.len(), 1, "one blob under both");
+}

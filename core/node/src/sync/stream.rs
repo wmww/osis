@@ -1269,6 +1269,7 @@ impl SyncEngine {
         let mut done: Option<Unsettled> = None;
         let mut report = None;
         while let Some(owed) = self.streams.get(&conn).and_then(|s| s.pulling.unsettled.front()).map(|u| u.owed.clone()) {
+            self.unread_take_held(conn, &owed, out)?;
             let left: BTreeSet<(LabelId, BlobId)> = owed.into_iter().filter(|(l, b)| self.wants(l, b)).collect();
             let Some(p) = self.streams.get_mut(&conn).map(|s| &mut s.pulling) else { break };
             let Some(front) = p.unsettled.front_mut() else { break };
@@ -1311,6 +1312,8 @@ impl SyncEngine {
     /// the first stream owing it (a fetch lost with its connection, or answered without it).
     pub(super) fn stream_settle_all(&mut self, out: &mut Vec<Action>) -> Result<()> {
         let waiting: Vec<ConnId> = self.streams.iter().filter(|(_, s)| !s.pulling.unsettled.is_empty()).map(|(c, _)| *c).collect();
+        let all: BTreeSet<(LabelId, BlobId)> = self.streams.values().flat_map(|s| s.pulling.unsettled.iter().flat_map(|u| u.owed.iter().copied())).collect();
+        self.unread_prune(&all);
         for conn in waiting {
             self.stream_settle(conn, out)?;
             let owed: BTreeSet<(LabelId, BlobId)> = self.streams.get(&conn).map(|s| s.pulling.unsettled.iter().flat_map(|u| u.owed.iter().copied()).collect()).unwrap_or_default();
