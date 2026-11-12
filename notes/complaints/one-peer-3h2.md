@@ -24,3 +24,5 @@
 - (re-walk round) Three "host lacks a must-hold body" seeds had one cause visible only on the serving side (a refused join with no `Lost` after it); a sim check that the two sides' stream joins agree after each settle would have named it at once.
 - (node fork) Counting passes by cause needed a temporary `#[track_caller]` probe on `mark_labels`/`mark_dirty` plus a thread-local map read in `passes`: a debug `PassStats` breakdown by trigger (stream arrival, own role commit reached, source moved, fill, resync) would answer "why 18 passes" without editing pass code.
 - (node fork) `Engine::me()` panics on a hub's engine ("joined no account"), so a probe printing the node's tid in shared code crashes hub nodes; `engine.tid()` is the safe tag.
+- (osis fork) The osis `World` storm report names message kinds only; a probe printing `osis_sim::net::frames` of each carried message (blob IDs per Stream/Delete) found each storm's blob in one run. A storm report with that detail would save the probe.
+- (osis fork) Paired nodes share the account tid, so `engine.me()` tags both alike in probes; `engine.tid()` (the node) tells them apart.
