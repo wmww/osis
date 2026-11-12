@@ -808,7 +808,7 @@ fn put_leftover(tx: &mut Tx<'_>, c: &CommitId, ai: usize, mut m: crate::engine::
     if m.stripped(ai) && m.valued(ai) == valued {
         return Ok(());
     }
-    let whole = !m.stripped(ai);
+    let fresh = !m.stripped(ai);
     m.set_hold(ai, Hold::Leftover { whole: whole_replace, valued });
     // a leftover says no entries (spec/permissions.md §5.2, Addenda: a list counts while its
     // body is held)
@@ -817,11 +817,11 @@ fn put_leftover(tx: &mut Tx<'_>, c: &CommitId, ai: usize, mut m: crate::engine::
     }
     if let Some(blob) = tx.get_commit(c)? {
         // its body goes: the blob without the slot, shredded
-        let (rest, shred) = if whole { (osis_commit::rewrite(&blob, |x| x == ai), Shred::Yes) } else { (std::sync::Arc::unwrap_or_clone(blob), Shred::No) };
+        let (rest, shred) = if fresh { (osis_commit::rewrite(&blob, |x| x == ai), Shred::Yes) } else { (std::sync::Arc::unwrap_or_clone(blob), Shred::No) };
         tx.put_commit(c, &rest, &m, shred, None)?;
     }
     tx.core.put_meta(*c, m);
-    if whole {
+    if fresh {
         tx.core.mark_changed(*c);
         if let Some(ch) = &mut tx.core.changed {
             ch.undropped.remove(c);
