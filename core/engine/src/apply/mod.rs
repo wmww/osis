@@ -778,7 +778,7 @@ fn ingest_class(tx: &mut Tx<'_>, mut blob: CommitBlob, origin: Origin) -> Result
             Ingested::Applied(id)
         }
         Exam::Pending(r, others) => {
-            // parts past their expiry (or a memory commit's purged ones) count as never received: examined again without them
+            // parts past their expiry (or purged ones that cannot be stripped) count as never received: examined again without them
             let (h, n) = (blob.header.clone(), blob.parts.len());
             crate::retention::pending_drops(tx, &id, &mut blob, &h)?;
             if blob.parts.len() != n {

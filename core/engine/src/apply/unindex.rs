@@ -173,11 +173,12 @@ mod tests {
         assert_eq!(e.get(&g, &ak("t:m.0")).unwrap(), None);
     }
 
-    // review (eph-unify-a): a memory body is never dropped for a keep bound, so its
-    // header (and expiry timer) is never forgotten while its live writes stay in the state; at
-    // its expiry it is held as its leftover, value-less (spec/crdt.md §4.7). spec: none (internal)
+    // spec/commits.md §5 Purge on replace, notes/ephemeral.md Principle: a memory aspect under
+    // purge on replace drops a replaced part at once under the replacer's cover, while the
+    // commit's live part on another aspect stays held, and at its expiry is held as its leftover,
+    // value-less (spec/crdt.md §4.7).
     #[test]
-    fn memory_purge_on_replace_ignored() {
+    fn memory_purge_on_replace_drops_the_replaced_part_spec_commits_5() {
         let mut lp = LocalPeer::fresh(1, WallMs(1_700_000_000_000));
         let e = &mut lp.peers[0].engine;
         let me = e.me();
@@ -186,32 +187,27 @@ mod tests {
         m.set(g, &ak("t:reg.0"), &Value::Str("g".into())).unwrap();
         m.set(g, &osis_schema::core_types::RETENTION, &osis_schema::core_types::RetentionSetting::of(ak("t:r+.0"), osis_schema::History::PurgeOnReplace)).unwrap();
         e.commit(m).unwrap();
-        let ret = osis_schema::Retention { by: osis_schema::PurgeBy::Writer };
         let t = WallMs(e.now().0 + 2 * 3_600_000);
         let mut m = Mutation::new();
         for (k, v) in [("t:r+.0", "v"), ("t:s+.0", "live")] {
-            m.retention(g, &ak(k), ret).unwrap();
             m.set(g, &ak(k), &Value::Str(v.into())).unwrap();
             m.expires(g, &ak(k), t).unwrap();
         }
         let c = e.commit_in_memory(m).unwrap().unwrap();
         lp.advance(10);
         let e = &mut lp.peers[0].engine;
-        // kills `r`'s write: a memory body ignores keep bounds (`s` live)
         let mut m = Mutation::new();
-        m.retention(g, &ak("t:r+.0"), ret).unwrap();
         m.set(g, &ak("t:r+.0"), &Value::Str("w".into())).unwrap();
         e.commit_in_memory(m).unwrap().unwrap();
-        lp.advance(2000 + 3_600_000);
-        lp.peers[0].tick().unwrap();
-        let e = &mut lp.peers[0].engine;
-        assert!(e.core.ix.commits.get(&c).is_some_and(|m| m.dropped.is_empty()));
+        let r = e.core.ix.commits.get(&c).and_then(|m| m.aspect(&g, &ak("t:r+.0"))).unwrap();
+        assert!(e.core.ix.commits.get(&c).is_some_and(|m| m.dropped.len() == 1 && m.dropped.contains_key(&r)), "the replaced part goes");
+        assert_eq!(e.get(&g, &ak("t:r+.0")).unwrap(), Some(Value::Str("w".into())));
         assert_eq!(e.get(&g, &ak("t:s+.0")).unwrap(), Some(Value::Str("live".into())));
         lp.advance(2 * 3_600_000);
         lp.peers[0].tick().unwrap();
         let e = &mut lp.peers[0].engine;
         assert_eq!(e.get(&g, &ak("t:s+.0")).unwrap(), None, "value-less at its expiry");
-        assert!(e.core.ix.commits.get(&c).is_some_and(|m| m.dropped.is_empty() && m.stripped.len() == 2), "held as its leftover");
+        assert!(e.core.ix.commits.get(&c).is_some_and(|m| m.stripped.len() == 1), "held as its leftover");
     }
 
     // eph-unify-a review (item 216): a memory aspect's state written by a durable transaction

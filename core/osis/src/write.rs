@@ -39,7 +39,8 @@ pub enum Expiry {
 /// it (its purgeable-by; admins always may).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Purge {
-    /// The aspect's whole history, and the aspect itself with it.
+    /// The aspect's whole history, and a durable aspect itself with it (an ephemeral one's
+    /// writes are held value-less: its removal would be an ephemeral write of its own).
     All,
     /// One commit's write. Its part stays listed as `Body::Purged` where it would be. If it is what the aspect
     /// reads now the value goes with it: `set` in the same commit to keep a value. A signal's fire
@@ -499,7 +500,9 @@ impl<'d> Write<'d> {
                 // `purge.0` (the engine leaves it out of a commit that expires)
                 WriteOp::Purge { tid, key: k } => {
                     let k = key(k)?;
-                    if k.signal() {
+                    // an ephemeral aspect's removal would be an ephemeral write: the request
+                    // alone holds its writes value-less
+                    if k.signal() || k.ephemeral() {
                         b.m.op(tid, &osis_schema::core_types::PURGE, PathOp { path: Vec::new(), op: Op::Replace(r.e.now().to_value()) })?;
                     } else {
                         b.m.op(tid, k, PathOp { path: Vec::new(), op: Op::RemoveAspect })?;
@@ -771,11 +774,9 @@ impl<'w, 'd, K: AspectKey> AspectWrite<'w, 'd, K> {
 
     /// Drops writes on the aspect for everyone (`Purge`). A request for one commit or one author
     /// is itself a write on the thing, so it fails `Permission` without write on the thing.
-    /// `Purge::All` of a value aspect removes it too.
+    /// `Purge::All` of a durable value aspect removes it too. The request is durable, also on an
+    /// ephemeral aspect: an ephemeral write beside it in one write is `Clash`.
     pub fn purge(&mut self, what: Purge) -> Result<()> {
-        if self.key.ephemeral() {
-            return Err(Error::Invalid("purge applies to durable aspects only".into()));
-        }
         let key = self.ok()?;
         match what {
             Purge::All => self.push(WriteOp::Purge { tid: self.tid, key }),

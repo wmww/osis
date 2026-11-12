@@ -38,15 +38,7 @@ pub(crate) fn pending_drops(tx: &mut Tx<'_>, id: &CommitId, blob: &mut osis_comm
         if let Some(t) = h.expires {
             tx.put_timer(t, id, ai, T_EXPIRY)?;
         }
-        if !known_purged(tx, h, id, ai)? {
-            continue;
-        }
-        if h.ephemeral.is_some() {
-            // a memory delta purged while waiting is dropped as never received (a divergence from
-            // durable data, issues/eph-parity.md Purge)
-            blob.parts.retain(|p| p.ai != ai);
-            strip_pending(tx, id, ai, false)?;
-        } else {
+        if known_purged(tx, h, id, ai)? {
             strip_purged(tx, id, blob, h, ai)?;
         }
     }
@@ -97,7 +89,8 @@ fn strip_purged(tx: &mut Tx<'_>, id: &CommitId, blob: &mut osis_commit::CommitBl
     tx.core.touch();
     // node-sync forgets the blobs holding it (`Engine::spent_copy`)
     tx.core.mark_changed(*id);
-    // the stored copy, shredded
+    // the stored copy, shredded, in its class (a memory commit's in memory, whichever transaction
+    // applies the request)
     if tx.core.ix.pending.contains_key(id)
         && let Some((kind, bytes)) = tx.txn.get_pending(id)?
         && let Ok(mut b) = osis_commit::CommitBlob::decode_stored(&bytes)
@@ -109,8 +102,10 @@ fn strip_purged(tx: &mut Tx<'_>, id: &CommitId, blob: &mut osis_commit::CommitBl
         } else {
             b.parts.retain(|p| p.ai != ai);
         }
-        tx.txn.remove_pending(id, Shred::Yes)?;
-        tx.txn.put_pending(id, kind, &b.encode())?;
+        tx.in_class(h.ephemeral.is_some(), |tx| {
+            tx.txn.remove_pending(id, Shred::Yes)?;
+            Ok(tx.txn.put_pending(id, kind, &b.encode())?)
+        })?;
     }
     Ok(())
 }
@@ -134,9 +129,6 @@ pub(crate) fn fetch_fallen(tx: &mut Tx<'_>, h: &Header, id: &CommitId, missing: 
 /// purge request naming them just applied (`purge_one`): held as `pending_drops` holds them.
 pub(super) fn purge_pending(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()> {
     let Some(h) = tx.core.ix.commits.get(c).map(|m| (*m.header).clone()).filter(|_| tx.core.ix.pending.contains_key(c)) else { return Ok(()) };
-    if h.ephemeral.is_some() {
-        return strip_pending(tx, c, ai, false);
-    }
     let Some((_, bytes)) = tx.txn.get_pending(c)? else { return Ok(()) };
     let Ok(mut blob) = osis_commit::CommitBlob::decode_stored(&bytes) else { return Ok(()) };
     strip_purged(tx, c, &mut blob, &h, ai)
@@ -240,8 +232,10 @@ pub(super) fn strip_pending(tx: &mut Tx<'_>, c: &CommitId, ai: usize, flag: bool
     }
     tx.core.touch();
     tx.core.mark_changed(*c);
-    tx.txn.remove_pending(c, Shred::Yes)?;
-    tx.txn.put_pending(c, kind, &blob.encode())?;
+    tx.in_class(blob.header.ephemeral.is_some(), |tx| {
+        tx.txn.remove_pending(c, Shred::Yes)?;
+        Ok(tx.txn.put_pending(c, kind, &blob.encode())?)
+    })?;
     if flag && let Some(a) = blob.header.aspects.get(ai) {
         suspect::raise(tx, &a.tid, &a.ak, suspect::Why::PendingExpiry, &[(*c, ai)])?;
     }

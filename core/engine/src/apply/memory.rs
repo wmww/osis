@@ -155,14 +155,14 @@ fn wait(tx: &mut Tx<'_>, blob: &CommitBlob, id: &CommitId) -> Result<crate::Inge
 
 impl Engine {
     /// What held memory commit `id` costs a holder, as the node cap counts it (spec/sync.md §9
-    /// Caps): per held part, its decoded heap size in each copy kept and
-    /// `PART_OVERHEAD` (`part_charge`). 0 when not held. Decodes its held parts again.
+    /// Caps): per held part, a leftover included (expired, purged), its decoded heap size in each
+    /// copy kept and `PART_OVERHEAD` (`part_charge`). 0 when not held. Decodes its held parts again.
     pub fn memory_charge(&mut self, id: &CommitId) -> Result<u64> {
         let Some(m) = self.core.ix.commits.get(id).filter(|m| m.view.memory).cloned() else { return Ok(0) };
         self.run(|tx| {
             tx.set_memory();
             let Some(blob) = tx.get_commit(id)? else { return Ok(0) };
-            let ais: BTreeSet<usize> = blob.parts.iter().map(|p| p.ai).filter(|ai| m.holds(*ai)).collect();
+            let ais: BTreeSet<usize> = (0..m.view.aspects.len()).filter(|ai| m.holds(*ai)).collect();
             let mut sum = 0u64;
             for ai in ais {
                 let mut heap = 0usize;

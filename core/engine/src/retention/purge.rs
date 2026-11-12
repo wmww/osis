@@ -176,13 +176,10 @@ fn could_stand(core: &Core, p: &Header, a: &AspectEntry, ch: &Header, c: &Commit
 
 /// Whether snapshot `s` may stand for body `(tid, ak)` of `c`: its actor holds the right over it
 /// (`holds_right`; spec/commits.md §5). Without it the snapshot still carries the body's live
-/// writes and leaves it may-hold, but no node drops it for this snapshot. Memory class: no
-/// retention to judge.
+/// writes and leaves it may-hold, but no node drops it for this snapshot. Either class (a memory
+/// delta's retention is `writer`).
 pub(crate) fn snapshot_right(core: &Core, s: &CommitId, c: &CommitId, tid: &Tid, ak: &Ak) -> bool {
     let (Some(sm), Some(m)) = (core.ix.commits.get(s), core.ix.commits.get(c)) else { return false };
-    if m.view.memory {
-        return true;
-    }
     let Some(a) = m.aspect(tid, ak).and_then(|ai| m.header.aspects.get(ai)) else { return false };
     holds_right(core, &sm.header, s, a, &m.header)
 }
@@ -293,7 +290,7 @@ pub(crate) fn requests_resting_on(core: &Core, node: &Tid, things: &BTreeSet<Tid
     let writers = core.ix.held.ever_writers(node);
     let mut reach: BTreeMap<Tid, bool> = BTreeMap::new();
     let mut out = Vec::new();
-    for (pc, m) in core.ix.commits.iter().filter(|(_, m)| m.view.purges && !m.view.memory) {
+    for (pc, m) in core.ix.commits.iter().filter(|(_, m)| m.view.purges) {
         if !(m.view.author == *node || m.view.actor == *node || writers.contains(&m.view.author) || writers.contains(&m.view.actor)) {
             continue;
         }
@@ -406,12 +403,10 @@ impl AspectRequests {
 /// `Changed::undropped`; a holder uploads it). A body stripped for carrying others' values stays held
 /// as its leftover (spec/permissions.md §6); no request names a snapshot (`names`). Cost: the aspect's requests
 /// and what they name, its snapshots' views, and with an aspect-wide request a walk of its parts, as
-/// `validity::rejudge_once` walks them (`scale::purge_rejudge_is_linear_in_requests_spec_permissions_6`). A memory delta purged stays
-/// purged: no fall restores it (a divergence, issues/eph-parity.md Purge).
+/// `validity::rejudge_once` walks them (`scale::purge_rejudge_is_linear_in_requests_spec_permissions_6`).
+/// Memory class alike: a memory part's leftover is set aside in memory, and the commit stays known
+/// until a copy comes (`unstrip`, `Meta::to_fetch`).
 pub(crate) fn rejudge_purges(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, changed: &mut BTreeSet<(Tid, Ak)>) -> Result<()> {
-    if tx.txn.is_memory_aspect(tid, ak) {
-        return Ok(());
-    }
     let mut requests = AspectRequests::load(tx, tid, ak)?;
     if requests.is_empty() {
         return Ok(());
@@ -513,6 +508,13 @@ pub(super) fn purge_one(tx: &mut Tx<'_>, pc: &CommitId, c: &CommitId, ai: usize,
     // every held body carrying the purged values, snapshots included, is stripped of them by the
     // rebuild this runs (`apply::rebuild`, spec/commits.md §5)
     hold_valueless(tx, c, ai, true, changed)?;
+    // an own write of the current sessions held value-less stops every snapshot's frontier for
+    // its session below it (`retention::held_purged`): what this node writes from now on goes
+    // under fresh sessions, past the hole (`Core::fresh_session`, as when one turns invalid)
+    let own = tx.core.me() == Some(m.header.author) || tx.core.accounts.contains_key(&m.header.author);
+    if own && matches!(m.header.form, osis_commit::Form::Session(n) if tx.core.current_sessions().contains(&n)) {
+        tx.core.fresh_session();
+    }
     Ok(true)
 }
 

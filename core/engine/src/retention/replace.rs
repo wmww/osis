@@ -82,8 +82,10 @@ pub(super) fn replaced(tx: &mut Tx<'_>, c: &CommitId, ai: usize, tid: &Tid, ak: 
 
 /// Judges the purge-on-replace bodies of the aspects marked this transaction (`Core::none_due`):
 /// a writer covers what is replaced and uncovered (one snapshot per aspect), then every covered
-/// one drops (spec/commits.md §5). Durable aspects only: an ephemeral delta's retention is fixed
-/// with no history promised (spec/commits.md §2).
+/// one drops (spec/commits.md §5). Either class: an ephemeral aspect's cover is a memory snapshot,
+/// and its replaced bodies drop under any writer's cover, their author's own included (no
+/// promise keeps them; notes/ephemeral.md Own bodies under own covers is for bodies nothing
+/// purges), a commit so spent forgotten (`memory::forget_if_spent`).
 pub(crate) fn settle_none(tx: &mut Tx<'_>) -> Result<()> {
     if tx.core.keep_bodies {
         return Ok(());
@@ -92,7 +94,8 @@ pub(crate) fn settle_none(tx: &mut Tx<'_>) -> Result<()> {
     while let Some(k) = tx.core.none_due.pop_first() {
         let (tid, ak) = k.clone();
         // a memory transaction writes no durable commit
-        if tx.txn.is_memory() {
+        let memory = ak.ephemeral();
+        if tx.txn.is_memory() && !memory {
             continue;
         }
         let kept = super::history::of(tx.core, &tid, &ak);
@@ -122,7 +125,7 @@ pub(crate) fn settle_none(tx: &mut Tx<'_>) -> Result<()> {
         // (spec/commits.md §5 Purge on replace)
         let mut owed = false;
         let ts = tx.core.hlc.peek();
-        let may = if !written.contains(&k) && !uncovered.is_empty() { super::snapshot::may_snapshot(tx, &tid, &ak, false, ts)? } else { MayWrite::No };
+        let may = if !written.contains(&k) && !uncovered.is_empty() { super::snapshot::may_snapshot(tx, &tid, &ak, memory, ts)? } else { MayWrite::No };
         match may {
             MayWrite::Later => await_cover(tx.core, &tid),
             MayWrite::Yes if tx.core.ix.cover_waits.get(&tid).is_some_and(|w| w.contains(&tid)) => end_wait(tx.core, &tid),
@@ -147,7 +150,7 @@ pub(crate) fn settle_none(tx: &mut Tx<'_>) -> Result<()> {
             // the write's own check has the last word (a removal sweep before it moves its stamp
             // on): a cover that fails leaves nothing and the body to the writers that may, and is
             // reported, never failing the transaction
-            if let Err(e) = tx.step(Step::Cover, |tx| super::snapshot::write_snapshot(tx, &tid, &ak, false)) {
+            if let Err(e) = tx.step(Step::Cover, |tx| tx.in_class(memory, |tx| super::snapshot::write_snapshot(tx, &tid, &ak, memory))) {
                 let now = tx.now();
                 tx.core.events.diagnostic(Diagnostic { kind: DiagnosticKind::OwnWriteFailed, tids: vec![tid], commit: None, peer: None, detail: e.to_string() }, now);
             }
@@ -172,7 +175,10 @@ pub(crate) fn settle_none(tx: &mut Tx<'_>) -> Result<()> {
                 }
                 continue;
             }
-            super::drop_part_for(tx, &c, ai, DropFor::Cover)?;
+            tx.in_class(memory, |tx| {
+                super::drop_part_for(tx, &c, ai, DropFor::Cover)?;
+                super::memory::forget_if_spent(tx, &c)
+            })?;
             // node-sync judges its delete at hosts (a snapshot's arrival judges only the
             // aspect's cover candidates, `Core::cover_judged_on`)
             tx.core.mark_changed(c);

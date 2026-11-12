@@ -78,7 +78,8 @@ pub(crate) fn reaches((fr, abs): (&Frontiers, &[(CommitId, Tid)]), h: &Header, c
 /// aspect (spec/crdt.md §1), so those writes are applied as dead, whether held, forgotten under
 /// own replaces, or never received. An invalid or missing body stops its source's frontier below
 /// it (the snapshot does not carry its writes, so it must not claim them), and what follows in
-/// that source is not reflected.
+/// that source is not reflected. So does a body held value-less for a purge (the callers'
+/// `valid_on`, `retention::held_purged`).
 pub(crate) fn frontiers_now(tx: &Tx<'_>, tid: &Tid, ak: &Ak, memory: bool, valid_on: &dyn Fn(&CommitId) -> bool) -> (Frontiers, BTreeSet<CommitId>) {
     frontiers_upto(tx, tid, ak, memory, valid_on, None)
 }
@@ -381,8 +382,12 @@ pub(crate) fn write_snapshot(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, memory: bool) 
         return Err(Error::Misuse("secrets.0 keys an epoch not established here (spec/crypto.md §4)"));
     }
     // a part still missing gives this state nothing (applied without it, spec/commits.md
-    // §4): an expiring one's writes would go value-less here anyway
-    let valid_on = |c: &CommitId| tx.core.ix.commits.get(c).is_some_and(|m| m.aspect(&tid, &ak).is_some_and(|ai| m.valid_at(ai) && (!m.missing.contains(&ai) || m.header.aspects.get(ai).is_some_and(|_| m.header.expires.is_some()))));
+    // §4): an expiring one's writes would go value-less here anyway; one held value-less for a
+    // purge is not claimed (`retention::held_purged`)
+    let now = tx.now().0;
+    let valid_on = |c: &CommitId| {
+        tx.core.ix.commits.get(c).is_some_and(|m| m.aspect(&tid, &ak).is_some_and(|ai| m.valid_at(ai) && (!m.missing.contains(&ai) || m.header.aspects.get(ai).is_some_and(|_| m.header.expires.is_some())) && !super::held_purged(tx.core, c, &tid, &ak, ai, now)))
+    };
     // frontiers cover only counters whose writes this state reflects: applied, valid, of
     // the sessions that occur in it (spec/crdt.md §8: a session with no write left in the
     // state is pruned with them), from the held valid snapshots' frontiers on (`frontiers_now`)

@@ -3481,3 +3481,145 @@ fn snapshot_excuses_only_what_it_reaches_spec_commits_7() {
         }
     }
 }
+
+/// Peer `i` writes `v` at the root of ephemeral `k` of `t`: the memory commit and its bytes.
+fn eph_set(lp: &mut LocalPeer, i: usize, t: Tid, k: &osis_base::Ak, v: &str) -> (osis_base::CommitId, Vec<u8>) {
+    let e = &mut lp.peers[i].engine;
+    let mut m = Mutation::new();
+    m.set(t, k, &s(v)).unwrap();
+    let c = e.commit_in_memory(m).unwrap().unwrap();
+    (c, e.package(&c).unwrap().unwrap().bytes)
+}
+
+/// Peer `i` writes `v` at the root of ephemeral `k` of `t`, which its cover may take at once.
+fn eph_write(lp: &mut LocalPeer, i: usize, t: Tid, k: &osis_base::Ak, v: &str) {
+    let mut m = Mutation::new();
+    m.set(t, k, &s(v)).unwrap();
+    lp.peers[i].engine.commit_in_memory(m).unwrap();
+}
+
+// spec/permissions.md §6, notes/ephemeral.md Principle: a purge of an ephemeral write whose right
+// falls later (its requester removed by a frontier not listing it) is undone at every node that
+// held the write value-less: the part is missing again and a copy brings the value back, as at a
+// node that never saw the purge. Meanwhile the leftover counts against the node cap as a held part.
+#[test]
+fn fallen_purge_of_ephemeral_write_comes_back_spec_perm_6() {
+    let (mut lp, t, x, _w) = admin_writer(6);
+    let k = ak("t:n+.0");
+    lp.advance(5);
+    let (c, copy) = eph_set(&mut lp, 2, t, &k, "kept");
+    for i in [1, 3, 4, 5] {
+        lp.peers[i].engine.ingest_memory(&copy, u64::MAX).unwrap();
+    }
+    lp.advance(5);
+    let mut m = Mutation::new();
+    m.purge(PurgeItem::Commit { commit: c, tid: t, ak: k.clone() });
+    m.set(t, &LIST, &Value::List(vec![s("beside")])).unwrap();
+    let p = lp.peers[1].commit(m).unwrap().unwrap();
+    let request = lp.peers[1].engine.package(&p).unwrap().unwrap();
+    for i in [3, 4, 5] {
+        lp.deliver(i, &request).unwrap();
+        let e = &mut lp.peers[i].engine;
+        assert_eq!(e.get(&t, &k).unwrap(), None, "peer {i}: purged");
+        assert!(!e.body_not_dropped(&c, &t, &k), "peer {i}: held value-less");
+        assert!(e.memory_charge(&c).unwrap() > 0, "peer {i}: the leftover is charged as a held part");
+    }
+    lp.advance(5);
+    let d = set_edge(&mut lp.peers[0].engine, t, x, None, None);
+    let demote = lp.peers[0].engine.package(&d).unwrap().unwrap();
+    for i in [3, 4] {
+        let _ = lp.deliver(i, &demote);
+        let e = &mut lp.peers[i].engine;
+        assert!(e.core.ix.commits.get(&c).is_some_and(|m| m.missing.len() == 1), "peer {i}: missing until a copy comes");
+        assert!(e.purged_on(&t, &k).unwrap().is_empty(), "peer {i}");
+        assert_eq!(e.get(&t, &k).unwrap(), None, "peer {i}: reads as a node that never received it");
+        assert!(e.suspects().unwrap().iter().any(|f| f.1 == k), "peer {i}: may read less than a holder of it");
+        e.ingest_memory(&copy, u64::MAX).unwrap();
+        assert_eq!(e.get(&t, &k).unwrap(), Some(s("kept")), "peer {i}: back");
+        assert!(!e.suspects().unwrap().iter().any(|f| f.1 == k), "peer {i}: the flag goes with the body back");
+    }
+    assert_eq!(lp.peers[5].engine.get(&t, &k).unwrap(), None, "a node holding the request alone");
+    assert_eq!(lp.peers[2].engine.get(&t, &k).unwrap(), Some(s("kept")), "the author never saw the purge");
+}
+
+// spec/commits.md §5 (A waiting part under a purge), notes/ephemeral.md Principle: an ephemeral
+// commit writing two aspects of `t` arrives as two copies (one part each), and a purge request
+// names one part: in every order of the three the node holds `t` as the author, which applied
+// the request, does, and keeps the other part's value.
+#[test]
+fn purge_of_waiting_ephemeral_part_reads_alike_spec_commits_5() {
+    let (a, b) = (ak("t:a+.0"), ak("t:b+.0"));
+    let mut digests = Vec::new();
+    for order in [[0usize, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]] {
+        let (mut lp, t, _x, _w) = admin_writer(4);
+        lp.advance(5);
+        let mut m = Mutation::new();
+        m.set(t, &a, &s("SECRET-a")).unwrap();
+        m.set(t, &b, &s("b")).unwrap();
+        let c = lp.peers[2].engine.commit_in_memory(m).unwrap().unwrap();
+        let whole = osis_commit::CommitBlob::decode(&lp.peers[2].engine.package(&c).unwrap().unwrap().bytes).unwrap();
+        let ai = whole.header.aspects.iter().position(|x| x.ak == a).unwrap();
+        let (mut first, mut rest) = (whole.clone(), whole.clone());
+        first.parts.retain(|q| q.ai == ai);
+        rest.parts.retain(|q| q.ai != ai);
+        lp.advance(5);
+        let mut m = Mutation::new();
+        m.purge(PurgeItem::Commit { commit: c, tid: t, ak: a.clone() });
+        m.set(t, &LIST, &Value::List(vec![s("beside")])).unwrap();
+        let p = lp.peers[0].commit(m).unwrap().unwrap();
+        let request = lp.peers[0].engine.package(&p).unwrap().unwrap();
+        lp.deliver(2, &request).unwrap();
+        for g in order {
+            match g {
+                0 => drop(lp.peers[3].engine.ingest_memory(&first.encode(), u64::MAX).unwrap()),
+                1 => drop(lp.peers[3].engine.ingest_memory(&rest.encode(), u64::MAX).unwrap()),
+                _ => drop(lp.deliver(3, &request).unwrap()),
+            }
+        }
+        let e = &mut lp.peers[3].engine;
+        assert!(e.pending().is_empty(), "order {order:?}: {:?}", e.pending());
+        assert_eq!(e.get(&t, &a).unwrap(), None, "order {order:?}");
+        assert_eq!(e.get(&t, &b).unwrap(), Some(s("b")), "order {order:?}");
+        assert!(!e.body_not_dropped(&c, &t, &a), "order {order:?}: held value-less");
+        let mut d = Vec::new();
+        for k in [&a, &b] {
+            let author = lp.peers[2].engine.state_digest(&t, k).unwrap();
+            assert_eq!(lp.peers[3].engine.state_digest(&t, k).unwrap(), author, "order {order:?}: {k:?} as its author holds it");
+            d.push(author);
+        }
+        digests.push(d);
+    }
+    assert!(digests.iter().all(|d| *d == digests[0]), "{digests:?}");
+}
+
+// spec/commits.md §5 Purge on replace, notes/ephemeral.md Principle: on an ephemeral aspect the
+// thing's setting purges on replace, a writer replacing another's write covers it, and the
+// replaced value is gone at the replacer, the reader that held it and its own author.
+#[test]
+fn purge_on_replace_of_ephemeral_write_spec_commits_5() {
+    let (mut lp, t, _x, _w) = admin_writer(4);
+    let k = ak("t:gone+.0");
+    let mut x = test_setting();
+    x.rules.extend(setting(&[("t:gone+.0", osis_schema::History::PurgeOnReplace)]).rules);
+    set_setting(&mut lp, 0, t, &x);
+    lp.sync_all().unwrap();
+    lp.advance(5);
+    let (c, copy) = eph_set(&mut lp, 2, t, &k, "SECRET-old");
+    for i in [1, 3] {
+        lp.peers[i].engine.ingest_memory(&copy, u64::MAX).unwrap();
+    }
+    lp.advance(5);
+    let before: std::collections::BTreeSet<osis_base::CommitId> = lp.peers[1].engine.core.ix.commits.keys().copied().collect();
+    eph_write(&mut lp, 1, t, &k, "new");
+    let e = &mut lp.peers[1].engine;
+    assert!(!e.core.ix.commits.contains_key(&c), "gone at the replacer");
+    let cover: Vec<osis_base::CommitId> = e.core.ix.commits.iter().filter(|(id, m)| !before.contains(id) && m.view.kind.is_compaction()).map(|(id, _)| *id).collect();
+    assert_eq!(cover.len(), 1, "one cover, its own write under it");
+    let cover = e.package(&cover[0]).unwrap().unwrap().bytes;
+    for i in [2, 3] {
+        let e = &mut lp.peers[i].engine;
+        e.ingest_memory(&cover, u64::MAX).unwrap();
+        assert!(!e.core.ix.commits.contains_key(&c), "peer {i}: gone");
+        assert_eq!(e.get(&t, &k).unwrap(), Some(s("new")), "peer {i}");
+    }
+}

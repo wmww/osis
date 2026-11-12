@@ -71,7 +71,8 @@ fn store(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, at: u64, bodies: &[Entry]) -> Resu
     if bodies.is_empty() {
         tx.txn.remove_local(&key, Shred::No)?;
     } else {
-        tx.txn.put_local(&key, &write(at, bodies), Shred::No)?;
+        let memory = tx.txn.is_memory_aspect(tid, ak);
+        tx.in_class(memory, |tx| Ok(tx.txn.put_local(&key, &write(at, bodies), Shred::No)?))?;
     }
     // what reads the flags (node sync's suspect lists) is taken again
     tx.core.touch();
@@ -79,10 +80,10 @@ fn store(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, at: u64, bodies: &[Entry]) -> Resu
 }
 
 /// Flags `(tid, ak)` suspect from now for `why`, about `bodies` (parts of it, by commit and
-/// aspect index; none flags nothing). A memory aspect never (a divergence, issues/eph-parity.md
-/// Purge).
+/// aspect index; none flags nothing). A memory aspect's flag is a memory row (`store`): gone at a
+/// restart, with what it is about.
 pub(crate) fn raise(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, why: Why, bodies: &[(CommitId, usize)]) -> Result<()> {
-    if bodies.is_empty() || tx.txn.is_memory_aspect(tid, ak) {
+    if bodies.is_empty() {
         return Ok(());
     }
     let (_, mut all) = load(tx, tid, ak)?.unwrap_or_default();

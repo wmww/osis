@@ -516,9 +516,10 @@ fn reopen_to_fetch(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<Option<cr
 /// value-less here (an expired delta's never comes back; its purge's fall made it missing
 /// already, `rejudge_purges`); else the copy is the leftover and brings nothing. One dropped
 /// as covered joins only once no cover carries it
-/// (`uncover` makes it missing), one dropped while invalid only once valid (`valid_again`). A memory part dropped other than as covered vanished whole
-/// (superseded, its thing deleted here) and stays gone (`memory::forget_if_spent` forgets a
-/// spent commit). A signal's part past its keep bound is past every bound: no copy is taken
+/// (`uncover` makes it missing), one dropped while invalid only once valid (`valid_again`). A memory part dropped other than as covered and held value-less by
+/// no request (superseded, its thing deleted here) vanished whole and stays gone
+/// (`memory::forget_if_spent` forgets a spent commit); one missing when purged is a durable one's
+/// case. A signal's part past its keep bound is past every bound: no copy is taken
 /// (spec/commits.md §5 Signals), so a peer still holding it resends nothing that sticks.
 pub(crate) fn takes_late(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<bool> {
     let Some(m) = tx.core.ix.commits.get(c) else { return Ok(false) };
@@ -528,13 +529,27 @@ pub(crate) fn takes_late(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<boo
     if m.stripped.contains(&ai) {
         return Ok(gone_of(tx.core, &m.header, c, ai).is_empty());
     }
-    Ok(!m.view.memory && m.dropped.get(&ai).is_some_and(|d| matches!(d.why, DropFor::Other | DropFor::Destroyed)))
+    let gone = m.dropped.get(&ai).is_some_and(|d| matches!(d.why, DropFor::Other | DropFor::Destroyed));
+    Ok(gone && (!m.view.memory || valueless(tx.core, c, ai)))
 }
 
 /// Whether the value-carrying writes of delta `ai` of `c` are held value-less here
 /// (`make_leftover`, or missing past its expiry or under a standing request).
 pub(crate) fn valueless(core: &Core, c: &CommitId, ai: usize) -> bool {
     core.ix.commits.get(c).is_some_and(|m| !gone_of(core, &m.header, c, ai).is_empty())
+}
+
+/// Whether part `ai` of `c` on `(tid, ak)` is held value-less for a purge request: its own writes
+/// on the value-less list, not past its expiry (an expired one is value-less for good). A
+/// snapshot's frontier stops below it as below an invalid or missing body (`snapshot::frontiers_upto`,
+/// spec/crdt.md §8): the snapshot holds its writes value-less, and claiming them would count the
+/// part covered once the purge falls and it is missing, so the restored value would be neither
+/// fetched nor kept must-hold.
+pub(crate) fn held_purged(core: &Core, c: &CommitId, tid: &Tid, ak: &Ak, ai: usize, now: u64) -> bool {
+    if !core.ix.valueless.contains_key(&(*tid, ak.clone())) {
+        return false;
+    }
+    core.ix.commits.get(c).is_some_and(|m| m.header.expires.is_none_or(|t| t > now)) && valueless(core, c, ai)
 }
 
 /// The writes delta `ai` of `id` holds as its own: its counters or commit ID, a
@@ -789,6 +804,11 @@ fn unstrip(tx: &mut Tx<'_>, c: &CommitId, ai: usize, kept: bool) -> Result<()> {
         leftover::remove(tx, &a.tid, &a.ak, c, ai)?;
     }
     m.missing.insert(ai);
+    // a memory commit stays known while the part is to come back (`reopen_to_fetch`); a copy
+    // joining makes way itself (`kept` false)
+    if kept && m.view.memory {
+        m.to_fetch.insert(ai);
+    }
     tx.core.stale_commits.insert(*c);
     if let Some(blob) = tx.get_commit(c)? {
         tx.put_commit(c, &blob, &m, Shred::No, None)?;

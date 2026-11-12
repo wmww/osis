@@ -335,9 +335,16 @@ fn purge_commit_is_delete_for_everyone_spec_commits_5() {
     let x = commit_with(&db, |w| w.at(t, untyped(ak("t:reg.0"))).set(&s("x")));
     commit_with(&db, |w| w.at(t, untyped(ak("t:reg.0"))).purge(osis::Purge::Commit(x.stamp.id)));
     assert!(matches!(bodies(&db, t, &ak("t:reg.0"))[..], [Body::Purged { .. }]));
-    // an ephemeral commit has no delta to purge; a memory aspect takes none
+    // an ephemeral write is purged as a durable one, by a durable request of its own
+    // (notes/ephemeral.md Principle): beside an ephemeral write it is refused
+    let e = commit_with(&db, |w| w.at(t, untyped(ak("t:x+.0"))).set(&s("eph")));
+    assert_eq!(db.at(t, untyped(ak("t:x+.0"))).get().unwrap(), Some(s("eph")));
+    commit_with(&db, |w| w.at(t, untyped(ak("t:x+.0"))).purge(osis::Purge::Commit(e.stamp.id)));
+    assert_eq!(db.at(t, untyped(ak("t:x+.0"))).get().unwrap(), None);
     let mut w = db.write();
-    assert!(matches!(w.at(t, untyped(ak("t:x+.0"))).purge(osis::Purge::Author(db.me())), Err(Error::Invalid(_))));
+    w.at(t, untyped(ak("t:x+.0"))).set(&s("again")).unwrap();
+    w.at(t, untyped(ak("t:x+.0"))).purge(osis::Purge::All).unwrap();
+    assert!(matches!(w.commit(), Err(Error::Invalid(m)) if m.contains("durable or ephemeral")), "a write is one commit");
 }
 
 // spec/permissions.md §6: a purge by author through the API: an admin's request drops a writer's

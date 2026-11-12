@@ -223,7 +223,7 @@ fn held_bytes<'b>(tx: &mut Tx<'_>, blobs: impl Iterator<Item = &'b BlobId>) -> R
 
 /// The bodies held of `(tid, ak)` a snapshot written now would cover (not snapshots; not ones
 /// with an expiry before it, which a snapshot covers only as their leftover; not one behind an
-/// invalid or missing body of its session, which its frontier cannot pass: counted, it would
+/// invalid, missing or purged body of its session, which its frontier cannot pass: counted, it would
 /// fire the trigger at every step), with their part and its cost. A leftover counts as a part
 /// with no delta bytes. Whether each is past its keep bound is the caller's (`Load::of`). Where
 /// the setting keeps live bodies, only bodies out of history and leftovers are looked at
@@ -255,7 +255,8 @@ fn candidates(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, me: Tid) -> Result<Vec<Candid
             *e = (*e).max(lo);
         }
     }
-    let valid_on = |c: &CommitId| tx.core.ix.commits.get(c).is_some_and(|m| m.aspect(tid, ak).is_some_and(|ai| m.valid_at(ai) && !m.missing.contains(&ai)));
+    let now = tx.now().0;
+    let valid_on = |c: &CommitId| tx.core.ix.commits.get(c).is_some_and(|m| m.aspect(tid, ak).is_some_and(|ai| m.valid_at(ai) && !m.missing.contains(&ai) && !super::held_purged(tx.core, c, tid, ak, ai, now)));
     let (_, reflected) = super::snapshot::frontiers_upto(tx, tid, ak, memory, &valid_on, Some(&upto));
     // (commit, part, its weight, a snapshot)
     let mut weighed = Vec::new();
