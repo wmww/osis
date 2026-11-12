@@ -896,6 +896,62 @@ fn sweep_takes_what_a_parent_reset_hid_spec_sync_7() {
     assert_eq!(st.read(), Some(one("b")), "a case write stamped below the edit shows it");
 }
 
+/// Content-less sequence elements in `f`, what a writer's delta bounds by `MAX_DELTA_BARE`.
+fn bare(f: &Fragment) -> u64 {
+    match f {
+        Fragment::Struct(s) => s.fields.values().map(bare).sum(),
+        Fragment::Enum(e) => e.payloads.values().map(bare).sum(),
+        Fragment::Map(m) => m.entries.values().filter_map(|en| en.frag.as_deref()).map(bare).sum(),
+        Fragment::Seq(s) => s
+            .elems()
+            .values()
+            .map(|el| match &el.content {
+                crate::seq::SeqContent::None => el.span,
+                crate::seq::SeqContent::Char(_) => 0,
+                crate::seq::SeqContent::Frag(f) => bare(f),
+            })
+            .sum(),
+        _ => 0,
+    }
+}
+
+/// spec/sync.md §7: a sweep takes at most `MAX_DELTA_BARE` content-less elements, so it is a
+/// valid writer delta whatever is hidden; sweeps again take the rest until none is left.
+#[test]
+fn sweep_is_bounded_and_finishes_spec_sync_7() {
+    use crate::ops::{Writer, replace};
+    use crate::seq::{Seq, SeqElem};
+    let (x, y, z) = (sess(Tid::from_bytes([1; 15])), sess(Tid::from_bytes([2; 15])), sess(Tid::from_bytes([3; 15])));
+    let text = crate::testutil::TyView(Ty::Text);
+    // x wrote a text, y undeletes all of it, z replaces it concurrently: every char is hidden
+    let n = osis_base::format::MAX_DELTA_BARE + 3;
+    // x's creation is held nowhere (the replace pruned it), its delta reflected
+    let mut undel = Seq::empty(true);
+    let at = Writer::new(ts(9), y.clone(), 1).delta_stamp();
+    for c in 1..=n {
+        undel.elems_mut().insert(Dot::new(x.clone(), c), SeqElem { deleted: Some((at.clone(), false)), undel: Some('a'), ..SeqElem::bare() });
+    }
+    let over = replace(&mut Writer::new(ts(7), z.clone(), 1), &text, &Value::Str("c".into())).unwrap();
+    let mut st = over;
+    st.join(Fragment::Seq(undel));
+    let xs = [(x.clone(), 1, n + 1)];
+    let reflected = in_ranges(&xs);
+    let want = st.read();
+    let mut steps = 0;
+    for k in 0.. {
+        let w = Writer::new(ts(20 + k), z.clone(), 9);
+        let Some(sw) = st.sweep(&w.delta_stamp(), &reflected) else { break };
+        assert!(bare(&sw) <= osis_base::format::MAX_DELTA_BARE, "step {k}: {} elements", bare(&sw));
+        let cx = DeltaCtx { ts: ts(20 + k), own: z.clone(), range: w.range(), kind: DeltaKind::Writer };
+        encode_delta(&Delta { nonce: [0; 16], fragment: sw.clone() }, &cx, None).expect("a valid writer delta");
+        st.join(sw);
+        steps += 1;
+    }
+    assert_eq!(steps, 2, "the cap, then the rest");
+    assert_eq!(st.read(), want);
+    assert!(!st.holds_write(&Dot::new(y, 1)), "every undelete is dead");
+}
+
 /// `v` with empty collections left out: a sweep's reset is a write, so a collection another writer
 /// reset meanwhile may read empty rather than absent, as under any concurrent removal (§4.3).
 fn shown(v: Value) -> Option<Value> {
@@ -946,6 +1002,16 @@ pub(crate) fn sweep_laws(seed: u64, ty: &Ty) -> usize {
         after.strip(&in_ranges(&gone));
         assert_eq!(after.read(), view.read(), "the view's read");
         assert_eq!(after.sweep(&stamp, &reflected), None, "swept once");
+        // swept a content-less element at a time, over as many commits as that takes: the same
+        let mut stepped = view.clone();
+        loop {
+            let mut left = 1;
+            let Some(part) = stepped.sweep_at_most(&stamp, &reflected, &mut left) else { break };
+            assert!(bare(&part) <= 1, "one element per step");
+            stepped.join(part);
+        }
+        stepped.strip(&in_ranges(&gone));
+        assert!(stepped == after, "swept in steps");
         let mut all = Fragment::default();
         for b in &bodies {
             all.join(b.clone());

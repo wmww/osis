@@ -287,24 +287,31 @@ impl Fragment {
     /// still arrive under an expired creation). Below a record it resets nothing more (that reset
     /// takes it all). An enum's payloads of a case not current are no such thing: any case write
     /// stamped between the enum's reset and theirs shows them. Not for role-class aspects (a
-    /// removal there names its key).
+    /// removal there names its key). One commit's worth: at most `MAX_DELTA_BARE` content-less
+    /// elements (§3.3 rule 7), the first ones in state order; the writer sweeps again for the rest.
     pub fn sweep(&self, r: &Stamp, reflected: &dyn Fn(&Dot) -> bool) -> Option<Fragment> {
+        let mut left = osis_base::format::MAX_DELTA_BARE;
+        self.sweep_at_most(r, reflected, &mut left)
+    }
+
+    /// `sweep` taking at most `left` content-less elements, less what it takes.
+    pub(crate) fn sweep_at_most(&self, r: &Stamp, reflected: &dyn Fn(&Dot) -> bool, left: &mut u64) -> Option<Fragment> {
         match self {
             Fragment::Register(_) | Fragment::Bag(_) | Fragment::Set(_) => None,
-            Fragment::Slots(_) => self.chosen().sweep(r, reflected),
+            Fragment::Slots(_) => self.chosen().sweep_at_most(r, reflected, left),
             Fragment::Struct(s) => {
-                let fields: BTreeMap<u64, Fragment> = s.fields.iter().filter_map(|(k, f)| Some((*k, f.sweep(r, reflected)?))).collect();
+                let fields: BTreeMap<u64, Fragment> = s.fields.iter().filter_map(|(k, f)| Some((*k, f.sweep_at_most(r, reflected, left)?))).collect();
                 (!fields.is_empty()).then(|| Fragment::Struct(Struct { meta: Meta::default(), fields }))
             }
             Fragment::Enum(e) => {
-                let payloads: BTreeMap<u64, Fragment> = e.payloads.iter().filter_map(|(k, f)| Some((*k, f.sweep(r, reflected)?))).collect();
+                let payloads: BTreeMap<u64, Fragment> = e.payloads.iter().filter_map(|(k, f)| Some((*k, f.sweep_at_most(r, reflected, left)?))).collect();
                 (!payloads.is_empty()).then(|| Fragment::Enum(Enum { meta: Meta::default(), case: None, payloads }))
             }
             Fragment::Map(m) => {
                 let mut entries = BTreeMap::new();
                 for (id, en) in &m.entries {
                     if m.is_live(id) {
-                        if let Some(inner) = en.frag.as_deref().and_then(|f| f.sweep(r, reflected)) {
+                        if let Some(inner) = en.frag.as_deref().and_then(|f| f.sweep_at_most(r, reflected, left)) {
                             entries.insert(id.clone(), Entry { frag: Some(Box::new(inner)), ..Entry::default() });
                         }
                     } else if id.key.is_some() || en.frag.is_some() {
@@ -326,7 +333,12 @@ impl Fragment {
                     // an undelete's char under a creation a reset pruned: the element never shows
                     // again (§5.7), and a delete beats the undelete
                     if el.created.is_none() && el.undel.is_some() && (0..el.span).all(|i| reflected(&Dot::new(d.src.clone(), d.ctr + i))) {
-                        out.elems_mut().insert(d.clone(), SeqElem { deleted: Some((r.clone(), true)), span: el.span, ..SeqElem::bare() });
+                        let span = el.span.min(*left);
+                        if span == 0 {
+                            break;
+                        }
+                        *left -= span;
+                        out.elems_mut().insert(d.clone(), SeqElem { deleted: Some((r.clone(), true)), span, ..SeqElem::bare() });
                     }
                 }
                 (!out.elems().is_empty()).then_some(Fragment::Seq(out))
@@ -336,10 +348,11 @@ impl Fragment {
                 for (d, el) in s.elems() {
                     let SeqContent::Frag(f) = &el.content else { continue };
                     if seq::is_visible(el, false) {
-                        if let Some(inner) = f.sweep(r, reflected) {
+                        if let Some(inner) = f.sweep_at_most(r, reflected, left) {
                             out.elems_mut().insert(d.clone(), SeqElem { content: SeqContent::Frag(Box::new(inner)), ..SeqElem::bare() });
                         }
-                    } else if f.written().is_some() && (el.reset().is_some() || (el.created.is_none() && reflected(d))) {
+                    } else if *left > 0 && f.written().is_some() && (el.reset().is_some() || (el.created.is_none() && reflected(d))) {
+                        *left -= 1;
                         out.elems_mut().insert(d.clone(), SeqElem { deleted: Some((r.clone(), true)), ..SeqElem::bare() });
                     }
                 }

@@ -864,6 +864,59 @@ fn sweep_of_removed_text_entry_ends_spec_sync_7() {
     }
 }
 
+// spec/sync.md §7, spec/crdt.md §3.3 rule 7: more hidden text chars than `MAX_DELTA_BARE` (a
+// large undelete, over several commits, concurrent with a replace of the text) are swept over
+// as many commits as that takes, each a valid writer delta, before the snapshot; the next
+// snapshot finds nothing more. The same at the crdt level, fast: `sweep_is_bounded_and_finishes`.
+#[test]
+#[ignore = "by hand: 2^18 hidden chars, about 35 s"]
+fn sweep_past_the_bare_cap_spec_sync_7() {
+    let k = ak("t:text.0");
+    let (mut lp, t) = one_writer(2);
+    let cap = osis_base::format::MAX_DELTA_BARE as usize;
+    let set = |lp: &mut LocalPeer, i: usize, v: &str| {
+        let mut m = Mutation::new();
+        m.set(t, &TEXT, &s(v)).unwrap();
+        lp.peers[i].commit(m).unwrap().unwrap()
+    };
+    // history kept, so the deletes undo
+    let mut m = Mutation::new();
+    m.set(t, &osis_schema::core_types::RETENTION, &osis_schema::core_types::RetentionSetting::of(k.clone(), osis_schema::History::FOREVER)).unwrap();
+    lp.peers[0].commit(m).unwrap().unwrap();
+    // cap + 2 chars, deleted in two commits (a delete is at most the cap), both undone
+    set(&mut lp, 0, &"a".repeat(cap + 2));
+    lp.advance(10);
+    let half = set(&mut lp, 0, &"a".repeat(cap / 2));
+    lp.advance(10);
+    let rest = set(&mut lp, 0, "");
+    lp.sync_all().unwrap();
+    lp.advance(10);
+    let mut m = Mutation::new();
+    m.op(t, &TEXT, osis_crdt::PathOp { path: vec![], op: osis_crdt::Op::Replace(s("c")) }).unwrap();
+    let over = lp.peers[1].commit(m).unwrap().unwrap();
+    lp.advance(10);
+    for d in [rest, half] {
+        let mut m = Mutation::new();
+        m.undo(d);
+        lp.peers[0].commit(m).unwrap().unwrap();
+    }
+    let pk = lp.peers[1].engine.package(&over).unwrap().unwrap();
+    lp.deliver(0, &pk).unwrap();
+    let reads_c = |lp: &mut LocalPeer, i: usize| lp.peers[i].engine.get(&t, &k).unwrap() == Some(s("c"));
+    assert!(reads_c(&mut lp, 0), "the replace hides the undeletes");
+    let grew = |lp: &mut LocalPeer| {
+        let n = lp.peers[0].engine.commit_ids().len();
+        lp.peers[0].engine.snapshot(&t, &k).unwrap().unwrap();
+        lp.peers[0].engine.commit_ids().len() - n
+    };
+    assert_eq!(grew(&mut lp), 3, "two sweeps (the cap, then the rest) and the snapshot");
+    assert!(reads_c(&mut lp, 0));
+    lp.sync_all().unwrap();
+    assert!(reads_c(&mut lp, 1), "the sweeps decode as writer deltas");
+    lp.advance(10);
+    assert_eq!(grew(&mut lp), 1, "swept: the snapshot alone");
+}
+
 // spec/sync.md §7: a record merely lacking its creation is no hidden one: a snapshot before the
 // creation arrives leaves it, and the entry reads with the edit in it once it does.
 #[test]
