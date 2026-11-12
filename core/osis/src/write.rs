@@ -39,8 +39,7 @@ pub enum Expiry {
 /// it (its purgeable-by; admins always may).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Purge {
-    /// The aspect's whole history, and a durable aspect itself with it (an ephemeral one's
-    /// writes are held value-less: its removal would be an ephemeral write of its own).
+    /// The aspect's whole history, and the aspect with it: it reads as absent.
     All,
     /// One commit's write. Its part stays listed as `Body::Purged` where it would be. If it is what the aspect
     /// reads now the value goes with it: `set` in the same commit to keep a value. A signal's fire
@@ -100,8 +99,8 @@ impl WriteOp {
 /// to the app:
 /// - A commit has one expiry: `expires`, else what its keys say, which must then agree. A thing
 ///   created in an expiring commit is destroyed at that expiry, whole.
-/// - A commit is durable or ephemeral (keys marked `+`), and an ephemeral signal (keys marked `+~`)
-///   is a commit of its own. A new thing is durable, so ephemeral writes on it go in a later commit.
+/// - A commit is durable or ephemeral (keys marked `+`; a purge is durable whatever it names), and
+///   an ephemeral signal (keys marked `+~`) is a commit of its own. A new thing is durable, so ephemeral writes on it go in a later commit.
 ///
 /// This is judged on what the ops ask, not on what they turn out to write: a `set` of the value
 /// already there still counts.
@@ -774,8 +773,8 @@ impl<'w, 'd, K: AspectKey> AspectWrite<'w, 'd, K> {
 
     /// Drops writes on the aspect for everyone (`Purge`). A request for one commit or one author
     /// is itself a write on the thing, so it fails `Permission` without write on the thing.
-    /// `Purge::All` of a durable value aspect removes it too. The request is durable, also on an
-    /// ephemeral aspect: an ephemeral write beside it in one write is `Clash`.
+    /// `Purge::All` of a value aspect removes it too. A purge is a durable write, also on an
+    /// ephemeral aspect: beside an ephemeral write it fails `commit` with `Invalid`.
     pub fn purge(&mut self, what: Purge) -> Result<()> {
         let key = self.ok()?;
         match what {

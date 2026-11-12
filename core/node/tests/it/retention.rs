@@ -3623,3 +3623,68 @@ fn purge_on_replace_of_ephemeral_write_spec_commits_5() {
         assert_eq!(e.get(&t, &k).unwrap(), Some(s("new")), "peer {i}");
     }
 }
+
+// spec/crdt.md §8, spec/sync.md §9 Frontier and New sessions: a snapshot written after a purge
+// does not claim the purged write (its frontier stops below it), so when the purge falls the
+// write is missing again, not covered, and a copy brings it back, at its own author too; that author writes on
+// under a fresh session, past the hole.
+#[test]
+fn snapshot_after_purge_leaves_the_write_to_come_back_spec_crdt_8() {
+    let (mut lp, t, x, _w) = admin_writer(4);
+    let k = ak("t:n+.0");
+    lp.advance(5);
+    let (c, copy) = eph_set(&mut lp, 2, t, &k, "kept");
+    let form = |b: &[u8]| osis_commit::CommitBlob::decode(b).unwrap().header.form;
+    lp.peers[1].engine.ingest_memory(&copy, u64::MAX).unwrap();
+    lp.advance(5);
+    let mut m = Mutation::new();
+    m.purge(PurgeItem::Commit { commit: c, tid: t, ak: k.clone() });
+    m.set(t, &LIST, &Value::List(vec![s("beside")])).unwrap();
+    let p = lp.peers[1].commit(m).unwrap().unwrap();
+    let request = lp.peers[1].engine.package(&p).unwrap().unwrap();
+    lp.deliver(2, &request).unwrap();
+    lp.advance(5);
+    let e = &mut lp.peers[2].engine;
+    assert_eq!(e.get(&t, &k).unwrap(), None, "purged at its author");
+    let (_, later) = eph_set(&mut lp, 2, t, &ak("t:other+.0"), "later");
+    assert_ne!(form(&later), form(&copy), "a fresh session past the hole");
+    let e = &mut lp.peers[2].engine;
+    let snap = e.snapshot(&t, &k).unwrap().expect("a snapshot of the leftover");
+    lp.advance(5);
+    let d = set_edge(&mut lp.peers[0].engine, t, x, None, None);
+    let demote = lp.peers[0].engine.package(&d).unwrap().unwrap();
+    let _ = lp.deliver(2, &demote);
+    let e = &mut lp.peers[2].engine;
+    assert!(e.purged_on(&t, &k).unwrap().is_empty());
+    // covered, node-sync would neither fetch the write nor keep it at hosts
+    assert_ne!(e.covered(&snap, &c, &t, &k).unwrap(), Some(true), "missing, not covered");
+    e.ingest_memory(&copy, u64::MAX).unwrap();
+    assert_eq!(e.get(&t, &k).unwrap(), Some(s("kept")), "back: the snapshot did not claim it");
+}
+
+// notes/ephemeral.md Own bodies under own covers, spec/sync.md §9: under purge on replace an
+// author's own ephemeral snapshot still carrying live writes is not under it, so another writer's
+// later cover does not drop it at its author (it drops only replaced bodies).
+#[test]
+fn purge_on_replace_keeps_own_live_ephemeral_snapshot_spec_sync_9() {
+    let (mut lp, t, _x, _w) = admin_writer(3);
+    let k = ak("t:gone+.0");
+    let mut x = test_setting();
+    x.rules.extend(setting(&[("t:gone+.0", osis_schema::History::PurgeOnReplace)]).rules);
+    set_setting(&mut lp, 0, t, &x);
+    lp.sync_all().unwrap();
+    lp.advance(5);
+    let mut m = Mutation::new();
+    m.op(t, &k, PathOp { path: vec![osis_crdt::PathSeg::Key(s("a"))], op: Op::Set(s("live")) }).unwrap();
+    lp.peers[2].engine.commit_in_memory(m).unwrap().unwrap();
+    let own = lp.peers[2].engine.snapshot(&t, &k).unwrap().unwrap();
+    let own_bytes = lp.peers[2].engine.package(&own).unwrap().unwrap().bytes;
+    lp.advance(5);
+    lp.peers[1].engine.ingest_memory(&own_bytes, u64::MAX).unwrap();
+    let theirs = lp.peers[1].engine.snapshot(&t, &k).unwrap().unwrap();
+    let theirs = lp.peers[1].engine.package(&theirs).unwrap().unwrap().bytes;
+    let e = &mut lp.peers[2].engine;
+    e.ingest_memory(&theirs, u64::MAX).unwrap();
+    assert!(e.core.ix.commits.get(&own).is_some_and(|m| m.dropped.is_empty()), "its author keeps its own live snapshot");
+    assert_eq!(e.get(&t, &k).unwrap(), Some(Value::Map(osis_base::ValueMap::from([(s("a"), s("live"))]))));
+}

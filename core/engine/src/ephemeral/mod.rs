@@ -95,8 +95,10 @@ impl Engine {
             return Ok(id.map(|id| Written { id, ts: self.core.ix.commits.get(&id).map(|c| c.view.ts).unwrap_or_default() }));
         }
         // a memory commit's writes and a durable commit's are not one (spec/commits.md §2)
-        let durable = m.aspects.keys().next().map(|(t, k)| format!("{t} {k}")).or_else(|| m.creates.keys().next().map(|t| format!("the creation of {t}")));
-        let durable = durable.or_else(|| (!(m.purge.is_empty() && m.dead_resets.is_empty() && m.fresh_resets.is_empty() && m.undoes.is_none() && m.deleting.is_empty())).then(|| "the rest".to_string()));
+        // a purge request is durable whatever it names (its `purge.0` delta is no write of the app's)
+        let durable = (!m.purge.is_empty()).then(|| "a purge".to_string());
+        let durable = durable.or_else(|| m.aspects.keys().next().map(|(t, k)| format!("{t} {k}"))).or_else(|| m.creates.keys().next().map(|t| format!("the creation of {t}")));
+        let durable = durable.or_else(|| (!(m.dead_resets.is_empty() && m.fresh_resets.is_empty() && m.undoes.is_none() && m.deleting.is_empty())).then(|| "the rest".to_string()));
         if let (Some(d), Some((t, k, _))) = (&durable, eph_ops.first()) {
             return Err(Error::Clash(format!("a commit is durable or ephemeral, and this write is both: {t} {k} is ephemeral, {d} is not. Write them as separate commits")));
         }

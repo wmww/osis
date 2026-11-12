@@ -160,8 +160,16 @@ pub(crate) fn settle_none(tx: &mut Tx<'_>) -> Result<()> {
                 continue;
             }
             // a live delta is no purge-on-replace body: it drops as any covered body does, by
-            // node-sync (its author's own covers only there, spec/sync.md §7 Own bodies)
-            if !tx.core.ix.commits.get(&c).is_some_and(|m| m.view.kind.is_compaction()) && !replaced(tx, &c, ai, &tid, &ak)? {
+            // node-sync (its author's own covers only there, spec/sync.md §7 Own bodies). A memory
+            // body only under purge on replace: any other (a snapshot carrying live writes, one
+            // replaced under another setting) is node-sync's too, where its author keeps its own
+            // (notes/ephemeral.md Own bodies under own covers)
+            let gone = if memory {
+                under_purge(tx, &c, ai, &tid, &ak, &kept)?
+            } else {
+                tx.core.ix.commits.get(&c).is_some_and(|m| m.view.kind.is_compaction()) || replaced(tx, &c, ai, &tid, &ak)?
+            };
+            if !gone {
                 continue;
             }
             // kept while in history (a dated replacement ahead of the clock too), and a commit
