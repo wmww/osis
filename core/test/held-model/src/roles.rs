@@ -268,6 +268,8 @@ impl Timeline {
             // one commit's writes are judged against the state before the commit
             for group in evs.chunk_by(|a, b| a.key == b.key) {
                 let pre = edges.clone();
+                // every applied write of the commit takes effect and audits; then the walk restarts
+                let mut grew = false;
                 let wall_ = wall(group[0].key.0);
                 for ev in group {
                     if dropped.contains(&(ev.commit, ev.part)) {
@@ -291,7 +293,6 @@ impl Timeline {
                     };
                     // step 4: audits by an explicit write
                     if explicit {
-                        let mut added = false;
                         for &x in actors.iter().filter(|&&x| x != a) {
                             for m in world.below(n) {
                                 let cb = world.class(&before, x, m, wall_);
@@ -303,16 +304,16 @@ impl Timeline {
                                     let fell_through = p.class.is_some_and(|c| Some(c) > ca && Some(c) <= cb);
                                     let listed = ev.frontier.as_ref().is_some_and(|f| f.contains(&p.ev.commit));
                                     if p.ev.author == x && p.on == m && fell_through && p.ev.key < ev.key && !listed {
-                                        added |= dropped.insert((p.ev.commit, p.ev.part));
+                                        grew |= dropped.insert((p.ev.commit, p.ev.part));
                                     }
                                 }
                             }
                         }
-                        if added {
-                            continue 'restart;
-                        }
                     }
                     applied.push(Applied { ev: ev.clone(), class, explicit, on, before, after: edges.clone() });
+                }
+                if grew {
+                    continue 'restart;
                 }
             }
             return Timeline { world, initial, applied, counting: Vec::new(), valid_addenda: BTreeSet::new() };

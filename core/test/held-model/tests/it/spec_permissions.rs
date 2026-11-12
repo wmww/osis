@@ -50,6 +50,29 @@ fn demotion_audits_edge_admin_grants_spec_permissions_5_1() {
     assert_eq!(o.valid[&(10, 0)], true);
 }
 
+// spec/permissions.md §5.1 (step 4): every applied write of a commit audits before the walk
+// restarts. Thing 41's first admin is 40, 40's is node 0; node 0 makes node 1 admin on 40 (#5)
+// and gives itself admin on 41 (#6). Node 1's commit #7 lowers node 0 to read on both: its
+// first write drops #5 (so #7 no longer applies), its second drops #6.
+#[test]
+fn commit_audits_all_its_writes_before_restart_spec_permissions_5_1() {
+    let mint = |t, link, k| held_model::gen::creation(t, link, FIRST_ADMIN, ts(0) - 10 + k, Retention::FIXED, None);
+    let r = Commit {
+        parts: [40, 41].map(|t| edge_on(7, 1, 2, t, EdgeWrite::role(FIRST_ADMIN, Some(Role::Read)), None).parts.remove(0)).to_vec(),
+        ..edge_on(7, 1, 2, 40, EdgeWrite::role(FIRST_ADMIN, Some(Role::Read)), Some(vec![]))
+    };
+    let o = evaluate(&held(3, vec![
+        mint(40, RecordLink::Admin(FIRST_ADMIN), 0),
+        mint(41, RecordLink::Admin(40), 1),
+        edge_on(5, FIRST_ADMIN, 0, 40, EdgeWrite::role(1, Some(Role::Admin)), None),
+        edge_on(6, FIRST_ADMIN, 1, 41, EdgeWrite::role(FIRST_ADMIN, Some(Role::Admin)), None),
+        r,
+    ]));
+    assert!(!o.valid[&(5, 0)], "#7's first write drops #5");
+    assert!(!o.valid[&(6, 0)], "#7's second write drops #6, though #7 then applies nothing");
+    assert!(!o.valid[&(7, 0)] && !o.valid[&(7, 1)]);
+}
+
 // spec/permissions.md §5.2: an admin-only aspect needs admin
 #[test]
 fn admin_only_aspect_needs_admin_spec_permissions_5_2() {
