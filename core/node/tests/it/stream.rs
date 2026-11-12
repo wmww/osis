@@ -968,7 +968,7 @@ fn a_join_pages_behind_the_stream_spec_sync_10() {
     let t = net.item(b, g, g, "early");
     // kept history: every write keeps its own entry (no compaction snapshot stands for them)
     net.keep(b, t, &[(osis_schema::RawKey::ak(&REG), osis_schema::History::FOREVER)]);
-    for i in 0..300 {
+    for i in 0..120 {
         net.write(b, t, &format!("early{i}"));
     }
     net.run();

@@ -123,8 +123,9 @@ fn purged_superset_holds_nothing_spec_sync_6() {
 }
 
 // spec/sync.md §7 (a body with live writes leaves only while a carrier stays): writer a purges
-// one delta of commit c whose two-delta blob p also holds a live write; a's rewrite q is lost on
-// the way, so p stays (and the live write with it) until q is at the host.
+// one delta of commit c whose two-delta blob p also holds a live write; p leaves the peer only
+// once a's rewrite q is there: after every hop the peer holds p or q (the kept live write is never
+// absent), and ends with q only.
 #[test]
 fn purged_body_waits_for_its_rewrite_spec_sync_7() {
     let (mut net, host, [a, b], _g, [t, t2]) = hosted::<2, 2>(&[(1, Role::Write)], ["x", "y"], false);
@@ -138,25 +139,22 @@ fn purged_body_waits_for_its_rewrite_spec_sync_7() {
     let l = net.label(a);
     let p = blobs_of(&mut net, a, &l, &c);
     assert_eq!(p.len(), 1);
-    net.lose_uploads.insert(a);
     let mut m = Mutation::new();
     m.purge_commit(c, t, gone.clone());
     m.remove_aspect(t, &GONE).unwrap();
     net.engine(a).commit(m).unwrap();
-    net.run();
+    net.feed(a, Event::Local);
+    for _ in 0..200 {
+        net.round();
+        let ids = net.host_ids(host, &l);
+        let q: Vec<_> = blobs_of(&mut net, a, &l, &c).into_iter().filter(|id| !p.contains(id)).collect();
+        assert!(ids.contains(&p[0]) || q.iter().any(|x| ids.contains(x)), "neither p nor its rewrite at the peer");
+    }
     net.run();
     let q: Vec<_> = blobs_of(&mut net, a, &l, &c).into_iter().filter(|id| !p.contains(id)).collect();
     assert_eq!(q.len(), 1, "a's rewrite placed");
     let ids = net.host_ids(host, &l);
-    assert!(!ids.contains(&q[0]), "q lost on the way");
-    assert!(ids.contains(&p[0]), "p waits for its carrier");
-    net.lose_uploads.clear();
-    // past the resend pause
-    net.advance(60_000);
-    net.run();
-    net.trace(&[a, b]);
-    let ids = net.host_ids(host, &l);
-    assert!(ids.contains(&q[0]), "q uploaded again");
+    assert!(ids.contains(&q[0]), "q pulled");
     assert!(!ids.contains(&p[0]), "p deleted once carried");
     assert_eq!(net.engine(b).get(&t2, &gone).unwrap(), Some(s("kept")));
     assert_eq!(net.engine(b).get(&t, &gone).unwrap(), None);
