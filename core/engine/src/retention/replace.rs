@@ -158,7 +158,7 @@ pub(crate) fn settle_none(tx: &mut Tx<'_>) -> Result<()> {
             }
             // kept while in history (a dated replacement ahead of the clock too), and a commit
             // carrying a purge request keeps its blobs to the floor (spec/commits.md §5): judged
-            // again then; out of history any writer's cover drops it (as `bounds::drop_from`)
+            // again then; out of history any writer's cover drops it (as `Engine::drop_from`)
             let now = tx.now().0;
             let floor = super::bounds::part_keep(tx, &c, &tid, &ak)?;
             if floor > now {

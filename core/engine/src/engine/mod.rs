@@ -2035,7 +2035,7 @@ impl Core {
             cover_cache: None,
             held_writes: memo::Memo::new("held writes"),
             replaced_dates: memo::Memo::new("replaced at"),
-            part_bounds: memo::Memo::new("body bounds"),
+            part_bounds: memo::Memo::new("part bounds"),
             timer_floor: 0,
             none_due: BTreeSet::new(),
             cover_candidates: BTreeMap::new(),

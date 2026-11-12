@@ -1203,7 +1203,7 @@ mod tests {
             let k = lp.peers[0].engine.part_keeps(&first).unwrap();
             let n = |name: &str, c: &[(&str, std::time::Duration, u64)]| c.iter().filter(|x| x.0 == name).map(|x| x.2).sum::<u64>();
             let c = crate::costs::take();
-            (k, n("body bounds", &c) + n("replaced at", &c) + n("held writes", &c) + n("deaths: a body", &c))
+            (k, n("part bounds", &c) + n("replaced at", &c) + n("held writes", &c) + n("deaths: a body", &c))
         };
         let (k, n) = judged(&mut lp);
         assert!(n > 0 && k.iter().any(|k| *k > 0), "judged: {k:?}");

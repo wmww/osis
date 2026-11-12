@@ -1306,7 +1306,7 @@ fn group_change(n: usize, change: Change) -> ([[u64; 3]; 3], [u64; 2]) {
         let labels = net.sync(x).labels();
         assert!(labels.iter().filter(|(t, _)| *t == things[0]).count() <= 1, "{change:?}: one label of the thing at node {x}");
     }
-    (per, [w.n("ensure rotated"), w.n("body bounds")])
+    (per, [w.n("ensure rotated"), w.n("part bounds")])
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

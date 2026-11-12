@@ -349,8 +349,8 @@ fn a_part_keeps_by_its_own_aspect_spec_commits_5() {
 
 // spec/requirements.md Purge on replace, spec/commits.md §5 Keep bounds (each delta kept by its
 // own aspect's setting alone): one commit writes a kept aspect and a purge-on-replace one in one
-// body; replacing both, the writer covers the purge-on-replace part and it goes at once, while
-// the kept part stays an hour from its own replacement.
+// body; replacing both, the writer covers the purge-on-replace part and it goes at once at every
+// node holding it, while the kept part stays an hour from its own replacement.
 #[test]
 fn purge_on_replace_part_goes_whatever_its_commit_keeps_spec_commits_5() {
     let (kept, gone) = ("t:a.0", "t:b.0");
@@ -366,12 +366,17 @@ fn purge_on_replace_part_goes_whatever_its_commit_keeps_spec_commits_5() {
         c
     };
     let c = both(&mut lp, "one");
+    lp.sync_all().unwrap();
     both(&mut lp, "two");
     let r = lp.peers[1].engine.now().0 - 1_000;
-    let e = &mut lp.peers[1].engine;
-    assert!(e.body_not_dropped(&c, &d, &ak(kept)), "the kept part stays");
-    assert_eq!(part_keep(e, &c, &d, &ak(kept)), r + HOUR, "kept by its own replacement");
-    assert!(!e.body_not_dropped(&c, &d, &ak(gone)), "the purge-on-replace part is gone");
+    lp.sync_all().unwrap();
+    // at the writer, and at the admins that held the whole body before the replacement came
+    for (i, p) in lp.peers.iter_mut().enumerate() {
+        let e = &mut p.engine;
+        assert!(e.body_not_dropped(&c, &d, &ak(kept)), "node {i}: the kept part stays");
+        assert_eq!(part_keep(e, &c, &d, &ak(kept)), r + HOUR, "node {i}: kept by its own replacement");
+        assert!(!e.body_not_dropped(&c, &d, &ak(gone)), "node {i}: the purge-on-replace part is gone");
+    }
 }
 
 // spec/commits.md §5 In force: two admins' settings at one wall ms are ordered by key, whatever

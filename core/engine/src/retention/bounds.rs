@@ -17,8 +17,7 @@ use std::sync::Arc;
 /// a fallen purge bringing it back, listings); one with a dead write (`replace::replaced`), a
 /// compaction snapshot (its writes are copies) and an in-memory part (no purge, host copy or
 /// listing of its own) are not. Judged per part, as a cover drops one part (`drop_part_for`). A
-/// delta found read alone leaves
-/// `Core::cover_candidates`. Cost: the part read once against the state's part it meets.
+/// delta found read alone leaves `Core::cover_candidates`. Cost: the part read once against the state's part it meets.
 pub(crate) fn read_alone(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<bool> {
     let Some(ai) = held_part(tx.core, c, tid, ak) else { return Ok(false) };
     let Some(m) = tx.core.ix.commits.get(c) else { return Ok(false) };

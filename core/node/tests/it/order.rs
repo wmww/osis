@@ -1198,7 +1198,7 @@ pub(crate) fn play_with(seed: u64, steps: &[Step], addenda: bool) -> Played {
                 let m = {
                     let mut m = Mutation::new();
                     m.set(th(t), &osis_schema::core_types::RETENTION, &rules).unwrap();
-                    // a second part in another body class, so the setting may arrive late
+                    // a second part beside the setting (another aspect and retention), so the setting may arrive late
                     if rule % 2 == 1 {
                         m.set(th(t), &REG, &s("beside")).unwrap();
                     }
