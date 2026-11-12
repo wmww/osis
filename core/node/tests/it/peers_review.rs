@@ -130,7 +130,7 @@ fn pending_kept_from_reader(peer_bytes: u64) -> (bool, bool) {
     (kept, pending)
 }
 
-// notes/node-sync.md (Unjudged input), spec/requirements.md (peer input never grows storage
+// notes/node-sync.md (Input giving nothing), spec/requirements.md (peer input never grows storage
 // unbounded): an entry from a reader that opens to a commit pending here counts against the peer
 // budget as an unopened one does; past it neither the entry nor the pending commit is kept.
 #[test]
@@ -192,6 +192,97 @@ fn second_kept(fresh: bool) -> bool {
 fn a_fresh_account_splits_no_budget_spec_sync_5() {
     assert!(!second_kept(false), "one account, one budget");
     assert!(!second_kept(true), "a fresh account beside it adds none");
+}
+
+/// Writer `b` (`peer_bytes`) syncing a label with no host; reader `r` serves it as a co-reader
+/// peer and streams `n` genuine commits of its own on item `t`, each invalid at `b` (a reader
+/// writes nothing), ephemeral with `memory`. Returns how many of them `b` still knows (a header
+/// with no body each), the bytes of `b`'s store, and whether writer `a`'s commit, streamed next
+/// by a session proving `a`, applies at `b`.
+fn reader_flood(n: usize, memory: bool) -> (usize, usize, bool) {
+    let mut net = Net::new();
+    let a = net.node(1, &[]);
+    let b = net.add_node(2, SyncConfig { peers: false, ..SyncConfig::default() });
+    let r = net.node(3, &[]);
+    for (n, k) in [(a, 0xa1), (b, 0xb1), (r, 0xc1)] {
+        reach(&mut net, n, k);
+    }
+    for x in [(a, b), (b, a), (r, b), (b, r)] {
+        net.blocked_peers.insert(x);
+    }
+    let g = net.group_at(a, &[(b, Role::Write), (r, Role::Read)], vec![]);
+    let t = net.item(a, g, g, "doc");
+    net.run();
+    let l = net.label(b);
+    // the item reaches b (a host-less label: a's stream)
+    let la = net.label(a);
+    let pull = |evs: &[ClientEvent]| evs.iter().find_map(|e| if let ClientEvent::Peer(m) = e { if let osis_proto::Message::Pull(x) = &**m { Some(x.id) } else { None } } else { None });
+    let a_events = |net: &mut Net| -> Vec<(LabelId, osis_proto::Event)> {
+        net.sync(a).entries(&la).into_iter().filter_map(|(blob_id, _)| {
+            let (wrap, _) = net.sync(a).entry_meta(&la, &blob_id)?;
+            let blob = net.engine(a).blob(&blob_id).ok()??;
+            Some((l, osis_proto::Event::Added { blob_id, blob: Some(blob), wrap, stamp: None }))
+        }).collect()
+    };
+    let (mut pa, evs) = member_pulled(&mut net, b, a, l);
+    let id = pull(&evs).expect("b pulls a");
+    let events = a_events(&mut net);
+    let reply = osis_proto::msg::PullReply { id, events, cursor: Some(vec![1; 8]), whole: false, more: false, report: false, joins: Vec::new() };
+    command(&mut net, b, &mut pa, Command::Peer(Box::new(osis_proto::Message::PullReply(Box::new(reply)))));
+    assert_eq!(net.read(b, t), Some(s("doc")), "the item reached b");
+    let mut flood = Vec::new();
+    let mut events = Vec::new();
+    for i in 0..n {
+        let mut m = osis_node::Mutation::new();
+        let e = net.engine(r);
+        let id = if memory {
+            m.set(t, &crate::common::ak("win:notes+.0"), &s(&format!("r{i}"))).unwrap();
+            e.commit_in_memory_hostile(m).unwrap().unwrap()
+        } else {
+            m.set(t, &REG, &s(&format!("r{i}"))).unwrap();
+            e.commit_hostile(m).unwrap().unwrap()
+        };
+        let cb = osis_commit::CommitBlob::decode(&net.engine(r).take_forged().unwrap()).unwrap();
+        let (_, ev) = crate::ephemeral::sealed(&mut net, b, g, &cb, None, 1000 + i as u64);
+        flood.push(id);
+        events.push((l, ev));
+    }
+    let (mut pr, evs) = member_pulled(&mut net, b, r, l);
+    let id = pull(&evs).expect("b pulls r");
+    let reply = osis_proto::msg::PullReply { id, events, cursor: Some(vec![1; 8]), whole: false, more: false, report: false, joins: Vec::new() };
+    command(&mut net, b, &mut pr, Command::Peer(Box::new(osis_proto::Message::PullReply(Box::new(reply)))));
+    // a tick forgets what no entry carries
+    net.advance(1_000);
+    let known = flood.iter().filter(|c| net.engine(b).header(c).is_some()).count();
+    let stored: usize = osis_store::Backend::scan(&net.nodes[b].backend, &[], None, usize::MAX).unwrap().iter().map(|(k, v)| k.len() + v.len()).sum();
+    // a's next write, on a's own session
+    net.write(a, t, "after");
+    let acts = net.sync(a).handle(Event::Local);
+    net.actions(a, acts);
+    let events: Vec<_> = a_events(&mut net).into_iter().filter(|(_, e)| matches!(e, osis_proto::Event::Added { blob_id, .. } if net.engine(b).blob(blob_id).ok().flatten().is_none())).collect();
+    let st = osis_proto::msg::Stream { events, cursor: Some(vec![2; 8]), report: false };
+    command(&mut net, b, &mut pa, Command::Peer(Box::new(osis_proto::Message::Stream(Box::new(st)))));
+    let applied = net.read(b, t) == Some(s("after"));
+    (known, stored, applied)
+}
+
+// spec/requirements.md (peer input never causes unbounded storage), spec/sync.md §5 (co-reader
+// peer budgets), spec/permissions.md §6 (invalid deltas), security: a reader serving the label as
+// a co-reader peer, no host between, streams genuine commits each invalid at the receiver
+// (durable and ephemeral alike); what the receiver keeps of them (a header each, no body) counts
+// against that peer's budget, so at n and at 10n it keeps the same bounded number, and another
+// writer's commit still applies
+#[test]
+fn reader_flood_of_invalid_commits_bounded_spec_sync_5() {
+    for memory in [false, true] {
+        let (known, stored, ok) = reader_flood(40, memory);
+        assert!(ok, "memory {memory}: a's write applies past the flood of 40");
+        let (known10, stored10, ok) = reader_flood(400, memory);
+        assert!(ok, "memory {memory}: a's write applies past the flood of 400");
+        assert_eq!((known, known10), (0, 0), "memory {memory}: no header of the flood outlives its entries");
+        // 360 more headers would add about 200 KB; the store's pages vary by a few KB
+        assert!(stored10 <= stored + stored / 10, "memory {memory}: the store at 10n ({stored10} bytes) is the store at n ({stored})");
+    }
 }
 
 // spec/sync.md §5: a stranger without the label's sync key opens nothing.

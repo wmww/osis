@@ -351,6 +351,14 @@ fn goes_invalid(core: &Core, m: &crate::engine::Meta, ai: usize) -> bool {
     !m.valid_at(ai) && m.holds(ai) && Some(m.view.author) != core.me() && !m.view.kind.is_role()
 }
 
+/// Whether commit `m` holds no part and is known only for a part dropped while invalid (its
+/// header, so a copy is not taken while it stays invalid and valid again it is fetched,
+/// `valid_again`): durable and memory alike, node-sync forgets it once it knows no entry of it
+/// (`Engine::forgettable`, spec/permissions.md §6).
+pub(crate) fn kept_invalid(m: &crate::engine::Meta) -> bool {
+    (0..m.view.aspects.len()).all(|ai| !m.holds(ai)) && m.dropped.keys().any(|ai| m.dropped_invalid(*ai))
+}
+
 /// Drops every held part judged invalid in this transaction (`Core::drop_due`) but those
 /// `goes_invalid` keeps: its writes are none of the state's, so no read changes and no aspect is
 /// rebuilt (spec/crdt.md §4.6, spec/permissions.md §5.2). Run at the transaction's end, after
@@ -1103,11 +1111,18 @@ impl Engine {
         self.core.ix.commits.get(c).is_some_and(|m| m.holds(ai))
     }
 
+    /// Whether commit `c` is known with no part held, only for a part dropped while invalid
+    /// (`kept_invalid`): what node-sync keeps of it is its header, charged to its source like
+    /// input not judged yet (notes/node-sync.md, Input giving nothing).
+    pub fn kept_invalid(&self, c: &CommitId) -> bool {
+        self.core.ix.commits.get(c).is_some_and(kept_invalid)
+    }
+
     /// Whether commit `c` may be forgotten, ID included, once node-sync knows no entry of it
-    /// (spec/commits.md §5, Forgetting): a content commit, every part dropped as covered by a
-    /// cover of its own author, no purge request, nothing waiting; or a memory commit holding no
-    /// part, nothing waiting, kept only for a part dropped while invalid (spec/sync.md §9
-    /// Forgetting, `memory::forget_if_spent`).
+    /// (spec/commits.md §5, Forgetting): nothing waiting, and either holding no part, known only
+    /// for a part dropped while invalid (`kept_invalid`, either class: spec/permissions.md §6), or
+    /// a durable content commit, every part dropped as covered by a cover of its own author, no
+    /// purge request.
     pub fn forgettable(&self, c: &CommitId) -> bool {
         // counted: tests read how many commits forgetting looks at
         let _s = crate::costs::span("forgettable");
@@ -1116,8 +1131,11 @@ impl Engine {
         if core.ix.pending.contains_key(c) {
             return false;
         }
+        if kept_invalid(m) {
+            return true;
+        }
         if m.view.memory {
-            return memory::kept_invalid(m);
+            return false;
         }
         let own_cover = |d: &Dropped| d.why == DropFor::Cover && d.covered_by.iter().any(|x| core.ix.commits.get(x).is_none_or(|s| s.view.author == m.view.author));
         m.view.kind == Kind::Content && !m.view.purges && m.dropped.len() == m.view.aspects.len() && m.dropped.values().all(own_cover)

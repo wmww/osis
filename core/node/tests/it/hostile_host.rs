@@ -527,6 +527,57 @@ fn unvouched_cap_per_host_spec_sync_3() {
     assert!(net.sync(a).entries(&l).iter().any(|(b, _)| *b == ids[0]), "s2's entry crowded out by s1's junk");
 }
 
+/// Host `h` lists to writer `b` (`unvouched_cap` 8), unstamped, `n` genuine commits of reader
+/// `r` on an item, each invalid at `b`, ephemeral with `memory` (a hostile host's word: an honest
+/// one carries at most its deposit budget of them). How many of them `b` knows (a header each,
+/// its body dropped) once settled.
+fn host_lists_invalid(n: usize, memory: bool) -> usize {
+    let mut net = Net::new();
+    let h = net.add_host();
+    let a = net.node(1, &[h]);
+    let b = net.add_node(2, osis_node::sync::SyncConfig { hosts: vec![net.address(h)], unvouched_cap: 8, ..Default::default() });
+    let r = net.node(3, &[h]);
+    let g = net.group(a, &[(b, Role::Write), (r, Role::Read)], &[h]);
+    net.name_inbox_elsewhere(a, g);
+    let t = net.item(a, g, g, "x");
+    net.run();
+    let l = net.label(b);
+    let conn = net.conn_to(b, h).expect("connected");
+    let mut flood = Vec::new();
+    let mut events = Vec::new();
+    for i in 0..n {
+        let mut m = osis_node::Mutation::new();
+        let id = if memory {
+            m.set(t, &crate::common::ak("win:notes+.0"), &s(&format!("r{i}"))).unwrap();
+            net.engine(r).commit_in_memory_hostile(m).unwrap().unwrap()
+        } else {
+            m.set(t, &REG, &s(&format!("r{i}"))).unwrap();
+            net.engine(r).commit_hostile(m).unwrap().unwrap()
+        };
+        let cb = osis_commit::CommitBlob::decode(&net.engine(r).take_forged().unwrap()).unwrap();
+        let (_, ev) = crate::ephemeral::sealed(&mut net, b, g, &cb, None, 1000 + i as u64);
+        flood.push(id);
+        events.push(ev);
+    }
+    net.feed(b, Event::Bytes { conn, bytes: push(l, events) });
+    net.settle(10_000);
+    net.advance(1_000);
+    flood.iter().filter(|c| net.engine(b).header(c).is_some()).count()
+}
+
+// spec/sync.md §3 (unvouched entries), spec/permissions.md §6 (invalid deltas), spec/requirements.md
+// (peer input never causes unbounded storage), security: a host listing unstamped commits invalid
+// at the node (their bodies dropped, each header kept while its entry is) counts them against
+// `unvouched_cap` as entries it cannot judge, so the node knows as few of them at 10n as at n,
+// durable and ephemeral alike
+#[test]
+fn unvouched_invalid_entries_capped_spec_sync_3() {
+    for memory in [false, true] {
+        let (k, k10) = (host_lists_invalid(20, memory), host_lists_invalid(200, memory));
+        assert!(k <= 9 && k10 <= 9, "memory {memory}: headers known past the cap: {k} at n, {k10} at 10n");
+    }
+}
+
 // spec/sync.md §5 (honest hosts take stamps under the head's write key only), spec/
 // requirements.md (peer input never causes unbounded storage): stamps under a superseded step's
 // write key (a removed writer's) vouch for nothing once the head is newer: such entries are

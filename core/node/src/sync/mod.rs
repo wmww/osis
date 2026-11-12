@@ -581,7 +581,7 @@ impl SyncEngine {
     }
 
     /// A bound on unverified input from other nodes was reached and what came past it was not
-    /// kept (notes/node-sync.md, Unjudged input): the app hears of it.
+    /// kept (notes/node-sync.md, Input giving nothing): the app hears of it.
     pub(crate) fn report_capped(&mut self, detail: String) {
         let now = self.engine.now();
         self.engine.core.events.diagnostic(Diagnostic { kind: DiagnosticKind::InputCapped, tids: Vec::new(), commit: None, peer: None, detail }, now);

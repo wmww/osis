@@ -342,10 +342,12 @@ impl SyncEngine {
     }
 
     /// Bytes new here that reader `conn`'s stream or fetches brought for entries of `l` with no
-    /// stamp under the served head: those still unopened count against the peer budgets as an
-    /// upload's did (`charge_key`), and past either the entry is not kept (spec/requirements.md:
-    /// peer input never grows storage unbounded).
-    pub(crate) fn charge_reader(&mut self, conn: ConnId, l: LabelId, fresh: &[BlobId]) -> Result<()> {
+    /// stamp under the served head, with their sizes as they came: those holding nothing here
+    /// (`gives_nothing`: unjudged, or a header kept for a part dropped while invalid) count
+    /// against the peer budgets as an upload's did (`charge_key`), and past either the entry is
+    /// not kept, nor its commit once no entry names it (`forget_forgettable`;
+    /// spec/requirements.md: peer input never grows storage unbounded).
+    pub(crate) fn charge_reader(&mut self, conn: ConnId, l: LabelId, fresh: &[(BlobId, u64)]) -> Result<()> {
         if fresh.is_empty() {
             return Ok(());
         }
@@ -353,14 +355,11 @@ impl SyncEngine {
         let who = self.connection_proven(conn).and_then(|p| p.source(&self.engine.core));
         let key = charge_key(who, &l);
         let mut gone = Vec::new();
-        for b in fresh {
-            if !self.state.entries.get(&(l, *b)).is_some_and(|e| e.stamp.is_none() && self.unjudged(e)) {
+        for (b, size) in fresh {
+            let size = *size;
+            if !self.state.entries.get(&(l, *b)).is_some_and(|e| e.stamp.is_none() && self.gives_nothing(e)) {
                 continue;
             }
-            let size = match self.engine.blob(b)? {
-                Some(x) => x.len() as u64,
-                None => 0,
-            };
             let used = self.charges.per.get(&key).copied().unwrap_or(0);
             if size > self.cfg.peer_bytes.saturating_sub(used) || size > self.cfg.peer_total_bytes.saturating_sub(self.charges.total) {
                 self.budget_reached(Some(l));
@@ -404,15 +403,17 @@ impl SyncEngine {
         }
     }
 
-    /// Whether entry `e` is not judged here (notes/node-sync.md, Unjudged input): unopened, bad,
-    /// parked, awaiting, or its commit pending and not applied. Such an entry no writer vouched
-    /// for counts against the unvouched bounds (`unvouched_cap`, the peer budgets).
-    pub(crate) fn unjudged(&self, e: &Entry) -> bool {
+    /// Whether entry `e` gives nothing held here (notes/node-sync.md, Input giving nothing):
+    /// unopened, bad, parked, awaiting, its commit pending and not applied, or its commit known
+    /// with no part held, only for a part dropped while invalid (`Engine::kept_invalid`: its
+    /// header). Such an entry no writer vouched for counts against the unvouched bounds
+    /// (`unvouched_cap`, the peer budgets).
+    pub(crate) fn gives_nothing(&self, e: &Entry) -> bool {
         use super::state::Kind;
         let ix = &self.engine.core.ix;
         match &e.kind {
             Kind::Unknown | Kind::Bad | Kind::Parked(_) | Kind::Awaits { .. } => true,
-            Kind::Commit { commit, .. } => ix.pending.contains_key(commit) && !ix.commits.contains_key(commit),
+            Kind::Commit { commit, .. } => (ix.pending.contains_key(commit) && !ix.commits.contains_key(commit)) || self.engine.kept_invalid(commit),
             _ => false,
         }
     }
@@ -428,7 +429,7 @@ impl SyncEngine {
     /// a host or peer.
     pub(crate) fn prune_charges(&mut self) {
         let st = &self.state;
-        let stale: Vec<(LabelId, BlobId)> = self.charges.by_entry.keys().filter(|(l, b)| !(st.entries.get(&(*l, *b)).is_some_and(|e| self.unjudged(e)) && !st.present_anywhere(l, b))).copied().collect();
+        let stale: Vec<(LabelId, BlobId)> = self.charges.by_entry.keys().filter(|(l, b)| !(st.entries.get(&(*l, *b)).is_some_and(|e| self.gives_nothing(e)) && !st.present_anywhere(l, b))).copied().collect();
         self.charges.reported &= stale.is_empty();
         for k in stale {
             if let Some((p, n)) = self.charges.by_entry.remove(&k) {

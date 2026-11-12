@@ -168,7 +168,7 @@ fn revoke_on_an_unrelated_thing_brings_no_keys() {
 // spec/crdt.md §4.6 (Removed: an invalid delta loses only its own writes): A removes B while B
 // and C are away; B, not knowing, creates map record "ash"; C gets it from B directly, writes
 // into it, then learns of the removal (B's delta invalid there, its body dropped, never
-// uploaded). A never holds B's delta. Both read C's nested write in a record with no creation
+// uploaded, its header forgotten with no entry of it known). A never holds B's delta. Both read C's nested write in a record with no creation
 // held alike: holding an invalid delta changes no value.
 #[test]
 fn others_writes_in_an_invalid_record_read_alike_spec_crdt_4_6() {
@@ -192,6 +192,7 @@ fn others_writes_in_an_invalid_record_read_alike_spec_crdt_4_6() {
     m.op(t, &map, PathOp { path: vec![key("ash")], op: Op::Set(Value::Map(ValueMap::from([(Value::Str("x".into()), Value::Int(1))]))) }).unwrap();
     let e = net.engine(b).commit(m).unwrap().unwrap();
     net.pair(b, c);
+    assert!(net.engine(c).header(&e).is_some(), "C holds B's delta");
     let mut m = osis_node::Mutation::new();
     m.op(t, &map, PathOp { path: vec![key("ash"), key("y")], op: Op::Set(Value::Int(2)) }).unwrap();
     net.engine(c).commit(m).unwrap().unwrap();
@@ -201,7 +202,8 @@ fn others_writes_in_an_invalid_record_read_alike_spec_crdt_4_6() {
     for _ in 0..3 {
         net.advance(31_000);
     }
-    assert!(net.engine(a).header(&e).is_none() && net.engine(c).header(&e).is_some(), "only C holds B's delta");
+    // C dropped it as invalid, and with no entry of it known forgot its header too
+    assert!(net.engine(a).header(&e).is_none() && net.engine(c).header(&e).is_none(), "A never held B's delta, C forgot it");
     let read = net.engine(c).get(&t, &map).unwrap();
     assert_eq!(read, net.engine(a).get(&t, &map).unwrap(), "A and C read alike");
     assert!(!format!("{read:?}").contains("ash"), "the record shows nowhere: {read:?}");

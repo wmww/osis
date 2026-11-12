@@ -309,11 +309,11 @@ impl SyncEngine {
                     // a bundle's stamps were checked against its path by the importer
                     let stamp = stamp.filter(|_| if cur.is_some() { by_head } else { trusted });
                     let listed = self.state.entries.contains_key(&(l, blob_id));
-                    if blob.is_some() {
+                    if let Some(bytes) = &blob {
                         crossed.push(blob_id);
                         // a reader's bytes new here, under no stamp of the served head: charged
                         if reader.is_some() && stamp.is_none() && !self.engine.has_blob(&blob_id) {
-                            fresh_here.push(blob_id);
+                            fresh_here.push((blob_id, bytes.len() as u64));
                         }
                     }
                     match self.state.entries.get(&(l, blob_id)).cloned() {
@@ -576,14 +576,14 @@ impl SyncEngine {
         // under a smaller cap
         let inbox = !self.inbox_actors_at(&l).is_empty();
         let cap = if inbox { self.cfg.unvouched_cap >> 4 } else { self.cfg.unvouched_cap };
-        let mut held = self.state.present_at(&host, &l).into_iter().filter(|b| self.state.entries.get(&(l, *b)).is_some_and(|e| e.stamp.is_none() && self.unjudged(e))).count();
+        let mut held = self.state.present_at(&host, &l).into_iter().filter(|b| self.state.entries.get(&(l, *b)).is_some_and(|e| e.stamp.is_none() && self.gives_nothing(e))).count();
         let mut gone = Vec::new();
         let mut over = 0usize;
         for (b, fresh) in ids {
             // unopened under what is held, or opened and not judged (its commit pending, parked,
-            // awaiting): notes/node-sync.md, Unjudged input
-            let unjudged = !listed.contains(b) && self.state.entries.get(&(l, *b)).is_some_and(|e| e.stamp.is_none() && self.unjudged(e) && (e.kind != Kind::Unknown || osis_label::unwrap_any(secrets.iter(), b, &e.wrap).is_none()));
-            if !unjudged {
+            // awaiting) or known for an invalid part only: notes/node-sync.md, Input giving nothing
+            let nothing = !listed.contains(b) && self.state.entries.get(&(l, *b)).is_some_and(|e| e.stamp.is_none() && self.gives_nothing(e) && (e.kind != Kind::Unknown || osis_label::unwrap_any(secrets.iter(), b, &e.wrap).is_none()));
+            if !nothing {
                 continue;
             }
             let opened = self.state.entries.get(&(l, *b)).is_some_and(|e| e.kind != Kind::Unknown);
@@ -944,7 +944,7 @@ impl SyncEngine {
         self.engine.reexamine()
     }
 
-    /// Pending rows nothing held carries go (notes/node-sync.md, Unjudged input): what pends
+    /// Pending rows nothing held carries go (notes/node-sync.md, Input giving nothing): what pends
     /// never outlives what holds it (an entry, a stranded report). Looked at: commits whose last
     /// carrier left, commits stored pending since the last look (one from no carrier, a pairing
     /// package's, goes at once), and every pending one once per start.

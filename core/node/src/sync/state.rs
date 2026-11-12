@@ -376,7 +376,7 @@ pub struct State {
     pub by_commit: BTreeMap<CommitId, BTreeSet<BlobId>>,
     /// How many inbox or request entries carry each commit.
     pub inbox_commits: BTreeMap<CommitId, usize>,
-    /// How many held entries carry each commit (notes/node-sync.md, Unjudged input): label
+    /// How many held entries carry each commit (notes/node-sync.md, Input giving nothing): label
     /// entries naming it (`Commit`, `Parked`, `Awaits`), inbox entries carrying it as their
     /// commit (`Inbox`, `Request`) or in their author's chain (`inbox_chain`), and stranded
     /// reports (`reported`).

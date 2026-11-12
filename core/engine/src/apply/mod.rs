@@ -1370,7 +1370,7 @@ impl Engine {
 
     /// Drops the stored pending copy of durable commit `id` (a pending or parked commit, or an
     /// applied one's parts that wait alone): the last entry carrying it left (node-sync's
-    /// `sweep_pending`, notes/node-sync.md Unjudged input). Its parts count as never received;
+    /// `sweep_pending`, notes/node-sync.md Input giving nothing). Its parts count as never received;
     /// the next entry carrying it brings it back. Whether there was one.
     pub fn forget_pending(&mut self, id: &CommitId) -> Result<bool> {
         if !self.core.ix.pending.contains_key(id) {
