@@ -268,7 +268,7 @@ pub(super) fn stream_stored(tx: &mut Tx<'_>, h: &Header, id: &CommitId, ai: usiz
 
 /// What the joins of a commit's parts leave for the rest of apply.
 #[derive(Default)]
-pub(super) struct Joins {
+struct Joins {
     pub changed: BTreeSet<(Tid, Ak)>,
     pub touched: Touched,
     /// Per valid part joined on an aspect holding a body with a relative bound, the writes its
@@ -280,8 +280,9 @@ pub(super) struct Joins {
 /// Joins every part of commit `id` (`valid`: per aspect), in part order, a piece at a time.
 ///
 /// Invariant (the differential `tests_paged` checks it against `Core::whole_apply`, where every
-/// part decodes whole and joins by `oracle::join_into_state`, all else of `join_part` the same): joining a delta a piece at a time, each piece's state pages
-/// written to the store and dropped from the cache before the next, leaves exactly the state,
+/// part decodes whole and joins by `oracle::join_into_state`, all else of `join_part` the same):
+/// joining a delta a piece at a time, each piece's state pages written to the store and dropped
+/// from the cache before the next, leaves exactly the state,
 /// snapshot records and outcomes that joining it whole does. Pieces split a delta by
 /// element (§8), and what is judged of a whole delta is judged of its pieces: un-merging,
 /// vouching and holding value-less per write, superseded writes per join.
