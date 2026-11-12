@@ -274,7 +274,10 @@ impl SyncEngine {
             if self.memory.reconciling.contains(&(conn, label)) {
                 return Ok(());
             }
-            let ids = self.state.present_at(&host, &label);
+            // a memory entry waiting unopened is not listed (covered by a snapshot since fallen
+            // invalid, `memory_reconcile_thing`): it comes back as needed, as durable fetches
+            // back the bodies it marks never received
+            let ids: Vec<osis_base::BlobId> = self.state.present_at(&host, &label).into_iter().filter(|b| !self.memory_unopened(&label, b)).collect();
             self.memory.reconciling.insert((conn, label));
             return self.command(conn, Command::Reconcile { label, ids }, out);
         }

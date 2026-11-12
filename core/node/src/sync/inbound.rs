@@ -1821,6 +1821,10 @@ impl SyncEngine {
         // from elsewhere: the host's log as it answered need not hold what came before it there
         // (spec/permissions.md §3 Complete pass), so a pass is asked again
         self.engine_events()?;
+        // a memory snapshot fell invalid during it (`memory_reconcile_thing`): reconciled now
+        if self.memory.reconcile_after.remove(&(conn, l)) && !self.memory.reconciled.contains(&(host, l)) && self.state.cursors.contains_key(&(host, l)) {
+            return self.sync_label(conn, l, out);
+        }
         let sent = self.lc(conn, &l).map_or(u64::MAX, |x| x.sync_seq);
         let later = self.synced.actors.get(&l).and_then(|(a, _)| self.role_change.get(a)).is_some_and(|r| r.0 > sent);
         if later && let Some(cursor) = self.state.cursors.get(&(host, l)).copied() {

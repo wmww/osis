@@ -1536,16 +1536,14 @@ fn compacted_write_of_removed_holder_stays_spec_permissions_5_2() {
     assert_eq!(notes(&mut net, d, w), all, "a node arriving later agrees");
 }
 
-// spec/requirements.md Convergence, spec/permissions.md §5.2 (the residual of a snapshot turning
-// invalid): writer w writes X, removes itself from the group (no demotion frontier), then
-// snapshots X's aspect as C stamped after the removal, so C is invalid wherever the removal is
-// known and X stays valid. Holder a gets C before the removal (drops X as covered, then C
-// turns invalid: X's writes are gone there until a copy arrives again), holder b the removal
-// first (C invalid on arrival, X kept). Both stay connected past the host's ephemeral tombstone
-// and end apart: a deleted X at the host once C carried it, so no writer holds X to place it
-// again once C fell (durable's residual, spec/sync.md §9).
+// spec/requirements.md Convergence, spec/permissions.md §5.2, spec/sync.md §9 (a snapshot
+// turning invalid): writer w writes X, removes itself from the group (no demotion frontier),
+// then snapshots X's aspect as C stamped after the removal, so C is invalid wherever the removal
+// is known and X stays valid. Holder a gets C before the removal (drops X as covered, then C
+// turns invalid), holder b the removal first (C invalid on arrival, X kept). a fell C before it
+// deleted X at the host, so its reconciliation fetches X back and both read it.
 #[test]
-fn snapshot_invalidated_by_self_removal_residual_spec_permissions_5_2() {
+fn snapshot_invalidated_by_self_removal_fetched_back_spec_permissions_5_2() {
     let (mut net, _host, [a, w, b], g, []) = hosted::<3, 0>(&[(1, Role::Write), (2, Role::Read)], [], true);
     let wn = window(&mut net, a, g, "w");
     net.run();
@@ -1581,11 +1579,7 @@ fn snapshot_invalidated_by_self_removal_residual_spec_permissions_5_2() {
     for _ in 0..(osis_base::format::MAX_DRIFT_MS / 60_000 + 5) {
         net.advance(60_000);
     }
-    // durable's residual (spec/sync.md §9, spec/permissions.md §5.2): a deleted X at the host
-    // under C and dropped it; C fell; w may not write any more and b, a reader, lost its entry
-    // of X with the host's deletion, so no writer holds X to place it again: a stays without X
-    // until its author writes the aspect again
-    assert_eq!((notes(&mut net, a, wn), notes(&mut net, b, wn)), (BTreeMap::new(), x), "nobody can place X again");
+    assert_eq!((notes(&mut net, a, wn), notes(&mut net, b, wn)), (x.clone(), x), "a fetched X back");
 }
 
 // spec/crdt.md §2.1: a write's session names its node, so a node's own writes are its sessions'
@@ -4727,6 +4721,86 @@ fn revert_run_with(seed: u64, restarts: bool) {
         }
         assert_eq!(net.eph_read(a, *t, STATE), net.eph_read(b, *t, STATE), "seed {seed}: {t:?}");
     }
+}
+
+// spec/sync.md §9 (Compaction), spec/permissions.md §5.2: a writer's snapshot covering another
+// author's write falls with its demotion (the admin never received it); the host still holds
+// the covered write, so the writer fetches it back at once and both read it
+// (`ephemeral_reverts_with_restarts_alike_large_spec_crdt_4_6` seed 751305619689)
+#[test]
+fn fallen_snapshot_fetches_covered_back_spec_sync_9() {
+    let mut net = Net::new();
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let b = net.node(2, &[host]);
+    let g = net.group(a, &[(b, Role::Write)], &[host]);
+    let t = net.item(a, g, g, "t");
+    net.run();
+    let tb = net.tid(b);
+    let mut m = Mutation::new();
+    m.set(t, &eph(STATE), &s("x")).unwrap();
+    let x = net.engine(a).write(m).unwrap().unwrap().id;
+    local(&mut net, a);
+    net.run();
+    assert_eq!(net.eph_read(b, t, STATE), Some(s("x")));
+    net.set_online(b, false);
+    let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
+    let d = osis_node::flows::Demotion { holder: tb, new: Some(edge), retain: None };
+    let done = net.engine(a).demote(&g, &d).unwrap();
+    let acts = net.sync(a).carry_out(done).unwrap();
+    net.actions(a, acts);
+    net.run();
+    net.advance(15_000);
+    // stamped after the demotion, which b has not seen
+    let acts = net.sync(b).compact_ephemeral_now().unwrap();
+    net.actions(b, acts);
+    assert!(!memory_ids(&mut net, b).contains(&x), "covered by b's snapshot");
+    net.set_online(b, true);
+    net.run();
+    net.advance(15_000);
+    assert!(memory_ids(&mut net, b).contains(&x), "fetched back");
+    assert_eq!(net.eph_read(b, t, STATE), Some(s("x")));
+    assert_eq!(net.eph_read(a, t, STATE), Some(s("x")));
+}
+
+// the same where the writer had deleted its covered write at the host under its snapshot and
+// the host restarted: the admin uploads the write again, and the writer's own tombstone of it
+// falls with the snapshot (seed 196 of the same property)
+#[test]
+fn fallen_snapshot_lifts_own_tombstone_spec_sync_9() {
+    let mut net = Net::new();
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let b = net.node(2, &[host]);
+    let g = net.group(a, &[(b, Role::Write)], &[host]);
+    let t = net.item(a, g, g, "t");
+    net.run();
+    let tb = net.tid(b);
+    let mut m = Mutation::new();
+    m.set(t, &eph(STATE), &s("y")).unwrap();
+    let y = net.engine(b).write(m).unwrap().unwrap().id;
+    local(&mut net, b);
+    net.run();
+    assert_eq!(net.eph_read(a, t, STATE), Some(s("y")));
+    net.set_online(a, false);
+    net.advance(15_000);
+    let acts = net.sync(b).compact_ephemeral_now().unwrap();
+    net.actions(b, acts);
+    net.run();
+    net.advance(15_000);
+    assert!(!memory_ids(&mut net, b).contains(&y), "covered by b's snapshot");
+    net.restart_host(host);
+    let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
+    let d = osis_node::flows::Demotion { holder: tb, new: Some(edge), retain: None };
+    let done = net.engine(a).demote(&g, &d).unwrap();
+    let acts = net.sync(a).carry_out(done).unwrap();
+    net.actions(a, acts);
+    net.set_online(a, true);
+    net.run();
+    net.advance(15_000);
+    assert!(memory_ids(&mut net, b).contains(&y), "fetched back");
+    assert_eq!(net.eph_read(b, t, STATE), Some(s("y")));
+    assert_eq!(net.eph_read(a, t, STATE), Some(s("y")));
 }
 
 // spec/crdt.md §4.6: an ephemeral undo or redo needs the rights of a write, and leaves the nodes alike.

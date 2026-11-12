@@ -1455,6 +1455,14 @@ impl State {
         out
     }
 
+    /// Forgets this node's tombstone of entry `b` of `l` (the deletion it records no longer
+    /// stands: the coverer it went under fell invalid).
+    pub fn lift_tomb(&mut self, l: LabelId, b: BlobId) {
+        if self.tombs.remove(&(l, b)).is_some() {
+            self.del_of(&l, &b, key(TOMB, &[&l.0, &b.0]));
+        }
+    }
+
     /// Forgets tombstones, and hosts' tombstoned answers, past their lifetime.
     pub fn expire_tombs(&mut self, now: u64) {
         // a memory entry's tombstone lasts `MAX_DRIFT`, as a host's does (spec/sync.md §5)

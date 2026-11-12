@@ -188,6 +188,9 @@ pub(crate) struct Memory {
     /// reconciles that label again on the next connection (nothing else here knows of an entry
     /// the cursor passed, so nothing would ask for it again).
     pub reconcile_fetches: BTreeMap<(ConnId, LabelId), BTreeSet<BlobId>>,
+    /// Labels a memory snapshot of whose closure fell invalid while their Sync on the
+    /// connection ran: reconciled when it ends (`synced`, `memory_reconcile_thing`).
+    pub reconcile_after: BTreeSet<(ConnId, LabelId)>,
     /// Entries refused for the label's cap or share here (their bytes dropped, their record
     /// kept unopened): fetched again once room appears (`retry_refused`), not before.
     pub refused: BTreeMap<LabelId, Refused>,
@@ -227,9 +230,9 @@ impl SyncEngine {
     /// judged again), entries whose commit waited unverified are charged as held, refused entries
     /// are fetched again where room appeared, and ephemeral signals go.
     pub(crate) fn memory_step(&mut self, out: &mut Vec<Action>) -> Result<()> {
-        for (t, _) in self.engine.take_memory_invalidated()? {
-            self.memory_reconcile_thing(&t);
-        }
+        // acted on once the drops are noted: what the fallen snapshot covered may have been
+        // forgotten since the last step
+        let invalidated = self.engine.take_memory_invalidated()?;
         self.engine.memory_compactions(false)?;
         let (awaits, dropped): (Vec<_>, Vec<_>) = self.engine.take_memory_drops().into_iter().partition(|(_, _, why)| matches!(why, MemoryDrop::Awaits { .. }));
         self.memory_dropped(&dropped);
@@ -250,6 +253,9 @@ impl SyncEngine {
                 }
             }
         }
+        for (t, ak) in invalidated {
+            self.memory_reconcile_thing(&t, &ak, out)?;
+        }
         self.retry_refused();
         let signals = self.engine.take_signals();
         for c in signals {
@@ -259,12 +265,48 @@ impl SyncEngine {
         Ok(())
     }
 
-    /// Reconciles the labels whose closure holds `t` at their next sync: a memory snapshot of
-    /// one of its aspects fell invalid here, and the bodies it covered are gone until copies
-    /// holders still have arrive again (spec/sync.md §9).
-    fn memory_reconcile_thing(&mut self, t: &Tid) {
+    /// A memory snapshot of `t`'s aspect `ak` fell invalid here, and the bodies it covered are
+    /// gone until copies holders still have arrive again (spec/sync.md §9): the entries of the
+    /// commits forgotten as covered or superseded there lose this node's tombstones and wait
+    /// unopened (whatever brings their bytes again opens them), and the labels whose closure holds `t` are reconciled, listing
+    /// only what is held (`memory_unopened`), so hosts name those they still have as needed.
+    /// At once where the label is open, when its Sync running ends, else at its next sync.
+    fn memory_reconcile_thing(&mut self, t: &Tid, ak: &osis_base::Ak, out: &mut Vec<Action>) -> Result<()> {
+        let on = |f: &Forgotten| matches!(f.why, MemoryDrop::Covered { .. } | MemoryDrop::Superseded { .. }) && f.header.aspects.iter().any(|a| a.tid == *t && a.ak == *ak);
+        let covered: Vec<CommitId> = self.memory.forgotten.iter().filter(|(c, f)| on(f) && !self.engine.holds_memory(c)).map(|(c, _)| *c).collect();
+        // deleted here as covered: those deletions no longer stand (a role change, rare: the
+        // tombstones, kept `MAX_DRIFT`, are scanned)
+        let tombs: Vec<(LabelId, BlobId)> = self.state.tombs.iter().filter(|(k, tb)| self.state.is_memory(&k.0, &k.1) && matches!(&tb.kind, Kind::Commit { commit, .. } if covered.contains(commit))).map(|(k, _)| *k).collect();
+        for (l, b) in tombs {
+            self.state.lift_tomb(l, b);
+        }
+        let mut unopened: BTreeMap<LabelId, Vec<BlobId>> = BTreeMap::new();
+        for c in covered {
+            for (l, b) in self.entries_of_commit(&c) {
+                if let Some(mut e) = self.state.entries.get(&(l, b)).cloned()
+                    && e.memory
+                {
+                    e.kind = Kind::Unknown;
+                    self.state.set_entry(l, b, e);
+                    unopened.entry(l).or_default().push(b);
+                }
+            }
+        }
+        // bytes still here open again at once
+        for (l, ids) in unopened {
+            self.open_entries(None, l, &ids)?;
+        }
         let labels: Vec<LabelId> = self.labels().into_iter().filter(|(g, _)| *g == *t || self.engine.closure(g).contains(t)).map(|(_, gl)| gl.id).collect();
         self.memory.reconciled.retain(|(_, l)| !labels.contains(l));
+        let open: Vec<(ConnId, LabelId, bool)> = self.conns.iter().flat_map(|(id, c)| c.labels.iter().filter(|(l, x)| labels.contains(l) && x.phase == Phase::Open).map(move |(l, x)| (*id, *l, x.syncing))).collect();
+        for (conn, l, syncing) in open {
+            if syncing {
+                self.memory.reconcile_after.insert((conn, l));
+            } else {
+                self.sync_label(conn, l, out)?;
+            }
+        }
+        Ok(())
     }
 
     /// Memory commits the engine forgot: their entries' charge is released, their header and
@@ -393,6 +435,12 @@ impl SyncEngine {
         if !marked.is_empty() {
             self.mark_labels(marked.iter());
         }
+    }
+
+    /// Whether memory entry `b` of `l` waits unopened to be fetched (not one refused for the
+    /// cap, `memory_skips`): a reconciliation lists it as not held.
+    pub(crate) fn memory_unopened(&self, l: &LabelId, b: &BlobId) -> bool {
+        self.state.entries.get(&(*l, *b)).is_some_and(|e| e.memory && e.kind == Kind::Unknown) && !self.memory_skips(l, b)
     }
 
     /// Whether entry `b` of `l` is not fetched here for now (refused for the cap or share, or
@@ -698,6 +746,7 @@ impl SyncEngine {
         }
         self.memory.reconcile_fetches.retain(|(c, _), _| *c != conn);
         self.memory.reconciling.retain(|(c, _)| *c != conn);
+        self.memory.reconcile_after.retain(|(c, _)| *c != conn);
         self.memory.own_uploads.retain(|(c, _, _)| *c != conn);
         self.memory.gained.retain(|(c, _), _| *c != conn);
         self.memory.announced.retain(|(c, _)| *c != conn);
