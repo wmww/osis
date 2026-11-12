@@ -139,7 +139,9 @@ fn stamped_wrap_never_replaced_spec_sync_5() {
 /// cut off from `race`. The thing and its entries.
 fn race(fx: &mut Fx, race: usize, wrong: bool, who: u8) -> (Tid, Vec<BlobId>) {
     let (g, l, a, h) = (fx.g, fx.l, fx.a, fx.h);
-    for n in [a, h] {
+    // nobody reaches `race` while the blob spreads: it would pull the good wrap first
+    let others: Vec<usize> = (0..fx.net.nodes.len()).filter(|n| *n != a && !fx.net.blocked.contains(&(*n, race))).collect();
+    for n in 0..fx.net.nodes.len() {
         fx.net.blocked.insert((n, race));
         fx.net.drop_link(n, race);
     }
@@ -154,6 +156,9 @@ fn race(fx: &mut Fx, race: usize, wrong: bool, who: u8) -> (Tid, Vec<BlobId>) {
         assert_eq!(stored_wrap(&fx.net, race, &l, id), Some(w), "first at that host");
     }
     fx.net.set_online(h, false);
+    for n in others {
+        fx.net.blocked.remove(&(n, race));
+    }
     (t, ids)
 }
 
