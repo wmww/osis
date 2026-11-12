@@ -86,6 +86,15 @@ fn bad_path_refused_at_first_page_spec_sync_5() {
     assert!(d.iter().any(|x| x.contains("host path does not verify")), "refused at the first page: {d:?}");
 }
 
+/// The first relay-only entry sent on `conn` (a cursorless Stream carrying its bytes): its label
+/// and event.
+fn relay_sent(acts: &[Action], conn: osis_node::sync::ConnId) -> Option<(osis_base::LabelId, osis_proto::Event)> {
+    sent(acts, conn).into_iter().find_map(|m| match m {
+        Message::Stream(x) if x.cursor.is_none() => x.events.into_iter().find(|(_, e)| matches!(e, osis_proto::Event::Added { blob: Some(b), stamp: Some(_), .. } if osis_label::Prefix::parse(b).is_ok_and(|p| p.class() == osis_label::Class::Relay))),
+        _ => None,
+    })
+}
+
 // spec/sync.md §9 (a relay-only commit older than `MAX_DRIFT` is dropped, its only replay window;
 // one delivered is remembered): a host pushing a captured ephemeral signal again fires nothing, at once
 // or later.
@@ -98,17 +107,11 @@ fn replayed_ephemeral_signal_dropped_spec_sync_9() {
     net.engine(a).write(m).unwrap();
     let acts = net.sync(a).handle(Event::Local);
     let conn_a = net.conn_to(a, host).unwrap();
-    let (label, entry) = sent(&acts, conn_a)
-        .into_iter()
-        .find_map(|m| match m {
-            Message::Upload { label, entries, .. } => entries.into_iter().next().map(|e| (label, e)),
-            _ => None,
-        })
-        .expect("relay-only entry sent");
+    let (label, entry) = relay_sent(&acts, conn_a).expect("relay-only entry sent");
     net.actions(a, acts);
     net.settle(10_000);
     assert_eq!(fired(&rx).len(), 1, "delivered once");
-    let push = |e: &osis_proto::Entry| crate::net::stream_msg(label, vec![osis_proto::Event::Added { blob_id: osis_label::blob_id(&e.blob), blob: Some(e.blob.clone()), wrap: e.wrap, stamp: Some(e.stamp) }], 0);
+    let push = |e: &osis_proto::Event| crate::net::stream_msg(label, vec![e.clone()], 0);
     let conn_b = net.conn_to(b, host).unwrap();
     net.feed(b, Event::Bytes { conn: conn_b, bytes: frame(push(&entry)) });
     assert!(fired(&rx).is_empty(), "a duplicate fires nothing");
@@ -131,7 +134,7 @@ fn junk_relays_raise_no_floor_spec_sync_9() {
         net.engine(a).write(m).unwrap();
         let acts = net.sync(a).handle(Event::Local);
         let conn_a = net.conn_to(a, host).unwrap();
-        let label = sent(&acts, conn_a).into_iter().find_map(|m| if let Message::Upload { label, .. } = m { Some(label) } else { None }).expect("relay-only entry sent");
+        let (label, _) = relay_sent(&acts, conn_a).expect("relay-only entry sent");
         net.actions(a, acts);
         net.settle(10_000);
         label
