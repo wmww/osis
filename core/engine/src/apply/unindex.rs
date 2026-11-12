@@ -93,7 +93,7 @@ pub(crate) fn unindex_commit(tx: &mut Tx<'_>, id: &CommitId) -> Result<()> {
     // a memory commit's pages go with it here, by the one release rule (`retention::chunks`;
     // its entries at hosts are node-sync's, `dropped_chunks`)
     if m.view.memory && !m.header.chunks.is_empty() {
-        for b in crate::retention::chunks::released(tx, &[(*id, &m.header)], &|_| false)? {
+        for b in crate::retention::chunks::released(tx, &[(*id, &m.header)], false)? {
             tx.blobs.release(&b, true)?;
         }
     }

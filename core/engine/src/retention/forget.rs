@@ -268,9 +268,8 @@ pub(crate) fn forget(tx: &mut Tx<'_>, lost: &[Tid], held: &BTreeMap<Tid, u64>) -
     // the chunks the deleted commits list that go by the one release rule (an entry naming
     // another thing's blob releases nothing, `retention::chunks`), then the sync records and the
     // blob ciphertexts nothing kept names
-    let erased: BTreeSet<Tid> = memo.iter().filter(|(_, f)| **f == Fate::Erased).map(|(t, _)| *t).collect();
     let listings: Vec<(CommitId, &Header)> = going.iter().map(|(c, h)| (*c, &**h)).collect();
-    let chunks = super::chunks::released(tx, &listings, &|t| !erased.contains(t))?;
+    let chunks = super::chunks::released(tx, &listings, true)?;
     let listed: BTreeSet<BlobId> = listings.iter().flat_map(|(_, h)| h.chunks.iter().map(|c| c.blob)).collect();
     let gone = match tx.core.sync_records {
         Some(r) => r.forget(tx, &out.labels, &out.things, &out.commits, &parts, chunks.clone())?,
