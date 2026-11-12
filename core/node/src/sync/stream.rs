@@ -646,7 +646,7 @@ impl SyncEngine {
         // a memory entry goes with its bytes up to this node's own limit, whatever the requester
         // asked: one superseded before a fetch of it arrives is never fetched (spec/sync.md §10,
         // Bodies)
-        let (inline, crossed) = self.streams.get(&conn).map_or((0, BTreeSet::new()), |s| (s.serving.inline_limit.max(self.cfg.inline_limit), s.serving.crossed.clone()));
+        let (inline, crossed) = self.streams.get(&conn).map_or((0, BTreeSet::new()), |s| (s.serving.inline_limit, s.serving.crossed.clone()));
         let mut out = Vec::new();
         let mut cut = false;
         for (seq, l, b, added) in picked {

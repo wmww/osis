@@ -206,10 +206,11 @@ fn a_full_peer_stays_within_its_cap_and_the_writer_keeps_the_rest_spec_sync_10()
 
 // spec/sync.md §5 (an entry deletes are judged by is taken outside the caps), §7 (purge), §10:
 // as above, then a purges `c`: the purge request reaches the full peer, the purged body leaves
-// it, and the peer takes something it lacked into the room freed, staying within its cap.
+// it, and the room freed takes the backlog the peer lacked, a's write that did not fit: b,
+// reading through the peer only, reads it, and the peer stays within its cap.
 #[test]
 fn a_purge_frees_room_at_a_full_peer_spec_sync_7() {
-    let (mut net, host, a, _b, t, _t2, l, c, p, full) = full_peer();
+    let (mut net, host, a, b, t, t2, l, c, p, full) = full_peer();
     let gone = Ak::new(GONE.ak()).unwrap();
     let before = net.host_ids(host, &l);
     let mut m = Mutation::new();
@@ -228,6 +229,8 @@ fn a_purge_frees_room_at_a_full_peer_spec_sync_7() {
     let request = blobs_of(&mut net, a, &l, &purge);
     assert!(request.iter().all(|r| after.contains(r)), "the purge request is there");
     assert!(after.iter().any(|x| !before.contains(x) && !request.contains(x)), "a body it lacked took the room freed");
+    assert_eq!(net.engine(b).get(&t2, &gone).unwrap(), Some(s("kept")), "the write that did not fit reaches b through the peer");
+    assert!(!net.refused_at(a, &l), "nothing lacked there any more");
     assert_eq!(net.host_capped(host, &l), full, "within its cap");
 }
 
