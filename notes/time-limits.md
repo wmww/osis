@@ -7,6 +7,7 @@ Each box's checks go to its own `~/.cache/osis/limits.log`; `tools/limits.py sum
 Format: `- <date time> <box> `<limit>` [<test>] <CPU|wall> <measured>/<limit> s at load <N>: <why>`.
 
 - 2026-11-12 ostrich `gate.hold` CPU 7077/3795 s, wall 619/241 s and `gate` CPU 9459/4094 s, wall 1200/299 s at load 18, 173 s lock wait apart: raise-followup review (osis-keys, osis-engine changed); persistent, issues/gate-five-minutes.md.
+- 2026-11-12 01:50 ostrich `gate.hold` CPU 6604/3795 s, wall 666/241 s and `gate` CPU 8457/4094 s, wall 1083/299 s at load 23: sim-stage-cost review, 8 of 26 crates selected (osis-node, osis-sim changed; the GUI crates with them); persistent, issues/gate-five-minutes.md.
 - 2026-11-12 00:02 ostrich `gate.hold` CPU 5902/3795 s, wall 456/241 s and `gate` CPU 6720/4094 s, wall 611/299 s at load 18, 605 s lock wait apart: dead-pub-fathom review, 10 of 26 crates selected (osis-engine, osis-keys, osis-node changed); persistent, issues/gate-five-minutes.md.
 - 2026-11-12 01:06 ostrich `heavy` [Cover C_regrant_rot] CPU 19245/5060 s, wall 1807/598 s at load 12 (12 workers, after a 178 s lock wait): the by-hand re-run to completion, 1,430,307 states, pass (raise-followup review).
 - 2026-11-12 00:30 ostrich `heavy` [Cover C_regrant_own and three negative controls] CPU 18113/5060 s, wall 1552/598 s at load 12 (12 workers, after a 501 s lock wait): by-hand TLC re-run after the model gained `Else`/`MetRaise` (raise-followup review), 1,472,612 states, pass; by-hand configs are long by design (README).
