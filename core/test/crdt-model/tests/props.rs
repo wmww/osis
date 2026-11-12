@@ -1386,6 +1386,39 @@ fn element_rule_spec_4_7() {
 }
 
 #[test]
+fn text_in_an_element_expires_by_writer_spec_4_7() {
+    // §4.7, §5.6, §5.7 Live: X creates an entry (a map entry, a list element) holding text "ab"; Y adds "cd" to
+    // it. Each one's expiry takes its own chars alone: the element shows while either's live, in either direction.
+    let txt = |v: &str| Value::Str(v.into());
+    let holders: [(Ty, fn(Option<Value>) -> Option<Value>); 2] = [
+        (Ty::Map(Box::new(Ty::Register), Box::new(Ty::Text)), |v| Some(Value::map(v.into_iter().map(|v| (Value::Int(7), v)).collect()))),
+        (Ty::List(Box::new(Ty::Text)), |v| Some(Value::List(v.into_iter().collect()))),
+    ];
+    for (ty, read) in &holders {
+        let put = |w: &mut Writer, st: Option<&Frag>, v: &str| match ty {
+            Ty::Map(_, vt) => ops::map_put(w, st, vt, &Value::Int(7), &txt(v)).unwrap(),
+            Ty::List(et) => match st {
+                None => ops::create(w, ty, &Value::List(vec![txt(v)])),
+                Some(st) => ops::seq_set_elem(w, st, et, 0, &txt(v)).unwrap(),
+            },
+            _ => unreachable!(),
+        };
+        let mut x = Writer::new(Source::session(1, 0), 1 << 16, 1);
+        let dx = put(&mut x, None, "ab");
+        let mut y = Writer::new(Source::session(2, 0), 2 << 16, 1);
+        let dy = roundtrip(&put(&mut y, Some(&dx), "abcd"), &y);
+        let mut s = dx.clone();
+        s.join(dy);
+        let after = |gone: &[Range]| { let mut t = s.clone(); t.strip(&in_ranges(gone)); t.read() };
+        let empty = |v: Option<Value>| v.filter(|v| *v != read(None).unwrap());
+        assert_eq!(s.read(), read(Some(txt("abcd"))), "{ty:?}");
+        assert_eq!(after(&[range(&x)]), read(Some(txt("cd"))), "{ty:?}: Y's chars outlive X");
+        assert_eq!(after(&[range(&y)]), read(Some(txt("ab"))), "{ty:?}: Y's expiry takes its chars alone");
+        assert_eq!(empty(after(&[range(&x), range(&y)])), None, "{ty:?}: both gone, the element goes");
+    }
+}
+
+#[test]
 fn map_dot_records_one_entry_spec_5_6() {
     // §5.6: a record keeps only its writes its dot's records' join holds, so stripping a state equals joining the
     // stripped delta (its leftover) with the rest. X creates `k` with field 1 = 1, Y later sets it to 2: X's

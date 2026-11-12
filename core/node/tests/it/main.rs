@@ -82,6 +82,7 @@ mod tombstone;
 mod validity;
 mod awaits;
 mod waits;
+mod expiry_model;
 mod wrap_poison;
 mod write;
 mod world_copy;
