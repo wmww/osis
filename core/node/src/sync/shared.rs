@@ -1183,7 +1183,7 @@ impl SyncEngine {
     }
 
     /// The peer's answer to Deposit item `(l, b)`: taken, it leaves the outbox (the pending
-    /// deliveries); refused for now, it backs off as a host's refusal does (`budget`); refused,
+    /// deliveries) and ends the back-off of the others under `l`; refused for now, it backs off as a host's refusal does (`budget`); refused,
     /// it is signed again with the current deposit key if that differs and offered again, else
     /// not offered on this connection again until what this node holds changes.
     fn shared_deposit_answered(&mut self, conn: ConnId, l: LabelId, b: BlobId, code: Code) -> Result<()> {
@@ -1197,6 +1197,11 @@ impl SyncEngine {
         if code == Code::OK {
             self.outbox.remove(&k);
             self.state.remove_out(&k.0, &l, &b);
+            // room appeared there: the others waiting for `l` go again now
+            let now = self.now();
+            for (_, o) in self.outbox.iter_mut().filter(|(x, _)| x.1 == l) {
+                o.after = o.after.min(now);
+            }
             return Ok(());
         }
         if self.deposit_moot(&k.0, &l, &b) {
