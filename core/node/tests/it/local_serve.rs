@@ -812,6 +812,10 @@ fn own_duplicate_case(v: &str) -> bool {
             net.blocked.insert((n, s));
             net.drop_link(n, s);
         }
+        // nor do a and b pull each other: each copy stays where it was placed
+        net.blocked_peers.extend([(a, b), (b, a)]);
+        net.set_online(b, false);
+        net.set_online(b, true);
         net.run();
         (net, (h1, h2, a, b, t, l))
     });
