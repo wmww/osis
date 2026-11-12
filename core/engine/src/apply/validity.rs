@@ -1119,11 +1119,9 @@ fn rejudge_once(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak)>> {
             {
                 flipped.insert((x.tid, x.ak.clone()));
                 tx.core.compaction.weigh((x.tid, x.ak.clone()));
-                if m.view.memory {
-                    // the bodies it covered were forgotten: the lane brings their copies back
-                    if *a && m.view.kind.is_compaction() {
-                        tx.core.memory.invalidated.insert((x.tid, x.ak.clone()));
-                    }
+                // what it covered comes back through node-sync (`Engine::take_fallen`)
+                if *a && m.view.kind.is_compaction() {
+                    tx.core.fallen.insert((x.tid, x.ak.clone()));
                 }
                 if *b {
                     rose.insert((x.tid, x.ak.clone()));

@@ -221,7 +221,7 @@ impl SyncEngine {
     pub(crate) fn memory_step(&mut self, out: &mut Vec<Action>) -> Result<()> {
         // acted on once the drops are noted: what the fallen snapshot covered may have been
         // forgotten since the last step
-        let invalidated = self.engine.take_memory_invalidated()?;
+        let fallen = self.engine.take_fallen()?;
         let (awaits, dropped): (Vec<_>, Vec<_>) = self.engine.take_memory_drops().into_iter().partition(|(_, _, why)| matches!(why, MemoryDrop::Awaits { .. }));
         self.memory_dropped(&dropped);
         // their bytes no entry names go now (an entry's go with it, `forget_blob`): an entry may
@@ -241,8 +241,8 @@ impl SyncEngine {
                 }
             }
         }
-        for (t, ak) in invalidated {
-            self.memory_relist_thing(&t, &ak, out)?;
+        for (t, ak) in fallen {
+            self.relist_fallen(&t, &ak, out)?;
         }
         self.apply_waiting()?;
         self.retry_refused();
@@ -254,22 +254,29 @@ impl SyncEngine {
         Ok(())
     }
 
-    /// A memory snapshot of `t`'s aspect `ak` fell invalid here, and the bodies it covered are
-    /// gone until copies holders still have arrive again (spec/sync.md §9): the entries of the
-    /// commits forgotten as covered or superseded there lose this node's tombstones and wait
-    /// unopened (whatever brings their bytes again opens them), and the streams carrying a label
-    /// whose closure holds `t` list their memory entries again (`stream_relist`).
-    fn memory_relist_thing(&mut self, t: &Tid, ak: &osis_base::Ak, out: &mut Vec<Action>) -> Result<()> {
+    /// A held valid snapshot of `t`'s aspect `ak` fell invalid here, either class, and the bodies
+    /// it covered are gone until copies holders still have arrive again (spec/sync.md §7 A
+    /// snapshot turning invalid): the entries of the commits dropped as covered there lose this
+    /// node's tombstones (a durable one's part is missing again, its known entries reopened by
+    /// `reopen_undropped`; a memory one was forgotten as covered or superseded, and its entries
+    /// wait unopened: whatever brings their bytes again opens them), and the streams carrying a
+    /// label whose closure holds `t` list their memory entries again (`stream_relist`). A durable
+    /// commit forgotten under the fallen snapshot left no tombstone: it reads as never received,
+    /// and a holder's must-hold upload brings it.
+    fn relist_fallen(&mut self, t: &Tid, ak: &osis_base::Ak, out: &mut Vec<Action>) -> Result<()> {
         let on = |f: &Forgotten| matches!(f.why, MemoryDrop::Covered { .. } | MemoryDrop::Superseded { .. }) && f.header.aspects.iter().any(|a| a.tid == *t && a.ak == *ak);
-        let covered: Vec<CommitId> = self.memory.forgotten.iter().filter(|(c, f)| on(f) && !self.engine.holds_memory(c)).map(|(c, _)| *c).collect();
+        let memory: Vec<CommitId> = self.memory.forgotten.iter().filter(|(c, f)| on(f) && !self.engine.holds_memory(c)).map(|(c, _)| *c).collect();
+        let ix = &self.engine.core.ix;
+        let missing = |c: &CommitId| ix.commits.get(c).is_some_and(|m| !m.view.memory && m.view.aspects.iter().position(|a| a.tid == *t && a.ak == *ak).is_some_and(|ai| m.missing.contains(&ai)));
+        let durable: BTreeSet<CommitId> = ix.by_aspect.get(&(*t, ak.clone())).into_iter().flatten().map(|(_, c)| *c).filter(|c| missing(c)).collect();
         // deleted here as covered: those deletions no longer stand (a role change, rare: the
-        // tombstones, kept `MAX_DRIFT`, are scanned)
-        let tombs: Vec<(LabelId, BlobId)> = self.state.tombs.iter().filter(|(k, tb)| self.state.is_memory(&k.0, &k.1) && matches!(&tb.kind, Kind::Commit { commit, .. } if covered.contains(commit))).map(|(k, _)| *k).collect();
+        // tombstones, kept their lifetime, are scanned)
+        let tombs: Vec<(LabelId, BlobId)> = self.state.tombs.iter().filter(|(_, tb)| matches!(&tb.kind, Kind::Commit { commit, .. } if memory.contains(commit) || durable.contains(commit))).map(|(k, _)| *k).collect();
         for (l, b) in tombs {
             self.state.lift_tomb(l, b);
         }
         let mut unopened: BTreeMap<LabelId, Vec<BlobId>> = BTreeMap::new();
-        for c in covered {
+        for c in memory {
             for (l, b) in self.entries_of_commit(&c) {
                 if let Some(mut e) = self.state.entries.get(&(l, b)).cloned()
                     && e.memory

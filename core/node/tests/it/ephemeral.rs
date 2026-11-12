@@ -1506,7 +1506,7 @@ fn snapshot_survives_rebuild_spec_crdt_4_6() {
 // Shape: c's automatic compaction is stamped last, so its snapshot covers every snapshot and
 // body at d and at the host (writers deleted them there); c's removal invalidates it, and d
 // holds nothing until a and b, still holding their own, snapshot afresh
-// (`Engine::take_memory_invalidated`; a re-upload of the deleted entries would meet the host's
+// (`Engine::take_fallen`; a re-upload of the deleted entries would meet the host's
 // delete tombstone).
 #[test]
 fn compacted_write_of_removed_holder_stays_spec_permissions_5_2() {
@@ -4983,10 +4983,10 @@ fn memory_compactor_demoted_keeps_others_writes_spec_permissions_5_2() {
     lp.deliver(2, &rp).unwrap();
     // the author kept its own body: X reads there, and
     // everywhere again once its copy arrives (the lane reconciles the label,
-    // `Engine::take_memory_invalidated`)
+    // `Engine::take_fallen`)
     assert!(holds_commit(&lp, 2, &x.0) && !holds_commit(&lp, 0, &x.0), "the author alone kept X");
     assert_eq!(memory_tags(&mut lp, 2, d), Some(Value::Set([s("X")].into())));
-    assert!(lp.peers[0].engine.take_memory_invalidated().unwrap().contains(&(d, eph("t:tags+.0"))), "the holder reconciles");
+    assert!(lp.peers[0].engine.take_fallen().unwrap().contains(&(d, eph("t:tags+.0"))), "the holder reconciles");
     memory_deliver(&mut lp, 0, &x);
     memory_deliver(&mut lp, 1, &x);
     for i in 0..3 {

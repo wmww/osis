@@ -1137,7 +1137,7 @@ impl SyncEngine {
     }
 
     /// Every stream tracking one of `labels` asks for the peer's live memory entries again
-    /// (`memory_relist_thing`).
+    /// (`relist_fallen`).
     pub(crate) fn stream_relist(&mut self, labels: &BTreeSet<LabelId>, out: &mut Vec<Action>) -> Result<()> {
         let conns: Vec<ConnId> = self.streams.iter().filter(|(_, s)| s.pulling.in_stream.iter().chain(s.pulling.joins.keys()).any(|l| labels.contains(l))).map(|(c, _)| *c).collect();
         for c in conns {

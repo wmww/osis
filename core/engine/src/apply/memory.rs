@@ -229,18 +229,17 @@ impl Engine {
         d.into_iter().filter(|(c, _, _)| !self.holds_memory(c)).collect()
     }
 
-    /// Memory aspects a held memory snapshot of which turned invalid since the last take (a
-    /// compactor's demotion not listing it, spec/permissions.md §5.2). The
-    /// bodies it covered were forgotten here (durable's residual) and deleted at hosts by any
-    /// writer, so a holder of nothing else reads nothing until the authors' copies come back
-    /// (they keep their own bodies under others' snapshots, `drop_covered`). A writer that still
-    /// holds a valid memory part of the aspect writes a fresh snapshot of what it holds (spec/
-    /// sync.md §9 Compaction): the lane uploads it as a new commit (a host's delete tombstone on
-    /// the old entries does not stop it) and, stamped after every held snapshot, nothing held
-    /// covers it away here. The lane also reconciles the aspects' labels for the rest.
-    pub fn take_memory_invalidated(&mut self) -> Result<BTreeSet<(Tid, Ak)>> {
+    /// Aspects a held valid compaction snapshot of which turned invalid since the last take (a
+    /// compactor's demotion not listing it, spec/permissions.md §5.2), either class: node-sync
+    /// gets back what it covered (spec/sync.md §7 A snapshot turning invalid). A memory
+    /// snapshot's covered bodies were forgotten here and deleted at hosts by any writer, so a
+    /// writer that still holds a valid memory part of the aspect also writes a fresh snapshot of
+    /// what it holds (spec/sync.md §9 Compaction): node-sync uploads it as a new commit (a host's
+    /// delete tombstone on the old entries does not stop it) and, stamped after every held
+    /// snapshot, nothing held covers it away here.
+    pub fn take_fallen(&mut self) -> Result<BTreeSet<(Tid, Ak)>> {
         // taken only once every snapshot is written: an error leaves them for the next step
-        let out = self.core.memory.invalidated.clone();
+        let out = self.core.fallen.clone();
         for (tid, ak) in &out {
             let holds_valid = self.core.ix.by_aspect.get(&(*tid, ak.clone())).into_iter().flatten().any(|(_, c)| {
                 self.core.ix.commits.get(c).is_some_and(|m| m.view.memory && m.aspect(tid, ak).is_some_and(|ai| m.holds(ai) && m.valid_at(ai)))
@@ -254,7 +253,7 @@ impl Engine {
                 Err(e) => return Err(e),
             }
         }
-        self.core.memory.invalidated.retain(|x| !out.contains(x));
+        self.core.fallen.retain(|x| !out.contains(x));
         Ok(out)
     }
 }

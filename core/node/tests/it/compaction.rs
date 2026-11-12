@@ -194,3 +194,91 @@ fn undo_within_kept_history_spec_commits_7() {
     assert!(matches!(net.engine(a).revert_commit(first, me), Ok(osis_node::ephemeral::Reverted::ContentGone)));
     assert_eq!(map_of(&mut net, r, u), map_of(&mut net, a, u));
 }
+
+// spec/sync.md §7 (A snapshot turning invalid), spec/permissions.md §5.2: writer b puts y and
+// compacts it under its own snapshot S while admin a is away; past `MAX_DRIFT` b deletes y at the
+// host (and, `forgotten`, forgets y once its tombstone ages out). a, holding y but never S,
+// demotes b: S falls, y stays valid (the frontier lists it). Both read y again: a holds y
+// uncovered and places it again, and b takes it whether it still knew y or not.
+fn fallen_own_snapshot_gets_back(forgotten: bool) {
+    let (mut net, host, [a, b], g, [t]) = hosted::<2, 1>(&[(1, Role::Write)], ["x"], true);
+    let y = put(&mut net, b, t, "y", "v");
+    net.run();
+    assert!(map_of(&mut net, a, t).is_some());
+    net.set_online(a, false);
+    net.advance(15_000);
+    let acts = net.sync(b).compact_now(&t, &map_ak()).unwrap();
+    net.actions(b, acts);
+    net.run();
+    net.advance(osis_base::format::MAX_DRIFT_MS + 60_000);
+    net.run();
+    let l = net.label(b);
+    assert_eq!(at_host(&mut net, host, b, &l, t), 1, "y deleted at the host, S there");
+    if forgotten {
+        net.advance(osis_base::format::TOMBSTONE_LIFETIME_MS + 60_000);
+        net.run();
+        assert!(net.engine(b).header(&y).is_none(), "b forgot y");
+    }
+    let want = map_of(&mut net, a, t);
+    let tb = net.tid(b);
+    let edge = osis_schema::core_types::Edge { role: Role::Read, until: None, invite: None, tied: None };
+    let d = osis_node::flows::Demotion { holder: tb, new: Some(edge), retain: None };
+    let done = net.engine(a).demote(&g, &d).unwrap();
+    let acts = net.sync(a).carry_out(done).unwrap();
+    net.actions(a, acts);
+    net.set_online(a, true);
+    net.run();
+    net.advance(15_000);
+    net.run();
+    assert_eq!(map_of(&mut net, a, t), want, "a reads y");
+    assert_eq!(map_of(&mut net, b, t), want, "b got y back");
+}
+
+#[test]
+fn fallen_own_snapshot_gets_back_known_spec_sync_7() {
+    fallen_own_snapshot_gets_back(false);
+}
+
+#[test]
+fn fallen_own_snapshot_gets_back_forgotten_spec_sync_7() {
+    fallen_own_snapshot_gets_back(true);
+}
+
+// spec/sync.md §7 (A snapshot turning invalid): as above (y known still at b), then the host is
+// wiped: a, back with the demotion, places y there again under its old entry, which b deleted
+// under S. S falls at b: its own tombstone of that entry no longer stands, so b fetches y.
+#[test]
+fn fallen_own_snapshot_lifts_own_tombstone_spec_sync_7() {
+    let (mut net, host, [a, b], g, [t]) = hosted::<2, 1>(&[(1, Role::Write)], ["x"], true);
+    let y = put(&mut net, b, t, "y", "v");
+    net.run();
+    let want = map_of(&mut net, a, t);
+    assert!(want.is_some());
+    net.set_online(a, false);
+    net.advance(15_000);
+    let acts = net.sync(b).compact_now(&t, &map_ak()).unwrap();
+    net.actions(b, acts);
+    net.run();
+    net.advance(osis_base::format::MAX_DRIFT_MS + 60_000);
+    net.run();
+    let l = net.label(b);
+    let of_y = |net: &mut Net, n: usize| net.sync(n).entries(&l).into_iter().filter(|(_, k)| matches!(k, EntryKind::Commit { commit, .. } if *commit == y)).map(|(id, _)| id).collect::<Vec<_>>();
+    assert!(of_y(&mut net, b).is_empty(), "b deleted y's entry");
+    net.set_online(b, false);
+    net.wipe_host(host);
+    let tb = net.tid(b);
+    let edge = osis_schema::core_types::Edge { role: Role::Read, until: None, invite: None, tied: None };
+    let d = osis_node::flows::Demotion { holder: tb, new: Some(edge), retain: None };
+    let done = net.engine(a).demote(&g, &d).unwrap();
+    let acts = net.sync(a).carry_out(done).unwrap();
+    net.actions(a, acts);
+    net.set_online(a, true);
+    net.run();
+    let placed = of_y(&mut net, a);
+    assert!(net.host_ids(host, &l).iter().any(|id| placed.contains(id)), "a placed y again");
+    net.set_online(b, true);
+    net.run();
+    net.advance(15_000);
+    net.run();
+    assert_eq!(map_of(&mut net, b, t), want, "b got y back");
+}

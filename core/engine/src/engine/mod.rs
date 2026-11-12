@@ -873,9 +873,6 @@ pub struct MemorySync {
     /// Memory commits forgotten since the last take, with their header (node-sync deletes
     /// their entries at hosts by it) and why (`Engine::take_memory_drops`).
     pub dropped: Vec<(CommitId, Arc<osis_commit::Header>, MemoryDrop)>,
-    /// Memory aspects a held memory snapshot turned invalid on since the last take
-    /// (`Engine::take_memory_invalidated`).
-    pub invalidated: BTreeSet<(Tid, Ak)>,
 }
 
 /// A decoded commit record: its head (received, origin, dropped parts) and blob.
@@ -1022,6 +1019,9 @@ pub struct Core {
     pub memory: MemorySync,
     /// The compaction trigger's state (spec/sync.md §7 Trigger), in memory.
     pub compaction: crate::retention::compact::Trigger,
+    /// Aspects a held valid compaction snapshot of either class turned invalid on since the last
+    /// take (`Engine::take_fallen`).
+    pub fallen: BTreeSet<(Tid, Ak)>,
     /// Set when a lazily held header failed to decode (`LazyHeader`): every later transaction
     /// fails (`Error::Corrupt`).
     pub header_fault: Arc<std::sync::atomic::AtomicBool>,
@@ -1251,6 +1251,7 @@ impl Core {
             later_sessions: self.later_sessions.clone(),
             memory: self.memory.clone(),
             compaction: self.compaction.clone(),
+            fallen: self.fallen.clone(),
             header_fault: osis_base::copying::remap(&self.header_fault, |f| std::sync::atomic::AtomicBool::new(f.load(std::sync::atomic::Ordering::Relaxed))),
             #[cfg(test)]
             check_ingest: self.check_ingest.clone(),
@@ -1776,6 +1777,7 @@ impl Core {
             written: _,
             memory: _,
             compaction: _,
+            fallen: _,
             stale_things: _,
             stale_authors: _,
             stale_under: _,
@@ -2026,6 +2028,7 @@ impl Core {
             later_sessions: 0,
             memory: MemorySync::default(),
             compaction: Default::default(),
+            fallen: Default::default(),
             header_fault: Arc::default(),
             #[cfg(test)]
             check_ingest: false,
