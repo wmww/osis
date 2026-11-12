@@ -332,3 +332,32 @@ fn void_names_round_trip_apart_from_applied_ones_spec_wire_7() {
     assert_ne!(Names { list: [applied].into(), departs: None }.digest(), Names { list: [void].into(), departs: None }.digest());
     assert_eq!(n.list.iter().next(), Some(&applied));
 }
+
+// spec/wire.md §7 (names, canonical): the decoder takes only what `to_value` writes: names
+// strictly ascending, each exactly `[ts, author, commit, holder, void]` at its lengths, at most
+// one departs mark.
+#[test]
+fn names_decode_strictly_spec_wire_7() {
+    use osis_base::Value;
+    let h = Tid::from_bytes([9; 15]);
+    let n = Names { list: [Name::applied(key(0), h), Name::void(key(0), h), Name::applied(key(1), h)].into(), departs: None };
+    let Value::List(f) = n.to_value() else { panic!() };
+    let Value::List(items) = f[0].clone() else { panic!() };
+    let with = |items: Vec<Value>, own: Vec<Value>| Names::from_value(&Value::List(vec![Value::List(items), Value::List(own)]));
+    assert!(with(items.clone(), vec![]).is_some());
+    assert!(with(items.iter().rev().cloned().collect(), vec![]).is_none(), "descending");
+    assert!(with(vec![items[0].clone(), items[0].clone()], vec![]).is_none(), "repeated");
+    let Value::List(x) = items[0].clone() else { panic!() };
+    let mut short = x.clone();
+    short[2] = Value::bytes(&[0; 31]);
+    assert!(with(vec![Value::List(short)], vec![]).is_none(), "commit of 31 bytes");
+    let mut extra = x.clone();
+    extra.push(Value::Bool(false));
+    assert!(with(vec![Value::List(extra)], vec![]).is_none(), "a sixth field");
+    let mut neg = x;
+    neg[0] = Value::Int(-1);
+    assert!(with(vec![Value::List(neg)], vec![]).is_none(), "a negative ts");
+    let own = Value::List(vec![Value::uint(1), Value::bytes(h.as_bytes()), Value::bytes(&[0; 16])]);
+    assert!(with(vec![], vec![own.clone()]).is_some());
+    assert!(with(vec![], vec![own.clone(), own]).is_none(), "two departs marks");
+}
