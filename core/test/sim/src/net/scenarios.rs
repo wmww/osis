@@ -824,16 +824,19 @@ pub fn snapshot_rights(seed: u64) -> Res<Report> {
     // every node here writes: any writer's cover drops a replaced body out of history, the purge
     // right or not (spec/commits.md §5 Out of history), and at the end every body is out
     // two rounds of overwrites, each followed by the seed's compacters
-    let mut written: Vec<(osis_base::CommitId, usize, bool)> = Vec::new();
+    // (commit, author node, an explicit compaction followed, its value, its stamp)
+    let mut written: Vec<(osis_base::CommitId, usize, bool, Value, osis_base::Ts)> = Vec::new();
     for round in 0..2 {
         for (i, (n, person)) in [(a, pa), (b, pb), (w, pw)].into_iter().cycle().take(6).enumerate() {
             let mut m = Mutation::new();
             // as the app writes: for the account, so any of its nodes holds the author's right
             m.act_as(person);
             m.retention(t, &workload::REG, keep).map_err(|e| sim.fail(e.to_string()))?;
-            m.set(t, &workload::REG, &Value::Str(format!("v{round}.{i}"))).map_err(|e| sim.fail(e.to_string()))?;
+            let v = Value::Str(format!("v{round}.{i}"));
+            m.set(t, &workload::REG, &v).map_err(|e| sim.fail(e.to_string()))?;
             if let Some(c) = sim.commit(n, m)? {
-                written.push((c, n, false));
+                let ts = sim.engine(n)?.header(&c).ok_or_else(|| sim.fail("no header of an own write"))?.ts;
+                written.push((c, n, false, v, ts));
             }
             sim.quiet(40)?;
         }
@@ -869,43 +872,40 @@ pub fn snapshot_rights(seed: u64) -> Res<Report> {
     let live: BTreeSet<osis_base::BlobId> = sim.hub(s).ok_or_else(|| sim.fail("no hub"))?.store().live_ids(&l).map_err(|e| sim.fail(e.to_string()))?.into_iter().collect();
     let entries = sim.sync(a)?.entries(&l);
     let at_host = |c: &osis_base::CommitId| entries.iter().any(|(id, x)| live.contains(id) && matches!(x, osis_node::sync::EntryKind::Commit { commit, .. } if commit == c));
-    // the compaction trigger writes snapshots of its own (spec/sync.md §7 Trigger): the latest
-    // snapshot stamp any node holds, and each written body's stamp where a node holds its header
-    let mut snap_ts = None;
-    let mut stamps = std::collections::BTreeMap::new();
+    // the live write is the one read (values are unique; every node reads alike, checked below),
+    // and a register write is covered by a snapshot whose winning write is stamped no earlier
+    // (spec/commits.md §5 Covered: joining it changes nothing), whichever node wrote it, the
+    // trigger or the scenario; a snapshot covering an earlier one wins no earlier, so the held
+    // ones say
+    let read = sim.engine(a)?.get_typed(&t, &workload::REG).ok().flatten();
+    let mut snap_wins: Option<osis_base::Ts> = None;
     for n in [a, b, w, fresh] {
         let e = sim.engine(n)?;
-        for x in e.commit_ids() {
-            let Some(h) = e.header(&x) else { continue };
-            if h.kind == osis_commit::Kind::ContentSnapshot && h.aspects.iter().any(|y| y.tid == t && y.ak == k) {
-                snap_ts = snap_ts.max(Some(h.ts));
-            }
-            if written.iter().any(|w| w.0 == x) {
-                stamps.insert(x, h.ts);
-            }
+        let ids: Vec<osis_base::CommitId> = e.core.ix.snapshots.get(&(t, k.clone())).into_iter().flatten().map(|x| x.1).collect();
+        for x in ids {
+            let f = e.body_fragment(&x, &t, &k).ok().flatten();
+            snap_wins = snap_wins.max(f.and_then(|f| f.live_writes().into_iter().filter_map(|(_, ts)| ts).max()));
         }
     }
-    for (c, author, gone) in &written {
-        // a live body stays where the setting keeps it while live (spec/commits.md §5 Kept while
-        // live; `a` holds it then, so `is_live`). Purge on replace: replaced at a (its write not
-        // live there), gone everywhere once the writers acted
-        // a commit `a` forgot went under its author's own cover (spec/commits.md §5 Forgetting),
-        // which carries whatever of it lived: no entry of it is left, so it counts as gone
-        let e = sim.engine(a)?;
-        let is_live = e.core.ix.commits.contains_key(c) && e.delta_live(c, &t, &k).map_err(|x| sim.fail(x.to_string()))?;
+    for (c, author, explicit, v, ts) in &written {
+        let is_live = read.as_ref() == Some(v);
+        // the setting keeps a live body for good under a D (spec/commits.md §5 Kept while live),
+        // none elsewhere
+        let kept_live = is_live && bound == 1;
         let dead = bound == 2 && !is_live;
-        let gone = &(!is_live && (*gone || dead));
-        // under keep at least a compacter's snapshot may be superseded before the bound passes: the
-        // body then waits for the next snapshot with the right, so only what stays is certain
-        // the author's own whole replaces cover it too (spec/commits.md §5 Own replaces): it wrote
-        // two later commits, scenario or random (fresh writes as b's device)
+        // a snapshot covering it, or its author's own whole replaces (spec/commits.md §5 Own
+        // replaces: two later writes of its author, scenario or random, fresh writing as b's device)
+        let snapped = snap_wins >= Some(*ts);
         let later = sim.written.iter().skip_while(|x| x.1 != *c).skip(1).filter(|x| (if x.0 == fresh { b } else { x.0 }) == *author).count();
-        let own = later >= 2;
-        // a snapshot the trigger wrote after it covers it as an explicit one does
-        let snapped = stamps.get(c).is_some_and(|ts| snap_ts > Some(*ts));
-        let may_go = !is_live && (*gone || bound == 2 || fresh_compacted || own || snapped);
-        if (*gone && bound != 1 && at_host(c)) || (!may_go && !at_host(c)) {
-            return Err(sim.fail(format!("{by:?} bound {bound}: body of node {author} at the host {}, may go {may_go}, should be gone {gone}", at_host(c))));
+        let own = !is_live && later >= 2;
+        // past every keep bound (the run waited out the history kept after replaced)
+        let may_go = !kept_live && (snapped || own);
+        // a writer's explicit compaction after it covers it at that writer, which drops and
+        // deletes it (purge on replace: gone everywhere once replaced); a body kept a while after
+        // replaced may wait for the next snapshot, so only what stays is certain there
+        let gone = !kept_live && (*explicit || dead);
+        if (gone && bound != 1 && at_host(c)) || (!may_go && !at_host(c)) {
+            return Err(sim.fail(format!("{by:?} bound {bound}: body of node {author} (live {is_live}) at the host {}, may go {may_go}, should be gone {gone}", at_host(c))));
         }
         for n in [a, b, w, fresh] {
             let e = sim.engine(n)?;

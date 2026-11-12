@@ -100,8 +100,14 @@ fn compaction_then_deletion_spec_sync_7() {
     // the dropped bodies' carriers go once their entries and tombstones have (growth:
     // notes/growth.md)
     // (the item's creation commit keeps its entry for `created.0`, so its carrier stays)
-    // (how many depends on which covers the trigger and the call wrote, spec/sync.md §7 Trigger)
-    assert!(net.sync(a).sync_rows(b's') > 1, "carriers recorded");
+    // The trigger compacted v1..v4 into its own snapshot as they were written, and the call's
+    // snapshot covers that one: the carriers are the creation commit's and the trigger
+    // snapshot's (deleted, its tombstone standing); v2..v4, forgotten under their author's
+    // covers (spec/commits.md §5 Forgetting), keep none
+    let carried: Vec<osis_commit::Kind> = net.sync(a).sync_row_sizes(b's').iter().filter_map(|(k, _)| net.engine(a).header(&osis_base::CommitId(k[k.len() - 32..].try_into().unwrap())).map(|h| h.kind)).collect();
+    assert_eq!(carried.len(), 2, "carriers recorded: {carried:?}");
+    assert!(carried.contains(&osis_commit::Kind::Content) && carried.contains(&osis_commit::Kind::ContentSnapshot), "{carried:?}");
+    assert!([c2, c3, c4].iter().all(|x| net.engine(a).header(x).is_none()), "v2..v4 forgotten");
     net.advance(osis_base::format::TOMBSTONE_LIFETIME_MS);
     net.advance(60_000);
     assert_eq!(net.sync(a).sync_rows(b's'), 1, "only the carrier of a body with an entry left");
@@ -1057,8 +1063,8 @@ fn stale_drop_reads_alike_spec_commits_5() {
 
 // spec/permissions.md §5.2, spec/commits.md §5: the snapshot a body dropped under falls while another
 // without the right, which it does not cover and which arrived after the drop, still covers the
-// body: no one uploads the body (may-hold), the dropper reads alike through that snapshot's copies
-// (its author may hold it again: spec/sync.md §7 Own bodies).
+// body: no one uploads the body (may-hold), the dropper, missing it again, does not fetch it and
+// reads alike through that snapshot's copies.
 #[test]
 fn snapshot_falls_rightless_one_covers_spec_perm_5_2() {
     let mut net = Net::new();
@@ -1098,6 +1104,9 @@ fn snapshot_falls_rightless_one_covers_spec_perm_5_2() {
     assert_eq!(want, Some(s("w'sb's")));
     assert_eq!(read(&mut net, b), want);
     assert_eq!(read(&mut net, w), want);
+    // not held at the dropper: missing again since S1 fell, and not fetched (S2 covers it)
+    let e = net.engine(b);
+    assert!(e.body_not_dropped(&c, &t, &k) && e.commit_parts_missing().get(&c).is_some_and(|x| !x.is_empty()), "not held at the dropper");
     let l = net.label(a);
     let live = net.host_ids(host, &l);
     for n in [a, b, w] {

@@ -8,9 +8,8 @@
 use crate::engine::{Engine, MemoryDrop, Tx};
 use crate::error::{Error, Result};
 use osis_base::{Ak, CommitId, Tid};
-use osis_commit::{CommitBlob, Form};
-
-use std::collections::{BTreeMap, BTreeSet};
+use osis_commit::CommitBlob;
+use std::collections::BTreeSet;
 
 /// Copies a holder keeps of a received part's writes, each counted by the node cap: the
 /// decoded part and the joined state.
@@ -45,18 +44,17 @@ pub(crate) fn part_bound(p: &osis_commit::Part) -> Result<u64> {
     Ok(part_charge(heap, p.delta.len()))
 }
 
-/// `part_bound` of the pages and link pages a paged part's `delta` links (spec/crdt.md §8),
-/// each by its plaintext's heads. Only blobs of the commit's chunk list (`listed`) are followed:
-/// a page outside it is bad input (`osis_commit::verify_part`), and a value's link to another
-/// blob (a durable chunk tree) is no page of it. A listed value tree's node (and so its chunks)
-/// is never decoded into state: held as bytes, charged as an entry. Every listed blob is held
-/// (`memory_gate`).
-fn pages_bound(tx: &mut Tx<'_>, delta: &[u8], listed: &BTreeSet<osis_base::BlobId>) -> Result<u64> {
+/// Each page and link page a paged part's `delta` links (spec/crdt.md §8), with its plaintext:
+/// blobs of the commit's chunk list (`listed`) reached by a link from the delta or a page, held
+/// here. Only listed blobs are followed: a page outside it is bad input (`osis_commit::verify_part`),
+/// and a value's link to another blob (a durable chunk tree) is no page of it. A listed value
+/// tree's node (and so its chunks) is no page: neither visited nor followed. A delta or page that
+/// is not one CBOR value is `BadInput`.
+pub(crate) fn each_page(tx: &mut Tx<'_>, delta: &[u8], listed: &BTreeSet<osis_base::BlobId>, f: &mut dyn FnMut(&[u8], &[u8]) -> Result<()>) -> Result<()> {
     let limits = |b: &[u8]| osis_base::Limits { max_depth: osis_base::format::MAX_OBJECT_DEPTH, max_bytes: b.len() };
     let mut stack = Vec::new();
-    osis_base::visit_links(delta, &limits(delta), &mut |l| stack.push(l)).map_err(|_| Error::BadInput("ephemeral part not one CBOR value"))?;
+    osis_base::visit_links(delta, &limits(delta), &mut |l| stack.push(l)).map_err(|_| Error::BadInput("part not one CBOR value"))?;
     let mut seen = BTreeSet::new();
-    let mut sum = 0u64;
     while let Some(l) = stack.pop() {
         if !listed.contains(&l.blob) || !seen.insert(l.blob) {
             continue;
@@ -66,10 +64,21 @@ fn pages_bound(tx: &mut Tx<'_>, delta: &[u8], listed: &BTreeSet<osis_base::BlobI
         if osis_label::tree::parse_node(&pt).is_ok() {
             continue;
         }
-        let heap = osis_crdt::decoded_bound(&pt).map_err(|_| Error::BadInput("ephemeral page not one CBOR value"))?;
-        sum = sum.saturating_add(part_charge(heap, pt.len()));
-        osis_base::visit_links(&pt, &limits(&pt), &mut |l| stack.push(l)).map_err(|_| Error::BadInput("ephemeral page not one CBOR value"))?;
+        f(&blob, &pt)?;
+        osis_base::visit_links(&pt, &limits(&pt), &mut |l| stack.push(l)).map_err(|_| Error::BadInput("page not one CBOR value"))?;
     }
+    Ok(())
+}
+
+/// `part_bound` of the pages and link pages a paged part's `delta` links (`each_page`), each by
+/// its plaintext's heads. Every listed blob is held (`memory_gate`).
+fn pages_bound(tx: &mut Tx<'_>, delta: &[u8], listed: &BTreeSet<osis_base::BlobId>) -> Result<u64> {
+    let mut sum = 0u64;
+    each_page(tx, delta, listed, &mut |_, pt| {
+        let heap = osis_crdt::decoded_bound(pt).map_err(|_| Error::BadInput("ephemeral page not one CBOR value"))?;
+        sum = sum.saturating_add(part_charge(heap, pt.len()));
+        Ok(())
+    })?;
     Ok(sum)
 }
 
@@ -139,18 +148,6 @@ pub(crate) fn memory_gate(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId)
 fn wait(tx: &mut Tx<'_>, blob: &CommitBlob, id: &CommitId) -> Result<crate::Ingested> {
     super::pend(tx, id, osis_store::PendingKind::Pending, &blob.encode(), crate::Reason::WaitBlobs)?;
     Ok(crate::Ingested::Pending(*id, crate::Reason::WaitBlobs))
-}
-
-/// The bytes of the page blobs held here that commit `h` lists for its delta on aspect `ai`
-/// (the chunk list entries under that delta's delete keys; spec/commits.md §1): what the part
-/// weighs beside its root.
-pub(crate) fn page_bytes(tx: &mut Tx<'_>, h: &osis_commit::Header, ai: usize) -> Result<usize> {
-    let Some(a) = h.aspects.get(ai) else { return Ok(0) };
-    let mut sum = 0usize;
-    for ch in h.chunks.iter().filter(|ch| ch.keys == a.keys) {
-        sum = sum.saturating_add(tx.blobs.get(&ch.blob)?.map_or(0, |b| b.len()));
-    }
-    Ok(sum)
 }
 
 impl Engine {

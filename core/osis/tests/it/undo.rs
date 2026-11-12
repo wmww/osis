@@ -179,27 +179,40 @@ fn undo_alike_held_or_compacted_spec_crdt_4_6() {
     }
 }
 
-// spec/crdt.md §4.6 (undo needs kept history): what only takes away what it made undoes with no history kept: a list insert,
-// a map entry's first creation. Redoing such an undo writes the taken value back, so needs the
-// undone write kept: a removed list element's creation stays in the state under its reset
-// (spec/crdt.md §5.7), a live write (spec/commits.md §7), so the insert comes back; a removed map
-// entry keeps nothing, so `NotUndoable`. With
-// history a first register set undoes to absent and redoes.
+// spec/crdt.md §4.6, spec/commits.md §7 (undo needs kept history), spec/sync.md §7 Trigger:
+// what only takes away what it made undoes with no history kept (a list insert, a map entry's
+// first creation) while its body is held: no setting keeps a live write, so once the trigger
+// compacts the aspect its undo is refused. Redoing such an undo writes the taken value back, so
+// needs the undo's body held the same way: the list's three bodies (set, insert, undo) compact,
+// so its redo is refused; a removed map entry keeps nothing to write back, so `NotUndoable`.
+// With history a first register set undoes to absent and redoes.
 #[test]
 fn takings_undo_without_history_redo_needs_it_spec_crdt_4_6() {
     let db = setup(0);
     let t = kept_thing(&db);
     let (l, m) = (key(&db, "app:l.0"), key(&db, "app:m.0"));
-    // below the compaction trigger (spec/sync.md §7): the first write is large, so a snapshot
-    // costs about what both bodies do, and the undone insert keeps its own body
-    let first: Vec<Value> = (0..1_000).map(Value::Int).collect();
-    commit_with(&db, |w| w.at(t, l.clone()).set(&Value::List(first.clone())));
-    commit_with(&db, |w| w.at(t, l.clone()).path(osis::p![]).splice(1_000..1_000, &[Value::Int(2)]));
-    let list = Scope::Aspects(vec![(t, ak("app:l.0"))]);
-    db.undo(&list).unwrap().unwrap();
-    assert_eq!(db.at(t, l.clone()).get().unwrap(), Some(Value::List(first.clone())), "the insert undone");
-    db.redo(&list).unwrap().unwrap();
-    assert_eq!(db.at(t, l.clone()).get().unwrap(), Some(Value::List(first.iter().cloned().chain([Value::Int(2)]).collect())), "its element still in the read");
+    let la = ak("app:l.0");
+    let held = |c: osis::CommitId| db.engine(|e| e.body_not_dropped(&c.raw(), &t, &la));
+    let list = Scope::Aspects(vec![(t, la.clone())]);
+    let get = || db.at(t, l.clone()).get().unwrap();
+    let ints = |xs: &[i64]| Some(Value::List(xs.iter().map(|x| Value::Int(*x)).collect()));
+    let set = commit_with(&db, |w| w.at(t, l.clone()).set(&Value::List(vec![Value::Int(1)]))).stamp.id;
+    let insert = commit_with(&db, |w| w.at(t, l.clone()).path(osis::p![]).splice(1..1, &[Value::Int(2)])).stamp.id;
+    assert!(held(set) && held(insert), "two bodies: not compacted yet");
+    let undo = db.undo(&list).unwrap().unwrap().stamp.id;
+    assert_eq!(get(), ints(&[1]), "the insert undone while its body is held");
+    // three bodies: the trigger compacted them into a snapshot
+    assert!(!held(set) && !held(insert) && !held(undo), "compacted");
+    assert_eq!(db.redo(&list), Err(gone(undo)), "the redo needs the undo's body");
+    assert_eq!(get(), ints(&[1]));
+    // an insert compacted before its undo: refused
+    let late = commit_with(&db, |w| w.at(t, l.clone()).path(osis::p![]).splice(1..1, &[Value::Int(3)])).stamp.id;
+    assert!(held(late));
+    commit_with(&db, |w| w.at(t, l.clone()).path(osis::p![]).splice(2..2, &[Value::Int(4)]));
+    commit_with(&db, |w| w.at(t, l.clone()).path(osis::p![]).splice(3..3, &[Value::Int(5)]));
+    assert!(!held(late), "compacted");
+    assert_eq!(db.revert(late), Err(gone(late)), "the insert's undo after compaction");
+    assert_eq!(get(), ints(&[1, 3, 4, 5]));
     commit_with(&db, |w| w.at(t, m.clone()).path(osis::p!["a"]).set(&Value::Int(1)));
     let map = Scope::Aspects(vec![(t, ak("app:m.0"))]);
     let undo = db.undo(&map).unwrap().unwrap();
@@ -389,3 +402,4 @@ fn undo_over_forgotten_ephemeral_part_not_undoable_spec_commits_7() {
     assert_eq!(db.undo(&scope), Err(gone(last)));
     assert_eq!(db.at(t, key(&db, "app:xe+.0")).get().unwrap(), int(2), "nothing written");
 }
+

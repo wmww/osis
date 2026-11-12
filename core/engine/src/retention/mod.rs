@@ -413,7 +413,11 @@ pub(crate) fn settings_changed(tx: &mut Tx<'_>) -> Result<()> {
             }
             // a live body kept for good may not be now (spec/commits.md §5 Kept while live): the
             // aspect's held deltas are cover candidates again, and the trigger weighs it
-            if kept.live_until() != osis_commit::retention::NEVER {
+            let live = kept.live_until();
+            if live > tx.now().0 {
+                crate::retention::compact::Trigger::live_until(tx, (t, ak.clone()), live);
+            }
+            if live != osis_commit::retention::NEVER {
                 let k = (t, ak.clone());
                 let on: Vec<CommitId> = tx.core.durable_on(&k).filter(|c| tx.core.ix.commits.get(c).is_some_and(|m| !m.view.kind.is_compaction())).collect();
                 if !on.is_empty() {
@@ -1042,15 +1046,19 @@ impl Engine {
     }
 
     /// Runs what is due by the wall clock: expiries, purge floors (`T_FLOOR`, `T_KEPT`), bodies
-    /// leaving history (`leaving`) and commits parked for drift. The commits whose timers fired
+    /// leaving history (`leaving`), live bounds the compaction trigger waits for
+    /// (`compact::Trigger::passed`) and commits parked for drift. The commits whose timers fired
     /// are marked changed (`Core::changed`).
     pub fn tick(&mut self) -> Result<()> {
         let r = self.run(|tx| {
             let mut changed = BTreeSet::new();
             let (due, next) = due_timers(tx)?;
             let (leave, next_leave) = leaving::due(tx.core, tx.now().0);
+            // live bounds passed: the trigger weighs those aspects
+            let now = tx.now().0;
+            tx.core.compaction.passed(now);
             // the timers these put lower it again
-            tx.core.timer_floor = next.min(next_leave);
+            tx.core.timer_floor = next.min(next_leave).min(tx.core.compaction.next_at());
             // their rebuilds once per aspect (`run_batched`: an expiry reads no state)
             crate::apply::run_batched(tx, |tx| {
                 for (k, c, ai, kind) in due {
@@ -1090,7 +1098,8 @@ impl Engine {
             let first = tx.txn.scan_local(records::TIMER, &[], 1)?;
             let part = first.first().and_then(|(k, _)| k.get(records::TIMER.len()..)).and_then(|k| records::parse_timer(k).ok()).map(|(t, _, _)| t);
             let aspect = tx.core.ix.leave_due.keys().next().copied();
-            Ok(part.into_iter().chain(aspect).min())
+            let live = Some(tx.core.compaction.next_at()).filter(|t| *t != u64::MAX);
+            Ok(part.into_iter().chain(aspect).chain(live).min())
         })
     }
 

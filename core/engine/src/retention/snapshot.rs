@@ -11,7 +11,7 @@ use osis_base::{Ak, CommitId, Tid, Ts};
 use osis_commit::{Form, Header, Kind};
 use osis_crdt::{Fragment, Frontiers};
 use osis_schema::core_types::{is_content, is_role_class};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// The state of `(tid, ak)` a snapshot of it carries: this node's state with the values of
 /// deltas with an expiry held value-less (spec/crdt.md §8: a snapshot never carries them, so
@@ -80,6 +80,13 @@ pub(crate) fn reaches((fr, abs): (&Frontiers, &[(CommitId, Tid)]), h: &Header, c
 /// it (the snapshot does not carry its writes, so it must not claim them), and what follows in
 /// that source is not reflected.
 pub(crate) fn frontiers_now(tx: &Tx<'_>, tid: &Tid, ak: &Ak, memory: bool, valid_on: &dyn Fn(&CommitId) -> bool) -> (Frontiers, BTreeSet<CommitId>) {
+    frontiers_upto(tx, tid, ak, memory, valid_on, None)
+}
+
+/// `frontiers_now`, walking only the sources `upto` names, each no further than the commit at
+/// the counter it gives (the compaction trigger asks whether its candidates are reflected, and
+/// walks no source past them). With `upto`, the frontiers are partial.
+pub(crate) fn frontiers_upto(tx: &Tx<'_>, tid: &Tid, ak: &Ak, memory: bool, valid_on: &dyn Fn(&CommitId) -> bool, upto: Option<&BTreeMap<osis_crdt::Source, u64>>) -> (Frontiers, BTreeSet<CommitId>) {
     let mut frontiers = Frontiers::default();
     let mut reflected = BTreeSet::new();
     for (_, s, fr, _) in tx.core.ix.snapshots.get(&(*tid, ak.clone())).into_iter().flatten() {
@@ -93,8 +100,18 @@ pub(crate) fn frontiers_now(tx: &Tx<'_>, tid: &Tid, ak: &Ak, memory: bool, valid
     }
     let from = (*tid, ak.clone(), osis_crdt::Source::session(osis_crdt::Session { node: Tid::from_bytes([0; 15]), nonce: [0; osis_crdt::SESSION_NONCE_LEN] }));
     for ((_, _, n), ranges) in tx.core.ix.ranges.range(from..).take_while(|((t, a, _), _)| t == tid && a == ak) {
+        let max = match upto {
+            Some(u) => match u.get(n) {
+                Some(m) => *m,
+                None => continue,
+            },
+            None => u64::MAX,
+        };
         let mut next = frontiers.of(n).saturating_add(1);
         for ((lo, c), hi) in ranges {
+            if *lo > max {
+                break;
+            }
             // below a snapshot's frontier: reflected by it
             if *hi <= next {
                 reflected.insert(*c);

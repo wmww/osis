@@ -512,6 +512,18 @@ fn remove_client_revokes() {
     assert!(c.has_content(x.u).unwrap());
     let keys_before = x.n.engine(|e| e.epochs(&x.g).map(|ep| format!("{:?}", ep.role(Role::Read).newest_held().map(|h| h.0))));
     assert_eq!(x.served(), 1);
+    // the entry's removal, as a listener on `clients^.0` hears it written
+    let node_thing = x.n.node();
+    let clients = Scope::Aspects(vec![(node_thing, ak("clients^.0"))]);
+    let (tx, rx) = std::sync::mpsc::channel();
+    let sub = x.n.on_write(&clients, move |_, e| {
+        if let osis::CommitEvent::Commit { id, commit: Some(c) } = e
+            && c.kind == osis::CommitKind::Content
+        {
+            let _ = tx.send(id);
+        }
+    })
+    .unwrap();
     assert!(x.n.remove_client(a).unwrap());
     x.until(|x| x.served() == 0);
     assert!(!x.n.grants(x.g).unwrap().contains_key(&a) && !x.n.grants(x.h).unwrap().contains_key(&a));
@@ -522,18 +534,12 @@ fn remove_client_revokes() {
     // the session is over for good, and a listener on it would never hear anything: it says so
     x.until(|_| matches!(c.at(x.t, osis::DynamicAspectKey::untyped(ak("t:name.0"))).get(), Err(Error::Refused(_))));
     assert!(matches!(c.on_diagnostic(|_, _| {}), Err(Error::Refused(_))));
-    // the entry's removal writes back what `clients^.0` keeps no history of: not undone; a half
-    // removal revives under no clock (half_removed_client_stays_ended)
-    let node_thing = x.n.node();
-    // (the removal may be compacted into a snapshot and forgotten, spec/sync.md §7 Trigger: then
-    // nothing listed reverts either)
-    for e in crate::common::listed(&x.n, Scope::Aspects(vec![(node_thing, ak("clients^.0"))])) {
-        let c = e.stamp.id;
-        match e.kind {
-            osis::CommitKind::Snapshot => assert!(x.n.revert(c).is_err()),
-            _ => assert_eq!(x.n.revert(c), Err(Error::NotUndoable { commit: c, reason: osis::NotUndoableReason::ContentGone })),
-        }
-    }
+    // the entry's removal writes back what `clients^.0` keeps no history of: not undone, its
+    // body compacted away or not (spec/commits.md §7); a half removal revives under no clock
+    // (half_removed_client_stays_ended)
+    drop(sub);
+    let removal = rx.try_recv().expect("the removal was heard");
+    assert_eq!(x.n.revert(removal), Err(Error::NotUndoable { commit: removal, reason: osis::NotUndoableReason::ContentGone }));
     assert!(matches!(x.connect(&s), Err(Error::Refused(_))));
     assert!(!x.n.remove_client(a).unwrap());
     assert!(!x.n.remove_client(x.n.me()).unwrap(), "only a registered client: never a role removal of something else");

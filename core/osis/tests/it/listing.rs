@@ -102,9 +102,11 @@ fn page_and_listener() {
     assert!(none.commits.is_empty() && !none.more);
 }
 
-// spec/commits.md §7 (Listed parts), notes/api.md Commits: a register keeping no history lists at most
-// its live write; one keeping history, declared or per write, lists every write until its keep bound,
-// then only the live one again; a signal key lists no writes, a value key no fires.
+// spec/commits.md §7 (Listed parts), §5 Kept while live, spec/sync.md §7 Trigger, notes/api.md
+// Commits: a register keeping no history lists only its live write, and once the trigger compacts
+// it (no setting keeps it while live) only the snapshot carrying it; one keeping history, declared
+// or per write, lists every write until its keep bound, then only the live one again; a signal key
+// lists no writes, a value key no fires.
 #[test]
 fn listed_while_in_read_or_kept_api_commits() {
     let c = clock();
@@ -112,16 +114,21 @@ fn listed_while_in_read_or_kept_api_commits() {
     typed_any(&db, &["t:kept.0"]);
     let t = thing(&db);
     let (plain, decl) = (ak("t:plain.0"), ak("t:kept.0"));
+    let held = |v: &str| Body::Held(Some(s(v)));
     for v in ["a", "b", "c"] {
         db.commit_set(t, untyped(plain.clone()), &s(v)).unwrap();
+        if v == "a" {
+            assert_eq!(bodies(&db, t, &plain), vec![held("a")], "no history: the live write alone");
+        }
         db.commit_set(t, kept(&db, &decl), &s(v)).unwrap();
         say(&db, t, v);
     }
-    let held = |v: &str| Body::Held(Some(s(v)));
-    // no history: at most the live write, and not even that once the trigger compacted it into
-    // a snapshot (spec/sync.md §7 Trigger), which lists nothing of its own
-    let p = bodies(&db, t, &plain);
-    assert!(p.is_empty() || p == vec![held("c")], "no history: at most the live write: {p:?}");
+    // the trigger compacted `plain` (three own whole replaces: the first covered by the other two,
+    // they by the snapshot): its live value is listed as the snapshot's
+    assert_eq!(bodies(&db, t, &plain), vec![], "no history: the live write compacted away");
+    let all = CommitQuery { kinds: vec![CommitKind::Content, CommitKind::Revert, CommitKind::Snapshot], ..page(CommitFrom::Oldest, 100) };
+    let listed: Vec<(CommitKind, Body<Value>)> = db.at(t, untyped(plain.clone())).writes(&all).unwrap().commits.iter().map(|x| (x.kind, part(x, t, &plain).body)).collect();
+    assert_eq!(listed, vec![(CommitKind::Snapshot, held("c"))], "the snapshot carrying the live write");
     assert_eq!(bodies(&db, t, &decl), vec![held("a"), held("b"), held("c")], "kept a day");
     assert_eq!(bodies(&db, t, &msg()), vec![held("a"), held("b"), held("c")], "kept for good");
     c.advance(2 * 86_400_000);

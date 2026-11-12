@@ -172,6 +172,55 @@ fn kept_history_never_compacted_spec_commits_5() {
     assert_eq!(map_of(&mut net, r, t), map_of(&mut net, a, t));
 }
 
+/// Bodies the compaction trigger weighed at the writer while it ran `f`.
+fn weighed(net: &mut Net, f: impl FnOnce(&mut Net)) -> u64 {
+    osis_node::costs::take();
+    f(net);
+    osis_node::costs::take().iter().find(|x| x.0 == "compact: bodies weighed").map_or(0, |x| x.2)
+}
+
+// spec/sync.md §7 Trigger, spec/commits.md §5 Kept while live, notes/coordination.md (count
+// work): where a setting keeps history the trigger's work per write is flat in the kept bodies.
+// Under keep-for-a-day, ten more puts after n live keys weigh nothing (every body is kept);
+// under keep-for-two-seconds, ten overwrites of one key, each replaced body leaving history
+// before the next, compact the replaced ones and weigh the same at n and 10n live keys (the
+// live ones are neither read nor walked).
+#[test]
+fn trigger_work_flat_under_kept_history_spec_sync_7() {
+    let run = |n: usize| {
+        let (mut net, _host, [a, r], _g, [t, u]) = hosted::<2, 2>(&[(1, Role::Read)], ["x", "y"], true);
+        net.keep(a, t, &[(GONEMAP.ak(), crate::common::DAY)]);
+        net.keep(a, u, &[(GONEMAP.ak(), osis_schema::History::Keep { until: None, after: Some(2_000) })]);
+        net.run();
+        put_apart(&mut net, a, t, n);
+        put_apart(&mut net, a, u, n);
+        let day = weighed(&mut net, |net| {
+            for i in 0..10 {
+                put(net, a, t, &format!("more{i}"), "v");
+                put(net, a, t, "k0", &format!("w{i}"));
+                net.run();
+            }
+        });
+        let short = weighed(&mut net, |net| {
+            for i in 0..10 {
+                put(net, a, u, "k0", &format!("w{i}"));
+                net.advance(3_000);
+                net.run();
+            }
+        });
+        // the replaced overwrites past their bound went; every live put stays
+        let (deltas, _) = held(&mut net, a, u);
+        assert!(deltas >= n && deltas <= n + 4, "n={n}: {deltas} deltas held on u");
+        assert_eq!(map_of(&mut net, r, u), map_of(&mut net, a, u));
+        (day, short)
+    };
+    let (small, large) = (run(20), run(200));
+    println!("bodies weighed (keep a day, keep 2 s) over 10 writes: n=20 {small:?}, n=200 {large:?}");
+    assert_eq!((small.0, large.0), (0, 0), "nothing weighed where every body is kept");
+    assert!(small.1 > 0, "the replaced overwrites are weighed");
+    assert!(large.1 <= small.1 + small.1 / 2, "work per write grew with kept history: {small:?} at 20, {large:?} at 200");
+}
+
 // spec/commits.md §7 Kept history only, §5 Kept while live: undo of a live put works for as long
 // as its aspect keeps it, however much was written beside it; where no setting keeps the aspect
 // the trigger compacts it, and its undo is refused (no history promised), never wrong.

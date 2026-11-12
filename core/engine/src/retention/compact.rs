@@ -7,7 +7,7 @@
 //! history (a replaced one in history, a live one kept while live, spec/commits.md §5) are not
 //! counted: no snapshot drops them.
 
-use crate::apply::memory::{page_bytes, part_weight};
+use crate::apply::memory::{each_page, part_weight};
 use crate::engine::{Engine, Tx};
 use crate::error::{Error, Result};
 use osis_base::{Ak, CommitId, Tid};
@@ -50,6 +50,9 @@ pub struct Trigger {
     due: BTreeSet<(Tid, Ak)>,
     /// Aspects weighed at the next step whatever their `est`.
     forced: BTreeSet<(Tid, Ak)>,
+    /// By wall ms, aspects whose live bodies a setting keeps until then (a `keep` until T
+    /// alone): uncounted when applied, weighed once the bound passes (`Engine::tick`).
+    at: BTreeMap<u64, BTreeSet<(Tid, Ak)>>,
 }
 
 impl Trigger {
@@ -61,7 +64,18 @@ impl Trigger {
         if h.kind.is_compaction() || !h.kind.has_own_writes() {
             return Ok(());
         }
+        let now = tx.now().0;
         for (ai, a) in h.aspects.iter().enumerate() {
+            if !compactable(&a.ak) {
+                continue;
+            }
+            // a live body its setting keeps (spec/commits.md §5 Kept while live) is no snapshot's
+            // to drop: it counts once it leaves history (`leaving::left`) or the live bound passes
+            let live = super::history::of(tx.core, &a.tid, &a.ak).live_until();
+            if live > now {
+                Trigger::live_until(tx, (a.tid, a.ak.clone()), live);
+                continue;
+            }
             Trigger::counts(tx, &a.tid, &a.ak, blob, ai)?;
         }
         Ok(())
@@ -84,6 +98,28 @@ impl Trigger {
         self.due.insert(k);
     }
 
+    /// `k` keeps its live bodies until wall ms `live` (past the clock): weighed then, unless
+    /// that is never.
+    pub(crate) fn live_until(tx: &mut Tx<'_>, k: (Tid, Ak), live: u64) {
+        if live < osis_commit::retention::NEVER && compactable(&k.1) {
+            tx.core.compaction.at.entry(live).or_default().insert(k);
+            tx.core.timer_floor = tx.core.timer_floor.min(live);
+        }
+    }
+
+    /// Asks a weighing of every aspect whose live bound passed by `now` (`at`).
+    pub(crate) fn passed(&mut self, now: u64) {
+        let later = self.at.split_off(&now.saturating_add(1));
+        for k in std::mem::replace(&mut self.at, later).into_values().flatten() {
+            self.weigh(k);
+        }
+    }
+
+    /// When the first live bound in `at` passes (`u64::MAX`: none).
+    pub(crate) fn next_at(&self) -> u64 {
+        self.at.keys().next().copied().unwrap_or(u64::MAX)
+    }
+
     /// `k` is weighed at the next step whatever its estimate.
     pub(crate) fn weigh(&mut self, k: (Tid, Ak)) {
         if compactable(&k.1) {
@@ -93,43 +129,67 @@ impl Trigger {
     }
 }
 
-/// The bytes part `ai` of `blob` weighs: what dropping it frees. Its deltas, and for an
-/// ephemeral body the pages held here that the commit lists under that delta's delete keys
-/// (values are inline: every blob it lists is a page only it links). A durable body's listed
-/// blobs are mostly its large values' chunks, which a snapshot links and keeps, so they are not
-/// counted (issues/durable-pages-unweighed.md: a durable delta's own pages go uncounted too).
+/// The bytes part `ai` of `blob` weighs: what dropping it frees. Its deltas and the pages held
+/// here they link (`apply::memory::each_page`), either class. Not its large values' trees: the
+/// live state, so the snapshot, links them while they are live (a replaced value's tree a drop
+/// frees goes uncounted, issues/replaced-trees-unweighed.md). A delta that is not one CBOR value
+/// weighs its bytes.
 fn body_bytes(tx: &mut Tx<'_>, blob: &CommitBlob, ai: usize) -> Result<usize> {
-    let deltas: usize = blob.parts.iter().filter(|p| p.ai == ai).map(|p| p.delta.len()).sum();
-    let pages = if blob.header.ephemeral.is_some() { page_bytes(tx, &blob.header, ai)? } else { 0 };
-    Ok(deltas.saturating_add(pages))
+    let listed: BTreeSet<osis_base::BlobId> = blob.header.chunks.iter().map(|ch| ch.blob).collect();
+    let mut sum = 0usize;
+    for p in blob.parts.iter().filter(|p| p.ai == ai) {
+        sum = sum.saturating_add(p.delta.len());
+        if listed.is_empty() {
+            continue;
+        }
+        let r = each_page(tx, &p.delta, &listed, &mut |b, _| {
+            sum = sum.saturating_add(b.len());
+            Ok(())
+        });
+        match r {
+            Ok(()) | Err(Error::BadInput(_)) => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(sum)
 }
 
 /// The bodies held of `(tid, ak)` a snapshot written now would cover (not snapshots; not ones
 /// with an expiry before it, which a snapshot covers only as their leftover; not one behind an
 /// invalid or missing body of its session, which its frontier cannot pass: counted, it would
 /// fire the trigger at every step), with their part and its cost. A leftover counts as a part
-/// with no delta bytes. Whether each is past its keep bound is the caller's (`Load::of`).
+/// with no delta bytes. Whether each is past its keep bound is the caller's (`Load::of`). Where
+/// the setting keeps live bodies, only bodies out of history and leftovers are looked at
+/// (`droppable`): kept ones are neither read nor walked past, so a weighing costs what it may
+/// drop, not the kept history.
 fn candidates(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Vec<(CommitId, usize, usize)>> {
     let memory = ak.ephemeral();
+    let pool = droppable(tx, tid, ak);
     // (commit, part, judged by ID, a snapshot)
-    let ids: Vec<(CommitId, usize, bool, bool)> = tx
-        .core
-        .ix
-        .by_aspect
-        .get(&(*tid, ak.clone()))
+    let ids: Vec<(CommitId, usize, bool, bool)> = pool
         .into_iter()
-        .flatten()
-        .filter_map(|(_, c)| {
-            let m = tx.core.ix.commits.get(c)?;
+        .filter_map(|c| {
+            let m = tx.core.ix.commits.get(&c)?;
             let ai = m.aspect(tid, ak).filter(|ai| m.holds(*ai) && m.valid_at(*ai))?;
-            m.header.aspects.get(ai).filter(|_| m.header.expires.is_none() || super::valueless(tx.core, c, ai))?;
-            Some((*c, ai, super::snapshot::by_id(m.header.kind, m.header.form), m.view.kind.is_compaction()))
+            m.header.aspects.get(ai).filter(|_| m.header.expires.is_none() || super::valueless(tx.core, &c, ai))?;
+            Some((c, ai, super::snapshot::by_id(m.header.kind, m.header.form), m.view.kind.is_compaction()))
         })
         .collect();
-    let valid_on = |c: &CommitId| tx.core.ix.commits.get(c).is_some_and(|m| m.aspect(tid, ak).is_some_and(|ai| m.valid_at(ai) && !m.missing.contains(&ai)));
-    let (_, reflected) = super::snapshot::frontiers_now(tx, tid, ak, memory, &valid_on);
     // counted: tests read how many bodies the trigger weighs
     crate::costs::count("compact: bodies weighed", ids.len() as u64);
+    // per session source of a candidate, the last counter to walk to
+    let mut upto: BTreeMap<osis_crdt::Source, u64> = BTreeMap::new();
+    for (c, ai, by_id, snapshot) in &ids {
+        if *by_id || *snapshot {
+            continue;
+        }
+        if let Some(crate::engine::Owned::Range { src, lo, .. }) = tx.core.ix.commits.get(c).and_then(|m| crate::engine::Owned::of(&m.header, c, *ai)) {
+            let e = upto.entry(src).or_insert(lo);
+            *e = (*e).max(lo);
+        }
+    }
+    let valid_on = |c: &CommitId| tx.core.ix.commits.get(c).is_some_and(|m| m.aspect(tid, ak).is_some_and(|ai| m.valid_at(ai) && !m.missing.contains(&ai)));
+    let (_, reflected) = super::snapshot::frontiers_upto(tx, tid, ak, memory, &valid_on, Some(&upto));
     let mut out = Vec::new();
     for (c, ai, by_id, snapshot) in ids {
         // not snapshots: each author keeps its own ephemeral one until its next (spec/sync.md §9),
@@ -142,6 +202,42 @@ fn candidates(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Vec<(CommitId, usiz
         out.push((c, ai, part_weight(bytes).saturating_add(ENTRY_CHARGE)));
     }
     Ok(out)
+}
+
+/// The held bodies of `(tid, ak)` a snapshot may drop now. Where its setting keeps live bodies
+/// (spec/commits.md §5 Kept while live), a body is kept while live or in history, so only the
+/// replaced ones out of history (`leaving` rows up to the cursor) and the leftovers (value-less,
+/// named by `Indexes::valueless`) may go; elsewhere every held body (history then keeps only
+/// under a setting that changed, or a purge floor: `Load::of` reads the keep bounds).
+fn droppable(tx: &Tx<'_>, tid: &Tid, ak: &Ak) -> BTreeSet<CommitId> {
+    let key = (*tid, ak.clone());
+    let ix = &tx.core.ix;
+    if super::history::of(tx.core, tid, ak).live_until() <= tx.now().0 {
+        return ix.by_aspect.get(&key).into_iter().flatten().map(|(_, c)| *c).collect();
+    }
+    let mut out = BTreeSet::new();
+    if let Some((_, Some(last))) = ix.leave_from.get(&key).copied() {
+        out.extend(ix.leaving.get(&key).into_iter().flat_map(|s| s.range(..=last)).map(|p| p.1));
+    }
+    for o in ix.valueless.get(&key).into_iter().flatten() {
+        match o {
+            crate::engine::Owned::Commit(c) => {
+                out.insert(*c);
+            }
+            crate::engine::Owned::Range { src, lo, .. } => {
+                let r = ix.ranges.get(&(*tid, ak.clone(), src.clone()));
+                out.extend(r.into_iter().flat_map(|m| m.range((*lo, CommitId([0; 32]))..)).take_while(|((l, _), _)| l == lo).map(|((_, c), _)| *c));
+            }
+            crate::engine::Owned::Dots { src, ctrs } => {
+                let Some(r) = ix.ranges.get(&(*tid, ak.clone(), src.clone())) else { continue };
+                for ctr in ctrs {
+                    // the range holding the counter
+                    out.extend(r.range(..=(*ctr, CommitId([0xff; 32]))).next_back().filter(|(_, hi)| *ctr < **hi).map(|((_, c), _)| *c));
+                }
+            }
+        }
+    }
+    out
 }
 
 /// What a snapshot of `(tid, ak)` would cost as a held body: its state (the expiring writes
