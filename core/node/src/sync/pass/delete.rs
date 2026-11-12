@@ -187,14 +187,15 @@ impl SyncEngine {
             // (each encryption has its own salt), only a genuine one (a forged duplicate must not
             // get the real entry deleted); one whose wrap is of no use there counts as no copy,
             // and goes itself once there is one, whatever its ID
-            // (in this node's own store: useless at a source, where another encryption replaces it)
+            // (in this node's own store: useless at a source, where another encryption replaces it;
+            // one whose bytes it dropped is no copy either, as `entry_for` places the body anew)
             let useless = match host {
                 Some(s) => self.state.is_gone_at(s, l, id),
                 None => self.state.useless_anywhere(l, id),
             };
             let same: Vec<BlobId> = self.state.entries_of(l, commit).filter(|(b, o)| (b < id || (useless && b != id)) && !o.cert && matches!(&o.kind, Kind::Commit { .. }) && match host {
                 Some(s) => self.state.holds_at(s, l, b),
-                None => !self.state.useless_anywhere(l, b),
+                None => !self.state.useless_anywhere(l, b) && self.engine.has_blob(b),
             }).map(|(b, _)| b).collect();
             f.duplicate_higher = same.into_iter().any(|b| self.others_readable(g, l, &b) == *parts && self.genuine(&b));
         } else if desired.iter().any(|d| d.iter().all(|p| parts.contains(p))) {
