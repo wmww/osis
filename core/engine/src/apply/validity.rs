@@ -141,10 +141,12 @@ pub(crate) fn forget_addendum_body(core: &mut Core, id: &CommitId, tid: &Tid) {
     }
 }
 
-/// Forgets what commit `id` said as an addendum (`unindex_commit`).
+/// Forgets what commit `id` said as an addendum (`unindex_commit`). One listing nothing (its
+/// body not held, as for every forgettable commit) vouches for nothing: its thing's validity
+/// stays as judged.
 pub(crate) fn forget_addenda(core: &mut Core, id: &CommitId, aspects: &[crate::engine::AspectView]) {
     for a in aspects.iter().filter(|a| ct::is_addenda(a.ak.as_str())) {
-        if core.ix.addenda.remove(&(a.tid, *id)).is_some() {
+        if core.ix.addenda.remove(&(a.tid, *id)).is_some_and(|x| !x.entries.is_empty()) {
             core.stale_things.insert(a.tid);
         }
     }

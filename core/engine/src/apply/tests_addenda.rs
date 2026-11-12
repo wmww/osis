@@ -403,3 +403,25 @@ fn a_bodiless_addendum_is_judged_by_its_header_spec_perm_5_2() {
     lp.peers[3].engine.rebuild_index().unwrap();
     assert_eq!(d1.first_diff(&lp.peers[3].engine.index_digest()), None, "rebuilt with the body");
 }
+
+// spec/commits.md §5 (Forgetting), spec/permissions.md §5.2 (Addenda): an addendum dropped while
+// invalid lists nothing, so forgetting it leaves every judgment as it was (its thing is not
+// stale after the transaction).
+#[test]
+fn forgetting_an_invalid_addendum_judges_nothing_spec_perm_5_2() {
+    let (mut lp, t) = world(3, &[Role::Write, Role::Read]);
+    let e = write(&mut lp, 1, t, "x:e.0", 7);
+    lp.sync(1, 2).unwrap();
+    let r = remove(&mut lp, 0, t, 1);
+    lp.sync(0, 2).unwrap();
+    let forged = forge_addendum(&mut lp, 2, t, r, &[e]);
+    lp.sync_all().unwrap();
+    let eng = &mut lp.peers[0].engine;
+    assert!(eng.kept_invalid(&forged) && eng.forgettable(&forged), "dropped while invalid");
+    eng.forget_commits(&[forged]).unwrap();
+    assert!(!eng.core.ix.commits.contains_key(&forged));
+    assert!(!eng.core.stale());
+    assert!(addenda(&lp, 0, t).is_empty());
+    assert!(!valid(&lp, 0, &e, t, "x:e.0"));
+    assert_eq!(reads(&mut lp, 0, t, "x:e.0"), None);
+}
