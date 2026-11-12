@@ -81,6 +81,81 @@ impl Fragment {
         }
     }
 
+    /// Calls `f` with the origin dot of every value-carrying write held here with its value
+    /// (§4.7): every write `strip` of its dot would change, and every write of a keyed map record
+    /// (each carries the record's key). A dot may come more than once; once stripped of a dot's
+    /// values, a fragment names it no more.
+    pub fn each_valued(&self, f: &mut dyn FnMut(&Dot)) {
+        let reg = |r: &Register, f: &mut dyn FnMut(&Dot)| {
+            if let Some(w) = &r.write
+                && w.value.is_some()
+            {
+                f(w.stamp.dot.origin());
+            }
+        };
+        if let Some(m) = self.meta()
+            && let (Some(w), false) = (&m.w, m.w_valueless)
+        {
+            f(w.dot.origin());
+        }
+        match self {
+            Fragment::Slots(Slots { reg: r, slots }) => {
+                if let Some(r) = r {
+                    reg(r, f);
+                }
+                slots.values().for_each(|s| s.each_valued(f));
+            }
+            Fragment::Register(r) => reg(r, f),
+            Fragment::Bag(Bag { elems, .. }) | Fragment::Set(Set { elems, .. }) => elems.values().filter_map(|e| e.frag.as_deref()).for_each(|s| s.each_valued(f)),
+            Fragment::Struct(s) => s.fields.values().for_each(|s| s.each_valued(f)),
+            Fragment::Enum(e) => {
+                if let Some(c) = &e.case
+                    && c.case.is_some()
+                {
+                    f(c.stamp.dot.origin());
+                }
+                e.payloads.values().for_each(|s| s.each_valued(f));
+            }
+            Fragment::Map(m) => {
+                for (id, en) in &m.entries {
+                    // each write of a keyed record carries its key
+                    if id.key.is_some() {
+                        if let Some(r) = &en.reset {
+                            f(r.dot.origin());
+                        }
+                        if en.created.is_some() {
+                            f(id.dot.origin());
+                        }
+                        if let Some(x) = en.frag.as_deref() {
+                            walk(&mut EachWrite(&mut *f), x);
+                        }
+                    }
+                    if let Some(s) = en.frag.as_deref() {
+                        s.each_valued(f);
+                    }
+                }
+            }
+            Fragment::Seq(s) => {
+                for (d, el) in s.elems() {
+                    // an undelete's char is its flag write's own value
+                    if el.undel.is_some()
+                        && let Some((st, _)) = &el.deleted
+                    {
+                        f(st.dot.origin());
+                    }
+                    // a range record's creations (list) or chars (text), each its own
+                    let each = !s.text && el.created.is_some() && !el.valueless || matches!(el.content, SeqContent::Char(_));
+                    if each {
+                        (0..el.span).for_each(|k| f(crate::seq_span::nth(d, k).origin()));
+                    }
+                    if let SeqContent::Frag(x) = &el.content {
+                        x.each_valued(f);
+                    }
+                }
+            }
+        }
+    }
+
     pub(crate) fn strip_values(&mut self, expired: &dyn Fn(&Dot) -> bool, ch: &mut Changes) {
         let exp = |d: &Dot| expired(d.origin());
         let reg = |r: &mut Register| {
@@ -575,6 +650,32 @@ impl Visit for HoldsStamp<'_> {
             }
         };
         if hit { Next::Stop } else { Next::On }
+    }
+}
+
+/// `Fragment::each_valued` in a keyed map record: the origin dot of every write.
+struct EachWrite<'a>(&'a mut dyn FnMut(&Dot));
+
+impl Visit for EachWrite<'_> {
+    fn stamp(&mut self, s: &Stamp) -> bool {
+        (self.0)(s.dot.origin());
+        false
+    }
+    fn rec(&mut self, r: Rec<'_>) -> Next {
+        match r {
+            Rec::Entry(id, e) if e.created.is_some() => (self.0)(id.dot.origin()),
+            Rec::Seq(d, el) => {
+                if el.created.is_some() {
+                    (0..el.span).for_each(|k| (self.0)(crate::seq_span::nth(d, k).origin()));
+                }
+                el.pos.iter().for_each(|p| (self.0)(p.0.dot.origin()));
+                if let Some((st, _)) = &el.deleted {
+                    (self.0)(st.dot.origin());
+                }
+            }
+            _ => {}
+        }
+        Next::On
     }
 }
 

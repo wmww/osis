@@ -16,14 +16,28 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use crate::engine::Gives;
+use crate::retention::snapshot::Carried;
 
-/// Notes a held compaction snapshot of `(tid, ak)` with its frontiers and `Absorbed`.
+/// Notes a held compaction snapshot of `(tid, ak)` with its frontiers and `Absorbed`; what its
+/// body carries valued is noted once read (`note_carried`).
 pub(crate) fn note_snapshot(core: &mut Core, tid: &Tid, ak: &Ak, ts: osis_base::Ts, id: &CommitId, (fr, abs, _): Gives) {
     // kept in (`ts`, ID) order, so arrival order (a rebuild's is the store's) does not show
     let v = core.ix.snapshots.entry_or_default((*tid, ak.clone()));
     if !v.iter().any(|x| x.1 == *id) {
         let at = v.partition_point(|x| (x.0, x.1) < (ts, *id));
-        v.insert(at, (ts, *id, fr, abs));
+        v.insert(at, (ts, *id, fr, abs, Carried::default()));
+    }
+}
+
+/// Notes `c`, the bound of what held snapshot `id` of `(tid, ak)` carries valued, from its body
+/// as held (joined, or its leftover): `retention::snapshot::Carried`.
+pub(crate) fn note_carried(core: &mut Core, tid: &Tid, ak: &Ak, id: &CommitId, c: Carried) {
+    let k = (*tid, ak.clone());
+    if core.ix.snapshots.get(&k).is_some_and(|v| v.iter().any(|x| x.1 == *id && x.4 != c)) {
+        let v = core.ix.snapshots.entry_or_default(k);
+        if let Some(x) = v.iter_mut().find(|x| x.1 == *id) {
+            x.4 = c;
+        }
     }
 }
 
@@ -337,8 +351,12 @@ fn join_part(tx: &mut Tx<'_>, h: &Header, id: &CommitId, blob: &CommitBlob, ai: 
         }
         return Ok(());
     }
+    let mut carried = Carried::default();
     each_piece(tx, h, id, blob, part, &mut |tx, f| {
         whole |= own && crate::retention::snapshot::replaces(&f);
+        if snap {
+            carried.add(&f);
+        }
         if !v {
             return Ok(());
         }
@@ -354,6 +372,9 @@ fn join_part(tx: &mut Tx<'_>, h: &Header, id: &CommitId, blob: &CommitBlob, ai: 
         Ok(())
     })?;
     note_whole(tx, id, ai, whole);
+    if snap {
+        note_carried(tx.core, &tid, &ak, id, carried);
+    }
     if !v {
         return Ok(());
     }
@@ -1078,12 +1099,13 @@ fn text_diff(kept: &str, rebuilt: &str) -> String {
 /// judged again.
 ///
 /// Invariant (spec/crdt.md §4.7, spec/commits.md §5; `retention::strip_leftover`): no held body
-/// carries the value of a write this node holds value-less (expired, purged), its own or a
-/// snapshot's copy of one of a delta with no expiry (`retention::carry_list`), and none loses a
-/// value of a write not so held. Kept where it can break: while the aspect's value-less list
-/// changed in this transaction, this walk reads every held body and holds each snapshot carrying
-/// such a value as its leftover (`retention::strip_carried`, which lists nothing); a body arriving
-/// later is judged on its join (`retention::drop_gone`).
+/// carries the value of a write this node holds value-less (expired, purged), its own or a copy
+/// under the original's dot (a snapshot's), and none loses a value of a write not so held. Kept
+/// where it can break: while the aspect's value-less list changed in this transaction, this walk
+/// reads every held body and holds each snapshot carrying a listed value as its leftover
+/// (`retention::strip_carried`, which lists nothing); a body arriving later is judged on its join
+/// (`retention::drop_gone`). An expiry no held snapshot's bound meets changes the state in place
+/// instead (`strip_state`).
 pub(crate) fn rebuild(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
     // a signal has no state: a validity change or a drop only changes which bodies count
     // (spec/commits.md §5 Signals)
@@ -1105,7 +1127,7 @@ pub(crate) fn rebuild(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
     }
     let _s = crate::costs::span("rebuild");
     crate::engine::listing::before_rebuild(tx, tid, ak)?;
-    let listed = tx.core.valueless_dirty.contains(&k).then(|| crate::retention::carry_list(tx.core, tid, ak)).filter(|l| !l.is_empty());
+    let listed = tx.core.valueless_dirty.contains(&k).then(|| tx.core.ix.valueless.get(&k).cloned()).flatten().filter(|l| !l.is_empty());
     let mut carriers = Vec::new();
     let st = rebuilt(tx, tid, ak, listed.as_deref().map(|l| (l, &mut carriers)))?;
     for (c, ai) in &carriers {
@@ -1126,9 +1148,9 @@ pub(crate) fn rebuild(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
 /// values of `own`, the expired delta's writes, as a join changes it. The held set changed only by
 /// that delta's body turning its leftover, so this is `rebuild`'s result at O(the delta): `at`,
 /// its body before and after the strip, says where its writes sit (a paged state loads those
-/// pages). A rebuild asked in this batch already reads the leftover. A snapshot carrying a
-/// copy of one of those values keeps it in its body (`retention::carry_list`); the state, held
-/// stripped, never shows it.
+/// pages). A rebuild asked in this batch already reads the leftover. Only while no held
+/// snapshot may carry a valued copy of those writes (`retention::snapshot::carried_meets`): a
+/// copy elsewhere would keep showing, so that expiry rebuilds instead.
 pub(crate) fn strip_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, at: &Fragment, own: &[Owned]) -> Result<()> {
     if ak.signal() {
         tx.core.mark_aspect_changed(tid, ak);

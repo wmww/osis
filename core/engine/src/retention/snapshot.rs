@@ -13,6 +13,49 @@ use osis_crdt::{Fragment, Frontiers};
 use osis_schema::core_types::{is_content, is_role_class};
 use std::collections::{BTreeMap, BTreeSet};
 
+/// What a held snapshot carries with a value, bounded (spec/crdt.md §4.7 Copies): per source,
+/// the least and greatest counter of a write its held body holds valued
+/// (`Fragment::each_valued`), O(sources). An honest snapshot holds an expiring write value-less
+/// (§8), so its bound need not meet one; an expiry strips the state in place only where no held
+/// snapshot's bound meets its writes (`meets`), else it rebuilds, which finds the carriers.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Carried(BTreeMap<osis_crdt::Source, (u64, u64)>);
+
+impl Carried {
+    /// Widens the bound by what `f` holds valued.
+    pub(crate) fn add(&mut self, f: &Fragment) {
+        f.each_valued(&mut |d| {
+            let e = self.0.entry(d.src.clone()).or_insert((d.ctr, d.ctr));
+            e.0 = e.0.min(d.ctr);
+            e.1 = e.1.max(d.ctr);
+        });
+    }
+    /// Whether the bound may hold a value of a write of `own`.
+    pub(crate) fn meets(&self, own: &[Owned]) -> bool {
+        let hull = |src: &osis_crdt::Source| self.0.get(src).copied();
+        own.iter().any(|o| match o {
+            Owned::Range { src, lo, hi } => hull(src).is_some_and(|(a, b)| a < *hi && *lo <= b),
+            Owned::Commit(c) => hull(&osis_crdt::Source::commit(*c)).is_some(),
+            Owned::Dots { src, ctrs } => hull(src).is_some_and(|(a, b)| ctrs.iter().any(|c| (a..=b).contains(c))),
+        })
+    }
+    /// Its sources, each one entry.
+    pub(crate) fn len(&self) -> usize {
+        self.0.len()
+    }
+    pub(crate) fn entries(&self) -> impl Iterator<Item = (&osis_crdt::Source, &(u64, u64))> {
+        self.0.iter()
+    }
+    pub(crate) fn of(v: impl IntoIterator<Item = (osis_crdt::Source, (u64, u64))>) -> Carried {
+        Carried(v.into_iter().collect())
+    }
+}
+
+/// Whether a held snapshot of `(tid, ak)` may carry a value of a write of `own` (`Carried`).
+pub(crate) fn carried_meets(core: &Core, tid: &Tid, ak: &Ak, own: &[Owned]) -> bool {
+    core.ix.snapshots.get(&(*tid, ak.clone())).into_iter().flatten().any(|s| s.4.meets(own))
+}
+
 /// The state of `(tid, ak)` a snapshot of it carries: this node's state with the values of
 /// deltas with an expiry held value-less (spec/crdt.md §8: a snapshot never carries them, so
 /// covers one only once it is held value-less, `covered`).
@@ -90,7 +133,7 @@ pub(crate) fn frontiers_now(tx: &Tx<'_>, tid: &Tid, ak: &Ak, memory: bool, valid
 pub(crate) fn frontiers_upto(tx: &Tx<'_>, tid: &Tid, ak: &Ak, memory: bool, valid_on: &dyn Fn(&CommitId) -> bool, upto: Option<&BTreeMap<osis_crdt::Source, u64>>) -> (Frontiers, BTreeSet<CommitId>) {
     let mut frontiers = Frontiers::default();
     let mut reflected = BTreeSet::new();
-    for (_, s, fr, _) in tx.core.ix.snapshots.get(&(*tid, ak.clone())).into_iter().flatten() {
+    for (_, s, fr, _, _) in tx.core.ix.snapshots.get(&(*tid, ak.clone())).into_iter().flatten() {
         if valid_on(s) {
             for (src, f) in fr.sources() {
                 if f > frontiers.of(&src) {

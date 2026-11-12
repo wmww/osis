@@ -37,7 +37,7 @@ pub(crate) fn reflected(core: &Core, tid: &Tid, ak: &Ak, d: &Dot) -> bool {
         return true;
     }
     let held = |s: &CommitId| core.ix.commits.get(s).is_some_and(|m| m.aspect(tid, ak).is_some_and(|ai| m.valid_at(ai) && !m.missing.contains(&ai) && !m.body_gone(ai)));
-    core.ix.snapshots.get(&(*tid, ak.clone())).into_iter().flatten().any(|(_, s, fr, abs)| {
+    core.ix.snapshots.get(&(*tid, ak.clone())).into_iter().flatten().any(|(_, s, fr, abs, _)| {
         let reaches = match d.src.kind() {
             osis_crdt::SourceKind::Commit(c) => abs.iter().any(|x| x.0 == *c),
             _ => fr.lists(&d.src) && fr.of(&d.src) >= d.ctr,

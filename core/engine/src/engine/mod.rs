@@ -850,8 +850,9 @@ pub(crate) struct CoreMark {
     records: u64,
 }
 
-/// A held compaction snapshot of an aspect: `ts`, ID, frontiers, `Absorbed` (commit, author).
-pub(crate) type HeldSnapshot = (Ts, CommitId, osis_crdt::Frontiers, Vec<(CommitId, Tid)>);
+/// A held compaction snapshot of an aspect: `ts`, ID, frontiers, `Absorbed` (commit, author),
+/// and the bound of what its held body carries with a value (`retention::snapshot::Carried`).
+pub(crate) type HeldSnapshot = (Ts, CommitId, osis_crdt::Frontiers, Vec<(CommitId, Tid)>, crate::retention::snapshot::Carried);
 
 impl MemoryDrop {
     /// The commits whose entries carry the dropped one's writes, if any.

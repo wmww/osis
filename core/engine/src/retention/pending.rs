@@ -85,10 +85,7 @@ fn strip_carried_waiting(tx: &mut Tx<'_>, id: &CommitId, blob: &mut osis_commit:
 /// snapshot), `Err` when it cannot be read yet (its thing's record, a page away; parked).
 fn carried(tx: &mut Tx<'_>, id: &CommitId, part: &osis_commit::Part, h: &Header, ai: usize) -> std::result::Result<Option<leftover::Leftover>, ()> {
     let Some(a) = h.aspects.get(ai) else { return Ok(None) };
-    let list = super::carry_list(tx.core, &a.tid, &a.ak);
-    if list.is_empty() {
-        return Ok(None);
-    }
+    let Some(list) = tx.core.ix.valueless.get(&(a.tid, a.ak.clone())).filter(|l| !l.is_empty()).cloned() else { return Ok(None) };
     let Some(dedup) = tx.core.dedup(&a.tid) else { return Err(()) };
     let mut interner = osis_crdt::Interner::new();
     let mut blobs = crate::engine::blobs::TxBlobs::new(&mut tx.blobs, tx.txn.is_memory());

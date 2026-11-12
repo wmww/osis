@@ -259,6 +259,16 @@ impl Rec for osis_crdt::Frontiers {
         Some(out)
     }
 }
+impl Rec for crate::retention::snapshot::Carried {
+    fn to(&self) -> Value {
+        Value::List(self.entries().map(|(s, (lo, hi))| Value::List(vec![s.to(), Value::uint(*lo), Value::uint(*hi)])).collect())
+    }
+    fn from(v: &Value) -> Option<Self> {
+        let Value::List(x) = v else { return None };
+        let e = x.iter().map(|e| <(osis_crdt::Source, u64, u64) as Rec>::from(e).map(|(s, lo, hi)| (s, (lo, hi)))).collect::<Option<Vec<_>>>()?;
+        Some(crate::retention::snapshot::Carried::of(e))
+    }
+}
 impl Rec for osis_crdt::Facts {
     fn to(&self) -> Value {
         let row = |((ts, src), f): (&(Ts, osis_crdt::Source), &osis_crdt::Fact)| Value::List(vec![ts.to(), src.to(), Value::uint(f.by as u64), f.actor.to()]);
@@ -345,6 +355,17 @@ impl<A: Rec, B: Rec, C: Rec, D: Rec> Rec for (A, B, C, D) {
         let Value::List(x) = v else { return None };
         let [a, b, c, d] = x.as_slice() else { return None };
         Some((A::from(a)?, B::from(b)?, C::from(c)?, D::from(d)?))
+    }
+}
+
+impl<A: Rec, B: Rec, C: Rec, D: Rec, E: Rec> Rec for (A, B, C, D, E) {
+    fn to(&self) -> Value {
+        Value::List(vec![self.0.to(), self.1.to(), self.2.to(), self.3.to(), self.4.to()])
+    }
+    fn from(v: &Value) -> Option<Self> {
+        let Value::List(x) = v else { return None };
+        let [a, b, c, d, e] = x.as_slice() else { return None };
+        Some((A::from(a)?, B::from(b)?, C::from(c)?, D::from(d)?, E::from(e)?))
     }
 }
 

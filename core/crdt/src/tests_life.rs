@@ -99,6 +99,19 @@ pub(crate) fn expiry_laws(seed: u64, ty: &Ty) {
         ms.strip(&|d| mexpired.iter().any(|(src, lo, hi)| d.source == *src && (*lo..*hi).contains(&d.ctr)));
         assert_eq!(strip(o), frag(&ms), "strip equals the model");
     }
+    // `each_valued` names every write holding a value, and none `strip` took a value from
+    for o in &s {
+        let mut valued = BTreeSet::new();
+        o.each_valued(&mut |d| {
+            valued.insert(d.clone());
+        });
+        let mut g = o.clone();
+        g.strip(&|d| !valued.contains(d));
+        assert_eq!(g, *o, "each_valued names every valued write");
+        let mut left = Vec::new();
+        strip(o).each_valued(&mut |d| left.extend(in_ranges(&expired)(d).then(|| d.clone())));
+        assert!(left.is_empty(), "stripped writes named valued: {left:?}");
+    }
     let (a, b) = (&s[0], &s[1]);
     assert_eq!(strip(&join(a, b)), join(&strip(a), &strip(b)), "strip commutes with join");
     assert_eq!(strip(&strip(a)), strip(a), "idempotent");

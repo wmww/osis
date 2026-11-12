@@ -50,6 +50,13 @@ impl Engine {
         })
     }
 
+    /// Per held snapshot of `(tid, ak)`, the entries of the bound of what it carries valued
+    /// (`retention::snapshot::Carried`, one per source).
+    #[doc(hidden)]
+    pub fn carried_bounds(&self, tid: &Tid, ak: &Ak) -> Vec<usize> {
+        self.core.ix.snapshots.get(&(*tid, ak.clone())).into_iter().flatten().map(|s| s.4.len()).collect()
+    }
+
     /// Commits `m` past the writer's rules, as a hostile node would: its role check, commit
     /// shape rules and refusal to emit a delta it judges invalid. A receiver's judgment of what
     /// no writer makes can be tested so.

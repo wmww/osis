@@ -508,7 +508,7 @@ fn own_replace_passes_hole_whole_or_paged_spec_crdt_8() {
     let e = &w.lp.peers[3].engine;
     let me = e.me();
     let held = e.core.ix.snapshots.get(&(w.t, aks()[3].clone())).cloned().unwrap_or_default();
-    let cover = held.iter().find(|(_, c, _, _)| e.core.ix.commits.get(c).is_some_and(|m| m.view.author == me)).expect("node 3 covers its replaced write");
+    let cover = held.iter().find(|(_, c, _, _, _)| e.core.ix.commits.get(c).is_some_and(|m| m.view.author == me)).expect("node 3 covers its replaced write");
     assert!(cover.2.sources().any(|(_, f)| f == 2), "the cover passes the hole below node 1's replace: {:?}", cover.2);
 }
 

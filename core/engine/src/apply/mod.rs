@@ -32,7 +32,7 @@ pub use memory::PART_OVERHEAD;
 pub(crate) use waits::Waits;
 #[cfg(debug_assertions)]
 pub(crate) use atomic::{check_rebuilt, TxChange};
-pub(crate) use atomic::{apply_verified, carries_any, forget_snapshot, index_commit, note_stands_in, ingest_secrets_keys, observe_state, rebuild, rejudged, run_batched, strip_state, strip_valueless};
+pub(crate) use atomic::{apply_verified, carries_any, forget_snapshot, index_commit, note_carried, note_stands_in, ingest_secrets_keys, observe_state, rebuild, rejudged, run_batched, strip_state, strip_valueless};
 
 use crate::engine::blobs::TxBlobs;
 use crate::engine::{Engine, Meta, Step, Tx, decode_commit_record, records};
@@ -1934,15 +1934,18 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
             for ai in ais {
                 let Some(a) = blob.header.aspects.get(ai) else { continue };
                 let keys = a.ak.as_str() == "keys.0";
+                let mut carried = crate::retention::snapshot::Carried::default();
                 if let Some(g) = each_held_piece(tx, &id, ai, &mut |tx, f| {
                     if keys {
                         keys::note_keysets(tx.core, &blob.header, &id, &a.tid, &keys::keysets_of(&blob.header, ai, std::slice::from_ref(&f)));
                     }
+                    carried.add(&f);
                     Ok(())
                 })?
                 .flatten()
                 {
                     atomic::note_snapshot(tx.core, &a.tid, &a.ak, blob.header.ts, &id, g);
+                    atomic::note_carried(tx.core, &a.tid, &a.ak, &id, carried);
                 }
             }
         }
