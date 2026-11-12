@@ -2,11 +2,58 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)] // test code
 
 use osis_base::format::{TAG_ENUM, TAG_LINK, TAG_SET, TAG_STRUCT_RESERVED, TAG_TID};
+use osis_base::cbor::{Item, check};
 use osis_base::{BlobId, CanonicalBytes, DecodeError, Float, Limits, Link, Tid, Unknown, Value, decode, decode_prefix, encode, item_prefix};
 use proptest::prelude::*;
 
+/// `decode`, checking that `cbor::check` decides alike, with the same error.
+fn dl(b: &[u8], limits: &Limits) -> Result<Value, DecodeError> {
+    let v = decode(b, limits);
+    assert_eq!(check(b, limits), v.as_ref().map(drop).map_err(|e| *e), "check differs from decode on {b:02x?}");
+    v
+}
+
 fn d(b: &[u8]) -> Result<Value, DecodeError> {
-    decode(b, &Limits::DEFAULT)
+    dl(b, &Limits::DEFAULT)
+}
+
+/// An `Item` reads as the value it encodes, every navigation of it included.
+fn reads_as(i: Item, v: &Value) -> Result<(), TestCaseError> {
+    prop_assert_eq!(i.to_value(), Ok(v.clone()));
+    prop_assert_eq!(i.as_uint(), v.as_uint());
+    prop_assert_eq!(i.is_int(), matches!(v, Value::Int(_)));
+    prop_assert_eq!(i.as_bool(), if let Value::Bool(b) = v { Some(*b) } else { None });
+    prop_assert_eq!(i.as_bytes(), v.as_bytes());
+    prop_assert_eq!(i.as_str(), if let Value::Str(s) = v { Some(s.as_str()) } else { None });
+    prop_assert_eq!(i.as_tid(), if let Value::Tid(t) = v { Some(*t) } else { None });
+    prop_assert_eq!(i.as_link(), if let Value::Link(l) = v { Some(**l) } else { None });
+    prop_assert_eq!(i.is_empty_list(), matches!(v, Value::List(l) if l.is_empty()));
+    match (i.as_list(), v) {
+        (Some(l), Value::List(w)) => {
+            prop_assert_eq!(l.len(), w.len());
+            prop_assert_eq!(l.iter().count(), w.len());
+            for (a, b) in l.iter().zip(w) {
+                reads_as(a, b)?;
+            }
+        }
+        (None, Value::List(_)) => prop_assert!(false, "a list not read as one"),
+        (Some(_), _) => prop_assert!(false, "read as a list"),
+        (None, _) => {}
+    }
+    match (i.as_map(), v) {
+        (Some(l), Value::Map(m)) => {
+            prop_assert_eq!(l.len(), 2 * m.len());
+            let items: Vec<Item> = l.iter().collect();
+            for (kv, (k, x)) in items.chunks(2).zip(m.iter()) {
+                reads_as(kv[0], k)?;
+                reads_as(kv[1], x)?;
+            }
+        }
+        (None, Value::Map(_)) => prop_assert!(false, "a map not read as one"),
+        (Some(_), _) => prop_assert!(false, "read as a map"),
+        (None, _) => {}
+    }
+    Ok(())
 }
 
 fn floats() -> impl Strategy<Value = Value> {
@@ -113,6 +160,7 @@ proptest! {
         prop_assert_eq!(c.depth(), v.depth());
         prop_assert_eq!(c.to_value(), Ok(v.clone()));
         prop_assert_eq!(CanonicalBytes::from_value(&v), c);
+        reads_as(Item::parse(&b, &Limits::DEFAULT).unwrap(), &v)?;
     }
 
     // §5: map keys and set elements sort by canonical bytes; Value's Ord is that order for values
@@ -154,9 +202,13 @@ proptest! {
     fn depth_limit(v in value()) {
         let b = encode(&v);
         let lim = |max_depth| Limits { max_depth, max_bytes: usize::MAX };
-        prop_assert!(decode(&b, &lim(v.depth())).is_ok());
+        prop_assert!(dl(&b, &lim(v.depth())).is_ok());
         if v.depth() > 0 {
-            prop_assert_eq!(decode(&b, &lim(v.depth() - 1)), Err(DecodeError::TooDeep));
+            prop_assert_eq!(dl(&b, &lim(v.depth() - 1)), Err(DecodeError::TooDeep));
+        }
+        // and at every size limit up to its own
+        for max_bytes in [0, b.len() / 2, b.len().saturating_sub(1), b.len()] {
+            dl(&b, &Limits { max_depth: 64, max_bytes }).ok();
         }
     }
 }
@@ -356,8 +408,8 @@ fn rejections() {
 #[test]
 fn limits() {
     let b = encode(&Value::Bytes(vec![0; 100]));
-    assert!(decode(&b, &Limits { max_depth: 4, max_bytes: 102 }).is_ok());
-    assert_eq!(decode(&b, &Limits { max_depth: 4, max_bytes: 101 }), Err(DecodeError::TooLarge));
+    assert!(dl(&b, &Limits { max_depth: 4, max_bytes: 102 }).is_ok());
+    assert_eq!(dl(&b, &Limits { max_depth: 4, max_bytes: 101 }), Err(DecodeError::TooLarge));
     let deep = vec![0x81u8; 1_000_000];
     assert_eq!(d(&deep), Err(DecodeError::TooDeep));
     // spec/data-model.md §5: 64 nested arrays around a scalar are allowed, 65 are not.
@@ -580,13 +632,13 @@ fn lying_heads_refused_before_allocating() {
         head(&mut nested, MAJOR_ARRAY, left as u64);
     }
     nested.resize(n, 0);
-    assert_eq!(decode(&nested, &Limits { max_depth: usize::MAX, max_bytes: n }), Err(DecodeError::Truncated));
+    assert_eq!(dl(&nested, &Limits { max_depth: usize::MAX, max_bytes: n }), Err(DecodeError::Truncated));
     let mut maps = Vec::new();
     head(&mut maps, MAJOR_MAP, (n / 2 - 3) as u64);
     head(&mut maps, osis_base::cbor::MAJOR_UINT, 0);
     head(&mut maps, MAJOR_MAP, (n / 2 - 3) as u64);
     maps.resize(n, 0);
-    assert_eq!(decode(&maps, &Limits { max_depth: usize::MAX, max_bytes: n }), Err(DecodeError::Truncated));
+    assert_eq!(dl(&maps, &Limits { max_depth: usize::MAX, max_bytes: n }), Err(DecodeError::Truncated));
     // exactly as many as the bytes: every item a byte, nothing refused
     let mut exact = Vec::new();
     head(&mut exact, MAJOR_ARRAY, 1000);

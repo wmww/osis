@@ -102,7 +102,7 @@ impl CanonicalBytes {
     /// Checks that `bytes` is exactly one value in the profile.
     pub fn parse(bytes: Vec<u8>, limits: &Limits) -> Result<CanonicalBytes, DecodeError> {
         let mut d = Decoder::new(&bytes, limits);
-        d.item(0)?;
+        d.check(0)?;
         if d.pos != bytes.len() {
             return Err(DecodeError::Trailing);
         }
@@ -310,6 +310,173 @@ pub fn decode(input: &[u8], limits: &Limits) -> Result<Value, DecodeError> {
     }
     Ok(v)
 }
+
+/// Whether `input` is exactly one value in the profile: `decode(input, limits)`, the same error
+/// included, without building the value (nothing is allocated).
+pub fn check(input: &[u8], limits: &Limits) -> Result<(), DecodeError> {
+    let mut d = Decoder::new(input, limits);
+    d.check(0)?;
+    if d.pos != input.len() {
+        return Err(DecodeError::Trailing);
+    }
+    Ok(())
+}
+
+/// One value of bytes `check` accepted, read in place: nothing is copied or allocated, and a
+/// read of the wrong kind is `None`.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct Item<'a>(&'a [u8]);
+
+impl<'a> Item<'a> {
+    /// `input` as one value, after `check`.
+    pub fn parse(input: &'a [u8], limits: &Limits) -> Result<Item<'a>, DecodeError> {
+        check(input, limits)?;
+        Ok(Item(input))
+    }
+
+    /// Its canonical bytes.
+    pub fn bytes(self) -> &'a [u8] {
+        self.0
+    }
+
+    fn reader(self) -> Reader<'a> {
+        Reader::new(self.0)
+    }
+
+    /// Its major type.
+    pub fn major(self) -> Option<u8> {
+        self.reader().peek_major()
+    }
+
+    /// The value, built.
+    pub fn to_value(self) -> Result<Value, DecodeError> {
+        decode(self.0, &Limits { max_depth: usize::MAX, max_bytes: self.0.len() })
+    }
+
+    /// A non-negative integer.
+    pub fn as_uint(self) -> Option<u64> {
+        self.reader().uint().ok()
+    }
+
+    /// An integer, of either sign.
+    pub fn is_int(self) -> bool {
+        matches!(self.major(), Some(MAJOR_UINT | MAJOR_NINT))
+    }
+
+    pub fn as_bool(self) -> Option<bool> {
+        match self.0 {
+            [FALSE] => Some(false),
+            [TRUE] => Some(true),
+            _ => None,
+        }
+    }
+
+    pub fn as_bytes(self) -> Option<&'a [u8]> {
+        self.reader().bytes().ok()
+    }
+
+    /// A byte string of exactly `N` bytes.
+    pub fn as_array<const N: usize>(self) -> Option<[u8; N]> {
+        self.as_bytes()?.try_into().ok()
+    }
+
+    pub fn as_str(self) -> Option<&'a str> {
+        self.reader().text().ok()
+    }
+
+    pub fn as_tid(self) -> Option<Tid> {
+        let mut r = self.reader();
+        r.tag(TAG_TID).ok()?;
+        r.fixed::<TID_LEN>().ok().map(Tid::from_bytes)
+    }
+
+    pub fn as_link(self) -> Option<Link> {
+        self.reader().link().ok()
+    }
+
+    /// An array's items.
+    pub fn as_list(self) -> Option<List<'a>> {
+        let mut r = self.reader();
+        let len = r.array().ok()?;
+        Some(List { rest: self.0.get(r.pos()..)?, len })
+    }
+
+    /// A map's entries, as a list of keys and values in turn.
+    pub fn as_map(self) -> Option<List<'a>> {
+        let mut r = self.reader();
+        let len = r.map().ok()?.checked_mul(2)?;
+        Some(List { rest: self.0.get(r.pos()..)?, len })
+    }
+
+    /// The empty array.
+    pub fn is_empty_list(self) -> bool {
+        self.0 == [MAJOR_ARRAY << 5]
+    }
+}
+
+impl fmt::Debug for Item<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.to_value() {
+            Ok(v) => write!(f, "Item({v:?})"),
+            Err(e) => write!(f, "Item({e:?})"),
+        }
+    }
+}
+
+/// The items of an array (or a map's keys and values in turn) of an `Item`, read in place.
+#[derive(Clone, Copy, Debug)]
+pub struct List<'a> {
+    rest: &'a [u8],
+    len: usize,
+}
+
+impl<'a> List<'a> {
+    pub fn len(self) -> usize {
+        self.len
+    }
+    pub fn is_empty(self) -> bool {
+        self.len == 0
+    }
+    pub fn iter(self) -> List<'a> {
+        self
+    }
+    pub fn first(self) -> Option<Item<'a>> {
+        self.iter().next()
+    }
+    pub fn get(self, i: usize) -> Option<Item<'a>> {
+        self.iter().nth(i)
+    }
+    /// Its items when there are exactly `N`.
+    pub fn tuple<const N: usize>(self) -> Option<[Item<'a>; N]> {
+        if self.len != N {
+            return None;
+        }
+        let mut out = [Item(&[]); N];
+        for (o, i) in out.iter_mut().zip(self) {
+            *o = i;
+        }
+        Some(out)
+    }
+}
+
+impl<'a> Iterator for List<'a> {
+    type Item = Item<'a>;
+    fn next(&mut self) -> Option<Item<'a>> {
+        if self.len == 0 {
+            return None;
+        }
+        let mut r = Reader::new(self.rest);
+        let item = r.item().ok()?;
+        self.rest = self.rest.get(item.len()..)?;
+        self.len -= 1;
+        Some(Item(item))
+    }
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.len, Some(self.len))
+    }
+}
+
+impl ExactSizeIterator for List<'_> {}
 
 /// Decodes one value from the start of `input`; returns it with the bytes it spans.
 pub fn decode_prefix<'a>(input: &'a [u8], limits: &Limits) -> Result<(Value, &'a [u8]), DecodeError> {
@@ -631,6 +798,140 @@ impl<'a> Decoder<'a> {
             }
         }
         Ok(())
+    }
+
+    /// `item` without building the value: the same checks in the same order, so the same result.
+    /// Returns whether a link occurs inside.
+    fn check(&mut self, depth: usize) -> Result<bool, DecodeError> {
+        let at = self.pos;
+        let ib = self.byte()?;
+        match ib >> 5 {
+            MAJOR_UINT | MAJOR_NINT => {
+                let n = self.arg(ib)?;
+                if i64::try_from(n).is_err() {
+                    return Err(DecodeError::IntOutOfRange);
+                }
+            }
+            MAJOR_BYTES => {
+                let n = self.len(ib, 1)?;
+                self.take(n)?;
+            }
+            MAJOR_TEXT => {
+                let n = self.len(ib, 1)?;
+                std::str::from_utf8(self.take(n)?).map_err(|_| DecodeError::InvalidUtf8)?;
+            }
+            MAJOR_ARRAY => {
+                self.enter(depth + 1)?;
+                let n = self.len(ib, 1)?;
+                self.promise(n)?;
+                let mut link = false;
+                for _ in 0..n {
+                    link |= self.check(depth + 1)?;
+                }
+                return Ok(link);
+            }
+            MAJOR_MAP => {
+                self.enter(depth + 1)?;
+                let n = self.len(ib, 2)?;
+                let promised = self.promised;
+                self.promise(n * 2)?;
+                let (mut keys, mut values) = (false, false);
+                let buf = self.buf;
+                let mut prev: &[u8] = &[];
+                for _ in 0..n {
+                    let start = self.pos;
+                    keys |= self.check(depth + 1)?;
+                    let raw = buf.get(start..self.pos).unwrap_or(&[]);
+                    if !prev.is_empty() && raw <= prev {
+                        return Err(DecodeError::MapKeyOrder);
+                    }
+                    prev = raw;
+                    values |= self.check(depth + 1)?;
+                }
+                if keys && n > 1 {
+                    self.equal_links(at, promised, depth)?;
+                }
+                return Ok(keys || values);
+            }
+            MAJOR_TAG => {
+                let tag = self.arg(ib)?;
+                return self.check_tagged(tag, depth, at);
+            }
+            _ => match ib {
+                FALSE | TRUE => {}
+                FLOAT64 => {
+                    let bits = self.be(8)?;
+                    Float::from_bits(bits).ok_or(DecodeError::NonCanonicalNan)?;
+                }
+                _ => return Err(DecodeError::BadSimple),
+            },
+        }
+        Ok(false)
+    }
+
+    /// `tagged` without building the value (`check`); `at`: where the tag's head starts.
+    fn check_tagged(&mut self, tag: u64, depth: usize, at: usize) -> Result<bool, DecodeError> {
+        let inner = depth + 1;
+        self.enter(inner)?;
+        match tag {
+            TAG_SET => {
+                self.enter(inner + 1)?;
+                let ib = self.byte()?;
+                if ib >> 5 != MAJOR_ARRAY {
+                    return Err(DecodeError::TagContent(tag));
+                }
+                let n = self.len(ib, 1)?;
+                let promised = self.promised;
+                self.promise(n)?;
+                let buf = self.buf;
+                let mut prev: &[u8] = &[];
+                let mut link = false;
+                for _ in 0..n {
+                    let start = self.pos;
+                    link |= self.check(inner + 1)?;
+                    let raw = buf.get(start..self.pos).unwrap_or(&[]);
+                    if !prev.is_empty() && raw <= prev {
+                        return Err(DecodeError::SetOrder);
+                    }
+                    prev = raw;
+                }
+                if link && n > 1 {
+                    self.equal_links(at, promised, depth)?;
+                }
+                Ok(link)
+            }
+            TAG_TID => self.fixed_bytes::<TID_LEN>(tag).map(|_| false),
+            TAG_ENUM => {
+                self.enter(inner + 1)?;
+                let n = self.expect(MAJOR_ARRAY, tag)?;
+                if n != 1 && n != 2 {
+                    return Err(DecodeError::TagContent(tag));
+                }
+                let case = self.expect(MAJOR_UINT, tag)?;
+                if i64::try_from(case).is_err() {
+                    return Err(DecodeError::IntOutOfRange);
+                }
+                if n == 2 { self.check(inner + 1) } else { Ok(false) }
+            }
+            TAG_LINK => {
+                self.enter(inner + 1)?;
+                self.link_content().map(|_| true)
+            }
+            _ => {
+                let saved = std::mem::take(&mut self.deepest);
+                let link = self.check(inner)?;
+                self.deepest = self.deepest.max(saved);
+                Ok(link)
+            }
+        }
+    }
+
+    /// `check`'s rare path: the map or set whose head starts at `at` (its promise taken at
+    /// `promised`), its keys or elements holding a link, decoded again for `decode`'s check
+    /// that no two are links of one content hash (`EqualLinks`).
+    fn equal_links(&mut self, at: usize, promised: usize, depth: usize) -> Result<(), DecodeError> {
+        (self.pos, self.promised) = (at, promised);
+        self.item(depth).map(drop)
     }
 
     /// One item inside `depth` arrays, maps and tags.
