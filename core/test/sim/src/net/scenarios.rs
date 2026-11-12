@@ -871,8 +871,10 @@ pub fn snapshot_rights(seed: u64) -> Res<Report> {
     for (c, author, gone) in &written {
         // a live body is read on its own: no cover drops it (spec/commits.md §5 Covered). Purge on
         // replace: replaced at a (its write not live there), gone everywhere once the writers acted
+        // a commit `a` forgot went under its author's own cover (spec/commits.md §5 Forgetting),
+        // which carries whatever of it lived: no entry of it is left, so it counts as gone
         let e = sim.engine(a)?;
-        let is_live = e.delta_live(c, &t, &k).map_err(|x| sim.fail(x.to_string()))?;
+        let is_live = e.core.ix.commits.contains_key(c) && e.delta_live(c, &t, &k).map_err(|x| sim.fail(x.to_string()))?;
         let dead = bound == 2 && !is_live;
         let gone = &(!is_live && (*gone || dead));
         // under keep at least a compacter's snapshot may be superseded before the bound passes: the
