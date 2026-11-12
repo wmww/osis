@@ -32,6 +32,7 @@ Format: `- <date time> <box> `<limit>` [<test>] <CPU|wall> <measured>/<limit> s 
 - 2026-11-11 16:55 ostrich `gate` CPU 8532/4094 s, wall 1198/299 s; `gate.hold` CPU 6525/3795 s, wall 730/241 s at load 19: stranded-report-storage review (osis-node changed); persistent, issues/gate-five-minutes.md.
 - 2026-11-12 00:23 fastbox-0 `gate.hold` wall 263/177 s, `gate` wall 331/220 s at load 22: stranded-bound review; persistent, issues/gate-five-minutes.md.
 - 2026-11-12 00:57 fastbox-0 `gate.hold` wall 229/177 s, `gate` wall 298/220 s at load 17: port-codec review, 13 crates selected, 57 s of it a rebuild after the reviewer's edits; persistent, issues/gate-five-minutes.md.
+- 2026-11-12 fastbox-0 `gate.hold` CPU 2815/2788 s, wall 309/177 s and `gate` wall 335/220 s at load 27: unmerge-nested review, no lock wait; persistent, issues/gate-five-minutes.md.
 
 ## Investigations
 One section per investigation: date and box, the trigger (hits or the run over 2x), what was tried, the outcome (fixed, or a raised limit with why no good solution was found). Tess reviews every raise.
