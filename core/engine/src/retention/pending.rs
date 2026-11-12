@@ -54,12 +54,18 @@ pub(crate) fn pending_drops(tx: &mut Tx<'_>, id: &CommitId, blob: &mut osis_comm
 /// that cannot be read yet (a page away, parked) is stripped once it can, at the latest when it
 /// joins (`drop_gone`). Called at every look at the stored copy (`reexamine`), so a request
 /// applied while it waits reaches it; the judgment is a memo (`Core::waiting_carries`) reading
-/// the list, so the part is decoded only when stored and when its aspect's list changed (a
-/// purge, an expiry), and at each look while it cannot be read.
+/// the list and the commit's pending entry, so the part is decoded when stored, at the first
+/// look after, when its aspect's list changed (a purge, an expiry), and at each look while it
+/// cannot be read; the answer lives while the commit waits.
 fn strip_carried_waiting(tx: &mut Tx<'_>, id: &CommitId, blob: &mut osis_commit::CommitBlob, h: &Header, ai: usize) -> Result<()> {
     let Some(a) = h.aspects.get(ai) else { return Ok(()) };
     let Some(part) = blob.parts.iter().find(|p| p.ai == ai && p.delta != emptied()).cloned() else { return Ok(()) };
-    let carries = crate::engine::memo::Memo::get_in(tx, |tx| &tx.core.waiting_carries, &(*id, ai), |tx| carried(tx, id, &part, h, ai).map(|l| l.is_some()));
+    let carries = crate::engine::memo::Memo::get_in(tx, |tx| &tx.core.waiting_carries, &(*id, ai), |tx| {
+        // read for the answer's life: its commit leaving the pending set moves it, so the memo's
+        // sweep drops it (bounded by what waits); a look re-pending it unchanged does not (`pend`)
+        let _ = tx.core.ix.pending.get(id);
+        carried(tx, id, &part, h, ai).map(|l| l.is_some())
+    });
     if carries != Ok(true) {
         return Ok(());
     }

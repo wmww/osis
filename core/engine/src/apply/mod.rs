@@ -895,7 +895,10 @@ fn settled_boxes(tx: &Tx<'_>, id: &CommitId) -> bool {
 fn pend(tx: &mut Tx<'_>, id: &CommitId, kind: PendingKind, bytes: &[u8], reason: Reason) -> Result<()> {
     tx.core.touch();
     tx.txn.put_pending(id, kind, bytes)?;
-    tx.core.ix.pending.insert(*id, reason);
+    // unchanged at a look that keeps it waiting: what read it holds (`Core::waiting_carries`)
+    if tx.core.ix.pending.get(id) != Some(&reason) {
+        tx.core.ix.pending.insert(*id, reason);
+    }
     tx.core.pended.insert(*id);
     Ok(())
 }

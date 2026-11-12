@@ -1571,9 +1571,9 @@ fn judged(f: impl FnOnce()) -> u64 {
 }
 
 /// `n` snapshots on an aspect with a purged write, none carrying it, pending for their `ts` at
-/// peer 1: how many are judged by a `reexamine` with nothing changed, and by the next purge on
-/// that aspect.
-fn waiting_snapshots_judged(n: usize) -> (u64, u64) {
+/// peer 1: how many are judged by a `reexamine` with nothing changed, by the next purge on that
+/// aspect, by an expiring write there, and by its expiry.
+fn waiting_snapshots_judged(n: usize) -> [u64; 4] {
     let mut lp = net2();
     lp.sync_all().unwrap();
     let a = lp.peers[0].engine.me();
@@ -1604,7 +1604,19 @@ fn waiting_snapshots_judged(n: usize) -> (u64, u64) {
         purge(&mut lp, "gone too");
         lp.peers[1].reexamine().unwrap();
     });
-    (idle, purged)
+    let expiring = judged(|| {
+        let mut m = Mutation::new();
+        m.set(t, &REG, &s("brief")).unwrap();
+        m.expires(t, &REG, osis_base::WallMs(lp.peers[1].engine.now().0 + 1_000)).unwrap();
+        lp.peers[1].commit(m).unwrap().unwrap();
+        lp.peers[1].reexamine().unwrap();
+    });
+    let expired = judged(|| {
+        lp.peers[1].clock.advance(2_000);
+        lp.peers[1].tick().unwrap();
+    });
+    assert_eq!(lp.peers[1].engine.pending().len(), n, "still waiting");
+    [idle, purged, expiring, expired]
 }
 
 // notes/coordination.md (Check scaling): a waiting snapshot is decoded to judge its carried copies
@@ -1612,8 +1624,6 @@ fn waiting_snapshots_judged(n: usize) -> (u64, u64) {
 // changed: n and 10n waiting snapshots cost the same there.
 #[test]
 fn waiting_snapshots_judged_only_when_their_list_changes_spec_commits_5() {
-    let (idle, purged) = waiting_snapshots_judged(3);
-    let (idle10, purged10) = waiting_snapshots_judged(30);
-    assert_eq!((idle, idle10), (0, 0), "nothing changed");
-    assert_eq!((purged, purged10), (3, 30), "each judged once at the list's change");
+    assert_eq!(waiting_snapshots_judged(3), [0, 3, 0, 3], "judged once at each change of the list: a purge, an expiry");
+    assert_eq!(waiting_snapshots_judged(30), [0, 30, 0, 30]);
 }
