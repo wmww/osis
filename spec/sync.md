@@ -378,7 +378,7 @@ A node sends a push (a Stream, §10, or a client-port Notify) only while its byt
       - its delta joined with the superseded part reads (spec/crdt.md §4.4) as it does alone.
     - This is judged when the superseding part is held valid (on arrival, at its build, or when it turns valid) and when the superseded part goes value-less at its expiry.
     - The dropped part's writes then vanish whole, as if never applied, at every node, its author included, so a later removal or undo of the superseding write does not show them again.
-    - Once a commit with a part so dropped is forgotten, its author deletes its entries at a host once a superseder or coverer of its parts is held there or the host is full for the label (§10 Full: the superseder waits there for the room they hold), and no other node deletes them.
+    - Once a commit with a part so dropped is forgotten, its author deletes its entries at a host once a superseder or coverer of its parts is held there, or at once while the host has told it that it is full for the label (§10 Full; the host then holds neither until it takes the superseder), and no other node deletes them.
     - One whose every part is superseded on arrival is not held.
     - An own write with `expires` superseded by a later own write before it was sent is never sent.
 - **Caps**:
