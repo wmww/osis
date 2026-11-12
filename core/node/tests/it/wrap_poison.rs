@@ -617,7 +617,7 @@ fn useless_snapshot_carries_nothing_spec_sync_7() {
     fx.net.blocked.insert((a, r));
     fx.net.drop_link(a, r);
     let ak = osis_base::Ak::new(osis_schema::RawKey::ak(&REG)).unwrap();
-    let acts = fx.net.sync(a).compact(&t, &ak).unwrap();
+    let acts = fx.net.sync(a).compact_now(&t, &ak).unwrap();
     fx.net.actions(a, acts);
     fx.net.run();
     fx.net.run();

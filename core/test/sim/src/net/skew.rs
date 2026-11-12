@@ -122,7 +122,7 @@ pub fn future_format(seed: u64) -> Res<Report> {
     }
     // an old writer compacts the aspect the newer commit wrote
     let tk = ak(&sim, &crate::workload::STORY)?;
-    let acts = sim.sync(a)?.compact(&t, &tk).map_err(|e| sim.fail(format!("compact: {e}")))?;
+    let acts = sim.sync(a)?.compact_now(&t, &tk).map_err(|e| sim.fail(format!("compact: {e}")))?;
     sim.actions(a, acts)?;
     sim.run(40)?;
     sim.run_until_quiescent(40)?;
@@ -176,7 +176,7 @@ pub fn newer_schema(seed: u64) -> Res<Report> {
     sim.commit(a, m)?;
     sim.run(40)?;
     sim.quiet(40)?;
-    let acts = sim.sync(a)?.compact(&t, &rk).map_err(|e| sim.fail(format!("compact: {e}")))?;
+    let acts = sim.sync(a)?.compact_now(&t, &rk).map_err(|e| sim.fail(format!("compact: {e}")))?;
     sim.actions(a, acts)?;
     sim.run(40)?;
     sim.run_until_quiescent(40)?;

@@ -2,8 +2,8 @@
 //! Core besides the ordinary change marks (commits forgotten with why, aspects whose snapshots
 //! fell invalid), the node cap's measures of memory commits (what a held part costs a holder,
 //! `part_charge`, and a bound on it from the part's bytes alone, `part_bound`, so
-//! `Engine::ingest_memory` decodes nothing past the room it is given), coalescing (one snapshot
-//! of an aspect's unsent own commits) and the compaction trigger.
+//! `Engine::ingest_memory` decodes nothing past the room it is given). The compaction trigger,
+//! durable and ephemeral alike: `retention::compact`.
 
 use crate::engine::{Engine, MemoryDrop, Tx};
 use crate::error::{Error, Result};
@@ -22,21 +22,6 @@ const HELD_COPIES: usize = 2;
 /// write, release, x86-64): 0 leaves a commit of many small aspects counted at a tenth of what
 /// it holds; infinity fills the cap with a label's first commit.
 pub const PART_OVERHEAD: usize = 2048;
-
-/// A node compacts a memory aspect once the bodies held of it cost more than this many times a
-/// snapshot of it (spec/sync.md §9). Performance switch between correct strategies: 0 compacts
-/// whenever two bodies are held (at every write), infinity never (bodies pile up to the node
-/// and host caps, past which entries are refused). Rebuilds cost O(1) per byte written for any
-/// value above 1; a host cap of this many times the sum of the aspects' snapshots holds every
-/// entry.
-pub const FACTOR: usize = 2;
-
-/// Bytes charged per held memory commit besides its parts (`part_weight`) when a node weighs
-/// the bodies it holds against their snapshot: about a host's per-entry and log record overhead
-/// plus the commit header. Performance switch: 0 lets small writes pile up as entries whose
-/// overhead dwarfs their bytes (a host's cap fills with overhead the trigger never sees),
-/// infinity compacts at every write.
-pub const ENTRY_CHARGE: usize = 1024;
 
 /// What a held part costs: its decoded heap size (`heap`, at least its encoded `bytes`) in each
 /// copy kept, weighed as a part (`part_weight`).
@@ -159,26 +144,13 @@ fn wait(tx: &mut Tx<'_>, blob: &CommitBlob, id: &CommitId) -> Result<crate::Inge
 /// The bytes of the page blobs held here that commit `h` lists for its delta on aspect `ai`
 /// (the chunk list entries under that delta's delete keys; spec/commits.md §1): what the part
 /// weighs beside its root.
-fn page_bytes(tx: &mut Tx<'_>, h: &osis_commit::Header, ai: usize) -> Result<usize> {
+pub(crate) fn page_bytes(tx: &mut Tx<'_>, h: &osis_commit::Header, ai: usize) -> Result<usize> {
     let Some(a) = h.aspects.get(ai) else { return Ok(0) };
     let mut sum = 0usize;
     for ch in h.chunks.iter().filter(|ch| ch.keys == a.keys) {
         sum = sum.saturating_add(tx.blobs.get(&ch.blob)?.map_or(0, |b| b.len()));
     }
     Ok(sum)
-}
-
-/// A memory aspect's load at this node (`Engine::memory_load`): what the bodies held of it cost
-/// (`held`, each its parts' `part_weight` plus `ENTRY_CHARGE`), what a snapshot of it would
-/// (`snapshot`), and the costliest body.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct MemoryLoad {
-    pub tid: Tid,
-    pub ak: Ak,
-    pub held: usize,
-    pub snapshot: usize,
-    pub largest: usize,
-    pub bodies: usize,
 }
 
 impl Engine {
@@ -283,124 +255,6 @@ impl Engine {
             }
         }
         self.core.memory.invalidated.retain(|x| !out.contains(x));
-        Ok(out)
-    }
-
-    /// The compaction trigger (spec/sync.md §9 Compaction): for each memory aspect changed since
-    /// it was last weighed (every one with `force`), when the bodies held of it, two at least,
-    /// cost more than `FACTOR` times a snapshot of it, each weighed per part as holders are
-    /// charged (`part_weight`) plus `ENTRY_CHARGE`, this node writes the snapshot
-    /// (`snapshot`) if it may. Weighed only once the held cost passes `FACTOR` times
-    /// the snapshot cost last weighed, so rebuilds cost O(1) per byte written, amortized. The
-    /// snapshots written (marked changed by their apply: the passes place them).
-    pub fn memory_compactions(&mut self, force: bool) -> Result<Vec<CommitId>> {
-        let dirty: Vec<(Tid, Ak)> = if force { self.memory_aspects() } else { std::mem::take(&mut self.core.memory.dirty).into_iter().collect() };
-        let mut out = Vec::new();
-        for (tid, ak) in dirty {
-            if self.core.created(&tid).is_none() {
-                continue;
-            }
-            let Some((held, largest, bodies)) = self.held_cost(&tid, &ak)? else { continue };
-            let last = self.core.memory.weighed.get(&(tid, ak.clone())).copied().unwrap_or(0);
-            if !force && (bodies < 2 || held <= FACTOR * last) {
-                continue;
-            }
-            let Some(snapshot) = self.snapshot_cost(&tid, &ak)? else { continue };
-            self.core.memory.weighed.insert((tid, ak.clone()), snapshot);
-            let _ = largest;
-            if bodies == 0 || (!force && (bodies < 2 || held <= FACTOR * snapshot)) {
-                continue;
-            }
-            // a node that may not write the aspect leaves compaction to one that may
-            match self.snapshot(&tid, &ak) {
-                Ok(Some(c)) => out.push(c),
-                Ok(None) | Err(Error::Permission { .. }) => {}
-                Err(e) => return Err(e),
-            }
-        }
-        Ok(out)
-    }
-
-    /// Every memory aspect with a held commit.
-    fn memory_aspects(&self) -> Vec<(Tid, Ak)> {
-        self.core.ix.by_aspect.iter().filter(|(_, s)| s.iter().any(|(_, c)| self.holds_memory(c))).map(|(k, _)| k.clone()).collect()
-    }
-
-    /// What the write bodies held of memory aspect `(tid, ak)` cost (not expiring ones before
-    /// their expiry: a snapshot covers one only as its leftover; not ones their history keeps
-    /// to a bound not passed: no snapshot drops them before; not snapshots: each author keeps
-    /// its own until its next, so two authors' would otherwise make each compact the other's
-    /// forever): (their sum, the costliest, how many). A leftover counts as a part with no delta
-    /// bytes, what its header, meta and leftover row hold.
-    fn held_cost(&mut self, tid: &Tid, ak: &Ak) -> Result<Option<(usize, usize, usize)>> {
-        let ids: Vec<(CommitId, usize)> = self
-            .core
-            .ix
-            .by_aspect
-            .get(&(*tid, ak.clone()))
-            .into_iter()
-            .flatten()
-            .filter_map(|(_, c)| {
-                let m = self.core.ix.commits.get(c).filter(|m| m.view.memory && !m.view.kind.is_compaction())?;
-                let ai = m.aspect(tid, ak).filter(|ai| m.holds(*ai))?;
-                m.header.aspects.get(ai).filter(|_| m.header.expires.is_none() || crate::retention::valueless(&self.core, c, ai))?;
-                Some((*c, ai))
-            })
-            .collect();
-        if ids.is_empty() {
-            return Ok(None);
-        }
-        let (tid, ak) = (*tid, ak.clone());
-        self.run(|tx| {
-            tx.set_memory();
-            // only bodies a snapshot built now would cover: one behind an invalid body of its
-            // session (a hole its frontier cannot pass) is held until that body turns valid,
-            // and must not make the trigger fire on every step
-            let valid_on = |c: &CommitId| tx.core.ix.commits.get(c).is_some_and(|m| m.aspect(&tid, &ak).is_some_and(|ai| m.valid_at(ai) && !m.missing.contains(&ai)));
-            let (_, reflected) = crate::retention::frontiers_now(tx, &tid, &ak, true, &valid_on);
-            // nor one its history keeps (spec/commits.md §5): no snapshot drops it before its bound
-            let now = tx.now().0;
-            let (mut sum, mut largest, mut bodies) = (0usize, 0usize, 0usize);
-            for (c, ai) in ids.iter().filter(|(c, _)| reflected.contains(c)) {
-                if crate::retention::bounds::part_keep(tx, c, &tid, &ak)? > now {
-                    continue;
-                }
-                let Some(blob) = tx.get_commit(c)? else { continue };
-                let bytes = blob.parts.iter().filter(|p| p.ai == *ai).map(|p| p.delta.len()).sum::<usize>().saturating_add(page_bytes(tx, &blob.header, *ai)?);
-                let cost = part_weight(bytes).saturating_add(ENTRY_CHARGE);
-                sum = sum.saturating_add(cost);
-                largest = largest.max(cost);
-                bodies += 1;
-            }
-            Ok(Some((sum, largest, bodies)))
-        })
-    }
-
-    /// What a snapshot of memory aspect `(tid, ak)` would cost as a held body: its state (the
-    /// expiring writes value-less) encoded unpaged (about its root and pages together), weighed as a part plus `ENTRY_CHARGE`.
-    fn snapshot_cost(&mut self, tid: &Tid, ak: &Ak) -> Result<Option<usize>> {
-        let (tid, ak) = (*tid, ak.clone());
-        let me = self.core.writer_for(&tid)?;
-        self.run(|tx| {
-            tx.set_memory();
-            let Some(st) = crate::retention::snapshot_state(tx, &tid, &ak)? else { return Ok(None) };
-            let cx = osis_commit::writer_ctx(Form::Commit, osis_commit::Kind::ContentSnapshot, osis_base::Ts::default(), me, 0, 0);
-            let s = osis_crdt::Snapshot { nonce: [0; osis_crdt::NONCE_LEN], fragment: st, frontiers: osis_crdt::Frontiers::default(), absorbed: BTreeMap::new() };
-            // unpaged encoding fails only on a malformed fragment: counted as nothing
-            let len = osis_crdt::encode_snapshot(&s, &cx, Some(&mut osis_crdt::Unpaged)).map_or(0, |b| b.len());
-            Ok(Some(part_weight(len).saturating_add(ENTRY_CHARGE)))
-        })
-    }
-
-    /// Per memory aspect held here, its load (tests, diagnostics: within `FACTOR` times the
-    /// snapshot plus one body once the trigger ran).
-    pub fn memory_load(&mut self) -> Result<Vec<MemoryLoad>> {
-        let mut out = Vec::new();
-        for (tid, ak) in self.memory_aspects() {
-            let Some((held, largest, bodies)) = self.held_cost(&tid, &ak)? else { continue };
-            let Some(snapshot) = self.snapshot_cost(&tid, &ak)? else { continue };
-            out.push(MemoryLoad { tid, ak, held, snapshot, largest, bodies });
-        }
         Ok(out)
     }
 }

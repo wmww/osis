@@ -470,8 +470,8 @@ pub fn check(sim: &mut NetSim) -> Res<()> {
     // compaction keeps the bodies held of an aspect within `FACTOR` times its snapshot
     let ups: Vec<usize> = (0..sim.nodes.len()).filter(|n| sim.is_up(*n)).collect();
     for n in ups {
-        for x in sim.engine(n)?.memory_load().map_err(|e| sim.fail(e.to_string()))? {
-            if x.held > osis_node::ephemeral::FACTOR * x.snapshot + x.largest {
+        for x in sim.engine(n)?.compaction_load().map_err(|e| sim.fail(e.to_string()))? {
+            if x.held > osis_node::retention::compact::FACTOR * x.snapshot + x.largest {
                 return Err(sim.fail(format!("node {n} holds {} B of {} on {}, more than `FACTOR` times its {} B snapshot and one {} B commit", x.held, x.ak, x.tid, x.snapshot, x.largest)));
             }
         }

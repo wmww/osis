@@ -214,15 +214,14 @@ impl SyncEngine {
 
     /// Per step, before the engine's changes are drained: the aspects whose memory snapshot
     /// fell invalid have their labels' memory entries listed again by every stream carrying them
-    /// (a writer wrote a fresh snapshot, an own commit the passes place), the memory aspects due are compacted (`Engine::memory_compactions`),
-    /// the commits the engine forgot are noted (their entries' charge released, their labels
+    /// (a writer wrote a fresh snapshot, an own commit the passes place), the commits the engine
+    /// forgot are noted (their entries' charge released, their labels
     /// judged again), entries whose commit waited unverified are charged as held, refused entries
     /// are fetched again where room appeared, and ephemeral signals go.
     pub(crate) fn memory_step(&mut self, out: &mut Vec<Action>) -> Result<()> {
         // acted on once the drops are noted: what the fallen snapshot covered may have been
         // forgotten since the last step
         let invalidated = self.engine.take_memory_invalidated()?;
-        self.engine.memory_compactions(false)?;
         let (awaits, dropped): (Vec<_>, Vec<_>) = self.engine.take_memory_drops().into_iter().partition(|(_, _, why)| matches!(why, MemoryDrop::Awaits { .. }));
         self.memory_dropped(&dropped);
         // their bytes no entry names go now (an entry's go with it, `forget_blob`): an entry may
@@ -914,7 +913,7 @@ impl SyncEngine {
     #[doc(hidden)]
     pub fn compact_ephemeral_now(&mut self) -> Result<Vec<Action>> {
         let mut out = Vec::new();
-        self.engine.memory_compactions(true)?;
+        self.engine.compact_memory_now()?;
         self.memory_step(&mut out)?;
         self.engine_events()?;
         self.run_dirty(&mut out)?;

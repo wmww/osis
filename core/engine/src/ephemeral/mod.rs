@@ -10,7 +10,6 @@
 
 mod signal;
 
-pub use crate::apply::memory::{ENTRY_CHARGE, FACTOR};
 pub use crate::undo::Reverted;
 pub use signal::{EphCommit, MAX_DELIVERED};
 

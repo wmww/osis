@@ -48,7 +48,7 @@ fn expired_leftover_dropped_once_covered_spec_commits_5() {
     let c = net.engine(a).commit(m).unwrap().unwrap();
     net.run();
     let ak = Ak::new(REG.ak()).unwrap();
-    let acts = net.sync(a).compact(&t, &ak).unwrap();
+    let acts = net.sync(a).compact_now(&t, &ak).unwrap();
     net.actions(a, acts);
     net.run();
     let held = |net: &mut Net| net.engine(a).coverers_of(&c, &t, &ak).is_empty();
@@ -60,8 +60,8 @@ fn expired_leftover_dropped_once_covered_spec_commits_5() {
 }
 
 // spec/sync.md §7, spec/commits.md §5: compaction uploads the snapshot first, then drops and
-// deletes exactly the covered replaced bodies (the live one stays: it is read on its own), and
-// the snapshot stays; a holder joining later reads the live value; the carriers go
+// deletes the covered bodies (the live one too: no setting keeps it while live, the snapshot
+// carries it), and the snapshot stays; a holder joining later reads the live value; the carriers go
 // `TOMBSTONE_LIFETIME` after the deletions.
 #[test]
 fn compaction_then_deletion_spec_sync_7() {
@@ -79,14 +79,14 @@ fn compaction_then_deletion_spec_sync_7() {
     let live = blobs_of(&mut net, a, &l, c4);
     assert!(old.iter().all(|id| net.host_ids(host, &l).contains(id)));
     let ak = Ak::new(REG.ak()).unwrap();
-    let acts = net.sync(a).compact(&t, &ak).unwrap();
+    let acts = net.sync(a).compact_now(&t, &ak).unwrap();
     net.actions(a, acts);
     net.run();
     net.run();
     net.trace(&[a]);
     let ids = net.host_ids(host, &l);
     assert!(old.iter().all(|id| !ids.contains(id)), "covered bodies deleted");
-    assert!(!live.is_empty() && live.iter().all(|id| ids.contains(id)), "the live body stays");
+    assert!(live.iter().all(|id| !ids.contains(id)), "the live body goes too");
     let snaps: Vec<_> = net.sync(a).entries(&l).into_iter().filter_map(|(id, k)| match k {
         EntryKind::Commit { commit, .. } if net.engine(a).header(&commit).is_some_and(|h| h.kind == osis_commit::Kind::ContentSnapshot) => Some(id),
         _ => None,
@@ -99,7 +99,8 @@ fn compaction_then_deletion_spec_sync_7() {
     // the dropped bodies' carriers go once their entries and tombstones have (growth:
     // notes/growth.md)
     // (the item's creation commit keeps its entry for `created.0`, so its carrier stays)
-    assert_eq!(net.sync(a).sync_rows(b's'), 3, "carriers recorded");
+    // (how many depends on which covers the trigger and the call wrote, spec/sync.md §7 Trigger)
+    assert!(net.sync(a).sync_rows(b's') > 1, "carriers recorded");
     net.advance(osis_base::format::TOMBSTONE_LIFETIME_MS);
     net.advance(60_000);
     assert_eq!(net.sync(a).sync_rows(b's'), 1, "only the carrier of a body with an entry left");
@@ -390,7 +391,7 @@ fn kept_record(net: &mut Net, a: usize, g: osis_base::Tid, asp: &osis_schema::As
         assert!(blobs(net, a, &l, &c0).iter().any(|b| net.host_ids(0, &l).contains(b)), "the commit is at the host");
         return (t, ak, l, c0);
     }
-    let acts = net.sync(a).compact(&t, &ak).unwrap();
+    let acts = net.sync(a).compact_now(&t, &ak).unwrap();
     net.actions(a, acts);
     net.run();
     let snaps = snapshots(net, a, &t, &ak);
@@ -486,13 +487,17 @@ fn text_partly_erased_covered_at_once_spec_commits_5() {
     }
     let l = net.label(a);
     let old = ids[1];
-    let at_host = blobs(&mut net, a, &l, &old);
-    assert!(!at_host.is_empty() && at_host.iter().all(|b| net.host_ids(host, &l).contains(b)));
+    // what carries the marker at the host: its body, or the trigger's snapshot of the text
+    // (spec/sync.md §7 Trigger: five live bodies compact)
+    let before = snapshots(&mut net, a, &t, &ak);
+    let carriers: Vec<_> = ids.iter().chain(&before).flat_map(|c| blobs(&mut net, a, &l, c)).collect();
+    let at_host: Vec<_> = carriers.into_iter().filter(|b| net.host_ids(host, &l).contains(b)).collect();
+    assert!(!at_host.is_empty());
     let mut m = Mutation::new();
     m.op(t, &GONETEXT, PathOp { path: Vec::new(), op: Op::Delete { at: chunk + chunk / 2 - 10, len: marker.len() + 20 } }).unwrap();
     net.engine(a).commit(m).unwrap().unwrap();
     net.run();
-    assert_eq!(snapshots(&mut net, a, &t, &ak).len(), 1, "one cover");
+    assert!(snapshots(&mut net, a, &t, &ak).len() > before.len(), "a cover");
     assert!(!net.engine(a).body_not_dropped(&old, &t, &ak), "the partly erased body goes at its first death");
     let ids_now = net.host_ids(host, &l);
     assert!(at_host.iter().all(|b| !ids_now.contains(b)), "and at the host");
@@ -650,7 +655,7 @@ fn purge_resnapshot_by_writer_without_schema_spec_commits_5() {
     m.op(t, &GONEMAP, PathOp { path: vec![osis_crdt::PathSeg::Key(s("secret"))], op: Op::Put(s("PURGED-51d2")) }).unwrap();
     let c1 = net.engine(a).commit(m).unwrap().unwrap();
     net.run();
-    let acts = net.sync(a).compact(&t, &ak).unwrap();
+    let acts = net.sync(a).compact_now(&t, &ak).unwrap();
     net.actions(a, acts);
     net.run();
     let l = net.label(a);
@@ -748,7 +753,7 @@ fn purge_covered_by_held_snapshot_no_resnapshot_spec_commits_5() {
     let w = put("one");
     put("two");
     net.run();
-    let acts = net.sync(a).compact(&t, &ak).unwrap();
+    let acts = net.sync(a).compact_now(&t, &ak).unwrap();
     net.actions(a, acts);
     net.run();
     let snaps = snapshots(&mut net, a, &t, &ak);
@@ -769,7 +774,7 @@ fn purge_covered_by_held_snapshot_no_resnapshot_spec_commits_5() {
 fn purge_reader_writes_no_snapshot_spec_commits_5() {
     let (mut net, _host, [a, b, c], _g, [t]) = hosted::<3, 1>(&[(1, Role::Write), (2, Role::Read)], ["old"], true);
     let ak = Ak::new(REG.ak()).unwrap();
-    let acts = net.sync(b).compact(&t, &ak).unwrap();
+    let acts = net.sync(b).compact_now(&t, &ak).unwrap();
     net.actions(b, acts);
     net.run();
     net.set_online(b, false);
@@ -821,7 +826,7 @@ fn out_of_history_goes_under_any_writers_cover_spec_sync_7() {
             let blobs = blobs_of(&mut net, ns[b], &l, c);
             net.write(ns[who], t, "new");
             net.run();
-            let acts = net.sync(ns[who]).compact(&t, &k).unwrap();
+            let acts = net.sync(ns[who]).compact_now(&t, &k).unwrap();
             net.actions(ns[who], acts);
             net.run();
             net.advance(2 * 3_600_000);
@@ -858,7 +863,7 @@ fn host_delete_waits_drift_past_history_spec_sync_7() {
     net.run();
     net.advance(660_000);
     net.run();
-    let acts = net.sync(a).compact(&t, &k).unwrap();
+    let acts = net.sync(a).compact_now(&t, &k).unwrap();
     net.actions(a, acts);
     net.run();
     assert!(!net.engine(a).body_not_dropped(&c, &t, &k), "out of history: dropped here");
@@ -887,7 +892,7 @@ fn second_label_gets_kept_bodies_spec_sync_6() {
         net.run();
         net.write(a, t, "new");
         net.run();
-        let acts = net.sync(w).compact(&t, &k).unwrap();
+        let acts = net.sync(w).compact_now(&t, &k).unwrap();
         net.actions(w, acts);
         net.run();
         let l = net.label(a);
@@ -992,7 +997,7 @@ fn stale_drop_reads_alike_spec_commits_5() {
         demote(&mut net, a, g, xt, to);
         net.advance(1_000);
         insert(&mut net, x, t, "x's");
-        let acts = net.sync(x).compact(&t, &k).unwrap();
+        let acts = net.sync(x).compact_now(&t, &k).unwrap();
         let snap = latest_snapshot(&mut net, x, t, &k, acts);
         net.run();
         net.advance(2 * 3_600_000);
@@ -1036,7 +1041,8 @@ fn stale_drop_reads_alike_spec_commits_5() {
 
 // spec/permissions.md §5.2, spec/commits.md §5: the snapshot a body dropped under falls while another
 // without the right, which it does not cover and which arrived after the drop, still covers the
-// body: no one uploads the body (may-hold), the dropper reads alike through that snapshot's copies.
+// body: no one uploads the body (may-hold), the dropper reads alike through that snapshot's copies
+// (its author may hold it again: spec/sync.md §7 Own bodies).
 #[test]
 fn snapshot_falls_rightless_one_covers_spec_perm_5_2() {
     let mut net = Net::new();
@@ -1054,14 +1060,14 @@ fn snapshot_falls_rightless_one_covers_spec_perm_5_2() {
     demote(&mut net, a, g, xt, Role::Read);
     net.advance(1_000);
     insert(&mut net, x, t, "x's");
-    let acts = net.sync(x).compact(&t, &k).unwrap();
+    let acts = net.sync(x).compact_now(&t, &k).unwrap();
     let s1 = latest_snapshot(&mut net, x, t, &k, acts);
     net.run();
     net.advance(2 * 3_600_000);
     net.run();
     assert!(!net.engine(b).body_not_dropped(&c, &t, &k));
     insert(&mut net, w, t, "w's");
-    let acts = net.sync(w).compact(&t, &k).unwrap();
+    let acts = net.sync(w).compact_now(&t, &k).unwrap();
     let s2 = latest_snapshot(&mut net, w, t, &k, acts);
     net.set_online(w, true);
     net.run();
@@ -1076,7 +1082,6 @@ fn snapshot_falls_rightless_one_covers_spec_perm_5_2() {
     assert_eq!(want, Some(s("w'sb's")));
     assert_eq!(read(&mut net, b), want);
     assert_eq!(read(&mut net, w), want);
-    assert!(!net.engine(b).body_not_dropped(&c, &t, &k), "not held at the dropper");
     let l = net.label(a);
     let live = net.host_ids(host, &l);
     for n in [a, b, w] {
@@ -1103,7 +1108,7 @@ fn right_learned_late_spec_commits_5() {
     net.grant(a, g, xt, Role::Admin);
     net.run();
     net.advance(1_000);
-    let acts = net.sync(x).compact(&t, &k).unwrap();
+    let acts = net.sync(x).compact_now(&t, &k).unwrap();
     let snap = latest_snapshot(&mut net, x, t, &k, acts);
     net.run();
     let pk = net.engine(x).package(&snap).unwrap().unwrap();
@@ -1133,7 +1138,7 @@ fn fresh_snapshot_covers_past_a_gap_spec_commits_5() {
     let k = Ak::new(SEQ.ak()).unwrap();
     insert_partly(&mut net, b, t, "1");
     net.run();
-    let acts = net.sync(b).compact(&t, &k).unwrap();
+    let acts = net.sync(b).compact_now(&t, &k).unwrap();
     net.actions(b, acts);
     net.run();
     net.advance(2 * 3_600_000);
@@ -1143,7 +1148,7 @@ fn fresh_snapshot_covers_past_a_gap_spec_commits_5() {
     net.set_online(f, true);
     net.run();
     assert_eq!(net.engine(f).get_typed(&t, &SEQ).unwrap(), Some(s("21")));
-    let acts = net.sync(f).compact(&t, &k).unwrap();
+    let acts = net.sync(f).compact_now(&t, &k).unwrap();
     let snap = latest_snapshot(&mut net, f, t, &k, acts);
     assert!(net.engine(f).snapshot_right(&snap, &c, &t, &k));
     net.run();
@@ -1170,7 +1175,7 @@ fn gap_covers_nothing_kept_spec_commits_5() {
         }
         net.write(b, t, "first");
         net.run();
-        let acts = net.sync(b).compact(&t, &k).unwrap();
+        let acts = net.sync(b).compact_now(&t, &k).unwrap();
         net.actions(b, acts);
         net.run();
         net.advance(2 * 3_600_000);
@@ -1182,7 +1187,7 @@ fn gap_covers_nothing_kept_spec_commits_5() {
         net.run();
         net.set_online(f, true);
         net.run();
-        let acts = net.sync(f).compact(&t, &k).unwrap();
+        let acts = net.sync(f).compact_now(&t, &k).unwrap();
         net.actions(f, acts);
         net.run();
         let h = net.engine(f).header(&c).unwrap();
@@ -1214,7 +1219,7 @@ fn purge_naming_a_cover_keeps_its_writes_spec_commits_5() {
     let ak = Ak::new(SEQ.ak()).unwrap();
     assert_eq!(net.engine(r).get_typed(&t, &SEQ).unwrap(), Some(s("v2")));
     net.blocked.insert((r, host));
-    let acts = net.sync(a).compact(&t, &ak).unwrap();
+    let acts = net.sync(a).compact_now(&t, &ak).unwrap();
     net.actions(a, acts);
     net.run();
     net.run();
@@ -1249,7 +1254,7 @@ fn purge_fall_after_cover_reads_alike_spec_perm_6() {
     let c = insert_partly(&mut net, a, t, "v2");
     net.run();
     let ak = Ak::new(SEQ.ak()).unwrap();
-    let acts = net.sync(a).compact(&t, &ak).unwrap();
+    let acts = net.sync(a).compact_now(&t, &ak).unwrap();
     net.actions(a, acts);
     net.run();
     net.advance(10_000);
@@ -1398,11 +1403,11 @@ fn fallen_carrier_carries_nothing_spec_sync_7() {
     net.engine(b).commit(m).unwrap().unwrap();
     net.run();
     let blobs = blobs_of(&mut net, b, &l, c);
-    let acts = net.sync(b).compact(&t, &seq).unwrap();
+    let acts = net.sync(b).compact_now(&t, &seq).unwrap();
     net.actions(b, acts);
     net.run();
     net.set_online(a, false);
-    let acts = net.sync(b).compact(&t, &map).unwrap();
+    let acts = net.sync(b).compact_now(&t, &map).unwrap();
     net.actions(b, acts);
     net.run();
     net.advance(2 * 3_600_000);
@@ -1461,7 +1466,7 @@ fn one_side_lacking_the_setting_no_upload_delete_repeat_spec_sync_7() {
     net.advance(1_000);
     net.write(b, t, "two");
     net.run();
-    let acts = net.sync(b).compact(&t, &k).unwrap();
+    let acts = net.sync(b).compact_now(&t, &k).unwrap();
     net.actions(b, acts);
     net.run();
     net.advance(2 * 3_600_000);
@@ -1549,7 +1554,7 @@ fn held_snapshot_keeps_the_chunks_it_links_spec_sync_7() {
         net.run();
     }
     let compact = |net: &mut Net| {
-        let acts = net.sync(a).compact(&t, &ak).unwrap();
+        let acts = net.sync(a).compact_now(&t, &ak).unwrap();
         net.actions(a, acts);
         net.advance(4_000_000);
     };
@@ -1592,7 +1597,7 @@ fn linked_header_reopens_past_its_expiry_spec_commits_6() {
     let mut m = Mutation::new();
     m.set(t, &aks[0], &s("w")).unwrap();
     net.engine(a).commit(m).unwrap();
-    let acts = net.sync(a).compact(&t, &aks[0]).unwrap();
+    let acts = net.sync(a).compact_now(&t, &aks[0]).unwrap();
     net.actions(a, acts);
     net.run();
     net.engine(a).check_index();

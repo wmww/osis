@@ -208,7 +208,7 @@ fn crossed_snapshots() -> (usize, usize) {
     let l = net.label(a);
     // each compacts one aspect, before the bound: nothing drops yet
     for (n, k) in [(a, Ak::new(ONE.ak()).unwrap()), (b, Ak::new(TWO.ak()).unwrap())] {
-        let acts = net.sync(n).compact(&t, &k).unwrap();
+        let acts = net.sync(n).compact_now(&t, &k).unwrap();
         net.actions(n, acts);
         net.run();
     }

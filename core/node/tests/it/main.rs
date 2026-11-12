@@ -19,6 +19,7 @@ mod cert_judge;
 mod caches;
 mod corrupt;
 mod crash;
+mod compaction;
 mod deletion;
 mod destruction;
 mod lifetimes;

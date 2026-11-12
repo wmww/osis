@@ -29,7 +29,6 @@ pub(crate) fn unindex_commit(tx: &mut Tx<'_>, id: &CommitId) -> Result<()> {
             crate::engine::MemoryDrop::Covered { by }
         };
         core.memory.dropped.push((*id, m.header.arc(), why));
-        core.memory.dirty.extend(v.aspects.iter().map(|a| (a.tid, a.ak.clone())));
     }
     for (ai, a) in v.aspects.iter().enumerate() {
         let k = (a.tid, a.ak.clone());

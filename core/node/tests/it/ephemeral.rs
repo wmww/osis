@@ -735,7 +735,7 @@ fn host_cap_compaction_frees_it_spec_sync_5() {
     let mut net = Net::new();
     // a few entries with their per-entry overhead (about 900 bytes each); tuned so one upload is
     // refused and the writer's own compaction later makes room (a refused write left alone with
-    // no compaction due stays refused: issues/eph-unify.md step 5, Replace at cap)
+    // no compaction due stays refused)
     let host = net.add_host_with(osis_host::HostPolicy { ephemeral_bytes: 6_300, ..osis_host::HostPolicy::default() });
     let a = net.node(1, &[host]);
     let b = net.node(2, &[host]);
@@ -1959,11 +1959,11 @@ fn random_window_run_on(seed: u64, single: bool, inflight: bool) {
             panic!("seed {seed}: node {n} differs from node {m} (cap {cap})\n{}\n{}", log.join("\n"), lane_dump(&mut net, &nodes, &hosts, &l, w));
         }
     }
-    // spec/sync.md §9 (compaction): the bodies each writer holds of an aspect within `FACTOR`
+    // spec/sync.md §9 §7 (compaction trigger): the bodies each writer holds of an aspect within `FACTOR`
     // times a snapshot of it and one in flight
     for n in &nodes {
-        for x in net.engine(*n).memory_load().unwrap() {
-            assert!(x.held <= osis_node::ephemeral::FACTOR * x.snapshot + x.largest, "seed {seed}: node {n} holds {} B of {} on {:?}, snapshot {} B\n{}", x.held, x.ak, x.tid, x.snapshot, log.join("\n"));
+        for x in net.engine(*n).compaction_load().unwrap() {
+            assert!(x.held <= osis_node::retention::compact::FACTOR * x.snapshot + x.largest, "seed {seed}: node {n} holds {} B of {} on {:?}, snapshot {} B\n{}", x.held, x.ak, x.tid, x.snapshot, log.join("\n"));
         }
     }
 }
@@ -3960,7 +3960,7 @@ fn delete_across_unread_rotation_retried_spec_sync_9() {
     assert!(!after.contains(&k4[0]), "the plain delete refused 9 went again under the next key");
 }
 
-// spec/commits.md §3 (session form), issues/eph-unify.md step 3: a memory commit is session
+// spec/commits.md §3 (session form): a memory commit is session
 // form under the open's session with the ephemeral marker; its dots are `(Session(node,
 // nonce), ctr)`, counted per aspect from 1, of that source, never a node's; no demotion
 // frontier lists it.
@@ -3994,7 +3994,7 @@ fn memory_commit_session_form_spec_commits_3() {
     assert_eq!(e.get(&t, &reg).unwrap(), Some(Value::Set([Value::Str("v1".into())].into())));
 }
 
-// issues/eph-unify.md step 3: a memory commit is nothing durable to node-sync: marked changed
+// a memory commit is nothing durable to node-sync: marked changed
 // (its bodies travel like any commit's, spec/sync.md §9) but no generation step, not among
 // `commit_ids` or a thing's durable commits, an `Ephemeral` event (none on a durable
 // subscription). spec: none (internal)
@@ -4030,7 +4030,7 @@ fn memory_commit_not_durable_to_sync() {
     assert!(e.core.generation > generation);
 }
 
-// issues/eph-unify.md step 3: work on a memory commit inside a durable transaction stays in
+// work on a memory commit inside a durable transaction stays in
 // memory: its expiry's tick writes nothing durable and steps no durable generation, and the
 // value expires. spec: none (internal)
 #[test]
@@ -4146,7 +4146,7 @@ fn commit_form_ephemeral_commit_spec_commits_3() {
 }
 
 // spec/commits.md §4 (a received commit is verified, pending or applied; memory class),
-// issues/eph-unify.md step 3: a received memory commit goes through `ingest` and applies with
+// a received memory commit goes through `ingest` and applies with
 // every row in memory (no durable write while it is judged or applies); again it is a duplicate; a
 // restart forgets it
 #[test]
@@ -4580,8 +4580,8 @@ fn memory_random_histories_read_alike_spec_crdt_4_7() {
     memory_random_histories(0..6, false);
 }
 
-// spec/sync.md §9 (Compaction, memory class), spec/commits.md §5 (covered), issues/eph-unify.md
-// step B: `memory_random_histories_read_alike_spec_crdt_4_7` with memory snapshots among the
+// spec/sync.md §9 (Compaction, memory class), spec/commits.md §5 (covered)
+// `memory_random_histories_read_alike_spec_crdt_4_7` with memory snapshots among the
 // writes (any writer or the admin, of the aspect's whole state at that node): each holder drops
 // what the snapshots it holds cover and forgets it, and all still read alike
 #[test]

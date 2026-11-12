@@ -783,7 +783,8 @@ impl SyncEngine {
         self.finalize_links()?;
         // tied edges whose placement is gone (spec/permissions.md §2)
         self.untie_unplaced()?;
-        // memory snapshots written here are changes the passes place (`memory_step` first)
+        // snapshots written here are changes the passes place (the trigger and `memory_step` first)
+        self.compact_due()?;
         self.memory_step(out)?;
         self.engine_events()?;
         // joined links that ended: this account leaves K (spec/permissions.md §7)

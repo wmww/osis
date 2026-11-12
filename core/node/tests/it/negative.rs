@@ -42,7 +42,7 @@ fn compaction_keeps_bodies_until_keep_at_least_spec_commits_5() {
         _ => None,
     }).collect();
     assert!(dead.len() >= 2);
-    let acts = net.sync(a).compact(&t, &ak).unwrap();
+    let acts = net.sync(a).compact_now(&t, &ak).unwrap();
     net.actions(a, acts);
     net.run();
     for c in &bodies[..2] {
@@ -52,7 +52,7 @@ fn compaction_keeps_bodies_until_keep_at_least_spec_commits_5() {
     assert!(dead.iter().all(|id| at.contains(id)), "deleted at the host before the bound");
     // the host delete waits MAX_DRIFT past the bound (spec/sync.md §7)
     net.advance(86_400_000 + osis_base::format::MAX_DRIFT_MS);
-    let acts = net.sync(a).compact(&t, &ak).unwrap();
+    let acts = net.sync(a).compact_now(&t, &ak).unwrap();
     net.actions(a, acts);
     net.run();
     for c in &bodies[..2] {
@@ -88,7 +88,7 @@ fn compact_across_skew(a_ahead: bool) -> (usize, usize) {
     }
     net.run();
     let ak = Ak::new(KEPT.ak()).unwrap();
-    let acts = net.sync(a).compact(&t, &ak).unwrap();
+    let acts = net.sync(a).compact_now(&t, &ak).unwrap();
     net.actions(a, acts);
     net.run();
     let l = net.label(a);
@@ -193,7 +193,7 @@ fn local_dating_churn() -> (usize, usize) {
         net.set_online(n, true);
     }
     net.run();
-    let acts = net.sync(a).compact(&t, &ak).unwrap();
+    let acts = net.sync(a).compact_now(&t, &ak).unwrap();
     net.actions(a, acts);
     net.run();
     // 5 min steps from before A's bound to past B's

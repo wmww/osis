@@ -147,7 +147,7 @@ fn briefly_online_nodes_spec_sync_6() {
     let e = net.engine(a);
     let rs = recipients_of(e, &[(at, Role::Admin), (bt, Role::Write)]);
     rotation(e, g, &rs, 61, false);
-    let acts = net.sync(a).compact(&t, &Ak::new(REG.ak()).unwrap()).unwrap();
+    let acts = net.sync(a).compact_now(&t, &Ak::new(REG.ak()).unwrap()).unwrap();
     net.actions(a, acts);
     net.run();
     net.write(a, t, "a2");

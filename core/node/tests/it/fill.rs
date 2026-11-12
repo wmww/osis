@@ -334,7 +334,7 @@ fn a_covered_body_stays_gone_during_a_fill_spec_sync_6() {
     f.net.write(a, t, "new");
     f.net.run();
     let reg = Ak::new("t:reg.0").unwrap();
-    let acts = f.net.sync(a).compact(&t, &reg).unwrap();
+    let acts = f.net.sync(a).compact_now(&t, &reg).unwrap();
     f.net.actions(a, acts);
     f.net.run();
     f.net.advance(osis_base::format::MAX_DRIFT_MS + 61_000);
@@ -617,7 +617,7 @@ fn a_compaction_part_way_loses_nothing_spec_sync_6() {
     f.net.advance(osis_base::format::MAX_DRIFT_MS + 61_000);
     f.net.set_online(c, true);
     f.until(|s| s.net.engine(s.c).get(&s.t, &big).unwrap().is_some() && s.held().len() >= FILL_BATCH);
-    let acts = f.net.sync(c).compact(&t, &big).unwrap();
+    let acts = f.net.sync(c).compact_now(&t, &big).unwrap();
     f.net.actions(c, acts);
     f.net.run();
     f.net.advance(61_000);

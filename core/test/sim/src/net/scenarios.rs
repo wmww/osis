@@ -197,7 +197,7 @@ pub fn compaction(seed: u64) -> Res<Report> {
     let deleted0 = deletions(&sim, s);
     for (n, a_) in [(a, &workload::REG), (b, &workload::TAGS), (a, &workload::MAP)] {
         let k = ak(&sim, a_)?;
-        let acts = sim.sync(n)?.compact(&t, &k).map_err(|e| sim.fail(format!("node {n} compact: {e}")))?;
+        let acts = sim.sync(n)?.compact_now(&t, &k).map_err(|e| sim.fail(format!("node {n} compact: {e}")))?;
         sim.actions(n, acts)?;
         sim.run(30)?;
     }
@@ -602,7 +602,7 @@ pub fn work_sets(seed: u64) -> Res<Report> {
     sim.quiet(40)?;
     for (n, a_) in [(a, &workload::REG), (b, &workload::TAGS)] {
         let k = ak(&sim, a_)?;
-        let acts = sim.sync(n)?.compact(&t, &k).map_err(|e| sim.fail(format!("node {n} compact: {e}")))?;
+        let acts = sim.sync(n)?.compact_now(&t, &k).map_err(|e| sim.fail(format!("node {n} compact: {e}")))?;
         sim.actions(n, acts)?;
         sim.run(20)?;
     }
@@ -737,7 +737,7 @@ pub fn coverer_revoked(seed: u64) -> Res<Report> {
         Ok(e.commit_ids().into_iter().filter(|x| e.header(x).is_some_and(|h| h.kind == osis_commit::Kind::ContentSnapshot && h.aspects.iter().any(|y| y.tid == t && y.ak == k))).collect())
     };
     let before = snaps(&mut sim, a)?;
-    let acts = sim.sync(a)?.compact(&t, &k).map_err(|e| sim.fail(format!("node {a} compact: {e}")))?;
+    let acts = sim.sync(a)?.compact_now(&t, &k).map_err(|e| sim.fail(format!("node {a} compact: {e}")))?;
     sim.actions(a, acts)?;
     let s1 = snaps(&mut sim, a)?.difference(&before).next().copied().ok_or_else(|| sim.fail("A wrote no snapshot"))?;
     sim.quiet(40)?;
@@ -745,7 +745,7 @@ pub fn coverer_revoked(seed: u64) -> Res<Report> {
     // a write of C's first: S2 covers S1 strictly (of covered-equal ones the higher ID goes)
     add(&mut sim, c, "by c")?;
     sim.run(10)?;
-    let acts = sim.sync(c)?.compact(&t, &k).map_err(|e| sim.fail(format!("node {c} compact: {e}")))?;
+    let acts = sim.sync(c)?.compact_now(&t, &k).map_err(|e| sim.fail(format!("node {c} compact: {e}")))?;
     sim.actions(c, acts)?;
     sim.run(20)?;
     // past `MAX_DRIFT`: W drops S1 under S2 and deletes it at the host
@@ -831,7 +831,7 @@ pub fn snapshot_rights(seed: u64) -> Res<Report> {
         }
         for n in [a, b, w] {
             if d.below(2) == 0 {
-                let acts = sim.sync(n)?.compact(&t, &k).map_err(|e| sim.fail(format!("node {n} compact: {e}")))?;
+                let acts = sim.sync(n)?.compact_now(&t, &k).map_err(|e| sim.fail(format!("node {n} compact: {e}")))?;
                 sim.actions(n, acts)?;
                 sim.quiet(40)?;
                 for x in written.iter_mut() {
@@ -852,7 +852,7 @@ pub fn snapshot_rights(seed: u64) -> Res<Report> {
     // uncovered, so what it may drop is not certain to go
     let fresh_compacted = d.below(2) == 0;
     if fresh_compacted {
-        let acts = sim.sync(fresh)?.compact(&t, &k).map_err(|e| sim.fail(format!("fresh compact: {e}")))?;
+        let acts = sim.sync(fresh)?.compact_now(&t, &k).map_err(|e| sim.fail(format!("fresh compact: {e}")))?;
         sim.actions(fresh, acts)?;
         sim.quiet(40)?;
     }

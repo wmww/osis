@@ -405,7 +405,7 @@ fn a_live_body_survives_a_covering_snapshot_spec_commits_5() {
     let c = msg(&mut net, b, t, "live", permanent());
     net.run();
     net.advance(ROLE_KEEP_MS + 3_600_000);
-    let acts = net.sync(a).compact(&t, &k()).unwrap();
+    let acts = net.sync(a).compact_now(&t, &k()).unwrap();
     net.actions(a, acts);
     net.run();
     net.advance(3_600_000);
@@ -436,7 +436,7 @@ fn a_body_replaced_before_a_restart_drops_under_a_later_cover_spec_commits_5() {
     net.run();
     net.restart(n, 51);
     net.run();
-    let acts = net.sync(a).compact(&t, &k()).unwrap();
+    let acts = net.sync(a).compact_now(&t, &k()).unwrap();
     net.actions(a, acts);
     net.run();
     assert!(net.engine(n).body_not_dropped(&c, &t, &k()), "dropped inside its history");
@@ -718,7 +718,7 @@ fn a_purge_purged_in_turn_spec_commits_5() {
         write_own(&mut net, a, t, "later");
         net.run();
         if snap {
-            let acts = net.sync(a).compact(&t, &own()).unwrap();
+            let acts = net.sync(a).compact_now(&t, &own()).unwrap();
             net.actions(a, acts);
             net.run();
         }
@@ -741,7 +741,7 @@ fn a_purge_of_a_snapshotted_message_spec_commits_5() {
     let Chat { mut net, a, b, n, t, .. } = chat();
     let c = msg(&mut net, b, t, "SECRET", permanent());
     net.run();
-    let acts = net.sync(a).compact(&t, &k()).unwrap();
+    let acts = net.sync(a).compact_now(&t, &k()).unwrap();
     net.actions(a, acts);
     net.run();
     let p = purge(&mut net, a, t, c, Retention::default());
@@ -762,7 +762,7 @@ fn cover(net: &mut Net, a: usize, t: Tid) {
     net.run();
     write_own(net, a, t, "later");
     net.run();
-    let acts = net.sync(a).compact(&t, &own()).unwrap();
+    let acts = net.sync(a).compact_now(&t, &own()).unwrap();
     net.actions(a, acts);
     net.run();
     net.advance(3_600_000);

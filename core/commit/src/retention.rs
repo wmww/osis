@@ -230,6 +230,24 @@ impl Timeline {
         if o > r { o } else { 0 }
     }
 
+    /// Until when a live body is kept (spec/commits.md §5 Kept while live): the end of the last
+    /// span in which a body replaced at that moment would be kept (a `keep` with a D: the span's
+    /// end; with only a T: T or the span's end, the earlier). `NEVER`: the newest keeps one with
+    /// a D; 0: no span keeps one.
+    pub fn live_until(&self) -> u64 {
+        let mut end = 0;
+        for (i, (from, o)) in self.0.iter().enumerate() {
+            let to = self.0.get(i + 1).map_or(NEVER, |x| x.0);
+            if let Opt::Keep { after, until } = *o {
+                let e = if after > 0 { to } else { until.min(to) };
+                if e > *from {
+                    end = end.max(e);
+                }
+            }
+        }
+        end
+    }
+
     /// What is in force at wall ms `t` (the newest with its wall ms at or before `t`).
     pub fn in_force(&self, t: u64) -> Opt {
         self.0.iter().rev().find(|x| x.0 <= t).map_or(Opt::None, |x| x.1)
@@ -254,6 +272,22 @@ impl Timeline {
 #[cfg(test)]
 mod timeline_tests {
     use super::*;
+
+    #[test]
+    fn live_until_spec_commits_5() {
+        assert_eq!(Timeline::default().live_until(), 0);
+        assert_eq!(Timeline::new([(10, Opt::None)]).live_until(), 0);
+        assert_eq!(Timeline::new([(10, Opt::Purge)]).live_until(), 0);
+        // a D keeps a live body to the span's end, for good in the newest
+        assert_eq!(Timeline::new([(10, Opt::Keep { after: 5, until: 0 })]).live_until(), NEVER);
+        assert_eq!(Timeline::new([(10, Opt::Keep { after: 5, until: 0 }), (40, Opt::None)]).live_until(), 40);
+        // a T alone keeps it to T, or the span's end
+        assert_eq!(Timeline::new([(10, Opt::Keep { after: 0, until: 30 })]).live_until(), 30);
+        assert_eq!(Timeline::new([(10, Opt::Keep { after: 0, until: 30 }), (20, Opt::None)]).live_until(), 20);
+        assert_eq!(Timeline::new([(10, Opt::Keep { after: 0, until: 5 })]).live_until(), 0);
+        // the last kept span counts, whatever follows
+        assert_eq!(Timeline::new([(10, Opt::Keep { after: 5, until: 0 }), (20, Opt::None), (30, Opt::Keep { after: 0, until: 35 })]).live_until(), 35);
+    }
 
     fn keep(after: u64, until: u64) -> Opt {
         Opt::Keep { after, until }

@@ -430,9 +430,13 @@ impl Engine {
     /// reaches the last of their counters, so it covers exactly them (and nothing another
     /// session wrote, which joining would change). One entry goes up per round trip instead of
     /// one per write; the covered commits are forgotten here at once (`drop_covered`) and never
-    /// uploaded. `None` when nothing of them is held.
+    /// uploaded. `None` when nothing of them is held, or the aspect keeps them while live.
     pub fn coalesce(&mut self, tid: &Tid, ak: &Ak, ids: &[CommitId]) -> Result<Option<CommitId>> {
         let (tid, ak) = (*tid, ak.clone());
+        // kept while live (spec/commits.md §5): the snapshot would drop none of them
+        if super::history::of(&self.core, &tid, &ak).live_until() > self.now().0 {
+            return Ok(None);
+        }
         let ids = ids.to_vec();
         self.run(|tx| {
             tx.set_memory();

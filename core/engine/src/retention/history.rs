@@ -67,6 +67,16 @@ impl Kept {
         self.tl.kept_until(r)
     }
 
+    /// Until when a live body of the aspect is kept (spec/commits.md §5 Kept while live; 0: not
+    /// kept, so a cover drops it at once): for good for fixed retention that keeps one (role-class,
+    /// `created.0`, `retention^.0`), else the timeline's `live_until`.
+    pub(crate) fn live_until(&self) -> u64 {
+        if self.always || self.role {
+            return osis_commit::retention::NEVER;
+        }
+        self.tl.live_until()
+    }
+
     /// Whether when a body leaves depends on when it was replaced (only then is it dated,
     /// `bounds::part_replaced_at`): some setting keeps history.
     pub(crate) fn dated(&self) -> bool {
@@ -119,14 +129,17 @@ mod tests {
         assert!(role.dated() && !role.keeps() && !role.purges());
         assert_eq!(role.leaves_at(Some(20)), 20 + ROLE_KEEP_MS);
         assert_eq!(role.leaves_at(None), 0);
+        assert_eq!(role.live_until(), osis_commit::retention::NEVER);
         let k = Kept { tl: Timeline::new([(0, Opt::Keep { until: 100, after: 50 })]), ..Kept::default() };
         assert_eq!(k.leaves_at(None), 0);
+        assert_eq!(k.live_until(), osis_commit::retention::NEVER);
         assert_eq!(k.leaves_at(Some(20)), 100);
         assert_eq!(k.leaves_at(Some(70)), 120);
         // purge on replace keeps nothing
         let p = Kept { tl: Timeline::new([(10, Opt::Purge)]), ..Kept::default() };
         assert!(p.purge_on_replace(20) && !p.purge_on_replace(5) && !p.keeps() && !p.dated());
         assert_eq!(p.leaves_at(Some(20)), 0);
+        assert_eq!(p.live_until(), 0);
         assert!(Kept { tl: Timeline::new([(10, Opt::Keep { until: FOREVER, after: 0 })]), ..Kept::default() }.forever(20));
         assert!(Kept { always: true, ..Kept::default() }.forever(0));
     }

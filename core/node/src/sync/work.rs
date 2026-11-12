@@ -461,7 +461,7 @@ impl SyncEngine {
                     }
                 }
             }
-            // a snapshot changes nothing for a body read on its own: only the aspect's cover
+            // a snapshot changes nothing for a body kept while live: only the aspect's cover
             // candidates are judged (`Core::cover_judged_on`), so its arrival costs O(change)
             // what waits on the aspect (a delete waiting for a carrier) is judged again
             for k in aspects {

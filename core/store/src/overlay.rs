@@ -1,5 +1,5 @@
 //! The memory overlay (notes/local-store.md, Memory overlay): rows of the memory class (what
-//! ephemeral data derives, issues/eph-unify.md) kept in plain maps beside the encrypted store,
+//! ephemeral data derives, notes/ephemeral.md) kept in plain maps beside the encrypted store,
 //! never written to the backend. A store opens with an empty overlay. A transaction changes it in
 //! place and keeps an undo journal, replayed when the transaction is dropped uncommitted or
 //! rolls back to a savepoint.

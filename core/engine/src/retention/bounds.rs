@@ -11,28 +11,6 @@ use osis_crdt::{ByWrite, Fragment, Winners, Won};
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
-/// Whether something reads part `(tid, ak)` of `c` on its own, so no cover drops it (spec/commits.md
-/// §5 Covered): a cover drops a part when it carries every live write of it and nothing reads the
-/// part alone. A held durable delta none of whose writes is dead is read alone (a purge by name,
-/// a fallen purge bringing it back, listings); one with a dead write (`replace::replaced`), a
-/// compaction snapshot (its writes are copies) and an in-memory part (no purge, host copy or
-/// listing of its own) are not. Judged per part, as a cover drops one part (`drop_part_for`). A
-/// delta found read alone leaves `Core::cover_candidates`. Cost: the part read once against the state's part it meets.
-pub(crate) fn read_alone(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<bool> {
-    let Some(ai) = held_part(tx.core, c, tid, ak) else { return Ok(false) };
-    let Some(m) = tx.core.ix.commits.get(c) else { return Ok(false) };
-    if m.header.kind.is_compaction() || m.view.memory || ak.signal() || m.bare(ai) {
-        return Ok(false);
-    }
-    if super::replace::replaced(tx, c, ai, tid, ak)? {
-        return Ok(false);
-    }
-    if let Some(s) = tx.core.cover_candidates.get_mut(&(*tid, ak.clone())) {
-        s.remove(c);
-    }
-    Ok(true)
-}
-
 /// `Engine::delta_live` in `tx`, through `Core::live_bodies` (per delta: what forgets it is a
 /// change of that aspect's state alone).
 pub(crate) fn delta_live(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<bool> {
@@ -90,11 +68,27 @@ fn clock_keep(core: &Core, replaced: Option<u64>) -> u64 {
 /// that replacement (wall ms, 0: none) for `clock_keep`. A part's date and keep read only its
 /// aspect's writes and setting, so no other part of its commit keeps it (a purge-on-replace part
 /// goes under its cover whatever its commit's kept parts keep), a covered drop on one aspect
-/// moves no other part's bound, and a part on an aspect no setting keeps has none.
+/// moves no other part's bound, and a part on an aspect no setting keeps has none. A part not
+/// replaced is kept while live where its aspect's setting says so (`live_keep`).
 fn part_bounds(tx: &mut Tx<'_>, h: &Header, c: &CommitId, ai: usize) -> Result<(u64, u64)> {
     let Some(a) = h.aspects.get(ai) else { return Ok((0, 0)) };
     let r = part_replaced_at(tx, h, c, ai)?.map(|t| t.wall_ms().0);
-    Ok((kept_until(tx.core, h, a, r), r.unwrap_or(0)))
+    let k = kept_until(tx.core, h, a, r);
+    let k = if r.is_none() { k.max(live_keep(tx.core, c, ai, a)) } else { k };
+    Ok((k, r.unwrap_or(0)))
+}
+
+/// Until when part `ai` of `c` (`a`), not dated as replaced, is kept while live (spec/commits.md
+/// §5 Kept while live): its aspect's `history::Kept::live_until` for a held valid delta with
+/// values, not a snapshot's or a signal's; 0 for any other. On an aspect some setting keeps
+/// history (`bounded`), a part `part_replaced_at` dates nothing of is live; on any other
+/// `live_until` is 0 but for fixed retention, whose parts are dated (role) or never out.
+pub(crate) fn live_keep(core: &Core, c: &CommitId, ai: usize, a: &osis_commit::AspectEntry) -> u64 {
+    let Some(m) = core.ix.commits.get(c) else { return 0 };
+    if m.view.kind.is_compaction() || a.ak.signal() || !m.holds(ai) || m.bare(ai) || !m.valid_at(ai) {
+        return 0;
+    }
+    super::history::of(core, &a.tid, &a.ak).live_until()
 }
 
 /// A keep bound and replacement (`part_bounds`) at the node's clock: their later when
@@ -369,7 +363,7 @@ impl Killed {
 /// carries a dying write, as telling which would read it); with `Killed::all`, every one dated
 /// whole (`mark_bounded`).
 /// On any aspect the dying writes' own commits are marked and become cover candidates: a body
-/// read on its own may not be now (`read_alone`); with `Killed::all`, every held body of the
+/// kept while live may not be now (`live_keep`); with `Killed::all`, every held body of the
 /// aspect (a reset joined by pages: rare).
 pub(crate) fn mark_killed(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, dead: &Killed) {
     if dead.all {
@@ -513,11 +507,27 @@ impl Engine {
         self.run(|tx| part_keep(tx, &c, &tid, &ak))
     }
 
-    /// Whether something reads the body holding `(tid, ak)` of `c` on its own, so no cover drops
-    /// it (`read_alone`).
-    pub fn read_alone(&mut self, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<bool> {
+    /// Whether held part `(tid, ak)` of `c` is replaced: a write of it is dead (spec/commits.md
+    /// §5 Bodies and deaths; `false` when not held whole and valid).
+    pub fn replaced(&mut self, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<bool> {
         let (c, tid, ak) = (*c, *tid, ak.clone());
-        self.run(|tx| read_alone(tx, &c, &tid, &ak))
+        self.run(|tx| {
+            let Some(ai) = held_part(tx.core, &c, &tid, &ak) else { return Ok(false) };
+            if tx.core.ix.commits.get(&c).is_none_or(|m| m.bare(ai)) {
+                return Ok(false);
+            }
+            super::replace::replaced(tx, &c, ai, &tid, &ak)
+        })
+    }
+
+    /// Body `(tid, ak)` of `c` is kept for good while live (its `drop_from` is past `FOREVER`,
+    /// spec/commits.md §5 Kept while live): it leaves the aspect's cover candidates
+    /// (`Core::cover_judged_on`) until a write of it dies, its aspect is rebuilt or its thing's
+    /// setting changes.
+    pub fn settle_kept(&mut self, c: &CommitId, tid: &Tid, ak: &Ak) {
+        if let Some(s) = self.core.cover_candidates.get_mut(&(*tid, ak.clone())) {
+            s.remove(c);
+        }
     }
 
     /// When part `ak` of `c` was replaced, for a relative keep at least (`part_replaced_at`;

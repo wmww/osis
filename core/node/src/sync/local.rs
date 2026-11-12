@@ -54,16 +54,35 @@ impl SyncEngine {
         Ok((new, self.handle(super::Event::Local)))
     }
 
-    /// Compacts `(t, ak)` (spec/sync.md §7): writes a snapshot from this node's state, then
-    /// drops the bodies it covers whose keep-at-least bound has passed (out of history: no purge
-    /// right asked); a later pass uploads the snapshot and deletes the dropped bodies at hosts once
-    /// the snapshot is there and `MAX_DRIFT` more has passed (`Dropped::hosts_from`).
-    pub fn compact(&mut self, t: &Tid, ak: &Ak) -> Result<Vec<Action>> {
+    /// Tests and the sim: compacts `(t, ak)` now, whatever the trigger says (spec/sync.md §7):
+    /// writes a snapshot from this node's state, then drops what it covers (`compacted`).
+    #[doc(hidden)]
+    pub fn compact_now(&mut self, t: &Tid, ak: &Ak) -> Result<Vec<Action>> {
         let Some(s) = self.engine.snapshot(t, ak)? else { return Ok(Vec::new()) };
-        let dropped: BTreeSet<CommitId> = self.drop_covered(t, ak, &s, None, &mut super::work::Left::default())?.into_iter().collect();
-        // a dropped body's key and ciphertext go with it (spec/commits.md §5)
-        self.forget_dropped(Some(&dropped))?;
+        self.compacted(t, ak, &s)?;
         Ok(self.handle(super::Event::Local))
+    }
+
+    /// Per step, the compaction trigger (spec/sync.md §7 Trigger, `Engine::compactions`): each
+    /// durable snapshot it wrote drops what it covers here at once (`compacted`), the thing in a
+    /// label's closure or not; an ephemeral one's covered bodies went as it applied.
+    pub(crate) fn compact_due(&mut self) -> Result<()> {
+        for (t, ak, s) in self.engine.compactions()? {
+            if !ak.ephemeral() {
+                self.compacted(&t, &ak, &s)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Drops the bodies of `(t, ak)` this node's new durable snapshot `s` covers whose
+    /// keep-at-least bound has passed (out of history: no purge right asked); a later pass
+    /// uploads the snapshot and deletes the dropped bodies at hosts once the snapshot is there and
+    /// `MAX_DRIFT` more has passed (`Dropped::hosts_from`).
+    fn compacted(&mut self, t: &Tid, ak: &Ak, s: &CommitId) -> Result<()> {
+        let dropped: BTreeSet<CommitId> = self.drop_covered(t, ak, s, None, &mut super::work::Left::default())?.into_iter().collect();
+        // a dropped body's key and ciphertext go with it (spec/commits.md §5)
+        self.forget_dropped(Some(&dropped))
     }
 
     /// Drops the bodies of `(t, ak)` that snapshot `s` covers whose keep-at-least bound has
@@ -109,6 +128,12 @@ impl SyncEngine {
                 continue;
             }
             let Some(h) = self.engine.header(&c) else { continue };
+            // a live delta this node wrote (none of its writes dead) drops only under its own
+            // covers (spec/sync.md §7 Own bodies): another writer's snapshot may fall later (a
+            // demotion not listing it), and the author's copy is then what brings the write back
+            if self.own(&c) && !self.own(&s) && !super::pass::is_snapshot(h.kind) && !self.engine.replaced(&c, t, ak)? {
+                continue;
+            }
             // an own whole replace is judged before its body's keep bound: most plain commits
             // cover nothing, and the bound reads every part of the body
             let own = self.engine.own_replace(&s, t, ak);
@@ -130,6 +155,12 @@ impl SyncEngine {
             // out of history any held valid writer's cover drops it, the purge right or not
             // (spec/commits.md §5 Out of history)
             let due = self.engine.drop_from(&c, t, ak)?;
+            // kept for good while live (spec/commits.md §5 Kept while live): judged again when
+            // a write of it dies or its setting changes (the engine marks it a candidate again)
+            if due >= osis_commit::FOREVER {
+                self.engine.settle_kept(&c, t, ak);
+                continue;
+            }
             if due > now.0 {
                 left.at(due, super::state::Touch::Commit(c));
                 continue;
@@ -174,11 +205,6 @@ impl SyncEngine {
                 self.covered_judged.insert(k);
                 continue;
             }
-            // read on its own (a live delta): no cover drops it; judged again when a write of
-            // it dies (the engine marks it, `bounds::mark_killed`)
-            if self.engine.read_alone(&c, t, ak)? {
-                continue;
-            }
             self.engine.drop_body(&c, t, ak)?;
             self.state.forget_due.insert(c);
             self.state.set_carrier(c, s);
@@ -202,7 +228,7 @@ impl SyncEngine {
             for q in &covers {
                 covered |= self.engine.covered(q, c, &a.tid, &a.ak)? == Some(true);
             }
-            if !covered || self.engine.read_alone(c, &a.tid, &a.ak)? {
+            if !covered {
                 return Ok(None);
             }
             due = due.max(self.engine.drop_from(c, &a.tid, &a.ak)?);

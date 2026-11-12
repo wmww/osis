@@ -144,7 +144,7 @@ fn eph_leftover_memory() {
     net.sync(b).expire_due();
     let expired = (rss_kib(), held(&mut net));
     net.sync(x).expire_due();
-    let snaps = net.engine(x).memory_compactions(false).unwrap();
+    let snaps = net.engine(x).compactions().unwrap();
     for bl in take_memory(&mut net, x) {
         net.engine(b).ingest_memory(&bl.encode(), u64::MAX).unwrap();
     }

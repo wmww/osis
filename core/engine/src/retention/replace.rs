@@ -156,6 +156,11 @@ pub(crate) fn settle_none(tx: &mut Tx<'_>) -> Result<()> {
             if super::held_part(tx.core, &c, &tid, &ak) != Some(ai) || coverer(tx, &c, &tid, &ak, false)?.is_none() {
                 continue;
             }
+            // a live delta is no purge-on-replace body: it drops as any covered body does, by
+            // node-sync (its author's own covers only there, spec/sync.md §7 Own bodies)
+            if !tx.core.ix.commits.get(&c).is_some_and(|m| m.view.kind.is_compaction()) && !replaced(tx, &c, ai, &tid, &ak)? {
+                continue;
+            }
             // kept while in history (a dated replacement ahead of the clock too), and a commit
             // carrying a purge request keeps its blobs to the floor (spec/commits.md §5): judged
             // again then; out of history any writer's cover drops it (as `Engine::drop_from`)
@@ -165,10 +170,6 @@ pub(crate) fn settle_none(tx: &mut Tx<'_>) -> Result<()> {
                 if floor < osis_commit::FOREVER {
                     tx.put_timer(floor, &c, ai, super::T_FLOOR)?;
                 }
-                continue;
-            }
-            // read on its own (a live delta): no cover drops it
-            if super::bounds::read_alone(tx, &c, &tid, &ak)? {
                 continue;
             }
             super::drop_part_for(tx, &c, ai, DropFor::Cover)?;

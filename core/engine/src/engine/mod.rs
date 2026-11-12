@@ -876,10 +876,6 @@ pub struct MemorySync {
     /// Memory aspects a held memory snapshot turned invalid on since the last take
     /// (`Engine::take_memory_invalidated`).
     pub invalidated: BTreeSet<(Tid, Ak)>,
-    /// Memory aspects changed since the compaction trigger last weighed them.
-    pub dirty: BTreeSet<(Tid, Ak)>,
-    /// Per aspect the snapshot cost last weighed (`Engine::memory_compactions`).
-    pub weighed: BTreeMap<(Tid, Ak), usize>,
 }
 
 /// A decoded commit record: its head (received, origin, dropped parts) and blob.
@@ -1018,12 +1014,14 @@ pub struct Core {
     pub session: osis_crdt::Session,
     /// This open's second session: the own source of its expiring memory commits (spec/crdt.md
     /// §2.1), so an expired commit, forgotten with its counters, leaves no gap in `session`'s
-    /// ranges that a snapshot frontier could not pass (issues/eph-unify.md, decision 2).
+    /// ranges that a snapshot frontier could not pass.
     pub expiring: osis_crdt::Session,
     /// Sessions this open began after its first (`fresh_session`).
     pub later_sessions: u64,
     /// What memory commits and things report to the ephemeral lane and the local write path.
     pub memory: MemorySync,
+    /// The compaction trigger's state (spec/sync.md §7 Trigger), in memory.
+    pub compaction: crate::retention::compact::Trigger,
     /// Set when a lazily held header failed to decode (`LazyHeader`): every later transaction
     /// fails (`Error::Corrupt`).
     pub header_fault: Arc<std::sync::atomic::AtomicBool>,
@@ -1098,11 +1096,12 @@ pub struct Core {
     /// Aspects whose purge-on-replace bodies `retention::settle_none` judges at the end of the
     /// transaction (`Core::index_none`).
     pub none_due: BTreeSet<(Tid, Ak)>,
-    /// Per aspect, held durable delta bodies a cover may come to drop: a write of each died (or
-    /// the aspect was rebuilt) since it was last found read on its own
-    /// (`retention::bounds::read_alone`). node-sync judges these, not every held body, when a
-    /// snapshot arrives: a snapshot changes nothing for a body read on its own, which leaves the
-    /// set when judged and comes back only when one of its writes dies (`mark_killed`).
+    /// Per aspect, held durable delta bodies a cover may come to drop: every one applied, but
+    /// those found kept for good while live (`Engine::settle_kept`, spec/commits.md §5 Kept
+    /// while live). node-sync judges these, not every held body, when a snapshot arrives: a
+    /// snapshot changes nothing for such a body, which comes back only when one of its writes
+    /// dies (`mark_killed`), its aspect is rebuilt (`mark_bounded`) or its thing's setting
+    /// changes (`retention::settings_changed`).
     pub cover_candidates: BTreeMap<(Tid, Ak), BTreeSet<CommitId>>,
     /// Things whose `retention^.0` deltas arrived, flipped or dropped this transaction: what their
     /// timeline judges is judged again at its end (`retention::settings_changed`).
@@ -1251,6 +1250,7 @@ impl Core {
             expiring: self.expiring.clone(),
             later_sessions: self.later_sessions.clone(),
             memory: self.memory.clone(),
+            compaction: self.compaction.clone(),
             header_fault: osis_base::copying::remap(&self.header_fault, |f| std::sync::atomic::AtomicBool::new(f.load(std::sync::atomic::Ordering::Relaxed))),
             #[cfg(test)]
             check_ingest: self.check_ingest.clone(),
@@ -1775,6 +1775,7 @@ impl Core {
             to_date: _,
             written: _,
             memory: _,
+            compaction: _,
             stale_things: _,
             stale_authors: _,
             stale_under: _,
@@ -2024,6 +2025,7 @@ impl Core {
             expiring,
             later_sessions: 0,
             memory: MemorySync::default(),
+            compaction: Default::default(),
             header_fault: Arc::default(),
             #[cfg(test)]
             check_ingest: false,
@@ -2330,7 +2332,7 @@ impl Tx<'_> {
         self.core.recheck_at(at, what)
     }
 
-    /// Runs `f` as work on data of class `memory` (issues/eph-unify.md): rows it creates for a
+    /// Runs `f` as work on data of class `memory`: rows it creates for a
     /// memory commit or aspect inside a durable transaction go to memory, and it neither steps
     /// `generation` nor marks node-sync's changes. A memory transaction stays memory.
     pub fn in_class<T>(&mut self, memory: bool, f: impl FnOnce(&mut Tx<'_>) -> Result<T>) -> Result<T> {

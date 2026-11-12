@@ -1426,7 +1426,7 @@ fn departed_reader_connected_across_new_step_spec_sync_5() {
     assert_eq!(net.sent_kinds.get(&17).copied().unwrap_or(0), reconciles, "no reconciliation");
 }
 
-/// Writer `a` holds `v1` on `t` under purge on replace, compacted. Writer `b` overwrites it with `v0`, which `a` takes
+/// Writer `a` holds `v1` on `t` under purge on replace. Writer `b` overwrites it with `v0`, which `a` takes
 /// or not; admin `x`, offline throughout, then lowers `b` with a frontier leaving that write out, so it turns invalid, and
 /// the writers it reaches take that lowering. Reader
 /// `c`, offline, is given the write and the lowering in the order asked. Returns the net, `t`, the
@@ -1447,9 +1447,6 @@ fn flip_after_drop(a_saw_kill: bool, kill_before_flip: bool) -> (Net, osis_base:
     net.engine(a).commit(m).unwrap().unwrap();
     net.run();
     let gone = Ak::new(GONE.ak()).unwrap();
-    // its snapshot covers the body
-    net.engine(a).snapshot(&t, &gone).unwrap();
-    net.run();
     assert_eq!(net.engine(c).get(&t, &gone).unwrap(), Some(s("v1")));
     net.advance(60_000);
     net.set_online(c, false);
@@ -1463,6 +1460,10 @@ fn flip_after_drop(a_saw_kill: bool, kill_before_flip: bool) -> (Net, osis_base:
     m.set(t, &GONE, &s("v0")).unwrap();
     let kill = net.engine(b).commit(m).unwrap().unwrap();
     net.run();
+    // `a`'s cover carries `v0` (b's own cover may already have taken `v1` there)
+    if a_saw_kill {
+        net.engine(a).snapshot(&t, &gone).unwrap();
+    }
     let kill = net.engine(b).package(&kill).unwrap().unwrap();
     assert_eq!(net.engine(a).get(&t, &gone).unwrap().is_some_and(|v| v == s("v0")), a_saw_kill);
     assert_eq!(net.engine(x).get(&t, &gone).unwrap(), Some(s("v1")), "the lowering's frontier leaves the killer out");
@@ -1485,8 +1486,8 @@ fn flip_after_drop(a_saw_kill: bool, kill_before_flip: bool) -> (Net, osis_base:
 }
 
 // spec/permissions.md §5.2 (a valid snapshot's copies count), spec/commits.md §5 Purge on replace:
-// writer `a` took the killer `v0` while `b` could still write and owed a cover for the `v1` it
-// replaced, so its snapshot carries `v0`. The lowering that leaves `v0` out does not take that
+// writer `a` took the killer `v0` while `b` could still write and wrote a cover, so its snapshot
+// carries `v0`. The lowering that leaves `v0` out does not take that
 // cover's copy: the reader, which took the lowering first, reads `v0` like the writers, and the
 // next write reaches all of them.
 #[test]

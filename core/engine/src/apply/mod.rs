@@ -1324,7 +1324,7 @@ impl Engine {
     /// (`memory::new_parts_bound`, from their bytes and their pages') it is `TooLarge`, nothing
     /// of it decoded, held or kept waiting (`memory::memory_gate`). One that waits is applied
     /// only by `apply_waiting_memory`, within the room then. Hidden: no production caller until received ephemeral
-    /// commits leave `ingest_ephemeral` (issues/eph-unify.md step B); `ingest` refuses them so a
+    /// commits leave `ingest_ephemeral`; `ingest` refuses them so a
     /// writer cannot slip one in through the durable lane meanwhile.
     #[doc(hidden)]
     pub fn ingest_memory(&mut self, bytes: &[u8], room: u64) -> Result<Ingested> {

@@ -311,9 +311,9 @@ fn purge_on_replace_never_listed_ahead_of_the_clock_spec_commits_5() {
 // spec/commits.md §5 Dated only where history is kept: each part of a body is dated by its own
 // writes and kept by its own aspect's setting alone. One commit writes the register (kept an
 // hour) and another aspect (no history). Replacing only the other aspect dates nothing: the kept
-// part is current, and the unkept part has no bound; spec/commits.md §7 Listed parts: the unkept
-// part is not listed (current by its own writes only). Replacing the kept part then keeps that
-// part an hour from its own replacement, and the other part none.
+// part is current, kept while live, and the unkept part has no bound; spec/commits.md §7 Listed
+// parts: the unkept part is not listed (current by its own writes only). Replacing the kept part
+// then keeps that part an hour from its own replacement, and the other part none.
 #[test]
 fn a_part_keeps_by_its_own_aspect_spec_commits_5() {
     for (kept, other) in [("t:b.0", "t:a.0"), ("t:a.0", "t:b.0")] {
@@ -325,13 +325,15 @@ fn a_part_keeps_by_its_own_aspect_spec_commits_5() {
         m.set(d, &ak(other), &s("x")).unwrap();
         let c = lp.peers[1].commit(m).unwrap().unwrap();
         lp.advance(1_000);
-        assert_eq!(lp.peers[1].engine.part_keeps(&c).unwrap(), vec![0, 0], "{kept}: not replaced");
+        let live = |e: &mut osis_node::Engine| e.header(&c).unwrap().aspects.iter().map(|a| if a.ak == ak(kept) { osis_commit::retention::NEVER } else { 0 }).collect::<Vec<_>>();
+        let want = live(&mut lp.peers[1].engine);
+        assert_eq!(lp.peers[1].engine.part_keeps(&c).unwrap(), want, "{kept}: the kept part kept while live, the other none");
         let mut m = Mutation::new();
         m.set(d, &ak(other), &s("y")).unwrap();
         lp.peers[1].commit(m).unwrap().unwrap();
         lp.advance(1_000);
         let e = &mut lp.peers[1].engine;
-        assert_eq!(e.part_keeps(&c).unwrap(), vec![0, 0], "{kept}: the other aspect's death dates no kept part");
+        assert_eq!(e.part_keeps(&c).unwrap(), want, "{kept}: the other aspect's death dates no kept part");
         assert_eq!(e.replaced_at(&c, &d, &ak(other)).unwrap(), None, "{kept}: no history on the other aspect");
         assert!(e.delta_live(&c, &d, &ak(kept)).unwrap(), "{kept}: the kept part is current");
         // listing is per part: the kept part's live write keeps no other part listed
@@ -648,7 +650,7 @@ fn covered_drops_history(seed: u64) -> usize {
     for (c, a) in &order {
         let k = ak(a);
         let now = p.engine.now().0;
-        if !p.engine.body_not_dropped(c, &d, &k) || p.engine.drop_from(c, &d, &k).unwrap() > now || p.engine.read_alone(c, &d, &k).unwrap() {
+        if !p.engine.body_not_dropped(c, &d, &k) || p.engine.drop_from(c, &d, &k).unwrap() > now {
             continue;
         }
         let covering = snaps.iter().any(|(s, sa)| sa == a && s != c && p.engine.body_not_dropped(s, &d, &k) && p.engine.covered(s, c, &d, &k).unwrap() == Some(true));
@@ -718,7 +720,8 @@ fn an_unkept_part_dates_no_other_part_spec_commits_5() {
     let snap = e.snapshot(&d, &ak(other)).unwrap().unwrap();
     assert!(e.covered(&snap, &b, &d, &ak(other)).unwrap() == Some(true) && e.drop_from(&b, &d, &ak(other)).unwrap() <= e.now().0);
     let before = (e.part_keeps(&w).unwrap(), e.replaced_at(&w, &d, &ak(kept)).unwrap(), e.replaced_at(&w, &d, &ak(other)).unwrap());
-    assert_eq!(before, (vec![0, 0], None, None), "W's kept part current, its other part undated");
+    let live: Vec<u64> = e.header(&w).unwrap().aspects.iter().map(|a| if a.ak == ak(kept) { osis_commit::retention::NEVER } else { 0 }).collect();
+    assert_eq!(before, (live, None, None), "W's kept part current (kept while live), its other part undated");
     e.drop_body(&b, &d, &ak(other)).unwrap();
     assert_eq!((e.part_keeps(&w).unwrap(), e.replaced_at(&w, &d, &ak(kept)).unwrap(), e.replaced_at(&w, &d, &ak(other)).unwrap()), before, "a covered drop moved W");
 }

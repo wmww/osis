@@ -320,8 +320,8 @@ fn join_part(tx: &mut Tx<'_>, h: &Header, id: &CommitId, blob: &CommitBlob, ai: 
     if let Some(fr) = gives {
         note_snapshot(tx.core, &tid, &ak, h.ts, id, fr);
     }
-    // superseded writes date bodies with a relative bound, and make a durable body read on its
-    // own one a cover may drop (`retention::bounds::read_alone`)
+    // superseded writes date bodies with a relative bound, and make a durable body kept while
+    // live one a cover may drop (`retention::bounds::live_keep`)
     let bounded = v && (!tx.is_memory_commit(id) || crate::retention::bounded(tx.core, &tid, &ak) || crate::engine::listing::listened(tx.core, &tid, &ak));
     let mut ch = Changes::new();
     let mut dead = Killed::default();
@@ -351,6 +351,10 @@ fn join_part(tx: &mut Tx<'_>, h: &Header, id: &CommitId, blob: &CommitBlob, ai: 
     }
     if ch.is_changed() {
         j.changed.insert((tid, ak.clone()));
+    }
+    // a durable delta a cover may drop unless kept while live (`Core::cover_candidates`)
+    if !snap && !tx.is_memory_commit(id) {
+        tx.core.cover_candidates.entry((tid, ak.clone())).or_default().insert(*id);
     }
     j.joined.push((tid, ak, dead));
     Ok(())
@@ -579,8 +583,8 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Parts, o
     }
     // a memory commit is ephemeral state to watchers (a local one's batch queues its own event,
     // `Engine::write`); node-sync carries its bodies as any commit's (`mark_changed`)
+    crate::retention::compact::Trigger::applied(tx, &h, blob)?;
     if h.ephemeral.is_some() {
-        tx.core.memory.dirty.extend(h.aspects.iter().map(|a| (a.tid, a.ak.clone())));
         if origin != Origin::Local {
             tx.core.events.queue(Event::Ephemeral { id, origin, author: h.author, actor: h.actor, ts: h.ts, received, changed: changed.into_iter().collect() });
         }

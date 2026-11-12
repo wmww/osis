@@ -29,6 +29,7 @@ use osis_store::Shred;
 use std::collections::BTreeSet;
 
 pub(crate) mod bounds;
+pub mod compact;
 pub(crate) mod history;
 pub(crate) mod leaving;
 pub(crate) mod leftover;
@@ -42,7 +43,7 @@ pub(crate) mod destroy;
 pub mod lifetimes;
 pub(crate) mod forget;
 pub(crate) mod memory;
-pub(crate) use snapshot::{frontiers_now, reaches, snapshot_state};
+pub(crate) use snapshot::{reaches, snapshot_state};
 #[cfg(test)]
 pub(crate) use snapshot::write_snapshot;
 pub mod suspect;
@@ -406,8 +407,19 @@ pub(crate) fn settings_changed(tx: &mut Tx<'_>) -> Result<()> {
             if osis_commit::retention::fixed_retention(ak.as_str()).is_some() {
                 continue;
             }
-            if history::of(tx.core, &t, &ak).purges() {
+            let kept = history::of(tx.core, &t, &ak);
+            if kept.purges() {
                 tx.core.none_due.insert((t, ak.clone()));
+            }
+            // a live body kept for good may not be now (spec/commits.md §5 Kept while live): the
+            // aspect's held deltas are cover candidates again, and the trigger weighs it
+            if kept.live_until() != osis_commit::retention::NEVER {
+                let k = (t, ak.clone());
+                let on: Vec<CommitId> = tx.core.durable_on(&k).filter(|c| tx.core.ix.commits.get(c).is_some_and(|m| !m.view.kind.is_compaction())).collect();
+                if !on.is_empty() {
+                    tx.core.cover_candidates.entry(k.clone()).or_default().extend(on);
+                }
+                tx.core.compaction.weigh(k);
             }
             leaving::settings_changed(tx, &t, &ak)?;
         }
@@ -803,15 +815,13 @@ fn hold_valueless(tx: &mut Tx<'_>, c: &CommitId, ai: usize, purged: bool, change
     // a memory commit's leftover may be superseded now (spec/sync.md §9), or covered by a
     // held snapshot (spec/commits.md §5); its caller forgets it
     changed.extend(memory::superseded_rest(tx, c)?);
-    if tx.is_memory_commit(c)
-        && let Some(a) = m.header.aspects.get(ai)
-    {
+    if let Some(a) = m.header.aspects.get(ai) {
         let k = (a.tid, a.ak.clone());
-        if tx.core.ix.commits.get(c).is_some_and(|m| m.holds(ai)) {
+        if tx.is_memory_commit(c) && tx.core.ix.commits.get(c).is_some_and(|m| m.holds(ai)) {
             memory::drop_covered(tx, &[k.clone()].into(), Some(c), Some(c))?;
         }
-        // the compaction trigger weighs leftovers (`Engine::memory_compactions`)
-        tx.core.memory.dirty.insert(k);
+        // the compaction trigger counts leftovers (`retention::compact`)
+        tx.core.compaction.weigh(k);
     }
     Ok(())
 }
@@ -1527,7 +1537,8 @@ mod tests {
             (e.get(&t, &x).unwrap(), held, own)
         };
         let keys_first = end(true);
-        // the live put is read on its own (`bounds::read_alone`): only the replaced one goes
+        // the live put is no purge-on-replace body: only the replaced one goes here (the live one
+        // is the compaction trigger's, node-sync's)
         assert_eq!(keys_first, (Some(Value::Int(2)), vec![false, true], 1), "bob covers on the replacement");
         assert_eq!(end(false), keys_first, "bob covers once the keys come");
     }

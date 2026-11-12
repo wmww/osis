@@ -51,7 +51,7 @@ fn log_follows_every_entry_path() {
     net.write(a, t, "three");
     net.run();
     compare(&mut net, a);
-    let acts = net.sync(a).compact(&t, &Ak::new(REG.ak()).unwrap()).unwrap();
+    let acts = net.sync(a).compact_now(&t, &Ak::new(REG.ak()).unwrap()).unwrap();
     net.actions(a, acts);
     net.run();
     compare(&mut net, a);

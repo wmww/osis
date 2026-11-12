@@ -294,7 +294,7 @@ fn no_reupload_ping_pong_spec_sync_6() {
     net.write(a, t, "v3");
     net.run();
     let l = net.label(a);
-    let acts = net.sync(a).compact(&t, &Ak::new(REG.ak()).unwrap()).unwrap();
+    let acts = net.sync(a).compact_now(&t, &Ak::new(REG.ak()).unwrap()).unwrap();
     net.actions(a, acts);
     net.run();
     net.run();

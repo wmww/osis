@@ -169,6 +169,14 @@ fn left(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, p: Place, now: u64) -> Result<()> {
         }
         // one its purge floor keeps listed is told again then, by its floor's timer (`on_parts`)
         moved(tx, tid, ak, &c);
+        // out of history it counts for the compaction trigger, as when applied
+        if held {
+            let memory = memory_class(tx.core, &c);
+            tx.in_class(memory, |tx| match tx.get_commit(&c)? {
+                Some(blob) => crate::retention::compact::Trigger::counts(tx, tid, ak, &blob, ai),
+                None => Ok(()),
+            })?;
+        }
         return Ok(());
     }
     if !held {
@@ -182,6 +190,11 @@ fn left(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, p: Place, now: u64) -> Result<()> {
             Ok(())
         }
     }
+}
+
+/// Whether held commit `c` is of the memory class.
+fn memory_class(core: &Core, c: &CommitId) -> bool {
+    core.ix.commits.get(c).is_some_and(|m| m.view.memory)
 }
 
 /// Walks `(tid, ak)` from its cursor while places leave by `now` (each `left`), moving the cursor
