@@ -390,7 +390,7 @@ impl<'d> Write<'d> {
 
     /// The write in its wire form (notes/client-port.md §2): `[actor, [ak*], [op*], expires?]`.
     fn wire(&self, there: &crate::port::client::Connection) -> Result<Vec<Value>> {
-        use crate::port::codec::{op_v, opt, retention_v, u};
+        use crate::port::codec::{op_v, opt, u, v};
         if self.ops.len() > crate::port::MAX_WRITE_OPS {
             return Err(Error::Invalid(format!("a write to another node holds at most {} ops", crate::port::MAX_WRITE_OPS)));
         }
@@ -403,7 +403,7 @@ impl<'d> Write<'d> {
                     WriteOp::Create(rec) => vec![u(0), rec.to_value()],
                     WriteOp::Group { g, member, items, add } => vec![u(2), t(*g), t(*member), Value::Bool(*items), Value::Bool(*add)],
                     WriteOp::Path { tid, key, op } => vec![u(3), t(*tid), u(u64::from(*key)), op_v(op)?],
-                    WriteOp::Retention { tid, key, r } => vec![u(5), t(*tid), u(u64::from(*key)), retention_v(r)],
+                    WriteOp::Retention { tid, key, r } => vec![u(5), t(*tid), u(u64::from(*key)), v(r)],
                     WriteOp::Purge { tid, key } => vec![u(6), t(*tid), u(u64::from(*key))],
                     WriteOp::Delete(x) => vec![u(7), t(*x)],
                     WriteOp::End(x) => vec![u(11), t(*x)],
@@ -418,7 +418,7 @@ impl<'d> Write<'d> {
         // not named by `act_as`: whoever this process is at that node
         let actor = if self.actor == self.db.me() { there.acts_as().unwrap_or(self.actor) } else { self.actor };
         let expires = self.expires.map(|e| expiry_at(self.db, e)).transpose()?;
-        Ok(vec![t(actor), Value::List(self.keys.iter().map(|k| crate::port::codec::ak_v(&k.ak)).collect()), Value::List(ops), opt(expires, |at| u(at.0))])
+        Ok(vec![t(actor), Value::List(self.keys.iter().map(|k| crate::port::codec::v(&k.ak)).collect()), Value::List(ops), opt(expires, |at| u(at.0))])
     }
 
     /// The engine mutation of the recorded ops, against the state `r` holds (`delete`).
@@ -569,13 +569,13 @@ impl Osis {
     /// Commits a write received in wire form (`Write::wire`) as this node's own: tids resolved
     /// and checked as the recorder checks them locally, keys typed by this node's schemas.
     pub(crate) fn replay(&self, args: Vec<Value>) -> Result<Option<Commit>> {
-        use crate::port::codec::{Args, bad, op, retention};
+        use crate::port::codec::{Args, bad, of, op};
         let mut a = Args::of(args);
         let actor = a.tid()?;
         if self.acting.is_some_and(|x| x != actor) {
             return Err(Error::Invalid("a client writes only as its own actor".into()));
         }
-        let keys: Vec<DynamicAspectKey> = a.list()?.iter().map(|v| crate::port::codec::ak(v).and_then(|ak| self.aspect_key(ak.as_str()))).collect::<Result<_>>()?;
+        let keys: Vec<DynamicAspectKey> = a.get::<Vec<osis_base::Ak>>()?.iter().map(|ak| self.aspect_key(ak.as_str())).collect::<Result<_>>()?;
         if let Some(why) = keys.iter().find_map(|k| not_writable(k.ak.as_str())) {
             return Err(Error::Invalid(why));
         }
@@ -612,17 +612,17 @@ impl Osis {
                     }
                     WriteOp::Path { tid, key: k, op: p }
                 }
-                5 => WriteOp::Retention { tid: o.tid()?, key: key(o.uint()?)?, r: retention(o.next()?)? },
+                5 => WriteOp::Retention { tid: o.tid()?, key: key(o.uint()?)?, r: of(o.next()?)? },
                 6 => WriteOp::Purge { tid: o.tid()?, key: key(o.uint()?)? },
                 7 => WriteOp::Delete(w.known(o.tid()?)?),
                 11 => WriteOp::End(w.known(o.tid()?)?),
                 12 => WriteOp::Release(w.known(o.tid()?)?),
                 13 => WriteOp::Retain { by: o.tid()?, key: key(o.uint()?)?, thing: o.tid()? },
-                8 => WriteOp::PurgeCommit { tid: o.tid()?, key: key(o.uint()?)?, commit: crate::port::codec::raw_commit_id(o.next()?)? },
+                8 => WriteOp::PurgeCommit { tid: o.tid()?, key: key(o.uint()?)?, commit: crate::port::codec::of(o.next()?)? },
                 9 => WriteOp::PurgeAuthor { tid: o.tid()?, key: key(o.uint()?)?, actor: o.tid()? },
                 10 => {
                     let (tid, k, v) = (o.tid()?, key(o.uint()?)?, o.next()?);
-                    let replaces = o.opt()?.map(crate::port::codec::raw_commit_id).transpose()?;
+                    let replaces = o.opt()?.map(crate::port::codec::of).transpose()?;
                     if self.acting.is_some() && op_links(&PathOp { path: Vec::new(), op: Op::Set(v.clone()) }) {
                         return Err(Error::Invalid("a client writes values, not links".into()));
                     }

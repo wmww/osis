@@ -425,7 +425,7 @@ impl ReadOnly {
                 continue;
             }
             let Ok(v) = r.call(method::STATUS, vec![]) else { continue };
-            let Ok(there) = crate::port::codec::status(v) else { continue };
+            let Ok(there) = crate::port::codec::of::<crate::Status>(v) else { continue };
             local.connected = local.connected.saturating_add(there.connected);
             local.two_sources.extend(there.two_sources);
             for (g, s) in there.groups {

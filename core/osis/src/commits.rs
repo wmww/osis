@@ -381,8 +381,8 @@ impl ReadOnly {
         self.track_commits(&Address::Writes(scope.clone()), None)?;
         if let Source::Node(r) = self.source_scope(Some(scope))? {
             let m = if redo { crate::port::method::REDO_TARGET } else { crate::port::method::UNDO_TARGET };
-            let v = r.call(m, vec![crate::port::codec::scope_v(scope)])?;
-            return crate::port::codec::Args::of(vec![v]).opt()?.map(|v| crate::port::codec::commit(v).map(|c| c.reporting(self))).transpose();
+            let v = r.call(m, vec![crate::port::codec::v(scope)])?;
+            return crate::port::codec::Args::of(vec![v]).opt()?.map(|v| crate::port::codec::of::<Commit>(v).map(|c| c.reporting(self))).transpose();
         }
         let Some(c) = self.target_id(scope, redo)? else { return Ok(None) };
         self.commit_here(c)
@@ -485,8 +485,8 @@ impl Osis {
     /// undone instead).
     pub fn undo(&self, scope: &Scope) -> Result<Option<Commit>> {
         if let Source::Node(r) = self.source_write_scope(scope)? {
-            let v = r.call_once(crate::port::method::UNDO, vec![crate::port::codec::scope_v(scope)])?;
-            return crate::port::codec::Args::of(vec![v]).opt()?.map(|v| crate::port::codec::commit(v).map(|c| c.reporting(self))).transpose();
+            let v = r.call_once(crate::port::method::UNDO, vec![crate::port::codec::v(scope)])?;
+            return crate::port::codec::Args::of(vec![v]).opt()?.map(|v| crate::port::codec::of::<Commit>(v).map(|c| c.reporting(self))).transpose();
         }
         self.step(scope, false)
     }
@@ -495,8 +495,8 @@ impl Osis {
     /// came after it there: reverts the undo. `None` when there is none.
     pub fn redo(&self, scope: &Scope) -> Result<Option<Commit>> {
         if let Source::Node(r) = self.source_write_scope(scope)? {
-            let v = r.call_once(crate::port::method::REDO, vec![crate::port::codec::scope_v(scope)])?;
-            return crate::port::codec::Args::of(vec![v]).opt()?.map(|v| crate::port::codec::commit(v).map(|c| c.reporting(self))).transpose();
+            let v = r.call_once(crate::port::method::REDO, vec![crate::port::codec::v(scope)])?;
+            return crate::port::codec::Args::of(vec![v]).opt()?.map(|v| crate::port::codec::of::<Commit>(v).map(|c| c.reporting(self))).transpose();
         }
         self.step(scope, true)
     }
@@ -505,7 +505,7 @@ impl Osis {
     /// reverting someone else's).
     pub fn revert(&self, id: CommitId) -> Result<Commit> {
         if let Source::Node(r) = self.source_write_commit(id.0)? {
-            return crate::port::codec::commit(r.call_once(crate::port::method::REVERT, vec![crate::port::codec::commit_id_v(&id)])?).map(|c| c.reporting(self));
+            return crate::port::codec::of::<Commit>(r.call_once(crate::port::method::REVERT, vec![crate::port::codec::v(&id)])?).map(|c| c.reporting(self));
         }
         let _g = lock(&self.inner.undo);
         self.revert_one(id)

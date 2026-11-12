@@ -577,7 +577,7 @@ impl ReadOnly {
     pub fn holders(&self, target: Tid) -> Result<Vec<Holder>> {
         if let crate::sources::Source::Node(r) = self.source(target) {
             self.untrackable("holders at a connected node")?;
-            return crate::port::codec::holders(r.call(crate::port::method::HOLDERS, vec![Value::Tid(target)])?);
+            return crate::port::codec::of(r.call(crate::port::method::HOLDERS, vec![Value::Tid(target)])?);
         }
         Ok(self.read_answer(|| crate::track::thing_key("holders", target), crate::watch::Filter::Due(crate::watch::Watch::Roles), move |r| {
             let mut out: Vec<Holder> = Vec::new();
@@ -695,7 +695,7 @@ impl Osis {
     /// a client with its own actor.
     pub fn grant(&self, target: Tid, holder: Tid, role: Role, opts: GrantOpts) -> Result<()> {
         if let crate::sources::Source::Node(r) = self.source_write(target)? {
-            return r.call(crate::port::method::GRANT, vec![Value::Tid(target), Value::Tid(holder), crate::port::codec::role_v(role), crate::port::codec::grant_opts_v(&opts)]).map(drop);
+            return r.call(crate::port::method::GRANT, vec![Value::Tid(target), Value::Tid(holder), crate::port::codec::v(&role), crate::port::codec::v(&opts)]).map(drop);
         }
         if !self.holds(target) {
             return Err(Error::UnknownThing { tid: target });
@@ -733,7 +733,7 @@ impl Osis {
     pub fn add_with_grant(&self, member: Member, group: Tid, role: Role) -> Result<()> {
         let (tid, subgroup) = member.parts();
         if let crate::sources::Source::Node(r) = self.source_write_all(&[tid, group])? {
-            return r.call(crate::port::method::ADD_WITH_GRANT, vec![crate::port::codec::member_v(member), Value::Tid(group), crate::port::codec::role_v(role)]).map(drop);
+            return r.call(crate::port::method::ADD_WITH_GRANT, vec![crate::port::codec::v(&member), Value::Tid(group), crate::port::codec::v(&role)]).map(drop);
         }
         for x in [tid, group] {
             if !self.holds(x) {
@@ -839,7 +839,7 @@ impl Osis {
     pub fn set_role(&self, target: Tid, holder: Tid, role: Option<Role>, o: SetRoleOpts) -> Result<()> {
         retain_only_on_removal(role, o)?;
         if !self.has_store() {
-            return self.rcall(crate::port::method::SET_ROLE, vec![Value::Tid(target), Value::Tid(holder), crate::port::codec::opt(role, crate::port::codec::role_v), crate::port::codec::set_role_v(&o)]).map(drop);
+            return self.rcall(crate::port::method::SET_ROLE, vec![Value::Tid(target), Value::Tid(holder), crate::port::codec::v(&role), crate::port::codec::v(&o)]).map(drop);
         }
         self.require_local("set_role", target)?;
         self.change_role(target, holder, role, o)
@@ -992,7 +992,7 @@ impl Osis {
     /// can redeem it until `until` or `revoke_link`.
     pub fn make_link(&self, target: Tid, role: Role, opts: LinkOpts) -> Result<ShareLink> {
         if let crate::sources::Source::Node(r) = self.source_write(target)? {
-            let v = r.call(crate::port::method::MAKE_LINK, vec![Value::Tid(target), crate::port::codec::role_v(role), crate::port::codec::opt(opts.until, |w| Value::uint(w.0)), Value::Bool(opts.single_use), Value::Bool(opts.direct)])?;
+            let v = r.call(crate::port::method::MAKE_LINK, vec![Value::Tid(target), crate::port::codec::v(&role), crate::port::codec::opt(opts.until, |w| Value::uint(w.0)), Value::Bool(opts.single_use), Value::Bool(opts.direct)])?;
             return Ok(ShareLink(crate::port::codec::Args::of(vec![v]).text()?));
         }
         let hosts = self.host_addrs();
@@ -1170,7 +1170,7 @@ impl Osis {
     /// a client with its own actor, which is also why a node connected with a client secret adds none.
     pub fn links(&self) -> Result<Vec<LinkInfo>> {
         if !self.has_store() {
-            return crate::port::codec::links(self.rcall(crate::port::method::LINKS, vec![])?);
+            return crate::port::codec::of(self.rcall(crate::port::method::LINKS, vec![])?);
         }
         self.live_links()
     }
@@ -1381,7 +1381,7 @@ impl Osis {
             let v = self.rcall(crate::port::method::NODES, vec![])?;
             return crate::port::codec::Args::of(vec![v]).list()?.into_iter().map(|d| {
                 let mut a = crate::port::codec::Args::new(d)?;
-                Ok(AccountNode { node: a.tid()?, role: crate::port::codec::role(&a.next()?)? })
+                Ok(AccountNode { node: a.tid()?, role: a.get()? })
             }).collect();
         }
         let home = self.home();
@@ -1555,7 +1555,7 @@ impl Osis {
             SyncScope::All | SyncScope::Deliveries => self.source_scope(None)?,
         };
         if let crate::sources::Source::Node(r) = r {
-            return self.node_task(&r, crate::port::method::WAIT_SYNCED, vec![crate::port::codec::sync_scope_v(scope)]).await.map(drop);
+            return self.node_task(&r, crate::port::method::WAIT_SYNCED, vec![crate::port::codec::v(&scope)]).await.map(drop);
         }
         self.wait_synced_pending(scope).await
     }
@@ -1618,8 +1618,8 @@ impl Osis {
     /// `Unsupported` on a client with its own actor.
     pub fn export_bundle(&self, groups: &[Tid], mut out: impl std::io::Write) -> Result<()> {
         if !self.has_store() {
-            use crate::port::{STREAM_CHUNK, codec::{Args, tids_v}, method};
-            let len = Args::of(vec![self.rcall(method::EXPORT_BUNDLE, vec![tids_v(groups)])?]).uint()?;
+            use crate::port::{STREAM_CHUNK, codec::{Args, v}, method};
+            let len = Args::of(vec![self.rcall(method::EXPORT_BUNDLE, vec![v(&groups.to_vec())])?]).uint()?;
             let mut off = 0;
             while off < len {
                 let page = self.primary_call_big(method::BUNDLE_READ, vec![Value::uint(off), Value::uint(STREAM_CHUNK as u64)], STREAM_CHUNK.saturating_add(osis_proto::client::SMALL_REPLY))?;

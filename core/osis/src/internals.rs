@@ -9,6 +9,13 @@ pub use crate::backlinks::BACKLINK_PAGE;
 pub use crate::commits::COMMIT_PAGE;
 pub use crate::net::ManualNet;
 pub use crate::account::OFFER_LIFETIME_MS;
+pub use crate::port::codec::Port;
+
+/// `v` read as the port's commit address (`[0, scope]`, `[1, tid, ak]`, `[2, tid, ak, commit id]`)
+/// and written back (tests: the type is not public).
+pub fn port_commit_address(v: crate::Value) -> crate::Result<crate::Value> {
+    crate::port::codec::of::<crate::commits::Address>(v).map(|a| a.to_port())
+}
 pub use crate::port::client::{own_uid, socket_dir, socket_path, socket_path_under};
 pub use crate::port::{COMMIT_DIRTY_BYTES, COMMIT_SEND, MAX_SCHEMA_BYTES, PUSH_BYTES, STREAM_CHUNK, WRITE_NONCES};
 pub use crate::value_type::of_schema;

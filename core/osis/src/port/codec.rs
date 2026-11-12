@@ -1,12 +1,17 @@
 //! Values of the client port's method table (notes/client-port.md §2): API types to and from
-//! untyped `Value`s, and API errors to and from Reply error codes (`osis_proto::ApiCode`).
+//! untyped `Value`s (`Port`), and API errors to and from Reply error codes (`osis_proto::ApiCode`).
+//! A type of fixed positions is declared once (`port_struct!`, `port_enum!`, `port_index!`), which
+//! gives both directions; only shapes that are not a plain list of fields or a tagged case
+//! (a map flattened into rows, a constructor deriving fields, ops a node may refuse) are written
+//! by hand, each direction beside the other.
 
 use crate::commits::{Address as At, Body, Commit, CommitKind, CommitPage, CommitQuery, NotUndoableReason, Part, Scope};
 use crate::error::{Error, Result};
 use crate::read::{Grant, Grants, GroupsOf, Stamp, ThingStamp};
 use crate::share::{GrantOpts, GroupSync, Holder, HolderKind, Address, LinkId, LinkInfo, Member, SetRoleOpts, Status, SyncScope, SyncState};
 use crate::watch::{DerivedFrom, Origin};
-use crate::commit_id::CommitId;
+use crate::backlinks::{Backlink, BacklinkPage, BacklinkQuery};
+use crate::commit_id::{CommitFrom, CommitId, CommitPos};
 use osis_base::{Ak, CommitId as RawCommitId, Role, Tid, Ts, Value, Time};
 use osis_crdt::{Op, PathOp, PathSeg};
 use osis_node::{Diagnostic, DiagnosticKind};
@@ -25,6 +30,18 @@ pub(crate) fn opt<T>(x: Option<T>, f: impl FnOnce(T) -> Value) -> Value {
     Value::opt(x.map(f))
 }
 
+/// A type as a port value, both directions (`internals::Port` for tests).
+#[doc(hidden)]
+pub trait Port: Sized {
+    fn to_port(&self) -> Value;
+    fn from_port(v: Value) -> Result<Self>;
+}
+
+/// `v` read as a `T`.
+pub(crate) fn of<T: Port>(v: Value) -> Result<T> {
+    T::from_port(v)
+}
+
 /// Reads positions of a list value.
 pub(crate) struct Args(std::vec::IntoIter<Value>);
 
@@ -41,26 +58,24 @@ impl Args {
     pub fn next(&mut self) -> Result<Value> {
         self.0.next().ok_or_else(|| bad("argument count"))
     }
+    /// The next position as a `T`.
+    pub fn get<T: Port>(&mut self) -> Result<T> {
+        T::from_port(self.next()?)
+    }
     pub fn uint(&mut self) -> Result<u64> {
-        self.next()?.as_uint().ok_or_else(|| bad("uint"))
+        self.get()
     }
     pub fn bool(&mut self) -> Result<bool> {
-        match self.next()? {
-            Value::Bool(b) => Ok(b),
-            _ => Err(bad("bool")),
-        }
+        self.get()
     }
     pub fn tid(&mut self) -> Result<Tid> {
-        tid(&self.next()?)
+        self.get()
     }
     pub fn ak(&mut self) -> Result<Ak> {
-        ak(&self.next()?)
+        self.get()
     }
     pub fn text(&mut self) -> Result<String> {
-        match self.next()? {
-            Value::Str(s) => Ok(s),
-            _ => Err(bad("text")),
-        }
+        self.get()
     }
     pub fn bytes(&mut self) -> Result<Vec<u8>> {
         match self.next()? {
@@ -75,16 +90,11 @@ impl Args {
         }
     }
     pub fn opt(&mut self) -> Result<Option<Value>> {
-        let mut l = self.list()?;
-        match l.len() {
-            0 => Ok(None),
-            1 => Ok(l.pop()),
-            _ => Err(bad("option")),
-        }
+        self.get()
     }
     /// An optional wall time.
     pub fn opt_wall(&mut self) -> Result<Option<Time>> {
-        self.opt()?.map(|w| wall(&w)).transpose()
+        self.get()
     }
     /// The positions not read yet.
     pub fn rest(&mut self) -> Vec<Value> {
@@ -95,193 +105,494 @@ impl Args {
     }
 }
 
-pub(crate) fn tid(v: &Value) -> Result<Tid> {
-    match v {
-        Value::Tid(t) => Ok(*t),
-        _ => Err(bad("tid")),
-    }
+/// A struct as the list of the named fields, in that order.
+macro_rules! port_struct {
+    ($t:ty { $($f:ident),+ $(,)? }) => {
+        impl Port for $t {
+            fn to_port(&self) -> Value {
+                Value::List(vec![$(self.$f.to_port()),+])
+            }
+            fn from_port(v: Value) -> Result<Self> {
+                let mut a = Args::new(v)?;
+                let x = Self { $($f: a.get()?),+ };
+                a.end()?;
+                Ok(x)
+            }
+        }
+    };
 }
 
-pub(crate) fn ak(v: &Value) -> Result<Ak> {
-    match v {
-        Value::Str(s) => Ak::new(s).map_err(|_| bad("AK")),
-        _ => Err(bad("AK")),
-    }
+/// An enum as `[case, payload*]`: tuple cases list their fields in order, struct cases the
+/// named fields in that order.
+macro_rules! port_enum {
+    ($t:ty, $what:literal { $($id:literal $c:ident $(($($x:ident),+))? $({$($f:ident),+})?),+ $(,)? }) => {
+        impl Port for $t {
+            fn to_port(&self) -> Value {
+                match self {
+                    $(Self::$c $(($($x),+))? $({$($f),+})? => Value::List(vec![u($id) $($(, $x.to_port())+)? $($(, $f.to_port())+)?]),)+
+                }
+            }
+            fn from_port(v: Value) -> Result<Self> {
+                let mut a = Args::new(v)?;
+                let x = match a.uint()? {
+                    $($id => Self::$c $(($(port_enum!(@get a $x)),+))? $({$($f: a.get()?),+})?,)+
+                    _ => return Err(bad($what)),
+                };
+                a.end()?;
+                Ok(x)
+            }
+        }
+    };
+    (@get $a:ident $x:ident) => { $a.get()? };
 }
 
-pub(crate) fn ak_v(a: &Ak) -> Value {
-    Value::Str(a.as_str().to_owned())
-}
-
-pub(crate) fn tids_v(ts: &[Tid]) -> Value {
-    Value::List(ts.iter().map(|t| Value::Tid(*t)).collect())
-}
-
-pub(crate) fn tids(v: Value) -> Result<Vec<Tid>> {
-    Args::of(vec![v]).list()?.iter().map(tid).collect()
-}
-
-pub(crate) fn role_v(r: Role) -> Value {
-    u(match r {
-        Role::Read => 0,
-        Role::Write => 1,
-        Role::Admin => 2,
-    })
-}
-
-pub(crate) fn role(v: &Value) -> Result<Role> {
-    match v.as_uint() {
-        Some(0) => Ok(Role::Read),
-        Some(1) => Ok(Role::Write),
-        Some(2) => Ok(Role::Admin),
-        _ => Err(bad("role")),
-    }
-}
-
-pub(crate) fn path_v(p: &Path) -> Value {
-    Value::List(
-        p.0.iter()
-            .map(|s| {
-                Value::List(match s {
-                    Step::Field(f) => vec![u(0), u(*f)],
-                    Step::Case(c) => vec![u(1), u(*c)],
-                    Step::Key(k) => vec![u(2), k.clone()],
-                    Step::Index(i) => vec![u(3), u(*i as u64)],
-                    Step::Elem(e) => vec![u(4), e.clone()],
+/// A unit-only enum as a bare uint.
+macro_rules! port_index {
+    ($t:ty, $what:literal { $($id:literal $c:ident),+ $(,)? }) => {
+        impl Port for $t {
+            fn to_port(&self) -> Value {
+                u(match self {
+                    $(Self::$c => $id,)+
                 })
-            })
-            .collect(),
-    )
+            }
+            fn from_port(v: Value) -> Result<Self> {
+                match v.as_uint() {
+                    $(Some($id) => Ok(Self::$c),)+
+                    _ => Err(bad($what)),
+                }
+            }
+        }
+    };
 }
 
-pub(crate) fn path(v: Value) -> Result<Path> {
-    let mut out = Vec::new();
-    for s in Args::of(vec![v]).list()? {
-        let mut a = Args::new(s)?;
-        let st = match a.uint()? {
-            0 => Step::Field(a.uint()?),
-            1 => Step::Case(a.uint()?),
-            2 => Step::Key(a.next()?),
-            3 => Step::Index(usize::try_from(a.uint()?).map_err(|_| bad("index"))?),
-            4 => Step::Elem(a.next()?),
-            _ => return Err(bad("path step")),
+impl Port for Value {
+    fn to_port(&self) -> Value {
+        self.clone()
+    }
+    fn from_port(v: Value) -> Result<Value> {
+        Ok(v)
+    }
+}
+
+impl Port for Tid {
+    fn to_port(&self) -> Value {
+        Value::Tid(*self)
+    }
+    fn from_port(v: Value) -> Result<Tid> {
+        match v {
+            Value::Tid(t) => Ok(t),
+            _ => Err(bad("tid")),
+        }
+    }
+}
+
+impl Port for bool {
+    fn to_port(&self) -> Value {
+        Value::Bool(*self)
+    }
+    fn from_port(v: Value) -> Result<bool> {
+        match v {
+            Value::Bool(b) => Ok(b),
+            _ => Err(bad("bool")),
+        }
+    }
+}
+
+impl Port for u64 {
+    fn to_port(&self) -> Value {
+        u(*self)
+    }
+    fn from_port(v: Value) -> Result<u64> {
+        v.as_uint().ok_or_else(|| bad("uint"))
+    }
+}
+
+impl Port for usize {
+    fn to_port(&self) -> Value {
+        u(*self as u64)
+    }
+    fn from_port(v: Value) -> Result<usize> {
+        v.as_uint().and_then(|n| usize::try_from(n).ok()).ok_or_else(|| bad("index"))
+    }
+}
+
+impl Port for String {
+    fn to_port(&self) -> Value {
+        Value::Str(self.clone())
+    }
+    fn from_port(v: Value) -> Result<String> {
+        match v {
+            Value::Str(s) => Ok(s),
+            _ => Err(bad("text")),
+        }
+    }
+}
+
+impl Port for Ak {
+    fn to_port(&self) -> Value {
+        Value::Str(self.as_str().to_owned())
+    }
+    fn from_port(v: Value) -> Result<Ak> {
+        match v {
+            Value::Str(s) => Ak::new(&s).map_err(|_| bad("AK")),
+            _ => Err(bad("AK")),
+        }
+    }
+}
+
+impl Port for Time {
+    fn to_port(&self) -> Value {
+        u(self.0)
+    }
+    fn from_port(v: Value) -> Result<Time> {
+        v.as_uint().map(Time).ok_or_else(|| bad("time"))
+    }
+}
+
+impl Port for Ts {
+    fn to_port(&self) -> Value {
+        u(self.to_u64())
+    }
+    fn from_port(v: Value) -> Result<Ts> {
+        v.as_uint().and_then(Ts::from_u64).ok_or_else(|| bad("ts"))
+    }
+}
+
+impl Port for RawCommitId {
+    fn to_port(&self) -> Value {
+        Value::bytes(&self.0)
+    }
+    fn from_port(v: Value) -> Result<RawCommitId> {
+        Args::of(vec![v]).bytes()?.try_into().map(RawCommitId).map_err(|_| bad("commit id"))
+    }
+}
+
+impl Port for CommitId {
+    fn to_port(&self) -> Value {
+        self.0.to_port()
+    }
+    fn from_port(v: Value) -> Result<CommitId> {
+        of(v).map(CommitId)
+    }
+}
+
+impl Port for LinkId {
+    fn to_port(&self) -> Value {
+        self.0.to_port()
+    }
+    fn from_port(v: Value) -> Result<LinkId> {
+        of(v).map(LinkId)
+    }
+}
+
+/// An address as its text.
+impl Port for Address {
+    fn to_port(&self) -> Value {
+        Value::Str(self.to_string())
+    }
+    fn from_port(v: Value) -> Result<Address> {
+        of::<String>(v)?.parse()
+    }
+}
+
+/// `[]` or `[x]`.
+impl<T: Port> Port for Option<T> {
+    fn to_port(&self) -> Value {
+        Value::opt(self.as_ref().map(T::to_port))
+    }
+    fn from_port(v: Value) -> Result<Option<T>> {
+        let mut l = Args::of(vec![v]).list()?;
+        match l.len() {
+            0 => Ok(None),
+            1 => l.pop().map(T::from_port).transpose(),
+            _ => Err(bad("option")),
+        }
+    }
+}
+
+impl<T: Port> Port for Vec<T> {
+    fn to_port(&self) -> Value {
+        Value::List(self.iter().map(T::to_port).collect())
+    }
+    fn from_port(v: Value) -> Result<Vec<T>> {
+        Args::of(vec![v]).list()?.into_iter().map(T::from_port).collect()
+    }
+}
+
+impl<A: Port, B: Port> Port for (A, B) {
+    fn to_port(&self) -> Value {
+        Value::List(vec![self.0.to_port(), self.1.to_port()])
+    }
+    fn from_port(v: Value) -> Result<(A, B)> {
+        let mut a = Args::new(v)?;
+        let x = (a.get()?, a.get()?);
+        a.end()?;
+        Ok(x)
+    }
+}
+
+port_index!(Role, "role" { 0 Read, 1 Write, 2 Admin });
+port_index!(HolderKind, "holder kind" { 0 Actor, 1 Link, 2 Key });
+port_index!(CommitKind, "commit kind" { 0 Content, 1 Revert, 2 Role, 3 Snapshot });
+port_index!(SyncState, "state" { 0 Synced, 1 Syncing, 2 NotConnected, 3 Refused, 4 Stranded });
+port_index!(DerivedFrom, "reason" { 0 ValidityChanged, 1 Expired, 2 Purged, 3 Arrived, 4 LostAccess, 5 Deleted });
+port_index!(DiagnosticKind, "diagnostic kind" {
+    0 BadInput,
+    1 CollidingRecord,
+    2 Parked,
+    3 Pending,
+    4 OverlappingCounters,
+    5 Removed,
+    6 Callback,
+    7 NotSynced,
+    8 Stranded,
+    9 Uncommitted,
+    10 EphemeralRefused,
+    11 Mismatch,
+    12 Storage,
+    13 Repair,
+    14 OwnWriteInvalid,
+    15 Unreadable,
+    16 SyncStopped,
+    17 DisputesUnexamined,
+    18 OwnWriteFailed,
+    19 ClockSkew,
+    20 InputCapped,
+});
+
+port_enum!(Step, "path step" { 0 Field(f), 1 Case(c), 2 Key(k), 3 Index(i), 4 Elem(e) });
+port_enum!(PathSeg, "path segment" { 0 Field(f), 1 Case(c), 2 Key(k), 3 Index(i) });
+port_enum!(Origin, "source" { 0 Initial, 1 Local(s), 2 Remote(s), 3 Derived(c) });
+port_enum!(Scope, "scope" { 0 Thing(t), 1 Aspects(v), 2 Group(t) });
+// `[0, scope]` a scope's writes (an aspect's: `Scope::Aspects` naming it), `[1, tid, ak]` a
+// signal's fires, `[2, tid, ak, commit id]` a fire's versions.
+port_enum!(At, "address" { 0 Writes(s), 1 Fired(t, k), 2 Versions(t, k, o) });
+port_enum!(Body<Value>, "part body" { 0 Held(v), 1 TooLarge { limit }, 2 Purged { by, actor }, 3 NotFetched });
+// A member of a group: `[0, tid]` item, `[1, tid]` subgroup.
+port_enum!(Member, "member" { 0 Item(t), 1 Subgroup(t) });
+
+port_struct!(GroupsOf { item_of, subgroup_of, within });
+port_struct!(Diagnostic { kind, tids, commit, peer, detail });
+port_struct!(CommitQuery { from, limit, actors, kinds, reverts, reverted_by, in_effect });
+port_struct!(CommitPage { commits, more, complete });
+port_struct!(GrantOpts { until, may_grant });
+port_struct!(SetRoleOpts { retain_copy });
+port_struct!(Holder { actor, kind, role, until, through });
+port_struct!(LinkInfo { id, target, role, until, single_use });
+port_struct!(Backlink { tid, ak });
+port_struct!(BacklinkQuery { after, limit });
+port_struct!(BacklinkPage { backlinks, more });
+
+impl Port for Path {
+    fn to_port(&self) -> Value {
+        self.0.to_port()
+    }
+    fn from_port(v: Value) -> Result<Path> {
+        of(v).map(Path)
+    }
+}
+
+/// `[ts, commit id]`.
+impl Port for CommitPos {
+    fn to_port(&self) -> Value {
+        Value::List(vec![self.0.ts.to_port(), self.0.id.to_port()])
+    }
+    fn from_port(v: Value) -> Result<CommitPos> {
+        let (ts, id) = of(v)?;
+        Ok(CommitPos::of(ts, id))
+    }
+}
+
+/// `[0]` newest, `[1]` oldest, `[2, ts, commit id]` before, `[3, ts, commit id]` after.
+impl Port for CommitFrom {
+    fn to_port(&self) -> Value {
+        let at = |k: u64, p: &CommitPos| vec![u(k), p.0.ts.to_port(), p.0.id.to_port()];
+        Value::List(match self {
+            CommitFrom::Newest => vec![u(0)],
+            CommitFrom::Oldest => vec![u(1)],
+            CommitFrom::Before(p) => at(2, p),
+            CommitFrom::After(p) => at(3, p),
+        })
+    }
+    fn from_port(v: Value) -> Result<CommitFrom> {
+        let mut a = Args::new(v)?;
+        let f = match a.uint()? {
+            0 => CommitFrom::Newest,
+            1 => CommitFrom::Oldest,
+            k @ (2 | 3) => {
+                let p = CommitPos::of(a.get()?, a.get()?);
+                if k == 2 { CommitFrom::Before(p) } else { CommitFrom::After(p) }
+            }
+            _ => return Err(bad("commit place")),
         };
         a.end()?;
-        out.push(st);
+        Ok(f)
     }
-    Ok(Path(out))
 }
 
-fn ts_v(t: Ts) -> Value {
-    u(t.to_u64())
-}
-
-fn ts(v: &Value) -> Result<Ts> {
-    v.as_uint().and_then(Ts::from_u64).ok_or_else(|| bad("ts"))
-}
-
-fn wall(v: &Value) -> Result<Time> {
-    v.as_uint().map(Time).ok_or_else(|| bad("time"))
-}
-
-pub(crate) fn raw_commit_id(v: Value) -> Result<RawCommitId> {
-    Args::of(vec![v]).bytes()?.try_into().map(RawCommitId).map_err(|_| bad("commit id"))
-}
-
-pub(crate) fn commit_id_v(c: &CommitId) -> Value {
-    Value::bytes(&c.0.0)
-}
-
-pub(crate) fn commit_id(v: Value) -> Result<CommitId> {
-    raw_commit_id(v).map(CommitId)
-}
-
-pub(crate) fn stamp_v(i: &Stamp) -> Value {
-    Value::List(vec![commit_id_v(&i.id), Value::Tid(i.actor), ts_v(i.ts), u(i.received.0)])
-}
-
-pub(crate) fn stamp(v: Value) -> Result<Stamp> {
-    let mut a = Args::new(v)?;
-    let i = Stamp::new(commit_id(a.next()?)?, a.tid()?, ts(&a.next()?)?, wall(&a.next()?)?);
-    a.end()?;
-    Ok(i)
-}
-
-pub(crate) fn thing_stamp_v(s: &ThingStamp) -> Value {
-    Value::List(vec![commit_id_v(&s.id), Value::Tid(s.actor), ts_v(s.ts), u(s.received.0)])
-}
-
-pub(crate) fn thing_stamp(v: Value) -> Result<ThingStamp> {
-    let mut a = Args::new(v)?;
-    let (id, actor, t, received) = (commit_id(a.next()?)?, a.tid()?, ts(&a.next()?)?, wall(&a.next()?)?);
-    let s = ThingStamp { id, actor, written: t.wall_ms(), ts: t, received };
-    a.end()?;
-    Ok(s)
-}
-
-pub(crate) fn groups_v(g: &GroupsOf) -> Value {
-    Value::List(vec![tids_v(&g.item_of), tids_v(&g.subgroup_of), tids_v(&g.within)])
-}
-
-pub(crate) fn groups(v: Value) -> Result<GroupsOf> {
-    let mut a = Args::new(v)?;
-    let g = GroupsOf { item_of: tids(a.next()?)?, subgroup_of: tids(a.next()?)?, within: tids(a.next()?)? };
-    a.end()?;
-    Ok(g)
-}
-
-pub(crate) fn grants_v(r: &Grants) -> Value {
-    Value::List(r.iter().map(|(t, e)| Value::List(vec![Value::Tid(*t), role_v(e.role), opt(e.until, |w| u(w.0)), opt(e.may_grant, role_v), Value::Bool(e.with_membership)])).collect())
-}
-
-pub(crate) fn grants(v: Value) -> Result<Grants> {
-    let mut out = Grants::new();
-    for x in Args::of(vec![v]).list()? {
-        let mut a = Args::new(x)?;
-        let t = a.tid()?;
-        let e = Grant { role: role(&a.next()?)?, until: a.opt_wall()?, may_grant: a.opt()?.map(|r| role(&r)).transpose()?, with_membership: a.bool()? };
+/// `[commit id, actor, ts, received]` (`written` is the ts's).
+impl Port for Stamp {
+    fn to_port(&self) -> Value {
+        Value::List(vec![self.id.to_port(), self.actor.to_port(), self.ts.to_port(), self.received.to_port()])
+    }
+    fn from_port(v: Value) -> Result<Stamp> {
+        let mut a = Args::new(v)?;
+        let s = Stamp::new(a.get()?, a.get()?, a.get()?, a.get()?);
         a.end()?;
-        out.insert(t, e);
-    }
-    Ok(out)
-}
-
-const REASONS: [DerivedFrom; 6] = [DerivedFrom::ValidityChanged, DerivedFrom::Expired, DerivedFrom::Purged, DerivedFrom::Arrived, DerivedFrom::LostAccess, DerivedFrom::Deleted];
-
-/// Fails to compile when a reason is added: list it in `REASONS` too.
-#[allow(dead_code)]
-fn reasons_listed(c: DerivedFrom) {
-    match c {
-        DerivedFrom::ValidityChanged | DerivedFrom::Expired | DerivedFrom::Purged | DerivedFrom::Arrived | DerivedFrom::LostAccess | DerivedFrom::Deleted => {}
+        Ok(s)
     }
 }
 
-pub(crate) fn origin_v(s: &Origin) -> Value {
-    Value::List(match s {
-        Origin::Initial => vec![u(0)],
-        Origin::Local(i) => vec![u(1), stamp_v(i)],
-        Origin::Remote(i) => vec![u(2), stamp_v(i)],
-        Origin::Derived(c) => vec![u(3), u(REASONS.iter().position(|x| x == c).unwrap_or(0) as u64)],
-    })
+/// As `Stamp`.
+impl Port for ThingStamp {
+    fn to_port(&self) -> Value {
+        Stamp::new(self.id, self.actor, self.ts, self.received).to_port()
+    }
+    fn from_port(v: Value) -> Result<ThingStamp> {
+        let Stamp { id, actor, written, received, ts } = of(v)?;
+        Ok(ThingStamp { id, actor, written, received, ts })
+    }
 }
 
-pub(crate) fn source(v: Value) -> Result<Origin> {
-    let mut a = Args::new(v)?;
-    let s = match a.uint()? {
-        0 => Origin::Initial,
-        1 => Origin::Local(stamp(a.next()?)?),
-        2 => Origin::Remote(stamp(a.next()?)?),
-        3 => Origin::Derived(*usize::try_from(a.uint()?).ok().and_then(|i| REASONS.get(i)).ok_or_else(|| bad("reason"))?),
-        _ => return Err(bad("source")),
+/// `[[holder, role, Opt(until), Opt(may grant), with membership]*]`.
+impl Port for Grants {
+    fn to_port(&self) -> Value {
+        Value::List(self.iter().map(|(t, e)| Value::List(vec![t.to_port(), e.role.to_port(), e.until.to_port(), e.may_grant.to_port(), e.with_membership.to_port()])).collect())
+    }
+    fn from_port(v: Value) -> Result<Grants> {
+        let mut out = Grants::new();
+        for x in Args::of(vec![v]).list()? {
+            let mut a = Args::new(x)?;
+            let t = a.tid()?;
+            let e = Grant { role: a.get()?, until: a.get()?, may_grant: a.get()?, with_membership: a.get()? };
+            a.end()?;
+            out.insert(t, e);
+        }
+        Ok(out)
+    }
+}
+
+/// `[connected, [[group, state, Opt(last sync), [refused by*], leaving]*], [two sources*]]`.
+impl Port for Status {
+    fn to_port(&self) -> Value {
+        let groups = self.groups.iter().map(|(g, x)| Value::List(vec![g.to_port(), x.state.to_port(), x.last_sync.to_port(), x.refused_by.to_port(), x.leaving.to_port()]));
+        Value::List(vec![self.connected.to_port(), Value::List(groups.collect()), Value::List(self.two_sources.iter().map(Tid::to_port).collect())])
+    }
+    fn from_port(v: Value) -> Result<Status> {
+        let mut a = Args::new(v)?;
+        let mut st = Status { connected: a.get()?, groups: Default::default(), node_connections: Vec::new(), two_sources: Default::default() };
+        for g in a.list()? {
+            let mut b = Args::new(g)?;
+            let t = b.tid()?;
+            let s = GroupSync { state: b.get()?, last_sync: b.get()?, refused_by: b.get()?, leaving: b.get()? };
+            b.end()?;
+            st.groups.insert(t, s);
+        }
+        st.two_sources = a.get::<Vec<Tid>>()?.into_iter().collect();
+        a.end()?;
+        Ok(st)
+    }
+}
+
+/// `[stamp, kind, Opt(reverts), [reverted by*], in effect, [[tid, ak, valid, body, Opt(edited)]*]]`
+impl Port for Commit {
+    fn to_port(&self) -> Value {
+        let parts = self.raw_parts().iter().map(|(t, k, p)| Value::List(vec![t.to_port(), k.to_port(), p.valid.to_port(), p.body.to_port(), p.edited.to_port()]));
+        Value::List(vec![self.stamp.to_port(), self.kind.to_port(), self.reverts.to_port(), self.reverted_by.to_port(), self.in_effect.to_port(), Value::List(parts.collect())])
+    }
+    fn from_port(v: Value) -> Result<Commit> {
+        let mut a = Args::new(v)?;
+        let (stamp, kind, reverts, reverted_by, in_effect) = (a.get()?, a.get()?, a.get()?, a.get()?, a.get()?);
+        let parts = a.list()?.into_iter().map(|p| {
+            let mut a = Args::new(p)?;
+            let x = (a.get()?, a.get()?, Part { valid: a.get()?, body: a.get()?, edited: a.get()? });
+            a.end()?;
+            Ok::<_, Error>(x)
+        });
+        let parts = parts.collect::<Result<_>>()?;
+        a.end()?;
+        Ok(Commit::of_parts(stamp, kind, reverts, reverted_by, in_effect, parts))
+    }
+}
+
+/// `by`.
+impl Port for Retention {
+    fn to_port(&self) -> Value {
+        u(self.by as u64)
+    }
+    fn from_port(v: Value) -> Result<Retention> {
+        let by = v.as_uint().and_then(PurgeBy::from_id).ok_or_else(|| bad("purge class"))?;
+        Ok(Retention { by })
+    }
+}
+
+/// A sync scope: `[]` all, `[tid]` what carries it, `[true]` the pending deliveries.
+impl Port for SyncScope {
+    fn to_port(&self) -> Value {
+        Value::List(match self {
+            SyncScope::All => vec![],
+            SyncScope::Thing(t) => vec![Value::Tid(*t)],
+            SyncScope::Deliveries => vec![Value::Bool(true)],
+        })
+    }
+    fn from_port(v: Value) -> Result<SyncScope> {
+        let mut a = Args::new(v)?;
+        match a.rest().as_slice() {
+            [] => Ok(SyncScope::All),
+            [Value::Bool(true)] => Ok(SyncScope::Deliveries),
+            [v] => Ok(SyncScope::Thing(of(v.clone())?)),
+            _ => Err(bad("sync scope")),
+        }
+    }
+}
+
+/// A path op `[path, [op, arg*]]`; ops by dot (text sessions) do not go to a node yet, so
+/// encoding may fail.
+pub(crate) fn op_v(p: &PathOp) -> Result<Value> {
+    let o = match &p.op {
+        Op::Set(v) => vec![u(0), v.clone()],
+        Op::Replace(v) => vec![u(1), v.clone()],
+        Op::Put(v) => vec![u(2), v.clone()],
+        Op::RemoveAspect => vec![u(3)],
+        Op::Add(v) => vec![u(4), v.clone()],
+        Op::Remove(v) => vec![u(5), v.clone()],
+        Op::Inc(v) => vec![u(6), v.clone()],
+        Op::Insert { at, items } => vec![u(7), at.to_port(), Value::List(items.clone())],
+        Op::Delete { at, len } => vec![u(8), at.to_port(), len.to_port()],
+        Op::Move { at, len, to } => vec![u(9), at.to_port(), len.to_port(), to.to_port()],
+        Op::Edit { base, new } => vec![u(10), base.clone(), new.clone()],
+        Op::InsertAfter { .. } | Op::DeleteDots { .. } | Op::Paste { .. } => return Err(Error::Unsupported("text session ops through another node".into())),
     };
+    Ok(Value::List(vec![p.path.to_port(), Value::List(o)]))
+}
+
+pub(crate) fn op(v: Value) -> Result<PathOp> {
+    let mut a = Args::new(v)?;
+    let path = a.get()?;
+    let mut o = Args::of(a.list()?);
     a.end()?;
-    Ok(s)
+    let op = match o.uint()? {
+        0 => Op::Set(o.next()?),
+        1 => Op::Replace(o.next()?),
+        2 => Op::Put(o.next()?),
+        3 => Op::RemoveAspect,
+        4 => Op::Add(o.next()?),
+        5 => Op::Remove(o.next()?),
+        6 => Op::Inc(o.next()?),
+        7 => Op::Insert { at: o.get()?, items: o.list()? },
+        8 => Op::Delete { at: o.get()?, len: o.get()? },
+        9 => Op::Move { at: o.get()?, len: o.get()?, to: o.get()? },
+        10 => Op::Edit { base: o.next()?, new: o.next()? },
+        _ => return Err(bad("op")),
+    };
+    o.end()?;
+    Ok(PathOp { path, op })
 }
 
 /// A read's result: `[0, Opt(value)]` or an error.
 pub(crate) fn read_v(r: &Result<Option<Value>>) -> Value {
     match r {
-        Ok(v) => Value::List(vec![u(0), Value::opt(v.clone())]),
+        Ok(v) => Value::List(vec![u(0), v.to_port()]),
         Err(e) => outcome_err(e).to_value(),
     }
 }
@@ -300,472 +611,6 @@ pub(crate) fn read(v: Value) -> Result<Result<Option<Value>>> {
         }
         _ => Err(bad("read result")),
     }
-}
-
-const STATES: [SyncState; 5] = [SyncState::Synced, SyncState::Syncing, SyncState::NotConnected, SyncState::Refused, SyncState::Stranded];
-
-pub(crate) fn status_v(s: &Status) -> Value {
-    let groups = s
-        .groups
-        .iter()
-        .map(|(g, x)| {
-            Value::List(vec![
-                Value::Tid(*g),
-                u(STATES.iter().position(|y| *y == x.state).unwrap_or(0) as u64),
-                opt(x.last_sync, |w| u(w.0)),
-                Value::List(x.refused_by.iter().map(|h| Value::Str(h.to_string())).collect()),
-                Value::Bool(x.leaving),
-            ])
-        })
-        .collect();
-    Value::List(vec![u(s.connected as u64), Value::List(groups), Value::List(s.two_sources.iter().map(|t| Value::Tid(*t)).collect())])
-}
-
-pub(crate) fn status(v: Value) -> Result<Status> {
-    let mut a = Args::new(v)?;
-    let connected = usize::try_from(a.uint()?).map_err(|_| bad("count"))?;
-    let mut st = Status { connected, groups: Default::default(), node_connections: Vec::new(), two_sources: Default::default() };
-    for g in a.list()? {
-        let mut b = Args::new(g)?;
-        let t = b.tid()?;
-        let state = *usize::try_from(b.uint()?).ok().and_then(|i| STATES.get(i)).ok_or_else(|| bad("state"))?;
-        let last_sync = b.opt_wall()?;
-        let refused_by = b.list()?.into_iter().map(|h| Args::of(vec![h]).text().and_then(|t| t.parse::<Address>())).collect::<Result<_>>()?;
-        let leaving = b.bool()?;
-        b.end()?;
-        st.groups.insert(t, GroupSync { state, last_sync, refused_by, leaving });
-    }
-    for t in a.list()? {
-        st.two_sources.insert(Args::of(vec![t]).tid()?);
-    }
-    a.end()?;
-    Ok(st)
-}
-
-const KINDS: [DiagnosticKind; 21] = [
-    DiagnosticKind::BadInput,
-    DiagnosticKind::CollidingRecord,
-    DiagnosticKind::Parked,
-    DiagnosticKind::Pending,
-    DiagnosticKind::OverlappingCounters,
-    DiagnosticKind::Removed,
-    DiagnosticKind::Callback,
-    DiagnosticKind::NotSynced,
-    DiagnosticKind::Stranded,
-    DiagnosticKind::Uncommitted,
-    DiagnosticKind::EphemeralRefused,
-    DiagnosticKind::Mismatch,
-    DiagnosticKind::Storage,
-    DiagnosticKind::Repair,
-    DiagnosticKind::OwnWriteInvalid,
-    DiagnosticKind::Unreadable,
-    DiagnosticKind::SyncStopped,
-    DiagnosticKind::DisputesUnexamined,
-    DiagnosticKind::OwnWriteFailed,
-    DiagnosticKind::ClockSkew,
-    DiagnosticKind::InputCapped,
-];
-
-/// Fails to compile when a kind is added: list it in `KINDS` too (an unlisted one went out as
-/// `BadInput`).
-#[allow(dead_code)]
-fn kinds_listed(k: DiagnosticKind) {
-    use DiagnosticKind::*;
-    match k {
-        BadInput | CollidingRecord | Parked | Pending | OverlappingCounters | Removed | Callback | NotSynced | Stranded | Uncommitted | EphemeralRefused | Mismatch | Storage | Repair | OwnWriteInvalid | Unreadable | SyncStopped | DisputesUnexamined | OwnWriteFailed | ClockSkew | InputCapped => {}
-    }
-}
-
-pub(crate) fn diag_v(d: &Diagnostic) -> Value {
-    Value::List(vec![u(KINDS.iter().position(|k| *k == d.kind).unwrap_or(0) as u64), tids_v(&d.tids), opt(d.commit, |c| Value::bytes(&c.0)), opt(d.peer, Value::Tid), Value::Str(d.detail.clone())])
-}
-
-pub(crate) fn diag(v: Value) -> Result<Diagnostic> {
-    let mut a = Args::new(v)?;
-    let kind = *usize::try_from(a.uint()?).ok().and_then(|i| KINDS.get(i)).ok_or_else(|| bad("diagnostic kind"))?;
-    let tids = tids(a.next()?)?;
-    let commit = a.opt()?.map(raw_commit_id).transpose()?;
-    let peer = a.opt()?.map(|p| tid(&p)).transpose()?;
-    let detail = a.text()?;
-    a.end()?;
-    Ok(Diagnostic { kind, tids, commit, peer, detail })
-}
-
-fn aspects_v(v: &[(Tid, Ak)]) -> Value {
-    Value::List(v.iter().map(|(t, a)| Value::List(vec![Value::Tid(*t), ak_v(a)])).collect())
-}
-
-fn aspects(v: Value) -> Result<Vec<(Tid, Ak)>> {
-    Args::of(vec![v]).list()?.into_iter().map(|x| {
-        let mut p = Args::new(x)?;
-        let r = (p.tid()?, p.ak()?);
-        p.end()?;
-        Ok(r)
-    }).collect()
-}
-
-pub(crate) fn scope_v(s: &Scope) -> Value {
-    Value::List(match s {
-        Scope::Thing(t) => vec![u(0), Value::Tid(*t)],
-        Scope::Aspects(v) => vec![u(1), aspects_v(v)],
-        Scope::Group(t) => vec![u(2), Value::Tid(*t)],
-    })
-}
-
-pub(crate) fn scope(v: Value) -> Result<Scope> {
-    let mut a = Args::new(v)?;
-    let s = match a.uint()? {
-        0 => Scope::Thing(a.tid()?),
-        1 => Scope::Aspects(aspects(a.next()?)?),
-        2 => Scope::Group(a.tid()?),
-        _ => return Err(bad("scope")),
-    };
-    a.end()?;
-    Ok(s)
-}
-
-const CKINDS: [CommitKind; 4] = [CommitKind::Content, CommitKind::Revert, CommitKind::Role, CommitKind::Snapshot];
-
-fn ckind_v(k: &CommitKind) -> Value {
-    u(CKINDS.iter().position(|x| x == k).unwrap_or(0) as u64)
-}
-
-fn ckind(v: &Value) -> Result<CommitKind> {
-    v.as_uint().and_then(|i| CKINDS.get(usize::try_from(i).ok()?).copied()).ok_or_else(|| bad("commit kind"))
-}
-
-pub(crate) fn query_v(q: &CommitQuery) -> Value {
-    Value::List(vec![
-        from_v(&q.from),
-        opt(q.limit, |n| u(n as u64)),
-        tids_v(&q.actors),
-        Value::List(q.kinds.iter().map(ckind_v).collect()),
-        opt(q.reverts.as_ref(), commit_id_v),
-        opt(q.reverted_by.as_ref(), commit_id_v),
-        opt(q.in_effect, Value::Bool),
-    ])
-}
-
-pub(crate) fn query(v: Value) -> Result<CommitQuery> {
-    let mut a = Args::new(v)?;
-    let q = CommitQuery {
-        from: from(a.next()?)?,
-        limit: a.opt()?.map(|n| n.as_uint().and_then(|n| usize::try_from(n).ok()).ok_or_else(|| bad("limit"))).transpose()?,
-        actors: tids(a.next()?)?,
-        kinds: a.list()?.iter().map(ckind).collect::<Result<_>>()?,
-        reverts: a.opt()?.map(commit_id).transpose()?,
-        reverted_by: a.opt()?.map(commit_id).transpose()?,
-        in_effect: a.opt()?.map(|b| Args::of(vec![b]).bool()).transpose()?,
-    };
-    a.end()?;
-    Ok(q)
-}
-
-/// `[0, scope]` a scope's writes (an aspect's: `Scope::Aspects` naming it), `[1, tid, ak]` a
-/// signal's fires, `[2, tid, ak, commit id]` a fire's versions.
-pub(crate) fn address_v(a: &At) -> Value {
-    Value::List(match a {
-        At::Writes(s) => vec![u(0), scope_v(s)],
-        At::Fired(t, k) => vec![u(1), Value::Tid(*t), ak_v(k)],
-        At::Versions(t, k, o) => vec![u(2), Value::Tid(*t), ak_v(k), commit_id_v(o)],
-    })
-}
-
-pub(crate) fn address(v: Value) -> Result<At> {
-    let mut a = Args::new(v)?;
-    let x = match a.uint()? {
-        0 => At::Writes(scope(a.next()?)?),
-        1 => At::Fired(a.tid()?, a.ak()?),
-        2 => At::Versions(a.tid()?, a.ak()?, commit_id(a.next()?)?),
-        _ => return Err(bad("address")),
-    };
-    a.end()?;
-    Ok(x)
-}
-
-pub(crate) fn from_v(f: &crate::CommitFrom) -> Value {
-    use crate::CommitFrom as F;
-    let at = |p: &crate::CommitPos| vec![ts_v(p.0.ts), commit_id_v(&CommitId(p.0.id))];
-    Value::List(match f {
-        F::Newest => vec![u(0)],
-        F::Oldest => vec![u(1)],
-        F::Before(p) => [vec![u(2)], at(p)].concat(),
-        F::After(p) => [vec![u(3)], at(p)].concat(),
-    })
-}
-
-pub(crate) fn from(v: Value) -> Result<crate::CommitFrom> {
-    use crate::{CommitFrom as F, CommitPos};
-    let mut a = Args::new(v)?;
-    let f = match a.uint()? {
-        0 => F::Newest,
-        1 => F::Oldest,
-        k @ (2 | 3) => {
-            let p = CommitPos::of(ts(&a.next()?)?, commit_id(a.next()?)?);
-            if k == 2 { F::Before(p) } else { F::After(p) }
-        }
-        _ => return Err(bad("commit place")),
-    };
-    a.end()?;
-    Ok(f)
-}
-
-fn body_v(b: &Body<Value>) -> Value {
-    Value::List(match b {
-        Body::Held(v) => vec![u(0), opt(v.clone(), |x| x)],
-        Body::TooLarge { limit } => vec![u(1), u(*limit)],
-        Body::Purged { by, actor } => vec![u(2), commit_id_v(by), opt(*actor, Value::Tid)],
-        Body::NotFetched => vec![u(3)],
-    })
-}
-
-fn body(v: Value) -> Result<Body<Value>> {
-    let mut b = Args::new(v)?;
-    let x = match b.uint()? {
-        0 => Body::Held(b.opt()?),
-        1 => Body::TooLarge { limit: b.uint()? },
-        2 => Body::Purged { by: commit_id(b.next()?)?, actor: b.opt()?.map(|v| Args::of(vec![v]).tid()).transpose()? },
-        3 => Body::NotFetched,
-        _ => return Err(bad("part body")),
-    };
-    b.end()?;
-    Ok(x)
-}
-
-/// `[stamp, kind, Opt(reverts), [reverted by*], in effect, [[tid, ak, valid, body, Opt(edited)]*]]`
-pub(crate) fn commit_v(c: &Commit) -> Value {
-    let pos = |p: &crate::CommitPos| Value::List(vec![ts_v(p.0.ts), commit_id_v(&CommitId(p.0.id))]);
-    let parts = c.raw_parts().iter().map(|(t, k, p)| Value::List(vec![Value::Tid(*t), ak_v(k), Value::Bool(p.valid), body_v(&p.body), opt(p.edited.as_ref(), pos)]));
-    Value::List(vec![
-        stamp_v(&c.stamp),
-        ckind_v(&c.kind),
-        opt(c.reverts.as_ref(), commit_id_v),
-        Value::List(c.reverted_by.iter().map(commit_id_v).collect()),
-        Value::Bool(c.in_effect),
-        Value::List(parts.collect()),
-    ])
-}
-
-fn part(v: Value) -> Result<(Tid, Ak, Part<Value>)> {
-    let mut a = Args::new(v)?;
-    let (t, k, valid, b) = (a.tid()?, a.ak()?, a.bool()?, body(a.next()?)?);
-    let edited = a.opt()?.map(|p| {
-        let mut p = Args::new(p)?;
-        let x = crate::CommitPos::of(ts(&p.next()?)?, commit_id(p.next()?)?);
-        p.end()?;
-        Ok::<_, crate::Error>(x)
-    }).transpose()?;
-    let x = (t, k, Part { valid, body: b, edited });
-    a.end()?;
-    Ok(x)
-}
-
-pub(crate) fn commit(v: Value) -> Result<Commit> {
-    let mut a = Args::new(v)?;
-    let (stamp, kind) = (stamp(a.next()?)?, ckind(&a.next()?)?);
-    let reverts = a.opt()?.map(commit_id).transpose()?;
-    let reverted_by = a.list()?.into_iter().map(commit_id).collect::<Result<_>>()?;
-    let in_effect = a.bool()?;
-    let parts = a.list()?.into_iter().map(part).collect::<Result<_>>()?;
-    a.end()?;
-    Ok(Commit::of_parts(stamp, kind, reverts, reverted_by, in_effect, parts))
-}
-
-pub(crate) fn page_v(p: &CommitPage) -> Value {
-    Value::List(vec![Value::List(p.commits.iter().map(commit_v).collect()), Value::Bool(p.more), Value::Bool(p.complete)])
-}
-
-pub(crate) fn page(v: Value) -> Result<CommitPage> {
-    let mut a = Args::new(v)?;
-    let commits = a.list()?.into_iter().map(commit).collect::<Result<_>>()?;
-    let (more, complete) = (a.bool()?, a.bool()?);
-    a.end()?;
-    Ok(CommitPage { commits, more, complete })
-}
-
-fn seg_v(s: &PathSeg) -> Value {
-    Value::List(match s {
-        PathSeg::Field(f) => vec![u(0), u(*f)],
-        PathSeg::Case(c) => vec![u(1), u(*c)],
-        PathSeg::Key(k) => vec![u(2), k.clone()],
-        PathSeg::Index(i) => vec![u(3), u(*i as u64)],
-    })
-}
-
-fn seg(v: Value) -> Result<PathSeg> {
-    let mut a = Args::new(v)?;
-    let s = match a.uint()? {
-        0 => PathSeg::Field(a.uint()?),
-        1 => PathSeg::Case(a.uint()?),
-        2 => PathSeg::Key(a.next()?),
-        3 => PathSeg::Index(usize::try_from(a.uint()?).map_err(|_| bad("index"))?),
-        _ => return Err(bad("path segment")),
-    };
-    a.end()?;
-    Ok(s)
-}
-
-fn usz(a: &mut Args) -> Result<usize> {
-    usize::try_from(a.uint()?).map_err(|_| bad("index"))
-}
-
-/// A path op; ops by dot (text sessions) do not go to a node yet.
-pub(crate) fn op_v(p: &PathOp) -> Result<Value> {
-    let o = match &p.op {
-        Op::Set(v) => vec![u(0), v.clone()],
-        Op::Replace(v) => vec![u(1), v.clone()],
-        Op::Put(v) => vec![u(2), v.clone()],
-        Op::RemoveAspect => vec![u(3)],
-        Op::Add(v) => vec![u(4), v.clone()],
-        Op::Remove(v) => vec![u(5), v.clone()],
-        Op::Inc(v) => vec![u(6), v.clone()],
-        Op::Insert { at, items } => vec![u(7), u(*at as u64), Value::List(items.clone())],
-        Op::Delete { at, len } => vec![u(8), u(*at as u64), u(*len as u64)],
-        Op::Move { at, len, to } => vec![u(9), u(*at as u64), u(*len as u64), u(*to as u64)],
-        Op::Edit { base, new } => vec![u(10), base.clone(), new.clone()],
-        Op::InsertAfter { .. } | Op::DeleteDots { .. } | Op::Paste { .. } => return Err(Error::Unsupported("text session ops through another node".into())),
-    };
-    Ok(Value::List(vec![Value::List(p.path.iter().map(seg_v).collect()), Value::List(o)]))
-}
-
-pub(crate) fn op(v: Value) -> Result<PathOp> {
-    let mut a = Args::new(v)?;
-    let path = a.list()?.into_iter().map(seg).collect::<Result<_>>()?;
-    let mut o = Args::of(a.list()?);
-    a.end()?;
-    let op = match o.uint()? {
-        0 => Op::Set(o.next()?),
-        1 => Op::Replace(o.next()?),
-        2 => Op::Put(o.next()?),
-        3 => Op::RemoveAspect,
-        4 => Op::Add(o.next()?),
-        5 => Op::Remove(o.next()?),
-        6 => Op::Inc(o.next()?),
-        7 => Op::Insert { at: usz(&mut o)?, items: o.list()? },
-        8 => Op::Delete { at: usz(&mut o)?, len: usz(&mut o)? },
-        9 => Op::Move { at: usz(&mut o)?, len: usz(&mut o)?, to: usz(&mut o)? },
-        10 => Op::Edit { base: o.next()?, new: o.next()? },
-        _ => return Err(bad("op")),
-    };
-    o.end()?;
-    Ok(PathOp { path, op })
-}
-
-/// `by`.
-pub(crate) fn retention_v(r: &Retention) -> Value {
-    u(r.by as u64)
-}
-
-pub(crate) fn retention(v: Value) -> Result<Retention> {
-    let by = v.as_uint().and_then(PurgeBy::from_id).ok_or_else(|| bad("purge class"))?;
-    Ok(Retention { by })
-}
-
-/// Grant options: `[Opt(until), Opt(invite)]`.
-pub(crate) fn grant_opts_v(o: &GrantOpts) -> Value {
-    Value::List(vec![opt(o.until, |w| u(w.0)), opt(o.may_grant, role_v)])
-}
-
-pub(crate) fn grant_opts(v: Value) -> Result<GrantOpts> {
-    let mut a = Args::new(v)?;
-    let until = a.opt_wall()?;
-    let invite = a.opt()?.map(|r| role(&r)).transpose()?;
-    a.end()?;
-    Ok(GrantOpts { until, may_grant: invite })
-}
-
-/// A member of a group: `[0, tid]` item, `[1, tid]` subgroup.
-pub(crate) fn member_v(m: Member) -> Value {
-    Value::List(match m {
-        Member::Item(t) => vec![u(0), Value::Tid(t)],
-        Member::Subgroup(t) => vec![u(1), Value::Tid(t)],
-    })
-}
-
-pub(crate) fn member(v: Value) -> Result<Member> {
-    let mut a = Args::new(v)?;
-    let m = match a.uint()? {
-        0 => Member::Item(a.tid()?),
-        1 => Member::Subgroup(a.tid()?),
-        _ => return Err(bad("member")),
-    };
-    a.end()?;
-    Ok(m)
-}
-
-fn holder_kind_v(k: HolderKind) -> Value {
-    u(match k {
-        HolderKind::Actor => 0,
-        HolderKind::Link => 1,
-        HolderKind::Key => 2,
-    })
-}
-
-fn holder_kind(v: &Value) -> Result<HolderKind> {
-    match v.as_uint() {
-        Some(0) => Ok(HolderKind::Actor),
-        Some(1) => Ok(HolderKind::Link),
-        Some(2) => Ok(HolderKind::Key),
-        _ => Err(bad("holder kind")),
-    }
-}
-
-pub(crate) fn holders_v(h: &[Holder]) -> Value {
-    Value::List(h.iter().map(|x| Value::List(vec![Value::Tid(x.actor), holder_kind_v(x.kind), role_v(x.role), opt(x.until, |w| u(w.0)), tids_v(&x.through)])).collect())
-}
-
-pub(crate) fn holders(v: Value) -> Result<Vec<Holder>> {
-    Args::of(vec![v]).list()?.into_iter().map(|x| {
-        let mut a = Args::new(x)?;
-        let (actor, kind, r, until) = (a.tid()?, holder_kind(&a.next()?)?, role(&a.next()?)?, a.opt_wall()?);
-        let through = a.list()?.into_iter().map(|t| Args::of(vec![t]).tid()).collect::<Result<Vec<Tid>>>()?;
-        a.end()?;
-        Ok(Holder { actor, kind, role: r, until, through })
-    }).collect()
-}
-
-pub(crate) fn links_v(l: &[LinkInfo]) -> Value {
-    Value::List(l.iter().map(|x| Value::List(vec![Value::Tid(x.id.0), Value::Tid(x.target), role_v(x.role), opt(x.until, |w| u(w.0)), Value::Bool(x.single_use)])).collect())
-}
-
-pub(crate) fn links(v: Value) -> Result<Vec<LinkInfo>> {
-    Args::of(vec![v]).list()?.into_iter().map(|x| {
-        let mut a = Args::new(x)?;
-        let r = LinkInfo { id: LinkId(a.tid()?), target: a.tid()?, role: role(&a.next()?)?, until: a.opt_wall()?, single_use: a.bool()? };
-        a.end()?;
-        Ok(r)
-    }).collect()
-}
-
-/// A sync scope: `[]` all, `[tid]` what carries it, `[true]` the pending deliveries.
-pub(crate) fn sync_scope_v(s: SyncScope) -> Value {
-    Value::List(match s {
-        SyncScope::All => vec![],
-        SyncScope::Thing(t) => vec![Value::Tid(t)],
-        SyncScope::Deliveries => vec![Value::Bool(true)],
-    })
-}
-
-pub(crate) fn sync_scope(v: Value) -> Result<SyncScope> {
-    let mut a = Args::new(v)?;
-    match a.rest().as_slice() {
-        [] => Ok(SyncScope::All),
-        [Value::Bool(true)] => Ok(SyncScope::Deliveries),
-        [v] => Ok(SyncScope::Thing(tid(v)?)),
-        _ => Err(bad("sync scope")),
-    }
-}
-
-/// A `SetRoleOpts`: `[Opt(keep)]`.
-pub(crate) fn set_role_v(o: &SetRoleOpts) -> Value {
-    Value::List(vec![opt(o.retain_copy, Value::Bool)])
-}
-
-pub(crate) fn set_role(v: Value) -> Result<SetRoleOpts> {
-    let mut a = Args::new(v)?;
-    let keep = a.opt()?.map(|k| Args::of(vec![k]).bool()).transpose()?;
-    a.end()?;
-    Ok(SetRoleOpts { retain_copy: keep })
 }
 
 /// An outcome carried as a value (a row that waits): the Reply's own forms.
@@ -795,11 +640,11 @@ pub(crate) fn outcome_err(e: &Error) -> Outcome {
     let (code, detail) = match e {
         Error::UnknownThing { tid } => (ApiCode::UNKNOWN_THING, vec![Value::Tid(*tid)]),
         Error::UnknownActor { tid } => (ApiCode::UNKNOWN_ACTOR, vec![Value::Tid(*tid)]),
-        Error::Permission { tid, needs } => (ApiCode::PERMISSION, vec![Value::Tid(*tid), role_v(*needs)]),
-        Error::Type { path, reason } => (ApiCode::TYPE, vec![path_v(path), t(reason)]),
-        Error::TooLarge { limit } => (ApiCode::TOO_LARGE, vec![u(*limit as u64)]),
-        Error::NotUndoable { commit, reason } => (ApiCode::NOT_UNDOABLE, vec![commit_id_v(commit), u(u64::from(*reason == NotUndoableReason::Superseded))]),
-        Error::Unsynced { groups } => (ApiCode::UNSYNCED, vec![tids_v(groups)]),
+        Error::Permission { tid, needs } => (ApiCode::PERMISSION, vec![Value::Tid(*tid), needs.to_port()]),
+        Error::Type { path, reason } => (ApiCode::TYPE, vec![path.to_port(), t(reason)]),
+        Error::TooLarge { limit } => (ApiCode::TOO_LARGE, vec![limit.to_port()]),
+        Error::NotUndoable { commit, reason } => (ApiCode::NOT_UNDOABLE, vec![commit.to_port(), u(u64::from(*reason == NotUndoableReason::Superseded))]),
+        Error::Unsynced { groups } => (ApiCode::UNSYNCED, vec![groups.to_port()]),
         Error::Invalid(m) => (ApiCode::INVALID, vec![t(m)]),
         Error::Storage(m) => (ApiCode::STORAGE, vec![t(m)]),
         Error::Network(m) => (ApiCode::NETWORK, vec![t(m)]),
@@ -819,11 +664,11 @@ pub(crate) fn error_of(code: u64, detail: Vec<Value>) -> Error {
         Ok(match code {
             ApiCode::UNKNOWN_THING => Error::UnknownThing { tid: a.tid()? },
             ApiCode::UNKNOWN_ACTOR => Error::UnknownActor { tid: a.tid()? },
-            ApiCode::PERMISSION => Error::Permission { tid: a.tid()?, needs: role(&a.next()?)? },
-            ApiCode::TYPE => Error::Type { path: path(a.next()?)?, reason: a.text()? },
+            ApiCode::PERMISSION => Error::Permission { tid: a.tid()?, needs: a.get()? },
+            ApiCode::TYPE => Error::Type { path: a.get()?, reason: a.text()? },
             ApiCode::TOO_LARGE => Error::TooLarge { limit: usize::try_from(a.uint()?).unwrap_or(usize::MAX) },
-            ApiCode::NOT_UNDOABLE => Error::NotUndoable { commit: commit_id(a.next()?)?, reason: if a.uint()? == 1 { NotUndoableReason::Superseded } else { NotUndoableReason::ContentGone } },
-            ApiCode::UNSYNCED => Error::Unsynced { groups: tids(a.next()?)? },
+            ApiCode::NOT_UNDOABLE => Error::NotUndoable { commit: a.get()?, reason: if a.uint()? == 1 { NotUndoableReason::Superseded } else { NotUndoableReason::ContentGone } },
+            ApiCode::UNSYNCED => Error::Unsynced { groups: a.get()? },
             ApiCode::INVALID => Error::Invalid(text(&mut a)),
             ApiCode::STORAGE => Error::Storage(text(&mut a)),
             ApiCode::NETWORK => Error::Network(text(&mut a)),
@@ -837,41 +682,7 @@ pub(crate) fn error_of(code: u64, detail: Vec<Value>) -> Error {
     r.unwrap_or_else(|e| e)
 }
 
-fn backlink_v(b: &crate::Backlink) -> Value {
-    Value::List(vec![Value::Tid(b.tid), ak_v(&b.ak)])
-}
-
-fn backlink(v: Value) -> Result<crate::Backlink> {
-    let mut a = Args::new(v)?;
-    let b = crate::Backlink { tid: a.tid()?, ak: a.ak()? };
-    a.end()?;
-    Ok(b)
-}
-
-/// `[Opt([tid, ak]), Opt(limit)]`
-pub(crate) fn backlink_query_v(q: &crate::BacklinkQuery) -> Value {
-    Value::List(vec![opt(q.after.as_ref(), backlink_v), opt(q.limit, |n| u(n as u64))])
-}
-
-pub(crate) fn backlink_query(v: Value) -> Result<crate::BacklinkQuery> {
-    let mut a = Args::new(v)?;
-    let q = crate::BacklinkQuery {
-        after: a.opt()?.map(backlink).transpose()?,
-        limit: a.opt()?.map(|n| n.as_uint().and_then(|n| usize::try_from(n).ok()).ok_or_else(|| bad("limit"))).transpose()?,
-    };
-    a.end()?;
-    Ok(q)
-}
-
-/// `[[[tid, ak]*], more]`
-pub(crate) fn backlink_page_v(p: &crate::BacklinkPage) -> Value {
-    Value::List(vec![Value::List(p.backlinks.iter().map(backlink_v).collect()), Value::Bool(p.more)])
-}
-
-pub(crate) fn backlink_page(v: Value) -> Result<crate::BacklinkPage> {
-    let mut a = Args::new(v)?;
-    let backlinks = a.list()?.into_iter().map(backlink).collect::<Result<_>>()?;
-    let more = a.bool()?;
-    a.end()?;
-    Ok(crate::BacklinkPage { backlinks, more })
+/// `x` as a port value.
+pub(crate) fn v<T: Port>(x: &T) -> Value {
+    x.to_port()
 }

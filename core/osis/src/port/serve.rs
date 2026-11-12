@@ -323,7 +323,7 @@ fn task(db: &Osis, m: u64, args: Vec<Value>) -> Result<Task> {
     let db = Osis::internal(db.inner.clone());
     let t: Task = match m {
         method::WAIT_SYNCED => {
-            let scope = c::sync_scope(a.next()?)?;
+            let scope = a.get()?;
             a.end()?;
             let p = db.wait_synced_pending(scope);
             Box::pin(async move { p.await.map(|()| nothing()) })
@@ -556,56 +556,56 @@ impl Worker {
         let v = match m {
             method::WHOAMI => Value::List(vec![Value::Tid(db.me()), Value::Tid(db.node()), Value::Tid(db.home())]),
             method::GET => {
-                let (tid, ak, path) = (a.tid()?, a.ak()?, c::path(a.next()?)?);
+                let (tid, ak, path) = (a.tid()?, a.ak()?, a.get::<osis_schema::Path>()?);
                 let key = db.aspect_key(ak.as_str())?;
                 let r = if path.0.is_empty() { db.at(tid, crate::DynamicAspectKey::untyped(ak)).get() } else { db.at(tid, key).path(path).get() };
                 c::read_v(&r)
             }
-            method::ASPECTS => Value::List(db.aspects(a.tid()?)?.iter().map(c::ak_v).collect()),
+            method::ASPECTS => Value::List(db.aspects(a.tid()?)?.iter().map(c::v).collect()),
             method::HAS_CONTENT => b(db.has_content(a.tid()?)?),
             method::HOLDS => b(db.holds(a.tid()?)),
-            method::GROUPS_OF => c::groups_v(&db.groups_of(a.tid()?)?),
-            method::GRANTS => c::grants_v(&db.grants(a.tid()?)?),
-            method::ROLE_ON => c::opt(db.role_on(a.tid()?)?, c::role_v),
-            method::CREATED => c::opt(db.created(a.tid()?)?, |s| c::thing_stamp_v(&s)),
-            method::CHANGED => c::opt(db.changed(a.tid()?)?, |s| c::thing_stamp_v(&s)),
+            method::GROUPS_OF => c::v(&db.groups_of(a.tid()?)?),
+            method::GRANTS => c::v(&db.grants(a.tid()?)?),
+            method::ROLE_ON => c::v(&db.role_on(a.tid()?)?),
+            method::CREATED => c::v(&db.created(a.tid()?)?),
+            method::CHANGED => c::v(&db.changed(a.tid()?)?),
             method::WRITE => {
                 let nonce = a.uint()?;
                 let rest = a.rest();
-                return self.once(db, conn, nonce, || Ok(c::opt(db.replay(rest)?, |x| c::commit_v(&x))));
+                return self.once(db, conn, nonce, || Ok(c::opt(db.replay(rest)?, |x| c::v(&x))));
             }
-            method::UNDO_TARGET => c::opt(db.undo_target(&c::scope(a.next()?)?)?.as_ref(), c::commit_v),
-            method::REDO_TARGET => c::opt(db.redo_target(&c::scope(a.next()?)?)?.as_ref(), c::commit_v),
+            method::UNDO_TARGET => c::opt(db.undo_target(&a.get()?)?.as_ref(), c::v),
+            method::REDO_TARGET => c::opt(db.redo_target(&a.get()?)?.as_ref(), c::v),
             method::UNDO | method::REDO => {
                 let nonce = a.uint()?;
-                let scope = c::scope(a.next()?)?;
-                return self.once(db, conn, nonce, || Ok(c::opt(if m == method::UNDO { db.undo(&scope)? } else { db.redo(&scope)? }, |x| c::commit_v(&x))));
+                let scope = a.get()?;
+                return self.once(db, conn, nonce, || Ok(c::opt(if m == method::UNDO { db.undo(&scope)? } else { db.redo(&scope)? }, |x| c::v(&x))));
             }
             method::REVERT => {
                 let nonce = a.uint()?;
-                let ch = c::commit_id(a.next()?)?;
-                return self.once(db, conn, nonce, || Ok(c::commit_v(&db.revert(ch)?)));
+                let ch = a.get()?;
+                return self.once(db, conn, nonce, || Ok(c::v(&db.revert(ch)?)));
             }
             method::LISTING => {
-                let (at, q, bytes) = (c::address(a.next()?)?, c::query(a.next()?)?, a.uint()?);
+                let (at, q, bytes) = (a.get::<crate::commits::Address>()?, a.get::<crate::CommitQuery>()?, a.uint()?);
                 // the main actor's handle reads at the source node: this engine's copy would be stale
                 if at.things().iter().any(|t| !db.is_local(*t)) {
                     return Err(unsupported("commits of a group this node reads at another node"));
                 }
-                c::page_v(&db.listing_here(&at, &q, usize::try_from(bytes).unwrap_or(usize::MAX))?)
+                c::v(&db.listing_here(&at, &q, usize::try_from(bytes).unwrap_or(usize::MAX))?)
             }
             method::LISTED_COMMIT => {
-                let (at, id) = (c::address(a.next()?)?, c::commit_id(a.next()?)?);
+                let (at, id) = (a.get::<crate::commits::Address>()?, a.get()?);
                 if at.things().iter().any(|t| !db.is_local(*t)) {
                     return Err(unsupported("commits of a group this node reads at another node"));
                 }
-                c::opt(db.commit_told_here(&at, id, None)?.as_ref(), c::commit_v)
+                c::opt(db.commit_told_here(&at, id, None)?.as_ref(), c::v)
             }
             method::BACKLINKS => {
-                let (t, q) = (a.tid()?, c::backlink_query(a.next()?)?);
-                c::backlink_page_v(&db.backlinks(t, &q)?)
+                let (t, q) = (a.tid()?, a.get()?);
+                c::v(&db.backlinks(t, &q)?)
             }
-            method::STATUS => c::status_v(&db.status()?),
+            method::STATUS => c::v(&db.status()?),
             method::REGISTER_SCHEMA => {
                 let (file, src) = (a.text()?, a.text()?);
                 // registrations are process-wide and kept: counted per node, by distinct source
@@ -622,7 +622,7 @@ impl Worker {
                 Value::List(vec![])
             }
             method::BYTE_LEN | method::STREAM_READ => {
-                let (tid, ak, path) = (a.tid()?, a.ak()?, c::path(a.next()?)?);
+                let (tid, ak, path) = (a.tid()?, a.ak()?, a.get::<osis_schema::Path>()?);
                 let s = db.at(tid, crate::DynamicAspectKey::untyped(ak)).path(path).stream()?;
                 if m == method::BYTE_LEN {
                     c::opt(s, |s| u(s.len()))
@@ -662,7 +662,7 @@ impl Worker {
                 Value::List(vec![])
             }
             method::GRANT => {
-                db.grant(a.tid()?, a.tid()?, c::role(&a.next()?)?, c::grant_opts(a.next()?)?)?;
+                db.grant(a.tid()?, a.tid()?, a.get()?, a.get()?)?;
                 Value::List(vec![])
             }
             method::REVOKE_LINK => {
@@ -671,15 +671,15 @@ impl Worker {
             }
             method::SET_ROLE => {
                 let (target, holder) = (a.tid()?, a.tid()?);
-                let role = a.opt()?.map(|r| c::role(&r)).transpose()?;
-                db.set_role(target, holder, role, c::set_role(a.next()?)?)?;
+                let role = a.get()?;
+                db.set_role(target, holder, role, a.get()?)?;
                 Value::List(vec![])
             }
             method::ADD_WITH_GRANT => {
-                db.add_with_grant(c::member(a.next()?)?, a.tid()?, c::role(&a.next()?)?)?;
+                db.add_with_grant(a.get()?, a.tid()?, a.get()?)?;
                 Value::List(vec![])
             }
-            method::NODES => Value::List(db.nodes()?.iter().map(|x| Value::List(vec![Value::Tid(x.node), c::role_v(x.role)])).collect()),
+            method::NODES => Value::List(db.nodes()?.iter().map(|x| Value::List(vec![Value::Tid(x.node), c::v(&x.role)])).collect()),
             method::ADD_PEER | method::REMOVE_PEER => {
                 let h: crate::Address = a.text()?.parse()?;
                 if m == method::ADD_PEER { db.add_peer(&h)? } else { db.remove_peer(&h)? }
@@ -709,7 +709,7 @@ impl Worker {
             }
             method::EXPORT_BUNDLE => {
                 let mut b = Vec::new();
-                db.export_bundle(&c::tids(a.next()?)?, &mut b)?;
+                db.export_bundle(&a.get::<Vec<Tid>>()?, &mut b)?;
                 let n = b.len();
                 self.conns.get_mut(&conn).ok_or(Error::Closed)?.export = b;
                 u(n as u64)
@@ -742,10 +742,10 @@ impl Worker {
                 db.leave(a.tid()?, a.tid()?)?;
                 Value::List(vec![])
             }
-            method::HOLDERS => c::holders_v(&db.holders(a.tid()?)?),
-            method::LINKS => c::links_v(&db.links()?),
+            method::HOLDERS => c::v(&db.holders(a.tid()?)?),
+            method::LINKS => c::v(&db.links()?),
             method::MAKE_LINK => {
-                let (t, r) = (a.tid()?, c::role(&a.next()?)?);
+                let (t, r) = (a.tid()?, a.get()?);
                 let until = a.opt_wall()?;
                 let o = crate::LinkOpts { until, single_use: a.bool()?, direct: a.bool()? };
                 Value::Str(db.make_link(t, r, o)?.to_string())
@@ -786,7 +786,7 @@ impl Worker {
                 return Ok(self.sub_task(conn, id, max_reply, t));
             }
             filter::ASPECT => {
-                let (t, ak, path) = (thing(a.tid()?)?, a.ak()?, c::path(a.next()?)?);
+                let (t, ak, path) = (thing(a.tid()?)?, a.ak()?, a.get::<osis_schema::Path>()?);
                 let read = value_read(db, t, &ak, path)?;
                 (Kind::Aspect(t, read.clone(), Sent::default()), Filter::Aspect(t, ak, read))
             }
@@ -799,7 +799,7 @@ impl Worker {
                 (Kind::Grants(t), Filter::Grants(t))
             }
             filter::COMMITS => {
-                let at = c::address(a.next()?)?;
+                let at = a.get::<crate::commits::Address>()?;
                 // a fire's versions change as the fire does: `on_fire` hears them
                 if matches!(at, crate::commits::Address::Versions(..)) {
                     return Err(c::bad("filter"));
@@ -810,7 +810,7 @@ impl Worker {
                 (Kind::Commits(at.clone()), Filter::Commits(at))
             }
             filter::BACKLINKS => {
-                let (t, q) = (thing(a.tid()?)?, c::backlink_query(a.next()?)?);
+                let (t, q) = (thing(a.tid()?)?, a.get()?);
                 (Kind::Backlinks(t, q, None), Filter::Due(crate::watch::Watch::Backlinks(t, acting.is_some())))
             }
             filter::STATUS => (Kind::Status, Filter::Status),
@@ -862,13 +862,13 @@ impl Worker {
                         None => db.commit_told_here(at, id, Some(row)),
                     };
                     let Ok(Some(e)) = told else { return };
-                    queue(&mut lock(&p), Value::List(vec![c::commit_id_v(&id), c::opt(Some(&e), c::commit_v)]))
+                    queue(&mut lock(&p), Value::List(vec![c::v(&id), c::opt(Some(&e), c::v)]))
                 }
                 Delivery::Commit { id, fired: None, .. } => lock(&p).note_commit(id, &held2),
                 Delivery::Grants | Delivery::Status(_) | Delivery::Due => lock(&p).dirty = true,
                 // this node's own source for it moved: the client's subscription ends
                 Delivery::Moved => lock(&p).lapsed = true,
-                Delivery::Diagnostic(x) => queue(&mut lock(&p), c::diag_v(&x)),
+                Delivery::Diagnostic(x) => queue(&mut lock(&p), c::v(&x)),
                 _ => return,
             }
             let _ = tx.send(Job::Dirty(conn));
@@ -881,11 +881,11 @@ impl Worker {
                     initial = Ok(c::read_v(&v));
                     *lock(sent) = Some(crate::watch::digest(&v));
                 }
-                Kind::Thing(t) => initial = r.aspects(*t).map(|aks| Value::List(aks.iter().map(|ak| Value::List(vec![c::ak_v(ak), c::read_v(&r.value(*t, ak))])).collect())),
-                Kind::Grants(t) => initial = Ok(c::grants_v(&r.grants(*t))),
+                Kind::Thing(t) => initial = r.aspects(*t).map(|aks| Value::List(aks.iter().map(|ak| Value::List(vec![c::v(ak), c::read_v(&r.value(*t, ak))])).collect())),
+                Kind::Grants(t) => initial = Ok(c::v(&r.grants(*t))),
                 Kind::Backlinks(t, q, _) => {
                     r.e.watch_references();
-                    initial = r.backlinks(*t, q).map(|p| c::backlink_page_v(&p));
+                    initial = r.backlinks(*t, q).map(|p| c::v(&p));
                 }
                 _ => {}
             }
@@ -896,7 +896,7 @@ impl Worker {
             *sent = Some(page_digest(&initial));
         }
         if let Kind::Status = kind {
-            initial = c::status_v(&db.status()?);
+            initial = c::v(&db.status()?);
         }
         let seen = kind.thing().is_none_or(|t| db.read_local(|r| !r.hidden(t)));
         if let Some(c) = self.conns.get_mut(&conn) {
@@ -1051,27 +1051,27 @@ fn due(db: &Osis, kind: &Kind, g: &Pending) -> Vec<(Value, Option<crate::watch::
                     *lock(sent) = Some(crate::watch::digest(&v));
                     v
                 });
-                let v = Value::List(vec![Value::Tid(*t), c::ak_v(ak), c::read_v(&now), c::origin_v(src)]);
+                let v = Value::List(vec![Value::Tid(*t), c::v(ak), c::read_v(&now), c::v(src)]);
                 out.push((v, Some(*src)));
             }
         }
         Kind::Thing(t) => {
             for (ak, src) in &g.aks {
-                let v = Value::List(vec![Value::Tid(*t), c::ak_v(ak), c::read_v(&db.read_local(|r| r.value(*t, ak))), c::origin_v(src)]);
+                let v = Value::List(vec![Value::Tid(*t), c::v(ak), c::read_v(&db.read_local(|r| r.value(*t, ak))), c::v(src)]);
                 out.push((v, Some(*src)));
             }
         }
         Kind::Commits(at) => {
             for id in g.commits.iter().take(COMMIT_SEND) {
                 let Ok(e) = db.commit_told_here(at, *id, None) else { continue };
-                out.push((Value::List(vec![c::commit_id_v(id), c::opt(e.as_ref(), c::commit_v)]), None));
+                out.push((Value::List(vec![c::v(id), c::opt(e.as_ref(), c::v)]), None));
             }
         }
-        Kind::Grants(t) if g.dirty => out.push((c::grants_v(&db.read_local(|r| r.grants(*t))), None)),
+        Kind::Grants(t) if g.dirty => out.push((c::v(&db.read_local(|r| r.grants(*t))), None)),
         // a page that cannot be read now goes at the next change
         Kind::Backlinks(t, q, sent) if g.dirty => {
             if let Ok(p) = db.read_local(|r| r.backlinks(*t, q)) {
-                let v = c::backlink_page_v(&p);
+                let v = c::v(&p);
                 if *sent != Some(page_digest(&v)) {
                     out.push((v, None));
                 }
@@ -1079,7 +1079,7 @@ fn due(db: &Osis, kind: &Kind, g: &Pending) -> Vec<(Value, Option<crate::watch::
         }
         Kind::Status if g.dirty => {
             // a store that cannot answer: the client hears something changed and asks for itself
-            out.push((db.status().map_or_else(|_| Value::List(vec![]), |st| c::status_v(&st)), None));
+            out.push((db.status().map_or_else(|_| Value::List(vec![]), |st| c::v(&st)), None));
         }
         _ => {}
     }
@@ -1095,7 +1095,7 @@ fn fit(id: Id, max_reply: usize, v: &Value, src: &Option<crate::watch::Origin>) 
         return (p, size);
     }
     // above the subscription's bound: what changed, read by path or stream
-    let p = Payload::TooLarge { source: c::origin_v(&src.unwrap_or(crate::watch::Origin::Initial)) };
+    let p = Payload::TooLarge { source: c::v(&src.unwrap_or(crate::watch::Origin::Initial)) };
     let size = size_of(&p);
     if size <= max_reply {
         return (p, size);

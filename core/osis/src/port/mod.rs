@@ -90,12 +90,12 @@ pub(crate) mod method {
     pub const RETAINED_COPIES: u64 = 39;
     /// `[actor]` -> `[]`
     pub const DROP_RETAINED_COPY: u64 = 40;
-    /// `[address, query, max bytes]` -> `[[commit*], more, complete]` (`codec::address`,
-    /// `codec::query`, `codec::commit`)
+    /// `[address, query, max bytes]` -> `[[commit*], more, complete]` (`codec::Port` of
+    /// `commits::Address`, `CommitQuery`, `Commit`)
     pub const LISTING: u64 = 41;
     /// `[address, commit id]` -> `Opt(commit)`: the commit as listed at the address
     pub const LISTED_COMMIT: u64 = 74;
-    /// `[tid, query]` -> page (`codec::backlink_query`, `codec::backlink_page`)
+    /// `[tid, query]` -> page (`codec::Port` of `BacklinkQuery`, `BacklinkPage`)
     pub const BACKLINKS: u64 = 75;
     /// `[]` -> `[[node, role]*]`
     pub const NODES: u64 = 44;
@@ -156,9 +156,9 @@ pub(crate) mod method {
 /// grants, `[3]` status, `[4]` diagnostics, `[5, method, [arg*]]` a row that waits, run at the node
 /// without holding its worker: the Reply and at most one Notify carry `Opt(outcome)`, the outcome
 /// once known; an Unsub or the connection's end cancels it, as dropping the future does locally;
-/// `[6, address]` the commits listed at an address (`codec::address`): each Notify `[commit id,
+/// `[6, address]` the commits listed at an address (`codec::Port`): each Notify `[commit id,
 /// Opt(commit)]`, the commit read when sent; `[7, tid, query]` a page of the thing's backlinks
-/// (`codec::backlink_query`): each Notify the page when it reads otherwise.
+/// (`codec::Port`): each Notify the page when it reads otherwise.
 pub(crate) mod filter {
     pub const ASPECT: u64 = 0;
     pub const THING: u64 = 1;

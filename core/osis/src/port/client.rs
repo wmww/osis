@@ -1012,7 +1012,7 @@ impl Osis {
     pub(crate) fn node_write(&self, r: &Connection, wire: Vec<Value>) -> Result<Option<crate::Commit>> {
         let v = r.call_once(method::WRITE, wire)?;
         let o = c::Args::of(vec![v]).opt()?;
-        o.map(|v| c::commit(v).map(|c| c.reporting(self))).transpose()
+        o.map(|v| c::of::<crate::Commit>(v).map(|c| c.reporting(self))).transpose()
     }
 
 
@@ -1045,7 +1045,7 @@ type Delivered = (Tid, osis_base::Ak, Result<Option<Value>>, crate::watch::Origi
 /// An aspect delivery `[tid, ak, read, source]`.
 fn delivery(v: Value) -> Result<Delivered> {
     let mut a = c::Args::new(v)?;
-    let (t, ak, r, s) = (a.tid()?, a.ak()?, c::read(a.next()?)?, c::source(a.next()?)?);
+    let (t, ak, r, s) = (a.tid()?, a.ak()?, c::read(a.next()?)?, a.get()?);
     a.end()?;
     Ok((t, ak, r, s))
 }
@@ -1057,8 +1057,8 @@ const COMMIT_HEAD: usize = 512;
 /// A commit subscription's Notify.
 fn commit_note(v: Value) -> Result<(crate::CommitId, Option<crate::Commit>)> {
     let mut a = c::Args::new(v)?;
-    let id = c::commit_id(a.next()?)?;
-    let commit = a.opt()?.map(c::commit).transpose()?;
+    let id = a.get()?;
+    let commit = a.opt()?.map(c::of).transpose()?;
     a.end()?;
     Ok((id, commit))
 }
@@ -1069,7 +1069,7 @@ fn sub_ended() -> Error {
 }
 
 fn aspect_filter(tid: Tid, ak: &osis_base::Ak, path: &osis_schema::Path) -> Value {
-    Value::List(vec![u(super::filter::ASPECT), Value::Tid(tid), c::ak_v(ak), c::path_v(path)])
+    Value::List(vec![u(super::filter::ASPECT), Value::Tid(tid), c::v(ak), c::v(path)])
 }
 
 /// A node's callback of `T`s.
@@ -1093,7 +1093,7 @@ impl Osis {
         }
         let cb: Callback = Box::new(move |db, d| {
             if let Delivery::Port(PortEvent::Notify(Payload::Delivery { value })) = d
-                && let Ok(x) = c::diag(value)
+                && let Ok(x) = c::of::<osis_node::Diagnostic>(value)
             {
                 f(db, x.into());
             }
@@ -1161,7 +1161,7 @@ impl Osis {
         let judge = move |v: Value| -> Option<Result<()>> {
             use crate::share::SyncState as S;
             // a Notify naming no status: the node's store could not say
-            match c::status(v).ok()?.groups.get(&g).map(|s| s.state) {
+            match c::of::<crate::Status>(v).ok()?.groups.get(&g).map(|s| s.state) {
                 None | Some(S::Synced) => Some(Ok(())),
                 Some(S::Stranded) => Some(Err(Error::Unsynced { groups: vec![g] })),
                 Some(_) => None,
@@ -1197,7 +1197,7 @@ impl Osis {
 impl crate::handle::ReadOnly {
     /// The length of a string or blob at the connected node (`None`: absent).
     pub(crate) fn node_len(&self, r: &Connection, tid: Tid, ak: &osis_base::Ak, path: &osis_schema::Path) -> Result<Option<u64>> {
-        let v = r.call(method::BYTE_LEN, vec![Value::Tid(tid), c::ak_v(ak), c::path_v(path)])?;
+        let v = r.call(method::BYTE_LEN, vec![Value::Tid(tid), c::v(ak), c::v(path)])?;
         c::Args::of(vec![v]).opt()?.map(|n| n.as_uint().ok_or_else(|| c::bad("length"))).transpose()
     }
 }
@@ -1205,7 +1205,7 @@ impl crate::handle::ReadOnly {
 impl crate::handle::ReadOnly {
     /// `get` / `get_path` at `r`.
     pub(crate) fn node_get(&self, r: &Connection, tid: Tid, ak: &osis_base::Ak, path: &osis_schema::Path) -> Result<Option<Value>> {
-        let v = r.call(method::GET, vec![Value::Tid(tid), c::ak_v(ak), c::path_v(path)])?;
+        let v = r.call(method::GET, vec![Value::Tid(tid), c::v(ak), c::v(path)])?;
         c::read(v)?
     }
 }
@@ -1229,7 +1229,7 @@ impl crate::handle::ReadOnly {
 impl crate::handle::ReadOnly {
     /// One `stream_read` page.
     pub(crate) fn node_read(&self, r: &Connection, tid: Tid, ak: &osis_base::Ak, path: &osis_schema::Path, offset: u64, n: usize) -> Result<Vec<u8>> {
-        let v = r.call_big(method::STREAM_READ, vec![Value::Tid(tid), c::ak_v(ak), c::path_v(path), u(offset), u(n as u64)], n.saturating_add(SMALL_REPLY))?;
+        let v = r.call_big(method::STREAM_READ, vec![Value::Tid(tid), c::v(ak), c::v(path), u(offset), u(n as u64)], n.saturating_add(SMALL_REPLY))?;
         c::Args::of(vec![v]).bytes()
     }
 }
@@ -1255,7 +1255,7 @@ impl crate::handle::ReadOnly {
                 PortEvent::Notify(Payload::Lapsed) => f(db, crate::CommitEvent::Ended(sub_ended())),
             }
         });
-        let filter = Value::List(vec![u(super::filter::COMMITS), c::address_v(&at)]);
+        let filter = Value::List(vec![u(super::filter::COMMITS), c::v(&at)]);
         Ok(self.node_sub(r, at.things().first().copied(), filter, true, cb)?.0)
     }
 }
@@ -1295,7 +1295,7 @@ impl crate::handle::ReadOnly {
                     }
                 }
                 PortEvent::Notify(Payload::TooLarge { source }) => {
-                    let source = c::source(source).unwrap_or(Origin::Initial);
+                    let source = c::of(source).unwrap_or(Origin::Initial);
                     last = None;
                     f(db, Change { tid, ak: ak2.clone(), value: Err(Error::TooLarge { limit: REPLY_BUDGET }), origin: source });
                 }
@@ -1360,7 +1360,7 @@ impl crate::handle::ReadOnly {
         let cb: Callback = Box::new(move |db, d| {
             let Delivery::Port(ev) = d else { return };
             match ev {
-                PortEvent::Initial(v) | PortEvent::Notify(Payload::Delivery { value: v }) => match c::grants(v) {
+                PortEvent::Initial(v) | PortEvent::Notify(Payload::Delivery { value: v }) => match c::of::<crate::read::Grants>(v) {
                     Ok(r) if last.as_ref() == Some(&r) => {}
                     Ok(r) => {
                         last = Some(r.clone());
@@ -1386,7 +1386,7 @@ impl crate::handle::ReadOnly {
         // a backlink's encoding: its AK and a tid, each with a few bytes of framing
         const PAGE_BYTES: usize = crate::backlinks::BACKLINK_PAGE * (osis_base::format::MAX_AK_BYTES + 64) + SMALL_REPLY;
         const _: () = assert!(PAGE_BYTES <= REPLY_BUDGET);
-        c::backlink_page(r.call_big(method::BACKLINKS, vec![Value::Tid(tid), c::backlink_query_v(q)], PAGE_BYTES)?)
+        c::of(r.call_big(method::BACKLINKS, vec![Value::Tid(tid), c::v(q)], PAGE_BYTES)?)
     }
 
     /// `on_backlinks_change` at the connected node.
@@ -1395,7 +1395,7 @@ impl crate::handle::ReadOnly {
         let cb: Callback = Box::new(move |db, d| {
             let Delivery::Port(ev) = d else { return };
             match ev {
-                PortEvent::Initial(v) | PortEvent::Notify(Payload::Delivery { value: v }) => match c::backlink_page(v) {
+                PortEvent::Initial(v) | PortEvent::Notify(Payload::Delivery { value: v }) => match c::of::<crate::BacklinkPage>(v) {
                     Ok(p) if last.as_ref() == Some(&p) => {}
                     Ok(p) => {
                         last = Some(p.clone());
@@ -1410,7 +1410,7 @@ impl crate::handle::ReadOnly {
                 }
             }
         });
-        let filter = Value::List(vec![u(super::filter::BACKLINKS), Value::Tid(tid), c::backlink_query_v(q)]);
+        let filter = Value::List(vec![u(super::filter::BACKLINKS), Value::Tid(tid), c::v(q)]);
         Ok(self.node_sub(r, Some(tid), filter, true, cb)?.0)
     }
 }
@@ -1425,15 +1425,15 @@ impl crate::handle::ReadOnly {
     /// A page of the commits at `at` at the connected node, within what one reply carries.
     /// `LISTED_COMMIT`: commit `id` as listed at `at` at the node.
     pub(crate) fn node_listed_commit(&self, r: &Connection, at: &crate::commits::Address, id: crate::CommitId) -> Result<Option<crate::Commit>> {
-        let v = r.call(method::LISTED_COMMIT, vec![c::address_v(at), c::commit_id_v(&id)])?;
-        c::Args::of(vec![v]).opt()?.map(|v| c::commit(v).map(|x| x.reporting(self))).transpose()
+        let v = r.call(method::LISTED_COMMIT, vec![c::v(at), c::v(&id)])?;
+        c::Args::of(vec![v]).opt()?.map(|v| c::of::<crate::Commit>(v).map(|x| x.reporting(self))).transpose()
     }
 
     pub(crate) fn node_listing(&self, r: &Connection, at: &crate::commits::Address, q: &crate::CommitQuery) -> Result<crate::CommitPage> {
         // a page ends past this, so it holds up to twice it, and every commit's head: it must fit
         // one reply, or nothing could page past those commits
         let bytes = self.inner.limit.min(REPLY_BUDGET.saturating_sub(crate::commits::COMMIT_PAGE * COMMIT_HEAD) / 2);
-        let mut page = c::page(r.call(method::LISTING, vec![c::address_v(at), c::query_v(q), u(bytes as u64)])?)?;
+        let mut page = c::of::<crate::CommitPage>(r.call(method::LISTING, vec![c::v(at), c::v(q), u(bytes as u64)])?)?;
         page.commits = page.commits.into_iter().map(|c| c.reporting(self)).collect();
         Ok(page)
     }

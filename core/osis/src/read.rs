@@ -443,7 +443,7 @@ impl ReadOnly {
         if let crate::sources::Source::Node(r) = self.source(tid) {
             self.track_remote_thing(&r, tid, thing_key("aspects", tid))?;
             let v = r.call(m::ASPECTS, vec![Value::Tid(tid)])?;
-            return crate::port::codec::Args::of(vec![v]).list()?.iter().map(crate::port::codec::ak).collect();
+            return crate::port::codec::Args::of(vec![v]).get();
         }
         self.read_answer(|| thing_key("aspects", tid), thing(tid), move |r| r.aspects(tid))
     }
@@ -453,7 +453,7 @@ impl ReadOnly {
     pub fn groups_of(&self, tid: Tid) -> Result<GroupsOf> {
         if let crate::sources::Source::Node(r) = self.source(tid) {
             self.untrackable("groups_of at a connected node")?;
-            return crate::port::codec::groups(r.call(m::GROUPS_OF, vec![Value::Tid(tid)])?);
+            return crate::port::codec::of(r.call(m::GROUPS_OF, vec![Value::Tid(tid)])?);
         }
         Ok(self.read_answer(|| thing_key("groups_of", tid), Filter::Due(Watch::Groups(tid)), move |r| r.groups_of(tid)))
     }
@@ -470,7 +470,7 @@ impl ReadOnly {
     pub fn grants(&self, thing: Tid) -> Result<Grants> {
         if let crate::sources::Source::Node(r) = self.source(thing) {
             self.track_remote_grants(&r, thing, thing_key("grants", thing))?;
-            return crate::port::codec::grants(r.call(m::GRANTS, vec![Value::Tid(thing)])?);
+            return crate::port::codec::of(r.call(m::GRANTS, vec![Value::Tid(thing)])?);
         }
         Ok(self.read_answer(|| thing_key("grants", thing), Filter::Grants(thing), move |r| r.grants(thing)))
     }
@@ -482,7 +482,7 @@ impl ReadOnly {
         if let crate::sources::Source::Node(r) = self.source(tid) {
             self.untrackable("role_on at a connected node")?;
             let v = r.call(m::ROLE_ON, vec![Value::Tid(tid)])?;
-            return crate::port::codec::Args::of(vec![v]).opt()?.map(|r| crate::port::codec::role(&r)).transpose();
+            return crate::port::codec::Args::of(vec![v]).get();
         }
         self.read_answer(|| thing_key("role_on", tid), Filter::Due(Watch::Roles), move |r| r.role_on(tid))
     }
@@ -505,7 +505,7 @@ impl ReadOnly {
 
     fn node_stamp(&self, r: &crate::port::client::Connection, m: u64, tid: Tid) -> Result<Option<ThingStamp>> {
         let v = r.call(m, vec![Value::Tid(tid)])?;
-        crate::port::codec::Args::of(vec![v]).opt()?.map(crate::port::codec::thing_stamp).transpose()
+        crate::port::codec::Args::of(vec![v]).opt()?.map(crate::port::codec::of).transpose()
     }
 
     /// When the thing was created: the oldest valid commit carrying its creation; `None` while it
