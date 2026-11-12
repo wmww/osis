@@ -500,15 +500,49 @@ impl<'a> Iterator for List<'a> {
         if self.len == 0 {
             return None;
         }
-        let mut r = Reader::new(self.rest);
-        let item = r.item().ok()?;
-        self.rest = self.rest.get(item.len()..)?;
+        let n = checked_len(self.rest)?;
+        let (item, rest) = self.rest.split_at_checked(n)?;
+        self.rest = rest;
         self.len -= 1;
         Some(Item(item))
     }
     fn size_hint(&self) -> (usize, Option<usize>) {
         (self.len, Some(self.len))
     }
+}
+
+/// The length of the item at the start of `b`, bytes `check` accepted, by its heads alone in one
+/// pass (no recursion, nothing checked again). `None` past the end of `b`, never a panic, whatever
+/// the bytes.
+fn checked_len(b: &[u8]) -> Option<usize> {
+    let (mut pos, mut left) = (0usize, 1usize);
+    while left > 0 {
+        left -= 1;
+        let ib = *b.get(pos)?;
+        let n = match ib & 31 {
+            0..=23 => 0,
+            24 => 1,
+            25 => 2,
+            26 => 4,
+            27 => 8,
+            _ => return None,
+        };
+        let arg = match n {
+            0 => u64::from(ib & 31),
+            _ => b.get(pos + 1..pos + 1 + n)?.iter().fold(0u64, |a, &x| (a << 8) | u64::from(x)),
+        };
+        pos += 1 + n;
+        let arg = usize::try_from(arg).ok();
+        match ib >> 5 {
+            MAJOR_BYTES | MAJOR_TEXT => pos = pos.checked_add(arg?)?,
+            MAJOR_ARRAY => left = left.checked_add(arg?)?,
+            MAJOR_MAP => left = left.checked_add(arg?.checked_mul(2)?)?,
+            MAJOR_TAG => left += 1,
+            // integers, and major 7: a float's 8 bytes are its argument's
+            _ => {}
+        }
+    }
+    (pos <= b.len()).then_some(pos)
 }
 
 /// Decodes one value from the start of `input`; returns it with the bytes it spans.
