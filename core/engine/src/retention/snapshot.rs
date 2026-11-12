@@ -108,7 +108,7 @@ pub(crate) fn frontiers_upto(tx: &Tx<'_>, tid: &Tid, ak: &Ak, memory: bool, vali
             },
             None => u64::MAX,
         };
-        let (next, _) = walk_source(tx.core, tid, ak, memory, valid_on, ranges.iter(), frontiers.of(n).saturating_add(1), max, &mut |c| {
+        let (next, _) = walk_source(valid_on, &|c| !memory && own_replace(tx.core, c, tid, ak), ranges.iter(), frontiers.of(n).saturating_add(1), max, &mut |c| {
             reflected.insert(c);
         });
         if next > 1 {
@@ -121,11 +121,11 @@ pub(crate) fn frontiers_upto(tx: &Tx<'_>, tid: &Tid, ak: &Ak, memory: bool, vali
 /// One session source's frontier walk on `(tid, ak)` (`frontiers_upto`), from `next`, its first
 /// counter not reflected, through `ranges` (its held ranges by start, `Indexes::ranges`, from
 /// any start on) up to start `max`: a range below `next` is reflected (by a snapshot's
-/// frontier); one that joins (starts at or below `next`, or is a durable own whole replace,
-/// whose reset passes a hole below it) and that `valid_on` passes is reflected and moves `next`
+/// frontier); one that joins (starts at or below `next`, or `resets` passes it: a durable own
+/// whole replace, whose reset passes a hole below it) and that `valid_on` passes is reflected and moves `next`
 /// past it; the first other stops the walk. `reflected` gets each one reflected. Returns `next`
 /// and whether a range stopped the walk (the source has held ranges behind a gap at `next`).
-pub(crate) fn walk_source<'r>(core: &Core, tid: &Tid, ak: &Ak, memory: bool, valid_on: &dyn Fn(&CommitId) -> bool, ranges: impl Iterator<Item = (&'r (u64, CommitId), &'r u64)>, mut next: u64, max: u64, reflected: &mut dyn FnMut(CommitId)) -> (u64, bool) {
+pub(crate) fn walk_source<'r>(valid_on: &dyn Fn(&CommitId) -> bool, resets: &dyn Fn(&CommitId) -> bool, ranges: impl Iterator<Item = (&'r (u64, CommitId), &'r u64)>, mut next: u64, max: u64, reflected: &mut dyn FnMut(CommitId)) -> (u64, bool) {
     for ((lo, c), hi) in ranges {
         if *lo > max {
             break;
@@ -135,7 +135,7 @@ pub(crate) fn walk_source<'r>(core: &Core, tid: &Tid, ak: &Ak, memory: bool, val
             reflected(*c);
             continue;
         }
-        let joins = *lo <= next || (!memory && own_replace(core, c, tid, ak));
+        let joins = *lo <= next || resets(c);
         if !joins || !valid_on(c) {
             return (next, true);
         }

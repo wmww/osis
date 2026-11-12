@@ -144,7 +144,8 @@ impl Trigger {
             let core = &*tx.core;
             let valid_on = |c: &CommitId| super::snapshot::claims(core, c, &k.0, &k.1, now);
             let ranges = core.ix.ranges.get(&(k.0, k.1.clone(), src.clone())).into_iter().flat_map(|r| r.range((from, CommitId([0; 32]))..));
-            super::snapshot::walk_source(core, &k.0, &k.1, k.1.ephemeral(), &valid_on, ranges, next, u64::MAX, &mut |c| passed.push(c))
+            let resets = |c: &CommitId| !k.1.ephemeral() && super::snapshot::own_replace(core, c, &k.0, &k.1);
+            super::snapshot::walk_source(&valid_on, &resets, ranges, next, u64::MAX, &mut |c| passed.push(c))
         };
         if let Some(e) = tx.core.compaction.est.get_mut(k) {
             if stopped {
@@ -168,11 +169,12 @@ impl Trigger {
     }
 
     /// `counts` for a held part, unless its setting keeps it while live (spec/commits.md §5 Kept
-    /// while live): no snapshot's to drop, it counts once it leaves history (`leaving::left`) or
-    /// the live bound passes.
+    /// while live) and it is in history, as the weighing looks at it (`droppable`): no
+    /// snapshot's to drop, it counts once it leaves history (`leaving::left`) or the live bound
+    /// passes. One passed by a gap may have left already, uncounted then (`Est::stops`).
     fn held_counts(tx: &mut Tx<'_>, c: &CommitId, k: &(Tid, Ak), blob: &CommitBlob, ai: usize) -> Result<()> {
         let live = super::history::of(tx.core, &k.0, &k.1).live_until();
-        if live > tx.now().0 {
+        if live > tx.now().0 && !super::leaving::out_of_history(tx.core, c, &k.0, &k.1) && !super::valueless(tx.core, c, ai) {
             Trigger::live_until(tx, k.clone(), live);
             return Ok(());
         }
@@ -663,14 +665,19 @@ mod tests {
     }
 
     /// A writer of ephemeral `x:m+.0` with its own session's bodies back after a restart, each
-    /// setting key `k` to a new value: `n` bodies, a first snapshot of the first when `snap`.
-    /// Returns the peer and the packed snapshot (if any) and bodies, in order, none ingested.
-    fn restarted(n: usize, snap: bool) -> (LocalPeer, Option<Vec<u8>>, Vec<Vec<u8>>) {
+    /// setting key `k` to a new value: `n` bodies, a first snapshot of the first when `snap`,
+    /// under history setting `keep` when given. Returns the peer and the packed snapshot (if
+    /// any) and bodies, in order, none ingested.
+    fn restarted(n: usize, snap: bool, keep: Option<osis_schema::History>) -> (LocalPeer, Option<Vec<u8>>, Vec<Vec<u8>>) {
         let mut lp = LocalPeer::fresh(1, osis_base::WallMs(1_700_000_000_000));
         let p = &mut lp.peers[0];
         let me = p.engine.me();
         let mut m = Mutation::new();
         let t = p.engine.new_thing(&mut m, me);
+        if let Some(h) = keep {
+            use osis_schema::core_types as ct;
+            m.set(t, &ct::RETENTION, &ct::RetentionSetting::of(Ak::new("x:m+.0").unwrap(), h)).unwrap();
+        }
         p.commit(m).unwrap();
         let mut s = None;
         if snap {
@@ -692,7 +699,7 @@ mod tests {
     // compacts them, so what it holds stays within `FACTOR` times a snapshot and one body.
     #[test]
     fn bodies_behind_a_gap_count_once_a_snapshot_passes_it_spec_sync_7() {
-        let (mut lp, snap, bodies) = restarted(8, true);
+        let (mut lp, snap, bodies) = restarted(8, true, None);
         let e = &mut lp.peers[0].engine;
         let mut weighed = 0;
         for (i, b) in bodies.iter().enumerate() {
@@ -720,7 +727,7 @@ mod tests {
     // weighs about once per snapshot's worth of bodies passed, not at each fill, at n and 10n.
     #[test]
     fn a_gap_filled_by_its_body_counts_what_it_passes_spec_sync_7() {
-        let (mut lp, _, bodies) = restarted(3, false);
+        let (mut lp, _, bodies) = restarted(3, false, None);
         let e = &mut lp.peers[0].engine;
         for b in &bodies[1..] {
             e.ingest_memory(b, u64::MAX).unwrap();
@@ -730,7 +737,7 @@ mod tests {
         e.ingest_memory(&bodies[0], u64::MAX).unwrap();
         assert_eq!(step(e), (1, 1), "the gap filled: weighed and compacted at the next step");
         for n in [10, 100] {
-            let (mut lp, _, bodies) = restarted(2 * n, false);
+            let (mut lp, _, bodies) = restarted(2 * n, false, None);
             let e = &mut lp.peers[0].engine;
             for b in bodies.iter().skip(1).step_by(2) {
                 e.ingest_memory(b, u64::MAX).unwrap();
@@ -745,6 +752,82 @@ mod tests {
             let l = gap_load(e);
             assert!(l.held <= FACTOR * l.snapshot + l.largest, "n={n}: {l:?}");
             assert!(written >= 1 && weighed <= n as u64 / 2, "n={n}: {weighed} weighings, {written} snapshots over {n} fills");
+        }
+    }
+
+    // spec/sync.md §7 (Trigger): where the setting keeps live bodies, those that left history
+    // behind a gap count once their missing body fills it, as they would had they left after.
+    #[test]
+    fn out_of_history_bodies_behind_a_gap_count_once_it_fills_spec_sync_7() {
+        let (mut lp, _, bodies) = restarted(12, false, Some(osis_schema::History::Keep { until: None, after: Some(2_000) }));
+        for b in &bodies[1..] {
+            lp.peers[0].engine.ingest_memory(b, u64::MAX).unwrap();
+        }
+        lp.advance(3_000);
+        lp.peers[0].tick().unwrap();
+        let e = &mut lp.peers[0].engine;
+        e.compactions().unwrap();
+        assert_eq!(gap_load(e).bodies, 0, "behind the gap");
+        e.ingest_memory(&bodies[0], u64::MAX).unwrap();
+        assert_eq!(step(e), (1, 1), "the replaced bodies count once the gap fills");
+    }
+
+    // spec/sync.md §7 (Trigger): two writers exchanging bodies and snapshots, with a third
+    // writer's session held behind a gap at both (its first body withheld) and growing: the
+    // held-back bodies weigh nothing (no snapshot passes the gap), so the two weigh and compact
+    // alike with the third writing nothing or five bodies a round, each about once per own
+    // write (no snapshot sets the other off), at n and 4n rounds.
+    #[test]
+    fn two_writers_with_a_gap_held_open_weigh_per_write_spec_sync_7() {
+        use osis_base::Role;
+        use osis_schema::core_types as ct;
+        let run = |rounds: usize, held_back: usize| {
+            let mut lp = LocalPeer::fresh(3, osis_base::WallMs(1_700_000_000_000));
+            lp.sync_all().unwrap();
+            let [a, b, x] = [0, 1, 2].map(|i| lp.peers[i].engine.me());
+            let (t, _) = lp.peers[0].engine.create_with_admin(&a).unwrap();
+            for w in [b, x] {
+                lp.peers[0].engine.grant(&t, &w, &ct::Edge { role: Role::Write, until: None, invite: None, tied: None }).unwrap();
+            }
+            lp.sync_all().unwrap();
+            put(&mut lp.peers[2].engine, t, "x", "withheld");
+            let (mut weighed, mut written) = (0u64, 0u64);
+            let mut out: [Vec<Vec<u8>>; 2] = [Vec::new(), Vec::new()];
+            for i in 0..rounds {
+                lp.advance(10);
+                let xs: Vec<Vec<u8>> = (0..held_back)
+                    .map(|j| {
+                        let c = put(&mut lp.peers[2].engine, t, "x", &format!("v{i}.{j}"));
+                        lp.peers[2].engine.package(&c).unwrap().unwrap().bytes
+                    })
+                    .collect();
+                for n in (0..2).filter(|_| i % 4 == 0) {
+                    let c = put(&mut lp.peers[n].engine, t, &format!("k{n}"), &format!("v{i}"));
+                    out[n].push(lp.peers[n].engine.package(&c).unwrap().unwrap().bytes);
+                }
+                for (n, p) in lp.peers[..2].iter_mut().enumerate() {
+                    for bytes in std::mem::take(&mut out[1 - n]).iter().chain(&xs) {
+                        p.engine.ingest_memory(bytes, u64::MAX).unwrap();
+                    }
+                }
+                for (p, o) in lp.peers[..2].iter_mut().zip(&mut out) {
+                    crate::costs::take();
+                    let snaps = p.engine.compactions().unwrap();
+                    let c = crate::costs::take();
+                    weighed += c.iter().find(|x| x.0 == "compact: aspects weighed").map_or(0, |x| x.2);
+                    written += snaps.len() as u64;
+                    for (_, _, s) in snaps {
+                        o.push(p.engine.package(&s).unwrap().unwrap().bytes);
+                    }
+                }
+            }
+            (weighed, written)
+        };
+        for rounds in [25, 100] {
+            let (quiet, busy) = (run(rounds, 0), run(rounds, 5));
+            println!("{rounds} rounds (weighed, written): third writer quiet {quiet:?}, five held-back bodies a round {busy:?}");
+            assert!(busy.0 <= quiet.0 + 4 && busy.1 <= quiet.1 + 2, "{rounds} rounds: the held-back bodies weighed: {quiet:?} against {busy:?}");
+            assert!(busy.0 <= rounds as u64 / 2 + 4, "{rounds} rounds: {busy:?}");
         }
     }
 

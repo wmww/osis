@@ -118,6 +118,12 @@ fn places<'a>(core: &'a Core, tid: &Tid, ak: &Ak) -> Option<&'a BTreeSet<Place>>
     if ak.signal() { core.ix.by_aspect.get(&k) } else { core.ix.leaving.get(&k) }
 }
 
+/// Whether value part `(tid, ak)` of `c` is out of history: its row at or before the cursor.
+pub(crate) fn out_of_history(core: &Core, c: &CommitId, tid: &Tid, ak: &Ak) -> bool {
+    let Some(ts) = core.ix.dated.get(&(*c, *tid, ak.clone())) else { return false };
+    core.ix.leave_from.get(&(*tid, ak.clone())).and_then(|f| f.1).is_some_and(|last| (*ts, *c) <= last)
+}
+
 /// The first place of `(tid, ak)` past `out`.
 fn first_after(core: &Core, tid: &Tid, ak: &Ak, out: Option<Place>) -> Option<Place> {
     let s = places(core, tid, ak)?;
