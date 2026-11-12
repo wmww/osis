@@ -140,7 +140,7 @@ RULES = [
     ("spec/permissions.md", "2", "edge inbox delivery", "MUST also be delivered to G as an inbox blob"),
     ("spec/permissions.md", "3", "required rotation", "MUST do so before it next encrypts"),
     ("spec/permissions.md", "3", "holder actors", "boxes a holder actor M at the keyset Seal gives"),
-    ("spec/permissions.md", "3", "removal uploaded first", "MUST, in the same sync and before any other upload"),
+    ("spec/permissions.md", "3", "removal placed first", "MUST, in the same sync and before anything else it places"),
     ("spec/permissions.md", "1", "last admin of a plain thing", "MUST NOT remove or lower the last admin edge of a plain thing"),
     ("spec/permissions.md", "2", "tied edge removed", "MUST remove the edge when it may"),
     ("spec/permissions.md", "2", "finalize", "MUST write the finalize before its next commit encrypting under T"),
