@@ -391,11 +391,9 @@ pub(crate) fn covered(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Tid, ak
     covered_join(tx, &second, c, tid, ak)
 }
 
-/// The body whole, the snapshot a piece at a time (its part at the
-/// body's positions, `Fragment::part_at`, and each piece's copies of the body's writes against
-/// the body's part at the piece's positions: a copy lies where its write does). Cost: the body
-/// and the snapshot's part at its positions, about twice the body; both whole only with a
-/// pull decoder walking them side by side (issues/durable-decode-bound.md).
+/// The body whole against the snapshot's part at the body's positions (`apply::held_part_at`).
+/// Cost: the body and that part, about twice the body, plus the snapshot streamed once per
+/// write of its record while it fits `CARRIED_MAX` (above it, once per judgment).
 pub(crate) fn covered_join(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<Option<bool>> {
     // counted: tests read how many pairs are joined
     let _s = crate::costs::span("covered: join");
@@ -453,19 +451,9 @@ pub(crate) fn covered_join(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Ti
     if let Some(b) = body {
         joined.join(b);
     }
-    let mut part = Fragment::default();
-    let gives = match &tx.core.cover_cache {
-        Some((cs, cai, pieces, gives)) if cs == s && *cai == sai => {
-            for p in pieces {
-                part.join(p.part_at(&joined));
-            }
-            gives.clone()
-        }
-        _ => crate::apply::each_held_piece(tx, s, sai, &mut |_, p| {
-            part.join(p.part_at(&joined));
-            Ok(())
-        })?,
-    };
+    let (mut part, gives) = crate::apply::held_part_at(tx, s, sai, &joined)?;
+    // counted: tests read how much of the snapshot a judgment walks
+    crate::costs::count_with("covered: snapshot part bytes", || part.approx_bytes() as u64);
     // the snapshot not held: nothing is established
     let Some(g) = &gives else { return Ok(None) };
     if let Some((fr, abs, facts)) = g {
@@ -700,7 +688,7 @@ impl Engine {
             let r = covered(tx, &s, &c, &tid, &ak)?;
             #[cfg(test)]
             if tx.core.ix.commits.get(&s).is_some_and(|m| m.view.kind.is_compaction()) {
-                let w = oracle::covered(tx, &s, &c, &tid, &ak)?;
+                let w = crate::costs::paused(|| oracle::covered(tx, &s, &c, &tid, &ak))?;
                 assert_eq!(r, w, "covered streamed vs whole");
             }
             Ok(r)

@@ -217,17 +217,6 @@ pub(crate) fn drop_covered(tx: &mut Tx<'_>, aspects: &BTreeSet<(Tid, Ak)>, keep:
             _ => tx.core.ix.by_aspect.get(&(*tid, ak.clone())).into_iter().flatten().map(|x| x.1).collect(),
         };
         let holds = |tx: &Tx<'_>, c: &CommitId| tx.core.ix.commits.get(c).is_some_and(|m| m.aspect(tid, ak).is_some_and(|ai| m.holds(ai)));
-        // a new snapshot judged against every body: its part read once
-        if let Some(n) = new_snap
-            && let Some((sai, _, _)) = held_on(tx, n, tid, ak)
-        {
-            let mut pieces = Vec::new();
-            let gives = crate::apply::each_held_piece(tx, n, sai, &mut |_, p| {
-                pieces.push(p);
-                Ok(())
-            })?;
-            tx.core.cover_cache = Some((*n, sai, pieces, gives));
-        }
         // the aspect rebuilt once for all the drops (a covered body's writes are in its coverer:
         // the state a drop reads is unchanged by the others)
         let r = crate::apply::run_batched(tx, |tx| {
@@ -260,7 +249,6 @@ pub(crate) fn drop_covered(tx: &mut Tx<'_>, aspects: &BTreeSet<(Tid, Ak)>, keep:
             }
             Ok(())
         });
-        tx.core.cover_cache = None;
         r?;
     }
     for c in &dropped {

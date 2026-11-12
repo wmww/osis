@@ -122,11 +122,14 @@ pub fn stream_part<'a>(h: &Header, id: &CommitId, part: &Part, dedup: &Secret32,
 
 /// `stream_part` of a part this node checked in full (`Checked`: the part of
 /// aspect `ai`, its `delta`), decode-only: no hash, canonical or `check_fragment` check again.
-pub fn read_part<'a>(h: &Header, id: &CommitId, ai: usize, delta: Checked<'_>, interner: &'a mut Interner, pages: Option<&'a mut dyn PageSource>, each: &mut dyn FnMut(osis_crdt::Fragment) -> Result<(), osis_crdt::Error>) -> Result<Option<osis_crdt::Head>, Error> {
+/// `want`: only the pages it names (`stream_checked_some`).
+#[allow(clippy::too_many_arguments)]
+pub fn read_part<'a>(h: &Header, id: &CommitId, ai: usize, delta: Checked<'_>, interner: &'a mut Interner, pages: Option<&'a mut dyn PageSource>, want: Option<osis_crdt::Want<'_>>, each: &mut dyn FnMut(Piece) -> Result<(), osis_crdt::Error>) -> Result<Option<osis_crdt::Head>, Error> {
     let cx = delta_ctx(h, id, ai, interner)?;
-    let head = stream_checked(delta, &cx, interner, pages, &mut |p| match p {
-        Piece::Skeleton(f) | Piece::Page { fragment: f, .. } => each(f),
-    })?;
+    let head = match want {
+        Some(w) => osis_crdt::stream_checked_some(delta, &cx, interner, pages, w, each)?,
+        None => stream_checked(delta, &cx, interner, pages, each)?,
+    };
     Ok((cx.kind == DeltaKind::Snapshot).then_some(head))
 }
 

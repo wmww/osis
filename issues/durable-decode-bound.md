@@ -1,5 +1,5 @@
 # Durable deltas decode with no memory bound
-> Summary: Tess's decision B (per-blob item cap `MAX_PAGE_ITEMS`, then verify and join page by page) is built through step 5: a 10^6-key map's commit or snapshot applies in 0.23-0.35 GB. Left: the writer holds the delta whole (2.2 GB, the op API), its snapshot loads, clones and copy-indexes the whole state (2.3 GB), `covered` holds the body and the snapshot's part at it (3.5 GB), and step 6 (root tables paged, a format change).
+> Summary: Tess's decision B (per-blob item cap `MAX_PAGE_ITEMS`, then verify and join page by page) is built through step 5: a 10^6-key map's commit or snapshot applies in 0.23-0.35 GB. Left: the writer holds the delta whole (2.2 GB, the op API), its snapshot loads, clones and copy-indexes the whole state (2.3 GB), `covered` holds the body and the snapshot's part at it (3.5 GB at a 10^6-key body), and step 6 (root tables paged, a format change).
 > Priority: low
 > Tags: security, crdt, engine
 
@@ -8,7 +8,7 @@ The steps cited from code: 1-2 streaming re-encode and piece iterator (osis-crdt
 ## Left whole at the writer (10^6 keys)
   - The delta: the op API takes whole `Value`s (`Mutation::set`) and `Batch` resolves the ops into one fragment, so the writer holds the input value (about 0.4 GB with the step's clone) and the delta (`approx_bytes` 1.9 GB: about 1.9 KB per entry of an int key and int value, a representation cost of `Map`'s records and key index). That is the 2.2 GB of the write.
   - The writer's snapshot (`snapshot_if`): loads and clones the whole state (+1.9 GB) and encodes it (now about one page). Its local apply joins it a piece at a time (a valid snapshot's copies are never compared with the state). Encoding from the paged state a page at a time (the encoder pulling each paged position's state pages, twice for the collecting pass; expiring values stripped and `own_retentions` read per page) would save the load and clone: the page-pulling encoder (the `Track` path walk the check already has, plus an engine page source over `PageIndex` in wire order).
-- `covered`: the body, with the snapshot's part at the body's positions accumulated (3.5 GB, 85 s; `Fragment::part_at`). Page by page on both sides needs a pull decoder walking the two streams side by side, or tracking which body positions some snapshot page reached: subtle.
+- `covered`: the body whole, with the snapshot's part at the body's positions (both about the body: 3.5 GB for a 10^6-key body; the snapshot's pages read are those holding the body's positions, `apply::held_part_at`). The body page by page needs a pull decoder walking it beside the snapshot's index.
 - Role-class bodies stay whole (rosters of thousands, not millions). Not streamed: paged positions inside a `Slots` slot, a sequence element's content or a page; paged sequences at apply; a reset over nested paged collections.
 
 ## Measured (`memory::big_map_apply_memory`, release, in-memory stores, 10^6 keys)

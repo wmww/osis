@@ -226,7 +226,17 @@ impl osis_crdt::PageSource for SharedPages<'_, '_, '_> {
         let mut tx = self.tx.try_borrow_mut().map_err(|_| osis_crdt::PageError::Storage)?;
         let tx = &mut **tx;
         let mut blobs = crate::engine::blobs::TxBlobs::new(&mut tx.blobs, tx.txn.is_memory());
-        osis_label::BlobReader::new(self.dedup, &mut blobs).get(link)
+        let page = osis_label::BlobReader::new(self.dedup, &mut blobs).get(link)?;
+        // counted: tests read how many stored bytes a stream decoded
+        crate::costs::count("stream: bytes", page.len() as u64);
+        Ok(page)
+    }
+}
+
+/// A streamed piece's fragment.
+pub(super) fn piece_fragment(p: osis_crdt::Piece) -> Fragment {
+    match p {
+        osis_crdt::Piece::Skeleton(f) | osis_crdt::Piece::Page { fragment: f, .. } => f,
     }
 }
 
@@ -242,21 +252,22 @@ pub(super) fn each_piece(tx: &mut Tx<'_>, h: &Header, id: &CommitId, blob: &Comm
         PartRef::Streamed(s) => s,
     };
     let p = blob.parts.iter().find(|p| p.ai == s.ai).ok_or(Error::Corrupt("streamed part"))?;
-    stream_stored(tx, h, id, s.ai, super::checked(&p.delta), &s.dedup, f).map(|_| ())
+    stream_stored(tx, h, id, s.ai, super::checked(&p.delta), &s.dedup, None, &mut |tx, p| f(tx, piece_fragment(p))).map(|_| ())
 }
 
 /// Decodes the checked delta of commit `id`'s part on aspect `ai` (header `h`, its thing's
 /// `dedup` secret) again, decode-only, and hands `f` its pieces, the skeleton first, then its
 /// pages in wire order (`osis_commit::read_part`; joining the pieces is joining the whole,
 /// spec/crdt.md §8): the transaction is shared between the page source and `f`. A snapshot's
-/// frontiers and `Absorbed`.
-pub(super) fn stream_stored(tx: &mut Tx<'_>, h: &Header, id: &CommitId, ai: usize, delta: osis_crdt::Checked<'_>, dedup: &osis_crypto::Secret32, f: &mut dyn FnMut(&mut Tx<'_>, Fragment) -> Result<()>) -> Result<Option<Gives>> {
+/// frontiers and `Absorbed`. `want`: only the pages it names (the skeleton always).
+#[allow(clippy::too_many_arguments)]
+pub(super) fn stream_stored(tx: &mut Tx<'_>, h: &Header, id: &CommitId, ai: usize, delta: osis_crdt::Checked<'_>, dedup: &osis_crypto::Secret32, want: Option<osis_crdt::Want<'_>>, f: &mut dyn FnMut(&mut Tx<'_>, osis_crdt::Piece) -> Result<()>) -> Result<Option<Gives>> {
     let cell = RefCell::new(tx);
     let mut failed = None;
     let mut pages = SharedPages { tx: &cell, dedup };
     let source: &mut dyn osis_crdt::PageSource = &mut pages;
     let mut interner = osis_crdt::Interner::new();
-    let r = osis_commit::read_part(h, id, ai, delta, &mut interner, Some(source), &mut |piece| {
+    let r = osis_commit::read_part(h, id, ai, delta, &mut interner, Some(source), want, &mut |piece| {
         // counted: tests read how many pieces streamed
         let _s = crate::costs::span("apply: piece");
         let mut tx = cell.try_borrow_mut().map_err(|_| STOPPED)?;

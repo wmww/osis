@@ -2151,18 +2151,53 @@ pub(crate) fn held_fragment(tx: &mut Tx<'_>, id: &CommitId, ai: usize) -> Result
 /// frontiers and `Absorbed`. A stripped part (`Meta::stripped`) is its leftover, one piece
 /// (`retention::leftover`).
 pub(crate) fn each_held_piece(tx: &mut Tx<'_>, id: &CommitId, ai: usize, f: &mut dyn FnMut(&mut Tx<'_>, osis_crdt::Fragment) -> Result<()>) -> Result<Option<Option<crate::engine::Gives>>> {
+    each_held_page(tx, id, ai, None, &mut |tx, p| f(tx, atomic::piece_fragment(p)))
+}
+
+/// `each_held_piece` handing over the pieces themselves, only the pages `want` names (a
+/// stripped part's leftover is one skeleton).
+fn each_held_page(tx: &mut Tx<'_>, id: &CommitId, ai: usize, want: Option<osis_crdt::Want<'_>>, f: &mut dyn FnMut(&mut Tx<'_>, osis_crdt::Piece) -> Result<()>) -> Result<Option<Option<crate::engine::Gives>>> {
     let Some(m) = tx.core.ix.commits.get(id).cloned() else { return Ok(None) };
     let h = m.header.clone();
     let Some(a) = h.aspects.get(ai) else { return Ok(None) };
     if m.stripped.contains(&ai) {
         let Some(l) = crate::retention::leftover::get(tx, &a.tid, &a.ak, id, ai)? else { return Err(Error::Corrupt("leftover missing")) };
-        f(tx, l.fragment)?;
+        f(tx, osis_crdt::Piece::Skeleton(l.fragment))?;
         return Ok(Some(l.gives));
     }
     let Some(blob) = tx.get_commit(id)? else { return Ok(None) };
     let Some(p) = blob.parts.iter().find(|p| p.ai == ai) else { return Ok(None) };
     let dedup = tx.core.dedup(&a.tid).ok_or(Error::Corrupt("dedup"))?;
-    Ok(Some(atomic::stream_stored(tx, &h, id, ai, checked(&p.delta), &dedup, f)?))
+    // counted with its pages (`atomic::SharedPages`)
+    crate::costs::count("stream: bytes", p.delta.len() as u64);
+    Ok(Some(atomic::stream_stored(tx, &h, id, ai, checked(&p.delta), &dedup, want, f)?))
+}
+
+/// The held part of commit `id` on aspect `ai` at `at`'s positions (`Fragment::part_at`), with
+/// what `each_held_piece` returns: its skeleton and the pages holding them (`PageIndex`, found
+/// by the first read of the part and kept per write of its record, `Core::decoded`), so a read
+/// costs the root and `at`'s pages, flat in the part's size.
+pub(crate) fn held_part_at(tx: &mut Tx<'_>, id: &CommitId, ai: usize, at: &osis_crdt::Fragment) -> Result<(osis_crdt::Fragment, Option<Option<crate::engine::Gives>>)> {
+    let stored = match tx.core.ix.commits.get(id).is_some_and(|m| m.stripped.contains(&ai)) {
+        true => None,
+        false => tx.get_commit(id)?.and_then(|b| b.parts.iter().find(|p| p.ai == ai).cloned()),
+    };
+    let kept = stored.as_ref().and_then(|p| tx.core.decoded.page_index(id, p));
+    let wanted = kept.as_ref().map(|k| k.wanted(at));
+    let want = wanted.as_ref().map(|w| move |path: &[osis_crdt::Step], x: osis_crdt::PageAt| w.wants(path, x));
+    let mut part = osis_crdt::Fragment::default();
+    let mut index = (stored.is_some() && kept.is_none()).then(osis_crdt::PageIndex::default);
+    let gives = each_held_page(tx, id, ai, want.as_ref().map(|w| w as osis_crdt::Want<'_>), &mut |_, p| {
+        if let Some(x) = &mut index {
+            x.add(&p);
+        }
+        part.join(atomic::piece_fragment(p).part_at(at));
+        Ok(())
+    })?;
+    if let (Some(p), Some(x), Some(_)) = (&stored, index, &gives) {
+        tx.core.decoded.keep_page_index(*id, p, Arc::new(x));
+    }
+    Ok((part, gives))
 }
 
 /// Whether commit `id` holds a body on aspect `ai` to read (what `each_held_piece` reads): a

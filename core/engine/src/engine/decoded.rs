@@ -11,10 +11,15 @@
 //! misfiled entry differs; decoding the same bytes again would only repeat a pure function, and
 //! an entry is never changed in place (`Arc`). Whether a part's pages are still held is not this
 //! cache's to check: `apply::check_rebuilt` reads held bodies with their pages past it.
+//!
+//! Beside them, a paged part's page index (`osis_crdt::PageIndex`, one entry per leaf page),
+//! found by its first read, so a read at some positions (`apply::held_part_at`) fetches only
+//! the pages holding them.
 
 use osis_base::CommitId;
 use osis_commit::{CommitBlob, Decoded, Part};
 use std::collections::{BTreeMap, HashMap};
+use osis_crdt::PageIndex;
 use std::sync::Arc;
 
 /// Bytes `DecodedCommits` may hold: records by their stored bytes, decoded parts by
@@ -39,10 +44,19 @@ struct KeptPart {
     from: Part,
 }
 
+#[derive(Clone)]
+struct KeptIndex {
+    index: Arc<PageIndex>,
+    /// Debug builds: the part it was streamed from.
+    #[cfg(debug_assertions)]
+    from: Part,
+}
+
 #[derive(Clone, Default)]
 pub(crate) struct DecodedCommits {
     records: HashMap<CommitId, KeptRecord>,
     parts: HashMap<CommitId, BTreeMap<usize, KeptPart>>,
+    indexes: HashMap<CommitId, BTreeMap<usize, KeptIndex>>,
     bytes: usize,
 }
 
@@ -79,6 +93,21 @@ impl DecodedCommits {
         }
     }
 
+    /// The kept page index of `p`, a part of the record of `id` as read now.
+    pub(crate) fn page_index(&self, id: &CommitId, p: &Part) -> Option<Arc<PageIndex>> {
+        let k = self.indexes.get(id)?.get(&p.ai)?;
+        #[cfg(debug_assertions)]
+        assert!(k.from == *p, "page index of part {} of {id:?} went stale", p.ai);
+        Some(k.index.clone())
+    }
+
+    /// Keeps `index`, streamed from `p`.
+    pub(crate) fn keep_page_index(&mut self, id: CommitId, p: &Part, index: Arc<PageIndex>) {
+        if self.room(index.approx_bytes().saturating_add(Self::debug_copy(p.delta.len()))) {
+            self.indexes.entry(id).or_default().insert(p.ai, KeptIndex { index, #[cfg(debug_assertions)] from: p.clone() });
+        }
+    }
+
     /// The bytes debug builds keep beside an entry decoded from `n` bytes (none in release).
     fn debug_copy(n: usize) -> usize {
         if cfg!(debug_assertions) { n } else { 0 }
@@ -102,6 +131,7 @@ impl DecodedCommits {
     pub(crate) fn forget(&mut self, id: &CommitId) {
         self.records.remove(id);
         self.parts.remove(id);
+        self.indexes.remove(id);
     }
 
     pub(crate) fn clear(&mut self) {
@@ -155,5 +185,54 @@ mod tests {
         });
         assert!(gone.unwrap().is_none(), "a removed record reads as gone");
         assert_eq!(decodes(e), (1, 1), "a removal rolled back decodes again");
+    }
+
+    // A cover judgment reads of a snapshot its root and the pages holding the body's positions
+    // (spec/commits.md §5 Covered), found by the snapshot's page index, which its first read
+    // builds and keeps per write of its record: past that read, a judgment's work is flat in the
+    // snapshot's size and judging every body is O(snapshot + bodies). The index holds one entry
+    // per page.
+    #[test]
+    fn cover_judgments_read_the_bodys_pages_spec_commits_5() {
+        use osis_crdt::{Op, PathOp, PathSeg};
+        const BODIES: i64 = 100;
+        // per size: (bytes streamed by the first judgment, by the rest, pieces streamed by the
+        // rest, the snapshot's part walked by the rest, the index kept)
+        let judge = |n: i64| -> (u64, u64, u64, u64, usize) {
+            let mut lp = crate::local_peer::LocalPeer::fresh(1, WallMs(1_700_000_000_000));
+            let e = &mut lp.peers[0].engine;
+            let me = e.me();
+            let ak = Ak::new("x:m.0").unwrap();
+            let mut m = Mutation::new();
+            let t = e.new_thing(&mut m, me);
+            m.set(t, &ak, &Value::Map((0..n).map(|i| (Value::Int(i), Value::Str(format!("value-{i:08}-{}", "x".repeat(200))))).collect())).unwrap();
+            e.commit(m).unwrap();
+            let bodies: Vec<_> = (0..BODIES)
+                .map(|i| {
+                    let mut m = Mutation::new();
+                    m.op(t, &ak, PathOp { path: vec![PathSeg::Key(Value::Int(n + i))], op: Op::Set(Value::Str(format!("body-{i:08}"))) }).unwrap();
+                    e.commit(m).unwrap().unwrap()
+                })
+                .collect();
+            let s = e.snapshot(&t, &ak).unwrap().unwrap();
+            e.core.decoded.clear();
+            let mut judge = |c| assert_eq!(e.run(|tx| crate::retention::snapshot::covered(tx, &s, c, &t, &ak)).unwrap(), Some(true));
+            let count = |costs: &[(&str, std::time::Duration, u64)], name: &str| costs.iter().filter(|x| x.0 == name).map(|x| x.2).sum::<u64>();
+            crate::costs::take();
+            judge(&bodies[0]);
+            let first = crate::costs::take();
+            bodies[1..].iter().for_each(&mut judge);
+            let rest = crate::costs::take();
+            let blob = e.run(|tx| tx.get_commit(&s)).unwrap().unwrap();
+            let index = e.core.decoded.page_index(&s, &blob.parts[0]).unwrap().approx_bytes();
+            (count(&first, "stream: bytes"), count(&rest, "stream: bytes"), count(&rest, "apply: piece"), count(&rest, "covered: snapshot part bytes"), index)
+        };
+        let (small, large) = (judge(500), judge(5_000));
+        let each = (BODIES - 1) as u64;
+        assert!(small.0 > 0 && large.0 > 5 * small.0, "the first judgment streams the snapshot whole: {small:?} {large:?}");
+        assert_eq!((small.2, large.2), (2 * each, 2 * each), "the rest stream the skeleton and the body's page");
+        assert!(large.1 / each < large.0 / 4, "a page and the root, far below the snapshot: {large:?}");
+        assert_eq!(small.3, large.3, "the part walked is flat in the snapshot's size");
+        assert!(large.4 > 5 * small.4 && large.4 < large.0 as usize / 100, "the index grows with the pages, far below the snapshot: {small:?} {large:?}");
     }
 }

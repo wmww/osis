@@ -247,10 +247,34 @@ fn joins_equal(seed: u64, ins: &[Input], commits: &[MCommit]) -> Result<usize, S
         let pieces = i.pieces().map_err(|e| e.to_string())?;
         paged += usize::from(pieces.len() > 1);
         for p in &pieces {
-            if let Piece::Page { path, fragment } = p
+            if let Piece::Page { path, fragment, .. } = p
                 && fragment.at_steps(path).is_none()
             {
                 return Err(format!("piece without its path {path:?}"));
+            }
+        }
+        // read at a commit's positions, the pages the index names give what every page gives
+        let mut index = crate::PageIndex::default();
+        pieces.iter().for_each(|p| index.add(p));
+        for c in commits.iter().step_by(3) {
+            let at = frag(&c.delta);
+            let part = |ps: &[Piece]| ps.iter().fold(Fragment::default(), |mut f, p| {
+                f.join(match p {
+                    Piece::Skeleton(x) | Piece::Page { fragment: x, .. } => x.part_at(&at),
+                });
+                f
+            });
+            let wanted = index.wanted(&at);
+            let mut some = Vec::new();
+            let mut p = i.pages.clone();
+            let src = p.as_mut().map(|p| p as &mut dyn PageSource);
+            crate::stream_checked_some(Checked::verified(&i.root), &i.cx, &mut Interner::new(), src, &|path, x| wanted.wants(path, x), &mut |x| {
+                some.push(x);
+                Ok(())
+            })
+            .map_err(|e| e.to_string())?;
+            if part(&some) != part(&pieces) {
+                return Err(format!("seed {seed}: the pages the index names give another part for root {}", hex(&i.root)));
             }
         }
         for b in bases.iter().step_by(8).chain(bases.last()) {

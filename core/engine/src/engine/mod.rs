@@ -277,10 +277,6 @@ impl HeldKeyset {
 /// A snapshot part's frontiers and `Absorbed` (commit, author).
 pub(crate) type Gives = (osis_crdt::Frontiers, Vec<(CommitId, Tid)>, osis_crdt::Facts);
 
-/// A snapshot's held part on one aspect, as `apply::each_held_piece` streams it: (snapshot, its
-/// aspect index, the pieces, what it gives).
-pub(crate) type CoverCache = (CommitId, usize, Vec<osis_crdt::Fragment>, Option<Option<Gives>>);
-
 impl Meta {
     /// A commit's meta from its decoded header.
     pub(crate) fn new(header: Arc<Header>, valid: Vec<bool>, head: index::RecordHead, missing: BTreeSet<usize>) -> Meta {
@@ -1102,9 +1098,6 @@ pub struct Core {
     /// While `Some` (a tick round's expiries): the rebuilds asked, one per aspect, run once
     /// when it ends (`apply::run_batched`).
     pub batched: Option<BTreeMap<(Tid, Ak), Batched>>,
-    /// While a held snapshot is judged against many bodies (`retention::memory::drop_covered`
-    /// for a new one): its held part, read once (`retention::covered`).
-    pub(crate) cover_cache: Option<CoverCache>,
     /// What judging when bodies were replaced reads of an aspect's held bodies, per aspect
     /// (`retention::bounds::held_writes`, `memo`).
     pub(crate) held_writes: memo::Memo<(Tid, Ak), Arc<crate::retention::bounds::HeldWrites>>,
@@ -1306,7 +1299,6 @@ impl Core {
             destroyed_due: self.destroyed_due.clone(),
             destroyed_kept: self.destroyed_kept.clone(),
             batched: self.batched.clone(),
-            cover_cache: self.cover_cache.clone(),
             held_writes: self.held_writes.clone(),
             replaced_dates: self.replaced_dates.clone(),
             waiting_carries: self.waiting_carries.clone(),
@@ -1760,7 +1752,6 @@ impl Core {
             self.live_bodies.clear();
             self.bodies.clear();
             self.decoded.clear();
-            self.cover_cache = None;
             self.records_read.wrote_all();
             if self.memory_tx {
                 self.memory_generation += 1;
@@ -1862,7 +1853,6 @@ impl Core {
             live_bodies: _,
             bodies: _,
             decoded: _,
-            cover_cache: _,
             generation: _,
             role_generation: _,
             memory_generation: _,
@@ -2099,7 +2089,6 @@ impl Core {
             destroyed_due: BTreeSet::new(),
             destroyed_kept: None,
             batched: None,
-            cover_cache: None,
             held_writes: memo::Memo::new("held writes"),
             replaced_dates: memo::Memo::new("replaced at"),
             waiting_carries: memo::Memo::new("waiting snapshot: judged"),
