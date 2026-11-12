@@ -67,6 +67,20 @@ fn hosted_commits(sim: &mut NetSim) -> Res<BTreeSet<CommitId>> {
     Ok(live.iter().filter_map(|k| sim.known.get(k)).map(|k| k.0).collect())
 }
 
+/// The `ts` of commit `c` as node `n` holds it.
+fn stamp(sim: &mut NetSim, n: usize, c: &CommitId) -> Res<osis_base::Ts> {
+    let h = sim.engine(n)?.header(c);
+    h.map(|h| h.ts).ok_or_else(|| sim.fail(format!("node {n} lacks its own commit {c:?}")))
+}
+
+/// The compaction snapshots of `t`'s story by `author` node `n` holds, with their `ts`.
+fn snapshots(sim: &mut NetSim, n: usize, author: Tid, t: Tid) -> Res<BTreeSet<(CommitId, osis_base::Ts)>> {
+    let k = super::scenarios::ak(sim, &workload::STORY)?;
+    let e = sim.engine(n)?;
+    let on = |h: &osis_commit::Header| h.kind.is_compaction() && h.author == author && h.aspects.iter().any(|a| a.tid == t && a.ak == k);
+    Ok(e.commit_ids().into_iter().filter_map(|c| e.header(&c).filter(|h| on(h)).map(|h| (c, h.ts))).collect())
+}
+
 fn demote(sim: &mut NetSim, n: usize, target: Tid, holder: Tid, new: Option<Role>) -> Res<()> {
     let new = new.map(|role| ct::Edge { role, until: None, invite: None, tied: None });
     let r = sim.engine(n)?.demote(&target, &Demotion { holder, new, retain: None });
@@ -79,7 +93,9 @@ fn demote(sim: &mut NetSim, n: usize, target: Tid, holder: Tid, new: Option<Role
 /// without having seen X; Bob writes Y and comes back. X and Y are invalid everywhere. A re-grant
 /// makes valid again those some node still holds: Bob forgets the doc once the removal applies
 /// there (spec/permissions.md §3), writers drop invalid bodies, so only a host that received one
-/// still holds it.
+/// still holds it, X or Y itself or a compaction snapshot of Bob's carrying it. A snapshot Carol
+/// wrote while holding them before the removal reached her vouches for them (notes/permissions.md
+/// Snapshots vouch): they then stay everywhere.
 pub fn revocation_bob(seed: u64) -> Res<Report> {
     revocation("revocation_bob", seed, false)
 }
@@ -114,6 +130,7 @@ fn revocation(name: &str, seed: u64, carol: bool) -> Res<Report> {
     }
     sim.advance(DAY_MS)?;
     let x = add_tag(&mut sim, b, t, "x")?;
+    let x_ts = stamp(&mut sim, b, &x)?;
     sim.advance(DAY_MS)?;
     // Thu: Alice removes Bob without having seen X
     sim.remove(a, g, pb)?;
@@ -121,17 +138,24 @@ fn revocation(name: &str, seed: u64, carol: bool) -> Res<Report> {
     sim.run(30)?;
     sim.advance(DAY_MS)?;
     let y = add_tag(&mut sim, b, t, "y")?;
+    let y_ts = stamp(&mut sim, b, &y)?;
+    let carol_before = snapshots(&mut sim, c, pc, t)?;
     if carol {
         sim.direct(b, c)?;
         expect_tags(&mut sim, &[c], t, &["x", "y"], &["x", "y"])?;
     }
     sim.advance(DAY_MS)?;
+    // what Bob compacted carries every write of his before it; Carol's, written holding X and Y
+    // valid (the removal has not reached her), carries both
+    let bob_snaps = snapshots(&mut sim, b, pb, t)?;
+    let carried = !snapshots(&mut sim, c, pc, t)?.is_subset(&carol_before);
     // Sun: they come back
     sim.unsever(Party::N(b), Party::S(s));
     sim.unsever(Party::N(c), Party::S(s));
     sim.run(60)?;
     sim.run_until_quiescent(40)?;
-    expect_tags(&mut sim, &[a, c], t, &["mon", "x", "y"], &["mon"])?;
+    let first: &[&str] = if carried { &["mon", "x", "y"] } else { &["mon"] };
+    expect_tags(&mut sim, &[a, c], t, &["mon", "x", "y"], first)?;
     // a re-grant validates the gap (§5.2) for what some node still holds: no node keeps an
     // invalid body but its author, who forgot the doc, so a host that received it
     sim.count_uploads = false;
@@ -141,7 +165,8 @@ fn revocation(name: &str, seed: u64, carol: bool) -> Res<Report> {
     sim.run(40)?;
     sim.run_until_quiescent(60)?;
     let story = ["mon", "x", "y"];
-    let want: Vec<&str> = [("mon", None), ("x", Some(x)), ("y", Some(y))].into_iter().filter(|(_, c)| c.is_none_or(|c| hosted.contains(&c))).map(|(w, _)| w).collect();
+    let kept = |c: CommitId, ts: osis_base::Ts| carried || hosted.contains(&c) || bob_snaps.iter().any(|(s, sts)| *sts > ts && hosted.contains(s));
+    let want: Vec<&str> = [("mon", None), ("x", Some((x, x_ts))), ("y", Some((y, y_ts)))].into_iter().filter(|(_, c)| c.is_none_or(|(c, ts)| kept(c, ts))).map(|(w, _)| w).collect();
     expect_tags(&mut sim, &[a, b, c], t, &story, &want)?;
     sim.finish()
 }
