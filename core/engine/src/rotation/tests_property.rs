@@ -69,8 +69,10 @@ struct Run {
     hostile: BTreeSet<usize>,
     /// The history's steps, for a failure's message.
     log: Vec<String>,
-    /// Every `secrets.0` state of an actor any node held after a step, and every secret any
-    /// node held: what a departed party that kept every state it met opens (`opens_in`).
+    /// Every `secrets.0` state of an actor any node held after each write, and every secret any
+    /// node held: what a departed party that kept every state it met opens (`opens_in`). Noted
+    /// after each write, not each step: a rotation removes the boxes at the epochs it supersedes,
+    /// so a box another write of the same step replaced is in no later state.
     states: Vec<(Tid, ct::Secrets)>,
     secrets: BTreeMap<Key, osis_crypto::Secret32>,
     /// When each peer first held each secret (an index into `log`).
@@ -209,7 +211,9 @@ impl Run {
     /// none of `m`'s secrets and the commits `held`, is within the stated limit for departed peer
     /// `d` (spec/crypto.md §4, Encrypting under: judged by order alone): unless the rotator held
     /// `d`'s departure from `m` (its last write in the settled timeline) and `k`'s rotation is
-    /// ordered before it, which the order rule leaves out. Read from the history at `o`.
+    /// ordered before it, which the order rule leaves out. A departure below `m` (from a holder
+    /// actor of `m`) is none of `m`'s: it reaches the rotator only as `m`'s next keyset
+    /// (notes/crypto.md, Holder actors at depth 0). Read from the history at `o`.
     fn excused(&self, o: usize, held: &BTreeSet<CommitId>, m: Tid, r: Role, k: &Epoch, d: usize) -> bool {
         let Some(om) = self.actors.iter().find(|x| x.0 == m).map(|x| x.1) else { return true };
         let Some(dep) = departure_point(self, om, m, d) else { return true };
@@ -441,8 +445,10 @@ fn rotation_history(seed: u64, every_tx: bool) -> Reached {
         let before = run.before(x);
         for t in run.all() {
             let _ = run.lp.peers[x].engine.reseal_due(&t, &Pass);
+            run.note();
             let made = run.lp.peers[x].engine.ensure_rotated(&t).is_ok_and(|d| !d.0.commits.is_empty());
             run.rotated(x, t, made);
+            run.note();
             if run.rng.next(2) == 0 {
                 let rot: BTreeSet<Role> = ROLES.into_iter().filter(|_| run.rng.next(2) == 0).collect();
                 let _ = run.rotate(x, t, &rot, false);
@@ -470,6 +476,7 @@ fn rotation_history(seed: u64, every_tx: bool) -> Reached {
                 let ti = run.actors.iter().position(|x| x.0 == t).unwrap();
                 run.log.push(format!("peer {a} removes hostile {h} from actor {ti}"));
                 run.record(a, &before);
+                run.note();
             }
         }
         run.lp.sync_all().unwrap();
@@ -510,7 +517,13 @@ fn settle(run: &mut Run, seed: u64, rotate: bool) {
                     continue;
                 }
                 let a = run.lp.peers[p].engine.reseal_due(&t, &Pass).unwrap().commits.len();
+                if a > 0 {
+                    run.note();
+                }
                 let b = if !rotate { 0 } else { run.lp.peers[p].engine.ensure_rotated(&t).unwrap_or_else(|e| panic!("seed {seed}: peer {p} ensure_rotated {t:?}: {e:?}")).0.commits.len() };
+                if b > 0 {
+                    run.note();
+                }
                 n += a + b;
                 if a + b > 0 {
                     let ti = run.actors.iter().position(|x| x.0 == t).unwrap();
