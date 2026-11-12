@@ -1,5 +1,5 @@
 # Un-merge of an invalid record's nested writes depends on holding the invalid delta
-> Summary: spec/crdt.md §4.6 (Removed) drops others' valid writes nested in a record an invalid delta created, but invalid bodies never travel, so a node that saw the invalid delta and one that never did read the aspect differently forever (an empty map vs absent). Invalid data affects a value. Found by `sim-sweep:revocation_carol` seed 723062969599 on main f9101135d.
+> Summary: spec/crdt.md §4.6 (Removed) drops others' valid writes nested in a record an invalid delta created, but invalid bodies never travel, so a node that saw the invalid delta and one that never did read the aspect differently forever (an empty map vs absent). Invalid data affects a value. Found by `sim-sweep:revocation_carol` seed 723062969599 on main f9101135d; seed 420306316144 fails the same way.
 > Priority: normal
 > Tags: crdt, engine
 
