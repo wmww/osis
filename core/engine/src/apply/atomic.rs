@@ -19,7 +19,7 @@ use crate::engine::Gives;
 use crate::retention::snapshot::Carried;
 
 /// Notes a held compaction snapshot of `(tid, ak)` with its frontiers and `Absorbed`; what its
-/// body carries valued is noted once read (`note_carried`).
+/// body carries is noted once read (`note_carried`).
 pub(crate) fn note_snapshot(core: &mut Core, tid: &Tid, ak: &Ak, ts: osis_base::Ts, id: &CommitId, (fr, abs, _): Gives) {
     // kept in (`ts`, ID) order, so arrival order (a rebuild's is the store's) does not show
     let v = core.ix.snapshots.entry_or_default((*tid, ak.clone()));
@@ -29,7 +29,7 @@ pub(crate) fn note_snapshot(core: &mut Core, tid: &Tid, ak: &Ak, ts: osis_base::
     }
 }
 
-/// Notes `c`, the bound of what held snapshot `id` of `(tid, ak)` carries valued, from its body
+/// Notes `c`, the bounds of what held snapshot `id` of `(tid, ak)` carries, from its body
 /// as held (joined, or its leftover): `retention::snapshot::Carried`.
 pub(crate) fn note_carried(core: &mut Core, tid: &Tid, ak: &Ak, id: &CommitId, c: Carried) {
     let k = (*tid, ak.clone());
@@ -1057,8 +1057,9 @@ pub(crate) fn check_rebuilt(tx: &mut Tx<'_>) -> Result<TxChange> {
                 debug_assert_eq!(on, 0, "{c:?} on {tid:?} {ak:?}: held with values, its writes value-less");
             }
         }
-        // every held snapshot is indexed with a bound holding each write its body holds valued
-        // (`retention::snapshot::Carried`): a write missed would expire in place past its copy
+        // every held snapshot is indexed with bounds holding each write its body holds, valued
+        // and value-less (`retention::snapshot::Carried`): a valued write missed would expire in
+        // place past its copy, a value-less one would cover a body it gives no value of
         for c in tx.core.ix.by_aspect.get(&k).map(|s| s.iter().map(|(_, c)| *c).collect::<Vec<_>>()).unwrap_or_default() {
             let Some(ai) = tx.core.ix.commits.get(&c).filter(|m| !m.header.kind.has_own_writes()).and_then(|m| m.aspect(&tid, &ak)) else { continue };
             let mut held = Carried::default();
@@ -1070,7 +1071,7 @@ pub(crate) fn check_rebuilt(tx: &mut Tx<'_>) -> Result<TxChange> {
                 continue;
             }
             let bound = tx.core.ix.snapshots.get(&k).and_then(|v| v.iter().find(|x| x.1 == c)).map(|x| x.4.clone());
-            debug_assert!(bound.is_some_and(|b| b.holds(&held)), "held snapshot {c:?} on {tid:?} {ak:?}: its carried bound misses a valued write it holds");
+            debug_assert!(bound.is_some_and(|b| b.holds(&held)), "held snapshot {c:?} on {tid:?} {ak:?}: its carried bounds miss a write it holds");
         }
         let cached = (tx.core.states.get(&k).cloned(), tx.core.pages.get(&k).cloned());
         let (want, got) = crate::costs::paused(|| -> Result<_> { Ok((rebuilt(tx, &tid, &ak, None)?, tx.state(&tid, &ak)?.cloned())) })?;

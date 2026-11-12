@@ -541,11 +541,13 @@ pub(crate) fn covered_join(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Ti
             return Ok(None);
         }
         // a snapshot holding a write of the body value-less covers it only where this node
-        // holds that write value-less for good (past its expiry): a copy stripped for a purge
-        // that fell (`purge::rejudge_purges`), or under the request still standing, or written
-        // by a node holding a request this one does not, gives no value, and the body counted
-        // covered would never be fetched again (spec/commits.md §5 Covered)
-        if !own && !(m.header.expires.is_some_and(|t| t <= tx.now().0) && super::valueless(tx.core, c, cai)) && holds_valueless(tx, s, sai, &super::writes_of(&m.header, c, cai), tid, ak)? {
+        // holds that write value-less for good (past its expiry; one with an expiry not held is
+        // value-less here, above): a copy stripped for a purge that fell
+        // (`purge::rejudge_purges`), or under the request still standing (it may fall, as a
+        // bare leftover stays, `drops_as_covered`), or written by a node holding a request this
+        // one does not, gives no value, and the body counted covered would never be fetched
+        // again (spec/commits.md §5 Covered)
+        if !own && !m.header.expires.is_some_and(|t| t <= tx.now().0) && holds_valueless(tx, s, sai, &super::writes_of(&m.header, c, cai), tid, ak)? {
             return Ok(Some(false));
         }
         return Ok(Some(true));
@@ -750,7 +752,9 @@ impl Engine {
     /// unchanged, whatever its tables say, and the snapshot holds each live write of the body
     /// with the body's payload where the body's write has one. A body not held here: covered, unless the snapshot's
     /// frontier lists its session short of its counters, so a body dropped here as covered past
-    /// a gap reads uncovered from then on (`Dropped::covered_by` keeps what covered it). A snapshot
+    /// a gap reads uncovered from then on (`Dropped::covered_by` keeps what covered it), or the
+    /// snapshot holds a write of it value-less that this node does not hold so for good (past
+    /// its expiry). A snapshot
     /// covers none stamped later, nor, purging on replace, a live body that keeps history. `None` when either is not
     /// held (nothing is established).
     pub fn covered(&mut self, s: &CommitId, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<Option<bool>> {
