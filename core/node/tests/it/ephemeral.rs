@@ -2975,8 +2975,8 @@ fn many_authors_run(authors: usize, secs: u64) -> (usize, u64, u64) {
 
 // spec/sync.md §9 (an expiring commit superseded by its author's later writes is dropped and its
 // author deletes it), §5 (a peer that cannot read L rate-limits deletes and caps ephemeral bytes
-// per label), §10 Bodies (an author pushes its own memory entries inline): 4 authors at 30 cursor
-// moves a second, scaled to a 1 s window (10 authors took 4.5-12 s: by hand below)
+// per label): 4 authors at 30 cursor moves a second, scaled to a 1 s window (10 authors took
+// 4.5-12 s: by hand below)
 #[test]
 fn many_authors_under_a_peers_rates_spec_sync_9() {
     let (del, peak, cap) = many_authors_run(4, 1);
