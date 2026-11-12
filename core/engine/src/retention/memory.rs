@@ -7,8 +7,12 @@
 //! memory commits read alike whatever was superseded when.
 
 use crate::engine::Tx;
+use crate::engine::write::{Creates, check_authority};
 use crate::error::Result;
-use osis_base::{Ak, CommitId, Tid};
+use crate::events::{Cause, Event};
+use osis_base::{Ak, CommitId, Tid, Ts};
+use osis_schema::RawKey;
+use osis_schema::core_types::CREATED;
 use osis_commit::EphClass;
 use osis_crdt::Fragment;
 use std::collections::BTreeSet;
@@ -44,10 +48,23 @@ pub(crate) fn forget_if_spent(tx: &mut Tx<'_>, c: &CommitId) -> Result<()> {
 }
 
 
+/// Whether each of `writers` may delete each of `things` at `ts` (spec/crdt.md §4.6): write on
+/// the thing, judged before anything is written (a thing in `creates` by its record there). A
+/// delete needs it whether or not a commit carries it (`Engine::write`, an undone creation).
+pub(crate) fn check_delete(tx: &Tx<'_>, writers: &[Tid], creates: &Creates, things: &BTreeSet<Tid>, ts: Ts) -> Result<()> {
+    for w in writers {
+        for t in things {
+            check_authority(tx.core, *w, creates, t, CREATED.ak(), ts)?;
+        }
+    }
+    Ok(())
+}
+
 /// A delete's ephemeral side (spec/commits.md §2, notes/ephemeral.md Deletion): every held part
 /// on an ephemeral aspect of `things` vanishes here (`vanish`) and the commits spent by it are
-/// forgotten; nothing is written, so other holders keep their copies. The aspects changed.
-pub(crate) fn drop_things(tx: &mut Tx<'_>, things: &BTreeSet<Tid>) -> Result<Vec<(Tid, Ak)>> {
+/// forgotten; nothing is written, so other holders keep their copies. No commit carries the
+/// drop, so listeners hear it as derived (`Cause::Deleted`).
+pub(crate) fn drop_things(tx: &mut Tx<'_>, things: &BTreeSet<Tid>) -> Result<()> {
     tx.in_class(true, |tx| {
         let mut changed = BTreeSet::new();
         let mut spent = BTreeSet::new();
@@ -62,7 +79,10 @@ pub(crate) fn drop_things(tx: &mut Tx<'_>, things: &BTreeSet<Tid>) -> Result<Vec
         for c in &spent {
             forget_if_spent(tx, c)?;
         }
-        Ok(changed.into_iter().collect())
+        if !changed.is_empty() {
+            tx.core.events.queue(Event::Changed { cause: Cause::Deleted, changed: changed.into_iter().collect() });
+        }
+        Ok(())
     })
 }
 

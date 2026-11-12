@@ -509,7 +509,7 @@ impl Engine {
     /// `revert_commit`; `confined`: held to `actor`'s rights on every write it really makes
     /// (`Engine::revert_as`), before anything applies. Undoing a creation deletes the thing
     /// (spec/crdt.md §4.6): the undo commit deletes it durably and its ephemeral state is dropped
-    /// here, as a delete does (`retention::memory::drop_things`).
+    /// here, as a delete does (`retention::memory::check_delete`, `drop_things`).
     pub(crate) fn revert_inner(&mut self, c: CommitId, actor: Tid, confined: bool) -> Result<Reverted> {
         let mut del: BTreeSet<Tid> = BTreeSet::new();
         let mut memory = false;
@@ -526,34 +526,23 @@ impl Engine {
         let writers: &[Tid] = if confined { &[node, actor] } else { &[node] };
         let done = self.run(|tx| {
             if !del.is_empty() {
-                let core = &*tx.core;
-                check_acts(core, node, &|_| None, &actor, ts)?;
-                for w in writers {
-                    for t in &del {
-                        check_authority(core, *w, &Default::default(), t, CREATED.ak(), ts)?;
-                    }
-                }
+                check_acts(tx.core, node, &|_| None, &actor, ts)?;
             }
+            crate::retention::memory::check_delete(tx, writers, &Default::default(), &del, ts)?;
             let mut m = Mutation::new();
             m.act_as(actor).undo(c);
             m.confined = confined;
             m.ts = Some(ts);
             let Some(u) = tx.in_class(memory, |tx| crate::engine::write::commit_in(tx, m))? else { return Ok(None) };
-            let ts = tx.core.ix.commits.get(&u).map(|m| m.view.ts).unwrap_or(ts);
-            Ok(Some((u, ts, crate::retention::memory::drop_things(tx, &del)?)))
+            crate::retention::memory::drop_things(tx, &del)?;
+            Ok(Some(u))
         });
-        let (u, ts, dropped) = match done {
-            Ok(Some(x)) => x,
-            Ok(None) => return Ok(Reverted::Superseded),
-            Err(Error::NotKept(_)) => return Ok(Reverted::NotKept),
-            Err(e) => return Err(e),
-        };
-        if memory {
-            self.ephemeral_written(u, actor);
-        } else {
-            self.dropped_event(dropped);
+        match done {
+            Ok(Some(u)) => Ok(Reverted::Written(self.written(u))),
+            Ok(None) => Ok(Reverted::Superseded),
+            Err(Error::NotKept(_)) => Ok(Reverted::NotKept),
+            Err(e) => Err(e),
         }
-        Ok(Reverted::Written(Written { id: u, ts }))
     }
 
     /// Held commits validly touching `scope` (every held commit with `None`: decodes every header),

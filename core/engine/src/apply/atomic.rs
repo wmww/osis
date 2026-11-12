@@ -587,13 +587,11 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Parts, o
         // an own edge with an `until` (a self-demotion): judged when it passes
         crate::rotation::arm_untils(tx, rosters.iter().copied())?;
     }
-    // a memory commit is ephemeral state to watchers (a local one's batch queues its own event,
-    // `Engine::write`); node-sync carries its bodies as any commit's (`mark_changed`)
+    // a memory commit is ephemeral state to watchers; node-sync carries its bodies as any
+    // commit's (`mark_changed`)
     crate::retention::compact::Trigger::applied(tx, &h, blob)?;
     if h.ephemeral.is_some() {
-        if origin != Origin::Local {
-            tx.core.events.queue(Event::Ephemeral { id, origin, author: h.author, actor: h.actor, ts: h.ts, received, changed: changed.into_iter().collect() });
-        }
+        tx.core.events.queue(Event::Ephemeral { id, origin, author: h.author, actor: h.actor, ts: h.ts, received, changed: changed.into_iter().collect() });
     } else {
         tx.core.events.queue(Event::Applied { id, origin, author: h.author, actor: h.actor, ts: h.ts, received, changed: changed.into_iter().collect() });
     }

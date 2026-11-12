@@ -642,3 +642,56 @@ fn a_thing_with_only_expiring_content_spec_commits_6() {
     assert_eq!(db.at(t, body).get().unwrap(), None);
     assert!(!durable_items(&db, g).contains(&t), "out of its group");
 }
+
+// notes/ephemeral.md API (Watches), Deletion: a local ephemeral write, its revert, a delete and
+// an undone creation each reach a listener once: the two commits as local changes naming their
+// commit, the two drops as derived (no commit carries them). spec/data-model.md §1,
+// spec/crdt.md §4.6
+#[test]
+fn local_ephemeral_changes_reach_listeners_once_spec_data_model_1() {
+    let (db, _c) = setup(0);
+    let draft = osis::DynamicAspectKey::untyped(ak("app:draft+.0"));
+    let listen = |x: osis::Tid| {
+        let (tx, rx) = channel();
+        let sub = db.at(x, draft.clone()).on_change(move |_, c| tx.send(c).unwrap()).unwrap();
+        assert_eq!(recv(&rx).origin, Origin::Initial);
+        (sub, rx)
+    };
+    let local = |o: Origin| match o {
+        Origin::Local(i) => i.id,
+        other => panic!("{other:?}"),
+    };
+    let x = db.commit_with(|w| { let x = w.create()?; keep_all(w, x); Ok(x) }).unwrap();
+    let (_sub, rx) = listen(x);
+    let set = |v: i64| {
+        let mut w = db.write();
+        w.at(x, draft.clone()).set(&Value::Int(v)).unwrap();
+        w.commit().unwrap().unwrap()
+    };
+    let one = set(1);
+    let ch = recv(&rx);
+    assert_eq!((ch.value, local(ch.origin)), (Ok(Some(Value::Int(1))), one.stamp.id));
+    let two = set(2);
+    assert_eq!(local(recv(&rx).origin), two.stamp.id);
+    let back = db.revert(two.stamp.id).unwrap();
+    let ch = recv(&rx);
+    assert_eq!((ch.value, local(ch.origin)), (Ok(Some(Value::Int(1))), back.stamp.id), "a revert is a local ephemeral commit");
+    db.settle();
+    assert!(rx.try_recv().is_err(), "told once each");
+    // a delete: derived
+    let mut w = db.write();
+    w.delete(x).unwrap();
+    w.commit().unwrap();
+    let ch = recv(&rx);
+    assert_eq!((ch.value, ch.origin), (Ok(None), Origin::Derived(osis::DerivedFrom::Deleted)));
+    // an undone creation: derived
+    let made = db.commit_with(|w| { let y = w.create()?; w.at(y, osis::DynamicAspectKey::untyped(ak("app:n.0"))).set(&Value::Int(0))?; Ok(y) }).unwrap();
+    let created = db.created(made).unwrap().unwrap().id;
+    db.commit_set(made, draft.clone(), &Value::Int(3)).unwrap();
+    let (_sub2, rx2) = listen(made);
+    db.revert(created).unwrap();
+    let ch = recv(&rx2);
+    assert_eq!((ch.value, ch.origin), (Ok(None), Origin::Derived(osis::DerivedFrom::Deleted)));
+    db.settle();
+    assert!(rx.try_recv().is_err() && rx2.try_recv().is_err(), "told once each");
+}

@@ -16,10 +16,7 @@ pub use signal::{EphCommit, MAX_DELIVERED};
 use crate::engine::write::{AspectMut, check_authority, commit_in};
 use crate::engine::{Engine, Mutation};
 use crate::error::{Error, Result};
-use crate::events::{Cause, Event, Origin};
 use osis_base::{Ak, CommitId, Tid, Ts};
-use osis_schema::RawKey;
-use osis_schema::core_types::CREATED;
 use std::collections::BTreeMap;
 
 /// The local ephemeral write path's own state (everything else is Core's).
@@ -82,17 +79,18 @@ impl Engine {
         }
         if eph_ops.is_empty() {
             let deleting = m.deleting.clone();
-            if !m.unchecked {
-                let ts = Ts::make(self.now(), 0).unwrap_or_default();
-                for t in &deleting {
-                    check_authority(&self.core, node, &m.creates, t, CREATED.ak(), ts)?;
-                }
-            }
+            let creates = m.creates.clone();
+            let writers: &[Tid] = if m.unchecked { &[] } else { &[node] };
+            let ts = Ts::make(self.now(), 0).unwrap_or_default();
             // a delete drops its things' ephemeral state whether or not it has durable writes
             // to commit: one with none is a drop alone, no commit
-            let (id, dropped) = self.run(|tx| Ok((commit_in(tx, m)?, crate::retention::memory::drop_things(tx, &deleting)?)))?;
-            self.dropped_event(dropped);
-            return Ok(id.map(|id| Written { id, ts: self.core.ix.commits.get(&id).map(|c| c.view.ts).unwrap_or_default() }));
+            let id = self.run(|tx| {
+                crate::retention::memory::check_delete(tx, writers, &creates, &deleting, ts)?;
+                let id = commit_in(tx, m)?;
+                crate::retention::memory::drop_things(tx, &deleting)?;
+                Ok(id)
+            })?;
+            return Ok(id.map(|id| self.written(id)));
         }
         // a memory commit's writes and a durable commit's are not one (spec/commits.md §2)
         // a purge request is durable whatever it names (its `purge.0` delta is no write of the app's)
@@ -172,49 +170,20 @@ impl Engine {
             }
             Ok(memory)
         })?;
-        Ok(id.map(|id| self.ephemeral_written(id, actor)))
+        Ok(id.map(|id| self.written(id)))
     }
 
-    /// Ends an own memory commit `id` written by `write` or a revert: its change event.
-    pub(crate) fn ephemeral_written(&mut self, id: CommitId, actor: Tid) -> Written {
-        // a node that has joined no account writes only its own thing, as itself
-        let author = self.core.me().unwrap_or(self.core.id.tid());
-        let now = self.now();
-        let (ts, mut changed) = self.header(&id).map(|h| (h.ts, h.aspects.iter().map(|a| (a.tid, a.ak.clone())).collect::<Vec<_>>())).unwrap_or_default();
-        changed.sort();
-        changed.dedup();
-        if !changed.is_empty() {
-            self.core.events.queue(Event::Ephemeral { id, origin: Origin::Local, author, actor, ts, received: now, changed });
-            self.core.events.flush();
-        }
-        Written { id, ts }
-    }
-
-    /// The change of the ephemeral aspects a delete or an undone creation dropped here
-    /// (`retention::memory::drop_things`): no commit carries it, so it is told as derived.
-    pub(crate) fn dropped_event(&mut self, changed: Vec<(Tid, Ak)>) {
-        if changed.is_empty() {
-            return;
-        }
-        self.core.events.queue(Event::Changed { cause: Cause::Deleted, changed });
-        self.core.events.flush();
+    /// Commit `id` as written here: its ID and stamp.
+    pub(crate) fn written(&self, id: CommitId) -> Written {
+        Written { id, ts: self.core.ix.commits.get(&id).map(|c| c.view.ts).unwrap_or_default() }
     }
 
     /// Tests: an own memory commit of `m` (what `write` makes of an ephemeral write).
     #[doc(hidden)]
     pub fn commit_in_memory(&mut self, m: Mutation) -> Result<Option<CommitId>> {
-        let actor = m.actor.unwrap_or(self.tid());
-        let id = self.run(|tx| {
+        self.run(|tx| {
             tx.set_memory();
             commit_in(tx, m)
-        })?;
-        if let Some(c) = id
-            && let Some(h) = self.header(&c)
-        {
-            let now = self.now();
-            self.core.events.queue(Event::Ephemeral { id: c, origin: Origin::Local, author: self.core.writer()?, actor, ts: h.ts, received: now, changed: h.aspects.iter().map(|a| (a.tid, a.ak.clone())).collect() });
-            self.core.events.flush();
-        }
-        Ok(id)
+        })
     }
 }
