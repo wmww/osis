@@ -26,3 +26,6 @@
 - (node fork) `Engine::me()` panics on a hub's engine ("joined no account"), so a probe printing the node's tid in shared code crashes hub nodes; `engine.tid()` is the safe tag.
 - (osis fork) The osis `World` storm report names message kinds only; a probe printing `osis_sim::net::frames` of each carried message (blob IDs per Stream/Delete) found each storm's blob in one run. A storm report with that detail would save the probe.
 - (osis fork) Paired nodes share the account tid, so `engine.me()` tags both alike in probes; `engine.tid()` (the node) tells them apart.
+- (role-budget round) A test that passed on the brief's status list (`sources::an_empty_group_can_be_sourced_at_the_node`) failed deterministically on the pre-rebase tip too: building that tip with `tools/bin-at` before blaming the rebase saved a bisect over main's commits.
+- (role-budget round) A rebase kept the branch's mode on `tools/policy.py` (main had just made it executable): `git diff origin/main --summary` shows mode changes a content diff hides.
+- (role-budget round) `lose_deposits` names commits by "some node's entry for the blob", so a deposit to an inbox label its sender does not hold (no entry there) slips through it: a test hiding a grant from its grantee could not.
