@@ -3555,6 +3555,43 @@ fn pages_count_against_the_cap_spec_sync_9() {
     assert!(at_c > 6 << 20, "c counts the pages: {at_c}");
 }
 
+// spec/sync.md §9 Caps: a page entry from others counts against the holder's cap when its bytes
+// arrive, its commit not held (not arrived yet, or never), and is released when its entry goes
+#[test]
+fn page_before_its_commit_counts_spec_sync_9() {
+    let (mut net, (host, a, b, g, w)) = windowed();
+    let mut m = Mutation::new();
+    for (k, v) in big_notes(4, 1 << 18, "k") {
+        m.op(w, &eph(NOTES), PathOp { path: vec![PathSeg::Key(s(&k))], op: Op::Set(s(&v)) }).unwrap();
+    }
+    // written, never synced: only the pages reach b
+    net.engine(a).write(m).unwrap();
+    let pages: Vec<osis_base::BlobId> = {
+        let e = net.engine(a);
+        let ids: Vec<CommitId> = e.memory_commits().into_iter().map(|x| x.0).collect();
+        ids.iter().filter_map(|c| e.header(c)).filter(|h| h.aspects.iter().any(|x| x.tid == w)).flat_map(|h| h.chunks.iter().map(|ch| ch.blob).collect::<Vec<_>>()).collect()
+    };
+    assert!(pages.len() >= 4, "paged: {}", pages.len());
+    let l = net.label(a);
+    let before = net.sync(b).ephemeral_bytes(&l);
+    let key = write_key(&mut net, a, g);
+    let mut events = Vec::new();
+    let mut size = 0u64;
+    for p in &pages {
+        let bytes = net.engine(a).blob(p).unwrap().unwrap();
+        size += bytes.len() as u64;
+        let wrap = [7; osis_crypto::WRAP_LEN];
+        let stamp = Some(osis_label::sign_stamp(&key, &l, p, &wrap));
+        events.push(osis_proto::Event::Added { blob_id: *p, blob: Some(bytes), wrap, stamp });
+    }
+    push(&mut net, b, host, l, events);
+    assert!(pages.iter().all(|p| net.engine(b).has_blob(p)), "b holds the pages");
+    assert!(notes(&mut net, b, w).is_empty(), "not their commit");
+    assert_eq!(net.sync(b).ephemeral_bytes(&l), before + size, "the pages count at b on arrival");
+    push(&mut net, b, host, l, pages.iter().map(|p| osis_proto::Event::Deleted(*p)).collect());
+    assert_eq!(net.sync(b).ephemeral_bytes(&l), before, "released with their entries");
+}
+
 // spec/sync.md §5 (a new sync key ends an open), §6: a Sync refused 8 because a read rotation
 // landed between its Open and it: the pass after the reopen on the same connection still
 // uploads b's offline note (once it counted the refused Sync's list as held there and never did).
