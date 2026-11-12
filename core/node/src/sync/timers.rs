@@ -21,6 +21,7 @@ impl SyncEngine {
             }
         }
         self.end_idle_links();
+        self.sources_moved();
         if self.passes_due() {
             self.passes(out)?;
         }

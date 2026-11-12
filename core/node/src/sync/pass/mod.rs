@@ -345,6 +345,21 @@ impl SyncEngine {
         full
     }
 
+    /// Labels with a source their last pass did not act on (`Work::acted`) are due: one that
+    /// became a source since (opened, read to its end, registered) gets what it missed. Not one
+    /// read first there (no secret of its head's sync epoch): the secrets arriving pass it.
+    pub(super) fn sources_moved(&mut self) {
+        let mut fresh = Vec::new();
+        for (id, c) in &self.conns {
+            for (l, x) in &c.labels {
+                if c.up && x.phase == super::Phase::Open && x.ready() && x.keys.epochs[0].is_some() && !self.work.get(l).is_some_and(|w| w.acted.contains(id)) && self.read_as_host(*id, l) {
+                    fresh.push(*l);
+                }
+            }
+        }
+        self.due_labels.extend(fresh);
+    }
+
     /// The passes (spec/sync.md §5): every label this node syncs gets one pass per change,
     /// whatever the number of its sources. Its own part runs once against this node's store
     /// (placing what the label must hold of its own, certificates, stamping, promotion,
