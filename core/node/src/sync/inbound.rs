@@ -498,6 +498,12 @@ impl SyncEngine {
             self.state.flush_storing(&mut self.engine, blobs)?;
         }
         self.engine.put_memory_blobs(memory_blobs)?;
+        // a memory entry is served with its bytes held (`stream_added`): one logged before they
+        // were (its bytes dropped while its commit awaited a record, fetched again) is logged
+        // again now, else no stream would show it
+        for (b, _) in &fresh_memory {
+            self.state.relog(l, *b);
+        }
         self.open_entries(conn, l, &touched)?;
         for (b, n) in fresh_memory {
             self.ingest_memory_blob(l, b, n)?;
@@ -876,8 +882,9 @@ impl SyncEngine {
         things.dedup();
         self.stats.awaits += 1;
         for x in self.state.labels_of(&b).into_iter().chain([l]) {
+            // an entry opened only now is still unknown (a memory entry ingested on arrival)
             if let Some(mut e) = self.state.entries.get(&(x, b)).cloned()
-                && matches!(e.kind, Kind::Commit { .. })
+                && matches!(e.kind, Kind::Commit { .. } | Kind::Unknown)
             {
                 e.kind = Kind::Awaits { commit, things: things.clone() };
                 self.state.set_entry(x, b, e);
@@ -934,6 +941,7 @@ impl SyncEngine {
                 e.kind = Kind::Unknown;
                 self.state.charge_memory(l, b, None);
                 self.state.set_entry(l, b, e);
+                self.reask.insert((l, b));
                 labels.insert(l);
             }
         }

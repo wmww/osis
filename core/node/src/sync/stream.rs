@@ -650,7 +650,7 @@ impl SyncEngine {
         // a memory entry goes with its bytes up to this node's own limit, whatever the requester
         // asked: one superseded before a fetch of it arrives is never fetched (spec/sync.md §10,
         // Bodies)
-        let (inline, crossed) = self.streams.get(&conn).map_or((0, BTreeSet::new()), |s| (s.serving.inline_limit, s.serving.crossed.clone()));
+        let (inline, crossed) = self.streams.get(&conn).map_or((0, BTreeSet::new()), |s| (s.serving.inline_limit.max(self.cfg.inline_limit), s.serving.crossed.clone()));
         let mut out = Vec::new();
         let mut cut = false;
         for (seq, l, b, added) in picked {
@@ -1346,6 +1346,26 @@ impl SyncEngine {
     /// allow, and each body a stream owes that is held nowhere and asked nowhere is fetched from
     /// the first stream owing it (a fetch lost with its connection, or answered without it).
     pub(super) fn stream_settle_all(&mut self, out: &mut Vec<Action>) -> Result<()> {
+        // reopened entries: opened where their bytes are here, else asked once of a peer whose
+        // shared set has the label (a source's come by its pass, `refetch`)
+        for (l, b) in std::mem::take(&mut self.reask) {
+            if self.state.entries.get(&(l, b)).is_none_or(|e| e.kind != super::state::Kind::Unknown) {
+                continue;
+            }
+            if self.engine.has_blob(&b) {
+                self.open_entries(None, l, &[b])?;
+                continue;
+            }
+            if !self.wants(&l, &b) {
+                continue;
+            }
+            let peer = self.streams.keys().find(|c| self.records.shared.get(*c).is_some_and(|s| s.has(&l))).copied();
+            if let Some(c) = peer
+                && self.may_ask(c, l, &b)
+            {
+                self.stream_fetch(c, l, vec![b], None, out)?;
+            }
+        }
         let waiting: Vec<ConnId> = self.streams.iter().filter(|(_, s)| !s.pulling.unsettled.is_empty()).map(|(c, _)| *c).collect();
         let all: BTreeSet<(LabelId, BlobId)> = self.streams.values().flat_map(|s| s.pulling.unsettled.iter().flat_map(|u| u.owed.iter().copied())).collect();
         self.unread_prune(&all);

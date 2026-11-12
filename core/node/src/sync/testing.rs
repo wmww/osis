@@ -63,6 +63,7 @@ impl SyncEngine {
                 unsettled_memo: self.unsettled_memo.clone(),
                 relink_backoff: self.relink_backoff.clone(),
                 relink_pending: self.relink_pending.clone(),
+                reask: self.reask.clone(),
                 relink_at: self.relink_at.clone(),
                 retired_at: self.retired_at.clone(),
                 deferred: self.deferred.clone(),

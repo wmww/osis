@@ -54,7 +54,9 @@ impl SyncEngine {
                     Fate::Keep => {}
                 }
             }
-            if !held {
+            // one awaiting a record keeps its entry: the record arriving fetches it again
+            // (`reopen_awaiting`), from a peer that reads the label too
+            if !held && !matches!(e.kind, Kind::Awaits { .. }) {
                 self.state.drop_entry(l, id);
             }
         }

@@ -178,6 +178,10 @@ pub struct SyncEngine {
     pub(crate) relink_backoff: BTreeMap<(Tid, osis_base::Ak), (u64, u64)>,
     /// Deleted chunks an aspect's back-off holds back, and when to try them again (memory only).
     pub(crate) relink_pending: BTreeSet<osis_base::BlobId>,
+    /// Entries reopened when what their commit awaited came (`reopen_awaiting`): opened where
+    /// their bytes are here, else asked again of a peer whose shared set has their label
+    /// (`stream_settle_all`).
+    pub(crate) reask: BTreeSet<(LabelId, osis_base::BlobId)>,
     pub(crate) relink_at: u64,
     /// Hosts where a replaced label is done with (`retire_at`).
     pub(crate) retired_at: BTreeSet<(HostKey, LabelId)>,
@@ -428,6 +432,7 @@ impl SyncEngine {
             unsettled_memo: None,
             relink_backoff: BTreeMap::new(),
             relink_pending: BTreeSet::new(),
+            reask: BTreeSet::new(),
             relink_at: 0,
             retired_at: BTreeSet::new(),
             deferred: Vec::new(),
