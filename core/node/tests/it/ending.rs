@@ -1827,3 +1827,50 @@ fn a_release_requests_entry_goes_everywhere_at_its_expiry_spec_sync_5() {
         assert!(net.engine(n).local_rows_naming(&req.0).unwrap().is_empty(), "node {n}: nothing names it past the tombstones");
     }
 }
+
+// spec/sync.md §5 (an entry goes at its prefix expiry, at any host), spec/commits.md §5
+// (Forgetting): b stops reading g's old label L once an admin replaces it, its rows there kept
+// unread. A writer that missed the replacement uploads the release request to L at b. Nothing at
+// b reads L, yet the entry goes there at the request's expiry, with every reader having forgotten
+// it, as it goes at the host that never read L
+#[test]
+fn a_release_requests_entry_goes_where_it_is_held_unread_spec_sync_5() {
+    let (net, host, [a, b, c], g, []) = hosted::<3, 0>(&[(1, Role::Write), (2, Role::Admin)], [], true);
+    let mut net = net;
+    let old = net.label(b);
+    let (new, acts) = net.sync(a).replace_label(&g, &old).unwrap();
+    net.actions(a, acts);
+    net.run();
+    net.run();
+    assert_eq!(net.group_labels(b).into_iter().map(|(_, l)| l.id).collect::<Vec<_>>(), vec![new], "b reads only the new label");
+    let rows = |net: &mut Net, n: usize, l: &osis_base::LabelId| osis_proto::LabelStore::live_ids(&*net.sync(n).hub_store().lock().unwrap(), l).unwrap();
+    assert!(!rows(&mut net, b, &old).is_empty(), "b keeps rows of L, unread");
+    // b's connections forget L too
+    net.restart(b, 31);
+    net.run();
+    let (x, _) = made(&mut net, c, g);
+    let req = net.engine(c).release(&[x]).unwrap().unwrap();
+    net.run();
+    let ids: Vec<osis_base::BlobId> = net.sync(c).entries(&new).into_iter().filter(|(_, k)| matches!(k, osis_node::sync::EntryKind::Commit { commit, .. } if *commit == req)).map(|(id, _)| id).collect();
+    assert!(!ids.is_empty() && ids.iter().all(|i| net.host_ids(host, &new).contains(i)), "the request placed");
+    // the stale writer's upload (as the host protocol takes it: the blob's prefix expiry)
+    for id in &ids {
+        let bytes = osis_proto::LabelStore::blob(&*net.sync(c).hub_store().lock().unwrap(), id).unwrap().unwrap();
+        let expiry = osis_label::host_prefix(&bytes).unwrap().and_then(|p| p.expiry()).map(|t| t.0);
+        assert!(expiry.is_some(), "the request's blob carries its expiry");
+        let put = osis_proto::Put { blob_id: *id, blob: &bytes, wrap: [7; osis_crypto::WRAP_LEN], stamp: None, expiry, ephemeral: false, replaces: &[], now: net.now() };
+        assert_eq!(osis_proto::LabelStore::put(&mut *net.sync(b).hub_store().lock().unwrap(), &old, put).unwrap(), osis_proto::Code::OK);
+    }
+    net.run();
+    assert!(ids.iter().all(|i| rows(&mut net, b, &old).contains(i)), "b holds it under L");
+    net.advance(osis_base::format::ROLE_KEEP_MS);
+    for _ in 0..3 {
+        net.advance(70_000);
+    }
+    for n in [a, b, c] {
+        assert!(net.engine(n).header(&req).is_none(), "node {n} forgot the request");
+    }
+    assert!(!ids.iter().any(|i| net.host_ids(host, &new).contains(i)), "gone at the host");
+    let held = rows(&mut net, b, &old);
+    assert!(!ids.iter().any(|i| held.contains(i) || net.sync(b).holds_blob(i)), "gone at b: no row, no bytes");
+}

@@ -933,8 +933,8 @@ impl State {
         if rows.is_empty() {
             return Ok(HubChanges::default());
         }
-        let (gone, held, refused) = engine.run(|tx| {
-            let (mut gone, mut held, mut refused) = (Vec::new(), Vec::new(), Vec::new());
+        let (gone, held, refused, expiry) = engine.run(|tx| {
+            let (mut gone, mut held, mut refused, mut expiry) = (Vec::new(), Vec::new(), Vec::new(), BTreeMap::new());
             for (l, b, row) in &rows {
                 let here = self.entries.get(&(*l, *b)).filter(|e| !e.memory);
                 match (here, row) {
@@ -948,6 +948,11 @@ impl State {
                     (None, Some(_)) => {
                         // its bytes are here (its row keeps them): the engine holds them again
                         if let Some(bytes) = tx.blobs.get(b)? {
+                            // it goes at its prefix expiry (`expire_entries`) whatever it opens as,
+                            // if at all: its label may be one this node cannot place
+                            if let Some(t) = osis_label::Prefix::parse(&bytes).ok().and_then(|p| p.expiry()) {
+                                expiry.insert(*b, t.0);
+                            }
                             tx.store_blobs(vec![(*b, bytes)])?;
                             held.push((*l, *b));
                         }
@@ -958,14 +963,14 @@ impl State {
             for (l, b) in &refused {
                 tx.blobs.defer(osis_host::HostStore::removal(l, b, true));
             }
-            Ok((gone, held, refused))
+            Ok((gone, held, refused, expiry))
         })?;
         engine.blobs_stored();
         let _ = refused;
         for (l, b, row) in rows {
             let Some((wrap, stamp)) = row else { continue };
             match self.entries.get(&(l, b)) {
-                None if !self.tombs.contains_key(&(l, b)) => self.set_entry_quiet(l, b, Entry { wrap, stamp, cert: false, salt: None, expires: None, size: None, kind: Kind::Unknown, memory: false }),
+                None if !self.tombs.contains_key(&(l, b)) => self.set_entry_quiet(l, b, Entry { wrap, stamp, cert: false, salt: None, expires: expiry.get(&b).copied(), size: None, kind: Kind::Unknown, memory: false }),
                 Some(e) if !e.memory && (e.wrap, e.stamp) != (wrap, stamp) => {
                     let e = Entry { wrap, stamp, ..e.clone() };
                     self.set_entry_quiet(l, b, e);

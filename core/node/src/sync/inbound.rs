@@ -1242,15 +1242,7 @@ impl SyncEngine {
         let Some(bytes) = self.engine.blob(&b)? else { return Ok(()) };
         let Some(g) = self.group_of(&l, conn) else { return Ok(()) };
         let secrets = self.read_secrets(&g);
-        // whatever it opens as, if at all, it goes at its prefix expiry (`expire_entries`): bytes
-        // held without a fetch (a row another wrote to the hub's store) pass no `keep_salts`
         let prefix = osis_label::Prefix::parse(&bytes).ok();
-        if e.expires.is_none()
-            && let Some(t) = prefix.as_ref().and_then(|p| p.expiry())
-        {
-            e.expires = Some(t.0);
-            self.state.set_entry(l, b, e.clone());
-        }
         if let Some((_, key)) = osis_label::unwrap_any(secrets.iter(), &b, &e.wrap) {
             // this group's closure is synced (spec/sync.md §3) from the first entry it opens: a
             // label named by another's word, with no entry readable, asks for nothing
