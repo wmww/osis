@@ -239,9 +239,8 @@ pub(crate) struct HeldWrites {
     bodies: Vec<(Ts, CommitId)>,
     clean: bool,
     /// The writes each held body holds, winning there or not (`Fragment::held_writes`), as the
-    /// state joins it (an invalid delta's writes left out, from a valid snapshot only what it
-    /// holds under such a dot without a write of its own there, `Unmerge::unvouched`; an invalid
-    /// snapshot's body gives nothing): the two earliest such bodies by `(ts, ID)`, so one is not
+    /// state joins it (an invalid delta's writes left out, a valid snapshot's body whole, an
+    /// invalid snapshot's giving nothing): the two earliest such bodies by `(ts, ID)`, so one is not
     /// the body judged.
     holds: ByWrite<Vec<(Ts, CommitId)>>,
     /// The writes each held valid snapshot with values holds as winners: its `ts` and ID, in
@@ -273,7 +272,7 @@ fn aspect_bodies(core: &Core, tid: &Tid, ak: &Ak) -> (bool, Vec<(Ts, CommitId)>)
 pub(super) fn read_held_writes(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<HeldWrites> {
     let (clean, on) = aspect_bodies(tx.core, tid, ak);
     // clean, un-merge removes nothing (`Unmerge::of` reads the invalid parts it has not)
-    let un = if clean { crate::apply::Unmerge::none() } else { crate::apply::Unmerge::of(tx, tid, ak)? };
+    let un = if clean { crate::apply::Unmerge::none() } else { crate::apply::Unmerge::of(tx.core, tid, ak) };
     let mut out = HeldWrites { bodies: on.clone(), clean, ..HeldWrites::default() };
     for (ts, x) in on {
         note_body(tx, tid, ak, &un, ts, x, &mut out)?;
@@ -334,7 +333,9 @@ fn note_body(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, un: &crate::apply::Unmerge, ts
             v.sort();
         });
     }
-    f.remove_writes(&|d| if snap { un.unvouched(d) } else { un.bad(d) });
+    if !snap {
+        un.strip(&mut f);
+    }
     out.holds.note(&f.held_writes(), |_, v| {
         v.push((ts, x));
         v.sort();

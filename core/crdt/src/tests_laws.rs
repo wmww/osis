@@ -288,14 +288,14 @@ mod entry_copies {
             // un-merge of each copy (§4.6), joined in either order
             let un = |x: &Fragment| {
                 let mut y = x.clone();
-                y.remove_dots(*e);
+                y.remove_writes(*e);
                 y
             };
             let fwd = ps[1..].iter().fold(un(&ps[0]), |a, b| join(&a, &un(b)));
             assert_eq!(fwd, ps[..n - 1].iter().rev().fold(un(&ps[n - 1]), |a, b| join(&a, &un(b))), "un-merge {i}, commutative");
             let mu = ms.iter().map(|m| {
                 let mut m = m.clone();
-                m.unmerge(*me, &|_| false);
+                m.unmerge(*me);
                 m
             });
             let mu = mu.reduce(|mut a, b| {

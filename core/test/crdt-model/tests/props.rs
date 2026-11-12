@@ -551,7 +551,7 @@ proptest! {
         let ty = kitchen_sink();
         let st = converge(seed, &ty, 3, 4, false, false);
         let Some(mut st) = st else { return Ok(()) };
-        st.unmerge(&|d| d.source == Source::session(2, 0), &|_| false);
+        st.unmerge(&|d| d.source == Source::session(2, 0));
         let mut stamps = Vec::new();
         st.stamps(&mut stamps);
         for s in stamps {
@@ -562,47 +562,35 @@ proptest! {
     }
 }
 
-/// §4.6, §5.6: a valid snapshot holds a record by its dot, wherever it sits. (1) Two concurrent records of key `k`; a
-/// valid write sits in the valid one's record, inside a nested entry `e` the invalid creator made and the snapshot
-/// holds under the other record: it stays. (2) The snapshot holds an invalid creator's keyed record; a valid write
-/// held value-less sits in the dot's key-erased record (§4.7): it stays too.
+/// §4.6: an invalid delta loses only its own writes. A valid write nested in an entry the invalid delta created stays,
+/// so the held bodies un-merged join to what a node that never held the invalid delta holds.
 #[test]
-fn unmerge_holds_records_by_dot_spec_4_6() {
+fn unmerge_keeps_others_nested_writes_spec_4_6() {
     use crdt_model::stamp::Stamp;
     use crdt_model::state::{Composite, Entry};
     let (good, bad) = (Source::session(1, 0), Source::session(2, 0));
     let st = |ts, src: &Source, ctr| Stamp::new(ts, src.clone(), ctr);
-    let reg = |s: Stamp, v: Option<&str>| Frag::Register { reset: None, write: Some((s, v.map(|v| Value::Str(v.into())))) };
+    let reg = |s: Stamp, v: &str| Frag::Register { reset: None, write: Some((s, Some(Value::Str(v.into())))) };
     let entry = |created: Option<Stamp>, frag: Frag| Entry { reset: None, frag: Some(Box::new(frag)), created };
-    let map = |es: Vec<((Dot, Option<&str>), Entry)>| Frag::Map { c: Composite::default(), entries: es.into_iter().map(|((d, k), e)| ((d, k.map(|k| Value::Str(k.into()))), e)).collect() };
+    let map = |es: Vec<((Dot, &str), Entry)>| Frag::Map { c: Composite::default(), entries: es.into_iter().map(|((d, k), e)| ((d, Some(Value::Str(k.into()))), e)).collect() };
     let dot = |src: &Source, ctr| Dot { source: src.clone(), ctr };
     let is_bad = |d: &Dot| d.source == bad;
-    let held_by = |snap: &Frag| {
-        let mut h = std::collections::BTreeSet::new();
-        snap.held_records(&mut h);
-        h
-    };
-    let (da, db, e) = (dot(&good, 1), dot(&bad, 1), dot(&bad, 2));
-    // the invalid creator's record of `k` with nested entry `e`, as a valid snapshot carries it
-    let theirs = map(vec![((db.clone(), Some("k")), entry(Some(st(10, &bad, 1)), map(vec![((e.clone(), Some("x")), entry(Some(st(10, &bad, 2)), reg(st(10, &bad, 3), Some("1"))))])))]);
-    let snap = map(vec![((da.clone(), Some("k")), entry(Some(st(11, &good, 1)), map(vec![]))), ((db.clone(), Some("k")), entry(Some(st(10, &bad, 1)), map(vec![((e.clone(), Some("x")), entry(Some(st(10, &bad, 2)), reg(st(10, &bad, 3), Some("1"))))])))]);
-    // the valid write into `e`, in the valid record of `k`
-    let write = map(vec![((da.clone(), Some("k")), entry(None, map(vec![((e.clone(), Some("x")), entry(None, reg(st(20, &good, 2), Some("2"))))])))]);
-    let mut kept = write.clone();
-    kept.unmerge(&is_bad, &|d| held_by(&snap).contains(d));
-    assert_eq!(kept, write, "(1) held through the other record");
-    let mut lost = write.clone();
-    lost.unmerge(&is_bad, &|_| false);
-    assert_ne!(lost, write, "(1) not held: it goes");
+    let (db, e) = (dot(&bad, 1), dot(&bad, 2));
+    // the invalid delta: entry `k` holding entry `x`
+    let theirs = map(vec![((db.clone(), "k"), entry(Some(st(10, &bad, 1)), map(vec![((e.clone(), "x"), entry(Some(st(10, &bad, 2)), reg(st(10, &bad, 3), "1")))])))]);
+    // a valid write into `x`
+    let write = map(vec![((db.clone(), "k"), entry(None, map(vec![((e.clone(), "x"), entry(None, reg(st(20, &good, 1), "2")))])))]);
     let mut gone = theirs.clone();
-    gone.unmerge(&is_bad, &|d| held_by(&snap).contains(d));
-    assert!(gone.read().is_none(), "the invalid creator's own writes go: {gone:?}");
-    // (2) the snapshot holds the keyed record of `db`; the valid write, value-less, in its key-erased record
-    let snap = map(vec![((db.clone(), Some("k0")), entry(Some(st(10, &bad, 1)), reg(st(10, &bad, 1), Some("whole"))))]);
-    let erased = map(vec![((db.clone(), None), entry(None, reg(st(30, &good, 3), None)))]);
-    let mut kept = erased.clone();
-    kept.unmerge(&is_bad, &|d| held_by(&snap).contains(d));
-    assert_eq!(kept, erased, "(2) the key-erased record is held with its keyed one");
+    gone.unmerge(&is_bad);
+    assert!(gone.read().is_none(), "the invalid delta's own writes go: {gone:?}");
+    let mut kept = write.clone();
+    kept.unmerge(&is_bad);
+    assert_eq!(kept, write, "the valid nested write stays");
+    let (mut held, mut never) = (None, None);
+    apply(&mut held, gone);
+    apply(&mut held, kept);
+    apply(&mut never, write);
+    assert_eq!(held, never, "holding the invalid delta changes nothing");
 }
 
 #[test]

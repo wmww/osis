@@ -1074,11 +1074,10 @@ pub(crate) fn filter_by(s: &mut Seq, t: &Seq, keep: crate::lifecycle::Keep) {
     *s.elems_mut() = out;
 }
 
-/// Removes every write whose origin dot matches `pred` (un-merge, §4.6): an element a matching
-/// dot created loses its creation (anchor and char) and, unless `keep` accepts the dot, its list
-/// content, others' writes nested in it included; its record goes where no write is left (what
-/// anchors at it is placed at a virtual anchor, §6.1).
-pub(crate) fn remove_dots(s: &mut Seq, pred: &dyn Fn(&Dot) -> bool, keep: &dyn Fn(&Dot) -> bool) {
+/// Removes every write whose origin dot matches `pred` (`Fragment::remove_writes`): an element a
+/// matching dot created loses its creation (anchor and char), others' writes on and in it stay;
+/// its record goes where no write is left (what anchors at it is placed at a virtual anchor, §6.1).
+pub(crate) fn remove_writes(s: &mut Seq, pred: &dyn Fn(&Dot) -> bool) {
     let bad = |st: &Stamp| pred(st.dot.origin());
     let elems = s.elems_mut();
     // a range record may span deltas: edited per element
@@ -1095,12 +1094,12 @@ pub(crate) fn remove_dots(s: &mut Seq, pred: &dyn Fn(&Dot) -> bool, keep: &dyn F
         if theirs {
             el.created = None;
             el.valueless = false;
-            if !(keep(d.origin()) && matches!(el.content, SeqContent::Frag(_))) {
+            if !matches!(el.content, SeqContent::Frag(_)) {
                 el.content = SeqContent::None;
             }
         }
         if let SeqContent::Frag(f) = &mut el.content {
-            f.remove_dots_in(pred, keep);
+            f.remove_writes(pred);
             if f.is_empty() {
                 el.content = SeqContent::None;
             }

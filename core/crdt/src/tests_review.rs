@@ -285,7 +285,7 @@ fn slots_unmerge_keeps_slot_creation_spec_7() {
     stripped.remove_writes(&|d| d.src == b.dot.src);
     assert!(matches!(&stripped, Fragment::Slots(s) if s.slots.contains_key(&Encoding::Map)), "{stripped:?}");
     let mut un = stripped.clone();
-    un.remove_dots(&|d| d.src == sess(Tid::from_bytes([4; 15])));
+    un.remove_writes(&|d| d.src == sess(Tid::from_bytes([4; 15])));
     assert_eq!(un, stripped, "nothing of the fourth author");
     for (name, x) in [("stripped", stripped), ("stripped, un-merged", un)] {
         let mut y = bdelta.clone();

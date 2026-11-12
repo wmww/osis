@@ -4,7 +4,7 @@
 //! and rewriting the whole state. `tests_paged` requires both to leave the same.
 
 use super::Parts;
-use super::atomic::{Joins, Unmerge, invalid_of, note_snapshot, strip_valueless};
+use super::atomic::{Joins, invalid_of, note_snapshot, strip_valueless};
 use super::{copies, validity};
 use crate::engine::{Gives, Tx};
 use crate::retention::Killed;
@@ -47,7 +47,7 @@ pub(super) fn joins(tx: &mut Tx<'_>, h: &Header, id: &CommitId, parts: &Parts, v
         }
         j.touched.note(&a.tid, &a.ak, &f);
         let mut dead = Killed::default();
-        let ch = join_into_state(tx, &a.tid, &a.ak, f, snap, &mut dead)?;
+        let ch = join_into_state(tx, &a.tid, &a.ak, f, &mut dead)?;
         if ch.is_changed() {
             j.changed.insert((a.tid, a.ak.clone()));
         }
@@ -65,18 +65,8 @@ fn note_snapshot_part(tx: &mut Tx<'_>, a: &AspectEntry, ts: osis_base::Ts, id: &
     copies::vouches_any(f, &owned)
 }
 
-fn join_into_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, mut delta: Fragment, snap: bool, dead: &mut Killed) -> Result<Changes> {
+fn join_into_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, mut delta: Fragment, dead: &mut Killed) -> Result<Changes> {
     tx.load_lazy(tid, ak)?;
-    let un = Unmerge::probe(tx, tid, ak, &delta)?;
-    if !un.is_empty() {
-        if snap {
-            let mine = delta.copy_index();
-            delta.remove_dots(&|d| un.bad(d) && !mine.holds(d));
-        } else {
-            un.strip(&mut delta);
-        }
-        crate::retention::mark_bounded(tx, tid, ak);
-    }
     strip_valueless(tx.core, tid, ak, &mut delta);
     let touch = crate::engine::pages::touch_of(&delta, tx.core.pages.get(&(*tid, ak.clone())));
     tx.ensure_touch(tid, ak, &touch)?;

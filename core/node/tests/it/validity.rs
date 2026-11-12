@@ -1549,9 +1549,10 @@ fn unmerge_paged_matches_fresh_large_spec_crdt_4_6() {
 // spec/crdt.md §4.6 (un-merge is a function of the held set), spec/commits.md §4 (a late
 // delta joins on arrival): Bob, removed, puts entry "late", text "BB" and a register in one
 // commit; Carol writes inside "late" and between Bob's chars. Dave gets Bob's commit with only
-// its register part, the rest later, Carol's commit anywhere among them: Carol's map write goes
-// with Bob's creation and Bob's chars go, as at Eve, who held Bob's commit
-// whole before Carol's; a node never getting the rest agrees with itself in either order.
+// its register part, the rest later, Carol's commit anywhere among them: Bob's creation and chars
+// go, Carol's map write stays in a record with no creation (read hidden), as at Eve, who held
+// Bob's commit whole before Carol's; a node never getting the rest agrees with itself in either
+// order.
 #[test]
 fn late_invalid_part_unmerges_alike_spec_crdt_4_6() {
     let (mut lp, d, b, _) = setup();
@@ -1608,7 +1609,9 @@ fn late_invalid_part_unmerges_alike_spec_crdt_4_6() {
         out
     };
     let want = look(&mut lp, 4);
-    assert!(!want[0].contains("late"), "Eve: {}", want[0]);
+    // the read, not the state: Carol's write stays under "late"
+    let shown = |x: &str| x.lines().next().unwrap().contains("late");
+    assert!(!shown(&want[0]), "Eve: {}", want[0]);
     let orders: [&[&[u8]]; 3] = [&[&nk.bytes, &partial, &ck.bytes], &[&partial, &nk.bytes, &ck.bytes], &[&partial, &ck.bytes, &nk.bytes]];
     for (k, seq) in orders.iter().enumerate() {
         let i = lp.peers.len();
@@ -1618,7 +1621,7 @@ fn late_invalid_part_unmerges_alike_spec_crdt_4_6() {
         assert_eq!(look(&mut lp, i), want, "order {k}");
     }
     // the map and text parts never come: alike either way too: the removal leaves them invalid, so
-    // nothing waits for them (spec/commits.md §4) and Carol's map write goes with the commit
+    // nothing waits for them (spec/commits.md §4) and Carol's map write stays hidden
     let mut seen = Vec::new();
     for (k, seq) in [[&nk.bytes, &partial], [&partial, &nk.bytes]].iter().enumerate() {
         let i = lp.peers.len();
@@ -1628,9 +1631,9 @@ fn late_invalid_part_unmerges_alike_spec_crdt_4_6() {
         seen.push(look(&mut lp, i));
     }
     assert_eq!(seen[0], seen[1], "partial");
-    assert!(!seen[0][0].contains("late"), "partial: {}", seen[0][0]);
+    assert!(!shown(&seen[0][0]), "partial: {}", seen[0][0]);
     // none of its parts on the thing comes, the one on another thing does: the commit is applied
-    // from its header's word on the thing, alike either way, Carol's map write going with it
+    // from its header's word on the thing, alike either way, Carol's map write hidden
     let mut seen = Vec::new();
     for (k, seq) in [[&nk.bytes, &elsewhere], [&elsewhere, &nk.bytes]].iter().enumerate() {
         let i = lp.peers.len();
@@ -1640,7 +1643,7 @@ fn late_invalid_part_unmerges_alike_spec_crdt_4_6() {
         seen.push(look(&mut lp, i));
     }
     assert_eq!(seen[0], seen[1], "elsewhere");
-    assert!(!seen[0][0].contains("late"), "elsewhere: {}", seen[0][0]);
+    assert!(!shown(&seen[0][0]), "elsewhere: {}", seen[0][0]);
 }
 
 // spec/permissions.md §5.2 (a valid snapshot speaks for current state alone: its writes join

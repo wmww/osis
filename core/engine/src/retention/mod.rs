@@ -1391,11 +1391,11 @@ mod tests {
         check(&mut lp, "a join inside the invalid part's record");
     }
 
-    // spec: none (internal: notes/engine.md, Derived values). A memo reading a commit's leftover,
-    // or its copy index from the cache, runs again when the record is written, and again when a
-    // failed transaction undoes that write.
+    // spec: none (internal: notes/engine.md, Derived values). A memo reading a commit's leftover
+    // runs again when the record is written, and again when a failed transaction undoes that
+    // write.
     #[test]
-    fn memos_follow_leftovers_and_cached_copy_indexes_through_writes_and_undo() {
+    fn memos_follow_leftovers_through_writes_and_undo() {
         use crate::engine::{Tx, memo::Memo};
         use crate::error::Error;
         let mut lp = LocalPeer::new(1, 956, WallMs(1_700_000_000_000)).unwrap();
@@ -1433,19 +1433,6 @@ mod tests {
         });
         assert!(r.is_err());
         assert_eq!(e.run(left).unwrap(), two, "the write undone");
-
-        let memo: &'static Memo<u8, String> = Box::leak(Box::new(Memo::new("test copy index")));
-        let ix = |tx: &mut Tx<'_>| Memo::get_in(tx, |_| memo, &1, |tx| Ok::<_, Error>(format!("{:?}", crate::apply::copies::copy_index(tx, &c, &t, &x)?)));
-        e.run(|tx| crate::apply::copies::copy_index(tx, &c, &t, &x).map(drop)).unwrap();
-        let whole = e.run(ix).unwrap();
-        let r = e.run(|tx| {
-            let (blob, m) = (tx.get_commit(&c)?.unwrap(), tx.core.ix.commits.get(&c).cloned().unwrap());
-            tx.put_commit(&c, &osis_commit::rewrite(&blob, |x| x == ai), &m, osis_store::Shred::No, None)?;
-            assert_ne!(ix(tx).unwrap(), whole, "its record written in the transaction");
-            undo()
-        });
-        assert!(r.is_err());
-        assert_eq!(e.run(ix).unwrap(), whole, "the write undone");
     }
 
     // spec/commits.md §5, spec/crypto.md §7, spec/requirements.md Purge on replace: a writer whose

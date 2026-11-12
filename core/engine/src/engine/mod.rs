@@ -1139,11 +1139,6 @@ pub struct Core {
     pub death_walks: u64,
     /// Aspect rebuilds run (`apply::rebuild`). Tests: what a validity change costs.
     pub rebuilds: u64,
-    /// Held snapshots' writes by dot (`copies::vouched`), per commit.
-    /// A commit's entries go whenever its stored body or leftover changes (`put_commit`,
-    /// `remove_commit`, `leftover::put`/`remove`: a strip erases keys and values, a late part
-    /// or an unstrip brings writes) and on rollback; all go past `COPY_CACHE_MAX` writes.
-    pub copy_index: BTreeMap<CommitId, BTreeMap<(Tid, Ak), Arc<osis_crdt::CopyIndex>>>,
     /// Stored commit records and their parts, decoded once per write of the record
     /// (`decoded::DecodedCommits`).
     pub(crate) decoded: decoded::DecodedCommits,
@@ -1286,7 +1281,6 @@ impl Core {
             replaced_reads: self.replaced_reads.clone(),
             death_walks: self.death_walks.clone(),
             rebuilds: self.rebuilds.clone(),
-            copy_index: self.copy_index.clone(),
             decoded: self.decoded.clone(),
             generation: self.generation.clone(),
             role_generation: self.role_generation.clone(),
@@ -1714,7 +1708,6 @@ impl Core {
             self.live_trees.clear();
             self.live_bodies.clear();
             self.bodies.clear();
-            self.copy_index.clear();
             self.decoded.clear();
             self.cover_cache = None;
             self.records_read.wrote_all();
@@ -1810,7 +1803,6 @@ impl Core {
             live_trees: _,
             live_bodies: _,
             bodies: _,
-            copy_index: _,
             decoded: _,
             cover_cache: _,
             generation: _,
@@ -2061,7 +2053,6 @@ impl Core {
             replaced_reads: 0,
             death_walks: 0,
             rebuilds: 0,
-            copy_index: BTreeMap::new(),
             decoded: Default::default(),
             generation: 0,
             role_generation: 0,
@@ -2732,7 +2723,6 @@ impl Tx<'_> {
         // missing as neither in the blob nor dropped)
         debug_assert!(meta.dropped.keys().all(|ai| !meta.missing.contains(ai)), "{id:?}: parts both dropped and missing: dropped {:?} missing {:?}", meta.dropped, meta.missing);
         self.core.bodies.remove(id);
-        self.core.copy_index.remove(id);
         self.core.decoded.forget(id);
         self.core.records_read.wrote(id, true);
         self.core.mark_changed(*id);
@@ -2759,7 +2749,6 @@ impl Tx<'_> {
     /// Removes a commit record (shredded) with what the index keeps beside it.
     pub fn remove_commit(&mut self, id: &CommitId) -> Result<()> {
         self.core.bodies.remove(id);
-        self.core.copy_index.remove(id);
         self.core.decoded.forget(id);
         self.core.records_read.wrote(id, false);
         self.txn.remove_local(&records::commit_key(id), Shred::Yes)?;

@@ -19,9 +19,10 @@ fn unmerge_removes_invalid_register_write_spec_crdt_4_6() {
     assert_eq!(read(&demoted(cs, true), REG), int(1));
 }
 
-// spec/crdt.md §4.6 (Removed): others' writes nested in a record the invalid delta created go
+// spec/crdt.md §4.6 (Removed): others' writes nested in a record the invalid delta created stay;
+// the aspect reads as where the invalid delta was never held
 #[test]
-fn unmerge_removes_writes_nested_in_invalid_entry_spec_crdt_4_6() {
+fn unmerge_keeps_writes_nested_in_invalid_entry_spec_crdt_4_6() {
     let cs = vec![
         content(10, 1, 1, vec![part(MAP, Retention::PLAIN, vec![
             created(1, 10, 3), put(1, 10, 10, 3, 4)
@@ -29,7 +30,8 @@ fn unmerge_removes_writes_nested_in_invalid_entry_spec_crdt_4_6() {
         content(11, FIRST_ADMIN, 2, vec![part(MAP, Retention::PLAIN, vec![put(2, 11, 10, 3, 9)])]),
     ];
     assert_eq!(read(&demoted(cs.clone(), false), MAP), map(&[(3, 9)]));
-    assert_eq!(read(&demoted(cs, true), MAP), None);
+    let never = demoted(cs[1..].to_vec(), true);
+    assert_eq!(evaluate(&demoted(cs, true)).states.get(&(T, MAP)), evaluate(&never).states.get(&(T, MAP)));
 }
 
 // spec/crdt.md §4.6 (Seq elements), §6.1: an invalid creation leaves nothing; what anchors at it is placed at its

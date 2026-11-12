@@ -509,7 +509,7 @@ fn unmerge_and_strip(c: &Case, reference: &MFrag) {
         let mut out = Fragment::default();
         for (d, _) in order {
             let mut b = frag(d);
-            b.remove_dots(&|d| d.src == bad);
+            b.remove_writes(&|d| d.src == bad);
             out.join(b);
         }
         out
@@ -517,7 +517,7 @@ fn unmerge_and_strip(c: &Case, reference: &MFrag) {
     let mut model = None;
     for (d, _) in &c.deltas {
         let mut m = d.clone();
-        m.unmerge(&|d| d.source == c.bad, &|_| false);
+        m.unmerge(&|d| d.source == c.bad);
         mapply(&mut model, m);
     }
     let ours = unmerged(&mut c.deltas.iter());

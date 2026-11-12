@@ -1278,7 +1278,7 @@ fn unmerge_keeps_undelete_char_spec_4_7() {
     let el = SeqElem { created: None, content: SeqContent::None, pos: vec![], deleted: Some((flag.clone(), false)), undel: Some('x'), valueless: false, span: 1 };
     let mut f = Fragment::Seq(Seq::new(true, Meta::default(), [(Dot { src: a.clone(), ctr: 5 }, el)].into()));
     assert!(f.holds_dots(&|d| d.src == a));
-    f.remove_dots(&|d| d.src == a);
+    f.remove_writes(&|d| d.src == a);
     let Fragment::Seq(s) = &f else { panic!("a sequence") };
     let left: Vec<_> = s.elems().values().map(|e| (e.deleted.clone(), e.undel)).collect();
     assert_eq!(left, vec![(Some((flag, false)), Some('x'))]);
@@ -1300,10 +1300,6 @@ fn part_at_a_sequence_is_the_deltas_records() {
     let Fragment::Seq(part) = whole.part_at(&delta) else { panic!("a sequence's part is one") };
     assert_eq!(part.elems().keys().cloned().collect::<Vec<_>>(), vec![dot(1000), dot(1002)]);
     assert!(whole.contains(&delta));
-    // and the index of its copies holds what the ranges name, not the sequence's
-    let ranges = [(src.clone(), 1000, 1001), (src.clone(), 1100, 1104)];
-    let ix = whole.copy_index_in(&ranges);
-    assert_eq!(ix.dots().cloned().collect::<Vec<_>>(), vec![dot(1000), dot(1100), dot(1102)]);
 }
 
 // §6.1, §4.6: a sequence's order is computed from valid writes only. The read of the bodies
@@ -1330,7 +1326,7 @@ mod valid_order {
             let mut st = Fragment::default();
             for b in order {
                 let mut f = frag(b);
-                f.remove_dots(&|d| d.src == bad);
+                f.remove_writes(&|d| d.src == bad);
                 st.join(f);
             }
             st
@@ -1487,7 +1483,7 @@ mod valid_order {
         assert_eq!(reads(&st).as_deref(), Some("ayb"), "expired: X keeps its place, no char");
         let mut un = Fragment::default();
         for mut f in [frag(&m), xs, frag(&y)] {
-            f.remove_dots(&|d| d.src == bad);
+            f.remove_writes(&|d| d.src == bad);
             un.join(f);
         }
         let mut never = frag(&m);

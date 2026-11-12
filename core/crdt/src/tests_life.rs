@@ -122,10 +122,10 @@ pub(crate) fn unmerge_check(seed: u64, ty: &Ty) {
     let mut ours = Fragment::default();
     for c in &commits {
         let mut m = c.delta.clone();
-        m.unmerge(&|d| d.source == MSource::session(2, 0), &|_| false);
+        m.unmerge(&|d| d.source == MSource::session(2, 0));
         mapply(&mut model, m);
         let mut b = frag(&c.delta);
-        b.remove_dots(&|d| d.src == bad);
+        b.remove_writes(&|d| d.src == bad);
         ours.join(b);
     }
     assert_eq!(ours, ostate(&model), "un-merged bodies equal the model's");
@@ -143,7 +143,7 @@ pub(crate) fn unmerge_check(seed: u64, ty: &Ty) {
             let mut out = Fragment::default();
             for b in bodies {
                 let mut b = b.clone();
-                b.remove_dots(pred);
+                b.remove_writes(pred);
                 out.join(b);
             }
             out
@@ -669,7 +669,7 @@ fn stripped_entry_keeps_others_creation_spec_perm_5_2() {
     assert_eq!(first, then, "the delta first, the stripped snapshot after; the snapshot first");
     // an un-merge of another author's dots (a rebuild) keeps the creation for the join too
     let mut unmerged = stripped.clone();
-    unmerged.remove_dots(&|d| d.src == sess(Tid::from_bytes([3; 15])));
+    unmerged.remove_writes(&|d| d.src == sess(Tid::from_bytes([3; 15])));
     let mut later = w2.clone();
     later.join(unmerged);
     assert_eq!(later, then, "removing others' dots kept the creation");

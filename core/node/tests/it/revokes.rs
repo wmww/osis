@@ -164,3 +164,43 @@ fn revoke_on_an_unrelated_thing_brings_no_keys() {
     assert!(!placed.is_empty(), "the revoke is under G's label");
     assert!(placed.iter().flatten().all(|ai| h.aspects[*ai].ak.as_str() != "keys.0"), "no keyset of M");
 }
+
+// spec/crdt.md §4.6 (Removed: an invalid delta loses only its own writes): A removes B while B
+// and C are away; B, not knowing, creates map record "ash"; C gets it from B directly, writes
+// into it, then learns of the removal (B's delta invalid there, its body dropped, never
+// uploaded). A never holds B's delta. Both read C's nested write in a record with no creation
+// held alike: holding an invalid delta changes no value.
+#[test]
+fn others_writes_in_an_invalid_record_read_alike_spec_crdt_4_6() {
+    use osis_base::{Ak, Value, ValueMap};
+    use osis_crdt::{Op, PathOp, PathSeg};
+    let (mut net, host, [a, b, c]) = hosted_nodes::<3>();
+    let g = net.group(a, &[(b, Role::Write), (c, Role::Write)], &[host]);
+    let t = net.item(a, g, g, "x");
+    net.run();
+    let map = Ak::new("s:map.0").unwrap();
+    let key = |k: &str| PathSeg::Key(Value::Str(k.into()));
+    net.set_online(b, false);
+    net.set_online(c, false);
+    let bt = net.tid(b);
+    let done = net.engine(a).demote(&g, &Demotion { holder: bt, new: None, retain: None }).unwrap();
+    let acts = net.sync(a).carry_out(done).unwrap();
+    net.actions(a, acts);
+    net.run();
+    net.advance(1_000);
+    let mut m = osis_node::Mutation::new();
+    m.op(t, &map, PathOp { path: vec![key("ash")], op: Op::Set(Value::Map(ValueMap::from([(Value::Str("x".into()), Value::Int(1))]))) }).unwrap();
+    let e = net.engine(b).commit(m).unwrap().unwrap();
+    net.pair(b, c);
+    let mut m = osis_node::Mutation::new();
+    m.op(t, &map, PathOp { path: vec![key("ash"), key("y")], op: Op::Set(Value::Int(2)) }).unwrap();
+    net.engine(c).commit(m).unwrap().unwrap();
+    // C learns of the removal before it uploads anything
+    net.pair(a, c);
+    net.set_online(c, true);
+    for _ in 0..3 {
+        net.advance(31_000);
+    }
+    assert!(net.engine(a).header(&e).is_none() && net.engine(c).header(&e).is_some(), "only C holds B's delta");
+    assert_eq!(net.engine(c).get(&t, &map).unwrap(), net.engine(a).get(&t, &map).unwrap(), "A and C read alike");
+}

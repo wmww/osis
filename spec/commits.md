@@ -155,7 +155,7 @@ Every delta carries **retention** on the wire: who may purge it (its purgeable-b
   - so never earlier than the death (spec/crdt.md §4.8); nodes holding the same bodies judge alike, and one holding more judges no later; a drop as covered moves no body into or out of history and no replaced-at of a body in history (no date depends on which body holds a write: the cover carries the dropped body's live writes with their stamps, and a write only it dated was replaced no later than it);
   - Limit: a write's `ts` is its writer's word (a vouched copy's too), so a writer stamping early shortens the history of what it replaces; that only reclaims storage early, it erases nothing.
   - an expiry dates none: the delta's body goes at T (§6) and a snapshot holds the write value-less;
-  - a write of a delta invalid here does not die, nor does a valid write an un-merge took with nothing superseding it (spec/crdt.md §4.6).
+  - a write of a delta invalid here does not die (spec/crdt.md §4.6).
 
 ### Covered
 - A body is **covered** by a valid snapshot the node holds (spec/permissions.md §5.2) when joining each of its deltas into the snapshot's fragment of that aspect leaves its canonical bytes unchanged (spec/crdt.md §3.3): every live write of the body is in the snapshot, and canonical form carries no dead content. A held body is judged by this join whatever the snapshot's tables say.

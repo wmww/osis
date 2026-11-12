@@ -5,4 +5,4 @@
 
 The forger needs a chain to the thing, not a right on it. Bodies a snapshot covers are gone, so this matters on an aspect that does not compact. Repro: osis-node `scale::repro_invalid_arrival_is_flat` (`rebuild: body` 61 -> 601 at 30 -> 300 held commits).
 
-Possible fix: skip the rebuild when the state held no write under any of the arriving delta's dots before (nothing of it can be in the state, so the rebuild is a fixpoint). That is a second path beside the rebuild, which drop-rejoin-robust avoids on purpose; worth it only with a measured cost, and the debug rebuild check (`check_rebuilt`) would cover it.
+Possible fix: skip the rebuild on an invalid arrival. An invalid delta removes only its own writes (spec/crdt.md §4.6) and never joined, so its arrival cannot change the state: the rebuild is a fixpoint, and the debug rebuild check (`check_rebuilt`) would confirm it. Check first that no other change rides on that rebuild (a held commit's validity flipping in the same step, e.g. an overlapping session range voiding both commits, must still rebuild through `rejudged`).

@@ -2322,6 +2322,7 @@ fn expired_list_element_keeps_others_values_spec_5_7() {
     let mut s2 = base.clone();
     s2.strip(&expired);
     assert_eq!(s2.read(), None);
+    let newer_alone = newer.clone();
     s2.join(newer);
     assert_eq!(s2, s1, "expiry commutes with the nested write");
     assert_eq!(rebooted(&s1).read(), others, "a snapshot carries the creation value-less");
@@ -2330,11 +2331,15 @@ fn expired_list_element_keeps_others_values_spec_5_7() {
     let mut s3 = base.clone();
     s3.join(copy);
     assert_eq!(s3.read(), base.read(), "a value-less copy before T");
-    // un-merging its creator takes the creation: the element goes
+    // un-merging its creator takes the creation: the element goes, the aspect reads as where
+    // only the other commit is held (§4.6)
     let mut s4 = s1.clone();
-    s4.remove_dots(&expired);
+    s4.remove_writes(&expired);
     s4.prune(None, &mut crate::Changes::new());
-    assert_eq!(s4.read(), None);
+    let mut only = Fragment::default();
+    only.join(newer_alone);
+    assert_eq!(s4.read(), only.read());
+    assert!(!matches!(s4.read(), Some(Value::List(ref l)) if !l.is_empty()), "the element goes: {:?}", s4.read());
 }
 
 /// §4.5, §5.7: a text element its commit made and removed, kept because the commit anchors at
