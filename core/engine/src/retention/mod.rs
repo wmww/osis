@@ -40,6 +40,7 @@ pub(crate) mod snapshot;
 #[cfg(test)]
 mod oracle;
 pub(crate) mod destroy;
+pub use destroy::{End, Minting, Standing};
 pub mod lifetimes;
 pub(crate) mod forget;
 pub(crate) mod chunks;

@@ -39,50 +39,114 @@ pub(crate) fn judges_destruction(ak: &str) -> bool {
     matches!(ak, CREATED | ROLES) || osis_commit::retention::destroying_request(ak)
 }
 
-/// When each minting of a destroyed thing was destroyed (spec/commits.md §5 Destruction): at its expiry
-/// (`wall_ms(ts) >= T`), or after the earliest held request that drops it. A minting is not asked:
-/// a request destroying the thing names every minting of it (`purge::names`).
-pub(crate) struct Destruction(Vec<(Option<u64>, Option<Point>)>);
+/// When a held minting is destroyed (spec/commits.md §5 Destruction): at its expiry `At(T, None)`,
+/// after a request `At(wall_ms(ts), Some(point))`, or `Never`, whichever comes first. In this order
+/// a part written after a later end is written after every earlier one: an expiry at `T` is
+/// reached by every `ts` past a request stamped before `T`, a request stamped at or after `T` only
+/// by `ts` past `T`.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+pub enum End {
+    At(u64, Option<Point>),
+    Never,
+}
+
+impl End {
+    /// Whether a part of commit `id` (header `h`) is written after this end.
+    fn after(&self, h: &Header, id: &CommitId) -> bool {
+        match self {
+            End::At(x, None) => *x <= h.ts.wall_ms().0,
+            End::At(_, Some(p)) => *p < Point { ts: h.ts, node: h.author, commit: *id },
+            End::Never => false,
+        }
+    }
+}
+
+/// A held minting's standing (spec/commits.md §5, A thing's mintings travel with its record):
+/// valued ones after every value-less one, then by end. A thing is destroyed when its highest
+/// held standing is value-less, and then at that end, so the highest minting is its witness: it
+/// alone judges the thing as all of them do.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+pub struct Standing {
+    pub valued: bool,
+    pub end: End,
+}
+
+/// A held minting of a thing: its commit and its standing.
+#[derive(Clone, Copy, Debug)]
+pub struct Minting {
+    pub commit: CommitId,
+    pub standing: Standing,
+}
+
+/// `t`'s destruction (spec/commits.md §5 Destruction): the end of its witness, the point by which
+/// every minting of it is dropped.
+pub(crate) struct Destruction(End);
 
 impl Destruction {
-    /// `t`'s destruction, `None` while it is not destroyed. Its requests are found among the commits on `t`
-    /// (a request has a delta on each thing it names), each judged once per minting.
+    /// `t`'s destruction, `None` while it is not destroyed.
     pub(crate) fn of(core: &Core, t: &Tid) -> Option<Destruction> {
         if !core.destroyed(t) {
             return None;
         }
-        let times = per_minting(core, t).into_iter().map(|(expires, by)| (expires, by.into_iter().min()));
-        Some(Destruction(times.collect()))
+        witness(core, t).map(|w| Destruction(w.standing.end))
     }
 
     /// Whether a part of commit `id` (header `h`) is written after the destruction: nobody writes a
     /// thing after its destruction, so such a part is a part on an unknown thing, whatever its aspect.
     pub(crate) fn after(&self, h: &Header, id: &CommitId) -> bool {
-        let at = Point { ts: h.ts, node: h.author, commit: *id };
-        let wall = h.ts.wall_ms().0;
-        self.0.iter().all(|(x, by)| x.is_some_and(|x| x <= wall) || by.is_some_and(|p| p < at))
+        self.0.after(h, id)
     }
 }
 
-/// Per held minting of `t`: its expiry and the held requests standing over it (each a request
-/// with an item on `t`'s `created.0`, found among the commits on `t`: a request has a delta on
-/// each thing it names).
-fn per_minting(core: &Core, t: &Tid) -> Vec<(Option<u64>, Vec<Point>)> {
-    let on_t = |p: &Header| p.requests().iter().any(|i| i.tid() == t && i.ak().as_str() == CREATED);
-    let requests: Vec<(CommitId, &Header)> = core.on_thing(t).filter_map(|pc| core.ix.commits.get(&pc).filter(|m| m.view.purges && on_t(&m.header)).map(|m| (pc, &*m.header))).collect();
-    let times = core.mintings(t).map(|(c, ai)| {
-        let m = core.ix.commits.get(&c)?;
-        let a = m.header.aspects.get(ai)?;
-        let by = requests.iter().filter(|(pc, p)| super::purge::stands(core, p, pc, a, &m.header, &c)).map(|(pc, p)| Point { ts: p.ts, node: p.author, commit: *pc }).collect();
-        Some((m.header.expires, by))
-    });
-    times.map(|x| x.unwrap_or((None, Vec::new()))).collect()
+/// A held minting of `t` as `per_minting` reads it: `(commit, delta index)`, its expiry and the
+/// held requests standing over it.
+struct Held {
+    at: (CommitId, usize),
+    expires: Option<u64>,
+    by: Vec<Point>,
 }
 
-/// The held requests standing over a minting of `t` (spec/commits.md §5 Destruction): with `t`'s
-/// mintings, what tells another node `t` was destroyed (`Engine::certificates`).
+/// Each held minting of `t` (`Held`; its requests each a request with an item on `t`'s
+/// `created.0`, found among the commits on `t`: a request has a delta on each thing it names).
+fn per_minting(core: &Core, t: &Tid) -> Vec<Held> {
+    let on_t = |p: &Header| p.requests().iter().any(|i| i.tid() == t && i.ak().as_str() == CREATED);
+    let requests: Vec<(CommitId, &Header)> = core.on_thing(t).filter_map(|pc| core.ix.commits.get(&pc).filter(|m| m.view.purges && on_t(&m.header)).map(|m| (pc, &*m.header))).collect();
+    let held = core.mintings(t).map(|(c, ai)| {
+        let none = Held { at: (c, ai), expires: None, by: Vec::new() };
+        let Some(m) = core.ix.commits.get(&c) else { return none };
+        let Some(a) = m.header.aspects.get(ai) else { return none };
+        let by = requests.iter().filter(|(pc, p)| super::purge::stands(core, p, pc, a, &m.header, &c)).map(|(pc, p)| Point { ts: p.ts, node: p.author, commit: *pc }).collect();
+        Held { at: (c, ai), expires: m.header.expires, by }
+    });
+    held.collect()
+}
+
+/// Every held minting of `t` with its standing (`Standing`). Costs the held mintings times the
+/// held requests on `t`'s creation.
+pub fn mintings(core: &Core, t: &Tid) -> Vec<Minting> {
+    let per = per_minting(core, t);
+    per.into_iter()
+        .map(|Held { at: (commit, ai), expires, by }| {
+            let expiry = expires.map_or(End::Never, |x| End::At(x, None));
+            let request = by.into_iter().min().map_or(End::Never, |p| End::At(p.ts.wall_ms().0, Some(p)));
+            Minting { commit, standing: Standing { valued: !core.minting_gone(&commit, ai), end: expiry.min(request) } }
+        })
+        .collect()
+}
+
+/// `t`'s witness: its highest held minting (`Standing`), ties by the lowest commit ID. What
+/// goes with `t`'s record (`Engine::minting_evidence`): its header and, destroyed, the requests
+/// destroying it (`destroying_requests`). A node holding them judges `t` live or destroyed, and
+/// when, as one holding every minting does.
+pub fn witness(core: &Core, t: &Tid) -> Option<Minting> {
+    mintings(core, t).into_iter().max_by(|a, b| a.standing.cmp(&b.standing).then(b.commit.cmp(&a.commit)))
+}
+
+/// The held requests standing over a minting of `t` (spec/commits.md §5 Destruction): with its
+/// witness, what tells another node `t` was destroyed, a node holding an earlier witness too. Only
+/// a right holder makes one: an admin, or a writer for its own minting or for one of class `writer`.
 pub(crate) fn destroying_requests(core: &Core, t: &Tid) -> BTreeSet<CommitId> {
-    per_minting(core, t).into_iter().flat_map(|(_, by)| by).map(|p| p.commit).collect()
+    per_minting(core, t).into_iter().flat_map(|h| h.by).map(|p| p.commit).collect()
 }
 
 /// How `t` was destroyed, read at wall ms `now`: by release alone (storage reclaim, never erasure:
@@ -92,7 +156,7 @@ pub(crate) fn destroying_requests(core: &Core, t: &Tid) -> BTreeSet<CommitId> {
 fn release_state(core: &Core, t: &Tid, now: u64) -> Option<bool> {
     let per = per_minting(core, t);
     let mut spent = true;
-    for (x, by) in &per {
+    for Held { expires: x, by, .. } in &per {
         if by.is_empty() || x.is_some_and(|x| x <= now) {
             return None;
         }

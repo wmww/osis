@@ -252,23 +252,25 @@ impl Engine {
     }
 
     /// What goes with `t`'s record, added to `out` (spec/commits.md §5, A thing's mintings travel
-    /// with its record; `cert_parts` adds it for every thing whose record goes): each held minting
-    /// of `t` and, destroyed, each held request dropping one, as a header alone. A node knowing `t`
-    /// by its record so holds `t`'s own minting beside any minting again: one expiring is no
-    /// destruction while another is not value-less. A minting's `expires` dates an expiry (a value-less part
-    /// is never uploaded), a request's header names what it destroys (`Header::requests`; `t`'s frozen
-    /// history judges its right), and a header-only blob has no prefix expiry, so a release's
-    /// copy outlives the request's own blobs (spec/sync.md §1). Each with its author's chains to
-    /// `t` and to its actor. Once per `out`: its mintings among `out`'s headers.
+    /// with its record; `cert_parts` adds it for every thing whose record goes): its witness
+    /// (`witness`) as a header alone and, destroyed, each held request destroying it. A node
+    /// knowing `t` by its record so judges it live or destroyed, and when, as one holding every
+    /// minting does: a minting again travels only while it is the witness, and only a right
+    /// holder makes a request, so what a reader mints adds nothing. A minting's `expires` dates an
+    /// expiry (a value-less part is never uploaded), a request's header names what it destroys
+    /// (`Header::requests`; `t`'s frozen history judges its right), and a header-only blob has no
+    /// prefix expiry, so a release's copy outlives the request's own blobs (spec/sync.md §1).
+    /// Each with its author's chains to `t` and to its actor. Once per `out`: its witness among
+    /// `out`'s headers.
     pub fn minting_evidence(&mut self, t: &Tid, out: &mut Certs) {
-        let mintings: Vec<CommitId> = self.core.mintings(t).map(|(c, _)| c).collect();
-        if mintings.iter().all(|c| out.headers.contains(c)) {
+        let Some(w) = self.witness(t) else { return };
+        if out.headers.contains(&w.commit) {
             return;
         }
-        out.headers.extend(mintings.iter().copied());
-        let requests = crate::retention::destroy::destroying_requests(&self.core, t);
-        out.headers.extend(requests.iter().copied());
-        for c in mintings.iter().chain(&requests) {
+        let requests = if w.standing.valued { BTreeSet::new() } else { crate::retention::destroy::destroying_requests(&self.core, t) };
+        let evidence: Vec<CommitId> = std::iter::once(w.commit).chain(requests).collect();
+        out.headers.extend(evidence.iter().copied());
+        for c in &evidence {
             let Some(h) = self.header(c) else { continue };
             for x in [*t, h.actor, h.author] {
                 // a header is judged by its author's edges and records; no keyset judges it
@@ -277,6 +279,17 @@ impl Engine {
                 self.cert_parts(&cs, out);
             }
         }
+    }
+
+    /// `t`'s witness (spec/commits.md §5, A thing's mintings travel with its record): its held
+    /// minting destroyed last, valued ones last of all, ties by the lowest commit ID.
+    pub fn witness(&self, t: &Tid) -> Option<crate::retention::Minting> {
+        crate::retention::destroy::witness(&self.core, t)
+    }
+
+    /// Every held minting of `t` with its standing (`witness` is the highest).
+    pub fn mintings_of(&self, t: &Tid) -> Vec<crate::retention::Minting> {
+        crate::retention::destroy::mintings(&self.core, t)
     }
 
     /// What judges destroyed actor `t`'s permission history (spec/permissions.md §4): every held

@@ -116,6 +116,12 @@ impl SyncEngine {
             if copied.contains(&c) && durable || in_bodies || self.state.certs.contains(&(l, c)) || self.header_held_at(l, &c, hosts.as_deref()) {
                 continue;
             }
+            // nor a witness where the label holds a minting standing as it does: a tie places
+            // nothing new (spec/commits.md §5, A thing's mintings travel with its record)
+            let minted: Vec<Tid> = h.aspects.iter().filter(|a| a.ak.as_str() == osis_commit::retention::CREATED).map(|a| a.tid).collect();
+            if !minted.is_empty() && minted.iter().all(|t| self.witness_held_at(l, t, hosts.as_deref(), Some(&c))) {
+                continue;
+            }
             let Some(body) = self.engine.header_body(&c) else { continue };
             self.place_copy(g, l, &c, &BTreeSet::new(), body)?;
         }
@@ -206,6 +212,14 @@ impl SyncEngine {
         let wrap = osis_crypto::wrap(&secret, &id, &key, 0)?;
         self.state.set_entry(l, id, Entry { wrap, stamp: None, cert: true, salt: Some(salt), expires: None, size: None, kind: Kind::Records(tids), source: None, memory: false });
         Ok(all)
+    }
+
+    /// Whether entries under `l` at `hosts` hold a minting of `t` standing as its witness does
+    /// (`Engine::witness`), other than `but`: a tie stands in for it.
+    pub(super) fn witness_held_at(&mut self, l: LabelId, t: &Tid, hosts: Option<&[HostKey]>, but: Option<&CommitId>) -> bool {
+        let Some(w) = self.engine.witness(t) else { return false };
+        let ties: Vec<CommitId> = self.engine.mintings_of(t).into_iter().filter(|m| m.standing == w.standing && Some(&m.commit) != but).map(|m| m.commit).collect();
+        ties.iter().any(|c| self.header_held_at(l, c, hosts))
     }
 
     /// Whether an entry under `l` carries commit `c`'s header (a body, a copy of any part of it,

@@ -117,6 +117,16 @@ impl SyncEngine {
         let Some(m) = self.engine.core.ix.commits.get(commit).cloned() else { return Ok(self.judge_forgotten(commit, opened, note)) };
         let h = m.header.clone();
         let aspects: Vec<(Tid, Ak)> = parts.iter().filter_map(|ai| h.aspects.get(*ai)).map(|a| (a.tid, a.ak.clone())).collect();
+        // a minting's header alone its things' witnesses supersede (spec/commits.md §5, A thing's
+        // mintings travel with its record)
+        if opened.is_empty() && settled && !desired.get(commit).is_some_and(|d| d.iter().any(|p| p.is_empty())) {
+            match self.superseded_minting(g, l, host, commit, &h) {
+                Some(true) => return Ok(Some((Hold::MustNot(Why::Outside), false, Vec::new()))),
+                // its witness not up yet: judged again next pass
+                Some(false) => note.unsure = true,
+                None => {}
+            }
+        }
         // a certificate of destroyed things (their frozen edges or a request destroying one outside the
         // closure, a minting's or a request's header alone: spec/permissions.md §4, spec/commits.md
         // §5 Destruction) is there for the label's things that need them told destroyed, whatever this
@@ -276,6 +286,35 @@ impl SyncEngine {
     /// superseder covers it (`carried`), none otherwise. Judged again every pass until it goes
     /// (`unsure`: what it waits for is the carrier's presence at the host, no state change here).
     /// A superseded body is its author's to delete, nobody else's.
+    /// Whether a header alone of commit `c` (header `h`) under `l` is a superseded minting of the
+    /// things it mints, all outside `g`'s closure (spec/commits.md §5, A thing's mintings travel
+    /// with its record): standing lower than each one's witness. `Some(true)`: the label holds each witness (or
+    /// a minting tying it) at `host`, so it goes; `Some(false)`: not yet (judged again each
+    /// pass); `None`: no such header. A live thing's is judged only by a node that may read it: it
+    /// holds the requests on its creation, and one that missed a request dropping the witness
+    /// would delete the live minting for a dead one.
+    fn superseded_minting(&mut self, g: &Tid, l: &LabelId, host: Option<&HostKey>, c: &CommitId, h: &osis_commit::Header) -> Option<bool> {
+        let minted: BTreeSet<Tid> = h.aspects.iter().filter(|a| a.ak.as_str() == osis_commit::retention::CREATED).map(|a| a.tid).collect();
+        let closure = self.engine.closure(g);
+        if minted.is_empty() || !h.requests().is_empty() || minted.iter().any(|t| closure.contains(t)) {
+            return None;
+        }
+        let me = self.engine.account_tid();
+        let hosts = host.map(std::slice::from_ref);
+        let mut held = true;
+        for t in &minted {
+            let w = self.engine.witness(t)?;
+            if w.standing.valued && !me.is_some_and(|me| self.engine.may_read(&me, t)) {
+                return None;
+            }
+            if self.engine.mintings_of(t).iter().find(|m| m.commit == *c).is_none_or(|m| m.standing >= w.standing) {
+                return None;
+            }
+            held &= self.witness_held_at(*l, t, hosts, Some(c));
+        }
+        Some(held)
+    }
+
     /// The destroyed things an entry of commit `c` (header `h`, parts `opened`) is a certificate of
     /// under `g`'s label, when that is all it is: a header alone (no lasting header the label
     /// wants) minting one or carrying a request destroying one, outside the closure or, inside, a

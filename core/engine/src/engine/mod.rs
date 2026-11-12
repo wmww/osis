@@ -1582,15 +1582,17 @@ impl Core {
     /// dropped by a purge or the destruction (`retention::destroy`). One missing may yet come. A thing never
     /// held is unknown, not destroyed.
     pub fn destroyed(&self, t: &Tid) -> bool {
-        let gone = |(c, ai): (CommitId, usize)| {
-            let Some(m) = self.ix.commits.get(&c) else { return false };
-            crate::retention::valueless(self, &c, ai) || m.dropped.get(&ai).is_some_and(|d| matches!(d.why, DropFor::Other | DropFor::Destroyed))
-        };
         let mut any = false;
-        self.mintings(t).all(|x| {
+        self.mintings(t).all(|(c, ai)| {
             any = true;
-            gone(x)
+            self.minting_gone(&c, ai)
         }) && any
+    }
+
+    /// Whether minting `ai` of `c` is held value-less or dropped by a purge or the destruction.
+    pub(crate) fn minting_gone(&self, c: &CommitId, ai: usize) -> bool {
+        let Some(m) = self.ix.commits.get(c) else { return false };
+        crate::retention::valueless(self, c, ai) || m.dropped.get(&ai).is_some_and(|d| matches!(d.why, DropFor::Other | DropFor::Destroyed))
     }
 
     /// Re-evaluates the timelines around the things whose held inputs changed; the things of
