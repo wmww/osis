@@ -674,7 +674,7 @@ fn tokio_runtime_close_then_shutdown_no_timer_panic() {
 // link to it all reach it; Bob, on that peer only, reads the group as soon as his redemption of
 // the link returns.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_paired_serving_node_in_process_spec_data_model_9() {
+async fn a_paired_peer_serves_what_it_reads_in_process_spec_data_model_9() {
     let net = osis_transport::Net::new(0);
     let alice = osis::internals::create(cfg(1, vec![], Some(net.endpoint("a")))).unwrap();
     let j = osis::internals::pair(cfg(2, vec![], Some(net.endpoint("h"))), &alice.pair_offer().unwrap()).unwrap();

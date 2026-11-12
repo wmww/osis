@@ -143,8 +143,6 @@ pub struct SyncEngine {
     /// Where each queued deposit (`State::outbox`: inbox blobs, a non-writer's own writes)
     /// stands: waiting for its host, or sent and not answered yet.
     pub(crate) outbox: BTreeMap<(HostKey, LabelId, osis_base::BlobId), local::Outgoing>,
-    /// Entries left in each deposit budget as a host last reported it (`send_outbox`).
-    pub(crate) deposit_room: BTreeMap<(HostKey, LabelId), u64>,
     /// Deposits for a label this node syncs with nobody: logged here, as a peer's deposit would
     /// be (`send_outbox`).
     pub(crate) local_inbox: Vec<(LabelId, Vec<u8>, [u8; osis_crypto::WRAP_LEN])>,
@@ -417,7 +415,6 @@ impl SyncEngine {
             last_tick: 0,
             diagnostics: Vec::new(),
             outbox,
-            deposit_room: BTreeMap::new(),
             local_inbox: Vec::new(),
             left: Some(deliver::LeftCheck::default()),
             lifetimes_heard: None,

@@ -115,10 +115,10 @@ impl SyncEngine {
         Ok(Some(complete))
     }
 
-    /// A writer serving `l` with no host promotes the deposits there as at a host
-    /// (`complete_chains`, `promote`; spec/sync.md §5): another node's deposited commit it
-    /// applied, past the relay wait since it arrived (a co-writer or the author may place the
-    /// chain first), gets the missing parts of its author's chain placed as
+    /// A writer promotes the deposits in its own store (spec/sync.md §5; sources pull the stamp):
+    /// a deposited commit it applied, another node's past the relay wait since it arrived (a
+    /// co-writer or the author may place the chain first), its own at once (one it deposited
+    /// while it did not write the group), gets the missing parts of its author's chain placed as
     /// this node's certificate copies, then its stamp; one whose chain it cannot complete
     /// stays a deposit and is judged again next pass (one not applied yet, once applied). Of
     /// the entries `scope` names, but `ours` (this pass's placements). Only while this node
@@ -132,7 +132,7 @@ impl SyncEngine {
             let Some(e) = self.state.entries.get(&(l, id)).cloned() else { continue };
             let Kind::Commit { commit, parts, .. } = &e.kind else { continue };
             let (commit, parts) = (*commit, parts.clone());
-            if e.stamp.is_some() || e.cert || self.own(&commit) || !self.would_promote(g, l, None, &id)? {
+            if e.stamp.is_some() || e.cert || !self.would_promote(g, l, None, &id)? {
                 continue;
             }
             if let Some(t) = self.relay_at(l, &commit) {

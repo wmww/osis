@@ -49,7 +49,6 @@ impl SyncEngine {
                 last_tick: self.last_tick.clone(),
                 diagnostics: self.diagnostics.clone(),
                 outbox: self.outbox.clone(),
-                deposit_room: self.deposit_room.clone(),
                 local_inbox: self.local_inbox.clone(),
                 tree_wants: self.tree_wants.clone(),
                 body_links: self.body_links.clone(),

@@ -330,7 +330,7 @@ fn chat_channel_localhost() {
 // it refuses: his `sync` exits 6 naming the peer that does not admit it).
 #[test]
 #[ignore]
-fn paired_serving_node_localhost() {
+fn a_paired_peer_serves_what_it_reads_localhost() {
     let (a, h, b) = (dir("own-alice"), dir("own-peer"), dir("own-bob"));
     osis(&a, &["init"]);
     pair(&a, &h, None);
