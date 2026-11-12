@@ -11,3 +11,5 @@
 - Rebasing a 45-commit WIP branch onto net-6a conflicted only twice, but a probe edit sharing a file with uncommitted SETTLE_ROUNDS made every commit a revert-commit-reapply dance (scripted in the scratchpad); `git commit --amend -- <dir>` silently took the local SETTLE change along.
 - With SETTLE_ROUNDS at 200 a few honest settles may need more (the constant's doc says up to about 210): a "no quiescence" at 200 is not proof of a loop.
 - Probes need the node's identity: two nodes print the same lines, and a pointer hash (`self as *const _`) was the quickest tag.
+- (sim fork) The sim trace cut every message at 160 characters, so a Stream's entries never showed; fixed in the branch (events in short). The trace also stops recording long before a scenario ends in some runs, so late hub decisions needed env-guarded `eprintln!` probes in pass code.
+- (sim fork) `osis_sim::replay` has no test entry: a scratch `tests/it` module reading the scenario and seed from env vars, removed before each commit, was the working replay tool.
