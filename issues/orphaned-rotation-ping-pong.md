@@ -1,0 +1,7 @@
+# Two rotators can rotate an orphaned epoch back and forth for good
+> Summary: An epoch is orphaned at a node that lacks its secret when it boxes no holder that may rotate the role (spec/crypto.md §4). If every such holder is left out of every rotation (no keyset to seal it at), each rotator's new epoch is orphaned at the other, which rotates again: an endless exchange of role commits. The plain-first-admin case is fixed; other ways to leave every rotating holder out are not ruled out.
+> Priority: low
+> Tags: keys, engine
+
+- Seen with a plain first admin T of a doc getting secrets of its own: T was left out (no keyset), so the doc's write epoch reached only its maker; a writer of T's team and the admin then alternated rotations every pass (`flows::plain_first_admin_gets_secrets_before_its_thing_spec_perm_3`). Fixed by giving T secrets of its own first, but only where the node administers T (`rotation::own_secrets_rot`): an admin of the doc through a direct grant, not of T, re-giving it secrets after its keyset part turned invalid (`give_own_secrets_again`), still leaves T out.
+- A fix in the rule itself: a rotation that would leave its new epoch orphaned for the other rotators (it boxes no holder that may rotate the role) is not made for orphaned alone, or "orphaned" counts only epochs some other rotator could have been boxed at. Needs the crypto model (core/test/tla/rotation) to check it keeps every holder reading.

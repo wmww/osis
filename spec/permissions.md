@@ -88,7 +88,7 @@
 ## 3. Secrets and rotation
 - Each role secret of an actor is sealed to every holder of that role or higher, every epoch (spec/crypto.md §4).
 - A **plain thing** (no holder for keys but its first admin, and no edge write on it) uses derived role secrets (spec/crypto.md §3). Before any grant on it, it gets random secrets of its own by a rotation from the derived epochs, boxed to its current holders for keys, and a `keys.0` (any other edge write on it lowers its first admin's edge, which §1 refuses).
-  - A thing that is to be granted a role on anything gets secrets of its own first.
+  - A thing that is to be granted a role on anything gets secrets of its own first; so does a plain holder for keys of a thing getting secrets of its own (its first admin), where the node administers it: a plain thing has no keyset to be sealed at (spec/crypto.md §4, Holder actors).
   - An admin node that sees a current holder of a plain thing other than its first admin (left so by its only keyset part turning invalid, spec/crypto.md §3) SHOULD give it secrets of its own the same way, boxing every current holder but one whose grant it may finalize (§2), deciding at the end of a complete sync pass (below) of the labels of the actor its secrets derive from; it MAY first wait up to `SETTLE_MS` after receiving another node's newest edge write on the thing, leaving it to that write's author. Concurrent ones fork (spec/crypto.md §4).
 - **Required rotation**: a departure (spec/crypto.md §4: removal, demotion, finalize) of holder M from actor A (a node's removal from its account's D is one, on D) requires rotating every role secret M could open through A:
   - on A, the roles M left;

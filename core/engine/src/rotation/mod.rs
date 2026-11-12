@@ -591,6 +591,14 @@ fn own_secrets_rot(tx: &mut Tx<'_>, t: Tid, hosts: Option<&[Address]>, also: &[c
         return Ok(None);
     }
     let who = tx.core.writer()?;
+    // its boxes make each holder a holder actor of `t`, which has secrets of its own first, as a
+    // grant's holder does (spec/permissions.md §3): a plain one has no keyset to be sealed at, so
+    // it is left out and its holders lose `t` (where this node administers it)
+    for (m, _) in tx.core.key_holders(&t) {
+        if !tx.core.is_key_actor(&m) && !tx.core.is_account(&m) && !tx.core.has_own_secrets(&m) && tx.core.role_now(&who, &m) == Some(Role::Admin) {
+            own_secrets(tx, m, done)?;
+        }
+    }
     ensure_rotated(tx, who, t, done)?;
     let held = tx.core.epochs(&t).ok_or(Error::Misuse("the secrets it derives from are not held"))?;
     // a holder whose grant this node may finalize is boxed nothing (spec/permissions.md §2), as

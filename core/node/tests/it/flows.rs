@@ -1536,8 +1536,8 @@ fn inside_member_departure_leaves_holder_out_spec_perm_3() {
     assert!(lp.peers[1].engine.epochs(&c).is_none_or(|e| e.read.secret(&top).is_none()), "o0 does not");
 }
 
-// spec/crypto.md §3, §4: a doc without secrets of its own in a team without any either: its
-// own-secrets rotation boxes nobody (the team has no keyset). The writer, who does not read the
+// spec/crypto.md §3, §4: a doc without secrets of its own in a team without any either (the
+// team gets its own first, spec/permissions.md §3). The writer, who does not read the
 // team, gets its grant before the rotation commit (wrapped under the doc's derived epoch): its
 // history box hands it that epoch's secret (it names its epoch), and once the rotation commit is
 // opened its write epoch is established.
@@ -1566,6 +1566,31 @@ fn grant_in_derived_base_spec_crypto_4() {
     let e = lp.peers[1].engine.epochs(&doc).unwrap();
     assert_eq!(e.read.secret(&derived), Some(&genuine));
     assert!(e.write.newest_held().is_some(), "bob holds an established write epoch of the doc");
+}
+
+// spec/permissions.md §3, spec/crypto.md §4 (orphaned): a doc whose first admin is a plain thing T
+// in team H gets secrets of its own on its first grant; T gets its own first, so the rotation
+// boxes T and H's writer reads and writes the doc. Left out (T has no keyset), the doc's write
+// epoch was orphaned at that writer, whose rotation was orphaned at the admin: they rotated it
+// back and forth for good.
+#[test]
+fn plain_first_admin_gets_secrets_before_its_thing_spec_perm_3() {
+    let (mut lp, ps) = people(3);
+    let h = thing_of(&mut lp, 0, ps[0]);
+    lp.peers[0].engine.grant(&h, &ps[1], &edge_of(Role::Write)).unwrap();
+    let t = thing_of(&mut lp, 0, h);
+    let doc = thing_of(&mut lp, 0, t);
+    spread(&mut lp);
+    lp.peers[0].engine.grant(&doc, &ps[2], &edge_of(Role::Read)).unwrap();
+    spread(&mut lp);
+    for i in 0..3 {
+        assert!(lp.peers[i].engine.get(&t, &ak("keys.0")).unwrap().is_some(), "peer {i}: T has secrets of its own");
+    }
+    for i in 0..2 {
+        let (done, _) = lp.peers[i].engine.ensure_rotated(&doc).unwrap();
+        assert!(done.commits.is_empty(), "peer {i}: no rotation of the doc is due");
+    }
+    assert_eq!(sealed_write(&mut lp, 1, doc, "by H's writer"), BTreeSet::from([0, 2]), "H's writer writes the doc; its admin and reader read it");
 }
 
 // spec/sync.md §2, §5: after a rotation an admin issues a child of the host's head at the
