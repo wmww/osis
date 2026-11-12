@@ -1760,8 +1760,8 @@ fn build_destroyed_world() -> (LocalPeer, Tid, Tid, Tid) {
 
 const T0: WallMs = WallMs(1_700_000_000_000);
 
-/// T ends: time passes it and every peer ticks, synced.
-fn end_t(lp: &mut LocalPeer, t: Tid) {
+/// T expires (so is destroyed): time passes it and every peer ticks, synced.
+fn expire_t(lp: &mut LocalPeer, t: Tid) {
     lp.advance(100_000);
     for i in 0..lp.peers.len() {
         lp.peers[i].tick().unwrap();
@@ -1773,8 +1773,8 @@ fn end_t(lp: &mut LocalPeer, t: Tid) {
 }
 
 // spec/crypto.md §4 (Holder actors, Destroyed): a destroyed actor holds no keys, so X's admin, once T
-// ended, rotates X (its box to T is a departure) boxing T's frozen holders in T's place: G and
-// itself, never peer 1, removed from T before the ending. Peer 1 opens none of X's new epoch from
+// is destroyed, rotates X (its box to T is a departure) boxing T's frozen holders in T's place: G
+// and itself, never peer 1, removed from T before the destruction. Peer 1 opens none of X's new epoch from
 // every secret it held; peer 3, reading X only through G and T, reads it
 #[test]
 fn destroyed_holder_actor_boxes_its_frozen_holders_never_one_removed_before_spec_crypto_4() {
@@ -1784,7 +1784,7 @@ fn destroyed_holder_actor_boxes_its_frozen_holders_never_one_removed_before_spec
     assert!(start.iter().any(|k| k.0 == x), "peer 1 reads X through T");
     lp.peers[0].engine.demote(&t, &Demotion { holder: n1, new: None, retain: None }).unwrap();
     lp.sync_all().unwrap();
-    end_t(&mut lp, t);
+    expire_t(&mut lp, t);
     let holders = lp.peers[0].engine.core.key_holders(&x);
     assert!(holders.iter().any(|h| h.0 == g) && !holders.iter().any(|h| h.0 == t || h.0 == n1), "T's frozen holders in its place: {holders:?}");
     let before = newest_read(&lp, 0, x);
@@ -1803,7 +1803,7 @@ fn destroyed_holder_actor_boxes_its_frozen_holders_never_one_removed_before_spec
 #[test]
 fn rotation_after_a_destruction_seals_a_frozen_holder_at_its_current_keyset_spec_crypto_4() {
     let (mut lp, t, x, g) = destroyed_world();
-    end_t(&mut lp, t);
+    expire_t(&mut lp, t);
     settle(&mut lp, &[0], &[x]);
     assert!(boxes(&mut lp, 0, x, g), "G boxed on X");
     let n3 = lp.peers[3].engine.tid();

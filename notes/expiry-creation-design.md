@@ -69,7 +69,7 @@ Expiry stops changing winners (stamps stay), so it can be an in-place strip of o
 - **Rejected.** The grant bringing the record: it removes only the first wait, the author's chain is the same problem next, and it misses the home-label sibling route. Keeping commits with boxes for this node: bytes keyed on an unverified claim any depositor can add.
 
 **Destruction.** `created.0` takes ordinary retention: a schema default per AK (proposed `admin`, no history), set per commit like any delta. The fixed `nobody` retention and the commit-sharing exemption go. Purging or expiring it **destroys** the thing.
-- **Who ends** (spec/permissions.md §6): any admin at the request, as with any purge right. Reading the right from standing on the first admin alone is rejected: a removed admin could then destroy a thing for everyone.
+- **Who destroys** (spec/permissions.md §6): any admin at the request, as with any purge right. Reading the right from standing on the first admin alone is rejected: a removed admin could then destroy a thing for everyone.
 - Every node drops the thing whole in the transaction that made its last creation value-less (`retention/destroy.rs`): incremental, cost the thing's parts, since a disappearing message is destroyed often; the commits' headers stay, as for any purge.
 - Node-sync deletes at hosts what the node has delete keys for, by the dropped-body path.
 - No wait before hosts delete (Tess): a destruction that later falls brings the thing back only if some node still holds a copy.
