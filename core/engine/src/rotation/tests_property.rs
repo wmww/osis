@@ -133,13 +133,15 @@ impl Run {
     }
 
     /// Peer `i` granted peer `j` role `r` on `t`: notes what that handed `j` (`handed`), on `t`
-    /// and, through boxes to `t` as a holder actor, on the actors `t` holds a role on.
+    /// and, through boxes to `t` as a holder actor, on the actors `t` holds a role on. A grant's
+    /// box carries what its author held when writing it (spec/crypto.md §4, Boxes), so the
+    /// epochs a rotation the grant made first count too.
     fn grant(&mut self, i: usize, j: usize, t: Tid, r: Role) {
-        let had: BTreeSet<Key> = self.held(i).into_iter().filter(|k| k.0 == t).collect();
         // the actors `i` may read
         let all: Vec<Tid> = self.all().into_iter().filter(|a| self.lp.peers[i].engine.get_typed(a, &ct::SECRETS).is_ok()).collect();
         let before = openable(&mut self.lp, i, &all, self.tids[j], BTreeSet::new());
         if self.lp.peers[i].engine.grant(&t, &self.tids[j], &edge(r)).is_ok() {
+            let had: BTreeSet<Key> = self.held(i).into_iter().filter(|k| k.0 == t).collect();
             let after = openable(&mut self.lp, i, &all, self.tids[j], BTreeSet::new());
             let boxed: BTreeSet<Key> = after.difference(&before).filter(|k| had.contains(k)).copied().collect();
             let carried = had.iter().filter(|k| boxed.iter().any(|b| b.1 == k.1 && k.2.n() < b.2.n()));
