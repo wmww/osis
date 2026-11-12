@@ -205,13 +205,55 @@ pub fn head_len(arg: u64) -> usize {
     }
 }
 
-fn len_head(out: &mut Vec<u8>, major: u8, len: usize) {
-    head(out, major, len as u64);
+/// Appends a non-negative integer (at most `i64::MAX`, the profile's range).
+pub fn put_uint(out: &mut Vec<u8>, n: u64) {
+    debug_assert!(i64::try_from(n).is_ok(), "uint above i64::MAX");
+    head(out, MAJOR_UINT, n);
 }
 
-fn bytes(out: &mut Vec<u8>, b: &[u8]) {
-    len_head(out, MAJOR_BYTES, b.len());
+/// Appends an array head of `len` items; the caller appends the items.
+pub fn put_array(out: &mut Vec<u8>, len: usize) {
+    head(out, MAJOR_ARRAY, len as u64);
+}
+
+/// Appends a map head of `len` entries; the caller appends keys and values in turn, keys in
+/// canonical order.
+pub fn put_map(out: &mut Vec<u8>, len: usize) {
+    head(out, MAJOR_MAP, len as u64);
+}
+
+pub fn put_bytes(out: &mut Vec<u8>, b: &[u8]) {
+    head(out, MAJOR_BYTES, b.len() as u64);
     out.extend_from_slice(b);
+}
+
+pub fn put_text(out: &mut Vec<u8>, s: &str) {
+    head(out, MAJOR_TEXT, s.len() as u64);
+    out.extend_from_slice(s.as_bytes());
+}
+
+pub fn put_bool(out: &mut Vec<u8>, b: bool) {
+    out.push(if b { TRUE } else { FALSE });
+}
+
+pub fn put_tid(out: &mut Vec<u8>, t: &Tid) {
+    head(out, MAJOR_TAG, TAG_TID);
+    put_bytes(out, t.as_bytes());
+}
+
+pub fn put_link(out: &mut Vec<u8>, l: &Link) {
+    head(out, MAJOR_TAG, TAG_LINK);
+    head(out, MAJOR_ARRAY, 3);
+    put_bytes(out, &l.hash);
+    put_bytes(out, &l.blob.0);
+    head(out, MAJOR_BYTES, 33);
+    out.push(l.suite);
+    out.extend_from_slice(&l.key);
+}
+
+/// The length of every link's encoding (`put_link`).
+pub fn link_len() -> usize {
+    head_len(TAG_LINK) + 1 + 2 * (head_len(32) + 32) + head_len(33) + 33
 }
 
 pub fn encode_into(v: &Value, out: &mut Vec<u8>) {
@@ -223,16 +265,10 @@ pub fn encode_into(v: &Value, out: &mut Vec<u8>) {
             out.push(FLOAT64);
             out.extend(f.to_bits().to_be_bytes());
         }
-        Value::Bool(b) => out.push(if *b { TRUE } else { FALSE }),
-        Value::Str(s) => {
-            len_head(out, MAJOR_TEXT, s.len());
-            out.extend_from_slice(s.as_bytes());
-        }
-        Value::Bytes(b) => bytes(out, b),
-        Value::Tid(t) => {
-            head(out, MAJOR_TAG, TAG_TID);
-            bytes(out, t.as_bytes());
-        }
+        Value::Bool(b) => put_bool(out, *b),
+        Value::Str(s) => put_text(out, s),
+        Value::Bytes(b) => put_bytes(out, b),
+        Value::Tid(t) => put_tid(out, t),
         Value::Enum(case, payload) => {
             head(out, MAJOR_TAG, TAG_ENUM);
             head(out, MAJOR_ARRAY, if payload.is_some() { 2 } else { 1 });
@@ -242,7 +278,7 @@ pub fn encode_into(v: &Value, out: &mut Vec<u8>) {
             }
         }
         Value::Map(m) => {
-            len_head(out, MAJOR_MAP, m.len());
+            put_map(out, m.len());
             if m.keys().any(has_link) {
                 let mut entries: Vec<(Vec<u8>, &Value)> = m.iter().map(|(k, v)| (encode(k), v)).collect();
                 entries.sort_by(|a, b| a.0.cmp(&b.0));
@@ -258,12 +294,12 @@ pub fn encode_into(v: &Value, out: &mut Vec<u8>) {
             }
         }
         Value::List(l) => {
-            len_head(out, MAJOR_ARRAY, l.len());
+            put_array(out, l.len());
             l.iter().for_each(|e| encode_into(e, out));
         }
         Value::Set(s) => {
             head(out, MAJOR_TAG, TAG_SET);
-            len_head(out, MAJOR_ARRAY, s.len());
+            put_array(out, s.len());
             if s.iter().any(has_link) {
                 let mut items: Vec<Vec<u8>> = s.iter().map(encode).collect();
                 items.sort();
@@ -272,15 +308,7 @@ pub fn encode_into(v: &Value, out: &mut Vec<u8>) {
             }
             s.iter().for_each(|e| encode_into(e, out));
         }
-        Value::Link(l) => {
-            head(out, MAJOR_TAG, TAG_LINK);
-            head(out, MAJOR_ARRAY, 3);
-            bytes(out, &l.hash);
-            bytes(out, &l.blob.0);
-            len_head(out, MAJOR_BYTES, 33);
-            out.push(l.suite);
-            out.extend_from_slice(&l.key);
-        }
+        Value::Link(l) => put_link(out, l),
         Value::Unknown(u) => {
             head(out, MAJOR_TAG, u.tag());
             out.extend_from_slice(u.content().as_bytes());

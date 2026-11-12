@@ -742,3 +742,22 @@ proptest! {
         prop_assert_eq!(got, want);
     }
 }
+
+proptest! {
+    // The single-item writers write what `encode` writes for that value.
+    #[test]
+    fn writers_match_encode(n in 0..=i64::MAX as u64, b in prop::collection::vec(any::<u8>(), 0..300), s in ".{0,40}", t in any::<[u8; 15]>(), hash in any::<[u8; 32]>(), suite in any::<u8>()) {
+        use osis_base::cbor::*;
+        let w = |f: &dyn Fn(&mut Vec<u8>)| { let mut out = Vec::new(); f(&mut out); out };
+        prop_assert_eq!(w(&|o| put_uint(o, n)), encode(&Value::uint(n)));
+        prop_assert_eq!(w(&|o| put_bytes(o, &b)), encode(&Value::Bytes(b.clone())));
+        prop_assert_eq!(w(&|o| put_text(o, &s)), encode(&Value::Str(s.clone())));
+        prop_assert_eq!(w(&|o| put_bool(o, n % 2 == 0)), encode(&Value::Bool(n % 2 == 0)));
+        prop_assert_eq!(w(&|o| put_tid(o, &Tid::from_bytes(t))), encode(&Value::Tid(Tid::from_bytes(t))));
+        let l = Link { hash, blob: BlobId(hash), suite, key: hash };
+        prop_assert_eq!(w(&|o| put_link(o, &l)), encode(&Value::link(l)));
+        prop_assert_eq!(link_len(), encode(&Value::link(l)).len());
+        let len = (n % 70_000) as usize;
+        prop_assert_eq!(w(&|o| put_array(o, len)), encode(&Value::List(vec![Value::Int(0); len]))[..head_len(len as u64)].to_vec());
+    }
+}

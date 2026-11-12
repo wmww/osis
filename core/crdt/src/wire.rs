@@ -9,8 +9,8 @@ use crate::error::Error;
 use crate::fragment::Fragment;
 use crate::page::{PageSink, PageSource};
 use crate::stamp::{CounterRange, Dot, Interner, Session, Source, SourceKind, Stamp};
-use osis_base::cbor::{Item, List};
-use osis_base::{CommitId, Tid, Ts, Value, WallMs};
+use osis_base::cbor::{Item, List, put_array, put_bytes, put_tid, put_uint};
+use osis_base::{CommitId, Tid, Ts, WallMs};
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap};
 
@@ -184,12 +184,6 @@ pub fn fact_source(src: &Source) -> Source {
     }
 }
 
-/// A non-negative integer as a value. Counters and `ts` stay below 2^63 (decoded ones are `Int`).
-pub(crate) fn uint(n: u64) -> Value {
-    debug_assert!(n <= i64::MAX as u64);
-    Value::uint(n)
-}
-
 /// A non-negative integer.
 pub(crate) fn as_uint(v: Item) -> Result<u64, Error> {
     v.as_uint().ok_or(Error::Malformed("expected an unsigned integer"))
@@ -252,7 +246,7 @@ pub(crate) struct Check {
     pub(crate) log: Option<Vec<Ev>>,
     pub(crate) track: Track,
     /// The paged positions left for streaming, with their link lists as written.
-    pub(crate) streams: BTreeMap<Vec<crate::paging::Step>, Value>,
+    pub(crate) streams: BTreeMap<Vec<crate::paging::Step>, Vec<u8>>,
     /// Pages the decode fetched outside streamed positions, given back by content.
     pub(crate) replay: Replay,
 }
@@ -293,7 +287,7 @@ impl Check {
     }
 
     /// Whether the root encoding is at a streamed position: then its link list, logged.
-    pub(crate) fn streamed(&mut self) -> Option<Value> {
+    pub(crate) fn streamed(&mut self) -> Option<Vec<u8>> {
         let log = self.log.as_mut().filter(|_| self.track.on)?;
         let v = self.streams.remove(&self.track.path)?;
         log.push(Ev::Stream(self.track.path.clone()));
@@ -482,11 +476,8 @@ impl<'p> Enc<'p> {
     }
 
     /// `Ci` of the commit of stamp `s` (a creation's commit, §3.2).
-    pub fn commit_of(&mut self, s: &Stamp) -> Value {
-        match self.stamp(s) {
-            Value::List(a) => a.into_iter().next().unwrap_or(uint(0)),
-            v => v,
-        }
+    pub fn commit_of(&mut self, s: &Stamp) -> u64 {
+        self.stamp_parts(s).0
     }
 
     /// True during the collecting pass; outputs are then discarded and no page is written.
@@ -541,56 +532,63 @@ impl<'p> Enc<'p> {
 
     /// `Frontiers := [[Src, ctr]*]`: one entry per `Session` source of the table, in table order,
     /// `ctr` 0 for a source `fr` has none for (§8; after the collecting pass).
-    pub(crate) fn frontiers_value(&self, fr: &Frontiers) -> Value {
-        let entries = self.sources.iter().enumerate().filter(|(_, s)| matches!(s.kind(), SourceKind::Session(_))).map(|(i, s)| Value::List(vec![uint(i as u64 + 1), uint(fr.of(s))]));
-        Value::List(entries.collect())
+    pub(crate) fn put_frontiers(&self, out: &mut Vec<u8>, fr: &Frontiers) {
+        let sessions = || self.sources.iter().enumerate().filter(|(_, s)| matches!(s.kind(), SourceKind::Session(_)));
+        put_array(out, sessions().count());
+        for (i, s) in sessions() {
+            put_array(out, 2);
+            put_uint(out, i as u64 + 1);
+            put_uint(out, fr.of(s));
+        }
     }
 
     /// `Facts := [Fact*]`, `Fact := by | [by, actor]` (§8): one per `Commits` entry, in table
     /// order; a commit `facts` misses gets `Fact::NARROWEST`.
-    pub(crate) fn facts_value(&self, facts: &Facts) -> Value {
-        let entries = self.commits.iter().map(|c| {
+    pub(crate) fn put_facts(&self, out: &mut Vec<u8>, facts: &Facts) {
+        put_array(out, self.commits.len());
+        for c in &self.commits {
             let f = facts.get(&(c.ts, c.src.clone())).copied().unwrap_or(Fact::NARROWEST);
             match f.actor {
-                None => uint(f.by as u64),
-                Some(a) => Value::List(vec![uint(f.by as u64), Value::Tid(a)]),
+                None => put_uint(out, f.by as u64),
+                Some(a) => {
+                    put_array(out, 2);
+                    put_uint(out, f.by as u64);
+                    put_tid(out, &a);
+                }
             }
-        });
-        Value::List(entries.collect())
+        }
     }
 
-    /// `Src` of a source (0 = own).
-    pub fn src(&mut self, s: &Source) -> Value {
-        self.note(s);
-        if self.collecting {
-            return uint(0);
-        }
-        uint(self.src_index(s))
+    /// Notes the source of dot `d` where `dot` would, writing nothing.
+    pub(crate) fn note_dot(&mut self, d: &Dot) {
+        self.note(&d.src);
     }
 
     /// `Dot := ctr | [Src, ctr]`.
-    pub fn dot(&mut self, d: &Dot) -> Value {
+    pub fn dot(&mut self, out: &mut Vec<u8>, d: &Dot) {
         self.note(&d.src);
         if self.collecting {
-            return uint(0);
+            return put_uint(out, 0);
         }
         if d.src == self.own {
-            uint(d.ctr)
+            put_uint(out, d.ctr);
         } else {
-            Value::List(vec![uint(self.src_index(&d.src)), uint(d.ctr)])
+            put_array(out, 2);
+            put_uint(out, self.src_index(&d.src));
+            put_uint(out, d.ctr);
         }
     }
 
     /// `Anchor := 0 | Dot`; `None` is HEAD.
-    pub fn anchor(&mut self, a: Option<&Dot>) -> Value {
+    pub fn anchor(&mut self, out: &mut Vec<u8>, a: Option<&Dot>) {
         match a {
-            None => uint(0),
-            Some(d) => self.dot(d),
+            None => put_uint(out, 0),
+            Some(d) => self.dot(out, d),
         }
     }
 
-    /// `Stamp := Ci | [Ci, ctr]`.
-    pub fn stamp(&mut self, s: &Stamp) -> Value {
+    /// `Ci` of stamp `s`, and its counter where it is not the commit's base (the array form).
+    fn stamp_parts(&mut self, s: &Stamp) -> (u64, Option<u64>) {
         let own_commit = self.is_own(s);
         self.note(&s.dot.src);
         if self.collecting {
@@ -605,7 +603,7 @@ impl<'p> Enc<'p> {
                     }
                 }
             }
-            return uint(0);
+            return (0, None);
         }
         let (ci, base) = if own_commit {
             (0, self.lo)
@@ -617,53 +615,63 @@ impl<'p> Enc<'p> {
             }
             (ci, base)
         };
-        if s.dot.ctr == base { uint(ci) } else { Value::List(vec![uint(ci), uint(s.dot.ctr)]) }
+        (ci, (s.dot.ctr != base).then_some(s.dot.ctr))
+    }
+
+    /// `Stamp := Ci | [Ci, ctr]`.
+    pub fn stamp(&mut self, out: &mut Vec<u8>, s: &Stamp) {
+        match self.stamp_parts(s) {
+            (ci, None) => put_uint(out, ci),
+            (ci, Some(ctr)) => {
+                put_array(out, 2);
+                put_uint(out, ci);
+                put_uint(out, ctr);
+            }
+        }
     }
 
     /// `Opt(Stamp)`: a reset `R` or presence `W`.
-    pub(crate) fn opt_stamp(&mut self, s: Option<&Stamp>) -> Value {
-        Value::List(s.map(|s| self.stamp(s)).into_iter().collect())
+    pub(crate) fn opt_stamp(&mut self, out: &mut Vec<u8>, s: Option<&Stamp>) {
+        put_array(out, usize::from(s.is_some()));
+        if let Some(s) = s {
+            self.stamp(out, s);
+        }
     }
 
     /// `Sources := [Source*]`.
-    pub(crate) fn sources_value(&self) -> Value {
-        Value::List(
-            self.sources
-                .iter()
-                .map(|s| match s.kind() {
-                    SourceKind::Session(x) => Value::Bytes(x.to_bytes().to_vec()),
-                    SourceKind::Commit(c) => Value::Bytes(c.0.to_vec()),
-                    SourceKind::Derived(d) => Value::List(vec![uint(self.src_index(&d.src)), uint(d.ctr)]),
-                })
-                .collect(),
-        )
-    }
-
-    /// `Commits := [[Src, [[dwall, logical, base]*]]*]`.
-    pub(crate) fn commits_value(&self) -> Value {
-        let mut groups: Vec<Value> = Vec::new();
-        let mut cur: Option<(u64, Vec<Value>, u64)> = None;
-        for c in &self.commits {
-            let src = self.src_index(&c.src);
-            let wall = c.ts.wall_ms().0;
-            match &mut cur {
-                Some((s, entries, prev)) if *s == src => {
-                    entries.push(Value::List(vec![uint(wall.saturating_sub(*prev)), uint(c.ts.logical()), uint(c.base)]));
-                    *prev = wall;
-                }
-                _ => {
-                    if let Some((s, entries, _)) = cur.take() {
-                        groups.push(Value::List(vec![uint(s), Value::List(entries)]));
-                    }
-                    let first = Value::List(vec![uint(wall), uint(c.ts.logical()), uint(c.base)]);
-                    cur = Some((src, vec![first], wall));
+    pub(crate) fn put_sources(&self, out: &mut Vec<u8>) {
+        put_array(out, self.sources.len());
+        for s in &self.sources {
+            match s.kind() {
+                SourceKind::Session(x) => put_bytes(out, &x.to_bytes()),
+                SourceKind::Commit(c) => put_bytes(out, &c.0),
+                SourceKind::Derived(d) => {
+                    put_array(out, 2);
+                    put_uint(out, self.src_index(&d.src));
+                    put_uint(out, d.ctr);
                 }
             }
         }
-        if let Some((s, entries, _)) = cur {
-            groups.push(Value::List(vec![uint(s), Value::List(entries)]));
+    }
+
+    /// `Commits := [[Src, [[dwall, logical, base]*]]*]`: one group per run of one `Src`.
+    pub(crate) fn put_commits(&self, out: &mut Vec<u8>) {
+        let groups = self.commits.chunk_by(|a, b| a.src == b.src);
+        put_array(out, groups.clone().count());
+        for g in groups {
+            put_array(out, 2);
+            put_uint(out, g.first().map_or(0, |c| self.src_index(&c.src)));
+            put_array(out, g.len());
+            let mut prev = 0;
+            for c in g {
+                let wall = c.ts.wall_ms().0;
+                put_array(out, 3);
+                put_uint(out, wall.saturating_sub(prev));
+                put_uint(out, c.ts.logical());
+                put_uint(out, c.base);
+                prev = wall;
+            }
         }
-        Value::List(groups)
     }
 
     /// Wire order of dots for sorting element, entry and run arrays (§3.3 rule 2): §2.2 order,
@@ -701,8 +709,8 @@ impl<'p> Enc<'p> {
     }
 
     /// Encodes a nested fragment.
-    pub fn fragment(&mut self, f: &Fragment) -> Result<Value, Error> {
-        crate::codec::encode_fragment(self, f)
+    pub fn fragment(&mut self, out: &mut Vec<u8>, f: &Fragment) -> Result<(), Error> {
+        crate::codec::encode_fragment(self, out, f)
     }
 }
 
@@ -997,7 +1005,7 @@ impl<'a> Dec<'a> {
 
     /// An encoder in check mode over this delta's tables (`stream`): streamed positions
     /// `streams`, the pages fetched so far given back by `Replay`.
-    pub(crate) fn checker(&mut self, cx: &DeltaCtx, streams: BTreeMap<Vec<crate::paging::Step>, Value>) -> Enc<'static> {
+    pub(crate) fn checker(&mut self, cx: &DeltaCtx, streams: BTreeMap<Vec<crate::paging::Step>, Vec<u8>>) -> Enc<'static> {
         let mut enc = Enc::new(cx, None);
         enc.collecting = false;
         enc.src_idx = self.sources.iter().enumerate().map(|(i, s)| (s.clone(), i as u64 + 1)).collect();
@@ -1032,6 +1040,7 @@ impl<'a> Dec<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use osis_base::Value;
 
     fn tid(n: u8) -> Tid {
         let mut b = [0u8; 15];
@@ -1040,6 +1049,12 @@ mod tests {
     }
     fn sess(n: u8) -> Source {
         Source::session(Session { node: tid(n), nonce: [n; crate::SESSION_NONCE_LEN] })
+    }
+    /// What `f` writes, as a value.
+    fn written(f: impl FnOnce(&mut Vec<u8>)) -> Value {
+        let mut b = Vec::new();
+        f(&mut b);
+        osis_base::decode(&b, &osis_base::Limits::DEFAULT).unwrap()
     }
     /// `f` of `v` read in place.
     fn with<T>(v: &Value, f: impl FnOnce(Item) -> T) -> T {
@@ -1069,14 +1084,14 @@ mod tests {
         let dots = [Dot::new(own.clone(), 3), Dot::new(b.clone(), 1)];
         let mut enc = Enc::new(&cx, None);
         for pass in 0..2 {
-            let mut out: Vec<Value> = stamps.iter().map(|s| enc.stamp(s)).collect();
-            out.extend(dots.iter().map(|d| enc.dot(d)));
+            let mut out: Vec<Value> = stamps.iter().map(|s| written(|o| enc.stamp(o, s))).collect();
+            out.extend(dots.iter().map(|d| written(|o| enc.dot(o, d))));
             if pass == 0 {
                 enc.finish_collecting();
                 continue;
             }
             // sources: a, then b (underlying of d), then d
-            let sources = enc.sources_value();
+            let sources = written(|o| enc.put_sources(o));
             assert_eq!(
                 sources,
                 Value::List(vec![
@@ -1086,7 +1101,7 @@ mod tests {
                 ])
             );
             // own group (Src 0) first, then a (20 then 50: dwall 30), then d
-            let commits = enc.commits_value();
+            let commits = written(|o| enc.put_commits(o));
             let e = |w: i64, l: i64, b: i64| Value::List(vec![Value::Int(w), Value::Int(l), Value::Int(b)]);
             assert_eq!(
                 commits,

@@ -16,7 +16,7 @@
 //! the root decode met them, which for canonical bytes is the order the check's root re-encode
 //! meets them.
 
-use crate::codec::{Pager, leaf_items, absorbed_value, canonical, check_root, decode_entries, decode_elem_items, decode_fields, decode_fragment, derived_ok, encode_elem, encode_entry, encode_field, encode_fragment, fetch_page, links, nonce, prune_stable, root_tables, snapshot_tail, LIMITS};
+use crate::codec::{Pager, leaf_items, put_absorbed, canonical, check_root, decode_entries, decode_elem_items, decode_fields, decode_fragment, derived_ok, encode_elem, encode_entry, encode_field, encode_fragment, fetch_page, links, nonce, prune_stable, root_tables, snapshot_tail, LIMITS};
 use crate::error::Error;
 use crate::fragment::{Bag, Eid, Encoding, Entry, Enum, Fragment, Map, Meta, Set, Struct};
 use crate::page::{PageParams, PageSource};
@@ -25,7 +25,7 @@ use crate::seq::Seq;
 use crate::seq_wire::Runs;
 use crate::stamp::{Dot, Interner, Stamp, max_opt};
 use crate::wire::{Dec, DeltaCtx, DeltaKind, Enc, Ev, Frontiers, NONCE_LEN, Track, as_array};
-use osis_base::cbor::Item;
+use osis_base::cbor::{Item, put_array, put_bytes};
 use osis_base::{CanonicalBytes, CommitId, Tid, Value};
 use std::collections::BTreeMap;
 
@@ -162,19 +162,21 @@ pub(crate) fn stream<'a>(bytes: &[u8], cx: &DeltaCtx, interner: &'a mut Interner
     }
 
     // the root with the input's tables, streamed positions as written
-    let mut streams = BTreeMap::new();
-    for (p, d) in &found {
-        streams.insert(p.clone(), osis_base::decode(&d.top, &LIMITS)?);
-    }
-    let mut enc = dec.checker(cx, streams);
-    let again = encode_fragment(&mut enc, &skeleton).map(|f| {
-        let mut root = vec![Value::Bytes(nonce.to_vec()), enc.sources_value(), enc.commits_value(), f];
+    let mut enc = dec.checker(cx, found.iter().map(|(p, d)| (p.clone(), d.top.clone())).collect());
+    let mut again = Vec::with_capacity(bytes.len());
+    put_array(&mut again, if snapshot { 7 } else { 4 });
+    put_bytes(&mut again, &nonce);
+    enc.put_sources(&mut again);
+    enc.put_commits(&mut again);
+    let written = encode_fragment(&mut enc, &mut again, &skeleton).map(|()| {
         if snapshot {
-            root.extend([enc.frontiers_value(&frontiers), absorbed_value(&absorbed), enc.facts_value(&facts)]);
+            enc.put_frontiers(&mut again, &frontiers);
+            put_absorbed(&mut again, &absorbed);
+            enc.put_facts(&mut again, &facts);
         }
-        osis_base::encode(&Value::List(root))
+        again
     });
-    canonical(bytes, again)?;
+    canonical(bytes, written)?;
     let log = enc.check.as_mut().and_then(|c| c.log.take()).unwrap_or_default();
     // canonical bytes meet their positions in one order, decoding or encoding (`Checked`)
     debug_assert!(log.iter().filter_map(|ev| if let Ev::Stream(p) = ev { found.get(p).map(|d| d.order) } else { None }).is_sorted());
@@ -314,7 +316,7 @@ fn position(dec: &mut Dec, mut enc: Option<&mut Enc>, d: &Deferred, wrap: &WrapP
         }
     }
     if let Some(enc) = enc
-        && osis_base::encode(&out.finish(enc)?) != d.top
+        && out.finish(enc)? != d.top
     {
         return Err(NOT_CANONICAL);
     }
@@ -412,8 +414,8 @@ impl Out {
                     self.seam(enc, Last::Dot((*d).clone()))?;
                 }
                 for (d, e) in &elems {
-                    let v = encode_elem(enc, d, e)?;
-                    self.emit(enc, v)?;
+                    encode_elem(enc, self.pager.out(), d, e)?;
+                    self.pager.end(enc.sink()).map_err(cut)?;
                 }
                 elems.last().map(|(d, _)| Last::Dot((*d).clone()))
             }
@@ -423,8 +425,8 @@ impl Out {
                     self.seam(enc, Last::Entry((*id).clone()))?;
                 }
                 for (id, e) in &entries {
-                    let v = encode_entry(enc, id, e)?;
-                    self.emit(enc, v)?;
+                    encode_entry(enc, self.pager.out(), id, e)?;
+                    self.pager.end(enc.sink()).map_err(cut)?;
                 }
                 entries.last().map(|(id, _)| Last::Entry((*id).clone()))
             }
@@ -433,8 +435,8 @@ impl Out {
                     self.seam(enc, Last::Field(*k))?;
                 }
                 for (k, x) in fields {
-                    let (k, v) = encode_field(enc, *k, x, Step::Field)?;
-                    self.pager.push_field(enc.sink(), k, v).map_err(cut)?;
+                    encode_field(enc, self.pager.out(), *k, x, Step::Field)?;
+                    self.pager.end(enc.sink()).map_err(cut)?;
                 }
                 fields.keys().next_back().map(|k| Last::Field(*k))
             }
@@ -444,12 +446,9 @@ impl Out {
                 if let Some((k, _)) = recs.first() {
                     self.seam(enc, Last::Dot((*k).clone()))?;
                 }
-                let mut out = Vec::new();
                 for (k, e) in &recs {
-                    runs.push(k, e, enc, &mut out)?;
-                    for v in out.drain(..) {
-                        self.emit(enc, v)?;
-                    }
+                    runs.push(k, e, enc)?;
+                    runs.flush(enc, &mut self.pager).map_err(cut)?;
                 }
                 self.runs = Some(runs);
                 // a range record's last element
@@ -463,20 +462,15 @@ impl Out {
         Ok(())
     }
 
-    fn emit(&mut self, enc: &mut Enc, v: Value) -> Result<(), Error> {
-        self.pager.push(enc.sink(), v).map_err(cut)
-    }
-
     /// The position as the encoder writes it.
-    fn finish(mut self, enc: &mut Enc) -> Result<Value, Error> {
+    fn finish(mut self, enc: &mut Enc) -> Result<Vec<u8>, Error> {
         if let Some(mut runs) = self.runs.take() {
-            let mut out = Vec::new();
-            runs.close(enc, &mut out)?;
-            for v in out {
-                self.emit(enc, v)?;
-            }
+            runs.close(enc)?;
+            runs.flush(enc, &mut self.pager).map_err(cut)?;
         }
-        self.pager.finish(enc.sink()).map_err(cut)
+        let mut out = Vec::new();
+        self.pager.finish(enc.sink(), &mut out).map_err(cut)?;
+        Ok(out)
     }
 }
 

@@ -5,9 +5,8 @@ use crate::seq::{Anchor, PosW, Seq, SeqContent, SeqElem, top2};
 use crate::seq_span::{nth, overlaps};
 use crate::stamp::{Dot, Stamp};
 use osis_base::Ts;
-use crate::wire::{Dec, DeltaKind, Enc, MAX_RUN, as_array, as_uint, uint};
-use osis_base::Value;
-use osis_base::cbor::{Item, List};
+use crate::wire::{Dec, DeltaKind, Enc, MAX_RUN, as_array, as_uint};
+use osis_base::cbor::{Item, List, MAJOR_TEXT, head, put_array, put_bool, put_text, put_uint};
 use osis_base::format::{CHUNK_MAX, MAX_DELTA_BARE};
 
 /// Content goes on the wire for text elements not deleted (rule 5) and for list elements whose
@@ -64,8 +63,9 @@ struct Open {
     prev: Dot,
     n: u64,
     parts: Vec<Part>,
-    fs: Vec<Value>,
-    size: usize,
+    /// The chunk's list content as written, `nfs` fragments.
+    fs: Vec<u8>,
+    nfs: usize,
     /// Sources of the written chunks' position and flag writes, noted when the run closes
     /// (a later chunk's content may close nested runs first).
     held: [Vec<crate::stamp::Source>; 2],
@@ -74,15 +74,19 @@ struct Open {
 /// Maximal runs (rule 3) over records pushed in wire order, written as they close: whole
 /// sequences and, across pages, streamed ones (one open run held). Every source is noted in the
 /// order of rule 1: a run's first dot and anchor, its content, then (deferred to the end of the
-/// run, past any `CHUNK_MAX` cut) its position writes and flag writes.
+/// run, past any `CHUNK_MAX` cut) its position writes and flag writes. Closed runs wait in
+/// `closed` until `flush` hands them to a pager.
 pub(crate) struct Runs {
     text: bool,
     open: Option<Open>,
+    closed: Vec<u8>,
+    /// Where each closed run starts in `closed`.
+    starts: Vec<usize>,
 }
 
 impl Runs {
     pub(crate) fn new(text: bool) -> Runs {
-        Runs { text, open: None }
+        Runs { text, open: None, closed: Vec::new(), starts: Vec::new() }
     }
 
     /// Whether record `(k, e)` continues the open run `o` (rule 3).
@@ -97,25 +101,27 @@ impl Runs {
         }
     }
 
-    /// Adds record `(k, e)`, the next in wire order; closed runs go to `out`.
-    pub(crate) fn push(&mut self, k: &Dot, e: &SeqElem, cx: &mut Enc, out: &mut Vec<Value>) -> Result<(), Error> {
+    /// Adds record `(k, e)`, the next in wire order; runs it closes wait for `flush`.
+    pub(crate) fn push(&mut self, k: &Dot, e: &SeqElem, cx: &mut Enc) -> Result<(), Error> {
         let mut off = 0u64;
         while off < e.span {
             // past the first piece of a record the open run is full
             if let Some(o) = &self.open
                 && (o.n == MAX_RUN || off > 0 || !self.continues(o, k, e))
             {
-                self.close(cx, out)?;
+                self.close(cx)?;
             }
             let anchor_at = |a: &Anchor| if off == 0 { a.clone() } else { Anchor::Dot(nth(k, off - 1)) };
             if self.open.is_none() {
                 let d0 = nth(k, off);
-                cx.dot(&d0);
-                if let Some((_, a)) = &e.created {
-                    anchor(cx, &anchor_at(a));
+                cx.note_dot(&d0);
+                if let Some((_, a)) = &e.created
+                    && let Anchor::Dot(a) = anchor_at(a)
+                {
+                    cx.note_dot(&a);
                 }
                 let deleted = e.deleted.clone();
-                self.open = Some(Open { src: k.src.clone(), carries: carries(e), content: has_content(e), creation: e.created.is_some(), valueless: e.valueless, pos_empty: e.pos.is_empty(), deleted, prev: d0, n: 0, parts: Vec::new(), fs: Vec::new(), size: 0, held: Default::default() });
+                self.open = Some(Open { src: k.src.clone(), carries: carries(e), content: has_content(e), creation: e.created.is_some(), valueless: e.valueless, pos_empty: e.pos.is_empty(), deleted, prev: d0, n: 0, parts: Vec::new(), fs: Vec::new(), nfs: 0, held: Default::default() });
             }
             let Some(o) = self.open.as_mut() else { return Err(Error::Malformed("run")) };
             let take = (e.span - off).min(MAX_RUN - o.n);
@@ -129,11 +135,10 @@ impl Runs {
             // a list run also closes once its content reaches `CHUNK_MAX` bytes (rule 3), so a
             // run fits a page; content-carrying list elements are single-element records
             if let (false, SeqContent::Frag(f)) = (self.text, &e.content) {
-                let v = cx.fragment(f)?;
-                o.size += osis_base::cbor::encoded_len(&v);
-                o.fs.push(v);
-                if o.size >= CHUNK_MAX {
-                    self.chunk(cx, out)?;
+                cx.fragment(&mut o.fs, f)?;
+                o.nfs += 1;
+                if o.fs.len() >= CHUNK_MAX {
+                    self.chunk(cx)?;
                 }
             }
         }
@@ -141,16 +146,16 @@ impl Runs {
     }
 
     /// Writes the open run's parts so far as one run.
-    fn chunk(&mut self, cx: &mut Enc, out: &mut Vec<Value>) -> Result<(), Error> {
+    fn chunk(&mut self, cx: &mut Enc) -> Result<(), Error> {
         let Some(o) = self.open.as_mut() else { return Ok(()) };
         if o.parts.is_empty() {
             return Ok(());
         }
         let parts = std::mem::take(&mut o.parts);
-        let fs = std::mem::take(&mut o.fs);
-        o.size = 0;
-        let content = (!self.text && o.content).then_some(fs);
-        out.push(encode_run(self.text, &parts, content, o.valueless, cx)?);
+        let (fs, nfs) = (std::mem::take(&mut o.fs), std::mem::take(&mut o.nfs));
+        let content = (!self.text && o.content).then_some((fs.as_slice(), nfs));
+        self.starts.push(self.closed.len());
+        encode_run(self.text, &parts, content, o.valueless, cx, &mut self.closed)?;
         let [p, f] = cx.undefer();
         o.held[0].extend(p);
         o.held[1].extend(f);
@@ -158,84 +163,113 @@ impl Runs {
     }
 
     /// Closes the open run: its last chunk, then the sources of its position and flag writes.
-    pub(crate) fn close(&mut self, cx: &mut Enc, out: &mut Vec<Value>) -> Result<(), Error> {
-        self.chunk(cx, out)?;
+    pub(crate) fn close(&mut self, cx: &mut Enc) -> Result<(), Error> {
+        self.chunk(cx)?;
         if let Some(o) = self.open.take() {
             cx.note_held(o.held);
         }
         Ok(())
     }
+
+    /// Hands the closed runs to `p`, as its elements.
+    pub(crate) fn flush(&mut self, cx: &mut Enc, p: &mut crate::codec::Pager) -> Result<(), Error> {
+        let starts = std::mem::take(&mut self.starts);
+        for (i, s) in starts.iter().enumerate() {
+            let e = starts.get(i + 1).copied().unwrap_or(self.closed.len());
+            p.out().extend_from_slice(self.closed.get(*s..e).unwrap_or_default());
+            p.end(cx.sink())?;
+        }
+        self.closed.clear();
+        Ok(())
+    }
 }
 
-fn anchor(cx: &mut Enc, a: &Anchor) -> Value {
+fn anchor(cx: &mut Enc, out: &mut Vec<u8>, a: &Anchor) {
     match a {
-        Anchor::Head => cx.anchor(None),
-        Anchor::Dot(d) => cx.anchor(Some(d)),
+        Anchor::Head => cx.anchor(out, None),
+        Anchor::Dot(d) => cx.anchor(out, Some(d)),
     }
 }
 
 /// The runs of `s` in wire order, into `p` as they close.
 pub(crate) fn encode_elems(s: &Seq, cx: &mut Enc, p: &mut crate::codec::Pager) -> Result<(), Error> {
-    let mut out = Vec::new();
     let mut runs = Runs::new(s.text);
     for (k, e) in cx.sorted(s.elems()) {
-        runs.push(k, e, cx, &mut out)?;
-        for v in out.drain(..) {
-            p.push(cx.sink(), v)?;
-        }
+        runs.push(k, e, cx)?;
+        runs.flush(cx, p)?;
     }
-    runs.close(cx, &mut out)?;
-    for v in out {
-        p.push(cx.sink(), v)?;
-    }
-    Ok(())
+    runs.close(cx)?;
+    runs.flush(cx, p)
 }
 
-/// One run of `parts`; `content`: its list content, encoded.
-fn encode_run(text: bool, parts: &[Part], content: Option<Vec<Value>>, valueless: bool, cx: &mut Enc) -> Result<Value, Error> {
+/// One run of `parts`; `content`: its list content as written, and how many fragments.
+fn encode_run(text: bool, parts: &[Part], content: Option<(&[u8], usize)>, valueless: bool, cx: &mut Enc, out: &mut Vec<u8>) -> Result<(), Error> {
     let Some(p0) = parts.first() else { return Err(Error::Malformed("empty run")) };
     let n: u64 = parts.iter().map(|p| p.len).sum();
-    let first = cx.dot(&p0.dot);
-    let creation = match &p0.created {
-        None => Value::List(Vec::new()),
+    put_array(out, 6);
+    cx.dot(out, &p0.dot);
+    put_uint(out, n);
+    match &p0.created {
+        None => put_array(out, 0),
         Some((_, a)) => {
-            let a = anchor(cx, a);
+            // value-less list creations (§3.2, §4.7)
+            put_array(out, 2 + usize::from(valueless));
+            anchor(cx, out, a);
             let mut segs: Vec<(u64, u64)> = Vec::new();
             for p in parts {
                 let Some((st, _)) = &p.created else { continue };
-                let ci = cx.commit_of(st).as_uint().unwrap_or(0);
+                let ci = cx.commit_of(st);
                 match segs.last_mut() {
                     Some((c, x)) if *c == ci => *x += p.len,
                     _ => segs.push((ci, p.len)),
                 }
             }
-            let segs = segs.into_iter().map(|(c, k)| Value::List(vec![uint(c), uint(k)])).collect();
-            let mut c = vec![a, Value::List(segs)];
-            // value-less list creations (§3.2, §4.7)
-            if valueless {
-                c.push(Value::Bool(false));
+            put_array(out, segs.len());
+            for (c, k) in segs {
+                put_array(out, 2);
+                put_uint(out, c);
+                put_uint(out, k);
             }
-            Value::List(c)
+            if valueless {
+                put_bool(out, false);
+            }
         }
-    };
-    let content = match content {
-        Some(fs) => Value::List(fs),
-        None if text && parts.iter().any(|p| p.ch.is_some()) => Value::Str(parts.iter().filter_map(|p| p.ch).collect()),
-        None => Value::List(Vec::new()),
+    }
+    let bare = match content {
+        Some((fs, nfs)) => {
+            put_array(out, nfs);
+            out.extend_from_slice(fs);
+            nfs == 0
+        }
+        None if text && parts.iter().any(|p| p.ch.is_some()) => {
+            let chars = || parts.iter().filter_map(|p| p.ch);
+            head(out, MAJOR_TEXT, chars().map(char::len_utf8).sum::<usize>() as u64);
+            for c in chars() {
+                out.extend_from_slice(c.encode_utf8(&mut [0; 4]).as_bytes());
+            }
+            false
+        }
+        None => {
+            put_array(out, 0);
+            true
+        }
     };
     // rule 1: sources of position and flag writes count after the whole run's content (held:
     // `Runs::chunk` takes them, `Runs::close` notes them)
     cx.defer(0);
-    let mut posw = Vec::new();
+    put_array(out, parts.iter().map(|p| p.pos.len()).sum());
     // flag writes: maximal ranges of one write, an undelete's chars (one per element) with it
     let mut flagw: Vec<FlagRange<'_>> = Vec::new();
     let mut idx = 0u64;
     for p in parts {
         for (st, a, key) in &p.pos {
-            let st = cx.stamp(st);
-            let mut w = vec![uint(idx), st, anchor(cx, a)];
-            w.extend(key.as_ref().map(|k| cx.stamp(k)));
-            posw.push(Value::List(w));
+            put_array(out, 3 + usize::from(key.is_some()));
+            put_uint(out, idx);
+            cx.stamp(out, st);
+            anchor(cx, out, a);
+            if let Some(k) = key {
+                cx.stamp(out, k);
+            }
         }
         if let Some(dl) = &p.deleted {
             match flagw.last_mut() {
@@ -249,16 +283,21 @@ fn encode_run(text: bool, parts: &[Part], content: Option<Vec<Value>>, valueless
         idx += p.len;
     }
     cx.defer(1);
-    let mut fw = Vec::with_capacity(flagw.len());
+    put_array(out, flagw.len());
     for (i, j, (st, b), u) in flagw {
-        let mut w = vec![uint(i), uint(j), cx.stamp(st), Value::Bool(*b)];
-        w.extend(u.map(Value::Str));
-        fw.push(Value::List(w));
+        put_array(out, 4 + usize::from(u.is_some()));
+        put_uint(out, i);
+        put_uint(out, j);
+        cx.stamp(out, st);
+        put_bool(out, *b);
+        if let Some(u) = u {
+            put_text(out, &u);
+        }
     }
-    if matches!(&content, Value::List(x) if x.is_empty()) {
+    if bare {
         cx.note_bare(n)?;
     }
-    Ok(Value::List(vec![first, uint(n), creation, content, Value::List(posw), Value::List(fw)]))
+    Ok(())
 }
 
 fn index(v: Item, n: u64) -> Result<u64, Error> {

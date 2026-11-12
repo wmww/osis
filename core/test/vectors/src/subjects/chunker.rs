@@ -84,8 +84,8 @@ pub fn pages() -> VecFile {
         let data = xof("osis test pages", n);
         let items: Vec<Value> = data.chunks(1024).map(|c| Value::Bytes(c.to_vec())).collect();
         let mut rec = PageRec { dedup: dedup.clone(), pages: Vec::new() };
-        let top = osis_crdt::page_array(Some(&mut rec), items).unwrap();
-        let Value::List(top) = top else { panic!("array") };
+        let top = osis_crdt::page_array(Some(&mut rec), &items).unwrap();
+        let Value::List(top) = osis_base::decode(&top, &osis_base::Limits::DEFAULT).unwrap() else { panic!("array") };
         let (mut elems, mut links) = (Vec::new(), Vec::new());
         for p in &rec.pages {
             let Value::List(items) = osis_base::decode(p, &osis_base::Limits { max_depth: 4, max_bytes: osis_base::format::MAX_BLOB }).unwrap() else { panic!("page") };

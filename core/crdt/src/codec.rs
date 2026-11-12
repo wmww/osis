@@ -10,53 +10,65 @@ use crate::page::{PageError, PageParams, PageSink, PageSource};
 use crate::paging::Step;
 use crate::seq::{self, Seq};
 use crate::stamp::{Dot, Interner, Source, SourceKind, Stamp};
-use crate::wire::{Dec, Delta, DeltaCtx, DeltaKind, Enc, Frontiers, NONCE_LEN, Snapshot, as_array, as_uint, uint};
+use crate::wire::{Dec, Delta, DeltaCtx, DeltaKind, Enc, Frontiers, NONCE_LEN, Snapshot, as_array, as_uint};
+use osis_base::cbor::{Item, List, encode_into, head_len, link_len, put_array, put_bool, put_bytes, put_link, put_map, put_tid, put_uint};
 use osis_base::format::{MAX_BLOB, MAX_OBJECT_DEPTH, MAX_VALUE_DEPTH};
-use osis_base::cbor::{Item, List};
-use osis_base::{CanonicalBytes, Limits, PageCutter, Value};
+use osis_base::{CanonicalBytes, Limits, Link, PageCutter, Value};
 use std::collections::{BTreeMap, BTreeSet};
 
 pub(crate) const LIMITS: Limits = Limits { max_depth: MAX_OBJECT_DEPTH, max_bytes: MAX_BLOB };
 
 // ---- encode
 
-fn opt_frag(cx: &mut Enc, f: Option<&Fragment>) -> Result<Value, Error> {
-    Ok(Value::List(match f {
-        Some(f) => vec![encode_fragment(cx, f)?],
-        None => Vec::new(),
-    }))
-}
-
-/// Length of a CBOR array head for `n` items.
-pub(crate) fn array_head(n: usize) -> usize {
-    match n {
-        0..24 => 1,
-        24..256 => 2,
-        256..65536 => 3,
-        _ if u32::try_from(n).is_ok() => 5,
-        _ => 9,
+/// `Opt(Fragment)`.
+fn opt_frag(cx: &mut Enc, out: &mut Vec<u8>, f: Option<&Fragment>) -> Result<(), Error> {
+    put_array(out, usize::from(f.is_some()));
+    match f {
+        Some(f) => encode_fragment(cx, out, f),
+        None => Ok(()),
     }
 }
 
+/// An element array's (or field map's) head of `n` items.
+fn put_head(out: &mut Vec<u8>, map: bool, n: usize) {
+    if map { put_map(out, n) } else { put_array(out, n) }
+}
+
+/// `[Link*]`.
+fn put_links(out: &mut Vec<u8>, links: &[Link]) {
+    put_array(out, links.len());
+    links.iter().for_each(|l| put_link(out, l));
+}
+
+/// `put_links(links).len()`.
+fn links_len(n: usize) -> usize {
+    head_len(n as u64).saturating_add(n.saturating_mul(link_len()))
+}
+
 /// An element array (or, `map`, a struct's field map or an enum's payload map) as written (§8,
-/// spec/wire.md §6), built element by element: itself while its plain encoding is at or below
+/// spec/wire.md §6), written element by element: itself while its plain encoding is at or below
 /// the page target; past it, cut into pages as elements come (`PageCutter`; a field's key and
 /// value bytes are one element, a page of fields a map), each page put through the sink as it
 /// closes; at the end `[Link+]`, or link pages when that list is above the target. Holds the
-/// elements of one page (all of them while the array may still be plain) and the links. The
-/// collecting pass keeps nothing (§3.3 rule 1 notes sources as elements are encoded).
+/// bytes of one page's elements (all of them while the array may still be plain) and the links.
+/// The collecting pass keeps nothing (§3.3 rule 1 notes sources as elements are encoded).
 pub(crate) struct Pager {
     map: bool,
     keep: bool,
     params: PageParams,
     cutter: PageCutter,
-    /// Elements not yet in a closed page: a list element, or a field's key and value.
-    items: Vec<Held>,
+    /// Elements not yet in a closed page, as written, then the one being written.
+    buf: Vec<u8>,
+    /// Where the element being written starts in `buf`.
+    mark: usize,
+    /// Elements held in `buf`, and while not paging where each starts.
+    held: usize,
+    starts: Vec<usize>,
     /// Elements and their encoded bytes so far: paged once the plain form passes the target.
     count: usize,
     size: usize,
     paging: bool,
-    links: Vec<Value>,
+    links: Vec<Link>,
     /// The test oracle's whole paging (`oracle`): every element held, then cut at the end.
     #[cfg(any(test, fuzzing))]
     whole: bool,
@@ -69,7 +81,10 @@ impl Pager {
             keep: true,
             params,
             cutter: PageCutter::new(params.cut),
-            items: Vec::new(),
+            buf: Vec::new(),
+            mark: 0,
+            held: 0,
+            starts: Vec::new(),
             count: 0,
             size: 0,
             paging: false,
@@ -98,113 +113,124 @@ impl Pager {
         false
     }
 
-    /// The next list element.
-    pub(crate) fn push(&mut self, sink: Option<&mut dyn PageSink>, v: Value) -> Result<(), Error> {
-        self.add(sink, Held::Elem(v))
+    /// Where the next element (a list element, or a field's key and value) is written; `end`
+    /// closes it.
+    pub(crate) fn out(&mut self) -> &mut Vec<u8> {
+        &mut self.buf
     }
 
-    /// The next field (`map`).
-    pub(crate) fn push_field(&mut self, sink: Option<&mut dyn PageSink>, k: Value, v: Value) -> Result<(), Error> {
-        self.add(sink, Held::Field(k, v))
-    }
-
-    fn add(&mut self, mut sink: Option<&mut dyn PageSink>, item: Held) -> Result<(), Error> {
+    /// Closes the element written since the last `end`.
+    pub(crate) fn end(&mut self, mut sink: Option<&mut dyn PageSink>) -> Result<(), Error> {
         if !self.keep {
+            self.buf.truncate(self.mark);
             return Ok(());
         }
         self.count += 1;
-        self.size = self.size.saturating_add(item.len());
+        self.size = self.size.saturating_add(self.buf.len().saturating_sub(self.mark));
         if self.paging {
-            let bytes = item.bytes();
-            return self.feed(sink, item, &bytes);
+            return self.feed(sink);
         }
-        self.items.push(item);
-        if self.oracle() || array_head(self.count).saturating_add(self.size) <= self.params.target {
+        self.starts.push(self.mark);
+        self.held += 1;
+        self.mark = self.buf.len();
+        if self.oracle() || head_len(self.count as u64).saturating_add(self.size) <= self.params.target {
             return Ok(());
         }
         // paged (the plain form only grows): cut what is held, then go on as elements come
         self.paging = true;
-        for item in std::mem::take(&mut self.items) {
-            let b = item.bytes();
-            self.feed(re(&mut sink), item, &b)?;
+        let (buf, starts) = (std::mem::take(&mut self.buf), std::mem::take(&mut self.starts));
+        (self.held, self.mark) = (0, 0);
+        for (i, s) in starts.iter().enumerate() {
+            let e = starts.get(i + 1).copied().unwrap_or(buf.len());
+            self.buf.extend_from_slice(buf.get(*s..e).unwrap_or_default());
+            self.feed(re(&mut sink))?;
         }
         Ok(())
     }
 
-    fn feed(&mut self, sink: Option<&mut dyn PageSink>, item: Held, bytes: &[u8]) -> Result<(), Error> {
-        self.items.push(item);
-        self.cutter.feed(bytes);
+    /// The element from `mark` to the end of `buf` to the cutter, while paging.
+    fn feed(&mut self, sink: Option<&mut dyn PageSink>) -> Result<(), Error> {
+        self.cutter.feed(self.buf.get(self.mark..).unwrap_or_default());
+        self.held += 1;
+        self.mark = self.buf.len();
         if self.cutter.end_element() { self.put_page(sink) } else { Ok(()) }
     }
 
-    fn whole(&self, items: Vec<Held>) -> Value {
-        let it = items.into_iter();
-        if self.map {
-            Value::Map(it.filter_map(|i| if let Held::Field(k, v) = i { Some((k, v)) } else { None }).collect())
-        } else {
-            Value::List(it.filter_map(|i| if let Held::Elem(v) = i { Some(v) } else { None }).collect())
-        }
+    /// The held elements as an array or map.
+    fn put_plain(&self, out: &mut Vec<u8>) {
+        put_head(out, self.map, self.held);
+        out.extend_from_slice(&self.buf);
     }
 
     fn put_page(&mut self, sink: Option<&mut dyn PageSink>) -> Result<(), Error> {
         let sink = sink.ok_or(Error::Mismatch("a paged array needs a page sink"))?;
-        let items = std::mem::take(&mut self.items);
-        let page = self.whole(items);
-        self.links.push(Value::link(sink.put(&osis_base::encode(&page))?));
+        let mut page = Vec::with_capacity(head_len(self.held as u64) + self.buf.len());
+        self.put_plain(&mut page);
+        self.links.push(sink.put(&page)?);
+        self.buf.clear();
+        (self.held, self.mark) = (0, 0);
         Ok(())
     }
 
-    /// The array as written: at a streamed position of a root being checked (`stream`), its
-    /// link list as the input has it.
-    pub(crate) fn done(self, cx: &mut Enc) -> Result<Value, Error> {
+    /// Writes the array as written: at a streamed position of a root being checked (`stream`),
+    /// its link list as the input has it.
+    pub(crate) fn done(self, cx: &mut Enc, out: &mut Vec<u8>) -> Result<(), Error> {
         if let Some(v) = cx.check.as_mut().and_then(|c| c.streamed()) {
-            return Ok(v);
+            out.extend_from_slice(&v);
+            return Ok(());
         }
         #[cfg(any(test, fuzzing))]
         if self.whole {
-            return self.done_whole(cx);
+            return self.done_whole(cx, out);
         }
-        self.finish(cx.sink())
+        self.finish(cx.sink(), out)
     }
 
-    /// `done` as the whole encoder (`oracle`): the collecting pass returns the elements, the
+    /// `done` as the whole encoder (`oracle`): the collecting pass writes the elements, the
     /// real one cuts them all at once.
     #[cfg(any(test, fuzzing))]
-    fn done_whole(mut self, cx: &mut Enc) -> Result<Value, Error> {
-        let items = std::mem::take(&mut self.items);
+    fn done_whole(self, cx: &mut Enc, out: &mut Vec<u8>) -> Result<(), Error> {
         if cx.collecting() {
-            return Ok(self.whole(items));
+            self.put_plain(out);
+            return Ok(());
         }
-        let encoded = items.iter().map(Held::bytes).collect();
-        oracle::paged(cx.sink(), items, encoded, |v| self.whole(v))
+        let ends = self.starts.iter().skip(1).copied().chain([self.buf.len()]);
+        let elems: Vec<&[u8]> = self.starts.iter().zip(ends).map(|(s, e)| self.buf.get(*s..e).unwrap_or_default()).collect();
+        oracle::paged(cx.sink(), self.map, &elems, out)
     }
 
-    /// The array as written (the collecting pass: an empty one).
-    pub(crate) fn finish(mut self, mut sink: Option<&mut dyn PageSink>) -> Result<Value, Error> {
+    /// Writes the array as written (the collecting pass: an empty one).
+    pub(crate) fn finish(mut self, mut sink: Option<&mut dyn PageSink>, out: &mut Vec<u8>) -> Result<(), Error> {
         if !self.paging {
-            let items = std::mem::take(&mut self.items);
-            return Ok(self.whole(items));
+            self.put_plain(out);
+            return Ok(());
         }
-        if !self.items.is_empty() {
+        if self.held > 0 {
             self.put_page(re(&mut sink))?;
         }
-        let list = Value::List(std::mem::take(&mut self.links));
-        if osis_base::encode(&list).len() <= self.params.target {
-            return Ok(list);
-        }
-        // link pages: the tree-node grouping rule, level 1 only
-        let Value::List(links) = list else { return Err(Error::Mismatch("links")) };
-        let sink = sink.ok_or(Error::Mismatch("a paged array needs a page sink"))?;
-        let mut groups = Vec::new();
-        for g in link_groups(&links, self.params.fanout) {
-            groups.push(Value::link(sink.put(&osis_base::encode(&Value::List(g.to_vec())))?));
-        }
-        let top = Value::List(groups);
-        if osis_base::encode(&top).len() > self.params.target {
-            return Err(Error::Mismatch("fragment needs a third page level"));
-        }
-        Ok(top)
+        link_list(sink, &self.links, self.params, out)
     }
+}
+
+/// `[Link+]` of an array's pages, or of link pages when that list is above the target (§8,
+/// spec/wire.md §6: the tree-node grouping rule, level 1 only).
+fn link_list(sink: Option<&mut dyn PageSink>, links: &[Link], params: PageParams, out: &mut Vec<u8>) -> Result<(), Error> {
+    if links_len(links.len()) <= params.target {
+        put_links(out, links);
+        return Ok(());
+    }
+    let sink = sink.ok_or(Error::Mismatch("a paged array needs a page sink"))?;
+    let mut top = Vec::new();
+    for g in link_groups(links, params.fanout) {
+        let mut page = Vec::with_capacity(links_len(g.len()));
+        put_links(&mut page, g);
+        top.push(sink.put(&page)?);
+    }
+    if links_len(top.len()) > params.target {
+        return Err(Error::Mismatch("fragment needs a third page level"));
+    }
+    put_links(out, &top);
+    Ok(())
 }
 
 /// `sink` reborrowed.
@@ -215,52 +241,27 @@ fn re<'s>(sink: &'s mut Option<&mut dyn PageSink>) -> Option<&'s mut dyn PageSin
     }
 }
 
-/// A `Pager` element: a list element, or a field's key and value.
-enum Held {
-    Elem(Value),
-    Field(Value, Value),
-}
-
-impl Held {
-    /// Its bytes as the cutter reads them.
-    fn bytes(&self) -> Vec<u8> {
-        match self {
-            Held::Elem(v) => osis_base::encode(v),
-            Held::Field(k, v) => {
-                let mut b = Vec::with_capacity(self.len());
-                osis_base::cbor::encode_into(k, &mut b);
-                osis_base::cbor::encode_into(v, &mut b);
-                b
-            }
-        }
-    }
-    /// `bytes().len()`.
-    fn len(&self) -> usize {
-        match self {
-            Held::Elem(v) => osis_base::cbor::encoded_len(v),
-            Held::Field(k, v) => osis_base::cbor::encoded_len(k) + osis_base::cbor::encoded_len(v),
-        }
-    }
-}
-
 /// An element array as written (§8, spec/wire.md §6): itself at or below the sink's page target,
 /// else `[Link+]` to pages, or to link pages when that list is above the target. Pages are put
 /// through the sink; `None` is fine only for an array that does not page.
-pub fn page_array(mut pages: Option<&mut dyn PageSink>, items: Vec<Value>) -> Result<Value, Error> {
+pub fn page_array(mut pages: Option<&mut dyn PageSink>, items: &[Value]) -> Result<Vec<u8>, Error> {
     let mut p = Pager::new(false, pages.as_ref().map_or(PageParams::FORMAT, |p| p.params()));
     for v in items {
-        p.push(re(&mut pages), v)?;
+        encode_into(v, p.out());
+        p.end(re(&mut pages))?;
     }
-    p.finish(pages)
+    let mut out = Vec::new();
+    p.finish(pages, &mut out)?;
+    Ok(out)
 }
 
 /// Links grouped into link pages by the tree-node rule (spec/wire.md §6): a group closes after
 /// a link whose hash starts with a zero byte (from its second link) or at `fanout` links.
-pub(crate) fn link_groups(links: &[Value], fanout: usize) -> Vec<&[Value]> {
+pub(crate) fn link_groups(links: &[Link], fanout: usize) -> Vec<&[Link]> {
     let mut out = Vec::new();
     let mut start = 0;
     for (i, l) in links.iter().enumerate() {
-        let zero = matches!(l, Value::Link(x) if x.hash.first() == Some(&0));
+        let zero = l.hash.first() == Some(&0);
         let n = i + 1 - start;
         if (n >= 2 && zero) || n >= fanout {
             out.push(links.get(start..=i).unwrap_or_default());
@@ -274,149 +275,157 @@ pub(crate) fn link_groups(links: &[Value], fanout: usize) -> Vec<&[Value]> {
 }
 
 /// A bag or set element `[Dot, R, Opt(Fragment)]`.
-pub(crate) fn encode_elem(cx: &mut Enc, d: &Dot, e: &Elem) -> Result<Value, Error> {
-    let dot = cx.dot(d);
-    let r = cx.opt_stamp(e.reset.as_ref());
-    let f = opt_frag(cx, e.frag.as_deref())?;
-    Ok(Value::List(vec![dot, r, f]))
+pub(crate) fn encode_elem(cx: &mut Enc, out: &mut Vec<u8>, d: &Dot, e: &Elem) -> Result<(), Error> {
+    put_array(out, 3);
+    cx.dot(out, d);
+    cx.opt_stamp(out, e.reset.as_ref());
+    opt_frag(cx, out, e.frag.as_deref())
 }
 
-fn encode_elems(cx: &mut Enc, elems: &BTreeMap<Dot, Elem>) -> Result<Value, Error> {
+fn encode_elems(cx: &mut Enc, out: &mut Vec<u8>, elems: &BTreeMap<Dot, Elem>) -> Result<(), Error> {
     let mut p = Pager::of(cx, false);
     for (d, e) in cx.sorted(elems) {
-        let v = encode_elem(cx, d, e)?;
-        p.push(cx.sink(), v)?;
+        encode_elem(cx, p.out(), d, e)?;
+        p.end(cx.sink())?;
     }
-    p.done(cx)
+    p.done(cx, out)
 }
 
 /// A map entry record `[Dot, Ci?, R, Key?, Opt(Fragment)]`.
-pub(crate) fn encode_entry(cx: &mut Enc, id: &Eid, e: &Entry) -> Result<Value, Error> {
-    let mut x = vec![cx.dot(&id.dot)];
+pub(crate) fn encode_entry(cx: &mut Enc, out: &mut Vec<u8>, id: &Eid, e: &Entry) -> Result<(), Error> {
     // the creation's commit, where a snapshot carries it (a writer's own creations
     // are implied, §3.2)
-    if let Some(c) = e.created.as_ref().filter(|c| !cx.is_own(c)) {
-        x.push(cx.commit_of(c));
+    let created = e.created.as_ref().filter(|c| !cx.is_own(c));
+    put_array(out, 3 + usize::from(created.is_some()) + usize::from(id.key().is_some()));
+    cx.dot(out, &id.dot);
+    if let Some(c) = created {
+        put_uint(out, cx.commit_of(c));
     }
-    x.push(cx.opt_stamp(e.reset.as_ref()));
-    x.extend(id.key().cloned());
+    cx.opt_stamp(out, e.reset.as_ref());
+    if let Some(k) = id.key() {
+        encode_into(k, out);
+    }
     cx.step(|| Step::Entry(id.clone()));
-    x.push(opt_frag(cx, e.frag.as_deref())?);
+    let r = opt_frag(cx, out, e.frag.as_deref());
     cx.step_done();
-    Ok(Value::List(x))
+    r
 }
 
 /// A struct field or enum payload `(id, Fragment)`; `step` names it in a path.
-pub(crate) fn encode_field(cx: &mut Enc, k: u64, f: &Fragment, step: fn(u64) -> Step) -> Result<(Value, Value), Error> {
+pub(crate) fn encode_field(cx: &mut Enc, out: &mut Vec<u8>, k: u64, f: &Fragment, step: fn(u64) -> Step) -> Result<(), Error> {
+    put_uint(out, k);
     cx.step(|| step(k));
-    let v = encode_fragment(cx, f);
+    let r = encode_fragment(cx, out, f);
     cx.step_done();
-    Ok((uint(k), v?))
+    r
 }
 
-fn head(cx: &mut Enc, enc: Encoding, meta: &Meta) -> Vec<Value> {
+/// A fragment's array head of `len` items, its encoding ID, `R` and `W`.
+fn head(cx: &mut Enc, out: &mut Vec<u8>, enc: Encoding, meta: &Meta, len: usize) {
+    put_array(out, len);
+    put_uint(out, u64::from(enc.id()));
     // sources are noted in encoding order (§3.3 rule 1): the reset first
-    let r = cx.opt_stamp(meta.reset.as_ref());
-    let mut w = cx.opt_stamp(meta.w.as_ref());
+    cx.opt_stamp(out, meta.reset.as_ref());
     // a value-less `W` (§3.2, §4.7)
-    if let (Value::List(v), true) = (&mut w, meta.w_valueless) {
-        v.push(Value::Bool(false));
+    put_array(out, usize::from(meta.w.is_some()) + usize::from(meta.w_valueless));
+    if let Some(w) = &meta.w {
+        cx.stamp(out, w);
     }
-    vec![uint(u64::from(enc.id())), r, w]
+    if meta.w_valueless {
+        put_bool(out, false);
+    }
 }
 
-fn encode_children(cx: &mut Enc, c: &BTreeMap<u64, Fragment>, step: fn(u64) -> Step) -> Result<Value, Error> {
+fn encode_children(cx: &mut Enc, out: &mut Vec<u8>, c: &BTreeMap<u64, Fragment>, step: fn(u64) -> Step) -> Result<(), Error> {
     let mut p = Pager::of(cx, true);
     for (k, f) in c {
-        let (k, v) = encode_field(cx, *k, f, step)?;
-        p.push_field(cx.sink(), k, v)?;
+        encode_field(cx, p.out(), *k, f, step)?;
+        p.end(cx.sink())?;
     }
-    p.done(cx)
+    p.done(cx, out)
 }
 
-fn encode_register(cx: &mut Enc, r: &Register) -> Value {
-    let mut a = vec![uint(0), cx.opt_stamp(r.reset.as_ref())];
+fn encode_register(cx: &mut Enc, out: &mut Vec<u8>, r: &Register) {
+    let value = r.write.as_ref().and_then(|w| w.value.as_ref());
+    put_array(out, 2 + usize::from(r.write.is_some()) + usize::from(value.is_some()));
+    put_uint(out, 0);
+    cx.opt_stamp(out, r.reset.as_ref());
     if let Some(w) = &r.write {
-        a.push(cx.stamp(&w.stamp));
-        if let Some(v) = &w.value {
-            a.push(v.clone());
-        }
+        cx.stamp(out, &w.stamp);
     }
-    Value::List(a)
+    if let Some(v) = value {
+        encode_into(v, out);
+    }
 }
 
-pub(crate) fn encode_fragment(cx: &mut Enc, f: &Fragment) -> Result<Value, Error> {
-    let Some(at) = cx.track().map(|t| t.enter()) else { return encode_fragment_at(cx, f) };
-    let r = encode_fragment_at(cx, f);
+pub(crate) fn encode_fragment(cx: &mut Enc, out: &mut Vec<u8>, f: &Fragment) -> Result<(), Error> {
+    let Some(at) = cx.track().map(|t| t.enter()) else { return encode_fragment_at(cx, out, f) };
+    let r = encode_fragment_at(cx, out, f);
     if let Some(t) = cx.track() {
         t.leave(at);
     }
     r
 }
 
-fn encode_fragment_at(cx: &mut Enc, f: &Fragment) -> Result<Value, Error> {
-    Ok(match f {
-        Fragment::Register(r) => encode_register(cx, r),
+fn encode_fragment_at(cx: &mut Enc, out: &mut Vec<u8>, f: &Fragment) -> Result<(), Error> {
+    match f {
+        Fragment::Register(r) => encode_register(cx, out, r),
         Fragment::Bag(Bag { meta, elems, .. }) | Fragment::Set(Set { meta, elems }) => {
-            let mut a = head(cx, f.encoding(), meta);
-            a.push(encode_elems(cx, elems)?);
-            Value::List(a)
+            head(cx, out, f.encoding(), meta, 4);
+            encode_elems(cx, out, elems)?;
         }
         Fragment::Struct(s) => {
-            let mut a = head(cx, Encoding::Struct, &s.meta);
-            a.push(encode_children(cx, &s.fields, Step::Field)?);
-            Value::List(a)
+            head(cx, out, Encoding::Struct, &s.meta, 4);
+            encode_children(cx, out, &s.fields, Step::Field)?;
         }
         Fragment::Enum(s) => {
-            let mut a = head(cx, Encoding::Enum, &s.meta);
-            let case = match &s.case {
-                None => Vec::new(),
-                Some(c) => {
-                    let mut x = vec![cx.stamp(&c.stamp)];
-                    x.extend(c.case.map(uint));
-                    vec![Value::List(x)]
+            head(cx, out, Encoding::Enum, &s.meta, 5);
+            put_array(out, usize::from(s.case.is_some()));
+            if let Some(c) = &s.case {
+                put_array(out, 1 + usize::from(c.case.is_some()));
+                cx.stamp(out, &c.stamp);
+                if let Some(k) = c.case {
+                    put_uint(out, k);
                 }
-            };
-            a.push(Value::List(case));
-            a.push(encode_children(cx, &s.payloads, Step::Case)?);
-            Value::List(a)
+            }
+            encode_children(cx, out, &s.payloads, Step::Case)?;
         }
         Fragment::Map(m) => {
-            let mut a = head(cx, Encoding::Map, &m.meta);
+            head(cx, out, Encoding::Map, &m.meta, 4);
             let mut p = Pager::of(cx, false);
             for (id, e) in cx.sorted_by(&m.entries, |id| &id.dot) {
-                let v = encode_entry(cx, id, e)?;
-                p.push(cx.sink(), v)?;
+                encode_entry(cx, p.out(), id, e)?;
+                p.end(cx.sink())?;
             }
-            a.push(p.done(cx)?);
-            Value::List(a)
+            p.done(cx, out)?;
         }
         Fragment::Seq(s) => {
-            let mut a = head(cx, s.encoding(), &s.meta);
+            head(cx, out, s.encoding(), &s.meta, 4);
             let mut p = Pager::of(cx, false);
             seq::encode_elems(s, cx, &mut p)?;
-            a.push(p.done(cx)?);
-            Value::List(a)
+            p.done(cx, out)?;
         }
         Fragment::Slots(s) => {
-            let reg = Value::List(s.reg.iter().map(|r| encode_register(cx, r)).collect());
-            let mut slots = Vec::with_capacity(s.slots.len());
-            for f in s.slots.values() {
-                slots.push(encode_fragment(cx, f)?);
+            put_array(out, 3);
+            put_uint(out, u64::from(Encoding::Slots.id()));
+            put_array(out, usize::from(s.reg.is_some()));
+            if let Some(r) = &s.reg {
+                encode_register(cx, out, r);
             }
-            Value::List(vec![uint(u64::from(Encoding::Slots.id())), reg, Value::List(slots)])
+            put_array(out, s.slots.len());
+            for f in s.slots.values() {
+                encode_fragment(cx, out, f)?;
+            }
         }
-    })
+    }
+    Ok(())
 }
 
-/// Runs the collecting pass and the real pass (§3.3 rule 1).
-fn encode_top<'p>(cx: &DeltaCtx, f: &Fragment, frontiers: Option<&Frontiers>, pages: Option<&'p mut dyn PageSink>) -> Result<(Enc<'p>, Value, Option<Value>), Error> {
-    let mut enc = Enc::new(cx, pages);
-    encode_fragment(&mut enc, f)?;
+/// The collecting pass over `f` (§3.3 rule 1): `enc`'s tables, nothing written.
+fn collect(enc: &mut Enc, f: &Fragment) -> Result<(), Error> {
+    encode_fragment(enc, &mut Vec::new(), f)?;
     enc.finish_collecting();
-    let frag = encode_fragment(&mut enc, f)?;
-    let fr = frontiers.map(|fr| enc.frontiers_value(fr));
-    Ok((enc, frag, fr))
+    Ok(())
 }
 
 /// The sources with a stamp, dot, anchor or sibling key in `f`'s canonical encoding (its
@@ -424,8 +433,7 @@ fn encode_top<'p>(cx: &DeltaCtx, f: &Fragment, frontiers: Option<&Frontiers>, pa
 /// frontier for (§8).
 pub fn sources_of(f: &Fragment, cx: &DeltaCtx) -> Result<BTreeSet<Source>, Error> {
     let mut enc = Enc::new(cx, None);
-    encode_fragment(&mut enc, f)?;
-    enc.finish_collecting();
+    collect(&mut enc, f)?;
     Ok(enc.sources().cloned().collect())
 }
 
@@ -446,26 +454,43 @@ pub fn encode_delta(d: &Delta, cx: &DeltaCtx, pages: Option<&mut dyn PageSink>) 
 }
 
 pub(crate) fn encode_delta_in(d: &Delta, cx: &DeltaCtx, pages: Option<&mut dyn PageSink>) -> Result<Vec<u8>, Error> {
-    let (enc, frag, _) = encode_top(cx, &d.fragment, None, pages)?;
-    let top = Value::List(vec![Value::Bytes(d.nonce.to_vec()), enc.sources_value(), enc.commits_value(), frag]);
-    Ok(osis_base::encode(&top))
+    write_delta(Enc::new(cx, pages), d)
+}
+
+/// `[nonce, Sources, Commits, Fragment]`, both passes by `enc`.
+fn write_delta(mut enc: Enc, d: &Delta) -> Result<Vec<u8>, Error> {
+    collect(&mut enc, &d.fragment)?;
+    let mut out = Vec::new();
+    put_array(&mut out, 4);
+    put_bytes(&mut out, &d.nonce);
+    enc.put_sources(&mut out);
+    enc.put_commits(&mut out);
+    encode_fragment(&mut enc, &mut out, &d.fragment)?;
+    Ok(out)
 }
 
 /// Encodes a snapshot delta (§8). The caller strips values of expiring deltas first (§4.7).
 pub fn encode_snapshot(s: &Snapshot, cx: &DeltaCtx, pages: Option<&mut dyn PageSink>) -> Result<Vec<u8>, Error> {
     #[cfg(test)]
-    return oracle::twin(pages, |p| encode_snapshot_in(s, cx, p), |p| oracle::encode_snapshot(s, cx, p));
+    return oracle::twin(pages, |p| write_snapshot(Enc::new(cx, p), s), |p| oracle::encode_snapshot(s, cx, p));
     #[cfg(not(test))]
-    encode_snapshot_in(s, cx, pages)
+    write_snapshot(Enc::new(cx, pages), s)
 }
 
-fn encode_snapshot_in(s: &Snapshot, cx: &DeltaCtx, pages: Option<&mut dyn PageSink>) -> Result<Vec<u8>, Error> {
-    let (enc, frag, fr) = encode_top(cx, &s.fragment, Some(&s.frontiers), pages)?;
+/// `[nonce, Sources, Commits, Fragment, Frontiers, Absorbed, Facts]`, both passes by `enc`.
+fn write_snapshot(mut enc: Enc, s: &Snapshot) -> Result<Vec<u8>, Error> {
+    collect(&mut enc, &s.fragment)?;
+    let mut out = Vec::new();
+    put_array(&mut out, 7);
+    put_bytes(&mut out, &s.nonce);
+    enc.put_sources(&mut out);
+    enc.put_commits(&mut out);
+    encode_fragment(&mut enc, &mut out, &s.fragment)?;
     frontiers_traced(&enc, s)?;
-    let fr = fr.unwrap_or(Value::List(Vec::new()));
-    let absorbed = absorbed_value(&s.absorbed);
-    let top = vec![Value::Bytes(s.nonce.to_vec()), enc.sources_value(), enc.commits_value(), frag, fr, absorbed, enc.facts_value(&s.facts)];
-    Ok(osis_base::encode(&Value::List(top)))
+    enc.put_frontiers(&mut out, &s.frontiers);
+    put_absorbed(&mut out, &s.absorbed);
+    enc.put_facts(&mut out, &s.facts);
+    Ok(out)
 }
 
 // ---- decode
@@ -1016,8 +1041,13 @@ pub(crate) fn snapshot_tail(dec: &Dec, fr: Item, ab: Item, fa: Item) -> Result<(
 }
 
 /// The absorbed table as written (§8).
-pub(crate) fn absorbed_value(absorbed: &BTreeMap<osis_base::CommitId, osis_base::Tid>) -> Value {
-    Value::List(absorbed.iter().map(|(c, a)| Value::List(vec![Value::Bytes(c.0.to_vec()), Value::Tid(*a)])).collect())
+pub(crate) fn put_absorbed(out: &mut Vec<u8>, absorbed: &BTreeMap<osis_base::CommitId, osis_base::Tid>) {
+    put_array(out, absorbed.len());
+    for (c, a) in absorbed {
+        put_array(out, 2);
+        put_bytes(out, &c.0);
+        put_tid(out, a);
+    }
 }
 
 /// The whole-delta decoder and encoder before streaming. The decoder decodes every page into one
@@ -1029,43 +1059,34 @@ pub(crate) fn absorbed_value(absorbed: &BTreeMap<osis_base::CommitId, osis_base:
 pub mod oracle {
     use super::*;
 
-    /// Pages `items` (canonical bytes `encoded`) when the plain form `whole(items)` is above the
-    /// target (spec/wire.md §6).
-    pub(crate) fn paged<T>(mut pages: Option<&mut dyn PageSink>, items: Vec<T>, encoded: Vec<Vec<u8>>, whole: impl Fn(Vec<T>) -> Value) -> Result<Value, Error> {
+    /// Writes the array of elements `elems` (their canonical bytes), paged when the plain form is
+    /// above the target (spec/wire.md §6).
+    pub(crate) fn paged(mut pages: Option<&mut dyn PageSink>, map: bool, elems: &[&[u8]], out: &mut Vec<u8>) -> Result<(), Error> {
         let params = pages.as_ref().map_or(PageParams::FORMAT, |p| p.params());
+        let plain = |out: &mut Vec<u8>, es: &[&[u8]]| {
+            put_head(out, map, es.len());
+            es.iter().for_each(|e| out.extend_from_slice(e));
+        };
         // array and map heads have the same length
-        let size = encoded.iter().fold(array_head(items.len()), |n, e| n.saturating_add(e.len()));
+        let size = elems.iter().fold(head_len(elems.len() as u64), |n, e| n.saturating_add(e.len()));
         if size <= params.target {
-            return Ok(whole(items));
+            plain(out, elems);
+            return Ok(());
         }
         let sink = pages.as_mut().ok_or(Error::Mismatch("a paged array needs a page sink"))?;
         let mut cutter = PageCutter::new(params.cut);
         let mut links = Vec::new();
-        let mut page = Vec::new();
-        for (item, bytes) in items.into_iter().zip(&encoded) {
-            page.push(item);
-            cutter.feed(bytes);
-            if cutter.end_element() {
-                links.push(Value::link(sink.put(&osis_base::encode(&whole(std::mem::take(&mut page))))?));
+        let mut from = 0;
+        for (i, e) in elems.iter().enumerate() {
+            cutter.feed(e);
+            if cutter.end_element() || i + 1 == elems.len() {
+                let mut page = Vec::new();
+                plain(&mut page, elems.get(from..=i).unwrap_or_default());
+                links.push(sink.put(&page)?);
+                from = i + 1;
             }
         }
-        if !page.is_empty() {
-            links.push(Value::link(sink.put(&osis_base::encode(&whole(page)))?));
-        }
-        let list = Value::List(links);
-        if osis_base::encode(&list).len() <= params.target {
-            return Ok(list);
-        }
-        let Value::List(links) = list else { return Err(Error::Mismatch("links")) };
-        let mut groups = Vec::new();
-        for g in link_groups(&links, params.fanout) {
-            groups.push(Value::link(sink.put(&osis_base::encode(&Value::List(g.to_vec())))?));
-        }
-        let top = Value::List(groups);
-        if osis_base::encode(&top).len() > params.target {
-            return Err(Error::Mismatch("fragment needs a third page level"));
-        }
-        Ok(top)
+        link_list(Some(&mut **sink), &links, params, out)
     }
 
     /// A content-addressed sink (`twin`): equal pages get equal links whatever the order of puts.
@@ -1109,28 +1130,19 @@ pub mod oracle {
         new(re(&mut pages))
     }
 
-    fn encode_top<'p>(cx: &DeltaCtx, f: &Fragment, frontiers: Option<&Frontiers>, pages: Option<&'p mut dyn PageSink>) -> Result<(Enc<'p>, Value, Option<Value>), Error> {
+    /// The whole encoder (`Pager::done_whole`).
+    fn whole<'p>(cx: &DeltaCtx, pages: Option<&'p mut dyn PageSink>) -> Enc<'p> {
         let mut enc = Enc::new(cx, pages);
         enc.whole = true;
-        encode_fragment(&mut enc, f)?;
-        enc.finish_collecting();
-        let frag = encode_fragment(&mut enc, f)?;
-        let fr = frontiers.map(|fr| enc.frontiers_value(fr));
-        Ok((enc, frag, fr))
+        enc
     }
 
     pub fn encode_delta(d: &Delta, cx: &DeltaCtx, pages: Option<&mut dyn PageSink>) -> Result<Vec<u8>, Error> {
-        let (enc, frag, _) = encode_top(cx, &d.fragment, None, pages)?;
-        let top = Value::List(vec![Value::Bytes(d.nonce.to_vec()), enc.sources_value(), enc.commits_value(), frag]);
-        Ok(osis_base::encode(&top))
+        write_delta(whole(cx, pages), d)
     }
 
     pub fn encode_snapshot(s: &Snapshot, cx: &DeltaCtx, pages: Option<&mut dyn PageSink>) -> Result<Vec<u8>, Error> {
-        let (enc, frag, fr) = encode_top(cx, &s.fragment, Some(&s.frontiers), pages)?;
-        super::frontiers_traced(&enc, s)?;
-        let fr = fr.unwrap_or(Value::List(Vec::new()));
-        let top = vec![Value::Bytes(s.nonce.to_vec()), enc.sources_value(), enc.commits_value(), frag, fr, absorbed_value(&s.absorbed), enc.facts_value(&s.facts)];
-        Ok(osis_base::encode(&Value::List(top)))
+        write_snapshot(whole(cx, pages), s)
     }
 
     fn replay(dec: &mut Dec) -> crate::wire::Replay {
