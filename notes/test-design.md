@@ -16,7 +16,7 @@ Rules for every test change:
 - Sizes are one function with a knob, never `_small`/`_large` twins of separate code; only the ignored sizes read `OSIS_*` ranges, and an override prints its range.
 - Oracles compare observables: reads, rosters, promised history (`history()` within kept history), errors. Best-effort APIs (undo availability, `commits()`, `changed()`, `Change.origin`) are never compared across nodes. An excuse comes from the generated history, never from the node under test; exchanges between nodes run through real sync.
 - A generator does not steer around a known difference; a failure is a design question.
-- Before deleting a harness, every open issue whose replay uses it gets a minimal example (`#[ignore] repro_*` naming the issue) or a replay that survives the change (open: issues/churn-seed-361-loop.md, an ephemeral harness).
+- Before deleting a harness, every open issue whose replay uses it gets a minimal example (`#[ignore] repro_*` naming the issue) or a replay that survives the change.
 - A change that removes or adds tests updates notes/testing.md and measures the default-test CPU-s of the touched binaries before and after (instruction counts, notes/testing.md Default-test cost).
 - Only less work shortens the default tests: running binaries in parallel was measured not to help (notes/testing.md Default-test cost).
 
