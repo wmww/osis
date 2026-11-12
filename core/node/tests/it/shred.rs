@@ -1430,3 +1430,125 @@ fn purge_strips_carrying_snapshots_alike_in_every_order_spec_commits_5() {
     assert!(matches!(bodies[1], osis_node::engine::listing::PartBody::Purged(_)), "{bodies:?}");
     assert!(purged.len() >= 2, "{purged:?}");
 }
+
+/// Peer 0's packages carrying a part on `t` (its record, before anything else is written there).
+fn record_of(lp: &mut LocalPeer, t: Tid) -> Vec<osis_node::local_peer::Package> {
+    lp.packages(0).unwrap().into_iter().filter(|p| osis_commit::CommitBlob::decode(&p.bytes).unwrap().header.aspects.iter().any(|a| a.tid == t)).collect()
+}
+
+// spec/commits.md §4 (Unjudgeable), §5 (Purge): a commit pending for its `ts`, one part on a thing
+// whose record is away, and a purge request naming that part (pending too, its part there thrown
+// out): no byte of the part is kept while the record is away. With the record the part comes again and is judged:
+// purged, or read as written when no request names it.
+#[test]
+fn pending_part_awaiting_its_record_keeps_no_byte_spec_commits_4() {
+    for purge in [false, true] {
+        let mut lp = net2();
+        let t = new_thing(&mut lp, 0);
+        lp.sync(0, 1).unwrap();
+        let t2 = new_thing(&mut lp, 0);
+        let rec = record_of(&mut lp, t2);
+        lp.peers[0].clock.advance(3 * osis_base::format::MAX_DRIFT_MS);
+        let mut m = Mutation::new();
+        m.set(t, &REG, &s("ahead")).unwrap();
+        m.set(t2, &REG, &s("SECRET-A2f6")).unwrap();
+        let c = lp.peers[0].commit(m).unwrap().unwrap();
+        let pc = lp.peers[0].engine.package(&c).unwrap().unwrap();
+        assert!(matches!(lp.deliver(1, &pc).unwrap(), osis_node::Ingested::Pending(_, osis_node::Reason::Drift)), "purge {purge}");
+        if purge {
+            let mut m = Mutation::new();
+            m.purge_commit(c, t2, ak("t:reg.0"));
+            m.set(t, &LIST, &Value::List(vec![s("a")])).unwrap();
+            let p = lp.peers[0].commit(m).unwrap().unwrap();
+            let pp = lp.peers[0].engine.package(&p).unwrap().unwrap();
+            assert!(matches!(lp.deliver(1, &pp).unwrap(), osis_node::Ingested::Pending(..)));
+        }
+        assert!(lp.peers[1].engine.pending().iter().any(|x| x.0 == c), "purge {purge}");
+        assert!(!recoverable(&mut lp.peers[1], b"SECRET-A2f6"), "purge {purge}: a part it cannot judge keeps no byte");
+        for pk in &rec {
+            lp.deliver(1, pk).unwrap();
+        }
+        lp.peers[1].clock.advance(3 * osis_base::format::MAX_DRIFT_MS);
+        lp.peers[1].reexamine().unwrap();
+        let e = &mut lp.peers[1].engine;
+        assert!(e.pending().is_empty(), "purge {purge}: {:?}", e.pending());
+        assert_eq!(e.get(&t, &ak("t:reg.0")).unwrap(), Some(s("ahead")));
+        let want = lp.peers[0].engine.state_digest(&t2, &ak("t:reg.0")).unwrap();
+        assert_eq!(lp.peers[1].engine.state_digest(&t2, &ak("t:reg.0")).unwrap(), want, "purge {purge}: as its author holds it");
+        if purge {
+            assert!(!recoverable(&mut lp.peers[1], b"SECRET-A2f6"));
+        } else {
+            assert_eq!(lp.peers[1].engine.get(&t2, &ak("t:reg.0")).unwrap(), Some(s("SECRET-A2f6")));
+        }
+    }
+}
+
+// spec/commits.md §4 (Unjudgeable), §5: an applied commit with a purged part, a part waiting for its
+// pages and a part on a thing whose record is away: a copy of it holds nothing the node needs, so
+// node-sync forgets it (`spent_copy`), the part whose record is away awaiting it (`copy_awaits`).
+#[test]
+fn copy_of_a_purged_part_beside_an_unjudgeable_one_is_spent_spec_commits_5() {
+    let map: osis_base::ValueMap = (0..2000).map(|i| (Value::Str(format!("key {i:05}")), Value::Str("v".repeat(60)))).collect();
+    let mut lp = net2();
+    let (t, h, q) = (new_thing(&mut lp, 0), new_thing(&mut lp, 0), new_thing(&mut lp, 0));
+    lp.sync(0, 1).unwrap();
+    let t2 = new_thing(&mut lp, 0);
+    lp.advance(5);
+    let mut m = Mutation::new();
+    m.set(t, &REG, &s("SECRET-C7d2")).unwrap();
+    m.set(h, &BIG, &Value::Map(map)).unwrap();
+    m.set(t2, &REG, &s("other")).unwrap();
+    let c = lp.peers[0].commit(m).unwrap().unwrap();
+    let pk = lp.peers[0].engine.package(&c).unwrap().unwrap();
+    assert!(!pk.blobs.is_empty(), "paged");
+    lp.advance(5);
+    let mut m = Mutation::new();
+    m.set(q, &REG, &s("q")).unwrap();
+    m.purge_commit(c, t, ak("t:reg.0"));
+    let p = lp.peers[0].commit(m).unwrap().unwrap();
+    let pp = lp.peers[0].engine.package(&p).unwrap().unwrap();
+    lp.deliver(1, &pp).unwrap();
+    lp.peers[1].receive(&pk.bytes, Vec::new()).unwrap();
+    let e = &mut lp.peers[1].engine;
+    assert!(e.commit_ids().contains(&c) && e.pending().iter().any(|x| x.0 == c), "applied, its paged part waiting");
+    let copy = osis_commit::CommitBlob::decode(&pk.bytes).unwrap();
+    let parts: Vec<usize> = copy.parts.iter().map(|p| p.ai).collect();
+    assert!(e.spent_copy(&c, &copy).unwrap(), "nothing of it needed");
+    assert_eq!(e.copy_awaits(&c, &parts).unwrap(), vec![t2]);
+    assert!(!recoverable(&mut lp.peers[1], b"SECRET-C7d2"));
+}
+
+// spec/commits.md §5 (Purge), spec/crdt.md §4.7 (Copies): a compaction snapshot carrying a write's
+// value, pending for its `ts` when a purge request takes the write: held as its leftover while it
+// waits, and joined so once it applies.
+#[test]
+fn waiting_snapshot_drops_a_purged_copy_spec_commits_5() {
+    let mut lp = net2();
+    lp.sync_all().unwrap();
+    let a = lp.peers[0].engine.me();
+    let t = new_thing(&mut lp, 1);
+    let edge = osis_schema::core_types::Edge { role: osis_base::Role::Write, until: None, invite: None, tied: None };
+    lp.peers[1].engine.grant(&t, &a, &edge).unwrap();
+    lp.sync(1, 0).unwrap();
+    lp.advance(5);
+    let w = set(&mut lp, 0, t, &REG, "SECRET-W9b4");
+    lp.sync(0, 1).unwrap();
+    lp.peers[0].clock.advance(3 * osis_base::format::MAX_DRIFT_MS);
+    let snap = lp.peers[0].engine.snapshot(&t, &ak("t:reg.0")).unwrap().unwrap();
+    let sp = lp.peers[0].engine.package(&snap).unwrap().unwrap();
+    assert!(matches!(lp.deliver(1, &sp).unwrap(), osis_node::Ingested::Pending(_, osis_node::Reason::Drift)));
+    let mut m = Mutation::new();
+    m.purge_commit(w, t, ak("t:reg.0"));
+    m.set(t, &LIST, &Value::List(vec![s("a")])).unwrap();
+    lp.peers[1].commit(m).unwrap().unwrap();
+    lp.peers[1].reexamine().unwrap();
+    assert!(lp.peers[1].engine.pending().iter().any(|x| x.0 == snap));
+    assert!(!recoverable(&mut lp.peers[1], b"SECRET-W9b4"), "the waiting snapshot's copy went");
+    lp.peers[1].clock.advance(3 * osis_base::format::MAX_DRIFT_MS);
+    lp.peers[1].reexamine().unwrap();
+    let e = &mut lp.peers[1].engine;
+    assert!(e.pending().is_empty() && e.commit_ids().contains(&snap), "{:?}", e.pending());
+    assert_eq!(e.get(&t, &ak("t:reg.0")).unwrap(), None, "purged");
+    assert!(e.suspects().unwrap().is_empty());
+    assert!(!recoverable(&mut lp.peers[1], b"SECRET-W9b4"));
+}

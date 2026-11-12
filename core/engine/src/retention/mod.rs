@@ -752,6 +752,15 @@ pub(crate) fn strip_carried(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<
     put_leftover(tx, c, ai, m, body, held.flatten())
 }
 
+/// Snapshot part `ai` of applied commit `c` joined as its leftover `body` (stripped while it
+/// waited, `pending::strip_carried_waiting`): held so, as `strip_carried` holds an applied one.
+pub(crate) fn hold_carrier(tx: &mut Tx<'_>, c: &CommitId, ai: usize, mut body: Fragment, gives: Option<crate::engine::Gives>) -> Result<()> {
+    let Some(m) = tx.core.ix.commits.get(c).cloned() else { return Ok(()) };
+    tx.core.touch();
+    strip_leftover(tx.core, &m.header, ai, &mut body);
+    put_leftover(tx, c, ai, m, body, gives)
+}
+
 /// The leftover of `body`, held part `ai` (spec/crdt.md §4.7), the one strip of purge, expiry
 /// and arrival. Invariant: no held body holds the value of a write the node holds value-less
 /// (purged, expired), its own or a snapshot's copy under its dot; no body loses a value of a write

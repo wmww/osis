@@ -40,7 +40,58 @@ pub(crate) fn pending_drops(tx: &mut Tx<'_>, id: &CommitId, blob: &mut osis_comm
         }
         if known_purged(tx, h, id, ai)? {
             strip_purged(tx, id, blob, h, ai)?;
+        } else if h.kind.is_compaction() {
+            strip_carried_waiting(tx, id, blob, h, ai)?;
         }
+    }
+    Ok(())
+}
+
+/// Snapshot part `ai` of pending commit `id` (in `blob`, header `h`) carrying a copy of a value of
+/// a write on its aspect's value-less list (purged): held as its leftover from now on, those
+/// copies value-less, as an applied carrier is (spec/crdt.md §4.7 Copies, `strip_carried`), its
+/// slot emptied (`emptied`); it joins as that leftover, frontiers, `Absorbed` and facts kept. One
+/// that cannot be read yet (a page away, parked) is stripped once it can, at the latest when it
+/// joins (`drop_gone`). Judged on every look at the stored copy (`reexamine`), so a request
+/// applied while it waits reaches it.
+fn strip_carried_waiting(tx: &mut Tx<'_>, id: &CommitId, blob: &mut osis_commit::CommitBlob, h: &Header, ai: usize) -> Result<()> {
+    let Some(a) = h.aspects.get(ai) else { return Ok(()) };
+    let Some(list) = tx.core.ix.valueless.get(&(a.tid, a.ak.clone())).filter(|l| !l.is_empty()).cloned() else { return Ok(()) };
+    let Some(dedup) = tx.core.dedup(&a.tid) else { return Ok(()) };
+    let Some(p) = blob.parts.iter_mut().find(|p| p.ai == ai && p.delta != emptied()) else { return Ok(()) };
+    let mut interner = osis_crdt::Interner::new();
+    let mut blobs = crate::engine::blobs::TxBlobs::new(&mut tx.blobs, tx.txn.is_memory());
+    let mut paged = osis_label::BlobReader::new(&dedup, &mut blobs);
+    let reader: &mut dyn osis_crdt::PageSource = &mut paged;
+    let Ok(Decoded::Snapshot(snap)) = osis_commit::verify_part(h, id, p, &dedup, &mut interner, Some(reader)) else { return Ok(()) };
+    let mut f = snap.fragment.clone();
+    f.strip(&|d| super::sorted_owns(&list, d));
+    if f == snap.fragment {
+        return Ok(());
+    }
+    p.delta = emptied();
+    let gives = Some((snap.frontiers, snap.absorbed.into_iter().collect(), snap.facts));
+    leftover::put(tx, &a.tid, &a.ak, id, ai, &leftover::Leftover { fragment: f, gives })?;
+    tx.core.touch();
+    // node-sync forgets the blobs holding it (`Engine::spent_copy`)
+    tx.core.mark_changed(*id);
+    rewrite_stored(tx, id, h, ai)
+}
+
+/// The stored pending copy of `id` (header `h`), if any, with slot `ai` emptied (`emptied`),
+/// shredded.
+fn rewrite_stored(tx: &mut Tx<'_>, id: &CommitId, h: &Header, ai: usize) -> Result<()> {
+    if tx.core.ix.pending.contains_key(id)
+        && let Some((kind, bytes)) = tx.txn.get_pending(id)?
+        && let Ok(mut b) = osis_commit::CommitBlob::decode_stored(&bytes)
+    {
+        for p in b.parts.iter_mut().filter(|p| p.ai == ai) {
+            p.delta = emptied();
+        }
+        tx.in_class(h.ephemeral.is_some(), |tx| {
+            tx.txn.remove_pending(id, Shred::Yes)?;
+            Ok(tx.txn.put_pending(id, kind, &b.encode())?)
+        })?;
     }
     Ok(())
 }
@@ -197,11 +248,20 @@ pub(crate) fn forget_waiting_leftovers(tx: &mut Tx<'_>, id: &CommitId) -> Result
 /// The parts of commit `id` just joined from their leftovers (`strip_purged`: aspect, fragment):
 /// held value-less as a purge leaves an applied part, the leftover their body. A purge that fell
 /// while they waited is judged again next (`rejudge_purges`).
-pub(crate) fn stripped_joined(tx: &mut Tx<'_>, id: &CommitId, joined: &[(usize, Fragment)], changed: &mut BTreeSet<(Tid, Ak)>) -> Result<()> {
+pub(crate) fn stripped_joined(tx: &mut Tx<'_>, id: &CommitId, joined: &[(usize, Decoded)], changed: &mut BTreeSet<(Tid, Ak)>) -> Result<()> {
     let ais: BTreeSet<usize> = joined.iter().map(|x| x.0).collect();
     for ai in ais {
-        let kept: Vec<Fragment> = joined.iter().filter(|x| x.0 == ai).map(|x| x.1.clone()).collect();
+        let kept: Vec<Fragment> = joined.iter().filter(|x| x.0 == ai).map(|x| x.1.fragment().clone()).collect();
         let Some(h) = tx.core.ix.commits.get(id).map(|m| m.header.clone()) else { continue };
+        // a snapshot stripped of carried copies (`strip_carried_waiting`) is held as that leftover
+        if let Some((_, Decoded::Snapshot(snap))) = joined.iter().find(|x| x.0 == ai) {
+            let gives = Some((snap.frontiers.clone(), snap.absorbed.iter().map(|(c, t)| (*c, *t)).collect(), snap.facts.clone()));
+            super::hold_carrier(tx, id, ai, snap.fragment.clone(), gives)?;
+            if let Some(a) = h.aspects.get(ai) {
+                changed.insert((a.tid, a.ak.clone()));
+            }
+            continue;
+        }
         let own = writes_of(&h, id, ai);
         if let Some(k) = make_leftover(tx, id, ai, &own, &kept)? {
             changed.insert(k);

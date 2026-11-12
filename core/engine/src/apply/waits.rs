@@ -165,16 +165,23 @@ pub(crate) fn wake(core: &mut Core) {
             undropped.extend(cs);
         }
     }
-    // a thrown-out commit awaiting this record among others (the entry names only the first)
+    // a thrown-out commit awaiting this record among others (the entry names only the first); a
+    // pending one whose copy threw out a part (`throw_out_parts`) is delivered again from the
+    // copies its carriers still hold
+    let mut again = Vec::new();
     for t in &records {
         for c in core.waits.on_record.get(t).into_iter().flatten() {
             if core.ix.commits.contains_key(c) {
                 undropped.insert(*c);
             } else {
                 reread.push(*c);
+                if core.ix.pending.contains_key(c) {
+                    again.push(*c);
+                }
             }
         }
     }
+    core.redeliver.extend(std::mem::take(&mut again));
     if !moved.is_empty() {
         undropped.append(&mut core.waits.awaiting.reach);
         // a thrown-out commit with a reach wait (an author whose record is held) among others:
@@ -182,8 +189,10 @@ pub(crate) fn wake(core: &mut Core) {
         for (t, cs) in &core.waits.on_record {
             if core.exists(t) {
                 reread.extend(cs.iter().filter(|c| !core.ix.commits.contains_key(*c)));
+                again.extend(cs.iter().filter(|c| !core.ix.commits.contains_key(*c) && core.ix.pending.contains_key(*c)));
             }
         }
+        core.redeliver.extend(std::mem::take(&mut again));
     }
     if let Some(ch) = &mut core.changed {
         ch.wakes.woken.extend(undropped);

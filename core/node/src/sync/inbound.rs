@@ -2050,6 +2050,8 @@ impl SyncEngine {
             return Ok(());
         }
         let ix = &self.engine.core.ix;
+        // a slot whose record is away too: what the refetch awaits takes a destroyed actor's record
+        // again (spec/commits.md §5 Destruction)
         let again = |c: &osis_base::CommitId, parts: &[usize]| commits.is_none_or(|cs| cs.contains(c)) && ix.commits.get(c).is_some_and(|m| parts.iter().any(|p| m.missing.contains(p)));
         // at start, bytes still held are a part waiting or one the engine has not taken yet
         let ids: Vec<(LabelId, BlobId)> = match commits {
@@ -2129,7 +2131,17 @@ impl SyncEngine {
         };
         for id in ids {
             let Some(r) = self.state.blobs.get(&id).cloned() else { continue };
-            if self.dropped(&id, &r)? {
+            // a part the engine cannot judge keeps no byte here (spec/commits.md §4 Unjudgeable):
+            // a pending commit's entries await its record, an applied one's missing slot is
+            // fetched again when it comes (`reopen_undropped`)
+            let awaits = self.engine.copy_awaits(&r.commit, &r.parts)?;
+            if !awaits.is_empty() && !self.engine.core.ix.commits.contains_key(&r.commit) {
+                if let Some(l) = self.state.labels_of(&id).into_iter().next() {
+                    self.await_records(l, id, r.commit, awaits)?;
+                } else {
+                    self.drop_blob(&id)?;
+                }
+            } else if !awaits.is_empty() || self.dropped(&id, &r)? {
                 self.drop_blob(&id)?;
             }
         }

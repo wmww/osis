@@ -85,7 +85,7 @@ Encoding: spec/wire.md §4. Fields:
 - **Pending storage**: a pending commit, and a held part that waits, is kept only while the node holds something carrying its commit: a label entry of it, an inbox blob carrying it or its author's chain (spec/sync.md §3), or the newest stranded report on a label naming a current holder whose keys carry it (spec/permissions.md §4). With none left it counts as never received until a carrier brings it again. Unstamped entries that give the node nothing held (unopened, parked, unjudgeable, their commit pending, or their commit known only for a part dropped as invalid, spec/permissions.md §6) count against its local bounds on unvouched input per label and source; past them it keeps neither the entry nor what pends from it or is known of its commit, and reports that to the app.
 - **Unjudgeable**: a node keeps no part it cannot judge and keeps what it needs to fetch what judges it.
   - A commit is unjudgeable while its author's or actor's `created.0` record is unknown; so is a held part while its thing's record or a record on its thing's chain (spec/permissions.md §1) is unknown, or the author is not on that chain and no record edge or holder named by an applied part's edge write, whether the walk applies it or not, leads from the author to it.
-  - No byte of such a commit or part is kept past the pass that fetched it. A node judges one pass's fetch together: commits carrying `created.0` first, then role commits by `ts`; it discards only what is still unjudgeable at the end of the pass.
+  - No byte of such a commit or part is kept past the pass that fetched it, whether its commit applies or pends: a pending commit's stored copy and every received blob holding the part go without it. A node judges one pass's fetch together: commits carrying `created.0` first, then role commits by `ts`; it discards only what is still unjudgeable at the end of the pass.
   - Before discarding, the node reads the `secrets.0` boxes of what it opened (spec/crypto.md Reading-only secrets). Nothing else of it stays but which record the blob awaits.
   - The node fetches a discarded commit or part again when what it awaits arrives; it is judged afresh and may await the next record.
   - A commit with every held part unjudgeable holds nothing and is not applied, whatever would make it pending; a commit with some other part applies, the unjudgeable part counting as never received until it is fetched again.
@@ -116,8 +116,8 @@ Encoding: spec/wire.md §4. Fields:
     - a carried write stamped after its commit.
   - A blob holding only such deltas, none of its parts waiting, is bad input.
   - Where such a delta, or its commit, waits, the delta is judged when that wait ends.
-- **Copies**: a commit pending for `ts` past `MAX_DRIFT` is held before its deltas' hashes are checked.
-  - A pending commit keeps the first copy of each such delta and of the signature.
+- **Copies**: a pending commit's deltas are checked against their hashes before it is stored, but while its header lists are not resolved.
+  - A pending commit keeps the first copy of each delta it could not check and of a signature it could not verify.
   - A copy that proves not to match goes, and a node then judges again the copies of the commit it holds as blobs; this brings back no delta counting as never received (§5).
   - A copy it no longer holds comes back as a holder's new upload (spec/sync.md §6).
 - A commit blob whose clear prefix disagrees with its header (expiry, the commitments to the delete keys its deltas list; spec/sync.md §1) is bad input.
@@ -207,8 +207,8 @@ Every delta carries **retention** on the wire: who may purge it (its purgeable-b
   - The node keeps it as its leftover (spec/crdt.md §4.7) and no other local copy of it; it waits and applies as that, so nodes holding the same commits read alike.
   - With a page of it not held, or parked (spec/versioning.md §2), it cannot be stripped: it goes at once with every local copy, as a part missing when purged.
   - If the request no longer drops it when its commit applies, it is fetched again like any missing delta.
-  - A snapshot part has no values of its own: it waits unstripped and drops once applied.
-- For any dropped delta (here or below), a received blob holding it that may also hold the only true copy of a waiting part of the same commit (one whose slot a copy not yet checkable holds, §4 Copies) is kept until that copy is judged.
+  - A snapshot part is never named. A waiting one carrying a copy of a value the node holds value-less is held as its leftover, those copies value-less (spec/crdt.md §4.7 Copies), and joins as that; one with a page not held, or parked, is stripped once it can be read, at the latest when it joins.
+  - Limit: a commit whose header lists are not resolved is judged by no request until they are; its parts keep their values until then or until its last carrier leaves (§4 Pending storage).
 - Where such a drop may leave a node reading less than one that kept the data, it reports the aspect suspect (spec/permissions.md §4).
 - **Out of history** every node may drop a covered body past its keep bounds (Covered) (compaction, spec/sync.md §7) under any held valid writer's snapshot or its author's own replaces, the purge right or not (The setting). Snapshot bodies follow the same rules. Deleting it at hosts stays a right holder's (spec/sync.md §7).
 
