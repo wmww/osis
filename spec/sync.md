@@ -33,7 +33,7 @@
 ## 2. Labels
 - A synced thing has a **label**: the unit a host stores. A label has an **index** i (0 for a group's first label) and the role keys below.
 - **Role keys**: Ed25519 keys, the first three from the group thing's role secrets (explicit, or derived from its base actor's by tid; spec/crypto.md §3):
-  - **sync** `kdf("label sync", read secret, le64(i))`;
+  - **sync** `kdf("label sync", sync secret, le64(i))`: every holder of sync or above derives it (spec/permissions.md §1);
   - **write** `kdf("label write", write secret, le64(i))`;
   - **delete** `kdf("label delete", admin secret, le64(i))`;
   - **deposit** `kdf("label deposit", deposit seed, label ID)`, from the deposit seed of the group's actor (§3; spec/crypto.md §3).
@@ -43,13 +43,13 @@
   - Each step is carried with its claim set.
   - A host holds one path from the genesis step to its **head** (§4). A new step is a child of the target host's head (§5).
   - An admin MAY issue a step without a rotation (same role keys, fresh step key) to list readers granted since its parent, key actors in particular.
-- **Claim set** of a step: padded with random keys to a power of two, in random order. It lists each **reader** M of the registered read epoch: every actor holding its read secret as the registrar knows it at registration (the holders of boxes carrying it, the first admin included while its record edge stands; a holder re-sealed later opens by sync key).
+- **Claim set** of a step: padded with random keys to a power of two, in random order. It lists each **reader** M of the registered read epoch (the registrar's newest read epoch at registration): every actor holding its read secret as the registrar knows it at registration (the holders of boxes carrying it, the first admin included while its record edge stands; a holder re-sealed later opens by sync key).
   - A reader is listed by its claim public key (derivation: spec/wire.md §8). M's X25519 key is the X25519 half of its read-role KEM key in the newest `keys.0` of M the registrar holds (a key actor: its single KEM key; an account: its newest open epoch's, spec/crypto.md §3). A non-contributory DH result omits M.
   - A reader that is a key actor other than a node or an account (a link key) is listed instead by its **static entry** (spec/wire.md §8), the same 32 bytes.
   - The registrar erases the step private key after signing.
   - M derives its claim key from its own private key and the step key; it tries each keyset epoch it has held.
 - **Entry boxes** of a step: one for each reader that is a key actor other than a node or an account (a link key), sealed to its KEM key (spec/crypto.md §4 sealed form; AD = (label ID, step key)). Layout: spec/wire.md §7.
-  - It holds the epoch's read secret and, when the epoch supersedes one whose secret the registrar holds, the secret of the one with the greatest n, ties by lowest nonce (what its rotation commit is wrapped under, spec/crypto.md §5).
+  - It holds the epoch's read secret and, when the epoch supersedes one whose secret the registrar holds, the secret of the one with the greatest n, ties by lowest nonce (what its rotation commit is wrapped under, spec/crypto.md §5), and the sync secret whose label key the step registers (its holder checks it derives the step's sync key).
   - A key actor holding no secret of the group reads the label from the current step; the rotation commit's history box (spec/crypto.md §4) opens the rest.
   - Each secret names its epoch of the group thing (spec/crypto.md §4); it is held as that epoch's secret, which establishes nothing.
   - Other readers get none: they read the rotations they missed in order (spec/crypto.md §5), or a re-seal (§3).
@@ -93,7 +93,7 @@
 - **List blobs**: a blob carrying thing lists of one rotation (spec/permissions.md §5.5; bytes spec/wire.md §4, List tree), wrapped per label like a commit, with no expiry and no commitments, fetched first (order 0). Under a label it carries only thing lists of things in the label's closure or touched by a commit placed there as a certificate. A node holds a list blob's thing lists once it holds its rotation; one opened beside the rotation (in one batch) is held as the rotation applies. A non-writer deposits it; a writer promotes it once each thing list in it verifies against the root of a rotation it holds.
 - **Inbox blob** (spec/crypto.md §5; layout and payload spec/wire.md §9): the parts about actor G of a role commit, boxed to G, with the label IDs and host addresses of those things it names that have labels of their own.
   - **What it carries about G**, any of:
-    - a grant with G's boxes;
+    - a grant with G's boxes (a sync grant: G's box of the sync secret, the payload naming the thing's labels, so G derives their sync keys);
     - a change or removal of G's grant;
     - a re-seal of G;
     - a rotation boxing G where G held no box at the read epoch before it.

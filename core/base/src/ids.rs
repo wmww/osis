@@ -479,12 +479,31 @@ impl PurgeBy {
 }
 
 
-/// A role, ordered read < write < admin.
+/// A role, ordered sync < read < write < admin. `Sync` holds and serves a thing's sync IDs and
+/// reads nothing of it (spec/permissions.md §1).
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub enum Role {
+    Sync,
     Read,
     Write,
     Admin,
+}
+
+impl Role {
+    /// Every role, lowest first.
+    pub const ALL: [Role; 4] = [Role::Sync, Role::Read, Role::Write, Role::Admin];
+    /// The role's value in a structure and its byte in the nonce rule (spec/wire.md §1).
+    pub fn id(self) -> u8 {
+        match self {
+            Role::Read => 0,
+            Role::Write => 1,
+            Role::Admin => 2,
+            Role::Sync => 3,
+        }
+    }
+    pub fn from_id(id: u64) -> Option<Role> {
+        Role::ALL.into_iter().find(|r| u64::from(r.id()) == id)
+    }
 }
 
 #[cfg(test)]

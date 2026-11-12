@@ -318,15 +318,16 @@ fn possessed(core: &Core, who: &Tid, a: &Tid, roles: &BTreeSet<Role>, holders: &
 }
 
 /// The roles `who` rotates for a rotation of `roles` of `a` boxing `holders` (spec/crypto.md §4,
-/// Possession, Writers): `roles` where Authority holds; with write added where `roles` is read
-/// alone and Authority holds only so (a holder actor `who` writes `a` through is shown at write
-/// only by a proof in a keyset of write); `None` where it fails either way: the rotation waits.
+/// Possession, Writers): `roles` where Authority holds; with write added where `roles` are below
+/// write (sync, read) and Authority holds only so (a holder actor `who` writes `a` through is
+/// shown at write only by a proof in a keyset of write); `None` where it fails either way: the
+/// rotation waits.
 pub(crate) fn shown_roles(core: &Core, who: &Tid, a: &Tid, roles: &BTreeSet<Role>, holders: &[Recipient]) -> Option<BTreeSet<Role>> {
     if possessed(core, who, a, roles, holders) {
         return Some(roles.clone());
     }
     let with_write: BTreeSet<Role> = roles.iter().copied().chain([Role::Write]).collect();
-    (roles.iter().all(|r| *r == Role::Read) && possessed(core, who, a, &with_write, holders)).then_some(with_write)
+    (roles.iter().all(|r| *r < Role::Write) && possessed(core, who, a, &with_write, holders)).then_some(with_write)
 }
 
 /// Holders a rotation `rot` of `a` boxes that hold no box at a current read epoch before it: its

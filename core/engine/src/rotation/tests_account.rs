@@ -237,7 +237,7 @@ fn grant_boxes_at_the_open_epoch_spec_crypto_4() {
     let name = account_epoch(1, &next.signing.verifying_key()).unwrap();
     let s = e.run(|tx| crate::flows::secrets_in(tx, &t)).unwrap();
     let named: Vec<_> = s.boxes.iter().filter(|(k, _)| k.holder == a.account).map(|(_, b)| osis_keys::box_epoch(b)).collect();
-    assert_eq!(named, vec![Some(name)]);
+    assert!(!named.is_empty() && named.iter().all(|x| *x == Some(name)), "{named:?}");
     let key = e.run(|tx| crate::flows::labels::reader_key(tx, &a.account)).unwrap();
     match key {
         Some(crate::flows::labels::ReaderKey::Dh(x)) => assert_eq!(x, next.kem.public().x25519(), "the open epoch's key"),

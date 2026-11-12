@@ -70,7 +70,7 @@ fn label(base: u8, rng: &mut SeededRng) -> Lab {
     let id = genesis_label(&a, 0);
     let keys = StepKeys::derive(&r, &w, &a, 0, &s32(base + 2), &id);
     let delete = label_role_key(LabelRole::Delete, &a, 0);
-    let (step, claims) = register(Parent::Genesis(&delete), keys, &[], (&Tid::from_bytes([base - 3; 15]), Epoch::new(0, [0; 32]).unwrap(), &r), rng).unwrap();
+    let (step, claims) = register(Parent::Genesis(&delete), keys, &[], (&Tid::from_bytes([base - 3; 15]), Epoch::new(0, [0; 32]).unwrap(), &r), (Epoch::new(0, [0; 32]).unwrap(), &r), rng).unwrap();
     Lab { id: step.label, path: Record::Path { label: step.label, steps: vec![(step, Some(claims))] }, read: r, stamp: label_role_key(LabelRole::Write, &w, 0) }
 }
 
@@ -177,6 +177,7 @@ fn entries(bytes: &[u8]) -> Vec<(osis_base::BlobId, [u8; osis_crypto::WRAP_LEN],
 
 fn role(r: Role) -> &'static str {
     match r {
+        Role::Sync => "sync",
         Role::Read => "read",
         Role::Write => "write",
         Role::Admin => "admin",

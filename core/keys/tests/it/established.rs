@@ -84,7 +84,7 @@ impl World {
         let mut a2v = ActorEpochs::default();
         ingest(&a, &s0, &Opener::Actor { holder: a2, epochs: &a2e }, &mut a2v, None).unwrap();
         assert!(r0.secrets.applied(&mut a2v, cid(1), &r0.keys).unwrap());
-        let e0 = r0.rotated[0].epoch;
+        let e0 = r0.role(Role::Read).unwrap().epoch;
         assert_eq!(a2v.read.current(), vec![e0]);
         assert_eq!(a2v.read.provenance(&e0), Some(Provenance::Rotated));
         World { a, p, a2, m1, pe, a2e, m1e, a1v, s0, a2v, e0, rng: g }
@@ -129,7 +129,7 @@ impl World {
 fn r9_reseal_before_rotation_commit() {
     let mut w = World::new();
     let (r1, a1v1, s1) = w.remove_m1();
-    let e1 = r1.rotated[0].epoch;
+    let e1 = r1.role(Role::Read).unwrap().epoch;
     // a2 is stranded at the head (e1 registered, its commit not uploaded); a1 re-seals it.
     let reseal = box_holder(&w.a, &a1v1, &hist(&w.a, &a1v1, &s1), &w.rcpt(w.a2), &read(), &mut w.rng).unwrap().unwrap();
     assert!(reseal.history.contains_key(&history_key(Role::Read, &e1)));
@@ -153,8 +153,8 @@ fn r9_reseal_before_rotation_commit() {
 
     // a2 rotates (a fork with e1), boxing m1: it does not know the removal.
     let r2 = w.rotate(&a2v, &s2, &[w.p, w.a2, w.m1]);
-    let e2 = r2.rotated[0].epoch;
-    assert_eq!(r2.rotated[0].supersedes, [w.e0].into_iter().collect());
+    let e2 = r2.role(Role::Read).unwrap().epoch;
+    assert_eq!(r2.role(Role::Read).unwrap().supersedes, [w.e0].into_iter().collect());
     assert_eq!(e2.n(), e1.n(), "a fork: n from established epochs only");
     let mut s3 = s2.clone();
     r2.secrets.apply(&mut s3);
@@ -185,10 +185,10 @@ fn r9_reseal_before_rotation_commit() {
 fn reorder_holding_e2_without_e1() {
     let mut w = World::new();
     let (r1, a1v1, s1) = w.remove_m1();
-    let e1 = r1.rotated[0].epoch;
+    let e1 = r1.role(Role::Read).unwrap().epoch;
     let names = Names { list: [r1_name(&w)].into(), departs: None };
     let r2 = w.rotate_naming(&a1v1, &s1, &[w.p, w.a2], &names);
-    let e2 = r2.rotated[0].epoch;
+    let e2 = r2.role(Role::Read).unwrap().epoch;
     let (mut a1v2, mut s1b) = (a1v1.clone(), s1.clone());
     r2.secrets.apply(&mut s1b);
     a1v2 = r2.preview(&a1v2).unwrap();
@@ -243,7 +243,7 @@ fn reorder_holding_e2_without_e1() {
 fn snapshot_established_needs_departure() {
     let mut w = World::new();
     let (r1, _, s1) = w.remove_m1();
-    let e1 = r1.rotated[0].epoch;
+    let e1 = r1.role(Role::Read).unwrap().epoch;
     let (g, ge) = (tid(5), person(0x50));
     let mut v = ActorEpochs::default();
     ingest(&w.a, &s1, &Opener::Actor { holder: w.a2, epochs: &w.a2e }, &mut v, None).unwrap();
@@ -263,7 +263,8 @@ fn snapshot_established_needs_departure() {
     assert_eq!(v.read.provenance(&e1), Some(Provenance::Rotated));
     assert_eq!(v.read.current(), vec![e1]);
     assert!(may_compact_secrets(&s1, &v).unwrap());
-    assert_eq!(reseal_needed(&s1, &v, &holders), vec![(g, read())]);
+    // a reader lacks sync boxes too (the test boxes read alone)
+    assert_eq!(reseal_needed(&s1, &v, &holders), vec![(g, [Role::Sync, Role::Read].into_iter().collect())]);
     assert!(box_holder(&w.a, &v, &hist(&w.a, &v, &s1), &rc, &read(), &mut w.rng).unwrap().is_some());
 }
 
@@ -306,8 +307,8 @@ fn planted_epochs_never_base_a_rotation() {
     let other = Epoch::new(TOP, [2; 32]).unwrap();
     v.read.observe(other);
     let r = w.rotate(&v, &w.s0.clone(), &[w.p, w.a2]);
-    assert_eq!(r.rotated[0].epoch.n(), w.e0.n() + 1);
-    assert_eq!(r.rotated[0].supersedes, [w.e0].into_iter().collect());
+    assert_eq!(r.role(Role::Read).unwrap().epoch.n(), w.e0.n() + 1);
+    assert_eq!(r.role(Role::Read).unwrap().supersedes, [w.e0].into_iter().collect());
     // the pending commit dropped: its epoch goes with its secret
     assert!(v.drop_reading_from(&from.commit));
     assert!(v.read.get(&top).is_none());
@@ -329,7 +330,7 @@ fn jumped_epochs_keep_rotation_possible() {
     assert!(!v.read.is_established(&top));
     assert_eq!(v.read.current(), vec![w.e0]);
     let r = w.rotate(&v, &w.s0.clone(), &[w.p, w.a2]);
-    assert_eq!(r.rotated[0].epoch.n(), w.e0.n() + 1);
+    assert_eq!(r.role(Role::Read).unwrap().epoch.n(), w.e0.n() + 1);
     // within the headroom: established, and the chain goes on above it
     let free = Epoch::new(osis_keys::MAX_FREE_N, [1; 32]).unwrap();
     v.read.set_rotation(free, cid(8), [w.e0].into());

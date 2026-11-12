@@ -196,7 +196,7 @@ impl SyncEngine {
         for (id, c) in &self.conns {
             for (l, x) in &c.labels {
                 v.push(format!(
-                    "conn {id} {l:?}: {:?} synced {} dirty {} registering {} writer {} reader {} outstanding {} head {:?}",
+                    "conn {id} {l:?}: {:?} synced {} dirty {} registering {} writer {} sync {} outstanding {} head {:?}",
                     x.phase,
                     x.synced,
                     x.dirty,

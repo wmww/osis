@@ -58,7 +58,7 @@ fn flood(net: &mut Net, r: usize, (host, g, l): (usize, Tid, LabelId), commits: 
 // deposits: what no writer would promote counts toward the cap): reader `r` of groups `g` and `h`
 // deposits under `g`'s label fresh encryptions of every commit it holds under either label, ten
 // each, as many as the host takes while `a` is away. Writer `a` stamps none of a commit the label held stamped
-// already, at most one of any other, none of `h`'s own role commits (no authority path into `g`),
+// already (but a rotation of g's actor, held only under the epoch it supersedes), at most one of any other, none of `h`'s own role commits (no authority path into `g`),
 // and its clearing leaves at most `DEPOSITS_WAITING` of the rest.
 #[test]
 fn a_readers_copies_are_promoted_once_spec_sync_5() {
@@ -97,7 +97,10 @@ fn a_readers_copies_are_promoted_once_spec_sync_5() {
     }
     for (c, mine) in &ids {
         let n = mine.iter().filter(|id| stamped(&net, host, &l, id)).count();
-        if held.contains(c) || h_only.contains(c) {
+        // a rotation of g's actor held only wrapped under the epoch it supersedes does not count
+        // as held (a newcomer cannot open it, spec/permissions.md §4): one copy may be stamped
+        let rotation = net.engine(a).carries_secrets(&g, c, &commits[c]);
+        if held.contains(c) && !rotation || h_only.contains(c) {
             assert_eq!(n, 0, "{c:?}: held already or not the label's, none stamped");
         } else {
             assert!(n <= 1, "{c:?}: {n} stamped copies");

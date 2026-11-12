@@ -3,17 +3,30 @@
 
 use crate::kdf::{self, LABEL_ID, STATIC_CLAIM, kdf};
 use crate::{Domain, Error, Secret32, Signature, SigningSecret, VerifyingKey, X25519Secret};
-use osis_base::{LabelId, Value, encode};
+use osis_base::{LabelId, Role, Value, encode};
 
-/// A label role key and the group role secret it derives from.
+/// A label role key and the group role secret it derives from (`role`).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum LabelRole {
-    /// From the read secret.
+    /// From the sync secret.
     Sync,
     /// From the write secret.
     Write,
     /// From the admin secret.
     Delete,
+}
+
+impl LabelRole {
+    pub const ALL: [LabelRole; 3] = [LabelRole::Sync, LabelRole::Write, LabelRole::Delete];
+
+    /// The group role whose secret derives the key.
+    pub fn role(self) -> Role {
+        match self {
+            LabelRole::Sync => Role::Sync,
+            LabelRole::Write => Role::Write,
+            LabelRole::Delete => Role::Admin,
+        }
+    }
 }
 
 /// `kdf("label <role>", secret, le64(index))` as an Ed25519 seed.

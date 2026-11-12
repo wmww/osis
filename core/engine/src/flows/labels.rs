@@ -92,9 +92,9 @@ fn deposit_seed(tx: &mut Tx<'_>, group: &Tid) -> Result<Secret32> {
 /// when `parent` is none, else a child of the parent step (signed by the parent's delete key,
 /// from the admin secret of the epoch it registers).
 pub(crate) fn issue(tx: &mut Tx<'_>, group: &Tid, epochs: &ActorEpochs, index: u64, parent: Option<(&Step, &Secret32)>, readers: &[ReaderKey], deposit: &Secret32) -> Result<(Step, ClaimSet)> {
-    let [(re, rs), (_, ws), (_, adm)] = registration_epochs(epochs).ok_or(Error::Misuse("an admin registers: every role's newest secret is needed"))?;
+    let [(se, ss), (re, rs), (_, ws), (_, adm)] = registration_epochs(epochs).ok_or(Error::Misuse("an admin registers: every role's newest secret is needed"))?;
     let label = parent.map_or_else(|| genesis_label(adm, index), |(p, _)| p.label);
-    let keys = StepKeys::derive(rs, ws, adm, index, deposit, &label);
+    let keys = StepKeys::derive(ss, ws, adm, index, deposit, &label);
     let rk: Vec<Reader> = readers
         .iter()
         .map(|r| match r {
@@ -107,7 +107,7 @@ pub(crate) fn issue(tx: &mut Tx<'_>, group: &Tid, epochs: &ActorEpochs, index: u
         None => Parent::Genesis(&del),
         Some((step, _)) => Parent::Child { step, delete: &del },
     };
-    Ok(register_with(p, keys, &rk, (group, re, rs), epochs.read.wrapped_under(&re), &mut *tx.rng)?)
+    Ok(register_with(p, keys, &rk, (group, re, rs), (se, ss), epochs.read.wrapped_under(&re), &mut *tx.rng)?)
 }
 
 /// `label.0` write: a new label of `group` with its genesis step, or a step added.
@@ -199,8 +199,7 @@ fn admin_registered(tx: &mut Tx<'_>, group: &Tid, label: &ct::Label) -> Result<b
     let Some(epochs) = tx.core.epochs(group) else { return Ok(false) };
     let Some((newest, _)) = epochs.role(Role::Admin).newest_held() else { return Ok(false) };
     for (step, _) in label_steps(label)?.values() {
-        let key = step.keys.get(osis_keys::label_role(Role::Admin));
-        if osis_keys::registered_epoch(epochs.role(Role::Admin), Role::Admin, label.index, key) == Some(newest) {
+        if osis_keys::registered_epoch(&epochs, LabelRole::Delete, label.index, &step.keys.delete) == Some(newest) {
             return Ok(true);
         }
     }
@@ -276,13 +275,7 @@ impl Engine {
             let (head, _) = steps.get(&h).ok_or(Error::Misuse("unknown head step"))?.clone();
             let epochs = tx.core.epochs(&g).ok_or(Error::Misuse("no secrets held for the group"))?;
             // the head's epochs per role, where held
-            let mut at = [None, None, None];
-            for (i, r) in [Role::Read, Role::Write, Role::Admin].into_iter().enumerate() {
-                let key = head.keys.get(osis_keys::label_role(r));
-                if let Some(slot) = at.get_mut(i) {
-                    *slot = osis_keys::registered_epoch(epochs.role(r), r, rec.index, key);
-                }
-            }
+            let at = LabelRole::ALL.map(|l| osis_keys::registered_epoch(&epochs, l, rec.index, head.keys.get(l)));
             let [_, _, Some(head_admin)] = at else { return Ok(None) };
             let deposit = deposit_seed(tx, &g)?;
             let deposit_key = osis_crypto::deposit_key(&deposit, &head.label).verifying_key();
@@ -293,11 +286,11 @@ impl Engine {
                 return Ok(None);
             }
             let admin_secret = epochs.role(Role::Admin).secret(&head_admin).cloned().ok_or(Error::Misuse("head admin secret"))?;
-            let [(re, _), (we, _), (ae, _)] = registration_epochs(&epochs).ok_or(Error::Misuse("an admin registers: every role's newest secret is needed"))?;
+            let [(se, _), (re, _), (we, _), (ae, _)] = registration_epochs(&epochs).ok_or(Error::Misuse("an admin registers: every role's newest secret is needed"))?;
             // a child of the head already recorded at these epochs (another admin's, or this
             // node's own for another host): reused, so one rotation gives one step
             if !fresh {
-                let current = |c: &Step| c.keys.deposit == deposit_key && [(Role::Read, re), (Role::Write, we), (Role::Admin, ae)].into_iter().all(|(r, e)| osis_keys::registered_epoch(epochs.role(r), r, rec.index, c.keys.get(osis_keys::label_role(r))) == Some(e));
+                let current = |c: &Step| c.keys.deposit == deposit_key && LabelRole::ALL.into_iter().zip([se, we, ae]).all(|(l, e)| osis_keys::registered_epoch(&epochs, l, rec.index, c.keys.get(l)) == Some(e));
                 if let Some((c, Some(set))) = steps.values().filter(|(c, _)| c.prev == Some(h) && current(c)).min_by_key(|(c, _)| c.id()) {
                     return Ok(Some((c.clone(), set.clone())));
                 }

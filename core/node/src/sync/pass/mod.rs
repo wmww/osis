@@ -213,7 +213,7 @@ impl SyncEngine {
         if read_ok {
             self.place_deferred(&g)?;
         }
-        // no secret of the head's read epoch: read first (spec/sync.md §5, reading without it),
+        // no secret of the head's sync epoch: read first (spec/sync.md §5, reading without it),
         // stranded only once nothing more here opens
         if keys.epochs[0].is_none() {
             if self.read_first(conn, host, &g, l, out)? {

@@ -7,7 +7,7 @@ Terms:
 - **Thing**: anything with an identity. **Aspect**: one typed datum of a thing. **Group**: a thing that lists things; the unit of sync.
 - **Commit**: one signed, atomic edit. **Part**: what a commit writes on one aspect.
 - A thing is **created** by its creation record and **destroyed** when it is released (explicitly or by the collector), purged or expired.
-- **Actor**: a thing that can hold roles and act (a node, an account, a team, a shared space). Thing, group and actor are overlapping capabilities of one object, not kinds. **Holder**: an actor with a role (read, write, admin) on something.
+- **Actor**: a thing that can hold roles and act (a node, an account, a team, a shared space). Thing, group and actor are overlapping capabilities of one object, not kinds. **Holder**: an actor with a role (sync, read, write, admin) on something; sync holds and serves data without reading it.
 - **Node**: a running osis instance with its own identity and store. It reads what it holds keys for and stores and serves the rest encrypted, in any mix; nothing else separates nodes. A node is **untrusted** for data it cannot read.
 - **Peer**: another node a node syncs with directly. **Relay**: forwards a connection's encrypted bytes and stores nothing; not a node. **Client**: anything using the osis client protocol to reach a node out of process, on the same machine or another; a node may be one too, for data it doesn't sync itself. **Thin client**: a client that is not a node. Machine, transport and acting actor are independent: which actors a client may act as is a node's policy, not a property of where the client runs.
 

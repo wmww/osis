@@ -365,7 +365,7 @@ pub(crate) fn reaches(core: &Core, author: &Tid, chain: &[Tid]) -> bool {
 }
 
 /// The role a `keys.0` or `secrets.0` delta needs (spec/permissions.md §3). `keys.0`: a writer
-/// rotates read and write, only an admin the admin role; at least write. A delta that is not a
+/// rotates sync, read and write, only an admin the admin role; at least write. A delta that is not a
 /// plain struct (a write or reset of the whole value) replaces every field: admin.
 fn rotation_required(ak: &str, f: &Fragment) -> Option<Role> {
     match ak {
@@ -377,8 +377,8 @@ fn rotation_required(ak: &str, f: &Fragment) -> Option<Role> {
         return Some(Role::Admin);
     }
     // the admin keyset, a key actor's KEM key, the inbox and the deposit seed need admin
-    // (spec/crypto.md §3: inbox and deposit seed by an admin); read and write keysets their
-    // rotator
+    // (spec/crypto.md §3: inbox and deposit seed by an admin); sync, read and write keysets
+    // their rotator
     let admin = match f.slot(osis_crdt::Encoding::Struct) {
         Some(osis_crdt::SlotRef::Frag(Fragment::Struct(st))) => (2..=5).any(|id| st.field(id).is_some()),
         _ => false,
@@ -396,7 +396,7 @@ pub(super) fn secrets_role(f: &Fragment) -> Role {
     // a delta putting history boxes only (a history add, spec/crypto.md §4) needs the role its
     // keys name: any holder of the epoch may add; anything else needs at least write
     let history_only = maps.iter().all(|(id, m)| m.entries().all(|(_, r, _, f)| *id == 1 && r.is_none() && f.is_some()));
-    let mut top = if history_only { Role::Read } else { Role::Write };
+    let mut top = if history_only { Role::Sync } else { Role::Write };
     for (id, m) in maps {
         for (_, _, k, _) in m.entries() {
             let role = k.and_then(|k| match id {

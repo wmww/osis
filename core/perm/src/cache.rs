@@ -83,11 +83,7 @@ impl W {
         self.n(t.to_u64());
     }
     fn role(&mut self, r: Role) {
-        self.u8(match r {
-            Role::Read => 0,
-            Role::Write => 1,
-            Role::Admin => 2,
-        });
+        self.u8(r.id());
     }
     fn opt<T>(&mut self, x: Option<T>, f: impl FnOnce(&mut W, T)) {
         match x {
@@ -477,12 +473,7 @@ impl<'a> R<'a> {
         Ts::from_u64(self.n()?)
     }
     fn role(&mut self) -> Option<Role> {
-        match self.u8()? {
-            0 => Some(Role::Read),
-            1 => Some(Role::Write),
-            2 => Some(Role::Admin),
-            _ => None,
-        }
+        Role::from_id(u64::from(self.u8()?))
     }
     fn opt<T>(&mut self, f: impl FnOnce(&mut R<'a>) -> Option<T>) -> Option<Option<T>> {
         match self.u8()? {

@@ -331,7 +331,7 @@ impl<A: Port, B: Port> Port for (A, B) {
     }
 }
 
-port_index!(Role, "role" { 0 Read, 1 Write, 2 Admin });
+port_index!(Role, "role" { 0 Read, 1 Write, 2 Admin, 3 Sync });
 port_index!(HolderKind, "holder kind" { 0 Actor, 1 Link, 2 Key });
 port_index!(CommitKind, "commit kind" { 0 Content, 1 Revert, 2 Role, 3 Snapshot });
 port_index!(SyncState, "state" { 0 Synced, 1 Syncing, 2 NotConnected, 3 Refused, 4 Stranded });

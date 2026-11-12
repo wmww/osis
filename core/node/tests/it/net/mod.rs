@@ -1819,7 +1819,7 @@ pub fn remove_holder(e: &mut Engine, a: Tid, holder: Tid, recipients: &[Recipien
 }
 
 fn rotation_ops(e: &mut Engine, m: &mut Mutation, a: Tid, recipients: &[Recipient], rng: u64, seed: bool, names: &osis_keys::Names) {
-    let roles = BTreeSet::from([Role::Read, Role::Write, Role::Admin]);
+    let roles = BTreeSet::from(Role::ALL);
     let view = e.epochs(&a).unwrap();
     let state = e.get_typed(&a, &ct::SECRETS).unwrap().unwrap_or_default();
     let r = rotate(&a, &roles, &view, &state, recipients, names, &mut SeededRng::from_u64(rng)).unwrap();
@@ -1833,11 +1833,7 @@ fn rotation_ops(e: &mut Engine, m: &mut Mutation, a: Tid, recipients: &[Recipien
         m.op(a, &ct::SECRETS, PathOp { path: vec![PathSeg::Field(1), PathSeg::Key(k.to_value())], op: Op::Set(Value::Bytes(h.clone())) }).unwrap();
     }
     for (role, ks) in &r.keys.keysets {
-        let f = match role {
-            Role::Read => 0,
-            Role::Write => 1,
-            Role::Admin => 2,
-        };
+        let f = osis_keys::aspects::keyset_field(*role);
         m.op(a, &ct::KEYS, PathOp { path: vec![PathSeg::Field(f)], op: Op::Replace(Some(ks.clone()).to_value()) }).unwrap();
     }
     if seed {

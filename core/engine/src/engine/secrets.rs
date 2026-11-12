@@ -395,7 +395,7 @@ impl Core {
     /// keyset alone would make them depend on which of `keys.0` and `secrets.0` joined first).
     /// Whether it has secrets of its own is the parts' (`apply::keys::refresh_own_keys`).
     pub(crate) fn observe_keys(&mut self, actor: &Tid, keys: &Keys) {
-        if keys.read.is_some() || keys.write.is_some() || keys.admin.is_some() {
+        if keys.sync.is_some() || keys.read.is_some() || keys.write.is_some() || keys.admin.is_some() {
             self.ix.delete_hints.remove(actor);
             self.role_changed();
         }

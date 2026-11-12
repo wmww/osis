@@ -214,6 +214,8 @@ mod tests {
         assert_eq!(a.signing.verifying_key(), expect.verifying_key());
         let r = [Role::Read, Role::Write, Role::Admin].map(|role| key_actor_role_secret(&seed, role));
         assert!(r[0] != r[1] && r[1] != r[2] && r[0] != r[2]);
+        let sync = key_actor_role_secret(&seed, Role::Sync);
+        assert!(r.iter().all(|x| *x != sync));
         let (t1, t2) = (Tid::from_bytes([1; 15]), Tid::from_bytes([2; 15]));
         assert_ne!(thing_role_secret(&r[0], Role::Read, &t1), thing_role_secret(&r[0], Role::Read, &t2));
         assert_ne!(thing_role_secret(&r[0], Role::Read, &t1), thing_role_secret(&r[0], Role::Write, &t1));

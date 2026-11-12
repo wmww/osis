@@ -1374,7 +1374,8 @@ impl Osis {
         Ok(())
     }
 
-    /// This account's nodes: those holding a role on it.
+    /// This account's nodes: those holding read or above on it (a holder of sync alone keeps
+    /// the account's inbox and is no node).
     /// `Unsupported` on a client with its own actor.
     pub fn nodes(&self) -> Result<Vec<AccountNode>> {
         if !self.has_store() {
@@ -1389,7 +1390,7 @@ impl Osis {
         self.engine(|e| -> Result<Vec<AccountNode>> {
             let mut out = Vec::new();
             for (m, edge) in e.roster(&home) {
-                if m == e.tid() || e.get(&m, &node_ak)?.is_some() {
+                if edge.role >= Role::Read && (m == e.tid() || e.get(&m, &node_ak)?.is_some()) {
                     out.push(AccountNode { node: m, role: edge.role });
                 }
             }

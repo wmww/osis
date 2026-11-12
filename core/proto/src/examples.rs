@@ -38,28 +38,30 @@ pub struct Fixture {
 }
 
 impl Fixture {
-    /// Group secrets from bytes `b..b+3`, deposit seed `b+3`; reader `b+4`; key actor `b+5`.
+    /// Group secrets from bytes `b..b+3`, deposit seed `b+3`; reader `b+4`; key actor `b+5`;
+    /// sync secret `b+8`.
     pub fn new(b: u8) -> Fixture {
-        let (read, write, admin, dseed) = (s32(b), s32(b + 1), s32(b + 2), s32(b + 3));
+        let (read, write, admin, dseed, sync) = (s32(b), s32(b + 1), s32(b + 2), s32(b + 3), s32(b + 8));
         let label = genesis_label(&admin, 0);
-        let keys = StepKeys::derive(&read, &write, &admin, 0, &dseed, &label);
+        let keys = StepKeys::derive(&sync, &write, &admin, 0, &dseed, &label);
         let delete = label_role_key(LabelRole::Delete, &admin, 0);
         let reader = X25519Secret::from_secret(&s32(b + 4));
         let key_actor = SigningSecret::from_seed(&s32(b + 5));
         let kem = KemSecret::derive(&s32(b + 6));
         let group = osis_base::Tid::from_bytes([b; 15]);
         let read_epoch = Epoch::derive(&group, osis_base::Role::Read, 1, &read).expect("small epoch");
+        let sync_epoch = Epoch::derive(&group, osis_base::Role::Sync, 1, &sync).expect("small epoch");
         let readers = [Reader::Dh(reader.public()), Reader::Static { signing: key_actor.verifying_key(), kem: kem.public() }];
         let mut rng = SeededRng::from_seed([b + 7; 32]);
-        let (genesis, genesis_claims) = register(Parent::Genesis(&delete), keys, &readers, (&group, read_epoch, &read), &mut rng).expect("fixed genesis");
-        let (child, child_claims) = register(Parent::Child { step: &genesis, delete: &delete }, keys, &readers, (&group, read_epoch, &read), &mut rng).expect("fixed child");
+        let (genesis, genesis_claims) = register(Parent::Genesis(&delete), keys, &readers, (&group, read_epoch, &read), (sync_epoch, &sync), &mut rng).expect("fixed genesis");
+        let (child, child_claims) = register(Parent::Child { step: &genesis, delete: &delete }, keys, &readers, (&group, read_epoch, &read), (sync_epoch, &sync), &mut rng).expect("fixed child");
         Fixture {
             label,
             genesis,
             genesis_claims,
             child,
             child_claims,
-            sync: label_role_key(LabelRole::Sync, &read, 0),
+            sync: label_role_key(LabelRole::Sync, &sync, 0),
             write: label_role_key(LabelRole::Write, &write, 0),
             delete,
             deposit: osis_crypto::deposit_key(&dseed, &label),
@@ -118,13 +120,13 @@ impl Label {
         l
     }
 
-    /// A step with read secret `b`, write `b + 1`, the admin secret (a child of the head signed
-    /// by `parent`, else the genesis step).
+    /// A step with read secret `b`, write `b + 1`, sync `b ^ 0x80`, the admin secret (a child of
+    /// the head signed by `parent`, else the genesis step).
     fn step_with(&mut self, b: u8, parent: Option<SigningSecret>) -> (Step, ClaimSet) {
-        let (read, write, adm) = (s32(b), s32(b + 1), s32(self.admin));
-        let pk = StepKeys::derive(&read, &write, &adm, 0, &s32(DEPOSIT_SEED), &self.id);
+        let (read, write, adm, sync) = (s32(b), s32(b + 1), s32(self.admin), s32(b ^ 0x80));
+        let pk = StepKeys::derive(&sync, &write, &adm, 0, &s32(DEPOSIT_SEED), &self.id);
         let keys = Keys {
-            sync: label_role_key(LabelRole::Sync, &read, 0),
+            sync: label_role_key(LabelRole::Sync, &sync, 0),
             write: label_role_key(LabelRole::Write, &write, 0),
             delete: label_role_key(LabelRole::Delete, &adm, 0),
             deposit: osis_crypto::deposit_key(&s32(DEPOSIT_SEED), &self.id),
@@ -134,9 +136,10 @@ impl Label {
         let mut rng = SeededRng::from_seed([b; 32]);
         let group = osis_base::Tid::from_bytes([b; 15]);
         let read_epoch = (&group, Epoch::derive(&group, osis_base::Role::Read, 1, &read).expect("small epoch"), &read);
+        let sync_epoch = (Epoch::derive(&group, osis_base::Role::Sync, 1, &sync).expect("small epoch"), &sync);
         let (step, set) = match (&parent, self.steps.last()) {
-            (Some(d), Some(prev)) => register(Parent::Child { step: prev, delete: d }, pk, &readers, read_epoch, &mut rng).expect("child step"),
-            _ => register(Parent::Genesis(&keys.delete), pk, &readers, read_epoch, &mut rng).expect("genesis step"),
+            (Some(d), Some(prev)) => register(Parent::Child { step: prev, delete: d }, pk, &readers, read_epoch, sync_epoch, &mut rng).expect("child step"),
+            _ => register(Parent::Genesis(&keys.delete), pk, &readers, read_epoch, sync_epoch, &mut rng).expect("genesis step"),
         };
         self.steps.push(step.clone());
         self.sets.push(set.clone());

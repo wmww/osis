@@ -65,7 +65,7 @@ fn index<T: Port + PartialEq + std::fmt::Debug>(cases: &[T]) {
 
 #[test]
 fn index_enums_read_by_position() {
-    index(&[Role::Read, Role::Write, Role::Admin]);
+    index(&[Role::Read, Role::Write, Role::Admin, Role::Sync]);
     index(&[HolderKind::Actor, HolderKind::Link, HolderKind::Key]);
     index(&[CommitKind::Content, CommitKind::Revert, CommitKind::Role, CommitKind::Snapshot]);
     index(&[SyncState::Synced, SyncState::Syncing, SyncState::NotConnected, SyncState::Refused, SyncState::Stranded]);

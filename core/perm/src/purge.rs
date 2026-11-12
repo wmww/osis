@@ -31,6 +31,6 @@ impl Timeline {
     /// rotates its roles and below.
     pub fn may_rotate(&self, node: &Tid, actor: &Tid, at: At) -> Vec<Role> {
         let r = self.role(node, actor, at);
-        [Role::Read, Role::Write, Role::Admin].into_iter().filter(|x| r >= Some(Role::Write) && Some(*x) <= r).collect()
+        Role::ALL.into_iter().filter(|x| r >= Some(Role::Write) && Some(*x) <= r).collect()
     }
 }

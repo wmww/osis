@@ -22,7 +22,8 @@ use std::collections::{BTreeMap, BTreeSet};
 /// The departure of a holder now holding `cur` from a role above it: from the role just above.
 fn above_role(cur: Option<Role>) -> Option<Role> {
     match cur {
-        None => Some(Role::Read),
+        None => Some(Role::Sync),
+        Some(Role::Sync) => Some(Role::Read),
         Some(Role::Read) => Some(Role::Write),
         Some(Role::Write) => Some(Role::Admin),
         Some(Role::Admin) => None,

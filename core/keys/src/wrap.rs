@@ -1,7 +1,7 @@
 //! Which epoch to wrap under (spec/crypto.md §5) and which epochs label role keys come from
 //! (spec/sync.md §2, §5). osis-label derives and uses the keys.
 
-use crate::epoch::{ActorEpochs, ROLES, RoleEpochs};
+use crate::epoch::{ActorEpochs, RoleEpochs};
 use osis_base::Role;
 use osis_crypto::{Epoch, LabelRole, Secret32, SigningSecret, VerifyingKey, label_role_key};
 
@@ -11,49 +11,42 @@ pub fn wrap_epoch(read: &RoleEpochs) -> Option<Epoch> {
     read.newest_held().map(|(e, _)| e)
 }
 
-/// The label role a group role secret derives.
-pub fn label_role(r: Role) -> LabelRole {
-    match r {
-        Role::Read => LabelRole::Sync,
-        Role::Write => LabelRole::Write,
-        Role::Admin => LabelRole::Delete,
-    }
-}
-
-/// The epochs a registration uses: the newest (established) of each role, with its secret
-/// (spec/permissions.md §3). None when a role's newest is not held (only an admin, holding all three, registers).
-pub fn registration_epochs(a: &ActorEpochs) -> Option<[(Epoch, &Secret32); 3]> {
+/// The epochs a registration uses: the newest (established) of each role in `Role::ALL` order,
+/// with its secret (spec/permissions.md §3): the sync, write and admin epochs derive the step's
+/// keys, the read epoch its claim set. None when a role's newest is not held (only an admin,
+/// holding every role, registers).
+pub fn registration_epochs(a: &ActorEpochs) -> Option<[(Epoch, &Secret32); 4]> {
     let get = |r: Role| -> Option<(Epoch, &Secret32)> {
         let re = a.role(r);
         let e = re.newest()?;
         re.secret(&e).map(|s| (e, s))
     };
-    Some([get(Role::Read)?, get(Role::Write)?, get(Role::Admin)?])
+    Some([get(Role::Sync)?, get(Role::Read)?, get(Role::Write)?, get(Role::Admin)?])
 }
 
-/// The held epoch of role `r` whose label key at `index` is `key` (a host head's registered
-/// key): the node talks to that host with it (spec/sync.md §2). Any held secret, established
-/// or not: opening a label is not encrypting under (spec/crypto.md §4). A stamp, step or delete
-/// under it needs `RoleEpochs::is_established`.
-pub fn registered_epoch(re: &RoleEpochs, r: Role, index: u64, key: &VerifyingKey) -> Option<Epoch> {
-    registered_key(re, r, index, key).map(|(e, _)| e)
+/// The held epoch of `l`'s group role whose label key at `index` is `key` (a host head's
+/// registered key): the node talks to that host with it (spec/sync.md §2). Any held secret,
+/// established or not: opening a label is not encrypting under (spec/crypto.md §4). A stamp,
+/// step or delete under it needs `RoleEpochs::is_established`.
+pub fn registered_epoch(a: &ActorEpochs, l: LabelRole, index: u64, key: &VerifyingKey) -> Option<Epoch> {
+    registered_key(a, l, index, key).map(|(e, _)| e)
 }
 
 /// `registered_epoch` with the label key it derives (reading-only secrets included): found by
 /// deriving each held secret's, so the one found is not derived again.
-pub fn registered_key(re: &RoleEpochs, r: Role, index: u64, key: &VerifyingKey) -> Option<(Epoch, SigningSecret)> {
-    re.held_newest_first().into_iter().map(|(e, s)| (e, label_role_key(label_role(r), s, index))).find(|(_, k)| k.verifying_key() == *key)
+pub fn registered_key(a: &ActorEpochs, l: LabelRole, index: u64, key: &VerifyingKey) -> Option<(Epoch, SigningSecret)> {
+    a.role(l.role()).held_newest_first().into_iter().map(|(e, s)| (e, label_role_key(l, s, index))).find(|(_, k)| k.verifying_key() == *key)
 }
 
-/// Whether an admin holds an established epoch newer than a head registers, per role
-/// (spec/sync.md §5): it then issues the next step there. `head` gives the head's epoch per role
-/// (read, write, admin) where the admin holds it; a role whose head epoch it does not hold returns
-/// false (it walks first), and so does an unestablished head admin epoch (the step is signed
-/// under its delete key: encrypting under, spec/crypto.md §4; the admin downloads its rotation
-/// commit first).
+/// Whether an admin holds an established epoch newer than a head registers, per label role
+/// (spec/sync.md §5): it then issues the next step there. `head` gives the head's epoch per
+/// label role (`LabelRole::ALL`: sync, write, delete) where the admin holds it; a role whose
+/// head epoch it does not hold returns false (it walks first), and so does an unestablished head
+/// admin epoch (the step is signed under its delete key: encrypting under, spec/crypto.md §4;
+/// the admin downloads its rotation commit first).
 pub fn newer_than_head(a: &ActorEpochs, head: [Option<Epoch>; 3]) -> bool {
     let mut newer = false;
-    for (r, h) in ROLES.into_iter().zip(head) {
+    for (r, h) in LabelRole::ALL.map(LabelRole::role).into_iter().zip(head) {
         let Some(h) = h else { return false };
         if r == Role::Admin && !a.role(r).is_established(&h) {
             return false;

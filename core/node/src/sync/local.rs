@@ -424,7 +424,9 @@ impl SyncEngine {
             // holder has nothing to read the chain from, so it would hold the grant pending and
             // show no state; a labeled thing's label carries it, as before); a chain that does
             // not fit the blob goes without (the holder then waits for the thing's label)
-            let unlabeled = things.iter().any(|t| !self.engine.labeled(t));
+            // a holder of sync alone reads no label of the thing either: it judges the commit by
+            // the chain alone
+            let unlabeled = things.iter().any(|t| !self.engine.labeled(t) || self.engine.core.role_now(&s.holder, t) == Some(Role::Sync));
             let carried = self.engine.header(&s.commit).map(|h| super::pass::parts_of(&h, |ai| !s.edge_only || h.aspects.get(ai).is_some_and(|a| a.ak.as_str() == "roles.0"))).unwrap_or_default();
             // a grant's or re-seal's recipient reads the thing: its `keys.0` goes along (a
             // removal's does not: the fresh deposit seed is not for the departed)

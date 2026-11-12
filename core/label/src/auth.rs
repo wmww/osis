@@ -333,16 +333,16 @@ mod tests {
         let m = X25519Secret::random(&mut rng);
         let card = KeyActorKeys::from_seed(&Secret32::from_bytes([4; 32]));
         let readers = [Reader::Dh(m.public()), Reader::Static { signing: card.signing.verifying_key(), kem: card.kem.public() }];
-        let (s0, c0) = register(Parent::Genesis(&g.delete(0)), g.keys(0), &readers, (&TG, Epoch::derive(&TG, osis_base::Role::Read, 0, &g.read).unwrap(), &g.read), &mut rng).unwrap();
-        let k1 = crate::StepKeys::derive(&g2.read, &g2.write, &g2.admin, 0, &g.deposit, &s0.label);
-        let (s1, c1) = register(Parent::Child { step: &s0, delete: &g.delete(0) }, k1, &readers, (&TG, Epoch::derive(&TG, osis_base::Role::Read, 1, &g2.read).unwrap(), &g2.read), &mut rng).unwrap();
+        let (s0, c0) = register(Parent::Genesis(&g.delete(0)), g.keys(0), &readers, (&TG, Epoch::derive(&TG, osis_base::Role::Read, 0, &g.read).unwrap(), &g.read), g.sync_at(), &mut rng).unwrap();
+        let k1 = crate::StepKeys::derive(&g2.sync, &g2.write, &g2.admin, 0, &g.deposit, &s0.label);
+        let (s1, c1) = register(Parent::Child { step: &s0, delete: &g.delete(0) }, k1, &readers, (&TG, Epoch::derive(&TG, osis_base::Role::Read, 1, &g2.read).unwrap(), &g2.read), g2.sync_at(), &mut rng).unwrap();
         let path = vec![s0.clone(), s1.clone()];
         let sets = Slice { path: &path, sets: vec![(s0.id(), Arc::new(c0.clone())), (s1.id(), Arc::new(c1.clone()))] };
         let evaluate_open = |p: &[Step], ix: &Slice<'_>, pr: &Proof, ch: &[u8; 32], sk: &[u8; 32]| evaluate_open(p.last().unwrap(), ix, pr, ch, sk).unwrap();
         let (ch, sk) = ([1; 32], [2; 32]);
         let l = s0.label;
-        let sync1 = label_role_key(LabelRole::Sync, &g2.read, 0);
-        let sync0 = label_role_key(LabelRole::Sync, &g.read, 0);
+        let sync1 = label_role_key(LabelRole::Sync, &g2.sync, 0);
+        let sync0 = label_role_key(LabelRole::Sync, &g.sync, 0);
         assert_eq!(evaluate_open(&path, &sets, &Proof::sync(None, &sync1, &l, &ch, &sk), &ch, &sk), OpenOutcome::Opened(None));
         assert_eq!(evaluate_open(&path, &sets, &Proof::sync(None, &sync0, &l, &ch, &sk), &ch, &sk), OpenOutcome::Child(s1.clone()));
         assert_eq!(evaluate_open(&path, &sets, &Proof::sync(None, &sync1, &l, &[9; 32], &sk), &ch, &sk), OpenOutcome::Refused);
@@ -373,16 +373,16 @@ mod tests {
         let mut rng = SeededRng::from_u64(0);
         let (g, g2) = (Group::new(40), Group::new(50));
         let rd = |n: u64, s: &Secret32| Epoch::derive(&TG, osis_base::Role::Read, n, s).unwrap();
-        let (s0, _) = register(Parent::Genesis(&g.delete(0)), g.keys(0), &[], (&TG, rd(0, &g.read), &g.read), &mut rng).unwrap();
+        let (s0, _) = register(Parent::Genesis(&g.delete(0)), g.keys(0), &[], (&TG, rd(0, &g.read), &g.read), g.sync_at(), &mut rng).unwrap();
         // a step without a rotation (a reader listed since), then a rotation
-        let (s1, _) = register(Parent::Child { step: &s0, delete: &g.delete(0) }, g.keys(0), &[], (&TG, rd(0, &g.read), &g.read), &mut rng).unwrap();
-        let k2 = crate::StepKeys::derive(&g2.read, &g2.write, &g2.admin, 0, &g.deposit, &s0.label);
-        let (s2, _) = register(Parent::Child { step: &s1, delete: &g.delete(0) }, k2, &[], (&TG, rd(1, &g2.read), &g2.read), &mut rng).unwrap();
+        let (s1, _) = register(Parent::Child { step: &s0, delete: &g.delete(0) }, g.keys(0), &[], (&TG, rd(0, &g.read), &g.read), g.sync_at(), &mut rng).unwrap();
+        let k2 = crate::StepKeys::derive(&g2.sync, &g2.write, &g2.admin, 0, &g.deposit, &s0.label);
+        let (s2, _) = register(Parent::Child { step: &s1, delete: &g.delete(0) }, k2, &[], (&TG, rd(1, &g2.read), &g2.read), g2.sync_at(), &mut rng).unwrap();
         let path = vec![s0.clone(), s1.clone(), s2.clone()];
         let ix = Slice { path: &path, sets: Vec::new() };
         let (ch, sk) = ([1; 32], [2; 32]);
         let l = s0.label;
-        let sync0 = label_role_key(LabelRole::Sync, &g.read, 0);
+        let sync0 = label_role_key(LabelRole::Sync, &g.sync, 0);
         let open = |step: Option<StepId>| evaluate_open(&s2, &ix, &Proof::sync(step, &sync0, &l, &ch, &sk), &ch, &sk).unwrap();
         assert_eq!(open(Some(s0.id())), OpenOutcome::Child(s1.clone()));
         s1.verify_child(&s0).unwrap();
@@ -400,7 +400,7 @@ mod tests {
     fn entry_signatures() {
         let g = Group::new(30);
         let mut rng = SeededRng::from_u64(0);
-        let (s0, _) = register(Parent::Genesis(&g.delete(0)), g.keys(0), &[], (&TG, epoch(0), &g.read), &mut rng).unwrap();
+        let (s0, _) = register(Parent::Genesis(&g.delete(0)), g.keys(0), &[], (&TG, epoch(0), &g.read), g.sync_at(), &mut rng).unwrap();
         let (l, b, w) = (s0.label, BlobId([1; 32]), [2u8; 49]);
         let write = label_role_key(LabelRole::Write, &g.write, 0);
         let stamp = sign_stamp(&write, &l, &b, &w);
@@ -419,9 +419,9 @@ mod tests {
     fn deletes() {
         let g = Group::new(40);
         let mut rng = SeededRng::from_u64(0);
-        let (s0, _) = register(Parent::Genesis(&g.delete(0)), g.keys(0), &[], (&TG, epoch(0), &g.read), &mut rng).unwrap();
+        let (s0, _) = register(Parent::Genesis(&g.delete(0)), g.keys(0), &[], (&TG, epoch(0), &g.read), g.sync_at(), &mut rng).unwrap();
         let l = s0.label;
-        let (sync, write) = (label_role_key(LabelRole::Sync, &g.read, 0), label_role_key(LabelRole::Write, &g.write, 0));
+        let (sync, write) = (label_role_key(LabelRole::Sync, &g.sync, 0), label_role_key(LabelRole::Write, &g.write, 0));
         let salt = [5u8; 16];
         let (d2, d3) = (DeleteSecret::derive(&Secret32::from_bytes([1; 32])), DeleteSecret::derive(&Secret32::from_bytes([2; 32])));
         let hb = [7u8; 16];

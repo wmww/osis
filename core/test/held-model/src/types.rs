@@ -89,8 +89,11 @@ pub struct DotRange {
     pub commit: CommitId,
 }
 
+/// Sync and read judge alike here (neither writes); sync is in the lattice so a node's roster
+/// translates whole.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Role {
+    Sync,
     Read,
     Write,
     Admin,

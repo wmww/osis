@@ -279,11 +279,7 @@ fn write_rotation(m: &mut Mutation, a: Tid, r: &osis_keys::Rotation) {
         m.op(a, &ct::SECRETS, PathOp { path: vec![PathSeg::Field(1), PathSeg::Key(k.to_value())], op: Op::Set(Value::Bytes(h.clone())) }).unwrap();
     }
     for (role, ks) in &r.keys.keysets {
-        let f = match role {
-            Role::Read => 0,
-            Role::Write => 1,
-            Role::Admin => 2,
-        };
+        let f = osis_keys::aspects::keyset_field(*role);
         m.op(a, &ct::KEYS, PathOp { path: vec![PathSeg::Field(f)], op: Op::Replace(Some(ks.clone()).to_value()) }).unwrap();
     }
 }
@@ -309,7 +305,7 @@ fn roster_removal(n: usize) -> (u64, usize, u64) {
         holders.push(Recipient { holder: Tid::from_bytes(x), role: Role::Write, keys: HolderKeys::Actor { keysets, own: BTreeMap::new() } });
     }
     // secrets of its own are all three roles' (spec/crypto.md §3): the thing gets them first
-    let all = BTreeSet::from([Role::Read, Role::Write, Role::Admin]);
+    let all = BTreeSet::from(Role::ALL);
     let view = e.epochs(&a).unwrap();
     let r0 = rotate(&a, &all, &view, &Default::default(), &holders[..1], &osis_keys::Names::default(), &mut SeededRng::from_u64(2)).unwrap();
     let mut m = Mutation::new();

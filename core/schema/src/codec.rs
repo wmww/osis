@@ -151,24 +151,15 @@ byte_id!(LabelId);
 byte_id!(CommitId);
 byte_id!(BlobId);
 
-/// `role = enum { read 0, write 1, admin 2 }`.
+/// `role = enum { read 0, write 1, admin 2, sync 3 }`.
 impl Codec for Role {
     fn to_value(&self) -> Value {
-        Value::Enum(
-            match self {
-                Role::Read => 0,
-                Role::Write => 1,
-                Role::Admin => 2,
-            },
-            None,
-        )
+        Value::Enum(u64::from(self.id()), None)
     }
     fn from_value(v: &Value) -> Result<Role, PathError> {
         match v {
-            Value::Enum(0, None) => Ok(Role::Read),
-            Value::Enum(1, None) => Ok(Role::Write),
-            Value::Enum(2, None) => Ok(Role::Admin),
-            Value::Enum(c, _) => Err(PathError::new(crate::Path::root(), PathErrorKind::UnknownCase(*c))),
+            Value::Enum(c, None) => Role::from_id(*c).ok_or_else(|| PathError::new(crate::Path::root(), PathErrorKind::UnknownCase(*c))),
+            Value::Enum(c, Some(_)) => Err(PathError::new(crate::Path::root(), PathErrorKind::UnknownCase(*c))),
             _ => Err(mismatch("enum")),
         }
     }

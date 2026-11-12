@@ -129,7 +129,7 @@ pub struct HeadKeys {
     /// Label-wide deletes and child steps (an established epoch).
     pub delete: Option<SigningSecret>,
     pub deposit: Option<SigningSecret>,
-    /// The head's epoch per role (read, write, admin) where held.
+    /// The head's epoch per label role (`LabelRole::ALL`: sync, write, delete) where held.
     pub epochs: [Option<Epoch>; 3],
 }
 
@@ -156,12 +156,11 @@ impl std::fmt::Debug for HeadKeys {
     }
 }
 
-/// The held epoch of `role` whose label key at `index` is `pk`, with that key
-/// and whether that secret may be encrypted under (not reading-only, spec/crypto.md §4).
-fn matching(e: &ActorEpochs, role: Role, index: u64, pk: &osis_crypto::VerifyingKey) -> Option<(Epoch, SigningSecret, bool)> {
-    let re = e.role(role);
-    let (ep, k) = osis_keys::registered_key(re, role, index, pk)?;
-    Some((ep, k, re.secret(&ep).is_some()))
+/// The held epoch of `l`'s group role whose label key at `index` is `pk`, with that key and
+/// whether that secret may be encrypted under (not reading-only, spec/crypto.md §4).
+fn matching(e: &ActorEpochs, l: LabelRole, index: u64, pk: &osis_crypto::VerifyingKey) -> Option<(Epoch, SigningSecret, bool)> {
+    let (ep, k) = osis_keys::registered_key(e, l, index, pk)?;
+    Some((ep, k, e.role(l.role()).secret(&ep).is_some()))
 }
 
 impl Engine {
@@ -570,19 +569,19 @@ impl Engine {
     fn head_keys_derived(&mut self, g: &Tid, index: u64, head: &Step) -> Result<HeadKeys> {
         let mut k = HeadKeys::default();
         if let Some(e) = self.epochs(g) {
-            if let Some((ep, s, _)) = matching(&e, Role::Read, index, &head.keys.sync) {
+            if let Some((ep, s, _)) = matching(&e, LabelRole::Sync, index, &head.keys.sync) {
                 k.sync = Some(s);
-                k.sync_established = self.established(g, &e, Role::Read, &ep);
+                k.sync_established = self.established(g, &e, Role::Sync, &ep);
                 k.epochs[0] = Some(ep);
             }
             // stamps and deletes are encrypting under: never from a reading-only secret
-            if let Some((ep, s, checked)) = matching(&e, Role::Write, index, &head.keys.write) {
+            if let Some((ep, s, checked)) = matching(&e, LabelRole::Write, index, &head.keys.write) {
                 if checked && self.established(g, &e, Role::Write, &ep) {
                     k.write = Some(s);
                 }
                 k.epochs[1] = Some(ep);
             }
-            if let Some((ep, s, checked)) = matching(&e, Role::Admin, index, &head.keys.delete) {
+            if let Some((ep, s, checked)) = matching(&e, LabelRole::Delete, index, &head.keys.delete) {
                 if checked && self.established(g, &e, Role::Admin, &ep) {
                     k.delete = Some(s);
                 }
@@ -811,10 +810,10 @@ mod tests {
         let mut a = ActorEpochs::default();
         a.write.set_reading_secret(e, s.clone(), osis_keys::Unchecked { author: Tid::from_bytes([1; 15]), commit: CommitId([1; 32]) });
         a.write.set_established(e, osis_keys::Provenance::Rotated);
-        let pk = osis_crypto::label_role_key(osis_keys::label_role(Role::Write), &s, 0).verifying_key();
-        let (ep, got, checked) = matching(&a, Role::Write, 0, &pk).unwrap();
+        let pk = osis_crypto::label_role_key(LabelRole::Write, &s, 0).verifying_key();
+        let (ep, got, checked) = matching(&a, LabelRole::Write, 0, &pk).unwrap();
         assert_eq!((ep, got.verifying_key(), checked), (e, pk, false));
         a.write.set_secret(e, s.clone());
-        assert!(matching(&a, Role::Write, 0, &pk).unwrap().2);
+        assert!(matching(&a, LabelRole::Write, 0, &pk).unwrap().2);
     }
 }

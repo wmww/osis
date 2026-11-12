@@ -22,7 +22,7 @@ use osis_schema::core_types as ct;
 use std::collections::{BTreeMap, BTreeSet};
 
 const N: usize = 5;
-const ROLES: [Role; 3] = osis_keys::ROLES;
+const ROLES: [Role; 4] = osis_keys::ROLES;
 
 /// What a seed reached, for the run's coverage tally.
 #[derive(Clone, Copy, Default, Debug)]
@@ -323,7 +323,7 @@ fn rotation_history(seed: u64, every_tx: bool) -> Reached {
             for j in (0..k).filter(|j| *j != i) {
                 if j == (i + 1) % k || rng.next(3) == 0 {
                     let (t, o) = actors[i];
-                    let _ = lp.peers[o].engine.grant(&t, &actors[j].0, &edge(ROLES[rng.next(3) as usize]));
+                    let _ = lp.peers[o].engine.grant(&t, &actors[j].0, &edge(ROLES[rng.next(ROLES.len() as u64) as usize]));
                     if !hidden {
                         lp.sync_all().unwrap();
                     }
@@ -334,7 +334,7 @@ fn rotation_history(seed: u64, every_tx: bool) -> Reached {
     for &(t, o) in &actors {
         for p in (1..N).filter(|p| *p != o) {
             if t == actors[0].0 || rng.next(3) == 0 {
-                let _ = lp.peers[o].engine.grant(&t, &tids[p], &edge(ROLES[rng.next(3) as usize]));
+                let _ = lp.peers[o].engine.grant(&t, &tids[p], &edge(ROLES[rng.next(ROLES.len() as u64) as usize]));
                 if !hidden {
                     lp.sync_all().unwrap();
                 }
@@ -391,7 +391,7 @@ fn rotation_history(seed: u64, every_tx: bool) -> Reached {
                 }
                 // a grant (raise)
                 4 if ri == Role::Admin && j != o && j != i => {
-                    let r = ROLES[run.rng.next(3) as usize];
+                    let r = ROLES[run.rng.next(ROLES.len() as u64) as usize];
                     if run.lp.peers[i].engine.core.role_now(&run.tids[j], &t) < Some(r) {
                         run.grant(i, j, t, r);
                     }

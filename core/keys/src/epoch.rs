@@ -12,7 +12,7 @@ use std::collections::{BTreeMap, BTreeSet};
 /// Suite 1, the only suite (spec/crypto.md §8).
 pub const SUITE: u64 = 1;
 
-pub const ROLES: [Role; 3] = [Role::Read, Role::Write, Role::Admin];
+pub const ROLES: [Role; 4] = Role::ALL;
 
 /// Sorts as `e` by age: greater n, then lower nonce, is newer.
 fn by_n(e: &Epoch) -> (u64, Reverse<[u8; 32]>) {
@@ -493,9 +493,10 @@ fn placeholder_nonce(e: &Epoch) -> [u8; 32] {
     osis_base::hash::derive_key("osis v1 derived placeholder", &[e.n().to_le_bytes().as_slice(), e.nonce()].concat())
 }
 
-/// The epochs of the three roles of one actor.
+/// The epochs of the four roles of one actor.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ActorEpochs {
+    pub sync: RoleEpochs,
     pub read: RoleEpochs,
     pub write: RoleEpochs,
     pub admin: RoleEpochs,
@@ -507,6 +508,7 @@ pub type AccountEpochHeld = (u64, Secret32, Vec<(u64, Secret32)>);
 impl ActorEpochs {
     pub fn role(&self, r: Role) -> &RoleEpochs {
         match r {
+            Role::Sync => &self.sync,
             Role::Read => &self.read,
             Role::Write => &self.write,
             Role::Admin => &self.admin,
@@ -520,6 +522,7 @@ impl ActorEpochs {
 
     pub fn role_mut(&mut self, r: Role) -> &mut RoleEpochs {
         match r {
+            Role::Sync => &mut self.sync,
             Role::Read => &mut self.read,
             Role::Write => &mut self.write,
             Role::Admin => &mut self.admin,

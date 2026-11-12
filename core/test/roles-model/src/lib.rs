@@ -65,7 +65,9 @@ pub mod shrink;
 pub mod single;
 pub mod trust;
 
-/// Roles, `None` below read.
+/// Roles, `None` below read. The build's sync role (below read) is not modelled: §5.1 judges it as
+/// read (neither writes nor audits), and invites and attribution are min/max over a total
+/// order, so one more level below read adds no new interleaving.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Hash)]
 pub enum Role {
     None,

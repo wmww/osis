@@ -614,13 +614,8 @@ pub(crate) fn record_head(m: &Meta) -> Vec<u8> {
     });
     w = w.u32(m.dropped.len() as u32);
     for (a, d) in &m.dropped {
-        let role = match d.role {
-            None => 0,
-            Some(Role::Read) => 1,
-            Some(Role::Write) => 2,
-            Some(Role::Admin) => 3,
-        };
-        w = w.u32(*a as u32).u8(u8::from(d.as_cover()) | role << 2 | u8::from(d.overreach) << 4 | u8::from(d.why == super::DropFor::Invalid) << 5).u32(d.covered_by.len() as u32);
+        let role = d.role.map_or(0, |r| 1 + r as u8);
+        w = w.u32(*a as u32).u8(u8::from(d.as_cover()) | role << 2 | u8::from(d.overreach) << 5 | u8::from(d.why == super::DropFor::Invalid) << 6).u32(d.covered_by.len() as u32);
         for s in &d.covered_by {
             w = w.raw(&s.0);
         }
@@ -669,13 +664,8 @@ pub(super) fn meta_row(core: &Core, id: &CommitId, m: &Meta) -> Vec<u8> {
     out.push(1);
     out.extend_from_slice(&(m.valid.len() as u32).to_be_bytes());
     for (ai, v) in m.valid.iter().enumerate() {
-        let role = match core.ix.rotation_role.get(&(*id, ai)) {
-            None => 0,
-            Some(Role::Read) => 1,
-            Some(Role::Write) => 2,
-            Some(Role::Admin) => 3,
-        };
-        out.push(u8::from(*v) | (role << 1) | (u8::from(core.ix.grant_overreach.contains(&(*id, ai))) << 3) | (u8::from(m.missing.contains(&ai)) << 4) | (u8::from(m.whole.contains(&ai)) << 5) | (u8::from(m.forgot.contains(&ai) && m.missing.contains(&ai)) << 6));
+        let role = core.ix.rotation_role.get(&(*id, ai)).map_or(0, |r| 1 + *r as u8);
+        out.push(u8::from(*v) | (role << 1) | (u8::from(core.ix.grant_overreach.contains(&(*id, ai))) << 4) | (u8::from(m.missing.contains(&ai)) << 5) | (u8::from(m.whole.contains(&ai)) << 6) | (u8::from(m.forgot.contains(&ai) && m.missing.contains(&ai)) << 7));
     }
     let v = &m.view;
     let mut w = records::Wr(out).u64(v.ts.to_u64()).u8(v.kind.id() as u8);
@@ -737,7 +727,7 @@ fn put_showing(w: records::Wr, x: &super::Showing) -> records::Wr {
 }
 
 fn read_showing(r: &mut records::Rd<'_>) -> Result<super::Showing> {
-    let role = |b: u8| [Role::Read, Role::Write, Role::Admin].get(<usize as From<u8>>::from(b)).copied().ok_or(Error::Corrupt("shown role"));
+    let role = |b: u8| Role::ALL.get(<usize as From<u8>>::from(b)).copied().ok_or(Error::Corrupt("shown role"));
     let rotates = r.u8()? != 0;
     let top = match r.u8()? {
         0 => None,
@@ -830,7 +820,7 @@ pub(crate) fn parse_head(v: &[u8]) -> Result<(RecordHead, &[u8])> {
         }
         let mut keysets = Vec::new();
         for _ in 0..r.u32()? {
-            let role = [Role::Read, Role::Write, Role::Admin].get(<usize as From<u8>>::from(r.u8()?)).copied().ok_or(Error::Corrupt("dropped keyset role"))?;
+            let role = Role::ALL.get(<usize as From<u8>>::from(r.u8()?)).copied().ok_or(Error::Corrupt("dropped keyset role"))?;
             let e = osis_crypto::Epoch::new(r.u64()?, r.arr()?).map_err(|_| Error::Corrupt("dropped keyset epoch"))?;
             let mut lists = Vec::new();
             for _ in 0..r.u32()? {
@@ -850,8 +840,8 @@ pub(crate) fn parse_head(v: &[u8]) -> Result<(RecordHead, &[u8])> {
         let stands_in = r.u8()? != 0;
         let hosts_from = r.u64()?;
         let shown = if r.u8()? != 0 { Some(std::sync::Arc::new(read_showing(&mut r)?)) } else { None };
-        let role = [Role::Read, Role::Write, Role::Admin].get(<usize as From<u8>>::from((flags >> 2) & 3).wrapping_sub(1)).copied();
-        dropped.insert(a, super::Dropped { covered_by, why: if flags & 1 != 0 { super::DropFor::Cover } else if flags & 32 != 0 { super::DropFor::Invalid } else { super::DropFor::Other }, hosts_from, stands_in, role, overreach: flags & 16 != 0, keysets, shown, superseded_by: BTreeSet::new() });
+        let role = Role::ALL.get(<usize as From<u8>>::from((flags >> 2) & 7).wrapping_sub(1)).copied();
+        dropped.insert(a, super::Dropped { covered_by, why: if flags & 1 != 0 { super::DropFor::Cover } else if flags & 64 != 0 { super::DropFor::Invalid } else { super::DropFor::Other }, hosts_from, stands_in, role, overreach: flags & 32 != 0, keysets, shown, superseded_by: BTreeSet::new() });
     }
     let (mut stripped, mut valued) = (BTreeSet::new(), BTreeSet::new());
     for _ in 0..r.u32()? {
@@ -1040,19 +1030,19 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
         let mut forgot = BTreeSet::new();
         for (ai, p) in parts.iter().enumerate() {
             valid.push(p & 1 != 0);
-            if p & 16 != 0 {
+            if p & 32 != 0 {
                 missing.insert(ai);
             }
-            if p & 32 != 0 {
+            if p & 64 != 0 {
                 whole.insert(ai);
             }
-            if p & 64 != 0 {
+            if p & 128 != 0 {
                 forgot.insert(ai);
             }
-            if let Some(r) = [Role::Read, Role::Write, Role::Admin].get(<usize as From<u8>>::from((p >> 1) & 3).wrapping_sub(1)) {
+            if let Some(r) = Role::ALL.get(<usize as From<u8>>::from((p >> 1) & 7).wrapping_sub(1)) {
                 tx.core.ix.rotation_role.insert((id, ai), *r);
             }
-            if p & 8 != 0 {
+            if p & 16 != 0 {
                 tx.core.ix.grant_overreach.insert((id, ai));
             }
         }

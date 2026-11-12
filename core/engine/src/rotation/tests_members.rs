@@ -1179,7 +1179,7 @@ fn removal_without_possession_goes_alone_spec_crypto_4() {
     lp.peers[0].engine.grant(&a, &m, &edge(Role::Admin)).unwrap();
     lp.peers[0].engine.grant(&a, &f, &edge(Role::Admin)).unwrap();
     lp.sync_all().unwrap();
-    rotate_skipping(&mut lp, 2, m, &BTreeSet::from([Role::Read, Role::Write, Role::Admin]), &[p]);
+    rotate_skipping(&mut lp, 2, m, &BTreeSet::from(Role::ALL), &[p]);
     lp.sync_all().unwrap();
     assert!(lp.peers[1].engine.epochs(&m).unwrap().admin.newest_held().is_none(), "P lacks M's new keyset secret");
     let epochs = lp.peers[1].engine.epochs(&a);

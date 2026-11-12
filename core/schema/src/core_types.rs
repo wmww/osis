@@ -206,6 +206,7 @@ codec_struct! {
     pub struct Keys {
         0 read: Option<Keyset>, 1 write: Option<Keyset>, 2 admin: Option<Keyset>,
         3 key: Option<KemKey>, 4 inbox: Option<Inbox>, 5 deposit_seed: Option<[u8; 32]>, 6 signing: Option<SigningKey>,
+        7 sync: Option<Keyset>,
     }
 }
 codec_struct! {

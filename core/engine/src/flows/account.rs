@@ -834,16 +834,17 @@ impl Engine {
     /// Pairing, existing node side (spec/sync.md §2: the only way a node receives a grant):
     /// `node`'s card (`created.0`, `keys.0`) was received over the direct connection. A node
     /// that is not on the account's devices actor is granted admin there (spec/permissions.md
-    /// §1: any grant on D makes a node of P); one that is (stranded) is re-sealed. Returns the
+    /// §1: a grant of read or above on D makes a node of P); one that is (stranded) is re-sealed. Returns the
     /// commits to send it directly: the grant or re-seal, D's and P's certificates and D's
-    /// `label.0` commits (the new node downloads the rest under the home label).
+    /// `label.0` commits (the new node downloads the rest under the home label). A holder of
+    /// sync alone on D is no node: it is granted admin as any other.
     pub fn pair(&mut self, node: &Tid) -> Result<Done> {
         let d = self.account()?.ok_or(Error::Misuse("not a node of an account"))?.1;
         let n = *node;
         if !self.knows(&n) {
             return Err(Error::UnknownThing(n));
         }
-        let holder = self.roster(&d).get(&n).is_some_and(|e| e.alive_at(Some(osis_base::Ts::make(self.now(), 0).unwrap_or_default())));
+        let holder = self.roster(&d).get(&n).is_some_and(|e| e.role >= Role::Read && e.alive_at(Some(osis_base::Ts::make(self.now(), 0).unwrap_or_default())));
         let mut done = if holder { self.reshare(&d, &n)? } else { self.grant(&d, &n, &admin_edge())? };
         let mut all: Vec<CommitId> = self.certificates(&d).commits.into_keys().collect();
         let label = osis_base::Ak::new("label.0").map_err(|_| Error::Misuse("ak"))?;

@@ -42,7 +42,7 @@ fn foreign_step(b: u8) -> osis_label::Step {
     let (read, write, admin, dep) = (Secret32::from_bytes([b; 32]), Secret32::from_bytes([b + 1; 32]), Secret32::from_bytes([b + 2; 32]), Secret32::from_bytes([b + 3; 32]));
     let keys = StepKeys::derive(&read, &write, &admin, 0, &dep, &genesis_label(&admin, 0));
     let delete = label_role_key(LabelRole::Delete, &admin, 0);
-    register(Parent::Genesis(&delete), keys, &[], (&osis_base::Tid::from_bytes([b; 15]), Epoch::new(0, [0; 32]).unwrap(), &read), &mut SeededRng::from_u64(b as u64)).unwrap().0
+    register(Parent::Genesis(&delete), keys, &[], (&osis_base::Tid::from_bytes([b; 15]), Epoch::new(0, [0; 32]).unwrap(), &read), (Epoch::new(0, [0; 32]).unwrap(), &read), &mut SeededRng::from_u64(b as u64)).unwrap().0
 }
 
 // spec/wire.md §11.2 (Push: "the peer then sends Push" for subscribed labels only), spec/
@@ -232,7 +232,7 @@ fn forged_entry_box_teaches_nothing_spec_sync_5() {
     let skeys = StepKeys::derive(&read, &write, &admin, 0, &dep, &genesis_label(&admin, 0));
     let delete = label_role_key(LabelRole::Delete, &admin, 0);
     let reader = osis_label::Reader::Static { signing: keys.signing.verifying_key(), kem: keys.kem.public() };
-    let (fake, set) = register(Parent::Genesis(&delete), skeys, &[reader], (&ka, Epoch::derive(&ka, Role::Read, 0, &read).unwrap(), &read), &mut SeededRng::from_u64(0)).unwrap();
+    let (fake, set) = register(Parent::Genesis(&delete), skeys, &[reader], (&ka, Epoch::derive(&ka, Role::Read, 0, &read).unwrap(), &read), (Epoch::derive(&ka, Role::Sync, 0, &read).unwrap(), &read), &mut SeededRng::from_u64(0)).unwrap();
     let entry_box = set.entry_box(&fake.label, &keys.signing.verifying_key()).cloned().expect("entry box");
     let target = LabelId([0x42; 16]);
     let addr = net.address(host);
@@ -287,10 +287,10 @@ fn substituted_entry_box_teaches_nothing_spec_sync_2() {
     let reader = || osis_label::Reader::Static { signing: keys.signing.verifying_key(), kem: keys.kem.public() };
     let e1 = Epoch::derive(&ka, Role::Read, 1, &read).unwrap();
     // the genuine genesis (its path verifies), and a box for its slot carrying another secret
-    let (head, _) = register(Parent::Genesis(&delete), skeys, &[reader()], (&ka, e1, &read), &mut SeededRng::from_u64(0)).unwrap();
+    let (head, _) = register(Parent::Genesis(&delete), skeys, &[reader()], (&ka, e1, &read), (Epoch::derive(&ka, Role::Sync, 1, &read).unwrap(), &read), &mut SeededRng::from_u64(0)).unwrap();
     let slot = osis_crypto::BoxSlot::Entry { label: head.label, step_key: head.step_key, group: ka };
     let other = Secret32::from_bytes([0x99; 32]);
-    let item = osis_crypto::EntryItem { epoch: Epoch::derive(&ka, Role::Read, 1, &other).unwrap(), secret: other, earlier: None };
+    let item = osis_crypto::EntryItem { epoch: Epoch::derive(&ka, Role::Read, 1, &other).unwrap(), secret: other.clone(), earlier: None, sync: (Epoch::derive(&ka, Role::Sync, 1, &other).unwrap(), other) };
     let sealed = osis_crypto::seal_entry(keys.kem.public(), &slot, &item, &mut SeededRng::from_u64(1)).unwrap();
     use osis_schema::core_types as ct;
     let forged = ct::SecretBox::Sealed(ct::SealedBox { keyset: None, suite: u64::from(osis_crypto::SUITE_1), sealed: ct::Sealed::X25519MlKem768(sealed) });

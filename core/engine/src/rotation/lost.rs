@@ -127,7 +127,7 @@ fn timed_since(tx: &mut Tx<'_>, a: Tid) -> Result<u64> {
 /// Drops the timed-loss records of actors read again or no longer held.
 fn prune_timed(tx: &mut Tx<'_>) -> Result<()> {
     let core = &*tx.core;
-    let gone: Vec<Tid> = core.ix.timed_lost.keys().filter(|a| !core.ix.secrets.get(a).is_some_and(ActorEpochs::holds_any) || readable(core, a)).copied().collect();
+    let gone: Vec<Tid> = core.ix.timed_lost.keys().filter(|a| !over_held(core, a)).copied().collect();
     for a in gone {
         tx.txn.remove_local(&[TIMED_LOST, a.as_bytes()].concat(), osis_store::Shred::No)?;
         tx.core.ix.timed_lost.remove(&a);
@@ -167,10 +167,30 @@ fn take_due(tx: &mut Tx<'_>, by: u64) -> Result<BTreeSet<Tid>> {
     Ok(out)
 }
 
-/// Whether the node, a held key actor or a link key it keeps reading as has a role on `a` now
-/// (any path, `until` honoured).
+/// Whether the node, a held key actor or a link key it keeps reading as holds `min` or above on
+/// `a` now (any path, `until` honoured).
+fn holds_at(core: &Core, a: &Tid, min: Role) -> bool {
+    let at = |m: &Tid| core.role_now(m, a) >= Some(min);
+    core.member().into_iter().chain([core.id.tid()]).any(|m| at(&m)) || core.key_actors.keys().chain(core.ix.bearers.iter()).any(at)
+}
+
+/// Whether the node (`holds_at`) reads `a` now: read or above.
 pub(crate) fn readable(core: &Core, a: &Tid) -> bool {
-    core.member().into_iter().chain([core.id.tid()]).any(|m| core.role_now(&m, a).is_some()) || core.key_actors.keys().chain(core.ix.bearers.iter()).any(|k| core.role_now(k, a).is_some())
+    holds_at(core, a, Role::Read)
+}
+
+/// Whether the node holds secrets of `a` its roles there no longer give (spec/permissions.md §3,
+/// lost access): any, holding no role on `a`; a role's above sync, holding sync alone (the sync
+/// secret stays: it reads nothing of `a`, and still holds and serves its sync IDs).
+fn over_held(core: &Core, a: &Tid) -> bool {
+    let Some(e) = core.ix.secrets.get(a) else { return false };
+    if readable(core, a) {
+        false
+    } else if holds_at(core, a, Role::Sync) {
+        ROLES.iter().any(|r| *r > Role::Sync && e.role(*r).holds_any())
+    } else {
+        e.holds_any()
+    }
 }
 
 /// Whether all that ended the node's (or a held key actor's) role on `a` is an `until` passing:
@@ -271,7 +291,7 @@ fn may_grant(core: &Core, author: &Tid, x: &Tid) -> bool {
 /// Reading-only secrets of an actor (spec/permissions.md §3) are no loss of it while their source
 /// commit may still be judged: a grant it may yet get.
 fn judge(tx: &mut Tx<'_>, cands: Vec<Tid>) -> Vec<Tid> {
-    let unread: Vec<Tid> = cands.into_iter().filter(|a| tx.core.ix.secrets.get(a).is_some_and(ActorEpochs::holds_any) && !readable(tx.core, a)).collect();
+    let unread: Vec<Tid> = cands.into_iter().filter(|a| over_held(tx.core, a)).collect();
     if unread.is_empty() {
         return unread;
     }
@@ -348,8 +368,9 @@ fn ways(core: &Core, actors: &BTreeSet<Tid>) -> BTreeMap<Tid, BTreeMap<Tid, Way>
             };
             w.extend(tl.ended(a, ts).into_iter().map(|(h, (e, end))| (h, Way { retain: says(e), end })));
         }
-        // the roster now, its record edge included while it stands
-        w.extend(core.current_holders(a).into_iter().map(|(h, _, _)| (h, live)));
+        // the roster now at read or above (a grant of sync reads nothing to keep), its record
+        // edge included while it stands
+        w.extend(core.current_holders(a).into_iter().filter(|(_, r, _)| *r >= Role::Read).map(|(h, _, _)| (h, live)));
     }
     out
 }
@@ -432,9 +453,19 @@ fn drop_actors(tx: &mut Tx<'_>, mut lost: Vec<Tid>, dropped: &[Tid], rejudge: bo
     let lost: Vec<Tid> = lost.into_iter().chain(gone).collect();
     let held: BTreeMap<Tid, u64> = lost.iter().filter_map(|a| Some((*a, tx.core.ix.secrets.get(a)?.read.held().map(|(e, _)| e.n()).max()?))).collect();
     for a in &lost {
-        tx.core.ix.secrets.remove(a);
-        tx.core.role_changed();
-        tx.txn.remove_local(&[b"k/".as_slice(), a.as_bytes()].concat(), osis_store::Shred::Yes)?;
+        // a holder of sync alone keeps the sync secret and drops the rest
+        let sync = holds_at(tx.core, a, Role::Sync).then(|| tx.core.ix.secrets.get(a).map(|e| e.sync.clone())).flatten();
+        match sync {
+            Some(sync) => {
+                tx.core.ix.secrets.insert(*a, ActorEpochs { sync, ..ActorEpochs::default() });
+                crate::flows::save_epochs(tx, a)?;
+            }
+            None => {
+                tx.core.ix.secrets.remove(a);
+                tx.core.role_changed();
+                tx.txn.remove_local(&[b"k/".as_slice(), a.as_bytes()].concat(), osis_store::Shred::Yes)?;
+            }
+        }
         let now = tx.now();
         tx.core.events.diagnostic(crate::Diagnostic { kind: crate::DiagnosticKind::Removed, tids: vec![*a], commit: None, peer: None, detail: if kept.contains_key(a) { "lost read access: secrets dropped, a read-only copy kept" } else { "lost read access: secrets and what only they read dropped" }.into() }, now);
     }
@@ -653,7 +684,7 @@ impl Engine {
         let mut todo = vec![a];
         while let Some(x) = todo.pop() {
             for h in core.ix.kept.get(&x).into_iter().flatten() {
-                if h == actor || (app && core.role_now(actor, h).is_some()) {
+                if h == actor || (app && core.role_now(actor, h) >= Some(Role::Read)) {
                     return true;
                 }
                 if seen.insert(*h) {

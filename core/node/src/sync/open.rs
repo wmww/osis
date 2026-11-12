@@ -7,7 +7,7 @@
 use super::{ConnId, LConn, Phase, SyncEngine};
 use crate::error::Result;
 use crate::labeling::{GroupLabel, HeadKeys};
-use osis_base::{LabelId, Tid};
+use osis_base::{LabelId, Role, Tid};
 use osis_crypto::{LabelRole, SigningSecret, X25519Secret, label_role_key, role_kem};
 use osis_label::{ClaimSet, Step, StepId};
 use osis_proto::{Code, Command, OpenKey, Request};
@@ -111,7 +111,7 @@ impl SyncEngine {
     /// for a hint, the sync keys at the index it names.
     fn tries(&mut self, host: &[u8; 32], g: &Tid, l: &LabelId) -> (u64, Vec<Try>) {
         let epochs = self.engine.epochs(g);
-        let held: Vec<osis_crypto::Secret32> = epochs.as_ref().map(|e| e.read.held_newest_first().into_iter().map(|(_, s)| s.clone()).collect()).unwrap_or_default();
+        let held: Vec<osis_crypto::Secret32> = epochs.as_ref().map(|e| e.sync.held_newest_first().into_iter().map(|(_, s)| s.clone()).collect()).unwrap_or_default();
         let sync_key = |step: &Step, index: u64| held.iter().map(|s| label_role_key(LabelRole::Sync, s, index)).find(|k| k.verifying_key() == step.keys.sync);
         let Some(gl) = self.group_label(g, l) else {
             let Some((index, via)) = self.state.hints.get(l).map(|h| (h.index, h.via)) else { return (0, Vec::new()) };
@@ -378,8 +378,8 @@ impl SyncEngine {
 
     /// Learns the read secret an accepted static-entry Hit's grant carries (spec/sync.md §10,
     /// Shared set): the path verified from the genesis step, the head's box opened by the key
-    /// actor whose static entry `entry` is, and its secret deriving the head's sync key, as for
-    /// an Open's (`static_entry_secret`). Whether it held.
+    /// actor whose static entry `entry` is, and its sync secret deriving the head's sync key, as
+    /// for an Open's (`static_entry_secret`). Whether it held.
     pub(crate) fn granted(&mut self, l: LabelId, entry: &[u8; 32], grant: &osis_proto::msg::EntryGrant) -> Result<bool> {
         let things = self.things();
         let Some(g) = things.get(&l).copied() else { return Ok(false) };
@@ -406,21 +406,18 @@ impl SyncEngine {
                 return Ok(false);
             }
         };
-        if osis_label::match_secret(&head.keys.sync, LabelRole::Sync, index, [&item.secret]).is_none() {
-            self.diag("entry box secret does not derive the head's sync key".into());
+        if osis_label::match_secret(&head.keys.sync, LabelRole::Sync, index, [&item.sync.1]).is_none() {
+            self.diag("entry box sync secret does not derive the head's sync key".into());
             return Ok(false);
         }
         self.record_steps(&g, &l, &grant.path, None)?;
-        if let Some((e, s)) = item.earlier {
-            self.engine.learn_read_secret(&g, e, s)?;
-        }
-        self.engine.learn_read_secret(&g, item.epoch, item.secret)?;
+        self.learn_entry(&g, item)?;
         Ok(true)
     }
 
-    /// Learns the read secret a verified head's entry box carries for the static entry tried,
-    /// when it derives the head's sync key (spec/sync.md §2: the step boxes the read secret of
-    /// its epoch; anything else is a forged box). False when it does not.
+    /// Learns the secrets a verified head's entry box carries for the static entry tried, when
+    /// its sync secret derives the head's sync key (spec/sync.md §2: the step boxes the secrets of
+    /// its epochs; anything else is a forged box). False when it does not.
     fn static_entry_secret(&mut self, conn: ConnId, l: LabelId, g: &Tid, head: &Step, b: &SecretBox) -> Result<bool> {
         let Some(Try::Static { kem, .. }) = self.current_try(conn, &l) else { return Ok(false) };
         let Some(index) = self.lc(conn, &l).map(|x| x.index) else { return Ok(false) };
@@ -431,15 +428,22 @@ impl SyncEngine {
                 return Ok(false);
             }
         };
-        if osis_label::match_secret(&head.keys.sync, LabelRole::Sync, index, [&item.secret]).is_none() {
-            self.diag("entry box secret does not derive the head's sync key".into());
+        if osis_label::match_secret(&head.keys.sync, LabelRole::Sync, index, [&item.sync.1]).is_none() {
+            self.diag("entry box sync secret does not derive the head's sync key".into());
             return Ok(false);
         }
-        // the earlier secret opens the epoch's rotation commit, and with it all the rest
+        self.learn_entry(g, item)
+    }
+
+    /// Learns an entry box's secrets: the earlier read secret opens the epoch's rotation commit,
+    /// and with it all the rest.
+    fn learn_entry(&mut self, g: &Tid, item: osis_crypto::EntryItem) -> Result<bool> {
         if let Some((e, s)) = item.earlier {
-            self.engine.learn_read_secret(g, e, s)?;
+            self.engine.learn_secret(g, Role::Read, e, s)?;
         }
-        self.engine.learn_read_secret(g, item.epoch, item.secret)
+        let (e, s) = item.sync;
+        self.engine.learn_secret(g, Role::Sync, e, s)?;
+        self.engine.learn_secret(g, Role::Read, item.epoch, item.secret)
     }
 
     /// The head is good: derive its keys; the label is read there by the shared set (a Hit on
@@ -527,7 +531,7 @@ impl SyncEngine {
         let only = self.claimants(&g, hinted)?;
         let mut front = Vec::new();
         if let Some(e) = self.engine.epochs(&g)
-            && let Some(s) = e.read.held_newest_first().into_iter().map(|(_, s)| label_role_key(LabelRole::Sync, s, index)).find(|k| k.verifying_key() == step.keys.sync)
+            && let Some(s) = e.sync.held_newest_first().into_iter().map(|(_, s)| label_role_key(LabelRole::Sync, s, index)).find(|k| k.verifying_key() == step.keys.sync)
         {
             front.push(Try::Sync { step: Some(step.clone()), key: s });
         }

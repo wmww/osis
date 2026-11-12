@@ -386,8 +386,8 @@ pub(crate) fn secrets_patch(read: &mut ct::Secrets, delta: &Fragment, state: &Fr
 /// The keysets a `keys.0` delta writes (whole keysets: a rotation replaces the field).
 pub(crate) fn keys_write(delta: &Fragment) -> KeysWrite {
     let mut w = KeysWrite::default();
-    for (id, r) in [(0, Role::Read), (1, Role::Write), (2, Role::Admin)] {
-        if let Some(v) = field(delta, id).and_then(Fragment::read)
+    for r in osis_keys::ROLES {
+        if let Some(v) = field(delta, osis_keys::aspects::keyset_field(r)).and_then(Fragment::read)
             && let Some(ks) = keyset_of_value(&v)
         {
             w.keysets.insert(r, ks);
@@ -682,18 +682,18 @@ pub(crate) fn pending_secrets_writes(blob: &osis_commit::CommitBlob, id: &Commit
 }
 
 impl crate::engine::Engine {
-    /// Records a read secret learned from a label's entry box (a link key opening
-    /// by static entry, spec/sync.md §2) when it is the secret of epoch `e` of `g` (spec/crypto.md
+    /// Records a read or sync secret learned from a label's entry box (a link key opening
+    /// by static entry, spec/sync.md §2) when it is the secret of epoch `e` of `g`'s role `r` (spec/crypto.md
     /// §4; anyone holding the head's step key, a removed admin among them, can write the box, so
     /// it establishes nothing). False when it is not.
-    pub fn learn_read_secret(&mut self, g: &Tid, e: osis_crypto::Epoch, secret: osis_crypto::Secret32) -> Result<bool> {
-        if !e.names(g, Role::Read, &secret) {
+    pub fn learn_secret(&mut self, g: &Tid, r: Role, e: osis_crypto::Epoch, secret: osis_crypto::Secret32) -> Result<bool> {
+        if !e.names(g, r, &secret) {
             return Ok(false);
         }
         let g = *g;
         self.run(|tx| {
             tx.core.touch();
-            tx.core.ix.secrets.entry_or_default(g).role_mut(Role::Read).set_secret(e, secret);
+            tx.core.ix.secrets.entry_or_default(g).role_mut(r).set_secret(e, secret);
             // what the secret opens: `g`'s own history boxes, then the boxes sealed to `g`
             let (s, alts) = (crate::flows::secrets_in(tx, &g)?, crate::flows::secrets_alts(tx, &g)?);
             tx.core.ingest_secrets(&g, &s, crate::engine::secrets::SecretsRead::State, &alts);
@@ -918,10 +918,11 @@ mod tests {
         for x in 2..lp.peers.len() {
             for i in 0..per {
                 let mut held = ActorEpochs::default();
+                held.sync.set_established(Epoch::new(1, [0; 32]).unwrap(), osis_keys::Provenance::Fixed);
                 held.read.set_established(Epoch::new(1, [0; 32]).unwrap(), osis_keys::Provenance::Fixed);
                 let rcpt = osis_keys::Recipient { holder: b, role: Role::Read, keys: keys.clone() };
                 let mut rng = osis_crypto::SeededRng::from_u64((x * 10_000 + i) as u64);
-                let rot = osis_keys::rotate(&t, &[Role::Read].into(), &held, &ct::Secrets::default(), &[rcpt], &osis_keys::Names::default(), &mut rng).unwrap();
+                let rot = osis_keys::rotate(&t, &[Role::Sync, Role::Read].into(), &held, &ct::Secrets::default(), &[rcpt], &osis_keys::Names::default(), &mut rng).unwrap();
                 let v = ct::Secrets { boxes: rot.secrets.boxes, history: rot.secrets.history.into_iter().collect() }.to_value();
                 let bytes = forge_role_commit(lp, x, t, &rec, &v);
                 assert!(matches!(lp.peers[1].receive(&bytes, Vec::new()).unwrap(), crate::Ingested::Awaits(..)), "a bogus commit cannot be judged at the grantee");
@@ -1016,7 +1017,7 @@ mod tests {
         let et = lp.peers[0].engine.epochs(&t).unwrap().read.newest().unwrap();
         lp.sync(0, 1).unwrap();
         assert!(lp.peers[1].engine.epochs(&t).is_none_or(|e| e.read.secret(&et).is_none()), "nothing opens t yet");
-        assert!(lp.peers[1].engine.learn_read_secret(&g, eg, sg).unwrap());
+        assert!(lp.peers[1].engine.learn_secret(&g, Role::Read, eg, sg).unwrap());
         assert!(lp.peers[1].engine.epochs(&t).unwrap().read.secret(&et).is_some(), "the box sealed to g's epoch opened");
         lp.peers[1].engine.check_index();
     }
@@ -1039,10 +1040,10 @@ mod tests {
         assert_ne!(e_new, before, "the removal rotated");
         let genuine = e0.read.secret(&e_new).cloned().unwrap();
         let planted = Secret32::from_bytes([0x66; 32]);
-        assert!(!lp.peers[1].engine.learn_read_secret(&t, e_new, planted.clone()).unwrap(), "a secret of another epoch");
+        assert!(!lp.peers[1].engine.learn_secret(&t, Role::Read, e_new, planted.clone()).unwrap(), "a secret of another epoch");
         let e1 = lp.peers[1].engine.epochs(&t).unwrap();
         assert!(e1.read.reading_secret(&e_new).is_none());
-        assert!(lp.peers[1].engine.learn_read_secret(&t, e_new, genuine.clone()).unwrap());
+        assert!(lp.peers[1].engine.learn_secret(&t, Role::Read, e_new, genuine.clone()).unwrap());
         let e1 = lp.peers[1].engine.epochs(&t).unwrap();
         assert_eq!(e1.read.secret(&e_new), Some(&genuine));
         assert!(!e1.read.is_established(&e_new) && e1.read.newest_held().is_none_or(|x| x.0 != e_new));
@@ -1183,8 +1184,9 @@ mod tests {
         assert!(checked, "its boxes came with it");
     }
 
+    /// The most reading candidates of one role (each role keeps its own budget).
     fn candidates(lp: &LocalPeer, t: &Tid) -> usize {
-        lp.peers[1].engine.core.ix.secrets.get(t).map_or(0, |e| osis_keys::ROLES.iter().map(|r| e.role(*r).held_newest_first().len()).sum())
+        lp.peers[1].engine.core.ix.secrets.get(t).map_or(0, |e| osis_keys::ROLES.iter().map(|r| e.role(*r).held_newest_first().len()).max().unwrap_or(0))
     }
 
     // spec/crypto.md §4 (secrets from pending commits kept as reading candidates): a flood of

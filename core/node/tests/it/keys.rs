@@ -44,11 +44,7 @@ fn rotation_commit_to(lp: &mut LocalPeer, a: Tid, seed: u64, roles: BTreeSet<Rol
         m.op(a, &ct::SECRETS, PathOp { path: vec![PathSeg::Field(1), PathSeg::Key(k.to_value())], op: Op::Set(Value::Bytes(h.clone())) }).unwrap();
     }
     for (role, ks) in &r.keys.keysets {
-        let f = match role {
-            Role::Read => 0,
-            Role::Write => 1,
-            Role::Admin => 2,
-        };
+        let f = osis_keys::aspects::keyset_field(*role);
         m.op(a, &ct::KEYS, PathOp { path: vec![PathSeg::Field(f)], op: Op::Replace(Some(ks.clone()).to_value()) }).unwrap();
     }
     (e.commit(m).unwrap().unwrap(), r)
@@ -62,7 +58,7 @@ fn rotation_out_of_order_spec_crypto_4() {
     let mut lp = net(2, 0);
     lp.sync_all().unwrap();
     let a = new_thing(&mut lp, 0);
-    let (c1, r1) = rotation_commit(&mut lp, a, 1, BTreeSet::from([Role::Read, Role::Write, Role::Admin]), &Names::default());
+    let (c1, r1) = rotation_commit(&mut lp, a, 1, BTreeSet::from(Role::ALL), &Names::default());
     let e1 = r1.rotated.iter().find(|x| x.role == Role::Read).unwrap().epoch;
     let v0 = lp.peers[0].engine.epochs(&a).unwrap();
     assert!(v0.read.is_established(&e1), "{:?}", v0.read);
@@ -104,7 +100,7 @@ fn history_chain_from_state_spec_crypto_4() {
     let roles = BTreeSet::from([Role::Read]);
     let only0 = [rcpt(&mut lp, 0, Role::Admin)];
     // secrets of its own are all three roles' (spec/crypto.md §3); then two read rotations
-    rotation_commit_to(&mut lp, a, 9, BTreeSet::from([Role::Read, Role::Write, Role::Admin]), &only0, &Names::default());
+    rotation_commit_to(&mut lp, a, 9, BTreeSet::from(Role::ALL), &only0, &Names::default());
     let (_, r1) = rotation_commit_to(&mut lp, a, 1, roles.clone(), &only0, &Names::default());
     let (_, r2) = rotation_commit_to(&mut lp, a, 2, roles.clone(), &only0, &Names::default());
     sync(&mut lp, 0, 1);
@@ -161,7 +157,7 @@ fn late_keys_part_establishes_rotation_spec_crypto_4() {
     let mut lp = net(2, 0);
     lp.sync_all().unwrap();
     let a = new_thing(&mut lp, 0);
-    let (_, r1) = rotation_commit(&mut lp, a, 1, BTreeSet::from([Role::Read, Role::Write, Role::Admin]), &Names::default());
+    let (_, r1) = rotation_commit(&mut lp, a, 1, BTreeSet::from(Role::ALL), &Names::default());
     let e1 = r1.rotated.iter().find(|x| x.role == Role::Read).unwrap().epoch;
     let (c2, r2) = rotation_commit(&mut lp, a, 2, BTreeSet::from([Role::Read]), &Names::default());
     let e2 = r2.rotated[0].epoch;
@@ -203,7 +199,7 @@ fn own_secrets_keep_derived_epochs_spec_crypto_4() {
     let derived = e.epochs(&h).unwrap();
     e.give_own_secrets(&h).unwrap();
     let own = e.epochs(&h).unwrap();
-    for r in [Role::Read, Role::Write, Role::Admin] {
+    for r in Role::ALL {
         let (ep, _) = derived.role(r).epochs().next().unwrap();
         let info = own.role(r).get(ep).unwrap_or_else(|| panic!("{r:?}: the derived epoch let go"));
         assert!(info.secret.is_some() && info.established == Some(Provenance::Derived), "{r:?}: {info:?}");

@@ -1483,7 +1483,7 @@ impl Core {
 
     /// The held valid keysets of actor `m`: (role, epoch, what is held of it).
     pub(crate) fn keysets_of(&self, m: &Tid) -> impl Iterator<Item = (osis_base::Role, osis_crypto::Epoch, &HeldKeyset)> {
-        self.ix.keysets.range((*m, osis_base::Role::Read, osis_crypto::Epoch::ZERO)..).take_while(move |(k, _)| k.0 == *m).map(|(k, v)| (k.1, k.2, v))
+        self.ix.keysets.range((*m, osis_base::Role::Sync, osis_crypto::Epoch::ZERO)..).take_while(move |(k, _)| k.0 == *m).map(|(k, v)| (k.1, k.2, v))
     }
 
     /// The first time after now that a grant's `until` or a role commit's `ts` falls due in the

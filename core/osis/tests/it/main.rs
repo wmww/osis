@@ -12,6 +12,7 @@ mod edits;
 mod serving;
 mod runtime;
 mod sharing;
+mod sync_role;
 mod sync;
 mod watch;
 mod scenario;

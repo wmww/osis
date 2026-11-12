@@ -166,7 +166,7 @@ fn registration_of_thousands_of_readers() {
     let mut m = Mutation::new();
     let a = e.new_thing(&mut m, me);
     e.commit(m).unwrap().unwrap();
-    let all = BTreeSet::from([Role::Read, Role::Write, Role::Admin]);
+    let all = BTreeSet::from(Role::ALL);
     let own = [Recipient { holder: me, role: Role::Admin, keys: HolderKeys::KeyActor { kem: e.identity().keys().kem.public().clone(), seed: None } }];
     let view = e.epochs(&a).unwrap();
     let r0 = rotate(&a, &all, &view, &Default::default(), &own, &osis_keys::Names::default(), &mut SeededRng::from_u64(2)).unwrap();
@@ -178,11 +178,7 @@ fn registration_of_thousands_of_readers() {
             m.op(a, &ct::SECRETS, PathOp { path: vec![PathSeg::Field(1), PathSeg::Key(k.to_value())], op: Op::Set(Value::Bytes(h.clone())) }).unwrap();
         }
         for (role, ks) in &r.keys.keysets {
-            let f = match role {
-                Role::Read => 0,
-                Role::Write => 1,
-                Role::Admin => 2,
-            };
+            let f = osis_keys::aspects::keyset_field(*role);
             m.op(a, &ct::KEYS, PathOp { path: vec![PathSeg::Field(f)], op: Op::Replace(Some(ks.clone()).to_value()) }).unwrap();
         }
     };

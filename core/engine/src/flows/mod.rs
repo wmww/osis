@@ -164,11 +164,7 @@ pub(crate) fn put_secrets(m: &mut Mutation, actor: Tid, w: &SecretsWrite, new_on
 /// Writes the rotated roles' keysets into `m` (whole keysets: the field is replaced).
 pub(crate) fn put_keysets(m: &mut Mutation, actor: Tid, w: &KeysWrite) -> Result<()> {
     for (role, ks) in &w.keysets {
-        let f = match role {
-            Role::Read => 0,
-            Role::Write => 1,
-            Role::Admin => 2,
-        };
+        let f = osis_keys::aspects::keyset_field(*role);
         m.op(actor, &ct::KEYS, PathOp { path: vec![PathSeg::Field(f)], op: Op::Replace(Some(ks.clone()).to_value()) })?;
     }
     Ok(())

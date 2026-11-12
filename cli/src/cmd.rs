@@ -21,6 +21,7 @@ use std::time::{Duration, Instant};
 
 pub fn role_text(r: Role) -> &'static str {
     match r {
+        Role::Sync => "sync",
         Role::Read => "read",
         Role::Write => "write",
         Role::Admin => "admin",
@@ -33,10 +34,11 @@ fn grant_opts(until: &Option<String>, may_grant: &Option<String>) -> anyhow::Res
 
 pub(crate) fn parse_role(s: &str) -> anyhow::Result<Role> {
     match s {
+        "sync" => Ok(Role::Sync),
         "read" => Ok(Role::Read),
         "write" => Ok(Role::Write),
         "admin" => Ok(Role::Admin),
-        _ => Err(usage(format!("role: read, write or admin (got {s:?})"))),
+        _ => Err(usage(format!("role: sync, read, write or admin (got {s:?})"))),
     }
 }
 

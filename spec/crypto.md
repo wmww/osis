@@ -33,13 +33,13 @@
 
 ## 3. Keys per actor kind
 - **Notation**: a `kdf` written with two arguments has empty input; a tid as input is its 15 bytes; an Ed25519 key "from" a kdf output is the key with that 32-byte seed (RFC 8032).
-- **Role secrets**: 32 random bytes per role (read, write, admin) per epoch (§4).
+- **Role secrets**: 32 random bytes per role (sync, read, write, admin) per epoch (§4).
 - **Plain thing** (spec/permissions.md §3): its role secrets derive from those of the next thing up its record chain (spec/permissions.md §1: its first admin), its **base actor**, and so on up while that one is plain too.
   - Its **derivation chain**: its record chain up to and including the first actor with secrets of its own or a key actor. Only keys use it (derivation, delete keys, section chains, spec/wire.md §4); it carries no authority.
   - Role secret = `kdf("thing <role>", base actor's <role> secret, tid)`, one per epoch of the base actor's role (forks included).
   - It sits at the epoch with n = min(base actor's n, 2^62 − 1) that the nonce rule (§4) gives the thing, role and derived secret.
   - **Order n** (§4) of a derived epoch: the base actor epoch's order n while the thing is plain, its n once the thing has secrets of its own.
-- **Giving a thing secrets of its own** (spec/permissions.md §3) is a rotation of all three roles from its derived epochs: the history boxes carry the derived secrets, the commit wraps under the derived read epoch, `keys.0` is written.
+- **Giving a thing secrets of its own** (spec/permissions.md §3) is a rotation of all four roles from its derived epochs: the history boxes carry the derived secrets, the commit wraps under the derived read epoch, `keys.0` is written.
 - A node counts a thing as having **secrets of its own** iff it holds a role commit whose `keys.0` part is valid (spec/permissions.md §5.2) and wrote a keyset in the body the node held (its body since dropped or missing counts). A thing whose only such part turns invalid is plain again (derived secrets), the secrets it learned from that commit kept for reading only (§4).
 - **Key actor** other than an account (node, link key): one 32-byte seed.
   - Signing key from `kdf("sign", seed)`.
@@ -69,7 +69,7 @@ Terms in this section depend on each other; each is defined once, under its bold
 
 ### Epochs
 - **Epoch**: each role secret of an actor has an epoch (n, nonce), independent per role. Each epoch names its suite ID.
-- **Nonce rule**: the nonce of role r's secret s of actor A at n is `kdf("epoch", s, A's tid || role byte || le64(n))` (32 bytes; role byte 0 read, 1 write, 2 admin).
+- **Nonce rule**: the nonce of role r's secret s of actor A at n is `kdf("epoch", s, A's tid || role byte || le64(n))` (32 bytes; role byte 0 read, 1 write, 2 admin, 3 sync).
   - A secret is the secret of the epoch its (actor, role, n) and the nonce rule name.
   - A box, history box entry or entry box carrying a secret is read as naming that epoch.
 - **Rotation** of a set of roles (spec/permissions.md §3): each role gets a fresh random secret under epoch n+1 with the nonce the rule gives; the other roles keep their secret and epoch. n is the greatest n of the role's current epochs at the rotator (epochs it has not established never count; 0 for an actor with no epoch of the role at all).

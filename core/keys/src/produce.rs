@@ -153,6 +153,11 @@ pub struct Rotation {
 }
 
 impl Rotation {
+    /// What it rotated of role `r`.
+    pub fn role(&self, r: Role) -> Option<&Rotated> {
+        self.rotated.iter().find(|x| x.role == r)
+    }
+
     /// Records the new epochs, secrets and names in the rotator's own view. Their establishment
     /// comes from the rotation commit, applied (spec/crypto.md §4); the names are the rotator's
     /// own, held here.

@@ -17,8 +17,9 @@ fn admin_rcpt(p: Tid, pe: &ActorEpochs) -> Recipient {
     Recipient { holder: p, role: Role::Admin, keys: HolderKeys::from_keys(&keys_of(pe)).unwrap().with_own(pe) }
 }
 
+/// The roles a reader holds.
 fn read() -> BTreeSet<Role> {
-    [Role::Read].into_iter().collect()
+    [Role::Sync, Role::Read].into_iter().collect()
 }
 
 /// A departure's name: commit `b`'s key, on `thing`.
@@ -85,12 +86,12 @@ fn rotation_held_before_the_removal() {
     let (mut s, mut v) = (base.clone(), view.clone());
     eager.secrets.apply(&mut s);
     v = eager.preview(&v).unwrap();
-    let e2 = eager.rotated[0].epoch;
+    let e2 = eager.role(Role::Read).unwrap().epoch;
     assert!(uncovered(&a, &v, Role::Read, &e2, &[], &AllHeld).is_empty());
     // The removal commit arrives with its rotation.
     removal.secrets.apply(&mut s);
     v = removal.preview(&v).unwrap();
-    let e2r = removal.rotated[0].epoch;
+    let e2r = removal.role(Role::Read).unwrap().epoch;
     let deps = [Departure::holder(m, Role::Read).at(Some(removed))];
     assert!(!uncovered(&a, &v, Role::Read, &e2, &deps, &AllHeld).is_empty());
     assert!(uncovered(&a, &v, Role::Read, &e2r, &deps, &AllHeld).is_empty());
@@ -99,10 +100,10 @@ fn rotation_held_before_the_removal() {
     let heal = rotate(&a, &read(), &v, &s, &with_m[..1], &naming(removed), &mut *rg).unwrap();
     let history: BTreeSet<_> = v.read.held_established().map(|x| x.0).collect();
     assert!(history.contains(&e2) && history.contains(&e2r));
-    assert_eq!(heal.rotated[0].supersedes, history);
+    assert_eq!(heal.role(Role::Read).unwrap().supersedes, history);
     heal.secrets.apply(&mut s);
     v = heal.preview(&v).unwrap();
-    let e3 = heal.rotated[0].epoch;
+    let e3 = heal.role(Role::Read).unwrap().epoch;
     assert!(uncovered(&a, &v, Role::Read, &e3, &deps, &AllHeld).is_empty());
     assert!(!merge_due(&a, &v, Role::Read, &deps, &AllHeld));
     let mut mv = ActorEpochs::default();
@@ -155,14 +156,14 @@ fn missing_box_covers_nothing() {
     let (view, base) = switched(a, p, &pe, &[], rg);
     let rot = rotate(&a, &read(), &view, &base, &[admin_rcpt(p, &pe)], &Names::default(), &mut *rg).unwrap();
     let v = rot.preview(&view).unwrap();
-    let e1 = rot.rotated[0].epoch;
+    let e1 = rot.role(Role::Read).unwrap().epoch;
     let removed = name(a, 7);
     let dep = [Departure::holder(m, Role::Read).at(Some(removed))];
     assert!(!uncovered(&a, &v, Role::Read, &e1, &dep, &AllHeld).is_empty());
     assert!(merge_due(&a, &v, Role::Read, &dep, &AllHeld));
     let named = rotate(&a, &read(), &v, &base, &[admin_rcpt(p, &pe)], &naming(removed), &mut *rg).unwrap();
     let v2 = named.preview(&v).unwrap();
-    let e2 = named.rotated[0].epoch;
+    let e2 = named.role(Role::Read).unwrap().epoch;
     assert!(uncovered(&a, &v2, Role::Read, &e2, &dep, &AllHeld).is_empty());
     struct Unmet;
     impl osis_keys::Held for Unmet {

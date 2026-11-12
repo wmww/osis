@@ -5,9 +5,9 @@
 use crate::common;
 use common::*;
 use osis_base::{CommitId, CreationRecord, Role, Tid, Ts};
-use osis_crypto::{Epoch, Secret32, label_role_key};
+use osis_crypto::{Epoch, LabelRole, Secret32, label_role_key};
 use osis_keys::{
-    ActorEpochs, Graph, PermGraph, label_role, newer_than_head, reached,
+    ActorEpochs, Graph, PermGraph, newer_than_head, reached,
     registered_epoch, registration_epochs, roles_up_to, delete_candidates, delete_key, wrap_epoch,
 };
 use osis_perm::{At, Edge, EdgeOp, RoleCommit, MemoryHeldSet, Timeline};
@@ -120,25 +120,32 @@ fn wrap_epochs() {
     let r = osis_keys::rotate(&tid(1), &roles_up_to(Role::Admin), &view, &Default::default(), &[], &osis_keys::Names::default(), &mut *rg).unwrap();
     assert_eq!(r.wrap_epoch(), ActorEpochs::derived(&pe, &tid(1)).read.newest());
     view = r.preview(&view).unwrap();
-    assert_eq!(wrap_epoch(&view.read), Some(r.rotated[0].epoch));
+    assert_eq!(wrap_epoch(&view.read), Some(r.role(Role::Read).unwrap().epoch));
     let w = osis_keys::rotate(&tid(1), &set(&[Role::Write]), &view, &Default::default(), &[], &osis_keys::Names::default(), &mut *rg).unwrap();
     assert_eq!(w.wrap_epoch(), None);
 }
 
-// spec/sync.md §2, §5: label keys come from each role's newest epoch; a node finds the held epoch
-// a head registered by its key; an admin holding a newer epoch than the head re-registers.
+// spec/sync.md §2, §5: label keys come from the sync, write and admin roles' newest epochs (the
+// read epoch gives the claim set only); a node finds the held epoch a head registered by its key;
+// an admin holding a newer sync, write or admin epoch than the head re-registers, a newer read
+// epoch alone makes no step.
 #[test]
 fn label_epochs() {
     let mut a = person(0x20);
-    let [r, w, ad] = registration_epochs(&a).unwrap();
-    assert_eq!((r.0, w.0, ad.0), (ep(1, 0x20), ep(1, 0x20), ep(1, 0x20)));
-    let key = label_role_key(label_role(Role::Read), r.1, 3).verifying_key();
+    let [s, r, w, ad] = registration_epochs(&a).unwrap();
+    assert_eq!((s.0, r.0, w.0, ad.0), (ep(1, 0x20), ep(1, 0x20), ep(1, 0x20), ep(1, 0x20)));
+    let key = label_role_key(LabelRole::Sync, s.1, 3).verifying_key();
+    assert_ne!(label_role_key(LabelRole::Sync, r.1, 3).verifying_key(), key, "the sync key derives from the sync secret");
+    let head = [Some(ep(1, 0x20)), Some(ep(1, 0x20)), Some(ep(1, 0x20))];
     a.read.set_history(ep(2, 1), BTreeSet::new(), [ep(1, 0x20)]);
     a.read.set_established(ep(2, 1), osis_keys::Provenance::Fixed);
     a.read.set_secret(ep(2, 1), Secret32::from_bytes([9; 32]));
-    assert_eq!(registered_epoch(&a.read, Role::Read, 3, &key), Some(ep(1, 0x20)));
-    assert_eq!(registered_epoch(&a.read, Role::Read, 4, &key), None);
-    let head = [Some(ep(1, 0x20)), Some(ep(1, 0x20)), Some(ep(1, 0x20))];
+    assert!(!newer_than_head(&a, head), "the read epoch registers no key");
+    a.sync.set_history(ep(2, 1), BTreeSet::new(), [ep(1, 0x20)]);
+    a.sync.set_established(ep(2, 1), osis_keys::Provenance::Fixed);
+    a.sync.set_secret(ep(2, 1), Secret32::from_bytes([8; 32]));
+    assert_eq!(registered_epoch(&a, LabelRole::Sync, 3, &key), Some(ep(1, 0x20)));
+    assert_eq!(registered_epoch(&a, LabelRole::Sync, 4, &key), None);
     assert!(newer_than_head(&a, head));
     assert!(!newer_than_head(&a, [Some(ep(2, 1)), Some(ep(1, 0x20)), Some(ep(1, 0x20))]));
     assert!(!newer_than_head(&a, [None, Some(ep(1, 0x20)), Some(ep(1, 0x20))]));
@@ -170,7 +177,8 @@ fn jumped_base_rotation_steps_plain_group() {
     for b in 0..32u8 {
         let mut pe = jumped_person(b);
         let before = ActorEpochs::derived(&pe, &u);
-        let head = registration_epochs(&before).unwrap().map(|(e, _)| Some(e));
+        let [s, _, w, ad] = registration_epochs(&before).unwrap().map(|(e, _)| Some(e));
+        let head = [s, w, ad];
         assert!(!newer_than_head(&before, head));
         // k2 removed: the rotation boxes k1 only
         let r = osis_keys::rotate(&p, &roles_up_to(Role::Admin), &pe, &Default::default(), &[key_rcpt(tid(3), Role::Admin, &s1)], &osis_keys::Names::default(), &mut rng(b.into())).unwrap();

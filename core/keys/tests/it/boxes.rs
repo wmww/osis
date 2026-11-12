@@ -41,7 +41,7 @@ fn forked() -> Forked {
     y.secrets.apply(&mut s);
     view = x.preview(&view).unwrap();
     view = y.preview(&view).unwrap();
-    Forked { a, view, s, forks: [x.rotated[0].epoch, y.rotated[0].epoch], rng: g }
+    Forked { a, view, s, forks: [x.role(Role::Read).unwrap().epoch, y.role(Role::Read).unwrap().epoch], rng: g }
 }
 
 // spec/crypto.md §4: a grant writes the grantee's boxes for every granted role at each current
@@ -53,10 +53,10 @@ fn grant_boxes_every_current_epoch() {
     let (g, ge) = (tid(5), person(0x50));
     let w = box_holder(&f.a, &f.view, &hist(&f.a, &f.view, &f.s), &actor_rcpt(g, Role::Write, &ge), &roles_up_to(Role::Write), &mut f.rng).unwrap().unwrap();
     let keys: BTreeSet<_> = w.boxes.keys().cloned().collect();
-    let ew = f.view.write.newest().unwrap();
-    let want: BTreeSet<_> = [box_key(g, Role::Read, &f.forks[0]), box_key(g, Role::Read, &f.forks[1]), box_key(g, Role::Write, &ew)].into_iter().collect();
+    let (es, ew) = (f.view.sync.newest().unwrap(), f.view.write.newest().unwrap());
+    let want: BTreeSet<_> = [box_key(g, Role::Sync, &es), box_key(g, Role::Read, &f.forks[0]), box_key(g, Role::Read, &f.forks[1]), box_key(g, Role::Write, &ew)].into_iter().collect();
     assert_eq!(keys, want);
-    for (r, e) in [(Role::Read, f.forks[0]), (Role::Read, f.forks[1]), (Role::Write, ew)] {
+    for (r, e) in [(Role::Sync, es), (Role::Read, f.forks[0]), (Role::Read, f.forks[1]), (Role::Write, ew)] {
         assert_eq!(w.history[&history_key(r, &e)], f.s.history[&history_key(r, &e)]);
     }
     // removes nothing; supersedes nothing (it writes no keyset)
@@ -83,6 +83,7 @@ fn grant_to_key_actor() {
     let mut want: Vec<_> = f.view.read.current().iter().map(|e| box_key(k, Role::Read, e)).collect();
     assert_eq!(want.len(), 2, "read forked");
     want.push(box_key(k, Role::Write, &ew));
+    want.push(box_key(k, Role::Sync, &f.view.sync.newest().unwrap()));
     want.sort();
     assert_eq!(w.boxes.keys().cloned().collect::<Vec<_>>(), want);
     let mut s = f.s.clone();
@@ -97,7 +98,7 @@ fn grant_to_key_actor() {
     // Its seed holder writes symmetric boxes instead.
     let sym = Recipient { holder: k, role: Role::Read, keys: HolderKeys::KeyActor { kem: osis_crypto::KeyActorKeys::from_seed(&seed).kem.public().clone(), seed: Some(seed.clone()) } };
     let w = box_holder(&f.a, &f.view, &hist(&f.a, &f.view, &f.s), &sym, &roles_up_to(Role::Read), &mut f.rng).unwrap().unwrap();
-    assert_eq!(w.boxes.len(), 2);
+    assert_eq!(w.boxes.len(), 3, "sync and both read forks");
     assert!(w.boxes.values().all(|b| matches!(b, SecretBox::Symmetric(x) if x.wrap.len() == 49)));
     let mut s = f.s.clone();
     w.apply(&mut s);
@@ -123,6 +124,7 @@ fn rotation_keeps_other_roles_boxes() {
     v = rot.preview(&v).unwrap();
     let mut want: Vec<_> = f.forks.iter().map(|e| box_key(k, Role::Read, e)).collect();
     want.push(box_key(k, Role::Write, &rot.rotated[0].epoch));
+    want.push(box_key(k, Role::Sync, &f.view.sync.newest().unwrap()));
     want.sort();
     assert_eq!(s.boxes.keys().filter(|b| b.holder == k).cloned().collect::<Vec<_>>(), want);
     let holders = [Holder { holder: k, role: Role::Write }];

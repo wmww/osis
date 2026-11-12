@@ -34,10 +34,12 @@ pub const PREFIX: &str = "osis v1 ";
 
 // kdf purposes (without `PREFIX`).
 /// Plain thing role secrets from the base actor's (spec/crypto.md §3); `thing_purpose` picks one.
+pub const THING_SYNC: &str = "thing sync";
 pub const THING_READ: &str = "thing read";
 pub const THING_WRITE: &str = "thing write";
 pub const THING_ADMIN: &str = "thing admin";
 /// Key actor role secrets from its seed (spec/crypto.md §3); `role_purpose` picks one.
+pub const ROLE_SYNC: &str = "role sync";
 pub const ROLE_READ: &str = "role read";
 pub const ROLE_WRITE: &str = "role write";
 pub const ROLE_ADMIN: &str = "role admin";
@@ -95,8 +97,8 @@ pub const BEACON_HIT: &str = "beacon hit";
 pub const BEACON_REPLY: &str = "beacon reply";
 
 /// Every kdf purpose, for distinctness checks and vectors.
-pub const PURPOSES: [&str; 34] = [
-    THING_READ, THING_WRITE, THING_ADMIN, ROLE_READ, ROLE_WRITE, ROLE_ADMIN, SIGN, KEM, CREATION_NONCE, BOX, HISTORY, EPOCH, WRAP, SECTION,
+pub const PURPOSES: [&str; 36] = [
+    THING_SYNC, THING_READ, THING_WRITE, THING_ADMIN, ROLE_SYNC, ROLE_READ, ROLE_WRITE, ROLE_ADMIN, SIGN, KEM, CREATION_NONCE, BOX, HISTORY, EPOCH, WRAP, SECTION,
     DELTA, LINK, LINK_TREE, DELETE_KEY, DELETE_BLIND, DELETE_NONCE, LINK_BLIND, LABEL_SYNC, LABEL_WRITE, LABEL_DELETE, LABEL_DEPOSIT, LABEL_CLAIM, LAN_TAG, LAN_SIG,
     POSSESSION, INNER_SECRET, INNER, BEACON, BEACON_HIT, BEACON_REPLY,
 ];
@@ -115,6 +117,7 @@ pub const STATIC_CLAIM: &str = "osis v1 static claim";
 
 pub fn thing_purpose(role: Role) -> &'static str {
     match role {
+        Role::Sync => THING_SYNC,
         Role::Read => THING_READ,
         Role::Write => THING_WRITE,
         Role::Admin => THING_ADMIN,
@@ -123,6 +126,7 @@ pub fn thing_purpose(role: Role) -> &'static str {
 
 pub fn role_purpose(role: Role) -> &'static str {
     match role {
+        Role::Sync => ROLE_SYNC,
         Role::Read => ROLE_READ,
         Role::Write => ROLE_WRITE,
         Role::Admin => ROLE_ADMIN,
@@ -222,7 +226,7 @@ mod tests {
         all.extend(Domain::ALL.iter().map(|d| d.as_str().to_string()));
         let set: BTreeSet<&String> = all.iter().collect();
         assert_eq!(set.len(), all.len());
-        assert_eq!(all.len(), 34 + 5 + 11);
+        assert_eq!(all.len(), PURPOSES.len() + 5 + 11);
     }
 
     // spec/crypto.md §1: kdf = keyed_hash(derive_key("osis v1 " + purpose, secret), input).

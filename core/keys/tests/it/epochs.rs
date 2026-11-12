@@ -61,14 +61,15 @@ fn own_secrets_switch() {
     let derived_read = thing_role_secret(w.pe.read.secret(&ep(1, 0x20)).unwrap(), Role::Read, &w.a);
     let de = Epoch::derive(&w.a, Role::Read, 1, &derived_read).unwrap();
     assert_eq!(rot.wrap_epoch(), Some(de));
-    // First admin: three symmetric boxes of 49 bytes (spec/wire.md §7).
+    // First admin: a symmetric box of 49 bytes per role (spec/wire.md §7).
     for r in ROLES {
         match &s.boxes[&box_key(w.p, r, &e(r))] {
             SecretBox::Symmetric(b) => assert_eq!(b.wrap.len(), 49),
             other => panic!("{other:?}"),
         }
     }
-    // M: one sealed read box, about 1.2 KB, naming its keyset; nothing for write or admin.
+    // M: a sealed box per role it holds (sync, read), about 1.2 KB, naming its keyset; nothing
+    // for write or admin.
     match &s.boxes[&box_key(w.m, Role::Read, &e(Role::Read))] {
         SecretBox::Sealed(b) => {
             assert_eq!(b.keyset, Some(osis_keys::aspects::to_schema(&ep(1, 0x30))));
@@ -77,11 +78,14 @@ fn own_secrets_switch() {
         }
         other => panic!("{other:?}"),
     }
-    assert!(!s.boxes.keys().any(|k| k.holder == w.m && k.role != Role::Read));
-    // L: a box at read and one at write.
-    let lkeys: Vec<_> = s.boxes.keys().filter(|k| k.holder == w.l).collect();
-    assert_eq!(lkeys, vec![&box_key(w.l, Role::Read, &e(Role::Read)), &box_key(w.l, Role::Write, &e(Role::Write))]);
-    assert_eq!(s.history.len(), 3);
+    assert!(!s.boxes.keys().any(|k| k.holder == w.m && k.role > Role::Read));
+    // L: a box at sync, read and write.
+    let mut lkeys: Vec<_> = s.boxes.keys().filter(|k| k.holder == w.l).collect();
+    lkeys.sort();
+    let mut want = [box_key(w.l, Role::Sync, &e(Role::Sync)), box_key(w.l, Role::Read, &e(Role::Read)), box_key(w.l, Role::Write, &e(Role::Write))];
+    want.sort();
+    assert_eq!(lkeys, want.iter().collect::<Vec<_>>());
+    assert_eq!(s.history.len(), ROLES.len());
 
     // Each opens what it holds; history yields the derived secrets.
     let mut me = w.me.clone();
@@ -135,7 +139,7 @@ fn fork_merge() {
 
     let x = rotate(&w.a, &read(), &view, &base, &w.holders(), &osis_keys::Names::default(), &mut *rg).unwrap();
     let y = rotate(&w.a, &read(), &view, &base, &w.holders(), &osis_keys::Names::default(), &mut *rg).unwrap();
-    let (ex, ey) = (x.rotated[0].epoch, y.rotated[0].epoch);
+    let (ex, ey) = (x.role(Role::Read).unwrap().epoch, y.role(Role::Read).unwrap().epoch);
     assert_eq!((ex.n(), ey.n()), (3, 3));
     assert_ne!(ex, ey);
     // Only read boxes at the superseded epoch are removed.
@@ -181,8 +185,8 @@ fn fork_merge() {
     let z = rotate(&w.a, &read(), &zview, &s1, &w.holders(), &osis_keys::Names::default(), &mut *rg).unwrap();
     let history: std::collections::BTreeSet<_> = zview.read.held_established().map(|x| x.0).collect();
     assert!(history.contains(&ex) && history.contains(&ey));
-    assert_eq!(z.rotated[0].supersedes, history);
-    assert_eq!(z.rotated[0].epoch.n(), 4);
+    assert_eq!(z.role(Role::Read).unwrap().supersedes, history);
+    assert_eq!(z.role(Role::Read).unwrap().epoch.n(), 4);
     let mut s3 = s1.clone();
     z.secrets.apply(&mut s3);
     assert!(!s3.boxes.keys().any(|k| k.role == Role::Read && (k.epoch == osis_keys::aspects::to_schema(&ex) || k.epoch == osis_keys::aspects::to_schema(&ey))));
@@ -194,9 +198,9 @@ fn fork_merge() {
     fresh.establish(&osis_keys::AllHeld);
     // every earlier secret is held at the epoch it names, no keyset needed
     let de = derived.read.current()[0];
-    for e in [ex, ey, r1.rotated[0].epoch, de] {
+    for e in [ex, ey, r1.role(Role::Read).unwrap().epoch, de] {
         assert!(fresh.read.secret(&e).is_some(), "{e:?}");
     }
-    assert_eq!(fresh.read.current(), vec![z.rotated[0].epoch]);
+    assert_eq!(fresh.read.current(), vec![z.role(Role::Read).unwrap().epoch]);
     assert!(s3.history.contains_key(&history_key(Role::Read, &ex)));
 }

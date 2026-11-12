@@ -383,8 +383,8 @@ fn rotation_rights() {
     w.set(n[0], x, n[2], edge(Write), 0, &all);
     w.set(n[0], x, n[3], edge(Read), 0, &all);
     let tl = Timeline::evaluate(&w.held());
-    assert_eq!(tl.may_rotate(&n[1], &x, At::END), vec![Read, Write, Admin]);
-    assert_eq!(tl.may_rotate(&n[2], &x, At::END), vec![Read, Write]);
+    assert_eq!(tl.may_rotate(&n[1], &x, At::END), vec![Role::Sync, Read, Write, Admin]);
+    assert_eq!(tl.may_rotate(&n[2], &x, At::END), vec![Role::Sync, Read, Write]);
     assert_eq!(tl.may_rotate(&n[3], &x, At::END), Vec::<Role>::new());
 }
 

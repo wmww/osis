@@ -62,7 +62,8 @@ impl Departure {
     /// after (none = no edge).
     pub fn of_change(holder: Tid, old: Option<Role>, new: Option<Role>) -> Option<Departure> {
         let from = match new {
-            None => Role::Read,
+            None => Role::Sync,
+            Some(Role::Sync) => Role::Read,
             Some(Role::Read) => Role::Write,
             Some(Role::Write) => Role::Admin,
             Some(Role::Admin) => return None,
@@ -193,7 +194,9 @@ mod tests {
     fn departures() {
         let m = Tid::from_bytes([1; 15]);
         assert_eq!(Departure::of_change(m, Some(Role::Admin), Some(Role::Read)), Some(Departure::holder(m, Role::Write)));
-        assert_eq!(Departure::of_change(m, Some(Role::Read), None), Some(Departure::holder(m, Role::Read).upto(Role::Read)));
+        assert_eq!(Departure::of_change(m, Some(Role::Read), None), Some(Departure::holder(m, Role::Sync).upto(Role::Read)), "a reader leaves sync too");
+        assert_eq!(Departure::of_change(m, Some(Role::Read), Some(Role::Sync)), Some(Departure::holder(m, Role::Read).upto(Role::Read)));
+        assert_eq!(Departure::of_change(m, Some(Role::Sync), None), Some(Departure::holder(m, Role::Sync).upto(Role::Sync)));
         assert_eq!(Departure::of_change(m, Some(Role::Read), Some(Role::Write)), None);
         assert_eq!(Departure::of_change(m, None, None), None);
         assert_eq!(Departure::holder(m, Role::Write).roles(), [Role::Write, Role::Admin].into_iter().collect());

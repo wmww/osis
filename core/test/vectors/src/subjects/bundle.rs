@@ -12,12 +12,13 @@ use osis_label::{BundleReader, BundleWriter, Importer, Parent, Prefix, Record, S
 
 const SPEC: &str = "spec/wire.md §12";
 
-fn genesis(read: &Secret32, write: &Secret32, admin: &Secret32, step: u8) -> (osis_label::Step, osis_label::ClaimSet) {
+/// A genesis step with no readers: `sync` derives its sync key.
+fn genesis(sync: &Secret32, write: &Secret32, admin: &Secret32, step: u8) -> (osis_label::Step, osis_label::ClaimSet) {
     let label = genesis_label(admin, 0);
-    let keys = StepKeys::derive(read, write, admin, 0, &s32(0x0c), &label);
+    let keys = StepKeys::derive(sync, write, admin, 0, &s32(0x0c), &label);
     let e = Epoch::new(0, [0; 32]).unwrap();
     let delete = label_role_key(LabelRole::Delete, admin, 0);
-    register(Parent::Genesis(&delete), keys, &[], (&osis_base::Tid::from_bytes([0x07; 15]), e, read), &mut FixedRng::new(&[&[step; 32], &[step + 1; 32]])).unwrap()
+    register(Parent::Genesis(&delete), keys, &[], (&osis_base::Tid::from_bytes([0x07; 15]), e, sync), (e, sync), &mut FixedRng::new(&[&[step; 32], &[step + 1; 32]])).unwrap()
 }
 
 pub fn bundle() -> VecFile {

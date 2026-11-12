@@ -177,6 +177,7 @@ impl KeysWrite {
     pub fn apply(&self, k: &mut Keys) {
         for (r, ks) in &self.keysets {
             let slot = match r {
+                Role::Sync => &mut k.sync,
                 Role::Read => &mut k.read,
                 Role::Write => &mut k.write,
                 Role::Admin => &mut k.admin,
@@ -186,9 +187,20 @@ impl KeysWrite {
     }
 }
 
+/// The field of `keys.0` holding `role`'s keyset (spec/data-model.md §9).
+pub fn keyset_field(role: Role) -> u64 {
+    match role {
+        Role::Read => 0,
+        Role::Write => 1,
+        Role::Admin => 2,
+        Role::Sync => 7,
+    }
+}
+
 /// The keyset of `role` in `keys.0`.
 pub fn keyset_of(k: &Keys, role: Role) -> Option<&Keyset> {
     match role {
+        Role::Sync => k.sync.as_ref(),
         Role::Read => k.read.as_ref(),
         Role::Write => k.write.as_ref(),
         Role::Admin => k.admin.as_ref(),

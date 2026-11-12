@@ -243,7 +243,7 @@ fn departure_attributed_to_its_lowering_not_a_later_drop_spec_crypto_4() {
     lp.peers[o].engine.ensure_rotated(&g).unwrap();
     let now = lp.peers[o].engine.epochs(&g).unwrap();
     let opens = super::tests::openable(&mut lp, o, &[g], tids[p1], p1_held.into_iter().map(|(r, e)| (g, r, e)).collect());
-    for r in [Role::Read, Role::Write, Role::Admin] {
+    for r in Role::ALL {
         let e = now.role(r).newest().unwrap();
         assert!(!opens.contains(&(g, r, e)), "first admin encrypts under {r:?} epoch {e:?}, which P1 opens");
     }

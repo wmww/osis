@@ -582,6 +582,7 @@ fn created(e: &mut Engine, cv: &mut Conv, c: &CommitId, t: &Tid) -> hm::Body {
 
 fn role_of(r: osis_base::Role) -> hm::Role {
     match r {
+        osis_base::Role::Sync => hm::Role::Sync,
         osis_base::Role::Read => hm::Role::Read,
         osis_base::Role::Write => hm::Role::Write,
         osis_base::Role::Admin => hm::Role::Admin,

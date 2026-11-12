@@ -102,7 +102,7 @@ fn peer_that_cannot_read_stores_nothing_forbidden() {
         needles.push((format!("node {n} signing key"), pk.to_vec()));
     }
     let ep = net.engine(nodes[0]).epochs(&g).unwrap();
-    for r in [Role::Read, Role::Write, Role::Admin] {
+    for r in Role::ALL {
         let (_, sec) = ep.role(r).newest_secret().unwrap();
         needles.push((format!("{r:?} secret"), sec.expose().to_vec()));
     }

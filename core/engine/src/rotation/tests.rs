@@ -140,7 +140,7 @@ fn rotation_missing_again_binds_nothing_spec_crypto_4() {
     lp.peers[0].engine.demote(&t, &Demotion { holder: p, new: Some(edge(Role::Read)), retain: None }).unwrap();
     lp.sync(0, 3).unwrap();
     assert!(!lp.peers[3].engine.core.ix.commits.get(&s).unwrap().valid.iter().any(|v| *v), "S invalid at N");
-    assert_eq!(blocked_at(&mut lp, 3, t), BTreeSet::from([Role::Read]), "R1's keyset missing again: its entry binds to nothing");
+    assert_eq!(blocked_at(&mut lp, 3, t), BTreeSet::from([Role::Sync, Role::Read]), "R1's keysets missing again: their entries bind to nothing");
     assert!(!lp.peers[3].engine.ensure_rotated(&t).unwrap().0.commits.is_empty(), "N rotates read");
     assert!(blocked_at(&mut lp, 3, t).is_empty(), "covered by its own rotation");
 }

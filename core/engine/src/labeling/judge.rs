@@ -43,12 +43,12 @@ impl Core {
         self.first_admin(d).filter(|p| seeds && self.is_account(p))
     }
 
-    /// Whether `x` is another node of this node's account: not an account, holding a role on the
-    /// account's devices actor D through the rosters held here now (spec/permissions.md §1). A
-    /// node removed from D is not.
+    /// Whether `x` is another node of this node's account: not an account, holding read or above
+    /// on the account's devices actor D through the rosters held here now (spec/permissions.md
+    /// §1). A node removed from D is not, nor is a holder of sync alone.
     pub fn own_node(&self, x: &Tid) -> bool {
         let Some((_, d)) = self.account_devices() else { return false };
-        *x != self.id.tid() && !self.is_account(x) && self.timelines.get(x).is_some_and(|tl| tl.role(x, &d, At::KEYS).is_some())
+        *x != self.id.tid() && !self.is_account(x) && self.timelines.get(x).is_some_and(|tl| tl.role(x, &d, At::KEYS) >= Some(osis_base::Role::Read))
     }
 
     /// J over `actors`: the actors a connection proved by their own key or, for an account, by

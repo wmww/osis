@@ -36,6 +36,7 @@ pub fn keys_of(a: &ActorEpochs) -> Keys {
         if let Some((e, s)) = a.role(r).newest_held() {
             let ks = Some(keyset(&e, s, &Default::default(), &Default::default()));
             match r {
+                Role::Sync => k.sync = ks,
                 Role::Read => k.read = ks,
                 Role::Write => k.write = ks,
                 Role::Admin => k.admin = ks,
