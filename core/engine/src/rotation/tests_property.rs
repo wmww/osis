@@ -42,8 +42,8 @@ struct Made {
     held: BTreeSet<CommitId>,
     /// The peers below the epoch's role in its view, for keys.
     below: BTreeSet<usize>,
-    /// The holder actors the epoch boxes of which the rotator held no secret at that role, each
-    /// with the keyset its box names.
+    /// The holder actors the epoch boxes at a keyset whose secret the rotator lacked, each with
+    /// that keyset.
     blind: BTreeSet<(Tid, Epoch)>,
     /// The earlier established secrets of the role it held: what its history box carries.
     carried: BTreeSet<Epoch>,
@@ -176,13 +176,13 @@ impl Run {
                         let own = self.lp.peers[i].engine.core.ix.epoch_intro.get(&(t, r, *x)).map(|v| v.1);
                         let after = own.and_then(|c| self.after(i, &c));
                         // a peer reading a holder actor the epoch boxes reads it rightly
-                        let via = own.map(|c| self.boxed_actors(i, &c, r)).unwrap_or_default();
+                        let via = own.map(|c| self.boxed_actors(i, &c, t, r)).unwrap_or_default();
                         let below: BTreeSet<usize> = (0..N).filter(|d| !access_at(self, i, *d, t, r, after) && !via.iter().any(|(m, _)| access_at(self, i, *d, *m, r, after))).collect();
-                        // a rotator holding no secret of a boxed actor judges the keyset it seals
-                        // it at by order alone (spec/crypto.md §4, the limit for an epoch whose
+                        // a rotator lacking the secret of the keyset it seals a boxed actor at
+                        // judges it by order alone (spec/crypto.md §4, the limit for an epoch whose
                         // secret the node lacks): a departed peer may open the epoch by that box
                         // where order allows it (`excused`)
-                        let blind: BTreeSet<(Tid, Epoch)> = via.iter().copied().filter(|(m, _)| !self.ever[i].iter().any(|k| k.0 == *m && k.1 == r)).collect();
+                        let blind: BTreeSet<(Tid, Epoch)> = via.iter().copied().filter(|(m, k)| !self.ever[i].contains(&(*m, r, *k))).collect();
                         self.log.push(format!("  made actor {} {r:?} n{} {:?} at peer {i}, below {below:?}, blind {}", self.actors.iter().position(|a| a.0 == t).unwrap(), x.n(), &x.nonce()[..2], blind.len()));
                         let carried = e.role(r).held_established().map(|(y, _)| y).filter(|y| y.n() < x.n()).collect();
                         self.made.insert((t, r, *x), Made { held: held.iter().copied().chain(own).collect(), below, blind, carried });
@@ -199,26 +199,44 @@ impl Run {
         Some(osis_perm::Point { ts: h.ts, node: h.author, commit: CommitId([0xff; 32]) })
     }
 
-    /// The holder actors (no peers) commit `c` boxes or proves at role `r`, as peer `i` read it,
-    /// each with the keyset its box or proof names.
-    fn boxed_actors(&self, i: usize, c: &CommitId, r: Role) -> BTreeSet<(Tid, Epoch)> {
+    /// The holder actors (no peers) commit `c` boxes or proves at role `r` of actor `a`, as peer
+    /// `i` read it, each with the keyset its box or proof names.
+    fn boxed_actors(&self, i: usize, c: &CommitId, a: Tid, r: Role) -> BTreeSet<(Tid, Epoch)> {
         let core = &self.lp.peers[i].engine.core;
         let Some(m) = core.ix.commits.get(c) else { return BTreeSet::new() };
-        (0..m.view.aspects.len()).filter_map(|ai| core.ix.shown.get(&(*c, ai))).flat_map(|x| x.shown.iter().filter(|s| s.role == r && !self.tids.contains(&s.holder)).map(|s| (s.holder, s.keyset)).collect::<Vec<_>>()).collect()
+        let parts = m.view.aspects.iter().enumerate().filter(|(_, x)| x.tid == a).filter_map(|(ai, _)| core.ix.shown.get(&(*c, ai)));
+        parts.flat_map(|x| x.shown.iter().filter(|s| s.role == r && !self.tids.contains(&s.holder)).map(|s| (s.holder, s.keyset)).collect::<Vec<_>>()).collect()
     }
 
-    /// Whether a box to holder actor `m` at keyset `k` of role `r`, sealed by a rotator holding
-    /// none of `m`'s secrets and the commits `held`, is within the stated limit for departed peer
-    /// `d` (spec/crypto.md §4, Encrypting under: judged by order alone): unless the rotator held
-    /// `d`'s departure from `m` (its last write in the settled timeline) and `k`'s rotation is
-    /// ordered before it, which the order rule leaves out. A departure below `m` (`d` reached `m`
-    /// only through a holder actor of it) is always excused, wider than the stated limit (Seal's
-    /// stale boxes): issues/rotation-excuse-below-wider-than-seal.md. Read from the history at `o`.
+    /// Whether keyset `k` of role `r` of holder actor `m` is superseded where the commits `held`
+    /// are: a held valid keyset of `m` lists it (spec/crypto.md §4, Stale), its rotation commit
+    /// and those of the epochs it lists among `held`, valid as peer `o` judges them settled.
+    fn superseded(&self, o: usize, held: &BTreeSet<CommitId>, m: Tid, r: Role, k: &Epoch) -> bool {
+        let core = &self.lp.peers[o].engine.core;
+        let Some(ep) = core.epochs(&m) else { return false };
+        let ep = ep.role(r);
+        let held_epoch = |y: &Epoch| core.ix.epoch_intro.get(&(m, r, *y)).is_some_and(|x| held.contains(&x.1)) || ep.epochs().any(|(x, info)| x == y && info.rotations.keys().any(|c| held.contains(c)));
+        ep.epochs().any(|(_, info)| info.rotations.iter().any(|(c, list)| list.contains(k) && held.contains(c) && list.iter().all(held_epoch)))
+    }
+
+    /// Whether a box to holder actor `m` at keyset `k` of role `r`, sealed by a rotator lacking
+    /// `k`'s secret and holding the commits `held`, is within the stated limits for departed
+    /// peer `d` (spec/crypto.md §4), read from the history at `o`. Seal leaves `m` out where `k`'s
+    /// rotation boxes or proves a keyset of a holder actor of `m` that a keyset the rotator held
+    /// supersedes (Stale), so a departure below `m` reaches the box only until such a keyset
+    /// does (the limit for a departure from a holder actor of M). A departure from `m` itself is
+    /// judged by order alone (the limit for an epoch whose secret the node lacks): within it
+    /// unless the rotator held `d`'s departure from `m` (its last write in the settled timeline)
+    /// and `k`'s rotation is ordered before it. Boxes a later grant or re-seal of `m` writes at
+    /// `k`, and keysets held invalid or tainted (Stale too), are not read: wider than Seal there.
     fn excused(&self, o: usize, held: &BTreeSet<CommitId>, m: Tid, r: Role, k: &Epoch, d: usize) -> bool {
-        let Some(om) = self.actors.iter().find(|x| x.0 == m).map(|x| x.1) else { return true };
-        let Some(dep) = departure_point(self, om, m, d) else { return true };
         let core = &self.lp.peers[o].engine.core;
         let Some((_, c)) = core.ix.epoch_intro.get(&(m, r, *k)) else { return true };
+        if held.contains(c) && self.boxed_actors(o, c, m, r).iter().any(|(m2, k2)| self.superseded(o, held, *m2, r, k2)) {
+            return false;
+        }
+        let Some(om) = self.actors.iter().find(|x| x.0 == m).map(|x| x.1) else { return true };
+        let Some(dep) = departure_point(self, om, m, d) else { return true };
         let Some(h) = core.ix.commits.get(c).map(|x| &x.header) else { return true };
         let made = osis_perm::Point { ts: h.ts, node: h.author, commit: *c };
         !(held.contains(&dep.commit) && made < dep)

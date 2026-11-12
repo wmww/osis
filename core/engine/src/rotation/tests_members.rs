@@ -1543,6 +1543,22 @@ fn co_writer_seals_no_keyset_with_a_stale_box_spec_crypto_4() {
     assert_eq!(leaked(&mut lp, 0, &[m, a, g], e, start), vec![a], "E opens only A, which a1 never rotates");
 }
 
+// spec/crypto.md §4 (Seal, Stale; the limit for a departure from a holder actor M' of M): the
+// world above, but W rotates G before any node knowing the removal does, so no keyset of G
+// records A left out. W holds M's knowing keyset, so A's epoch's box to M is stale there one level
+// below A, and W leaves A out of G's new epoch: E opens none of it.
+#[test]
+fn blind_sealer_leaves_out_at_a_stale_box_below_spec_crypto_4() {
+    let (mut lp, m, a, g) = co_writer_world();
+    let e = lp.peers[3].engine.me();
+    let start = held_by(&lp, 3, &[m, a, g]);
+    removal(&mut lp, 2, m, e);
+    lp.sync_all().unwrap();
+    rotate_skipping(&mut lp, 4, g, &BTreeSet::from([Role::Read]), &[]);
+    assert_eq!(sealed_at(&mut lp, 4, g, a), None, "A left out");
+    assert!(!leaked(&mut lp, 4, &[m, a, g], e, start).contains(&g), "E opens none of G's new epoch");
+}
+
 /// Peer `i` removes `d` from `t` alone (no rotation, as while Seal waits or Authority fails).
 fn removal_alone(lp: &mut LocalPeer, i: usize, t: Tid, d: Tid) {
     lp.peers[i]
