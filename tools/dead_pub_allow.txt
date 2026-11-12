@@ -38,6 +38,7 @@ osis-transport::close_gracefully  deferred: the dialer's graceful close, called 
 osis-engine::body_min_ts  deferred: durable-compaction/chunk-blind (retention/bounds.rs)
 
 # core/node/src/sync/ (3h2): mostly test hooks
+osis-node::drop_all_covered  test hook: the order harness runs node-sync's covered drops over its bare-engine nodes
 osis-node::compact_ephemeral_now  deferred: 3h2
 osis-node::conn_groups  deferred: 3h2
 osis-node::connection_record  deferred: 3h2
