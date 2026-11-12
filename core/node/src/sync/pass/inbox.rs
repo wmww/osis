@@ -16,8 +16,18 @@ const INBOX_COPY_MIN_LEFT: u64 = osis_base::format::INBOX_LIFETIME_MS / 2;
 impl SyncEngine {
     /// A writer stamps in its store the deposited inbox blobs of `scope` it would stamp
     /// (`inbox_stampable`; spec/sync.md §3, Stamping in place): its sources pull the stamp.
+    /// Those of the scope's commits too (an invite accepted applies its commit: no entry of the
+    /// label moved); the label's inbox entries are bounded by its deposit budget.
     pub(super) fn stamp_inbox(&mut self, l: LabelId, scope: &Scope, write: &osis_crypto::SigningSecret) -> Result<()> {
-        for id in self.scope_entries(&l, scope) {
+        let mut ids = self.scope_entries(&l, scope);
+        if let Scope::Some { commits, .. } = scope
+            && !commits.is_empty()
+        {
+            let of = |s: &Self, b: &BlobId| matches!(s.state.entries.get(&(l, *b)).map(|e| &e.kind), Some(Kind::Inbox(Some(c))) if commits.contains(c));
+            let more: Vec<BlobId> = self.state.of_kind(&l, Kind::TAG_INBOX).into_iter().filter(|b| of(self, b)).collect();
+            ids.extend(more);
+        }
+        for id in ids {
             let Some(e) = self.state.entries.get(&(l, id)).cloned() else { continue };
             let Kind::Inbox(Some(c)) = e.kind else { continue };
             if e.stamp.is_some() || !self.inbox_stampable(&l, &id, &c)? {
