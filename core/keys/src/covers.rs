@@ -180,44 +180,6 @@ pub fn uncovered<'a>(epochs: &ActorEpochs, r: Role, e: &Epoch, departures: &'a [
     departures.iter().filter(|d| !covers(epochs, r, e, d, held)).collect()
 }
 
-/// The maker of an epoch as a node sees it (`fork_merger`): whether it is this node, and
-/// whether it may rotate the role now.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Maker {
-    pub me: bool,
-    pub may_rotate: bool,
-}
-
-/// Merge of a fork (spec/crypto.md §4, encrypting under): whether `r` has more than one current
-/// epoch and this node is its merger: the maker (`maker`; `None`: unknown) of the newest current
-/// epoch other than the newest whose maker may rotate `r`, or anyone when there is none. The
-/// merger rotates, listing every current epoch.
-///
-/// Invariant: a holder actor's boxes at A's current epochs anchor it (`members::seal_keyset`);
-/// A forked across two keysets of M, neither listing the other, anchors M at both, and only a
-/// keyset of M listing both (M's merge) can seal M again. Nodes holding the same fork agree on
-/// its merger, so concurrent rotations take one merge however many forks they made: two nodes
-/// merging alike fork again (every maker of a non-newest epoch merging made two merges of three
-/// forks, then a third; the newest's maker merging beside them, a fork on every round of a sync
-/// delivering both merges together). Nodes holding different forks may each read as the merger,
-/// and their merges fork again while views differ (issues/rotation-storm-after-grant-end.md).
-pub fn fork_merger(epochs: &ActorEpochs, r: Role, maker: impl Fn(&Epoch) -> Option<Maker>) -> bool {
-    let rs = epochs.role(r);
-    let cur = rs.current();
-    let Some(newest) = rs.newest() else { return false };
-    if cur.len() < 2 {
-        return false;
-    }
-    let mut merger: Option<(Epoch, Maker)> = None;
-    for e in cur.iter().filter(|e| **e != newest) {
-        let Some(m) = maker(e).filter(|m| m.may_rotate) else { continue };
-        if merger.as_ref().is_none_or(|(x, _)| rs.is_newer(e, x)) {
-            merger = Some((*e, m));
-        }
-    }
-    merger.is_none_or(|(_, m)| m.me)
-}
-
 /// A current holder as a re-sealer sees it: its role on the actor.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Holder {

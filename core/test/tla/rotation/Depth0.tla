@@ -421,16 +421,13 @@ Possess(x, a) == IsAdm(x, a) \/
 
 \* y may rotate a, as x sees it
 MayRot(x, y, a) == IsAdm(y, a) \/ (y \in Learners /\ Through(y, a) /\ ~OffPath(x, y, a))
-\* x merges a fork of a: it made a current epoch other than the newest, or no
-\* maker of one may rotate a ("fork": two makers merging alike fork again); the
-\* spec's one merger (the newest such epoch's maker) is this with two forks
+\* x merges a fork of a: it is a's merger, read from the roster as x sees it
+\* (one node of those that may rotate a, the same at every node holding the
+\* same roster), whatever epochs x holds (spec/crypto.md §4, Merger; the
+\* built order is standing order, here TLC's CHOOSE)
 Merger(x, a) ==
-  LET others == Cur(x, a) \ {NewestV(x, a)}
-  IN (\E f \in others : ep[f].by = x) \/ ~\E f \in others : MayRot(x, ep[f].by, a)
-\* rule 3, merge: a current epoch misses a known departure, or there is more
-\* than one and x is the merger
-MergeDue(x, a) == \/ \E f \in Cur(x, a) : ~Covers(x, f, a)
-                  \/ Cardinality(Cur(x, a)) > 1 /\ Merger(x, a)
+  LET c == {y \in Learners : MayRot(x, y, a)}
+  IN c # {} /\ x = CHOOSE y \in c : TRUE
 \* a rotation due for any reason but a fork of knowing epochs: the newest
 \* epoch blocked, or any current epoch (held or not) not covering a known
 \* departure, with a stale box, or boxing a keyless holder
@@ -439,6 +436,17 @@ OtherDue(x, a) ==
   IN \/ e \in Blocked(x)
      \/ \E f \in Cur(x, a) : ~Covers(x, f, a) \/ StaleAt(x, f)
      \/ \E f \in Cur(x, a) : Keyless(x, f) \/ GoneBox(x, f)
+\* a rotation of an actor b that x makes for a reason other than a merge waits
+\* on a's fork (Seal): x merges a first, merger or not
+SealNeed(x, a) ==
+  /\ Cardinality(Cur(x, a)) > 1
+  /\ \E b \in Acts : /\ b # a /\ Writer(x, b) /\ a \in MemV(x, b, {})
+                     /\ SealK(x, b, a) = 0 /\ Forked(x, b, a) /\ OtherDue(x, b)
+\* rule 3, merge: a current epoch misses a known departure, or there is more
+\* than one and x is the merger, or a rotation x needs waits on the fork
+MergeDue(x, a) == \/ \E f \in Cur(x, a) : ~Covers(x, f, a)
+                  \/ Cardinality(Cur(x, a)) > 1 /\ Merger(x, a)
+                  \/ SealNeed(x, a)
 \* a plain thing given secrets of its own: x wrote it under a derived secret
 \* that no history of a current epoch carries (x lacked the own-secrets
 \* rotation when it wrote): it is a current epoch beside the own ones, merged

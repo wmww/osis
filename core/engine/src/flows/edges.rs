@@ -173,7 +173,7 @@ pub(crate) fn grant_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, holder
     let boxes = if rotation::grant_keyless(tx.core, &target, &holder) {
         None
     } else {
-        let rcpt = match rotation::sealed(tx, &who, &target, &holder, edge.role)? {
+        let rcpt = match rotation::sealed_merging(tx, &who, &target, &holder, edge.role, &mut done)? {
             rotation::Sealed::Boxed(r) => r,
             rotation::Sealed::Out => return Err(Error::Misuse("the holder has no keyset this node may seal it to")),
             rotation::Sealed::Wait => return Err(rotation::SEAL_WAITS),
@@ -341,8 +341,9 @@ pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &D
         if !roles.is_empty() {
             let held = tx.core.epochs(&target).ok_or(Error::Misuse("no secrets held for the target"))?;
             let skip: Vec<(Tid, Option<Role>)> = std::iter::once((holder, new_role)).chain(gone.iter().map(|(x, _)| (*x, None))).collect();
-            // while Seal waits, or Authority would fail, the removal goes alone (spec/permissions.md §3)
-            if let Some(holders) = rotation::recipients(tx, &who, &target, &skip)?
+            // while Seal waits on a fork this node cannot merge, or Authority would fail, the
+            // removal goes alone (spec/permissions.md §3)
+            if let Some(holders) = rotation::recipients_merging(tx, &who, &target, &skip, &mut done)?
                 && let Some(roles) = rotation::shown_roles(tx.core, &who, &target, &roles, &holders.holders)
             {
                 let r = rotation::rotation_into(tx, &mut m, target, &roles, &held, &holders, !pending.is_empty())?;
@@ -474,7 +475,7 @@ pub(crate) fn finalize_in(tx: &mut Tx<'_>, who: Tid, target: Tid, ended: &[(Tid,
     if !roles.is_empty() && tx.core.has_own_secrets(&target) {
         let held = tx.core.epochs(&target).ok_or(Error::Misuse("no secrets held for the target"))?;
         let skip: Vec<(Tid, Option<Role>)> = ended.iter().map(|(x, _, _)| (*x, None)).collect();
-        if let Some(holders) = rotation::recipients(tx, &who, &target, &skip)?
+        if let Some(holders) = rotation::recipients_merging(tx, &who, &target, &skip, done)?
             && let Some(roles) = rotation::shown_roles(tx.core, &who, &target, &roles, &holders.holders)
         {
             let r = rotation::rotation_into(tx, &mut m, target, &roles, &held, &holders, !pending.is_empty())?;

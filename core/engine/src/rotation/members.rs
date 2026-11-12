@@ -90,6 +90,58 @@ pub(crate) fn grant_keyless(core: &mut Core, target: &Tid, holder: &Tid) -> bool
     osis_keys::key_access(gs).contains(&(*target, *holder))
 }
 
+/// The holders of `x` for keys in standing order (spec/crypto.md §4, Merger): the record edge
+/// first, then by the key of the write that began each one's present standing (`Timeline::
+/// standing_since`), ties by tid.
+fn standing_order(core: &Core, x: &Tid) -> Vec<Tid> {
+    let holders: BTreeSet<Tid> = core.edge_holders(x).into_iter().map(|h| h.0).collect();
+    let Some(tl) = core.timelines.get(x) else { return holders.into_iter().collect() };
+    let mut order: Vec<(Option<osis_perm::Point>, Tid)> = tl.standing_since(x).into_iter().filter(|(h, _)| holders.contains(h)).map(|(h, p)| (p, h)).collect();
+    order.sort();
+    order.into_iter().map(|(_, h)| h).collect()
+}
+
+/// The first party (an account or another key actor) that may rotate `r` of `a` over grants with
+/// key access, depth first over each actor's holders in standing order from `a` (`Merger`).
+/// None also when an actor ahead of it that may rotate `r` has holders this node holds no roster
+/// of: the merger may be among them, so this node is none.
+fn first_rotator(core: &Core, a: &Tid, r: Role) -> Option<Tid> {
+    let mut seen = BTreeSet::from([*a]);
+    let mut stack = vec![standing_order(core, a).into_iter()];
+    while let Some(next) = stack.last_mut() {
+        let Some(h) = next.next() else {
+            stack.pop();
+            continue;
+        };
+        if !super::may_rotate(core, &h, a).contains(&r) || !seen.insert(h) {
+            continue;
+        }
+        if core.is_key_actor(&h) {
+            return Some(h);
+        }
+        if core.timelines.get(&h).is_none() && core.first_admin(&h).is_none() {
+            return None;
+        }
+        stack.push(standing_order(core, &h).into_iter());
+    }
+    None
+}
+
+/// Whether this node, signing as `who`, is the merger of role `r` of `a` (spec/crypto.md §4,
+/// Merger): the first party that may rotate it (`first_rotator`), and for an account, its first
+/// node in its devices actor's standing order. Read from rosters alone, never from the epochs
+/// held: nodes holding the same edge writes name one merger whatever forks each holds, so
+/// merges never fork each other. Nobody, when no party may rotate `r` as this node sees it.
+pub(crate) fn is_merger(core: &Core, who: &Tid, a: &Tid, r: Role) -> bool {
+    let Some(p) = first_rotator(core, a, r) else { return false };
+    if p != *who {
+        return false;
+    }
+    let Some(d) = core.accounts.get(&p).map(|h| h.devices) else { return true };
+    let me = core.id.tid();
+    standing_order(core, &d).into_iter().find(|n| *n != p && core.is_key_actor(n)) == Some(me)
+}
+
 /// The held keysets of role `r` of actor `m` (spec/crypto.md §4): the valid ones from `keysets`,
 /// and `k`, when it is none of those, if held invalid.
 pub(super) fn keysets_of(tx: &mut Tx<'_>, m: &Tid, r: Role, k: Option<&Epoch>) -> Result<Keysets> {
