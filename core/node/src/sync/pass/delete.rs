@@ -283,11 +283,13 @@ impl SyncEngine {
 
     /// Whether a header alone of commit `c` (header `h`) under `l` is a superseded minting of the
     /// things it mints, all outside `g`'s closure (spec/commits.md §5, A thing's mintings travel
-    /// with its record): standing lower than each one's witness. `Some(true)`: the label holds each witness (or
-    /// a minting tying it) at `host`, so it goes; `Some(false)`: not yet (judged again each
-    /// pass); `None`: no such header. Any node judges it: one that lacks a request dropping its
-    /// witness ranks that one no lower than it stands, so what stays reads the thing live while it
-    /// is, and once it is destroyed its witness is placed again (`certificates`).
+    /// with its record): standing lower than each one's witness and expiring before it (or a
+    /// minting tying it). `Some(true)`: the label holds such a witness at `host`, so it goes;
+    /// `Some(false)`: not yet (judged again each pass); `None`: no such header. Any node judges it:
+    /// one that lacks a request dropping its witness ranks that one no lower than it stands, so
+    /// what stays reads the thing live while it is, and once it is destroyed its witness is placed
+    /// again (`certificates`). Expiry orders copies alike in every view, so two nodes whose
+    /// standings differ never delete each other's copy in one round: the latest-expiring copy stays.
     fn superseded_minting(&mut self, g: &Tid, l: &LabelId, host: Option<&HostKey>, c: &CommitId, h: &osis_commit::Header) -> Option<bool> {
         let minted: BTreeSet<Tid> = h.aspects.iter().filter(|a| a.ak.as_str() == osis_commit::retention::CREATED).map(|a| a.tid).collect();
         let closure = self.engine.closure(g);
@@ -301,7 +303,16 @@ impl SyncEngine {
             if self.engine.mintings_of(t).iter().find(|m| m.commit == *c).is_none_or(|m| m.standing >= w.standing) {
                 return None;
             }
-            held &= self.witness_held_at(*l, t, hosts, Some(c));
+            let later = |z: Option<u64>| match (h.expires, z) {
+                (Some(x), Some(z)) => x < z,
+                (x, z) => x.is_some() && z.is_none(),
+            };
+            let ties: Vec<CommitId> = self.engine.mintings_of(t).into_iter().filter(|m| m.standing == w.standing && m.commit != *c).map(|m| m.commit).collect();
+            let ties: Vec<CommitId> = ties.into_iter().filter(|z| self.engine.header(z).is_some_and(|zh| later(zh.expires))).collect();
+            if ties.is_empty() {
+                return None;
+            }
+            held &= ties.iter().any(|z| self.header_held_at(*l, z, hosts));
         }
         Some(held)
     }

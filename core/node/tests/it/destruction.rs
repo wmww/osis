@@ -1149,7 +1149,8 @@ fn a_witness_deleted_by_a_node_lacking_the_request_comes_back_once_destroyed_spe
 // C; then a purges Y alone (a hostile writer's own minting goes the same way): C is the witness
 // again, live until T, its copy gone. Once T passes a places C again with the request, so t is
 // destroyed at T at a node granted g after T (knowing t by its record) as at a, and at every node
-// once all are back: an edge write between the purge and T stands everywhere
+// once all are back: an edge write between the purge and T stands everywhere. Y's copy, expiring
+// later than C, stays beside it
 #[test]
 fn a_purged_later_minting_leaves_the_destruction_at_the_creations_expiry_spec_commits_5() {
     let life = 30 * 60_000;
@@ -1174,6 +1175,10 @@ fn a_purged_later_minting_leaves_the_destruction_at_the_creations_expiry_spec_co
     }
     assert!(!minting_copies(&mut net, a, &l, t).contains(&w), "C, the witness again, has no copy");
     destroyed_at_alike(&mut net, (a, b), t, x, end, &[a]);
+    // Y stands lower than C at a but expires later, so its copy stays: a node lacking the purge
+    // ranks Y higher, and deleting by expiry alone keeps the two from deleting both copies at once
+    let copies: std::collections::BTreeSet<CommitId> = minting_copies(&mut net, a, &l, t).into_iter().collect();
+    assert_eq!(copies, [w, y].into(), "C placed again beside Y");
     let d = granted_later(&mut net, a, g);
     for n in [b, c, r] {
         net.set_online(n, true);
