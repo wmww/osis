@@ -2717,7 +2717,8 @@ fn snapshots_held(lp: &mut LocalPeer, i: usize, t: Tid, k: &osis_base::Ak) -> Ve
 
 // spec/commits.md §5 (purge on replace cover): a writer holding a replaced purge-on-replace body covers
 // it in the transaction that replaced it, and the body goes there at once; the replacing body,
-// live, is read on its own and stays beside the one snapshot, and the writer reads the new value.
+// live, is no purge-on-replace body and stays beside the one snapshot (a live one drops by the
+// compaction trigger's covers, spec/sync.md §7), and the writer reads the new value.
 #[test]
 fn none_writer_covers_in_the_replacing_transaction_spec_commits_5() {
     let mut lp = net(1, 0);

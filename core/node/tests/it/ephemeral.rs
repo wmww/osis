@@ -4982,7 +4982,7 @@ fn memory_compactor_demoted_keeps_others_writes_spec_permissions_5_2() {
     lp.deliver(1, &rp).unwrap();
     lp.deliver(2, &rp).unwrap();
     // the author kept its own body: X reads there, and
-    // everywhere again once its copy arrives (the lane reconciles the label,
+    // everywhere again once its copy arrives (node-sync relists the fallen snapshot's entries,
     // `Engine::take_fallen`)
     assert!(holds_commit(&lp, 2, &x.0) && !holds_commit(&lp, 0, &x.0), "the author alone kept X");
     assert_eq!(memory_tags(&mut lp, 2, d), Some(Value::Set([s("X")].into())));

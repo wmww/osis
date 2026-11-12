@@ -14,7 +14,7 @@
 //! replace. `leftover`: the rows.
 //!
 //! Each part of a body is judged on its own: its keep bound by its own aspect (`bounds::part_keep`),
-//! its liveness by its own writes (`bounds::read_alone`); a part drops alone, and the blob is
+//! whether it is live by its own writes (`replace::replaced`, `bounds::live_keep`); a part drops alone, and the blob is
 //! rewritten without it (`drop_part_for`).
 
 use crate::engine::records::{self, Rd, Wr};

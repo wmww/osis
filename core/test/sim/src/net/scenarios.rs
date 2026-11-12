@@ -786,7 +786,8 @@ pub fn coverer_revoked(seed: u64) -> Res<Report> {
 /// the seed picks a purge set, the thing's setting and a mix of compacters among an admin and two
 /// plain writers, under faults. A body stays at the host and reaches a node coming fresh unless it
 /// is replaced and a compacter wrote a snapshot after it (once out of history any writer's cover
-/// drops it; a live body is read on its own and stays, spec/commits.md §5 Covered); such a body
+/// drops it; a live body stays where the setting keeps it while live, spec/commits.md §5 Kept
+/// while live, and is covered like a replaced one where it does not); such a body
 /// leaves the host (a node that never held that snapshot, superseded early, may keep its copy).
 /// Everyone reads alike, the fresh node too, whichever bodies it got; the labels go quiet
 /// (`finish`: no upload and delete loop).
@@ -885,8 +886,9 @@ pub fn snapshot_rights(seed: u64) -> Res<Report> {
         }
     }
     for (c, author, gone) in &written {
-        // a live body is read on its own: no cover drops it (spec/commits.md §5 Covered). Purge on
-        // replace: replaced at a (its write not live there), gone everywhere once the writers acted
+        // a live body stays where the setting keeps it while live (spec/commits.md §5 Kept while
+        // live; `a` holds it then, so `is_live`). Purge on replace: replaced at a (its write not
+        // live there), gone everywhere once the writers acted
         // a commit `a` forgot went under its author's own cover (spec/commits.md §5 Forgetting),
         // which carries whatever of it lived: no entry of it is left, so it counts as gone
         let e = sim.engine(a)?;

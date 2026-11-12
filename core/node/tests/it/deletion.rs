@@ -973,8 +973,9 @@ fn insert(net: &mut Net, n: usize, t: osis_base::Tid, v: &str) -> osis_base::Com
 }
 
 /// `insert` of `v` behind a first character `n` deletes at once: the body holds a dead write and
-/// live ones, so a cover may drop it (a delta none of whose writes is dead is read on its own,
-/// spec/commits.md §5 Covered). Reads as `insert` of `v`.
+/// live ones, so any writer's cover may drop it, at its author too (a delta none of whose writes
+/// is dead drops there only under the author's own covers, spec/sync.md §7 Own bodies). Reads as
+/// `insert` of `v`.
 fn insert_partly(net: &mut Net, n: usize, t: osis_base::Tid, v: &str) -> osis_base::CommitId {
     use osis_crdt::{Op, PathOp};
     let c = insert(net, n, t, &format!("#{v}"));

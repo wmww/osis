@@ -128,6 +128,8 @@ fn candidates(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Vec<(CommitId, usiz
         .collect();
     let valid_on = |c: &CommitId| tx.core.ix.commits.get(c).is_some_and(|m| m.aspect(tid, ak).is_some_and(|ai| m.valid_at(ai) && !m.missing.contains(&ai)));
     let (_, reflected) = super::snapshot::frontiers_now(tx, tid, ak, memory, &valid_on);
+    // counted: tests read how many bodies the trigger weighs
+    crate::costs::count("compact: bodies weighed", ids.len() as u64);
     let mut out = Vec::new();
     for (c, ai, by_id, snapshot) in ids {
         // not snapshots: each author keeps its own ephemeral one until its next (spec/sync.md §9),
