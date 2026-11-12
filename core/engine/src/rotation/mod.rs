@@ -679,20 +679,28 @@ fn own_secrets_rot(tx: &mut Tx<'_>, t: Tid, hosts: Option<&[Address]>, also: &[c
 }
 
 /// The plain things whose secrets derive from `a` that this node, an admin of each, sees with a
-/// current holder other than its first admin (spec/permissions.md §3: such a thing is left by its
-/// only keyset part turning invalid, spec/crypto.md §3); each gets secrets of its own again.
+/// current holder other than its first admin, or holding a role with key access on an actor with
+/// secrets of its own (spec/permissions.md §3: such a thing is left by its only keyset part
+/// turning invalid, spec/crypto.md §3); each gets secrets of its own again. A plain holder actor has no keyset to
+/// be sealed at, so no rotation of what it holds a role on boxes it: its members read nothing new
+/// there, and rotators reaching it only through it hold no epoch there (`boxes_rotator`).
 pub(crate) fn own_secrets_candidates(core: &Core, a: &Tid) -> Vec<Tid> {
     let Some(me) = core.me() else { return Vec::new() };
-    // keys sort by target: each target once (a scan per call; only plain targets go further)
-    let mut last = None;
-    core.ix
-        .holder_keys
-        .keys()
-        .map(|(t, _)| *t)
-        .filter(|t| last.replace(*t) != Some(*t))
-        .filter(|t| !core.has_own_secrets(t) && !core.is_key_actor(t) && core.secret_actor(t) == Some(*a))
-        .filter(|t| core.role_now(&me, t) == Some(Role::Admin) && core.key_holders(t).iter().any(|(m, _)| Some(*m) != core.first_admin(t)))
-        .collect()
+    let plain = |t: &Tid| !core.has_own_secrets(t) && !core.is_key_actor(t) && core.secret_actor(t) == Some(*a) && core.role_now(&me, t) == Some(Role::Admin);
+    let keyless = members::key_access(core);
+    // a scan per call; only plain targets and holders go further
+    let mut out = BTreeSet::new();
+    for ((x, _), m) in core.ix.holder_keys.iter() {
+        if !out.contains(x) && plain(x) && core.key_holders(x).iter().any(|(h, _)| Some(*h) != core.first_admin(x)) {
+            out.insert(*x);
+        }
+        // a plain thing holds its plain record children by derivation: only an actor with secrets
+        // of its own seals to its holders
+        if !out.contains(m) && plain(m) && core.has_own_secrets(x) && !keyless.contains(&(*x, *m)) && core.key_holders(x).iter().any(|(h, _)| h == m) {
+            out.insert(*m);
+        }
+    }
+    out.into_iter().collect()
 }
 
 /// `own_secrets` for a plain thing with current holders, delivering the rotation by inbox to
@@ -948,7 +956,8 @@ impl Engine {
     }
 
     /// The plain things whose secrets derive from `actor` that this node administers and sees
-    /// with a current holder other than their first admin (spec/permissions.md §3): each is
+    /// with a current holder other than their first admin, or holding a role with key access on
+    /// an actor with secrets of its own (spec/permissions.md §3): each is
     /// due secrets of its own again (`give_own_secrets_again`), decided at the end of a complete
     /// pass of `actor`'s labels (node-sync's).
     pub fn own_secrets_candidates(&self, actor: &Tid) -> Vec<Tid> {

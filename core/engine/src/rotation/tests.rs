@@ -2189,4 +2189,16 @@ fn orphaned_rotations_do_not_trade_spec_crypto_4() {
     }
     assert!(made >= 1, "W1 rotates for the maker's departure");
     assert!(made <= 2, "{made} rotations: orphaned epochs traded back and forth");
+    let writes = |lp: &LocalPeer, i: usize| lp.peers[i].engine.epochs(&d).unwrap().write.newest_held().is_some();
+    assert!(!writes(&lp, 1) && !writes(&lp, 2), "no rotation boxes T: H's writers hold no write epoch of D");
+    // the stall ends once T has secrets of its own again (spec/permissions.md §3): a plain holder
+    // actor is a candidate, and the next rotation of D boxes T
+    assert_eq!(lp.peers[0].engine.own_secrets_candidates(&h), vec![t], "a plain holder actor gets secrets again");
+    lp.peers[0].engine.give_own_secrets_again(&t).unwrap();
+    lp.sync_all().unwrap();
+    for i in [1, 2] {
+        lp.peers[i].engine.ensure_rotated(&d).unwrap();
+        lp.sync_all().unwrap();
+    }
+    assert!(writes(&lp, 1) && writes(&lp, 2), "H's writers hold D's write epoch through T");
 }
