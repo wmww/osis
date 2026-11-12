@@ -138,6 +138,25 @@ pub(crate) fn header_fact(h: &Header, a: &osis_commit::AspectEntry) -> osis_crdt
     osis_crdt::Fact { by: a.retention.by, actor: (h.actor != h.author).then_some(h.actor) }
 }
 
+/// What a snapshot's `Facts` (with its `Absorbed` authors, `absorbed`) state of carried commit
+/// `k` (spec/crdt.md §8): its purgeable-by and its actor, the author where the fact names none (a
+/// session's node; a commit-form commit's `Absorbed` author). `None` where the snapshot names no
+/// author (a commit-form commit it does not list as absorbed): it states nothing of it.
+pub(crate) fn stated(facts: &osis_crdt::Facts, absorbed: &dyn Fn(&CommitId) -> Option<Tid>, k: &(Ts, osis_crdt::Source)) -> Option<(osis_base::PurgeBy, Tid)> {
+    let f = facts.get(k).copied().unwrap_or(osis_crdt::Fact::NARROWEST);
+    let author = match k.1.kind() {
+        osis_crdt::SourceKind::Session(s) => Some(s.node),
+        osis_crdt::SourceKind::Commit(c) => absorbed(c),
+        osis_crdt::SourceKind::Derived(_) => None,
+    };
+    Some((f.by, f.actor.or(author)?))
+}
+
+/// The carried commits `(ts, origin source)` whose writes `f` holds.
+fn stamps_of(f: &Fragment) -> BTreeSet<(Ts, osis_crdt::Source)> {
+    f.writes().into_iter().filter_map(|(d, ts)| Some((ts?, osis_crdt::fact_source(&d.src)))).collect()
+}
+
 /// The held commit on `(tid, ak)` stamped `ts` whose own writes are `src`'s (spec/crdt.md §2.1:
 /// one commit per `ts` and source on an aspect; equivocating ones are all held), with its
 /// aspect index.
@@ -154,8 +173,8 @@ pub(crate) fn held_by_stamp(core: &Core, tid: &Tid, ak: &Ak, ts: Ts, src: &osis_
 }
 
 /// The facts of the commits whose stamps `st` carries (spec/crdt.md §8 `Facts`): a held
-/// commit's from its header, else as a held valid snapshot of the aspect states them (the
-/// first by `(ts, ID)`). One neither gives (none should be) is left to `Fact::NARROWEST`.
+/// commit's from its header, else as the first held valid snapshot of the aspect by `(ts, ID)`
+/// carrying it states them. One neither gives (none should be) is left to `Fact::NARROWEST`.
 pub(crate) fn facts_of(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, st: &Fragment) -> Result<osis_crdt::Facts> {
     let carried: BTreeSet<(Ts, osis_crdt::Source)> = st.writes().into_iter().filter_map(|(d, ts)| Some((ts?, osis_crdt::fact_source(&d.src)))).collect();
     let mut out = osis_crdt::Facts::new();
@@ -175,11 +194,7 @@ pub(crate) fn facts_of(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, st: &Fragment) -> Re
             }
         }
     }
-    if rest.is_empty() {
-        out.retain(|_, f| *f != osis_crdt::Fact::NARROWEST);
-        return Ok(out);
-    }
-    let snaps: Vec<CommitId> = tx.core.ix.snapshots.get(&(*tid, ak.clone())).into_iter().flatten().map(|x| x.1).collect();
+    let snaps: Vec<CommitId> = if rest.is_empty() { Vec::new() } else { tx.core.ix.snapshots.get(&(*tid, ak.clone())).into_iter().flatten().map(|x| x.1).collect() };
     for s in snaps {
         if rest.is_empty() {
             break;
@@ -188,14 +203,27 @@ pub(crate) fn facts_of(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, st: &Fragment) -> Re
         if !crate::apply::copies::snapshot_valid(tx.core, &s, tid, ak) {
             continue;
         }
-        let Some(Some((_, _, facts))) = crate::apply::each_held_piece(tx, &s, sai, &mut |_, _| Ok(()))? else { continue };
-        rest.retain(|k| match facts.get(k) {
-            Some(f) => {
-                out.insert(k.clone(), *f);
-                false
+        let mut part = Fragment::default();
+        let Some(Some((_, _, facts))) = crate::apply::each_held_piece(tx, &s, sai, &mut |_, f| {
+            part.join(f);
+            Ok(())
+        })?
+        else {
+            continue;
+        };
+        // a commit it carries with no fact left out is stated the narrowest
+        let carries = stamps_of(&part);
+        rest.retain(|k| {
+            if !carries.contains(k) {
+                return true;
             }
-            None => true,
+            out.insert(k.clone(), facts.get(k).copied().unwrap_or(osis_crdt::Fact::NARROWEST));
+            false
         });
+    }
+    #[cfg(test)]
+    if let Some(lie) = &tx.core.lie_facts {
+        out.extend(lie.clone());
     }
     out.retain(|_, f| *f != osis_crdt::Fact::NARROWEST);
     Ok(out)
@@ -331,7 +359,7 @@ pub(crate) fn covered_join(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Ti
     let is_snapshot = m.header.kind.is_compaction();
     let decoded = crate::apply::held_part(tx, c, cai)?;
     let body_facts = match &decoded {
-        Some(osis_commit::Decoded::Snapshot(x)) => Some(x.facts.clone()),
+        Some(osis_commit::Decoded::Snapshot(x)) => Some((x.facts.clone(), x.absorbed.clone())),
         _ => None,
     };
     let mut body: Option<Fragment> = decoded.map(osis_commit::Decoded::into_fragment);
@@ -374,10 +402,16 @@ pub(crate) fn covered_join(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Ti
         let h = &m.header;
         // the snapshot states what a purge judges the body's writes by as the body does
         // (spec/commits.md §5 Covered): a cover never leaves another class or actor standing
-        // for them where the header is not held
+        // for them where the header is not held. Judged on the commits both carry, each as
+        // stated (a fact left out is the narrowest, the actor the author where it names none)
+        let both: Vec<_> = if held { stamps_of(&joined).intersection(&stamps_of(&part)).cloned().collect() } else { Vec::new() };
+        let cover = |k: &(Ts, osis_crdt::Source)| stated(facts, &|x| abs.iter().find(|a| a.0 == *x).map(|a| a.1), k);
         let same = match &body_facts {
-            Some(bf) => bf.iter().all(|(k, f)| facts.get(k).is_none_or(|x| x == f)),
-            None => h.aspects.get(cai).is_none_or(|a| facts.get(&(h.ts, h.form.own_source(h.author, *c))).is_none_or(|x| *x == header_fact(h, a))),
+            Some((bf, babs)) => both.iter().all(|k| stated(bf, &|x| babs.get(x).copied(), k) == cover(k)),
+            None => {
+                let k = (h.ts, h.form.own_source(h.author, *c));
+                !both.contains(&k) || h.aspects.get(cai).is_none_or(|a| cover(&k) == Some((a.retention.by, h.actor)))
+            }
         };
         if held && !same {
             return Ok(Some(false));

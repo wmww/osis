@@ -47,11 +47,11 @@ impl Target {
         Target { tid: a.tid, ak: a.ak.clone(), ts: h.ts, src: h.form.own_source(h.author, *c), actor: h.actor, by: a.retention.by, expires: h.expires, own_writes: h.kind.has_own_writes() }
     }
 
-    /// The commit stamped `ts` of `src` (author `author`) on `(tid, ak)` as a snapshot's fact `f`
-    /// states it: a snapshot carries no value of a delta with an expiry (spec/crdt.md §8), so one
-    /// whose values it carries has none.
-    pub(crate) fn carried(tid: Tid, ak: Ak, ts: Ts, src: osis_crdt::Source, author: Tid, f: osis_crdt::Fact) -> Target {
-        Target { tid, ak, ts, src, actor: f.actor.unwrap_or(author), by: f.by, expires: None, own_writes: true }
+    /// The commit stamped `ts` of `src` on `(tid, ak)` as a snapshot states it (`snapshot::stated`:
+    /// class `by`, `actor`): a snapshot carries no value of a delta with an expiry (spec/crdt.md
+    /// §8), so one whose values it carries has none.
+    pub(crate) fn carried(tid: Tid, ak: Ak, ts: Ts, src: osis_crdt::Source, by: osis_base::PurgeBy, actor: Tid) -> Target {
+        Target { tid, ak, ts, src, actor, by, expires: None, own_writes: true }
     }
 }
 
@@ -547,11 +547,11 @@ pub(crate) fn rejudge_purges(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, changed: &mut 
 }
 
 /// One commit this node holds no header of, as the held valid snapshots of its aspect carrying
-/// writes of it state it: the facts each states, its author, the counters of its writes there.
+/// writes of it state it: the class and actor each states (`snapshot::stated`), the counters of
+/// its writes there.
 #[derive(Default)]
 struct Carried {
-    facts: Vec<osis_crdt::Fact>,
-    author: Option<Tid>,
+    stated: Vec<(osis_base::PurgeBy, Tid)>,
     ctrs: BTreeSet<u64>,
 }
 
@@ -563,16 +563,24 @@ struct Carried {
 /// delta's writes go on by its own range). Judged whole again on each call, so one no request
 /// takes any more leaves the list, its carriers kept as their leftovers as on any fall
 /// (`rejudge_purges`). Where it lists more, node-sync re-snapshots (`Changed::purges`). Cost: the
-/// aspect's requests and its held snapshots, read whole; a lookup alone where it has no request.
+/// aspect's requests and its held snapshots, read whole; a lookup alone where it holds no
+/// snapshot and lists no such copy, or has no request.
 pub(crate) fn rejudge_carried(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, changed: &mut BTreeSet<(Tid, Ak)>) -> Result<()> {
     let k = (*tid, ak.clone());
     let had: Vec<Owned> = tx.core.ix.valueless.get(&k).into_iter().flatten().filter(|o| matches!(o, Owned::Dots { .. })).cloned().collect();
-    let mut requests = AspectRequests::load(tx, tid, ak)?;
-    if requests.is_empty() && had.is_empty() {
+    // no snapshot, nothing carried: the aspect's requests are not read (a signal's, say)
+    let mut snaps: Vec<CommitId> = tx.core.ix.snapshots.get(&k).into_iter().flatten().map(|x| x.1).collect();
+    if snaps.is_empty() && had.is_empty() {
         return Ok(());
     }
+    let mut requests = AspectRequests::load(tx, tid, ak)?;
+    if requests.is_empty() {
+        if had.is_empty() {
+            return Ok(());
+        }
+        snaps.clear();
+    }
     let mut carried: BTreeMap<(Ts, osis_crdt::Source), Carried> = BTreeMap::new();
-    let snaps: Vec<CommitId> = if requests.is_empty() { Vec::new() } else { tx.core.ix.snapshots.get(&k).into_iter().flatten().map(|x| x.1).collect() };
     for s in snaps {
         let Some(sai) = super::held_part(tx.core, &s, tid, ak) else { continue };
         if !crate::apply::copies::snapshot_valid(tx.core, &s, tid, ak) {
@@ -587,30 +595,26 @@ pub(crate) fn rejudge_carried(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, changed: &mut
         let mut seen = BTreeSet::new();
         for (d, ts) in writes {
             let Some(ts) = ts else { continue };
-            let src = osis_crdt::fact_source(&d.src);
-            // a commit the facts leave out is stated the narrowest
-            let f = facts.get(&(ts, src.clone())).unwrap_or(&osis_crdt::Fact::NARROWEST);
-            let author = match src.kind() {
-                osis_crdt::SourceKind::Session(x) => Some(x.node),
-                osis_crdt::SourceKind::Commit(c) => absorbed.iter().find(|x| x.0 == *c).map(|x| x.1),
-                osis_crdt::SourceKind::Derived(_) => None,
-            };
-            let e = carried.entry((ts, src.clone())).or_default();
-            if seen.insert((ts, src)) && !e.facts.contains(f) {
-                e.facts.push(*f);
-            }
-            e.author = e.author.or(author);
+            let k = (ts, osis_crdt::fact_source(&d.src));
+            let e = carried.entry(k.clone()).or_default();
             e.ctrs.insert(d.ctr);
+            // each snapshot's actor is its own word (its fact, else the author it names): a
+            // snapshot naming no author states nothing of the commit
+            if seen.insert(k.clone())
+                && let Some(x) = super::snapshot::stated(&facts, &|c| absorbed.iter().find(|a| a.0 == *c).map(|a| a.1), &k)
+                && !e.stated.contains(&x)
+            {
+                e.stated.push(x);
+            }
         }
     }
     let mut want = Vec::new();
     for ((ts, src), c) in carried {
-        let Some(author) = c.author else { continue };
-        if !super::snapshot::held_by_stamp(tx.core, tid, ak, ts, &src).is_empty() {
+        if c.stated.is_empty() || !super::snapshot::held_by_stamp(tx.core, tid, ak, ts, &src).is_empty() {
             continue;
         }
         let core = &*tx.core;
-        if c.facts.iter().all(|f| requests.standing_t(core, &Target::carried(*tid, ak.clone(), ts, src.clone(), author, *f)).is_some()) {
+        if c.stated.iter().all(|(by, actor)| requests.standing_t(core, &Target::carried(*tid, ak.clone(), ts, src.clone(), *by, *actor)).is_some()) {
             want.push(Owned::Dots { src, ctrs: c.ctrs.into_iter().collect() });
         }
     }
@@ -696,8 +700,11 @@ pub(super) fn apply_request(tx: &mut Tx<'_>, id: &CommitId, h: &Header, purged: 
         {
             ch.purges.entry((*item.tid(), item.ak().clone())).or_default().extend(held);
         }
-        // the copies of commits not held here (`rejudge_carried`)
-        rejudge_carried(tx, item.tid(), item.ak(), purged)?;
+    }
+    // the copies of commits not held here (`rejudge_carried`), once per named aspect
+    let aspects: BTreeSet<(Tid, Ak)> = h.requests().iter().map(|i| (*i.tid(), i.ak().clone())).collect();
+    for (tid, ak) in aspects {
+        rejudge_carried(tx, &tid, &ak, purged)?;
     }
     Ok(())
 }

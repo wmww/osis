@@ -1042,6 +1042,9 @@ pub struct Core {
     /// Tests: steps of a kind fail (`Tx::step`).
     #[cfg(test)]
     pub(crate) step_fault: Option<StepFault>,
+    /// Tests: the facts this node's snapshots state, over the true ones (`snapshot::facts_of`).
+    #[cfg(test)]
+    pub(crate) lie_facts: Option<osis_crdt::Facts>,
     /// Key actors other than the node whose seed this node holds for now (a link key from
     /// its card, a link key; role flows): they sign commits (`Mutation::sign_as`) and
     /// open their boxes. In memory only.
@@ -1265,6 +1268,8 @@ impl Core {
             piece_fault: self.piece_fault.clone(),
             #[cfg(test)]
             step_fault: self.step_fault.clone(),
+            #[cfg(test)]
+            lie_facts: self.lie_facts.clone(),
             key_actors: self.key_actors.clone(),
             account: self.account.clone(),
             time: self.time.clone(),
@@ -1896,6 +1901,8 @@ impl Core {
             piece_fault: _,
             #[cfg(test)]
             step_fault: _,
+            #[cfg(test)]
+            lie_facts: _,
         } = c;
     }
 
@@ -2044,6 +2051,8 @@ impl Core {
             piece_fault: None,
             #[cfg(test)]
             step_fault: None,
+            #[cfg(test)]
+            lie_facts: None,
             key_actors: Default::default(),
             epochs_of: memo::Memo::new("epochs"),
             states_read: Default::default(),
