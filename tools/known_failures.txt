@@ -12,3 +12,5 @@ ephemeral::random_churn_converges_large OSIS_EPH_START=807204137413 issues/churn
 ephemeral::random_churn_converges_large OSIS_EPH_START=807204138930 issues/forget-commits-stale-validity.md stale validity left unjudged
 sim-sweep:evil_host_drops 472765857787/472765857787 issues/evil-host-drops-seed-787.md not quiescent after \d+ rounds
 sim-sweep:work_sets 7000/7010 issues/work-sets-snapshot-storm.md message storm: .*kind Some\(ContentSnapshot\)
+ephemeral::random_window_one_capped_host_large OSIS_EPH_START=1811714465 issues/capped-host-stale-ephemeral-entry.md the full host keeps entries .* no node holds
+runtime::a_paired_peer_serves_what_it_reads_in_process_spec_data_model_9 - issues/paired-peer-runtime-flake.md Unsynced \{ groups
