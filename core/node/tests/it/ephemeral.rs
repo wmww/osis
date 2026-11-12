@@ -3931,13 +3931,12 @@ fn cover_across_unread_rotation_lands_spec_sync_9() {
     assert!(before.difference(&after).count() > 0, "what it absorbs is deleted at the host");
 }
 
-// spec/sync.md §5, §9: a plain delete of an absorbed entry sent before the writer reads a
-// rotation is refused 9; it goes again under the next key and the entry leaves the host. The
-// writer's last note is in flight when it compacts: its delete waits for the OK, then for the
-// cover's (`orphans`, `waiting`), so it goes alone after the rotation. The admin holds no
-// ephemeral entries of others, nor the writer it removes: the writer alone deletes.
+// spec/sync.md §5, §9: the writer compacts while it hears nothing from the peer, and a rotation
+// moves the peer's head before the writer reads it: the absorbed entry still leaves the peer,
+// by a delete under the head the writer reads there. The admin holds no ephemeral entries of
+// others, nor the writer it removes: the writer alone deletes.
 #[test]
-fn delete_across_unread_rotation_retried_spec_sync_9() {
+fn delete_across_unread_rotation_lands_spec_sync_9() {
     let mut net = Net::new();
     let host = net.add_host();
     let a = net.add_node(1, SyncConfig { hosts: vec![net.address(host)], ephemeral_bytes: 0, ..SyncConfig::default() });
@@ -3953,11 +3952,11 @@ fn delete_across_unread_rotation_retried_spec_sync_9() {
     }
     let l = net.label(a);
     let before: BTreeSet<osis_base::BlobId> = net.host_ids(host, &l).into_iter().collect();
-    net.held_to.insert(b);
     note(&mut net, b, w, "k4", "v4");
     net.run();
     let k4: Vec<osis_base::BlobId> = net.host_ids(host, &l).into_iter().filter(|i| !before.contains(i)).collect();
     assert_eq!(k4.len(), 1, "the last note landed");
+    net.held_to.insert(b);
     let acts = net.sync(b).compact_ephemeral_now().unwrap();
     net.actions(b, acts);
     net.run();
@@ -3970,7 +3969,7 @@ fn delete_across_unread_rotation_retried_spec_sync_9() {
     net.run();
     net.advance(60_000);
     let after: BTreeSet<osis_base::BlobId> = net.host_ids(host, &l).into_iter().collect();
-    assert!(!after.contains(&k4[0]), "the plain delete refused 9 went again under the next key");
+    assert!(!after.contains(&k4[0]), "the absorbed entry left the peer");
 }
 
 // spec/commits.md §3 (session form): a memory commit is session
