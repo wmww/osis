@@ -182,7 +182,7 @@ pub(crate) struct Shared {
     arrived: bool,
     /// The peer's filter arrivals on this connection: a label Open opened at a peer that cannot
     /// read it is opened again at most once per arrival (`shared_unopened`).
-    arrivals: u64,
+    pub(crate) arrivals: u64,
     /// A filter arrived since the sync keys were last tested: a peer that cannot read tests
     /// nothing, so its filter gaining a head's sync key is found by this side testing every
     /// served head's at each arrival, not only the pending set's.
@@ -919,6 +919,18 @@ impl SyncEngine {
             let Some(s) = self.records.shared.get(&conn) else { return Ok(()) };
             let Some(peer) = &s.peer else { return Ok(()) };
             let shown = candidates.into_iter().find(|(_, k)| peer.values.binary_search(&beacon_value(&beacon(&k.verifying_key().to_bytes(), &l.0, &s.r), peer.f)).is_ok());
+            // the peer holds L at the newest recorded step (its path registered, the filter since
+            // then tested) and shows none of this node's credentials of it (claim keys of a step
+            // whose claim set is not held, say): it holds none the peer takes, stranded
+            // (spec/permissions.md §4)
+            let resync = self.cfg.resync_ms;
+            if shown.is_none() && self.conns.get(&conn).and_then(|c| c.req.registered.get(&l)).is_some_and(|(a, t)| *a != arrival || now >= t.saturating_add(resync)) {
+                if let Some(g) = self.lc(conn, &l).map(|x| x.group) {
+                    self.fail(conn, l);
+                    self.stranded(conn, g, l, out)?;
+                }
+                continue;
+            }
             self.walked(conn, l, shown, out)?;
         }
         Ok(())

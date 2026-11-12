@@ -204,8 +204,10 @@ impl SyncEngine {
         for (id, c) in &self.conns {
             for (l, x) in &c.labels {
                 v.push(format!(
-                    "conn {id} {l:?}: {:?} synced {} registering {} writer {} sync {} outstanding {} head {:?} lacking {} full {}",
+                    "conn {id} {l:?}: {:?} up {} ready {} synced {} registering {} writer {} sync {} outstanding {} head {:?} lacking {} full {}",
                     x.phase,
+                    c.up,
+                    c.session.is_ready(),
                     x.synced,
                     x.registering.is_some(),
                     x.keys.is_writer(),

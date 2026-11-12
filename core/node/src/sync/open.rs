@@ -371,6 +371,7 @@ impl SyncEngine {
         self.set_head(conn, l, step)?;
         if let Some(c) = self.conns.get_mut(&conn) {
             c.req.reopens.remove(&l);
+            c.req.registered.remove(&l);
             self.refusals.remove(&(host, l));
         }
         if let Some(lc) = self.lc_mut(conn, &l) {
@@ -412,7 +413,7 @@ impl SyncEngine {
 
     /// No key opens `l` on `conn`: tried again from scratch after `resync_ms`. A hinted label:
     /// the next thing a blob names it under gets its turn (`vet_inbox_hints`).
-    fn fail(&mut self, conn: ConnId, l: LabelId) {
+    pub(crate) fn fail(&mut self, conn: ConnId, l: LabelId) {
         let now = self.now();
         let Some(lc) = self.lc_mut(conn, &l) else { return };
         lc.phase = Phase::Failed;
@@ -874,6 +875,10 @@ impl SyncEngine {
                 lc.path.remove(0);
             }
             if lc.path.is_empty() {
+                let at = (self.records.shared.get(&conn).map_or(0, |s| s.arrivals), self.now());
+                if let Some(c) = self.conns.get_mut(&conn) {
+                    c.req.registered.insert(l, at);
+                }
                 // deposits refused while the label was unknown there go now, not after their
                 // back-off (a node's own deposits under a label it just created)
                 if let Some(host) = self.conns.get(&conn).map(|c| c.host) {

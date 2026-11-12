@@ -164,6 +164,11 @@ pub(crate) struct Requests {
     /// Sync-key credentials whose Hit the peer refused since its last filter arrival: not shown
     /// to the walk (a filter keeps a moved head's entries until a whole one is sent).
     pub refused: BTreeSet<(LabelId, [u8; 32])>,
+    /// Labels whose recorded path the peer took to its newest step since they were last open
+    /// here, with the filter arrival and time then: a walk at a later arrival, or `resync_ms`
+    /// on (a registration the peer held already changes no filter), that finds no credential
+    /// shown strands the label (`shared_unopened`) instead of registering again.
+    pub registered: BTreeMap<LabelId, (u64, u64)>,
 }
 
 impl Requests {
@@ -173,6 +178,7 @@ impl Requests {
         self.deleting.retain(|(l, _), _| !gone(l));
         self.reopens.retain(|l, _| !gone(l));
         self.walked.retain(|l, _| !gone(l));
+        self.registered.retain(|l, _| !gone(l));
         self.refused.retain(|(l, _)| !gone(l));
     }
 
