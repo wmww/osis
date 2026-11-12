@@ -1374,8 +1374,9 @@ fn work_waiting_bounded_spec_sync_6() {
     assert!(net.sync(a).work_waiting() < cap / 2, "and nothing waits after: {}", net.sync(a).work_waiting());
 }
 
-// spec: none (costs, spec/requirements.md Scale): what a pass left for the next (here uploads a full
-// host refuses) is not work waiting: over `work_max` of it does not make every following pass full.
+// spec: none (costs, spec/requirements.md Scale): what a pass left for the next (here entries a full
+// peer lacks) is not work waiting: over `work_max` of it makes no following pass full, and it is
+// not judged again by each.
 #[test]
 fn work_left_by_a_pass_is_not_waiting_spec_sync_6() {
     let mut net = Net::new();
@@ -1404,7 +1405,8 @@ fn work_left_by_a_pass_is_not_waiting_spec_sync_6() {
         net.run();
     }
     let s1 = net.sync(a).pass_stats();
-    assert!(s1.bodies - s0.bodies > 4 * cap as u64, "those waiting are judged again: {}", s1.bodies - s0.bodies);
+    // what the full peer lacks is acted on there as last judged (`Work::lacked`), not judged again
+    assert!(s1.bodies - s0.bodies <= 2 * 4, "only the new writes are judged: {}", s1.bodies - s0.bodies);
     assert!(s1.passes > s0.passes);
     assert_eq!(s1.full, s0.full, "no pass over them is full");
 }

@@ -207,6 +207,8 @@ impl SyncEngine {
         // the wraps of a reader's announcements that make no row (their bytes not held)
         let mut unlisted: BTreeMap<BlobId, [u8; osis_crypto::WRAP_LEN]> = BTreeMap::new();
         let mut announced = false;
+        // an entry held here newly shown at the source: its part of a pass acts on it
+        let mut shown = false;
         // entries new here that no writer vouched for (a deposit, or a host's junk): no stamp
         // under the head's write key, or before a head is known any step's this node knows (a
         // host cannot make one; a superseded step's key may be a removed writer's)
@@ -302,13 +304,15 @@ impl SyncEngine {
                         Some(w) => signed_by(w),
                         None => writers.iter().any(signed_by),
                     };
-                    // a durable entry known there as it is, its bytes held (a stream showing it
-                    // again): nothing changed, nothing to judge (a memory entry's replay is judged
-                    // again: its cover may drop it, spec/sync.md §9)
+                    // a durable entry held here as it is, its bytes held (a source showing what
+                    // this node holds, or showing it again): only its presence there changed,
+                    // which only that source's part of the next pass reads (`Work::lacked`), so
+                    // nothing is judged again (a memory entry's replay is: its cover may drop
+                    // it, spec/sync.md §9)
                     let present = host.is_some_and(|s| self.state.is_present(&s, &l, &blob_id));
-                    let echo = present
+                    let echo = host.is_some()
                         && self.engine.has_blob(&blob_id)
-                        && self.state.entries.get(&(l, blob_id)).is_some_and(|e| !e.memory && e.wrap == wrap && (stamp.is_none() || e.stamp == stamp));
+                        && self.state.entries.get(&(l, blob_id)).is_some_and(|e| !e.memory && e.kind != Kind::Unknown && e.wrap == wrap && (stamp.is_none() || e.stamp == stamp));
                     // presence comes only from what the peer shows, an own upload's echo
                     // included, never from an upload's OK (a store restored from a backup lost
                     // what it acknowledged)
@@ -323,6 +327,7 @@ impl SyncEngine {
                         }
                     }
                     if echo {
+                        shown |= !present;
                         continue;
                     }
                     // a dropped body (`Entry::dropped`): bytes a fetch asked before the drop
@@ -482,7 +487,7 @@ impl SyncEngine {
         // a push to a stream read to its end brings the log to its end: a pass end
         let pushed = conn.and_then(|c| self.conns.get(&c)).and_then(|c| c.labels.get(&l)).is_some_and(|x| x.synced && x.fill.is_none());
         // the label changed under us: a pass decides again (carriers, retags); not per batch of a fill
-        if (!touched.is_empty() || announced) && !filling {
+        if (!touched.is_empty() || announced || shown) && !filling {
             // a fill under way at another connection passes at its own times: what this one
             // brought is one of them
             if self.filling(&l) {

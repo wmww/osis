@@ -460,21 +460,22 @@ fn one_more_write_at(k: usize) -> ([u64; 5], [u64; 5]) {
     (pass_work(before.0, net.sync(a).pass_stats()), pass_work(before.1, net.sync(b).pass_stats()))
 }
 
-// spec/sync.md §6, §10; issues/net-one-peer.md 3h2 (one pass per label): a write to a
-// label kept at 1 and at 3 peers that cannot read it costs each node the same full passes and
-// bodies judged: the own part judges the change once, whatever the number of sources; only the
-// per-source check of what each lacks or holds grows with them. Fails: each source's echo of
-// the write passes the label and judges its bodies again (issues/pass-per-source-echo.md).
+// spec/sync.md §6, §10; issues/net-one-peer.md 3h2 (one pass per label): a write to a label
+// kept at 1 and at 3 peers that cannot read it costs each node the same full passes and bodies
+// judged: the own part judges the change once, whatever the number of sources; a source showing
+// what this node holds only marks presence there, which that source's part acts on from the
+// verdicts the last pass reached (`Work::lacked`), so the per-source check of what each lacks or
+// holds alone grows with them, linearly.
 #[test]
-#[ignore]
-fn repro_one_pass_judges_a_change_for_every_source() {
+fn one_pass_judges_a_change_for_every_source() {
     let (one, three) = (one_more_write_at(1), one_more_write_at(3));
-    println!("(passes, full, bodies, entries, examined) writer {:?} / {:?}, reader {:?} / {:?}", one.0, three.0, one.1, three.1);
     for (who, x, y) in [("writer", one.0, three.0), ("reader", one.1, three.1)] {
         for i in [1, 2] {
-            assert_eq!(x[i], y[i], "{who}: {} at 1 and 3 sources", PASS[i]);
+            assert_eq!(x[i], y[i], "{who}: {} at 1 and 3 sources: {x:?} / {y:?}", PASS[i]);
         }
-        assert!(y[3] <= 3 * x[3].max(1), "{who}: entries judged per source: {} / {}", x[3], y[3]);
+        // per source at most twice the change's entries: by the pass that has it, and once more
+        // when that source shows it
+        assert!(y[3] <= 2 * 3 * x[3].max(1), "{who}: entries judged per source: {x:?} / {y:?}");
     }
 }
 

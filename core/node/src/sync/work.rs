@@ -37,6 +37,10 @@ pub(crate) struct Touched {
     pub states: BTreeSet<(Tid, Ak)>,
     /// Blobs that arrived or came with a changed commit (a body linking them uploads them now).
     pub blobs: BTreeSet<BlobId>,
+    /// Entries held here newly shown at a source (`State::shown`): no verdict here changes, so
+    /// the own part does not judge them again; they wake what waits on them (a delete waiting
+    /// for its carrier there) and each source's part judges them there.
+    pub shown: BTreeSet<(Touch, super::state::HostKey)>,
     /// Things whose record chains changed (`Held::below` of new record links), or those `roles` reach.
     pub moved: BTreeSet<Tid>,
     /// Whose roles changed and where.
@@ -140,6 +144,7 @@ impl Touched {
         self.commits.extend(o.commits.iter().copied());
         self.states.extend(o.states.iter().cloned());
         self.blobs.extend(o.blobs.iter().copied());
+        self.shown.extend(o.shown.iter().copied());
         self.moved.extend(o.moved.iter().copied());
         self.roles.merge(&o.roles);
         self.actors.extend(o.actors.iter().copied());
@@ -268,6 +273,11 @@ pub(crate) struct Work {
     pub acted: BTreeSet<super::ConnId>,
     /// Passes of the label so far (`SyncEngine::label_passes`).
     pub passes: u64,
+    /// Entries the last pass placed or found must-hold that a source lacked, with their
+    /// priority and what they were judged by: that verdict stands until a touch of it (it is
+    /// then judged again), so a pass that does not judge it again acts at each source on it as
+    /// it was (an arrival showing it at a source only marks presence, `SyncEngine::shown`).
+    pub lacked: BTreeMap<BlobId, (u8, Touch)>,
 }
 
 impl Work {
@@ -316,7 +326,8 @@ impl Work {
     /// Takes what pass left to do (`Left`) as the next pass's set.
     pub fn leave(&mut self, left: Left) {
         self.touched.full = false;
-        self.again = left.again || !left.commits.is_empty() || !left.blobs.is_empty();
+        self.again = left.again || !left.commits.is_empty() || !left.blobs.is_empty() || !left.lacked.is_empty();
+        self.lacked = left.lacked;
         self.touched.commits = left.commits;
         self.touched.blobs = left.blobs;
         self.elsewhere = 0;
@@ -341,11 +352,22 @@ impl Scope {
             Scope::Some { commits, .. } => commits.contains(c),
         }
     }
+
+    /// Whether what `t` names is judged by this scope.
+    pub fn judges(&self, t: &Touch) -> bool {
+        match (self, t) {
+            (Scope::All, _) => true,
+            (Scope::Some { commits, .. }, Touch::Commit(c)) => commits.contains(c),
+            (Scope::Some { blobs, .. }, Touch::Blob(b)) => blobs.contains(b),
+        }
+    }
 }
 
 /// What a pass left to do: judged again next pass, or on what it waits for.
 #[derive(Default)]
 pub(crate) struct Left {
+    /// What a source lacks of what this pass placed or kept (`Work::lacked`).
+    pub lacked: BTreeMap<BlobId, (u8, Touch)>,
     pub commits: BTreeSet<CommitId>,
     pub blobs: BTreeSet<BlobId>,
     pub waits: Waits,
@@ -415,6 +437,24 @@ impl SyncEngine {
         for k in std::mem::take(&mut w.touched.states) {
             if let Some(cs) = w.waits.aspects.remove(&k) {
                 w.touched.commits.extend(cs);
+            }
+        }
+        // shown at a source: what waits on it there is judged again (a delete waiting for its
+        // carrier), not it
+        for (x, _) in &w.touched.shown {
+            match x {
+                Touch::Commit(c) => {
+                    for a in self.engine.header(c).map(|h| h.aspects.clone()).unwrap_or_default() {
+                        if let Some(cs) = w.waits.aspects.remove(&(a.tid, a.ak)) {
+                            w.touched.commits.extend(cs);
+                        }
+                    }
+                }
+                Touch::Blob(b) => {
+                    if let Some(cs) = w.waits.links.remove(b) {
+                        w.touched.commits.extend(cs);
+                    }
+                }
             }
         }
         for b in &w.touched.blobs {

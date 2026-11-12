@@ -492,6 +492,7 @@ impl SyncEngine {
             w.touched.full = true;
         }
         let (full, scope) = self.begin(&g, &l, w, &ctx.closure);
+        let shown = std::mem::take(&mut w.touched.shown);
         let J { mut scope, mut left, snaps, mut bodies, judged, unsettled, snapping, replaced } = self.judging(p, ctx, w, scope, full)?;
         let mut sends = Vec::new();
         // a role commit this node must hold waits for its relay (`relay_at`): no source has it
@@ -530,9 +531,40 @@ impl SyncEngine {
         }
         let settled = unsettled.is_empty();
         self.judge_touched(ctx, &g, &l, &scope, &judged, &mut bodies)?;
+        // what a source lacked at the last pass that this one did not judge again: its verdict
+        // stands, acted on at each source as it was (not while this node may not place here)
+        let lacked = std::mem::take(&mut w.lacked);
+        if own {
+            for (id, (prio, of)) in lacked {
+                if !scope.judges(&of) && self.state.entries.contains_key(&(l, id)) && !sends.iter().any(|o| o.id == id) {
+                    sends.push(Out { prio, id, fresh: false, of: Some(of) });
+                }
+            }
+        }
+        // a source's part also judges there what was newly shown there (`Touched::shown`)
+        if let Scope::Some { commits, .. } = &scope {
+            let more: BTreeSet<CommitId> = shown.iter().filter_map(|(x, _)| if let Touch::Commit(c) = x { Some(*c) } else { None }).filter(|c| !commits.contains(c)).collect();
+            if !more.is_empty() {
+                bodies.extend(self.bodies_in(ctx, &g, &l, &Scope::Some { commits: more, blobs: BTreeSet::new() })?);
+            }
+        }
         w.acted.clear();
         for conn in sources {
-            if self.at_source(conn, p, w, (&sends, behind), &bodies, &snaps, &scope, settled, &mut left, out)? {
+            let host = self.conns.get(&conn).map(|c| c.host);
+            let here = match &scope {
+                Scope::Some { commits, blobs } => {
+                    let (mut cs, mut bs) = (commits.clone(), blobs.clone());
+                    for (x, _) in shown.iter().filter(|(_, s)| Some(*s) == host) {
+                        match x {
+                            Touch::Commit(c) => cs.insert(*c),
+                            Touch::Blob(b) => bs.insert(*b),
+                        };
+                    }
+                    Scope::Some { commits: cs, blobs: bs }
+                }
+                Scope::All => Scope::All,
+            };
+            if self.at_source(conn, p, w, (&sends, behind), &bodies, &snaps, &here, settled, &mut left, out)? {
                 w.acted.insert(conn);
             }
         }
@@ -600,8 +632,14 @@ impl SyncEngine {
             if !lacks(self, &o.id) {
                 continue;
             }
-            // judged again next pass until the source has it
-            leave(o, left);
+            // acted on again at the next pass until the source has it: as judged now, unless a
+            // touch of it judges it again meanwhile (`Work::lacked`)
+            match o.of {
+                Some(of) => {
+                    left.lacked.insert(o.id, (o.prio, of));
+                }
+                None => leave(o, left),
+            }
             let Some(e) = self.state.entries.get(&(l, o.id)).cloned() else { continue };
             let stamped = e.stamp.is_some_and(|s| osis_label::verify_stamp(&p.stamps, &l, &o.id, &e.wrap, &s).is_ok());
             // what it pulls once it reads it: stamped for its head now or by this pass (a
@@ -673,12 +711,16 @@ impl SyncEngine {
     }
 
     /// Entry `id` of `l` shown again to source `conn` (`State::relog`) when its latest event is
-    /// before the source's head last moved (`LConn::head_moved_at`).
+    /// before the source's head last moved (`LConn::head_moved_at`) and the source reported
+    /// reading past it without showing it.
     fn relog_for_head(&mut self, conn: ConnId, l: LabelId, id: BlobId) -> Result<()> {
         let Some(moved) = self.lc(conn, &l).and_then(|x| x.head_moved_at) else { return Ok(()) };
+        // read there and not shown back: refused (a source shows what it takes on its stream
+        // before it reports reading past it); one not read yet there comes as any
+        let Some(read) = self.stream_reported(conn, &l) else { return Ok(()) };
         self.state.flush(&mut self.engine)?;
         let latest = self.engine.run(|tx| { let p = super::state::hub(tx)?.node_log(|t| t.log_entry_latest(&l, &id))?; Ok(p) })?;
-        if latest.is_some_and(|p| p < moved) {
+        if latest.is_some_and(|p| p < moved && p <= read) {
             self.state.relog(l, id);
         }
         Ok(())

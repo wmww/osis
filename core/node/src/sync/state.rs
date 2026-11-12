@@ -368,6 +368,8 @@ pub struct State {
     /// Entries, presence and certificates changed since the passes last looked, by label; and
     /// commits whose carriers changed (any label). In memory.
     pub touched: BTreeSet<(LabelId, Touch)>,
+    /// Entries newly present at a source (`Touched::shown`).
+    pub shown: BTreeSet<(LabelId, Touch, HostKey)>,
     pub touched_commits: BTreeSet<CommitId>,
     /// Commits whose blob records were added since `SyncEngine::forget_dropped` last looked (a
     /// dropped body's blob that came back).
@@ -1642,9 +1644,14 @@ impl State {
     pub fn set_present(&mut self, s: HostKey, l: LabelId, b: BlobId, on: bool) {
         let k = key(PRESENT, &[&s, &l.0, &b.0]);
         if on {
+            // shown there: no verdict here changes (`Touched::shown`)
             if self.present.insert((s, l, b)) {
                 self.present_by.insert((l, b, s));
-                self.touch(l, b);
+                let t = match self.entries.get(&(l, b)).map(|e| &e.kind) {
+                    Some(Kind::Commit { commit, .. }) => Touch::Commit(*commit),
+                    _ => Touch::Blob(b),
+                };
+                self.shown.insert((l, t, s));
                 self.version += 1;
                 self.put_of(&l, &b, k, Vec::new());
             }

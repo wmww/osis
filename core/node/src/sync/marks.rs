@@ -216,11 +216,12 @@ impl SyncEngine {
     /// Hands the changes noted since the last pass to every label's work set: the engine's
     /// (`touched`) to all, the sync state's to the label's (`State::touched`).
     pub(crate) fn spread_touches(&mut self) {
-        if self.touched.is_empty() && self.state.touched.is_empty() && self.state.touched_commits.is_empty() {
+        if self.touched.is_empty() && self.state.touched.is_empty() && self.state.touched_commits.is_empty() && self.state.shown.is_empty() {
             return;
         }
         let mut t = std::mem::take(&mut self.touched);
         let st = std::mem::take(&mut self.state.touched);
+        let shown = std::mem::take(&mut self.state.shown);
         t.commits.append(&mut self.state.touched_commits);
         let max = self.cfg.work_max;
         let elsewhere = t.size();
@@ -230,6 +231,10 @@ impl SyncEngine {
             for (_, x) in st.range((*l, state::Touch::Commit(osis_base::CommitId([0; 32])))..).take_while(|(x, _)| x == l) {
                 w.again = true;
                 w.touched.add(*x);
+            }
+            for (_, x, s) in shown.range((*l, state::Touch::Commit(osis_base::CommitId([0; 32])), [0; 32])..).take_while(|(x, _, _)| x == l) {
+                w.again = true;
+                w.touched.shown.insert((*x, *s));
             }
             w.bound(elsewhere, max);
         }
