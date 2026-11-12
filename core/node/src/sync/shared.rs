@@ -927,6 +927,7 @@ impl SyncEngine {
                 continue;
             }
             self.log_events_from(super::inbound::Src::Served(conn), l, vec![osis_proto::Event::Added { blob_id, blob: Some(blob), wrap, stamp: None }], None, out)?;
+            self.keep_source(l, blob_id);
             self.stream_crossed(conn, vec![blob_id]);
         }
         Ok(())

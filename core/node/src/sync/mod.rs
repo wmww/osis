@@ -502,6 +502,8 @@ impl SyncEngine {
             // the keys and ciphertexts of bodies the engine dropped before a crash cut this layer
             // off (its forget runs a step after the dropping transaction, spec/commits.md §5)
             s.forget_dropped(None)?;
+            // peer budgets as the store holds them
+            s.charge_held();
             // flows' deliveries a crash cut off before they were carried out
             if let Err(e) = s.take_owed() {
                 s.diag(format!("owed deliveries: {e}"));

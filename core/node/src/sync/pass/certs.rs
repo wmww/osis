@@ -140,7 +140,7 @@ impl SyncEngine {
                 self.engine.put_blobs(vec![(id, blob)])?;
                 // fetched first: what it names reads as listed from the start
                 let wrap = osis_crypto::wrap(&secret, &id, &key, 0)?;
-                self.state.set_entry(l, id, Entry { wrap, stamp: None, cert: true, salt: Some(salt), expires: None, size: None, kind: Kind::List { rotation: r, held: true }, memory: false });
+                self.state.set_entry(l, id, Entry { wrap, stamp: None, cert: true, salt: Some(salt), expires: None, size: None, kind: Kind::List { rotation: r, held: true }, source: None, memory: false });
             }
             for t in want {
                 self.state.add_listed(l, r, t);
@@ -187,7 +187,7 @@ impl SyncEngine {
         let id = osis_label::blob_id(&blob);
         self.engine.put_blobs(vec![(id, blob)])?;
         let wrap = osis_crypto::wrap(&secret, &id, &key, 0)?;
-        self.state.set_entry(l, id, Entry { wrap, stamp: None, cert: true, salt: Some(salt), expires: None, size: None, kind: Kind::Records(tids), memory: false });
+        self.state.set_entry(l, id, Entry { wrap, stamp: None, cert: true, salt: Some(salt), expires: None, size: None, kind: Kind::Records(tids), source: None, memory: false });
         Ok(all)
     }
 

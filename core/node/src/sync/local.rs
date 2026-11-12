@@ -329,7 +329,7 @@ impl SyncEngine {
             if !self.state.entries.contains_key(&(l, b)) {
                 let wrap = osis_crypto::filler_wrap(&mut *self.rng);
                 let expires = self.held_expiry(&b)?;
-                self.state.set_entry(l, b, Entry { wrap, stamp: None, cert: true, salt: None, expires, size: None, kind: Kind::Unknown, memory: false });
+                self.state.set_entry(l, b, Entry { wrap, stamp: None, cert: true, salt: None, expires, size: None, kind: Kind::Unknown, source: None, memory: false });
             }
         }
         Ok(())

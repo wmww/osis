@@ -139,6 +139,72 @@ fn pending_from_reader_counts_against_peer_budget_spec_sync_5() {
     assert_eq!(pending_kept_from_reader(64), (false, false), "past it, neither kept");
 }
 
+/// A reader sharing L brings writer `b` two batches of `k` unstamped entries giving nothing
+/// there, each batch on its own session: unopened 1000-byte entries, or with `pending` commits
+/// that open and pend (drift). `peer_bytes` is the first batch's size; with `restart` `b`
+/// restarts between the batches. How many of each batch `b` holds after the second.
+fn budget_across_restart(pending: bool, restart: bool) -> (usize, usize) {
+    let k = 3;
+    let mut net = Net::new();
+    let a = net.node(1, &[]);
+    let b = net.add_node(2, SyncConfig { peers: false, ..SyncConfig::default() });
+    reach(&mut net, a, 0xa1);
+    reach(&mut net, b, 0xb1);
+    net.blocked_peers.insert((a, b));
+    let g = net.group_at(a, &[(b, Role::Write)], vec![]);
+    net.run();
+    let l = net.label(b);
+    let mut events = Vec::new();
+    if pending {
+        net.set_skew(a, 2 * 3_600_000);
+        let la = net.label(a);
+        for i in 0..2 * k {
+            let c = net.write(a, g, &format!("ahead {i}"));
+            let acts = net.sync(a).handle(Event::Local);
+            net.actions(a, acts);
+            net.run();
+            let blob_id = net.sync(a).entries(&la).into_iter().find(|(_, x)| matches!(x, EntryKind::Commit { commit, .. } if *commit == c)).expect("a placed it").0;
+            let (wrap, _) = net.sync(a).entry_meta(&la, &blob_id).unwrap();
+            let blob = net.engine(a).blob(&blob_id).unwrap().unwrap();
+            events.push((blob_id, blob, wrap));
+        }
+        net.set_skew(a, 0);
+    } else {
+        for i in 0..2 * k {
+            let blob = vec![0x50 + i as u8; 1000];
+            events.push((osis_label::blob_id(&blob), blob, [0x11; osis_crypto::WRAP_LEN]));
+        }
+    }
+    let budget: u64 = events.iter().take(k).map(|(_, x, _)| x.len() as u64).sum();
+    net.sync(b).config_mut().peer_bytes = budget;
+    for (i, batch) in events.chunks(k).enumerate() {
+        if i == 1 && restart {
+            net.restart(b, 9);
+            net.sync(b).config_mut().peer_bytes = budget;
+        }
+        let (mut p, evs) = member_pulled(&mut net, b, a, l);
+        let id = evs.iter().find_map(|e| if let ClientEvent::Peer(m) = e { if let osis_proto::Message::Pull(x) = &**m { Some(x.id) } else { None } } else { None }).expect("b pulls its member");
+        let evs = batch.iter().map(|(blob_id, blob, wrap)| (l, osis_proto::Event::Added { blob_id: *blob_id, blob: Some(blob.clone()), wrap: *wrap, stamp: None })).collect();
+        let reply = osis_proto::msg::PullReply { id, events: evs, cursor: Some(vec![1 + i as u8; 8]), whole: false, more: false, report: false, joins: Vec::new() };
+        command(&mut net, b, &mut p, Command::Peer(Box::new(osis_proto::Message::PullReply(Box::new(reply)))));
+    }
+    let held = net.sync(b).entries(&l);
+    let count = |batch: &[(osis_base::BlobId, Vec<u8>, [u8; osis_crypto::WRAP_LEN])]| batch.iter().filter(|(x, _, _)| held.iter().any(|(y, _)| y == x)).count();
+    (count(&events[..k]), count(&events[k..]))
+}
+
+// spec/requirements.md (peer input never grows storage unbounded), notes/peers.md Budget: the
+// peer budget holds across a restart. A reader fills it with entries giving nothing (unopened,
+// or commits pending here), the node restarts, and the reader's next batch is refused as it is
+// without the restart: what the node holds stays within one budget.
+#[test]
+fn peer_budget_holds_across_restart_spec_sync_5() {
+    for pending in [false, true] {
+        assert_eq!(budget_across_restart(pending, false), (3, 0), "pending {pending}: the first batch fills the budget");
+        assert_eq!(budget_across_restart(pending, true), (3, 0), "pending {pending}: a restart gives no fresh budget");
+    }
+}
+
 /// Whether node `b` (`peer_bytes` 1500) keeps the second of two unopened 1000-byte entries that
 /// reader `a` brings over two sessions, each proving `a`'s account and, with `fresh`, also an
 /// account known by nothing at `b`, below `a`'s in tid order (anyone can make one per session).
@@ -192,6 +258,61 @@ fn second_kept(fresh: bool) -> bool {
 fn a_fresh_account_splits_no_budget_spec_sync_5() {
     assert!(!second_kept(false), "one account, one budget");
     assert!(!second_kept(true), "a fresh account beside it adds none");
+}
+
+/// The bytes of node `n`'s stored entry rows under `l` (`y/e`), by blob.
+fn entry_rows(net: &mut Net, n: usize, l: LabelId) -> std::collections::BTreeMap<osis_base::BlobId, usize> {
+    net.sync(n).sync_row_sizes(b'e').into_iter().filter(|(k, _)| k.windows(16).any(|w| w == l.0)).filter_map(|(k, v)| {
+        let id: [u8; 32] = k.get(k.len().checked_sub(32)?..)?.try_into().ok()?;
+        Some((osis_base::BlobId(id), v))
+    }).collect()
+}
+
+// notes/peers.md Budget (`Entry::source`): an entry charged to a peer's source keeps it in its row
+// (15 bytes) while it counts, the same per entry at n and 10n, and drops it once the entry gives
+// something held (here pending commits that apply once the clock passes their drift).
+#[test]
+fn a_charged_source_costs_its_row_until_judged_spec_sync_5() {
+    let mut per_entry = Vec::new();
+    for n in [2, 20] {
+        let mut net = Net::new();
+        let a = net.node(1, &[]);
+        let b = net.add_node(2, SyncConfig { peers: false, ..SyncConfig::default() });
+        reach(&mut net, a, 0xa1);
+        reach(&mut net, b, 0xb1);
+        net.blocked_peers.insert((a, b));
+        let g = net.group_at(a, &[(b, Role::Write)], vec![]);
+        net.run();
+        let (l, la) = (net.label(b), net.label(a));
+        net.set_skew(a, 2 * 3_600_000);
+        let mut events = Vec::new();
+        for i in 0..n {
+            let c = net.write(a, g, &format!("ahead {i:03}"));
+            let acts = net.sync(a).handle(Event::Local);
+            net.actions(a, acts);
+            net.run();
+            let blob_id = net.sync(a).entries(&la).into_iter().find(|(_, x)| matches!(x, EntryKind::Commit { commit, .. } if *commit == c)).expect("a placed it").0;
+            let (wrap, _) = net.sync(a).entry_meta(&la, &blob_id).unwrap();
+            let blob = net.engine(a).blob(&blob_id).unwrap().unwrap();
+            events.push((l, osis_proto::Event::Added { blob_id, blob: Some(blob), wrap, stamp: None }));
+        }
+        net.set_skew(a, 0);
+        let ids: Vec<osis_base::BlobId> = events.iter().filter_map(|(_, e)| if let osis_proto::Event::Added { blob_id, .. } = e { Some(*blob_id) } else { None }).collect();
+        let (mut p, evs) = member_pulled(&mut net, b, a, l);
+        let id = evs.iter().find_map(|e| if let ClientEvent::Peer(m) = e { if let osis_proto::Message::Pull(x) = &**m { Some(x.id) } else { None } } else { None }).expect("b pulls its member");
+        let reply = osis_proto::msg::PullReply { id, events, cursor: Some(vec![1; 8]), whole: false, more: false, report: false, joins: Vec::new() };
+        command(&mut net, b, &mut p, Command::Peer(Box::new(osis_proto::Message::PullReply(Box::new(reply)))));
+        let charged = entry_rows(&mut net, b, l);
+        assert!(ids.iter().all(|x| charged.contains_key(x)), "n {n}: every entry kept pending");
+        net.advance(2 * 3_600_000 + 60_000);
+        assert!(net.engine(b).pending().is_empty(), "n {n}: the commits applied");
+        let judged = entry_rows(&mut net, b, l);
+        let charged: usize = ids.iter().map(|x| charged[x]).sum();
+        let judged: usize = ids.iter().map(|x| judged.get(x).copied().expect("kept applied")).sum();
+        assert_eq!(charged, judged + 15 * n, "n {n}: 15 bytes per charged row, gone once judged");
+        per_entry.push(charged / n);
+    }
+    assert_eq!(per_entry[0], per_entry[1], "the same row per entry at n and 10n");
 }
 
 /// Writer `b` (`peer_bytes`) syncing a label with no host; reader `r` serves it as a co-reader

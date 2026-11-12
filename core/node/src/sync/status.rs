@@ -270,6 +270,21 @@ impl SyncEngine {
         n
     }
 
+    /// The stored sync records under `y/<tag>`: each key and its value's length (tests: row
+    /// costs).
+    #[doc(hidden)]
+    pub fn sync_row_sizes(&mut self, tag: u8) -> Vec<(Vec<u8>, usize)> {
+        let _ = self.state.flush(&mut self.engine);
+        let mut out = Vec::new();
+        let _ = self.engine.run(|tx| {
+            tx.scan(&[b'y', b'/', tag], |k, v| {
+                out.push((k.to_vec(), v.len()));
+                Ok(())
+            })
+        });
+        out
+    }
+
     /// Whether this node still holds a commit blob's key or ciphertext (tests: a dropped body
     /// leaves neither).
     pub fn holds_blob(&mut self, b: &osis_base::BlobId) -> bool {

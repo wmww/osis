@@ -282,7 +282,7 @@ impl SyncEngine {
                 }
                 if !self.state.entries.contains_key(&(l, *blob_id)) {
                     // recorded before its presence (`State::put_of` goes by the record's class)
-                    self.state.set_entry(l, *blob_id, Entry { wrap: *wrap, stamp: None, cert: false, salt: None, expires: None, size: None, kind: Kind::Unknown, memory: true });
+                    self.state.set_entry(l, *blob_id, Entry { wrap: *wrap, stamp: None, cert: false, salt: None, expires: None, size: None, kind: Kind::Unknown, source: None, memory: true });
                 }
             }
             match ev {
@@ -332,7 +332,7 @@ impl SyncEngine {
                                 let fresh = blob.is_some() && !self.engine.has_blob(&blob_id);
                                 unvouched.push((blob_id, fresh));
                             }
-                            self.state.set_entry(l, blob_id, Entry { wrap, stamp, cert: false, salt: None, expires: None, size: None, kind: Kind::Unknown, memory: false })
+                            self.state.set_entry(l, blob_id, Entry { wrap, stamp, cert: false, salt: None, expires: None, size: None, kind: Kind::Unknown, source: None, memory: false })
                         }
                         Some(mut e) if e.wrap != wrap || (stamp.is_some() && e.stamp != stamp) => {
                             if self.take_wrap(conn, host, l, blob_id, &mut e, &wrap, stamp.is_some(), held_stamped) {
@@ -2181,7 +2181,7 @@ impl SyncEngine {
         if !self.state.entries.contains_key(&(l, b)) {
             let Some(t) = self.state.tombs.get(&(l, b)).cloned() else { return false };
             let memory = self.state.is_memory(&l, &b);
-            self.state.set_entry_quiet(l, b, Entry { wrap: t.wrap, stamp: None, cert: t.cert, salt: t.salt, expires: t.expires, size: None, kind: t.kind, memory });
+            self.state.set_entry_quiet(l, b, Entry { wrap: t.wrap, stamp: None, cert: t.cert, salt: t.salt, expires: t.expires, size: None, kind: t.kind, source: None, memory });
         }
         let new = !self.state.is_present(&s, &l, &b);
         self.state.set_present(s, l, b, true);

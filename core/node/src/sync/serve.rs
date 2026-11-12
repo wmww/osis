@@ -5,8 +5,8 @@
 //! on a dialed connection, its messages going down as `Action::Hub`. It serves any number of
 //! connections (spec/sync.md §10 Served connections). What a peer's stream or Deposit items bring is charged to
 //! its source (`Proven::source`) when known here, else the label (dialer keys are fresh per
-//! connection), and to a node-wide total (`SyncConfig` `peer_bytes`, `peer_total_bytes`) until
-//! it opens, reaches a host or is dropped.
+//! connection), and to a node-wide total (`SyncConfig` `peer_bytes`, `peer_total_bytes`) while
+//! it gives nothing held and is at no host; the source is kept with the entry (`Entry::source`).
 
 use super::state::Entry;
 use super::{Action, ConnId, SyncEngine};
@@ -115,11 +115,13 @@ impl ClientBinding {
     }
 }
 
-/// Bytes peers uploaded or deposited here, per entry: (peer key, bytes), with running sums per
-/// peer key and in all (stale charges pruned at ticks and when a budget is reached).
+/// What peers brought here that gives nothing held and is at no host (notes/peers.md, Budget):
+/// each entry's source (`Entry::source`) and size, with running sums per charge key
+/// (`charge_key`) and in all (stale charges pruned at ticks and when a budget is reached).
+/// Rebuilt at open from the entries (`charge_held`).
 #[derive(Clone, Default)]
 pub(crate) struct Charges {
-    by_entry: BTreeMap<(LabelId, BlobId), ([u8; 32], u64)>,
+    by_entry: BTreeMap<(LabelId, BlobId), (Option<Tid>, u64)>,
     per: BTreeMap<[u8; 32], u64>,
     total: u64,
     /// When charges were last pruned (wall ms), and whether a budget was reached since.
@@ -130,42 +132,52 @@ pub(crate) struct Charges {
 }
 
 impl Charges {
-    fn charge(&mut self, l: LabelId, b: BlobId, key: [u8; 32], n: u64) {
-        if let Some((p, old)) = self.by_entry.insert((l, b), (key, n)) {
-            self.uncharge(p, old);
+    fn charge(&mut self, l: LabelId, b: BlobId, source: Option<Tid>, n: u64) {
+        if let Some((p, old)) = self.by_entry.insert((l, b), (source, n)) {
+            self.uncharge(charge_key(p, &l), old);
         }
-        *self.per.entry(key).or_default() += n;
+        *self.per.entry(charge_key(source, &l)).or_default() += n;
         self.total = self.total.saturating_add(n);
     }
 
-    fn uncharge(&mut self, p: [u8; 32], n: u64) {
+    fn uncharge(&mut self, k: [u8; 32], n: u64) {
         self.total = self.total.saturating_sub(n);
-        if let Some(x) = self.per.get_mut(&p) {
+        if let Some(x) = self.per.get_mut(&k) {
             *x = x.saturating_sub(n);
             if *x == 0 {
-                self.per.remove(&p);
+                self.per.remove(&k);
             }
         }
+    }
+
+    /// Whether `n` more bytes from `source` under `l` fit both budgets.
+    fn fits(&self, cfg: &super::SyncConfig, source: Option<Tid>, l: &LabelId, n: u64) -> bool {
+        let used = self.per.get(&charge_key(source, l)).copied().unwrap_or(0);
+        n <= cfg.peer_bytes.saturating_sub(used) && n <= cfg.peer_total_bytes.saturating_sub(self.total)
     }
 }
 
 /// Whom bytes a peer session put here are charged to: its source (`Proven::source`: its node, for
-/// a node of this node's account, else its first account known here), else the label they went under (a dialer
-/// key is fresh per connection, so charging it would bound nothing: a link holder's sessions
-/// share its K label's budget).
+/// a node of this node's account, else its first account known here), else the label they went
+/// under (a dialer key is fresh per connection, so charging it would bound nothing: a link
+/// holder's sessions share its K label's budget).
 fn charge_key(source: Option<Tid>, label: &LabelId) -> [u8; 32] {
-    source.map(|t| {
-        let mut k = [0u8; 32];
-        if let Some(d) = k.get_mut(..15) {
-            d.copy_from_slice(t.as_bytes());
+    match source {
+        Some(t) => {
+            let mut k = [0u8; 32];
+            if let Some(d) = k.get_mut(..15) {
+                d.copy_from_slice(t.as_bytes());
+            }
+            k
         }
-        k
-    }).unwrap_or_else(|| {        let mut k = [0xff; 32];
-        if let Some(d) = k.get_mut(16..) {
-            d.copy_from_slice(&label.0);
+        None => {
+            let mut k = [0xff; 32];
+            if let Some(d) = k.get_mut(16..) {
+                d.copy_from_slice(&label.0);
+            }
+            k
         }
-        k
-    })
+    }
 }
 
 impl SyncEngine {
@@ -344,24 +356,22 @@ impl SyncEngine {
     /// Bytes new here that reader `conn`'s stream or fetches brought for entries of `l` with no
     /// stamp under the served head, with their sizes as they came: those holding nothing here
     /// (`gives_nothing`: unjudged, or a header kept for a part dropped while invalid) count
-    /// against the peer budgets as an upload's did (`charge_key`), and past either the entry is
-    /// not kept, nor its commit once no entry names it (`forget_forgettable`;
-    /// spec/requirements.md: peer input never grows storage unbounded).
+    /// against the peer budgets (`charge_key`), and past either the entry is not kept, nor its
+    /// commit once no entry names it (`forget_forgettable`; spec/requirements.md: peer input
+    /// never grows storage unbounded).
     pub(crate) fn charge_reader(&mut self, conn: ConnId, l: LabelId, fresh: &[(BlobId, u64)]) -> Result<()> {
         if fresh.is_empty() {
             return Ok(());
         }
         self.prune_due();
         let who = self.connection_proven(conn).and_then(|p| p.source(&self.engine.core));
-        let key = charge_key(who, &l);
         let mut gone = Vec::new();
         for (b, size) in fresh {
             let size = *size;
             if !self.state.entries.get(&(l, *b)).is_some_and(|e| e.stamp.is_none() && self.gives_nothing(e)) {
                 continue;
             }
-            let used = self.charges.per.get(&key).copied().unwrap_or(0);
-            if size > self.cfg.peer_bytes.saturating_sub(used) || size > self.cfg.peer_total_bytes.saturating_sub(self.charges.total) {
+            if !self.charges.fits(&self.cfg, who, &l, size) {
                 self.budget_reached(Some(l));
                 self.state.drop_entry(l, *b);
                 self.fetched(b);
@@ -373,24 +383,69 @@ impl SyncEngine {
                 }
                 continue;
             }
-            self.charges.charge(l, *b, key, size);
+            self.charges.charge(l, *b, who, size);
+            self.keep_source(l, *b);
         }
         self.delete_blobs(&gone)
     }
 
-    /// Charges a Deposit item's blob `b` (`size` bytes under `l`) from `conn`'s peer as an upload
-    /// is charged (`charge_key`); false, charging nothing, past either budget.
+    /// Charges a Deposit item's blob `b` (`size` bytes under `l`) from `conn`'s peer as a
+    /// reader's entry is charged (`charge_key`); false, charging nothing, past either budget. The
+    /// entry, made once the item is taken, gets its source then (`keep_source`).
     pub(crate) fn charge_deposit(&mut self, conn: ConnId, l: LabelId, b: BlobId, size: u64) -> bool {
         self.prune_due();
         let node = self.connection_proven(conn).and_then(|p| p.node).filter(|_| self.connection_proven(conn).is_some_and(|p| self.engine.core.judge(p.all()).known()));
-        let key = charge_key(node, &l);
-        let used = self.charges.per.get(&key).copied().unwrap_or(0);
-        if size > self.cfg.peer_bytes.saturating_sub(used) || size > self.cfg.peer_total_bytes.saturating_sub(self.charges.total) {
+        if !self.charges.fits(&self.cfg, node, &l, size) {
             self.budget_reached(Some(l));
             return false;
         }
-        self.charges.charge(l, b, key, size);
+        self.charges.charge(l, b, node, size);
         true
+    }
+
+    /// Records the source entry `b` of `l` is charged to with the entry (`Entry::source`), so
+    /// its charge outlives a restart.
+    pub(crate) fn keep_source(&mut self, l: LabelId, b: BlobId) {
+        let Some((source, _)) = self.charges.by_entry.get(&(l, b)).copied() else { return };
+        if let Some(e) = self.state.entries.get(&(l, b)).filter(|e| e.source != source) {
+            let e = Entry { source, ..e.clone() };
+            self.state.set_entry(l, b, e);
+        }
+    }
+
+    /// Whether entry `e` (`b` of `l`) counts against the peer budgets: unstamped, giving nothing
+    /// held and at no host.
+    fn counts(&self, l: &LabelId, b: &BlobId, e: &Entry) -> bool {
+        e.stamp.is_none() && self.gives_nothing(e) && !self.state.present_anywhere(l, b)
+    }
+
+    /// Charges what the store holds at open (notes/peers.md, Budget): every entry that counts,
+    /// at its size, to its source (`Entry::source`, else its label), so a restart gives no peer a
+    /// fresh budget; a source left on one that no longer counts goes.
+    pub(crate) fn charge_held(&mut self) {
+        let mut counted = Vec::new();
+        let mut cleared = Vec::new();
+        for ((l, b), e) in &self.state.entries {
+            if self.counts(l, b, e) {
+                counted.push((*l, *b, e.source, e.size.map_or(0, u64::from)));
+            } else if e.source.is_some() {
+                cleared.push((*l, *b));
+            }
+        }
+        for (l, b, source, n) in counted {
+            self.charges.charge(l, b, source, n);
+        }
+        for (l, b) in cleared {
+            self.clear_source(l, b);
+        }
+    }
+
+    /// Drops entry `b` of `l`'s source: it no longer counts.
+    fn clear_source(&mut self, l: LabelId, b: BlobId) {
+        if let Some(e) = self.state.entries.get(&(l, b)).filter(|e| e.source.is_some()) {
+            let e = Entry { source: None, ..e.clone() };
+            self.state.set_entry(l, b, e);
+        }
     }
 
     /// A peer budget refused what a peer sent (under `l`): the app hears of it once until
@@ -425,16 +480,16 @@ impl SyncEngine {
         }
     }
 
-    /// Drops charges that no longer count: entries no longer held, judged since, or present at
-    /// a host or peer.
+    /// Drops charges that no longer count (`counts`): entries no longer held, stamped, judged
+    /// since, or present at a host, with the source they kept.
     pub(crate) fn prune_charges(&mut self) {
-        let st = &self.state;
-        let stale: Vec<(LabelId, BlobId)> = self.charges.by_entry.keys().filter(|(l, b)| !(st.entries.get(&(*l, *b)).is_some_and(|e| self.gives_nothing(e)) && !st.present_anywhere(l, b))).copied().collect();
+        let stale: Vec<(LabelId, BlobId)> = self.charges.by_entry.keys().filter(|(l, b)| !self.state.entries.get(&(*l, *b)).is_some_and(|e| self.counts(l, b, e))).copied().collect();
         self.charges.reported &= stale.is_empty();
-        for k in stale {
-            if let Some((p, n)) = self.charges.by_entry.remove(&k) {
-                self.charges.uncharge(p, n);
+        for (l, b) in stale {
+            if let Some((p, n)) = self.charges.by_entry.remove(&(l, b)) {
+                self.charges.uncharge(charge_key(p, &l), n);
             }
+            self.clear_source(l, b);
         }
         self.charges.pruned = self.now();
         self.charges.full = false;

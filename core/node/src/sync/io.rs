@@ -26,8 +26,9 @@ pub struct SyncConfig {
     /// Co-readers dialed per label and in total (by node tid).
     pub max_peers_per_label: usize,
     pub max_peers: usize,
-    /// Bytes one peer key, and all peers together, may have uploaded or deposited here that
-    /// are not opened, not at a host and still held (co-reader-peer serving).
+    /// Bytes one peer (its source, else the label), and all peers together, may have brought
+    /// here of entries unstamped, giving nothing held and at no host (co-reader-peer serving;
+    /// resource bound: 0 keeps no unjudged input of a peer, infinity lets peers fill storage).
     pub peer_bytes: u64,
     pub peer_total_bytes: u64,
     /// Connections authenticated as client actors at once (a further Auth is Error 4). Resource
