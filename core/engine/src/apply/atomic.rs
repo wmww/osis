@@ -2,7 +2,7 @@
 //! after its role records reach perm, marks the bodies its joins may have replaced, applies expiry and purges, and
 //! re-judges held deltas when the held set changed; events go out after it is durable.
 
-use super::{Parts, Streamed, copies, validity};
+use super::{Parts, Streamed, validity};
 use crate::engine::{Core, Meta, Owned, Tx, records};
 use crate::error::{Error, Result};
 use crate::events::{Cause, Event, Origin};
@@ -262,14 +262,11 @@ pub(super) fn stream_stored(tx: &mut Tx<'_>, h: &Header, id: &CommitId, ai: usiz
     Ok(head.map(|x| (x.frontiers, x.absorbed.into_iter().collect())))
 }
 
-/// What the joins of a commit's parts, and the rebuilds after them, leave for the rest of apply.
+/// What the joins of a commit's parts leave for the rest of apply.
 #[derive(Default)]
 pub(super) struct Joins {
     pub changed: BTreeSet<(Tid, Ak)>,
     pub touched: Touched,
-    /// Aspects rebuilt once the commit is stored (its own bodies join too): one a valid
-    /// snapshot vouching for invalid writes joined into, or one an invalid delta arrived on.
-    pub rebuild: BTreeSet<(Tid, Ak)>,
     /// Per valid part joined on an aspect holding a body with a relative bound, the writes its
     /// joins superseded: the bodies they replaced are judged again (`retention::mark_killed`),
     /// after the commit's record.
@@ -299,10 +296,10 @@ fn joins(tx: &mut Tx<'_>, h: &Header, id: &CommitId, blob: &CommitBlob, parts: &
 
 /// Joins one part (`joins`): every held snapshot notes its frontiers, whatever its validity; a
 /// valid part joins (a valid snapshot's writes like any write, spec/crdt.md §4.1: they are
-/// never compared with their own delta's); an invalid delta does not join: the aspect is
-/// rebuilt once it is stored (`after_store`: its writes and others' writes nested under its
-/// creations go, spec/crdt.md §4.6); an invalid snapshot gives
-/// nothing (its copies never join, spec/permissions.md §5.2).
+/// never compared with their own delta's, and those of a delta invalid here count through it);
+/// an invalid part joins nothing and changes nothing: un-merge takes exactly an invalid delta's
+/// own writes (spec/crdt.md §4.6), which no other delta carries (§3.3: no foreign stamps outside
+/// snapshots), and an invalid snapshot gives nothing (spec/permissions.md §5.2).
 #[allow(clippy::too_many_arguments)]
 fn join_part(tx: &mut Tx<'_>, h: &Header, id: &CommitId, blob: &CommitBlob, ai: usize, part: PartRef<'_>, v: bool, j: &mut Joins) -> Result<()> {
     let Some(a) = h.aspects.get(ai) else { return Ok(()) };
@@ -325,19 +322,12 @@ fn join_part(tx: &mut Tx<'_>, h: &Header, id: &CommitId, blob: &CommitBlob, ai: 
     if let Some(fr) = gives {
         note_snapshot(tx.core, &tid, &ak, h.ts, id, fr);
     }
-    // a valid snapshot carrying writes of deltas invalid here makes them count again: the aspect
-    // is rebuilt (spec/crdt.md §4.6)
-    let owned = if snap && v { invalid_of(tx.core, &tid, &ak) } else { Vec::new() };
-    let mut vouch = false;
     // superseded writes date bodies with a relative bound, and make a durable body read on its
     // own one a cover may drop (`retention::bounds::read_alone`)
     let bounded = v && (!tx.is_memory_commit(id) || crate::retention::bounded(tx.core, &tid, &ak) || crate::engine::listing::listened(tx.core, &tid, &ak));
     let mut ch = Changes::new();
     let mut dead = Killed::default();
-    // an invalid delta (the one path, issues/drop-rejoin-robust.md item 1): nothing of it
-    // joins; the aspect is rebuilt from the held bodies once it is stored
     if !v && !snap {
-        j.rebuild.insert((tid, ak.clone()));
         if own {
             each_piece(tx, h, id, blob, part, &mut |_, f| {
                 whole |= crate::retention::snapshot::replaces(&f);
@@ -348,9 +338,6 @@ fn join_part(tx: &mut Tx<'_>, h: &Header, id: &CommitId, blob: &CommitBlob, ai: 
         return Ok(());
     }
     each_piece(tx, h, id, blob, part, &mut |tx, f| {
-        if snap {
-            vouch |= copies::vouches_any(&f, &owned);
-        }
         whole |= own && crate::retention::snapshot::replaces(&f);
         if !v {
             return Ok(());
@@ -361,9 +348,6 @@ fn join_part(tx: &mut Tx<'_>, h: &Header, id: &CommitId, blob: &CommitBlob, ai: 
         Ok(())
     })?;
     note_whole(tx, id, ai, whole);
-    if vouch {
-        j.rebuild.insert((tid, ak.clone()));
-    }
     if !v {
         return Ok(());
     }
@@ -374,16 +358,7 @@ fn join_part(tx: &mut Tx<'_>, h: &Header, id: &CommitId, blob: &CommitBlob, ai: 
     Ok(())
 }
 
-/// What un-merging removes on `(tid, ak)` (spec/crdt.md §4.6, spec/permissions.md §5.2): from
-/// every delta body (leftovers included) the writes of the held deltas invalid here, exactly
-/// their own (others' writes nested in their records stay). A valid snapshot's body joins whole:
-/// its copies stay, its writer vouched for them.
-pub(crate) struct Unmerge {
-    owned: OwnedSet,
-}
-
-/// A list of `Owned` for a lookup per dot in O(log its length): a fall lists every fallen delta,
-/// and asks about every dot it reads.
+/// A list of `Owned` for a lookup per dot in O(log its length).
 #[derive(Default)]
 struct OwnedSet {
     commits: BTreeSet<CommitId>,
@@ -415,9 +390,6 @@ impl OwnedSet {
         }
         set
     }
-    fn is_empty(&self) -> bool {
-        self.commits.is_empty() && self.ranges.is_empty()
-    }
     /// Whether `f` carries a value of a write of theirs (`Fragment::strip` would change it).
     fn valued_in(&self, f: &Fragment) -> bool {
         let mut g = f.clone();
@@ -438,31 +410,6 @@ impl OwnedSet {
     }
 }
 
-impl Unmerge {
-    /// From the held set.
-    pub(crate) fn of(core: &Core, tid: &Tid, ak: &Ak) -> Unmerge {
-        Unmerge { owned: OwnedSet::of(&invalid_of(core, tid, ak)) }
-    }
-    /// Nothing invalid: removes nothing.
-    pub(crate) fn none() -> Unmerge {
-        Unmerge { owned: OwnedSet::default() }
-    }
-    pub(crate) fn is_empty(&self) -> bool {
-        self.owned.is_empty()
-    }
-    /// Whether a write of origin dot `d` goes.
-    pub(crate) fn bad(&self, d: &osis_crdt::Dot) -> bool {
-        self.owned.owns(d)
-    }
-    /// Removes from a delta body what un-merging removes (spec/crdt.md §4.6): the invalid
-    /// deltas' own writes.
-    pub(crate) fn strip(&self, f: &mut Fragment) {
-        if !self.is_empty() {
-            f.remove_writes(&|d| self.bad(d));
-        }
-    }
-}
-
 /// Whether held part `ai` of `c` carries a value of a write of `owned` (`rebuild`'s invariant).
 pub(crate) fn carries_any(tx: &mut Tx<'_>, c: &CommitId, ai: usize, owned: &[Owned]) -> Result<bool> {
     let set = OwnedSet::of(owned);
@@ -472,20 +419,6 @@ pub(crate) fn carries_any(tx: &mut Tx<'_>, c: &CommitId, ai: usize, owned: &[Own
         Ok(())
     })?;
     Ok(carries)
-}
-
-/// The writes of the held deltas on `(tid, ak)` that are invalid here.
-pub(crate) fn invalid_of(core: &Core, tid: &Tid, ak: &Ak) -> Vec<Owned> {
-    let mut out = Vec::new();
-    for c in core.ix.invalid.get(&(*tid, ak.clone())).into_iter().flatten() {
-        let Some(m) = core.ix.commits.get(c) else { continue };
-        let Some(ai) = m.aspect(tid, ak) else { continue };
-        if m.valid_at(ai) {
-            continue;
-        }
-        out.extend(crate::retention::writes_of(&m.header, c, ai));
-    }
-    out
 }
 
 pub(crate) fn strip_valueless(core: &Core, tid: &Tid, ak: &Ak, st: &mut Fragment) {
@@ -615,20 +548,13 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Parts, o
 
     let pend = super::keys::before_join(tx, &h, &id, &read, &valid)?;
     let mut j = joins(tx, &h, &id, blob, &parts, &valid)?;
-    // an invalid aspect whose part is not held (it may never come, or come late): rebuilt as a
-    // held one is
-    for (ai, a) in h.aspects.iter().enumerate() {
-        if !valid.get(ai).copied().unwrap_or(false) && !parts.has(ai) {
-            arrived_invalid(tx, &a.tid, &a.ak, &mut j)?;
-        }
-    }
     {
         let _s = crate::costs::span("apply: put_commit");
         // role-class parts join whole: the record holds the parts read
         tx.put_commit(&id, blob, &meta, Shred::No, h.kind.is_role().then(|| read.edges()))?;
     }
     note_held_rules(tx, &h, &id, &parts)?;
-    after_store(tx, &mut j)?;
+    after_store(tx, &j);
     {
         let _s = crate::costs::span("apply: retention");
         crate::retention::stripped_joined(tx, &id, &parts.stripped_joined(), &mut j.changed)?;
@@ -699,31 +625,11 @@ fn note_whole(tx: &mut Tx<'_>, id: &CommitId, ai: usize, whole: bool) {
     }
 }
 
-/// A delta invalid on arrival whose part is not held (it may never come, or come late): the
-/// aspect is rebuilt as on a flip (a held one once stored, `join_part`; the one path,
-/// issues/invalid-arrival-replays-aspect.md). Edge and creation aspects reach perm instead.
-fn arrived_invalid(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, j: &mut Joins) -> Result<()> {
-    if validity::perm_ak(ak.as_str()) || ak.signal() {
-        return Ok(());
-    }
-    if invalid_of(tx.core, tid, ak).is_empty() {
-        return Ok(());
-    }
-    rebuild_changed(tx, tid, ak, j)
-}
-
-/// Once commit `id` is stored, so its own bodies join too: the rebuilds its joins call for
-/// (`Joins::rebuild`), then the bodies its valid parts' joins replaced are marked.
-fn after_store(tx: &mut Tx<'_>, j: &mut Joins) -> Result<()> {
-    for (tid, ak) in std::mem::take(&mut j.rebuild) {
-        // counted: tests read whether a snapshot vouched
-        let _s = crate::costs::span("apply: vouched rebuild");
-        rebuild_changed(tx, &tid, &ak, j)?;
-    }
+/// Once commit `id` is stored: the bodies its valid parts' joins replaced are marked.
+fn after_store(tx: &mut Tx<'_>, j: &Joins) {
     for (tid, ak, dead) in &j.joined {
         crate::retention::mark_killed(tx, tid, ak, dead);
     }
-    Ok(())
 }
 
 /// `rebuild` of `(tid, ak)` in an apply: noted for its events and indexes.
@@ -786,7 +692,7 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
     // a leftover set aside at a purge's fall is stale once a copy joined whole
     crate::retention::forget_joined_leftovers(tx, &h, id, &late)?;
     note_held_rules(tx, &h, id, &parts)?;
-    after_store(tx, &mut j)?;
+    after_store(tx, &j);
     // a snapshot back and judged invalid carries nothing: the parts dropped under its cover
     // alone are missing again, as when a held one turns invalid (spec/permissions.md §5.2)
     let fell: Vec<usize> = if h.kind.is_compaction() { late.iter().copied().filter(|ai| tx.core.ix.commits.get(id).is_some_and(|m| !m.valid_at(*ai))).collect() } else { Vec::new() };
@@ -1037,9 +943,10 @@ pub(crate) enum TxChange {
 /// Debug builds, at the end of every transaction (issues/drop-rejoin-robust.md, item 5): each
 /// aspect it touched (below) holds exactly the join of its held bodies (`rebuilt`: spec/crdt.md
 /// §4.6 Un-merge), as stored, but for the text chars §5.7 leaves to the node. Panics with the
-/// difference. Every change but a valid join is a rebuild, so for those aspects this checks
-/// that a rebuild is a fixpoint; for the ordinary joins, that the incremental state is the
-/// rebuild. Returns what the transaction changed.
+/// difference. Every change but a valid join or an invalid part's arrival or drop is a rebuild,
+/// so for those aspects this checks that a rebuild is a fixpoint; for the ordinary joins, that
+/// the incremental state is the rebuild; for an invalid part (always checked), that it changes
+/// nothing. Returns what the transaction changed.
 #[cfg(debug_assertions)]
 pub(crate) fn check_rebuilt(tx: &mut Tx<'_>) -> Result<TxChange> {
     use crate::engine::state::encode;
@@ -1152,9 +1059,8 @@ fn text_diff(kept: &str, rebuilt: &str) -> String {
 /// The one path after anything but a valid join changes what `(tid, ak)` holds
 /// (issues/drop-rejoin-robust.md item 1): a validity flip, a drop, a part held as its leftover,
 /// a re-arrival. The state is `rebuilt` (spec/crdt.md §4.6, spec/permissions.md §5.2): the join
-/// of every held body, leftovers included, each first stripped of the writes of the deltas now
-/// invalid here (by counter range or commit ID, so the author's valid deltas keep theirs; a
-/// valid snapshot's body joins whole), then of the values held
+/// of every held valid body, leftovers included (an invalid delta's body carries only its own
+/// writes, which un-merge takes; an invalid snapshot gives nothing), stripped of the values held
 /// value-less here. Written shredded (spec/commits.md §5: a body went, so every local copy of it
 /// goes). What waits on its state, and its bodies with a relative bound, are
 /// judged again.
@@ -1251,7 +1157,6 @@ pub(crate) fn rebuilt(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, mut carrying: Option<
         let Some(m) = tx.core.ix.commits.get(c) else { return Ok(None) };
         Ok(Some((ai, m.header.kind.is_compaction(), m.valid_at(ai))))
     };
-    let un = Unmerge::of(tx.core, tid, ak);
     let mut st = Fragment::default();
     let mut ch = Changes::new();
     // the bodies a piece at a time; once the state is settled above the next one, none older
@@ -1274,24 +1179,22 @@ pub(crate) fn rebuilt(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, mut carrying: Option<
         let Some((ai, snap, valid)) = joining(tx, c)? else { continue };
         let _s = (!settled).then(|| crate::costs::span("rebuild: body"));
         debug_assert!(snapshots || !snap, "snapshot {c:?} of {tid:?} {ak:?} held and stored, not in `ix.snapshots`");
-        // an invalid snapshot joins nothing, but its body is held
-        let joins = !snap || valid;
-        if !joins && listed.is_none() {
+        // an invalid part joins nothing, but its body is held: un-merge takes exactly an invalid
+        // delta's own writes, all its body carries (spec/crdt.md §3.3, §4.6), and an invalid
+        // snapshot gives nothing (spec/permissions.md §5.2)
+        if !valid && listed.is_none() {
             continue;
         }
         let mut carries = false;
-        super::each_held_piece(tx, c, ai, &mut |_, mut f| {
+        super::each_held_piece(tx, c, ai, &mut |_, f| {
             if let Some(l) = &listed
                 && !carries
             {
                 carries = l.valued_in(&f);
                 debug_assert!(snap || !carries, "content body {c:?} of {tid:?} {ak:?} holds a listed value: its own go at `make_leftover`, and only a snapshot copies another's");
             }
-            if !joins {
+            if !valid {
                 return Ok(());
-            }
-            if !snap {
-                un.strip(&mut f);
             }
             if let Some(x) = fast.as_mut().filter(|_| !settled) {
                 x.join_into(f.clone(), None, &mut Changes::new());
@@ -1345,7 +1248,6 @@ mod tests {
                 })
                 .collect();
             let set = OwnedSet::of(&owned);
-            assert_eq!(set.is_empty(), owned.is_empty());
             for src in &srcs {
                 for ctr in &ctrs {
                     let d = Dot { src: src.clone(), ctr: *ctr };

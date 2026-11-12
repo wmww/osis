@@ -616,8 +616,7 @@ indexes! {
     /// Perm inputs: applied role commits, `created.0` records.
     pub held: held::Held,
     pub commits: JMap<CommitId, Meta>,
-    /// Commits with a part invalid here, per aspect (`Core::index_validity`), so a join finds the
-    /// writes to strip in O(invalid parts), not O(history).
+    /// Commits with a part invalid here, per aspect (`Core::index_validity`).
     pub invalid: JSetMap<(Tid, Ak), CommitId>,
     /// Held commits per aspect their header lists: (`ts`, commit), whatever the part's validity
     /// and whether its body is held. Invariant (also for `by_thing`): it finds

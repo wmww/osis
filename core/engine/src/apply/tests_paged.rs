@@ -713,7 +713,7 @@ fn paged_snapshot_differing_copies_match_whole_spec_perm_5_2() {
         });
         let want = if late { "stamped after its commit" } else { "Applied" };
         assert!(outs.last().is_some_and(|o| o.contains(want)), "{name}: {outs:?}");
-        assert!(!c.contains_key("apply: vouched rebuild"), "{name}: {c:?}");
+        assert!(!c.contains_key("rebuild"), "{name}: {c:?}");
     }
 }
 

@@ -233,11 +233,11 @@ fn judge_replaced_at(tx: &mut Tx<'_>, h: &Header, c: &CommitId, ai: usize, fresh
 /// What `dated_replaced_at` reads of the held bodies of an aspect, by write (`osis_crdt::ByWrite`).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct HeldWrites {
-    /// The aspect's held commits read (`Indexes::by_aspect`), and whether no part of the aspect
-    /// is invalid here (`Indexes::invalid`): then each body's writes below are a function of the
-    /// body alone, so a body joining adds its own (`amend_held_writes`).
+    /// The aspect's held commits read (`Indexes::by_aspect`) and those with a part invalid here
+    /// (`Indexes::invalid`): each body's writes below are a function of the body and its
+    /// validity alone, so a body joining adds its own (`amend_held_writes`).
     bodies: Vec<(Ts, CommitId)>,
-    clean: bool,
+    invalid: BTreeSet<CommitId>,
     /// The writes each held body holds, winning there or not (`Fragment::held_writes`), as the
     /// state joins it (an invalid delta's writes left out, a valid snapshot's body whole, an
     /// invalid snapshot's giving nothing): the two earliest such bodies by `(ts, ID)`, so one is not
@@ -261,36 +261,31 @@ pub(super) fn held_writes(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Arc<Hel
     )
 }
 
-/// Whether no part of `(tid, ak)` is invalid here (`HeldWrites::clean`), and its held commits:
-/// what `amend_held_writes` compares, read inside `memo::accounted`.
-fn aspect_bodies(core: &Core, tid: &Tid, ak: &Ak) -> (bool, Vec<(Ts, CommitId)>) {
+/// The commits with a part of `(tid, ak)` invalid here, and its held commits: what
+/// `amend_held_writes` compares, read inside `memo::accounted`.
+fn aspect_bodies(core: &Core, tid: &Tid, ak: &Ak) -> (BTreeSet<CommitId>, Vec<(Ts, CommitId)>) {
     let k = (*tid, ak.clone());
-    crate::engine::memo::accounted(|| (core.ix.invalid.get(&k).is_none_or(|s| s.is_empty()), core.ix.by_aspect.get(&k).into_iter().flatten().cloned().collect()))
+    crate::engine::memo::accounted(|| (core.ix.invalid.get(&k).cloned().unwrap_or_default(), core.ix.by_aspect.get(&k).into_iter().flatten().cloned().collect()))
 }
 
 /// `HeldWrites` of `(tid, ak)` read anew: every held body of the aspect, each part whole.
 pub(super) fn read_held_writes(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<HeldWrites> {
-    let (clean, on) = aspect_bodies(tx.core, tid, ak);
-    // clean, un-merge removes nothing (`Unmerge::of` reads the invalid parts it has not)
-    let un = if clean { crate::apply::Unmerge::none() } else { crate::apply::Unmerge::of(tx.core, tid, ak) };
-    let mut out = HeldWrites { bodies: on.clone(), clean, ..HeldWrites::default() };
+    let (invalid, on) = aspect_bodies(tx.core, tid, ak);
+    let mut out = HeldWrites { bodies: on.clone(), invalid, ..HeldWrites::default() };
     for (ts, x) in on {
-        note_body(tx, tid, ak, &un, ts, x, &mut out)?;
+        note_body(tx, tid, ak, ts, x, &mut out)?;
     }
     Ok(out)
 }
 
-/// `old` brought up to date when the aspect's held commits only grew while it stayed clean
-/// (`HeldWrites::clean`, read at both): each new body's writes noted, what a fresh read gives.
-/// `None` (read it anew) when a commit left the aspect or a part of it is invalid. The aspect's
-/// commits and invalid parts are its accounted reads (`aspect_bodies`): any other move of what
-/// `old` read (a held body's part dropped, a late part come, a validity flip, a rollback of
-/// records) reads it anew.
+/// `old` brought up to date when the aspect's held commits only grew and none of `old`'s flipped
+/// (`HeldWrites::invalid`, read at both): each new body's writes noted, what a fresh read gives.
+/// `None` (read it anew) when a commit left the aspect or an old one's validity moved. The
+/// aspect's commits and invalid parts are its accounted reads (`aspect_bodies`): any other move
+/// of what `old` read (a held body's part dropped, a late part come, a rollback of records)
+/// reads it anew.
 fn amend_held_writes(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, old: &HeldWrites) -> Result<Option<HeldWrites>> {
-    let (clean, on) = aspect_bodies(tx.core, tid, ak);
-    if !(old.clean && clean) {
-        return Ok(None);
-    }
+    let (invalid, on) = aspect_bodies(tx.core, tid, ak);
     // both sorted: each of `old.bodies` still held, the rest new
     let mut was = old.bodies.iter().peekable();
     let mut new = Vec::new();
@@ -306,35 +301,36 @@ fn amend_held_writes(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, old: &HeldWrites) -> R
     if was.next().is_some() {
         return Ok(None);
     }
+    // the old commits invalid now are those invalid then
+    if !invalid.iter().filter(|c| !new.iter().any(|x| x.1 == **c)).eq(old.invalid.iter()) {
+        return Ok(None);
+    }
     let mut out = old.clone();
     out.bodies = on;
-    let un = crate::apply::Unmerge::none();
+    out.invalid = invalid;
     for (ts, x) in new {
-        note_body(tx, tid, ak, &un, ts, x, &mut out)?;
+        note_body(tx, tid, ak, ts, x, &mut out)?;
     }
     Ok(Some(out))
 }
 
-/// Notes held body `(ts, x)` of `(tid, ak)` in `out` (`HeldWrites`), its part read whole, as
-/// un-merge `un` leaves it.
-fn note_body(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, un: &crate::apply::Unmerge, ts: Ts, x: CommitId, out: &mut HeldWrites) -> Result<()> {
+/// Notes held body `(ts, x)` of `(tid, ak)` in `out` (`HeldWrites`), its part read whole; an
+/// invalid part gives nothing (un-merge takes all an invalid delta's body carries, `apply::rebuilt`).
+fn note_body(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, ts: Ts, x: CommitId, out: &mut HeldWrites) -> Result<()> {
     let Some(xai) = held_part(tx.core, &x, tid, ak) else { return Ok(()) };
-    if crate::apply::copies::invalid_snapshot(tx.core, &x, tid, ak) {
+    let Some(m) = tx.core.ix.commits.get(&x) else { return Ok(()) };
+    if !m.valid_at(xai) {
         return Ok(());
     }
-    let Some(m) = tx.core.ix.commits.get(&x) else { return Ok(()) };
     let snap = m.header.kind.is_compaction();
-    let carries = snap && !m.bare(xai) && m.valid_at(xai);
-    let Some(mut f) = crate::apply::held_fragment(tx, &x, xai)? else { return Ok(()) };
+    let carries = snap && !m.bare(xai);
+    let Some(f) = crate::apply::held_fragment(tx, &x, xai)? else { return Ok(()) };
     drop(crate::costs::span("deaths: a body"));
     if carries {
         out.carried.note(&f.winners(), |_, v| {
             v.push((ts, x));
             v.sort();
         });
-    }
-    if !snap {
-        un.strip(&mut f);
     }
     out.holds.note(&f.held_writes(), |_, v| {
         v.push((ts, x));

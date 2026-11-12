@@ -815,11 +815,10 @@ fn validity_flip_is_linear_spec_permissions_5_2() {
     flat("a revoke flipping an add: commits re-judged", a[0].n("rejudge: a commit"), b[0].n("rejudge: a commit"));
 }
 
-// issues/invalid-arrival-replays-aspect.md; spec/permissions.md §5.2; spec/requirements.md, Scale: an invalid add
-// arriving among n held commits takes nothing, yet rebuilds the aspect from every held body.
+// spec/crdt.md §4.6 (un-merge takes exactly an invalid delta's own writes), spec/requirements.md,
+// Scale: an invalid add arriving among n held commits takes nothing and reads no held body.
 #[test]
-#[ignore = "issues/invalid-arrival-replays-aspect.md"]
-fn repro_invalid_arrival_is_flat() {
+fn invalid_arrival_is_flat_spec_crdt_4_6() {
     let (a, b) = (validity_flip(30), validity_flip(300));
     all_flat("an invalid add arriving", &a[1], &b[1]);
 }

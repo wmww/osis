@@ -293,14 +293,16 @@ fn drop_part_for(tx: &mut Tx<'_>, c: &CommitId, ai: usize, why: DropFor) -> Resu
     crate::apply::keys::forget_dropped(tx, &header, ai, &role_bodies)?;
     // a snapshot dropped other than as covered carries nothing: the parts dropped under its
     // cover alone are missing again
-    if stands_in || (own_cover && why != DropFor::Cover) {
+    let uncovered = stands_in || (own_cover && why != DropFor::Cover);
+    if uncovered {
         uncover(tx, &a.tid, &a.ak)?;
     }
     // the one path (issues/drop-rejoin-robust.md item 1): the aspect is rebuilt from what is
     // held now, shredded (every local copy of the body goes,
     // spec/commits.md §5). A valid snapshot dropped vouches no more for invalid deltas' writes
     // it carried (spec/permissions.md §5.2). An ended thing's aspects rebuild once, after its last part (`retention::end`).
-    if why == DropFor::Ended {
+    // An invalid part gave nothing (`apply::rebuilt`): its drop leaves the state as it is.
+    if why == DropFor::Ended || (invalid && !uncovered) {
         return Ok(());
     }
     crate::apply::rebuild(tx, &a.tid, &a.ak)
@@ -383,9 +385,8 @@ fn goes_invalid(core: &Core, m: &crate::engine::Meta, ai: usize) -> bool {
 }
 
 /// Drops every held part judged invalid in this transaction (`Core::drop_due`) but those
-/// `goes_invalid` keeps, each aspect rebuilt once (the one path: a record an invalid body left
-/// with no write goes with it): its writes are none of the state's, so no read changes
-/// (spec/permissions.md §5.2). Run at the transaction's end, after
+/// `goes_invalid` keeps: its writes are none of the state's, so no read changes and no aspect is
+/// rebuilt (spec/crdt.md §4.6, spec/permissions.md §5.2). Run at the transaction's end, after
 /// this node's addenda (a witness lists what it received, `flows::addenda`).
 pub(crate) fn drop_invalid(tx: &mut Tx<'_>) -> Result<()> {
     while !tx.core.drop_due.is_empty() {
@@ -1389,6 +1390,19 @@ mod tests {
         check(&mut lp, "an invalid part joined");
         lp.deliver(3, &inside).unwrap();
         check(&mut lp, "a join inside the invalid part's record");
+        // with the invalid part held, a join amends them: it reads its own body alone
+        let mut m = Mutation::new();
+        m.op(t, &x, PathOp { path: vec![PathSeg::Key(Value::Str("d".into()))], op: Op::Set(Value::Int(3)) }).unwrap();
+        lp.advance(10);
+        let more = lp.peers[1].commit(m).unwrap().unwrap();
+        let more = lp.peers[1].engine.package(&more).unwrap().unwrap();
+        crate::costs::take();
+        lp.deliver(3, &more).unwrap();
+        lp.peers[3].engine.run(|tx| super::bounds::held_writes(tx, &t, &x).map(drop)).unwrap();
+        let c = crate::costs::take();
+        let count = |name: &str| c.iter().filter(|s| s.0 == name).map(|s| s.2).sum::<u64>();
+        assert_eq!((count("deaths: a body"), count("held writes")), (1, 0), "a join beside an invalid part");
+        check(&mut lp, "a join beside an invalid part");
     }
 
     // spec: none (internal: notes/engine.md, Derived values). A memo reading a commit's leftover

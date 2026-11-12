@@ -4,13 +4,12 @@
 //! and rewriting the whole state. `tests_paged` requires both to leave the same.
 
 use super::Parts;
-use super::atomic::{Joins, invalid_of, note_snapshot, strip_valueless};
-use super::{copies, validity};
+use super::atomic::{Joins, note_snapshot, strip_valueless};
 use crate::engine::{Gives, Tx};
 use crate::retention::Killed;
 use crate::error::Result;
 use osis_base::{Ak, CommitId, Tid};
-use osis_commit::{AspectEntry, Decoded, Header};
+use osis_commit::{Decoded, Header};
 use osis_crdt::{Changes, Fragment};
 use osis_store::Shred;
 
@@ -30,19 +29,12 @@ pub(super) fn joins(tx: &mut Tx<'_>, h: &Header, id: &CommitId, parts: &Parts, v
         if a.ak.signal() {
             continue;
         }
-        let snap = fr.is_some();
         // every held snapshot's frontiers, whatever its validity
         if let Some(fr) = fr {
-            let v = valid.get(ai).copied().unwrap_or(false);
-            if note_snapshot_part(tx, a, h.ts, id, &f, fr, v) {
-                j.rebuild.insert((a.tid, a.ak.clone()));
-            }
+            note_snapshot(tx.core, &a.tid, &a.ak, h.ts, id, fr);
         }
+        // an invalid part joins nothing (`atomic::join_part`)
         if !valid.get(ai).copied().unwrap_or(false) {
-            // an invalid delta joins nothing: rebuilt once stored (`atomic::join_part`)
-            if !snap && !validity::perm_ak(a.ak.as_str()) {
-                j.rebuild.insert((a.tid, a.ak.clone()));
-            }
             continue;
         }
         j.touched.note(&a.tid, &a.ak, &f);
@@ -54,15 +46,6 @@ pub(super) fn joins(tx: &mut Tx<'_>, h: &Header, id: &CommitId, parts: &Parts, v
         j.joined.push((a.tid, a.ak.clone(), dead));
     }
     Ok(())
-}
-
-fn note_snapshot_part(tx: &mut Tx<'_>, a: &AspectEntry, ts: osis_base::Ts, id: &CommitId, f: &Fragment, fr: Gives, valid: bool) -> bool {
-    note_snapshot(tx.core, &a.tid, &a.ak, ts, id, fr);
-    if !valid {
-        return false;
-    }
-    let owned = invalid_of(tx.core, &a.tid, &a.ak);
-    copies::vouches_any(f, &owned)
 }
 
 fn join_into_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, mut delta: Fragment, dead: &mut Killed) -> Result<Changes> {
