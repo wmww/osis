@@ -277,28 +277,34 @@ impl Fragment {
     }
 
     /// The writes of a compacting writer's sweep (spec/crdt.md §4.8, spec/sync.md §7): a reset at
-    /// `r` of each map entry and list element that a removal ended (removal is final) and that
-    /// still holds a write, so that it dies and its bytes go. A record not live for want of a
-    /// creation or a value is no such thing: the creation or a valued write may still arrive.
-    /// Below a record it resets nothing more (that reset takes it all). Not for role-class
-    /// aspects (a removal there names its key).
-    pub fn sweep(&self, r: &Stamp) -> Option<Fragment> {
+    /// `r` of each map entry and list element that is not live, holds a write, and whose creation
+    /// is dead (removal is final), so that it dies and its bytes go; for text, a delete at `r` of
+    /// each element whose creation is dead holding an undelete's char. A creation is dead when the
+    /// record has a reset of its own (a removal is written above the creation it removes), or when
+    /// no creation of it is held though `reflected` says the state reflects the delta that wrote
+    /// it: a reset pruned it. A record lacking its creation otherwise may still show (the creation
+    /// may arrive, or turn valid), and one holding it does not hold it dead (a valued write may
+    /// still arrive under an expired creation). Below a record it resets nothing more (that reset
+    /// takes it all). An enum's payloads of a case not current are no such thing: any case write
+    /// stamped between the enum's reset and theirs shows them. Not for role-class aspects (a
+    /// removal there names its key).
+    pub fn sweep(&self, r: &Stamp, reflected: &dyn Fn(&Dot) -> bool) -> Option<Fragment> {
         match self {
             Fragment::Register(_) | Fragment::Bag(_) | Fragment::Set(_) => None,
-            Fragment::Slots(_) => self.chosen().sweep(r),
+            Fragment::Slots(_) => self.chosen().sweep(r, reflected),
             Fragment::Struct(s) => {
-                let fields: BTreeMap<u64, Fragment> = s.fields.iter().filter_map(|(k, f)| Some((*k, f.sweep(r)?))).collect();
+                let fields: BTreeMap<u64, Fragment> = s.fields.iter().filter_map(|(k, f)| Some((*k, f.sweep(r, reflected)?))).collect();
                 (!fields.is_empty()).then(|| Fragment::Struct(Struct { meta: Meta::default(), fields }))
             }
             Fragment::Enum(e) => {
-                let payloads: BTreeMap<u64, Fragment> = e.payloads.iter().filter_map(|(k, f)| Some((*k, f.sweep(r)?))).collect();
+                let payloads: BTreeMap<u64, Fragment> = e.payloads.iter().filter_map(|(k, f)| Some((*k, f.sweep(r, reflected)?))).collect();
                 (!payloads.is_empty()).then(|| Fragment::Enum(Enum { meta: Meta::default(), case: None, payloads }))
             }
             Fragment::Map(m) => {
                 let mut entries = BTreeMap::new();
                 for (id, en) in &m.entries {
                     if m.is_live(id) {
-                        if let Some(inner) = en.frag.as_deref().and_then(|f| f.sweep(r)) {
+                        if let Some(inner) = en.frag.as_deref().and_then(|f| f.sweep(r, reflected)) {
                             entries.insert(id.clone(), Entry { frag: Some(Box::new(inner)), ..Entry::default() });
                         }
                     } else if id.key.is_some() || en.frag.is_some() {
@@ -306,23 +312,34 @@ impl Fragment {
                         // a key a record repeats goes with any write, a value-less one too; a
                         // key-erased record has bytes to lose only in a valued one
                         let holds = recs().any(|(i, x)| x.frag.as_deref().is_some_and(|f| if i.key.is_some() { f.all_max().is_some() } else { f.written().is_some() }));
-                        if holds && recs().any(|(_, x)| x.reset.is_some()) && !recs().any(|(i, _)| m.is_live(i)) {
+                        let dead = || recs().any(|(_, x)| x.reset.is_some()) || (recs().all(|(_, x)| x.created.is_none()) && reflected(&id.dot));
+                        if holds && !recs().any(|(i, _)| m.is_live(i)) && dead() {
                             entries.insert(Eid::erased(id.dot.clone()), Entry::tomb(r));
                         }
                     }
                 }
                 (!entries.is_empty()).then(|| Fragment::Map(Map::new(Meta::default(), entries)))
             }
-            Fragment::Seq(s) if s.text => None,
+            Fragment::Seq(s) if s.text => {
+                let mut out = Seq::empty(true);
+                for (d, el) in s.elems() {
+                    // an undelete's char under a creation a reset pruned: the element never shows
+                    // again (§5.7), and a delete beats the undelete
+                    if el.created.is_none() && el.undel.is_some() && (0..el.span).all(|i| reflected(&Dot::new(d.src.clone(), d.ctr + i))) {
+                        out.elems_mut().insert(d.clone(), SeqElem { deleted: Some((r.clone(), true)), span: el.span, ..SeqElem::bare() });
+                    }
+                }
+                (!out.elems().is_empty()).then_some(Fragment::Seq(out))
+            }
             Fragment::Seq(s) => {
                 let mut out = Seq::empty(false);
                 for (d, el) in s.elems() {
                     let SeqContent::Frag(f) = &el.content else { continue };
                     if seq::is_visible(el, false) {
-                        if let Some(inner) = f.sweep(r) {
+                        if let Some(inner) = f.sweep(r, reflected) {
                             out.elems_mut().insert(d.clone(), SeqElem { content: SeqContent::Frag(Box::new(inner)), ..SeqElem::bare() });
                         }
-                    } else if f.written().is_some() && el.reset().is_some() {
+                    } else if f.written().is_some() && (el.reset().is_some() || (el.created.is_none() && reflected(d))) {
                         out.elems_mut().insert(d.clone(), SeqElem { deleted: Some((r.clone(), true)), ..SeqElem::bare() });
                     }
                 }

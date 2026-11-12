@@ -303,7 +303,7 @@ Rules:
   - **Join**: the copy with the value wins over the copy without (§4.1 copy order).
   - **Read**: a value-less write takes part in "later wins" like any other but reads as absent:
     - a register whose winner is value-less is absent;
-    - an enum whose case winner is value-less is absent and its payloads stay hidden until a reset sweeps them (§5.4);
+    - an enum whose case winner is value-less is absent and its payloads stay hidden until a reset prunes them (§5.4);
     - a value-less `W` makes nothing present;
     - a set or bag element whose value is value-less is not live; a map entry or list element whose creation is value-less is live only while it holds a live value (§4.3, §5.6, §5.7);
     - a text element whose winning flag write is a value-less undelete is not live (§5.7).
@@ -344,7 +344,7 @@ A write of fragment `A` is dead in `A ⊔ B` iff it wins in `A` and not in `A �
 - The invalid deltas' writes supersede nothing, so a write only they superseded has no death.
 - A valid write un-merged with the record it sits in still dies at a valid superseder (a reset on that record).
 
-**Hidden writes.** A write hidden in an element that is not live (§5.6, §5.7 Live) is not dead by that: it dies when a reset prunes it, a compacting writer's sweep included (spec/sync.md §7).
+**Hidden writes.** A write hidden in an element that is not live (§5.6, §5.7 Live), or in a payload of an enum case that is not current, is not dead by that: it dies when a reset prunes it, or a delete beats a text undelete, a compacting writer's sweep included (spec/sync.md §7).
 
 Retention judges when a body was replaced from the bodies a node holds, never earlier than this (spec/commits.md §5).
 
@@ -380,7 +380,7 @@ Each encoding below gives: state, delta shape (= grammar of §3.2, restated wher
 - Tombstones: none beyond `R`.
 
 ### 5.4 Enum (5)
-- State: `R`, `written`, case register `(stamp, case_id)`, payloads `{case_id: fragment}`. Payload writes are filed under the case they were made for; the payload of a case that is not current stays in the state, hidden, until a reset sweeps it.
+- State: `R`, `written`, case register `(stamp, case_id)`, payloads `{case_id: fragment}`. Payload writes are filed under the case they were made for; the payload of a case that is not current stays in the state, hidden, until a reset prunes it: a case write stamped between the enum's reset and a payload write shows that write.
 - Join: case register by stamp; payloads per case; prune (payloads of a non-current case are pruned by `E` like any other fragment, so a case change, which is a reset, drops every older payload write of every case).
 - Read: `[case_id]` or `[case_id, read(payloads[case_id])]`. A payload fragment that is absent for a case that has a payload type is a typed-read error (missing payload), never a panic. If the case register is absent the enum is absent, whatever payloads exist.
 - Ops: `set_case(id, payload)` where id differs from the current case → `[5, [D], [], [[D, id]], {id: payload fragment}]` (reset, case write, payload). Same case with a changed payload → `[5, [], [], [], {id: diff-delta}]` (no case write). `option<T>`: `none` is a case without payload: `[5, [D], [], [[D, 0]], {}]`.

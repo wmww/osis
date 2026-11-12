@@ -767,20 +767,20 @@ fn sweep_takes_only_what_is_hidden_spec_sync_7() {
     let edit = crate::diff(&mut Writer::new(ts(9), y.clone(), 1), Some(&put), &AnyView, &map("b")).unwrap().unwrap();
     let w = Writer::new(ts(20), y.clone(), 5);
     let r = w.delta_stamp();
-    assert_eq!(put.sweep(&r), None, "a live entry");
-    assert_eq!(edit.sweep(&r), None, "the creation not held: it may still arrive");
+    assert_eq!(put.sweep(&r, &|_| false), None, "a live entry");
+    assert_eq!(edit.sweep(&r, &|_| false), None, "the creation not held: it may still arrive");
     let dot = Dot::new(x.clone(), 1);
     let removal = crate::reset_entries(&Writer::new(ts(7), x.clone(), 3), &[(dot.clone(), Value::Str("k".into()))]);
     let mut gone = put.clone();
     gone.join(removal.clone());
-    assert_eq!(gone.sweep(&r), None, "a tombstone holds nothing");
+    assert_eq!(gone.sweep(&r, &|_| false), None, "a tombstone holds nothing");
     let mut hid = gone.clone();
     hid.join(edit.clone());
     assert_eq!(hid.read(), Some(Value::Map(Default::default())));
-    let sweep = hid.sweep(&r).expect("a removal hid the edit");
+    let sweep = hid.sweep(&r, &|_| false).expect("a removal hid the edit");
     let mut after = hid.clone();
     after.join(sweep.clone());
-    assert_eq!(after.sweep(&r), None, "once");
+    assert_eq!(after.sweep(&r, &|_| false), None, "once");
     assert!(!after.holds_write(&Dot::new(y.clone(), 1)), "the edit is dead");
     let Fragment::Map(m) = &after else { panic!("a map") };
     assert!(m.entries.keys().all(|id| id.key.is_none()), "the key is gone");
@@ -789,10 +789,10 @@ fn sweep_takes_only_what_is_hidden_spec_sync_7() {
     expired.join(edit.clone());
     expired.strip(&mine);
     assert_eq!(expired.read(), Some(map("b")), "another's value keeps the entry");
-    assert_eq!(expired.sweep(&r), None, "a live entry");
+    assert_eq!(expired.sweep(&r, &|_| false), None, "a live entry");
     let mut own = put.clone();
     own.strip(&mine);
-    assert_eq!(own.sweep(&r), None, "expired, nothing else in it");
+    assert_eq!(own.sweep(&r, &|_| false), None, "expired, nothing else in it");
     // another's removal alone in an expired entry hides it
     let nested = |m: Value| Value::Map([(Value::Str("k".into()), m)].into_iter().collect());
     let put = create(&mut Writer::new(ts(5), x.clone(), 1), &AnyView, &nested(map("a"))).unwrap();
@@ -801,18 +801,18 @@ fn sweep_takes_only_what_is_hidden_spec_sync_7() {
     hid.join(removal.clone());
     hid.strip(&mine);
     assert_eq!(hid.read(), Some(Value::Map(Default::default())));
-    assert_eq!(hid.sweep(&r), None, "not removed: a valued write may still arrive");
+    assert_eq!(hid.sweep(&r, &|_| false), None, "not removed: a valued write may still arrive");
     // a list element, nested in a live one
     let ty = crate::testutil::TyView(Ty::List(Box::new(Ty::Map(Box::new(Ty::Register), Box::new(Ty::Register)))));
     let list = create(&mut Writer::new(ts(5), x.clone(), 1), &ty, &Value::List(vec![map("a")])).unwrap();
     let new = crate::diff(&mut Writer::new(ts(9), y.clone(), 1), Some(&list), &ty, &Value::List(vec![Value::Map(Default::default())])).unwrap().unwrap();
-    assert_eq!(list.sweep(&r), None, "a live element");
+    assert_eq!(list.sweep(&r, &|_| false), None, "a live element");
     let mut over = list.clone();
     over.join(new);
-    assert_eq!(over.sweep(&r), None, "a live element, emptied");
+    assert_eq!(over.sweep(&r, &|_| false), None, "a live element, emptied");
     over.strip(&mine);
     assert_eq!(over.read(), Some(Value::List(Vec::new())));
-    assert_eq!(over.sweep(&r), None, "not removed");
+    assert_eq!(over.sweep(&r, &|_| false), None, "not removed");
     // a removed element with a newer write inside
     let rm = crate::diff(&mut Writer::new(ts(7), x.clone(), 3), Some(&list), &ty, &Value::List(vec![])).unwrap().unwrap();
     let edit = crate::diff(&mut Writer::new(ts(9), y.clone(), 1), Some(&list), &ty, &Value::List(vec![map("b")])).unwrap().unwrap();
@@ -820,10 +820,80 @@ fn sweep_takes_only_what_is_hidden_spec_sync_7() {
     gone.join(rm);
     gone.join(edit);
     assert_eq!(gone.read(), Some(Value::List(Vec::new())));
-    let sweep = gone.sweep(&r).expect("its edit hidden");
+    let sweep = gone.sweep(&r, &|_| false).expect("its edit hidden");
     gone.join(sweep);
-    assert_eq!(gone.sweep(&r), None);
+    assert_eq!(gone.sweep(&r, &|_| false), None);
     assert!(!gone.holds_write(&Dot::new(y, 1)));
+}
+
+/// spec/sync.md §7: a creation a parent's reset pruned is dead once the state reflects its delta, so
+/// what was written into its record since goes (a map entry, a list element, a text undelete's
+/// char); the record merely lacking its creation (not received, or its delta invalid) stays, and so
+/// does an enum's payload of a case not current, which a concurrent case write may show.
+#[test]
+fn sweep_takes_what_a_parent_reset_hid_spec_sync_7() {
+    use crate::ops::{Writer, create, diff, replace};
+    use crate::seq::{Seq, SeqElem};
+    use crate::view::AnyView;
+    let (x, y, z) = (sess(Tid::from_bytes([1; 15])), sess(Tid::from_bytes([2; 15])), sess(Tid::from_bytes([3; 15])));
+    let r = Writer::new(ts(20), z.clone(), 9).delta_stamp();
+    let xs = [(x.clone(), 1, 9)];
+    let reflected = in_ranges(&xs);
+    // each: x creates at 5, y writes inside at 9, z replaces the parent at 7
+    let check = |what: &str, put: Fragment, edit: Fragment, over: Fragment| {
+        let mut st = put.clone();
+        st.join(over.clone());
+        st.join(edit.clone());
+        let want = st.read();
+        let mut partial = over.clone();
+        partial.join(edit.clone());
+        assert_eq!(partial.sweep(&r, &|_| false), None, "{what}: the creation may arrive");
+        assert_eq!(st.sweep(&r, &|_| false), None, "{what}: its delta not reflected (invalid)");
+        let sw = st.sweep(&r, &reflected).unwrap_or_else(|| panic!("{what}: swept"));
+        let cx = DeltaCtx { ts: ts(20), own: z.clone(), range: Writer::new(ts(20), z.clone(), 9).range(), kind: DeltaKind::Writer };
+        let bytes = encode_delta(&Delta { nonce: [0; 16], fragment: sw.clone() }, &cx, None).unwrap();
+        assert_eq!(decode_delta(&bytes, &cx, &mut Interner::new(), None).unwrap().fragment, sw, "{what}: the wire");
+        let mut after = st.clone();
+        after.join(sw.clone());
+        assert_eq!(after.read(), want, "{what}: the read");
+        assert!(!after.holds_write(&Dot::new(y.clone(), 1)), "{what}: the edit is dead");
+        assert_eq!(after.sweep(&r, &reflected), None, "{what}: once");
+        // the late creation, or the partial view swept, read alike
+        let mut late = partial.clone();
+        late.join(sw);
+        late.join(put);
+        assert_eq!(late.read(), want, "{what}: a late creation stays dead");
+    };
+    let map = |v: &str| Value::Map([(Value::Str("k".into()), Value::Str(v.into()))].into_iter().collect());
+    let put = create(&mut Writer::new(ts(5), x.clone(), 1), &AnyView, &map("a")).unwrap();
+    let edit = diff(&mut Writer::new(ts(9), y.clone(), 1), Some(&put), &AnyView, &map("b")).unwrap().unwrap();
+    let over = replace(&mut Writer::new(ts(7), z.clone(), 1), &AnyView, &Value::Map(Default::default())).unwrap();
+    check("map entry", put, edit, over);
+    let ty = crate::testutil::TyView(Ty::List(Box::new(Ty::Map(Box::new(Ty::Register), Box::new(Ty::Register)))));
+    let put = create(&mut Writer::new(ts(5), x.clone(), 1), &ty, &Value::List(vec![map("a")])).unwrap();
+    let edit = diff(&mut Writer::new(ts(9), y.clone(), 1), Some(&put), &ty, &Value::List(vec![map("b")])).unwrap().unwrap();
+    let over = replace(&mut Writer::new(ts(7), z.clone(), 1), &ty, &Value::List(vec![map("c")])).unwrap();
+    check("list element", put, edit, over);
+    let text = crate::testutil::TyView(Ty::Text);
+    let put = create(&mut Writer::new(ts(5), x.clone(), 1), &text, &Value::Str("a".into())).unwrap();
+    let mut undel = Seq::empty(true);
+    undel.elems_mut().insert(Dot::new(x.clone(), 1), SeqElem { deleted: Some((Writer::new(ts(9), y.clone(), 1).delta_stamp(), false)), undel: Some('a'), ..SeqElem::bare() });
+    let over = replace(&mut Writer::new(ts(7), z.clone(), 1), &text, &Value::Str("c".into())).unwrap();
+    check("text undelete", put, Fragment::Seq(undel), over);
+    // an enum: case 1 by x at 5, case 2 by z at 7, an edit of case 1's payload by y at 9
+    let ety = crate::testutil::TyView(Ty::Enum([(1, Some(Ty::Register)), (2, None)].into_iter().collect()));
+    let one = |v: &str| Value::Enum(1, Some(Box::new(Value::Str(v.into()))));
+    let put = create(&mut Writer::new(ts(5), x.clone(), 1), &ety, &one("a")).unwrap();
+    let edit = diff(&mut Writer::new(ts(9), y.clone(), 1), Some(&put), &ety, &one("b")).unwrap().unwrap();
+    let two = diff(&mut Writer::new(ts(7), z.clone(), 1), Some(&put), &ety, &Value::Enum(2, None)).unwrap().unwrap();
+    let mut st = put.clone();
+    st.join(two);
+    st.join(edit);
+    assert_eq!(st.read(), Some(Value::Enum(2, None)));
+    assert_eq!(st.sweep(&r, &|_| true), None, "a payload of a case not current");
+    // a concurrent case write stamped between the case change and the edit, arriving late
+    st.join(replace(&mut Writer::new(ts(8), x.clone(), 5), &ety, &one("c")).unwrap());
+    assert_eq!(st.read(), Some(one("b")), "a case write stamped below the edit shows it");
 }
 
 /// `v` with empty collections left out: a sweep's reset is a write, so a collection another writer
@@ -859,11 +929,14 @@ pub(crate) fn sweep_laws(seed: u64, ty: &Ty) -> usize {
         let expired: Vec<Range> = ranges.iter().filter(|_| r.chance(1, 4)).cloned().collect();
         let gone: Vec<Range> = expired.iter().filter(|_| r.chance(3, 4)).cloned().collect();
         let mut view = Fragment::default();
-        for b in bodies.iter().filter(|_| r.chance(2, 3)) {
+        let mut held: Vec<Range> = Vec::new();
+        for (b, rg) in bodies.iter().zip(&ranges).filter(|_| r.chance(2, 3)) {
             view.join(b.clone());
+            held.push(rg.clone());
         }
         view.strip(&in_ranges(&gone));
-        let Some(sw) = view.sweep(&stamp) else { continue };
+        let reflected = in_ranges(&held);
+        let Some(sw) = view.sweep(&stamp, &reflected) else { continue };
         swept += 1;
         let cx = DeltaCtx { ts: ts(1 << 40), own: me.clone(), range: w.range(), kind: DeltaKind::Writer };
         let bytes = encode_delta(&Delta { nonce: [0; 16], fragment: sw.clone() }, &cx, None).unwrap();
@@ -872,7 +945,7 @@ pub(crate) fn sweep_laws(seed: u64, ty: &Ty) -> usize {
         after.join(sw.clone());
         after.strip(&in_ranges(&gone));
         assert_eq!(after.read(), view.read(), "the view's read");
-        assert_eq!(after.sweep(&stamp), None, "swept once");
+        assert_eq!(after.sweep(&stamp, &reflected), None, "swept once");
         let mut all = Fragment::default();
         for b in &bodies {
             all.join(b.clone());

@@ -25,6 +25,27 @@ pub(crate) fn delta_received(core: &Core, tid: &Tid, ak: &Ak, d: &Dot) -> bool {
     any_delta(core, tid, ak, d, &|_, m, ai| !m.missing.contains(&ai))
 }
 
+/// Whether the state of `(tid, ak)` reflects the delta that wrote dot `d` (spec/sync.md §7
+/// Sweep): applied here and valid, or reached by a held valid snapshot's `Frontiers` or
+/// `Absorbed` (spec/crdt.md §8). Never a `Derived` dot: its record is its register write's.
+pub(crate) fn reflected(core: &Core, tid: &Tid, ak: &Ak, d: &Dot) -> bool {
+    crate::costs::count("sweep: reflected", 1);
+    if matches!(d.src.kind(), osis_crdt::SourceKind::Derived(_)) {
+        return false;
+    }
+    if any_delta(core, tid, ak, d, &|_, m, ai| m.valid_at(ai) && !m.missing.contains(&ai)) {
+        return true;
+    }
+    let held = |s: &CommitId| core.ix.commits.get(s).is_some_and(|m| m.aspect(tid, ak).is_some_and(|ai| m.valid_at(ai) && !m.missing.contains(&ai) && !m.body_gone(ai)));
+    core.ix.snapshots.get(&(*tid, ak.clone())).into_iter().flatten().any(|(_, s, fr, abs)| {
+        let reaches = match d.src.kind() {
+            osis_crdt::SourceKind::Commit(c) => abs.iter().any(|x| x.0 == *c),
+            _ => fr.lists(&d.src) && fr.of(&d.src) >= d.ctr,
+        };
+        reaches && held(s)
+    })
+}
+
 /// Whether held snapshot `snap`'s part on `(tid, ak)` is valid (`Judge::part`: its author could
 /// write the aspect at it).
 pub(crate) fn snapshot_valid(core: &Core, snap: &CommitId, tid: &Tid, ak: &Ak) -> bool {

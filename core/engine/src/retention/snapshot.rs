@@ -479,7 +479,7 @@ pub(crate) fn may_snapshot(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, memory: bool, ts
 /// a snapshot of `(tid, ak)` from this node's whole state, applied here.
 pub(crate) fn write_snapshot(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, memory: bool) -> Result<Option<CommitId>> {
     let (tid, ak) = (*tid, ak.clone());
-    // what a removal or expiry hid goes first, by an ordinary commit: its bodies die and
+    // what no write can show any more goes first, by an ordinary commit: its bodies die and
     // the snapshot does not carry it (spec/sync.md §7)
     let probe = osis_crdt::Stamp::new(Default::default(), osis_crdt::Source::commit(CommitId([0; 32])), 1);
     if !memory && osis_schema::core_types::is_content(ak.as_str()) && crate::engine::write::sweep_of(tx, &tid, &ak, &probe)?.is_some() {

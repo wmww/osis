@@ -649,7 +649,9 @@ pub(crate) fn build_one(tx: &mut Tx<'_>, mut plan: CommitPlan, mut deltas: Vec<R
 
 /// The writes of a compacting writer's sweep of `(tid, ak)` at stamp `r` (`Fragment::sweep`).
 pub(crate) fn sweep_of(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, r: &osis_crdt::Stamp) -> Result<Option<Fragment>> {
-    Ok(tx.state(tid, ak)?.and_then(|st| st.sweep(r)))
+    tx.load(tid, ak)?;
+    let core = &*tx.core;
+    Ok(tx.cached(tid, ak).and_then(|st| st.sweep(r, &|d| crate::apply::copies::reflected(core, tid, ak, d))))
 }
 
 /// The writer's own source: its session, or for commit form a placeholder commit that sorts

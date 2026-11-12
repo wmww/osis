@@ -659,41 +659,93 @@ fn list_element_expiry_in_any_order_spec_crdt_5_7() {
     assert!(digests.iter().all(|d| *d == digests[0]), "{digests:?}");
 }
 
-// spec/sync.md §7, spec/crdt.md §4.8: an edit into a removed entry is hidden, not dead, until a
-// compacting writer's sweep: then its body goes under purge on replace and a snapshot carries
-// neither its value nor the removed key.
+// spec/sync.md §7, spec/crdt.md §4.8: an edit into an entry a removal or a `replace` of the map
+// ended is hidden, not dead, until a compacting writer's sweep: then a snapshot carries neither its
+// value nor the key, reads are unchanged, and its body goes under purge on replace while kept
+// history keeps it.
 #[test]
-#[ignore = "issues/swept-hidden-write-uncoverable.md"]
-fn repro_hidden_write_goes_at_compaction_spec_sync_7() {
-    let k = ak("t:gonemap.0");
-    let (mut lp, t) = one_writer(2);
-    let op = |lp: &mut LocalPeer, i: usize, path: Vec<osis_crdt::PathSeg>, op: osis_crdt::Op| {
+fn hidden_write_goes_at_compaction_spec_sync_7() {
+    for (aspect, replace) in [(GONEMAP, false), (GONEMAP, true), (KEPTMAP, true)] {
+        let k = aspect.name();
+        let (mut lp, t) = one_writer(2);
+        let op = |lp: &mut LocalPeer, i: usize, path: Vec<osis_crdt::PathSeg>, op: osis_crdt::Op| {
+            let mut m = Mutation::new();
+            m.op(t, &aspect, osis_crdt::PathOp { path, op }).unwrap();
+            lp.peers[i].commit(m).unwrap().unwrap()
+        };
+        let key = || vec![osis_crdt::PathSeg::Key(s("SECRETKEY"))];
+        op(&mut lp, 0, key(), osis_crdt::Op::Set(s("first")));
+        lp.sync_all().unwrap();
+        lp.advance(10);
+        let after = if replace { Value::Map([(s("other"), s("x"))].into_iter().collect()) } else { Value::Map(Default::default()) };
+        op(&mut lp, 0, vec![], if replace { osis_crdt::Op::Replace(after.clone()) } else { osis_crdt::Op::Remove(s("SECRETKEY")) });
+        lp.advance(10);
+        let edit = op(&mut lp, 1, key(), osis_crdt::Op::Set(s("HIDDENVAL")));
+        // peer 0 holds the edit before peer 1 learns of the removal
+        let pk = lp.peers[1].engine.package(&edit).unwrap().unwrap();
+        lp.deliver(0, &pk).unwrap();
+        let what = format!("{} replace {replace}", k.as_str());
+        assert_eq!(lp.peers[0].engine.get(&t, &k).unwrap(), Some(after.clone()), "{what}");
+        let carries = |lp: &mut LocalPeer, what: &[u8]| {
+            let c = lp.peers[0].engine.snapshot(&t, &k).unwrap().unwrap();
+            let pk = lp.peers[0].engine.package(&c).unwrap().unwrap();
+            std::iter::once(&pk.bytes).chain(pk.blobs.iter().map(|(_, b)| b)).any(|b| b.windows(what.len()).any(|x| x == what))
+        };
+        assert!(!carries(&mut lp, b"HIDDENVAL"), "{what}: the value in a snapshot");
+        assert!(!carries(&mut lp, b"SECRETKEY"), "{what}: the removed key in a snapshot");
+        let kept = aspect.name() == KEPTMAP.name();
+        assert_eq!(lp.peers[0].engine.body_not_dropped(&edit, &t, &k), kept, "{what}: the body covered, or kept as history");
+        assert_eq!(lp.peers[0].engine.get(&t, &k).unwrap(), Some(after.clone()), "{what}");
+        // the sweep is an ordinary commit: another holder reads and drops alike
+        lp.sync_all().unwrap();
+        assert_eq!(lp.peers[1].engine.body_not_dropped(&edit, &t, &k), kept, "{what}: the body at another holder");
+        assert_eq!(lp.peers[1].engine.get(&t, &k).unwrap(), Some(after), "{what}");
+    }
+}
+
+// spec/sync.md §7: a sweep's lookups are per hidden record (the creating delta of each record
+// lacking its creation), none for live ones; its walk is the state's, as the snapshot's.
+#[test]
+fn sweep_counts_hidden_records_spec_sync_7() {
+    let k = ak("t:big.0");
+    let counts = |n: usize| {
+        let (mut lp, t) = one_writer(2);
+        let keys: Vec<Value> = (0..n).map(|i| s(&format!("k{i}"))).collect();
         let mut m = Mutation::new();
-        m.op(t, &GONEMAP, osis_crdt::PathOp { path, op }).unwrap();
-        lp.peers[i].commit(m).unwrap().unwrap()
+        for key in &keys {
+            m.op(t, &BIG, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(key.clone())], op: osis_crdt::Op::Set(s("a")) }).unwrap();
+        }
+        lp.peers[0].commit(m).unwrap().unwrap();
+        lp.sync_all().unwrap();
+        lp.advance(10);
+        let mut m = Mutation::new();
+        m.op(t, &BIG, osis_crdt::PathOp { path: vec![], op: osis_crdt::Op::Replace(Value::Map(keys.iter().map(|k| (k.clone(), s("live"))).collect())) }).unwrap();
+        lp.peers[0].commit(m).unwrap().unwrap();
+        lp.advance(10);
+        let mut m = Mutation::new();
+        for key in &keys {
+            m.op(t, &BIG, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(key.clone())], op: osis_crdt::Op::Set(s("b")) }).unwrap();
+        }
+        let edit = lp.peers[1].commit(m).unwrap().unwrap();
+        let pk = lp.peers[1].engine.package(&edit).unwrap().unwrap();
+        lp.deliver(0, &pk).unwrap();
+        let want = lp.peers[0].engine.get(&t, &k).unwrap();
+        let commits = lp.peers[0].engine.commit_ids().len();
+        osis_node::costs::take();
+        lp.peers[0].engine.snapshot(&t, &k).unwrap().unwrap();
+        let looked = osis_node::costs::take().iter().find(|x| x.0 == "sweep: reflected").map_or(0, |x| x.2);
+        assert_eq!(lp.peers[0].engine.commit_ids().len(), commits + 2, "a sweep and the snapshot");
+        assert_eq!(lp.peers[0].engine.get(&t, &k).unwrap(), want);
+        // again: n live entries, nothing hidden
+        osis_node::costs::take();
+        lp.advance(10);
+        lp.peers[0].engine.snapshot(&t, &k).unwrap().unwrap();
+        let again = osis_node::costs::take().iter().find(|x| x.0 == "sweep: reflected").map_or(0, |x| x.2);
+        (looked, again)
     };
-    let key = || vec![osis_crdt::PathSeg::Key(s("SECRETKEY"))];
-    op(&mut lp, 0, key(), osis_crdt::Op::Set(s("first")));
-    lp.sync_all().unwrap();
-    lp.advance(10);
-    op(&mut lp, 0, vec![], osis_crdt::Op::Remove(s("SECRETKEY")));
-    lp.advance(10);
-    let edit = op(&mut lp, 1, key(), osis_crdt::Op::Set(s("HIDDENVAL")));
-    lp.sync_all().unwrap();
-    assert_eq!(lp.peers[0].engine.get(&t, &k).unwrap(), Some(Value::Map(Default::default())));
-    let carries = |lp: &mut LocalPeer, what: &[u8]| {
-        let c = lp.peers[0].engine.snapshot(&t, &k).unwrap().unwrap();
-        let pk = lp.peers[0].engine.package(&c).unwrap().unwrap();
-        std::iter::once(&pk.bytes).chain(pk.blobs.iter().map(|(_, b)| b)).any(|b| b.windows(what.len()).any(|x| x == what))
-    };
-    assert!(!carries(&mut lp, b"HIDDENVAL"), "the value in a snapshot");
-    assert!(!carries(&mut lp, b"SECRETKEY"), "the removed key in a snapshot");
-    assert!(!lp.peers[0].engine.body_not_dropped(&edit, &t, &k), "the body covered");
-    assert_eq!(lp.peers[0].engine.get(&t, &k).unwrap(), Some(Value::Map(Default::default())));
-    // the sweep is an ordinary commit: another holder reads and drops alike
-    lp.sync_all().unwrap();
-    assert!(!lp.peers[1].engine.body_not_dropped(&edit, &t, &k), "the body at another holder");
-    assert_eq!(lp.peers[1].engine.get(&t, &k).unwrap(), Some(Value::Map(Default::default())));
+    // twice per hidden record: the probe whether to sweep, then the sweep's commit
+    assert_eq!(counts(20), (40, 0));
+    assert_eq!(counts(200), (400, 0));
 }
 
 // spec/sync.md §7, spec/crdt.md §4.7: a purge of an edit hidden in a removed entry leaves no key.
