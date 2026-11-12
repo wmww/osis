@@ -121,7 +121,7 @@ impl SyncEngine {
         // the batch is waited on: the host answers in order, so a next one would wait behind it.
         // Passes wait on it only while it counts as asked (`asked`): past the stall time the host
         // may be trickling the reply, and what the label lacks is asked elsewhere
-        let out_at: Vec<u64> = f.asked.iter().filter_map(|b| c.req.fetching.get(b).copied().or_else(|| SyncEngine::stream_asked_at(&self.streams, conn, b))).collect();
+        let out_at: Vec<u64> = f.asked.iter().filter_map(|b| SyncEngine::stream_asked_at(&self.streams, conn, b)).collect();
         if !out_at.is_empty() {
             if !f.first_done && out_at.iter().all(|at| at.saturating_add(STALL_TIMEOUT_MS) <= now) {
                 f.first_done = true;

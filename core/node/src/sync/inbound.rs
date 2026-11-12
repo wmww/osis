@@ -12,7 +12,7 @@ use crate::Ingested;
 use osis_base::{BlobId, Classified, CommitId, ErrorClass, LabelId, Tid};
 use osis_crypto::{Secret32, VerifyingKey, role_kem};
 use osis_label::Step;
-use osis_proto::{Code, Command, Event as LogEvent};
+use osis_proto::{Code, Event as LogEvent};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -175,7 +175,6 @@ impl SyncEngine {
             .into_iter()
             .filter(|e| match e {
                 LogEvent::Added { blob_id, blob: Some(b), .. } if osis_label::blob_id(b) != *blob_id => {
-                    self.fetched(blob_id);
                     false
                 }
                 _ => true,
@@ -245,9 +244,6 @@ impl SyncEngine {
             if let LogEvent::Added { blob_id, blob, .. } = &ev
                 && self.state.tombs.contains_key(&(l, *blob_id))
             {
-                if let Some(c) = conn.and_then(|c| self.conns.get_mut(&c)) {
-                    c.req.fetching.remove(blob_id);
-                }
                 // recorded again as it was, quietly (not fetched, not served on), so the pass
                 // judges it there as any present entry, whatever its kind (spec/sync.md §6
                 // Tombstones)
@@ -278,7 +274,6 @@ impl SyncEngine {
             {
                 if let Some(c) = conn.and_then(|c| self.conns.get_mut(&c)) {
                     c.req.missing.remove(blob_id);
-                    c.req.fetching.remove(blob_id);
                 }
                 if class == osis_label::Class::Relay {
                     let head = head_write(self);
@@ -338,9 +333,6 @@ impl SyncEngine {
                     // a dropped body (`Entry::dropped`): bytes a fetch asked before the drop
                     // brings, or anyone's, are not kept
                     if self.state.entries.get(&(l, blob_id)).is_some_and(Entry::dropped) {
-                        if blob.is_some() {
-                            self.fetched(&blob_id);
-                        }
                         continue;
                     }
                     // the host holds it now: fetched there again when wanted
@@ -399,7 +391,6 @@ impl SyncEngine {
                         // (fetched for a delete-key signature, or brought by anyone); one with
                         // no salt to read (bad input) wakes no pass
                         Some(_) if !memory && !self.engine.has_blob(&blob_id) && self.dropped_chunk(&blob_id)? => {
-                            self.fetched(&blob_id);
                             if self.state.entries.get(&(l, blob_id)).is_none_or(|e| e.salt.is_none()) {
                                 continue;
                             }
@@ -407,10 +398,8 @@ impl SyncEngine {
                         // a page of a memory commit forgotten here (not arrived again): its bytes
                         // are not kept
                         Some(_) if memory && self.forgotten_page(&blob_id) => {
-                            self.fetched(&blob_id);
                         }
                         Some(b) if memory => {
-                            self.fetched(&blob_id);
                             // a host's unstamped junk in the ephemeral class is judged as its
                             // durable junk is (`drop_unvouched`: opened under nothing, its bytes go)
                             if host.is_some() && !vouched && stamp.is_none() && !self.engine.has_blob(&blob_id) {
@@ -422,7 +411,6 @@ impl SyncEngine {
                             memory_blobs.push((blob_id, b));
                         }
                         Some(b) => {
-                            self.fetched(&blob_id);
                             // listed before its bytes: judged as they come (`drop_unvouched`)
                             if listed && host.is_some() && !vouched && stamp.is_none() && !self.engine.has_blob(&blob_id) {
                                 unvouched.push((blob_id, true));
@@ -673,7 +661,6 @@ impl SyncEngine {
                 self.state.set_present(host, l, *b, false);
                 if !self.state.present_anywhere(&l, b) {
                     self.state.drop_entry(l, *b);
-                    self.fetched(b);
                     if opened {
                         self.forget_blob(b)?;
                         if !self.state.blobs.contains_key(b) && !self.state.named(b) {
@@ -2002,17 +1989,11 @@ impl SyncEngine {
         let missing = |s: &Self, b: &BlobId| s.conns.get(&conn).is_none_or(|c| c.req.missing.contains(b));
         let mut seen = BTreeSet::new();
         let ids: Vec<BlobId> = ids.into_iter().filter(|b| seen.insert(*b) && !missing(self, b) && self.may_ask(conn, l, b)).collect();
-        // open there by the shared set: fetched by its stream's Fetch
-        if self.read_as_host(conn, &l) {
-            return self.stream_fetch(conn, l, ids, None, out);
-        }
-        let now = self.now();
-        let Some(c) = self.conns.get_mut(&conn) else { return Ok(()) };
-        c.req.fetching.extend(ids.iter().map(|b| (*b, now)));
-        if ids.is_empty() {
+        // fetched by the stream's Fetch where the shared set opened L; nowhere else
+        if !self.read_as_host(conn, &l) {
             return Ok(());
         }
-        self.command(conn, Command::Fetch { label: l, ids }, out)
+        self.stream_fetch(conn, l, ids, None, out)
     }
 
     /// Entry `b` under `l` is no longer at `host`: once no host holds it, the entry goes

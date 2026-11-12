@@ -153,8 +153,6 @@ pub(crate) struct Requests {
     pub sent: BTreeMap<(LabelId, osis_base::BlobId), (u64, u64)>,
     /// Deletes sent, likewise.
     pub deleting: BTreeMap<(LabelId, osis_base::BlobId), (u64, u64)>,
-    /// Blobs asked for and not received yet, with when (wall ms; `SyncEngine::asked`).
-    pub fetching: BTreeMap<osis_base::BlobId, u64>,
     /// Blobs the host did not deliver when fetched (since it last announced them).
     pub missing: BTreeSet<osis_base::BlobId>,
     /// Reopens in a row per label.
@@ -191,8 +189,7 @@ impl SyncEngine {
     /// answers first settles it (spec/sync.md §10, Bodies).
     pub(crate) fn asked(&self, b: &osis_base::BlobId) -> Option<u64> {
         let now = self.now();
-        let hosts = self.conns.values().filter_map(|c| c.req.fetching.get(b).copied());
-        hosts.chain(self.stream_asks(b)).map(|at| at.saturating_add(osis_proto::client::STALL_TIMEOUT_MS)).filter(|t| *t > now).max()
+        self.stream_asks(b).map(|at| at.saturating_add(osis_proto::client::STALL_TIMEOUT_MS)).filter(|t| *t > now).max()
     }
 
     /// `asked`, with a pass of `l` (`settle_by`) when it ends: what skipped or waited on `b` for
@@ -206,15 +203,8 @@ impl SyncEngine {
     /// Whether `b` may be fetched of `conn`'s source under `l`: not out there already, whatever
     /// its age (each source asked once while its fetch is out), and not asked anywhere now.
     pub(crate) fn may_ask(&mut self, conn: ConnId, l: LabelId, b: &osis_base::BlobId) -> bool {
-        let here = self.conns.get(&conn).is_some_and(|c| c.req.fetching.contains_key(b)) || self.stream_asks_on(conn, b);
+        let here = self.stream_asks_on(conn, b);
         !here && !self.asked_for(l, b)
-    }
-
-    /// Blob `b` arrived, or a host said it does not hold it: no longer in flight.
-    pub(crate) fn fetched(&mut self, b: &osis_base::BlobId) {
-        for c in self.conns.values_mut() {
-            c.req.fetching.remove(b);
-        }
     }
 
     /// Label `l` on connection `conn`.
@@ -417,38 +407,14 @@ impl SyncEngine {
             E::Registered { label } => self.registered(conn, label, out)?,
             E::PathSteps { label, steps, more } => self.path_steps(conn, label, steps, more, out)?,
             E::DeleteStatus { label, blob_ids, codes } => self.delete_status(conn, label, blob_ids, codes)?,
-            // what an upload, deposit, cursor sync, subscription or reconciliation brings: none is
-            // asked (a source's entries come by its stream, `stream_apply`; it pulls this node's)
-            E::EntryStatus { .. } | E::Budget { .. } | E::Events { .. } | E::Want { .. } | E::Synced { .. } | E::NeedReconcile { .. } | E::Reconciled { .. } | E::Subscribed { .. } => self.diag("peer sent what no request asked".into()),
-            E::Fetched { label, items } => {
-                // asked for and not there: not asked again on this connection
-                let mut gone = false;
-                for f in items.iter().filter(|f| f.entry.is_none()) {
-                    self.fetched(&f.blob_id);
-                    gone |= self.conns.get_mut(&conn).is_some_and(|c| c.req.missing.insert(f.blob_id));
-                }
-                if gone {
-                    self.mark_labels(&[label]);
-                }
-                let evs: Vec<osis_proto::Event> = items.into_iter().filter_map(|f| f.entry.map(|(blob, wrap, stamp)| osis_proto::Event::Added { blob_id: f.blob_id, blob: Some(blob), wrap, stamp })).collect();
-                if !evs.is_empty() {
-                    self.received_from(conn, label);
-                }
-                self.log_events(Some(conn), label, evs, out)?;
-            }
+            // what an upload, deposit, cursor sync, subscription, reconciliation or host Fetch
+            // brings: none is asked (a source's entries come by its stream, `stream_apply`, and
+            // its bodies by the stream's Fetch; it pulls this node's)
+            E::EntryStatus { .. } | E::Budget { .. } | E::Events { .. } | E::Want { .. } | E::Synced { .. } | E::NeedReconcile { .. } | E::Reconciled { .. } | E::Subscribed { .. } | E::Fetched { .. } => self.diag("peer sent what no request asked".into()),
             // the listener keeps no record of this side (it refused the proofs or the Resume): the
             // set still runs
             E::Refused { kind: osis_proto::client::Request::Prove | osis_proto::client::Request::Resume, .. } => self.no_record(conn, out)?,
-            E::Refused { label, kind, code, fetch } => {
-                // no longer in flight on this connection: a pass asks again (after a reopen);
-                // a reconciliation's ephemeral ones only a reconciliation names again
-                if let Some(c) = self.conns.get_mut(&conn) {
-                    for b in &fetch {
-                        c.req.fetching.remove(b);
-                    }
-                }
-                self.refused(conn, label, kind, code, out)?
-            }
+            E::Refused { label, kind, code, .. } => self.refused(conn, label, kind, code, out)?,
             E::PeerError(e) => self.diag(format!("host: {e}")),
         }
         Ok(())

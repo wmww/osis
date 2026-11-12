@@ -383,7 +383,6 @@ impl SyncEngine {
             if !self.charges.fits(&self.cfg, who, &l, size) {
                 self.budget_reached(Some(l));
                 self.state.drop_entry(l, *b);
-                self.fetched(b);
                 // an opened one's blob record goes with it (`forget_blob`), so nothing carries
                 // its pending commit (`sweep_pending`)
                 self.forget_blob(b)?;

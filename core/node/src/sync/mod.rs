@@ -1008,11 +1008,11 @@ mod tests {
         crate::local_peer::LocalPeer::cached("node::one_peer", || (crate::local_peer::LocalPeer::new(1, 0, osis_base::WallMs(1_700_000_000_000)).unwrap(), ())).0
     }
 
-    // spec/sync.md §6: a fetch or deposit in flight on a connection that ended (its session
-    // closed it, say on a request timeout, or the transport went down) is asked again on the
-    // next connection; the ended one is never answered.
+    // spec/sync.md §6: a deposit in flight on a connection that ended (its session closed it,
+    // say on a request timeout, or the transport went down) goes again on the next connection;
+    // the ended one is never answered (a fetch goes with its stream).
     #[test]
-    fn closed_session_forgets_its_fetches_spec_sync_6() {
+    fn closed_session_sends_its_deposits_again_spec_sync_6() {
         for down in [false, true] {
             let lp = one_peer();
             let p = lp.peers.into_iter().next().unwrap();
@@ -1020,9 +1020,6 @@ mod tests {
             let cfg = SyncConfig { hosts: vec![host.clone()], ..SyncConfig::default() };
             let mut s = SyncEngine::new(super::host::on_hub(p), Box::new(osis_crypto::SeededRng::from_u64(1)), cfg).unwrap();
             let conn = s.handle(Event::Tick).into_iter().find_map(|a| if let Action::Dial { conn, .. } = a { Some(conn) } else { None }).unwrap();
-            let b = osis_base::BlobId([1; 32]);
-            let now = s.now();
-            s.conns.get_mut(&conn).unwrap().req.fetching.insert(b, now);
             let d = osis_crypto::SigningSecret::from_seed(&osis_crypto::Secret32::from_bytes([5; 32]));
             s.queue_deposit(LabelId([1; 16]), std::slice::from_ref(&host), &d, vec![9; 40], [3; osis_crypto::WRAP_LEN], None, false);
             for o in s.outbox.values_mut() {
@@ -1033,30 +1030,9 @@ mod tests {
             } else {
                 s.outputs(conn, vec![ClientOutput::Close], &mut Vec::new()).unwrap();
             }
-            assert!(!s.asked(&b).is_some());
             assert!(s.outbox.values().all(|o| o.sent.is_none()), "the deposit goes again");
             assert_eq!(s.deliveries_pending(), 1);
         }
-    }
-
-    // spec/sync.md §6: a blob a connection's host did not deliver is not fetched there again
-    // until that host announces it (it holds it now).
-    #[test]
-    fn undelivered_blob_fetched_again_once_announced_spec_sync_6() {
-        let lp = one_peer();
-        let p = lp.peers.into_iter().next().unwrap();
-        let host = Address { url: "quic://host:1".into(), key: [7; 32] };
-        let cfg = SyncConfig { hosts: vec![host], ..SyncConfig::default() };
-        let mut s = SyncEngine::new(super::host::on_hub(p), Box::new(osis_crypto::SeededRng::from_u64(1)), cfg).unwrap();
-        let conn = s.handle(Event::Tick).into_iter().find_map(|a| if let Action::Dial { conn, .. } = a { Some(conn) } else { None }).unwrap();
-        let (l, b) = (LabelId([1; 16]), osis_base::BlobId([1; 32]));
-        s.conns.get_mut(&conn).unwrap().req.missing.insert(b);
-        s.fetch_on(conn, l, [b], &mut Vec::new()).unwrap();
-        assert!(!s.asked(&b).is_some(), "not asked again");
-        let added = osis_proto::Event::Added { blob_id: b, blob: None, wrap: [3; osis_crypto::WRAP_LEN], stamp: None };
-        s.log_events(Some(conn), l, vec![added], &mut Vec::new()).unwrap();
-        s.fetch_on(conn, l, [b], &mut Vec::new()).unwrap();
-        assert!(s.asked(&b).is_some(), "asked once announced");
     }
 
     // spec/sync.md §5: a deposit is kept until each of its hosts answers it, also across a

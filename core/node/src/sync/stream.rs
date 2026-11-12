@@ -1596,12 +1596,8 @@ impl SyncEngine {
         // a peer that cannot read L: what it did not deliver is not asked there again until it
         // announces it, and what it delivered is applied as its stream's events are
         if self.read_as_host(conn, &l) {
-            for b in &wrong {
-                self.fetched(b);
-            }
             let mut gone = false;
             for b in &failed {
-                self.fetched(b);
                 gone |= self.conns.get_mut(&conn).is_some_and(|c| c.req.missing.insert(*b));
             }
             if gone {
