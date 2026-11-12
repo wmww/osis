@@ -15,11 +15,21 @@ pub struct Key {
     pub commit: CommitId,
 }
 
-/// One named departure: the thing whose `roles.0` part of the commit is met, and its commit's key.
+/// One named departure: the thing whose `roles.0` part of the commit is met, and its commit's key;
+/// `raised`: for a raise that applied nothing at the rotator (spec/crypto.md §4, Lowering), the
+/// holder it raised, so it never reads as the same commit applied as a lowering.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Name {
     pub thing: Tid,
     pub key: Key,
+    pub raised: Option<Tid>,
+}
+
+impl Name {
+    /// The name of the commit at `key` on `thing`, a lowering applied there.
+    pub fn of(thing: Tid, key: Key) -> Name {
+        Name { thing, key, raised: None }
+    }
 }
 
 /// The rotation commit itself, when it departs a holder of the actor (it cannot name its own
@@ -51,13 +61,13 @@ pub struct Names {
 pub type NamesDigest = [u8; 32];
 
 impl Names {
-    /// `[[name*], Opt([ts, author, blind])]`, each name `[thing, ts, author, commit]`,
-    /// ascending (spec/wire.md §7).
+    /// `[[name*], Opt([ts, author, blind])]`, each name `[thing, ts, author, commit]`, a raised
+    /// holder's tid appended, ascending (spec/wire.md §7).
     pub fn to_value(&self) -> Value {
         let list = self
             .list
             .iter()
-            .map(|n| Value::List(vec![Value::bytes(n.thing.as_bytes()), Value::uint(n.key.ts), Value::bytes(n.key.node.as_bytes()), Value::bytes(&n.key.commit.0)]))
+            .map(|n| Value::List([Value::bytes(n.thing.as_bytes()), Value::uint(n.key.ts), Value::bytes(n.key.node.as_bytes()), Value::bytes(&n.key.commit.0)].into_iter().chain(n.raised.map(|h| Value::bytes(h.as_bytes()))).collect()))
             .collect();
         let own = self.departs.iter().map(|o| Value::List(vec![Value::uint(o.ts), Value::bytes(o.author.as_bytes()), Value::bytes(&o.blind)])).collect();
         Value::List(vec![Value::List(list), Value::List(own)])
@@ -80,10 +90,16 @@ impl Names {
         let mut last: Option<Name> = None;
         for it in items {
             let Value::List(x) = it else { return None };
-            let [Value::Bytes(thing), Value::Int(ts), Value::Bytes(node), Value::Bytes(commit)] = x.as_slice() else { return None };
+            let (head, raised) = match x.as_slice() {
+                [a, b, c, d] => ([a, b, c, d], None),
+                [a, b, c, d, Value::Bytes(h)] => ([a, b, c, d], Some(Tid::from_bytes(h.as_slice().try_into().ok()?))),
+                _ => return None,
+            };
+            let [Value::Bytes(thing), Value::Int(ts), Value::Bytes(node), Value::Bytes(commit)] = head else { return None };
             let n = Name {
                 thing: Tid::from_bytes(thing.as_slice().try_into().ok()?),
                 key: Key { ts: u64::try_from(*ts).ok()?, node: Tid::from_bytes(node.as_slice().try_into().ok()?), commit: CommitId(commit.as_slice().try_into().ok()?) },
+                raised,
             };
             if last.is_some_and(|l| l >= n) {
                 return None;

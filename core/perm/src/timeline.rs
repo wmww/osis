@@ -713,8 +713,8 @@ impl Timeline {
         on.iter().filter_map(|w| self.edge_write(w))
     }
     /// The edge writes held on `t`, applied or not (a write that applies to nothing, such as a
-    /// removal of an edge another write removed first, included), each with its commit and op.
-    pub fn held_on<'t>(&'t self, t: &Tid) -> impl Iterator<Item = (&'t RoleCommit, &'t EdgeOp)> + 't {
+    /// removal of an edge another write removed first, included), each with its ID, commit and op.
+    pub fn held_on<'t>(&'t self, t: &Tid) -> impl Iterator<Item = (WriteId, &'t RoleCommit, &'t EdgeOp)> + 't {
         let index = self.memo.held_on_target.get_or_init(|| {
             let mut by: BTreeMap<Tid, Vec<WriteId>> = BTreeMap::new();
             for c in self.input.commits.values() {
@@ -724,7 +724,7 @@ impl Timeline {
             }
             by
         });
-        index.get(t).map_or(&[][..], Vec::as_slice).iter().filter_map(|w| self.edge_write(w))
+        index.get(t).map_or(&[][..], Vec::as_slice).iter().filter_map(|w| self.edge_write(w).map(|(c, o)| (*w, c, o)))
     }
     /// The commit of the edge write in force on (`holder`, `target`): the last applied one, when
     /// it set a value (spec/permissions.md §2: the next edge write resets the entry it created).

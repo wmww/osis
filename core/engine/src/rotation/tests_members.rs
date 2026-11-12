@@ -875,7 +875,8 @@ fn knowing_rekey_after_hidden_grant_spec_crypto_4() {
 // peer 2 to reader while peer 2, not knowing, grants X read on Y, boxing Y's read epoch to X. At
 // peer 0 the grant is invalid (peer 2 is no admin there): X holds no role on Y, yet the box opens
 // Y's epoch for X's member D. That epoch is one peer 2 holds as a reader and could hand on
-// anyway: peer 0 counts no departure from the box and rotates nothing for it (the stated limit).
+// anyway: peer 0 counts no departure from the box, nor from the raise of a reader author, and
+// rotates nothing for it (the stated limit).
 #[test]
 fn invalid_grant_box_judges_nothing_spec_crypto_4() {
     let mut lp = synced(3);

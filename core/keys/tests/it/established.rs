@@ -26,7 +26,7 @@ fn read() -> BTreeSet<Role> {
 
 /// The name of a1's removal of m1 (`World::remove_m1`, commit `cid(4)`).
 fn r1_name(w: &World) -> osis_keys::Name {
-    osis_keys::Name { thing: w.a, key: osis_keys::Key { ts: 4, node: tid(9), commit: cid(4) } }
+    osis_keys::Name::of(w.a, osis_keys::Key { ts: 4, node: tid(9), commit: cid(4) })
 }
 
 /// Holds the commits listed; every rotator holds its role.

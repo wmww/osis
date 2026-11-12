@@ -891,7 +891,7 @@ mod tests {
         a.read.set_rotation(e2, osis_base::CommitId([9; 32]), [Epoch::new(1, [3; 32]).unwrap()].into());
         let k = |n: u8| osis_keys::Key { ts: u64::from(n), node: Tid::from_bytes([n; 15]), commit: osis_base::CommitId([n; 32]) };
         a.read.set_snapshot(e2, osis_base::CommitId([8; 32]));
-        a.read.set_history(e2, [osis_keys::Names { list: [Name { thing: Tid::from_bytes([6; 15]), key: k(5) }].into(), departs: Some(Own { ts: 7, author: Tid::from_bytes([7; 15]), blind: [0; 16] }) }].into(), [Epoch::new(1, [4; 32]).unwrap()]);
+        a.read.set_history(e2, [osis_keys::Names { list: [Name::of(Tid::from_bytes([6; 15]), k(5))].into(), departs: Some(Own { ts: 7, author: Tid::from_bytes([7; 15]), blind: [0; 16] }) }].into(), [Epoch::new(1, [4; 32]).unwrap()]);
         let b = decode_epochs(&encode_epochs(&a)).unwrap();
         assert_eq!(b, a);
         assert!(b.read.is_reading_only(&e2) && b.read.secret(&e2).is_none());
@@ -909,7 +909,7 @@ mod tests {
         let (held, unheld) = (Epoch::new(1, [1; 32]).unwrap(), Epoch::new(2, [2; 32]).unwrap());
         let mut seed = ActorEpochs::default();
         seed.read.set_secret(held, Secret32::from_bytes([1; 32]));
-        let n = osis_keys::Names { list: [Name { thing: actor, key: osis_keys::Key { ts: 1, node: actor, commit: osis_base::CommitId([1; 32]) } }].into(), departs: None };
+        let n = osis_keys::Names { list: [Name::of(actor, osis_keys::Key { ts: 1, node: actor, commit: osis_base::CommitId([1; 32]) })].into(), departs: None };
         seed.read.set_history(unheld, [n].into(), [held]);
         let core = &mut lp.peers[0].engine.core;
         core.ix.secrets.insert(actor, seed);

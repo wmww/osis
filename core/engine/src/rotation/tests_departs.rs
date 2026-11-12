@@ -106,7 +106,7 @@ pub(super) fn leave(lp: &mut LocalPeer, i: usize, g: Tid, how: Forge) -> crate::
             m.ts = Some(t1);
             match how {
                 Forge::Listed => {
-                    let name = osis_keys::Name { thing: g, key: osis_keys::Key { ts: ts.to_u64(), node: me, commit: c.unwrap() } };
+                    let name = osis_keys::Name::of(g, osis_keys::Key { ts: ts.to_u64(), node: me, commit: c.unwrap() });
                     forged_entry(tx, &mut m, g, &Names { list: [name].into(), departs: None })?;
                 }
                 _ => {
@@ -348,7 +348,7 @@ fn stripped_history_entry_leaves_nothing_spec_crypto_4() {
     let removal = lp.peers[A].engine.demote(&g, &Demotion { holder: tids[W], new: None, retain: None }).unwrap().commits;
     assert!(!removal.is_empty());
     lp.advance(1000);
-    let name = osis_keys::Name { thing: g, key: osis_keys::Key { ts: 1, node: tids[W], commit: osis_base::CommitId([0x5a; 32]) } };
+    let name = osis_keys::Name::of(g, osis_keys::Key { ts: 1, node: tids[W], commit: osis_base::CommitId([0x5a; 32]) });
     let odd = Names { list: [name].into(), departs: None };
     let entry = lp.peers[W]
         .engine

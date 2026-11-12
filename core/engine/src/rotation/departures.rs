@@ -1,6 +1,6 @@
 //! Departures from an actor (spec/permissions.md §3, spec/crypto.md §4): the ones this node
 //! knows of, read from the role timeline (the points at which a holder's grant for keys was
-//! lowered, by an edge write or an audit drop, whose holder holds less now) and from the
+//! lowered, by an edge write or a raise applying nothing here, whose holder holds less now) and from the
 //! `secrets.0` state (box holders at a current epoch that hold less than that role now), and
 //! the makers of current epochs that hold less than that role now by any path, each attributed
 //! to the name a rotation knowing it writes (`events`); the names rotations write (`names`). A
@@ -62,76 +62,116 @@ pub(crate) fn names(core: &Core, a: &Tid, departs: Option<osis_keys::Own>) -> os
     let mut list = BTreeSet::new();
     if let Some(tl) = core.timelines.get(a) {
         for l in lowerings(core, tl, a) {
-            list.extend(l.things.iter().map(|t| Name { thing: *t, key: key_of(&l.point) }));
+            list.extend(l.names);
         }
     }
     osis_keys::Names { list, departs }
 }
 
 /// A point of `a`'s timeline at which some holder's grant on `a` for keys was lowered: by an
-/// applied edge write on `a` (a removal, demotion, self-removal or finalize), or by a demotion
-/// elsewhere whose audit dropped an edge write on `a` that had raised a holder (a box written
-/// on that write's word is no longer the timeline's; a dropped lowering write raised nobody
-/// and lowers nobody by going).
+/// applied edge write on `a` (a removal, demotion, self-removal or finalize), or by a raise
+/// that applies nothing here, at the point it stops applying: a demotion elsewhere whose audit
+/// dropped an edge write on `a` that had raised a holder, or a held edge write on `a` raising
+/// one that never applied (invalid at its point), by an author holding write on `a` (a box
+/// written on that write's word is no longer the timeline's; a dropped lowering write raised
+/// nobody and lowers nobody by going).
 struct Lowering {
-    point: osis_perm::Point,
-    /// The holders lowered there, each with the roles it left (from, up to).
-    holders: Vec<(Tid, Role, Role)>,
-    /// The things it is named on: `a` for an edge write on `a`, the targets of its edge writes
-    /// for a drop.
-    things: BTreeSet<Tid>,
+    /// The holders lowered there, each with the roles it left (from, up to) and the name its
+    /// departure is attributed to.
+    holders: Vec<(Tid, Role, Role, Name)>,
+    /// What a rotation names of it: on `a` for an applied edge write on `a`, on the targets of
+    /// its edge writes for a drop, on `a` with the holder it raised for a raise that never
+    /// applied (a rotator that applied that raise, as a lowering or not, never names that).
+    names: BTreeSet<Name>,
 }
 
-/// At one point: the holders an edge write on `a` touches, and the holders dropped raising
-/// writes had raised, each with the roles it left.
-type Touched = (BTreeSet<Tid>, Vec<(Tid, Role, Role)>);
+/// At one point: the holders an applied edge write on `a` touches, and the holders raises
+/// applying nothing had raised, each with the roles it left: dropped ones (at the demotion),
+/// and the point's own invalid ones.
+#[derive(Default)]
+struct Touched {
+    written: BTreeSet<Tid>,
+    dropped: Vec<(Tid, Role, Role)>,
+    invalid: Vec<(Tid, Role, Role)>,
+}
 
 /// The lowerings on `a` this node holds (spec/crypto.md §4, Names): at each point where an
 /// applied edge write on `a` changes `a`'s edges, the holders holding less for keys just after
-/// it than just before (`a`'s edges are constant between such points); at each demotion whose
-/// audit dropped an edge write on `a`, the holders a dropped write had raised (its value above
-/// the holder's grant for keys just before its own point), from read up to that value. Only
-/// commits this node holds: names are met by holding them.
+/// it than just before (`a`'s edges are constant between such points); for each raise applying
+/// nothing here (its value above the holder's grant for keys just before its own point), the
+/// holder it raised, from read up to that value: at the demotion whose audit dropped it, or, for
+/// a held resolved write that never applied, at its own point when its author holds write on
+/// `a` (`invalid_raises`). Only commits this node holds: names are met by holding them.
 fn lowerings(core: &Core, tl: &Timeline, a: &Tid) -> Vec<Lowering> {
     let held = |c: &osis_base::CommitId| core.ix.commits.contains_key(c);
-    // per point: the holders an edge write on `a` touches there, and the holders dropped
-    // raising writes had raised, with the roles each left
+    let raised = |mc: &RoleCommit, op: &EdgeOp| key_role(op.edge.as_ref()).filter(|put| key_role(tl.edges_at(Some(mc.point())).get(&op.holder, a)).is_none_or(|had| had < *put));
     let mut points: BTreeMap<osis_perm::Point, Touched> = BTreeMap::new();
     for (mc, op) in edge_writes(tl, a) {
-        points.entry(mc.point()).or_default().0.insert(op.holder);
+        points.entry(mc.point()).or_default().written.insert(op.holder);
     }
     for (w, p) in tl.dropped() {
         let WriteId(c, i) = w;
         let Some(mc) = tl.role_commit(c) else { continue };
         let Some(op) = mc.ops.get(*i as usize).filter(|op| op.target == *a) else { continue };
-        let Some(put) = key_role(op.edge.as_ref()) else { continue };
-        if key_role(tl.edges_at(Some(mc.point())).get(&op.holder, a)).is_none_or(|had| had < put) {
-            points.entry(*p).or_default().1.push((op.holder, Role::Read, put));
+        if let Some(put) = raised(mc, op) {
+            points.entry(*p).or_default().dropped.push((op.holder, Role::Read, put));
+        }
+    }
+    for (mc, op) in invalid_raises(core, tl, a) {
+        if let Some(put) = raised(mc, op) {
+            points.entry(mc.point()).or_default().invalid.push((op.holder, Role::Read, put));
         }
     }
     let pts: Vec<osis_perm::Point> = points.keys().copied().collect();
     let mut out = Vec::new();
     for (i, p) in pts.iter().enumerate() {
-        let Some((written, raised)) = points.get(p).filter(|_| held(&p.commit)) else { continue };
+        let Some(t) = points.get(p).filter(|_| held(&p.commit)) else { continue };
+        let key = key_of(p);
         let before = tl.edges_at(Some(*p));
         let after = tl.edges_at(pts.get(i + 1).copied());
-        let mut holders: Vec<(Tid, Role, Role)> = written
+        let lowered: Vec<(Tid, Role, Role)> = t
+            .written
             .iter()
             .filter_map(|h| Departure::of_change(*h, key_role(before.get(h, a)), key_role(after.get(h, a))).map(|d| (*h, d.from, d.upto)))
             .collect();
+        // an applied lowering and a drop at one point are one commit, its departures attributed
+        // to the greatest thing it is named on, so the choice never depends on order
         let mut things = BTreeSet::new();
-        if !holders.is_empty() {
+        if !lowered.is_empty() {
             things.insert(*a);
         }
-        if !raised.is_empty() {
-            holders.extend(raised.iter().copied());
+        if !t.dropped.is_empty() {
             things.extend(drop_things(tl, p, a));
         }
+        let mut names: BTreeSet<Name> = things.iter().map(|x| Name::of(*x, key)).collect();
+        let mut holders = Vec::new();
+        if let Some(thing) = things.iter().next_back() {
+            holders.extend(lowered.iter().chain(&t.dropped).map(|(h, from, upto)| (*h, *from, *upto, Name::of(*thing, key))));
+        }
+        for (h, from, upto) in &t.invalid {
+            let name = Name { thing: *a, key, raised: Some(*h) };
+            names.insert(name);
+            holders.push((*h, *from, *upto, name));
+        }
         if !holders.is_empty() {
-            out.push(Lowering { point: *p, holders, things });
+            out.push(Lowering { holders, names });
         }
     }
     out
+}
+
+/// The held edge writes on `a` that never applied here (invalid at their point: neither applied
+/// nor dropped), their commits resolved (one that is not applies nothing until it is, like one
+/// not held), by an author holding write on `a` for keys (`At::KEYS`). Such a raise's boxes
+/// open for the holder it raised wherever its author held the epoch, and nothing on the timeline
+/// stands behind them; a rotator that applied it boxed that holder too. A reader's writes force
+/// nothing (spec/requirements.md: malicious readers only waste storage), and an author holding
+/// less than write could write no valid box at all: its own departure rotates what it holds.
+fn invalid_raises<'t>(core: &'t Core, tl: &'t Timeline, a: &'t Tid) -> impl Iterator<Item = (&'t RoleCommit, &'t EdgeOp)> + 't {
+    tl.held_on(a)
+        .filter(|(w, mc, _)| !tl.is_applied(w) && !tl.dropped().contains_key(w) && !core.ix.unresolved.contains(&mc.id))
+        .filter(|(_, mc, _)| tl.role(&mc.author, a, At::KEYS) >= Some(Role::Write))
+        .map(|(_, mc, op)| (mc, op))
 }
 
 /// The things a demotion at `p` that dropped an edge write on `a` is named on: the targets of
@@ -141,16 +181,9 @@ fn drop_things(tl: &Timeline, p: &osis_perm::Point, a: &Tid) -> BTreeSet<Tid> {
 }
 
 /// The departure events on `a` (spec/crypto.md §4, Attributes): each lowering (`lowerings`)
-/// per holder it lowered, with the roles it left and its name (on the greatest thing the
-/// lowering is named on, so the choice never depends on order).
+/// per holder it lowered, with the roles it left and its name.
 fn events(core: &Core, tl: &Timeline, a: &Tid) -> Vec<(Tid, Role, Role, Name)> {
-    let mut out = Vec::new();
-    for l in lowerings(core, tl, a) {
-        let Some(thing) = l.things.iter().next_back().copied() else { continue };
-        let name = Name { thing, key: key_of(&l.point) };
-        out.extend(l.holders.iter().map(|(h, from, upto)| (*h, *from, *upto, name)));
-    }
-    out
+    lowerings(core, tl, a).into_iter().flat_map(|l| l.holders).collect()
 }
 
 /// Departures from `a` itself: holders that hold less now (`Core::key_holders`) than a departure event
@@ -172,7 +205,7 @@ fn direct_departures(tx: &mut Tx<'_>, a: &Tid) -> Result<BTreeSet<Departure>> {
         x.0 = x.0.min(from);
         x.1 = x.1.max(upto);
         // the newest event by key (spec/permissions.md §5.1)
-        if at.map(|n| (n.key, n.thing)) > x.2.map(|n| (n.key, n.thing)) {
+        if at.map(|n| (n.key, n.thing, n.raised)) > x.2.map(|n| (n.key, n.thing, n.raised)) {
             x.2 = at;
         }
     };
@@ -210,15 +243,16 @@ fn direct_departures(tx: &mut Tx<'_>, a: &Tid) -> Result<BTreeSet<Departure>> {
 /// ended grant) each lower it where made, but in the merged timeline only the first in order
 /// applies; a rotation carrying another (its departs mark) covers the departure alike, else
 /// each such rotation is uncovered wherever the first arrives and every rotator rotates again.
-/// Nothing applied here raises `m` back to `from` after `at` (that would be a newer lowering, or
-/// `m` would hold `from`), so a rotator naming one of them boxed `m` at those roles only on a
-/// raise that applies nothing here (issues/raise-invalid-here-covered.md, as for `at` itself).
+/// Nothing held raises `m` back to `from` after `at`: an applied raise would leave `m` holding
+/// it or meet a newer lowering, and one applying nothing here is a newer lowering itself
+/// (`lowerings`), so a rotator naming one of them boxed `m` at none of those roles on the word
+/// of any raise this node holds.
 fn later_writes(core: &Core, tl: Option<&Timeline>, a: &Tid, m: &Tid, from: Role, at: Option<Name>) -> Vec<Name> {
     let (Some(tl), Some(at)) = (tl, at) else { return Vec::new() };
     let held = |c: &osis_base::CommitId| core.ix.commits.contains_key(c);
     tl.held_on(a)
-        .filter(|(mc, op)| op.holder == *m && key_of(&mc.point()) > at.key && key_role(op.edge.as_ref()) < Some(from) && held(&mc.id))
-        .map(|(mc, _)| Name { thing: *a, key: key_of(&mc.point()) })
+        .filter(|(_, mc, op)| op.holder == *m && key_of(&mc.point()) > at.key && key_role(op.edge.as_ref()) < Some(from) && held(&mc.id))
+        .map(|(_, mc, _)| Name::of(*a, key_of(&mc.point())))
         .collect()
 }
 

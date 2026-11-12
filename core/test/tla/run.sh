@@ -56,6 +56,11 @@ instances=(
   "cover rotation Cover C_drop_any.cfg fail"     # negative control: attribution to any audit drop
   "cover rotation Cover C_dup.cfg pass"          # concurrent removals each cover (Attributes, later writes)
   "cover rotation Cover C_dup_nolater.cfg fail"  # negative control: only the first removal attributed
+  "cover rotation Cover C_regrant_noraise.cfg fail" # negative control (C_regrant, by hand): the removal's epoch covers the re-granted holder
+  "cover rotation Cover C_regrant_reader.cfg fail" # the stated limit: a reader's raise forces nothing
+  "cover rotation Cover C_regrant_rot_noraise.cfg fail" # negative control
+  "cover rotation Cover C_regrant_rot_nomark.cfg fail" # negative control: a raise named as the commit applied
+  "cover rotation Cover C_regrant_own_noraise.cfg fail" # negative control
   "authority rotation AuthorityMC A_order_nobase.cfg pass" # keysets read as of the commit's key (spec/crypto.md §4, Possession)
   "authority rotation AuthorityMC A_order_3.cfg pass"
   "authority rotation AuthorityMC A_held_nobase.cfg fail" # negative control: keysets read as held now give two fixpoints

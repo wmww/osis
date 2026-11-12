@@ -77,11 +77,11 @@ impl Departure {
 }
 
 /// Whether names `n` of an epoch of `actor` name `d` (spec/crypto.md §4): one of its names
-/// (`Departure::names`) is among them, or is a commit on `actor` that is the rotation commit
-/// itself (its departs mark, by the commit's `ts`, author and `blind`), that author holding `r`
-/// under `held`.
+/// (`Departure::names`) is among them, or is a lowering on `actor` by the rotation commit itself
+/// (its departs mark, by the commit's `ts`, author and `blind`), that author holding `r` under
+/// `held`. A raise the rotation commit carries applied where it was made: its mark names none.
 pub fn named(n: &Names, actor: &Tid, r: Role, d: &Departure, held: &dyn Held) -> bool {
-    d.names().any(|at| n.list.contains(at) || (at.thing == *actor && n.departs.is_some_and(|o| held.marks(&o, &at.key)) && held.holds(&at.key.node, r)))
+    d.names().any(|at| n.list.contains(at) || (at.thing == *actor && at.raised.is_none() && n.departs.is_some_and(|o| held.marks(&o, &at.key)) && held.holds(&at.key.node, r)))
 }
 
 /// The covers rule (spec/crypto.md §4): epoch `e` of role `r` of `actor` covers `d` when `d`

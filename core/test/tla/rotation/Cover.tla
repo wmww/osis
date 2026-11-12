@@ -16,23 +16,35 @@
 (* to none, applied or not; with Dup, Q removes L concurrently with S (S2,   *)
 (* carrying Q's rotation, which leaves L out), so S2 applies nothing where S *)
 (* is held and covers only by Later.                                         *)
+(* Regrant: O removes reader-admin M (Rm), then demotes P to DemoteTo (Dp);  *)
+(* P, not holding Dp, may remove M itself (W) and re-grant it (Gr), boxing M *)
+(* at its current epochs (P acts so even when not a writer, from what it     *)
+(* holds: PKnows at the start); both are ordered after Dp, so they apply     *)
+(* nothing where Dp is held (invalid, not audited). Raise: a held edge write *)
+(* raising its holder that applies nothing, by an author holding write, is   *)
+(* a lowering at its own point, named by itself as a raise ("^" before its   *)
+(* id: never the name of the same commit applied as a lowering; Marked       *)
+(* FALSE: the same name, the negative control).                              *)
 (* Commits are delivered whole in any order; boxes are global (crypto is     *)
 (* access: a party's secrets are the closure over boxes to it and history).  *)
 EXTENDS Integers, FiniteSets, Sequences, TLC
 
-CONSTANTS Attr, Forge, Audit, Writers, MaxE, Later, Dup
+CONSTANTS Attr, Forge, Audit, Writers, MaxE, Later, Dup, Regrant, Raise, DemoteTo, Marked, PKnows
 
 Honest == Writers
-Members == {"P", "L", "Q"}
+Members == {"P", "L", "Q"} \cup (IF Regrant THEN {"M"} ELSE {})
 Parties == {"O"} \cup Members
-ADMIN == 2
+ADMIN == 3
+WRITE == 2
 READ == 1
 NONE == 0
 
 K == [id |-> "K", ts |-> 5, author |-> "P", h |-> "L", val |-> READ, kind |-> "chg"]
 S == [id |-> "S", ts |-> 9, author |-> "L", h |-> "L", val |-> NONE, kind |-> "self"]
 D == [id |-> "D", ts |-> 11, author |-> "O", h |-> "P", val |-> NONE, kind |-> "chg"]
-Static == {S} \cup (IF Audit THEN {K, D} ELSE {})
+Rm == [id |-> "Rm", ts |-> 3, author |-> "O", h |-> "M", val |-> NONE, kind |-> "chg"]
+Dp == [id |-> "Dp", ts |-> 12, author |-> "O", h |-> "P", val |-> DemoteTo, kind |-> "chg"]
+Static == {S} \cup (IF Audit THEN {K, D} ELSE {}) \cup (IF Regrant THEN {Rm, Dp} ELSE {})
 StaticIds == {c.id : c \in Static}
 
 VARIABLES cs,      \* edge and rotation commits that exist
@@ -41,7 +53,7 @@ VARIABLES cs,      \* edge and rotation commits that exist
           ents,    \* history entries: [e, author, names, bound]
           boxes,   \* {<<party, epoch id>>}
           adds,    \* history adds {<<epoch id, earlier epoch id>>}: an entry at e carries f
-          wrote,   \* {<<epoch id, holders the writer saw departed>>}
+          wrote,   \* {<<epoch id, holders the writer saw departed, held Gr>>}
           forged   \* forgeries made (each once)
 vars == <<cs, held, eps, ents, boxes, adds, wrote, forged>>
 
@@ -60,7 +72,7 @@ Sorted(X) == IF X = {} THEN <<>>
              ELSE LET m == CHOOSE c \in X : \A d \in X : c.ts <= d.ts
                   IN <<m>> \o Sorted(X \ {m})
 
-Init0 == [edge |-> [h \in Members |-> ADMIN], low |-> {}, attr |-> [h \in Members |-> "none"]]
+Init0 == [edge |-> [h \in Members |-> ADMIN], low |-> {}, unap |-> {}, attr |-> [h \in Members |-> "none"]]
 
 \* an explicit change applies by its author's admin (O always); a self-removal always
 Applies(st, c) == c.kind = "self" \/ c.author = "O" \/ st.edge[c.author] = ADMIN
@@ -70,6 +82,7 @@ Step(st, c) ==
       lowered == ok /\ new[c.h] < st.edge[c.h]
   IN [edge |-> new,
       low |-> st.low \cup (IF lowered THEN {c.id} ELSE {}),
+      unap |-> st.unap \cup (IF ~ok /\ c.val > st.edge[c.h] THEN {c.id} ELSE {}),
       attr |-> [h \in Members |-> IF lowered /\ h = c.h THEN c.id ELSE st.attr[h]]]
 
 RECURSIVE WalkSeq(_, _)
@@ -77,22 +90,29 @@ WalkSeq(st, s) == IF s = <<>> THEN st ELSE WalkSeq(Step(st, Head(s)), Tail(s))
 Edge(H) == {c \in cs : c.kind \in {"chg", "self"} /\ c.id \in H /\ ~Dropped(H, c)}
 Walk(H) == WalkSeq(Init0, Sorted(Edge(H)))
 
+\* a raise applying nothing at a node holding H, by an author holding write there (Raise)
+RaiseEv(H) == IF Raise THEN {id \in Walk(H).unap : CommitOf(id).author = "O" \/ Walk(H).edge[CommitOf(id).author] >= WRITE}
+              ELSE {}
+\* its name, and the commit a name is of
+RName(id) == IF Marked THEN "^" \o id ELSE id
+OfName(x) == CHOOSE c \in cs : c.id = x \/ RName(c.id) = x
 \* a drop event: D held with a dropped write on the holder's edge (Attr "any")
 DropsOn(H, h) == "D" \in H /\ \E c \in cs : c.id \in H /\ Dropped(H, c) /\ c.h = h
 \* the name a node holding H attributes h's departure to
 AttrOf(H, h) == LET W == Walk(H)
                     lowers == IF W.attr[h] = "none" THEN {} ELSE {W.attr[h]}
-                    cands == lowers \cup (IF Attr = "any" /\ DropsOn(H, h) THEN {"D"} ELSE {})
+                    cands == lowers \cup {RName(id) : id \in {i \in RaiseEv(H) : CommitOf(i).h = h}}
+                             \cup (IF Attr = "any" /\ DropsOn(H, h) THEN {"D"} ELSE {})
                 IN IF cands = {} THEN "none"
-                   ELSE CHOOSE c \in cands : \A d \in cands : CommitOf(c).ts >= CommitOf(d).ts
+                   ELSE CHOOSE c \in cands : \A d \in cands : OfName(c).ts >= OfName(d).ts
 \* every name h's departure is attributed to at a node holding H (Later: the commits after
 \* AttrOf writing h's edge to none, applied or not)
 AttrSet(H, h) == LET a == AttrOf(H, h)
                  IN IF a = "none" THEN {}
                     ELSE {a} \cup (IF Later THEN {c.id : c \in {d \in cs : d.id \in H /\ d.kind \in {"chg", "self"}
-                                                      /\ d.h = h /\ d.val = NONE /\ d.ts > CommitOf(a).ts}} ELSE {})
+                                                      /\ d.h = h /\ d.val = NONE /\ d.ts > OfName(a).ts}} ELSE {})
 \* the names a rotation by a node holding H writes
-NamesOf(H) == Walk(H).low \cup (IF Attr = "any" /\ \E h \in Members : DropsOn(H, h) THEN {"D"} ELSE {})
+NamesOf(H) == Walk(H).low \cup {RName(id) : id \in RaiseEv(H)} \cup (IF Attr = "any" /\ \E h \in Members : DropsOn(H, h) THEN {"D"} ELSE {})
 
 \* ---- keys at a node ---------------------------------------------------------
 RECURSIVE Close(_)
@@ -100,7 +120,7 @@ Close(X) == LET T == X \cup UNION {Ep(e).hist : e \in X} \cup {p[2] : p \in {q \
             IN IF T = X THEN X ELSE Close(T)
 Sec(p) == Close({e \in EpIds : <<p, e>> \in boxes})
 
-Met(n, names) == names \subseteq held[n]
+Met(n, names) == \A x \in names : OfName(x).id \in held[n]
 Est(n, e) == e = 0 \/ (Ep(e).commit \in held[n]
                        /\ (e \in Sec(n) => \E x \in ents : x.e = e /\ Met(n, x.names)))
 EstSet(n) == {e \in EpIds : Est(n, e)}
@@ -213,11 +233,27 @@ DupRemoval ==
         /\ boxes' = boxes \cup {<<p, e.id>> : p \in Holders("Q") \ {"L"}}
   /\ UNCHANGED <<forged, adds>>
 
-WritesNow == {<<Newest(n), Departed(n)>> : n \in {m \in Honest : MayEncrypt(m)}}
+\* P, not holding Dp, removes M (W) while its view shows M holding (Regrant)
+PRemove ==
+  /\ Regrant /\ "W" \notin AllIds /\ Role("P", "P") = ADMIN /\ Holds("P", "M")
+  /\ cs' = cs \cup {[id |-> "W", ts |-> 40 + Len(eps), author |-> "P", h |-> "M", val |-> NONE, kind |-> "chg"]}
+  /\ held' = [held EXCEPT !["P"] = @ \cup {"W"}, !["L"] = @ \cup {"W"}]
+  /\ UNCHANGED <<eps, ents, boxes, adds, forged>>
+\* P, not holding Dp, re-grants M read while its view shows M departed, boxing M at the current
+\* epochs it holds (Regrant)
+ReGrant ==
+  /\ Regrant /\ "Gr" \notin AllIds /\ Role("P", "P") = ADMIN /\ Role("P", "M") = NONE
+  /\ cs' = cs \cup {[id |-> "Gr", ts |-> 41 + Len(eps), author |-> "P", h |-> "M", val |-> READ, kind |-> "chg"]}
+  /\ held' = [held EXCEPT !["P"] = @ \cup {"Gr"}, !["L"] = @ \cup {"Gr"}]
+  /\ boxes' = boxes \cup {<<"M", e>> : e \in Current("P") \cap Sec("P")}
+  /\ UNCHANGED <<eps, ents, adds, forged>>
+
+\* each write: its epoch, the holders its writer saw departed, whether it held P's re-grant
+WritesNow == {<<Newest(n), Departed(n), "Gr" \in held[n]>> : n \in {m \in Honest : MayEncrypt(m)}}
 
 E0 == [id |-> 0, num |-> 0, commit |-> "G", author |-> "O", lists |-> {}, hist |-> {}]
 Init == /\ cs = Static
-        /\ held = [n \in Parties |-> IF n = "L" THEN StaticIds ELSE {}]
+        /\ held = [n \in Parties |-> IF n = "L" THEN StaticIds ELSE IF n = "P" THEN PKnows ELSE {}]
         /\ eps = <<E0>>
         /\ ents = {[e |-> 0, author |-> "O", names |-> {}, bound |-> TRUE]}
         /\ boxes = {<<p, 0>> : p \in Parties}
@@ -225,7 +261,7 @@ Init == /\ cs = Static
         /\ wrote = {}
         /\ forged = {}
 Next == /\ \/ \E n \in Honest : Deliver(n) \/ Rotate(n) \/ HistAdd(n)
-           \/ ForgeEntry \/ ForgeBackdated \/ SelfRot \/ DupRemoval
+           \/ ForgeEntry \/ ForgeBackdated \/ SelfRot \/ DupRemoval \/ PRemove \/ ReGrant
         /\ wrote' = wrote \cup WritesNow
 Spec == Init /\ [][Next]_vars
 
@@ -233,9 +269,11 @@ Spec == Init /\ [][Next]_vars
 TrulyDeparted == {h \in Members : Walk(AllIds).edge[h] = NONE}
 \* content a writer wrote knowing a departure is never readable by the departed holder; what
 \* hostile L holds it can hand any party out of band (its forgeries only automate that), so
-\* another departed party reading an epoch L holds is no leak the rule judges
+\* another departed party reading an epoch L holds is no leak the rule judges; nor is M reading
+\* what a writer not holding P's re-grant wrote (a grant the writer has not received hands on
+\* what its author held, as a valid one would)
 NoLeak == \A w \in wrote \cup WritesNow : \A m \in w[2] \cap TrulyDeparted :
-            w[1] \notin Sec(m) \/ (m # "L" /\ w[1] \in Sec("L"))
+            w[1] \notin Sec(m) \/ (m # "L" /\ w[1] \in Sec("L")) \/ (m = "M" /\ ~w[3])
 \* Q's concurrent removal covers L's departure wherever S is held too (Dup; fails without Later:
 \* only S is attributed there, so every node knowing both rotates again)
 DupCovers == \A n \in Honest : \A e \in EpIds :

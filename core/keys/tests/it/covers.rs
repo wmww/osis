@@ -23,7 +23,7 @@ fn read() -> BTreeSet<Role> {
 
 /// A departure's name: commit `b`'s key, on `thing`.
 fn name(thing: Tid, b: u8) -> Name {
-    Name { thing, key: Key { ts: u64::from(b), node: tid(9), commit: osis_base::CommitId([b; 32]) } }
+    Name::of(thing, Key { ts: u64::from(b), node: tid(9), commit: osis_base::CommitId([b; 32]) })
 }
 
 fn naming(n: Name) -> Names {
