@@ -643,7 +643,10 @@ impl SyncEngine {
         let from = if list.is_empty() { after } else { 0 };
         let picked: Vec<(u64, LabelId, BlobId, bool)> = self.state.mem_log.after(from).filter(|(s, l, _, added)| (list.contains(l) && (*added || *s > after)) || (members.contains(l) && *s > after)).collect();
         let mut at = self.state.mem_log.seq();
-        let (inline, crossed) = self.streams.get(&conn).map_or((0, BTreeSet::new()), |s| (s.serving.inline_limit, s.serving.crossed.clone()));
+        // a memory entry goes with its bytes up to this node's own limit, whatever the requester
+        // asked: one superseded before a fetch of it arrives is never fetched (spec/sync.md §10,
+        // Bodies)
+        let (inline, crossed) = self.streams.get(&conn).map_or((0, BTreeSet::new()), |s| (s.serving.inline_limit.max(self.cfg.inline_limit), s.serving.crossed.clone()));
         let mut out = Vec::new();
         let mut cut = false;
         for (seq, l, b, added) in picked {
@@ -1450,10 +1453,13 @@ impl SyncEngine {
             return Ok(());
         };
         // flow control: a push is not taken while the stream waits on bodies, nor after one was
-        // not until a reply reads from the cursor again (pushes follow on from each other)
+        // not until a reply reads from the cursor again (pushes follow on from each other). Its
+        // memory part has no position to read from again: the next Pull lists the live memory
+        // entries again (`relist`)
         if p.dropped || p.full() {
             p.dropped = true;
             p.caught_up = false;
+            p.relist |= !s.events.is_empty();
             return self.stream_ask(conn, false, out);
         }
         let owed = self.stream_apply(conn, s.events, out)?;
