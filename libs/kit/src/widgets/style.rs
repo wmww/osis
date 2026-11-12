@@ -1,12 +1,14 @@
 //! Stock Masonry widgets (labels, text inputs) styled from a look.
 
+use super::Mark;
 use crate::text::font_stack;
-use crate::theme::{Accent, Look};
-use masonry::core::{NewWidget, Properties, StyleProperty};
+use crate::theme::{Font, HeadingMark, LabelCase, Look};
+use masonry::core::{NewWidget, Properties, StyleProperty, Widget};
 use masonry::parley::FontWeight;
 use masonry::peniko::Color;
 use masonry::properties::{Background, BorderWidth, CaretColor, ContentColor, Padding, PlaceholderColor, SelectionColor, UnfocusedSelectionColor};
-use masonry::widgets::{InsertNewline, Label, Prose, TextArea, TextInput};
+use masonry::properties::types::CrossAxisAlignment;
+use masonry::widgets::{Flex, InsertNewline, Label, Prose, TextArea, TextInput};
 
 /// What a piece of text is, for its size, weight and colour.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -25,41 +27,83 @@ pub enum Text {
     Small,
 }
 
-/// Size, weight and colour of a text role.
-pub fn role(look: &Look, t: Text) -> (f32, f32, Color) {
-    let caps = matches!(look.theme.accent, Accent::Caps | Accent::Slash);
-    let (title_base, label_base) = match look.theme.accent {
-        Accent::Rule => (300.0, 400.0),
-        Accent::Caps | Accent::Slash => (800.0, 700.0),
-        _ => (720.0, 650.0),
-    };
+/// Size, weight, colour and font of a text role: titles, the brand and section labels are
+/// headings, the rest text.
+pub fn role(look: &Look, t: Text) -> (f32, f32, Color, Font) {
+    let th = &look.theme;
+    let heading = |px| (look.heading_px(px), look.heading_weight(), look.heading, th.heading_font);
+    let text = |px, c| (look.text_px(px), look.text_weight(), c, th.text_font);
     match t {
-        Text::Brand => (30.0, look.weight(title_base, 300.0, 100.0, 900.0), look.fg),
-        Text::Title => (30.0, look.weight(title_base, 300.0, 100.0, 900.0), look.fg),
-        Text::Section => (if caps { 12.0 } else { 13.0 }, look.weight(label_base, 200.0, 100.0, 900.0), look.muted),
-        Text::Body => (16.0, 400.0, look.fg),
-        Text::Muted => (14.0, 400.0, look.muted),
-        Text::Small => (12.5, 400.0, look.muted),
+        Text::Brand | Text::Title => heading(30.0),
+        Text::Section => heading(13.0),
+        Text::Body => text(16.0, look.fg),
+        Text::Muted => text(14.0, look.muted),
+        Text::Small => text(12.5, look.muted),
     }
 }
 
-/// A label in a text role (section labels upper-cased where the accent asks).
+/// The text styles of a role, plus the underline mark on titles.
+fn styles(look: &Look, t: Text) -> Vec<StyleProperty> {
+    let (size, weight, _, font) = role(look, t);
+    let mut v = vec![StyleProperty::FontSize(size), StyleProperty::FontWeight(FontWeight::new(weight)), font_stack(font)];
+    if t == Text::Title && look.theme.mark == HeadingMark::Underline {
+        // drawn in the text's own colour: a text area paints with one brush
+        v.extend([StyleProperty::Underline(true), StyleProperty::UnderlineSize(Some(size * 0.22)), StyleProperty::UnderlineOffset(Some(size * -0.06))]);
+    }
+    v
+}
+
+/// A label in a text role (section labels in the theme's label case).
 pub fn label(look: &Look, text: &str, t: Text) -> NewWidget<Label> {
-    let (size, weight, color) = role(look, t);
-    let s = if t == Text::Section && matches!(look.theme.accent, Accent::Caps | Accent::Slash | Accent::Plain) { text.to_uppercase() } else { text.to_string() };
-    let mut l = Label::new(s).with_style(StyleProperty::FontSize(size)).with_style(StyleProperty::FontWeight(FontWeight::new(weight))).with_style(font_stack(look));
-    // bar: mono labels
-    if t == Text::Section && look.theme.accent == Accent::Bar {
-        l = l.with_style(StyleProperty::FontStack(masonry::parley::FontStack::Source(std::borrow::Cow::Borrowed("JetBrains Mono, monospace"))));
+    let (_, _, color, _) = role(look, t);
+    let s = match (t, look.theme.label_case) {
+        (Text::Section, LabelCase::Upper) => text.to_uppercase(),
+        (Text::Section, LabelCase::Lower) => text.to_lowercase(),
+        _ => text.to_string(),
+    };
+    let mut l = Label::new(s);
+    for st in styles(look, t) {
+        l = l.with_style(st);
+    }
+    if t == Text::Section && look.theme.label_case == LabelCase::Upper {
+        l = l.with_style(StyleProperty::LetterSpacing(role(look, t).0 * 0.08));
     }
     NewWidget::new_with_props(l, Properties::new().with(ContentColor::new(color)).with(Padding::all(0.0)))
+}
+
+/// A heading (a section label, a title, the brand) with the theme's mark: a slash or dot before
+/// a section label or a title, the dot also after the brand. `lead`: something already stands
+/// before it (an icon or avatar), so no mark goes there.
+pub fn marked(look: &Look, w: NewWidget<impl Widget + ?Sized>, t: Text, lead: bool) -> NewWidget<dyn Widget> {
+    let mark = look.theme.mark;
+    let em = f64::from(role(look, t).0);
+    let row = Flex::row().cross_axis_alignment(CrossAxisAlignment::Center);
+    match (mark, t) {
+        (HeadingMark::Slash | HeadingMark::Dot, Text::Section | Text::Title) if !lead => {
+            let m = NewWidget::new(Mark::new(look, mark == HeadingMark::Dot, em));
+            NewWidget::new(row.with_child(m).with_flex_child(w.erased(), 1.0)).erased()
+        }
+        (HeadingMark::Dot, Text::Brand) => {
+            let m = NewWidget::new(Mark::after(look, em));
+            NewWidget::new(row.cross_axis_alignment(CrossAxisAlignment::End).with_child(w.erased()).with_child(m)).erased()
+        }
+        _ => w.erased(),
+    }
+}
+
+/// A heading label with its mark.
+pub fn heading(look: &Look, text: &str, t: Text) -> NewWidget<dyn Widget> {
+    marked(look, label(look, text, t), t, false)
 }
 
 /// Read-only text in a text role that can be selected and copied (click, then Ctrl+C), broken at
 /// word boundaries. It takes all the width it is offered: not for a non-flex child of a row.
 pub fn prose(look: &Look, text: &str, t: Text) -> NewWidget<Prose> {
-    let (size, weight, color) = role(look, t);
-    let area = TextArea::new_immutable(text).with_style(StyleProperty::FontSize(size)).with_style(StyleProperty::FontWeight(FontWeight::new(weight))).with_style(font_stack(look));
+    let color = role(look, t).2;
+    let mut area = TextArea::new_immutable(text);
+    for st in styles(look, t) {
+        area = area.with_style(st);
+    }
     let props = Properties::new()
         .with(ContentColor::new(color))
         .with(SelectionColor { color: look.selection })
@@ -67,25 +111,13 @@ pub fn prose(look: &Look, text: &str, t: Text) -> NewWidget<Prose> {
     NewWidget::new(Prose::from_text_area(NewWidget::new_with_props(area, props)))
 }
 
-/// The accent's mark above a screen's title: a rule in the main colour (rule), a bar (bar), an
-/// underline (slash); `None` for plain and caps.
-pub fn title_mark(look: &Look) -> Option<NewWidget<masonry::widgets::Flex>> {
-    let (w, h) = match look.theme.accent {
-        Accent::Rule => (f64::INFINITY, 3.0),
-        Accent::Bar => (f64::INFINITY, 8.0),
-        Accent::Slash => (48.0, 4.0),
-        Accent::Plain | Accent::Caps => return None,
-    };
-    let b = masonry::widgets::SizedBox::empty().raw_width(Some(w)).height(masonry::properties::types::Length::px(h));
-    let b = NewWidget::new_with_props(b, Properties::new().with(Background::Color(look.main)));
-    let row = if w.is_finite() { masonry::widgets::Flex::row().with_child(b) } else { masonry::widgets::Flex::row().with_flex_child(b, 1.0) };
-    Some(NewWidget::new(row))
-}
-
 /// A borderless text input in a text role (`multiline`: Enter inserts a newline).
 pub fn input(look: &Look, text: &str, placeholder: &str, t: Text, multiline: bool) -> (NewWidget<TextInput>, masonry::core::WidgetId) {
-    let (size, weight, color) = role(look, t);
-    let mut area = TextArea::new_editable(text).with_style(StyleProperty::FontSize(size)).with_style(StyleProperty::FontWeight(FontWeight::new(weight))).with_style(font_stack(look));
+    let color = role(look, t).2;
+    let mut area = TextArea::new_editable(text);
+    for st in styles(look, t) {
+        area = area.with_style(st);
+    }
     if multiline {
         area = area.with_insert_newline(InsertNewline::OnEnter).with_style(StyleProperty::LineHeight(masonry::parley::LineHeight::FontSizeRelative(1.55)));
     }

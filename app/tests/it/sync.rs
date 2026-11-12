@@ -315,12 +315,12 @@ fn look_merges_and_tolerates_odd_values() {
     let (a, b) = two();
     let ga = a.main_group().unwrap();
     let gb = b.main_group().unwrap();
-    a.set_theme("cel").unwrap();
+    a.set_theme("velocity").unwrap();
     b.set_theme("slate").unwrap();
     b.set_mode(Mode::Dark).unwrap();
     sync(&a, &b);
     assert_eq!(a.look().unwrap(), b.look().unwrap());
-    let want = if ga < gb { "cel" } else { "slate" };
+    let want = if ga < gb { "velocity" } else { "slate" };
     assert_eq!(a.look().unwrap(), (Some(want.into()), Mode::Dark), "the main group's theme, the other's mode");
     let main = a.main_group().unwrap();
     let mut w = a.db.write();
@@ -328,7 +328,7 @@ fn look_merges_and_tolerates_odd_values() {
     w.at(main, osis::DynamicAspectKey::untyped(Ak::new("ui:mode.0").unwrap())).set(&Value::Enum(7, None)).unwrap();
     w.commit().unwrap();
     // the other group's choice shows through (b's mode lived on gb)
-    let other = if main == ga { (Some("slate".into()), Mode::Dark) } else { (Some("cel".into()), Mode::Auto) };
+    let other = if main == ga { (Some("slate".into()), Mode::Dark) } else { (Some("velocity".into()), Mode::Auto) };
     assert_eq!(a.look().unwrap(), other, "odd values on the main group read as unset");
     a.set_theme("no-such-theme").unwrap();
     assert_eq!(a.look().unwrap().0.as_deref(), Some("no-such-theme"));

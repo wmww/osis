@@ -1,5 +1,5 @@
 //! Text for kit widgets that lay out their own text (tiles): one parley layout per string, in
-//! the look's font.
+//! the look's text font.
 
 use crate::theme::{Font, Look};
 use masonry::core::{BrushIndex, StyleProperty};
@@ -20,18 +20,19 @@ pub fn family(font: Font) -> &'static str {
         Font::Atkinson => "Atkinson Hyperlegible Next, system-ui, sans-serif",
         Font::Nunito => "Nunito, system-ui, sans-serif",
         Font::Literata => "Literata, serif",
+        Font::JetBrainsMono => "JetBrains Mono, monospace",
     }
 }
 
-/// The look's font stack, as a style property for Labels and text areas.
-pub fn font_stack(look: &Look) -> StyleProperty {
-    StyleProperty::FontStack(FontStack::Source(Cow::Borrowed(family(look.theme.font))))
+/// `font`'s stack, as a style property for Labels and text areas.
+pub fn font_stack(font: Font) -> StyleProperty {
+    StyleProperty::FontStack(FontStack::Source(Cow::Borrowed(family(font))))
 }
 
-/// A one-line (or wrapped at `wrap`) layout of `text`.
+/// A one-line (or wrapped at `wrap`) layout of `text` in the look's text font.
 pub fn layout(fcx: &mut FontContext, lcx: &mut LayoutContext<BrushIndex>, look: &Look, text: &str, size: f32, weight: f32, wrap: Option<f32>) -> Layout<BrushIndex> {
     let mut b = lcx.ranged_builder(fcx, text, 1.0, true);
-    b.push_default(font_stack(look));
+    b.push_default(font_stack(look.theme.text_font));
     b.push_default(StyleProperty::FontSize(size));
     b.push_default(StyleProperty::FontWeight(FontWeight::new(weight)));
     let mut l = b.build(text);

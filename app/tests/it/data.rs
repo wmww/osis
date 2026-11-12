@@ -112,9 +112,9 @@ fn look_choice() {
     let d = data();
     d.main_group().unwrap();
     assert_eq!(d.look().unwrap(), (None, Mode::Auto));
-    d.set_theme("cel").unwrap();
+    d.set_theme("velocity").unwrap();
     d.set_mode(Mode::Dark).unwrap();
-    assert_eq!(d.look().unwrap(), (Some("cel".into()), Mode::Dark));
+    assert_eq!(d.look().unwrap(), (Some("velocity".into()), Mode::Dark));
 }
 
 /// Offers, tagging, untagging, reach of a private thing, undo.

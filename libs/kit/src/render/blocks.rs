@@ -222,9 +222,9 @@ impl R<'_> {
     fn block(&mut self, b: &Block) -> Option<NewWidget<dyn Widget>> {
         let look = self.look.clone();
         Some(match b {
-            Block::Heading(s) => style::label(&look, s, Text::Title).erased(),
+            Block::Heading(s) => style::heading(&look, s, Text::Title),
             Block::Line(s) => style::prose(&look, s, Text::Muted).erased(),
-            Block::Label(s) => style::label(&look, s, Text::Section).erased(),
+            Block::Label(s) => style::heading(&look, s, Text::Section),
             Block::Chips(c) => self.chips(c),
             Block::Tabs(tabs) => {
                 let mut wrap = Wrap::new(look.clone());
@@ -259,9 +259,6 @@ impl R<'_> {
         let look = self.look.clone();
         let sp = |x: f64| look.sp(x);
         let mut body = Flex::column().cross_axis_alignment(CrossAxisAlignment::Fill).with_gap(Length::px(sp(16.0)));
-        if let Some(m) = style::title_mark(&look) {
-            body = body.with_child(m);
-        }
         // a child with a list scrolls that list: it takes the height, the rest stays put
         body = if fills { body.with_flex_child(self.child(key), 1.0) } else { body.with_child(self.child(key)) };
         for b in below {
@@ -348,7 +345,7 @@ impl R<'_> {
                 },
                 false,
             ),
-            Item::Label(s) => (style::label(&look, s, Text::Section).erased(), true),
+            Item::Label(s) => (style::heading(&look, s, Text::Section), true),
             Item::View(_) => (self.child(&row.key).erased(), false),
             Item::New(d) => {
                 let w = NewWidget::new(Tile::new(TileStyle::New, TileIcon::Icon(Icon::Plus), "New", "Note, event, person, tag", None, look));
@@ -495,7 +492,7 @@ impl R<'_> {
             let row = Flex::row().with_gap(Length::px(look.sp(4.0))).with_child(NewWidget::new(SizedBox::new(avatar).width(Length::px(46.0)))).with_flex_child(w, 1.0);
             return Some(NewWidget::new(row).erased());
         }
-        Some(w.erased())
+        Some(if role_t == Text::Title { style::marked(&look, w, Text::Title, false) } else { w.erased() })
     }
 
     fn composer(&mut self, c: &Composer) -> NewWidget<dyn Widget> {

@@ -1,10 +1,12 @@
 //! A chip: a small pill with a colour dot or an icon and a label (a tag on a thing, an action
-//! like "+ Tag" or "Undo"). It leans with the theme's slant like other cards. A removable chip
+//! like "+ Tag" or "Undo"). It is a card in its own colour (else the screen's) and leans with
+//! the theme's slant like other cards; a flat chip has no fill until hovered. A removable chip
 //! has a × at its end. Emits `ChipPress::Open` for a click on the chip, `Remove` on the ×.
 
 use crate::icons::Icon;
 use crate::text;
-use crate::theme::{Look, fade, mix, neutral};
+use super::{brighten, fill_card, lean};
+use crate::theme::{Card, Look, fade};
 use masonry::accesskit::{Node, Role};
 use masonry::core::{AccessCtx, AccessEvent, BoxConstraints, BrushIndex, ChildrenIds, EventCtx, LayoutCtx, PaintCtx, PointerEvent, PropertiesMut, PropertiesRef, RegisterCtx, TextEvent, Update, UpdateCtx, Widget};
 use masonry::kurbo::{Affine, Circle, Line, Point, RoundedRect, Size, Stroke};
@@ -119,7 +121,7 @@ impl Widget for Chip {
     fn layout(&mut self, ctx: &mut LayoutCtx<'_>, _props: &mut PropertiesMut<'_>, bc: &BoxConstraints) -> Size {
         let look = self.look.clone();
         let (fcx, lcx) = ctx.text_contexts();
-        let l = text::layout(fcx, lcx, &look, &self.label, 13.0, 500.0, None);
+        let l = text::layout(fcx, lcx, &look, &self.label, look.text_px(13.0), look.text_weight(), None);
         let w = self.lead() + f64::from(l.width()) + if self.removable { X_W } else { 12.0 };
         self.text = Some(l);
         bc.constrain(Size::new(w, H))
@@ -128,36 +130,36 @@ impl Widget for Chip {
     fn paint(&mut self, ctx: &mut PaintCtx<'_>, _props: &PropertiesRef<'_>, scene: &mut Scene) {
         let look = &*self.look;
         let size = ctx.size();
-        let tint = self.tint.unwrap_or_else(neutral);
-        let k = look.theme.slant.to_radians().tan();
-        let skew = Affine::translate((size.height * 0.5 * k, 0.0)) * Affine::skew(-k, 0.0);
-        let rect = RoundedRect::from_rect(size.to_rect(), (look.theme.radius * 100.0).min(size.height / 2.0));
+        let tint = self.tint.unwrap_or(look.main);
+        let skew = lean(look.shear(), size);
+        let rect = RoundedRect::from_rect(size.to_rect(), (look.radius() * 100.0).min(size.height / 2.0));
         let hovered = ctx.is_hovered();
-        let fill = if self.flat {
-            if hovered { Some(fade(look.fg, 0.07)) } else { None }
+        let card = look.card(Some(tint));
+        let (fg, muted) = if self.flat { (look.fg, look.muted) } else { (card.fg, card.muted) };
+        if self.flat {
+            if hovered {
+                scene.fill(Fill::NonZero, skew, fade(look.fg, 0.07), None, &rect);
+            }
         } else {
-            let base = look.card(None);
-            Some(mix(base, tint, if hovered { 0.32 } else { 0.22 }))
-        };
-        if let Some(f) = fill {
-            scene.fill(Fill::NonZero, skew, f, None, &rect);
+            let c = if hovered { Card { top: brighten(card.top), bottom: brighten(card.bottom), ..card } } else { card };
+            fill_card(scene, look, rect, &c, skew);
         }
         if ctx.is_focus_target() {
-            scene.stroke(&Stroke::new(1.5), skew, look.accent, None, &rect);
+            scene.stroke(&Stroke::new(1.5), skew, look.main, None, &rect);
         }
         let mid = size.height / 2.0;
         match self.mark {
             ChipMark::Dot => scene.fill(Fill::NonZero, Affine::IDENTITY, tint, None, &Circle::new((15.0, mid), 4.0)),
-            ChipMark::Icon(i) => i.paint(scene, (8.0, mid - 7.0), 14.0, if self.flat { look.muted } else { look.fg }, false),
+            ChipMark::Icon(i) => i.paint(scene, (8.0, mid - 7.0), 14.0, if self.flat { muted } else { fg }, false),
             ChipMark::None => {}
         }
         if let Some(l) = &self.text {
-            let c = if self.flat { look.muted } else { look.fg };
+            let c = if self.flat { muted } else { fg };
             text::draw(scene, l, Point::new(self.lead(), mid - f64::from(l.height()) / 2.0), c);
         }
         if self.removable {
             let cx = size.width - X_W / 2.0 - 3.0;
-            let c = fade(look.fg, if hovered { 0.8 } else { 0.45 });
+            let c = fade(fg, if hovered { 0.8 } else { 0.45 });
             let st = Stroke::new(1.5);
             scene.stroke(&st, Affine::IDENTITY, c, None, &Line::new((cx - 3.5, mid - 3.5), (cx + 3.5, mid + 3.5)));
             scene.stroke(&st, Affine::IDENTITY, c, None, &Line::new((cx + 3.5, mid - 3.5), (cx - 3.5, mid + 3.5)));

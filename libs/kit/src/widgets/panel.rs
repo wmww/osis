@@ -1,9 +1,9 @@
-//! A panel: one child on the theme's panel surface (fill at panel opacity, outline and shadow
-//! fading with it), or an inset (a faint fill, no outline) or a field (opaque-ish surface with
-//! the outline).
+//! A panel: one child on the theme's panel colour (flat; its alpha is panel opacity, which the
+//! outline and shadow follow), or an inset (a faint fill, no outline), or a field (the panel
+//! colour at least 62% opaque, with the outline and the tile shadow, leaning with the slant).
 
-use super::shadow;
-use crate::theme::{Look, fade, mix};
+use super::{lean, shadow};
+use crate::theme::{Look, fade};
 use masonry::accesskit::{Node, Role};
 use masonry::core::{AccessCtx, BoxConstraints, ChildrenIds, LayoutCtx, NewWidget, PaintCtx, PropertiesMut, PropertiesRef, RegisterCtx, Update, UpdateCtx, Widget, WidgetMut, WidgetPod};
 use masonry::kurbo::{Affine, Insets, Point, RoundedRect, Size, Stroke};
@@ -61,7 +61,7 @@ impl Panel {
     }
 
     fn radius(&self) -> f64 {
-        let r = self.look.theme.radius;
+        let r = self.look.radius();
         match self.kind {
             PanelKind::Panel => r * 1.35,
             PanelKind::Inset | PanelKind::Field | PanelKind::Highlight => r * 0.8,
@@ -96,50 +96,53 @@ impl Widget for Panel {
         ctx.place_child(&mut self.child, Point::new(h, v));
         let size = bc.constrain(Size::new(cs.width + 2.0 * h, cs.height + 2.0 * v));
         let (dx, dy) = self.look.shadow_offset(1.5);
-        let b = self.look.theme.shadow_blur * 2.5;
+        let b = self.look.shadow_blur(2.5);
         ctx.set_paint_insets(Insets::new((b - dx).max(0.0), (b - dy).max(0.0), (b + dx).max(0.0), (b + dy).max(0.0)));
         size
     }
 
     fn paint(&mut self, ctx: &mut PaintCtx<'_>, _props: &PropertiesRef<'_>, scene: &mut Scene) {
+        use masonry::peniko::{Color, Fill, Gradient};
         let look = &*self.look;
-        let rect = RoundedRect::from_rect(ctx.size().to_rect(), self.radius());
-        let op = look.theme.panel_opacity;
+        let size = ctx.size();
+        let rect = RoundedRect::from_rect(size.to_rect(), self.radius());
+        let ow = look.outline_width();
+        let outline = |scene: &mut Scene, xf: Affine, c: Color| {
+            if ow > 0.0 {
+                scene.stroke(&Stroke::new(ow), xf, c, None, &rect.rect().inset(-ow / 2.0).to_rounded_rect(self.radius()));
+            }
+        };
+        let id = Affine::IDENTITY;
         match self.kind {
             PanelKind::Panel => {
+                let op = look.panel_opacity();
                 if op > 0.0 {
-                    let mut l = look.clone();
-                    l.shadow = fade(l.shadow, op);
-                    shadow(scene, &l, rect, 1.5, Affine::IDENTITY);
-                    scene.fill(masonry::peniko::Fill::NonZero, Affine::IDENTITY, look.panel, None, &rect);
-                    // gloss on a panel: only a faint lit top edge
-                    if look.theme.gloss > 0.0 {
+                    shadow(scene, look, rect, (1.5, 2.5), fade(look.shadow, op), id);
+                    scene.fill(Fill::NonZero, id, look.panel, None, &rect);
+                    // a blurring panel has a faint lit top edge
+                    let lit = (look.theme.panel_blur * 0.04).clamp(0.0, 1.0);
+                    if lit > 0.0 {
+                        let hi = fade(Color::WHITE, if look.dark { 0.14 } else { 0.75 } * lit * op);
                         let r = rect.rect();
-                        let g = masonry::peniko::Gradient::new_linear((r.x0, r.y0), (r.x0, r.y0 + 24.0))
-                            .with_stops([(0.0, fade(masonry::peniko::Color::WHITE, look.theme.gloss * 0.18)), (1.0, fade(masonry::peniko::Color::WHITE, 0.0))]);
-                        scene.fill(masonry::peniko::Fill::NonZero, Affine::IDENTITY, &g, None, &rect);
+                        let g = Gradient::new_linear((r.x0, r.y0), (r.x0, r.y0 + 2.0)).with_stops([(0.0, hi), (1.0, fade(hi, 0.0))]);
+                        scene.fill(Fill::NonZero, id, &g, None, &rect);
                     }
-                    if look.theme.outline > 0.0 {
-                        let ow = look.theme.outline;
-                        scene.stroke(&Stroke::new(ow), Affine::IDENTITY, fade(look.outline, op), None, &rect.rect().inset(-ow / 2.0).to_rounded_rect(self.radius()));
-                    }
+                    outline(scene, id, fade(look.outline, op));
                 }
             }
             PanelKind::Inset => {
-                scene.fill(masonry::peniko::Fill::NonZero, Affine::IDENTITY, fade(look.fg, 0.04), None, &rect);
+                scene.fill(Fill::NonZero, id, fade(look.fg, 0.04), None, &rect);
             }
             PanelKind::Highlight => {
-                scene.fill(masonry::peniko::Fill::NonZero, Affine::IDENTITY, mix(look.surface, look.accent, 0.16), None, &rect);
-                let w = 1.5;
-                scene.stroke(&Stroke::new(w), Affine::IDENTITY, look.accent, None, &rect.rect().inset(-w / 2.0).to_rounded_rect(self.radius()));
+                scene.fill(Fill::NonZero, id, fade(look.fg, 0.04), None, &rect);
+                let w = 2.0;
+                scene.stroke(&Stroke::new(w), id, look.main, None, &rect.rect().inset(-w / 2.0).to_rounded_rect((self.radius() - w / 2.0).max(0.0)));
             }
             PanelKind::Field => {
-                let bg = fade(mix(look.surface, look.main, 0.03), 0.62 + op * 0.38);
-                scene.fill(masonry::peniko::Fill::NonZero, Affine::IDENTITY, bg, None, &rect);
-                if look.theme.outline > 0.0 {
-                    let ow = look.theme.outline;
-                    scene.stroke(&Stroke::new(ow), Affine::IDENTITY, look.outline, None, &rect.rect().inset(-ow / 2.0).to_rounded_rect(self.radius()));
-                }
+                let xf = lean(look.shear(), size);
+                shadow(scene, look, rect, (1.0, 1.0), look.shadow, xf);
+                scene.fill(Fill::NonZero, xf, look.field(), None, &rect);
+                outline(scene, xf, look.outline);
             }
         }
     }

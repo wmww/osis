@@ -1,12 +1,13 @@
 //! A tile: one thing or scope as a card (grids) or a row (rails, lists), or the dashed "new"
 //! card. An icon square (a line icon or initials) in the thing's colour, its name and a line
-//! under it. Cards take the theme's fill, slant, shadow and gloss; rows are flat until hovered or
-//! current. Emits `Press` when clicked (or Enter/Space when focused).
+//! under it. Cards draw the theme's card colours in the thing's own colour, slanted, with the
+//! tile shadow; rows are flat until hovered, and the current row is a card. Emits `Press` when
+//! clicked (or Enter/Space when focused).
 
-use super::{Press, fill_glossy, shadow};
+use super::{Press, brighten, fill_card, lean, shadow};
 use crate::icons::Icon;
 use crate::text;
-use crate::theme::{Accent, Look, fade, mix, neutral};
+use crate::theme::{Card, Look, fade};
 use masonry::accesskit::{Node, Role};
 use masonry::core::keyboard::{Key, NamedKey};
 use masonry::core::{AccessCtx, AccessEvent, BoxConstraints, BrushIndex, ChildrenIds, EventCtx, LayoutCtx, PaintCtx, PointerEvent, PropertiesMut, PropertiesRef, RegisterCtx, TextEvent, Update, UpdateCtx, Widget, WidgetMut};
@@ -88,14 +89,14 @@ impl Tile {
 
     fn radius(&self) -> f64 {
         match self.style {
-            TileStyle::Row => self.look.theme.radius * 0.55,
-            _ => self.look.theme.radius,
+            TileStyle::Row => self.look.radius() * 0.55,
+            _ => self.look.radius(),
         }
     }
 
-    /// Whether the card's text is white (filled cards only; rows sit on the panel).
-    fn white(&self) -> bool {
-        (self.style == TileStyle::Card || self.style == TileStyle::Row && self.current) && self.look.on_card_white()
+    /// Whether it is drawn as a card (a card, or the current row).
+    fn is_card(&self) -> bool {
+        self.style == TileStyle::Card || self.style == TileStyle::Row && self.current
     }
 }
 
@@ -154,16 +155,16 @@ impl Widget for Tile {
     fn layout(&mut self, ctx: &mut LayoutCtx<'_>, _props: &mut PropertiesMut<'_>, bc: &BoxConstraints) -> Size {
         let look = self.look.clone();
         let (fcx, lcx) = ctx.text_contexts();
-        let name_w = look.weight(600.0, 75.0, 400.0, 800.0);
+        let name_w = look.name_weight();
         let (ns, ss) = match self.style {
-            TileStyle::Row => (14.0, 12.0),
-            _ => (15.0, 12.5),
+            TileStyle::Row => (look.text_px(14.0), look.text_px(12.0)),
+            _ => (look.text_px(15.0), look.text_px(12.5)),
         };
         let name = if self.name.is_empty() { "Untitled" } else { &self.name };
         // a bar tile (dense lists) wraps its name to the width instead of cutting it
         let wrap = (self.icon == TileIcon::Bar && bc.is_width_bounded()).then(|| (bc.max().width - 2.0 * self.pad().1 - self.icon_size() - self.sp(7.0)).max(20.0) as f32);
         let n = text::layout(fcx, lcx, &look, name, ns, name_w, wrap);
-        let s = text::layout(fcx, lcx, &look, &self.sub, ss, 400.0, None);
+        let s = text::layout(fcx, lcx, &look, &self.sub, ss, look.text_weight(), None);
         let ini = match &self.icon {
             TileIcon::Initials(i) => Some(text::layout(fcx, lcx, &look, i, if self.style == TileStyle::Row { 11.0 } else { 13.0 }, 700.0, None)),
             TileIcon::Icon(_) | TileIcon::Bar => None,
@@ -178,8 +179,8 @@ impl Widget for Tile {
         };
         let _ = ph;
         let size = bc.constrain(want);
-        if self.style == TileStyle::Card {
-            let b = look.theme.shadow_blur;
+        if self.style != TileStyle::New {
+            let b = look.shadow_blur(1.0);
             let (dx, dy) = look.shadow_offset(1.0);
             ctx.set_paint_insets(masonry::kurbo::Insets::new((b - dx).max(0.0), (b - dy).max(0.0), (b + dx).max(0.0), (b + dy).max(0.0)));
         }
@@ -191,51 +192,23 @@ impl Widget for Tile {
         let size = ctx.size();
         let hovered = ctx.is_hovered();
         let pressed = ctx.is_active();
-        let tint = self.tint.unwrap_or_else(neutral);
+        let card: Card = look.card(self.tint);
         let rect = RoundedRect::from_rect(size.to_rect(), self.radius());
         // cards lean by the theme's slant about their centre; text stays upright
-        let k = look.theme.slant.to_radians().tan();
-        let skew = Affine::translate((size.height * 0.5 * k, 0.0)) * Affine::skew(-k, 0.0);
+        let skew = lean(look.shear(), size);
         match self.style {
             TileStyle::Card => {
-                shadow(scene, &look, rect, 1.0, skew);
-                let mut fill = look.card(Some(tint));
-                if hovered {
-                    fill = mix(fill, if look.dark { Color::WHITE } else { Color::BLACK }, 0.05);
-                }
-                if pressed {
-                    fill = mix(fill, tint, 0.2);
-                }
-                fill_glossy(scene, &look, rect, fill, skew);
-                match look.theme.accent {
-                    // bar: the tag colour as a stripe down the left
-                    Accent::Bar => {
-                        let stripe = Rect::new(0.0, 0.0, 5.0, size.height);
-                        // on a card filled with its own colour the stripe is a darker shade of it
-                        let c = if look.on_card_white() { mix(tint, Color::BLACK, 0.4) } else { tint };
-                        scene.push_clip_layer(skew, &rect);
-                        scene.fill(Fill::NonZero, skew, c, None, &stripe);
-                        scene.pop_layer();
-                    }
-                    // slash: a corner flag
-                    Accent::Slash => {
-                        let mut flag = masonry::kurbo::BezPath::new();
-                        flag.move_to((size.width - 26.0, 0.0));
-                        flag.line_to((size.width, 0.0));
-                        flag.line_to((size.width, 26.0));
-                        flag.close_path();
-                        scene.push_clip_layer(skew, &rect);
-                        scene.fill(Fill::NonZero, skew, tint, None, &flag);
-                        scene.pop_layer();
-                    }
-                    _ => {}
-                }
+                shadow(scene, &look, rect, (1.0, 1.0), look.shadow, skew);
+                let c = if hovered || pressed { Card { top: brighten(card.top), bottom: brighten(card.bottom), ..card } } else { card };
+                fill_card(scene, &look, rect, &c, skew);
+            }
+            TileStyle::Row if self.current => {
+                shadow(scene, &look, rect, (0.75, 1.0), look.shadow, skew);
+                fill_card(scene, &look, rect, &card, skew);
             }
             TileStyle::Row => {
-                let amt = if self.current { (0.05 + look.theme.fill * 0.95).max(0.2) } else if hovered { 0.12 } else { 0.0 };
-                if amt > 0.0 {
-                    let base = if self.current { look.main } else { tint };
-                    scene.fill(Fill::NonZero, skew, fade(base, amt), None, &rect);
+                if hovered {
+                    scene.fill(Fill::NonZero, skew, fade(look.fg, if pressed { 0.12 } else { 0.07 }), None, &rect);
                 }
             }
             TileStyle::New => {
@@ -247,25 +220,31 @@ impl Widget for Tile {
         // keyboard focus is always visible: Space and Enter press what it rings
         if ctx.is_focus_target() {
             let ring = RoundedRect::from_rect(size.to_rect().inset(-1.5), (self.radius() - 1.5).max(0.0));
-            scene.stroke(&Stroke::new(2.0), skew, look.accent, None, &ring);
+            scene.stroke(&Stroke::new(2.0), skew, look.main, None, &ring);
         }
         let (pv, ph) = self.pad();
         let ic = self.icon_size();
-        let white = self.white();
-        let fg = if white { Color::WHITE } else { look.fg };
-        let muted = if white { fade(Color::WHITE, 0.82) } else { look.muted };
-        // the icon square
-        let ir = RoundedRect::from_rect(Rect::from_origin_size((ph, pv), (ic, ic)), ic * 0.5 * look.theme.icon_round.clamp(0.0, 1.0));
+        let on_card = self.is_card();
+        let white = on_card && look.on_card_white();
+        let (fg, muted) = if on_card { (card.fg, card.muted) } else { (look.fg, look.muted) };
+        let tint = self.tint.unwrap_or(look.main);
+        // the icon square, leaning with the slant less as it gets round; its glyph upright
+        let ir = RoundedRect::from_rect(Rect::from_origin_size((0.0, 0.0), (ic, ic)), ic * 0.5 * look.icon_round());
+        let ixf = Affine::translate((ph, pv)) * lean(look.icon_shear(), Size::new(ic, ic));
         let (icon_bg, icon_fg) = match self.style {
             TileStyle::New => (None, muted),
-            _ if white => (Some(fade(Color::WHITE, 0.22)), Color::WHITE),
-            _ => (Some(mix(tint, Color::WHITE, 0.2)), Color::WHITE),
+            _ if on_card => (Some(card.icon_bg), card.icon_fg),
+            _ => (Some(tint), Color::WHITE),
         };
         if self.icon == TileIcon::Bar {
             let bar = RoundedRect::from_rect(Rect::new(ph, pv, ph + ic, size.height - pv), 1.5);
             scene.fill(Fill::NonZero, Affine::IDENTITY, if white { Color::WHITE } else { tint }, None, &bar);
         } else if let Some(bg) = icon_bg {
-            scene.fill(Fill::NonZero, Affine::IDENTITY, bg, None, &ir);
+            scene.fill(Fill::NonZero, ixf, bg, None, &ir);
+            // the current row's icon is ringed where its text is white
+            if self.style == TileStyle::Row && self.current && white {
+                scene.stroke(&Stroke::new(2.0), ixf, fade(Color::WHITE, 0.8), None, &ir.rect().inset(1.0).to_rounded_rect(ic * 0.5 * look.icon_round() + 1.0));
+            }
         }
         let Some((n, s, ini)) = &self.texts else { return };
         match (&self.icon, ini) {

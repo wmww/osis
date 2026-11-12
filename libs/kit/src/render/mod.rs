@@ -114,8 +114,9 @@ struct Draw<'u, 'a, 'b> {
 impl Surface for Draw<'_, '_, '_> {
     fn show(&mut self, path: &str, out: &Section) -> osis::Result<bool> {
         let ui = &mut *self.ui;
-        // results in the rail mark the open thing
-        let current = (path == "rail").then(|| ui.built.as_ref().map(|l| l.t)).flatten();
+        // the rail (results, favorites) marks the open thing
+        let in_rail = path == RAIL || path.starts_with(&views::child_path(RAIL, ""));
+        let current = in_rail.then(|| ui.built.as_ref().map(|l| l.t)).flatten();
         let mut blocks = out.blocks.clone();
         // a pinned foot and following the end only when this node fills the page
         let (foot, filled) = (out.foot.clone(), ui.pinned.contains(path));
@@ -174,7 +175,7 @@ impl Ui {
         // osis callbacks run on this thread, inside the `settle` that the Wakeup drains after
         let (tx, rx) = channel();
         let (theme, mode) = data.look().unwrap_or((None, ModeChoice::Auto));
-        let theme = Theme::named(theme.as_deref().unwrap_or("frost"));
+        let theme = Theme::named(theme.as_deref());
         let mode = kit_mode(&mode);
         let m = tx.clone();
         let diag_sub = data.db.on_diagnostic(move |_, d| {
@@ -263,7 +264,7 @@ impl Ui {
         Graph::drain(&self.state.graph);
         let main = self.data.main_group()?;
         let sh = Graph::view(&self.state.graph, ("shell", main), move |r| shell(r, &("shell", main)))?.value;
-        self.theme = Theme::named(sh.theme.as_deref().unwrap_or("frost"));
+        self.theme = Theme::named(sh.theme.as_deref());
         self.mode = kit_mode(&sh.mode);
         let dark = self.dark(ctx);
         self.state.set_local(DARK, dark);
@@ -420,7 +421,7 @@ impl Ui {
     fn home_widget(&mut self, l: &Layout) -> NewWidget<dyn Widget> {
         let look = self.look.clone();
         let mut col = Flex::column().cross_axis_alignment(CrossAxisAlignment::Fill).with_gap(Length::px(look.sp(18.0)));
-        col = col.with_child(style::label(&look, "osis", Text::Brand)).with_child(self.search_field(true));
+        col = col.with_child(style::heading(&look, "osis", Text::Brand)).with_child(self.search_field(true));
         if l.searching {
             col = col.with_flex_child(self.slot("results"), 1.0);
         } else {

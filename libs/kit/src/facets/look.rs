@@ -52,10 +52,10 @@ impl Facet for LookFacet {
     fn show(&self, cx: &Cx, _t: Tid) -> Result<Section> {
         let (theme, mode) = cx.look()?;
         let dark = dark_of(cx)?;
-        let current = theme.unwrap_or_else(|| "frost".into());
+        let current = Theme::named(theme.as_deref()).id;
         let themes = Theme::defaults()
             .iter()
-            .map(|th| Pick { label: th.name.to_string(), mark: Mark::Initials(th.name.chars().take(1).collect()), tint: Some(hex(crate::theme::mix(th.surface.of(dark), th.background.of(!dark), 0.7))), current: th.id == current, press: Do::new(SetTheme(th.id)) })
+            .map(|th| Pick { label: th.name.to_string(), mark: Mark::Initials(th.name.chars().take(1).collect()), tint: Some(hex(crate::theme::mix(th.panel.of(dark, crate::theme::neutral()).with_alpha(1.0), th.bg1.of(!dark, crate::theme::neutral()), 0.7))), current: th.id == current, press: Do::new(SetTheme(th.id)) })
             .collect();
         let modes = [(Mode::Auto, "Auto", Icon::Recent), (Mode::Light, "Light", Icon::Eye), (Mode::Dark, "Dark", Icon::Star)]
             .into_iter()
