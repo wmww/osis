@@ -299,6 +299,9 @@ struct Msg {
     what: Payload,
 }
 
+/// A certificate copy: a commit's plaintext cut to some parts, and the blobs it links.
+type CardCopy = (Vec<u8>, Vec<(osis_base::BlobId, Vec<u8>)>);
+
 /// (label, blob) -> (commit, delta parts) of every commit blob a node opened.
 pub type Known = BTreeMap<(LabelId, osis_base::BlobId), (CommitId, Vec<usize>)>;
 
@@ -1948,8 +1951,8 @@ impl NetSim {
         Ok(())
     }
 
-    /// Hands every commit node `from` holds to node `to` over a direct connection (a card
-    /// exchange before pairing or a grant).
+    /// Hands every commit node `from` holds to node `to` over a direct connection (pairing; a
+    /// handover with no host, `scenarios::peer_group`).
     pub fn direct(&mut self, from: usize, to: usize) -> Res<()> {
         let ids = self.engine(from)?.commit_ids();
         for id in ids {
@@ -1961,10 +1964,35 @@ impl NetSim {
         self.feed(to, Event::Local)
     }
 
-    /// Node `x` hands what it holds (its node and account cards) to node `y` over a direct
-    /// connection: a contact exchange, so `y` can grant `x`'s account.
+    /// What account `me`'s contact card carries (`osis::Osis::contact_card`): the `created.0` and
+    /// `keys.0` parts of its commits, each a certificate copy (plaintext and linked blobs).
+    fn card_copies(e: &mut Engine, me: &Tid) -> osis_node::Result<Vec<CardCopy>> {
+        let mut copies = Vec::new();
+        for id in e.commit_ids() {
+            let Some(h) = e.header(&id) else { continue };
+            let parts: BTreeSet<usize> = h.aspects.iter().enumerate().filter(|(_, a)| a.tid == *me && matches!(a.ak.as_str(), "created.0" | "keys.0")).map(|(i, _)| i).collect();
+            let Some(body) = e.part_body(&id, &parts)? else { continue };
+            let mut blobs = Vec::new();
+            for b in e.linked_blobs(&id, &parts)? {
+                if let Some(bytes) = e.blob(&b)? {
+                    blobs.push((b, bytes));
+                }
+            }
+            copies.push((body.plaintext, blobs));
+        }
+        Ok(copies)
+    }
+
+    /// Node `x` hands node `y` what `x`'s account's contact card carries (`card_copies`), as an
+    /// import of the card would fetch it, so `y` can grant `x`'s account.
     pub fn introduce(&mut self, x: usize, y: usize) -> Res<()> {
-        self.direct(x, y)
+        let Some(&me) = self.account_of.get(&x) else { return Err(self.fail(format!("node {x} has no account"))) };
+        let copies = Self::card_copies(self.engine(x)?, &me).map_err(|e| self.fail(format!("node {x} contact card: {e}")))?;
+        for (bytes, blobs) in copies {
+            let r = self.engine(y)?.ingest(&bytes, blobs);
+            r.map_err(|e| self.fail(format!("node {y} contact ingest: {e}")))?;
+        }
+        self.feed(y, Event::Local)
     }
 
     /// Node `n` creates an account with its home label at `hosts`.

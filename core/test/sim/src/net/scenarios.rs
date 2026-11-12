@@ -1000,7 +1000,9 @@ fn place_nodes(sim: &mut NetSim, ns: &[usize], t: Topology) -> Res<()> {
 }
 
 /// Accounts on `ns` with no host, each listening; a group of the first's account granted to the
-/// others, the setup handed over directly (a contact exchange).
+/// others. With no host there is no contact card (it needs one): each side hands the other
+/// everything it holds over a direct connection (`NetSim::direct`), its node's `reach.0` and the
+/// edges that make that node a reader among it.
 pub fn peer_group(sim: &mut NetSim, ns: &[usize]) -> Res<Tid> {
     let mut persons = Vec::new();
     for n in ns {
@@ -1009,7 +1011,7 @@ pub fn peer_group(sim: &mut NetSim, ns: &[usize]) -> Res<Tid> {
     }
     let (Some(&a), Some(&pa)) = (ns.first(), persons.first()) else { return Err(sim.fail("no nodes")) };
     for n in ns.iter().skip(1) {
-        sim.introduce(*n, a)?;
+        sim.direct(*n, a)?;
     }
     let g = sim.group_with(a, pa, &[], true)?;
     for p in persons.iter().skip(1) {

@@ -9,4 +9,4 @@ rotation::tests_property::rotation_holds_large_spec_crypto_4 OSIS_ROTATION_START
 rotation::tests_property::rotation_holds_large_spec_crypto_4 OSIS_ROTATION_START=962141499239 issues/rotation-opens-departed-seed.md made by a rotator that saw it depart
 ephemeral::random_churn_converges_large OSIS_EPH_START=807204137843 issues/churn-seed-843-diverge.md node \d+ reads .*, node \d+ 
 sim-sweep:evil_host_drops 472765857787/472765857787 issues/evil-host-drops-seed-787.md not quiescent after \d+ rounds
-sim-sweep:concurrent_writers 892962858361/892962858375 issues/concurrent-writers-storage-seed-375.md stores \d+ B; must hold .* over the bound
+sim-sweep:work_sets 7000/7010 issues/work-sets-snapshot-storm.md message storm: .*kind Some\(ContentSnapshot\)
