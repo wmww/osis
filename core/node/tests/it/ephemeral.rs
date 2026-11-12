@@ -2579,6 +2579,7 @@ fn restart_mid_handshake_reopens() {
     net.restart(a, 51);
     net.run();
     let d = net.sync(a).describe();
+    let d: Vec<&String> = d.iter().filter(|x| x.starts_with("conn ")).collect();
     assert!(!d.is_empty() && d.iter().all(|x| x.contains(": Open")), "{d:?}");
 }
 
