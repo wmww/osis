@@ -13,25 +13,31 @@ use osis_crdt::{Fragment, Frontiers};
 use osis_schema::core_types::{is_content, is_role_class};
 use std::collections::{BTreeMap, BTreeSet};
 
-/// What a held snapshot carries with a value, bounded (spec/crdt.md §4.7 Copies): per source,
-/// the least and greatest counter of a write its held body holds valued
-/// (`Fragment::each_valued`), O(sources). An honest snapshot holds an expiring write value-less
-/// (§8), so its bound need not meet one; an expiry strips the state in place only where no held
-/// snapshot's bound meets its writes (`meets`), else it rebuilds, which finds the carriers.
+/// What a held snapshot carries, bounded (spec/crdt.md §4.7 Copies): per source, the least and
+/// greatest counter of a write its held body holds valued (`Fragment::each_valued`), and apart
+/// of one it holds value-less, O(sources). An honest snapshot holds an expiring write
+/// value-less (§8), so its valued bound need not meet one; an expiry strips the state in place
+/// only where no held snapshot's valued bound meets its writes (`meets`), else it rebuilds,
+/// which finds the carriers. The value-less bound says where a cover may hold a write
+/// value-less (`covered_join`: such a cover covers no body of it not held value-less here).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Carried(BTreeMap<osis_crdt::Source, (u64, u64)>);
+pub struct Carried {
+    valued: Hull,
+    valueless: Hull,
+}
 
-impl Carried {
-    /// Widens the bound by what `f` holds valued.
-    pub(crate) fn add(&mut self, f: &Fragment) {
-        f.each_valued(&mut |d| {
-            let e = self.0.entry(d.src.clone()).or_insert((d.ctr, d.ctr));
-            e.0 = e.0.min(d.ctr);
-            e.1 = e.1.max(d.ctr);
-        });
+/// Per source, the least and greatest counter of the writes it bounds.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Hull(BTreeMap<osis_crdt::Source, (u64, u64)>);
+
+impl Hull {
+    fn add(&mut self, d: &osis_crdt::Dot) {
+        let e = self.0.entry(d.src.clone()).or_insert((d.ctr, d.ctr));
+        e.0 = e.0.min(d.ctr);
+        e.1 = e.1.max(d.ctr);
     }
-    /// Whether the bound may hold a value of a write of `own`.
-    pub(crate) fn meets(&self, own: &[Owned]) -> bool {
+    /// Whether the bound may hold a write of `own`.
+    fn meets(&self, own: &[Owned]) -> bool {
         let hull = |src: &osis_crdt::Source| self.0.get(src).copied();
         own.iter().any(|o| match o {
             Owned::Range { src, lo, hi } => hull(src).is_some_and(|(a, b)| a < *hi && *lo <= b),
@@ -39,20 +45,48 @@ impl Carried {
             Owned::Dots { src, ctrs } => hull(src).is_some_and(|(a, b)| ctrs.iter().any(|c| (a..=b).contains(c))),
         })
     }
-    /// Whether this bound holds every write `o` bounds.
     #[cfg(debug_assertions)]
-    pub(crate) fn holds(&self, o: &Carried) -> bool {
+    fn holds(&self, o: &Hull) -> bool {
         o.0.iter().all(|(s, (lo, hi))| self.0.get(s).is_some_and(|(a, b)| a <= lo && hi <= b))
-    }
-    /// Its sources, each one entry.
-    pub(crate) fn len(&self) -> usize {
-        self.0.len()
     }
     pub(crate) fn entries(&self) -> impl Iterator<Item = (&osis_crdt::Source, &(u64, u64))> {
         self.0.iter()
     }
-    pub(crate) fn of(v: impl IntoIterator<Item = (osis_crdt::Source, (u64, u64))>) -> Carried {
-        Carried(v.into_iter().collect())
+    pub(crate) fn of(v: impl IntoIterator<Item = (osis_crdt::Source, (u64, u64))>) -> Hull {
+        Hull(v.into_iter().collect())
+    }
+}
+
+impl Carried {
+    /// Widens the bounds by what `f` holds, valued and value-less.
+    pub(crate) fn add(&mut self, f: &Fragment) {
+        f.each_valued(&mut |d| self.valued.add(d));
+        let mut none = BTreeSet::new();
+        f.valueless_dots(&mut none);
+        none.iter().for_each(|d| self.valueless.add(d));
+    }
+    /// Whether the bound may hold a value of a write of `own`.
+    pub(crate) fn meets(&self, own: &[Owned]) -> bool {
+        self.valued.meets(own)
+    }
+    /// Whether the bound may hold a write of `own` value-less.
+    pub(crate) fn meets_valueless(&self, own: &[Owned]) -> bool {
+        self.valueless.meets(own)
+    }
+    /// Whether these bounds hold every write `o` bounds.
+    #[cfg(debug_assertions)]
+    pub(crate) fn holds(&self, o: &Carried) -> bool {
+        self.valued.holds(&o.valued) && self.valueless.holds(&o.valueless)
+    }
+    /// The sources of its valued bound, each one entry.
+    pub(crate) fn len(&self) -> usize {
+        self.valued.0.len()
+    }
+    pub(crate) fn hulls(&self) -> (&Hull, &Hull) {
+        (&self.valued, &self.valueless)
+    }
+    pub(crate) fn of(valued: Hull, valueless: Hull) -> Carried {
+        Carried { valued, valueless }
     }
 }
 
@@ -503,7 +537,18 @@ pub(crate) fn covered_join(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Ti
     // dropped: a part not fetched yet is not established (a set add or map put still to come).
     if !held {
         let own = g.is_none();
-        return Ok(if own && !m.is_dropped(cai) { None } else { Some(true) });
+        if own && !m.is_dropped(cai) {
+            return Ok(None);
+        }
+        // a snapshot holding a write of the body value-less covers it only where this node
+        // holds that write value-less for good (past its expiry): a copy stripped for a purge
+        // that fell (`purge::rejudge_purges`), or under the request still standing, or written
+        // by a node holding a request this one does not, gives no value, and the body counted
+        // covered would never be fetched again (spec/commits.md §5 Covered)
+        if !own && !(m.header.expires.is_some_and(|t| t <= tx.now().0) && super::valueless(tx.core, c, cai)) && holds_valueless(tx, s, sai, &super::writes_of(&m.header, c, cai), tid, ak)? {
+            return Ok(Some(false));
+        }
+        return Ok(Some(true));
     }
     // the snapshot holds the body's live writes as the body does, judged on its part at the
     // body's positions: with its writes under the body's dots taken out and the body joined
@@ -518,6 +563,25 @@ pub(crate) fn covered_join(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Ti
     part.remove_writes(&|d| ix.holds(d) && !valueless.contains(d));
     part.join(joined);
     Ok(Some(crate::engine::state::encode(&part)? == before))
+}
+
+/// Whether held snapshot `s` (part `sai` on `(tid, ak)`) holds a write of `own` value-less. Its
+/// value-less bound (`Carried`) answers most without the body; where it may, the body is read.
+fn holds_valueless(tx: &mut Tx<'_>, s: &CommitId, sai: usize, own: &[Owned], tid: &Tid, ak: &Ak) -> Result<bool> {
+    let meets = tx.core.ix.snapshots.get(&(*tid, ak.clone())).into_iter().flatten().find(|x| x.1 == *s).is_none_or(|x| x.4.meets_valueless(own));
+    if own.is_empty() || !meets {
+        return Ok(false);
+    }
+    // counted: tests read how often a cover's body is read for it
+    let _s = crate::costs::span("covered: value-less copies");
+    let mut found = false;
+    crate::apply::each_held_piece(tx, s, sai, &mut |_, f| {
+        let mut none = BTreeSet::new();
+        f.valueless_dots(&mut none);
+        found |= none.iter().any(|d| own.iter().any(|o| o.owns(d)));
+        Ok(())
+    })?;
+    Ok(found)
 }
 
 /// Whether this node may write a snapshot of `(tid, ak)` stamped `ts` (`write::may_write`): as the

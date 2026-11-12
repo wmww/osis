@@ -466,11 +466,10 @@ fn purge_stands_again_when_its_demotion_falls_spec_perm_6() {
     }
 }
 
-// spec/commits.md §5, spec/permissions.md §6: a snapshot stripped for carrying the purged value stays
-// held through the fall, its copy value-less; given again it gives the value; the delta itself need
-// not return.
-#[test]
-fn snapshot_stripped_for_a_fallen_purge_gives_the_value_again_spec_perm_6() {
+/// Node 3 holds `c` (2's write "kept"), 2's snapshot `snap` carrying it and 1's purge of `c`, then
+/// 0's demotion of 1 that leaves the purge out: the purge stood (`snap` stripped of `c`'s value)
+/// and fell (`c` missing, `snap` held through the fall, its copy value-less). Returns `c`'s copy.
+fn stripped_through_a_fall() -> (LocalPeer, Tid, osis_base::CommitId, osis_base::CommitId, osis_node::local_peer::Package) {
     let (mut lp, t, x, _w) = admin_writer(4);
     let k = ak("t:reg.0");
     lp.advance(5);
@@ -504,10 +503,37 @@ fn snapshot_stripped_for_a_fallen_purge_gives_the_value_again_spec_perm_6() {
     let missing = |e: &osis_node::Engine, id| e.core.ix.commits.get(id).unwrap().missing_parts().count();
     assert_eq!((missing(e, &snap), missing(e, &c)), (0, 1));
     assert_eq!(e.get(&t, &k).unwrap(), None, "the held copy is value-less");
+    (lp, t, c, snap, pc)
+}
+
+// spec/commits.md §5, spec/permissions.md §6: a snapshot stripped for carrying the purged value stays
+// held through the fall, its copy value-less; given again it gives the value; the delta itself need
+// not return.
+#[test]
+fn snapshot_stripped_for_a_fallen_purge_gives_the_value_again_spec_perm_6() {
+    let (mut lp, t, _c, snap, _pc) = stripped_through_a_fall();
+    let ps = lp.peers[2].engine.package(&snap).unwrap().unwrap();
     lp.deliver(3, &ps).unwrap();
     let e = &mut lp.peers[3].engine;
-    assert_eq!(missing(e, &snap), 0);
-    assert_eq!(e.get(&t, &k).unwrap(), Some(s("kept")), "the snapshot carries it");
+    assert_eq!(e.core.ix.commits.get(&snap).unwrap().missing_parts().count(), 0);
+    assert_eq!(e.get(&t, &ak("t:reg.0")).unwrap(), Some(s("kept")), "the snapshot carries it");
+}
+
+// spec/commits.md §5 Covered: a cover holding a write value-less covers no body of it that is not
+// held value-less here. After the fall the snapshot stripped of `c`'s value covers nothing of `c`:
+// node-sync's covered drops leave it missing, and the copy fetched gives the value again.
+#[test]
+fn snapshot_stripped_for_a_fallen_purge_covers_nothing_of_it_spec_commits_5() {
+    let (mut lp, t, c, snap, pc) = stripped_through_a_fall();
+    let k = ak("t:reg.0");
+    let e = &mut lp.peers[3].engine;
+    assert_ne!(e.covered(&snap, &c, &t, &k).unwrap(), Some(true), "its copy is value-less");
+    osis_node::sync::drop_all_covered(e).unwrap();
+    assert!(e.body_not_dropped(&c, &t, &k), "missing, not dropped as covered");
+    lp.deliver(3, &pc).unwrap();
+    let e = &mut lp.peers[3].engine;
+    assert_eq!(e.core.ix.commits.get(&c).unwrap().missing_parts().count(), 0);
+    assert_eq!(e.get(&t, &k).unwrap(), Some(s("kept")), "the fetched copy gives the value");
 }
 
 // spec/commits.md §5, spec/permissions.md §6: a part applied alone and dropped by a purge request whose
