@@ -914,12 +914,16 @@ impl SyncEngine {
     }
 
     /// `l` on `conn` waits for the peer's filter again, testing the newest recorded head's
-    /// credential.
+    /// credential; a member of the connection's set already (the peer's Hit came while this node
+    /// registered L there, `member_at_host` waiting for no Testing then) is open there at once.
     pub(crate) fn retest_label(&mut self, conn: ConnId, l: LabelId, out: &mut Vec<super::Action>) -> Result<()> {
         if let Some(lc) = self.lc_mut(conn, &l) {
             lc.phase = Phase::Testing;
             lc.shown = None;
             lc.path.clear();
+        }
+        if self.shared_member(conn, &l) {
+            return self.member_at_host(conn, l, false, out);
         }
         self.shared_retest(conn, out)
     }

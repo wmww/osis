@@ -219,6 +219,9 @@ impl SyncEngine {
                 ));
             }
         }
+        for id in self.records.shared.keys() {
+            v.push(format!("shared {id}: members {:?}", self.shared_members(*id)));
+        }
         v
     }
 
