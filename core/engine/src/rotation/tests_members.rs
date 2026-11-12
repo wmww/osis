@@ -592,7 +592,7 @@ fn removal_goes_alone_while_seal_waits_spec_permissions_3() {
     lp.sync_all().unwrap();
     let mut merged = 0;
     for i in [0, 2] {
-        merged += lp.peers[i].engine.ensure_rotated(&m).unwrap().0.commits.len();
+        merged += lp.peers[i].engine.merge_forks(&m).unwrap().commits.len();
         lp.sync_all().unwrap();
     }
     assert_eq!(merged, 1, "M's merger merges");
@@ -1512,7 +1512,8 @@ fn three_forks_take_one_merge_spec_crypto_4() {
     }
     lp.sync_all().unwrap();
     assert_eq!(lp.peers[0].engine.epochs(&t).unwrap().read.current().len(), 3, "three forks");
-    let merges: usize = (0..3).map(|p| lp.peers[p].engine.ensure_rotated(&t).unwrap().0.commits.len()).sum();
+    assert!((0..3).all(|p| lp.peers[p].engine.ensure_rotated(&t).unwrap().0.commits.is_empty()), "a fork alone is merged at a complete pass's end, not before encrypting");
+    let merges: usize = (0..3).map(|p| lp.peers[p].engine.merge_forks(&t).unwrap().commits.len()).sum();
     assert_eq!(merges, 1, "one merger");
     lp.sync_all().unwrap();
     assert_eq!(lp.peers[1].engine.epochs(&t).unwrap().read.current().len(), 1, "merged");

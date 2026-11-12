@@ -335,8 +335,8 @@ fn regrant_after_tag_removal_spec_crypto_4() {
 // spec/permissions.md §3 (re-seal fixpoint), spec/crypto.md §4 (forks, merge): A and D rotate G's write
 // concurrently, D's rotation leaving writer B out, so B lacks a box and the secret at D's fork.
 // B, holding only A's fork, writes no re-seal of itself (before: one boxing A's fork alone on
-// every pass); A, holding both, re-seals B once, a box at each fork, or, as the fork's merger
-// (rule 3: a re-seal makes the rotations due first), merges it, boxing B.
+// every pass); A, holding both, re-seals B once, a box at each fork, and the fork's merger
+// merges it at its pass's end (rule 3), boxing B: then nothing more is due.
 #[test]
 fn forked_role_reseal_reaches_fixpoint_spec_permissions_3() {
     let (mut lp, g, tids) = granted(3, &[(1, Role::Write), (2, Role::Write)]);
@@ -363,8 +363,19 @@ fn forked_role_reseal_reaches_fixpoint_spec_permissions_3() {
     }
     assert_eq!(lp.peers[0].engine.reseal_due(&g, &Pass).unwrap().commits.len(), 1, "A re-seals B");
     lp.sync_all().unwrap();
+    // the fork's merger merges at its complete pass's end (`merge_forks`), once, and the
+    // re-seal or history add it leaves due once
+    let mut rounds = Vec::new();
+    loop {
+        let n: usize = (0..3).map(|p| lp.peers[p].engine.reseal_due(&g, &Pass).unwrap().commits.len()).sum();
+        lp.sync_all().unwrap();
+        rounds.push(n);
+        if n == 0 || rounds.len() > 4 {
+            break;
+        }
+    }
+    assert!(rounds.len() <= 3 && rounds.iter().all(|n| *n <= 1), "a fixpoint after at most one merge and one re-seal or history add: {rounds:?}");
     for p in 0..3 {
-        assert!(lp.peers[p].engine.reseal_due(&g, &Pass).unwrap().commits.is_empty(), "peer {p}: fixpoint");
         assert!(all_boxed(&mut lp, p, &[g]), "peer {p}: every holder boxed");
     }
     let e = lp.peers[1].engine.epochs(&g).unwrap();
@@ -936,7 +947,8 @@ fn finalize_without_secret_rotates_history_added_spec_permissions_2() {
 fn rounds_to_settle(lp: &mut LocalPeer, g: Tid) -> Vec<usize> {
     let mut out = Vec::new();
     loop {
-        let n: usize = (0..lp.peers.len()).map(|p| lp.peers[p].engine.ensure_rotated(&g).unwrap().0.commits.len()).sum();
+        // what is due at once, then the merges a complete pass decides
+        let n: usize = (0..lp.peers.len()).map(|p| lp.peers[p].engine.ensure_rotated(&g).unwrap().0.commits.len() + lp.peers[p].engine.merge_forks(&g).unwrap().commits.len()).sum();
         lp.sync_all().unwrap();
         out.push(n);
         if n == 0 || out.len() > 8 {

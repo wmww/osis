@@ -173,12 +173,13 @@ pub(crate) fn blocked_roles(tx: &mut Tx<'_>, who: &Tid, a: &Tid) -> Result<BTree
 /// The roles of `a` that `who` may rotate whose rotation is due
 /// (spec/crypto.md §4, encrypting under): blocked (`blocked_roles_of`), or some current epoch,
 /// not only the newest, does not cover a known departure (one whose secret this node lacks
-/// covers nothing: it is superseded unread), or the role forked and `who` is its merger (merge,
-/// rule 3), or some current epoch, held or not, has a stale box (rule 2) or a box to an actor
-/// whose grant is keyless (the knowing re-key, rule 4), or is orphaned (`orphaned`), or an
-/// unsuperseded epoch is not current here and `who` withdraws it. No secret of the role is needed; the
+/// covers nothing: it is superseded unread), or some current epoch, held or not, has a stale box
+/// (rule 2) or a box to an actor whose grant is keyless (the knowing re-key, rule 4), or is
+/// orphaned (`orphaned`); with `pass_end` (`converge`) also when the role forked and `who` is its
+/// merger (merge, rule 3), or an unsuperseded epoch is not current here and `who` withdraws it.
+/// No secret of the role is needed; the
 /// commit must be uploadable (`wrappable`), else the rotation waits for a re-seal.
-fn rotation_due(tx: &mut Tx<'_>, who: &Tid, a: &Tid) -> Result<BTreeSet<Role>> {
+fn rotation_due(tx: &mut Tx<'_>, who: &Tid, a: &Tid, pass_end: bool) -> Result<BTreeSet<Role>> {
     let may = may_rotate(tx.core, who, a);
     let Some(epochs) = tx.core.epochs(a) else { return Ok(BTreeSet::new()) };
     let deps = departures(tx, a)?;
@@ -187,7 +188,7 @@ fn rotation_due(tx: &mut Tx<'_>, who: &Tid, a: &Tid) -> Result<BTreeSet<Role>> {
     let roles: Vec<Role> = ROLES.into_iter().filter(|r| may.contains(r) && !epochs.role(*r).current().is_empty()).collect();
     for r in roles {
         let held = tx.core.names_held(a);
-        let mut due = blocked.contains(&r) || osis_keys::merge_due(&epochs, r, &deps, &held) || osis_keys::fork_merger(&epochs, r, |e| maker(tx.core, who, a, r, e));
+        let mut due = blocked.contains(&r) || osis_keys::merge_due(&epochs, r, &deps, &held) || pass_end && osis_keys::fork_merger(&epochs, r, |e| maker(tx.core, who, a, r, e));
         // judged from the state, so for current epochs whose secret this node lacks too
         for e in epochs.role(r).current() {
             due = due || members::keyless_at(tx, a, r, &e)? || members::stale_at(tx, a, r, &e)? || orphaned(tx, a, &epochs, r, &e)?;
@@ -195,7 +196,7 @@ fn rotation_due(tx: &mut Tx<'_>, who: &Tid, a: &Tid) -> Result<BTreeSet<Role>> {
         // withdraw: an unsuperseded epoch whose names this node does not meet, by its maker,
         // or by anyone when its maker may not rotate (or is unknown: a snapshot's epoch)
         let current = epochs.role(r).current();
-        due = due || epochs.role(r).unsuperseded().iter().any(|e| !current.contains(e) && maker(tx.core, who, a, r, e).is_none_or(|m| m.me || !m.may_rotate));
+        due = due || pass_end && epochs.role(r).unsuperseded().iter().any(|e| !current.contains(e) && maker(tx.core, who, a, r, e).is_none_or(|m| m.me || !m.may_rotate));
         if due {
             out.insert(r);
         }
@@ -463,7 +464,7 @@ pub(crate) fn ensure_rotated(tx: &mut Tx<'_>, who: Tid, a: Tid, done: &mut Done)
 /// `ensure_rotated`, finalizing on `a` no edge of a holder in `rewriting`: the commit about to
 /// be written writes those edges anew (a removal, which is their departure, or a renewal).
 pub(crate) fn ensure_rotated_but(tx: &mut Tx<'_>, who: Tid, a: Tid, rewriting: &[Tid], done: &mut Done) -> Result<BTreeSet<Role>> {
-    let rotated = rotate_below(tx, who, a, rewriting, done)?;
+    let rotated = rotate_below(tx, who, a, rewriting, false, done)?;
     rotate_above(tx, who, rotated, done)?;
     let Some(a) = secret_actor_up(tx.core, &a) else { return Ok(BTreeSet::new()) };
     blocked_roles(tx, &who, &a)
@@ -478,7 +479,7 @@ pub(crate) fn rotate_above(tx: &mut Tx<'_>, who: Tid, mut rotated: Vec<Tid>, don
     while let Some(x) = rotated.pop() {
         for y in above(tx.core, &x) {
             if tx.core.has_own_secrets(&y) && !may_rotate(tx.core, &who, &y).is_empty() && entered.insert(y) {
-                rotated.extend(rotate_below(tx, who, y, &[], done)?);
+                rotated.extend(rotate_below(tx, who, y, &[], false, done)?);
             }
         }
     }
@@ -503,7 +504,7 @@ fn secret_actor_up(core: &Core, a: &Tid) -> Option<Tid> {
 
 /// The rotations due on `a` and the holder actors below it (`ensure_rotated`, the downward
 /// cascade): the actors rotated.
-fn rotate_below(tx: &mut Tx<'_>, who: Tid, a: Tid, rewriting: &[Tid], done: &mut Done) -> Result<Vec<Tid>> {
+fn rotate_below(tx: &mut Tx<'_>, who: Tid, a: Tid, rewriting: &[Tid], pass_end: bool, done: &mut Done) -> Result<Vec<Tid>> {
     let target = a;
     let mut rotated = Vec::new();
     let Some(a) = secret_actor_up(tx.core, &a) else { return Ok(rotated) };
@@ -527,7 +528,7 @@ fn rotate_below(tx: &mut Tx<'_>, who: Tid, a: Tid, rewriting: &[Tid], done: &mut
         let x = *x;
         stack.pop();
         finalize_due(tx, who, x, if x == target { rewriting } else { &[] }, done)?;
-        let mine = rotation_due(tx, &who, &x)?;
+        let mine = rotation_due(tx, &who, &x, pass_end)?;
         if mine.is_empty() {
             continue;
         }
@@ -541,6 +542,20 @@ fn rotate_below(tx: &mut Tx<'_>, who: Tid, a: Tid, rewriting: &[Tid], done: &mut
         }
     }
     Ok(rotated)
+}
+
+/// The rotations nothing waits for, on `a` and the holder actors below it (`rotate_below`) by
+/// `who`, with the other rotations due there: merges of forks where `who` is the merger
+/// (`osis_keys::fork_merger`) and withdraws of unsuperseded epochs not current here. Decided at
+/// the end of a complete pass of `a`'s labels (`Engine::reseal_due`), as re-seals and history
+/// adds are, never by `ensure_rotated`: no epoch they supersede is one this node would encrypt
+/// under while it misses a departure, and a node deciding on a partial view (some of the forks,
+/// an epoch whose named writes are still on their way) reads as the merger or withdrawer beside
+/// nodes holding others, whose rotations fork again while views differ (a merge storm). With the
+/// pass complete the forks are held alike, and nodes holding the same forks agree on one merger.
+fn merge_forks(tx: &mut Tx<'_>, who: Tid, a: Tid, done: &mut Done) -> Result<()> {
+    let rotated = rotate_below(tx, who, a, &[], true, done)?;
+    rotate_above(tx, who, rotated, done)
 }
 
 /// The finalize `who` may write of the edges on `a` past their `until` by this node's clock
@@ -929,9 +944,10 @@ impl Engine {
         self.run(|tx| own_secrets_delivered(tx, t))
     }
 
-    /// Re-seals the holders of `actor` the trigger names and adds the history its current epochs
-    /// lack (spec/permissions.md §3, spec/crypto.md §4 History box), decided at the end of a
-    /// complete pass of its labels (`sync`); nothing otherwise.
+    /// Makes the rotations of `actor` nothing waits for (`merge_forks`: merges, withdraws), re-seals the
+    /// holders of `actor` the trigger names and adds the history its current epochs lack
+    /// (spec/permissions.md §3, spec/crypto.md §4 History box), decided at the end of a complete
+    /// pass of its labels (`sync`); nothing otherwise.
     pub fn reseal_due(&mut self, actor: &Tid, sync: &dyn SyncState) -> Result<Done> {
         if !sync.complete_pass(actor) {
             return Ok(Done::default());
@@ -939,6 +955,8 @@ impl Engine {
         let a = *actor;
         self.run(|tx| {
             let mut done = Done::default();
+            let me = tx.core.writer()?;
+            merge_forks(tx, me, a, &mut done)?;
             let mut due = reseal_candidates(tx, &a)?;
             if !due.is_empty() {
                 // the rotations due and the finalizes of ended edges go first where this node can
@@ -953,6 +971,19 @@ impl Engine {
                 done.extend(reseal_one(tx, a, m, &roles, Reseal::Missing)?);
             }
             done.extend(add_history(tx, a)?);
+            Ok(done)
+        })
+    }
+
+    /// `merge_forks` alone, as a complete pass's end runs it (tests: the merges and withdraws without the
+    /// re-seals and history adds of `reseal_due`).
+    #[cfg(test)]
+    pub(crate) fn merge_forks(&mut self, actor: &Tid) -> Result<Done> {
+        let a = *actor;
+        self.run(|tx| {
+            let mut done = Done::default();
+            let me = tx.core.writer()?;
+            merge_forks(tx, me, a, &mut done)?;
             Ok(done)
         })
     }

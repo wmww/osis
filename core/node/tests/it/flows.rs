@@ -2814,7 +2814,9 @@ fn a_fork_by_two_siblings_ends_quiet_spec_crypto_4() {
     for _ in 0..8 {
         let mut n = 0;
         for i in 0..2 {
+            // what is due at once, then the merge a complete pass's end decides
             n += lp.peers[i].engine.ensure_rotated(&t).unwrap().0.commits.len();
+            n += lp.peers[i].engine.reseal_due(&t, &Pass).unwrap().commits.len();
         }
         made.push(n);
         spread(&mut lp);
