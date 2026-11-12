@@ -2459,6 +2459,54 @@ fn delete_waits_for_its_role_commits_at_the_host_spec_sync_7() {
     assert_eq!(net.eph_read(b, w, CURSOR), net.eph_read(c, w, CURSOR));
 }
 
+// spec/sync.md §7 (random churn seed 501814946361 shrunk): writer d, away and cut from the
+// admin's peer, snapshots the cursor before it hears of its demotion, covering b's write. Peer 0
+// moved to the demotion's step meanwhile (b and c registered it), so d's snapshot, stamped under
+// the old write key, never lands there to carry a delete, and d learns its demotion from peer 0:
+// b's write is placed again at most once, d deletes it at most once, and the writers read alike.
+#[test]
+fn a_stale_deleter_meets_one_re_placement_spec_sync_7() {
+    let (mut net, (hosts, nodes, g, w)) = churn_world();
+    let (a, b, d) = (nodes[0], nodes[1], nodes[3]);
+    let put = |net: &mut Net, n: usize, v: &str| -> CommitId {
+        let mut m = Mutation::new();
+        m.op(w, &eph(CURSOR), PathOp { path: vec![PathSeg::Key(s("k"))], op: Op::Put(s(v)) }).unwrap();
+        let id = net.engine(n).write(m).unwrap().unwrap().id;
+        local(net, n);
+        id
+    };
+    let write = put(&mut net, b, "b");
+    net.run();
+    let l = net.label(a);
+    for (n, h) in [(a, hosts[0]), (d, hosts[1])] {
+        net.blocked.insert((n, h));
+        net.drop_link(n, h);
+    }
+    net.set_online(d, false);
+    net.run();
+    let td = net.tid(d);
+    let edge = osis_schema::core_types::Edge { role: Role::Read, until: None, invite: None, tied: None };
+    let demote = osis_node::flows::Demotion { holder: td, new: Some(edge), retain: None };
+    let done = net.engine(a).demote(&g, &demote).unwrap();
+    let acts = net.sync(a).carry_out(done).unwrap();
+    net.actions(a, acts);
+    net.run();
+    let deletes = |net: &Net| net.deleted.iter().filter(|((n, x, _), _)| *n == d && *x == l).map(|(_, k)| *k).sum::<usize>();
+    let before = deletes(&net);
+    put(&mut net, d, "d");
+    let acts = net.sync(d).compact_ephemeral_now().unwrap();
+    net.actions(d, acts);
+    net.set_online(d, true);
+    net.run();
+    let encryptions = net.sync(b).entries(&l).into_iter().filter(|(_, k)| matches!(k, osis_node::sync::EntryKind::Commit { commit, .. } if *commit == write)).count();
+    assert!(encryptions <= 2, "b's write placed again {} times", encryptions - 1);
+    assert!(deletes(&net) - before <= 2, "d's deletes at peer 0: {}", deletes(&net) - before);
+    for _ in 0..3 {
+        net.advance(31_000);
+    }
+    assert_eq!(net.eph_read(b, w, CURSOR), net.eph_read(d, w, CURSOR));
+}
+
 /// The entries at `host` of `n`'s commit `c` under `l`, as `n` knows them (fresh encryptions
 /// it placed included).
 fn commit_entries_at(net: &mut Net, host: usize, n: usize, l: &osis_base::LabelId, c: CommitId) -> usize {
