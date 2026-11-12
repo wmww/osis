@@ -103,7 +103,7 @@ fn forgotten_survives_restart_spec_commits_5() {
     let e = &mut lp.peers[0].engine;
     e.drop_body(&c, &t, &a).unwrap();
     assert!(e.forgettable(&c));
-    e.forget_commit(&c).unwrap();
+    e.forget_commits(&[c]).unwrap();
     let before = e.core.ix.forgotten.get(&(t, a.clone())).copied();
     assert!(before.is_some());
     lp.peers[0].restart(0).unwrap();
@@ -130,7 +130,7 @@ fn forgotten_goes_with_its_thing_spec_commits_5() {
     replaces(&mut lp, t, &a, 1..3);
     let e = &mut lp.peers[0].engine;
     e.drop_body(&c, &t, &a).unwrap();
-    e.forget_commit(&c).unwrap();
+    e.forget_commits(&[c]).unwrap();
     assert!(e.local_census().unwrap().contains_key("f/"), "the forgotten row");
     lp.advance(200_000);
     lp.peers[0].tick().unwrap();

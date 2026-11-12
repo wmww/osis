@@ -835,7 +835,7 @@ mod tests {
         lp.peers[0].receive(&bytes, Vec::new()).unwrap();
         let e = &mut lp.peers[0].engine;
         assert!(e.forgettable(&bad), "R's commit kept for an invalid part only");
-        e.forget_commit(&bad).unwrap();
+        e.forget_commits(&[bad]).unwrap();
         remove_k(&mut lp, t, &x, keep).unwrap().unwrap();
     }
 

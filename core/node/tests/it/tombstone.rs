@@ -1028,3 +1028,37 @@ fn a_purged_write_is_forgotten_past_its_tombstone_spec_commits_5() {
         }
     }
 }
+
+/// `n` elements appended by writer `b` to a list kept under no history, purged by admin `a` with
+/// one aspect-wide request: the aspect rebuilds node-sync runs as the leftovers are forgotten past
+/// their tombstone, every node counted.
+fn forget_rebuilds(n: usize) -> u64 {
+    let Chat { mut net, a, b, t, .. } = chat();
+    let list = Ak::new(LIST.ak()).unwrap();
+    for i in 0..n {
+        let mut m = Mutation::new();
+        m.op(t, &LIST, osis_crdt::PathOp { path: vec![], op: osis_crdt::Op::Insert { at: i, items: vec![s(&format!("m{i}"))] } }).unwrap();
+        net.engine(b).commit(m).unwrap();
+    }
+    net.run();
+    let mut m = Mutation::new();
+    m.purge(PurgeItem::Aspect { tid: t, ak: list.clone() });
+    m.set(t, &GONE, &s("after")).unwrap();
+    net.engine(a).commit(m).unwrap().unwrap();
+    net.run();
+    let held = |net: &mut Net| net.engine(b).held_commits(Some(&[(t, list.clone())])).len();
+    assert!(held(&mut net) >= n, "{n}: its leftovers are held");
+    osis_node::costs::take();
+    net.advance(osis_base::format::TOMBSTONE_LIFETIME_MS + 60_000);
+    let rebuilds = osis_node::costs::take().into_iter().find(|x| x.0 == "rebuild").map_or(0, |x| x.2);
+    assert!(held(&mut net) < n, "{n}: its leftovers are forgotten");
+    rebuilds
+}
+
+// spec/requirements.md Scale, spec/commits.md §5 Forgetting: an aspect's purged leftovers
+// forgotten together rebuild it once, not once per leftover (n and 4n)
+#[test]
+fn forgetting_purged_leftovers_rebuilds_once_spec_commits_5() {
+    let (small, large) = (forget_rebuilds(10), forget_rebuilds(40));
+    assert!(large <= small + 2, "rebuilds grow with the leftovers forgotten: {small} at 10, {large} at 40");
+}

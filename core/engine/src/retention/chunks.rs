@@ -117,7 +117,7 @@ mod tests {
         let e = &mut lp.peers[1].engine;
         e.drop_body(&cs[0], &t2, &a).unwrap();
         assert!(e.forgettable(&cs[0]));
-        e.forget_commit(&cs[0]).unwrap();
+        e.forget_commits(&[cs[0]]).unwrap();
         let alone = tree.iter().filter(|b| e.core.ix.by_chunk.get(b).is_some_and(|l| l.iter().all(|c| *c == forged))).count();
         assert!(alone > 0, "the forged commit alone lists some of t2's chunks");
         lp.advance(1000);

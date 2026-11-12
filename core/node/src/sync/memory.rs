@@ -344,10 +344,10 @@ impl SyncEngine {
     }
 
     /// Whether a blob commit `c`'s chunk list names has an entry here and no other held commit
-    /// lists it (a snapshot listing the blobs it links takes over).
-    fn lists_named(&self, c: &CommitId) -> bool {
+    /// but those in `going` lists it (a snapshot listing the blobs it links takes over).
+    fn lists_named(&self, c: &CommitId, going: &BTreeSet<CommitId>) -> bool {
         let ix = &self.engine.core.ix;
-        ix.commits.get(c).is_some_and(|m| m.header.chunks.iter().any(|ch| self.state.named(&ch.blob) && ix.by_chunk.get(&ch.blob).is_none_or(|cs| cs.iter().all(|x| x == c))))
+        ix.commits.get(c).is_some_and(|m| m.header.chunks.iter().any(|ch| self.state.named(&ch.blob) && ix.by_chunk.get(&ch.blob).is_none_or(|cs| cs.iter().all(|x| x == c || going.contains(x)))))
     }
 
     /// The commits that carry forgotten commit `c`'s writes now: those its drop named, each
@@ -384,12 +384,21 @@ impl SyncEngine {
         for b in std::mem::take(&mut self.state.unnamed_chunks) {
             self.state.forget_due.extend(self.engine.core.ix.by_chunk.get(&b).into_iter().flatten().copied());
         }
+        // judged in turn, each as if those before it were gone, then forgotten in one
+        // transaction: an aspect rebuilt once however many of its leftovers go
+        let mut going = BTreeSet::new();
         for c in std::mem::take(&mut self.state.forget_due) {
-            if self.engine.forgettable(&c) && !self.has_entries(&c) && !self.lists_named(&c) && !self.state.deleted_commit(&c) && !self.state.by_commit.contains_key(&c) {
-                self.engine.forget_commit(&c)?;
-                self.state.forget_carrier(&c);
-                self.touched.commits.insert(c);
+            if self.engine.forgettable(&c) && !self.has_entries(&c) && !self.lists_named(&c, &going) && !self.state.deleted_commit(&c) && !self.state.by_commit.contains_key(&c) {
+                going.insert(c);
             }
+        }
+        if going.is_empty() {
+            return Ok(());
+        }
+        self.engine.forget_commits(&going.iter().copied().collect::<Vec<_>>())?;
+        for c in going {
+            self.state.forget_carrier(&c);
+            self.touched.commits.insert(c);
         }
         Ok(())
     }

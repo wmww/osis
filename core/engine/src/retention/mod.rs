@@ -1219,24 +1219,27 @@ impl Engine {
         self.core.ix.commits.keys().copied().filter(|c| self.forgettable(c)).collect()
     }
 
-    /// Forgets commit `c`, ID included: as if it had never applied (`apply::unindex_commit`). Its
-    /// leftovers held (`kept_purged`) go first, their aspects rebuilt without their value-less
-    /// writes, as at a node that never received it.
-    pub fn forget_commit(&mut self, c: &CommitId) -> Result<()> {
-        let c = *c;
-        // a memory commit's is memory work (`forgettable`: one kept for an invalid part)
+    /// Forgets commits `cs`, IDs included: as if they had never applied (`apply::unindex_commit`).
+    /// Their leftovers held (`kept_purged`) go first, their aspects rebuilt once at the end
+    /// without their value-less writes, as at a node that never received them (one rebuild per
+    /// commit made forgetting an aspect's `n` leftovers quadratic).
+    pub fn forget_commits(&mut self, cs: &[CommitId]) -> Result<()> {
         self.run(|tx| {
-            let memory = tx.is_memory_commit(&c);
-            tx.in_class(memory, |tx| {
-                crate::apply::run_batched(tx, |tx| {
-                    let Some(m) = tx.core.ix.commits.get(&c) else { return Ok(()) };
-                    let held: Vec<(usize, Tid, Ak)> = m.stripped.iter().filter_map(|ai| m.header.aspects.get(*ai).map(|a| (*ai, a.tid, a.ak.clone()))).collect();
-                    for (ai, tid, ak) in held {
-                        drop_part_for(tx, &c, ai, DropFor::Destroyed)?;
-                        crate::apply::rebuild(tx, &tid, &ak)?;
-                    }
-                    crate::apply::unindex_commit(tx, &c)
-                })
+            crate::apply::run_batched(tx, |tx| {
+                for c in cs {
+                    // a memory commit's is memory work (`forgettable`: one kept for an invalid part)
+                    let memory = tx.is_memory_commit(c);
+                    tx.in_class(memory, |tx| {
+                        let Some(m) = tx.core.ix.commits.get(c) else { return Ok(()) };
+                        let held: Vec<(usize, Tid, Ak)> = m.stripped.iter().filter_map(|ai| m.header.aspects.get(*ai).map(|a| (*ai, a.tid, a.ak.clone()))).collect();
+                        for (ai, tid, ak) in held {
+                            drop_part_for(tx, c, ai, DropFor::Destroyed)?;
+                            crate::apply::rebuild(tx, &tid, &ak)?;
+                        }
+                        crate::apply::unindex_commit(tx, c)
+                    })?;
+                }
+                Ok(())
             })
         })
     }
