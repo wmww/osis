@@ -555,12 +555,14 @@ impl SyncEngine {
         let mut deposits = Vec::new();
         let on_head = p.id == own.id;
         let again = self.encrypt_again(host, own, (sends, behind), bodies, snaps, left)?;
+        let mut lacking = 0;
         for o in sends.iter().chain(&again) {
             if !lacks(self, &o.id) {
                 continue;
             }
             // judged again next pass until the source has it
             leave(o, left);
+            lacking += 1;
             let Some(e) = self.state.entries.get(&(l, o.id)).cloned() else { continue };
             let stamped = e.stamp.is_some_and(|s| osis_label::verify_stamp(&p.stamps, &l, &o.id, &e.wrap, &s).is_ok());
             // a role commit the source takes once it pulls it; at a source on an older head
@@ -583,6 +585,9 @@ impl SyncEngine {
                 None if !stamped && (self.mine(&e) || matches!(o.of, Some(Touch::Commit(_)))) => deposits.push(o.id),
                 None => {}
             }
+        }
+        if let Some(lc) = self.lc_mut(conn, &l) {
+            lc.lacking = lacking;
         }
         self.deposit_items(conn, &p, deposits, out)?;
         self.clear_deposits(conn, host, &p, out)?;

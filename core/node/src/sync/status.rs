@@ -31,7 +31,7 @@ impl SyncEngine {
                 // a host the label no longer names is on its way out: no source of it
                 if c.up && x.phase == Phase::Open && host.is_some() {
                     st.sources += 1;
-                    if x.idle() && c.session.outstanding() == 0 {
+                    if x.idle() && x.lacking == 0 && c.session.outstanding() == 0 {
                         st.idle += 1;
                     }
                 }

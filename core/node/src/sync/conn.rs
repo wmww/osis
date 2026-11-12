@@ -62,6 +62,9 @@ pub(crate) struct LConn {
     /// The node log position the peer's reports must reach before a step is registered here:
     /// the role commits it lacks were logged under its head and go first (`roles_unreported`).
     pub report_at: Option<u64>,
+    /// Bodies this node places that the last pass found the peer lacking (it pulls them, within
+    /// its own caps and rates): while any is, the label is not caught up there (`label_status`).
+    pub lacking: usize,
     /// A child step refused for now: no pass registers one before this (wall ms).
     pub step_retry: u64,
     /// Child steps refused in a row (the back-off doubles per refusal; an open or a registered
