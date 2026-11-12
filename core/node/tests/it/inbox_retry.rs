@@ -1,7 +1,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 //! Deposits refused for now (spec/sync.md §3, §5; notes/inbox.md, The outbox): the grantee's inbox
-//! label is not registered yet (code 13) or the deposit budget is full; the sender keeps the blob
-//! and deposits it again (backing off from `retry_ms`) until the host takes it, and an admin's
+//! label is not registered yet or the deposit budget is full; the sender keeps the blob and offers
+//! it again (backing off from `retry_ms`) until a peer keeping the label takes it, and an admin's
 //! clearing frees a filled budget.
 
 use crate::net;
