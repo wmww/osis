@@ -211,9 +211,9 @@ impl Run {
     /// none of `m`'s secrets and the commits `held`, is within the stated limit for departed peer
     /// `d` (spec/crypto.md §4, Encrypting under: judged by order alone): unless the rotator held
     /// `d`'s departure from `m` (its last write in the settled timeline) and `k`'s rotation is
-    /// ordered before it, which the order rule leaves out. A departure below `m` (from a holder
-    /// actor of `m`) is none of `m`'s: it reaches the rotator only as `m`'s next keyset
-    /// (notes/crypto.md, Holder actors at depth 0). Read from the history at `o`.
+    /// ordered before it, which the order rule leaves out. A departure below `m` (`d` reached `m`
+    /// only through a holder actor of it) is always excused, wider than the stated limit (Seal's
+    /// stale boxes): issues/rotation-excuse-below-wider-than-seal.md. Read from the history at `o`.
     fn excused(&self, o: usize, held: &BTreeSet<CommitId>, m: Tid, r: Role, k: &Epoch, d: usize) -> bool {
         let Some(om) = self.actors.iter().find(|x| x.0 == m).map(|x| x.1) else { return true };
         let Some(dep) = departure_point(self, om, m, d) else { return true };
