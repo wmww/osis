@@ -5,3 +5,4 @@
 order::held_set_decides_plain OSIS_ORDER_START=539131766525 issues/order-required-floor-plain.md held_set_decides: \w+ seeds ran, but not
 keep::any_order_until_keeps_no_more_large OSIS_KEEP_START=636109736897 issues/keep-until-order-seed.md kept only by order
 ephemeral::random_churn_converges_large OSIS_EPH_START=501814946361 issues/churn-seed-361-loop.md no quiescence after \d+ rounds
+rotation::tests_property::rotation_holds_large_spec_crypto_4 OSIS_ROTATION_START=565001976595 issues/rotation-seed-595-departed-opens.md made by a rotator that saw it depart
