@@ -571,11 +571,11 @@ fn text_fully_erased_covered_at_once_spec_commits_5() {
 // spec/sync.md §7 (a body with live writes is deleted at a label only while another entry carries
 // them): under purge on replace, a word typed and its first char deleted: the carrier written then
 // holds the rest of the word live. A word typed and another char deleted: the carrier drops at its
-// first death with the rest live, and the carrier written then is lost on its way to the host: the
-// first stays at the host until the second is there (was: judged dead once dropped, deleted
-// without a carrier, and the label lost the chars a fresh node needs).
+// first death with the rest live, written while the peer is away: once it is back, the first
+// leaves the peer only after the peer holds the second, at every step (a delete without a
+// carrier there loses the chars a fresh node needs).
 #[test]
-fn dropped_snapshot_waits_for_lost_carrier_spec_sync_7() {
+fn dropped_snapshot_waits_for_its_carrier_spec_sync_7() {
     use osis_crdt::{Op, PathOp};
     let mut net = Net::new();
     let host = net.add_host();
@@ -600,16 +600,24 @@ fn dropped_snapshot_waits_for_lost_carrier_spec_sync_7() {
     assert!(!at_host.is_empty() && at_host.iter().all(|b| net.host_ids(host, &l).contains(b)), "the snapshot is at the host");
     edit(&mut net, Op::Insert { at: 0, items: vec![s("two")] });
     assert!(net.engine(a).body_not_dropped(&s1, &t, &ak) && net.engine(a).delta_live(&s1, &t, &ak).unwrap(), "the word's rest is live");
-    net.lose_uploads.insert(a);
+    net.blocked.insert((a, host));
+    net.drop_link(a, host);
     // "twoECRET": the `E` goes
     edit(&mut net, Op::Delete { at: 3, len: 1 });
     assert!(!net.engine(a).body_not_dropped(&s1, &t, &ak), "dropped at its first death");
     assert!(net.engine(a).delta_live(&s1, &t, &ak).unwrap(), "dropped live, the rest still in the state");
-    assert!(snapshots(&mut net, a, &t, &ak).len() > 1, "a carrier written");
-    let ids = net.host_ids(host, &l);
-    assert!(at_host.iter().all(|b| ids.contains(b)), "kept at the host while the carrier is not there");
-    net.lose_uploads.clear();
-    net.advance(60_000);
+    let carriers: Vec<osis_base::CommitId> = snapshots(&mut net, a, &t, &ak).into_iter().filter(|c| *c != s1).collect();
+    assert!(!carriers.is_empty(), "a carrier written");
+    net.blocked.remove(&(a, host));
+    net.tick(60_000);
+    net.feed(a, osis_node::sync::Event::Local);
+    while net.step() {
+        let ids = net.host_ids(host, &l);
+        if at_host.iter().any(|b| !ids.contains(b)) {
+            let carrier_blobs: Vec<osis_base::BlobId> = carriers.iter().flat_map(|c| blobs(&mut net, a, &l, c)).collect();
+            assert!(carrier_blobs.iter().any(|b| ids.contains(b)), "deleted at the peer before a carrier is there");
+        }
+    }
     net.run();
     let ids = net.host_ids(host, &l);
     assert!(at_host.iter().all(|b| !ids.contains(b)), "deleted once the carrier is there");
