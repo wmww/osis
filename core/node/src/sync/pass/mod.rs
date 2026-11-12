@@ -436,7 +436,7 @@ impl SyncEngine {
         if read_ok {
             self.place_deferred(&g)?;
         }
-        // no secret of the served head's read epoch: each source is read first, then the label
+        // no secret of the served head's sync epoch: each source is read first, then the label
         // reported stranded there (`at_source`)
         let own = read_ok && keys.epochs[0].is_some() && (keys.is_writer() || keys.deposit.is_some());
         let p = Head { g, l, host: None, id: head.id(), stamps: head.keys.write, keys, read_ok };
@@ -448,6 +448,10 @@ impl SyncEngine {
     /// under the label (a read epoch of the head held, and a write or deposit key).
     fn run_pass(&mut self, p: &Head, own: bool, ctx: &BodyCtx, w: &mut Work, out: &mut Vec<super::Action>) -> Result<()> {
         let (g, l, keys) = (p.g, p.l, &p.keys);
+        let sources = self.sources(&l);
+        if sources.iter().any(|c| !w.acted.contains(c)) {
+            w.touched.full = true;
+        }
         let (full, scope) = self.begin(&g, &l, w, &ctx.closure);
         let J { mut scope, mut left, snaps, mut bodies, judged, unsettled, snapping, replaced } = self.judging(p, ctx, w, scope, full)?;
         let mut sends = Vec::new();
@@ -486,8 +490,11 @@ impl SyncEngine {
         }
         let settled = unsettled.is_empty();
         self.judge_touched(ctx, &g, &l, &scope, &judged, &mut bodies)?;
-        for conn in self.sources(&l) {
-            self.at_source(conn, p, w, (&sends, behind), &bodies, &snaps, &scope, settled, &mut left, out)?;
+        w.acted.clear();
+        for conn in sources {
+            if self.at_source(conn, p, w, (&sends, behind), &bodies, &snaps, &scope, settled, &mut left, out)? {
+                w.acted.insert(conn);
+            }
         }
         if own {
             // what this node's store must not hold goes, whoever else holds the label
@@ -504,28 +511,30 @@ impl SyncEngine {
     /// node's own deposits it lacks go as Deposit items, and, at a writer on the source's head,
     /// what it lacks stamped under a superseded key is stamped again (it pulls them); deposits
     /// it keeps waiting are cleared, and must-not-hold entries it holds deleted by a delete-key
-    /// holder, once it holds the role commits this node must hold there.
+    /// holder, once it holds the role commits this node must hold there. Whether it acted there
+    /// (not while registering or reading first: the next pass with it judges everything).
     #[allow(clippy::too_many_arguments)]
-    fn at_source(&mut self, conn: ConnId, own: &Head, w: &Work, (sends, behind): (&[Out], bool), bodies: &[Body], snaps: &Snaps, scope: &Scope, settled: bool, left: &mut Left, out: &mut Vec<super::Action>) -> Result<()> {
+    fn at_source(&mut self, conn: ConnId, own: &Head, w: &Work, (sends, behind): (&[Out], bool), bodies: &[Body], snaps: &Snaps, scope: &Scope, settled: bool, left: &mut Left, out: &mut Vec<super::Action>) -> Result<bool> {
         let (g, l) = (own.g, own.l);
-        let Some(c) = self.conns.get(&conn) else { return Ok(()) };
+        let Some(c) = self.conns.get(&conn) else { return Ok(false) };
         let host = c.host;
-        let Some(lc) = c.labels.get(&l) else { return Ok(()) };
-        let (index, Some(head)) = (lc.index, lc.head.clone()) else { return Ok(()) };
+        let Some(lc) = c.labels.get(&l) else { return Ok(false) };
+        let (index, Some(head)) = (lc.index, lc.head.clone()) else { return Ok(false) };
         // secrets may have arrived since the head was accepted
         self.recheck_doubts();
         let (keys, read_ok) = self.usable_keys(&g, index, &head)?;
         if let Some(lc) = self.lc_mut(conn, &l) {
             lc.keys = keys.clone();
         }
-        // no secret of the head's read epoch: read first (spec/sync.md §5, reading without it),
+        // no secret of the head's sync epoch: read first (spec/sync.md §5, reading without it),
         // stranded only once nothing more here opens
         if keys.epochs[0].is_none() {
             if self.read_first(conn, host, &g, l, out)? {
                 leave_all(sends, left);
-                return Ok(());
+                return Ok(false);
             }
-            return self.stranded(conn, g, l, out);
+            self.stranded(conn, g, l, out)?;
+            return Ok(true);
         }
         // registering there: what this pass would act on there waits for the next one. A step
         // goes once the source has read, under its head, the role commits it lacks (a removed
@@ -536,7 +545,7 @@ impl SyncEngine {
         }
         if unreported.is_none() && self.reregister(conn, l, out)? {
             leave_all(sends, left);
-            return Ok(());
+            return Ok(false);
         }
         self.refetch(conn, host, l, w, out)?;
         let p = Head { g, l, host: Some(host), id: head.id(), stamps: head.keys.write, keys, read_ok };
@@ -581,7 +590,7 @@ impl SyncEngine {
         if quiet && settled {
             self.retire_at(host, &g, l)?;
         }
-        Ok(())
+        Ok(true)
     }
 
     /// The node log position source `conn` must report reading `l` to before a step is

@@ -262,6 +262,10 @@ pub(crate) struct Work {
     pub pass_at: Option<u64>,
     /// When `pass_at` was set (wall ms): a clock now before it went back.
     pub scheduled: u64,
+    /// The sources the last pass acted on (`SyncEngine::sources`): a pass with another one
+    /// judges everything, so what a source missed while it was none (registering, opening
+    /// again, being read) reaches it.
+    pub acted: BTreeSet<super::ConnId>,
 }
 
 impl Work {
