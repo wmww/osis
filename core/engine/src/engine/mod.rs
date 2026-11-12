@@ -3355,8 +3355,9 @@ impl Engine {
 
     /// An open from the persisted index and a rebuild from the commit records each compute the
     /// indexes and role timelines this node holds (spec/permissions.md §5.1 step 5: validity is
-    /// a function of the held set), the open decoding no header and judging every part as held.
-    /// Both load in a transaction that is dropped, so the store is as it was. Panics with the
+    /// a function of the held set), the open decoding no header, reading no blob (what a held
+    /// record needs is in the store, whatever blobs expiry or a drop took) and judging every
+    /// part as held. Both load in a transaction that is dropped, so the store is as it was. Panics with the
     /// difference. Debug builds run it after sampled transactions (`run`); tests call it where
     /// a reproducer's point is.
     #[doc(hidden)]
@@ -3367,13 +3368,13 @@ impl Engine {
             fresh.accounts = self.core.accounts.clone();
             let mut rng = SeededRng::from_u64(0);
             let mut store_rng = SeededRng::from_u64(0);
-            let load = || -> Result<bool> {
+            let load = || -> Result<Option<u64>> {
                 let txn = self.store.transaction(&mut store_rng)?;
                 let mut tx = Tx { txn, blobs: blobs::Cipher::new(&*self.blobs, 0), core: &mut fresh, rng: &mut rng };
                 // a transaction that left the index stale (`index::invalidate`: commit records
                 // changed outside the in-memory indexes) is followed by a reload
                 if !index::current(&mut tx)? {
-                    return Ok(false);
+                    return Ok(None);
                 }
                 crate::apply::load(&mut tx, rebuild)?;
                 // the persisted edges rows are what the role commits' records read, one each
@@ -3385,15 +3386,14 @@ impl Engine {
                     }
                     assert!(rows.is_empty(), "node/edges rows without a role commit: {:?}", rows.keys().collect::<Vec<_>>());
                 }
-                Ok(true)
+                Ok(Some(tx.blobs.reads))
             };
             // its work is not the measured code's (scale checks count work)
             let r = crate::costs::paused(|| osis_perm::uncounted(load));
             let at = if rebuild { "rebuilt from the commit records" } else { "opened from the persisted index" };
             assert!(r.is_ok(), "{at}: {:?}", r.err());
-            if !matches!(r, Ok(true)) {
-                return;
-            }
+            let Ok(Some(reads)) = r else { return };
+            assert!(rebuild || reads == 0, "{at}: {reads} blob reads");
             // compared typed; the digests' text only for the message
             if !self.core.same_index(&fresh) {
                 let d = self.core.index_digest().first_diff(&fresh.index_digest());

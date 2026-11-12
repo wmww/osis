@@ -33,6 +33,8 @@ pub struct Cipher<'a> {
     /// A write to the ciphertext store failed: what it held so far may be gone.
     failed: bool,
     done: bool,
+    /// Blob reads made (`Engine::check_index`: an open from the persisted index reads none).
+    pub reads: u64,
 }
 
 /// A point `Cipher::rollback_to` goes back to.
@@ -41,7 +43,7 @@ pub struct CipherMark(usize, usize, usize);
 
 impl<'a> Cipher<'a> {
     pub fn new(src: &'a dyn Ciphertext, seq: u64) -> Cipher<'a> {
-        Cipher { src, tx: None, seq, held: Vec::new(), releases: BTreeMap::new(), journal: Vec::new(), removals: Vec::new(), failed: false, done: false }
+        Cipher { src, tx: None, seq, held: Vec::new(), releases: BTreeMap::new(), journal: Vec::new(), removals: Vec::new(), failed: false, done: false, reads: 0 }
     }
 
     fn tx(&mut self) -> &mut (dyn CipherTx + 'a) {
@@ -69,6 +71,7 @@ impl<'a> Cipher<'a> {
 
     /// Bytes `offset..offset+len` of blob `id`.
     pub fn read(&mut self, id: &BlobId, offset: u64, len: usize) -> crate::error::Result<Option<Vec<u8>>> {
+        self.reads += 1;
         Ok(self.tx().read(id, offset, len)?)
     }
 

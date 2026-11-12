@@ -1058,7 +1058,7 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
         }
         let view = Arc::new(view);
         let header = if view.linked {
-            // lists by link from the record now
+            // lists by link from the record
             let mut h = super::decode_stored_header(&id, &bytes).ok_or(Error::Corrupt("commit record header"))?;
             head.resolve(&mut h)?;
             debug_assert_eq!(super::View::of(&h), *view, "meta row of {id:?} is stale");
