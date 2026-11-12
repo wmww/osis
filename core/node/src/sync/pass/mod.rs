@@ -545,9 +545,12 @@ impl SyncEngine {
             }
             // judged again next pass until the source has it
             leave(o, left);
-            roles_behind |= o.prio <= 1;
             let Some(e) = self.state.entries.get(&(l, o.id)).cloned() else { continue };
             let stamped = e.stamp.is_some_and(|s| osis_label::verify_stamp(&p.stamps, &l, &o.id, &e.wrap, &s).is_ok());
+            // a role commit the source takes once it pulls it (stamped for its head, or stamped
+            // here for it now); one under a newer head waits for that head's step, which holds
+            // nothing else back
+            roles_behind |= o.prio <= 1 && p.keys.is_writer() && (on_head || stamped);
             match &own.keys.write {
                 Some(wk) if on_head && !stamped => {
                     self.stamp_entry(l, o.id, e, wk);
