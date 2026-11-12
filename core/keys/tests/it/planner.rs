@@ -29,9 +29,9 @@ impl Graph for MemoryGraph {
     }
 }
 
-// spec/permissions.md §3: `reached` (the labels a removal is placed under) is the fixpoint of the things one hop from the start or from a thing reached, never
-// through the avoided holder, on random graphs with cycles and first admins, and stays linear on
-// a lattice with 6^11 paths.
+// spec/permissions.md §3: `reached` (the labels a removal is placed under) is the fixpoint of
+// the things one hop from the start or from a thing reached, never through the avoided holder,
+// on random graphs with cycles and first admins, and stays linear on a lattice with 6^11 paths.
 #[test]
 fn reached_is_the_hop_fixpoint() {
     let mut x: u64 = 0x2545_F491_4F6C_DD1D;

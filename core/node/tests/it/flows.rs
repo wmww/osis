@@ -308,8 +308,9 @@ pub(crate) fn big(marker: &str) -> String {
     format!("{marker}{}", "x".repeat(400))
 }
 
-/// Things of a removal: `d` (bob read, removed), `f` (read by bob only through `d`), `e` (read by
-/// bob directly and through `d`), `mine` (bob's own).
+/// Things of a removal: `d` (bob read, removed), `f` (read by bob only through `d`; `f` and `d`
+/// read each other, a role cycle that keeps neither once bob is out), `e` (read by bob directly
+/// and through `d`), `mine` (bob's own).
 struct Lost {
     lp: LocalPeer,
     faults: osis_store::Faults,
@@ -351,6 +352,7 @@ fn lost_built(from_e: bool) -> (LocalPeer, (Tid, Tid, Tid, Tid)) {
     lp.peers[0].engine.grant(&e, &pb, &edge_of(Role::Read)).unwrap();
     let f = thing_of(&mut lp, 0, pa);
     lp.peers[0].engine.grant(&f, &d, &edge_of(Role::Read)).unwrap();
+    lp.peers[0].engine.grant(&d, &f, &edge_of(Role::Read)).unwrap();
     for (t, mark) in [(d, D_MARK), (e, E_MARK), (f, F_MARK)] {
         let mut m = Mutation::new();
         m.set(t, &REG, &s(&big(mark))).unwrap();
