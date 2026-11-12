@@ -26,3 +26,4 @@
 - Backtraces in the test profile name few frames (inlined), and file paths did not show either, so "who cleared this presence" needed reasoning from the call sites instead.
 - The renamed-to-host identifiers from the last review: "host" is deprecated too; a reviewer renaming node words should check issues/deprecated-terms.md first.
 - Fourth review: rebasing 34 branch commits over 38 of main's conflicted at the second commit; squashed to the reviewed tip and rebased once. Main's eph-invalid-parts rule lived in `memory_want`, which the branch deletes: the rebase merged cleanly and only `reader_flood_takes_no_cap` caught the lost rule.
+- Fourth review: main moved 14 commits during the first gate (eph-churn-loop, eph-reverts-seed), so a second conflicted rebase and a second gate. Main's memory-lane fixes keep landing in functions this branch deletes (`memory_want`, `memory_reconcile_thing`, `sync_label`): each rebase has to port the rule by hand onto the stream.
