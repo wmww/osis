@@ -1,5 +1,5 @@
 //! spec: none (the node log in the host's store: issues/net-one-peer.md build 3e, issues/net-reconnect.md
-//! One node log). The hub's store logs every entry and head it holds, beside its per-label logs.
+//! One node log). The hub's store logs every entry and head it holds.
 
 use crate::common::*;
 use osis_base::format::TOMBSTONE_LIFETIME_MS;
@@ -35,11 +35,11 @@ fn host() -> Host {
     open(MemoryBackend::new(), MemoryRoot::new(), 0)
 }
 
-fn put(s: &mut HostStore, l: &LabelId, n: u64, stamped: bool, expiry: Option<u64>, replaces: &[BlobId]) -> BlobId {
+fn put(s: &mut HostStore, l: &LabelId, n: u64, stamped: bool, expiry: Option<u64>) -> BlobId {
     let b = blob(n);
     let id = osis_label::blob_id(&b);
     let stamp = stamped.then_some(Signature([n as u8; 64]));
-    let p = Put { blob_id: id, blob: &b, wrap: [n as u8; WRAP_LEN], stamp, expiry, ephemeral: false, replaces, now: T0, role: false };
+    let p = Put { blob_id: id, blob: &b, wrap: [n as u8; WRAP_LEN], stamp, expiry, ephemeral: false, now: T0, role: false };
     assert_eq!(s.put(l, p).unwrap(), Code::OK);
     id
 }
@@ -69,15 +69,16 @@ fn a_listing_from_the_start_is_the_live_set_plus_retained_deletions() {
     h.s.push_step(&l2, f2.genesis.clone(), Some(f2.genesis_claims.clone())).unwrap();
     // the head moves: its earlier event goes
     h.s.push_step(&l1, f1.child.clone(), Some(f1.child_claims.clone())).unwrap();
-    let mut live: Vec<(LabelId, BlobId)> = (0..6).map(|n| (l1, put(&mut h.s, &l1, n, true, None, &[]))).collect();
-    live.extend((10..14).map(|n| (l2, put(&mut h.s, &l2, n, n != 13, (n == 12).then_some(T0 + 1_000), &[]))));
-    // a delete, a replacement and an expiry: each leaves a deletion event
-    let (deleted, replaced, expired) = (live.remove(0), live.remove(6), live.remove(6));
+    let mut live: Vec<(LabelId, BlobId)> = (0..6).map(|n| (l1, put(&mut h.s, &l1, n, true, None))).collect();
+    live.extend((10..14).map(|n| (l2, put(&mut h.s, &l2, n, n != 13, (n == 12).then_some(T0 + 1_000)))));
+    // two deletes and an expiry: each leaves a deletion event
+    let (deleted, deleted2, expired) = (live.remove(0), live.remove(6), live.remove(6));
     h.s.delete(&l1, &deleted.1, T0).unwrap();
-    live.push((l2, put(&mut h.s, &l2, 20, true, None, &[replaced.1])));
+    h.s.delete(&l2, &deleted2.1, T0).unwrap();
+    live.push((l2, put(&mut h.s, &l2, 20, true, None)));
     // an ephemeral entry is never logged
     let eb = blob(30);
-    let p = Put { blob_id: osis_label::blob_id(&eb), blob: &eb, wrap: [30; WRAP_LEN], stamp: Some(Signature([30; 64])), expiry: None, ephemeral: true, replaces: &[], now: T0, role: false };
+    let p = Put { blob_id: osis_label::blob_id(&eb), blob: &eb, wrap: [30; WRAP_LEN], stamp: Some(Signature([30; 64])), expiry: None, ephemeral: true, now: T0, role: false };
     assert_eq!(h.s.put(&l1, p).unwrap(), Code::OK);
     sweep(&mut h, T0 + 1_000);
     assert_eq!(h.s.entry(&l2, &expired.1).unwrap(), None);
@@ -88,7 +89,7 @@ fn a_listing_from_the_start_is_the_live_set_plus_retained_deletions() {
     assert_eq!(e.len(), live.len() + 3 + 2, "one event per subject: {e:?}");
     assert_eq!(added(&e), live.iter().copied().collect(), "every held entry, of every sync ID");
     assert!(live.iter().all(|(l, b)| h.s.entry(l, b).unwrap().is_some()));
-    assert_eq!(gone(&e), [deleted, replaced, expired].into_iter().collect());
+    assert_eq!(gone(&e), [deleted, deleted2, expired].into_iter().collect());
     assert_eq!(heads(&e).into_iter().collect::<BTreeSet<_>>(), [l1, l2].into_iter().collect());
     // deletions are retained for their lifetime, then the listing is the live set alone
     let due = h.s.next_due().unwrap().unwrap();
@@ -109,7 +110,7 @@ fn dropped_deletions_raise_the_horizon_spec_sync_10() {
     let f = Fixture::new(0x30);
     let l = f.label;
     h.s.push_step(&l, f.genesis.clone(), Some(f.genesis_claims.clone())).unwrap();
-    let ids: Vec<BlobId> = (0..3).map(|n| put(&mut h.s, &l, n, true, None, &[])).collect();
+    let ids: Vec<BlobId> = (0..3).map(|n| put(&mut h.s, &l, n, true, None)).collect();
     let horizon = |h: &mut Host| h.s.node_log(|t| t.log_horizon()).unwrap();
     h.s.delete(&l, &ids[0], T0).unwrap();
     sweep(&mut h, T0 + 1_000);
@@ -129,11 +130,11 @@ fn an_entrys_earlier_events_compact_away() {
         let f = Fixture::new(0x30);
         h.s.push_step(&f.label, f.genesis.clone(), Some(f.genesis_claims.clone())).unwrap();
         for i in 0..n {
-            put(&mut h.s, &f.label, i, false, None, &[]);
+            put(&mut h.s, &f.label, i, false, None);
         }
         let before = read(&mut h.s, None).cursor.unwrap();
         for i in 0..n {
-            put(&mut h.s, &f.label, i, true, None, &[]);
+            put(&mut h.s, &f.label, i, true, None);
         }
         let e = listing(&mut h.s);
         assert_eq!(e.len() as u64, n + 1, "one event per entry and the head");
@@ -152,15 +153,15 @@ fn a_restored_store_issues_no_cursor() {
     let mut h = host();
     let f = Fixture::new(0x40);
     h.s.push_step(&f.label, f.genesis.clone(), Some(f.genesis_claims.clone())).unwrap();
-    put(&mut h.s, &f.label, 1, true, None, &[]);
+    put(&mut h.s, &f.label, 1, true, None);
     let early = read(&mut h.s, None).cursor.unwrap();
     h.s.store_mut().unwrap();
     let (backup, backup_root) = (h.backend.copy(), h.root.copy());
-    put(&mut h.s, &f.label, 2, true, None, &[]);
+    put(&mut h.s, &f.label, 2, true, None);
     let late = read(&mut h.s, None).cursor.unwrap();
     // the restored store takes a write: what the lost store issued past the backup is no cursor
     let mut r = open(backup, backup_root, 1);
-    put(&mut r.s, &f.label, 3, true, None, &[]);
+    put(&mut r.s, &f.label, 3, true, None);
     let from_late = read(&mut r.s, Some(&late));
     assert!(from_late.whole, "a cursor past the restore point reads from the start");
     assert_eq!(from_late.events.len(), 3);
@@ -179,10 +180,10 @@ fn dropping_a_label_leaves_nothing_of_it() {
     let base = h.s.all_rows().unwrap().len();
     h.s.push_step(&l1, f1.genesis.clone(), Some(f1.genesis_claims.clone())).unwrap();
     h.s.push_step(&l2, f2.genesis.clone(), Some(f2.genesis_claims.clone())).unwrap();
-    let only1: Vec<BlobId> = (0..4).map(|n| put(&mut h.s, &l1, n, n != 3, None, &[])).collect();
+    let only1: Vec<BlobId> = (0..4).map(|n| put(&mut h.s, &l1, n, n != 3, None)).collect();
     // one blob under both labels: it stays with the label kept
-    let shared = put(&mut h.s, &l1, 9, true, None, &[]);
-    put(&mut h.s, &l2, 9, true, None, &[]);
+    let shared = put(&mut h.s, &l1, 9, true, None);
+    put(&mut h.s, &l2, 9, true, None);
     h.s.delete(&l1, &only1[0], T0).unwrap();
     let kept_rows: Vec<_> = {
         let before = h.s.all_rows().unwrap();

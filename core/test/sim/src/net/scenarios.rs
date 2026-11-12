@@ -10,7 +10,7 @@ use crate::harness::{ClockSpec, Report, Res, Seeds};
 use crate::reach::Uplink;
 use crate::workload;
 use osis_base::format::ROLE_KEEP_MS;
-use osis_base::{Ak, Role, Tid, Value, WallMs};
+use osis_base::{Ak, LabelId, Role, Tid, Value, WallMs};
 use osis_node::Mutation;
 use osis_node::sync::Event;
 use osis_schema::RawKey;
@@ -117,16 +117,15 @@ pub fn two_nodes_host_under(s: Seeds, faults: LinkFaults) -> Res<Report> {
     sim.finish()
 }
 
-/// Three accounts share a group through two replicating hosts (spec/sync.md §5 replication,
-/// §6): A (admin, reaches both), B (writer, s0 only), C (reader, s1 only); grants by inbox;
-/// host crashes mid-write, partitions.
+/// Three accounts share a group through two hosts (spec/sync.md §5, §6): A (admin, reaches
+/// both, the only way data crosses between them), B (writer, s0 only), C (reader, s1 only);
+/// grants by inbox; host crashes mid-write, partitions.
 pub fn three_accounts_two_hosts(s: Seeds) -> Res<Report> {
     let w = NetWeights { host_crash: 1, host_restart: 2, partition: 1, heal: 2, ..NetWeights::default() };
     let (mut sim, ()) = setup("three_accounts_two_hosts", s, w, |sim| {
         let mut d = Dice::new(sim.seed ^ 0x3b);
         let s0 = sim.add_host()?;
         let s1 = sim.add_host()?;
-        sim.replicate(s0, s1)?;
         let a = sim.add_node(&[s0, s1], clock(&mut d))?;
         let b = sim.add_node(&[s0], clock(&mut d))?;
         let c = sim.add_node(&[s1], clock(&mut d))?;
@@ -207,7 +206,7 @@ pub fn compaction(s: Seeds) -> Res<Report> {
     })?;
     sim.run(60)?;
     sim.quiet(40)?;
-    let deleted0 = deletions(&sim, s);
+    let live0 = live_at(&sim, s);
     for (n, a_) in [(a, &workload::REG), (b, &workload::TAGS), (a, &workload::MAP)] {
         let k = ak(&sim, a_)?;
         let acts = sim.sync(n)?.compact_now(&t, &k).map_err(|e| sim.fail(format!("node {n} compact: {e}")))?;
@@ -215,7 +214,8 @@ pub fn compaction(s: Seeds) -> Res<Report> {
         sim.run(30)?;
     }
     sim.run_until_quiescent(40)?;
-    if deletions(&sim, s) == deleted0 {
+    let live = live_at(&sim, s);
+    if live0.iter().all(|x| live.contains(x)) {
         return Err(sim.fail("compaction deleted nothing at the host"));
     }
     let c = write_gone(&mut sim, a, t, "later")?;
@@ -226,20 +226,15 @@ pub fn compaction(s: Seeds) -> Res<Report> {
     sim.finish()
 }
 
-/// Deleted records in the logs of host `s`.
-fn deletions(sim: &NetSim, s: usize) -> usize {
+/// The live entries of host `s`.
+fn live_at(sim: &NetSim, s: usize) -> BTreeSet<(LabelId, osis_base::BlobId)> {
     use osis_proto::LabelStore;
-    let Some(h) = sim.hub(s) else { return 0 };
-    let mut k = 0;
+    let Some(h) = sim.hub(s) else { return BTreeSet::new() };
     let held = h.store().labels_after(None, 4096).unwrap_or_default();
-    for l in held {
-        let recs = h.store().log_after(&l, 0, 1 << 20).ok().flatten().unwrap_or_default();
-        k += recs.iter().filter(|(_, r)| matches!(r, osis_proto::LogRecord::Deleted(_))).count();
-    }
-    k
+    held.into_iter().flat_map(|l| h.store().live_ids(&l).unwrap_or_default().into_iter().map(move |b| (l, b))).collect()
 }
 
-/// A reader relays (spec/sync.md §5, §6): two hosts that do not replicate; the writer reaches
+/// A reader relays (spec/sync.md §5, §6): two hosts; the writer reaches
 /// only s0, a reader both, a second reader only s1; the second reader reads the writer's content
 /// carried by the first. The readers open the label while the admin registers the steps of the
 /// grants' rotations (an open answered with the old head follows the new one).
@@ -587,8 +582,8 @@ pub fn large_edits(s: Seeds) -> Res<Report> {
     sim.finish()
 }
 
-/// Pass work sets against full passes (spec/sync.md §6, §7): two replicating hosts, an admin
-/// and two writers writing at random under faults, then compactions (snapshots), purge-on-replace
+/// Pass work sets against full passes (spec/sync.md §6, §7): two hosts, an admin and a writer
+/// reaching both and a writer reaching s1 only, writing at random under faults, then compactions (snapshots), purge-on-replace
 /// and expiring writes, a purge, a demotion of a writer, time past the bounds. Run as is and
 /// under `with_full_passes`, it must give the same run (`core/test/sim/tests/it/work_sets.rs`).
 pub fn work_sets(s: Seeds) -> Res<Report> {
@@ -596,7 +591,6 @@ pub fn work_sets(s: Seeds) -> Res<Report> {
         let mut d = Dice::new(sim.seed ^ 0x3e7);
         let s0 = sim.add_host()?;
         let s1 = sim.add_host()?;
-        sim.replicate(s0, s1)?;
         let a = sim.add_node(&[s0, s1], clock(&mut d))?;
         let b = sim.add_node(&[s0, s1], clock(&mut d))?;
         let c = sim.add_node(&[s1], clock(&mut d))?;

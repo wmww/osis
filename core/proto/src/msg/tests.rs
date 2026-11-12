@@ -17,17 +17,43 @@ fn resume_caps_spec_wire_11_2() {
 // table in `decode_body` and its match stay in step, not only for the examples listed
 #[test]
 fn every_kind_is_in_the_decode_table() {
+    for kind in kinds() {
+        assert!(!unknown_at_every_arity(kind), "kind {kind} has no field count or decode arm");
+    }
+}
+
+/// The kinds `Message::kind` names, parsed from its source.
+fn kinds() -> Vec<u64> {
     let src = include_str!("../msg.rs");
     let body = src.split("pub fn kind(&self)").nth(1).expect("fn kind").split("\n    }\n").next().unwrap();
     let kinds: Vec<u64> = body.lines().filter_map(|l| l.trim().strip_suffix(',')?.rsplit("=> ").next()?.parse().ok()).collect();
     assert!(kinds.len() > 30, "kinds parsed from Message::kind: {kinds:?}");
-    for kind in kinds {
-        let unknown = (2..=8).all(|n| {
-            let mut items = vec![Value::Int(kind as i64), Value::Int(1)];
-            items.resize(n, Value::Int(0));
-            matches!(decode_body(kind, 1, Value::List(items)), Err(Error::UnknownKind(_)))
-        });
-        assert!(!unknown, "kind {kind} has no field count or decode arm");
+    kinds
+}
+
+/// Whether `kind` decodes as an unknown kind with 0 to 6 fields after its head.
+fn unknown_at_every_arity(kind: u64) -> bool {
+    (2..=8).all(|n| {
+        let mut items = vec![Value::Int(kind as i64), Value::Int(1)];
+        items.resize(n, Value::Int(0));
+        matches!(decode_body(kind, 1, Value::List(items)), Err(Error::UnknownKind(_)))
+    })
+}
+
+/// Retired kinds (spec/wire.md §11.2): never decoded, never reused.
+const RETIRED: [u64; 10] = [10, 12, 13, 15, 16, 17, 18, 21, 22, 23];
+
+// spec/wire.md §11.2: a retired kind number is no message: it decodes as an unknown kind (a
+// request of it is answered Error 11), is neither request nor reply, and names no kind again
+#[test]
+fn retired_kinds_are_unknown_spec_wire_11_2() {
+    let kinds = kinds();
+    for kind in RETIRED {
+        assert!(unknown_at_every_arity(kind), "kind {kind} decodes");
+        let r = rejected(Value::List(vec![Value::Int(kind as i64), Value::Int(7), Value::Int(0)]));
+        assert_eq!((r.id, r.code(), r.error), (7, Code::UNSUPPORTED, Error::UnknownKind(kind)), "kind {kind}");
+        assert!(!is_request_kind(kind) && !is_reply_kind(kind), "kind {kind}");
+        assert!(!kinds.contains(&kind), "kind {kind} reused");
     }
 }
 
@@ -60,9 +86,9 @@ fn examples_name_every_kind() {
     let ms = messages();
     let mut kinds: Vec<u64> = ms.iter().map(|(_, m)| m.kind()).collect();
     kinds.dedup();
-    // kinds 24-29 (client port): tests/it/port.rs; 30-31 reports; 32-35 elsewhere; 36-40 the
-    // shared set; 41-44 the stream; 45-46 the digest
-    assert_eq!(kinds, (0..=23).chain(30..=31).chain(36..=46).collect::<Vec<_>>());
+    // retired kinds name nothing; kinds 24-29 (client port): tests/it/port.rs; 30-31 reports;
+    // 32-35 elsewhere; 36-40 the shared set; 41-44 the stream; 45-46 the digest
+    assert_eq!(kinds, (0..=23).filter(|k| !RETIRED.contains(k)).chain(30..=31).chain(36..=46).collect::<Vec<_>>());
 }
 
 // spec/wire.md §11.2 Pull: a Stream with a cursor and no events (an ended member reaching its
@@ -78,78 +104,22 @@ fn a_stream_with_no_events_round_trips_spec_wire_11_2() {
 fn caps() {
     let ms: std::collections::BTreeMap<_, _> = messages().into_iter().collect();
     let m = |n: &str| ms[n].clone();
-    for (name, cap) in [("upload", MAX_ITEMS), ("delete", MAX_ITEMS), ("fetch", MAX_ITEMS), ("subscribe", MAX_LABELS), ("unsubscribe", MAX_LABELS), ("path reply", MAX_PATH_STEPS), ("fetch reply", MAX_ITEMS)] {
+    for (name, cap) in [("delete", MAX_ITEMS), ("fetch", MAX_ITEMS), ("path reply", MAX_PATH_STEPS), ("fetch reply", MAX_ITEMS)] {
         assert!(Message::decode(&enc(with_list(m(name), cap))).is_ok(), "{name} at cap");
         assert_eq!(rejected(with_list(m(name), cap + 1)).error, Error::Cap(match name {
-            "upload" => "upload entries",
             "delete" => "delete items",
             "fetch" => "fetch ids",
             "path reply" => "path steps",
-            "fetch reply" => "fetch items",
-            _ => "labels",
+            _ => "fetch items",
         }), "{name}");
     }
-    // Sync entries: 1024, like Upload
-    let entries = |n: usize| Message::Sync { id: 1, label: LabelId([0; 16]), cursor: None, inline_limit: 0, max_reply: 16_384, entries: vec![Entry::new(vec![], [0; WRAP_LEN], Signature([0; 64])); n], gained: vec![] };
-    assert!(Message::decode(&entries(MAX_ITEMS).encode()).is_ok());
-    assert_eq!(Message::decode(&entries(MAX_ITEMS + 1).encode()).unwrap_err().error, Error::Cap("sync entries"));
-    // gained and want: 4096
-    let sync = |n: usize| Message::Sync { id: 1, label: LabelId([0; 16]), cursor: None, inline_limit: 0, max_reply: 16_384, entries: vec![], gained: vec![BlobId([0; 32]); n] };
-    assert!(Message::decode(&sync(MAX_GAINED).encode()).is_ok());
-    assert_eq!(Message::decode(&sync(MAX_GAINED + 1).encode()).unwrap_err().error, Error::Cap("gained"));
-    let want = |n: usize| Message::SyncReply { id: 1, events: vec![], want: vec![BlobId([0; 32]); n], codes: vec![], cursor: Cursor { log_id: [0; 16], seq: 0 }, more: false };
-    assert!(Message::decode(&want(MAX_GAINED + 1).encode()).is_err());
-    // Upload, Delete, Fetch, Subscribe need at least one item
-    for name in ["upload", "delete", "fetch", "subscribe", "reconcile"] {
+    // Delete and Fetch need at least one item
+    for name in ["delete", "fetch"] {
         assert!(Message::decode(&enc(with_list(m(name), 0))).is_err(), "{name} empty");
     }
 }
 
-fn fp_range(lo: u8, hi: u8) -> Range {
-    Range { lower: Bound::new(vec![lo]).unwrap(), upper: Bound::new(vec![hi]).unwrap(), mode: Mode::Fingerprint([0; 16]) }
-}
-
-// spec/wire.md §11.2, §11.3: Reconcile 256 ranges, reply 4096; sorted disjoint; mode list sizes
-#[test]
-fn reconcile_rules() {
-    let rec = |ranges: Vec<Range>| Message::Reconcile { id: 1, label: LabelId([0; 16]), ranges }.encode();
-    let reply = |ranges: Vec<Range>| Message::ReconcileReply { id: 1, ranges }.encode();
-    let many = |n: usize| (0..n).map(|i| Range { lower: Bound::new((i as u16).to_be_bytes().to_vec()).unwrap(), upper: Bound::new((i as u16 + 1).to_be_bytes().to_vec()).unwrap(), mode: Mode::Fingerprint([0; 16]) }).collect::<Vec<_>>();
-    assert!(Message::decode(&rec(many(256))).is_ok());
-    assert_eq!(Message::decode(&rec(many(257))).unwrap_err().error, Error::Cap("ranges"));
-    assert!(Message::decode(&reply(many(4096))).is_ok());
-    assert!(Message::decode(&reply(many(4097))).is_err());
-    // overlap, unsorted, empty range
-    assert!(Message::decode(&rec(vec![fp_range(1, 3), fp_range(2, 4)])).is_err());
-    assert!(Message::decode(&rec(vec![fp_range(3, 4), fp_range(1, 2)])).is_err());
-    assert!(Message::decode(&rec(vec![fp_range(1, 3), fp_range(3, 4)])).is_ok());
-    assert!(Message::decode(&rec(vec![fp_range(2, 2)])).is_err());
-    // `[1]` and `[1, 0]` are the same bound
-    let r = Range { lower: Bound::new(vec![1]).unwrap(), upper: Bound::new(vec![1, 0]).unwrap(), mode: Mode::Fingerprint([0; 16]) };
-    assert!(Message::decode(&rec(vec![r])).is_err());
-    // an end upper bound must be last
-    let end = Range { lower: Bound::empty(), upper: Bound::empty(), mode: Mode::Fingerprint([0; 16]) };
-    assert!(Message::decode(&rec(vec![end.clone()])).is_ok());
-    assert!(Message::decode(&rec(vec![end, fp_range(5, 6)])).is_err());
-    // bound over 32 bytes
-    let Value::List(mut v) = Message::Reconcile { id: 1, label: LabelId([0; 16]), ranges: vec![fp_range(1, 2)] }.to_value() else { unreachable!() };
-    v[3] = Value::List(vec![Value::List(vec![Value::Bytes(vec![0; 33]), Value::Bytes(vec![]), Value::List(vec![Value::Int(0), Value::Bytes(vec![0; 16])])])]);
-    assert!(Message::decode(&enc(Value::List(v))).is_err());
-    // mode 1 at most 32 IDs, sorted, inside the range; mode 2 lists 1024 and 32
-    let ids = |n: usize| (0..n).map(|i| { let mut b = [0u8; 32]; b[..8].copy_from_slice(&(i as u64).to_be_bytes()); BlobId(b) }).collect::<Vec<_>>();
-    let whole = |mode| Range { lower: Bound::empty(), upper: Bound::empty(), mode };
-    assert!(Message::decode(&rec(vec![whole(Mode::Ids(ids(32)))])).is_ok());
-    assert!(Message::decode(&rec(vec![whole(Mode::Ids(ids(33)))])).is_err());
-    let mut rev = ids(3);
-    rev.reverse();
-    assert!(Message::decode(&rec(vec![whole(Mode::Ids(rev))])).is_err());
-    assert!(Message::decode(&rec(vec![Range { lower: Bound::new(vec![1]).unwrap(), upper: Bound::empty(), mode: Mode::Ids(ids(1)) }])).is_err());
-    assert!(Message::decode(&reply(vec![whole(Mode::Diff { theirs: ids(1024), lacking: ids(32) })])).is_ok());
-    assert!(Message::decode(&reply(vec![whole(Mode::Diff { theirs: ids(1025), lacking: vec![] })])).is_err());
-    assert!(Message::decode(&reply(vec![whole(Mode::Diff { theirs: vec![], lacking: ids(33) })])).is_err());
-}
-
-// spec/wire.md §11.1: [kind, id, ...] with id < 2^32; unknown kind answered by 11; Push carries id 0
+// spec/wire.md §11.1: [kind, id, ...] with id < 2^32; unknown kind answered by 11; Stream carries id 0
 #[test]
 fn heads() {
     let r = rejected(Value::List(vec![Value::Int(99), Value::Int(7)]));
@@ -168,24 +138,28 @@ fn heads() {
     let r = rejected(Value::List(vec![Value::Int(2), Value::Int(9), Value::Int(0), Value::Int(0)]));
     assert_eq!((r.id, r.code()), (9, Code::MALFORMED));
     assert!(Message::decode(&[0xff]).is_err());
-    let Value::List(mut push) = messages().into_iter().find(|(n, _)| *n == "push").unwrap().1.to_value() else { unreachable!() };
+    let Value::List(mut push) = messages().into_iter().find(|(n, _)| *n == "stream").unwrap().1.to_value() else { unreachable!() };
     push[1] = Value::Int(5);
     assert!(Message::decode(&enc(Value::List(push))).is_err());
 }
 
 // spec/wire.md §11.2: wrap 57 bytes, sig 64, label 16; blob at most MAX_BLOB
-// spec/sync.md §5 (upload refusals): an oversized blob does not decode
+// spec/sync.md §5 (deposit refusals): an oversized blob does not decode
 #[test]
 fn field_sizes() {
-    let Value::List(dep) = messages().into_iter().find(|(n, _)| *n == "deposit").unwrap().1.to_value() else { unreachable!() };
-    for (pos, len) in [(2, 15), (4, 48), (5, 63)] {
-        let mut d = dep.clone();
-        d[pos] = Value::Bytes(vec![0; len]);
-        assert!(Message::decode(&enc(Value::List(d))).is_err(), "pos {pos}");
+    let Value::List(offer) = messages().into_iter().find(|(n, _)| *n == "offer with a deposit").unwrap().1.to_value() else { unreachable!() };
+    // the deposit item: [2, label, blob, wrap, sig]
+    let with = |pos: usize, v: Value| {
+        let mut o = offer.clone();
+        let Value::List(items) = &mut o[2] else { unreachable!() };
+        let Value::List(d) = &mut items[0] else { unreachable!() };
+        d[pos] = v;
+        Value::List(o)
+    };
+    for (pos, len) in [(1, 15), (3, 48), (4, 63)] {
+        assert!(Message::decode(&enc(with(pos, Value::Bytes(vec![0; len])))).is_err(), "pos {pos}");
     }
-    let mut d = dep.clone();
-    d[3] = Value::Bytes(vec![0; MAX_BLOB + 1]);
-    assert_eq!(rejected(Value::List(d)).error, Error::Cap("message"));
+    assert_eq!(rejected(with(2, Value::Bytes(vec![0; MAX_BLOB + 1]))).error, Error::Cap("offer item"));
     let st = |n: usize| Value::List(vec![Value::Int(6), Value::Int(1), Value::Bytes(vec![0; n])]);
     assert_eq!(rejected(st(MAX_STEP_BYTES + 1)).error, Error::Cap("step"));
     // a step must parse: 323 zero bytes do not
@@ -219,13 +193,12 @@ fn item_cap_spec_wire_13() {
     body.extend(std::iter::repeat_n(0u8, n));
     let r = Message::decode(&body).expect_err("decoded");
     assert_eq!(r.error, Error::Cap("message items"));
-    let cursor = Cursor { log_id: [1; 16], seq: 1 };
-    // Deleted events filling the frame, all codes (denser than any engine reply: those page by
-    // `event_size`)
-    let deleted = Event::Deleted(BlobId([0xee; 32]));
-    let codes = vec![Code::OK; MAX_ITEMS];
-    let k = (MAX_MESSAGE - MAX_ITEMS - 64) / 36;
-    let m = Message::SyncReply { id: 1, events: vec![deleted; k], want: vec![], codes, cursor, more: true };
+    // Deleted events filling the frame (denser than any engine reply: those page by
+    // `stream_event_size`)
+    let deleted = (LabelId([0xdd; 16]), Event::Deleted(BlobId([0xee; 32])));
+    let each = enc(Value::List(vec![Value::bytes(&deleted.0.0), event_value(&deleted.1)])).len();
+    let k = (MAX_MESSAGE - 64) / each;
+    let m = Message::PullReply(Box::new(PullReply { id: 1, events: vec![deleted; k], cursor: Some(vec![1; 72]), whole: false, trimmed: false, more: true, report: false, joins: vec![] }));
     let body = m.encode();
     assert!(body.len() <= MAX_MESSAGE && body.len() + 100 > MAX_MESSAGE, "{}", body.len());
     assert_eq!(Message::decode(&body), Ok(m));

@@ -304,8 +304,6 @@ admin aspect host^.0: struct {
     admit 0: admit,
     /// Label IDs (16 bytes) taken under `listed`.
     labels 1: set<blob>,
-    /// Other hosts to copy to.
-    replicate 2: list<address>,
     /// Tuning settings by name.
     policy 3: map<string, int>,
     /// Per-label limits, by label ID.

@@ -7,8 +7,6 @@ use crate::Error;
 use crate::frame::{FrameDecoder, encode_frame, send};
 use crate::hello::{Hello, OFFSET_DIAGNOSTIC_MS, OffsetSample, PROTOCOL_VERSION, estimate_offset, negotiate};
 use crate::msg::*;
-use crate::rbsr::Reconciler;
-use crate::serving::REPLY_BUDGET;
 use osis_base::format::MAX_MESSAGE;
 use osis_base::{BlobId, LabelId};
 use osis_crypto::SigningSecret;
@@ -38,10 +36,10 @@ pub const WINDOW_QUEUE: usize = WINDOW + MAX_MESSAGE + 4;
 /// page of `MAX_PATH_STEPS`, Budget, Pong, Ok, Error) and the smallest `max_reply`: the requests per
 /// round trip are `WINDOW` over it. 0 fits no reply; at `MAX_MESSAGE` two go per round trip.
 pub const SMALL_REPLY: usize = 16 << 10;
-/// What a first Sync page asks, and a Fetch per ID: most replies fit (a role commit with its boxes
-/// is about 15 KiB), a larger one takes one more round trip under `REPLY_BUDGET`. The Syncs and
-/// Fetches per round trip are `WINDOW` over it: at `SMALL_REPLY` a role commit is asked twice, at
-/// `REPLY_BUDGET` two go per round trip.
+/// What a Fetch asks per ID at first: most replies fit (a role commit with its boxes is about
+/// 15 KiB), a larger one takes one more round trip under `REPLY_BUDGET`. The Fetches per round
+/// trip are `WINDOW` over it: at `SMALL_REPLY` a role commit is asked twice, at `REPLY_BUDGET`
+/// two go per round trip.
 pub const FIRST_REPLY: usize = 64 << 10;
 /// Frame bytes plus allowances of the requests a session within `WINDOW` can have unanswered:
 /// below `WINDOW` before its last one, which adds at most a whole frame and `MAX_MESSAGE`. A peer
@@ -56,16 +54,16 @@ pub const MAX_UNANSWERED: usize = WINDOW + (MAX_MESSAGE + 4) + MAX_MESSAGE;
 pub const MAX_AHEAD: usize = crate::serving::SEND_QUEUE + MAX_UNANSWERED;
 
 /// The most reply bytes the peer may queue for a request (spec/sync.md §6): `MAX_MESSAGE` for
-/// Reconcile, its `max_reply` for Sync, Fetch, Call and Sub, `SMALL_REPLY` for every other
-/// request, 0 for a message that is no request.
+/// Prove, its `max_reply` for Fetch, Pull, Call and Sub, `SMALL_REPLY` for every other request,
+/// 0 for a message that is no request.
 pub fn allowance(msg: &Message) -> usize {
     use Message as M;
     match msg {
-        M::Reconcile { .. } | M::Prove { .. } => MAX_MESSAGE,
-        M::Sync { max_reply, .. } | M::Fetch { max_reply, .. } | M::Call { max_reply, .. } | M::Sub { max_reply, .. } => usize::try_from(*max_reply).unwrap_or(usize::MAX),
+        M::Prove { .. } => MAX_MESSAGE,
+        M::Fetch { max_reply, .. } | M::Call { max_reply, .. } | M::Sub { max_reply, .. } => usize::try_from(*max_reply).unwrap_or(usize::MAX),
         M::Pull(p) => usize::try_from(p.max_reply).unwrap_or(usize::MAX),
-        M::Ping { .. } | M::Path { .. } | M::Open { .. } | M::Register { .. } | M::Upload { .. } | M::Deposit { .. } | M::Delete { .. } | M::Subscribe { .. } | M::Unsubscribe { .. } | M::Auth { .. } | M::Unsub { .. } | M::Resume { .. } | M::Beacons { .. } | M::Offer { .. } | M::Lost { .. } | M::NoRecord { .. } | M::Stranded { .. } | M::Suspect { .. } => SMALL_REPLY,
-        M::Error { .. } | M::Ok { .. } | M::Pong { .. } | M::Opened { .. } | M::Step { .. } | M::PathReply { .. } | M::Status { .. } | M::Budget { .. } | M::SyncReply { .. } | M::ReconcileReply { .. } | M::FetchReply { .. } | M::Push { .. } | M::Reply { .. } | M::Notify { .. } | M::Proved { .. } | M::Resumed { .. } | M::Shared { .. } | M::PullReply(_) | M::Stream(_) | M::Applied { .. } | M::Digest { .. } | M::Members { .. } => 0,
+        M::Ping { .. } | M::Path { .. } | M::Open { .. } | M::Register { .. } | M::Delete { .. } | M::Auth { .. } | M::Unsub { .. } | M::Resume { .. } | M::Beacons { .. } | M::Offer { .. } | M::Lost { .. } | M::NoRecord { .. } | M::Stranded { .. } | M::Suspect { .. } => SMALL_REPLY,
+        M::Error { .. } | M::Ok { .. } | M::Pong { .. } | M::Opened { .. } | M::Step { .. } | M::PathReply { .. } | M::Status { .. } | M::FetchReply { .. } | M::Reply { .. } | M::Notify { .. } | M::Proved { .. } | M::Resumed { .. } | M::Shared { .. } | M::PullReply(_) | M::Stream(_) | M::Applied { .. } | M::Digest { .. } | M::Members { .. } => 0,
     }
 }
 /// A requester's window (spec/sync.md §6): requests go in the order made while the bytes in
@@ -238,15 +236,6 @@ fn sent_bytes(out: &[ClientOutput]) -> u64 {
 const MAX_SAMPLES: usize = 9;
 /// Round trips before a clock offset is reported (one outlier among three moves nothing).
 const MIN_PONGS: usize = 3;
-/// Reconcile messages one reconciliation may send before it is abandoned (a misbehaving peer).
-pub const MAX_RECONCILE_MESSAGES: usize = 4096;
-/// IDs one reconciliation may find missing on either side, and ranges it may have queued, before
-/// it is abandoned (a responder splitting without end; about 64 MB and 13 MB at most).
-pub const MAX_RECONCILE_IDS: usize = 1 << 21;
-pub const MAX_RECONCILE_QUEUED: usize = 1 << 17;
-/// Sync pages in a row without events before the exchange is abandoned (a peer handing out
-/// fresh cursors and nothing else).
-pub const MAX_EMPTY_PAGES: u32 = 16;
 
 #[derive(Clone, Debug)]
 pub struct ClientConfig {
@@ -282,18 +271,7 @@ pub enum Command {
     Register { label: LabelId, step: Step, claim_set: Option<ClaimSet> },
     /// The registration path after `after` (from the genesis step when none), all pages.
     Path { label: LabelId, after: Option<StepId> },
-    /// Cursor sync (none: replay the label's live entries) with our new stamped entries and the
-    /// IDs gained from other sources since the cursor. Over `MAX_GAINED` gained IDs falls back to
-    /// reconciliation (`NeedReconcile`); entries beyond one message go as Uploads.
-    Sync { label: LabelId, cursor: Option<Cursor>, inline_limit: u64, entries: Vec<Entry>, gained: Vec<BlobId> },
-    /// Range reconciliation of our live IDs for the label against the peer's.
-    Reconcile { label: LabelId, ids: Vec<BlobId> },
-    Fetch { label: LabelId, ids: Vec<BlobId> },
-    Upload { label: LabelId, entries: Vec<Entry> },
-    Deposit { label: LabelId, blob: Vec<u8>, wrap: Wrap, sig: Signature },
     Delete { label: LabelId, items: Vec<DeleteItem> },
-    Subscribe { labels: Vec<LabelId> },
-    Unsubscribe { labels: Vec<LabelId> },
     /// Stop following a label's Path pages (the node no longer wants them).
     StopPath { label: LabelId },
     /// Client port (notes/client-port.md §2): `token` is the caller's, echoed in the events.
@@ -334,27 +312,7 @@ pub enum ClientEvent {
     Step { label: LabelId, step: Step },
     Registered { label: LabelId },
     PathSteps { label: LabelId, steps: Vec<Step>, more: bool },
-    /// Status per entry of an Upload or a Sync.
-    EntryStatus { label: LabelId, blob_ids: Vec<BlobId>, codes: Vec<Code> },
     DeleteStatus { label: LabelId, blob_ids: Vec<BlobId>, codes: Vec<Code> },
-    /// A Deposit's answer; `budget` (entries, bytes left) only when it was signed by the head's
-    /// deposit key.
-    Budget { label: LabelId, blob_id: BlobId, code: Code, budget: Option<(u64, u64)> },
-    /// Log events of a Sync reply or a Push, in order; then keep `cursor` for the label (none:
-    /// a bundle, a peer with no cursor, a Push while a Sync of the label runs).
-    Events { label: LabelId, events: Vec<Event>, cursor: Option<Cursor> },
-    /// Gained IDs the peer lacks: upload them.
-    Want { label: LabelId, ids: Vec<BlobId> },
-    /// A Sync ran through its last page.
-    Synced { label: LabelId },
-    /// Cursor sync cannot proceed (cursor invalid, or too many gained IDs): reconcile. Entries the
-    /// Sync carried have been sent as an Upload. `trimmed`: the cursor's log was trimmed past it
-    /// (code 15), so what was present there and is not any more was deleted.
-    NeedReconcile { label: LabelId, trimmed: bool },
-    /// Range reconciliation done: IDs the peer holds that we lack, and the reverse.
-    Reconciled { label: LabelId, need: Vec<BlobId>, have: Vec<BlobId> },
-    Fetched { label: LabelId, items: Vec<Fetched> },
-    Subscribed { labels: Vec<LabelId>, codes: Vec<Code> },
     /// A request was answered by Error, or could not be sent (code 2: a delete item whose time
     /// cannot be encoded). `fetch`: a Fetch's blob IDs left unanswered (empty for other kinds).
     Refused { label: Option<LabelId>, kind: Request, code: Code, fetch: Vec<BlobId> },
@@ -398,14 +356,7 @@ pub enum Request {
     Open,
     Register,
     Path,
-    Upload,
-    Deposit,
     Delete,
-    Sync,
-    Reconcile,
-    Fetch,
-    Subscribe,
-    Unsubscribe,
     /// A client-port request.
     Api,
     Prove,
@@ -422,17 +373,7 @@ enum Pending {
     Path(LabelId),
     /// A Path exchange the node stopped: its reply is dropped.
     PathStopped(LabelId),
-    Upload(LabelId, Vec<BlobId>),
-    Deposit(LabelId, BlobId),
     Delete(LabelId, Vec<BlobId>),
-    /// `gained`: the IDs the request listed (a Want may name only those); `empty`: pages in a
-    /// row without events before this one.
-    Sync { label: LabelId, cursor: Option<Cursor>, entries: Vec<Entry>, inline_limit: u64, max_reply: u64, gained: Vec<BlobId>, empty: u32 },
-    Reconcile(LabelId, u64),
-    /// With the `max_reply` it asked.
-    Fetch(LabelId, Vec<BlobId>, u64),
-    Subscribe(Vec<LabelId>),
-    Unsubscribe,
     /// An Auth, Call or Sub with its token.
     Api(u64),
     /// An Unsub of subscription id.
@@ -442,9 +383,8 @@ enum Pending {
 impl Pending {
     fn label(&self) -> Option<LabelId> {
         match self {
-            Pending::Open(l) | Pending::Register(l) | Pending::Path(l) | Pending::PathStopped(l) | Pending::Upload(l, _) | Pending::Deposit(l, _) | Pending::Delete(l, _) | Pending::Reconcile(l, _) | Pending::Fetch(l, ..) => Some(*l),
-            Pending::Sync { label, .. } => Some(*label),
-            Pending::Prove | Pending::Resume | Pending::Ping { .. } | Pending::Subscribe(_) | Pending::Unsubscribe | Pending::Api(_) | Pending::ApiUnsub(_) => None,
+            Pending::Open(l) | Pending::Register(l) | Pending::Path(l) | Pending::PathStopped(l) | Pending::Delete(l, _) => Some(*l),
+            Pending::Prove | Pending::Resume | Pending::Ping { .. } | Pending::Api(_) | Pending::ApiUnsub(_) => None,
         }
     }
 
@@ -456,15 +396,8 @@ impl Pending {
             Pending::Resume => Request::Resume,
             Pending::Register(_) => Request::Register,
             Pending::Path(_) | Pending::PathStopped(_) => Request::Path,
-            Pending::Upload(..) => Request::Upload,
-            Pending::Deposit(..) => Request::Deposit,
             Pending::Delete(..) => Request::Delete,
-            Pending::Sync { .. } => Request::Sync,
-            Pending::Reconcile(..) => Request::Reconcile,
-            Pending::Fetch(..) => Request::Fetch,
-            Pending::Subscribe(_) => Request::Subscribe,
-            Pending::Unsubscribe | Pending::ApiUnsub(_) => Request::Unsubscribe,
-            Pending::Api(_) => Request::Api,
+            Pending::Api(_) | Pending::ApiUnsub(_) => Request::Api,
         }
     }
 }
@@ -479,13 +412,6 @@ struct Req {
 
 /// The command tag of a request no command asked for (pings).
 const NO_COMMAND: u64 = u64::MAX;
-#[derive(Clone)]
-
-struct Rec {
-    r: Reconciler,
-    own: Vec<BlobId>,
-    sent: usize,
-}
 
 #[derive(Clone)]
 pub struct ClientSession {
@@ -517,7 +443,6 @@ pub struct ClientSession {
     open: BTreeMap<u64, usize>,
     samples: VecDeque<OffsetSample>,
     pongs: usize,
-    recs: BTreeMap<LabelId, Rec>,
     /// Subscription ids reserved (spec/wire.md §11.1): from their Sub until the Unsub is
     /// answered or a Notify `Lapsed`; the token while delivered (none once unsubscribing).
     api_subs: BTreeMap<Id, Option<u64>>,
@@ -545,7 +470,6 @@ impl ClientSession {
             open: BTreeMap::new(),
             samples: VecDeque::new(),
             pongs: 0,
-            recs: BTreeMap::new(),
             api_subs: BTreeMap::new(),
         }
     }
@@ -763,51 +687,6 @@ impl ClientSession {
             Command::Peer(m) => send(out, *m),
             Command::Register { label, step, claim_set } => self.request(|id| Message::Register { id, label, step, claim_set }, Pending::Register(label)),
             Command::Path { label, after } => self.request(|id| Message::Path { id, label, after }, Pending::Path(label)),
-            Command::Sync { label, cursor, inline_limit, entries, gained } => {
-                if gained.len() > MAX_GAINED {
-                    self.upload(label, entries);
-                    event(out, ClientEvent::NeedReconcile { label, trimmed: false });
-                    return;
-                }
-                let mut budget = REPLY_BUDGET.saturating_sub(40 * gained.len());
-                let mut inline = Vec::new();
-                let mut rest = Vec::new();
-                let mut replaces = 0;
-                // within the message caps (spec/wire.md §11.2); the rest goes as Uploads
-                for e in entries {
-                    let size = entry_size(&e);
-                    if rest.is_empty() && size <= budget && inline.len() < MAX_ITEMS && replaces + e.replaces.len() <= MAX_ITEMS {
-                        budget -= size;
-                        replaces += e.replaces.len();
-                        inline.push(e);
-                    } else {
-                        rest.push(e);
-                    }
-                }
-                // small first, whatever the label holds: the rest pages under the whole budget
-                let max_reply = (FIRST_REPLY + 40 * gained.len() + 10 * inline.len()).min(REPLY_BUDGET) as u64;
-                let pending = Pending::Sync { label, cursor, entries: inline.clone(), inline_limit, max_reply, gained: gained.clone(), empty: 0 };
-                self.request(|id| Message::Sync { id, label, cursor, inline_limit, max_reply, entries: inline, gained }, pending);
-                self.upload(label, rest);
-            }
-            Command::Reconcile { label, mut ids } => {
-                ids.sort();
-                ids.dedup();
-                self.recs.insert(label, Rec { r: Reconciler::new(&ids), own: ids, sent: 0 });
-                self.reconcile_send(label, out);
-            }
-            Command::Fetch { label, ids } => {
-                for chunk in ids.chunks(MAX_ITEMS) {
-                    // a larger blob is asked again (`Pending::Fetch`)
-                    let max_reply = FIRST_REPLY.saturating_mul(chunk.len()).min(REPLY_BUDGET) as u64;
-                    self.request(|id| Message::Fetch { id, label, max_reply, ids: chunk.to_vec() }, Pending::Fetch(label, chunk.to_vec(), max_reply));
-                }
-            }
-            Command::Upload { label, entries } => self.upload(label, entries),
-            Command::Deposit { label, blob, wrap, sig } => {
-                let blob_id = osis_label::blob_id(&blob);
-                self.request(|id| Message::Deposit { id, label, blob, wrap, sig }, Pending::Deposit(label, blob_id));
-            }
             Command::Delete { label, items } => {
                 let (items, bad): (Vec<DeleteItem>, Vec<DeleteItem>) = items.into_iter().partition(|i| i.to_value().is_ok());
                 if !bad.is_empty() {
@@ -816,16 +695,6 @@ impl ClientSession {
                 for chunk in items.chunks(MAX_ITEMS) {
                     let ids = chunk.iter().map(|i| i.blob).collect();
                     self.request(|id| Message::Delete { id, label, items: chunk.to_vec() }, Pending::Delete(label, ids));
-                }
-            }
-            Command::Subscribe { labels } => {
-                for chunk in labels.chunks(MAX_LABELS) {
-                    self.request(|id| Message::Subscribe { id, labels: chunk.to_vec() }, Pending::Subscribe(chunk.to_vec()));
-                }
-            }
-            Command::Unsubscribe { labels } => {
-                for chunk in labels.chunks(MAX_LABELS) {
-                    self.request(|id| Message::Unsubscribe { id, labels: chunk.to_vec() }, Pending::Unsubscribe);
                 }
             }
             Command::StopPath { label } => {
@@ -852,57 +721,6 @@ impl ClientSession {
                 self.request(|id| Message::Unsub { id, sub }, Pending::ApiUnsub(sub));
             }
             Command::Close => self.close(out),
-        }
-    }
-
-    /// Uploads in batches within the item caps (entries, and replace items over them) and the
-    /// message size. An entry naming more than `MAX_ITEMS` replacements goes with its first
-    /// `MAX_ITEMS` (callers stay under it).
-    fn upload(&mut self, label: LabelId, entries: Vec<Entry>) {
-        let mut batch: Vec<Entry> = Vec::new();
-        let (mut used, mut replaces) = (0, 0);
-        for mut e in entries {
-            e.replaces.truncate(MAX_ITEMS);
-            let size = entry_size(&e);
-            if !batch.is_empty() && (batch.len() == MAX_ITEMS || replaces + e.replaces.len() > MAX_ITEMS || used + size > REPLY_BUDGET) {
-                self.upload_batch(label, std::mem::take(&mut batch));
-                (used, replaces) = (0, 0);
-            }
-            used += size;
-            replaces += e.replaces.len();
-            batch.push(e);
-        }
-        if !batch.is_empty() {
-            self.upload_batch(label, batch);
-        }
-    }
-
-    fn upload_batch(&mut self, label: LabelId, entries: Vec<Entry>) {
-        let ids = entries.iter().map(|e| osis_label::blob_id(&e.blob)).collect();
-        self.request(|id| Message::Upload { id, label, entries }, Pending::Upload(label, ids));
-    }
-
-    fn reconcile_send(&mut self, label: LabelId, out: &mut Vec<ClientOutput>) {
-        let mut batches = Vec::new();
-        let Some(rec) = self.recs.get_mut(&label) else { return };
-        while let Some(b) = rec.r.next_batch() {
-            batches.push(b);
-        }
-        rec.sent += batches.len();
-        let found = rec.r.need.len().saturating_add(rec.r.have.len());
-        if rec.sent > MAX_RECONCILE_MESSAGES || found > MAX_RECONCILE_IDS || rec.r.queued() > MAX_RECONCILE_QUEUED {
-            self.recs.remove(&label);
-            event(out, ClientEvent::Refused { label: Some(label), kind: Request::Reconcile, code: Code::REFUSED, fetch: Vec::new() });
-            return;
-        }
-        if rec.r.is_done() {
-            if let Some(rec) = self.recs.remove(&label) {
-                event(out, ClientEvent::Reconciled { label, need: rec.r.need.into_iter().collect(), have: rec.r.have.into_iter().collect() });
-            }
-            return;
-        }
-        for (token, ranges) in batches {
-            self.request(|id| Message::Reconcile { id, label, ranges }, Pending::Reconcile(label, token));
         }
     }
 
@@ -955,14 +773,6 @@ impl ClientSession {
         };
         match msg {
             Message::Ping { id, .. } => send(out, Message::Pong { id, wall_ms: now }),
-            Message::Push { label, events, cursor } => {
-                // while a Sync of the label runs (a replay above all) its pages still bring
-                // entries from before the push: keeping the push's cursor would skip them for
-                // good if the connection ended first; likewise while a reconciliation runs (the
-                // Sync from the kept cursor follows it)
-                let syncing = self.pending.values().any(|r| matches!(r.p, Pending::Sync { label: l, .. } | Pending::Reconcile(l, _) if l == label));
-                event(out, ClientEvent::Events { label, events, cursor: (!syncing).then_some(cursor) })
-            }
             Message::Notify { sub, payload } => {
                 let lapsed = payload == crate::api::Payload::Lapsed;
                 if let Some(Some(token)) = self.api_subs.get(&sub).copied() {
@@ -1003,17 +813,6 @@ impl ClientSession {
                     event(out, E::ClockOffset { offset_ms, diagnostic: offset_ms.unsigned_abs() > OFFSET_DIAGNOSTIC_MS });
                 }
             }
-            (Pending::Sync { label, entries, .. }, M::Error { code: code @ (Code::CURSOR_INVALID | Code::LOG_TRIMMED), .. }) => {
-                // The entries were not taken: send them on their own.
-                self.upload(label, entries);
-                event(out, E::NeedReconcile { label, trimmed: code == Code::LOG_TRIMMED });
-            }
-            (Pending::Reconcile(label, _), M::Error { code, .. }) => {
-                if self.recs.remove(&label).is_some() {
-                    event(out, E::Refused { label: Some(label), kind: Request::Reconcile, code, fetch: Vec::new() });
-                }
-            }
-            (Pending::Fetch(label, ids, _), M::Error { code, .. }) => event(out, E::Refused { label: Some(label), kind: Request::Fetch, code, fetch: ids }),
             (Pending::Api(token), M::Error { id, code }) => {
                 // a refused Sub's id is free; one unsubscribed meanwhile has nobody waiting
                 if self.api_subs.remove(&id) != Some(None) {
@@ -1035,9 +834,6 @@ impl ClientSession {
                     self.api_subs.remove(&sub);
                 }
             }
-            // an Error is no answer to a deposit (the host's store failed): refused for now, it goes
-            // again after a back-off, and the deposits paced behind it go on (`send_outbox`)
-            (Pending::Deposit(label, blob_id), M::Error { .. }) => event(out, E::Budget { label, blob_id, code: Code::RATE_LIMITED, budget: None }),
             (Pending::Prove, M::Proved { proofs, .. }) => {
                 // proved over this side's challenge and the key it dialed: a proof of any other
                 // connection, or the listener's relayed from one, does not verify
@@ -1059,63 +855,7 @@ impl ClientSession {
                     _ => {}
                 }
             }
-            (Pending::Upload(label, blob_ids), M::Status { codes, .. }) if codes.len() == blob_ids.len() => event(out, E::EntryStatus { label, blob_ids, codes }),
             (Pending::Delete(label, blob_ids), M::Status { codes, .. }) if codes.len() == blob_ids.len() => event(out, E::DeleteStatus { label, blob_ids, codes }),
-            (Pending::Subscribe(labels), M::Status { codes, .. }) if codes.len() == labels.len() => event(out, E::Subscribed { labels, codes }),
-            (Pending::Unsubscribe, M::Ok { .. }) => {}
-            (Pending::Deposit(label, blob_id), M::Budget { code, budget, .. }) => event(out, E::Budget { label, blob_id, code, budget }),
-            (Pending::Sync { label, cursor: asked, entries, inline_limit, max_reply, gained, empty }, M::SyncReply { events, want, codes, cursor, more, .. }) if codes.len() == entries.len() => {
-                if !entries.is_empty() {
-                    let blob_ids = entries.iter().map(|e| osis_label::blob_id(&e.blob)).collect();
-                    event(out, E::EntryStatus { label, blob_ids, codes });
-                }
-                let empty = if events.is_empty() { empty.saturating_add(1) } else { 0 };
-                // a page under a small cap may hold nothing: its first event did not fit
-                let whole = max_reply >= REPLY_BUDGET as u64;
-                let stuck = more && events.is_empty() && whole && (asked == Some(cursor) || empty >= MAX_EMPTY_PAGES);
-                event(out, E::Events { label, events, cursor: Some(cursor) });
-                // a Want answers the gained IDs this Sync listed, nothing else (spec/wire.md §11.2)
-                let asked_for: std::collections::BTreeSet<BlobId> = gained.into_iter().collect();
-                let n = want.len();
-                let want: Vec<BlobId> = want.into_iter().filter(|b| asked_for.contains(b)).collect();
-                if want.len() < n {
-                    event(out, E::PeerError(Error::Malformed("want names an ID the sync did not list")));
-                }
-                if !want.is_empty() {
-                    event(out, E::Want { label, ids: want });
-                }
-                if stuck {
-                    event(out, E::PeerError(Error::Malformed("sync page without progress")));
-                } else if more {
-                    let max_reply = REPLY_BUDGET as u64;
-                    let next = |id| Message::Sync { id, label, cursor: Some(cursor), inline_limit, max_reply, entries: vec![], gained: vec![] };
-                    self.request(next, Pending::Sync { label, cursor: Some(cursor), entries: vec![], inline_limit, max_reply, gained: vec![], empty });
-                } else {
-                    event(out, E::Synced { label });
-                }
-            }
-            (Pending::Reconcile(label, token), M::ReconcileReply { ranges, .. }) => {
-                if let Some(rec) = self.recs.get_mut(&label) {
-                    rec.r.on_reply(token, &rec.own, &ranges);
-                    self.reconcile_send(label, out);
-                }
-            }
-            (Pending::Fetch(label, ids, asked), M::FetchReply { items, .. }) => {
-                let n = items.len();
-                let consistent = n <= ids.len() && items.iter().zip(&ids).all(|(f, i)| f.blob_id == *i);
-                if !consistent {
-                    event(out, E::PeerError(Error::Malformed("fetch reply items")));
-                    return;
-                }
-                event(out, E::Fetched { label, items });
-                let rest: Vec<BlobId> = ids.get(n..).unwrap_or(&[]).to_vec();
-                let max_reply = REPLY_BUDGET as u64;
-                if (n > 0 || asked < max_reply) && !rest.is_empty() {
-                    self.request(|id| Message::Fetch { id, label, max_reply, ids: rest.clone() }, Pending::Fetch(label, rest.clone(), max_reply));
-                } else if !rest.is_empty() {
-                    event(out, E::Refused { label: Some(label), kind: Request::Fetch, code: Code::TOO_LARGE, fetch: rest });
-                }
-            }
             (_, _) => event(out, E::PeerError(Error::Malformed("reply of the wrong kind"))),
         }
     }

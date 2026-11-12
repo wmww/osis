@@ -51,7 +51,6 @@ generated! {
     sign_signatures => "sign/signatures",
     schema_core => "schema/core",
     proto_messages => "proto/messages",
-    proto_reconcile => "proto/reconcile",
     commit_headers => "commit/headers",
     blob_prefix => "blob/prefix",
     blob_blobs => "blob/blobs",

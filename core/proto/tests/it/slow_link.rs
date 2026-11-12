@@ -1,13 +1,14 @@
-//! A client against a host over a throttled link with the drivers' send queues (spec/sync.md
-//! §6: the request window, held pushes and the stall timeout): bulk uploads, fetches and pushes
-//! on a slow link finish on one connection, and neither side's queue outgrows `WINDOW_QUEUE`
-//! (`SEND_QUEUE` with pushes).
+//! A client against a listener over a throttled link with the drivers' send queues (spec/sync.md
+//! §6: the request window and the stall timeout): bulk deposits and fetches between nodes on a
+//! slow link finish on one connection, and neither side's queue outgrows `WINDOW_QUEUE`.
 
+use osis_base::BlobId;
 use osis_proto::client::{STALL_TIMEOUT_MS, WINDOW, WINDOW_QUEUE};
-use osis_proto::serving::SEND_QUEUE;
 use osis_proto::examples::{Label, blob_sized};
+use osis_proto::msg::{NODE_IDS, OfferItem};
+use osis_proto::serving::REPLY_BUDGET;
 use osis_proto::*;
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 
 const T0: u64 = 1_700_000_000_000;
 
@@ -60,6 +61,8 @@ struct Run {
     down: Pipe,
     timer: Option<u64>,
     events: Vec<ClientEvent>,
+    /// The listener's node: the blobs deposited with it.
+    held: HashMap<BlobId, Vec<u8>>,
 }
 
 impl Run {
@@ -68,12 +71,13 @@ impl Run {
             now: T0,
             client: ClientSession::new(ClientConfig { peer_static_key: [0x5e; 32], challenge: [0x80; 32] }),
             host: ServingSession::new(ServingConfig { static_key: [0x5e; 32], challenge: [0x40; 32] }),
-            store: MemoryLabelStore::new([9; 32]),
+            store: MemoryLabelStore::new(),
             // the node's `MAX_QUEUED` and the host's default `max_queued_bytes`
             up: Pipe::new(64 << 20),
             down: Pipe::new(64 << 20),
             timer: None,
             events: Vec::new(),
+            held: HashMap::new(),
         };
         let so = r.host.handle(T0, &mut r.store, ServingInput::Start);
         r.host_out(so);
@@ -98,14 +102,39 @@ impl Run {
                 ServingOutput::Send(b) => self.down.push(b, "host"),
                 ServingOutput::Close => panic!("host closed"),
                 ServingOutput::StoreError(e) => panic!("{e}"),
-                ServingOutput::Changed(_) | ServingOutput::Relay(_) | ServingOutput::PeerError(_) | ServingOutput::Request(_) | ServingOutput::Room { .. } | ServingOutput::Peer(_) => {}
+                // the listener's node answers its peer's requests at once
+                ServingOutput::Peer(m) => {
+                    let reply = self.answer(*m);
+                    let so = self.host.handle(self.now, &mut self.store, ServingInput::Peer(Box::new(reply)));
+                    self.host_out(so);
+                }
+                ServingOutput::PeerError(_) | ServingOutput::Request(_) | ServingOutput::Room { .. } => {}
             }
+        }
+    }
+
+    /// The listener's node: an Offer of deposits is held, a Fetch answered from what it holds.
+    fn answer(&mut self, m: Message) -> Message {
+        match m {
+            Message::Offer { id, items } => {
+                let codes = items
+                    .into_iter()
+                    .map(|i| {
+                        let OfferItem::Deposit { blob, .. } = i else { panic!("a deposit") };
+                        self.held.insert(osis_label::blob_id(&blob), blob);
+                        (Code::OK, None, None)
+                    })
+                    .collect();
+                Message::Shared { id, codes }
+            }
+            Message::Fetch { id, ids, .. } => Message::FetchReply { id, items: ids.into_iter().map(|blob_id| Fetched { blob_id, entry: self.held.get(&blob_id).map(|b| (b.clone(), [0; osis_crypto::WRAP_LEN], None)) }).collect() },
+            m => panic!("{m:?}"),
         }
     }
 
     /// Steps the link (`rate` bytes per direction per `step_ms`) until nothing is outstanding.
     fn settle(&mut self, rate: usize, step_ms: u64) {
-        while self.client.outstanding() > 0 || self.up.queued > 0 || self.down.queued > 0 || self.host.held() {
+        while self.client.outstanding() > 0 || self.client.in_flight() > 0 || self.client.unsent() > 0 || self.up.queued > 0 || self.down.queued > 0 {
             self.step(rate, step_ms);
         }
     }
@@ -133,30 +162,33 @@ impl Run {
         assert!(self.now - T0 < 1 << 40, "no end");
     }
 
-    fn command(&mut self, c: Command, rate: usize, step_ms: u64) -> Vec<ClientEvent> {
-        self.input(ClientInput::Command(c));
+    /// The node's own messages to the listener, sent as the window allows; the answers.
+    fn peer(&mut self, ms: Vec<Message>, rate: usize, step_ms: u64) -> Vec<Message> {
+        for m in ms {
+            self.input(ClientInput::Command(Command::Peer(Box::new(m))));
+        }
         self.settle(rate, step_ms);
-        std::mem::take(&mut self.events)
+        std::mem::take(&mut self.events).into_iter().filter_map(|e| if let ClientEvent::Peer(m) = e { Some(*m) } else { None }).collect()
     }
 }
 
-/// Uploads `n` blobs of `size` bytes over the link, fetches them back, all on one session.
+/// Deposits `n` blobs of `size` bytes with the listener over the link, one per Offer, and
+/// fetches them back, all on one session.
 fn round_trip(n: u64, size: usize, rate: usize, step_ms: u64) -> Run {
     let mut r = Run::new();
     let l = Label::new(1);
     r.settle(rate, step_ms);
-    r.command(Command::Register { label: l.id, step: l.steps[0].clone(), claim_set: Some(l.sets[0].clone()) }, rate, step_ms);
-    let ev = r.command(Command::Open { label: l.id, key: OpenKey::Sync { step: None, key: l.head_keys().sync.clone() } }, rate, step_ms);
-    assert!(ev.iter().any(|e| matches!(e, ClientEvent::Opened { .. })), "{ev:?}");
-    let entries: Vec<Entry> = (0..n).map(|i| l.entry(blob_sized(i, 0, vec![], size))).collect();
-    let ids: Vec<_> = entries.iter().map(|e| osis_label::blob_id(&e.blob)).collect();
+    let blobs: Vec<Vec<u8>> = (0..n).map(|i| blob_sized(i, 0, vec![], size)).collect();
+    let ids: Vec<BlobId> = blobs.iter().map(|b| osis_label::blob_id(b)).collect();
+    let offers = blobs.into_iter().zip(0u32..).map(|(b, k)| Message::Offer { id: NODE_IDS | k, items: vec![l.deposit(b, &l.head_keys().deposit)] }).collect();
     let started = r.now;
-    let ev = r.command(Command::Upload { label: l.id, entries }, rate, step_ms);
-    let codes: Vec<Code> = ev.iter().flat_map(|e| if let ClientEvent::EntryStatus { codes, .. } = e { codes.clone() } else { vec![] }).collect();
-    assert_eq!(codes, vec![Code::OK; n as usize], "{ev:?}");
-    assert!(r.now - started > 2 * STALL_TIMEOUT_MS, "the upload took longer than the stall timeout");
-    let ev = r.command(Command::Fetch { label: l.id, ids: ids.clone() }, rate, step_ms);
-    let got: Vec<_> = ev.iter().flat_map(|e| if let ClientEvent::Fetched { items, .. } = e { items.iter().filter(|f| f.entry.is_some()).map(|f| f.blob_id).collect() } else { vec![] }).collect();
+    let answers = r.peer(offers, rate, step_ms);
+    let codes: Vec<Code> = answers.iter().flat_map(|m| if let Message::Shared { codes, .. } = m { codes.iter().map(|c| c.0).collect() } else { vec![] }).collect();
+    assert_eq!(codes, vec![Code::OK; n as usize]);
+    assert!(r.now - started > 2 * STALL_TIMEOUT_MS, "the deposits took longer than the stall timeout");
+    let fetches = ids.iter().zip(1000u32..).map(|(id, k)| Message::Fetch { id: NODE_IDS | k, label: l.id, max_reply: REPLY_BUDGET as u64, ids: vec![*id] }).collect();
+    let answers = r.peer(fetches, rate, step_ms);
+    let got: Vec<BlobId> = answers.iter().flat_map(|m| if let Message::FetchReply { items, .. } = m { items.iter().filter(|f| f.entry.is_some()).map(|f| f.blob_id).collect() } else { vec![] }).collect();
     assert_eq!(got, ids);
     r
 }
@@ -186,9 +218,11 @@ fn window_holds_requests_back_spec_sync_6() {
     let l = Label::new(1);
     let sent = |out: &[ClientOutput]| out.iter().filter_map(|o| if let ClientOutput::Send(f) = o { Message::decode(&f[4..]).ok() } else { None }).collect::<Vec<_>>();
     // each Fetch may bring back a whole message
-    let ids: Vec<_> = (0..1024 * 4u32).map(|i| osis_label::blob_id(&i.to_le_bytes())).collect();
-    let out = c.handle(T0, ClientInput::Command(Command::Fetch { label: l.id, ids }));
-    let first = sent(&out);
+    let mut first = Vec::new();
+    for k in 0..4u32 {
+        let fetch = Message::Fetch { id: NODE_IDS | k, label: l.id, max_reply: REPLY_BUDGET as u64, ids: vec![osis_label::blob_id(&k.to_le_bytes())] };
+        first.extend(sent(&c.handle(T0, ClientInput::Command(Command::Peer(Box::new(fetch))))));
+    }
     assert_eq!(first.len(), 2, "two fetches fit the window (after the pings)");
     assert_eq!(c.unsent(), 2);
     assert!(c.in_flight() >= WINDOW);
@@ -196,54 +230,6 @@ fn window_holds_requests_back_spec_sync_6() {
     let out = c.handle(T0, ClientInput::Bytes(encode_frame(&Message::FetchReply { id, items: vec![] }.encode())));
     assert_eq!(sent(&out).len(), 1, "an answer makes room for the next");
     assert_eq!(c.unsent(), 1);
-}
-
-// spec/sync.md §6 (flow control): writers fill a label far faster than its subscriber's 640 KB/s
-// link; the host holds the pushes (continued from the subscription's position as the queue
-// drains, relay-only entries dropped meanwhile), so the queue stays within `SEND_QUEUE` and every
-// entry arrives by push on one connection (without `Taken` the first push overflows the cap)
-#[test]
-fn pushes_to_slow_subscriber_spec_sync_6() {
-    let (rate, step_ms) = (64_000, 100);
-    let mut r = Run::new();
-    let l = Label::new(1);
-    r.settle(rate, step_ms);
-    r.command(Command::Register { label: l.id, step: l.steps[0].clone(), claim_set: Some(l.sets[0].clone()) }, rate, step_ms);
-    r.command(Command::Open { label: l.id, key: OpenKey::Sync { step: None, key: l.head_keys().sync.clone() } }, rate, step_ms);
-    r.command(Command::Sync { label: l.id, cursor: None, inline_limit: 8 << 20, entries: vec![], gained: vec![] }, rate, step_ms);
-    r.command(Command::Subscribe { labels: vec![l.id] }, rate, step_ms);
-    // another connection uploads 72 MiB at once
-    let mut w = ServingSession::new(ServingConfig { static_key: [0x5e; 32], challenge: [0x41; 32] });
-    w.handle(r.now, &mut r.store, ServingInput::Start);
-    w.handle(r.now, &mut r.store, ServingInput::Bytes(encode_frame(&Hello::new(r.now, [7; 32]).encode())));
-    let mut ids = Vec::new();
-    for b in 0..9u32 {
-        let entries: Vec<Entry> = (0..2).map(|i| l.entry(blob_sized(u64::from(b * 2 + i), 0, vec![], 4 << 20))).collect();
-        ids.extend(entries.iter().map(|e| osis_label::blob_id(&e.blob)));
-        let out = w.handle(r.now, &mut r.store, ServingInput::Bytes(encode_frame(&Message::Upload { id: b + 1, label: l.id, entries }.encode())));
-        assert!(out.contains(&ServingOutput::Changed(l.id)));
-        let so = r.host.handle(r.now, &mut r.store, ServingInput::Changed(l.id));
-        r.host_out(so);
-    }
-    assert!(r.host.held());
-    // 8 MiB of pushes are unwritten: room for a small relay, not for one of 1 MiB
-    let relay = |n: usize| {
-        let e = l.entry(vec![1; n]);
-        ServingInput::Relay(Relayed { label: l.id, blob_id: osis_label::blob_id(&e.blob), blob: e.blob.into(), wrap: e.wrap, stamp: e.stamp })
-    };
-    assert!(r.host.handle(r.now, &mut r.store, relay(1 << 20)).is_empty(), "no room: the relay is dropped");
-    let so = r.host.handle(r.now, &mut r.store, relay(100));
-    assert_eq!(so.len(), 1);
-    r.host_out(so);
-    r.settle(rate, step_ms);
-    let got: Vec<_> = r
-        .events
-        .iter()
-        .flat_map(|e| if let ClientEvent::Events { events, .. } = e { events.clone() } else { vec![] })
-        .filter_map(|e| if let Event::Added { blob_id, blob: Some(b), .. } = e { (b.len() > 100).then_some(blob_id) } else { None })
-        .collect();
-    assert_eq!(got, ids);
-    assert!(r.down.max <= SEND_QUEUE, "{}", r.down.max);
 }
 
 // spec/sync.md §6: a request is unanswered while it waits for room in the window, however long
@@ -254,14 +240,18 @@ fn held_back_requests_count_unanswered_spec_sync_6() {
     c.handle(T0, ClientInput::Start);
     let l = Label::new(1);
     // given before the Hellos
-    c.handle(T0, ClientInput::Command(Command::Fetch { label: l.id, ids: vec![osis_label::blob_id(b"a")] }));
+    c.handle(T0, ClientInput::Command(Command::Path { label: l.id, after: None }));
     let first = c.commands();
     assert!(!c.answered(first));
     let sent = |out: &[ClientOutput]| out.iter().filter_map(|o| if let ClientOutput::Send(f) = o { Message::decode(&f[4..]).ok() } else { None }).collect::<Vec<_>>();
     let mut pending: VecDeque<Message> = VecDeque::new();
     pending.extend(sent(&c.handle(T0, ClientInput::Bytes(encode_frame(&Hello::new(T0, [3; 32]).encode())))));
-    let ids: Vec<_> = (0..1024 * 4u32).map(|i| osis_label::blob_id(&i.to_le_bytes())).collect();
-    pending.extend(sent(&c.handle(T0, ClientInput::Command(Command::Fetch { label: l.id, ids }))));
+    // the node's Fetches fill the window; a command made after them waits behind them
+    for k in 0..4u32 {
+        let fetch = Message::Fetch { id: NODE_IDS | k, label: l.id, max_reply: REPLY_BUDGET as u64, ids: vec![osis_label::blob_id(&k.to_le_bytes())] };
+        pending.extend(sent(&c.handle(T0, ClientInput::Command(Command::Peer(Box::new(fetch))))));
+    }
+    pending.extend(sent(&c.handle(T0, ClientInput::Command(Command::Path { label: l.id, after: None }))));
     let big = c.commands();
     assert!(c.unsent() > 0);
     // answer every request sent, an hour later each time, until the queue drains
@@ -273,6 +263,7 @@ fn held_back_requests_count_unanswered_spec_sync_6() {
         let reply = match m {
             Message::Fetch { id, .. } => Message::FetchReply { id, items: vec![] },
             Message::Ping { id, .. } => Message::Pong { id, wall_ms: now },
+            Message::Path { id, .. } => Message::Error { id, code: Code::REFUSED },
             _ => continue,
         };
         let out = c.handle(now, ClientInput::Bytes(encode_frame(&reply.encode())));
@@ -281,109 +272,4 @@ fn held_back_requests_count_unanswered_spec_sync_6() {
     }
     assert!(answered_first);
     assert!(c.answered(big) && c.unsent() == 0);
-}
-
-/// Another connection on `r`'s store, past its Hellos.
-fn writer(r: &mut Run) -> ServingSession {
-    let mut w = ServingSession::new(ServingConfig { static_key: [0x5e; 32], challenge: [0x41; 32] });
-    w.handle(r.now, &mut r.store, ServingInput::Start);
-    w.handle(r.now, &mut r.store, ServingInput::Bytes(encode_frame(&Hello::new(r.now, [7; 32]).encode())));
-    w
-}
-
-/// Registers, opens, syncs and subscribes `labels` on `r`'s session.
-fn subscribe(r: &mut Run, labels: &[&Label], rate: usize, step_ms: u64) {
-    r.settle(rate, step_ms);
-    for l in labels {
-        r.command(Command::Register { label: l.id, step: l.steps[0].clone(), claim_set: Some(l.sets[0].clone()) }, rate, step_ms);
-        r.command(Command::Open { label: l.id, key: OpenKey::Sync { step: None, key: l.head_keys().sync.clone() } }, rate, step_ms);
-        r.command(Command::Sync { label: l.id, cursor: None, inline_limit: 8 << 20, entries: vec![], gained: vec![] }, rate, step_ms);
-    }
-    r.command(Command::Subscribe { labels: labels.iter().map(|l| l.id).collect() }, rate, step_ms);
-    r.events.clear();
-}
-
-/// Uploads `e` under `l` on `w` and tells `r`'s connection (as the hub does).
-fn upload(r: &mut Run, w: &mut ServingSession, id: u32, l: &Label, e: Entry) {
-    let out = w.handle(r.now, &mut r.store, ServingInput::Bytes(encode_frame(&Message::Upload { id, label: l.id, entries: vec![e] }.encode())));
-    assert!(out.contains(&ServingOutput::Changed(l.id)));
-    let so = r.host.handle(r.now, &mut r.store, ServingInput::Changed(l.id));
-    r.host_out(so);
-}
-
-/// The added blob IDs pushed to `r`'s client under `l`, in order.
-fn pushed(r: &Run, l: &Label) -> Vec<osis_base::BlobId> {
-    r.events
-        .iter()
-        .flat_map(|e| if let ClientEvent::Events { label, events, .. } = e { if *label == l.id { events.clone() } else { vec![] } } else { vec![] })
-        .filter_map(|e| if let Event::Added { blob_id, .. } = e { Some(blob_id) } else { None })
-        .collect()
-}
-
-// spec/sync.md §6: held pushes go in turn: a label written faster than the subscriber's link
-// does not keep another label's entry back until its writers stop
-#[test]
-fn held_pushes_take_turns_spec_sync_6() {
-    let (rate, step_ms) = (64_000, 100);
-    let mut r = Run::new();
-    let (a, b) = (Label::new(1), Label::new(2));
-    // the busy label sorts first
-    let (busy, quiet) = if a.id < b.id { (a, b) } else { (b, a) };
-    subscribe(&mut r, &[&busy, &quiet], rate, step_ms);
-    let mut w = writer(&mut r);
-    let mut quiet_id = None;
-    // 1 MiB under the busy label every step (16x the link) for 60 s
-    for i in 0..600u32 {
-        upload(&mut r, &mut w, i + 1, &busy, busy.entry(blob_sized(u64::from(i), 0, vec![], 1 << 20)));
-        if i == 20 {
-            let e = quiet.entry(blob_sized(1 << 20, 0, vec![], 1 << 20));
-            quiet_id = Some(osis_label::blob_id(&e.blob));
-            upload(&mut r, &mut w, 10_000, &quiet, e);
-        }
-        r.step(rate, step_ms);
-    }
-    assert_eq!(pushed(&r, &quiet), vec![quiet_id.unwrap()], "the quiet label's entry arrived while the busy one was still written");
-    assert!(r.down.max <= SEND_QUEUE, "{}", r.down.max);
-}
-
-// spec/sync.md §6: held pushes resumed from the subscription's position deliver what unheld ones
-// would: random writes under several labels, random link rates; every entry arrives once, in log
-// order, and the queue stays within `SEND_QUEUE`
-#[test]
-fn held_pushes_deliver_everything_in_order_spec_sync_6() {
-    for seed in 0..6u64 {
-        let mut x = seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1;
-        let mut rnd = |n: u64| {
-            x ^= x << 13;
-            x ^= x >> 7;
-            x ^= x << 17;
-            x % n
-        };
-        let rate = 8_000 + rnd(120_000) as usize;
-        let step_ms = 100;
-        let mut r = Run::new();
-        let labels: Vec<Label> = (0..1 + rnd(3)).map(|i| Label::new(i as u8 + 1)).collect();
-        subscribe(&mut r, &labels.iter().collect::<Vec<_>>(), rate, step_ms);
-        let mut w = writer(&mut r);
-        let mut want = vec![Vec::new(); labels.len()];
-        let mut n = 0u64;
-        for _ in 0..40 {
-            for _ in 0..rnd(4) {
-                let k = rnd(labels.len() as u64) as usize;
-                let size = if rnd(4) == 0 { 1 + rnd(2 << 20) } else { 1 + rnd(20_000) } as usize;
-                let e = labels[k].entry(blob_sized(n, 0, vec![], size));
-                want[k].push(osis_label::blob_id(&e.blob));
-                n += 1;
-                upload(&mut r, &mut w, n as u32, &labels[k], e);
-            }
-            for _ in 0..rnd(30) {
-                r.step(rate, step_ms);
-            }
-        }
-        r.settle(rate, step_ms);
-        for (k, l) in labels.iter().enumerate() {
-            assert_eq!(pushed(&r, l), want[k], "seed {seed} label {k}");
-        }
-        assert!(r.down.max <= SEND_QUEUE, "seed {seed}: {}", r.down.max);
-    }
 }

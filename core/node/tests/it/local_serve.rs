@@ -1214,7 +1214,7 @@ fn an_unopened_row_another_wrote_leaves_the_serving_node_at_its_expiry_spec_sync
     let mut blob = osis_label::Prefix::for_groups([5; 16], &[6; 16], Some(WallMs(t)), &[]).unwrap().to_bytes();
     blob.extend_from_slice(&[9; 64]);
     let id = osis_label::blob_id(&blob);
-    let put = osis_proto::Put { blob_id: id, blob: &blob, wrap: [7; osis_crypto::WRAP_LEN], stamp: None, expiry: Some(t), ephemeral: false, replaces: &[], now: net.now(), role: false };
+    let put = osis_proto::Put { blob_id: id, blob: &blob, wrap: [7; osis_crypto::WRAP_LEN], stamp: None, expiry: Some(t), ephemeral: false, now: net.now(), role: false };
     osis_proto::LabelStore::put(&mut *net.sync(a).hub_store().lock().unwrap(), &l, put).unwrap();
     net.feed(a, Event::Hub { ups: Vec::new() });
     net.run();

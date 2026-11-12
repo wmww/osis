@@ -1493,7 +1493,7 @@ fn demoted_writers_refused_writes_take_no_deposit_budget_spec_sync_5() {
     let (mut net, host, [a, b], g, [t]) = hosted::<2, 1>(&[(1, Role::Write)], ["t"], true);
     net.advance(15_000);
     let l = net.label(a);
-    let before = osis_proto::LabelStore::budget(&*net.hosts[host].hub.store(), &l).unwrap();
+    let before = net.deposit_room(host, &l);
     let tb = net.tid(b);
     let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
     let d = osis_node::flows::Demotion { holder: tb, new: Some(edge), retain: None };
@@ -1508,7 +1508,7 @@ fn demoted_writers_refused_writes_take_no_deposit_budget_spec_sync_5() {
         net.advance(15_000);
     }
     assert_eq!(net.read(a, t), Some(s("t")));
-    assert_eq!(osis_proto::LabelStore::budget(&*net.hosts[host].hub.store(), &l).unwrap(), before);
+    assert_eq!(net.deposit_room(host, &l), before);
 }
 
 

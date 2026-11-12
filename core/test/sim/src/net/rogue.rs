@@ -1,15 +1,16 @@
 //! Hand-driven client sessions (adversaries): an osis-proto `ClientSession` connected straight to
 //! a host's `Hub`, its requests and the replies exchanged synchronously, no faults. Whatever
-//! keys, blobs, wraps and stamps the scenario builds go on the wire as they are: a removed
-//! holder's stale steps and replays, malformed blobs, deposit floods.
+//! keys and steps the scenario builds go on the wire as they are: a removed holder's stale opens
+//! and steps, frames that are no message. Entries a hostile writer would serve the host go in
+//! the host's store by the store's rules (`host_put`).
 
 use super::{End, NetSim, Party, Payload};
 use crate::harness::Res;
-use osis_base::{LabelId, Tid};
-use osis_crypto::{Secret32, SigningSecret};
+use osis_base::{BlobId, LabelId, Tid};
+use osis_crypto::Secret32;
 use osis_label::Step;
 use osis_node::labeling::HeadKeys;
-use osis_proto::{ClientConfig, ClientEvent, ClientInput, ClientOutput, ClientSession, Command, LabelStore};
+use osis_proto::{ClientConfig, ClientEvent, ClientInput, ClientOutput, ClientSession, Code, Command, LabelStore, Put};
 use osis_host::HubOutput;
 use std::collections::VecDeque;
 
@@ -34,7 +35,14 @@ pub struct LabelKeys {
     pub keys: HeadKeys,
     /// Newest read secret held (wraps).
     pub read: Option<Secret32>,
-    pub deposit: Option<SigningSecret>,
+}
+
+/// An entry a writer stamped: blob, wrap and stamp.
+pub struct Stamped {
+    pub id: BlobId,
+    pub blob: Vec<u8>,
+    pub wrap: [u8; osis_crypto::WRAP_LEN],
+    pub stamp: osis_crypto::Signature,
 }
 
 impl NetSim {
@@ -80,6 +88,19 @@ impl NetSim {
             return Err(self.fail(format!("rogue session at host {s} not ready: {:?}", r.events)));
         }
         Ok(r)
+    }
+
+    /// A stamped entry of `label` in host `s`'s store as its pull from the writer would take it
+    /// (the store's rules); its node sync then serves it. The store's code.
+    pub fn host_put(&mut self, s: usize, label: LabelId, e: &Stamped) -> Res<Code> {
+        let now = self.now();
+        let hub = self.hub(s).ok_or_else(|| self.fail(format!("host {s} is down")))?;
+        let put = Put { blob_id: e.id, blob: &e.blob, wrap: e.wrap, stamp: Some(e.stamp), expiry: None, ephemeral: false, now, role: false };
+        let code = hub.store().put(&label, put);
+        let code = code.map_err(|x| self.fail(format!("host {s} put: {x}")))?;
+        self.note(format!("host {s} took {:?} by hand: {code:?}", e.id));
+        self.host_feed(s, osis_node::sync::Event::Local)?;
+        Ok(code)
     }
 
     /// Sends one command; returns the events it caused.
@@ -170,8 +191,7 @@ impl NetSim {
         let keys = self.engine(n)?.head_keys(g, gl.index, &head);
         let keys = keys.map_err(|x| self.fail(format!("head keys: {x}")))?;
         let read = self.engine(n)?.epochs(g).and_then(|x| x.read.newest_held().map(|y| y.1.clone()));
-        let deposit = keys.deposit.clone();
-        Ok(LabelKeys { g: *g, label: gl.id, head, keys, read, deposit })
+        Ok(LabelKeys { g: *g, label: gl.id, head, keys, read })
     }
 
     /// Whether node `n` may reach host `s`.

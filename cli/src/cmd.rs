@@ -1470,9 +1470,6 @@ fn set_serving(ctx: &mut Ctx<'_>, f: ServingFlags) -> anyhow::Result<()> {
             h.admitted.extend(sync_ids(ctx, &l)?);
         }
     }
-    if let Some(v) = given(&f.replicate) {
-        h.replicate = peers(ctx, &v)?;
-    }
     if let Some(v) = given(&f.policy) {
         h.policy = osis::ServingPolicy::default();
         for p in v {
@@ -1522,7 +1519,7 @@ fn clients(ctx: &mut Ctx<'_>, c: &ClientsCmd) -> anyhow::Result<()> {
     }
 }
 
-/// The terms of serving as lines (`admit listed|open`, `admitted ID`, `replicate ADDR`, `policy NAME N`,
+/// The terms of serving as lines (`admit listed|open`, `admitted ID`, `policy NAME N`,
 /// `cap ID ENTRIES BYTES`) or one JSON object; exit 3 when not serving.
 fn serving_show(ctx: &mut Ctx<'_>) -> anyhow::Result<()> {
     let h = ctx.db.serving()?.ok_or_else(|| exit(3, "not serving"))?;
@@ -1532,14 +1529,12 @@ fn serving_show(ctx: &mut Ctx<'_>) -> anyhow::Result<()> {
     };
     let mut lines = vec![format!("admit {admit}")];
     lines.extend(h.admitted.iter().map(|l| format!("admitted {l}")));
-    lines.extend(h.replicate.iter().map(|a| format!("replicate {a}")));
     let knobs = policy_lines(&h.policy);
     lines.extend(knobs.iter().map(|(k, n)| format!("policy {k} {n}")));
     lines.extend(h.caps.iter().map(|(l, c)| format!("cap {l} {} {}", c.entries, c.bytes)));
     let j = J::obj([
         ("admit", J::str(admit)),
         ("admitted", J::Arr(h.admitted.iter().map(|l| J::str(l.to_string())).collect())),
-        ("replicate", J::Arr(h.replicate.iter().map(|a| J::str(a.to_string())).collect())),
         ("policy", J::Obj(knobs.iter().map(|(k, n)| (k.clone(), J::int(*n))).collect())),
         ("caps", J::Obj(h.caps.iter().map(|(l, c)| (l.to_string(), J::obj([("entries", J::int(c.entries)), ("bytes", J::int(c.bytes))]))).collect())),
     ]);

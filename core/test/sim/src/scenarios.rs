@@ -64,7 +64,6 @@ pub const SCENARIOS: &[(&str, Scenario)] = &[
     ("evil_host_drops", adversary::evil_host_drops),
     ("removed_replayer", adversary::removed_replayer),
     ("malformed_blobs", adversary::malformed_blobs),
-    ("deposit_flood", adversary::deposit_flood),
     ("equivocating_writer", adversary::equivocating_writer),
     ("tombstone_liar", adversary::tombstone_liar),
     ("future_format", skew::future_format),

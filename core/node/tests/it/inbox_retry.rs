@@ -267,12 +267,12 @@ fn two_accounts() -> (Net, usize, usize, usize, osis_base::Tid, osis_base::Tid) 
 
 /// Fills the deposit budget of `l` at the host with what nobody opens, but for `spare` slots.
 fn fill_budget(net: &mut Net, host: usize, l: &osis_base::LabelId, spare: u64) -> Vec<osis_base::BlobId> {
-    let left = osis_proto::LabelStore::budget(&*net.hosts[host].hub.store(), l).unwrap().entries_left;
+    let left = net.deposit_room(host, l).0;
     let mut junk = Vec::new();
     for i in 0..left - spare {
         let blob = [&i.to_be_bytes()[..], &[0; 24]].concat();
         let id = osis_label::blob_id(&blob);
-        let put = osis_proto::Put { blob_id: id, blob: &blob, wrap: [7; osis_crypto::WRAP_LEN], stamp: None, expiry: None, ephemeral: false, replaces: &[], now: 0, role: false };
+        let put = osis_proto::Put { blob_id: id, blob: &blob, wrap: [7; osis_crypto::WRAP_LEN], stamp: None, expiry: None, ephemeral: false, now: 0, role: false };
         osis_proto::LabelStore::put(&mut *net.hosts[host].hub.store(), l, put).unwrap();
         junk.push(id);
     }
@@ -324,8 +324,7 @@ fn taken_deposit_ends_the_back_off_of_others_spec_sync_5() {
 
 /// What is left of the deposit budget of `l` at the host: (entries, bytes).
 fn budget_left(net: &mut Net, host: usize, l: &osis_base::LabelId) -> (u64, u64) {
-    let b = osis_proto::LabelStore::budget(&*net.hosts[host].hub.store(), l).unwrap();
-    (b.entries_left, b.bytes_left)
+    net.deposit_room(host, l)
 }
 
 // spec/sync.md §5: junk with no expiry fills an inbox's budget while its account is away; the grants refused meanwhile get through once a node of hers comes back, and what she does not clear leaves the rest of the budget free
@@ -362,7 +361,7 @@ fn stranger_fill_in_bytes_ends_with_a_pass_spec_sync_5() {
         // what a host takes: a well-formed prefix, then anything
         let mut blob = osis_label::Prefix::new([i; 16], None, Vec::new()).unwrap().to_bytes();
         blob.resize(size, 0);
-        let put = osis_proto::Put { blob_id: osis_label::blob_id(&blob), blob: &blob, wrap: [7; osis_crypto::WRAP_LEN], stamp: None, expiry: None, ephemeral: false, replaces: &[], now: 0, role: false };
+        let put = osis_proto::Put { blob_id: osis_label::blob_id(&blob), blob: &blob, wrap: [7; osis_crypto::WRAP_LEN], stamp: None, expiry: None, ephemeral: false, now: 0, role: false };
         osis_proto::LabelStore::put(&mut *net.hosts[host].hub.store(), &home, put).unwrap();
         i += 1;
     }
@@ -403,7 +402,7 @@ fn junk_under_any_label_goes_down_to_the_cap_spec_sync_5() {
     net.set_online(a, false);
     for id in &junk {
         let blob = net.engine(a).blob(id).unwrap().unwrap();
-        let put = osis_proto::Put { blob_id: *id, blob: &blob, wrap: [7; osis_crypto::WRAP_LEN], stamp: None, expiry: None, ephemeral: false, replaces: &[], now: 0, role: false };
+        let put = osis_proto::Put { blob_id: *id, blob: &blob, wrap: [7; osis_crypto::WRAP_LEN], stamp: None, expiry: None, ephemeral: false, now: 0, role: false };
         assert_eq!(osis_proto::LabelStore::put(&mut *net.hosts[host].hub.store(), &l, put).unwrap(), osis_proto::Code::OK);
     }
     net.set_online(a, true);
@@ -492,7 +491,7 @@ fn a_readers_invalid_fill_ends_with_an_admin_pass_spec_sync_5() {
     // b writes before it hears of its demotion: no peer takes them (none pulls b's store),
     // stamped under a write key the demotion's step supersedes
     net.unpulled.insert(b);
-    let room = osis_proto::LabelStore::budget(&*net.hosts[host].hub.store(), &l).unwrap().entries_left;
+    let room = net.deposit_room(host, &l).0;
     let done = net.engine(a).demote(&g, &d).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
@@ -514,7 +513,7 @@ fn a_readers_invalid_fill_ends_with_an_admin_pass_spec_sync_5() {
     let mut filled = 0;
     {
         for (id, wrap, blob) in sealed {
-            let put = osis_proto::Put { blob_id: id, blob: &blob, wrap, stamp: None, expiry: None, ephemeral: false, replaces: &[], now: net.now(), role: false };
+            let put = osis_proto::Put { blob_id: id, blob: &blob, wrap, stamp: None, expiry: None, ephemeral: false, now: net.now(), role: false };
             if osis_proto::LabelStore::put(&mut *net.hosts[host].hub.store(), &l, put).unwrap() == osis_proto::Code::OK {
                 filled += 1;
             }

@@ -2,10 +2,10 @@
 //! over `HostStore` on a `MemoryBackend`) exchanging proto bytes engine to engine, no tokio
 //! (notes/architecture.md §2). Connections are ordered byte streams: a fault cuts one (a lost
 //! message on a stream is a broken stream), delays what is sent (per-stream order kept, streams
-//! overtaking each other) or duplicates a message. Partitions block (node, host) and (host,
-//! host) pairs; nodes and hosts crash (now, or at a durable write) and restart over their
-//! durable state; a host may lose its data; a node may lose its disk.
-//! Hosts replicate to their peers (push).
+//! overtaking each other) or duplicates a message. Partitions block (node, host) pairs (and
+//! node pairs over peer links); nodes and hosts crash (now, or at a durable write) and restart
+//! over their durable state; a host may lose its data; a node may lose its disk. Two hosts never
+//! connect: data crosses between them only through a reader connected to both.
 //!
 //! No roll depends on what was sent, so in compared runs (`work_sets`) a message more or less
 //! moves nothing else: each step has its own `Dice`; the network runs on its own clock (`net`),
@@ -118,8 +118,9 @@ pub fn with_other_stream<T>(f: impl FnOnce() -> T) -> T {
     r
 }
 
-/// When each upload, deposit and registration first reached each host, and when a delete took
-/// its last copy of a commit: (host, label, what, 'U', 'P', 'R' or 'G') -> virtual ms
+/// When each entry's bytes (in an Added event or a Fetch reply), deposit and registration first
+/// reached each host, and when a delete took its last copy of a commit: (host, label, what, 'U',
+/// 'P', 'R' or 'G') -> virtual ms
 /// (`with_arrivals`). What: a commit blob by its commit and parts, a step by its ID, anything else
 /// by its size: a blob's ID is the luck of when its sealing drew from the node's random stream.
 /// Not each delete: which copies of a commit go, and how many, is that luck too; a 'G' has no label.
@@ -141,7 +142,7 @@ fn compared() -> bool {
     ARRIVALS.with(|a| a.borrow().is_some())
 }
 
-fn note_arrivals(names: &BTreeMap<osis_base::BlobId, Vec<u8>>, s: usize, at: u64, bytes: &[u8]) {
+fn note_arrivals(names: &BTreeMap<osis_base::BlobId, (LabelId, Vec<u8>)>, s: usize, at: u64, bytes: &[u8]) {
     use osis_proto::Message as M;
     ARRIVALS.with(|a| {
         let mut a = a.borrow_mut();
@@ -152,14 +153,31 @@ fn note_arrivals(names: &BTreeMap<osis_base::BlobId, Vec<u8>>, s: usize, at: u64
             let mut add = |l: LabelId, id: Vec<u8>, op: char| {
                 a.entry((s, l, id, op)).or_insert(at);
             };
-            let name = |id: osis_base::BlobId, size: usize| names.get(&id).cloned().unwrap_or_else(|| size.to_le_bytes().to_vec());
-            match M::decode(&f) {
-                Ok(M::Upload { label, entries, .. } | M::Sync { label, entries, .. }) => {
-                    for e in entries {
-                        add(label, name(osis_label::blob_id(&e.blob), e.blob.len()), 'U');
+            let name = |id: &osis_base::BlobId, size: usize| names.get(id).map(|x| x.1.clone()).unwrap_or_else(|| size.to_le_bytes().to_vec());
+            let added = |a: &mut dyn FnMut(LabelId, Vec<u8>, char), events: Vec<(LabelId, osis_proto::Event)>| {
+                for (l, e) in events {
+                    if let osis_proto::Event::Added { blob_id, blob: Some(b), .. } = e {
+                        a(l, name(&blob_id, b.len()), 'U');
                     }
                 }
-                Ok(M::Deposit { label, blob, .. }) => add(label, name(osis_label::blob_id(&blob), blob.len()), 'P'),
+            };
+            match M::decode(&f) {
+                Ok(M::Stream(st)) => added(&mut add, st.events),
+                Ok(M::PullReply(r)) => added(&mut add, r.events),
+                // a reply names no label: the one the blob was shown under
+                Ok(M::FetchReply { items, .. }) => {
+                    for (i, (b, ..)) in items.iter().filter_map(|i| i.entry.as_ref().map(|e| (i, e))) {
+                        let l = names.get(&i.blob_id).map_or(LabelId([0; 16]), |x| x.0);
+                        add(l, name(&i.blob_id, b.len()), 'U');
+                    }
+                }
+                Ok(M::Offer { items, .. }) => {
+                    for i in items {
+                        if let osis_proto::msg::OfferItem::Deposit { label, blob, .. } = i {
+                            add(label, name(&osis_label::blob_id(&blob), blob.len()), 'P');
+                        }
+                    }
+                }
                 Ok(M::Register { label, step, .. }) => add(label, step.id().0.to_vec(), 'R'),
                 _ => {}
             }
@@ -225,8 +243,6 @@ pub struct NetHost {
     pub faults: Faults,
     pub key: [u8; 32],
     pub address: Address,
-    /// Hosts it replicates to.
-    pub peers: Vec<usize>,
     pub up: bool,
     /// A dishonest host: what it does to its outgoing messages.
     pub evil: Option<Evil>,
@@ -372,7 +388,7 @@ pub struct NetSim {
     /// Held-back messages of evil hosts per connection.
     held: BTreeMap<(usize, u64), Vec<u8>>,
     /// What a commit blob is, when noting arrivals (`Arrivals`), from what senders held.
-    names: BTreeMap<osis_base::BlobId, Vec<u8>>,
+    names: BTreeMap<osis_base::BlobId, (LabelId, Vec<u8>)>,
     /// Blobs whose entries nodes show peers (Added events, Deposit items, Fetch replies) are
     /// counted in `sent_watched` (adversaries).
     pub watched: BTreeSet<osis_base::BlobId>,
@@ -409,12 +425,14 @@ fn frames(b: &[u8]) -> String {
     let mut v = Vec::new();
     while let Ok(Some(f)) = d.next_frame() {
         let s = match osis_proto::Message::decode(&f) {
-            // uploads by blob ID and class
-            Ok(osis_proto::Message::Upload { label, entries, .. }) => {
-                let es: Vec<String> = entries.iter().map(|e| format!("{:?} {:?} {} B", osis_label::blob_id(&e.blob), osis_label::Prefix::parse(&e.blob).map(|p| p.class()), e.blob.len())).collect();
-                format!("Upload {label:?} {es:?}")
+            // fetched entries by blob ID and class
+            Ok(osis_proto::Message::FetchReply { id, items }) => {
+                let es: Vec<String> = items.iter().map(|i| match &i.entry {
+                    Some((b, ..)) => format!("{:?} {:?} {} B", i.blob_id, osis_label::Prefix::parse(b).map(|p| p.class()), b.len()),
+                    None => format!("{:?} none", i.blob_id),
+                }).collect();
+                format!("FetchReply {id} {es:?}")
             }
-            Ok(osis_proto::Message::Deposit { id, label, blob, .. }) => format!("Deposit {id} {label:?} {:?} {:?} {} B", osis_label::blob_id(&blob), osis_label::Prefix::parse(&blob).map(|p| p.class()), blob.len()),
             // stream events by blob ID: Added (+, `s` stamped, `b` with its bytes), Deleted (-), a new head
             Ok(osis_proto::Message::Stream(st)) => format!("Stream {}", events(&st.events)),
             Ok(osis_proto::Message::PullReply(r)) => format!("PullReply {} more {} {}", r.id, r.more, events(&r.events)),
@@ -628,7 +646,6 @@ impl NetSim {
                     faults: h.faults.test_copy(),
                     key: h.key,
                     address: h.address.clone(),
-                    peers: h.peers.clone(),
                     up: h.up,
                     evil: h.evil,
                     sent: h.sent.clone(),
@@ -714,7 +731,7 @@ impl NetSim {
         let key = host_key(i);
         let faults = Faults::new();
         let (backend, root) = (MemoryBackend::with_faults(faults.clone()), MemoryRoot::with_faults(faults.clone()));
-        self.hosts.push(NetHost { hub: None, sync: None, engine_disk: (MemoryBackend::new(), MemoryRoot::new(), false), wake: None, backend, root, faults, key, address: Address { url: format!("quic://host{i}:1"), key }, peers: Vec::new(), up: false, evil: None, sent: BTreeMap::new(), policy, slow: false });
+        self.hosts.push(NetHost { hub: None, sync: None, engine_disk: (MemoryBackend::new(), MemoryRoot::new(), false), wake: None, backend, root, faults, key, address: Address { url: format!("quic://host{i}:1"), key }, up: false, evil: None, sent: BTreeMap::new(), policy, slow: false });
         self.start_host(i)?;
         Ok(i)
     }
@@ -778,13 +795,6 @@ impl NetSim {
                 _ => {}
             }
         }
-        Ok(())
-    }
-
-    /// Host `a` replicates to `b` and back.
-    pub fn replicate(&mut self, a: usize, b: usize) -> Res<()> {
-        self.host(a)?.peers.push(b);
-        self.host(b)?.peers.push(a);
         Ok(())
     }
 
@@ -977,7 +987,7 @@ impl NetSim {
         Ok(())
     }
 
-    /// A host just took `bytes`: what they delete of which it now holds no copy under any label
+    /// A host just took `bytes`: what they delete (a Delete, Deleted events) of which it now holds no copy under any label
     /// goes in `Arrivals` as 'G', when a delete took effect, whichever copy went last.
     fn note_gone(&self, s: usize, bytes: &[u8]) {
         use osis_proto::{LabelStore, Message as M};
@@ -988,14 +998,16 @@ impl NetSim {
         let mut d = osis_proto::FrameDecoder::default();
         d.push(bytes);
         while let Ok(Some(f)) = d.next_frame() {
-            let items: Vec<_> = match M::decode(&f) {
-                Ok(M::Delete { items, .. }) => items,
-                Ok(M::Upload { entries, .. }) => entries.into_iter().flat_map(|e| e.replaces).collect(),
+            let deleted = |events: Vec<(LabelId, osis_proto::Event)>| events.into_iter().filter_map(|(_, e)| if let osis_proto::Event::Deleted(b) = e { Some(b) } else { None }).collect();
+            let items: Vec<osis_base::BlobId> = match M::decode(&f) {
+                Ok(M::Delete { items, .. }) => items.into_iter().map(|i| i.blob).collect(),
+                Ok(M::Stream(st)) => deleted(st.events),
+                Ok(M::PullReply(r)) => deleted(r.events),
                 _ => continue,
             };
-            for name in items.iter().filter_map(|i| self.names.get(&i.blob)) {
+            for name in items.iter().filter_map(|b| self.names.get(b).map(|x| &x.1)) {
                 let labels = hub.store().labels_after(None, 4096).unwrap_or_default();
-                let held = labels.into_iter().any(|l| hub.store().live_ids(&l).unwrap_or_default().iter().any(|b| self.names.get(b) == Some(name)));
+                let held = labels.into_iter().any(|l| hub.store().live_ids(&l).unwrap_or_default().iter().any(|b| self.names.get(b).map(|x| &x.1) == Some(name)));
                 if !held {
                     ARRIVALS.with(|a| {
                         if let Some(a) = a.borrow_mut().as_mut() {
@@ -1007,20 +1019,15 @@ impl NetSim {
         }
     }
 
-    /// Names the commit blobs among what node `n` is sending (`Arrivals`), from its entries.
+    /// Names the commit blobs of the labels whose entries node `n` is showing (`Arrivals`), from
+    /// its entries, with the label (a Fetch reply names none).
     fn note_names(&mut self, n: usize, bytes: &[u8]) {
-        use osis_proto::Message as M;
         let Some(s) = self.nodes.get(n).and_then(|x| x.sync.as_ref()) else { return };
-        let mut d = osis_proto::FrameDecoder::default();
-        d.push(bytes);
-        while let Ok(Some(f)) = d.next_frame() {
-            let label = match M::decode(&f) {
-                Ok(M::Upload { label, .. } | M::Deposit { label, .. }) => label,
-                _ => continue,
-            };
+        let labels: BTreeSet<LabelId> = shown_in(bytes).into_iter().filter_map(|(l, _)| l).collect();
+        for label in labels {
             for (b, k) in s.entries(&label) {
                 if let osis_node::sync::EntryKind::Commit { commit, parts, .. } = k {
-                    self.names.insert(b, format!("{commit:?} {parts:?}").into_bytes());
+                    self.names.insert(b, (label, format!("{commit:?} {parts:?}").into_bytes()));
                 }
             }
         }
@@ -1510,7 +1517,7 @@ impl NetSim {
         self.timers()
     }
 
-    /// Node wakes, host ticks, host redials.
+    /// Node wakes, host ticks.
     fn timers(&mut self) -> Res<()> {
         let now = self.now();
         for s in 0..self.hosts.len() {
@@ -1524,7 +1531,6 @@ impl NetSim {
                 self.host_feed(s, Event::Tick)?;
             }
         }
-        self.redial()?;
         for n in 0..self.nodes.len() {
             let at = self.nodes.get(n).map_or(now, |x| x.clock.now_wall_ms().0);
             let due = self.nodes.get(n).and_then(|x| x.hub.as_ref()).and_then(|h| h.next_due(at)).is_some_and(|t| t <= at);
@@ -1536,31 +1542,6 @@ impl NetSim {
             if due {
                 self.node(n)?.wake = None;
                 self.feed(n, Event::Tick)?;
-            }
-        }
-        Ok(())
-    }
-
-    /// Hosts dial the peers they replicate to when not connected.
-    fn redial(&mut self) -> Res<()> {
-        for s in 0..self.hosts.len() {
-            let peers = self.hosts.get(s).filter(|x| x.up).map(|x| x.peers.clone()).unwrap_or_default();
-            for p in peers {
-                let linked = self.links.values().any(|l| matches!(l.dialer, End::Hub(x, _) if x == s) && matches!(l.acceptor, End::Hub(y, _) if y == p));
-                if linked || !self.hosts.get(p).is_some_and(|x| x.up) || self.is_blocked(Party::S(s), Party::S(p)) {
-                    continue;
-                }
-                let (hs, hp) = (self.next_hub_conn, self.next_hub_conn + 1);
-                self.next_hub_conn += 2;
-                let id = self.next_link;
-                self.next_link += 1;
-                self.links.insert(id, Link { dialer: End::Hub(s, hs), acceptor: End::Hub(p, hp), last: [0; 2], route: None });
-                let now = self.now();
-                let (ks, kp) = (host_key(s), host_key(p));
-                let out = self.hosts.get_mut(p).and_then(|x| x.hub.as_mut()).map(|h| h.accept(now, hp, kp, osis_host::Remote::key(ks))).unwrap_or_default();
-                self.hub_out(p, out)?;
-                let out = self.hosts.get_mut(s).and_then(|x| x.hub.as_mut()).map(|h| h.peer_up(now, hs, kp)).unwrap_or_default();
-                self.hub_out(s, out)?;
             }
         }
         Ok(())
@@ -1862,7 +1843,7 @@ impl NetSim {
         }
     }
 
-    /// Blocks a random (node, host) or (host, host) pair and cuts its links.
+    /// Blocks a random (node, host) pair and cuts its links.
     fn random_partition(&mut self) {
         let (nn, ns) = (self.nodes.len(), self.hosts.len());
         // with peer links, a pair of nodes (or a node and a relay) too
@@ -1878,11 +1859,8 @@ impl NetSim {
         if ns == 0 {
             return;
         }
-        let a = if ns > 1 && self.dice.pct(30) { Party::S(self.dice.index(ns)) } else { Party::N(self.dice.index(nn.max(1))) };
+        let a = Party::N(self.dice.index(nn.max(1)));
         let b = Party::S(self.dice.index(ns));
-        if a == b {
-            return;
-        }
         self.partition(a, b);
     }
 
@@ -2237,7 +2215,7 @@ impl NetSim {
         Err(self.fail(format!("not quiescent after {max_rounds} rounds; one more round changes {churn:?}; busy: {busy:?}; fingerprint {last:?} -> {fp:?}")))
     }
 
-    /// What changes while the system is still moving: nodes' commits and pending, hosts' logs.
+    /// What changes while the system is still moving: nodes' commits and pending, hosts' node logs.
     fn fingerprint(&self) -> Vec<u64> {
         let mut v = Vec::new();
         for n in &self.nodes {
@@ -2248,11 +2226,7 @@ impl NetSim {
         }
         for s in &self.hosts {
             let Some(h) = &s.hub else { continue };
-            use osis_proto::LabelStore;
-            let held = h.store().labels_after(None, 4096).unwrap_or_default();
-            for l in held {
-                v.push(h.store().log_head(&l).map(|x| x.1).unwrap_or(0));
-            }
+            v.push(h.store().node_log(|t| t.log_end()).unwrap_or(0));
         }
         v
     }
@@ -2291,15 +2265,17 @@ impl NetSim {
                 for b in &live {
                     h.update(&b.0);
                 }
-                // the whole log: every upload and delete, in order
-                let mut after = 0;
-                while let Ok(Some(recs)) = hub.store().log_after(&l, after, 1024) {
-                    let Some(last) = recs.last().map(|x| x.0) else { break };
-                    for r in &recs {
-                        h.update(format!("{r:?}").as_bytes());
-                    }
-                    after = last;
+            }
+            // the whole node log: every entry added and deleted and every head, in order
+            let mut after = 0;
+            while let Ok((events, at, more)) = hub.store().node_log(|t| t.log_after(after, 1024)) {
+                for e in &events {
+                    h.update(format!("{e:?}").as_bytes());
                 }
+                if !more {
+                    break;
+                }
+                after = at;
             }
             parts.insert(format!("host {i} holds"), text(format!("{holds:?}")));
         }

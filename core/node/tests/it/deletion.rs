@@ -1401,10 +1401,10 @@ fn one_commit_disappearing_message_spec_commits_6() {
     }
 }
 
-/// Host log records of label `l` (entries added and deleted) so far.
+/// Events of label `l` in the host's node log (entries added and removed) so far.
 fn log_len(net: &Net, host: usize, l: &osis_base::LabelId) -> usize {
-    use osis_proto::LabelStore;
-    net.hosts[host].hub.store().log_after(l, 0, 1 << 20).unwrap().unwrap_or_default().len()
+    let (a, d) = net.logged_at(host, l);
+    a.len() + d.len()
 }
 
 // spec/sync.md §6, §7 (what a node deletes it would not upload): B writes C on a map and t:seq,

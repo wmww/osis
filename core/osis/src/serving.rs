@@ -3,7 +3,6 @@
 //! node thing may set it; the node's own sync driver does the serving.
 
 use crate::error::{Error, Result};
-use crate::share::Address;
 use crate::Osis;
 use osis_base::{LabelId, Tid, hex};
 use osis_node::sync::{HostPolicy as HostLimits, host_policy, host_policy_known};
@@ -139,8 +138,6 @@ pub struct Serving {
     pub admit: Admit,
     /// Groups it stores for others under `Admit::Listed`.
     pub admitted: BTreeSet<SyncId>,
-    /// Other serving nodes it pushes what it stores to.
-    pub replicate: Vec<Address>,
     /// How much it takes on.
     pub policy: ServingPolicy,
     /// Per-group caps in place of the policy's.
@@ -158,7 +155,6 @@ impl Osis {
         Ok(Some(Serving {
             admit: h.admit,
             admitted: h.labels.into_iter().map(SyncId).collect(),
-            replicate: h.replicate.into_iter().map(|a| Address(osis_label::Address { url: a.url, key: a.key })).collect(),
             // what it runs by; a limit it cannot, another node's, stays for a later set
             policy: ServingPolicy::stored(&h.policy),
             caps: h.caps.into_iter().map(|(l, c)| (SyncId(l), c)).collect(),
@@ -175,7 +171,6 @@ impl Osis {
                 let v = ct::Host {
                     admit: h.admit,
                     labels: h.admitted.into_iter().map(|a| a.0).collect(),
-                    replicate: h.replicate.into_iter().map(|a| ct::Address { url: a.0.url, key: a.0.key }).collect(),
                     policy: h.policy.limits()?,
                     caps: h.caps.into_iter().map(|(a, c)| (a.0, c)).collect(),
                 };

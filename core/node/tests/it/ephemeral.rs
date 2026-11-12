@@ -5640,7 +5640,7 @@ fn demoted_writer_deposits_none_of_its_writes_spec_sync_5() {
     net.run();
     net.advance(15_000);
     let l = net.label(a);
-    let room = osis_proto::LabelStore::budget(&*net.hosts[host].hub.store(), &l).unwrap();
+    let room = net.deposit_room(host, &l);
     let tb = net.tid(b);
     let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
     let d = osis_node::flows::Demotion { holder: tb, new: Some(edge), retain: None };
@@ -5656,7 +5656,7 @@ fn demoted_writer_deposits_none_of_its_writes_spec_sync_5() {
     assert_eq!(net.eph_read(a, u, STATE), None);
     // b's own write, invalid at b too, is not deposited: no writer would promote it and nobody
     // deletes it, so it would hold the deposit budget for good
-    assert_eq!(osis_proto::LabelStore::budget(&*net.hosts[host].hub.store(), &l).unwrap(), room);
+    assert_eq!(net.deposit_room(host, &l), room);
 }
 
 /// What `purge_rounds` saw: per round (bytes held, leftovers held), then leftovers held after.

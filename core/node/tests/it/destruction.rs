@@ -2107,7 +2107,7 @@ fn a_release_requests_entry_goes_everywhere_at_its_expiry_spec_sync_5() {
 
 // spec/sync.md §5 (an entry goes at its prefix expiry, at any host), spec/commits.md §5
 // (Forgetting): b stops reading g's old label L once an admin replaces it, its rows there kept
-// unread. A writer that missed the replacement uploads the release request to L at b. Nothing at
+// unread. A writer that missed the replacement has the release request under L, which b takes. Nothing at
 // b reads L, yet the entry goes there at the request's expiry, with every reader having forgotten
 // it, as it goes at the host that never read L
 #[test]
@@ -2130,12 +2130,12 @@ fn a_release_requests_entry_goes_where_it_is_held_unread_spec_sync_5() {
     net.run();
     let ids: Vec<osis_base::BlobId> = net.sync(c).entries(&new).into_iter().filter(|(_, k)| matches!(k, osis_node::sync::EntryKind::Commit { commit, .. } if *commit == req)).map(|(id, _)| id).collect();
     assert!(!ids.is_empty() && ids.iter().all(|i| net.host_ids(host, &new).contains(i)), "the request placed");
-    // the stale writer's upload (as the host protocol takes it: the blob's prefix expiry)
+    // the entry reaches b under L by its store's rules (as a pull from the stale writer: the blob's prefix expiry)
     for id in &ids {
         let bytes = osis_proto::LabelStore::blob(&*net.sync(c).hub_store().lock().unwrap(), id).unwrap().unwrap();
         let expiry = osis_label::host_prefix(&bytes).unwrap().and_then(|p| p.expiry()).map(|t| t.0);
         assert!(expiry.is_some(), "the request's blob carries its expiry");
-        let put = osis_proto::Put { blob_id: *id, blob: &bytes, wrap: [7; osis_crypto::WRAP_LEN], stamp: None, expiry, ephemeral: false, replaces: &[], now: net.now(), role: false };
+        let put = osis_proto::Put { blob_id: *id, blob: &bytes, wrap: [7; osis_crypto::WRAP_LEN], stamp: None, expiry, ephemeral: false, now: net.now(), role: false };
         assert_eq!(osis_proto::LabelStore::put(&mut *net.sync(b).hub_store().lock().unwrap(), &old, put).unwrap(), osis_proto::Code::OK);
     }
     net.run();

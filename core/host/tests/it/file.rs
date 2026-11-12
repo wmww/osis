@@ -6,7 +6,7 @@
 use osis_base::{LabelId, ManualClock, WallMs};
 use osis_crypto::{SeededRng, Signature};
 use osis_proto::examples::Fixture;
-use osis_proto::{Code, LabelStore, LogRecord, Put};
+use osis_proto::{Code, LabelStore, Put};
 use osis_host::{HostStore, HostPolicy};
 use osis_store::{FileRoot, RedbBackend, Store, StoreConfig};
 use std::sync::Arc;
@@ -21,10 +21,10 @@ fn open(dir: &std::path::Path, clock: Arc<ManualClock>, policy: HostPolicy, seed
 }
 
 fn put(b: &[u8]) -> Put<'_> {
-    Put { blob_id: osis_label::blob_id(b), blob: b, wrap: [1; osis_crypto::WRAP_LEN], stamp: Some(Signature([2; 64])), expiry: None, ephemeral: false, replaces: &[], now: 0, role: false }
+    Put { blob_id: osis_label::blob_id(b), blob: b, wrap: [1; osis_crypto::WRAP_LEN], stamp: Some(Signature([2; 64])), expiry: None, ephemeral: false, now: 0, role: false }
 }
 
-// spec/sync.md §4: registration path, entries, pending deletions, tombstones and the log persist in the file; a reopened node resumes sweeps
+// spec/sync.md §4: registration path, entries, tombstones and blobs persist in the file
 #[test]
 #[ignore]
 fn redb_store_survives_reopen() {
@@ -35,25 +35,21 @@ fn redb_store_survives_reopen() {
     let f = Fixture::new(0x10);
     let l: LabelId = f.label;
     let blobs: Vec<Vec<u8>> = (1..=3).map(Fixture::blob).collect();
-    let (log_id, head) = {
+    {
         let mut s = open(&dir, clock.clone(), HostPolicy::default(), 0);
         s.push_step(&l, f.genesis.clone(), Some(f.genesis_claims.clone())).unwrap();
         for b in &blobs {
             assert_eq!(s.put(&l, put(b)).unwrap(), Code::OK);
         }
         s.delete(&l, &osis_label::blob_id(&blobs[0]), T0).unwrap();
-        s.log_head(&l).unwrap()
-    };
+    }
     let mut s = open(&dir, clock, HostPolicy::default(), 1);
-    assert_eq!(s.log_head(&l).unwrap(), (log_id, head));
     assert_eq!(s.path(&l).unwrap(), vec![f.genesis.clone()]);
     assert!(s.claim_set(&l, &f.genesis.id()).unwrap().is_some());
     assert!(s.tombstoned(&l, &osis_label::blob_id(&blobs[0])).unwrap());
     assert_eq!(s.blob(&osis_label::blob_id(&blobs[2])).unwrap().as_deref(), Some(&blobs[2][..]));
     assert_eq!(s.blob(&osis_label::blob_id(&blobs[0])).unwrap(), None);
     s.delete(&l, &osis_label::blob_id(&blobs[1]), T0 + 100).unwrap();
-    let last = s.log_after(&l, head, 10).unwrap().unwrap();
-    assert_eq!(last.iter().map(|r| r.1.clone()).collect::<Vec<_>>(), vec![LogRecord::Deleted(osis_label::blob_id(&blobs[1]))]);
     assert_eq!(s.live_ids(&l).unwrap(), vec![osis_label::blob_id(&blobs[2])]);
     drop(s);
     std::fs::remove_dir_all(&dir).unwrap();
@@ -61,7 +57,7 @@ fn redb_store_survives_reopen() {
 
 // spec: none (cost, spec/requirements.md Scale; notes/testing.md Performance budgets, host): a
 // hub-sized batch is one store commit whatever the store holds: durable writes (backend commits
-// and key-root writes) for 64 uploads in one batch, 64 deletes in one batch, and a single upload
+// and key-root writes) for 64 puts in one batch, 64 deletes in one batch, and a single put
 // then its delete (each delete batch a shredding commit) are the same at n and 10n entries held.
 // Counted over the memory backend (default tests).
 #[test]
@@ -107,6 +103,6 @@ fn host_batch_writes_do_not_grow_with_entries() {
         (up, del, pair)
     };
     let (small, big) = (writes(100), writes(1000));
-    assert_eq!(small, big, "(64 uploads, 64 deletes, one upload and its delete): durable writes at 100 and 1000 entries");
+    assert_eq!(small, big, "(64 puts, 64 deletes, one put and its delete): durable writes at 100 and 1000 entries");
     assert!(small.0 <= 3 && small.1 <= 3 && small.2 <= 5, "a batch is one store commit (a delete's with its shredding root writes): {small:?}");
 }

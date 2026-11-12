@@ -1,14 +1,12 @@
 //! Hosting (notes/serving.md, Hosting in the node): the node reads its own `host^.0`
 //! (spec/data-model.md §9) and hands its driver a `HostConfig` (`Action::Host`), public data
-//! only: which sync IDs it stores for others (`open`, or `labels`), replication peers, policy and
-//! caps. The sync IDs it reads are node sync's whatever that says (`osis_host`'s `reader_*`). The
+//! only: which sync IDs it stores for others (`open`, or `labels`), policy and caps. The sync IDs it reads are node sync's whatever that says (`osis_host`'s `reader_*`). The
 //! hub's store is the node's for good (`hub_store`); hosting stopping drops the labels it kept for
 //! others. The hub serves on the node's own listeners, under its one key.
 
 use super::{Action, SyncEngine};
 use osis_host::{Admission, HostConfig, HostPolicy, HostStore, LabelCaps};
 use std::sync::{Arc, Mutex};
-use osis_label::Address;
 use osis_schema::core_types::{self as ct, Admit};
 use std::collections::BTreeMap;
 
@@ -97,7 +95,6 @@ impl SyncEngine {
         };
         Some(HostConfig {
             admission,
-            replicate: h.replicate.into_iter().map(|a| Address { url: a.url, key: a.key }).collect(),
             policy,
             caps: h.caps.into_iter().map(|(l, c)| (l, LabelCaps { entries: c.entries, bytes: c.bytes })).collect(),
         })

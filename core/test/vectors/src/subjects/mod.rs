@@ -41,7 +41,7 @@ pub struct Generated {
 }
 
 /// Every generator. A new one adds its line here.
-pub const GENERATED: [Generated; 23] = {
+pub const GENERATED: [Generated; 22] = {
     const fn g(name: &'static str, generate: fn() -> VecFile) -> Generated {
         Generated { name, generate, check: None }
     }
@@ -59,7 +59,6 @@ pub const GENERATED: [Generated; 23] = {
         g("sign/signatures", sign::signatures),
         g("schema/core", schema::core),
         g("proto/messages", proto::messages),
-        g("proto/reconcile", proto::reconcile),
         g("commit/headers", commit::headers),
         g("blob/prefix", blob::prefixes),
         g("blob/blobs", blob::blobs),

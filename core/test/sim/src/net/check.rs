@@ -21,7 +21,8 @@ use super::{NetSim, Party};
 use crate::harness::Res;
 use osis_base::{BlobId, LabelId, Role, Tid};
 use osis_node::Engine;
-use osis_proto::{LabelStore, LogRecord};
+use osis_proto::LabelStore;
+use osis_store::NodeEvent;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Resync rounds the no-ping-pong check watches.
@@ -331,8 +332,8 @@ fn groups(sim: &mut NetSim) -> Res<()> {
     Ok(())
 }
 
-/// Which holders the model keeps connected: a holder and a host it can reach, hosts that
-/// replicate, and holders with a route between them either way (`Reach::linked`). Computed from
+/// Which holders the model keeps connected: a holder and a host it can reach, and holders with a
+/// route between them either way (`Reach::linked`); two hosts only through a holder. Computed from
 /// the model and the scenario's partitions alone, never from what a node holds or did, so a
 /// holder is judged exactly when it can be reached. Any other node (a reader through a folder)
 /// joins the part it reaches, the admin's first, to be held to its reads; it bridges nothing,
@@ -342,15 +343,10 @@ struct Connected(BTreeMap<Party, Party>);
 impl Connected {
     fn of(sim: &NetSim, holders: &BTreeSet<usize>, anchor: Option<usize>) -> Connected {
         let mut c = Connected(BTreeMap::new());
-        for (s, h) in sim.hosts.iter().enumerate() {
+        for s in 0..sim.hosts.len() {
             for n in holders {
                 if !sim.is_blocked(Party::N(*n), Party::S(s)) {
                     c.join(Party::N(*n), Party::S(s));
-                }
-            }
-            for p in &h.peers {
-                if !sim.is_blocked(Party::S(s), Party::S(*p)) {
-                    c.join(Party::S(s), Party::S(*p));
                 }
             }
         }
@@ -628,9 +624,9 @@ fn no_ping_pong(sim: &mut NetSim) -> Res<()> {
     Ok(())
 }
 
-pub type Heads = BTreeMap<(usize, LabelId), ([u8; 16], u64)>;
+pub type Heads = BTreeMap<usize, u64>;
 
-/// Every label's log head at every up host.
+/// The end of every honest up host's node log.
 pub fn log_heads(sim: &NetSim) -> Heads {
     let mut m = BTreeMap::new();
     for s in 0..sim.hosts.len() {
@@ -638,31 +634,32 @@ pub fn log_heads(sim: &NetSim) -> Heads {
             continue;
         }
         let Some(hub) = sim.hub(s) else { continue };
-        let held = hub.store().labels_after(None, 4096).unwrap_or_default();
-        for l in held {
-            if let Ok(h) = hub.store().log_head(&l) {
-                m.insert((s, l), h);
-            }
+        if let Ok(end) = hub.store().node_log(|t| t.log_end()) {
+            m.insert(s, end);
         }
     }
     m
 }
 
-/// Log records since `heads` (a label not in it, or with another log instance, from its start;
-/// the last 40 records at most), with what the entries hold.
+/// Node log events since `heads` (a host not in it, or whose log is behind it, from its start;
+/// the last 40 events at most), with what the entries hold.
 pub fn churn(sim: &NetSim, heads: &Heads) -> Vec<String> {
     let mut out = Vec::new();
-    for (s, l) in log_heads(sim).into_keys() {
+    for s in log_heads(sim).into_keys() {
         let Some(hub) = sim.hub(s) else { continue };
-        let Ok((log, top)) = hub.store().log_head(&l) else { continue };
-        let seq = heads.get(&(s, l)).filter(|h| h.0 == log).map_or(0, |h| h.1);
-        let recs = hub.store().log_after(&l, seq.max(top.saturating_sub(40)), 64);
-        for (_, r) in recs.ok().flatten().unwrap_or_default() {
-            let (what, b) = match r {
-                LogRecord::Added(b) => ("added", b),
-                LogRecord::Deleted(b) => ("deleted", b),
-                LogRecord::Head(st) => {
-                    out.push(format!("s{s} {l:?} head {:?}", st.id().0.first()));
+        let Ok((events, ..)) = hub.store().node_log(|t| {
+            let end = t.log_end()?;
+            let pos = heads.get(&s).copied().filter(|p| *p <= end).unwrap_or(0);
+            t.log_after(pos.max(end.saturating_sub(40)), 64)
+        }) else {
+            continue;
+        };
+        for e in events {
+            let (what, l, b) = match e.event {
+                NodeEvent::Added(l, b) => ("added", l, b),
+                NodeEvent::Deleted { label, blob, .. } => ("deleted", label, blob),
+                NodeEvent::Head(l) => {
+                    out.push(format!("s{s} {l:?} head"));
                     continue;
                 }
             };

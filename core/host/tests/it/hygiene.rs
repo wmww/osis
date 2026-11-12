@@ -39,13 +39,14 @@ fn stored_bytes_hold_no_plaintext_identifiers() {
             osis_label::frame(&p, &plaintext, &mut rng).unwrap().1
         })
         .collect();
-    w.run(a, Command::Upload { label: l.id, entries: blobs[..2].iter().map(|b| l.entry(b.clone())).collect() });
-    w.run(a, l.deposit(blobs[2].clone(), &l.head_keys().deposit.clone()));
-    w.run(a, Command::Upload { label: l.id, entries: vec![l.entry(blobs[3].clone())] });
+    for b in [&blobs[0], &blobs[1], &blobs[3]] {
+        assert_eq!(pull(&w, h, &l, &l.entry(b.clone())), Code::OK);
+    }
+    assert_eq!(deposit(&w, h, l.deposit(blobs[2].clone(), &l.head_keys().deposit.clone())), Code::OK);
     let item = DeleteItem::sign(&l.head_keys().delete, &l.id, osis_label::blob_id(&blobs[0])).unwrap();
     w.run(a, Command::Delete { label: l.id, items: vec![item] });
-    let env = osis_label::frame(&Prefix::new([9; 16], None, vec![]).unwrap().with_class(osis_label::Class::Relay), &plaintext, &mut rng).unwrap().1;
-    w.run(a, Command::Upload { label: l.id, entries: vec![l.entry(env)] });
+    let env = osis_label::frame(&Prefix::new([9; 16], Some(WallMs(w.now() + osis_base::format::MAX_DRIFT_MS)), vec![]).unwrap().with_class(osis_label::Class::Relay), &plaintext, &mut rng).unwrap().1;
+    assert_eq!(pull(&w, h, &l, &l.entry(env)), Code::OK);
     w.advance(1_000);
     let mut history = w.backends[h].history();
     assert!(!history.is_empty());
@@ -69,7 +70,7 @@ fn stored_bytes_hold_no_plaintext_identifiers() {
 
 // spec/requirements.md Deletion (forward secure), spec/sync.md §4: a node hosting a label it can
 // also read holds the read secret, so a wrap it kept would open the blob: after a delete, an
-// expiry, a replaced-then-deleted wrap and the label dropped (hosting stopped), an attacker holding the device (every key the
+// expiry, a re-wrapped-then-deleted wrap and the label dropped (hosting stopped), an attacker holding the device (every key the
 // current root yields) and every row the host store ever wrote finds none of those wraps
 #[test]
 fn deleted_wraps_unrecoverable() {
@@ -98,13 +99,13 @@ fn deleted_wraps_unrecoverable() {
         let b = &blobs[i];
         // entry 3 starts as a deposit
         let stamp = (i != 3 || w != 103).then_some(Signature([w; 64]));
-        let p = Put { blob_id: osis_label::blob_id(b), blob: b, wrap: wrap(w), stamp, expiry, ephemeral: false, replaces: &[], now: 0, role: false };
+        let p = Put { blob_id: osis_label::blob_id(b), blob: b, wrap: wrap(w), stamp, expiry, ephemeral: false, now: 0, role: false };
         assert_eq!(s.put(&l, p).unwrap(), Code::OK);
     };
     for i in 0..24 {
         put(&mut s, i, 100 + i as u8, (i == 7).then_some(T0 + 1_000));
     }
-    // entry 3's wrap replaced (a promotion under another wrap), then deleted; entry 5 deleted; entry 7 expires
+    // entry 3's wrap changed (a promotion under another wrap), then deleted; entry 5 deleted; entry 7 expires
     put(&mut s, 3, 250, None);
     let (dead, live) = ([wrap(103), wrap(250), wrap(105), wrap(107)], wrap(120));
     let found = |s: &mut osis_host::HostStore, w: &[u8]| {

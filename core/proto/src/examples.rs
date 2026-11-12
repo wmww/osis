@@ -4,7 +4,6 @@
 #![allow(clippy::expect_used)]
 
 use crate::msg::*;
-use crate::rbsr::Bound;
 use crate::client::Command;
 use osis_base::hash::hash;
 use osis_base::{BlobId, LabelId, WallMs};
@@ -81,11 +80,19 @@ impl Fixture {
     }
 
     /// A stamped entry of `blob` under the head's write key (wrap: one byte repeated).
-    pub fn entry(&self, blob: Vec<u8>) -> Entry {
+    pub fn entry(&self, blob: Vec<u8>) -> Stamped {
         let wrap = [blob.len() as u8; WRAP_LEN];
         let stamp = sign_stamp(&self.write, &self.label, &osis_label::blob_id(&blob), &wrap, false);
-        Entry { blob, wrap, stamp, replaces: Vec::new() }
+        Stamped { blob, wrap, stamp }
     }
+}
+
+/// A blob with its wrap and its stamp under a write key.
+#[derive(Clone, Debug)]
+pub struct Stamped {
+    pub blob: Vec<u8>,
+    pub wrap: Wrap,
+    pub stamp: Signature,
 }
 
 /// One label's signing keys at one step.
@@ -158,20 +165,21 @@ impl Label {
     }
 
     /// A stamped entry of `blob` under the head's write key.
-    pub fn entry(&self, blob: Vec<u8>) -> Entry {
+    pub fn entry(&self, blob: Vec<u8>) -> Stamped {
         self.entry_by(blob, &self.head_keys().write.clone())
     }
 
-    pub fn entry_by(&self, blob: Vec<u8>, write: &SigningSecret) -> Entry {
+    pub fn entry_by(&self, blob: Vec<u8>, write: &SigningSecret) -> Stamped {
         let wrap: Wrap = [(blob.len() % 251) as u8; WRAP_LEN];
         let stamp = sign_stamp(write, &self.id, &osis_label::blob_id(&blob), &wrap, false);
-        Entry { blob, wrap, stamp, replaces: Vec::new() }
+        Stamped { blob, wrap, stamp }
     }
 
-    pub fn deposit(&self, blob: Vec<u8>, key: &SigningSecret) -> Command {
+    /// A Deposit item of `blob` signed by `key`.
+    pub fn deposit(&self, blob: Vec<u8>, key: &SigningSecret) -> crate::msg::OfferItem {
         let wrap: Wrap = [7; WRAP_LEN];
         let sig = sign_deposit(key, &self.id, &osis_label::blob_id(&blob), &wrap, false);
-        Command::Deposit { label: self.id, blob, wrap, sig }
+        crate::msg::OfferItem::Deposit { label: self.id, blob, wrap, sig }
     }
 
     /// Registers step `i` with its claim set.
@@ -211,7 +219,6 @@ pub fn messages() -> Vec<(&'static str, Message)> {
     let f = Fixture::new(0x10);
     let l = f.label;
     let id = |b: u8| BlobId([b; 32]);
-    let cursor = Cursor { log_id: [0x1c; 16], seq: 42 };
     let entry = f.entry(Fixture::blob(1));
     let added = Event::Added { blob_id: osis_label::blob_id(&entry.blob), blob: Some(entry.blob.clone()), wrap: entry.wrap, stamp: Some(entry.stamp) };
     let entry_box = f.genesis_claims.entry_box(&l, &f.key_actor.verifying_key()).cloned();
@@ -234,69 +241,13 @@ pub fn messages() -> Vec<(&'static str, Message)> {
         ("register", Message::Register { id: 7, label: l, step: f.genesis.clone(), claim_set: Some(f.genesis_claims.clone()) }),
         ("path", Message::Path { id: 8, label: l, after: Some(f.genesis.id()) }),
         ("path reply", Message::PathReply { id: 8, steps: vec![f.genesis.clone(), f.child.clone()], more: false }),
-        ("upload", Message::Upload { id: 10, label: l, entries: vec![entry.clone()] }),
-        (
-            "upload with replaces",
-            Message::Upload {
-                id: 11,
-                label: l,
-                entries: vec![Entry {
-                    replaces: vec![
-                        DeleteItem::sign(&f.delete, &l, id(0xe2)).expect("fixed delete"),
-                        DeleteItem::sign_by(&f.write, &[(3, &dk)], &[0x7d; 16], &[0x7e; 16], &l, id(0xe3)).expect("fixed delete"),
-                    ],
-                    ..f.entry(Fixture::blob(4))
-                }],
-            },
-        ),
         ("status", Message::Status { id: 10, codes: vec![Code::OK, Code::NOT_HEAD] }),
-        ("deposit", Message::Deposit { id: 12, label: l, blob: deposited.clone(), wrap: dep_wrap, sig: dep_sig }),
-        ("budget", Message::Budget { id: 12, code: Code::OK, budget: Some((63, 2_064_384)) }),
         ("delete", Message::Delete { id: 14, label: l, items: vec![DeleteItem::sign(&f.delete, &l, id(0xd1)).expect("fixed delete"), DeleteItem::sign_by(&f.sync, &[(2, &dk)], &[0x7d; 16], &[0x7e; 16], &l, id(0xd2)).expect("fixed delete")] }),
-        ("cursor sync", Message::Sync { id: 15, label: l, cursor: Some(cursor), inline_limit: 65_536, max_reply: 16_384, entries: vec![entry], gained: vec![id(0xa1), id(0xa2)] }),
-        ("sync without cursor", Message::Sync { id: 16, label: l, cursor: None, inline_limit: 0, max_reply: 16_384, entries: vec![], gained: vec![] }),
-        (
-            "sync reply",
-            Message::SyncReply {
-                id: 15,
-                events: vec![
-                    added.clone(),
-                    Event::Added { blob_id: id(0xb2), blob: None, wrap: [0x79; WRAP_LEN], stamp: None },
-                    Event::Deleted(id(0xb3)),
-                    Event::Head(f.child.clone()),
-                ],
-                want: vec![id(0xa2)],
-                codes: vec![Code::OK],
-                cursor: Cursor { log_id: [0x1c; 16], seq: 47 },
-                more: false,
-            },
-        ),
-        (
-            "reconcile",
-            Message::Reconcile {
-                id: 17,
-                label: l,
-                ranges: vec![
-                    Range { lower: Bound::empty(), upper: Bound::of(&id(0x40)), mode: Mode::Fingerprint([0xf1; 16]) },
-                    Range { lower: Bound::of(&id(0x40)), upper: Bound::new(vec![0x80]).unwrap_or_default(), mode: Mode::Ids(vec![id(0x41), id(0x42)]) },
-                ],
-            },
-        ),
-        (
-            "reconcile reply",
-            Message::ReconcileReply {
-                id: 17,
-                ranges: vec![Range { lower: Bound::of(&id(0x40)), upper: Bound::new(vec![0x80]).unwrap_or_default(), mode: Mode::Diff { theirs: vec![id(0x43)], lacking: vec![id(0x42)] } }],
-            },
-        ),
-        ("fetch", Message::Fetch { id: 19, label: l, max_reply: 32_768, ids: vec![id(0xb2), id(0xb5)] }),
+        ("fetch", Message::Fetch { id: crate::msg::NODE_IDS | 19, label: l, max_reply: 32_768, ids: vec![id(0xb2), id(0xb5)] }),
         (
             "fetch reply",
-            Message::FetchReply { id: 19, items: vec![Fetched { blob_id: id(0xb2), entry: Some((Fixture::blob(3), [0x79; WRAP_LEN], None)) }, Fetched { blob_id: id(0xb5), entry: None }] },
+            Message::FetchReply { id: crate::msg::NODE_IDS | 19, items: vec![Fetched { blob_id: id(0xb2), entry: Some((Fixture::blob(3), [0x79; WRAP_LEN], None)) }, Fetched { blob_id: id(0xb5), entry: None }] },
         ),
-        ("subscribe", Message::Subscribe { id: 21, labels: vec![l, LabelId([0x0b; 16])] }),
-        ("unsubscribe", Message::Unsubscribe { id: 22, labels: vec![l] }),
-        ("push", Message::Push { label: l, events: vec![added.clone()], cursor: Cursor { log_id: [0x1c; 16], seq: 48 } }),
         (
             "stranded",
             Message::Stranded {

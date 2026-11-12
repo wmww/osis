@@ -23,7 +23,7 @@ fn requests(out: &[ServingOutput]) -> Vec<Message> {
 /// A serving session past the Hellos.
 fn serving() -> (ServingSession, MemoryLabelStore) {
     let mut s = ServingSession::new(ServingConfig { static_key: [1; 32], challenge: [2; 32] });
-    let mut store = MemoryLabelStore::new([5; 32]);
+    let mut store = MemoryLabelStore::new();
     s.handle(T0, &mut store, ServingInput::Start);
     s.handle(T0, &mut store, ServingInput::Bytes(encode_frame(&Hello::new(T0, [3; 32]).encode())));
     (s, store)

@@ -124,7 +124,7 @@ fn a_client_acts_on_the_dialable_key_only_after_auth() {
     raw(&mut net, a, &c, &call);
     let got = net.take_port(a);
     assert!(matches!(request(&got), Some((Tier::Client(x), Message::Call { id: 3, .. })) if x == actor), "{got:?}");
-    let sub = Message::Subscribe { id: 9, labels: vec![osis_base::LabelId([1; 16])] };
+    let sub = Message::Path { id: 9, label: osis_base::LabelId([1; 16]), after: None };
     let r = raw(&mut net, a, &c, &sub);
     assert!(!r.iter().any(|m| matches!(m, Message::Error { code, .. } if *code == osis_proto::Code::UNSUPPORTED)), "{r:?}");
 }

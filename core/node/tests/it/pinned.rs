@@ -35,11 +35,9 @@ fn unopened(net: &mut Net, n: usize, l: &LabelId) -> BTreeSet<BlobId> {
     net.sync(n).entries(l).into_iter().filter(|(_, k)| *k == EntryKind::Unknown).map(|(id, _)| id).collect()
 }
 
-/// Deletions in host `host`'s log of `l`.
+/// Removals of `l` in host `host`'s node log.
 fn deletions(net: &Net, host: usize, l: &LabelId) -> usize {
-    use osis_proto::{LabelStore, LogRecord};
-    let recs = net.hosts[host].hub.store().log_after(l, 0, 1 << 20).unwrap().unwrap_or_default();
-    recs.iter().filter(|(_, r)| matches!(r, LogRecord::Deleted(_))).count()
+    net.logged_at(host, l).1.len()
 }
 
 // spec/sync.md §6, spec/commits.md §4 (sim two_nodes_host): an entry announced, its fetch lost

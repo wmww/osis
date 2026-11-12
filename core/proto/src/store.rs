@@ -33,25 +33,11 @@ pub struct EntryMeta {
     /// None: deposited.
     pub stamp: Option<Signature>,
     pub size: u64,
-    /// Sequence number of its latest add event.
-    pub add_seq: u64,
 }
 
-/// A log record (spec/sync.md §4); add events take wrap and stamp from the live entry.
-#[derive(Clone, Debug, PartialEq, Eq)]
-#[allow(clippy::large_enum_variant)] // steps carry parsed keys; boxing buys nothing here
-pub enum LogRecord {
-    Added(BlobId),
-    Deleted(BlobId),
-    Head(Step),
-}
-
-/// An entry to add or replace, already authorized by the engine. An ephemeral entry
-/// (`ephemeral`, from the blob's prefix class) is held in memory only, under a per-label byte
-/// cap (spec/sync.md §4, §5). `replaces` (by their delete proofs, as the host engine
-/// authorized them; one no longer held is skipped, one naming the uploaded entry itself is
-/// ignored) go in the same step: all of them iff the entry is admitted
-/// (logged after its add), the room they free counted toward its cap.
+/// An entry to add or re-wrap, already authorized. An ephemeral entry (`ephemeral`, from the
+/// blob's prefix class) is held in memory only, under a per-label byte cap (spec/sync.md §4,
+/// §5).
 #[derive(Clone, Copy, Debug)]
 pub struct Put<'a> {
     pub blob_id: BlobId,
@@ -60,25 +46,17 @@ pub struct Put<'a> {
     pub stamp: Option<Signature>,
     pub expiry: Option<u64>,
     pub ephemeral: bool,
-    pub replaces: &'a [BlobId],
-    /// Wall ms (tombstones of the replaced entries).
+    /// Wall ms.
     pub now: u64,
     /// Signed as an entry deletes are judged by (a role commit or a request, `Domain::RoleEntry`):
     /// taken past the storage caps by up to a deposit budget (spec/sync.md §5, Storage caps).
     pub role: bool,
 }
 
-/// What remains of a label's deposit budget.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Budget {
-    pub entries_left: u64,
-    pub bytes_left: u64,
-}
-
 /// Longest registration path `path` walks (a guard against a corrupt store).
 const MAX_PATH: usize = 1 << 20;
 
-/// Earlier distinct keys per role an Upload, Deposit or Delete is answered code 9 for rather
+/// Earlier distinct keys per role a stamp, deposit or Delete is answered code 9 for rather
 /// than refused (each a signature check per refused item). Minor consequence: past it a signer
 /// that far behind gets code 1 (a stale deposit is dropped, not re-signed); 0 would refuse
 /// every earlier key, infinity would cost a check per key the label ever had.
@@ -106,7 +84,7 @@ impl StepKey {
     }
 }
 
-/// What an Upload, Deposit or Delete is checked against: the head step and, per `StepKey`, up to
+/// What a stamp, deposit or Delete is checked against: the head step and, per `StepKey`, up to
 /// `OLDER_KEYS` distinct earlier keys of the path, newest first, never the head's. A store keeps
 /// it as the head advances (`child`), so a check reads no path however long.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -213,36 +191,21 @@ pub trait LabelStore {
         Ok(self.blob(blob_id)?.map(|b| osis_label::prefix_bytes(&b).to_vec()))
     }
     /// Adds an entry; a stamped upload replaces a deposited entry's wrap and stamp, clearing its
-    /// flag. Anything else of a held blob changes nothing. Logs an add when something changed.
+    /// flag. Anything else of a held blob changes nothing.
     /// Invariant (spec/sync.md §5): a stamped entry's wrap and stamp never change while it lives,
     /// so no writer can take from readers a wrap they could open: only a first upload can place a
     /// useless one, and nodes knowing the key place a fresh encryption past it.
     fn put(&mut self, label: &LabelId, put: Put<'_>) -> Result<Code, StoreError>;
-    fn budget(&self, label: &LabelId) -> Result<Budget, StoreError>;
-    /// Removes an entry, leaving a tombstone, and logs the deletion
-    /// (or refuses, e.g. code 4).
+    /// Removes an entry, leaving a tombstone (or refuses, e.g. code 4).
     fn delete(&mut self, label: &LabelId, blob_id: &BlobId, now: u64) -> Result<Code, StoreError>;
-    /// The label log's instance ID and its last sequence number (0: empty).
-    fn log_head(&self, label: &LabelId) -> Result<([u8; 16], u64), StoreError>;
-    /// Records with sequence numbers above `after`, at most `max`; `None` when the log no longer
-    /// reaches `after`.
-    fn log_after(&self, label: &LabelId, after: u64, max: usize) -> Result<Option<Vec<(u64, LogRecord)>>, StoreError>;
-    /// Live entries with IDs above `after` (from the lowest when none), ascending, at most `max`.
-    fn live_by_id(&self, label: &LabelId, after: Option<&BlobId>, max: usize) -> Result<Vec<(BlobId, EntryMeta)>, StoreError>;
-    /// IDs of the live entries in `[lower, upper)` (no upper: to the end), sorted. A Reconcile
-    /// reads only the ranges it asks (spec/wire.md §11.3), so its cost follows them, not the label.
-    fn live_ids_in(&self, label: &LabelId, lower: &BlobId, upper: Option<&BlobId>) -> Result<Vec<BlobId>, StoreError>;
     /// IDs of the live entries, sorted.
-    fn live_ids(&self, label: &LabelId) -> Result<Vec<BlobId>, StoreError> {
-        self.live_ids_in(label, &BlobId([0; 32]), None)
-    }
+    fn live_ids(&self, label: &LabelId) -> Result<Vec<BlobId>, StoreError>;
     /// Admits a stamped relay-only upload (spec/sync.md §5; `RelayGate::admit`).
     fn relay(&mut self, label: &LabelId, blob_id: &BlobId, size: usize, expiry: Option<u64>, now: u64) -> Result<crate::RelayVerdict, StoreError>;
 }
 
 #[derive(Clone, Debug, Default)]
 struct LabelState {
-    log_id: [u8; 16],
     steps: BTreeMap<StepId, (Step, Option<Arc<ClaimSet>>)>,
     head: Option<StepId>,
     keys: Option<HeadKeys>,
@@ -251,25 +214,12 @@ struct LabelState {
     children: BTreeMap<Option<StepId>, StepId>,
     entries: BTreeMap<BlobId, (EntryMeta, Option<u64>)>,
     tombstones: BTreeMap<BlobId, u64>,
-    /// Per durable entry removed: when the log up to the position it went at is dropped (its
-    /// removal plus `TOMBSTONE_LIFETIME`), and that position.
-    trims: Vec<(u64, u64)>,
-    log: Vec<(u64, LogRecord)>,
-    /// Records at or below this sequence number were dropped.
-    horizon: u64,
-    next_seq: u64,
     /// Ephemeral entries and their bytes.
     ephemeral: BTreeSet<BlobId>,
     ephemeral_bytes: u64,
 }
 
 impl LabelState {
-    fn append(&mut self, r: LogRecord) -> u64 {
-        self.next_seq += 1;
-        self.log.push((self.next_seq, r));
-        self.next_seq
-    }
-
     /// Claim slots of the head's set (0 when not held).
     fn head_claims(&self) -> u64 {
         self.head.and_then(|h| self.steps.get(&h)).and_then(|(_, c)| c.as_ref()).map_or(0, |c| c.claims.len() as u64)
@@ -279,7 +229,6 @@ impl LabelState {
 /// In-memory host store with the recommended deposit budget (spec/sync.md §5).
 #[derive(Clone, Debug, Default)]
 pub struct MemoryLabelStore {
-    seed: [u8; 32],
     labels: BTreeMap<LabelId, LabelState>,
     blobs: HashMap<BlobId, (Vec<u8>, usize)>,
     /// Entries per label beyond which uploads get code 12.
@@ -288,8 +237,6 @@ pub struct MemoryLabelStore {
     pub ephemeral_cap: Option<u64>,
     /// `blob` calls so far (cost tests).
     pub blob_reads: std::cell::Cell<u64>,
-    /// IDs `live_ids_in` returned so far (cost tests).
-    pub ids_read: std::cell::Cell<u64>,
     /// `step` calls so far (cost tests).
     pub step_reads: std::cell::Cell<u64>,
     pub relays: crate::RelayGate,
@@ -303,9 +250,8 @@ fn unknown() -> StoreError {
 }
 
 impl MemoryLabelStore {
-    /// `seed` names this instance's logs (log IDs derive from it).
-    pub fn new(seed: [u8; 32]) -> MemoryLabelStore {
-        MemoryLabelStore { seed, ..Default::default() }
+    pub fn new() -> MemoryLabelStore {
+        MemoryLabelStore::default()
     }
 
     fn state(&self, label: &LabelId) -> Option<&LabelState> {
@@ -325,7 +271,7 @@ impl MemoryLabelStore {
         }
     }
 
-    /// Removes an entry with a log record and a tombstone.
+    /// Removes an entry, leaving a tombstone.
     fn remove_entry(&mut self, label: &LabelId, blob_id: &BlobId, now: u64) -> Result<(), StoreError> {
         let s = self.state_mut(label)?;
         let Some((m, _)) = s.entries.remove(blob_id) else { return Ok(()) };
@@ -334,21 +280,10 @@ impl MemoryLabelStore {
             s.ephemeral_bytes = s.ephemeral_bytes.saturating_sub(m.size);
         }
         s.tombstones.insert(*blob_id, now);
-        let seq = s.append(LogRecord::Deleted(*blob_id));
-        if !ephemeral {
-            s.trims.push((now.saturating_add(TOMBSTONE_LIFETIME_MS), seq));
-        }
         self.unref(blob_id);
         Ok(())
     }
 
-    /// Drops log records up to `seq` (cursors below it become invalid).
-    pub fn truncate_log(&mut self, label: &LabelId, seq: u64) {
-        if let Some(s) = self.labels.get_mut(label) {
-            s.log.retain(|(n, _)| *n > seq);
-            s.horizon = s.horizon.max(seq);
-        }
-    }
 
     /// Drops a step's claim set (as after `ROLE_KEEP`).
     pub fn drop_claim_set(&mut self, label: &LabelId, id: &StepId) {
@@ -357,27 +292,19 @@ impl MemoryLabelStore {
         }
     }
 
-    /// Expires entries (no tombstone, no event), drops old tombstones
-    /// and the log up to removals that old (spec/sync.md §4).
+    /// Expires entries (no tombstone) and drops old tombstones (spec/sync.md §4).
     pub fn sweep(&mut self, now: u64) {
         let labels: Vec<LabelId> = self.labels.keys().copied().collect();
         for label in labels {
             let Some(s) = self.labels.get_mut(&label) else { continue };
             let expired: Vec<BlobId> = s.entries.iter().filter(|(_, (_, exp))| exp.is_some_and(|t| t <= now)).map(|(k, _)| *k).collect();
             s.tombstones.retain(|_, t| t.saturating_add(TOMBSTONE_LIFETIME_MS) > now);
-            let trim = s.trims.iter().filter(|(t, _)| *t <= now).map(|(_, seq)| *seq).max();
-            s.trims.retain(|(t, _)| *t > now);
             for id in &expired {
-                if let Some((m, _)) = s.entries.remove(id) {
-                    if s.ephemeral.remove(id) {
-                        s.ephemeral_bytes = s.ephemeral_bytes.saturating_sub(m.size);
-                    } else {
-                        s.trims.push((now.saturating_add(TOMBSTONE_LIFETIME_MS), s.next_seq));
-                    }
+                if let Some((m, _)) = s.entries.remove(id)
+                    && s.ephemeral.remove(id)
+                {
+                    s.ephemeral_bytes = s.ephemeral_bytes.saturating_sub(m.size);
                 }
-            }
-            if let Some(seq) = trim {
-                self.truncate_log(&label, seq);
             }
             for id in &expired {
                 self.unref(id);
@@ -418,15 +345,8 @@ impl LabelStore for MemoryLabelStore {
     }
 
     fn push_step(&mut self, label: &LabelId, step: Step, claim_set: Option<ClaimSet>) -> Result<Code, StoreError> {
-        let seed = self.seed;
-        let s = self.labels.entry(*label).or_insert_with(|| {
-            let mut log_id = [0u8; 16];
-            let h = osis_base::hash::hash(&[&seed[..], &label.0[..]].concat());
-            log_id.copy_from_slice(h.get(..16).unwrap_or(&[0; 16]));
-            LabelState { log_id, ..Default::default() }
-        });
+        let s = self.labels.entry(*label).or_default();
         let id = step.id();
-        s.append(LogRecord::Head(step.clone()));
         s.keys = Some(match s.keys.take() {
             Some(k) => k.child(step.clone()),
             None => HeadKeys::genesis(step.clone()),
@@ -458,22 +378,14 @@ impl LabelStore for MemoryLabelStore {
     fn put(&mut self, label: &LabelId, put: Put<'_>) -> Result<Code, StoreError> {
         let (cap, ecap) = (self.entry_cap, self.ephemeral_cap);
         let s = self.state_mut(label)?;
-        // what the replacements remove (all or nothing, below) and the room they free
-        let mut gone: BTreeSet<BlobId> = BTreeSet::new();
-        for b in put.replaces {
-            if *b != put.blob_id && s.entries.contains_key(b) {
-                gone.insert(*b);
-            }
-        }
-        let freed_bytes: u64 = gone.iter().filter(|b| s.ephemeral.contains(b)).filter_map(|b| s.entries.get(b)).map(|(m, _)| m.size).sum();
         let held = s.entries.get(&put.blob_id).map(|(m, _)| m.clone());
         // a stamped entry never changes (`LabelStore::put`)
         let same = held.as_ref().is_some_and(|m| put.stamp.is_none() || m.stamp.is_some());
         if !same {
-            if held.is_none() && cap.is_some_and(|c| s.entries.len().saturating_sub(gone.len()) >= c) {
+            if held.is_none() && cap.is_some_and(|c| s.entries.len() >= c) {
                 return Ok(Code::STORAGE_CAP);
             }
-            if put.ephemeral && held.is_none() && ecap.is_some_and(|c| s.ephemeral_bytes.saturating_sub(freed_bytes) + put.blob.len() as u64 > c) {
+            if put.ephemeral && held.is_none() && ecap.is_some_and(|c| s.ephemeral_bytes + put.blob.len() as u64 > c) {
                 return Ok(Code::STORAGE_CAP);
             }
             if put.stamp.is_none() {
@@ -487,65 +399,24 @@ impl LabelStore for MemoryLabelStore {
                 s.ephemeral_bytes += put.blob.len() as u64;
                 s.ephemeral.insert(put.blob_id);
             }
-            let seq = s.append(LogRecord::Added(put.blob_id));
-            let meta = EntryMeta { wrap: put.wrap, stamp: put.stamp, size: put.blob.len() as u64, add_seq: seq };
+            let meta = EntryMeta { wrap: put.wrap, stamp: put.stamp, size: put.blob.len() as u64 };
             s.entries.insert(put.blob_id, (meta, put.expiry));
             if held.is_none() {
                 let e = self.blobs.entry(put.blob_id).or_insert_with(|| (put.blob.to_vec(), 0));
                 e.1 += 1;
             }
         }
-        // removed after the add is logged: a holder applies the new entry before the deletions
-        for b in gone {
-            self.remove_entry(label, &b, put.now)?;
-        }
         Ok(Code::OK)
     }
 
-    fn budget(&self, label: &LabelId) -> Result<Budget, StoreError> {
-        let s = self.state(label).ok_or_else(unknown)?;
-        let (n, bytes) = Self::deposited(s);
-        let max = 64 + 4 * s.head_claims();
-        Ok(Budget { entries_left: max.saturating_sub(n), bytes_left: (max * DEPOSIT_ENTRY_BYTES).saturating_sub(bytes) })
-    }
 
     fn delete(&mut self, label: &LabelId, blob_id: &BlobId, now: u64) -> Result<Code, StoreError> {
         self.remove_entry(label, blob_id, now)?;
         Ok(Code::OK)
     }
 
-    fn log_head(&self, label: &LabelId) -> Result<([u8; 16], u64), StoreError> {
-        let s = self.state(label).ok_or_else(unknown)?;
-        Ok((s.log_id, s.next_seq))
-    }
-
-    fn log_after(&self, label: &LabelId, after: u64, max: usize) -> Result<Option<Vec<(u64, LogRecord)>>, StoreError> {
-        let s = self.state(label).ok_or_else(unknown)?;
-        if after < s.horizon || after > s.next_seq {
-            return Ok(None);
-        }
-        let start = s.log.partition_point(|(n, _)| *n <= after);
-        Ok(Some(s.log.iter().skip(start).take(max).cloned().collect()))
-    }
-
-    fn live_by_id(&self, label: &LabelId, after: Option<&BlobId>, max: usize) -> Result<Vec<(BlobId, EntryMeta)>, StoreError> {
-        let s = self.state(label).ok_or_else(unknown)?;
-        let range = match after {
-            Some(a) => s.entries.range((std::ops::Bound::Excluded(*a), std::ops::Bound::Unbounded)),
-            None => s.entries.range(..),
-        };
-        Ok(range.take(max).map(|(k, (m, _))| (*k, m.clone())).collect())
-    }
-
-    fn live_ids_in(&self, label: &LabelId, lower: &BlobId, upper: Option<&BlobId>) -> Result<Vec<BlobId>, StoreError> {
-        let Some(s) = self.state(label) else { return Ok(Vec::new()) };
-        let ids: Vec<BlobId> = match upper {
-            Some(u) if u <= lower => Vec::new(),
-            Some(u) => s.entries.range(*lower..*u).map(|(k, _)| *k).collect(),
-            None => s.entries.range(*lower..).map(|(k, _)| *k).collect(),
-        };
-        self.ids_read.set(self.ids_read.get() + ids.len() as u64);
-        Ok(ids)
+    fn live_ids(&self, label: &LabelId) -> Result<Vec<BlobId>, StoreError> {
+        Ok(self.state(label).map(|s| s.entries.keys().copied().collect()).unwrap_or_default())
     }
 
     fn relay(&mut self, label: &LabelId, blob_id: &BlobId, size: usize, expiry: Option<u64>, now: u64) -> Result<crate::RelayVerdict, StoreError> {
@@ -610,7 +481,7 @@ pub(crate) mod tests {
         for seed in 0..16u64 {
             let pick = |i: usize, r: usize| 1 + osis_base::hash::hash(&[seed.to_le_bytes(), (i as u64).to_le_bytes(), (r as u64).to_le_bytes()].concat())[0] % (2 + seed as u8);
             let p = path(40, pick);
-            let mut store = MemoryLabelStore::new([1; 32]);
+            let mut store = MemoryLabelStore::new();
             for (i, s) in p.iter().enumerate() {
                 store.push_step(&l, s.clone(), None).unwrap();
                 let at = &p[..=i];

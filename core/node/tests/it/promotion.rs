@@ -6,8 +6,8 @@ use crate::net::hosted_nodes;
 use crate::net;
 use net::*;
 use osis_base::{BlobId, CommitId, LabelId, Role, Tid};
-use osis_node::sync::{Action, EntryKind};
-use osis_proto::{LabelStore, Message, encode_frame};
+use osis_node::sync::EntryKind;
+use osis_proto::LabelStore;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// The durable commit entries node `n` holds under `l`: commit and parts.
@@ -29,7 +29,7 @@ fn stamped(net: &Net, host: usize, l: &LabelId, id: &BlobId) -> bool {
 }
 
 /// Reader `r` deposits at `host` under `g`'s label `l` `n` fresh encryptions of each of
-/// `commits` (its parts there), all in one go: the IDs per commit.
+/// `commits` (its parts there), as Deposit items: the IDs per commit.
 fn flood(net: &mut Net, r: usize, (host, g, l): (usize, Tid, LabelId), commits: &BTreeMap<CommitId, Vec<usize>>, n: usize) -> BTreeMap<CommitId, Vec<BlobId>> {
     let (_, gl) = net.group_labels(r).into_iter().find(|(_, x)| x.id == l).unwrap();
     let head = net.host_path(host, &l).last().unwrap().clone();
@@ -37,8 +37,7 @@ fn flood(net: &mut Net, r: usize, (host, g, l): (usize, Tid, LabelId), commits: 
     let deposit = keys.deposit.unwrap();
     let secret = net.engine(r).wrap_secret(&g, None).unwrap().unwrap();
     let mut rng = osis_crypto::SeededRng::from_u64(7);
-    let (mut out, mut sends) = (BTreeMap::new(), Vec::new());
-    let conn = net.conn_to(r, host).unwrap();
+    let mut out = BTreeMap::new();
     for (c, parts) in commits {
         let Some(body) = net.engine(r).part_body(c, &parts.iter().copied().collect()).unwrap() else { continue };
         for _ in 0..n {
@@ -46,11 +45,9 @@ fn flood(net: &mut Net, r: usize, (host, g, l): (usize, Tid, LabelId), commits: 
             let wrap = osis_crypto::wrap(&secret, &s.id, &s.key, body.order).unwrap();
             let sig = osis_label::sign_deposit(&deposit, &l, &s.id, &wrap, false);
             out.entry(*c).or_insert_with(Vec::new).push(s.id);
-            sends.push(Action::Send { conn, bytes: encode_frame(&Message::Deposit { id: 0x4000_0001, label: l, blob: s.blob, wrap, sig }.encode()) });
+            net.deposit_at(host, &l, &s.blob, wrap, &sig);
         }
     }
-    net.actions(r, sends);
-    net.run();
     out
 }
 

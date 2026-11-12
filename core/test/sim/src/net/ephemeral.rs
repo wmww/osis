@@ -358,7 +358,7 @@ impl NetSim {
     }
 
     /// The nodes of `ns` grouped by what connects them for `g`'s label through hosts not in
-    /// `lossy`: a host they reach, hosts replicating to each other.
+    /// `lossy`: a host they reach (two hosts only through a node).
     fn eph_components(&mut self, g: &Tid, ns: &[usize], lossy: &BTreeSet<usize>) -> Vec<Vec<usize>> {
         let mut edges: BTreeMap<Party, BTreeSet<Party>> = BTreeMap::new();
         let mut link = |a: Party, b: Party| {
@@ -371,10 +371,6 @@ impl NetSim {
                 if self.label_reaches(*n, s, g) {
                     link(Party::N(*n), Party::S(s));
                 }
-            }
-            let peers = self.hosts.get(s).map(|x| x.peers.clone()).unwrap_or_default();
-            for p in peers.into_iter().filter(|p| !lossy.contains(p) && self.hub(*p).is_some()) {
-                link(Party::S(s), Party::S(p));
             }
         }
         let mut seen: BTreeSet<Party> = BTreeSet::new();
@@ -536,7 +532,7 @@ fn random_cap(d: &mut Dice) -> u64 {
 }
 
 /// Shared ephemeral data under faults (notes/ephemeral.md): A (admin) and B (writer) reach both
-/// replicating hosts, C (writer) only s0, D (reader) only s1; odd seeds give s0 a random
+/// hosts (the only way between them), C (writer) only s0, D (reader) only s1; odd seeds give s0 a random
 /// ephemeral cap (0 and below one cover included). A window added to the group and a durable item get random
 /// ephemeral (expiring ones included) and signal writes amid durable writes, lossy links, node
 /// and host crashes (mid-write too), partitions and slow hosts; then the quiescent
@@ -551,7 +547,6 @@ pub fn ephemeral(s: Seeds) -> Res<Report> {
         let policy = HostPolicy { ephemeral_bytes: cap.unwrap_or(sim.cfg.policy.ephemeral_bytes), ..sim.cfg.policy.clone() };
         let s0 = sim.add_host_with(policy)?;
         let s1 = sim.add_host()?;
-        sim.replicate(s0, s1)?;
         let a = sim.add_node(&[s0, s1], clock(&mut d))?;
         let b = sim.add_node(&[s0, s1], clock(&mut d))?;
         let c = sim.add_node(&[s0], clock(&mut d))?;

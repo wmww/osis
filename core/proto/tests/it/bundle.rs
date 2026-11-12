@@ -4,14 +4,14 @@
 use osis_base::{Value, cbor};
 use osis_crypto::{Secret32, SigningSecret};
 use osis_label::{BundleWriter, Record, sign_stamp};
-use osis_proto::bundle::BundleImport;
+use osis_proto::bundle::{BundleImport, Imported};
 use osis_proto::examples::Fixture;
-use osis_proto::{ClientEvent, Event, encode_frame};
+use osis_proto::{Event, encode_frame};
 
-fn import(file: &[u8]) -> Vec<ClientEvent> {
+fn import(file: &[u8]) -> Vec<Imported> {
     let mut imp = BundleImport::new(file).unwrap();
     let mut out = vec![];
-    while let Some(ev) = imp.next_events().unwrap() {
+    while let Some(ev) = imp.next().unwrap() {
         out.extend(ev);
     }
     out
@@ -42,12 +42,15 @@ fn import_replays_records() {
     let mut file = w.finish().unwrap();
     file.extend(encode_frame(&cbor::encode(&Value::List(vec![Value::Int(9), Value::Int(1)]))));
     let ev = import(&file);
-    assert_eq!(ev[0], ClientEvent::PathSteps { label: l, steps: vec![f.genesis.clone(), f.child.clone()], more: false });
-    let one = |e| ClientEvent::Events { label: l, events: vec![e], cursor: None };
-    assert_eq!(ev[1], one(Event::Added { blob_id: id1, blob: Some(b1), wrap, stamp: Some(stamp) }));
-    assert_eq!(ev[2], one(Event::Added { blob_id: id2, blob: Some(b2), wrap, stamp: None }));
-    assert!(matches!(ev[3], ClientEvent::PeerError(_)));
-    assert_eq!(ev[4], one(Event::Deleted(id1)));
+    assert!(matches!(&ev[0], Imported::Path { label, steps } if *label == l && *steps == vec![f.genesis.clone(), f.child.clone()]), "{ev:?}");
+    let event = |i: usize| match &ev[i] {
+        Imported::Event { label, event } if *label == l => event.clone(),
+        e => panic!("{i}: {e:?}"),
+    };
+    assert_eq!(event(1), Event::Added { blob_id: id1, blob: Some(b1), wrap, stamp: Some(stamp) });
+    assert_eq!(event(2), Event::Added { blob_id: id2, blob: Some(b2), wrap, stamp: None });
+    assert!(matches!(ev[3], Imported::Refused(_)), "{ev:?}");
+    assert_eq!(event(4), Event::Deleted(id1));
     assert_eq!(ev.len(), 5);
 }
 
@@ -60,5 +63,5 @@ fn import_rejects() {
     w.record(&Record::Path { label: f.label, steps: vec![(f.genesis.clone(), None), (f.child.clone(), None)] }).unwrap();
     w.record(&Record::Path { label: f.label, steps: vec![(f.genesis.clone(), None)] }).unwrap();
     let ev = import(&w.finish().unwrap());
-    assert!(matches!(&ev[..], [ClientEvent::PathSteps { .. }, ClientEvent::PeerError(_)]), "{ev:?}");
+    assert!(matches!(&ev[..], [Imported::Path { .. }, Imported::Refused(_)]), "{ev:?}");
 }

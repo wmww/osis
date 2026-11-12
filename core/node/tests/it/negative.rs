@@ -63,11 +63,9 @@ fn compaction_keeps_bodies_until_keep_at_least_spec_commits_5() {
     assert_eq!(net.engine(a).get(&t, &ak).unwrap(), Some(s("v3")));
 }
 
-/// Deletions in host `host`'s log of label `l`.
+/// Removals of label `l` in host `host`'s node log.
 fn deletions(net: &Net, host: usize, l: &osis_base::LabelId) -> usize {
-    use osis_proto::{LabelStore, LogRecord};
-    let recs = net.hosts[host].hub.store().log_after(l, 0, 1 << 20).unwrap().unwrap_or_default();
-    recs.iter().filter(|(_, r)| matches!(r, LogRecord::Deleted(_))).count()
+    net.logged_at(host, l).1.len()
 }
 
 /// Two writers, one with its clock `MAX_DRIFT` ahead, compact two dead bodies and pass their
@@ -128,11 +126,9 @@ fn compaction_across_skew_no_churn_spec_sync_7() {
     }
 }
 
-/// Deletions in host `host`'s log of label `l` of the blobs in `of`.
+/// Removals of label `l` in host `host`'s node log of the blobs in `of`.
 fn deletions_of(net: &Net, host: usize, l: &osis_base::LabelId, of: &std::collections::BTreeSet<osis_base::BlobId>) -> usize {
-    use osis_proto::{LabelStore, LogRecord};
-    let recs = net.hosts[host].hub.store().log_after(l, 0, 1 << 20).unwrap().unwrap_or_default();
-    recs.iter().filter(|(_, r)| matches!(r, LogRecord::Deleted(id) if of.contains(id))).count()
+    net.logged_at(host, l).1.iter().filter(|id| of.contains(id)).count()
 }
 
 // spec/commits.md §5 (replaced, from the held set), spec/sync.md §6: X < Y < Z on a kept
@@ -205,9 +201,7 @@ fn local_dating_churn() -> (usize, usize) {
     }
     assert!(!net.engine(a).body_not_dropped(&x, &t, &ak), "A past its bound");
     assert!(!net.engine(b).body_not_dropped(&x, &t, &ak), "B past its bound");
-    use osis_proto::{LabelStore, LogRecord};
-    let recs = net.hosts[host].hub.store().log_after(&l, 0, 1 << 20).unwrap().unwrap_or_default();
-    let of_x = recs.iter().filter(|(_, r)| matches!(r, LogRecord::Deleted(id) if seen.contains(id))).count();
+    let of_x = net.logged_at(host, &l).1.iter().filter(|id| seen.contains(id)).count();
     (of_x, seen.len())
 }
 

@@ -11,7 +11,7 @@ pub enum Domain {
     Commit,
     LabelRegister,
     LabelOpen,
-    Upload,
+    Stamp,
     Deposit,
     Delete,
     /// A LAN announcement, by a dialable key (spec/sync.md §10).
@@ -34,7 +34,7 @@ impl Domain {
         Domain::Commit,
         Domain::LabelRegister,
         Domain::LabelOpen,
-        Domain::Upload,
+        Domain::Stamp,
         Domain::Deposit,
         Domain::Delete,
         Domain::LanAnnounce,
@@ -49,7 +49,7 @@ impl Domain {
             Domain::Commit => "osis v1 commit",
             Domain::LabelRegister => "osis v1 label register",
             Domain::LabelOpen => "osis v1 label open",
-            Domain::Upload => "osis v1 upload",
+            Domain::Stamp => "osis v1 upload",
             Domain::Deposit => "osis v1 deposit",
             Domain::Delete => "osis v1 delete",
             Domain::LanAnnounce => "osis v1 lan announce",
@@ -286,7 +286,7 @@ mod tests {
         let [_, _, _, _, _, _, hi, lo] = osis_base::format::TAG_ENUM.to_be_bytes();
         assert_eq!(osis_base::encode(&pk.to_value())[..5], [0xd9, hi, lo, 0x82, 0x01]);
         assert_eq!(VerifyingKey::from_value(&pk.to_value()), Ok(pk));
-        let sig = sk.sign(Domain::Upload, &[0; 32]);
+        let sig = sk.sign(Domain::Stamp, &[0; 32]);
         assert_eq!(Signature::from_value(&sig.to_value()), Ok(sig));
         let other = Value::Enum(2, Some(Box::new(Value::Bytes(vec![0; 32]))));
         let e = VerifyingKey::from_value(&other).unwrap_err();

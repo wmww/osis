@@ -5,7 +5,6 @@
 
 use crate::Error;
 use crate::dec::{self, Fields};
-use crate::rbsr::{self, Bound};
 use osis_base::format::{MAX_BLOB, MAX_MESSAGE};
 use osis_base::{BlobId, LabelId, Limits, Value, cbor};
 pub use osis_crypto::Signature;
@@ -18,10 +17,6 @@ pub type Wrap = [u8; WRAP_LEN];
 
 /// Per-message caps (spec/wire.md §11.2).
 pub const MAX_ITEMS: usize = 1024;
-pub const MAX_GAINED: usize = 4096;
-pub const MAX_LABELS: usize = 1024;
-pub const MAX_RECONCILE_RANGES: usize = 256;
-pub const MAX_RECONCILE_REPLY_RANGES: usize = 4096;
 pub const MAX_PATH_STEPS: usize = 48;
 /// Open labels per connection a peer may refuse to exceed (code 4).
 pub const MAX_OPEN_LABELS: usize = 4096;
@@ -61,54 +56,12 @@ impl Code {
     pub const EXPIRED: Code = Code(7);
     pub const NOT_OPENED: Code = Code(8);
     pub const NOT_HEAD: Code = Code(9);
-    pub const CURSOR_INVALID: Code = Code(10);
     pub const UNSUPPORTED: Code = Code(11);
     pub const STORAGE_CAP: Code = Code(12);
     pub const UNKNOWN_LABEL: Code = Code(13);
     pub const NOT_ADMITTED: Code = Code(14);
-    /// A Sync cursor of the peer's log that the log was trimmed past.
-    pub const LOG_TRIMMED: Code = Code(15);
 }
 
-/// `entry := [blob, wrap, stamp] | [blob, wrap, stamp, [replace+]]`.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Entry {
-    pub blob: Vec<u8>,
-    pub wrap: Wrap,
-    pub stamp: Signature,
-    /// Entries this one replaces (spec/sync.md §5, Replace): removed iff it is admitted.
-    pub replaces: Vec<DeleteItem>,
-}
-
-impl Entry {
-    /// An entry replacing nothing.
-    pub fn new(blob: Vec<u8>, wrap: Wrap, stamp: Signature) -> Entry {
-        Entry { blob, wrap, stamp, replaces: Vec::new() }
-    }
-}
-
-/// `replace := [blob_id, [[level, dsig]*], sig]`: an entry an upload replaces, by the
-/// signatures a Delete of it without `at` carries (`at` is always `None`).
-fn replace_value(d: &DeleteItem) -> Value {
-    let by = Value::List(d.by.iter().map(|(l, s)| Value::List(vec![Value::uint(u64::from(*l)), Value::bytes(&s.0)])).collect());
-    Value::List(vec![Value::bytes(&d.blob.0), by, Value::bytes(&d.sig.0)])
-}
-
-fn replace_from_value(v: Value) -> Result<DeleteItem, Error> {
-    let mut f = Fields::exact(v, 3, "replace")?;
-    let blob = BlobId(f.fixed()?);
-    let by = osis_label::by_from_value(&f.next()?).map_err(|_| Error::Malformed("replace levels"))?;
-    let r = DeleteItem { blob, by, sig: Signature(f.fixed()?) };
-    f.end()?;
-    Ok(r)
-}
-
-/// `cursor := [log_id, seq]`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct Cursor {
-    pub log_id: [u8; 16],
-    pub seq: u64,
-}
 
 /// `event := [0, blob_id, Opt(blob), wrap, Opt(stamp)] | [1, blob_id] | [3, step]`.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -122,25 +75,6 @@ pub enum Event {
     /// The sending node, which cannot read the label, refused an entry of it it pulled for room
     /// (true), or has room again (false): carried by a Stream without cursor (spec/sync.md §10).
     Full(bool),
-}
-
-/// `range := [lower, upper, mode]`.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Range {
-    pub lower: Bound,
-    /// Empty: the end of the ID space.
-    pub upper: Bound,
-    pub mode: Mode,
-}
-
-/// `mode := [0, fingerprint] | [1, [blob_id*]] | [2, [blob_id*], [blob_id*]]`.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Mode {
-    Fingerprint([u8; 16]),
-    /// The sender's IDs in the range, at most 32.
-    Ids(Vec<BlobId>),
-    /// The responder's IDs the list lacked (at most 1024), then the listed IDs it lacks.
-    Diff { theirs: Vec<BlobId>, lacking: Vec<BlobId> },
 }
 
 /// A Fetch reply item: the entry of the label, or none.
@@ -163,23 +97,12 @@ pub enum Message {
     Register { id: Id, label: LabelId, step: Step, claim_set: Option<ClaimSet> },
     Path { id: Id, label: LabelId, after: Option<StepId> },
     PathReply { id: Id, steps: Vec<Step>, more: bool },
-    Upload { id: Id, label: LabelId, entries: Vec<Entry> },
+    /// One code per item of a Delete, in order.
     Status { id: Id, codes: Vec<Code> },
-    Deposit { id: Id, label: LabelId, blob: Vec<u8>, wrap: Wrap, sig: Signature },
-    /// `budget` (entries, bytes left) only for a deposit signed by the head's deposit key.
-    Budget { id: Id, code: Code, budget: Option<(u64, u64)> },
     /// Items with `at` above 2^63 - 1 cannot be encoded (check with `osis_label::delete_digest`).
     Delete { id: Id, label: LabelId, items: Vec<DeleteItem> },
-    /// `max_reply`: the reply's frame body bound, as for a Call.
-    Sync { id: Id, label: LabelId, cursor: Option<Cursor>, inline_limit: u64, max_reply: u64, entries: Vec<Entry>, gained: Vec<BlobId> },
-    SyncReply { id: Id, events: Vec<Event>, want: Vec<BlobId>, codes: Vec<Code>, cursor: Cursor, more: bool },
-    Reconcile { id: Id, label: LabelId, ranges: Vec<Range> },
-    ReconcileReply { id: Id, ranges: Vec<Range> },
     Fetch { id: Id, label: LabelId, max_reply: u64, ids: Vec<BlobId> },
     FetchReply { id: Id, items: Vec<Fetched> },
-    Subscribe { id: Id, labels: Vec<LabelId> },
-    Unsubscribe { id: Id, labels: Vec<LabelId> },
-    Push { label: LabelId, events: Vec<Event>, cursor: Cursor },
     /// Client port (notes/client-port.md §2): a main session sends no secret, a thin client
     /// its bearer secret (`Debug` redacted, zeroized on drop).
     Auth { id: Id, secret: Option<osis_crypto::Secret32>, session: [u8; 16] },
@@ -370,15 +293,16 @@ pub fn peek_head(body: &[u8]) -> Option<(u64, Id)> {
     Some((kind, Id::try_from(id).ok()?))
 }
 
-/// Kinds that answer a request, by its id: every kind with an id that is no request (Push,
-/// Notify and the stream's Stream, Applied, Digest and Members answer none).
+/// Kinds that answer a request, by its id: every kind with an id that is no request (Notify
+/// and the stream's Stream, Applied, Digest and Members answer none). Retired kinds (10, 12,
+/// 13, 15-18, 21-23) are neither.
 pub fn is_reply_kind(kind: u64) -> bool {
-    kind <= 46 && !is_request_kind(kind) && !matches!(kind, 23 | 29 | 43..=46)
+    kind <= 46 && !is_request_kind(kind) && !matches!(kind, 10 | 12 | 13 | 15..=18 | 21..=23 | 29 | 43..=46)
 }
 
 /// Kinds that are requests (spec/wire.md §11.2: those with `->`).
 pub fn is_request_kind(kind: u64) -> bool {
-    matches!(kind, 2 | 4 | 7 | 8 | 10 | 12 | 14 | 15 | 17 | 19 | 21 | 22 | 24 | 25 | 27 | 28 | 30 | 31 | 32 | 34 | 36 | 37 | 38 | 40 | 41)
+    matches!(kind, 2 | 4 | 7 | 8 | 14 | 19 | 24 | 25 | 27 | 28 | 30 | 31 | 32 | 34 | 36 | 37 | 38 | 40 | 41)
 }
 
 impl OfferItem {
@@ -431,20 +355,10 @@ impl Message {
             Register { .. } => 7,
             Path { .. } => 8,
             PathReply { .. } => 9,
-            Upload { .. } => 10,
             Status { .. } => 11,
-            Deposit { .. } => 12,
-            Budget { .. } => 13,
             Delete { .. } => 14,
-            Sync { .. } => 15,
-            SyncReply { .. } => 16,
-            Reconcile { .. } => 17,
-            ReconcileReply { .. } => 18,
             Fetch { .. } => 19,
             FetchReply { .. } => 20,
-            Subscribe { .. } => 21,
-            Unsubscribe { .. } => 22,
-            Push { .. } => 23,
             Auth { .. } => 24,
             Call { .. } => 25,
             Reply { .. } => 26,
@@ -471,14 +385,14 @@ impl Message {
         }
     }
 
-    /// The request id (0 for Push).
+    /// The request id (0 for a push).
     pub fn id(&self) -> Id {
         use Message::*;
         match self {
-            Error { id, .. } | Ok { id } | Ping { id, .. } | Pong { id, .. } | Open { id, .. } | Opened { id, .. } | Step { id, .. } | Register { id, .. } | Path { id, .. } | PathReply { id, .. } | Upload { id, .. } | Status { id, .. } | Deposit { id, .. } | Budget { id, .. } | Delete { id, .. } | Sync { id, .. } | SyncReply { id, .. } | Reconcile { id, .. } | ReconcileReply { id, .. } | Fetch { id, .. } | FetchReply { id, .. } | Subscribe { id, .. } | Unsubscribe { id, .. } | Auth { id, .. } | Call { id, .. } | Reply { id, .. } | Sub { id, .. } | Unsub { id, .. } | Stranded { id, .. } | Suspect { id, .. } | Prove { id, .. } | Proved { id, .. } | Resume { id, .. } | Resumed { id, .. } | Beacons { id, .. } | Offer { id, .. } | Lost { id, .. } | Shared { id, .. } | NoRecord { id } => *id,
+            Error { id, .. } | Ok { id } | Ping { id, .. } | Pong { id, .. } | Open { id, .. } | Opened { id, .. } | Step { id, .. } | Register { id, .. } | Path { id, .. } | PathReply { id, .. } | Status { id, .. } | Delete { id, .. } | Fetch { id, .. } | FetchReply { id, .. } | Auth { id, .. } | Call { id, .. } | Reply { id, .. } | Sub { id, .. } | Unsub { id, .. } | Stranded { id, .. } | Suspect { id, .. } | Prove { id, .. } | Proved { id, .. } | Resume { id, .. } | Resumed { id, .. } | Beacons { id, .. } | Offer { id, .. } | Lost { id, .. } | Shared { id, .. } | NoRecord { id } => *id,
             Pull(p) => p.id,
             PullReply(r) => r.id,
-            Push { .. } | Notify { .. } | Stream(_) | Applied { .. } | Digest { .. } | Members { .. } => 0,
+            Notify { .. } | Stream(_) | Applied { .. } | Digest { .. } | Members { .. } => 0,
         }
     }
 
@@ -511,17 +425,10 @@ impl Message {
             M::Step { step, .. } => vec![k, id, step_value(step)],
             M::Register { label, step, claim_set, .. } => vec![k, id, l(label), step_value(step), Value::opt(claim_set.as_ref().map(|c| Value::Bytes(c.to_bytes())))],
             M::Path { label, after, .. } => vec![k, id, l(label), Value::opt(after.as_ref().map(|a| Value::bytes(&a.0)))],
+            M::Status { codes, .. } => vec![k, id, Value::List(codes.iter().map(|c| Value::uint(c.0)).collect())],
             M::PathReply { steps, more, .. } => vec![k, id, Value::List(steps.iter().map(step_value).collect()), Value::Bool(*more)],
-            M::Upload { label, entries, .. } => vec![k, id, l(label), entries_value(entries)],
-            M::Status { codes, .. } => vec![k, id, codes_value(codes)],
-            M::Deposit { label, blob, wrap, sig, .. } => vec![k, id, l(label), Value::bytes(blob), Value::bytes(wrap), Value::bytes(&sig.0)],
-            M::Budget { code, budget, .. } => vec![k, id, Value::uint(code.0), Value::opt(budget.map(|(e, b)| Value::List(vec![Value::uint(e), Value::uint(b)])))],
             // An unencodable item (at above 2^63 - 1) becomes `[]`, which the peer rejects.
             M::Delete { label, items, .. } => vec![k, id, l(label), Value::List(items.iter().map(|i| i.to_value().unwrap_or(Value::List(vec![]))).collect())],
-            M::Sync { label, cursor, inline_limit, max_reply, entries, gained, .. } => vec![k, id, l(label), Value::opt(cursor.as_ref().map(cursor_value)), Value::uint(*inline_limit), Value::uint(*max_reply), entries_value(entries), ids_value(gained)],
-            M::SyncReply { events, want, codes, cursor, more, .. } => vec![k, id, events_value(events), ids_value(want), codes_value(codes), cursor_value(cursor), Value::Bool(*more)],
-            M::Reconcile { label, ranges, .. } => vec![k, id, l(label), ranges_value(ranges)],
-            M::ReconcileReply { ranges, .. } => vec![k, id, ranges_value(ranges)],
             M::Fetch { label, max_reply, ids, .. } => vec![k, id, l(label), Value::uint(*max_reply), ids_value(ids)],
             M::FetchReply { items, .. } => vec![
                 k,
@@ -536,8 +443,6 @@ impl Message {
                         .collect(),
                 ),
             ],
-            M::Subscribe { labels, .. } | M::Unsubscribe { labels, .. } => vec![k, id, Value::List(labels.iter().map(l).collect())],
-            M::Push { label, events, cursor } => vec![k, id, l(label), events_value(events), cursor_value(cursor)],
             M::Stranded { label, holder, keys, .. } => {
                 let [commits, records] = keys.to_values();
                 vec![k, id, l(label), Value::Tid(*holder), commits, records]
@@ -595,22 +500,21 @@ impl Message {
 fn decode_body(kind: u64, id: Id, v: Value) -> Result<Message, Error> {
     let n = match kind {
         1 | 40 => 2,
-        0 | 2 | 3 | 6 | 11 | 18 | 20 | 21 | 22 | 26 | 28 | 32 | 33 | 37 | 38 | 39 | 44 | 45 => 3,
-        4 | 5 | 8 | 9 | 10 | 13 | 14 | 17 | 24 | 27 | 29 | 31 | 34 | 35 => 4,
-        7 | 19 | 23 | 25 => 5,
-        12 | 30 => 6,
-        16 => 7,
-        15 | 41 => 8,
+        0 | 2 | 3 | 6 | 11 | 20 | 26 | 28 | 32 | 33 | 37 | 38 | 39 | 44 | 45 => 3,
+        4 | 5 | 8 | 9 | 14 | 24 | 27 | 29 | 31 | 34 | 35 => 4,
+        7 | 19 | 25 => 5,
+        30 => 6,
+        41 => 8,
         36 | 42 => 9,
         43 => 5,
         46 => 4,
         _ => return Err(Error::UnknownKind(kind)),
     };
-    // Push has no reply (id 0); every request and reply has a real id; an Error answering a
+    // Pushes have no reply (id 0); every request and reply has a real id; an Error answering a
     // broken frame may carry 0.
     match (kind, id) {
-        (23 | 29 | 43..=46, 0) | (0, _) => {}
-        (23 | 29 | 43..=46, _) => return Err(Error::Malformed("id of a message without reply")),
+        (29 | 43..=46, 0) | (0, _) => {}
+        (29 | 43..=46, _) => return Err(Error::Malformed("id of a message without reply")),
         (_, 0) => return Err(Error::Malformed("id 0")),
         _ => {}
     }
@@ -631,39 +535,14 @@ fn decode_body(kind: u64, id: Id, v: Value) -> Result<Message, Error> {
             let steps = f.list(0, MAX_PATH_STEPS, "path steps")?.into_iter().map(step_of).collect::<Result<_, _>>()?;
             Message::PathReply { id, steps, more: f.bool()? }
         }
-        10 => Message::Upload { id, label: label(&mut f)?, entries: entries(f.list(1, MAX_ITEMS, "upload entries")?)? },
-        11 => Message::Status { id, codes: codes(f.list(1, usize::MAX, "status codes")?)? },
-        12 => Message::Deposit { id, label: label(&mut f)?, blob: f.bytes(MAX_BLOB)?, wrap: f.fixed()?, sig: Signature(f.fixed()?) },
-        13 => Message::Budget { id, code: Code(f.uint()?), budget: f.opt()?.map(budget).transpose()? },
+        11 => Message::Status { id, codes: f.list(1, usize::MAX, "status codes")?.into_iter().map(|v| dec::uint(v, "code").map(Code)).collect::<Result<_, _>>()? },
         14 => {
             let label = label(&mut f)?;
             let items = f.list(1, MAX_ITEMS, "delete items")?.iter().map(DeleteItem::from_value).collect::<Result<_, _>>()?;
             Message::Delete { id, label, items }
         }
-        15 => {
-            let label = label(&mut f)?;
-            let cursor = f.opt()?.map(cursor).transpose()?;
-            let inline_limit = f.uint()?;
-            let max_reply = max_reply(&mut f)?;
-            let entries = entries(f.list(0, MAX_ITEMS, "sync entries")?)?;
-            let gained = ids(f.list(0, MAX_GAINED, "gained")?)?;
-            Message::Sync { id, label, cursor, inline_limit, max_reply, entries, gained }
-        }
-        16 => Message::SyncReply {
-            id,
-            events: events(f.list(0, usize::MAX, "events")?)?,
-            want: ids(f.list(0, MAX_GAINED, "want")?)?,
-            codes: codes(f.list(0, usize::MAX, "codes")?)?,
-            cursor: cursor(f.next()?)?,
-            more: f.bool()?,
-        },
-        17 => Message::Reconcile { id, label: label(&mut f)?, ranges: ranges(f.list(1, MAX_RECONCILE_RANGES, "ranges")?)? },
-        18 => Message::ReconcileReply { id, ranges: ranges(f.list(0, MAX_RECONCILE_REPLY_RANGES, "ranges")?)? },
         19 => Message::Fetch { id, label: label(&mut f)?, max_reply: max_reply(&mut f)?, ids: ids(f.list(1, MAX_ITEMS, "fetch ids")?)? },
         20 => Message::FetchReply { id, items: f.list(0, MAX_ITEMS, "fetch items")?.into_iter().map(fetched).collect::<Result<_, _>>()? },
-        21 => Message::Subscribe { id, labels: labels(f.list(1, MAX_LABELS, "labels")?)? },
-        22 => Message::Unsubscribe { id, labels: labels(f.list(1, MAX_LABELS, "labels")?)? },
-        23 => Message::Push { label: label(&mut f)?, events: events(f.list(1, usize::MAX, "events")?)?, cursor: cursor(f.next()?)? },
         24 => Message::Auth {
             id,
             secret: f.opt()?.map(|v| dec::fixed(v, "client secret").map(osis_crypto::Secret32::from_bytes)).transpose()?,
@@ -813,59 +692,6 @@ fn entry_box(v: Value) -> Result<SecretBox, Error> {
     Ok(e)
 }
 
-/// Entries of an Upload or Sync: at most `MAX_ITEMS` replace items over all of them.
-fn entries(vs: Vec<Value>) -> Result<Vec<Entry>, Error> {
-    let mut left = MAX_ITEMS;
-    vs.into_iter()
-        .map(|v| {
-            let mut f = Fields::range(v, 3, 4, "entry")?;
-            let (blob, wrap, stamp) = (f.bytes(MAX_BLOB)?, f.fixed()?, Signature(f.fixed()?));
-            let replaces = match f.remaining() {
-                0 => Vec::new(),
-                _ => {
-                    let rs = f.list(1, left, "replaces")?;
-                    left -= rs.len();
-                    rs.into_iter().map(replace_from_value).collect::<Result<_, _>>()?
-                }
-            };
-            f.end()?;
-            Ok(Entry { blob, wrap, stamp, replaces })
-        })
-        .collect()
-}
-
-fn entries_value(es: &[Entry]) -> Value {
-    Value::List(
-        es.iter()
-            .map(|e| {
-                let mut v = vec![Value::bytes(&e.blob), Value::bytes(&e.wrap), Value::bytes(&e.stamp.0)];
-                if !e.replaces.is_empty() {
-                    v.push(Value::List(e.replaces.iter().map(replace_value).collect()));
-                }
-                Value::List(v)
-            })
-            .collect(),
-    )
-}
-
-fn budget(v: Value) -> Result<(u64, u64), Error> {
-    let mut f = Fields::exact(v, 2, "budget")?;
-    let b = (f.uint()?, f.uint()?);
-    f.end()?;
-    Ok(b)
-}
-
-fn cursor(v: Value) -> Result<Cursor, Error> {
-    let mut f = Fields::exact(v, 2, "cursor")?;
-    let c = Cursor { log_id: f.fixed()?, seq: f.uint()? };
-    f.end()?;
-    Ok(c)
-}
-
-fn cursor_value(c: &Cursor) -> Value {
-    Value::List(vec![Value::bytes(&c.log_id), Value::uint(c.seq)])
-}
-
 fn ids(vs: Vec<Value>) -> Result<Vec<BlobId>, Error> {
     vs.into_iter().map(|v| dec::fixed(v, "blob id").map(BlobId)).collect()
 }
@@ -876,18 +702,6 @@ fn ids_value(ids: &[BlobId]) -> Value {
 
 fn labels(vs: Vec<Value>) -> Result<Vec<LabelId>, Error> {
     vs.into_iter().map(|v| dec::fixed(v, "label id").map(LabelId)).collect()
-}
-
-fn codes(vs: Vec<Value>) -> Result<Vec<Code>, Error> {
-    vs.into_iter().map(|v| dec::uint(v, "code").map(Code)).collect()
-}
-
-fn codes_value(cs: &[Code]) -> Value {
-    Value::List(cs.iter().map(|c| Value::uint(c.0)).collect())
-}
-
-fn events(vs: Vec<Value>) -> Result<Vec<Event>, Error> {
-    vs.into_iter().map(event).collect()
 }
 
 fn event(v: Value) -> Result<Event, Error> {
@@ -915,10 +729,6 @@ pub(crate) fn event_value(e: &Event) -> Value {
         Event::Full(full) => vec![Value::uint(2), Value::Bool(*full)],
         Event::Head(step) => vec![Value::uint(3), step_value(step)],
     })
-}
-
-fn events_value(es: &[Event]) -> Value {
-    Value::List(es.iter().map(event_value).collect())
 }
 
 fn opt_cursor(c: &Option<Vec<u8>>) -> Value {
@@ -982,58 +792,6 @@ fn fetched(v: Value) -> Result<Fetched, Error> {
     Ok(Fetched { blob_id, entry })
 }
 
-fn ranges(vs: Vec<Value>) -> Result<Vec<Range>, Error> {
-    let mut out: Vec<Range> = Vec::with_capacity(vs.len());
-    for v in vs {
-        let mut f = Fields::exact(v, 3, "range")?;
-        let lower = Bound::new(f.bytes(32)?).ok_or(Error::Malformed("bound"))?;
-        let upper = Bound::new(f.bytes(32)?).ok_or(Error::Malformed("bound"))?;
-        if !rbsr::lower_below_upper(&lower, &upper) {
-            return Err(Error::Malformed("range bounds"));
-        }
-        if let Some(prev) = out.last()
-            && (prev.upper.is_end() || rbsr::cmp_bounds(&prev.upper, &lower) == std::cmp::Ordering::Greater)
-        {
-            return Err(Error::Malformed("ranges unsorted or overlapping"));
-        }
-        let mut m = Fields::range(f.next()?, 2, 3, "mode")?;
-        let in_range = |ids: &[BlobId]| ids.is_sorted_by(|a, b| a < b) && ids.iter().all(|i| rbsr::contains(&lower, &upper, i));
-        let mode = match (m.uint()?, m.remaining()) {
-            (0, 1) => Mode::Fingerprint(m.fixed()?),
-            (1, 1) => Mode::Ids(ids(m.list(0, rbsr::LIST_MAX, "mode 1 ids")?)?),
-            (2, 2) => Mode::Diff { theirs: ids(m.list(0, rbsr::DIFF_MAX, "mode 2 ids")?)?, lacking: ids(m.list(0, rbsr::LIST_MAX, "mode 2 ids")?)? },
-            _ => return Err(Error::Malformed("mode")),
-        };
-        m.end()?;
-        f.end()?;
-        let ok = match &mode {
-            Mode::Fingerprint(_) => true,
-            Mode::Ids(ids) => in_range(ids),
-            Mode::Diff { theirs, lacking } => in_range(theirs) && in_range(lacking),
-        };
-        if !ok {
-            return Err(Error::Malformed("mode ids unsorted or outside the range"));
-        }
-        out.push(Range { lower, upper, mode });
-    }
-    Ok(out)
-}
-
-fn ranges_value(rs: &[Range]) -> Value {
-    Value::List(
-        rs.iter()
-            .map(|r| {
-                let mode = match &r.mode {
-                    Mode::Fingerprint(fp) => vec![Value::uint(0), Value::bytes(fp)],
-                    Mode::Ids(ids) => vec![Value::uint(1), ids_value(ids)],
-                    Mode::Diff { theirs, lacking } => vec![Value::uint(2), ids_value(theirs), ids_value(lacking)],
-                };
-                Value::List(vec![Value::bytes(r.lower.as_bytes()), Value::bytes(r.upper.as_bytes()), Value::List(mode)])
-            })
-            .collect(),
-    )
-}
-
 /// Upper bound on the encoded size of an event (paging, spec/wire.md §11.2 `more`).
 pub fn event_size(e: &Event) -> usize {
     match e {
@@ -1043,10 +801,6 @@ pub fn event_size(e: &Event) -> usize {
     }
 }
 
-/// Upper bound on the encoded size of an entry.
-pub fn entry_size(e: &Entry) -> usize {
-    140 + e.blob.len() + 180 * e.replaces.len()
-}
 
 #[cfg(test)]
 mod tests;

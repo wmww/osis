@@ -1052,7 +1052,7 @@ impl SyncEngine {
             // at a sync ID this node does not read, a Deposit by the hub's store's rules (held
             // unread, or not held yet)
             let code = if !things.contains_key(&l) {
-                self.unread_deposit(conn, l, &blob, wrap, &sig, out)?
+                self.unread_deposit(l, &blob, wrap, &sig)?
             } else {
                 let code = self.shared_deposit_verdict(conn, &served, &things, l, &blob, &wrap, &sig)?;
                 if code == Code::OK {

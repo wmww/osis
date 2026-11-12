@@ -4,7 +4,7 @@
 //! Its path is the one it serves from `label.0` (`reader_steps`). Admission, caps, budgets, rates
 //! and expiry govern only unread sync IDs: node sync's writes pass none of them. Its bytes-less
 //! knowledge (entries announced and not fetched, tombstones) stays in the engine's store. A read
-//! sync ID is neither replicated nor dropped when hosting stops. Its removals apply after the
+//! sync ID is not dropped when hosting stops. Its removals apply after the
 //! engine's commit (`removal`, `forgetting`); what others change of it (`moved`) node sync reads
 //! back from the node log.
 
@@ -13,7 +13,7 @@ use osis_base::{BlobId, LabelId};
 use osis_crypto::Signature;
 use osis_proto::msg::WRAP_LEN;
 use osis_label::{ClaimSet, Step};
-use osis_proto::{EntryMeta, LogRecord, StoreError};
+use osis_proto::{EntryMeta, StoreError};
 use std::collections::BTreeSet;
 
 /// An entry row as node sync wrote it: wrap and stamp.
@@ -32,7 +32,7 @@ impl HostStore {
     }
 
     /// Whether something other than node sync changed a sync ID it reads or streams, or a head,
-    /// since the last ask (an upload, a delete, the sweep, a registration): node sync reads the
+    /// since the last ask (a put, a delete, the sweep, a registration): node sync reads the
     /// node log past what it applied, stamps the heads' credentials and serves what its streams
     /// gained.
     pub fn take_moved(&mut self) -> bool {
@@ -82,7 +82,6 @@ impl HostStore {
         if self.get(&key(b'n', &[&label.0]))?.is_none() {
             tx.batch.put(key(b'n', &[&label.0]), Vec::new());
         }
-        let seq = tx.append(&LogRecord::Added(*blob));
         let l = label.0;
         let row = match held {
             Some(old) => {
@@ -90,7 +89,7 @@ impl HostStore {
                     tx.meta.dep_n = tx.meta.dep_n.saturating_sub(1);
                     tx.meta.dep_bytes = tx.meta.dep_bytes.saturating_sub(old.meta.size);
                 }
-                Row { meta: EntryMeta { wrap, stamp, add_seq: seq, ..old.meta }, expiry: old.expiry, role: old.role }
+                Row { meta: EntryMeta { wrap, stamp, ..old.meta }, expiry: old.expiry, role: old.role }
             }
             None => {
                 let bytes = self.db.get_mut().run(|t, _| t.read_blob(blob, 0, usize::MAX)).map_err(super::err)?.ok_or_else(|| corrupt("reader entry without its bytes"))?;
@@ -105,13 +104,12 @@ impl HostStore {
                 tx.batch.put(key(b'R', &[&blob.0]), [&be(refs + 1)[..], osis_label::prefix_bytes(&bytes)].concat());
                 // no expiry: node sync judges when an entry of a sync ID it reads expires (its
                 // pass removes the row), the one expiry path there
-                Row { meta: EntryMeta { wrap, stamp, size, add_seq: seq }, expiry: None, role: false }
+                Row { meta: EntryMeta { wrap, stamp, size }, expiry: None, role: false }
             }
         };
         tx.batch.put(key(b'E', &[&l, &blob.0]), row.encode());
         tx.batch.log(Write::LogAdded(*label, *blob));
         self.finish(tx)?;
-        self.origins.remove(&(*label, *blob));
         Ok(true)
     }
 
@@ -173,8 +171,15 @@ impl HostStore {
 
     /// Node sync's entry rows of `label` after `after`, at most `max`: blob, wrap, stamp.
     pub fn reader_rows(&self, label: &LabelId, after: Option<&BlobId>, max: usize) -> Result<Vec<(BlobId, ReaderRow)>, StoreError> {
-        use osis_proto::LabelStore;
-        Ok(self.live_by_id(label, after, max)?.into_iter().map(|(b, m)| (b, (m.wrap, m.stamp))).collect())
+        let prefix = key(b'E', &[&label.0]);
+        let start = match after {
+            // the least key above `after`
+            Some(a) => key(b'E', &[&label.0, &a.0, &[0]]),
+            None => prefix.clone(),
+        };
+        let end = osis_store::prefix_end(&prefix);
+        let rows = self.scan(&start, end.as_deref(), max)?;
+        rows.iter().map(|(k, v)| Ok((BlobId(read_arr(k, 17)?), Row::decode(v).map(|r| (r.meta.wrap, r.meta.stamp))?))).collect()
     }
 
     /// Node sync forgot `label` (the group is gone here): every row of it, shredded, its node log

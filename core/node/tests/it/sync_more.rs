@@ -11,7 +11,6 @@ use osis_node::sync::{EntryKind, SyncConfig};
 use osis_schema::RawKey;
 use osis_schema::core_types as ct;
 use osis_host::HostPolicy;
-use osis_proto::LabelStore;
 use std::collections::BTreeSet;
 
 /// Commits under label `l` that `n` knows, with the aspects their headers touch.
@@ -194,38 +193,15 @@ fn pages_and_lazy_chunks_spec_sync_6() {
     assert_eq!(net.engine(b).get_full(&t, &blob_ak).unwrap(), Some(Value::Bytes(big)));
 }
 
-// spec/sync.md §6: a cursor the host no longer serves (log trimmed) falls back to range
-// reconciliation, then a fresh cursor.
-#[test]
-fn reconciliation_fallback_spec_sync_6() {
+/// Reader B holds v0 of a purge-on-replace aspect; offline, A replaces it 5 times and the peer
+/// deletes the replaced bodies; with `age` B stays away past `TOMBSTONE_LIFETIME`, so the peer's
+/// node log drops those deletions (its deletion horizon passes B's position); `wipe`: the peer
+/// then loses everything (a new log) and A registers again and the peer pulls; `restart`: B
+/// restarts before coming back. B back online: whether it still knows v0's entry, and whether
+/// its entries are the peer's.
+fn stale_entry_after_away(age: bool, wipe: bool, restart: bool) -> (bool, bool) {
     let mut net = Net::new();
-    let host = net.add_host_with(HostPolicy { log_keep: 16, ..HostPolicy::default() });
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let g = net.group(a, &[(b, Role::Read)], &[host]);
-    let t = net.item(a, g, g, "v0");
-    net.keep(a, t, &[("t:gone.0", PURGE)]);
-    net.run();
-    net.set_online(b, false);
-    for i in 1..40 {
-        net.write(a, t, &format!("v{i}"));
-        net.run();
-    }
-    net.set_online(b, true);
-    net.advance(10_000);
-    net.trace(&[b]);
-    assert_eq!(net.read(b, t), Some(s("v39")));
-}
-
-/// Reader B holds v0 of a purge-on-replace aspect; offline, A replaces it 5 times and the host
-/// deletes the replaced bodies and trims its log past B's cursor: by `log_keep` 16, or with
-/// `age` (default policy) by age, B staying away past `TOMBSTONE_LIFETIME`; `wipe`: the host
-/// then loses everything (a new log ID) and A registers and uploads again; `restart`: B
-/// restarts before coming back (its first sync there reconciles before using the cursor). B
-/// back online: whether it still knows v0's entry, and whether its entries are the host's.
-fn stale_entry_after_fallback(age: bool, wipe: bool, restart: bool) -> (bool, bool) {
-    let mut net = Net::new();
-    let host = if age { net.add_host() } else { net.add_host_with(HostPolicy { log_keep: 16, ..HostPolicy::default() }) };
+    let host = net.add_host();
     let a = net.node(1, &[host]);
     let b = net.node(2, &[host]);
     let g = net.group(a, &[(b, Role::Read)], &[host]);
@@ -251,7 +227,6 @@ fn stale_entry_after_fallback(age: bool, wipe: bool, restart: bool) -> (bool, bo
     if age {
         net.advance(osis_base::format::TOMBSTONE_LIFETIME_MS);
         net.run();
-        assert_eq!(net.hosts[host].hub.store().log_after(&l, 0, 1).unwrap(), None, "the log was trimmed by age");
     }
     if wipe {
         net.set_online(a, false);
@@ -275,33 +250,24 @@ fn stale_entry_after_fallback(age: bool, wipe: bool, restart: bool) -> (bool, bo
     (kept, known == at_the_peer)
 }
 
-// spec/sync.md §6, spec/wire.md §11.2 (code 15): a cursor the host's log was trimmed past
-// reconciles, and an entry known present there and absent now was deleted there: gone from
-// the reader's sync state as a Deleted record would take it.
+// spec/sync.md §10 (Reading): a reader away past the peer's deletion horizon is listed from the
+// start, marked trimmed, and takes an entry it knew present there and absent now as deleted.
 #[test]
-fn trimmed_log_reconcile_deletes_absent_entries_spec_sync_6() {
-    assert_eq!(stale_entry_after_fallback(false, false, false), (false, true));
+fn a_listing_past_the_deletion_horizon_deletes_absent_entries_spec_sync_10() {
+    assert_eq!(stale_entry_after_away(true, false, false), (false, true));
 }
 
-// spec/sync.md §4, §6: as above with the log trimmed by age: the host drops its log up to
-// removals older than `TOMBSTONE_LIFETIME`, and a reader away longer converges through code 15.
+// spec/sync.md §10: as above for a restarted reader (its stored position is below the horizon).
 #[test]
-fn log_trimmed_by_age_reconcile_deletes_absent_entries_spec_sync_6() {
-    assert_eq!(stale_entry_after_fallback(true, false, false), (false, true));
+fn a_restarted_reader_past_the_deletion_horizon_deletes_absent_entries_spec_sync_10() {
+    assert_eq!(stale_entry_after_away(true, false, true), (false, true));
 }
 
-// spec/sync.md §6: as above for a restarted reader: the reconciliation its first sync after
-// the start runs keeps durable presence, so the code 15 from its kept cursor still finds v0.
+// spec/sync.md §10 (Reading): a position of another log (a wiped peer) lists from the start
+// unmarked: what the reader knew stays known, nothing taken as deleted.
 #[test]
-fn trimmed_log_after_restart_deletes_absent_entries_spec_sync_6() {
-    assert_eq!(stale_entry_after_fallback(false, false, true), (false, true));
-}
-
-// spec/sync.md §6, spec/wire.md §11.2 (code 10): a cursor of another log (a wiped host)
-// reconciles presence only: what the reader knew stays known, nothing taken as deleted.
-#[test]
-fn other_log_reconcile_keeps_entries_spec_sync_6() {
-    assert!(stale_entry_after_fallback(false, true, false).0);
+fn another_logs_listing_keeps_entries_spec_sync_10() {
+    assert!(stale_entry_after_away(false, true, false).0);
 }
 
 // spec/permissions.md §4 (growth, notes/growth.md): a node's record of a certificate copy it
@@ -650,17 +616,14 @@ fn purge_shreds_only_unique_chunks_spec_sync_7() {
     assert_eq!(net.engine(b).get_full(&t, &blob_ak).unwrap(), Some(Value::Bytes(v2)));
 }
 
-/// Commits in the order host `s` logged their blobs under `l` (blob IDs mapped through node
-/// `n`'s entries; first appearance).
+/// Commits in the order host `s`'s node log shows their blobs under `l` (blob IDs mapped through
+/// node `n`'s entries; first appearance).
 fn logged_commits(net: &mut Net, s: usize, n: usize, l: &osis_base::LabelId) -> Vec<osis_base::CommitId> {
-    use osis_proto::LabelStore;
     let of: std::collections::BTreeMap<osis_base::BlobId, osis_base::CommitId> =
         net.sync(n).entries(l).into_iter().filter_map(|(id, k)| if let EntryKind::Commit { commit, .. } = k { Some((id, commit)) } else { None }).collect();
-    let log = net.hosts[s].hub.store().log_after(l, 0, 100_000).unwrap().unwrap();
     let mut out = Vec::new();
-    for (_, r) in log {
-        if let osis_proto::LogRecord::Added(id) = r
-            && let Some(c) = of.get(&id)
+    for id in net.logged_at(s, l).0 {
+        if let Some(c) = of.get(&id)
             && !out.contains(c)
         {
             out.push(*c);
@@ -871,7 +834,7 @@ fn forged_certificate_copy_ignored_spec_commits_4() {
         let fake = osis_node::labeling::Body { plaintext: blob.encode(), ..b };
         let s = net.engine(w).seal_to(&fake, osis_label::Class::Durable, &mut osis_crypto::SeededRng::from_u64(0)).unwrap().unwrap();
         let wrap = osis_crypto::wrap(&secret, &s.id, &s.key, 1).unwrap();
-        let put = osis_proto::Put { blob_id: s.id, blob: &s.blob, wrap, stamp: None, expiry: None, ephemeral: false, replaces: &[], now: 0, role: false };
+        let put = osis_proto::Put { blob_id: s.id, blob: &s.blob, wrap, stamp: None, expiry: None, ephemeral: false, now: 0, role: false };
         osis_proto::LabelStore::put(&mut *net.hosts[host].hub.store(), &l, put).unwrap();
         forged.push(s.id);
     }
@@ -1411,10 +1374,9 @@ fn work_left_by_a_pass_is_not_waiting_spec_sync_6() {
     assert_eq!(s1.full, s0.full, "no pass over them is full");
 }
 
-// spec/sync.md §5 (an open holds under the head's sync key): a removed reader still connected
-// and subscribed when the remover registers the new step (ignoring all it is sent from then on)
-// is told of no entry added after it, while the remaining reader and the admin go on over the
-// same connections, reopened under the new key with their cursors (no reconciliation).
+// spec/sync.md §10 (Lost): a removed reader still connected when the remover registers the new
+// step (ignoring all it is sent from then on) is told of no entry added after it, while the
+// remaining reader and the admin go on over the same connections.
 #[test]
 fn departed_reader_connected_across_new_step_spec_sync_5() {
     let (mut net, host, [a, r, x], g, []) = hosted::<3, 0>(&[(1, Role::Read), (2, Role::Read)], [], false);
@@ -1424,7 +1386,6 @@ fn departed_reader_connected_across_new_step_spec_sync_5() {
     let conns = [a, r, x].map(|n| net.conn_to(n, host).expect("connected"));
     net.told.insert(x, BTreeSet::new());
     net.deaf.insert(x);
-    let reconciles = net.sent_kinds.get(&17).copied().unwrap_or(0);
     let (at, rt, xt) = (net.tid(a), net.tid(r), net.tid(x));
     let e = net.engine(a);
     let rs = recipients_of(e, &[(at, Role::Admin), (rt, Role::Read)]);
@@ -1443,7 +1404,6 @@ fn departed_reader_connected_across_new_step_spec_sync_5() {
     assert_eq!(net.read(r, t), Some(s("z")));
     assert_eq!([a, r, x].map(|n| net.conn_to(n, host).expect("connected")), conns, "same connections");
     assert!(net.hosts[host].hub.connections() >= 3);
-    assert_eq!(net.sent_kinds.get(&17).copied().unwrap_or(0), reconciles, "no reconciliation");
 }
 
 /// Writer `a` holds `v1` on `t` under purge on replace. Writer `b` overwrites it with `v0`, which `a` takes
@@ -1765,7 +1725,7 @@ fn reused_chain_copy_tombstoned_placed_fresh_spec_sync_3() {
     let l2 = net.group_labels(b).into_iter().find(|(g, _)| *g == g2).map(|(_, l)| l.id).unwrap();
     for id in &old {
         let blob = osis_proto::LabelStore::blob(&*net.hosts[host].hub.store(), id).unwrap().unwrap();
-        let put = osis_proto::Put { blob_id: *id, blob: &blob, wrap: [7; osis_crypto::WRAP_LEN], stamp: None, expiry: None, ephemeral: false, replaces: &[], now: 0, role: false };
+        let put = osis_proto::Put { blob_id: *id, blob: &blob, wrap: [7; osis_crypto::WRAP_LEN], stamp: None, expiry: None, ephemeral: false, now: 0, role: false };
         osis_proto::LabelStore::put(&mut *net.hosts[host].hub.store(), &l2, put).unwrap();
         let now = net.now_at(host);
         osis_proto::LabelStore::delete(&mut *net.hosts[host].hub.store(), &l2, id, now).unwrap();

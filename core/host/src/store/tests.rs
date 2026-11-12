@@ -42,14 +42,19 @@ fn blob(n: u8) -> Vec<u8> {
 }
 
 fn put(b: &[u8], stamped: bool, expiry: Option<u64>) -> Put<'_> {
-    Put { blob_id: osis_label::blob_id(b), blob: b, wrap: [b.len() as u8; WRAP_LEN], stamp: stamped.then_some(Signature([b.len() as u8; 64])), expiry, ephemeral: false, replaces: &[], now: 0, role: false }
+    Put { blob_id: osis_label::blob_id(b), blob: b, wrap: [b.len() as u8; WRAP_LEN], stamp: stamped.then_some(Signature([b.len() as u8; 64])), expiry, ephemeral: false, now: 0, role: false }
 }
 
 fn id(n: u8) -> BlobId {
     osis_label::blob_id(&blob(n))
 }
 
-// spec/sync.md §4: entries, log with sequence numbers, the head and its claim set; durable across reopen with the same log ID
+/// The node log's end: moves with every event logged.
+fn log_end(s: &mut HostStore) -> u64 {
+    s.node_log(|t| t.log_end()).unwrap()
+}
+
+// spec/sync.md §4: entries, the head and its claim set are durable across reopen
 #[test]
 fn state_survives_reopen() {
     let mut e = env(HostPolicy::default());
@@ -57,19 +62,16 @@ fn state_survives_reopen() {
     assert_eq!(e.store.put(&l, put(&blob(1), true, None)).unwrap(), Code::OK);
     assert_eq!(e.store.put(&l, put(&blob(2), false, Some(T0 + 10))).unwrap(), Code::OK);
     e.store.push_step(&l, e.f.child.clone(), None).unwrap();
-    let before = (e.store.log_head(&l).unwrap(), e.store.live_by_id(&l, None, 100).unwrap(), e.store.log_after(&l, 0, 100).unwrap());
+    let entries = |s: &HostStore| s.live_ids(&l).unwrap().into_iter().map(|b| (b, s.entry(&l, &b).unwrap())).collect::<Vec<_>>();
+    let before = entries(&e.store);
+    assert_eq!(before.len(), 2);
     let again = open(e.backend.clone(), &e.root, e.clock.clone(), HostPolicy::default(), 1);
-    let after = (again.log_head(&l).unwrap(), again.live_by_id(&l, None, 100).unwrap(), again.log_after(&l, 0, 100).unwrap());
-    assert_eq!(before, after);
+    assert_eq!(entries(&again), before);
     assert_eq!(again.head(&l).unwrap(), Some(e.f.child.id()));
     assert_eq!(again.path(&l).unwrap(), vec![e.f.genesis.clone(), e.f.child.clone()]);
     assert_eq!(again.claim_set(&l, &e.f.genesis.id()).unwrap().as_deref(), Some(&e.f.genesis_claims));
     assert_eq!(again.claim_set(&l, &e.f.child.id()).unwrap(), None);
     assert_eq!(again.blob(&id(1)).unwrap(), Some(blob(1)));
-    // a fresh instance names its logs differently: old cursors are invalid there
-    let mut fresh = open(MemoryBackend::new(), &MemoryRoot::new(), e.clock.clone(), HostPolicy::default(), 2);
-    fresh.push_step(&l, e.f.genesis.clone(), None).unwrap();
-    assert_ne!(fresh.log_head(&l).unwrap().0, before.0.0);
 }
 
 // spec/sync.md §4: blob bytes are stored once per host and deleted when no label references them
@@ -95,25 +97,27 @@ fn blob_bytes_once_per_node() {
     assert!(e.store.scan_prefix(b"R", 10).unwrap().is_empty());
 }
 
-// spec/sync.md §5: an upload of a held blob replaces wrap and stamp and clears the deposited flag; a deposit of a held blob changes nothing
+// spec/sync.md §5: a stamped put of a deposited blob replaces wrap and stamp and clears the
+// deposited flag, logged once; a deposit of a held blob changes nothing
 #[test]
-fn replace_and_deposited_flag() {
+fn promotion_and_deposited_flag() {
     let mut e = env(HostPolicy::default());
     let l = e.f.label;
     let b = blob(3);
     e.store.put(&l, put(&b, false, None)).unwrap();
     assert_eq!(e.store.entry(&l, &id(3)).unwrap().unwrap().stamp, None);
-    let seq = e.store.log_head(&l).unwrap().1;
+    let end = log_end(&mut e.store);
     e.store.put(&l, put(&b, false, None)).unwrap();
-    assert_eq!(e.store.log_head(&l).unwrap().1, seq);
+    assert_eq!(log_end(&mut e.store), end);
     let mut p = put(&b, true, None);
     p.wrap = [9; WRAP_LEN];
     e.store.put(&l, p).unwrap();
     let m = e.store.entry(&l, &id(3)).unwrap().unwrap();
-    assert_eq!((m.wrap, m.stamp.is_some(), m.add_seq), ([9; WRAP_LEN], true, seq + 1));
+    assert_eq!((m.wrap, m.stamp.is_some()), ([9; WRAP_LEN], true));
+    let end = log_end(&mut e.store);
     // identical re-upload: nothing logged
     e.store.put(&l, p).unwrap();
-    assert_eq!(e.store.log_head(&l).unwrap().1, seq + 1);
+    assert_eq!(log_end(&mut e.store), end);
 }
 
 // spec/sync.md §5: deposit budget 64 + 4 x claim slots entries and x 32 KiB bytes; freed on stamp, delete, expiry
@@ -122,34 +126,35 @@ fn deposit_budget() {
     let mut e = env(HostPolicy::default());
     let l = e.f.label;
     let max = 64 + 4 * e.f.genesis_claims.claims.len() as u64;
-    assert_eq!(e.store.budget(&l).unwrap(), Budget { entries_left: max, bytes_left: max * DEPOSIT_ENTRY_BYTES });
-    let blobs: Vec<Vec<u8>> = (0..max).map(|n| [&n.to_be_bytes()[..], &[0; 24]].concat()).collect();
-    for (i, b) in blobs.iter().enumerate() {
+    let blobs: Vec<Vec<u8>> = (0..max + 8).map(|n| [&n.to_be_bytes()[..], &[0; 24]].concat()).collect();
+    for (i, b) in blobs.iter().take(max as usize).enumerate() {
         let expiry = (i == 0).then_some(T0 + 5);
         assert_eq!(e.store.put(&l, put(b, false, expiry)).unwrap(), Code::OK);
     }
-    let extra = vec![0xee; 40];
-    assert_eq!(e.store.put(&l, put(&extra, false, None)).unwrap(), Code::BUDGET_FULL);
-    assert_eq!(e.store.budget(&l).unwrap().entries_left, 0);
+    let mut spare = blobs[max as usize..].iter();
+    let mut deposit = |e: &mut Env| e.store.put(&l, put(spare.next().unwrap(), false, None)).unwrap();
+    assert_eq!(deposit(&mut e), Code::BUDGET_FULL);
     // stamped: out of the budget
     e.store.put(&l, put(&blobs[1], true, None)).unwrap();
-    assert_eq!(e.store.budget(&l).unwrap().entries_left, 1);
+    assert_eq!(deposit(&mut e), Code::OK);
+    assert_eq!(deposit(&mut e), Code::BUDGET_FULL);
     e.store.delete(&l, &osis_label::blob_id(&blobs[2]), T0).unwrap();
-    assert_eq!(e.store.budget(&l).unwrap().entries_left, 2);
+    assert_eq!(deposit(&mut e), Code::OK);
+    assert_eq!(deposit(&mut e), Code::BUDGET_FULL);
     e.store.sweep(T0 + 5, 1024).unwrap();
-    assert_eq!(e.store.budget(&l).unwrap().entries_left, 3);
     // bytes: an entry larger than what remains
-    let left = e.store.budget(&l).unwrap().bytes_left;
+    let left = max * DEPOSIT_ENTRY_BYTES - (max - 1) * 32;
     let big = vec![0xbb; left as usize + 1];
     assert_eq!(e.store.put(&l, put(&big, false, None)).unwrap(), Code::BUDGET_FULL);
-    // a new head with a bigger claim set raises the budget; a head without its set gives the floor
+    assert_eq!(deposit(&mut e), Code::OK);
+    // a head without its claim set gives the floor of 64 entries
     e.store.push_step(&l, e.f.child.clone(), None).unwrap();
-    assert_eq!(e.store.budget(&l).unwrap().entries_left, 64u64.saturating_sub(max - 3));
+    assert_eq!(deposit(&mut e), Code::BUDGET_FULL);
 }
 
 // spec/sync.md §5 Deposit: an ephemeral deposit is held in memory under the one deposit budget
-// (durable and ephemeral alike) and the ephemeral cap; promoting it logs it again and frees its
-// share; a delete frees it too; a restart forgets it with the budget it held
+// (durable and ephemeral alike) and the ephemeral cap; promoting it frees its share; a delete
+// frees it too; a restart forgets it with the budget it held
 #[test]
 fn ephemeral_deposits_share_the_budget() {
     let mut e = env(HostPolicy::default());
@@ -163,29 +168,31 @@ fn ephemeral_deposits_share_the_budget() {
     for b in &durable {
         assert_eq!(e.store.put(&l, put(b, false, None)).unwrap(), Code::OK);
     }
-    assert_eq!(e.store.budget(&l).unwrap().entries_left, 0);
-    let extra = eph_blob(9_999, 40);
-    assert_eq!(e.store.put(&l, Put { stamp: None, ..eph_put(&extra, None) }).unwrap(), Code::BUDGET_FULL);
+    let extra: Vec<Vec<u8>> = (0..4).map(|n| eph_blob(9_000 + n, 40)).collect();
+    let deposit = |s: &mut HostStore, n: usize| s.put(&l, Put { stamp: None, ..eph_put(&extra[n], None) }).unwrap();
+    assert_eq!(deposit(&mut e.store, 0), Code::BUDGET_FULL);
     assert_eq!(e.store.put(&l, put(&[0xee; 40], false, None)).unwrap(), Code::BUDGET_FULL);
     let eph_id = osis_label::blob_id(&eph[0]);
     assert_eq!(e.store.entry(&l, &eph_id).unwrap().unwrap().stamp, None);
-    // promoted: stamped, logged again, out of the budget
-    let seq = e.store.log_head(&l).unwrap().1;
+    // promoted: stamped, out of the budget
     assert_eq!(e.store.put(&l, eph_put(&eph[0], None)).unwrap(), Code::OK);
-    let m = e.store.entry(&l, &eph_id).unwrap().unwrap();
-    assert_eq!((m.stamp.is_some(), m.add_seq), (true, seq + 1));
-    assert_eq!(e.store.budget(&l).unwrap().entries_left, 1);
+    assert!(e.store.entry(&l, &eph_id).unwrap().unwrap().stamp.is_some());
+    assert_eq!(deposit(&mut e.store, 0), Code::OK);
+    assert_eq!(deposit(&mut e.store, 1), Code::BUDGET_FULL);
     // a deposit of a held stamped entry changes nothing
     assert_eq!(e.store.put(&l, Put { stamp: None, ..eph_put(&eph[0], None) }).unwrap(), Code::OK);
     assert!(e.store.entry(&l, &eph_id).unwrap().unwrap().stamp.is_some());
     e.store.delete(&l, &osis_label::blob_id(&eph[1]), T0).unwrap();
-    assert_eq!(e.store.budget(&l).unwrap().entries_left, 2);
-    let again = open(e.backend.clone(), &e.root, e.clock.clone(), HostPolicy::default(), 1);
-    assert_eq!(again.budget(&l).unwrap().entries_left, max - durable.len() as u64);
+    assert_eq!(deposit(&mut e.store, 1), Code::OK);
+    let mut again = open(e.backend.clone(), &e.root, e.clock.clone(), HostPolicy::default(), 1);
     assert_eq!(again.entry(&l, &osis_label::blob_id(&eph[2])).unwrap(), None);
+    // the durable deposits alone hold budget after the restart
+    for n in 0..4 {
+        assert_eq!(deposit(&mut again, n), Code::OK);
+    }
 }
 
-// spec/sync.md §5: hosts cap storage per label (code 12); replacing a held entry is not capped
+// spec/sync.md §5: hosts cap storage per label (code 12); re-wrapping a held entry is not capped
 #[test]
 fn storage_cap() {
     // the genesis step and its claim set count too
@@ -224,12 +231,12 @@ fn rate_limits() {
 
 // spec/sync.md §5, randomized differential of both stores against the rule: a stamped entry's wrap
 // and stamp never change while it lives; a deposit changes nothing held; a stamped upload takes a
-// deposited entry, once; anything that changes nothing logs nothing.
+// deposited entry, once; anything that changes nothing logs nothing (the node log).
 #[test]
 fn stamped_entry_never_changes_randomized() {
     for seed in 0..32u64 {
         let mut e = env(HostPolicy::unlimited());
-        let mut mem = osis_proto::MemoryLabelStore::new([1; 32]);
+        let mut mem = osis_proto::MemoryLabelStore::new();
         let l = e.f.label;
         mem.push_step(&l, e.f.genesis.clone(), Some(e.f.genesis_claims.clone())).unwrap();
         // the model: blob -> (wrap, stamp)
@@ -249,7 +256,7 @@ fn stamped_entry_never_changes_randomized() {
             let mut p = put(&b, stamped, None);
             p.wrap = [w; WRAP_LEN];
             p.stamp = stamped.then_some(Signature([w; 64]));
-            let heads = (e.store.log_head(&l).unwrap().1, mem.log_head(&l).unwrap().1);
+            let end = log_end(&mut e.store);
             assert_eq!(e.store.put(&l, p).unwrap(), Code::OK);
             assert_eq!(mem.put(&l, p).unwrap(), Code::OK);
             let want = match model.get(&n) {
@@ -264,14 +271,12 @@ fn stamped_entry_never_changes_randomized() {
             let (ms, mm) = (e.store.entry(&l, &id(n)).unwrap().unwrap(), mem.entry(&l, &id(n)).unwrap().unwrap());
             assert_eq!((ms.wrap, ms.stamp), model[&n], "seed {seed}");
             assert_eq!((mm.wrap, mm.stamp), model[&n], "seed {seed}");
-            let after = (e.store.log_head(&l).unwrap().1, mem.log_head(&l).unwrap().1);
-            assert_eq!(after.0 > heads.0, changed, "seed {seed}");
-            assert_eq!(after.1 > heads.1, changed, "seed {seed}");
+            assert_eq!(log_end(&mut e.store) > end, changed, "seed {seed}");
         }
     }
 }
 
-// spec/sync.md §5: a delete leaves a tombstone and a log event; expiry removes outright, no tombstone, no event; tombstones last TOMBSTONE_LIFETIME
+// spec/sync.md §5: a delete leaves a tombstone; expiry removes outright, no tombstone, no event; tombstones last TOMBSTONE_LIFETIME
 #[test]
 fn expiry_and_tombstones() {
     let mut e = env(HostPolicy::default());
@@ -283,11 +288,8 @@ fn expiry_and_tombstones() {
     assert_eq!(e.store.entry(&l, &id(2)).unwrap(), None);
     assert!(!e.store.tombstoned(&l, &id(2)).unwrap());
     assert_eq!(e.store.blob(&id(2)).unwrap(), None);
-    let seq = e.store.log_head(&l).unwrap().1;
     e.store.delete(&l, &id(1), T0 + 80).unwrap();
     assert!(e.store.tombstoned(&l, &id(1)).unwrap());
-    let recs = e.store.log_after(&l, seq, 10).unwrap().unwrap();
-    assert_eq!(recs.iter().map(|r| r.1.clone()).collect::<Vec<_>>(), vec![LogRecord::Deleted(id(1))]);
     e.store.sweep(T0 + 80 + TOMBSTONE_LIFETIME_MS - 1, 1024).unwrap();
     assert!(e.store.tombstoned(&l, &id(1)).unwrap());
     e.store.sweep(T0 + 80 + TOMBSTONE_LIFETIME_MS, 1024).unwrap();
@@ -295,53 +297,10 @@ fn expiry_and_tombstones() {
     assert_eq!(e.store.next_due().unwrap(), None);
 }
 
-// spec/sync.md §4, §6: the log records of removed entries (deleted or expired) go once the
-// removal is `TOMBSTONE_LIFETIME` old, the log up to it with them; a cursor below falls back to
-// reconciliation, one after it reads on. Overwrite churn leaves no log behind.
+// spec/sync.md §4: an expired entry's tombstone-less removal leaves a later deletion's tombstone
+// of the same blob its full lifetime
 #[test]
-fn log_trimmed_by_age() {
-    let mut e = env(HostPolicy::default());
-    let l = e.f.label;
-    let records = |e: &Env| e.store.scan_prefix(&key(b'G', &[&l.0]), usize::MAX).unwrap().len();
-    let base = records(&e);
-    // 40 overwrites: each upload replaces the last; one expiring entry
-    for n in 1..=40u8 {
-        let b = blob(n);
-        let prev = [id(n - 1)];
-        let p = Put { replaces: if n > 1 { &prev } else { &[] }, now: T0, ..put(&b, true, None) };
-        assert_eq!(e.store.put(&l, p).unwrap(), Code::OK);
-    }
-    e.store.put(&l, put(&blob(50), true, Some(T0 + 10))).unwrap();
-    let mid = e.store.log_head(&l).unwrap().1;
-    assert!(records(&e) >= base + 80, "adds and deletes logged");
-    e.store.sweep(T0 + 10, 1024).unwrap();
-    // a later write, after the removals
-    e.clock.set(WallMs(T0 + DAY_MS));
-    e.store.put(&l, put(&blob(60), true, None)).unwrap();
-    e.store.sweep(T0 + TOMBSTONE_LIFETIME_MS - 1, 1024).unwrap();
-    assert!(e.store.log_after(&l, 0, 1).unwrap().is_some(), "kept for the tombstone lifetime");
-    // a budget of 10 rows (index and log) takes the trim over several sweeps, the horizon
-    // rising through partial trims
-    let (mut last, mut partial) = (0, false);
-    while e.store.sweep(T0 + TOMBSTONE_LIFETIME_MS + 10, 10).unwrap().more {
-        let horizon = e.store.meta(&l).unwrap().unwrap().horizon;
-        assert!(horizon >= last, "the horizon rises: {last} -> {horizon}");
-        partial |= horizon > 0 && horizon < mid;
-        last = horizon;
-    }
-    assert!(partial, "a trim cut short by the budget");
-    assert_eq!(e.store.log_after(&l, mid - 1, 1).unwrap(), None, "a cursor below the trim falls back");
-    let tail = e.store.log_after(&l, mid, 10).unwrap().unwrap();
-    assert_eq!(tail.iter().map(|r| r.1.clone()).collect::<Vec<_>>(), vec![LogRecord::Added(id(60))]);
-    assert_eq!(records(&e), 1, "only the record after the last removal is left");
-    assert_eq!(e.store.live_ids(&l).unwrap(), BTreeSet::from([id(40), id(60)]).into_iter().collect::<Vec<_>>());
-    assert_eq!(e.store.next_due().unwrap(), None);
-}
-
-// spec/sync.md §4: an expiry's trim point leaves a later deletion's tombstone of the same blob
-// its full lifetime
-#[test]
-fn expiry_trim_keeps_later_tombstone() {
+fn expiry_keeps_later_tombstone() {
     let mut e = env(HostPolicy::default());
     let l = e.f.label;
     e.store.put(&l, put(&blob(1), true, Some(T0 + 10))).unwrap();
@@ -351,14 +310,14 @@ fn expiry_trim_keeps_later_tombstone() {
     e.store.put(&l, Put { now: T0 + DAY_MS, ..put(&blob(1), true, None) }).unwrap();
     assert_eq!(e.store.delete(&l, &id(1), T0 + DAY_MS).unwrap(), Code::OK);
     e.store.sweep(T0 + 10 + TOMBSTONE_LIFETIME_MS, 1024).unwrap();
-    assert!(e.store.tombstoned(&l, &id(1)).unwrap(), "the deletion's tombstone outlives the expiry's trim");
+    assert!(e.store.tombstoned(&l, &id(1)).unwrap(), "the deletion's tombstone outlives the expiry");
     e.store.sweep(T0 + DAY_MS + TOMBSTONE_LIFETIME_MS, 1024).unwrap();
     assert!(!e.store.tombstoned(&l, &id(1)).unwrap());
 }
 
-// a sweep whose budget the due trim rows fill still trims: no label's trim starves
+// a sweep whose budget the due tombstone rows fill makes progress: every tombstone goes
 #[test]
-fn log_trim_progresses_when_trim_rows_fill_budget() {
+fn tombstone_drop_progresses_under_a_small_budget() {
     let mut e = env(HostPolicy::default());
     let labels: Vec<LabelId> = (0..4u8).map(|n| {
         let g = Fixture::new(0x20 + n);
@@ -368,13 +327,14 @@ fn log_trim_progresses_when_trim_rows_fill_budget() {
         g.label
     }).collect();
     let mut sweeps = 0;
-    while e.store.sweep(T0 + TOMBSTONE_LIFETIME_MS, labels.len()).unwrap().more {
+    while e.store.sweep(T0 + TOMBSTONE_LIFETIME_MS, 1).unwrap().more {
         sweeps += 1;
-        assert!(sweeps < 100, "the trim makes progress");
+        assert!(sweeps < 100, "the sweep makes progress");
     }
     for l in &labels {
-        assert_eq!(e.store.log_after(l, 0, 1).unwrap(), None, "trimmed");
+        assert!(!e.store.tombstoned(l, &id(1)).unwrap());
     }
+    assert_eq!(e.store.next_due().unwrap(), None);
 }
 
 // spec/sync.md §4: a claim set is kept until its step has been superseded for ROLE_KEEP
@@ -392,23 +352,6 @@ fn claim_sets_dropped_after_role_keep() {
     assert!(e.store.step(&l, &g).unwrap().is_some());
 }
 
-// spec/wire.md §11.2 Sync: the log keeps a horizon; cursors below it are refused (reconciliation fallback)
-#[test]
-fn log_horizon() {
-    let mut e = env(HostPolicy { log_keep: 8, ..HostPolicy::default() });
-    let l = e.f.label;
-    for n in 0..20 {
-        e.store.put(&l, put(&blob(n), true, None)).unwrap();
-    }
-    let (_, head) = e.store.log_head(&l).unwrap();
-    assert_eq!(head, 21);
-    assert_eq!(e.store.log_after(&l, 0, 100).unwrap(), None);
-    let tail = e.store.log_after(&l, head - 8, 100).unwrap().unwrap();
-    assert_eq!(tail.len(), 8);
-    assert_eq!(e.store.log_after(&l, head + 1, 100).unwrap(), None);
-    assert_eq!(e.store.live_ids(&l).unwrap().len(), 20);
-}
-
 fn eph_put(b: &[u8], expiry: Option<u64>) -> Put<'_> {
     Put { ephemeral: true, ..put(b, true, expiry) }
 }
@@ -421,8 +364,8 @@ fn eph_blob(n: u32, len: usize) -> Vec<u8> {
 }
 
 // ephemeral security review H2: a stranger looping upload and delete of ephemeral entries on its
-// own label grows no memory without bound: tombstones and log records are charged to the label's
-// cap, deletes are rate-limited, tombstones go after `EPH_TOMBSTONE_MS`, and the due-time index
+// own label grows no memory without bound: entries are charged to the label's cap, tombstones to
+// the host-wide total, deletes are rate-limited, tombstones go after `EPH_TOMBSTONE_MS`, and the due-time index
 // empties
 #[test]
 fn ephemeral_churn_memory_bounded() {
@@ -446,7 +389,7 @@ fn ephemeral_churn_memory_bounded() {
     let left = e.store.ephemeral_bytes(&l);
     let live = e.store.eph.labels.get(&l).map_or(0, |x| x.entries.len()) as u64;
     assert!(e.store.eph.labels.get(&l).is_none_or(|x| x.tombstones.is_empty()), "tombstones dropped");
-    assert!(left <= live * (48 + ENTRY_OVERHEAD) + EPH_LOG_KEEP as u64 * REC_OVERHEAD, "{left}");
+    assert!(left <= live * (48 + ENTRY_OVERHEAD), "{left}");
     assert!(e.store.eph.due.len() as u64 <= live, "due index holds only live entries' times");
     // a deleted entry stays refused for the tombstone's lifetime only
     let mut e = env(HostPolicy::default());
@@ -489,38 +432,7 @@ fn ephemeral_total_evicts_largest_label() {
     assert_eq!(e.store.eph.labels.get(&honest).map_or(0, |x| x.entries.len()), 10);
 }
 
-// ephemeral security review M7: ephemeral churn takes sequence numbers from the label's log but
-// neither trims durable records nor sends a durable cursor back to reconciliation
-#[test]
-fn ephemeral_churn_keeps_durable_cursors() {
-    let mut e = env(HostPolicy { log_keep: 8, deletes: u32::MAX, ..HostPolicy::default() });
-    let l = e.f.label;
-    for n in 0..4 {
-        e.store.put(&l, put(&blob(n), true, None)).unwrap();
-    }
-    let (_, cursor) = e.store.log_head(&l).unwrap();
-    for n in 0..(EPH_LOG_KEEP as u32) {
-        let b = eph_blob(n, 40);
-        e.store.put(&l, eph_put(&b, None)).unwrap();
-        e.store.delete(&l, &osis_label::blob_id(&b), T0).unwrap();
-    }
-    e.store.put(&l, put(&blob(9), true, None)).unwrap();
-    let recs = e.store.log_after(&l, cursor, usize::MAX).unwrap().expect("the cursor still reaches");
-    assert!(recs.iter().any(|(_, r)| *r == LogRecord::Added(id(9))));
-    assert!(e.store.log_after(&l, 0, usize::MAX).unwrap().is_some(), "4 durable records + head: under log_keep");
-    // a live ephemeral entry whose add record was trimmed still reaches an old cursor
-    let live = eph_blob(7_777_777, 40);
-    e.store.put(&l, eph_put(&live, None)).unwrap();
-    for n in 0..(EPH_LOG_KEEP as u32) {
-        let b = eph_blob(8_000_000 + n, 40);
-        e.store.put(&l, eph_put(&b, None)).unwrap();
-        e.store.delete(&l, &osis_label::blob_id(&b), T0).unwrap();
-    }
-    let recs = e.store.log_after(&l, cursor, usize::MAX).unwrap().unwrap();
-    assert!(recs.iter().any(|(_, r)| *r == LogRecord::Added(osis_label::blob_id(&live))));
-}
-
-// ENTRY_OVERHEAD, TOMB_OVERHEAD, REC_OVERHEAD count what the in-memory structures cost (each
+// ENTRY_OVERHEAD and TOMB_OVERHEAD count what the in-memory structures cost (each
 // map entry with about half again for B-tree slack or hash load)
 #[test]
 fn overheads_cover_the_structures() {
@@ -530,31 +442,31 @@ fn overheads_cover_the_structures() {
         + slack(size_of::<(BlobId, (Vec<u8>, usize))>() + 1)
         + slack(size_of::<(u64, BlobId)>())
         + 2 * slack(size_of::<(u64, LabelId, BlobId)>())
-        + slack(size_of::<((LabelId, BlobId), [u8; 32])>() + 1)
         + 32;
     assert!(entry <= ENTRY_OVERHEAD, "{entry}");
     let tomb = slack(size_of::<(BlobId, u64)>()) + slack(size_of::<(u64, LabelId, BlobId)>());
     assert!(tomb <= TOMB_OVERHEAD, "{tomb}");
-    assert!(slack(size_of::<(u64, EphRec)>()) <= REC_OVERHEAD, "{}", size_of::<(u64, EphRec)>());
 }
 
-// spec/sync.md §4: `live_by_id` pages ascending from after a given ID
+// spec/sync.md §4: `live_ids` lists a label's entries ascending, durable and ephemeral; node
+// sync's `reader_rows` pages its rows ascending from after a given ID
 #[test]
-fn live_by_id_pages() {
+fn live_ids_and_reader_rows() {
     let mut e = env(HostPolicy::default());
     let l = e.f.label;
     for n in 0..10 {
         e.store.put(&l, put(&blob(n), true, None)).unwrap();
     }
+    let eb = eph_blob(1, 40);
+    e.store.put(&l, eph_put(&eb, None)).unwrap();
     let mut all: Vec<BlobId> = (0..10).map(id).collect();
     all.sort();
-    assert_eq!(e.store.live_ids(&l).unwrap(), all);
-    let page = e.store.live_by_id(&l, Some(&all[3]), 4).unwrap();
+    let page = e.store.reader_rows(&l, Some(&all[3]), 4).unwrap();
     assert_eq!(page.iter().map(|p| p.0).collect::<Vec<_>>(), all[4..8]);
+    all.push(osis_label::blob_id(&eb));
+    all.sort();
+    assert_eq!(e.store.live_ids(&l).unwrap(), all);
     assert!(e.store.live_ids(&LabelId([0xee; 16])).unwrap().is_empty());
-    assert_eq!(e.store.live_ids_in(&l, &all[2], Some(&all[7])).unwrap(), all[2..7]);
-    assert_eq!(e.store.live_ids_in(&l, &all[7], None).unwrap(), all[7..]);
-    assert!(e.store.live_ids_in(&l, &all[7], Some(&all[2])).unwrap().is_empty());
 }
 
 #[derive(Clone, Debug)]
@@ -580,18 +492,17 @@ fn expiry_of(n: u8) -> Option<u64> {
 }
 
 proptest! {
-    // spec/sync.md §4, §5: HostStore answers exactly as the reference MemoryLabelStore (no policy limits), and its log replays to its state
+    // spec/sync.md §4, §5: HostStore answers exactly as the reference MemoryLabelStore (no policy limits)
     #[test]
     fn agrees_with_reference_and_replays(ops in prop::collection::vec(op(), 1..40)) {
         let mut e = env(HostPolicy::unlimited());
         let g = Fixture::new(0x20);
         e.store.push_step(&g.label, g.genesis.clone(), None).unwrap();
-        let mut r = MemoryLabelStore::new([0; 32]);
+        let mut r = MemoryLabelStore::new();
         r.push_step(&e.f.label, e.f.genesis.clone(), Some(e.f.genesis_claims.clone())).unwrap();
         r.push_step(&g.label, g.genesis.clone(), None).unwrap();
         let mut now = T0;
         let mut stepped = false;
-        let mut expired = false;
         for o in &ops {
             let pick = |second: bool| if second { g.label } else { e.f.label };
             match o.clone() {
@@ -622,29 +533,15 @@ proptest! {
                 Op::Sweep { advance } => {
                     now += advance;
                     e.clock.set(WallMs(now));
-                    expired |= (0..12).any(|n| expiry_of(n).is_some_and(|t| t <= now));
                     e.store.sweep(now, usize::MAX).unwrap();
                     r.sweep(now);
                 }
             }
             for l in [e.f.label, g.label] {
-                prop_assert_eq!(e.store.live_by_id(&l, None, 100).unwrap(), r.live_by_id(&l, None, 100).unwrap());
-                for (lo, hi) in [(0u8, None), (3, Some(9)), (9, Some(3)), (6, None)] {
-                    let (lo, hi) = (id(lo), hi.map(id));
-                    prop_assert_eq!(e.store.live_ids_in(&l, &lo, hi.as_ref()).unwrap(), r.live_ids_in(&l, &lo, hi.as_ref()).unwrap());
-                }
-                prop_assert_eq!(e.store.budget(&l).unwrap(), r.budget(&l).unwrap());
-                prop_assert_eq!(e.store.log_head(&l).unwrap().1, r.log_head(&l).unwrap().1);
-                // serving tells a trimmed log (code 15) from a position past the head (10) by these
-                let head = r.log_head(&l).unwrap().1;
-                for at in [head, head + 1] {
-                    prop_assert_eq!(e.store.log_after(&l, at, 1).unwrap().is_some(), r.log_after(&l, at, 1).unwrap().is_some());
-                }
-                // the same records; a sweep executes due deletes by time, the reference by ID
-                // (and the same log trimmed by age: a removal's records go `TOMBSTONE_LIFETIME` after it)
-                let recs = |v: Option<Vec<(u64, LogRecord)>>| v.map(|v| { let mut v: Vec<String> = v.into_iter().map(|r| format!("{:?}", r.1)).collect(); v.sort(); v });
-                for after in [0, head / 2] {
-                    prop_assert_eq!(recs(e.store.log_after(&l, after, 1000).unwrap()), recs(r.log_after(&l, after, 1000).unwrap()));
+                let live = e.store.live_ids(&l).unwrap();
+                prop_assert_eq!(&live, &r.live_ids(&l).unwrap());
+                for b in &live {
+                    prop_assert_eq!(e.store.entry(&l, b).unwrap(), r.entry(&l, b).unwrap());
                 }
                 prop_assert_eq!(e.store.head(&l).unwrap(), r.head(&l).unwrap());
                 prop_assert_eq!(e.store.head_keys(&l).unwrap(), osis_proto::HeadKeys::of_path(&e.store.path(&l).unwrap()));
@@ -659,42 +556,6 @@ proptest! {
                 }
             }
         }
-        // replay: adds and deletes of the log give the live set (expiry logs nothing, so only without it)
-        if !expired {
-            for l in [e.f.label, g.label] {
-                let mut live = BTreeSet::new();
-                let mut head = None;
-                // a log trimmed by age replays from its horizon only
-                let Some(recs) = e.store.log_after(&l, 0, 10_000).unwrap() else { continue };
-                for (_, rec) in recs {
-                    match rec {
-                        LogRecord::Added(b) => { live.insert(b); }
-                        LogRecord::Deleted(b) => { live.remove(&b); }
-                        LogRecord::Head(s) => head = Some(s.id()),
-                    }
-                }
-                prop_assert_eq!(live.into_iter().collect::<Vec<_>>(), e.store.live_ids(&l).unwrap());
-                prop_assert_eq!(head, e.store.head(&l).unwrap());
-            }
-        }
-    }
-}
-
-// spec/sync.md §5 (ephemeral memory capped per label, log records counted): the log records of
-// deletions (a covered entry deleted) stay within the label's cap: older records are trimmed (sim `ephemeral` seed 13: a label 58 B over its cap)
-#[test]
-fn deletion_records_within_cap() {
-    let cap = 8 << 10;
-    let mut e = env(HostPolicy { ephemeral_bytes: cap, deletes: 1_000, ..HostPolicy::default() });
-    let l = e.f.label;
-    let mut n = 0u32;
-    // plain entries up to the cap
-    while e.store.put(&l, eph_put(&eph_blob(n, 64), None)).unwrap() == Code::OK {
-        n += 1;
-    }
-    for k in 0..n {
-        e.store.delete(&l, &osis_label::blob_id(&eph_blob(k, 64)), T0).unwrap();
-        assert!(e.store.ephemeral_bytes(&l) <= cap, "deletes: {} B over {cap}", e.store.ephemeral_bytes(&l));
     }
 }
 
@@ -802,9 +663,9 @@ fn steps_count_toward_byte_caps() {
         let v = child_of(&e.f, &t);
         let mut again = open(e.backend.clone(), &e.root, e.clock.clone(), cap.clone(), 1);
         for st in [&mut e.store, &mut again] {
-            let (log, totals) = (st.log_head(&l).unwrap(), st.totals().unwrap());
+            let (log, totals) = (log_end(st), st.totals().unwrap());
             assert_eq!(st.push_step(&l, v.clone(), None).unwrap(), Code::STORAGE_CAP);
-            assert_eq!((st.head(&l).unwrap(), st.log_head(&l).unwrap(), st.totals().unwrap()), (Some(t.id()), log, totals));
+            assert_eq!((st.head(&l).unwrap(), log_end(st), st.totals().unwrap()), (Some(t.id()), log, totals));
         }
         e.clock.advance(cap.over_cap_step_ms - 1);
         assert_eq!(e.store.push_step(&l, v.clone(), None).unwrap(), Code::STORAGE_CAP);

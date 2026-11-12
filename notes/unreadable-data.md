@@ -8,7 +8,6 @@
 - Which actors dial it: a reader proves its account and the key actors it holds (by their creation records, so their tids) to every key it chose to dial, a `label.0` host's included (spec/sync.md §10, Connection proofs), so the node links them to the labels the connection opens; a node key only between nodes of one account.
 - The roster bucket of each step's claim set (and of a rotation commit, by its padded size), which claim slots were used, when, and how many steps behind the claimant was (two late nodes of one account use one slot); roughly how many key actors read the label (static entries are not points about half the time).
 - Which entries were deposited and when (a grant or a reader-originated write).
-- Which entry a Replace rewrites (it names it): those two carry one commit.
 - Header-only lasting blobs: one more small stamped entry with no commitments close to a deletion it already sees (notes/sync-convergence.md).
 - Whether it hosts a label at all is visible to a prober with the label ID (Open's UNKNOWN_LABEL vs REFUSED; accepted).
 

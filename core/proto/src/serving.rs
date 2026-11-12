@@ -1,20 +1,20 @@
 //! Serving side of one connection (spec/sync.md §4-§9, spec/wire.md §11): a sans-I/O state machine
-//! answering every request from a `LabelStore`. The driver feeds stream bytes and cross-connection
-//! notices and carries out the outputs.
+//! answering the store's requests from a `LabelStore` and handing node-kind messages and
+//! client-port requests to the upper layer. The driver feeds stream bytes and carries out the
+//! outputs.
 
 use crate::Error;
 use crate::frame::{FrameDecoder, encode_frame, send};
 use crate::hello::{Hello, PROTOCOL_VERSION, negotiate};
 use crate::msg::*;
-use crate::rbsr;
 use crate::relay::RelayVerdict;
-use crate::store::{EntryMeta, HeadKeys, LabelStore, LogRecord, Put, StepKey, StoreError};
+use crate::store::{HeadKeys, LabelStore, Put, StepKey, StoreError};
 use osis_base::format::MAX_MESSAGE;
 use osis_base::{BlobId, LabelId};
 use osis_crypto::{Domain, LabelRole, verify_delete};
 use osis_label::auth::delete_digest;
 use osis_label::{Class, OpenOutcome, PathIndex, Prefix, entry_digest, evaluate_open, host_prefix, key_for_levels};
-use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::Arc;
 
 /// Room left in a reply for everything but its events or items.
@@ -25,17 +25,12 @@ const REPLY_HEAD: usize = 1024;
 pub fn reply_bound(max_reply: u64) -> usize {
     usize::try_from(max_reply).unwrap_or(usize::MAX).min(REPLY_BUDGET).saturating_sub(REPLY_HEAD)
 }
-/// Log records or entries read from the store per call.
-const LOG_BATCH: usize = 256;
 /// Labels whose head keys a connection caches (cleared when full). Performance switch: a peer
 /// cycling past it makes the connection reload them (two store reads beyond the head lookup every
 /// message makes, and up to 33 key parses); 0 reloads per message, infinity grows with the labels
 /// a peer names, opened or not. An entry is about 7 KB (parsed keys), so about 450 KB per
 /// connection, the scale of `MAX_CROSSED`.
 const MAX_CACHED: usize = 64;
-/// Blob IDs a connection remembers as crossed (an optimization only: past it the set is cleared,
-/// so a peer streaming entries cannot grow it without bound).
-const MAX_CROSSED: usize = 1 << 14;
 /// Unwritten push bytes a connection can hold (spec/sync.md §6): pushes go while the unwritten
 /// bytes, the push included, fit `REPLY_BUDGET` or none are unwritten, so at most one push frame.
 pub const PUSH_QUEUE: usize = MAX_MESSAGE + 4;
@@ -47,8 +42,6 @@ pub const SEND_QUEUE: usize = crate::client::WINDOW_QUEUE + PUSH_QUEUE;
 /// queue has room; 0 spins the driver while a slow subscriber drains, infinity leaves them to
 /// the next unrelated tick.
 pub const PUSH_POLL_MS: u64 = 1000;
-/// Domain of replay cursor IDs.
-const REPLAY: &str = "osis v1 replay";
 
 #[derive(Clone, Debug)]
 pub struct ServingConfig {
@@ -64,11 +57,6 @@ pub enum ServingInput {
     Start,
     /// Bytes received on the stream.
     Bytes(Vec<u8>),
-    /// A label's log grew (on any connection): push to a subscription.
-    Changed(LabelId),
-    /// A relay-only entry accepted on another connection: push it if subscribed (dropped while
-    /// the connection's unwritten bytes leave no room).
-    Relay(Relayed),
     /// The transport has taken this many bytes of this connection's output so far (cumulative):
     /// pushes wait while too much is unwritten (spec/sync.md §6). A driver that never reports it
     /// delivers instantly (no push is held back); one that does reports it before input bytes,
@@ -137,8 +125,8 @@ fn sent_bytes(out: &[ServingOutput]) -> u64 {
     out.iter().map(|o| if let ServingOutput::Send(b) = o { b.len() as u64 } else { 0 }).sum()
 }
 
-/// A relay-only entry (spec/sync.md §5): accepted by stamp, pushed to the label's current
-/// subscribers on other connections, held by nobody.
+/// A relay-only entry (spec/sync.md §5): accepted by stamp, passed on to the label's other
+/// holders by node sync's stream, held by nobody.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Relayed {
     pub label: LabelId,
@@ -154,10 +142,6 @@ pub enum ServingOutput {
     /// A frame to write.
     Send(Vec<u8>),
     Close,
-    /// This connection grew a label's log: deliver `ServingInput::Changed` to every connection.
-    Changed(LabelId),
-    /// A relay-only entry accepted: deliver `ServingInput::Relay` to every other connection.
-    Relay(Relayed),
     /// The peer broke a protocol rule (diagnostic).
     PeerError(Error),
     StoreError(StoreError),
@@ -219,7 +203,7 @@ fn check(k: &HeadKeys, key: StepKey, domain: Domain, digest: &[u8; 32], sig: &Si
     *struck = true;
     Code::REFUSED
 }
-/// `check` of an entry's stamp or deposit signature (`plain`: `Upload` or `Deposit`), or of one
+/// `check` of an entry's stamp or deposit signature (`plain`: `Stamp` or `Deposit`), or of one
 /// under `RoleEntry` (spec/sync.md §5): its code, and whether it verified as a role entry.
 fn check_entry(k: &HeadKeys, key: StepKey, plain: Domain, digest: &[u8; 32], sig: &Signature, struck: &mut bool) -> (Code, bool) {
     let mut first = *struck;
@@ -242,16 +226,6 @@ pub struct ServingSession {
     /// Opened labels, by the sync key of the head each was proven at (spec/sync.md §5): a head
     /// with another sync key ends it (`still_open`).
     opened: BTreeMap<LabelId, osis_crypto::VerifyingKey>,
-    /// Subscribed labels and the log position pushed so far.
-    subs: BTreeMap<LabelId, u64>,
-    /// Last complete Sync per label: its cursor sequence number.
-    synced: BTreeMap<LabelId, u64>,
-    /// Last Sync's inline limit per label (pushes use it).
-    inline: BTreeMap<LabelId, u64>,
-    /// Replays in progress: the log position taken at their start.
-    replays: BTreeMap<LabelId, u64>,
-    /// Blobs whose bytes crossed this connection (at most `MAX_CROSSED`): not inlined back.
-    crossed: HashSet<BlobId>,
     /// Head keys per label, as of its head (`MAX_CACHED`).
     keys: HashMap<LabelId, HeadKeys>,
     /// A signature of the message being handled verified under no key (`check`).
@@ -262,9 +236,6 @@ pub struct ServingSession {
     written: u64,
     /// The last `ServingInput::Taken` (none: never reported, no flow control).
     taken: Option<u64>,
-    /// Subscribed labels whose pushes wait for room in the send queue (from their position in
-    /// `subs`), in the order they were held: resumed in turn, so a busy label starves no other.
-    owed: VecDeque<LabelId>,
     /// Client-port requests handed out and not answered: their kind (24 Auth, 25 Call, 27 Sub),
     /// reply bound and charge.
     asked: BTreeMap<Id, (u64, usize, Charge)>,
@@ -289,8 +260,7 @@ pub struct ServingSession {
     /// Frames received and not yet run, in order: from the first request whose reply allowance
     /// did not fit the room (`fits`) on. No input comes while any wait (`takes_input`).
     pending: VecDeque<Pending>,
-    /// What the last push or own request held back for room needs (`need`).
-    push_need: usize,
+    /// What the last own request held back for room needs (`need`).
     flush_need: Option<usize>,
     /// The push room last granted (`ServingOutput::Room`), reserved until the upper layer's
     /// pushes (or an empty `Notify`, giving it back) arrive.
@@ -316,31 +286,6 @@ fn head_keys<'a>(keys: &'a mut HashMap<LabelId, HeadKeys>, store: &dyn LabelStor
     Ok(keys.get(label))
 }
 
-/// Replay cursor ID of a log (spec/wire.md §11.2).
-pub fn replay_id(log_id: &[u8; 16]) -> [u8; 16] {
-    let h = osis_base::hash::hash(&[REPLAY.as_bytes(), &log_id[..]].concat());
-    let mut id = [0u8; 16];
-    id.copy_from_slice(h.get(..16).unwrap_or(&[0; 16]));
-    id
-}
-
-/// Replay position of a blob ID: its first 63 bits, big-endian (a wire integer stays below
-/// 2^63).
-fn replay_pos(id: &BlobId) -> u64 {
-    let mut b = [0u8; 8];
-    b.copy_from_slice(id.0.get(..8).unwrap_or(&[0; 8]));
-    u64::from_be_bytes(b) >> 1
-}
-
-/// The greatest blob ID at a replay position (continuing after it skips the position).
-fn after_pos(pos: u64) -> BlobId {
-    let mut b = [0xff; 32];
-    if let Some(d) = b.get_mut(..8) {
-        d.copy_from_slice(&((pos << 1) | 1).to_be_bytes());
-    }
-    BlobId(b)
-}
-
 impl ServingSession {
     pub fn new(cfg: ServingConfig) -> ServingSession {
         ServingSession {
@@ -349,17 +294,11 @@ impl ServingSession {
             version: None,
             closed: false,
             opened: BTreeMap::new(),
-            subs: BTreeMap::new(),
-            synced: BTreeMap::new(),
-            inline: BTreeMap::new(),
-            replays: BTreeMap::new(),
-            crossed: HashSet::new(),
             keys: HashMap::new(),
             struck: false,
             peer_challenge: None,
             written: 0,
             taken: None,
-            owed: VecDeque::new(),
             asked: BTreeMap::new(),
             node_asked: BTreeMap::new(),
             asked_bytes: Charge::default(),
@@ -370,7 +309,6 @@ impl ServingSession {
             slack: usize::MAX,
             base: 0,
             pending: VecDeque::new(),
-            push_need: 0,
             flush_need: None,
             granted: 0,
             requests: crate::client::Window::default(),
@@ -417,7 +355,7 @@ impl ServingSession {
         if let Some(p) = self.pending.front() {
             return Some(p.need());
         }
-        self.flush_need.or_else(|| self.held().then_some(self.push_need.max(1)))
+        self.flush_need.or_else(|| self.held().then_some(crate::client::SMALL_REPLY))
     }
 
     /// The node's bytes left for this connection, with `out` written.
@@ -454,11 +392,6 @@ impl ServingSession {
         self.opened.keys()
     }
 
-    /// Whether `label` is subscribed here: only then does a relay-only entry go to it.
-    pub fn subscribed(&self, label: &LabelId) -> bool {
-        self.subs.contains_key(label)
-    }
-
     /// Whether `label` is opened and its open holds at the head: under the head's sync key
     /// (spec/sync.md §5).
     fn holds(&mut self, store: &dyn LabelStore, label: &LabelId) -> Result<bool, StoreError> {
@@ -468,7 +401,7 @@ impl ServingSession {
         })
     }
 
-    /// `holds`, ending an open that no longer does, with its subscription (spec/sync.md §5).
+    /// `holds`, ending an open that no longer does (spec/sync.md §5).
     fn still_open(&mut self, store: &dyn LabelStore, label: &LabelId) -> Result<bool, StoreError> {
         if self.holds(store, label)? {
             return Ok(true);
@@ -481,11 +414,6 @@ impl ServingSession {
     /// the labels opened (`MAX_OPEN_LABELS`).
     fn end_open(&mut self, label: &LabelId) {
         self.opened.remove(label);
-        self.subs.remove(label);
-        self.synced.remove(label);
-        self.inline.remove(label);
-        self.replays.remove(label);
-        self.owed.retain(|x| x != label);
     }
 
     pub fn is_closed(&self) -> bool {
@@ -497,9 +425,10 @@ impl ServingSession {
         self.version
     }
 
-    /// Whether pushes wait for the transport to take bytes (`ServingInput::Taken`).
+    /// Whether the upper layer's push room waits for the transport to take bytes
+    /// (`ServingInput::Taken`).
     pub fn held(&self) -> bool {
-        !self.owed.is_empty() || self.room_wanted
+        self.room_wanted
     }
 
     /// Push room for Notifies: what fits `REPLY_BUDGET` behind the unwritten bytes (all of it
@@ -514,13 +443,6 @@ impl ServingSession {
         let o = self.own(out);
         let share = if o == 0 { usize::MAX } else { self.share.saturating_sub(o) };
         Some(r.min(share).min(self.left(out))).filter(|r| *r >= crate::client::SMALL_REPLY)
-    }
-
-    /// Queues `label`'s pushes behind those already held (`owed`).
-    fn owe(&mut self, label: LabelId) {
-        if !self.owed.contains(&label) {
-            self.owed.push_back(label);
-        }
     }
 
     /// Bytes written and not taken by the transport, with those in `out` (0 without reports).
@@ -636,46 +558,18 @@ impl ServingSession {
                 }
                 self.requests.tail_in(self.decoder.partial(), self.decoder.pending(), now);
             }
-            // while pushes are held, a label waits its turn (`owed`)
-            ServingInput::Changed(label) if self.held() => {
-                if self.subs.contains_key(&label) {
-                    self.owe(label);
-                }
-            }
-            ServingInput::Changed(label) => {
-                if let Err(e) = self.push(store, &label, out) {
-                    out.push(ServingOutput::StoreError(e));
-                }
-            }
-            ServingInput::Relay(r) => {
-                // a slow subscriber misses relay-only entries rather than queueing them
-                let ev = Event::Added { blob_id: r.blob_id, blob: Some(r.blob.to_vec()), wrap: r.wrap, stamp: Some(r.stamp) };
-                // an open a new head ended gets none (its held push ends it)
-                if let Some(seq) = self.subs.get(&r.label).copied()
-                    && !self.no_room(out, event_size(&ev))
-                    && self.holds(store, &r.label).unwrap_or_else(|e| {
-                        out.push(ServingOutput::StoreError(e));
-                        false
-                    })
-                {
-                    match store.log_head(&r.label) {
-                        Ok((log_id, _)) => send(out, Message::Push { label: r.label, events: vec![ev], cursor: Cursor { log_id, seq } }),
-                        Err(e) => out.push(ServingOutput::StoreError(e)),
-                    }
-                }
-            }
             ServingInput::Taken(n) => {
                 self.taken = Some(self.taken.map_or(n, |t| t.max(n)));
                 self.requests.taken(n, now);
-                self.resume(store, out);
+                self.resume(out);
             }
             ServingInput::Resume => {
                 self.run_pending(now, store, out);
-                self.resume(store, out);
+                self.resume(out);
             }
             ServingInput::WantRoom => match self.room(out) {
-                Some(budget) if self.owed.is_empty() => self.grant(budget, out),
-                _ => self.room_wanted = true,
+                Some(budget) => self.grant(budget, out),
+                None => self.room_wanted = true,
             },
             ServingInput::Reply { id, reply } => self.api_reply(id, reply, out),
             ServingInput::Notify(notes) => {
@@ -687,17 +581,7 @@ impl ServingSession {
     }
 
     /// Held pushes go on, labels in turn, then the room the upper layer waits for.
-    fn resume(&mut self, store: &mut dyn LabelStore, out: &mut Vec<ServingOutput>) {
-        // in turn: one held again goes to the back, and the rest keep their place
-        while let Some(l) = self.owed.pop_front() {
-            if let Err(e) = self.push(store, &l, out) {
-                out.push(ServingOutput::StoreError(e));
-                self.owe(l);
-            }
-            if self.owed.back() == Some(&l) {
-                break;
-            }
-        }
+    fn resume(&mut self, out: &mut Vec<ServingOutput>) {
         if self.room_wanted
             && let Some(budget) = self.room(out)
         {
@@ -876,78 +760,17 @@ impl ServingSession {
         Ok(Some(match msg {
             M::Ping { id, .. } => M::Pong { id, wall_ms: now },
             M::Open { id, label, proof } => self.open(store, id, label, proof)?,
-            M::Register { id, label, step, claim_set } => self.register(store, id, label, step, claim_set, out)?,
+            M::Register { id, label, step, claim_set } => self.register(store, id, label, step, claim_set)?,
             M::Path { id, label, after } => self.path(store, id, label, after)?,
-            M::Upload { id, label, entries } => {
-                let ids: Vec<BlobId> = entries.iter().map(|e| osis_label::blob_id(&e.blob)).collect();
-                // code 9 alone, never the head (an ex-writer would watch rotations, spec/sync.md §5)
-                M::Status { id, codes: self.accept_all(store, now, &label, &entries, &ids, out)? }
-            }
-            M::Deposit { id, label, blob, wrap, sig } => {
-                let Some(k) = head_keys(&mut self.keys, store, &label)? else {
-                    return Ok(Some(M::Budget { id, code: Code::UNKNOWN_LABEL, budget: None }));
-                };
-                let (code, signed) = deposit(store, now, &label, k, &blob, wrap, &sig, &mut self.struck)?;
-                // a deposit not signed by the head's deposit key learns its code only: neither
-                // the head nor the budget (spec/sync.md §5)
-                if !signed {
-                    return Ok(Some(M::Budget { id, code, budget: None }));
-                }
-                changed(&[code], &label, out);
-                let b = store.budget(&label)?;
-                M::Budget { id, code, budget: Some((b.entries_left, b.bytes_left)) }
-            }
             M::Delete { id, label, items } => {
                 let mut codes = Vec::with_capacity(items.len());
                 for item in &items {
                     codes.push(self.delete(store, now, &label, item)?);
                 }
-                changed(&codes, &label, out);
                 M::Status { id, codes }
             }
-            M::Sync { id, label, cursor, inline_limit, max_reply, entries, gained } => self.sync(store, now, id, label, cursor, inline_limit, max_reply, entries, gained, out)?,
-            M::Reconcile { id, label, ranges } => {
-                if !self.still_open(store, &label)? {
-                    return Ok(Some(M::Error { id, code: Code::NOT_OPENED }));
-                }
-                if ranges.iter().any(|r| matches!(r.mode, Mode::Diff { .. })) {
-                    return Ok(Some(M::Error { id, code: Code::MALFORMED }));
-                }
-                // only the asked ranges are read (sorted and disjoint: at most the label once)
-                let mut mine = Vec::with_capacity(ranges.len());
-                for r in &ranges {
-                    let upper = (!r.upper.is_end()).then(|| BlobId(r.upper.padded()));
-                    mine.push(store.live_ids_in(&label, &BlobId(r.lower.padded()), upper.as_ref())?);
-                }
-                match rbsr::respond_in(&ranges, &mine) {
-                    Ok(ranges) => M::ReconcileReply { id, ranges },
-                    Err(_) => M::Error { id, code: Code::MALFORMED },
-                }
-            }
-            M::Fetch { id, label, max_reply, ids } => self.fetch(store, id, label, max_reply, ids)?,
-            M::Subscribe { id, labels } => {
-                let mut codes = Vec::with_capacity(labels.len());
-                for l in labels {
-                    codes.push(if self.still_open(store, &l)? {
-                        let seq = match self.synced.get(&l) {
-                            Some(s) => *s,
-                            None => store.log_head(&l)?.1,
-                        };
-                        self.subs.insert(l, seq);
-                        Code::OK
-                    } else {
-                        Code::NOT_OPENED
-                    });
-                }
-                M::Status { id, codes }
-            }
-            M::Unsubscribe { id, labels } => {
-                for l in labels {
-                    self.subs.remove(&l);
-                    self.owed.retain(|x| *x != l);
-                }
-                M::Ok { id }
-            }
+            // a Fetch is the stream's alone (spec/wire.md §11.2: its id in the node's range)
+            M::Fetch { id, .. } => M::Error { id, code: Code::UNSUPPORTED },
             // Replies and pushes: this side sends no requests.
             _ => return Ok(None),
         }))
@@ -1014,7 +837,7 @@ impl ServingSession {
         })
     }
 
-    fn register(&mut self, store: &mut dyn LabelStore, id: Id, label: LabelId, step: Step, claim_set: Option<ClaimSet>, out: &mut Vec<ServingOutput>) -> Result<Message, StoreError> {
+    fn register(&mut self, store: &mut dyn LabelStore, id: Id, label: LabelId, step: Step, claim_set: Option<ClaimSet>) -> Result<Message, StoreError> {
         if step.label != label || claim_set.as_ref().is_some_and(|c| c.hash() != step.claims_hash) {
             return Ok(Message::Error { id, code: Code::MALFORMED });
         }
@@ -1043,7 +866,6 @@ impl ServingSession {
         if code != Code::OK {
             return Ok(Message::Error { id, code });
         }
-        out.push(ServingOutput::Changed(label));
         Ok(Message::Ok { id })
     }
 
@@ -1072,322 +894,12 @@ impl ServingSession {
         Ok(Message::PathReply { id, steps, more: at.is_some() })
     }
 
-    fn fetch(&mut self, store: &dyn LabelStore, id: Id, label: LabelId, max_reply: u64, ids: Vec<BlobId>) -> Result<Message, StoreError> {
-        if !self.still_open(store, &label)? {
-            return Ok(Message::Error { id, code: Code::NOT_OPENED });
-        }
-        let mut items = Vec::new();
-        let mut used = 0usize;
-        for blob_id in ids {
-            // the size first: a small `max_reply` lets a thousand of these go per round trip, and
-            // one that does not fit reads no blob
-            let meta = store.entry(&label, &blob_id)?;
-            let size = 120 + meta.as_ref().map_or(0, |m| usize::try_from(m.size).unwrap_or(usize::MAX));
-            if used.saturating_add(size) > reply_bound(max_reply) {
-                break;
-            }
-            let entry = match meta {
-                Some(m) => store.blob(&blob_id)?.map(|b| (b, m.wrap, m.stamp)),
-                None => None,
-            };
-            used += 120 + entry.as_ref().map_or(0, |e| e.0.len());
-            if entry.is_some() {
-                self.cross(blob_id);
-            }
-            items.push(Fetched { blob_id, entry });
-        }
-        Ok(Message::FetchReply { id, items })
-    }
-
-    /// The event for a log record, or none for a superseded add or a gained blob.
-    fn event(&self, store: &dyn LabelStore, label: &LabelId, seq: u64, rec: LogRecord, inline_limit: u64, gained: &HashSet<BlobId>) -> Result<Option<Event>, StoreError> {
-        Ok(match rec {
-            LogRecord::Added(b) => match store.entry(label, &b)? {
-                Some(m) if m.add_seq == seq && !gained.contains(&b) => Some(self.added(store, b, m, inline_limit)?),
-                _ => None,
-            },
-            LogRecord::Deleted(b) => Some(Event::Deleted(b)),
-            LogRecord::Head(s) => Some(Event::Head(s)),
-        })
-    }
-
-    /// `event_size` of `added`'s event, without reading the blob: a small `max_reply` lets a
-    /// thousand Syncs go per round trip, and a page that does not fit it reads none.
-    fn added_size(&self, blob_id: &BlobId, m: &EntryMeta, inline_limit: u64) -> usize {
-        let inline = m.size <= inline_limit && !self.crossed.contains(blob_id);
-        180 + if inline { usize::try_from(m.size).unwrap_or(usize::MAX) } else { 0 }
-    }
-
-    fn added(&self, store: &dyn LabelStore, blob_id: BlobId, m: EntryMeta, inline_limit: u64) -> Result<Event, StoreError> {
-        let blob = if m.size <= inline_limit && !self.crossed.contains(&blob_id) { store.blob(&blob_id)? } else { None };
-        Ok(Event::Added { blob_id, blob, wrap: m.wrap, stamp: m.stamp })
-    }
-
-    fn take(&mut self, e: &Event) {
-        if let Event::Added { blob_id, blob: Some(_), .. } = e {
-            self.cross(*blob_id);
-        }
-    }
-
-    fn cross(&mut self, blob_id: BlobId) {
-        if self.crossed.len() >= MAX_CROSSED {
-            self.crossed.clear();
-        }
-        self.crossed.insert(blob_id);
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn sync(&mut self, store: &mut dyn LabelStore, now: u64, id: Id, label: LabelId, cursor: Option<Cursor>, inline_limit: u64, max_reply: u64, entries: Vec<Entry>, gained: Vec<BlobId>, out: &mut Vec<ServingOutput>) -> Result<Message, StoreError> {
-        if !self.still_open(store, &label)? {
-            return Ok(Message::Error { id, code: Code::NOT_OPENED });
-        }
-        let (log_id, head_seq) = store.log_head(&label)?;
-        let invalid = Message::Error { id, code: Code::CURSOR_INVALID };
-        // a position of this log it no longer reaches: trimmed (the requester takes what it knew
-        // present and is not here as deleted); one past the head is not this log's
-        let trimmed = Message::Error { id, code: Code::LOG_TRIMMED };
-        // Log mode from a sequence number, or a replay (in blob ID order) after a position.
-        enum From {
-            Log(u64),
-            Replay { start: u64, after: Option<BlobId> },
-        }
-        let from = match cursor {
-            None => From::Replay { start: head_seq, after: None },
-            Some(c) if c.log_id == log_id => {
-                if c.seq > head_seq {
-                    return Ok(invalid);
-                }
-                if store.log_after(&label, c.seq, 0)?.is_none() {
-                    return Ok(trimmed);
-                }
-                From::Log(c.seq)
-            }
-            Some(c) if c.log_id == replay_id(&log_id) => match self.replays.get(&label) {
-                Some(start) => From::Replay { start: *start, after: Some(after_pos(c.seq)) },
-                None => return Ok(invalid),
-            },
-            Some(_) => return Ok(invalid),
-        };
-        self.inline.insert(label, inline_limit);
-        let ids: Vec<BlobId> = entries.iter().map(|e| osis_label::blob_id(&e.blob)).collect();
-        for b in &ids {
-            self.cross(*b);
-        }
-        let codes = self.accept_all(store, now, &label, &entries, &ids, out)?;
-        let mut want = Vec::new();
-        for g in &gained {
-            if store.entry(&label, g)?.is_none() && !store.tombstoned(&label, g)? {
-                want.push(*g);
-            }
-        }
-        // The requester holds what it gained and what it just sent: no add events for those.
-        let gained: HashSet<BlobId> = gained.into_iter().chain(ids).collect();
-        let budget = reply_bound(max_reply).saturating_sub(40 * want.len() + 10 * codes.len());
-        // under the whole budget a first event goes whatever its size; under a smaller one a page
-        // may hold none, and the requester asks on under the whole budget
-        let may_empty = max_reply < REPLY_BUDGET as u64;
-        let (mut events, mut used, mut more) = (Vec::new(), 0usize, false);
-        let cursor = match from {
-            From::Log(seq) => {
-                let mut pos = seq;
-                'log: loop {
-                    let Some(recs) = store.log_after(&label, pos, LOG_BATCH)? else { return Ok(trimmed) };
-                    if recs.is_empty() {
-                        break;
-                    }
-                    for (seq, rec) in recs {
-                        if let LogRecord::Added(b) = &rec
-                            && let Some(m) = store.entry(&label, b)?
-                            && m.add_seq == seq
-                            && !gained.contains(b)
-                            && used.saturating_add(self.added_size(b, &m, inline_limit)) > budget
-                            && (may_empty || !events.is_empty())
-                        {
-                            more = true;
-                            break 'log;
-                        }
-                        if let Some(e) = self.event(store, &label, seq, rec, inline_limit, &gained)? {
-                            let size = event_size(&e);
-                            if used + size > budget && (may_empty || !events.is_empty()) {
-                                more = true;
-                                break 'log;
-                            }
-                            used += size;
-                            self.take(&e);
-                            events.push(e);
-                        }
-                        pos = seq;
-                    }
-                }
-                Cursor { log_id, seq: pos }
-            }
-            From::Replay { start, mut after } => {
-                'live: loop {
-                    let live = store.live_by_id(&label, after.as_ref(), LOG_BATCH)?;
-                    if live.is_empty() {
-                        break;
-                    }
-                    for (b, m) in live {
-                        if !gained.contains(&b) {
-                            if used.saturating_add(self.added_size(&b, &m, inline_limit)) > budget && (may_empty || !events.is_empty()) {
-                                more = true;
-                                break 'live;
-                            }
-                            let e = self.added(store, b, m, inline_limit)?;
-                            let size = event_size(&e);
-                            used += size;
-                            self.take(&e);
-                            events.push(e);
-                        }
-                        after = Some(b);
-                    }
-                }
-                match more {
-                    true => {
-                        self.replays.insert(label, start);
-                        // no position yet (the first page held nothing): before every ID
-                        Cursor { log_id: replay_id(&log_id), seq: after.as_ref().map_or(0, replay_pos) }
-                    }
-                    false => {
-                        self.replays.remove(&label);
-                        Cursor { log_id, seq: start }
-                    }
-                }
-            }
-        };
-        if !more {
-            self.synced.insert(label, cursor.seq);
-        }
-        Ok(Message::SyncReply { id, events, want, codes, cursor, more })
-    }
-
-    /// Pushes `label`'s new log events. An open a new head ends (`still_open`) gets the events up
-    /// to and with that head's, and nothing after: its subscription ends.
-    fn push(&mut self, store: &dyn LabelStore, label: &LabelId, out: &mut Vec<ServingOutput>) -> Result<(), StoreError> {
-        let Some(mut seq) = self.subs.get(label).copied() else { return Ok(()) };
-        if self.no_room(out, 1) {
-            self.push_need = crate::client::SMALL_REPLY;
-            self.owe(*label);
-            return Ok(());
-        }
-        let ends = match self.opened.get(label).copied() {
-            Some(k) if !self.holds(store, label)? => Some(k),
-            _ => None,
-        };
-        let inline_limit = self.inline.get(label).copied().unwrap_or(0);
-        let (log_id, head) = store.log_head(label)?;
-        let none = HashSet::new();
-        let (mut events, mut used) = (Vec::new(), 0);
-        loop {
-            let Some(recs) = store.log_after(label, seq, LOG_BATCH)? else {
-                // The log no longer reaches the subscription: the client's next Sync recovers.
-                seq = head;
-                break;
-            };
-            if recs.is_empty() {
-                break;
-            }
-            for (s, rec) in recs {
-                let ending = matches!((&rec, ends), (LogRecord::Head(st), Some(k)) if st.keys.sync != k);
-                if ending {
-                    // pushed whatever the queue holds: the last event of this subscription
-                    let e = self.event(store, label, s, rec, inline_limit, &none)?;
-                    events.extend(e);
-                    send(out, Message::Push { label: *label, events, cursor: Cursor { log_id, seq: s } });
-                    self.end_open(label);
-                    return Ok(());
-                }
-                if let Some(e) = self.event(store, label, s, rec, inline_limit, &none)? {
-                    let size = event_size(&e);
-                    if self.backlog(out) + used + size > REPLY_BUDGET || !self.fits(out, used + size) {
-                        if !events.is_empty() {
-                            send(out, Message::Push { label: *label, events: std::mem::take(&mut events), cursor: Cursor { log_id, seq } });
-                            used = 0;
-                        }
-                        if self.no_room(out, size) {
-                            // the rest goes from `seq` once the transport takes bytes (`Taken`)
-                            // or the node's room grows (`Resume`)
-                            self.push_need = size;
-                            self.owe(*label);
-                            self.subs.insert(*label, seq);
-                            return Ok(());
-                        }
-                    }
-                    used += size;
-                    self.take(&e);
-                    events.push(e);
-                }
-                seq = s;
-            }
-        }
-        if ends.is_some() {
-            // the ending head's record is gone from the log: the current head ends it
-            events.extend(self.keys(store, label)?.map(|h| Event::Head(h.head.clone())));
-            send(out, Message::Push { label: *label, events, cursor: Cursor { log_id, seq } });
-            self.end_open(label);
-            return Ok(());
-        }
-        if !events.is_empty() {
-            send(out, Message::Push { label: *label, events, cursor: Cursor { log_id, seq } });
-        }
-        self.subs.insert(*label, seq);
-        self.owed.retain(|x| x != label);
-        Ok(())
-    }
-
-    /// The stamped entries of an Upload or Sync (`ids`: their blob IDs), one code each.
-    fn accept_all(&mut self, store: &mut dyn LabelStore, now: u64, label: &LabelId, entries: &[Entry], ids: &[BlobId], out: &mut Vec<ServingOutput>) -> Result<Vec<Code>, StoreError> {
-        let mut codes = Vec::with_capacity(entries.len());
-        for (e, b) in entries.iter().zip(ids) {
-            codes.push(self.accept(store, now, label, *b, &e.blob, e.wrap, e.stamp, &e.replaces, out)?);
-        }
-        changed(&codes, label, out);
-        Ok(codes)
-    }
-
-    /// Upload of one stamped entry (spec/sync.md §5), with the entries it replaces: each
-    /// authorized as a Delete of it would be, all removed iff the entry is admitted. A relay-only
-    /// blob is not stored: it goes to the other connections' subscribers (`ServingOutput::Relay`).
-    #[allow(clippy::too_many_arguments)]
-    fn accept(&mut self, store: &mut dyn LabelStore, now: u64, label: &LabelId, blob_id: BlobId, blob: &[u8], wrap: Wrap, stamp: Signature, replaces: &[DeleteItem], out: &mut Vec<ServingOutput>) -> Result<Code, StoreError> {
-        // An oversized blob never gets here: the message decoder refuses it (msg tests `field_sizes`).
-        debug_assert!(blob.len() <= osis_base::format::MAX_BLOB);
-        let Some(k) = head_keys(&mut self.keys, store, label)? else { return Ok(Code::UNKNOWN_LABEL) };
-        let (code, role) = check_entry(k, StepKey::Write, Domain::Upload, &entry_digest(label, &blob_id, &wrap), &stamp, &mut self.struck);
-        if code != Code::OK {
-            return Ok(code);
-        }
-        let mut replaced = Vec::with_capacity(replaces.len());
-        for item in replaces {
-            // one no longer held is skipped unchecked: nothing to remove
-            if store.entry(label, &item.blob)?.is_none() {
-                continue;
-            }
-            let code = self.delete_auth(store, label, item, false)?;
-            if code != Code::OK {
-                return Ok(code);
-            }
-            replaced.push(item.blob);
-        }
-        // held by nobody, a relay-only blob replaces nothing (spec/sync.md §5)
-        if !replaces.is_empty() && host_prefix(blob).is_ok_and(|p| p.is_some_and(|p| p.class() == Class::Relay)) {
-            return Ok(Code::REFUSED);
-        }
-        match put_stamped(store, now, label, blob_id, blob, wrap, stamp, &replaced, role)? {
-            Taken::Relay(r) => {
-                out.push(ServingOutput::Relay(r));
-                Ok(Code::OK)
-            }
-            Taken::Code(c) => Ok(c),
-        }
-    }
-
     /// The signatures of a delete of held entry `item.blob` (spec/sync.md §5): by the head's
     /// delete key, or by delete keys of levels (checked against the blob prefix's commitment
-    /// groups: every group for a Delete, any one for a Replace, `every`) with the label key the
+    /// groups: every group) with the label key the
     /// levels need. The prefix (`blob_prefix`, never the whole blob) is read only once the label
     /// signature holds.
-    fn delete_auth(&mut self, store: &dyn LabelStore, label: &LabelId, item: &DeleteItem, every: bool) -> Result<Code, StoreError> {
+    fn delete_auth(&mut self, store: &dyn LabelStore, label: &LabelId, item: &DeleteItem) -> Result<Code, StoreError> {
         let Some(k) = head_keys(&mut self.keys, store, label)? else { return Ok(Code::UNKNOWN_LABEL) };
         let levels = item.levels();
         let Ok(digest) = delete_digest(label, &item.blob, &levels) else { return Ok(Code::MALFORMED) };
@@ -1418,7 +930,7 @@ impl ServingSession {
                     return Ok(Code::REFUSED);
                 }
             }
-            if covered.is_empty() || (every && !covered.iter().all(|c| *c)) {
+            if covered.is_empty() || !covered.iter().all(|c| *c) {
                 return Ok(Code::REFUSED);
             }
         }
@@ -1440,13 +952,13 @@ impl ServingSession {
             if !item.by.is_empty() {
                 return Ok(Code::REFUSED);
             }
-            let code = self.delete_auth(store, label, item, true)?;
+            let code = self.delete_auth(store, label, item)?;
             if code != Code::OK {
                 return Ok(code);
             }
             return Ok(if store.tombstoned(label, &item.blob)? { Code::OK } else { Code::REFUSED });
         }
-        let code = self.delete_auth(store, label, item, true)?;
+        let code = self.delete_auth(store, label, item)?;
         if code != Code::OK {
             return Ok(code);
         }
@@ -1461,11 +973,11 @@ pub enum Taken {
     Relay(Relayed),
 }
 
-/// A stamped entry whose stamp verified, put into the store by the Upload rules (spec/sync.md
-/// §5): a relay-only blob passes the relay gate and is not stored; an expired or tombstoned
-/// one is refused. Shared by a session's Upload and node sync's pull of a sync ID it cannot read.
+/// A stamped entry whose stamp verified, put into the store (spec/sync.md §5, Taking a stamped
+/// entry): a relay-only blob passes the relay gate and is not stored; an expired or tombstoned
+/// one is refused. Used by node sync's pull of a sync ID it cannot read.
 #[allow(clippy::too_many_arguments)]
-pub fn put_stamped(store: &mut dyn LabelStore, now: u64, label: &LabelId, blob_id: BlobId, blob: &[u8], wrap: Wrap, stamp: Signature, replaced: &[BlobId], role: bool) -> Result<Taken, StoreError> {
+pub fn put_stamped(store: &mut dyn LabelStore, now: u64, label: &LabelId, blob_id: BlobId, blob: &[u8], wrap: Wrap, stamp: Signature, role: bool) -> Result<Taken, StoreError> {
     let Ok(prefix) = host_prefix(blob) else { return Ok(Taken::Code(Code::MALFORMED)) };
     let class = prefix.as_ref().map(|p| p.class()).unwrap_or_default();
     let expiry = prefix.and_then(|p| p.expiry()).map(|t| t.0);
@@ -1482,7 +994,7 @@ pub fn put_stamped(store: &mut dyn LabelStore, now: u64, label: &LabelId, blob_i
     if store.tombstoned(label, &blob_id)? {
         return Ok(Taken::Code(Code::TOMBSTONED));
     }
-    Ok(Taken::Code(store.put(label, Put { blob_id, blob, wrap, stamp: Some(stamp), expiry, ephemeral: class.in_memory(), replaces: replaced, now, role })?))
+    Ok(Taken::Code(store.put(label, Put { blob_id, blob, wrap, stamp: Some(stamp), expiry, ephemeral: class.in_memory(), now, role })?))
 }
 
 /// A stamped entry pulled from a reader of `label` at a node that cannot read it (spec/sync.md
@@ -1491,11 +1003,11 @@ pub fn put_stamped(store: &mut dyn LabelStore, now: u64, label: &LabelId, blob_i
 #[allow(clippy::too_many_arguments)]
 pub fn pulled(store: &mut dyn LabelStore, now: u64, label: &LabelId, k: &HeadKeys, blob: &[u8], wrap: Wrap, stamp: Signature, struck: &mut bool) -> Result<Taken, StoreError> {
     let blob_id = osis_label::blob_id(blob);
-    let (code, role) = check_entry(k, StepKey::Write, Domain::Upload, &entry_digest(label, &blob_id, &wrap), &stamp, struck);
+    let (code, role) = check_entry(k, StepKey::Write, Domain::Stamp, &entry_digest(label, &blob_id, &wrap), &stamp, struck);
     if code != Code::OK {
         return Ok(Taken::Code(code));
     }
-    put_stamped(store, now, label, blob_id, blob, wrap, stamp, &[], role)
+    put_stamped(store, now, label, blob_id, blob, wrap, stamp, role)
 }
 
 /// A Deposit of `blob` under `label` (spec/sync.md §5), whose head keys are `k`: its code, and
@@ -1522,7 +1034,7 @@ pub fn deposit(store: &mut dyn LabelStore, now: u64, label: &LabelId, k: &HeadKe
     if store.tombstoned(label, &blob_id)? {
         return Ok((Code::TOMBSTONED, true));
     }
-    Ok((store.put(label, Put { blob_id, blob, wrap, stamp: None, expiry, ephemeral: class.in_memory(), replaces: &[], now, role })?, true))
+    Ok((store.put(label, Put { blob_id, blob, wrap, stamp: None, expiry, ephemeral: class.in_memory(), now, role })?, true))
 }
 
 impl From<Vec<u8>> for ServingOutput {
@@ -1531,11 +1043,6 @@ impl From<Vec<u8>> for ServingOutput {
     }
 }
 
-fn changed(codes: &[Code], label: &LabelId, out: &mut Vec<ServingOutput>) {
-    if codes.contains(&Code::OK) && !out.contains(&ServingOutput::Changed(*label)) {
-        out.push(ServingOutput::Changed(*label));
-    }
-}
 
 #[cfg(test)]
 mod tests {
@@ -1543,36 +1050,6 @@ mod tests {
     use super::*;
     use crate::examples::{CHALLENGE, Fixture, STATIC_KEY};
     use crate::store::MemoryLabelStore;
-
-    // spec/requirements.md (peer input never causes unbounded allocation): a peer streaming Syncs
-    // of refused entries does not grow the connection's crossed set past its cap
-    #[test]
-    fn crossed_set_bounded() {
-        let f = Fixture::new(0x10);
-        let mut store = MemoryLabelStore::new([1; 32]);
-        store.push_step(&f.label, f.genesis.clone(), Some(f.genesis_claims.clone())).unwrap();
-        let mut c = ServingSession::new(ServingConfig { static_key: STATIC_KEY, challenge: CHALLENGE });
-        let mut feed = |c: &mut ServingSession, body: Vec<u8>| c.handle(0, &mut store, ServingInput::Bytes(encode_frame(&body)));
-        feed(&mut c, Hello::new(0, [2; 32]).encode());
-        let out = feed(&mut c, Message::Open { id: 1, label: f.label, proof: Proof::sync(None, &f.sync, &f.label, &CHALLENGE, &STATIC_KEY) }.encode());
-        assert!(out.iter().any(|o| matches!(o, ServingOutput::Send(b) if matches!(Message::decode(&b[4..]), Ok(Message::Opened { .. })))));
-        let n = MAX_CROSSED / 2 + 1;
-        for round in 0..3u32 {
-            let entries = (0..n).map(|i| Entry { blob: [round.to_be_bytes(), (i as u32).to_be_bytes()].concat(), wrap: [0; WRAP_LEN], stamp: Signature([0; 64]), replaces: Vec::new() }).collect();
-            feed(&mut c, Message::Sync { id: 2 + round, label: f.label, cursor: None, inline_limit: 0, max_reply: REPLY_BUDGET as u64, entries, gained: vec![] }.encode());
-            assert!(c.crossed.len() <= MAX_CROSSED, "{}", c.crossed.len());
-        }
-        assert!(!c.is_closed());
-    }
-
-    fn opened(f: &Fixture, store: &mut MemoryLabelStore) -> ServingSession {
-        let mut c = ServingSession::new(ServingConfig { static_key: STATIC_KEY, challenge: CHALLENGE });
-        c.handle(0, store, ServingInput::Bytes(encode_frame(&Hello::new(0, [2; 32]).encode())));
-        let open = Message::Open { id: 1, label: f.label, proof: Proof::sync(None, &f.sync, &f.label, &CHALLENGE, &STATIC_KEY) };
-        let out = c.handle(0, store, ServingInput::Bytes(encode_frame(&open.encode())));
-        assert!(out.iter().any(|o| matches!(o, ServingOutput::Send(b) if matches!(Message::decode(&b[4..]), Ok(Message::Opened { .. })))));
-        c
-    }
 
     fn reply(out: &[ServingOutput]) -> Message {
         out.iter().find_map(|o| if let ServingOutput::Send(b) = o { Message::decode(&b[4..]).ok() } else { None }).unwrap()
@@ -1582,7 +1059,7 @@ mod tests {
     // store's: the session hands them up unanswered and sends the upper layer's answers
     #[test]
     fn prove_and_resume_go_up() {
-        let mut store = MemoryLabelStore::new([1; 32]);
+        let mut store = MemoryLabelStore::new();
         let mut c = ServingSession::new(ServingConfig { static_key: STATIC_KEY, challenge: CHALLENGE });
         c.handle(0, &mut store, ServingInput::Bytes(encode_frame(&Hello::new(0, [2; 32]).encode())));
         for m in [Message::Prove { id: 1, proofs: vec![] }, Message::Resume { id: 2, nonce: [3; 32], tags: vec![[4; 32]] }] {
@@ -1601,7 +1078,7 @@ mod tests {
     // unanswered, a peer adding more is closed before the one past the bound goes up
     #[test]
     fn node_requests_count_until_answered_spec_sync_6() {
-        let mut store = MemoryLabelStore::new([1; 32]);
+        let mut store = MemoryLabelStore::new();
         let fetch = |k: u32| Message::Fetch { id: crate::msg::NODE_IDS | k, label: LabelId([9; 16]), max_reply: REPLY_BUDGET as u64, ids: vec![BlobId([1; 32])] };
         let start = |store: &mut MemoryLabelStore| {
             let mut c = ServingSession::new(ServingConfig { static_key: STATIC_KEY, challenge: CHALLENGE });
@@ -1631,27 +1108,43 @@ mod tests {
         assert_eq!(up, crate::client::MAX_UNANSWERED / each);
     }
 
+    /// A label of `n` steps (`store::tests::path`) opened under its head's sync key: Path
+    /// requests on it from genesis get pages of `MAX_PATH_STEPS` steps.
+    fn long_opened(store: &mut MemoryLabelStore, n: usize) -> (ServingSession, LabelId) {
+        let label = Fixture::new(0x10).label;
+        for s in crate::store::tests::path(n, |i, r| 1 + ((i + r) % 200) as u8) {
+            store.push_step(&label, s, None).unwrap();
+        }
+        let mut c = ServingSession::new(ServingConfig { static_key: STATIC_KEY, challenge: CHALLENGE });
+        c.handle(0, store, ServingInput::Bytes(encode_frame(&Hello::new(0, [2; 32]).encode())));
+        let head_key = crate::store::tests::secret(1 + ((n - 1) % 200) as u8);
+        let open = Message::Open { id: 1, label, proof: Proof::sync(None, &head_key, &label, &CHALLENGE, &STATIC_KEY) };
+        assert!(matches!(reply(&c.handle(0, store, ServingInput::Bytes(encode_frame(&open.encode())))), Message::Opened { .. }));
+        (c, label)
+    }
+
+    /// A framed Path request from genesis.
+    fn path_from_genesis(id: Id, label: LabelId) -> Vec<u8> {
+        encode_frame(&Message::Path { id, label, after: None }.encode())
+    }
+
+    /// The Path pages in `out`.
+    fn pages(out: &[ServingOutput]) -> usize {
+        out.iter().filter(|o| matches!(o, ServingOutput::Send(b) if matches!(Message::decode(&b[4..]), Ok(Message::PathReply { .. })))).count()
+    }
+
     // spec/sync.md §6 (request window), spec/requirements.md (peer input never causes unbounded
     // work): a peer pipelining requests (two per input, within `MAX_UNANSWERED`) without taking
     // the replies is closed once they pass `SEND_QUEUE`; the rest of its input costs nothing
     #[test]
     fn pipelined_replies_bounded() {
-        let f = Fixture::new(0x10);
-        let mut store = MemoryLabelStore::new([1; 32]);
-        store.push_step(&f.label, f.genesis.clone(), Some(f.genesis_claims.clone())).unwrap();
-        let blob = vec![7u8; osis_base::format::MAX_BLOB];
-        let blob_id = osis_label::blob_id(&blob);
-        let put = Put { blob_id, blob: &blob, wrap: [0; WRAP_LEN], stamp: Some(Signature([0; 64])), expiry: None, ephemeral: false, replaces: &[], now: 0, role: false };
-        assert_eq!(store.put(&f.label, put).unwrap(), Code::OK);
-        let mut c = opened(&f, &mut store);
+        let mut store = MemoryLabelStore::new();
+        let (mut c, label) = long_opened(&mut store, MAX_PATH_STEPS + 1);
         let taken = c.written;
         c.handle(0, &mut store, ServingInput::Taken(taken));
         let mut sent = 0;
-        for id in 0..50u32 {
-            let mut bytes = Vec::new();
-            for k in 0..2 {
-                bytes.extend(encode_frame(&Message::Fetch { id: 10 + 2 * id + k, label: f.label, max_reply: REPLY_BUDGET as u64, ids: vec![blob_id] }.encode()));
-            }
+        for id in 0..10_000u32 {
+            let bytes = [path_from_genesis(10 + 2 * id, label), path_from_genesis(11 + 2 * id, label)].concat();
             let out = c.handle(0, &mut store, ServingInput::Bytes(bytes));
             sent += out.iter().map(|x| if let ServingOutput::Send(b) = x { b.len() } else { 0 }).sum::<usize>();
             if c.is_closed() {
@@ -1660,7 +1153,7 @@ mod tests {
             }
         }
         assert!(c.is_closed());
-        assert!(sent > SEND_QUEUE - MAX_MESSAGE && sent <= SEND_QUEUE + MAX_MESSAGE, "{sent}");
+        assert!(sent > SEND_QUEUE && sent <= SEND_QUEUE + 2 * crate::client::SMALL_REPLY, "{sent}");
     }
 
     // spec/sync.md §10 (Served connections): with a room set, requests are taken but each runs,
@@ -1669,22 +1162,19 @@ mod tests {
     // while one waits; the rest run as the transport takes the replies
     #[test]
     fn replies_wait_for_room_spec_sync_10() {
-        let f = Fixture::new(0x10);
-        let mut store = MemoryLabelStore::new([1; 32]);
-        store.push_step(&f.label, f.genesis.clone(), Some(f.genesis_claims.clone())).unwrap();
-        let blob = vec![7u8; 256 << 10];
-        let blob_id = osis_label::blob_id(&blob);
-        let put = Put { blob_id, blob: &blob, wrap: [0; WRAP_LEN], stamp: Some(Signature([0; 64])), expiry: None, ephemeral: false, replaces: &[], now: 0, role: false };
-        assert_eq!(store.put(&f.label, put).unwrap(), Code::OK);
-        let mut c = opened(&f, &mut store);
+        let mut store = MemoryLabelStore::new();
+        let (mut c, label) = long_opened(&mut store, MAX_PATH_STEPS + 1);
         let mut taken = c.written;
         c.handle(0, &mut store, ServingInput::Taken(taken));
-        let allowance = 300usize << 10;
-        let fetch = |id: u32| encode_frame(&Message::Fetch { id, label: f.label, max_reply: allowance as u64, ids: vec![blob_id] }.encode());
+        let allowance = crate::client::SMALL_REPLY;
         let ids = |out: &[ServingOutput]| out.iter().filter_map(|o| if let ServingOutput::Send(b) = o { Message::decode(&b[4..]).ok().map(|m| m.id()) } else { None }).collect::<Vec<_>>();
-        let share = 1 << 20;
+        // a full page, framed
+        let page = encode_frame(&Message::PathReply { id: 100, steps: store.path(&label).unwrap()[..MAX_PATH_STEPS].to_vec(), more: true }.encode()).len();
+        assert!(page < allowance && 2 * page > allowance, "{page}");
+        // two pages and an allowance fit; three and an allowance do not
+        let share = 2 * page + allowance + page / 2;
         c.set_room(share, 64 << 20);
-        let out = c.handle(0, &mut store, ServingInput::Bytes((100..108).flat_map(fetch).collect()));
+        let out = c.handle(0, &mut store, ServingInput::Bytes((100..108).flat_map(|id| path_from_genesis(id, label)).collect()));
         assert_eq!(ids(&out), vec![100, 101, 102], "three fit the share");
         assert!(c.holding(&[]) <= share);
         assert!(!c.takes_input() && c.need() == Some(allowance));
@@ -1699,11 +1189,11 @@ mod tests {
         let out = c.handle(0, &mut store, ServingInput::Taken(taken));
         assert!(ids(&out).is_empty() && c.holding(&[]) == 0 && c.need() == Some(allowance));
         // a share smaller than one reply: one at a time, each alone
-        c.set_room(64 << 10, 64 << 20);
+        c.set_room(page / 2, 64 << 20);
         let out = c.handle(0, &mut store, ServingInput::Resume);
         assert_eq!(ids(&out), vec![106]);
         taken = c.written;
-        c.set_room(64 << 10, 64 << 20);
+        c.set_room(page / 2, 64 << 20);
         let out = c.handle(0, &mut store, ServingInput::Taken(taken));
         assert_eq!(ids(&out), vec![107]);
         assert!(c.takes_input() && c.need().is_none());
@@ -1715,7 +1205,7 @@ mod tests {
     // back the room that lets those pushes go, even under a share smaller than both
     #[test]
     fn granted_room_is_reserved_spec_sync_10() {
-        let mut store = MemoryLabelStore::new([1; 32]);
+        let mut store = MemoryLabelStore::new();
         let mut c = ServingSession::new(ServingConfig { static_key: STATIC_KEY, challenge: CHALLENGE });
         c.handle(0, &mut store, ServingInput::Bytes(encode_frame(&Hello::new(0, [2; 32]).encode())));
         let taken = c.written;
@@ -1744,14 +1234,8 @@ mod tests {
     // the two together close no connection
     #[test]
     fn own_requests_unwritten_close_nothing() {
-        let f = Fixture::new(0x10);
-        let mut store = MemoryLabelStore::new([1; 32]);
-        store.push_step(&f.label, f.genesis.clone(), Some(f.genesis_claims.clone())).unwrap();
-        let blob = vec![7u8; osis_base::format::MAX_BLOB];
-        let blob_id = osis_label::blob_id(&blob);
-        let put = Put { blob_id, blob: &blob, wrap: [0; WRAP_LEN], stamp: Some(Signature([0; 64])), expiry: None, ephemeral: false, replaces: &[], now: 0, role: false };
-        assert_eq!(store.put(&f.label, put).unwrap(), Code::OK);
-        let mut c = opened(&f, &mut store);
+        let mut store = MemoryLabelStore::new();
+        let (mut c, label) = long_opened(&mut store, MAX_PATH_STEPS + 1);
         let taken = c.written;
         c.handle(0, &mut store, ServingInput::Taken(taken));
         // three filter pages just under 8 MiB each: below `WINDOW` before the third
@@ -1760,144 +1244,121 @@ mod tests {
             c.handle(0, &mut store, ServingInput::Peer(Box::new(page(k))));
         }
         assert!(c.requests.in_flight() > crate::client::WINDOW);
-        // a dialer within its window: two whole-budget Fetches, the second sent below `WINDOW`
-        for id in [10, 11] {
-            let out = c.handle(0, &mut store, ServingInput::Bytes(encode_frame(&Message::Fetch { id, label: f.label, max_reply: REPLY_BUDGET as u64, ids: vec![blob_id] }.encode())));
-            assert!(matches!(reply(&out), Message::FetchReply { ref items, .. } if items.len() == 1), "{id}: closed {}", c.is_closed());
+        // a dialer within its window: Path requests (nearly a whole allowance of reply each)
+        // while what it has in flight is below `WINDOW`
+        let (mut bytes, mut in_flight, mut n) = (Vec::new(), 0, 0u32);
+        while in_flight < crate::client::WINDOW {
+            let f = path_from_genesis(10 + n, label);
+            in_flight += f.len() + crate::client::SMALL_REPLY;
+            bytes.extend(f);
+            n += 1;
         }
+        let out = c.handle(0, &mut store, ServingInput::Bytes(bytes));
         assert!(!c.is_closed());
+        assert_eq!(pages(&out), n as usize);
+        assert!(c.unread() > SEND_QUEUE, "the replies and own requests unwritten pass the dialer's bound alone: {}", c.unread());
     }
 
     // spec/sync.md §6 (request window), spec/requirements.md (peer input never causes unbounded
     // work): requests that would carry more than `MAX_UNANSWERED` unanswered in one input close
-    // the connection before any runs, so repeating a whole-space Reconcile (which reads the whole
-    // label) costs at most three label reads per input; spread over inputs, each runs
+    // the connection before any runs, so repeating a request that reads much (a Path page reads
+    // its steps) costs at most a window of them per input; spread over inputs, each runs
     #[test]
     fn pipelined_requests_bounded() {
-        let f = Fixture::new(0x10);
-        let mut store = MemoryLabelStore::new([1; 32]);
-        store.push_step(&f.label, f.genesis.clone(), Some(f.genesis_claims.clone())).unwrap();
-        let n = 1000u32;
-        for i in 0..n {
-            let blob = i.to_be_bytes().to_vec();
-            let put = Put { blob_id: osis_label::blob_id(&blob), blob: &blob, wrap: [0; WRAP_LEN], stamp: Some(Signature([0; 64])), expiry: None, ephemeral: false, replaces: &[], now: 0, role: false };
-            assert_eq!(store.put(&f.label, put).unwrap(), Code::OK);
-        }
-        let whole = |id| encode_frame(&Message::Reconcile { id, label: f.label, ranges: vec![Range { lower: rbsr::Bound::empty(), upper: rbsr::Bound::empty(), mode: Mode::Fingerprint([0; 16]) }] }.encode());
-        let replies = |out: &[ServingOutput]| out.iter().filter(|o| matches!(o, ServingOutput::Send(b) if matches!(Message::decode(&b[4..]), Ok(Message::ReconcileReply { .. })))).count();
+        let mut store = MemoryLabelStore::new();
+        let (mut c, label) = long_opened(&mut store, MAX_PATH_STEPS + 1);
         // within the bound: three per input, input after input
-        let mut c = opened(&f, &mut store);
-        store.ids_read.set(0);
+        store.step_reads.set(0);
         for round in 0..4u32 {
-            let out = c.handle(0, &mut store, ServingInput::Bytes((0..3).flat_map(|k| whole(10 + 3 * round + k)).collect()));
-            assert_eq!(replies(&out), 3);
+            let out = c.handle(0, &mut store, ServingInput::Bytes((0..3).flat_map(|k| path_from_genesis(10 + 3 * round + k, label)).collect()));
+            assert_eq!(pages(&out), 3);
         }
         assert!(!c.is_closed());
-        assert_eq!(store.ids_read.get(), 12 * u64::from(n));
+        assert_eq!(store.step_reads.get(), 12 * MAX_PATH_STEPS as u64);
         // past it in one input: closed before any of them runs (frames are taken, then run)
-        let mut c = opened(&f, &mut store);
-        store.ids_read.set(0);
-        let out = c.handle(0, &mut store, ServingInput::Bytes((0..1000).flat_map(whole).collect()));
+        let mut store = MemoryLabelStore::new();
+        let (mut c, label) = long_opened(&mut store, MAX_PATH_STEPS + 1);
+        let n = crate::client::MAX_UNANSWERED / crate::client::SMALL_REPLY + 1;
+        store.step_reads.set(0);
+        let out = c.handle(0, &mut store, ServingInput::Bytes((0..n as u32).flat_map(|k| path_from_genesis(10 + k, label)).collect()));
         assert!(c.is_closed());
         assert!(out.iter().any(|o| matches!(o, ServingOutput::PeerError(Error::Cap("requests past the request window")))), "{out:?}");
-        assert_eq!(replies(&out), 0);
-        assert_eq!(store.ids_read.get(), 0);
+        assert_eq!(pages(&out), 0);
+        assert_eq!(store.step_reads.get(), 0);
     }
 
-    // spec/wire.md §11.3, spec/requirements.md (peer input never causes unbounded work): a
-    // Reconcile reads only the live IDs inside its ranges, so repeating a narrow range over a
-    // large label costs what the range holds, and the whole space costs the label once
-    #[test]
-    fn reconcile_reads_only_asked_ranges() {
-        let f = Fixture::new(0x10);
-        let mut store = MemoryLabelStore::new([1; 32]);
-        store.push_step(&f.label, f.genesis.clone(), Some(f.genesis_claims.clone())).unwrap();
-        let n = 4096u32;
-        let mut ids = Vec::new();
-        for i in 0..n {
-            let blob = i.to_be_bytes().to_vec();
-            let blob_id = osis_label::blob_id(&blob);
-            let put = Put { blob_id, blob: &blob, wrap: [0; WRAP_LEN], stamp: Some(Signature([0; 64])), expiry: None, ephemeral: false, replaces: &[], now: 0, role: false };
-            assert_eq!(store.put(&f.label, put).unwrap(), Code::OK);
-            ids.push(blob_id);
-        }
-        ids.sort();
-        let mut c = opened(&f, &mut store);
-        // [ids[100], ids[110]): ten IDs, asked by fingerprint and by list
-        let (lo, hi) = (rbsr::Bound::of(&ids[100]), rbsr::Bound::of(&ids[110]));
-        for (i, mode) in [Mode::Fingerprint([0; 16]), Mode::Ids(vec![])].into_iter().enumerate() {
-            store.ids_read.set(0);
-            let msg = Message::Reconcile { id: 2 + i as u32, label: f.label, ranges: vec![Range { lower: lo.clone(), upper: hi.clone(), mode }] };
-            let out = c.handle(0, &mut store, ServingInput::Bytes(encode_frame(&msg.encode())));
-            let Message::ReconcileReply { ranges, .. } = reply(&out) else { panic!("{out:?}") };
-            let want = match i {
-                0 => Mode::Ids(ids[100..110].to_vec()),
-                _ => Mode::Diff { theirs: ids[100..110].to_vec(), lacking: vec![] },
-            };
-            assert_eq!(ranges, vec![Range { lower: lo.clone(), upper: hi.clone(), mode: want }]);
-            assert_eq!(store.ids_read.get(), 10);
-        }
-        store.ids_read.set(0);
-        let whole = Message::Reconcile { id: 9, label: f.label, ranges: vec![Range { lower: rbsr::Bound::empty(), upper: rbsr::Bound::empty(), mode: Mode::Fingerprint([0; 16]) }] };
-        let out = c.handle(0, &mut store, ServingInput::Bytes(encode_frame(&whole.encode())));
-        assert!(matches!(reply(&out), Message::ReconcileReply { ranges, .. } if ranges.len() == rbsr::SPLIT));
-        assert_eq!(store.ids_read.get(), u64::from(n));
+    /// A Delete item of a blob this store does not hold, signed by delete secret `k`.
+    fn delete_by(k: u8, label: &LabelId) -> DeleteItem {
+        DeleteItem::sign(&crate::store::tests::secret(k), label, BlobId([0xd1; 32])).unwrap()
+    }
+
+    /// The codes of a Delete of `items` on a connection.
+    fn delete_codes(c: &mut ServingSession, store: &mut MemoryLabelStore, id: Id, label: LabelId, items: Vec<DeleteItem>) -> Vec<Code> {
+        let out = c.handle(0, store, ServingInput::Bytes(encode_frame(&Message::Delete { id, label, items }.encode())));
+        let Message::Status { codes, .. } = reply(&out) else { panic!("{out:?}") };
+        codes
     }
 
     // spec/sync.md §5, spec/requirements.md (peer input never causes unbounded work): checking
-    // an Upload (which needs no open) reads the head keys the store keeps, never the label's
-    // path, however long and whatever the connection has cached; a recent earlier key still
-    // gets code 9
+    // a Delete's signature (which needs no open) reads the head keys the store keeps, never the
+    // label's path, however long and whatever the connection has cached; a recent earlier key
+    // still gets code 9
     #[test]
-    fn upload_check_reads_no_path() {
+    fn delete_check_reads_no_path() {
         let f = Fixture::new(0x10);
-        let mut store = MemoryLabelStore::new([1; 32]);
+        let mut store = MemoryLabelStore::new();
         let path = crate::store::tests::path(1000, |i, r| 1 + ((i + r) % 200) as u8);
         for s in &path {
             store.push_step(&f.label, s.clone(), None).unwrap();
         }
-        let e = f.entry(Fixture::blob(1));
-        let blob_id = osis_label::blob_id(&e.blob);
-        // step 995's write key: four keys before the head's
-        let old = Entry { stamp: osis_label::sign_stamp(&crate::store::tests::secret(1 + ((995 + 1) % 200) as u8), &f.label, &blob_id, &e.wrap, false), ..e.clone() };
-        let bad = Entry { stamp: Signature([0; 64]), ..e };
+        // step 995's delete key: four keys before the head's
+        let old = delete_by(1 + ((995 + 2) % 200) as u8, &f.label);
+        let bad = DeleteItem { sig: Signature([0; 64]), ..old.clone() };
         for _ in 0..2 {
             // a fresh connection: nothing cached
             let mut c = ServingSession::new(ServingConfig { static_key: STATIC_KEY, challenge: CHALLENGE });
             c.handle(0, &mut store, ServingInput::Bytes(encode_frame(&Hello::new(0, [2; 32]).encode())));
             store.step_reads.set(0);
-            let up = Message::Upload { id: 1, label: f.label, entries: vec![old.clone(), bad.clone()] };
-            let out = c.handle(0, &mut store, ServingInput::Bytes(encode_frame(&up.encode())));
-            let Message::Status { codes, .. } = reply(&out) else { panic!("{out:?}") };
-            assert_eq!(codes, vec![Code::NOT_HEAD, Code::REFUSED]);
+            assert_eq!(delete_codes(&mut c, &mut store, 1, f.label, vec![old.clone(), bad.clone()]), vec![Code::NOT_HEAD, Code::REFUSED]);
             assert_eq!(store.step_reads.get(), 0);
         }
     }
 
     // spec/wire.md §11.2, spec/requirements.md (peer input never causes unbounded work): once a
     // signature of a message verifies under no key, the message's later ones are tried against
-    // the head's key only (one verification each, not one per kept key): an old key's stamp after
-    // a bogus one gets 1, before it 9, and the next message starts over
+    // the head's key only (one verification each, not one per kept key): an old key's signature
+    // after a bogus one gets 1, before it 9, and the next message starts over; node sync's
+    // stamp checks (`pulled`) share the rule through their `struck`
     #[test]
     fn bogus_signature_stops_older_keys() {
         let f = Fixture::new(0x10);
-        let mut store = MemoryLabelStore::new([1; 32]);
+        let mut store = MemoryLabelStore::new();
         let path = crate::store::tests::path(10, |i, r| 1 + ((i + r) % 200) as u8);
         for s in &path {
             store.push_step(&f.label, s.clone(), None).unwrap();
         }
-        let e = f.entry(Fixture::blob(1));
-        let blob_id = osis_label::blob_id(&e.blob);
-        // step 5's write key (by `path`'s rule above)
-        let old = Entry { stamp: osis_label::sign_stamp(&crate::store::tests::secret(7), &f.label, &blob_id, &e.wrap, false), ..e.clone() };
-        let bad = Entry { stamp: Signature([0; 64]), ..e };
+        // step 5's delete key (by `path`'s rule above)
+        let old = delete_by(8, &f.label);
+        let bad = DeleteItem { sig: Signature([0; 64]), ..old.clone() };
         let mut c = ServingSession::new(ServingConfig { static_key: STATIC_KEY, challenge: CHALLENGE });
         c.handle(0, &mut store, ServingInput::Bytes(encode_frame(&Hello::new(0, [2; 32]).encode())));
-        for (i, (entries, want)) in [(vec![old.clone(), bad.clone()], vec![Code::NOT_HEAD, Code::REFUSED]), (vec![bad.clone(), old.clone()], vec![Code::REFUSED, Code::REFUSED]), (vec![old.clone()], vec![Code::NOT_HEAD])].into_iter().enumerate() {
-            let up = Message::Upload { id: 1 + i as u32, label: f.label, entries };
-            let out = c.handle(0, &mut store, ServingInput::Bytes(encode_frame(&up.encode())));
-            let Message::Status { codes, .. } = reply(&out) else { panic!("{out:?}") };
-            assert_eq!(codes, want, "message {i}");
+        let cases = [(vec![old.clone(), bad.clone()], vec![Code::NOT_HEAD, Code::REFUSED]), (vec![bad.clone(), old.clone()], vec![Code::REFUSED, Code::REFUSED]), (vec![old.clone()], vec![Code::NOT_HEAD])];
+        for (i, (items, want)) in cases.into_iter().enumerate() {
+            assert_eq!(delete_codes(&mut c, &mut store, 1 + i as u32, f.label, items), want, "message {i}");
+        }
+        // stamps: step 5's write key
+        let e = f.entry(Fixture::blob(1));
+        let blob_id = osis_label::blob_id(&e.blob);
+        let old = osis_label::sign_stamp(&crate::store::tests::secret(7), &f.label, &blob_id, &e.wrap, false);
+        let k = store.head_keys(&f.label).unwrap().unwrap();
+        let code = |store: &mut MemoryLabelStore, stamp: Signature, struck: &mut bool| match pulled(store, 0, &f.label, &k, &e.blob, e.wrap, stamp, struck).unwrap() {
+            Taken::Code(c) => c,
+            Taken::Relay(_) => panic!("relayed"),
+        };
+        for (i, (stamps, want)) in [(vec![old, Signature([0; 64])], vec![Code::NOT_HEAD, Code::REFUSED]), (vec![Signature([0; 64]), old], vec![Code::REFUSED, Code::REFUSED])].into_iter().enumerate() {
+            let mut struck = false;
+            let got: Vec<Code> = stamps.into_iter().map(|s| code(&mut store, s, &mut struck)).collect();
+            assert_eq!(got, want, "stamps {i}");
         }
     }
 
@@ -1909,7 +1370,7 @@ mod tests {
     fn open_reads_no_path() {
         use crate::store::tests::{path, secret};
         let f = Fixture::new(0x10);
-        let mut store = MemoryLabelStore::new([1; 32]);
+        let mut store = MemoryLabelStore::new();
         let path = path(1000, |i, r| 1 + ((i + r) % 200) as u8);
         let claim = secret(240);
         for (i, s) in path.iter().enumerate() {
@@ -1961,7 +1422,7 @@ mod tests {
             let n = 1 + r(0, 9) as usize % 24;
             let pool = 1 + seed as u8 % 4;
             let path = path(n, |i, role| 1 + (r(i, role as u64) % pool));
-            let mut store = MemoryLabelStore::new([1; 32]);
+            let mut store = MemoryLabelStore::new();
             let claim = secret(240);
             let held: Vec<bool> = (0..n).map(|i| r(i, 7) % 3 == 0).collect();
             for (i, s) in path.iter().enumerate() {
@@ -2011,7 +1472,7 @@ mod tests {
     #[test]
     fn path_pages_by_child_index() {
         let f = Fixture::new(0x10);
-        let mut store = MemoryLabelStore::new([1; 32]);
+        let mut store = MemoryLabelStore::new();
         let path = crate::store::tests::path(2 * MAX_PATH_STEPS + 7, |i, r| 1 + ((i + r) % 200) as u8);
         for s in &path {
             store.push_step(&f.label, s.clone(), None).unwrap();
@@ -2044,20 +1505,25 @@ mod tests {
         assert!(matches!(ask(&mut c, &mut store, 10, Some(StepId([7; 32]))).0, Message::Error { code: Code::REFUSED, .. }));
     }
 
+    /// Holds a stamped entry (as node sync's pull puts one).
+    fn held(store: &mut MemoryLabelStore, label: &LabelId, e: &crate::examples::Stamped) {
+        let put = Put { blob_id: osis_label::blob_id(&e.blob), blob: &e.blob, wrap: e.wrap, stamp: Some(e.stamp), expiry: None, ephemeral: false, now: 0, role: false };
+        assert_eq!(store.put(label, put).unwrap(), Code::OK);
+    }
+
     // spec/sync.md §5 (Delete), spec/requirements.md (peer input never causes unbounded work): items
     // carrying a delete-key signature but no valid label signature are refused without reading
     // the blob (up to MAX_BLOB each) for its prefix
     #[test]
     fn unsigned_delete_items_read_no_blob() {
         let f = Fixture::new(0x10);
-        let mut store = MemoryLabelStore::new([1; 32]);
+        let mut store = MemoryLabelStore::new();
         store.push_step(&f.label, f.genesis.clone(), Some(f.genesis_claims.clone())).unwrap();
         let e = f.entry(Fixture::blob(1));
         let blob_id = osis_label::blob_id(&e.blob);
+        held(&mut store, &f.label, &e);
         let mut c = ServingSession::new(ServingConfig { static_key: STATIC_KEY, challenge: CHALLENGE });
         c.handle(0, &mut store, ServingInput::Bytes(encode_frame(&Hello::new(0, [2; 32]).encode())));
-        let out = c.handle(0, &mut store, ServingInput::Bytes(encode_frame(&Message::Upload { id: 1, label: f.label, entries: vec![e] }.encode())));
-        assert!(out.iter().any(|o| matches!(o, ServingOutput::Changed(_))), "uploaded");
         let dk = osis_crypto::DeleteSecret::derive(&osis_crypto::Secret32::from_bytes([0x7a; 32]));
         let mut item = DeleteItem::sign_by(&f.sync, &[(2, &dk)], &[0x7d; 16], &[0x7e; 16], &f.label, blob_id).unwrap();
         item.sig = Signature([0; 64]);
@@ -2068,53 +1534,20 @@ mod tests {
         assert_eq!(store.blob_reads.get(), 0);
     }
 
-    // spec/wire.md §11.2 (`max_reply`), spec/requirements.md (peer input never causes unbounded
-    // work): a blob over a small `max_reply` is not read, or a thousand small requests per round
-    // trip each read a whole blob and answer nothing
-    #[test]
-    fn what_does_not_fit_max_reply_reads_no_blob() {
-        let f = Fixture::new(0x10);
-        let mut store = MemoryLabelStore::new([1; 32]);
-        store.push_step(&f.label, f.genesis.clone(), Some(f.genesis_claims.clone())).unwrap();
-        let blob = vec![7u8; 1 << 20];
-        let blob_id = osis_label::blob_id(&blob);
-        let put = Put { blob_id, blob: &blob, wrap: [0; WRAP_LEN], stamp: Some(Signature([0; 64])), expiry: None, ephemeral: false, replaces: &[], now: 0, role: false };
-        assert_eq!(store.put(&f.label, put).unwrap(), Code::OK);
-        let mut c = opened(&f, &mut store);
-        let small = crate::client::SMALL_REPLY as u64;
-        store.blob_reads.set(0);
-        let reqs = [
-            Message::Fetch { id: 10, label: f.label, max_reply: small, ids: vec![blob_id] },
-            Message::Sync { id: 11, label: f.label, cursor: None, inline_limit: 1 << 21, max_reply: small, entries: vec![], gained: vec![] },
-        ];
-        for m in reqs {
-            let out = c.handle(0, &mut store, ServingInput::Bytes(encode_frame(&m.encode())));
-            assert!(out.iter().any(|o| matches!(o, ServingOutput::Send(_))), "answered");
-            assert_eq!(store.blob_reads.get(), 0, "{m:?}");
-        }
-        // the log too
-        let (_, head) = store.log_head(&f.label).unwrap();
-        assert!(head > 0);
-        let cursor = Cursor { log_id: store.log_head(&f.label).unwrap().0, seq: 0 };
-        let m = Message::Sync { id: 12, label: f.label, cursor: Some(cursor), inline_limit: 1 << 21, max_reply: small, entries: vec![], gained: vec![] };
-        c.handle(0, &mut store, ServingInput::Bytes(encode_frame(&m.encode())));
-        assert_eq!(store.blob_reads.get(), 0);
-    }
-
     // spec/sync.md §5 (Delete): a signed delete by level checks the blob's prefix
     // (`blob_prefix`), never reading the whole blob (up to MAX_BLOB per item)
     #[test]
     fn delete_by_level_reads_prefix_only() {
         let f = Fixture::new(0x10);
-        let mut store = MemoryLabelStore::new([1; 32]);
+        let mut store = MemoryLabelStore::new();
         store.push_step(&f.label, f.genesis.clone(), Some(f.genesis_claims.clone())).unwrap();
         let dk = osis_crypto::DeleteSecret::derive(&osis_crypto::Secret32::from_bytes([0x7a; 32]));
         let commit = osis_crypto::commitment(2, &dk.verifying_key(), &[1; 16], &[0x7e; 16]).unwrap();
         let e = f.entry(Fixture::blob_with(1, None, vec![commit]));
         let blob_id = osis_label::blob_id(&e.blob);
+        held(&mut store, &f.label, &e);
         let mut c = ServingSession::new(ServingConfig { static_key: STATIC_KEY, challenge: CHALLENGE });
         c.handle(0, &mut store, ServingInput::Bytes(encode_frame(&Hello::new(0, [2; 32]).encode())));
-        c.handle(0, &mut store, ServingInput::Bytes(encode_frame(&Message::Upload { id: 1, label: f.label, entries: vec![e] }.encode())));
         let item = DeleteItem::sign_by(&f.sync, &[(2, &dk)], &[1; 16], &[0x7e; 16], &f.label, blob_id).unwrap();
         let wrong = DeleteItem::sign_by(&f.sync, &[(2, &dk)], &[2; 16], &[0x7e; 16], &f.label, blob_id).unwrap();
         store.blob_reads.set(0);
@@ -2123,5 +1556,67 @@ mod tests {
         assert_eq!(codes, vec![Code::REFUSED, Code::OK]);
         assert_eq!(store.blob_reads.get(), 0);
         assert!(store.entry(&f.label, &blob_id).unwrap().is_none());
+    }
+
+    // spec/sync.md §5 (Deposit): a deposit verifies under the head's deposit key (another key
+    // learns its code only), is held unstamped within the deposit budget (64 + 4 x claim slots,
+    // then code 5), an ephemeral blob too; a relay-only one is refused here, whatever the store
+    // behind it checks, and nothing of it is held
+    #[test]
+    fn deposit_rules_spec_sync_5() {
+        let now = 1_700_000_000_000;
+        let l = crate::examples::Label::new(3);
+        let mut store = MemoryLabelStore::new();
+        store.push_step(&l.id, l.steps[0].clone(), Some(l.sets[0].clone())).unwrap();
+        let k = store.head_keys(&l.id).unwrap().unwrap();
+        let dk = l.head_keys().deposit.clone();
+        let put = |store: &mut MemoryLabelStore, blob: Vec<u8>, key: &osis_crypto::SigningSecret| {
+            let OfferItem::Deposit { blob, wrap, sig, .. } = l.deposit(blob, key) else { unreachable!() };
+            deposit(store, now, &l.id, &k, &blob, wrap, &sig, &mut false).unwrap()
+        };
+        assert_eq!(put(&mut store, crate::examples::blob(0), &l.head_keys().write.clone()), (Code::REFUSED, false));
+        let max = 64 + 4 * l.sets[0].claims.len() as u64;
+        for n in 0..max {
+            assert_eq!(put(&mut store, crate::examples::blob(n), &dk), (Code::OK, true), "{n}");
+        }
+        assert_eq!(put(&mut store, crate::examples::blob(max), &dk), (Code::BUDGET_FULL, true));
+        assert!(store.entry(&l.id, &crate::examples::bid(0)).unwrap().is_some_and(|m| m.stamp.is_none()), "held deposited");
+        // a fresh label: ephemeral held deposited, relay-only refused
+        let mut store = MemoryLabelStore::new();
+        store.push_step(&l.id, l.steps[0].clone(), Some(l.sets[0].clone())).unwrap();
+        for (n, class) in [(1u8, Class::Ephemeral), (2, Class::Relay)] {
+            let p = Prefix::new(crate::examples::salt(u64::from(n)), Some(osis_base::WallMs(now + osis_base::format::MAX_DRIFT_MS)), vec![]).unwrap().with_class(class);
+            let b = osis_label::frame(&p, &[n; 50], &mut osis_crypto::SeededRng::from_seed([n; 32])).unwrap().1;
+            let code = put(&mut store, b.clone(), &dk);
+            let held = store.entry(&l.id, &osis_label::blob_id(&b)).unwrap();
+            if class == Class::Relay {
+                assert_eq!(code, (Code::REFUSED, true));
+                assert!(held.is_none());
+            } else {
+                assert_eq!(code, (Code::OK, true));
+                assert!(held.is_some_and(|m| m.stamp.is_none()), "held deposited");
+            }
+        }
+    }
+
+    // spec/sync.md §6 (flow control): a relay-only push (a Stream without cursor) goes only when
+    // it fits `REPLY_BUDGET` behind the unwritten bytes, else it is dropped; a stream push with a
+    // cursor always goes
+    #[test]
+    fn relay_push_without_room_is_dropped_spec_sync_6() {
+        let mut store = MemoryLabelStore::new();
+        let mut c = ServingSession::new(ServingConfig { static_key: STATIC_KEY, challenge: CHALLENGE });
+        c.handle(0, &mut store, ServingInput::Bytes(encode_frame(&Hello::new(0, [2; 32]).encode())));
+        let taken = c.written;
+        c.handle(0, &mut store, ServingInput::Taken(taken));
+        let push = |n: usize, cursor: Option<Vec<u8>>| {
+            let ev = Event::Added { blob_id: BlobId([n as u8; 32]), blob: Some(vec![1; n]), wrap: [0; WRAP_LEN], stamp: None };
+            ServingInput::Peer(Box::new(Message::Stream(Box::new(crate::msg::Stream { events: vec![(LabelId([7; 16]), ev)], cursor, report: false }))))
+        };
+        // 8 MiB unwritten
+        assert_eq!(c.handle(0, &mut store, push(8 << 20, Some(vec![1; 72]))).len(), 1);
+        assert!(c.handle(0, &mut store, push(1 << 20, None)).is_empty(), "no room: dropped");
+        assert_eq!(c.handle(0, &mut store, push(100, None)).len(), 1);
+        assert_eq!(c.handle(0, &mut store, push(1 << 20, Some(vec![2; 72]))).len(), 1, "a cursor push goes");
     }
 }

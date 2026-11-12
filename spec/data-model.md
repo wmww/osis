@@ -119,7 +119,7 @@ The core aspects form the core schema, evolving under spec/versioning.md. `schem
 - **`host^.0`** present: the node hosts (spec/sync.md §4). Absent: it does not, and keeps nothing for others (stopping drops what it kept, at the latest when the node next runs sync; a later start begins empty). Never placed under a label.
   - `admit` `listed`: it takes registrations of the labels in `labels`. `admit` `open`: of any label.
   - A label the node syncs (it reads the group, spec/sync.md §2) it stores and serves whatever `admit` says, `host^.0` present or not, and keeps when hosting stops (spec/sync.md §4).
-  - `replicate`: peer hosts. `policy`, `caps`: local policy.
+  - `policy`, `caps`: local policy.
 - **`clients^.0`**: clients with an actor of their own, by client actor (spec/sync.md §10). Never placed under a label.
   - `secret_hash`: BLAKE3 of the client's 32-byte bearer secret. `until`: when its sessions end.
   - The client actor is a thing whose first admin is the node's account, with secrets of its own, and what the client may do is that actor's roles.

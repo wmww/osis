@@ -699,12 +699,10 @@ impl<T: Transport, H: Shared> Driver<T, H> {
 
     /// Carries out the last `Action::Host`: hosting stops (the labels it kept for others go from
     /// the store, under the default policy admitting nothing), starts or changes in place
-    /// (admission, caps, policy, replication peers).
+    /// (admission, caps, policy).
     async fn host_update(&mut self) {
         let Some(want) = self.host_want.take() else { return };
         let Some(cfg) = want else {
-            self.hub.cfg = None;
-            self.hub.replicate(&self.transport, &[], None);
             {
                 let mut st = self.hub.hub_mut().store();
                 st.set_policy(HostPolicy::default());
@@ -714,17 +712,11 @@ impl<T: Transport, H: Shared> Driver<T, H> {
             self.hub.applied(out);
             return;
         };
-        let cfg = *cfg;
         {
             let mut st = self.hub.hub_mut().store();
             st.set_policy(cfg.policy.clone());
             st.set_admission(cfg.admission.clone(), cfg.caps.clone());
         }
-        if self.hub.cfg.as_ref().is_none_or(|c| c.replicate != cfg.replicate) {
-            let secret = self.dialable_secret();
-            self.hub.replicate(&self.transport, &cfg.replicate, secret);
-        }
-        self.hub.cfg = Some(cfg);
     }
 
     /// After `Action::Reach`: every listener of the dialable key listens again with the new
@@ -754,11 +746,6 @@ impl<T: Transport, H: Shared> Driver<T, H> {
             && let Err(e) = self.listen(urls).await
         {
             (self.log)(&format!("listening with the new dialable key: {e}"));
-        }
-        // replication dials as the node's key
-        if let Some(cfg) = self.hub.cfg.clone() {
-            let secret = self.dialable_secret();
-            self.hub.replicate(&self.transport, &cfg.replicate, secret);
         }
         if !self.relisten {
             self.lan_rejoin(true).await;

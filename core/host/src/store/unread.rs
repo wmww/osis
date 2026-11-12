@@ -16,7 +16,7 @@ use std::sync::Arc;
 pub enum MemEvent {
     /// Added, or its wrap or stamp changed (a promotion).
     Added(LabelId, BlobId),
-    /// Deleted (a delete, a replacement, an eviction).
+    /// Deleted (a delete, an eviction).
     Deleted(LabelId, BlobId),
     /// Gone with no event of its own (expired).
     Gone(LabelId, BlobId),
@@ -78,7 +78,7 @@ impl HostStore {
         self.streamed = labels;
     }
 
-    /// The live ephemeral entries of `label`, oldest add first.
+    /// The live ephemeral entries of `label`, oldest first.
     pub fn ephemeral_live(&self, label: &LabelId) -> Vec<BlobId> {
         self.eph.labels.get(label).map(|e| e.order.values().copied().collect()).unwrap_or_default()
     }

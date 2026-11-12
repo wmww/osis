@@ -197,7 +197,7 @@ def host_blind():
         text = open(src).read()
         if "OpenKey" in text:
             yield f"{rel}: names OpenKey"
-        # osis-proto's client engine (replication pushes with it) opens a label only with an
+        # osis-proto's client engine opens a label only with an
         # `OpenKey` (refused above); its examples hold secrets; a glob would hide both
         for p in paths_of(text, "osis_proto"):
             if p in ("*", "as") or p.endswith("::*") or p.split("::")[0] in HOST_PROTO_DENY:

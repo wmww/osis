@@ -1,11 +1,12 @@
 //! Scripted clients (osis-proto `ClientSession`) and hosts (`Hub` over `HostStore` on a
-//! `MemoryBackend` and `MemoryRoot` sharing a fault plan) wired by in-memory byte queues; a label with rotations; blobs.
+//! `MemoryBackend` and `MemoryRoot` sharing a fault plan) wired by in-memory byte queues; entries
+//! put as node sync puts them (`pull`, `deposit`); a label with rotations; blobs.
 #![allow(dead_code)]
 
-use osis_base::{BlobId, Clock, LabelId, ManualClock, WallMs};
+use osis_base::{BlobId, Clock, ManualClock, WallMs};
 use osis_crypto::{SeededRng, Secret32};
 use osis_proto::*;
-pub use osis_proto::examples::{Label, bid, blob, blob_with, salt};
+pub use osis_proto::examples::{Label, Stamped, bid, blob, blob_with, salt};
 use osis_host::{HostStore, ConnId, Down, Hub, HubOutput, HostPolicy, Up};
 use osis_store::{Faults, MemoryBackend, MemoryRoot, Store, StoreConfig};
 use std::collections::VecDeque;
@@ -109,21 +110,6 @@ impl World {
         let ev = std::mem::take(&mut self.events[c]);
         assert!(matches!(ev.first(), Some(ClientEvent::Ready { .. })), "{ev:?}");
         c
-    }
-
-    /// Hub `from` dials hub `to` as its replication peer; returns the link index.
-    pub fn peer(&mut self, from: usize, to: usize) -> usize {
-        let (ca, cb) = (self.next_conn, self.next_conn + 1);
-        self.next_conn += 2;
-        self.links.push(Link { a: End::Hub(from, ca), b: End::Hub(to, cb), to_b: VecDeque::new(), to_a: VecDeque::new(), open: true });
-        let now = self.now();
-        let out = self.hubs[to].accept(now, cb, hub_key(to), osis_host::Remote::key(hub_key(from)));
-        self.hub_out(to, out);
-        let out = self.hubs[from].peer_up(now, ca, hub_key(to));
-        self.hub_out(from, out);
-        self.pump();
-        self.settle();
-        self.links.len() - 1
     }
 
     /// Drops a link (both sides see the close).
@@ -298,37 +284,56 @@ impl World {
     }
 }
 
-pub fn events_of(ev: &[ClientEvent]) -> (Vec<Event>, Option<Cursor>) {
-    let mut all = vec![];
-    let mut cursor = None;
-    for e in ev {
-        if let ClientEvent::Events { events, cursor: c, .. } = e {
-            all.extend(events.iter().cloned());
-            cursor = *c;
-        }
-    }
-    (all, cursor)
-}
-
 pub fn statuses(ev: &[ClientEvent]) -> Vec<Code> {
     ev.iter()
         .flat_map(|e| match e {
-            ClientEvent::EntryStatus { codes, .. } | ClientEvent::DeleteStatus { codes, .. } => codes.clone(),
-            ClientEvent::Budget { code, .. } => vec![*code],
+            ClientEvent::DeleteStatus { codes, .. } => codes.clone(),
             _ => vec![],
         })
         .collect()
 }
 
-pub fn added(evs: &[Event]) -> Vec<BlobId> {
-    evs.iter().filter_map(|e| if let Event::Added { blob_id, .. } = e { Some(*blob_id) } else { None }).collect()
-}
-
-pub fn sync(label: LabelId, cursor: Option<Cursor>, entries: Vec<Entry>, gained: Vec<BlobId>) -> Command {
-    Command::Sync { label, cursor, inline_limit: 1 << 20, entries, gained }
-}
-
 pub fn sorted(mut v: Vec<BlobId>) -> Vec<BlobId> {
     v.sort();
     v
+}
+
+/// Stamped entry `e` of `l` put at hub `h` as node sync's pull puts it (`serving::pulled`: its
+/// stamp checked under the head keys).
+pub fn pull_taken(w: &World, h: usize, l: &Label, e: &Stamped) -> serving::Taken {
+    let mut s = w.hubs[h].store();
+    let k = s.head_keys(&l.id).unwrap().expect("a registered label");
+    serving::pulled(&mut *s, w.now(), &l.id, &k, &e.blob, e.wrap, e.stamp, &mut false).unwrap()
+}
+
+/// `pull_taken`'s code (a relay-only blob passed on: OK).
+pub fn pull(w: &World, h: usize, l: &Label, e: &Stamped) -> Code {
+    match pull_taken(w, h, l, e) {
+        serving::Taken::Code(c) => c,
+        serving::Taken::Relay(_) => Code::OK,
+    }
+}
+
+/// Entries `ns` of `l` (`blob(n)` under the head's write key) pulled at hub `h`: their codes.
+pub fn pull_all(w: &World, h: usize, l: &Label, ns: impl IntoIterator<Item = u64>) -> Vec<Code> {
+    ns.into_iter().map(|n| pull(w, h, l, &l.entry(blob(n)))).collect()
+}
+
+/// A Deposit item put at hub `h` as node sync puts one (`serving::deposit`): its code, and whether
+/// its signature verified (only then may the depositor learn more than the code).
+pub fn deposit_verified(w: &World, h: usize, item: msg::OfferItem) -> (Code, bool) {
+    let msg::OfferItem::Deposit { label, blob, wrap, sig } = item else { panic!("not a deposit") };
+    let mut s = w.hubs[h].store();
+    let k = s.head_keys(&label).unwrap().expect("a registered label");
+    serving::deposit(&mut *s, w.now(), &label, &k, &blob, wrap, &sig, &mut false).unwrap()
+}
+
+/// `deposit_verified`'s code.
+pub fn deposit(w: &World, h: usize, item: msg::OfferItem) -> Code {
+    deposit_verified(w, h, item).0
+}
+
+/// The live entries of `l` at hub `h`, ascending.
+pub fn live(w: &World, h: usize, l: &Label) -> Vec<BlobId> {
+    w.hubs[h].store().live_ids(&l.id).unwrap()
 }

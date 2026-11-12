@@ -38,7 +38,6 @@ Each was a number that only made a bug unlikely (class X); the code ends by a fi
 | per-message caps (`MAX_ITEMS` 1024, `MAX_GAINED` 4096, `MAX_LABELS` 1024, reconcile ranges 256/4096, `MAX_PATH_STEPS` 1024, `MAX_OPEN_LABELS` 4096) | R | nothing per message / unbounded per-message work |
 | `MAX_HELLO_VERSIONS` 16, `MAX_HELLO_BYTES` 256 | R | no handshake / unbounded first frame |
 | `MAX_MESSAGE_ITEMS` 2^20 (osis-proto `msg`: CBOR items per message, counted before decoding) | R (densest engine reply about 760 000 items, densest §11.2-valid message about 1 021 000; a decoded item is 100-260 bytes, so at most about 270 MB per decode, one at a time in a hub) | no message decodes / about 2 GB of value tree per 9 MiB frame from any peer |
-| rbsr `LIST_MAX` 32, `DIFF_MAX` 1024, `SPLIT` 16, `DENSE_LIST` 8 | P (spec: either mode valid) | more rounds / bigger messages |
 | deposit budget `64 + 4 × claims` entries × 32 KiB (`DEPOSIT_ENTRY_BYTES`) | R (host policy) | no deposits / unbounded junk deposits |
 
 ### Clock and session (`proto/client.rs`, `hello.rs`)
@@ -57,10 +56,9 @@ Each was a number that only made a bug unlikely (class X); the code ends by a fi
 ### Serving (`proto/serving.rs`, `relay.rs`, `host/`)
 | value | class | 0 / ∞ |
 |---|---|---|
-| `LOG_BATCH` 256, replicate `BATCH_RECORDS` 256, `BATCH_BYTES` 4 MiB, `MAX_STEPS` 64, hub `SWEEP_BUDGET` 1024 | P | no progress per call / unbounded call latency |
+| hub `SWEEP_BUDGET` 1024 | P | no progress per call / unbounded call latency |
 | `OLDER_KEYS` 8 | M | every stale key REFUSED / unbounded signature checks per refused item; past it a writer 8+ rotations behind gets REFUSED instead of 9 (neither carries the head); the entry stays unsent and goes again at the next pass, under the head the connection learned by open (a stale sync key opens to its child and walks) or by registration pushes (checked) |
 | `MAX_CACHED` 64 | P | head keys only: reload per message (two store reads, up to 33 key parses) / memory (about 7 KB each per connection, any label a peer names; 4096 would be up to 30 MB per connection) |
-| `MAX_CROSSED` 2^14, `MAX_ORIGINS` 2^20 | P (optimizations, cleared past the cap) | blobs inlined back, entries replicated back to their origin (refused there as held) / memory |
 | `SEQ_BLOCK` 1024 | P (commented in code) | |
 | `ENTRY_OVERHEAD` 896, `TOMB_OVERHEAD` 160, `REC_OVERHEAD` 96 | measured, tested (`overheads_cover_the_structures`) | |
 | `EPH_LOG_KEEP` 2^16 | R (commented) | every cursor replays / log bounded by the cap only |
@@ -73,7 +71,7 @@ Each was a number that only made a bug unlikely (class X); the code ends by a fi
 | `max_queued_bytes` 64 MiB (at least `SEND_QUEUE` + `WINDOW_QUEUE`: replies, a push and node sync's own requests; config refuses less) | R (a peer that does not read) | sessions keeping the window closed / unbounded buffer |
 | `PUSH_POLL_MS` 1 s | M (held pushes resume up to this late after the queue drains; the hub's `unread` count lags the transport by up to this while bytes await a report, within each connection's own `SEND_QUEUE`); also the period output is judged "not moving" over: a reader taking less than one `WRITE_CHUNK` (16 KiB) in it may be closed while a connection waits for the bound's room; and the pace a waiting connection resumes at | the driver spins while a slow subscriber drains or any byte is unreported, and every holder is closed at once when one waits / pushes and waiting requests wait for an unrelated tick, and holders that never read keep the bound full for good |
 | `MAX_PATH` 2^20 | R (corrupt-store guard) | |
-| replicate `RETRY_MIN_MS`/`RETRY_MAX_MS` 1-60 s, driver `BACKOFF_MIN/MAX` 1-60 s, `SWEEP_BACKOFF_MS` 1 s, `MAX_IDLE` 60 s, `FINISH_WAIT` 10 s | M | busy loop / never retries |
+| `SWEEP_BACKOFF_MS` 1 s, `MAX_IDLE` 60 s, `FINISH_WAIT` 10 s | M | busy loop / never retries |
 
 ### Transport (`transport/`)
 | value | class | 0 / ∞ |

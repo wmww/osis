@@ -43,12 +43,10 @@ fn invited(home: bool) -> (Net, usize, (osis_base::Tid, osis_base::LabelId, osis
     (net, host, x)
 }
 
-/// Records of the host's log of `l`: (added, deleted).
+/// Events of `l` in the host's node log: (added, removed).
 fn log(net: &Net, host: usize, l: &osis_base::LabelId) -> (usize, usize) {
-    use osis_proto::LabelStore;
-    let recs = net.hosts[host].hub.store().log_after(l, 0, 1 << 20).ok().flatten().unwrap_or_default();
-    let del = recs.iter().filter(|(_, r)| matches!(r, osis_proto::LogRecord::Deleted(_))).count();
-    (recs.len() - del, del)
+    let (a, d) = net.logged_at(host, l);
+    (a.len(), d.len())
 }
 
 fn copies(net: &mut Net, n: usize, l: &osis_base::LabelId, c: &osis_base::CommitId) -> usize {

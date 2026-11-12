@@ -4,8 +4,9 @@
 //! sync-key, deposit-key and static entries go in the filter to every connection; a Hit on the
 //! sync key with its open signature opens the sync ID, which is then served by the stream from the
 //! hub's store; a head with another sync key ends it through its event. A hand dialer proving
-//! nothing plays the reader: it registers and uploads by the host protocol and holds the label's
-//! keys (examples::Label), node `b` reads a group of its own.
+//! nothing plays the reader: it registers the label and holds its keys (examples::Label); entries
+//! reach node `b`'s store by its store's rules as if pulled from a reader (`take`); node `b`
+//! reads a group of its own.
 
 use crate::connection_proofs::{CHALLENGE, Dialer, LISTENER, dial_with, pump};
 use crate::net;
@@ -34,7 +35,7 @@ struct Setup {
 }
 
 /// Node `b` reading a group of its own, keeping everything for others (`open` admission); a hand
-/// dialer registers label `l` there, uploads two entries, and sends NoRecord.
+/// dialer registers label `l` there, two entries reach b's store, and the dialer sends NoRecord.
 fn setup() -> Setup {
     let mut net = Net::new();
     let a = net.node(1, &[]);
@@ -46,7 +47,10 @@ fn setup() -> Setup {
     let mut p = dial_with(&mut net, b, CHALLENGE);
     let l = Label::new(0x51);
     command(&mut net, b, &mut p, l.register_cmd(0));
-    command(&mut net, b, &mut p, Command::Upload { label: l.id, entries: vec![l.entry(blob(1)), l.entry(blob(2))] });
+    for n in [1, 2] {
+        put(&mut net, b, &l, l.entry(blob(n)));
+    }
+    net.run();
     let msgs = shared_of(&send(&mut net, b, &mut p, Message::NoRecord { id: 1 << 31 }));
     let mut filter = (0, Vec::new());
     for m in &msgs {
@@ -57,6 +61,27 @@ fn setup() -> Setup {
     }
     assert!(filter.0 > 0, "a filter: {msgs:?}");
     Setup { net, b, l, p, filter, read }
+}
+
+/// Stamped entry `e` of `l` taken into node `b`'s store by its rules, as pulled from a reader
+/// (spec/sync.md §5, Taking a stamped entry).
+fn put(net: &mut Net, b: usize, l: &Label, e: osis_proto::examples::Stamped) {
+    let now = net.now();
+    let hub = net.sync(b).hub_store();
+    let mut hub = hub.lock().unwrap();
+    let k = osis_proto::LabelStore::head_keys(&*hub, &l.id).unwrap().unwrap();
+    let taken = osis_proto::serving::pulled(&mut *hub, now, &l.id, &k, &e.blob, e.wrap, e.stamp, &mut false).unwrap();
+    assert!(matches!(taken, osis_proto::serving::Taken::Code(Code::OK)), "taken");
+}
+
+/// `put`, then what node `b` sent the hand dialer since, as messages.
+fn take(s: &mut Setup, e: osis_proto::examples::Stamped) -> Vec<Message> {
+    put(&mut s.net, s.b, &s.l, e);
+    s.net.run();
+    let now = s.net.now();
+    let frames = s.net.hand_sent(s.b, s.p.hc);
+    let outs: Vec<_> = frames.into_iter().flat_map(|f| s.p.cs.handle(now, ClientInput::Bytes(f))).collect();
+    shared_of(&pump(&mut s.net, s.b, &mut s.p, outs))
 }
 
 fn command(net: &mut Net, b: usize, p: &mut Dialer, c: Command) -> Vec<ClientEvent> {
@@ -148,9 +173,9 @@ fn a_strangers_hit_on_a_read_secret_opens_nothing_spec_sync_10() {
 }
 
 // spec/sync.md §10 Shared set, Stream: a reader opens an unread L by its sync key, pulls what the
-// node keeps of it, and its uploads and deletes there reach its stream
+// node keeps of it, and what the node takes later and deletes there reach its stream
 #[test]
-fn a_reader_opens_an_unread_label_by_sync_key_pulls_uploads_and_deletes_spec_sync_10() {
+fn a_reader_opens_an_unread_label_by_sync_key_pulls_takes_and_deletes_spec_sync_10() {
     let mut s = setup();
     let l = s.l.id;
     let reply = opened(&mut s);
@@ -158,10 +183,10 @@ fn a_reader_opens_an_unread_label_by_sync_key_pulls_uploads_and_deletes_spec_syn
     assert_eq!(added(&reply.events, l), want, "the listing from the hub's store");
     assert!(reply.events.iter().any(|(x, e)| *x == l && matches!(e, Ev::Head(h) if h.id() == s.l.steps[0].id())), "and its head");
     send(&mut s.net, s.b, &mut s.p, Message::Applied { cursor: reply.cursor.clone().unwrap() });
-    let third = s.l.entry(blob(3));
-    let evs = command(&mut s.net, s.b, &mut s.p, Command::Upload { label: l, entries: vec![third.clone()] });
-    let third_id = osis_label::blob_id(&third.blob);
-    assert!(added(&pushed(&shared_of(&evs)), l).contains(&third_id), "an upload is pushed to the follower: {evs:?}");
+    let third_id = osis_label::blob_id(&blob(3));
+    let e = s.l.entry(blob(3));
+    let msgs = take(&mut s, e);
+    assert!(added(&pushed(&msgs), l).contains(&third_id), "an entry taken is pushed to the follower: {msgs:?}");
     let item = DeleteItem::sign(&s.l.head_keys().delete, &l, third_id).unwrap();
     let evs = command(&mut s.net, s.b, &mut s.p, Command::Delete { label: l, items: vec![item] });
     assert!(pushed(&shared_of(&evs)).iter().any(|(x, e)| *x == l && *e == Ev::Deleted(third_id)), "and its deletion: {evs:?}");
@@ -208,9 +233,10 @@ fn a_head_change_ends_the_open_after_its_event_spec_sync_10() {
     let last = streams.iter().rev().find(|x| x.cursor.is_some()).expect("a push");
     assert!(last.events.iter().any(|(x, e)| *x == l && matches!(e, Ev::Head(h) if h.id() == s.l.steps[1].id())), "the new head's event is served: {msgs:?}");
     assert!(s.net.sync(s.b).shared_members(s.p.conn).contains(&l), "still a member until reported");
-    // an upload under the new keys, logged past the head's event, is not served
-    let evs = command(&mut s.net, s.b, &mut s.p, Command::Upload { label: l, entries: vec![s.l.entry(blob(4))] });
-    assert!(added(&pushed(&shared_of(&evs)), l).is_empty(), "nothing past the head's event");
+    // an entry under the new keys, logged past the head's event, is not served
+    let e = s.l.entry(blob(4));
+    let msgs = take(&mut s, e);
+    assert!(added(&pushed(&msgs), l).is_empty(), "nothing past the head's event");
     let msgs = shared_of(&send(&mut s.net, s.b, &mut s.p, Message::Applied { cursor: last.cursor.clone().unwrap() }));
     assert!(msgs.iter().any(|m| matches!(m, Message::Lost { items, .. } if items.iter().any(|(x, _)| *x == l))), "Lost once reported past it: {msgs:?}");
     assert!(!s.net.sync(s.b).shared_members(s.p.conn).contains(&l));
@@ -235,11 +261,11 @@ fn a_pull_after_a_head_change_gets_nothing_past_its_event_spec_sync_10() {
     let e4 = s.l.entry(blob(4));
     let now = s.net.now();
     {
-        // another connection's register and upload, in the hub before node sync's next step
+        // a register on another connection and an entry taken, in the hub before node sync's next step
         let hub = s.net.sync(s.b).hub_store();
         let mut hub = hub.lock().unwrap();
         assert_eq!(hub.push_step(&l, step, Some(set)).unwrap(), Code::OK);
-        let put = osis_proto::Put { blob_id: osis_label::blob_id(&e4.blob), blob: &e4.blob, wrap: e4.wrap, stamp: Some(e4.stamp), expiry: None, ephemeral: false, replaces: &[], now, role: false };
+        let put = osis_proto::Put { blob_id: osis_label::blob_id(&e4.blob), blob: &e4.blob, wrap: e4.wrap, stamp: Some(e4.stamp), expiry: None, ephemeral: false, now, role: false };
         assert_eq!(hub.put(&l, put).unwrap(), Code::OK);
     }
     let m = Message::Pull(Box::new(Pull { id: PULL_ID, cursor: reply.cursor.clone(), joins: vec![], inline_limit: 1 << 20, max_reply: 1 << 20, follow: true, ephemeral: false }));
@@ -267,32 +293,23 @@ fn a_deposit_at_an_unread_inbox_is_taken_spec_sync_10() {
     assert!(held.is_some_and(|m| m.stamp.is_none()), "kept unstamped (deposited)");
 }
 
-// spec/sync.md §10 Stream (ephemeral, relay-only): an unread L's ephemeral entries are listed from
-// the hub's memory and follow on; a relay-only upload past the hub's gate reaches the reader on
-// its stream as a Stream with no cursor
+// spec/sync.md §10 Stream (ephemeral): an unread L's ephemeral entries are listed from the hub's
+// memory and follow on
 #[test]
-fn an_unread_labels_memory_and_relay_entries_reach_the_reader_spec_sync_10() {
+fn an_unread_labels_memory_entries_reach_the_reader_spec_sync_10() {
     let mut s = setup();
     let l = s.l.id;
     let soon = s.net.now() + osis_base::format::MAX_DRIFT_MS;
     let eph = |n: u8| classed(n, osis_label::Class::Ephemeral, soon);
-    command(&mut s.net, s.b, &mut s.p, Command::Upload { label: l, entries: vec![s.l.entry(eph(6))] });
+    put(&mut s.net, s.b, &s.l, s.l.entry(eph(6)));
+    s.net.run();
     let reply = opened(&mut s);
     let e6 = osis_label::blob_id(&eph(6));
     assert!(added(&reply.events, l).contains(&e6), "a live memory entry is listed");
     send(&mut s.net, s.b, &mut s.p, Message::Applied { cursor: reply.cursor.clone().unwrap() });
-    let evs = command(&mut s.net, s.b, &mut s.p, Command::Upload { label: l, entries: vec![s.l.entry(eph(7))] });
-    assert!(added(&pushed(&shared_of(&evs)), l).contains(&osis_label::blob_id(&eph(7))), "a new one follows: {evs:?}");
-    // a relay-only entry from another connection goes on the reader's stream
-    let mut q = dial_with(&mut s.net, s.b, [8; 32]);
-    let relay = classed(8, osis_label::Class::Relay, soon);
-    command(&mut s.net, s.b, &mut q, Command::Upload { label: l, entries: vec![s.l.entry(relay.clone())] });
-    let now = s.net.now();
-    let frames = s.net.hand_sent(s.b, s.p.hc);
-    let outs: Vec<_> = frames.into_iter().flat_map(|f| s.p.cs.handle(now, ClientInput::Bytes(f))).collect();
-    let msgs = shared_of(&pump(&mut s.net, s.b, &mut s.p, outs));
-    let rid = osis_label::blob_id(&relay);
-    assert!(msgs.iter().any(|m| matches!(m, Message::Stream(x) if x.cursor.is_none() && added(&x.events, l).contains(&rid))), "{msgs:?}");
+    let e = s.l.entry(eph(7));
+    let msgs = take(&mut s, e);
+    assert!(added(&pushed(&msgs), l).contains(&osis_label::blob_id(&eph(7))), "a new one follows: {msgs:?}");
 }
 
 /// A blob of class `c` expiring at `t` (wall ms).
@@ -340,7 +357,6 @@ fn a_write_reaches_a_peer_that_cannot_read_by_its_pull_spec_sync_10() {
     let mine: BTreeSet<BlobId> = net.sync(a).entries(&l).into_iter().map(|x| x.0).collect();
     let held: BTreeSet<BlobId> = net.host_ids(host, &l).into_iter().collect();
     assert!(mine.is_subset(&held), "the peer holds every entry of the writer's store");
-    assert_eq!(net.sent_kinds.get(&10).copied().unwrap_or(0), 0, "no Upload");
     net.set_online(a, false);
     net.set_online(b, true);
     net.advance(61_000);
@@ -619,7 +635,6 @@ fn a_deposit_for_an_offline_recipient_lands_where_its_inbox_is_kept_spec_sync_10
         net.run();
         net.advance(61_000);
     }
-    assert_eq!(net.sent_kinds.get(&12).copied().unwrap_or(0), 0, "no Deposit message: a Deposit item");
     net.set_online(a, false);
     net.set_online(b, true);
     for _ in 0..3 {

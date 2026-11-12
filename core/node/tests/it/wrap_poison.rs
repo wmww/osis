@@ -8,17 +8,12 @@ use crate::net;
 use net::*;
 use osis_base::{BlobId, LabelId, Role, Tid};
 use osis_crypto::{Secret32, WRAP_LEN};
-use osis_node::sync::{Action, EntryKind};
-use osis_proto::{LabelStore, Message, encode_frame};
+use osis_node::sync::EntryKind;
+use osis_proto::{LabelStore, encode_frame};
 
 const WRITER: u8 = 0;
 const READER: u8 = 1;
 
-pub(crate) fn send(net: &mut Net, h: usize, host: usize, m: Message) {
-    let conn = net.conn_to(h, host).unwrap();
-    net.actions(h, vec![Action::Send { conn, bytes: encode_frame(&m.encode()) }]);
-    net.settle(10_000);
-}
 
 /// `h`'s entry `id` with `wrap` reaches `host` first, taken by its store's rules: as pulled from
 /// `h` (`WRITER`: stamped with the head's write key) or as `h`'s Deposit item (`READER`).
@@ -122,11 +117,11 @@ fn stamped_wrap_never_replaced_spec_sync_5() {
         assert_eq!(fx.net.read(h, t), Some(s("message")));
         for id in entries_of(&mut fx.net, h, &l, t) {
             let before = stored_wrap(&fx.net, host, &l, &id);
-            let head = fx.net.hosts[host].hub.store().log_head(&l).unwrap();
+            let logged = fx.net.logged_at(host, &l);
             let w = bad_wrap(&mut fx.net, h, g, &id, wrong);
             hostile_put(&mut fx.net, h, host, (g, &l), id, w, WRITER);
             assert_eq!(stored_wrap(&fx.net, host, &l, &id), before);
-            assert_eq!(fx.net.hosts[host].hub.store().log_head(&l).unwrap(), head, "nothing logged");
+            assert_eq!(fx.net.logged_at(host, &l), logged, "nothing logged");
         }
         fx.net.run();
         connect(&mut fx, &[host], 33);
@@ -211,7 +206,7 @@ fn raced_wrap_repaired_by_fresh_encryption_spec_sync_5() {
         let mine = entries_of(&mut fx.net, a, &l, t);
         let fresh = mine.iter().filter(|b| at.contains(b)).count();
         assert_eq!(fresh, ids.len(), "seed {seed}: one copy each there: {mine:?}");
-        let deleted = fx.net.hosts[r].hub.store().log_after(&l, 0, usize::MAX).unwrap().unwrap().iter().filter(|(_, x)| matches!(x, osis_proto::LogRecord::Deleted(_))).count();
+        let deleted = fx.net.logged_at(r, &l).1.len();
         assert_eq!(deleted, ids.len(), "seed {seed}: no copy deleted in between");
         let n = fx.net.host_ids(r, &fx.l).len();
         fx.net.advance(600_000);

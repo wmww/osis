@@ -1,5 +1,6 @@
 //! Phase C adversaries (notes/testing.md, Phase C): a dishonest host, a removed holder replaying
-//! what it kept, a holder uploading malformed blobs, a flooding depositor. Each states its
+//! what it kept, a writer's malformed or equivocating entries at a host, a host lying about
+//! tombstones. Each states its
 //! expected outcome; the invariant throughout is that honest nodes converge (through an honest
 //! host where one is dishonest) and never read an unauthorised write.
 //! Out of scope here: a stolen pairing offer (notes/api.md Sharing and roles, pairing: offers, requests and replies
@@ -8,7 +9,7 @@
 //! bound; osis crate tests own it).
 
 use super::library::{add_tag, tags};
-use super::rogue::LabelKeys;
+use super::rogue::{LabelKeys, Stamped};
 use super::scenarios::{clock, persons, purge, setup, shared_group, write_gone};
 use super::{Evil, NetSim, NetWeights, Party};
 use crate::dice::Dice;
@@ -19,7 +20,7 @@ use std::collections::{BTreeMap, BTreeSet};
 /// Per honest node: the commits it had authored when it first held the removal.
 type Knew = BTreeMap<Tid, BTreeSet<CommitId>>;
 use osis_crypto::SeededRng;
-use osis_proto::{ClientEvent, Code, Command, Entry, LabelStore, OpenKey};
+use osis_proto::{ClientEvent, Code, Command, LabelStore, OpenKey};
 
 /// A blob framing `plaintext` with a fresh salt and no commitments: (ID, bytes, key).
 pub fn seal(sim: &mut NetSim, plaintext: &[u8]) -> Res<(BlobId, Vec<u8>, osis_crypto::Secret32)> {
@@ -29,27 +30,13 @@ pub fn seal(sim: &mut NetSim, plaintext: &[u8]) -> Res<(BlobId, Vec<u8>, osis_cr
     Ok((osis_label::blob_id(&blob), blob, key))
 }
 
-/// A stamped entry of `blob` under `k`'s read secret and write key (wrong keys when not held).
-pub fn stamped(sim: &NetSim, k: &LabelKeys, id: &BlobId, blob: Vec<u8>, key: &osis_crypto::Secret32) -> Res<Entry> {
+/// A stamped entry of `blob` under `k`'s read secret and write key.
+pub fn stamped(sim: &NetSim, k: &LabelKeys, id: &BlobId, blob: Vec<u8>, key: &osis_crypto::Secret32) -> Res<Stamped> {
     let read = k.read.clone().ok_or_else(|| sim.fail("no read secret held"))?;
     let wrap = osis_crypto::wrap(&read, id, key, 1).map_err(|e| sim.fail(e.to_string()))?;
     let write = k.keys.write.clone().ok_or_else(|| sim.fail("no write key held"))?;
     let stamp = osis_label::sign_stamp(&write, &k.label, id, &wrap, false);
-    Ok(Entry { blob, wrap, stamp, replaces: Vec::new() })
-}
-
-/// Codes of the entry statuses and budgets among `evs`.
-pub fn codes(evs: &[ClientEvent]) -> Vec<Code> {
-    let mut v = Vec::new();
-    for e in evs {
-        match e {
-            ClientEvent::EntryStatus { codes, .. } | ClientEvent::DeleteStatus { codes, .. } => v.extend(codes.iter().copied()),
-            ClientEvent::Budget { code, .. } => v.push(*code),
-            ClientEvent::Refused { code, .. } => v.push(*code),
-            _ => {}
-        }
-    }
-    v
+    Ok(Stamped { id: *id, blob, wrap, stamp })
 }
 
 /// A dishonest host (spec/sync.md §6; spec/requirements.md, Threat model: hosts are trusted
@@ -102,11 +89,11 @@ fn evil(name: &str, s: Seeds, e: Evil) -> Res<Report> {
 }
 
 /// A removed holder replays what it kept (spec/sync.md §2, §5; spec/permissions.md §5): it keeps
-/// the label's old keys, entries and step. After its removal (and a purge it saw) it opens with
-/// its old sync key, registers its old step, re-uploads the old entries, the purged one included,
-/// and deposits a commit it wrote offline after the removal. Expected: the stale step and the
-/// purged blob are refused, no honest node reads the post-removal write, honest nodes converge;
-/// colluding with the host, M's secrets open no body made after its removal.
+/// the label's old keys and step. After its removal (and a purge it saw) it opens with its old
+/// sync key and registers its old step by hand, then comes back with a commit it wrote offline
+/// after the removal. Expected: the stale step is refused, no honest node reads the post-removal
+/// write, honest nodes converge; colluding with the host, M's secrets open no body made after its
+/// removal.
 pub fn removed_replayer(s: Seeds) -> Res<Report> {
     let (mut sim, (s, a, b, m, pm, g, t, gone)) = setup("removed_replayer", s, NetWeights::default(), |sim| {
         let mut d = Dice::new(sim.seed ^ 0x4e);
@@ -125,20 +112,8 @@ pub fn removed_replayer(s: Seeds) -> Res<Report> {
     })?;
     sim.run(40)?;
     sim.quiet(40)?;
-    // what M keeps: the keys at the current head, every live entry
+    // what M keeps: the keys at the current head
     let old = sim.label_keys(m, s, &g)?;
-    let kept: Vec<Entry> = {
-        let hub = sim.hub(s).ok_or_else(|| sim.fail("host down"))?;
-        let st = hub.store();
-        let mut v = Vec::new();
-        for id in st.live_ids(&old.label).unwrap_or_default() {
-            let (Some(e), Some(blob)) = (st.entry(&old.label, &id).ok().flatten(), st.blob(&id).ok().flatten()) else { continue };
-            if let Some(stamp) = e.stamp {
-                v.push(Entry { blob, wrap: e.wrap, stamp, replaces: Vec::new() });
-            }
-        }
-        v
-    };
     // a purge M saw, then its removal while it is offline; it writes on
     purge(&mut sim, a, gone, t)?;
     sim.quiet(40)?;
@@ -151,7 +126,7 @@ pub fn removed_replayer(s: Seeds) -> Res<Report> {
     note_removal(&mut sim, [a, b], g, pm, &mut knew)?;
     sim.advance(60_000)?;
     note_removal(&mut sim, [a, b], g, pm, &mut knew)?;
-    let evil_c = add_tag(&mut sim, m, t, "m-after")?;
+    add_tag(&mut sim, m, t, "m-after")?;
     // the replay, by hand
     let mut r = sim.rogue(s)?;
     let k = old.keys.sync.clone().ok_or_else(|| sim.fail("M held no sync key"))?;
@@ -159,35 +134,6 @@ pub fn removed_replayer(s: Seeds) -> Res<Report> {
     let stale = sim.rogue_do(&mut r, Command::Register { label: old.label, step: old.head.clone(), claim_set: None })?;
     if stale.iter().any(|e| matches!(e, ClientEvent::Registered { .. })) {
         return Err(sim.fail(format!("the host accepted a stale step from the removed holder: {stale:?}; open {opened:?}")));
-    }
-    let replay = sim.rogue_do(&mut r, Command::Upload { label: old.label, entries: kept.clone() })?;
-    let purged_ids: Vec<BlobId> = sim.known.iter().filter(|(_, (c, _))| *c == gone).map(|(k, _)| k.1).collect();
-    let hub = sim.hub(s).ok_or_else(|| sim.fail("host down"))?;
-    for id in &purged_ids {
-        if hub.store().live_ids(&old.label).unwrap_or_default().contains(id) {
-            return Err(sim.fail(format!("the replay brought back the purged blob {id:?}: {:?}", codes(&replay))));
-        }
-    }
-    // the post-removal commit, deposited under the old wrap secret and deposit key
-    let body = sim.engine(m)?.body(&evil_c).map_err(|e| sim.fail(e.to_string()))?;
-    if let Some(body) = body
-        && let Some(read) = old.read.clone()
-    {
-        let mut rng = SeededRng::from_u64(sim.dice.u64());
-        let sealed = sim.engine(m)?.seal(&body, osis_label::Class::Durable, &[], &mut rng).map_err(|e| sim.fail(e.to_string()))?.ok_or_else(|| sim.fail("no secret to seal under"))?;
-        let (id, blob, key) = (sealed.id, sealed.blob, sealed.key);
-        let wrap = osis_crypto::wrap(&read, &id, &key, 1).map_err(|e| sim.fail(e.to_string()))?;
-        if let Some(dk) = &old.deposit {
-            let sig = osis_label::sign_deposit(dk, &old.label, &id, &wrap, false);
-            let ev = sim.rogue_do(&mut r, Command::Deposit { label: old.label, blob: blob.clone(), wrap, sig })?;
-            // its stale key learns the code alone: no head, no budget (spec/sync.md §5)
-            if ev.iter().any(|e| matches!(e, ClientEvent::Budget { budget: Some(_), .. })) {
-                return Err(sim.fail(format!("a deposit under the removed holder's key was told the budget: {ev:?}")));
-            }
-        }
-        if let Ok(e) = stamped(&sim, &old, &id, blob, &key) {
-            sim.rogue_do(&mut r, Command::Upload { label: old.label, entries: vec![e] })?;
-        }
     }
     sim.rogue_close(&mut r);
     sim.unsever(Party::N(m), Party::S(s));
@@ -259,9 +205,11 @@ fn run_noting(sim: &mut NetSim, n: u64, nodes: [usize; 2], g: Tid, holder: Tid, 
     Ok(())
 }
 
-/// A holder uploads malformed blobs (spec/sync.md §5, spec/commits.md §4; spec/versioning.md §2:
-/// malformed data is rejected, never parked): garbage bytes, a well-framed blob of garbage, a
-/// real commit under a prefix that disagrees with its header, a wrap for another blob. Expected:
+/// A writer's malformed blobs (spec/sync.md §5, spec/commits.md §4; spec/versioning.md §2:
+/// malformed data is rejected, never parked), stamped with its write key and placed in the host's
+/// store as the host's pull from that writer would take them (`host_put`): garbage bytes, a
+/// well-framed blob of garbage, a real commit under a prefix that disagrees with its header, a
+/// wrap for another blob; then a frame that is no message on a connection of its own. Expected:
 /// the host keeps them (it cannot judge them), honest nodes reject them without failing, keep
 /// syncing and converge.
 pub fn malformed_blobs(s: Seeds) -> Res<Report> {
@@ -282,7 +230,6 @@ pub fn malformed_blobs(s: Seeds) -> Res<Report> {
     sim.run(30)?;
     sim.quiet(40)?;
     let k = sim.label_keys(m, s, &g)?;
-    let mut r = sim.rogue(s)?;
     let mut entries = Vec::new();
     // garbage bytes, stamped: no prefix
     let junk: Vec<u8> = (0..300).map(|_| sim.dice.u64() as u8).collect();
@@ -308,8 +255,14 @@ pub fn malformed_blobs(s: Seeds) -> Res<Report> {
         entries.push(stamped(&sim, &k, &id2, blob2, &key)?);
     }
     // a blob whose framing version the host does not know is kept (spec/wire.md §5)
-    sim.rogue_do(&mut r, Command::Upload { label: k.label, entries })?;
+    for e in &entries {
+        let code = sim.host_put(s, k.label, e)?;
+        if code != Code::OK {
+            return Err(sim.fail(format!("the host refused a malformed blob: {code:?}")));
+        }
+    }
     // a frame that is no message
+    let mut r = sim.rogue(s)?;
     sim.rogue_raw(&mut r, osis_proto::encode_frame(&[0xff, 0x00, 0x13]))?;
     sim.rogue_close(&mut r);
     sim.run(80)?;
@@ -317,75 +270,6 @@ pub fn malformed_blobs(s: Seeds) -> Res<Report> {
     for n in [a, b, m] {
         if !tags(&mut sim, n, t)?.contains("real") {
             return Err(sim.fail(format!("node {n} lost the real write")));
-        }
-    }
-    sim.finish()
-}
-
-/// A flooding depositor (spec/sync.md §5, deposit budget; notes/serving.md, host policy): a reader
-/// holding the deposit key deposits hundreds of fresh encryptions of a body of the label.
-/// Expected: bounded: the host accepts at most the label's deposit budget and refuses the rest;
-/// honest nodes delete the duplicates, keep writing and converge.
-pub fn deposit_flood(s: Seeds) -> Res<Report> {
-    let (mut sim, (s, a, b, f, g, t)) = setup("deposit_flood", s, NetWeights::default(), |sim| {
-        let mut d = Dice::new(sim.seed ^ 0xf1);
-        let s = sim.add_host()?;
-        let a = sim.add_node(&[s], clock(&mut d))?;
-        let b = sim.add_node(&[s], clock(&mut d))?;
-        let f = sim.add_node(&[s], clock(&mut d))?;
-        let [pa, pb, pf] = persons(sim, [a, b, f], [s, s, s])?;
-        let g = shared_group(sim, a, pa, &[s], &[(pb, Role::Write), (pf, Role::Read)])?;
-        let t = sim.item(a, g)?;
-        sim.reconnect_all();
-        sim.quiet(40)?;
-        Ok((s, a, b, f, g, t))
-    })?;
-    let k = sim.label_keys(f, s, &g)?;
-    let dk = k.deposit.clone().ok_or_else(|| sim.fail("the reader holds no deposit key"))?;
-    let read = k.read.clone().ok_or_else(|| sim.fail("the reader holds no read secret"))?;
-    // fresh encryptions of a body of the label (valid duplicates: junk is malformed_blobs')
-    let body = sim.engine(f)?.label_bodies(&g).map_err(|e| sim.fail(e.to_string()))?.into_iter().next().ok_or_else(|| sim.fail("no body"))?;
-    let mut rng = SeededRng::from_u64(sim.dice.u64());
-    let mut r = sim.rogue(s)?;
-    let mut ok = 0u64;
-    let mut refused = 0u64;
-    let mut budget = None;
-    for i in 0..400u64 {
-        let sealed = sim.engine(f)?.seal(&body, osis_label::Class::Durable, &[], &mut rng).map_err(|e| sim.fail(e.to_string()))?.ok_or_else(|| sim.fail("no secret to seal under"))?;
-        let (id, blob, key) = (sealed.id, sealed.blob, sealed.key);
-        let wrap = osis_crypto::wrap(&read, &id, &key, 1).map_err(|e| sim.fail(e.to_string()))?;
-        let sig = osis_label::sign_deposit(&dk, &k.label, &id, &wrap, false);
-        let evs = sim.rogue_do(&mut r, Command::Deposit { label: k.label, blob, wrap, sig })?;
-        for e in &evs {
-            if let ClientEvent::Budget { code: Code::OK, budget: Some((entries_left, _)), .. } = e
-                && budget.is_none()
-            {
-                budget = Some(entries_left + 1);
-            }
-        }
-        for c in codes(&evs) {
-            if c == Code::OK {
-                ok += 1;
-            } else {
-                refused += 1;
-            }
-        }
-        if i % 50 == 0 {
-            sim.advance(1_000)?;
-        }
-    }
-    sim.rogue_close(&mut r);
-    let budget = budget.unwrap_or(0);
-    if ok > budget || refused == 0 {
-        return Err(sim.fail(format!("deposit flood: {ok} accepted, {refused} refused (budget {budget})")));
-    }
-    sim.excused.insert(f);
-    add_tag(&mut sim, b, t, "still")?;
-    sim.run(60)?;
-    sim.run_until_quiescent(40)?;
-    for n in [a, b] {
-        if !tags(&mut sim, n, t)?.contains("still") {
-            return Err(sim.fail(format!("node {n} does not read the honest write after the flood")));
         }
     }
     sim.finish()
@@ -413,7 +297,8 @@ impl osis_commit::Secrets for Dedup {
 /// An equivocating writer (spec/commits.md §4: two commits by one node with overlapping
 /// counter ranges of one session on one aspect are both invalid; spec/crdt.md §2.3): writer B writes
 /// `c1` on an aspect, then signs a second commit `c2` reusing that commit's counters on the
-/// same aspect, outside its engine, and uploads it stamped under the label. Expected: every
+/// same aspect, outside its engine, stamped under the label and placed in the host's store as the
+/// host's pull from B would take it (`host_put`). Expected: every
 /// node, B's own included, ends up reading neither write, holds both commits, and converges.
 pub fn equivocating_writer(s: Seeds) -> Res<Report> {
     use osis_commit::{AspectWrite, CommitBuilder, Kind, MemoryBlobs, writer_ctx};
@@ -465,13 +350,11 @@ pub fn equivocating_writer(s: Seeds) -> Res<Report> {
     let k = sim.label_keys(b, s, &g)?;
     let mut rng = SeededRng::from_u64(sim.dice.u64());
     let sealed = osis_node::labeling::seal_plain(&built.commit.encode(), osis_label::Class::Durable, &mut rng).map_err(|e| sim.fail(e.to_string()))?;
-    let entries = vec![stamped(&sim, &k, &sealed.id, sealed.blob, &sealed.key)?];
+    let e = stamped(&sim, &k, &sealed.id, sealed.blob, &sealed.key)?;
     sim.equivocation(c2);
-    let mut r = sim.rogue(s)?;
-    let up = sim.rogue_do(&mut r, Command::Upload { label: k.label, entries })?;
-    sim.rogue_close(&mut r);
-    if codes(&up).iter().any(|x| *x != Code::OK) {
-        return Err(sim.fail(format!("the host refused the equivocating commit: {:?}", codes(&up))));
+    let code = sim.host_put(s, k.label, &e)?;
+    if code != Code::OK {
+        return Err(sim.fail(format!("the host refused the equivocating commit: {code:?}")));
     }
     sim.run(60)?;
     sim.run_until_quiescent(40)?;
@@ -489,7 +372,8 @@ pub fn equivocating_writer(s: Seeds) -> Res<Report> {
 /// A host lying about tombstones (spec/sync.md §5: a tombstoned blob ID is refused; §7: a
 /// purge reaches every copy; spec/requirements.md: "nothing trusts a host's word"): after a
 /// purge is applied and deleted at the host, the host re-announces the purged entry, blob,
-/// wrap and stamp as they were, to every node on its open connections. Expected: no node takes
+/// wrap and stamp as they were, in a Stream at its node log's end, to every node on its open
+/// connections. Expected: no node takes
 /// the body back (purged bodies at no honest node, the purged value stays gone), no node
 /// uploads or deposits it again (counted as nodes send, since the host's tombstone would refuse it), everything converges.
 pub fn tombstone_liar(s: Seeds) -> Res<Report> {
@@ -531,9 +415,14 @@ pub fn tombstone_liar(s: Seeds) -> Res<Report> {
     if ids.iter().any(|id| live.contains(id)) {
         return Err(sim.fail("the purged body is still live at the host before the lie"));
     }
-    // the lie, at the label's real log head
-    let (log_id, seq) = sim.hub(s).ok_or_else(|| sim.fail("host down"))?.store().log_head(&label).map_err(|e| sim.fail(e.to_string()))?;
-    let push = osis_proto::encode_frame(&osis_proto::Message::Push { label, events, cursor: osis_proto::Cursor { log_id, seq } }.encode());
+    // the lie, at the host's real log end
+    let cursor = sim.hub(s).ok_or_else(|| sim.fail("host down"))?.store().node_log(|t| {
+        let end = t.log_end()?;
+        t.log_cursor(end)
+    });
+    let cursor = cursor.map_err(|e| sim.fail(e.to_string()))?;
+    let events = events.into_iter().map(|e| (label, e)).collect();
+    let push = osis_proto::encode_frame(&osis_proto::Message::Stream(Box::new(osis_proto::msg::Stream { events, cursor, report: false })).encode());
     sim.watched.extend(ids.iter().copied());
     let mut told = 0;
     for n in [a, b, c] {

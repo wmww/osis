@@ -1,7 +1,7 @@
 //! `HostStore`: osis-proto's `LabelStore` over its own osis-store `Store` (spec/sync.md §4, §5):
-//! registration paths, entries, tombstones, per-label logs, blob bytes stored once with reference
-//! counts, expiry, claim-set retention, and the host policy (storage caps,
-//! deposit budget, rate limits). Every mutation's writes apply together to the open store
+//! registration paths, entries, tombstones, blob bytes stored once with reference counts, expiry,
+//! claim-set retention, the node log (notes/local-store.md, Node log), and the host policy
+//! (storage caps, deposit budget, rate limits). Every mutation's writes apply together to the open store
 //! transaction, committed per mutation or, deferred (`defer_durability`), once per hub batch.
 //!
 //! Deletion (spec/requirements.md, Deletion): every row removal shreds (`Shred::Yes`), so a
@@ -12,28 +12,24 @@
 //!
 //! Rows, in one table of the store (encrypted under the host store's own key tree; what a host
 //! sees anyway, blobs are ciphertext):
-//! `I` seed; `L label` meta; `K label` the head's earlier role keys (`HeadKeys`); `S label step`
+//! `L label` meta; `K label` the head's earlier role keys (`HeadKeys`); `S label step`
 //! step; `C label step` claim set, `H label step key` each of its keys (the entry box or empty:
 //! an Open looks one key up instead of loading the set); path indexes `V label sync_key` the newest step registering
 //! that sync key, `W label` the genesis step and `W label step` its child (an Open or a Path page
 //! reads no path); `E label blob` entry;
-//! `T label blob` tombstone time; `G label seq` log record; `R blob` reference count and the
-//! blob's prefix bytes (`blob_prefix`);
-//! sweep indexes `X t label blob` (expiry),
-//! `Y t label blob` (a removed entry's log trim, and its tombstone drop after a deletion: the log
-//! position it went at, then 1 for a deletion, 0 for an expiry), `Z t label step` (claim-set drop, with its `H` rows);
-//! `Q peer label` replication position; `N` host-wide totals (labels, entries, bytes).
+//! `T label blob` tombstone time; `R blob` reference count and the blob's prefix bytes
+//! (`blob_prefix`); sweep indexes `X t label blob` (expiry), `Y t label blob` (tombstone drop),
+//! `Z t label step` (claim-set drop, with its `H` rows); `N` host-wide totals (labels, entries,
+//! bytes); `B blob` the engine's hold (`engine.rs`), `n label` node sync's (`reader.rs`).
 //!
 //! Ephemeral entries (blob prefix class ephemeral, spec/sync.md §4) are held in memory only:
-//! entry, blob, log records and tombstones; a restart loses them. Their log records take
-//! sequence numbers from the label's log, reserved on disk in blocks (`SEQ_BLOCK`, the label
-//! meta's `reserved`), so no number handed out before a restart is handed out again.
+//! entry, blob and tombstone; a restart loses them.
 
 use osis_base::format::{MAX_DRIFT_MS, ROLE_KEEP_MS, TOMBSTONE_LIFETIME_MS};
 use osis_base::{BlobId, Clock, LabelId};
 use osis_crypto::Signature;
 use osis_proto::msg::{ClaimSet, Code, SecretBox, Step, StepId, WRAP_LEN};
-use osis_proto::{Budget, EntryMeta, HeadKeys, LabelStore, LogRecord, Put, StoreError};
+use osis_proto::{EntryMeta, HeadKeys, LabelStore, Put, StoreError};
 use osis_store::{KeyValue, Shred, Store, Suspended, Table, Transaction};
 use crate::{Admission, LabelCaps};
 use std::cell::RefCell;
@@ -56,8 +52,6 @@ pub struct HostPolicy {
     /// A claim set is kept this long after its step is superseded (at least `ROLE_KEEP`).
     pub claim_keep_ms: u64,
     pub tombstone_ms: u64,
-    /// Log records kept per label; older ones are dropped (cursors below fall back to reconciliation).
-    pub log_keep: u64,
     /// Rate-limit window.
     pub window_ms: u64,
     /// Per label and window.
@@ -71,11 +65,11 @@ pub struct HostPolicy {
     /// growth past the caps is at most `max_labels` steps per this; 0 leaves only `registers`,
     /// infinity takes one such step per label until room appears (a later rotation waits there).
     pub over_cap_step_ms: u64,
-    /// Ephemeral memory charged per label, and over all labels: an ephemeral upload beyond the
+    /// Ephemeral memory charged per label, and over all labels: an ephemeral entry beyond the
     /// label's is refused; past the total, the label charged most gives way (notes/ephemeral.md).
     pub ephemeral_bytes: u64,
     pub ephemeral_total: u64,
-    /// Relay-only uploads pushed per label and window, and their bytes (`osis_proto::RelayLimits`).
+    /// Relay-only entries passed on per label and window, and their bytes (`osis_proto::RelayLimits`).
     pub relays: u32,
     pub relay_bytes: u64,
     /// Host-wide caps: new entries, labels and steps beyond them are refused.
@@ -109,7 +103,6 @@ impl Default for HostPolicy {
             deposit_factor: 1,
             claim_keep_ms: ROLE_KEEP_MS,
             tombstone_ms: TOMBSTONE_LIFETIME_MS,
-            log_keep: 1 << 20,
             window_ms: 60_000,
             deletes: 20_000,
             deposits: 600,
@@ -143,7 +136,6 @@ impl HostPolicy {
             "deposit_factor" => self.deposit_factor = v,
             "claim_keep_ms" => self.claim_keep_ms = v,
             "tombstone_ms" => self.tombstone_ms = v,
-            "log_keep" => self.log_keep = v,
             "window_ms" => self.window_ms = v,
             "deletes" => self.deletes = n32()?,
             "deposits" => self.deposits = n32()?,
@@ -186,7 +178,6 @@ impl HostPolicy {
         put("deposit_factor", self.deposit_factor, d.deposit_factor);
         put("claim_keep_ms", self.claim_keep_ms, d.claim_keep_ms);
         put("tombstone_ms", self.tombstone_ms, d.tombstone_ms);
-        put("log_keep", self.log_keep, d.log_keep);
         put("window_ms", self.window_ms, d.window_ms);
         put("deletes", self.deletes.into(), d.deletes.into());
         put("deposits", self.deposits.into(), d.deposits.into());
@@ -210,7 +201,6 @@ impl HostPolicy {
         HostPolicy {
             cap_entries: u64::MAX,
             cap_bytes: u64::MAX,
-            log_keep: u64::MAX,
             deletes: u32::MAX,
             deposits: u32::MAX,
             registers: u32::MAX,
@@ -244,7 +234,7 @@ enum Write {
     PutBlob(BlobId, Vec<u8>),
     /// Deleted unless the engine holds it (`B`).
     DeleteBlob(BlobId),
-    /// Node log events (notes/local-store.md, Node log), beside the per-label log.
+    /// Node log events (notes/local-store.md, Node log).
     LogAdded(LabelId, BlobId),
     LogDeleted(LabelId, BlobId, u64),
     LogHead(LabelId, StepId),
@@ -416,24 +406,15 @@ fn decode_older(b: &[u8]) -> Result<[Vec<osis_crypto::VerifyingKey>; 4], StoreEr
     Ok(older)
 }
 
-/// Per-label counters and positions.
+/// Per-label counters.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct Meta {
-    log_id: [u8; 16],
     head: Option<StepId>,
-    next_seq: u64,
-    /// Records at or below this sequence number were dropped.
-    horizon: u64,
     head_claims: u64,
     entries: u64,
     bytes: u64,
     dep_n: u64,
     dep_bytes: u64,
-    /// Sequence numbers up to this one may have gone to ephemeral log records (in memory).
-    reserved: u64,
-    /// Durable log records held (`G` rows): ephemeral records and reserved numbers take
-    /// sequence numbers too, so the span `next_seq - horizon` does not count them.
-    records: u64,
     /// Wall ms before which a child step past a byte cap is refused (`HostPolicy::over_cap_step_ms`).
     over_cap_until: u64,
     /// Role entries (`Put::role`) among `entries` and their bytes: outside the label's caps.
@@ -448,20 +429,14 @@ impl Meta {
     }
 }
 
-const META_LEN: usize = 16 + 1 + 32 + 8 * 12;
-
-/// Sequence numbers reserved on disk at a time for ephemeral log records. Performance switch
-/// (notes/arbitrary-values.md): 1 writes the label meta per ephemeral upload, a large block skips
-/// that many numbers after a restart (harmless: cursors only compare).
-const SEQ_BLOCK: u64 = 1024;
+const META_LEN: usize = 1 + 32 + 8 * 8;
 
 impl Meta {
     fn encode(&self) -> Vec<u8> {
         let mut v = Vec::with_capacity(META_LEN);
-        v.extend_from_slice(&self.log_id);
         v.push(u8::from(self.head.is_some()));
         v.extend_from_slice(&self.head.map_or([0; 32], |h| h.0));
-        for n in [self.next_seq, self.horizon, self.head_claims, self.entries, self.bytes, self.dep_n, self.dep_bytes, self.reserved, self.records, self.over_cap_until, self.role_n, self.role_bytes] {
+        for n in [self.head_claims, self.entries, self.bytes, self.dep_n, self.dep_bytes, self.over_cap_until, self.role_n, self.role_bytes] {
             v.extend_from_slice(&be(n));
         }
         v
@@ -471,22 +446,17 @@ impl Meta {
         if b.len() != META_LEN {
             return Err(corrupt("label meta"));
         }
-        let n = |i: usize| read_u64(b, 49 + 8 * i);
+        let n = |i: usize| read_u64(b, 33 + 8 * i);
         Ok(Meta {
-            log_id: read_arr(b, 0)?,
-            head: (b.get(16) == Some(&1)).then(|| read_arr(b, 17).map(StepId)).transpose()?,
-            next_seq: n(0)?,
-            horizon: n(1)?,
-            head_claims: n(2)?,
-            entries: n(3)?,
-            bytes: n(4)?,
-            dep_n: n(5)?,
-            dep_bytes: n(6)?,
-            reserved: n(7)?,
-            records: n(8)?,
-            over_cap_until: n(9)?,
-            role_n: n(10)?,
-            role_bytes: n(11)?,
+            head: (b.first() == Some(&1)).then(|| read_arr(b, 1).map(StepId)).transpose()?,
+            head_claims: n(0)?,
+            entries: n(1)?,
+            bytes: n(2)?,
+            dep_n: n(3)?,
+            dep_bytes: n(4)?,
+            over_cap_until: n(5)?,
+            role_n: n(6)?,
+            role_bytes: n(7)?,
         })
     }
 }
@@ -500,7 +470,7 @@ struct Row {
     role: bool,
 }
 
-const ROW_LEN: usize = WRAP_LEN + 1 + 64 + 8 * 3;
+const ROW_LEN: usize = WRAP_LEN + 1 + 64 + 8 * 2;
 
 impl Row {
     fn encode(&self) -> Vec<u8> {
@@ -509,7 +479,7 @@ impl Row {
         v.extend_from_slice(&m.wrap);
         v.push(u8::from(m.stamp.is_some()) | u8::from(self.role) << 1 | u8::from(self.expiry.is_some()) << 2);
         v.extend_from_slice(&m.stamp.map_or([0; 64], |s| s.0));
-        for n in [m.size, m.add_seq, self.expiry.unwrap_or(0)] {
+        for n in [m.size, self.expiry.unwrap_or(0)] {
             v.extend_from_slice(&be(n));
         }
         v
@@ -527,30 +497,11 @@ impl Row {
                 wrap: read_arr(b, 0)?,
                 stamp: opt(1, 0).map(|_| read_arr(b, WRAP_LEN + 1).map(Signature)).transpose()?,
                 size: read_u64(b, at)?,
-                add_seq: read_u64(b, at + 8)?,
             },
-            expiry: opt(4, read_u64(b, at + 16)?),
+            expiry: opt(4, read_u64(b, at + 8)?),
             role: flags & 2 != 0,
         })
     }
-}
-
-fn encode_record(r: &LogRecord) -> Vec<u8> {
-    match r {
-        LogRecord::Added(b) => key(0, &[&b.0]),
-        LogRecord::Deleted(b) => key(1, &[&b.0]),
-        LogRecord::Head(s) => key(3, &[&s.to_bytes()]),
-    }
-}
-
-fn decode_record(b: &[u8]) -> Result<LogRecord, StoreError> {
-    let id = || read_arr(b, 1).map(BlobId);
-    Ok(match b.first() {
-        Some(0) => LogRecord::Added(id()?),
-        Some(1) => LogRecord::Deleted(id()?),
-        Some(3) => LogRecord::Head(Step::parse(b.get(1..).unwrap_or(&[])).map_err(|_| corrupt("step"))?),
-        _ => return Err(corrupt("log record")),
-    })
 }
 
 /// Rate-limited operations.
@@ -566,51 +517,19 @@ enum Rate {
 struct EphEntry {
     meta: EntryMeta,
     expiry: Option<u64>,
+    /// Its place in the label's eviction order (`EphLabel::order`).
+    age: u64,
 }
 
-/// What an upload's replacements remove (spec/sync.md §5, Replace), planned before it is
-/// admitted, and the room they free per cap.
-#[derive(Default)]
-struct Plan {
-    /// Entries removed (durable rows or ephemeral entries), in request order.
-    gone: Vec<BlobId>,
-    /// Durable entries and bytes freed.
-    entries: u64,
-    bytes: u64,
-    /// Ephemeral memory freed in the label's charge.
-    eph_label: u64,
-    /// Removals counted against the delete rate.
-    counted: u32,
-}
-
-/// An ephemeral log record (in memory): no head records go here, so no parsed step.
-#[derive(Clone, Copy, Debug)]
-enum EphRec {
-    Added(BlobId),
-    Deleted(BlobId),
-}
-
-impl EphRec {
-    fn record(self) -> LogRecord {
-        match self {
-            EphRec::Added(b) => LogRecord::Added(b),
-            EphRec::Deleted(b) => LogRecord::Deleted(b),
-        }
-    }
-}
-
-/// A label's ephemeral entries, tombstones and log records (in memory).
+/// A label's ephemeral entries and tombstones (in memory).
 #[derive(Clone, Debug, Default)]
 struct EphLabel {
     entries: BTreeMap<BlobId, EphEntry>,
-    /// Entries by their latest add's sequence number, oldest first (eviction order).
+    /// Entries by age, oldest first (eviction order).
     order: BTreeMap<u64, BlobId>,
     /// Deleted ephemeral entries: when their tombstone goes.
     tombstones: BTreeMap<BlobId, u64>,
-    log: std::collections::VecDeque<(u64, EphRec)>,
-    /// Ephemeral records at or below this sequence number were dropped.
-    horizon: u64,
-    /// Memory charged to the label's cap: blobs, per-entry and per-record overhead.
+    /// Memory charged to the label's cap: blobs and per-entry overhead.
     bytes: u64,
     /// Memory of its tombstones (charged to the host-wide total only).
     tombs: u64,
@@ -634,19 +553,12 @@ enum Charge {
 }
 
 /// Memory charged per ephemeral entry besides its blob bytes: the entry map's key and value
-/// (about 170 bytes), the blob map's entry, the eviction order and due-time index entries and an
-/// origin entry, each with its map's node overhead (checked against the
-/// type sizes by `overheads_cover_the_structures`). Not a tunable: what an entry really costs.
+/// (about 150 bytes), the blob map's entry, the eviction order and due-time index entries, each
+/// with its map's node overhead (checked against the type sizes by
+/// `overheads_cover_the_structures`). Not a tunable: what an entry really costs.
 const ENTRY_OVERHEAD: u64 = 896;
 /// Memory charged per ephemeral tombstone (map entry and due-time index entry).
 const TOMB_OVERHEAD: u64 = 160;
-/// Memory charged per ephemeral log record.
-const REC_OVERHEAD: u64 = 96;
-
-/// Ephemeral log records kept per label (a cursor below them replays). Resource bound, charged
-/// to the label's ephemeral bytes besides (0: every cursor replays; infinity: bounded by the
-/// cap alone, and a full label trims its log first).
-const EPH_LOG_KEEP: usize = 1 << 16;
 
 /// How long a deleted ephemeral entry stays refused (its tombstone, in memory). Minor
 /// consequence: past it a holder that missed the deletion may upload the entry again, and the
@@ -659,8 +571,8 @@ const EPH_TOMBSTONE_MS: u64 = MAX_DRIFT_MS;
 struct Ephemeral {
     labels: HashMap<LabelId, EphLabel>,
     blobs: HashMap<BlobId, (Vec<u8>, usize)>,
-    /// The log's next sequence number for labels with ephemeral records since start.
-    seq: HashMap<LabelId, u64>,
+    /// The next entry's age (`EphEntry::age`).
+    next_age: u64,
     /// Memory charged over all labels, and the labels by their charge (eviction picks the
     /// largest).
     total: u64,
@@ -696,15 +608,6 @@ impl Ephemeral {
             self.by_bytes.insert((all, *l));
         }
         self.total = self.total.saturating_sub(n);
-    }
-
-    /// Drops the label's oldest log record (cursors below it replay). Whether one was there.
-    fn trim_log(&mut self, l: &LabelId) -> bool {
-        let Some(e) = self.labels.get_mut(l) else { return false };
-        let Some((s, _)) = e.log.pop_front() else { return false };
-        e.horizon = s;
-        self.release(l, REC_OVERHEAD, Charge::Label);
-        true
     }
 }
 
@@ -743,22 +646,13 @@ impl Rates {
     }
 }
 
-/// One mutation: the label's meta, its row writes and log appends, committed as one batch.
+/// One mutation: the label's meta and its row writes, committed as one batch.
 struct Tx {
     label: LabelId,
     meta: Meta,
     /// Entries and bytes before this mutation, and whether the label is new (host totals).
     before: (u64, u64, bool),
     batch: Writes,
-}
-
-impl Tx {
-    fn append(&mut self, r: &LogRecord) -> u64 {
-        self.meta.next_seq += 1;
-        self.meta.records += 1;
-        self.batch.put(key(b'G', &[&self.label.0, &be(self.meta.next_seq)]), encode_record(r));
-        self.meta.next_seq
-    }
 }
 
 /// A due index row: (row key, rest after `t`, value).
@@ -812,9 +706,6 @@ pub fn claim_set_bytes(label: &LabelId, id: &StepId, c: &ClaimSet) -> u64 {
     rows_bytes(&set_rows(label, id, c))
 }
 
-/// Remembered entry origins (in memory) beyond which the map is cleared.
-const MAX_ORIGINS: usize = 1 << 20;
-
 /// `LabelStore` over a `Store`. Holds the store, the clock for rate windows and supersession
 /// times, and the policy.
 pub struct HostStore {
@@ -822,14 +713,9 @@ pub struct HostStore {
     db: RefCell<Db>,
     /// A write failed since the last `durable`: its transaction was aborted.
     failed: Option<osis_store::Error>,
-    seed: [u8; 32],
     clock: Arc<dyn Clock>,
     policy: HostPolicy,
     rates: Rates,
-    /// Peer key of the connection whose request is being handled (set by the hub).
-    origin: Option<[u8; 32]>,
-    /// Who last added or replaced an entry, when known: replication skips sending it back.
-    origins: HashMap<(LabelId, BlobId), [u8; 32]>,
     eph: Ephemeral,
     relays: osis_proto::RelayGate,
     /// Commits wait for `durable` (`defer_durability`).
@@ -862,12 +748,9 @@ impl HostStore {
         Ok(HostStore {
             db: RefCell::new(db),
             failed: self.failed.clone(),
-            seed: self.seed,
             clock,
             policy: self.policy.clone(),
             rates: self.rates.clone(),
-            origin: self.origin,
-            origins: self.origins.clone(),
             eph: self.eph.clone(),
             relays: self.relays.clone(),
             lazy: self.lazy,
@@ -883,23 +766,14 @@ impl HostStore {
     }
 
     /// Opens the host store over `store` (the host's own, never the node's), creating its table
-    /// and the instance seed (log IDs derive from it) on first use. `rng` keys the store's units.
+    /// on first use. `rng` keys the store's units.
     pub fn open(mut store: Store, clock: Arc<dyn Clock>, policy: HostPolicy, mut rng: Box<dyn osis_crypto::NodeRng>) -> Result<HostStore, StoreError> {
-        let mut fresh = [0u8; 32];
-        rng.fill_bytes(&mut fresh);
         let mut t = store.transaction(&mut *rng).map_err(err)?;
         let table = t.index(TABLE).map_err(err)?;
-        let seed = match t.table_get(table, b"I").map_err(err)? {
-            Some(s) => s.as_slice().try_into().map_err(|_| corrupt("seed"))?,
-            None => {
-                t.table_put(table, b"I", fresh.to_vec(), Shred::No).map_err(err)?;
-                fresh
-            }
-        };
         t.commit().map_err(err)?;
         let relays = osis_proto::RelayGate::default();
         let db = RefCell::new(Db { store, table, rng, open: None });
-        let mut s = HostStore { db, failed: None, seed, clock, policy: HostPolicy::default(), rates: Rates::default(), origin: None, origins: HashMap::new(), eph: Ephemeral::default(), relays, lazy: false, admission: Admission::Open, caps: BTreeMap::new(), engine_mem: HashMap::new(), read: BTreeSet::new(), moved: false, heads_gen: 0, streamed: BTreeSet::new(), mem: Vec::new() };
+        let mut s = HostStore { db, failed: None, clock, policy: HostPolicy::default(), rates: Rates::default(), eph: Ephemeral::default(), relays, lazy: false, admission: Admission::Open, caps: BTreeMap::new(), engine_mem: HashMap::new(), read: BTreeSet::new(), moved: false, heads_gen: 0, streamed: BTreeSet::new(), mem: Vec::new() };
         s.set_policy(policy);
         Ok(s)
     }
@@ -912,16 +786,11 @@ impl HostStore {
         self.policy = policy;
     }
 
-    /// Which labels new registrations are taken for, and per-label caps in place of the
-    /// policy's (`HostConfig`).
-    /// Label `label`'s meta, or a fresh one (its log ID from the instance seed) and true.
+    /// Label `label`'s meta, or a fresh one and true.
     fn meta_or_new(&self, label: &LabelId) -> Result<(Meta, bool), StoreError> {
         Ok(match self.meta(label)? {
             Some(m) => (m, false),
-            None => {
-                let h = osis_base::hash::hash(&[&self.seed[..], &label.0[..]].concat());
-                (Meta { log_id: read_arr(&h, 0)?, ..Meta::default() }, true)
-            }
+            None => (Meta::default(), true),
         })
     }
 
@@ -959,7 +828,6 @@ impl HostStore {
                 tx.batch.put(k, v);
             }
         }
-        tx.append(&LogRecord::Head(step));
         tx.batch.log(Write::LogHead(*label, id));
         // any head: the unread ones' credentials are in node sync's filters
         self.heads_gen += 1;
@@ -973,6 +841,8 @@ impl HostStore {
         !self.reads(label) && self.admission.admits(label)
     }
 
+    /// Which labels new registrations are taken for, and per-label caps in place of the
+    /// policy's (`HostConfig`).
     pub fn set_admission(&mut self, admission: Admission, caps: BTreeMap<LabelId, LabelCaps>) {
         self.admission = admission;
         self.caps = caps;
@@ -1057,16 +927,6 @@ impl HostStore {
         &self.policy
     }
 
-    /// The peer key of the connection whose requests follow (none: unknown).
-    pub fn set_origin(&mut self, peer: Option<[u8; 32]>) {
-        self.origin = peer;
-    }
-
-    /// The peer key an entry's current wrap and stamp came from, if remembered.
-    pub fn origin(&self, label: &LabelId, blob: &BlobId) -> Option<[u8; 32]> {
-        self.origins.get(&(*label, *blob)).copied()
-    }
-
     pub fn totals(&self) -> Result<Totals, StoreError> {
         let Some(b) = self.get(b"N")? else { return Ok(Totals::default()) };
         Ok(Totals { labels: read_u64(&b, 0)?, entries: read_u64(&b, 8)?, bytes: read_u64(&b, 16)? })
@@ -1076,23 +936,12 @@ impl HostStore {
         self.clock.now_wall_ms().0
     }
 
-    /// The label's meta with its log position past every ephemeral record handed out (this run's,
-    /// or reserved before a restart).
     fn meta(&self, label: &LabelId) -> Result<Option<Meta>, StoreError> {
-        let Some(mut m) = self.raw_meta(label)? else { return Ok(None) };
-        m.next_seq = match self.eph.seq.get(label) {
-            Some(s) => m.next_seq.max(*s),
-            None => m.next_seq.max(m.reserved),
-        };
-        Ok(Some(m))
-    }
-
-    fn raw_meta(&self, label: &LabelId) -> Result<Option<Meta>, StoreError> {
         self.get(&key(b'L', &[&label.0]))?.map(|b| Meta::decode(&b)).transpose()
     }
 
-    /// Ephemeral memory charged per label: blobs and per-entry, per-tombstone and per-record
-    /// overhead (tests, diagnostics).
+    /// Ephemeral memory charged to `label`'s cap: blobs and per-entry overhead (tests,
+    /// diagnostics).
     pub fn ephemeral_bytes(&self, label: &LabelId) -> u64 {
         self.eph.labels.get(label).map_or(0, |e| e.bytes)
     }
@@ -1103,16 +952,15 @@ impl HostStore {
         self.eph.labels.get(label).map(|e| e.entries.keys().copied().collect()).unwrap_or_default()
     }
 
-    /// Whether a new plain ephemeral entry of `size` blob bytes would fit under `label`'s cap,
-    /// every log record trimmed as an upload would (tests: a refusal is genuine).
+    /// Whether a new plain ephemeral entry of `size` blob bytes would fit under `label`'s cap
+    /// (tests: a refusal is genuine).
     pub fn ephemeral_fits(&self, label: &LabelId, size: u64) -> bool {
-        let used = self.eph.labels.get(label).map_or(0, |e| e.bytes.saturating_sub(REC_OVERHEAD.saturating_mul(e.log.len() as u64)));
-        used.saturating_add(size).saturating_add(ENTRY_OVERHEAD).saturating_add(REC_OVERHEAD) <= self.policy.ephemeral_bytes
+        self.ephemeral_bytes(label).saturating_add(size).saturating_add(ENTRY_OVERHEAD) <= self.policy.ephemeral_bytes
     }
 
     /// The entries and bytes of `label` its caps count (role entries are outside them).
     pub fn capped(&self, label: &LabelId) -> Result<(u64, u64), StoreError> {
-        Ok(self.raw_meta(label)?.map_or((0, 0), |m| m.capped()))
+        Ok(self.meta(label)?.map_or((0, 0), |m| m.capped()))
     }
 
     /// What `label`'s room of one kind (durable, or `memory`) found used: the label's and the
@@ -1122,7 +970,7 @@ impl HostStore {
         let used = if memory {
             [self.ephemeral_bytes(label), self.eph.total, 0, 0]
         } else {
-            let m = self.raw_meta(label)?;
+            let m = self.meta(label)?;
             let t = self.totals()?;
             let (entries, bytes) = m.as_ref().map_or((0, 0), Meta::capped);
             [entries, bytes, t.entries, t.bytes]
@@ -1135,39 +983,12 @@ impl HostStore {
         self.eph.total
     }
 
-    /// Appends an ephemeral log record (in memory), reserving sequence numbers on disk as needed.
-    fn eph_append(&mut self, label: &LabelId, r: EphRec) -> Result<u64, StoreError> {
-        let m = self.meta(label)?.ok_or_else(unknown)?;
-        let seq = m.next_seq.saturating_add(1);
-        if seq > m.reserved {
-            let mut raw = self.raw_meta(label)?.ok_or_else(unknown)?;
-            raw.reserved = seq.saturating_add(SEQ_BLOCK);
-            let mut b = Writes::default();
-            b.put(key(b'L', &[&label.0]), raw.encode());
-            self.write(b)?;
-        }
-        self.eph.seq.insert(*label, seq);
-        self.note_memory(label, match r {
-            EphRec::Added(b) => unread::MemEvent::Added(*label, b),
-            EphRec::Deleted(b) => unread::MemEvent::Deleted(*label, b),
-        });
-        self.eph.labels.entry(*label).or_default().log.push_back((seq, r));
-        self.eph.charge(label, REC_OVERHEAD, Charge::Label);
-        if self.eph.labels.get(label).is_some_and(|e| e.log.len() > EPH_LOG_KEEP) {
-            self.eph.trim_log(label);
-        }
-        // a record no upload made room for (a deletion's) stays within the cap: older records go
-        while self.eph.labels.get(label).is_some_and(|e| e.bytes > self.policy.ephemeral_bytes) && self.eph.trim_log(label) {}
-        Ok(seq)
-    }
-
-    /// Removes an ephemeral entry: silently (expiry), with a tombstone and a log record (a
-    /// delete), or with a log record only (evicted for the host-wide cap: holders may bring it
-    /// back).
-    fn eph_remove(&mut self, label: &LabelId, blob: &BlobId, how: EphRemove) -> Result<bool, StoreError> {
-        let Some(e) = self.eph.labels.get_mut(label) else { return Ok(false) };
-        let Some(x) = e.entries.remove(blob) else { return Ok(false) };
-        e.order.remove(&x.meta.add_seq);
+    /// Removes an ephemeral entry: silently (expiry), with a tombstone (a delete), or without one
+    /// (evicted for the host-wide cap: holders may bring it back). Whether it was held.
+    fn eph_remove(&mut self, label: &LabelId, blob: &BlobId, how: EphRemove) -> bool {
+        let Some(e) = self.eph.labels.get_mut(label) else { return false };
+        let Some(x) = e.entries.remove(blob) else { return false };
+        e.order.remove(&x.age);
         if x.meta.stamp.is_none() {
             e.dep_n = e.dep_n.saturating_sub(1);
             e.dep_bytes = e.dep_bytes.saturating_sub(x.meta.size);
@@ -1182,50 +1003,42 @@ impl HostStore {
                 self.eph.blobs.remove(blob);
             }
         }
-        match how {
-            EphRemove::Expire => self.note_memory(label, HostStore::memory_removed(*label, *blob, how)),
-            EphRemove::Delete(now) => {
-                let drop = now.saturating_add(EPH_TOMBSTONE_MS);
-                if let Some(old) = self.eph.labels.entry(*label).or_default().tombstones.insert(*blob, drop) {
-                    self.eph.due.remove(&(old, *label, *blob));
-                } else {
-                    self.eph.charge(label, TOMB_OVERHEAD, Charge::Tomb);
-                }
-                self.eph.due.insert((drop, *label, *blob));
-                self.eph_append(label, EphRec::Deleted(*blob))?;
+        if let EphRemove::Delete(now) = how {
+            let drop = now.saturating_add(EPH_TOMBSTONE_MS);
+            if let Some(old) = self.eph.labels.entry(*label).or_default().tombstones.insert(*blob, drop) {
+                self.eph.due.remove(&(old, *label, *blob));
+            } else {
+                self.eph.charge(label, TOMB_OVERHEAD, Charge::Tomb);
             }
-            EphRemove::Evict => {
-                self.eph_append(label, EphRec::Deleted(*blob))?;
-            }
+            self.eph.due.insert((drop, *label, *blob));
         }
-        Ok(true)
+        self.note_memory(label, HostStore::memory_removed(*label, *blob, how));
+        true
     }
 
     /// Frees ephemeral memory for the host-wide cap from the label charged most (M4 of the
-    /// ephemeral security review: a stranger's labels cannot lock others out): its oldest log
-    /// record, else its oldest entry, else its oldest tombstone. Whether anything was freed.
-    fn eph_evict(&mut self) -> Result<bool, StoreError> {
-        let Some((_, l)) = self.eph.by_bytes.last().copied() else { return Ok(false) };
-        if self.eph.trim_log(&l) {
-            return Ok(true);
-        }
-        let Some(e) = self.eph.labels.get(&l) else { return Ok(false) };
-        if let Some((_, b)) = e.order.first_key_value().map(|(s, b)| (*s, *b)) {
+    /// ephemeral security review: a stranger's labels cannot lock others out): its oldest entry,
+    /// else its oldest tombstone. Whether anything was freed.
+    fn eph_evict(&mut self) -> bool {
+        let Some((_, l)) = self.eph.by_bytes.last().copied() else { return false };
+        let Some(e) = self.eph.labels.get(&l) else { return false };
+        if let Some(b) = e.order.first_key_value().map(|(_, b)| *b) {
             return self.eph_remove(&l, &b, EphRemove::Evict);
         }
-        let Some((b, t)) = e.tombstones.iter().min_by_key(|(_, t)| **t).map(|(b, t)| (*b, *t)) else { return Ok(false) };
+        let Some((b, t)) = e.tombstones.iter().min_by_key(|(_, t)| **t).map(|(b, t)| (*b, *t)) else { return false };
         if let Some(e) = self.eph.labels.get_mut(&l) {
             e.tombstones.remove(&b);
         }
         self.eph.due.remove(&(t, l, b));
         self.eph.release(&l, TOMB_OVERHEAD, Charge::Tomb);
-        Ok(true)
+        true
     }
 
     /// Adds an ephemeral entry or promotes a deposited one (spec/sync.md §4, §5): past the
-    /// label's ephemeral cap (after trimming its log) code 12; past the node's, the label charged
-    /// most gives way; a deposit within the deposit budget, as a durable one.
-    fn eph_put(&mut self, label: &LabelId, put: Put<'_>, plan: &Plan) -> Result<Code, StoreError> {
+    /// label's ephemeral cap code 12; past the node's, the label charged most gives way; a
+    /// deposit within the deposit budget, as a durable one.
+    fn eph_put(&mut self, label: &LabelId, put: Put<'_>) -> Result<Code, StoreError> {
+        let m = self.meta(label)?.ok_or_else(unknown)?;
         let now = self.now();
         self.rates.roll(now, self.policy.window_ms);
         let size = put.blob.len() as u64;
@@ -1234,63 +1047,52 @@ impl HostStore {
             if put.stamp.is_none() || held.stamp.is_some() {
                 return Ok(Code::OK);
             }
-            let seq = self.eph_append(label, EphRec::Added(put.blob_id))?;
             if let Some(e) = self.eph.labels.get_mut(label) {
                 e.dep_n = e.dep_n.saturating_sub(1);
                 e.dep_bytes = e.dep_bytes.saturating_sub(held.size);
-                e.order.remove(&held.add_seq);
-                e.order.insert(seq, put.blob_id);
                 if let Some(x) = e.entries.get_mut(&put.blob_id) {
-                    x.meta = EntryMeta { wrap: put.wrap, stamp: put.stamp, add_seq: seq, ..held };
+                    x.meta = EntryMeta { wrap: put.wrap, stamp: put.stamp, ..held };
                 }
             }
-            self.note_origin(label, &put.blob_id);
+            self.note_memory(label, MemEvent::Added(*label, put.blob_id));
             return Ok(Code::OK);
         }
-        if put.stamp.is_none() {
-            let m = self.meta(label)?.ok_or_else(unknown)?;
-            let max = self.budget_max(&m);
-            let (n, bytes) = self.deposited(label, &m);
-            if n.saturating_add(1) > max || bytes.saturating_add(size) > max.saturating_mul(DEPOSIT_ENTRY_BYTES) {
-                return Ok(Code::BUDGET_FULL);
-            }
-            if !self.rates.take(label, Rate::Deposit, self.policy.deposits) {
-                return Ok(Code::RATE_LIMITED);
-            }
+        if put.stamp.is_none() && !self.deposit_fits(label, &m, size) {
+            return Ok(Code::BUDGET_FULL);
         }
-        // the planned removals' memory still held (an eviction below may take one first)
-        let freed = |s: &Self| plan.gone.iter().filter_map(|b| s.eph_entry(label, b)).map(|e| e.meta.size.saturating_add(ENTRY_OVERHEAD)).fold(0u64, u64::saturating_add);
-        let need = size.saturating_add(ENTRY_OVERHEAD).saturating_add(REC_OVERHEAD);
-        let used = |s: &Self| s.eph.labels.get(label).map_or(0, |e| e.bytes).saturating_sub(plan.eph_label);
-        while used(self).saturating_add(need) > self.policy.ephemeral_bytes && self.eph.trim_log(label) {}
-        if used(self).saturating_add(need) > self.policy.ephemeral_bytes {
+        if put.stamp.is_none() && !self.rates.take(label, Rate::Deposit, self.policy.deposits) {
+            return Ok(Code::RATE_LIMITED);
+        }
+        let need = size.saturating_add(ENTRY_OVERHEAD);
+        if self.ephemeral_bytes(label).saturating_add(need) > self.policy.ephemeral_bytes {
             return Ok(Code::STORAGE_CAP);
         }
-        while self.eph.total.saturating_sub(freed(self)).saturating_add(need) > self.policy.ephemeral_total {
-            if !self.eph_evict()? {
+        while self.eph.total.saturating_add(need) > self.policy.ephemeral_total {
+            if !self.eph_evict() {
                 return Ok(Code::STORAGE_CAP);
             }
         }
-        let seq = self.eph_append(label, EphRec::Added(put.blob_id))?;
+        let age = self.eph.next_age;
+        self.eph.next_age += 1;
         let e = self.eph.labels.entry(*label).or_default();
-        e.order.insert(seq, put.blob_id);
+        e.order.insert(age, put.blob_id);
         if put.stamp.is_none() {
             e.dep_n += 1;
             e.dep_bytes = e.dep_bytes.saturating_add(size);
         }
-        e.entries.insert(put.blob_id, EphEntry { meta: EntryMeta { wrap: put.wrap, stamp: put.stamp, size, add_seq: seq }, expiry: put.expiry });
+        e.entries.insert(put.blob_id, EphEntry { meta: EntryMeta { wrap: put.wrap, stamp: put.stamp, size }, expiry: put.expiry, age });
         if let Some(t) = put.expiry {
             self.eph.due.insert((t, *label, put.blob_id));
         }
-        self.eph.charge(label, size.saturating_add(ENTRY_OVERHEAD), Charge::Label);
+        self.eph.charge(label, need, Charge::Label);
         self.eph.blobs.entry(put.blob_id).or_insert_with(|| (put.blob.to_vec(), 0)).1 += 1;
-        self.note_origin(label, &put.blob_id);
+        self.note_memory(label, MemEvent::Added(*label, put.blob_id));
         Ok(Code::OK)
     }
 
     /// Adds a durable entry or promotes a deposited one (spec/sync.md §4, §5): past the label's
-    /// or the node's cap, the room `plan`'s removals free counted, code 12.
-    fn durable_put(&mut self, label: &LabelId, put: Put<'_>, held: Option<Row>, plan: &Plan) -> Result<Code, StoreError> {
+    /// or the node's cap, code 12.
+    fn durable_put(&mut self, label: &LabelId, put: Put<'_>, held: Option<Row>) -> Result<Code, StoreError> {
         let mut tx = self.tx(label)?;
         if let Some(r) = &held
             && (put.stamp.is_none() || r.meta.stamp.is_some())
@@ -1300,41 +1102,31 @@ impl HostStore {
         let size = put.blob.len() as u64;
         let now = self.now();
         self.rates.roll(now, self.policy.window_ms);
-        match &held {
-            // a promotion: once per entry
-            Some(_) => {}
-            None => {
-                let m = &tx.meta;
-                let p = &self.policy;
-                // an entry deletes are judged by is outside the storage caps, else no purge or
-                // compaction frees room here; a stamped one is a writer's, bounded by nothing
-                // more, a deposited one by the deposit budget below (spec/sync.md §5, Role entries)
-                if !put.role {
-                    let (entries, bytes) = m.capped();
-                    let (entries, bytes) = (entries.saturating_sub(plan.entries), bytes.saturating_sub(plan.bytes));
-                    let (cap_entries, cap_bytes) = self.label_caps(label);
-                    if entries.saturating_add(1) > cap_entries || bytes.saturating_add(size) > cap_bytes {
-                        return Ok(Code::STORAGE_CAP);
-                    }
-                    let t = self.totals()?;
-                    let (entries, bytes) = (t.entries.saturating_sub(plan.entries), t.bytes.saturating_sub(plan.bytes));
-                    if entries.saturating_add(1) > p.max_entries || bytes.saturating_add(size) > p.max_bytes {
-                        return Ok(Code::STORAGE_CAP);
-                    }
+        // a promotion: once per entry, no cap or budget
+        if held.is_none() {
+            let m = &tx.meta;
+            let p = &self.policy;
+            // an entry deletes are judged by is outside the storage caps, else no purge or
+            // compaction frees room here; a stamped one is a writer's, bounded by nothing
+            // more, a deposited one by the deposit budget below (spec/sync.md §5, Role entries)
+            if !put.role {
+                let (entries, bytes) = m.capped();
+                let (cap_entries, cap_bytes) = self.label_caps(label);
+                if entries.saturating_add(1) > cap_entries || bytes.saturating_add(size) > cap_bytes {
+                    return Ok(Code::STORAGE_CAP);
                 }
-                if put.stamp.is_none() {
-                    let max = self.budget_max(m);
-                    let (n, bytes) = self.deposited(label, m);
-                    if n.saturating_add(1) > max || bytes.saturating_add(size) > max.saturating_mul(DEPOSIT_ENTRY_BYTES) {
-                        return Ok(Code::BUDGET_FULL);
-                    }
-                    if !self.rates.take(label, Rate::Deposit, p.deposits) {
-                        return Ok(Code::RATE_LIMITED);
-                    }
+                let t = self.totals()?;
+                if t.entries.saturating_add(1) > p.max_entries || t.bytes.saturating_add(size) > p.max_bytes {
+                    return Ok(Code::STORAGE_CAP);
                 }
             }
+            if put.stamp.is_none() && !self.deposit_fits(label, m, size) {
+                return Ok(Code::BUDGET_FULL);
+            }
+            if put.stamp.is_none() && !self.rates.take(label, Rate::Deposit, p.deposits) {
+                return Ok(Code::RATE_LIMITED);
+            }
         }
-        let seq = tx.append(&LogRecord::Added(put.blob_id));
         let l = label.0;
         // node sync alone expires an entry of a sync ID it reads (its pass removes the row)
         let expiry = put.expiry.filter(|_| !self.reads(label));
@@ -1344,7 +1136,7 @@ impl HostStore {
                     tx.meta.dep_n = tx.meta.dep_n.saturating_sub(1);
                     tx.meta.dep_bytes = tx.meta.dep_bytes.saturating_sub(old.meta.size);
                 }
-                Row { meta: EntryMeta { wrap: put.wrap, stamp: put.stamp, add_seq: seq, ..old.meta }, expiry: old.expiry, role: old.role }
+                Row { meta: EntryMeta { wrap: put.wrap, stamp: put.stamp, ..old.meta }, expiry: old.expiry, role: old.role }
             }
             None => {
                 tx.meta.entries += 1;
@@ -1366,63 +1158,13 @@ impl HostStore {
                 }
                 let prefix = osis_label::prefix_bytes(put.blob);
                 tx.batch.put(key(b'R', &[&put.blob_id.0]), [&be(refs + 1)[..], prefix].concat());
-                Row { meta: EntryMeta { wrap: put.wrap, stamp: put.stamp, size, add_seq: seq }, expiry, role: put.role }
+                Row { meta: EntryMeta { wrap: put.wrap, stamp: put.stamp, size }, expiry, role: put.role }
             }
         };
         tx.batch.put(key(b'E', &[&l, &put.blob_id.0]), row.encode());
         tx.batch.log(Write::LogAdded(*label, put.blob_id));
         self.finish(tx)?;
-        self.note_origin(label, &put.blob_id);
         Ok(Code::OK)
-    }
-
-    /// Plans `put`'s replacements (spec/sync.md §5, Replace): what goes, the room freed.
-    fn plan(&self, label: &LabelId, put: &Put<'_>) -> Result<Plan, StoreError> {
-        let mut plan = Plan::default();
-        let mut seen = BTreeSet::new();
-        for &b in put.replaces {
-            if b == put.blob_id || seen.contains(&b) {
-                continue;
-            }
-            if let Some(e) = self.eph_entry(label, &b) {
-                seen.insert(b);
-                plan.eph_label = plan.eph_label.saturating_add(e.meta.size.saturating_add(ENTRY_OVERHEAD));
-                plan.counted += 1;
-                plan.gone.push(b);
-            } else if let Some(row) = self.row(label, &b)? {
-                seen.insert(b);
-                // a role entry frees no capped room
-                if !row.role {
-                    plan.entries += 1;
-                    plan.bytes = plan.bytes.saturating_add(row.meta.size);
-                }
-                plan.counted += 1;
-                plan.gone.push(b);
-            }
-        }
-        Ok(plan)
-    }
-
-    /// Carries out a planned replacement once its upload was admitted (logged after the add):
-    /// each entry removed as a Delete removes it.
-    fn replace(&mut self, label: &LabelId, plan: &Plan, now: u64) -> Result<(), StoreError> {
-        if plan.gone.is_empty() {
-            return Ok(());
-        }
-        let mut tx = self.tx(label)?;
-        let mut durable = false;
-        for b in &plan.gone {
-            if self.eph_entry(label, b).is_some() {
-                self.eph_remove(label, b, EphRemove::Delete(now))?;
-            } else if let Some(row) = self.row(label, b)? {
-                self.remove(&mut tx, b, &row, now, true)?;
-                durable = true;
-            }
-        }
-        if durable {
-            self.finish(tx)?;
-        }
-        Ok(())
     }
 
     fn eph_entry(&self, label: &LabelId, blob: &BlobId) -> Option<&EphEntry> {
@@ -1443,7 +1185,7 @@ impl HostStore {
             let Some(e) = self.eph.labels.get(&l) else { continue };
             if let Some(x) = e.entries.get(&b) {
                 if x.expiry.is_some_and(|t| t <= now) {
-                    self.eph_remove(&l, &b, EphRemove::Expire)?;
+                    self.eph_remove(&l, &b, EphRemove::Expire);
                 }
             } else if e.tombstones.get(&b).is_some_and(|d| *d <= now) {
                 if let Some(e) = self.eph.labels.get_mut(&l) {
@@ -1475,27 +1217,12 @@ impl HostStore {
         Ok(Tx { label: *label, before: (entries, bytes, false), meta, batch: Writes::default() })
     }
 
-    /// Trims the log to `log_keep` durable records (in steps of 1/8 of it: the oldest `G` rows,
-    /// scanned, so ephemeral records and reserved numbers in between cost nothing) and commits.
+    /// Writes the label's meta and the host totals with `tx`'s rows, and commits.
     fn finish(&mut self, mut tx: Tx) -> Result<(), StoreError> {
-        let keep = self.policy.log_keep.max(1);
-        if tx.meta.records > keep.saturating_add(keep / 8) {
-            let drop = usize::try_from(tx.meta.records - keep).unwrap_or(usize::MAX);
-            let prefix = key(b'G', &[&tx.label.0]);
-            let end = osis_store::prefix_end(&prefix);
-            let rows = self.scan(&prefix, end.as_deref(), drop)?;
-            for (k, _) in &rows {
-                tx.batch.delete(k.clone());
-                tx.meta.horizon = tx.meta.horizon.max(read_u64(k, 17)?);
-            }
-            tx.meta.records = tx.meta.records.saturating_sub(rows.len() as u64);
-        }
         tx.batch.put(key(b'L', &[&tx.label.0]), tx.meta.encode());
-        // node sync wakes for what it serves: a sync ID it reads, one its shared sets stream
-        self.moved |= self.read.contains(&tx.label) || self.streamed.contains(&tx.label);
-        if let Some(s) = self.eph.seq.get_mut(&tx.label) {
-            *s = (*s).max(tx.meta.next_seq);
-        }
+        // node sync wakes for what it holds as its own (`reads`: it alone expires those, a sync ID
+        // it no longer syncs included) and what its shared sets stream
+        self.moved |= self.reads(&tx.label) || self.streamed.contains(&tx.label);
         let (entries, bytes, new) = tx.before;
         let (now_entries, now_bytes) = tx.meta.capped();
         if new || entries != now_entries || bytes != now_bytes {
@@ -1510,35 +1237,19 @@ impl HostStore {
         self.write(tx.batch)
     }
 
-    fn budget_max(&self, m: &Meta) -> u64 {
-        self.policy.deposit_factor.max(1).saturating_mul(64u64.saturating_add(m.head_claims.saturating_mul(4)))
-    }
-
-    /// Records the connection the entry came on (`origins`), or forgets an earlier one.
-    fn note_origin(&mut self, label: &LabelId, blob: &BlobId) {
-        match self.origin {
-            Some(o) => {
-                if self.origins.len() >= MAX_ORIGINS {
-                    self.origins.clear();
-                }
-                self.origins.insert((*label, *blob), o);
-            }
-            None => {
-                self.origins.remove(&(*label, *blob));
-            }
-        }
-    }
-
-    /// Deposited entries under `label` and their bytes, durable (`m`) and ephemeral: one budget.
-    fn deposited(&self, label: &LabelId, m: &Meta) -> (u64, u64) {
+    /// Whether one more deposited entry of `size` bytes fits `label`'s deposit budget (spec/sync.md
+    /// §5): `deposit_factor` × (64 + 4 × head claim slots) entries, × `DEPOSIT_ENTRY_BYTES` bytes,
+    /// over its deposited entries durable (`m`) and ephemeral.
+    fn deposit_fits(&self, label: &LabelId, m: &Meta, size: u64) -> bool {
+        let max = self.policy.deposit_factor.max(1).saturating_mul(64u64.saturating_add(m.head_claims.saturating_mul(4)));
         let (n, b) = self.eph.labels.get(label).map_or((0, 0), |e| (e.dep_n, e.dep_bytes));
-        (m.dep_n.saturating_add(n), m.dep_bytes.saturating_add(b))
+        let (n, bytes) = (m.dep_n.saturating_add(n), m.dep_bytes.saturating_add(b));
+        n.saturating_add(1) <= max && bytes.saturating_add(size) <= max.saturating_mul(DEPOSIT_ENTRY_BYTES)
     }
 
-    /// Removes a held entry at `now` within `tx`: counters, indexes, blob reference; a tombstone
-    /// and a deletion record when `tombstone`. Either way a `Y` row due `tombstone_ms` later
-    /// holds the log position the entry is gone at: the sweep then drops the log up to it
-    /// (spec/sync.md §4; a cursor below falls back to range reconciliation, §6).
+    /// Removes a held entry at `now` within `tx`: counters, indexes, blob reference, a node log
+    /// deletion event; when `tombstone`, a tombstone the sweep drops `tombstone_ms` later (its
+    /// `Y` row).
     fn remove(&self, tx: &mut Tx, blob: &BlobId, row: &Row, now: u64, tombstone: bool) -> Result<(), StoreError> {
         let l = tx.label.0;
         tx.batch.delete(key(b'E', &[&l, &blob.0]));
@@ -1556,18 +1267,15 @@ impl HostStore {
             m.role_n = m.role_n.saturating_sub(1);
             m.role_bytes = m.role_bytes.saturating_sub(row.meta.size);
         }
-        let drop = now.saturating_add(self.policy.tombstone_ms);
-        let seq = if tombstone {
-            // A tombstone already present keeps its first drop time row; replace it.
+        if tombstone {
+            let drop = now.saturating_add(self.policy.tombstone_ms);
+            // a tombstone already present has its own drop row: it moves to the new time
             if let Some(old) = self.get(&key(b'T', &[&l, &blob.0]))? {
                 tx.batch.delete(key(b'Y', &[&old, &l, &blob.0]));
             }
             tx.batch.put(key(b'T', &[&l, &blob.0]), be(drop).to_vec());
-            tx.append(&LogRecord::Deleted(*blob))
-        } else {
-            tx.meta.next_seq
-        };
-        tx.batch.put(key(b'Y', &[&be(drop), &l, &blob.0]), [be(seq).as_slice(), &[u8::from(tombstone)]].concat());
+            tx.batch.put(key(b'Y', &[&be(drop), &l, &blob.0]), vec![]);
+        }
         // the node log takes every removal, an expiry too: the entry left the node
         tx.batch.log(Write::LogDeleted(tx.label, *blob, now));
         let (refs, prefix) = self.refs(blob)?;
@@ -1581,7 +1289,7 @@ impl HostStore {
     }
 
     /// Drops every label `drop` names, whole and shredded (hosting stopped: the store keeps no
-    /// sync ID for others), with no tombstone, record or deletion event: nobody deleted its
+    /// sync ID for others), with no tombstone or deletion event: nobody deleted its
     /// entries, the store stopped holding them. Its blobs go once no other label references them.
     /// Commits. The labels dropped.
     pub fn drop_labels(&mut self, drop: &dyn Fn(&LabelId) -> bool) -> Result<Vec<LabelId>, StoreError> {
@@ -1597,10 +1305,11 @@ impl HostStore {
         for l in &gone {
             self.drop_label(l)?;
         }
-        // rows naming a dropped label past their first part, in one pass: the sweep indexes
-        // (`X`/`Y`/`Z t label …`) and replication positions (`Q peer label`)
+        // the sweep indexes naming a dropped label after their time (`X`/`Y`/`Z t label …`), in
+        // one pass
         let set: BTreeSet<&LabelId> = gone.iter().collect();
-        for (tag, at) in [(b'X', 9), (b'Y', 9), (b'Z', 9), (b'Q', 33)] {
+        for tag in *b"XYZ" {
+            let at = 9;
             let mut from = vec![tag];
             let end = osis_store::prefix_end(&from);
             loop {
@@ -1628,7 +1337,7 @@ impl HostStore {
     }
 
     fn drop_label(&mut self, l: &LabelId) -> Result<(), StoreError> {
-        let Some(meta) = self.raw_meta(l)? else { return Ok(()) };
+        let Some(meta) = self.meta(l)? else { return Ok(()) };
         self.heads_gen += 1;
         let mut w = Writes::default();
         // blob references, one per entry (`R` counts labels holding the blob)
@@ -1656,7 +1365,7 @@ impl HostStore {
                 w.put(key(b'R', &[&b.0]), [&be(have - n)[..], &pre].concat());
             }
         }
-        for tag in *b"LKSCHVWETG" {
+        for tag in *b"LKSCHVWET" {
             let prefix = key(tag, &[&l.0]);
             let end = osis_store::prefix_end(&prefix);
             loop {
@@ -1692,8 +1401,6 @@ impl HostStore {
                 }
             }
         }
-        self.eph.seq.remove(l);
-        self.origins.retain(|(x, _), _| x != l);
         Ok(())
     }
 
@@ -1721,10 +1428,9 @@ impl HostStore {
         Ok(rows.into_iter().map(|(k, v)| (k.clone(), k.get(9..).unwrap_or(&[]).to_vec(), v)).collect())
     }
 
-    /// Expires entries (no tombstone, no per-label record; a node log deletion), drops old
-    /// tombstones and the log up to removals that old, and claim sets superseded for
-    /// `claim_keep_ms`; at most `budget` index and log rows, one commit per label; then a page of
-    /// the node log's sweep. An index row that does not parse, or names a label not held, is dropped.
+    /// Expires entries (no tombstone; a node log deletion), drops old tombstones and claim sets
+    /// superseded for `claim_keep_ms`; at most `budget` index rows, one commit per label; then a
+    /// page of the node log's sweep. An index row that does not parse, or names a label not held, is dropped.
     pub fn sweep(&mut self, now: u64, budget: usize) -> Result<Swept, StoreError> {
         let mut out = Swept::default();
         let mut left = budget.max(1);
@@ -1758,53 +1464,14 @@ impl HostStore {
             }
             self.finish(tx)?;
         }
-        // removals past their lifetime: a deletion's tombstone goes, and the label's log up to
-        // the highest position an entry went at (spec/sync.md §4; each record once over the log's
-        // life); the `Y` and `G` rows dropped count against the budget, so a sweep whose budget
-        // the due `Y` rows fill still drops some; a trim the budget cuts short keeps that highest
-        // `Y` row (and its tombstone) for the next sweep
+        // tombstones past their lifetime
         let mut b = Writes::default();
-        let drop_y = |b: &mut Writes, (k, rest, v): Due| {
-            if v.get(8) == Some(&1) {
+        for (k, rest, _) in self.due(b'Y', now, left)? {
+            left -= 1;
+            if rest.len() == 48 {
                 b.delete(key(b'T', &[&rest]));
             }
             b.delete(k);
-        };
-        let mut trim: BTreeMap<LabelId, (u64, Due)> = BTreeMap::new();
-        for row in self.due(b'Y', now, left)? {
-            let gone = match (read_arr(&row.1, 0).map(LabelId), read_u64(&row.2, 0)) {
-                (Ok(l), Ok(seq)) if row.1.len() == 48 && trim.get(&l).is_none_or(|t| t.0 <= seq) => trim.insert(l, (seq, row)).map(|t| t.1),
-                _ => Some(row),
-            };
-            if let Some(row) = gone {
-                drop_y(&mut b, row);
-                left -= 1;
-            }
-        }
-        for (label, (seq, row)) in trim {
-            let mut done = true;
-            if let Ok(mut tx) = self.tx(&label)
-                && seq > tx.meta.horizon
-            {
-                let prefix = key(b'G', &[&label.0]);
-                let rows = self.scan(&prefix, Some(&key(b'G', &[&label.0, &be(seq.saturating_add(1))])), left)?;
-                done = rows.len() < left;
-                left -= rows.len();
-                for (k, _) in &rows {
-                    tx.batch.delete(k.clone());
-                }
-                tx.meta.records = tx.meta.records.saturating_sub(rows.len() as u64);
-                tx.meta.horizon = match rows.last() {
-                    _ if done => seq,
-                    Some((k, _)) => read_u64(k, 17)?,
-                    None => tx.meta.horizon,
-                };
-                self.finish(tx)?;
-            }
-            if done {
-                drop_y(&mut b, row);
-                left = left.saturating_sub(1);
-            }
         }
         // a dropped claim set's bytes, its index rows' included, leave the label's and the
         // host's totals; each index row counts against the budget (a set has up to `MAX_CLAIMS`
@@ -1876,25 +1543,13 @@ impl HostStore {
         if let Some(t) = self.db.borrow_mut().run(|t, _| t.log_next_due()).map_err(err)? {
             next = Some(next.map_or(t, |n| n.min(t)));
         }
-        for tag in *b"XPYZ" {
+        for tag in *b"XYZ" {
             if let Some((k, _)) = self.scan_prefix(&[tag], 1)?.first() {
                 let t = read_u64(k, 1)?;
                 next = Some(next.map_or(t, |n| n.min(t)));
             }
         }
         Ok(next)
-    }
-
-    /// Log position replicated to `peer` for `label`: (log ID it refers to, sequence number).
-    pub fn replica_pos(&self, peer: &[u8; 32], label: &LabelId) -> Result<Option<([u8; 16], u64)>, StoreError> {
-        let Some(b) = self.get(&key(b'Q', &[peer, &label.0]))? else { return Ok(None) };
-        Ok(Some((read_arr(&b, 0)?, read_u64(&b, 16)?)))
-    }
-
-    pub fn set_replica_pos(&mut self, peer: &[u8; 32], label: &LabelId, log_id: [u8; 16], seq: u64) -> Result<(), StoreError> {
-        let mut b = Writes::default();
-        b.put(key(b'Q', &[peer, &label.0]), [&log_id[..], &be(seq)].concat());
-        self.write(b)
     }
 }
 
@@ -2026,35 +1681,13 @@ impl LabelStore for HostStore {
     }
 
     fn put(&mut self, label: &LabelId, put: Put<'_>) -> Result<Code, StoreError> {
-        let plan = self.plan(label, &put)?;
-        // the removals count against the delete rate (taken even if the upload is then refused
-        // for its cap: a minor overcount)
-        if plan.counted > 0 {
-            self.rates.roll(self.now(), self.policy.window_ms);
-            for _ in 0..plan.counted {
-                if !self.rates.take(label, Rate::Delete, self.policy.deletes) {
-                    return Ok(Code::RATE_LIMITED);
-                }
-            }
-        }
         let held = self.row(label, &put.blob_id)?;
         // an ephemeral blob (unless the same blob is held as a durable entry) stays in memory
-        let code = if (put.ephemeral && held.is_none()) || self.eph_entry(label, &put.blob_id).is_some() {
-            self.eph_put(label, put, &plan)?
+        if (put.ephemeral && held.is_none()) || self.eph_entry(label, &put.blob_id).is_some() {
+            self.eph_put(label, put)
         } else {
-            self.durable_put(label, put, held, &plan)?
-        };
-        if code == Code::OK {
-            self.replace(label, &plan, put.now)?;
+            self.durable_put(label, put, held)
         }
-        Ok(code)
-    }
-
-    fn budget(&self, label: &LabelId) -> Result<Budget, StoreError> {
-        let m = self.meta(label)?.ok_or_else(unknown)?;
-        let max = self.budget_max(&m);
-        let (n, bytes) = self.deposited(label, &m);
-        Ok(Budget { entries_left: max.saturating_sub(n), bytes_left: max.saturating_mul(DEPOSIT_ENTRY_BYTES).saturating_sub(bytes) })
     }
 
     fn delete(&mut self, label: &LabelId, blob_id: &BlobId, now: u64) -> Result<Code, StoreError> {
@@ -2063,7 +1696,7 @@ impl LabelStore for HostStore {
             if !self.rates.take(label, Rate::Delete, self.policy.deletes) {
                 return Ok(Code::RATE_LIMITED);
             }
-            self.eph_remove(label, blob_id, EphRemove::Delete(now))?;
+            self.eph_remove(label, blob_id, EphRemove::Delete(now));
             return Ok(Code::OK);
         }
         let mut tx = self.tx(label)?;
@@ -2077,80 +1710,12 @@ impl LabelStore for HostStore {
         Ok(Code::OK)
     }
 
-    fn log_head(&self, label: &LabelId) -> Result<([u8; 16], u64), StoreError> {
-        let m = self.meta(label)?.ok_or_else(unknown)?;
-        Ok((m.log_id, m.next_seq))
-    }
-
-    fn log_after(&self, label: &LabelId, after: u64, max: usize) -> Result<Option<Vec<(u64, LogRecord)>>, StoreError> {
-        let m = self.meta(label)?.ok_or_else(unknown)?;
-        let eph = self.eph.labels.get(label);
-        if after < m.horizon || after > m.next_seq {
-            return Ok(None);
-        }
-        if max == 0 || after == m.next_seq {
-            return Ok(Some(Vec::new()));
-        }
-        let start = key(b'G', &[&label.0, &be(after + 1)]);
-        let end = key(b'G', &[&label.0, &be(m.next_seq.saturating_add(1))]);
-        let end = if m.next_seq == u64::MAX { osis_store::prefix_end(&key(b'G', &[&label.0])) } else { Some(end) };
-        let rows = self.scan(&start, end.as_deref(), max)?;
-        let mut out = rows.iter().map(|(k, v)| Ok((read_u64(k, 17)?, decode_record(v)?))).collect::<Result<Vec<_>, StoreError>>()?;
-        // the ephemeral records in sequence order among them; where the ephemeral log was trimmed
-        // past `after`, the live entries added since stand in for their add records (the
-        // deletions trimmed are not repeated), so ephemeral churn never sends a
-        // durable cursor back to reconciliation
-        if let Some(e) = eph {
-            if after < e.horizon {
-                out.extend(e.order.range(after + 1..=e.horizon).take(max).map(|(s, b)| (*s, LogRecord::Added(*b))));
-            }
-            let at = e.log.partition_point(|(s, _)| *s <= after);
-            out.extend(e.log.iter().skip(at).take(max).map(|(s, r)| (*s, r.record())));
-            out.sort_by_key(|(s, _)| *s);
-            out.truncate(max);
-        }
-        Ok(Some(out))
-    }
-
-    fn live_by_id(&self, label: &LabelId, after: Option<&BlobId>, max: usize) -> Result<Vec<(BlobId, EntryMeta)>, StoreError> {
+    fn live_ids(&self, label: &LabelId) -> Result<Vec<BlobId>, StoreError> {
         let prefix = key(b'E', &[&label.0]);
-        let start = match after {
-            // The least key above `after`.
-            Some(a) => key(b'E', &[&label.0, &a.0, &[0]]),
-            None => prefix.clone(),
-        };
-        let end = osis_store::prefix_end(&prefix);
-        let rows = self.scan(&start, end.as_deref(), max)?;
-        let mut out = rows.iter().map(|(k, v)| Ok((BlobId(read_arr(k, 17)?), Row::decode(v)?.meta))).collect::<Result<Vec<_>, StoreError>>()?;
-        if let Some(e) = self.eph.labels.get(label) {
-            let range = match after {
-                Some(a) => e.entries.range((std::ops::Bound::Excluded(*a), std::ops::Bound::Unbounded)),
-                None => e.entries.range(..),
-            };
-            out.extend(range.take(max).map(|(b, x)| (*b, x.meta.clone())));
-            out.sort_by_key(|(b, _)| *b);
-            out.truncate(max);
-        }
-        Ok(out)
-    }
-
-    fn live_ids_in(&self, label: &LabelId, lower: &BlobId, upper: Option<&BlobId>) -> Result<Vec<BlobId>, StoreError> {
-        if upper.is_some_and(|u| u <= lower) {
-            return Ok(Vec::new());
-        }
-        let start = key(b'E', &[&label.0, &lower.0]);
-        let end = match upper {
-            Some(u) => Some(key(b'E', &[&label.0, &u.0])),
-            None => osis_store::prefix_end(&key(b'E', &[&label.0])),
-        };
-        let rows = self.scan(&start, end.as_deref(), usize::MAX)?;
+        let rows = self.scan_prefix(&prefix, usize::MAX)?;
         let mut out = rows.iter().map(|(k, _)| Ok(BlobId(read_arr(k, 17)?))).collect::<Result<Vec<_>, StoreError>>()?;
         if let Some(e) = self.eph.labels.get(label) {
-            let eph = match upper {
-                Some(u) => e.entries.range(*lower..*u),
-                None => e.entries.range(*lower..),
-            };
-            out.extend(eph.map(|(b, _)| *b));
+            out.extend(e.entries.keys().copied());
             out.sort();
         }
         Ok(out)

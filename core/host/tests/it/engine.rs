@@ -28,7 +28,7 @@ fn a_blob_read_and_served_is_stored_once() {
     let (x, y) = (blob(1), blob(2));
     let (xi, yi) = (osis_label::blob_id(&x), osis_label::blob_id(&y));
     // served first, then held by the engine: one copy; the hub's delete leaves the engine's
-    w.run(a, Command::Upload { label: l.id, entries: vec![l.entry(x.clone())] });
+    assert_eq!(pull(&w, h, &l, &l.entry(x.clone())), Code::OK);
     assert_eq!(blobs(&w), 1);
     {
         let mut s = w.hubs[h].store();
@@ -52,7 +52,7 @@ fn a_blob_read_and_served_is_stored_once() {
         assert!(s.hold(&yi, y.clone(), false).unwrap());
         s.commit().unwrap();
     }
-    w.run(a, Command::Upload { label: l.id, entries: vec![l.entry(y.clone())] });
+    assert_eq!(pull(&w, h, &l, &l.entry(y.clone())), Code::OK);
     assert_eq!(blobs(&w), 1, "stored once");
     {
         let mut s = w.hubs[h].store();

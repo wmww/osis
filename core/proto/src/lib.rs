@@ -1,5 +1,5 @@
 //! osis-proto: the node-to-node sync protocol (spec/sync.md §5-§9, §11; spec/wire.md §11-§13):
-//! frames, Hello, every message, range reconciliation, and sans-I/O client and serving engines
+//! frames, Hello, every message, and sans-I/O client and serving engines
 //! (`handle(now, Input) -> Vec<Output>`; no async, no sockets, time passed in).
 //! Layer 5 (notes/architecture.md). Notes: notes/sync-protocol.md (osis-proto).
 #![forbid(unsafe_code)]
@@ -16,7 +16,6 @@ pub mod frame;
 pub mod hello;
 pub mod msg;
 pub mod prove;
-pub mod rbsr;
 pub mod relay;
 pub mod serving;
 pub mod store;
@@ -26,11 +25,11 @@ pub use client::{ClientConfig, ClientEvent, ClientInput, ClientOutput, ClientSes
 pub use error::Error;
 pub use serving::{Relayed, ServingConfig, ServingSession, ServingInput, ServingOutput};
 pub use relay::{RelayGate, RelayLimits, RelayVerdict};
-pub use store::{Budget, EntryMeta, HeadKeys, LabelStore, LogRecord, MemoryLabelStore, Put, StepKey, StoreError};
+pub use store::{EntryMeta, HeadKeys, LabelStore, MemoryLabelStore, Put, StepKey, StoreError};
 pub use frame::{FrameDecoder, MAX_HELLO_BYTES, encode_frame};
 pub use hello::{Hello, OffsetSample, PROTOCOL_VERSION, estimate_offset, negotiate};
 pub use prove::{ActorProof, MAX_PROOFS, MAX_RESUME_TAGS, Prover};
-pub use msg::{Code, Cursor, Entry, Event, Fetched, Message, Mode, Range, Rejected};
+pub use msg::{Code, Event, Fetched, Message, Rejected};
 
 /// Longest opaque node-log cursor a `Lost` carries (`osis_store` seals one in 80 bytes or so).
 pub const MAX_CURSOR_BYTES: usize = 256;

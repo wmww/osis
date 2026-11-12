@@ -524,7 +524,7 @@ fn removal_from_partial_node_keeps_unheld_edits_spec_permissions_5_2() {
     assert_eq!(x(&phone, in_h), None, "the phone holds nothing of H");
     assert_eq!(x(carol, in_h), Some(s("bob in h")));
     let label = alice.engine(|e| e.group_labels(&h).unwrap())[0].id;
-    let log = |w: &World| osis_proto::store::LabelStore::log_head(&*w.hosts[0].hub.store(), &label).unwrap();
+    let log = |w: &World| logged(w, &label);
     for db in [&alice, bob, carol] {
         w.set_online(db, false);
     }
@@ -1308,7 +1308,7 @@ fn a_grant_to_a_group_is_copied_only_by_its_admin() {
         w.run();
         w.set_online(&alice, false);
         let label = osis::internals::label_of(&alice.sync_ids(f).unwrap()[0]);
-        let log = |w: &World| osis_proto::store::LabelStore::log_head(&*w.hosts[0].hub.store(), &label).unwrap().1;
+        let log = |w: &World| logged(w, &label);
         let before = log(&w);
         let t = plain(&others[0], "for f");
         others[0].sync(t, &[]).unwrap();
@@ -1848,4 +1848,14 @@ fn text_on_merge_is_a_subscription() {
     _da.settle();
     assert!(rx.try_recv().is_err(), "no call after the drop");
     assert!(sa.text().starts_with(">>"), "the session still merges");
+}
+
+/// Events of `label` in the first host's node log (an entry's earlier events compact away).
+fn logged(w: &World, label: &osis_base::LabelId) -> usize {
+    let (events, _, more) = w.hosts[0].hub.store().node_log(|t| t.log_after(0, 1 << 20)).unwrap();
+    assert!(!more);
+    events.iter().filter(|e| match e.event {
+        osis_store::NodeEvent::Added(l, _) | osis_store::NodeEvent::Head(l) => l == *label,
+        osis_store::NodeEvent::Deleted { label: l, .. } => l == *label,
+    }).count()
 }

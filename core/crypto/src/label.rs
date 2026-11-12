@@ -146,6 +146,6 @@ mod tests {
         assert!(verify_open(&pk, &LabelId([9; 16]), &c, &s, &sig).is_err());
         assert!(verify_open(&pk, &l, &[9; 32], &s, &sig).is_err());
         assert!(verify_open(&pk, &l, &c, &[9; 32], &sig).is_err());
-        assert!(pk.verify(Domain::Upload, &open_digest(&l, &c, &s), &sig).is_err());
+        assert!(pk.verify(Domain::Stamp, &open_digest(&l, &c, &s), &sig).is_err());
     }
 }

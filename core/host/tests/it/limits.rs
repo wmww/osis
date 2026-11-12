@@ -1,5 +1,5 @@
 //! Negative cases (spec/sync.md §5; notes/label-access.md and notes/inbox.md "Limits"): what a stale, reading or hostile
-//! client cannot do at a host.
+//! peer cannot do at a host.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
 use crate::common;
@@ -10,24 +10,29 @@ use osis_proto::msg::DeleteItem;
 use osis_proto::*;
 use osis_host::HostPolicy;
 
+/// The hub every test here uses.
+const H: usize = 0;
+
 fn world() -> (World, usize) {
     let mut w = World::new();
     let h = w.add_hub(HostPolicy::default());
+    assert_eq!(h, H);
     let c = w.connect(h);
     (w, c)
 }
 
-// spec/sync.md §5 Open: an ex-holder's superseded sync key gets the child step and nothing else
-// spec/sync.md §5 (stale sync key), §5 (download needs open)
 /// A header blind (spec/crypto.md §7).
 const HB: [u8; 16] = [0x4b; 16];
+
+// spec/sync.md §5 Open: an ex-holder's superseded sync key gets the child step and nothing else;
+// an entry stamped under a superseded write key gets code 9 alone
 
 #[test]
 fn stale_sync_key_gets_exactly_one_step() {
     let (mut w, c) = world();
     let mut l = Label::new(3);
     w.setup(c, &l);
-    w.run(c, Command::Upload { label: l.id, entries: vec![l.entry(blob(1))] });
+    assert_eq!(pull_all(&w, H, &l, [1]), vec![Code::OK]);
     let old = l.head_keys().clone();
     let (s1, cs1) = l.rotate(20);
     w.run(c, Command::Register { label: l.id, step: s1.clone(), claim_set: Some(cs1) });
@@ -35,30 +40,23 @@ fn stale_sync_key_gets_exactly_one_step() {
     w.run(c, Command::Register { label: l.id, step: s2, claim_set: Some(cs2) });
     let ev = w.run(c, Command::Open { label: l.id, key: OpenKey::Sync { step: None, key: old.sync.clone() } });
     assert!(matches!(&ev[..], [ClientEvent::Step { step, .. }] if *step == s1), "{ev:?}");
-    for cmd in [sync(l.id, None, vec![], vec![]), Command::Fetch { label: l.id, ids: vec![bid(1)] }, Command::Path { label: l.id, after: None }, Command::Reconcile { label: l.id, ids: vec![] }] {
-        let ev = w.run(c, cmd);
-        assert!(matches!(&ev[..], [ClientEvent::Refused { code: Code::NOT_OPENED, .. }]), "{ev:?}");
-    }
-    let ev = w.run(c, Command::Subscribe { labels: vec![l.id] });
-    assert_eq!(ev, vec![ClientEvent::Subscribed { labels: vec![l.id], codes: vec![Code::NOT_OPENED] }]);
-    // the old write key gets 9 alone, not the head
-    let ev = w.run(c, Command::Upload { label: l.id, entries: vec![l.entry_by(blob(2), &old.write)] });
-    assert!(matches!(&ev[..], [ClientEvent::EntryStatus { codes, .. }] if *codes == vec![Code::NOT_HEAD]), "{ev:?}");
+    let ev = w.run(c, Command::Path { label: l.id, after: None });
+    assert!(matches!(&ev[..], [ClientEvent::Refused { code: Code::NOT_OPENED, .. }]), "{ev:?}");
+    assert_eq!(pull(&w, H, &l, &l.entry_by(blob(2), &old.write)), Code::NOT_HEAD);
 }
 
-// spec/sync.md §5 Stamp, Deposit: a reader (sync key only) cannot upload or deposit, nor sign deletes without a delete key
-// spec/sync.md §5 (upload refusals), §5 (delete keys), §5 (register), §5 (deposit budget)
+// spec/sync.md §5 Stamp, Deposit: a reader (sync key only) cannot stamp or deposit, nor sign deletes without a delete key
+// spec/sync.md §5 (stamp refusals), §5 (delete keys), §5 (register), §5 (deposit budget)
 #[test]
 fn reader_cannot_write() {
     let (mut w, c) = world();
     let l = Label::new(3);
     w.setup(c, &l);
     let sk = l.head_keys().sync.clone();
-    assert_eq!(statuses(&w.run(c, Command::Upload { label: l.id, entries: vec![l.entry_by(blob(1), &sk)] })), vec![Code::REFUSED]);
-    // a badly signed deposit learns its code only, not the budget (spec/sync.md §5)
-    let ev = w.run(c, l.deposit(blob(2), &sk));
-    assert!(matches!(&ev[..], [ClientEvent::Budget { code: Code::REFUSED, budget: None, .. }]), "{ev:?}");
-    w.run(c, Command::Upload { label: l.id, entries: vec![l.entry(blob(3))] });
+    assert_eq!(pull(&w, H, &l, &l.entry_by(blob(1), &sk)), Code::REFUSED);
+    // a badly signed deposit learns its code only (spec/sync.md §5)
+    assert_eq!(deposit_verified(&w, H, l.deposit(blob(2), &sk)), (Code::REFUSED, false));
+    assert_eq!(pull_all(&w, H, &l, [3]), vec![Code::OK]);
     let item = DeleteItem::sign(&sk, &l.id, bid(3)).unwrap();
     assert_eq!(statuses(&w.run(c, Command::Delete { label: l.id, items: vec![item] })), vec![Code::REFUSED]);
     // a register under a stranger's key: code 9 alone, never the head (spec/sync.md §5)
@@ -82,7 +80,9 @@ fn delete_key_deletes_only_its_own_body() {
     let mine = blob_with(10, 0, vec![commit(1, 10)]);
     let other = blob_with(11, 0, vec![commit(1, 99)]);
     let plain = blob(12);
-    w.run(c, Command::Upload { label: l.id, entries: vec![l.entry(mine.clone()), l.entry(other.clone()), l.entry(plain.clone())] });
+    for b in [&mine, &other, &plain] {
+        assert_eq!(pull(&w, H, &l, &l.entry(b.clone())), Code::OK);
+    }
     let k = l.head_keys().clone();
     let item = |b: &[u8], n: u64, level: u8| DeleteItem::sign_by(&k.sync, &[(level, &dk)], &salt(n), &HB, &l.id, osis_label::blob_id(b)).unwrap();
     // hostile deletes: a forged delete key; the right key under the write label key (level 1
@@ -96,36 +96,28 @@ fn delete_key_deletes_only_its_own_body() {
     // the same body under another label is untouched
     let l2 = Label::new(4);
     w.setup(c, &l2);
-    w.run(c, Command::Upload { label: l2.id, entries: vec![l2.entry(mine.clone())] });
-    w.open(c, &l2);
-    let ev = w.run(c, Command::Fetch { label: l2.id, ids: vec![osis_label::blob_id(&mine)] });
-    assert!(matches!(&ev[..], [ClientEvent::Fetched { items, .. }] if items[0].entry.is_some()), "{ev:?}");
+    assert_eq!(pull(&w, H, &l2, &l2.entry(mine.clone())), Code::OK);
+    assert_eq!(live(&w, H, &l2), vec![osis_label::blob_id(&mine)]);
 }
 
-// spec/sync.md §5: deposits over the budget and tombstoned IDs are refused; a blob is fetched only as an entry of an opened label
-// spec/sync.md §5 (deposit refusals), §5 (download needs open)
+// spec/sync.md §5: deposits over the budget and tombstoned IDs are refused; an unknown label does
+// not open
+// spec/sync.md §5 (deposit refusals)
 #[test]
-fn budget_tombstone_and_fetch_scope() {
+fn budget_and_tombstone() {
     let (mut w, c) = world();
     let l = Label::new(3);
-    let l2 = Label::new(4);
     w.setup(c, &l);
-    w.setup(c, &l2);
     let dk = l.head_keys().deposit.clone();
     let max = 64 + 4 * l.sets[0].claims.len() as u64;
     for n in 0..max {
-        assert_eq!(statuses(&w.run(c, l.deposit(blob(n), &dk))), vec![Code::OK]);
+        assert_eq!(deposit(&w, H, l.deposit(blob(n), &dk)), Code::OK);
     }
-    assert_eq!(statuses(&w.run(c, l.deposit(blob(max), &dk))), vec![Code::BUDGET_FULL]);
+    assert_eq!(deposit(&w, H, l.deposit(blob(max), &dk)), Code::BUDGET_FULL);
     let item = DeleteItem::sign(&l.head_keys().delete, &l.id, bid(0)).unwrap();
     assert_eq!(statuses(&w.run(c, Command::Delete { label: l.id, items: vec![item] })), vec![Code::OK]);
-    assert_eq!(statuses(&w.run(c, l.deposit(blob(0), &dk))), vec![Code::TOMBSTONED]);
-    assert_eq!(statuses(&w.run(c, Command::Upload { label: l.id, entries: vec![l.entry(blob(0))] })), vec![Code::TOMBSTONED]);
-    // blob 1 is held under l only: opening l2 does not reach it
-    w.open(c, &l2);
-    let ev = w.run(c, Command::Fetch { label: l2.id, ids: vec![bid(1)] });
-    assert!(matches!(&ev[..], [ClientEvent::Fetched { items, .. }] if items[0].entry.is_none()), "{ev:?}");
-    // an unknown label
+    assert_eq!(deposit(&w, H, l.deposit(blob(0), &dk)), Code::TOMBSTONED);
+    assert_eq!(pull_all(&w, H, &l, [0]), vec![Code::TOMBSTONED]);
     let ev = w.run(c, Command::Open { label: LabelId([0xee; 16]), key: OpenKey::Sync { step: None, key: l.head_keys().sync.clone() } });
     assert!(matches!(&ev[..], [ClientEvent::Refused { code: Code::UNKNOWN_LABEL, .. }]), "{ev:?}");
 }

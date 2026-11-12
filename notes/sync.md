@@ -11,7 +11,7 @@ The requirements behind sync: spec/requirements.md, Data a node cannot read and 
 - notes/unreadable-data.md: what a node learns about data it cannot read, and the choices that keep it that small.
 - notes/sync-protocol.md: why the wire is so, osis-proto (client and serving engines, reconciliation, reply caps) and osis-label.
 - notes/flow-control.md: request window, push holding, stall timeouts, the hub's per-input bounds and turns.
-- notes/serving.md: hosting as a node feature, osis-host (store, policy, hub, replication, driver), hosting in the node, host abuse.
+- notes/serving.md: hosting as a node feature, osis-host (store, policy, hub, driver), hosting in the node, host abuse.
 - notes/node-sync.md: node sync as built: module map, records, the pass, certificates, inbound, handed-off groups, junk copies, first sync, simulator invariants.
 - notes/node-sync-work-sets.md: what a pass judges and when a label passes (work sets, idle labels, many labels), with measured costs.
 - notes/networking.md (transports, reachability, first contact) and notes/peers.md (co-reader peers, LAN routes, co-reader serving, local passes).
@@ -32,7 +32,6 @@ The requirements behind sync: spec/requirements.md, Data a node cannot read and 
 
 ## Stamps and the write path
 - **Stamps** (read must not give upload): the author's signature sits inside the ciphertext, so the label write key is the only writer proof a host can check. Signing (label ID, blob ID, wrap) and storing the signature beside the wrap lets anyone relay a writer-vouched entry (LAN-first flows, host to host by push, bundles) while readers originate nothing; covering the wrap means a relaying reader can spoil nothing. Stamps check against the current step, so a removed writer's stamps die with the rotation its removal already does.
-- **Upload needs no open; download does.** An open on upload added nothing (a current reader could replay a stale stamped blob after its tombstone either way, a removed one only until the next step) and blocked blind-to-blind replication. Download needs one, so hosts replicate by push, never pull: else an ex-holder could run a "host" and pull.
 - **Deposits** carry what a reader legitimately needs under a label: a provisional entry under a per-label budget, readable at once by co-readers, promoted by a writer's stamped re-upload, which frees the budget (notes/inbox.md). Rejected: upload under the write key alone (loses relay); per-holder upload keys (linkable).
 - **A stamped entry never changes at a host** (spec/sync.md §5). Every writer shares one write key and a host cannot read a wrap, so it can tell nothing about a re-upload: last-wrap-wins let one member hide any message from every node not holding its key (reproduced). No honest node re-wraps a held stamped entry (`place` skips a blob already under the label; a pass sends only what a host lacks), so first-stamped-wins costs nothing and needs no replacement rate limit: one wrap per entry, no number to pick. A stamped upload over a deposit still replaces, or any reader could keep a writer's wrap out.
   - Residual race: only a first upload at a host can put a useless wrap there, so the attacker must hold the blob from another host or promote a deposit first. It loses at a reader to any other host's wrap and to a holder's fresh encryption (the path for a tombstoned ID; `gone` marks the entry). The fresh copy goes to that host alone, where it is first by construction, so the race cannot repeat there.
@@ -66,5 +65,4 @@ The requirements behind sync: spec/requirements.md, Data a node cannot read and 
 
 ## Open
 - Partial restore from hosts: `label.0` writes of groups go under the home label of the nearest labeled actor up their record chain (a table of contents of labels); a subgroup's content is restorable alone only when it has its own label.
-- Upload batching; a log retention horizon per node (beyond it peers fall back to range reconciliation).
 - Host abuse limits: notes/serving.md, Abuse.

@@ -791,10 +791,10 @@ impl SyncEngine {
                 self.reopen(conn, l, out)
             }
             // sent before the open in flight (replies come in order): that open decides
-            (Request::Path | Request::Fetch, Some(Phase::Opening)) if code == Code::NOT_OPENED => Ok(()),
+            (Request::Path, Some(Phase::Opening)) if code == Code::NOT_OPENED => Ok(()),
             // the peer ended the open (a new head's sync key): opened again, and what the stream
             // announced meanwhile is fetched by the pass after (`refetch`)
-            (Request::Path | Request::Fetch, _) if code == Code::NOT_OPENED || code == Code::UNKNOWN_LABEL => {
+            (Request::Path, _) if code == Code::NOT_OPENED || code == Code::UNKNOWN_LABEL => {
                 self.diag(format!("{kind:?} refused: code {}", code.0));
                 self.reopen(conn, l, out)
             }

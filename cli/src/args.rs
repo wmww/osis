@@ -570,9 +570,6 @@ pub struct ServingFlags {
     /// Also admit a group (one synced here) or a sync ID, 32 hex digits (repeatable)
     #[arg(long, value_name = "GROUP|ID")]
     pub admitted: Vec<String>,
-    /// Push what it stores for others to this serving node, `url#key` (repeatable)
-    #[arg(long, value_name = "ADDR")]
-    pub replicate: Vec<String>,
     /// A limit: group_entries, group_bytes, groups, entries, bytes (repeatable)
     #[arg(long, value_name = "NAME=N")]
     pub policy: Vec<String>,
@@ -583,7 +580,7 @@ pub struct ServingFlags {
 
 impl ServingFlags {
     pub fn any(&self) -> bool {
-        self.admit.is_some() || !self.admitted.is_empty() || !self.replicate.is_empty() || !self.policy.is_empty() || !self.cap.is_empty()
+        self.admit.is_some() || !self.admitted.is_empty() || !self.policy.is_empty() || !self.cap.is_empty()
     }
 }
 

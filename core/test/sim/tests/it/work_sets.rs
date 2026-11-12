@@ -1,7 +1,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 //! Pass work sets against full passes (spec/sync.md §6, §7): the same scenario and seed run
 //! with work sets and with every pass judging everything (`osis_sim::net::with_full_passes`)
-//! end alike: faults and writes, when each upload, deposit and registration first reached each
+//! end alike: faults and writes, when each entry's bytes, deposit and registration first reached each
 //! host and when a delete took a host's last copy of a commit (`osis_sim::net::with_arrivals`),
 //! and what each node and host ends up with (`Report::parts`). Not every message: a pass the work
 //! sets leave out saves what it would have sent again, and the sim's dice do not look at what is

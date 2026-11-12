@@ -2824,7 +2824,7 @@ mod tests {
             (added, (disks[0].0.syncs() - w1.0, disks[1].0.syncs() - w1.1))
         };
         // n and 10n past the first table split (a split commits shredded: two backend writes)
-        let (small, large) = (commits(25), commits(250));
+        let (small, large) = (commits(50), commits(500));
         assert_eq!(small, large, "commits per batch do not grow with it");
         // the engine's store: one shredding commit (two writes); the hub's: its commit (here
         // shredding: two) and the transaction's note cleared after the engine's

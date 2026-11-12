@@ -1,14 +1,26 @@
 //! Bundle import (spec/sync.md §11, spec/wire.md §12): osis-label's reader and importer (paths,
-//! stamps and blob IDs verified as a host does) presented as a peer with no cursor, yielding
-//! the client events a Sync would.
+//! stamps and blob IDs verified as a store does), yielding paths and log events as a peer's
+//! stream would, with no cursor.
 
 use crate::Error;
-use crate::client::ClientEvent;
 use crate::msg::Event;
-use osis_base::BlobId;
+use osis_base::{BlobId, LabelId};
+use osis_label::Step;
 use osis_label::{BundleEvent, BundleReader, Importer};
 use std::collections::HashMap;
 use std::io::Read;
+
+/// What one bundle record gives.
+#[derive(Debug)]
+#[allow(clippy::large_enum_variant)] // one record at a time; boxing buys nothing
+pub enum Imported {
+    /// A label's registration path, from its genesis step.
+    Path { label: LabelId, steps: Vec<Step> },
+    /// One log event of a label.
+    Event { label: LabelId, event: Event },
+    /// A record the importer refused (bad path, stamp, entry before its blob).
+    Refused(Error),
+}
 
 pub struct BundleImport<R: Read> {
     reader: BundleReader<R>,
@@ -23,25 +35,25 @@ impl<R: Read> BundleImport<R> {
         Ok(BundleImport { reader: BundleReader::new(r)?, importer: Importer::new(), blobs: HashMap::new() })
     }
 
-    /// The events of the next record (possibly none), `None` at the end. A broken frame ends the
-    /// import with an error; a record the importer refuses (bad path, stamp, entry before its blob)
-    /// yields a `PeerError` and the import goes on; unknown records are skipped.
-    pub fn next_events(&mut self) -> Result<Option<Vec<ClientEvent>>, Error> {
+    /// What the next record gives (possibly nothing), `None` at the end. A broken frame ends the
+    /// import with an error; a refused record yields `Refused` and the import goes on; unknown
+    /// records are skipped.
+    #[allow(clippy::should_implement_trait)] // fallible: an iterator of results would hide the end
+    pub fn next(&mut self) -> Result<Option<Option<Imported>>, Error> {
         let Some(record) = self.reader.next_record()? else { return Ok(None) };
         let ev = match self.importer.import(record) {
-            Err(e) => return Ok(Some(vec![ClientEvent::PeerError(e.into())])),
-            Ok(None) => return Ok(Some(vec![])),
+            Err(e) => return Ok(Some(Some(Imported::Refused(e.into())))),
+            Ok(None) => return Ok(Some(None)),
             Ok(Some(ev)) => ev,
         };
-        let one = |label, e| vec![ClientEvent::Events { label, events: vec![e], cursor: None }];
         Ok(Some(match ev {
-            BundleEvent::Path { label, steps } => vec![ClientEvent::PathSteps { label, steps: steps.into_iter().map(|(s, _)| s).collect(), more: false }],
+            BundleEvent::Path { label, steps } => Some(Imported::Path { label, steps: steps.into_iter().map(|(s, _)| s).collect() }),
             BundleEvent::Blob { id, blob } => {
                 self.blobs.insert(id, blob);
-                vec![]
+                None
             }
-            BundleEvent::Add { label, blob, wrap, stamp } => one(label, Event::Added { blob_id: blob, blob: self.blobs.remove(&blob), wrap, stamp }),
-            BundleEvent::Deleted { label, blob } => one(label, Event::Deleted(blob)),
+            BundleEvent::Add { label, blob, wrap, stamp } => Some(Imported::Event { label, event: Event::Added { blob_id: blob, blob: self.blobs.remove(&blob), wrap, stamp } }),
+            BundleEvent::Deleted { label, blob } => Some(Imported::Event { label, event: Event::Deleted(blob) }),
         }))
     }
 }

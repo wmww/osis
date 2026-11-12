@@ -2,7 +2,7 @@
 > Summary: Network design, decided with Tess: our own transport abstraction over any ordered byte stream; QUIC to known addresses; our own P2P on quinn (relaying by any willing node, hole punching through it, switching to direct by reconnecting) in every build; no central server, relaying is a setting of any willing node; reachability as osis data (`reach.0`), serving addresses pinning a key, transport keys apart from signing keys; first contact by link; risks, alternatives, the push wake-up proposal, Tor; and osis-transport as built (stream contract, InProcess, QUIC, P2P, LAN sockets, unix, Multi). Co-reader peers in node sync (`reach.0` publishing, dialing, LAN routes, co-reader serving): notes/peers.md.
 
 ## What osis needs from the network (spec/requirements.md)
-- Long-lived connections with push from the serving side (subscriptions, relay-only signals), several labels per connection, one round trip for the common case.
+- Long-lived connections with push from the serving side (the stream, relay-only signals, client-port Notifies), several labels per connection, one round trip for the common case.
 - No always-on node or public IP is assumed (spec/requirements.md, Offline and network): nodes that share data sync directly, and any node may also store and serve data it cannot read for others. P2P (`p2p`) is on in every build; LAN announcements (`lan`, `Config::lan`) are on in every build (issues/net-connect.md).
 - No required coordinator: any helper is replaceable and self-hostable; osis works without it (LAN, any peer, a known address).
 - For data it cannot read a node must not learn authorship or role grants. It learns client IPs (accepted), not node identities.
@@ -42,7 +42,7 @@ Hides IPs from relays and peers. Not needed now (Tess). Path: a transport over A
 - **Willow/WGPS, Syncthing BEP, Hyperswarm**: sync protocols or JS-only stacks, not transports. Syncthing's dumb volunteer relays and its untrusted (encrypted-only) devices are precedents for decision 3; its discovery servers are the semi-central part we avoid.
 
 ## Proposal: push wake-ups from peers
-Mobile notifications need a peer keeping the label to wake a device with no live connection (spec/sync.md §8 pushes only on subscriptions). A push token (APNs, FCM) is a stable device identifier, so registering one token for several labels would link them at that peer beyond the accepted overlap leak. Not in the spec; nothing is needed before the initial implementation.
+Mobile notifications need a peer keeping the label to wake a device with no live connection (pushes go only on a live connection's stream, spec/sync.md §8). A push token (APNs, FCM) is a stable device identifier, so registering one token for several labels would link them at that peer beyond the accepted overlap leak. Not in the spec; nothing is needed before the initial implementation.
 - **Wake handles**: per label the device registers a sealed box to a push proxy's public key holding the push token plus fresh randomness, so the peer sees unrelated handles. On a new log event the peer hands the handle to the proxy, which opens it and sends an empty push; the device syncs. The peer learns handle counts per label and wake timing; the proxy learns tokens and timing, never labels; both together can link labels by timing.
 - **UnifiedPush**: the peer posts to per-label endpoint URLs directly, no proxy; an osis node can itself be a distributor. iOS needs APNs through the official proxy.
 - Rate limits: at most one wake per handle per short interval; events batch into one wake.

@@ -1,18 +1,14 @@
 //! `Hub`: a node's connections over one store, sans-I/O (spec/sync.md §5-§10). One osis-proto
-//! `ServingSession` per accepted connection, under the key of the listener that took it, one
-//! `Replicator` per connection this node dialed to a peer host; cross-connection notices
-//! (`Changed` to every connection and replicator, `Relay` to every other connection), bounded
-//! sweeps, Hello deadlines, stalls of the upper layer's requests and timers. Node sync is every
+//! `ServingSession` per accepted connection, under the key of the listener that took it; bounded
+//! sweeps, Hello deadlines and stalls of the upper layer's requests. Node sync is every
 //! session's upper layer (issues/net-one-peer.md step 3): the hub hands it each connection's
 //! start, node-kind messages, client-port requests, push room and end (`HubOutput::Up`) and takes its messages, answers and closes down (`Hub::down`),
 //! judging none of them. The node's driver and the simulator only move bytes, pass `Up` and
 //! `Down` between the hub and node sync, and call `tick` when `next_due` says.
 
-use crate::replicate::Replicator;
 use crate::store::HostStore;
 use std::sync::{Arc, Mutex, MutexGuard};
-use osis_base::LabelId;
-use osis_proto::{ClientInput, ClientOutput, Message, ServingConfig, ServingSession, ServingInput, ServingOutput};
+use osis_proto::{Message, ServingConfig, ServingSession, ServingInput, ServingOutput};
 use osis_transport::Peer;
 use std::collections::{BTreeMap, VecDeque};
 
@@ -30,7 +26,7 @@ pub enum HubOutput {
     Send(ConnId, Vec<u8>),
     /// Close the connection (the hub has forgotten it).
     Close(ConnId),
-    /// Something worth logging (a peer's protocol error, a storage failure, a refused replication).
+    /// Something worth logging (a peer's protocol error, a storage failure).
     Diagnostic(String),
     /// For node sync, the session's upper layer.
     Up(ConnId, Up),
@@ -51,9 +47,6 @@ pub enum Up {
     Request(Box<Message>),
     /// Pushes of up to `budget` bytes may go now (after `Down::WantRoom`).
     Room { budget: usize },
-    /// A relay-only entry this connection uploaded to a sync ID node sync does not read, past
-    /// the store's relay gate: node sync hands it to the readers its shared sets serve it to.
-    Relay(osis_proto::Relayed),
     /// The connection is gone (after a `Start`).
     End,
 }
@@ -99,22 +92,28 @@ pub enum Down {
     WantRoom,
     /// Close the connection.
     Close,
-    /// Node sync changed this label in the store outside a batch (a Deposit item it took): its
-    /// subscribers and replicators hear of it, as of any connection's change.
-    Changed(LabelId),
 }
 
+/// A served connection. `buffered`: received bytes it holds (`ServingSession::buffered`); `hold`:
+/// what it holds against the output bound (`ServingSession::holding`); `alone`: no output of its
+/// own (`ServingSession::alone`); `need`: the room its first waiting reply, push or request needs
+/// (`ServingSession::need`); `queued`: in `queue` since then; `paused`: received frames wait for
+/// room, so it takes no input (`Hub::waits`); `taken`: the last report (`Hub::sent`); `moved`: a
+/// report took more since the last check; `started`: its `Up::Start` went.
 #[derive(Clone)]
-enum Conn {
-    /// `buffered`: received bytes it holds (`ServingSession::buffered`); `hold`: what it holds
-    /// against the output bound (`ServingSession::holding`); `alone`: no output of its own
-    /// (`ServingSession::alone`); `need`: the room its first waiting reply, push or request needs
-    /// (`ServingSession::need`); `queued`: in `queue` since then; `paused`: received
-    /// frames wait for room, so it takes no input (`Hub::waits`); `taken`: the last report
-    /// (`Hub::sent`); `moved`: a report took more since the last check; `started`: its
-    /// `Up::Start` went.
-    Served { c: Box<ServingSession>, remote: Remote, hello_by: Option<u64>, buffered: usize, hold: usize, alone: bool, need: Option<usize>, queued: Option<u64>, paused: bool, taken: u64, moved: bool, started: bool },
-    Peer { r: Box<Replicator>, timer: Option<u64> },
+struct Conn {
+    c: Box<ServingSession>,
+    remote: Remote,
+    hello_by: Option<u64>,
+    buffered: usize,
+    hold: usize,
+    alone: bool,
+    need: Option<usize>,
+    queued: Option<u64>,
+    paused: bool,
+    taken: u64,
+    moved: bool,
+    started: bool,
 }
 
 pub struct Hub {
@@ -146,15 +145,13 @@ pub struct Hub {
     check_at: Option<u64>,
     /// The latest time any call carried.
     now: u64,
-    /// Relay-only entries handed to connections so far (`relays_delivered`).
-    relays_delivered: u64,
     /// Started connections removed since the last batch ended (`Up::End`).
     ended: Vec<ConnId>,
 }
 
 impl Hub {
     pub fn new(store: Arc<Mutex<HostStore>>, rng: Box<dyn osis_crypto::NodeRng>) -> Hub {
-        Hub { store, rng, conns: BTreeMap::new(), sweep_hold: 0, sweep_more: false, buffered: 0, hold: 0, active: 0, queue: VecDeque::new(), resumed: Vec::new(), check_at: None, now: 0, relays_delivered: 0, ended: Vec::new() }
+        Hub { store, rng, conns: BTreeMap::new(), sweep_hold: 0, sweep_more: false, buffered: 0, hold: 0, active: 0, queue: VecDeque::new(), resumed: Vec::new(), check_at: None, now: 0, ended: Vec::new() }
     }
 
     /// Tests only: an exact copy of this hub as it stands, on `clock`, sharing no mutable state
@@ -185,7 +182,6 @@ impl Hub {
                 resumed: self.resumed.clone(),
                 check_at: self.check_at,
                 now: self.now,
-                relays_delivered: self.relays_delivered,
                 ended: self.ended.clone(),
             }
         })
@@ -198,7 +194,7 @@ impl Hub {
     }
 
     /// Hosting stopped: the labels `drop` names go from the store (`HostStore::drop_labels`),
-    /// and served connections that opened something, and replication sessions, close.
+    /// and connections that opened something close.
     pub fn stop_hosting(&mut self, drop: &dyn Fn(&osis_base::LabelId) -> bool) -> Vec<HubOutput> {
         self.sweep_more = false;
         self.sweep_hold = 0;
@@ -207,10 +203,7 @@ impl Hub {
             out.push(HubOutput::Diagnostic(format!("hosting stopped: dropping its labels: {e}")));
         }
         out.extend(self.batch(|h, _, out| {
-            let gone: Vec<ConnId> = h.conns.iter().filter(|(_, c)| match c {
-                Conn::Served { c, .. } => c.opened().next().is_some(),
-                Conn::Peer { .. } => true,
-            }).map(|(id, _)| *id).collect();
+            let gone: Vec<ConnId> = h.conns.iter().filter(|(_, c)| c.c.opened().next().is_some()).map(|(id, _)| *id).collect();
             for id in gone {
                 h.remove(id);
                 out.push(HubOutput::Close(id));
@@ -223,11 +216,6 @@ impl Hub {
         self.conns.len()
     }
 
-    /// Relay-only entries handed to connections so far: one per subscriber of the label on
-    /// another connection, whatever the number of connections.
-    pub fn relays_delivered(&self) -> u64 {
-        self.relays_delivered
-    }
 
     fn challenge(&mut self) -> [u8; 32] {
         let mut c = [0u8; 32];
@@ -243,17 +231,10 @@ impl Hub {
         self.now = now;
         let cfg = ServingConfig { static_key: key, challenge: self.challenge() };
         let hello_by = Some(now.saturating_add(self.store().policy().hello_ms));
-        self.conns.insert(id, Conn::Served { c: Box::new(ServingSession::new(cfg)), remote, hello_by, buffered: 0, hold: 0, alone: true, need: None, queued: None, paused: false, taken: 0, moved: false, started: false });
+        self.conns.insert(id, Conn { c: Box::new(ServingSession::new(cfg)), remote, hello_by, buffered: 0, hold: 0, alone: true, need: None, queued: None, paused: false, taken: 0, moved: false, started: false });
         self.batch(|h, st, out| h.serve(st, now, id, ServingInput::Start, out))
     }
 
-    /// A connection this node dialed to peer host `peer_key` is up: replicate to it.
-    pub fn peer_up(&mut self, now: u64, id: ConnId, peer_key: [u8; 32]) -> Vec<HubOutput> {
-        self.now = now;
-        let challenge = self.challenge();
-        self.conns.insert(id, Conn::Peer { r: Box::new(Replicator::new(peer_key, challenge)), timer: None });
-        self.batch(|h, st, out| h.replicate(st, now, id, Some(ClientInput::Start), out))
-    }
 
     /// Runs `f` in one store transaction committed at its end (one commit, at most one shredding
     /// root write, for a whole message of entries, spec/requirements.md: peer input never causes
@@ -293,34 +274,27 @@ impl Hub {
     /// Bytes arrived on a connection.
     pub fn input(&mut self, now: u64, id: ConnId, bytes: Vec<u8>) -> Vec<HubOutput> {
         self.now = now;
-        self.batch(|h, st, out| match h.conns.get(&id) {
-            Some(Conn::Served { .. }) => {
+        self.batch(|h, st, out| {
+            if h.conns.contains_key(&id) {
                 h.serve(st, now, id, ServingInput::Bytes(bytes), out);
                 h.limit_buffered(st, out);
             }
-            Some(Conn::Peer { .. }) => h.replicate(st, now, id, Some(ClientInput::Bytes(bytes)), out),
-            None => {}
         })
     }
 
     /// The transport took bytes sent on these connections since the last report, with how many
-    /// it took in all: progress for a replication session's stall timeout, room for a served
-    /// connection's pushes (`ServingInput::Taken`). The driver reports it before `tick`, before
+    /// it took in all: room for a connection's pushes (`ServingInput::Taken`). The driver reports it before `tick`, before
     /// a connection's input bytes, and at `PUSH_POLL_MS` while one holds pushes (`next_due`).
     pub fn sent(&mut self, now: u64, ids: &[(ConnId, u64)]) -> Vec<HubOutput> {
         self.now = now;
         self.batch(|h, st, out| {
             for (id, n) in ids {
-                match h.conns.get_mut(id) {
-                    Some(Conn::Peer { .. }) => h.replicate(st, now, *id, Some(ClientInput::Taken(*n)), out),
-                    Some(Conn::Served { taken, moved, .. }) => {
-                        if *n > *taken {
-                            *taken = *n;
-                            *moved = true;
-                        }
-                        h.serve(st, now, *id, ServingInput::Taken(*n), out);
+                if let Some(c) = h.conns.get_mut(id) {
+                    if *n > c.taken {
+                        c.taken = *n;
+                        c.moved = true;
                     }
-                    None => {}
+                    h.serve(st, now, *id, ServingInput::Taken(*n), out);
                 }
             }
         })
@@ -338,12 +312,7 @@ impl Hub {
         self.now = now;
         self.batch(|h, st, out| {
             for (id, d) in downs {
-                // the store changed whatever became of the connection
-                if let Down::Changed(l) = d {
-                    h.changed(st, now, l, out);
-                    continue;
-                }
-                if !matches!(h.conns.get(&id), Some(Conn::Served { .. })) {
+                if !h.conns.contains_key(&id) {
                     continue;
                 }
                 match d {
@@ -351,7 +320,6 @@ impl Hub {
                     Down::Reply { id: r, reply } => h.serve(st, now, id, ServingInput::Reply { id: r, reply }, out),
                     Down::Notify(n) => h.serve(st, now, id, ServingInput::Notify(n), out),
                     Down::WantRoom => h.serve(st, now, id, ServingInput::WantRoom, out),
-                    Down::Changed(_) => {}
                     Down::Close => {
                         h.remove(id);
                         out.push(HubOutput::Close(id));
@@ -363,7 +331,7 @@ impl Hub {
 
     /// Forgets a connection and what it holds (`Up::End` once the batch ends).
     fn remove(&mut self, id: ConnId) {
-        let Some(Conn::Served { buffered, hold, need, started, .. }) = self.conns.remove(&id) else { return };
+        let Some(Conn { buffered, hold, need, started, .. }) = self.conns.remove(&id) else { return };
         self.buffered = self.buffered.saturating_sub(buffered);
         self.hold = self.hold.saturating_sub(hold);
         if hold > 0 || need.is_some() {
@@ -383,7 +351,7 @@ impl Hub {
     /// Whether connection `id`'s received frames wait for room: its driver hands the hub none of
     /// its input until it takes input again (`take_resumed`). Others are served meanwhile.
     pub fn waits(&self, id: ConnId) -> bool {
-        matches!(self.conns.get(&id), Some(Conn::Served { paused: true, .. }))
+        matches!(self.conns.get(&id), Some(Conn { paused: true, .. }))
     }
 
     /// Connections that take input again since the last call.
@@ -408,7 +376,7 @@ impl Hub {
 
     fn need_of(&self, id: ConnId) -> usize {
         match self.conns.get(&id) {
-            Some(Conn::Served { need: Some(n), alone: true, .. }) => *n,
+            Some(Conn { need: Some(n), alone: true, .. }) => *n,
             _ => 0,
         }
     }
@@ -426,10 +394,10 @@ impl Hub {
         let mut kicks = self.queue.len();
         while let Some(&id) = self.queue.front() {
             let need = match self.conns.get(&id) {
-                Some(Conn::Served { need: Some(n), alone: true, .. }) => *n,
+                Some(Conn { need: Some(n), alone: true, .. }) => *n,
                 _ => {
                     self.queue.pop_front();
-                    if let Some(Conn::Served { queued, .. }) = self.conns.get_mut(&id) {
+                    if let Some(Conn { queued, .. }) = self.conns.get_mut(&id) {
                         *queued = None;
                     }
                     continue;
@@ -452,9 +420,7 @@ impl Hub {
 
     fn unmove(&mut self) {
         for c in self.conns.values_mut() {
-            if let Conn::Served { moved, .. } = c {
-                *moved = false;
-            }
+            c.moved = false;
         }
     }
 
@@ -464,7 +430,7 @@ impl Hub {
     fn first_due(&self) -> Option<u64> {
         let f = self.queue.front()?;
         match self.conns.get(f) {
-            Some(Conn::Served { queued: Some(t), .. }) => Some(t.saturating_add(osis_proto::client::STALL_TIMEOUT_MS / 2)),
+            Some(Conn { queued: Some(t), .. }) => Some(t.saturating_add(osis_proto::client::STALL_TIMEOUT_MS / 2)),
             _ => None,
         }
     }
@@ -485,7 +451,7 @@ impl Hub {
             let needs = self.queue.iter().fold(0usize, |n, q| n.saturating_add(self.need_of(*q))).min(max);
             // output of its own that did not move: a reservation alone (a reply to come) has no
             // bytes to move
-            self.close_biggest(st, needs, |id, c| matches!(c, Conn::Served { moved: false, alone: false, queued: None, .. }) && id != first, "not moving", out);
+            self.close_biggest(st, needs, |id, c| matches!(c, Conn { moved: false, alone: false, queued: None, .. }) && id != first, "not moving", out);
             self.check_at = Some(now.saturating_add(osis_proto::serving::PUSH_POLL_MS));
             self.unmove();
         }
@@ -502,7 +468,7 @@ impl Hub {
             return;
         }
         let mut picked: Vec<(usize, ConnId)> = self.conns.iter().filter_map(|(id, c)| match c {
-            Conn::Served { hold, .. } if *hold > 0 && which(*id, c) => Some((*hold, *id)),
+            Conn { hold, .. } if *hold > 0 && which(*id, c) => Some((*hold, *id)),
             _ => None,
         }).collect();
         picked.sort_unstable();
@@ -524,7 +490,7 @@ impl Hub {
     /// until under it (anyone who can connect could otherwise hold `MAX_MESSAGE` per connection).
     fn limit_buffered(&mut self, st: &HostStore, out: &mut Vec<HubOutput>) {
         while self.buffered > st.policy().max_buffered_bytes {
-            let Some(id) = self.conns.iter().filter_map(|(id, c)| if let Conn::Served { buffered, .. } = c { Some((*buffered, *id)) } else { None }).max().map(|(_, id)| id) else { break };
+            let Some(id) = self.conns.iter().map(|(id, c)| (c.buffered, *id)).max().map(|(_, id)| id) else { break };
             self.remove(id);
             out.push(HubOutput::Close(id));
             out.push(HubOutput::Diagnostic(format!("connection {id}: closed, received frames over the budget")));
@@ -532,8 +498,7 @@ impl Hub {
     }
 
     /// Runs what is due: a bounded sweep (expiry, tombstones, claim sets), Hello
-    /// deadlines, stalls of node sync's requests (spec/sync.md §6 Stall), replication work and
-    /// timers.
+    /// deadlines and stalls of node sync's requests (spec/sync.md §6 Stall).
     pub fn tick(&mut self, now: u64) -> Vec<HubOutput> {
         self.now = now;
         self.batch(|h, st, out| h.tick_in(st, now, out))
@@ -551,33 +516,16 @@ impl Hub {
                 }
             }
         }
-        let late: Vec<ConnId> = self.conns.iter().filter(|(_, c)| matches!(c, Conn::Served { hello_by: Some(t), .. } if *t <= now)).map(|(id, _)| *id).collect();
+        let late: Vec<ConnId> = self.conns.iter().filter(|(_, c)| matches!(c, Conn { hello_by: Some(t), .. } if *t <= now)).map(|(id, _)| *id).collect();
         for id in late {
             self.remove(id);
             out.push(HubOutput::Close(id));
         }
-        let stalled: Vec<ConnId> = self.conns.iter().filter(|(_, c)| matches!(c, Conn::Served { c, .. } if c.stall_at().is_some_and(|t| t <= now))).map(|(id, _)| *id).collect();
+        let stalled: Vec<ConnId> = self.conns.iter().filter(|(_, c)| matches!(c, Conn { c, .. } if c.stall_at().is_some_and(|t| t <= now))).map(|(id, _)| *id).collect();
         for id in stalled {
             self.remove(id);
             out.push(HubOutput::Close(id));
             out.push(HubOutput::Diagnostic(format!("connection {id}: closed, a request stalled")));
-        }
-        let due: Vec<(ConnId, bool)> = self
-            .conns
-            .iter()
-            .filter_map(|(id, c)| match c {
-                Conn::Peer { r, timer } => {
-                    let fired = timer.is_some_and(|t| t <= now);
-                    (fired || r.next_due(now).is_some_and(|t| t <= now)).then_some((*id, fired))
-                }
-                Conn::Served { .. } => None,
-            })
-            .collect();
-        for (id, fired) in due {
-            if fired && let Some(Conn::Peer { timer, .. }) = self.conns.get_mut(&id) {
-                *timer = None;
-            }
-            self.replicate(st, now, id, fired.then_some(ClientInput::Timer), out);
         }
     }
 
@@ -586,24 +534,15 @@ impl Hub {
         let sweep = if self.sweep_more { Some(now) } else { self.store().next_due().ok().flatten() }.map(|t| t.max(self.sweep_hold));
         // bytes not yet reported taken: the driver reports at the next tick (shares count them)
         let unread = (self.hold > 0).then(|| now.saturating_add(osis_proto::serving::PUSH_POLL_MS)).into_iter().chain(self.check_at).chain(self.first_due());
-        let conns = self.conns.values().filter_map(|c| match c {
-            Conn::Served { c, hello_by, .. } => [c.held().then(|| now.saturating_add(osis_proto::serving::PUSH_POLL_MS)), *hello_by, c.stall_at()].into_iter().flatten().min(),
-            Conn::Peer { r, timer } => [*timer, r.next_due(now)].into_iter().flatten().min(),
-        });
+        let conns = self.conns.values().filter_map(|Conn { c, hello_by, .. }| [c.held().then(|| now.saturating_add(osis_proto::serving::PUSH_POLL_MS)), *hello_by, c.stall_at()].into_iter().flatten().min());
         sweep.into_iter().chain(unread).chain(conns).min()
     }
 
     fn serve(&mut self, st: &mut HostStore, now: u64, id: ConnId, input: ServingInput, out: &mut Vec<HubOutput>) {
         let (share, slack) = (self.share(st), self.slack(st, id));
-        let Some(Conn::Served { c, remote, hello_by, buffered, hold, alone, need, queued, paused, started, .. }) = self.conns.get_mut(&id) else { return };
+        let Some(Conn { c, remote, hello_by, buffered, hold, alone, need, queued, paused, started, .. }) = self.conns.get_mut(&id) else { return };
         c.set_room(share, slack);
-        // whose entries these are (echo suppression): a keyed peer's
-        st.set_origin(match &remote.peer {
-            Peer::Key(k) => Some(*k),
-            Peer::Unix { .. } => None,
-        });
         let outputs = c.handle(now, st, input);
-        st.set_origin(None);
         if c.version().is_some() {
             *hello_by = None;
         }
@@ -639,18 +578,6 @@ impl Hub {
                     self.remove(id);
                     out.push(HubOutput::Close(id));
                 }
-                ServingOutput::Changed(l) => self.changed(st, now, l, out),
-                // only to the label's subscribers on other connections, the bytes shared
-                ServingOutput::Relay(r) => {
-                    if !st.reads(&r.label) {
-                        out.push(HubOutput::Up(id, Up::Relay(r.clone())));
-                    }
-                    let others: Vec<ConnId> = self.conns.iter().filter(|(k, c)| **k != id && matches!(c, Conn::Served { c, .. } if c.subscribed(&r.label))).map(|(k, _)| *k).collect();
-                    for j in others {
-                        self.relays_delivered += 1;
-                        self.serve(st, now, j, ServingInput::Relay(r.clone()), out);
-                    }
-                }
                 ServingOutput::PeerError(e) => out.push(HubOutput::Diagnostic(format!("connection {id}: {e}"))),
                 ServingOutput::StoreError(e) => out.push(HubOutput::Diagnostic(e.to_string())),
                 // node sync's, judged there (proofs, records, the shared set, the stream, the port)
@@ -661,43 +588,4 @@ impl Hub {
         }
     }
 
-    /// A label's log grew: push to subscriptions, queue replication.
-    fn changed(&mut self, st: &mut HostStore, now: u64, label: LabelId, out: &mut Vec<HubOutput>) {
-        let ids: Vec<ConnId> = self.conns.keys().copied().collect();
-        for j in ids {
-            match self.conns.get_mut(&j) {
-                Some(Conn::Served { .. }) => self.serve(st, now, j, ServingInput::Changed(label), out),
-                Some(Conn::Peer { r, .. }) => {
-                    r.mark([label]);
-                    self.replicate(st, now, j, None, out);
-                }
-                None => {}
-            }
-        }
-    }
-
-    fn replicate(&mut self, st: &mut HostStore, now: u64, id: ConnId, input: Option<ClientInput>, out: &mut Vec<HubOutput>) {
-        let Some(Conn::Peer { r, timer }) = self.conns.get_mut(&id) else { return };
-        let outputs = r.handle(now, st, input);
-        let mut close = false;
-        for o in outputs {
-            match o {
-                ClientOutput::Send(b) => out.push(HubOutput::Send(id, b)),
-                ClientOutput::Close => close = true,
-                ClientOutput::SetTimer(t) => *timer = Some(t),
-                ClientOutput::Event(e) => {
-                    if let Some(d) = Replicator::diagnostic(&e) {
-                        out.push(HubOutput::Diagnostic(format!("peer {id}: {d}")));
-                    }
-                }
-            }
-        }
-        for d in r.take_diagnostics() {
-            out.push(HubOutput::Diagnostic(format!("peer {id}: {d}")));
-        }
-        if close {
-            self.conns.remove(&id);
-            out.push(HubOutput::Close(id));
-        }
-    }
 }

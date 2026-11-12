@@ -1,8 +1,7 @@
 //! The hub in the node driver's loop over osis-transport's `InProcess` (perfect network: under
 //! tokio nothing needs stepping): a node hosting by its `host^.0` serves scripted host clients
 //! (osis-proto `ClientSession`) end to end, with node sync above every hub session (proofs, the
-//! shared set, the stream), replicates to a peer host through `dial_as` sessions across a
-//! restart, and serves connections in turns (spec/sync.md §5-§10).
+//! shared set, the stream), and serves connections in turns (spec/sync.md §5-§10).
 //! Event-driven only: a timeout guards against a hang. The slow-reader cap is a unit test of
 //! `osis_transport::link` (`InProcess` has no flow control to stall a writer).
 
@@ -38,8 +37,7 @@ impl Shared for Keep {
     }
 }
 
-/// A node hosting (`host^.0`: any label admitted, replicating to `peers`) under the tokio
-/// driver, listening at its URL.
+/// A node hosting (`host^.0`: any label admitted) under the tokio driver, listening at its URL.
 struct Host {
     addr: Address,
     ctl: mpsc::UnboundedSender<Control>,
@@ -47,17 +45,16 @@ struct Host {
 }
 
 impl Host {
-    fn node(net: &mut Net, seed: u64, url: &str, peers: Vec<Address>) -> Keep {
+    fn node(net: &mut Net, seed: u64, url: &str) -> Keep {
         let n = net.add_node(seed, Default::default());
-        Host::keep(net, n, url, peers)
+        Host::keep(net, n, url)
     }
 
     /// Node `n` of `net` set to host (any label admitted), taken out of `net` for a driver.
-    fn keep(net: &mut Net, n: usize, url: &str, peers: Vec<Address>) -> Keep {
+    fn keep(net: &mut Net, n: usize, url: &str) -> Keep {
         let me = net.node_tid(n);
         let mut m = osis_node::Mutation::new();
-        let replicate = peers.into_iter().map(|a| ct::Address { url: a.url, key: a.key }).collect();
-        m.replace(me, &ct::HOST, &ct::Host { admit: ct::Admit::Open, replicate, ..Default::default() }).unwrap();
+        m.replace(me, &ct::HOST, &ct::Host { admit: ct::Admit::Open, ..Default::default() }).unwrap();
         net.engine(n).commit(m).unwrap();
         Keep { engine: Mutex::new(net.take(n)), url: url.into() }
     }
@@ -178,26 +175,6 @@ impl Client {
         }
     }
 
-    /// Waits until pushes added `n` entries; returns their blob IDs sorted.
-    async fn pushed(&mut self, n: usize) -> Vec<BlobId> {
-        let mut got = vec![];
-        while got.len() < n {
-            got.extend(added(&self.next().await));
-        }
-        sorted(got)
-    }
-}
-
-fn added(ev: &[ClientEvent]) -> Vec<BlobId> {
-    ev.iter().flat_map(|e| if let ClientEvent::Events { events, .. } = e { events.clone() } else { vec![] }).filter_map(|e| if let osis_proto::Event::Added { blob_id, .. } = e { Some(blob_id) } else { None }).collect()
-}
-
-fn statuses(ev: &[ClientEvent]) -> Vec<Code> {
-    ev.iter().flat_map(|e| if let ClientEvent::EntryStatus { codes, .. } = e { codes.clone() } else { vec![] }).collect()
-}
-
-fn sync(label: LabelId, entries: Vec<Entry>) -> Command {
-    Command::Sync { label, cursor: None, inline_limit: 1 << 20, entries, gained: vec![] }
 }
 
 fn sorted(mut v: Vec<BlobId>) -> Vec<BlobId> {
@@ -205,16 +182,38 @@ fn sorted(mut v: Vec<BlobId>) -> Vec<BlobId> {
     v
 }
 
+/// Live entries of `l` in the node's store.
+async fn held(host: &Host, l: LabelId) -> Vec<BlobId> {
+    host.call(move |s| osis_proto::LabelStore::live_ids(&*s.hub_store().lock().unwrap(), &l).unwrap()).await
+}
+
+/// Stamped entries of `l` taken into the node's store by its rules, as pulled from a reader.
+async fn take(host: &Host, l: &Label, blobs: Vec<Vec<u8>>) {
+    let (id, entries) = (l.id, blobs.into_iter().map(|b| l.entry(b)).collect::<Vec<_>>());
+    host.call(move |s| {
+        let now = s.engine_mut().now().0;
+        let hub = s.hub_store();
+        let mut hub = hub.lock().unwrap();
+        let k = osis_proto::LabelStore::head_keys(&*hub, &id).unwrap().unwrap();
+        for e in entries {
+            let t = osis_proto::serving::pulled(&mut *hub, now, &id, &k, &e.blob, e.wrap, e.stamp, &mut false).unwrap();
+            assert!(matches!(t, osis_proto::serving::Taken::Code(Code::OK)));
+        }
+    })
+    .await;
+}
+
 fn open(l: &Label) -> Command {
     Command::Open { label: l.id, key: OpenKey::Sync { step: None, key: l.head_keys().sync.clone() } }
 }
 
-// spec/sync.md §5, §8, §10: host clients of a hosting node (multi-thread runtime: hub calls in block_in_place): register, open, upload, download, subscription push
+// spec/sync.md §5, §10: clients of a node keeping a label it cannot read (multi-thread runtime:
+// hub calls in block_in_place): register, open, its path, a delete by the delete key
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn clients_end_to_end() {
     let tnet = osis_transport::Net::new(0);
     let mut net = Net::new();
-    let keep = Host::node(&mut net, 1, "mem://s", vec![]);
+    let keep = Host::node(&mut net, 1, "mem://s");
     let host = Host::start(keep, tnet.endpoint("s"), net.clock.clone()).await;
     let clients = tnet.endpoint("clients");
     let (mut a, mut b) = (host.client(&clients).await, host.client(&clients).await);
@@ -224,43 +223,17 @@ async fn clients_end_to_end() {
         let ev = c.run(open(&l)).await;
         assert!(matches!(&ev[..], [ClientEvent::Opened { .. }]), "{ev:?}");
     }
-    b.run(Command::Subscribe { labels: vec![l.id] }).await;
-    let ev = a.run(sync(l.id, (0..20).map(|n| l.entry(blob(n))).collect())).await;
-    assert_eq!(statuses(&ev), vec![Code::OK; 20]);
-    assert_eq!(b.pushed(20).await, sorted((0..20).map(bid).collect()));
-    assert_eq!(added(&b.run(sync(l.id, vec![])).await), sorted((0..20).map(bid).collect()));
+    let ev = b.run(Command::Path { label: l.id, after: None }).await;
+    assert!(matches!(&ev[..], [ClientEvent::PathSteps { steps, more: false, .. }] if steps.len() == 1), "{ev:?}");
+    take(&host, &l, (0..3).map(blob).collect()).await;
+    assert_eq!(held(&host, l.id).await, sorted((0..3).map(bid).collect()));
+    let item = osis_label::DeleteItem::sign(&l.head_keys().delete, &l.id, bid(1)).unwrap();
+    let ev = a.run(Command::Delete { label: l.id, items: vec![item] }).await;
+    assert!(matches!(&ev[..], [ClientEvent::DeleteStatus { codes, .. }] if codes == &[Code::OK]), "{ev:?}");
+    assert_eq!(held(&host, l.id).await, sorted([0, 2].into_iter().map(bid).collect()));
     host.stop().await;
 }
 
-// spec/sync.md §5, §10: a host configured with a peer dials it as its own static key and pushes stamped entries; after a restart over the same storage it resumes
-#[tokio::test]
-async fn hosts_replicate_through_dialed_links() {
-    let tnet = osis_transport::Net::new(0);
-    let mut net = Net::new();
-    let clients = tnet.endpoint("clients");
-    let k2 = Host::node(&mut net, 2, "mem://s2", vec![]);
-    let s2 = Host::start(k2, tnet.endpoint("s2"), net.clock.clone()).await;
-    let l = Label::new(3);
-    // a reader of the label waits at the peer, subscribed
-    let mut b = s2.client(&clients).await;
-    b.run(l.register_cmd(0)).await;
-    b.run(open(&l)).await;
-    b.run(Command::Subscribe { labels: vec![l.id] }).await;
-    let k1 = Host::node(&mut net, 1, "mem://s1", vec![s2.addr.clone()]);
-    let s1 = Host::start(k1, tnet.endpoint("s1"), net.clock.clone()).await;
-    let mut a = s1.client(&clients).await;
-    a.run(l.register_cmd(0)).await;
-    a.run(Command::Upload { label: l.id, entries: (0..5).map(|n| l.entry(blob(n))).collect() }).await;
-    assert_eq!(b.pushed(5).await, sorted((0..5).map(bid).collect()));
-    // restart s1 over the same storage: only the new entry travels
-    let k1 = s1.stop().await;
-    let s1 = Host::start(k1, tnet.endpoint("s1"), net.clock.clone()).await;
-    let mut a = s1.client(&clients).await;
-    a.run(Command::Upload { label: l.id, entries: vec![l.entry(blob(5))] }).await;
-    assert_eq!(added(&b.next().await), vec![bid(5)]);
-    s1.stop().await;
-    s2.stop().await;
-}
 
 // spec/data-model.md §9, spec/sync.md §5: hosting stopping closes the connections that opened
 // something of the host store; the others stay, served an empty store on the same listener and
@@ -269,7 +242,7 @@ async fn hosts_replicate_through_dialed_links() {
 async fn stopping_closes_what_opened_the_host_store() {
     let tnet = osis_transport::Net::new(0);
     let mut net = Net::new();
-    let keep = Host::node(&mut net, 1, "mem://s", vec![]);
+    let keep = Host::node(&mut net, 1, "mem://s");
     let host = Host::start(keep, tnet.endpoint("s"), net.clock.clone()).await;
     let clients = tnet.endpoint("clients");
     let mut a = host.client(&clients).await;
@@ -277,8 +250,6 @@ async fn stopping_closes_what_opened_the_host_store() {
     let l = Label::new(3);
     a.run(l.register_cmd(0)).await;
     a.run(open(&l)).await;
-    let ev = a.run(sync(l.id, (0..3).map(|n| l.entry(blob(n))).collect())).await;
-    assert_eq!(statuses(&ev), vec![Code::OK; 3]);
     host.call(|s: &mut SyncEngine| {
         let me = s.engine_mut().tid();
         let mut m = osis_node::Mutation::new();
@@ -296,71 +267,50 @@ async fn stopping_closes_what_opened_the_host_store() {
 
 // spec: none (driver policy, notes/flow-control.md Hub stall bounds): connections take turns per input,
 // so one connection's backlog of inputs does not delay another's request: an opener writes a
-// flood of uploads at once (many 64 KiB reads queued behind its reader); a reader's Sync, sent
-// while the flood runs, waits a few of its inputs, not the backlog
+// flood of deletes at once (many 64 KiB reads queued behind its reader, each 16 KiB frame removing
+// one held entry and checking more signatures); a reader's Path, sent while the flood runs,
+// waits a few of its inputs, not the backlog
 #[tokio::test]
 async fn flood_does_not_delay_others() {
-    const BLOB: usize = 16 << 10;
     const FLOOD: u64 = 1500;
     let tnet = osis_transport::Net::new(0);
     let mut net = Net::new();
-    let keep = Host::node(&mut net, 1, "mem://s", vec![]);
+    let keep = Host::node(&mut net, 1, "mem://s");
     let host = Host::start(keep, tnet.endpoint("s"), net.clock.clone()).await;
     let l = Label::new(3);
     let mut a = host.client(&tnet.endpoint("a")).await;
     a.run(l.register_cmd(0)).await;
-    a.run(open(&l)).await;
+    take(&host, &l, (0..FLOOD).map(|n| blob(1000 + n)).collect()).await;
     let mut b = host.client(&tnet.endpoint("b")).await;
     b.run(open(&l)).await;
-    let count = |ev: &[ClientEvent]| added(ev).len() as u64;
-    let probe = || Command::Sync { label: l.id, cursor: None, inline_limit: 0, entries: vec![], gained: vec![] };
-    // the flood: one upload frame per blob, written at once, its replies never read
-    let mut flood = Vec::new();
-    for n in 0..FLOOD {
-        let entry = l.entry(osis_proto::examples::blob_sized(1000 + n, 0, vec![], BLOB));
-        flood.extend(encode_frame(&Message::Upload { id: (1 << 30) + n as u32, label: l.id, entries: vec![entry] }.encode()));
-    }
+    let probe = || Command::Path { label: l.id, after: None };
+    let done = |held: usize| FLOOD - held as u64;
+    // the flood: one delete frame per held entry, padded with items to 16 KiB, written at once,
+    // its replies never read
+    let junk = osis_label::DeleteItem::sign(&l.head_keys().delete, &l.id, BlobId([0xee; 32])).unwrap();
+    let frame = |n: u64, pad: usize| {
+        let mut items = vec![osis_label::DeleteItem::sign(&l.head_keys().delete, &l.id, bid(1000 + n)).unwrap()];
+        items.extend(std::iter::repeat_n(junk.clone(), pad));
+        encode_frame(&Message::Delete { id: (1 << 30) + n as u32, label: l.id, items }.encode())
+    };
+    let pad = (0..1024).find(|p| frame(0, *p).len() >= 16 << 10).unwrap();
+    let flood: Vec<u8> = (0..FLOOD).flat_map(|n| frame(n, pad)).collect();
     assert!(a.link.tx.send(flood, usize::MAX));
-    let c0 = count(&b.run(probe()).await);
-    let c1 = count(&b.run(probe()).await);
+    b.run(probe()).await;
+    let c0 = done(held(&host, l.id).await.len());
+    b.run(probe()).await;
+    let c1 = done(held(&host, l.id).await.len());
     assert!(c1 < FLOOD, "the flood ended before the probes: {c1}");
-    // a read is at most 64 KiB, 4 blobs; the flood gets one read per scheduler round while the
-    // probe travels there and back (48 blobs; 760 when the reader queued reads ahead)
-    assert!(c1 - c0 <= 100, "the second probe waited {} flood entries (first: {c0})", c1 - c0);
+    // a read is at most 64 KiB, 4 frames; the flood gets one read per scheduler round while the
+    // probe travels there and back (48 frames; 760 when the reader queued reads ahead)
+    assert!(c1 - c0 <= 100, "the second probe waited {} flood frames (first: {c0})", c1 - c0);
     host.stop().await;
 }
 
-// spec/sync.md §5, §8, §10: the same over QUIC on localhost (by hand: touches the network): two hosting nodes, a client at one, the other dialed with the first's static key pushes to its subscriber.
-// Run: `cargo test -p osis-node --test it -- --ignored hub_loop::`.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore]
-async fn quic_clients_and_replication() {
-    use osis_transport::Quic;
-    let mut net = Net::new();
-    let k2 = Host::node(&mut net, 2, "quic://127.0.0.1:0", vec![]);
-    let s2 = Host::start(k2, Quic::new(), net.clock.clone()).await;
-    let k1 = Host::node(&mut net, 1, "quic://127.0.0.1:0", vec![s2.addr.clone()]);
-    let s1 = Host::start(k1, Quic::new(), net.clock.clone()).await;
-    let l = Label::new(3);
-    let mut b = s2.client(&Quic::new()).await;
-    b.run(l.register_cmd(0)).await;
-    b.run(open(&l)).await;
-    b.run(Command::Subscribe { labels: vec![l.id] }).await;
-    let mut a = s1.client(&Quic::new()).await;
-    assert_eq!(a.run(l.register_cmd(0)).await, vec![ClientEvent::Registered { label: l.id }]);
-    let ev = a.run(open(&l)).await;
-    assert!(matches!(&ev[..], [ClientEvent::Opened { .. }]), "{ev:?}");
-    let ev = a.run(sync(l.id, (0..5).map(|n| l.entry(blob(n))).collect())).await;
-    assert_eq!(statuses(&ev), vec![Code::OK; 5]);
-    assert_eq!(b.pushed(5).await, sorted((0..5).map(bid).collect()));
-    assert_eq!(added(&a.run(sync(l.id, vec![])).await), sorted((0..5).map(bid).collect()));
-    s1.stop().await;
-    s2.stop().await;
-}
 
 // issues/net-one-peer.md 3c, spec/sync.md §5, §10: node sync above the hub. One connection to the
-// key of a node carries a label the node hosts and cannot read (Register, Open, Sync: the
-// hub's store) and a group the node reads (proofs, NoRecord, a Hit, the stream: node sync), each
+// key of a node carries a label the node keeps and cannot read (Register, Open, Path: the hub's
+// store) and a group the node reads (proofs, NoRecord, a Hit, the stream: node sync), each
 // answered by its layer
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn one_connection_serves_hosted_and_read_labels() {
@@ -377,14 +327,13 @@ async fn one_connection_serves_hosted_and_read_labels() {
     assert!(!held.is_empty());
     let provers = net.sync(a).provers(false).unwrap();
     let value = read_value(&mut net, a, m);
-    let keep = Host::keep(&mut net, n, "mem://s", vec![]);
+    let keep = Host::keep(&mut net, n, "mem://s");
     let host = Host::start(keep, tnet.endpoint("s"), net.clock.clone()).await;
     let mut c = host.client(&tnet.endpoint("clients")).await;
     // L, which the node cannot read: the hub's store
     let l = Label::new(3);
     assert_eq!(c.run(l.register_cmd(0)).await, vec![ClientEvent::Registered { label: l.id }]);
     assert!(matches!(&c.run(open(&l)).await[..], [ClientEvent::Opened { .. }]));
-    assert_eq!(statuses(&c.run(sync(l.id, (0..3).map(|k| l.entry(blob(k))).collect())).await), vec![Code::OK; 3]);
     // M, which it reads: node sync proves to a dialer it knows and runs the shared set
     let ev = c.run(Command::Prove(provers)).await;
     assert!(matches!(&ev[..], [ClientEvent::Proved { proofs }] if !proofs.is_empty()), "{ev:?}");
@@ -423,7 +372,8 @@ async fn one_connection_serves_hosted_and_read_labels() {
     .unwrap();
     assert!(pushed.iter().any(|(x, e)| *x == m && matches!(e, osis_proto::Event::Added { blob_id, .. } if !held.contains(blob_id))), "{pushed:?}");
     // and L still, on the same connection
-    assert_eq!(added(&c.run(sync(l.id, vec![])).await), sorted((0..3).map(bid).collect()));
+    let ev = c.run(Command::Path { label: l.id, after: None }).await;
+    assert!(matches!(&ev[..], [ClientEvent::PathSteps { .. }]), "{ev:?}");
     host.stop().await;
 }
 
@@ -438,7 +388,7 @@ async fn a_stranger_gets_no_proof_spec_sync_10() {
     net.group_at(n, &[], vec![]);
     net.run();
     let provers = net.sync(z).provers(false).unwrap();
-    let keep = Host::keep(&mut net, n, "mem://s", vec![]);
+    let keep = Host::keep(&mut net, n, "mem://s");
     let host = Host::start(keep, tnet.endpoint("s"), net.clock.clone()).await;
     let mut c = host.client(&tnet.endpoint("clients")).await;
     let ev = c.run(Command::Prove(provers)).await;

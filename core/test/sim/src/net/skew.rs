@@ -11,7 +11,7 @@ use crate::harness::{Report, Res, Seeds};
 use osis_base::{BlobId, CommitId, LabelId, Role, Value};
 use osis_crypto::SeededRng;
 use osis_node::Mutation;
-use osis_proto::{Command, Entry, LabelStore};
+use osis_proto::{Code, LabelStore};
 use osis_schema::{Aspect, RawKey, StaticSchema};
 
 /// Version 1 of the skew schema (the old build's).
@@ -65,8 +65,9 @@ fn future_commit(sim: &mut NetSim, n: usize, c: &CommitId) -> Res<(Vec<u8>, Comm
     Ok((osis_base::cbor::encode(&v), id.ok_or_else(|| sim.fail("no header"))?))
 }
 
-/// A newer format (spec/versioning.md §1, §2): a writer of a newer build uploads a commit of
-/// format version `FORMAT_VERSION + 1` (stamped and wrapped like any). Expected: every old node
+/// A newer format (spec/versioning.md §1, §2): a writer of a newer build stamps and wraps a commit
+/// of format version `FORMAT_VERSION + 1` like any, and s0 takes it from the writer (placed in its
+/// store by the store's rules, `host_put`: this build's writer never makes one). Expected: every old node
 /// stores it parked (pending, not read, no failure); a reader relays it to a host the writer
 /// does not reach; an old writer compacting the aspect and deleting what its snapshot covers
 /// leaves it at the hosts (an old writer never destroys what it cannot read).
@@ -95,7 +96,7 @@ pub fn future_format(s: Seeds) -> Res<Report> {
         sim.quiet(40)?;
         Ok((s0, s1, [a, w, r, c], g, t, base))
     })?;
-    // the newer build's commit, uploaded by its writer
+    // the newer build's commit, as s0's pull from its writer takes it
     let (pt, fid) = future_commit(&mut sim, w, &base)?;
     let k = sim.label_keys(w, s0, &g)?;
     let mut rng = SeededRng::from_u64(sim.dice.u64());
@@ -106,9 +107,10 @@ pub fn future_format(s: Seeds) -> Res<Report> {
     let wrap = osis_crypto::wrap(&read, &bid, &key, 1).map_err(|e| sim.fail(e.to_string()))?;
     let write = k.keys.write.clone().ok_or_else(|| sim.fail("no write key"))?;
     let stamp = osis_label::sign_stamp(&write, &k.label, &bid, &wrap, false);
-    let mut rg = sim.rogue(s0)?;
-    sim.rogue_do(&mut rg, Command::Upload { label: k.label, entries: vec![Entry { blob, wrap, stamp, replaces: Vec::new() }] })?;
-    sim.rogue_close(&mut rg);
+    let code = sim.host_put(s0, k.label, &super::rogue::Stamped { id: bid, blob, wrap, stamp })?;
+    if code != Code::OK {
+        return Err(sim.fail(format!("s0 refused the newer commit: {code:?}")));
+    }
     sim.parked_ok.insert(fid);
     sim.run(60)?;
     sim.run_until_quiescent(40)?;

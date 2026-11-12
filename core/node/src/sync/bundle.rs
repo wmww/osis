@@ -1,12 +1,12 @@
 //! File bundles (spec/sync.md §11; spec/wire.md §12): export of the labels this node holds
-//! entries of (registration path, blobs, entries with wraps and stamps); import as a peer with
-//! no cursor through osis-proto's `BundleImport`.
+//! entries of (registration path, blobs, entries with wraps and stamps); import as a peer's
+//! events with no cursor through osis-proto's `BundleImport`.
 
 use super::SyncEngine;
 use crate::error::{Error, Result};
 use osis_base::{BlobId, LabelId};
 use osis_label::{BundleWriter, Record};
-use osis_proto::ClientEvent;
+use osis_proto::bundle::Imported;
 use std::collections::BTreeSet;
 
 impl SyncEngine {
@@ -41,18 +41,16 @@ impl SyncEngine {
     pub fn import_bundle(&mut self, bytes: &[u8]) -> Result<Vec<super::Action>> {
         let mut out = Vec::new();
         let mut imp = osis_proto::bundle::BundleImport::new(bytes).map_err(|_| Error::BadInput("bundle"))?;
-        while let Some(evs) = imp.next_events().map_err(|_| Error::BadInput("bundle frame"))? {
-            for e in evs {
-                match e {
-                    ClientEvent::PathSteps { label, steps, .. } => {
-                        if let Some(g) = self.group_of(&label, None) {
-                            self.record_steps(&g, &label, &steps, None)?;
-                        }
+        while let Some(item) = imp.next().map_err(|_| Error::BadInput("bundle frame"))? {
+            match item {
+                Some(Imported::Path { label, steps }) => {
+                    if let Some(g) = self.group_of(&label, None) {
+                        self.record_steps(&g, &label, &steps, None)?;
                     }
-                    ClientEvent::Events { label, events, .. } => self.log_events(None, label, events, &mut out)?,
-                    ClientEvent::PeerError(e) => self.diag(format!("bundle: {e}")),
-                    _ => {}
                 }
+                Some(Imported::Event { label, event }) => self.log_events(None, label, vec![event], &mut out)?,
+                Some(Imported::Refused(e)) => self.diag(format!("bundle: {e}")),
+                None => {}
             }
         }
         self.state.flush(&mut self.engine)?;

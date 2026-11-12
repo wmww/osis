@@ -1,6 +1,6 @@
-//! Resource bounds and replication robustness (spec/sync.md §5: hosts cap storage; spec/wire.md
-//! §11.2 Register Error 12): Hello deadline, host-wide caps, bounded sweeps,
-//! retry after refusals, mutual replication.
+//! Resource bounds (spec/sync.md §5: hosts cap storage; spec/wire.md §11.2 Register Error 12;
+//! §10 Served connections): Hello deadline, output and input bounds, one commit per message,
+//! host-wide caps, bounded sweeps.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
 use crate::common;
@@ -11,10 +11,6 @@ use osis_proto::*;
 use osis_proto::msg::DeleteItem;
 use osis_host::{HostPolicy, HubOutput};
 use osis_store::Fault;
-
-fn live(w: &World, h: usize, l: &Label) -> Vec<BlobId> {
-    LabelStore::live_ids(&*w.hubs[h].store(), &l.id).unwrap()
-}
 
 // spec: none (host policy): a connection without a Hello within `hello_ms` is closed
 #[test]
@@ -405,9 +401,9 @@ fn shares_follow_the_active() {
     assert!(!hub.waits(1));
 }
 
-// spec/requirements.md (peer input never causes unbounded work): a message's entries reach disk
-// in one store commit, not one per entry: at most three durable writes (rows, root, cleanup when
-// it shreds: a removal, or a table page split) for 1024 uploads or 1024 deletes
+// spec/requirements.md (peer input never causes unbounded work): a message's items reach disk in
+// one store commit, not one per item: at most three durable writes (rows, root, cleanup when it
+// shreds) for 1024 deletes
 #[test]
 fn one_commit_per_message() {
     let mut w = World::new();
@@ -415,11 +411,7 @@ fn one_commit_per_message() {
     let c = w.connect(h);
     let l = Label::new(3);
     w.setup(c, &l);
-    let before = w.faults[h].writes();
-    let ev = w.run(c, Command::Upload { label: l.id, entries: (0..1024).map(|n| l.entry(blob(n))).collect() });
-    assert_eq!(statuses(&ev), vec![Code::OK; 1024]);
-    assert!(w.faults[h].writes() - before <= 3, "{} durable writes of an upload", w.faults[h].writes() - before);
-    assert_eq!(live(&w, h, &l).len(), 1024);
+    assert_eq!(pull_all(&w, h, &l, 0..1024), vec![Code::OK; 1024]);
     let before = w.faults[h].writes();
     let key = l.head_keys().delete.clone();
     let items = (0..1024).map(|n| DeleteItem::sign(&key, &l.id, osis_label::blob_id(&blob(n))).unwrap()).collect();
@@ -428,38 +420,23 @@ fn one_commit_per_message() {
     assert!(live(&w, h, &l).is_empty());
 }
 
-// spec/requirements.md (durability): nothing is acknowledged or pushed before its input's commit:
-// when the commit fails, the uploader gets no status and the subscriber no push, both are
-// closed, nothing of it is kept, and the uploader's retry is taken once writes work again. A
+// spec/requirements.md (durability): nothing is acknowledged before its input's commit: a
 // delete's shredding commit failing at any of its writes (rows, root, cleanup) acknowledges
-// nothing either, and leaves its entries all deleted or all live
+// nothing, closes the connection, and leaves its entries all deleted or all live; a delete is
+// taken once writes work again
 #[test]
 fn failed_commit_sends_nothing() {
     let mut w = World::new();
     let h = w.add_hub(HostPolicy::default());
-    // client index = link index
-    let (a, c) = (w.connect(h), w.connect(h));
+    let a = w.connect(h);
     let l = Label::new(3);
     w.setup(a, &l);
-    w.open(c, &l);
-    w.run(c, Command::Subscribe { labels: vec![l.id] });
-    w.take(c);
-    w.faults[h].at(0, Fault::Fail);
-    let ev = w.run(a, Command::Upload { label: l.id, entries: vec![l.entry(blob(1))] });
-    assert!(statuses(&ev).is_empty(), "{ev:?}");
-    assert!(events_of(&w.take(c)).0.is_empty());
-    assert!(!w.link_open(a) && !w.link_open(c));
-    assert!(live(&w, h, &l).is_empty(), "the failed commit was rolled back");
-    let a2 = w.connect(h);
-    w.open(a2, &l);
-    assert_eq!(statuses(&w.run(a2, Command::Upload { label: l.id, entries: vec![l.entry(blob(1))] })), vec![Code::OK]);
-    assert_eq!(live(&w, h, &l), vec![osis_label::blob_id(&blob(1))]);
     let key = l.head_keys().delete.clone();
     for (n, at) in (10u64..).step_by(2).zip(0..3) {
         let ids = [osis_label::blob_id(&blob(n)), osis_label::blob_id(&blob(n + 1))];
+        assert_eq!(pull_all(&w, h, &l, [n, n + 1]), vec![Code::OK; 2]);
+        // client index = link index
         let a = w.connect(h);
-        w.open(a, &l);
-        assert_eq!(statuses(&w.run(a, Command::Upload { label: l.id, entries: vec![l.entry(blob(n)), l.entry(blob(n + 1))] })), vec![Code::OK; 2]);
         w.faults[h].at(at, Fault::Fail);
         let items = ids.iter().map(|id| DeleteItem::sign(&key, &l.id, *id).unwrap()).collect();
         let ev = w.run(a, Command::Delete { label: l.id, items });
@@ -470,8 +447,9 @@ fn failed_commit_sends_nothing() {
         assert_eq!(held, if at < 2 { 2 } else { 0 }, "write {at}");
     }
     let a3 = w.connect(h);
-    w.open(a3, &l);
-    assert_eq!(statuses(&w.run(a3, Command::Upload { label: l.id, entries: vec![l.entry(blob(2))] })), vec![Code::OK]);
+    let item = DeleteItem::sign(&key, &l.id, osis_label::blob_id(&blob(10))).unwrap();
+    assert_eq!(statuses(&w.run(a3, Command::Delete { label: l.id, items: vec![item] })), vec![Code::OK]);
+    assert!(!live(&w, h, &l).contains(&osis_label::blob_id(&blob(10))));
 }
 
 // spec/wire.md §11.2 Register, spec/sync.md §5: host-wide caps refuse new labels (Error 12) and new entries (code 12)
@@ -485,10 +463,8 @@ fn host_wide_caps() {
     w.setup(c, &l2);
     let ev = w.run(c, l3.register_cmd(0));
     assert!(matches!(&ev[..], [ClientEvent::Refused { code: Code::STORAGE_CAP, .. }]), "{ev:?}");
-    let ev = w.run(c, Command::Upload { label: l1.id, entries: (0..2).map(|n| l1.entry(blob(n))).collect() });
-    assert_eq!(statuses(&ev), vec![Code::OK; 2]);
-    let ev = w.run(c, Command::Upload { label: l2.id, entries: (2..4).map(|n| l2.entry(blob(n))).collect() });
-    assert_eq!(statuses(&ev), vec![Code::OK, Code::STORAGE_CAP]);
+    assert_eq!(pull_all(&w, h, &l1, 0..2), vec![Code::OK; 2]);
+    assert_eq!(pull_all(&w, h, &l2, 2..4), vec![Code::OK, Code::STORAGE_CAP]);
     assert_eq!(w.hubs[h].store().totals().unwrap().entries, 3);
 }
 
@@ -501,7 +477,9 @@ fn sweeps_are_bounded() {
     let l = Label::new(3);
     w.setup(c, &l);
     let t = w.now() + 1_000;
-    w.run(c, Command::Upload { label: l.id, entries: (0..2500).map(|n| l.entry(blob_with(n, t, vec![]))).collect() });
+    for n in 0..2500 {
+        assert_eq!(pull(&w, h, &l, &l.entry(blob_with(n, t, vec![]))), Code::OK);
+    }
     w.clock.advance(1_000);
     let now = w.now();
     w.hubs[h].tick(now);
@@ -512,67 +490,16 @@ fn sweeps_are_bounded() {
     assert_eq!(w.hubs[h].store().totals().unwrap().entries, 0);
 }
 
-// spec/sync.md §5: a replication batch refused for now (code 12) does not advance the position; the label is retried and converges once the peer has room
-#[test]
-fn replication_retries_after_refusal() {
-    let mut w = World::new();
-    let (s1, s2) = (w.add_hub(HostPolicy::default()), w.add_hub(HostPolicy { cap_entries: 3, ..HostPolicy::default() }));
-    let a = w.connect(s1);
-    let l = Label::new(3);
-    w.setup(a, &l);
-    w.run(a, Command::Upload { label: l.id, entries: (0..5).map(|n| l.entry(blob(n))).collect() });
-    w.peer(s1, s2);
-    assert_eq!(live(&w, s2, &l).len(), 3);
-    let head = LabelStore::log_head(&*w.hubs[s1].store(), &l.id).unwrap();
-    let pos = w.hubs[s1].store().replica_pos(&hub_key(s2), &l.id).unwrap();
-    assert!(pos.is_none_or(|p| p.1 < head.1), "{pos:?}");
-    assert!(w.diagnostics.iter().any(|d| d.contains("retrying")), "{:?}", w.diagnostics);
-    // a retry while the peer is still full changes nothing
-    w.advance(1_000);
-    assert_eq!(live(&w, s2, &l).len(), 3);
-    w.restart(s2, HostPolicy::default());
-    w.peer(s1, s2);
-    assert_eq!(live(&w, s2, &l), sorted((0..5).map(bid).collect()));
-    assert_eq!(w.hubs[s1].store().replica_pos(&hub_key(s2), &l.id).unwrap(), Some(head));
-}
-
-// spec/sync.md §5: two hosts replicating to each other converge without sending entries back; one entry with two wraps settles
-#[test]
-fn mutual_replication_settles() {
-    let mut w = World::new();
-    let (s1, s2) = (w.add_hub(HostPolicy::default()), w.add_hub(HostPolicy::default()));
-    let (a, b) = (w.connect(s1), w.connect(s2));
-    let l = Label::new(3);
-    w.setup(a, &l);
-    w.setup(b, &l);
-    let x = blob(100);
-    let e1 = l.entry(x.clone());
-    let mut e2 = e1.clone();
-    e2.wrap = [0x77; osis_crypto::WRAP_LEN];
-    e2.stamp = osis_label::sign_stamp(&l.head_keys().write, &l.id, &osis_label::blob_id(&x), &e2.wrap, false);
-    w.peer(s1, s2);
-    w.peer(s2, s1);
-    // both wraps arrive at once, each at one side
-    w.send(a, Command::Upload { label: l.id, entries: vec![e1] });
-    w.send(b, Command::Upload { label: l.id, entries: vec![e2] });
-    w.pump();
-    w.settle();
-    w.run(a, Command::Upload { label: l.id, entries: (0..10).map(|n| l.entry(blob(n))).collect() });
-    let heads = |w: &World| [s1, s2].map(|h| LabelStore::log_head(&*w.hubs[h].store(), &l.id).unwrap().1);
-    let settled = heads(&w);
-    // genesis and 11 adds: the side holding one wrap keeps it
-    assert!(settled.iter().all(|h| *h == 12), "{settled:?}");
-    assert_eq!(live(&w, s1, &l), live(&w, s2, &l));
-    w.run(a, Command::Upload { label: l.id, entries: vec![l.entry(blob(50))] });
-    let after = heads(&w);
-    assert_eq!(after, [settled[0] + 1, settled[1] + 1], "one add each, no echo");
-    assert!(w.diagnostics.is_empty(), "{:?}", w.diagnostics);
-}
-
-/// An Upload of one `size`-byte entry, its id in the node's range when `node`.
-fn upload(node: bool, size: usize) -> Vec<u8> {
-    let id = if node { osis_proto::msg::NODE_IDS | 7 } else { 7 };
-    encode_frame(&Message::Upload { id, label: osis_base::LabelId([1; 16]), entries: vec![osis_proto::msg::Entry { blob: vec![1; size], wrap: [0; osis_crypto::WRAP_LEN], stamp: osis_crypto::Signature([0; 64]), replaces: vec![] }] }.encode())
+/// A request of about `size` bytes: an Offer of one Deposit item when `node` (handed up to node
+/// sync), else a client-port Call (answered by the session: no Auth yet).
+fn big_request(node: bool, size: usize) -> Vec<u8> {
+    let msg = if node {
+        let item = osis_proto::msg::OfferItem::Deposit { label: osis_base::LabelId([1; 16]), blob: vec![1; size], wrap: [0; osis_crypto::WRAP_LEN], sig: osis_crypto::Signature([0; 64]) };
+        Message::Offer { id: osis_proto::msg::NODE_IDS | 7, items: vec![item] }
+    } else {
+        Message::Call { id: 7, max_reply: osis_proto::client::SMALL_REPLY as u64, method: 0, args: vec![osis_base::Value::bytes(&vec![1; size])] }
+    };
+    encode_frame(&msg.encode())
 }
 
 // spec/sync.md §10 (Served connections): received frames count against the input bound until
@@ -590,17 +517,17 @@ fn received_frames_stay_within_the_bound() {
     hub.down(now, vec![(1, push(1, mib - 4096))]);
     let mut gone = 0;
     for id in 2..=9u64 {
-        gone += closed(&hub.input(now, id, upload(false, 600 << 10))).len();
+        gone += closed(&hub.input(now, id, big_request(false, 600 << 10))).len();
         assert!(hub.buffered() <= mib, "{} buffered", hub.buffered());
     }
     assert_eq!(gone, 7, "one waiting frame fits");
     // handed up: the frame is input held until node sync answers
     let (h, _) = unread_hub(&mut w, mib, 2);
     let hub = &mut w.hubs[h];
-    let out = hub.input(now, 1, upload(true, 600 << 10));
-    assert!(closed(&out).is_empty() && out.iter().any(|o| matches!(o, HubOutput::Up(1, _))));
+    let out = hub.input(now, 1, big_request(true, 600 << 10));
+    assert!(closed(&out).is_empty() && out.iter().any(|o| matches!(o, HubOutput::Up(1, _))), "{out:?}");
     assert!(hub.buffered() > 600 << 10 && hub.held() <= mib);
-    assert_eq!(closed(&hub.input(now, 2, upload(true, 600 << 10))).len(), 1);
+    assert_eq!(closed(&hub.input(now, 2, big_request(true, 600 << 10))).len(), 1);
     assert!(hub.buffered() <= mib && hub.held() <= mib);
 }
 
@@ -620,7 +547,7 @@ fn role_entries_outside_the_caps_spec_sync_5() {
     s.push_step(&f.label, f.genesis.clone(), Some(f.genesis_claims.clone())).unwrap();
     let mut put = |n: u64, stamped: bool, role: bool| {
         let b = blob(n);
-        let p = Put { blob_id: osis_label::blob_id(&b), blob: &b, wrap: [0; WRAP_LEN], stamp: stamped.then_some(Signature([1; 64])), expiry: None, ephemeral: false, replaces: &[], now: T0, role };
+        let p = Put { blob_id: osis_label::blob_id(&b), blob: &b, wrap: [0; WRAP_LEN], stamp: stamped.then_some(Signature([1; 64])), expiry: None, ephemeral: false, now: T0, role };
         s.put(&f.label, p).unwrap()
     };
     let budget = 64 + 4 * f.genesis_claims.claims.len() as u64;

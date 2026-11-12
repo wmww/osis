@@ -52,7 +52,6 @@ fn samples() -> Vec<(&'static str, &'static str, Value)> {
         ("host", "host^.0", HOST.encode(&Host {
             admit: Admit::Open,
             labels: BTreeSet::from([LabelId([31; 16])]),
-            replicate: vec![Address { url: "quic://b:7400".into(), key: [32; 32] }],
             policy: BTreeMap::from([("cap_bytes".to_string(), 1000)]),
             caps: BTreeMap::from([(LabelId([33; 16]), HostCaps { entries: 5, bytes: 6 })]),
         })),

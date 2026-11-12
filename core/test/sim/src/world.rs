@@ -2,7 +2,7 @@
 //! `Hub`s over in-memory queues under one `ManualClock`. A hub is either the world's own host
 //! (`add_host`) or a node's (`node_hub`): every node serves its peers through one, reached by
 //! its key at any URL, its store the host store while its `host^.0` says so (`Action::Host`; in
-//! memory, every write recorded; replication is not carried); nodes reach each other's hubs over
+//! memory, every write recorded); nodes reach each other's hubs over
 //! `peer://` through the reachability model (`crate::reach`). No tokio, no threads of its own, no
 //! sleeps: time moves only by `advance`, so a run is a function of its seeds. The osis crate's
 //! tests drive it. It panics rather than return failure: a storm, a future that never resolves.
@@ -425,7 +425,8 @@ impl World {
     }
 
     /// What `db` sent since `start_tally`, and got (`down <kind>`; one first frame of a connection
-    /// decodes as `Hello`): message kind -> (count, frame bytes).
+    /// decodes as `Hello`): message kind -> (count, frame bytes); an Offer's Deposit items also count
+    /// as `Deposit` (count, blob bytes).
     pub fn tally(&mut self, db: &Osis) -> BTreeMap<String, (u64, u64)> {
         let Some(i) = self.index(db) else { return BTreeMap::new() };
         let Some(t) = &self.tally else { return BTreeMap::new() };
@@ -438,9 +439,19 @@ impl World {
         dec.push(bytes);
         while let Ok(Some(f)) = dec.next_frame() {
             let k = frame_kind(&f);
-            let e = t.entry((d, if down { format!("down {k}") } else { k })).or_default();
+            let side = |k: &str| if down { format!("down {k}") } else { k.to_string() };
+            let e = t.entry((d, side(&k))).or_default();
             e.0 += 1;
             e.1 += f.len() as u64 + 4;
+            if let Ok(Message::Offer { items, .. }) = Message::decode(&f) {
+                for i in items {
+                    if let osis_proto::msg::OfferItem::Deposit { blob, .. } = i {
+                        let e = t.entry((d, side("Deposit"))).or_default();
+                        e.0 += 1;
+                        e.1 += blob.len() as u64;
+                    }
+                }
+            }
         }
     }
 

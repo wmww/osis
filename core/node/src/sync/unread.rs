@@ -5,7 +5,7 @@
 //! rows, its ephemeral entries as the log's memory part, its relay-only entries past the hub's
 //! relay gate) and ends through the event of a head that no longer bears it. This node tests
 //! nothing for them; it pulls each from every reader that opened it here, taking what it pulls by
-//! the store's Upload rules (`unread_events`).
+//! the store's rules for a stamped entry (`unread_events`).
 
 use super::state::hub_err;
 use super::{Action, ConnId, SyncEngine};
@@ -176,7 +176,7 @@ impl SyncEngine {
 
     /// Events of unread `l` pulled from `conn`'s reader (spec/sync.md §10, Stream): a stamped
     /// entry with its bytes, or whose blob the hub's store holds already under any sync ID (bytes
-    /// cross once), goes into the hub's store by its Upload rules (the stamp under its head's
+    /// cross once), goes into the hub's store by its rules for a stamped entry (the stamp under its head's
     /// write key); a relay-only one passes the store's relay gate and goes on to the other members
     /// sharing `l`. A deposited entry (no stamp) is not taken: it carries no deposit signature,
     /// so deposits reach this node only as Deposit items. Deletions and heads do nothing (a
@@ -186,7 +186,6 @@ impl SyncEngine {
     pub(crate) fn unread_events(&mut self, conn: ConnId, l: LabelId, events: Vec<osis_proto::Event>, out: &mut Vec<Action>) -> Result<BTreeSet<BlobId>> {
         let now = self.now();
         let mut owed = BTreeSet::new();
-        let mut changed = false;
         let mut relays = Vec::new();
         let mut taken = Vec::new();
         let mut pending = Vec::new();
@@ -227,7 +226,6 @@ impl SyncEngine {
                     osis_proto::serving::Taken::Relay(r) => relays.push(r),
                     osis_proto::serving::Taken::Code(c) => {
                         if c == Code::OK {
-                            changed = true;
                             taken.push(blob_id);
                         } else if c == Code::STORAGE_CAP {
                             let memory = osis_label::Prefix::parse(&bytes).is_ok_and(|p| p.class().in_memory());
@@ -251,9 +249,6 @@ impl SyncEngine {
             let events = tombstoned.into_iter().map(|b| (l, osis_proto::Event::Deleted(b))).collect();
             self.shared_send(conn, osis_proto::Message::Stream(Box::new(osis_proto::msg::Stream { events, cursor: None, report: false })), out)?;
         }
-        if changed {
-            self.hub_down(conn, osis_host::Down::Changed(l), out);
-        }
         self.stream_crossed(conn, taken);
         for r in relays {
             self.stream_relay(Some(conn), r.label, r.blob_id, &r.blob, r.wrap, Some(r.stamp), out)?;
@@ -262,7 +257,7 @@ impl SyncEngine {
     }
 
     /// Owed entries of unread sync IDs whose blob the store holds now (fetched under another
-    /// sync ID: bytes cross once) are taken by its Upload rules, as `unread_events` takes one
+    /// sync ID: bytes cross once) are taken by its rules for a stamped entry, as `unread_events` takes one
     /// with its bytes.
     pub(crate) fn unread_take_held(&mut self, conn: ConnId, owed: &BTreeSet<(LabelId, BlobId)>, out: &mut Vec<Action>) -> Result<()> {
         let held: Vec<(LabelId, BlobId)> = {
@@ -349,9 +344,9 @@ impl SyncEngine {
     }
 
     /// A Deposit item for unread inbox `l` (issues/net-shared-set.md, Deposits): taken as a
-    /// Deposit by the hub's store (its signature, budget, rate, caps: spec/sync.md §5), its
-    /// subscribers told: 0, refused for now (4, 5, 12), else 14.
-    pub(crate) fn unread_deposit(&mut self, conn: ConnId, l: LabelId, blob: &[u8], wrap: [u8; WRAP_LEN], sig: &Signature, out: &mut Vec<Action>) -> Result<Code> {
+    /// Deposit by the hub's store (its signature, budget, rate, caps: spec/sync.md §5): 0,
+    /// refused for now (4, 5, 12), else 14.
+    pub(crate) fn unread_deposit(&mut self, l: LabelId, blob: &[u8], wrap: [u8; WRAP_LEN], sig: &Signature) -> Result<Code> {
         let now = self.now();
         let code = {
             let mut hub = self.hub();
@@ -367,9 +362,6 @@ impl SyncEngine {
                 _ => Code::NOT_ADMITTED,
             }
         };
-        if code == Code::OK {
-            self.hub_down(conn, osis_host::Down::Changed(l), out);
-        }
         Ok(code)
     }
 }

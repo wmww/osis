@@ -421,10 +421,6 @@ impl SyncEngine {
             E::Registered { label } => self.registered(conn, label, out)?,
             E::PathSteps { label, steps, more } => self.path_steps(conn, label, steps, more, out)?,
             E::DeleteStatus { label, blob_ids, codes } => self.delete_status(conn, label, blob_ids, codes)?,
-            // what an upload, deposit, cursor sync, subscription, reconciliation or host Fetch
-            // brings: none is asked (a source's entries come by its stream, `stream_apply`, and
-            // its bodies by the stream's Fetch; it pulls this node's)
-            E::EntryStatus { .. } | E::Budget { .. } | E::Events { .. } | E::Want { .. } | E::Synced { .. } | E::NeedReconcile { .. } | E::Reconciled { .. } | E::Subscribed { .. } | E::Fetched { .. } => self.diag("peer sent what no request asked".into()),
             // the listener keeps no record of this side (it refused the proofs or the Resume): the
             // set still runs
             E::Refused { kind: osis_proto::client::Request::Prove | osis_proto::client::Request::Resume, .. } => self.no_record(conn, out)?,

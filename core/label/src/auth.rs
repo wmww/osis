@@ -142,13 +142,13 @@ pub fn entry_digest(label: &LabelId, blob: &BlobId, wrap: &[u8]) -> [u8; 32] {
 /// A stamp: the label write key's signature under `"osis v1 upload"`, or `"osis v1 role
 /// entry"` for an entry deletes are judged by (`role`: a role commit or a request).
 pub fn sign_stamp(write: &SigningSecret, label: &LabelId, blob: &BlobId, wrap: &[u8], role: bool) -> Signature {
-    write.sign(entry_domain(Domain::Upload, role), &entry_digest(label, blob, wrap))
+    write.sign(entry_domain(Domain::Stamp, role), &entry_digest(label, blob, wrap))
 }
 
 /// Checks a stamp against the head's write key, under either domain; an altered wrap fails.
 pub fn verify_stamp(head_write: &VerifyingKey, label: &LabelId, blob: &BlobId, wrap: &[u8], stamp: &Signature) -> Result<(), Error> {
     let d = entry_digest(label, blob, wrap);
-    head_write.verify(Domain::Upload, &d, stamp).or_else(|_| head_write.verify(Domain::RoleEntry, &d, stamp)).map_err(|_| Error::Verify("stamp"))
+    head_write.verify(Domain::Stamp, &d, stamp).or_else(|_| head_write.verify(Domain::RoleEntry, &d, stamp)).map_err(|_| Error::Verify("stamp"))
 }
 
 /// A deposit signature by the deposit key under `"osis v1 deposit"`, or `"osis v1 role entry"`

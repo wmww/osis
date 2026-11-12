@@ -23,8 +23,8 @@ fn two_nodes_host() {
     assert!(r.writes > 5 && r.crashes > 0 && r.dropped > 0 && r.held_checked > 0, "{r:?}");
 }
 
-// spec/sync.md §5 (replication, push only), §6; spec/sync.md §3 (grants by inbox): three
-// accounts share a group through two replicating hosts with host crashes and partitions.
+// spec/sync.md §5, §6; spec/sync.md §3 (grants by inbox): three accounts share a group through
+// two hosts, joined only by the admin reaching both, with host crashes and partitions.
 #[test]
 #[ignore = "by hand"]
 fn three_accounts_two_hosts() {

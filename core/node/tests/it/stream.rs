@@ -10,8 +10,6 @@ use osis_base::{Role, Tid};
 use osis_schema::RawKey;
 
 const PULL: u64 = 41;
-const SYNC: u64 = 15;
-const SUBSCRIBE: u64 = 21;
 const FETCH: u64 = 19;
 
 /// Co-readers `a`, `b` (dialable, admin of `g`) and `c` (dialable), each pair connected, settled
@@ -54,26 +52,22 @@ fn pair(net: &mut Net, n: usize) -> (usize, usize, Vec<Tid>) {
     (a, b, gs)
 }
 
-// spec/sync.md §10 (Stream): a co-reader's entries come by one Pull stream, never a per-label
-// Sync. (Stream: both sides pull): a reader's own write reaches a co-reader by the co-reader
-// pulling it, whoever dialed, with no Upload, Deposit or Open between them
+// spec/sync.md §10 (Stream: both sides pull): a reader's own write reaches a co-reader by the
+// co-reader pulling it, whoever dialed, with no Open between them
 #[test]
-fn a_readers_write_reaches_a_co_reader_with_no_upload_spec_sync_10() {
+fn a_readers_write_reaches_a_co_reader_by_its_pull_spec_sync_10() {
     const OPEN: u64 = 4;
-    const UPLOAD: u64 = 10;
-    const DEPOSIT: u64 = 12;
     let (mut net, a, b, gs) = paired(1);
     let t = net.item(b, gs[0], gs[0], "x");
     net.run();
     assert_eq!(net.read(a, t), Some(s("x")), "b's write reached a");
     assert!(net.peer_sent(a, PULL) > 0, "a pulls b");
-    assert_eq!(net.peer_sent(a, SYNC) + net.peer_sent(a, SUBSCRIBE), 0, "no per-label Sync or Subscribe between readers");
     net.write(a, t, "from the dialer");
     net.run();
     assert_eq!(net.read(b, t), Some(s("from the dialer")), "the listener pulled the dialer's write");
     assert!(net.peer_sent(b, PULL) > 0, "b pulls a");
     for n in [a, b] {
-        assert_eq!(net.peer_sent(n, UPLOAD) + net.peer_sent(n, DEPOSIT) + net.peer_sent(n, OPEN), 0, "node {n}: no upload, deposit or open between readers");
+        assert_eq!(net.peer_sent(n, OPEN), 0, "node {n}: no open between readers");
     }
 }
 
@@ -207,23 +201,22 @@ fn watch(net: &mut Net) -> std::rc::Rc<std::cell::RefCell<Seen>> {
 }
 
 /// Pulls and pages of a first contact sharing `n` sync IDs.
-fn first_contact(n: usize) -> (usize, usize, usize) {
+fn first_contact(n: usize) -> (usize, usize) {
     let mut net = Net::new();
     let seen = watch(&mut net);
     let (a, _, gs) = pair(&mut net, n);
     assert_eq!(net.sync(a).labels().len(), n + 1, "every group's label and a's home");
     let _ = gs;
     let pages = seen.borrow().replies.len();
-    (net.peer_sent(a, PULL), pages, net.peer_sent(a, SYNC) + net.peer_sent(a, SUBSCRIBE))
+    (net.peer_sent(a, PULL), pages)
 }
 
 // spec/sync.md §10 (Stream): a first contact sharing n sync IDs joins them in O(1) Pulls: the joins
 // of one batch of opens go in one Pull, its reply pages by size, not per sync ID
 #[test]
 fn first_contact_joins_in_constant_pulls_spec_sync_10() {
-    let (p1, r1, s1) = first_contact(3);
-    let (p10, r10, s10) = first_contact(30);
-    assert_eq!((s1, s10), (0, 0), "no per-label Sync between readers");
+    let (p1, r1) = first_contact(3);
+    let (p10, r10) = first_contact(30);
     assert!(p10 <= p1 + 1 && r10 <= r1 + 1, "Pulls {p1} at n, {p10} at 10n; replies {r1}, {r10}");
 }
 

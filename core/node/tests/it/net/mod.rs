@@ -175,8 +175,6 @@ pub struct Net {
     pub hold_opened: BTreeSet<usize>,
     /// Nodes whose host bytes are held back until `release` (a node reading nothing for a while).
     pub held_to: BTreeSet<usize>,
-    /// Per node, the `gained` lists of the Syncs it sent to hosts (non-empty ones).
-    pub gained: BTreeMap<usize, Vec<Vec<osis_base::BlobId>>>,
     /// Host messages announcing or carrying one of these blobs are held back until `release`
     /// (a slow fetch of one entry).
     pub hold_blobs: BTreeSet<osis_base::BlobId>,
@@ -254,7 +252,6 @@ struct Parts {
     deaf: BTreeSet<usize>,
     hold_opened: BTreeSet<usize>,
     held_to: BTreeSet<usize>,
-    gained: BTreeMap<usize, Vec<Vec<osis_base::BlobId>>>,
     hold_blobs: BTreeSet<osis_base::BlobId>,
     hide_blobs: BTreeMap<usize, BTreeSet<osis_base::BlobId>>,
     bare_blobs: BTreeMap<usize, BTreeSet<osis_base::BlobId>>,
@@ -273,12 +270,12 @@ struct Parts {
 impl Net {
     fn into_parts(self) -> Parts {
         assert!(self.tamper.is_none() && self.host_tamper.is_none(), "a tamper cannot be kept");
-        Parts { clock: self.clock, nodes: self.nodes, hosts: self.hosts, links: self.links, queue: self.queue, next_hub_conn: self.next_hub_conn, steps: self.steps, blocked: self.blocked, plinks: self.plinks, blocked_peers: self.blocked_peers, lan_keys: self.lan_keys, held: self.held, held_messages: self.held_messages, sent_kinds: self.sent_kinds, shown: self.shown, shown_held: self.shown_held, pushed: self.pushed, deleted: self.deleted, peer_kinds: self.peer_kinds, sent_bytes: self.sent_bytes, crossed: self.crossed, dialed: self.dialed, full_passes: self.full_passes, bare: self.bare, home_at_hosts: self.home_at_hosts, unpulled: self.unpulled, unpulled_at: self.unpulled_at, lose_deposits: self.lose_deposits, held_hosts: self.held_hosts, busy: self.busy, hub_busy: self.hub_busy, told: self.told, fetched: self.fetched, deaf: self.deaf, hold_opened: self.hold_opened, held_to: self.held_to, gained: self.gained, hold_blobs: self.hold_blobs, hide_blobs: self.hide_blobs, bare_blobs: self.bare_blobs, walk_to: self.walk_to, tamper_link: self.tamper_link, silent: self.silent, trickle: self.trickle, trickle_hosts: self.trickle_hosts, batch_reads: self.batch_reads, peer_closes: self.peer_closes, next_node_hub: self.next_node_hub, hands: self.hands, port: self.port }
+        Parts { clock: self.clock, nodes: self.nodes, hosts: self.hosts, links: self.links, queue: self.queue, next_hub_conn: self.next_hub_conn, steps: self.steps, blocked: self.blocked, plinks: self.plinks, blocked_peers: self.blocked_peers, lan_keys: self.lan_keys, held: self.held, held_messages: self.held_messages, sent_kinds: self.sent_kinds, shown: self.shown, shown_held: self.shown_held, pushed: self.pushed, deleted: self.deleted, peer_kinds: self.peer_kinds, sent_bytes: self.sent_bytes, crossed: self.crossed, dialed: self.dialed, full_passes: self.full_passes, bare: self.bare, home_at_hosts: self.home_at_hosts, unpulled: self.unpulled, unpulled_at: self.unpulled_at, lose_deposits: self.lose_deposits, held_hosts: self.held_hosts, busy: self.busy, hub_busy: self.hub_busy, told: self.told, fetched: self.fetched, deaf: self.deaf, hold_opened: self.hold_opened, held_to: self.held_to, hold_blobs: self.hold_blobs, hide_blobs: self.hide_blobs, bare_blobs: self.bare_blobs, walk_to: self.walk_to, tamper_link: self.tamper_link, silent: self.silent, trickle: self.trickle, trickle_hosts: self.trickle_hosts, batch_reads: self.batch_reads, peer_closes: self.peer_closes, next_node_hub: self.next_node_hub, hands: self.hands, port: self.port }
     }
 
     fn from_parts(p: Parts) -> Net {
-        let Parts { clock, nodes, hosts, links, queue, next_hub_conn, steps, blocked, plinks, blocked_peers, lan_keys, held, held_messages, sent_kinds, shown, shown_held, pushed, deleted, peer_kinds, sent_bytes, crossed, dialed, full_passes, bare, home_at_hosts, unpulled, unpulled_at, lose_deposits, held_hosts, busy, hub_busy, told, fetched, deaf, hold_opened, held_to, gained, hold_blobs, hide_blobs, bare_blobs, walk_to, tamper_link, silent, trickle, trickle_hosts, batch_reads, peer_closes, next_node_hub, hands, port } = p;
-        Net { clock, nodes, hosts, links, queue, next_hub_conn, steps, blocked, plinks, blocked_peers, lan_keys, held, held_messages, sent_kinds, shown, shown_held, pushed, deleted, peer_kinds, sent_bytes, crossed, dialed, full_passes, bare, home_at_hosts, unpulled, unpulled_at, lose_deposits, held_hosts, busy, hub_busy, told, fetched, deaf, hold_opened, held_to, gained, hold_blobs, hide_blobs, bare_blobs, walk_to, tamper_link, silent, trickle, trickle_hosts, batch_reads, peer_closes, next_node_hub, hands, port, tamper: None, host_tamper: None }
+        let Parts { clock, nodes, hosts, links, queue, next_hub_conn, steps, blocked, plinks, blocked_peers, lan_keys, held, held_messages, sent_kinds, shown, shown_held, pushed, deleted, peer_kinds, sent_bytes, crossed, dialed, full_passes, bare, home_at_hosts, unpulled, unpulled_at, lose_deposits, held_hosts, busy, hub_busy, told, fetched, deaf, hold_opened, held_to, hold_blobs, hide_blobs, bare_blobs, walk_to, tamper_link, silent, trickle, trickle_hosts, batch_reads, peer_closes, next_node_hub, hands, port } = p;
+        Net { clock, nodes, hosts, links, queue, next_hub_conn, steps, blocked, plinks, blocked_peers, lan_keys, held, held_messages, sent_kinds, shown, shown_held, pushed, deleted, peer_kinds, sent_bytes, crossed, dialed, full_passes, bare, home_at_hosts, unpulled, unpulled_at, lose_deposits, held_hosts, busy, hub_busy, told, fetched, deaf, hold_opened, held_to, hold_blobs, hide_blobs, bare_blobs, walk_to, tamper_link, silent, trickle, trickle_hosts, batch_reads, peer_closes, next_node_hub, hands, port, tamper: None, host_tamper: None }
     }
 }
 
@@ -474,7 +471,7 @@ pub fn host_key(i: usize) -> [u8; 32] {
 impl Net {
     /// A network whose new nodes are each their own account's only node.
     pub fn new() -> Net {
-        Net { bare: false, home_at_hosts: false, clock: Arc::new(ManualClock::new(WallMs(T0))), nodes: vec![], hosts: vec![], links: BTreeMap::new(), queue: VecDeque::new(), next_hub_conn: 1, next_node_hub: HUB_BASE, steps: 0, blocked: BTreeSet::new(), plinks: BTreeMap::new(), blocked_peers: BTreeSet::new(), lan_keys: BTreeMap::new(), held: BTreeSet::new(), held_messages: Vec::new(), sent_kinds: BTreeMap::new(), shown: BTreeMap::new(), shown_held: BTreeMap::new(), pushed: BTreeMap::new(), deleted: BTreeMap::new(), peer_kinds: BTreeMap::new(), sent_bytes: 0, crossed: BTreeMap::new(), dialed: Vec::new(), full_passes: false, unpulled: BTreeSet::new(), unpulled_at: BTreeSet::new(), lose_deposits: BTreeSet::new(), held_hosts: BTreeSet::new(), busy: BTreeMap::new(), hub_busy: std::time::Duration::ZERO, told: BTreeMap::new(), fetched: BTreeMap::new(), deaf: BTreeSet::new(), hold_opened: BTreeSet::new(), held_to: BTreeSet::new(), gained: BTreeMap::new(), hold_blobs: BTreeSet::new(), hide_blobs: BTreeMap::new(), bare_blobs: BTreeMap::new(), walk_to: BTreeMap::new(), tamper: None, tamper_link: None, host_tamper: None, silent: BTreeSet::new(), trickle: BTreeMap::new(), trickle_hosts: BTreeMap::new(), batch_reads: false, peer_closes: 0, hands: BTreeMap::new(), port: Vec::new() }
+        Net { bare: false, home_at_hosts: false, clock: Arc::new(ManualClock::new(WallMs(T0))), nodes: vec![], hosts: vec![], links: BTreeMap::new(), queue: VecDeque::new(), next_hub_conn: 1, next_node_hub: HUB_BASE, steps: 0, blocked: BTreeSet::new(), plinks: BTreeMap::new(), blocked_peers: BTreeSet::new(), lan_keys: BTreeMap::new(), held: BTreeSet::new(), held_messages: Vec::new(), sent_kinds: BTreeMap::new(), shown: BTreeMap::new(), shown_held: BTreeMap::new(), pushed: BTreeMap::new(), deleted: BTreeMap::new(), peer_kinds: BTreeMap::new(), sent_bytes: 0, crossed: BTreeMap::new(), dialed: Vec::new(), full_passes: false, unpulled: BTreeSet::new(), unpulled_at: BTreeSet::new(), lose_deposits: BTreeSet::new(), held_hosts: BTreeSet::new(), busy: BTreeMap::new(), hub_busy: std::time::Duration::ZERO, told: BTreeMap::new(), fetched: BTreeMap::new(), deaf: BTreeSet::new(), hold_opened: BTreeSet::new(), held_to: BTreeSet::new(), hold_blobs: BTreeSet::new(), hide_blobs: BTreeMap::new(), bare_blobs: BTreeMap::new(), walk_to: BTreeMap::new(), tamper: None, tamper_link: None, host_tamper: None, silent: BTreeSet::new(), trickle: BTreeMap::new(), trickle_hosts: BTreeMap::new(), batch_reads: false, peer_closes: 0, hands: BTreeMap::new(), port: Vec::new() }
     }
 
     /// An exact copy of this network as it stands (notes/testing.md, Copied worlds): every node
@@ -552,7 +549,6 @@ impl Net {
                 deaf: self.deaf.clone(),
                 hold_opened: self.hold_opened.clone(),
                 held_to: self.held_to.clone(),
-                gained: self.gained.clone(),
                 hold_blobs: self.hold_blobs.clone(),
                 hide_blobs: self.hide_blobs.clone(),
                 bare_blobs: self.bare_blobs.clone(),
@@ -1109,11 +1105,6 @@ impl Net {
                                     *self.deleted.entry((n, *label, i.blob)).or_default() += 1;
                                 }
                             }
-                            if let osis_proto::Message::Sync { gained, .. } = &m
-                                && !gained.is_empty()
-                            {
-                                self.gained.entry(n).or_default().push(gained.clone());
-                            }
                             if let osis_proto::Message::Open { id, label, proof: osis_label::Proof::Sync { .. } } = &m
                                 && let Some((s, _)) = self.links.get(&(n, conn))
                                 && let Some((l, step)) = self.walk_to.get(s)
@@ -1121,13 +1112,6 @@ impl Net {
                             {
                                 let r = osis_proto::Message::Step { id: *id, step: step.clone() };
                                 self.queue.push_back(Msg::ToNode(n, self.nodes[n].life, conn, osis_proto::encode_frame(&r.encode())));
-                                continue;
-                            }
-                            if let osis_proto::Message::Deposit { id, label, blob, .. } = &m
-                                && self.carries(label, &osis_label::blob_id(blob), &self.lose_deposits)
-                            {
-                                let e = osis_proto::Message::Error { id: *id, code: osis_proto::Code::RATE_LIMITED };
-                                self.queue.push_back(Msg::ToNode(n, self.nodes[n].life, conn, osis_proto::encode_frame(&e.encode())));
                                 continue;
                             }
                             // a node's deposited entries reach the peer by its stream, or as Deposit
@@ -1281,10 +1265,6 @@ impl Net {
                 let lost = |l: &osis_base::LabelId, b: &osis_base::BlobId| self.carries(l, b, &self.lose_deposits);
                 let added = |(l, e): &(osis_base::LabelId, osis_proto::Event)| matches!(e, osis_proto::Event::Added { blob_id, .. } if lost(l, blob_id));
                 match osis_proto::Message::decode(&body) {
-                    Ok(osis_proto::Message::Deposit { id, label, blob, .. }) if lost(&label, &osis_label::blob_id(&blob)) => {
-                        let e = osis_proto::Message::Error { id, code: osis_proto::Code::RATE_LIMITED };
-                        self.queue.push_back(Msg::ToNode(n, self.nodes[n].life, conn, osis_proto::encode_frame(&e.encode())));
-                    }
                     // a reader's own entries reach a co-reader by its stream: lost there
                     Ok(osis_proto::Message::PullReply(mut r)) => {
                         r.events.retain(|x| !added(x));
@@ -1832,6 +1812,58 @@ impl Net {
     /// Live entry IDs the host holds under a label.
     pub fn host_ids(&self, s: usize, l: &osis_base::LabelId) -> Vec<osis_base::BlobId> {
         self.hosts[s].hub.store().live_ids(l).unwrap()
+    }
+
+    /// What peer `s`'s node log holds of `l`, in log order: the entries it shows added and
+    /// those it shows removed (deletes and expiries; an entry's earlier events compact away).
+    pub fn logged_at(&self, s: usize, l: &osis_base::LabelId) -> (Vec<osis_base::BlobId>, Vec<osis_base::BlobId>) {
+        let (mut added, mut removed) = (Vec::new(), Vec::new());
+        let mut at = 0;
+        loop {
+            let (page, next, more) = self.hosts[s].hub.store().node_log(|t| t.log_after(at, 1 << 16)).unwrap();
+            for e in page {
+                match e.event {
+                    osis_store::NodeEvent::Added(x, id) if x == *l => added.push(id),
+                    osis_store::NodeEvent::Deleted { label, blob, .. } if label == *l => removed.push(blob),
+                    _ => {}
+                }
+            }
+            if !more {
+                return (added, removed);
+            }
+            at = next;
+        }
+    }
+
+    /// What remains of `l`'s deposit budget at peer `s` (spec/sync.md §5, spec/wire.md §2: 64
+    /// entries plus 4 per claim slot of the head's set, of `DEPOSIT_ENTRY_BYTES` each, times the
+    /// policy's `deposit_factor`), less its deposited entries: (entries, bytes).
+    pub fn deposit_room(&self, s: usize, l: &osis_base::LabelId) -> (u64, u64) {
+        let store = self.hosts[s].hub.store();
+        let head = osis_proto::LabelStore::head(&*store, l).unwrap().unwrap();
+        let slots = osis_proto::LabelStore::claim_set(&*store, l, &head).unwrap().map_or(0, |c| c.claims.len() as u64);
+        let max = store.policy().deposit_factor.max(1) * (64 + 4 * slots);
+        let (mut n, mut bytes) = (0, 0);
+        for id in osis_proto::LabelStore::live_ids(&*store, l).unwrap() {
+            if let Some(m) = osis_proto::LabelStore::entry(&*store, l, &id).unwrap().filter(|m| m.stamp.is_none()) {
+                n += 1;
+                bytes += m.size;
+            }
+        }
+        (max.saturating_sub(n), (max * osis_host::DEPOSIT_ENTRY_BYTES).saturating_sub(bytes))
+    }
+
+    /// A Deposit item reaching peer `s` for `l`, taken by its store's Deposit rules (spec/sync.md
+    /// §5), then the net runs.
+    pub fn deposit_at(&mut self, s: usize, l: &osis_base::LabelId, blob: &[u8], wrap: [u8; osis_crypto::WRAP_LEN], sig: &osis_crypto::Signature) -> osis_proto::Code {
+        let now = self.now_at(s);
+        let code = {
+            let mut store = self.hosts[s].hub.store();
+            let k = osis_proto::LabelStore::head_keys(&*store, l).unwrap().unwrap();
+            osis_proto::serving::deposit(&mut *store, now, l, &k, blob, wrap, sig, &mut false).unwrap().0
+        };
+        self.run();
+        code
     }
 
     /// The entries of `l` peer `s`'s store counts against its caps (role entries are outside them).

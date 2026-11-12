@@ -2,12 +2,11 @@
 //! (spec/sync.md §4-§9, spec/wire.md §11).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
-use osis_base::{BlobId, LabelId, Value, WallMs, cbor, hash::hash};
+use osis_base::{LabelId, Value, cbor};
 use osis_crypto::{Secret32, SigningSecret};
-use osis_label::{Prefix, sign_deposit};
-use osis_proto::msg::{DeleteItem, Wrap};
+use osis_proto::msg::DeleteItem;
 use osis_proto::*;
-use osis_proto::examples::{Label, bid, blob, blob_sized, blob_with, salt};
+use osis_proto::examples::{Label, bid, blob, blob_with, salt};
 use osis_proto::client::SMALL_REPLY;
 use std::collections::VecDeque;
 
@@ -35,7 +34,7 @@ struct Net {
 
 impl Net {
     fn new(n: usize, host_skew: u64) -> Net {
-        let mut net = Net { now: T0, host_skew, store: MemoryLabelStore::new([9; 32]), hosts: vec![], clients: vec![], events: vec![], to_host: vec![], to_client: vec![], handshake: vec![], flights: 0 };
+        let mut net = Net { now: T0, host_skew, store: MemoryLabelStore::new(), hosts: vec![], clients: vec![], events: vec![], to_host: vec![], to_client: vec![], handshake: vec![], flights: 0 };
         for i in 0..n {
             net.hosts.push(ServingSession::new(ServingConfig { static_key: [0x5e; 32], challenge: [0x40 + i as u8; 32] }));
             net.clients.push(ClientSession::new(ClientConfig { peer_static_key: [0x5e; 32], challenge: [0x80 + i as u8; 32] }));
@@ -66,18 +65,6 @@ impl Net {
         for o in out {
             match o {
                 ServingOutput::Send(b) => self.to_client[i].push_back(b),
-                ServingOutput::Changed(l) => {
-                    for j in 0..self.hosts.len() {
-                        let so = self.hosts[j].handle(self.now + self.host_skew, &mut self.store, ServingInput::Changed(l));
-                        self.host_out(j, so);
-                    }
-                }
-                ServingOutput::Relay(r) => {
-                    for j in (0..self.hosts.len()).filter(|j| *j != i) {
-                        let so = self.hosts[j].handle(self.now + self.host_skew, &mut self.store, ServingInput::Relay(r.clone()));
-                        self.host_out(j, so);
-                    }
-                }
                 ServingOutput::Close | ServingOutput::PeerError(_) | ServingOutput::Request(_) | ServingOutput::Room { .. } | ServingOutput::Peer(_) => {}
                 ServingOutput::StoreError(e) => panic!("{e}"),
             }
@@ -130,39 +117,26 @@ impl Net {
         assert_eq!(ev, vec![ClientEvent::Registered { label: l.id }]);
     }
 
+    /// Holds `blob` under `l`, stamped by the head's write key (as node sync's pull puts one).
+    fn hold(&mut self, l: &Label, blob: &[u8]) {
+        let e = l.entry(blob.to_vec());
+        let put = Put { blob_id: osis_label::blob_id(blob), blob, wrap: e.wrap, stamp: Some(e.stamp), expiry: None, ephemeral: false, now: self.now, role: false };
+        assert_eq!(self.store.put(&l.id, put).unwrap(), Code::OK);
+    }
+
     fn open(&mut self, i: usize, l: &Label) {
         let ev = self.run(i, Command::Open { label: l.id, key: OpenKey::Sync { step: None, key: l.head_keys().sync.clone() } });
         assert!(matches!(&ev[..], [ClientEvent::Opened { .. }]), "{ev:?}");
     }
 }
 
-fn events_of(ev: &[ClientEvent]) -> (Vec<Event>, Option<Cursor>) {
-    let mut all = vec![];
-    let mut cursor = None;
-    for e in ev {
-        if let ClientEvent::Events { events, cursor: c, .. } = e {
-            all.extend(events.iter().cloned());
-            cursor = *c;
-        }
-    }
-    (all, cursor)
-}
-
 fn statuses(ev: &[ClientEvent]) -> Vec<Code> {
     ev.iter()
         .flat_map(|e| match e {
-            ClientEvent::EntryStatus { codes, .. } | ClientEvent::DeleteStatus { codes, .. } => codes.clone(),
+            ClientEvent::DeleteStatus { codes, .. } => codes.clone(),
             _ => vec![],
         })
         .collect()
-}
-
-fn added(evs: &[Event]) -> Vec<BlobId> {
-    evs.iter().filter_map(|e| if let Event::Added { blob_id, .. } = e { Some(*blob_id) } else { None }).collect()
-}
-
-fn sync(label: LabelId, cursor: Option<Cursor>, entries: Vec<Entry>, gained: Vec<BlobId>) -> Command {
-    Command::Sync { label, cursor, inline_limit: 1 << 20, entries, gained }
 }
 
 // spec/wire.md §11.1, spec/sync.md §6: Hellos at once, clock offset from three round trips, diagnostic above a few seconds
@@ -182,108 +156,6 @@ fn handshake_and_clock_offset() {
     assert!(out.iter().any(|o| matches!(o, ClientOutput::SetTimer(t) if *t > T0)));
 }
 
-// spec/sync.md §5, §6: register, open, upload inline with Sync, download by replay, cursor sync with gained and want
-#[test]
-fn register_open_sync_download() {
-    let mut net = Net::new(2, 0);
-    let l = Label::new(3);
-    net.setup(&l);
-    net.open(0, &l);
-    net.open(1, &l);
-    let ev = net.run(0, sync(l.id, None, (0..50).map(|n| l.entry(blob(n))).collect(), vec![]));
-    assert_eq!(statuses(&ev), vec![Code::OK; 50]);
-    // the uploader gets no add events for what it sent
-    let (evs, c0) = events_of(&ev);
-    assert!(evs.is_empty(), "{evs:?}");
-    assert!(c0.is_some());
-    // B replays every live entry in blob ID order, blobs inline, stamps and wraps
-    let ev = net.run(1, sync(l.id, None, vec![], vec![]));
-    let (evs, cursor) = events_of(&ev);
-    let mut want: Vec<BlobId> = (0..50).map(bid).collect();
-    want.sort();
-    assert_eq!(added(&evs), want);
-    let Event::Added { blob: Some(b), wrap, stamp: Some(s), .. } = &evs[0] else { panic!() };
-    let e = l.entry(b.clone());
-    assert_eq!((*wrap, *s), (e.wrap, e.stamp));
-    assert!(ev.contains(&ClientEvent::Synced { label: l.id }));
-    // A adds 5 more; B's cursor sync returns exactly those, minus what B gained elsewhere
-    net.run(0, Command::Upload { label: l.id, entries: (50..55).map(|n| l.entry(blob(n))).collect() });
-    let ev = net.run(1, sync(l.id, cursor, vec![], vec![bid(52), bid(100), bid(101)]));
-    assert_eq!(added(&events_of(&ev).0), [50, 51, 53, 54].map(bid));
-    assert!(ev.contains(&ClientEvent::Want { label: l.id, ids: vec![bid(100), bid(101)] }));
-}
-
-// spec/wire.md §11.2 Sync: a replay pages by blob ID position and ends with the log cursor taken at its start
-#[test]
-fn replay_on_a_truncated_log_ends_with_a_cursor() {
-    let mut net = Net::new(2, 0);
-    let l = Label::new(3);
-    net.setup(&l);
-    net.open(0, &l);
-    net.open(1, &l);
-    for n in 0..3 {
-        let ev = net.run(0, Command::Upload { label: l.id, entries: vec![l.entry(blob_sized(n, 0, vec![], 4 << 20))] });
-        assert_eq!(statuses(&ev), vec![Code::OK]);
-    }
-    let head = net.store.log_head(&l.id).unwrap().1;
-    net.store.truncate_log(&l.id, head);
-    let ev = net.run(1, Command::Sync { label: l.id, cursor: None, inline_limit: u64::MAX, entries: vec![], gained: vec![] });
-    let pages = ev.iter().filter(|e| matches!(e, ClientEvent::Events { .. })).count();
-    assert!(pages >= 2, "{pages} pages");
-    assert_eq!(added(&events_of(&ev).0).len(), 3);
-    assert!(ev.contains(&ClientEvent::Synced { label: l.id }));
-    let cursor = events_of(&ev).1.unwrap();
-    assert_eq!(cursor.seq, head);
-    // the cursor works: a later upload arrives by it
-    net.run(0, Command::Upload { label: l.id, entries: vec![l.entry(blob(9))] });
-    let ev = net.run(1, sync(l.id, Some(cursor), vec![], vec![]));
-    assert_eq!(added(&events_of(&ev).0), vec![bid(9)]);
-}
-
-// spec/sync.md §6, spec/wire.md §11.2: a cursor the log was trimmed past gets Error 15 (one of another log or past the head, 10); the Sync's entries still go up; reconciliation finds both differences
-#[test]
-fn lost_cursor_falls_back_to_reconciliation() {
-    let mut net = Net::new(2, 0);
-    let l = Label::new(3);
-    net.setup(&l);
-    net.open(0, &l);
-    net.open(1, &l);
-    net.run(0, Command::Upload { label: l.id, entries: (0..300).map(|n| l.entry(blob(n))).collect() });
-    let ev = net.run(1, sync(l.id, None, vec![], vec![]));
-    let (_, cursor) = events_of(&ev);
-    net.run(0, Command::Upload { label: l.id, entries: (300..340).map(|n| l.entry(blob(n))).collect() });
-    let c = cursor.unwrap();
-    for other in [Cursor { log_id: [9; 16], ..c }, Cursor { seq: c.seq + 1000, ..c }] {
-        let ev = net.run(1, sync(l.id, Some(other), vec![], vec![]));
-        assert_eq!(ev, vec![ClientEvent::NeedReconcile { label: l.id, trimmed: false }]);
-    }
-    net.store.truncate_log(&l.id, c.seq + 1);
-    let ev = net.run(1, sync(l.id, cursor, vec![l.entry(blob(2000))], vec![]));
-    assert!(ev.contains(&ClientEvent::NeedReconcile { label: l.id, trimmed: true }), "{ev:?}");
-    assert_eq!(statuses(&ev), vec![Code::OK]);
-    // B holds 0..300, 2000 and 1000..1010 of its own
-    let ids: Vec<BlobId> = (0..300).chain(1000..1010).chain([2000]).map(bid).collect();
-    let ev = net.run(1, Command::Reconcile { label: l.id, ids });
-    let mut need: Vec<BlobId> = (300..340).map(bid).collect();
-    let mut have: Vec<BlobId> = (1000..1010).map(bid).collect();
-    need.sort();
-    have.sort();
-    assert_eq!(ev, vec![ClientEvent::Reconciled { label: l.id, need, have }]);
-}
-
-// spec/sync.md §6: a gained list over a message (4096 IDs) falls back to reconciliation
-#[test]
-fn oversized_gained_list_reconciles() {
-    let mut net = Net::new(1, 0);
-    let l = Label::new(3);
-    net.setup(&l);
-    net.open(0, &l);
-    let gained: Vec<BlobId> = (0..4097u64).map(|n| BlobId(hash(&n.to_le_bytes()))).collect();
-    let ev = net.run(0, sync(l.id, Some(Cursor { log_id: [0; 16], seq: 0 }), vec![], gained));
-    assert_eq!(ev, vec![ClientEvent::NeedReconcile { label: l.id, trimmed: false }]);
-    assert_eq!(net.clients[0].outstanding(), 0);
-}
-
 // spec/sync.md §5: a superseded sync key gets the child step and nothing else; the child verifies under its parent's delete key
 // spec/sync.md §5 (stale sync key), §5 (register)
 #[test]
@@ -300,8 +172,8 @@ fn stale_sync_key_gets_one_signed_step() {
     assert_eq!(step, &child);
     step.verify_child(&l.steps[0]).unwrap();
     // not opened: reads refused
-    let ev = net.run(0, sync(l.id, None, vec![], vec![]));
-    assert!(matches!(&ev[..], [ClientEvent::Refused { kind: osis_proto::Request::Sync, code: Code::NOT_OPENED, .. }]), "{ev:?}");
+    let ev = net.run(0, Command::Path { label: l.id, after: None });
+    assert!(matches!(&ev[..], [ClientEvent::Refused { kind: osis_proto::Request::Path, code: Code::NOT_OPENED, .. }]), "{ev:?}");
     let ev = net.run(0, Command::Open { label: l.id, key: OpenKey::Sync { step: None, key: SigningSecret::from_seed(&s32(99)) } });
     assert!(matches!(&ev[..], [ClientEvent::Refused { code: Code::REFUSED, .. }]));
     // a step on another branch is refused with code 9 alone, never the head (spec/sync.md §5)
@@ -344,148 +216,6 @@ fn claim_and_static_opens() {
     assert!(matches!(&ev[..], [ClientEvent::Refused { code: Code::REFUSED, .. }]));
 }
 
-// spec/sync.md §5: stamps under the head's write key; an old key gets 9 alone; expiry, tombstone, unknown label; identical re-uploads log nothing
-// spec/sync.md §5 (upload refusals): bad stamp, expired, tombstoned
-#[test]
-fn upload_rules() {
-    let mut net = Net::new(1, 0);
-    let mut l = Label::new(3);
-    net.setup(&l);
-    let old = l.head_keys().clone();
-    let mut bad = l.entry(blob(2));
-    bad.stamp.0[0] ^= 1;
-    let ev = net.run(0, Command::Upload { label: l.id, entries: vec![l.entry(blob(1)), bad, l.entry(blob_with(3, T0 - 1, vec![])), l.entry(blob_with(4, T0 + 1000, vec![]))] });
-    assert_eq!(statuses(&ev), vec![Code::OK, Code::REFUSED, Code::EXPIRED, Code::OK]);
-    let seq = net.store.log_head(&l.id).unwrap().1;
-    let ev = net.run(0, Command::Upload { label: l.id, entries: vec![l.entry(blob(1))] });
-    assert_eq!(statuses(&ev), vec![Code::OK]);
-    assert_eq!(net.store.log_head(&l.id).unwrap().1, seq);
-    let (child, cs) = l.rotate(20);
-    net.run(0, Command::Register { label: l.id, step: child.clone(), claim_set: Some(cs) });
-    let ev = net.run(0, Command::Upload { label: l.id, entries: vec![l.entry_by(blob(5), &old.write), l.entry(blob(6))] });
-    assert!(matches!(&ev[..], [ClientEvent::EntryStatus { codes, .. }] if *codes == vec![Code::NOT_HEAD, Code::OK]), "{ev:?}");
-    net.open(0, &l);
-    let item = DeleteItem::sign(&l.head_keys().delete, &l.id, bid(6)).unwrap();
-    let ev = net.run(0, Command::Delete { label: l.id, items: vec![item] });
-    assert_eq!(statuses(&ev), vec![Code::OK]);
-    let ev = net.run(0, Command::Upload { label: l.id, entries: vec![l.entry(blob(6))] });
-    assert_eq!(statuses(&ev), vec![Code::TOMBSTONED]);
-    let ev = net.run(0, Command::Upload { label: LabelId([0xee; 16]), entries: vec![l.entry(blob(7))] });
-    assert_eq!(statuses(&ev), vec![Code::UNKNOWN_LABEL]);
-    // a prefix without room for a ciphertext is malformed
-    let mut short = Prefix::new(salt(8), None, vec![]).unwrap().to_bytes();
-    short.push(0);
-    let ev = net.run(0, Command::Upload { label: l.id, entries: vec![l.entry(short)] });
-    assert_eq!(statuses(&ev), vec![Code::MALFORMED]);
-}
-
-// spec/sync.md §5 (upload refusals): an oversized blob is refused by the session (the message
-// decoder's cap is the only check: `accept` has none of its own) and nothing is logged
-#[test]
-fn oversized_upload_refused_spec_sync_5() {
-    let mut net = Net::new(1, 0);
-    let l = Label::new(3);
-    net.setup(&l);
-    let seq = net.store.log_head(&l.id).unwrap().1;
-    let big = l.entry(blob_sized(1, 0, vec![], osis_base::format::MAX_BLOB));
-    let body = Message::Upload { id: 77, label: l.id, entries: vec![big] }.encode();
-    assert!(body.len() < osis_base::format::MAX_MESSAGE);
-    let so = net.hosts[0].handle(T0, &mut net.store, ServingInput::Bytes(encode_frame(&body)));
-    net.host_out(0, so);
-    let reply: Vec<u8> = net.to_client[0].drain(..).flatten().collect();
-    let mut d = FrameDecoder::new();
-    d.set_max(osis_base::format::MAX_MESSAGE);
-    d.push(&reply);
-    let m = Message::decode(&d.next_frame().unwrap().unwrap()).unwrap();
-    assert_eq!(m, Message::Error { id: 77, code: Code::MALFORMED });
-    assert_eq!(net.store.log_head(&l.id).unwrap().1, seq);
-}
-
-// spec/sync.md §5: an Error reply to a deposit (the host's store failed) is a refusal for now: the
-// node holds it as unanswered otherwise, and `send_outbox` paces the label's others behind it
-#[test]
-fn deposit_answered_by_an_error_is_refused_for_now_spec_sync_5() {
-    let mut net = Net::new(1, 0);
-    let l = Label::new(3);
-    net.setup(&l);
-    let (b, wrap): (Vec<u8>, Wrap) = (blob(0), [7; osis_crypto::WRAP_LEN]);
-    let blob_id = osis_label::blob_id(&b);
-    let sig = sign_deposit(&l.head_keys().deposit, &l.id, &blob_id, &wrap, false);
-    let co = net.clients[0].handle(net.now, ClientInput::Command(Command::Deposit { label: l.id, blob: b, wrap, sig }));
-    net.client_out(0, co);
-    let mut d = FrameDecoder::default();
-    d.push(&net.to_host[0].pop_front().unwrap());
-    let id = Message::decode(&d.next_frame().unwrap().unwrap()).unwrap().id();
-    let co = net.clients[0].handle(net.now, ClientInput::Bytes(encode_frame(&Message::Error { id, code: Code::REFUSED }.encode())));
-    net.client_out(0, co);
-    let ev = std::mem::take(&mut net.events[0]);
-    assert!(matches!(&ev[..], [ClientEvent::Budget { code: Code::RATE_LIMITED, budget: None, blob_id: x, .. }] if *x == blob_id), "{ev:?}");
-}
-
-// spec/sync.md §5: deposits by the deposit key within the budget (64 + 4 x claim slots), refused when full
-#[test]
-fn deposit_budget() {
-    let mut net = Net::new(1, 0);
-    let l = Label::new(3);
-    net.setup(&l);
-    let max = 64 + 4 * l.sets[0].claims.len() as u64;
-    let deposit = |l: &Label, n: u64, k: &SigningSecret| {
-        let b = blob(n);
-        let wrap: Wrap = [7; osis_crypto::WRAP_LEN];
-        let sig = sign_deposit(k, &l.id, &osis_label::blob_id(&b), &wrap, false);
-        Command::Deposit { label: l.id, blob: b, wrap, sig }
-    };
-    let dk = l.head_keys().deposit.clone();
-    let ev = net.run(0, deposit(&l, 0, &dk));
-    assert!(matches!(&ev[..], [ClientEvent::Budget { code: Code::OK, budget: Some((n, _)), .. }] if *n == max - 1), "{ev:?}");
-    // a deposit not signed by the deposit key learns its code only, not the budget
-    let ev = net.run(0, deposit(&l, 1, &l.head_keys().write.clone()));
-    assert!(matches!(&ev[..], [ClientEvent::Budget { code: Code::REFUSED, budget: None, .. }]), "{ev:?}");
-    for n in 1..max {
-        net.run(0, deposit(&l, n, &dk));
-    }
-    let ev = net.run(0, deposit(&l, 500, &dk));
-    assert!(matches!(&ev[..], [ClientEvent::Budget { code: Code::BUDGET_FULL, budget: Some((0, _)), .. }]), "{ev:?}");
-    // stamping a deposited entry takes it out of the budget
-    let ev = net.run(0, Command::Upload { label: l.id, entries: vec![l.entry(blob(0))] });
-    assert_eq!(statuses(&ev), vec![Code::OK]);
-    let ev = net.run(0, deposit(&l, 500, &dk));
-    assert!(matches!(&ev[..], [ClientEvent::Budget { code: Code::OK, budget: Some((0, _)), .. }]), "{ev:?}");
-    net.open(0, &l);
-    let (evs, _) = events_of(&net.run(0, sync(l.id, None, vec![], vec![])));
-    assert!(evs.iter().any(|e| matches!(e, Event::Added { stamp: None, .. })));
-}
-
-// spec/sync.md §5 Deposit: an ephemeral blob deposited (no stamp) is held deposited and pushed
-// like any deposit; a relay-only one is refused by the host engine itself, whatever the store
-// behind it checks, and nothing of it is stored or pushed
-#[test]
-fn deposit_ephemeral_held_relay_only_refused_spec_sync_5() {
-    let mut net = Net::new(2, 0);
-    let l = Label::new(3);
-    net.setup(&l);
-    net.open(1, &l);
-    net.run(1, Command::Subscribe { labels: vec![l.id] });
-    let dk = l.head_keys().deposit.clone();
-    for (n, class) in [(1u8, osis_label::Class::Ephemeral), (2, osis_label::Class::Relay)] {
-        let p = Prefix::new(salt(u64::from(n)), Some(WallMs(T0 + osis_base::format::MAX_DRIFT_MS)), vec![]).unwrap().with_class(class);
-        let b = osis_label::frame(&p, &[n; 50], &mut osis_crypto::SeededRng::from_seed([n; 32])).unwrap().1;
-        let wrap: Wrap = [7; osis_crypto::WRAP_LEN];
-        let sig = sign_deposit(&dk, &l.id, &osis_label::blob_id(&b), &wrap, false);
-        let ev = net.run(0, Command::Deposit { label: l.id, blob: b.clone(), wrap, sig });
-        let held = net.store.entry(&l.id, &osis_label::blob_id(&b)).unwrap();
-        if class == osis_label::Class::Relay {
-            assert!(matches!(&ev[..], [ClientEvent::Budget { code: Code::REFUSED, .. }]), "{ev:?}");
-            assert!(held.is_none());
-        } else {
-            assert!(matches!(&ev[..], [ClientEvent::Budget { code: Code::OK, .. }]), "{ev:?}");
-            assert!(held.is_some_and(|m| m.stamp.is_none()), "held deposited");
-            assert!(!std::mem::take(&mut net.events[1]).is_empty(), "pushed");
-        }
-    }
-    assert!(net.events[1].is_empty(), "nothing of the relay-only blob pushed");
-}
-
 // spec/sync.md §5, spec/crypto.md §7: deletes by key and by a level's delete key (level 3 write key, levels 1-2 sync key)
 #[test]
 fn deletes() {
@@ -499,129 +229,59 @@ fn deletes() {
     let b3 = blob_with(10, 0, vec![commit(3, &t3, 10)]);
     let b1 = blob_with(11, 0, vec![commit(1, &t1, 11)]);
     let b_plain = blob(12);
-    net.run(0, Command::Upload { label: l.id, entries: vec![l.entry(b3.clone()), l.entry(b1.clone()), l.entry(b_plain.clone())] });
+    for b in [&b3, &b1, &b_plain] {
+        net.hold(&l, b);
+    }
     let k = l.head_keys().clone();
     let item = |b: &[u8], n: u64, by: (u8, &Secret32), signer: &SigningSecret| DeleteItem::sign_by(signer, &[(by.0, &dk(by.1))], &salt(n), &HB, &l.id, osis_label::blob_id(b)).unwrap();
     let ev = net.run(0, Command::Delete { label: l.id, items: vec![item(&b3, 10, (3, &t3), &k.sync), item(&b3, 10, (3, &t9), &k.write), item(&b3, 10, (1, &t3), &k.sync), item(&b1, 11, (1, &t1), &k.sync)] });
     assert_eq!(statuses(&ev), vec![Code::REFUSED, Code::REFUSED, Code::REFUSED, Code::OK]);
     let ev = net.run(0, Command::Delete { label: l.id, items: vec![item(&b3, 10, (3, &t3), &k.write)] });
     assert_eq!(statuses(&ev), vec![Code::OK]);
-    let (_, cursor) = events_of(&net.run(0, sync(l.id, None, vec![], vec![])));
     let ev = net.run(0, Command::Delete { label: l.id, items: vec![DeleteItem::sign(&k.delete, &l.id, osis_label::blob_id(&b_plain)).unwrap()] });
     assert_eq!(statuses(&ev), vec![Code::OK]);
-    let (evs, _) = events_of(&net.run(0, sync(l.id, cursor, vec![], vec![])));
-    assert_eq!(evs, vec![Event::Deleted(osis_label::blob_id(&b_plain))]);
+    for b in [&b3, &b1, &b_plain] {
+        let id = osis_label::blob_id(b);
+        assert!(net.store.entry(&l.id, &id).unwrap().is_none() && net.store.tombstoned(&l.id, &id).unwrap());
+    }
 }
 
-// spec/sync.md §5, §8, spec/wire.md §11.2: pushes in the cursor-reply format under the last Sync's inline limit; a relay-only entry reaches other subscribers and is stored nowhere
-#[test]
-fn subscribe_push_and_relays() {
-    let mut net = Net::new(2, 0);
-    let l = Label::new(3);
-    net.setup(&l);
-    net.open(0, &l);
-    net.open(1, &l);
-    net.run(1, Command::Sync { label: l.id, cursor: None, inline_limit: 0, entries: vec![], gained: vec![] });
-    let ev = net.run(1, Command::Subscribe { labels: vec![l.id, LabelId([0xee; 16])] });
-    assert_eq!(ev, vec![ClientEvent::Subscribed { labels: vec![l.id, LabelId([0xee; 16])], codes: vec![Code::OK, Code::NOT_OPENED] }]);
-    let (_, c1) = events_of(&net.run(1, sync(l.id, None, vec![], vec![])));
-    net.run(0, Command::Upload { label: l.id, entries: vec![l.entry(blob(1)), l.entry(blob(2))] });
-    let ev = std::mem::take(&mut net.events[1]);
-    let (evs, cursor) = events_of(&ev);
-    assert_eq!(evs.len(), 2);
-    // the last Sync asked for 1 MiB inline: pushes carry the blobs
-    assert!(matches!(&evs[0], Event::Added { blob: Some(_), .. }));
-    assert!(cursor.unwrap().seq > c1.unwrap().seq);
-    let (evs, _) = events_of(&net.run(1, sync(l.id, cursor, vec![], vec![])));
-    assert!(evs.is_empty());
-    let p = Prefix::new(salt(9), Some(WallMs(T0 + osis_base::format::MAX_DRIFT_MS)), vec![]).unwrap().with_class(osis_label::Class::Relay);
-    let env = osis_label::frame(&p, &[0x5a; 100], &mut osis_crypto::SeededRng::from_seed([0; 32])).unwrap().1;
-    let e = l.entry(env.clone());
-    let ev = net.run(0, Command::Upload { label: l.id, entries: vec![e.clone()] });
-    assert_eq!(statuses(&ev), vec![Code::OK]);
-    let (evs, _) = events_of(&std::mem::take(&mut net.events[1]));
-    assert_eq!(evs, vec![Event::Added { blob_id: osis_label::blob_id(&env), blob: Some(env.clone()), wrap: e.wrap, stamp: Some(e.stamp) }]);
-    assert!(net.store.entry(&l.id, &osis_label::blob_id(&env)).unwrap().is_none(), "held by nobody");
-    let mut bad = e.clone();
-    bad.stamp = osis_proto::msg::Signature([0; 64]);
-    net.run(0, Command::Upload { label: l.id, entries: vec![bad] });
-    assert!(net.events[1].is_empty());
-    net.run(1, Command::Unsubscribe { labels: vec![l.id] });
-    net.run(0, Command::Upload { label: l.id, entries: vec![l.entry(blob(3))] });
-    assert!(net.events[1].is_empty());
-}
-
-// spec/sync.md §5 (an open holds under the head's sync key), §8: a head with another sync key
-// ends the label's opens and subscriptions on every connection, the registrar's included: one
-// push ending with that head, then nothing, every read refused 8 until opened again under the
-// new key (which resumes from the cursor). A step keeping the sync key keeps them.
+// spec/sync.md §5 (an open holds under the head's sync key): a head with another sync key
+// ends the label's opens on every connection, the registrar's included: every read refused 8
+// until opened again under the new key. A step keeping the sync key keeps them.
 #[test]
 fn new_sync_key_ends_opens_spec_sync_5() {
     let mut net = Net::new(2, 0);
     let mut l = Label::new(3);
     net.setup(&l);
-    let mut cursors = vec![];
+    let id = l.id;
+    let path = |net: &mut Net, i: usize| net.run(i, Command::Path { label: id, after: None });
     for i in 0..2 {
         net.open(i, &l);
-        let (_, c) = events_of(&net.run(i, sync(l.id, None, vec![], vec![])));
-        cursors.push(c);
-        let ev = net.run(i, Command::Subscribe { labels: vec![l.id] });
-        assert_eq!(ev, vec![ClientEvent::Subscribed { labels: vec![l.id], codes: vec![Code::OK] }]);
     }
     // a step without a read rotation: the opens hold
     let (same, cs) = l.rotate(1);
     assert_eq!(same.keys.sync, l.steps[0].keys.sync);
     net.run(0, Command::Register { label: l.id, step: same.clone(), claim_set: Some(cs) });
-    assert_eq!(events_of(&std::mem::take(&mut net.events[1])).0, vec![Event::Head(same)]);
-    net.run(0, Command::Upload { label: l.id, entries: vec![l.entry(blob(1))] });
-    assert_eq!(added(&events_of(&std::mem::take(&mut net.events[1])).0), vec![bid(1)]);
-    // a read rotation, registered by client 0: both pushed the head last, then nothing
+    for i in 0..2 {
+        let ev = path(&mut net, i);
+        assert!(matches!(&ev[..], [ClientEvent::PathSteps { steps, .. }] if steps.len() == 2), "{ev:?}");
+    }
+    // a read rotation, registered by client 0: both opens end
     let (child, cs) = l.rotate(20);
     let ev = net.run(0, Command::Register { label: l.id, step: child.clone(), claim_set: Some(cs) });
-    assert!(ev.contains(&ClientEvent::Registered { label: l.id }), "{ev:?}");
-    assert_eq!(events_of(&ev).0, vec![Event::Head(child.clone())]);
-    assert_eq!(events_of(&std::mem::take(&mut net.events[1])).0, vec![Event::Head(child.clone())]);
-    let ev = net.run(0, Command::Upload { label: l.id, entries: vec![l.entry(blob(2))] });
-    assert_eq!(statuses(&ev), vec![Code::OK]);
-    assert_eq!(events_of(&ev).0, vec![], "no push to the registrar");
-    assert!(net.events[1].is_empty(), "{:?}", net.events[1]);
-    for (i, cursor) in cursors.iter().enumerate() {
-        let ev = net.run(i, sync(l.id, *cursor, vec![], vec![]));
-        assert!(matches!(&ev[..], [ClientEvent::Refused { kind: Request::Sync, code: Code::NOT_OPENED, .. }]), "{ev:?}");
-        let ev = net.run(i, Command::Fetch { label: l.id, ids: vec![bid(2)] });
-        assert_eq!(ev, vec![ClientEvent::Refused { label: Some(l.id), kind: Request::Fetch, code: Code::NOT_OPENED, fetch: vec![bid(2)] }]);
-        let ev = net.run(i, Command::Path { label: l.id, after: None });
+    assert_eq!(ev, vec![ClientEvent::Registered { label: l.id }]);
+    for i in 0..2 {
+        let ev = path(&mut net, i);
         assert!(matches!(&ev[..], [ClientEvent::Refused { kind: Request::Path, code: Code::NOT_OPENED, .. }]), "{ev:?}");
-        let ev = net.run(i, Command::Subscribe { labels: vec![l.id] });
-        assert_eq!(ev, vec![ClientEvent::Subscribed { labels: vec![l.id], codes: vec![Code::NOT_OPENED] }]);
     }
     assert_eq!(net.hosts[1].opened().count(), 0);
-    // the old key gets the child only; the new one opens and syncs on from the cursor
+    // the old key gets the child only; the new one opens and reads again
     let ev = net.run(1, Command::Open { label: l.id, key: OpenKey::Sync { step: None, key: l.keys[0].sync.clone() } });
     assert!(matches!(&ev[..], [ClientEvent::Step { .. }]), "{ev:?}");
     net.open(1, &l);
-    let (evs, _) = events_of(&net.run(1, sync(l.id, cursors[1], vec![], vec![])));
-    assert_eq!(added(&evs), vec![bid(1), bid(2)]);
-    net.run(1, Command::Subscribe { labels: vec![l.id] });
-    net.run(0, Command::Upload { label: l.id, entries: vec![l.entry(blob(3))] });
-    assert_eq!(added(&events_of(&std::mem::take(&mut net.events[1])).0), vec![bid(3)]);
-}
-
-// spec/sync.md §5, spec/wire.md §11.2: fetch by ID of opened labels only, items in request order
-#[test]
-fn fetch() {
-    let mut net = Net::new(1, 0);
-    let l = Label::new(3);
-    net.setup(&l);
-    net.run(0, Command::Upload { label: l.id, entries: vec![l.entry(blob(1))] });
-    let ids = vec![bid(1), bid(2)];
-    let ev = net.run(0, Command::Fetch { label: l.id, ids: ids.clone() });
-    assert!(matches!(&ev[..], [ClientEvent::Refused { code: Code::NOT_OPENED, .. }]));
-    net.open(0, &l);
-    let ev = net.run(0, Command::Fetch { label: l.id, ids });
-    let [ClientEvent::Fetched { items, .. }] = &ev[..] else { panic!("{ev:?}") };
-    assert_eq!(items[0].entry.as_ref().unwrap().0, blob(1));
-    assert_eq!(items[1].entry, None);
+    let ev = path(&mut net, 1);
+    assert_eq!(ev, vec![ClientEvent::PathSteps { label: l.id, steps: l.steps.clone(), more: false }]);
 }
 
 // spec/wire.md §11.1, §11.2: unknown kind gets Error 11, a malformed request Error 2 (both sides), a bad frame Error 2 and close
@@ -646,92 +306,37 @@ fn bad_frames() {
     assert!(so.contains(&ServingOutput::Close));
 }
 
-// spec/wire.md §11.2: a peer whose Sync pages make no progress is dropped, not followed forever
-#[test]
-fn client_stops_on_a_stuck_sync() {
-    let mut net = Net::new(1, 0);
-    let l = Label::new(3);
-    let cursor = Cursor { log_id: [1; 16], seq: 5 };
-    let out = net.clients[0].handle(T0, ClientInput::Command(sync(l.id, Some(cursor), vec![], vec![])));
-    let sends: Vec<&Vec<u8>> = out.iter().filter_map(|o| if let ClientOutput::Send(f) = o { Some(f) } else { None }).collect();
-    let [f] = &sends[..] else { panic!("{out:?}") };
-    let Message::Sync { id, .. } = Message::decode(&f[4..]).unwrap() else { panic!() };
-    // an empty page under the small first cap is asked on under the whole budget
-    let reply = Message::SyncReply { id, events: vec![], want: vec![], codes: vec![], cursor, more: true };
-    let out = net.clients[0].handle(T0, ClientInput::Bytes(encode_frame(&reply.encode())));
-    let sends: Vec<&Vec<u8>> = out.iter().filter_map(|o| if let ClientOutput::Send(f) = o { Some(f) } else { None }).collect();
-    let [f] = &sends[..] else { panic!("{out:?}") };
-    let Message::Sync { id, max_reply, .. } = Message::decode(&f[4..]).unwrap() else { panic!() };
-    assert_eq!(max_reply, serving::REPLY_BUDGET as u64);
-    let reply = Message::SyncReply { id, events: vec![], want: vec![], codes: vec![], cursor, more: true };
-    let out = net.clients[0].handle(T0, ClientInput::Bytes(encode_frame(&reply.encode())));
-    assert!(out.iter().any(|o| matches!(o, ClientOutput::Event(ClientEvent::PeerError(_)))));
-    assert!(!out.iter().any(|o| matches!(o, ClientOutput::Send(_))));
-}
-
-// spec/sync.md §6, spec/requirements.md cost goals: a common-case sync converges in one round trip
-#[test]
-fn round_trips_are_constant_in_the_common_case() {
-    for n in [10u64, 400] {
-        let mut net = Net::new(2, 0);
-        let l = Label::new(3);
-        net.setup(&l);
-        net.open(0, &l);
-        net.open(1, &l);
-        net.run(0, sync(l.id, None, (0..n).map(|i| l.entry(blob(i))).collect(), vec![]));
-        let (_, cursor) = events_of(&net.run(1, sync(l.id, None, vec![], vec![])));
-        net.run(0, Command::Upload { label: l.id, entries: (n..n + 5).map(|i| l.entry(blob(i))).collect() });
-        net.flights = 0;
-        let (evs, _) = events_of(&net.run(1, sync(l.id, cursor, vec![l.entry(blob(10_000))], vec![])));
-        assert_eq!(evs.len(), 5);
-        assert_eq!(net.flights, 2, "one round trip");
-    }
-}
-
-// spec/sync.md §6, spec/wire.md §11.3: N random entries converge; the reconciliation fallback takes about log16(n) round trips (by hand)
-#[test]
-#[ignore]
-fn loopback_converges_at_size() {
-    let n = 20_000u64;
-    let mut net = Net::new(2, 0);
-    let l = Label::new(3);
-    net.setup(&l);
-    net.open(0, &l);
-    net.open(1, &l);
-    net.run(0, Command::Upload { label: l.id, entries: (0..n).map(|i| l.entry(blob(i))).collect() });
-    let ev = net.run(1, Command::Sync { label: l.id, cursor: None, inline_limit: 0, entries: vec![], gained: vec![] });
-    assert_eq!(events_of(&ev).0.len() as u64, n);
-    net.flights = 0;
-    let ids: Vec<BlobId> = (0..n).filter(|i| i % 1000 != 0).chain(n..n + 20).map(bid).collect();
-    let ev = net.run(1, Command::Reconcile { label: l.id, ids });
-    let [ClientEvent::Reconciled { need, have, .. }] = &ev[..] else { panic!("{ev:?}") };
-    assert_eq!((need.len(), have.len()), (20, 20));
-    assert!(net.flights <= 8, "{} flights", net.flights);
-}
-
 /// The frames a session sent in `out`, decoded.
 fn sent_msgs<'a>(out: impl IntoIterator<Item = &'a ClientOutput>) -> Vec<Message> {
     out.into_iter().filter_map(|o| if let ClientOutput::Send(f) = o { Message::decode(&f[4..]).ok() } else { None }).collect()
 }
 
-/// Push frames (Stream frames when `stream`, for a served session), each carrying an 8 MiB blob,
-/// at least `total` bytes in all.
-fn filler(total: usize, stream: bool) -> Vec<Vec<u8>> {
+/// Relay-only Stream frames, each carrying an 8 MiB blob, at least `total` bytes in all.
+fn filler(total: usize) -> Vec<Vec<u8>> {
     let mut frames = Vec::new();
     let mut n = 0;
     while n < total {
         let ev = Event::Added { blob_id: bid(frames.len() as u64), blob: Some(vec![0; 8 << 20]), wrap: [0; osis_crypto::WRAP_LEN], stamp: None };
-        let l = LabelId([7; 16]);
-        let m = if stream {
-            Message::Stream(Box::new(osis_proto::msg::Stream { events: vec![(l, ev)], cursor: None, report: false }))
-        } else {
-            Message::Push { label: l, events: vec![ev], cursor: Cursor { log_id: [1; 16], seq: 1 } }
-        };
-        let f = encode_frame(&m.encode());
+        let f = encode_frame(&stream(LabelId([7; 16]), ev, None).encode());
         n += f.len();
         frames.push(f);
     }
     frames
+}
+
+/// A Stream of one event.
+fn stream(l: LabelId, ev: Event, cursor: Option<Vec<u8>>) -> Message {
+    Message::Stream(Box::new(osis_proto::msg::Stream { events: vec![(l, ev)], cursor, report: false }))
+}
+
+/// A node's Fetch of one blob asking `max_reply`.
+fn node_fetch(k: u32, max_reply: usize) -> Message {
+    Message::Fetch { id: osis_proto::msg::NODE_IDS | k, label: LabelId([7; 16]), max_reply: max_reply as u64, ids: vec![bid(1)] }
+}
+
+/// Whether `out` carries the answer to a node's Fetch.
+fn fetched(out: &[ClientOutput]) -> bool {
+    out.iter().any(|o| matches!(o, ClientOutput::Event(ClientEvent::Peer(m)) if matches!(**m, Message::FetchReply { .. })))
 }
 
 /// A session past its Hello with its clock pings answered: nothing of its own in flight.
@@ -769,14 +374,14 @@ fn stalled_requests_time_out() {
     assert!(out.iter().any(|o| matches!(o, ClientOutput::SetTimer(x) if *x == T0 + 2 * t - 1)), "{out:?}");
     // a push backlog moves it while within `MAX_AHEAD`: an honest peer's reply can be behind it
     let mut moved = false;
-    for f in filler(client::MAX_AHEAD + 1, false) {
+    for f in filler(client::MAX_AHEAD + 1) {
         let out = c.handle(T0 + t, ClientInput::Bytes(f));
         moved |= out.iter().any(|o| matches!(o, ClientOutput::SetTimer(x) if *x == T0 + 2 * t));
     }
     assert!(moved, "the push backlog moved it");
     // past it bytes of other kinds move nothing: a push, the peer's own request, a later ping's
     // answer
-    let push = Message::Push { label: LabelId([7; 16]), events: vec![Event::Deleted(bid(1))], cursor: Cursor { log_id: [1; 16], seq: 1 } };
+    let push = stream(LabelId([7; 16]), Event::Deleted(bid(1)), Some(vec![1; 72]));
     let mut other = encode_frame(&push.encode());
     other.extend(encode_frame(&Message::Ping { id: 9, wall_ms: T0 }.encode()));
     other.extend(encode_frame(&Message::Pong { id: pings[2], wall_ms: T0 }.encode()));
@@ -808,19 +413,19 @@ fn slow_replies_keep_the_connection_spec_sync_6() {
         assert!(!c.handle(now, ClientInput::Timer).iter().any(|o| matches!(o, ClientOutput::Close)));
     }
     let l = LabelId([7; 16]);
-    let out = c.handle(now, ClientInput::Command(Command::Fetch { label: l, ids: vec![bid(1)] }));
+    let out = c.handle(now, ClientInput::Command(Command::Peer(Box::new(Message::Fetch { id: osis_proto::msg::NODE_IDS | 1, label: l, max_reply: osis_proto::serving::REPLY_BUDGET as u64, ids: vec![bid(1)] }))));
     let fetch = sent_msgs(&out).iter().find_map(|m| if let Message::Fetch { id, .. } = m { Some(*id) } else { None }).unwrap();
     c.handle(now, ClientInput::Bytes(encode_frame(&Message::Pong { id: pings[2], wall_ms: now }.encode())));
     // a 60 KiB answer at 1 KiB per 100 s
     let reply = encode_frame(&Message::FetchReply { id: fetch, items: vec![Fetched { blob_id: bid(1), entry: Some((vec![5; 60 << 10], [0; osis_crypto::WRAP_LEN], None)) }] }.encode());
-    let mut fetched = false;
+    let mut got = false;
     for piece in reply.chunks(1024) {
         now += t - 20_000;
         let out = c.handle(now, ClientInput::Bytes(piece.to_vec()));
-        fetched |= out.iter().any(|o| matches!(o, ClientOutput::Event(ClientEvent::Fetched { .. })));
+        got |= fetched(&out);
         assert!(!c.handle(now, ClientInput::Timer).iter().any(|o| matches!(o, ClientOutput::Close)), "closed at {} s", (now - T0) / 1000);
     }
-    assert!(fetched, "the answer arrived");
+    assert!(got, "the answer arrived");
     assert!(!c.is_closed());
 }
 
@@ -831,10 +436,10 @@ fn slow_replies_keep_the_connection_spec_sync_6() {
 fn a_slow_reply_behind_a_full_push_backlog_keeps_the_connection_spec_sync_6() {
     let t = client::STALL_TIMEOUT_MS;
     let mut c = quiet_session();
-    let out = c.handle(T0, ClientInput::Command(Command::Fetch { label: LabelId([7; 16]), ids: vec![bid(1)] }));
+    let out = c.handle(T0, ClientInput::Command(Command::Peer(Box::new(node_fetch(1, client::FIRST_REPLY)))));
     let fetch = sent_msgs(&out).iter().find_map(|m| if let Message::Fetch { id, .. } = m { Some(*id) } else { None }).unwrap();
     let blob = vec![5; osis_proto::serving::REPLY_BUDGET - 1024];
-    let push = |seq| encode_frame(&Message::Push { label: LabelId([8; 16]), events: vec![Event::Added { blob_id: bid(seq), blob: Some(blob.clone()), wrap: [0; osis_crypto::WRAP_LEN], stamp: None }], cursor: Cursor { log_id: [1; 16], seq } }.encode());
+    let push = |seq| encode_frame(&stream(LabelId([8; 16]), Event::Added { blob_id: bid(seq), blob: Some(blob.clone()), wrap: [0; osis_crypto::WRAP_LEN], stamp: None }, Some(seq.to_be_bytes().to_vec())).encode());
     let mut link = push(1);
     link.extend(push(2));
     link.extend(encode_frame(&Message::FetchReply { id: fetch, items: vec![] }.encode()));
@@ -844,7 +449,7 @@ fn a_slow_reply_behind_a_full_push_backlog_keeps_the_connection_spec_sync_6() {
     for piece in link.chunks(64 << 10) {
         now += 4000;
         let out = c.handle(now, ClientInput::Bytes(piece.to_vec()));
-        answered |= out.iter().any(|o| matches!(o, ClientOutput::Event(ClientEvent::Fetched { .. })));
+        answered |= fetched(&out);
         assert!(!c.handle(now, ClientInput::Timer).iter().any(|o| matches!(o, ClientOutput::Close)), "closed at {} s", (now - T0) / 1000);
     }
     assert!(now - T0 > 4 * t, "slower than the stall time");
@@ -857,14 +462,14 @@ fn a_slow_reply_behind_a_full_push_backlog_keeps_the_connection_spec_sync_6() {
 fn a_pusher_answering_nothing_is_closed_after_max_ahead_spec_sync_6() {
     let t = client::STALL_TIMEOUT_MS;
     let mut c = quiet_session();
-    c.handle(T0, ClientInput::Command(Command::Fetch { label: LabelId([7; 16]), ids: vec![bid(1)] }));
+    c.handle(T0, ClientInput::Command(Command::Peer(Box::new(node_fetch(1, client::FIRST_REPLY)))));
     let mut bytes = 0;
-    for f in filler(client::MAX_AHEAD + 1, false) {
+    for f in filler(client::MAX_AHEAD + 1) {
         bytes += f.len();
         c.handle(T0 + 1, ClientInput::Bytes(f));
     }
     assert!(bytes <= client::MAX_AHEAD + (9 << 20), "{bytes}");
-    let small = encode_frame(&Message::Push { label: LabelId([8; 16]), events: vec![Event::Deleted(bid(1))], cursor: Cursor { log_id: [1; 16], seq: 1 } }.encode());
+    let small = encode_frame(&stream(LabelId([8; 16]), Event::Deleted(bid(1)), Some(vec![1; 72])).encode());
     let mut now = T0 + 1;
     while now < T0 + 1 + t - 1000 {
         now += 1000;
@@ -939,7 +544,7 @@ fn a_silent_node_request_times_out_spec_sync_6() {
 #[test]
 fn a_listener_request_stalls_while_the_dialer_answers_nothing_spec_sync_6() {
     let t = client::STALL_TIMEOUT_MS;
-    let mut store = MemoryLabelStore::new([9; 32]);
+    let mut store = MemoryLabelStore::new();
     let mut s = ServingSession::new(ServingConfig { static_key: [1; 32], challenge: [2; 32] });
     let bytes = |out: Vec<ServingOutput>| out.iter().map(|o| if let ServingOutput::Send(f) = o { f.len() } else { 0 }).sum::<usize>();
     let mut written = bytes(s.handle(T0, &mut store, ServingInput::Start));
@@ -957,7 +562,7 @@ fn a_listener_request_stalls_while_the_dialer_answers_nothing_spec_sync_6() {
     assert_eq!(s.stall_at(), Some(T0 + 10 + t));
     // the dialer's own messages move it until `MAX_AHEAD` of them came (one per input: what a
     // single input may carry is bounded apart)
-    for f in filler(client::MAX_AHEAD + 1, true) {
+    for f in filler(client::MAX_AHEAD + 1) {
         s.handle(T0 + 30, &mut store, ServingInput::Bytes(f));
     }
     assert_eq!(s.stall_at(), Some(T0 + 30 + t));
@@ -976,71 +581,31 @@ fn a_listener_request_stalls_while_the_dialer_answers_nothing_spec_sync_6() {
     assert!(!s.is_closed());
 }
 
-// spec/sync.md §6 (a replay's pages bring the live entries, the last page the log cursor), §8
-// (pushes carry cursors): a Push arriving while a Sync of its label runs gives no cursor to keep,
-// so a connection lost before the Sync ends never skips the entries its later pages held
-#[test]
-fn push_during_sync_keeps_no_cursor() {
-    let mut c = ClientSession::new(ClientConfig { peer_static_key: [1; 32], challenge: [2; 32] });
-    c.handle(T0, ClientInput::Start);
-    c.handle(T0, ClientInput::Bytes(encode_frame(&Hello::new(T0, [3; 32]).encode())));
-    let l = LabelId([7; 16]);
-    let out = c.handle(T0, ClientInput::Command(sync(l, None, vec![], vec![])));
-    let id = out.iter().find_map(|o| if let ClientOutput::Send(f) = o { if let Ok(Message::Sync { id, .. }) = Message::decode(&f[4..]) { Some(id) } else { None } } else { None }).unwrap();
-    let head = Cursor { log_id: [1; 16], seq: 9 };
-    let push = |c: &mut ClientSession| {
-        let out = c.handle(T0, ClientInput::Bytes(encode_frame(&Message::Push { label: l, events: vec![Event::Deleted(bid(1))], cursor: head }.encode())));
-        out.into_iter().find_map(|o| if let ClientOutput::Event(ClientEvent::Events { cursor, .. }) = o { Some(cursor) } else { None }).unwrap()
-    };
-    assert_eq!(push(&mut c), None, "no cursor while the replay runs");
-    c.handle(T0, ClientInput::Bytes(encode_frame(&Message::SyncReply { id, events: vec![], want: vec![], codes: vec![], cursor: Cursor { log_id: [1; 16], seq: 8 }, more: false }.encode())));
-    assert_eq!(push(&mut c), Some(head), "kept once it ended");
-}
-
-// the same while a reconciliation of the label runs (a node's first sync after a start
-// reconciles, then syncs from its kept cursor): a push's cursor kept then skipped the entries
-// between the old cursor and the push for good when the connection ended first
-#[test]
-fn push_during_reconcile_keeps_no_cursor() {
-    let mut c = ClientSession::new(ClientConfig { peer_static_key: [1; 32], challenge: [2; 32] });
-    c.handle(T0, ClientInput::Start);
-    c.handle(T0, ClientInput::Bytes(encode_frame(&Hello::new(T0, [3; 32]).encode())));
-    let l = LabelId([7; 16]);
-    let out = c.handle(T0, ClientInput::Command(Command::Reconcile { label: l, ids: vec![bid(1)] }));
-    assert!(out.iter().any(|o| matches!(o, ClientOutput::Send(f) if matches!(Message::decode(&f[4..]), Ok(Message::Reconcile { .. })))));
-    let out = c.handle(T0, ClientInput::Bytes(encode_frame(&Message::Push { label: l, events: vec![Event::Deleted(bid(2))], cursor: Cursor { log_id: [1; 16], seq: 9 } }.encode())));
-    let cursor = out.into_iter().find_map(|o| if let ClientOutput::Event(ClientEvent::Events { cursor, .. }) = o { Some(cursor) } else { None }).unwrap();
-    assert_eq!(cursor, None, "no cursor while the reconciliation runs");
-}
-
 // spec/sync.md §6 (flow control): a client within its window never sends more unanswered
 // requests than `MAX_UNANSWERED`, so a host delivering everything it sent in one input (as
-// `pump` does) closes nothing: many reconciliations, fetches, paths and pings queued at once
+// `pump` does) closes nothing: paths, deletes and pings past a window's worth queued at once
 // all complete
 #[test]
 fn queued_requests_stay_within_the_unanswered_bound() {
     let mut net = Net::new(2, 0);
     let l = Label::new(3);
     net.setup(&l);
-    net.open(0, &l);
     net.open(1, &l);
-    net.run(0, Command::Upload { label: l.id, entries: (0..100).map(|n| l.entry(blob(n))).collect() });
+    let n = 2 * client::WINDOW / SMALL_REPLY;
     let mut co = Vec::new();
-    for k in 0..8u64 {
+    for k in 0..n as u64 {
         let c = &mut net.clients[1];
-        co.extend(c.handle(net.now, ClientInput::Command(Command::Reconcile { label: l.id, ids: (k..90 + k).map(bid).collect() })));
-        co.extend(c.handle(net.now, ClientInput::Command(Command::Fetch { label: l.id, ids: vec![bid(k)] })));
         co.extend(c.handle(net.now, ClientInput::Command(Command::Path { label: l.id, after: None })));
-        co.extend(c.handle(net.now, ClientInput::Command(sync(l.id, None, vec![], vec![]))));
+        let item = DeleteItem::sign(&l.head_keys().delete, &l.id, bid(k)).unwrap();
+        co.extend(c.handle(net.now, ClientInput::Command(Command::Delete { label: l.id, items: vec![item] })));
     }
+    assert!(net.clients[1].unsent() > 0, "the window holds some back");
     net.client_out(1, co);
     net.pump();
     assert!(!net.hosts[1].is_closed());
     let ev = std::mem::take(&mut net.events[1]);
-    // reconciliations of one label: the last one given is the one that reports
-    assert_eq!(ev.iter().filter(|e| matches!(e, ClientEvent::Reconciled { .. })).count(), 1, "{ev:?}");
-    assert_eq!(ev.iter().filter(|e| matches!(e, ClientEvent::Fetched { .. })).count(), 8, "{ev:?}");
-    assert_eq!(ev.iter().filter(|e| matches!(e, ClientEvent::PathSteps { .. })).count(), 8, "{ev:?}");
+    assert_eq!(ev.iter().filter(|e| matches!(e, ClientEvent::PathSteps { .. })).count(), n, "paths");
+    assert_eq!(ev.iter().filter(|e| matches!(e, ClientEvent::DeleteStatus { .. })).count(), n, "deletes");
     assert_eq!(net.clients[1].outstanding(), 0);
 }
 
@@ -1221,73 +786,4 @@ fn held_back_node_requests_keep_their_order_spec_sync_6() {
     }
     assert_eq!(sent[0], made[..2], "the window holds back the rest");
     assert_eq!(answered, made, "listener");
-}
-
-// spec/sync.md §6, spec/wire.md §11.2 (Sync, Fetch `max_reply`): a request's allowance is what it
-// asks, so a connection opens and syncs many labels in a few round trips, not two labels per trip.
-#[test]
-fn many_labels_sync_in_few_round_trips() {
-    let mut net = Net::new(1, 0);
-    let labels: Vec<Label> = (0..=255).map(Label::new).collect();
-    for l in &labels {
-        net.setup(l);
-        net.open(0, l);
-    }
-    let ids: Vec<LabelId> = labels.iter().map(|l| l.id).collect();
-    let n = ids.len();
-    let start = net.flights;
-    let mut out = vec![];
-    for id in &ids {
-        out.extend(net.clients[0].handle(net.now, ClientInput::Command(sync(*id, None, vec![], vec![]))));
-    }
-    net.client_out(0, out);
-    net.pump();
-    let synced = net.events[0].iter().filter(|e| matches!(e, ClientEvent::Synced { .. })).count();
-    assert_eq!(synced, n);
-    assert!(net.flights - start <= 4, "{} flights for {n} labels", net.flights - start);
-}
-
-// spec/wire.md §11.2 Sync: a first page stays under a small `max_reply`, an inline blob that does
-// not fit waits for the next page (a page with no event, not a stuck peer), nothing is lost.
-#[test]
-fn small_first_page_then_the_whole_budget() {
-    let mut net = Net::new(2, 0);
-    let l = Label::new(3);
-    net.setup(&l);
-    net.open(0, &l);
-    net.open(1, &l);
-    let big: Vec<Vec<u8>> = (0..4).map(|i| blob_sized(i, 0, vec![], 5 * SMALL_REPLY)).collect();
-    let entries: Vec<Entry> = big.iter().map(|b| l.entry(b.clone())).collect();
-    net.run(0, Command::Upload { label: l.id, entries });
-    let start = net.flights;
-    let ev = net.run(1, sync(l.id, None, vec![], vec![]));
-    let (evs, _) = events_of(&ev);
-    assert_eq!(added(&evs).len(), 4);
-    assert!(evs.iter().all(|e| matches!(e, Event::Added { blob: Some(_), .. })), "inline");
-    assert!(ev.contains(&ClientEvent::Synced { label: l.id }));
-    assert!(!ev.iter().any(|e| matches!(e, ClientEvent::PeerError(_))), "{ev:?}");
-    assert_eq!(net.flights - start, 4, "the small page, then one under the whole budget");
-}
-
-// spec/wire.md §11.2 Fetch: a blob over a small `max_reply` is asked again under the whole budget.
-#[test]
-fn fetch_over_a_small_cap_asks_again() {
-    let mut net = Net::new(1, 0);
-    let l = Label::new(3);
-    net.setup(&l);
-    net.open(0, &l);
-    let b = blob_sized(9, 0, vec![], 5 * SMALL_REPLY);
-    let id = osis_label::blob_id(&b);
-    let small = blob(1);
-    net.run(0, Command::Upload { label: l.id, entries: vec![l.entry(small.clone()), l.entry(b)] });
-    let start = net.flights;
-    let ev = net.run(0, Command::Fetch { label: l.id, ids: vec![id] });
-    assert_eq!(net.flights - start, 4, "asked twice");
-    let got: Vec<_> = ev.iter().filter_map(|e| if let ClientEvent::Fetched { items, .. } = e { Some(items.clone()) } else { None }).flatten().collect();
-    assert_eq!(got.len(), 1);
-    assert!(got[0].entry.is_some());
-    // a small one in one trip
-    let start = net.flights;
-    net.run(0, Command::Fetch { label: l.id, ids: vec![osis_label::blob_id(&small)] });
-    assert_eq!(net.flights - start, 2);
 }
