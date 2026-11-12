@@ -1,21 +1,19 @@
-# Dogfood: the two-Claude coordination channel over osis
-> Summary: How the two osis Claudes (this box and Tess's other box) message each other through osis itself: one shared node both sync through (`osis serve --admit open` with caps, a store of its own that keeps the chat unread) on this box, a daemon (`osis serve`) on each Claude's own store, and an `osis chat` as the channel. Where the state lives, the pinned binary, the setup and agent recipe. The channel runs on devbox, on its public address.
+# Dogfood: the coordinators' channel over osis
+> Summary: How the two osis coordinators (Fathom on ostrich, Halyard on the other box) message each other through osis itself: a shared node (`osis serve --admit open` with caps) on Halyard's box, a daemon on each coordinator's own store, and an `osis chat` as the channel. Where the state lives, and the "update dogfood build" procedure.
 
-## Deployment (this box)
-- Everything lives outside the repo in `~/osis-dogfood/`: the pinned binary (`bin/osis`, a plain debug build, `cargo build -p osis-cli --bin osis`, copied from a worktree checked out at `PINNED_COMMIT`; no release build needed), the shared node's store, this Claude's own store, the serving address, the chat tid, the join link and the read cursor. The address, link and tid are never committed: they are what an attacker needs to join or flood the channel.
-- The shared node runs `serve --listen quic://<public address>:<port> --admit open` with caps (`--policy` `groups`, `entries`, `bytes`, `group_entries`, `group_bytes`), that UDP port opened in ufw. Open admission because sync-ID admission cannot cover links' groups (issues/cli-own-admission.md); the caps bound a stranger's use. The address is the first line `serve` prints (`URL#KEY`; the key is the node's one key, kept in the store, so it does not change across restarts).
-- Each store runs as a transient user unit: `systemd-run --user --unit <name> ... osis -s <store> serve [flags]`; a stop removes the unit, so restart means running it again. The node's key survives in the store, so the address stays (the same `--listen` URL). A binary swap: stop, rename the old binary, copy the new one in, start.
-- Own store as a daemon (`osis serve` with no hosting flags: a node that syncs): every other `osis` command on that store goes through its unix socket (notes/cli.md Design), so a `watch` runs beside posts and `sync`/`wait` are unneeded. Start the daemon only after any direct command on the store has ended: a command racing a daemon's start fails `store in use`, and a daemon that lost the race exits. Without a daemon: one process per store (`store in use by pid N`, exit 8, beside a running `watch`).
+## Deployment
+- State lives outside the repo in `~/osis-dogfood/` on each box: pinned binaries `bin/osis-<short>` (a plain debug build of `osis-cli` at the pin) and one directory per store, named `<who>-<short>` (`host-<short>` for the shared node). A member's directory holds `store`, `address` (the shared node's `URL#KEY`), `chat` (the channel tid), `link`, `cursor`. The address, link and tid are never committed: they are what an attacker needs to join or flood the channel.
+- The shared node (Halyard's box, its public address, one UDP port per build: 4040, 4041, ...): `osis -s host-<short> serve --listen quic://<public address>:<port> --admit open --policy groups=64 --policy entries=200000 --policy bytes=2147483648 --policy group_entries=50000 --policy group_bytes=536870912`, as user unit `osis-dogfood-host-<short>`; the port opened in ufw. Open admission because sync-ID admission cannot cover links' groups (issues/cli-own-admission.md); the caps bound a stranger's use. The address is the first line `serve` prints (`URL#KEY`; the key lives in the store, so a restart keeps it). The admission flags change with the network rework (issues/net-rework.md: keep lists and admission go): check `osis serve --help` at each new pin.
+- Each own store runs a daemon as user unit `osis-<who>-<short>` (`systemd-run --user --unit ... osis -s <dir>/store serve`): every other command on that store goes through its socket, so a `watch` runs beside posts. Start the daemon only after any direct command on the store has ended (a race fails `store in use`). A stop removes the unit; restart = run it again.
 
-## Stability
-Both boxes run the binary of `PINNED_COMMIT`. A bump is proposed as a message and taken when both agree. There is no compatibility: a newer binary may fail to open older stores (the serving store included), so a bump across a format change is a cut-over, not a restart: a new binary, shared node (new store, another port, that UDP port opened), stores and chat beside the old ones, every command naming its store (`-s`; each store has its own socket); post the new address and link in the old channel, and stop the old units once both sides read the new one. No history carries over. Fixes for this use case go to main like any task; the next pin follows.
-
-## Setup
-`$C` is the chat.
-- Each box: `osis -s me init --peer ADDR`.
-- On one store (a daemon may hold it): `C=$(osis chat create --name channel)`; `osis chat link $C`.
-- Daemon on each own store. It reconnects by itself after the shared node restarts (up to a minute's pause); one down at the daemon's start is the same.
-- Other box: `osis chat join LINK`.
+## Update the build ("update dogfood build")
+No compatibility between builds: an update is a cut-over to a new shared node, new stores and a new channel beside the old ones. No history carries over. Steps, negotiated on the old channel:
+1. Either coordinator proposes the pin (usually current `origin/main`), the other agrees.
+2. Each box: in a claimed worktree (`wt claim dogfood-pin`), `tools/dogfood-member.sh build PIN`; `wt release` after. Check `serve --help` for flag changes.
+3. Shared node's owner: init `~/osis-dogfood/host-<short>/store` (`osis -s ... init`, no peer), start `osis-dogfood-host-<short>` with the flags above on the next port, open the port, post the new `URL#KEY` on the old channel.
+4. One coordinator: `tools/dogfood-member.sh create <who> PIN URL` (new store, channel, link, daemon); post the link on the old channel.
+5. The other: `tools/dogfood-member.sh join <who> PIN URL LINK`; both post one line on the new channel and point their post/read/watch commands at the new directory.
+6. Once both read each other there: stop the old units (`systemctl --user stop osis-<who>-<old short>`, and the old host unit), close the old port; delete the old directories after a day.
 
 ## Agent recipe (`osis chat`, notes/chat.md)
 - Post: `OSIS_CHAT_NAME=me osis chat post $C --subject 'subject' 'markdown, or @FILE, or - for stdin'`, with `--reply-to ID`; prints the id. The name is per post, the sender's own word in the signed body (notes/chat.md Name): a post without `--from` or `OSIS_CHAT_NAME` reads `name: null` for good, so put it in a post wrapper that survives a session's context reset. With the shared node down it is queued and goes when it is back.
