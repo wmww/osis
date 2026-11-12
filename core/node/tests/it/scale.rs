@@ -1324,18 +1324,27 @@ fn a_change_costs_a_few_passes() {
             }
             // a full pass judges the label's bodies
             linear(&format!("{change:?}, node {k}: bodies judged"), small.0[k][2], big.0[k][2]);
-            // a change's passes: its own commits arriving, pushed back and settled. Edge 10: own
-            // uploads' echoes and others' uploads reach a node as separate stream pushes until
-            // 3h2's single pass over sources(L) (issues/net-one-peer.md), expected to bring it to 8
-            let most = if change == Change::Edge { 10 } else { 8 };
-            assert!(big.0[k][0] <= most && big.0[k][1] <= 2, "{change:?}, node {k}: {:?} passes, full", big.0[k]);
+            // a change's passes: its own commits arriving, pushed back and settled. Grant and
+            // Edge give the thing secrets and a label of its own, which all three holders start
+            // at once; at node 0 (counted by cause: Grant 16, Edge 21) a pass per label its
+            // own commits touch (L, home, the new L': 3, Edge 5), per own role commit a source
+            // showed, of every label it concerns (`reached`: 5, Edge 8; these wake rotations
+            // and deletes waiting on it elsewhere), per stream push bringing the other holders'
+            // certificate and record copies of the new label (each places what the new label
+            // lacks before the others' copies are shown: 5), and once each for the new label's
+            // source opening, its head, and a report reached. Full passes: two, and for a new
+            // label also its first pass (a fresh work set)
+            let new_label = matches!(change, Change::Grant | Change::Edge);
+            let most = if new_label { 22 } else { 8 };
+            assert!(big.0[k][0] <= most && big.0[k][1] <= if new_label { 3 } else { 2 }, "{change:?}, node {k}: {:?} passes, full", big.0[k]);
         }
-        // a rotation run per node and role commit applied, not per pass; keep bounds per commit
-        // the change marks, not per body a pass judges
+        // a rotation run per node and secret actor the change moved, not per pass (Grant and
+        // Edge: g and the thing at each of three nodes, and the two accounts the edge names); keep
+        // bounds per commit the change marks, not per body a pass judges
         flat(&format!("{change:?}: rotation runs"), small.1[0], big.1[0]);
         flat(&format!("{change:?}: keep bounds judged"), small.1[1], big.1[1]);
         let passes: u64 = big.0.iter().map(|x| x[0]).sum();
-        assert!(big.1[0] <= 6, "{change:?}: {} rotation runs over {passes} passes", big.1[0]);
+        assert!(big.1[0] <= 8, "{change:?}: {} rotation runs over {passes} passes", big.1[0]);
     }
 }
 
