@@ -1071,7 +1071,7 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
             return Err(Error::Corrupt("meta row"));
         }
         crate::apply::index_commit(tx.core, &id, &view);
-        tx.core.put_meta(id, Meta { view, header, received: head.received, origin: head.origin, valid, dropped: head.dropped, stripped: head.stripped, valued: head.valued, missing, whole, forgot });
+        tx.core.put_meta(id, Meta { view, header, received: head.received, origin: head.origin, valid, dropped: head.dropped, stripped: head.stripped, valued: head.valued, missing, whole, forgot, to_fetch: BTreeSet::new() });
         crate::apply::note_stands_in(tx.core, &id);
         tx.core.index_validity(&id);
     }

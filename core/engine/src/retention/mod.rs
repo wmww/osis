@@ -353,10 +353,11 @@ fn goes_invalid(core: &Core, m: &crate::engine::Meta, ai: usize) -> bool {
 
 /// Whether commit `m` holds no part and is known only for a part dropped while invalid (its
 /// header, so a copy is not taken while it stays invalid and valid again it is fetched,
-/// `valid_again`): durable and memory alike, node-sync forgets it once it knows no entry of it
-/// (`Engine::forgettable`, spec/permissions.md §6).
+/// `valid_again`) or, memory class, one reopened to be fetched (`Meta::to_fetch`): durable and
+/// memory alike, node-sync forgets it once it knows no entry of it (`Engine::forgettable`,
+/// spec/permissions.md §6).
 pub(crate) fn kept_invalid(m: &crate::engine::Meta) -> bool {
-    (0..m.view.aspects.len()).all(|ai| !m.holds(ai)) && m.dropped.keys().any(|ai| m.dropped_invalid(*ai))
+    (0..m.view.aspects.len()).all(|ai| !m.holds(ai)) && (!m.to_fetch.is_empty() || m.dropped.keys().any(|ai| m.dropped_invalid(*ai)))
 }
 
 /// Drops every held part judged invalid in this transaction (`Core::drop_due`) but those
@@ -477,9 +478,14 @@ fn refetch(tx: &mut Tx<'_>, c: &CommitId) {
     }
 }
 
-/// `reopen`, and node-sync fetches it again (`Changed::undropped`).
+/// `reopen`, and node-sync fetches it again (`Changed::undropped`). A memory commit stays known
+/// while the part is to come (`Meta::to_fetch`).
 fn reopen_to_fetch(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<Option<crate::engine::Meta>> {
-    let m = reopen(tx, c, ai)?;
+    let mut m = reopen(tx, c, ai)?;
+    if let Some(m) = m.as_mut().filter(|m| m.view.memory) {
+        m.to_fetch.insert(ai);
+        tx.core.put_meta(*c, m.clone());
+    }
     if let Some(ch) = &mut tx.core.changed {
         ch.undropped.insert(*c);
     }

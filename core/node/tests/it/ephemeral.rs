@@ -2338,6 +2338,71 @@ fn invalid_part_tombstoned_then_valid_fetched_spec_permissions_6() {
     }
 }
 
+// spec/permissions.md §6 (a part dropped while invalid is fetched again once valid; random churn
+// seed 657238290944 shrunk): writer c's write X (a cursor key and a flag) and its later flag Y
+// reach b before c's demotion does, so b holds X's flag superseded by Y. The demotion's frontier
+// lacks both: X's cursor part drops at b as invalid, X known for it alone. The re-grant makes it
+// valid again, missing until fetched: X stays known while a part of it is to come (a forget then
+// took the superseded flag for all of X, and b never fetched the cursor part)
+#[test]
+fn superseded_part_beside_one_valid_again_fetched_spec_permissions_6() {
+    let (mut net, (hosts, nodes, g, w)) = churn_world();
+    let (a, b, c) = (nodes[0], nodes[1], nodes[2]);
+    net.set_online(nodes[3], false);
+    let tc = net.tid(c);
+    let edge = |role| osis_schema::core_types::Edge { role, until: None, invite: None, tied: None };
+    let role = |net: &mut Net, holder: Tid, r: Role| {
+        let done = if r == Role::Write {
+            net.engine(a).grant(&g, &holder, &edge(r)).unwrap()
+        } else {
+            net.engine(a).demote(&g, &osis_node::flows::Demotion { holder, new: Some(edge(r)), retain: None }).unwrap()
+        };
+        let acts = net.sync(a).carry_out(done).unwrap();
+        net.actions(a, acts);
+    };
+    // b reads only: no addendum of its vouches for c's writes
+    let tb = net.tid(b);
+    role(&mut net, tb, Role::Read);
+    net.advance(1_000);
+    // c reaches only host 1, the admin only host 0
+    for (n, h) in [(c, hosts[0]), (a, hosts[1])] {
+        net.blocked.insert((n, h));
+        net.drop_link(n, h);
+    }
+    net.run();
+    let exp = osis_base::WallMs(net.now() + 1_200_000);
+    let mut m = Mutation::new();
+    m.op(w, &eph(CURSOR), PathOp { path: vec![PathSeg::Key(s("k"))], op: Op::Put(s("c")) }).unwrap();
+    m.set(w, &eph(FLAG), &s("f1")).unwrap();
+    for ak in [CURSOR, FLAG] {
+        m.expires(w, &eph(ak), exp).unwrap();
+    }
+    let x = net.engine(c).write(m).unwrap().unwrap().id;
+    local(&mut net, c);
+    net.advance(1_000);
+    let mut m = Mutation::new();
+    m.set(w, &eph(FLAG), &s("f2")).unwrap();
+    m.expires(w, &eph(FLAG), exp).unwrap();
+    net.engine(c).write(m).unwrap().unwrap();
+    local(&mut net, c);
+    net.advance(1_000);
+    assert!(net.engine(b).memory_body_held(&x), "b holds X's cursor part");
+    // the demotion's frontier lacks c's writes: invalid (spec/permissions.md §5.2)
+    role(&mut net, tc, Role::Read);
+    net.advance(1_000);
+    assert!(net.engine(b).kept_invalid(&x), "b knows X only for its invalid cursor part");
+    role(&mut net, tc, Role::Write);
+    net.advance(1_000);
+    net.blocked.clear();
+    for _ in 0..3 {
+        net.advance(15_000);
+    }
+    let want = Some(Value::Map([(s("k"), s("c"))].into()));
+    for n in [a, b, c] {
+        assert_eq!(net.eph_read(n, w, CURSOR), want, "node {n} reads c's cursor write");
+    }
+}
+
 // spec/sync.md §7 (a delete waits for the role commits it is judged by; random churn seed
 // 460971879377 shrunk): writer c is promoted again while writer b reaches only host 0 and the
 // admin only host 1, so b still judges c a reader. c's snapshot covers b's write, but c's

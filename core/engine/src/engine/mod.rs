@@ -96,6 +96,11 @@ pub struct Meta {
     /// Forgetting): dead at every node, so they keep no header; a copy arriving joins them as
     /// any missing part, and the mark goes with it.
     pub forgot: BTreeSet<usize>,
+    /// Those of `missing` reopened to be fetched again (`retention::reopen_to_fetch`: valid
+    /// again, uncovered, a fall), memory class: a memory commit holding no part stays known
+    /// while one is (`retention::kept_invalid`), so a superseded part beside it does not take the
+    /// commit, and the part to come, with it (`retention::memory::forget_if_spent`).
+    pub to_fetch: BTreeSet<usize>,
 }
 
 /// Why a part dropped, where that decides whether it can come back.
@@ -278,7 +283,7 @@ pub(crate) type CoverCache = (CommitId, usize, Vec<osis_crdt::Fragment>, Option<
 impl Meta {
     /// A commit's meta from its decoded header.
     pub(crate) fn new(header: Arc<Header>, valid: Vec<bool>, head: index::RecordHead, missing: BTreeSet<usize>) -> Meta {
-        Meta { view: Arc::new(View::of(&header)), header: LazyHeader::ready(header), received: head.received, origin: head.origin, valid, dropped: head.dropped, stripped: head.stripped, valued: head.valued, missing, whole: BTreeSet::new(), forgot: BTreeSet::new() }
+        Meta { view: Arc::new(View::of(&header)), header: LazyHeader::ready(header), received: head.received, origin: head.origin, valid, dropped: head.dropped, stripped: head.stripped, valued: head.valued, missing, whole: BTreeSet::new(), forgot: BTreeSet::new(), to_fetch: BTreeSet::new() }
     }
     /// The index of aspect `(tid, ak)` in the commit.
     pub(crate) fn aspect(&self, tid: &Tid, ak: &Ak) -> Option<usize> {
@@ -2182,6 +2187,7 @@ impl Core {
     pub(crate) fn put_meta(&mut self, id: CommitId, mut m: Meta) {
         // a part joined or dropped since is no longer marked forgotten
         m.forgot.retain(|ai| m.missing.contains(ai));
+        m.to_fetch.retain(|ai| m.missing.contains(ai));
         self.index_own(&id, &m, true);
         // a part held invalid (a late part joining, a leftover kept) goes at the transaction's end
         if (0..m.valid.len()).any(|ai| !m.valid_at(ai) && m.holds(ai)) {
