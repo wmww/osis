@@ -842,10 +842,6 @@ mod tests {
         assert_eq!(runs("test count"), 1);
     }
 
-    // spec: none (internal). An answer no longer holding is amended when each read of it that
-    // moved was only ever read inside `accounted`, and is again by the amend; a move of any other
-    // read runs the function anew, as does an amend giving no answer, and so does a move of a
-    // stamp read inside and outside `accounted` (as two keys sharing a hash share one).
     // spec: none (engine internals): a hit looks up the keys an answer read only in containers
     // that changed since they last held; an unchanged one holds whole, a moved key in either
     // container runs it again, however often it was asked in between
@@ -874,6 +870,10 @@ mod tests {
         assert_eq!(runs("test pair"), 2, "a key read moved in one container, then in the other");
     }
 
+    // spec: none (internal). An answer no longer holding is amended when each read of it that
+    // moved was only ever read inside `accounted`, and is again by the amend; a move of any other
+    // read runs the function anew, as does an amend giving no answer, and so does a move of a
+    // stamp read inside and outside `accounted` (as two keys sharing a hash share one).
     #[test]
     fn an_amend_is_kept_only_over_what_it_accounts_for() {
         let mut list: JMap<u8, Vec<u8>> = JMap::default();
