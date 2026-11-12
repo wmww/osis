@@ -133,7 +133,7 @@ Alternatives weighed:
 Text: Parley's plain editor exists; rich editing does not. The markdown editor is ours: an editor over Parley layouts with styled spans, first as a styled-source editor (headings larger, links coloured, markup visible), not WYSIWYG; the one place a plain-text fallback is acceptable early.
 
 ## Prototype order
-1. Linux desktop (Tess: Linux desktop first): home, rail, tiles, demo data, the theme engine, facet views with tags, reach and history, the calendar week and the tags tree. Built.
+1. Linux desktop (Tess: Linux desktop first): home, rail, tiles, demo data, the theme engine, facet views with tags, reach and history, the calendar week and the tags tree (built).
 2. Android: experimental, notes/android.md (app/android; Tess asked for a prototype APK).
 3. Time and People lenses, search, the schema fallback view.
 4. iOS shell, web, durable view-state spec.
@@ -144,7 +144,7 @@ Open toolkit checks: backgrounds in Vello (gradients, sweep gradients, masks; be
 One device with demo data (the first build takes a few minutes): `cargo run -p osis-app -- ~/osis-try/solo --demo --theme glass`. The store directory is made on first run; `--demo` adds the demo things once (keeping existing favorites); `--theme clarity|glass|project|memphis|slate|velocity` and `--auto|--light|--dark` set the look, as does the Look section of home's page. `--peer ADDR` (repeatable) adds peer addresses an existing store lacks.
 
 Two nodes syncing through a third local node of another account (four terminals):
-1. `cargo run --bin osis -- -s ~/osis-try/host init`, then `cargo run --bin osis -- -s ~/osis-try/host serve --listen quic://127.0.0.1:47833 --admit open` (`open`: it is another account, so it takes no group as its own). Its first line is the serving address, `quic://127.0.0.1:47833#<key>` (stable across restarts of that store); leave it running.
+1. `cargo run --bin osis -- -s ~/osis-try/relay init`, then `cargo run --bin osis -- -s ~/osis-try/relay serve --listen quic://127.0.0.1:47833 --admit open` (`open`: it is another account, so it takes no group as its own; `--admit` is deprecated, issues/deprecated-terms.md). Its first line is the serving address, `quic://127.0.0.1:47833#<key>` (stable across restarts of that store); leave it running.
 2. `cargo run -p osis-app -- ~/osis-try/a --peer 'quic://127.0.0.1:47833#<key>' --demo` (quote the address: it holds a `#`). Close the window once it shows (a store is locked while open).
 3. `cargo run --bin osis -- -s ~/osis-try/a pair offer`. It prints an `osis://pair/...` line and waits.
 4. Another terminal: `cargo run --bin osis -- -s ~/osis-try/b pair join 'osis://pair/...'`. It prints an `osis://pair-request/...` line and waits. Paste that into terminal 3 and press Enter: it prints an `osis://pair-reply/...` line; paste that into terminal 4. Both exit (`b` learns the peer from the offer).
@@ -203,7 +203,3 @@ app/tests/it: `data`, `edit`, `fields`, `time`, `sync` (two devices, windows), `
 Remove each line once adopted.
 - Undoing a creation deletes the thing (redo restores it): `Data::can_undo`'s creation skip can go.
 - A thing watch sees a delete as aspects going absent and `has_content` is false for a deleted thing: `Data::opened` can check that instead of scanning `things()`.
-- A typed read of a stored value of another shape (or a newer version's enum case) reads as `None` with a `Mismatch` diagnostic: `Data::get`'s wrapper can go (`db.at(t, k).get()`).
-- `db.changed(t) -> Option<ThingStamp>`: the last content change (not membership or sharing), else the creation, shown by `.shown()` (`min(ts, received)`, as `created`): `Data::changed` can use it instead of a listing (which scans every aspect) per thing.
-- `Config.dispatch = Dispatcher::Pump(wake)`: callbacks run on the thread calling `db.settle()`; `wake` (any thread, maybe under the osis lock, once per batch) only posts the UI wake. kit wakes the event loop, then `db.settle()` on the UI thread; callbacks post into `render`'s queue, which the same wake drains.
-- A membership change that leaves a durable thing in no synced group while the target group's own data syncs (an item of home, not a subgroup) fails `Invalid`; the app group already avoids this.

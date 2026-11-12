@@ -6,7 +6,7 @@
 - Notes are markdown and cover every simple text document: a note is `name.0` plus `body.0` (core), no `note:` keys. `body.0` is the one freeform markdown aspect, also the notes on an event or a contact; apps show its first line where a description would go.
 - Chat: `libs/chat` (osis-chat: creation and edit rules), `osis chat`: design E on primitives, `schema/chat.osis` (a message is one typed write; notes/chat.md).
 - Be very careful with dates and times: milliseconds since the epoch are right for many things and wrong for the rest, and the rest gets complex fast.
-- Events are shared with read or write like anything else; no attendee or RSVP machinery now (link people in `body.0`, or an app-level aspect later).
+- Events are shared with read or write like anything else; no attendee or RSVP machinery (link people in `body.0`, or an app-level aspect later).
 - Avoid API convenience functions that only save calling existing ones; the one addition here is `Osis::profile()` and `profile_of(account)`, because the profile thing is the API's own creation.
 
 ## Time (spec/data-model.md §3)
@@ -40,6 +40,6 @@ The schema says what each aspect holds; the reasons:
 - Default-test time (idle 4 cores, debug): about 10 s; accounts and introductions cost about 1 s each, so the tags cases over 10 s are `#[ignore = "by hand"]`.
 
 ## Open
-- Recurrence expansion and zone resolution as a shared library (an app concern today; worth one implementation).
+- Recurrence expansion and zone resolution as a shared library (the app's `time` does it; worth one implementation).
 - Import and export for vCard and iCalendar, with where UIDs are kept.
-- Files (a blob with a mime type) for attachments and contact photos (no photo aspect now, Tess).
+- Files (a blob with a mime type) for attachments and contact photos (Tess: no photo aspect until then).

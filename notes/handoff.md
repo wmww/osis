@@ -1,7 +1,7 @@
 # Handoff to the next coordinator
 > Summary: What is in flight and what comes next, for whoever coordinates after Fathom. Design principles and process live in notes/coordination.md; this note only holds state. Rewrite or delete once taken.
 
-Read CLAUDE.md and notes/coordination.md first. Tess: opus only for every agent, no fable, until she says otherwise. Questions for Tess are issues tagged `tess-call`; priorities are on every issue. Fathom is the lead coordinator (Tess); a second coordinator takes the areas the lead assigns (Kestrel had networking and docs cleanup); the split and protocol run over the dogfood channel (notes/dogfood.md).
+Read CLAUDE.md and notes/coordination.md first. Tess: opus only for every agent, no fable, until she says otherwise. Questions for Tess are issues tagged `tess-call`; priorities are on every issue. Fathom is the lead coordinator (Tess); a second coordinator takes the areas the lead assigns; the split and protocol run over the dogfood channel (notes/dogfood.md).
 
 ## Focus (Tess)
 Big features and refactors first; chase a bug only when it could threaten their viability. Don't rush to the goal API through shortcuts that later unravel it, but bring core to a settled, finalized state soon so the whole system can settle.
@@ -9,21 +9,16 @@ Big features and refactors first; chase a bug only when it could threaten their 
 Signal edits: reuse the existing edit machinery rather than add a second mechanism; full-replace-only is fine (Tess), with API questions to settle. App re-rendering (listener step 8) goes ahead without a session with Tess.
 
 ## Large designs, in order
-- **Rotation leak fix**: merged (keysets carry possession proofs; one verdict per rotation; derived establishment computed from held commits). Open: issues/keys-depth0-removed-member-rotates.md, issues/rotation-keyset-gone-before-its-boxes.md.
-- **Test refactor** (notes/test-design.md): steps 1-8, 5b and 10 done or in review (step 7 on `crdt-differential`); left: 9 (ephemeral, after connection-lived data), 11, 12. Open: issues/held-model-role-commit-scope.md.
-- **Expiry and creation records** (notes/expiry-creation-design.md): steps 1-3 built. Left: the creation-record steps and step 4's osis-API examples.
-- **Listener API** (notes/listener-design.md): steps 1-4 built. Left: 5 (path listeners), 6 (sessions follow every write), 7 (callers), 8 (node-state granularity, an app session with Tess).
+- **Rotation**: open issues/keys-depth0-removed-member-rotates.md, issues/rotation-keyset-gone-before-its-boxes.md.
+- **Test design** (notes/test-design.md, Open work): the ephemeral property (after connection-lived data), the default-test slow tail, small items.
 - **Account signing** (issues/account-signing.md): steps 1 and 4 built. Step 2 open with Tess (covered commits: keep listing everything; per-session ranges studied with header forgetting). Next: 3 (spec), 5, 6.
 - **Settings** (issues/settings.md, decided with Tess): account and node settings as ordinary aspects on private things in home; the design to reach for whenever persistent settings are needed, and bespoke settings systems get cut over to it. Not urgent. Build after account signing step 6, which moves node data under D's home label: reconcile the two first.
 - **Forgetting compacted headers** (notes/growth.md row 1): conflicts with removal lists naming commit IDs; study a per-session counter range for frontiers with it.
-- Kestrel's: network rework (issues/net-rework.md), then data that lives while its keepers are connected (issues/connection-lived-data.md).
+- Network rework (issues/net-rework.md), then data that lives while its keepers are connected (issues/connection-lived-data.md).
 
 ## Findings recorded only here
 - Bounding rotation names (issues/rotation-names-grow.md): "chain coverage through supersedes" leaks (a TLA instance found it); a base-chain rule breaks when a base rotation turns invalid. Redo with the rotate-free principle (spec/crypto.md §4).
 
-## Networking (Petrel's, devbox)
-Issues/net-rework.md's order. Built on main: net-tests step 2; honest status step 1 (step 2 waits for Pull); `lan` in every build; shared-set steps 2-4 (`SyncEngine::proven`, J and credentials, records and `changed_at`) and the node log. Nothing in production reads J, credentials, records or the log yet.
-- In flight: branch `net-beacons` (tip fe27c989a, on devbox only; shared-set step 5: beacons, Offer, Lost, first contact; peer connections open only through the shared set). Worker done, default tests and clippy clean; no review, gate or networking check. Next: a fresh security reviewer (earlier steps' reviews each found a role- or relay-binding bug: ask that first). Its deviations from the design: Hits are keyed digests bound to side, listener key and challenges; new kinds `Shared` and `NoRecord`; a reader with no established epoch uses its newest secret; departed admits nothing (Covers not built); opposite dialers keep two connections until Pull; `Lost` goes at once until step 7. `port::a_wait_needs_no_pump...` failed once under load: check for a close-ordering race.
-- After it: steps 6-9 of issues/net-shared-set.md, step 2 of issues/net-honest-status.md with Pull.
-- Step 10 (the epoch signature, Fathom's account signing) decides when a proven account counts. Check what main says before relying on "J counts key actors alone".
-- Dogfood channel served from devbox (`~/osis-dogfood`, port 4040, transient units `osis-dogfood-host` (the node both Claudes sync through; `restart-host.sh`), `osis-dogfood-me`): a box stop ends them; restart per notes/dogfood.md with the same stores.
+## Networking
+Order and state: issues/net-rework.md; the build in progress is issues/net-one-peer.md (one key, one store and serving path; step 3h2 under way). Step 10 of issues/net-shared-set.md (the epoch signature, account signing) decides when a proven account counts: check what main says before relying on "J counts key actors alone".
+- Dogfood channel served from devbox (`~/osis-dogfood`, port 4040, transient units `osis-dogfood-host` (the node both Claudes sync through; `restart-host.sh`), `osis-dogfood-me`): a box stop stops them; restart per notes/dogfood.md with the same stores.

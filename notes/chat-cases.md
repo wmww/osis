@@ -95,7 +95,7 @@ Cells: `yes`/`no` forced; `opt` app's clean choice; `opt*` a modified client def
 | Disappearing message gone everywhere at its time, with the nodes keeping the chat unread unattended? | yes | yes |
 | Offline device past the time: gone when it wakes? | yes | yes |
 | Does a hostile device keep a deleted message? | accepted | yes |
-| Can the app make messages undeletable (permanent chat)? | opt | opt* |
+| Can the app make messages undeletable (permanent chat)? | opt | no!³⁸ |
 | Timer changed mid-chat: do old messages keep their old timer? | yes | yes |
 | Does a disappeared message leave a trace on each device? | no | yes¹¹ |
 | Does a deleted message leave the fact and time visible to members? | accepted | yes |
@@ -250,12 +250,12 @@ Cells: `yes`/`no` forced; `opt` app's clean choice; `opt*` a modified client def
 
 - **e** Sender card in invite requests (Tess: yes).
 - **h** Wake relay for background notifications (Tess: does not block).
-- **j** Per-sender key chains (Signal sender keys): per-message erasure, at the cost of a per-sender state per device and either a per-sender marker hosts can link or trial decryption.
+- **j** Per-sender key chains (Signal sender keys): per-message erasure, at the cost of a per-sender state per device and either a per-sender marker the nodes keeping the chat unread can link or trial decryption.
 - **m** Erasable per-device KEM keys with per-device boxes (MLS-sized): what real member forward secrecy would need; against spec/crypto.md §3 and requirements line 48.
 - **n** History-less grant: a read rotation at the add with earlier secrets sealed per prior holder, no shared history box, chain certificates re-placed (issues/history-less-grant.md); segments (footnote 33) are the fallback without core change.
-- **o** Newest-first fetch of a label: built (spec/sync.md §6); a device that stops fetching: issues/partial-history-fetch.md.
+- **o** A node that stops fetching short of old messages (issues/partial-history-fetch.md); fetch is newest first (spec/sync.md §6).
 - **r** Pure readers place nothing under big labels: no chain certificates or node card from a reader unless asked (realms past a few thousand members).
-- **s** Default-off sync: a device holding a realm's secret does not sync the labels of the things the realm holds until the app chooses (today `compute_labels` syncs every label whose secret the node holds).
+- **s** Default-off sync: a device holding a realm's secret does not sync the labels of the things the realm holds until the app chooses (a node syncs every label whose secret it holds, `SyncEngine::labels`).
 
 ## Footnotes
 
@@ -276,9 +276,9 @@ Cells: `yes`/`no` forced; `opt` app's clean choice; `opt*` a modified client def
 34. The new chat carries no pointer back; a tid is a bare reference and the old chat's label and the peers keeping it live under its own label.
 35. The pointer is a set, so old members stitch every branch; each newcomer sees only its branch; admins merge with a further segment.
 36. About 15 KB per member (grant boxes plus chain certificates under the new label): about 15 MB at 1000, estimated.
-38. default yes; author-only purge (admins cannot delete) is a chat setting (core q, built).
+38. admins may always purge (spec/commits.md §5): no setting makes a message undeletable.
 39. the header's actor is checked by validity (spec/permissions.md §5.2: the signing device holds write on the actor at the commit's key), so a valid commit's actor is its sender; that the actor itself could write on the chat is the ordinary validity of the device's write only when its path runs through the actor.
-40. with the frontier study; today a kick lists about 34 B per message the member ever sent (3.4 MB at 10^5) and caps near 1.9x10^6 messages.
+40. with frontier heads (unbuilt); without them a kick lists about 34 B per message the member ever sent (3.4 MB at 10^5) and caps near 1.9x10^6 messages.
 41. The removal and the top realm's rotation are one commit (2.7 KB per member); each child re-keys on any writer's next sync pass (about 11 KB, eager, may fork). Cutting sync, write and deposit keys needs an admin of each child to register a step at each node keeping it unread; until then the removed member reads ciphertext and can upload.
 42. At 1000: 2.7 MB plus about 11 KB per child, spread over members' passes. At 100,000 with tiers of 1000: the tier (2.7 MB), the top realm (100 boxes), then children; estimated.
 43. All three roles rotate on every realm and chat the mod administered, admins only; the ex-mod keeps delete keys until each label is stepped.

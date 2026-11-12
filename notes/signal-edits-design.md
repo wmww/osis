@@ -1,5 +1,5 @@
 # Signal edits: design
-> Summary: Design (Fathom, with Tess's direction: full replace only, reuse what osis has), built: an edit is a whole fire naming the fire it replaces, honored only for the same verified author; chat and the app use it. Spec terms, what is reused, API, costs, build plan.
+> Summary: Signal edits as built (Tess's direction: full replace only, reuse what osis has): an edit is a whole fire naming the fire it replaces, honored only for the same verified author; chat and the app use it. Spec terms, what is reused and rejected, API shape and why, costs, engine notes, the open requirements question.
 
 **Verdict:** an edit is a whole fire that names the fire it replaces, and the fire's commit is its address. The register's rule is reused, but not the register state.
 
@@ -65,12 +65,12 @@ db.at(c, MSG).versions(id, &q)?;                            // history: the fire
 - **`RetentionEntry::refuse_replace`** is the setting entry's `final` (`final` is reserved in Rust): a writer default, no validity rule.
 - **Reaction:** `chat:react~0: { target, emoji: option<string> }`. `replace(r, {target, emoji: Some(new)})` changes it, and `emoji: None` or a purge withdraws it. Finding reactions by message is a separate listing question.
 
-**Chat and app** (step 5): reply and edit targets are the original's `CommitId`; a quote is `commit(id)` (tracked to that commit alone, so it moves with its message only); "(edited)" is `Part::edited`; `osis_chat::edit` is `replace`, plus `Purge::Commit` in the same write under the purge setting; editing off is `refuse_replace`; delete is one `Purge::Commit`; history is `versions`; listening is `on_fire`. The CLI's `read`/`watch` lines are one shape (a watch line is the message as it reads); its `read --after` cursor is an arrival place of its own (`osis_chat::Cursor`), as an edit arrives under its message's id.
+**Chat and app**: reply and edit targets are the original's `CommitId`; a quote is `commit(id)` (tracked to that commit alone, so it moves with its message only); "(edited)" is `Part::edited`; `osis_chat::edit` is `replace`, plus `Purge::Commit` in the same write under the purge setting; editing off is `refuse_replace`; delete is one `Purge::Commit`; history is `versions`; listening is `on_fire`. The CLI's `read`/`watch` lines are one shape (a watch line is the message as it reads); its `read --after` cursor is an arrival place of its own (`osis_chat::Cursor`), as an edit arrives under its message's id.
 
 ## Costs
 Totals are at n and 10n messages, with v versions on a message.
 
-| Operation | Today | Design |
+| Operation | As plain fires (a new message plus a purge) | With edits |
 |---|---|---|
 | Edit | 2 commits, plus a walk | 1 commit, O(log n) |
 | Listing page p | Distance from newest | O(p log n), one body per entry |
@@ -80,18 +80,11 @@ Totals are at n and 10n messages, with v versions on a message.
 Index: `originals` for paging (honored versions removed, so edits add no walk) and `versions` keyed `(t, ak, O, actor)`, valid only, so forged claims are never read. Both move on validity flips inside the existing rejudge, and O's arrival promotes matching versions.
 
 
-## Build plan
-Each step gets one worker and one reviewer. Steps 1-5 are built: the model (`core/test/held-model/src/edits.rs`), the wire and rules, and the engine (`core/engine/src/engine/edits.rs`: `originals` persisted, `versions` derived from views and validity; `settle` re-places the claims of each changed original and each changed claim at a transaction's end; a purge tombstone's end has a `T_KEPT` timer).
-
+## Engine
+The model is `core/test/held-model/src/edits.rs`; the engine `core/engine/src/engine/edits.rs` (`originals` persisted, `versions` derived from views and validity; `settle` re-places the claims of each changed original and each changed claim at a transaction's end; a purge tombstone's end has a `T_KEPT` timer).
 - Listing is judged from headers (spec/commits.md §7): an original whose body is not here yet is listed (not fetched) and its versions fold under it; the read takes the newest version whose body is here (or purged). Engine and model alike.
 - An original leaving the listing by time (expiry, keep bound, tombstone end) frees its versions when its timer runs. The node runs due timers before every API call (`expire_due`), as for expiry, so no call sees the gap; only a raw engine read between the bound and `tick` does.
-- A claim sorting before its original is model-tested only: an engine test needs two devices of one account with skewed clocks.
-
-1. **Model first.** A small TLA or held-model covering arrival order, validity flips, purge, expiry and forged claims. Properties: nodes holding the same commits read alike, and a forged claim changes no reading.
-2. **Wire and rules:** `replaces`, the honoring rule, `final`, the purge and expiry change; spec/commits.md, spec/wire.md, spec/data-model.md.
-3. **Engine indexes and fold:** `originals`, `versions`, listing, listener events. Counted test at n and 10n: bodies read per page and per quote are flat.
-4. **`osis` API:** `replace`, `commit`, `versions`, `Part::edited`, `refuse_replace`, port, generic CLI, compile-fail doc tests (API, above).
-5. **Chat and app:** on the API above, quote by `commit`; fast-design step 9.
+- A claim sorting before its original is model-tested only: an engine test needs two nodes of one account with skewed clocks.
 
 ## For Tess (issues/signal-edits-requirements.md)
 - **Requirements line:** "A signal has no current value, only entries" would gain "an entry can be replaced by its author". A signal still has no current value, but this is a change to the requirements, so it needs your OK.

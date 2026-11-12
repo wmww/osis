@@ -4,30 +4,30 @@
 ## 1. Crate map
 One workspace, root `Cargo.toml`: members `core/*` (library crates in unprefixed directories: `core/base` is osis-base), `libs/chat`, `core/test/{sim,vectors,crdt-model,roles-model,held-model}`, `cli` (the default members, core) and the GUI `libs/kit`, `app`, `app/android` (below); `core/test` is excluded otherwise: `core/test/fuzz/` (cargo-fuzz, own workspace), `core/test/tla` (TLA+ specs, no crate). Internal crates are `[workspace.dependencies]`; members write `osis-base.workspace = true`. A new crate needs a line here.
 
-| layer | crate | plan(s) | contents |
-|---|---|---|---|
-| 0 | `osis-base` | (notes/base-schema.md) | Value, canonical CBOR, Tid, Ak, Link, ids, time, `format` constants, chunker, hashing, hex, base64url, `Clock`, `impl_error!` |
-| 1 | `osis-crypto` | crypto | suite 1 primitives, kdf, sealed boxes, wraps, delete keys (blinded); `OsRng` for drivers |
-| 1 | `osis-crdt` | crdt-core, crdt-seq | merge encodings, delta grammar, join/read/diff, paging; `View`, `PageSink`, `PageSource` |
-| 1 | `osis-perm` | perm | role validity rules over an abstract held set |
-| 1 | `osis-transport` | transport, p2p | `Transport`; `InProcess`, QUIC, P2P (`p2p`), LAN announcements (`lan`); `link` sessions (channel pairs with tokio pump tasks) for the node driver |
-| 2 | `osis-schema` | schema | DSL, types, core aspect types, implements `View` |
-| 2 | `osis-store` | store | `Backend`, `MemoryBackend`, `RedbBackend` and `FileRoot`, `RootStorage`, `Store`, `Transaction` |
-| 3 | `osis-commit` | commit | commit header and blob, kinds, retention, delete keys, signatures, builder, verification, sections and prefix groups, chunk trees (the one writer and reader; osis-label re-exports it) and header lists (notes/crdt.md) |
-| 3 | `osis-keys` | keys | keysets, epochs, boxes, history boxes, label keys |
-| 4 | `osis-label` | label, large-values | blobs, labels, steps, stamps, blob-backed tree and page sinks/sources, large values |
-| 5 | `osis-proto` | proto | sans-I/O sync protocol engines |
-| 6 | `osis-host` | host | hosting (storing and serving labels it need not read): `HostStore`, `HostPolicy`, sans-I/O `Hub`, `HostConfig`; driven only by the node's driver in its own loop, from the node's `host^.0` |
-| 7 | `osis-engine` | node-core, role-flows | engine, apply, retention, undo, events, identity, ephemeral, labeling, flows, rotation, `local_peer` (notes/engine.md); the persisted index tag (`build.rs`: a hash of the engine's and its osis dependencies' sources); phase timers `costs` (always compiled, recording on a thread once it calls `costs::take`); `SyncRecords`, the hook node-sync installs for the sync records engine transactions write or drop |
-| 8 | `osis-node` | node-sync | `sync` (sans-I/O sync engine) over osis-engine, whose modules it re-exports at the same paths (`osis_node::engine`, `osis_node::flows`, ...); default feature `driver` (tokio driver); `lan` (the driver's LAN loop) |
-| 9 | `osis` | api | public API: the handle owns the node's `SyncEngine`; sync runs on a tokio driver (`Runtime::Tokio`/`Own`) over osis-transport `link` sessions (`Transport::Quic`, `Store::Dir` for the redb store; co-readers over P2P; `lan` adds the LAN loop) |
-| 10 | `osis-cli` | cli | binary `osis` |
-| 10 | `osis-vectors` (`core/test/vectors/`) | test-infra | conformance vector format, checkers, in-memory generators, fuzz seeds |
-| 10 | `osis-bench` | test-infra | bench harness (no deps) and benches; size budgets (by hand) |
-| 10 | `osis-sim` (`core/test/sim/`) | sim | deterministic simulator; `world`: `Osis` handles and in-memory hubs under one manual clock (the osis crate's tests) |
-| - | `crdt-model` (`core/test/crdt-model`) | | reference model of spec/crdt.md (notes/crdt.md) |
-| - | `roles-model` (`core/test/roles-model`) | | model of the role rules (notes/permissions.md) |
-| - | `held-model` (`core/test/held-model`) | | what a node holding a body set reads, from spec/ alone (notes/testing.md, Models) |
+| layer | crate | contents |
+|---|---|---|
+| 0 | `osis-base` | Value, canonical CBOR, Tid, Ak, Link, ids, time, `format` constants, chunker, hashing, hex, base64url, `Clock`, `impl_error!` |
+| 1 | `osis-crypto` | suite 1 primitives, kdf, sealed boxes, wraps, delete keys (blinded); `OsRng` for drivers |
+| 1 | `osis-crdt` | merge encodings, delta grammar, join/read/diff, paging; `View`, `PageSink`, `PageSource` |
+| 1 | `osis-perm` | role validity rules over an abstract held set |
+| 1 | `osis-transport` | `Transport`; `InProcess`, QUIC, P2P (`p2p`), LAN announcements (`lan`); `link` sessions (channel pairs with tokio pump tasks) for the node driver |
+| 2 | `osis-schema` | DSL, types, core aspect types, implements `View` |
+| 2 | `osis-store` | `Backend`, `MemoryBackend`, `RedbBackend` and `FileRoot`, `RootStorage`, `Store`, `Transaction` |
+| 3 | `osis-commit` | commit header and blob, kinds, retention, delete keys, signatures, builder, verification, sections and prefix groups, chunk trees (the one writer and reader; osis-label re-exports it) and header lists (notes/crdt.md) |
+| 3 | `osis-keys` | keysets, epochs, boxes, history boxes, label keys |
+| 4 | `osis-label` | blobs, labels, steps, stamps, blob-backed tree and page sinks/sources, large values |
+| 5 | `osis-proto` | sans-I/O sync protocol engines |
+| 6 | `osis-host` | hosting (storing and serving labels it need not read): `HostStore`, `HostPolicy`, sans-I/O `Hub`, `HostConfig`; driven only by the node's driver in its own loop, from the node's `host^.0` |
+| 7 | `osis-engine` | engine, apply, retention, undo, events, identity, ephemeral, labeling, flows, rotation, `local_peer` (notes/engine.md); the persisted index tag (`build.rs`: a hash of the engine's and its osis dependencies' sources); phase timers `costs` (always compiled, recording on a thread once it calls `costs::take`); `SyncRecords`, the hook node-sync installs for the sync records engine transactions write or drop |
+| 8 | `osis-node` | `sync` (sans-I/O sync engine) over osis-engine, whose modules it re-exports at the same paths (`osis_node::engine`, `osis_node::flows`, ...); default feature `driver` (tokio driver); `lan` (the driver's LAN loop) |
+| 9 | `osis` | public API: the handle owns the node's `SyncEngine`; sync runs on a tokio driver (`Runtime::Tokio`/`Own`) over osis-transport `link` sessions (`Transport::Quic`, `Store::Dir` for the redb store; co-readers over P2P; `lan` adds the LAN loop) |
+| 10 | `osis-cli` | binary `osis` |
+| 10 | `osis-vectors` (`core/test/vectors/`) | conformance vector format, checkers, in-memory generators, fuzz seeds |
+| 10 | `osis-bench` | bench harness (no deps) and benches; size budgets (by hand) |
+| 10 | `osis-sim` (`core/test/sim/`) | deterministic simulator; `world`: `Osis` handles and in-memory hubs under one manual clock (the osis crate's tests) |
+| - | `crdt-model` (`core/test/crdt-model`) | reference model of spec/crdt.md (notes/crdt.md) |
+| - | `roles-model` (`core/test/roles-model`) | model of the role rules (notes/permissions.md) |
+| - | `held-model` (`core/test/held-model`) | what a node holding a body set reads, from spec/ alone (notes/testing.md, Models) |
 
 **GUI** (workspace members outside default-members, notes/app.md): `osis-kit` (`libs/kit/`, UI toolkit over Masonry), `osis-app` (`app/`, the first-party app) and `osis-android` (`app/android`, notes/android.md), reaching core only through `osis`, `osis-schema` and `osis-chat`. A bare cargo command never builds them (notes/build.md).
 
@@ -103,7 +103,7 @@ One line per external crate; adding a dependency means adding its line. No serde
 - The cli needs no tokio of its own (it polls the API's futures on its thread and syncs on `Runtime::Own`, `serve` included).
 
 ## 6. Conventions
-- Every crate root: a doc comment naming its contents, layer and plan, then `#![forbid(unsafe_code)]`, and `[lints] workspace = true` in its Cargo.toml. Exception: app/android, whose one `#[unsafe(no_mangle)]` entry point needs `unsafe_code = "deny"` (notes/testing.md, Policy checks).
+- Every crate root: a doc comment naming its contents, layer and notes, then `#![forbid(unsafe_code)]`, and `[lints] workspace = true` in its Cargo.toml. Exception: app/android, whose one `#[unsafe(no_mangle)]` entry point needs `unsafe_code = "deny"` (notes/testing.md, Policy checks).
 - Every test cites the spec section it checks (comment above it; form in notes/testing.md, Conventions), so grep and notes/testing-map.md answer "what checks §X".
 - Wire choices the spec leaves open sit behind one constant or one function marked `provisional` (grep `provisional`). spec/wire.md fixes everything core holds; `format` constants are marked `fixed` with their spec section.
 - Prose, comments, errors and commit messages compact; no formatting tools.

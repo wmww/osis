@@ -1,5 +1,5 @@
 # Realms
-> Summary: Design under discussion with Tess, nothing built or in spec, resumes now that first admins are built. A realm is an actor marked `realm.0`, as `tag.0` marks a group: members are its holders, what is in it is what it holds a grant on or is first admin of; access, nesting, overlap and per-account roles come from existing grants. Realms and tags may turn out to be one concept. Open questions at the end (issues/realms-design.md).
+> Summary: Design under discussion with Tess, nothing built or in spec. A realm is an actor marked `realm.0`, as `tag.0` marks a group: members are its holders, what is in it is what it holds a grant on or is first admin of; access, nesting, overlap and per-account roles come from existing grants. Realms and tags may turn out to be one concept. Open questions at the end (issues/realms-design.md).
 
 ## Status of the discussion
 Decided: members see the member list. Everything else is a proposal.
@@ -35,7 +35,7 @@ The management screen, and what each control writes:
 - Members, with role: `roles.0` on R. Add: `grant` or a link. Change: `set_role`. Remove: `set_role` to `None` (retain or erase, from R's default). Leave: self-removal.
 - Contents: R's grants. Add: grant R a role on the thing, needing admin or `may_grant` on it (only what you may share); add it to R's group too if it has no label. Remove: remove R's grant and unplace.
 - Sub-realms and roles: realms R holds a grant on, and realms holding a grant on R.
-- Who can see a thing, through which realm: `holder_path` and `reach`.
+- Who can see a thing, through which realm: `holders` (each entry's `through` path).
 - First-party apps confirm before adding to a realm, showing who will see it (the tags guideline).
 
 ## Removal at depth 0
@@ -56,7 +56,7 @@ A shared tag is already an actor (notes/tags.md, Sharing a tag) and may also car
 - **"A chat is a faction"**: a chat is a thing a realm holds write on or administers. A plain 1:1 or group chat is no realm; a server or team is a realm, a channel a chat in it, a mod role a realm holding admin on it or on some chats.
 - **The directory aspect** (`faction:children^.0`): the contents list is R's grants. A chat app wanting categories, order or names of channels it has not synced keeps its own layout aspect on R.
 - **Tied content**: a document in the realm is a grant to R; removing it from R's group does not revoke.
-- **Chat core asks become realm asks**: default-off sync (a member chooses which of a realm's labels to sync; today a node syncs every label whose secret it holds) and pure readers placing nothing under big labels. Both matter more, since realms gather any number of things.
+- **Chat core asks become realm asks**: default-off sync (a member chooses which of a realm's labels to sync; a node syncs every label whose secret it holds) and pure readers placing nothing under big labels. Both matter more, since realms gather any number of things.
 
 ## Core changes
 - `realm.0: struct { color 0: option<string> }` in spec/data-model.md §9, default retention (`admin`), typed key `osis::core::REALM`.
@@ -74,4 +74,4 @@ A realm being a tag too; realms administered by one account ("family", I stay ad
 5. **Keep on removal**: keep by default, matching chat: an honest client cannot force erasure, and silent erasure of someone's own messages reads as data loss. Admins may choose erase per removal.
 6. **Things created in a realm**: the realm is first admin (they stay when the maker leaves, like a team drive) rather than the maker sharing them in; things that already exist are shared in.
 7. **No single controlling account by default**: a realm's admins are equals (an actor whose admins are its grants, the first admin removable); a realm one account controls is allowed too.
-8. **Serving**: a node that does not read a realm stores its label only by label or `admit open`, as for chats today. Leave this to the admission work.
+8. **Serving**: a node that cannot read a realm keeps its sync ID as any other (issues/net-one-peer.md, Sync model): nothing realm-specific.

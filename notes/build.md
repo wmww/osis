@@ -117,7 +117,7 @@ Every reviewer of a scripted rename sweep found over-matches the worker's old-wo
 - A full disk reads as a compile error (`failed to write query cache`, `failed to parse process output`): `df` before believing a build failure. A `du` of `/home/ai/*` takes over 10 minutes: use `df` and the worktrees only.
 
 ## What things should cost
-Warm worktree. Rows marked (load N) are recent measurements at that load with system76-scheduler off for the run (it finished before a refresh caught it); compare CPU-s, wall follows load. Unmarked rows are quiet-box numbers from when osis-engine and osis-node were half their present size (engine 20k lines, node with tests 26k; now 42k and 71k): expect them about 2x. More than about 3x the CPU-s: stop and find out why.
+Warm worktree. Rows marked (load N) are recent measurements at that load with system76-scheduler off for the run (it finished before a refresh caught it); compare CPU-s, wall follows load. Unmarked rows are quiet-box numbers measured with osis-engine at 20k lines and osis-node with tests at 26k (about half their present size): expect them about 2x. More than about 3x the CPU-s: stop and find out why.
 
 | what | expect |
 |---|---|
@@ -125,7 +125,7 @@ Warm worktree. Rows marked (load N) are recent measurements at that load with sy
 | one-line edit, `cargo test --no-run`: osis-node / osis-engine | 2.5 s (4 crates) / 31-37 s, 190-205 CPU-s (load 15; 6 crates, 12 links: osis-engine lib and its unit tests 20 s each in parallel, then osis-node `it` 11 s; 68 s, 217 CPU-s at load 21-27); osis-engine lib alone 10-29 s, 26-60 CPU-s |
 | `cargo test`, built | 380-390 s, 4700 CPU-s, 13,000 G instructions (3448 tests), alone under the lock at load 15-20 (518 s, 5257 CPU-s at load 20-40); osis-node `it` 193 s / 2580 CPU-s of it, osis `it` 78 s. CPU-bound; CPU-s rise with load (SMT). Compare instructions (`tools/icount`), stable to 0.1%. Harness failures are reported unshrunk (`OSIS_ORDER_SHRINK=1`, `OSIS_PERM_SHRINK=1` shrink; a shrinking osis-node `it` with 12 failures ran 646 s); per test: notes/testing.md Default-test cost |
 | edit osis-base, `cargo build --all-targets` | 40 s, 314 CPU-s (load 16) |
-| edit osis-base, then `cargo test --no-run` | 230-280 CPU-s (daec95654 the same, 220-250), 33-138 s wall at load 20-37: the critical path is osis-engine's lib and lib-test (36 s each at load 33), then osis, then osis-node `it` (25 s) |
+| edit osis-base, then `cargo test --no-run` | 230-280 CPU-s, 33-138 s wall at load 20-37: the critical path is osis-engine's lib and lib-test (36 s each at load 33), then osis, then osis-node `it` (25 s) |
 | rebase over a change in osis-commit, osis-engine, -node, -proto, -label, `cargo test --no-run` | 2280 CPU-s (13 crates); 14.4 min wall at load 20-40 under SCHED_IDLE, about 5 min expected without |
 | clippy after a one-line edit | 3-7 s; osis-engine 8 s, 19 CPU-s at load 26, then the GUI lint 3 s, 5 CPU-s |
 | clean `cargo build`; then `--all-targets`; first clippy | 82 s; +53 s; +17 s |

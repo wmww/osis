@@ -39,7 +39,7 @@ Each was a number that only made a bug unlikely (class X); the code ends by a fi
 | `MAX_HELLO_VERSIONS` 16, `MAX_HELLO_BYTES` 256 | R | no handshake / unbounded first frame |
 | `MAX_MESSAGE_ITEMS` 2^20 (osis-proto `msg`: CBOR items per message, counted before decoding) | R (densest engine reply about 760 000 items, densest §11.2-valid message about 1 021 000; a decoded item is 100-260 bytes, so at most about 270 MB per decode, one at a time in a hub) | no message decodes / about 2 GB of value tree per 9 MiB frame from any peer |
 | rbsr `LIST_MAX` 32, `DIFF_MAX` 1024, `SPLIT` 16, `DENSE_LIST` 8 | P (spec: either mode valid) | more rounds / bigger messages |
-| deposit budget `64 + 4 × claims` entries × 32 KiB (`DEPOSIT_ENTRY_BYTES`, `ENTRY_UNIT`) | R (host policy) | no deposits / unbounded junk deposits |
+| deposit budget `64 + 4 × claims` entries × 32 KiB (`DEPOSIT_ENTRY_BYTES`) | R (host policy) | no deposits / unbounded junk deposits |
 
 ### Clock and session (`proto/client.rs`, `hello.rs`)
 | value | class | 0 / ∞ |
@@ -73,7 +73,7 @@ Each was a number that only made a bug unlikely (class X); the code ends by a fi
 | `max_queued_bytes` 64 MiB (at least `SEND_QUEUE` + `WINDOW_QUEUE`: replies, a push and node sync's own requests; config refuses less) | R (a peer that does not read) | sessions keeping the window closed / unbounded buffer |
 | `PUSH_POLL_MS` 1 s | M (held pushes resume up to this late after the queue drains; the hub's `unread` count lags the transport by up to this while bytes await a report, within each connection's own `SEND_QUEUE`); also the period output is judged "not moving" over: a reader taking less than one `WRITE_CHUNK` (16 KiB) in it may be closed while a connection waits for the bound's room; and the pace a waiting connection resumes at | the driver spins while a slow subscriber drains or any byte is unreported, and every holder is closed at once when one waits / pushes and waiting requests wait for an unrelated tick, and holders that never read keep the bound full for good |
 | `MAX_PATH` 2^20 | R (corrupt-store guard) | |
-| replicate `RETRY_MIN/MAX_MS` 1-60 s, driver `BACKOFF_MIN/MAX` 1-60 s, `SWEEP_BACKOFF_MS` 1 s, `MAX_IDLE` 60 s, `FINISH_WAIT` 10 s | M | busy loop / never retries |
+| replicate `RETRY_MIN_MS`/`RETRY_MAX_MS` 1-60 s, driver `BACKOFF_MIN/MAX` 1-60 s, `SWEEP_BACKOFF_MS` 1 s, `MAX_IDLE` 60 s, `FINISH_WAIT` 10 s | M | busy loop / never retries |
 
 ### Transport (`transport/`)
 | value | class | 0 / ∞ |
@@ -108,11 +108,10 @@ Each was a number that only made a bug unlikely (class X); the code ends by a fi
 | registration refused for now, or a label unknown at a host with nothing to register (an invitee ahead of the label): back-off `retry_ms` doubling per refusal in a row on a connection (an open resets it), at most `resync_ms` (`open.rs` `refused_for_now`) | M (existing knobs) | opens every tick / a label the host admits or gets later never syncs on that connection |
 | `MAX_ROUNDS` 16 | M (the rest opens at the next pass: `refetch`) | |
 | `SyncEngine::redeliver` visits per commit per round, 1 + its entries | R (past it the name waits for the next step; 0 would look at nothing, infinity spins should a name's invariant fail) | one look per copy |
-| `MAX_NOTIFY` 8 | M (the rest goes at the next `handle`) | |
-| `RELAYS_REMEMBERED` 2^16, `WAITING_MAX` 2^12, `UNFIT_MAX` 2^12, `SHARE_REFUSED_MAX` 2^12 | R (commented) | |
+| `RELAYS_REMEMBERED` 2^16, `UNFIT_MAX` 2^12 | R (commented) | |
 | `MAX_FILTER_ENTRIES` 2^22 (shared set) | R (a filter past it closes the connection: nothing opens) | no filter taken / a known actor's filter is this node's memory |
 | `PAGE_BYTES` 256 KiB (a filter's page), `MAX_SHARED_ITEMS` 1024, `MAX_BYROLE_HITS` 256 | P (more messages) / a message beyond `MAX_MESSAGE` | |
-| `MAX_PEER_STEPS` 64, `LAN_HEARD` 4, `LAN_BOUND` 64 (announcements bound to their source per co-reader; past it only a self-flooding co-reader reopens replays of its own), `LAN_CHANGE_MS` 5 s | R | |
+| `LAN_HEARD` 4, `LAN_BOUND` 64 (announcements bound to their source per co-reader; past it only a self-flooding co-reader reopens replays of its own), `LAN_CHANGE_MS` 5 s | R | |
 | stream `SCAN_ROWS` 2^16, `MAX_CROSSED` 2^14 | R (rows a reply reads) / M (bytes inlined back past it) | no reply moves / one request reads the whole log; nothing remembered / unbounded set |
 | stream `MAX_WAITING` 1024 (positions not settled, and bodies they owe, from which a stream takes no new position) | R (flow control: no Pull, pushes not taken and read again from the cursor; past it only the Pull in flight's reply and the last push taken add, each within a message; `pushes_past_the_bound_grow_nothing_and_lose_nothing`) | the stream never moves / a source that never serves makes the requester keep a position per push and an id per announcement |
 | stream `MAX_UNREPORTED` 16 | R (unreported replies and pushes kept apart; past it the oldest two merge) | 0 would drop members unreported, so at least 1; at 1 a member waits for the latest report while pushes keep coming / a requester that never reports grows it per push |
@@ -175,7 +174,7 @@ Each was a number that only made a bug unlikely (class X); the code ends by a fi
 | `LOST_HEARD_WAIT_MS` = `ROLE_KEEP` 90 days (engine rotation) | M: how long an actor lost by an `until` passing alone waits for node-sync to hear its labels out. Past it a node out of reach loses unsent writes on what a renewal it has not heard would have kept, and comes back by a re-seal; before it the erase is late. No new number: past `ROLE_KEEP` such a node does not sync cleanly anyway. At 0 every offline holder loses those writes; at infinity one dead or hostile host keeps every expired share it hosts on the node for good | `rotation/lost.rs`; `keep_clients::an_until_ended_out_of_reach_goes_past_role_keep` |
 | release request `expires` = `ts` + `ROLE_KEEP` 90 days (commit `retention::release_expires`) | M: how long a release request stays for nodes that have not seen it. At 0 it is forgotten as written: holders that missed it upload the thing again and right holders release it again, round for good (a livelock, nothing lost); at infinity it is a tombstone, which a release may not leave. No new number: past `ROLE_KEEP` a node that missed it does not sync cleanly anyway; the request is placed at a host before the thing's blobs are deleted there, one arriving late still destroys the thing, and a held thing needing the evidence keeps it past the expiry | node `lifetimes::a_released_thing_is_forgotten_at_its_requests_expiry_and_a_stale_copy_is_judged_again` |
 | `MAX_HINT_COMMITS` 64 | R (lowest commit ID evicted, not oldest; inbox spam can evict a genuine hint) | the grantee then writes once the thing's `keys.0` syncs, as after a restart (candidates are not persisted): a delay (checked) |
-| `WALK_CACHE_MIN` 64, `MAX_WAIT_BYTES` 64 KiB / 16 MiB, `COPY_CACHE_MAX` 2^20, `HELD_WRITES_MAX` 2^20 (engine `retention/bounds.rs`: other aspects' `HeldWrites` kept beside the last read) | P | |
+| `WALK_CACHE_MIN` 64 | P | |
 | `DECODED_MAX` 16 MiB (engine `engine/decoded.rs`: stored commit records and their decoded parts kept, all forgotten past it) | P | every read decodes its record and parts from the store / every commit read since the open stays decoded in memory |
 | `SWEEP` 2 (engine `engine/memo.rs`: a memo checks every entry and drops those that no longer hold when it has grown to this many times what the last check kept) | P | at 1 every new entry checks them all / an answer nobody asks for again is never dropped |
 | pages `PAGE_BYTES` 8 KiB, `SEQ_PAGE_BYTES` 3 KiB, `MIN_PAGED` 64, `GROUP` 32, `PREFETCH` 8, `OP_RUNS` 8, prefetch budget `max(1024)`, `SCAN_PAGE` 256, pending page 256 | P | |
