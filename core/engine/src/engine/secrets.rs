@@ -9,7 +9,6 @@ use crate::error::{Error, Result};
 use osis_base::{ChainStep, CreationRecord, RecordLink, RecordChain, Role, Tid, Value};
 use osis_crypto::{DeleteSecret, Epoch, Secret32, VerifyingKey, dedup_secret};
 use osis_keys::{ActorEpochs, HistoryAlts, Name, Opener, Own, Provenance, ROLES, Unchecked};
-use osis_perm::At;
 use osis_schema::RawKey;
 use osis_schema::core_types::{HistoryKey, Keys, Secrets, SigningKey};
 use std::collections::BTreeMap;
@@ -424,10 +423,10 @@ pub(crate) struct NamesHeld<'c> {
 }
 
 impl NamesHeld<'_> {
-    /// Whether `who` holds `r` on the actor now, for keys (`At::KEYS`: every `until`
-    /// disregarded), over its record chain and through holder actors alike.
+    /// Whether `who` holds `r` on the actor now, for keys (`rotation::members::role_for_keys`:
+    /// every `until` disregarded, through holder actors with key access).
     fn holder(&self, who: &Tid, r: Role) -> bool {
-        self.core.timelines.get(&self.actor).and_then(|tl| tl.role(who, &self.actor, At::KEYS)) >= Some(r)
+        crate::rotation::members::role_for_keys(self.core, who, &self.actor) >= Some(r)
     }
 
     /// Commit `c` is applied here with what its edge writes end: no reset of it names an entry
@@ -476,8 +475,7 @@ impl osis_keys::Held for NamesHeld<'_> {
         });
         applied && self.resolved(&n.key.commit) && if n.void { !self.applies(&n.key.commit, &n.holder) } else { self.stands(&n.key, Some(&n.holder)) }
     }
-    /// The author of held commit `c` holds `r` on the actor now, for keys (`At::KEYS`: every
-    /// `until` disregarded), over its record chain and through holder actors alike.
+    /// The author of held commit `c` holds `r` on the actor now, for keys (`holder`).
     ///
     /// Invariant: what covers a departure is its rotator's word, and a rotator's word counts
     /// only while it holds the role (spec/crypto.md §4, covers). A rotator lowered below `r`

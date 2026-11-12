@@ -199,6 +199,38 @@ fn self_removal_backdated_rotation_spec_crypto_4() {
     leaver_uncovered(Forge::Backdated);
 }
 
+// spec/crypto.md §4 (Holds: over grants with key access; Departure, maker; Covers: the departs
+// mark's author holds r), spec/requirements.md Permissions (a keyless grant gives no read through
+// it): W writes G and is first admin of H; G reads H, then H reads G (closing the cycle:
+// keyless). W's self-removal rotates read and write, its departs mark naming itself. W still
+// holds read on G through H, but keyless: it reads nothing through it, so its rotation covers
+// nothing and it left the epochs it made: A and X rotate before encrypting.
+#[test]
+fn leaver_through_keyless_grant_spec_crypto_4() {
+    let mut lp = synced(3);
+    let tids: Vec<Tid> = (0..3).map(|i| lp.peers[i].engine.me()).collect();
+    let g = group(&mut lp, A);
+    lp.peers[A].engine.grant(&g, &tids[W], &edge(Role::Write)).unwrap();
+    lp.peers[A].engine.grant(&g, &tids[X], &edge(Role::Admin)).unwrap();
+    lp.sync_all().unwrap();
+    let h = group(&mut lp, W);
+    lp.peers[W].engine.grant(&h, &g, &edge(Role::Read)).unwrap();
+    lp.sync_all().unwrap();
+    lp.peers[A].clock.advance(1);
+    lp.peers[A].engine.grant(&g, &h, &edge(Role::Read)).unwrap();
+    lp.sync_all().unwrap();
+    assert!(super::members::key_access(&lp.peers[A].engine.core).contains(&(g, h)), "H's grant on G is keyless");
+    let w_held: BTreeSet<Epoch> = leave(&mut lp, W, g, Forge::Rotating).unwrap().into_iter().filter(|(r, _)| *r == Role::Read).map(|(_, e)| e).collect();
+    lp.sync_all().unwrap();
+    for i in [A, X] {
+        assert_eq!(lp.peers[i].engine.core.timelines.get(&g).unwrap().role(&tids[W], &g, osis_perm::At::KEYS), Some(Role::Read), "peer {i}: W holds read on G through H (a role all the same)");
+        assert!(super::tests::blocked_at(&mut lp, i, g).contains(&Role::Read), "peer {i}: W's departure covered");
+        lp.peers[i].engine.ensure_rotated(&g).unwrap();
+        let now = newest_read(&lp, i, g).unwrap();
+        assert!(!w_held.contains(&now), "peer {i} encrypts under {now:?}, which W held");
+    }
+}
+
 // spec/permissions.md §3 (a `secrets.0` delta needs write): a reader's backdated entry listing
 // its self-removal writes nothing there.
 #[test]

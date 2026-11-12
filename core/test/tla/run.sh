@@ -62,6 +62,7 @@ instances=(
   "tail rotation Tail T_chain_commit.cfg fail"   # negative control: an applied name met by holding its commit
   "tail rotation Tail T_fin_takes.cfg fail"      # negative control: an applied name met only where it takes (Live)
   "cover rotation Cover C_regrant_reader.cfg fail" # the stated limit: a reader's write does not count
+  "cover rotation Cover C_leaver_keyless.cfg fail" # negative control: a leaver holding through a keyless grant counted (Holds)
   "authority rotation AuthorityMC A_order_nobase.cfg pass" # keysets read as of the commit's key (spec/crypto.md §4, Possession)
   "authority rotation AuthorityMC A_order_3.cfg pass"
   "authority rotation AuthorityMC A_held_nobase.cfg fail" # negative control: keysets read as held now give two fixpoints

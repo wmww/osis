@@ -64,6 +64,19 @@ pub(crate) fn may_rotate_keyed(core: &Core, who: &Tid, a: &Tid) -> BTreeSet<Role
     ROLES.into_iter().filter(|r| role >= Some(Role::Write) && Some(*r) <= role).collect()
 }
 
+/// `who`'s role on `a` now for keys (spec/crypto.md §4, Holds: `At::KEYS`, every `until`
+/// disregarded), over its record chain and through holder actors whose grants have key access
+/// only: a keyless grant gives no read through it (spec/requirements.md Permissions), so a party
+/// holding `a` only so has left it.
+pub(crate) fn role_for_keys(core: &Core, who: &Tid, a: &Tid) -> Option<Role> {
+    let tl = core.timelines.get(a)?;
+    let keyless = key_access(core);
+    if keyless.is_empty() {
+        return tl.role(who, a, osis_perm::At::KEYS);
+    }
+    tl.roles_without(who, osis_perm::At::KEYS, &keyless).get(a).copied()
+}
+
 /// Whether holder actor `h` of `a` has key access to it (a key actor always has).
 pub(crate) fn keyed(core: &mut Core, a: &Tid, h: &Tid) -> bool {
     core.is_key_actor(h) || !key_access(core).contains(&(*a, *h))

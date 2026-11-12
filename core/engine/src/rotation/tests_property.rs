@@ -207,7 +207,9 @@ impl Run {
                         let after = own.and_then(|c| self.after(i, &c));
                         // a peer reading a holder actor the epoch boxes reads it rightly
                         let via = own.map(|c| self.boxed_actors(i, &c, t, r)).unwrap_or_default();
-                        let below: BTreeSet<usize> = (0..N).filter(|d| !access_at(self, i, *d, t, r, after) && !via.iter().any(|(m, _)| access_at(self, i, *d, *m, r, after))).collect();
+                        // its maker holds what it made (a leaver rotating in its own
+                        // self-removal): rule 1 judges who encrypts under it after
+                        let below: BTreeSet<usize> = (0..N).filter(|d| *d != i && !access_at(self, i, *d, t, r, after) && !via.iter().any(|(m, _)| access_at(self, i, *d, *m, r, after))).collect();
                         // a rotator lacking the secret of the keyset it seals a boxed actor at
                         // judges it by order alone (spec/crypto.md §4, the limit for an epoch whose
                         // secret the node lacks): a departed peer may open the epoch by that box
@@ -253,7 +255,7 @@ impl Run {
     /// supersedes (Stale), so a departure below `m` reaches the box only until such a keyset
     /// does (the limit for a departure from a holder actor of M). A departure from `m` itself is
     /// judged by order alone (the limit for an epoch whose secret the node lacks): within it
-    /// unless the rotator held `d`'s departure from `m` (its last write in the settled timeline)
+    /// unless the rotator held `d`'s departure from `m` (`tail_departure_point`: the write a covering epoch must name)
     /// and `k`'s rotation is ordered before it. Boxes a later grant or re-seal of `m` writes at
     /// `k`, keysets held invalid or tainted (Stale too) and superseding keysets held only by a
     /// compaction snapshot are not read: wider than Seal there.
@@ -264,7 +266,7 @@ impl Run {
             return false;
         }
         let Some(om) = self.actors.iter().find(|x| x.0 == m).map(|x| x.1) else { return true };
-        let Some(dep) = departure_point(self, om, m, d) else { return true };
+        let Some(dep) = tail_departure_point(self, om, m, d, r) else { return true };
         let Some(h) = core.ix.commits.get(c).map(|x| &x.header) else { return true };
         let made = osis_perm::Point { ts: h.ts, node: h.author, commit: *c };
         !(held.contains(&dep.commit) && made < dep)
@@ -766,6 +768,26 @@ fn path_loss(run: &Run, o: usize, d: usize, t: Tid, r: Role) -> Option<CommitId>
     // whether `d` reads `t` just before each point, then just after the last
     let reads: Vec<bool> = points.iter().copied().chain(last).map(|p| access_at(run, o, d, t, r, Some(p))).collect();
     points.iter().zip(reads.windows(2)).filter(|(_, w)| w[0] && !w[1]).map(|(p, _)| p.commit).next_back()
+}
+
+/// Where peer `d`'s departure from role `r` of holder actor `m` is ordered for a keyset of `m`
+/// whose secret a sealer lacks (spec/crypto.md §4, Encrypting under: the earliest tail write
+/// giving it less than `r`, the write a covering epoch must name): the first applied write on
+/// its edge after the newest one giving `r` or more; else `departure_point`.
+fn tail_departure_point(run: &Run, o: usize, m: Tid, d: usize, r: Role) -> Option<osis_perm::Point> {
+    let tl = run.lp.peers[o].engine.core.timelines.get(&m)?;
+    let mut ws: Vec<(osis_perm::Point, Option<Role>)> = tl
+        .applied()
+        .iter()
+        .filter(|(_, a)| a.target == m)
+        .filter_map(|(w, a)| {
+            let op = tl.role_commit(&w.0)?.ops.get(w.1 as usize)?;
+            (op.target == m && op.holder == run.tids[d]).then(|| (a.point, super::key_role(op.edge.as_ref())))
+        })
+        .collect();
+    ws.sort_by_key(|x| x.0);
+    let from = ws.iter().rposition(|x| x.1 >= Some(r)).map_or(0, |i| i + 1);
+    ws.get(from).map(|x| x.0).or_else(|| departure_point(run, o, m, d))
 }
 
 /// `departure`, at its point in the key order.

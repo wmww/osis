@@ -24,13 +24,15 @@
 (* nothing where Dp is held (invalid, not audited). Else: Dp takes P's right *)
 (* through a holder actor, so no rotation of this actor names it, and honest *)
 (* writers re-seal holders they see unboxed at a current epoch they hold.    *)
+(* KeylessHolds (negative control): L, gone, still counts as holding the     *)
+(* role (spec/crypto.md §4 Holds counting a keyless grant's path).          *)
 (* MetVoid: a void name is met only where its write applies nothing (FALSE:  *)
 (* the negative control).                                                    *)
 (* Commits are delivered whole in any order; boxes are global (crypto is     *)
 (* access: a party's secrets are the closure over boxes to it and history).  *)
 EXTENDS Integers, FiniteSets, Sequences, TLC
 
-CONSTANTS Forge, Audit, Writers, MaxE, Dup, Regrant, DemoteTo, PKnows, Else, MetVoid
+CONSTANTS Forge, Audit, Writers, MaxE, Dup, Regrant, DemoteTo, PKnows, Else, MetVoid, KeylessHolds
 
 Honest == Writers
 Members == {"P", "L", "Q"} \cup (IF Regrant THEN {"M"} ELSE {})
@@ -133,14 +135,16 @@ Newest(n) == CHOOSE e \in Current(n) : \A f \in Current(n) :
 
 Role(n, p) == IF p = "O" THEN ADMIN ELSE Walk(held[n]).edge[p]
 Holds(n, p) == Role(n, p) >= READ
+\* whether a rotator's word counts (Covers): Holds, or with KeylessHolds L anyway
+AuthHolds(n, p) == Holds(n, p) \/ (KeylessHolds /\ p = "L")
 Departed(n) == {h \in Members : Role(n, h) = NONE}
 
 \* Covers (spec/crypto.md §4): the departure of h at n by epoch e: a met bound entry pins it; an
 \* epoch whose secret n lacks covers nothing (its history box is closed to it)
 Covers(n, e, h) ==
   LET ep == Ep(e)
-  IN /\ e \in Sec(n) /\ Holds(n, ep.author)
-     /\ \E x \in ents : x.e = e /\ x.bound /\ Met(n, x.names) /\ Pins(held[n], x.names, h, ep.commit, Holds(n, ep.author))
+  IN /\ e \in Sec(n) /\ AuthHolds(n, ep.author)
+     /\ \E x \in ents : x.e = e /\ x.bound /\ Met(n, x.names) /\ Pins(held[n], x.names, h, ep.commit, AuthHolds(n, ep.author))
 CoversAll(n, e) == \A h \in Departed(n) : Covers(n, e, h)
 NeedRot(n) == \E e \in Current(n) : ~CoversAll(n, e)
 HasCurrent(n) == Current(n) \cap Sec(n) # {}

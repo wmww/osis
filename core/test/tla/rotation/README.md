@@ -121,6 +121,7 @@ notes/crypto.md (Frozen coverage, The pin). One actor, read role; first admin O 
 | `C_dup` | `Dup`: admin Q removes L concurrently with S, in a commit carrying its rotation; writers O and Q, `MaxE = 3`; `NoLeak`, `DupCovers` (Q's epoch covers L's departure wherever S, S2 and its names are held) | pass | 49 | 2 s |
 | `C_dup_audit` | by hand: as C_dup with the audit-drop shape | **fails** `DupCovers` (O holds K dropped by D: a void write giving L read before S2, which Q's names lack; the pin asks it named though S2 removes L whatever K did: one more rotation, no leak) | 428 | 1 s (12 workers) |
 | `C_leaver` | by hand: every forgery, writers O and P, `MaxE = 6` | pass | 97,878 | 16 min |
+| `C_leaver_keyless` | negative control (`KeylessHolds`): L rotates in its self-removal and still counts as holding the role, as a leaver holding the actor only through a keyless grant would were Holds to count that path | **fails** `NoLeak` (expected: L's own epoch covers its departure; writers encrypt under it) | 14 | 1 s (4 workers) |
 | `C_regrant` | by hand: `Regrant`, P demoted to write, writers O and P, `MaxE = 2` | pass | 273,116 | 416 s (12 workers, load 13) |
 | `C_regrant_else` | by hand: as C_regrant with `Else`, `MetVoid` | pass | 326,354 | 374 s (12 workers, load 13) |
 | `C_regrant_else_nomet` | by hand: as C_regrant_else without `MetVoid` (negative control) | **fails** `NoLeak` (P, lacking Dp, holds Gr applied, establishes O's epoch naming it void and re-seals M at it) | 43,169 | 22 s (12 workers) |

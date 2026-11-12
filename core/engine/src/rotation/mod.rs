@@ -11,7 +11,7 @@
 
 pub(crate) mod departures;
 mod lost;
-mod members;
+pub(crate) mod members;
 #[cfg(test)]
 mod tests_account;
 #[cfg(test)]

@@ -1357,14 +1357,15 @@ fn box_walk_passes_actors_the_node_may_not_rotate_spec_crypto_4() {
     assert_eq!(leaked(&mut lp, 0, &[m, a, g], e, start), Vec::<Tid>::new());
 }
 
-// spec/crypto.md §4 (Encrypting under: the maker of an epoch opens it): A and M in a cycle (M
-// holds write on A first, so A's grant on M is keyless: M boxes A nothing). P writes A, so M
-// through it. Demoted to read on A, P, unaware, rotates M (its maker holds M's epoch with no box
-// naming it); re-granted write, P's removal from A lists that rotation in its frontier, so it
-// stands (spec/permissions.md §5.2). P holds no role on M any more: M's epoch it made is uncovered, so the
-// admin rotates M before sealing it into A, and P opens nothing written under A after.
+// spec/crypto.md §4 (Holds: over grants with key access; Departure, maker), spec/requirements.md
+// Permissions (a keyless grant gives no read through it): A and M in a cycle (M holds write on
+// A first, so A's grant on M is keyless: M boxes A nothing). P writes A, so M through it, but
+// reads nothing of M. Demoted to read on A, P, unaware, rotates M (its maker holds M's epoch with
+// no box naming it); re-granted write, P's rotation stands (its frontier, spec/permissions.md
+// §5.2). P holds M only through the keyless grant: the epoch it made is uncovered at once, the
+// admin rotates M off it, and P opens nothing written under A or M after its removal from A.
 #[test]
-fn maker_lowered_through_a_holder_actor_opens_nothing_new_spec_crypto_4() {
+fn maker_through_keyless_grant_opens_nothing_new_spec_crypto_4() {
     let mut lp = synced(2);
     let p = lp.peers[1].engine.me();
     let a = group(&mut lp, 0);
@@ -1383,12 +1384,13 @@ fn maker_lowered_through_a_holder_actor_opens_nothing_new_spec_crypto_4() {
     lp.sync_all().unwrap();
     lp.peers[0].engine.grant(&a, &p, &edge(Role::Write)).unwrap();
     lp.sync_all().unwrap();
+    assert_eq!(newest_read(&lp, 0, m), k2, "P's epoch of M stands");
+    assert!(blocked_at(&mut lp, 0, m).contains(&Role::Read), "P made it, reading nothing of M");
     removal(&mut lp, 0, a, p);
     lp.sync_all().unwrap();
-    assert_eq!(newest_read(&lp, 0, m), k2, "P's epoch of M stands");
-    assert!(lp.peers[0].engine.core.role_now(&p, &m).is_none(), "P holds no role on M");
     let (_, still) = lp.peers[0].engine.ensure_rotated(&a).unwrap();
     assert!(still.is_empty(), "{still:?}");
+    lp.peers[0].engine.ensure_rotated(&m).unwrap();
     assert_eq!(leaked(&mut lp, 0, &[m, a], p, start), Vec::<Tid>::new());
     assert_ne!(newest_read(&lp, 0, m), k2, "M rotated off P's epoch");
     lp.sync_all().unwrap();
