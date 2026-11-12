@@ -1166,7 +1166,7 @@ fn rejudge_once(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak)>> {
     }
     // each aspect rebuilt once, after its flips and every purge request's verdict on it (a
     // requester's flip moves all its requests: one rebuild per request read the aspect's bodies
-    // once each). Nothing in it reads a state (`run_batched`).
+    // once each). Nothing in it reads a state (`run_batched`): what does runs after.
     super::run_batched(tx, |tx| {
         if rebuild {
             for (tid, ak) in &flipped {
@@ -1187,17 +1187,6 @@ fn rejudge_once(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak)>> {
                     super::atomic::rebuild(tx, tid, ak)
                 })?;
             }
-            // memory parts turned valid may supersede held ones (spec/sync.md §9)
-            let memory: BTreeSet<(Tid, Ak)> = rose.iter().filter(|(t, a)| tx.txn.is_memory_aspect(t, a)).cloned().collect();
-            if !memory.is_empty() {
-                let gone = tx.in_class(true, |tx| {
-                    let gone = crate::retention::memory::drop_superseded(tx, &memory)?;
-                    // and snapshots turned valid cover held bodies
-                    crate::retention::memory::drop_covered(tx, &memory, None, None)?;
-                    Ok(gone)
-                })?;
-                flipped.extend(gone);
-            }
             // a request's right rests on the same timelines (spec/permissions.md §6)
             let things: BTreeSet<Tid> = things.union(&under).copied().collect();
             for (tid, ak) in crate::retention::purged_aspects(tx, &things, &whole)? {
@@ -1206,6 +1195,18 @@ fn rejudge_once(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak)>> {
         }
         Ok(())
     })?;
+    // memory parts turned valid may supersede held ones (spec/sync.md §9): after the rebuilds,
+    // as a cover's keep bound reads the state (`bounds::part_keep`)
+    let memory: BTreeSet<(Tid, Ak)> = if rebuild { rose.iter().filter(|(t, a)| tx.txn.is_memory_aspect(t, a)).cloned().collect() } else { BTreeSet::new() };
+    if !memory.is_empty() {
+        let gone = tx.in_class(true, |tx| {
+            let gone = crate::retention::memory::drop_superseded(tx, &memory)?;
+            // and snapshots turned valid cover held bodies
+            crate::retention::memory::drop_covered(tx, &memory, None, None)?;
+            Ok(gone)
+        })?;
+        flipped.extend(gone);
+    }
     // after the rebuilds: a keyset or secrets flip reads its aspect's state
     super::keys::rebuild_keysets(tx, &keyset_flips)?;
     super::keys::refresh_own_keys(tx, &keyset_flips, true)?;
