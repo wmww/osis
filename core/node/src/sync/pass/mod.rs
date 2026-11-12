@@ -407,7 +407,8 @@ impl SyncEngine {
             let Some(head) = served.get(&l).and_then(|s| s.head()) else { continue };
             // no pass before a fill has what judging needs: it would ask what it lacks at once,
             // out of the fill's order (`read_first`); one under way passes at its own times
-            // (`fill_due`) and on this node's own writes, not per batch applied
+            // (`fill_due`: also what another connection's stream brings meanwhile) and on this
+            // node's own writes, not per batch applied
             if self.fill_first_waits(&l) || self.filling(&l) && !own_wrote && !fill_due.contains(&l) {
                 continue;
             }

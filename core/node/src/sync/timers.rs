@@ -126,9 +126,10 @@ impl SyncEngine {
                 at(x);
             }
             for l in c.labels.values() {
-                // a label waiting for a reply re-syncs after it; a quiet one needs no time of its
-                // own, what comes due for it waits for the next tick
-                if (l.phase == Phase::Open && l.fill.is_some()) || l.phase == Phase::Failed || (l.phase == Phase::Testing && l.registering.is_none()) {
+                // a label not open re-tries after `resync_ms`; an open one needs no time of its
+                // own (a fill's stalled batch wakes by `settle_by`), what comes due for it waits
+                // for the next tick
+                if l.phase == Phase::Failed || (l.phase == Phase::Testing && l.registering.is_none()) {
                     at(l.last_sync.saturating_add(resync));
                 }
                 if let Phase::Refused { retry_at } = l.phase {

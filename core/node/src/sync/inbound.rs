@@ -483,7 +483,13 @@ impl SyncEngine {
         let pushed = conn.and_then(|c| self.conns.get(&c)).and_then(|c| c.labels.get(&l)).is_some_and(|x| x.synced && x.fill.is_none());
         // the label changed under us: a pass decides again (carriers, retags); not per batch of a fill
         if (!touched.is_empty() || announced) && !filling {
-            self.mark_labels(&[l]);
+            // a fill under way at another connection passes at its own times: what this one
+            // brought is one of them
+            if self.filling(&l) {
+                self.fill_due.insert(l);
+            } else {
+                self.mark_labels(&[l]);
+            }
         }
         // bodies waiting for a linked blob upload it now it is here (`Left::links`)
         self.touched.blobs.extend(blobs.iter().map(|(b, _)| *b));
