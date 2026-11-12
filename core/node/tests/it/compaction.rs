@@ -221,6 +221,66 @@ fn trigger_work_flat_under_kept_history_spec_sync_7() {
     assert!(large.1 <= small.1 + small.1 / 2, "work per write grew with kept history: {small:?} at 20, {large:?} at 200");
 }
 
+/// What the trigger did at the writer while it ran `f`: (aspects weighed, snapshots written).
+fn trigger_runs(net: &mut Net, f: impl FnOnce(&mut Net)) -> (u64, u64) {
+    osis_node::costs::take();
+    f(net);
+    let c = osis_node::costs::take();
+    let get = |k: &str| c.iter().find(|x| x.0 == k).map_or(0, |x| x.2);
+    (get("compact: aspects weighed"), get("compact: snapshots written"))
+}
+
+// spec/sync.md §7 Trigger, spec/commits.md §5 Purge: the trigger weighs exactly what a snapshot
+// written now drops. Here n puts kept while live are reached by a held snapshot's frontier,
+// then purged: their leftovers stay (the purge may fall), so they count for nothing. Ten
+// overwrites of one key follow, each replaced body leaving history before the next: after
+// every snapshot the trigger writes nothing it counts is left, so it fires only once new
+// replaced bodies pass the threshold, never at every write, and weighs at most every other
+// write, at n and 10n purged bodies alike.
+#[test]
+fn trigger_counts_what_its_snapshot_drops_spec_sync_7() {
+    let run = |n: usize| {
+        let (mut net, _host, [a, _r], _g, [t]) = hosted::<2, 1>(&[(1, Role::Read)], ["x"], true);
+        net.keep(a, t, &[(GONEMAP.ak(), osis_schema::History::Keep { until: None, after: Some(2_000) })]);
+        net.run();
+        let puts = put_apart(&mut net, a, t, n);
+        net.sync(a).compact_now(&t, &map_ak()).unwrap();
+        net.run();
+        let mut m = Mutation::new();
+        for c in &puts {
+            m.purge_commit(*c, t, map_ak());
+        }
+        m.op(t, &GONEMAP, PathOp { path: vec![PathSeg::Key(s("k0"))], op: Op::Set(s("purged")) }).unwrap();
+        net.engine(a).commit(m).unwrap().unwrap();
+        net.run();
+        let k = map_ak();
+        let load = |net: &mut Net| net.engine(a).compaction_load().unwrap().into_iter().find(|l| l.tid == t && l.ak == k).unwrap();
+        assert_eq!(load(&mut net).bodies, 0, "n={n}: a purge's leftovers count for nothing");
+        let (mut weighed, mut written) = (0, 0);
+        for i in 0..10 {
+            let (w, s) = trigger_runs(&mut net, |net| {
+                put(net, a, t, "k0", &format!("w{i}"));
+                net.advance(3_000);
+                net.run();
+            });
+            if s > 0 {
+                let l = load(&mut net);
+                assert_eq!(l.bodies, 0, "n={n}, write {i}: a body counted is left after the snapshot: {l:?}");
+            }
+            (weighed, written) = (weighed + w, written + s);
+        }
+        let e = net.engine(a);
+        assert!(puts.iter().all(|c| e.core.ix.commits.get(c).is_some_and(|m| m.stripped.len() == 1)), "n={n}: the leftovers stay");
+        (weighed, written)
+    };
+    for n in [4, 40] {
+        let (weighed, written) = run(n);
+        println!("n={n}: over 10 writes, {weighed} weighings, {written} snapshots");
+        assert!(written >= 1, "n={n}: the replaced overwrites compact");
+        assert!(weighed <= 5 && written <= weighed, "n={n}: {weighed} weighings, {written} snapshots over 10 writes");
+    }
+}
+
 // spec/commits.md §7 Kept history only, §5 Kept while live: undo of a live put works for as long
 // as its aspect keeps it, however much was written beside it; where no setting keeps the aspect
 // its undo is refused at once, its body held, and alike once the trigger compacted it.

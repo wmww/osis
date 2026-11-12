@@ -591,7 +591,7 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Parts, o
     }
     // a memory commit is ephemeral state to watchers; node-sync carries its bodies as any
     // commit's (`mark_changed`)
-    crate::retention::compact::Trigger::applied(tx, &h, blob)?;
+    crate::retention::compact::Trigger::applied(tx, &id, &h, blob)?;
     if h.ephemeral.is_some() {
         tx.core.events.queue(Event::Ephemeral { id, origin, author: h.author, actor: h.actor, ts: h.ts, received, changed: changed.into_iter().collect() });
     } else {

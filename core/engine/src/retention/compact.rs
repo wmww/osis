@@ -60,7 +60,7 @@ impl Trigger {
     /// may hold their cost more. A snapshot adds nothing: only writes make one stale, and only
     /// what they add makes the trigger weigh (so two writers never compact each other's
     /// snapshots in turn).
-    pub(crate) fn applied(tx: &mut Tx<'_>, h: &Header, blob: &CommitBlob) -> Result<()> {
+    pub(crate) fn applied(tx: &mut Tx<'_>, id: &CommitId, h: &Header, blob: &CommitBlob) -> Result<()> {
         if h.kind.is_compaction() || !h.kind.has_own_writes() {
             return Ok(());
         }
@@ -76,28 +76,32 @@ impl Trigger {
                 Trigger::live_until(tx, (a.tid, a.ak.clone()), live);
                 continue;
             }
-            Trigger::counts(tx, &a.tid, &a.ak, blob, ai)?;
+            Trigger::counts(tx, id, &a.tid, &a.ak, blob, ai)?;
         }
         Ok(())
     }
 
-    /// Part `ai` of `blob` on `(tid, ak)` may count for the trigger from now on (applied, or out
-    /// of history): what `(tid, ak)` may hold grows by its cost, every tree blob it lists counted.
+    /// Part `ai` of `blob` (commit `c`) on `(tid, ak)` may count for the trigger from now on
+    /// (applied, or out of history): what `(tid, ak)` may hold grows by its cost, every tree blob
+    /// it lists counted; by nothing where no cover drops it (`retention::drops_as_covered`: a
+    /// purge's leftover), as the weighing counts it.
     /// A live value links its own tree, but a write lists the tree blobs it adds, about those it
     /// unlinks from the value it replaces (a changed chunk and its path to the root), which a
     /// drop then frees: so what is held grows by them, read by length, O(the blobs it lists).
-    pub(crate) fn counts(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, blob: &CommitBlob, ai: usize) -> Result<()> {
-        if !compactable(ak) {
+    /// A snapshot (out of history) grows it by its tree blobs alone, as the weighing counts it
+    /// (`Candidate::body`).
+    pub(crate) fn counts(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak, blob: &CommitBlob, ai: usize) -> Result<()> {
+        let now = tx.now().0;
+        if !compactable(ak) || tx.core.ix.commits.get(c).is_some_and(|m| !super::drops_as_covered(m, ai, now)) {
             return Ok(());
         }
         let w = body_bytes(tx, blob, ai)?;
         let tree = held_bytes(tx, w.tree.iter())?;
-        tx.core.compaction.grow((*tid, ak.clone()), w.bytes.saturating_add(tree));
+        let cost = if blob.header.kind.is_compaction() { tree } else { part_weight(w.bytes.saturating_add(tree)).saturating_add(ENTRY_CHARGE) };
+        if cost > 0 {
+            tx.core.compaction.add((*tid, ak.clone()), cost);
+        }
         Ok(())
-    }
-
-    fn grow(&mut self, k: (Tid, Ak), bytes: usize) {
-        self.add(k, part_weight(bytes).saturating_add(ENTRY_CHARGE));
     }
 
     fn add(&mut self, k: (Tid, Ak), cost: usize) {
@@ -221,24 +225,27 @@ fn held_bytes<'b>(tx: &mut Tx<'_>, blobs: impl Iterator<Item = &'b BlobId>) -> R
     Ok(sum)
 }
 
-/// The bodies held of `(tid, ak)` a snapshot written now would cover (not snapshots; not ones
-/// with an expiry before it, which a snapshot covers only as their leftover; not one behind an
-/// invalid, missing or purged body of its session, which its frontier cannot pass: counted, it would
-/// fire the trigger at every step), with their part and its cost. A leftover counts as a part
-/// with no delta bytes. Whether each is past its keep bound is the caller's (`Load::of`). Where
+/// The bodies held of `(tid, ak)` a snapshot written now would cover and drop, with their part
+/// and its cost: those a cover drops (`retention::drops_as_covered`, the drop's own judgment: a
+/// purge's leftover stays), whose writes the snapshot claims (its frontier walk passes them or
+/// `Absorbed` lists them: `snapshot::claims`, the writer's own judgment; not one behind an
+/// invalid, missing or purged body of its session), and not ones with an expiry before it,
+/// which a snapshot covers only as their leftover. Counted otherwise, a body no snapshot drops
+/// would fire the trigger at every step. A leftover counts as a part with no delta bytes. Whether each is past its keep bound is the caller's (`Load::of`). Where
 /// the setting keeps live bodies, only bodies out of history and leftovers are looked at
 /// (`droppable`): kept ones are neither read nor walked past, so a weighing costs what it may
 /// drop, not the kept history.
 fn candidates(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, me: Tid) -> Result<Vec<Candidate>> {
     let memory = ak.ephemeral();
+    let now = tx.now().0;
     let pool = droppable(tx, tid, ak);
     // (commit, part, judged by ID, a snapshot)
     let ids: Vec<(CommitId, usize, bool, bool)> = pool
         .into_iter()
         .filter_map(|c| {
             let m = tx.core.ix.commits.get(&c)?;
-            let ai = m.aspect(tid, ak).filter(|ai| m.holds(*ai) && m.valid_at(*ai))?;
-            m.header.aspects.get(ai).filter(|_| m.header.expires.is_none() || super::valueless(tx.core, &c, ai))?;
+            let ai = m.aspect(tid, ak).filter(|ai| m.holds(*ai) && m.valid_at(*ai) && super::drops_as_covered(m, *ai, now))?;
+            m.header.aspects.get(ai).filter(|_| m.header.expires.is_none() || m.bare(ai))?;
             Some((c, ai, super::snapshot::by_id(m.header.kind, m.header.form), m.view.kind.is_compaction()))
         })
         .collect();
@@ -255,8 +262,7 @@ fn candidates(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, me: Tid) -> Result<Vec<Candid
             *e = (*e).max(lo);
         }
     }
-    let now = tx.now().0;
-    let valid_on = |c: &CommitId| tx.core.ix.commits.get(c).is_some_and(|m| m.aspect(tid, ak).is_some_and(|ai| m.valid_at(ai) && !m.missing.contains(&ai) && !super::held_purged(tx.core, c, tid, ak, ai, now)));
+    let valid_on = |c: &CommitId| super::snapshot::claims(tx.core, c, tid, ak, now);
     let (_, reflected) = super::snapshot::frontiers_upto(tx, tid, ak, memory, &valid_on, Some(&upto));
     // (commit, part, its weight, a snapshot)
     let mut weighed = Vec::new();
@@ -443,6 +449,8 @@ impl Engine {
                 self.core.compaction.est.remove(&k);
                 continue;
             }
+            // counted: tests read how often the trigger weighs and fires per write
+            crate::costs::count("compact: aspects weighed", 1);
             let Some(l) = Load::of(self, &tid, &ak, me)? else {
                 self.core.compaction.est.remove(&k);
                 continue;
@@ -452,6 +460,7 @@ impl Engine {
             if fire {
                 match self.snapshot(&tid, &ak) {
                     Ok(Some(c)) => {
+                        crate::costs::count("compact: snapshots written", 1);
                         out.push((tid, ak.clone(), c));
                         held = 0;
                     }

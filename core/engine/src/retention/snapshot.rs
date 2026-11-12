@@ -229,6 +229,15 @@ pub(crate) fn facts_of(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, st: &Fragment) -> Re
     Ok(out)
 }
 
+/// Whether a snapshot of `(tid, ak)` written now at wall ms `now` claims the writes of `c`'s part
+/// (`frontiers_now`'s walk passes it, `Absorbed` lists it): valid here; held, as a part still
+/// missing gives the state nothing (applied without it, spec/commits.md §4), but an expiring
+/// one, whose writes would go value-less here anyway; not held value-less for a purge
+/// (`retention::held_purged`). The writer and the compaction trigger both ask it.
+pub(crate) fn claims(core: &Core, c: &CommitId, tid: &Tid, ak: &Ak, now: u64) -> bool {
+    core.ix.commits.get(c).is_some_and(|m| m.aspect(tid, ak).is_some_and(|ai| m.valid_at(ai) && (!m.missing.contains(&ai) || m.header.expires.is_some()) && !super::held_purged(core, c, tid, ak, ai, now)))
+}
+
 /// Whether a commit's own writes are judged by its ID (commit form: a snapshot lists those whose
 /// writes it holds as absorbed) rather than by counters under a frontier.
 pub(super) fn by_id(kind: Kind, form: Form) -> bool {
@@ -507,13 +516,8 @@ pub(crate) fn write_snapshot(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, memory: bool) 
     if ak.as_str() == "secrets.0" && !crate::apply::keys::may_compact(tx.core, &tid, &st) {
         return Err(Error::Misuse("secrets.0 keys an epoch not established here (spec/crypto.md §4)"));
     }
-    // a part still missing gives this state nothing (applied without it, spec/commits.md
-    // §4): an expiring one's writes would go value-less here anyway; one held value-less for a
-    // purge is not claimed (`retention::held_purged`)
     let now = tx.now().0;
-    let valid_on = |c: &CommitId| {
-        tx.core.ix.commits.get(c).is_some_and(|m| m.aspect(&tid, &ak).is_some_and(|ai| m.valid_at(ai) && (!m.missing.contains(&ai) || m.header.aspects.get(ai).is_some_and(|_| m.header.expires.is_some())) && !super::held_purged(tx.core, c, &tid, &ak, ai, now)))
-    };
+    let valid_on = |c: &CommitId| claims(tx.core, c, &tid, &ak, now);
     // frontiers cover only counters whose writes this state reflects: applied, valid, of
     // the sessions that occur in it (spec/crdt.md §8: a session with no write left in the
     // state is pruned with them), from the held valid snapshots' frontiers on (`frontiers_now`)

@@ -171,17 +171,20 @@ pub(crate) fn held_part(core: &Core, c: &CommitId, tid: &Tid, ak: &Ak) -> Option
 /// without it (same header), the aspect rebuilt
 /// shredded (node-sync deletes it at hosts, judged from
 /// `Meta::body_gone`). A bare leftover stays for un-merge (spec/crdt.md §4.6) but past its
-/// expiry, when a held snapshot covers it (`expired_leftover`); one holding values
+/// expiry, when a held snapshot covers it (`drops_as_covered`); one holding values
 /// (`Meta::valued`) is dropped as a whole body.
 pub(crate) fn drop_part(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()> {
     drop_part_for(tx, c, ai, DropFor::Other)
 }
 
-/// Whether part `ai` of `m` is a bare leftover past its expiry (spec/commits.md §5): value-less
-/// for good, so it drops as covered like any body, its writes in the coverer (a purge's leftover
-/// stays: the purge may fall and its values come back).
-pub(crate) fn expired_leftover(m: &crate::engine::Meta, ai: usize, now: u64) -> bool {
-    m.bare(ai) && m.header.expires.is_some_and(|t| t <= now)
+/// Whether a cover may drop part `ai` of `m` (spec/commits.md §5): not dropped, and a body, a
+/// leftover holding values (`Meta::valued`) or a bare leftover past its expiry (value-less for
+/// good, its writes in the coverer). A purge's bare leftover stays: the purge may fall and its
+/// values come back. The one judgment of which parts a cover drops: the drop (`drop_part_for`,
+/// `Engine::droppable_if_covered`) and the compaction trigger's count (`compact::candidates`)
+/// both ask it, so the trigger never counts a body its own snapshot leaves.
+pub(crate) fn drops_as_covered(m: &crate::engine::Meta, ai: usize, now: u64) -> bool {
+    !m.dropped.contains_key(&ai) && (!m.bare(ai) || m.header.expires.is_some_and(|t| t <= now))
 }
 
 /// `drop_part`, saying why.
@@ -192,7 +195,7 @@ fn drop_part_for(tx: &mut Tx<'_>, c: &CommitId, ai: usize, why: DropFor) -> Resu
     let invalid = why == DropFor::Invalid;
     // a bare leftover stays but past its expiry under a cover, or while invalid: then it gives
     // nothing; a signal's gives nothing ever, and goes at its keep bound
-    let leftover = invalid || why == DropFor::Destroyed || why == DropFor::Cover && expired_leftover(&m, ai, tx.now().0) || a.ak.signal();
+    let leftover = invalid || why == DropFor::Destroyed || why == DropFor::Cover && drops_as_covered(&m, ai, tx.now().0) || a.ak.signal();
     if m.dropped.contains_key(&ai) || (m.bare(ai) && !leftover) {
         return Ok(());
     }
