@@ -965,6 +965,11 @@ impl SyncEngine {
         // from the start)
         let named = p.unsettled_names(l);
         p.rejoin.remove(l);
+        // a join asked before it left is not this one: its reply's answer for L (a refusal for
+        // the Hit that went stale, say) must not end a join made after L opened again
+        if let Some((_, _, sent)) = &mut p.asked {
+            sent.retain(|x| x != l);
+        }
         let (was_in, join) = (p.in_stream.remove(l), p.joins.remove(l));
         let listing = matches!(stop, Stop::Listing);
         let lag = match (stop, was_in, join) {
