@@ -262,13 +262,15 @@ fn undo_writes(tx: &mut Tx<'_>, target: CommitId, actor: Tid, ts: Ts, confined: 
 
 /// The parts of content commit `target` its undo inverts, each with its delta and its writer's
 /// source. Left out: one invalid here, a signal's (it reads absent before and after), the creation
-/// record, the parts on things the commit created (those are deleted, `unmake_ops`) and a
-/// membership part whose writes in effect are all listings of those things (`lists_only`: the
-/// deletion takes them out). Every other part is reverted, or there is no undo (`NotKept`): it is
-/// not in kept history by its thing's setting at the undo's `ts` (spec/commits.md §7:
+/// record and the parts on things the commit created (those are deleted, `unmake_ops`). Every
+/// other part is reverted, or there is no undo (`NotKept`): it is not received yet; or it is not
+/// in kept history by its thing's setting at the undo's `ts` (spec/commits.md §7:
 /// `bounds::setting_keeps`, whatever is held, so an undo is the same on every node whatever
-/// compaction did), or its body is not held (purged, expired, not fetched yet); or it writes back
-/// replaced content (`osis_crdt::restores`) not kept (`replaced_kept`).
+/// compaction did) or its body is gone (purged, expired), unless it is a membership part whose
+/// writes in effect only list things the commit created (`lists_only`: left out, the deletion
+/// takes them out); or it writes back replaced content (`osis_crdt::restores`) not kept
+/// (`replaced_kept`). A kept part is inverted even when `lists_only`, so the group reads as before
+/// the commit (spec/crdt.md §4.6 SHOULD).
 fn undone_parts(tx: &mut Tx<'_>, target: &CommitId, ts: Ts, writers: &[Tid]) -> Result<Vec<(osis_commit::AspectEntry, Fragment, Source)>> {
     let m = tx.core.ix.commits.get(target).cloned().ok_or(Error::UnknownCommit(*target))?;
     let h = m.header.clone();
@@ -276,10 +278,16 @@ fn undone_parts(tx: &mut Tx<'_>, target: &CommitId, ts: Ts, writers: &[Tid]) -> 
     let now = ts.wall_ms().0;
     let mut parts = Vec::new();
     for (ai, a) in h.aspects.iter().enumerate() {
-        if !m.valid_at(ai) || a.ak.signal() || a.ak.as_str() == CREATED.ak() || a.ak.as_str() == osis_commit::retention::RETENTION || made.contains(&a.tid) || lists_only(tx, &h, target, ai, &made, writers, ts)? {
+        if !m.valid_at(ai) || a.ak.signal() || a.ak.as_str() == CREATED.ak() || a.ak.as_str() == osis_commit::retention::RETENTION || made.contains(&a.tid) {
             continue;
         }
-        if m.body_gone(ai) || m.missing.contains(&ai) || !crate::retention::bounds::setting_keeps(tx, target, ai, now)? {
+        if m.missing.contains(&ai) {
+            return Err(Error::NotKept(*target));
+        }
+        if m.body_gone(ai) || !crate::retention::bounds::setting_keeps(tx, target, ai, now)? {
+            if lists_only(tx, &h, target, ai, &made, writers, ts)? {
+                continue;
+            }
             return Err(Error::NotKept(*target));
         }
         let Some(Decoded::Delta(d)) = crate::apply::held_part(tx, target, ai)? else { return Err(Error::Corrupt("content part held without its delta")) };

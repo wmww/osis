@@ -537,8 +537,9 @@ fn remove_client_revokes() {
     // no setting keeps `clients^.0`: the entry's removal is never undone, on any node, held or
     // not (spec/commits.md §7); a half removal revives under no clock
     // (half_removed_client_stays_ended)
+    // heard on the dispatcher: wait for it before the subscription goes
+    let removal = rx.recv_timeout(std::time::Duration::from_secs(60)).expect("the removal was heard");
     drop(sub);
-    let removal = rx.try_recv().expect("the removal was heard");
     assert_eq!(x.n.revert(removal), Err(Error::NotUndoable { commit: removal, reason: osis::NotUndoableReason::NotKept }));
     assert!(matches!(x.connect(&s), Err(Error::Refused(_))));
     assert!(!x.n.remove_client(a).unwrap());
