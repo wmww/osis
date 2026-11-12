@@ -378,10 +378,13 @@ fn disappearing_spec_commits_6() {
     w.run();
     assert!(texts(&a, c).is_empty() && texts(&b, c).is_empty());
     // edit (purging the old text in the same commit) and delete in a disappearing chat; an edit
-    // ends with its message
+    // ends with its message. The original reaches b first: an expiring delta's purge leaves
+    // nothing at a label (spec/commits.md §5 Purge: no lasting header), so a reader that never got it reads the
+    // edit as a message of its own
     disappear(&a, c, Some(Duration::from_secs(60)));
     w.run();
     let o = post(&a, c, "orginal").unwrap();
+    w.run();
     edit(&a, c, o, "original").unwrap();
     w.run();
     assert_eq!(texts(&b, c), ["original"]);
