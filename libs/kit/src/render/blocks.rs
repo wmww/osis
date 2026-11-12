@@ -5,7 +5,7 @@ use crate::view::paged::{Item, List, ListRow, Style};
 use crate::view::{Block, ChipMark, Composer, Do, Entry, FormRow, Mark, Pick, TextRole, WindowState};
 use osis::Tid;
 use crate::icons::Icon;
-use crate::masonry::core::{NewWidget, Properties, Widget, WidgetId};
+use crate::masonry::core::{Capitalize, EnterKey, NewWidget, Properties, TextInputHints, Widget, WidgetId};
 use crate::masonry::properties::Padding;
 use crate::masonry::properties::types::{CrossAxisAlignment, Length};
 use crate::masonry::widgets::{Flex, SizedBox, TextInput};
@@ -464,7 +464,9 @@ impl R<'_> {
 
     /// A form field: the input in a field panel that reports losing focus.
     fn form_input(&mut self, value: &str, placeholder: &str, save: Do) -> NewWidget<Panel> {
-        let (input, id) = style::input(self.look, value, placeholder, Text::Body, false);
+        // raw values (dates, ids, numbers) as typed: no corrections
+        let hints = TextInputHints { capitalize: Capitalize::None, suggest: false, enter: EnterKey::Done, ..Default::default() };
+        let (input, id) = style::input(self.look, value, placeholder, Text::Body, false, hints);
         let panel = NewWidget::new(Panel::new(input, self.look.clone(), PanelKind::Field, (5.0, 8.0)).report_blur(true));
         self.acts.forms.insert(id, FormInput { save, saved: value.to_string(), text: value.to_string() });
         self.acts.blur.insert(panel.id(), id);
@@ -483,7 +485,8 @@ impl R<'_> {
             TextRole::Body => Text::Body,
             TextRole::Muted => Text::Muted,
         };
-        let (w, id): (NewWidget<TextInput>, _) = style::input(&look, &shown, placeholder, role_t, multiline);
+        let hints = TextInputHints { suggest: true, enter: EnterKey::Done, ..Default::default() };
+        let (w, id): (NewWidget<TextInput>, _) = style::input(&look, &shown, placeholder, role_t, multiline, hints);
         self.acts.editors.insert(id, key);
         self.built.ids.push(id);
         if let Some((m, c)) = lead {
@@ -502,7 +505,9 @@ impl R<'_> {
         for (i, f) in c.fields.iter().enumerate() {
             let key = (self.path.to_string(), f.thing, f.ak.clone(), Some(f.key.clone()));
             let text = self.window.sessions.show(self.data, &key).unwrap_or_default();
-            let (input, id) = style::input(&look, &text, &f.placeholder, Text::Body, false);
+            let enter = if i == last { EnterKey::Send } else { EnterKey::Next };
+            let hints = TextInputHints { suggest: true, enter, ..Default::default() };
+            let (input, id) = style::input(&look, &text, &f.placeholder, Text::Body, false, hints);
             let panel = NewWidget::new(Panel::new(input, look.clone(), PanelKind::Field, (8.0, 12.0)));
             self.acts.editors.insert(id, key);
             self.built.ids.push(id);

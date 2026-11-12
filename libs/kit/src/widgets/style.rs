@@ -8,6 +8,7 @@ use masonry::parley::FontWeight;
 use masonry::peniko::Color;
 use masonry::properties::{Background, BorderWidth, CaretColor, ContentColor, Padding, PlaceholderColor, SelectionColor, UnfocusedSelectionColor};
 use masonry::properties::types::CrossAxisAlignment;
+use masonry::core::TextInputHints;
 use masonry::widgets::{Flex, InsertNewline, Label, Prose, TextArea, TextInput};
 
 /// What a piece of text is, for its size, weight and colour.
@@ -111,10 +112,11 @@ pub fn prose(look: &Look, text: &str, t: Text) -> NewWidget<Prose> {
     NewWidget::new(Prose::from_text_area(NewWidget::new_with_props(area, props)))
 }
 
-/// A borderless text input in a text role (`multiline`: Enter inserts a newline).
-pub fn input(look: &Look, text: &str, placeholder: &str, t: Text, multiline: bool) -> (NewWidget<TextInput>, masonry::core::WidgetId) {
+/// A borderless text input in a text role (`multiline`: Enter inserts a newline), telling input
+/// methods what it is for.
+pub fn input(look: &Look, text: &str, placeholder: &str, t: Text, multiline: bool, hints: TextInputHints) -> (NewWidget<TextInput>, masonry::core::WidgetId) {
     let color = role(look, t).2;
-    let mut area = TextArea::new_editable(text);
+    let mut area = TextArea::new_editable(text).with_text_input_hints(hints);
     for st in styles(look, t) {
         area = area.with_style(st);
     }

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Builds the debug-signed osis APK (notes/android.md): app/android/build.sh [arm64|x86_64].
-# Needs ANDROID_HOME (SDK with build-tools and platforms;android-36) and ANDROID_NDK_ROOT.
+# Needs ANDROID_HOME (SDK with build-tools and platforms;android-36), ANDROID_NDK_ROOT and a JDK.
 # Prints the APK's path.
 set -euo pipefail
 abi=${1:-arm64}
@@ -26,8 +26,12 @@ out=$root/target/$target/release/apk
 rm -rf "$out" && mkdir -p "$out/lib/$dir"
 cp "$root/target/$target/release/libosis_android.so" "$out/lib/$dir/"
 "$llvm/llvm-strip" --strip-debug "$out/lib/$dir/libosis_android.so"
+# java/: the activity, the view and its input connection, as classes.dex
+mkdir -p "$out/classes"
+javac -source 11 -target 11 -Xlint:-options -nowarn -cp "$jar" -d "$out/classes" $(find "$here/java" -name '*.java')
+"$bt/d8" --release --min-api 28 --lib "$jar" --output "$out" $(find "$out/classes" -name '*.class')
 "$bt/aapt2" link -o "$out/unaligned.apk" --manifest "$here/AndroidManifest.xml" -I "$jar"
-(cd "$out" && zip -q -r unaligned.apk lib)
+(cd "$out" && zip -q -r unaligned.apk lib classes.dex)
 "$bt/zipalign" -f -P 16 4 "$out/unaligned.apk" "$out/aligned.apk"
 ks=$HOME/.android/debug.keystore
 if [ ! -f "$ks" ]; then

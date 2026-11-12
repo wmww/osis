@@ -337,6 +337,14 @@ pub trait Widget: AsDynWidget + Any {
         false
     }
 
+    /// The widget's text as input methods see it, if it is an editable text.
+    ///
+    /// A widget that [accepts text input](Self::accepts_text_input) and returns `Some` here gets
+    /// [`Ime::Edit`](crate::core::Ime::Edit) events made against what this returns.
+    fn ime_text(&self) -> Option<&dyn crate::core::ImeText> {
+        None
+    }
+
     // TODO - Write a generic default implementation once
     // `const std::any::type_name` is stable.
     // See https://github.com/rust-lang/rust/issues/63084

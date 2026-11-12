@@ -1,0 +1,410 @@
+diff --git src/tests/update.rs src/tests/update.rs
+index 1a29811d3..270c57049 100644
+--- src/tests/update.rs
++++ src/tests/update.rs
+@@ -5,7 +5,7 @@ use std::sync::mpsc;
+ 
+ use assert_matches::assert_matches;
+ use masonry_core::core::{
+-    CursorIcon, Ime, NewWidget, Properties, TextEvent, Update, Widget, WidgetId, WidgetPod,
++    CursorIcon, Ime, NewWidget, Properties, TextEdit, TextEvent, Update, Widget, WidgetId, WidgetPod,
+     WidgetTag,
+ };
+ use masonry_testing::{
+@@ -492,10 +492,18 @@ fn ime_commit() {
+ 
+     harness.focus_on(Some(textbox_id));
+ 
+-    harness.process_text_event(TextEvent::Ime(Ime::Commit("New Text".to_string())));
++    let insert = |at: usize, text: &str| {
++        TextEvent::Ime(Ime::Edit(TextEdit {
++            replace: at..at,
++            text: text.to_string(),
++            selection: (at + text.len(), at + text.len()),
++            compose: None,
++        }))
++    };
++    harness.process_text_event(insert(0, "New Text"));
+     assert_eq!(harness.get_widget(textbox_tag).text(), "New Text");
+ 
+-    harness.process_text_event(TextEvent::Ime(Ime::Commit(" and more".to_string())));
++    harness.process_text_event(insert(8, " and more"));
+     assert_eq!(harness.get_widget(textbox_tag).text(), "New Text and more");
+ 
+     let ime_area_size = harness.ime_rect().1;
+diff --git src/widgets/text_area.rs src/widgets/text_area.rs
+index 249de6702..74427ebeb 100644
+--- src/widgets/text_area.rs
++++ src/widgets/text_area.rs
+@@ -3,10 +3,11 @@
+ 
+ use std::any::TypeId;
+ use std::mem::Discriminant;
++use std::ops::Range;
+ 
+ use accesskit::{Node, NodeId, Role};
+ use masonry_core::util::bounding_box_to_rect;
+-use parley::PlainEditor;
++use parley::{Affinity, PlainEditor, Selection};
+ use parley::editor::{Generation, SplitString};
+ use tracing::{Span, trace_span};
+ use vello::Scene;
+@@ -16,7 +17,7 @@ use vello::peniko::Fill;
+ use crate::core::keyboard::{Key, KeyState, NamedKey};
+ use crate::core::{
+     AccessCtx, AccessEvent, BoxConstraints, BrushIndex, ChildrenIds, CursorIcon, EventCtx, Ime,
+-    LayoutCtx, PaintCtx, PointerButton, PointerButtonEvent, PointerEvent, PointerUpdate,
++    ImeText, LayoutCtx, TextEdit, TextInputHints, PaintCtx, PointerButton, PointerButtonEvent, PointerEvent, PointerUpdate,
+     PropertiesMut, PropertiesRef, QueryCtx, RegisterCtx, StyleProperty, TextEvent, Update,
+     UpdateCtx, Widget, WidgetId, WidgetMut, render_text,
+ };
+@@ -87,6 +88,14 @@ pub struct TextArea<const USER_EDITABLE: bool> {
+ 
+     /// Time elapsed (ms) to calculate the timeout of the cursor's blink animation.
+     anim_elapsed: u64,
++
++    /// The composing region an input method is working on, in bytes ([`ImeText::compose`]).
++    /// Only input-method edits set it; any other change to the text or selection ends it.
++    compose: Option<Range<usize>>,
++    /// Bumped on every change to the text ([`ImeText::revision`]).
++    revision: u64,
++    /// What the text is for ([`ImeText::hints`]); `multiline` follows `insert_newline`.
++    hints: TextInputHints,
+ }
+ 
+ // --- MARK: BUILDERS
+@@ -131,6 +140,9 @@ impl<const EDITABLE: bool> TextArea<EDITABLE> {
+             anim_cursor_visible: true,
+             anim_prev_interval: 0,
+             anim_elapsed: 0,
++            compose: None,
++            revision: 0,
++            hints: TextInputHints::default(),
+         }
+     }
+ 
+@@ -225,6 +237,12 @@ impl<const EDITABLE: bool> TextArea<EDITABLE> {
+         self
+     }
+ 
++    /// Tells input methods what the text is for (see [`TextInputHints`]).
++    pub fn with_text_input_hints(mut self, hints: TextInputHints) -> Self {
++        self.hints = hints;
++        self
++    }
++
+     /// Configures how this text area handles the user pressing Enter <kbd>↵</kbd>.
+     pub fn with_insert_newline(mut self, insert_newline: InsertNewline) -> Self {
+         self.insert_newline = insert_newline;
+@@ -251,6 +269,66 @@ impl<const EDITABLE: bool> TextArea<EDITABLE> {
+ 
+ // --- MARK: HELPERS
+ impl<const EDITABLE: bool> TextArea<EDITABLE> {
++    /// Ends any composition, keeping its text: a change made by anything but the input method.
++    fn end_compose(&mut self) -> bool {
++        self.compose.take().is_some()
++    }
++
++    /// Applies an input method's edit. Returns whether the text changed, or `None` if the edit
++    /// does not fit the text (out of bounds or off a char boundary) and was ignored.
++    fn apply_edit(
++        &mut self,
++        fctx: &mut parley::FontContext,
++        lctx: &mut parley::LayoutContext<BrushIndex>,
++        edit: &TextEdit,
++    ) -> Option<bool> {
++        let fits = |t: &str, a: usize, b: usize| a <= b && b <= t.len() && t.is_char_boundary(a) && t.is_char_boundary(b);
++        let old = self.editor.raw_text();
++        if !fits(old, edit.replace.start, edit.replace.end) {
++            return None;
++        }
++        let new_len = old.len() - edit.replace.len() + edit.text.len();
++        let in_new = |i: usize| {
++            if i < edit.replace.start {
++                old.is_char_boundary(i)
++            } else if i < edit.replace.start + edit.text.len() {
++                edit.text.is_char_boundary(i - edit.replace.start)
++            } else {
++                i <= new_len && old.is_char_boundary(i - edit.text.len() + edit.replace.len())
++            }
++        };
++        let (a, f) = edit.selection;
++        let compose = edit.compose.clone().filter(|c| !c.is_empty());
++        if !in_new(a) || !in_new(f) || compose.as_ref().is_some_and(|c| c.start > c.end || !in_new(c.start) || !in_new(c.end)) {
++            return None;
++        }
++        let changed = old[edit.replace.clone()] != *edit.text;
++        if changed {
++            // on the buffer, not through layout cursors (which snap to grapheme clusters)
++            let mut text = String::with_capacity(new_len);
++            text.push_str(&old[..edit.replace.start]);
++            text.push_str(&edit.text);
++            text.push_str(&old[edit.replace.end..]);
++            self.editor.set_text(&text);
++            self.revision += 1;
++        }
++        self.editor.driver(fctx, lctx).select_byte_range(a, f);
++        self.compose = compose;
++        Some(changed)
++    }
++
++    /// The composing region's line boxes, for its underline and the IME area.
++    fn compose_geometry(&self) -> Vec<Rect> {
++        let (Some(c), Some(layout)) = (&self.compose, self.editor.try_layout()) else {
++            return Vec::new();
++        };
++        let sel = Selection::new(
++            parley::Cursor::from_byte_index(layout, c.start, Affinity::Downstream),
++            parley::Cursor::from_byte_index(layout, c.end, Affinity::Upstream),
++        );
++        sel.geometry(layout).into_iter().map(|(b, _)| bounding_box_to_rect(b)).collect()
++    }
++
+     /// Get the IME area from the editor, accounting for padding.
+     ///
+     /// This should only be called when the editor layout is available.
+@@ -259,7 +337,8 @@ impl<const EDITABLE: bool> TextArea<EDITABLE> {
+             self.editor.try_layout().is_some(),
+             "TextArea::ime_area should only be called when the editor layout is available"
+         );
+-        bounding_box_to_rect(self.editor.ime_cursor_area())
++        let caret = bounding_box_to_rect(self.editor.ime_cursor_area());
++        self.compose_geometry().into_iter().fold(caret, |a, r| a.union(r))
+     }
+ }
+ 
+@@ -327,14 +406,9 @@ impl<const EDITABLE: bool> TextArea<EDITABLE> {
+     /// This is likely to be disruptive if the user is focused on this widget,
+     /// as it does not retain selections, and may cause undesirable interactions with IME.
+     pub fn reset_text(this: &mut WidgetMut<'_, Self>, new_text: &str) {
+-        // If the IME is currently composing, we need to clear the compose first. This is quite
+-        // disruptive, but we've warned about that. The platform's state is not reset, and the
+-        // preedit will show up again when the platform updates it.
+-        if this.widget.editor.is_composing() {
+-            let (fctx, lctx) = this.ctx.text_contexts();
+-            this.widget.editor.driver(fctx, lctx).clear_compose();
+-        }
++        this.widget.end_compose();
+         this.widget.editor.set_text(new_text);
++        this.widget.revision += 1;
+ 
+         let (fctx, lctx) = this.ctx.text_contexts();
+         this.widget.editor.driver(fctx, lctx).move_to_text_end();
+@@ -374,6 +448,13 @@ impl<const EDITABLE: bool> TextArea<EDITABLE> {
+         this.ctx.request_layout();
+     }
+ 
++    /// Tells input methods what the text is for; the runtime equivalent of
++    /// [`with_text_input_hints`](Self::with_text_input_hints). Takes effect when the next input
++    /// method session starts.
++    pub fn set_text_input_hints(this: &mut WidgetMut<'_, Self>, hints: TextInputHints) {
++        this.widget.hints = hints;
++    }
++
+     /// Configures how this text area handles the user pressing Enter <kbd>↵</kbd>.
+     pub fn set_insert_newline(this: &mut WidgetMut<'_, Self>, insert_newline: InsertNewline) {
+         this.widget.insert_newline = insert_newline;
+@@ -399,6 +480,7 @@ impl<const EDITABLE: bool> TextArea<EDITABLE> {
+     ///
+     /// No-op if either index is not a char boundary.
+     pub fn select_byte_range(this: &mut WidgetMut<'_, Self>, start: usize, end: usize) {
++        this.widget.end_compose();
+         let (fctx, lctx) = this.ctx.text_contexts();
+         this.widget
+             .editor
+@@ -494,10 +576,6 @@ impl<const EDITABLE: bool> Widget for TextArea<EDITABLE> {
+         _props: &mut PropertiesMut<'_>,
+         event: &PointerEvent,
+     ) {
+-        if self.editor.is_composing() {
+-            return;
+-        }
+-
+         match event {
+             PointerEvent::Down(PointerButtonEvent {
+                 button: None | Some(PointerButton::Primary),
+@@ -522,6 +600,7 @@ impl<const EDITABLE: bool> Widget for TextArea<EDITABLE> {
+                 }
+                 let new_generation = self.editor.generation();
+                 if new_generation != self.rendered_generation {
++                    self.end_compose();
+                     ctx.request_render();
+                     ctx.set_ime_area(self.ime_area());
+                     self.rendered_generation = new_generation;
+@@ -538,6 +617,7 @@ impl<const EDITABLE: bool> Widget for TextArea<EDITABLE> {
+                         .extend_selection_to_point(cursor_pos.x as f32, cursor_pos.y as f32);
+                     let new_generation = self.editor.generation();
+                     if new_generation != self.rendered_generation {
++                        self.end_compose();
+                         ctx.request_render();
+                         ctx.set_ime_area(self.ime_area());
+                         self.rendered_generation = new_generation;
+@@ -561,7 +641,7 @@ impl<const EDITABLE: bool> Widget for TextArea<EDITABLE> {
+ 
+         match event {
+             TextEvent::Keyboard(key_event) => {
+-                if key_event.state != KeyState::Down || self.editor.is_composing() {
++                if key_event.state != KeyState::Down {
+                     return;
+                 }
+                 let (shift, action_mod) = (
+@@ -744,7 +824,9 @@ impl<const EDITABLE: bool> Widget for TextArea<EDITABLE> {
+                 ctx.set_handled();
+                 let new_generation = self.editor.generation();
+                 if new_generation != self.rendered_generation {
++                    self.end_compose();
+                     if edited {
++                        self.revision += 1;
+                         ctx.submit_action::<Self::Action>(TextAction::Changed(
+                             self.text().into_iter().collect(),
+                         ));
+@@ -763,49 +845,42 @@ impl<const EDITABLE: bool> Widget for TextArea<EDITABLE> {
+             }
+ 
+             TextEvent::Ime(e) => {
+-                // TODO: Handle the cursor movement things from https://github.com/rust-windowing/winit/pull/3824
+-                let (fctx, lctx) = ctx.text_contexts();
+-
+-                // Whether the returned text has changed.
+-                // We don't send a TextChanged when the preedit changes
++                ctx.set_handled();
+                 let mut edited = false;
++                let mut changed = false;
+                 match e {
+-                    Ime::Disabled => {
+-                        self.editor.driver(fctx, lctx).clear_compose();
+-                    }
+-                    Ime::Preedit(text, cursor) => {
+-                        if text.is_empty() {
+-                            self.editor.driver(fctx, lctx).clear_compose();
+-                        } else {
+-                            self.editor.driver(fctx, lctx).set_compose(text, *cursor);
+-                            edited = true;
++                    Ime::Disabled => changed = self.end_compose(),
++                    Ime::Edit(edit) if EDITABLE => {
++                        let (fctx, lctx) = ctx.text_contexts();
++                        match self.apply_edit(fctx, lctx, edit) {
++                            Some(e) => {
++                                edited = e;
++                                changed = true;
++                            }
++                            None => tracing::debug!("ignored an IME edit off the text: {edit:?}"),
+                         }
+                     }
+-                    Ime::Commit(text) => {
+-                        self.editor
+-                            .driver(fctx, lctx)
+-                            .insert_or_replace_selection(text);
+-                        edited = true;
+-                    }
+-                    Ime::Enabled => {}
++                    Ime::Edit(_) | Ime::Enabled => {}
+                 }
+-
+-                ctx.set_handled();
+                 if edited {
+                     let text = self.text().into_iter().collect();
+                     ctx.submit_action::<Self::Action>(TextAction::Changed(text));
+                 }
+-
+                 let new_generation = self.editor.generation();
+-                if new_generation != self.rendered_generation {
++                if edited || new_generation != self.rendered_generation {
+                     ctx.request_layout();
+                     self.rendered_generation = new_generation;
++                } else if changed {
++                    // only the composing region moved: its underline and the IME area
++                    ctx.request_render();
++                    ctx.set_ime_area(self.ime_area());
+                 }
+             }
+ 
+             TextEvent::ClipboardPaste(text) => {
+                 if EDITABLE {
+                     let (fctx, lctx) = ctx.text_contexts();
++                    self.end_compose();
+                     self.editor
+                         .driver(fctx, lctx)
+                         .insert_or_replace_selection(text);
+@@ -813,6 +888,7 @@ impl<const EDITABLE: bool> Widget for TextArea<EDITABLE> {
+                     // TODO - Factor out with other branches
+                     let new_generation = self.editor.generation();
+                     if new_generation != self.rendered_generation {
++                        self.revision += 1;
+                         ctx.submit_action::<Self::Action>(TextAction::Changed(
+                             self.text().into_iter().collect(),
+                         ));
+@@ -832,6 +908,10 @@ impl<const EDITABLE: bool> Widget for TextArea<EDITABLE> {
+         EDITABLE
+     }
+ 
++    fn ime_text(&self) -> Option<&dyn ImeText> {
++        EDITABLE.then_some(self as &dyn ImeText)
++    }
++
+     fn on_access_event(
+         &mut self,
+         ctx: &mut EventCtx<'_>,
+@@ -839,10 +919,6 @@ impl<const EDITABLE: bool> Widget for TextArea<EDITABLE> {
+         event: &AccessEvent,
+     ) {
+         if event.action == accesskit::Action::SetTextSelection {
+-            if self.editor.is_composing() {
+-                return;
+-            }
+-
+             if let Some(accesskit::ActionData::SetTextSelection(selection)) = &event.data {
+                 let (fctx, lctx) = ctx.text_contexts();
+                 self.editor
+@@ -850,6 +926,7 @@ impl<const EDITABLE: bool> Widget for TextArea<EDITABLE> {
+                     .select_from_accesskit(selection);
+                 let new_generation = self.editor.generation();
+                 if new_generation != self.rendered_generation {
++                    self.end_compose();
+                     ctx.request_render();
+                     ctx.set_ime_area(self.ime_area());
+                     self.rendered_generation = new_generation;
+@@ -980,6 +1057,11 @@ impl<const EDITABLE: bool> Widget for TextArea<EDITABLE> {
+             &[text_color.color.into()],
+             self.hint,
+         );
++        // the composing text, underlined
++        for r in self.compose_geometry() {
++            let line = Rect::new(r.x0, r.y1 - 1.5, r.x1, r.y1);
++            scene.fill(Fill::NonZero, Affine::IDENTITY, text_color.color, None, &line);
++        }
+     }
+ 
+     fn get_cursor(&self, _ctx: &QueryCtx<'_>, _pos: Point) -> CursorIcon {
+@@ -1034,6 +1116,31 @@ impl<const EDITABLE: bool> Widget for TextArea<EDITABLE> {
+     }
+ }
+ 
++impl<const EDITABLE: bool> ImeText for TextArea<EDITABLE> {
++    fn text(&self) -> &str {
++        self.editor.raw_text()
++    }
++
++    fn selection(&self) -> (usize, usize) {
++        self.selection_bytes()
++    }
++
++    fn compose(&self) -> Option<Range<usize>> {
++        self.compose.clone()
++    }
++
++    fn revision(&self) -> u64 {
++        self.revision
++    }
++
++    fn hints(&self) -> TextInputHints {
++        TextInputHints {
++            multiline: self.insert_newline == InsertNewline::OnEnter,
++            ..self.hints
++        }
++    }
++}
++
+ /// When to insert a newline in a text area.
+ #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+ pub enum InsertNewline {

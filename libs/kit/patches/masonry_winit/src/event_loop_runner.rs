@@ -718,8 +718,10 @@ impl MasonryState<'_> {
                 app_driver.on_theme_changed(window.id, &mut DriverCtx::new(self, event_loop), theme);
             }
             WinitWindowEvent::Ime(ime) => {
-                let ime = winit_ime_to_masonry(ime);
-                window.render_root.handle_text_event(TextEvent::Ime(ime));
+                let target = window.render_root.focused_ime_text().map(|(_, t)| t);
+                for ime in winit_ime_to_masonry(ime, target) {
+                    window.render_root.handle_text_event(TextEvent::Ime(ime));
+                }
             }
             WinitWindowEvent::Focused(new_focus) => {
                 window
@@ -948,6 +950,11 @@ impl MasonryState<'_> {
     pub(crate) fn window_mut(&mut self, window_id: WindowId) -> &mut Window {
         let handle_id = self.handle_id(window_id);
         self.windows.get_mut(&handle_id).unwrap()
+    }
+
+    /// The window with this id (osis-kit patch: `AppDriver::on_start` reads its handle).
+    pub fn window(&mut self, window_id: WindowId) -> &mut Window {
+        self.window_mut(window_id)
     }
 
     pub fn is_suspended(&self) -> bool {

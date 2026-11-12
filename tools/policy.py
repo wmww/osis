@@ -35,6 +35,8 @@ def dep_tables(manifest):
         for key in ("dependencies", "dev-dependencies", "build-dependencies"):
             yield t.get(key, {})
 
+# app/android's unsafe blocks (one allowed)
+android_unsafe = []
 external = {n: "workspace" for n, d in ws["workspace"]["dependencies"].items() if n not in internal}
 UNSAFE = re.compile(r"\bunsafe\s*(\{|fn\b|impl\b|trait\b|extern\b)")
 DOCTEST = re.compile(r"^\s*//[/!]\s*```(?!text)")  # an opening fence rustdoc compiles
@@ -69,8 +71,8 @@ for m in members:
             for name, spec in table.items():
                 if name != "crdt-model" and (name in internal or (isinstance(spec, dict) and "path" in spec)):
                     errs.append(f"{rel}: depends on workspace crate `{name}`; it may depend on crdt-model only")
-    # app/android: the workspace lints with unsafe_code at deny, for its one `#[unsafe(no_mangle)]`
-    # entry point (NativeActivity finds `android_main` by name; notes/android.md)
+    # app/android: the workspace lints with unsafe_code at deny, for its one unsafe call (the NDK
+    # makes a native window of the view's Surface only through a raw JNI call; notes/android.md)
     is_android = rel == "app/android"
     if is_android:
         want = {"rust": {"unsafe_code": "deny"}, "clippy": ws["workspace"].get("lints", {}).get("clippy", {})}
@@ -95,16 +97,20 @@ for m in members:
             continue
         srel = os.path.relpath(src, ROOT)
         text = open(src).read()
-        for i, line in enumerate(text.splitlines(), 1):
+        lines = text.splitlines()
+        for i, line in enumerate(lines, 1):
             if UNSAFE.search(line.split("//", 1)[0]):
+                # app/android's one unsafe block, under its SAFETY comment
+                if is_android and line.strip().startswith("unsafe {") and any(l.strip().startswith("// SAFETY:") for l in lines[max(0, i - 4):i - 1]):
+                    android_unsafe.append(srel)
+                    continue
                 errs.append(f"{srel}:{i}: unsafe code")
-        if is_android and len(re.findall(r"\bunsafe\b", re.sub(r"//[^\n]*", "", text))) != text.count("#[unsafe(no_mangle)]"):
-            errs.append(f"{srel}: unsafe beyond the entry point's #[unsafe(no_mangle)]")
-        if is_android and text.count("#[unsafe(no_mangle)]") > 1:
-            errs.append(f"{srel}: more than one #[unsafe(no_mangle)]")
         root_file = srel.endswith(("/src/lib.rs", "/src/main.rs")) or "/src/bin/" in srel
         if root_file and not is_model and not is_android and "#![forbid(unsafe_code)]" not in text:
             errs.append(f"{srel}: crate root lacks #![forbid(unsafe_code)]")
+
+if len(android_unsafe) > 1:
+    errs.append(f"app/android: {len(android_unsafe)} unsafe blocks; it may have one ({', '.join(android_unsafe)})")
 
 for name, where in sorted(external.items()):
     if f"`{name}`" not in allow:

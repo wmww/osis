@@ -2691,12 +2691,13 @@ dependencies = [
  "android_logger",
  "jni",
  "log",
+ "ndk",
  "osis",
  "osis-app",
  "osis-kit",
+ "pollster",
  "tracing",
  "tracing-subscriber",
- "winit",
 ]
 
 [[package]]

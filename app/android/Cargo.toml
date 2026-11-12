@@ -1,6 +1,6 @@
 [package]
 name = "osis-android"
-description = "The osis app packaged for Android (experimental; notes/android.md): android_main and the platform layer"
+description = "The osis app on Android (experimental; notes/android.md): its View and Activity (java/) and the Rust shell behind them"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,13 +8,13 @@ license.workspace = true
 publish = false
 
 [lib]
-# build.sh packs the cdylib for NativeActivity; on other targets the lib is empty.
+# build.sh packs the cdylib with java/'s classes; on other targets the lib is empty.
 crate-type = ["cdylib"]
 test = false
 doctest = false
 
-# The workspace's lints, with unsafe_code at deny instead of forbid: `android_main` needs
-# `#[unsafe(no_mangle)]`, allowed on that one item.
+# The workspace's lints, with unsafe_code at deny instead of forbid: the view's Surface becomes a
+# native window through one unsafe call, allowed on that item.
 [lints.rust]
 unsafe_code = "deny"
 
@@ -28,10 +28,11 @@ indexing_slicing = "deny"
 osis.workspace = true
 osis-app.workspace = true
 osis-kit.workspace = true
-# android-activity's NativeActivity backend (no Java or Gradle)
-winit = { version = "0.30.12", features = ["android-native-activity"] }
-# the system clipboard (ClipboardManager over JNI); the version android-activity uses
+# JNI both ways: java/'s natives (native_method!) and calls into the view
 jni = "0.22"
+# the view's Surface as a native window, a wgpu surface target (rwh_06)
+ndk = { version = "0.9", features = ["rwh_06"] }
+pollster = "0.4"
 log = "0.4"
 # a logcat subscriber, set first: masonry's default writes stderr (lost on Android) and a log
 # file in temp_dir (not writable there)

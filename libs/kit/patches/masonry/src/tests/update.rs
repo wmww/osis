@@ -5,7 +5,7 @@ use std::sync::mpsc;
 
 use assert_matches::assert_matches;
 use masonry_core::core::{
-    CursorIcon, Ime, NewWidget, Properties, TextEvent, Update, Widget, WidgetId, WidgetPod,
+    CursorIcon, Ime, NewWidget, Properties, TextEdit, TextEvent, Update, Widget, WidgetId, WidgetPod,
     WidgetTag,
 };
 use masonry_testing::{
@@ -492,10 +492,18 @@ fn ime_commit() {
 
     harness.focus_on(Some(textbox_id));
 
-    harness.process_text_event(TextEvent::Ime(Ime::Commit("New Text".to_string())));
+    let insert = |at: usize, text: &str| {
+        TextEvent::Ime(Ime::Edit(TextEdit {
+            replace: at..at,
+            text: text.to_string(),
+            selection: (at + text.len(), at + text.len()),
+            compose: None,
+        }))
+    };
+    harness.process_text_event(insert(0, "New Text"));
     assert_eq!(harness.get_widget(textbox_tag).text(), "New Text");
 
-    harness.process_text_event(TextEvent::Ime(Ime::Commit(" and more".to_string())));
+    harness.process_text_event(insert(8, " and more"));
     assert_eq!(harness.get_widget(textbox_tag).text(), "New Text and more");
 
     let ime_area_size = harness.ime_rect().1;

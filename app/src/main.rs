@@ -62,8 +62,7 @@ fn run() -> Result<(), String> {
     if demo {
         osis_app::demo::add(&data).map_err(|e| format!("demo data: {e}"))?;
     }
-    let ui = Ui::new(data, app.window(), app.waker()).map_err(|e| e.to_string())?;
-    let look = ui.look();
-    let root = tree(look.clone());
-    app.run("osis", (1100.0, 720.0), root, ui, look.bg).map_err(|e| e.to_string())
+    let ui = Ui::new(data, app.waker()).map_err(|e| e.to_string())?;
+    let root = tree(ui.look());
+    app.run("osis", (1100.0, 720.0), root, ui).map_err(|e| e.to_string())
 }

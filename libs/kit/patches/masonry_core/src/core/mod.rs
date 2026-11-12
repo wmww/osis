@@ -10,6 +10,7 @@ mod events;
 mod layout_cache;
 mod properties;
 mod text;
+mod text_input;
 mod widget;
 mod widget_arena;
 mod widget_mut;
@@ -33,6 +34,7 @@ pub use properties::{
     DefaultProperties, HasProperty, Properties, PropertiesMut, PropertiesRef, Property,
 };
 pub use text::{ArcStr, BrushIndex, StyleProperty, StyleSet, render_text};
+pub use text_input::{Capitalize, EnterKey, ImeText, TextEdit, TextInputHints, TextPurpose};
 pub use widget::find_widget_under_pointer;
 pub use widget::{AllowRawMut, AsDynWidget, ChildrenIds, FromDynWidget, Widget, WidgetId};
 pub use widget_mut::WidgetMut;

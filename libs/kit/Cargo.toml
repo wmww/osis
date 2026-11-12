@@ -14,6 +14,10 @@ doctest = false
 [lints]
 workspace = true
 
+# the desktop shell (window.rs); Android's is osis-android, over its own View
+[target.'cfg(not(target_os = "android"))'.dependencies]
+masonry_winit.workspace = true
+
 [features]
 # Screen reader support (AccessKit's platform adapter; on Linux zbus and ~55 crates). Off: no
 # assistive technology sees the app.
@@ -24,7 +28,6 @@ osis.workspace = true
 jiff.workspace = true
 tokio.workspace = true
 masonry.workspace = true
-masonry_winit.workspace = true
 # Feature pin, unused here (notes/build.md, Feature unification): as core's proptest enables it.
 regex-syntax.workspace = true
 

@@ -1,4 +1,5 @@
-//! The window's root: paints the theme's background behind one child (the screen). A new background colour (a new main colour)
+//! The window's root: paints the theme's background behind one child (the screen), which it keeps
+//! clear of the window's insets (system bars, a cutout, an on-screen keyboard). A new background colour (a new main colour)
 //! fades in over `FADE_NS`: the one motion the look allows (notes/theming.md).
 
 use crate::backdrop;
@@ -6,7 +7,7 @@ use crate::theme::Look;
 use masonry::accesskit::{Node, Role};
 use masonry::core::{AccessCtx, BoxConstraints, ChildrenIds, LayoutCtx, NewWidget, PaintCtx, PropertiesMut, PropertiesRef, RegisterCtx, UpdateCtx, Widget, WidgetMut, WidgetPod};
 use masonry::peniko::Color;
-use masonry::kurbo::{Point, Size};
+use masonry::kurbo::{Insets, Point, Size};
 use masonry::vello::Scene;
 use std::sync::Arc;
 
@@ -21,11 +22,13 @@ pub struct Root {
     seed: u64,
     /// The colour faded from and how far the fade is (0..1).
     fade: Option<(Color, f64)>,
+    /// What covers the window's edges, in logical pixels.
+    insets: Insets,
 }
 
 impl Root {
     pub fn new(child: NewWidget<impl Widget + ?Sized>, look: Arc<Look>) -> Root {
-        Root { child: child.erased().to_pod(), look, seed: 0, fade: None }
+        Root { child: child.erased().to_pod(), look, seed: 0, fade: None, insets: Insets::ZERO }
     }
 
     /// Replaces the screen.
@@ -38,6 +41,15 @@ impl Root {
 
     pub fn child_mut<'t>(this: &'t mut WidgetMut<'_, Self>) -> WidgetMut<'t, dyn Widget> {
         this.ctx.get_mut(&mut this.widget.child)
+    }
+
+    /// What covers the window's edges (logical pixels): the screen lays out inside it, the
+    /// background still fills the window.
+    pub fn set_insets(this: &mut WidgetMut<'_, Self>, insets: Insets) {
+        if this.widget.insets != insets {
+            this.widget.insets = insets;
+            this.ctx.request_layout();
+        }
     }
 
     pub fn set_look(this: &mut WidgetMut<'_, Self>, look: Arc<Look>, seed: u64) {
@@ -84,8 +96,10 @@ impl Widget for Root {
 
     fn layout(&mut self, ctx: &mut LayoutCtx<'_>, _props: &mut PropertiesMut<'_>, bc: &BoxConstraints) -> Size {
         let size = bc.max();
-        ctx.run_layout(&mut self.child, &BoxConstraints::tight(size));
-        ctx.place_child(&mut self.child, Point::ORIGIN);
+        let i = self.insets;
+        let inner = Size::new((size.width - i.x0 - i.x1).max(0.0), (size.height - i.y0 - i.y1).max(0.0));
+        ctx.run_layout(&mut self.child, &BoxConstraints::tight(inner));
+        ctx.place_child(&mut self.child, Point::new(i.x0, i.y0));
         size
     }
 

@@ -887,6 +887,17 @@ impl RenderRoot {
         self.global_state.focused_widget
     }
 
+    /// The focused widget and its text as input methods see it, while an input method session is
+    /// active for it (between [`RenderRootSignal::StartIme`] and [`RenderRootSignal::EndIme`]).
+    pub fn focused_ime_text(&self) -> Option<(WidgetId, &dyn crate::core::ImeText)> {
+        if !self.global_state.is_ime_active {
+            return None;
+        }
+        let id = self.global_state.focused_widget?;
+        let node = self.widget_arena.nodes.find(id)?;
+        node.item.widget.ime_text().map(|t| (id, t))
+    }
+
     /// Return the [`WidgetId`] of the widget which [captures pointer events](crate::doc::masonry_concepts#pointer-capture).
     pub fn pointer_capture_target(&self) -> Option<WidgetId> {
         self.global_state.pointer_capture_target

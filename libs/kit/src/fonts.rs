@@ -2,7 +2,7 @@
 //! font but the platform's own is OFL). Families are named as `text::family` asks for them.
 
 use masonry::peniko::Blob;
-use masonry_winit::app::MasonryState;
+use masonry::app::RenderRoot;
 use std::sync::Arc;
 
 /// (family name, variable font file).
@@ -17,12 +17,10 @@ pub const BUNDLED: [(&str, &[u8]); 8] = [
     ("JetBrains Mono", include_bytes!("../assets/fonts/jetbrainsmono/font.ttf")),
 ];
 
-/// Registers the bundled fonts with every window (call from `AppDriver::on_start`; it asks for a
-/// relayout, so text laid out before it is redone).
-pub fn register(state: &mut MasonryState<'_>) {
-    for root in state.roots() {
-        for (_, bytes) in BUNDLED {
-            root.register_fonts(Blob::new(Arc::new(bytes)));
-        }
+/// Registers the bundled fonts with a window (it asks for a relayout, so text laid out before it
+/// is redone).
+pub fn register(root: &mut RenderRoot) {
+    for (_, bytes) in BUNDLED {
+        root.register_fonts(Blob::new(Arc::new(bytes)));
     }
 }
