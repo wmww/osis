@@ -229,10 +229,40 @@ fn keep_until_blocks_compaction_spec_commits_5() {
     assert_eq!(o.fates[&(10, 0)], Fate::Keep(KeepWhy::Until));
     assert!(o.deadlines.contains(&at(5)));
     assert_eq!(o.history[&(T, REG)], [(st(1, 10, 1), 10)].into_iter().collect());
-    assert_eq!(o.fates[&(11, 0)], Fate::Keep(KeepWhy::Plain), "live: read on its own, no cover drops it");
+    assert_eq!(o.fates[&(11, 0)], Fate::Keep(KeepWhy::Live), "live: kept to T");
     let o = evaluate(&held(5, cs));
     assert_eq!(o.fates[&(10, 0)], Fate::MayDrop(DropWhy::Covered { by: 12 }));
+    assert_eq!(o.fates[&(11, 0)], Fate::MayDrop(DropWhy::Covered { by: 12 }), "live past T: a cover drops it");
     assert!(o.history.is_empty());
+}
+
+// spec/commits.md §5 (Kept while live): a live delta is kept to the end of the last span of its
+// aspect's timeline that would keep a body replaced then (a D: the span's end, for good in the
+// newest; a T alone: T or the span's end); elsewhere a cover drops it at once
+#[test]
+fn live_delta_kept_to_its_live_bound_spec_commits_5() {
+    let live = |settings: Vec<Commit>, now: u64| {
+        let mut cs = settings;
+        cs.push(reg(10, FIRST_ADMIN, 1, REG, Retention::PLAIN, 1));
+        cs.push(snap(12, FIRST_ADMIN, 2, REG, Retention::WRITER, vec![set(1, 10, 1)]));
+        let o = evaluate(&held(now, cs));
+        (o.fates[&(10, 0)], o.deadlines.contains(&at(4)))
+    };
+    let dropped = Fate::MayDrop(DropWhy::Covered { by: 12 });
+    // no setting, no history promised, purge on replace: no bound
+    assert_eq!(live(vec![], 3).0, dropped);
+    assert_eq!(live(vec![setting(5, 0, REG, Opt::None)], 3).0, dropped);
+    assert_eq!(live(vec![setting(5, 0, REG, Opt::Purge)], 3).0, dropped);
+    // a D in the newest setting: for good
+    assert_eq!(live(vec![setting(5, 0, REG, keep_after(1))], 100).0, Fate::Keep(KeepWhy::Live));
+    // a D ended by a later setting: to that setting's stamp
+    let ended = || vec![setting(5, 0, REG, keep_after(1)), setting(6, 4, REG, Opt::None)];
+    assert_eq!(live(ended(), 3), (Fate::Keep(KeepWhy::Live), true));
+    assert_eq!(live(ended(), 4).0, dropped);
+    // one way: a keep after purge on replace keeps nothing
+    assert_eq!(live(vec![setting(5, 0, REG, Opt::Purge), setting(6, 1, REG, keep_after(1))], 3).0, dropped);
+    // another aspect's keep keeps nothing here
+    assert_eq!(live(vec![setting(5, 0, OTHER, KEPT)], 3).0, dropped);
 }
 
 // spec/commits.md §5 (The setting, keep D after replaced): no node drops a body earlier than D

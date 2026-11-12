@@ -607,7 +607,8 @@ pub(crate) struct Drops {
 /// difference, with the model's answer and the node's. With `drops` (the caller judging after
 /// every ingest and tick): every body the node dropped as covered since is judged against the
 /// settings it holds now, those it dropped by (spec/commits.md §5 Keep bounds: a node never
-/// drops a body the settings it holds keep in history on its clock), dated as
+/// drops a body the settings it holds keep in history, or a live one before its live bound, on
+/// its clock), dated as
 /// held-model dates it with the body as last seen held. A drop is judged once: a setting arriving
 /// later that puts the body back in history does not make it wrong (Dropped stays dropped).
 pub(crate) fn compare(e: &mut Engine, hist: &History, cov: &mut Coverage, drops: Option<&mut Drops>) -> Option<String> {
@@ -744,7 +745,8 @@ pub(crate) fn compare(e: &mut Engine, hist: &History, cov: &mut Coverage, drops:
     }
     // covered drops since the last judgment, each against the settings held now, the body as
     // last seen held, with every fresh drop held: in history, or dated ahead of the clock where
-    // a setting keeps the aspect, it was kept (spec/commits.md §5 Keep bounds). A covered drop
+    // a setting keeps the aspect, it was kept (spec/commits.md §5 Keep bounds); live, before its
+    // aspect's live bound, it was kept too (Kept while live). A covered drop
     // redates nothing in history (notes/engine-retention.md Replaced, When), so the step's
     // drops are judged together
     if let Some(d) = drops {
@@ -759,18 +761,27 @@ pub(crate) fn compare(e: &mut Engine, hist: &History, cov: &mut Coverage, drops:
                     && let Some(b) = d.bodies.get(&(id, i))
                 {
                     p.body = b.clone();
-                    fresh.push((c.id, i, id, p.thing, p.aspect));
+                    fresh.push((c.id, c.kind, i, id, p.thing, p.aspect));
                 }
             }
         }
         if !fresh.is_empty() {
             let ob = hm::evaluate(&back);
             let now = input.held.now;
-            for &(cid, i, id, thing, aspect) in &fresh {
+            for &(cid, kind, i, id, thing, aspect) in &fresh {
+                let (t, a) = &by_part[&(thing, aspect)];
+                // a live delta (held valid, not replaced, not a snapshot's or a signal's) is kept
+                // to its aspect's live bound (spec/commits.md §5 Kept while live)
+                if kind == hm::CommitKind::Content && !aspect.signal && ob.valid.get(&(cid, i)) == Some(&true) && !ob.replaced.contains(&(cid, i)) {
+                    reach_n(cov, "live drops judged", 1);
+                    if now < ob.live_until(thing, aspect) {
+                        diffs.push(("dropped a live body before its live bound".into(), differ(format!("commit {id:?} (#{cid}) on {t:?} {}: dropped as covered at {now}, live, the settings held keep it to {}", a.as_str(), ob.live_until(thing, aspect)), &[thing])));
+                    }
+                    continue;
+                }
                 let Some(Some(r)) = ob.replaced_at.get(&(cid, i)).copied() else { continue };
                 reach_n(cov, "covered drops judged", 1);
                 if ob.kept(thing, aspect, r, now) {
-                    let (t, a) = &by_part[&(thing, aspect)];
                     diffs.push(("dropped a body in history".into(), differ(format!("commit {id:?} (#{cid}) on {t:?} {}: dropped as covered at {now}, replaced at {r}, the settings held keep it to {}", a.as_str(), ob.out(thing, aspect, r)), &[thing])));
                 }
             }

@@ -73,6 +73,25 @@ pub fn kept(settings: &[Setting], one_way: bool, r: Ms, now: Ms) -> bool {
     o > r && now < o
 }
 
+/// Until when a live body (not replaced) is kept (spec/commits.md §5 Kept while live): the
+/// latest moment up to which some span of the timeline would keep a body replaced then. A span
+/// keeps one replaced at m iff its entry's bound passes m: with a D, at every m of the span;
+/// with only a T, at every m before T. `NEVER`: the newest span keeps one with a D, or its T is
+/// `NEVER`; 0: no span keeps one (a cover drops the live body at once).
+pub fn live_until(settings: &[Setting], one_way: bool) -> Ms {
+    let tl = timeline(settings, one_way);
+    let mut end = 0;
+    for (i, s) in tl.iter().enumerate() {
+        let to = tl.get(i + 1).map_or(NEVER, |n| n.ts);
+        let Opt::Keep { after, until } = s.opt else { continue };
+        let last = if after > 0 { to } else { until.min(to) };
+        if last > s.ts {
+            end = end.max(last);
+        }
+    }
+    end
+}
+
 /// The setting in force at wall time `t` (the newest by key with `ts <= t`), as it reads.
 pub fn in_force(settings: &[Setting], one_way: bool, t: Ms) -> Opt {
     timeline(settings, one_way).iter().rev().find(|s| s.ts <= t).map_or(Opt::None, |s| s.opt)

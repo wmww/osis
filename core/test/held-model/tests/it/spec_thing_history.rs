@@ -58,6 +58,21 @@ fn leaves_in_replaced_order() {
     }
 }
 
+/// Kept while live (spec/commits.md §5): a live body is kept at m exactly while some moment at or
+/// after m would keep a body replaced then (the setting in force then keeps it past then); for
+/// good iff the newest setting does so for every later moment.
+#[test]
+fn kept_while_live_until_no_later_replacement_would_be_kept() {
+    for t in timelines(3) {
+        let l = live_until(&t, true);
+        let kept_if_replaced = |m: Ms| out(&t, true, m) > m;
+        for m in 0..=END + 4 {
+            assert_eq!(m < l, (m..=END + 4).any(kept_if_replaced), "{t:?} m {m}: live until {l}");
+        }
+        assert_eq!(l == NEVER, kept_if_replaced(NEVER - 1), "{t:?}: live until {l}");
+    }
+}
+
 /// Out is for good: a setting stamped after the moment a body left never brings it back, and
 /// one stamped at or before the moment a body was replaced changes nothing before that moment.
 #[test]

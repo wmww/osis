@@ -6,6 +6,7 @@ Each box's checks go to its own `~/.cache/osis/limits.log`; `tools/limits.py sum
 ## Hits
 Format: `- <date time> <box> `<limit>` [<test>] <CPU|wall> <measured>/<limit> s at load <N>: <why>`.
 
+- 2026-11-12 ostrich `heavy` CPU 12446/5060 s, wall 1009/598 s at load 15-20 (after a 99 s lock wait): held-model-live-bodies, a by-hand 300-seed `order::held_set_decides_plain` sweep, not a gate (as above).
 - 2026-11-12 ostrich `gate.hold` CPU 7077/3795 s, wall 619/241 s and `gate` CPU 9459/4094 s, wall 1200/299 s at load 18, 173 s lock wait apart: raise-followup review (osis-keys, osis-engine changed); persistent, issues/gate-five-minutes.md.
 - 2026-11-12 01:50 ostrich `gate.hold` CPU 6604/3795 s, wall 666/241 s and `gate` CPU 8457/4094 s, wall 1083/299 s at load 23: sim-stage-cost review, 8 of 26 crates selected (osis-node, osis-sim changed; the GUI crates with them); persistent, issues/gate-five-minutes.md.
 - 2026-11-12 00:02 ostrich `gate.hold` CPU 5902/3795 s, wall 456/241 s and `gate` CPU 6720/4094 s, wall 611/299 s at load 18, 605 s lock wait apart: dead-pub-fathom review, 10 of 26 crates selected (osis-engine, osis-keys, osis-node changed); persistent, issues/gate-five-minutes.md.

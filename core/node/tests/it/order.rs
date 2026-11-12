@@ -3797,6 +3797,28 @@ fn harness_flags_a_covered_drop_in_history_spec_commits_5() {
     assert_eq!(cov.differs.get("dropped a body in history"), Some(&2), "{:?}", cov.differs);
 }
 
+// The harness's covered-drop check also catches a node dropping a live body before its live
+// bound (spec/commits.md §5 Kept while live): one kept register write (kept 30 min after
+// replaced, so live for good) and a snapshot covering it, dropped by hand, is flagged.
+#[test]
+fn harness_flags_a_live_drop_before_its_live_bound_spec_commits_5() {
+    use Step::*;
+    let h = vec![Typed { by: 0, t: 0, op: 16, k: 0, v: 1 }, Advance { who: None, ms: 10 }, Compact { by: 0, t: 0, op: 16 }];
+    let played = play(0, &h);
+    let hist = crate::held::History::new(&played.packs);
+    let n = played.packs.len();
+    let mut p = deliver(&played, &(0..n).collect::<Vec<_>>());
+    let (t, a) = (played.things[0], aspect_of(16));
+    let writes: Vec<CommitId> = played.packs[played.base..].iter().map(|pk| osis_commit::CommitBlob::decode(&pk.bytes).unwrap()).filter(|b| !b.header.kind.is_compaction() && b.header.aspects.iter().any(|x| x.tid == t && x.ak == a)).map(|b| b.id()).collect();
+    assert_eq!(writes.len(), 1, "{:?}", played.tally.show());
+    let (mut cov, mut drops) = (crate::held::Coverage::default(), crate::held::Drops::default());
+    assert_eq!(crate::held::compare(&mut p.engine, &hist, &mut cov, Some(&mut drops)), None);
+    p.engine.drop_body(&writes[0], &t, &a).unwrap();
+    let d = crate::held::compare(&mut p.engine, &hist, &mut cov, Some(&mut drops)).expect("the drop is flagged");
+    assert!(d.contains("live"), "{d}");
+    assert_eq!(cov.differs.get("dropped a live body before its live bound"), Some(&1), "{:?}", cov.differs);
+}
+
 // spec/commits.md §5 Invalid: 0 lowers 1 to read, 2 (having seen it) grants 1 write again, 1
 // writes G's register, then 0 lowers 2 and itself to read, so 1 alone compacts last. A node given 2's own admin grant
 // after all of it drops 1's write and 1's compactions as invalid, and once they count

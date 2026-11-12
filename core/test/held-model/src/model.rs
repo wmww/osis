@@ -22,7 +22,10 @@ pub enum KeepWhy {
     /// In history (the thing's setting keeps it, `Outcome::out`), or before a purge request's
     /// floor: only purge or expiry act on it.
     Until,
-    /// Nothing lets it go: uncovered, or covered by no snapshot holding the right.
+    /// Live (not replaced) before its aspect's live bound (`Outcome::live_until`, spec/commits.md
+    /// §5 Kept while live): only purge, expiry or invalidity act on it.
+    Live,
+    /// Nothing lets it go: uncovered, fixed retention, or a live delta held invalid.
     Plain,
 }
 
@@ -168,6 +171,15 @@ impl Outcome {
     /// reads `keep`, one way: a keep after purge on replace reads as none).
     pub fn aspect_keeps(&self, t: ThingId, a: Aspect) -> bool {
         thing_history::timeline(&self.timeline_of(t, a), true).iter().any(|s| matches!(s.opt, Opt::Keep { .. }))
+    }
+    /// Until when a live delta of `(t, a)` (held valid, not replaced, not a snapshot's or a
+    /// signal's) is kept from a covered drop (spec/commits.md §5 Kept while live, one way); 0: a
+    /// cover drops it at once. `NEVER` for fixed retention.
+    pub fn live_until(&self, t: ThingId, a: Aspect) -> u64 {
+        if a.fixed() {
+            return NEVER;
+        }
+        thing_history::live_until(&self.timeline_of(t, a), true)
     }
     /// The entry option in force for `(t, a)` at wall ms `at` (one way).
     pub fn in_force(&self, t: ThingId, a: Aspect, at: u64) -> Opt {
@@ -763,6 +775,10 @@ fn judge(h: &Held) -> Outcome {
             if let Some(Some(r)) = o.replaced_at.get(&(c.id, i)) {
                 o.deadlines.insert(o.out(p.thing, p.aspect, *r));
             }
+            // a live delta's live bound
+            if c.kind == CommitKind::Content && !p.aspect.signal && o.valid.get(&(c.id, i)) == Some(&true) && !o.replaced.contains(&(c.id, i)) {
+                o.deadlines.insert(o.live_until(p.thing, p.aspect));
+            }
         }
     }
     o.deadlines.retain(|&t| t > now && t != NEVER);
@@ -886,10 +902,18 @@ fn fate(
     // spec/commits.md §5 The setting: in history, kept (compaction may not drop it); under purge on
     // replace, gone at every node once a right holder covers it and the clock reaches its
     // replacement, owed by a right holder until then; out of history, any valid writer's cover
-    // drops it (Tess's decision 4, notes/engine-retention.md History); a live delta (not replaced) is the state, so no cover drops it
-    // (spec/commits.md §5 Covered: only a purge, expiry or invalidity removes it)
+    // drops it (Tess's decision 4, notes/engine-retention.md History). A live delta (held valid,
+    // not replaced) is kept to its aspect's live bound, then drops under any cover as a replaced
+    // one out of history (spec/commits.md §5 Kept while live; its author's own covers only is
+    // node-sync's rule, spec/sync.md §7 Own bodies, AMBIGUITIES 70). A live delta held invalid
+    // (the author's own, kept by spec/permissions.md §6) is no live delta of that rule.
     if c.kind != CommitKind::Snapshot && !o.replaced.contains(&pr) {
-        return (keep(KeepWhy::Plain), false);
+        if o.valid.get(&pr) != Some(&true) {
+            return (keep(KeepWhy::Plain), false);
+        }
+        if now < o.live_until(t, a) {
+            return (keep(KeepWhy::Live), false);
+        }
     }
     let kept = o.replaced_at.get(&pr).copied().flatten().is_some_and(|r| o.kept(t, a, r, now));
     let under = o.under_purge.contains(&pr);
