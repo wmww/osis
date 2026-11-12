@@ -73,35 +73,46 @@ pub struct Meta {
     pub origin: Origin,
     /// Validity per aspect (spec/permissions.md §5.2).
     pub valid: Vec<bool>,
-    /// Aspects whose deltas were all dropped (as covered, expired or purged), with
-    /// what each keeps.
-    pub dropped: BTreeMap<usize, Dropped>,
-    /// Aspects held as their leftover (expired, purged, a body carrying a copy of such a value:
+    /// What this node holds of each part, by aspect index (`Hold`).
+    pub hold: Vec<Hold>,
+}
+
+/// What a node holds of one part of an applied commit: one state, so no part is both dropped
+/// and missing, or held as its leftover and dropped.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Hold {
+    /// Its body. `whole`: a plain part whose delta replaces the aspect whole
+    /// (`retention::snapshot::replaces`), what stands as an own replace (`Indexes::own_replaces`).
+    Body { whole: bool },
+    /// Its leftover (expired, purged, a body carrying a copy of such a value:
     /// `retention::make_leftover`, `retention::strip_carried`): read from `records::LEFTOVER` as
-    /// the body. Held for the engine, no body for node-sync (`body_gone`).
-    pub stripped: BTreeSet<usize>,
-    /// Those of `stripped` held as their leftover only for the copies they carry, none of their own
-    /// writes value-less (a snapshot, which has none, always). Such a leftover is a body like a
-    /// whole one for keep bounds, covering and a purge naming it (`bare`;
-    /// spec/commits.md §5 Dropping a body).
-    pub valued: BTreeSet<usize>,
-    /// Aspects none of whose deltas is held here (neither held nor dropped): a part that may
-    /// still arrive late, or never, or one dropped under a cover since turned invalid
-    /// (`retention::uncover`) (spec/permissions.md §5.2: a snapshot's copies of their writes
-    /// count).
-    pub missing: BTreeSet<usize>,
-    /// Held plain parts whose delta replaces the aspect whole (`retention::snapshot::replaces`):
-    /// what stands as an own replace (`Indexes::own_replaces`).
-    pub whole: BTreeSet<usize>,
-    /// Those of `missing` dropped with a released thing forgotten here (spec/commits.md §5
-    /// Forgetting): dead at every node, so they keep no header; a copy arriving joins them as
-    /// any missing part, and the mark goes with it.
-    pub forgot: BTreeSet<usize>,
-    /// Those of `missing` reopened to be fetched again (`retention::reopen_to_fetch`: valid
-    /// again, uncovered, a fall), memory class: a memory commit holding no part stays known
-    /// while one is (`retention::kept_invalid`), so a superseded part beside it does not take the
-    /// commit, and the part to come, with it (`retention::memory::forget_if_spent`).
-    pub to_fetch: BTreeSet<usize>,
+    /// the body. Held for the engine, no body for node-sync (`Meta::body_gone`). `valued`: held so
+    /// only for the copies it carries, none of its own writes value-less (a snapshot, which has
+    /// none, always); such a leftover is a body like a whole one for keep bounds, covering and a
+    /// purge naming it (`Meta::bare`; spec/commits.md §5 Dropping a body). `whole` as for `Body`,
+    /// judged on the leftover (which keeps every reset).
+    Leftover { whole: bool, valued: bool },
+    /// Every delta of it dropped (as covered, expired or purged), with what it keeps.
+    Dropped(Dropped),
+    /// None of its deltas held here: a part that may still arrive late, or never, or one dropped
+    /// under a cover since turned invalid (`retention::uncover`) (spec/permissions.md §5.2: a
+    /// snapshot's copies of their writes count).
+    Missing(Missing),
+}
+
+/// Why a part is missing, where it matters.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Missing {
+    #[default]
+    Plain,
+    /// Dropped with a released thing forgotten here (spec/commits.md §5 Forgetting): dead at
+    /// every node, so it keeps no header; a copy arriving joins it as any missing part.
+    Forgot,
+    /// Reopened to be fetched again (`retention::reopen_to_fetch`: valid again, uncovered, a
+    /// fall), memory class: a memory commit holding no part stays known while one is
+    /// (`retention::kept_invalid`), so a superseded part beside it does not take the commit, and
+    /// the part to come, with it (`retention::memory::forget_if_spent`).
+    ToFetch,
 }
 
 /// Why a part dropped, where that decides whether it can come back.
@@ -278,9 +289,11 @@ impl HeldKeyset {
 pub(crate) type Gives = (osis_crdt::Frontiers, Vec<(CommitId, Tid)>, osis_crdt::Facts);
 
 impl Meta {
-    /// A commit's meta from its decoded header.
-    pub(crate) fn new(header: Arc<Header>, valid: Vec<bool>, head: index::RecordHead, missing: BTreeSet<usize>) -> Meta {
-        Meta { view: Arc::new(View::of(&header)), header: LazyHeader::ready(header), received: head.received, origin: head.origin, valid, dropped: head.dropped, stripped: head.stripped, valued: head.valued, missing, whole: BTreeSet::new(), forgot: BTreeSet::new(), to_fetch: BTreeSet::new() }
+    /// A commit's meta from its decoded header: parts in `missing` missing, the rest as `head`
+    /// says (`Hold::stored`).
+    pub(crate) fn new(header: Arc<Header>, valid: Vec<bool>, mut head: index::RecordHead, missing: BTreeSet<usize>) -> Meta {
+        let hold = (0..valid.len()).map(|ai| Hold::stored(ai, &mut head, missing.contains(&ai), false, false)).collect();
+        Meta { view: Arc::new(View::of(&header)), header: LazyHeader::ready(header), received: head.received, origin: head.origin, valid, hold }
     }
     /// The index of aspect `(tid, ak)` in the commit.
     pub(crate) fn aspect(&self, tid: &Tid, ak: &Ak) -> Option<usize> {
@@ -290,23 +303,111 @@ impl Meta {
     pub(crate) fn valid_at(&self, ai: usize) -> bool {
         self.valid.get(ai).copied().unwrap_or(false)
     }
-    /// Whether part `ai` is held: neither dropped nor missing (a stripped one is, as its leftover).
-    pub(crate) fn holds(&self, ai: usize) -> bool {
-        !self.dropped.contains_key(&ai) && !self.missing.contains(&ai)
+    /// Sets what is held of part `ai`.
+    pub(crate) fn set_hold(&mut self, ai: usize, h: Hold) {
+        if let Some(x) = self.hold.get_mut(ai) {
+            *x = h;
+        }
+    }
+    /// Whether part `ai` is held: its body or its leftover.
+    pub fn holds(&self, ai: usize) -> bool {
+        matches!(self.hold.get(ai), Some(Hold::Body { .. } | Hold::Leftover { .. }))
+    }
+    /// Whether part `ai` is held as its leftover (`Hold::Leftover`).
+    pub fn stripped(&self, ai: usize) -> bool {
+        matches!(self.hold.get(ai), Some(Hold::Leftover { .. }))
+    }
+    /// Whether part `ai` is held as a leftover holding values (`Hold::Leftover::valued`).
+    pub fn valued(&self, ai: usize) -> bool {
+        matches!(self.hold.get(ai), Some(Hold::Leftover { valued: true, .. }))
     }
     /// Whether part `ai` is held as a leftover for its own writes gone value-less (expired,
     /// purged): no values to keep, so no keep bounds.
-    pub(crate) fn bare(&self, ai: usize) -> bool {
-        self.stripped.contains(&ai) && !self.valued.contains(&ai)
+    pub fn bare(&self, ai: usize) -> bool {
+        matches!(self.hold.get(ai), Some(Hold::Leftover { valued: false, .. }))
+    }
+    /// Whether held part `ai` replaces its aspect whole (`Hold::Body::whole`).
+    pub fn whole(&self, ai: usize) -> bool {
+        matches!(self.hold.get(ai), Some(Hold::Body { whole: true } | Hold::Leftover { whole: true, .. }))
+    }
+    /// Marks held part `ai` as a whole replace.
+    pub(crate) fn set_whole(&mut self, ai: usize) {
+        if let Some(Hold::Body { whole } | Hold::Leftover { whole, .. }) = self.hold.get_mut(ai) {
+            *whole = true;
+        }
+    }
+    /// Whether part `ai` is missing (`Hold::Missing`).
+    pub fn missing(&self, ai: usize) -> bool {
+        matches!(self.hold.get(ai), Some(Hold::Missing(_)))
+    }
+    /// Why part `ai` is missing, if it is.
+    pub fn missing_as(&self, ai: usize) -> Option<Missing> {
+        match self.hold.get(ai) {
+            Some(Hold::Missing(x)) => Some(*x),
+            _ => None,
+        }
+    }
+    /// What dropped part `ai` keeps, if it is dropped.
+    pub fn dropped(&self, ai: usize) -> Option<&Dropped> {
+        match self.hold.get(ai) {
+            Some(Hold::Dropped(d)) => Some(d),
+            _ => None,
+        }
+    }
+    /// `dropped`, to change what it keeps.
+    pub(crate) fn dropped_mut(&mut self, ai: usize) -> Option<&mut Dropped> {
+        match self.hold.get_mut(ai) {
+            Some(Hold::Dropped(d)) => Some(d),
+            _ => None,
+        }
+    }
+    /// Whether part `ai` is dropped.
+    pub fn is_dropped(&self, ai: usize) -> bool {
+        self.dropped(ai).is_some()
+    }
+    /// The dropped parts, by aspect index.
+    pub fn dropped_parts(&self) -> impl Iterator<Item = (usize, &Dropped)> + '_ {
+        self.hold.iter().enumerate().filter_map(|(ai, h)| match h {
+            Hold::Dropped(d) => Some((ai, d)),
+            _ => None,
+        })
+    }
+    /// The missing parts, by aspect index.
+    pub fn missing_parts(&self) -> impl Iterator<Item = usize> + '_ {
+        self.hold.iter().enumerate().filter(|(_, h)| matches!(h, Hold::Missing(_))).map(|(ai, _)| ai)
+    }
+    /// The parts held as their leftover, by aspect index.
+    pub fn stripped_parts(&self) -> impl Iterator<Item = usize> + '_ {
+        self.hold.iter().enumerate().filter(|(_, h)| matches!(h, Hold::Leftover { .. })).map(|(ai, _)| ai)
     }
     /// Whether part `ai` has no body to upload or keep at hosts: dropped, or held as its leftover
     /// (spec/commits.md §5: purged, expired).
     pub fn body_gone(&self, ai: usize) -> bool {
-        self.dropped.contains_key(&ai) || self.stripped.contains(&ai)
+        matches!(self.hold.get(ai), Some(Hold::Dropped(_) | Hold::Leftover { .. }))
+    }
+    /// Whether some part has no body to upload or keep at hosts (`body_gone`).
+    pub fn any_body_gone(&self) -> bool {
+        (0..self.hold.len()).any(|ai| self.body_gone(ai))
     }
     /// Whether part `ai` was dropped while invalid (`DropFor::Invalid`).
     pub fn dropped_invalid(&self, ai: usize) -> bool {
-        self.dropped.get(&ai).is_some_and(|d| d.why == DropFor::Invalid)
+        self.dropped(ai).is_some_and(|d| d.why == DropFor::Invalid)
+    }
+}
+
+impl Hold {
+    /// Part `ai` as stored: `head`'s dropped and stripped parts (its `Dropped` taken), then the
+    /// meta row's `missing`, `whole` and `forgot` bits (`index::meta_row`).
+    pub(crate) fn stored(ai: usize, head: &mut index::RecordHead, missing: bool, whole: bool, forgot: bool) -> Hold {
+        if let Some(d) = head.dropped.remove(&ai) {
+            Hold::Dropped(d)
+        } else if head.stripped.contains(&ai) {
+            Hold::Leftover { whole, valued: head.valued.contains(&ai) }
+        } else if missing {
+            Hold::Missing(if forgot { Missing::Forgot } else { Missing::Plain })
+        } else {
+            Hold::Body { whole }
+        }
     }
 }
 
@@ -485,7 +586,7 @@ fn signers_elsewhere(m: &Meta) -> Vec<Tid> {
     }
     let mut out: Vec<Tid> = Vec::new();
     for k in [m.view.author, m.view.actor] {
-        if !out.contains(&k) && m.view.aspects.iter().enumerate().any(|(ai, a)| a.tid != k && !m.dropped.contains_key(&ai)) {
+        if !out.contains(&k) && m.view.aspects.iter().enumerate().any(|(ai, a)| a.tid != k && !m.is_dropped(ai)) {
             out.push(k);
         }
     }
@@ -942,7 +1043,7 @@ pub struct Core {
     /// `Engine::inbox_actors` (`memo`).
     pub(crate) inbox_actors: memo::Memo<(), Arc<BTreeMap<LabelId, Vec<Tid>>>>,
     /// Page indexes of the cached states kept paged in the store.
-    pub pages: HashMap<(Tid, Ak), pages::PageIndex>,
+    pub pages: HashMap<(Tid, Ak), pages::StatePages>,
     pub timelines: held::Timelines,
     /// The sides taken in admin disputes (`crate::sides`), the walk's trust set; `detect`:
     /// dispute detection is on (after open: a held set loaded again has no arrivals).
@@ -1616,7 +1717,7 @@ impl Core {
     /// Whether minting `ai` of `c` is held value-less or dropped by a purge or the destruction.
     pub(crate) fn minting_gone(&self, c: &CommitId, ai: usize) -> bool {
         let Some(m) = self.ix.commits.get(c) else { return false };
-        crate::retention::valueless(self, c, ai) || m.dropped.get(&ai).is_some_and(|d| matches!(d.why, DropFor::Other | DropFor::Destroyed))
+        crate::retention::valueless(self, c, ai) || m.dropped(ai).is_some_and(|d| matches!(d.why, DropFor::Other | DropFor::Destroyed))
     }
 
     /// Re-evaluates the timelines around the things whose held inputs changed; the things of
@@ -2184,7 +2285,7 @@ impl Core {
         if !tx.core.commits_watched {
             return Ok(());
         }
-        let state = |m: &Meta, ai: usize| (m.valid_at(ai), m.dropped.contains_key(&ai), m.stripped.contains(&ai), m.missing.contains(&ai));
+        let state = |m: &Meta, ai: usize| (m.valid_at(ai), m.is_dropped(ai), m.stripped(ai), m.missing(ai));
         let mut out: BTreeSet<_> = std::mem::take(&mut tx.core.commits_named).into_iter().collect();
         // each changed commit's view (its last if gone) and whether it was held when the
         // transaction began
@@ -2244,10 +2345,7 @@ impl Core {
 
     /// Sets `id`'s meta: every change to what a part holds goes through here or `take_meta`, so
     /// the indexes derived from it stay exact.
-    pub(crate) fn put_meta(&mut self, id: CommitId, mut m: Meta) {
-        // a part joined or dropped since is no longer marked forgotten
-        m.forgot.retain(|ai| m.missing.contains(ai));
-        m.to_fetch.retain(|ai| m.missing.contains(ai));
+    pub(crate) fn put_meta(&mut self, id: CommitId, m: Meta) {
         let was = self.ix.commits.get(&id).map(signers_elsewhere).unwrap_or_default();
         self.note_signed(&was, &signers_elsewhere(&m));
         self.index_own(&id, &m, true);
@@ -2324,7 +2422,7 @@ impl Core {
             } else {
                 self.ix.own_held.remove(&k, &e);
             }
-            if held && m.whole.contains(&ai) {
+            if held && m.whole(ai) {
                 self.ix.own_replaces.insert(k, e);
             } else {
                 self.ix.own_replaces.remove(&k, &e);
@@ -2501,7 +2599,7 @@ impl Tx<'_> {
 
     /// Runs `g` on the cached state of `(tid, ak)` (taken out of the cache meanwhile) and its page
     /// index; nothing for an unpaged state.
-    fn with_pages<T>(&mut self, tid: &Tid, ak: &Ak, g: impl FnOnce(&mut Transaction<'_>, &mut pages::PageIndex, &mut Fragment) -> Result<T>) -> Result<Option<T>> {
+    fn with_pages<T>(&mut self, tid: &Tid, ak: &Ak, g: impl FnOnce(&mut Transaction<'_>, &mut pages::StatePages, &mut Fragment) -> Result<T>) -> Result<Option<T>> {
         let k = (*tid, ak.clone());
         let Some(idx) = self.core.pages.get_mut(&k) else { return Ok(None) };
         let Some(mut f) = self.core.states.get_mut(&k).and_then(Option::take) else { return Ok(None) };
@@ -2811,9 +2909,6 @@ impl Tx<'_> {
     /// they keep; then its blob), and for a role commit its `node/edges` row (`edges`: what the caller already
     /// read of `blob` with `edge_parts_of`, else decoded here).
     pub(crate) fn put_commit(&mut self, id: &CommitId, blob: &CommitBlob, meta: &Meta, shred: Shred, edges: Option<&crate::apply::validity::EdgeParts>) -> Result<()> {
-        // a part is held, dropped or missing: never both of the last two (an open derives
-        // missing as neither in the blob nor dropped)
-        debug_assert!(meta.dropped.keys().all(|ai| !meta.missing.contains(ai)), "{id:?}: parts both dropped and missing: dropped {:?} missing {:?}", meta.dropped, meta.missing);
         self.core.bodies.remove(id);
         self.core.decoded.forget(id);
         self.core.records_read.wrote(id, true);
@@ -3543,6 +3638,42 @@ mod tests {
     use osis_crdt::{Op, PathOp, PathSeg};
     use osis_schema::core_types as ct;
     use osis_schema::Codec;
+
+    // spec/commits.md §5 (Dropping a body): what each part state answers. One state per part, so
+    // no part is both held and dropped or missing, and only a held one is a whole replace.
+    #[test]
+    fn each_part_state_answers_alone() {
+        use super::{Dropped, Hold, Missing};
+        let mut lp = LocalPeer::fresh(1, WallMs(1_700_000_000_000));
+        let a = lp.peers[0].engine.me();
+        let mut m = Mutation::new();
+        lp.peers[0].engine.new_thing(&mut m, a);
+        let id = lp.peers[0].commit(m).unwrap().unwrap();
+        let mut meta = lp.peers[0].engine.core.ix.commits[&id].clone();
+        meta.hold = vec![Hold::Body { whole: true }];
+        meta.valid = vec![true];
+        // (holds, body gone, leftover, valued, bare, whole, dropped, missing)
+        let answers = |m: &super::Meta| (m.holds(0), m.body_gone(0), m.stripped(0), m.valued(0), m.bare(0), m.whole(0), m.is_dropped(0), m.missing(0));
+        let cases = [
+            (Hold::Body { whole: true }, (true, false, false, false, false, true, false, false)),
+            (Hold::Body { whole: false }, (true, false, false, false, false, false, false, false)),
+            (Hold::Leftover { whole: true, valued: true }, (true, true, true, true, false, true, false, false)),
+            (Hold::Leftover { whole: false, valued: false }, (true, true, true, false, true, false, false, false)),
+            (Hold::Dropped(Dropped::default()), (false, true, false, false, false, false, true, false)),
+            (Hold::Missing(Missing::ToFetch), (false, false, false, false, false, false, false, true)),
+        ];
+        for (h, want) in cases {
+            meta.set_hold(0, h.clone());
+            assert_eq!(answers(&meta), want, "{h:?}");
+        }
+        // marking a part not held a whole replace changes nothing
+        meta.set_hold(0, Hold::Missing(Missing::Plain));
+        meta.set_whole(0);
+        assert_eq!(meta.hold[0], Hold::Missing(Missing::Plain));
+        // no such part: nothing held, nothing set
+        meta.set_hold(1, Hold::Body { whole: true });
+        assert!(meta.hold.len() == 1 && !meta.holds(1) && !meta.missing(1));
+    }
 
     fn digest(p: &Peer) -> String {
         // headers decoded alike (decoding is a cache, not undone)

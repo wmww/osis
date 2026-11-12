@@ -146,7 +146,7 @@ impl Peer {
         let awaits = match i {
             Ingested::Awaits(_, crate::Reason::MissingChain(t) | crate::Reason::UnknownCreated(t)) if applied.is_none() => Some(*t),
             // the blob decoded only where a held commit misses a part
-            _ if applied.is_some_and(|m| !m.missing.is_empty() && CommitBlob::decode(bytes).is_ok_and(|b| b.parts.iter().any(|p| m.missing.contains(&p.ai)))) => None,
+            _ if applied.is_some_and(|m| m.missing_parts().next().is_some() && CommitBlob::decode(bytes).is_ok_and(|b| b.parts.iter().any(|p| m.missing(p.ai)))) => None,
             _ => return,
         };
         self.discards += 1;

@@ -621,7 +621,7 @@ pub(crate) fn load_edges(tx: &mut Tx<'_>) -> Result<BTreeMap<CommitId, crate::ap
 }
 
 /// What of a commit its record holds ahead of its blob (version 1): received, origin, dropped
-/// parts and what each keeps (`Meta::dropped`), and the header's linked lists (a held header is
+/// parts and what each keeps (`Hold::Dropped`), and the header's linked lists (a held header is
 /// whole on its own: the list blobs live by the sync rules, gone at the commit's expiry).
 pub(crate) struct RecordHead {
     pub received: WallMs,
@@ -650,10 +650,10 @@ pub(crate) fn record_head(m: &Meta) -> Vec<u8> {
         Origin::Local => 0,
         Origin::Remote => 1,
     });
-    w = w.u32(m.dropped.len() as u32);
-    for (a, d) in &m.dropped {
+    w = w.u32(m.dropped_parts().count() as u32);
+    for (a, d) in m.dropped_parts() {
         let role = d.role.map_or(0, |r| 1 + r as u8);
-        w = w.u32(*a as u32).u8(u8::from(d.as_cover()) | role << 2 | u8::from(d.overreach) << 5 | u8::from(d.why == super::DropFor::Invalid) << 6).u32(d.covered_by.len() as u32);
+        w = w.u32(a as u32).u8(u8::from(d.as_cover()) | role << 2 | u8::from(d.overreach) << 5 | u8::from(d.why == super::DropFor::Invalid) << 6).u32(d.covered_by.len() as u32);
         for s in &d.covered_by {
             w = w.raw(&s.0);
         }
@@ -682,9 +682,9 @@ pub(crate) fn record_head(m: &Meta) -> Vec<u8> {
             Some(x) => put_showing(w.u8(1), x),
         };
     }
-    w = w.u32(m.stripped.len() as u32);
-    for a in &m.stripped {
-        w = w.u32(*a as u32).u8(u8::from(m.valued.contains(a)));
+    w = w.u32(m.stripped_parts().count() as u32);
+    for a in m.stripped_parts() {
+        w = w.u32(a as u32).u8(u8::from(m.valued(a)));
     }
     // a header applies resolved (spec/commits.md §4)
     debug_assert!(m.header.is_resolved(), "record of an unresolved header");
@@ -703,7 +703,7 @@ pub(super) fn meta_row(core: &Core, id: &CommitId, m: &Meta) -> Vec<u8> {
     out.extend_from_slice(&(m.valid.len() as u32).to_be_bytes());
     for (ai, v) in m.valid.iter().enumerate() {
         let role = core.ix.rotation_role.get(&(*id, ai)).map_or(0, |r| 1 + *r as u8);
-        out.push(u8::from(*v) | (role << 1) | (u8::from(core.ix.grant_overreach.contains(&(*id, ai))) << 4) | (u8::from(m.missing.contains(&ai)) << 5) | (u8::from(m.whole.contains(&ai)) << 6) | (u8::from(m.forgot.contains(&ai) && m.missing.contains(&ai)) << 7));
+        out.push(u8::from(*v) | (role << 1) | (u8::from(core.ix.grant_overreach.contains(&(*id, ai))) << 4) | (u8::from(m.missing(ai)) << 5) | (u8::from(m.whole(ai)) << 6) | (u8::from(m.missing_as(ai) == Some(super::Missing::Forgot)) << 7));
     }
     let v = &m.view;
     let mut w = records::Wr(out).u64(v.ts.to_u64()).u8(v.kind.id() as u8);
@@ -1056,27 +1056,17 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
         Ok(())
     })?;
     let fault = tx.core.header_fault.clone();
-    for (id, head, bytes) in recs {
+    for (id, mut head, bytes) in recs {
         let row = rows.remove(&id).ok_or(Error::Corrupt("meta row missing"))?;
         let (parts, view, shown) = parse_meta_row(&row)?;
         for (ai, x) in shown {
             tx.core.ix.shown.insert((id, ai), Arc::new(x));
         }
         let mut valid = Vec::with_capacity(parts.len());
-        let mut missing = BTreeSet::new();
-        let mut whole = BTreeSet::new();
-        let mut forgot = BTreeSet::new();
+        let mut hold = Vec::with_capacity(parts.len());
         for (ai, p) in parts.iter().enumerate() {
             valid.push(p & 1 != 0);
-            if p & 32 != 0 {
-                missing.insert(ai);
-            }
-            if p & 64 != 0 {
-                whole.insert(ai);
-            }
-            if p & 128 != 0 {
-                forgot.insert(ai);
-            }
+            hold.push(super::Hold::stored(ai, &mut head, p & 32 != 0, p & 64 != 0, p & 128 != 0));
             if let Some(r) = Role::ALL.get(<usize as From<u8>>::from((p >> 1) & 7).wrapping_sub(1)) {
                 tx.core.ix.rotation_role.insert((id, ai), *r);
             }
@@ -1099,7 +1089,7 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
             return Err(Error::Corrupt("meta row"));
         }
         crate::apply::index_commit(tx.core, &id, &view);
-        tx.core.put_meta(id, Meta { view, header, received: head.received, origin: head.origin, valid, dropped: head.dropped, stripped: head.stripped, valued: head.valued, missing, whole, forgot, to_fetch: BTreeSet::new() });
+        tx.core.put_meta(id, Meta { view, header, received: head.received, origin: head.origin, valid, hold });
         crate::apply::note_stands_in(tx.core, &id);
         tx.core.index_validity(&id);
     }
@@ -1147,4 +1137,57 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
         tx.core.ix.names_due.remove(&c);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+    use super::super::{DropFor, Dropped, Hold, Missing};
+    use crate::Mutation;
+    use crate::local_peer::LocalPeer;
+    use osis_base::{Ak, Value, WallMs};
+
+    // spec: none (internal: notes/engine-store.md, the commit record and meta row). Every part
+    // state is stored as the record head and the meta row's bits and read back as it was, but
+    // `Missing::ToFetch`, a memory commit's mark, which no store keeps.
+    #[test]
+    fn every_part_state_reads_back_as_stored() {
+        let mut lp = LocalPeer::fresh(1, WallMs(1_700_000_000_000));
+        let a = lp.peers[0].engine.me();
+        let mut m = Mutation::new();
+        let t = lp.peers[0].engine.new_thing(&mut m, a);
+        let c = lp.peers[0].commit(m).unwrap().unwrap();
+        let mut m = Mutation::new();
+        for k in ["a", "b", "c", "d", "e", "f", "g", "h"] {
+            m.set(t, &Ak::new(format!("x:{k}.0")).unwrap(), &Value::Int(1)).unwrap();
+        }
+        let id = lp.peers[0].commit(m).unwrap().unwrap();
+        let e = &lp.peers[0].engine;
+        let mut meta = e.core.ix.commits[&id].clone();
+        let cover = Dropped { covered_by: [c].into(), why: DropFor::Cover, hosts_from: 7, ..Dropped::default() };
+        let invalid = Dropped { why: DropFor::Invalid, ..Dropped::default() };
+        let states = [
+            Hold::Body { whole: false },
+            Hold::Body { whole: true },
+            Hold::Leftover { whole: true, valued: true },
+            Hold::Leftover { whole: false, valued: false },
+            Hold::Dropped(cover),
+            Hold::Dropped(invalid),
+            Hold::Missing(Missing::Plain),
+            Hold::Missing(Missing::Forgot),
+        ];
+        assert_eq!(meta.hold.len(), states.len());
+        meta.hold = states.to_vec();
+        let head = super::record_head(&meta);
+        let row = super::meta_row(&e.core, &id, &meta);
+        let (mut head, _) = super::parse_head(&head).unwrap();
+        let (parts, _, _) = super::parse_meta_row(&row).unwrap();
+        let back: Vec<Hold> = parts.iter().enumerate().map(|(ai, p)| Hold::stored(ai, &mut head, p & 32 != 0, p & 64 != 0, p & 128 != 0)).collect();
+        assert_eq!(back, states.to_vec());
+        // memory only: read back as a plain missing part
+        meta.hold[6] = Hold::Missing(Missing::ToFetch);
+        let row = super::meta_row(&e.core, &id, &meta);
+        let (parts, _, _) = super::parse_meta_row(&row).unwrap();
+        assert_eq!(parts[6] & (32 | 64 | 128), 32);
+    }
 }

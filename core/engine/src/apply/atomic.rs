@@ -3,7 +3,7 @@
 //! re-judges held deltas when the held set changed; events go out after it is durable.
 
 use super::{Parts, Streamed, validity};
-use crate::engine::{Core, Meta, Owned, Tx, records};
+use crate::engine::{Core, Hold, Meta, Missing, Owned, Tx, records};
 use crate::error::{Error, Result};
 use crate::events::{Cause, Event, Origin};
 use crate::retention::Killed;
@@ -44,7 +44,7 @@ pub(crate) fn note_carried(core: &mut Core, tid: &Tid, ak: &Ak, id: &CommitId, c
 /// Indexes the dropped parts of `id` that still stand in (`Dropped::stands_in`).
 pub(crate) fn note_stands_in(core: &mut Core, id: &CommitId) {
     let Some(m) = core.ix.commits.get(id) else { return };
-    let ks: Vec<(Tid, Ak)> = m.dropped.iter().filter(|x| x.1.stands_in).filter_map(|x| m.view.aspects.get(*x.0)).map(|a| (a.tid, a.ak.clone())).collect();
+    let ks: Vec<(Tid, Ak)> = m.dropped_parts().filter(|x| x.1.stands_in).filter_map(|x| m.view.aspects.get(x.0)).map(|a| (a.tid, a.ak.clone())).collect();
     for k in ks {
         core.ix.dropped_snapshots.insert(k, *id);
     }
@@ -582,8 +582,9 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Parts, o
     }
     let valid: Vec<bool> = (0..h.aspects.len()).map(|ai| validity::part_valid(tx.core, &h, &id, ai)).collect();
     let missing: BTreeSet<usize> = (0..h.aspects.len()).filter(|ai| !parts.has(*ai)).collect();
-    let meta = Meta { view, header: crate::engine::LazyHeader::ready(h.clone()), received, origin, valid: valid.clone(), dropped: BTreeMap::new(), stripped: BTreeSet::new(), valued: BTreeSet::new(), missing, whole: BTreeSet::new(), forgot: BTreeSet::new(), to_fetch: BTreeSet::new() };
-    crate::retention::fetch_fallen(tx, &h, &id, &meta.missing)?;
+    let hold = (0..h.aspects.len()).map(|ai| if missing.contains(&ai) { Hold::Missing(Missing::Plain) } else { Hold::Body { whole: false } }).collect();
+    let meta = Meta { view, header: crate::engine::LazyHeader::ready(h.clone()), received, origin, valid: valid.clone(), hold };
+    crate::retention::fetch_fallen(tx, &h, &id, &missing)?;
     tx.core.put_meta(id, meta.clone());
     tx.core.index_validity(&id);
     crate::retention::note_requests(tx, &id, &h)?;
@@ -653,14 +654,14 @@ fn note_held_rules(tx: &mut Tx<'_>, h: &Header, id: &CommitId, parts: &Parts) ->
     Ok(())
 }
 
-/// Marks part `ai` of commit `id` as a whole replace (`Meta::whole`), so it stands in the own
+/// Marks part `ai` of commit `id` as a whole replace (`Hold::Body::whole`), so it stands in the own
 /// indexes (`Core::put_meta`).
 fn note_whole(tx: &mut Tx<'_>, id: &CommitId, ai: usize, whole: bool) {
     if !whole {
         return;
     }
     if let Some(mut m) = tx.core.ix.commits.get(id).cloned() {
-        m.whole.insert(ai);
+        m.set_whole(ai);
         tx.core.put_meta(*id, m);
     }
 }
@@ -708,7 +709,11 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
     tx.core.touch();
     let mut meta = tx.core.ix.commits.get(id).cloned().ok_or(Error::Corrupt("commit index"))?;
     let h = meta.header.clone();
-    meta.missing.retain(|ai| !parts.has(*ai));
+    for ai in parts.ais() {
+        if meta.missing(ai) {
+            meta.set_hold(ai, Hold::Body { whole: false });
+        }
+    }
     tx.core.put_meta(*id, meta.clone());
     let late = parts.ais();
     let mut held_changed = note_created(tx, &h, &parts.whole)?;
@@ -999,7 +1004,7 @@ pub(crate) fn check_rebuilt(tx: &mut Tx<'_>) -> Result<TxChange> {
     // or arrived otherwise; a state written otherwise: always checked)
     let mut fresh: BTreeMap<(Tid, Ak), usize> = BTreeMap::new();
     let mut always: BTreeSet<(Tid, Ak)> = BTreeSet::new();
-    let status = |m: &Meta, ai: usize| (m.valid_at(ai), m.dropped.contains_key(&ai), m.missing.contains(&ai), m.stripped.contains(&ai));
+    let status = |m: &Meta, ai: usize| (m.valid_at(ai), m.is_dropped(ai), m.missing(ai), m.stripped(ai));
     for (id, old) in tx.core.ix.commits.before() {
         let new = tx.core.ix.commits.get(id);
         let Some(m) = new.or(old) else { continue };

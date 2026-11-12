@@ -270,7 +270,7 @@ fn trigger_counts_what_its_snapshot_drops_spec_sync_7() {
             (weighed, written) = (weighed + w, written + s);
         }
         let e = net.engine(a);
-        assert!(puts.iter().all(|c| e.core.ix.commits.get(c).is_some_and(|m| m.stripped.len() == 1)), "n={n}: the leftovers stay");
+        assert!(puts.iter().all(|c| e.core.ix.commits.get(c).is_some_and(|m| m.stripped_parts().count() == 1)), "n={n}: the leftovers stay");
         (weighed, written)
     };
     for n in [4, 40] {

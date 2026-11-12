@@ -154,7 +154,7 @@ impl SyncEngine {
         if opened.iter().any(|p| m.body_gone(*p) && !self.engine.left_at_hosts(commit, *p)) {
             // a body dropped as covered leaves hosts `MAX_DRIFT` past its keep-at-least bound, once
             // every node's clock agrees it may go (spec/commits.md §5 Keep bounds)
-            let from = opened.iter().filter_map(|p| m.dropped.get(p)).map(|d| d.hosts_from).max().unwrap_or(0);
+            let from = opened.iter().filter_map(|p| m.dropped(*p)).map(|d| d.hosts_from).max().unwrap_or(0);
             if from > now {
                 note.at(from);
                 return Ok(None);

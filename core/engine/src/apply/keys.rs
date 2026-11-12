@@ -205,7 +205,7 @@ pub(crate) fn rebuild_keysets(tx: &mut Tx<'_>, actors: &std::collections::BTreeS
             if !m.valid_at(ai) {
                 continue;
             }
-            if let Some(d) = m.dropped.get(&ai) {
+            if let Some(d) = m.dropped(ai) {
                 note_keysets(tx.core, &m.header, &id, a, &d.keysets);
             }
             if let Some(d) = super::held_part(tx, &id, ai)? {

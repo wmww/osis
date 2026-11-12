@@ -4389,7 +4389,7 @@ fn memory_expiry_goes_valueless_spec_crdt_4_7() {
     for i in 0..3 {
         assert_eq!(memory_tags(&mut lp, i, d), empty, "{i}: the replace's reset stays (0's element stays removed), its value went");
         assert!(holds_commit(&lp, i, &rep.0), "{i}: the expired commit is held as its leftover");
-        assert!(lp.peers[i].engine.core.ix.commits.get(&rep.0).is_some_and(|m| !m.stripped.is_empty()));
+        assert!(lp.peers[i].engine.core.ix.commits.get(&rep.0).is_some_and(|m| m.stripped_parts().next().is_some()));
     }
     memory_deliver(&mut lp, 0, &rep);
     assert_eq!(memory_tags(&mut lp, 0, d), empty);
@@ -4947,7 +4947,7 @@ fn memory_random_demotion(seed: u64) {
         let held: Vec<BTreeMap<Tid, BTreeSet<osis_base::CommitId>>> = (0..4)
             .map(|i| {
                 let mut by: BTreeMap<Tid, BTreeSet<osis_base::CommitId>> = BTreeMap::new();
-                for (c, m) in lp.peers[i].engine.core.ix.commits.iter().filter(|(_, m)| m.view.memory && (0..m.view.aspects.len()).any(|ai| !m.dropped.contains_key(&ai) && !m.missing.contains(&ai))) {
+                for (c, m) in lp.peers[i].engine.core.ix.commits.iter().filter(|(_, m)| m.view.memory && (0..m.view.aspects.len()).any(|ai| !m.is_dropped(ai) && !m.missing(ai))) {
                     by.entry(m.view.author).or_default().insert(*c);
                 }
                 by

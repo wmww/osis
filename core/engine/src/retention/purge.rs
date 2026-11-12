@@ -247,7 +247,7 @@ pub(crate) fn lasting(tx: &mut Tx<'_>, id: &CommitId, on: &dyn Fn(&Core, &Tid) -
     let Some(m) = tx.core.ix.commits.get(id).cloned() else { return Ok(false) };
     let now = tx.now().0;
     // a released thing's drops are no erasure's (spec/commits.md §5 Destruction): none lasts
-    if m.header.aspects.iter().enumerate().any(|(ai, a)| (m.stripped.contains(&ai) || m.dropped.contains_key(&ai)) && on(tx.core, &a.tid) && super::history::permanent(tx.core, &m.header, a, now) && !super::destroy::released(tx.core, &a.tid, now)) {
+    if m.header.aspects.iter().enumerate().any(|(ai, a)| (m.stripped(ai) || m.is_dropped(ai)) && on(tx.core, &a.tid) && super::history::permanent(tx.core, &m.header, a, now) && !super::destroy::released(tx.core, &a.tid, now)) {
         return Ok(true);
     }
     if !m.view.purges {
@@ -465,7 +465,7 @@ impl AspectRequests {
 /// and what they name, its snapshots' views, and with an aspect-wide request a walk of its parts, as
 /// `validity::rejudge_once` walks them (`scale::purge_rejudge_is_linear_in_requests_spec_permissions_6`).
 /// Memory class alike: a memory part's leftover is set aside in memory, and the commit stays known
-/// until a copy comes (`unstrip`, `Meta::to_fetch`).
+/// until a copy comes (`unstrip`, `Missing::ToFetch`).
 pub(crate) fn rejudge_purges(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, changed: &mut BTreeSet<(Tid, Ak)>) -> Result<()> {
     let mut requests = AspectRequests::load(tx, tid, ak)?;
     if requests.is_empty() {
@@ -511,7 +511,7 @@ pub(crate) fn rejudge_purges(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, changed: &mut 
             continue;
         }
         // dropped as covered it stays so: its cover's copies are its writes while one carries it
-        if m.stripped.contains(&ai) || m.missing.contains(&ai) || m.dropped.get(&ai).is_some_and(|d| !d.as_cover()) {
+        if m.stripped(ai) || m.missing(ai) || m.dropped(ai).is_some_and(|d| !d.as_cover()) {
             back.push((c, ai));
         }
         leaving.extend(going);
@@ -527,11 +527,11 @@ pub(crate) fn rejudge_purges(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, changed: &mut 
     suspect::raise(tx, tid, ak, suspect::Why::Uncovered, &back)?;
     for (c, ai) in back {
         let Some(m) = tx.core.ix.commits.get(&c) else { continue };
-        if m.stripped.contains(&ai) {
+        if m.stripped(ai) {
             // never received until a copy comes; its leftover set aside for a rise before one
             unstrip(tx, &c, ai, true)?;
             refetch(tx, &c);
-        } else if m.missing.contains(&ai) {
+        } else if m.missing(ai) {
             refetch(tx, &c);
         } else {
             reopen_to_fetch(tx, &c, ai)?;
@@ -685,7 +685,7 @@ pub(super) fn apply_request(tx: &mut Tx<'_>, id: &CommitId, h: &Header, purged: 
             let Some((m, ai)) = core.ix.commits.get(&c).and_then(|m| Some((m, m.aspect(item.tid(), item.ak())?))) else { continue };
             let Some(a) = m.header.aspects.get(ai) else { continue };
             // applied here: held, or dropped as covered (its writes in the state through its cover)
-            let applied = m.view.kind.has_own_writes() && (!m.body_gone(ai) || m.dropped.get(&ai).is_some_and(|d| d.as_cover()));
+            let applied = m.view.kind.has_own_writes() && (!m.body_gone(ai) || m.dropped(ai).is_some_and(|d| d.as_cover()));
             if (matches!(item, PurgeItem::Commit { .. }) || *rights.entry((a.retention.by as u64, m.header.actor)).or_insert_with(|| holds_right(core, h, id, a, &m.header)))
                 && purge_one(tx, id, &c, ai, purged)?
             {

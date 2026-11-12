@@ -474,10 +474,10 @@ impl Engine {
     }
 
     /// Every applied durable commit with its parts not received here (`commit_ids` with
-    /// `Meta::missing`): two nodes holding one commit may hold different parts of it.
+    /// `Hold::Missing`): two nodes holding one commit may hold different parts of it.
     #[doc(hidden)]
     pub fn commit_parts_missing(&self) -> BTreeMap<CommitId, std::collections::BTreeSet<usize>> {
-        self.core.ix.commits.iter().filter(|(_, m)| !m.view.memory).map(|(id, m)| (*id, m.missing.clone())).collect()
+        self.core.ix.commits.iter().filter(|(_, m)| !m.view.memory).map(|(id, m)| (*id, m.missing_parts().collect())).collect()
     }
 
     /// The indexes open rebuilds, field by field (tests: a load from the persisted index equals a
@@ -635,8 +635,8 @@ impl Engine {
         for (c, m) in self.core.ix.commits.iter() {
             let Some(ai) = m.aspect(tid, ak) else { continue };
             let h = &m.header;
-            let dropped = m.dropped.get(&ai);
-            let missing = m.missing.contains(&ai);
+            let dropped = m.dropped(ai);
+            let missing = m.missing(ai);
             let valid = m.valid.get(ai).copied().unwrap_or(true);
             let _ = writeln!(out, "  {c:?} {:?} by {} ts {:?}: dropped {:?} missing {missing} valid {valid} covered by {:?}", h.kind, h.author, h.ts, dropped.is_some(), dropped.map(|d| &d.covered_by));
         }
@@ -712,8 +712,9 @@ fn tables(ix: &super::Indexes) -> [(&'static str, &dyn Table); 26] {
 
 /// A commit's `CommitDigest`, its `rest` empty, and what `rest` shows.
 fn commit_digest(m: &super::Meta) -> (CommitDigest, (&osis_base::WallMs, &crate::events::Origin, &super::View)) {
-    let stands_in = m.dropped.iter().filter(|(_, d)| d.stands_in).map(|(ai, _)| *ai).collect();
-    let d = CommitDigest { kind: m.view.kind, valid: m.valid.clone(), dropped: m.dropped.keys().copied().collect(), stands_in, stripped: m.stripped.clone(), valued: m.valued.clone(), missing: m.missing.clone(), rest: String::new() };
+    let n = m.hold.len();
+    let stands_in = m.dropped_parts().filter(|(_, d)| d.stands_in).map(|(ai, _)| ai).collect();
+    let d = CommitDigest { kind: m.view.kind, valid: m.valid.clone(), dropped: m.dropped_parts().map(|x| x.0).collect(), stands_in, stripped: m.stripped_parts().collect(), valued: (0..n).filter(|ai| m.valued(*ai)).collect(), missing: m.missing_parts().collect(), whole: (0..n).filter(|ai| m.whole(*ai)).collect(), rest: String::new() };
     (d, (&m.received, &m.origin, &*m.view))
 }
 
@@ -833,10 +834,12 @@ pub struct CommitDigest {
     /// (`Dropped::stands_in`).
     pub dropped: std::collections::BTreeSet<usize>,
     pub stands_in: std::collections::BTreeSet<usize>,
-    /// Aspects held as their leftover (`Meta::stripped`), those holding values (`Meta::valued`).
+    /// Aspects held as their leftover (`Hold::Leftover`), those holding values (`Hold::Leftover::valued`).
     pub stripped: std::collections::BTreeSet<usize>,
     pub valued: std::collections::BTreeSet<usize>,
     pub missing: std::collections::BTreeSet<usize>,
+    /// Held parts standing as whole replaces (`Hold::Body::whole`).
+    pub whole: std::collections::BTreeSet<usize>,
     /// Received time, origin and view, as text.
     pub rest: String,
 }

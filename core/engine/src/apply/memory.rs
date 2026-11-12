@@ -88,7 +88,7 @@ fn pages_bound(tx: &mut Tx<'_>, delta: &[u8], listed: &BTreeSet<osis_base::BlobI
 /// What the parts of `blob` not held or dropped here could cost decoded (`part_bound`, their
 /// pages included): what ingesting it may decode.
 pub(crate) fn new_parts_bound(tx: &mut Tx<'_>, blob: &CommitBlob) -> Result<u64> {
-    let known = tx.core.ix.commits.get(&blob.id()).map(|m| m.missing.clone());
+    let known = tx.core.ix.commits.get(&blob.id()).map(|m| m.missing_parts().collect::<BTreeSet<usize>>());
     let listed: BTreeSet<osis_base::BlobId> = blob.header.chunks.iter().map(|ch| ch.blob).collect();
     let mut sum = 0u64;
     for p in &blob.parts {

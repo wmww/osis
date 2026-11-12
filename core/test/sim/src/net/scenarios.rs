@@ -799,7 +799,7 @@ pub fn coverer_revoked(s: Seeds) -> Res<Report> {
     let part = |sim: &mut NetSim| -> Res<Option<(bool, bool)>> {
         let e = sim.engine(w)?;
         let Some(m) = e.core.ix.commits.get(&s1) else { return Ok(None) };
-        Ok(m.view.aspects.iter().position(|x| x.tid == t && x.ak == k).map(|ai| (m.dropped.contains_key(&ai), m.missing.contains(&ai))))
+        Ok(m.view.aspects.iter().position(|x| x.tid == t && x.ak == k).map(|ai| (m.is_dropped(ai), m.missing(ai))))
     };
     if part(&mut sim)? != Some((true, false)) {
         return Err(sim.fail("W did not drop S1 under S2"));
@@ -953,7 +953,7 @@ pub fn snapshot_rights(s: Seeds) -> Res<Report> {
         for n in [a, b, w, fresh] {
             let e = sim.engine(n)?;
             let m = e.core.ix.commits.get(c);
-            let held = m.is_some_and(|m| m.view.aspects.iter().position(|x| x.tid == t && x.ak == k).is_some_and(|ai| !m.dropped.contains_key(&ai) && !m.missing.contains(&ai)));
+            let held = m.is_some_and(|m| m.view.aspects.iter().position(|x| x.tid == t && x.ak == k).is_some_and(|ai| !m.is_dropped(ai) && !m.missing(ai)));
             if !may_go && !held {
                 return Err(sim.fail(format!("{by:?} bound {bound}: kept body of node {author} not held at node {n}")));
             }

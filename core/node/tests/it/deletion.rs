@@ -1036,7 +1036,7 @@ fn stale_drop_reads_alike_spec_commits_5() {
             assert!(!net.engine(n).snapshot_right(&snap, &c, &t, &k), "node {n}: no right now, {to:?}");
         }
         assert_eq!(net.engine(a).body_not_dropped(&c, &t, &k), to == Role::Read, "the admin keeps it while uncovered, {to:?}");
-        let there = net.engine(b).body_not_dropped(&c, &t, &k) && !net.engine(b).core.ix.commits.get(&c).unwrap().missing.iter().next().is_some();
+        let there = net.engine(b).body_not_dropped(&c, &t, &k) && !net.engine(b).core.ix.commits.get(&c).unwrap().missing_parts().next().is_some();
         let read = |net: &mut Net, n: usize| net.engine(n).get_typed(&t, &SEQ).unwrap();
         let want = read(&mut net, a);
         assert_eq!(read(&mut net, b), want, "{to:?}");

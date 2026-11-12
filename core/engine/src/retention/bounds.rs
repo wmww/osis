@@ -607,7 +607,7 @@ impl Engine {
     /// history (spec/commits.md §5 Purge).
     pub fn holds_valid_snapshot(&self, s: &CommitId, tid: &Tid, ak: &Ak) -> bool {
         let Some(m) = self.core.ix.commits.get(s) else { return false };
-        m.view.kind.is_compaction() && m.aspect(tid, ak).is_some_and(|ai| !m.body_gone(ai) && !m.missing.contains(&ai) && m.valid_at(ai))
+        m.view.kind.is_compaction() && m.aspect(tid, ak).is_some_and(|ai| !m.body_gone(ai) && !m.missing(ai) && m.valid_at(ai))
     }
 
     /// Whether `c`'s part on `(tid, ak)` drops as covered (compaction, spec/commits.md §5;

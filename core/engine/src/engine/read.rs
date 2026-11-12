@@ -256,7 +256,7 @@ pub(crate) fn deleted_aspects(tx: &mut super::Tx<'_>, t: &Tid) -> Result<Vec<Ak>
         .core
         .aspects_of(t)
         .filter(|((_, ak), _)| ct::deletable(ak.as_str()) && !ak.ephemeral() && !ak.signal())
-        .map(|((_, ak), cs)| (ak.clone(), cs.iter().rev().find(|(_, c)| tx.core.ix.commits.get(c).is_some_and(|m| m.aspect(t, ak).is_some_and(|ai| m.valid_at(ai) && m.missing.contains(&ai)))).map(|(ts, _)| *ts)))
+        .map(|((_, ak), cs)| (ak.clone(), cs.iter().rev().find(|(_, c)| tx.core.ix.commits.get(c).is_some_and(|m| m.aspect(t, ak).is_some_and(|ai| m.valid_at(ai) && m.missing(ai)))).map(|(ts, _)| *ts)))
         .collect();
     let mut out = Vec::new();
     for (ak, missing) in named {

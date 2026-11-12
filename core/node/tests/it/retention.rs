@@ -215,7 +215,7 @@ fn purge_rights(orders: &[[usize; 3]]) {
                 assert_eq!(lp.peers[r].engine.body_not_dropped(&c, &t, &ak("t:reg.0")), !want && !invalid, "{by:?} by peer {who} demoted {demoted}, order {order:?}");
                 // given again it is held by every order alike
                 let _ = lp.deliver(r, &late[0]);
-                assert!(lp.peers[r].engine.core.ix.commits.get(&c).unwrap().missing.is_empty(), "{by:?} by peer {who} demoted {demoted}, order {order:?}");
+                assert!(lp.peers[r].engine.core.ix.commits.get(&c).unwrap().missing_parts().next().is_none(), "{by:?} by peer {who} demoted {demoted}, order {order:?}");
             }
         }
     }
@@ -335,13 +335,13 @@ fn fallen_purge_comes_back_spec_perm_6() {
     let _ = b.lp.deliver(3, &demote);
     let e = &mut b.lp.peers[3].engine;
     assert!(e.body_not_dropped(&c, &t, &k));
-    assert_eq!(e.core.ix.commits.get(&c).unwrap().missing.len(), 1, "missing until a copy comes");
+    assert_eq!(e.core.ix.commits.get(&c).unwrap().missing_parts().count(), 1, "missing until a copy comes");
     assert_eq!(e.get(&t, &k).unwrap(), Some(s("new")), "reads as a node that never received it");
     assert!(e.purged_on(&t, &k).unwrap().is_empty());
     let pk = b.lp.peers[2].engine.package(&c).unwrap().unwrap();
     let _ = b.lp.deliver(3, &pk);
     let e = &mut b.lp.peers[3].engine;
-    assert!(e.core.ix.commits.get(&c).unwrap().missing.is_empty());
+    assert!(e.core.ix.commits.get(&c).unwrap().missing_parts().next().is_none());
     assert_eq!(e.get(&t, &k).unwrap(), Some(s("kept")));
     // and it survives an index rebuild
     e.rebuild_index().unwrap();
@@ -501,7 +501,7 @@ fn snapshot_stripped_for_a_fallen_purge_gives_the_value_again_spec_perm_6() {
     assert!(!e.body_not_dropped(&snap, &t, &k) && !e.body_not_dropped(&c, &t, &k));
     lp.deliver(3, &pd).unwrap();
     let e = &mut lp.peers[3].engine;
-    let missing = |e: &osis_node::Engine, id| e.core.ix.commits.get(id).unwrap().missing.len();
+    let missing = |e: &osis_node::Engine, id| e.core.ix.commits.get(id).unwrap().missing_parts().count();
     assert_eq!((missing(e, &snap), missing(e, &c)), (0, 1));
     assert_eq!(e.get(&t, &k).unwrap(), None, "the held copy is value-less");
     lp.deliver(3, &ps).unwrap();
@@ -558,7 +558,7 @@ fn part_of_a_fallen_purge_comes_back_spec_perm_6() {
     let e = &mut lp.peers[3].engine;
     assert!(e.pending().is_empty(), "{:?}", e.pending());
     assert!(e.purged_on(&t, &k).unwrap().is_empty());
-    assert_eq!(e.core.ix.commits.get(&c).unwrap().missing.len(), 1, "as never received");
+    assert_eq!(e.core.ix.commits.get(&c).unwrap().missing_parts().count(), 1, "as never received");
     lp.deliver(3, &reg_part).unwrap();
     let e = &mut lp.peers[3].engine;
     assert_eq!(e.get(&t, &k).unwrap(), Some(s("kept")));
@@ -1880,7 +1880,7 @@ fn regrant_with_no_holder_reads_alike_spec_permissions_6() {
     for i in [0, 2] {
         let e = &mut lp.peers[i].engine;
         assert_eq!(e.body_valid(&c, &t, &a), Some(true), "peer {i}: valid again");
-        assert_eq!(e.core.ix.commits[&c].missing.len(), 1, "peer {i}: missing");
+        assert_eq!(e.core.ix.commits[&c].missing_parts().count(), 1, "peer {i}: missing");
         assert!(!e.suspects().unwrap().is_empty(), "peer {i}: flagged");
         assert_ne!(e.get(&t, &a).unwrap(), Some(s("lost")), "peer {i}");
     }
@@ -2090,7 +2090,7 @@ fn snapshot_of_two_purges_one_falls_spec_perm_6() {
         lp.deliver(4, pk).unwrap();
     }
     assert!(!lp.peers[3].engine.body_not_dropped(&ids[1], &t, &k), "the other purge stands");
-    assert!(lp.peers[3].engine.core.ix.commits.get(&snap).unwrap().missing.is_empty(), "held through the fall");
+    assert!(lp.peers[3].engine.core.ix.commits.get(&snap).unwrap().missing_parts().next().is_none(), "held through the fall");
     assert!(!lp.peers[3].engine.body_not_dropped(&snap, &t, &k), "as its leftover");
     lp.deliver(3, &pks[3]).unwrap();
     assert!(!lp.peers[3].engine.body_not_dropped(&snap, &t, &k), "it carries the other's value");
@@ -2180,7 +2180,7 @@ fn demotion_lists_the_message_omits_the_delete_spec_perm_6() {
         assert_eq!(lp.peers[3].engine.body_not_dropped(&c, &t, &k), listed, "the holder keeps the body while it is valid");
         for i in [0, 2] {
             assert_eq!(lp.peers[i].engine.get(&t, &k).unwrap(), before, "peer {i}: as never received");
-            assert_eq!(lp.peers[i].engine.core.ix.commits.get(&c).unwrap().missing.len(), 1, "peer {i}");
+            assert_eq!(lp.peers[i].engine.core.ix.commits.get(&c).unwrap().missing_parts().count(), 1, "peer {i}");
             lp.deliver(i, &copy).unwrap();
             assert_eq!(lp.peers[i].engine.body_not_dropped(&c, &t, &k), listed, "peer {i}: the copy joins, and goes while invalid");
             assert_eq!(lp.peers[i].engine.get(&t, &k).unwrap(), want, "peer {i}");
@@ -3326,7 +3326,7 @@ fn bare_leftover_stays_copy_leftover_goes_spec_commits_5() {
     let e = &mut lp.peers[0].engine;
     assert_eq!(e.get(&t, &k).unwrap(), Some(s("d")));
     let m1 = e.core.ix.commits.get(&c1).unwrap();
-    assert!(m1.stripped.contains(&0) && m1.dropped.is_empty(), "the bare leftover stays: {}", e.aspect_dump(&t, &k));
+    assert!(m1.stripped(0) && m1.dropped_parts().next().is_none(), "the bare leftover stays: {}", e.aspect_dump(&t, &k));
     assert!(!e.coverers_of(&s0, &t, &k).is_empty(), "the copy leftover went as covered: {}", e.aspect_dump(&t, &k));
 }
 
@@ -3530,7 +3530,7 @@ fn fallen_purge_of_ephemeral_write_comes_back_spec_perm_6() {
     for i in [3, 4] {
         let _ = lp.deliver(i, &demote);
         let e = &mut lp.peers[i].engine;
-        assert!(e.core.ix.commits.get(&c).is_some_and(|m| m.missing.len() == 1), "peer {i}: missing until a copy comes");
+        assert!(e.core.ix.commits.get(&c).is_some_and(|m| m.missing_parts().count() == 1), "peer {i}: missing until a copy comes");
         assert!(e.purged_on(&t, &k).unwrap().is_empty(), "peer {i}");
         assert_eq!(e.get(&t, &k).unwrap(), None, "peer {i}: reads as a node that never received it");
         assert!(e.suspects().unwrap().iter().any(|f| f.1 == k), "peer {i}: may read less than a holder of it");
@@ -3685,6 +3685,6 @@ fn purge_on_replace_keeps_own_live_ephemeral_snapshot_spec_sync_9() {
     let theirs = lp.peers[1].engine.package(&theirs).unwrap().unwrap().bytes;
     let e = &mut lp.peers[2].engine;
     e.ingest_memory(&theirs, u64::MAX).unwrap();
-    assert!(e.core.ix.commits.get(&own).is_some_and(|m| m.dropped.is_empty()), "its author keeps its own live snapshot");
+    assert!(e.core.ix.commits.get(&own).is_some_and(|m| m.dropped_parts().next().is_none()), "its author keeps its own live snapshot");
     assert_eq!(e.get(&t, &k).unwrap(), Some(Value::Map(osis_base::ValueMap::from([(s("a"), s("live"))]))));
 }

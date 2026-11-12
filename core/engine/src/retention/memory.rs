@@ -23,7 +23,7 @@ use std::collections::BTreeSet;
 pub(crate) fn vanish(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<Option<(Tid, Ak)>> {
     let Some(m) = tx.core.ix.commits.get(c) else { return Ok(None) };
     let Some(a) = m.header.aspects.get(ai) else { return Ok(None) };
-    if m.dropped.contains_key(&ai) {
+    if m.is_dropped(ai) {
         return Ok(None);
     }
     let (tid, ak) = (a.tid, a.ak.clone());
@@ -36,12 +36,12 @@ pub(crate) fn vanish(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<Option<
 /// none waits: as if it had never applied (`unindex_commit`), its receipt kept. A copy arriving
 /// again applies again and goes again by the same rule. One with a part dropped while invalid
 /// stays known (`super::kept_invalid`): a copy is not taken while it stays invalid, and valid again it
-/// is fetched (`valid_again`), the commit known until the part is back (`Meta::to_fetch`: a
+/// is fetched (`valid_again`), the commit known until the part is back (`Missing::ToFetch`: a
 /// part to come is not spent); node-sync forgets it once it knows no entry of it
 /// (`Engine::forgettable`, spec/sync.md §9 Forgetting).
 pub(crate) fn forget_if_spent(tx: &mut Tx<'_>, c: &CommitId) -> Result<()> {
     let Some(m) = tx.core.ix.commits.get(c) else { return Ok(()) };
-    if !m.view.memory || m.dropped.is_empty() || (0..m.view.aspects.len()).any(|ai| m.holds(ai)) || tx.core.ix.pending.contains_key(c) || super::kept_invalid(m) {
+    if !m.view.memory || m.dropped_parts().next().is_none() || (0..m.view.aspects.len()).any(|ai| m.holds(ai)) || tx.core.ix.pending.contains_key(c) || super::kept_invalid(m) {
         return Ok(());
     }
     crate::apply::unindex_commit(tx, c)
@@ -157,7 +157,7 @@ fn drop_superseded_of(tx: &mut Tx<'_>, cands: BTreeSet<CommitId>, keep: Option<&
             let Some(by) = superseder(tx, &c, ai)? else { continue };
             changed.extend(vanish(tx, &c, ai)?);
             if let Some(mut m) = tx.core.ix.commits.get(&c).cloned()
-                && let Some(d) = m.dropped.get_mut(&ai)
+                && let Some(d) = m.dropped_mut(ai)
             {
                 d.superseded_by.insert(by);
                 tx.core.put_meta(c, m);

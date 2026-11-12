@@ -473,7 +473,7 @@ fn equal_stamped_snapshots_cover_each_other_spec_sync_7() {
     assert_eq!(e.covered(&lo, &hi, &t, &tags).unwrap(), Some(true));
     assert_eq!(e.covered(&hi, &lo, &t, &tags).unwrap(), Some(true));
     e.drop_body(&hi, &t, &tags).unwrap();
-    assert!(e.core.ix.commits.get(&hi).unwrap().dropped.values().all(|d| d.why == osis_node::engine::DropFor::Cover && !d.stands_in));
+    assert!(e.core.ix.commits.get(&hi).unwrap().dropped_parts().map(|x| x.1).all(|d| d.why == osis_node::engine::DropFor::Cover && !d.stands_in));
     let mut read = Vec::new();
     for p in [1, 4] {
         let e = &mut lp.peers[p].engine;
@@ -554,7 +554,7 @@ fn flip_flag_on(lp: &mut LocalPeer, t: Tid, asp: &Ak, body: &CommitId) {
             let h = e.header(&id).unwrap();
             if h.aspects.iter().any(|x| x.ak == *asp) {
                 let m = e.core.ix.commits.get(&id).unwrap();
-                eprintln!("DBG {id:?} body {} author {:?} kind {:?} dropped {:?} missing {:?}", id == *body, h.author, h.kind, m.dropped.values().map(|d| (d.why, d.covered_by.clone())).collect::<Vec<_>>(), m.missing);
+                eprintln!("DBG {id:?} body {} author {:?} kind {:?} dropped {:?} missing {:?}", id == *body, h.author, h.kind, m.dropped_parts().map(|x| x.1).map(|d| (d.why, d.covered_by.clone())).collect::<Vec<_>>(), m.missing_parts().collect::<Vec<_>>());
             }
         }
         eprintln!("DBG suspects {:?}", e.suspects().unwrap());

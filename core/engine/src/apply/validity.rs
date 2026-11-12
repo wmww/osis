@@ -1177,7 +1177,7 @@ fn rejudge_once(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak)>> {
                     // a snapshot turned invalid gives nothing (its writer no longer vouches for it,
                     // spec/permissions.md §5.2): parts dropped under its cover alone are missing again
                     // (an own replace likewise, spec/commits.md §5 Own replaces)
-                    let snaps = fell.get(&k).into_iter().flatten().any(|(c, _)| tx.core.ix.commits.get(c).is_some_and(|m| m.view.kind.is_compaction() || !m.whole.is_empty()));
+                    let snaps = fell.get(&k).into_iter().flatten().any(|(c, _)| tx.core.ix.commits.get(c).is_some_and(|m| m.view.kind.is_compaction() || (0..m.hold.len()).any(|ai| m.whole(ai))));
                     let _s = crate::costs::span("rejudge: rebuild");
                     if snaps {
                         crate::retention::uncover(tx, tid, ak)?;

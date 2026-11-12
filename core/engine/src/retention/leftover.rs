@@ -41,7 +41,7 @@ impl Leftover {
     }
 }
 
-/// The leftover of part `ai` of `c` on `(tid, ak)`, if kept (an applied part's, `Meta::stripped`,
+/// The leftover of part `ai` of `c` on `(tid, ak)`, if kept (an applied part's, `Hold::Leftover`,
 /// or a waiting part's).
 pub(crate) fn get(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, c: &CommitId, ai: usize) -> Result<Option<Leftover>> {
     // stamped with its record (`put`, `remove`)

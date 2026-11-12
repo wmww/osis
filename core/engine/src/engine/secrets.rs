@@ -471,7 +471,7 @@ impl osis_keys::Held for NamesHeld<'_> {
     /// on a holder actor it wrote through, an audit).
     fn met(&self, n: &Name) -> bool {
         let applied = self.core.ix.commits.get(&n.key.commit).is_some_and(|m| {
-            m.header.aspects.iter().position(|a| a.tid == self.actor && a.ak.as_str() == "roles.0").is_none_or(|ai| !m.missing.contains(&ai))
+            m.header.aspects.iter().position(|a| a.tid == self.actor && a.ak.as_str() == "roles.0").is_none_or(|ai| !m.missing(ai))
         });
         applied && self.resolved(&n.key.commit) && if n.void { !self.applies(&n.key.commit, &n.holder) } else { self.stands(&n.key, Some(&n.holder)) }
     }

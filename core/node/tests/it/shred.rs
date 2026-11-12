@@ -990,7 +990,7 @@ fn snapshot_leftover_stripped_again_unrecoverable_spec_commits_5() {
         let e = &mut lp.peers[i].engine;
         let sai = e.header(&snap).unwrap().aspects.iter().position(|a| a.tid == t && a.ak == k).unwrap();
         let m = e.core.ix.commits.get(&snap).unwrap();
-        assert!(m.stripped.contains(&sai), "peer {i}: the snapshot carrying the purged value is held as its leftover");
+        assert!(m.stripped(sai), "peer {i}: the snapshot carrying the purged value is held as its leftover");
         assert!(!recoverable(&mut lp.peers[i], mx.as_bytes()), "peer {i}: the first purged value recovered");
     }
     filler(&mut lp, 0, 6);
@@ -1041,7 +1041,7 @@ fn fallen_snapshot_rig() -> Fallen {
     lp.deliver(1, &pk).unwrap();
     lp.peers[1].reexamine().unwrap();
     let sai = lp.peers[1].engine.header(&snap).unwrap().aspects.iter().position(|a| a.tid == t && a.ak == k).unwrap();
-    assert!(lp.peers[1].engine.core.ix.commits.get(&snap).unwrap().stripped.contains(&sai), "the snapshot is held as its leftover");
+    assert!(lp.peers[1].engine.core.ix.commits.get(&snap).unwrap().stripped(sai), "the snapshot is held as its leftover");
     lp.advance(5);
     let done = lp.peers[0].engine.demote(&t, &Demotion { holder: x, new: None, retain: None }).unwrap();
     for id in &done.commits {
@@ -1050,7 +1050,7 @@ fn fallen_snapshot_rig() -> Fallen {
     }
     lp.peers[1].reexamine().unwrap();
     let m = lp.peers[1].engine.core.ix.commits.get(&snap).unwrap();
-    assert!(m.stripped.contains(&sai) && !m.missing.contains(&sai), "fallen: the snapshot stays held as its leftover");
+    assert!(m.stripped(sai) && !m.missing(sai), "fallen: the snapshot stays held as its leftover");
     Fallen { lp, t, cy, my }
 }
 

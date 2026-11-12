@@ -18,7 +18,7 @@ pub(crate) fn covered(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Tid, ak
     if super::snapshot::stamped_later(tx.core, c, s) {
         return Ok(Some(false));
     }
-    if tx.core.ix.commits.get(c).is_some_and(|m| m.view.kind.is_compaction() && m.missing.contains(&cai)) {
+    if tx.core.ix.commits.get(c).is_some_and(|m| m.view.kind.is_compaction() && m.missing(cai)) {
         return Ok(None);
     }
     let part = crate::apply::held_part(tx, s, sai)?;
@@ -33,7 +33,7 @@ pub(crate) fn covered(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Tid, ak
             (_, true) => !sn.absorbed.contains_key(c),
             _ => false,
         };
-        if untraced && m.missing.contains(&cai) {
+        if untraced && m.missing(cai) {
             return Ok(None);
         }
     }
@@ -45,7 +45,7 @@ pub(crate) fn covered(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Tid, ak
     let is_snapshot = m.header.kind.is_compaction();
     if is_snapshot && !crate::apply::copies::snapshot_valid(tx.core, c, tid, ak) {
         let core = &*tx.core;
-        body.remove_writes(&|d| crate::apply::copies::any_delta(core, tid, ak, d, &|_, m, ai| !m.missing.contains(&ai) && m.valid_at(ai)));
+        body.remove_writes(&|d| crate::apply::copies::any_delta(core, tid, ak, d, &|_, m, ai| !m.missing(ai) && m.valid_at(ai)));
     }
     let before = crate::engine::state::encode(&snap)?;
     let mut j = snap.clone();

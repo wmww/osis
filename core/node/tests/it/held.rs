@@ -448,9 +448,9 @@ fn convert(e: &mut Engine, hist: &History) -> Input {
             let replaces = a.replaces.map(|o| cv.commit(&o));
             let part = |body| hm::Part { thing, aspect, retention, body, stripped: BTreeSet::new(), replaces };
             let state = match &meta {
-                Some(m) if m.missing.contains(&ai) => Some(hm::Body::Missing),
-                Some(m) if m.dropped.contains_key(&ai) => {
-                    let d = &m.dropped[&ai];
+                Some(m) if m.missing(ai) => Some(hm::Body::Missing),
+                Some(m) if m.is_dropped(ai) => {
+                    let d = m.dropped(ai).expect("dropped");
                     // dropped as covered: by its first coverer in the history; for its bounds:
                     // the model has no such drop, the body is fed as never received
                     let cover = (d.why == osis_node::engine::DropFor::Cover).then(|| d.covered_by.iter().find(|c| hist.headers.contains_key(c)).map(|c| cv.commit(c))).flatten();
@@ -493,12 +493,12 @@ fn convert(e: &mut Engine, hist: &History) -> Input {
                 }
                 // a stripped addendum lists nothing (spec/permissions.md §5.2 Addenda)
                 _ if aspect == hm::Aspect::ADDENDA => {
-                    let es = if meta.as_ref().is_some_and(|m| m.stripped.contains(&ai)) { Vec::new() } else { cv.addenda(e.body_fragment(id, &a.tid, &a.ak).unwrap().as_ref()) };
+                    let es = if meta.as_ref().is_some_and(|m| m.stripped(ai)) { Vec::new() } else { cv.addenda(e.body_fragment(id, &a.tid, &a.ak).unwrap().as_ref()) };
                     parts.push(part(hm::Body::Held(hm::Delta::Addenda(es))));
                 }
                 _ => {
                     let f = if ok { bodies.remove(&(*id, ai)).unwrap_or_else(|| hm::Frag::empty(0)) } else { hm::Frag::empty(0) };
-                    if meta.as_ref().is_some_and(|m| m.stripped.contains(&ai)) {
+                    if meta.as_ref().is_some_and(|m| m.stripped(ai)) {
                         leftovers.push((label, parts.len()));
                     }
                     parts.push(part(hm::Body::Held(hm::Delta::Writes(f))));
@@ -600,7 +600,7 @@ fn role_of(r: osis_base::Role) -> hm::Role {
 /// Whether the node holds part `ai` of applied commit `c`: whole or as its leftover (spec/crdt.md
 /// §4.7: a leftover is a held body), neither dropped nor missing.
 fn held_body(e: &Engine, c: &CommitId, ai: usize) -> bool {
-    e.core.ix.commits.get(c).is_some_and(|m| !m.dropped.contains_key(&ai) && !m.missing.contains(&ai))
+    e.core.ix.commits.get(c).is_some_and(|m| !m.is_dropped(ai) && !m.missing(ai))
 }
 
 /// What `compare` remembers of one node between its judgments, for judging its drops: each held
@@ -695,7 +695,7 @@ pub(crate) fn compare(e: &mut Engine, hist: &History, cov: &mut Coverage, drops:
         if touches && !own && o.applied.contains(&c.id) != applied {
             let h = &hist.headers[&id];
             let parts: Vec<String> = h.aspects.iter().map(|a| format!("{:?} {} syncs {} first admin {:?}", a.tid, a.ak.as_str(), e.core.syncs(&a.tid), e.first_admin(&a.tid))).collect();
-            let missing = e.core.ix.commits.get(&id).map(|m| m.missing.clone());
+            let missing = e.core.ix.commits.get(&id).map(|m| m.missing_parts().collect::<Vec<_>>());
             diffs.push(("applied differs".into(), differ(format!("commit {id:?} (#{}) applied: model {}, node {applied}; parts {parts:?}, node misses {missing:?}", c.id, o.applied.contains(&c.id)), &c.parts.iter().map(|p| p.thing).collect::<Vec<_>>())));
             continue;
         }

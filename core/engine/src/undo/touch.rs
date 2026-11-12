@@ -38,7 +38,7 @@ struct Aspect {
     of_part: HashMap<CommitId, (Ts, Vec<Pos>)>,
     /// Parts to read again: their commit's `Meta` changed.
     due: BTreeSet<Place>,
-    /// Parts not fetched yet (`Meta::missing`).
+    /// Parts not fetched yet (`Hold::Missing`).
     missing: BTreeSet<Place>,
     /// Snapshot parts: what they hold is read whole, never by position.
     snaps: BTreeSet<Place>,
@@ -125,7 +125,7 @@ fn examine(tx: &mut Tx<'_>, k: &(Tid, Ak), place: Place) -> Result<()> {
     }
     let Some(m) = tx.core.ix.commits.get(&c) else { return Ok(()) };
     let Some(ai) = m.aspect(&k.0, &k.1) else { return Ok(()) };
-    let (snap, missing, holds) = (m.view.kind.is_compaction(), m.missing.contains(&ai), m.holds(ai));
+    let (snap, missing, holds) = (m.view.kind.is_compaction(), m.missing(ai), m.holds(ai));
     let Some(a) = tx.core.touches.aspects.get_mut(k) else { return Ok(()) };
     // a snapshot not fetched yet blocks a restoring undo too (`undo::replaced_kept`)
     if missing {
@@ -189,5 +189,5 @@ pub(crate) fn inside(core: &Core, tid: &Tid, ak: &Ak, p: &[Seg]) -> BTreeSet<Pla
 /// Whether a valid part of `(tid, ak)` ordered before `at` is not fetched yet (`ensure` first).
 pub(crate) fn missing_before(core: &Core, tid: &Tid, ak: &Ak, at: Place) -> bool {
     let Some(a) = core.touches.aspects.get(&(*tid, ak.clone())) else { return true };
-    a.missing.range(..at).any(|(_, c)| core.ix.commits.get(c).is_some_and(|m| m.aspect(tid, ak).is_some_and(|ai| m.valid_at(ai) && m.missing.contains(&ai))))
+    a.missing.range(..at).any(|(_, c)| core.ix.commits.get(c).is_some_and(|m| m.aspect(tid, ak).is_some_and(|ai| m.valid_at(ai) && m.missing(ai))))
 }

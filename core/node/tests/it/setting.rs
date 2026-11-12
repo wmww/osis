@@ -247,7 +247,7 @@ fn dropped_before_a_late_extension_is_not_fetched_spec_commits_5() {
     }
     let ai = lp.peers[0].engine.header(&v1).unwrap().aspects.iter().position(|a| a.ak == ak(A)).unwrap();
     let m = lp.peers[0].engine.core.ix.commits.get(&v1).unwrap();
-    assert!(m.dropped.contains_key(&ai) && !m.missing.contains(&ai), "dropped, not missing: not fetched");
+    assert!(m.is_dropped(ai) && !m.missing(ai), "dropped, not missing: not fetched");
     assert!(!listed(&mut lp.peers[0], &v1, d), "not held: not listed");
     assert!(listed(&mut lp.peers[1], &v1, d), "held: in history");
     // Bob, holding it, offers everything: Alice takes no copy

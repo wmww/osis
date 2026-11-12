@@ -130,7 +130,7 @@ fn held_invalid(tx: &mut Tx<'_>, m: &Tid, r: Role, k: &Epoch) -> Result<bool> {
         if meta.valid_at(ai) {
             continue;
         }
-        let mut recs = meta.dropped.get(&ai).map(|d| d.keysets.clone()).unwrap_or_default();
+        let mut recs = meta.dropped(ai).map(|d| d.keysets.clone()).unwrap_or_default();
         if let Some(d) = crate::apply::held_part(tx, &id, ai)? {
             recs.extend(crate::apply::keys::keysets_of(&meta.header, ai, std::slice::from_ref(d.fragment())));
         }

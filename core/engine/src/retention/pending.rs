@@ -219,10 +219,10 @@ pub(crate) fn emptied() -> Vec<u8> {
 
 /// Whether part `ai` of commit `id`, whose stored pending copy is `pending`, is held value-less
 /// while it waits (`strip_purged`): its slot there emptied, its leftover kept, the part not joined
-/// (`Meta::stripped`). The emptied slot tells it from a leftover set aside at a fall for a missing
+/// (`Hold::Leftover`). The emptied slot tells it from a leftover set aside at a fall for a missing
 /// part of the applied commit (`unstrip`), which no copy of the part replaces until one joins.
 pub(crate) fn waiting_stripped(tx: &mut Tx<'_>, pending: &osis_commit::CommitBlob, id: &CommitId, ai: usize) -> Result<bool> {
-    if tx.core.ix.commits.get(id).is_some_and(|m| m.stripped.contains(&ai)) || !pending.parts.iter().any(|p| p.ai == ai && p.delta == emptied()) {
+    if tx.core.ix.commits.get(id).is_some_and(|m| m.stripped(ai)) || !pending.parts.iter().any(|p| p.ai == ai && p.delta == emptied()) {
         return Ok(false);
     }
     let Some(a) = pending.header.aspects.get(ai) else { return Ok(false) };
@@ -246,7 +246,7 @@ fn forget_waiting_leftover(tx: &mut Tx<'_>, h: &Header, id: &CommitId, ai: usize
 /// (a waiting part's, or one set aside at its purge's fall).
 pub(crate) fn forget_joined_leftovers(tx: &mut Tx<'_>, h: &Header, id: &CommitId, ais: &BTreeSet<usize>) -> Result<()> {
     for ai in ais {
-        if tx.core.ix.commits.get(id).is_some_and(|m| m.stripped.contains(ai)) {
+        if tx.core.ix.commits.get(id).is_some_and(|m| m.stripped(*ai)) {
             continue;
         }
         if let Some(a) = h.aspects.get(*ai) {

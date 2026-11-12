@@ -22,7 +22,7 @@ pub(crate) fn any_delta(core: &Core, tid: &Tid, ak: &Ak, d: &Dot, f: &dyn Fn(&Co
 
 /// Whether the delta carrying dot `d` on `(tid, ak)` was ever held here (held or dropped).
 pub(crate) fn delta_received(core: &Core, tid: &Tid, ak: &Ak, d: &Dot) -> bool {
-    any_delta(core, tid, ak, d, &|_, m, ai| !m.missing.contains(&ai))
+    any_delta(core, tid, ak, d, &|_, m, ai| !m.missing(ai))
 }
 
 /// Whether the state of `(tid, ak)` reflects the delta that wrote dot `d` (spec/sync.md §7
@@ -33,10 +33,10 @@ pub(crate) fn reflected(core: &Core, tid: &Tid, ak: &Ak, d: &Dot) -> bool {
     if matches!(d.src.kind(), osis_crdt::SourceKind::Derived(_)) {
         return false;
     }
-    if any_delta(core, tid, ak, d, &|_, m, ai| m.valid_at(ai) && !m.missing.contains(&ai)) {
+    if any_delta(core, tid, ak, d, &|_, m, ai| m.valid_at(ai) && !m.missing(ai)) {
         return true;
     }
-    let held = |s: &CommitId| core.ix.commits.get(s).is_some_and(|m| m.aspect(tid, ak).is_some_and(|ai| m.valid_at(ai) && !m.missing.contains(&ai) && !m.body_gone(ai)));
+    let held = |s: &CommitId| core.ix.commits.get(s).is_some_and(|m| m.aspect(tid, ak).is_some_and(|ai| m.valid_at(ai) && !m.missing(ai) && !m.body_gone(ai)));
     core.ix.snapshots.get(&(*tid, ak.clone())).into_iter().flatten().any(|(_, s, fr, abs, _)| {
         let reaches = match d.src.kind() {
             osis_crdt::SourceKind::Commit(c) => abs.iter().any(|x| x.0 == *c),

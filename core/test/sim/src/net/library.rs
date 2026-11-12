@@ -1003,7 +1003,7 @@ fn purge_falls_how(name: &str, s: Seeds, churn: bool) -> Res<Report> {
     sim.run_until_quiescent(40)?;
     for n in [a, b] {
         let en = sim.engine(n)?;
-        let back = en.core.ix.commits.get(&c).is_some_and(|m| m.missing.is_empty() && m.dropped.is_empty() && m.stripped.is_empty());
+        let back = en.core.ix.commits.get(&c).is_some_and(|m| m.missing_parts().next().is_none() && m.dropped_parts().next().is_none() && m.stripped_parts().next().is_none());
         let shown = en.purged_on(&t, &k).map_err(|e| sim.fail(e.to_string()))?;
         if !back || !shown.is_empty() {
             return Err(sim.fail(format!("node {n}: the body back {back}, purges shown {shown:?}")));

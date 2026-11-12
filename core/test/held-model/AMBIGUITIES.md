@@ -36,7 +36,7 @@ Entries 39 (required retention), 54-56 (snapshot history modes, D at a node with
    **Resolved** (a) The engine reads no ordering (`apply::gates::removed_author`, its doc accepts the cost; parts.rs `missing_delta_of_a_removed_author_any_order_spec_commits_4`). Spec says "whatever their order against the delta's commit".
 
 9. **When a leftover may go.** spec/crdt.md §4.7: the leftover is "a held body like any other ... that uploads nowhere"; spec/commits.md §6: "every node holds them value-less, the body ... as its leftover, whatever the delta's keep-at-least bound". Nothing says when an expired or purged delta's leftover is dropped (keep at most? covered?). Choice: a leftover is terminal in the model (`Fate::Leftover` before any bound).
-   **Resolved** (a) A bare leftover (no value of its own) is never dropped (`judge_at_most`, `drop_part_for` on `Meta::bare`); one stripped only of carried copies is a body like a whole one (`Meta::valued`). Spec §5 Dropping a body says so. Model: a `Copy` leftover now takes keep bounds and covering (judged stripped); test `copy_leftover_drops_at_its_bound_spec_commits_5`; engine: retention.rs `bare_leftover_stays_copy_leftover_goes_spec_commits_5`.
+   **Resolved** (a) A bare leftover (no value of its own) is never dropped (`judge_at_most`, `drop_part_for` on `Meta::bare`); one stripped only of carried copies is a body like a whole one (`Hold::Leftover::valued`). Spec §5 Dropping a body says so. Model: a `Copy` leftover now takes keep bounds and covering (judged stripped); test `copy_leftover_drops_at_its_bound_spec_commits_5`; engine: retention.rs `bare_leftover_stays_copy_leftover_goes_spec_commits_5`.
 
 10. (Retired.)
 
@@ -79,7 +79,7 @@ Entries 39 (required retention), 54-56 (snapshot history modes, D at a node with
    **Resolved** (a) The engine counts an invalid snapshot replaced at its own `ts` and nothing else (`deaths::date_falls`; retention.rs `invalid_snapshot_recomputes_no_deaths_spec_commits_5`). spec/commits.md §5 says its carried writes do not die.
 
 24. **A purged or expired delta's own body.** spec/commits.md §5 Purge said a node "drops ... the named deltas" and "holds every body carrying their values as its leftover", leaving open whether the named delta's own body is dropped or held as its leftover. Choice: `Fate::Leftover(Purged | Expired)`.
-   **Resolved** (a) spec/crdt.md §4.7 (the body goes, "the node holds the body's leftover instead") and commits §6 already said leftover for expiry; commits §5 Purge now names the delta's own body too. The engine holds it as its leftover (`Meta::stripped`); the adapter (osis-node `tests/it/held.rs`) had read every leftover as dropped (`body_not_dropped`) and accepted either.
+   **Resolved** (a) spec/crdt.md §4.7 (the body goes, "the node holds the body's leftover instead") and commits §6 already said leftover for expiry; commits §5 Purge now names the delta's own body too. The engine holds it as its leftover (`Hold::Leftover`); the adapter (osis-node `tests/it/held.rs`) had read every leftover as dropped (`body_not_dropped`) and accepted either.
 
 ## held-model-2 (undo, roles beyond one edge, waits, required retention)
 

@@ -96,12 +96,12 @@ impl PageSet {
 
 /// The paged collections of a state (keyed by path) and which of their pages are loaded.
 #[derive(Clone, Debug)]
-pub struct PageIndex {
+pub struct StatePages {
     sets: BTreeMap<Vec<Step>, PageSet>,
     paths: Paths,
 }
 
-impl PageIndex {
+impl StatePages {
     /// The paths below a paged collection's elements (what its pages reduce).
     fn nested(&self, p: &[Step]) -> Paths {
         Paths { here: false, next: self.paths.below(p).map(|x| x.next.clone()).unwrap_or_default() }
@@ -128,7 +128,7 @@ impl PageIndex {
 pub type Touch = Option<PagedTouch>;
 
 /// What joining `delta` can change in a state with page index `idx`.
-pub fn touch_of(delta: &Fragment, idx: Option<&PageIndex>) -> Touch {
+pub fn touch_of(delta: &Fragment, idx: Option<&StatePages>) -> Touch {
     delta.touched_paths(&idx?.paths)
 }
 
@@ -221,7 +221,7 @@ fn steps(p: &KeyedPath) -> Vec<Step> {
 
 /// Unit state of a paged state: `[1, skeleton, [[set ID, path, encoding]*]]`.
 /// Unpaged states start `[bytes, ...]`.
-fn unit_state(skeleton: &Fragment, idx: &PageIndex) -> Result<Vec<u8>> {
+fn unit_state(skeleton: &Fragment, idx: &StatePages) -> Result<Vec<u8>> {
     let sets = idx.sets.values().map(|s| Value::List(vec![Value::uint(u64::from(s.id)), path_value(&s.path), Value::uint(u64::from(s.enc.id()))])).collect();
     Ok(osis_base::encode(&Value::List(vec![Value::Int(TAG), Value::Bytes(encode(skeleton)?), Value::List(sets)])))
 }
@@ -273,7 +273,7 @@ fn key_row(set: &PageSet, k: &Value, d: Option<&Dot>) -> Vec<u8> {
 // ---- loading
 
 /// Opens a paged state: its skeleton and index, no page loaded yet.
-pub fn open(unit_state: &[u8], salt: &[u8; 32]) -> Result<(Fragment, PageIndex)> {
+pub fn open(unit_state: &[u8], salt: &[u8; 32]) -> Result<(Fragment, StatePages)> {
     let bad = || Error::Corrupt("state");
     let lim = osis_base::Limits { max_depth: osis_base::format::MAX_OBJECT_DEPTH, max_bytes: unit_state.len() };
     let v = osis_base::decode(unit_state, &lim).map_err(|_| bad())?;
@@ -283,7 +283,7 @@ pub fn open(unit_state: &[u8], salt: &[u8; 32]) -> Result<(Fragment, PageIndex)>
         return Err(bad());
     }
     let f = decode(skel)?;
-    let mut idx = PageIndex { sets: BTreeMap::new(), paths: Paths::default() };
+    let mut idx = StatePages { sets: BTreeMap::new(), paths: Paths::default() };
     for x in list {
         let Value::List(x) = x else { return Err(bad()) };
         let [Value::Int(id), p, Value::Int(enc)] = x.as_slice() else { return Err(bad()) };
@@ -333,7 +333,7 @@ fn join_row(f: &mut Fragment, set: &mut PageSet, key: Vec<u8>, row: &[u8]) -> Re
 }
 
 /// Loads every page not loaded yet: the whole state.
-pub fn load_all(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &mut PageIndex, f: &mut Fragment) -> Result<()> {
+pub fn load_all(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &mut StatePages, f: &mut Fragment) -> Result<()> {
     if idx.whole() {
         return Ok(());
     }
@@ -405,7 +405,7 @@ fn ensure_set(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, t: Table, set: &mut
 /// the pages its records span), and for a paged sequence what its placement's follow of the
 /// join needs (a dry run, `Fragment::dry_follow`, loading what it misses, a few times; the
 /// placement is then attached to the sequence, which the join follows).
-pub fn ensure_touch(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &mut PageIndex, f: &mut Fragment, touch: &PagedTouch) -> Result<bool> {
+pub fn ensure_touch(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &mut StatePages, f: &mut Fragment, touch: &PagedTouch) -> Result<bool> {
     let t = table(txn, tid, ak)?;
     for (p, dots) in &touch.elems {
         let Some(set) = idx.sets.get_mut(p) else { return Ok(false) };
@@ -484,7 +484,7 @@ fn key_dots(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, set: &PageSet, k: &Va
 /// Loads what reading or writing at `path` (op path segments) needs: the pages of the map keys
 /// along it (through the key index), the element a sequence index steps into (`walk`), and at its end
 /// everything paged below. `Ok(false)`: not addressable that way (load whole).
-pub fn ensure_path(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &mut PageIndex, f: &mut Fragment, path: &[PathSeg]) -> Result<bool> {
+pub fn ensure_path(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &mut StatePages, f: &mut Fragment, path: &[PathSeg]) -> Result<bool> {
     let t = table(txn, tid, ak)?;
     let at = walk(txn, tid, ak, t, idx, f, path)?;
     // everything paged at or below the positions reached
@@ -502,7 +502,7 @@ pub fn ensure_path(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &mut Page
 /// The positions `path` (op path segments) reaches, as steps from the root, with the pages of
 /// the map keys along it loaded (through the key index) and, of a sequence it indexes into, the
 /// element's block and page through the stored placement (attached; without one every page).
-fn walk(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, t: Table, idx: &mut PageIndex, f: &mut Fragment, path: &[PathSeg]) -> Result<Vec<Vec<Step>>> {
+fn walk(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, t: Table, idx: &mut StatePages, f: &mut Fragment, path: &[PathSeg]) -> Result<Vec<Vec<Step>>> {
     // positions reached so far, as steps from the root
     let mut at: Vec<Vec<Step>> = vec![Vec::new()];
     for seg in path {
@@ -1067,7 +1067,7 @@ fn place_whole(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, set: &mut PageSet,
 /// elements at its window, whose links it takes (`large::window_links`). `false`: not that kind
 /// (another op, a sequence not paged, loaded whole or without a placement, a list edit taking
 /// links from the whole list): load whole.
-pub(crate) fn attach_ops(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &mut PageIndex, f: &mut Fragment, ops: &[osis_crdt::PathOp], edits: &[Option<super::large::ListEdit>]) -> Result<bool> {
+pub(crate) fn attach_ops(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &mut StatePages, f: &mut Fragment, ops: &[osis_crdt::PathOp], edits: &[Option<super::large::ListEdit>]) -> Result<bool> {
     use osis_crdt::Op;
     let t = table(txn, tid, ak)?;
     for (n, op) in ops.iter().enumerate() {
@@ -1121,7 +1121,7 @@ pub(crate) fn attach_ops(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &mu
 
 /// Loads what the placements attached to the paged sequences missed since the last call.
 /// `Some(true)`: something was (run again), `Some(false)`: nothing, `None`: give up (load whole).
-pub fn absorb(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &mut PageIndex, f: &mut Fragment) -> Result<Option<bool>> {
+pub fn absorb(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &mut StatePages, f: &mut Fragment) -> Result<Option<bool>> {
     let t = table(txn, tid, ak)?;
     let mut any = false;
     for set in idx.sets.values_mut().filter(|s| is_seq(s) && !s.whole) {
@@ -1160,7 +1160,7 @@ pub enum Ranged {
 /// The visible elements `r` (by index, clamped) of the paged sequence at `path` (op path
 /// segments) through its placement: the top, the blocks holding them and the pages holding
 /// their records, nothing else of the sequence.
-pub fn seq_range(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &mut PageIndex, f: &mut Fragment, path: &[PathSeg], r: Span<usize>) -> Result<Ranged> {
+pub fn seq_range(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &mut StatePages, f: &mut Fragment, path: &[PathSeg], r: Span<usize>) -> Result<Ranged> {
     let t = table(txn, tid, ak)?;
     let at = walk(txn, tid, ak, t, idx, f, path)?;
     let [p] = at.as_slice() else { return Ok(Ranged::Unpaged) };
@@ -1228,7 +1228,7 @@ fn step_index(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, t: Table, set: &mut
 }
 
 /// Lays the placement of the paged sequence at `p` out anew (its pages loaded whole).
-pub fn rebuild_placement(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &mut PageIndex, f: &Fragment, p: &[Step]) -> Result<()> {
+pub fn rebuild_placement(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &mut StatePages, f: &Fragment, p: &[Step]) -> Result<()> {
     let (Some(set), Some(c)) = (idx.sets.get_mut(p), f.at_steps(p)) else { return Ok(()) };
     write_placement(txn, tid, ak, set, c, Shred::No)
 }
@@ -1306,7 +1306,7 @@ fn write_set(txn: &mut Transaction<'_>, t: Table, kt: Table, set: &mut PageSet, 
 /// Writes a whole state: the unit's state field, and the pages when the state is above
 /// `PAGE_TARGET` and holds large collections (the old pages, if any, are dropped shredded).
 /// `f` must be the whole state.
-pub fn write_full(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, f: Option<&Fragment>, old_paged: bool, salt: &[u8; 32]) -> Result<(Vec<u8>, Option<PageIndex>)> {
+pub fn write_full(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, f: Option<&Fragment>, old_paged: bool, salt: &[u8; 32]) -> Result<(Vec<u8>, Option<StatePages>)> {
     if old_paged {
         txn.drop_table(tid, ak, STATE_TABLE)?;
         txn.drop_table(tid, ak, KEY_TABLE)?;
@@ -1323,7 +1323,7 @@ pub fn write_full(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, f: Option<&Frag
     }
     let t = txn.create_table(tid, ak, STATE_TABLE)?;
     let kt = txn.create_table(tid, ak, KEY_TABLE)?;
-    let mut idx = PageIndex { sets: BTreeMap::new(), paths: Paths::default() };
+    let mut idx = StatePages { sets: BTreeMap::new(), paths: Paths::default() };
     for p in &paged {
         idx.paths.insert(p);
     }
@@ -1426,7 +1426,7 @@ fn write_pieces(txn: &mut Transaction<'_>, t: Table, set: &mut PageSet, c: &Frag
 /// Rewrites what `touch` says changed in the paged state `f` (holding at least the pages
 /// `ensure_touch` loaded for it). `Ok(None)`: it does not fit the pages (write whole);
 /// `Ok(Some(unit))`: done, with the unit's new state field if the skeleton changed.
-pub fn write_touched(txn: &mut Transaction<'_>, idx: &mut PageIndex, tid: &Tid, ak: &Ak, f: &Fragment, touch: &PagedTouch, shred: Shred) -> Result<Option<Option<Vec<u8>>>> {
+pub fn write_touched(txn: &mut Transaction<'_>, idx: &mut StatePages, tid: &Tid, ak: &Ak, f: &Fragment, touch: &PagedTouch, shred: Shred) -> Result<Option<Option<Vec<u8>>>> {
     // a touched collection that moved or changed encoding: lay out again
     for p in touch.elems.keys() {
         let (Some(set), Some(c)) = (idx.sets.get(p), f.at_steps(p)) else { return Ok(None) };
@@ -1479,7 +1479,7 @@ pub fn write_touched(txn: &mut Transaction<'_>, idx: &mut PageIndex, tid: &Tid, 
 /// keeping its skeleton, so a delta joined a page at a time holds about one page of its state
 /// (issues/durable-decode-bound.md). Not while it pages a sequence: those stay loaded for their
 /// placement (notes/crdt.md: long texts load fully for linearization).
-pub fn evict(idx: &mut PageIndex, f: &mut Fragment) {
+pub fn evict(idx: &mut StatePages, f: &mut Fragment) {
     if idx.sets.values().any(is_seq) {
         return;
     }
@@ -1531,7 +1531,7 @@ fn set_rows(txn: &mut Transaction<'_>, t: Table, set: &PageSet) -> Result<Vec<Ve
 /// (its path runs through pages) or `d` changing an encoding above a paged collection: `Whole`.
 /// `moved`: the tids it adds and removes, for the reference index (meaningful for `Paged`; the
 /// others write a whole state, which the index follows whole).
-pub fn join_reset(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &mut PageIndex, f: &Fragment, d: &Fragment, moved: &mut super::refs::Delta) -> Result<Reset> {
+pub fn join_reset(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &mut StatePages, f: &Fragment, d: &Fragment, moved: &mut super::refs::Delta) -> Result<Reset> {
     let nested = idx.sets.keys().any(|p| idx.sets.keys().any(|q| q.len() < p.len() && p.starts_with(q)));
     if nested || idx.sets.values().any(is_seq) || !idx.sets.keys().all(|p| d.steps_through(p)) {
         return Ok(Reset::Whole);
@@ -1629,7 +1629,7 @@ pub fn join_reset(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &mut PageI
 /// joined under the skeleton's spine along its path). Loading prunes them again, so reads
 /// never show them.
 #[cfg(test)]
-pub fn stale_in_pages(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &PageIndex, f: &Fragment) -> Result<usize> {
+pub fn stale_in_pages(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &StatePages, f: &Fragment) -> Result<usize> {
     let t = table(txn, tid, ak)?;
     let s0 = f.reduced(&idx.paths);
     let mut n = 0;
@@ -2327,7 +2327,7 @@ mod tests {
     /// Runs `op` on the pages loaded of a state prepared by `attach_ops`, loading what it misses
     /// until nothing is (as `commit_in` does).
     #[allow(clippy::too_many_arguments)]
-    fn run_cold(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &mut PageIndex, f: &mut Fragment, op: &PathOp, view: &SeqView, w: impl Fn() -> Writer) -> Option<(Fragment, osis_crdt::CounterRange)> {
+    fn run_cold(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &mut StatePages, f: &mut Fragment, op: &PathOp, view: &SeqView, w: impl Fn() -> Writer) -> Option<(Fragment, osis_crdt::CounterRange)> {
         for _ in 0..OP_RUNS {
             let mut b = Batch::new(f, w());
             let got = b.apply(op, view).ok().and_then(|_| b.finish());

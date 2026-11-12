@@ -18,8 +18,8 @@ pub(crate) fn unindex_commit(tx: &mut Tx<'_>, id: &CommitId) -> Result<()> {
     // reported to the ephemeral lane with why, from what its dropped parts record: superseded
     // if a part was (its author's to delete), else covered, else gone
     if v.memory {
-        let superseders: BTreeSet<CommitId> = m.dropped.values().flat_map(|d| d.superseded_by.iter().copied()).collect();
-        let mut by: BTreeSet<CommitId> = m.dropped.values().filter(|d| d.why == crate::engine::DropFor::Cover).flat_map(|d| d.covered_by.iter().copied()).collect();
+        let superseders: BTreeSet<CommitId> = m.dropped_parts().flat_map(|(_, d)| d.superseded_by.iter().copied()).collect();
+        let mut by: BTreeSet<CommitId> = m.dropped_parts().map(|(_, d)| d).filter(|d| d.why == crate::engine::DropFor::Cover).flat_map(|d| d.covered_by.iter().copied()).collect();
         let why = if !superseders.is_empty() {
             by.extend(superseders);
             crate::engine::MemoryDrop::Superseded { by }
@@ -200,14 +200,14 @@ mod tests {
         m.set(g, &ak("t:r+.0"), &Value::Str("w".into())).unwrap();
         e.commit_in_memory(m).unwrap().unwrap();
         let r = e.core.ix.commits.get(&c).and_then(|m| m.aspect(&g, &ak("t:r+.0"))).unwrap();
-        assert!(e.core.ix.commits.get(&c).is_some_and(|m| m.dropped.len() == 1 && m.dropped.contains_key(&r)), "the replaced part goes");
+        assert!(e.core.ix.commits.get(&c).is_some_and(|m| m.dropped_parts().count() == 1 && m.is_dropped(r)), "the replaced part goes");
         assert_eq!(e.get(&g, &ak("t:r+.0")).unwrap(), Some(Value::Str("w".into())));
         assert_eq!(e.get(&g, &ak("t:s+.0")).unwrap(), Some(Value::Str("live".into())));
         lp.advance(2 * 3_600_000);
         lp.peers[0].tick().unwrap();
         let e = &mut lp.peers[0].engine;
         assert_eq!(e.get(&g, &ak("t:s+.0")).unwrap(), None, "value-less at its expiry");
-        assert!(e.core.ix.commits.get(&c).is_some_and(|m| m.stripped.len() == 1), "held as its leftover");
+        assert!(e.core.ix.commits.get(&c).is_some_and(|m| m.stripped_parts().count() == 1), "held as its leftover");
     }
 
     // eph-unify-a review (item 216): a memory aspect's state written by a durable transaction

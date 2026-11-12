@@ -25,7 +25,7 @@
 //! unknown thing.
 
 use crate::engine::records;
-use crate::engine::{Core, DropFor, Tx};
+use crate::engine::{Core, DropFor, Hold, Missing, Tx};
 use crate::error::Result;
 use crate::events::{Cause, Event};
 use osis_base::{Ak, CommitId, Tid};
@@ -308,7 +308,7 @@ fn reopen_fallen(tx: &mut Tx<'_>, t: &Tid) -> Result<()> {
     let mut keysets = false;
     for c in commits {
         let Some(m) = tx.core.ix.commits.get(&c) else { continue };
-        let destroyed: Vec<(usize, bool)> = m.dropped.iter().filter(|(_, d)| d.why == DropFor::Destroyed).filter_map(|(ai, _)| m.header.aspects.get(*ai).filter(|a| a.tid == *t).map(|a| (*ai, a.ak.as_str() == "keys.0"))).collect();
+        let destroyed: Vec<(usize, bool)> = m.dropped_parts().filter(|(_, d)| d.why == DropFor::Destroyed).filter_map(|(ai, _)| m.header.aspects.get(ai).filter(|a| a.tid == *t).map(|a| (ai, a.ak.as_str() == "keys.0"))).collect();
         for (ai, is_keys) in destroyed {
             keysets |= is_keys;
             super::reopen_to_fetch(tx, &c, ai)?;
@@ -330,7 +330,7 @@ pub(crate) fn record_back(tx: &mut Tx<'_>, t: &Tid) -> Result<()> {
     let commits: Vec<CommitId> = tx.core.on_thing(t).collect();
     for c in commits {
         let Some(m) = tx.core.ix.commits.get(&c) else { continue };
-        let destroyed: Vec<usize> = m.dropped.iter().filter(|(_, d)| d.why == DropFor::Destroyed).filter_map(|(ai, _)| m.header.aspects.get(*ai).filter(|a| a.tid == *t && judges_destruction(a.ak.as_str()) && a.ak.as_str() != CREATED).map(|_| *ai)).collect();
+        let destroyed: Vec<usize> = m.dropped_parts().filter(|(_, d)| d.why == DropFor::Destroyed).filter_map(|(ai, _)| m.header.aspects.get(ai).filter(|a| a.tid == *t && judges_destruction(a.ak.as_str()) && a.ak.as_str() != CREATED).map(|_| ai)).collect();
         for ai in destroyed {
             super::reopen_to_fetch(tx, &c, ai)?;
         }
@@ -362,7 +362,7 @@ pub(crate) fn dependents(core: &crate::engine::Core, t: &Tid) -> bool {
     let key = core.is_key_actor(t);
     let signed = key && core.ix.signed.get(t).is_some_and(|n| *n > 0);
     // checked on every key actor judged, named or not
-    debug_assert!(!key || signed == core.ix.commits.values().any(|m| !m.view.memory && (m.view.author == *t || m.view.actor == *t) && m.view.aspects.iter().enumerate().any(|(ai, a)| a.tid != *t && !m.dropped.contains_key(&ai))), "Indexes::signed of {t}");
+    debug_assert!(!key || signed == core.ix.commits.values().any(|m| !m.view.memory && (m.view.author == *t || m.view.actor == *t) && m.view.aspects.iter().enumerate().any(|(ai, a)| a.tid != *t && !m.is_dropped(ai))), "Indexes::signed of {t}");
     signed || core.ix.held.named_on(t).any(|x| x != t)
 }
 
@@ -457,7 +457,7 @@ fn destroy_thing(tx: &mut Tx<'_>, t: &Tid, changed: &mut BTreeSet<(Tid, Ak)>) ->
 
 /// Forgets released `t` once its release requests are past their expiry and nothing keeps it
 /// (spec/commits.md §5 Forgetting; `destroy_thing` dropped every part of it and its record). Of each
-/// commit on `t`, a part elsewhere is marked forgotten (`Meta::forgot`: on a released thing
+/// commit on `t`, a part elsewhere is marked forgotten (`Missing::Forgot`: on a released thing
 /// forgotten here before, this transaction's included, whose record is not held again), missing on a thing whose record is not
 /// held (unknown here, maybe alive elsewhere), or other (on a thing held here):
 /// - all marked: it goes whole, header and ID included; node-sync deletes its entries where it
@@ -481,7 +481,7 @@ fn forget_released(tx: &mut Tx<'_>, t: &Tid) -> Result<()> {
         // not held (missing, or dropped) on a thing whose record is not held
         let unknown = |ai: &usize| !m.holds(*ai) && aspects.get(*ai).is_some_and(|a| tx.core.created(&a.tid).is_none());
         // a marked part whose thing's record came back is live again until its copy joins
-        let elsewhere = (0..aspects.len()).filter(|ai| !on_t.contains(ai) && !(m.forgot.contains(ai) && unknown(ai)));
+        let elsewhere = (0..aspects.len()).filter(|ai| !on_t.contains(ai) && !(m.missing_as(*ai) == Some(Missing::Forgot) && unknown(ai)));
         let (mut awaited, mut held) = (Vec::new(), false);
         for ai in elsewhere {
             if unknown(&ai) {
@@ -503,10 +503,13 @@ fn forget_released(tx: &mut Tx<'_>, t: &Tid) -> Result<()> {
             continue;
         }
         let mut m = m.clone();
-        for ai in on_t.iter().copied().filter(|ai| m.dropped.contains_key(ai)).collect::<Vec<_>>() {
+        for ai in on_t.iter().copied().filter(|ai| m.is_dropped(*ai)).collect::<Vec<_>>() {
             super::reopen_in(tx, &c, &mut m, ai);
         }
-        m.forgot.extend(on_t.into_iter().filter(|ai| m.missing.contains(ai)));
+        // dead at every node: one to be fetched is not (`Missing::ToFetch` goes)
+        for ai in on_t.into_iter().filter(|ai| m.missing(*ai)).collect::<Vec<_>>() {
+            m.set_hold(ai, Hold::Missing(Missing::Forgot));
+        }
         if let Some(blob) = tx.get_commit(&c)? {
             tx.put_commit(&c, &blob, &m, Shred::No, None)?;
         }

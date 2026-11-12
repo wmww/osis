@@ -309,7 +309,7 @@ fn removal_racing_a_destruction_converges_in_both_orders_spec_commits_5() {
 /// Whether a commit on `t` held at node `n` has a part on `t` waiting.
 fn waiting_on(net: &mut Net, n: usize, t: Tid) -> bool {
     let core = &net.engine(n).core;
-    core.on_thing(&t).any(|c| core.ix.commits.get(&c).is_some_and(|m| m.missing.iter().any(|ai| m.header.aspects.get(*ai).is_some_and(|a| a.tid == t))))
+    core.on_thing(&t).any(|c| core.ix.commits.get(&c).is_some_and(|m| m.missing_parts().any(|ai| m.header.aspects.get(ai).is_some_and(|a| a.tid == t))))
 }
 
 // spec/commits.md §4, §5 (Destruction): a fall judges again what waited on the destroyed thing (a late write

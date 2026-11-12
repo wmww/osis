@@ -358,7 +358,7 @@ pub(crate) fn date_due(tx: &mut Tx<'_>) -> Result<()> {
         let e = items.entry((t, a, c)).or_insert(how);
         *e = (*e).max(how);
     }
-    let state = |m: &crate::engine::Meta, ai: usize| (m.valid_at(ai), m.dropped.contains_key(&ai), m.stripped.contains(&ai), m.missing.contains(&ai));
+    let state = |m: &crate::engine::Meta, ai: usize| (m.valid_at(ai), m.is_dropped(ai), m.stripped(ai), m.missing(ai));
     for (id, old) in tx.core.ix.commits.before() {
         let Some(old) = old else { continue };
         let new = tx.core.ix.commits.get(id);
@@ -367,7 +367,7 @@ pub(crate) fn date_due(tx: &mut Tx<'_>) -> Result<()> {
                 continue;
             }
             let k = (*id, a.tid, a.ak.clone());
-            if tx.core.ix.dated.contains_key(&k) || new.is_some_and(|n| n.stripped.contains(&ai)) {
+            if tx.core.ix.dated.contains_key(&k) || new.is_some_and(|n| n.stripped(ai)) {
                 items.entry((a.tid, a.ak.clone(), *id)).or_insert(Dating::Kept);
             }
         }

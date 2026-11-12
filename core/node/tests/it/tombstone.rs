@@ -619,7 +619,7 @@ fn a_fallen_purge_shows_no_tombstone_spec_perm_6() {
     net.run();
     assert!(net.engine(n).body_not_dropped(&m, &t, &k()));
     assert!(net.engine(n).purged_on(&t, &k()).unwrap().is_empty());
-    let holds = |net: &mut Net, x: usize| net.engine(x).core.ix.commits.get(&m).is_some_and(|c| c.missing.is_empty() && c.dropped.is_empty());
+    let holds = |net: &mut Net, x: usize| net.engine(x).core.ix.commits.get(&m).is_some_and(|c| c.missing_parts().next().is_none() && c.dropped_parts().next().is_none());
     // not the demoted admin: it reads the label no more
     for x in [a, b, n] {
         assert!(holds(&mut net, x), "at {x}: the body is back");
@@ -845,7 +845,7 @@ fn a_holder_that_saw_a_fallen_purges_delete_uploads_again_spec_sync_6() {
     net.run();
     net.advance(120_000);
     net.run();
-    let holds = |net: &mut Net, x: usize| net.engine(x).core.ix.commits.get(&m).is_some_and(|c| c.missing.is_empty() && c.dropped.is_empty());
+    let holds = |net: &mut Net, x: usize| net.engine(x).core.ix.commits.get(&m).is_some_and(|c| c.missing_parts().next().is_none() && c.dropped_parts().next().is_none());
     for n in [b, h] {
         assert!(holds(&mut net, n), "at {n}");
         assert!(net.engine(n).purged_on(&t, &k()).unwrap().is_empty(), "at {n}");
@@ -877,7 +877,7 @@ fn a_header_only_some_judge_lasting_is_left_alone_spec_sync_6() {
     net.actions(d2, acts);
     net.run();
     assert!(net.engine(a).purged_on(&t, &k()).unwrap().is_empty());
-    assert!(net.engine(d2).commit_ids().contains(&m) && net.engine(a).core.ix.commits.get(&m).unwrap().missing.len() == 1);
+    assert!(net.engine(d2).commit_ids().contains(&m) && net.engine(a).core.ix.commits.get(&m).unwrap().missing_parts().count() == 1);
     net.advance(120_000);
     let before = known_entries(&mut net, a, host);
     for _ in 0..6 {
@@ -954,7 +954,7 @@ fn a_fresh_node_demotes_and_nothing_comes_back_spec_perm_6() {
         }
         for n in [a, b, f] {
             assert_ne!(net.engine(n).get(&t, &k()).unwrap(), Some(s("SECRET")), "node {n}");
-            assert!(!net.engine(n).body_not_dropped(&m, &t, &k()) || net.engine(n).core.ix.commits.get(&m).is_none_or(|c| !c.missing.is_empty()), "node {n}: the body is back");
+            assert!(!net.engine(n).body_not_dropped(&m, &t, &k()) || net.engine(n).core.ix.commits.get(&m).is_none_or(|c| c.missing_parts().next().is_some()), "node {n}: the body is back");
             assert_eq!(net.engine(n).purged_on(&t, &k()).unwrap().contains_key(&m), lasting, "node {n}: the tombstone");
         }
         let at = at_host(&mut net, a, host, &l, m);

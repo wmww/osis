@@ -296,7 +296,7 @@ pub(crate) fn facts_of(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, st: &Fragment) -> Re
 /// one, whose writes would go value-less here anyway; not held value-less for a purge
 /// (`retention::held_purged`). The writer and the compaction trigger both ask it.
 pub(crate) fn claims(core: &Core, c: &CommitId, tid: &Tid, ak: &Ak, now: u64) -> bool {
-    core.ix.commits.get(c).is_some_and(|m| m.aspect(tid, ak).is_some_and(|ai| m.valid_at(ai) && (!m.missing.contains(&ai) || m.header.expires.is_some()) && !super::held_purged(core, c, tid, ak, ai, now)))
+    core.ix.commits.get(c).is_some_and(|m| m.aspect(tid, ak).is_some_and(|ai| m.valid_at(ai) && (!m.missing(ai) || m.header.expires.is_some()) && !super::held_purged(core, c, tid, ak, ai, now)))
 }
 
 /// Whether a commit's own writes are judged by its ID (commit form: a snapshot lists those whose
@@ -321,6 +321,13 @@ pub(crate) fn own_aspect(ak: &Ak) -> bool {
 /// write, which implies one (spec/crdt.md §5.1).
 pub(crate) fn replaces(f: &Fragment) -> bool {
     f.reset().is_some() || matches!(f, Fragment::Register(_) | Fragment::Slots(_))
+}
+
+/// Whether held body `f` (whole or a leftover, which keeps every reset) of a part of commit `m`
+/// on `ak` stands as a whole replace (`Hold::Body::whole`): a plain durable commit's delta on an
+/// own aspect replacing it whole, as apply and a load from the commit records judge it.
+pub(crate) fn whole_replace(m: &crate::engine::Meta, ak: &Ak, f: &Fragment) -> bool {
+    m.view.kind == Kind::Content && !m.view.memory && own_aspect(ak) && replaces(f)
 }
 
 /// `author`'s valid own replaces of `(tid, ak)` held here, oldest first.
@@ -410,7 +417,7 @@ pub(crate) fn covered_join(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Ti
     }
     // a snapshot body still to arrive (or missing again, `uncover`): nothing is established
     // without its content (a delta's frontier or absorbed check below stands alone)
-    if tx.core.ix.commits.get(c).is_some_and(|m| m.view.kind.is_compaction() && m.missing.contains(&cai)) {
+    if tx.core.ix.commits.get(c).is_some_and(|m| m.view.kind.is_compaction() && m.missing(cai)) {
         return Ok(None);
     }
     let Some(m) = tx.core.ix.commits.get(c).cloned() else { return Ok(None) };
@@ -443,7 +450,7 @@ pub(crate) fn covered_join(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Ti
     if is_snapshot && !crate::apply::copies::snapshot_valid(tx.core, c, tid, ak) {
         let core = &*tx.core;
         if let Some(b) = &mut body {
-            b.remove_writes(&|d| crate::apply::copies::any_delta(core, tid, ak, d, &|_, m, ai| !m.missing.contains(&ai) && m.valid_at(ai)));
+            b.remove_writes(&|d| crate::apply::copies::any_delta(core, tid, ak, d, &|_, m, ai| !m.missing(ai) && m.valid_at(ai)));
         }
     }
     let held = body.is_some();
@@ -487,7 +494,7 @@ pub(crate) fn covered_join(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Ti
             (_, true) => !abs.iter().any(|x| x.0 == *c),
             _ => false,
         };
-        if untraced && m.missing.contains(&cai) {
+        if untraced && m.missing(cai) {
             return Ok(None);
         }
     }
@@ -496,7 +503,7 @@ pub(crate) fn covered_join(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Ti
     // dropped: a part not fetched yet is not established (a set add or map put still to come).
     if !held {
         let own = g.is_none();
-        return Ok(if own && !m.dropped.contains_key(&cai) { None } else { Some(true) });
+        return Ok(if own && !m.is_dropped(cai) { None } else { Some(true) });
     }
     // the snapshot holds the body's live writes as the body does, judged on its part at the
     // body's positions: with its writes under the body's dots taken out and the body joined

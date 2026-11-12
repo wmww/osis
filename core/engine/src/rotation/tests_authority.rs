@@ -124,7 +124,7 @@ fn half_valid_rotation_refused_alike_with_certificates_only_spec_crypto_4() {
     send_skipping(&mut lp, F, M1, &BTreeSet::new());
     let at_a1 = verdicts(&lp, A1, &c, m);
     let at_m1 = verdicts(&lp, M1, &c, m);
-    let missing = |i: usize| lp.peers[i].engine.core.ix.commits.get(&c).unwrap().missing.len();
+    let missing = |i: usize| lp.peers[i].engine.core.ix.commits.get(&c).unwrap().missing_parts().count();
     assert!(missing(A1) > missing(M1), "a1 holds the certificate only");
     assert_eq!(at_m1.len(), 2, "m1 holds both parts");
     assert!(at_a1.iter().chain(&at_m1).all(|(_, v)| !v), "a1: {at_a1:?}, m1: {at_m1:?}");
@@ -151,7 +151,7 @@ fn rotation_without_its_keyset_shows_nothing_until_it_comes_spec_crypto_4() {
         let _ = lp.peers[M1].receive(&cut.encode(), pk.blobs.clone());
     }
     let keys_ai = lp.peers[M1].engine.core.ix.commits.get(&c).unwrap().view.aspects.iter().position(|x| x.tid == m && x.ak.as_str() == "keys.0").unwrap();
-    assert!(lp.peers[M1].engine.core.ix.commits.get(&c).unwrap().missing.contains(&keys_ai), "the keyset counts missing");
+    assert!(lp.peers[M1].engine.core.ix.commits.get(&c).unwrap().missing(keys_ai), "the keyset counts missing");
     let secrets = |lp: &LocalPeer| verdicts(lp, M1, &c, m).into_iter().find(|x| x.0 == "secrets.0").map(|x| x.1);
     assert_eq!(secrets(&lp), Some(false), "shows nothing: invalid");
     send_skipping(&mut lp, F, M1, &BTreeSet::new());

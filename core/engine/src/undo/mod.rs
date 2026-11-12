@@ -238,7 +238,7 @@ fn replaced_kept(tx: &mut Tx<'_>, h: &Header, id: &CommitId, a: &osis_commit::As
         if held.filter(|x| snaps.contains(&x.1)).any(|x| crate::retention::reaches((&x.2, &x.3), &m.header, &c, p.hi)) {
             continue;
         }
-        if m.missing.contains(&ci) || !keeps_now(tx.core, h, p, now) {
+        if m.missing(ci) || !keeps_now(tx.core, h, p, now) {
             return Ok(false);
         }
     }
@@ -391,7 +391,7 @@ fn undone_parts(tx: &mut Tx<'_>, target: &CommitId, ts: Ts, writers: &[Tid]) -> 
         if !m.valid_at(ai) || a.ak.signal() || a.ak.as_str() == CREATED.ak() || a.ak.as_str() == osis_commit::retention::RETENTION || made.contains(&a.tid) {
             continue;
         }
-        if m.missing.contains(&ai) {
+        if m.missing(ai) {
             return Err(Error::NotKept(*target));
         }
         if m.body_gone(ai) || !crate::retention::bounds::setting_keeps(tx, target, ai, now)? {

@@ -1170,7 +1170,7 @@ impl SyncEngine {
         let mut named: Vec<CommitId> = ix.pending.keys().copied().collect();
         named.extend(self.state.by_commit.iter().filter(|(c, blobs)| match ix.commits.get(c) {
             None => !self.memory.forgotten.contains_key(c),
-            Some(m) => blobs.iter().filter_map(|b| self.state.blobs.get(b)).any(|r| r.parts.iter().any(|p| m.missing.contains(p) && !m.forgot.contains(p))),
+            Some(m) => blobs.iter().filter_map(|b| self.state.blobs.get(b)).any(|r| r.parts.iter().any(|p| m.missing_as(*p).is_some_and(|x| x != osis_engine::engine::Missing::Forgot))),
         }).map(|(c, _)| *c));
         for c in named {
             self.engine.name_redeliver(c);
@@ -2052,7 +2052,7 @@ impl SyncEngine {
         let ix = &self.engine.core.ix;
         // a slot whose record is away too: what the refetch awaits takes a destroyed actor's record
         // again (spec/commits.md §5 Destruction)
-        let again = |c: &osis_base::CommitId, parts: &[usize]| commits.is_none_or(|cs| cs.contains(c)) && ix.commits.get(c).is_some_and(|m| parts.iter().any(|p| m.missing.contains(p)));
+        let again = |c: &osis_base::CommitId, parts: &[usize]| commits.is_none_or(|cs| cs.contains(c)) && ix.commits.get(c).is_some_and(|m| parts.iter().any(|p| m.missing(*p)));
         // at start, bytes still held are a part waiting or one the engine has not taken yet
         let ids: Vec<(LabelId, BlobId)> = match commits {
             Some(cs) => cs.iter().flat_map(|c| self.entries_of_commit(c)).filter(|k| matches!(self.state.entries.get(k).map(|e| &e.kind), Some(Kind::Commit { commit, parts, .. }) if again(commit, parts))).collect(),
@@ -2086,7 +2086,7 @@ impl SyncEngine {
     /// its bytes are not kept, whoever brings them.
     pub(crate) fn dropped_chunk(&mut self, b: &BlobId) -> Result<bool> {
         let ix = &self.engine.core.ix;
-        let listed = ix.by_chunk.get(b).is_some_and(|cs| cs.iter().any(|c| ix.commits.get(c).is_some_and(|m| !m.dropped.is_empty() || !m.stripped.is_empty())));
+        let listed = ix.by_chunk.get(b).is_some_and(|cs| cs.iter().any(|c| ix.commits.get(c).is_some_and(|m| m.any_body_gone())));
         Ok(listed && self.dropped_chunks(&BTreeSet::from([*b]))?.0.contains_key(b))
     }
 
@@ -2147,8 +2147,8 @@ impl SyncEngine {
         }
         // chunks of dropped deltas, their salts kept (`forget_chunk`)
         let listed: BTreeSet<BlobId> = match commits {
-            None => self.engine.core.ix.commits.values().filter(|m| !m.dropped.is_empty() || !m.stripped.is_empty()).flat_map(|m| m.view.chunks.iter().copied()).collect(),
-            Some(cs) => cs.iter().filter_map(|c| self.engine.core.ix.commits.get(c)).filter(|m| !m.dropped.is_empty() || !m.stripped.is_empty()).flat_map(|m| m.view.chunks.iter().copied()).collect(),
+            None => self.engine.core.ix.commits.values().filter(|m| m.any_body_gone()).flat_map(|m| m.view.chunks.iter().copied()).collect(),
+            Some(cs) => cs.iter().filter_map(|c| self.engine.core.ix.commits.get(c)).filter(|m| m.any_body_gone()).flat_map(|m| m.view.chunks.iter().copied()).collect(),
         };
         let held: BTreeSet<BlobId> = listed.into_iter().filter(|b| !self.state.blobs.contains_key(b) && self.engine.has_blob(b)).collect();
         if held.is_empty() {

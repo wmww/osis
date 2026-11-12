@@ -303,12 +303,12 @@ fn pending_commit_holds_back_no_own_upload_spec_sync_6() {
     net.run();
     net.advance(30_000);
     net.run();
-    assert!(net.engine(b).core.ix.commits.get(&c1).is_some_and(|m| !m.missing.is_empty()), "its part on `u` cannot be judged");
+    assert!(net.engine(b).core.ix.commits.get(&c1).is_some_and(|m| m.missing_parts().next().is_some()), "its part on `u` cannot be judged");
     let mut m = Mutation::new();
     m.set(t, &REG, &s("mine")).unwrap();
     let c2 = net.engine(b).commit(m).unwrap().unwrap();
     net.run();
-    assert!(net.engine(b).core.ix.commits.get(&c1).is_some_and(|m| !m.missing.is_empty()), "still awaiting");
+    assert!(net.engine(b).core.ix.commits.get(&c1).is_some_and(|m| m.missing_parts().next().is_some()), "still awaiting");
     assert!(!at_host(&mut net, b, host, &l, &c2).is_empty(), "b's own body held back behind a commit not judged");
 }
 

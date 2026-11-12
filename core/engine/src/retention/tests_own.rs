@@ -64,7 +64,7 @@ fn missing_part_is_not_established_spec_commits_5() {
         lp.deliver(1, &p).unwrap();
     }
     let e1 = &mut lp.peers[1].engine;
-    assert!(e1.core.ix.commits.get(&c).unwrap().missing.contains(&ai));
+    assert!(e1.core.ix.commits.get(&c).unwrap().missing(ai));
     for q in &qs {
         assert_eq!(e1.covered(q, &c, &t, &a).unwrap(), None, "a part not fetched is not established");
     }
@@ -179,7 +179,7 @@ fn invalid_own_replaces_give_back_what_they_covered_spec_commits_5() {
     lp.sync(0, 2).unwrap();
     let e2 = &lp.peers[2].engine;
     let ai = e2.core.ix.commits.get(&c).unwrap().aspect(&t, &a).unwrap();
-    assert!(e2.core.ix.commits.get(&c).unwrap().missing.contains(&ai), "C is missing again");
+    assert!(e2.core.ix.commits.get(&c).unwrap().missing(ai), "C is missing again");
     let pk = lp.peers[0].engine.package(&c).unwrap().unwrap();
     lp.deliver(2, &pk).unwrap();
     assert_eq!(lp.peers[0].engine.get(&t, &a).unwrap(), Some(Value::Int(5)), "Alice never held the replaces");
@@ -226,7 +226,7 @@ fn one_own_replace_left_covers_nothing_spec_commits_5() {
     assert_eq!(lp.peers[0].engine.covered(&q1, &c, &t, &a).unwrap(), Some(false), "Alice: one own replace covers nothing");
     let e2 = &lp.peers[2].engine;
     let ai = e2.core.ix.commits.get(&c).unwrap().aspect(&t, &a).unwrap();
-    assert!(e2.core.ix.commits.get(&c).unwrap().missing.contains(&ai), "Eve: C is missing again");
+    assert!(e2.core.ix.commits.get(&c).unwrap().missing(ai), "Eve: C is missing again");
     assert_eq!(lp.peers[2].engine.get(&t, &a).unwrap(), Some(Value::Int(6)), "Eve reads as Alice");
     assert_eq!(lp.peers[0].engine.get(&t, &a).unwrap(), Some(Value::Int(6)));
 }
@@ -293,7 +293,7 @@ fn any_two_held_own_replaces_keep_a_drop_spec_commits_5() {
     let e2 = &mut lp.peers[2].engine;
     assert_eq!(e2.covered(&q0, &c, &t, &a).unwrap(), Some(true), "Eve: the same two");
     let ai = e2.core.ix.commits.get(&c).unwrap().aspect(&t, &a).unwrap();
-    assert!(!e2.core.ix.commits.get(&c).unwrap().missing.contains(&ai), "Eve: C stays dropped");
+    assert!(!e2.core.ix.commits.get(&c).unwrap().missing(ai), "Eve: C stays dropped");
     assert_eq!(lp.peers[2].engine.get(&t, &a).unwrap(), Some(Value::Int(7)), "Eve reads as Alice");
     assert_eq!(lp.peers[0].engine.get(&t, &a).unwrap(), Some(Value::Int(7)));
 }

@@ -2013,7 +2013,7 @@ fn explain(played: &Played, held: &[usize], p: &mut Peer, what: &str) {
         let shown = |e: &osis_node::Engine, c: Option<&osis_node::engine::CommitDigest>| match c {
             None => "absent".to_string(),
             Some(c) => {
-                let why: Vec<String> = e.core.ix.commits.get(&pk.id).map(|m| m.dropped.iter().map(|(ai, d)| format!("{ai}: {:?} by {:?}", d.why, d.covered_by.iter().map(pack).collect::<Vec<_>>())).collect()).unwrap_or_default();
+                let why: Vec<String> = e.core.ix.commits.get(&pk.id).map(|m| m.dropped_parts().map(|(ai, d)| format!("{ai}: {:?} by {:?}", d.why, d.covered_by.iter().map(pack).collect::<Vec<_>>())).collect()).unwrap_or_default();
                 format!("valid {:?} dropped {:?} {why:?} stands in {:?} stripped {:?} valued {:?} missing {:?}", c.valid, c.dropped, c.stands_in, c.stripped, c.valued, c.missing)
             }
         };
@@ -3671,7 +3671,7 @@ fn kill_and_purge_in_one_commit_keeps_leftover_spec_commits_5() {
         assert!(p.engine.purge_stands(&purge, &write, &t, &a), "the request names the write and stands");
         let m = p.engine.core.ix.commits.get(&write).unwrap();
         let ai = m.header.aspects.iter().position(|x| x.tid == t && x.ak == a).unwrap();
-        assert!(m.stripped.contains(&ai) && !m.dropped.contains_key(&ai), "order {order:?}: held as its leftover, not dropped: dropped {:?} stripped {:?}", m.dropped, m.stripped);
+        assert!(m.stripped(ai) && !m.is_dropped(ai), "order {order:?}: held as its leftover, not dropped: dropped {:?} stripped {:?}", m.dropped(ai), m.stripped(ai));
     }
 }
 
