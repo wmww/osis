@@ -46,3 +46,4 @@ One section per investigation: date and box, the trigger (hits or the run over 2
 
 - 2026-11-10 ostrich, the gate against the 5-minute cap (`gate`, `gate.hold` 4.3x): issues/gate-five-minutes.md (what was measured and profiled, what was fixed, what each remaining fix would save). No limit raised.
 - 2026-11-11 ostrich `gate` CPU 7067/4094 s, wall 770/299 s; `gate.hold` CPU 6639/3795 s, wall 702/241 s at load 13: order-covered-held review (10 of 26 crates); persistent, issues/gate-five-minutes.md.
+- 2026-11-11 18:57 ostrich `gate.hold` CPU 5179/3795 s, wall 426/241 s and `gate` CPU 5489/4094 s, wall 523/299 s at load 15, no lock wait: rotation-departed-opens review, 9 of 26 crates selected (osis-engine changed); properties 110 s, sim 144 s; persistent, issues/gate-five-minutes.md.
