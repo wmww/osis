@@ -363,7 +363,7 @@ fn forked_role_reseal_reaches_fixpoint_spec_permissions_3() {
     }
     assert_eq!(lp.peers[0].engine.reseal_due(&g, &Pass).unwrap().commits.len(), 1, "A re-seals B");
     lp.sync_all().unwrap();
-    // the fork's merger merges at its complete pass's end (`merge_forks`), once, and the
+    // the fork's merger merges at its complete pass's end (`pass_end_rotations`), once, and the
     // re-seal or history add it leaves due once
     let mut rounds = Vec::new();
     loop {
@@ -948,7 +948,7 @@ fn rounds_to_settle(lp: &mut LocalPeer, g: Tid) -> Vec<usize> {
     let mut out = Vec::new();
     loop {
         // what is due at once, then the merges a complete pass decides
-        let n: usize = (0..lp.peers.len()).map(|p| lp.peers[p].engine.ensure_rotated(&g).unwrap().0.commits.len() + lp.peers[p].engine.merge_forks(&g).unwrap().commits.len()).sum();
+        let n: usize = (0..lp.peers.len()).map(|p| lp.peers[p].engine.ensure_rotated(&g).unwrap().0.commits.len() + lp.peers[p].engine.pass_end_rotations(&g).unwrap().commits.len()).sum();
         lp.sync_all().unwrap();
         out.push(n);
         if n == 0 || out.len() > 8 {

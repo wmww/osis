@@ -553,7 +553,7 @@ fn rotate_below(tx: &mut Tx<'_>, who: Tid, a: Tid, rewriting: &[Tid], pass_end: 
 /// an epoch whose named writes are still on their way) reads as the merger or withdrawer beside
 /// nodes holding others, whose rotations fork again while views differ (a merge storm). With the
 /// pass complete the forks are held alike, and nodes holding the same forks agree on one merger.
-fn merge_forks(tx: &mut Tx<'_>, who: Tid, a: Tid, done: &mut Done) -> Result<()> {
+fn pass_end_rotations(tx: &mut Tx<'_>, who: Tid, a: Tid, done: &mut Done) -> Result<()> {
     let rotated = rotate_below(tx, who, a, &[], true, done)?;
     rotate_above(tx, who, rotated, done)
 }
@@ -944,7 +944,7 @@ impl Engine {
         self.run(|tx| own_secrets_delivered(tx, t))
     }
 
-    /// Makes the rotations of `actor` nothing waits for (`merge_forks`: merges, withdraws), re-seals the
+    /// Makes the rotations of `actor` nothing waits for (`pass_end_rotations`: merges, withdraws), re-seals the
     /// holders of `actor` the trigger names and adds the history its current epochs lack
     /// (spec/permissions.md §3, spec/crypto.md §4 History box), decided at the end of a complete
     /// pass of its labels (`sync`); nothing otherwise.
@@ -956,7 +956,7 @@ impl Engine {
         self.run(|tx| {
             let mut done = Done::default();
             let me = tx.core.writer()?;
-            merge_forks(tx, me, a, &mut done)?;
+            pass_end_rotations(tx, me, a, &mut done)?;
             let mut due = reseal_candidates(tx, &a)?;
             if !due.is_empty() {
                 // the rotations due and the finalizes of ended edges go first where this node can
@@ -975,15 +975,15 @@ impl Engine {
         })
     }
 
-    /// `merge_forks` alone, as a complete pass's end runs it (tests: the merges and withdraws without the
+    /// `pass_end_rotations` alone, as a complete pass's end runs it (tests: the merges and withdraws without the
     /// re-seals and history adds of `reseal_due`).
     #[cfg(test)]
-    pub(crate) fn merge_forks(&mut self, actor: &Tid) -> Result<Done> {
+    pub(crate) fn pass_end_rotations(&mut self, actor: &Tid) -> Result<Done> {
         let a = *actor;
         self.run(|tx| {
             let mut done = Done::default();
             let me = tx.core.writer()?;
-            merge_forks(tx, me, a, &mut done)?;
+            pass_end_rotations(tx, me, a, &mut done)?;
             Ok(done)
         })
     }
