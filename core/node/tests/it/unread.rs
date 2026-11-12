@@ -419,3 +419,78 @@ fn a_blob_under_two_sync_ids_is_taken_under_both_spec_sync_10() {
     }
     assert_eq!(ids.len(), 1, "one blob under both");
 }
+
+// spec/sync.md §10 (Bodies): a body a peer that cannot read L answered a Fetch with nothing is not
+// asked there again on that connection (no Fetch storm while it lacks it), and is fetched once the
+// peer announces it again (here, its listing on the next connection)
+#[test]
+fn undelivered_blob_fetched_again_once_announced_spec_sync_6() {
+    use std::cell::Cell;
+    use std::rc::Rc;
+    let (mut net, _host, [a, b], g, [t]) = hosted::<2, 1>(&[(1, Role::Read)], ["x"], true);
+    net.set_online(b, false);
+    let c = net.write(a, t, "y");
+    net.run();
+    let l = net.label(a);
+    let body = net.sync(a).entries(&l).into_iter().find(|(_, k)| matches!(k, osis_node::sync::EntryKind::Commit { commit, .. } if *commit == c)).unwrap().0;
+    let asked = Rc::new(Cell::new(0));
+    let n = asked.clone();
+    net.host_tamper = Some(Box::new(move |m| match m {
+        Message::FetchReply { id, items } if items.iter().any(|i| i.blob_id == body) => {
+            n.set(n.get() + 1);
+            let items = items.iter().cloned().map(|mut i| {
+                if i.blob_id == body {
+                    i.entry = None;
+                }
+                i
+            });
+            Some(Message::FetchReply { id: *id, items: items.collect() })
+        }
+        // announced without its bytes: fetched
+        Message::Stream(x) if x.events.iter().any(|(_, e)| matches!(e, Ev::Added { blob_id, blob: Some(_), .. } if *blob_id == body)) => {
+            let mut x = x.clone();
+            for (_, e) in &mut x.events {
+                if let Ev::Added { blob_id, blob, .. } = e
+                    && *blob_id == body
+                {
+                    *blob = None;
+                }
+            }
+            Some(Message::Stream(x))
+        }
+        Message::PullReply(r) if r.events.iter().any(|(_, e)| matches!(e, Ev::Added { blob_id, blob: Some(_), .. } if *blob_id == body)) => {
+            let mut r = r.clone();
+            for (_, e) in &mut r.events {
+                if let Ev::Added { blob_id, blob, .. } = e
+                    && *blob_id == body
+                {
+                    *blob = None;
+                }
+            }
+            Some(Message::PullReply(r))
+        }
+        _ => None,
+    }));
+    net.set_online(b, true);
+    for _ in 0..4 {
+        net.run();
+        net.advance(61_000);
+    }
+    // another write passes the label at b: what the peer lacks is not asked there again
+    let t2 = net.item(a, g, g, "other");
+    for _ in 0..2 {
+        net.run();
+        net.advance(61_000);
+    }
+    assert_eq!(net.read(b, t2), Some(s("other")));
+    assert_eq!(asked.get(), 1, "asked once on the connection");
+    assert_eq!(net.read(b, t), Some(s("x")));
+    net.host_tamper = None;
+    net.set_online(b, false);
+    net.set_online(b, true);
+    for _ in 0..2 {
+        net.run();
+        net.advance(61_000);
+    }
+    assert_eq!(net.read(b, t), Some(s("y")), "fetched once announced again");
+}
