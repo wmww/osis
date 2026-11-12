@@ -19,13 +19,13 @@ use proptest::prelude::*;
 
 /// Pages by blob ID, never hash-checked, so a mutated page reaches the decoder.
 #[derive(Clone, Debug)]
-pub(crate) struct Blobs {
-    pub(crate) pages: Vec<Vec<u8>>,
+struct Blobs {
+    pages: Vec<Vec<u8>>,
     params: PageParams,
 }
 
 impl Blobs {
-    pub(crate) fn new(params: PageParams) -> Blobs {
+    fn new(params: PageParams) -> Blobs {
         Blobs { pages: Vec::new(), params }
     }
 }
@@ -53,20 +53,20 @@ impl PageSource for Blobs {
 }
 
 /// Small enough that most fragments page, some at two levels.
-pub(crate) const TINY: PageParams = PageParams { target: 1500, cut: ChunkParams { min: 48, max: 192, mask_bits: 4 }, fanout: 8, ..PageParams::FORMAT };
+const TINY: PageParams = PageParams { target: 1500, cut: ChunkParams { min: 48, max: 192, mask_bits: 4 }, fanout: 8, ..PageParams::FORMAT };
 /// Larger pages: one level, pages of several sequence runs.
-pub(crate) const SMALL: PageParams = PageParams { target: 2000, cut: ChunkParams { min: 128, max: 1024, mask_bits: 6 }, fanout: 8, ..PageParams::FORMAT };
+const SMALL: PageParams = PageParams { target: 2000, cut: ChunkParams { min: 128, max: 1024, mask_bits: 6 }, fanout: 8, ..PageParams::FORMAT };
 
 fn hex(b: &[u8]) -> String {
     b.iter().map(|x| format!("{x:02x}")).collect()
 }
 
 /// One input: a delta or snapshot root and its pages.
-pub(crate) struct Input {
-    pub(crate) root: Vec<u8>,
-    pub(crate) pages: Option<Blobs>,
-    pub(crate) cx: DeltaCtx,
-    pub(crate) snapshot: bool,
+struct Input {
+    root: Vec<u8>,
+    pages: Option<Blobs>,
+    cx: DeltaCtx,
+    snapshot: bool,
 }
 
 impl Input {
@@ -138,7 +138,7 @@ impl Input {
 
 /// The encodings of a random history: each commit's delta and the joined state's snapshot,
 /// paged at `params` (`None`: unpaged); those needing a third page level are left out.
-pub(crate) fn inputs(seed: u64, types: &[Ty], params: Option<PageParams>) -> (Vec<Input>, Vec<MCommit>) {
+fn inputs(seed: u64, types: &[Ty], params: Option<PageParams>) -> (Vec<Input>, Vec<MCommit>) {
     let mut r = crate::testutil::rng(seed | 1);
     // where paging is tested, writers start with large writes, so those and the states page
     let sources = (1..=3).map(|n| MSource::session(n, 0)).collect();
@@ -165,7 +165,7 @@ pub(crate) fn inputs(seed: u64, types: &[Ty], params: Option<PageParams>) -> (Ve
 }
 
 /// A mutant of `i`: its root or one of its pages changed bytewise or by one value node.
-pub(crate) fn mutant(r: &mut Rng, i: &Input) -> Input {
+fn mutant(r: &mut Rng, i: &Input) -> Input {
     let mut root = i.root.clone();
     let mut pages = i.pages.clone();
     let page = pages.as_mut().filter(|p| !p.pages.is_empty() && r.chance(2, 3));
@@ -268,7 +268,7 @@ fn joins_equal(seed: u64, ins: &[Input], commits: &[MCommit]) -> Result<usize, S
 
 /// Per case: one text, one list of structs (all writers on one type, so the root is no
 /// `Slots` and its sequence streams), or every encoding nested next to a register and a text.
-pub(crate) fn types(k: u64) -> Vec<Ty> {
+fn types(k: u64) -> Vec<Ty> {
     let inner = Ty::Struct([(1, Ty::Register), (2, Ty::Set(Box::new(Ty::Register)))].into_iter().collect());
     match k % 3 {
         0 => vec![Ty::Text],
@@ -279,7 +279,7 @@ pub(crate) fn types(k: u64) -> Vec<Ty> {
 }
 
 /// Mutants per input: 6 in the default tests, 30 with `OSIS_SLOW`.
-pub(crate) fn per() -> usize {
+fn per() -> usize {
     if std::env::var_os("OSIS_SLOW").is_some() { 30 } else { 6 }
 }
 

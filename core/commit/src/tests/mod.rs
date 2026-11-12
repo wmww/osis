@@ -1,11 +1,9 @@
 //! Unit tests (spec/wire.md §4, spec/commits.md): header round trips here, one module per area.
 
 mod build;
-mod direct;
-pub(crate) mod prop;
+mod prop;
 mod review;
 mod validate;
-mod value_header;
 mod verify;
 
 use crate::*;

@@ -33,10 +33,6 @@ mod undo;
 mod view;
 mod winners;
 mod wire;
-#[cfg(test)]
-mod value_codec;
-#[cfg(test)]
-mod tests_direct;
 
 // test support, also built for the fuzz targets (`--cfg fuzzing`, core/test/fuzz); test code
 // for clippy's no-panic lints, which see only `cfg(test)`

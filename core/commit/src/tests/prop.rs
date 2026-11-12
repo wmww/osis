@@ -27,7 +27,7 @@ fn link() -> impl Strategy<Value = Link> {
 }
 
 prop_compose! {
-    pub(crate) fn header()(
+    fn header()(
         author in tid(), actor in tid(), kind in 0u64..4, wall in 0u64..1 << 46, form in any::<bool>(), expires in proptest::option::of(0u64..1 << 50),
         aspects in proptest::collection::vec(aspect(), 0..4),
         chunks in proptest::collection::vec((any::<[u8; 32]>(), proptest::collection::vec(0usize..5, 0..3)), 0..3),
