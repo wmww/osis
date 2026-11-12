@@ -33,7 +33,7 @@ pub(crate) fn of(core: &Core, tid: &Tid, ak: &Ak) -> Kept {
         return Kept { role: true, ..Kept::default() };
     }
     if osis_commit::retention::fixed_retention(a).is_some() {
-        return Kept { always: !osis_commit::retention::ending_request(a), ..Kept::default() };
+        return Kept { always: !osis_commit::retention::destroying_request(a), ..Kept::default() };
     }
     let settings = crate::apply::validity::settings(core, tid);
     // a fire is history from its own `ts`: purge on replace reads as no history there

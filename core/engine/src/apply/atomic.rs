@@ -459,9 +459,9 @@ pub(crate) fn learn_record(tx: &mut Tx<'_>, rec: CreationRecord) -> Result<bool>
     let key = [records::CREATED, t.as_bytes()].concat();
     tx.txn.put_local(&key, &osis_base::encode(&rec.to_value()), Shred::No)?;
     tx.core.ix.held.create(rec);
-    if tx.core.ended(&t) {
-        tx.core.note_ended_kept(&t, true);
-        crate::retention::end::record_back(tx, &t)?;
+    if tx.core.destroyed(&t) {
+        tx.core.note_destroyed_kept(&t, true);
+        crate::retention::destroy::record_back(tx, &t)?;
     }
     crate::retention::lifetimes::queue_with_listers(tx, &t)?;
     // the reader actor of the thing's deltas is known now

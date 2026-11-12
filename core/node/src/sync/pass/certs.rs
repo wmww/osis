@@ -92,7 +92,7 @@ impl SyncEngine {
             let Some(body) = self.engine.part_body(&c, &missing)? else { continue };
             self.place_copy(g, l, &c, &missing, body)?;
         }
-        // headers alone (an ended actor's mintings)
+        // headers alone (a destroyed actor's mintings)
         let hosts = self.counted_at(g, l);
         for c in wanted.headers {
             // this node's own copy placed before and gone since is not placed again

@@ -322,7 +322,7 @@ impl Held {
         self.log.push(Undo::Created(t, old));
     }
 
-    /// Forgets a thing's record (`retention::end`: the thing ended).
+    /// Forgets a thing's record (`retention::destroy`: the thing was destroyed).
     pub fn forget_record(&mut self, t: &Tid) {
         let old = self.set_created(*t, None);
         self.log.push(Undo::Created(*t, old));
@@ -376,7 +376,7 @@ impl Held {
     }
 
     /// Things whose creation record was added since the last call.
-    /// `t`'s record counts as arrived again: its ending fell, and what awaited it is judged again.
+    /// `t`'s record counts as arrived again: its destruction fell, and what awaited it is judged again.
     pub fn record_back(&mut self, t: Tid) {
         self.records.push(t);
     }

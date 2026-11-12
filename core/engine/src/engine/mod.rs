@@ -110,8 +110,8 @@ pub enum DropFor {
     /// While invalid, at the end of the transaction that judged it (`retention::drop_invalid`):
     /// it comes back as missing when it turns valid (`retention::valid_again`).
     Invalid,
-    /// Its thing ended (`retention::end`): as `Other`, but a value-less leftover goes too.
-    Ended,
+    /// Its thing was destroyed (`retention::destroy`): as `Other`, but a value-less leftover goes too.
+    Destroyed,
 }
 
 /// What a dropped part keeps in its commit record (spec/commits.md §5).
@@ -1062,13 +1062,13 @@ pub struct Core {
     pub list_bound: usize,
     /// Value-less lists changed in this transaction, written at its end (`retention::persist_valueless`).
     pub valueless_dirty: BTreeSet<(Tid, Ak)>,
-    /// Ended things whose keep is judged again at the end of the transaction (`retention::end`):
+    /// Destroyed things whose keep is judged again at the end of the transaction (`retention::destroy`):
     /// what needs their evidence may have gone.
-    pub ended_due: BTreeSet<Tid>,
-    /// Ended things kept here that a held thing may need (`retention::end::needs_evidence`,
-    /// `Engine::ended_needed`): a superset, read through `Core::ended_kept`; `None` until first
+    pub destroyed_due: BTreeSet<Tid>,
+    /// Destroyed things kept here that a held thing may need (`retention::destroy::needs_evidence`,
+    /// `Engine::destroyed_needed`): a superset, read through `Core::destroyed_kept`; `None` until first
     /// read after an open.
-    pub ended_kept: Option<BTreeSet<Tid>>,
+    pub destroyed_kept: Option<BTreeSet<Tid>>,
     /// While `Some` (a tick round's expiries): the rebuilds asked, one per aspect, run once
     /// when it ends (`apply::run_batched`).
     pub batched: Option<BTreeMap<(Tid, Ak), Batched>>,
@@ -1258,8 +1258,8 @@ impl Core {
             keep_bodies: self.keep_bodies.clone(),
             list_bound: self.list_bound.clone(),
             valueless_dirty: self.valueless_dirty.clone(),
-            ended_due: self.ended_due.clone(),
-            ended_kept: self.ended_kept.clone(),
+            destroyed_due: self.destroyed_due.clone(),
+            destroyed_kept: self.destroyed_kept.clone(),
             batched: self.batched.clone(),
             cover_cache: self.cover_cache.clone(),
             held_writes: self.held_writes.clone(),
@@ -1507,16 +1507,16 @@ impl Core {
         self.role_generation += 1;
     }
 
-    /// Whether `t` exists here: its record is held and it has not ended. What may read a thing
+    /// Whether `t` exists here: its record is held and it has not been destroyed. What may read a thing
     /// asks this; what judges commits on it asks `created`, a record being identity.
     pub fn exists(&self, t: &Tid) -> bool {
-        self.created(t).is_some() && !self.ended(t)
+        self.created(t).is_some() && !self.destroyed(t)
     }
 
     /// Whether `t` takes writes here: it exists and, but for a key actor (its record is its
     /// creation's whole content, and only its own nodes see it end), a minting of it is held. A
-    /// node that learned a thing's record raw (a record blob) cannot tell it ended, and a write
-    /// there would be one every node that saw the ending ignores.
+    /// node that learned a thing's record raw (a record blob) cannot tell it was destroyed, and a write
+    /// there would be one every node that saw the destruction ignores.
     pub fn writable(&self, t: &Tid) -> bool {
         self.exists(t) && (matches!(self.created(t), Some(osis_base::CreationRecord::KeyActor { .. })) || self.mintings(t).next().is_some())
     }
@@ -1529,24 +1529,24 @@ impl Core {
         held.into_iter().flatten().filter_map(move |(_, c)| Some((*c, self.ix.commits.get(c)?.aspect(&t, ak.as_ref()?)?)))
     }
 
-    /// The ended things kept here that a held thing may need (`retention::end`): every ended
-    /// thing with a held record once after an open, then kept by the endings and the references
-    /// moving to them (`end_ended`); `Engine::ended_needed` leaves out those it finds unneeded.
-    pub fn ended_kept(&mut self) -> Vec<Tid> {
-        if self.ended_kept.is_none() {
-            let all: BTreeSet<Tid> = self.ix.held.things().copied().filter(|t| self.ended(t)).collect();
-            self.ended_kept = Some(all);
+    /// The destroyed things kept here that a held thing may need (`retention::destroy`): every destroyed
+    /// thing with a held record once after an open, then kept by the destructions and the references
+    /// moving to them (`apply_destructions`); `Engine::destroyed_needed` leaves out those it finds unneeded.
+    pub fn destroyed_kept(&mut self) -> Vec<Tid> {
+        if self.destroyed_kept.is_none() {
+            let all: BTreeSet<Tid> = self.ix.held.things().copied().filter(|t| self.destroyed(t)).collect();
+            self.destroyed_kept = Some(all);
         }
-        let kept: Vec<Tid> = self.ended_kept.iter().flatten().copied().filter(|t| self.ended(t) && self.created(t).is_some()).collect();
-        if let Some(s) = &mut self.ended_kept {
+        let kept: Vec<Tid> = self.destroyed_kept.iter().flatten().copied().filter(|t| self.destroyed(t) && self.created(t).is_some()).collect();
+        if let Some(s) = &mut self.destroyed_kept {
             s.retain(|t| kept.contains(t));
         }
         kept
     }
 
-    /// Notes ended thing `t` as kept here or not (`ended_kept`).
-    pub(crate) fn note_ended_kept(&mut self, t: &Tid, kept: bool) {
-        if let Some(s) = &mut self.ended_kept {
+    /// Notes destroyed thing `t` as kept here or not (`destroyed_kept`).
+    pub(crate) fn note_destroyed_kept(&mut self, t: &Tid, kept: bool) {
+        if let Some(s) = &mut self.destroyed_kept {
             if kept {
                 s.insert(*t);
             } else {
@@ -1555,13 +1555,13 @@ impl Core {
         }
     }
 
-    /// Whether `t` is ended: a minting of it was held (`mintings`), and each is held value-less or
-    /// dropped by a purge or the ending (`retention::end`). One missing may yet come. A thing never
-    /// held is unknown, not ended.
-    pub fn ended(&self, t: &Tid) -> bool {
+    /// Whether `t` is destroyed: a minting of it was held (`mintings`), and each is held value-less or
+    /// dropped by a purge or the destruction (`retention::destroy`). One missing may yet come. A thing never
+    /// held is unknown, not destroyed.
+    pub fn destroyed(&self, t: &Tid) -> bool {
         let gone = |(c, ai): (CommitId, usize)| {
             let Some(m) = self.ix.commits.get(&c) else { return false };
-            crate::retention::valueless(self, &c, ai) || m.dropped.get(&ai).is_some_and(|d| matches!(d.why, DropFor::Other | DropFor::Ended))
+            crate::retention::valueless(self, &c, ai) || m.dropped.get(&ai).is_some_and(|d| matches!(d.why, DropFor::Other | DropFor::Destroyed))
         };
         let mut any = false;
         self.mintings(t).all(|x| {
@@ -1816,8 +1816,8 @@ impl Core {
             cover_candidates: _,
             settings_due: _,
             valueless_dirty: _,
-            ended_due: _,
-            ended_kept: _,
+            destroyed_due: _,
+            destroyed_kept: _,
             lifetimes_rights: _,
             changed: _,
             redeliver: _,
@@ -2029,8 +2029,8 @@ impl Core {
             keep_bodies: false,
             list_bound: osis_commit::MAX_LIST_BYTES,
             valueless_dirty: BTreeSet::new(),
-            ended_due: BTreeSet::new(),
-            ended_kept: None,
+            destroyed_due: BTreeSet::new(),
+            destroyed_kept: None,
             batched: None,
             cover_cache: None,
             held_writes: memo::Memo::new("held writes"),
@@ -3191,9 +3191,9 @@ impl Engine {
                 }
                 tx.core.none_due.clear();
                 if r.is_ok() && !tx.txn.is_memory() {
-                    r = r.and_then(|v| crate::retention::end::end_ended(&mut tx).map(|_| v));
+                    r = r.and_then(|v| crate::retention::destroy::apply_destructions(&mut tx).map(|_| v));
                 }
-                tx.core.ended_due.clear();
+                tx.core.destroyed_due.clear();
                 if r.is_ok() {
                     r = r.and_then(|v| crate::retention::persist_valueless(&mut tx).map(|_| v));
                 }

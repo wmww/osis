@@ -38,7 +38,7 @@ pub(crate) mod replace;
 pub(crate) mod snapshot;
 #[cfg(test)]
 mod oracle;
-pub(crate) mod end;
+pub(crate) mod destroy;
 pub mod lifetimes;
 pub(crate) mod forget;
 pub(crate) mod memory;
@@ -189,7 +189,7 @@ fn drop_part_for(tx: &mut Tx<'_>, c: &CommitId, ai: usize, why: DropFor) -> Resu
     let invalid = why == DropFor::Invalid;
     // a bare leftover stays but past its expiry under a cover, or while invalid: then it gives
     // nothing; a signal's gives nothing ever, and goes at its keep bound
-    let leftover = invalid || why == DropFor::Ended || why == DropFor::Cover && expired_leftover(&m, ai, tx.now().0) || a.ak.signal();
+    let leftover = invalid || why == DropFor::Destroyed || why == DropFor::Cover && expired_leftover(&m, ai, tx.now().0) || a.ak.signal();
     if m.dropped.contains_key(&ai) || (m.bare(ai) && !leftover) {
         return Ok(());
     }
@@ -215,7 +215,7 @@ fn drop_part_for(tx: &mut Tx<'_>, c: &CommitId, ai: usize, why: DropFor) -> Resu
     // the held valid snapshots covering it: their copies of its writes stay its writes
     // (an invalid body's writes are none of the state's, whatever carries copies of them)
     // (a plain commit counts only as its author's own whole replace: `snapshot::own_covers`)
-    let snaps: Vec<CommitId> = if invalid || why == DropFor::Ended { Vec::new() } else { tx.core.ix.snapshots.get(&k).into_iter().flatten().map(|x| x.1).chain(snapshot::own_covers(tx.core, c, &a.tid, &a.ak)).filter(|s| s != c).collect() };
+    let snaps: Vec<CommitId> = if invalid || why == DropFor::Destroyed { Vec::new() } else { tx.core.ix.snapshots.get(&k).into_iter().flatten().map(|x| x.1).chain(snapshot::own_covers(tx.core, c, &a.tid, &a.ak)).filter(|s| s != c).collect() };
     let mut covered_by = BTreeSet::new();
     let own_cover = m.whole.remove(&ai);
     for s in snaps {
@@ -268,9 +268,9 @@ fn drop_part_for(tx: &mut Tx<'_>, c: &CommitId, ai: usize, why: DropFor) -> Resu
     // the one path (issues/drop-rejoin-robust.md item 1): the aspect is rebuilt from what is
     // held now, shredded (every local copy of the body goes,
     // spec/commits.md §5). A valid snapshot dropped vouches no more for invalid deltas' writes
-    // it carried (spec/permissions.md §5.2). An ended thing's aspects rebuild once, after its last part (`retention::end`).
+    // it carried (spec/permissions.md §5.2). A destroyed thing's aspects rebuild once, after its last part (`retention::destroy`).
     // An invalid part gave nothing (`apply::rebuilt`): its drop leaves the state as it is.
-    if why == DropFor::Ended || (invalid && !uncovered) {
+    if why == DropFor::Destroyed || (invalid && !uncovered) {
         return Ok(());
     }
     crate::apply::rebuild(tx, &a.tid, &a.ak)
@@ -486,7 +486,7 @@ pub(crate) fn takes_late(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<boo
     if m.stripped.contains(&ai) {
         return Ok(gone_of(tx.core, &m.header, c, ai).is_empty());
     }
-    Ok(!m.view.memory && m.dropped.get(&ai).is_some_and(|d| matches!(d.why, DropFor::Other | DropFor::Ended)))
+    Ok(!m.view.memory && m.dropped.get(&ai).is_some_and(|d| matches!(d.why, DropFor::Other | DropFor::Destroyed)))
 }
 
 /// Whether the value-carrying writes of delta `ai` of `c` are held value-less here
@@ -837,7 +837,7 @@ pub(crate) fn on_apply(tx: &mut Tx<'_>, id: &CommitId, changed: &mut BTreeSet<(T
     let mut purged = BTreeSet::new();
     on_parts(tx, id, &h, &(0..h.aspects.len()).collect(), &mut purged, changed)?;
     purge::apply_request(tx, id, &h, &mut purged)?;
-    // a further minting of a held thing may bring it back after its expiry (`end::end_ended`)
+    // a further minting of a held thing may bring it back after its expiry (`destroy::apply_destructions`)
     for a in h.aspects.iter().filter(|a| a.ak.as_str() == osis_commit::retention::CREATED) {
         if tx.core.mintings(&a.tid).nth(1).is_some() {
             tx.core.valueless_dirty.insert((a.tid, a.ak.clone()));

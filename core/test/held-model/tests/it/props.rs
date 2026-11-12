@@ -68,7 +68,7 @@ fn output_is_a_function_of_the_held_set(seeds: Vec<u64>) {
 /// or purge fell (`Outcome::uncovered`, `Fate::NeverReceived`) or that turned valid again after
 /// their drop as invalid (copies taken from `full`). Each
 /// round changes no read. Commits thrown out whole are fetched again from `full` each round
-/// (`Outcome::revisit`), as are an ended thing's parts: an ending that falls (a demotion of its
+/// (`Outcome::revisit`), as are a destroyed thing's parts: a destruction that falls (a demotion of its
 /// purger arriving later) is repaired like any purge that falls.
 fn settle(mut h: Held, full: Option<&Held>, seed: u64, seen: &mut Seen) -> Held {
     for round in 0..16 {
@@ -368,7 +368,7 @@ fn creations_last_read_like_creations_first(seeds: Vec<u64>) {
     });
 }
 
-/// The shapes `histories_reach_endings_unknown_things_and_settings` asks the generator for.
+/// The shapes `histories_reach_destructions_unknown_things_and_settings` asks the generator for.
 const SHAPES: [&str; 8] = ["expiry", "purge", "unknown", "late setting", "invalid setting", "history", "signal history", "purge on replace"];
 
 /// The commit `late_commit_converges_after_repair` withholds from `h`, seed's history.
@@ -376,7 +376,7 @@ fn late_of(seed: u64, h: &Held) -> usize {
     (seed % h.commits.len() as u64 * 7) as usize % h.commits.len()
 }
 
-/// What seed's history reaches, by name: each of `SHAPES` (things ended by expiry and by purge,
+/// What seed's history reaches, by name: each of `SHAPES` (things destroyed by expiry and by purge,
 /// parts thrown out as unknown, a late and an invalid setting, a body in history, a signal's, a
 /// body under purge on replace), a body a node may drop as covered, and the fate of each part of
 /// the commit `late_of` withholds.
@@ -384,15 +384,15 @@ fn kinds(seed: u64) -> BTreeSet<String> {
     let h = history(seed, LEN);
     let o = evaluate(&h);
     let settings = || h.commits.iter().enumerate().filter(|(_, c)| c.parts.iter().any(|p| p.aspect == Aspect::RETENTION));
-    let ended = |by_expiry: bool| {
-        o.ended.iter().any(|&t| {
+    let destroyed = |by_expiry: bool| {
+        o.destroyed.iter().any(|&t| {
             let c = h.commits.iter().find(|c| c.id == held_model::gen::CREATION_ID + t).unwrap();
             c.expires.is_some_and(|x| h.now >= x) == by_expiry
         })
     };
     let reached = [
-        ended(true),
-        ended(false),
+        destroyed(true),
+        destroyed(false),
         o.fates.values().any(|f| *f == Fate::MustDrop(DropWhy::Unknown)),
         // late: stamped before a commit written before it
         settings().any(|(i, c)| h.commits[..i].iter().any(|x| x.ts > c.ts)),
@@ -449,12 +449,12 @@ fn covering(n: u64, late: bool) -> Vec<u64> {
     set
 }
 
-// spec: none (the generator's reach): the histories end things by expiry and by purge, throw
+// spec: none (the generator's reach): the histories destroy things by expiry and by purge, throw
 // parts out on things a node holds no creation of, and hold settings (late ones, invalid ones),
 // bodies in history (signals too) and bodies under purge on replace, each in at least one seed in
 // a hundred
 #[test]
-fn histories_reach_endings_unknown_things_and_settings() {
+fn histories_reach_destructions_unknown_things_and_settings() {
     let seen = &reach()[..100];
     let count = |what: &str| seen.iter().filter(|k| k.contains(what)).count();
     eprintln!("of 100: {:?}", SHAPES.iter().map(|w| (w, count(w))).collect::<Vec<_>>());

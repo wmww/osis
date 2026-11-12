@@ -20,7 +20,7 @@ mod caches;
 mod corrupt;
 mod crash;
 mod deletion;
-mod ending;
+mod destruction;
 mod lifetimes;
 mod disputes;
 mod edits;

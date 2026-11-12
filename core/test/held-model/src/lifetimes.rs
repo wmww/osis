@@ -3,10 +3,10 @@
 //!
 //! The rule: a thing with no list is standalone and kept. A thing with a list is kept while some
 //! listed retainer is kept and references it, or cannot be judged (not held, not readable). A
-//! node drops only what it holds, may end, and judges unreachable from what it holds.
+//! node drops only what it holds, may destroy, and judges unreachable from what it holds.
 //!
 //! Abstracted: what "references" reads (a tid in the retainer's kept data), validity (only valid
-//! writes reach a view), the right to end (a set of things), hearing labels out (a `View` is a
+//! writes reach a view), the right to destroy (a set of things), hearing labels out (a `View` is a
 //! node's data once heard out; `view_of` shows what a part-received commit set does instead).
 use std::collections::BTreeSet;
 
@@ -18,9 +18,9 @@ pub type Set = BTreeSet<T>;
 pub enum Held {
     /// Held and readable: its list (`None`: standalone) and the things its kept data references.
     Known { list: Option<Set>, refs: Set },
-    /// Ended, and the node holds what shows it.
-    Ended,
-    /// Not held, not readable, or ended with nothing left to show it.
+    /// Destroyed, and the node holds what shows it.
+    Destroyed,
+    /// Not held, not readable, or destroyed with nothing left to show it.
     Unknown,
 }
 pub type View = Vec<Held>;
@@ -37,7 +37,7 @@ pub fn kept(v: &View) -> Set {
                 None => true,
                 Some(l) => l.iter().any(|&r| match &v[r] {
                     Held::Unknown => true,
-                    Held::Ended => false,
+                    Held::Destroyed => false,
                     Held::Known { refs, .. } => refs.contains(&x) && k.contains(&r),
                 }),
             };
@@ -51,7 +51,7 @@ pub fn kept(v: &View) -> Set {
     }
 }
 
-/// The held things judged unreachable: what the node drops where it may end them.
+/// The held things judged unreachable: what the node drops where it may destroy them.
 pub fn unreachable(v: &View) -> Set {
     let k = kept(v);
     (0..v.len()).filter(|x| matches!(v[*x], Held::Known { .. }) && !k.contains(x)).collect()
@@ -94,7 +94,7 @@ pub fn walk(v: &View, x: T) -> bool {
         for &r in list {
             match &v[r] {
                 Held::Unknown => return false,
-                Held::Ended => {}
+                Held::Destroyed => {}
                 Held::Known { refs, .. } => {
                     if refs.contains(&y) && seen.insert(r) {
                         stack.push(r);
@@ -115,8 +115,8 @@ pub enum Part {
     /// Everything the thing's kept data references after the write.
     Refs(T, Set),
     /// Erasure: a purge of the creation.
-    End(T),
-    /// A release request's part on the thing's `released.0`: an ending, never lasting.
+    Purge(T),
+    /// A release request's part on the thing's `released.0`: a destruction, never lasting.
     Release(T),
 }
 
@@ -126,7 +126,7 @@ pub struct Commit {
     pub parts: Vec<Part>,
 }
 
-/// What a node holding these commits holds of `n` things: the later write wins, an ending
+/// What a node holding these commits holds of `n` things: the later write wins, a destruction
 /// (purge or release) is final while held, and a part on a thing whose creation is not held is not held.
 pub fn view_of(n: usize, held: &[&Commit]) -> View {
     let mut v: View = vec![Held::Unknown; n];
@@ -153,8 +153,8 @@ pub fn view_of(n: usize, held: &[&Commit]) -> View {
         }
     }
     for part in c.iter().flat_map(|c| &c.parts) {
-        if let Part::End(x) | Part::Release(x) = part {
-            v[*x] = Held::Ended;
+        if let Part::Purge(x) | Part::Release(x) = part {
+            v[*x] = Held::Destroyed;
         }
     }
     v
@@ -166,8 +166,8 @@ pub enum Event {
     List(T, Option<Set>),
     Refs(T, Set),
     /// Erased by someone else: a purge of the creation, kept for good.
-    End(T),
-    /// The thing's every minting expired: an ending whose evidence (the minting headers) is
+    Purge(T),
+    /// The thing's every minting expired: a destruction whose evidence (the minting headers) is
     /// forgotten as a release request's is.
     Expire(T),
     /// A release request arrives from another node (also one arriving late: then `Forget`).
@@ -180,23 +180,23 @@ pub enum Event {
     /// Read access lost, or the thing forgotten.
     Lose(T),
     /// The thing arrives or becomes readable, or a stale copy of it (its creation, list and
-    /// references) arrives: known, unless an ending of it is held.
+    /// references) arrives: known, unless a destruction of it is held.
     Learn(T, Option<Set>, Set),
-    /// A bare minting (no list): known and standalone, unless an ending of it is held.
+    /// A bare minting (no list): known and standalone, unless a destruction of it is held.
     Mint(T),
-    /// The right to end the thing, gained or lost.
+    /// The right to destroy the thing, gained or lost.
     Right(T, bool),
 }
 
 /// A node judging incrementally: each change queues what it touches, and `settle` judges the
-/// queue. Its kept state: `pending` (the things judged unreachable that it may not end) and
-/// which held endings it forgets in time.
+/// queue. Its kept state: `pending` (the things judged unreachable that it may not destroy) and
+/// which held destructions it forgets in time.
 #[derive(Clone, Debug)]
 pub struct Node {
     pub view: View,
     pub rights: Set,
     pub pending: Set,
-    /// Ended things whose ending is forgotten in time (expiry, release); a purge is kept.
+    /// Destroyed things whose destruction is forgotten in time (expiry, release); a purge is kept.
     forgettable: Set,
     queue: Vec<T>,
     /// Released by this node's own `Release`, reported by the next `settle`.
@@ -223,7 +223,7 @@ impl Node {
         (0..self.view.len()).filter(|y| matches!(&self.view[*y], Held::Known { list: Some(l), .. } if l.contains(&x))).collect()
     }
 
-    /// Whether a held thing lists or references `x`: its ending's evidence is kept.
+    /// Whether a held thing lists or references `x`: its destruction's evidence is kept.
     pub fn needs_evidence(&self, x: T) -> bool {
         self.view.iter().any(|h| matches!(h, Held::Known { list, refs } if refs.contains(&x) || list.as_ref().is_some_and(|l| l.contains(&x))))
     }
@@ -234,17 +234,17 @@ impl Node {
         self.listers(x).into_iter().filter(|y| refs.contains(y)).collect()
     }
 
-    fn end(&mut self, x: T, forgettable: bool) {
+    fn destroy(&mut self, x: T, forgettable: bool) {
         if forgettable {
             self.forgettable.insert(x);
         } else {
             self.forgettable.remove(&x);
         }
-        if self.view[x] == Held::Ended {
+        if self.view[x] == Held::Destroyed {
             return;
         }
         self.queue.extend(self.listers(x));
-        self.view[x] = Held::Ended;
+        self.view[x] = Held::Destroyed;
         self.pending.remove(&x);
     }
 
@@ -271,20 +271,20 @@ impl Node {
                     self.queue.extend(changed);
                 }
             }
-            Event::End(x) => self.end(x, false),
+            Event::Purge(x) => self.destroy(x, false),
             Event::Expire(x) | Event::Released(x) => {
-                if self.view[x] != Held::Ended || self.forgettable.contains(&x) {
-                    self.end(x, true)
+                if self.view[x] != Held::Destroyed || self.forgettable.contains(&x) {
+                    self.destroy(x, true)
                 }
             }
             Event::Release(x) => {
                 if matches!(self.view[x], Held::Known { .. }) && self.rights.contains(&x) {
-                    self.end(x, true);
+                    self.destroy(x, true);
                     self.released.push(x);
                 }
             }
             Event::Forget(x) => {
-                if self.view[x] == Held::Ended && self.forgettable.contains(&x) && !self.needs_evidence(x) {
+                if self.view[x] == Held::Destroyed && self.forgettable.contains(&x) && !self.needs_evidence(x) {
                     self.forgettable.remove(&x);
                     self.view[x] = Held::Unknown;
                     self.queue.extend(self.listers(x));
@@ -311,9 +311,9 @@ impl Node {
         }
     }
 
-    /// Judges the queue; returns the things this node ends (its own `Release`s first).
+    /// Judges the queue; returns the things this node destroys (its own `Release`s first).
     pub fn settle(&mut self) -> Vec<T> {
-        let mut ended = std::mem::take(&mut self.released);
+        let mut destroyed = std::mem::take(&mut self.released);
         while let Some(x) = self.queue.pop() {
             if !matches!(self.view[x], Held::Known { .. }) {
                 continue;
@@ -322,10 +322,10 @@ impl Node {
             if walk(&self.view, x) {
                 if self.rights.contains(&x) {
                     let below = self.below(x);
-                    self.view[x] = Held::Ended;
+                    self.view[x] = Held::Destroyed;
                     self.forgettable.insert(x);
                     self.pending.remove(&x);
-                    ended.push(x);
+                    destroyed.push(x);
                     self.queue.extend(below);
                 } else if self.pending.insert(x) {
                     self.queue.extend(self.below(x));
@@ -334,6 +334,6 @@ impl Node {
                 self.queue.extend(self.below(x));
             }
         }
-        ended
+        destroyed
     }
 }

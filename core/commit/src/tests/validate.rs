@@ -279,7 +279,7 @@ fn session_form_spec_commits_3() {
     assert!(Header::from_value(&v).is_err());
 }
 
-// spec/commits.md §5 (Ending: a release request), spec/wire.md §4: `released.0` stands only in a
+// spec/commits.md §5 (Destruction: a release request), spec/wire.md §4: `released.0` stands only in a
 // durable content commit of `released.0` deltas alone, no purge item, expiring `ROLE_KEEP` after
 // its `ts`; read as a purge item on each thing's `created.0`.
 #[test]

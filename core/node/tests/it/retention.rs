@@ -3394,10 +3394,10 @@ fn edge_admin_removing_own_edge_is_self_removal_spec_perm_2() {
     }
 }
 
-// spec/commits.md §5 (Ending): the read is a function of what is held, in any arrival order of the
-// creation, a write and the ending: gone at every order, thrown-out commits being fetched again
+// spec/commits.md §5 (Destruction): the read is a function of what is held, in any arrival order of the
+// creation, a write and the destruction: gone at every order, thrown-out commits being fetched again
 #[test]
-fn ending_in_any_arrival_order_spec_commits_5() {
+fn destruction_in_any_arrival_order_spec_commits_5() {
     let orders = [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]];
     let mut lp = net(2 + orders.len(), 0x7e1);
     lp.sync_all().unwrap();

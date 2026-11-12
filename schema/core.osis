@@ -57,7 +57,7 @@ aspect group.0: struct {
 /// The groups this device knows that hold the thing, directly or through subgroups.
 synthetic guaranteed aspect groups.0: set<tid>;
 
-/// The things that keep this thing alive (absent: it lives until ended). While present (also
+/// The things that keep this thing alive (absent: it lives until destroyed). While present (also
 /// empty) the thing is released once no listed retainer that is itself kept references it in
 /// its current data (spec/data-model.md §9).
 admin aspect retainers^.0: set<tid>;

@@ -236,12 +236,12 @@ lFollow == TRUE
 \* stranded
 oMem == {<<"X", "c">>, <<"X", "T">>, <<"T", "a1">>, <<"T", "d">>}
 oDeps == {<<"d", "T", "a1">>}
-\* an ended holder actor (spec/crypto.md \S 4 Holder actors, Ended): X {x1, T},
+\* a destroyed holder actor (spec/crypto.md \S 4 Holder actors, Destroyed): X {x1, T},
 \* T {t1, G, E}, G {g1, d}: x1 is X's one admin and writes X; t1 removes E
-\* from T (alone or with T's rotation) and T may end at any time; d, a reader
-\* of X through G and T, lacks T's epochs at first (a newcomer once T ended
+\* from T (alone or with T's rotation) and T may be destroyed at any time; d, a reader
+\* of X through G and T, lacks T's epochs at first (a newcomer once T was destroyed
 \* before d learned them). With ndEagerG, g1 may rotate G once (X's rotation after
-\* the ending boxes G's new keyset)
+\* the destruction boxes G's new keyset)
 ndActs == <<"X", "T", "G">>
 ndMem == {<<"X", "x1">>, <<"X", "T">>, <<"T", "t1">>, <<"T", "G">>, <<"T", "E">>,
          <<"G", "g1">>, <<"G", "d">>}
@@ -250,10 +250,10 @@ ndLearners == {"x1", "t1", "g1", "d"}
 ndDeps == {<<"E", "T", "t1">>}
 ndG == << <<"X", "T">>, <<"T", "G">> >>
 ndUnaware == {<<"d", "T">>}
-ndEnds == {"T"}
+ndDestroyable == {"T"}
 ndEagerG == {<<"g1", "G">>}
 ndOff == FALSE
-\* ... and f, a reader of G, removed from G by g1 after or before the ending
+\* ... and f, a reader of G, removed from G by g1 after or before the destruction
 ndrMem == ndMem \cup {<<"G", "f">>}
 ndrDeps == ndDeps \cup {<<"f", "G", "g1">>}
 \* smaller: g1 (t2) acts not
@@ -265,7 +265,7 @@ ndrsLearners == {"x1", "g1", "d"}
 \* liveness: no removal, E left out; x1 and d alone act
 ndlMem == ndMem \ {<<"T", "E">>}
 ndlLearners == {"x1", "d"}
-\* recursion: T's frozen holder T2 ended too: X {x1, T}, T {t1, T2},
+\* recursion: T's frozen holder T2 destroyed too: X {x1, T}, T {t1, T2},
 \* T2 {t2, G, E}, G {g1, d}; t2 removes E from T2
 nrActs == <<"X", "T", "T2", "G">>
 nrMem == {<<"X", "x1">>, <<"X", "T">>, <<"T", "t1">>, <<"T", "T2">>,
@@ -275,5 +275,5 @@ nrLearners == {"x1", "t1", "t2", "g1", "d"}
 nrDeps == {<<"E", "T2", "t2">>}
 nrG == << <<"X", "T">>, <<"T", "T2">>, <<"T2", "G">> >>
 nrUnaware == {<<"d", "T">>, <<"d", "T2">>}
-nrEnds == {"T", "T2"}
+nrDestroyable == {"T", "T2"}
 =============================================================================

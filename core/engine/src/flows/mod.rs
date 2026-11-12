@@ -241,16 +241,16 @@ impl Core {
     /// `rotation::key_role` (its record edge included while it stands), every held applied
     /// write in effect and `until` disregarded: keys read no clock, so an edge past its `until`
     /// stays until it is finalized (spec/permissions.md §2).
-    /// An ended actor holds no keys: in its place come its frozen holders (its edges as they
-    /// stood at its ending: nobody writes it after), each at the lesser of its role there and
-    /// the ended actor's here, and so on through ended actors among them, a holder reached
-    /// more than one way at the greatest (spec/crypto.md §4, Holder actors, Ended); `actor`
+    /// A destroyed actor holds no keys: in its place come its frozen holders (its edges as they
+    /// stood at its destruction: nobody writes it after), each at the lesser of its role there and
+    /// the destroyed actor's here, and so on through destroyed actors among them, a holder reached
+    /// more than one way at the greatest (spec/crypto.md §4, Holder actors, Destroyed); `actor`
     /// itself never.
     pub fn key_holders(&self, actor: &Tid) -> Vec<(Tid, Role)> {
-        expand_ended(actor, |t| self.edge_holders(t), |m| self.ended_actor(m))
+        expand_destroyed(actor, |t| self.edge_holders(t), |m| self.destroyed_actor(m))
     }
 
-    /// The direct holders of `actor` for keys (`key_holders` without the ended actors' frozen
+    /// The direct holders of `actor` for keys (`key_holders` without the destroyed actors' frozen
     /// holders in their place): every edge on it by `rotation::key_role`, its record edge
     /// included while it stands.
     pub(crate) fn edge_holders(&self, actor: &Tid) -> Vec<(Tid, Role)> {
@@ -260,10 +260,10 @@ impl Core {
         }
     }
 
-    /// Whether `m` is an ended actor other than a key actor (a key actor's keys are its seed's:
+    /// Whether `m` is a destroyed actor other than a key actor (a key actor's keys are its seed's:
     /// its own nodes still hold them).
-    pub(crate) fn ended_actor(&self, m: &Tid) -> bool {
-        matches!(self.created(m), Some(CreationRecord::Thing { .. })) && self.ended(m)
+    pub(crate) fn destroyed_actor(&self, m: &Tid) -> bool {
+        matches!(self.created(m), Some(CreationRecord::Thing { .. })) && self.destroyed(m)
     }
 
     /// Whether `tid` has role secrets of its own (else a plain thing derives them from its first
@@ -444,11 +444,11 @@ impl Engine {
     }
 }
 
-/// `key_holders`' walk over `edges` (an actor's direct holders for keys) with `ended` actors
+/// `key_holders`' walk over `edges` (an actor's direct holders for keys) with `destroyed` actors
 /// replaced by their own holders, each at the lesser role along the way and the greatest over
-/// the ways: an ended actor is entered again only at a greater role than before, so each at
+/// the ways: a destroyed actor is entered again only at a greater role than before, so each at
 /// most once per role.
-fn expand_ended(actor: &Tid, edges: impl Fn(&Tid) -> Vec<(Tid, Role)>, ended: impl Fn(&Tid) -> bool) -> Vec<(Tid, Role)> {
+fn expand_destroyed(actor: &Tid, edges: impl Fn(&Tid) -> Vec<(Tid, Role)>, destroyed: impl Fn(&Tid) -> bool) -> Vec<(Tid, Role)> {
     let mut out: BTreeMap<Tid, Role> = BTreeMap::new();
     let mut entered: BTreeMap<Tid, Role> = BTreeMap::from([(*actor, Role::Admin)]);
     let mut work = vec![(*actor, Role::Admin)];
@@ -458,12 +458,12 @@ fn expand_ended(actor: &Tid, edges: impl Fn(&Tid) -> Vec<(Tid, Role)>, ended: im
             if m == *actor {
                 continue;
             }
-            let into = if ended(&m) { &mut entered } else { &mut out };
+            let into = if destroyed(&m) { &mut entered } else { &mut out };
             if into.get(&m).is_some_and(|x| *x >= r) {
                 continue;
             }
             into.insert(m, r);
-            if ended(&m) {
+            if destroyed(&m) {
                 work.push((m, r));
             }
         }
@@ -479,13 +479,13 @@ mod tests {
         Tid::from_bytes([n; 15])
     }
 
-    // spec/crypto.md §4 (Holders for keys, Ended): an ended actor reached at a lesser role first
+    // spec/crypto.md §4 (Holders for keys, Destroyed): a destroyed actor reached at a lesser role first
     // and at a greater one later puts its holders at the greater, whatever the walk's order
     #[test]
-    fn ended_holder_reached_two_ways_takes_the_greater_role_spec_crypto_4() {
+    fn destroyed_holder_reached_two_ways_takes_the_greater_role_spec_crypto_4() {
         let (a, t, u, v, m) = (tid(1), tid(2), tid(3), tid(4), tid(5));
         for (lo, hi) in [(t, u), (u, t)] {
-            // a: lo (ended, read), hi (ended, admin); lo and hi: v (ended, admin); v: m (admin)
+            // a: lo (destroyed, read), hi (destroyed, admin); lo and hi: v (destroyed, admin); v: m (admin)
             let edges = |x: &Tid| -> Vec<(Tid, Role)> {
                 let mut e = if *x == a {
                     vec![(lo, Role::Read), (hi, Role::Admin)]
@@ -499,8 +499,8 @@ mod tests {
                 e.sort();
                 e
             };
-            let ended = |x: &Tid| [t, u, v].contains(x);
-            assert_eq!(expand_ended(&a, edges, ended), vec![(m, Role::Admin)], "lo {lo:?}");
+            let destroyed = |x: &Tid| [t, u, v].contains(x);
+            assert_eq!(expand_destroyed(&a, edges, destroyed), vec![(m, Role::Admin)], "lo {lo:?}");
         }
     }
 }

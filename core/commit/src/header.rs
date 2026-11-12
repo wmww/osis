@@ -167,13 +167,13 @@ pub enum PurgeItem {
 
 impl Header {
     /// Whether this commit is a release request: it carries `released.0` deltas (`validate`: those
-    /// alone; spec/commits.md §5 Ending).
+    /// alone; spec/commits.md §5 Destruction).
     pub fn is_release(&self) -> bool {
         self.aspects.iter().any(|a| a.ak.as_str() == crate::retention::RELEASED)
     }
 
     /// The items of the commit's request (spec/commits.md §5): its purge field, or for a release
-    /// an item on `created.0` of each thing it has a `released.0` delta on, which ends the thing
+    /// an item on `created.0` of each thing it has a `released.0` delta on, which destroys the thing
     /// as a purge of its creation does.
     pub fn requests(&self) -> std::borrow::Cow<'_, [PurgeItem]> {
         if !self.is_release() {

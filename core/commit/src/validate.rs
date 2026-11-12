@@ -89,7 +89,7 @@ impl Header {
             }
         }
         // a release request: durable content, `released.0` deltas alone, no purge field, expiring
-        // `ROLE_KEEP` after its `ts` (spec/commits.md §5 Ending)
+        // `ROLE_KEEP` after its `ts` (spec/commits.md §5 Destruction)
         if self.is_release() {
             let only = self.aspects.iter().all(|a| a.ak.as_str() == RELEASED);
             if kind != Kind::Content || self.ephemeral.is_some() || !only || !self.purge.is_empty() || self.expires != Some(release_expires(self.ts)) {

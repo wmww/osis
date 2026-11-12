@@ -2,7 +2,7 @@
 //! `core::RETAINERS`, `AspectWrite::retaining`, `Write::release`, and the writer refusing its own
 //! list change that leaves a thing unreachable. The judgment itself is node-sync's (node
 //! `lifetimes::`); a thing under no label is judged at once, after each call.
-//! spec/commits.md §5 Lifetimes, Ending.
+//! spec/commits.md §5 Lifetimes, Destruction.
 
 use crate::common::*;
 use osis::core::RETAINERS;

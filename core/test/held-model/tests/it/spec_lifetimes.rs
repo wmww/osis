@@ -10,11 +10,11 @@ fn subsets(of: &[T]) -> Vec<Set> {
     (0..1u32 << of.len()).map(|m| of.iter().enumerate().filter(|(i, _)| m & (1 << i) != 0).map(|(_, x)| *x).collect()).collect()
 }
 
-/// Every state of thing `x` among `n`: unknown, ended, or known with any list and references
+/// Every state of thing `x` among `n`: unknown, destroyed, or known with any list and references
 /// (`own`: its own tid may be in either).
 fn states(n: usize, x: T, own: bool, unknown: bool) -> Vec<Held> {
     let of: Vec<T> = (0..n).filter(|y| own || *y != x).collect();
-    let mut out = vec![Held::Ended];
+    let mut out = vec![Held::Destroyed];
     if unknown {
         out.push(Held::Unknown);
     }
@@ -59,7 +59,7 @@ fn with_everything_held_kept_is_what_standalone_things_reach() {
 
 #[test]
 fn a_node_missing_things_never_drops_what_the_whole_view_keeps() {
-    // also a retainer lost (read access gone, forgotten) or ended with nothing left to show it
+    // also a retainer lost (read access gone, forgotten) or destroyed with nothing left to show it
     for v in views(3, false, true) {
         let u = unreachable(&v);
         for x in 0..3 {
@@ -88,9 +88,9 @@ fn cycles_drop_unless_a_standalone_thing_reaches_them() {
 }
 
 #[test]
-fn an_ended_retainer_drops_and_an_unknown_one_keeps() {
+fn a_destroyed_retainer_drops_and_an_unknown_one_keeps() {
     let v = |r: Held| vec![r, known(Some(&[0]), &[]), known(Some(&[1]), &[])];
-    assert_eq!(unreachable(&v(Held::Ended)), set(&[1, 2]));
+    assert_eq!(unreachable(&v(Held::Destroyed)), set(&[1, 2]));
     assert_eq!(unreachable(&v(Held::Unknown)), set(&[2]));
     assert_eq!(unreachable(&v(known(None, &[1]))), set(&[2]));
 }
@@ -130,13 +130,13 @@ fn a_drop_is_final() {
     let c = [
         commit(1, &[Part::Create(0), Part::Create(1), Part::List(1, Some(set(&[0]))), Part::Refs(0, set(&[1]))]),
         commit(2, &[Part::Refs(0, set(&[]))]),
-        commit(3, &[Part::End(1)]),
-        // a re-reference written without the end, and a new retainer
+        commit(3, &[Part::Purge(1)]),
+        // a re-reference written without the purge, and a new retainer
         commit(4, &[Part::Refs(0, set(&[1])), Part::List(1, None)]),
     ];
     for held in held_subsets(&c) {
         if held.iter().any(|h| h.ts == 3) {
-            assert_eq!(view_of(2, &held)[1], Held::Ended);
+            assert_eq!(view_of(2, &held)[1], Held::Destroyed);
         }
     }
 }
@@ -163,7 +163,7 @@ fn event(r: &mut Rng, n: usize) -> Event {
     match r.next(13) {
         0 | 1 => Event::List(x, r.list(n)),
         2 | 3 => Event::Refs(x, r.set(n)),
-        4 => Event::End(x),
+        4 => Event::Purge(x),
         5 => Event::Expire(x),
         6 => Event::Released(x),
         7 => Event::Release(x),
@@ -177,8 +177,8 @@ fn event(r: &mut Rng, n: usize) -> Event {
 
 /// Over random runs of every change (lists, references, purges, expiries, release requests
 /// received and written, forgetting, lost and learned things, stale copies, mintings, rights):
-/// judging only what each change touches ends exactly what a from-scratch judgment says the
-/// node may end, and `pending` is exactly the rest.
+/// judging only what each change touches destroys exactly what a from-scratch judgment says the
+/// node may destroy, and `pending` is exactly the rest.
 #[test]
 fn judging_what_a_change_touches_matches_judging_everything() {
     const N: usize = 5;
@@ -201,20 +201,20 @@ fn judging_what_a_change_touches_matches_judging_everything() {
             }
             log.push(Event::Right(usize::MAX, false)); // marks a settle in the log
             let before = unreachable(&node.view);
-            let ended = node.settle();
+            let destroyed = node.settle();
             let want: Set = before.intersection(&node.rights).copied().chain(own).collect();
-            assert_eq!(ended.iter().copied().collect::<Set>(), want, "seed {seed}: {log:?}");
+            assert_eq!(destroyed.iter().copied().collect::<Set>(), want, "seed {seed}: {log:?}");
             assert_eq!(node.pending, unreachable(&node.view), "seed {seed}: {log:?}");
             assert!(node.pending.is_disjoint(&node.rights), "seed {seed}: {log:?}");
         }
     }
 }
 
-/// Forgetting an ending never changes a judgment: it is forgotten only where no held thing lists
+/// Forgetting a destruction never changes a judgment: it is forgotten only where no held thing lists
 /// or references the thing, and nothing else reads it. So a node forgetting a request never
 /// releases more, and never keeps what a node holding the request would release.
 #[test]
-fn forgetting_an_ending_changes_no_judgment() {
+fn forgetting_a_destruction_changes_no_judgment() {
     const N: usize = 5;
     for seed in 1..=4000u64 {
         let mut r = Rng(seed.wrapping_mul(0x2545F4914F6CDD1D) | 1);
@@ -228,8 +228,8 @@ fn forgetting_an_ending_changes_no_judgment() {
             node.apply(e.clone());
             if let Event::Forget(x) = e {
                 assert_eq!((unreachable(&node.view), kept(&node.view)), before, "seed {seed}: {log:?}");
-                if was[x] == Held::Ended && node.needs_evidence(x) {
-                    assert_eq!(node.view[x], Held::Ended, "seed {seed}: {log:?}");
+                if was[x] == Held::Destroyed && node.needs_evidence(x) {
+                    assert_eq!(node.view[x], Held::Destroyed, "seed {seed}: {log:?}");
                 }
             }
             node.settle();
@@ -257,35 +257,35 @@ fn losing_a_thing_never_adds_a_release() {
     }
 }
 
-/// An ending held is final against any later list, reference, stale copy or minting until it is
+/// A destruction held is final against any later list, reference, stale copy or minting until it is
 /// forgotten; a purge is never forgotten.
 #[test]
-fn an_ending_held_is_final_until_forgotten() {
+fn a_destruction_held_is_final_until_forgotten() {
     const N: usize = 4;
     for seed in 1..=4000u64 {
         let mut r = Rng(seed.wrapping_mul(0x9E3779B97F4A7C15) ^ 7 | 1);
         let mut node = Node::new(N);
-        let mut ended: Vec<Option<bool>> = vec![None; N]; // Some(purged)
+        let mut destroyed: Vec<Option<bool>> = vec![None; N]; // Some(purged)
         let mut log = Vec::new();
         for _ in 0..16 {
             let e = event(&mut r, N);
             log.push(e.clone());
             node.apply(e.clone());
             for x in node.settle() {
-                ended[x].get_or_insert(false);
+                destroyed[x].get_or_insert(false);
             }
             match e {
-                Event::End(x) => ended[x] = Some(true),
+                Event::Purge(x) => destroyed[x] = Some(true),
                 Event::Expire(x) | Event::Released(x) => {
-                    ended[x].get_or_insert(false);
+                    destroyed[x].get_or_insert(false);
                 }
-                Event::Lose(x) => ended[x] = None,
-                Event::Forget(x) if ended[x] == Some(false) && node.view[x] != Held::Ended => ended[x] = None,
+                Event::Lose(x) => destroyed[x] = None,
+                Event::Forget(x) if destroyed[x] == Some(false) && node.view[x] != Held::Destroyed => destroyed[x] = None,
                 _ => {}
             }
             for x in 0..N {
-                if ended[x].is_some() {
-                    assert_eq!(node.view[x], Held::Ended, "seed {seed} thing {x}: {log:?}");
+                if destroyed[x].is_some() {
+                    assert_eq!(node.view[x], Held::Destroyed, "seed {seed} thing {x}: {log:?}");
                 }
             }
         }
@@ -303,9 +303,9 @@ fn an_expired_retainers_child_is_released_where_the_child_is_held() {
     node.apply(Event::Right(2, true));
     assert!(node.settle().is_empty());
     node.apply(Event::Expire(0));
-    // the expiry's evidence is kept while 1 lists 0, so 1 reads 0 ended, not unknown
+    // the expiry's evidence is kept while 1 lists 0, so 1 reads 0 destroyed, not unknown
     node.apply(Event::Forget(0));
-    assert_eq!(node.view[0], Held::Ended);
+    assert_eq!(node.view[0], Held::Destroyed);
     assert_eq!(node.settle().into_iter().collect::<Set>(), set(&[1, 2]));
     // nothing holds 1 and 2 now (their own requests aside), so 0's evidence goes
     node.apply(Event::Forget(0));
@@ -330,7 +330,7 @@ fn an_explicit_release_takes_the_thing_and_what_only_it_kept_and_stays_while_ref
     node.apply(Event::Forget(1));
     node.apply(Event::Learn(1, Some(set(&[0])), set(&[2])));
     node.apply(Event::Mint(1));
-    assert_eq!(node.view[1], Held::Ended);
+    assert_eq!(node.view[1], Held::Destroyed);
     // 0 drops the reference: the request is forgotten, and a stale copy comes back and is
     // released again
     node.apply(Event::Refs(0, set(&[3])));

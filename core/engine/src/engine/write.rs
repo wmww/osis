@@ -338,7 +338,7 @@ pub(crate) enum MayWrite {
     /// Not yet: the thing's minting or the delete keys every write on it lists are not here
     /// (spec/crypto.md §7); they may arrive.
     Later,
-    /// Not on what is held: the thing does not exist here (or ended), or the node lacks the role.
+    /// Not on what is held: the thing does not exist here (or was destroyed), or the node lacks the role.
     No,
 }
 

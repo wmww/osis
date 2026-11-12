@@ -19,7 +19,7 @@ const CARD: [&str; 3] = ["keys.0", "node.0", "reach.0"];
 pub type Parts = BTreeSet<usize>;
 
 /// Chain material a verifier needs (spec/permissions.md §4): parts of commits to copy, commits
-/// to copy as headers alone (an ended actor's mintings), and raw creation records (a record
+/// to copy as headers alone (a destroyed actor's mintings), and raw creation records (a record
 /// blob's), which outlive the commits that minted them.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Certs {
@@ -168,11 +168,11 @@ impl Engine {
         }
         // the record chain's records
         out.records.extend(self.core.record_chain(g).filter_map(|s| s.thing()));
-        // the ended things the label's closure needs told ended: on an authority path into it,
+        // the destroyed things the label's closure needs told destroyed: on an authority path into it,
         // or listed or referenced there; their records and frozen permission history, which no
-        // body under the label carries once their ending dropped their own (spec/permissions.md
-        // §4, spec/commits.md §5 Ending)
-        let needed = self.ended_needed(g).unwrap_or_else(|_| self.ended_upstream(g));
+        // body under the label carries once their destruction dropped their own (spec/permissions.md
+        // §4, spec/commits.md §5 Destruction)
+        let needed = self.destroyed_needed(g).unwrap_or_else(|_| self.destroyed_upstream(g));
         for e in needed {
             out.records.insert(e);
             out.records.extend(self.core.record_chain(&e).filter_map(|s| s.thing()));
@@ -199,27 +199,27 @@ impl Engine {
             let certs = self.chain_to(&me, a);
             self.cert_parts(&certs, &mut out);
         }
-        // every ended thing whose record goes, with what tells it ended
-        let ended: Vec<Tid> = out.records.iter().filter(|t| self.core.ended(t)).copied().collect();
-        for t in ended {
-            self.ending_evidence(&t, &mut out);
+        // every destroyed thing whose record goes, with what tells it was destroyed
+        let destroyed: Vec<Tid> = out.records.iter().filter(|t| self.core.destroyed(t)).copied().collect();
+        for t in destroyed {
+            self.destruction_evidence(&t, &mut out);
         }
         out.records.retain(|t| self.core.created(t).is_some());
         out
     }
 
-    /// The ended actors held here on an authority path into `g`'s closure (spec/commits.md §5
-    /// Ending): named first admin or holder on a live thing of the closure, or on such an ended
+    /// The destroyed actors held here on an authority path into `g`'s closure (spec/commits.md §5
+    /// Destruction): named first admin or holder on a live thing of the closure, or on such a destroyed
     /// actor. A walk of the held holders, few beside the closure's things, and up from the
-    /// ended ones among them.
-    pub fn ended_upstream(&self, g: &Tid) -> BTreeSet<Tid> {
+    /// destroyed ones among them.
+    pub fn destroyed_upstream(&self, g: &Tid) -> BTreeSet<Tid> {
         let closure = self.closure(g);
         let held = &self.core.ix.held;
-        let ended: Vec<Tid> = held.holders().filter(|e| self.core.ended(e)).copied().collect();
+        let destroyed: Vec<Tid> = held.holders().filter(|e| self.core.destroyed(e)).copied().collect();
         let mut out = BTreeSet::new();
-        // to a fixpoint: an ended actor counts once it is named on a live closure thing or on one counted
+        // to a fixpoint: a destroyed actor counts once it is named on a live closure thing or on one counted
         loop {
-            let more: Vec<Tid> = ended.iter().filter(|e| !out.contains(*e) && held.named_on(e).any(|x| x != *e && (closure.contains(x) && !self.core.ended(x) || out.contains(x)))).copied().collect();
+            let more: Vec<Tid> = destroyed.iter().filter(|e| !out.contains(*e) && held.named_on(e).any(|x| x != *e && (closure.contains(x) && !self.core.destroyed(x) || out.contains(x)))).copied().collect();
             if more.is_empty() {
                 return out;
             }
@@ -227,45 +227,45 @@ impl Engine {
         }
     }
 
-    /// The ended things held here whose evidence the closure of `g` needs (spec/commits.md §5
-    /// Ending, issues/thing-lifetimes.md What is kept): on an authority path into it
-    /// (`ended_upstream`), or listed in `retainers^.0` or referenced in a live durable value by
-    /// a live thing of it. O(kept ended things something needs and the reference rows naming
-    /// them): bounded by live things, not by what ended.
-    pub fn ended_needed(&mut self, g: &Tid) -> Result<BTreeSet<Tid>> {
-        let mut out = self.ended_upstream(g);
+    /// The destroyed things held here whose evidence the closure of `g` needs (spec/commits.md §5
+    /// Destruction, issues/thing-lifetimes.md What is kept): on an authority path into it
+    /// (`destroyed_upstream`), or listed in `retainers^.0` or referenced in a live durable value by
+    /// a live thing of it. O(kept destroyed things something needs and the reference rows naming
+    /// them): bounded by live things, not by what was destroyed.
+    pub fn destroyed_needed(&mut self, g: &Tid) -> Result<BTreeSet<Tid>> {
+        let mut out = self.destroyed_upstream(g);
         let closure = self.closure(g);
-        for x in self.core.ended_kept() {
-            crate::costs::count("ended needed: candidates", 1);
+        for x in self.core.destroyed_kept() {
+            crate::costs::count("destroyed needed: candidates", 1);
             if out.contains(&x) {
                 continue;
             }
-            let rows: Vec<_> = self.references_to(&x)?.into_iter().filter(|r| r.source != x && crate::retention::end::needs_from(&r.ak)).collect();
+            let rows: Vec<_> = self.references_to(&x)?.into_iter().filter(|r| r.source != x && crate::retention::destroy::needs_from(&r.ak)).collect();
             if rows.iter().any(|r| closure.contains(&r.source) && self.core.exists(&r.source)) {
                 out.insert(x);
-            } else if rows.is_empty() && !crate::retention::end::dependents(&self.core, &x) {
-                // needed by nothing held: no candidate until a reference to it comes (`end_ended`)
-                self.core.note_ended_kept(&x, false);
+            } else if rows.is_empty() && !crate::retention::destroy::dependents(&self.core, &x) {
+                // needed by nothing held: no candidate until a reference to it comes (`apply_destructions`)
+                self.core.note_destroyed_kept(&x, false);
             }
         }
         Ok(out)
     }
 
-    /// What tells ended actor `t` ended, added to `out` (spec/commits.md §5 Ending): whatever
-    /// lets a node judge `t`'s frozen history also tells it the ending (`cert_parts` adds it
-    /// for every ended thing whose record goes). Each held minting and each held request
+    /// What tells that actor `t` was destroyed, added to `out` (spec/commits.md §5 Destruction): whatever
+    /// lets a node judge `t`'s frozen history also tells it the destruction (`cert_parts` adds it
+    /// for every destroyed thing whose record goes). Each held minting and each held request
     /// dropping one, as a header alone: a minting's `expires` dates an expiry (a value-less part
-    /// is never uploaded), a request's header names what it ends (`Header::requests`; `t`'s frozen
+    /// is never uploaded), a request's header names what it destroys (`Header::requests`; `t`'s frozen
     /// history judges its right), and a header-only blob has no prefix expiry, so a release's
     /// copy outlives the request's own blobs (spec/sync.md §1). Each with its author's chains to
     /// `t` and to its actor. Once per `out`: its mintings among `out`'s headers.
-    fn ending_evidence(&mut self, t: &Tid, out: &mut Certs) {
+    fn destruction_evidence(&mut self, t: &Tid, out: &mut Certs) {
         let mintings: Vec<CommitId> = self.core.mintings(t).map(|(c, _)| c).collect();
         if mintings.iter().all(|c| out.headers.contains(c)) {
             return;
         }
         out.headers.extend(mintings.iter().copied());
-        let requests = crate::retention::end::ending_requests(&self.core, t);
+        let requests = crate::retention::destroy::destroying_requests(&self.core, t);
         out.headers.extend(requests.iter().copied());
         for c in mintings.iter().chain(&requests) {
             let Some(h) = self.header(c) else { continue };
@@ -276,7 +276,7 @@ impl Engine {
         }
     }
 
-    /// What judges ended actor `t`'s permission history (spec/permissions.md §4): every held
+    /// What judges destroyed actor `t`'s permission history (spec/permissions.md §4): every held
     /// edge write on `t` with its write certificates (its author's chains, its holder's).
     fn history_certificates(&self, t: &Tid) -> osis_perm::Certificates {
         let mut out = osis_perm::Certificates::default();
@@ -373,9 +373,9 @@ impl Engine {
                 out.add(c, self.parts_of(&c, &BTreeSet::from([*t]), &["keys.0"]));
             }
         }
-        let ended: Vec<Tid> = certs.created.iter().filter(|t| self.core.ended(t)).copied().collect();
-        for t in ended {
-            self.ending_evidence(&t, out);
+        let destroyed: Vec<Tid> = certs.created.iter().filter(|t| self.core.destroyed(t)).copied().collect();
+        for t in destroyed {
+            self.destruction_evidence(&t, out);
         }
     }
 
@@ -493,7 +493,7 @@ impl Engine {
         }))
     }
 
-    /// A header-only copy of held commit `c` (an ended actor's minting, `ending_evidence`): no
+    /// A header-only copy of held commit `c` (a destroyed actor's minting, `destruction_evidence`): no
     /// part, so no expiry or commitments in its prefix (spec/sync.md §1), ordered by its `ts`
     /// (spec/crypto.md §5).
     pub fn header_body(&self, c: &CommitId) -> Option<Body> {

@@ -411,7 +411,7 @@ pub const CLIENTS: Aspect<BTreeMap<Tid, Client>> = Aspect::new("clients^.0", &CO
 pub const RETENTION: Aspect<RetentionSetting> = Aspect::new("retention^.0", &CORE);
 /// `purge.0`: the delta of a purge request naming no aspect to reset; fixed retention (spec/commits.md §5).
 pub const PURGE: Aspect<WallMs> = Aspect::new("purge.0", &CORE);
-/// `released.0`: a release request's delta on each thing it releases (spec/commits.md §5 Ending);
+/// `released.0`: a release request's delta on each thing it releases (spec/commits.md §5 Destruction);
 /// fixed retention, expiring `ROLE_KEEP` after its `ts`.
 pub const RELEASED: Aspect<WallMs> = Aspect::new("released.0", &CORE);
 pub const GROUP: Aspect<Group> = Aspect::new("group.0", &CORE);

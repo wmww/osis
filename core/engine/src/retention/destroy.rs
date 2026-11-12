@@ -1,19 +1,19 @@
-//! Ending a thing (spec/commits.md §5 Ending; notes/expiry-creation-design.md §3): purging or
+//! Destroying a thing (spec/commits.md §5 Destruction; notes/expiry-creation-design.md §3): purging or
 //! expiring its creation. A thing exists while a creation of it is held live; once every held
 //! creation of it is value-less the thing goes in the transaction that made it so: its parts as
 //! bodies dropped (node-sync then deletes them at hosts by the dropped-body path), its states and
 //! per-aspect rows. Records are identity, `created.0` is existence: what the thing created lives
 //! on: authority that passed through it stands as its frozen history says. Its record, its
-//! value-less creation and its `roles.0` parts (no content) stay while it **keeps**: ended by
+//! value-less creation and its `roles.0` parts (no content) stay while it **keeps**: destroyed by
 //! purge (for good: the right to purge is read from them, and a removal arriving later may make
-//! it fall; a fall reopens what the ending dropped, `reopen_fallen`), or with a dependent here
+//! it fall; a fall reopens what the destruction dropped, `reopen_fallen`), or with a dependent here
 //! (`dependents`): another held thing it is on an authority path of (a held record naming it
 //! first admin, a held edge write naming it holder), whose verdicts climb its record edge and
 //! frozen edges, or for a key actor a held commit it signed or acted in with a part held on
-//! another thing, which its record verifies. An ended thing that keeps nothing leaves only the
-//! commits' headers, and the ended actors named on it, kept only for it, go then too.
+//! another thing, which its record verifies. A destroyed thing that keeps nothing leaves only the
+//! commits' headers, and the destroyed actors named on it, kept only for it, go then too.
 //! What a dependent needs travels with the dependent: its holders place the record and frozen
-//! history under its labels (`Engine::ended_upstream`), and a node that kept nothing takes them
+//! history under its labels (`Engine::destroyed_upstream`), and a node that kept nothing takes them
 //! again when it opens them (`takes_late`), so it judges a dependent reaching it later as the
 //! others do: the keep is per node, but no verdict depends on it.
 //! `Core::exists` says the thing is gone all the same. A later write on it is a write on an
@@ -33,30 +33,30 @@ const CREATED: &str = osis_commit::retention::CREATED;
 const RELEASED: &str = osis_commit::retention::RELEASED;
 const ROLES: &str = "roles.0";
 
-/// Aspects whose parts an ended thing still takes (`thing_wait`), so its ending is judged alike:
-/// its mintings, its frozen edges and the ending requests' parts on it.
-pub(crate) fn judges_ending(ak: &str) -> bool {
-    matches!(ak, CREATED | ROLES) || osis_commit::retention::ending_request(ak)
+/// Aspects whose parts a destroyed thing still takes (`thing_wait`), so its destruction is judged alike:
+/// its mintings, its frozen edges and the destroying requests' parts on it.
+pub(crate) fn judges_destruction(ak: &str) -> bool {
+    matches!(ak, CREATED | ROLES) || osis_commit::retention::destroying_request(ak)
 }
 
-/// When each minting of an ended thing ended (spec/commits.md §5 Ending): at its expiry
+/// When each minting of a destroyed thing was destroyed (spec/commits.md §5 Destruction): at its expiry
 /// (`wall_ms(ts) >= T`), or after the earliest held request that drops it. A minting is not asked:
-/// a request ending the thing names every minting of it (`purge::names`).
-pub(crate) struct Ending(Vec<(Option<u64>, Option<Point>)>);
+/// a request destroying the thing names every minting of it (`purge::names`).
+pub(crate) struct Destruction(Vec<(Option<u64>, Option<Point>)>);
 
-impl Ending {
-    /// `t`'s ending, `None` while it is not ended. Its requests are found among the commits on `t`
+impl Destruction {
+    /// `t`'s destruction, `None` while it is not destroyed. Its requests are found among the commits on `t`
     /// (a request has a delta on each thing it names), each judged once per minting.
-    pub(crate) fn of(core: &Core, t: &Tid) -> Option<Ending> {
-        if !core.ended(t) {
+    pub(crate) fn of(core: &Core, t: &Tid) -> Option<Destruction> {
+        if !core.destroyed(t) {
             return None;
         }
-        let ends = per_minting(core, t).into_iter().map(|(expires, by)| (expires, by.into_iter().min()));
-        Some(Ending(ends.collect()))
+        let times = per_minting(core, t).into_iter().map(|(expires, by)| (expires, by.into_iter().min()));
+        Some(Destruction(times.collect()))
     }
 
-    /// Whether a part of commit `id` (header `h`) is written after the ending: nobody writes a
-    /// thing after its ending, so such a part is a part on an unknown thing, whatever its aspect.
+    /// Whether a part of commit `id` (header `h`) is written after the destruction: nobody writes a
+    /// thing after its destruction, so such a part is a part on an unknown thing, whatever its aspect.
     pub(crate) fn after(&self, h: &Header, id: &CommitId) -> bool {
         let at = Point { ts: h.ts, node: h.author, commit: *id };
         let wall = h.ts.wall_ms().0;
@@ -70,25 +70,25 @@ impl Ending {
 fn per_minting(core: &Core, t: &Tid) -> Vec<(Option<u64>, Vec<Point>)> {
     let on_t = |p: &Header| p.requests().iter().any(|i| i.tid() == t && i.ak().as_str() == CREATED);
     let requests: Vec<(CommitId, &Header)> = core.on_thing(t).filter_map(|pc| core.ix.commits.get(&pc).filter(|m| m.view.purges && on_t(&m.header)).map(|m| (pc, &*m.header))).collect();
-    let ends = core.mintings(t).map(|(c, ai)| {
+    let times = core.mintings(t).map(|(c, ai)| {
         let m = core.ix.commits.get(&c)?;
         let a = m.header.aspects.get(ai)?;
         let by = requests.iter().filter(|(pc, p)| super::purge::stands(core, p, pc, a, &m.header, &c)).map(|(pc, p)| Point { ts: p.ts, node: p.author, commit: *pc }).collect();
         Some((m.header.expires, by))
     });
-    ends.map(|x| x.unwrap_or((None, Vec::new()))).collect()
+    times.map(|x| x.unwrap_or((None, Vec::new()))).collect()
 }
 
-/// The held requests standing over a minting of `t` (spec/commits.md §5 Ending): with `t`'s
-/// mintings, what tells another node `t` ended (`Engine::certificates`).
-pub(crate) fn ending_requests(core: &Core, t: &Tid) -> BTreeSet<CommitId> {
+/// The held requests standing over a minting of `t` (spec/commits.md §5 Destruction): with `t`'s
+/// mintings, what tells another node `t` was destroyed (`Engine::certificates`).
+pub(crate) fn destroying_requests(core: &Core, t: &Tid) -> BTreeSet<CommitId> {
     per_minting(core, t).into_iter().flat_map(|(_, by)| by).map(|p| p.commit).collect()
 }
 
-/// How `t` ended, read at wall ms `now`: by release alone (storage reclaim, never erasure:
+/// How `t` was destroyed, read at wall ms `now`: by release alone (storage reclaim, never erasure:
 /// every held minting dropped by a standing release request, none by a purge or its own
 /// expiry), and then whether every such request is past its expiry (spec/commits.md §5
-/// Ending, Forgetting). `None`: not ended by release alone.
+/// Destruction, Forgetting). `None`: not destroyed by release alone.
 fn release_state(core: &Core, t: &Tid, now: u64) -> Option<bool> {
     let per = per_minting(core, t);
     let mut spent = true;
@@ -107,17 +107,17 @@ fn release_state(core: &Core, t: &Tid, now: u64) -> Option<bool> {
     (!per.is_empty()).then_some(spent)
 }
 
-/// Whether `t` ended by release alone (`release_state`): nothing of it is erasure's, so no
+/// Whether `t` was destroyed by release alone (`release_state`): nothing of it is erasure's, so no
 /// header of it lasts (`purge::lasting`).
 pub(crate) fn released(core: &Core, t: &Tid, now: u64) -> bool {
     release_state(core, t, now).is_some()
 }
 
-/// Whether something held here needs the evidence that `t` ended (issues/thing-lifetimes.md,
+/// Whether something held here needs the evidence that `t` was destroyed (issues/thing-lifetimes.md,
 /// What is kept): a dependent (`dependents`), or another held thing listing it in
 /// `retainers^.0` or referencing it in a live durable value other than `group.0` (the
 /// reference index, `needs_from`). One rule
-/// for every ending: while it holds, `t`'s record, value-less creation, `roles.0` and ending
+/// for every destruction: while it holds, `t`'s record, value-less creation, `roles.0` and destruction
 /// request parts stay and travel under that thing's labels (`Engine::certificates`).
 pub(crate) fn needs_evidence(tx: &mut Tx<'_>, t: &Tid) -> Result<bool> {
     if dependents(tx.core, t) {
@@ -127,55 +127,55 @@ pub(crate) fn needs_evidence(tx: &mut Tx<'_>, t: &Tid) -> Result<bool> {
 }
 
 /// Whether a reference row in aspect `ak` makes its source need the evidence that its target
-/// ended: a live durable value, but not `group.0` (a group contains its members, it does not
+/// destroyed: a live durable value, but not `group.0` (a group contains its members, it does not
 /// depend on them: readers show nothing for an unknown member; it still keeps a member alive
 /// for the lifetime judgment).
 pub(crate) fn needs_from(ak: &Ak) -> bool {
     !ak.ephemeral() && ak.as_str() != osis_schema::RawKey::ak(&osis_schema::core_types::GROUP)
 }
 
-/// Whether a request ending `t` is still in force here: a purge for good, a release until its
-/// expiry; an ending by expiry alone has none.
+/// Whether a request destroying `t` is still in force here: a purge for good, a release until its
+/// expiry; a destruction by expiry alone has none.
 fn in_force(tx: &Tx<'_>, t: &Tid) -> bool {
     !every_creation_expired(tx, t) && release_state(tx.core, t, tx.now().0) != Some(true)
 }
 
-/// Whether ended `t` keeps its record and what tells it ended (`in_force`, `needs_evidence`),
-/// noting it in `Core::ended_kept` while something needs it.
+/// Whether destroyed `t` keeps its record and what tells it was destroyed (`in_force`, `needs_evidence`),
+/// noting it in `Core::destroyed_kept` while something needs it.
 fn keeps(tx: &mut Tx<'_>, t: &Tid) -> Result<bool> {
     let needs = needs_evidence(tx, t)?;
-    tx.core.note_ended_kept(t, needs);
+    tx.core.note_destroyed_kept(t, needs);
     Ok(needs || in_force(tx, t))
 }
 
 /// Ends the things a value-less list changed on in this transaction (`Core::valueless_dirty`,
 /// taken at the end of the transaction, so any arrival order lands here).
-pub(crate) fn end_ended(tx: &mut Tx<'_>) -> Result<()> {
+pub(crate) fn apply_destructions(tx: &mut Tx<'_>) -> Result<()> {
     let dirty: BTreeSet<Tid> = tx.core.valueless_dirty.iter().filter(|(_, ak)| ak.as_str() == CREATED).map(|(t, _)| *t).collect();
-    let (due, fell): (BTreeSet<Tid>, BTreeSet<Tid>) = dirty.into_iter().partition(|t| tx.core.ended(t));
-    // ended things whose keep may have gone: a release request's part on it expired, or a
-    // thing needing its evidence let go of it (`Core::ended_due`)
+    let (due, fell): (BTreeSet<Tid>, BTreeSet<Tid>) = dirty.into_iter().partition(|t| tx.core.destroyed(t));
+    // destroyed things whose keep may have gone: a release request's part on it expired, or a
+    // thing needing its evidence let go of it (`Core::destroyed_due`)
     let mut again: BTreeSet<Tid> = tx.core.valueless_dirty.iter().filter(|(_, ak)| ak.as_str() == RELEASED).map(|(t, _)| *t).collect();
-    again.extend(std::mem::take(&mut tx.core.ended_due));
+    again.extend(std::mem::take(&mut tx.core.destroyed_due));
     again.retain(|t| !due.contains(t) && !fell.contains(t));
     if due.is_empty() && fell.is_empty() && again.is_empty() {
         return Ok(());
     }
-    // the things whose holders for keys these were (named on them, or on an ended actor so
+    // the things whose holders for keys these were (named on them, or on a destroyed actor so
     // named): possession counts their frozen holders in their place (spec/crypto.md §4, Holder
-    // actors, Ended), so their verdicts are judged again
+    // actors, Destroyed), so their verdicts are judged again
     let mut seen: BTreeSet<Tid> = due.union(&fell).copied().collect();
     let mut work: Vec<Tid> = seen.iter().copied().collect();
     while let Some(t) = work.pop() {
         let on: Vec<Tid> = tx.core.ix.held.named_on(&t).copied().filter(|x| *x != t).collect();
         for x in on {
             tx.core.stale_things.insert(x);
-            if tx.core.ended_actor(&x) && seen.insert(x) {
+            if tx.core.destroyed_actor(&x) && seen.insert(x) {
                 work.push(x);
             }
         }
     }
-    // known again or ended: judged, with what lists it
+    // known again or destroyed: judged, with what lists it
     for t in due.iter().chain(&fell) {
         super::lifetimes::queue_with_listers(tx, t)?;
     }
@@ -186,14 +186,14 @@ pub(crate) fn end_ended(tx: &mut Tx<'_>) -> Result<()> {
     }
     let mut held_changed = false;
     for t in &due {
-        held_changed |= end_thing(tx, t, &mut changed)?;
+        held_changed |= destroy_thing(tx, t, &mut changed)?;
     }
-    // a kept ended thing goes once nothing keeps it (what that drops may let more go)
+    // a kept destroyed thing goes once nothing keeps it (what that drops may let more go)
     loop {
-        again.extend(std::mem::take(&mut tx.core.ended_due));
+        again.extend(std::mem::take(&mut tx.core.destroyed_due));
         let Some(t) = again.pop_first() else { break };
-        if tx.core.ended(&t) && tx.core.created(&t).is_some() && !keeps(tx, &t)? {
-            held_changed |= end_thing(tx, &t, &mut changed)?;
+        if tx.core.destroyed(&t) && tx.core.created(&t).is_some() && !keeps(tx, &t)? {
+            held_changed |= destroy_thing(tx, &t, &mut changed)?;
         }
     }
     if held_changed {
@@ -206,15 +206,15 @@ pub(crate) fn end_ended(tx: &mut Tx<'_>) -> Result<()> {
     Ok(())
 }
 
-/// `t`'s ending fell: the parts it dropped are fetched again (spec/commits.md §5 Ending).
+/// `t`'s destruction fell: the parts it dropped are fetched again (spec/commits.md §5 Destruction).
 fn reopen_fallen(tx: &mut Tx<'_>, t: &Tid) -> Result<()> {
     let commits: Vec<CommitId> = tx.core.on_thing(t).collect();
     // a keys.0 part's keysets left with its dropped record
     let mut keysets = false;
     for c in commits {
         let Some(m) = tx.core.ix.commits.get(&c) else { continue };
-        let ended: Vec<(usize, bool)> = m.dropped.iter().filter(|(_, d)| d.why == DropFor::Ended).filter_map(|(ai, _)| m.header.aspects.get(*ai).filter(|a| a.tid == *t).map(|a| (*ai, a.ak.as_str() == "keys.0"))).collect();
-        for (ai, is_keys) in ended {
+        let destroyed: Vec<(usize, bool)> = m.dropped.iter().filter(|(_, d)| d.why == DropFor::Destroyed).filter_map(|(ai, _)| m.header.aspects.get(*ai).filter(|a| a.tid == *t).map(|a| (*ai, a.ak.as_str() == "keys.0"))).collect();
+        for (ai, is_keys) in destroyed {
             keysets |= is_keys;
             super::reopen_to_fetch(tx, &c, ai)?;
         }
@@ -228,15 +228,15 @@ fn reopen_fallen(tx: &mut Tx<'_>, t: &Tid) -> Result<()> {
     Ok(())
 }
 
-/// `t`'s record is held again after its ending here kept nothing of it (a dependent reached this
-/// node later): what that drop took of its frozen history (`judges_ending` but its mintings,
-/// which stay ended) counts as never received and is fetched again (spec/commits.md §5 Ending).
+/// `t`'s record is held again after its destruction here kept nothing of it (a dependent reached this
+/// node later): what that drop took of its frozen history (`judges_destruction` but its mintings,
+/// which stay destroyed) counts as never received and is fetched again (spec/commits.md §5 Destruction).
 pub(crate) fn record_back(tx: &mut Tx<'_>, t: &Tid) -> Result<()> {
     let commits: Vec<CommitId> = tx.core.on_thing(t).collect();
     for c in commits {
         let Some(m) = tx.core.ix.commits.get(&c) else { continue };
-        let ended: Vec<usize> = m.dropped.iter().filter(|(_, d)| d.why == DropFor::Ended).filter_map(|(ai, _)| m.header.aspects.get(*ai).filter(|a| a.tid == *t && judges_ending(a.ak.as_str()) && a.ak.as_str() != CREATED).map(|_| *ai)).collect();
-        for ai in ended {
+        let destroyed: Vec<usize> = m.dropped.iter().filter(|(_, d)| d.why == DropFor::Destroyed).filter_map(|(ai, _)| m.header.aspects.get(*ai).filter(|a| a.tid == *t && judges_destruction(a.ak.as_str()) && a.ak.as_str() != CREATED).map(|_| *ai)).collect();
+        for ai in destroyed {
             super::reopen_to_fetch(tx, &c, ai)?;
         }
     }
@@ -252,7 +252,7 @@ fn reads_again(t: &Tid, changed: &mut BTreeSet<(Tid, Ak)>) {
     }
 }
 
-/// Whether `t`'s every creation is past its expiry: an ending nothing can make fall, whatever
+/// Whether `t`'s every creation is past its expiry: a destruction nothing can make fall, whatever
 /// purge requests it also holds.
 fn every_creation_expired(tx: &Tx<'_>, t: &Tid) -> bool {
     let now = tx.now().0;
@@ -262,7 +262,7 @@ fn every_creation_expired(tx: &Tx<'_>, t: &Tid) -> bool {
 /// Whether something held here depends on `t` (the module doc): `t` is on an authority path of
 /// another held thing (a held record names it first admin, or a held edge write names it
 /// holder), or for a key actor a held commit it signed or acted in has a part held on another
-/// thing. The last walks the commits: only a key actor's ending asks it, which is rare
+/// thing. The last walks the commits: only a key actor's destruction asks it, which is rare
 /// (notes/coordination.md, Rare paths may be brute force).
 pub(crate) fn dependents(core: &crate::engine::Core, t: &Tid) -> bool {
     if core.ix.held.named_on(t).any(|x| x != t) {
@@ -274,9 +274,9 @@ pub(crate) fn dependents(core: &crate::engine::Core, t: &Tid) -> bool {
     core.ix.commits.values().any(|m| (m.header.author == *t || m.header.actor == *t) && m.header.aspects.iter().enumerate().any(|(ai, a)| a.tid != *t && !m.dropped.contains_key(&ai)))
 }
 
-/// Drops everything of `t` (`end_ended`) but what it keeps (the module doc). Whether the role
+/// Drops everything of `t` (`apply_destructions`) but what it keeps (the module doc). Whether the role
 /// timelines' inputs changed: they do when it keeps nothing.
-fn end_thing(tx: &mut Tx<'_>, t: &Tid, changed: &mut BTreeSet<(Tid, Ak)>) -> Result<bool> {
+fn destroy_thing(tx: &mut Tx<'_>, t: &Tid, changed: &mut BTreeSet<(Tid, Ak)>) -> Result<bool> {
     let keep = keeps(tx, t)?;
     // released, every request past its expiry: with what it drops the node forgets it
     let forget = !keep && release_state(tx.core, t, tx.now().0) == Some(true);
@@ -287,10 +287,10 @@ fn end_thing(tx: &mut Tx<'_>, t: &Tid, changed: &mut BTreeSet<(Tid, Ak)>) -> Res
     // the actors named on it (its first admin, its holders), read before its record and edges go
     let ups: Vec<Tid> = if keep { Vec::new() } else { tx.core.ix.held.holders_of(t).copied().collect() };
     // the holders its `roles.0` entries keyed go with the entries: read while the parts are held
-    // kept or not, an edge write on it stamped after its ending goes (`Ending::after`), judged
+    // kept or not, an edge write on it stamped after its destruction goes (`Destruction::after`), judged
     // once while the late writes are still held
-    let ending = Ending::of(tx.core, t);
-    let late = |core: &Core, id: &CommitId| ending.as_ref().is_some_and(|e| core.ix.commits.get(id).is_some_and(|m| e.after(&m.header, id)));
+    let destruction = Destruction::of(tx.core, t);
+    let late = |core: &Core, id: &CommitId| destruction.as_ref().is_some_and(|e| core.ix.commits.get(id).is_some_and(|m| e.after(&m.header, id)));
     let edge_commits: Vec<CommitId> = tx.core.ix.held.commits_on(t).iter().map(|c| c.id).filter(|c| !keep || late(tx.core, c)).collect();
     for id in &edge_commits {
         let parts = crate::apply::edge_parts(tx, id)?;
@@ -305,17 +305,17 @@ fn end_thing(tx: &mut Tx<'_>, t: &Tid, changed: &mut BTreeSet<(Tid, Ak)>) -> Res
             }
         }
     }
-    let aspects: Vec<(Ak, Vec<CommitId>)> = tx.core.aspects_of(t).filter(|((_, ak), _)| !keep || !judges_ending(ak.as_str())).map(|((_, ak), s)| (ak.clone(), s.iter().map(|x| x.1).collect())).collect();
-    // what it keeps but for its parts written after the ending
+    let aspects: Vec<(Ak, Vec<CommitId>)> = tx.core.aspects_of(t).filter(|((_, ak), _)| !keep || !judges_destruction(ak.as_str())).map(|((_, ak), s)| (ak.clone(), s.iter().map(|x| x.1).collect())).collect();
+    // what it keeps but for its parts written after the destruction
     let partly: Vec<(Ak, Vec<CommitId>)> = if keep {
-        tx.core.aspects_of(t).filter(|((_, ak), _)| judges_ending(ak.as_str()) && ak.as_str() != CREATED).map(|((_, ak), s)| (ak.clone(), s.iter().map(|x| x.1).filter(|c| late(tx.core, c)).collect::<Vec<_>>())).filter(|(_, cs)| !cs.is_empty()).collect()
+        tx.core.aspects_of(t).filter(|((_, ak), _)| judges_destruction(ak.as_str()) && ak.as_str() != CREATED).map(|((_, ak), s)| (ak.clone(), s.iter().map(|x| x.1).filter(|c| late(tx.core, c)).collect::<Vec<_>>())).filter(|(_, cs)| !cs.is_empty()).collect()
     } else {
         Vec::new()
     };
     for (ak, commits) in aspects.iter().chain(&partly) {
         for c in commits {
             if let Some(ai) = tx.core.ix.commits.get(c).and_then(|m| m.aspect(t, ak)) {
-                super::drop_part_for(tx, c, ai, DropFor::Ended)?;
+                super::drop_part_for(tx, c, ai, DropFor::Destroyed)?;
             }
         }
     }
@@ -358,10 +358,10 @@ fn end_thing(tx: &mut Tx<'_>, t: &Tid, changed: &mut BTreeSet<(Tid, Ak)>) -> Res
         if forget {
             forget_released(tx, t)?;
         }
-        // the ended actors on its authority paths, kept for it alone, go too
+        // the destroyed actors on its authority paths, kept for it alone, go too
         for up in ups {
-            if up != *t && tx.core.created(&up).is_some() && tx.core.ended(&up) {
-                end_thing(tx, &up, changed)?;
+            if up != *t && tx.core.created(&up).is_some() && tx.core.destroyed(&up) {
+                destroy_thing(tx, &up, changed)?;
             }
         }
     }
@@ -370,7 +370,7 @@ fn end_thing(tx: &mut Tx<'_>, t: &Tid, changed: &mut BTreeSet<(Tid, Ak)>) -> Res
 }
 
 /// Forgets released `t` once its release requests are past their expiry and nothing keeps it
-/// (spec/commits.md §5 Forgetting; `end_thing` dropped every part of it and its record). Of each
+/// (spec/commits.md §5 Forgetting; `destroy_thing` dropped every part of it and its record). Of each
 /// commit on `t`, a part elsewhere is marked forgotten (`Meta::forgot`: on a released thing
 /// forgotten here before, this transaction's included, whose record is not held again), missing on a thing whose record is not
 /// held (unknown here, maybe alive elsewhere), or other (on a thing held here):

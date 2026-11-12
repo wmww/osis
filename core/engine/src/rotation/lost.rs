@@ -284,7 +284,7 @@ fn judge(tx: &mut Tx<'_>, cands: Vec<Tid>) -> Vec<Tid> {
 }
 
 /// This node's own self-removals (`departures_placing`) from `a` or from an actor holding a role
-/// on it, transitively over the edges (`edge_holders`: an ended actor it left before the ending
+/// on it, transitively over the edges (`edge_holders`: a destroyed actor it left before the destruction
 /// included): what made it lose `a` (a node that left a holder actor loses what that actor reads).
 fn own_leaving(tx: &mut Tx<'_>, a: &Tid) -> Result<BTreeSet<osis_base::CommitId>> {
     let mut out = BTreeSet::new();

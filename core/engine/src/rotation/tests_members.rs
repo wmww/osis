@@ -1724,19 +1724,19 @@ fn keyless_route_makes_no_valid_rotation_spec_crypto_4() {
     assert!(blocked_at(&mut lp, 0, g).is_empty(), "G's admin may encrypt under G");
 }
 
-/// An ended holder actor's world (spec/crypto.md §4, Holder actors, Ended): peer 0 makes T,
+/// A destroyed holder actor's world (spec/crypto.md §4, Holder actors, Destroyed): peer 0 makes T,
 /// expiring at `T0 + 50 s` (first admin peer 0, secrets of its own) and X (secrets of its own),
 /// grants T read on X; peer 2 makes G and peer 0 grants G read on T; peer 1 reads T, and peer
 /// 3 reads G. Synced: T, X, G. Built once, copied (`LocalPeer::cached`).
-fn ended_world() -> (LocalPeer, Tid, Tid, Tid) {
-    let (lp, (t, x, g)) = LocalPeer::cached("rotation::ended_world", || {
-        let (lp, t, x, g) = build_ended_world();
+fn destroyed_world() -> (LocalPeer, Tid, Tid, Tid) {
+    let (lp, (t, x, g)) = LocalPeer::cached("rotation::destroyed_world", || {
+        let (lp, t, x, g) = build_destroyed_world();
         (lp, (t, x, g))
     });
     (lp, t, x, g)
 }
 
-fn build_ended_world() -> (LocalPeer, Tid, Tid, Tid) {
+fn build_destroyed_world() -> (LocalPeer, Tid, Tid, Tid) {
     let mut lp = LocalPeer::new(4, 0, T0).unwrap();
     let me = lp.peers[0].engine.me();
     let mut m = Mutation::new();
@@ -1768,17 +1768,17 @@ fn end_t(lp: &mut LocalPeer, t: Tid) {
     }
     lp.sync_all().unwrap();
     for i in 0..lp.peers.len() {
-        assert!(lp.peers[i].engine.core.ended(&t) || lp.peers[i].engine.core.created(&t).is_none(), "peer {i}: T ended");
+        assert!(lp.peers[i].engine.core.destroyed(&t) || lp.peers[i].engine.core.created(&t).is_none(), "peer {i}: T destroyed");
     }
 }
 
-// spec/crypto.md §4 (Holder actors, Ended): an ended actor holds no keys, so X's admin, once T
+// spec/crypto.md §4 (Holder actors, Destroyed): a destroyed actor holds no keys, so X's admin, once T
 // ended, rotates X (its box to T is a departure) boxing T's frozen holders in T's place: G and
 // itself, never peer 1, removed from T before the ending. Peer 1 opens none of X's new epoch from
 // every secret it held; peer 3, reading X only through G and T, reads it
 #[test]
-fn ended_holder_actor_boxes_its_frozen_holders_never_one_removed_before_spec_crypto_4() {
-    let (mut lp, t, x, g) = ended_world();
+fn destroyed_holder_actor_boxes_its_frozen_holders_never_one_removed_before_spec_crypto_4() {
+    let (mut lp, t, x, g) = destroyed_world();
     let n1 = lp.peers[1].engine.tid();
     let start = held_by(&lp, 1, &[t, x]);
     assert!(start.iter().any(|k| k.0 == x), "peer 1 reads X through T");
@@ -1797,12 +1797,12 @@ fn ended_holder_actor_boxes_its_frozen_holders_never_one_removed_before_spec_cry
     assert_eq!(newest_read(&lp, 3, x), Some(w), "peer 3 reads X through G");
 }
 
-// spec/crypto.md §4 (Holder actors, Ended; Stale): X's rotation after T's ending boxes T's frozen
+// spec/crypto.md §4 (Holder actors, Destroyed; Stale): X's rotation after T's destruction boxes T's frozen
 // holder G at its current keyset as any holder actor: G's admin removes peer 3 from G, so X's box
 // to G goes stale and X rotates onto G's new keyset, which peer 3 opens nothing of
 #[test]
-fn rotation_after_an_ending_seals_a_frozen_holder_at_its_current_keyset_spec_crypto_4() {
-    let (mut lp, t, x, g) = ended_world();
+fn rotation_after_a_destruction_seals_a_frozen_holder_at_its_current_keyset_spec_crypto_4() {
+    let (mut lp, t, x, g) = destroyed_world();
     end_t(&mut lp, t);
     settle(&mut lp, &[0], &[x]);
     assert!(boxes(&mut lp, 0, x, g), "G boxed on X");

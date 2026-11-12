@@ -495,11 +495,11 @@ impl Engine {
     }
 
     /// Whether a header of `h` may be a lasting header on `t` (spec/commits.md §5): it carries a
-    /// purge request, or a permanent delta on `t` unless `t` ended by release alone (no header of
+    /// purge request, or a permanent delta on `t` unless `t` was destroyed by release alone (no header of
     /// it lasts).
     pub fn may_last_on(&self, h: &Header, t: &osis_base::Tid) -> bool {
         let now = self.now().0;
-        !h.purge.is_empty() || h.aspects.iter().any(|a| a.tid == *t && super::history::permanent(&self.core, h, a, now)) && !super::end::released(&self.core, t, now)
+        !h.purge.is_empty() || h.aspects.iter().any(|a| a.tid == *t && super::history::permanent(&self.core, h, a, now)) && !super::destroy::released(&self.core, t, now)
     }
 
     /// From when any node may drop held part `(tid, ak)` of `c` under a held valid writer's

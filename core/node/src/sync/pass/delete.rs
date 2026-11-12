@@ -116,16 +116,16 @@ impl SyncEngine {
         let Some(m) = self.engine.core.ix.commits.get(commit).cloned() else { return Ok(self.judge_forgotten(commit, opened, note)) };
         let h = m.header.clone();
         let aspects: Vec<(Tid, Ak)> = parts.iter().filter_map(|ai| h.aspects.get(*ai)).map(|a| (a.tid, a.ak.clone())).collect();
-        // a certificate of ended things (their frozen edges or a request ending one outside the
+        // a certificate of destroyed things (their frozen edges or a request destroying one outside the
         // closure, a minting's or a request's header alone: spec/permissions.md §4, spec/commits.md
-        // §5 Ending) is there for the label's things that need them told ended, whatever this
+        // §5 Destruction) is there for the label's things that need them told destroyed, whatever this
         // node kept: it goes once a settled view finds none on an authority path into the
-        // closure or listing or referencing one there (`ended_needed`)
-        if let Some(about) = self.ended_certificate(g, commit, &h, opened, desired) {
+        // closure or listing or referencing one there (`destroyed_needed`)
+        if let Some(about) = self.destroyed_certificate(g, commit, &h, opened, desired) {
             if !settled {
                 return Ok(None);
             }
-            let needed = self.engine.ended_needed(g)?;
+            let needed = self.engine.destroyed_needed(g)?;
             if about.iter().any(|t| needed.contains(t)) {
                 // judged again once what names, lists or references them ends, changes or
                 // leaves the closure
@@ -273,16 +273,16 @@ impl SyncEngine {
     /// superseder covers it (`carried`), none otherwise. Judged again every pass until it goes
     /// (`unsure`: what it waits for is the carrier's presence at the host, no state change here).
     /// A superseded body is its author's to delete, nobody else's.
-    /// The ended things an entry of commit `c` (header `h`, parts `opened`) is a certificate of
+    /// The destroyed things an entry of commit `c` (header `h`, parts `opened`) is a certificate of
     /// under `g`'s label, when that is all it is: a header alone (no lasting header the label
-    /// wants) minting one or carrying a request ending one, outside the closure or, inside, a
+    /// wants) minting one or carrying a request destroying one, outside the closure or, inside, a
     /// header that cannot be lasting (`Engine::may_last_on`); or every
-    /// part a `roles.0` or ending request (`purge.0`, `released.0`) part on one outside the
+    /// part a `roles.0` or destroying request (`purge.0`, `released.0`) part on one outside the
     /// closure (inside, such a part is a closure body).
-    fn ended_certificate(&self, g: &Tid, c: &CommitId, h: &osis_commit::Header, opened: &[usize], desired: &Desired) -> Option<BTreeSet<Tid>> {
+    fn destroyed_certificate(&self, g: &Tid, c: &CommitId, h: &osis_commit::Header, opened: &[usize], desired: &Desired) -> Option<BTreeSet<Tid>> {
         let core = &self.engine.core;
         let closure = self.engine.closure(g);
-        let outside = |t: &Tid| !closure.contains(t) && core.ended(t);
+        let outside = |t: &Tid| !closure.contains(t) && core.destroyed(t);
         let about: BTreeSet<Tid> = if opened.is_empty() {
             if desired.get(c).is_some_and(|d| d.iter().any(|p| p.is_empty())) {
                 return None;
@@ -290,10 +290,10 @@ impl SyncEngine {
             let minted = h.aspects.iter().filter(|a| a.ak.as_str() == osis_commit::retention::CREATED).map(|a| a.tid);
             let requested = h.requests().iter().map(|i| *i.tid()).collect::<Vec<_>>();
             // inside the closure, not a header that may be lasting there (judged below)
-            minted.chain(requested).filter(|t| outside(t) || core.ended(t) && !self.engine.may_last_on(h, t)).collect()
+            minted.chain(requested).filter(|t| outside(t) || core.destroyed(t) && !self.engine.may_last_on(h, t)).collect()
         } else {
             let on: Vec<&osis_commit::AspectEntry> = opened.iter().filter_map(|ai| h.aspects.get(*ai)).collect();
-            if on.len() < opened.len() || !on.iter().all(|a| (a.ak.as_str() == "roles.0" || osis_commit::retention::ending_request(a.ak.as_str())) && outside(&a.tid)) {
+            if on.len() < opened.len() || !on.iter().all(|a| (a.ak.as_str() == "roles.0" || osis_commit::retention::destroying_request(a.ak.as_str())) && outside(&a.tid)) {
                 return None;
             }
             on.iter().map(|a| a.tid).collect()

@@ -26,20 +26,20 @@ pub const RETENTION: &str = "retention^.0";
 /// The AK of the delta a purge request with nothing to reset carries.
 pub const PURGE: &str = "purge.0";
 
-/// The AK of a release request's delta on each thing it releases (spec/commits.md §5 Ending).
+/// The AK of a release request's delta on each thing it releases (spec/commits.md §5 Destruction).
 pub const RELEASED: &str = "released.0";
 
-/// The AKs of an ending request's delta on its thing, what tells another node the thing ended
-/// (spec/commits.md §5 Ending): a purge's `purge.0`, a release's `released.0`.
-pub const ENDING_REQUESTS: [&str; 2] = [PURGE, RELEASED];
+/// The AKs of a destroying request's delta on its thing, what tells another node the thing was destroyed
+/// (spec/commits.md §5 Destruction): a purge's `purge.0`, a release's `released.0`.
+pub const DESTROYING_REQUESTS: [&str; 2] = [PURGE, RELEASED];
 
-/// Whether a delta of `ak` is an ending request's (`ENDING_REQUESTS`).
-pub fn ending_request(ak: &str) -> bool {
-    ENDING_REQUESTS.contains(&ak)
+/// Whether a delta of `ak` is a destroying request's (`DESTROYING_REQUESTS`).
+pub fn destroying_request(ak: &str) -> bool {
+    DESTROYING_REQUESTS.contains(&ak)
 }
 
 /// The expiry a commit carrying `released.0` deltas has: `wall_ms(ts) + ROLE_KEEP`
-/// (spec/commits.md §5 Ending).
+/// (spec/commits.md §5 Destruction).
 pub fn release_expires(ts: Ts) -> u64 {
     ts.wall_ms().0.saturating_add(ROLE_KEEP_MS)
 }
@@ -55,7 +55,7 @@ pub fn role_kept(ak: &str) -> bool {
 pub fn fixed_retention(ak: &str) -> Option<Retention> {
     if ak == RETENTION {
         Some(KEPT_RETENTION)
-    } else if ending_request(ak) {
+    } else if destroying_request(ak) {
         // a commit carrying a request carries no `expires` from a setting
         Some(Retention { by: PurgeBy::AuthorOrAdmin })
     } else if role_kept(ak) {

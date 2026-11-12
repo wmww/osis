@@ -206,7 +206,7 @@ pub fn history(seed: u64, n: usize) -> Held {
     let mut ids: BTreeSet<CommitId> = BTreeSet::new();
     let mut w = START;
     let mut logical = 0u64;
-    // the things' creations: an ending (expiry, purge) needs a purgeable one
+    // the things' creations: a destruction (expiry, purge) needs a purgeable one
     for (k, &(t, link, author)) in CREATIONS.iter().enumerate() {
         let ts = (START - HOUR) * MS + k as u64;
         let retention = if r.chance(50) { Retention::FIXED } else { Retention::ROLE };
@@ -333,7 +333,7 @@ pub fn history(seed: u64, n: usize) -> Held {
             let f = snapshot_state(&h, &o, thing, aspect);
             Commit { kind: CommitKind::Snapshot, parts: vec![plain_part(thing, aspect, Retention::WRITER, Delta::Writes(f))], ..base(id, author, ts) }
         } else if roll < 31 && !commits.is_empty() {
-            // a creation's purge ends the thing: drawn less often
+            // a creation's purge destroys the thing: drawn less often
             let mut target = commits[r.below(commits.len() as u64) as usize].clone();
             if creates(&target) && !r.chance(30) {
                 target = commits[r.below(commits.len() as u64) as usize].clone();

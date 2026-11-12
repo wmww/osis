@@ -62,7 +62,7 @@ enum Here {
 /// Whether part `i` of `c` is listed, judged from its header (spec/commits.md §7): what is here of it.
 fn status(h: &Held, o: &Outcome, by_id: &BTreeMap<CommitId, &Commit>, c: &Commit, i: usize) -> Option<Here> {
     let p = &c.parts[i];
-    if !p.aspect.signal || c.kind != CommitKind::Content || o.ended.contains(&p.thing) || o.valid.get(&(c.id, i)) != Some(&true) || expired(c, h.now) {
+    if !p.aspect.signal || c.kind != CommitKind::Content || o.destroyed.contains(&p.thing) || o.valid.get(&(c.id, i)) != Some(&true) || expired(c, h.now) {
         return None;
     }
     if let Some(q) = o.purged.get(&(c.id, i)) {

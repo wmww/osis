@@ -532,7 +532,7 @@ impl SyncEngine {
     /// its raw records (the ones held).
     fn chain_values(&mut self, chain: crate::labeling::Certs) -> Result<(Vec<osis_base::Value>, Vec<osis_base::CreationRecord>)> {
         let mut out = Vec::new();
-        // headers alone (an ended actor's mintings) beside the parts
+        // headers alone (a destroyed actor's mintings) beside the parts
         let headers = chain.headers.iter().filter(|x| !chain.commits.contains_key(*x)).map(|x| (*x, Default::default()));
         let all: Vec<(CommitId, BTreeSet<usize>)> = chain.commits.clone().into_iter().chain(headers).collect();
         for (x, q) in all {

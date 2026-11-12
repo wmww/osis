@@ -1,5 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
-//! Ending a thing at the node level (spec/commits.md §5 Ending, spec/permissions.md §6): what
+//! Destroying a thing at the node level (spec/commits.md §5 Destruction, spec/permissions.md §6): what
 //! outlasts it, restarts, stale copies, a fall, and its cost.
 
 use crate::net::hosted;
@@ -50,7 +50,7 @@ fn demote(net: &mut Net, n: usize, thing: Tid, holder: Tid, role: Role) {
     net.engine(n).commit(m).unwrap().unwrap();
 }
 
-fn end(net: &mut Net, by: usize, t: Tid) -> CommitId {
+fn purge_thing(net: &mut Net, by: usize, t: Tid) -> CommitId {
     let mut m = Mutation::new();
     m.set(t, &ct::PURGE, &osis_base::WallMs(net.now())).unwrap();
     m.purge(PurgeItem::Aspect { tid: t, ak: Ak::new(ct::CREATED.ak()).unwrap() });
@@ -73,15 +73,15 @@ fn gone(net: &mut Net, n: usize, t: Tid) {
     assert!(matches!(e.commit(m), Err(osis_node::Error::UnknownThing(_))), "node {n}: a write refused as unknown");
 }
 
-// spec/commits.md §5 (Ending): an ending holds over a restart, and nothing of the thing reads as
+// spec/commits.md §5 (Destruction): a destruction holds over a restart, and nothing of the thing reads as
 // existing
 #[test]
-fn ended_stays_ended_over_a_restart_spec_commits_5() {
+fn destroyed_stays_destroyed_over_a_restart_spec_commits_5() {
     let Setup { mut net, a, b, g, .. } = setup();
     let (t, _) = made(&mut net, a, g);
     net.write(b, t, "y");
     net.run();
-    end(&mut net, a, t);
+    purge_thing(&mut net, a, t);
     net.run();
     for n in [a, b] {
         gone(&mut net, n, t);
@@ -92,11 +92,11 @@ fn ended_stays_ended_over_a_restart_spec_commits_5() {
     assert!(net.read(b, g).is_some() || net.read(a, g) == net.read(b, g));
 }
 
-// spec/permissions.md §6 (Ending), spec/commits.md §5: an admin by a grant on the thing alone may
-// end it, and the verdict reads the edges the ending keeps: a stale copy of the creation arriving
-// while the request is held ends the thing again, also after a restart
+// spec/permissions.md §6 (Destruction), spec/commits.md §5: an admin by a grant on the thing alone may
+// destroy it, and the verdict reads the edges the destruction keeps: a stale copy of the creation arriving
+// while the request is held destroys the thing again, also after a restart
 #[test]
-fn a_grant_holder_ends_and_a_stale_copy_ends_again_spec_permissions_6() {
+fn a_grant_holder_destroys_and_a_stale_copy_is_destroyed_again_spec_permissions_6() {
     let Setup { mut net, a, b, c, g } = setup();
     let (t, creation) = made(&mut net, a, g);
     let tc = net.tid(c);
@@ -104,7 +104,7 @@ fn a_grant_holder_ends_and_a_stale_copy_ends_again_spec_permissions_6() {
     demote(&mut net, a, g, tc, Role::Read);
     net.run();
     let stale = net.engine(a).package(&creation).unwrap().unwrap();
-    end(&mut net, c, t);
+    purge_thing(&mut net, c, t);
     net.run();
     gone(&mut net, b, t);
     let _ = net.engine(b).ingest(&stale.bytes, Vec::new());
@@ -118,10 +118,10 @@ fn a_grant_holder_ends_and_a_stale_copy_ends_again_spec_permissions_6() {
     }
 }
 
-// spec/requirements.md Deletion; Tess's ruling on a fallen ending: a demotion ordered before the
-// request makes the ending fall where it is held; the thing comes back from a node holding a copy
+// spec/requirements.md Deletion; Tess's ruling on a fallen destruction: a demotion ordered before the
+// request makes the destruction fall where it is held; the thing comes back from a node holding a copy
 #[test]
-fn an_ending_that_falls_comes_back_from_a_copy_spec_commits_5() {
+fn a_destruction_that_falls_comes_back_from_a_copy_spec_commits_5() {
     let Setup { mut net, a, b, c, g, .. } = setup();
     let (t, _) = made(&mut net, a, g);
     let tb = net.tid(b);
@@ -131,7 +131,7 @@ fn an_ending_that_falls_comes_back_from_a_copy_spec_commits_5() {
     net.set_online(c, false);
     demote(&mut net, c, g, tb, Role::Read);
     net.advance(10);
-    end(&mut net, b, t);
+    purge_thing(&mut net, b, t);
     net.run();
     gone(&mut net, a, t);
     assert_eq!(net.read(c, t), Some(s("x")), "c never heard");
@@ -139,21 +139,21 @@ fn an_ending_that_falls_comes_back_from_a_copy_spec_commits_5() {
     net.run();
     net.advance(120_000);
     net.advance(120_000);
-    assert_eq!(net.read(c, t), Some(s("x")), "the ending fell at c, which holds a copy");
-    assert_eq!(net.read(a, t), Some(s("x")), "the ending fell at a: the copy comes back");
+    assert_eq!(net.read(c, t), Some(s("x")), "the destruction fell at c, which holds a copy");
+    assert_eq!(net.read(a, t), Some(s("x")), "the destruction fell at a: the copy comes back");
     assert_eq!(net.read(b, t), Some(s("x")), "and at the demoted b");
 }
 
-// spec/commits.md §4 (Unjudgeable), §5 (Ending): a late write on an ended thing is a write on an
-// unknown thing: nothing of it is kept, and it does not come back while the ending stands
+// spec/commits.md §4 (Unjudgeable), §5 (Destruction): a late write on a destroyed thing is a write on an
+// unknown thing: nothing of it is kept, and it does not come back while the destruction stands
 #[test]
-fn a_late_write_awaits_an_ended_thing_spec_commits_5() {
+fn a_late_write_awaits_a_destroyed_thing_spec_commits_5() {
     let Setup { mut net, a, b, g, .. } = setup();
     let (t, _) = made(&mut net, a, g);
     net.set_online(b, false);
     let late = net.write(b, t, "late");
     let pk = net.engine(b).package(&late).unwrap().unwrap();
-    end(&mut net, a, t);
+    purge_thing(&mut net, a, t);
     net.run();
     assert!(matches!(net.engine(a).ingest(&pk.bytes, Vec::new()).unwrap(), Ingested::Awaits(..)));
     assert!(!net.engine(a).commit_ids().contains(&late));
@@ -167,10 +167,10 @@ fn a_late_write_awaits_an_ended_thing_spec_commits_5() {
     assert!(!net.engine(a).commit_ids().contains(&late));
 }
 
-// spec/commits.md §4, §5 (Ending): an ending arriving while a write awaits the unknown thing: the
+// spec/commits.md §4, §5 (Destruction): a destruction arriving while a write awaits the unknown thing: the
 // write comes back to nothing, and its parts are not held
 #[test]
-fn an_ending_while_a_write_awaits_the_thing_spec_commits_5() {
+fn a_destruction_while_a_write_awaits_the_thing_spec_commits_5() {
     let mut lp = crate::common::net(2, 0);
     lp.sync_all().unwrap();
     let before: std::collections::BTreeSet<_> = lp.packages(0).unwrap().iter().map(|p| p.id).collect();
@@ -196,8 +196,8 @@ fn an_ending_while_a_write_awaits_the_thing_spec_commits_5() {
     assert!(!lp.peers[1].engine.knows(&t));
 }
 
-/// The work of ending one thing holding `parts` writes on a node holding `others` other things.
-fn ending_work(parts: usize, others: usize) -> (crate::scale::Work, crate::scale::Work) {
+/// The work of destroying one thing holding `parts` writes on a node holding `others` other things.
+fn destruction_work(parts: usize, others: usize) -> (crate::scale::Work, crate::scale::Work) {
     let mut lp = crate::common::net(1, 0);
     let b = lp.peers[0].backend.clone();
     let mut other = crate::common::new_thing(&mut lp, 0);
@@ -226,24 +226,24 @@ fn ending_work(parts: usize, others: usize) -> (crate::scale::Work, crate::scale
     (w, base)
 }
 
-// spec/requirements.md Scale, spec/commits.md §5 (Ending): an ending costs the thing's own parts,
+// spec/requirements.md Scale, spec/commits.md §5 (Destruction): a destruction costs the thing's own parts,
 // not their square and not the things beside it: it rewrites only the store pages its own rows
 // sit on, however many other things the node holds (bytes follow the page size, so writes are
 // what is counted)
 #[test]
-fn ending_costs_the_things_parts_spec_commits_5() {
-    let (a, b) = (ending_work(20, 5), ending_work(200, 5));
+fn destruction_costs_the_things_parts_spec_commits_5() {
+    let (a, b) = (destruction_work(20, 5), destruction_work(200, 5));
     crate::scale::linear("rebuilds by parts", a.0.n("rebuild"), b.0.n("rebuild"));
     crate::scale::linear("bytes written by parts", a.0.io.written_bytes, b.0.io.written_bytes);
-    let (a, b) = (ending_work(5, 20), ending_work(5, 200));
+    let (a, b) = (destruction_work(5, 20), destruction_work(5, 200));
     crate::scale::flat("rebuilds by other things", a.0.n("rebuild"), b.0.n("rebuild"));
     crate::scale::flat("store writes by other things", a.0.io.writes, b.0.io.writes);
 }
 
-// spec/commits.md §5 (Ending): the first admin's removal is authorised by a grant the ending keeps,
-// so a removal arriving after the ending makes it fall and a copy brings the thing back
+// spec/commits.md §5 (Destruction): the first admin's removal is authorised by a grant the destruction keeps,
+// so a removal arriving after the destruction makes it fall and a copy brings the thing back
 #[test]
-fn repro_first_admin_removal_after_ending() {
+fn repro_first_admin_removal_after_destruction() {
     let Setup { mut net, a, b, c, g } = setup();
     let (t, creation) = made(&mut net, a, g);
     let tc = net.tid(c);
@@ -254,7 +254,7 @@ fn repro_first_admin_removal_after_ending() {
     let done = net.engine(c).demote(&t, &osis_node::flows::Demotion { holder: g, new: None, retain: None }).unwrap();
     let removal: Vec<_> = done.commits.iter().map(|x| net.engine(c).package(x).unwrap().unwrap()).collect();
     net.advance(10);
-    end(&mut net, a, t);
+    purge_thing(&mut net, a, t);
     net.run();
     gone(&mut net, b, t);
     for p in &removal {
@@ -264,13 +264,13 @@ fn repro_first_admin_removal_after_ending() {
     assert_eq!(net.read(b, t), Some(s("x")));
 }
 
-// spec/commits.md §5 (Ending), spec/sync.md §5: a removal of the first admin racing an ending, in
-// both arrival orders: the nodes agree the ending fell, and then nothing is uploaded or deleted at
+// spec/commits.md §5 (Destruction), spec/sync.md §5: a removal of the first admin racing a destruction, in
+// both arrival orders: the nodes agree the destruction fell, and then nothing is uploaded or deleted at
 // hosts over and over
 #[test]
-fn removal_racing_an_ending_converges_in_both_orders_spec_commits_5() {
-    for ending_first in [true, false] {
-        let (mut net, (a, b, c, g, t)) = Net::cached("ending::removal_racing", || {
+fn removal_racing_a_destruction_converges_in_both_orders_spec_commits_5() {
+    for destruction_first in [true, false] {
+        let (mut net, (a, b, c, g, t)) = Net::cached("destruction::removal_racing", || {
             let Setup { mut net, a, b, c, g } = setup();
             let (t, _) = made(&mut net, a, g);
             let (tc, tb) = (net.tid(c), net.tid(b));
@@ -280,12 +280,12 @@ fn removal_racing_an_ending_converges_in_both_orders_spec_commits_5() {
             (net, (a, b, c, g, t))
         });
         // who is cut off until both are written: the side that took the other first
-        let off = if ending_first { c } else { a };
+        let off = if destruction_first { c } else { a };
         net.set_online(off, false);
         net.engine(c).demote(&t, &osis_node::flows::Demotion { holder: g, new: None, retain: None }).unwrap();
         net.run();
         net.advance(10);
-        end(&mut net, a, t);
+        purge_thing(&mut net, a, t);
         net.run();
         net.set_online(off, true);
         net.run();
@@ -294,15 +294,15 @@ fn removal_racing_an_ending_converges_in_both_orders_spec_commits_5() {
         }
         // a lost its way in with the first admin's edge; b and c hold their own
         for n in [b, c] {
-            assert_eq!(net.read(n, t), Some(s("x")), "ending first {ending_first}: node {n}");
+            assert_eq!(net.read(n, t), Some(s("x")), "destruction first {destruction_first}: node {n}");
         }
-        assert!(!net.engine(a).core.ended(&t), "ending first {ending_first}: it fell at a too");
+        assert!(!net.engine(a).core.destroyed(&t), "destruction first {destruction_first}: it fell at a too");
         let churn = |net: &Net| net.sent_kinds.get(&10).copied().unwrap_or(0) + net.sent_kinds.get(&14).copied().unwrap_or(0);
         let settled = churn(&net);
         for _ in 0..4 {
             net.advance(120_000);
         }
-        assert_eq!(churn(&net), settled, "ending first {ending_first}: uploads and deletes go on");
+        assert_eq!(churn(&net), settled, "destruction first {destruction_first}: uploads and deletes go on");
     }
 }
 
@@ -312,10 +312,10 @@ fn waiting_on(net: &mut Net, n: usize, t: Tid) -> bool {
     core.on_thing(&t).any(|c| core.ix.commits.get(&c).is_some_and(|m| m.missing.iter().any(|ai| m.header.aspects.get(*ai).is_some_and(|a| a.tid == t))))
 }
 
-// spec/commits.md §4, §5 (Ending): a fall judges again what waited on the ended thing (a late write
+// spec/commits.md §4, §5 (Destruction): a fall judges again what waited on the destroyed thing (a late write
 // awaiting it, the falling removal's own key rotation), and observers of its roles hear it come back
 #[test]
-fn a_fall_judges_again_what_waited_on_the_ended_thing_spec_commits_5() {
+fn a_fall_judges_again_what_waited_on_the_destroyed_thing_spec_commits_5() {
     let Setup { mut net, a, b, c, g } = setup();
     let (t, _) = made(&mut net, a, g);
     let tb = net.tid(b);
@@ -327,7 +327,7 @@ fn a_fall_judges_again_what_waited_on_the_ended_thing_spec_commits_5() {
     let late = net.write(c, t, "late");
     let pk = net.engine(c).package(&late).unwrap().unwrap();
     net.advance(10);
-    end(&mut net, b, t);
+    purge_thing(&mut net, b, t);
     net.run();
     gone(&mut net, a, t);
     net.engine(a).take_wakes();
@@ -349,10 +349,10 @@ fn a_fall_judges_again_what_waited_on_the_ended_thing_spec_commits_5() {
     assert_eq!(net.read(a, t), Some(s("late")));
 }
 
-// spec/commits.md §5 (Ending): an ending by expiry keeps nothing, even where the thing held a purge
+// spec/commits.md §5 (Destruction): a destruction by expiry keeps nothing, even where the thing held a purge
 // request of something else
 #[test]
-fn an_expiry_ending_keeps_nothing_beside_a_purge_spec_commits_5() {
+fn a_destruction_by_expiry_keeps_nothing_beside_a_purge_spec_commits_5() {
     let mut lp = crate::common::net(1, 0);
     let at = osis_base::WallMs(lp.peers[0].engine.now().0 + 1_000);
     let me = lp.peers[0].engine.me();
@@ -372,14 +372,14 @@ fn an_expiry_ending_keeps_nothing_beside_a_purge_spec_commits_5() {
     assert!(lp.peers[0].engine.core.timelines.get(&t).is_none_or(|tl| tl.roster(&t, osis_perm::At::END).is_empty()), "no edges kept");
 }
 
-// spec/commits.md §5 (Ending), spec/permissions.md §6: a removal of the ending's author and its
+// spec/commits.md §5 (Destruction), spec/permissions.md §6: a removal of the destruction's author and its
 // re-grant, ordered before the request, arriving in any order around it: the verdict is a
 // function of what is held
 #[test]
-fn removal_and_regrant_around_an_ending_converge_in_any_order_spec_commits_5() {
-    // the ending first (it stands, falls, stands again), between the two, and last
+fn removal_and_regrant_around_a_destruction_converge_in_any_order_spec_commits_5() {
+    // the destruction first (it stands, falls, stands again), between the two, and last
     for order in [[0, 1, 2], [1, 0, 2], [1, 2, 0]] {
-        let (mut net, (a, b, c, _, t, tb)) = Net::cached("ending::removal_and_regrant", || {
+        let (mut net, (a, b, c, _, t, tb)) = Net::cached("destruction::removal_and_regrant", || {
             let Setup { mut net, a, b, c, g } = setup();
             let (t, _) = made(&mut net, a, g);
             let tb = net.tid(b);
@@ -396,25 +396,25 @@ fn removal_and_regrant_around_an_ending_converge_in_any_order_spec_commits_5() {
         let re = net.grant(c, t, tb, Role::Admin);
         let regrant = vec![net.engine(c).package(&re).unwrap().unwrap()];
         net.advance(10);
-        let ending = end(&mut net, b, t);
-        let ending = vec![net.engine(b).package(&ending).unwrap().unwrap()];
-        let lots = [ending, removal, regrant];
+        let destruction = purge_thing(&mut net, b, t);
+        let destruction = vec![net.engine(b).package(&destruction).unwrap().unwrap()];
+        let lots = [destruction, removal, regrant];
         for lot in order {
             for p in &lots[lot] {
                 let _ = net.engine(a).ingest(&p.bytes, Vec::new());
             }
         }
         net.engine(a).reexamine().unwrap();
-        assert!(net.engine(a).core.ended(&t), "order {order:?}: the re-grant gives the right back");
+        assert!(net.engine(a).core.destroyed(&t), "order {order:?}: the re-grant gives the right back");
         gone(&mut net, a, t);
     }
 }
 
-// spec/commits.md §5 (Ending: dependents): an ended thing others name first admin keeps its record
-// and edges while one of them is held, so the dependent reads and is written through the ended
-// thing's standing edges; once its last dependent ends too, neither leaves anything
+// spec/commits.md §5 (Destruction: dependents): a destroyed thing others name first admin keeps its record
+// and edges while one of them is held, so the dependent reads and is written through the destroyed
+// thing's standing edges; once its last dependent is destroyed too, neither leaves anything
 #[test]
-fn an_ended_first_admin_stays_a_chain_proof_until_its_last_dependent_goes_spec_commits_5() {
+fn a_destroyed_first_admin_stays_a_chain_proof_until_its_last_dependent_goes_spec_commits_5() {
     let mut lp = crate::common::net(2, 0);
     lp.sync_all().unwrap();
     let now = lp.peers[0].engine.now().0;
@@ -434,7 +434,7 @@ fn an_ended_first_admin_stays_a_chain_proof_until_its_last_dependent_goes_spec_c
     for i in 0..2 {
         lp.peers[i].tick().unwrap();
         let e = &mut lp.peers[i].engine;
-        assert!(!e.knows(&t), "peer {i}: t ended");
+        assert!(!e.knows(&t), "peer {i}: t was destroyed");
         assert!(e.core.created(&t).is_some(), "peer {i}: t's record kept as x's chain proof");
         assert_eq!(e.get(&x, &Ak::new(crate::common::REG.ak()).unwrap()).unwrap(), Some(s("x")), "peer {i}: x lives on");
     }
@@ -447,16 +447,16 @@ fn an_ended_first_admin_stays_a_chain_proof_until_its_last_dependent_goes_spec_c
     for i in 0..2 {
         lp.peers[i].tick().unwrap();
         let e = &mut lp.peers[i].engine;
-        assert!(!e.knows(&x), "peer {i}: x ended");
+        assert!(!e.knows(&x), "peer {i}: x was destroyed");
         assert!(e.core.created(&x).is_none() && e.core.created(&t).is_none(), "peer {i}: neither leaves a record");
     }
 }
 
-// spec/commits.md §5 (Ending: dependents): an ended actor a held edge names holder on another
+// spec/commits.md §5 (Destruction: dependents): a destroyed actor a held edge names holder on another
 // thing is on that thing's authority paths and keeps its record and edges, as a first admin does;
-// once that thing ends too, nothing of either is left
+// once that thing is destroyed too, nothing of either is left
 #[test]
-fn an_ended_holder_stays_until_what_names_it_goes_spec_commits_5() {
+fn a_destroyed_holder_stays_until_what_names_it_goes_spec_commits_5() {
     let mut lp = crate::common::net(2, 0);
     lp.sync_all().unwrap();
     let now = lp.peers[0].engine.now().0;
@@ -478,7 +478,7 @@ fn an_ended_holder_stays_until_what_names_it_goes_spec_commits_5() {
     for i in 0..2 {
         lp.peers[i].tick().unwrap();
         let e = &mut lp.peers[i].engine;
-        assert!(!e.knows(&t), "peer {i}: t ended");
+        assert!(!e.knows(&t), "peer {i}: t was destroyed");
         assert!(e.core.created(&t).is_some(), "peer {i}: t's record kept, x names it holder");
         assert!(e.roster(&x).contains_key(&t), "peer {i}: t's edge on x stands");
     }
@@ -486,18 +486,18 @@ fn an_ended_holder_stays_until_what_names_it_goes_spec_commits_5() {
     for i in 0..2 {
         lp.peers[i].tick().unwrap();
         let e = &mut lp.peers[i].engine;
-        assert!(!e.knows(&x), "peer {i}: x ended");
+        assert!(!e.knows(&x), "peer {i}: x was destroyed");
         assert!(e.core.created(&x).is_none() && e.core.created(&t).is_none(), "peer {i}: neither leaves a record");
         assert!(e.core.timelines.get(&t).is_none_or(|tl| tl.roster(&t, osis_perm::At::END).is_empty()), "peer {i}: no edges of t kept");
     }
 }
 
-// spec/commits.md §5 (Ending: dependents), spec/permissions.md §4 (records travel raw): an account
-// that ends itself leaves the group it created running under its other admins. Its own data is
+// spec/commits.md §5 (Destruction: dependents), spec/permissions.md §4 (records travel raw): an account
+// that destroys itself leaves the group it created running under its other admins. Its own data is
 // gone; what it wrote there still reads and verifies, the other admin writes on, and a node
 // granted afterwards learns the account's record from the group's label alone
 #[test]
-fn an_ended_account_leaves_what_it_created_running_spec_commits_5() {
+fn a_destroyed_account_leaves_what_it_created_running_spec_commits_5() {
     let Setup { mut net, a, b, c, g } = setup();
     let p = net.engine(a).me();
     let t = net.item(a, g, g, "from a");
@@ -506,7 +506,7 @@ fn an_ended_account_leaves_what_it_created_running_spec_commits_5() {
     net.engine(a).commit(m).unwrap().unwrap();
     net.run();
     assert_eq!(net.read(a, p), Some(s("mine")));
-    end(&mut net, a, p);
+    purge_thing(&mut net, a, p);
     net.run();
     gone(&mut net, a, p);
     assert!(net.engine(a).core.created(&p).is_some(), "its record stays: the group names it first admin");
@@ -540,12 +540,12 @@ fn an_ended_account_leaves_what_it_created_running_spec_commits_5() {
     assert_eq!(net.read(d, t2), Some(s("from c")));
 }
 
-// spec/commits.md §5 (Ending: dependents), spec/permissions.md §4 (Placing): a thing whose first
-// admin ended by expiry before a node joined the group reads at that node, which learns the ended
-// first admin's record from the group's label (no body there carries it once it ended), and takes
-// no write on that record alone: it cannot tell the thing ended
+// spec/commits.md §5 (Destruction: dependents), spec/permissions.md §4 (Placing): a thing whose first
+// admin destroyed by expiry before a node joined the group reads at that node, which learns the destroyed
+// first admin's record from the group's label (no body there carries it once it was destroyed), and takes
+// no write on that record alone: it cannot tell the thing was destroyed
 #[test]
-fn a_node_joining_after_a_first_admin_ended_reads_its_dependents_spec_commits_5() {
+fn a_node_joining_after_a_first_admin_was_destroyed_reads_its_dependents_spec_commits_5() {
     let Setup { mut net, a, b, c, g } = setup();
     let at = net.now() + 1_000;
     let mut m = Mutation::new();
@@ -563,7 +563,7 @@ fn a_node_joining_after_a_first_admin_ended_reads_its_dependents_spec_commits_5(
         net.advance(70_000);
     }
     for n in [a, b, c] {
-        assert!(!net.engine(n).knows(&t), "node {n}: t ended");
+        assert!(!net.engine(n).knows(&t), "node {n}: t was destroyed");
         assert_eq!(net.read(n, x), Some(s("x")), "node {n}: x lives on");
     }
     let d = net.joining_node(4, &[0]);
@@ -589,7 +589,7 @@ fn a_node_joining_after_a_first_admin_ended_reads_its_dependents_spec_commits_5(
     assert_eq!(net.read(d, t), None, "d: nothing of t");
     let mut m = Mutation::new();
     m.set(t, &REG, &s("late")).unwrap();
-    assert!(matches!(net.engine(d).commit(m), Err(osis_node::Error::UnknownThing(_))), "d: a write to t refused, as at a node that saw it end");
+    assert!(matches!(net.engine(d).commit(m), Err(osis_node::Error::UnknownThing(_))), "d: a write to t refused, as at a node that saw it destroyed");
     let mut m = Mutation::new();
     m.set(x, &REG, &s("x2")).unwrap();
     net.engine(d).commit(m).unwrap().unwrap();
@@ -625,10 +625,10 @@ fn granted_later_as(net: &mut Net, by: usize, g: Tid, role: Role) -> usize {
     d
 }
 
-/// A thing `t` in `g` (first admin `g`) that ends by expiry in 5 s, with b granted admin on it.
-/// `listed`: `g` lists it in a durable commit of its own, so the ended thing stays in `g`'s
-/// closure; else in its expiring creation commit, so it leaves the closure as it ends.
-fn ending_actor(net: &mut Net, a: usize, b: usize, g: Tid, listed: bool) -> Tid {
+/// A thing `t` in `g` (first admin `g`) that is destroyed by expiry in 5 s, with b granted admin on it.
+/// `listed`: `g` lists it in a durable commit of its own, so the destroyed thing stays in `g`'s
+/// closure; else in its expiring creation commit, so it leaves the closure as it is destroyed.
+fn destroyed_actor_of(net: &mut Net, a: usize, b: usize, g: Tid, listed: bool) -> Tid {
     let at = net.now() + 5_000;
     let mut m = Mutation::new();
     let t = net.engine(a).new_thing(&mut m, g);
@@ -652,8 +652,8 @@ fn ending_actor(net: &mut Net, a: usize, b: usize, g: Tid, listed: bool) -> Tid 
     t
 }
 
-/// Lets `t` end (`ending_actor`) with c offline through it, then brings c back.
-fn end_with_c_away(net: &mut Net, c: usize) {
+/// Lets `t` be destroyed (`destroyed_actor_of`) with c offline through it, then brings c back.
+fn destroy_with_c_away(net: &mut Net, c: usize) {
     for _ in 0..2 {
         net.advance(70_000);
     }
@@ -663,16 +663,16 @@ fn end_with_c_away(net: &mut Net, c: usize) {
     }
 }
 
-// spec/commits.md §5 (Ending: dependents), spec/permissions.md §4 (Placing): b is admin of x only
-// by its edge on x's first admin t. t ends by expiry while c holds no dependent of it (x reaches c
-// after the ending), so c keeps nothing of t and its ending deletes t's bodies at the host; the
+// spec/commits.md §5 (Destruction: dependents), spec/permissions.md §4 (Placing): b is admin of x only
+// by its edge on x's first admin t. t is destroyed by expiry while c holds no dependent of it (x reaches c
+// after the destruction), so c keeps nothing of t and its destruction deletes t's bodies at the host; the
 // holders of x place t's frozen edges under the label again (as closure bodies while g lists t,
 // else as certificate copies), so c judges b's grant on x as a and b do
 #[test]
-fn an_ended_first_admins_edges_reach_a_node_that_held_no_dependent_spec_commits_5() {
+fn a_destroyed_first_admins_edges_reach_a_node_that_held_no_dependent_spec_commits_5() {
     for listed in [false, true] {
         let Setup { mut net, a, b, c, g } = setup();
-        let t = ending_actor(&mut net, a, b, g, listed);
+        let t = destroyed_actor_of(&mut net, a, b, g, listed);
         net.set_online(c, false);
         let x = net.item(a, g, t, "x");
         net.run();
@@ -681,23 +681,23 @@ fn an_ended_first_admins_edges_reach_a_node_that_held_no_dependent_spec_commits_
         net.run();
         let ra = net.engine(a).roster(&x);
         assert!(ra.contains_key(&ta), "listed {listed}: a: b's grant on x by its admin on t");
-        end_with_c_away(&mut net, c);
+        destroy_with_c_away(&mut net, c);
         for n in [a, b, c] {
-            assert!(!net.engine(n).knows(&t), "listed {listed}: node {n}: t ended");
+            assert!(!net.engine(n).knows(&t), "listed {listed}: node {n}: t was destroyed");
             assert_eq!(net.read(n, x), Some(s("x")), "listed {listed}: node {n}: x lives on");
             assert_eq!(net.engine(n).roster(&x), ra, "listed {listed}: node {n}: x's roster");
         }
     }
 }
 
-// spec/commits.md §5 (Ending): as
-// `an_ended_first_admins_edges_reach_a_node_that_held_no_dependent_spec_commits_5`, with a durable
-// write on t before its ending. c keeps nothing of t, then takes its record again with x; a late
-// copy of that write is a part on an ended thing there, never content
+// spec/commits.md §5 (Destruction): as
+// `a_destroyed_first_admins_edges_reach_a_node_that_held_no_dependent_spec_commits_5`, with a durable
+// write on t before its destruction. c keeps nothing of t, then takes its record again with x; a late
+// copy of that write is a part on a destroyed thing there, never content
 #[test]
-fn a_late_content_copy_after_the_record_comes_back_stays_ended_spec_commits_5() {
+fn a_late_content_copy_after_the_record_comes_back_stays_destroyed_spec_commits_5() {
     let Setup { mut net, a, b, c, g } = setup();
-    let t = ending_actor(&mut net, a, b, g, false);
+    let t = destroyed_actor_of(&mut net, a, b, g, false);
     let mut m = Mutation::new();
     m.set(t, &REG, &s("y")).unwrap();
     let late = net.engine(a).commit(m).unwrap().unwrap();
@@ -706,28 +706,28 @@ fn a_late_content_copy_after_the_record_comes_back_stays_ended_spec_commits_5() 
     net.set_online(c, false);
     let x = net.item(a, g, t, "x");
     net.run();
-    end_with_c_away(&mut net, c);
+    destroy_with_c_away(&mut net, c);
     assert!(net.engine(c).core.created(&t).is_some(), "c: t's record back with x");
     let _ = net.engine(c).ingest(&late, Vec::new());
     net.engine(c).reexamine().unwrap();
     for _ in 0..2 {
         net.advance(70_000);
     }
-    assert!(!net.engine(c).knows(&t), "c: t ended");
+    assert!(!net.engine(c).knows(&t), "c: t was destroyed");
     assert_eq!(net.read(c, t), None, "c: nothing of t");
     assert!(!net.engine(c).has_content(&t).unwrap(), "c: no content on t");
     assert_eq!(net.read(c, x), Some(s("x")), "c: x lives on");
 }
 
-// spec/commits.md §5 (Ending: dependents), spec/permissions.md §1 (the first admin is history): t,
-// granted admin on x by an edge (x's first admin is g), ends by expiry; b, admin of x only through
-// t, granted on x before the ending and grants again after it through t's frozen edges. Every node
-// agrees on x's roster: those that held x at the ending, c which got the ending first, and a node
+// spec/commits.md §5 (Destruction: dependents), spec/permissions.md §1 (the first admin is history): t,
+// granted admin on x by an edge (x's first admin is g), is destroyed by expiry; b, admin of x only through
+// t, granted on x before the destruction and grants again after it through t's frozen edges. Every node
+// agrees on x's roster: those that held x at the destruction, c which got the destruction first, and a node
 // granted afterwards
 #[test]
-fn authority_through_an_ended_granted_admin_stands_spec_commits_5() {
+fn authority_through_a_destroyed_granted_admin_stands_spec_commits_5() {
     let Setup { mut net, a, b, c, g } = setup();
-    let t = ending_actor(&mut net, a, b, g, true);
+    let t = destroyed_actor_of(&mut net, a, b, g, true);
     net.set_online(c, false);
     let x = net.item(a, g, g, "x");
     net.run();
@@ -736,7 +736,7 @@ fn authority_through_an_ended_granted_admin_stands_spec_commits_5() {
     let ta = net.tid(a);
     net.grant(b, x, ta, Role::Read);
     net.run();
-    end_with_c_away(&mut net, c);
+    destroy_with_c_away(&mut net, c);
     let tc = net.tid(c);
     net.grant(b, x, tc, Role::Write);
     net.run();
@@ -744,29 +744,29 @@ fn authority_through_an_ended_granted_admin_stands_spec_commits_5() {
         net.advance(70_000);
     }
     let ra = net.engine(a).roster(&x);
-    assert!(ra.get(&ta).is_some_and(|e| e.role == Role::Read), "a: b's grant before the ending");
+    assert!(ra.get(&ta).is_some_and(|e| e.role == Role::Read), "a: b's grant before the destruction");
     assert!(ra.get(&tc).is_some_and(|e| e.role == Role::Write), "a: b's grant after it");
     for n in [a, b, c] {
-        assert!(!net.engine(n).knows(&t), "node {n}: t ended");
+        assert!(!net.engine(n).knows(&t), "node {n}: t was destroyed");
         assert!(net.engine(n).core.created(&t).is_some(), "node {n}: t's record stays, x names it holder");
         assert_eq!(net.engine(n).roster(&x), ra, "node {n}: x's roster");
     }
     let d = granted_later(&mut net, a, g);
     assert_eq!(net.read(d, x), Some(s("x")), "d: x reads");
     assert_eq!(net.engine(d).roster(&x), ra, "d: x's roster");
-    assert!(!net.engine(d).knows(&t), "d: t ended, learned with its frozen history");
+    assert!(!net.engine(d).knows(&t), "d: t was destroyed, learned with its frozen history");
     assert!(net.engine(d).roster(&t).is_empty(), "d: t's roster reads empty as at a");
 }
 
-// spec/crypto.md §4 (Holder actors, Ended): as
-// `an_ended_first_admins_edges_reach_a_node_that_held_no_dependent_spec_commits_5`, then a node
+// spec/crypto.md §4 (Holder actors, Destroyed): as
+// `a_destroyed_first_admins_edges_reach_a_node_that_held_no_dependent_spec_commits_5`, then a node
 // granted g afterwards: x has secrets of its own, boxed to its holder actor t, whose own secrets
-// nobody boxes once t ended; x's admins box t's frozen holders (g, b's account) in its place, so
+// nobody boxes once t was destroyed; x's admins box t's frozen holders (g, b's account) in its place, so
 // the newcomer reads x through g
 #[test]
-fn newcomer_reads_a_dependent_keyed_by_an_ended_actor_spec_crypto_4() {
+fn newcomer_reads_a_dependent_keyed_by_a_destroyed_actor_spec_crypto_4() {
     let Setup { mut net, a, b, c, g } = setup();
-    let t = ending_actor(&mut net, a, b, g, false);
+    let t = destroyed_actor_of(&mut net, a, b, g, false);
     net.set_online(c, false);
     let x = net.item(a, g, t, "x");
     net.run();
@@ -774,28 +774,28 @@ fn newcomer_reads_a_dependent_keyed_by_an_ended_actor_spec_crypto_4() {
     net.grant(b, x, ta, Role::Read);
     net.run();
     let ra = net.engine(a).roster(&x);
-    end_with_c_away(&mut net, c);
+    destroy_with_c_away(&mut net, c);
     let d = granted_later(&mut net, a, g);
     assert_eq!(net.read(d, x), Some(s("x")), "d: x reads");
     assert_eq!(net.engine(d).roster(&x), ra, "d: x's roster");
 }
 
-// spec/crypto.md §4 (Holder actors, Ended), spec/commits.md §5 (Ending): as
-// `newcomer_reads_a_dependent_keyed_by_an_ended_actor_spec_crypto_4` with d an admin of g. t's
-// ending travels with its frozen history (its minting's header), so d reads t as ended as the
+// spec/crypto.md §4 (Holder actors, Destroyed), spec/commits.md §5 (Destruction): as
+// `newcomer_reads_a_dependent_keyed_by_a_destroyed_actor_spec_crypto_4` with d an admin of g. t's
+// destruction travels with its frozen history (its minting's header), so d reads t as destroyed as the
 // others do: t's frozen holders hold x's keys in its place, x's current epochs agree, and what d
 // writes to x the others read
 #[test]
-fn a_newcomer_admin_keys_a_dependent_by_an_ended_actors_frozen_holders_spec_crypto_4() {
+fn a_newcomer_admin_keys_a_dependent_by_a_destroyed_actors_frozen_holders_spec_crypto_4() {
     let Setup { mut net, a, b, c, g } = setup();
-    let t = ending_actor(&mut net, a, b, g, false);
+    let t = destroyed_actor_of(&mut net, a, b, g, false);
     net.set_online(c, false);
     let x = net.item(a, g, t, "x");
     net.run();
     let ta = net.tid(a);
     net.grant(b, x, ta, Role::Read);
     net.run();
-    end_with_c_away(&mut net, c);
+    destroy_with_c_away(&mut net, c);
     let d = granted_later_as(&mut net, a, g, Role::Admin);
     for _ in 0..3 {
         net.advance(70_000);
@@ -805,7 +805,7 @@ fn a_newcomer_admin_keys_a_dependent_by_an_ended_actors_frozen_holders_spec_cryp
     let ha = holders(&mut net, a);
     assert!(!ha.iter().any(|h| h.0 == t) && ha.iter().any(|h| h.0 == g), "a: t's frozen holders hold x's keys: {ha:?}");
     for n in [b, c, d] {
-        assert!(!net.engine(n).knows(&t), "node {n}: t ended");
+        assert!(!net.engine(n).knows(&t), "node {n}: t was destroyed");
         assert_eq!(holders(&mut net, n), ha, "node {n}: x's holders for keys");
         assert_eq!(cur(&mut net, n), cur(&mut net, a), "node {n}: x's current epochs");
     }
@@ -836,14 +836,14 @@ fn setup_reader() -> (Setup, usize) {
     (Setup { net, a, b, c, g }, r)
 }
 
-// spec/commits.md §5 (Ending): a request names every minting. A reader of `g` (it holds t's record)
+// spec/commits.md §5 (Destruction): a request names every minting. A reader of `g` (it holds t's record)
 // mints t again before and after an admin purges t's creation, and a writer of t mints it again
-// after the ending, each with the default retention: c takes the three and the ending in every
+// after the destruction, each with the default retention: c takes the three and the destruction in every
 // order, and t reads gone everywhere
 #[test]
 fn a_minting_again_the_request_can_drop_never_brings_back_a_purged_thing_spec_commits_5() {
     for order in [[0, 1, 2, 3], [1, 0, 2, 3], [2, 3, 1, 0], [3, 2, 0, 1]] {
-        let (mut net, (a, b, c, _, r, t)) = Net::cached("ending::minting_again_can_drop", || {
+        let (mut net, (a, b, c, _, r, t)) = Net::cached("destruction::minting_again_can_drop", || {
             let (Setup { mut net, a, b, c, g }, r) = setup_reader();
             let (t, _) = made(&mut net, a, g);
             net.run();
@@ -857,12 +857,12 @@ fn a_minting_again_the_request_can_drop_never_brings_back_a_purged_thing_spec_co
         net.advance(10);
         let before = remint(&mut net, r, t);
         net.advance(10);
-        let ending = end(&mut net, a, t);
-        let ending = net.engine(a).package(&ending).unwrap().unwrap().bytes;
+        let destruction = purge_thing(&mut net, a, t);
+        let destruction = net.engine(a).package(&destruction).unwrap().unwrap().bytes;
         net.advance(10);
         let after = remint(&mut net, r, t);
         let by_writer = remint(&mut net, b, t);
-        let lots = [&before, &ending, &after, &by_writer];
+        let lots = [&before, &destruction, &after, &by_writer];
         for i in order {
             let _ = net.engine(c).ingest(lots[i], Vec::new());
             net.engine(c).reexamine().unwrap();
@@ -880,9 +880,9 @@ fn a_minting_again_the_request_can_drop_never_brings_back_a_purged_thing_spec_co
     }
 }
 
-// spec/commits.md §5 (Ending, Limit): a reader holding an expiring thing's record mints it again
+// spec/commits.md §5 (Destruction, Limit): a reader holding an expiring thing's record mints it again
 // durable, before its expiry and after it. Wherever the mintings arrive before or after the thing
-// ended there, it exists past its expiry, but its content still expired
+// destroyed there, it exists past its expiry, but its content still expired
 #[test]
 fn a_durable_minting_again_keeps_an_expiring_thing_but_not_its_content_spec_commits_5() {
     for remint_first in [true, false] {
@@ -908,7 +908,7 @@ fn a_durable_minting_again_keeps_an_expiring_thing_but_not_its_content_spec_comm
         net.advance(10_000);
         // c is offline: its expiry runs by its own clock
         net.engine(c).tick().unwrap();
-        assert_eq!(net.engine(c).core.ended(&t), !remint_first, "first {remint_first}: t ended at c only without the minting");
+        assert_eq!(net.engine(c).core.destroyed(&t), !remint_first, "first {remint_first}: t was destroyed at c only without the minting");
         let after = remint(&mut net, r, t);
         if !remint_first {
             let _ = net.engine(c).ingest(&before, Vec::new());
@@ -920,13 +920,13 @@ fn a_durable_minting_again_keeps_an_expiring_thing_but_not_its_content_spec_comm
     }
 }
 
-// spec/commits.md §5 (Ending: nobody writes a thing after its ending): t, first admin of x, is
+// spec/commits.md §5 (Destruction: nobody writes a thing after its destruction): t, first admin of x, is
 // purged; c, an admin of t that has not heard of it, grants r admin on t afterwards. r gains nothing on x through t at b whether the grant reaches it before or after the
-// ending, nor anywhere once all have synced
+// destruction, nor anywhere once all have synced
 #[test]
-fn an_edge_write_after_an_ending_counts_nowhere_spec_commits_5() {
+fn an_edge_write_after_a_destruction_counts_nowhere_spec_commits_5() {
     for grant_first in [true, false] {
-        let (mut net, (a, b, c, _, r, t, x)) = Net::cached("ending::edge_write_after", || {
+        let (mut net, (a, b, c, _, r, t, x)) = Net::cached("destruction::edge_write_after", || {
             let (Setup { mut net, a, b, c, g }, r) = setup_reader();
             let (t, _) = made(&mut net, a, g);
             let x = net.item(a, g, t, "x");
@@ -935,22 +935,22 @@ fn an_edge_write_after_an_ending_counts_nowhere_spec_commits_5() {
         });
         let tr = net.tid(r);
         assert_eq!(net.engine(r).role_on(&x), Some(Role::Read), "grant first {grant_first}: r reads x through g");
-        // c, offline, has not heard of the ending: its grant is a writer's, stamped after it
+        // c, offline, has not heard of the destruction: its grant is a writer's, stamped after it
         net.set_online(b, false);
         net.set_online(c, false);
         net.advance(10);
-        let ending = end(&mut net, a, t);
-        let ending = net.engine(a).package(&ending).unwrap().unwrap().bytes;
+        let destruction = purge_thing(&mut net, a, t);
+        let destruction = net.engine(a).package(&destruction).unwrap().unwrap().bytes;
         net.run();
         net.advance(10);
         let grant = set_edge(net.engine(c), t, tr, Role::Admin);
         let grant = net.engine(c).package(&grant).unwrap().unwrap().bytes;
-        let lots = if grant_first { [&grant, &ending] } else { [&ending, &grant] };
+        let lots = if grant_first { [&grant, &destruction] } else { [&destruction, &grant] };
         for p in lots {
             let _ = net.engine(b).ingest(p, Vec::new());
             net.engine(b).reexamine().unwrap();
         }
-        assert!(net.engine(b).core.ended(&t), "grant first {grant_first}: t ended at b");
+        assert!(net.engine(b).core.destroyed(&t), "grant first {grant_first}: t was destroyed at b");
         assert!(!net.engine(b).roster(&x).is_empty(), "grant first {grant_first}: x lives at b");
         net.set_online(b, true);
         net.set_online(c, true);
@@ -968,12 +968,12 @@ fn an_edge_write_after_an_ending_counts_nowhere_spec_commits_5() {
     }
 }
 
-// spec/commits.md §5 (Ending: nobody writes a thing after its ending), spec/permissions.md §4: t,
+// spec/commits.md §5 (Destruction: nobody writes a thing after its destruction), spec/permissions.md §4: t,
 // first admin of x, is purged; a node granted g afterwards learns t's record, frozen edges and the
-// request with them, so it reads t as ended, and a grant on t that c, not having heard, wrote
-// after the ending gives r nothing there, as at b
+// request with them, so it reads t as destroyed, and a grant on t that c, not having heard, wrote
+// after the destruction gives r nothing there, as at b
 #[test]
-fn a_newcomer_refuses_an_edge_write_after_an_ending_spec_commits_5() {
+fn a_newcomer_refuses_an_edge_write_after_a_destruction_spec_commits_5() {
     let (Setup { mut net, a, b, c, g }, r) = setup_reader();
     let (t, _) = made(&mut net, a, g);
     let x = net.item(a, g, t, "x");
@@ -981,13 +981,13 @@ fn a_newcomer_refuses_an_edge_write_after_an_ending_spec_commits_5() {
     let tr = net.tid(r);
     net.set_online(c, false);
     net.advance(10);
-    end(&mut net, a, t);
+    purge_thing(&mut net, a, t);
     net.run();
     net.advance(10);
     let grant = set_edge(net.engine(c), t, tr, Role::Admin);
     let grant = net.engine(c).package(&grant).unwrap().unwrap().bytes;
     let d = granted_later(&mut net, a, g);
-    assert!(!net.engine(d).knows(&t), "d: t ended");
+    assert!(!net.engine(d).knows(&t), "d: t was destroyed");
     assert!(net.engine(d).core.created(&t).is_some(), "d: t's record, x names it");
     let _ = net.engine(d).ingest(&grant, Vec::new());
     net.engine(d).reexamine().unwrap();
@@ -1001,14 +1001,14 @@ fn a_newcomer_refuses_an_edge_write_after_an_ending_spec_commits_5() {
     assert_eq!(net.engine(d).roster(&x), net.engine(b).roster(&x), "d: x's roster as at b");
 }
 
-// spec/commits.md §5 (Ending is judged by the history before it), spec/permissions.md §6: c, admin
-// of t by its own grant on t alone, ends t; a, not having heard, demotes c on t afterwards with a
-// frontier that omits the request. The demotion is a write after the ending: whether b takes it
-// before or after the request, the ending stands at every node
+// spec/commits.md §5 (Destruction is judged by the history before it), spec/permissions.md §6: c, admin
+// of t by its own grant on t alone, destroys t; a, not having heard, demotes c on t afterwards with a
+// frontier that omits the request. The demotion is a write after the destruction: whether b takes it
+// before or after the request, the destruction stands at every node
 #[test]
-fn a_demotion_after_an_ending_does_not_undo_it_spec_commits_5() {
+fn a_demotion_after_a_destruction_does_not_undo_it_spec_commits_5() {
     for demotion_first in [true, false] {
-        let (mut net, (a, b, c, _, t, tc)) = Net::cached("ending::demotion_after", || {
+        let (mut net, (a, b, c, _, t, tc)) = Net::cached("destruction::demotion_after", || {
             let Setup { mut net, a, b, c, g } = setup();
             let (t, _) = made(&mut net, a, g);
             let tc = net.tid(c);
@@ -1020,8 +1020,8 @@ fn a_demotion_after_an_ending_does_not_undo_it_spec_commits_5() {
         net.set_online(a, false);
         net.set_online(b, false);
         net.advance(10);
-        let ending = end(&mut net, c, t);
-        let ending = net.engine(c).package(&ending).unwrap().unwrap().bytes;
+        let destruction = purge_thing(&mut net, c, t);
+        let destruction = net.engine(c).package(&destruction).unwrap().unwrap().bytes;
         net.advance(10);
         let mut m = Mutation::new();
         let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
@@ -1030,12 +1030,12 @@ fn a_demotion_after_an_ending_does_not_undo_it_spec_commits_5() {
         m.frontier(ct::Frontier::default().to_value());
         let d = net.engine(a).commit(m).unwrap().unwrap();
         let demotion = net.engine(a).package(&d).unwrap().unwrap().bytes;
-        let lots = if demotion_first { [&demotion, &ending] } else { [&ending, &demotion] };
+        let lots = if demotion_first { [&demotion, &destruction] } else { [&destruction, &demotion] };
         for p in lots {
             let _ = net.engine(b).ingest(p, Vec::new());
             net.engine(b).reexamine().unwrap();
         }
-        assert!(net.engine(b).core.ended(&t), "demotion first {demotion_first}: the ending stands at b");
+        assert!(net.engine(b).core.destroyed(&t), "demotion first {demotion_first}: the destruction stands at b");
         net.set_online(a, true);
         net.set_online(b, true);
         for _ in 0..3 {
@@ -1047,7 +1047,7 @@ fn a_demotion_after_an_ending_does_not_undo_it_spec_commits_5() {
     }
 }
 
-/// The things node a's cut walks count for one role change on t, while c's ending request on t
+/// The things node a's cut walks count for one role change on t, while c's destroying request on t
 /// stands nowhere (a demoted c on t first) and a later edge write on t is held, beside `others`
 /// other things in t's group.
 fn fallen_request_work(others: usize) -> u64 {
@@ -1063,30 +1063,30 @@ fn fallen_request_work(others: usize) -> u64 {
     net.set_online(c, false);
     demote(&mut net, a, t, tc, Role::Read);
     net.advance(10);
-    let ending = end(&mut net, c, t);
-    let ending = net.engine(c).package(&ending).unwrap().unwrap().bytes;
+    let destruction = purge_thing(&mut net, c, t);
+    let destruction = net.engine(c).package(&destruction).unwrap().unwrap().bytes;
     net.advance(10);
     set_edge(net.engine(a), t, tb, Role::Write);
-    let _ = net.engine(a).ingest(&ending, Vec::new());
+    let _ = net.engine(a).ingest(&destruction, Vec::new());
     net.engine(a).reexamine().unwrap();
-    assert!(!net.engine(a).core.ended(&t), "others {others}: the request stands nowhere");
+    assert!(!net.engine(a).core.destroyed(&t), "others {others}: the request stands nowhere");
     osis_node::costs::take();
     set_edge(net.engine(a), t, tb, Role::Admin);
-    osis_node::costs::take().into_iter().find(|x| x.0 == "ending: cut walk things").map_or(0, |x| x.2)
+    osis_node::costs::take().into_iter().find(|x| x.0 == "destruction: cut walk things").map_or(0, |x| x.2)
 }
 
-// spec/requirements.md Scale, spec/permissions.md §6 (Ending): a request that ended nothing, with
+// spec/requirements.md Scale, spec/permissions.md §6 (Destruction): a request that destroyed nothing, with
 // later edge writes on its thing held, costs each role change on the thing what the thing's
 // authority comes from, not the node's other things
 #[test]
-fn a_fallen_ending_walks_only_the_things_authority_spec_permissions_6() {
+fn a_fallen_destruction_walks_only_the_things_authority_spec_permissions_6() {
     let (small, big) = (fallen_request_work(3), fallen_request_work(30));
     assert!(small > 0, "the cut walk runs");
     crate::scale::flat("cut walk things by other things", small, big);
 }
 
-// spec/commits.md §5 (Ending, Limit): a reader of g mints a purged t again `nobody`, which the
-// request has no right over; b, not having heard of the ending, writes t after it. Brought back, t
+// spec/commits.md §5 (Destruction, Limit): a reader of g mints a purged t again `nobody`, which the
+// request has no right over; b, not having heard of the destruction, writes t after it. Brought back, t
 // is live again: its roster stands and b's late write shows, at every node whatever the order c
 // took the three in
 #[test]
@@ -1099,8 +1099,8 @@ fn a_minting_again_the_request_cannot_drop_brings_back_a_live_thing_alike_spec_c
             net.set_online(n, false);
         }
         net.advance(10);
-        let ending = end(&mut net, a, t);
-        let ending = net.engine(a).package(&ending).unwrap().unwrap().bytes;
+        let destruction = purge_thing(&mut net, a, t);
+        let destruction = net.engine(a).package(&destruction).unwrap().unwrap().bytes;
         net.advance(10);
         let rec = net.engine(r).core.created(&t).cloned().unwrap();
         let mut m = Mutation::new();
@@ -1111,7 +1111,7 @@ fn a_minting_again_the_request_cannot_drop_brings_back_a_live_thing_alike_spec_c
         net.advance(10);
         let w = net.write(b, t, "late");
         let late = net.engine(b).package(&w).unwrap().unwrap().bytes;
-        let lots = [&ending, &remint, &late];
+        let lots = [&destruction, &remint, &late];
         for i in order {
             let _ = net.engine(c).ingest(lots[i], Vec::new());
             net.engine(c).reexamine().unwrap();
@@ -1130,13 +1130,13 @@ fn a_minting_again_the_request_cannot_drop_brings_back_a_live_thing_alike_spec_c
     }
 }
 
-// spec/commits.md §5 (Ending), spec/permissions.md §6: b's ending R1 falls by c's concurrent
-// demotion of b on g; a ends t after R1. A node taking R2 while R1 still stands drops it as written
-// after the ending, and fetches it again once R1 falls: t ends at every node whatever the order
+// spec/commits.md §5 (Destruction), spec/permissions.md §6: b's destruction R1 falls by c's concurrent
+// demotion of b on g; a destroys t after R1. A node taking R2 while R1 still stands drops it as written
+// after the destruction, and fetches it again once R1 falls: t is destroyed at every node whatever the order
 #[test]
-fn a_second_ending_after_one_that_falls_ends_the_thing_spec_commits_5() {
+fn a_second_destruction_after_one_that_falls_destroys_the_thing_spec_commits_5() {
     for order in [[1, 2, 0], [0, 1, 2]] {
-        let (mut net, (a, b, c, g, r, t, tb)) = Net::cached("ending::second_ending", || {
+        let (mut net, (a, b, c, g, r, t, tb)) = Net::cached("destruction::second", || {
             let (Setup { mut net, a, b, c, g }, r) = setup_reader();
             let (t, _) = made(&mut net, a, g);
             let tb = net.tid(b);
@@ -1155,10 +1155,10 @@ fn a_second_ending_after_one_that_falls_ends_the_thing_spec_commits_5() {
         let d = net.engine(c).commit(m).unwrap().unwrap();
         let dem = net.engine(c).package(&d).unwrap().unwrap().bytes;
         net.advance(10);
-        let r1 = end(&mut net, b, t);
+        let r1 = purge_thing(&mut net, b, t);
         let r1 = net.engine(b).package(&r1).unwrap().unwrap().bytes;
         net.advance(10);
-        let r2 = end(&mut net, a, t);
+        let r2 = purge_thing(&mut net, a, t);
         let r2 = net.engine(a).package(&r2).unwrap().unwrap().bytes;
         let lots = [&dem, &r1, &r2];
         for i in order {
@@ -1177,28 +1177,28 @@ fn a_second_ending_after_one_that_falls_ends_the_thing_spec_commits_5() {
     }
 }
 
-// spec/permissions.md §1, spec/commits.md §5 (Ending: authority through an ended actor stands):
-// b administers plain x only through x's first admin t; once t ended, removing t from x would
+// spec/permissions.md §1, spec/commits.md §5 (Destruction: authority through a destroyed actor stands):
+// b administers plain x only through x's first admin t; once t was destroyed, removing t from x would
 // leave x no admin (t's frozen admins administer x through t's edge alone), so it is refused
 #[test]
-fn removing_an_ended_only_admin_of_a_plain_thing_is_refused_spec_permissions_1() {
+fn removing_a_destroyed_only_admin_of_a_plain_thing_is_refused_spec_permissions_1() {
     let Setup { mut net, a, b, c, g } = setup();
-    let t = ending_actor(&mut net, a, b, g, false);
+    let t = destroyed_actor_of(&mut net, a, b, g, false);
     let x = net.item(a, g, t, "x");
     net.run();
-    end_with_c_away(&mut net, c);
-    assert!(!net.engine(b).knows(&t), "t ended");
+    destroy_with_c_away(&mut net, c);
+    assert!(!net.engine(b).knows(&t), "t was destroyed");
     let d = osis_node::flows::Demotion { holder: t, new: None, retain: None };
     let err = net.engine(b).demote(&x, &d).err();
     assert!(matches!(err, Some(osis_node::Error::Misuse(m)) if m.contains("no admin")), "refused: {err:?}");
 }
 
-// spec/commits.md §5 (The ending travels with the record), spec/permissions.md §4: t, first admin
+// spec/commits.md §5 (The destruction travels with the record), spec/permissions.md §4: t, first admin
 // of x and outside g's closure, is purged; time passes, so every node judges what sits under g's
-// label, and then a node is granted g. The request ending t stays there for x's sake (every node
-// holding x needs it), so the newcomer reads t as ended as the others do
+// label, and then a node is granted g. The request destroying t stays there for x's sake (every node
+// holding x needs it), so the newcomer reads t as destroyed as the others do
 #[test]
-fn a_purge_ending_stays_under_a_dependents_label_for_a_newcomer_spec_commits_5() {
+fn a_destruction_by_purge_stays_under_a_dependents_label_for_a_newcomer_spec_commits_5() {
     let Setup { mut net, a, b, c, g } = setup();
     let mut m = Mutation::new();
     let t = net.engine(a).new_thing(&mut m, g);
@@ -1211,27 +1211,27 @@ fn a_purge_ending_stays_under_a_dependents_label_for_a_newcomer_spec_commits_5()
     let x = net.item(a, g, t, "x");
     net.run();
     net.advance(10);
-    end(&mut net, a, t);
+    purge_thing(&mut net, a, t);
     net.run();
     for _ in 0..3 {
         net.advance(70_000);
     }
     for n in [a, b, c] {
-        assert!(!net.engine(n).knows(&t), "node {n}: t ended");
+        assert!(!net.engine(n).knows(&t), "node {n}: t was destroyed");
     }
     let d = granted_later(&mut net, a, g);
     assert_eq!(net.read(d, x), Some(s("x")), "d: x reads");
     assert!(net.engine(d).core.created(&t).is_some(), "d: t's record, x names it");
-    assert!(!net.engine(d).knows(&t), "d: t ended");
+    assert!(!net.engine(d).knows(&t), "d: t was destroyed");
     assert_eq!(net.engine(d).roster(&x), net.engine(a).roster(&x), "d: x's roster as at a");
 }
 
-// spec/commits.md §5 (The ending travels with the record), spec/permissions.md §4, notes/growth.md:
-// the certificates of an ended thing outside the closure (its minting's header, the request ending
-// it) stay under g's label while x, a dependent of it, is in the closure, and go once x ends: no
+// spec/commits.md §5 (The destruction travels with the record), spec/permissions.md §4, notes/growth.md:
+// the certificates of a destroyed thing outside the closure (its minting's header, the request destroying
+// it) stay under g's label while x, a dependent of it, is in the closure, and go once x is destroyed: no
 // node finds a dependent there any more
 #[test]
-fn an_ended_things_certificates_leave_the_label_with_its_last_dependent_spec_commits_5() {
+fn a_destroyed_things_certificates_leave_the_label_with_its_last_dependent_spec_commits_5() {
     let Setup { mut net, a, b, g, .. } = setup();
     let l = net.label(a);
     let mut m = Mutation::new();
@@ -1245,7 +1245,7 @@ fn an_ended_things_certificates_leave_the_label_with_its_last_dependent_spec_com
     let x = net.item(a, g, t, "x");
     net.run();
     net.advance(10);
-    let req = end(&mut net, a, t);
+    let req = purge_thing(&mut net, a, t);
     net.run();
     let at_host = |net: &mut Net, c: CommitId| {
         let host = net.host_ids(0, &l);
@@ -1254,21 +1254,21 @@ fn an_ended_things_certificates_leave_the_label_with_its_last_dependent_spec_com
     for _ in 0..3 {
         net.advance(70_000);
     }
-    assert!(at_host(&mut net, mint) && at_host(&mut net, req), "t's minting and ending under g's label for x");
+    assert!(at_host(&mut net, mint) && at_host(&mut net, req), "t's minting and destruction under g's label for x");
     net.advance(10);
-    end(&mut net, a, x);
+    purge_thing(&mut net, a, x);
     net.run();
     for _ in 0..3 {
         net.advance(70_000);
     }
-    assert!(!net.engine(a).knows(&x), "x ended");
+    assert!(!net.engine(a).knows(&x), "x was destroyed");
     assert!(!at_host(&mut net, mint), "t's minting header gone with its last dependent");
-    assert!(!at_host(&mut net, req), "the request ending t gone with its last dependent");
+    assert!(!at_host(&mut net, req), "the request destroying t gone with its last dependent");
 }
 
-// spec/commits.md §5 (Ending: a release request): an admin's release of t is one commit of
-// `released.0` deltas expiring `ROLE_KEEP` after it; every node receiving it ends t as a purge of
-// its creation does (t reads absent, a write on t is refused), a stale copy of the creation ends
+// spec/commits.md §5 (Destruction: a release request): an admin's release of t is one commit of
+// `released.0` deltas expiring `ROLE_KEEP` after it; every node receiving it destroys t as a purge of
+// its creation does (t reads absent, a write on t is refused), a stale copy of the creation is destroyed
 // again, and nothing of it is erasure's (its header lasts nowhere)
 #[test]
 fn a_released_thing_reads_absent_at_every_node_spec_commits_5() {
@@ -1293,11 +1293,11 @@ fn a_released_thing_reads_absent_at_every_node_spec_commits_5() {
     gone(&mut net, b, t);
 }
 
-// spec/permissions.md §6 (Ending), spec/commits.md §5: a release needs the right to end the thing
+// spec/permissions.md §6 (Destruction), spec/commits.md §5: a release needs the right to destroy the thing
 // (by default its admins): a writer's is refused at the writer, and one written past the writer's
-// rules ends nothing where it arrives
+// rules destroys nothing where it arrives
 #[test]
-fn a_release_without_the_right_ends_nothing_spec_permissions_6() {
+fn a_release_without_the_right_destroys_nothing_spec_permissions_6() {
     let Setup { mut net, a, b, g, .. } = setup();
     let (t, _) = made(&mut net, a, g);
     net.run();
@@ -1317,13 +1317,13 @@ fn a_release_without_the_right_ends_nothing_spec_permissions_6() {
     assert!(matches!(net.engine(a).snapshot(&t, &Ak::new(ct::RELEASED.ak()).unwrap()), Err(osis_node::Error::Misuse(_))));
 }
 
-// spec/commits.md §5 (Ending: dependents), spec/crypto.md §4 (Holder actors, Ended): as
-// `a_newcomer_admin_keys_a_dependent_by_an_ended_actors_frozen_holders_spec_crypto_4`, with t
+// spec/commits.md §5 (Destruction: dependents), spec/crypto.md §4 (Holder actors, Destroyed): as
+// `a_newcomer_admin_keys_a_dependent_by_a_destroyed_actors_frozen_holders_spec_crypto_4`, with t
 // released instead of expired: x's admins box t's frozen holders in its place, every node judges
-// x's roster and keys alike, and a node granted afterwards learns t ended with its frozen history
+// x's roster and keys alike, and a node granted afterwards learns t was destroyed with its frozen history
 // (the request's `released.0` part travels with t's record)
 #[test]
-fn a_released_actors_dependents_see_it_ended_spec_crypto_4() {
+fn a_released_actors_dependents_see_it_destroyed_spec_crypto_4() {
     let Setup { mut net, a, b, c, g } = setup();
     let mut m = Mutation::new();
     let t = net.engine(a).new_thing(&mut m, g);
@@ -1351,7 +1351,7 @@ fn a_released_actors_dependents_see_it_ended_spec_crypto_4() {
     let ha = holders(&mut net, a);
     assert!(!ha.iter().any(|h| h.0 == t) && ha.iter().any(|h| h.0 == g), "a: t's frozen holders hold x's keys: {ha:?}");
     for n in [a, b, c, d] {
-        assert!(!net.engine(n).knows(&t), "node {n}: t ended");
+        assert!(!net.engine(n).knows(&t), "node {n}: t was destroyed");
         assert!(net.engine(n).core.created(&t).is_some(), "node {n}: t's record kept for x");
         assert_eq!(net.read(n, x), Some(s("x")), "node {n}: x lives on");
         assert_eq!(net.engine(n).roster(&x), ra, "node {n}: x's roster");
@@ -1393,12 +1393,12 @@ fn retained(net: &mut Net, n: usize, g: Tid) -> (Tid, Tid, CommitId) {
 }
 
 // issues/thing-lifetimes.md (What is kept; The release: Final while held), spec/commits.md §5
-// (Ending, Forgetting): x, listing r and referenced by it, is released on purpose. Past its
-// request's expiry every node still holds that x ended (r references it), and a node granted g
-// afterwards gets that evidence under g's label: it reads x ended, not unknown, and a stale copy
-// of x's creation ends again on arrival. No header of x lasts meanwhile
+// (Destruction, Forgetting): x, listing r and referenced by it, is released on purpose. Past its
+// request's expiry every node still holds that x was destroyed (r references it), and a node granted g
+// afterwards gets that evidence under g's label: it reads x destroyed, not unknown, and a stale copy
+// of x's creation is destroyed again on arrival. No header of x lasts meanwhile
 #[test]
-fn a_referenced_released_thing_stays_ended_past_its_expiry_and_for_a_newcomer_spec_commits_5() {
+fn a_referenced_released_thing_stays_destroyed_past_its_expiry_and_for_a_newcomer_spec_commits_5() {
     use osis_node::retention::lifetimes::Status;
     let Setup { mut net, a, b, c, g } = setup();
     let l = net.label(a);
@@ -1416,20 +1416,20 @@ fn a_referenced_released_thing_stays_ended_past_its_expiry_and_for_a_newcomer_sp
         net.advance(70_000);
     }
     for n in [a, b, c] {
-        assert_eq!(net.engine(n).lifetime_status(&x), Status::Ended, "node {n}: x ended past the request's expiry");
+        assert_eq!(net.engine(n).lifetime_status(&x), Status::Destroyed, "node {n}: x stays destroyed past the request's expiry");
     }
     let d = granted_later(&mut net, a, g);
-    assert_eq!(net.engine(d).lifetime_status(&x), Status::Ended, "d: told x ended under g's label");
+    assert_eq!(net.engine(d).lifetime_status(&x), Status::Destroyed, "d: told x destroyed under g's label");
     let _ = net.engine(d).ingest(&stale.bytes, stale.blobs);
     net.run();
-    assert_eq!(net.engine(d).lifetime_status(&x), Status::Ended, "d: a stale copy ends again");
+    assert_eq!(net.engine(d).lifetime_status(&x), Status::Destroyed, "d: a stale copy is destroyed again");
     assert!(!net.engine(d).knows(&x));
 }
 
 // issues/thing-lifetimes.md (What is kept; Interactions: Expiry): rr, an expiring retainer,
 // references cx, which lists it. rr expires while its admins are offline (not heard out: cx
-// stays). A node granted g afterwards receives cx with rr's ending under g's label (cx lists rr),
-// so it reads rr ended, judges cx unreachable and releases it, rather than reading rr unknown and
+// stays). A node granted g afterwards receives cx with rr's destruction under g's label (cx lists rr),
+// so it reads rr destroyed, judges cx unreachable and releases it, rather than reading rr unknown and
 // keeping cx for good
 #[test]
 fn an_expired_retainers_child_is_judged_and_released_at_a_later_node_spec_commits_5() {
@@ -1467,14 +1467,14 @@ fn an_expired_retainers_child_is_judged_and_released_at_a_later_node_spec_commit
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
     net.run();
-    // g's other admins are offline: nobody who may end cx judges it at rr's expiry
+    // g's other admins are offline: nobody who may destroy cx judges it at rr's expiry
     net.set_online(a, false);
     net.set_online(c, false);
     for _ in 0..3 {
         net.advance(70_000);
     }
-    assert_eq!(net.engine(b).lifetime_status(&rr), Status::Ended, "rr expired");
-    assert_eq!(net.engine(b).lifetime_status(&cx), Status::Known, "b may not end cx");
+    assert_eq!(net.engine(b).lifetime_status(&rr), Status::Destroyed, "rr expired");
+    assert_eq!(net.engine(b).lifetime_status(&cx), Status::Known, "b may not destroy cx");
     assert_eq!(net.engine(b).lifetimes_pending().unwrap(), vec![cx], "b: unreachable, pending");
     assert_eq!(net.engine(a).lifetime_status(&cx), Status::Known, "a offline: nothing judged");
     net.nodes[d].accepts = true;
@@ -1483,12 +1483,12 @@ fn an_expired_retainers_child_is_judged_and_released_at_a_later_node_spec_commit
     for _ in 0..3 {
         net.advance(70_000);
     }
-    assert_eq!(net.engine(d).lifetime_status(&rr), Status::Ended, "d: told rr ended under g's label");
-    assert_eq!(net.engine(d).lifetime_status(&cx), Status::Ended, "d: cx judged unreachable and released once heard out");
-    assert_eq!(net.engine(b).lifetime_status(&cx), Status::Ended, "b: by d's request");
+    assert_eq!(net.engine(d).lifetime_status(&rr), Status::Destroyed, "d: told rr destroyed under g's label");
+    assert_eq!(net.engine(d).lifetime_status(&cx), Status::Destroyed, "d: cx judged unreachable and released once heard out");
+    assert_eq!(net.engine(b).lifetime_status(&cx), Status::Destroyed, "b: by d's request");
     net.set_online(a, true);
     net.run();
-    assert_eq!(net.engine(a).lifetime_status(&cx), Status::Ended, "a: released");
+    assert_eq!(net.engine(a).lifetime_status(&cx), Status::Destroyed, "a: released");
 }
 
 // issues/thing-lifetimes.md (The release: Applying; Limits 5), spec/sync.md §6: a right holder
@@ -1555,8 +1555,8 @@ fn nothing_of_a_released_thing_nothing_needs_outlasts_its_request_spec_commits_5
     }
 }
 
-// issues/thing-lifetimes.md (What is kept), spec/commits.md §5 (Ending, Forgetting): a group
-// contains its members, it does not need them told ended. t, released while still listed in g's
+// issues/thing-lifetimes.md (What is kept), spec/commits.md §5 (Destruction, Forgetting): a group
+// contains its members, it does not need them told destroyed. t, released while still listed in g's
 // `group.0`, is forgotten at its request's expiry at every node: no record, no header of a commit
 // only on it, nothing of them at the host
 #[test]

@@ -1285,37 +1285,37 @@ fn purge_fall_after_cover_reads_alike_spec_perm_6() {
 }
 
 /// A plain thing in a group shared by a and b, with a value by a, its creation purgeable by admins.
-fn ending_setup() -> (Net, usize, usize, usize, osis_base::Tid, osis_base::Tid) {
+fn destruction_setup() -> (Net, usize, usize, usize, osis_base::Tid, osis_base::Tid) {
     let (net, host, [a, b], g, [t]) = hosted::<2, 1>(&[(1, Role::Write)], ["x"], true);
     (net, host, a, b, g, t)
 }
 
-fn end_request(net: &mut Net, by: usize, t: osis_base::Tid) -> osis_node::Result<Option<osis_base::CommitId>> {
+fn purge_request_of(net: &mut Net, by: usize, t: osis_base::Tid) -> osis_node::Result<Option<osis_base::CommitId>> {
     let mut m = Mutation::new();
     m.set(t, &ct::PURGE, &osis_base::WallMs(net.now())).unwrap();
     m.purge(osis_commit::PurgeItem::Aspect { tid: t, ak: Ak::new(ct::CREATED.ak()).unwrap() });
     net.engine(by).commit(m)
 }
 
-// spec/commits.md §5 (Ending), spec/sync.md §5: a purge of a thing's creation by its first admin's
-// holder ends it at every node, hosts dropping its blobs; a write after the end is ignored
+// spec/commits.md §5 (Destruction), spec/sync.md §5: a purge of a thing's creation by its first admin's
+// holder destroys it at every node, hosts dropping its blobs; a write after the destruction is ignored
 #[test]
-fn purge_ends_the_thing_everywhere_spec_commits_5() {
-    let (mut net, host, a, b, g, t) = ending_setup();
+fn purge_destroys_the_thing_everywhere_spec_commits_5() {
+    let (mut net, host, a, b, g, t) = destruction_setup();
     let l = net.label(a);
     let c = net.write(a, t, "y");
     net.run();
     let blobs: Vec<_> = net.sync(a).entries(&l).into_iter().filter(|(_, k)| matches!(k, EntryKind::Commit { commit, .. } if *commit == c)).map(|(id, _)| id).collect();
     assert!(!blobs.is_empty() && blobs.iter().all(|id| net.host_ids(host, &l).contains(id)));
     assert_eq!(net.read(b, t), Some(s("y")));
-    end_request(&mut net, a, t).unwrap().unwrap();
+    purge_request_of(&mut net, a, t).unwrap().unwrap();
     net.run();
     for n in [a, b] {
         assert_eq!(net.read(n, t), None, "node {n}");
         assert!(net.engine(n).get_typed(&t, &ct::CREATED).unwrap().is_none(), "the record goes with the thing");
     }
     let ids = net.host_ids(host, &l);
-    assert!(blobs.iter().all(|id| !ids.contains(id)), "hosts drop the ended thing's blobs");
+    assert!(blobs.iter().all(|id| !ids.contains(id)), "hosts drop the destroyed thing's blobs");
     // a write after the end is on an unknown thing: refused here, ignored where it arrives
     let mut m = Mutation::new();
     m.set(t, &REG, &s("late")).unwrap();
@@ -1323,12 +1323,12 @@ fn purge_ends_the_thing_everywhere_spec_commits_5() {
     assert_eq!(net.read(a, g), net.read(b, g), "the group lives on");
 }
 
-// spec/permissions.md §6 (Ending): a writer has no right to end a thing: the writer's own check
+// spec/permissions.md §6 (Destruction): a writer has no right to destroy a thing: the writer's own check
 // refuses it, and a forged request changes no read
 #[test]
-fn non_admin_cannot_end_spec_permissions_6() {
-    let (mut net, _host, a, b, _g, t) = ending_setup();
-    assert!(matches!(end_request(&mut net, b, t), Err(osis_node::Error::Permission { .. })));
+fn non_admin_cannot_destroy_spec_permissions_6() {
+    let (mut net, _host, a, b, _g, t) = destruction_setup();
+    assert!(matches!(purge_request_of(&mut net, b, t), Err(osis_node::Error::Permission { .. })));
     net.run();
     assert_eq!(net.read(a, t), Some(s("x")));
     assert_eq!(net.read(b, t), Some(s("x")));
@@ -1338,7 +1338,7 @@ fn non_admin_cannot_end_spec_permissions_6() {
 // creation expires with its content, and the thing is gone at every node at T
 #[test]
 fn one_commit_disappearing_message_spec_commits_6() {
-    let (mut net, _host, a, b, g, _t) = ending_setup();
+    let (mut net, _host, a, b, g, _t) = destruction_setup();
     let mut m = Mutation::new();
     let msg = net.engine(a).new_thing(&mut m, g);
     m.set(msg, &REG, &s("gone soon")).unwrap();

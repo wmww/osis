@@ -708,10 +708,10 @@ impl SyncEngine {
     /// so a first sync's commits ahead of their records cost no second fetch. Bounded by `MAX_ROUNDS`
     /// a safety bound (past it the wake fetches them again).
     fn settle_batch(&mut self, mut unjudged: Vec<(ToIngest, crate::Reason)>) -> Result<()> {
-        // a record an ending here kept nothing of (spec/commits.md §5 Ending) is taken again from
+        // a record a destruction here kept nothing of (spec/commits.md §5 Destruction) is taken again from
         // a held record blob carrying it once something awaits it
-        let mut missing = self.engine.ended_records_awaited();
-        missing.extend(unjudged.iter().map(|(_, r)| awaited(r)).filter(|t| self.engine.core.created(t).is_none() && self.engine.core.ended(t)));
+        let mut missing = self.engine.destroyed_records_awaited();
+        missing.extend(unjudged.iter().map(|(_, r)| awaited(r)).filter(|t| self.engine.core.created(t).is_none() && self.engine.core.destroyed(t)));
         self.relearn_records(&missing)?;
         for _ in 0..MAX_ROUNDS {
             if unjudged.is_empty() {
@@ -756,8 +756,8 @@ impl SyncEngine {
         Ok(())
     }
 
-    /// Learns the records of `things` again from the held record blobs listing them (an ending
-    /// here kept nothing of them, spec/commits.md §5 Ending).
+    /// Learns the records of `things` again from the held record blobs listing them (a destruction
+    /// here kept nothing of them, spec/commits.md §5 Destruction).
     fn relearn_records(&mut self, things: &BTreeSet<Tid>) -> Result<()> {
         if things.is_empty() {
             return Ok(());

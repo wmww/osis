@@ -37,8 +37,8 @@ fn refs(m: &mut Mutation, x: Tid, to: Value) {
     m.set(x, &refs_ak(), &to).unwrap();
 }
 
-/// A purge of `t`'s creation by node `by` (an erasure: `end`).
-fn end(net: &mut Net, by: usize, t: Tid) -> CommitId {
+/// A purge of `t`'s creation by node `by` (an erasure).
+fn purge_thing(net: &mut Net, by: usize, t: Tid) -> CommitId {
     let mut m = Mutation::new();
     m.set(t, &ct::PURGE, &osis_base::WallMs(net.now())).unwrap();
     m.purge(PurgeItem::Aspect { tid: t, ak: Ak::new(ct::CREATED.ak()).unwrap() });
@@ -50,7 +50,7 @@ fn view(e: &mut Engine, things: &[Tid]) -> hm::View {
     things
         .iter()
         .map(|t| match e.lifetime_status(t) {
-            Status::Ended => hm::Held::Ended,
+            Status::Destroyed => hm::Held::Destroyed,
             Status::Unknown => hm::Held::Unknown,
             Status::Known => {
                 let list = e.get_typed(t, &ct::RETAINERS).unwrap().map(|l| l.iter().filter_map(|r| things.iter().position(|x| x == r)).collect());
@@ -121,7 +121,7 @@ fn the_judgment_releases_what_the_model_judges_unreachable() {
                     _ => {
                         if net.engine(a).lifetime_status(&x) == Status::Known {
                             log.push(format!("end {x:?}"));
-                            end(&mut net, a, x);
+                            purge_thing(&mut net, a, x);
                         }
                         continue;
                     }
@@ -138,7 +138,7 @@ fn the_judgment_releases_what_the_model_judges_unreachable() {
             released += got.release.len();
             assert_eq!(got.request.is_some(), !got.release.is_empty(), "seed {seed}: one request for what it releases");
             for x in &got.release {
-                assert_eq!(net.engine(a).lifetime_status(x), Status::Ended, "seed {seed}: released");
+                assert_eq!(net.engine(a).lifetime_status(x), Status::Destroyed, "seed {seed}: released");
             }
             assert!(net.engine(a).judge_lifetimes(&|_| true, true).unwrap().release.is_empty(), "seed {seed}: judged twice");
         }
@@ -175,7 +175,7 @@ fn a_change_judges_what_it_touches_at_n_and_10n() {
 }
 
 // issues/thing-lifetimes.md (The judgment: an unknown retainer keeps): a node holding a thing but
-// not its retainer releases nothing and keeps nothing pending, though it may end the thing; the
+// not its retainer releases nothing and keeps nothing pending, though it may destroy the thing; the
 // node holding both keeps it while the retainer references it.
 #[test]
 fn a_node_missing_a_retainer_releases_nothing() {
@@ -199,14 +199,14 @@ fn a_node_missing_a_retainer_releases_nothing() {
         assert!(net.engine(n).lifetimes_pending().unwrap().is_empty(), "node {n}");
     }
     // the retainer stops referencing it: the node holding both judges it unreachable once heard
-    // out and releases it (node sync's trigger); the other still cannot judge, and ends it by
+    // out and releases it (node sync's trigger); the other still cannot judge, and destroys it by
     // that request
     let mut m = Mutation::new();
     refs(&mut m, r, Value::Set(Default::default()));
     net.engine(a).commit(m).unwrap();
     net.run();
     for n in [a, b] {
-        assert_eq!(net.engine(n).lifetime_status(&x), Status::Ended, "node {n}");
+        assert_eq!(net.engine(n).lifetime_status(&x), Status::Destroyed, "node {n}");
         assert!(net.engine(n).lifetimes_pending().unwrap().is_empty(), "node {n}");
     }
 }
@@ -238,7 +238,7 @@ fn a_new_listed_thing_is_judged_once_heard_out() {
     assert_eq!(e.lifetimes_due().unwrap(), (false, false));
 }
 
-// issues/thing-lifetimes.md (The release; Cascade), spec/commits.md §5 (Ending): r, an actor first
+// issues/thing-lifetimes.md (The release; Cascade), spec/commits.md §5 (Destruction): r, an actor first
 // admin of x and y, lives by root's reference; x lives by r's. Unreferenced, r is released with x
 // in one request (x's right comes through r, judged with it), at both nodes; y, which r is first
 // admin of but does not keep, lives on as r's dependent and is written through r's frozen edges
@@ -273,7 +273,7 @@ fn a_cascade_releases_an_actor_and_what_it_kept_in_one_commit() {
     for n in [a, b] {
         let e = net.engine(n);
         for t in [r, x] {
-            assert_eq!(e.lifetime_status(&t), Status::Ended, "node {n}: {t:?} released");
+            assert_eq!(e.lifetime_status(&t), Status::Destroyed, "node {n}: {t:?} released");
             assert!(!e.knows(&t), "node {n}: {t:?} reads absent");
         }
         assert!(e.knows(&y), "node {n}: y lives on");
@@ -287,7 +287,7 @@ fn a_cascade_releases_an_actor_and_what_it_kept_in_one_commit() {
 }
 
 // issues/thing-lifetimes.md (The release): the judgment and the release request are two
-// transactions; a released thing stays pending until the request, applied, ends it, so a request
+// transactions; a released thing stays pending until the request, applied, destroys it, so a request
 // that fails to be written (here the store refuses it once) is judged again at the next open
 // and released then. Without the pending row nothing would queue it again.
 #[test]
@@ -314,12 +314,12 @@ fn a_release_that_fails_to_be_written_is_judged_again_at_the_next_open() {
     net.restart(a, 2);
     let e = net.engine(a);
     assert_eq!(e.lifetime_status(&x), Status::Known);
-    assert_eq!(e.lifetimes_pending().unwrap(), vec![x], "judged, pending until ended");
+    assert_eq!(e.lifetimes_pending().unwrap(), vec![x], "judged, pending until destroyed");
     assert!(e.lifetimes_due().unwrap().0, "the open judges what is pending");
     let got = e.judge_lifetimes(&|_| true, true).unwrap();
     assert_eq!(got.release, vec![x]);
     assert!(got.request.is_some());
-    assert_eq!(e.lifetime_status(&x), Status::Ended);
+    assert_eq!(e.lifetime_status(&x), Status::Destroyed);
     assert!(e.lifetimes_pending().unwrap().is_empty());
     assert!(!e.lifetimes_due().unwrap().0);
 }
@@ -355,9 +355,9 @@ fn a_released_thing_is_forgotten_at_its_requests_expiry_and_a_stale_copy_is_judg
     let first = e.judge_lifetimes(&|_| true, true).unwrap();
     assert_eq!(first.release, vec![x]);
     let req = first.request.unwrap();
-    assert_eq!(e.lifetime_status(&x), Status::Ended);
+    assert_eq!(e.lifetime_status(&x), Status::Destroyed);
     net.advance(osis_base::format::ROLE_KEEP_MS / 2);
-    assert_eq!(net.engine(a).lifetime_status(&x), Status::Ended, "held until the request expires");
+    assert_eq!(net.engine(a).lifetime_status(&x), Status::Destroyed, "held until the request expires");
     net.advance(osis_base::format::ROLE_KEEP_MS / 2 + 1_000);
     let e = net.engine(a);
     assert_eq!(e.lifetime_status(&x), Status::Unknown, "forgotten at its request's expiry");
@@ -374,7 +374,7 @@ fn a_released_thing_is_forgotten_at_its_requests_expiry_and_a_stale_copy_is_judg
     let again = e.judge_lifetimes(&|_| true, true).unwrap();
     assert_eq!(again.release, vec![x], "judged again: unreachable");
     assert_ne!(again.request, Some(req), "by a new request");
-    assert_eq!(e.lifetime_status(&x), Status::Ended);
+    assert_eq!(e.lifetime_status(&x), Status::Destroyed);
 }
 
 // issues/thing-lifetimes.md (The release: Forgotten), spec/commits.md §5 (Never received): x made
@@ -447,12 +447,12 @@ fn a_forgotten_released_thing_takes_its_role_commits() {
     assert_eq!(net.engine(a).lifetime_status(&x), Status::Unknown);
 }
 
-// issues/thing-lifetimes.md (What is kept; Cost): what a label's certificates read of ended things
-// is bounded by what live things need, not by what ended: with n and 10n purged things nothing
+// issues/thing-lifetimes.md (What is kept; Cost): what a label's certificates read of destroyed things
+// is bounded by what live things need, not by what destroyed: with n and 10n purged things nothing
 // references, finding the one released thing r references reads as many candidates (after the
 // first look leaves out the unneeded)
 #[test]
-fn finding_needed_endings_reads_what_live_things_need_at_n_and_10n() {
+fn finding_needed_destructions_reads_what_live_things_need_at_n_and_10n() {
     let count = |n: usize| {
         let (mut net, [a]) = local_nodes::<1>();
         let t = things(&mut net, a, n + 2);
@@ -461,14 +461,14 @@ fn finding_needed_endings_reads_what_live_things_need_at_n_and_10n() {
         refs(&mut m, r, Value::Set([Value::Tid(x)].into()));
         net.engine(a).commit(m).unwrap();
         for g in gone {
-            end(&mut net, a, *g);
+            purge_thing(&mut net, a, *g);
         }
         net.engine(a).release(&[x]).unwrap().unwrap();
         let e = net.engine(a);
-        assert_eq!(e.ended_needed(&r).unwrap(), [x].into());
+        assert_eq!(e.destroyed_needed(&r).unwrap(), [x].into());
         osis_node::costs::take();
-        assert_eq!(e.ended_needed(&r).unwrap(), [x].into());
-        osis_node::costs::take().into_iter().find(|(k, _, _)| *k == "ended needed: candidates").map_or(0, |x| x.2)
+        assert_eq!(e.destroyed_needed(&r).unwrap(), [x].into());
+        osis_node::costs::take().into_iter().find(|(k, _, _)| *k == "destroyed needed: candidates").map_or(0, |x| x.2)
     };
     let (small, big) = (count(10), count(100));
     assert!(small >= 1 && big == small, "{small} at n, {big} at 10n");
@@ -496,7 +496,7 @@ fn a_request_going_whole_after_one_of_its_things_leaves_no_row_of_it() {
     net.advance(osis_base::format::ROLE_KEEP_MS + 1_000);
     let e = net.engine(a);
     assert_eq!(e.lifetime_status(&x), Status::Unknown);
-    assert_eq!(e.lifetime_status(&y), Status::Ended, "z references y");
+    assert_eq!(e.lifetime_status(&y), Status::Destroyed, "z references y");
     assert!(e.header(&req).is_some(), "kept for y");
     // its part on x stays marked forgotten over a restart
     net.restart(a, 3);
@@ -549,7 +549,7 @@ fn at_host(net: &mut Net, n: usize, l: &osis_base::LabelId, f: impl Fn(CommitId,
 }
 
 // issues/thing-lifetimes.md (The release: When, Applying): b drops r's reference to x; node sync
-// judges x unreachable once g's label is heard out and releases it, so x ends at every node. The
+// judges x unreachable once g's label is heard out and releases it, so x is destroyed at every node. The
 // request is at the host before x's write leaves it, checked after every message
 #[test]
 fn unreferencing_releases_at_every_node_once_heard_out() {
@@ -575,7 +575,7 @@ fn unreferencing_releases_at_every_node_once_heard_out() {
     net.run();
     for n in [a, b] {
         let e = net.engine(n);
-        assert_eq!(e.lifetime_status(&x), Status::Ended, "node {n}: released");
+        assert_eq!(e.lifetime_status(&x), Status::Destroyed, "node {n}: released");
         assert!(!e.knows(&x), "node {n}");
         assert!(e.lifetimes_pending().unwrap().is_empty(), "node {n}");
         assert_eq!(e.lifetimes_due().unwrap(), (false, false), "node {n}: nothing queued or held");
@@ -604,7 +604,7 @@ fn a_thing_under_no_label_is_released_at_once() {
     refs(&mut m, r, Value::Set(Default::default()));
     net.engine(a).commit(m).unwrap().unwrap();
     net.feed(a, osis_node::sync::Event::Local);
-    assert_eq!(net.engine(a).lifetime_status(&x), Status::Ended);
+    assert_eq!(net.engine(a).lifetime_status(&x), Status::Destroyed);
 }
 
 // issues/thing-lifetimes.md (The release: When): offline (its link to the host down), a node
@@ -634,7 +634,7 @@ fn an_offline_node_releases_nothing_until_heard_out() {
     for _ in 0..3 {
         net.advance(70_000);
     }
-    assert_eq!(net.engine(a).lifetime_status(&x), Status::Ended, "heard out: released");
+    assert_eq!(net.engine(a).lifetime_status(&x), Status::Destroyed, "heard out: released");
 }
 
 // issues/thing-lifetimes.md (The judgment: a one-commit move keeps): x moves from r1 to r2 in one
@@ -740,7 +740,7 @@ fn a_subtree_and_a_cycle_release_at_every_node() {
     net.run();
     for n in [a, b] {
         for t in [x, y, z] {
-            assert_eq!(net.engine(n).lifetime_status(&t), Status::Ended, "node {n}: {t:?} released");
+            assert_eq!(net.engine(n).lifetime_status(&t), Status::Destroyed, "node {n}: {t:?} released");
         }
         assert!(net.engine(n).lifetimes_pending().unwrap().is_empty(), "node {n}");
     }

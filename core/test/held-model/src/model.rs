@@ -55,9 +55,9 @@ pub enum DropWhy {
     /// record or whose thing's record chain the node lacks: not held, and fetched again once
     /// known (notes/expiry-creation-design.md §3 Throw out and revisit).
     Unknown,
-    /// On an ended thing (every creation of it joined is expired or purged): the node forgets the
-    /// thing whole (notes/expiry-creation-design.md §3 Ending).
-    Ended,
+    /// On a destroyed thing (every creation of it joined is expired or purged): the node forgets the
+    /// thing whole (notes/expiry-creation-design.md §3 Destruction).
+    Destroyed,
 }
 
 /// What the node does with a held body.
@@ -124,8 +124,8 @@ pub struct Outcome {
     /// Values held that the node must not hold: `(body, carrying delta, write)`, the write by
     /// `death::key`.
     pub forbidden: BTreeSet<(PartRef, DeltaRef, Name)>,
-    /// Things the node forgets: ended (`DropWhy::Ended`).
-    pub ended: BTreeSet<ThingId>,
+    /// Things the node forgets: destroyed (`DropWhy::Destroyed`).
+    pub destroyed: BTreeSet<ThingId>,
     /// Commits held of which the node holds nothing (every part it holds is `DropWhy::Unknown`, or
     /// its author's or actor's record is unknown): thrown out whole, their IDs kept to fetch them again once a
     /// record comes (`act` removes them).
@@ -428,40 +428,40 @@ fn parked(h: &Held) -> BTreeSet<CommitId> {
     h.commits.iter().filter(|c| wall(c.ts) > h.now.saturating_add(MAX_DRIFT)).map(|c| c.id).collect()
 }
 
-/// The settled role timeline of a held set (its ended things forgotten).
+/// The settled role timeline of a held set (its destroyed things forgotten).
 pub fn timeline(h: &Held) -> Timeline {
     let (hv, _) = forgotten(h);
     join_held(&hv, &parked(&hv)).tl
 }
 
-/// Whether an ended thing keeps this part: its creation and `roles.0` while a purge request's
-/// part on it is held, as the ending is judged from them (spec/commits.md §5 Ending).
-fn kept_when_ended(h: &Held, p: &Part) -> bool {
+/// Whether a destroyed thing keeps this part: its creation and `roles.0` while a purge request's
+/// part on it is held, as the destruction is judged from them (spec/commits.md §5 Destruction).
+fn kept_when_destroyed(h: &Held, p: &Part) -> bool {
     (p.aspect == Aspect::ROLES || p.aspect == Aspect::CREATED) && h.commits.iter().flat_map(|c| &c.parts).any(|q| q.thing == p.thing && q.aspect == crate::gen::PURGE)
 }
 
-/// `h` with every part on `things` counting as never received, but what an ending keeps.
+/// `h` with every part on `things` counting as never received, but what a destruction keeps.
 fn forget(h: &Held, things: &BTreeSet<ThingId>) -> Held {
     let mut n = h.clone();
-    for p in n.commits.iter_mut().flat_map(|c| c.parts.iter_mut()).filter(|p| things.contains(&p.thing) && !kept_when_ended(h, p)) {
+    for p in n.commits.iter_mut().flat_map(|c| c.parts.iter_mut()).filter(|p| things.contains(&p.thing) && !kept_when_destroyed(h, p)) {
         p.body = Body::Missing;
         p.stripped.clear();
     }
     n
 }
 
-/// The held set as judged once its ended things are forgotten, with its judgment. What an ending
-/// keeps (`kept_when_ended`) still counts, so a purge's right reads the same before and after.
+/// The held set as judged once its destroyed things are forgotten, with its judgment. What a destruction
+/// keeps (`kept_when_destroyed`) still counts, so a purge's right reads the same before and after.
 fn forgotten(h: &Held) -> (Held, Outcome) {
     let mut gone: BTreeSet<ThingId> = BTreeSet::new();
     loop {
         let hv = forget(h, &gone);
         let mut o = judge(&hv);
-        if o.ended.is_subset(&gone) {
-            o.ended = gone;
+        if o.destroyed.is_subset(&gone) {
+            o.destroyed = gone;
             return (hv, o);
         }
-        gone.extend(o.ended);
+        gone.extend(o.destroyed);
     }
 }
 
@@ -469,15 +469,15 @@ pub fn evaluate(h: &Held) -> Outcome {
     let (_, mut o) = forgotten(h);
     for c in &h.commits {
         for (i, p) in c.parts.iter().enumerate() {
-            if o.ended.contains(&p.thing) && matches!(p.body, Body::Held(_) | Body::Parked) && !kept_when_ended(h, p) {
-                o.fates.insert((c.id, i), Fate::MustDrop(DropWhy::Ended));
+            if o.destroyed.contains(&p.thing) && matches!(p.body, Body::Held(_) | Body::Parked) && !kept_when_destroyed(h, p) {
+                o.fates.insert((c.id, i), Fate::MustDrop(DropWhy::Destroyed));
             }
         }
     }
     o
 }
 
-/// The judgment of a held set with no thing forgotten; `Outcome::ended` is the things it ends.
+/// The judgment of a held set with no thing forgotten; `Outcome::destroyed` is the things it destroys.
 fn judge(h: &Held) -> Outcome {
     let now = h.now;
     let by_id: BTreeMap<CommitId, &Commit> = h.commits.iter().map(|c| (c.id, c)).collect();
@@ -553,9 +553,9 @@ fn judge(h: &Held) -> Outcome {
             }
         }
     }
-    // ended: every creation joined of the thing is value-less (notes/expiry-creation-design.md §3)
+    // destroyed: every creation joined of the thing is value-less (notes/expiry-creation-design.md §3)
     let joined = || view.iter().flat_map(|c| c.parts.iter().map(move |p| (c, p))).filter(|(_, p)| creation(p).is_some());
-    o.ended = joined().map(|(_, p)| p.thing).filter(|&t| joined().filter(|(_, p)| p.thing == t).all(|(c, p)| o.valueless.contains(&(c.id, t, p.aspect)))).collect();
+    o.destroyed = joined().map(|(_, p)| p.thing).filter(|&t| joined().filter(|(_, p)| p.thing == t).all(|(c, p)| o.valueless.contains(&(c.id, t, p.aspect)))).collect();
     let vls = o.valueless.clone();
     let valid_m = o.valid.clone();
     let vl = |c: CommitId, t: ThingId, a: Aspect| vls.contains(&(c, t, a));
@@ -953,7 +953,7 @@ pub fn act(h: &Held, o: &Outcome, may: Option<PartRef>) -> Held {
                         *f = dots.strip(t, a, f, &drop);
                     }
                 }
-                Fate::MustDrop(DropWhy::Gone | DropWhy::Invalid | DropWhy::Unknown | DropWhy::Ended) | Fate::NeverReceived => {
+                Fate::MustDrop(DropWhy::Gone | DropWhy::Invalid | DropWhy::Unknown | DropWhy::Destroyed) | Fate::NeverReceived => {
                     p.body = Body::Missing;
                     p.stripped.clear();
                 }

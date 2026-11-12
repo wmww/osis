@@ -81,7 +81,7 @@ impl super::Core {
 
     /// At the end of a transaction (before its journal is committed): a `NotSynced` diagnostic
     /// for each thing the subgroups it cut held when it began and that no synced group carries
-    /// now (spec/requirements.md, Offline and network): it stays on this node. An ended thing
+    /// now (spec/requirements.md, Offline and network): it stays on this node. A destroyed thing
     /// stays as nothing.
     pub(crate) fn report_cut(&mut self, now: osis_base::WallMs) {
         let cut = std::mem::take(&mut self.cut_subs);
@@ -91,7 +91,7 @@ impl super::Core {
         let was = self.ix.groups.before();
         let held: BTreeSet<Tid> = cut.iter().flat_map(|s| self.ix.groups.reach_before(&was, s).into_iter().filter(move |t| t != s)).collect();
         for t in held {
-            if !self.carried(&t) && !self.ended(&t) {
+            if !self.carried(&t) && !self.destroyed(&t) {
                 let detail = "a subgroup left the synced group that held it: this stays on this node".into();
                 self.events.diagnostic(crate::events::Diagnostic { kind: crate::events::DiagnosticKind::NotSynced, tids: vec![t], commit: None, peer: None, detail }, now);
             }

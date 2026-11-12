@@ -224,10 +224,10 @@ impl Engine {
         self.core.exists(tid)
     }
 
-    /// Whether `tid` ended here (purged, expired or released, spec/commits.md §5 Ending): it
+    /// Whether `tid` was destroyed here (purged, expired or released, spec/commits.md §5 Destruction): it
     /// reads as absent, its kept record and creation included.
-    pub fn ended(&self, tid: &Tid) -> bool {
-        self.core.ended(tid)
+    pub fn destroyed(&self, tid: &Tid) -> bool {
+        self.core.destroyed(tid)
     }
 
     /// Every aspect with a held state, as `(tid, ak)` (simulator invariants).

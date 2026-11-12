@@ -659,10 +659,10 @@ fn thing_wait(
     record: &dyn Fn(&Tid) -> Option<CreationRecord>,
     chain_rec: &dyn Fn(&Tid, &crate::engine::Core) -> Option<CreationRecord>,
 ) -> Option<Reason> {
-    // an ended thing is unknown, but for what judges its ending written before it
-    // (`retention::end`); an ending by expiry keeps no record but for a dependent
-    let ended = |id: &CommitId| !crate::retention::end::judges_ending(a.ak.as_str()) || a.ak.as_str() != osis_commit::retention::CREATED && crate::retention::end::Ending::of(core, &a.tid).is_some_and(|e| e.after(h, id));
-    if record(&a.tid).is_none() || core.ended(&a.tid) && ended(&h.id()) {
+    // a destroyed thing is unknown, but for what judges its destruction written before it
+    // (`retention::destroy`); a destruction by expiry keeps no record but for a dependent
+    let destroyed = |id: &CommitId| !crate::retention::destroy::judges_destruction(a.ak.as_str()) || a.ak.as_str() != osis_commit::retention::CREATED && crate::retention::destroy::Destruction::of(core, &a.tid).is_some_and(|e| e.after(h, id));
+    if record(&a.tid).is_none() || core.destroyed(&a.tid) && destroyed(&h.id()) {
         return Some(Reason::UnknownCreated(a.tid));
     }
     let mut chain = vec![a.tid];
@@ -1346,11 +1346,11 @@ impl Engine {
         self.run(|tx| keys::forget_unchecked(tx, &id))
     }
 
-    /// The ended things whose record something here awaits: an ending here kept nothing of
-    /// them (spec/commits.md §5 Ending) and a dependent reached this node after it, so a held
+    /// The destroyed things whose record something here awaits: a destruction here kept nothing of
+    /// them (spec/commits.md §5 Destruction) and a dependent reached this node after it, so a held
     /// record blob gives the record again (node-sync).
-    pub fn ended_records_awaited(&self) -> BTreeSet<Tid> {
-        self.core.waits.records_awaited().filter(|t| self.core.created(t).is_none() && self.core.ended(t)).copied().collect()
+    pub fn destroyed_records_awaited(&self) -> BTreeSet<Tid> {
+        self.core.waits.records_awaited().filter(|t| self.core.created(t).is_none() && self.core.destroyed(t)).copied().collect()
     }
 
     /// The records commit `id`, thrown out whole, awaits: every part's (empty when not remembered).

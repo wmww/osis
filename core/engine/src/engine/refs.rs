@@ -2,7 +2,7 @@
 //! (target, source thing, AK) how many times the target's tid occurs in the held values of the
 //! source's state on that aspect. Local and rebuildable (`write_all`), in two store index tables,
 //! kept in the transaction that changes a state: a join counts the tids at its reach before and
-//! after (`Delta::reach`), a whole write (a rebuild: validity, expiry, purge, ending) the whole
+//! after (`Delta::reach`), a whole write (a rebuild: validity, expiry, purge, destruction) the whole
 //! state against the stored rows (`resync`), a dropped aspect clears them. An ephemeral aspect's
 //! rows are memory rows, as its state is. A row appearing or going is told as
 //! `Event::References` once someone listens (`Engine::watch_references`). spec: none (local;
@@ -157,11 +157,11 @@ pub(crate) fn note(tx: &mut Tx<'_>, source: &Tid, ak: &Ak, d: Delta) -> Result<(
             crate::retention::lifetimes::queue(tx, t)?;
         }
     }
-    // an ended thing whose evidence a list or reference kept: its keep is judged again
-    if crate::retention::end::needs_from(ak) {
+    // a destroyed thing whose evidence a list or reference kept: its keep is judged again
+    if crate::retention::destroy::needs_from(ak) {
         for t in &moved {
-            if tx.core.ended(t) {
-                tx.core.ended_due.insert(*t);
+            if tx.core.destroyed(t) {
+                tx.core.destroyed_due.insert(*t);
             }
         }
     }

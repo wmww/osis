@@ -18,8 +18,8 @@ use std::collections::{BTreeMap, BTreeSet};
 type Request = (CommitId, LazyHeader);
 
 /// Whether a request stamped `at` may name a delta on `ak` stamped `ts`: one stamped before it, or
-/// any minting (`created.0`): a request ending a thing ends every minting of it, so a later minting
-/// is held value-less as the earlier ones (spec/commits.md §5 Ending).
+/// any minting (`created.0`): a request destroying a thing drops every minting of it, so a later minting
+/// is held value-less as the earlier ones (spec/commits.md §5 Destruction).
 fn stamped_before(at: Ts, ak: &Ak, ts: Ts) -> bool {
     ts < at || ak.as_str() == osis_commit::retention::CREATED
 }
@@ -38,7 +38,7 @@ fn reaches(item: &PurgeItem, ch: &Header, c: &CommitId) -> bool {
 /// writes of its own (a snapshot has none, so no request names it: it is never purged, its copies
 /// of purged values go as any carrying body's), an item on its aspect reaches it, it is stamped
 /// before the request, and a purge request that expires reaches only deltas expiring no later
-/// than it (spec/commits.md §5); a release, which expires, ends every minting (§5 Ending).
+/// than it (spec/commits.md §5); a release, which expires, drops every minting (§5 Destruction).
 fn names(p: &Header, a: &AspectEntry, ch: &Header, c: &CommitId) -> bool {
     ch.kind.has_own_writes()
         && stamped_before(p.ts, &a.ak, ch.ts)
@@ -71,10 +71,10 @@ pub(super) fn holds_right(core: &Core, p: &Header, pc: &CommitId, a: &AspectEntr
     let point = Point { ts: p.ts, node: p.author, commit: *pc };
     let (by, actor) = (a.retention.by, ch.actor);
     let judge = |tl: &osis_perm::Timeline| tl.purge_stands(&p.author, &a.tid, by, &actor, point) && (p.actor == p.author || tl.purge_stands(&p.actor, &a.tid, by, &actor, point));
-    // an ending is judged by the thing's history before it: nothing written on the thing after it
-    // counts (spec/commits.md §5 Ending), so an edge write on it stamped later, held here before
-    // the ending arrived, is left out of the walk that judges it. Such a write is not held once
-    // the thing ended (`end::Ending`): a walk from scratch only while one is, only for signers
+    // a destruction is judged by the thing's history before it: nothing written on the thing after it
+    // counts (spec/commits.md §5 Destruction), so an edge write on it stamped later, held here before
+    // the destruction arrived, is left out of the walk that judges it. Such a write is not held once
+    // the thing was destroyed (`destroy::Destruction`): a walk from scratch only while one is, only for signers
     // that could ever hold the right (held inputs only grow, so neither can a cut's), and only
     // over what authority on the thing and the delta's actor comes from (`Held::upstream`), not
     // the node's whole role graph
@@ -85,7 +85,7 @@ pub(super) fn holds_right(core: &Core, p: &Header, pc: &CommitId, a: &AspectEntr
                 return false;
             }
             let things = core.ix.held.upstream(&BTreeSet::from([a.tid, actor]));
-            crate::costs::count("ending: cut walk things", things.len() as u64);
+            crate::costs::count("destruction: cut walk things", things.len() as u64);
             let cut = Cut { held: &core.ix.held, things, later };
             return judge(&osis_perm::Timeline::evaluate_with(&cut, &core.sides.trust()));
         }
@@ -195,8 +195,8 @@ pub(crate) fn snapshot_right(core: &Core, s: &CommitId, c: &CommitId, tid: &Tid,
 pub(crate) fn lasting(tx: &mut Tx<'_>, id: &CommitId, on: &dyn Fn(&Core, &Tid) -> bool) -> Result<bool> {
     let Some(m) = tx.core.ix.commits.get(id).cloned() else { return Ok(false) };
     let now = tx.now().0;
-    // a released thing's drops are no erasure's (spec/commits.md §5 Ending): none lasts
-    if m.header.aspects.iter().enumerate().any(|(ai, a)| (m.stripped.contains(&ai) || m.dropped.contains_key(&ai)) && on(tx.core, &a.tid) && super::history::permanent(tx.core, &m.header, a, now) && !super::end::released(tx.core, &a.tid, now)) {
+    // a released thing's drops are no erasure's (spec/commits.md §5 Destruction): none lasts
+    if m.header.aspects.iter().enumerate().any(|(ai, a)| (m.stripped.contains(&ai) || m.dropped.contains_key(&ai)) && on(tx.core, &a.tid) && super::history::permanent(tx.core, &m.header, a, now) && !super::destroy::released(tx.core, &a.tid, now)) {
         return Ok(true);
     }
     if !m.view.purges {

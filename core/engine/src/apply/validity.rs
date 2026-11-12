@@ -892,13 +892,13 @@ impl osis_keys::possession::View for Possession<'_> {
     fn author_on(&self, t: &Tid) -> Option<Role> {
         self.roles.get(t).copied()
     }
-    /// The roster before the commit, an actor ended before it (the commit is stamped after its
-    /// ending) in place of its frozen holders, and so on (spec/crypto.md §4, Holder actors, Ended).
+    /// The roster before the commit, an actor destroyed before it (the commit is stamped after its
+    /// destruction) in place of its frozen holders, and so on (spec/crypto.md §4, Holder actors, Destroyed).
     fn holder_actors(&self) -> BTreeSet<Tid> {
         let held = |m: &Tid| self.core.is_account(m) || self.core.keysets_of(m).any(|(_, _, x)| x.held_before(&self.point));
         let header = self.core.ix.commits.get(&self.point.commit).map(|m| m.header.clone());
         let ended_before = |m: &Tid| {
-            self.core.ended_actor(m) && header.as_ref().is_some_and(|h| crate::retention::end::Ending::of(self.core, m).is_some_and(|e| e.after(h, &self.point.commit)))
+            self.core.destroyed_actor(m) && header.as_ref().is_some_and(|h| crate::retention::destroy::Destruction::of(self.core, m).is_some_and(|e| e.after(h, &self.point.commit)))
         };
         let mut out = BTreeSet::new();
         let mut seen = BTreeSet::from([self.actor]);

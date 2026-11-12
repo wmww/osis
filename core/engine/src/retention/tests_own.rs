@@ -113,7 +113,7 @@ fn forgotten_survives_restart_spec_commits_5() {
 }
 
 // spec/commits.md §5 Forgetting: what a node keeps of a forgotten commit goes with its thing, as
-// at a node that never held it (no row per ended thing).
+// at a node that never held it (no row per destroyed thing).
 #[test]
 fn forgotten_goes_with_its_thing_spec_commits_5() {
     let mut lp = LocalPeer::fresh(1, T0);
@@ -135,7 +135,7 @@ fn forgotten_goes_with_its_thing_spec_commits_5() {
     lp.advance(200_000);
     lp.peers[0].tick().unwrap();
     let e = &mut lp.peers[0].engine;
-    assert_eq!(e.get(&t, &a).unwrap(), None, "ended");
+    assert_eq!(e.get(&t, &a).unwrap(), None, "destroyed");
     assert!(!e.core.ix.forgotten.contains_key(&(t, a.clone())));
     assert!(!e.local_census().unwrap().contains_key("f/"), "gone with the thing");
 }

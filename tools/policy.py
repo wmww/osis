@@ -6,7 +6,8 @@ and core/base/testenv-known.txt lists exactly the `OSIS_*` variables the sources
 osis-host cannot reach decryption (`host_blind`), and no test can bind the real LAN port or
 announce on the real LAN (`real_lan_tests`), and world copies stay test-only (`test_copies`), and only the engine's `apply::checked`
 vouches for checked delta bytes (`checked_bytes`), and every tools/known_failures.txt line names
-an existing issue file, an existing test or sim scenario and a valid pattern (`known_failures`).
+an existing issue file, an existing test or sim scenario and a valid pattern (`known_failures`),
+and no code names a thing's destruction by the old word "ended" (`ended_names`).
 Usage: python3 tools/policy.py   (every workspace member, the GUI's included; vendored crates under
 libs/kit/patches/ are not ours and are skipped; exit 1 on any violation)"""
 import glob, os, re, sys, tomllib
@@ -349,6 +350,32 @@ def known_failures():
         if not re.search(rf"\bfn {re.escape(name.split('::')[-1])}\b", rs):
             yield f"{gate_failures.KNOWN}: {name}: no such test"
 
+# issues/deprecated-terms.md (Tess): a thing is destroyed (released, purged or expired), never
+# ended: a thing is not a time period. The old names of that concept may not come back in code.
+# "ended" and "ending" stay for what does end: a grant's or edge's `until`, a stream, a pass, a
+# connection, a subscription, a link.
+ENDED_NAMES = re.compile(
+    r"\bretention(::|/)end\b|\b(DropFor|DropWhy|Held|Status)::Ended\b|\b(WriteOp|Part)::End\b|\bEnding\b"
+    r"|\b(ENDING_REQUESTS|EndedIn|NoLeakEnded|judges_ending|end_ended|end_thing|expand_ended|kept_when_ended)\b"
+    r"|\b(?:\w+_)?(ended|ending)_(things?|actors?|kept|due|needed|upstream|certificate|records|evidence|requests?|world|setup|work|first)\b"
+    r"|\b(ended|ending|an ended|an ending) (things?|actors?|accounts?|first admins?|key actors?|requests?|evidence)\b"
+    r"|\b(ended|ending) by (purge|release|expiry)\b|\bthe ending (travels|falls|fell|stands|keeps)\b|\bfn end\(&mut self, tid\b")
+
+def ended_names():
+    for top in ("core", "cli", "libs", "app", "schema", "tools"):
+        for dirpath, dirs, files in os.walk(os.path.join(ROOT, top)):
+            dirs[:] = [d for d in dirs if d not in ("target", "patches")]
+            for f in files:
+                if not f.endswith((".rs", ".tla", ".cfg", ".osis", ".sh")):
+                    continue
+                path = os.path.join(dirpath, f)
+                rel = os.path.relpath(path, ROOT)
+                for n, line in enumerate(open(path, errors="replace"), 1):
+                    m = ENDED_NAMES.search(line)
+                    if m:
+                        yield f"{rel}:{n}: `{m.group(0)}`: a thing is destroyed, not ended (issues/deprecated-terms.md)"
+
+errs.extend(ended_names())
 errs.extend(known_failures())
 errs.extend(test_copies())
 errs.extend(checked_bytes())

@@ -73,8 +73,8 @@ pub(crate) enum WriteOp {
     PurgeAuthor { tid: Tid, key: u32, actor: Tid },
     /// Removes the thing's aspects and the memberships this node may remove, as held at commit.
     Delete(Tid),
-    /// Ends the thing for everyone: purges its creation.
-    End(Tid),
+    /// Destroys the thing for everyone: purges its creation.
+    PurgeThing(Tid),
     /// Releases the thing: a release request on it.
     Release(Tid),
     /// Adds `by` to `thing`'s retainers; `by`'s aspect `key` must reference `thing` after the
@@ -88,7 +88,7 @@ impl WriteOp {
         match self {
             WriteOp::Create(_) => Vec::new(),
             WriteOp::Retain { by, thing, .. } => vec![*by, *thing],
-            WriteOp::Delete(t) | WriteOp::End(t) | WriteOp::Release(t) | WriteOp::Group { g: t, .. } => vec![*t],
+            WriteOp::Delete(t) | WriteOp::PurgeThing(t) | WriteOp::Release(t) | WriteOp::Group { g: t, .. } => vec![*t],
             WriteOp::Path { tid, .. } | WriteOp::Fire { tid, .. } | WriteOp::Retention { tid, .. } | WriteOp::Purge { tid, .. } | WriteOp::PurgeCommit { tid, .. } | WriteOp::PurgeAuthor { tid, .. } => vec![*tid],
         }
     }
@@ -98,7 +98,7 @@ impl WriteOp {
 /// a commit fails `commit` with `Invalid`, naming what clashed; writing it as several commits is up
 /// to the app:
 /// - A commit has one expiry: `expires`, else what its keys say, which must then agree. A thing
-///   created in an expiring commit ends at that expiry, whole.
+///   created in an expiring commit is destroyed at that expiry, whole.
 /// - A commit is durable or ephemeral (keys marked `+`), and an ephemeral signal (keys marked `+~`)
 ///   is a commit of its own. A new thing is durable, so ephemeral writes on it go in a later commit.
 ///
@@ -198,7 +198,7 @@ impl<'d> Write<'d> {
 
     /// When this commit expires, in place of what its keys say. A later call replaces it. `commit`
     /// fails `Invalid` when the time is not in the future, or beside what cannot expire: a removal
-    /// from a group, a `delete`, an `end`, or a purge naming anything but commits expiring no
+    /// from a group, a `delete`, a `purge` of a thing, or a purge naming anything but commits expiring no
     /// later on a thing the write also writes. A commit writing into
     /// a value that expires sooner (a reaction to a disappearing message) expires with that value,
     /// whatever this says: it means nothing once the value is gone.
@@ -274,25 +274,26 @@ impl<'d> Write<'d> {
         Ok(())
     }
 
-    /// Ends `tid` for everyone: every node drops the thing, whole, and ignores what is written on
-    /// it later. Unlike `delete` it cannot be undone. What depends on it lives on: rights others
-    /// held through it stand as they were, and what an ended account signed still verifies. Only an
-    /// admin of the thing may end it (`Permission` otherwise); an account ends itself. An
-    /// expiring commit that creates a thing ends it the same way when it expires.
-    pub fn end(&mut self, tid: Tid) -> Result<()> {
+    /// Destroys `tid` for everyone by purging its creation: every node drops the thing, whole, and
+    /// ignores what is written on it later. Unlike `delete` it cannot be undone. What depends on it
+    /// lives on: rights others held through it stand as they were, and what a destroyed account
+    /// signed still verifies. Only an admin of the thing may purge it (`Permission` otherwise); an
+    /// account purges itself. An expiring commit that creates a thing destroys it the same way when
+    /// it expires.
+    pub fn purge(&mut self, tid: Tid) -> Result<()> {
         let t = self.known(tid)?;
-        self.ops.push(WriteOp::End(t));
+        self.ops.push(WriteOp::PurgeThing(t));
         Ok(())
     }
 
-    /// Releases `tid`: it goes from every node, as an ended thing does, but as storage reclaim,
+    /// Releases `tid`: it goes from every node, as a purged thing does, but as storage reclaim,
     /// not erasure: nothing of it is kept for good, so a node still holding a copy of it may bring
     /// it back later. It goes whatever lists or references it (a reference to it then reads as
-    /// gone, as after `end`), and stays gone wherever a thing listing or referencing it is held.
+    /// gone, as after `purge`), and stays gone wherever a thing listing or referencing it is held.
     /// What only it kept alive (things listing it as their retainer) is released after it, by the
-    /// node's own judgment. Needs the right to end it (`Permission` otherwise, as `end`). A
+    /// node's own judgment. Needs the right to purge it (`Permission` otherwise, as `purge`). A
     /// release is a commit of its own: `commit` fails `Invalid` beside any other op or an
-    /// `expires`. Beside `end`, which erases: release is for a thing no longer needed, `end` for
+    /// `expires`. Beside `purge`, which erases: release is for a thing no longer needed, `purge` for
     /// one that must be gone for good.
     pub fn release(&mut self, tid: Tid) -> Result<()> {
         let t = self.known(tid)?;
@@ -406,7 +407,7 @@ impl<'d> Write<'d> {
                     WriteOp::Retention { tid, key, r } => vec![u(5), t(*tid), u(u64::from(*key)), v(r)],
                     WriteOp::Purge { tid, key } => vec![u(6), t(*tid), u(u64::from(*key))],
                     WriteOp::Delete(x) => vec![u(7), t(*x)],
-                    WriteOp::End(x) => vec![u(11), t(*x)],
+                    WriteOp::PurgeThing(x) => vec![u(11), t(*x)],
                     WriteOp::Release(x) => vec![u(12), t(*x)],
                     WriteOp::Retain { by, key, thing } => vec![u(13), t(*by), u(u64::from(*key)), t(*thing)],
                     WriteOp::PurgeCommit { tid, key, commit } => vec![u(8), t(*tid), u(u64::from(*key)), Value::bytes(&commit.0)],
@@ -428,7 +429,7 @@ impl<'d> Write<'d> {
         let gk = DynamicAspectKey { ak: Ak::new(GROUP.ak()).unwrap_or_else(|_| unreachable!("a core AK")), schema: Some(crate::keys::core_schema()) };
         let mut b = Built { m: Mutation::new(), added: Vec::new(), removed: Vec::new() };
         let key = |i: u32| keys.get(i as usize).ok_or_else(|| Error::Invalid("op names no key of its write".into()));
-        // a release request carries `released.0` deltas alone (spec/commits.md §5 Ending)
+        // a release request carries `released.0` deltas alone (spec/commits.md §5 Destruction)
         let releases = ops.iter().filter(|o| matches!(o, WriteOp::Release(_))).count();
         if releases > 0 && (releases < ops.len() || expires.is_some()) {
             return Err(Error::Invalid("a release is a commit of its own: write it in a Write with no other op and no expiry".into()));
@@ -445,7 +446,7 @@ impl<'d> Write<'d> {
                     }
                     b.m.create(rec);
                 }
-                WriteOp::Group { add: false, .. } | WriteOp::Delete(_) | WriteOp::End(_) if expires.is_some() => return Err(Error::Invalid("a removal from a group, a delete or an end does not expire: this write has an expiry, so write it as a commit of its own".into())),
+                WriteOp::Group { add: false, .. } | WriteOp::Delete(_) | WriteOp::PurgeThing(_) if expires.is_some() => return Err(Error::Invalid("a removal from a group, a delete or a purge of a thing does not expire: this write has an expiry, so write it as a commit of its own".into())),
                 WriteOp::Group { g, member, items, add } => b.group(&gk, g, member, items, add)?,
                 // a dynamic key's kind is known only now: a write of the other kind never
                 // silently does nothing
@@ -519,7 +520,7 @@ impl<'d> Write<'d> {
                     b.m.op(tid, &osis_schema::core_types::PURGE, PathOp { path: Vec::new(), op: Op::Replace(r.e.now().to_value()) })?;
                     b.m.purge(PurgeItem::Author { tid, ak: key(k)?.ak.clone(), actor });
                 }
-                WriteOp::End(tid) => {
+                WriteOp::PurgeThing(tid) => {
                     b.m.op(tid, &osis_schema::core_types::PURGE, PathOp { path: Vec::new(), op: Op::Replace(r.e.now().to_value()) })?;
                     b.m.purge(PurgeItem::Aspect { tid, ak: osis_base::Ak::new(osis_schema::core_types::CREATED.ak()).map_err(|_| Error::Invalid("created.0".into()))? });
                 }
@@ -615,7 +616,7 @@ impl Osis {
                 5 => WriteOp::Retention { tid: o.tid()?, key: key(o.uint()?)?, r: of(o.next()?)? },
                 6 => WriteOp::Purge { tid: o.tid()?, key: key(o.uint()?)? },
                 7 => WriteOp::Delete(w.known(o.tid()?)?),
-                11 => WriteOp::End(w.known(o.tid()?)?),
+                11 => WriteOp::PurgeThing(w.known(o.tid()?)?),
                 12 => WriteOp::Release(w.known(o.tid()?)?),
                 13 => WriteOp::Retain { by: o.tid()?, key: key(o.uint()?)?, thing: o.tid()? },
                 8 => WriteOp::PurgeCommit { tid: o.tid()?, key: key(o.uint()?)?, commit: crate::port::codec::of(o.next()?)? },

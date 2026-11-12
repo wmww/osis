@@ -1801,7 +1801,7 @@ fn a_client_leaves_alone() {
 
 // issues/thing-lifetimes.md (API), notes/client-port.md §3, spec/commits.md §5 and spec/permissions.md §6: `retaining` and `release` go through
 // the port's write as the actor's: a thing created retained by a thing under the group, released
-// by an admin; a writer may not release (the right to end it), nor list it (admin-only).
+// by an admin; a writer may not release (the right to purge it), nor list it (admin-only).
 #[test]
 fn retaining_and_release_are_the_actors() {
     let x = node();
@@ -1821,7 +1821,7 @@ fn retaining_and_release_are_the_actors() {
     assert!(x.n.created(g).unwrap().is_none(), "nothing applied");
     let mut w = writer.write();
     w.release(f).unwrap();
-    assert!(matches!(w.commit(), Err(Error::Permission { .. })), "no right to end it");
+    assert!(matches!(w.commit(), Err(Error::Permission { .. })), "no right to purge it");
     assert!(x.n.created(f).unwrap().is_some());
     let mut w = admin.write();
     w.release(f).unwrap();
