@@ -904,6 +904,7 @@ impl SyncEngine {
             let candidates = self.walk_candidates(conn, l, tested.get(&l).map(|x| x.0))?;
             let Some(s) = self.records.shared.get(&conn) else { return Ok(()) };
             let Some(peer) = &s.peer else { return Ok(()) };
+            let nc = candidates.len();
             let shown = candidates.into_iter().find(|(_, v)| peer.values.binary_search(&beacon_value(&beacon(v, &l.0, &s.r), peer.f)).is_ok());
             self.walked(conn, l, shown.map(|x| x.0), out)?;
         }
@@ -1594,6 +1595,8 @@ impl SyncEngine {
             }
             Asked::Offer(items) => {
                 s.pending.offers_unanswered = s.pending.offers_unanswered.saturating_sub(1);
+                // Hits answered 0 whose credential is gone: a Lost each, once the Offer is read
+                let mut stale = Vec::new();
                 for (item, (code, tag, grant)) in items.into_iter().zip(codes) {
                     if let AskedItem::Deposit(l, b) = item {
                         self.shared_deposit_answered(conn, l, b, code)?;
@@ -1638,18 +1641,24 @@ impl SyncEngine {
                             let now = self.shared_creds(conn, Some(&set), TESTED)?;
                             if granted && now.iter().any(|x| x.value == c.value) {
                                 self.shared_open(conn, c.label, c.class, Some(c.beacon), out)?;
-                            } else if !self.shared_member(conn, &c.label) {
-                                // this tester's credential is gone (issues/net-shared-set.md, Divergence), or
-                                // the peer's grant failed: closed and re-marked as any Lost sent, so a
-                                // credential that returns is offered again; a failed grant's Hit stays
-                                // answered, as a refused one, so a forged grant buys no loop
-                                self.shared_close(conn, &c.label, super::stream::Stop::Here)?;
+                            } else {
+                                // a failed grant's Hit stays answered, as a refused one, so a
+                                // forged grant buys no loop
                                 if !granted && let Some(s) = self.records.shared.get_mut(&conn) {
                                     s.offered.insert(beacon_hit(&c.value, &c.label.0, &c.beacon, (s.by_listener, &s.key, &s.dialer, &s.listener)));
                                 }
-                                self.shared_lost_send(conn, c.label, out)?;
+                                stale.push(c.label);
                             }
                         }
+                    }
+                }
+                // this tester's credential is gone (issues/net-shared-set.md, Divergence), unless
+                // another Hit on L opened it (the same Offer's, read after) or still may (one
+                // unanswered): the peer opened L for that one too, and a Lost would close it
+                stale.dedup();
+                for l in stale {
+                    if !self.shared_member(conn, &l) && !self.shared_hit_out(conn, &l) {
+                        self.shared_lost_send(conn, l, out)?;
                     }
                 }
                 match self.records.shared.get(&conn) {
@@ -1660,6 +1669,11 @@ impl SyncEngine {
                 }
             }
         }
+    }
+
+    /// Whether an Offer of this side still unanswered on `conn` carries a Hit on `l`.
+    fn shared_hit_out(&self, conn: ConnId, l: &LabelId) -> bool {
+        self.records.shared.get(&conn).is_some_and(|s| s.asked.values().any(|a| matches!(a, Asked::Offer(items) if items.iter().any(|i| matches!(i, AskedItem::Hit(c) if c.label == *l)))))
     }
 
     fn shared_lost_send(&mut self, conn: ConnId, l: LabelId, out: &mut Vec<Action>) -> Result<()> {
