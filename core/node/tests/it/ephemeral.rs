@@ -2302,10 +2302,9 @@ fn delete_waits_for_its_role_commits_at_the_host_spec_sync_7() {
     let write = put(&mut net, b, "b");
     net.run();
     let l = net.label(a);
-    // the entries of b's write at host 0
-    let mine: Vec<osis_base::BlobId> = net.sync(b).entries(&l).into_iter().filter(|(_, k)| matches!(k, osis_node::sync::EntryKind::Commit { commit, .. } if *commit == write)).map(|(x, _)| x).collect();
-    let at0 = |net: &Net| -> usize { let held = net.host_ids(hosts[0], &l); mine.iter().filter(|x| held.contains(x)).count() };
-    let held = at0(&net);
+    // the entries of b's write at host 0, fresh encryptions included
+    let at0 = |net: &mut Net| commit_entries_at(net, hosts[0], b, &l, write);
+    let held = at0(&mut net);
     assert!(held > 0, "b's write is at host 0");
     for (n, h) in [(a, hosts[0]), (b, hosts[1])] {
         net.blocked.insert((n, h));
@@ -2320,11 +2319,18 @@ fn delete_waits_for_its_role_commits_at_the_host_spec_sync_7() {
     let acts = net.sync(c).compact_ephemeral_now().unwrap();
     net.actions(c, acts);
     net.run();
-    assert_eq!(at0(&net), held, "kept at host 0 while the promotion is on its way there");
+    assert_eq!(at0(&mut net), held, "kept at host 0 while the promotion is on its way there");
     net.advance(31_000);
     net.advance(1_000);
-    assert_eq!(at0(&net), 0, "deleted once the promotion is there");
+    assert_eq!(at0(&mut net), 0, "deleted once the promotion is there");
     assert_eq!(net.eph_read(b, w, CURSOR), net.eph_read(c, w, CURSOR));
+}
+
+/// The entries at `host` of `n`'s commit `c` under `l`, as `n` knows them (fresh encryptions
+/// it placed included).
+fn commit_entries_at(net: &mut Net, host: usize, n: usize, l: &osis_base::LabelId, c: CommitId) -> usize {
+    let held = net.host_ids(host, l);
+    net.sync(n).entries(l).into_iter().filter(|(x, k)| held.contains(x) && matches!(k, osis_node::sync::EntryKind::Commit { commit, .. } if *commit == c)).count()
 }
 
 // spec/sync.md §6 (a writer stamps every ephemeral entry it uploads; held at a host only as

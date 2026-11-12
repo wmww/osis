@@ -149,7 +149,7 @@ Each was a number that only made a bug unlikely (class X); the code ends by a fi
 | `LAN_JOIN_REPEATS` 2, `LAN_JOIN_GAP` 1 s (provisional) | M | a lost first announcement waits `LAN_ANNOUNCE` / one datagram per gap for ever |
 | `LAN_ANNOUNCE` 30 s, `LAN_REJOIN_MIN` 30 s (provisional) | M | repeats at the loop's speed, a network change rejoins at once / one announcement per join, a network change never rejoins |
 | `LAN_FRESH_MS` 2 windows, `PEERS_TTL_MS` 60 s | M (dialing only; opens check access) | |
-| `SETTLE_MS` 30 s, `RELAY_MIN_MS` 5 s | M (co-writers both upload: duplicate work, idempotent; admins all give a plain thing with a holder secrets of its own: a fork and a label each, pruned) | |
+| `SETTLE_MS` 30 s, `RELAY_MIN_MS` 5 s | M (co-writers both upload: duplicate work, idempotent; admins all give a plain thing with a holder secrets of its own: a fork and a label each, pruned; a writer's deletes at a host wait while it holds a role commit back from there, spec/sync.md §7 Role view first: a delete or purge reaches the host up to `SETTLE_MS` late) | 0: every holder uploads every role commit at once / a role commit only its author places, and a co-writer's deletes at a host its author never reaches never go |
 | `PASS_AGAIN` 8 (sync/mod.rs) | M (past it a marked label waits for the next event, a resync at the latest) | |
 | `RELINK_BACKOFF_MS` 1 h - 7 days | R (a host deleting fresh chunks) | |
 | `sync_now` pings a connection quiet for `retry_ms`, nothing outstanding (`SyncEngine::refresh`) | M (existing knob) | a ping per poll per connection / a dead connection found only by the periodic ping |
@@ -212,5 +212,6 @@ Each was a number that only made a bug unlikely (class X); the code ends by a fi
 | sim `STORM` 5000, `ROGUE_STORM` 100 000, `SLOW_MS` 30 s | M | |
 | sim `reach::PORT`, `NetSim::lan_drop_pct` 25 | M | a port is only text in an address; the drop rate shapes the mix of events, quiet announces undropped |
 | sim world `STORM` 5000 rounds (`world.rs`; busiest osis-test settle about 300) | M | a storm panics; at infinity it hangs the test |
+| node test net `SETTLE_ROUNDS` 2000 (`core/node/tests/it/net/mod.rs`; busiest node-test settle about 210) | M | every settle panics; at infinity a loop inside one settle (clock still) runs to the seed's CPU limit |
 | seed runner `SEED_TIMEOUT_SECS` 600 (`osis_base::testenv`, CPU-seconds a seed's thread uses, or seconds it uses none; `OSIS_SEED_TIMEOUT_SECS` overrides; slowest seeds take a few CPU-s) | M | 0: every seed is hung; ∞: a hung seed hangs the run silently |
 | order `TWIN_SHARE` 0.25 (`core/node/tests/it/order.rs`: the share of an exhaustive held set's enumerated orders tried again with late parts, besides its named three) | M (a twin costs about its order with its checks; each gate's fresh seeds draw other orders) | 0: the named three only per held set with a multi-part commit; 1: every order's twin, double the size's cost |
