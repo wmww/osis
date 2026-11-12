@@ -1356,30 +1356,17 @@ impl ServingSession {
             }
             replaced.push(item.blob);
         }
-        let Ok(prefix) = host_prefix(blob) else { return Ok(Code::MALFORMED) };
-        let class = prefix.as_ref().map(|p| p.class()).unwrap_or_default();
-        let expiry = prefix.and_then(|p| p.expiry()).map(|t| t.0);
-        if class == Class::Relay {
-            // held by nobody, so it replaces nothing (spec/sync.md §5)
-            if !replaces.is_empty() {
-                return Ok(Code::REFUSED);
+        // held by nobody, a relay-only blob replaces nothing (spec/sync.md §5)
+        if !replaces.is_empty() && host_prefix(blob).is_ok_and(|p| p.is_some_and(|p| p.class() == Class::Relay)) {
+            return Ok(Code::REFUSED);
+        }
+        match put_stamped(store, now, label, blob_id, blob, wrap, stamp, &replaced)? {
+            Taken::Relay(r) => {
+                out.push(ServingOutput::Relay(r));
+                Ok(Code::OK)
             }
-            return Ok(match store.relay(label, &blob_id, blob.len(), expiry, now)? {
-                RelayVerdict::Push => {
-                    out.push(ServingOutput::Relay(Relayed { label: *label, blob_id, blob: blob.into(), wrap, stamp }));
-                    Code::OK
-                }
-                RelayVerdict::Seen => Code::OK,
-                RelayVerdict::Refused(c) => c,
-            });
+            Taken::Code(c) => Ok(c),
         }
-        if expiry.is_some_and(|t| t <= now) {
-            return Ok(Code::EXPIRED);
-        }
-        if store.tombstoned(label, &blob_id)? {
-            return Ok(Code::TOMBSTONED);
-        }
-        store.put(label, Put { blob_id, blob, wrap, stamp: Some(stamp), expiry, ephemeral: class.in_memory(), replaces: &replaced, now })
     }
 
     /// The signatures of a delete of held entry `item.blob` (spec/sync.md §5): by the head's
@@ -1452,6 +1439,50 @@ impl ServingSession {
         }
         store.delete(label, &item.blob, now)
     }
+}
+
+/// What a stamped entry put into the store gave: its code, or a relay-only blob to push to the
+/// label's other holders (`put_stamped`).
+pub enum Taken {
+    Code(Code),
+    Relay(Relayed),
+}
+
+/// A stamped entry whose stamp verified, put into the store by the Upload rules (spec/sync.md
+/// §5): a relay-only blob passes the relay gate and is not stored; an expired or tombstoned
+/// one is refused. Shared by a session's Upload and node sync's pull of a sync ID it cannot read.
+#[allow(clippy::too_many_arguments)]
+pub fn put_stamped(store: &mut dyn LabelStore, now: u64, label: &LabelId, blob_id: BlobId, blob: &[u8], wrap: Wrap, stamp: Signature, replaced: &[BlobId]) -> Result<Taken, StoreError> {
+    let Ok(prefix) = host_prefix(blob) else { return Ok(Taken::Code(Code::MALFORMED)) };
+    let class = prefix.as_ref().map(|p| p.class()).unwrap_or_default();
+    let expiry = prefix.and_then(|p| p.expiry()).map(|t| t.0);
+    if class == Class::Relay {
+        return Ok(match store.relay(label, &blob_id, blob.len(), expiry, now)? {
+            RelayVerdict::Push => Taken::Relay(Relayed { label: *label, blob_id, blob: blob.into(), wrap, stamp }),
+            RelayVerdict::Seen => Taken::Code(Code::OK),
+            RelayVerdict::Refused(c) => Taken::Code(c),
+        });
+    }
+    if expiry.is_some_and(|t| t <= now) {
+        return Ok(Taken::Code(Code::EXPIRED));
+    }
+    if store.tombstoned(label, &blob_id)? {
+        return Ok(Taken::Code(Code::TOMBSTONED));
+    }
+    Ok(Taken::Code(store.put(label, Put { blob_id, blob, wrap, stamp: Some(stamp), expiry, ephemeral: class.in_memory(), replaces: replaced, now })?))
+}
+
+/// A stamped entry pulled from a reader of `label` at a node that cannot read it (spec/sync.md
+/// §10, Stream): its stamp checked under the head keys `k`, then `put_stamped`. `struck` as for
+/// `check`.
+#[allow(clippy::too_many_arguments)]
+pub fn pulled(store: &mut dyn LabelStore, now: u64, label: &LabelId, k: &HeadKeys, blob: &[u8], wrap: Wrap, stamp: Signature, struck: &mut bool) -> Result<Taken, StoreError> {
+    let blob_id = osis_label::blob_id(blob);
+    let code = check(k, StepKey::Write, Domain::Upload, &entry_digest(label, &blob_id, &wrap), &stamp, struck);
+    if code != Code::OK {
+        return Ok(Taken::Code(code));
+    }
+    put_stamped(store, now, label, blob_id, blob, wrap, stamp, &[])
 }
 
 /// A Deposit of `blob` under `label` (spec/sync.md §5), whose head keys are `k`: its code, and

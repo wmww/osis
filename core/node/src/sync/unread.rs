@@ -4,7 +4,8 @@
 //! the filter to every connection; a member opened by one is served from the hub's store (its
 //! rows, its ephemeral entries as the log's memory part, its relay-only entries past the hub's
 //! relay gate) and ends through the event of a head that no longer bears it. This node tests
-//! nothing for them and pulls none.
+//! nothing for them; it pulls each from every reader that opened it here, taking what it pulls by
+//! the store's Upload rules (`unread_events`).
 
 use super::state::hub_err;
 use super::{Action, ConnId, SyncEngine};
@@ -155,6 +156,68 @@ impl SyncEngine {
                 None => super::state::hub(tx)?.node_log(|t| t.log_end())?,
             })
         })
+    }
+
+    /// Events of unread `l` pulled from `conn`'s reader (spec/sync.md §10, Stream): a stamped
+    /// entry with its bytes, or whose blob the hub's store holds already under any sync ID (bytes
+    /// cross once), goes into the hub's store by its Upload rules (the stamp under its head's
+    /// write key); a relay-only one passes the store's relay gate and goes on to the other members
+    /// sharing `l`. A deposited entry (no stamp) is not taken: it carries no deposit signature,
+    /// so deposits reach this node only as Deposit items. Deletions and heads do nothing (a
+    /// delete comes by a delete-key holder's Delete, a head by Register). Returns the stamped
+    /// entries announced without bytes that the store lacks: owed until fetched.
+    pub(crate) fn unread_events(&mut self, conn: ConnId, l: LabelId, events: Vec<osis_proto::Event>, out: &mut Vec<Action>) -> Result<BTreeSet<BlobId>> {
+        let now = self.now();
+        let mut owed = BTreeSet::new();
+        let mut changed = false;
+        let mut relays = Vec::new();
+        let mut taken = Vec::new();
+        {
+            let mut hub = self.hub();
+            let Some(k) = hub.head_keys(&l).map_err(hub_err)? else { return Ok(owed) };
+            for e in events {
+                let osis_proto::Event::Added { blob_id, blob, wrap, stamp: Some(stamp) } = e else { continue };
+                if hub.entry(&l, &blob_id).map_err(hub_err)?.is_some_and(|m| m.stamp.is_some()) {
+                    continue;
+                }
+                let bytes = match blob {
+                    Some(b) if osis_label::blob_id(&b) == blob_id => b,
+                    Some(_) => continue,
+                    None => match hub.blob(&blob_id).map_err(hub_err)? {
+                        Some(b) => b,
+                        None => {
+                            owed.insert(blob_id);
+                            continue;
+                        }
+                    },
+                };
+                let mut struck = false;
+                match osis_proto::serving::pulled(&mut *hub, now, &l, &k, &bytes, wrap, stamp, &mut struck).map_err(hub_err)? {
+                    osis_proto::serving::Taken::Relay(r) => relays.push(r),
+                    osis_proto::serving::Taken::Code(c) => {
+                        if c == Code::OK {
+                            changed = true;
+                            taken.push(blob_id);
+                        }
+                    }
+                }
+            }
+        }
+        if changed {
+            self.hub_down(conn, osis_host::Down::Changed(l), out);
+        }
+        self.stream_crossed(conn, taken);
+        for r in relays {
+            self.stream_relay(Some(conn), r.label, r.blob_id, &r.blob, r.wrap, Some(r.stamp), out)?;
+        }
+        Ok(owed)
+    }
+
+    /// Whether this node wants the bytes of unread `l`'s entry `b`: its store holds neither the
+    /// entry stamped nor the blob.
+    pub(crate) fn unread_wants(&mut self, l: &LabelId, b: &BlobId) -> Result<bool> {
+        let hub = self.hub();
+        Ok(!hub.entry(l, b).map_err(hub_err)?.is_some_and(|m| m.stamp.is_some()) && hub.blob(b).map_err(hub_err)?.is_none())
     }
 
     /// A Deposit item for unread inbox `l` (issues/net-shared-set.md, Deposits): taken as a

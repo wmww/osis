@@ -448,9 +448,9 @@ impl SyncEngine {
         s.members = members.iter().map(|(l, m)| (*l, Member { class: m.class, beacon: m.beacon, until: m.until })).collect();
         let restored = !s.members.is_empty();
         self.records.shared.insert(conn, s);
-        // this side pulls no sync ID it keeps unread (it cannot read it)
+        // a sync ID it keeps unread is pulled from the start (`stream_join`)
         let unread = self.unread_heads()?;
-        let pulled: Vec<(LabelId, osis_store::Member)> = members.iter().filter(|(l, _)| !unread.contains_key(l)).cloned().collect();
+        let pulled: Vec<(LabelId, osis_store::Member)> = members.iter().map(|(l, m)| if unread.contains_key(l) { (*l, osis_store::Member { at: At::Join(None), ..m.clone() }) } else { (*l, m.clone()) }).collect();
         self.stream_bind(conn, id, rec.cursor, &pulled, &members);
         self.unread_restream()?;
         if restored {
@@ -1159,14 +1159,11 @@ impl SyncEngine {
         self.local_dirty |= class != SYNC && self.records.shared.values().all(Shared::is_empty);
         let Some(s) = self.records.shared.get_mut(&conn) else { return Ok(()) };
         s.members.insert(l, Member { class, beacon, until: None });
-        let record = s.record;
-        // kept unread: served to the peer from the hub's store, never pulled (this side cannot
-        // read it)
+        // kept unread: served to the peer from the hub's store, and pulled from it by the store's
+        // rules (`unread_events`)
         if self.is_unread(&l)? {
-            if let Some(id) = record {
-                self.engine.run(|tx| Ok(tx.txn.record_open(&id, l, &osis_store::Member { class, beacon, until: None, at: At::Stream })?))?;
-            }
-            return self.unread_restream();
+            self.unread_restream()?;
+            return self.stream_join(conn, l, osis_store::Member { class, beacon, until: None, at: At::Join(None) }, out);
         }
         self.suspects_due = true;
         self.stream_join(conn, l, osis_store::Member { class, beacon, until: None, at: At::Join(None) }, out)?;

@@ -866,6 +866,10 @@ impl SyncEngine {
             })?,
             None => None,
         };
+        // a sync ID kept unread is pulled from the start at every open: what this node refused
+        // of it (a stamp under a head it had not registered yet) comes again, and only what its
+        // store lacks is fetched
+        let lag = if self.is_unread(&l)? { None } else { lag };
         // a peer that cannot read L, read before with no record of it: on from what was read there
         let lag = lag.or_else(|| {
             let host = self.conns.get(&conn).filter(|_| self.read_as_host(conn, &l))?.host;
@@ -1193,6 +1197,11 @@ impl SyncEngine {
                 self.log_events(Some(conn), l, evs, out)?;
                 continue;
             }
+            // kept unread here: taken by the store's rules
+            if self.is_unread(&l)? {
+                owed.extend(self.unread_events(conn, l, evs, out)?.into_iter().map(|b| (l, b)));
+                continue;
+            }
             let announced: Vec<BlobId> = evs.iter().filter_map(|e| if let Event::Added { blob_id, blob: None, .. } = e { Some(*blob_id) } else { None }).collect();
             gone.extend(evs.iter().filter_map(|e| if let Event::Deleted(b) = e { Some((l, *b)) } else { None }));
             self.received_from(conn, l);
@@ -1211,6 +1220,9 @@ impl SyncEngine {
     /// its tombstone, not a dropped body (`Entry::dropped`), not refused by the ephemeral cap
     /// (which waits for room, not for a fetch).
     fn wants(&mut self, l: &LabelId, b: &BlobId) -> bool {
+        if self.is_unread(l).unwrap_or(false) {
+            return self.unread_wants(l, b).unwrap_or(false);
+        }
         !self.engine.has_blob(b) && !self.state.entries.get(&(*l, *b)).is_some_and(super::state::Entry::dropped) && !self.memory_skips(l, b)
     }
 
@@ -1537,7 +1549,11 @@ impl SyncEngine {
         }
         if !evs.is_empty() && self.records.shared.get(&conn).is_some_and(|s| s.has(&l)) {
             let delivered: Vec<BlobId> = evs.iter().filter_map(|e| if let Event::Added { blob_id, .. } = e { Some(*blob_id) } else { None }).collect();
-            self.reader_events(conn, l, evs, out)?;
+            if self.is_unread(&l)? {
+                self.unread_events(conn, l, evs, out)?;
+            } else {
+                self.reader_events(conn, l, evs, out)?;
+            }
             // bytes served and not kept (a relay-only blob, one past a budget): the source gave
             // what it holds, so nothing of them is owed on its stream (else asked every step)
             let unkept: BTreeSet<(LabelId, BlobId)> = delivered.into_iter().filter(|b| self.wants(&l, b)).map(|b| (l, b)).collect();
