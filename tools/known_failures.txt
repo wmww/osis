@@ -6,7 +6,6 @@ order::held_set_decides_plain OSIS_ORDER_START=539131766525 issues/order-require
 keep::any_order_until_keeps_no_more_large OSIS_KEEP_START=636109736897 issues/keep-until-order-seed.md kept only by order
 ephemeral::random_churn_converges_large OSIS_EPH_START=501814946361 issues/churn-seed-361-loop.md no quiescence after \d+ rounds
 rotation::tests_property::rotation_holds_large_spec_crypto_4 OSIS_ROTATION_START=1044279127 issues/rotation-holder-lacks-box-seed.md with key access lacks a box
-rotation::tests_property::rotation_holds_large_spec_crypto_4 OSIS_ROTATION_START=59710880685 issues/rotation-seed-685-departed-opens.md made by a rotator that saw it depart
 ephemeral::random_churn_converges_large OSIS_EPH_START=807204137843 issues/churn-seed-843-diverge.md node \d+ reads .*, node \d+ 
 sim-sweep:label_replacement_offline 911499435371 issues/label-replacement-offline-seed-371.md the replaced label still holds \d+ content entries
 sim-sweep:evil_host_drops 472765857787 issues/evil-host-drops-seed-787.md not quiescent after \d+ rounds
