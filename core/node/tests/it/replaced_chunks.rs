@@ -50,11 +50,11 @@ fn replaced_label_first_commit_deleted_after_its_value_dropped_spec_sync_2() {
         _ => None,
     }).collect();
     let first = commits.into_iter().find(|c| net.engine(a).header(c).is_some_and(|h| h.aspects.iter().any(|x| x.tid == t && x.ak.as_str() == "created.0"))).unwrap();
-    let entries_of_first = |net: &mut Net| {
-        let live = net.host_ids(host, &old);
-        net.sync(a).entries(&old).into_iter().filter(|(id, k)| live.contains(id) && matches!(k, EntryKind::Commit { commit, .. } if *commit == first)).count()
+    let entries_of_first = |net: &mut Net, l| {
+        let live = net.host_ids(host, &l);
+        net.sync(a).entries(&l).into_iter().filter(|(id, k)| live.contains(id) && matches!(k, EntryKind::Commit { commit, .. } if *commit == first)).count()
     };
-    assert_eq!(entries_of_first(&mut net), 1);
+    assert_eq!(entries_of_first(&mut net, old), 1);
     net.set_online(a, false);
     let (new, acts) = net.sync(a).replace_label(&g, &old).unwrap();
     net.actions(a, acts);
@@ -67,7 +67,8 @@ fn replaced_label_first_commit_deleted_after_its_value_dropped_spec_sync_2() {
     for _ in 0..3 {
         net.advance(31_000);
     }
-    assert_eq!(entries_of_first(&mut net), 0, "the first commit's entry left under the replaced label");
+    assert_eq!(entries_of_first(&mut net, old), 0, "the first commit's entry left under the replaced label");
+    assert_eq!(entries_of_first(&mut net, new), 1, "the replacement holds the creation record");
     let labels: Vec<_> = net.group_labels(a).into_iter().map(|(_, l)| l.id).collect();
     assert_eq!(labels, vec![new], "the admin is done with the old label");
 }
