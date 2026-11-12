@@ -1681,6 +1681,35 @@ fn demoted_unaware() -> (LocalPeer, Tid, Vec<Tid>, BTreeSet<osis_base::CommitId>
     (lp, g, tids, dem)
 }
 
+// spec/crypto.md §4 (Unsuperseded, Lists, withdraw): peers A (0, first admin), a2 (1, admin), M
+// (2, reader), R (3, admin). A demotes a2 to write (D); a2, unaware, removes M (W); R, holding W
+// but not D, rotates read (e_R, naming W, boxing no M). At A, W applies nothing (a2 a writer at
+// its point): M reads on, and e_R's names are met at no holder of its secret, yet e_R is current
+// at M (it lacks the secret: established by its commit alone). R, its maker, withdraws it: a
+// rotation listing it, which every holder counts alike.
+#[test]
+fn unmet_epoch_withdrawn_by_its_maker_spec_crypto_4() {
+    let (mut lp, g, tids) = granted(4, &[(1, Role::Admin), (2, Role::Read), (3, Role::Admin)]);
+    lp.peers[0].engine.demote(&g, &Demotion { holder: tids[1], new: Some(edge(Role::Write)), retain: None }).unwrap();
+    lp.peers[1].clock.advance(5_000);
+    lp.peers[1].engine.demote(&g, &Demotion { holder: tids[2], new: None, retain: None }).unwrap();
+    lp.sync(1, 3).unwrap();
+    lp.peers[3].clock.advance(10_000);
+    rotate_leaving_out(&mut lp, 3, g, &BTreeSet::from([Role::Read]), &[]);
+    let e_r = newest_read(&lp, 3, g).unwrap();
+    lp.sync_all().unwrap();
+    assert!(lp.peers[0].engine.core.role_now(&tids[2], &g).is_some(), "M reads on at A");
+    let read = |lp: &LocalPeer, p: usize| lp.peers[p].engine.epochs(&g).unwrap().read.clone();
+    assert!(!read(&lp, 3).is_established(&e_r) && read(&lp, 3).unsuperseded().contains(&e_r), "e_R unmet at R, unsuperseded");
+    assert!(read(&lp, 2).is_current(&e_r), "e_R current at M");
+    rounds_to_settle(&mut lp, g);
+    for p in 1..4 {
+        assert_eq!(read(&lp, p).current(), read(&lp, 0).current(), "peers 0 and {p} count different current read epochs");
+    }
+    let newest = read(&lp, 0).newest().unwrap();
+    assert!(read(&lp, 2).secret(&newest).is_some(), "M holds the newest read epoch");
+}
+
 /// Whether A (peer 0) may encrypt under an epoch of `g` that M (2) opens from `from`'s state.
 fn removed_reader_reads(lp: &mut LocalPeer, g: Tid, tids: &[Tid], from: usize) -> bool {
     removed_opens(lp, g, tids, from, Role::Read)

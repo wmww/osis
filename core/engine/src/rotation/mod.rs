@@ -175,7 +175,8 @@ pub(crate) fn blocked_roles(tx: &mut Tx<'_>, who: &Tid, a: &Tid) -> Result<BTree
 /// not only the newest, does not cover a known departure (one whose secret this node lacks
 /// covers nothing: it is superseded unread), or the role forked and `who` is its merger (merge,
 /// rule 3), or some current epoch, held or not, has a stale box (rule 2) or a box to an actor
-/// whose grant is keyless (the knowing re-key, rule 4), or is orphaned (`orphaned`). No secret of the role is needed; the
+/// whose grant is keyless (the knowing re-key, rule 4), or is orphaned (`orphaned`), or an
+/// unsuperseded epoch is not current here and `who` withdraws it. No secret of the role is needed; the
 /// commit must be uploadable (`wrappable`), else the rotation waits for a re-seal.
 fn rotation_due(tx: &mut Tx<'_>, who: &Tid, a: &Tid) -> Result<BTreeSet<Role>> {
     let may = may_rotate(tx.core, who, a);
@@ -191,6 +192,10 @@ fn rotation_due(tx: &mut Tx<'_>, who: &Tid, a: &Tid) -> Result<BTreeSet<Role>> {
         for e in epochs.role(r).current() {
             due = due || members::keyless_at(tx, a, r, &e)? || members::stale_at(tx, a, r, &e)? || orphaned(tx, a, &epochs, r, &e)?;
         }
+        // withdraw: an unsuperseded epoch whose names this node does not meet, by its maker,
+        // or by anyone when its maker may not rotate (or is unknown: a snapshot's epoch)
+        let current = epochs.role(r).current();
+        due = due || epochs.role(r).unsuperseded().iter().any(|e| !current.contains(e) && maker(tx.core, who, a, r, e).is_none_or(|m| m.me || !m.may_rotate));
         if due {
             out.insert(r);
         }

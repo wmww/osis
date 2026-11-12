@@ -317,15 +317,7 @@ impl RoleEpochs {
     /// where its secret is held (`EpochInfo::names_met`). Sticky provenances stay. Returns
     /// whether anything changed.
     pub fn establish(&mut self, held: &dyn Held) -> bool {
-        let mut est: BTreeMap<Epoch, Provenance> = self.map.iter().filter_map(|(e, i)| i.established.filter(|p| p.sticky()).map(|p| (*e, p))).collect();
-        let base: Vec<Epoch> = self.map.iter().filter(|(e, i)| !est.contains_key(*e) && i.rotated() && i.names_met(held)).map(|(e, _)| *e).collect();
-        loop {
-            let ready: Vec<Epoch> = base.iter().filter(|e| !est.contains_key(*e) && within_headroom(&est, e)).copied().collect();
-            if ready.is_empty() {
-                break;
-            }
-            est.extend(ready.into_iter().map(|e| (e, Provenance::Rotated)));
-        }
+        let est = self.established_by(|i| i.names_met(held));
         let mut changed = false;
         for (e, i) in self.map.iter_mut() {
             if !i.established.is_some_and(Provenance::sticky) {
@@ -335,6 +327,32 @@ impl RoleEpochs {
             }
         }
         changed
+    }
+
+    /// The established epochs with their provenance, `met` standing for the names condition:
+    /// sticky ones, and those rotated (`EpochInfo::rotated`) and `met`, within headroom (a
+    /// fixpoint over the set).
+    fn established_by(&self, met: impl Fn(&EpochInfo) -> bool) -> BTreeMap<Epoch, Provenance> {
+        let mut est: BTreeMap<Epoch, Provenance> = self.map.iter().filter_map(|(e, i)| i.established.filter(|p| p.sticky()).map(|p| (*e, p))).collect();
+        let base: Vec<Epoch> = self.map.iter().filter(|(e, i)| !est.contains_key(*e) && i.rotated() && met(i)).map(|(e, _)| *e).collect();
+        loop {
+            let ready: Vec<Epoch> = base.iter().filter(|e| !est.contains_key(*e) && within_headroom(&est, e)).copied().collect();
+            if ready.is_empty() {
+                return est;
+            }
+            est.extend(ready.into_iter().map(|e| (e, Provenance::Rotated)));
+        }
+    }
+
+    /// Unsuperseded epochs (spec/crypto.md §4): those current with the names condition of
+    /// establishment dropped, as a node holding none of the role's secrets counts them (but for
+    /// what the history boxes it opens list), ascending. One unsuperseded and not current here
+    /// has names this node does not meet, yet is current wherever its secret is not held: a
+    /// rotation lists it, and its maker withdraws it.
+    pub fn unsuperseded(&self) -> Vec<Epoch> {
+        let est = self.established_by(|_| true);
+        let superseded: BTreeSet<&Epoch> = est.keys().filter_map(|e| self.map.get(e)).flat_map(EpochInfo::superseded_iter).collect();
+        est.into_keys().filter(|e| !superseded.contains(e)).collect()
     }
 
     pub fn is_established(&self, e: &Epoch) -> bool {

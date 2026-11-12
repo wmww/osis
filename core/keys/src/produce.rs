@@ -208,11 +208,11 @@ fn removals(roles: &BTreeSet<Role>, held: &ActorEpochs, held_secrets: &Secrets) 
 }
 
 /// Rotates `roles` of `actor` (spec/crypto.md §4, spec/permissions.md §3): per role a fresh
-/// secret at n+1 (n = greatest n of its current epochs, held or not; epochs merely seen,
-/// unestablished, never count), boxes for every holder holding the role (first admin included
-/// while its record edge stands), the history box of every distinct earlier established secret
-/// held with `names` (spec/crypto.md §4: the departures from `actor` the rotator holds), the
-/// keyset listing every current epoch, and the removal of the role's boxes at the epochs whose
+/// secret at n+1 (n = greatest n of its current and unsuperseded epochs, held or not; epochs merely
+/// seen, with no valid rotation commit or snapshot, never count), boxes for every holder holding
+/// the role (first admin included while its record edge stands), the history box of every
+/// distinct earlier established secret held with `names` (spec/crypto.md §4: the departures from
+/// `actor` the rotator holds), the keyset listing every current and unsuperseded epoch, and the removal of the role's boxes at the epochs whose
 /// secret is held. No current secret is needed: an epoch the rotator cannot open is superseded
 /// unread, and a holder of its secret adds it to the new epoch's history (`history_adds`).
 /// `held` is the rotator's established view of the actor (a plain thing's derived epochs for the
@@ -233,7 +233,9 @@ pub fn rotate_leaving_out(actor: &Tid, roles: &BTreeSet<Role>, held: &ActorEpoch
     let mut wrap = None;
     for &r in roles {
         let re = held.role(r);
-        let current = re.current();
+        // current and unsuperseded: an epoch whose names this node does not meet is current
+        // wherever its secret is not held, so it counts for n and is listed
+        let current: BTreeSet<Epoch> = re.current().into_iter().chain(re.unsuperseded()).collect();
         // no epoch of any role at all: a plain thing's first (spec/crypto.md §3), n counted
         // as 0; an actor with epochs of other roles but none current of this one cannot rotate it
         let n = match current.iter().map(Epoch::n).max() {
