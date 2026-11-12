@@ -120,6 +120,7 @@ impl Page {
                 }
             }
         }
+        debug_assert_eq!(w.0.len(), self.size());
         w.take()
     }
     pub(crate) fn decode(b: &[u8]) -> Result<Page, Error> {

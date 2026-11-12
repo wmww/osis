@@ -640,3 +640,23 @@ proptest! {
         prop_assert_eq!(cs.iter().map(bytes).collect::<Vec<_>>(), bcs.iter().map(bytes).collect::<Vec<_>>());
     }
 }
+
+// `encoded_len` is the encoding's length at every head width (the round trip's values stay short).
+#[test]
+fn encoded_len_at_head_widths() {
+    use osis_base::cbor::encoded_len;
+    let mut vs = Vec::new();
+    for n in [0u64, 23, 24, 255, 256, 65535, 65536, u32::MAX as u64, u32::MAX as u64 + 1, i64::MAX as u64] {
+        vs.push(Value::Int(n as i64));
+        vs.push(Value::Int(-1 - n as i64));
+        vs.push(Value::Enum(n, None));
+    }
+    for n in [23usize, 24, 255, 256, 65535, 65536] {
+        vs.push(Value::Bytes(vec![0; n]));
+        vs.push(Value::Str("a".repeat(n)));
+        vs.push(Value::List(vec![Value::Bool(true); n]));
+    }
+    for v in vs {
+        assert_eq!(encoded_len(&v), encode(&v).len());
+    }
+}
