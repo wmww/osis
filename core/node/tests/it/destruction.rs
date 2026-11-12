@@ -1015,6 +1015,37 @@ fn reader_knows_by_record(expires_in: Option<u64>) -> (Setup, usize, Tid, Commit
     (Setup { net, a, b, c, g }, r, t, w, x)
 }
 
+/// `who`'s role on `x` at node `at`, now.
+fn role_on(net: &mut Net, at: usize, who: usize, x: Tid) -> Option<Role> {
+    let who = net.tid(who);
+    let ts = osis_base::Ts::make(osis_base::WallMs(net.now()), 0).unwrap();
+    osis_engine::engine::write::role_of(&net.engine(at).core, &who, &x, ts)
+}
+
+/// a, an admin of t (first admin of x), grants b admin on t, then the net runs until past `end`:
+/// at each of `nodes` t lives before and is destroyed after, and b's grant, stamped before `end`,
+/// stands on x (the destruction is dated at `end` alike everywhere, record-only nodes included).
+fn destroyed_at_alike(net: &mut Net, (a, b): (usize, usize), t: Tid, x: Tid, end: u64, nodes: &[usize]) {
+    for &at in nodes {
+        assert!(!net.engine(at).core.destroyed(&t), "node {at}: t lives");
+        assert_eq!(role_on(net, at, a, x), Some(Role::Admin), "node {at}: a administers x through t");
+    }
+    let tb = net.tid(b);
+    net.grant(a, t, tb, Role::Admin);
+    net.run();
+    assert!(net.now() < end, "the grant is stamped before the destruction");
+    while net.now() <= end + 70_000 {
+        net.advance(70_000);
+    }
+    for _ in 0..3 {
+        net.advance(70_000);
+    }
+    for &at in nodes {
+        assert!(net.engine(at).core.destroyed(&t), "node {at}: t destroyed");
+        assert_eq!(role_on(net, at, b, x), Some(Role::Admin), "node {at}: b's grant, before the destruction, stands");
+    }
+}
+
 /// A minting again of `t` by node `n` (`expires`, `retention` on it), ingested at node `at`.
 fn mint_at(net: &mut Net, n: usize, at: usize, t: Tid, expires: Option<u64>, retention: Option<osis_schema::Retention>) -> CommitId {
     let rec = net.engine(n).core.created(&t).cloned().unwrap();
@@ -1085,12 +1116,13 @@ fn a_minting_again_adds_no_copy_under_a_label_carrying_the_record_spec_commits_5
 
 // spec/commits.md §5 (A thing's mintings travel with its record): t's own minting W (durable) is its
 // witness; c, a reader of t, mints it again N, `nobody` and expiring. a purges t: the request drops W
-// but not N, so N is the witness now, placed under g's label in W's place, and t lives at every node,
-// r (which holds W's copy alone of what was placed before) and a node granted g afterwards included.
-// a grants b admin on t then. Once N expires t is destroyed everywhere at N's expiry, not at the
-// purge: b's grant, stamped between them, stands on x at every node
+// but not N, so N is the witness now. b, a writer of g that does not read t, lacks the request and
+// deletes N's copy under g's label as lower than W. t lives at every node, r (which holds W alone of
+// what was placed) and a node granted g afterwards included; once N expires, a, which may place N
+// again now that t is destroyed, does, with the request, so t is destroyed at N's expiry everywhere,
+// not at the purge
 #[test]
-fn a_purge_of_the_witness_hands_over_to_the_next_minting_at_every_node_spec_commits_5() {
+fn a_witness_deleted_by_a_node_lacking_the_request_comes_back_once_destroyed_spec_commits_5() {
     let (Setup { mut net, a, b, c, g }, r, t, w, x) = reader_knows_by_record(None);
     let l = net.group_labels(a).into_iter().find(|(x, _)| *x == g).unwrap().1.id;
     let expiry = net.now() + 30 * 60_000;
@@ -1100,34 +1132,58 @@ fn a_purge_of_the_witness_hands_over_to_the_next_minting_at_every_node_spec_comm
     }
     assert_eq!(minting_copies(&mut net, a, &l, t), vec![w], "W, durable, is the witness");
     assert!(net.engine(r).header(&w).is_some() && net.engine(r).header(&n).is_none(), "r holds W alone");
-    let role_on_x = |net: &mut Net, at: usize, who: usize| {
-        let who = net.tid(who);
-        let ts = osis_base::Ts::make(osis_base::WallMs(net.now()), 0).unwrap();
-        osis_engine::engine::write::role_of(&net.engine(at).core, &who, &x, ts)
-    };
     purge_thing(&mut net, a, t);
     for _ in 0..3 {
         net.advance(70_000);
     }
-    assert_eq!(minting_copies(&mut net, a, &l, t), vec![n], "N, which the request cannot drop, is the witness");
+    let copies: std::collections::BTreeSet<CommitId> = minting_copies(&mut net, a, &l, t).into_iter().collect();
+    assert_eq!(copies, [w].into(), "b deleted N's copy");
     let d = granted_later(&mut net, a, g);
     assert!(net.engine(d).core.created(&t).is_some(), "d holds t's record");
-    for at in [a, b, r, d] {
-        assert!(!net.engine(at).core.destroyed(&t), "node {at}: t lives");
-        assert_eq!(role_on_x(&mut net, at, a), Some(Role::Admin), "node {at}: a administers x through t");
+    destroyed_at_alike(&mut net, (a, b), t, x, expiry, &[a, b, r, d]);
+}
+
+// spec/commits.md §5 (A thing's mintings travel with its record): t's creation C expires at T. a, the
+// one node online that places under g's label (b, c and r, which could place C there for the first
+// time, are away), mints t again, Y, expiring later, so Y is the witness and a deletes its copy of
+// C; then a purges Y alone (a hostile writer's own minting goes the same way): C is the witness
+// again, live until T, its copy gone. Once T passes a places C again with the request, so t is
+// destroyed at T at a node granted g after T (knowing t by its record) as at a, and at every node
+// once all are back: an edge write between the purge and T stands everywhere
+#[test]
+fn a_purged_later_minting_leaves_the_destruction_at_the_creations_expiry_spec_commits_5() {
+    let life = 30 * 60_000;
+    let (Setup { mut net, a, b, c, g }, r, t, w, x) = reader_knows_by_record(Some(life));
+    for n in [b, c, r] {
+        net.set_online(n, false);
     }
-    let tb = net.tid(b);
-    net.grant(a, t, tb, Role::Admin);
-    net.run();
-    while net.now() <= expiry + 70_000 {
+    let end = net.now() + life;
+    let l = net.group_labels(a).into_iter().find(|(x, _)| *x == g).unwrap().1.id;
+    let y = mint_at(&mut net, a, a, t, Some(end + 86_400_000), None);
+    for _ in 0..3 {
         net.advance(70_000);
+    }
+    let copies: std::collections::BTreeSet<CommitId> = minting_copies(&mut net, a, &l, t).into_iter().collect();
+    assert_eq!(copies, [y].into(), "Y is the witness, C's copy gone");
+    let mut m = Mutation::new();
+    m.set(t, &ct::PURGE, &osis_base::WallMs(net.now())).unwrap();
+    m.purge_commit(y, t, Ak::new(ct::CREATED.ak()).unwrap());
+    net.engine(a).commit(m).unwrap().unwrap();
+    for _ in 0..3 {
+        net.advance(70_000);
+    }
+    assert!(!minting_copies(&mut net, a, &l, t).contains(&w), "C, the witness again, has no copy");
+    destroyed_at_alike(&mut net, (a, b), t, x, end, &[a]);
+    let d = granted_later(&mut net, a, g);
+    for n in [b, c, r] {
+        net.set_online(n, true);
     }
     for _ in 0..3 {
         net.advance(70_000);
     }
     for at in [a, b, r, d] {
-        assert!(net.engine(at).core.destroyed(&t), "node {at}: t destroyed once N expired");
-        assert_eq!(role_on_x(&mut net, at, b), Some(Role::Admin), "node {at}: b's grant, before the destruction, stands");
+        assert!(net.engine(at).core.destroyed(&t), "node {at}: t destroyed");
+        assert_eq!(role_on(&mut net, at, b, x), Some(Role::Admin), "node {at}: b's grant, before the destruction, stands");
     }
 }
 

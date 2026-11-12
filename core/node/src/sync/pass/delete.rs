@@ -285,23 +285,19 @@ impl SyncEngine {
     /// things it mints, all outside `g`'s closure (spec/commits.md §5, A thing's mintings travel
     /// with its record): standing lower than each one's witness. `Some(true)`: the label holds each witness (or
     /// a minting tying it) at `host`, so it goes; `Some(false)`: not yet (judged again each
-    /// pass); `None`: no such header. A live thing's is judged only by a node that may read it: it
-    /// holds the requests on its creation, and one that missed a request dropping the witness
-    /// would delete the live minting for a dead one.
+    /// pass); `None`: no such header. Any node judges it: one that lacks a request dropping its
+    /// witness ranks that one no lower than it stands, so what stays reads the thing live while it
+    /// is, and once it is destroyed its witness is placed again (`certificates`).
     fn superseded_minting(&mut self, g: &Tid, l: &LabelId, host: Option<&HostKey>, c: &CommitId, h: &osis_commit::Header) -> Option<bool> {
         let minted: BTreeSet<Tid> = h.aspects.iter().filter(|a| a.ak.as_str() == osis_commit::retention::CREATED).map(|a| a.tid).collect();
         let closure = self.engine.closure(g);
         if minted.is_empty() || !h.requests().is_empty() || minted.iter().any(|t| closure.contains(t)) {
             return None;
         }
-        let me = self.engine.account_tid();
         let hosts = host.map(std::slice::from_ref);
         let mut held = true;
         for t in &minted {
             let w = self.engine.witness(t)?;
-            if w.standing.valued && !me.is_some_and(|me| self.engine.may_read(&me, t)) {
-                return None;
-            }
             if self.engine.mintings_of(t).iter().find(|m| m.commit == *c).is_none_or(|m| m.standing >= w.standing) {
                 return None;
             }
@@ -324,10 +320,7 @@ impl SyncEngine {
             if desired.get(c).is_some_and(|d| d.iter().any(|p| p.is_empty())) {
                 return None;
             }
-            let minted = h.aspects.iter().filter(|a| a.ak.as_str() == osis_commit::retention::CREATED).map(|a| a.tid);
-            let requested = h.requests().iter().map(|i| *i.tid()).collect::<Vec<_>>();
-            // inside the closure, not a header that may be lasting there (judged below)
-            minted.chain(requested).filter(|t| outside(t) || core.destroyed(t) && !self.engine.may_last_on(h, t)).collect()
+            self.header_certifies(&closure, h)
         } else {
             let on: Vec<&osis_commit::AspectEntry> = opened.iter().filter_map(|ai| h.aspects.get(*ai)).collect();
             if on.len() < opened.len() || !on.iter().all(|a| (a.ak.as_str() == "roles.0" || osis_commit::retention::destroying_request(a.ak.as_str())) && outside(&a.tid)) {
@@ -336,6 +329,16 @@ impl SyncEngine {
             on.iter().map(|a| a.tid).collect()
         };
         (!about.is_empty()).then_some(about)
+    }
+
+    /// The destroyed things a header alone of `h` is a certificate of under a label of `closure`
+    /// (`destroyed_certificate`): those it mints or requests, outside the closure or, inside, where
+    /// it cannot be a lasting header (judged as one).
+    pub(super) fn header_certifies(&self, closure: &BTreeSet<Tid>, h: &osis_commit::Header) -> BTreeSet<Tid> {
+        let core = &self.engine.core;
+        let minted = h.aspects.iter().filter(|a| a.ak.as_str() == osis_commit::retention::CREATED).map(|a| a.tid);
+        let requested = h.requests().iter().map(|i| *i.tid()).collect::<Vec<_>>();
+        minted.chain(requested).filter(|t| core.destroyed(t) && (!closure.contains(t) || !self.engine.may_last_on(h, t))).collect()
     }
 
     /// An entry of a memory commit the engine forgot whole (spec/sync.md §9: covered,

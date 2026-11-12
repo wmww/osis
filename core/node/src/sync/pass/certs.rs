@@ -103,18 +103,36 @@ impl SyncEngine {
             };
             self.place_copy(g, l, &c, &missing, body)?;
         }
-        // headers alone (the mintings of things whose records go)
+        // headers alone (the witnesses of things whose records go, and destroyed ones' requests)
         let hosts = self.counted_at(g, l);
+        let mut needed: Option<BTreeSet<Tid>> = None;
         for c in wanted.headers {
             // none where the label carries the header already: a durable commit copied with
             // parts (an account's minting is its card's commit), a live closure thing's minting
-            // (a body there); nor this node's own copy placed before and gone since
+            // (a body there)
             let Some(h) = self.engine.header(&c) else { continue };
             let durable = h.expires.is_none();
             let core = &self.engine.core;
             let in_bodies = h.aspects.iter().filter(|a| a.ak.as_str() == osis_commit::retention::CREATED).all(|a| closure.contains(&a.tid) && !core.destroyed(&a.tid)) && h.requests().is_empty();
-            if copied.contains(&c) && durable || in_bodies || self.state.certs.contains(&(l, c)) || self.header_held_at(l, &c, hosts.as_deref()) {
+            if copied.contains(&c) && durable || in_bodies || self.header_held_at(l, &c, hosts.as_deref()) {
                 continue;
+            }
+            // nor this node's own copy placed before and gone since (views differing while a
+            // thing lives would place and delete it for good), but a certificate of a destroyed
+            // thing the label needs, which this node keeps there (`destroyed_certificate`): once
+            // destroyed every view agrees, its requests travel with it (spec/commits.md §5, A
+            // thing's mintings travel with its record)
+            if self.state.certs.contains(&(l, c)) {
+                let about = self.header_certifies(&closure, &h);
+                if about.is_empty() {
+                    continue;
+                }
+                if needed.is_none() {
+                    needed = Some(self.engine.destroyed_needed(g)?);
+                }
+                if needed.as_ref().is_some_and(|n| about.is_disjoint(n)) {
+                    continue;
+                }
             }
             // nor a witness where the label holds a minting standing as it does: a tie places
             // nothing new (spec/commits.md §5, A thing's mintings travel with its record)
