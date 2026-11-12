@@ -619,6 +619,8 @@ impl Sim {
         let es: Vec<(usize, &Engine)> = self.nodes.iter().enumerate().map(|(i, n)| (i, &n.peer.engine)).collect();
         let r = check::quiescent(&es);
         r.map_err(|w| self.fail(w))?;
+        // read every node afresh: the per-step views trust `Engine::point`, this does not
+        self.views.clear();
         self.check_convergence()?;
         self.finish_report()
     }
