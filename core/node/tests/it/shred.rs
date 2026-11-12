@@ -1519,10 +1519,61 @@ fn copy_of_a_purged_part_beside_an_unjudgeable_one_is_spent_spec_commits_5() {
 }
 
 // spec/commits.md §5 (Purge), spec/crdt.md §4.7 (Copies): a compaction snapshot carrying a write's
-// value, pending for its `ts` when a purge request takes the write: held as its leftover while it
-// waits, and joined so once it applies.
+// value, pending for its `ts`, the write purged before it comes or while it waits: held as its
+// leftover while it waits, and joined so once it applies.
 #[test]
 fn waiting_snapshot_drops_a_purged_copy_spec_commits_5() {
+    for purge_first in [false, true] {
+        let mut lp = net2();
+        lp.sync_all().unwrap();
+        let a = lp.peers[0].engine.me();
+        let t = new_thing(&mut lp, 1);
+        let edge = osis_schema::core_types::Edge { role: osis_base::Role::Write, until: None, invite: None, tied: None };
+        lp.peers[1].engine.grant(&t, &a, &edge).unwrap();
+        lp.sync(1, 0).unwrap();
+        lp.advance(5);
+        let w = set(&mut lp, 0, t, &REG, "SECRET-W9b4");
+        lp.sync(0, 1).unwrap();
+        lp.peers[0].clock.advance(3 * osis_base::format::MAX_DRIFT_MS);
+        let snap = lp.peers[0].engine.snapshot(&t, &ak("t:reg.0")).unwrap().unwrap();
+        let sp = lp.peers[0].engine.package(&snap).unwrap().unwrap();
+        let purge = |lp: &mut LocalPeer| {
+            let mut m = Mutation::new();
+            m.purge_commit(w, t, ak("t:reg.0"));
+            m.set(t, &LIST, &Value::List(vec![s("a")])).unwrap();
+            lp.peers[1].commit(m).unwrap().unwrap();
+            lp.peers[1].reexamine().unwrap();
+        };
+        if purge_first {
+            purge(&mut lp);
+        }
+        assert!(matches!(lp.deliver(1, &sp).unwrap(), osis_node::Ingested::Pending(_, osis_node::Reason::Drift)));
+        if !purge_first {
+            purge(&mut lp);
+        }
+        assert!(lp.peers[1].engine.pending().iter().any(|x| x.0 == snap));
+        assert!(!recoverable(&mut lp.peers[1], b"SECRET-W9b4"), "purge first {purge_first}: the waiting snapshot's copy went");
+        lp.peers[1].clock.advance(3 * osis_base::format::MAX_DRIFT_MS);
+        lp.peers[1].reexamine().unwrap();
+        let e = &mut lp.peers[1].engine;
+        assert!(e.pending().is_empty() && e.commit_ids().contains(&snap), "{:?}", e.pending());
+        assert_eq!(e.get(&t, &ak("t:reg.0")).unwrap(), None, "purged");
+        assert!(e.suspects().unwrap().is_empty());
+        assert!(!recoverable(&mut lp.peers[1], b"SECRET-W9b4"));
+    }
+}
+
+/// Waiting snapshots judged for carried copies (`waiting snapshot: judged`) during `f`.
+fn judged(f: impl FnOnce()) -> u64 {
+    osis_node::costs::take();
+    f();
+    osis_node::costs::take().iter().find(|x| x.0 == "waiting snapshot: judged").map_or(0, |x| x.2)
+}
+
+/// `n` snapshots on an aspect with a purged write, none carrying it, pending for their `ts` at
+/// peer 1: how many are judged by a `reexamine` with nothing changed, and by the next purge on
+/// that aspect.
+fn waiting_snapshots_judged(n: usize) -> (u64, u64) {
     let mut lp = net2();
     lp.sync_all().unwrap();
     let a = lp.peers[0].engine.me();
@@ -1531,24 +1582,38 @@ fn waiting_snapshot_drops_a_purged_copy_spec_commits_5() {
     lp.peers[1].engine.grant(&t, &a, &edge).unwrap();
     lp.sync(1, 0).unwrap();
     lp.advance(5);
-    let w = set(&mut lp, 0, t, &REG, "SECRET-W9b4");
-    lp.sync(0, 1).unwrap();
+    let purge = |lp: &mut LocalPeer, v: &str| {
+        let w = set(lp, 1, t, &REG, v);
+        let mut m = Mutation::new();
+        m.purge_commit(w, t, ak("t:reg.0"));
+        m.set(t, &LIST, &Value::List(vec![s(v)])).unwrap();
+        lp.peers[1].commit(m).unwrap().unwrap();
+    };
+    purge(&mut lp, "gone");
     lp.peers[0].clock.advance(3 * osis_base::format::MAX_DRIFT_MS);
-    let snap = lp.peers[0].engine.snapshot(&t, &ak("t:reg.0")).unwrap().unwrap();
-    let sp = lp.peers[0].engine.package(&snap).unwrap().unwrap();
-    assert!(matches!(lp.deliver(1, &sp).unwrap(), osis_node::Ingested::Pending(_, osis_node::Reason::Drift)));
-    let mut m = Mutation::new();
-    m.purge_commit(w, t, ak("t:reg.0"));
-    m.set(t, &LIST, &Value::List(vec![s("a")])).unwrap();
-    lp.peers[1].commit(m).unwrap().unwrap();
+    for i in 0..n {
+        set(&mut lp, 0, t, &REG, &format!("v{i}"));
+        let snap = lp.peers[0].engine.snapshot(&t, &ak("t:reg.0")).unwrap().unwrap();
+        let sp = lp.peers[0].engine.package(&snap).unwrap().unwrap();
+        assert!(matches!(lp.deliver(1, &sp).unwrap(), osis_node::Ingested::Pending(_, osis_node::Reason::Drift)));
+    }
     lp.peers[1].reexamine().unwrap();
-    assert!(lp.peers[1].engine.pending().iter().any(|x| x.0 == snap));
-    assert!(!recoverable(&mut lp.peers[1], b"SECRET-W9b4"), "the waiting snapshot's copy went");
-    lp.peers[1].clock.advance(3 * osis_base::format::MAX_DRIFT_MS);
-    lp.peers[1].reexamine().unwrap();
-    let e = &mut lp.peers[1].engine;
-    assert!(e.pending().is_empty() && e.commit_ids().contains(&snap), "{:?}", e.pending());
-    assert_eq!(e.get(&t, &ak("t:reg.0")).unwrap(), None, "purged");
-    assert!(e.suspects().unwrap().is_empty());
-    assert!(!recoverable(&mut lp.peers[1], b"SECRET-W9b4"));
+    assert_eq!(lp.peers[1].engine.pending().len(), n);
+    let idle = judged(|| lp.peers[1].reexamine().unwrap());
+    let purged = judged(|| {
+        purge(&mut lp, "gone too");
+        lp.peers[1].reexamine().unwrap();
+    });
+    (idle, purged)
+}
+
+// notes/coordination.md (Check scaling): a waiting snapshot is decoded to judge its carried copies
+// when stored and when its aspect's value-less list changes, never by a `reexamine` with nothing
+// changed: n and 10n waiting snapshots cost the same there.
+#[test]
+fn waiting_snapshots_judged_only_when_their_list_changes_spec_commits_5() {
+    let (idle, purged) = waiting_snapshots_judged(3);
+    let (idle10, purged10) = waiting_snapshots_judged(30);
+    assert_eq!((idle, idle10), (0, 0), "nothing changed");
+    assert_eq!((purged, purged10), (3, 30), "each judged once at the list's change");
 }

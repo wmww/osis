@@ -52,30 +52,50 @@ pub(crate) fn pending_drops(tx: &mut Tx<'_>, id: &CommitId, blob: &mut osis_comm
 /// copies value-less, as an applied carrier is (spec/crdt.md §4.7 Copies, `strip_carried`), its
 /// slot emptied (`emptied`); it joins as that leftover, frontiers, `Absorbed` and facts kept. One
 /// that cannot be read yet (a page away, parked) is stripped once it can, at the latest when it
-/// joins (`drop_gone`). Judged on every look at the stored copy (`reexamine`), so a request
-/// applied while it waits reaches it.
+/// joins (`drop_gone`). Called at every look at the stored copy (`reexamine`), so a request
+/// applied while it waits reaches it; the judgment is a memo (`Core::waiting_carries`) reading
+/// the list, so the part is decoded only when stored and when its aspect's list changed (a
+/// purge, an expiry), and at each look while it cannot be read.
 fn strip_carried_waiting(tx: &mut Tx<'_>, id: &CommitId, blob: &mut osis_commit::CommitBlob, h: &Header, ai: usize) -> Result<()> {
     let Some(a) = h.aspects.get(ai) else { return Ok(()) };
-    let Some(list) = tx.core.ix.valueless.get(&(a.tid, a.ak.clone())).filter(|l| !l.is_empty()).cloned() else { return Ok(()) };
-    let Some(dedup) = tx.core.dedup(&a.tid) else { return Ok(()) };
-    let Some(p) = blob.parts.iter_mut().find(|p| p.ai == ai && p.delta != emptied()) else { return Ok(()) };
-    let mut interner = osis_crdt::Interner::new();
-    let mut blobs = crate::engine::blobs::TxBlobs::new(&mut tx.blobs, tx.txn.is_memory());
-    let mut paged = osis_label::BlobReader::new(&dedup, &mut blobs);
-    let reader: &mut dyn osis_crdt::PageSource = &mut paged;
-    let Ok(Decoded::Snapshot(snap)) = osis_commit::verify_part(h, id, p, &dedup, &mut interner, Some(reader)) else { return Ok(()) };
-    let mut f = snap.fragment.clone();
-    f.strip(&|d| super::sorted_owns(&list, d));
-    if f == snap.fragment {
+    let Some(part) = blob.parts.iter().find(|p| p.ai == ai && p.delta != emptied()).cloned() else { return Ok(()) };
+    let carries = crate::engine::memo::Memo::get_in(tx, |tx| &tx.core.waiting_carries, &(*id, ai), |tx| carried(tx, id, &part, h, ai).map(|l| l.is_some()));
+    if carries != Ok(true) {
         return Ok(());
     }
-    p.delta = emptied();
-    let gives = Some((snap.frontiers, snap.absorbed.into_iter().collect(), snap.facts));
-    leftover::put(tx, &a.tid, &a.ak, id, ai, &leftover::Leftover { fragment: f, gives })?;
+    let Ok(Some(l)) = carried(tx, id, &part, h, ai) else { return Ok(()) };
+    if let Some(p) = blob.parts.iter_mut().find(|p| p.ai == ai && p.delta != emptied()) {
+        p.delta = emptied();
+    }
+    leftover::put(tx, &a.tid, &a.ak, id, ai, &l)?;
     tx.core.touch();
     // node-sync forgets the blobs holding it (`Engine::spent_copy`)
     tx.core.mark_changed(*id);
     rewrite_stored(tx, id, h, ai)
+}
+
+/// Snapshot part `part` (aspect `ai` of commit `id`, header `h`) stripped of the copies its
+/// aspect's value-less list names, as its leftover; `None` when it carries none (or is no
+/// snapshot), `Err` when it cannot be read yet (its thing's record, a page away; parked).
+fn carried(tx: &mut Tx<'_>, id: &CommitId, part: &osis_commit::Part, h: &Header, ai: usize) -> std::result::Result<Option<leftover::Leftover>, ()> {
+    let Some(a) = h.aspects.get(ai) else { return Ok(None) };
+    let Some(list) = tx.core.ix.valueless.get(&(a.tid, a.ak.clone())).filter(|l| !l.is_empty()).cloned() else { return Ok(None) };
+    let Some(dedup) = tx.core.dedup(&a.tid) else { return Err(()) };
+    let mut interner = osis_crdt::Interner::new();
+    let mut blobs = crate::engine::blobs::TxBlobs::new(&mut tx.blobs, tx.txn.is_memory());
+    let mut paged = osis_label::BlobReader::new(&dedup, &mut blobs);
+    let reader: &mut dyn osis_crdt::PageSource = &mut paged;
+    let snap = match osis_commit::verify_part(h, id, part, &dedup, &mut interner, Some(reader)) {
+        Ok(Decoded::Snapshot(snap)) => snap,
+        Err(e) if crate::apply::is_missing_page(&e) || osis_base::Classified::class(&e) == osis_base::ErrorClass::Parked => return Err(()),
+        _ => return Ok(None),
+    };
+    let mut f = snap.fragment.clone();
+    f.strip(&|d| super::sorted_owns(&list, d));
+    if f == snap.fragment {
+        return Ok(None);
+    }
+    Ok(Some(leftover::Leftover { fragment: f, gives: Some((snap.frontiers, snap.absorbed.into_iter().collect(), snap.facts)) }))
 }
 
 /// The stored pending copy of `id` (header `h`), if any, with slot `ai` emptied (`emptied`),

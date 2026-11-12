@@ -1090,6 +1090,10 @@ pub struct Core {
     /// When each held part was replaced, per (commit, aspect index)
     /// (`retention::bounds::dated_replaced_at`, `memo`).
     pub(crate) replaced_dates: memo::Memo<(CommitId, usize), Option<osis_base::Ts>>,
+    /// Whether a waiting snapshot part, per (commit, aspect index), carries a copy of a value its
+    /// aspect's value-less list names (`retention::pending::carries_listed`, `memo`): judged again
+    /// only when that list changes.
+    pub(crate) waiting_carries: memo::Memo<(CommitId, usize), bool>,
     /// `Engine::part_keeps` per commit but for the clock (`retention::bounds::commit_bounds`,
     /// `memo`).
     pub(crate) part_bounds: memo::Memo<CommitId, Arc<Vec<(u64, u64)>>>,
@@ -1284,6 +1288,7 @@ impl Core {
             cover_cache: self.cover_cache.clone(),
             held_writes: self.held_writes.clone(),
             replaced_dates: self.replaced_dates.clone(),
+            waiting_carries: self.waiting_carries.clone(),
             part_bounds: self.part_bounds.clone(),
             tree_refs: self.tree_refs.clone(),
             timer_floor: self.timer_floor.clone(),
@@ -1819,6 +1824,7 @@ impl Core {
             links: _,
             held_writes: _,
             replaced_dates: _,
+            waiting_carries: _,
             part_bounds: _,
             tree_refs: _,
             departures: _,
@@ -2072,6 +2078,7 @@ impl Core {
             cover_cache: None,
             held_writes: memo::Memo::new("held writes"),
             replaced_dates: memo::Memo::new("replaced at"),
+            waiting_carries: memo::Memo::new("waiting snapshot: judged"),
             part_bounds: memo::Memo::new("part bounds"),
             tree_refs: memo::Memo::new("tree refs"),
             timer_floor: 0,
