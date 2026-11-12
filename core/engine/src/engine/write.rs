@@ -551,6 +551,28 @@ fn linked_chunk(tx: &mut Tx<'_>, framing: &Framing, l: &osis_base::Link) -> Resu
     Ok(Some(ChunkWrite { blob: l.blob, blind, levels: Some(levels) }))
 }
 
+/// How many blobs a snapshot of `(tid, ak)` by `node` whose delta encodes to `delta` lists
+/// (`write_snapshot`: it reuses the state's trees, introducing none): the links `linked_chunk`
+/// keeps under the snapshot's framing, of the transaction's class. Compaction weighs a snapshot
+/// by what it lists (`compact::snapshot_cost`); 0 where this node could not frame it.
+pub(crate) fn snapshot_listed(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, node: Tid, delta: &[u8]) -> Result<usize> {
+    let memory = tx.txn.is_memory();
+    let kind = if is_role_class(ak.as_str()) { Kind::RoleSnapshot } else { Kind::ContentSnapshot };
+    let plan = CommitPlan { kind, ts: Ts::default(), actor: node, form: Form::Commit, creates: Default::default(), purge: Vec::new(), undoes: None, frontier: None, signer: node, blind: [0; 16], expires: None, restores: false, rotation: None };
+    let published = super::secrets::published_keys(tx, &plan.creates, [*tid])?;
+    let wanted = osis_commit::retention::snapshot_retention(ak.as_str());
+    let Ok((retention, _)) = settle(tx.core, memory, kind, plan.ts, tid, ak, None, false, Some(wanted), None) else { return Ok(0) };
+    let Ok(mut framing) = framing_for(tx.core, &plan, &published, tid, &retention) else { return Ok(0) };
+    if memory {
+        framing.class = osis_label::Class::Ephemeral;
+    }
+    let mut n = 0;
+    for l in super::large::delta_links(tx, &framing.dedup, delta)? {
+        n += usize::from(linked_chunk(tx, &framing, &l)?.is_some());
+    }
+    Ok(n)
+}
+
 /// A creation takes its commit's other deltas' expiry (a one-commit disappearing message).
 fn fit_creations(aspects: &mut [((Tid, Ak), AspectMut)]) {
     let other = |ak: &Ak| ak.as_str() != CREATED.ak() && ak.as_str() != osis_commit::retention::RETENTION;

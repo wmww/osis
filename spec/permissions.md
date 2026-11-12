@@ -338,7 +338,7 @@ A commit of account P names the epoch it is signed at (spec/wire.md §4); §5.4 
 - What the right promises is that honest nodes keep the body. Which hosts carry it follows the thing's labels: a thing leaving a group leaves that label's hosts whatever its retention (spec/sync.md §6), and holders keep their copies.
 
 ## 7. Links
-- A **link** consists of K, an actor whose first admin is the sharer's actor, with secrets of its own and the `link` field in its creation record naming the target (spec/wire.md §3; every holder of the target holds that record among the chain certificates of K's grant, §4; the field is its creator's word: no node checks it and no authority depends on it; only a joiner's own leave reads it, below), granted the link's role on the target, and L, a key actor whose seed is in the link, with a grant (role r, invite r) on K for the link's role r.
+- A **link** consists of K, an actor whose first admin is the sharer's actor, with secrets of its own and the `link` field in its creation record naming the target (spec/wire.md §3; every holder of the target holds that record among the chain certificates of K's grant, §4; the field is its creator's word: no node checks it and no authority depends on it; only a joiner's own leave reads it, below), granted the link's role on the target, and L, a key actor whose seed is in the link, with a grant (role r, invite r) on K for the link's role r, read or above (redeeming reads K's roster).
   - The sharer's actor is K's only admin.
   - A client making the link writes the target's `retain` default then in force on K (§3) when it says retain.
 - **Link text** encodes: L's seed, the target tid, K's tid, K's label ID and host addresses, and optionally the sharer node's dialable key and relays.

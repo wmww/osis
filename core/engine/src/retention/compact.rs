@@ -242,18 +242,15 @@ fn droppable(tx: &Tx<'_>, tid: &Tid, ak: &Ak) -> BTreeSet<CommitId> {
 
 /// What a snapshot of `(tid, ak)` would cost as a held body: its state (the expiring writes
 /// value-less) encoded, weighed as a part plus `ENTRY_CHARGE`, plus its chunk list
-/// (`LISTED_BLOB_BYTES` per blob its large values link: a snapshot lists them, spec/wire.md §4).
-/// `None`: no state.
+/// (`LISTED_BLOB_BYTES` per blob it would list, `snapshot_listed`, spec/wire.md §4: of its class
+/// and committing to its keys, so an ephemeral one counts no durable tree). `None`: no state.
 fn snapshot_cost(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, me: Tid) -> Result<Option<usize>> {
     let Some(st) = super::snapshot_state(tx, tid, ak)? else { return Ok(None) };
     let cx = osis_commit::writer_ctx(Form::Commit, osis_commit::Kind::ContentSnapshot, osis_base::Ts::default(), me, 0, 0);
     let s = osis_crdt::Snapshot { nonce: [0; osis_crdt::NONCE_LEN], fragment: st, frontiers: osis_crdt::Frontiers::default(), absorbed: BTreeMap::new() };
     // encoding fails only on a malformed fragment: counted as nothing
     let bytes = osis_crdt::encode_snapshot(&s, &cx, Some(&mut osis_crdt::Unpaged)).unwrap_or_default();
-    let listed = match tx.core.dedup(tid) {
-        Some(d) => crate::engine::large::delta_links(tx, &d, &bytes)?.len(),
-        _ => 0,
-    };
+    let listed = crate::engine::write::snapshot_listed(tx, tid, ak, me, &bytes)?;
     Ok(Some(part_weight(bytes.len()).saturating_add(ENTRY_CHARGE).saturating_add(listed.saturating_mul(LISTED_BLOB_BYTES))))
 }
 
@@ -404,5 +401,70 @@ impl Engine {
             }
         }
         Ok(out)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+    use super::*;
+    use crate::local_peer::LocalPeer;
+    use crate::Mutation;
+    use osis_base::Value;
+
+    /// A thing whose durable aspect `x:big.0` holds a chunked value of `n` × 64 KiB and whose
+    /// ephemeral aspect `x:cur+.0` holds that value's link: (peer, thing, the tree's blobs).
+    fn linked(n: usize) -> (LocalPeer, Tid, usize) {
+        let mut lp = LocalPeer::fresh(1, osis_base::WallMs(1_700_000_000_000));
+        let me = lp.peers[0].engine.me();
+        let mut m = Mutation::new();
+        let t = lp.peers[0].engine.new_thing(&mut m, me);
+        lp.peers[0].commit(m).unwrap();
+        let big = Ak::new("x:big.0").unwrap();
+        let mut m = Mutation::new();
+        m.set(t, &big, &Value::Bytes((0..n * 65536).map(|i| (i * 7 % 251) as u8).collect())).unwrap();
+        lp.peers[0].commit(m).unwrap();
+        let e = &mut lp.peers[0].engine;
+        let link = e.state(&t, &big).unwrap().and_then(|f| f.read()).unwrap();
+        assert!(matches!(link, Value::Link(_)), "chunked");
+        let tree = e.live_trees(&t).unwrap().blobs.len();
+        let mut m = Mutation::new();
+        m.set(t, &Ak::new("x:cur+.0").unwrap(), &link).unwrap();
+        e.commit_in_memory(m).unwrap().unwrap();
+        (lp, t, tree)
+    }
+
+    /// The blobs a snapshot of `(t, ak)` is weighed as listing here: `snapshot_cost` past its
+    /// encoded state, in `LISTED_BLOB_BYTES`.
+    fn listed(lp: &mut LocalPeer, t: Tid, ak: &str) -> usize {
+        let ak = Ak::new(ak).unwrap();
+        let e = &mut lp.peers[0].engine;
+        let me = e.core.writer_for(&t).unwrap();
+        e.run(|tx| {
+            if ak.ephemeral() {
+                tx.set_memory();
+            }
+            let st = super::super::snapshot_state(tx, &t, &ak)?.unwrap();
+            let cx = osis_commit::writer_ctx(Form::Commit, osis_commit::Kind::ContentSnapshot, osis_base::Ts::default(), me, 0, 0);
+            let s = osis_crdt::Snapshot { nonce: [0; osis_crdt::NONCE_LEN], fragment: st, frontiers: osis_crdt::Frontiers::default(), absorbed: BTreeMap::new() };
+            let bytes = osis_crdt::encode_snapshot(&s, &cx, Some(&mut osis_crdt::Unpaged)).unwrap();
+            let cost = snapshot_cost(tx, &t, &ak, me)?.unwrap();
+            Ok((cost - part_weight(bytes.len()) - ENTRY_CHARGE) / LISTED_BLOB_BYTES)
+        })
+        .unwrap()
+    }
+
+    // spec/wire.md §4, spec/sync.md §7 (Trigger): a snapshot's cost counts the blobs it lists. A
+    // durable snapshot lists the durable tree its value links; an ephemeral one, whose value links
+    // that same tree, lists none of it (another class), so its cost counts none, at n and 10n
+    // chunks alike.
+    #[test]
+    fn an_ephemeral_snapshot_counts_no_durable_tree_spec_wire_4() {
+        for n in [3, 30] {
+            let (mut lp, t, tree) = linked(n);
+            assert!(tree >= 2 + n / 10, "{n}: the tree has its chunks and a node ({tree})");
+            assert_eq!(listed(&mut lp, t, "x:big.0"), tree, "{n}: a durable snapshot lists the tree");
+            assert_eq!(listed(&mut lp, t, "x:cur+.0"), 0, "{n}: an ephemeral one lists none of it");
+        }
     }
 }

@@ -58,6 +58,11 @@ impl Engine {
     /// L's edge (r, invite r, `until`) on K with its boxes, K's edge on the target, and a
     /// sharer-only thing keeping the seed. Returns the link and the seed thing.
     pub fn create_link(&mut self, sharer: &Tid, spec: &LinkSpec) -> Result<(ShareLink, Tid, Done)> {
+        // redeeming reads K's label as L (its roster shows K's grant on the target), which a
+        // role below read does not give (spec/permissions.md §7)
+        if spec.role < Role::Read {
+            return Err(Error::Misuse("a link gives read or above: grant sync to the holder's account instead"));
+        }
         // a fresh seed, never copied to an unwiped stack array
         let seed = self.run(|tx| Ok(Secret32::random(&mut *tx.rng)))?;
         let l = self.hold_key_actor(seed.clone())?;

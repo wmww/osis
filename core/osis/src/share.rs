@@ -989,7 +989,8 @@ impl Osis {
     }
 
     /// Makes a share link to `target` with `role`, reached through this node's saved peers. Anyone holding the link
-    /// can redeem it until `until` or `revoke_link`.
+    /// can redeem it until `until` or `revoke_link`. `role` is read or above: redeeming reads the link's own
+    /// roster, so a link at `Sync` is `Invalid` (grant sync to the holder's account instead).
     pub fn make_link(&self, target: Tid, role: Role, opts: LinkOpts) -> Result<ShareLink> {
         if let crate::sources::Source::Node(r) = self.source_write(target)? {
             let v = r.call(crate::port::method::MAKE_LINK, vec![Value::Tid(target), crate::port::codec::v(&role), crate::port::codec::opt(opts.until, |w| Value::uint(w.0)), Value::Bool(opts.single_use), Value::Bool(opts.direct)])?;

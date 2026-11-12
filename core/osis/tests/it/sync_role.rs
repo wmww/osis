@@ -193,3 +193,45 @@ fn a_rotation_reaches_a_sync_only_holder_by_its_inbox_spec_sync_3() {
     assert!(!keys.is_empty() && keys.is_subset(&derived(&secrets(bob, g, Role::Sync), index)), "Bob derives the new sync key");
     assert!(keys.is_disjoint(&derived(&secrets(carol, g, Role::Sync), index)), "Carol does not");
 }
+
+// spec/permissions.md §3, spec/sync.md §3, spec/wire.md §9: a removed holder learns its removal
+// by the notice its inbox gets, judged by the author's chain. Bob, holding sync alone, read
+// nothing under the group's label, so Carol's admin grant (after his) reaches him only as the
+// chain the notice carries: he then holds no role on the group, drops its sync secret and syncs
+// none of it, as a removed reader does. (Carol meets Bob's card under the label once Alice copies
+// it, `SETTLE_MS` after receiving it; Bob, syncing no group of hers, admits the notice as an
+// invite request, which the world accepts.)
+#[test]
+fn a_removed_sync_only_holder_learns_its_removal_spec_sync_3() {
+    for role in [Role::Read, Role::Sync] {
+        let (mut w, alice, others, ids) = common::people(2);
+        let (bob, carol) = (&others[0], &others[1]);
+        let g = group(&alice);
+        alice.grant(g, ids[0], role, GrantOpts::default()).unwrap();
+        w.run();
+        alice.grant(g, ids[1], Role::Admin, GrantOpts::default()).unwrap();
+        w.run();
+        w.advance(60_000);
+        w.run();
+        assert_eq!(bob.role_on(g).unwrap(), Some(role));
+        assert!(!secrets(bob, g, Role::Sync).is_empty(), "{role:?}: Bob holds the sync secret");
+        carol.set_role(g, bob.me(), None, SetRoleOpts::default()).unwrap();
+        w.run();
+        assert_eq!(bob.role_on(g).unwrap(), None, "{role:?}: Bob holds no role");
+        assert!(secrets(bob, g, Role::Sync).is_empty(), "{role:?}: Bob drops the sync secret");
+        assert!(!bob.status().unwrap().groups.contains_key(&g), "{role:?}: Bob syncs none of it");
+    }
+}
+
+// spec/permissions.md §7: a link's role is read or above (redeeming reads K's roster as L): one
+// at sync is refused when made, writing nothing; a read link is made as before.
+#[test]
+fn a_link_at_sync_is_refused_spec_permissions_7() {
+    let (_w, alice, _, _) = common::people(0);
+    let g = group(&alice);
+    let commits = alice.engine(|e| e.commit_ids().len());
+    assert!(matches!(alice.make_link(g, Role::Sync, Default::default()), Err(osis::Error::Invalid(_))));
+    assert_eq!(alice.engine(|e| e.commit_ids().len()), commits, "nothing written");
+    assert!(alice.links().unwrap().is_empty());
+    alice.make_link(g, Role::Read, Default::default()).unwrap();
+}
