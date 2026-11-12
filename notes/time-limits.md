@@ -28,6 +28,7 @@ Format: `- <date time> <box> `<limit>` [<test>] <CPU|wall> <measured>/<limit> s 
 - 2026-11-11 ostrich `gate` wall 725/299 s, CPU 1.7x; `gate.hold` wall 521/241 s, CPU 1.6x at load 13: test-profile-3 review (10 of 26 crates); persistent, issues/gate-five-minutes.md.
 - 2026-11-11 15:39 ostrich `gate.hold` CPU 6824/3795 s, wall 573/241 s and `gate` CPU 7007/4094 s, wall 617/299 s at load 16: 10 of 26 crates selected (history-entry-inputs review, osis-engine and osis-keys changed); persistent, issues/gate-five-minutes.md.
 - 2026-11-11 ostrich `heavy` CPU 14564 s (2.9x), wall 1274 s (2.1x) at load 16: order-held-record, a by-hand 300-seed `order::held_set_decides_plain` sweep, not a gate; the `heavy` limit fits a gate-size hold, not a sweep of hundreds of seeds.
+- 2026-11-11 ostrich `heavy` CPU 12057 s (2.4x), wall 1058 s (1.8x) at load 13: order-covered-held, a by-hand 300-seed `order::held_set_decides_plain` sweep, not a gate (as above).
 - 2026-11-11 ostrich `gate` CPU 7582/4094 s, wall 842/299 s; `gate.hold` CPU 6452/3795 s, wall 607/241 s; `gate.clippy` CPU 102/69 s, wall 71/57 s at load 15-22: order-held-record review (10 of 26 crates); persistent, issues/gate-five-minutes.md.
 - 2026-11-11 16:55 ostrich `gate` CPU 8532/4094 s, wall 1198/299 s; `gate.hold` CPU 6525/3795 s, wall 730/241 s at load 19: stranded-report-storage review (osis-node changed); persistent, issues/gate-five-minutes.md.
 - 2026-11-12 00:23 fastbox-0 `gate.hold` wall 263/177 s, `gate` wall 331/220 s at load 22: stranded-bound review; persistent, issues/gate-five-minutes.md.

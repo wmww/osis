@@ -2873,7 +2873,9 @@ fn held_set_decides_at(sizes: Vec<Size>) {
                 let shrunk = u64_var("OSIS_ORDER_SHRINK").is_some_and(|n| n != 0);
                 let (steps, err) = if shrunk { shrink(threads, seed, steps, cfg) } else { (steps, r.clone().unwrap_err()) };
                 let what = if shrunk { "shrunk" } else { "as made; OSIS_ORDER_SHRINK=1 shrinks it" };
-                let msg = format!("seed {seed}, {e:?} (replay: {}; {what}, for check({seed}, &h, {cfg:?})): h = vec!{steps:?}\n{err}", size.replay(seed));
+                // the failure's first line on the seed line: what tools/known_failures.txt patterns match
+                let (head, rest) = err.split_once('\n').unwrap_or((&err, ""));
+                let msg = format!("seed {seed}, {e:?} (replay: {}; {what}, for check({seed}, &h, {cfg:?})): {head}\nh = vec!{steps:?}\n{rest}", size.replay(seed));
                 eprintln!("{msg}\n");
                 msg
             });
