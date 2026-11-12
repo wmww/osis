@@ -12,6 +12,3 @@ sim-sweep:label_replacement_offline 911499435371/911499435371 issues/label-repla
 sim-sweep:evil_host_drops 472765857787/472765857787 issues/evil-host-drops-seed-787.md not quiescent after \d+ rounds
 order::held_set_decides_plain OSIS_ORDER_SEED=62510 issues/order-settled-seed-62510.md ^seed 62510, Settled .*settled: shows other than the node keeping every body
 order::held_set_decides_plain OSIS_ORDER_SEED=38534 issues/order-settled-roster-seed-38534.md ^seed 38534, Settled .*settled: shows other than the node keeping every body
-rotation::tests_property::rotation_holds_large_spec_crypto_4 OSIS_ROTATION_START=469 issues/rotation-current-epochs-differ-seeds.md count different current epochs
-rotation::tests_property::rotation_holds_large_spec_crypto_4 OSIS_ROTATION_START=630 issues/rotation-current-epochs-differ-seeds.md count different current epochs
-rotation::tests_property::rotation_holds_large_spec_crypto_4 OSIS_ROTATION_START=765 issues/rotation-current-epochs-differ-seeds.md count different current epochs

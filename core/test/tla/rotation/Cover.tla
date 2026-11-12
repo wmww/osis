@@ -130,6 +130,9 @@ Est(n, e) == e = 0 \/ (Ep(e).commit \in held[n]
                        /\ (e \in Sec(n) => \E x \in ents : x.e = e /\ Met(n, x.names)))
 EstSet(n) == {e \in EpIds : Est(n, e)}
 Current(n) == {e \in EstSet(n) : ~\E f \in EstSet(n) : e \in Ep(f).lists}
+\* Unsuperseded: current were the names condition of Est dropped
+RotSet(n) == {e \in EpIds : e = 0 \/ Ep(e).commit \in held[n]}
+Unsup(n) == {e \in RotSet(n) : ~\E f \in RotSet(n) : e \in Ep(f).lists}
 Newest(n) == CHOOSE e \in Current(n) : \A f \in Current(n) :
                Ep(e).num > Ep(f).num \/ (Ep(e).num = Ep(f).num /\ e <= f)
 
@@ -147,13 +150,17 @@ Covers(n, e, h) ==
      /\ \E x \in ents : x.e = e /\ x.bound /\ Met(n, x.names) /\ Pins(held[n], x.names, h, ep.commit, AuthHolds(n, ep.author))
 CoversAll(n, e) == \A h \in Departed(n) : Covers(n, e, h)
 NeedRot(n) == \E e \in Current(n) : ~CoversAll(n, e)
+\* withdraw: an unsuperseded epoch not current at n, by its maker, or by anyone when its maker
+\* may not rotate
+Withdraw(n) == \E e \in Unsup(n) \ Current(n) : Ep(e).author = n \/ Role(n, Ep(e).author) < ADMIN
 HasCurrent(n) == Current(n) \cap Sec(n) # {}
 MayEncrypt(n) == HasCurrent(n) /\ Newest(n) \in Sec(n) /\ ~NeedRot(n)
 
 Holders(n) == {p \in Parties : Holds(n, p)}
 NewEpoch(n, cid, author) ==
-  [id |-> Len(eps), num |-> 1 + Ep(Newest(n)).num, commit |-> cid, author |-> author,
-   lists |-> Current(n), hist |-> EstSet(n) \cap Sec(n)]
+  LET ls == Current(n) \cup Unsup(n)
+  IN [id |-> Len(eps), num |-> 1 + Ep(CHOOSE e \in ls : \A f \in ls : Ep(e).num >= Ep(f).num).num,
+      commit |-> cid, author |-> author, lists |-> ls, hist |-> EstSet(n) \cap Sec(n)]
 
 \* ---- actions ----------------------------------------------------------------
 Deliver(n) == \E c \in cs : c.id \notin held[n] /\ held' = [held EXCEPT ![n] = @ \cup {c.id}]
@@ -165,7 +172,7 @@ HonestRots == Cardinality({c \in cs : c.kind = "rot" /\ c.author \in Honest})
 \* a rotator holds the role in its own view (one that does not makes no valid rotation; a box it
 \* writes anyway carries only what it held, a stated limit)
 Rotate(n) ==
-  /\ NeedRot(n) /\ HonestRots < MaxE /\ Role(n, n) = ADMIN
+  /\ (NeedRot(n) \/ Withdraw(n)) /\ HonestRots < MaxE /\ Role(n, n) = ADMIN
   /\ LET id == "R" \o ToString(Len(eps))
          e == NewEpoch(n, id, n)
      IN /\ cs' = cs \cup {[id |-> id, ts |-> 20 + Len(eps), author |-> n, kind |-> "rot"]}
