@@ -721,9 +721,9 @@ fn check(run: &mut Run, seed: u64, rotated: bool) {
                         assert!(!opens.contains(&(t, r, e)), "seed {seed}: peer {d} (now {:?}) opens {t:?} {r:?} epoch {e:?} peer {h} ({hr:?}) encrypts under", role(d));
                     }
                 }
-                // the commits that cost it `t`: its departure from `t` itself, and the one that cut
-                // its last path to `t` (through holder actors too)
-                let lost: Vec<CommitId> = departure(run, o, t, d).into_iter().chain(path_loss(run, o, d, t, r)).collect();
+                // the commits that cost it `r` of `t`: its departure from `r` on `t` itself, and
+                // the one that cut its last path to `t` (through holder actors too)
+                let lost: Vec<CommitId> = departure(run, o, t, d, r).into_iter().chain(path_loss(run, o, d, t, r)).collect();
                 let regained = |e: &Epoch| run.made.iter().any(|((t2, r2, e2), m)| *t2 == t && *r2 == r && !m.below.contains(&d) && m.carried.contains(e) && run.ever[d].contains(&(t, r, *e2)));
                 // the boxes within the limit for `d` (`excused`), in any epoch of the history: a
                 // cascade seals a holder actor blind in an epoch of an actor `t`'s epoch boxes
@@ -752,10 +752,12 @@ fn check(run: &mut Run, seed: u64, rotated: bool) {
     }
 }
 
-/// Peer `d`'s departure from `t` in the settled timeline: the last applied write on its edge,
-/// or a later demotion whose audit dropped a write on it.
-fn departure(run: &Run, o: usize, t: Tid, d: usize) -> Option<CommitId> {
-    departure_point(run, o, t, d).map(|p| p.commit)
+/// Peer `d`'s departure from role `r` of `t` in the settled timeline: the last applied write
+/// taking its edge from `r` or more to below it (for keys, `key_role`), or a later demotion whose
+/// audit dropped a write giving it `r` or more. A write that never gave `r` (a sync grant, for
+/// read) departs nothing at `r`.
+fn departure(run: &Run, o: usize, t: Tid, d: usize, r: Role) -> Option<CommitId> {
+    departure_point(run, o, t, d, r).map(|p| p.commit)
 }
 
 /// The edge write (on any actor) at which peer `d` last lost role `r` of `t` by every path in
@@ -781,15 +783,18 @@ fn tail_departure_point(run: &Run, o: usize, m: Tid, d: usize, r: Role) -> Optio
     let log = super::departures::edge_logs(core, tl, &m).remove(&run.tids[d]);
     let key = log.and_then(|l| osis_keys::Departure::holder(run.tids[d], r).edge(l).newest_needed(r));
     let point = key.and_then(|k| Some(osis_perm::Point { ts: osis_base::Ts::from_u64(k.ts)?, node: k.node, commit: k.commit }));
-    point.or_else(|| departure_point(run, o, m, d))
+    point.or_else(|| departure_point(run, o, m, d, r))
 }
 
 /// `departure`, at its point in the key order.
-fn departure_point(run: &Run, o: usize, t: Tid, d: usize) -> Option<osis_perm::Point> {
+fn departure_point(run: &Run, o: usize, t: Tid, d: usize, r: Role) -> Option<osis_perm::Point> {
     let tl = run.lp.peers[o].engine.core.timelines.get(&t)?;
-    let on_edge = |c: &CommitId| tl.role_commit(c).is_some_and(|mc| mc.ops.iter().any(|op| op.target == t && op.holder == run.tids[d]));
-    let applied = tl.applied().values().filter(|a| a.target == t && on_edge(&a.point.commit)).map(|a| a.point);
-    let dropped = tl.dropped().iter().filter(|(w, _)| matches!(w, osis_perm::WriteId(c, _) if on_edge(c))).map(|(_, p)| *p);
+    let h = run.tids[d];
+    // the edge value write `w` sets on `d`'s edge into `t`, if it is one
+    let on_edge = |w: &osis_perm::WriteId| tl.role_commit(&w.0).and_then(|mc| mc.ops.get(w.1 as usize)).filter(|op| op.target == t && op.holder == h).map(|op| op.edge.as_ref());
+    let gives = |e: Option<&osis_perm::Edge>| super::key_role(e) >= Some(r);
+    let applied = tl.applied().iter().filter(|(w, a)| on_edge(w).is_some_and(|e| !gives(e)) && gives(tl.edges_at(Some(a.point)).get(&h, &t))).map(|(_, a)| a.point);
+    let dropped = tl.dropped().iter().filter(|(w, _)| on_edge(w).is_some_and(gives)).map(|(_, p)| *p);
     applied.chain(dropped).max()
 }
 
