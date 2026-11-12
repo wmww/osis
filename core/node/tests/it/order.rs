@@ -2100,8 +2100,9 @@ struct Cfg {
     random: usize,
     /// Partial held sets.
     subsets: usize,
-    /// How many of each held set's orders are tried again with late parts.
-    split: usize,
+    /// Which of each held set's orders are tried again with late parts (only a held set with a
+    /// commit with parts on several aspects: otherwise they deliver the same bytes).
+    split: Twins,
     /// How many of each held set's orders are tried again at an earlier clock (`Clock`): as made
     /// and reversed, then a sample spread evenly over the rest.
     clock: usize,
@@ -2122,15 +2123,50 @@ struct Cfg {
     away: bool,
 }
 
+/// A held set's orders tried again with late parts (`Cfg::split`).
+#[derive(Clone, Copy, Debug)]
+enum Twins {
+    /// The first n (as made, reversed, ...; `usize::MAX`: every one).
+    First(usize),
+    /// `TWIN_SHARE` of them rounded up, so at least one, drawn from the seed (`twins`).
+    Share,
+}
+
+/// The share of a held set's orders `Twins::Share` tries again with late parts. Minor
+/// consequence: a twin differs from its order only in which parts come first and its late parts
+/// at the end, and is about as costly as the order and its checks together (late-part ingest
+/// wakes and judges again what waited on it). A quarter: the twins' half of the exhaustive size
+/// drops to an eighth (8 seeds 2170 -> 1250 G) while a held set of 720 orders still gets 180
+/// twins and every held set with a multi-part commit at least one, each gate's fresh seeds drawing
+/// other orders. At 0 every such held set still gets one (rounded up); at 1 every order does.
+const TWIN_SHARE: f64 = 0.25;
+
+/// The indices of `n` orders `split` tries again with late parts; `Share` a seeded draw.
+fn twins(split: Twins, n: usize, rng: &mut Rng) -> Vec<usize> {
+    match split {
+        Twins::First(m) => (0..m.min(n)).collect(),
+        Twins::Share => {
+            let mut all: Vec<usize> = (0..n).collect();
+            let m = ((n as f64 * TWIN_SHARE).ceil() as usize).clamp(n.min(1), n);
+            for i in 0..m {
+                all.swap(i, i + rng.below((n - i) as u64) as usize);
+            }
+            let mut out = all[..m].to_vec();
+            out.sort();
+            out
+        }
+    }
+}
+
 /// The one order config (`held_set_decides`): as made, reversed, as fetched, every order of a
 /// whole set of at most 4 commits after the setup, shuffles, two partial held sets, two orders
 /// each with late parts and at an earlier clock; every node judged by held-model too. Sizes
 /// change the counts (`Size`), never the kinds.
-const ORDERS: Cfg = Cfg { all_up_to: 4, every_held: false, random: 2, subsets: 2, split: 2, clock: 2, sync: true, late: false, settled: false, model: true, addenda: false, away: false };
+const ORDERS: Cfg = Cfg { all_up_to: 4, every_held: false, random: 2, subsets: 2, split: Twins::First(2), clock: 2, sync: true, late: false, settled: false, model: true, addenda: false, away: false };
 
 /// A hand-written history's orders, none shuffled or drawn: as made, reversed and as a first
 /// sync fetches it, of the whole set and two first-sync prefixes.
-const NAMED: Cfg = Cfg { all_up_to: 0, random: 0, subsets: 0, split: 0, clock: 0, sync: false, model: false, ..ORDERS };
+const NAMED: Cfg = Cfg { all_up_to: 0, random: 0, subsets: 0, split: Twins::First(0), clock: 0, sync: false, model: false, ..ORDERS };
 
 /// The arrival orders of `held` tried: as made (the reference), reversed, every order of the
 /// held commits after the setup when there are at most `all_up_to` (and the whole set is held,
@@ -2242,6 +2278,9 @@ struct Seen {
     moved: u64,
     /// Orders delivered reopening after every ingest (`reopens_alike`).
     reopened: u64,
+    /// Held sets with a multi-part commit, those of them given late-parts orders, and those
+    /// orders (`Cfg::split`).
+    twins: (u64, u64, u64),
     /// Parts left out as covered (`covered_away`), commits held in part for good (`with_syncs`).
     covered_away: u64,
     withheld: u64,
@@ -2267,6 +2306,7 @@ impl Seen {
         self.clocked += o.clocked;
         self.moved += o.moved;
         self.reopened += o.reopened;
+        self.twins = (self.twins.0 + o.twins.0, self.twins.1 + o.twins.1, self.twins.2 + o.twins.2);
         self.covered_away += o.covered_away;
         self.withheld += o.withheld;
         self.settled += o.settled;
@@ -2292,6 +2332,10 @@ impl Seen {
         let fail = |what: &str| -> ! { panic!("held_set_decides: {what}:\n{}\n{open:?}", open.tally.show()) };
         if self.judged[0] == 0 || self.model.compared == 0 {
             fail("no node judged against the oracle and held-model");
+        }
+        // every held set with a multi-part commit had its parts arrive late in some order
+        if self.twins.1 < self.twins.0 {
+            fail(&format!("{} of {} held sets with a multi-part commit tried with late parts", self.twins.1, self.twins.0));
         }
         // each emphasis's outcome, over its own seeds
         type Reached = fn(&Seen) -> bool;
@@ -2340,6 +2384,7 @@ impl Seen {
             ("a move of an earlier clock changing a state or a body", open.moved > 0 || open.clocked < 300),
             ("purged or expired deltas judged", open.judged[1] > 0),
             ("a reopen after every ingest", open.reopened > 0),
+            ("an order with late parts", open.twins.2 > 0),
             ("a sync exchange bringing content back", open.restored > 0),
         ];
         for (what, ok) in paths {
@@ -2376,9 +2421,10 @@ fn check_orders(threads: usize, seed: u64, steps: &[Step], cfg: Cfg) -> Result<S
     let mut seen = Seen { tally: played.tally.clone(), ..Seen::default() };
     let n = played.packs.len();
     let whole: Vec<usize> = (0..n).collect();
-    let split = played.packs.iter().any(|pk| osis_commit::CommitBlob::decode(&pk.bytes).is_ok_and(|b| b.parts.iter().any(|x| x.ai != b.parts[0].ai)));
+    // late parts only matter for a commit with parts on several aspects
+    let multi: Vec<bool> = played.packs.iter().map(|pk| osis_commit::CommitBlob::decode(&pk.bytes).is_ok_and(|b| b.parts.iter().any(|x| x.ai != b.parts[0].ai))).collect();
     let mut full: Option<Oracle> = None;
-    for held in held_sets(played, cfg.subsets, &mut rng).into_iter().take(if cfg.settled { 1 } else { usize::MAX }) {
+    for (h, held) in held_sets(played, cfg.subsets, &mut rng).into_iter().take(if cfg.settled { 1 } else { usize::MAX }).enumerate() {
         let of = format!("held {held:?} of {n} commits (base {})", played.base);
         let o = oracle(played, &held);
         let orders = orders(played, &held, cfg, &mut rng);
@@ -2474,8 +2520,17 @@ fn check_orders(threads: usize, seed: u64, steps: &[Step], cfg: Cfg) -> Result<S
                 })
                 .map_err(|d| format!("{of}: order #{k} at an earlier clock {c:?} {order:?}: {d}"))
         };
-        // late parts only matter when a commit has parts on several aspects
-        let splits = if split { cfg.split.min(orders.len()) } else { 0 };
+        // the orders tried again with late parts, drawn from the seed (its own stream per held set)
+        let twins = if held.iter().any(|&i| multi[i]) {
+            let mut r = Rng(seed.wrapping_mul(0x2545_f491_4f6c_dd1d) ^ (h as u64 + 1).wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
+            twins(cfg.split, orders.len(), &mut r)
+        } else {
+            Vec::new()
+        };
+        seen.twins.0 += u64::from(held.iter().any(|&i| multi[i]));
+        seen.twins.1 += u64::from(!twins.is_empty());
+        seen.twins.2 += twins.len() as u64;
+        seen.orders += twins.len();
         seen.orders += clocks;
         seen.clocked += clocks as u64;
         // a partial set, then the rest (both ways), ends as the whole set's node
@@ -2489,10 +2544,10 @@ fn check_orders(threads: usize, seed: u64, steps: &[Step], cfg: Cfg) -> Result<S
         };
         // a node reopening after every ingest (its clock moving) reads as one that never did
         let reopens = if held == whole && played.settle_from.is_none() { 2.min(orders.len()) } else { 0 };
-        // tasks, each holding a permit: orders 0.. as they are, then 0.. with late parts, each split by
+        // tasks, each holding a permit: orders 0.. as they are, then `twins` with late parts, each split by
         // its own rng, then 0.. at an earlier clock, then the rest after the partial set, then the
         // first orders reopening after every ingest
-        let counts = [orders.len(), splits, clocks, rests.len(), reopens];
+        let counts = [orders.len(), twins.len(), clocks, rests.len(), reopens];
         let tasks: Vec<u64> = (0..counts.iter().sum::<usize>() as u64).collect();
         let base = rng.0;
         let errs = pooled_map(&tasks, threads, |x| {
@@ -2503,7 +2558,7 @@ fn check_orders(threads: usize, seed: u64, steps: &[Step], cfg: Cfg) -> Result<S
             }
             caught(|| match kind {
                 0 => one(k, None),
-                1 => one(k, Some(&mut Rng(base ^ x.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1))),
+                1 => one(twins[k], Some(&mut Rng(base ^ x.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1))),
                 2 => clocked(k),
                 3 => then_rest(&rests[k]),
                 _ => reopens_alike(played, &orders[k]).map_err(|d| format!("{of}, order {:?} reopened after every ingest: {d}", orders[k])),
@@ -2797,11 +2852,12 @@ struct Size {
 
 /// Default tests: a seed of every emphasis, and one of every emphasis capped to 3 commits after the
 /// setup (the smallest cap with orders past as made and reversed), checked in every order of every
-/// held set; no environment read. `exhaustive` runs the same kinds at 6.
+/// held set, each with late parts (its seeds are fixed, so a drawn share would leave the same
+/// orders untried for good); no environment read. `exhaustive` runs the same kinds at 6.
 fn quick() -> Vec<Size> {
     vec![
         Size { name: "quick", seeds: (0..8).collect(), len: 32, cfg: ORDERS, exhaustive: None, env: false },
-        Size { name: "quick, exhaustive", seeds: (100..108).collect(), len: 30, cfg: Cfg { all_up_to: 3, every_held: true, random: 0, subsets: 1, split: usize::MAX, clock: 4, ..ORDERS }, exhaustive: Some(3), env: false },
+        Size { name: "quick, exhaustive", seeds: (100..108).collect(), len: 30, cfg: Cfg { all_up_to: 3, every_held: true, random: 0, subsets: 1, split: Twins::First(usize::MAX), clock: 4, ..ORDERS }, exhaustive: Some(3), env: false },
     ]
 }
 
@@ -2823,10 +2879,11 @@ fn plain() -> Size {
     from_env("plain", 0..80, 60, Cfg { random: 6, subsets: 4, ..ORDERS }, None)
 }
 
-/// Every order of the whole set and of every held set, each with late parts, of histories of at
-/// most 6 commits after the setup (720 orders), 24 of them at an earlier clock.
+/// Every order of the whole set and of every held set, a drawn quarter of them with late parts
+/// (`Twins::Share`), of histories of at most 6 commits after the setup (720 orders), 24 of them at
+/// an earlier clock.
 fn exhaustive() -> Size {
-    from_env("exhaustive", 0..80, 40, Cfg { all_up_to: 6, every_held: true, random: 0, subsets: 2, split: usize::MAX, clock: 24, ..ORDERS }, Some(6))
+    from_env("exhaustive", 0..80, 40, Cfg { all_up_to: 6, every_held: true, random: 0, subsets: 2, split: Twins::Share, clock: 24, ..ORDERS }, Some(6))
 }
 
 impl Size {
@@ -2894,7 +2951,7 @@ fn held_set_decides_at(sizes: Vec<Size>) {
         }
         let failed: Vec<String> = results.into_iter().filter_map(|x| x.1).collect();
         // always shown: the counts are what a passing run is read for
-        osis_base::testenv::visible(true, &format!("order::held_set_decides ({}): {} seeds from {}, {} steps, {} orders in the passing ones, {} failing, {:.1} s; held-model compared {} aspects over {} nodes", size.name, size.seeds.len(), size.seeds.first().copied().unwrap_or(0), size.len, here.orders, failed.len(), t0.elapsed().as_secs_f64(), here.model.compared, here.model.nodes));
+        osis_base::testenv::visible(true, &format!("order::held_set_decides ({}): {} seeds from {}, {} steps, {} orders in the passing ones ({} with late parts), {} failing, {:.1} s; held-model compared {} aspects over {} nodes", size.name, size.seeds.len(), size.seeds.first().copied().unwrap_or(0), size.len, here.orders, here.twins.2, failed.len(), t0.elapsed().as_secs_f64(), here.model.compared, here.model.nodes));
         seen.add(&here);
         fails.extend(failed);
     }
