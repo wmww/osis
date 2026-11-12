@@ -111,6 +111,7 @@ Each a branch with a worker and a reviewer; default tests over issues/net-tests.
 
 ## Tess
 Each needs her call or her nod; the design takes the reversible option meanwhile.
+- **How an account manages which groups a box keeps (the keep list as a whole)**: Tess wants more input on this before it is built; 6a waits for that discussion. The keep-list shape above is a draft.
 - **The profile listing shows a box's address to the listing account's contacts**, a friend's box included. Listed by default (co-holders need it); whether an entry may stay unlisted, and whether a friend's box must agree to being listed, stay open (a flag on the entry; nothing here constrains it).
 - **Inbox addresses leave `keys.0`**: someone delivering to an account it holds the card of but is not a contact of finds the account's boxes only on a LAN or at an address it knows (it finds them in the card today).
 - **Only peers that cannot read are listed**: off a LAN, two accounts' reading nodes meet only through a box, a link or a known address (the decided end state; requirements "sync directly by default, between different users too" holds on a LAN). Listing a reading node too (an always-on desktop) is left possible.
