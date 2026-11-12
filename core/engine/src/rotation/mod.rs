@@ -296,7 +296,7 @@ pub(crate) fn recipients_merging(tx: &mut Tx<'_>, who: &Tid, a: &Tid, skip: &[(T
     loop {
         match recipients_or_waiting(tx, who, a, skip)? {
             Ok(b) => return Ok(Some(b)),
-            Err(m) if merged.insert(m) && merge_for_seal(tx, *who, m, done)? => {}
+            Err(m) if merged.insert(m) && merge_for_seal(tx, *who, *a, m, done)? => {}
             Err(_) => return Ok(None),
         }
     }
@@ -306,16 +306,20 @@ pub(crate) fn recipients_merging(tx: &mut Tx<'_>, who: &Tid, a: &Tid, skip: &[(T
 /// (`merge_for_seal`).
 pub(crate) fn sealed_merging(tx: &mut Tx<'_>, who: &Tid, a: &Tid, m: &Tid, role: Role, done: &mut Done) -> Result<Sealed> {
     match members::sealed(tx, who, a, m, role)? {
-        Sealed::Wait if merge_for_seal(tx, *who, *m, done)? => members::sealed(tx, who, a, m, role),
+        Sealed::Wait if merge_for_seal(tx, *who, *a, *m, done)? => members::sealed(tx, who, a, m, role),
         s => Ok(s),
     }
 }
 
-/// The merge a rotation or grant needs (spec/crypto.md §4, Seal): Seal waits on holder actor
-/// `m`'s fork, and `who` rotates every forked role of `m` it may rotate, now, merger or not.
-/// Whether it rotated `m`.
-fn merge_for_seal(tx: &mut Tx<'_>, who: Tid, m: Tid, done: &mut Done) -> Result<bool> {
-    Ok(rotate_below(tx, who, m, &[], Due::Fork, done)?.contains(&m))
+/// The merge a rotation or grant of `a` needs (spec/crypto.md §4, Seal): Seal waits on holder
+/// actor `m`'s fork, and `who` rotates every forked role of `m` it may rotate, now, merger or
+/// not, followed upward as any rotation of a holder actor is (`rotate_above`), but for `a`,
+/// whose own step answers its boxes to `m`. Whether it rotated `m`.
+fn merge_for_seal(tx: &mut Tx<'_>, who: Tid, a: Tid, m: Tid, done: &mut Done) -> Result<bool> {
+    let rotated = rotate_below(tx, who, m, &[], Due::Fork, done)?;
+    let merged = rotated.contains(&m);
+    rotate_above_but(tx, who, rotated, Some(a), done)?;
+    Ok(merged)
 }
 
 /// `recipients`, or the holder actor whose keysets Seal waits on.
@@ -552,8 +556,13 @@ pub(crate) fn ensure_rotated_but(tx: &mut Tx<'_>, who: Tid, a: Tid, rewriting: &
 /// are holders of (`above`) that `who` may rotate, upward, each once. A rotation of M makes the
 /// boxes to M at its old keyset stale; answered by M's rotator at once, no other rotator above M
 /// meets them and answers with a fork of its own.
-pub(crate) fn rotate_above(tx: &mut Tx<'_>, who: Tid, mut rotated: Vec<Tid>, done: &mut Done) -> Result<()> {
-    let mut entered: BTreeSet<Tid> = rotated.iter().copied().collect();
+pub(crate) fn rotate_above(tx: &mut Tx<'_>, who: Tid, rotated: Vec<Tid>, done: &mut Done) -> Result<()> {
+    rotate_above_but(tx, who, rotated, None, done)
+}
+
+/// `rotate_above`, leaving `but` alone.
+fn rotate_above_but(tx: &mut Tx<'_>, who: Tid, mut rotated: Vec<Tid>, but: Option<Tid>, done: &mut Done) -> Result<()> {
+    let mut entered: BTreeSet<Tid> = rotated.iter().copied().chain(but).collect();
     while let Some(x) = rotated.pop() {
         for y in above(tx.core, &x) {
             if tx.core.has_own_secrets(&y) && !may_rotate(tx.core, &who, &y).is_empty() && entered.insert(y) {
