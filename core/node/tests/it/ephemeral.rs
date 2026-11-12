@@ -2303,8 +2303,9 @@ fn invalid_part_tombstoned_then_valid_fetched_spec_permissions_6() {
     let tb = net.tid(b);
     role(&mut net, tb, Role::Read);
     net.advance(1_000);
-    // c reaches only host 1, the admin only host 0
-    for (n, h) in [(c, hosts[0]), (a, hosts[1])] {
+    // c reaches only host 1, the admin only host 0; b only host 1 meanwhile (host 0 would pull
+    // the write from b)
+    for (n, h) in [(c, hosts[0]), (a, hosts[1]), (b, hosts[0])] {
         net.blocked.insert((n, h));
         net.drop_link(n, h);
     }
@@ -2315,8 +2316,11 @@ fn invalid_part_tombstoned_then_valid_fetched_spec_permissions_6() {
     local(&mut net, c);
     net.advance(1_000);
     assert!(net.engine(b).memory_body_held(&write) && !net.engine(a).holds_memory(&write));
-    // the demotion's frontier lacks c's write: invalid (spec/permissions.md §5.2)
+    // the demotion's frontier lacks c's write: invalid (spec/permissions.md §5.2); b gets it
+    // directly
     role(&mut net, tc, Role::Read);
+    net.pair(a, b);
+    local(&mut net, b);
     net.advance(1_000);
     net.blocked.clear();
     net.advance(1_000);
@@ -2368,8 +2372,9 @@ fn superseded_part_beside_one_valid_again_fetched_spec_permissions_6() {
     let tb = net.tid(b);
     role(&mut net, tb, Role::Read);
     net.advance(1_000);
-    // c reaches only host 1, the admin only host 0
-    for (n, h) in [(c, hosts[0]), (a, hosts[1])] {
+    // c reaches only host 1, the admin only host 0; b only host 1 meanwhile (host 0 would pull
+    // the writes from b)
+    for (n, h) in [(c, hosts[0]), (a, hosts[1]), (b, hosts[0])] {
         net.blocked.insert((n, h));
         net.drop_link(n, h);
     }
@@ -2391,8 +2396,11 @@ fn superseded_part_beside_one_valid_again_fetched_spec_permissions_6() {
     local(&mut net, c);
     net.advance(1_000);
     assert!(net.engine(b).memory_body_held(&x), "b holds X's cursor part");
-    // the demotion's frontier lacks c's writes: invalid (spec/permissions.md §5.2)
+    // the demotion's frontier lacks c's writes: invalid (spec/permissions.md §5.2); b gets it
+    // directly
     role(&mut net, tc, Role::Read);
+    net.pair(a, b);
+    local(&mut net, b);
     net.advance(1_000);
     assert!(net.engine(b).kept_invalid(&x), "b knows X only for its invalid cursor part");
     role(&mut net, tc, Role::Write);
