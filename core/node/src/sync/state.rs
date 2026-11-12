@@ -943,6 +943,12 @@ impl State {
                             gone.push((*l, *b));
                         }
                     }
+                    // an entry known without its bytes (announced) whose row brings them
+                    (Some(e), Some(_)) if e.expires.is_none() && !tx.blobs.held(b)? => {
+                        if let Some(t) = tx.blobs.get(b)?.and_then(|x| osis_label::Prefix::parse(&x).ok()).and_then(|p| p.expiry()) {
+                            expiry.insert(*b, t.0);
+                        }
+                    }
                     // deleted here: the row goes too
                     (None, Some(_)) if self.tombs.contains_key(&(*l, *b)) => refused.push((*l, *b)),
                     (None, Some(_)) => {
@@ -971,8 +977,8 @@ impl State {
             let Some((wrap, stamp)) = row else { continue };
             match self.entries.get(&(l, b)) {
                 None if !self.tombs.contains_key(&(l, b)) => self.set_entry_quiet(l, b, Entry { wrap, stamp, cert: false, salt: None, expires: expiry.get(&b).copied(), size: None, kind: Kind::Unknown, memory: false }),
-                Some(e) if !e.memory && (e.wrap, e.stamp) != (wrap, stamp) => {
-                    let e = Entry { wrap, stamp, ..e.clone() };
+                Some(e) if !e.memory && ((e.wrap, e.stamp) != (wrap, stamp) || (e.expires.is_none() && expiry.contains_key(&b))) => {
+                    let e = Entry { wrap, stamp, expires: e.expires.or(expiry.get(&b).copied()), ..e.clone() };
                     self.set_entry_quiet(l, b, e);
                 }
                 _ => {}
