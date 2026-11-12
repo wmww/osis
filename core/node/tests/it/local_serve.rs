@@ -933,14 +933,13 @@ fn advance_unheld(net: &mut Net, n: usize, chunks: &[BlobId], ms: u64) {
 }
 
 /// spec/sync.md §6 (Tombstones), spec/commits.md §5 (a purge drops every body carrying the
-/// values, chunks included): a large value's chunks a host took while its answers were held are
-/// purged while those answers are still to come (`lost` false: they arrive after the drop) or
-/// after they were lost with the connection; the chunks leave the host once it reports them,
-/// and the node keeps no record of them. `writer`: the purger is a writer, not an admin (it
+/// values, chunks included): a large value's chunks a peer that cannot read pulled are purged
+/// while it is connected (`lost` false) or while it is away (`lost`: the connection went); the
+/// chunks leave the peer once its stream shows them, and the node keeps no record of them. `writer`: the purger is a writer, not an admin (it
 /// deletes by its delta's delete key, signed for each chunk's salt kept from when it held the
 /// bytes, kept across a restart when `lost`): from the purge on it stores no byte of them and
 /// logs none, so a co-reader pulling it gets none, and it fetches none.
-fn chunks_answered_late(lost: bool, writer: bool) {
+fn chunks_purged(lost: bool, writer: bool) {
     let (mut net, h, [a, b], _g, [t]) = hosted::<2, 1>(&[(1, Role::Write)], ["x"], false);
     net.keep(a, t, &[("t:gone.0", PURGE)]);
     let (w, other) = if writer { (b, a) } else { (a, b) };
@@ -951,7 +950,6 @@ fn chunks_answered_late(lost: bool, writer: bool) {
     let l = net.label(a);
     // the purger alone may delete there
     net.set_online(other, false);
-    net.held_hosts.insert(h);
     let big: String = (0..300_000u32).map(|i| char::from(b'a' + (i.wrapping_mul(2654435761) >> 27) as u8 % 26)).collect();
     let mut m = osis_node::Mutation::new();
     m.set(t, &GONE, &s(&big)).unwrap();
@@ -965,7 +963,6 @@ fn chunks_answered_late(lost: bool, writer: bool) {
     if lost {
         net.blocked.insert((w, h));
         net.drop_link(w, h);
-        net.release_host(h);
     }
     let mut m = osis_node::Mutation::new();
     m.purge_commit(c, t, Ak::new(GONE.ak()).unwrap());
@@ -976,12 +973,10 @@ fn chunks_answered_late(lost: bool, writer: bool) {
     assert_eq!(chunk_copies(&mut net, w, &chunks), (0, 0), "the purge drops the chunks' bytes at once");
     let known = |net: &mut Net| listed(net, w, &l).into_iter().filter(|id| chunks.contains(id)).count();
     if lost {
-        assert_eq!(known(&mut net), 0, "the purged chunks left the node while the host was away");
+        // the peer's `known` outlives the connection: the entries stay listed to be deleted there;
         // the salts outlive a restart (in the tombstones)
         net.restart(w, 7);
         net.blocked.remove(&(w, h));
-    } else {
-        net.release_host(h);
     }
     for _ in 0..4 {
         advance_unheld(&mut net, w, &chunks, 60_000);
@@ -994,23 +989,23 @@ fn chunks_answered_late(lost: bool, writer: bool) {
 }
 
 #[test]
-fn purged_chunks_whose_answers_were_lost_leave_the_host_spec_sync_6() {
-    chunks_answered_late(true, false);
+fn purged_chunks_leave_a_peer_that_was_away_spec_sync_6() {
+    chunks_purged(true, false);
 }
 
 #[test]
-fn purged_chunks_whose_answers_were_lost_leave_the_host_by_delete_key_spec_sync_6() {
-    chunks_answered_late(true, true);
+fn purged_chunks_leave_a_peer_that_was_away_by_delete_key_spec_sync_6() {
+    chunks_purged(true, true);
 }
 
 #[test]
-fn purged_chunks_mid_upload_leave_the_host_spec_sync_6() {
-    chunks_answered_late(false, false);
+fn purged_chunks_leave_a_peer_spec_sync_6() {
+    chunks_purged(false, false);
 }
 
 #[test]
-fn purged_chunks_mid_upload_leave_the_host_by_delete_key_spec_sync_6() {
-    chunks_answered_late(false, true);
+fn purged_chunks_leave_a_peer_by_delete_key_spec_sync_6() {
+    chunks_purged(false, true);
 }
 
 // spec/sync.md §6 (Tombstones: a delete needs only the salt), spec/commits.md §5: a writer (no
