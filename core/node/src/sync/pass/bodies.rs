@@ -167,6 +167,10 @@ impl SyncEngine {
         if !self.state.body_deleted(l, b.commit, &b.parts) && !host.is_some_and(|h| at_host(self, h)) {
             return Ok(false);
         }
+        // expiring within the clock drift allowed: a holder whose clock is ahead took it at expiry
+        if b.expires.is_some_and(|x| x <= self.now().saturating_add(osis_base::format::MAX_DRIFT_MS)) {
+            return Ok(true);
+        }
         let Some(h) = self.engine.header(&b.commit) else { return Ok(false) };
         let keeps = self.engine.part_keeps(&b.commit)?;
         let unjudged = h.ephemeral.is_some() && self.refused_there(host, &l);
