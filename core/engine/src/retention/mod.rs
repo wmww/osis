@@ -835,13 +835,16 @@ fn put_leftover(tx: &mut Tx<'_>, c: &CommitId, ai: usize, mut m: crate::engine::
 /// arriving (`takes_late`), whose join brings them back valued; or on its purge's fall
 /// (`rejudge_purges`), a delta's leftover then `kept` aside for a rise before a copy comes (held
 /// value-less again, it holds what it left, as at a node that never saw the fall:
-/// `make_leftover` adopts it).
+/// `make_leftover` adopts it). A whole replace missing at the fall is no own replace: the
+/// bodies dropped under it alone are missing again (`uncover`), as `drop_part_for` judges an own
+/// cover dropped; for a joining copy the replace stays one.
 fn unstrip(tx: &mut Tx<'_>, c: &CommitId, ai: usize, kept: bool) -> Result<()> {
     let Some(mut m) = tx.core.ix.commits.get(c).cloned() else { return Ok(()) };
     let Some(a) = m.header.aspects.get(ai).cloned() else { return Ok(()) };
     if !m.stripped(ai) {
         return Ok(());
     }
+    let own_cover = kept && m.whole(ai);
     tx.core.touch();
     if !kept {
         leftover::remove(tx, &a.tid, &a.ak, c, ai)?;
@@ -856,6 +859,9 @@ fn unstrip(tx: &mut Tx<'_>, c: &CommitId, ai: usize, kept: bool) -> Result<()> {
     // a snapshot missing indexes nothing, as an open reads it
     crate::apply::forget_snapshot(tx.core, &a.tid, &a.ak, c);
     tx.core.put_meta(*c, m);
+    if own_cover {
+        uncover(tx, &a.tid, &a.ak)?;
+    }
     crate::apply::rebuild(tx, &a.tid, &a.ak)
 }
 
@@ -1905,6 +1911,60 @@ mod tests {
         lp.deliver(2, &p2).unwrap();
         assert_eq!(hold(&lp), Hold::Leftover { whole: true, valued: false }, "purged again");
         assert!(own(&lp));
+        lp.peers[2].engine.check_index();
+    }
+
+    // spec/commits.md §5 (Own replaces, Purge): an own replace gone missing at its purge's fall
+    // is no cover: a body dropped under it and one other own replace is missing again, as at a
+    // node that holds the same commits and never saw the fall. W writes C0, then whole replaces
+    // C2, C3; C0 is dropped as covered; the admin X purges C2; the owner removes X before hearing
+    // of it, so the purge falls and C2 is missing.
+    #[test]
+    fn own_replace_missing_at_a_fall_uncovers_spec_commits_5() {
+        let mut lp = LocalPeer::fresh(3, WallMs(1_700_000_000_000));
+        lp.sync_all().unwrap();
+        let (a, x, w) = (lp.peers[0].engine.me(), lp.peers[1].engine.me(), lp.peers[2].engine.me());
+        let (reg, other) = (Ak::new("x:a.0").unwrap(), Ak::new("x:b.0").unwrap());
+        let mut m = Mutation::new();
+        let t = lp.peers[0].engine.new_thing(&mut m, a);
+        m.set(t, &other, &Value::Int(0)).unwrap();
+        lp.peers[0].commit(m).unwrap();
+        let write = ct::Edge { role: Role::Write, until: None, invite: None, tied: None };
+        lp.peers[0].engine.grant(&t, &x, &ct::Edge { role: Role::Admin, ..write.clone() }).unwrap();
+        lp.peers[0].engine.grant(&t, &w, &write).unwrap();
+        lp.sync_all().unwrap();
+        let cs: Vec<CommitId> = (0..3)
+            .map(|v| {
+                lp.advance(10);
+                let mut m = Mutation::new();
+                m.set(t, &reg, &Value::Int(v)).unwrap();
+                lp.peers[2].commit(m).unwrap().unwrap()
+            })
+            .collect();
+        let (c0, c2) = (cs[0], cs[1]);
+        lp.sync_all().unwrap();
+        lp.peers[2].engine.drop_body(&c0, &t, &reg).unwrap();
+        let hold = |lp: &LocalPeer, c: &CommitId| lp.peers[2].engine.core.ix.commits[c].hold[0].clone();
+        assert!(matches!(hold(&lp, &c0), Hold::Dropped(_)), "covered by C2, C3");
+        lp.advance(10);
+        let mut m = Mutation::new();
+        m.purge_commit(c2, t, reg.clone());
+        m.set(t, &other, &Value::Int(1)).unwrap();
+        let p = lp.peers[1].commit(m).unwrap().unwrap();
+        let p = lp.peers[1].engine.package(&p).unwrap().unwrap();
+        lp.advance(10);
+        let d = lp.peers[0].engine.demote(&t, &Demotion { holder: x, new: None, retain: None }).unwrap();
+        let ds: Vec<_> = d.commits.iter().map(|c| lp.peers[0].engine.package(c).unwrap().unwrap()).collect();
+        lp.deliver(2, &p).unwrap();
+        assert!(matches!(hold(&lp, &c0), Hold::Dropped(_)), "C2 purged is still an own replace");
+        lp.peers[2].engine.take_changed();
+        for d in &ds {
+            lp.deliver(2, d).unwrap();
+        }
+        assert_eq!(hold(&lp, &c2), Hold::Missing(Missing::Plain), "fallen: never received");
+        assert_eq!(hold(&lp, &c0), Hold::Missing(Missing::Plain), "C0 is missing again: one own replace covers nothing");
+        assert!(lp.peers[2].engine.take_changed().undropped.contains(&c0), "and fetched");
+        assert_eq!(lp.peers[2].engine.get(&t, &reg).unwrap(), Some(Value::Int(2)));
         lp.peers[2].engine.check_index();
     }
 }
