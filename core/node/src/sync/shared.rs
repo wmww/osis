@@ -299,7 +299,7 @@ impl SyncEngine {
     }
 
     /// Whether a member of `conn`'s set was opened by this node's sync-key or claim Hit: its peer
-    /// cannot read it, so it pulls nothing of it.
+    /// cannot read it (a source, spec/sync.md §10).
     pub(crate) fn shared_by_key(&self, conn: ConnId, l: &LabelId) -> bool {
         self.records.shared.get(&conn).and_then(|s| s.members.get(l)).is_some_and(|m| m.class == SYNC)
     }

@@ -185,11 +185,10 @@ impl SyncEngine {
     }
 
     /// Whether a reader may pull this node's stream: it is dialable, or a connection shares a
-    /// sync ID with a peer that pulls (not one that cannot read it: it reads nothing). Only then is a label synced
-    /// with no host served, so placed locally
-    /// (`local_passes`).
+    /// sync ID it opened by read credentials. With no source connected either, no pass runs
+    /// (`passes`).
     pub(crate) fn serves_readers(&mut self) -> bool {
-        // a peer that cannot read L (opened by this side's sync key there) pulls nothing
+        // a member opened by this side's sync key is a source's: `passes` counts those
         self.records.shared.iter().any(|(c, s)| s.member_ids().any(|l| !self.shared_by_key(*c, &l))) || self.own_reach().is_some()
     }
 

@@ -307,10 +307,10 @@ impl SyncEngine {
         self.held_parts_at(g, l, c, hosts.as_deref())
     }
 
-    /// Where another node's entry under `l` counts as held: present at every host this node
-    /// syncs the label with, or, for a label served with no host, in this node's own served
-    /// state (`None`): this node is its host (`local_passes`), so what it places does not move
-    /// with which peers happen to be connected.
+    /// Where another node's entry under `l` counts as held: present at every peer its `label.0`
+    /// names that this node is connected to, or, for a label whose `label.0` names none, in
+    /// this node's own store (`None`), so what it places does not move with which peers happen
+    /// to be connected.
     pub(super) fn counted_at(&mut self, g: &Tid, l: LabelId) -> Option<Vec<HostKey>> {
         if self.group_label(g, &l).is_some_and(|gl| crate::sync::peers::hostless(&gl.hosts)) {
             return None;
