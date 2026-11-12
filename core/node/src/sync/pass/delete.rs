@@ -164,7 +164,7 @@ impl SyncEngine {
             // every delta's live writes count, the kept ones' too (spec/sync.md §7, `carried`);
             // under a replaced label no content entry stays, carried there or not: its
             // replacement holds the content (spec/sync.md §2)
-            let content_gone = self.is_replaced(g, l) && !opened.iter().filter_map(|ai| h.aspects.get(*ai)).any(|a| super::kept_when_replaced(a.ak.as_str()));
+            let content_gone = self.is_replaced(g, l) && super::replaced_content(opened.iter().filter_map(|ai| h.aspects.get(*ai)).map(|a| &a.ak));
             let live = !content_gone && opened.iter().any(|ai| self.part_live(&h, commit, *ai));
             return Ok(Some((Hold::MustNot(Why::Dropped), live, aspects)));
         }
@@ -402,7 +402,7 @@ impl SyncEngine {
                 let listers = core.ix.by_chunk.get(b).into_iter().flatten().filter_map(|c| core.ix.commits.get(c));
                 let mut any = false;
                 for m in listers {
-                    if m.view.aspects.iter().any(|a| kept_when_replaced(a.ak.as_str())) {
+                    if !replaced_content(m.view.aspects.iter().map(|a| &a.ak)) {
                         return false;
                     }
                     any = true;

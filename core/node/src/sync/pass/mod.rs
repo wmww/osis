@@ -161,9 +161,12 @@ pub(super) fn is_card(ak: &str) -> bool {
     matches!(ak, "node.0" | "reach.0" | "keys.0")
 }
 
-/// What stays under a replaced label besides role-class commits (spec/sync.md §2).
-pub(super) fn kept_when_replaced(ak: &str) -> bool {
-    ct::is_role_class(ak) || matches!(ak, "created.0" | "node.0" | "reach.0")
+/// Whether an entry or commit on aspects `aks` is content under a replaced label, which goes
+/// there (spec/sync.md §2): one with any part beside role-class writes, creation records and
+/// node cards. A creation record that shares its commit with content (a thing's first value)
+/// goes with it: the replacement label holds that commit.
+pub(crate) fn replaced_content<'a>(mut aks: impl Iterator<Item = &'a osis_base::Ak>) -> bool {
+    aks.any(|ak| !(ct::is_role_class(ak.as_str()) || matches!(ak.as_str(), "created.0" | "node.0" | "reach.0")))
 }
 
 /// Every part of `h` on the aspects `keep` admits.

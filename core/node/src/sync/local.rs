@@ -335,7 +335,7 @@ impl SyncEngine {
         for b in self.state.present_at(&host, &l) {
             let Some(Kind::Commit { commit, parts, .. }) = self.state.entries.get(&(l, b)).map(|e| &e.kind) else { continue };
             let Some(h) = self.engine.header(commit) else { return Ok(()) };
-            if parts.iter().filter_map(|ai| h.aspects.get(*ai)).any(|a| !super::pass::kept_when_replaced(a.ak.as_str())) {
+            if super::pass::replaced_content(parts.iter().filter_map(|ai| h.aspects.get(*ai)).map(|a| &a.ak)) {
                 return Ok(());
             }
         }

@@ -61,7 +61,7 @@
   - One role commit may carry the `label.0` deltas of many groups.
 - **Replacement** of a label lost at a host:
   - An admin rotates the admin secret if the loss calls for it, creates label index `1 + max index in label.0`, uploads the live blobs under it and marks the old label replaced.
-  - At hosts it still controls it deletes the old label's content entries, carried under it or not (§7 Live writes: the new label holds the content), keeping its role commits and the `label.0` commit that marks it replaced.
+  - At hosts it still controls it deletes the old label's content entries, carried under it or not (§7 Live writes: the new label holds the content), keeping its role commits and the `label.0` commit that marks it replaced. A content entry holds a part on an aspect other than role-class ones, `created.0`, `node.0` and `reach.0`; a creation record sharing an entry with content goes with it.
   - No new step of a replaced label is issued. At a host that does not hold it, the admin MAY register its recorded path again to place that `label.0` commit there.
   - Once that commit is under the old label and its content entries are gone at a host (or the label cannot be opened there), the admin's work there is done.
 - **One sync ID per actor**: a commit that gives a thing role secrets of its own (spec/permissions.md §3) MUST also create its label (index 0, unless it already has one) and record it in `label.0`, in that one commit. That label is the thing's **home label**.
