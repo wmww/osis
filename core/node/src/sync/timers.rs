@@ -108,7 +108,7 @@ impl SyncEngine {
             let capped = self.conns.get(&conn).is_some_and(|c| self.capped.range((c.host, label, osis_base::BlobId([0; 32]))..=(c.host, label, osis_base::BlobId([0xff; 32]))).next().is_some());
             if let Some(l) = self.lc_mut(conn, &label) {
                 // a pass when something waits for it (`Work::resync_due`: what a pass left, a
-                // timed bound); the stream brings what the host gets
+                // timed bound); the stream brings what the peer gets
                 l.last_sync = now;
                 l.dirty |= l.fill.is_some() || l.work.resync_due(now) || capped;
             }

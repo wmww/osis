@@ -866,7 +866,7 @@ impl SyncEngine {
             })?,
             None => None,
         };
-        // a host this node read before with no record of it: on from what was read there
+        // a peer that cannot read L, read before with no record of it: on from what was read there
         let lag = lag.or_else(|| {
             let host = self.conns.get(&conn).filter(|_| self.read_as_host(conn, &l))?.host;
             self.state.stream_at.get(&host).and_then(|x| x.lag(&l))
@@ -940,7 +940,7 @@ impl SyncEngine {
             u.merged.retain(|x| x != l);
             u.paging.retain(|(x, _)| x != l);
         }
-        // at a host, by its key: a rejoin there goes on from where it left, else the start
+        // at a peer that cannot read L, by its key: a rejoin there goes on from where it left, else the start
         if let Some(host) = host
             && let Some(mut x) = self.state.stream_at.get(&host).cloned()
         {
@@ -1187,7 +1187,7 @@ impl SyncEngine {
         let (mut owed, mut gone) = (BTreeSet::new(), BTreeSet::new());
         for (l, evs) in by_label {
             // the stream of a peer that cannot read L: its entries are present there (`known`) and
-            // judged as a host's, bodies fetched there as wanted (lazily, or in a fill's order), so
+            // judged as such a peer's, bodies fetched there as wanted (lazily, or in a fill's order), so
             // it owes none
             if self.read_as_host(conn, &l) {
                 self.log_events(Some(conn), l, evs, out)?;
@@ -1304,7 +1304,7 @@ impl SyncEngine {
     /// applied (`stream_settle`).
     fn stream_store(&mut self, conn: ConnId, cursor: Option<Vec<u8>>, merged: &[LabelId], paging: &[(LabelId, Vec<u8>)]) -> Result<()> {
         let Some(p) = self.streams.get(&conn).map(|s| &s.pulling) else { return Ok(()) };
-        // a host's: what was read there, by its key, with the state it covers (`stream_at`)
+        // a peer that cannot read L: what was read there, by its key, with the state it covers (`stream_at`)
         if let (Some(host), Some(c)) = (self.conns.get(&conn).filter(|c| !c.peer).map(|c| c.host), cursor.as_ref()) {
             let stream: BTreeSet<LabelId> = p.in_stream.iter().filter(|l| self.read_as_host(conn, l)).copied().collect();
             let mut x = self.state.stream_at.get(&host).cloned().unwrap_or_default();
@@ -1346,7 +1346,7 @@ impl SyncEngine {
         for l in relisted {
             if self.read_as_host(conn, &l) {
                 self.known_join(conn, l, true);
-                // the host's store is the one this node read before, trimmed past where it read:
+                // the peer's store is the one this node read before, trimmed past where it read:
                 // what the listing lacks of what it held there was deleted there
                 if let Some((_, t)) = self.lc_mut(conn, &l).and_then(|x| x.relisted.as_mut()) {
                     *t = r.trimmed;

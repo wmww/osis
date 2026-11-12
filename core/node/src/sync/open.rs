@@ -443,7 +443,7 @@ impl SyncEngine {
     }
 
     /// The head is good: derive its keys; the label is read there by the shared set (a Hit on
-    /// the host's sync-key entry for this head) and its stream.
+    /// the peer's sync-key entry for this head) and its stream.
     fn accept_head(&mut self, conn: ConnId, l: LabelId, head: Step, out: &mut Vec<super::Action>) -> Result<()> {
         let head_id = head.id();
         self.set_head(conn, l, head)?;
@@ -611,7 +611,7 @@ impl SyncEngine {
             }
             // sent before the open in flight (replies come in order): that open decides
             (Request::Path | Request::Fetch, Some(Phase::Opening)) if code == Code::NOT_OPENED => Ok(()),
-            // the host ended the open (a new head's sync key): opened again, and what the stream
+            // the peer ended the open (a new head's sync key): opened again, and what the stream
             // announced meanwhile is fetched by the pass after (`refetch`)
             (Request::Path | Request::Fetch, _) if code == Code::NOT_OPENED || code == Code::UNKNOWN_LABEL => {
                 self.diag(format!("{kind:?} refused: code {}", code.0));
@@ -649,7 +649,7 @@ impl SyncEngine {
     /// retry timer instead.
     pub(crate) fn reopen(&mut self, conn: ConnId, l: LabelId, out: &mut Vec<super::Action>) -> Result<()> {
         let Some(lc) = self.lc(conn, &l) else { return Ok(()) };
-        // an open in flight decides: a host answers in order, so its answer comes after whatever
+        // an open in flight decides: a peer answers in order, so its answer comes after whatever
         // asked for this one, and a second Open's answers would meet the first's next try
         if lc.phase == Phase::Opening {
             return Ok(());

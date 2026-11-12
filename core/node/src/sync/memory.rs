@@ -800,7 +800,7 @@ impl SyncEngine {
     }
 
     /// The memory entries held under `l`.
-    fn memory_entries_of<'a>(&'a self, l: &LabelId) -> impl Iterator<Item = (BlobId, &'a Entry)> + 'a {
+    pub(super) fn memory_entries_of<'a>(&'a self, l: &LabelId) -> impl Iterator<Item = (BlobId, &'a Entry)> + 'a {
         self.state.label_entries(l).filter(|(_, e)| e.memory)
     }
 

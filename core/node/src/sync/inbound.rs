@@ -277,23 +277,17 @@ impl SyncEngine {
                     continue;
                 }
                 memory = true;
-                // the peers whose streams announced it hold it whatever its class: their presence
-                // moves to the memory record (each stream shows an entry once, so presence dropped
-                // here never came back, and every pass put the entry up again there), kept for the
-                // peers connected now as any memory entry's (`memory_lost`)
-                let mut shown = Vec::new();
-                if self.state.entries.get(&(l, *blob_id)).is_some_and(|e| !e.memory) {
-                    let up: BTreeSet<HostKey> = self.conns.values().filter(|c| c.up).map(|c| c.host).collect();
-                    shown = self.state.hosts_of(&l, blob_id).into_iter().filter(|s| up.contains(s)).map(|s| (s, self.state.deposited.contains(&(s, l, *blob_id)))).collect();
-                    self.state.forget_class(l, *blob_id);
-                }
-                if !self.state.entries.contains_key(&(l, *blob_id)) {
-                    // recorded before its presence (`State::put_of` goes by the record's class)
-                    self.state.set_entry(l, *blob_id, Entry { wrap: *wrap, stamp: None, cert: false, salt: None, expires: None, size: None, kind: Kind::Unknown, source: None, memory: true });
-                }
-                for (s, deposited) in shown {
-                    self.state.set_present(s, l, *blob_id, true);
-                    self.state.set_deposited(s, l, *blob_id, deposited);
+                // the peers whose streams announced it hold it whatever its class
+                // (`State::reclass_memory`); recorded before its presence (`State::put_of` goes
+                // by the record's class)
+                let e = Entry { wrap: *wrap, stamp: None, cert: false, salt: None, expires: None, size: None, kind: Kind::Unknown, source: None, memory: true };
+                match self.state.entries.get(&(l, *blob_id)) {
+                    Some(o) if !o.memory => {
+                        let up: BTreeSet<HostKey> = self.conns.values().filter(|c| c.up).map(|c| c.host).collect();
+                        self.state.reclass_memory(l, *blob_id, e, &up);
+                    }
+                    Some(_) => {}
+                    None => self.state.set_entry(l, *blob_id, e),
                 }
             }
             match ev {
@@ -1846,11 +1840,21 @@ impl SyncEngine {
     /// again (a fresh Pull).
     pub(crate) fn stream_read(&mut self, conn: ConnId, l: LabelId, out: &mut Vec<super::Action>) -> Result<()> {
         let Some(host) = self.conns.get(&conn).map(|c| c.host) else { return Ok(()) };
+        // read there to its end the first time since it joined, which listed the memory entries
+        // it holds there: one with no body here (its commit forgotten, or known only for a part
+        // dropped while invalid) that it lacks has nothing to put up, so it goes once held
+        // nowhere (`absent_at`)
+        if self.lc(conn, &l).is_some_and(|x| !x.synced) {
+            let dead: Vec<BlobId> = self.memory_entries_of(&l).filter(|(b, e)| !self.state.is_present(&host, &l, b) && matches!(&e.kind, Kind::Commit { commit, .. } if !self.engine.memory_body_held(commit))).map(|(b, _)| b).collect();
+            for b in dead {
+                self.absent_at(None, l, b)?;
+            }
+        }
         if self.lc(conn, &l).is_some_and(|x| x.fill.is_some()) {
             self.fill_listed(conn, l, out)?;
             return self.fetch_waiting(conn, l, out);
         }
-        // a listing from the start ended: marked trimmed (the host's store is the one read before,
+        // a listing from the start ended: marked trimmed (the peer's store is the one read before,
         // its deletions since not all in its log), what it lacks of what was present there was
         // deleted there, as a Deleted event says; else its absence proves nothing (a wiped or
         // restored store), and only presence went (`known_join`)
@@ -1872,6 +1876,10 @@ impl SyncEngine {
                 self.relink_lost()?;
             }
         }
+        // read there to its end the first time since it joined, which listed the memory entries
+        // it holds there: one with no body here (its commit forgotten, or known only for a part
+        // dropped while invalid) that it lacks has nothing to put up, so it goes once held
+        // nowhere (`absent_at`)
         // read there to its end the first time since it joined: a pass judges it (later ends
         // bring nothing a pass waits for: what arrived marked it already, `log_events`)
         if let Some(lc) = self.lc_mut(conn, &l) {

@@ -22,7 +22,7 @@ const ENTRY: &[u8] = b"y/e";
 const PRESENT: &[u8] = b"y/p";
 /// Per peer that cannot read a label it streams, what this node read of its stream (`StreamAt`).
 const STREAM_AT: &[u8] = b"y/c";
-/// A (host, label) whose listing's fill has not ended (`fill`).
+/// A (peer key, label) whose listing's fill has not ended (`fill`).
 const FILLING: &[u8] = b"y/4";
 const HEAD: &[u8] = b"y/h";
 const BLOB: &[u8] = b"y/b";
@@ -1488,14 +1488,38 @@ impl State {
         true
     }
 
-    /// Forgets every record of an entry announced without its bytes that turned out ephemeral
-    /// (its blob's prefix class, spec/sync.md §9), its presence included: it is recorded again
-    /// as a memory entry (no tombstone), the caller moving the presence over.
-    pub fn forget_class(&mut self, l: LabelId, b: BlobId) {
+    /// Records an entry announced without its bytes that turned out ephemeral (its blob's prefix
+    /// class, spec/sync.md §9) again as memory entry `e`, no tombstone. Its rows at the peers in
+    /// `up` (connected now: a memory entry's presence lasts its connection, `memory_lost`) move
+    /// with it as they were: each stream shows an entry once, so a row dropped here never comes
+    /// back (the writer put the entry up there again every pass while others deleted it). Its
+    /// rows at other peers go, from the store too.
+    pub fn reclass_memory(&mut self, l: LabelId, b: BlobId, e: Entry, up: &BTreeSet<HostKey>) {
+        type Row = (HostKey, bool, bool, Option<u64>, Option<[u8; WRAP_LEN]>);
+        let mut peers: BTreeSet<HostKey> = self.hosts_of(&l, &b).into_iter().collect();
+        peers.extend(self.gone_by.range((l, b, [0; 32])..=(l, b, [0xff; 32])).map(|(_, _, s)| *s));
+        let rows: Vec<Row> = peers.iter().map(|s| (*s, self.is_present(s, &l, &b), self.deposited.contains(&(*s, l, b)), self.gone.get(&(*s, l, b)).copied(), self.doubts.get(&(*s, l, b)).copied())).collect();
+        for s in &peers {
+            self.clear_gone(*s, l, b);
+        }
         self.forget_entry(l, b);
+        self.set_entry(l, b, e);
+        for (s, present, deposited, gone, doubt) in rows.into_iter().filter(|r| up.contains(&r.0)) {
+            if present {
+                self.set_present(s, l, b, true);
+                self.set_deposited(s, l, b, deposited);
+            }
+            if let Some(at) = gone {
+                self.gone.insert((s, l, b), at);
+                self.gone_by.insert((l, b, s));
+            }
+            if let Some(w) = doubt {
+                self.doubts.insert((s, l, b), w);
+            }
+        }
     }
 
-    /// Forgets an entry and its presence at every host, no tombstone.
+    /// Forgets an entry and its presence at every peer, no tombstone.
     fn forget_entry(&mut self, l: LabelId, b: BlobId) {
         let hosts: Vec<HostKey> = self.present_by.range((l, b, [0u8; 32])..).take_while(|(x, y, _)| *x == l && *y == b).map(|(_, _, s)| *s).collect();
         for s in hosts {
@@ -2426,6 +2450,31 @@ mod tests {
         assert!(s.doubts.is_empty(), "the wrap goes with the entry");
         s.expire_tombs(1_000 + osis_base::format::TOMBSTONE_LIFETIME_MS);
         assert!(!s.is_gone_at(&h1, &l, &b));
+    }
+
+    // spec/sync.md §9: an entry recorded durable that its bytes show ephemeral keeps its rows
+    // at the peers connected now as they were, in memory only; the others go, from the store too.
+    #[test]
+    fn a_reclassed_entry_keeps_its_rows_at_connected_peers_spec_sync_9() {
+        let mut node = crate::sync::host::on_hub(one_peer().peers.remove(0));
+        let e = &mut node;
+        let (up, down, l, b) = ([7u8; 32], [8u8; 32], LabelId([1; 16]), BlobId([2; 32]));
+        let mut s = State { now: 1_000, ..State::default() };
+        s.set_entry(l, b, entry(1));
+        for h in [up, down] {
+            s.set_present(h, l, b, true);
+            s.set_deposited(h, l, b, true);
+            s.set_doubtful(h, l, b, [3; WRAP_LEN]);
+        }
+        s.flush(e).unwrap();
+        assert_eq!((rows(e, PRESENT), rows(e, GONE), rows(e, DOUBT)), (2, 2, 2));
+        s.reclass_memory(l, b, Entry { memory: true, ..entry(2) }, &[up].into());
+        s.flush(e).unwrap();
+        assert_eq!((rows(e, PRESENT), rows(e, GONE), rows(e, DOUBT)), (0, 0, 0), "nothing of it stored");
+        assert!(s.is_memory(&l, &b));
+        assert_eq!(s.hosts_of(&l, &b), [up]);
+        assert!(s.deposited.contains(&(up, l, b)) && s.is_gone_at(&up, &l, &b) && s.doubts.contains_key(&(up, l, b)));
+        assert!(!s.is_gone_at(&down, &l, &b) && !s.doubts.contains_key(&(down, l, b)));
     }
 
     // spec/sync.md §5, §7 (growth, notes/growth.md): a host's tombstoned answer is forgotten
