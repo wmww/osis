@@ -1032,6 +1032,91 @@ fn expired_removal_stays_spec_crdt_4_7() {
     }
 }
 
+/// Writers a and b hold a lasting 48 KB value under a snapshot (so `n` small leftovers stay below
+/// `FACTOR` times it), `n`
+/// expiring Puts of a's on `ak` of a's window (keys k0.., each its own commit, expiring 100 ms
+/// apart) and b's lasting Set into the first one's entry; c, offline
+/// meanwhile, restarts after they all expired (hosts deleted them) and gets b's Set without the
+/// entry it lives in. Asserts c reads differently until the aspect has been quiet for
+/// `QUIET_MS`, then alike, with k0 b's. Returns the snapshots written for the quiet rule in that
+/// quiet time, and all snapshots written in two more.
+fn quiet_cover(ak: &str, n: usize) -> (u64, u64) {
+    use osis_node::retention::compact::QUIET_MS;
+    let (mut net, _host, [a, b, c], g, []) = hosted::<3, 0>(&[(1, Role::Write), (2, Role::Write)], [], true);
+    let w = window(&mut net, a, g, "w");
+    net.run();
+    let mut m = Mutation::new();
+    m.op(w, &eph(ak), PathOp { path: vec![PathSeg::Key(s("big"))], op: Op::Put(s(&"x".repeat(48_000))) }).unwrap();
+    net.engine(a).write(m).unwrap();
+    local(&mut net, a);
+    let acts = net.sync(a).compact_now(&w, &eph(ak)).unwrap();
+    net.actions(a, acts);
+    net.run();
+    net.set_online(c, false);
+    let t = net.now() + 5_000;
+    for i in 0..n {
+        let mut m = Mutation::new();
+        m.op(w, &eph(ak), PathOp { path: vec![PathSeg::Key(s(&format!("k{i}")))], op: Op::Put(s("gone")) }).unwrap();
+        m.expires(w, &eph(ak), osis_base::WallMs(t + 100 * i as u64)).unwrap();
+        net.engine(a).write(m).unwrap();
+    }
+    local(&mut net, a);
+    net.run();
+    let mut m = Mutation::new();
+    m.op(w, &eph(ak), PathOp { path: vec![PathSeg::Key(s("k0"))], op: Op::Set(s("kept")) }).unwrap();
+    net.engine(b).write(m).unwrap();
+    local(&mut net, b);
+    net.run();
+    net.advance(t + 100 * n as u64 + 1_000 - net.now());
+    net.restart(c, 77);
+    net.set_online(c, true);
+    net.advance(30_000);
+    let kept = Some(Value::Map([(s("big"), s(&"x".repeat(48_000))), (s("k0"), s("kept"))].into()));
+    assert!(net.eph_read(a, w, ak) == kept && net.eph_read(b, w, ak) == kept, "{ak} n={n}: the writers read b's Set in a's entry");
+    assert!(net.eph_read(c, w, ak) != kept, "{ak} n={n}: c missed the entry's creation");
+    osis_node::costs::take();
+    net.advance(QUIET_MS);
+    net.advance(30_000);
+    let quiet = osis_node::costs::take().iter().find(|x| x.0 == "compact: quiet snapshots").map_or(0, |x| x.2);
+    for x in [a, b, c] {
+        assert!(net.eph_read(x, w, ak) == kept, "{ak} n={n}: node {x} reads alike once quiet");
+    }
+    for _ in 0..2 {
+        net.advance(QUIET_MS);
+        net.advance(30_000);
+    }
+    let later = osis_node::costs::take().iter().find(|x| x.0 == "compact: snapshots written").map_or(0, |x| x.2);
+    (quiet, later)
+}
+
+// spec/sync.md §7 (Trigger, cover once quiet), spec/crdt.md §4.7 (Limit): an expired Put's
+// leftover is the only carrier of its entry's creation once hosts deleted the body, so c,
+// restarted after the expiry, reads b's lasting Set in that entry only once a writer holding the
+// leftover covers it: once the aspect has been quiet for `QUIET_MS`, though one leftover is far
+// below `FACTOR`. Durable and ephemeral alike.
+#[test]
+fn leftover_covered_once_quiet_spec_sync_7() {
+    for ak in [NOTES, "win:notes.0"] {
+        let (quiet, later) = quiet_cover(ak, 1);
+        assert!((1..=2).contains(&quiet), "{ak}: each writer holding the leftover covers it at most once: {quiet}");
+        assert_eq!(later, 0, "{ak}: the snapshots set off no more");
+    }
+}
+
+// spec/sync.md §7 (Trigger, cover once quiet): the quiet rule writes at most one snapshot per
+// writer per quiet time, however many writes expired in it (n and 10n), and the writers'
+// snapshots set off no more in the quiet times after
+#[test]
+fn quiet_cover_is_flat_spec_sync_7() {
+    for ak in [NOTES, "win:notes.0"] {
+        for n in [3, 30] {
+            let (quiet, later) = quiet_cover(ak, n);
+            assert!((1..=2).contains(&quiet), "{ak} n={n}: {quiet} quiet snapshots by two writers");
+            assert_eq!(later, 0, "{ak} n={n}: the snapshots set off no more");
+        }
+    }
+}
+
 // spec/commits.md §5 (Covered: a delta with an expiry is covered once held value-less), spec/sync.md
 // §9 (Compaction): past their expiry A's notes are leftovers at A, B and the reader C; the writers'
 // trigger weighs leftovers, and a snapshot covers them, so every holder drops them (none of them
@@ -2198,6 +2283,10 @@ fn random_churn_run(seed: u64) {
     for _ in 0..4 {
         net.advance(15_000);
     }
+    net.advance(61_000);
+    // holders read alike once quiet: a leftover reaches a node that missed its write only in a
+    // writer's snapshot, written once the aspect has been quiet (spec/sync.md §7 Trigger)
+    net.advance(osis_node::retention::compact::QUIET_MS);
     net.advance(61_000);
     let holders: Vec<usize> = nodes.iter().copied().filter(|n| synced(&mut net, *n, w)).collect();
     let Some(&h0) = holders.first() else { return };

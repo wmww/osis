@@ -24,7 +24,7 @@ Per container:
 - **`W`** carries a value: it writes the app value "an empty composite", held value-less like a register's (`[Stamp, false]` on the wire). So an expiring `{}` goes at T.
 - **Removals and resets.** Removal is final: a newer write inside a removed element stays hidden until a sweep resets it.
 
-**Late nodes.** A node that never held an expired or purged creation (hosts drop its body) holds others' writes in the entry without it, so it shows nothing there until a writer compacts and the snapshot carries the creation value-less; nodes that held it show the others' writes. The limit spec/commits.md §5 states for non-value writes, reactions included.
+**Late nodes.** A node that never held an expired or purged creation (hosts drop its body) holds others' writes in the entry without it, so it shows nothing there until a writer compacts and the snapshot carries the creation value-less (at the latest once a writer holding the leftover has been quiet for `QUIET_MS`, notes/engine-retention.md Cover once quiet); nodes that held it show the others' writes. The limit spec/commits.md §5 states for non-value writes, reactions included.
 
 **Leftovers at expiry**: only the expired delta's non-value writes and its value-carrying writes value-less: resets, flags, positions, creations with their anchors, value-less register, case and `W` stamps. They are held as the delta's leftover body until a snapshot covers them, because hosts delete the body at T and it cannot be fetched again. Nothing else stays: no element reset, no whole-dot key move, no hidden-dot mark.
 

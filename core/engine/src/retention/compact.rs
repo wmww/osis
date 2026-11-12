@@ -5,7 +5,9 @@
 //! the pages they link, the tree blobs it lists that no live state links (`body_bytes`,
 //! `Weighed::tree`), `PART_OVERHEAD` per part (`apply::memory::part_weight`, what the node cap
 //! charges) and `ENTRY_CHARGE`. Bodies kept by history (a replaced one in history, a live one
-//! kept while live, spec/commits.md §5) are not counted: no snapshot drops them.
+//! kept while live, spec/commits.md §5) are not counted: no snapshot drops them. An aspect
+//! holding an expired write's leftover is also compacted once quiet for `QUIET_MS`, whatever
+//! `FACTOR` says (`Trigger::quiet`): the snapshot is the leftover's only carrier.
 
 use crate::apply::memory::{each_page, part_weight};
 use crate::engine::{Engine, Tx};
@@ -30,6 +32,14 @@ pub const FACTOR: usize = 2;
 /// compacts at every write.
 pub const ENTRY_CHARGE: usize = 1024;
 
+/// How long an aspect with a leftover held here must be quiet (no write held, no expiry) before
+/// this node covers its leftovers whatever `FACTOR` says (spec/sync.md §7 Trigger, cover once
+/// quiet): `MAX_DRIFT`, the window in which nodes may already read an expiring write
+/// differently by their clocks. 0 is one snapshot per expiry (a collection of expiring elements
+/// pays its whole state per element), infinity never covers (a node that missed the write
+/// reads differently for good).
+pub const QUIET_MS: u64 = osis_base::format::MAX_DRIFT_MS;
+
 /// Whether the trigger compacts `ak`: content (not role-class, `created.0` or `retention^.0`),
 /// no fixed retention, not a signal (no state).
 pub(crate) fn compactable(ak: &Ak) -> bool {
@@ -52,6 +62,14 @@ pub struct Trigger {
     /// By wall ms, aspects whose live bodies a setting keeps until then (a `keep` until T
     /// alone): uncounted when applied, weighed once the bound passes (`Engine::tick`).
     at: BTreeMap<u64, BTreeSet<(Tid, Ak)>>,
+    /// Per aspect holding a value-less write here, when it will have been quiet for `QUIET_MS`
+    /// (wall ms): a write held or an expiry on it moves that on (`stirred`); a snapshot does
+    /// not, so writers' quiet snapshots never set each other off. `quiet_at` orders them.
+    quiet: BTreeMap<(Tid, Ak), u64>,
+    quiet_at: BTreeSet<(u64, (Tid, Ak))>,
+    /// Aspects quiet since the last step: weighed then, and a leftover a snapshot would drop
+    /// fires it whatever `FACTOR` says (`Engine::compactions`).
+    quiet_due: BTreeSet<(Tid, Ak)>,
 }
 
 /// What the trigger knows of an aspect (`Trigger::est`).
@@ -96,6 +114,7 @@ impl Trigger {
         if h.kind.is_compaction() {
             return Trigger::snapshot_held(tx, id, &k);
         }
+        Trigger::stirred(tx, &k);
         if !h.kind.has_own_writes() {
             return Ok(());
         }
@@ -249,6 +268,25 @@ impl Trigger {
         }
     }
 
+    /// A write was held on `k` or one of its writes expired (or turned valid or invalid): where
+    /// `k` holds a value-less write here, its quiet time starts again (`quiet`). O(log aspects).
+    pub(crate) fn stirred(tx: &mut Tx<'_>, k: &(Tid, Ak)) {
+        if !compactable(&k.1) || tx.core.ix.valueless.get(k).is_none_or(|l| l.is_empty()) {
+            return;
+        }
+        let at = tx.now().0.saturating_add(QUIET_MS);
+        tx.core.compaction.arm(k.clone(), at);
+        tx.core.timer_floor = tx.core.timer_floor.min(at);
+    }
+
+    /// `k` is quiet at wall ms `at` unless stirred again before.
+    pub(crate) fn arm(&mut self, k: (Tid, Ak), at: u64) {
+        if let Some(old) = self.quiet.insert(k.clone(), at) {
+            self.quiet_at.remove(&(old, k.clone()));
+        }
+        self.quiet_at.insert((at, k));
+    }
+
     /// Asks a weighing of every aspect whose live bound passed by `now` (`at`).
     pub(crate) fn passed(&mut self, now: u64) {
         let later = self.at.split_off(&now.saturating_add(1));
@@ -257,9 +295,21 @@ impl Trigger {
         }
     }
 
-    /// When the first live bound in `at` passes (`u64::MAX`: none).
+    /// Asks a weighing, for the quiet rule, of every aspect whose quiet time passed by `now`
+    /// (`quiet`). After the expiries due by `now` ran: one stirs its aspect again.
+    pub(crate) fn quiet_passed(&mut self, now: u64) {
+        while let Some((at, k)) = self.quiet_at.first().cloned().filter(|x| x.0 <= now) {
+            self.quiet_at.remove(&(at, k.clone()));
+            self.quiet.remove(&k);
+            self.quiet_due.insert(k.clone());
+            self.weigh(k);
+        }
+    }
+
+    /// When the first live bound in `at` or quiet time passes (`u64::MAX`: none).
     pub(crate) fn next_at(&self) -> u64 {
-        self.at.keys().next().copied().unwrap_or(u64::MAX)
+        let live = self.at.keys().next().copied().unwrap_or(u64::MAX);
+        live.min(self.quiet_at.first().map_or(u64::MAX, |x| x.0))
     }
 
     /// `k` is weighed at the next step whatever its estimate.
@@ -348,21 +398,22 @@ fn candidates(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, me: Tid) -> Result<(Vec<Candi
     let memory = ak.ephemeral();
     let now = tx.now().0;
     let pool = droppable(tx, tid, ak);
-    // (commit, part, judged by ID, a snapshot)
-    let ids: Vec<(CommitId, usize, bool, bool)> = pool
+    // (commit, part, judged by ID, a snapshot, a leftover)
+    let ids: Vec<(CommitId, usize, bool, bool, bool)> = pool
         .into_iter()
         .filter_map(|c| {
             let m = tx.core.ix.commits.get(&c)?;
             let ai = m.aspect(tid, ak).filter(|ai| m.holds(*ai) && m.valid_at(*ai) && super::drops_as_covered(m, *ai, now))?;
             m.header.aspects.get(ai).filter(|_| m.header.expires.is_none() || m.bare(ai))?;
-            Some((c, ai, super::snapshot::by_id(m.header.kind, m.header.form), m.view.kind.is_compaction()))
+            let snapshot = m.view.kind.is_compaction();
+            Some((c, ai, super::snapshot::by_id(m.header.kind, m.header.form), snapshot, !snapshot && m.header.expires.is_some()))
         })
         .collect();
     // counted: tests read how many bodies the trigger weighs
     crate::costs::count("compact: bodies weighed", ids.len() as u64);
     // per session source of a candidate, the last counter to walk to
     let mut upto: BTreeMap<osis_crdt::Source, u64> = BTreeMap::new();
-    for (c, ai, by_id, snapshot) in &ids {
+    for (c, ai, by_id, snapshot, _) in &ids {
         if *by_id || *snapshot {
             continue;
         }
@@ -374,9 +425,9 @@ fn candidates(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, me: Tid) -> Result<(Vec<Candi
     let valid_on = |c: &CommitId| super::snapshot::claims(tx.core, c, tid, ak, now);
     let (frontiers, reflected) = super::snapshot::frontiers_upto(tx, tid, ak, memory, &valid_on, Some(&upto));
     let mut stops = Stops::new();
-    // (commit, part, its weight, a snapshot)
+    // (commit, part, its weight, a snapshot, a leftover)
     let mut weighed = Vec::new();
-    for (c, ai, by_id, snapshot) in ids {
+    for (c, ai, by_id, snapshot, leftover) in ids {
         // a snapshot is no body the trigger counts: each author keeps its own ephemeral one until
         // its next (spec/sync.md §9), so two authors' would make each compact the other's forever.
         // But the tree blobs it lists that no live state links go with it when the new snapshot
@@ -393,11 +444,11 @@ fn candidates(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, me: Tid) -> Result<(Vec<Candi
             continue;
         }
         let Some(blob) = tx.get_commit(&c)? else { continue };
-        weighed.push((c, ai, body_bytes(tx, &blob, ai)?, snapshot));
+        weighed.push((c, ai, body_bytes(tx, &blob, ai)?, snapshot, leftover));
     }
     // the tree blobs a drop frees: those no live state of the thing links (the tree memo,
     // `tree_refs::state_refs_in`), none while a tree is not all held (as `chunks::released`)
-    let listed: BTreeSet<BlobId> = weighed.iter().flat_map(|(_, _, w, _)| w.tree.iter().copied()).collect();
+    let listed: BTreeSet<BlobId> = weighed.iter().flat_map(|(_, _, w, _, _)| w.tree.iter().copied()).collect();
     let mut freed = BTreeSet::new();
     if !listed.is_empty() {
         let linked = crate::engine::tree_refs::state_refs_in(tx, tid, &listed)?;
@@ -406,13 +457,13 @@ fn candidates(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, me: Tid) -> Result<(Vec<Candi
         }
     }
     let mut out = Vec::new();
-    for (c, ai, w, snapshot) in weighed {
+    for (c, ai, w, snapshot, leftover) in weighed {
         // a blob two bodies list is freed once
         let mine: Vec<BlobId> = w.tree.iter().filter(|b| freed.remove(b)).copied().collect();
         let tree = held_bytes(tx, mine.iter())?;
         let cost = if snapshot { tree } else { part_weight(w.bytes.saturating_add(tree)).saturating_add(ENTRY_CHARGE) };
         if cost > 0 {
-            out.push(Candidate { c, ai, cost, body: !snapshot });
+            out.push(Candidate { c, ai, cost, body: !snapshot, leftover });
         }
     }
     Ok((out, stops))
@@ -429,6 +480,8 @@ struct Candidate {
     cost: usize,
     /// A body the trigger counts (not a snapshot: only its replaced tree blobs count).
     body: bool,
+    /// An expired write's leftover (held value-less past its expiry).
+    leftover: bool,
 }
 
 /// The held bodies of `(tid, ak)` a snapshot may drop now. Where its setting keeps live bodies
@@ -487,7 +540,7 @@ const LISTED_BLOB_BYTES: usize = 56;
 
 /// An aspect's load at this node (`Engine::compaction_load`): what the bodies held of it a
 /// snapshot would drop cost (`held`), what the snapshot would (`snapshot`), the costliest body and
-/// how many.
+/// how many, and how many of those are expired writes' leftovers.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Load {
     pub tid: Tid,
@@ -496,6 +549,7 @@ pub struct Load {
     pub snapshot: usize,
     pub largest: usize,
     pub bodies: usize,
+    pub leftovers: usize,
 }
 
 impl Load {
@@ -515,8 +569,8 @@ impl Load {
             candidates(tx, tid, ak, me)
         })?;
         let now = e.now().0;
-        let (mut held, mut largest, mut bodies) = (0usize, 0usize, 0usize);
-        for Candidate { c, ai, cost, body } in cands {
+        let (mut held, mut largest, mut bodies, mut leftovers) = (0usize, 0usize, 0usize, 0usize);
+        for Candidate { c, ai, cost, body, leftover } in cands {
             if e.part_keeps(&c)?.get(ai).copied().unwrap_or(0) > now {
                 continue;
             }
@@ -525,6 +579,7 @@ impl Load {
                 largest = largest.max(cost);
                 bodies += 1;
             }
+            leftovers += usize::from(leftover);
         }
         let Some(snapshot) = e.run(|tx| {
             class(tx);
@@ -533,7 +588,7 @@ impl Load {
         else {
             return Ok(None);
         };
-        Ok(Some((Load { tid: *tid, ak: ak.clone(), held, snapshot, largest, bodies }, stops)))
+        Ok(Some((Load { tid: *tid, ak: ak.clone(), held, snapshot, largest, bodies, leftovers }, stops)))
     }
 }
 
@@ -541,12 +596,15 @@ impl Engine {
     /// The compaction trigger (spec/sync.md §7 Trigger), at each step: every aspect due whose
     /// estimate passes `FACTOR` times its last snapshot cost (or asked to be weighed) is weighed,
     /// and where the bodies a snapshot would drop, two at least, cost more than `FACTOR` times
-    /// it, this node writes the snapshot if it may write the aspect (`snapshot`). Returns the
+    /// it, or where the aspect has been quiet for `QUIET_MS` (`Trigger::quiet`) and holds an
+    /// expired write's leftover a snapshot would drop, this node writes the snapshot if it may
+    /// write the aspect (`snapshot`). Returns the
     /// snapshots written, by aspect: an ephemeral one's covered bodies are dropped as it applies
     /// (`retention::memory::drop_covered`), a durable one's by node-sync.
     pub fn compactions(&mut self) -> Result<Vec<(Tid, Ak, CommitId)>> {
         let due = std::mem::take(&mut self.core.compaction.due);
         let forced = std::mem::take(&mut self.core.compaction.forced);
+        let quiet = std::mem::take(&mut self.core.compaction.quiet_due);
         let mut out = Vec::new();
         for k in due {
             let (est, last) = self.core.compaction.est.get(&k).map_or((0, 0), |e| (e.held, e.snapshot));
@@ -573,12 +631,19 @@ impl Engine {
                 self.core.compaction.est.remove(&k);
                 continue;
             };
-            let fire = l.bodies >= 2 && l.held > FACTOR.saturating_mul(l.snapshot);
+            // cover once quiet: a leftover is the one carrier of an expired write's creations and
+            // resets to a node that missed it (hosts deleted the body at its expiry)
+            let full = l.bodies >= 2 && l.held > FACTOR.saturating_mul(l.snapshot);
+            let fire = full || quiet.contains(&k) && l.leftovers > 0;
             let mut held = l.held;
             if fire {
                 match self.snapshot(&tid, &ak) {
                     Ok(Some(c)) => {
                         crate::costs::count("compact: snapshots written", 1);
+                        if !full {
+                            // counted: tests read how often a quiet aspect is covered
+                            crate::costs::count("compact: quiet snapshots", 1);
+                        }
                         out.push((tid, ak.clone(), c));
                         held = 0;
                     }

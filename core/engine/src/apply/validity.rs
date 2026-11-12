@@ -1163,8 +1163,10 @@ fn rejudge_once(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak)>> {
     }
     // what its body judged goes with it (`reopen`): judged again by the next pass
     crate::retention::valid_again(tx, &back)?;
-    for (tid, ak) in &flipped {
-        tx.core.mark_aspect_changed(tid, ak);
+    for k in &flipped {
+        tx.core.mark_aspect_changed(&k.0, &k.1);
+        // a flip may uncover a leftover: covered once the aspect is quiet (spec/sync.md §7)
+        crate::retention::compact::Trigger::stirred(tx, k);
     }
     // each aspect rebuilt once, after its flips and every purge request's verdict on it (a
     // requester's flip moves all its requests: one rebuild per request read the aspect's bodies

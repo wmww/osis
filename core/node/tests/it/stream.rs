@@ -598,9 +598,12 @@ fn back_after_aging(n: usize) -> (usize, bool, bool, usize) {
         net.keep(b, *g, &[("group.0", osis_schema::History::FOREVER)]);
         let t = net.item(b, *g, *g, &format!("keep{i}"));
         let gone = net.item(b, *g, *g, "gone");
+        // an aspect of its own: its expiry is covered once quiet (spec/sync.md §7 Trigger), and a
+        // cover in an aspect with other bodies would delete there too
+        let short = osis_base::Ak::new("t:short.0").unwrap();
         let mut m = osis_node::Mutation::new();
-        m.set(gone, &REG, &s("short")).unwrap();
-        m.expires(gone, &osis_base::Ak::new(REG.ak()).unwrap(), osis_base::WallMs(net.now() + day)).unwrap();
+        m.set(gone, &short, &s("short")).unwrap();
+        m.expires(gone, &short, osis_base::WallMs(net.now() + day)).unwrap();
         net.engine(b).commit(m).unwrap();
         let _ = t;
     }

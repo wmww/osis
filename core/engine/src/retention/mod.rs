@@ -891,7 +891,9 @@ fn hold_valueless(tx: &mut Tx<'_>, c: &CommitId, ai: usize, purged: bool, change
         if tx.is_memory_commit(c) && tx.core.ix.commits.get(c).is_some_and(|m| m.holds(ai)) {
             memory::drop_covered(tx, &[k.clone()].into(), Some(c), Some(c))?;
         }
-        // the compaction trigger counts leftovers (`retention::compact`)
+        // the compaction trigger counts leftovers (`retention::compact`), and covers them once
+        // the aspect is quiet
+        crate::retention::compact::Trigger::stirred(tx, &k);
         tx.core.compaction.weigh(k);
     }
     Ok(())
@@ -1136,8 +1138,8 @@ impl Engine {
     }
 
     /// Runs what is due by the wall clock: expiries, purge floors (`T_FLOOR`, `T_KEPT`), bodies
-    /// leaving history (`leaving`), live bounds the compaction trigger waits for
-    /// (`compact::Trigger::passed`) and commits parked for drift. The commits whose timers fired
+    /// leaving history (`leaving`), live bounds and quiet times the compaction trigger waits for
+    /// (`compact::Trigger::passed`, `quiet_passed`) and commits parked for drift. The commits whose timers fired
     /// are marked changed (`Core::changed`).
     pub fn tick(&mut self) -> Result<()> {
         let r = self.run(|tx| {
@@ -1166,6 +1168,9 @@ impl Engine {
             if !changed.is_empty() {
                 tx.core.events.queue(Event::Changed { cause: Cause::Expiry, changed: changed.into_iter().collect() });
             }
+            // quiet times passed: after the expiries, which end an aspect's quiet time
+            tx.core.compaction.quiet_passed(now);
+            tx.core.timer_floor = tx.core.timer_floor.min(tx.core.compaction.next_at());
             Ok(())
         });
         if r.is_err() {

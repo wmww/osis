@@ -3162,6 +3162,13 @@ impl Engine {
         e.reload()?;
         e.take_account()?;
         e.reexamine()?;
+        // a leftover held from before goes uncovered no longer than a quiet time from here
+        // (spec/sync.md §7 Trigger)
+        let quiet = e.now().0.saturating_add(crate::retention::compact::QUIET_MS);
+        let held: Vec<(Tid, Ak)> = e.core.ix.valueless.iter().filter(|(k, l)| !l.is_empty() && crate::retention::compact::compactable(&k.1)).map(|(k, _)| k.clone()).collect();
+        for k in held {
+            e.core.compaction.arm(k, quiet);
+        }
         e.core.timer_floor = e.next_timer()?.unwrap_or(u64::MAX);
         Ok(e)
     }
