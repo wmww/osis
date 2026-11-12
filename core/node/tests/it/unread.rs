@@ -324,3 +324,48 @@ fn a_key_actors_static_entry_opens_an_unread_label_with_its_grant_spec_sync_10()
     assert_eq!(Some(&grant.entry_box), s.l.sets[0].entries.get(&entry), "the head's box for the entry");
     assert!(s.net.sync(s.b).shared_members(q.conn).contains(&l));
 }
+
+// spec/sync.md §10 (Stream: a node that cannot read L pulls it from every reader that opened it
+// there): a write reaches the peer that cannot read its group by the peer's pull alone (no
+// Upload is sent), and a second reader reads it through that peer with the writer offline.
+#[test]
+fn a_write_reaches_a_peer_that_cannot_read_by_its_pull_spec_sync_10() {
+    let (mut net, host, [a, b], g, []) = hosted::<2, 0>(&[(1, Role::Read)], [], true);
+    net.set_online(b, false);
+    net.sent_kinds.clear();
+    let t = net.item(a, g, g, "pulled");
+    net.run();
+    let l = net.label(a);
+    let mine: BTreeSet<BlobId> = net.sync(a).entries(&l).into_iter().map(|x| x.0).collect();
+    let held: BTreeSet<BlobId> = net.host_ids(host, &l).into_iter().collect();
+    assert!(mine.is_subset(&held), "the peer holds every entry of the writer's store");
+    assert_eq!(net.sent_kinds.get(&10).copied().unwrap_or(0), 0, "no Upload");
+    net.set_online(a, false);
+    net.set_online(b, true);
+    net.advance(61_000);
+    assert_eq!(net.read(b, t), Some(osis_base::Value::Str("pulled".into())));
+}
+
+// spec/sync.md §10 (Stream): a peer that cannot read L, restored from a backup taken before a
+// write, pulls it again from a reader at the next connection, and a second reader gets it from
+// that peer with the writer offline.
+#[test]
+fn a_peer_restored_from_a_backup_pulls_again_spec_sync_10() {
+    let (mut net, host, [a, b], g, []) = hosted::<2, 0>(&[(1, Role::Read)], [], true);
+    net.set_online(b, false);
+    let backup = net.backup_host(host);
+    let t = net.item(a, g, g, "again");
+    net.run();
+    let l = net.label(a);
+    let before = net.host_ids(host, &l).len();
+    // the peer's store as it was before the write
+    net.restore_host(host, backup);
+    assert!(net.host_ids(host, &l).len() < before, "rolled back");
+    for _ in 0..3 {
+        net.advance(61_000);
+    }
+    net.set_online(a, false);
+    net.set_online(b, true);
+    net.advance(61_000);
+    assert_eq!(net.read(b, t), Some(osis_base::Value::Str("again".into())));
+}

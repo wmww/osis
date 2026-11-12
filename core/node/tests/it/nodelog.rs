@@ -135,6 +135,8 @@ fn a_chunk_is_logged_when_its_bytes_arrive() {
     let b = net.add_node(2, SyncConfig { hosts: vec![net.address(host)], inline_limit: 0, ..SyncConfig::default() });
     let g = net.group(a, &[(b, Role::Read)], &[host]);
     let t = net.item(a, g, g, "x");
+    // past the first sync (a listing from the start fetches everything, newest first)
+    net.run();
     let v: Vec<u8> = (0..700_000u32).map(|i| (i % 251) as u8).collect();
     let mut m = Mutation::new();
     m.set(t, &BLOB, &Value::Bytes(v)).unwrap();

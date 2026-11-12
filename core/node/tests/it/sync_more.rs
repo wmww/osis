@@ -171,6 +171,8 @@ fn pages_and_lazy_chunks_spec_sync_6() {
     let b = net.add_node(2, SyncConfig { hosts: vec![net.address(host)], inline_limit: 0, ..SyncConfig::default() });
     let g = net.group(a, &[(b, Role::Read)], &[host]);
     let t = net.item(a, g, g, "x");
+    // past the first sync (a listing from the start fetches everything, newest first)
+    net.run();
     let big: Vec<u8> = (0..300_000u32).map(|i| (i % 251) as u8).collect();
     let map: osis_base::ValueMap = (0..2000).map(|i| (Value::Str(format!("key {i:05}")), Value::Str("v".repeat(60)))).collect();
     let mut m = Mutation::new();

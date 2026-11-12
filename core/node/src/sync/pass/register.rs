@@ -48,35 +48,31 @@ impl SyncEngine {
         !self.engine.keys_write_pending(&a).unwrap_or(true)
     }
 
-    /// Re-registration at a source (spec/sync.md §5): an admin holding the source's head epochs
-    /// and a newer established one, once the step may go (a recorded child, or `step_settled`),
-    /// registers a child step (the actor's role commits are in this node's store, which the
-    /// source pulls); the rest of the pass runs once it is registered, or under the source's head
-    /// while the step waits or is refused for now. True while the step is in flight.
+    /// Registration at a source (spec/sync.md §5, Register): a source on a step of the recorded
+    /// path below its newest gets the recorded child of its head, by any reader holding the path
+    /// (steps verify themselves); an admin holding the source head's epochs and a newer
+    /// established one issues a child of it once `step_settled` (re-registration; the actor's role
+    /// commits are in this node's store, which the source pulls). The rest of the pass there runs
+    /// once it is registered, or under the source's head while the step waits or is refused for
+    /// now. True while a step is in flight.
     pub(super) fn reregister(&mut self, conn: ConnId, l: LabelId, out: &mut Vec<crate::sync::Action>) -> Result<bool> {
         let Some(lc) = self.lc(conn, &l) else { return Ok(false) };
         let (g, keys, head, retry) = (lc.group, lc.keys.clone(), lc.head.clone(), lc.step_retry);
-        // a replaced label is never stepped again (spec/sync.md §2: its replacement carries on)
-        if !self.step_due(&g, &l, &keys) {
-            return Ok(false);
-        }
         // a step refused for now goes again only after its back-off; meanwhile the pass runs
         // under the source's head: what it places is wrapped under the newest read epoch, so a
         // removed holder still opening that head gets nothing it can read (spec/sync.md §5)
-        if retry > self.now() {
+        let Some(head) = head else { return Ok(false) };
+        if retry > self.now() || self.is_replaced(&g, &l) {
             return Ok(false);
         }
-        let (Some(_), Some(head)) = (&keys.write, head) else { return Ok(false) };
-        // a child of the host's head already recorded in `label.0` (this node's local step,
-        // another admin's) is registered first: the walk down the recorded path issues nothing;
-        // else a step goes only once settled
-        let recorded = self.recorded_child(&g, &l, &head.id());
-        if recorded.is_none() && !self.step_settled(&g, l) {
-            return Ok(false);
-        }
-        let (step, set) = match recorded {
+        let (step, set) = match self.recorded_child(&g, &l, &head.id()) {
             Some(x) => x,
             None => {
+                // a replaced label is never stepped again (spec/sync.md §2: its replacement
+                // carries on)
+                if !self.step_due(&g, &l, &keys) || !self.step_settled(&g, l) {
+                    return Ok(false);
+                }
                 let (step, done) = self.engine.issue_step(&g, &l, &head.id(), false)?;
                 self.take_done(done)?;
                 let Some(x) = step else { return Ok(false) };

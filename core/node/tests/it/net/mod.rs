@@ -24,6 +24,12 @@ use std::sync::mpsc::Receiver;
 
 pub const T0: u64 = 1_700_000_000_000;
 
+/// A backup of a host's durable state (`Net::backup_host`).
+pub struct HostDisk {
+    hub: (MemoryBackend, MemoryRoot),
+    engine: (MemoryBackend, MemoryRoot),
+}
+
 /// A node that keeps what it cannot read for others: its hub, node sync above it (a bare engine:
 /// no account, no group), on a clock of its own (`set_host_skew`).
 pub struct Host {
@@ -595,6 +601,20 @@ impl Net {
         self.close_host(s);
         let clock = self.hosts[s].clock.clone();
         self.hosts[s] = self.host_on(s, (MemoryBackend::new(), MemoryRoot::new()), (MemoryBackend::new(), MemoryRoot::new()), clock, HostPolicy::default(), 990 + s as u64, true);
+    }
+
+    /// A backup of host `s`'s durable state (its hub's store and its engine's), as a backup
+    /// takes it (`restore_host`).
+    pub fn backup_host(&self, s: usize) -> HostDisk {
+        let h = &self.hosts[s];
+        HostDisk { hub: (h.backend.copy(), h.root.copy()), engine: (h.engine_disk.0.copy(), h.engine_disk.1.copy()) }
+    }
+
+    /// Restarts host `s` over `disk` (a backup of its durable state): its connections are gone.
+    pub fn restore_host(&mut self, s: usize, disk: HostDisk) {
+        self.close_host(s);
+        let clock = self.hosts[s].clock.clone();
+        self.hosts[s] = self.host_on(s, disk.hub, disk.engine, clock, HostPolicy::default(), 970 + s as u64, false);
     }
 
     /// Restarts host `s` over its durable state: its connections are gone, its in-memory

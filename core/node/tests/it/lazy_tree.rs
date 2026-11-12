@@ -19,6 +19,8 @@ fn read_fetches_its_tree_only_spec_sync_6() {
     let g = net.group(a, &[(b, Role::Read)], &[host]);
     let t = net.item(a, g, g, "x");
     let u = net.item(a, g, g, "y");
+    // past the first sync (a listing from the start fetches everything, newest first)
+    net.run();
     let one: Vec<u8> = (0..700_000u32).map(|i| (i % 251) as u8).collect();
     let two: Vec<u8> = (0..700_000u32).map(|i| (i % 241) as u8).collect();
     for (x, v) in [(t, &one), (u, &two)] {
