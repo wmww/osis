@@ -1090,6 +1090,8 @@ pub struct Core {
     /// `Engine::part_keeps` per commit but for the clock (`retention::bounds::commit_bounds`,
     /// `memo`).
     pub(crate) part_bounds: memo::Memo<CommitId, Arc<Vec<(u64, u64)>>>,
+    /// The trees each source of a thing links (`Engine::tree_refs`, `memo`).
+    pub(crate) tree_refs: memo::Memo<(Tid, tree_refs::Source), Arc<Trees>>,
     /// At or before the earliest retention timer held (wall ms; `u64::MAX`: none): set by
     /// `tick` and at open, lowered by every timer put (`Engine::timers_due`).
     pub timer_floor: u64,
@@ -1118,8 +1120,6 @@ pub struct Core {
     /// What changed since node-sync last took it (`Engine::take_changed`; `None`: no
     /// node-sync, nothing kept). A mark from an aborted transaction stays: one extra judgment.
     pub changed: Option<Changed>,
-    /// `Engine::tree_refs` per thing asked, kept up to date per source changed (`tree_refs`).
-    pub tree_refs: tree_refs::TreeRefs,
     /// Aspects (`None`) and commits' parts (`Some`, that change's) a read found a link of whose
     /// blob is not held (`Engine::missed_blob`): the next blob stored re-delivers them to watches
     /// (`Tx::store_blobs`: `Cause::Fetched`, `Event::Commits`). Bounded by the aspects and entries
@@ -1276,6 +1276,7 @@ impl Core {
             held_writes: self.held_writes.clone(),
             replaced_dates: self.replaced_dates.clone(),
             part_bounds: self.part_bounds.clone(),
+            tree_refs: self.tree_refs.clone(),
             timer_floor: self.timer_floor.clone(),
             none_due: self.none_due.clone(),
             settings_due: self.settings_due.clone(),
@@ -1284,7 +1285,6 @@ impl Core {
             cut_subs: self.cut_subs.clone(),
             refold: self.refold.clone(),
             changed: self.changed.clone(),
-            tree_refs: self.tree_refs.clone(),
             missed: self.missed.clone(),
             bodies: self.bodies.clone(),
             live_bodies: self.live_bodies.clone(),
@@ -1608,7 +1608,6 @@ impl Core {
     /// Drops what is derived from the state of `(tid, ak)` (a write changes it).
     fn state_changed(&mut self, tid: &Tid, ak: &Ak) {
         self.states_read.wrote(&(*tid, ak.clone()), true);
-        self.tree_refs.state_moved(tid, ak);
         self.forget_live(tid, ak);
         if osis_schema::core_types::is_role_class(ak.as_str()) {
             self.role_changed();
@@ -1660,7 +1659,6 @@ impl Core {
     /// Notes that the running transaction writes the state of `k` (evicted on rollback).
     pub fn wrote(&mut self, k: (Tid, Ak)) {
         self.states_read.wrote(&k, true);
-        self.tree_refs.state_moved(&k.0, &k.1);
         self.written.push(k);
     }
 
@@ -1809,6 +1807,7 @@ impl Core {
             held_writes: _,
             replaced_dates: _,
             part_bounds: _,
+            tree_refs: _,
             departures: _,
             reseal_scans: _,
             // caches, dropped when anything changed (`states` and `pages` per written aspect)
@@ -1827,8 +1826,6 @@ impl Core {
             // work lists and hints a superset of which is harmless (the consumer re-checks each
             // entry against the restored state), and what a step only moves forward
             drop_due: _,
-            // its marks only (answers are kept from committed data alone, `tree_refs`)
-            tree_refs: _,
             cut_subs: _,
             refold: _,
             none_due: _,
@@ -2055,6 +2052,7 @@ impl Core {
             held_writes: memo::Memo::new("held writes"),
             replaced_dates: memo::Memo::new("replaced at"),
             part_bounds: memo::Memo::new("part bounds"),
+            tree_refs: memo::Memo::new("tree refs"),
             timer_floor: 0,
             none_due: BTreeSet::new(),
             cover_candidates: BTreeMap::new(),
@@ -2064,7 +2062,6 @@ impl Core {
             refold: BTreeSet::new(),
             changed: None,
             sync_records: None,
-            tree_refs: Default::default(),
             missed: BTreeSet::new(),
             bodies: BTreeMap::new(),
             live_bodies: BTreeMap::new(),
@@ -2746,7 +2743,6 @@ impl Tx<'_> {
         self.core.bodies.remove(id);
         self.core.decoded.forget(id);
         self.core.records_read.wrote(id, true);
-        self.core.tree_refs.record_moved(id, meta.header.aspects.iter().map(|a| a.tid));
         self.core.mark_changed(*id);
         let v = [index::record_head(meta), blob.encode()].concat();
         self.txn.put_local(&records::commit_key(id), &v, shred)?;
@@ -2773,7 +2769,6 @@ impl Tx<'_> {
         self.core.bodies.remove(id);
         self.core.decoded.forget(id);
         self.core.records_read.wrote(id, false);
-        self.core.tree_refs.record_moved(id, []);
         self.txn.remove_local(&records::commit_key(id), Shred::Yes)?;
         index::remove_edges(self, id)?;
         index::remove_addenda(self, id)
