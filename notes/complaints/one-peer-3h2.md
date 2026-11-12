@@ -19,3 +19,6 @@
 - (walk round) Raw-message tests that drive an Open by bytes at start (`hostile_host::bad_path_refused_at_first_page`) break whenever the open path changes: a test helper that brings a label to a named phase would keep them about the property.
 - (walk round) The sim engines move in memory, so a `self as *const _` tag changes mid-run; the node's tid prefix was the stable tag.
 - (walk round) Two Hits on one label in one Offer produced a Lost that closed the second's open at the peer: a shared-set desync visible only as a missing Head event three layers up. A debug check that both sides' member sets agree after each settle would have named it at once.
+- (re-walk round) The sim's node identities differ between runs of one seed once code changes (blob and commit IDs too), so a probe tag found in one run (`dialable_key()[0]`) must be read again after every rebuild.
+- (re-walk round) Comparing against an older commit of the branch was the fastest way to tell a regression from a known limit: a second `wt claim` on a temporary branch built the sim test binary in about 4 min.
+- (re-walk round) Three "host lacks a must-hold body" seeds had one cause visible only on the serving side (a refused join with no `Lost` after it); a sim check that the two sides' stream joins agree after each settle would have named it at once.
