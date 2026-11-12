@@ -3,3 +3,4 @@
 - `Engine::me()` is not `core.id.tid()`: probes printing one and tests naming nodes by the other cost a misread of which node did what.
 - Memory blobs released from a durable `Engine::run` stay held (`tx.blobs.release(b, false)`): node-sync's `delete_blobs` silently did nothing for ephemeral pieces until given the class.
 - An ephemeral author's own snapshot keeps carrying a replaced value until its next snapshot; a test expecting every node to let go after another writer's compaction reads as a bug until that rule is found (notes/ephemeral.md).
+- Review: `losing_a_thing_keeps_chunks_another_thing_links` passed with the bears check removed: node-sync's label entries kept t2's blobs anyway, and `freed::lost` released nothing at all (the lost thing's own states and bodies, still indexed mid-forget, counted as sources). A safety test needs a run with the guard removed to show it is not vacuous.

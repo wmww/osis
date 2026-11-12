@@ -83,19 +83,30 @@ fn answer(trees: impl IntoIterator<Item = Arc<Trees>>, blobs: &BTreeSet<BlobId>)
 
 /// `Engine::tree_refs` in transaction `tx`.
 pub(crate) fn tree_refs_in(tx: &mut Tx<'_>, t: &Tid, blobs: &BTreeSet<BlobId>) -> Result<Trees> {
-    refs_in(tx, t, blobs, false)
+    refs_in(tx, t, blobs, false, &|_| false)
+}
+
+/// `tree_refs_in` of the sources of `t` but those `gone` names (lost access: the forgotten
+/// aspects' states and bodies, still indexed while the forget runs, `retention::freed::lost`).
+pub(crate) fn kept_refs_in(tx: &mut Tx<'_>, t: &Tid, blobs: &BTreeSet<BlobId>, gone: &dyn Fn(&Source) -> bool) -> Result<Trees> {
+    refs_in(tx, t, blobs, false, gone)
+}
+
+/// Every source of thing `t`, states and bodies.
+pub(crate) fn sources_of(tx: &mut Tx<'_>, t: &Tid) -> Result<BTreeSet<Source>> {
+    sources(tx, t, false)
 }
 
 /// `tree_refs_in` of the live states of `t` alone: what a drop of every body linking the rest
 /// would leave linked (the compaction trigger's weighing, `retention::compact`).
 pub(crate) fn state_refs_in(tx: &mut Tx<'_>, t: &Tid, blobs: &BTreeSet<BlobId>) -> Result<Trees> {
-    refs_in(tx, t, blobs, true)
+    refs_in(tx, t, blobs, true, &|_| false)
 }
 
-fn refs_in(tx: &mut Tx<'_>, t: &Tid, blobs: &BTreeSet<BlobId>, states: bool) -> Result<Trees> {
+fn refs_in(tx: &mut Tx<'_>, t: &Tid, blobs: &BTreeSet<BlobId>, states: bool, gone: &dyn Fn(&Source) -> bool) -> Result<Trees> {
     let t = *t;
     let mut got = Vec::new();
-    for s in sources(tx, &t, states)? {
+    for s in sources(tx, &t, states)?.into_iter().filter(|s| !gone(s)) {
         let k = (t, s);
         // a node a kept walk lacked, held now
         if let Some(x) = tx.core.tree_refs.held(&k) {
@@ -116,7 +127,7 @@ fn refs_in(tx: &mut Tx<'_>, t: &Tid, blobs: &BTreeSet<BlobId>, states: bool) -> 
         let fresh = crate::costs::paused(|| {
             crate::engine::memo::unrecorded(|| -> Result<Trees> {
                 let mut all = Vec::new();
-                for s in sources(tx, &t, states)? {
+                for s in sources(tx, &t, states)?.into_iter().filter(|s| !gone(s)) {
                     all.push(Arc::new(trees_of(tx, &t, &s)?));
                 }
                 Ok(answer(all, blobs))

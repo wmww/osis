@@ -1911,11 +1911,11 @@ fn forged_link_keeps(author: usize) {
     assert_eq!(net.engine(w).get_full(&t2, &Ak::new(BLOB.ak()).unwrap()).unwrap(), Some(osis_base::Value::Bytes(v1.clone())), "node {author} reads t2");
 }
 
-// spec/sync.md §7 Freed links (a piece goes only by a link its prefix bears), spec/permissions.md
-// §3 (a node drops what it lost read access to, nothing it still reads): a writer of t1 who reads
-// t2 sets a t1 value to t2's value link. A node removed from t1's group, still reading t2 (whose
-// earlier bodies it dropped under t2's author's replaces), keeps t2's blobs: offline, it reads
-// t2 whole.
+// spec/permissions.md §3 (a node drops what it lost read access to, nothing it still reads): a
+// writer of t1 who reads t2 sets a t1 value to t2's value link. A node removed from t1's group,
+// still reading t2 (whose earlier bodies it dropped under t2's author's replaces), keeps t2's
+// blobs: offline, it reads t2 whole. Here t2's label entries keep them too; the bears rule alone
+// (spec/sync.md §7 Freed links) is `freed::tests::lost_access_keeps_another_things_piece_*`.
 #[test]
 fn losing_a_thing_keeps_chunks_another_thing_links_spec_sync_7() {
     let (mut net, host, [a, v, f]) = hosted_nodes::<3>();
@@ -1967,4 +1967,40 @@ fn losing_a_thing_keeps_chunks_another_thing_links_spec_sync_7() {
     let held = tree.iter().filter(|x| net.engine(v).has_blob(x)).count();
     assert_eq!(held, tree.len(), "v keeps t2's blobs");
     assert_eq!(net.engine(v).get_full(&t2, &Ak::new(BLOB.ak()).unwrap()).unwrap(), Some(osis_base::Value::Bytes(v1)), "v reads t2 offline");
+}
+
+// spec/sync.md §7 Freed links, notes/coordination.md (check scaling): purging a large value of
+// n and of 10n pieces and syncing until the host holds none of them judges freed links in
+// proportion to the pieces (each judgment reads the whole set: a fixed number of judgments).
+#[test]
+fn freed_judgment_linear_in_pieces_spec_sync_7() {
+    let run = |bytes: usize| {
+        let (mut net, h, [a], _g, [t]) = hosted::<1, 1>(&[], ["x"], true);
+        net.keep(a, t, &[("t:gone.0", PURGE)]);
+        net.run();
+        let mut x = vec![0u8; bytes];
+        osis_crypto::RngCore::fill_bytes(&mut osis_crypto::SeededRng::from_u64(5), &mut x);
+        let x: String = x.into_iter().map(|b| char::from(b'a' + b % 26)).collect();
+        let mut m = Mutation::new();
+        m.set(t, &GONE, &s(&x)).unwrap();
+        let c = net.engine(a).commit(m).unwrap().unwrap();
+        net.run();
+        let l = net.label(a);
+        let tree = net.engine(a).live_trees(&t).unwrap().blobs;
+        assert!(tree.iter().all(|b| net.host_ids(h, &l).contains(b)), "the host holds the tree");
+        let mut m = Mutation::new();
+        m.purge_commit(c, t, Ak::new(GONE.ak()).unwrap());
+        m.remove_aspect(t, &GONE).unwrap();
+        osis_node::costs::take();
+        net.engine(a).commit(m).unwrap();
+        net.run();
+        net.advance(60_000);
+        let judged = osis_node::costs::take().into_iter().find(|(k, ..)| *k == "freed: rows judged").map_or(0, |(_, _, c)| c);
+        assert!(tree.iter().all(|b| !net.host_ids(h, &l).contains(b)), "none of the tree left at the host");
+        (tree.len() as u64, judged)
+    };
+    let (n, small) = run(1 << 20);
+    let (n10, big) = run(10 << 20);
+    assert!(n10 >= 5 * n, "pieces: {n} and {n10}");
+    assert!(small > 0 && big * n <= 2 * small * n10, "rows judged: {small} for {n} pieces, {big} for {n10}");
 }

@@ -23,7 +23,7 @@
 use crate::engine::records::{self, Rd, Wr};
 use crate::engine::{Engine, Tx};
 use crate::error::{Error, Result};
-use osis_base::{BlobId, CommitId, Link, Tid, Value};
+use osis_base::{Ak, BlobId, CommitId, Link, Tid, Value};
 use osis_crypto::DeleteSecret;
 use osis_store::Shred;
 use std::collections::{BTreeMap, BTreeSet};
@@ -90,12 +90,14 @@ fn key(b: &BlobId, t: &Tid) -> Vec<u8> {
     [records::FREED, &b.0, t.as_bytes()].concat()
 }
 
+/// A row a link's blob key may have been committed in (one waiting for a node blob) is
+/// overwritten and removed shredded (spec/commits.md §5: a dropped body's keys go).
 fn put(tx: &mut Tx<'_>, f: &Freed) -> Result<()> {
-    tx.in_class(f.memory, |tx| Ok(tx.txn.put_local(&f.key(), &f.encode(), Shred::No)?))
+    tx.in_class(f.memory, |tx| Ok(tx.txn.put_local(&f.key(), &f.encode(), Shred::Yes)?))
 }
 
 fn remove(tx: &mut Tx<'_>, f: &Freed) -> Result<()> {
-    tx.txn.remove_local(&f.key(), Shred::No)?;
+    tx.txn.remove_local(&f.key(), Shred::Yes)?;
     Ok(())
 }
 
@@ -168,7 +170,10 @@ pub(crate) fn settle_due(tx: &mut Tx<'_>) -> Result<()> {
 /// Judges the freed links of `things` (every one: `None`; the module doc).
 pub(crate) fn judge(tx: &mut Tx<'_>, things: Option<&BTreeSet<Tid>>) -> Result<Judgment> {
     let mut by_thing: BTreeMap<Tid, Vec<Freed>> = BTreeMap::new();
-    for f in rows(tx, records::FREED)? {
+    let all = rows(tx, records::FREED)?;
+    // counted: tests read how much a dropped value's deletion judges in all
+    crate::costs::count("freed: rows judged", all.len() as u64);
+    for f in all {
         if things.is_none_or(|ts| ts.contains(&f.tid)) {
             by_thing.entry(f.tid).or_default().push(f);
         }
@@ -234,7 +239,8 @@ pub(crate) fn judge(tx: &mut Tx<'_>, things: Option<&BTreeSet<Tid>>) -> Result<J
 /// freed sets go (a party removed cannot delete), and of the pieces `roots` reach through held
 /// node blobs, those no remaining source of their thing reaches and whose prefix bears their
 /// link are this node's to drop. The blobs to release.
-pub(crate) fn lost(tx: &mut Tx<'_>, things: &BTreeSet<Tid>, roots: BTreeMap<Tid, Vec<Link>>) -> Result<BTreeSet<BlobId>> {
+/// `gone`: the forgotten aspects and commits, sources no more though still indexed meanwhile.
+pub(crate) fn lost(tx: &mut Tx<'_>, things: &BTreeSet<Tid>, roots: BTreeMap<Tid, Vec<Link>>, gone: (&BTreeSet<(Tid, Ak)>, &BTreeMap<CommitId, BTreeSet<usize>>)) -> Result<BTreeSet<BlobId>> {
     for f in rows(tx, records::FREED)? {
         if things.contains(&f.tid) {
             remove(tx, &f)?;
@@ -247,7 +253,22 @@ pub(crate) fn lost(tx: &mut Tx<'_>, things: &BTreeSet<Tid>, roots: BTreeMap<Tid,
         while !todo.is_empty() {
             todo.retain(|l| seen.insert(l.blob));
             let blobs: BTreeSet<BlobId> = todo.iter().map(|l| l.blob).collect();
-            let refs = crate::engine::tree_refs::tree_refs_in(tx, &t, &blobs)?;
+            let refs = {
+                use crate::engine::tree_refs::{Source, kept_refs_in, sources_of};
+                let (aspects, parts) = gone;
+                let srcs = sources_of(tx, &t)?;
+                let core = &*tx.core;
+                // a body none of whose held parts on `t` is kept
+                let body_gone = |c: &CommitId| core.ix.commits.get(c).is_none_or(|m| m.header.aspects.iter().enumerate().filter(|(ai, a)| a.tid == t && m.holds(*ai)).all(|(ai, _)| parts.get(c).is_some_and(|w| w.contains(&ai))));
+                let skip: BTreeSet<Source> = srcs
+                    .into_iter()
+                    .filter(|s| match s {
+                        Source::State(ak) => aspects.contains(&(t, ak.clone())),
+                        Source::Body(c) => body_gone(c),
+                    })
+                    .collect();
+                kept_refs_in(tx, &t, &blobs, &|s| skip.contains(s))?
+            };
             let mut next = Vec::new();
             for l in std::mem::take(&mut todo) {
                 if refs.blobs.contains(&l.blob) || !refs.missing.is_empty() {
@@ -283,7 +304,7 @@ impl Engine {
         }
         self.run(|tx| {
             for (t, b) in done {
-                tx.txn.remove_local(&key(b, t), Shred::No)?;
+                tx.txn.remove_local(&key(b, t), Shred::Yes)?;
             }
             Ok(())
         })
@@ -450,5 +471,74 @@ mod tests {
         let (small, big) = (freed(256 << 10), freed(2560 << 10));
         assert!(small > 0, "an edit frees some pieces");
         assert!(big <= small + 4, "freed links of an edit: {small} at n, {big} at 10n");
+    }
+
+    /// Peer 0 writes thing `t1` (and `t2`) and grants peer 1 read on both; `t2` holds a 1 MiB
+    /// value, and `t1` holds `t1_value(t2's link)`. Then peer 1 is removed from `t1` and drops
+    /// what it lost. How many blobs of `t1`'s tree peer 1 still holds, and whether it holds all
+    /// of `t2`'s.
+    fn lose_t1(t1_value: impl Fn(&Link) -> Value) -> (usize, bool) {
+        use crate::flows::Demotion;
+        use osis_base::Role;
+        use osis_schema::core_types::Edge;
+        let mut lp = LocalPeer::fresh(2, osis_base::WallMs(1_700_000_000_000));
+        lp.sync_all().unwrap();
+        let (me, v) = (lp.peers[0].engine.me(), lp.peers[1].engine.me());
+        let mut m = Mutation::new();
+        let t1 = lp.peers[0].engine.new_thing(&mut m, me);
+        let t2 = lp.peers[0].engine.new_thing(&mut m, me);
+        lp.peers[0].commit(m).unwrap();
+        let read = Edge { role: Role::Read, until: None, invite: None, tied: None };
+        for t in [t1, t2] {
+            lp.peers[0].engine.grant(&t, &v, &read).unwrap();
+        }
+        lp.sync_all().unwrap();
+        let a = Ak::new("x:b.0").unwrap();
+        let mut x = vec![0u8; 1 << 20];
+        osis_crypto::RngCore::fill_bytes(&mut osis_crypto::SeededRng::from_u64(1), &mut x);
+        let mut m = Mutation::new();
+        m.set(t2, &a, &Value::Bytes(x.clone())).unwrap();
+        lp.peers[0].commit(m).unwrap();
+        let Some(Value::Link(l2)) = lp.peers[0].engine.get(&t2, &a).unwrap() else { panic!("t2 holds a large value") };
+        lp.advance(1000);
+        let mut m = Mutation::new();
+        m.set(t1, &a, &t1_value(&l2)).unwrap();
+        lp.peers[0].commit(m).unwrap();
+        lp.sync_all().unwrap();
+        let tree1 = lp.peers[0].engine.live_trees(&t1).unwrap().blobs;
+        let tree2 = lp.peers[0].engine.live_trees(&t2).unwrap().blobs;
+        assert!(tree1.iter().chain(&tree2).all(|b| lp.peers[1].engine.has_blob(b)), "peer 1 holds both trees");
+        lp.advance(1000);
+        let removal = lp.peers[0].engine.demote(&t1, &Demotion { holder: v, new: None, retain: None }).unwrap().commits;
+        for c in removal {
+            let pk = lp.peers[0].engine.package(&c).unwrap().unwrap();
+            lp.deliver(1, &pk).unwrap();
+        }
+        let e = &mut lp.peers[1].engine;
+        e.drop_lost_due().unwrap();
+        assert_eq!(e.get(&t1, &a).unwrap(), None, "peer 1 forgot t1");
+        assert_eq!(e.get_full(&t2, &a).unwrap(), Some(Value::Bytes(x)), "peer 1 reads t2");
+        (tree1.iter().filter(|b| e.has_blob(b)).count(), tree2.iter().all(|b| e.has_blob(b)))
+    }
+
+    // spec/permissions.md §3, spec/sync.md §7 Freed links (lost access drops the pieces the
+    // forgotten parts reach that no remaining source links), with no node-sync: a reader removed
+    // from t1 drops t1's own tree
+    #[test]
+    fn lost_access_drops_the_things_tree_spec_permissions_3() {
+        let mut y = vec![0u8; 1 << 20];
+        osis_crypto::RngCore::fill_bytes(&mut osis_crypto::SeededRng::from_u64(2), &mut y);
+        let (t1, t2) = lose_t1(|_| Value::Bytes(y.clone()));
+        assert_eq!(t1, 0, "t1's tree dropped");
+        assert!(t2, "t2's tree kept");
+    }
+
+    // spec/sync.md §7 Freed links (a piece goes only by a link its prefix bears), spec/crypto.md
+    // §7, with no node-sync: t1's value is t2's link copied verbatim; a reader removed from t1
+    // drops nothing of t2, though no source of t1 links it any more
+    #[test]
+    fn lost_access_keeps_another_things_piece_it_linked_spec_crypto_7() {
+        let (_, t2) = lose_t1(|l| Value::Link(Box::new(*l)));
+        assert!(t2, "t2's tree kept whole");
     }
 }
