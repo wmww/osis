@@ -65,6 +65,13 @@ pub(crate) struct LConn {
     /// This node's log end when the peer's head here last moved: entries logged before then the
     /// peer may have read and refused under the old head's keys (`relog_for_head`).
     pub head_moved_at: Option<u64>,
+    /// The peer said it refused an entry of the label it pulled for room and has none again
+    /// yet (spec/sync.md §10, Full): what it lacks it lacks, and nothing waits for it to take
+    /// it.
+    pub full: bool,
+    /// Bodies this node places that the last pass found the peer lacking (it pulls them): while
+    /// any is and the peer is not full, the label is not caught up there (`label_status`).
+    pub lacking: usize,
     /// A child step refused for now: no pass registers one before this (wall ms).
     pub step_retry: u64,
     /// Child steps refused in a row (the back-off doubles per refusal; an open or a registered
@@ -98,9 +105,9 @@ impl LConn {
         self.phase == Phase::Open && self.fill.as_ref().is_some_and(|f| !f.first_done)
     }
 
-    /// Ready, with no fill under way.
+    /// Ready, with no fill under way, and lacking nothing this node places unless full.
     pub(super) fn idle(&self) -> bool {
-        self.ready() && self.fill.is_none()
+        self.ready() && self.fill.is_none() && (self.lacking == 0 || self.full)
     }
 }
 

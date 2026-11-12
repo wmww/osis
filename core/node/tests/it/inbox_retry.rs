@@ -271,7 +271,7 @@ fn fill_budget(net: &mut Net, host: usize, l: &osis_base::LabelId, spare: u64) -
     for i in 0..left - spare {
         let blob = [&i.to_be_bytes()[..], &[0; 24]].concat();
         let id = osis_label::blob_id(&blob);
-        let put = osis_proto::Put { blob_id: id, blob: &blob, wrap: [7; osis_crypto::WRAP_LEN], stamp: None, expiry: None, ephemeral: false, replaces: &[], now: 0 };
+        let put = osis_proto::Put { blob_id: id, blob: &blob, wrap: [7; osis_crypto::WRAP_LEN], stamp: None, expiry: None, ephemeral: false, replaces: &[], now: 0, role: false };
         osis_proto::LabelStore::put(&mut *net.hosts[host].hub.store(), l, put).unwrap();
         junk.push(id);
     }
@@ -361,7 +361,7 @@ fn stranger_fill_in_bytes_ends_with_a_pass_spec_sync_5() {
         // what a host takes: a well-formed prefix, then anything
         let mut blob = osis_label::Prefix::new([i; 16], None, Vec::new()).unwrap().to_bytes();
         blob.resize(size, 0);
-        let put = osis_proto::Put { blob_id: osis_label::blob_id(&blob), blob: &blob, wrap: [7; osis_crypto::WRAP_LEN], stamp: None, expiry: None, ephemeral: false, replaces: &[], now: 0 };
+        let put = osis_proto::Put { blob_id: osis_label::blob_id(&blob), blob: &blob, wrap: [7; osis_crypto::WRAP_LEN], stamp: None, expiry: None, ephemeral: false, replaces: &[], now: 0, role: false };
         osis_proto::LabelStore::put(&mut *net.hosts[host].hub.store(), &home, put).unwrap();
         i += 1;
     }
@@ -402,7 +402,7 @@ fn junk_under_any_label_goes_down_to_the_cap_spec_sync_5() {
     net.set_online(a, false);
     for id in &junk {
         let blob = net.engine(a).blob(id).unwrap().unwrap();
-        let put = osis_proto::Put { blob_id: *id, blob: &blob, wrap: [7; osis_crypto::WRAP_LEN], stamp: None, expiry: None, ephemeral: false, replaces: &[], now: 0 };
+        let put = osis_proto::Put { blob_id: *id, blob: &blob, wrap: [7; osis_crypto::WRAP_LEN], stamp: None, expiry: None, ephemeral: false, replaces: &[], now: 0, role: false };
         assert_eq!(osis_proto::LabelStore::put(&mut *net.hosts[host].hub.store(), &l, put).unwrap(), osis_proto::Code::OK);
     }
     net.set_online(a, true);
@@ -513,7 +513,7 @@ fn a_readers_invalid_fill_ends_with_an_admin_pass_spec_sync_5() {
     let mut filled = 0;
     {
         for (id, wrap, blob) in sealed {
-            let put = osis_proto::Put { blob_id: id, blob: &blob, wrap, stamp: None, expiry: None, ephemeral: false, replaces: &[], now: net.now() };
+            let put = osis_proto::Put { blob_id: id, blob: &blob, wrap, stamp: None, expiry: None, ephemeral: false, replaces: &[], now: net.now(), role: false };
             if osis_proto::LabelStore::put(&mut *net.hosts[host].hub.store(), &l, put).unwrap() == osis_proto::Code::OK {
                 filled += 1;
             }

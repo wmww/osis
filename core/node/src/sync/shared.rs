@@ -304,6 +304,12 @@ impl SyncEngine {
         self.records.shared.get(&conn).and_then(|s| s.members.get(l)).is_some_and(|m| m.class == SYNC)
     }
 
+    /// Whether a member of `conn`'s set was opened by read credentials: its peer reads it (no
+    /// source of it, spec/sync.md §10).
+    pub(crate) fn shared_reads(&self, conn: ConnId, l: &LabelId) -> bool {
+        self.records.shared.get(&conn).and_then(|s| s.members.get(l)).is_some_and(|m| m.class == READ)
+    }
+
     /// Whether `l` is open in the set of `conn`, a connection this node dialed to one of the
     /// label's hosts (`label.0`, the configured hosts): read as a host is (`stream_apply`), its
     /// entries present there, whatever opened it (this node's sync-key or claim Hit at a peer
@@ -1157,7 +1163,8 @@ impl SyncEngine {
             if !e.cert && matches!(e.kind, super::state::Kind::Commit { .. }) && self.mine(&e) {
                 // this node's own write placed for deposit: queued, so neither a crash nor
                 // forgetting the label recalls it
-                self.queue_deposit(l, std::slice::from_ref(&address), &d, blob, e.wrap, None);
+                let role = self.role_entry(&e);
+                self.queue_deposit(l, std::slice::from_ref(&address), &d, blob, e.wrap, None, role);
                 queued = true;
                 continue;
             }
@@ -1165,7 +1172,7 @@ impl SyncEngine {
             if busy || items.len() == MAX_SHARED_ITEMS {
                 continue;
             }
-            let sig = osis_label::sign_deposit(&d, &l, &id, &e.wrap);
+            let sig = osis_label::sign_deposit(&d, &l, &id, &e.wrap, self.role_entry(&e));
             items.push(OfferItem::Deposit { label: l, blob, wrap: e.wrap, sig });
             asked.push(AskedItem::Deposit(l, id));
             if let Some(c) = self.conns.get_mut(&conn) {

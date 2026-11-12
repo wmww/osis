@@ -871,7 +871,7 @@ fn forged_certificate_copy_ignored_spec_commits_4() {
         let fake = osis_node::labeling::Body { plaintext: blob.encode(), ..b };
         let s = net.engine(w).seal_to(&fake, osis_label::Class::Durable, &mut osis_crypto::SeededRng::from_u64(0)).unwrap().unwrap();
         let wrap = osis_crypto::wrap(&secret, &s.id, &s.key, 1).unwrap();
-        let put = osis_proto::Put { blob_id: s.id, blob: &s.blob, wrap, stamp: None, expiry: None, ephemeral: false, replaces: &[], now: 0 };
+        let put = osis_proto::Put { blob_id: s.id, blob: &s.blob, wrap, stamp: None, expiry: None, ephemeral: false, replaces: &[], now: 0, role: false };
         osis_proto::LabelStore::put(&mut *net.hosts[host].hub.store(), &l, put).unwrap();
         forged.push(s.id);
     }
@@ -1763,7 +1763,7 @@ fn reused_chain_copy_tombstoned_placed_fresh_spec_sync_3() {
     let l2 = net.group_labels(b).into_iter().find(|(g, _)| *g == g2).map(|(_, l)| l.id).unwrap();
     for id in &old {
         let blob = osis_proto::LabelStore::blob(&*net.hosts[host].hub.store(), id).unwrap().unwrap();
-        let put = osis_proto::Put { blob_id: *id, blob: &blob, wrap: [7; osis_crypto::WRAP_LEN], stamp: None, expiry: None, ephemeral: false, replaces: &[], now: 0 };
+        let put = osis_proto::Put { blob_id: *id, blob: &blob, wrap: [7; osis_crypto::WRAP_LEN], stamp: None, expiry: None, ephemeral: false, replaces: &[], now: 0, role: false };
         osis_proto::LabelStore::put(&mut *net.hosts[host].hub.store(), &l2, put).unwrap();
         let now = net.now_at(host);
         osis_proto::LabelStore::delete(&mut *net.hosts[host].hub.store(), &l2, id, now).unwrap();

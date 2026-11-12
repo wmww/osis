@@ -119,7 +119,7 @@ fn bundle(played: &Played, second: bool) -> Laid {
             for (id, b) in &pk.blobs {
                 if seen.insert(*id) {
                     let wrap = osis_crypto::filler_wrap(&mut rng);
-                    let stamp = sign_stamp(&lab.stamp, &lab.id, id, &wrap);
+                    let stamp = sign_stamp(&lab.stamp, &lab.id, id, &wrap, false);
                     recs.push(Record::Blob(b.clone()));
                     recs.push(Record::Entry { label: lab.id, blob: *id, wrap, stamp: Some(stamp) });
                     refs.insert(of.len());
@@ -134,7 +134,7 @@ fn bundle(played: &Played, second: bool) -> Laid {
             for r in readers {
                 let lab = lab_of(r);
                 let wrap = osis_crypto::wrap(&lab.read, &sealed.id, &sealed.key, 1).unwrap();
-                let stamp = sign_stamp(&lab.stamp, &lab.id, &sealed.id, &wrap);
+                let stamp = sign_stamp(&lab.stamp, &lab.id, &sealed.id, &wrap, false);
                 recs.push(Record::Entry { label: lab.id, blob: sealed.id, wrap, stamp: Some(stamp) });
                 of.push(ci);
             }

@@ -762,7 +762,7 @@ impl SyncEngine {
             let Some(s) = &sealed else { break };
             let stamp_key = self.relay_stamp_key(&g, &l);
             let wrap = osis_crypto::wrap(&secret, &s.id, &s.key, body.order)?;
-            let stamp = stamp_key.as_ref().map(|w| osis_label::sign_stamp(w, &l, &s.id, &wrap));
+            let stamp = stamp_key.as_ref().map(|w| osis_label::sign_stamp(w, &l, &s.id, &wrap, false));
             self.send_relay(l, s.blob.clone(), wrap, stamp, out)?;
         }
         Ok(())

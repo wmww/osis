@@ -2130,7 +2130,7 @@ fn a_release_requests_entry_goes_where_it_is_held_unread_spec_sync_5() {
         let bytes = osis_proto::LabelStore::blob(&*net.sync(c).hub_store().lock().unwrap(), id).unwrap().unwrap();
         let expiry = osis_label::host_prefix(&bytes).unwrap().and_then(|p| p.expiry()).map(|t| t.0);
         assert!(expiry.is_some(), "the request's blob carries its expiry");
-        let put = osis_proto::Put { blob_id: *id, blob: &bytes, wrap: [7; osis_crypto::WRAP_LEN], stamp: None, expiry, ephemeral: false, replaces: &[], now: net.now() };
+        let put = osis_proto::Put { blob_id: *id, blob: &bytes, wrap: [7; osis_crypto::WRAP_LEN], stamp: None, expiry, ephemeral: false, replaces: &[], now: net.now(), role: false };
         assert_eq!(osis_proto::LabelStore::put(&mut *net.sync(b).hub_store().lock().unwrap(), &old, put).unwrap(), osis_proto::Code::OK);
     }
     net.run();

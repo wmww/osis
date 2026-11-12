@@ -98,7 +98,7 @@ fn deleted_wraps_unrecoverable() {
         let b = &blobs[i];
         // entry 3 starts as a deposit
         let stamp = (i != 3 || w != 103).then_some(Signature([w; 64]));
-        let p = Put { blob_id: osis_label::blob_id(b), blob: b, wrap: wrap(w), stamp, expiry, ephemeral: false, replaces: &[], now: 0 };
+        let p = Put { blob_id: osis_label::blob_id(b), blob: b, wrap: wrap(w), stamp, expiry, ephemeral: false, replaces: &[], now: 0, role: false };
         assert_eq!(s.put(&l, p).unwrap(), Code::OK);
     };
     for i in 0..24 {

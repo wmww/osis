@@ -119,6 +119,9 @@ pub enum Event {
     Deleted(BlobId),
     /// New head, without claim set.
     Head(Step),
+    /// The sending node, which cannot read the label, refused an entry of it it pulled for room
+    /// (true), or has room again (false): carried by a Stream without cursor (spec/sync.md §10).
+    Full(bool),
 }
 
 /// `range := [lower, upper, mode]`.
@@ -897,6 +900,7 @@ fn event(v: Value) -> Result<Event, Error> {
             stamp: f.opt()?.map(|v| dec::fixed(v, "stamp").map(Signature)).transpose()?,
         },
         (1, 1) => Event::Deleted(BlobId(f.fixed()?)),
+        (2, 1) => Event::Full(f.bool()?),
         (3, 1) => Event::Head(step(&mut f)?),
         _ => return Err(Error::Malformed("event")),
     };
@@ -908,6 +912,7 @@ pub(crate) fn event_value(e: &Event) -> Value {
     Value::List(match e {
         Event::Added { blob_id, blob, wrap, stamp } => vec![Value::uint(0), Value::bytes(&blob_id.0), Value::opt(blob.as_deref().map(Value::bytes)), Value::bytes(wrap), Value::opt(stamp.as_ref().map(|s| Value::bytes(&s.0)))],
         Event::Deleted(id) => vec![Value::uint(1), Value::bytes(&id.0)],
+        Event::Full(full) => vec![Value::uint(2), Value::Bool(*full)],
         Event::Head(step) => vec![Value::uint(3), step_value(step)],
     })
 }
@@ -1033,7 +1038,7 @@ fn ranges_value(rs: &[Range]) -> Value {
 pub fn event_size(e: &Event) -> usize {
     match e {
         Event::Added { blob, .. } => 180 + blob.as_ref().map_or(0, |b| b.len()),
-        Event::Deleted(_) => 40,
+        Event::Deleted(_) | Event::Full(_) => 40,
         Event::Head(_) => 10 + MAX_STEP_BYTES,
     }
 }

@@ -686,6 +686,10 @@ impl SyncEngine {
             self.diag(format!("dropping lost secrets: {e}"));
         }
         self.host_step(&mut out);
+        // a sync ID full here with room again is pulled again
+        if let Err(e) = self.unread_room(&mut out) {
+            self.diag(format!("room again: {e}"));
+        }
         if let Some(at) = self.next_wake()
             && self.wake != Some(at)
         {
@@ -1020,7 +1024,7 @@ mod tests {
             let now = s.now();
             s.conns.get_mut(&conn).unwrap().req.fetching.insert(b, now);
             let d = osis_crypto::SigningSecret::from_seed(&osis_crypto::Secret32::from_bytes([5; 32]));
-            s.queue_deposit(LabelId([1; 16]), std::slice::from_ref(&host), &d, vec![9; 40], [3; osis_crypto::WRAP_LEN], None);
+            s.queue_deposit(LabelId([1; 16]), std::slice::from_ref(&host), &d, vec![9; 40], [3; osis_crypto::WRAP_LEN], None, false);
             for o in s.outbox.values_mut() {
                 o.sent = Some(conn);
             }
@@ -1066,7 +1070,7 @@ mod tests {
         let d = osis_crypto::SigningSecret::from_seed(&osis_crypto::Secret32::from_bytes([5; 32]));
         let delivery = Some((osis_base::Tid::from_bytes([4; 15]), osis_base::CommitId([6; 32])));
         for (l, x) in [(LabelId([1; 16]), None), (LabelId([2; 16]), delivery)] {
-            s.queue_deposit(l, std::slice::from_ref(&host), &d, vec![9; 40], [3; osis_crypto::WRAP_LEN], x);
+            s.queue_deposit(l, std::slice::from_ref(&host), &d, vec![9; 40], [3; osis_crypto::WRAP_LEN], x, false);
         }
         assert_eq!(s.deliveries_pending(), 2);
         s.state.flush(&mut s.engine).unwrap();

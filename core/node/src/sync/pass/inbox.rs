@@ -33,7 +33,7 @@ impl SyncEngine {
             if e.stamp.is_some() || !self.inbox_stampable(&l, &id, &c)? {
                 continue;
             }
-            self.stamp_entry(l, id, e, write);
+            self.stamp_entry(l, id, e, write, false);
         }
         Ok(())
     }

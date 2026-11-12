@@ -212,15 +212,17 @@ pub struct LabelStatus {
     /// Nodes connected now with it open, whoever dialed, readers or not: a node both sides dialed
     /// counts once, by this node's own connection.
     pub sources: usize,
-    /// Of those, the ones this node's own pass ended with, nothing outstanding and nothing changed
-    /// since. A session only the other side dialed runs no pass here, so it is never among them.
+    /// Of those, the ones this node's own pass ended with, nothing outstanding, nothing changed
+    /// since and nothing this node places lacking there (but at a full one: `refused_by`). A
+    /// session only the other side dialed runs no pass here, so it is never among them.
     pub idle: usize,
     /// Connections up and still opening it: passes about to run, not sources yet.
     pub opening: usize,
     /// Every host refused every key this node holds: none can serve it here (waits for a re-seal).
     pub stranded: bool,
-    /// Hosts whose last refusal in a row was "not admitted" (code 14), connected now or not:
-    /// nodes this node holds to serve it, that will not.
+    /// Hosts whose last refusal in a row was "not admitted" (code 14), connected now or not, and
+    /// connected ones full for it (spec/sync.md §10, Full): nodes this node holds to serve it,
+    /// that will not take it, or not all of it.
     pub refused_by: Vec<Address>,
     /// This node left the group and keeps its secrets until its self-removal is placed
     /// (`SyncEngine::leaving`).

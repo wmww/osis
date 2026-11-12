@@ -138,7 +138,7 @@ impl SyncEngine {
                 }
                 None => continue,
             }
-            self.stamp_entry(l, id, e, write);
+            self.stamp_entry(l, id, e, write, false);
         }
         Ok(())
     }

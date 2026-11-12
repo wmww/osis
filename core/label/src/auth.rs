@@ -139,24 +139,35 @@ pub fn entry_digest(label: &LabelId, blob: &BlobId, wrap: &[u8]) -> [u8; 32] {
     osis_base::hash::hash(&encode(&Value::List(vec![Value::bytes(&label.0), Value::bytes(&blob.0), Value::bytes(wrap)])))
 }
 
-/// A stamp: the label write key's signature under `"osis v1 upload"`.
-pub fn sign_stamp(write: &SigningSecret, label: &LabelId, blob: &BlobId, wrap: &[u8]) -> Signature {
-    write.sign(Domain::Upload, &entry_digest(label, blob, wrap))
+/// A stamp: the label write key's signature under `"osis v1 upload"`, or `"osis v1 role
+/// entry"` for an entry deletes are judged by (`role`: a role commit or a request).
+pub fn sign_stamp(write: &SigningSecret, label: &LabelId, blob: &BlobId, wrap: &[u8], role: bool) -> Signature {
+    write.sign(entry_domain(Domain::Upload, role), &entry_digest(label, blob, wrap))
 }
 
-/// Checks a stamp against the head's write key; an altered wrap fails.
+/// Checks a stamp against the head's write key, under either domain; an altered wrap fails.
 pub fn verify_stamp(head_write: &VerifyingKey, label: &LabelId, blob: &BlobId, wrap: &[u8], stamp: &Signature) -> Result<(), Error> {
-    head_write.verify(Domain::Upload, &entry_digest(label, blob, wrap), stamp).map_err(|_| Error::Verify("stamp"))
+    let d = entry_digest(label, blob, wrap);
+    head_write.verify(Domain::Upload, &d, stamp).or_else(|_| head_write.verify(Domain::RoleEntry, &d, stamp)).map_err(|_| Error::Verify("stamp"))
 }
 
-/// A deposit signature by the deposit key under `"osis v1 deposit"`.
-pub fn sign_deposit(deposit: &SigningSecret, label: &LabelId, blob: &BlobId, wrap: &[u8]) -> Signature {
-    deposit.sign(Domain::Deposit, &entry_digest(label, blob, wrap))
+/// A deposit signature by the deposit key under `"osis v1 deposit"`, or `"osis v1 role entry"`
+/// for a request (`role`).
+pub fn sign_deposit(deposit: &SigningSecret, label: &LabelId, blob: &BlobId, wrap: &[u8], role: bool) -> Signature {
+    deposit.sign(entry_domain(Domain::Deposit, role), &entry_digest(label, blob, wrap))
 }
 
-/// Checks a deposit's signature against the head's deposit key; an altered wrap fails.
+/// Checks a deposit's signature against the head's deposit key, under either domain; an
+/// altered wrap fails.
 pub fn verify_deposit(head_deposit: &VerifyingKey, label: &LabelId, blob: &BlobId, wrap: &[u8], sig: &Signature) -> Result<(), Error> {
-    head_deposit.verify(Domain::Deposit, &entry_digest(label, blob, wrap), sig).map_err(|_| Error::Verify("deposit"))
+    let d = entry_digest(label, blob, wrap);
+    head_deposit.verify(Domain::Deposit, &d, sig).or_else(|_| head_deposit.verify(Domain::RoleEntry, &d, sig)).map_err(|_| Error::Verify("deposit"))
+}
+
+/// The signing domain of an entry's stamp or deposit signature (`plain`: `Upload` or
+/// `Deposit`): `RoleEntry` for one deletes are judged by.
+pub fn entry_domain(plain: Domain, role: bool) -> Domain {
+    if role { Domain::RoleEntry } else { plain }
 }
 
 /// The label key a delete by delete keys at `levels` needs beside them (spec/sync.md §5): the
@@ -403,13 +414,13 @@ mod tests {
         let (s0, _) = register(Parent::Genesis(&g.delete(0)), g.keys(0), &[], (&TG, epoch(0), &g.read), g.sync_at(), &mut rng).unwrap();
         let (l, b, w) = (s0.label, BlobId([1; 32]), [2u8; 49]);
         let write = label_role_key(LabelRole::Write, &g.write, 0);
-        let stamp = sign_stamp(&write, &l, &b, &w);
+        let stamp = sign_stamp(&write, &l, &b, &w, false);
         verify_stamp(&s0.keys.write, &l, &b, &w, &stamp).unwrap();
         assert!(verify_stamp(&s0.keys.sync, &l, &b, &w, &stamp).is_err());
         let digest = entry_digest(&l, &b, &w);
         assert!(s0.keys.write.verify(Domain::Deposit, &digest, &stamp).is_err());
         let dep = osis_crypto::deposit_key(&g.deposit, &l);
-        s0.keys.deposit.verify(Domain::Deposit, &digest, &sign_deposit(&dep, &l, &b, &w)).unwrap();
+        s0.keys.deposit.verify(Domain::Deposit, &digest, &sign_deposit(&dep, &l, &b, &w, false)).unwrap();
     }
 
     // spec/sync.md §5, spec/crypto.md §7: delete by the label delete key; by a level's delete
@@ -488,7 +499,7 @@ mod tests {
         fn stamp_binds_wrap(i in 0usize..49, x in 1u8..=255) {
             let write = label_role_key(LabelRole::Write, &Secret32::from_bytes([1; 32]), 0);
             let (l, b, w) = (LabelId([1; 16]), BlobId([2; 32]), [3u8; 49]);
-            let stamp = sign_stamp(&write, &l, &b, &w);
+            let stamp = sign_stamp(&write, &l, &b, &w, false);
             let mut w2 = w;
             w2[i] ^= x;
             prop_assert!(verify_stamp(&write.verifying_key(), &l, &b, &w2, &stamp).is_err());

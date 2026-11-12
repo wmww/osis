@@ -63,6 +63,9 @@ pub struct Put<'a> {
     pub replaces: &'a [BlobId],
     /// Wall ms (tombstones of the replaced entries).
     pub now: u64,
+    /// Signed as an entry deletes are judged by (a role commit or a request, `Domain::RoleEntry`):
+    /// taken past the storage caps by up to a deposit budget (spec/sync.md §5, Storage caps).
+    pub role: bool,
 }
 
 /// What remains of a label's deposit budget.

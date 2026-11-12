@@ -436,9 +436,13 @@ struct Meta {
     records: u64,
     /// Wall ms before which a child step past a byte cap is refused (`HostPolicy::over_cap_step_ms`).
     over_cap_until: u64,
+    /// Role entries (`Put::role`) among `entries` and their bytes: outside the label's caps,
+    /// within a deposit budget of their own.
+    role_n: u64,
+    role_bytes: u64,
 }
 
-const META_LEN: usize = 16 + 1 + 32 + 8 * 10;
+const META_LEN: usize = 16 + 1 + 32 + 8 * 12;
 
 /// Sequence numbers reserved on disk at a time for ephemeral log records. Performance switch
 /// (notes/arbitrary-values.md): 1 writes the label meta per ephemeral upload, a large block skips
@@ -451,7 +455,7 @@ impl Meta {
         v.extend_from_slice(&self.log_id);
         v.push(u8::from(self.head.is_some()));
         v.extend_from_slice(&self.head.map_or([0; 32], |h| h.0));
-        for n in [self.next_seq, self.horizon, self.head_claims, self.entries, self.bytes, self.dep_n, self.dep_bytes, self.reserved, self.records, self.over_cap_until] {
+        for n in [self.next_seq, self.horizon, self.head_claims, self.entries, self.bytes, self.dep_n, self.dep_bytes, self.reserved, self.records, self.over_cap_until, self.role_n, self.role_bytes] {
             v.extend_from_slice(&be(n));
         }
         v
@@ -475,6 +479,8 @@ impl Meta {
             reserved: n(7)?,
             records: n(8)?,
             over_cap_until: n(9)?,
+            role_n: n(10)?,
+            role_bytes: n(11)?,
         })
     }
 }
@@ -484,6 +490,8 @@ impl Meta {
 struct Row {
     meta: EntryMeta,
     expiry: Option<u64>,
+    /// Taken as a role entry (`Put::role`): counted in `Meta::role_n`.
+    role: bool,
 }
 
 const ROW_LEN: usize = WRAP_LEN + 1 + 64 + 8 * 3;
@@ -493,7 +501,7 @@ impl Row {
         let m = &self.meta;
         let mut v = Vec::with_capacity(ROW_LEN);
         v.extend_from_slice(&m.wrap);
-        v.push(u8::from(m.stamp.is_some()) | u8::from(self.expiry.is_some()) << 2);
+        v.push(u8::from(m.stamp.is_some()) | u8::from(self.role) << 1 | u8::from(self.expiry.is_some()) << 2);
         v.extend_from_slice(&m.stamp.map_or([0; 64], |s| s.0));
         for n in [m.size, m.add_seq, self.expiry.unwrap_or(0)] {
             v.extend_from_slice(&be(n));
@@ -516,6 +524,7 @@ impl Row {
                 add_seq: read_u64(b, at + 8)?,
             },
             expiry: opt(4, read_u64(b, at + 16)?),
+            role: flags & 2 != 0,
         })
     }
 }
@@ -755,6 +764,20 @@ pub struct Totals {
     pub labels: u64,
     pub entries: u64,
     pub bytes: u64,
+}
+
+/// Room of one kind as used at a reading (`HostStore::room`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Room {
+    pub memory: bool,
+    used: [u64; 4],
+}
+
+impl Room {
+    /// Whether any count is below `earlier`'s: something left since.
+    pub fn below(&self, earlier: &Room) -> bool {
+        self.used.iter().zip(earlier.used.iter()).any(|(a, b)| a < b)
+    }
 }
 
 /// What a bounded sweep did.
@@ -1080,6 +1103,25 @@ impl HostStore {
         used.saturating_add(size).saturating_add(ENTRY_OVERHEAD).saturating_add(REC_OVERHEAD) <= self.policy.ephemeral_bytes
     }
 
+    /// The entries and bytes of `label` its caps count (role entries are outside them).
+    pub fn capped(&self, label: &LabelId) -> Result<(u64, u64), StoreError> {
+        Ok(self.raw_meta(label)?.map_or((0, 0), |m| (m.entries.saturating_sub(m.role_n), m.bytes.saturating_sub(m.role_bytes))))
+    }
+
+    /// What `label`'s room of one kind (durable, or `memory`) found used: the label's and the
+    /// store's, entries and bytes (memory: bytes charged). Room grew when any is below an
+    /// earlier reading's (`Room::below`).
+    pub fn room(&self, label: &LabelId, memory: bool) -> Result<Room, StoreError> {
+        let used = if memory {
+            [self.ephemeral_bytes(label), self.eph.total, 0, 0]
+        } else {
+            let m = self.raw_meta(label)?;
+            let t = self.totals()?;
+            [m.as_ref().map_or(0, |m| m.entries), m.as_ref().map_or(0, |m| m.bytes), t.entries, t.bytes]
+        };
+        Ok(Room { memory, used })
+    }
+
     /// Ephemeral memory charged over all labels (tests, diagnostics).
     pub fn ephemeral_total(&self) -> u64 {
         self.eph.total
@@ -1255,16 +1297,26 @@ impl HostStore {
             Some(_) => {}
             None => {
                 let m = &tx.meta;
-                let (entries, bytes) = (m.entries.saturating_sub(plan.entries), m.bytes.saturating_sub(plan.bytes));
-                let (cap_entries, cap_bytes) = self.label_caps(label);
-                if entries.saturating_add(1) > cap_entries || bytes.saturating_add(size) > cap_bytes {
-                    return Ok(Code::STORAGE_CAP);
-                }
-                let t = self.totals()?;
                 let p = &self.policy;
-                let (entries, bytes) = (t.entries.saturating_sub(plan.entries), t.bytes.saturating_sub(plan.bytes));
-                if entries.saturating_add(1) > p.max_entries || bytes.saturating_add(size) > p.max_bytes {
-                    return Ok(Code::STORAGE_CAP);
+                if put.role {
+                    // an entry deletes are judged by is outside the storage caps, within a
+                    // deposit budget of role entries: without it no purge or compaction frees
+                    // room here (spec/sync.md §5, Storage caps)
+                    let max = self.budget_max(m);
+                    if m.role_n.saturating_add(1) > max || m.role_bytes.saturating_add(size) > max.saturating_mul(DEPOSIT_ENTRY_BYTES) {
+                        return Ok(Code::STORAGE_CAP);
+                    }
+                } else {
+                    let (entries, bytes) = (m.entries.saturating_sub(m.role_n).saturating_sub(plan.entries), m.bytes.saturating_sub(m.role_bytes).saturating_sub(plan.bytes));
+                    let (cap_entries, cap_bytes) = self.label_caps(label);
+                    if entries.saturating_add(1) > cap_entries || bytes.saturating_add(size) > cap_bytes {
+                        return Ok(Code::STORAGE_CAP);
+                    }
+                    let t = self.totals()?;
+                    let (entries, bytes) = (t.entries.saturating_sub(plan.entries), t.bytes.saturating_sub(plan.bytes));
+                    if entries.saturating_add(1) > p.max_entries || bytes.saturating_add(size) > p.max_bytes {
+                        return Ok(Code::STORAGE_CAP);
+                    }
                 }
                 if put.stamp.is_none() {
                     let max = self.budget_max(m);
@@ -1288,11 +1340,15 @@ impl HostStore {
                     tx.meta.dep_n = tx.meta.dep_n.saturating_sub(1);
                     tx.meta.dep_bytes = tx.meta.dep_bytes.saturating_sub(old.meta.size);
                 }
-                Row { meta: EntryMeta { wrap: put.wrap, stamp: put.stamp, add_seq: seq, ..old.meta }, expiry: old.expiry }
+                Row { meta: EntryMeta { wrap: put.wrap, stamp: put.stamp, add_seq: seq, ..old.meta }, expiry: old.expiry, role: old.role }
             }
             None => {
                 tx.meta.entries += 1;
                 tx.meta.bytes = tx.meta.bytes.saturating_add(size);
+                if put.role {
+                    tx.meta.role_n += 1;
+                    tx.meta.role_bytes = tx.meta.role_bytes.saturating_add(size);
+                }
                 if put.stamp.is_none() {
                     tx.meta.dep_n += 1;
                     tx.meta.dep_bytes = tx.meta.dep_bytes.saturating_add(size);
@@ -1306,7 +1362,7 @@ impl HostStore {
                 }
                 let prefix = osis_label::prefix_bytes(put.blob);
                 tx.batch.put(key(b'R', &[&put.blob_id.0]), [&be(refs + 1)[..], prefix].concat());
-                Row { meta: EntryMeta { wrap: put.wrap, stamp: put.stamp, size, add_seq: seq }, expiry }
+                Row { meta: EntryMeta { wrap: put.wrap, stamp: put.stamp, size, add_seq: seq }, expiry, role: put.role }
             }
         };
         tx.batch.put(key(b'E', &[&l, &put.blob_id.0]), row.encode());
@@ -1486,6 +1542,10 @@ impl HostStore {
         if row.meta.stamp.is_none() {
             m.dep_n = m.dep_n.saturating_sub(1);
             m.dep_bytes = m.dep_bytes.saturating_sub(row.meta.size);
+        }
+        if row.role {
+            m.role_n = m.role_n.saturating_sub(1);
+            m.role_bytes = m.role_bytes.saturating_sub(row.meta.size);
         }
         let drop = now.saturating_add(self.policy.tombstone_ms);
         let seq = if tombstone {

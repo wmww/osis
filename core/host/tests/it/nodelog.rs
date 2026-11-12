@@ -39,7 +39,7 @@ fn put(s: &mut HostStore, l: &LabelId, n: u64, stamped: bool, expiry: Option<u64
     let b = blob(n);
     let id = osis_label::blob_id(&b);
     let stamp = stamped.then_some(Signature([n as u8; 64]));
-    let p = Put { blob_id: id, blob: &b, wrap: [n as u8; WRAP_LEN], stamp, expiry, ephemeral: false, replaces, now: T0 };
+    let p = Put { blob_id: id, blob: &b, wrap: [n as u8; WRAP_LEN], stamp, expiry, ephemeral: false, replaces, now: T0, role: false };
     assert_eq!(s.put(l, p).unwrap(), Code::OK);
     id
 }
@@ -77,7 +77,7 @@ fn a_listing_from_the_start_is_the_live_set_plus_retained_deletions() {
     live.push((l2, put(&mut h.s, &l2, 20, true, None, &[replaced.1])));
     // an ephemeral entry is never logged
     let eb = blob(30);
-    let p = Put { blob_id: osis_label::blob_id(&eb), blob: &eb, wrap: [30; WRAP_LEN], stamp: Some(Signature([30; 64])), expiry: None, ephemeral: true, replaces: &[], now: T0 };
+    let p = Put { blob_id: osis_label::blob_id(&eb), blob: &eb, wrap: [30; WRAP_LEN], stamp: Some(Signature([30; 64])), expiry: None, ephemeral: true, replaces: &[], now: T0, role: false };
     assert_eq!(h.s.put(&l1, p).unwrap(), Code::OK);
     sweep(&mut h, T0 + 1_000);
     assert_eq!(h.s.entry(&l2, &expired.1).unwrap(), None);

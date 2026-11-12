@@ -40,6 +40,18 @@ pub(crate) struct Unread {
     /// and stamp: taken once the blob is held, whichever sync ID's fetch brought it
     /// (`unread_take_held`); kept while some stream owes them.
     pending: BTreeMap<(LabelId, BlobId), ([u8; WRAP_LEN], Signature)>,
+    /// Sync IDs full here: an entry pulled for them was refused for room (`Full`).
+    full: BTreeMap<LabelId, Full>,
+}
+
+/// A sync ID full here (spec/sync.md §10, Full): what its refusals found used, the entries
+/// refused (not fetched again while it is full), and the connections told.
+#[derive(Clone, Default)]
+struct Full {
+    durable: Option<osis_host::Room>,
+    memory: Option<osis_host::Room>,
+    refused: BTreeSet<BlobId>,
+    told: BTreeSet<ConnId>,
 }
 
 impl SyncEngine {
@@ -177,11 +189,18 @@ impl SyncEngine {
         let mut relays = Vec::new();
         let mut taken = Vec::new();
         let mut pending = Vec::new();
+        let mut refused = Vec::new();
+        // refused for room while full: announced again, the reader is told (a new connection)
+        let was_refused = self.unread.full.get(&l).map(|f| f.refused.clone()).unwrap_or_default();
         {
             let mut hub = self.hub();
             let Some(k) = hub.head_keys(&l).map_err(hub_err)? else { return Ok(owed) };
             for e in events {
                 let osis_proto::Event::Added { blob_id, blob, wrap, stamp: Some(stamp) } = e else { continue };
+                if blob.is_none() && was_refused.contains(&blob_id) {
+                    refused.push((blob_id, None));
+                    continue;
+                }
                 if hub.entry(&l, &blob_id).map_err(hub_err)?.is_some_and(|m| m.stamp.is_some()) {
                     continue;
                 }
@@ -204,6 +223,9 @@ impl SyncEngine {
                         if c == Code::OK {
                             changed = true;
                             taken.push(blob_id);
+                        } else if c == Code::STORAGE_CAP {
+                            let memory = osis_label::Prefix::parse(&bytes).is_ok_and(|p| p.class().in_memory());
+                            refused.push((blob_id, Some(hub.room(&l, memory).map_err(hub_err)?)));
                         }
                     }
                 }
@@ -211,6 +233,9 @@ impl SyncEngine {
         }
         for (b, wrap, stamp) in pending {
             self.unread.pending.insert((l, b), (wrap, stamp));
+        }
+        if !refused.is_empty() {
+            self.unread_refused(conn, l, refused, out)?;
         }
         if changed {
             self.hub_down(conn, osis_host::Down::Changed(l), out);
@@ -252,9 +277,58 @@ impl SyncEngine {
         self.unread.pending.retain(|k, _| owed.contains(k));
     }
 
+    /// Entries of unread `l` pulled from `conn` and refused for room, each with what its kind
+    /// found used: `l` is full here, and `conn`'s reader is told so once (an event of a Stream
+    /// without cursor, as no position names it).
+    fn unread_refused(&mut self, conn: ConnId, l: LabelId, refused: Vec<(BlobId, Option<osis_host::Room>)>, out: &mut Vec<Action>) -> Result<()> {
+        let f = self.unread.full.entry(l).or_default();
+        for (b, room) in refused {
+            f.refused.insert(b);
+            match room {
+                Some(r) if r.memory => f.memory = Some(r),
+                Some(r) => f.durable = Some(r),
+                None => {}
+            }
+        }
+        if f.told.insert(conn) {
+            self.shared_send(conn, osis_proto::Message::Stream(Box::new(osis_proto::msg::Stream { events: vec![(l, osis_proto::Event::Full(true))], cursor: None, report: false })), out)?;
+        }
+        Ok(())
+    }
+
+    /// Each sync ID full here whose kind of room grew since its refusals (an entry deleted,
+    /// expired, or evicted, here or under another sync ID) has room again: the connections told
+    /// are told so, and it is pulled again from the start at each, so what it refused comes
+    /// again (taken now, or refused and full again).
+    pub(super) fn unread_room(&mut self, out: &mut Vec<Action>) -> Result<()> {
+        if self.unread.full.is_empty() {
+            return Ok(());
+        }
+        let heads = self.unread_heads()?;
+        self.unread.full.retain(|l, _| heads.contains_key(l));
+        let freed: Vec<LabelId> = {
+            let hub = self.hub();
+            let grew = |l: &LabelId, r: &Option<osis_host::Room>| r.as_ref().is_some_and(|r| hub.room(l, r.memory).is_ok_and(|now| now.below(r)));
+            self.unread.full.iter().filter(|(l, f)| grew(l, &f.durable) || grew(l, &f.memory)).map(|(l, _)| *l).collect()
+        };
+        for l in freed {
+            let Some(f) = self.unread.full.remove(&l) else { continue };
+            for conn in f.told {
+                if self.records.shared.get(&conn).is_some_and(|s| s.has(&l)) {
+                    self.shared_send(conn, osis_proto::Message::Stream(Box::new(osis_proto::msg::Stream { events: vec![(l, osis_proto::Event::Full(false))], cursor: None, report: false })), out)?;
+                }
+            }
+            self.stream_rejoin(&l, out)?;
+        }
+        Ok(())
+    }
+
     /// Whether this node wants the bytes of unread `l`'s entry `b`: its store holds neither the
-    /// entry stamped nor the blob.
+    /// entry stamped nor the blob, and did not refuse it for room while `l` is full here.
     pub(crate) fn unread_wants(&mut self, l: &LabelId, b: &BlobId) -> Result<bool> {
+        if self.unread.full.get(l).is_some_and(|f| f.refused.contains(b)) {
+            return Ok(false);
+        }
         let hub = self.hub();
         Ok(!hub.entry(l, b).map_err(hub_err)?.is_some_and(|m| m.stamp.is_some()) && hub.blob(b).map_err(hub_err)?.is_none())
     }

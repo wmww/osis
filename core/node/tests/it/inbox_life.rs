@@ -199,7 +199,7 @@ fn inbox_copy_names_only_touched_things_spec_sync_3() {
     let blob = osis_label::seal_inbox_blob(&bob, &kem, &payload, now, &mut osis_crypto::SeededRng::from_u64(0)).unwrap();
     let id = osis_label::blob_id(&blob);
     net.set_online(b, false);
-    let put = osis_proto::Put { blob_id: id, blob: &blob, wrap: [7; osis_crypto::WRAP_LEN], stamp: None, expiry: Some(now.0 + osis_base::format::INBOX_LIFETIME_MS), ephemeral: false, replaces: &[], now: 0 };
+    let put = osis_proto::Put { blob_id: id, blob: &blob, wrap: [7; osis_crypto::WRAP_LEN], stamp: None, expiry: Some(now.0 + osis_base::format::INBOX_LIFETIME_MS), ephemeral: false, replaces: &[], now: 0, role: false };
     osis_proto::LabelStore::put(&mut *net.hosts[host].hub.store(), &home, put).unwrap();
     net.set_online(b, true);
     for _ in 0..3 {
@@ -247,7 +247,7 @@ fn plant_bytes(net: &mut Net, from: usize, (host, l): (usize, &LabelId), to: Tid
     // the prefix carries `now + INBOX_LIFETIME`: seal "earlier" for a shorter expiry
     let blob = osis_label::seal_inbox_blob(&to, &kem, &payload, osis_base::WallMs(expiry - INBOX_LIFETIME_MS), &mut osis_crypto::SeededRng::from_u64(0)).unwrap();
     let id = osis_label::blob_id(&blob);
-    let put = osis_proto::Put { blob_id: id, blob: &blob, wrap: [7; osis_crypto::WRAP_LEN], stamp: None, expiry: Some(expiry), ephemeral: false, replaces: &[], now: 0 };
+    let put = osis_proto::Put { blob_id: id, blob: &blob, wrap: [7; osis_crypto::WRAP_LEN], stamp: None, expiry: Some(expiry), ephemeral: false, replaces: &[], now: 0, role: false };
     osis_proto::LabelStore::put(&mut *net.hosts[host].hub.store(), l, put).unwrap();
     id
 }
@@ -479,7 +479,7 @@ fn an_inbox_chain_applies_only_chain_deltas_spec_wire_9() {
     let kem = osis_crypto::KemPublicKey::from_slice(kb).unwrap();
     let now = net.now();
     let blob = osis_label::seal_inbox_blob(&bob, &kem, &payload, osis_base::WallMs(now), &mut osis_crypto::SeededRng::from_u64(0)).unwrap();
-    let put = osis_proto::Put { blob_id: osis_label::blob_id(&blob), blob: &blob, wrap: [7; osis_crypto::WRAP_LEN], stamp: None, expiry: Some(now + INBOX_LIFETIME_MS), ephemeral: false, replaces: &[], now: 0 };
+    let put = osis_proto::Put { blob_id: osis_label::blob_id(&blob), blob: &blob, wrap: [7; osis_crypto::WRAP_LEN], stamp: None, expiry: Some(now + INBOX_LIFETIME_MS), ephemeral: false, replaces: &[], now: 0, role: false };
     osis_proto::LabelStore::put(&mut *net.hosts[host].hub.store(), &home, put).unwrap();
     net.set_online(b, true);
     for _ in 0..3 {
@@ -1365,7 +1365,7 @@ fn deposit_junk(net: &mut Net, from: usize, (host, l): (usize, &LabelId), bob: T
         let (_, blob) = osis_label::frame(&prefix, b"junk", &mut rng).unwrap();
         let id = osis_label::blob_id(&blob);
         let wrap = osis_crypto::filler_wrap(&mut rng);
-        let sig = osis_label::sign_deposit(&d, l, &id, &wrap);
+        let sig = osis_label::sign_deposit(&d, l, &id, &wrap, false);
         crate::wrap_poison::send(net, from, host, osis_proto::Message::Deposit { id: 0x4000_0001, label: *l, blob, wrap, sig });
         out.push(id);
     }
@@ -1583,7 +1583,7 @@ fn hostile_inbox_blob_peak_is_bounded_spec_sync_3() {
     // the label's host lists it with a stamp nobody signed: an honest host's deposit budget would
     // stop a stranger at about 2 MiB (spec/sync.md §5), the host of an inbox label has no such limit
     let stamp = Some(osis_crypto::Signature([0; 64]));
-    let put = osis_proto::Put { blob_id: id, blob: &blob, wrap: [7; osis_crypto::WRAP_LEN], stamp, expiry: Some(now.0 + osis_base::format::INBOX_LIFETIME_MS), ephemeral: false, replaces: &[], now: 0 };
+    let put = osis_proto::Put { blob_id: id, blob: &blob, wrap: [7; osis_crypto::WRAP_LEN], stamp, expiry: Some(now.0 + osis_base::format::INBOX_LIFETIME_MS), ephemeral: false, replaces: &[], now: 0, role: false };
     assert_eq!(osis_proto::LabelStore::put(&mut *net.hosts[host].hub.store(), &home, put).unwrap(), osis_proto::Code::OK);
     drop(blob);
     let _ = std::fs::write("/proc/self/clear_refs", "5");
@@ -1813,7 +1813,7 @@ fn a_padded_record_blob_is_never_stamped_spec_sync_5() {
     let secret = net.engine(r).wrap_secret(&o, None).unwrap().unwrap();
     let wrap = osis_crypto::wrap(&secret, &id, &key, 0).unwrap();
     let seed = net.engine(r).deposit_seed(&o).unwrap().unwrap();
-    let sig = osis_label::sign_deposit(&osis_crypto::deposit_key(&seed, &l), &l, &id, &wrap);
+    let sig = osis_label::sign_deposit(&osis_crypto::deposit_key(&seed, &l), &l, &id, &wrap, false);
     crate::wrap_poison::send(&mut net, r, host, osis_proto::Message::Deposit { id: 0x4000_0001, label: l, blob, wrap, sig });
     assert!(net.host_ids(host, &l).contains(&id), "the host took it");
     let before: std::collections::BTreeSet<_> = net.host_ids(host, &l).into_iter().collect();

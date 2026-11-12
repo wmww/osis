@@ -238,7 +238,7 @@ fn a_pull_after_a_head_change_gets_nothing_past_its_event_spec_sync_10() {
         let hub = s.net.sync(s.b).hub_store();
         let mut hub = hub.lock().unwrap();
         assert_eq!(hub.push_step(&l, step, Some(set)).unwrap(), Code::OK);
-        let put = osis_proto::Put { blob_id: osis_label::blob_id(&e4.blob), blob: &e4.blob, wrap: e4.wrap, stamp: Some(e4.stamp), expiry: None, ephemeral: false, replaces: &[], now };
+        let put = osis_proto::Put { blob_id: osis_label::blob_id(&e4.blob), blob: &e4.blob, wrap: e4.wrap, stamp: Some(e4.stamp), expiry: None, ephemeral: false, replaces: &[], now, role: false };
         assert_eq!(hub.put(&l, put).unwrap(), Code::OK);
     }
     let m = Message::Pull(Box::new(Pull { id: PULL_ID, cursor: reply.cursor.clone(), joins: vec![], inline_limit: 1 << 20, max_reply: 1 << 20, follow: true, ephemeral: false }));
@@ -257,8 +257,8 @@ fn a_deposit_at_an_unread_inbox_is_taken_spec_sync_10() {
     let b5 = blob(5);
     let wrap = [7; osis_crypto::WRAP_LEN];
     let id = osis_label::blob_id(&b5);
-    let good = osis_label::sign_deposit(&s.l.head_keys().deposit, &l, &id, &wrap);
-    let bad = osis_label::sign_deposit(&s.l.head_keys().write, &l, &id, &wrap);
+    let good = osis_label::sign_deposit(&s.l.head_keys().deposit, &l, &id, &wrap, false);
+    let bad = osis_label::sign_deposit(&s.l.head_keys().write, &l, &id, &wrap, false);
     let ans = offer(&mut s.net, s.b, &mut s.p, vec![OfferItem::Deposit { label: l, blob: b5.clone(), wrap, sig: bad }, OfferItem::Deposit { label: l, blob: b5, wrap, sig: good }]);
     assert_eq!(ans, vec![(Code::NOT_ADMITTED, None), (Code::OK, None)]);
     use osis_proto::LabelStore;

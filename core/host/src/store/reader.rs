@@ -90,7 +90,7 @@ impl HostStore {
                     tx.meta.dep_n = tx.meta.dep_n.saturating_sub(1);
                     tx.meta.dep_bytes = tx.meta.dep_bytes.saturating_sub(old.meta.size);
                 }
-                Row { meta: EntryMeta { wrap, stamp, add_seq: seq, ..old.meta }, expiry: old.expiry }
+                Row { meta: EntryMeta { wrap, stamp, add_seq: seq, ..old.meta }, expiry: old.expiry, role: old.role }
             }
             None => {
                 let bytes = self.db.get_mut().run(|t, _| t.read_blob(blob, 0, usize::MAX)).map_err(super::err)?.ok_or_else(|| corrupt("reader entry without its bytes"))?;
@@ -105,7 +105,7 @@ impl HostStore {
                 tx.batch.put(key(b'R', &[&blob.0]), [&be(refs + 1)[..], osis_label::prefix_bytes(&bytes)].concat());
                 // no expiry: node sync judges when an entry of a sync ID it reads expires (its
                 // pass removes the row), the one expiry path there
-                Row { meta: EntryMeta { wrap, stamp, size, add_seq: seq }, expiry: None }
+                Row { meta: EntryMeta { wrap, stamp, size, add_seq: seq }, expiry: None, role: false }
             }
         };
         tx.batch.put(key(b'E', &[&l, &blob.0]), row.encode());

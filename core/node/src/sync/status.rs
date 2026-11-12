@@ -14,8 +14,10 @@ impl SyncEngine {
             let leaving = self.leaving().any(|a| *a == self.engine.group_actor(&g));
             let mut failed = BTreeSet::new();
             let passed = self.state.passed.contains(&l.id);
-            // the hosts whose last answer refused it (code 14), connected now or not
-            let refused_by = l.hosts.iter().filter(|a| self.refusals.get(&(a.key, l.id)).is_some_and(|(_, code)| *code == Code::NOT_ADMITTED)).cloned().collect();
+            // the hosts whose last answer refused it (code 14), connected now or not, and those
+            // full for it (`LConn::full`)
+            let full = |k: &HostKey| self.conns.values().any(|c| c.up && c.host == *k && c.labels.get(&l.id).is_some_and(|x| x.full));
+            let refused_by = l.hosts.iter().filter(|a| self.refusals.get(&(a.key, l.id)).is_some_and(|(_, code)| *code == Code::NOT_ADMITTED) || full(&a.key)).cloned().collect();
             let mut st = LabelStatus { group: g, label: l.id, hosts: l.hosts.len(), sources: 0, idle: 0, opening: 0, stranded: false, refused_by, leaving, last_sync: None, passed, replaced: l.replaced };
             for c in self.conns.values().filter(|c| !c.peer) {
                 let host = l.hosts.iter().find(|a| a.key == c.host);
@@ -202,14 +204,16 @@ impl SyncEngine {
         for (id, c) in &self.conns {
             for (l, x) in &c.labels {
                 v.push(format!(
-                    "conn {id} {l:?}: {:?} synced {} registering {} writer {} sync {} outstanding {} head {:?}",
+                    "conn {id} {l:?}: {:?} synced {} registering {} writer {} sync {} outstanding {} head {:?} lacking {} full {}",
                     x.phase,
                     x.synced,
                     x.registering.is_some(),
                     x.keys.is_writer(),
                     x.keys.epochs[0].is_some(),
                     c.session.outstanding(),
-                    x.head.as_ref().map(|h| h.id().0[0])
+                    x.head.as_ref().map(|h| h.id().0[0]),
+                    x.lacking,
+                    x.full
                 ));
             }
         }

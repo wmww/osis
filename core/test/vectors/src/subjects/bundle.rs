@@ -31,8 +31,8 @@ pub fn bundle() -> VecFile {
     let (_, b2) = frame(&p, b"two", &mut FixedRng::new(&[&[0x57; 32]])).unwrap();
     let (i1, i2) = (osis_label::blob_id(&b1), osis_label::blob_id(&b2));
     let (w1s, w1t) = (wrap(&r0, &i1, &k1, 1).unwrap(), wrap(&r1, &i1, &k1, 1).unwrap());
-    let st0 = sign_stamp(&label_role_key(LabelRole::Write, &w0, 0), &s0.label, &i1, &w1s);
-    let st1 = sign_stamp(&label_role_key(LabelRole::Write, &w1, 0), &t0.label, &i1, &w1t);
+    let st0 = sign_stamp(&label_role_key(LabelRole::Write, &w0, 0), &s0.label, &i1, &w1s, false);
+    let st1 = sign_stamp(&label_role_key(LabelRole::Write, &w1, 0), &t0.label, &i1, &w1t, false);
     let recs = vec![
         Record::Path { label: s0.label, steps: vec![(s0.clone(), Some(c0))] },
         Record::Path { label: t0.label, steps: vec![(t0.clone(), None)] },

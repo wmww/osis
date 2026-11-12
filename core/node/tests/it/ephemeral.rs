@@ -28,7 +28,7 @@ pub(crate) fn sealed(net: &mut Net, w: usize, g: Tid, c: &osis_commit::CommitBlo
     let s = osis_node::labeling::seal_plain(&c.encode(), class, &mut osis_crypto::SeededRng::from_u64(seed)).unwrap();
     let wrap = osis_crypto::wrap(&secret, &s.id, &s.key, 1).unwrap();
     let l = net.label(w);
-    let stamp = stamp.map(|k| osis_label::sign_stamp(k, &l, &s.id, &wrap));
+    let stamp = stamp.map(|k| osis_label::sign_stamp(k, &l, &s.id, &wrap, false));
     (s.id, osis_proto::Event::Added { blob_id: s.id, blob: Some(s.blob), wrap, stamp })
 }
 
@@ -729,10 +729,10 @@ fn removed_writer_ephemeral_unmerged_spec_permissions_5_2() {
 }
 
 // spec/sync.md §9 (caps), §10 (a peer that cannot read L takes what it pulls within its own
-// caps and sends no refusal): writes past a peer's ephemeral cap for the label, small and then
+// caps and says when it is full): writes past a peer's ephemeral cap for the label, small and then
 // past what the writer's compactions bring the state down to: the peer stays within its cap,
 // everything settles (no compaction of the cover into the next cover forever), the writer keeps
-// every write, and its status shows the label not caught up there
+// every write, and its status shows the peer full
 #[test]
 fn ephemeral_writes_past_a_peers_cap_stay_with_the_writer_spec_sync_9() {
     for (cap, value) in [(6_300, "v"), (2_500, "vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv")] {
@@ -753,12 +753,12 @@ fn ephemeral_writes_past_a_peers_cap_stay_with_the_writer_spec_sync_9() {
         net.advance(61_000);
         let want: BTreeMap<String, String> = (0..30).map(|i| (format!("k{i}"), value.to_string())).collect();
         assert_eq!(notes(&mut net, a, w), want, "cap {cap}: the writer keeps every write");
-        assert!(net.lags(a, &l), "cap {cap}: the writer's status shows the peer lacking some");
+        assert!(net.refused_at(a, &l), "cap {cap}: the writer's status shows the peer full");
     }
 }
 
 // spec/sync.md §9 (caps), §10: one write larger than a peer's whole ephemeral cap stays out of
-// it (the writer keeps it, its status shows the gap); later writes that fit still reach the
+// it (the writer keeps it, its status shows the peer full); later writes that fit still reach the
 // other writer through that peer
 #[test]
 fn a_write_past_a_peers_whole_cap_stays_out_and_later_ones_sync_spec_sync_9() {
@@ -781,7 +781,7 @@ fn a_write_past_a_peers_whole_cap_stays_out_and_later_ones_sync_spec_sync_9() {
     assert!(net.hosts[host].hub.store().ephemeral_bytes(&l) <= 8_000, "the peer stays within its cap");
     assert_eq!(net.eph_read(b, w, "win:big+.0"), None);
     assert!(net.eph_read(a, w, "win:big+.0").is_some(), "the writer keeps it");
-    assert!(net.lags(a, &l), "the writer's status shows the peer lacking it");
+    assert!(net.refused_at(a, &l), "the writer's status shows the peer full");
     note(&mut net, a, w, "k", "v");
     net.run();
     assert_eq!(notes(&mut net, b, w), map(&[("k", "v")]), "a later write that fits syncs");
@@ -1425,7 +1425,7 @@ fn ephemeral_blob_under_wrong_id_dropped_spec_sync_4() {
         let osis_proto::Event::Added { blob, wrap, stamp, .. } = ev.clone() else { unreachable!() };
         let mut forged = id;
         forged.0[31] ^= 1 + n;
-        let stamp = stamp.map(|_| osis_label::sign_stamp(&wk, &l, &forged, &wrap));
+        let stamp = stamp.map(|_| osis_label::sign_stamp(&wk, &l, &forged, &wrap, false));
         push(&mut net, b, host, l, vec![osis_proto::Event::Added { blob_id: forged, blob, wrap, stamp }]);
     }
     assert_eq!((net.sync(b).ephemeral_bytes(&l), net.sync(b).ephemeral_held_entries(&l)), held);
@@ -3656,7 +3656,7 @@ fn page_before_its_commit_counts_spec_sync_9() {
         let bytes = net.engine(a).blob(p).unwrap().unwrap();
         size += bytes.len() as u64;
         let wrap = [7; osis_crypto::WRAP_LEN];
-        let stamp = Some(osis_label::sign_stamp(&key, &l, p, &wrap));
+        let stamp = Some(osis_label::sign_stamp(&key, &l, p, &wrap, false));
         events.push(osis_proto::Event::Added { blob_id: *p, blob: Some(bytes), wrap, stamp });
     }
     push(&mut net, b, host, l, events);
@@ -3710,7 +3710,7 @@ fn root_before_pages_decodes_within_cap_spec_sync_9() {
     assert!(net.engine(b).memory_pending(&id), "the root waits for its pages");
     let events = pages.iter().map(|(p, bytes)| {
         let wrap = [7; osis_crypto::WRAP_LEN];
-        osis_proto::Event::Added { blob_id: *p, blob: Some(bytes.clone()), wrap, stamp: Some(osis_label::sign_stamp(&key, &l, p, &wrap)) }
+        osis_proto::Event::Added { blob_id: *p, blob: Some(bytes.clone()), wrap, stamp: Some(osis_label::sign_stamp(&key, &l, p, &wrap, false)) }
     }).collect();
     push(&mut net, b, host, l, events);
     let costs = osis_node::costs::take();

@@ -438,8 +438,9 @@ impl SyncEngine {
                     }
                     touched.push(blob_id);
                 }
-                // a reader's deletion says only that it no longer has the entry
-                LogEvent::Deleted(_) if reader.is_some() => {}
+                // a reader's deletion says only that it no longer has the entry (a host's that
+                // reads the label too: it judges its own store)
+                LogEvent::Deleted(_) if reader.is_some() || conn.is_some_and(|c| self.shared_reads(c, &l)) => {}
                 LogEvent::Deleted(b) => {
                     // the peer refuses this blob ID while its tombstone lasts: a body it must
                     // hold goes there under another encryption (`encrypt_again`); this node's
@@ -469,6 +470,16 @@ impl SyncEngine {
                 LogEvent::Head(step) => {
                     if let Some(c) = conn {
                         self.new_head(c, l, step, out)?;
+                    }
+                }
+                // a peer that cannot read L takes no more of it for now, or has room again: what
+                // it lacks is judged there so (`LConn::full`)
+                LogEvent::Full(full) => {
+                    if let Some(x) = conn.and_then(|c| self.lc_mut(c, &l))
+                        && x.full != full
+                    {
+                        x.full = full;
+                        self.mark_labels(&[l]);
                     }
                 }
             }

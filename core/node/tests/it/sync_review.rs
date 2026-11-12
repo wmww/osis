@@ -175,12 +175,12 @@ fn full_peer() -> (Net, usize, usize, usize, Tid, Tid, osis_base::LabelId, osis_
     let l = net.label(a);
     let p = blobs_of(&mut net, a, &l, &c);
     assert_eq!(p.len(), 1);
-    let full = net.host_ids(host, &l).len() as u64;
+    let full = net.host_capped(host, &l);
     net.restart_host_with(host, osis_host::HostPolicy { cap_entries: full, ..osis_host::HostPolicy::default() });
     net.run();
     // past the redial pause
     net.advance(66_000);
-    assert!(!net.lags(a, &l), "caught up while nothing is lacking");
+    assert!(!net.lags(a, &l) && !net.refused_at(a, &l), "caught up while nothing is lacking");
     let mut m = Mutation::new();
     m.set(t2, &GONE, &s("kept")).unwrap();
     net.engine(a).commit(m).unwrap();
@@ -191,47 +191,44 @@ fn full_peer() -> (Net, usize, usize, usize, Tid, Tid, osis_base::LabelId, osis_
 }
 
 // spec/sync.md §5, §10 (a peer that cannot read L takes what it pulls within its own caps and
-// sends no refusal; presence there is what its stream showed): the label is at its entry cap at
+// says when it is full; presence there is what its stream showed): the label is at its entry cap at
 // the peer and a's next write does not fit: the peer stays within its cap, a keeps the write, and
-// a's status shows the label not caught up there.
+// a's status shows the peer full.
 #[test]
 fn a_full_peer_stays_within_its_cap_and_the_writer_keeps_the_rest_spec_sync_10() {
     let (mut net, host, a, b, _t, t2, l, _c, _p, full) = full_peer();
     let gone = Ak::new(GONE.ak()).unwrap();
-    assert_eq!(net.host_ids(host, &l).len() as u64, full, "the peer stays within its cap");
+    assert_eq!(net.host_capped(host, &l), full, "the peer stays within its cap");
     assert_eq!(net.engine(a).get(&t2, &gone).unwrap(), Some(s("kept")), "a keeps its write");
     assert_eq!(net.engine(b).get(&t2, &gone).unwrap(), None, "b reads through the peer only");
-    assert!(net.lags(a, &l), "a's status shows the peer lacking it");
+    assert!(net.refused_at(a, &l), "a's status shows the peer full");
 }
 
-// spec/sync.md §7 (purge), §10: as above, then a purges `c`: the purged body leaves the full
-// peer, and a write after it reaches b through the room it freed. Fails: the purge request
-// itself does not fit there, and every delete waits for the role commits the peer lacks.
+// spec/sync.md §5 (an entry deletes are judged by is taken outside the caps), §7 (purge), §10:
+// as above, then a purges `c`: the purge request reaches the full peer, the purged body leaves
+// it, and the peer takes something it lacked into the room freed, staying within its cap.
 #[test]
-#[ignore = "issues/full-peer-role-commits.md"]
-fn repro_a_purge_frees_room_at_a_full_peer_spec_sync_7() {
-    let (mut net, host, a, b, t, t2, l, c, p, full) = full_peer();
+fn a_purge_frees_room_at_a_full_peer_spec_sync_7() {
+    let (mut net, host, a, _b, t, _t2, l, c, p, full) = full_peer();
     let gone = Ak::new(GONE.ak()).unwrap();
+    let before = net.host_ids(host, &l);
     let mut m = Mutation::new();
     m.purge_commit(c, t, gone.clone());
     m.remove_aspect(t, &GONE).unwrap();
-    net.engine(a).commit(m).unwrap();
+    let purge = net.engine(a).commit(m).unwrap().unwrap();
     net.feed(a, Event::Local);
     for _ in 0..50 {
         net.round();
-        assert!(net.host_ids(host, &l).len() as u64 <= full, "the peer stays within its cap");
+        assert!(net.host_capped(host, &l) <= full, "the peer stays within its cap");
     }
     net.run();
     net.advance(31_000);
-    assert!(!net.host_ids(host, &l).contains(&p), "the purged body left the full peer");
-    let mut m = Mutation::new();
-    m.set(t2, &GONE, &s("later")).unwrap();
-    net.engine(a).commit(m).unwrap();
-    net.feed(a, Event::Local);
-    net.run();
-    net.advance(31_000);
-    assert!(net.host_ids(host, &l).len() as u64 <= full, "the peer stays within its cap");
-    assert_eq!(net.engine(b).get(&t2, &gone).unwrap(), Some(s("later")), "a write after the purge fits in the room it freed");
+    let after = net.host_ids(host, &l);
+    assert!(!after.contains(&p), "the purged body left the full peer");
+    let request = blobs_of(&mut net, a, &l, &purge);
+    assert!(request.iter().all(|r| after.contains(r)), "the purge request is there");
+    assert!(after.iter().any(|x| !before.contains(x) && !request.contains(x)), "a body it lacked took the room freed");
+    assert_eq!(net.host_capped(host, &l), full, "within its cap");
 }
 
 // spec/permissions.md §3 (complete pass): a role commit pushed to a subscribed node ends
@@ -460,8 +457,8 @@ fn self_removal_crash_still_drops_spec_permissions_3() {
 
 // spec/permissions.md §3 (a self-removal drops once placed): a node leaving a group offline
 // that then applies a received role change on the group (the lost-access trigger runs) keeps
-// the group, and shows it leaving, while the host refuses its uploads; once the host takes the
-// removal, the admin learns it and the leaver drops the group.
+// the group, and shows it leaving, while the host pulls none of its writes; once the host takes
+// the removal, the admin learns it and the leaver drops the group.
 #[test]
 fn self_removal_kept_by_trigger_until_placed_spec_permissions_3() {
     let (mut net, host, [a, b, c], g, [t]) = hosted::<3, 1>(&[(1, Role::Write)], ["marker"], true);
@@ -477,17 +474,20 @@ fn self_removal_kept_by_trigger_until_placed_spec_permissions_3() {
     net.grant(a, g, ct_, Role::Read);
     net.feed(a, Event::Local);
     net.run();
-    net.restart_host_with(host, osis_host::HostPolicy { cap_entries: 0, ..osis_host::HostPolicy::default() });
+    net.unpulled_at.insert((b, host));
     net.set_online(b, true);
     for _ in 0..3 {
         net.run();
         net.advance(66_000);
     }
     assert!(net.engine(b).roster(&g).contains_key(&ct_), "b applied the admin's commit");
-    assert!(net.engine(a).roster(&g).contains_key(&bt), "the host refused b's removal");
+    assert!(net.engine(a).roster(&g).contains_key(&bt), "the host has not b's removal");
     assert_eq!(net.read(b, t), Some(s("marker")), "b keeps the group until its removal is placed");
     assert!(net.sync(b).label_status().iter().any(|l| l.group == g && l.leaving), "b shows the group leaving");
-    net.restart_host_with(host, osis_host::HostPolicy::default());
+    // pulled again from the start at the next open
+    net.unpulled_at.clear();
+    net.set_online(b, false);
+    net.set_online(b, true);
     for _ in 0..3 {
         net.run();
         net.advance(66_000);
@@ -499,7 +499,7 @@ fn self_removal_kept_by_trigger_until_placed_spec_permissions_3() {
 }
 
 // spec/permissions.md §3 (a self-removal drops once placed): leaving two groups, each drops
-// once its own removal is placed; one whose host refuses it holds back nothing else.
+// once its own removal is placed; one whose host does not pull it holds back nothing else.
 #[test]
 fn self_removals_drop_per_group_spec_permissions_3() {
     let mut net = Net::new();
@@ -521,7 +521,7 @@ fn self_removals_drop_per_group_spec_permissions_3() {
         let acts = net.sync(b).carry_out(done).unwrap();
         net.actions(b, acts);
     }
-    net.restart_host_with(h2, osis_host::HostPolicy { cap_entries: 0, ..osis_host::HostPolicy::default() });
+    net.unpulled_at.insert((b, h2));
     net.set_online(b, true);
     for _ in 0..3 {
         net.run();
@@ -529,7 +529,7 @@ fn self_removals_drop_per_group_spec_permissions_3() {
     }
     assert!(!net.engine(a).roster(&g1).contains_key(&bt) && net.engine(a).roster(&g2).contains_key(&bt));
     assert_eq!(net.read(b, t1), None, "g1's removal is placed: dropped");
-    assert_eq!(net.read(b, t2), Some(s("two")), "g2's is refused: kept");
+    assert_eq!(net.read(b, t2), Some(s("two")), "g2's is not there: kept");
     let status = net.sync(b).label_status();
     assert!(status.iter().any(|l| l.group == g2 && l.leaving) && !status.iter().any(|l| l.group == g1 && l.leaving));
 }
@@ -588,15 +588,18 @@ fn self_removal_shared_subgroup_spec_permissions_3() {
     assert_eq!((net.read(b, t1), net.read(b, t2), net.read(b, t3)), (None, Some(s("two")), Some(s("three"))), "S still read through g2");
     net.set_online(b, false);
     leave(&mut net, g2);
-    net.restart_host_with(h2, osis_host::HostPolicy { cap_entries: 0, ..osis_host::HostPolicy::default() });
+    net.unpulled_at.insert((b, h2));
     net.set_online(b, true);
     for _ in 0..3 {
         net.run();
         net.advance(66_000);
     }
-    assert!(net.engine(a).roster(&g2).contains_key(&bt), "h2 refused the removal");
+    assert!(net.engine(a).roster(&g2).contains_key(&bt), "h2 has not the removal");
     assert_eq!((net.read(b, t2), net.read(b, t3)), (Some(s("two")), Some(s("three"))), "S waits for g2's removal");
-    net.restart_host_with(h2, osis_host::HostPolicy::default());
+    // pulled again from the start at the next open
+    net.unpulled_at.clear();
+    net.set_online(b, false);
+    net.set_online(b, true);
     for _ in 0..3 {
         net.run();
         net.advance(66_000);

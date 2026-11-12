@@ -213,6 +213,8 @@ impl SyncEngine {
             relisted: None,
             entry_box: None,
             report_at: None,
+            full: false,
+            lacking: 0,
             head_moved_at: None,
             writers: Vec::new(),
         };

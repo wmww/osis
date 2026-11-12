@@ -83,7 +83,7 @@ impl Fixture {
     /// A stamped entry of `blob` under the head's write key (wrap: one byte repeated).
     pub fn entry(&self, blob: Vec<u8>) -> Entry {
         let wrap = [blob.len() as u8; WRAP_LEN];
-        let stamp = sign_stamp(&self.write, &self.label, &osis_label::blob_id(&blob), &wrap);
+        let stamp = sign_stamp(&self.write, &self.label, &osis_label::blob_id(&blob), &wrap, false);
         Entry { blob, wrap, stamp, replaces: Vec::new() }
     }
 }
@@ -164,13 +164,13 @@ impl Label {
 
     pub fn entry_by(&self, blob: Vec<u8>, write: &SigningSecret) -> Entry {
         let wrap: Wrap = [(blob.len() % 251) as u8; WRAP_LEN];
-        let stamp = sign_stamp(write, &self.id, &osis_label::blob_id(&blob), &wrap);
+        let stamp = sign_stamp(write, &self.id, &osis_label::blob_id(&blob), &wrap, false);
         Entry { blob, wrap, stamp, replaces: Vec::new() }
     }
 
     pub fn deposit(&self, blob: Vec<u8>, key: &SigningSecret) -> Command {
         let wrap: Wrap = [7; WRAP_LEN];
-        let sig = sign_deposit(key, &self.id, &osis_label::blob_id(&blob), &wrap);
+        let sig = sign_deposit(key, &self.id, &osis_label::blob_id(&blob), &wrap, false);
         Command::Deposit { label: self.id, blob, wrap, sig }
     }
 
@@ -218,7 +218,7 @@ pub fn messages() -> Vec<(&'static str, Message)> {
     let claim = f.genesis.claim_key(&f.reader).expect("claim key");
     let deposited = Fixture::blob(2);
     let dep_wrap = [0x78; WRAP_LEN];
-    let dep_sig = osis_label::sign_deposit(&f.deposit, &l, &osis_label::blob_id(&deposited), &dep_wrap);
+    let dep_sig = osis_label::sign_deposit(&f.deposit, &l, &osis_label::blob_id(&deposited), &dep_wrap, false);
     let dk = osis_crypto::DeleteSecret::derive(&s32(0x7a));
     vec![
         ("error", Message::Error { id: 1, code: Code::NOT_OPENED }),

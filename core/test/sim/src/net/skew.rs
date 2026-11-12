@@ -105,7 +105,7 @@ pub fn future_format(s: Seeds) -> Res<Report> {
     let read = k.read.clone().ok_or_else(|| sim.fail("no read secret"))?;
     let wrap = osis_crypto::wrap(&read, &bid, &key, 1).map_err(|e| sim.fail(e.to_string()))?;
     let write = k.keys.write.clone().ok_or_else(|| sim.fail("no write key"))?;
-    let stamp = osis_label::sign_stamp(&write, &k.label, &bid, &wrap);
+    let stamp = osis_label::sign_stamp(&write, &k.label, &bid, &wrap, false);
     let mut rg = sim.rogue(s0)?;
     sim.rogue_do(&mut rg, Command::Upload { label: k.label, entries: vec![Entry { blob, wrap, stamp, replaces: Vec::new() }] })?;
     sim.rogue_close(&mut rg);

@@ -391,6 +391,7 @@ fn events(evs: &[(osis_base::LabelId, osis_proto::Event)]) -> String {
             osis_proto::Event::Added { blob_id, blob, stamp, .. } => format!("{}+{}{}{}", short(&l.0), short(&blob_id.0), if stamp.is_some() { "s" } else { "" }, if blob.is_some() { "b" } else { "" }),
             osis_proto::Event::Deleted(b) => format!("{}-{}", short(&l.0), short(&b.0)),
             osis_proto::Event::Head(_) => format!("{} head", short(&l.0)),
+            osis_proto::Event::Full(f) => format!("{} full {f}", short(&l.0)),
         })
         .collect();
     v.join(" ")

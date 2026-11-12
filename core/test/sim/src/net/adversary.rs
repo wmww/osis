@@ -34,7 +34,7 @@ pub fn stamped(sim: &NetSim, k: &LabelKeys, id: &BlobId, blob: Vec<u8>, key: &os
     let read = k.read.clone().ok_or_else(|| sim.fail("no read secret held"))?;
     let wrap = osis_crypto::wrap(&read, id, key, 1).map_err(|e| sim.fail(e.to_string()))?;
     let write = k.keys.write.clone().ok_or_else(|| sim.fail("no write key held"))?;
-    let stamp = osis_label::sign_stamp(&write, &k.label, id, &wrap);
+    let stamp = osis_label::sign_stamp(&write, &k.label, id, &wrap, false);
     Ok(Entry { blob, wrap, stamp, replaces: Vec::new() })
 }
 
@@ -178,7 +178,7 @@ pub fn removed_replayer(s: Seeds) -> Res<Report> {
         let (id, blob, key) = (sealed.id, sealed.blob, sealed.key);
         let wrap = osis_crypto::wrap(&read, &id, &key, 1).map_err(|e| sim.fail(e.to_string()))?;
         if let Some(dk) = &old.deposit {
-            let sig = osis_label::sign_deposit(dk, &old.label, &id, &wrap);
+            let sig = osis_label::sign_deposit(dk, &old.label, &id, &wrap, false);
             let ev = sim.rogue_do(&mut r, Command::Deposit { label: old.label, blob: blob.clone(), wrap, sig })?;
             // its stale key learns the code alone: no head, no budget (spec/sync.md §5)
             if ev.iter().any(|e| matches!(e, ClientEvent::Budget { budget: Some(_), .. })) {
@@ -354,7 +354,7 @@ pub fn deposit_flood(s: Seeds) -> Res<Report> {
         let sealed = sim.engine(f)?.seal(&body, osis_label::Class::Durable, &[], &mut rng).map_err(|e| sim.fail(e.to_string()))?.ok_or_else(|| sim.fail("no secret to seal under"))?;
         let (id, blob, key) = (sealed.id, sealed.blob, sealed.key);
         let wrap = osis_crypto::wrap(&read, &id, &key, 1).map_err(|e| sim.fail(e.to_string()))?;
-        let sig = osis_label::sign_deposit(&dk, &k.label, &id, &wrap);
+        let sig = osis_label::sign_deposit(&dk, &k.label, &id, &wrap, false);
         let evs = sim.rogue_do(&mut r, Command::Deposit { label: k.label, blob, wrap, sig })?;
         for e in &evs {
             if let ClientEvent::Budget { code: Code::OK, budget: Some((entries_left, _)), .. } = e

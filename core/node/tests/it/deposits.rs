@@ -102,9 +102,9 @@ fn a_deposit_item_is_taken_only_signed_for_a_held_inbox_spec_wire_11_2() {
     let id = osis_label::blob_id(&blob);
     let item = |label: LabelId, sig| OfferItem::Deposit { label, blob: blob.clone(), wrap, sig };
     let elsewhere = LabelId([7; 16]);
-    let good = osis_label::sign_deposit(&key, &inbox.label, &id, &wrap);
-    let other = osis_label::sign_deposit(&key, &elsewhere, &id, &wrap);
-    let bad = osis_label::sign_deposit(&osis_crypto::SigningSecret::from_seed(&osis_crypto::Secret32::from_bytes([9; 32])), &inbox.label, &id, &wrap);
+    let good = osis_label::sign_deposit(&key, &inbox.label, &id, &wrap, false);
+    let other = osis_label::sign_deposit(&key, &elsewhere, &id, &wrap, false);
+    let bad = osis_label::sign_deposit(&osis_crypto::SigningSecret::from_seed(&osis_crypto::Secret32::from_bytes([9; 32])), &inbox.label, &id, &wrap, false);
     let ans = offer(&mut net, b, &mut p, vec![item(elsewhere, other), item(inbox.label, bad), item(inbox.label, good)]);
     assert_eq!(ans, vec![(Code::NOT_ADMITTED, None), (Code::NOT_ADMITTED, None), (Code::OK, None)]);
     assert!(net.sync(b).entries(&inbox.label).iter().any(|(x, _)| *x == id), "taken into the inbox");
@@ -133,7 +133,7 @@ fn a_deposit_item_is_judged_by_what_the_receiver_proved_here_spec_sync_10() {
     let blob = osis_proto::examples::Fixture::blob(7);
     let wrap = [5; osis_crypto::WRAP_LEN];
     let id = osis_label::blob_id(&blob);
-    let sig = osis_label::sign_deposit(&key, &inbox.label, &id, &wrap);
+    let sig = osis_label::sign_deposit(&key, &inbox.label, &id, &wrap, false);
     let ans = offer(&mut net, b, &mut p, vec![OfferItem::Deposit { label: inbox.label, blob, wrap, sig }]);
     assert_eq!(ans, vec![(Code::NOT_ADMITTED, None)], "b proved no actor here");
     assert!(!net.sync(b).entries(&inbox.label).iter().any(|(x, _)| *x == id));

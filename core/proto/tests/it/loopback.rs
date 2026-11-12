@@ -410,7 +410,7 @@ fn deposit_answered_by_an_error_is_refused_for_now_spec_sync_5() {
     net.setup(&l);
     let (b, wrap): (Vec<u8>, Wrap) = (blob(0), [7; osis_crypto::WRAP_LEN]);
     let blob_id = osis_label::blob_id(&b);
-    let sig = sign_deposit(&l.head_keys().deposit, &l.id, &blob_id, &wrap);
+    let sig = sign_deposit(&l.head_keys().deposit, &l.id, &blob_id, &wrap, false);
     let co = net.clients[0].handle(net.now, ClientInput::Command(Command::Deposit { label: l.id, blob: b, wrap, sig }));
     net.client_out(0, co);
     let mut d = FrameDecoder::default();
@@ -432,7 +432,7 @@ fn deposit_budget() {
     let deposit = |l: &Label, n: u64, k: &SigningSecret| {
         let b = blob(n);
         let wrap: Wrap = [7; osis_crypto::WRAP_LEN];
-        let sig = sign_deposit(k, &l.id, &osis_label::blob_id(&b), &wrap);
+        let sig = sign_deposit(k, &l.id, &osis_label::blob_id(&b), &wrap, false);
         Command::Deposit { label: l.id, blob: b, wrap, sig }
     };
     let dk = l.head_keys().deposit.clone();
@@ -471,7 +471,7 @@ fn deposit_ephemeral_held_relay_only_refused_spec_sync_5() {
         let p = Prefix::new(salt(u64::from(n)), Some(WallMs(T0 + osis_base::format::MAX_DRIFT_MS)), vec![]).unwrap().with_class(class);
         let b = osis_label::frame(&p, &[n; 50], &mut osis_crypto::SeededRng::from_seed([n; 32])).unwrap().1;
         let wrap: Wrap = [7; osis_crypto::WRAP_LEN];
-        let sig = sign_deposit(&dk, &l.id, &osis_label::blob_id(&b), &wrap);
+        let sig = sign_deposit(&dk, &l.id, &osis_label::blob_id(&b), &wrap, false);
         let ev = net.run(0, Command::Deposit { label: l.id, blob: b.clone(), wrap, sig });
         let held = net.store.entry(&l.id, &osis_label::blob_id(&b)).unwrap();
         if class == osis_label::Class::Relay {

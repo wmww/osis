@@ -305,14 +305,14 @@ impl SyncEngine {
         if let Some(d) = &deposit
             && let (Some(wrap), Some(blob)) = (self.state.entries.get(&(l, id)).map(|e| e.wrap), self.engine.blob(&id)?)
         {
-            self.queue_deposit(l, hosts, d, blob, wrap, None);
+            self.queue_deposit(l, hosts, d, blob, wrap, None, false);
         }
         self.place_linked(l, c, parts)?;
         if let Some(d) = &deposit {
             for id in self.engine.linked_blobs(c, parts)? {
                 let wrap = self.state.entries.get(&(l, id)).map(|e| e.wrap);
                 if let (Some(wrap), Some(blob)) = (wrap, self.engine.blob(&id)?) {
-                    self.queue_deposit(l, hosts, d, blob, wrap, None);
+                    self.queue_deposit(l, hosts, d, blob, wrap, None, false);
                 }
             }
         }
@@ -509,7 +509,8 @@ impl SyncEngine {
             },
         };
         let Some(seed) = seed else { return Ok(false) };
-        let sig = osis_label::sign_deposit(&osis_crypto::deposit_key(&seed, l), l, b, &o.wrap);
+        let role = self.state.entries.get(&(*l, *b)).is_some_and(|e| self.role_entry(e));
+        let sig = osis_label::sign_deposit(&osis_crypto::deposit_key(&seed, l), l, b, &o.wrap, role);
         if sig == o.sig {
             return Ok(false);
         }
@@ -611,24 +612,25 @@ impl SyncEngine {
         let d = osis_crypto::deposit_key(&osis_crypto::Secret32::from_bytes(seed), &label);
         let wrap = osis_crypto::filler_wrap(&mut *self.rng);
         if !super::peers::hostless(hosts) {
-            self.queue_deposit(label, hosts, &d, blob, wrap, delivery);
+            self.queue_deposit(label, hosts, &d, blob, wrap, delivery, false);
         } else if self.labels().iter().any(|(_, x)| x.id == label) {
             // an inbox this node reads and no host serves: deposited here, its other nodes get it
             // by their streams
             self.local_inbox.push((label, blob, wrap));
         } else {
             // one no host serves: a Deposit item to whichever of its nodes is connected first
-            let sig = osis_label::sign_deposit(&d, &label, &osis_label::blob_id(&blob), &wrap);
+            let sig = osis_label::sign_deposit(&d, &label, &osis_label::blob_id(&blob), &wrap, false);
             self.queue_out(label, super::state::Dest::Nodes(*actor), blob, wrap, sig, delivery);
         }
         Ok(())
     }
 
-    /// Queues a deposit under `label`, signed now: kept durably until each of its hosts takes
-    /// it, refuses it for good, or it is moot (`deposit_moot`); a crash, a cut or forgetting the
-    /// label does not recall it.
-    pub(crate) fn queue_deposit(&mut self, label: LabelId, hosts: &[Address], deposit: &osis_crypto::SigningSecret, blob: Vec<u8>, wrap: [u8; osis_crypto::WRAP_LEN], delivery: Option<(Tid, CommitId)>) {
-        let sig = osis_label::sign_deposit(deposit, &label, &osis_label::blob_id(&blob), &wrap);
+    /// Queues a deposit under `label`, signed now (as a role entry when `role`, `stamp_entry`):
+    /// kept durably until each of its hosts takes it, refuses it for good, or it is moot
+    /// (`deposit_moot`); a crash, a cut or forgetting the label does not recall it.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn queue_deposit(&mut self, label: LabelId, hosts: &[Address], deposit: &osis_crypto::SigningSecret, blob: Vec<u8>, wrap: [u8; osis_crypto::WRAP_LEN], delivery: Option<(Tid, CommitId)>, role: bool) {
+        let sig = osis_label::sign_deposit(deposit, &label, &osis_label::blob_id(&blob), &wrap, role);
         for host in hosts {
             self.queue_out(label, super::state::Dest::Host(host.clone()), blob.clone(), wrap, sig, delivery);
         }

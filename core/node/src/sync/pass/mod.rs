@@ -249,11 +249,23 @@ impl SyncEngine {
     }
 
     /// Stamps entry `id` under `l` and keeps the stamp, so a later pass does not promote it again.
-    pub(super) fn stamp_entry(&mut self, l: LabelId, id: BlobId, mut e: Entry, write: &osis_crypto::SigningSecret) -> osis_crypto::Signature {
-        let stamp = osis_label::sign_stamp(write, &l, &id, &e.wrap);
+    /// One deletes are judged by (`role`, or a role commit or request of its own) is stamped as
+    /// such: a peer that cannot read `l` takes it past its storage caps (spec/sync.md §5).
+    pub(super) fn stamp_entry(&mut self, l: LabelId, id: BlobId, mut e: Entry, write: &osis_crypto::SigningSecret, role: bool) -> osis_crypto::Signature {
+        let role = role || self.role_entry(&e);
+        let stamp = osis_label::sign_stamp(write, &l, &id, &e.wrap, role);
         e.stamp = Some(stamp);
         self.state.set_entry(l, id, e);
         stamp
+    }
+
+    /// Whether entry `e` is a role commit or a request this node opened: what deletes are judged
+    /// by (`judges_deletes`; its chunks are such entries by the pass's order, `Out::prio`).
+    pub(crate) fn role_entry(&self, e: &Entry) -> bool {
+        match &e.kind {
+            Kind::Commit { commit, .. } if !e.cert => self.engine.core.ix.commits.get(commit).is_some_and(|m| m.view.kind == osis_commit::Kind::Role || m.view.purges),
+            _ => false,
+        }
     }
 
     /// Readies `w` for a pass (`prepare`): whether it judges everything, and its scope.
@@ -409,9 +421,9 @@ impl SyncEngine {
 
     /// The sources of `l` a pass acts on: connected peers that cannot read it where this node
     /// opened it by a sync-key or claim Hit and whose stream read it to their log's end, with
-    /// nothing registering there.
+    /// nothing registering there. A peer that reads it is none (it judges its own store).
     pub(crate) fn sources(&self, l: &LabelId) -> Vec<ConnId> {
-        self.conns.iter().filter(|(id, c)| c.up && c.labels.get(l).is_some_and(|x| x.phase == super::Phase::Open && x.ready()) && self.read_as_host(**id, l)).map(|(id, _)| *id).collect()
+        self.conns.iter().filter(|(id, c)| c.up && c.labels.get(l).is_some_and(|x| x.phase == super::Phase::Open && x.ready()) && self.read_as_host(**id, l) && !self.shared_reads(**id, l)).map(|(id, _)| *id).collect()
     }
 
     /// The keys of `head` this node may use, and whether it may place under read: never encrypt
@@ -495,10 +507,11 @@ impl SyncEngine {
                 if !scope.is_all() {
                     cands.extend(&ours);
                 }
+                let role: BTreeSet<BlobId> = sends.iter().filter(|o| o.prio <= 1).map(|o| o.id).collect();
                 for id in cands {
                     let Some(e) = self.state.entries.get(&(l, id)).cloned() else { continue };
                     if e.stamp.is_none() && (e.cert || ours.contains(&id)) {
-                        self.stamp_entry(l, id, e, wk);
+                        self.stamp_entry(l, id, e, wk, role.contains(&id));
                     }
                 }
                 self.stamp_inbox(l, &scope, wk)?;
@@ -570,12 +583,14 @@ impl SyncEngine {
         let mut deposits = Vec::new();
         let on_head = p.id == own.id;
         let again = self.encrypt_again(host, own, (sends, behind), bodies, snaps, left)?;
+        let mut lacking = 0;
         for o in sends.iter().chain(&again) {
             if !lacks(self, &o.id) {
                 continue;
             }
             // judged again next pass until the source has it
             leave(o, left);
+            lacking += 1;
             let Some(e) = self.state.entries.get(&(l, o.id)).cloned() else { continue };
             let stamped = e.stamp.is_some_and(|s| osis_label::verify_stamp(&p.stamps, &l, &o.id, &e.wrap, &s).is_ok());
             // a role commit the source takes once it pulls it; at a source on an older head
@@ -584,14 +599,14 @@ impl SyncEngine {
             roles_behind |= o.prio <= 1 && p.keys.is_writer() && on_head;
             match &own.keys.write {
                 Some(wk) if on_head && !stamped => {
-                    self.stamp_entry(l, o.id, e, wk);
+                    self.stamp_entry(l, o.id, e, wk, o.prio <= 1);
                 }
                 // a source on an older head (its step refused for now, spec/sync.md §5) takes
                 // what is stamped for its head: stamped for it unless the stamp already serves
                 // another source, which keeps it (its head moving judges everything again)
                 Some(_) if !stamped && !self.stamp_serves_a_source(l, o.id, &e) => {
                     if let Some(wk) = &p.keys.write {
-                        self.stamp_entry(l, o.id, e, wk);
+                        self.stamp_entry(l, o.id, e, wk, o.prio <= 1);
                     }
                 }
                 // stamped for its head: one it read before its head moved here was refused under
@@ -602,6 +617,9 @@ impl SyncEngine {
                 None if !stamped && (self.mine(&e) || matches!(o.of, Some(Touch::Commit(_)))) => deposits.push(o.id),
                 None => {}
             }
+        }
+        if let Some(lc) = self.lc_mut(conn, &l) {
+            lc.lacking = lacking;
         }
         self.deposit_items(conn, &p, deposits, out)?;
         self.clear_deposits(conn, host, &p, out)?;

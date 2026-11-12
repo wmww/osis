@@ -24,8 +24,8 @@ fn import_replays_records() {
     let (b1, b2) = (Fixture::blob(1), Fixture::blob(2));
     let (id1, id2) = (osis_label::blob_id(&b1), osis_label::blob_id(&b2));
     let wrap = [9u8; osis_crypto::WRAP_LEN];
-    let stamp = sign_stamp(&f.write, &f.label, &id1, &wrap);
-    let forged = sign_stamp(&SigningSecret::from_seed(&Secret32::from_bytes([99; 32])), &f.label, &id2, &wrap);
+    let stamp = sign_stamp(&f.write, &f.label, &id1, &wrap, false);
+    let forged = sign_stamp(&SigningSecret::from_seed(&Secret32::from_bytes([99; 32])), &f.label, &id2, &wrap, false);
     let mut w = BundleWriter::new(Vec::new()).unwrap();
     let l = f.label;
     for r in [

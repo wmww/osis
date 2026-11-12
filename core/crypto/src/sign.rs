@@ -24,10 +24,13 @@ pub enum Domain {
     Merge,
     /// An actor's proof on a connection (spec/sync.md §10, spec/wire.md §11.2).
     ConnectionProof,
+    /// A stamp or deposit signature of an entry deletes are judged by: a role commit or a
+    /// request (spec/sync.md §5, Storage caps).
+    RoleEntry,
 }
 
 impl Domain {
-    pub const ALL: [Domain; 11] = [
+    pub const ALL: [Domain; 12] = [
         Domain::Commit,
         Domain::LabelRegister,
         Domain::LabelOpen,
@@ -39,6 +42,7 @@ impl Domain {
         Domain::Inner,
         Domain::Merge,
         Domain::ConnectionProof,
+        Domain::RoleEntry,
     ];
     pub const fn as_str(self) -> &'static str {
         match self {
@@ -53,6 +57,7 @@ impl Domain {
             Domain::Inner => "osis v1 inner",
             Domain::Merge => "osis v1 merge",
             Domain::ConnectionProof => "osis v1 connection proof",
+            Domain::RoleEntry => "osis v1 role entry",
         }
     }
     fn message(self, digest: &[u8; 32]) -> Vec<u8> {

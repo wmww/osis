@@ -514,7 +514,7 @@ fn junk(l: &LabelId, tag: u8, n: u8, stamp_key: Option<&osis_crypto::SigningSecr
         .map(|b| {
             let id = osis_label::blob_id(b);
             let wrap = [tag; osis_crypto::WRAP_LEN];
-            osis_proto::Event::Added { blob_id: id, blob: Some(b.clone()), wrap, stamp: stamp_key.map(|k| osis_label::sign_stamp(k, l, &id, &wrap)) }
+            osis_proto::Event::Added { blob_id: id, blob: Some(b.clone()), wrap, stamp: stamp_key.map(|k| osis_label::sign_stamp(k, l, &id, &wrap, false)) }
         })
         .collect();
     (ids, crate::net::stream_msg(*l, events, 1 << 40))
@@ -1148,7 +1148,7 @@ impl OneGroup {
         let write = net.engine(w).head_keys(&g, gl.index, &head).unwrap().write.unwrap();
         let rep = osis_label::DeleteItem::sign_by(&write, &[(3, &wk)], p.salt(), &hb, &l, id).unwrap();
         let bid = osis_label::blob_id(&blob);
-        let stamp = osis_label::sign_stamp(&write, &l, &bid, &wrap);
+        let stamp = osis_label::sign_stamp(&write, &l, &bid, &wrap, false);
         let conn = net.conn_to(w, host).expect("connected");
         let entry = osis_proto::Entry { blob, wrap, stamp, replaces: vec![rep] };
         net.actions(w, vec![Action::Send { conn, bytes: frame(Message::Upload { id: 900_020, label: l, entries: vec![entry] }) }]);

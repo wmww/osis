@@ -286,7 +286,7 @@ cursor := [log_id, seq]
 outcome := [0, value] | [1, code, detail*]
 payload := [0, value] | [1] | [2, value]
 suspect := [thing, ak, digest]
-event  := [0, blob_id, Opt(blob), wrap, Opt(stamp)] | [1, blob_id] | [3, step]
+event  := [0, blob_id, Opt(blob), wrap, Opt(stamp)] | [1, blob_id] | [2, full] | [3, step]
 range  := [lower, upper, mode]
 mode   := [0, fingerprint] | [1, [blob_id*]] | [2, [blob_id*], [blob_id*]]
 ```
@@ -313,11 +313,11 @@ Steps and claim sets (§8) and `entry_box` (a `box` value, §7) are their canoni
   - 12 when that genesis step does not fit a storage cap (a child step that does not fit: spec/sync.md §5);
   - 4 when registrations are rate-limited.
 - **Path** (opened labels): the registration path after step `after` (from the genesis step when absent) toward the head, without claim sets, at most 48 steps per reply; `more` is true when steps remain. An `after` that is neither the head nor on the path is answered Error 1.
-- **Upload** and the entries of Sync: `stamp` under `"osis v1 upload"`, digest BLAKE3(canonical `[label_id, blob_id, wrap]`). Status gives one code per entry in order.
+- **Upload** and the entries of Sync: `stamp` under `"osis v1 upload"` (`"osis v1 role entry"` for a role entry, spec/sync.md §5), digest BLAKE3(canonical `[label_id, blob_id, wrap]`). Status gives one code per entry in order.
   - A relay-only entry (prefix class 2) is not stored: the receiver admits it (spec/sync.md §5), pushes it to the subscribers of the label on its other connections as a Push of one add event carrying the blob (the Push's cursor the subscription's current position) and answers 0.
   - A repeat of a blob ID it pushed under that label before the blob's expiry is answered 0 and pushed to nobody.
 - **Replace** (an entry's replace list, spec/sync.md §5): each carries the signatures of a Delete item of `blob_id`, checked as for Delete except that one commitment group covered suffices. Status code 1 or 9 for a replacement's signatures refuses its entry.
-- **Deposit**: `sig` by the deposit key under `"osis v1 deposit"`, digest as for a stamp. Budget reports what remains of the label's deposit budget after the request, present only when `sig` verified under the head's deposit key (spec/sync.md §5).
+- **Deposit**: `sig` by the deposit key under `"osis v1 deposit"` (`"osis v1 role entry"` for a role entry), digest as for a stamp. Budget reports what remains of the label's deposit budget after the request, present only when `sig` verified under the head's deposit key (spec/sync.md §5).
 - **Delete**: per item, signatures under `"osis v1 delete"` over digest BLAKE3(canonical `[label_id, blob_id, [level*]]`), the levels those of its `[level, dsig]` pairs, ascending, distinct, within 1..3:
   - with no pair, `sig` by the head's delete key;
   - else each `dsig` by that level's delete key, verifying under the commitment at that level of at least one of the blob prefix's groups (spec/crypto.md §7), every group covered by at least one pair, and `sig` by the head's write key when any level is 3, else its sync key (spec/sync.md §5). A pair verifying under no group refuses the item.
@@ -335,7 +335,7 @@ Steps and claim sets (§8) and `entry_box` (a `box` value, §7) are their canoni
   - **`max_reply`**, in `SMALL_REPLY..=REPLY_BUDGET`, bounds the reply's frame body. A peer ends the page before an event that would pass it, so a reply asked below `REPLY_BUDGET` may hold no event, and one asked at `REPLY_BUDGET` holds at least one.
   - A first page SHOULD ask 64 KiB plus 40 bytes per `gained` and 10 per `entry`, and later pages `REPLY_BUDGET`; a Fetch 64 KiB per ID.
   - `more` true: repeat with the returned cursor.
-- **Events**: 0 an entry added or a deposited one stamped, its wrap and stamp replaced (no stamp: deposited), 1 deleted, 3 a new head (without claim set); 2 is unused. Expiry produces no event.
+- **Events**: 0 an entry added or a deposited one stamped, its wrap and stamp replaced (no stamp: deposited), 1 deleted, 2 the sender is full for the label (`full` a bool: true full, false room again; only in a Stream with no cursor, spec/sync.md §10 Full), 3 a new head (without claim set). Expiry produces no event.
 - **Fetch** (spec/sync.md §5): items in request order, possibly a prefix of the request when the reply would exceed `max_reply` (in `SMALL_REPLY..=REPLY_BUDGET`), possibly none below `REPLY_BUDGET`; the requester asks the rest again under `REPLY_BUDGET`.
 - **Subscribe** (opened labels): the peer then sends Push with each new run of log events after the cursor of the label's last Sync on this connection that returned `more` false (else after the log head at Subscribe), with blobs as in Sync under the connection's last `inline_limit` for that label, and the relay-only entries other connections upload.
 - **Stranded** and **Suspect** (spec/permissions.md §4): node to node only, answered Ok whatever the receiver does with them. Stranded names a label the sender is stranded on and the holder (a tid) it reads the label's actor through, with that holder's holder keys (§9); Suspect carries suspect entries of things in the label's closure, `thing` a tid, `ak` an AK, `digest` 16 bytes, as many as fit `MAX_MESSAGE` per message.

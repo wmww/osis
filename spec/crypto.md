@@ -23,6 +23,7 @@
   - `"osis v1 label open"`
   - `"osis v1 upload"` (stamps, spec/sync.md §5)
   - `"osis v1 deposit"`
+  - `"osis v1 role entry"` (a stamp or deposit signature of a role entry, in place of the two above, spec/sync.md §5)
   - `"osis v1 delete"`
   - `"osis v1 lan announce"` (by a dialable key, spec/sync.md §10)
   - `"osis v1 connection proof"` (a connection proof, spec/wire.md §11.2: over the prover's role, the verifier's challenge and the listener's key)

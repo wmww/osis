@@ -340,8 +340,8 @@ pub struct GroupSync {
     pub state: SyncState,
     /// When it was last `Synced`, as far as this run of the node knows.
     pub last_sync: Option<Time>,
-    /// Connected nodes this node holds to serve it that do not take it: state `Refused` when no
-    /// node has it open, else informational.
+    /// Nodes this node holds to serve it that do not take it, or are full and take no more of
+    /// it for now: state `Refused` when no node has it open, else informational.
     pub refused_by: Vec<Address>,
     /// This node left the group and keeps it until a connected node has its removal; stays set
     /// while none has.

@@ -219,6 +219,19 @@ fn check(k: &HeadKeys, key: StepKey, domain: Domain, digest: &[u8; 32], sig: &Si
     *struck = true;
     Code::REFUSED
 }
+/// `check` of an entry's stamp or deposit signature (`plain`: `Upload` or `Deposit`), or of one
+/// under `RoleEntry` (spec/sync.md §5): its code, and whether it verified as a role entry.
+fn check_entry(k: &HeadKeys, key: StepKey, plain: Domain, digest: &[u8; 32], sig: &Signature, struck: &mut bool) -> (Code, bool) {
+    let mut first = *struck;
+    let code = check(k, key, plain, digest, sig, &mut first);
+    if code != Code::REFUSED {
+        *struck = first;
+        return (code, false);
+    }
+    let code = check(k, key, Domain::RoleEntry, digest, sig, struck);
+    (code, code == Code::OK)
+}
+
 #[derive(Clone)]
 
 pub struct ServingSession {
@@ -1340,7 +1353,7 @@ impl ServingSession {
         // An oversized blob never gets here: the message decoder refuses it (msg tests `field_sizes`).
         debug_assert!(blob.len() <= osis_base::format::MAX_BLOB);
         let Some(k) = head_keys(&mut self.keys, store, label)? else { return Ok(Code::UNKNOWN_LABEL) };
-        let code = check(k, StepKey::Write, Domain::Upload, &entry_digest(label, &blob_id, &wrap), &stamp, &mut self.struck);
+        let (code, role) = check_entry(k, StepKey::Write, Domain::Upload, &entry_digest(label, &blob_id, &wrap), &stamp, &mut self.struck);
         if code != Code::OK {
             return Ok(code);
         }
@@ -1360,7 +1373,7 @@ impl ServingSession {
         if !replaces.is_empty() && host_prefix(blob).is_ok_and(|p| p.is_some_and(|p| p.class() == Class::Relay)) {
             return Ok(Code::REFUSED);
         }
-        match put_stamped(store, now, label, blob_id, blob, wrap, stamp, &replaced)? {
+        match put_stamped(store, now, label, blob_id, blob, wrap, stamp, &replaced, role)? {
             Taken::Relay(r) => {
                 out.push(ServingOutput::Relay(r));
                 Ok(Code::OK)
@@ -1452,7 +1465,7 @@ pub enum Taken {
 /// §5): a relay-only blob passes the relay gate and is not stored; an expired or tombstoned
 /// one is refused. Shared by a session's Upload and node sync's pull of a sync ID it cannot read.
 #[allow(clippy::too_many_arguments)]
-pub fn put_stamped(store: &mut dyn LabelStore, now: u64, label: &LabelId, blob_id: BlobId, blob: &[u8], wrap: Wrap, stamp: Signature, replaced: &[BlobId]) -> Result<Taken, StoreError> {
+pub fn put_stamped(store: &mut dyn LabelStore, now: u64, label: &LabelId, blob_id: BlobId, blob: &[u8], wrap: Wrap, stamp: Signature, replaced: &[BlobId], role: bool) -> Result<Taken, StoreError> {
     let Ok(prefix) = host_prefix(blob) else { return Ok(Taken::Code(Code::MALFORMED)) };
     let class = prefix.as_ref().map(|p| p.class()).unwrap_or_default();
     let expiry = prefix.and_then(|p| p.expiry()).map(|t| t.0);
@@ -1469,7 +1482,7 @@ pub fn put_stamped(store: &mut dyn LabelStore, now: u64, label: &LabelId, blob_i
     if store.tombstoned(label, &blob_id)? {
         return Ok(Taken::Code(Code::TOMBSTONED));
     }
-    Ok(Taken::Code(store.put(label, Put { blob_id, blob, wrap, stamp: Some(stamp), expiry, ephemeral: class.in_memory(), replaces: replaced, now })?))
+    Ok(Taken::Code(store.put(label, Put { blob_id, blob, wrap, stamp: Some(stamp), expiry, ephemeral: class.in_memory(), replaces: replaced, now, role })?))
 }
 
 /// A stamped entry pulled from a reader of `label` at a node that cannot read it (spec/sync.md
@@ -1478,11 +1491,11 @@ pub fn put_stamped(store: &mut dyn LabelStore, now: u64, label: &LabelId, blob_i
 #[allow(clippy::too_many_arguments)]
 pub fn pulled(store: &mut dyn LabelStore, now: u64, label: &LabelId, k: &HeadKeys, blob: &[u8], wrap: Wrap, stamp: Signature, struck: &mut bool) -> Result<Taken, StoreError> {
     let blob_id = osis_label::blob_id(blob);
-    let code = check(k, StepKey::Write, Domain::Upload, &entry_digest(label, &blob_id, &wrap), &stamp, struck);
+    let (code, role) = check_entry(k, StepKey::Write, Domain::Upload, &entry_digest(label, &blob_id, &wrap), &stamp, struck);
     if code != Code::OK {
         return Ok(Taken::Code(code));
     }
-    put_stamped(store, now, label, blob_id, blob, wrap, stamp, &[])
+    put_stamped(store, now, label, blob_id, blob, wrap, stamp, &[], role)
 }
 
 /// A Deposit of `blob` under `label` (spec/sync.md §5), whose head keys are `k`: its code, and
@@ -1493,7 +1506,7 @@ pub fn pulled(store: &mut dyn LabelStore, now: u64, label: &LabelId, k: &HeadKey
 #[allow(clippy::too_many_arguments)]
 pub fn deposit(store: &mut dyn LabelStore, now: u64, label: &LabelId, k: &HeadKeys, blob: &[u8], wrap: Wrap, sig: &Signature, struck: &mut bool) -> Result<(Code, bool), StoreError> {
     let blob_id = osis_label::blob_id(blob);
-    let code = check(k, StepKey::Deposit, Domain::Deposit, &entry_digest(label, &blob_id, &wrap), sig, struck);
+    let (code, role) = check_entry(k, StepKey::Deposit, Domain::Deposit, &entry_digest(label, &blob_id, &wrap), sig, struck);
     if code != Code::OK {
         return Ok((code, false));
     }
@@ -1509,7 +1522,7 @@ pub fn deposit(store: &mut dyn LabelStore, now: u64, label: &LabelId, k: &HeadKe
     if store.tombstoned(label, &blob_id)? {
         return Ok((Code::TOMBSTONED, true));
     }
-    Ok((store.put(label, Put { blob_id, blob, wrap, stamp: None, expiry, ephemeral: class.in_memory(), replaces: &[], now })?, true))
+    Ok((store.put(label, Put { blob_id, blob, wrap, stamp: None, expiry, ephemeral: class.in_memory(), replaces: &[], now, role })?, true))
 }
 
 impl From<Vec<u8>> for ServingOutput {
@@ -1628,7 +1641,7 @@ mod tests {
         store.push_step(&f.label, f.genesis.clone(), Some(f.genesis_claims.clone())).unwrap();
         let blob = vec![7u8; osis_base::format::MAX_BLOB];
         let blob_id = osis_label::blob_id(&blob);
-        let put = Put { blob_id, blob: &blob, wrap: [0; WRAP_LEN], stamp: Some(Signature([0; 64])), expiry: None, ephemeral: false, replaces: &[], now: 0 };
+        let put = Put { blob_id, blob: &blob, wrap: [0; WRAP_LEN], stamp: Some(Signature([0; 64])), expiry: None, ephemeral: false, replaces: &[], now: 0, role: false };
         assert_eq!(store.put(&f.label, put).unwrap(), Code::OK);
         let mut c = opened(&f, &mut store);
         let taken = c.written;
@@ -1661,7 +1674,7 @@ mod tests {
         store.push_step(&f.label, f.genesis.clone(), Some(f.genesis_claims.clone())).unwrap();
         let blob = vec![7u8; 256 << 10];
         let blob_id = osis_label::blob_id(&blob);
-        let put = Put { blob_id, blob: &blob, wrap: [0; WRAP_LEN], stamp: Some(Signature([0; 64])), expiry: None, ephemeral: false, replaces: &[], now: 0 };
+        let put = Put { blob_id, blob: &blob, wrap: [0; WRAP_LEN], stamp: Some(Signature([0; 64])), expiry: None, ephemeral: false, replaces: &[], now: 0, role: false };
         assert_eq!(store.put(&f.label, put).unwrap(), Code::OK);
         let mut c = opened(&f, &mut store);
         let mut taken = c.written;
@@ -1736,7 +1749,7 @@ mod tests {
         store.push_step(&f.label, f.genesis.clone(), Some(f.genesis_claims.clone())).unwrap();
         let blob = vec![7u8; osis_base::format::MAX_BLOB];
         let blob_id = osis_label::blob_id(&blob);
-        let put = Put { blob_id, blob: &blob, wrap: [0; WRAP_LEN], stamp: Some(Signature([0; 64])), expiry: None, ephemeral: false, replaces: &[], now: 0 };
+        let put = Put { blob_id, blob: &blob, wrap: [0; WRAP_LEN], stamp: Some(Signature([0; 64])), expiry: None, ephemeral: false, replaces: &[], now: 0, role: false };
         assert_eq!(store.put(&f.label, put).unwrap(), Code::OK);
         let mut c = opened(&f, &mut store);
         let taken = c.written;
@@ -1767,7 +1780,7 @@ mod tests {
         let n = 1000u32;
         for i in 0..n {
             let blob = i.to_be_bytes().to_vec();
-            let put = Put { blob_id: osis_label::blob_id(&blob), blob: &blob, wrap: [0; WRAP_LEN], stamp: Some(Signature([0; 64])), expiry: None, ephemeral: false, replaces: &[], now: 0 };
+            let put = Put { blob_id: osis_label::blob_id(&blob), blob: &blob, wrap: [0; WRAP_LEN], stamp: Some(Signature([0; 64])), expiry: None, ephemeral: false, replaces: &[], now: 0, role: false };
             assert_eq!(store.put(&f.label, put).unwrap(), Code::OK);
         }
         let whole = |id| encode_frame(&Message::Reconcile { id, label: f.label, ranges: vec![Range { lower: rbsr::Bound::empty(), upper: rbsr::Bound::empty(), mode: Mode::Fingerprint([0; 16]) }] }.encode());
@@ -1804,7 +1817,7 @@ mod tests {
         for i in 0..n {
             let blob = i.to_be_bytes().to_vec();
             let blob_id = osis_label::blob_id(&blob);
-            let put = Put { blob_id, blob: &blob, wrap: [0; WRAP_LEN], stamp: Some(Signature([0; 64])), expiry: None, ephemeral: false, replaces: &[], now: 0 };
+            let put = Put { blob_id, blob: &blob, wrap: [0; WRAP_LEN], stamp: Some(Signature([0; 64])), expiry: None, ephemeral: false, replaces: &[], now: 0, role: false };
             assert_eq!(store.put(&f.label, put).unwrap(), Code::OK);
             ids.push(blob_id);
         }
@@ -1846,7 +1859,7 @@ mod tests {
         let e = f.entry(Fixture::blob(1));
         let blob_id = osis_label::blob_id(&e.blob);
         // step 995's write key: four keys before the head's
-        let old = Entry { stamp: osis_label::sign_stamp(&crate::store::tests::secret(1 + ((995 + 1) % 200) as u8), &f.label, &blob_id, &e.wrap), ..e.clone() };
+        let old = Entry { stamp: osis_label::sign_stamp(&crate::store::tests::secret(1 + ((995 + 1) % 200) as u8), &f.label, &blob_id, &e.wrap, false), ..e.clone() };
         let bad = Entry { stamp: Signature([0; 64]), ..e };
         for _ in 0..2 {
             // a fresh connection: nothing cached
@@ -1876,7 +1889,7 @@ mod tests {
         let e = f.entry(Fixture::blob(1));
         let blob_id = osis_label::blob_id(&e.blob);
         // step 5's write key (by `path`'s rule above)
-        let old = Entry { stamp: osis_label::sign_stamp(&crate::store::tests::secret(7), &f.label, &blob_id, &e.wrap), ..e.clone() };
+        let old = Entry { stamp: osis_label::sign_stamp(&crate::store::tests::secret(7), &f.label, &blob_id, &e.wrap, false), ..e.clone() };
         let bad = Entry { stamp: Signature([0; 64]), ..e };
         let mut c = ServingSession::new(ServingConfig { static_key: STATIC_KEY, challenge: CHALLENGE });
         c.handle(0, &mut store, ServingInput::Bytes(encode_frame(&Hello::new(0, [2; 32]).encode())));
@@ -2065,7 +2078,7 @@ mod tests {
         store.push_step(&f.label, f.genesis.clone(), Some(f.genesis_claims.clone())).unwrap();
         let blob = vec![7u8; 1 << 20];
         let blob_id = osis_label::blob_id(&blob);
-        let put = Put { blob_id, blob: &blob, wrap: [0; WRAP_LEN], stamp: Some(Signature([0; 64])), expiry: None, ephemeral: false, replaces: &[], now: 0 };
+        let put = Put { blob_id, blob: &blob, wrap: [0; WRAP_LEN], stamp: Some(Signature([0; 64])), expiry: None, ephemeral: false, replaces: &[], now: 0, role: false };
         assert_eq!(store.put(&f.label, put).unwrap(), Code::OK);
         let mut c = opened(&f, &mut store);
         let small = crate::client::SMALL_REPLY as u64;

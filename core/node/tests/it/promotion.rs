@@ -44,7 +44,7 @@ fn flood(net: &mut Net, r: usize, (host, g, l): (usize, Tid, LabelId), commits: 
         for _ in 0..n {
             let s = net.engine(r).seal_to(&body, osis_label::Class::Durable, &mut rng).unwrap().unwrap();
             let wrap = osis_crypto::wrap(&secret, &s.id, &s.key, body.order).unwrap();
-            let sig = osis_label::sign_deposit(&deposit, &l, &s.id, &wrap);
+            let sig = osis_label::sign_deposit(&deposit, &l, &s.id, &wrap, false);
             out.entry(*c).or_insert_with(Vec::new).push(s.id);
             sends.push(Action::Send { conn, bytes: encode_frame(&Message::Deposit { id: 0x4000_0001, label: l, blob: s.blob, wrap, sig }.encode()) });
         }

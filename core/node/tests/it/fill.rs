@@ -270,7 +270,7 @@ fn a_deposit_comes_after_order_0_spec_sync_6() {
     let (_, blob) = osis_label::frame(&prefix, b"deposit", &mut rng).unwrap();
     let id = osis_label::blob_id(&blob);
     let wrap = [0x13; osis_crypto::WRAP_LEN];
-    let sig = osis_label::sign_deposit(keys.deposit.as_ref().unwrap(), &l, &id, &wrap);
+    let sig = osis_label::sign_deposit(keys.deposit.as_ref().unwrap(), &l, &id, &wrap, false);
     crate::wrap_poison::send(&mut f.net, a, host, osis_proto::Message::Deposit { id: 0x4000_0001, label: l, blob, wrap, sig });
     f.net.run();
     assert!(f.net.host_ids(host, &l).contains(&id), "at the host");
@@ -412,7 +412,7 @@ fn junk_listed_goes_when_it_comes_spec_sync_6() {
     let (_, blob) = osis_label::frame(&prefix, b"junk", &mut rng).unwrap();
     let id = osis_label::blob_id(&blob);
     let wrap = [0x13; osis_crypto::WRAP_LEN];
-    let sig = osis_label::sign_deposit(keys.deposit.as_ref().unwrap(), &l, &id, &wrap);
+    let sig = osis_label::sign_deposit(keys.deposit.as_ref().unwrap(), &l, &id, &wrap, false);
     crate::wrap_poison::send(&mut f.net, a, host, osis_proto::Message::Deposit { id: 0x4000_0001, label: l, blob, wrap, sig });
     f.net.run();
     assert!(f.net.host_ids(host, &l).contains(&id), "at the host");

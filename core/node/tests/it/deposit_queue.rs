@@ -272,17 +272,21 @@ fn deliveries_survive_a_crash_before_carry_out_spec_sync_5() {
     }
 }
 
-// spec/sync.md §5 (a refused deposit at one host does not hold what another accepted; a
-// storage-cap refusal is for now), spec/sync.md §3: K's label at two hosts, one refusing every
-// entry (storage cap); the redeemer's deposit lands at the other, and its inbox blob to its own
-// account goes; the deposit at the full host is sent again and lands once it has room.
+// spec/sync.md §5 (a refused deposit at one host does not hold what another accepted; a rate
+// refusal is for now), spec/sync.md §3: K's label at two hosts, one refusing every deposit (its
+// deposit rate 0); the redeemer's deposit lands at the other, and its inbox blob to its own
+// account goes; the deposit at the refusing host is sent again and lands once its rate allows.
 #[test]
 fn inbox_goes_when_one_host_refuses_spec_sync_5() {
     let mut net = Net::new();
     net.add_host();
     net.add_host();
-    net.add_host_with(osis_host::HostPolicy { cap_entries: 0, ..osis_host::HostPolicy::default() });
+    net.add_host_with(osis_host::HostPolicy { deposits: 0, ..osis_host::HostPolicy::default() });
     let (a, x, _, link, px, held) = link_setup_at(&mut net, &[1, 2]);
+    // nor does it pull another node's promotion of it
+    for n in 0..net.nodes.len() {
+        net.unpulled_at.insert((n, 2));
+    }
     let inbox = net.engine(x).get_typed(&px, &ct::KEYS).unwrap().unwrap().inbox.unwrap().label;
     let before = net.host_ids(0, &inbox).len();
     let done = net.engine(x).redeem(&link, &px, true).unwrap();
@@ -295,8 +299,9 @@ fn inbox_goes_when_one_host_refuses_spec_sync_5() {
     assert!(net.engine(a).roster(&link.k).contains_key(&px), "the sharer applied the redemption");
     assert!(net.host_ids(0, &inbox).len() > before, "the inbox blob reached its label");
     // the redemption's deposit (an account's keys travel in its `keys.0`, no keyset commit)
-    assert_eq!(net.sync(x).deliveries_pending(), 1, "the full host's deposit is kept");
+    assert_eq!(net.sync(x).deliveries_pending(), 1, "the refusing host's deposit is kept");
     let full = net.host_ids(2, &link.k_label).len();
+    net.unpulled_at.clear();
     net.restart_host_with(2, osis_host::HostPolicy::default());
     for _ in 0..4 {
         net.run();
@@ -304,7 +309,7 @@ fn inbox_goes_when_one_host_refuses_spec_sync_5() {
     }
     net.run();
     assert_eq!(net.sync(x).deliveries_pending(), 0);
-    assert!(net.host_ids(2, &link.k_label).len() > full, "the deposit landed once there was room");
+    assert!(net.host_ids(2, &link.k_label).len() > full, "the deposit landed once the rate allowed it");
 }
 
 // spec/permissions.md §3 (a removal goes under the labels the removed party could read in the

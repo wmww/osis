@@ -858,6 +858,20 @@ impl SyncEngine {
         }
     }
 
+    /// Every stream tracking member `l` reads it again from the start (a sync ID kept unread
+    /// that has room again: what it refused comes again, `unread_room`).
+    pub(super) fn stream_rejoin(&mut self, l: &LabelId, out: &mut Vec<Action>) -> Result<()> {
+        let conns: Vec<ConnId> = self.streams.iter().filter(|(_, s)| s.pulling.in_stream.contains(l) || s.pulling.joins.contains_key(l)).map(|(c, _)| *c).collect();
+        for c in conns {
+            let Some(p) = self.streams.get_mut(&c).map(|s| &mut s.pulling) else { continue };
+            p.in_stream.remove(l);
+            p.joins.insert(*l, None);
+            p.caught_up = false;
+            self.stream_ask(c, false, out)?;
+        }
+        Ok(())
+    }
+
     /// `conn`'s record is no longer honoured: its stream keeps nothing in it from now on.
     pub(super) fn stream_unbind(&mut self, conn: ConnId) {
         if let Some(s) = self.streams.get_mut(&conn) {
