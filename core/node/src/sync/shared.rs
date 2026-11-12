@@ -1622,6 +1622,8 @@ impl SyncEngine {
                 s.pending.offers_unanswered = s.pending.offers_unanswered.saturating_sub(1);
                 // Hits answered 0 whose credential is gone: a Lost each, once the Offer is read
                 let mut stale = Vec::new();
+                // failed grants' Hits: answered for good, after the close below re-marks L
+                let mut declined = Vec::new();
                 for (item, (code, tag, grant)) in items.into_iter().zip(codes) {
                     if let AskedItem::Deposit(l, b) = item {
                         self.shared_deposit_answered(conn, l, b, code)?;
@@ -1679,10 +1681,9 @@ impl SyncEngine {
                                 // stays answered, as a refused one, so a forged grant buys no loop
                                 if let Some(s) = self.records.shared.get_mut(&conn) {
                                     let hit = beacon_hit(&c.value, &c.label.0, &c.beacon, (s.by_listener, &s.key, &s.dialer, &s.listener));
-                                    if granted {
-                                        s.offered.remove(&hit);
-                                    } else {
-                                        s.offered.insert(hit);
+                                    s.offered.remove(&hit);
+                                    if !granted {
+                                        declined.push(hit);
                                     }
                                 }
                                 stale.push(c.label);
@@ -1700,6 +1701,9 @@ impl SyncEngine {
                         self.shared_close(conn, &l, super::stream::Stop::Here)?;
                         self.shared_lost_send(conn, l, out)?;
                     }
+                }
+                if let Some(s) = self.records.shared.get_mut(&conn) {
+                    s.offered.extend(declined);
                 }
                 match self.records.shared.get(&conn) {
                     Some(s) if s.pending.offers_unanswered > 0 => Ok(()),
