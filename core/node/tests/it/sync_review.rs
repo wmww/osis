@@ -676,7 +676,7 @@ fn strict_subset_needs_superset_at_that_host_spec_sync_6() {
     let ids = net.host_ids(h1, &l);
     assert!(ids.contains(&q[0]) && !ids.contains(&p[0]), "h1 holds q, not p");
     // b back, its uploads failing
-    net.lose_uploads.insert(b);
+    net.unpulled.insert(b);
     net.set_online(b, true);
     // past the redial pause
     net.advance(6_000);

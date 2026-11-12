@@ -557,10 +557,12 @@ fn useless_superset_does_not_cost_a_rewrite_spec_sync_6() {
     let t2 = net.item(a, g, g, "y");
     net.run();
     let l = net.label(a);
-    // `b` holds the key, its copies never get anywhere
-    net.lose_uploads.insert(b);
-    net.drop_link(a, r);
-    net.blocked.insert((a, r));
+    // `b` holds the key, and `r` never pulls its copies; nobody else reaches `r` meanwhile
+    net.unpulled.insert(b);
+    for n in [a, h] {
+        net.drop_link(n, r);
+        net.blocked.insert((n, r));
+    }
     let mut m = osis_node::Mutation::new();
     m.set(t, &GONE, &s("secret")).unwrap();
     m.set(t2, &GONE, &s("kept")).unwrap();
@@ -643,7 +645,7 @@ fn useless_snapshot_carries_nothing_spec_sync_7() {
         }
     }
     fx.net.set_online(h, false);
-    fx.net.lose_uploads.insert(a);
+    fx.net.unpulled.insert(a);
     reconnect(&mut fx, a, r, 41);
     fx.net.advance(600_000);
     connect(&mut fx, &[r], 33);

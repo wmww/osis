@@ -134,9 +134,9 @@ pub struct Net {
     bare: bool,
     /// New nodes' accounts have their home label (their inbox) at the node's hosts.
     pub home_at_hosts: bool,
-    /// Nodes whose Upload requests to hosts are lost on the way (answered rate-limited for
-    /// the host: a request is never left unanswered on an ordered stream).
-    pub lose_uploads: BTreeSet<usize>,
+    /// Nodes whose entries peers that cannot read never pull: the entries their streams show
+    /// those peers and the bytes they fetch from them are lost on the way.
+    pub unpulled: BTreeSet<usize>,
     /// Deposits (to a host) of blobs carrying these commits, by any node's entry for the blob,
     /// are lost on the way (answered rate-limited), and a reader's stream and fetches drop them.
     pub lose_deposits: BTreeSet<CommitId>,
@@ -223,7 +223,7 @@ struct Parts {
     full_passes: bool,
     bare: bool,
     home_at_hosts: bool,
-    lose_uploads: BTreeSet<usize>,
+    unpulled: BTreeSet<usize>,
     lose_deposits: BTreeSet<CommitId>,
     held_hosts: BTreeSet<usize>,
     busy: BTreeMap<usize, std::time::Duration>,
@@ -252,12 +252,12 @@ struct Parts {
 impl Net {
     fn into_parts(self) -> Parts {
         assert!(self.tamper.is_none() && self.host_tamper.is_none(), "a tamper cannot be kept");
-        Parts { clock: self.clock, nodes: self.nodes, hosts: self.hosts, links: self.links, queue: self.queue, next_hub_conn: self.next_hub_conn, steps: self.steps, blocked: self.blocked, plinks: self.plinks, blocked_peers: self.blocked_peers, lan_keys: self.lan_keys, held: self.held, held_messages: self.held_messages, sent_kinds: self.sent_kinds, uploaded: self.uploaded, deleted: self.deleted, peer_kinds: self.peer_kinds, sent_bytes: self.sent_bytes, dialed: self.dialed, full_passes: self.full_passes, bare: self.bare, home_at_hosts: self.home_at_hosts, lose_uploads: self.lose_uploads, lose_deposits: self.lose_deposits, held_hosts: self.held_hosts, busy: self.busy, hub_busy: self.hub_busy, told: self.told, fetched: self.fetched, deaf: self.deaf, hold_opened: self.hold_opened, held_to: self.held_to, gained: self.gained, hold_blobs: self.hold_blobs, hide_blobs: self.hide_blobs, bare_blobs: self.bare_blobs, walk_to: self.walk_to, tamper_link: self.tamper_link, silent: self.silent, trickle: self.trickle, trickle_hosts: self.trickle_hosts, batch_reads: self.batch_reads, peer_closes: self.peer_closes, next_node_hub: self.next_node_hub, hands: self.hands, port: self.port }
+        Parts { clock: self.clock, nodes: self.nodes, hosts: self.hosts, links: self.links, queue: self.queue, next_hub_conn: self.next_hub_conn, steps: self.steps, blocked: self.blocked, plinks: self.plinks, blocked_peers: self.blocked_peers, lan_keys: self.lan_keys, held: self.held, held_messages: self.held_messages, sent_kinds: self.sent_kinds, uploaded: self.uploaded, deleted: self.deleted, peer_kinds: self.peer_kinds, sent_bytes: self.sent_bytes, dialed: self.dialed, full_passes: self.full_passes, bare: self.bare, home_at_hosts: self.home_at_hosts, unpulled: self.unpulled, lose_deposits: self.lose_deposits, held_hosts: self.held_hosts, busy: self.busy, hub_busy: self.hub_busy, told: self.told, fetched: self.fetched, deaf: self.deaf, hold_opened: self.hold_opened, held_to: self.held_to, gained: self.gained, hold_blobs: self.hold_blobs, hide_blobs: self.hide_blobs, bare_blobs: self.bare_blobs, walk_to: self.walk_to, tamper_link: self.tamper_link, silent: self.silent, trickle: self.trickle, trickle_hosts: self.trickle_hosts, batch_reads: self.batch_reads, peer_closes: self.peer_closes, next_node_hub: self.next_node_hub, hands: self.hands, port: self.port }
     }
 
     fn from_parts(p: Parts) -> Net {
-        let Parts { clock, nodes, hosts, links, queue, next_hub_conn, steps, blocked, plinks, blocked_peers, lan_keys, held, held_messages, sent_kinds, uploaded, deleted, peer_kinds, sent_bytes, dialed, full_passes, bare, home_at_hosts, lose_uploads, lose_deposits, held_hosts, busy, hub_busy, told, fetched, deaf, hold_opened, held_to, gained, hold_blobs, hide_blobs, bare_blobs, walk_to, tamper_link, silent, trickle, trickle_hosts, batch_reads, peer_closes, next_node_hub, hands, port } = p;
-        Net { clock, nodes, hosts, links, queue, next_hub_conn, steps, blocked, plinks, blocked_peers, lan_keys, held, held_messages, sent_kinds, uploaded, deleted, peer_kinds, sent_bytes, dialed, full_passes, bare, home_at_hosts, lose_uploads, lose_deposits, held_hosts, busy, hub_busy, told, fetched, deaf, hold_opened, held_to, gained, hold_blobs, hide_blobs, bare_blobs, walk_to, tamper_link, silent, trickle, trickle_hosts, batch_reads, peer_closes, next_node_hub, hands, port, tamper: None, host_tamper: None }
+        let Parts { clock, nodes, hosts, links, queue, next_hub_conn, steps, blocked, plinks, blocked_peers, lan_keys, held, held_messages, sent_kinds, uploaded, deleted, peer_kinds, sent_bytes, dialed, full_passes, bare, home_at_hosts, unpulled, lose_deposits, held_hosts, busy, hub_busy, told, fetched, deaf, hold_opened, held_to, gained, hold_blobs, hide_blobs, bare_blobs, walk_to, tamper_link, silent, trickle, trickle_hosts, batch_reads, peer_closes, next_node_hub, hands, port } = p;
+        Net { clock, nodes, hosts, links, queue, next_hub_conn, steps, blocked, plinks, blocked_peers, lan_keys, held, held_messages, sent_kinds, uploaded, deleted, peer_kinds, sent_bytes, dialed, full_passes, bare, home_at_hosts, unpulled, lose_deposits, held_hosts, busy, hub_busy, told, fetched, deaf, hold_opened, held_to, gained, hold_blobs, hide_blobs, bare_blobs, walk_to, tamper_link, silent, trickle, trickle_hosts, batch_reads, peer_closes, next_node_hub, hands, port, tamper: None, host_tamper: None }
     }
 }
 
@@ -453,7 +453,7 @@ pub fn host_key(i: usize) -> [u8; 32] {
 impl Net {
     /// A network whose new nodes are each their own account's only node.
     pub fn new() -> Net {
-        Net { bare: false, home_at_hosts: false, clock: Arc::new(ManualClock::new(WallMs(T0))), nodes: vec![], hosts: vec![], links: BTreeMap::new(), queue: VecDeque::new(), next_hub_conn: 1, next_node_hub: HUB_BASE, steps: 0, blocked: BTreeSet::new(), plinks: BTreeMap::new(), blocked_peers: BTreeSet::new(), lan_keys: BTreeMap::new(), held: BTreeSet::new(), held_messages: Vec::new(), sent_kinds: BTreeMap::new(), uploaded: BTreeMap::new(), deleted: BTreeMap::new(), peer_kinds: BTreeMap::new(), sent_bytes: 0, dialed: Vec::new(), full_passes: false, lose_uploads: BTreeSet::new(), lose_deposits: BTreeSet::new(), held_hosts: BTreeSet::new(), busy: BTreeMap::new(), hub_busy: std::time::Duration::ZERO, told: BTreeMap::new(), fetched: BTreeMap::new(), deaf: BTreeSet::new(), hold_opened: BTreeSet::new(), held_to: BTreeSet::new(), gained: BTreeMap::new(), hold_blobs: BTreeSet::new(), hide_blobs: BTreeMap::new(), bare_blobs: BTreeMap::new(), walk_to: BTreeMap::new(), tamper: None, tamper_link: None, host_tamper: None, silent: BTreeSet::new(), trickle: BTreeMap::new(), trickle_hosts: BTreeMap::new(), batch_reads: false, peer_closes: 0, hands: BTreeMap::new(), port: Vec::new() }
+        Net { bare: false, home_at_hosts: false, clock: Arc::new(ManualClock::new(WallMs(T0))), nodes: vec![], hosts: vec![], links: BTreeMap::new(), queue: VecDeque::new(), next_hub_conn: 1, next_node_hub: HUB_BASE, steps: 0, blocked: BTreeSet::new(), plinks: BTreeMap::new(), blocked_peers: BTreeSet::new(), lan_keys: BTreeMap::new(), held: BTreeSet::new(), held_messages: Vec::new(), sent_kinds: BTreeMap::new(), uploaded: BTreeMap::new(), deleted: BTreeMap::new(), peer_kinds: BTreeMap::new(), sent_bytes: 0, dialed: Vec::new(), full_passes: false, unpulled: BTreeSet::new(), lose_deposits: BTreeSet::new(), held_hosts: BTreeSet::new(), busy: BTreeMap::new(), hub_busy: std::time::Duration::ZERO, told: BTreeMap::new(), fetched: BTreeMap::new(), deaf: BTreeSet::new(), hold_opened: BTreeSet::new(), held_to: BTreeSet::new(), gained: BTreeMap::new(), hold_blobs: BTreeSet::new(), hide_blobs: BTreeMap::new(), bare_blobs: BTreeMap::new(), walk_to: BTreeMap::new(), tamper: None, tamper_link: None, host_tamper: None, silent: BTreeSet::new(), trickle: BTreeMap::new(), trickle_hosts: BTreeMap::new(), batch_reads: false, peer_closes: 0, hands: BTreeMap::new(), port: Vec::new() }
     }
 
     /// An exact copy of this network as it stands (notes/testing.md, Copied worlds): every node
@@ -517,7 +517,7 @@ impl Net {
                 full_passes: self.full_passes.clone(),
                 bare: self.bare.clone(),
                 home_at_hosts: self.home_at_hosts.clone(),
-                lose_uploads: self.lose_uploads.clone(),
+                unpulled: self.unpulled.clone(),
                 lose_deposits: self.lose_deposits.clone(),
                 held_hosts: self.held_hosts.clone(),
                 busy: self.busy.clone(),
@@ -1095,17 +1095,34 @@ impl Net {
                                     _ => {}
                                 }
                             }
-                            if self.lose_uploads.contains(&n)
-                                && let osis_proto::Message::Upload { id, .. } = m
-                            {
-                                let e = osis_proto::Message::Error { id, code: osis_proto::Code::RATE_LIMITED };
-                                self.queue.push_back(Msg::ToNode(n, self.nodes[n].life, conn, osis_proto::encode_frame(&e.encode())));
-                                continue;
+                            if self.unpulled.contains(&n) {
+                                match m {
+                                    osis_proto::Message::Stream(mut x) => {
+                                        x.events.retain(|(_, e)| !matches!(e, osis_proto::Event::Added { .. }));
+                                        if !x.events.is_empty() {
+                                            kept.extend(osis_proto::encode_frame(&osis_proto::Message::Stream(x).encode()));
+                                        }
+                                        continue;
+                                    }
+                                    osis_proto::Message::PullReply(mut r) => {
+                                        r.events.retain(|(_, e)| !matches!(e, osis_proto::Event::Added { .. }));
+                                        kept.extend(osis_proto::encode_frame(&osis_proto::Message::PullReply(r).encode()));
+                                        continue;
+                                    }
+                                    osis_proto::Message::FetchReply { id, mut items } => {
+                                        for f in &mut items {
+                                            f.entry = None;
+                                        }
+                                        kept.extend(osis_proto::encode_frame(&osis_proto::Message::FetchReply { id, items }.encode()));
+                                        continue;
+                                    }
+                                    _ => {}
+                                }
                             }
                         }
                         kept.extend(osis_proto::encode_frame(&body));
                     }
-                    if self.lose_uploads.contains(&n) || !self.walk_to.is_empty() || !self.lose_deposits.is_empty() {
+                    if self.unpulled.contains(&n) || !self.walk_to.is_empty() || !self.lose_deposits.is_empty() {
                         bytes = kept;
                     }
                     if let Some((s, hc)) = self.links.get(&(n, conn)).copied() {
