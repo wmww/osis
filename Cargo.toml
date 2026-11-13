@@ -83,7 +83,7 @@ expect_used = "deny"
 panic = "deny"
 indexing_slicing = "deny"
 
-# Every test run and sim sweep uses this profile (notes/testing.md, Build hygiene). opt-level 1:
+# Every test run and sim sweep uses this profile (notes/build.md, Profile and command forms). opt-level 1:
 # tests several times faster for slower compiles; line tables keep backtraces' file:line.
 [profile.dev]
 debug = "line-tables-only"

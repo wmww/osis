@@ -1,4 +1,4 @@
-//! Phase C scenario library (notes/testing.md, Phase C; notes/permissions.md): the
+//! Phase C scenario library (notes/test-sim.md, Scenarios; notes/permissions.md): the
 //! named role and retention stories over sync engines and hosts. Each sets up with
 //! flows, runs a faulty schedule around the story's critical moment, checks the story's expected
 //! outcome, and ends with the quiescent invariants (`check`).

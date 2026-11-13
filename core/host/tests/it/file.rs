@@ -55,7 +55,7 @@ fn redb_store_survives_reopen() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
-// spec: none (cost, spec/requirements.md Scale; notes/testing.md Performance budgets, host): a
+// spec: none (cost, spec/requirements.md Scale; notes/test-scale.md Performance budgets, host): a
 // hub-sized batch is one store commit whatever the store holds: durable writes (backend commits
 // and key-root writes) for 64 puts in one batch, 64 deletes in one batch, and a single put
 // then its delete (each delete batch a shredding commit) are the same at n and 10n entries held.

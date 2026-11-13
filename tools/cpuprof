@@ -1,6 +1,6 @@
 #!/bin/sh
 # tools/cpuprof OUT CMD...: runs CMD under a SIGPROF sampler (no perf or gdb on this box), then
-# prints the functions holding the most CPU samples, inclusive and self (notes/testing.md).
+# prints the functions holding the most CPU samples, inclusive and self (notes/test-harnesses.md, Measuring).
 # Samples stay in OUT.<pid>; `tools/cpuprof --report OUT.<pid> [N] [FILTER]` reprints them
 # (FILTER: only samples with a frame whose name contains it). Builds cpuprof.c on first use.
 set -e

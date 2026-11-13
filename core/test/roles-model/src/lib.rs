@@ -33,7 +33,7 @@
 //! agrees with the canonical one); `Display` on a history prints it as a trace. The joint
 //! walk's code follows §5.1 step by step (`order`, `authority`, `audit`, `pass`, `eval`).
 //! Searches print each counterexample shrunk. `digest` hashes every verdict over random
-//! histories: a refactor must keep it (values in notes/testing.md, Models).
+//! histories: a refactor must keep it (values in notes/test-properties.md, Models).
 //! Binary: `cargo run --bin roles-model -- [samples] [mode]`; `cargo test` runs
 //! the scenarios.
 //!

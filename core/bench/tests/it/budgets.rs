@@ -1,6 +1,6 @@
 //! Size budgets (by hand: `cargo test -p osis-bench --test it -- --ignored budgets::`). Each budget is a number from
 //! notes or spec plus a margin, cites its source, and fails on regression. Pending budgets (their
-//! crates have not landed) are listed in notes/testing.md, "Size budgets".
+//! crates have not landed) are listed in notes/test-scale.md, "Size budgets and benches".
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
 use osis_bench::assert_budget;

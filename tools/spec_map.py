@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Spec-to-test map (notes/testing.md, Spec citations). Collects every Rust test (`#[test]`
+"""Spec-to-test map (notes/testing.md, Conventions). Collects every Rust test (`#[test]`
 functions, proptest cases included) and every live vector case, with the spec sections each
 cites, and writes notes/testing-map.md: per numbered spec section, the tests citing it; every
 MUST / MUST NOT sentence of spec/*.md plus the refusal rules listed in RULES, each with the tests
@@ -285,7 +285,7 @@ def render():
     lines += [""]
     if problems:
         lines += ["## Rule table problems", ""] + [f"- {p}" for p in problems] + [""]
-    lines += ["## SHOULDs (not gated; notes/testing.md)", ""] + [f"- {f} §{s}: {short(t, 140)}" for f, s, t in shoulds] + [""]
+    lines += ["## SHOULDs (not gated; notes/gate.md)", ""] + [f"- {f} §{s}: {short(t, 140)}" for f, s, t in shoulds] + [""]
     unknown = sorted({f"{f} §{s}" for t in tests for f, s, _ in t["cites"] if not any(x == s for x, _ in secs.get(f, []))})
     lines += ["## Gaps (sections nothing cites)", ""] + [f"- {g}" for g in gaps] + [""]
     if unknown:

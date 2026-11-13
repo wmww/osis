@@ -187,7 +187,7 @@ pub struct Events {
     per_peer: BTreeMap<(Option<Tid>, Option<DiagnosticKind>), (u64, usize)>,
 }
 
-/// A world copy's (notes/testing.md, Copied worlds): the queue and the diagnostics' dedup and
+/// A world copy's (notes/test-harnesses.md, Copied worlds): the queue and the diagnostics' dedup and
 /// windows as they are, no subscriber (a copy's owner subscribes again).
 impl Clone for Events {
     fn clone(&self) -> Events {

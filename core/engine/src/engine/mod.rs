@@ -3204,7 +3204,7 @@ impl Engine {
 
     /// Debug builds: whether a cache hit of `what` is worth comparing with a fresh read: one
     /// comparison per state of the store and indexes checks all that can be checked (repeats held
-    /// a quarter of the CPU of `osis`'s tests, notes/testing.md). The clock is not part of it (a
+    /// a quarter of the CPU of `osis`'s tests, notes/testing.md, Default-test cost). The clock is not part of it (a
     /// running one moves at nearly every hit): a cache whose answer moves with time names that
     /// time in `what`.
     #[cfg(debug_assertions)]

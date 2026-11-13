@@ -1,4 +1,4 @@
-//! World copies of `osis` nodes (notes/testing.md, Copied worlds): a copied sim `World` goes on
+//! World copies of `osis` nodes (notes/test-harnesses.md, Copied worlds): a copied sim `World` goes on
 //! exactly as the original, its nodes' watches work, and the two share nothing.
 
 use crate::common::*;
@@ -90,7 +90,7 @@ fn observe(w: &mut World, dbs: &[Osis], t: Tid) -> Vec<String> {
     out
 }
 
-// spec: none (internal: notes/testing.md, Copied worlds). A copied world goes on exactly as
+// spec: none (internal: notes/test-harnesses.md, Copied worlds). A copied world goes on exactly as
 // the original and as a world built afresh: the same further steps (with watches on the copies)
 // leave the same reads, indexes, stores and counters, and steps on either leave the other as it
 // was.

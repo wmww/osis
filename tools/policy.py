@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Policy checks (notes/testing.md, Policy checks): unsafe forbidden everywhere in the workspace,
+"""Policy checks (notes/gate.md, Policy checks): unsafe forbidden everywhere in the workspace,
 workspace lints on, every external dependency has its line in notes/architecture.md §5, and no
 target marked `test = false` / `doctest = false` has unit tests / doctests that would silently not run,
 and core/base/testenv-known.txt lists exactly the `OSIS_*` variables the sources name, and
@@ -42,7 +42,7 @@ UNSAFE = re.compile(r"\bunsafe\s*(\{|fn\b|impl\b|trait\b|extern\b)")
 DOCTEST = re.compile(r"^\s*//[/!]\s*```(?!text)")  # an opening fence rustdoc compiles
 
 def test_off_violations(m, rel, man):
-    """Targets with tests turned off must have none (notes/testing.md, Build hygiene)."""
+    """Targets with tests turned off must have none (notes/gate.md, Policy checks)."""
     lib = man.get("lib", {})
     srcs = glob.glob(os.path.join(m, "src/**/*.rs"), recursive=True)
     lib_srcs = [s for s in srcs if "/src/bin/" not in s and not s.endswith("/src/main.rs")]
@@ -250,7 +250,7 @@ def dispute_types():
                 elif top == "core" and not rel.startswith(SIDES_HOOKS) and SIDES_NAMES.search(re.sub(r"//[^\n]*", "", text)):
                     yield f"{rel}: names the trust store or its dispute event (engine sides.rs, its hooks and the API layer only)"
 
-# notes/testing.md (Network in tests): agents run tests side by side, so none binds the real LAN port or
+# notes/testing.md (Conventions): agents run tests side by side, so none binds the real LAN port or
 # announces on the real network. `Lan::bind` in tests takes a free port (0, or another socket's);
 # `osis` from a CLI test runs with `--no-lan`; a node a test builds starts from
 # `internals::Opening` (LAN off), never a bare `Config` with a runtime.
@@ -300,7 +300,7 @@ def peer_ticks():
                     if PEER_TICK.search(line.split("//", 1)[0]):
                         yield f"{os.path.relpath(path, ROOT)}:{n}: engine.tick()/reexamine() on a peer skips its wake (use Peer::tick/reexamine)"
 
-# notes/testing.md (Copied worlds): a test copy is the same node twice (identity, session, rng
+# notes/test-harnesses.md (Copied worlds): a test copy is the same node twice (identity, session, rng
 # stream), so product code never makes one. Product sources name the copy hooks only in the
 # files that define them; tests, the test crates and the LocalPeer harness may use them freely.
 COPY_HOOKS = re.compile(r"\btest_copy\b|\btest_copy_boxed\b|\bcopying::|\btest_subscribe_with\b")
@@ -319,7 +319,7 @@ def test_copies():
                 continue
             for n, line in enumerate(open(path, errors="replace"), 1):
                 if COPY_HOOKS.search(line.split("//", 1)[0]):
-                    yield f"{rel}:{n}: a world-copy hook outside tests (notes/testing.md, Copied worlds)"
+                    yield f"{rel}:{n}: a world-copy hook outside tests (notes/test-harnesses.md, Copied worlds)"
 
 # notes/engine-paged.md (Checked once): `osis_crdt::Checked` vouches that bytes passed the full
 # check on this node, and the decode-only readers trust it. Product code builds one only in the

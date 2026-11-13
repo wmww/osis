@@ -3,7 +3,7 @@
 > Priority: low
 > Tags: permissions, node, performance
 
-Repro: osis-perm `scale::repro_late_write_rejudges_flat`, `scale::repro_evaluate_with_drops_linear` (`osis_perm::commits_walked` at 10^2 and 10^3 edge writes; notes/testing.md Scale checks).
+Repro: osis-perm `scale::repro_late_write_rejudges_flat`, `scale::repro_evaluate_with_drops_linear` (`osis_perm::commits_walked` at 10^2 and 10^3 edge writes; notes/test-scale.md Scale checks).
 
 Done: notes/permissions.md "Implementation" (`Timelines::append`, the found-order rule for D, placed late writes and joining nodes, shared kept states) and "Walk cost" (numbers).
 

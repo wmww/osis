@@ -1,4 +1,4 @@
-# cargo deny check (notes/testing.md, Policy checks): licences, duplicate versions, advisories,
+# cargo deny check (notes/gate.md, Policy checks): licences, duplicate versions, advisories,
 # sources. Covers the workspace, the GUI included; core/test/fuzz/ is outside it.
 
 # Default features: the GUI's off-by-default `accessibility` (zbus, unmaintained parts) is not

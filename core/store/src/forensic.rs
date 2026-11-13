@@ -1,6 +1,6 @@
 //! The forensic attack (tests only): everything an attacker holding the device recovers. It is
 //! the project's definition of "forensically clean" (spec/requirements.md, Deletion: a node that
-//! deleted honestly and is compromised later yields nothing; notes/testing.md, Forensic attack).
+//! deleted honestly and is compromised later yields nothing; notes/test-security.md, Forensic attack).
 //!
 //! The attacker holds what the device yields now (the keys of the current store tree, and
 //! secrets the node's code computes from it, `Evidence::secrets`), every row and blob the

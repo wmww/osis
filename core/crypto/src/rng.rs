@@ -9,7 +9,7 @@ pub struct SeededRng(blake3::OutputReader);
 
 /// A node's generator: a secure one, which a test's world copy can copy (`test_copy`).
 pub trait NodeRng: rand_core::CryptoRngCore + Send {
-    /// Tests only (world copies, notes/testing.md): a generator continuing as this one would,
+    /// Tests only (world copies, notes/test-harnesses.md): a generator continuing as this one would,
     /// the same stream for a seeded one. Never in a product: two nodes drawing one stream draw
     /// the same nonces and keys.
     #[doc(hidden)]
@@ -98,7 +98,7 @@ mod tests {
         assert_ne!(SeededRng::from_u64(1).next_u64(), SeededRng::from_u64(0).next_u64());
     }
 
-    // spec: none (notes/testing.md, Copied worlds): a copy goes on with the same stream; a
+    // spec: none (notes/test-harnesses.md, Copied worlds): a copy goes on with the same stream; a
     // reseeded copy with a stream of its salt, the same for the same salt, the original unmoved
     #[test]
     fn reseeded_copy_draws_the_salts_stream() {

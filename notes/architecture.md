@@ -27,7 +27,7 @@ One workspace, root `Cargo.toml`: members `core/*` (library crates in unprefixed
 | 10 | `osis-sim` (`core/test/sim/`) | deterministic simulator; `world`: `Osis` handles and in-memory hubs under one manual clock (the osis crate's tests) |
 | - | `crdt-model` (`core/test/crdt-model`) | reference model of spec/crdt.md (notes/crdt.md) |
 | - | `roles-model` (`core/test/roles-model`) | model of the role rules (notes/permissions.md) |
-| - | `held-model` (`core/test/held-model`) | what a node holding a body set reads, from spec/ alone (notes/testing.md, Models) |
+| - | `held-model` (`core/test/held-model`) | what a node holding a body set reads, from spec/ alone (notes/test-properties.md, Models) |
 
 **GUI** (workspace members outside default-members, notes/app.md): `osis-kit` (`libs/kit/`, UI toolkit over Masonry), `osis-app` (`app/`, the first-party app) and `osis-android` (`app/android`, notes/android.md), reaching core only through `osis`, `osis-schema` and `osis-chat`. A bare cargo command never builds them (notes/build.md).
 
@@ -35,7 +35,7 @@ One workspace, root `Cargo.toml`: members `core/*` (library crates in unprefixed
 
 **Over the API**: `osis-chat` (`libs/chat`, osis only): chat's shared rules (creation, the edit model) for the CLI and apps; `osis-cli` depends on it.
 
-**Per-crate notes** (module map, decisions): core and schema notes/base-schema.md (schema evolution notes/versioning.md); crypto and keys notes/crypto.md (Implementation); crdt and commit notes/crdt.md (Implementation); perm notes/permissions.md (Implementation); store notes/local-store.md (Implementation); label notes/sync-protocol.md (osis-label); proto notes/sync-protocol.md (osis-proto); host notes/serving.md; transport notes/networking.md (Implementation); engine and node notes/engine.md (and the engine-* notes it lists), node sync notes/node-sync.md; osis notes/api.md (Implementation); cli notes/cli.md; kit and app notes/app.md (Prototype); sim notes/testing.md (Simulator); vectors, bench and test tooling notes/testing.md.
+**Per-crate notes** (module map, decisions): core and schema notes/base-schema.md (schema evolution notes/versioning.md); crypto and keys notes/crypto.md (Implementation); crdt and commit notes/crdt.md (Implementation); perm notes/permissions.md (Implementation); store notes/local-store.md (Implementation); label notes/sync-protocol.md (osis-label); proto notes/sync-protocol.md (osis-proto); host notes/serving.md; transport notes/networking.md (Implementation); engine and node notes/engine.md (and the engine-* notes it lists), node sync notes/node-sync.md; osis notes/api.md (Implementation); cli notes/cli.md; kit and app notes/app.md (Prototype); sim notes/test-sim.md; vectors, bench and test tooling notes/testing.md.
 
 ## 2. Fixed abstractions
 Each is a trait (or small trait family) in the named crate with an in-memory or no-op implementation in the same crate for tests. Layers above never reach around them.
@@ -103,7 +103,7 @@ One line per external crate; adding a dependency means adding its line. No serde
 - The cli needs no tokio of its own (it polls the API's futures on its thread and syncs on `Runtime::Own`, `serve` included).
 
 ## 6. Conventions
-- Every crate root: a doc comment naming its contents, layer and notes, then `#![forbid(unsafe_code)]`, and `[lints] workspace = true` in its Cargo.toml. Exception: app/android, whose one unsafe call (the NDK makes a native window of a Surface only through raw JNI) needs `unsafe_code = "deny"` (notes/testing.md, Policy checks).
+- Every crate root: a doc comment naming its contents, layer and notes, then `#![forbid(unsafe_code)]`, and `[lints] workspace = true` in its Cargo.toml. Exception: app/android, whose one unsafe call (the NDK makes a native window of a Surface only through raw JNI) needs `unsafe_code = "deny"` (notes/gate.md, Policy checks).
 - Every test cites the spec section it checks (comment above it; form in notes/testing.md, Conventions), so grep and notes/testing-map.md answer "what checks §X".
 - Wire choices the spec leaves open sit behind one constant or one function marked `provisional` (grep `provisional`). spec/wire.md fixes everything core holds; `format` constants are marked `fixed` with their spec section.
 - Prose, comments, errors and commit messages compact; no formatting tools.

@@ -10,7 +10,7 @@
 - `record_chain` (`chain.rs`: `RecordLink`, `ChainStep`, `RecordChain`): every walk up creation records goes through it, so the stop rules and `MAX_CHAIN_DEPTH` live in one place.
 - `format` (spec/wire.md §2, §13) holds only fixed format constants; `MAX_MESSAGE` (protocol v1) and `TOMBSTONE_LIFETIME_MS` (policy) are not format constants.
 - Errors: every error type has an `ErrorClass` (`BadInput`, `Parked`, `Local`), through `Classified`.
-- `testenv` is doc-hidden and tests only; it reads the environment. Every `OSIS_*` variable is in core/base/testenv-known.txt, policy.py-checked (notes/testing.md, Seed runners).
+- `testenv` is doc-hidden and tests only; it reads the environment. Every `OSIS_*` variable is in core/base/testenv-known.txt, policy.py-checked (notes/test-harnesses.md, Seed runners).
 
 ## osis-schema
 - Types (spec/data-model.md §3): `Type` (mirrors §10 `type_expr`: scalars, `Text`, `List`/`Set`/`Map`, `Struct(StructType)`, `Enum(EnumType)`, `Counter`/`Max`/`Min`, `Named(name, args)` incl. `option`/`markdown`/`timestamp`/`duration`, `Param`), `Field`, `Case`.

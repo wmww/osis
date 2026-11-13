@@ -3,7 +3,7 @@
 > Priority: low
 > Tags: sync, node-sync, api, performance
 
-Built: priority, not partiality. Numbers: notes/testing.md, long aspect table.
+Built: priority, not partiality. Numbers: notes/test-scale.md, Scale checks.
 
 Not built, each needing a reason from use first:
 - **A cap**: a node-local "no older than". The fill stops at it. `complete` stays false for good, so `wait_synced`, a demotion's pre-sync and `label_passed` need another answer than a finished pass; deletions stay held (`unopened`), so a capped node would need not to count what it chose not to fetch, or it never deletes. Must-hold stays judged on held bodies only.

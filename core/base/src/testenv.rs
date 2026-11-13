@@ -121,7 +121,7 @@ impl Seeds {
     }
 }
 
-// The seed runner (notes/testing.md, Seed runners).
+// The seed runner (notes/test-harnesses.md, Seed runners).
 
 /// A thread per core, or the number in env `var`.
 pub fn threads(var: &str) -> usize {

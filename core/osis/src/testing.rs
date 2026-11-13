@@ -1,4 +1,4 @@
-//! Test hooks for world copies (notes/testing.md, Copied worlds), reached through
+//! Test hooks for world copies (notes/test-harnesses.md, Copied worlds), reached through
 //! `ManualNet::test_copy`: never in a product, where a copy is the same
 //! node twice (one identity, session and rng stream, so the two would reuse nonces, counters and
 //! commit IDs).

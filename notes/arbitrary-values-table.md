@@ -205,7 +205,7 @@ Each was a number that only made a bug unlikely (class X); the code ends by a fi
 ### Test oracles (`core/test/`)
 | value | class | note |
 |---|---|---|
-| sim `STATE_FACTOR` 2 etc. | M (calibrated detection bound, notes/testing.md) | growth below the bound goes unseen |
+| sim `STATE_FACTOR` 2 etc. | M (calibrated detection bound, notes/test-sim.md) | growth below the bound goes unseen |
 | `MAX_PROOFS` 256 (`proto/prove.rs`: proofs in a Prove or Proved) | R | a stranger pays one signature per proof: about 12 ms of verification per connection, once; a node holding more key actors proves its own key and the first by tid, the rest unproved on that connection; past it a message is refused whole; 0: nothing proved; ∞: seconds of event loop per connection |
 | sim `IDLE_ROUNDS` 3 | M | ping-pong with a longer period goes unseen |
 | sim `STORM` 5000, `ROGUE_STORM` 100 000, `SLOW_MS` 30 s | M | |

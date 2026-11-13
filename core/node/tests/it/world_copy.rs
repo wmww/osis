@@ -1,4 +1,4 @@
-//! World copies (notes/testing.md, Copied worlds): a copied `Net` goes on exactly as the
+//! World copies (notes/test-harnesses.md, Copied worlds): a copied `Net` goes on exactly as the
 //! original, and the two share nothing.
 
 use crate::net::{Net, hosted};
@@ -45,7 +45,7 @@ fn runs() -> Vec<(&'static str, u64)> {
     osis_node::costs::take().into_iter().map(|(k, _, n)| (k, n)).collect()
 }
 
-// spec: none (internal: notes/testing.md, Copied worlds). A copied net goes on exactly as the
+// spec: none (internal: notes/test-harnesses.md, Copied worlds). A copied net goes on exactly as the
 // original: the same further steps leave the same reads, indexes, stores, host entries,
 // counters and memo runs, and steps on either leave the other as it was.
 #[test]

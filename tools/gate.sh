@@ -1,5 +1,5 @@
 #!/bin/sh
-# The merge gate (notes/build.md, Merge gate; notes/testing.md, The gate): every check in order,
+# The merge gate (notes/gate.md): every check in order,
 # each with its wall time and CPU-s. The checks before the tests (instant checks, lints, builds,
 # deny) fail fast; every test stage runs to its end whatever an earlier one did, and the gate then
 # prints every failure, KNOWN (tools/known_failures.txt) or NEW (tools/gate_failures.py). Exit 0
@@ -10,7 +10,7 @@
 # Its tests: the default tests (`cargo test`) plus the branch's selection from tools/test_select.py
 # (properties and sim scenarios at small size, from the crates the branch touched and their
 # dependents), all run in one hold of the heavy lock; every build and lint before it runs unlocked.
-# Per project (notes/build.md, Components pay for themselves): the GUI (osis-kit libs/kit/, osis-app
+# Per project (notes/gate.md, Components pay for themselves): the GUI (osis-kit libs/kit/, osis-app
 # app/, osis-android app/android/: workspace members outside default-members) has its own steps. A
 # diff touching only libs/kit/ or app/ runs only the GUI steps; any other diff runs the core steps,
 # whose lint covers the GUI too (an osis API change must not silently break the app); both, both. The
@@ -141,7 +141,7 @@ unification_check() {
   [ "$bad" -eq 0 ]
 }
 # system76-scheduler puts any cargo it sees (60 s refresh) and everything it spawns after in
-# SCHED_IDLE: builds then crawl 10-20x beside any test run (notes/build.md, Scheduler)
+# SCHED_IDLE: builds then crawl 10-20x beside any test run (notes/build.md, Profile and command forms)
 if systemctl is-active --quiet com.system76.Scheduler.service 2>/dev/null; then
   echo "gate: WARNING: system76-scheduler is running; builds here run at idle priority and take many times their cost (notes/build.md)" >&2
 fi

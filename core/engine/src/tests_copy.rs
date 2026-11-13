@@ -1,4 +1,4 @@
-//! World copies (notes/testing.md, Copied worlds): a copied `LocalPeer` goes on exactly as the
+//! World copies (notes/test-harnesses.md, Copied worlds): a copied `LocalPeer` goes on exactly as the
 //! original, and the two share nothing.
 
 #![allow(clippy::unwrap_used, clippy::indexing_slicing)]
@@ -87,7 +87,7 @@ fn runs() -> Vec<(&'static str, u64)> {
     crate::costs::take().into_iter().map(|(k, _, n)| (k, n)).collect()
 }
 
-// spec: none (internal: notes/testing.md, Copied worlds). A copied world goes on exactly as the
+// spec: none (internal: notes/test-harnesses.md, Copied worlds). A copied world goes on exactly as the
 // original: the same further steps make the same commits, reads, indexes, timelines, events,
 // stored bytes and memo runs.
 #[test]
@@ -105,7 +105,7 @@ fn a_copied_world_goes_on_as_the_original() {
     assert_eq!(observe(&mut lp, t), observe(&mut copy, t), "after the same steps");
 }
 
-// spec: none (internal: notes/testing.md, Copied worlds). A copy shares nothing with its
+// spec: none (internal: notes/test-harnesses.md, Copied worlds). A copy shares nothing with its
 // original: writes and fault plans of either leave the other as it was.
 #[test]
 fn a_copy_shares_nothing() {

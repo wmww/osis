@@ -1,5 +1,5 @@
 # Networking tests that can fail: leftovers
-> Summary: the networking test harness is built (notes/testing.md, Reachability model and API world: sim peer links, in-process `peer://` and LAN over the nat.rs model, checks over peers, each open no-server audit row as an ignored `repro_*` test its job un-ignores). Left: an end-to-end repro of audit row 4, and real-socket tests beyond localhost.
+> Summary: the networking test harness is built (notes/test-sim.md, Reachability model and API world sections: sim peer links, in-process `peer://` and LAN over the nat.rs model, checks over peers, each open no-server audit row as an ignored `repro_*` test its job un-ignores). Left: an end-to-end repro of audit row 4, and real-socket tests beyond localhost.
 > Priority: low
 > Tags: tests, sim, transport
 

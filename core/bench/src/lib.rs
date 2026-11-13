@@ -1,6 +1,6 @@
 //! osis-bench: a dependency-free bench harness (benches/, `cargo bench`) and the
 //! size budgets (tests/it/budgets.rs, by hand). Numbers are tracked by the nightly workflow, never
-//! gated; budgets are. Conventions: notes/testing.md.
+//! gated; budgets are. Conventions: notes/test-scale.md.
 //! Layer 9 (notes/architecture.md). Notes: notes/testing.md.
 #![forbid(unsafe_code)]
 

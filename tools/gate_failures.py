@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The gate's failure summary (notes/testing.md, The gate's summary): every failure of its test
+"""The gate's failure summary (notes/gate.md, The summary): every failure of its test
 stages, each marked KNOWN (listed in tools/known_failures.txt, with its issue) or NEW.
 
   tools/gate_failures.py SEL RESULTS [ROOT]   SEL: the gate's selection file (`run LIMIT CMD` and

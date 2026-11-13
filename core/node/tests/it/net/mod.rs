@@ -454,7 +454,7 @@ impl Net {
         Net { bare: false, home_at_hosts: false, clock: Arc::new(ManualClock::new(WallMs(T0))), nodes: vec![], hosts: vec![], links: BTreeMap::new(), queue: VecDeque::new(), next_hub_conn: 1, next_node_hub: HUB_BASE, steps: 0, blocked: BTreeSet::new(), plinks: BTreeMap::new(), blocked_peers: BTreeSet::new(), lan_keys: BTreeMap::new(), held: BTreeSet::new(), held_messages: Vec::new(), sent_kinds: BTreeMap::new(), shown: BTreeMap::new(), shown_held: BTreeMap::new(), pushed: BTreeMap::new(), deleted: BTreeMap::new(), peer_kinds: BTreeMap::new(), sent_bytes: 0, crossed: BTreeMap::new(), dialed: Vec::new(), full_passes: false, unpulled: BTreeSet::new(), unpulled_at: BTreeSet::new(), lose_deposits: BTreeSet::new(), held_hosts: BTreeSet::new(), busy: BTreeMap::new(), hub_busy: std::time::Duration::ZERO, told: BTreeMap::new(), fetched: BTreeMap::new(), deaf: BTreeSet::new(), held_to: BTreeSet::new(), hold_blobs: BTreeSet::new(), hide_blobs: BTreeMap::new(), bare_blobs: BTreeMap::new(), tamper: None, tamper_link: None, host_tamper: None, silent: BTreeSet::new(), trickle: BTreeMap::new(), trickle_hosts: BTreeMap::new(), batch_reads: false, peer_closes: 0, hands: BTreeMap::new(), port: Vec::new() }
     }
 
-    /// An exact copy of this network as it stands (notes/testing.md, Copied worlds): every node
+    /// An exact copy of this network as it stands (notes/test-harnesses.md, Copied worlds): every node
     /// (`SyncEngine::test_copy`) and host (`Hub::test_copy`) with its device, on one new clock at
     /// the same time (each node's skew kept), the queues, links and counters: run the same steps
     /// on both and they do the same. Unread engine events stay readable on both (`&mut`). A net

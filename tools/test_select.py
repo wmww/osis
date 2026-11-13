@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The gate's selection (notes/testing.md, The gate): a branch's properties and sim scenarios at small
+"""The gate's selection (notes/gate.md, The selection): a branch's properties and sim scenarios at small
 size, computed from what it touched. tools/gate.sh runs them in its one hold of the heavy lock.
 
   tools/test_select.py [--base REV | --all] [--offset N]          print the selection and its commands

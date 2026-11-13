@@ -1,0 +1,54 @@
+# Merge gate
+> Summary: What `tools/gate.sh` runs and in what order, which steps a branch's paths select (GUI, docs-only), how `tools/test_select.py` picks the properties and sim scenarios, how failures are marked KNOWN or NEW (`tools/known_failures.txt`), and the instant checks (policy.py, spec_map.py).
+
+A branch proves itself in its worktree; main is only fast-forwarded, never built. The reviewer gates once per branch; a worker never does (notes/coordination.md, Test budget). Stage costs and limits: notes/build.md, Time limits.
+
+## Running it
+`tools/gate.sh [--all] [--base REV] [--plan]` from the worktree root, after `git fetch && git rebase origin/main` and reading the rebase's result. No pipe, no `tools/heavy` around it (it takes the lock itself; a nested one refuses). It refuses a tree mid-rebase or with conflicts, and a HEAD that lacks origin/main (it fetches first; local main lags when the other box merges).
+- `--base REV`: diff against REV instead of the merge base with main. `--all`: select every crate (as on main, or with no merge base). `--plan`: print `core= gui= unify= select=all|diff|none` and exit.
+- Exit 0 `== gate passed`; 3 `== gate FAILED, KNOWN failures only`; 1 `== gate FAILED: N NEW, M KNOWN`; 2 bad use or refused.
+- Then the coordinator: `git checkout main && git merge --ff-only <branch> && git push`. Task branches are never pushed.
+
+## Steps
+Each prints its wall and CPU-s (compare CPU-s; wall follows load) and checks its time limit. The steps before the tests fail fast; every test stage runs to its end.
+1. The lockfile is current (`cargo metadata --locked`, about 1 s; not `--offline`, where an uncached crate fails like a stale lock; the failure prints the refresh command); `tools/policy.py`.
+2. Instant checks: the tools' own tests (`tools/gate_select_test.sh`, `test_select_test.py`, `gate_failures_test.py`, `limits_test.py`), `tools/limits.py split`, `tools/spec_map.py --uncited`, `--gaps`.
+3. The selection, printed with its commands (The selection, below).
+4. Lints: core clippy, then the GUI's on the same artifacts (re-lints only kit and app, a few seconds; cold, about 1.5 min once per worktree).
+5. Builds, unlocked: `cargo test --no-run` and every binary the selection runs, with the runs' own cargo arguments, so the hold builds nothing (doctests still compile inside it).
+6. The unification check, when a `Cargo.toml`, `Cargo.lock` or `.cargo/` changed (notes/build.md, Feature unification); `osis schema check` on every `schema/*.osis`; `cargo deny check`, then core's bans alone (deny.toml skip-trees the GUI stack, which would hide a core duplicate with a copy there).
+7. One `tools/heavy` hold: the default tests (`cargo test --locked --no-fail-fast`), the selected properties, the selected sim scenarios at 15 seeds.
+8. The GUI tests (`cargo test -p osis-kit -p osis-app -p osis-android`), when libs/kit/ or app/ changed.
+9. The summary (below).
+
+## Components pay for themselves
+Iterating on one project must not run the others' checks. The paths changed since the merge base (committed or not) pick the steps:
+- only libs/kit/ or app/: the GUI lint and tests, unification if a manifest changed, deny.
+- every other path Markdown under spec/, notes/ or issues/ (`core=docs`): steps 1-2, plus the GUI steps if the GUI changed. A Rust line that reads or includes a file there (`git grep` in gate.sh, one-line calls only) sends the full gate and names it.
+- anything else: every step; the GUI lint always (an osis API change must not silently break the app), the GUI tests only if the GUI changed.
+
+A new project extends the same pattern, with its own properties and release checks.
+
+## The selection
+`tools/test_select.py [--base REV | --all] [--offset N]` prints what a gate would select and run; `--paths P...` asks about paths without a diff; `--all` lists every property and the `OSIS_*` variable each reads.
+- **What it selects**: every property test of the crates the paths touch and of their dependents in the Cargo graph, and every sim scenario if osis-sim is among them. A normal or build edge carries on to that crate's dependents; a dev edge selects that one crate and stops (a change to held-model, roles-model or crdt-model selects the crates testing against it). A change low in the graph (osis-base, -crypto, -store, -crdt, -perm, -engine) selects nearly everything: that is the graph's answer, don't trim it by hand.
+- **A property test** is an `#[ignore]` test whose name ends in a size word (`_large`, `_plain`, `_exhaustive`) before any `_spec_*` suffix; never a `repro_`. The name is all: there is no list. An `#[ignore]` the scan cannot name (a macro's `fn $name`) is printed as `not read`. Anything else ignored is by hand; name a by-hand property `_by_hand`.
+- **Paths outside a crate**: `Cargo.toml`, `Cargo.lock`, `.cargo/`, `rust-toolchain` select every crate; a `schema/*.osis` the crates whose Rust names it, and their dependents; notes/, spec/, issues/, docs/, tools/ and core/test/tla/ nothing (TLA is by hand: notes/test-properties.md, Models); anything else nothing, printed as not classified.
+- **Offsets**: one random offset per gate starts every `OSIS_*_START` and is xor'ed into `OSIS_CRDT_SEED` and `OSIS_PERM_SEED`, so no two gates sample the same seeds; `--offset N` repeats one.
+- Never at the gate: large sizes and by-hand tests. A branch changing an invariant the selection does not reach gets one targeted larger run, named in its brief.
+
+## The summary
+`tools/gate_failures.py` (its docstring has the exact parse rules): one line per failure, `KNOWN` (with its issue) or `NEW`, each failing seed under it with its replay line. Whatever it cannot account for is NEW: a stage that did not run, a crashed or killed target, a hung-seed exit, a cargo `error` outside a target, a missing sim tally.
+- `tools/known_failures.txt`: one failure on main per line, `NAME REPRO ISSUE PATTERN` (NAME a libtest path or `sim-sweep:SCENARIO`; REPRO the setting that fails on main; PATTERN a regex). A failure is KNOWN when every failing unit of NAME (each seed's line, or the whole panic when it names no seed) matches a pattern of NAME; the gate's seeds are random, so REPRO's seed never needs to match. Keep a pattern as narrow as the issue's own words, so a new bug in a known test stays NEW; the reviewer still reads a KNOWN failure's text.
+- A property failing on main gets its issue and line at once (REPRO checked on main against the pattern); the fix deletes both. `tools/policy.py` refuses a line whose issue or test is gone or whose pattern does not compile.
+
+## Policy checks
+`python3 tools/policy.py` (its docstring lists every check; each failure names its rule). Among them: unsafe forbidden (app/android's one `unsafe` block, under a `// SAFETY:` comment, is the exception), every external dependency has its line in notes/architecture.md §5, core/base/testenv-known.txt lists exactly the `OSIS_*` variables the sources name (an `OSIS_PROBE_*` one fails: a probe left in), and dead `pub` items.
+- **Dead `pub`** (`tools/dead_pub.py`; `--all` lists every hit with its allowlist reason): a core `pub` item whose name appears only in its definition, its own crate's tests, `use` lines and (types) `impl` headers fails, unless tools/dead_pub_allow.txt lists it with a reason (`public API`, `test hook`, `table`, `deferred:`). A text scan by name: another crate's mention counts as a use, so a shared name hides a dead item; core/test and core/bench are not scanned. Fix a hit by removing it (and the tests that only exercised it), `#[cfg(test)]`, or listing it; a stale entry fails too.
+- **`cargo deny check`** (deny.toml): licence allowlist, duplicate versions denied (a forced one gets a `skip` with a reason), advisories, crates.io only. Members are `publish = false`.
+- The core crates below the engine (osis-base, -crdt, -perm, -schema) pull no tokio, quinn, redb or ML-KEM; tokio enters by default only in osis-transport, osis-node (`driver`) and osis (notes/architecture.md §5).
+
+## Spec-to-test map
+`python3 tools/spec_map.py` writes notes/testing-map.md (gitignored): per numbered spec section, the tests and vector cases citing it, the rule checklist, gaps and uncited tests. One flag per run: `--uncited` (gate) fails on a test in core/, libs/chat/ or cli/ that cites nothing (models exempt); `--gaps` (gate) fails on a rule with neither a test nor an issue, or a MUST sentence no rule anchors.
+- **Rules**: every MUST / MUST NOT sentence of spec/*.md plus the refusal rules of spec/permissions.md and spec/sync.md, each a `RULES` entry in the script (file, §, anchor, a substring of the sentence). A test or issue covers one by citing `spec/<file>.md §N (anchor)`; a new MUST fails `--gaps` until it has an entry. `VACUOUS` lists rules nothing can test yet.
+- Not in the map: SHOULDs (listed, not gated), policy numbers (cited as `spec: none` or by section), normative text without a MUST (section level only), spec/requirements.md (no numbered sections; covered by reviews).

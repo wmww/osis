@@ -1,4 +1,4 @@
-//! One test per hand-written file and per generator (notes/testing.md; format
+//! One test per hand-written file and per generator (notes/test-properties.md, Conformance vectors; format
 //! core/test/vectors/README.md). Each file's cases cite their spec sections.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 

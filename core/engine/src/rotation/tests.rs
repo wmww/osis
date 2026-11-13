@@ -12,7 +12,7 @@ use std::collections::{BTreeMap, BTreeSet};
 pub(super) const T0: WallMs = WallMs(1_700_000_000_000);
 
 /// `n` fresh peers (`LocalPeer::new`, seed 0, at `T0`), synced: built once per test process, each
-/// caller handed a copy (notes/testing.md, Copied worlds).
+/// caller handed a copy (notes/test-harnesses.md, Copied worlds).
 pub(super) fn synced(n: usize) -> LocalPeer {
     LocalPeer::cached(&format!("rotation::synced/{n}"), || {
         let mut lp = LocalPeer::new(n, 0, T0).unwrap();

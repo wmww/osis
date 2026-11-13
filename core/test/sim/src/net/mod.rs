@@ -573,7 +573,7 @@ impl NetSim {
         }
     }
 
-    /// Scenario `name`'s calm setup (notes/testing.md, Sim setups): `build` on
+    /// Scenario `name`'s calm setup (notes/test-sim.md, Shared setups): `build` on
     /// `NetSim::new(name, s.setup, cfg)`, built once per process per (name, `params`, setup seed,
     /// run mode) and copied for each run, the copy going on from `s.seed` (`copy`). `params` names
     /// what the seed picks that the setup depends on (a topology). `build` takes no scheduler

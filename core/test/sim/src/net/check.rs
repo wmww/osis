@@ -62,7 +62,7 @@ fn copies_waiting(sim: &mut NetSim) -> Res<()> {
 /// label), or, for a label no host names, from every commit made under it (`written`), never
 /// from its own holdings, so junk a peer made it keep (or pending commits) raises no bound.
 /// Calibrated on seeds 0..3 of every scenario: nodes used at most 0.69 of the bound (stored bytes
-/// at most 3.5x what they must hold; notes/testing.md, Simulator); junk kept, or state growing
+/// at most 3.5x what they must hold; notes/test-sim.md); junk kept, or state growing
 /// with time rather than with edits, breaks it.
 const STATE_FACTOR: u64 = 2;
 const STATE_PER_ENTRY: u64 = 2 << 10;

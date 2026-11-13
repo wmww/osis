@@ -1,4 +1,4 @@
-# Failures on main the gate marks KNOWN (notes/testing.md, The gate's summary): one per line,
+# Failures on main the gate marks KNOWN (notes/gate.md, The summary): one per line,
 # NAME REPRO ISSUE PATTERN. NAME: a libtest path or sim-sweep:SCENARIO; REPRO: the setting that
 # fails on main (a sim's SETUP/SEED); ISSUE: its issues/ file; PATTERN: a regex every failing
 # unit of NAME (each seed line of its panic, or its whole panic) must match

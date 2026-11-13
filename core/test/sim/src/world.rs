@@ -162,7 +162,7 @@ impl World {
         }
     }
 
-    /// An exact copy of this world as it stands (notes/testing.md, Copied worlds): every node
+    /// An exact copy of this world as it stands (notes/test-harnesses.md, Copied worlds): every node
     /// (`ManualNet::test_copy`, in start order, closed ones closed) and host (`Hub::test_copy`,
     /// `SyncEngine::test_copy`), on one new clock at the same time and new own clocks
     /// (`cfg_clocked`) at theirs, the queues, links, model and counters, the diagnostics not yet

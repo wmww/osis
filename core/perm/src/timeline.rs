@@ -128,7 +128,7 @@ pub(crate) struct Memo {
     pub disputes: std::sync::OnceLock<Vec<Dispute>>,
 }
 
-/// A copy holding the same answers and measures (world copies, notes/testing.md).
+/// A copy holding the same answers and measures (world copies, notes/test-harnesses.md).
 impl Clone for Memo {
     fn clone(&self) -> Memo {
         fn get<T: Clone>(m: &Mutex<T>) -> Mutex<T> {

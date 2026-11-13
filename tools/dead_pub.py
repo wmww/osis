@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Dead `pub` items (notes/testing.md, Policy checks): rustc's dead-code lint stops at `pub`, so an
+"""Dead `pub` items (notes/gate.md, Policy checks): rustc's dead-code lint stops at `pub`, so an
 item whose only callers are its own crate's tests lives on. Lists every `pub` fn, method, const,
 static and type defined outside test code in a core crate (core/*, not core/test or core/bench) whose name
 appears nowhere but its definition, its own crate's tests (`tests/`, `benches/`, `#[cfg(test)]` and

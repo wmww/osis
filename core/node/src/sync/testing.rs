@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 impl SyncEngine {
     /// Tests only: an exact copy of this sync engine as it stands, on `clock` (the copy's node's
-    /// wall clock), sharing no mutable state with it (notes/testing.md, Copied worlds): its
+    /// wall clock), sharing no mutable state with it (notes/test-harnesses.md, Copied worlds): its
     /// engine (`Engine::test_copy`), connections, work sets, caches and memos, its rng going on
     /// with the same stream. It goes on exactly as this one would given the same inputs. Its
     /// engine-event receiver holds the events this one's had not read (`&mut`: this one's is

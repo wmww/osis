@@ -19,7 +19,7 @@ pub struct HeldBody {
 
 impl Engine {
     /// Tests only: an exact copy of this engine as it stands, on `clock`, sharing no mutable
-    /// state with it (notes/testing.md, Copied worlds): its store over test copies of the backend
+    /// state with it (notes/test-harnesses.md, Copied worlds): its store over test copies of the backend
     /// and root (`osis_store::Store::test_copy`), its indexes, caches and memos, its rngs
     /// continuing the same streams (`NodeRng::test_copy`). It goes on exactly as this one would.
     /// Not copied: event subscribers and commit listeners (their owner subscribes and listens

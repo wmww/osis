@@ -1,5 +1,5 @@
-//! `sim-sweep`: runs many seeds of every simulator scenario (notes/testing.md, Simulator) over
-//! one setup per scenario (of `--setup`, by default `--from`: notes/testing.md, Sim setups), in
+//! `sim-sweep`: runs many seeds of every simulator scenario (notes/test-sim.md) over
+//! one setup per scenario (of `--setup`, by default `--from`: notes/test-sim.md, Shared setups), in
 //! parallel (`osis_base::testenv::run_jobs`: a seed past `OSIS_SEED_TIMEOUT_SECS` CPU-seconds is
 //! named hung), within a time budget; prints each failing seed with its replay call and exits 1 if
 //! any failed. Blocked scenarios (`osis_sim::BLOCKED`, a known engine bug each) are skipped

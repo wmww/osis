@@ -1,4 +1,4 @@
-//! Differential tests against core/test/roles-model (notes/testing.md): random histories from
+//! Differential tests against core/test/roles-model (notes/test-properties.md, Models): random histories from
 //! the model, evaluated by both; equal rosters, roles, applied and dropped sets.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing, clippy::needless_range_loop)]
 

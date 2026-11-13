@@ -1,5 +1,5 @@
 //! World copies (tests): an exact in-memory copy of a set of nodes sharing no mutable state with
-//! the original (notes/testing.md, Copied worlds). Inside `copying`, `remap` gives each shared
+//! the original (notes/test-harnesses.md, Copied worlds). Inside `copying`, `remap` gives each shared
 //! handle (`Arc`) of the original one new handle, so what two parts of the original share (a
 //! device's fault plan, a store's data behind two backend handles, a memo's stamp table) the
 //! copy's parts share too, and nothing of the copy points at the original. `copying_reseeded`
@@ -90,7 +90,7 @@ static KEPT: std::sync::LazyLock<Kept> = std::sync::LazyLock::new(Default::defau
 
 /// Tests only: `copy` of the world `build` makes, built once per process per `key` (a name for
 /// the build and every parameter it takes). Callers are test setups that hand each test a copy
-/// it cannot tell from a world it built itself (notes/testing.md, Copied worlds).
+/// it cannot tell from a world it built itself (notes/test-harnesses.md, Copied worlds).
 #[allow(clippy::panic)]
 pub fn cached<W: Send + 'static>(key: &str, build: impl FnOnce() -> W, copy: impl FnOnce(&mut W) -> W) -> W {
     let slot = KEPT.lock().unwrap_or_else(std::sync::PoisonError::into_inner).entry(key.to_string()).or_default().clone();
@@ -109,7 +109,7 @@ pub fn cached<W: Send + 'static>(key: &str, build: impl FnOnce() -> W, copy: imp
 mod tests {
     use super::*;
 
-    // spec: none (internal: notes/testing.md, Copied worlds). Inside one copy a shared handle
+    // spec: none (internal: notes/test-harnesses.md, Copied worlds). Inside one copy a shared handle
     // maps to one new handle; outside, every remap is new; the copy shares nothing with the
     // original.
     #[test]
