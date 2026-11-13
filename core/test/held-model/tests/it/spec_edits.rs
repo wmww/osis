@@ -1,7 +1,7 @@
 //! Signal edits (notes/signal-edits-design.md, held_model::edits). Properties checked over every subset
 //! of small worlds, smallest first, so a failure names a minimal counterexample.
 use crate::util::*;
-use held_model::edits::{listed, listing, Entry, Shows};
+use held_model::edits::{listed_of, listing, listing_of, Entry, Shows};
 use held_model::*;
 
 const SIG: Aspect = Aspect::signal(5);
@@ -157,8 +157,9 @@ fn unlisted_counts_for_nothing(u: &[Commit], nows: &[u64], signals: &[CommitId])
     each_subset(u, |s| {
         for &n in nows {
             let w = world(n, s);
-            let all = at_sig(&w);
-            let on = listed(&w);
+            let o = evaluate(&w);
+            let all = listing_of(&w, &o).remove(&(T, SIG)).unwrap_or_default();
+            let on = listed_of(&w, &o);
             for &c in signals.iter().filter(|c| ids(s).contains(c) && !on.contains(c)) {
                 assert_eq!(all, at_sig(&world(n, &without(s, &[c]))), "{c} unlisted in {:?} now {n}", ids(s));
             }
@@ -235,7 +236,7 @@ fn a_purged_newest_version_keeps_older_ones_gone() {
                 let w = world(n, s);
                 let o = evaluate(&w);
                 let purged = |c| o.purged.keys().any(|&(x, _)| x == c);
-                for e in at_sig(&w).iter().filter(|e| e.place.1 == 10) {
+                for e in listing_of(&w, &o).remove(&(T, SIG)).unwrap_or_default().iter().filter(|e| e.place.1 == 10) {
                     if let Shows::Value(_) = e.shows {
                         assert!(!ids(s).iter().any(|&c| c > e.version && matches!(c, 11 | 12) && purged(c)), "{:?} now {n}: {e:?}", ids(s));
                     }

@@ -30,24 +30,32 @@ pub enum Shows {
 /// What the node's listing of each signal reads, in place order. Own invalid parts (spec/commits.md
 /// §7) are not here: they are marked and read as themselves.
 pub fn listing(h: &Held) -> BTreeMap<(ThingId, Aspect), Vec<Entry>> {
-    let o = evaluate(h);
+    listing_of(h, &evaluate(h))
+}
+
+/// `listing` from `o`, `h`'s evaluation.
+pub fn listing_of(h: &Held, o: &Outcome) -> BTreeMap<(ThingId, Aspect), Vec<Entry>> {
     let by_id: BTreeMap<CommitId, &Commit> = h.commits.iter().map(|c| (c.id, c)).collect();
     let mut listed: BTreeMap<(ThingId, Aspect), Vec<(&Commit, usize)>> = BTreeMap::new();
     for c in &h.commits {
         for (i, p) in c.parts.iter().enumerate() {
-            if status(h, &o, &by_id, c, i).is_some() {
+            if status(h, o, &by_id, c, i).is_some() {
                 listed.entry((p.thing, p.aspect)).or_default().push((c, i));
             }
         }
     }
-    listed.into_iter().map(|(k, parts)| (k, entries(h, &o, &by_id, &parts))).collect()
+    listed.into_iter().map(|(k, parts)| (k, entries(h, o, &by_id, &parts))).collect()
 }
 
 /// The commits with a listed part (a version folded under a newer one has no entry of its own).
 pub fn listed(h: &Held) -> BTreeSet<CommitId> {
-    let o = evaluate(h);
+    listed_of(h, &evaluate(h))
+}
+
+/// `listed` from `o`, `h`'s evaluation.
+pub fn listed_of(h: &Held, o: &Outcome) -> BTreeSet<CommitId> {
     let by_id: BTreeMap<CommitId, &Commit> = h.commits.iter().map(|c| (c.id, c)).collect();
-    h.commits.iter().filter(|c| (0..c.parts.len()).any(|i| status(h, &o, &by_id, c, i).is_some())).map(|c| c.id).collect()
+    h.commits.iter().filter(|c| (0..c.parts.len()).any(|i| status(h, o, &by_id, c, i).is_some())).map(|c| c.id).collect()
 }
 
 /// What is here of a listed part.

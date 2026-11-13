@@ -133,38 +133,13 @@ def split():
     return bad
 
 
-def timed(cmd, cwd=None, env=None):
-    """(rc, CPU-s, wall, output) of one process, its children included."""
-    t0 = time.time()
-    p = subprocess.Popen(cmd, cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-    out = p.stdout.read()
-    _, status, ru = os.wait4(p.pid, 0)
-    return os.waitstatus_to_exitcode(status), ru.ru_utime + ru.ru_stime, time.time() - t0, out.decode(errors="replace")
-
-
 def tests(jobs):
     """Every default test as its own process, `jobs` at a time, against the `test` CPU limit; the
     ones over either limit (or near the wall limit, which this concurrent run inflates) again
     alone, each the box's only test. Take the heavy lock first."""
-    out = subprocess.run(["cargo", "test", "--locked", "--no-run", "--message-format=json"], cwd=ROOT,
-                         capture_output=True, text=True, check=True).stdout
-    bins = []
-    for line in out.splitlines():
-        o = json.loads(line)
-        if o.get("reason") == "compiler-artifact" and o.get("executable") and o["profile"]["test"]:
-            # `path+file:///…/dir#name@0.1.0`, or `…/name#0.1.0` when the name is the dir's
-            url, frag = o["package_id"].rsplit("#", 1)
-            pkg = frag.split("@")[0] if "@" in frag else url.rstrip("/").rsplit("/", 1)[-1]
-            bins.append((o["executable"], os.path.dirname(o["manifest_path"]), f"{pkg} {o['target']['name']}"))
-    # what `cargo test` sets that a test may read: .cargo/config.toml's [env]
-    env = dict(os.environ, PROPTEST_CASES=os.environ.get("PROPTEST_CASES", "32"))
-    todo = []
-    for exe, cwd, label in bins:
-        def listed(*a):
-            r = subprocess.run([exe, "--list", "--format=terse", *a], cwd=cwd, env=env, capture_output=True, text=True)
-            return {l.rsplit(": ", 1)[0] for l in r.stdout.splitlines() if l.endswith(": test")}
-        todo += [(exe, cwd, label, n) for n in sorted(listed() - listed("--ignored"))]
-    print(f"{len(todo)} default tests in {len(bins)} binaries, {jobs} at a time")
+    from pertest import default_tests, test_env, timed
+    todo, env = default_tests(ROOT), test_env()
+    print(f"{len(todo)} default tests in {len({t[2] for t in todo})} binaries, {jobs} at a time")
     lim, why = limit("test")
     if lim is None:
         sys.exit(f"limits: {why}")

@@ -216,6 +216,8 @@ fn any_order_dropping_shows_a_subset() {
         for t in timelines(2).into_iter().filter(|t| t.len() == 2) {
             let all = bodies(fire);
             let items: Vec<Item> = t.iter().map(|s| Item::S(*s)).chain(all.iter().map(|b| Item::B(*b))).collect();
+            // the reference holds everything: one judgment per moment, whatever the order
+            let mut full_at = std::collections::BTreeMap::new();
             for order in perms(&items) {
                 // each item arrives no earlier than its stamp; `lag` delays the whole run
                 for lag in [0, 2] {
@@ -236,7 +238,7 @@ fn any_order_dropping_shows_a_subset() {
                     }
                     for now in now..now + 5 {
                         n.act(true, now);
-                        let (h, full) = (n.history(true, now), history(&t, true, &all, now));
+                        let (h, full) = (n.history(true, now), full_at.entry(now).or_insert_with(|| history(&t, true, &all, now)));
                         assert!(h.iter().all(|x| full.contains(x) || late.contains(x)), "{order:?} now {now}: shows more");
                         assert!(full.iter().all(|x| h.contains(x) || n.dropped.contains(x)), "{order:?} now {now}: lost without a drop");
                     }
@@ -581,6 +583,8 @@ fn ev_any_order_dropping_shows_a_subset() {
     let opts = [Opt::None, keep_after(1), KEPT, Opt::Purge];
     for tl in ev_timelines(2, &[0, 2], &opts).into_iter().filter(|t| t.len() == 2) {
         let items = [settings_of(SIG, &tl), vec![body(10, 1, true), body(11, 3, true)]].concat();
+        // the reference holds everything: one judgment per moment, whatever the order
+        let mut full_at = std::collections::BTreeMap::new();
         for order in perms(&items) {
             let (mut n, mut now) = (held(0, vec![]), 0);
             for c in &order {
@@ -590,8 +594,8 @@ fn ev_any_order_dropping_shows_a_subset() {
             }
             for now in now..now + 3 {
                 n = eager(n, now);
-                let full = held(now, items.clone());
-                let (h, f) = (listed(&n, SIG), listed(&full, SIG));
+                let f = full_at.entry(now).or_insert_with(|| listed(&held(now, items.clone()), SIG));
+                let h = listed(&n, SIG);
                 assert!(h.is_subset(&f), "{order:?} now {now}: shows more");
                 let lost: Vec<CommitId> = f.difference(&h).copied().collect();
                 for c in lost {
