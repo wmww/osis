@@ -245,7 +245,7 @@ pub(crate) fn judge(tx: &mut Tx<'_>, heard: &dyn Fn(&Tid) -> bool, held: bool, r
                 gone.insert(x);
                 out.release.push(x);
             }
-            // pending until the request destroys it (`judge_lifetimes`)
+            // pending (one released: until the request destroys it, `judge_lifetimes`)
             if ends || !pending {
                 set(tx, PENDING, &x, true)?;
                 queue.extend(below(tx, &x)?);

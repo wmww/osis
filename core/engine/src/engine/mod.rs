@@ -3021,7 +3021,6 @@ impl Tx<'_> {
         Ok(Some(b))
     }
 
-    /// Scans local records under `prefix` (keys returned without it).
     /// Every stored pending or parked copy, a page at a time: commit, kind, bytes.
     pub(crate) fn each_pending(&mut self, mut f: impl FnMut(CommitId, osis_store::PendingKind, Vec<u8>)) -> Result<()> {
         let mut after: Option<CommitId> = None;
@@ -3053,6 +3052,7 @@ impl Tx<'_> {
         Ok(())
     }
 
+    /// Scans local records under `prefix` (keys returned without it).
     pub fn scan(&mut self, prefix: &[u8], mut f: impl FnMut(&[u8], Vec<u8>) -> Result<()>) -> Result<()> {
         let mut from: Vec<u8> = Vec::new();
         loop {
