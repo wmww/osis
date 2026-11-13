@@ -1,0 +1,4 @@
+# list-undo-extra
+- The briefed issue was already fixed on main (b55a0af6f, with its minimal test `list_undo_delete_skips_hidden_element_spec_4_6`), but that commit left the issue file, so this task was briefed on a solved bug. Its seed no longer reproduced (rng use changed); only the shrunk script in the issue did.
+- Rebuilding the crdt test binary while a seed sweep ran it made a run of seeds fail spuriously (the binary was replaced underneath): copy the binary aside before a long sweep.
+- The release-check crdt line (notes/testing.md) runs the by-hand `stream_memory_big_map` (it fails: issues/stream-memory-encode-ratio.md) and has no seed-range knob for `random_scripts_replay_spec_5_7`; a sweep is one process per `OSIS_CRDT_SEED`. My first 30,000-seed sweep held the heavy lock 2.4x its CPU limit (the size was my pick).

@@ -12,3 +12,6 @@ ephemeral::random_window_one_capped_host_large OSIS_EPH_START=1811714465 issues/
 runtime::a_paired_peer_serves_what_it_reads_in_process_spec_data_model_9 - issues/paired-peer-runtime-flake.md Unsynced \{ groups
 sim-sweep:malformed_blobs 72407225782/72407225792 issues/malformed-blobs-host-refusal.md the host refused a malformed blob: Code\(2\)
 sim-sweep:member_churn 921485473073/921485473124 issues/member-churn-label-failed-at-host.md not open at host .* at quiescence
+fuzz_seq::tests::random_scripts_replay_spec_5_7 OSIS_CRDT_SEED=10971 issues/seq-paste-after-paste-order.md ops read like the same ops on a plain sequence
+tests_laws::entry_copies::forged_entry_copies_join_and_expire_alike_spec_5_6 OSIS_CRDT_SEED=2854516606 issues/forged-entry-copies-expiry-seed.md before the joins
+tests_life::sweep_laws_spec_sync_7 OSIS_CRDT_SEED=917311 issues/sweep-laws-view-read-seed.md the view's read

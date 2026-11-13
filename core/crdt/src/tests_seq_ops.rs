@@ -772,6 +772,36 @@ fn list_undo_delete_skips_hidden_element_spec_4_6() {
     assert_eq!(a.state.read(), before.read());
 }
 
+/// §5.7 move, §6.1, §4.6: a move leaves a record holding no position write on END, as a virtual
+/// anchor (a flag-only record whose creation the node lacks), and moves what hangs below it as
+/// roots; so undoing the move restores the read, as END cannot be written back.
+#[test]
+fn move_leaves_unplaced_record_on_end_spec_5_7() {
+    let view = text_view();
+    let ins = |at: usize, x: &str| op(Op::Insert { at, items: vec![s(x)] });
+    let mut b = Replica::new(2);
+    b.commit(1, &[ins(0, "x")], &view);
+    let (y, _, _) = b.commit(2, &[ins(1, "y")], &view).unwrap();
+    let (del, _, _) = b.commit(3, &[op(Op::Delete { at: 0, len: 1 })], &view).unwrap();
+    let mut a = Replica::new(1);
+    a.commit(4, &[ins(0, "u")], &view);
+    a.commit(5, &[ins(0, "zw")], &view);
+    // x's delete without its creation: x holds no position write, so it and y sit on END
+    a.state.join(y);
+    a.state.join(del);
+    assert_eq!(a.state.read(), Some(s("zwuy")));
+    let before = a.state.clone();
+    // the second move's range "w", x, "y": x stays, y moves as a root
+    let (d, src, range) = a.commit(6, &[op(Op::Move { at: 2, len: 1, to: 0 }), op(Op::Move { at: 2, len: 2, to: 0 })], &view).unwrap();
+    assert_eq!(a.state.read(), Some(s("wyuz")));
+    let x = crate::stamp::Dot { src: session_of(2), ctr: 1 };
+    assert!(matches!(&d, Fragment::Seq(sq) if !sq.elems().contains_key(&x)), "no position write for x");
+    let u = Undone { delta: &d, source: &src, range };
+    let ud = undo(&mut Writer::new(ts(7 << 16), session_of(1), a.lo), &u, &a.state, &before, &view).unwrap().unwrap();
+    a.state.join(ud);
+    assert_eq!(a.state.read(), before.read());
+}
+
 /// §5.7 Undo: a move undoes by writing the old anchors back (notes/crdt.md worked example).
 #[test]
 fn move_undo_spec_5_7() {

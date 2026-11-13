@@ -450,7 +450,7 @@ Text is `list<char>` with run compression and immutable element content; list el
 - `insert(after: index|HEAD, items)`: one creation run (or several, rule 3) `[k, n, [anchor, [[0, n]]], content, [], []]`, anchor = dot of the element visually at `index` (HEAD for 0). Elements get dots `k..k+n`.
 - `delete(range)`: for each maximal run of consecutive dots in the range, a record `[first, m, [], [], [], [[0, m-1, D, true]]]`; the one delta stamp for the whole commit. List: the element reset prunes the elements' content below `D`.
 - `undelete(dots)` (text only): same with `false`, each element's char carried in the `FlagW` string (from the state before the undone delete or a clipboard); an element whose char the writer lacks cannot be shown again (Live). A list element is restored by re-inserting its value with a fresh dot.
-- The **range** of a delete or move is the slice of the full placement order (deleted elements included, §6.1) from the first to the last visible element of the selection, so deleted and content-less elements inside a selection travel with it; trailing deleted elements stay behind.
+- The **range** of a delete or move is the slice of the full placement order (deleted elements included, §6.1) from the first to the last visible element of the selection, so deleted and content-less elements inside a selection travel with it; trailing deleted elements stay behind. A move's range leaves out every element holding no position write: it sits on `END` by its dot as a virtual anchor does (§6.2) and stays there, so an undo can restore it.
 - `move(range, after: index|HEAD)`:
   - `roots`: the elements of the range whose chosen parent (§6.2) is outside the range, in visual order.
   - `pred`: the visible element before the range (or HEAD).

@@ -746,6 +746,8 @@ pub(crate) trait SeqRead {
     fn rec(&self, d: &Dot) -> Option<&SeqElem>;
     /// Whether a record holds element `d`.
     fn holds(&self, d: &Dot) -> bool;
+    /// The record holding element `d`.
+    fn holding(&self, d: &Dot) -> Option<&SeqElem>;
 }
 
 impl SeqRead for Seq {
@@ -762,7 +764,13 @@ impl SeqRead for Seq {
         self.elems.get(d)
     }
     fn holds(&self, d: &Dot) -> bool {
-        !self.uncovered(d) && crate::seq_span::find(&self.elems, d).is_some()
+        self.holding(d).is_some()
+    }
+    fn holding(&self, d: &Dot) -> Option<&SeqElem> {
+        if self.uncovered(d) {
+            return None;
+        }
+        crate::seq_span::find(&self.elems, d).map(|x| x.1)
     }
 }
 
@@ -864,7 +872,10 @@ impl SeqRead for Layered<'_> {
         self.top.get(d).or_else(|| self.base.rec(d))
     }
     fn holds(&self, d: &Dot) -> bool {
-        crate::seq_span::find(&self.top, d).is_some() || self.base.holds(d)
+        self.holding(d).is_some()
+    }
+    fn holding(&self, d: &Dot) -> Option<&SeqElem> {
+        crate::seq_span::find(&self.top, d).map(|x| x.1).or_else(|| self.base.holding(d))
     }
 }
 

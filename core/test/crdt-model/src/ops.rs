@@ -410,7 +410,9 @@ pub fn seq_move(w: &mut Writer, state: &Frag, from: usize, len: usize, after: us
     // visible element of the selection, so deleted and content-less elements inside the selection travel with it
     let i0 = all.iter().position(|d| *d == vis[from]).unwrap();
     let i1 = all.iter().position(|d| *d == vis[from + len - 1]).unwrap();
-    let range: Vec<Dot> = all[i0..=i1].to_vec();
+    // an element holding no position write sits on END by its dot as a virtual anchor does (§6.1)
+    // and stays there: no part of the range
+    let range: Vec<Dot> = all[i0..=i1].iter().filter(|d| !elems[*d].pos.is_empty()).cloned().collect();
     let rest: Vec<&Dot> = vis.iter().filter(|d| !range.contains(d)).collect();
     if after > rest.len() {
         return None;

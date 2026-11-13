@@ -110,11 +110,13 @@ fn position(w: &mut Writer, a: Anchor) -> SeqElem {
 
 /// The position writes moving the nodes `range` (placement positions) to `dest`, re-anchoring
 /// the nodes outside it that hang below it at `pred` (§5.7 move). A creation chain's first
-/// element carries its edge; the elements of a range without creation are each a root (bare
-/// anchors and flag-only elements sit on END one by one), so each gets a write, chained in
-/// order. The next root anchors at the last element of the previous root's moved subtree.
-fn move_writes(w: &mut Writer, p: &Placement, range: Range<usize>, pred: Anchor, dest: Anchor) -> BTreeMap<Dot, SeqElem> {
-    let rows: Vec<&Row> = p.iter_from(range.start).take(range.len()).collect();
+/// element carries its edge; the elements of a positioned range without creation are each a
+/// root, so each gets a write, chained in order. The next root anchors at the last element of
+/// the previous root's moved subtree. A node holding no position write (`placed` false) sits
+/// on END by its dot as a virtual anchor does (§6.1) and stays there: it is no part of the
+/// range, and what hangs below it inside the range moves as roots.
+fn move_writes(w: &mut Writer, p: &Placement, range: Range<usize>, pred: Anchor, dest: Anchor, placed: &dyn Fn(&Dot) -> bool) -> BTreeMap<Dot, SeqElem> {
+    let rows: Vec<&Row> = p.iter_from(range.start).take(range.len()).filter(|r| placed(&r.dot)).collect();
     // a row's children name its last element
     let ends: Vec<Dot> = rows.iter().map(|r| nth(&r.dot, r.span - 1)).collect();
     let inr: HashSet<&Dot> = ends.iter().collect();
@@ -242,7 +244,7 @@ pub(crate) fn op<V: View>(w: &mut Writer, text: bool, s: Option<&dyn SeqRead>, v
             }
             let dest = anchor_outside(&vis, range.clone(), *to)?;
             let pred = anchor_after(&vis, *at)?;
-            *out.elems_mut() = move_writes(w, p, range, pred, dest);
+            *out.elems_mut() = move_writes(w, p, range, pred, dest, &|d| s.holding(d).is_some_and(|e| !e.pos.is_empty()));
             check_bare(&out)?;
         }
         Op::Paste { dots, at } => {
@@ -268,7 +270,7 @@ pub(crate) fn op<V: View>(w: &mut Writer, text: bool, s: Option<&dyn SeqRead>, v
             }
             let dest = anchor_outside(&vis, *i0..*i1 + 1, *at)?;
             let pred = pred_of(p, *i0);
-            *out.elems_mut() = move_writes(w, p, *i0..*i1 + 1, pred, dest);
+            *out.elems_mut() = move_writes(w, p, *i0..*i1 + 1, pred, dest, &|d| s.holding(d).is_some_and(|e| !e.pos.is_empty()));
             check_bare(&out)?;
             let d = w.delta_stamp();
             for dot in dots {
