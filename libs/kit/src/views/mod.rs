@@ -166,7 +166,8 @@ pub fn child_specs(blocks: &[Block]) -> Vec<(String, ViewSpec, bool)> {
     for b in blocks {
         match b {
             Block::View { key, spec } => out.push((key.clone(), spec.clone(), false)),
-            Block::Filled { key, spec, below, .. } => {
+            Block::Filled { key, spec, above, below, .. } => {
+                out.extend(child_specs(above));
                 out.push((key.clone(), spec.clone(), true));
                 out.extend(child_specs(below));
             }
@@ -201,8 +202,19 @@ impl Node {
         self.walk().into_iter().find(|n| n.spec.view_type == view_type)
     }
     /// Every block in the tree.
+    /// Every block shown, a filled block's head and foot blocks after it.
     pub fn blocks(&self) -> Vec<&Block> {
-        self.walk().into_iter().flat_map(|n| n.out.blocks.iter()).collect()
+        fn add<'a>(b: &'a Block, out: &mut Vec<&'a Block>) {
+            out.push(b);
+            if let Block::Filled { above, below, .. } = b {
+                above.iter().chain(below).for_each(|b| add(b, out));
+            }
+        }
+        let mut out = Vec::new();
+        for n in self.walk() {
+            n.out.blocks.iter().for_each(|b| add(b, &mut out));
+        }
+        out
     }
 }
 

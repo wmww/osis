@@ -223,7 +223,7 @@ impl R<'_> {
             Block::List(l) => self.list(l),
             Block::Days(days) => self.days(days),
             Block::View { key, .. } => self.child(key).erased(),
-            Block::Filled { key, has_foot, plain, fills, below, .. } => self.filled(key, *has_foot, *plain, *fills, below),
+            Block::Filled { key, has_foot, plain, above, below, .. } => self.filled(key, *has_foot, *plain, above, below),
             Block::Bar { back, descriptor, favorite, star, more, menu } => self.bar(back, descriptor, *favorite, star, more, menu),
             Block::Form { rows, wide } => self.form(rows, *wide),
             Block::Editor { thing, ak, key, placeholder, role, multiline, lead } => self.editor(*thing, ak, key, placeholder, *role, *multiline, lead)?,
@@ -239,29 +239,37 @@ impl R<'_> {
         w
     }
 
-    /// A child filling the space: panel, scroll, what is below it, the pinned foot under them.
-    fn filled(&mut self, key: &str, has_foot: bool, plain: bool, fills: bool, below: &[Block]) -> NewWidget<dyn Widget> {
+    /// A child filling a page: what is above it as the page's head, the child and what is below
+    /// it in a panel, the child's foot as the page's foot.
+    fn filled(&mut self, key: &str, has_foot: bool, plain: bool, above: &[Block], below: &[Block]) -> NewWidget<dyn Widget> {
         let look = self.look.clone();
         let sp = |x: f64| look.sp(x);
-        let mut body = Flex::column().cross_axis_alignment(CrossAxisAlignment::Fill).with_gap(Length::px(sp(16.0)));
-        // a child with a list takes what the page leaves it (`Page`); other content its own height
-        body = if fills { body.with_flex_child(self.child(key), 1.0) } else { body.with_child(self.child(key)) };
+        let mut head = Flex::column().cross_axis_alignment(CrossAxisAlignment::Fill).with_gap(Length::px(sp(8.0)));
+        for b in above {
+            if let Some(w) = self.block(b) {
+                head = head.with_child(w);
+            }
+        }
+        // the child takes what the page leaves when everything fits
+        let mut body = Flex::column().cross_axis_alignment(CrossAxisAlignment::Fill).with_gap(Length::px(sp(16.0))).with_flex_child(self.child(key), 1.0);
         for b in below {
             if let Some(w) = self.block(b) {
                 body = body.with_child(w);
             }
         }
         let body = NewWidget::new_with_props(body, Properties::new().with(Padding::all(sp(28.0))));
-        let scroll: NewWidget<dyn Widget> = NewWidget::new(Page::new(body, look.clone())).erased();
         self.built.pinned.push(key.to_string());
-        let mut col = Flex::column().cross_axis_alignment(CrossAxisAlignment::Fill).with_gap(Length::px(sp(10.0)));
-        col = if plain { col.with_flex_child(scroll, 1.0) } else { col.with_flex_child(NewWidget::new(Panel::new(scroll, look.clone(), PanelKind::Panel, (0.0, 0.0)).fill_height(true)), 1.0) };
+        let body: NewWidget<dyn Widget> = if plain { body.erased() } else { NewWidget::new(Panel::new(body, look.clone(), PanelKind::Panel, (0.0, 0.0)).fill_height(true)).erased() };
+        let mut page = Page::new(body, look.clone());
+        if !above.is_empty() {
+            page = page.with_head(NewWidget::new(head), sp(10.0));
+        }
         if has_foot {
             let foot = NewWidget::new(SizedBox::empty());
             self.built.feet.push((key.to_string(), foot.id()));
-            col = col.with_child(NewWidget::new(Panel::new(foot, look.clone(), PanelKind::Panel, (12.0, 14.0))));
+            page = page.with_foot(NewWidget::new(Panel::new(foot, look.clone(), PanelKind::Panel, (12.0, 14.0))), sp(10.0));
         }
-        NewWidget::new(col).erased()
+        NewWidget::new(page).erased()
     }
 
     fn bar(&mut self, back: &Option<Do>, descriptor: &str, favorite: bool, star: &Do, more: &Do, menu: &[crate::view::Chip]) -> NewWidget<dyn Widget> {

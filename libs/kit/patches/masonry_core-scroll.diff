@@ -1,0 +1,152 @@
+--- src/core/contexts.rs
++++ src/core/contexts.rs
+@@ -414,23 +414,6 @@
+         self.global_state.needs_pointer_pass = true;
+     }
+ 
+-    /// Send a signal to parent widgets to scroll this widget into view.
+-    pub fn request_scroll_to_this(&mut self) {
+-        let rect = self.widget_state.size().to_rect();
+-        self.global_state
+-            .scroll_request_targets
+-            .push((self.widget_state.id, rect));
+-    }
+-
+-    /// Send a signal to parent widgets to scroll this area into view.
+-    ///
+-    /// `rect` is in local coordinates.
+-    pub fn request_scroll_to(&mut self, rect: Rect) {
+-        self.global_state
+-            .scroll_request_targets
+-            .push((self.widget_state.id, rect));
+-    }
+-
+     /// Set the event as "handled", which stops its propagation to parent
+     /// widgets.
+     pub fn set_handled(&mut self) {
+@@ -561,6 +544,57 @@
+         new_size
+     }
+ 
++    /// Where the descendant `id` was last placed, in this widget's coordinates (its own and its
++    /// ancestors' origins below this widget); `None` when it is not a descendant.
++    pub fn descendant_origin(&self, id: WidgetId) -> Option<Point> {
++        let me = self.widget_state.id.to_raw();
++        let mut at = Vec2::ZERO;
++        let mut cur = id.to_raw();
++        loop {
++            let node = self.children.find(cur)?;
++            at += node.item.state.origin.to_vec2();
++            match node.parent_id {
++                Some(p) if p == me => return Some(at.to_point()),
++                Some(p) => cur = p,
++                None => return None,
++            }
++        }
++    }
++
++    /// The focused widget's IME area (a text field's caret; else its box), in this widget's
++    /// coordinates, when it is a descendant.
++    pub fn focused_area(&self) -> Option<Rect> {
++        let id = self.global_state.focused_widget?;
++        let at = self.descendant_origin(id)?;
++        let node = self.children.find(id.to_raw())?;
++        let state = &node.item.state;
++        Some(state.ime_area.unwrap_or_else(|| state.size().to_rect()) + at.to_vec2())
++    }
++
++    /// Asks the scroll pass (after this layout) to bring the focused widget's IME area into view.
++    pub fn request_scroll_to_focused(&mut self) {
++        let Some(id) = self.global_state.focused_widget else { return };
++        let Some(node) = self.children.find(id.to_raw()) else { return };
++        let state = &node.item.state;
++        let area = state.ime_area.unwrap_or_else(|| state.size().to_rect());
++        self.global_state.scroll_request_targets.push((id, area));
++    }
++
++    /// Marks the descendant `id` (and the widgets between) as needing layout, so this widget's
++    /// next `run_layout` on its child reaches it even under constraints it was laid out at before.
++    pub fn request_layout_of(&mut self, id: WidgetId) {
++        let me = self.widget_state.id.to_raw();
++        let mut cur = id.to_raw();
++        loop {
++            let Some(node) = self.children.reborrow_mut().find_mut(cur) else { return };
++            node.item.state.needs_layout = true;
++            match node.parent_id {
++                Some(p) if p != me => cur = p,
++                _ => return,
++            }
++        }
++    }
++
+     /// Set the position of a child widget, in the parent's coordinate space.
+     /// This will affect the parent's display rect.
+     ///
+@@ -1230,6 +1264,51 @@
+             }
+         }
+ 
++        /// Send a signal to parent widgets to scroll this widget into view.
++        pub fn request_scroll_to_this(&mut self) {
++            let rect = self.widget_state.size().to_rect();
++            self.global_state
++                .scroll_request_targets
++                .push((self.widget_state.id, rect));
++        }
++
++        /// Send a signal to parent widgets to scroll this area into view.
++        ///
++        /// `rect` is in local coordinates.
++        pub fn request_scroll_to(&mut self, rect: Rect) {
++            self.global_state
++                .scroll_request_targets
++                .push((self.widget_state.id, rect));
++        }
++
++        /// Send a signal to parent widgets to scroll this widget's IME area (a text field's
++        /// caret) into view, or the whole widget when it has none.
++        pub fn request_scroll_to_ime_area(&mut self) {
++            let rect = self
++                .widget_state
++                .ime_area
++                .unwrap_or_else(|| self.widget_state.size().to_rect());
++            self.global_state
++                .scroll_request_targets
++                .push((self.widget_state.id, rect));
++        }
++
++        /// Queue a callback that will be called with a [`WidgetMut`] for the widget `id`, anywhere
++        /// in the tree (nothing is called if it is gone by then).
++        ///
++        /// The callbacks will be run in the order they were submitted during the mutate pass.
++        pub fn mutate_widget_later(
++            &mut self,
++            id: WidgetId,
++            f: impl FnOnce(WidgetMut<'_, dyn Widget>) + Send + 'static,
++        ) {
++            let callback = MutateCallback {
++                id,
++                callback: Box::new(f),
++            };
++            self.global_state.mutate_callbacks.push(callback);
++        }
++
+         // TODO - Remove from MutateCtx?
+         /// Queue a callback that will be called with a [`WidgetMut`] for this widget.
+         ///
+--- src/passes/update.rs
++++ src/passes/update.rs
+@@ -683,6 +683,13 @@
+ 
+             root.global_state.is_ime_active = widget_state.accepts_text_input;
+             if widget_state.accepts_text_input {
++                // a text field taking the focus is brought into view at its caret
++                let area = widget_state
++                    .ime_area
++                    .unwrap_or_else(|| widget_state.size().to_rect());
++                root.global_state
++                    .scroll_request_targets
++                    .push((next_focused, area));
+                 root.global_state.emit_signal(RenderRootSignal::StartIme);
+             }
+         } else {

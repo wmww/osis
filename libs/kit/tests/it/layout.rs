@@ -13,7 +13,7 @@ use osis_kit::masonry::dpi::{PhysicalPosition, PhysicalSize};
 use osis_kit::masonry::kurbo::{Point, Rect};
 use osis_kit::platform::{Platform, SelectionMenu, Thresholds};
 use std::cell::RefCell;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::mpsc::{Receiver, channel};
 use osis_kit::render::{ROOT, Ui, rail_needs, tree};
@@ -42,11 +42,16 @@ impl Screen {
 
     /// Home in a window `width` by `height`, with `n` favorites named `fav 0`, `fav 1`, ...
     fn home(width: u32, height: u32, n: usize) -> Screen {
+        Screen::home_as(width, height, n, Arrange::Cards)
+    }
+
+    /// Home with its favorites arranged as `arrange`.
+    fn home_as(width: u32, height: u32, n: usize, arrange: Arrange) -> Screen {
         let d = data();
         d.set_theme("glass").unwrap();
-        // home: the account group's collection of favorites, as cards
+        // home: the account group's collection of favorites
         let mut w = d.db.write();
-        w.at(d.main_group().unwrap(), COLLECTION).set(&Collection { source: Source::Favorites, having: Default::default(), order: Order::Own, arrange: Arrange::Cards, element: None }).unwrap();
+        w.at(d.main_group().unwrap(), COLLECTION).set(&Collection { source: Source::Favorites, having: Default::default(), order: Order::Own, arrange, element: None }).unwrap();
         w.commit().unwrap();
         for i in 0..n {
             let t = d.create_note().unwrap();
@@ -56,6 +61,23 @@ impl Screen {
             d.toggle_favorite(t).unwrap();
         }
         d.set_open(None).unwrap();
+        Screen::show(d, width, height)
+    }
+
+    /// A tag holding `n` notes named `fav 0`, `fav 1`, ... open in a window `width` by `height`:
+    /// a page with a bar above its list and the thing's chrome below it.
+    fn tag(width: u32, height: u32, n: usize) -> Screen {
+        let d = data();
+        d.set_theme("glass").unwrap();
+        let tag = osis_kit::views::sample_offer(&d, "tag");
+        for i in 0..n {
+            let t = d.create_note().unwrap();
+            let mut w = d.db.write();
+            w.at(t, NAME).set(&format!("fav {i}")).unwrap();
+            w.commit().unwrap();
+            d.add_tag(t, tag).unwrap();
+        }
+        d.set_open(Some(tag)).unwrap();
         Screen::show(d, width, height)
     }
 
@@ -524,3 +546,291 @@ fn touch_scrolls_the_page_in_order() {
     assert!(ran > 1 && ran < 10_000, "{ran} frames");
     assert!(top(&mut s) < lifted - 10.0, "{lifted} -> {}", top(&mut s));
 }
+
+/// Every widget a screen reader names as `want` says, outermost first, with its rect in the window,
+/// the part of it its clips leave, and the ids of its subtree.
+fn named(s: &Screen, nodes: &HashMap<u64, Node>, want: &dyn Fn(&str) -> bool) -> Vec<(String, Rect, Rect, HashSet<WidgetId>)> {
+    fn ids(w: WidgetRef<'_, dyn Widget>, out: &mut HashSet<WidgetId>) {
+        out.insert(w.id());
+        for c in w.children() {
+            ids(c, out);
+        }
+    }
+    // what shows of each: its rect within what clips it
+    fn walk(w: WidgetRef<'_, dyn Widget>, nodes: &HashMap<u64, Node>, want: &dyn Fn(&str) -> bool, clip: Rect, out: &mut Vec<(String, Rect, Rect, HashSet<WidgetId>)>) {
+        let o = w.ctx().window_origin();
+        let clip = w.ctx().clip_path().map_or(clip, |c| clip.intersect(c + o.to_vec2()));
+        let n = nodes.get(&w.id().to_raw());
+        // a text widget's words are in its text runs
+        let text = n.map(|n| n.children().iter().filter_map(|c| nodes.get(&c.0)).filter(|c| c.role() == Role::TextRun).filter_map(|c| c.value()).collect::<String>());
+        let l = n.and_then(|n| n.label().map(str::to_string)).or(text.filter(|t| !t.is_empty()));
+        if let Some(l) = l.filter(|l| want(l)) {
+            let mut sub = HashSet::new();
+            ids(w, &mut sub);
+            let r = Rect::from_origin_size(o, w.ctx().size());
+            let shown = r.intersect(clip);
+            let shown = if shown.width() > 0.0 && shown.height() > 0.0 { shown } else { Rect::from_origin_size(r.origin(), (0.0, 0.0)) };
+            out.push((l.split(':').next().unwrap_or_default().trim().to_string(), r, shown, sub));
+            return;
+        }
+        for c in w.children() {
+            walk(c, nodes, want, clip, out);
+        }
+    }
+    let mut out = Vec::new();
+    walk(s.rr.get_layer_root(0), nodes, want, Rect::new(f64::NEG_INFINITY, f64::NEG_INFINITY, f64::INFINITY, f64::INFINITY), &mut out);
+    out
+}
+
+/// What of `named` a user can see: some of it in `win`, and a press there reaches it.
+fn seen_in(s: &Screen, nodes: &HashMap<u64, Node>, want: &dyn Fn(&str) -> bool, win: Rect) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    for (label, _, shown, sub) in named(s, nodes, want) {
+        let v = shown.intersect(win);
+        if v.width() <= 0.0 || v.height() <= 0.0 {
+            continue;
+        }
+        // some of it shows where a press reaches it (what clips it may leave only a sliver)
+        let mut y = v.y0 + 0.5;
+        while y < v.y1 {
+            if s.rr.get_layer_root(0).find_widget_under_pointer(Point::new(v.center().x, y)).is_some_and(|hit| sub.contains(&hit.id())) {
+                out.insert(label.clone());
+                break;
+            }
+            y += 2.0;
+        }
+    }
+    out
+}
+
+/// The window's rect.
+fn window(s: &Screen) -> Rect {
+    let (w, h) = s.size();
+    Rect::new(0.0, 0.0, w, h)
+}
+
+/// On a thing's page (its bar above the list, its chrome below), at any height from a sliver to
+/// taller than everything, wheel turns at one place reach the bar, every row and the chrome, one
+/// thing scrolling at a time.
+#[test]
+fn one_scroll_reaches_every_part() {
+    let n = 8;
+    let parts = |l: &str| l.starts_with("fav ") || l == "More" || l == "Undo";
+    for h in [60, 120, 190, 700, 4000] {
+        let mut s = Screen::tag(360, h, n);
+        // just inside the page's top (the bar, while it is pinned): the page's edge is 16 px in,
+        // and a short page is only a few px above the status line
+        let at = Point::new(180.0, 17.0);
+        let mut seen = BTreeSet::new();
+        for _ in 0..400 {
+            let nodes = s.nodes();
+            seen.extend(seen_in(&s, &nodes, &parts, window(&s)));
+            let (count, nested) = scrollables_in(&nodes);
+            assert!(count <= 1 && nested == 0, "height {h}: {count} scrollables, {nested} nested");
+            if seen.len() == n + 2 {
+                break;
+            }
+            s.wheel(at, 20.0);
+        }
+        assert_eq!(seen.len(), n + 2, "height {h}: reached {seen:?}");
+    }
+}
+
+/// The topmost row that shows, of those named `fav ...`, and its top in the window (where what
+/// is off screen sits is not what a user sees).
+fn first_row(s: &mut Screen) -> Option<(String, f64)> {
+    let nodes = s.nodes();
+    let rows = |l: &str| l.starts_with("fav ");
+    let seen = seen_in(s, &nodes, &rows, window(s));
+    named(s, &nodes, &rows).into_iter().filter(|(l, _, _, _)| seen.contains(l)).map(|(l, r, _, _)| (l, r.y0)).min_by(|a, b| a.1.total_cmp(&b.1))
+}
+
+/// A list following its end, scrolled back to the top of its page, keeps the page's order when
+/// the window shrinks: what is above the list shows, and right below it the list's first row.
+#[test]
+fn a_following_list_keeps_the_order_when_the_window_shrinks() {
+    let mut s = Screen::home_as(360, 700, 30, Arrange::Stream);
+    // back to the top of the page by bringing the search field into view (as focusing it does)
+    let nodes = s.nodes();
+    let search = *nodes.iter().find(|(_, n)| n.role() == Role::TextInput).expect("the search field").0;
+    s.rr.handle_access_event(ActionRequest { action: Action::ScrollIntoView, target: NodeId(search), data: None });
+    // the list loads windows towards its start (as a shell answers it) until the field shows
+    for _ in 0..20 {
+        s.rr.redraw();
+        pump(&mut s.ui, &mut s.rr, &s.signals);
+    }
+    fn find(w: WidgetRef<'_, dyn Widget>, id: u64) -> Option<Rect> {
+        if w.id().to_raw() == id {
+            return Some(Rect::from_origin_size(w.ctx().window_origin(), w.ctx().size()));
+        }
+        w.children().into_iter().find_map(|c| find(c, id))
+    }
+    let field = |s: &Screen| find(s.rr.get_layer_root(0), search).unwrap();
+    let top = field(&s);
+    assert!(top.y0 >= 0.0 && top.y1 <= 700.0, "the search field shows: {top:?}");
+    let (first, y) = first_row(&mut s).expect("a row shows");
+    assert!(y > top.y1, "below the field: {first} at {y}");
+    for h in [500, 300, 200] {
+        s.resize_to(360, h);
+        let f = field(&s);
+        assert!((f.y0 - top.y0).abs() < 0.5, "height {h}: the top stays: {f:?}");
+        // what shows below the field is the list's start: its first row, if any row shows
+        if let Some((row, y)) = first_row(&mut s) {
+            assert_eq!(row, first, "height {h}: the list's first row comes next");
+            assert!(y > f.y1, "height {h}: below the field");
+        }
+    }
+}
+
+/// Rows that fit the window scroll with the page; when the window changes until they no longer
+/// fit (the list scrolls its rows) and back, what is at the top stays put.
+#[test]
+fn no_jump_when_rows_start_or_stop_overflowing() {
+    // eight cards in one column at 360: about 1100 px of rows, 300 above, 130 below; scrolled
+    // into the rows, short of the end at every height tried
+    let mut s = Screen::home(360, 1000, 8);
+    for d in [300.0, 10.0, 20.0] {
+        s.wheel(Point::new(180.0, 500.0), d);
+    }
+    let (row, y) = first_row(&mut s).unwrap();
+    for h in (1000..1200).step_by(10).chain((1000..1200).rev().step_by(10)) {
+        s.resize_to(360, h);
+        let (r, y2) = first_row(&mut s).unwrap();
+        assert_eq!(r, row, "height {h}");
+        assert!((y2 - y).abs() < 0.5, "height {h}: {row} moved from {y} to {y2}");
+    }
+}
+
+/// Every wheel step moves the page by all of it, also a step crossing from what is above the
+/// list into its rows and from its rows into what is below, until the end.
+#[test]
+fn a_wheel_step_is_never_lost() {
+    let mut s = Screen::tag(360, 300, 8);
+    let at = Point::new(180.0, 150.0);
+    // what shows (what is off screen is not where the one position says until it shows)
+    let rows = |s: &mut Screen| {
+        let nodes = s.nodes();
+        let parts = |l: &str| l.starts_with("fav ") || l == "Undo";
+        let seen = seen_in(s, &nodes, &parts, window(s));
+        named(s, &nodes, &parts).into_iter().filter(|(l, _, _, _)| seen.contains(l)).map(|(l, r, _, _)| (l, r.y0)).collect::<HashMap<_, _>>()
+    };
+    let mut before = rows(&mut s);
+    let mut moved = 0;
+    for _ in 0..200 {
+        s.wheel(at, 37.0);
+        let after = rows(&mut s);
+        let d: Vec<f64> = before.iter().filter_map(|(l, y)| after.get(l).map(|y2| y - y2)).collect();
+        // what shows moves by the whole step, until the end
+        assert!(!d.is_empty(), "step {moved}: something shows in both");
+        if d.iter().all(|d| d.abs() < 0.01) {
+            break;
+        }
+        let step = d[0];
+        assert!(d.iter().all(|d| (d - step).abs() < 0.01), "step {moved}: moved by {d:?}");
+        if step < 37.0 - 0.01 {
+            // a part of a step: the end, where the next moves nothing
+            s.wheel(at, 37.0);
+            assert_eq!(rows(&mut s), after, "step {moved} stopped short of the end: {step}");
+            before = after;
+            break;
+        }
+        moved += 1;
+        before = after;
+    }
+    let undo = before.get("Undo").copied().unwrap();
+    assert!(moved > 10 && undo < 300.0, "{moved} steps reached the chrome at {undo}");
+}
+
+/// A scroll costs a window of rows, whatever the list's length: rows laid out by one wheel step
+/// in the middle of a list of `n` and of `10 n` are the same.
+#[test]
+fn a_scroll_costs_the_same_at_any_length() {
+    let cost = |n: usize| {
+        let d = data();
+        let tag = osis_kit::views::sample_offer(&d, "tag");
+        osis_kit::views::grow_tag(&d, tag, n);
+        d.set_open(Some(tag)).unwrap();
+        let mut s = Screen::show(d, 360, 400);
+        let at = Point::new(180.0, 200.0);
+        for _ in 0..20 {
+            s.wheel(at, 100.0);
+        }
+        let before = osis_kit::testing::rows_laid_out();
+        s.wheel(at, 100.0);
+        osis_kit::testing::rows_laid_out() - before
+    };
+    let (small, large) = (cost(100), cost(1000));
+    assert!(small > 0 && large <= small, "rows laid out by a step: {small} at 100, {large} at 1000");
+}
+
+/// The focused text field's caret in the window: the focused widget's IME area as last reported.
+fn caret(s: &Screen) -> Option<Rect> {
+    let mut at = None;
+    for sig in s.signals.try_iter() {
+        if let RenderRootSignal::ImeMoved(p, size) = sig {
+            at = Some(Rect::from_origin_size((p.x, p.y), (size.width, size.height)));
+        }
+    }
+    at
+}
+
+/// A note whose body is `lines` lines long, in a window `width` by `height`.
+fn long_note(width: u32, height: u32, lines: usize) -> Screen {
+    let d = data();
+    d.set_theme("glass").unwrap();
+    let t = d.create_note().unwrap();
+    let mut w = d.db.write();
+    w.at(t, NAME).set(&"long".to_string()).unwrap();
+    w.at(t, osis::core::BODY).set(&(0..lines).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n")).unwrap();
+    w.commit().unwrap();
+    d.set_open(Some(t)).unwrap();
+    Screen::show(d, width, height)
+}
+
+/// The note body's text field (the editor whose text starts so).
+fn body(s: &mut Screen) -> (WidgetId, Rect) {
+    let nodes = s.nodes();
+    let (_, r, _, sub) = named(s, &nodes, &|l| l.starts_with("line 0")).into_iter().next().expect("the body");
+    let id = *sub.iter().find(|id| s.rr.get_widget(**id).is_some_and(|w| w.ctx().accepts_text_input())).unwrap_or(sub.iter().next().unwrap());
+    (id, r)
+}
+
+/// A text field taking the focus comes into view at its caret, and stays in view when the space
+/// shrinks under it (a soft keyboard's insets, a shorter window).
+#[test]
+fn a_focused_field_stays_in_view_when_the_space_shrinks() {
+    let mut s = long_note(360, 700, 6);
+    let (id, _) = body(&mut s);
+    s.rr.handle_access_event(ActionRequest { action: Action::Focus, target: NodeId(id.to_raw()), data: None });
+    s.rr.redraw();
+    assert_eq!(s.rr.focused_widget(), Some(id));
+    while caret(&s).is_some() {}
+    // a keyboard takes all but 150 px at the bottom
+    s.ui.set_insets(&mut s.rr, [0.0, 0.0, 0.0, 550.0]);
+    s.rr.redraw();
+    let c = caret(&s).or_else(|| {
+        s.rr.redraw();
+        caret(&s)
+    });
+    let c = c.expect("the caret was reported");
+    assert!(c.y0 >= 0.0 && c.y1 <= 150.0, "the caret above the keyboard: {c:?}");
+    s.ui.set_insets(&mut s.rr, [0.0; 4]);
+    s.resize_to(360, 120);
+    s.rr.redraw();
+    if let Some(c) = caret(&s) {
+        assert!(c.y0 >= 0.0 && c.y1 <= 120.0, "the caret in a short window: {c:?}");
+    }
+    let (_, r) = body(&mut s);
+    assert!(r.y1 > 0.0 && r.y0 < 120.0, "the body in view: {r:?}");
+}
+
+/// A note's body is never shorter than its text: in a window too short for it the page scrolls
+/// instead, and the body is as tall as in a window where it has room to spare beyond its text.
+#[test]
+fn an_editor_is_never_shorter_than_its_text() {
+    let height = |h: u32| body(&mut long_note(360, h, 30)).1.height();
+    let (short, roomy) = (height(60), height(400));
+    assert!(short > 30.0 * 10.0, "thirty lines in {short} px");
+    assert!((short - roomy).abs() < 0.5, "{short} at 60 px, {roomy} at 400 px");
+}
+

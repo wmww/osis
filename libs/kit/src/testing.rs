@@ -26,6 +26,11 @@ const SCALE_RATIO: u64 = 2;
 /// Rows a list holds beyond its window: its "new" tile, a page landing past the limit.
 const WINDOW_SLACK: u64 = 2;
 
+/// Rows lists have laid out on this thread so far: what a scroll costs, counted.
+pub fn rows_laid_out() -> u64 {
+    crate::widgets::LAID_OUT.with(|n| n.get())
+}
+
 /// Where a tree draws in a test: what each path shows, and the rows a change would touch.
 #[derive(Default)]
 pub struct Screen {

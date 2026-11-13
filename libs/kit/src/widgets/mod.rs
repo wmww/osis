@@ -11,6 +11,7 @@ mod root;
 pub mod style;
 mod tile;
 mod vlist;
+pub(crate) use vlist::LAID_OUT;
 mod wrap;
 
 pub use button::IconButton;

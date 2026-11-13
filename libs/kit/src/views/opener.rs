@@ -95,26 +95,23 @@ fn opener(cx: &Cx, spec: &ViewSpec) -> Result<Section> {
     let node = cx.path();
     let fits = fitting(cx, t)?;
     let view = selected(cx, &node, t, &fits)?;
-    let mut blocks = Vec::new();
+    // the bar and tabs head the page (pinned while it has room for them)
+    let mut above = Vec::new();
     let chrome_on = !spec.config.flag("no_chrome");
     if chrome_on {
         let bar = ViewSpec { view_type: "bar".into(), subject: t, config: spec.config.clone().with("opener", &node) };
-        blocks.push(Block::View { key: "bar".into(), spec: bar });
+        above.push(Block::View { key: "bar".into(), spec: bar });
     }
     if fits.len() > 1 {
-        blocks.push(Block::Tabs(fits.iter().map(|v| Tab { label: v.label.to_string(), current: v.id == view.id, press: Do::new(ViewAs(t, v.id)) }).collect()));
+        above.push(Block::Tabs(fits.iter().map(|v| Tab { label: v.label.to_string(), current: v.id == view.id, press: Do::new(ViewAs(t, v.id)) }).collect()));
     }
     let child = ViewSpec { view_type: view.id.into(), subject: t, config: spec.config.clone() };
     let key = format!("content:{}", view.id);
     // the child's node, so `sync` finds it built; a memo of its own, so what changes in the child
     // other than having a foot leaves the opener alone
-    let (has_foot, fills) = *cx.memo(("has_foot", super::child_path(&node, &key), child.clone()), |r, (_, path, child)| {
-        let out = super::render(r, path, child)?;
-        Ok((!out.foot.is_empty(), out.blocks.iter().any(|b| matches!(b, Block::List(_)))))
-    })?;
+    let has_foot = *cx.memo(("has_foot", super::child_path(&node, &key), child.clone()), |r, (_, path, child)| Ok(!super::render(r, path, child)?.foot.is_empty()))?;
     let below = if chrome_on { vec![Block::View { key: "chrome".into(), spec: ViewSpec::new("chrome", t) }] } else { Vec::new() };
-    blocks.push(Block::Filled { key, spec: child, has_foot, plain: !chrome_on, fills, below });
-    Ok(Section::of(blocks))
+    Ok(Section::of(vec![Block::Filled { key, spec: child, has_foot, plain: !chrome_on, above, below }]))
 }
 
 fn bar(cx: &Cx, spec: &ViewSpec) -> Result<Section> {

@@ -1,0 +1,98 @@
+--- src/widgets/flex.rs
++++ src/widgets/flex.rs
+@@ -652,14 +652,27 @@
+         let mut max_above_baseline = 0_f64;
+         let mut max_below_baseline = 0_f64;
+ 
++        // a child filling the cross axis is laid out across all of it at once, so it is not laid
++        // out a second time to fill it (which doubles the layouts below at each such Flex)
++        let cross_max = self.direction.minor(bc.max());
++        let cross = self.cross_alignment;
++        let direction = self.direction;
++        let filled = move |bc: BoxConstraints, alignment: Option<CrossAxisAlignment>| {
++            if alignment.unwrap_or(cross) != CrossAxisAlignment::Fill || !cross_max.is_finite() {
++                return bc;
++            }
++            let min = direction.pack(direction.major(bc.min()), cross_max);
++            BoxConstraints::new(min.into(), bc.max())
++        };
++
+         // MEASURE FIXED CHILDREN AND FLEX SUM
+         for child in &mut self.children {
+             match child {
+-                Child::Fixed { widget, .. } => {
++                Child::Fixed { widget, alignment } => {
+                     // The BoxConstraints of fixed-children only depends on the BoxConstraints of the
+                     // Flex widget.
+                     let child_size = {
+-                        let child_size = ctx.run_layout(widget, &loosened_bc);
++                        let child_size = ctx.run_layout(widget, &filled(loosened_bc, *alignment));
+ 
+                         if child_size.width.is_infinite() {
+                             tracing::warn!("A non-Flex child has an infinite width.");
+@@ -698,11 +711,11 @@
+         // MEASURE FLEX CHILDREN
+         for child in &mut self.children {
+             match child {
+-                Child::Flex { widget, flex, .. } => {
++                Child::Flex { widget, flex, alignment } => {
+                     let child_size = {
+                         let desired_major = (*flex) * px_per_flex;
+ 
+-                        let child_bc = self.direction.constraints(&loosened_bc, 0.0, desired_major);
++                        let child_bc = filled(self.direction.constraints(&loosened_bc, 0.0, desired_major), *alignment);
+                         ctx.run_layout(widget, &child_bc)
+                     };
+ 
+@@ -715,7 +728,8 @@
+                     max_below_baseline = max_below_baseline.max(baseline_offset);
+                 }
+                 Child::FlexedSpacer(flex, calculated_size) => {
+-                    let desired_major = (*flex) * px_per_flex;
++                    // under no bound a spacer has nothing to take
++                    let desired_major = if px_per_flex.is_finite() { (*flex) * px_per_flex } else { 0.0 };
+                     *calculated_size = desired_major;
+                     major_flex += *calculated_size;
+                 }
+@@ -724,7 +738,7 @@
+         }
+ 
+         // COMPUTE EXTRA SPACE
+-        let extra_length = if self.fill_major_axis {
++        let extra_length = if self.fill_major_axis && remaining_major.is_finite() {
+             (remaining_major - major_flex).max(0.0)
+         } else {
+             // If we are *not* expected to fill our available space this usually
+@@ -769,11 +783,11 @@
+                                 .direction
+                                 .pack(self.direction.major(child_size), minor)
+                                 .into();
+-                            let child_bc = BoxConstraints::tight(fill_size);
+-                            // TODO: This is the second call of layout on the same child,
+-                            // which can lead to exponential increase in layout calls
+-                            // when used multiple times in the widget hierarchy.
+-                            ctx.run_layout(widget, &child_bc);
++                            // laid out across the whole cross axis already, unless that was
++                            // unbounded
++                            if child_size != fill_size {
++                                ctx.run_layout(widget, &BoxConstraints::tight(fill_size));
++                            }
+                             0.0
+                         }
+                         _ => {
+@@ -800,11 +814,10 @@
+             }
+         }
+ 
+-        if flex_sum > MIN_FLEX_SUM && bc_major_max.is_infinite() {
+-            tracing::warn!("A child of Flex is flex, but Flex is unbounded.");
+-        }
+-
+-        let final_major = if flex_sum > MIN_FLEX_SUM || self.fill_major_axis {
++        // under no bound, flex children take their own size: the Flex is as long as its children
++        let final_major = if bc_major_max.is_infinite() {
++            bc_major_min.max(major_non_flex + major_flex)
++        } else if flex_sum > MIN_FLEX_SUM || self.fill_major_axis {
+             bc_major_max.max(major_non_flex)
+         } else {
+             bc_major_min.max(major_non_flex)

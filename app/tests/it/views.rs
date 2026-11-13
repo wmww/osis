@@ -24,7 +24,9 @@ fn open(d: &Data, t: Tid) -> Node {
 }
 
 fn tabs(n: &Node) -> Vec<String> {
-    n.out.blocks.iter().find_map(|b| if let Block::Tabs(t) = b { Some(t.iter().map(|x| x.label.clone()).collect()) } else { None }).unwrap_or_default()
+    // the tabs head the opener's filled page
+    let above = n.out.blocks.iter().flat_map(|b| if let Block::Filled { above, .. } = b { above.as_slice() } else { &[] });
+    n.out.blocks.iter().chain(above).find_map(|b| if let Block::Tabs(t) = b { Some(t.iter().map(|x| x.label.clone()).collect()) } else { None }).unwrap_or_default()
 }
 
 fn content(n: &Node) -> &Node {

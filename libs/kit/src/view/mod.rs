@@ -312,10 +312,10 @@ pub enum Block {
     Composer(Composer),
     /// A child view at `key`, inline.
     View { key: String, spec: ViewSpec },
-    /// A child view filling the space: scrolling with what is `below` it (`plain`: no panel behind
-    /// it), its foot pinned under the scroll (`has_foot` makes room for it). `fills`: the child
-    /// has a list, which takes the height the rest leaves it (one scroll runs through all of it).
-    Filled { key: String, spec: ViewSpec, has_foot: bool, plain: bool, fills: bool, below: Vec<Block> },
+    /// A child view filling a page (`widgets::Page`): scrolling with what is `below` it (`plain`:
+    /// no panel behind it), headed by what is `above` it and footed by its foot (`has_foot`
+    /// makes room for it), both pinned while the page has room for them.
+    Filled { key: String, spec: ViewSpec, has_foot: bool, plain: bool, above: Vec<Block>, below: Vec<Block> },
     /// The thing's bar: back, descriptor, favorite, the context menu's button and open items.
     Bar { back: Option<Do>, descriptor: String, favorite: bool, star: Do, more: Do, menu: Vec<Chip> },
     /// One of several options, each shown as a tile.

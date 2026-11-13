@@ -683,6 +683,13 @@ pub(crate) fn run_update_focus_pass(root: &mut RenderRoot) {
 
             root.global_state.is_ime_active = widget_state.accepts_text_input;
             if widget_state.accepts_text_input {
+                // a text field taking the focus is brought into view at its caret
+                let area = widget_state
+                    .ime_area
+                    .unwrap_or_else(|| widget_state.size().to_rect());
+                root.global_state
+                    .scroll_request_targets
+                    .push((next_focused, area));
                 root.global_state.emit_signal(RenderRootSignal::StartIme);
             }
         } else {
