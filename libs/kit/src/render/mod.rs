@@ -16,7 +16,7 @@ use crate::store::{Data, Reader};
 use crate::view::search::{Paste, classify, search};
 use crate::input::Input as Pointers;
 use crate::platform::Platform;
-use crate::view::{Act, Block, Cx, DARK, Do, Graph, Icon, Input, NAMING, Open, PasteTo, QUERY, Section, Surface, TICK, Tree, ViewSpec, WindowState};
+use crate::view::{Act, Block, Cx, DARK, Do, Graph, Icon, Input, Open, PasteTo, QUERY, Section, Surface, TICK, TYPE_IN, Tree, ViewSpec, WindowState};
 use crate::view::keyed::{self, ListSteps};
 use crate::view::paged::{Item, LIST_WINDOW, ListRow, ListWindow};
 use crate::view::sessions::Key;
@@ -31,7 +31,7 @@ use crate::masonry::properties::types::{CrossAxisAlignment, Length};
 use crate::masonry::widgets::{Flex, IndexedStack, Prose, SizedBox, TextAction, TextArea};
 use crate::theme::{Look, Mode, Theme, parse};
 use crate::widgets::style::{self, Text};
-use crate::widgets::{Blur, ChipPress, GUTTER, ListAction, Page, Panel, PanelKind, Press, ROW_MIN, Root, VirtualList};
+use crate::widgets::{Blur, ChipPress, Frame, GUTTER, ListAction, Page, Panel, PanelKind, Press, ROW_MIN, Root, VirtualList};
 use crate::window::Waker;
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
@@ -69,6 +69,8 @@ pub enum Msg {
     Redeemed(Result<Tid, String>),
     /// A minute passed.
     Tick,
+    /// The long-press timer `seq` ran out (`input::Alarm`).
+    LongPress(u64),
 }
 
 /// What the page's slot shows now, and what to forget when it goes.
@@ -196,8 +198,10 @@ pub struct Ui {
     searching: bool,
     /// The platform and the pointer input through it, from `start` on.
     attached: Option<Attached>,
-    /// Fields that appeared wanting typing (slot, widget), served after the update.
-    typing: Vec<(String, WidgetId)>,
+    /// Root reports animation frames (a fling goes on).
+    ticking: bool,
+    /// Fields built to type in (`TYPE_IN`), served after the update.
+    typing: Vec<WidgetId>,
     /// The widgets that report an action and what it does.
     acts: blocks::Acts,
     _diag_sub: Subscription,
@@ -256,6 +260,7 @@ impl Ui {
             search_stacks: Vec::new(),
             searching: false,
             attached: None,
+            ticking: false,
             typing: Vec::new(),
             acts: blocks::Acts::default(),
             _diag_sub: diag_sub,
@@ -352,29 +357,20 @@ impl Ui {
         Ok(())
     }
 
-    /// Fields that appeared wanting typing take the focus and want the keyboard; served, the flag
-    /// goes from their slot's model (as the view will say once `NAMING` is cleared). `NAMING`
-    /// lasts one update: the one after the action built the new thing's page, or never will.
+    /// The first field to type in (`TYPE_IN`) that the update built takes the focus and wants the
+    /// keyboard. `TYPE_IN` lasts one update: the one after it was set, which built the field or
+    /// never will.
     fn serve_typing(&mut self, rr: &mut RenderRoot) {
-        for (key, id) in std::mem::take(&mut self.typing) {
-            if !rr.has_widget(id) {
-                continue;
-            }
-            if let Some(a) = self.attached.as_mut() {
-                a.input.type_in(rr, &mut *a.platform, id);
-            } else {
-                rr.focus_on(Some(id));
-            }
-            if let Some(slot) = self.slots.get_mut(&key) {
-                for b in &mut slot.model {
-                    if let Block::Editor { wants_typing, .. } = b {
-                        *wants_typing = false;
-                    }
+        if let Some(id) = std::mem::take(&mut self.typing).into_iter().find(|id| rr.has_widget(*id)) {
+            match self.attached.as_mut() {
+                Some(a) => a.input.type_in(rr, &mut *a.platform, id),
+                None => {
+                    rr.focus_on(Some(id));
                 }
             }
         }
-        if self.state.graph.peek(NAMING).is_some() {
-            self.state.set_local(NAMING, None);
+        if self.state.graph.peek(TYPE_IN).is_some() {
+            self.state.set_local(TYPE_IN, None);
         }
     }
 
@@ -575,7 +571,7 @@ impl Ui {
             });
         }
         if let Some(id) = built.typing {
-            self.typing.push((key.to_string(), id));
+            self.typing.push(id);
         }
         for (k, c) in &built.children {
             let p = views::child_path(key, k);
@@ -874,7 +870,17 @@ impl Ui {
 
     /// `start` for a window whose fonts are registered.
     fn attach(&mut self, platform: Box<dyn Platform>, scale: f64, dark: bool) {
-        self.attached = Some(Attached { input: Pointers::new(platform.thresholds()), platform });
+        let (m, w) = (self.tx.clone(), self.waker.clone());
+        let alarm = Box::new(move |seq, after| {
+            let (m, w) = (m.clone(), w.clone());
+            std::thread::spawn(move || {
+                std::thread::sleep(after);
+                if m.send(Msg::LongPress(seq)).is_ok() {
+                    w.wake();
+                }
+            });
+        });
+        self.attached = Some(Attached { input: Pointers::new(platform.thresholds(), alarm), platform });
         self.scale = scale;
         self.system_dark = dark;
         self.data.db.settle();
@@ -940,6 +946,16 @@ impl Ui {
                 rr.handle_pointer_event(e);
             }
         }
+        self.tick(rr);
+    }
+
+    /// Root reports animation frames while a fling goes on.
+    fn tick(&mut self, rr: &mut RenderRoot) {
+        let on = self.attached.as_ref().is_some_and(|a| a.input.flinging());
+        if on != self.ticking {
+            self.ticking = on;
+            rr.edit_widget_with_tag(ROOT, |mut r| Root::set_ticking(&mut r, on));
+        }
     }
 
     /// An input-method session started or ended (a text field gained or lost the focus).
@@ -985,6 +1001,11 @@ impl Ui {
                         self.state.set_local(TICK, now.0 / 60_000);
                     }
                 }
+                Msg::LongPress(seq) => {
+                    if let Some(a) = self.attached.as_mut() {
+                        a.input.long_press(rr, &mut *a.platform, seq);
+                    }
+                }
             }
         }
         self.update(rr, false);
@@ -992,7 +1013,12 @@ impl Ui {
 
     /// A widget submitted an action.
     pub fn action(&mut self, rr: &mut RenderRoot, id: WidgetId, action: ErasedAction) {
-        if action.is::<Press>() {
+        if let Some(Frame(interval)) = action.downcast_ref::<Frame>().copied() {
+            if let Some(a) = self.attached.as_mut() {
+                a.input.frame(rr, interval);
+            }
+            self.tick(rr);
+        } else if action.is::<Press>() {
             if let Some(d) = self.acts.pressed(id) {
                 self.run(rr, d, Input::Press);
             }

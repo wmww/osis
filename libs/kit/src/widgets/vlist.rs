@@ -3,7 +3,8 @@
 //! move the view, and pins to the end while following it. As the viewport nears the edge of what is
 //! loaded it asks for a new window (`ListAction::Moved`); the shell asks the graph and applies
 //! the difference. Rows go in columns like a tile grid (a row marked `span` runs the full width).
-//! Dragging a row emits `ListAction::Reorder`. A bar at the right shows and moves the position:
+//! Dragging a row (a mouse drag, or a touch after a long press picks it up) emits
+//! `ListAction::Reorder`; a touch drag otherwise scrolls (kit `input`). A bar at the right shows and moves the position:
 //! over the whole list where its length is known (`ListAction::Jump`), else over what is loaded.
 //!
 //! Masonry's `VirtualScroll` is not used: its dense ids cannot shift when a row is inserted above,
@@ -385,6 +386,15 @@ impl Widget for VirtualList {
                 let n = self.movable();
                 self.press = self.rects.iter().take(n).position(|r| r.contains(p)).map(|i| (i, p));
                 self.drop = None;
+                // a long press picks the row up at once (a mouse picks it up once it moves)
+                if crate::input::is_long_press(e)
+                    && let Some((i, _)) = self.press
+                {
+                    self.drop = Some(i);
+                    ctx.capture_pointer();
+                    ctx.set_handled();
+                    ctx.request_paint_only();
+                }
             }
             PointerEvent::Move(e) => {
                 let Some((_, start)) = self.press else { return };

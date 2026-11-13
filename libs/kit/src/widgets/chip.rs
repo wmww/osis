@@ -8,7 +8,7 @@ use crate::text;
 use super::{brighten, fill_card, lean};
 use crate::theme::{Card, Look, fade};
 use masonry::accesskit::{Node, Role};
-use masonry::core::{AccessCtx, AccessEvent, BoxConstraints, BrushIndex, ChildrenIds, EventCtx, LayoutCtx, PaintCtx, PointerEvent, PropertiesMut, PropertiesRef, RegisterCtx, TextEvent, Update, UpdateCtx, Widget};
+use masonry::core::{AccessCtx, AccessEvent, BoxConstraints, BrushIndex, ChildrenIds, EventCtx, LayoutCtx, PaintCtx, PointerButton, PointerEvent, PropertiesMut, PropertiesRef, RegisterCtx, TextEvent, Update, UpdateCtx, Widget};
 use masonry::kurbo::{Affine, Circle, Line, Point, RoundedRect, Size, Stroke};
 use masonry::parley::Layout;
 use masonry::peniko::{Color, Fill};
@@ -74,7 +74,8 @@ impl Widget for Chip {
 
     fn on_pointer_event(&mut self, ctx: &mut EventCtx<'_>, _props: &mut PropertiesMut<'_>, event: &PointerEvent) {
         match event {
-            PointerEvent::Down(e) => {
+            // a press is the primary button's: a secondary press (a touch's long press) is not
+            PointerEvent::Down(e) if matches!(e.button, None | Some(PointerButton::Primary)) => {
                 let x = ctx.local_position(e.state.position).x;
                 self.down_on_x = self.removable && x > ctx.size().width - X_W - 4.0;
                 ctx.capture_pointer();

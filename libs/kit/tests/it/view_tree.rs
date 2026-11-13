@@ -104,24 +104,17 @@ fn blocks(n: &osis_kit::views::Node) -> Vec<Block> {
     out
 }
 
-/// Whether the page of `t` has a title field wanting typing, as `w` sees it.
-fn title_wants_typing(d: &Data, w: &WindowState, t: Tid) -> bool {
-    let n = page(&Cx::new(d, w, false), t).unwrap();
-    blocks(&n).iter().any(|b| matches!(b, Block::Editor { ak, wants_typing: true, .. } if ak == "name.0"))
-}
-
-/// A thing made here from an offer wants its title typed when its page appears; once the shell
-/// served that (clearing `NAMING`), and on any other thing, it does not.
+/// A thing made here from an offer is to have its title typed in: the field to type in next
+/// names that, and the thing's page has the field.
 #[test]
-fn a_new_things_title_wants_typing() {
-    use osis_kit::view::{Act, Action, Input, NAMING, UseOffer};
+fn a_new_things_title_is_the_field_to_type_in() {
+    use osis_kit::facets::name::TITLE;
+    use osis_kit::view::{Act, Action, Input, TYPE_IN, UseOffer};
     let d = data();
     let w = WindowState::default();
-    let old = d.create_note().unwrap();
     UseOffer("note", None).run(&Act::new(&d, &w), &Input::Press).unwrap();
     let t = d.opened().unwrap().unwrap();
-    assert!(title_wants_typing(&d, &w, t));
-    assert!(!title_wants_typing(&d, &w, old));
-    w.set_local(NAMING, None);
-    assert!(!title_wants_typing(&d, &w, t));
+    assert_eq!(w.graph.peek(TYPE_IN), Some((t, TITLE)));
+    let n = page(&Cx::new(&d, &w, false), t).unwrap();
+    assert!(blocks(&n).iter().any(|b| matches!(b, Block::Editor { thing, ak, .. } if *thing == t && ak == TITLE)));
 }

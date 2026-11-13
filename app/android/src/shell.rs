@@ -315,17 +315,18 @@ impl Shell {
     }
 
     /// The keyboard's Select all, Cut, Copy and Paste buttons: the field's own shortcuts (Ctrl
-    /// with `letter`), as a hardware keyboard sends them.
+    /// with `letter`), as a hardware keyboard sends them. True when the field took it.
     pub fn shortcut(&mut self, letter: &str) -> bool {
         if self.focused().is_none() {
             return false;
         }
+        let mut took = false;
         for state in [KeyState::Down, KeyState::Up] {
             let k = KeyboardEvent { state, key: Key::Character(letter.into()), modifiers: Modifiers::CONTROL, ..Default::default() };
-            self.root.handle_text_event(TextEvent::Keyboard(k));
+            took |= self.root.handle_text_event(TextEvent::Keyboard(k)) == Handled::Yes;
         }
         self.input_done();
-        true
+        took
     }
 
     pub fn batch(&mut self, begin: bool) -> bool {

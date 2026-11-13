@@ -17,13 +17,15 @@ use std::time::Duration;
 const A: WidgetTag<TextArea<true>> = WidgetTag::new("a");
 const B: WidgetTag<TextArea<true>> = WidgetTag::new("b");
 
-const THRESHOLDS: Thresholds = Thresholds { double_tap: Duration::from_millis(300), double_tap_slop: 10.0, long_press: Duration::from_millis(400), touch_slop: 8.0 };
+pub(crate) const THRESHOLDS: Thresholds = Thresholds { double_tap: Duration::from_millis(300), double_tap_slop: 10.0, long_press: Duration::from_millis(400), touch_slop: 8.0 };
 
 /// A platform that records what it was asked.
 #[derive(Default)]
 pub(crate) struct Recorder {
     pub(crate) keyboard: Vec<bool>,
     pub(crate) clipboard: Option<String>,
+    /// Selection menus asked for.
+    pub(crate) menus: usize,
 }
 
 impl Platform for Recorder {
@@ -37,6 +39,7 @@ impl Platform for Recorder {
         self.keyboard.push(wanted);
     }
     fn show_selection_menu(&mut self, _: &SelectionMenu) -> bool {
+        self.menus += 1;
         false
     }
     fn hide_selection_menu(&mut self) {}
@@ -72,7 +75,7 @@ impl Screen {
         let mut root = RenderRoot::new(NewWidget::new(col).erased(), move |s| drop(tx.send(s)), opts);
         osis_kit::fonts::register(&mut root);
         let _ = root.redraw();
-        Screen { root, signals, input: Input::new(THRESHOLDS), platform: Recorder::default(), now: 1_000_000_000 }
+        Screen { root, signals, input: Input::new(THRESHOLDS, Box::new(|_, _| {})), platform: Recorder::default(), now: 1_000_000_000 }
     }
 
     fn id(&self, tag: WidgetTag<TextArea<true>>) -> WidgetId {

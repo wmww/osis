@@ -1,0 +1,224 @@
+diff --git a/src/widgets/mod.rs b/src/widgets/mod.rs
+index 61218feac..70bce3831 100644
+--- src/widgets/mod.rs
++++ src/widgets/mod.rs
+@@ -41,7 +41,7 @@ pub use self::sized_box::SizedBox;
+ pub use self::slider::Slider;
+ pub use self::spinner::Spinner;
+ pub use self::split::{Split, ceil_length};
+-pub use self::text_area::{InsertNewline, TextAction, TextArea};
++pub use self::text_area::{InsertNewline, SelectionEnd, TextAction, TextArea};
+ pub use self::text_input::TextInput;
+ pub use self::variable_label::VariableLabel;
+ pub use self::virtual_scroll::{VirtualScroll, VirtualScrollAction};
+diff --git a/src/widgets/portal.rs b/src/widgets/portal.rs
+index 0b5d90814..648f730a9 100644
+--- src/widgets/portal.rs
++++ src/widgets/portal.rs
+@@ -4,7 +4,6 @@
+ use std::ops::Range;
+ 
+ use accesskit::{Node, Role};
+-use dpi::PhysicalPosition;
+ use tracing::{Span, trace_span};
+ use vello::Scene;
+ use vello::kurbo::{Point, Rect, Size, Vec2};
+@@ -272,10 +271,12 @@ impl<W: Widget + FromDynWidget + ?Sized> Widget for Portal<W> {
+ 
+         match *event {
+             PointerEvent::Scroll(PointerScrollEvent { delta, .. }) => {
+-                // TODO - Remove reference to scale factor.
+-                // See https://github.com/linebender/xilem/issues/1264
++                // a pixel delta is physical; the viewport is logical
+                 let delta = match delta {
+-                    ScrollDelta::PixelDelta(PhysicalPosition::<f64> { x, y }) => -Vec2 { x, y },
++                    ScrollDelta::PixelDelta(p) => {
++                        let p = p.to_logical::<f64>(ctx.get_scale_factor());
++                        -Vec2 { x: p.x, y: p.y }
++                    }
+                     ScrollDelta::LineDelta(x, y) => {
+                         -Vec2 {
+                             x: x as f64,
+@@ -283,8 +284,11 @@ impl<W: Widget + FromDynWidget + ?Sized> Widget for Portal<W> {
+                         } * 120.0
+                     }
+                     _ => Vec2::ZERO,
+-                } * ctx.get_scale_factor();
+-                self.set_viewport_pos_raw(portal_size, content_size, self.viewport_pos + delta);
++                };
++                // a scroll this portal took goes no further; at its edge it goes on outward
++                if self.set_viewport_pos_raw(portal_size, content_size, self.viewport_pos + delta) {
++                    ctx.set_handled();
++                }
+                 ctx.request_compose();
+ 
+                 {
+diff --git a/src/widgets/text_area.rs b/src/widgets/text_area.rs
+index b5ff832ef..7f75ecd9d 100644
+--- src/widgets/text_area.rs
++++ src/widgets/text_area.rs
+@@ -11,13 +11,13 @@ use parley::{Affinity, PlainEditor, Selection};
+ use parley::editor::{Generation, SplitString};
+ use tracing::{Span, trace_span};
+ use vello::Scene;
+-use vello::kurbo::{Affine, Point, Rect, Size};
++use vello::kurbo::{Affine, Circle, Point, Rect, Size, Vec2};
+ use vello::peniko::Fill;
+ 
+ use crate::core::keyboard::{Key, KeyState, NamedKey};
+ use crate::core::{
+     AccessCtx, AccessEvent, BoxConstraints, BrushIndex, ChildrenIds, CursorIcon, EventCtx, Ime,
+-    ImeText, LayoutCtx, TextEdit, TextInputHints, PaintCtx, PointerButton, PointerButtonEvent, PointerEvent, PointerUpdate,
++    ImeText, LayoutCtx, TextEdit, TextInputHints, PaintCtx, PointerButton, PointerButtonEvent, PointerEvent, PointerType, PointerUpdate,
+     PropertiesMut, PropertiesRef, QueryCtx, RegisterCtx, StyleProperty, TextEvent, Update,
+     UpdateCtx, Widget, WidgetId, WidgetMut, render_text,
+ };
+@@ -96,6 +96,18 @@ pub struct TextArea<const USER_EDITABLE: bool> {
+     revision: u64,
+     /// What the text is for ([`ImeText::hints`]); `multiline` follows `insert_newline`.
+     hints: TextInputHints,
++    /// Selection handles show (a long press selected): the text revision they were shown at. They
++    /// go when the text changes, the selection collapses, a primary press lands or focus leaves.
++    handles: Option<u64>,
++}
++
++/// One end of the selection, as its handle names it.
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub enum SelectionEnd {
++    /// Where the selection started.
++    Anchor,
++    /// The caret's end.
++    Focus,
+ }
+ 
+ // --- MARK: BUILDERS
+@@ -143,6 +155,7 @@ impl<const EDITABLE: bool> TextArea<EDITABLE> {
+             compose: None,
+             revision: 0,
+             hints: TextInputHints::default(),
++            handles: None,
+         }
+     }
+ 
+@@ -476,6 +489,60 @@ impl<const EDITABLE: bool> TextArea<EDITABLE> {
+         (s.anchor().index(), s.focus().index())
+     }
+ 
++    /// Whether the selection handles show.
++    pub fn has_handles(&self) -> bool {
++        self.handles == Some(self.revision) && !self.editor.raw_selection().is_collapsed()
++    }
++
++    /// Each shown handle: which end, the caret's line box at that end, and the handle's circle
++    /// (centre, radius) hanging below it (local coordinates).
++    fn handle_shapes(&self) -> Vec<(SelectionEnd, Rect, Point, f64)> {
++        let (true, Some(layout)) = (self.has_handles(), self.editor.try_layout()) else {
++            return Vec::new();
++        };
++        let s = self.editor.raw_selection();
++        [(SelectionEnd::Anchor, s.anchor()), (SelectionEnd::Focus, s.focus())]
++            .into_iter()
++            .map(|(end, c)| {
++                let caret = bounding_box_to_rect(c.geometry(layout, 1.5));
++                // the radius from the line: a handle as big as the text it adjusts
++                let r = caret.height() * 0.4;
++                (end, caret, Point::new(caret.center().x, caret.y1 + r), r)
++            })
++            .collect()
++    }
++
++    /// Each shown handle's centre (local coordinates).
++    pub fn handle_centres(&self) -> Vec<(SelectionEnd, Point)> {
++        self.handle_shapes().into_iter().map(|(end, _, c, _)| (end, c)).collect()
++    }
++
++    /// The handle at `p` (local), within `slop` of its circle (the nearest when both are), and
++    /// the offset from `p` to its caret's middle: where a drag from `p` puts that end.
++    pub fn handle_at(&self, p: Point, slop: f64) -> Option<(SelectionEnd, Vec2)> {
++        self.handle_shapes()
++            .into_iter()
++            .map(|(end, caret, c, r)| (end, caret.center() - p, (c - p).hypot() - r))
++            .filter(|(_, _, d)| *d <= slop)
++            .min_by(|a, b| a.2.total_cmp(&b.2))
++            .map(|(end, v, _)| (end, v))
++    }
++
++    /// Moves the `end` of the selection to the text nearest `p` (local), keeping the other. The
++    /// selection never collapses: an end dragged onto the other stays where it was.
++    pub fn drag_handle(this: &mut WidgetMut<'_, Self>, end: SelectionEnd, p: Point) {
++        let Some(layout) = this.widget.editor.try_layout() else { return };
++        let at = parley::Cursor::from_point(layout, p.x as f32, p.y as f32).index();
++        let (a, f) = this.widget.selection_bytes();
++        let (a, f) = match end {
++            SelectionEnd::Anchor => (at, f),
++            SelectionEnd::Focus => (a, at),
++        };
++        if a != f && (a, f) != this.widget.selection_bytes() {
++            Self::select_byte_range(this, a, f);
++        }
++    }
++
+     /// Set the selection to the given byte range.
+     ///
+     /// No-op if either index is not a char boundary.
+@@ -577,11 +644,33 @@ impl<const EDITABLE: bool> Widget for TextArea<EDITABLE> {
+         event: &PointerEvent,
+     ) {
+         match event {
++            // a touch's long press (kit delivers it as the touch's secondary press): the word
++            // under it, with handles to adjust the selection; moving on extends it by words
++            PointerEvent::Down(PointerButtonEvent {
++                button: Some(PointerButton::Secondary),
++                pointer,
++                state,
++            }) if pointer.pointer_type != PointerType::Mouse => {
++                let p = ctx.local_position(state.position);
++                let (fctx, lctx) = ctx.text_contexts();
++                self.editor.driver(fctx, lctx).select_word_at_point(p.x as f32, p.y as f32);
++                self.end_compose();
++                self.handles = EDITABLE.then_some(self.revision);
++                self.rendered_generation = self.editor.generation();
++                ctx.request_render();
++                ctx.set_ime_area(self.ime_area());
++                ctx.request_focus();
++                ctx.capture_pointer();
++                ctx.set_handled();
++            }
+             PointerEvent::Down(PointerButtonEvent {
+                 button: None | Some(PointerButton::Primary),
+                 state,
+                 ..
+             }) => {
++                if self.handles.take().is_some() {
++                    ctx.request_render();
++                }
+                 let cursor_pos = ctx.local_position(state.position);
+                 let (fctx, lctx) = ctx.text_contexts();
+                 let mut drv = self.editor.driver(fctx, lctx);
+@@ -951,7 +1040,10 @@ impl<const EDITABLE: bool> Widget for TextArea<EDITABLE> {
+ 
+     fn update(&mut self, ctx: &mut UpdateCtx<'_>, _props: &mut PropertiesMut<'_>, event: &Update) {
+         match event {
+-            Update::FocusChanged(_) => {
++            Update::FocusChanged(focused) => {
++                if !focused {
++                    self.handles = None;
++                }
+                 ctx.request_render();
+             }
+             Update::DisabledChanged(_) => {
+@@ -1046,6 +1138,14 @@ impl<const EDITABLE: bool> Widget for TextArea<EDITABLE> {
+                     &bounding_box_to_rect(cursor),
+                 );
+             };
++            // the selection handles, in the selection's colour: a stem down each end and a disc
++            // below it
++            let handle = props.get::<SelectionColor>().color;
++            for (_, caret, c, r) in self.handle_shapes() {
++                let stem = Rect::new(caret.x0, caret.y0, caret.x1, c.y);
++                scene.fill(Fill::NonZero, Affine::IDENTITY, handle, None, &stem);
++                scene.fill(Fill::NonZero, Affine::IDENTITY, handle, None, &Circle::new(c, r));
++            }
+         }
+ 
+         let text_color = if ctx.is_disabled() {

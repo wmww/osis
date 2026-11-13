@@ -10,7 +10,7 @@ use crate::text;
 use crate::theme::{Card, Look, fade};
 use masonry::accesskit::{Node, Role};
 use masonry::core::keyboard::{Key, NamedKey};
-use masonry::core::{AccessCtx, AccessEvent, BoxConstraints, BrushIndex, ChildrenIds, EventCtx, LayoutCtx, PaintCtx, PointerEvent, PropertiesMut, PropertiesRef, RegisterCtx, TextEvent, Update, UpdateCtx, Widget, WidgetMut};
+use masonry::core::{AccessCtx, AccessEvent, BoxConstraints, BrushIndex, ChildrenIds, EventCtx, LayoutCtx, PaintCtx, PointerButton, PointerEvent, PropertiesMut, PropertiesRef, RegisterCtx, TextEvent, Update, UpdateCtx, Widget, WidgetMut};
 use masonry::kurbo::{Affine, Point, Rect, RoundedRect, Size, Stroke};
 use masonry::parley::Layout;
 use masonry::peniko::{Color, Fill};
@@ -111,7 +111,8 @@ impl Widget for Tile {
 
     fn on_pointer_event(&mut self, ctx: &mut EventCtx<'_>, _props: &mut PropertiesMut<'_>, event: &PointerEvent) {
         match event {
-            PointerEvent::Down(e) => {
+            // a press is the primary button's: a secondary press (a touch's long press) is not
+            PointerEvent::Down(e) if matches!(e.button, None | Some(PointerButton::Primary)) => {
                 self.down = Some(ctx.local_position(e.state.position));
                 self.dragged = false;
                 ctx.capture_pointer();

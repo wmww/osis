@@ -310,9 +310,7 @@ pub enum Block {
     Days(Vec<Day>),
     Form { rows: Vec<FormRow>, wide: bool },
     /// A text field bound to `(thing, aspect)` over a text session, or to a map entry of it.
-    /// `wants_typing`: when it appears, the user is to type in it now (it takes the focus and the
-    /// soft keyboard is wanted).
-    Editor { thing: Tid, ak: String, key: Option<String>, placeholder: String, role: TextRole, multiline: bool, lead: Option<(Mark, Option<String>)>, wants_typing: bool },
+    Editor { thing: Tid, ak: String, key: Option<String>, placeholder: String, role: TextRole, multiline: bool, lead: Option<(Mark, Option<String>)> },
     Composer(Composer),
     /// A child view at `key`, inline.
     View { key: String, spec: ViewSpec },
@@ -424,9 +422,10 @@ pub const DARK: Local<bool> = Local::new("dark", || false);
 pub const TICK: Local<u64> = Local::new("tick", || 0);
 /// Bumped on every keystroke in an editor: what shows pending typing depends on it.
 pub const TYPED: Local<u64> = Local::new("typed", || 0);
-/// A thing just made here: its title wants typing (`UseOffer` sets it; `Ui` clears it after the
-/// next update, which built the thing's page).
-pub const NAMING: Local<Option<Tid>> = Local::new("naming", || None);
+/// The field to type in next, `(thing, aspect)`: the next update focuses the first editor of it
+/// that it builds and wants the keyboard (a thing just made: its title). Any view may set it; `Ui`
+/// clears it after that update, so no later rebuild of the field asks again.
+pub const TYPE_IN: Local<Option<(Tid, &'static str)>> = Local::new("type_in", || None);
 
 pub struct WindowInner {
     pub sessions: Sessions,
@@ -598,7 +597,7 @@ impl Action for UseOffer {
             None => {
                 let t = act.create_with(o.set)?;
                 act.set_local(QUERY, String::new());
-                act.set_local(NAMING, Some(t));
+                act.set_local(TYPE_IN, Some((t, crate::facets::name::TITLE)));
             }
             Some(t) => {
                 let g = act.main_group()?;

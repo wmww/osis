@@ -18,7 +18,7 @@ pub use grid::TileGrid;
 pub use mark::Mark;
 pub use page::Page;
 pub use panel::{Blur, Panel, PanelKind};
-pub use root::Root;
+pub use root::{Frame, Root};
 pub use tile::{ROW_MIN, Tile, TileIcon, TileStyle};
 pub use vlist::{GUTTER, ListAction, VirtualList};
 pub use wrap::Wrap;

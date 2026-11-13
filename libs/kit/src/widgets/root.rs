@@ -1,6 +1,7 @@
 //! The window's root: paints the theme's background behind one child (the screen), which it keeps
 //! clear of the window's insets (system bars, a cutout, an on-screen keyboard). A new background colour (a new main colour)
-//! fades in over `FADE_NS`: the one motion the look allows (notes/theming.md).
+//! fades in over `FADE_NS`: the one motion the look allows (notes/theming.md). While ticking it
+//! reports every animation frame (`Frame`), for motion driven from outside the widget tree (a fling).
 
 use crate::backdrop;
 use crate::theme::Look;
@@ -24,11 +25,17 @@ pub struct Root {
     fade: Option<(Color, f64)>,
     /// What covers the window's edges, in logical pixels.
     insets: Insets,
+    /// Reporting animation frames.
+    ticking: bool,
 }
+
+/// An animation frame went by, this many ns after the last (0: the first of a run).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Frame(pub u64);
 
 impl Root {
     pub fn new(child: NewWidget<impl Widget + ?Sized>, look: Arc<Look>) -> Root {
-        Root { child: child.erased().to_pod(), look, seed: 0, fade: None, insets: Insets::ZERO }
+        Root { child: child.erased().to_pod(), look, seed: 0, fade: None, insets: Insets::ZERO, ticking: false }
     }
 
     /// Replaces the screen.
@@ -49,6 +56,16 @@ impl Root {
         if this.widget.insets != insets {
             this.widget.insets = insets;
             this.ctx.request_layout();
+        }
+    }
+
+    /// Reports every animation frame (`Frame`) while `on`.
+    pub fn set_ticking(this: &mut WidgetMut<'_, Self>, on: bool) {
+        if this.widget.ticking != on {
+            this.widget.ticking = on;
+            if on {
+                this.ctx.request_anim_frame();
+            }
         }
     }
 
@@ -77,9 +94,14 @@ impl Root {
 }
 
 impl Widget for Root {
-    type Action = masonry::core::NoAction;
+    type Action = Frame;
 
     fn on_anim_frame(&mut self, ctx: &mut UpdateCtx<'_>, _props: &mut PropertiesMut<'_>, interval: u64) {
+        if self.ticking {
+            // asked again at once, so the next frame's interval runs from this one
+            ctx.request_anim_frame();
+            ctx.submit_action::<Frame>(Frame(interval));
+        }
         if let Some((from, t)) = self.fade {
             let t = t + interval as f64 / FADE_NS;
             self.fade = if t >= 1.0 { None } else { Some((from, t)) };

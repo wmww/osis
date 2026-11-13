@@ -1,9 +1,12 @@
 //! `name.0`: a thing's title.
 
 use crate::store::Reader;
-use crate::view::{Block, Cx, Facet, Icon, Mark, NAMING, Offer, Section, Summary, TextRole};
+use crate::view::{Block, Cx, Facet, Icon, Mark, Offer, Section, Summary, TextRole};
 use osis::core::NAME;
 use osis::{Result, Tid};
+
+/// The title's aspect.
+pub const TITLE: &str = "name.0";
 
 pub struct NameFacet;
 pub static FACET: NameFacet = NameFacet;
@@ -18,7 +21,7 @@ impl Facet for NameFacet {
         "name"
     }
     fn claims(&self, ak: &str) -> bool {
-        ak == "name.0"
+        ak == TITLE
     }
     fn universal(&self) -> bool {
         true
@@ -36,19 +39,18 @@ impl Facet for NameFacet {
         if cfg.flag("compact") || cfg.flag("read_only") {
             return Ok(Section::of(vec![Block::Label(s.name)]));
         }
-        if !cx.has(t, "name.0")? {
+        if !cx.has(t, TITLE)? {
             return Ok(Section::of(vec![Block::Heading(s.name)]));
         }
-        let wants_typing = cx.local(NAMING)? == Some(t);
         let lead = match s.mark {
             Mark::Initials(_) => Some((s.mark, s.color)),
             Mark::Icon(_) => None,
         };
-        Ok(Section::of(vec![Block::Editor { thing: t, ak: "name.0".into(), key: None, placeholder: "Untitled".into(), role: TextRole::Title, multiline: false, lead, wants_typing }]))
+        Ok(Section::of(vec![Block::Editor { thing: t, ak: TITLE.into(), key: None, placeholder: "Untitled".into(), role: TextRole::Title, multiline: false, lead }]))
     }
     fn offers(&self, cx: &Reader, t: Option<Tid>) -> Result<Vec<Offer>> {
         let Some(t) = t else { return Ok(Vec::new()) };
-        if cx.has(t, "name.0")? {
+        if cx.has(t, TITLE)? {
             return Ok(Vec::new());
         }
         Ok(vec![Offer { id: "name", label: "Name", icon: Icon::Note, set: start }])

@@ -6,7 +6,7 @@ use crate::icons::Icon;
 use crate::theme::{Look, fade};
 use masonry::accesskit::{Node, Role};
 use masonry::core::keyboard::{Key, NamedKey};
-use masonry::core::{AccessCtx, AccessEvent, BoxConstraints, ChildrenIds, EventCtx, LayoutCtx, PaintCtx, PointerEvent, PropertiesMut, PropertiesRef, RegisterCtx, TextEvent, Update, UpdateCtx, Widget, WidgetMut};
+use masonry::core::{AccessCtx, AccessEvent, BoxConstraints, ChildrenIds, EventCtx, LayoutCtx, PaintCtx, PointerButton, PointerEvent, PropertiesMut, PropertiesRef, RegisterCtx, TextEvent, Update, UpdateCtx, Widget, WidgetMut};
 use masonry::kurbo::{Affine, RoundedRect, Size};
 use masonry::peniko::Fill;
 use masonry::vello::Scene;
@@ -42,7 +42,8 @@ impl Widget for IconButton {
 
     fn on_pointer_event(&mut self, ctx: &mut EventCtx<'_>, _props: &mut PropertiesMut<'_>, event: &PointerEvent) {
         match event {
-            PointerEvent::Down(..) => {
+            // a press is the primary button's: a secondary press (a touch's long press) is not
+            PointerEvent::Down(e) if matches!(e.button, None | Some(PointerButton::Primary)) => {
                 ctx.capture_pointer();
                 ctx.request_paint_only();
             }

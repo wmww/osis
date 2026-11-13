@@ -1,5 +1,5 @@
 # Android
-> Summary: The experimental Android build of the app (app/android): the same UI as desktop in a View of our own (java/: OsisActivity, OsisView, OsisInputConnection) run on the UI thread by Rust; the keyboard's input connection over the focused text (kit's ime::android); build recipe (javac, d8, aapt2, no Gradle); what works on the emulator, and what is open (touch scrolling, text selection on touch, cursor anchor info).
+> Summary: The experimental Android build of the app (app/android): the same UI as desktop in a View of our own (java/: OsisActivity, OsisView, OsisInputConnection) run on the UI thread by Rust; the keyboard's input connection over the focused text (kit's ime::android); build recipe (javac, d8, aapt2, no Gradle); what works on the emulator, and what is open (the selection menu, cursor anchor info).
 
 ## Shape
 - `app/android` is the crate `osis-android`, a workspace member outside default-members, empty on every other target.
@@ -25,11 +25,11 @@
 - Run: `adb install -r <apk>`, `adb shell am start -n net.osis.app/.OsisActivity`; logs: `adb logcat --pid=$(adb shell pidof net.osis.app)` (tag `osis`).
 
 ## Status
-- Emulator with the host GPU (AMD/Mesa through gfxstream Vulkan): renders, touch taps, Back, insets, the keyboard (above), backgrounding and returning (the surface is dropped and made again).
+- Emulator with the host GPU (AMD/Mesa through gfxstream Vulkan): renders, Back, insets, the keyboard (above), backgrounding and returning (the surface is dropped and made again). Touch is kit's (notes/app.md, Platforms and input), nothing here: taps, swipes scrolling a page and a list, a long press picking a row up to reorder, a long press selecting a word with handles that drag, a new thing's title asking for the keyboard (checked with `adb shell input swipe`, a swipe in place for a long press, `input motionevent DOWN/MOVE/UP` for handle drags). A fling is unit-tested only (adb's swipes are too short to show one on these short pages).
 - The emulator's software GPUs (SwiftShader, lavapipe headless) lose the device on the first frame; the GLES adapter has no compute. Vello needs compute; vello_cpu would be the no-GPU fallback, unbuilt.
 - Untested on a real phone. Untested anywhere: QUIC sync, joining, rotation, dark mode switching (`nativeConfig`).
 
 ## Open
-- Touch gestures, the selection menu, layout: issues/platform-input.md.
+- The selection menu (the keyboard's Select all, Cut, Copy, Paste buttons work meanwhile; `nativeShortcut` answers whether the field took them), layout: issues/platform-input.md.
 - `requestCursorUpdates` answers false: no `CursorAnchorInfo`, which floating candidate windows and stylus handwriting use.
 - Logs at info to logcat: no app code logs links, keys or messages; errors carry the store path. Dependencies (masonry, wgpu, quinn) log far more at debug/trace, unaudited: keep the cap at info.

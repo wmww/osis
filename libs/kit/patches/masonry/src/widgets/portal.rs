@@ -4,7 +4,6 @@
 use std::ops::Range;
 
 use accesskit::{Node, Role};
-use dpi::PhysicalPosition;
 use tracing::{Span, trace_span};
 use vello::Scene;
 use vello::kurbo::{Point, Rect, Size, Vec2};
@@ -272,10 +271,12 @@ impl<W: Widget + FromDynWidget + ?Sized> Widget for Portal<W> {
 
         match *event {
             PointerEvent::Scroll(PointerScrollEvent { delta, .. }) => {
-                // TODO - Remove reference to scale factor.
-                // See https://github.com/linebender/xilem/issues/1264
+                // a pixel delta is physical; the viewport is logical
                 let delta = match delta {
-                    ScrollDelta::PixelDelta(PhysicalPosition::<f64> { x, y }) => -Vec2 { x, y },
+                    ScrollDelta::PixelDelta(p) => {
+                        let p = p.to_logical::<f64>(ctx.get_scale_factor());
+                        -Vec2 { x: p.x, y: p.y }
+                    }
                     ScrollDelta::LineDelta(x, y) => {
                         -Vec2 {
                             x: x as f64,
@@ -283,8 +284,11 @@ impl<W: Widget + FromDynWidget + ?Sized> Widget for Portal<W> {
                         } * 120.0
                     }
                     _ => Vec2::ZERO,
-                } * ctx.get_scale_factor();
-                self.set_viewport_pos_raw(portal_size, content_size, self.viewport_pos + delta);
+                };
+                // a scroll this portal took goes no further; at its edge it goes on outward
+                if self.set_viewport_pos_raw(portal_size, content_size, self.viewport_pos + delta) {
+                    ctx.set_handled();
+                }
                 ctx.request_compose();
 
                 {

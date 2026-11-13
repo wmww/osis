@@ -44,7 +44,7 @@ impl Facet for BodyFacet {
         if cx.config().flag("read_only") {
             return Ok(Section::of(vec![Block::Line(cx.db.at(t, BODY).get()?.unwrap_or_default())]));
         }
-        Ok(Section::of(vec![Block::Editor { thing: t, ak: "body.0".into(), key: None, placeholder: "Write something…".into(), role: TextRole::Body, multiline: true, lead: None, wants_typing: false }]))
+        Ok(Section::of(vec![Block::Editor { thing: t, ak: "body.0".into(), key: None, placeholder: "Write something…".into(), role: TextRole::Body, multiline: true, lead: None }]))
     }
     fn search(&self, cx: &Reader, t: Tid) -> Result<Vec<String>> {
         Ok(cx.db.at(t, BODY).get()?.into_iter().collect())

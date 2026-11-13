@@ -1,6 +1,7 @@
 //! osis-kit's test binary.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
+mod gestures;
 mod graph;
 mod ime;
 mod input;

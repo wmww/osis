@@ -26,7 +26,7 @@ impl Facet for PlaceFacet {
         Ok(())
     }
     fn show(&self, _cx: &Cx, t: Tid) -> Result<Section> {
-        Ok(Section::of(vec![Block::Editor { thing: t, ak: "event:location.0".into(), key: None, placeholder: "Where".into(), role: TextRole::Muted, multiline: false, lead: None, wants_typing: false }]))
+        Ok(Section::of(vec![Block::Editor { thing: t, ak: "event:location.0".into(), key: None, placeholder: "Where".into(), role: TextRole::Muted, multiline: false, lead: None }]))
     }
     fn search(&self, cx: &Reader, t: Tid) -> Result<Vec<String>> {
         Ok(cx.db.at(t, LOCATION).get()?.into_iter().collect())

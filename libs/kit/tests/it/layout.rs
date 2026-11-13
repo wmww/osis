@@ -7,11 +7,15 @@ use crate::view_tree::data;
 use osis::core::NAME;
 use osis_kit::schema::{Arrange, COLLECTION, Collection, CollectionOrder as Order, CollectionSource as Source};
 use osis_kit::masonry::accesskit::{Action, ActionRequest, Node, NodeId, Role};
-use osis_kit::masonry::app::{RenderRoot, RenderRootOptions, WindowSizePolicy};
+use osis_kit::masonry::app::{RenderRoot, RenderRootOptions, RenderRootSignal, WindowSizePolicy};
 use osis_kit::masonry::core::{PointerEvent, PointerId, PointerInfo, PointerScrollEvent, PointerState, PointerType, ScrollDelta, Widget, WidgetId, WidgetRef, WindowEvent};
 use osis_kit::masonry::dpi::{PhysicalPosition, PhysicalSize};
 use osis_kit::masonry::kurbo::{Point, Rect};
+use osis_kit::platform::{Platform, SelectionMenu, Thresholds};
+use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap};
+use std::rc::Rc;
+use std::sync::mpsc::{Receiver, channel};
 use osis_kit::render::{ROOT, Ui, rail_needs, tree};
 use osis_kit::store::Data;
 use osis_kit::theme::{Look, Theme};
@@ -336,4 +340,101 @@ fn scroll_into_view_shows_it() {
     s.rr.redraw();
     let r = rect(&s);
     assert!(r.y0 >= 0.0 && r.y1 <= 190.0, "in the window: {r:?}");
+}
+
+/// A platform that shares what the keyboard was asked with the test.
+struct Keys(Rc<RefCell<Vec<bool>>>);
+
+impl Platform for Keys {
+    fn clipboard(&mut self) -> Option<String> {
+        None
+    }
+    fn set_clipboard(&mut self, _: String) {}
+    fn keyboard(&mut self, wanted: bool) {
+        self.0.borrow_mut().push(wanted);
+    }
+    fn show_selection_menu(&mut self, _: &SelectionMenu) -> bool {
+        false
+    }
+    fn hide_selection_menu(&mut self) {}
+    fn thresholds(&self) -> Thresholds {
+        crate::input::THRESHOLDS
+    }
+}
+
+/// Runs the actions widgets reported, as a shell does.
+fn pump(ui: &mut Ui, rr: &mut RenderRoot, signals: &Receiver<RenderRootSignal>) {
+    for _ in 0..8 {
+        let got: Vec<_> = signals.try_iter().collect();
+        if got.is_empty() {
+            return;
+        }
+        for s in got {
+            if let RenderRootSignal::Action(a, w) = s {
+                ui.action(rr, w, a);
+            }
+        }
+        ui.wake(rr);
+    }
+}
+
+/// Presses what a screen reader calls `label` (or a label starting so), then runs what follows.
+/// `seen` gathers the screen reader's tree from its updates, which carry only what changed.
+fn press(ui: &mut Ui, rr: &mut RenderRoot, signals: &Receiver<RenderRootSignal>, seen: &mut Vec<(NodeId, String)>, label: &str) {
+    rr.handle_window_event(WindowEvent::EnableAccessTree);
+    for _ in 0..2 {
+        let (_, update) = rr.redraw();
+        for (id, n) in update.map(|u| u.nodes).unwrap_or_default() {
+            seen.push((id, n.label().unwrap_or_default().to_string()));
+        }
+        pump(ui, rr, signals);
+    }
+    // the latest node so called
+    let Some(id) = seen.iter().rev().find(|(_, l)| l == label || l.starts_with(&format!("{label}: "))).map(|(id, _)| *id) else {
+        panic!("no {label:?} in {:?}", seen.iter().map(|(_, l)| l).collect::<Vec<_>>());
+    };
+    rr.handle_access_event(ActionRequest { action: Action::Click, target: id, data: None });
+    pump(ui, rr, signals);
+    ui.wake(rr);
+}
+
+/// A thing made from New wants its title typed in: the keyboard is asked for once, when the field
+/// appears, and not again when its slot rebuilds (a merge of its title, the screen rebuilt).
+#[test]
+fn a_new_things_title_asks_for_the_keyboard_once() {
+    let d = data();
+    let first = d.create_note().unwrap();
+    d.set_open(Some(first)).unwrap();
+    let ui = Ui::new(d.clone(), Waker::new(|| {})).unwrap();
+    let (tx, signals) = channel();
+    let opts = RenderRootOptions {
+        default_properties: Arc::new(osis_kit::masonry::theme::default_property_set()),
+        use_system_fonts: false,
+        size_policy: WindowSizePolicy::User,
+        size: PhysicalSize::new(1200, 700),
+        scale_factor: 1.0,
+        test_font: None,
+    };
+    let rr = RenderRoot::new(tree(ui.look()), move |s| drop(tx.send(s)), opts);
+    let keys = Rc::new(RefCell::new(Vec::new()));
+    let mut s = Screen { ui, rr, d };
+    s.ui.start(&mut s.rr, Box::new(Keys(keys.clone())), 1.0, false);
+    s.ui.wake(&mut s.rr);
+    let mut seen = Vec::new();
+    press(&mut s.ui, &mut s.rr, &signals, &mut seen, "New");
+    press(&mut s.ui, &mut s.rr, &signals, &mut seen, "Note");
+    let t = s.d.opened().unwrap().unwrap();
+    assert_ne!(t, first);
+    assert_eq!(*keys.borrow(), vec![true]);
+    let typing = s.rr.focused_ime_text().map(|(id, _)| id).unwrap();
+    // another device names it: the merge rebuilds what shows the name
+    let mut w = s.d.db.write();
+    w.at(t, NAME).set(&"named elsewhere".to_string()).unwrap();
+    w.commit().unwrap();
+    s.ui.wake(&mut s.rr);
+    // the screen rebuilt: the rail goes
+    s.resize(300);
+    s.ui.wake(&mut s.rr);
+    assert_ne!(s.rr.focused_ime_text().map(|(id, _)| id), Some(typing), "rebuilt");
+    assert_eq!(*keys.borrow(), vec![true]);
 }

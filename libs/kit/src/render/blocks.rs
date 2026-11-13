@@ -2,7 +2,7 @@
 
 use crate::store::Data;
 use crate::view::paged::{Item, List, ListRow, Style};
-use crate::view::{Block, ChipMark, Composer, Do, Entry, FormRow, Mark, PasteTo, Pick, TextRole, WindowState};
+use crate::view::{Block, ChipMark, Composer, Do, Entry, FormRow, Mark, PasteTo, Pick, TYPE_IN, TextRole, WindowState};
 use osis::Tid;
 use crate::icons::Icon;
 use crate::masonry::core::{Capitalize, EnterKey, NewWidget, Properties, TextInputHints, Widget, WidgetId};
@@ -45,7 +45,7 @@ pub struct Built {
     pub feet: Vec<(String, WidgetId)>,
     /// Filled children, by key: their foot is pinned.
     pub pinned: Vec<String>,
-    /// The field that wants typing now (`Block::Editor::wants_typing`).
+    /// The field to type in now (`TYPE_IN`).
     pub typing: Option<WidgetId>,
     /// The kept lists, by the index of their block.
     pub lists: HashMap<usize, RowList>,
@@ -237,7 +237,7 @@ impl R<'_> {
             Block::Filled { key, has_foot, plain, fills, below, .. } => self.filled(key, *has_foot, *plain, *fills, below),
             Block::Bar { back, descriptor, favorite, star, more, menu } => self.bar(back, descriptor, *favorite, star, more, menu),
             Block::Form { rows, wide } => self.form(rows, *wide),
-            Block::Editor { thing, ak, key, placeholder, role, multiline, lead, wants_typing } => self.editor(*thing, ak, key, placeholder, *role, *multiline, lead, *wants_typing)?,
+            Block::Editor { thing, ak, key, placeholder, role, multiline, lead } => self.editor(*thing, ak, key, placeholder, *role, *multiline, lead)?,
             Block::Composer(c) => self.composer(c),
             Block::Pick { cols, options } => self.pick(*cols, options),
         })
@@ -472,7 +472,7 @@ impl R<'_> {
 
     #[allow(clippy::too_many_arguments)]
     #[allow(clippy::too_many_arguments)]
-    fn editor(&mut self, thing: Tid, ak: &str, map: &Option<String>, placeholder: &str, role: TextRole, multiline: bool, lead: &Option<(Mark, Option<String>)>, wants_typing: bool) -> Option<NewWidget<dyn Widget>> {
+    fn editor(&mut self, thing: Tid, ak: &str, map: &Option<String>, placeholder: &str, role: TextRole, multiline: bool, lead: &Option<(Mark, Option<String>)>) -> Option<NewWidget<dyn Widget>> {
         let look = self.look.clone();
         let key = (self.path.to_string(), thing, ak.to_string(), map.clone());
         let shown = self.window.sessions.show(self.data, &key).ok()?;
@@ -485,7 +485,7 @@ impl R<'_> {
         let (w, id): (NewWidget<TextInput>, _) = style::input(&look, &shown, placeholder, role_t, multiline, hints);
         self.acts.editors.insert(id, key);
         self.built.ids.push(id);
-        if wants_typing {
+        if self.built.typing.is_none() && self.window.graph.peek(TYPE_IN).is_some_and(|(t, a)| t == thing && a == ak) {
             self.built.typing = Some(id);
         }
         if let Some((m, c)) = lead {
