@@ -97,12 +97,14 @@ pub const BEACON: &str = "beacon";
 pub const BEACON_HIT: &str = "beacon hit";
 /// The tag answering a Hit (`beacon_reply`).
 pub const BEACON_REPLY: &str = "beacon reply";
+/// A dialer's proof credential over a sync key (`sync_proof`).
+pub const SYNC_PROOF: &str = "sync proof";
 
 /// Every kdf purpose, for distinctness checks and vectors.
-pub const PURPOSES: [&str; 37] = [
+pub const PURPOSES: [&str; 38] = [
     THING_SYNC, THING_READ, THING_WRITE, THING_ADMIN, ROLE_SYNC, ROLE_READ, ROLE_WRITE, ROLE_ADMIN, SIGN, KEM, CREATION_NONCE, BOX, HISTORY, EPOCH, WRAP, SECTION,
     DELTA, LINK, LINK_TREE, DELETE_KEY, DELETE_BLIND, DELETE_NONCE, LINK_BLIND, THING_BLIND, LABEL_SYNC, LABEL_WRITE, LABEL_DELETE, LABEL_DEPOSIT, LABEL_CLAIM, LAN_TAG, LAN_SIG,
-    POSSESSION, INNER_SECRET, INNER, BEACON, BEACON_HIT, BEACON_REPLY,
+    POSSESSION, INNER_SECRET, INNER, BEACON, BEACON_HIT, BEACON_REPLY, SYNC_PROOF,
 ];
 
 // Full derive_key contexts used directly (not through `kdf`).
@@ -158,6 +160,13 @@ pub fn resumed_tag(r: &[u8; 32], key: &[u8; 32], dialer: &[u8; 32], listener: &[
 /// value both sides compute for one credential, so a filter entry is its first bits.
 pub fn beacon(match_value: &[u8; 32], label: &[u8; 16], r: &[u8; 32]) -> [u8; 32] {
     *blake3::keyed_hash(kdf(BEACON, match_value, label).expose(), r).as_bytes()
+}
+
+/// The match value of a dialer's proof of the sync secret behind raw sync public key `sync`
+/// (spec/sync.md §10, Admissible): `kdf("sync proof", sync, "")`, so its beacon is never a sync
+/// key's own.
+pub fn sync_proof(sync: &[u8; 32]) -> [u8; 32] {
+    *kdf(SYNC_PROOF, sync, b"").expose()
 }
 
 /// Which side a Hit or a tag is sent by and the connection it binds: `(by_listener, listener key,

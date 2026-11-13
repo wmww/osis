@@ -102,6 +102,12 @@ impl SyncEngine {
         for l in &labels {
             let actor = things.get(l).map(|t| self.engine.core.reader_of(t));
             let mut values: Vec<[u8; 32]> = creds.get(l).map(|c| c.iter().map(Credential::match_value).collect()).unwrap_or_default();
+            // and the sync key a dialer proves (`Which::accepts`): a step under a new one moves it
+            if let Some(g) = things.get(l).filter(|_| self.synced.ids.contains(l))
+                && let Some(step) = self.newest_step(&g.clone(), l)
+            {
+                values.push(step.keys.sync.to_bytes());
+            }
             values.sort_unstable();
             let reach = actor.map_or([0; 32], |a| holders_hash(&self.engine.core, &a, &mut memo, &mut stack).0);
             let bytes: Vec<u8> = values.iter().flatten().copied().chain(reach).collect();

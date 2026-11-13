@@ -336,3 +336,22 @@ fn minting_a_client_is_all_or_nothing() {
     assert!(net.sync(a).engine_mut().get_typed(&node, &ct::CLIENTS).unwrap().unwrap().contains_key(&t));
 }
 
+
+// spec/sync.md §5 Opens (a dialer that cannot read L opens it only by its proof): a client's
+// session on a reader holds no per-label state, before and after Auth, however many labels the
+// reader syncs; it never begins a shared set, so nothing is tested there either.
+#[test]
+fn a_client_session_holds_no_label_state() {
+    let (mut net, _, [a], _, []) = hosted::<1, 0>(&[], [], true);
+    assert!(!net.sync(a).labels().is_empty(), "a syncs labels");
+    let key = net.sync(a).dialable_key();
+    let actor = Tid::from_bytes([5; 15]);
+    set_entry(&mut net, a, actor, Some(entry(&SECRET, None)));
+    let mut c = client_on(&mut net, a, key, Peer::Key([9; 32]));
+    assert_eq!(net.sync(a).served_label_states().get(&c.conn), Some(&0), "none at the start");
+    let (_, code) = bearer(&mut net, a, &mut c, Some(SECRET));
+    assert_eq!(code, None);
+    net.advance(61_000);
+    assert_eq!(net.sync(a).served_label_states().get(&c.conn), Some(&0), "none after Auth and a resync");
+    assert!(net.sync(a).shared_members(c.conn).is_empty());
+}

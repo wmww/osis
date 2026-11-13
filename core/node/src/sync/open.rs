@@ -316,19 +316,16 @@ impl SyncEngine {
     /// by a held sync key no known step bears (the walk's), or a hint's label knowing no step, it
     /// opens with no head: the stream's head event names it (`new_head`).
     pub(crate) fn member_unread_there(&mut self, conn: ConnId, l: LabelId, restored: bool, out: &mut Vec<super::Action>) -> Result<()> {
+        // labels are tested and walked only where this node dialed a node the label lists
         let Some(c) = self.conns.get(&conn) else { return Ok(()) };
-        let host = c.listed();
-        // on any other connection only this node's Hit at a peer that cannot read L opens it
-        if host.is_none() && !self.shared_by_key(conn, &l) {
-            return Ok(());
-        }
+        let Some(host) = c.listed() else { return Ok(()) };
         let Some(lc) = c.labels.get(&l).filter(|x| !x.phase.is_open()) else { return Ok(()) };
         let g = lc.group;
         let shown = match &lc.phase {
             Phase::Testing { shown } => shown.as_deref().cloned(),
             _ => None,
         };
-        let known = host.filter(|_| restored).and_then(|h| self.state.heads.get(&(h, l)).cloned());
+        let known = if restored { self.state.heads.get(&(host, l)).cloned() } else { None };
         let (step, by) = match shown {
             Some((None, k)) => {
                 // no step: whatever a walk reached here is not the head it opened at
@@ -351,16 +348,11 @@ impl SyncEngine {
         }
         if let Some(c) = self.conns.get_mut(&conn) {
             c.req.registered.remove(&l);
-            if let Some(h) = host {
-                self.refusals.remove(&(h, l));
-            }
+            self.refusals.remove(&(host, l));
         }
         if let Some(lc) = self.label_at_mut(conn, &l) {
             lc.phase = Phase::Open { by: by.map(Box::new), doubted: None };
             (lc.step_retry, lc.step_refusals) = (0, 0);
-            // a peer that dialed this node is read as a reader is (`read_as_host`): nothing to
-            // read to its end here, it pulls what this node places
-            lc.synced |= host.is_none();
         }
         self.stream_source_gained(conn, &l, out)?;
         // a stream resumed by the record read it to the peer's end already: a pass end there

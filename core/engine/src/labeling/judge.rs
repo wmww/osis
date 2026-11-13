@@ -15,7 +15,8 @@ use std::collections::{BTreeMap, BTreeSet};
 pub enum Judgment {
     /// A proven actor holds L's read role here now.
     Holder,
-    /// Every grant path seen here for every proven actor that ever held L has ended.
+    /// Every grant path seen here for every proven actor that ever held L has ended (a role
+    /// below read held now, sync, is no departure).
     Departed,
     /// No path to L seen here: blocks nothing.
     Unknown,
@@ -70,6 +71,10 @@ impl Judge<'_> {
             if *x == a || self.timeline(x).is_some_and(|tl| tl.role(x, &a, At::KEYS) >= Some(Role::Read)) {
                 return Judgment::Holder;
             }
+        }
+        // a holder of a role below read (sync) holds L still: it has not departed
+        if self.actors.iter().any(|x| self.timeline(x).is_some_and(|tl| tl.role(x, &a, At::KEYS).is_some())) {
+            return Judgment::Unknown;
         }
         let core = self.core;
         for x in &self.actors {

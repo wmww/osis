@@ -295,6 +295,12 @@ impl SyncEngine {
         self.conns.iter().filter(|(_, c)| c.dial.is_none()).map(|(c, _)| (*c, self.shared_members(*c).into_iter().collect())).collect()
     }
 
+    /// Each served connection's per-label states (`LabelAt`; tests: none where the peer dialed).
+    #[doc(hidden)]
+    pub fn served_label_states(&self) -> BTreeMap<ConnId, usize> {
+        self.conns.iter().filter(|(_, c)| c.dial.is_none()).map(|(id, c)| (*id, c.labels.len())).collect()
+    }
+
     /// The labels this node serves to readers: those it syncs, at the deepest recorded step.
     /// Cached until `label.0` or role change.
     pub(crate) fn served_labels(&mut self) -> Arc<BTreeMap<LabelId, ServedLabel>> {

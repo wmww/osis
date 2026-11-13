@@ -619,13 +619,14 @@ impl SyncEngine {
         want
     }
 
-    /// Starts every wanted label not yet on a ready connection: one this node dialed to a node
-    /// the label lists (tested, and walked when its credential is not shown), and one a peer
-    /// dialed (tested only: its Hit opens it where the peer's filter shows it, so a node that
-    /// cannot read L and dials a reader of L pulls L from it). A co-reader's sync IDs are its
-    /// shared set's, read by the stream.
+    /// Starts every wanted label not yet on a ready connection this node dialed to a node the
+    /// label lists (tested, and walked when its credential is not shown). Nowhere else does a
+    /// label hold state: a co-reader's sync IDs are its shared set's, read by the stream, and a
+    /// peer that dialed this node opens L only by proving L's sync secret (its own Hit,
+    /// `shared_proof_keys`), so a connection holds a member per label its dialer proved and nothing
+    /// for the rest.
     pub(super) fn add_new_labels(&mut self, out: &mut Vec<Action>) -> Result<()> {
-        let conns: Vec<(ConnId, Option<HostKey>)> = self.conns.iter().filter(|(_, c)| c.is_ready() && !c.to_peer()).map(|(id, c)| (*id, c.key())).collect();
+        let conns: Vec<(ConnId, HostKey)> = self.conns.iter().filter(|(_, c)| c.is_ready()).filter_map(|(id, c)| c.listed().map(|k| (*id, k))).collect();
         if conns.is_empty() {
             return Ok(());
         }
@@ -654,7 +655,7 @@ impl SyncEngine {
                 // failed under another thing (a hint's sender named this label so): it starts
                 // again as what wants it now
                 let known = self.conns.get(&conn).and_then(|c| c.labels.get(l)).is_some_and(|x| x.group == *g || !matches!(x.phase, Phase::Failed { .. } | Phase::Refused { .. }));
-                if !known && host.is_none_or(|h| hosts.contains(&h)) {
+                if !known && hosts.contains(&host) {
                     self.start_label(conn, *g, *l, out)?;
                 }
             }

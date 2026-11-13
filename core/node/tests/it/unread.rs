@@ -363,25 +363,99 @@ fn a_write_reaches_a_peer_that_cannot_read_by_its_pull_spec_sync_10() {
     assert_eq!(net.read(b, t), Some(osis_base::Value::Str("pulled".into())));
 }
 
-// spec/sync.md §10 (Stream: each side pulls, whoever dialed): a node that cannot read L and
-// dialed a reader of L pulls L from it: the reader's Hit on its filter opens L on the connection
-// it serves.
+/// Reader `a` of L (listing the host) and node `p` that cannot read L, keeping it unread (its
+/// hub holds L's path, copied from the host) and dialing `a`, never reaching the host. `p`
+/// proves an actor `a` knows: holding Sync on L's group when `sync` (and so its sync secret),
+/// else Read on another group of `a`'s. (net, a, p, g, L).
+fn dialing_node(sync: bool) -> (Net, usize, usize, Tid, LabelId) {
+    let holders: &[(usize, Role)] = if sync { &[(1, Role::Sync)] } else { &[] };
+    let (mut net, host, [a, p], g, []) = hosted::<2, 0>(holders, [], true);
+    if !sync {
+        net.group(a, &[(p, Role::Read)], &[]);
+    }
+    let l = net.label(a);
+    net.blocked.insert((p, host));
+    net.drop_link(p, host);
+    let path = net.host_path(host, &l);
+    {
+        let hub = net.sync(p).hub_store();
+        let mut hub = hub.lock().unwrap();
+        hub.set_admission(osis_host::Admission::Open, Default::default());
+        for st in path {
+            assert_eq!(osis_proto::LabelStore::push_step(&mut *hub, &l, st, None).unwrap(), Code::OK);
+        }
+    }
+    let key = crate::peers::reach_ed(&mut net, a);
+    net.sync(p).set_hosts(vec![osis_label::Address { url: "peer://reader".into(), key }]);
+    net.run();
+    (net, a, p, g, l)
+}
+
+/// What node `p`'s store keeps of `l`.
+fn kept(net: &mut Net, p: usize, l: &LabelId) -> BTreeSet<BlobId> {
+    let hub = net.sync(p).hub_store();
+    let hub = hub.lock().unwrap();
+    osis_proto::LabelStore::live_ids(&*hub, l).unwrap().into_iter().collect()
+}
+
+// spec/sync.md §10 (Offer, Stream: each side pulls, whoever dialed), §5 Opens: a node that
+// cannot read L, holding L's sync secret (Sync on its group), dials a reader of L and pulls L
+// from it: its own Hit on L's sync key, signed by it, opens L on the connection; the reader holds
+// no per-label state there and shares only what the dialer proved.
 #[test]
 fn a_peer_that_cannot_read_pulls_from_a_reader_it_dialed_spec_sync_10() {
-    let (mut net, host, [a], g, []) = hosted::<1, 0>(&[], [], true);
-    let l = net.label(a);
-    // the reader no longer dials the peer; the peer dials the reader
-    net.blocked.insert((a, host));
-    net.drop_link(a, host);
-    let key = crate::peers::reach_ed(&mut net, a);
-    net.host_sync(host).set_hosts(vec![osis_label::Address { url: "peer://reader".into(), key }]);
-    let before = net.host_ids(host, &l).len();
+    let (mut net, a, p, g, l) = dialing_node(true);
+    assert!(!net.engine(p).epochs(&g).unwrap().read.holds_any(), "p cannot read L");
+    let before = kept(&mut net, p, &l).len();
     net.item(a, g, g, "pulled by its dialer");
     net.advance(61_000);
     let mine: BTreeSet<BlobId> = net.sync(a).entries(&l).into_iter().map(|x| x.0).collect();
-    let held: BTreeSet<BlobId> = net.host_ids(host, &l).into_iter().collect();
+    let held = kept(&mut net, p, &l);
     assert!(held.len() > before, "the dialer pulled the new write");
     assert!(mine.is_subset(&held), "the dialer holds every entry of the reader's store");
+    let opened = net.sync(a).served_opened();
+    assert!(opened.values().any(|m| m.contains(&l)), "L open on the connection p dialed: {opened:?}");
+    assert!(opened.values().all(|m| m.iter().all(|x| *x == l)), "only what p proved: {opened:?}");
+    assert!(net.sync(a).served_label_states().values().all(|n| *n == 0), "no per-label state where the peer dialed");
+}
+
+// spec/sync.md §5 Opens (one sync-key run per proof): a dialer's proof of L's sync secret opens
+// L only while the newest step the reader records bears that sync key: a rotation closes L
+// there, and while the dialer's head bears the old key (no reader moved it) nothing written
+// after it reaches the dialer.
+#[test]
+fn a_dialers_proof_ends_at_the_next_sync_key_spec_sync_5() {
+    let (mut net, a, p, g, l) = dialing_node(true);
+    net.item(a, g, g, "before");
+    net.advance(61_000);
+    assert!(net.sync(a).served_opened().values().any(|m| m.contains(&l)), "open by p's proof");
+    let at = net.tid(a);
+    let rs = recipients_of(net.engine(a), &[(at, Role::Admin)]);
+    rotation(net.engine(a), g, &rs, 61, false);
+    net.run();
+    net.advance(61_000);
+    assert_eq!(net.group_labels(a).into_iter().find(|(_, x)| x.id == l).unwrap().1.steps.len(), 2, "a step under the new sync key");
+    assert!(net.sync(a).served_opened().values().all(|m| !m.contains(&l)), "closed at the new sync key");
+    let held = kept(&mut net, p, &l);
+    net.item(a, g, g, "after");
+    net.advance(61_000);
+    assert_eq!(kept(&mut net, p, &l), held, "nothing after the rotation reaches p");
+}
+
+// spec/sync.md §10 (Offer), §5 (Opens): a node that keeps L unread and holds only L's public
+// sync key (no secret), proving an actor the reader knows, dials a reader of L and gets nothing
+// of L: no open, no stream, no Hit of the reader's (its filter shows the key's beacon).
+#[test]
+fn a_dialer_holding_only_the_public_sync_key_pulls_nothing_spec_sync_10() {
+    let (mut net, a, p, g, l) = dialing_node(false);
+    let before = kept(&mut net, p, &l);
+    let hits = net.sync(a).pass_stats().hits_sent;
+    net.item(a, g, g, "not for the dialer");
+    net.advance(61_000);
+    assert!(!net.sync(a).served_opened().is_empty(), "p dialed a");
+    assert!(net.sync(a).served_opened().values().all(|m| !m.contains(&l)), "L never opens where p dialed");
+    assert_eq!(kept(&mut net, p, &l), before, "the dialer pulled nothing");
+    assert_eq!(net.sync(a).pass_stats().hits_sent, hits, "the reader sent no Hit");
 }
 
 // spec/sync.md §10 (Stream): a peer that cannot read L, restored from a backup taken before a
