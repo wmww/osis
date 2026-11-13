@@ -175,8 +175,10 @@ pub struct SyncEngine {
     /// interval after that (doubling, `RELINK_BACKOFF_MS` to `RELINK_BACKOFF_MAX_MS`).
     pub(crate) relink_backoff: BTreeMap<(Tid, osis_base::Ak), (u64, u64)>,
     /// Chunks deleted from every host, by the label that lost them: judged for repair at the
-    /// label's next settled pass (`relink_lost`), kept while unsettled or held back (memory only).
-    pub(crate) relink_pending: BTreeMap<LabelId, BTreeSet<osis_base::BlobId>>,
+    /// label's next settled pass (`relink_lost`), kept while held here and unsettled or held
+    /// back, with when the back-off alone lets the label be asked again (memory only: a
+    /// restart drops them, issues/relink-queue-lost-at-restart.md).
+    pub(crate) relink_pending: BTreeMap<LabelId, (BTreeSet<osis_base::BlobId>, u64)>,
     /// Entries reopened when what their commit awaited came (`reopen_awaiting`): opened where
     /// their bytes are here, else asked again of a peer whose shared set has their label
     /// (`stream_settle_all`).

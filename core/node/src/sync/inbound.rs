@@ -120,16 +120,20 @@ impl SyncEngine {
     /// (`relink_lost`), once what the batch that deleted them brought is applied.
     pub(crate) fn relink_later(&mut self, l: LabelId, lost: BTreeSet<osis_base::BlobId>) {
         if !lost.is_empty() {
-            self.relink_pending.entry(l).or_default().extend(lost);
+            let q = self.relink_pending.entry(l).or_default();
+            q.0.extend(lost);
+            q.1 = 0;
             self.mark_labels(&[l]);
         }
     }
 
     /// A tick: the labels whose repair an aspect's back-off held back pass once it lets them.
     pub(crate) fn relink_due(&mut self) {
-        if self.relink_at.is_some_and(|at| self.now() >= at) {
-            self.relink_at = None;
-            let ls: Vec<LabelId> = self.relink_pending.keys().copied().collect();
+        let now = self.now();
+        if self.relink_at.is_some_and(|at| now >= at) {
+            let (due, later): (Vec<_>, Vec<_>) = self.relink_pending.iter().map(|(l, q)| (*l, q.1)).partition(|x| x.1 <= now);
+            self.relink_at = later.iter().map(|x| x.1).min();
+            let ls: Vec<LabelId> = due.into_iter().map(|x| x.0).collect();
             self.mark_labels(&ls);
         }
     }
@@ -138,13 +142,21 @@ impl SyncEngine {
     /// that a live value of `g`'s closure links (`Engine::relink`), judged by this node's view
     /// with the label settled, as deletes are: nothing while an entry of it is unopened, and no
     /// aspect a pending commit touches (`unsettled`). Those wait for a later pass, as do those
-    /// an aspect's back-off holds back (at most once per interval per aspect, `relink_at`).
+    /// an aspect's back-off holds back (at most once per interval per aspect, `relink_at`); a
+    /// label only the back-off holds is not asked again before it passes.
     pub(crate) fn relink_lost(&mut self, g: &Tid, l: LabelId, unsettled: &super::pass::Unsettled) -> Result<()> {
-        if unsettled.contains(&None) {
+        let now = self.now();
+        let Some((mut pending, not_before)) = self.relink_pending.remove(&l) else { return Ok(()) };
+        // only a held blob can be written again: the queue stays within what this node holds
+        // however long the label waits
+        pending.retain(|b| self.engine.has_blob(b));
+        if pending.is_empty() {
             return Ok(());
         }
-        let Some(pending) = self.relink_pending.get(&l).cloned() else { return Ok(()) };
-        let now = self.now();
+        self.relink_pending.insert(l, (pending.clone(), not_before));
+        if unsettled.contains(&None) || now < not_before {
+            return Ok(());
+        }
         let backoff = &mut self.relink_backoff;
         let mut next: Option<u64> = None;
         let mut waits = false;
@@ -163,11 +175,17 @@ impl SyncEngine {
         };
         let things: BTreeSet<Tid> = self.engine.closure(g).iter().copied().collect();
         let r = self.engine.relink(&pending, &things, &mut allow);
-        if let Some(n) = next {
-            self.relink_at = Some(self.relink_at.map_or(n, |a| a.min(n)));
-        }
-        if next.is_none() && !waits {
-            self.relink_pending.remove(&l);
+        match (next, waits) {
+            (None, false) => {
+                self.relink_pending.remove(&l);
+            }
+            (Some(n), w) => {
+                self.relink_at = Some(self.relink_at.map_or(n, |a| a.min(n)));
+                if !w && let Some(q) = self.relink_pending.get_mut(&l) {
+                    q.1 = n;
+                }
+            }
+            (None, true) => {}
         }
         match r {
             Err(e @ crate::Error::Store(_)) => Err(e),
