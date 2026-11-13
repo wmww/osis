@@ -300,6 +300,7 @@ impl SyncEngine {
         }
         let now = self.state.now;
         self.state = super::state::State::reload(&mut self.engine, &self.state)?;
+        debug_assert!(self.state.memory_charges_agree(), "memory charges match the entries kept");
         // what the passes knew of entries is gone with them: everything is judged again
         self.touched.full = true;
         self.state.now = now;

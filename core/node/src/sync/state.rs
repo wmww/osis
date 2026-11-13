@@ -1511,6 +1511,25 @@ impl State {
         self.version += 1;
     }
 
+    /// Whether each label's charge is the sum of its memory entries' and its leftover commits'
+    /// charges, every charged entry a memory entry held (debug checks).
+    pub fn memory_charges_agree(&self) -> bool {
+        let mut sum: BTreeMap<LabelId, u64> = BTreeMap::new();
+        for ((l, b), n) in &self.memory_charge {
+            if !self.entries.get(&(*l, *b)).is_some_and(|e| e.memory) {
+                return false;
+            }
+            *sum.entry(*l).or_default() += n;
+        }
+        for (ls, n) in self.leftover_charge.values() {
+            for l in ls {
+                *sum.entry(*l).or_default() += n;
+            }
+        }
+        sum.retain(|_, n| *n > 0);
+        sum == self.memory_bytes
+    }
+
     /// Charges memory entry `b` of `l` (held from another node) `n` against the label's cap
     /// (replacing any earlier charge), or releases it (`None`).
     pub fn charge_memory(&mut self, l: LabelId, b: BlobId, n: Option<u64>) {
