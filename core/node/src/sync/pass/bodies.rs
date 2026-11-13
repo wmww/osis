@@ -41,7 +41,7 @@ impl SyncEngine {
             }
             // a right holder deleted it here: its keep bounds, judged from what it holds, passed
             // there (spec/commits.md §5); not placed again while its live writes are carried
-            if !here && self.delete_stands(source, l, b, &needed, snaps, &mut note)? {
+            if !here && self.delete_stands(source, (l, p.id), b, &needed, snaps, &mut note)? {
                 continue;
             }
             // another node's commit not at this source: its author (or a co-writer) first
@@ -53,7 +53,7 @@ impl SyncEngine {
             let (id, fresh) = match entry {
                 Some(id) => (id, false),
                 None if read_ok && (keys.is_writer() || self.may_deposit(keys, b)) => {
-                    let again = self.delete_took(source, l, b);
+                    let again = self.delete_took(source, l, b).then_some(p.id);
                     match self.place(g, l, b, false, again)? {
                         Some(id) => (id, true),
                         None => continue,
@@ -159,12 +159,14 @@ impl SyncEngine {
     /// and this node, not reading those entries, cannot show it is not (a fresh encryption past
     /// that delete would be deleted again, forever).
     /// A delete this node finds unfounded (a part to carry with no carrier there) stands too once
-    /// it took a blob this node sealed to place the body again past such a delete (`BlobRec::
-    /// again`): the right holder judges it covered by a snapshot this node does not hold (one
-    /// on its way, or a host keeping it from this node), and placing it again would only be
-    /// deleted again, one fresh blob and tombstone per round trip. It stands while that
-    /// tombstone lasts.
-    pub(super) fn delete_stands(&mut self, source: Option<&PeerKey>, l: LabelId, b: &Body, parts: &[usize], snaps: &Snaps, note: &mut Note) -> Result<bool> {
+    /// it took a blob this node sealed to place the body again past such a delete at label head
+    /// `head` (`BlobRec::again`): the right holder judges it covered by a snapshot this node
+    /// does not hold (one on its way, or a host keeping it from this node), and placing it again
+    /// would only be deleted again, one fresh blob and tombstone per round trip. It stands while
+    /// that tombstone lasts and the head is that step: a role change (a demotion, the head
+    /// moving with it) may make the deleter's cover or killing write fall, so one more placement
+    /// goes then.
+    pub(super) fn delete_stands(&mut self, source: Option<&PeerKey>, (l, head): (LabelId, osis_label::StepId), b: &Body, parts: &[usize], snaps: &Snaps, note: &mut Note) -> Result<bool> {
         if !self.delete_took(source, l, b) {
             return Ok(false);
         }
@@ -177,7 +179,7 @@ impl SyncEngine {
         let unjudged = h.ephemeral.is_some() && self.refused_there(source, &l);
         for ai in parts {
             if self.must_carry(&h, &b.commit, &keeps, *ai, snaps, note)? && !self.carried_by(source, &l, &b.commit, &[*ai], b.to_label) && !unjudged {
-                return Ok(self.again_deleted(source, l, b));
+                return Ok(self.again_deleted(source, (l, head), b));
             }
         }
         Ok(!self.engine.named_by_a_fallen_purge(&b.commit, parts)?)
@@ -198,12 +200,13 @@ impl SyncEngine {
         deleted.into_iter().any(|p| self.readable(&g, &b.commit, &p) == b.parts)
     }
 
-    /// Whether a blob this node sealed to place body `b` again past a delete (`BlobRec::again`)
-    /// was deleted under `l` too: tombstoned here, or gone at `source` and not present there.
-    fn again_deleted(&mut self, source: Option<&PeerKey>, l: LabelId, b: &Body) -> bool {
+    /// Whether a blob this node sealed to place body `b` again past a delete at label head
+    /// `head` (`BlobRec::again`) was deleted under `l` too: tombstoned here, or gone at `source`
+    /// and not present there.
+    fn again_deleted(&mut self, source: Option<&PeerKey>, (l, head): (LabelId, osis_label::StepId), b: &Body) -> bool {
         let Some(g) = self.group_of(&l, None) else { return false };
         let st = &self.state;
-        let gone: Vec<Vec<usize>> = st.by_commit.get(&b.commit).into_iter().flatten().filter_map(|id| st.blobs.get(id).filter(|r| r.again).map(|r| (id, r))).filter(|(id, _)| st.tombs.contains_key(&(l, **id)) || source.is_some_and(|s| st.is_gone_at(s, &l, id) && !st.is_present(s, &l, id))).map(|(_, r)| r.parts.clone()).collect();
+        let gone: Vec<Vec<usize>> = st.by_commit.get(&b.commit).into_iter().flatten().filter_map(|id| st.blobs.get(id).filter(|r| r.again == Some(head)).map(|r| (id, r))).filter(|(id, _)| st.tombs.contains_key(&(l, **id)) || source.is_some_and(|s| st.is_gone_at(s, &l, id) && !st.is_present(s, &l, id))).map(|(_, r)| r.parts.clone()).collect();
         gone.into_iter().any(|p| self.readable(&g, &b.commit, &p) == b.parts)
     }
 
@@ -369,8 +372,9 @@ impl SyncEngine {
     /// tombstoned there; for a certificate copy, this node's own copy of exactly its parts), else
     /// a fresh one (`Engine::seal`: every held part in sections, the sections this node could not
     /// open copied verbatim; a copy: `Engine::seal_to`); wrapped for the label.
-    /// `again`: placed past a delete (`BlobRec::again`, kept on a blob sealed now).
-    pub(crate) fn place(&mut self, g: &Tid, l: LabelId, b: &Body, cert: bool, again: bool) -> Result<Option<BlobId>> {
+    /// `again`: placed past a delete at that label head (`BlobRec::again`, kept on a blob sealed
+    /// now).
+    pub(crate) fn place(&mut self, g: &Tid, l: LabelId, b: &Body, cert: bool, again: Option<osis_label::StepId>) -> Result<Option<BlobId>> {
         let Some(secret) = self.engine.wrap_secret(g, Some((&b.commit, &b.parts)))? else { return Ok(None) };
         // a memory commit's blobs carry its class and live in memory (spec/sync.md §9)
         let class = self.engine.header(&b.commit).map_or(osis_label::Class::Durable, |h| osis_label::Class::of_marker(h.ephemeral));
@@ -496,6 +500,7 @@ impl SyncEngine {
         let Some((lc, source)) = self.conns.values().filter(|c| c.dial_key() == Some(*node)).find_map(|c| c.labels.get(l).filter(|x| x.phase.is_open()).zip(c.peer)) else { return Ok(None) };
         let source = &source;
         let (g, keys) = (lc.group, lc.keys.clone());
+        let Some(head) = lc.head.as_ref().map(|h| h.id()) else { return Ok(None) };
         let mut v = Verdicts { writer: keys.is_writer(), ..Verdicts::default() };
         let bodies = self.engine.label_bodies_meta(&g)?;
         let mut w = Work::fresh();
@@ -509,7 +514,7 @@ impl SyncEngine {
             if let Some(needed) = self.must_hold(b, &snaps, &snapping, &mut note)? {
                 // not placed again (`body_sends`); one held there is checked whatever deletes of
                 // other copies of it took (a duplicate's, the luck of the order a pass drew)
-                if !self.carried_by(Some(source), l, &b.commit, &needed, b.to_label) && self.delete_stands(Some(source), *l, b, &needed, &snaps, &mut note)? {
+                if !self.carried_by(Some(source), l, &b.commit, &needed, b.to_label) && self.delete_stands(Some(source), (*l, head), b, &needed, &snaps, &mut note)? {
                     continue;
                 }
                 v.must_hold.push((b.commit, needed));

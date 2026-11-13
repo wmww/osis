@@ -272,7 +272,7 @@ impl SyncEngine {
     /// it; whether it was placed. With no current read secret nothing wraps it and nothing is
     /// recorded: a later pass places it.
     pub(super) fn place_copy(&mut self, g: &Tid, l: LabelId, c: &CommitId, parts: &BTreeSet<usize>, body: Body) -> Result<bool> {
-        let placed = self.place(g, l, &body, true, false)?.is_some();
+        let placed = self.place(g, l, &body, true, None)?.is_some();
         if placed {
             self.place_linked(l, c, parts)?;
             self.state.add_cert(l, *c);

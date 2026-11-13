@@ -330,7 +330,7 @@ impl SyncEngine {
         let Some(b) = self.engine.part_body(c, parts)? else { return Ok(true) };
         // one blob of these parts, wrapped per label (`place`); a rotation-carrying copy is
         // wrapped like the body (spec/crypto.md §5): other holders take it as the body's entry
-        let Some(id) = self.place(g, l, &b, true, false)? else { return Ok(false) };
+        let Some(id) = self.place(g, l, &b, true, None)? else { return Ok(false) };
         if let Some(d) = &deposit
             && let (Some(wrap), Some(blob)) = (self.state.entries.get(&(l, id)).map(|e| e.wrap), self.engine.blob(&id)?)
         {

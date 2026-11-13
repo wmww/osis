@@ -246,9 +246,10 @@ pub struct BlobRec {
     pub cert: bool,
     /// A memory commit's blob (`Entry::memory`): the record lives in memory only.
     pub memory: bool,
-    /// Sealed by this node to place a body again past a delete it judged unfounded: a delete of
-    /// this blob too stands (`SyncEngine::delete_stands`).
-    pub again: bool,
+    /// Sealed by this node to place a body again past a delete it judged unfounded, at the label
+    /// head then: a delete of this blob too stands while that is the head (`SyncEngine::
+    /// delete_stands`).
+    pub again: Option<osis_label::StepId>,
 }
 
 /// A body under a label: (label, commit, its parts by aspect index, sorted).
@@ -854,8 +855,9 @@ impl State {
                     let flags = x.u8()?;
                     let parts = decode_ais(&mut x)?;
                     let ais = decode_ais(&mut x)?;
+                    let again = if flags & 2 != 0 { Some(osis_label::StepId(x.arr()?)) } else { None };
                     s.by_commit.entry(commit).or_default().insert(id);
-                    s.blobs.insert(id, BlobRec { commit, parts, ais, key, cert: flags & 1 != 0, memory: false, again: flags & 2 != 0 });
+                    s.blobs.insert(id, BlobRec { commit, parts, ais, key, cert: flags & 1 != 0, memory: false, again });
                 }
                 b"k" => {
                     s.certs.insert((LabelId(r.arr()?), CommitId(r.arr()?)));
@@ -1889,7 +1891,11 @@ impl State {
 
     pub fn add_blob(&mut self, id: BlobId, rec: BlobRec) {
         if !rec.memory {
-            let v = encode_ais(encode_ais(Wr::new().raw(&rec.commit.0).raw(rec.key.expose()).u8(u8::from(rec.cert) | u8::from(rec.again) << 1), &rec.parts), &rec.ais).take();
+            let mut w = encode_ais(encode_ais(Wr::new().raw(&rec.commit.0).raw(rec.key.expose()).u8(u8::from(rec.cert) | u8::from(rec.again.is_some()) << 1), &rec.parts), &rec.ais);
+            if let Some(h) = &rec.again {
+                w = w.raw(&h.0);
+            }
+            let v = w.take();
             self.put(key(BLOB, &[&id.0]), v);
         }
         self.by_commit.entry(rec.commit).or_default().insert(id);

@@ -2228,3 +2228,59 @@ fn a_rewrite_without_an_unread_delta_is_no_duplicate_spec_sync_7() {
     assert!(left.len() == 2 && left.iter().any(|x| x.len() == 1), "b's blob and w's rewrite: {left:?}");
     assert_eq!(deletes, [0, 0, 0], "deletes by a, b and w");
 }
+
+// spec/sync.md §6 (Placed again once; once no valid snapshot under the label covers it, its
+// holders place it again): writer b holds its write C; admin x compacts it under S, which the host
+// keeps from b (a cover on its way), drops C and deletes it; b places C again once, x deletes that
+// too and the delete stands: quiet. Owner a, away and never holding C or S, demotes x to read: S
+// falls and the label's head moves. b, C's only holder, places it again and every node reads it
+// (a stand lasting the tombstone's life left C at b alone).
+#[test]
+fn a_placement_again_deleted_goes_again_once_the_head_moves_spec_sync_6() {
+    let (mut net, host, [a, x, b], g, [t]) = hosted::<3, 1>(&[(1, Role::Admin), (2, Role::Write)], ["x"], true);
+    let l = net.label(a);
+    let k = Ak::new(SEQ.ak()).unwrap();
+    net.set_online(a, false);
+    let c = insert(&mut net, b, t, "b's");
+    net.run();
+    let known: std::collections::BTreeSet<_> = net.sync(x).entries(&l).into_iter().map(|(id, _)| id).collect();
+    let of_c = |k: &EntryKind| matches!(k, EntryKind::Commit { commit, .. } if *commit == c);
+    // what x logs from now on, C placed again aside, the host never lists to b
+    let hide = |net: &mut Net| {
+        let hidden = net.sync(x).entries(&l).into_iter().filter(|(id, k)| !known.contains(id) && !of_c(k)).map(|(id, _)| id).collect();
+        net.hide_blobs.insert(b, hidden);
+    };
+    hide(&mut net);
+    insert(&mut net, x, t, "x's");
+    let acts = net.sync(x).compact_now(&t, &k).unwrap();
+    net.actions(x, acts);
+    for ms in [0, 20 * 60_000, 2 * 3_600_000] {
+        net.tick(ms);
+        for n in [x, b] {
+            net.feed(n, osis_node::sync::Event::Local);
+        }
+        for _ in 0..300 {
+            if net.queue_len() == 0 {
+                break;
+            }
+            hide(&mut net);
+            net.round();
+        }
+    }
+    // `run` asserts quiescence: the delete of the placement again stands
+    net.run();
+    assert!(!net.engine(x).body_not_dropped(&c, &t, &k) && net.engine(b).body_not_dropped(&c, &t, &k), "x dropped C, b keeps it");
+    let at = |net: &mut Net| blobs_of(net, b, &l, c).iter().any(|id| net.host_ids(host, &l).contains(id));
+    assert!(!at(&mut net), "C is not at the host");
+    let xt = net.tid(x);
+    demote(&mut net, a, g, xt, Role::Read);
+    net.hide_blobs.remove(&b);
+    net.set_online(a, true);
+    net.run();
+    net.advance(61_000);
+    assert!(at(&mut net), "b placed C again");
+    let read = |net: &mut Net, n: usize| net.engine(n).get_typed(&t, &SEQ).unwrap();
+    assert_eq!(read(&mut net, b), Some(s("b's")));
+    assert_eq!(read(&mut net, a), Some(s("b's")), "a reads C");
+    assert_eq!(read(&mut net, x), Some(s("b's")), "x reads C");
+}

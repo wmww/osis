@@ -753,7 +753,7 @@ impl SyncEngine {
             } else {
                 let readable = self.readable(&g, &c, &parts);
                 let Some(b) = bodies.iter().find(|b| b.commit == c && b.parts == readable).cloned() else { continue };
-                if self.delete_stands(Some(&source), l, &b, &b.parts, snaps, &mut note)? || self.entry_for(Some(&source), &l, &b).is_some_and(|x| self.state.is_present(&source, &l, &x)) {
+                if self.delete_stands(Some(&source), (l, own.id), &b, &b.parts, snaps, &mut note)? || self.entry_for(Some(&source), &l, &b).is_some_and(|x| self.state.is_present(&source, &l, &x)) {
                     continue;
                 }
                 note.leave(c, left);
@@ -765,7 +765,7 @@ impl SyncEngine {
                 continue;
             }
             // a body deleted there (not one under a useless wrap) goes as a placement again
-            let replaces = !cert && !self.state.is_present(&source, &l, &o.id);
+            let replaces = (!cert && !self.state.is_present(&source, &l, &o.id)).then_some(own.id);
             let Some(id) = self.place(&g, l, &b, cert, replaces)? else { continue };
             if cert {
                 self.place_linked(l, &c, &parts.iter().copied().collect())?;
