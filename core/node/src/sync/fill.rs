@@ -70,7 +70,7 @@ impl SyncEngine {
         for b in self.state.of_kind(&l, Kind::TAG_UNKNOWN) {
             let Some(e) = self.state.entries.get(&(l, b)) else { continue };
             let r = self.rank(&secrets, host, &l, &b, &e.wrap);
-            if self.state.is_present(&host, &l, &b) && !self.engine.has_blob(&b) {
+            if self.state.is_present(&host, &l, &b) && !self.opens_here(&l, &b) {
                 queue.insert((r, b));
             }
         }
@@ -157,7 +157,7 @@ impl SyncEngine {
                 break;
             }
             f.queue.pop_first();
-            if self.state.entries.contains_key(&(l, b)) && self.state.is_present(&host, &l, &b) && !missing(self, &b) && !self.engine.has_blob(&b) {
+            if self.state.entries.contains_key(&(l, b)) && self.state.is_present(&host, &l, &b) && !missing(self, &b) && !self.opens_here(&l, &b) {
                 if self.may_ask(conn, l, &b) {
                     first = Some(r == FIRST);
                     ids.push(b);

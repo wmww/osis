@@ -198,3 +198,64 @@ fn reach_arriving_applies_its_part_spec_commits_4() {
     }
     assert_eq!(named.len(), 2, "entries naming either wait");
 }
+
+// spec/sync.md §6 (Dropped bodies), spec/commits.md §4 (Unjudgeable): `x`'s group g is an item
+// and subgroup of `team`, so one blob of a commit on `x` and on a new `h` is under both labels.
+// Reader b gets it without `h`'s record: it applies without that part, and its copy goes, its
+// wraps under both labels with it. The record comes and the part is missing again: b fetches the
+// blob again under each label, though the first fetch brings the bytes the other entry names,
+// and every entry opens (taking only the bytes, the other stayed unopened for good; a writer
+// placed the commit there again, for another to delete, without end).
+#[test]
+fn a_part_missing_again_is_fetched_under_every_label_spec_sync_6() {
+    let mut net = net::Net::new();
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let b = net.node(2, &[host]);
+    let g = net.group(a, &[(b, Role::Read)], &[host]);
+    let x = net.item(a, g, g, "x");
+    let team = net.group(a, &[(b, Role::Read)], &[host]);
+    net.grant(a, g, team, Role::Read);
+    let mut grp = net.engine(a).get_typed(&team, &ct::GROUP).unwrap().unwrap_or_default();
+    grp.items.insert(g);
+    grp.subgroups.insert(g);
+    let mut m = osis_node::Mutation::new();
+    m.set(team, &ct::GROUP, &grp).unwrap();
+    net.engine(a).commit(m).unwrap();
+    net.run();
+    let labels: Vec<osis_base::LabelId> = [g, team].map(|t| net.group_labels(b).into_iter().find(|(x, _)| *x == t).unwrap().1.id).into();
+    let at_host = |net: &mut net::Net| labels.iter().flat_map(|l| net.host_ids(host, l)).collect::<std::collections::BTreeSet<_>>();
+    // a creates h (its record in commit r) while b is away; b never hears of what that placed
+    net.set_online(b, false);
+    let (before, commits) = (at_host(&mut net), net.engine(a).commit_ids());
+    let h = net.item(a, g, g, "first");
+    let r = net.engine(a).commit_ids().into_iter().find(|c| !commits.contains(c)).unwrap();
+    net.run();
+    let hide = at_host(&mut net).difference(&before).copied().collect();
+    net.hide_blobs.insert(b, hide);
+    let mut m = osis_node::Mutation::new();
+    m.set(h, &REG, &s("second")).unwrap();
+    m.set(x, &REG, &s("both")).unwrap();
+    let c = net.engine(a).commit(m).unwrap().unwrap();
+    net.run();
+    net.set_online(b, true);
+    net.run();
+    net.advance(15_000);
+    let of_c = |net: &mut net::Net, n: usize, l: &osis_base::LabelId| net.sync(n).entries(l).into_iter().filter(|(_, k)| matches!(k, EntryKind::Commit { commit, .. } if *commit == c)).map(|(id, _)| id).collect::<Vec<_>>();
+    let blob = of_c(&mut net, a, &labels[0]);
+    assert_eq!(blob.len(), 1);
+    assert_eq!(of_c(&mut net, a, &labels[1]), blob, "one blob of c under both labels");
+    assert!(net.engine(b).commit_ids().contains(&c), "c applied without its part on h");
+    assert_eq!((net.read(b, x), net.read(b, h)), (Some(text("both")), None));
+    let shredded = |net: &mut net::Net, l: &osis_base::LabelId| net.sync(b).entry_meta(l, &blob[0]).is_some_and(|m| m.0 == [0; osis_crypto::WRAP_LEN]);
+    assert!(labels.iter().all(|l| shredded(&mut net, l)), "c's copy went, its wraps with it");
+    // the record by hand (as pairing brings it)
+    let pr = net.engine(a).package(&r).unwrap().unwrap();
+    net.engine(b).ingest(&pr.bytes, pr.blobs).unwrap();
+    net.run();
+    net.advance(15_000);
+    assert_eq!(net.read(b, h), Some(text("second")), "the part fetched again");
+    for l in &labels {
+        assert_eq!(of_c(&mut net, b, l), blob, "{l:?}: c's entry opened");
+    }
+}

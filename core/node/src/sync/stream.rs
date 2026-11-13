@@ -1266,14 +1266,21 @@ impl SyncEngine {
         Ok(owed)
     }
 
-    /// Whether this node wants the bytes of entry `b` of `l`: not held, not removed here within
-    /// its tombstone, not a dropped body (`Entry::dropped`), not refused by the ephemeral cap
-    /// (which waits for room, not for a fetch).
+    /// Whether entry `b` of `l` can open from what is here: its bytes held and its wrap kept
+    /// (a shredded one's comes back only with a fetch under `l`, spec/sync.md §6).
+    pub(crate) fn opens_here(&mut self, l: &LabelId, b: &BlobId) -> bool {
+        self.engine.has_blob(b) && !self.state.entries.get(&(*l, *b)).is_some_and(super::state::Entry::shredded)
+    }
+
+    /// Whether this node wants entry `b` of `l` fetched: it cannot open from what is here (its
+    /// bytes not held, or its wrap shredded: `opens_here`), not removed here within its
+    /// tombstone, not a dropped body (`Entry::dropped`), not refused by the ephemeral cap (which
+    /// waits for room, not for a fetch).
     fn wants(&mut self, l: &LabelId, b: &BlobId) -> bool {
         if self.is_unread(l).unwrap_or(false) {
             return self.unread_wants(l, b).unwrap_or(false);
         }
-        !self.engine.has_blob(b) && !self.state.entries.get(&(*l, *b)).is_some_and(super::state::Entry::dropped) && !self.memory_skips(l, b)
+        !self.opens_here(l, b) && !self.state.entries.get(&(*l, *b)).is_some_and(super::state::Entry::dropped) && !self.memory_skips(l, b)
     }
 
     /// `conn`'s source no longer holds these entries: they are owed on its stream no more.
@@ -1346,13 +1353,13 @@ impl SyncEngine {
     /// allow, and each body a stream owes that is held nowhere and asked nowhere is fetched from
     /// the first stream owing it (a fetch lost with its connection, or answered without it).
     pub(super) fn stream_settle_all(&mut self, out: &mut Vec<Action>) -> Result<()> {
-        // reopened entries: opened where their bytes are here, else asked once of a peer whose
-        // shared set has the label (a source's come by its pass, `refetch`)
+        // reopened entries: opened from what is here (`opens_here`), else asked once of a peer
+        // whose shared set has the label (a source's come by its pass, `refetch`)
         for (l, b) in std::mem::take(&mut self.reask) {
             if self.state.entries.get(&(l, b)).is_none_or(|e| e.kind != super::state::Kind::Unknown) {
                 continue;
             }
-            if self.engine.has_blob(&b) {
+            if self.opens_here(&l, &b) {
                 self.open_entries(None, l, &[b])?;
                 continue;
             }

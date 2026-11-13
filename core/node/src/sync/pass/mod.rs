@@ -950,13 +950,14 @@ impl SyncEngine {
         Ok(self.open_or_fetch(conn, host, l, ids, out)? || busy)
     }
 
-    /// Of unopened entries `ids` of `l`: those whose bytes are here are opened under the
-    /// secrets held now, the rest present at `host` fetched (a fetch lost to a cut or crash,
-    /// secrets that arrived later). Whether any was fetched or opened.
+    /// Of unopened entries `ids` of `l`: those that open from what is here (`opens_here`) are
+    /// opened under the secrets held now, the rest present at `host` fetched (a fetch lost to a
+    /// cut or crash, secrets that arrived later, a wrap shredded). Whether any was fetched or
+    /// opened.
     fn open_or_fetch(&mut self, conn: ConnId, host: HostKey, l: LabelId, ids: Vec<BlobId>, out: &mut Vec<super::Action>) -> Result<bool> {
         let missing = |s: &Self, b: &BlobId| s.conns.get(&conn).is_some_and(|c| c.req.missing.contains(b));
         let ids: Vec<BlobId> = ids.into_iter().filter(|b| !missing(self, b) && !self.asked_for(l, b) && self.state.is_present(&host, &l, b) && !self.memory_skips(&l, b)).collect();
-        let (held, want): (Vec<BlobId>, Vec<BlobId>) = ids.into_iter().partition(|b| self.engine.has_blob(b));
+        let (held, want): (Vec<BlobId>, Vec<BlobId>) = ids.into_iter().partition(|b| self.opens_here(&l, b));
         if !held.is_empty() {
             self.open_entries(Some(conn), l, &held)?;
         }
