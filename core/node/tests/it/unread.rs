@@ -774,18 +774,24 @@ fn behind_item(p: &Dialer, l: &Label, i: usize, named: bool) -> OfferItem {
     OfferItem::Behind { label: l.id, step: named.then(|| l.steps[i].id()), key: k.verifying_key().to_bytes(), sig: osis_crypto::sign_open(k, &l.id, &p.hello, &LISTENER) }
 }
 
-/// The answers to an Offer of `items`: each code and the child step carried, if any.
-fn behind_answers(s: &mut Setup, items: Vec<OfferItem>) -> Vec<(Code, Option<osis_label::Step>)> {
+/// The answers to an Offer of `items`: each code and the grant carried, if any.
+fn offer_answers(s: &mut Setup, items: Vec<OfferItem>) -> Vec<(Code, Option<osis_proto::msg::Grant>)> {
     let msgs = shared_of(&send(&mut s.net, s.b, &mut s.p, Message::Offer { id: 77, items }));
     let Some(Message::Shared { codes, .. }) = msgs.iter().find(|m| m.id() == 77) else { panic!("{msgs:?}") };
-    codes.iter().map(|(c, _, g)| (*c, g.as_ref().map(|g| { assert!(g.entry_box.is_none() && g.steps.len() == 1, "a child step alone"); g.steps[0].clone() }))).collect()
+    codes.iter().map(|(c, _, g)| (*c, g.as_deref().cloned())).collect()
+}
+
+/// The answers to an Offer of `items`: each code and the steps carried, if any.
+fn behind_answers(s: &mut Setup, items: Vec<OfferItem>) -> Vec<(Code, Option<Vec<osis_label::Step>>)> {
+    offer_answers(s, items).into_iter().map(|(c, g)| (c, g.map(|g| { assert!(g.entry_box.is_none(), "steps alone"); g.steps }))).collect()
 }
 
 // spec/sync.md §5 (Behind), spec/wire.md §11.2 (Offer): a node keeping L unread answers a Behind
-// item by the sync key of a step on its path other than its head with that step's child, which
-// verifies under the step; naming no step, the newest step bearing the key answers. One on the
-// head, by a key the step does not bear, with a signature over another connection's challenge,
-// or on a label not kept here is refused (14), carrying nothing; nothing opens.
+// item by a credential of a step on its path other than its head (its sync key, a claim of its
+// held set) with the steps after it to the head, each verifying under the one before; naming no
+// step, after the newest step bearing the sync key. One on the head, by a key that is no credential of the step
+// (a claim naming no step), or with a signature over another connection's challenge is refused
+// (14), one on a label not kept here answered 13, carrying nothing; nothing opens.
 // spec/sync.md §5 (behind)
 #[test]
 fn a_behind_item_gets_its_steps_child_spec_sync_5() {
@@ -805,18 +811,51 @@ fn a_behind_item_gets_its_steps_child_spec_sync_5() {
         *sig = osis_crypto::sign_open(&l.keys[0].sync, &l.id, &[1; 32], &LISTENER);
     }
     let unknown = Label::new(0x52);
-    let items = vec![behind_item(p, l, 0, true), behind_item(p, l, 1, false), behind_item(p, l, 2, true), wrong_key, elsewhere, behind_item(p, &unknown, 0, true)];
+    // step 1's claim key of the reader its set lists
+    let claim = l.steps[1].claim_key(&l.reader).unwrap();
+    let by_claim = |step: Option<osis_label::StepId>| OfferItem::Behind { label: l.id, step, key: claim.verifying_key().to_bytes(), sig: osis_crypto::sign_open(&claim, &l.id, &p.hello, &LISTENER) };
+    let items = vec![behind_item(p, l, 0, true), behind_item(p, l, 1, false), behind_item(p, l, 2, true), wrong_key, elsewhere, behind_item(p, &unknown, 0, true), by_claim(Some(l.steps[1].id())), by_claim(None)];
     let steps = l.steps.clone();
     let ans = behind_answers(&mut s, items);
     let l = &s.l;
-    assert_eq!(ans[0], (Code::OK, Some(steps[1].clone())), "step 0's child");
+    assert_eq!(ans[0], (Code::OK, Some(steps[1..].to_vec())), "the steps after step 0 to the head");
     steps[1].verify_child(&l.steps[0]).unwrap();
-    assert_eq!(ans[1], (Code::OK, Some(steps[2].clone())), "naming none: the newest step bearing the key");
-    for (i, a) in ans.iter().enumerate().skip(2) {
+    steps[2].verify_child(&l.steps[1]).unwrap();
+    assert_eq!(ans[1], (Code::OK, Some(steps[2..].to_vec())), "naming none: after the newest step bearing the key");
+    for (i, a) in ans.iter().enumerate().take(5).skip(2) {
         assert_eq!(*a, (Code::NOT_ADMITTED, None), "item {i}");
     }
+    assert_eq!(ans[5], (Code::UNKNOWN_LABEL, None), "a label not kept here");
+    assert_eq!(ans[6], (Code::OK, Some(steps[2..].to_vec())), "by a claim of the named step's set");
+    assert_eq!(ans[7], (Code::NOT_ADMITTED, None), "a claim names its step");
     assert!(s.net.sync(s.b).shared_members(s.p.conn).is_empty(), "nothing opens");
-    assert_eq!(s.net.sync(s.b).pass_stats().behind_answered, 2);
+    assert_eq!(s.net.sync(s.b).pass_stats().behind_answered, 3);
+}
+
+// spec/sync.md §5 (Behind), spec/wire.md §11.2 (Offer): a Behind item by a key actor's signing
+// key, naming no step, at a node keeping L unread is answered with the head's entry box for its
+// static entry and the path, as a Static item's Hit is, when the head's claim set lists the
+// entry; naming a step whose set lists it, with the steps after it alone; a key actor the head
+// does not list is refused (14); nothing opens.
+// spec/sync.md §5 (behind static)
+#[test]
+fn a_behind_item_by_a_static_entry_gets_the_heads_box_spec_sync_5() {
+    let mut s = setup();
+    s.l.rotate(0x61);
+    command(&mut s.net, s.b, &mut s.p, s.l.register_cmd(1));
+    let by = |p: &Dialer, l: &Label, k: &osis_crypto::SigningSecret, step: Option<osis_label::StepId>| OfferItem::Behind { label: l.id, step, key: k.verifying_key().to_bytes(), sig: osis_crypto::sign_open(k, &l.id, &p.hello, &LISTENER) };
+    let stranger = osis_crypto::SigningSecret::from_seed(&osis_crypto::Secret32::from_bytes([0x77; 32]));
+    let (p, l) = (&s.p, &s.l);
+    let items = vec![by(p, l, &l.key_actor, None), by(p, l, &stranger, None), by(p, l, &l.key_actor, Some(l.steps[0].id()))];
+    let (steps, set) = (l.steps.clone(), l.sets[1].clone());
+    let ans = offer_answers(&mut s, items);
+    let entry = osis_crypto::static_entry(&s.l.id, &s.l.key_actor.verifying_key());
+    let g = ans[0].1.as_ref().expect("a grant");
+    assert_eq!((ans[0].0, g.steps.clone(), g.entry_box.as_ref()), (Code::OK, steps, set.entries.get(&entry)), "the head's box and the path");
+    assert_eq!(ans[1], (Code::NOT_ADMITTED, None), "not listed");
+    let child = ans[2].1.as_ref().expect("a child");
+    assert_eq!((ans[2].0, child.entry_box.is_none(), child.steps.clone()), (Code::OK, true, vec![s.l.steps[1].clone()]), "naming a step it lists: the steps after it");
+    assert!(s.net.sync(s.b).shared_members(s.p.conn).is_empty(), "nothing opens");
 }
 
 // spec/sync.md §5 (Delete): a node keeping L unread takes a Delete of it only on a connection

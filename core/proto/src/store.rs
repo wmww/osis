@@ -54,7 +54,7 @@ pub struct Put<'a> {
 }
 
 /// Longest registration path `path` walks (a guard against a corrupt store).
-const MAX_PATH: usize = 1 << 20;
+pub const MAX_PATH: usize = 1 << 20;
 
 /// Earlier distinct keys per role a stamp, deposit or Delete is answered code 9 for rather
 /// than refused (each a signature check per refused item). Minor consequence: past it a signer

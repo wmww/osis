@@ -1829,3 +1829,33 @@ fn a_head_moved_past_while_away_is_opened_again_spec_sync_10() {
     assert_eq!(net.read(b, t), Some(s("after")), "b reads L at the new head");
     assert_eq!(net.sync(b).pass_stats().behind_sent - behind, 1, "one Behind item");
 }
+
+// spec/sync.md §5 (Behind), §2 (Claim set): a reader away across two rotations, holding neither
+// new epoch's sync secret, catches up at a node that cannot read L with no other reader online:
+// one Behind item on the step it holds the sync key of gives both new steps, and its claim at the
+// head is shown and opens L.
+#[test]
+fn two_rotations_missed_are_crossed_by_one_behind_item_spec_sync_5() {
+    let (mut net, host, [a, b, x, y], g, []) = hosted::<4, 0>(&[(1, Role::Read), (2, Role::Read), (3, Role::Read)], [], true);
+    let l = net.label(a);
+    net.set_online(b, false);
+    net.run();
+    let (at, bt, xt, yt) = (net.tid(a), net.tid(b), net.tid(x), net.tid(y));
+    let e = net.engine(a);
+    let rs = recipients_of(e, &[(at, Role::Admin), (bt, Role::Read), (yt, Role::Read)]);
+    remove_holder(e, g, xt, &rs, 45);
+    net.run();
+    let e = net.engine(a);
+    let rs = recipients_of(e, &[(at, Role::Admin), (bt, Role::Read)]);
+    remove_holder(e, g, yt, &rs, 46);
+    net.run();
+    assert_eq!(net.host_path(host, &l).len(), 3, "two new steps landed");
+    let t = net.item(a, g, g, "after");
+    net.run();
+    net.set_online(a, false);
+    let behind = net.sync(b).pass_stats().behind_sent;
+    net.set_online(b, true);
+    net.advance(61_000);
+    assert_eq!(net.read(b, t), Some(s("after")), "b reads L at the head, no other reader online");
+    assert_eq!(net.sync(b).pass_stats().behind_sent - behind, 1, "one Behind item");
+}

@@ -174,36 +174,62 @@ impl SyncEngine {
         Ok(Some(osis_proto::msg::Grant { entry_box: Some(entry_box), steps }))
     }
 
-    /// The answer to a Behind item on unread `l` (spec/sync.md §5, Behind): the child of `step`
-    /// (none: of the newest step bearing `key`), a step of the hub store's path other than its
-    /// head that bears sync key `key`, when `sig` is an open signature by that key over this side's
-    /// Hello challenge and the listener's key (`challenge`, `listener`); else none. Index lookups
-    /// and two step reads, whatever the path's length.
+    /// The answer to a Behind item on `l` (spec/sync.md §5, Behind), its key `key` shown by `sig`,
+    /// an open signature over this side's Hello challenge and the listener's key (`challenge`,
+    /// `listener`): the steps after `step` on the hub store's path to its head when it is not the
+    /// head and `key` is a credential of it (its sync key, a claim of its held claim set, or a key
+    /// actor's signing key whose static entry the set lists); naming no step, by a sync key, those
+    /// after the newest step bearing it; naming no step, by a key actor's
+    /// signing key whose static entry the head's claim set lists, the head's entry box for it and
+    /// the path (a Static item's grant). A label this node neither keeps nor reads is unknown.
+    /// Index lookups and a step read per step crossed, whatever the path's length before the
+    /// named step (a static entry's grant reads the path, as a Static item's does).
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn unread_behind(&mut self, l: &LabelId, step: Option<&osis_label::StepId>, key: &[u8; 32], sig: &Signature, challenge: &[u8; 32], listener: &[u8; 32]) -> Result<Option<Step>> {
+    pub(crate) fn unread_behind(&mut self, l: &LabelId, step: Option<&osis_label::StepId>, key: &[u8; 32], sig: &Signature, challenge: &[u8; 32], listener: &[u8; 32]) -> Result<BehindAnswer> {
         if !self.is_unread(l)? {
-            return Ok(None);
+            return Ok(if self.things().contains_key(l) { BehindAnswer::Refused } else { BehindAnswer::Unknown });
         }
-        let Ok(pk) = osis_crypto::VerifyingKey::from_slice(key) else { return Ok(None) };
+        let Ok(pk) = osis_crypto::VerifyingKey::from_slice(key) else { return Ok(BehindAnswer::Refused) };
         if osis_crypto::verify_open(&pk, l, challenge, listener, sig).is_err() {
-            return Ok(None);
+            return Ok(BehindAnswer::Refused);
         }
         let hub = self.hub();
         let id = match step {
             Some(s) => *s,
             None => match hub.step_with_sync(l, &pk).map_err(hub_err)? {
                 Some(s) => s,
-                None => return Ok(None),
+                None => {
+                    drop(hub);
+                    let entry = osis_crypto::static_entry(l, &pk);
+                    return Ok(self.unread_grant(l, &entry)?.map_or(BehindAnswer::Refused, |g| BehindAnswer::Grant(Box::new(g))));
+                }
             },
         };
         if hub.head(l).map_err(hub_err)?.is_none_or(|h| h == id) {
-            return Ok(None);
+            return Ok(BehindAnswer::Refused);
         }
-        if hub.step(l, &id).map_err(hub_err)?.is_none_or(|at| at.keys.sync != pk) {
-            return Ok(None);
+        let Some(at) = hub.step(l, &id).map_err(hub_err)? else { return Ok(BehindAnswer::Refused) };
+        // a credential of the named step: its sync key, a claim of its held set, or a key
+        // actor's whose static entry the set lists
+        let listed = || -> Result<bool> {
+            let Some(set) = hub.claim_set(l, &id).map_err(hub_err)? else { return Ok(false) };
+            Ok(set.contains(key) || set.contains(&osis_crypto::static_entry(l, &pk)))
+        };
+        if at.keys.sync != pk && !(step.is_some() && listed()?) {
+            return Ok(BehindAnswer::Refused);
         }
-        let Some(child) = hub.child(l, Some(&id)).map_err(hub_err)? else { return Ok(None) };
-        hub.step(l, &child).map_err(hub_err)
+        // the steps after it to the head, by the child index
+        let mut steps = Vec::new();
+        let mut at = id;
+        while let Some(c) = hub.child(l, Some(&at)).map_err(hub_err)? {
+            if steps.len() >= osis_proto::store::MAX_PATH {
+                return Ok(BehindAnswer::Refused);
+            }
+            let Some(st) = hub.step(l, &c).map_err(hub_err)? else { break };
+            steps.push(st);
+            at = c;
+        }
+        Ok(if steps.is_empty() { BehindAnswer::Refused } else { BehindAnswer::Steps(steps) })
     }
 
     /// Where a member of unread `l` opened by a credential its head no longer bears ends
@@ -435,4 +461,16 @@ impl SyncEngine {
         };
         Ok(code)
     }
+}
+
+/// The answer to a Behind item (`SyncEngine::unread_behind`).
+pub(crate) enum BehindAnswer {
+    /// The label is not held here (code 13).
+    Unknown,
+    /// Anything else refused (code 14).
+    Refused,
+    /// The steps after the named one to the head, in order.
+    Steps(Vec<Step>),
+    /// A static entry the head lists: its entry box and the path.
+    Grant(Box<osis_proto::msg::Grant>),
 }

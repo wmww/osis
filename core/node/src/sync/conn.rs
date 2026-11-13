@@ -88,6 +88,12 @@ pub(crate) struct LConn {
     /// A verified step of the peer's path past `label.0`'s (a static entry's grant's head, or
     /// where a Behind walk got to): the newest step known there (`SyncEngine::newest_known`).
     pub walk: Option<Step>,
+    /// The peer answered a Behind item by this node's static entry with a refusal: its head
+    /// does not list it (`SyncEngine::static_entry_refused`).
+    pub static_refused: bool,
+    /// Steps a Behind item on was refused in this walk (off the peer's path, or its head): not
+    /// asked again until the walk ends (`SyncEngine::behind_from`).
+    pub behind_refused: Vec<osis_label::StepId>,
     /// The head the peer's stream named past the open head, which Behind items walk to.
     pub walk_to: Option<osis_label::StepId>,
     /// A recorded step and the key of its credential the peer's filter showed when the newest

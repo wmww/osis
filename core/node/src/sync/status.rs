@@ -80,7 +80,8 @@ impl SyncEngine {
         let routes = self.wanted_labels().into_iter().find(|(_, x, _)| x == l).map_or(Vec::new(), |(_, _, r)| r);
         let on: Vec<&LConn> = self.conns.values().filter_map(|c| c.labels.get(l)).collect();
         let failed = |h: &state::HostKey| self.conns.values().any(|c| c.host == *h && c.labels.get(l).is_some_and(|x| x.phase == Phase::Failed));
-        routes.iter().all(failed) && on.iter().all(|x| x.phase == Phase::Failed) && self.shared_static_missing(l)
+        let refused = on.iter().any(|x| x.static_refused) || self.shared_static_missing(l);
+        routes.iter().all(failed) && on.iter().all(|x| x.phase == Phase::Failed) && refused
     }
 
     /// Sync connections up, whichever side dialed: a client's session is none.

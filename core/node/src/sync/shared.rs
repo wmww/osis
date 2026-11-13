@@ -97,6 +97,9 @@ enum AskedItem {
     /// A Behind item on this step of the label (none: a hint's, naming no step;
     /// `SyncEngine::behind`).
     Behind(LabelId, Option<Box<osis_label::Step>>),
+    /// A Behind item by a key actor's signing key, naming no step, on this static entry of the
+    /// label (`SyncEngine::behind`).
+    Static(LabelId, [u8; 32]),
 }
 
 /// What a request of this side waits for.
@@ -871,15 +874,18 @@ impl SyncEngine {
     /// signed by that key over the peer's Hello challenge and the listener's key (spec/sync.md §5,
     /// Behind), in one Offer. False where no Offer may go (no shared set, the peer's digest not
     /// read).
-    pub(super) fn shared_behind(&mut self, conn: ConnId, l: LabelId, asks: Vec<(Option<osis_label::Step>, osis_crypto::SigningSecret)>, out: &mut Vec<Action>) -> Result<bool> {
+    /// `by_static`: the keys are key actors' signing keys, naming no step, each asking by its
+    /// static entry.
+    pub(super) fn shared_behind(&mut self, conn: ConnId, l: LabelId, asks: Vec<(Option<osis_label::Step>, osis_crypto::SigningSecret)>, by_static: bool, out: &mut Vec<Action>) -> Result<bool> {
         let Some(s) = self.records.shared.get(&conn).filter(|s| s.digest_read) else { return Ok(false) };
         let peer_challenge = if s.by_listener { s.dialer } else { s.listener };
         let mut items = Vec::new();
         let mut asked = Vec::new();
         for (step, key) in asks {
             let sig = osis_crypto::sign_open(&key, &l, &peer_challenge, &s.key);
-            items.push(OfferItem::Behind { label: l, step: step.as_ref().map(osis_label::Step::id), key: key.verifying_key().to_bytes(), sig });
-            asked.push(AskedItem::Behind(l, step.map(Box::new)));
+            let pk = key.verifying_key();
+            items.push(OfferItem::Behind { label: l, step: step.as_ref().map(osis_label::Step::id), key: pk.to_bytes(), sig });
+            asked.push(if by_static { AskedItem::Static(l, osis_crypto::static_entry(&l, &pk)) } else { AskedItem::Behind(l, step.map(Box::new)) });
         }
         self.stats.behind_sent += items.len() as u64;
         self.shared_send_offer(conn, items, asked, out)?;
@@ -1116,11 +1122,17 @@ impl SyncEngine {
         drop(judge);
         let (challenge, listener) = (if s.by_listener { s.listener } else { s.dialer }, s.key);
         for (i, l, step, key, sig) in behinds {
-            if let Some(child) = self.unread_behind(&l, step.as_ref(), &key, &sig, &challenge, &listener)?
-                && let Some(c) = codes.get_mut(i)
-            {
-                self.stats.behind_answered += 1;
-                *c = (Code::OK, None, Some(Box::new(osis_proto::msg::Grant { entry_box: None, steps: vec![child] })));
+            let answer = match self.unread_behind(&l, step.as_ref(), &key, &sig, &challenge, &listener)? {
+                super::unread::BehindAnswer::Unknown => (Code::UNKNOWN_LABEL, None, None),
+                super::unread::BehindAnswer::Refused => continue,
+                super::unread::BehindAnswer::Steps(steps) => {
+                    self.stats.behind_answered += 1;
+                    (Code::OK, None, Some(Box::new(osis_proto::msg::Grant { entry_box: None, steps })))
+                }
+                super::unread::BehindAnswer::Grant(g) => (Code::OK, None, Some(g)),
+            };
+            if let Some(c) = codes.get_mut(i) {
+                *c = answer;
             }
         }
         for (i, l, entry) in unread_grants {
@@ -1711,15 +1723,21 @@ impl SyncEngine {
                 // failed grants' Hits: answered for good, after the close below re-marks L
                 let mut declined = Vec::new();
                 // Behind items' answers per label, in order: the first child answered settles it
-                let mut behinds: Vec<(LabelId, Option<osis_label::Step>, Option<osis_label::Step>)> = Vec::new();
+                let mut behinds: Vec<(LabelId, Option<osis_label::Step>, Vec<osis_label::Step>, bool)> = Vec::new();
+                // Behind items by a static entry: (label, entry, code, grant)
+                let mut statics = Vec::new();
                 for (item, (code, tag, grant)) in items.into_iter().zip(codes) {
                     if let AskedItem::Deposit(l, b) = item {
                         self.shared_deposit_answered(conn, l, b, code)?;
                         continue;
                     }
                     if let AskedItem::Behind(l, step) = item {
-                        let child = grant.filter(|_| code == Code::OK).and_then(|g| g.steps.into_iter().next());
-                        behinds.push((l, step.map(|x| *x), child));
+                        let steps = grant.filter(|_| code == Code::OK).map(|g| g.steps).unwrap_or_default();
+                        behinds.push((l, step.map(|x| *x), steps, code == Code::UNKNOWN_LABEL));
+                        continue;
+                    }
+                    if let AskedItem::Static(l, entry) = item {
+                        statics.push((l, entry, code, grant));
                         continue;
                     }
                     if code != Code::OK {
@@ -1751,7 +1769,7 @@ impl SyncEngine {
                                 self.shared_open(conn, l, JUDGED, None, out)?;
                             }
                         }
-                        AskedItem::Deposit(..) | AskedItem::Behind(..) => {}
+                        AskedItem::Deposit(..) | AskedItem::Behind(..) | AskedItem::Static(..) => {}
                         AskedItem::Hit(c) => {
                             let Some(s) = self.records.shared.get(&conn) else { return Ok(()) };
                             let expect = beacon_reply(&c.value, &c.label.0, &c.beacon, s.side(!s.by_listener));
@@ -1784,10 +1802,13 @@ impl SyncEngine {
                         }
                     }
                 }
+                for (l, entry, code, grant) in statics {
+                    self.static_answered(conn, l, &entry, code, grant.as_deref(), out)?;
+                }
                 let mut done: BTreeSet<LabelId> = BTreeSet::new();
-                for (l, step, child) in behinds.iter().filter(|x| x.2.is_some()).chain(behinds.iter().filter(|x| x.2.is_none())) {
+                for (l, step, steps, unknown) in behinds.iter().filter(|x| !x.2.is_empty()).chain(behinds.iter().filter(|x| x.2.is_empty())) {
                     if done.insert(*l) {
-                        self.behind_answered(conn, *l, step.clone(), child.clone(), out)?;
+                        self.behind_answered(conn, *l, step.clone(), steps.clone(), *unknown, out)?;
                     }
                 }
                 // this tester's credential is gone (issues/net-shared-set.md, Divergence), unless

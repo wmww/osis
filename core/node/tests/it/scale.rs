@@ -1708,7 +1708,7 @@ fn filter_tests_per_arrival_do_not_grow_with_steps() {
     assert_eq!(big.1, 0, "a reader on the head walks nothing");
 }
 
-/// Behind items reader b sent, those the peer answered with a child and the Registers b sent,
+/// Behind items reader b sent, those the peer answered with steps and the Registers b sent,
 /// catching up `crossed` steps it missed (holding their secrets, not their `label.0`) past
 /// `steps` earlier ones.
 fn catch_up(steps: usize, crossed: usize) -> (u64, u64, usize) {
@@ -1741,13 +1741,13 @@ fn catch_up(steps: usize, crossed: usize) -> (u64, u64, usize) {
 }
 
 // spec/sync.md §5 (Behind), spec/requirements.md (Scale): a reader behind a peer's head by k
-// steps catches up with one Behind item and one answer per step crossed, and registers nothing,
+// steps catches up with one Behind item, answered once with the k steps, and registers nothing,
 // whether the label's history holds n or 10n steps before them.
 #[test]
-fn a_catch_up_answers_once_per_step_crossed_spec_sync_5() {
+fn a_catch_up_takes_one_behind_item_spec_sync_5() {
     for crossed in [1, 3] {
         let (small, big) = (catch_up(1, crossed), catch_up(10, crossed));
         assert_eq!(small, big, "{crossed} crossed: at 1 and 10 earlier steps");
-        assert_eq!(small, (crossed as u64, crossed as u64, 0), "{crossed} crossed: one answer per step crossed, no Register");
+        assert_eq!(small, (1, 1, 0), "{crossed} crossed: one Behind item and answer, no Register");
     }
 }
