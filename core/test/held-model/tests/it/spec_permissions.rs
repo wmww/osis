@@ -19,6 +19,21 @@ fn demotion_frontier_keeps_listed_writes_spec_permissions_5_2() {
     assert_eq!(o.valid[&(11, 0)], false);
 }
 
+// spec/permissions.md §5.2: a demotion from admin to write takes the admin-only writes before it
+// and leaves the plain ones: each need judged by its own demotions
+#[test]
+fn demotion_to_write_takes_only_admin_writes_spec_permissions_5_2() {
+    let cs = vec![
+        edge(5, FIRST_ADMIN, 0, 1, Some(Role::Admin), None),
+        reg(10, 1, 1, REG, Retention::PLAIN, 1),
+        reg(11, 1, 2, ADM, Retention::PLAIN, 2),
+        edge(20, FIRST_ADMIN, 3, 1, Some(Role::Write), Some(vec![])),
+    ];
+    let o = evaluate(&held(4, cs));
+    assert_eq!(o.valid[&(10, 0)], true);
+    assert_eq!(o.valid[&(11, 0)], false);
+}
+
 // spec/permissions.md §5.2: re-grant revives the writes since the first point it held the role
 #[test]
 fn regrant_revives_writes_spec_permissions_5_2() {

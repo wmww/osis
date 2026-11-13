@@ -206,7 +206,10 @@ pub struct Applied {
 pub struct Timeline {
     pub world: World,
     pub initial: Edges,
-    pub applied: Vec<Applied>,
+    /// Fixed once walked (`demotions` keeps its answers).
+    applied: Vec<Applied>,
+    /// `demotions`' answers by (thing, X, need), as indices into `applied`.
+    demoted: std::sync::Mutex<BTreeMap<(ThingId, NodeId, Role), Vec<usize>>>,
     /// The addenda that count (`vouch`): valid, their author held write on the thing at their key.
     pub counting: Vec<Addendum>,
     /// The valid addenda: (commit, thing).
@@ -316,7 +319,7 @@ impl Timeline {
                     continue 'restart;
                 }
             }
-            return Timeline { world, initial, applied, counting: Vec::new(), valid_addenda: BTreeSet::new() };
+            return Timeline { world, initial, applied, demoted: Default::default(), counting: Vec::new(), valid_addenda: BTreeSet::new() };
         }
     }
 
@@ -344,16 +347,25 @@ impl Timeline {
     /// Valid explicit demotions of X below `need` on the thing: explicit writes by another author
     /// taking X's role there, the edge as restored, from `need` or above to below it.
     pub fn demotions(&self, thing: ThingId, x: NodeId, need: Role) -> Vec<&Applied> {
-        self.applied
-            .iter()
-            .filter(|p| {
-                let w = wall(p.ev.key.0);
-                p.explicit
-                    && p.ev.author != x
-                    && self.world.role(&p.before, x, thing, w).is_some_and(|r| r >= need)
-                    && !self.world.role(&p.after, x, thing, w).is_some_and(|r| r >= need)
-            })
-            .collect()
+        let mut memo = self.demoted.lock().unwrap();
+        let ix = memo.entry((thing, x, need)).or_insert_with(|| {
+            (0..self.applied.len())
+                .filter(|&i| {
+                    let p = &self.applied[i];
+                    let w = wall(p.ev.key.0);
+                    p.explicit
+                        && p.ev.author != x
+                        && self.world.role(&p.before, x, thing, w).is_some_and(|r| r >= need)
+                        && !self.world.role(&p.after, x, thing, w).is_some_and(|r| r >= need)
+                })
+                .collect()
+        });
+        ix.iter().map(|&i| &self.applied[i]).collect()
+    }
+
+    /// The applied edge writes, in walk order.
+    pub fn applied(&self) -> &[Applied] {
+        &self.applied
     }
 
     /// The first point X held `need` or above (spec/permissions.md §5.2 re-grant).

@@ -95,6 +95,10 @@ pub(crate) struct History {
     /// The model's judgment of each held set judged so far: a pure function of its input, and
     /// the arrival orders of one history mostly end on the same few (`judged`).
     judged: std::sync::Mutex<Vec<(hm::Held, Arc<Judged>)>>,
+    /// Per commit's bytes as some node held it, whether a delta links a blob (`paged`).
+    paged: std::sync::Mutex<BTreeMap<Vec<u8>, bool>>,
+    /// Per body's snapshot bytes, the fragment crdt-model decodes (`frag`).
+    frags: std::sync::Mutex<BTreeMap<Vec<u8>, hm::Frag>>,
 }
 
 /// What `compare` reads of the model for one input: its outcome and role timeline.
@@ -109,7 +113,8 @@ impl History {
         if let Some((_, j)) = self.judged.lock().unwrap().iter().find(|(k, _)| k == h) {
             return j.clone();
         }
-        let j = Arc::new(Judged { o: hm::evaluate(h), tl: hm::timeline(h) });
+        let (o, tl) = hm::judged(h);
+        let j = Arc::new(Judged { o, tl });
         self.judged.lock().unwrap().push((h.clone(), j.clone()));
         j
     }
@@ -125,7 +130,37 @@ impl History {
             .collect();
         order.sort();
         let labels = order.iter().enumerate().map(|(i, x)| (x.3, i as u32 + 1)).collect();
-        History { headers, labels, judged: Default::default() }
+        History { headers, labels, judged: Default::default(), paged: Default::default(), frags: Default::default() }
+    }
+
+    /// Whether a delta of commit `c` as `e` holds it links a blob (a large value's tree): a
+    /// function of the bytes, kept per bytes.
+    fn paged(&self, e: &mut Engine, c: &CommitId) -> bool {
+        let Some(bytes) = crate::common::held_bytes(e, c) else { return false };
+        if let Some(&p) = self.paged.lock().unwrap().get(&bytes) {
+            return p;
+        }
+        let limits = |d: &[u8]| osis_base::Limits { max_depth: osis_base::format::MAX_OBJECT_DEPTH, max_bytes: d.len() };
+        let p = CommitBlob::decode(&bytes).is_ok_and(|b| {
+            b.parts.iter().any(|p| {
+                let mut any = false;
+                let _ = osis_base::visit_links(&p.delta, &limits(&p.delta), &mut |_| any = true);
+                any
+            })
+        });
+        self.paged.lock().unwrap().insert(bytes, p);
+        p
+    }
+
+    /// `f` as crdt-model decodes its wire bytes (`frag`), kept per bytes.
+    fn frag(&self, f: &Fragment) -> Result<hm::Frag, String> {
+        let (bytes, mut cx) = snapshot_bytes(f)?;
+        if let Some(x) = self.frags.lock().unwrap().get(&bytes) {
+            return Ok(x.clone());
+        }
+        let x = crdt_model::wire::decode_snapshot(&bytes, &mut cx).map(|x| x.0).map_err(|e| format!("crdt-model decode: {e:?}"))?;
+        self.frags.lock().unwrap().insert(bytes, x.clone());
+        Ok(x)
     }
 }
 
@@ -138,16 +173,17 @@ fn source(s: &Source) -> hm::Source {
     }
 }
 
-/// A fragment as crdt-model decodes its wire bytes: encoded as a snapshot delta under a source and
-/// `ts` nothing else has, so every write is carried under its own stamp (spec/crdt.md §8).
-fn frag(f: &Fragment) -> Result<hm::Frag, String> {
+/// A fragment's wire bytes as a snapshot delta under a source and `ts` nothing else has, so every
+/// write is carried under its own stamp (spec/crdt.md §8), and the context crdt-model decodes
+/// them in (`History::frag`).
+fn snapshot_bytes(f: &Fragment) -> Result<(Vec<u8>, crdt_model::wire::Ctx), String> {
     let ts = ((1u64 << 47) - 1) << 16;
     let own = crdt_model::stamp::Source::session(250, 0);
     let crdt_model::stamp::Source::Session(own_bytes) = &own else { unreachable!() };
     let cx = osis_crdt::DeltaCtx { ts: osis_base::Ts::from_u64(ts).unwrap(), own: Source::session(osis_crdt::Session::from_bytes(own_bytes)), range: osis_crdt::CounterRange::EMPTY, kind: osis_crdt::DeltaKind::Snapshot };
     let snap = osis_crdt::Snapshot { nonce: [0; 16], fragment: f.clone(), frontiers: Default::default(), absorbed: Default::default(), facts: Default::default() };
     let bytes = osis_crdt::encode_snapshot(&snap, &cx, None).map_err(|e| format!("encode: {e:?}"))?;
-    crdt_model::wire::decode_snapshot(&bytes, &mut crdt_model::wire::Ctx::new(ts, own, 1)).map(|x| x.0).map_err(|e| format!("crdt-model decode: {e:?}"))
+    Ok((bytes, crdt_model::wire::Ctx::new(ts, own, 1)))
 }
 
 /// A value as crdt-model has it (its canonical bytes).
@@ -229,8 +265,8 @@ struct Conv<'h> {
     hist: &'h History,
     /// Actors and things: one id space.
     ids: BTreeMap<Tid, hm::NodeId>,
-    /// Commits outside the history (a frontier naming one).
-    extra: BTreeMap<String, u32>,
+    /// Commits outside the history (a frontier naming one), by ID or by stamp and source.
+    extra: BTreeMap<Result<CommitId, String>, u32>,
     aspects: BTreeMap<String, u32>,
 }
 
@@ -239,14 +275,14 @@ impl Conv<'_> {
         let n = self.ids.len() as u32;
         *self.ids.entry(*t).or_insert(n)
     }
-    fn extra(&mut self, k: String) -> u32 {
+    fn extra(&mut self, k: Result<CommitId, String>) -> u32 {
         let n = self.extra.len() as u32;
         *self.extra.entry(k).or_insert(1_000_000 + n)
     }
     fn commit(&mut self, c: &CommitId) -> hm::CommitId {
         match self.hist.labels.get(c) {
             Some(l) => *l,
-            None => self.extra(format!("{c:?}")),
+            None => self.extra(Ok(*c)),
         }
     }
     /// The model aspect of an AK: one name per AK.
@@ -352,7 +388,7 @@ impl Scope {
 }
 
 /// What of `e`'s held commits is outside the model (`Scope`).
-fn scope(e: &mut Engine, held: &[(CommitId, Arc<Header>, bool)]) -> Scope {
+fn scope(e: &mut Engine, hist: &History, held: &[(CommitId, Arc<Header>, bool)]) -> Scope {
     use osis_node::Reason as R;
     let mut s = Scope::default();
     let role_out = |s: &mut Scope, why: &'static str| {
@@ -362,7 +398,7 @@ fn scope(e: &mut Engine, held: &[(CommitId, Arc<Header>, bool)]) -> Scope {
     for (id, h, applied) in held {
         let commit_out = if h.kind == Kind::RoleSnapshot {
             Some("role snapshot")
-        } else if !crate::common::linked_blobs(e, id).is_empty() {
+        } else if hist.paged(e, id) {
             Some("paged")
         } else if h.ephemeral.is_some() {
             Some("ephemeral")
@@ -401,7 +437,7 @@ fn convert(e: &mut Engine, hist: &History) -> Input {
             held.push((id, h.clone(), false));
         }
     }
-    let mut sc = scope(e, &held);
+    let mut sc = scope(e, hist, &held);
     // the node's own writes from outside the history (its creation, its node info): never
     // received, so never parked, where the harness sets its clock back before them
     for (_, h, _) in held.iter().filter(|(id, _, _)| !hist.headers.contains_key(id)) {
@@ -421,7 +457,7 @@ fn convert(e: &mut Engine, hist: &History) -> Input {
                 continue;
             }
             if let Some(f) = e.body_fragment(id, &a.tid, &a.ak).unwrap() {
-                bodies.insert((*id, ai), frag(&f).unwrap_or_else(|why| panic!("body of {id:?} on {:?} {}: {why}", a.tid, a.ak.as_str())));
+                bodies.insert((*id, ai), hist.frag(&f).unwrap_or_else(|why| panic!("body of {id:?} on {:?} {}: {why}", a.tid, a.ak.as_str())));
             }
         }
     }
@@ -522,7 +558,7 @@ fn convert(e: &mut Engine, hist: &History) -> Input {
                         let named = cv.hist.headers.iter().find(|(c, h)| h.ts == *ts && h.form.own_source(h.author, **c) == *src).map(|x| *x.0);
                         let commit = match named {
                             Some(c) => cv.commit(&c),
-                            None => cv.extra(format!("{ts:?} {src:?}")),
+                            None => cv.extra(Err(format!("{ts:?} {src:?}"))),
                         };
                         hm::PurgeItem::Commit { commit, thing, aspect }
                     }
@@ -766,7 +802,7 @@ pub(crate) fn compare(e: &mut Engine, hist: &History, cov: &mut Coverage, drops:
     // `roles.0` reads: each known thing's roster (its edges alive now, record edges included;
     // `tied` carried, never an authority) as the model's walk ends
     if !by_part.is_empty() {
-        let last = tl.applied.last().map_or(&tl.initial, |a| &a.after);
+        let last = tl.applied().last().map_or(&tl.initial, |a| &a.after);
         for th in input.held.records.iter().map(|t| t.id) {
             let model: BTreeMap<hm::NodeId, (hm::Role, Option<hm::Role>, Option<u64>)> = last.iter().filter(|((t, _), e)| *t == th && e.alive(input.held.now)).map(|((_, h), e)| (*h, (e.role, e.invite, e.until))).collect();
             let t = input.ids[&th];

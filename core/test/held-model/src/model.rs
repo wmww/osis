@@ -448,8 +448,7 @@ fn parked(h: &Held) -> BTreeSet<CommitId> {
 
 /// The settled role timeline of a held set (its destroyed things forgotten).
 pub fn timeline(h: &Held) -> Timeline {
-    let (hv, _) = forgotten(h);
-    join_held(&hv, &parked(&hv)).tl
+    judged(h).1
 }
 
 /// Whether a destroyed thing keeps this part: its creation and `roles.0` while a purge request's
@@ -470,21 +469,26 @@ fn forget(h: &Held, things: &BTreeSet<ThingId>) -> Held {
 
 /// The held set as judged once its destroyed things are forgotten, with its judgment. What a destruction
 /// keeps (`kept_when_destroyed`) still counts, so a purge's right reads the same before and after.
-fn forgotten(h: &Held) -> (Held, Outcome) {
+fn forgotten(h: &Held) -> (Held, Outcome, Timeline) {
     let mut gone: BTreeSet<ThingId> = BTreeSet::new();
     loop {
         let hv = forget(h, &gone);
-        let mut o = judge(&hv);
+        let (mut o, tl) = judge(&hv);
         if o.destroyed.is_subset(&gone) {
             o.destroyed = gone;
-            return (hv, o);
+            return (hv, o, tl);
         }
         gone.extend(o.destroyed);
     }
 }
 
 pub fn evaluate(h: &Held) -> Outcome {
-    let (_, mut o) = forgotten(h);
+    judged(h).0
+}
+
+/// `evaluate` and `timeline` of one held set, judged once.
+pub fn judged(h: &Held) -> (Outcome, Timeline) {
+    let (_, mut o, tl) = forgotten(h);
     for c in &h.commits {
         for (i, p) in c.parts.iter().enumerate() {
             if o.destroyed.contains(&p.thing) && matches!(p.body, Body::Held(_) | Body::Parked) && !kept_when_destroyed(h, p) {
@@ -492,11 +496,12 @@ pub fn evaluate(h: &Held) -> Outcome {
             }
         }
     }
-    o
+    (o, tl)
 }
 
-/// The judgment of a held set with no thing forgotten; `Outcome::destroyed` is the things it destroys.
-fn judge(h: &Held) -> Outcome {
+/// The judgment of a held set with no thing forgotten, and its role timeline;
+/// `Outcome::destroyed` is the things it destroys.
+fn judge(h: &Held) -> (Outcome, Timeline) {
     let now = h.now;
     let by_id: BTreeMap<CommitId, &Commit> = h.commits.iter().map(|c| (c.id, c)).collect();
     let mut o = Outcome::default();
@@ -806,7 +811,7 @@ fn judge(h: &Held) -> Outcome {
             }
         }
     }
-    o
+     (o, tl)
 }
 
 /// The wall ms before which a commit's bodies are must-hold at every node whatever the settings:
