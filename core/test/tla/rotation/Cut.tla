@@ -282,9 +282,10 @@ NoPast == /\ \A x \in (CutTo \ InitH) : CutGranted(x) /\ ~HistGranted(x) =>
                Know(x) \cap Anc(CutOf(x)) \subseteq (IF x \in Hostile THEN {} ELSE HKnow)
           /\ \A h \in Hostile \cap CutTo : CutGranted(h) /\ ~HistGranted(h) =>
                \A q \in Accomp : Know(q) \cap Anc(CutOf(h)) = {}
-\* m obtains no epoch made knowing its removal, before its re-add (the re-add's causal past)
+\* m obtains no epoch made knowing its removal (the removal's own included), before its re-add (the
+\* re-add's causal past); a new node of m opens a subset (Fresh is within Know)
 NoAbsence == RemoveM /\ HasRm =>
-  Know(M) \cap Desc(RmC) \cap (IF CutGranted(M) THEN Anc(CutOf(M)) ELSE EIds) = {}
+  Know(M) \cap ({RmC} \cup Desc(RmC)) \cap (IF CutGranted(M) THEN Anc(CutOf(M)) ELSE EIds) = {}
 \* probe: nothing but the cut and what descends from it (fails where a concurrent cut's fork is
 \* carried: content written beside the grant, not before it)
 StrictNoPast == \A x \in (CutTo \ InitH) : CutGranted(x) /\ ~HistGranted(x) =>
@@ -313,9 +314,6 @@ Unlocked == Settled => \A v \in Final : Cur(v) # {} /\ Cur(v) \subseteq Sec(v)
 Alike == Settled => \A v, w \in Final : Cur(v) = Cur(w)
 \* settled: a re-added m's new node opens every epoch its removal's rotator held
 ReaddFresh == Settled /\ RemoveM /\ CutGranted(M) => Anc(RmC) \subseteq Fresh(M)
-\* a removed m's new node opens no epoch made knowing its removal (before its re-add)
-GoneFresh == RemoveM /\ HasRm =>
-  Fresh(M) \cap ({RmC} \cup Desc(RmC)) \cap (IF CutGranted(M) THEN Anc(CutOf(M)) ELSE EIds) = {}
 \* vacuity probe (must fail): no settled state follows every step the bounds allow
 NoFullRun == ~(/\ Settled /\ nrot = MaxRot /\ nmerge = MaxMerge /\ nhost = MaxHost
                /\ \A x \in CutTo \cup HistTo : Granted(x) /\ (RemoveM => HasRm))
