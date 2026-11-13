@@ -228,17 +228,7 @@ pub enum Cmd {
     /// Delete every aspect and membership of a thing
     Delete { t: String },
     /// Things in a group, by query (not built yet: `members` lists them)
-    Ls {
-        g: String,
-        #[arg(long, value_name = "AK")]
-        with: Option<String>,
-        #[arg(long, value_name = "time|PATH")]
-        order: Option<String>,
-        #[arg(long)]
-        page: Option<usize>,
-        #[arg(long)]
-        follow: bool,
-    },
+    Ls { g: String },
     /// Things whose current values reference T, as `tid aspect` lines: every page; with --watch
     /// the first page, again on each change
     Backlinks {
