@@ -1,6 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 //! A hostile writer against other writers' wraps (spec/sync.md §5). Invariant: nothing a writer
-//! placings keeps a body from a reader for good. A stamped entry's wrap never changes at a host;
+//! logs keeps a body from a reader for good. A stamped entry's wrap never changes at a host;
 //! a useless first wrap (a race for a host the author has not reached yet, a hostile promotion)
 //! loses to another host's wrap at a reader and to a fresh encryption from a node knowing the key.
 
@@ -105,7 +105,7 @@ fn connect(fx: &mut Fx, hosts: &[usize], seed: u64) {
     fx.net.run();
 }
 
-// spec/sync.md §5: a writer placing a held stamped entry again under a garbage wrap, or one opening
+// spec/sync.md §5: a writer logging a held stamped entry again under a garbage wrap, or one opening
 // to another key, changes nothing at the host and logs nothing; a fresh reader reads it.
 #[test]
 fn stamped_wrap_never_replaced_spec_sync_5() {
@@ -164,7 +164,7 @@ fn reconnect(fx: &mut Fx, n: usize, host: usize, seed: u64) {
 }
 
 // spec/sync.md §5: a reader's deposit under a blob ID it saw elsewhere keeps no writer's wrap
-// out: the writer's stamped placing takes the entry, and no second encryption is needed.
+// out: the writer's stamped entry replaces the deposit, and no second encryption is needed.
 #[test]
 fn stamped_entry_replaces_hostile_deposit_spec_sync_5() {
     let mut fx = fixture(2, 0);
@@ -326,7 +326,7 @@ fn keyless_node_keeps_the_wrap_that_opens_spec_sync_5() {
 
 // spec/sync.md §5, randomized: writers, hosts, attacks and reading orders picked per seed; every
 // reader ends up reading every message, at every host set it can reach, whatever a hostile writer
-// placed and whichever order it heard things in, once one honest holder has been back.
+// logged and whichever order it heard things in, once one honest holder has been back.
 #[test]
 fn hostile_wraps_hide_nothing_randomized_spec_sync_5() {
     let mut failed = Vec::new();

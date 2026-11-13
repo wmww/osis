@@ -9,7 +9,7 @@ use osis_schema::RawKey;
 use osis_node::sync::Event;
 
 // spec/sync.md §3, §5, §6: two nodes of one group converge through one host: closure
-// bodies placed stamped, downloaded, unwrapped and applied, both ways.
+// bodies logged stamped, downloaded, unwrapped and applied, both ways.
 #[test]
 fn two_nodes_converge_spec_sync_6() {
     let (mut net, _host, [a, b], _g, [t]) = hosted::<2, 1>(&[(1, Role::Write)], ["hello"], true);
@@ -104,7 +104,7 @@ fn bundle_round_trip_spec_sync_11() {
 }
 
 // spec/sync.md §6: the cursor, entries and heads survive a restart: the node resumes where it
-// was and places nothing it placed before again.
+// was and logs again nothing it placed before.
 #[test]
 fn restart_resumes_spec_sync_6() {
     let (mut net, host, [a, b], _g, [t]) = hosted::<2, 1>(&[(1, Role::Write)], ["one"], true);

@@ -820,7 +820,7 @@ fn leaving_with_a_copy_over_a_host_spec_perm_3() {
 }
 
 // spec/permissions.md §3, Retain; spec/sync.md §2: over a real host a copy leaves the label: no
-// session, nothing placed, later writes do not reach it, others converge without it.
+// session, nothing logged, later writes do not reach it, others converge without it.
 #[test]
 fn copy_is_not_synced_spec_perm_3() {
     let (mut net, host, [a, b], g, [t]) = crate::net::hosted::<2, 1>(&[(1, Role::Read)], ["before"], true);

@@ -1340,7 +1340,7 @@ fn moves_differential(seed: u64) -> (usize, usize) {
             _ => match x.p.at(m.t, osis::DynamicAspectKey::untyped(title())).get() {
                 Ok(Some(Value::Str(v))) => {
                     if at_node {
-                        // the node may not have pulled what this node placed before moving: wait
+                        // the node may not have pulled what this node logged before moving: wait
                         until("the node's copy caught up", || {
                             let _ = x.n.nudge_sync();
                             let now = x.p.at(m.t, osis::DynamicAspectKey::untyped(title())).get().unwrap();

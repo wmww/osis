@@ -267,7 +267,7 @@ fn first_sync_waits_for_hidden_body_spec_commits_4() {
 // covers nothing): writer b cannot judge a's commit (it also writes thing `u`, whose
 // creating commit is hidden from b), which writes `t:reg.0`, and writes `t:reg.0` itself: b's
 // body goes to the host all the same (was issue sync-unsettled-deadlock: two writers'
-// pending commits, each waiting for the other's body, stopped each other's placing). One blob
+// pending commits, each waiting for the other's body, stopped each other's logging). One blob
 // per commit: a commit waits on a missing record, not on a hidden part.
 #[test]
 fn pending_commit_holds_back_no_own_entry_spec_sync_6() {

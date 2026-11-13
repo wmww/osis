@@ -51,7 +51,7 @@ impl SyncEngine {
         let actor = self.engine.group_actor(g);
         wanted.extend(self.engine.revoke_certificates(&authors, &closure, &actor));
         // removals of the label's actor's edges on things in its closure, whoever made them
-        // (spec/permissions.md §2): its holders still holding such an edge would place it again
+        // (spec/permissions.md §2): its holders still holding such an edge would log again
         // the thing's bodies that others delete, on every pass
         let (removals, own_removals) = self.engine.removal_certificates(&actor, &closure);
         wanted.extend(removals);

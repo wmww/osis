@@ -7,7 +7,7 @@
 //! Per host and label: open (sync key of the head, else walk by stale key or claim key),
 //! verify the head, download (cursor sync, reconciliation fallback), apply role commits
 //! first, then the pass: re-registration when an admin holds newer epochs (the actor's
-//! role commits the host lacks first, then the step, then the rest), placing of
+//! role commits the host lacks first, then the step, then the rest), logging of
 //! must-hold bodies, relays, certificates, deletions of must-not-hold bodies. Stranded and
 //! suspect reports go over connections and inboxes (`reports`).
 
@@ -186,7 +186,7 @@ pub struct SyncEngine {
     pub(crate) deferred: Vec<Deferred>,
     /// Commit blobs whose every delta was checked against its header hash (`true`) or found
     /// forged (`false`; the entry is `Bad`): only checked blobs stand in for this node's own
-    /// placings or justify deleting another entry (`SyncEngine::genuine`).
+    /// entries or justify deleting another entry (`SyncEngine::genuine`).
     pub(crate) genuine: BTreeMap<osis_base::BlobId, bool>,
     /// New secrets: the boxes of pending commits' other copies are read again (`redeliver`).
     pub(crate) reread_boxes: bool,

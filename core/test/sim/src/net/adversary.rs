@@ -458,7 +458,7 @@ pub fn equivocating_writer(s: Seeds) -> Res<Report> {
 /// wrap and stamp as they were, in a Stream at its node log's end, to every node on its open
 /// connections. Expected: no node takes
 /// the body back (purged bodies at no honest node, the purged value stays gone), no node
-/// places or deposits it again (counted as nodes send, since the host's tombstone would refuse it), everything converges.
+/// logs or deposits it again (counted as nodes send, since the host's tombstone would refuse it), everything converges.
 pub fn tombstone_liar(s: Seeds) -> Res<Report> {
     let (mut sim, (s, a, b, c, g, t, gone)) = setup("tombstone_liar", s, NetWeights::default(), |sim| {
         let mut d = Dice::new(sim.seed ^ 0x7b);

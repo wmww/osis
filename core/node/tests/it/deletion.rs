@@ -59,7 +59,7 @@ fn expired_leftover_dropped_once_covered_spec_commits_5() {
     assert_eq!(net.read(a, t), None);
 }
 
-// spec/sync.md §7, spec/commits.md §5: compaction places the snapshot first, then drops and
+// spec/sync.md §7, spec/commits.md §5: compaction logs the snapshot first, then drops and
 // deletes the covered bodies (the live one too: no setting keeps it while live, the snapshot
 // carries it), and the snapshot stays; a holder joining later reads the live value; the carriers go
 // `TOMBSTONE_LIFETIME` after the deletions, and a body that keeps its entry keeps one carrier row
@@ -243,7 +243,7 @@ fn refused_step_deletes_still_spec_sync_5() {
 // head, wrapped under the newest read epoch: the remaining writer reads them, the removed reader,
 // whose sync key still opens that head, cannot.
 #[test]
-fn refused_step_places_still_spec_sync_5() {
+fn refused_step_host_still_pulls_spec_sync_5() {
     let (mut net, host, [a, b, c], g, [t]) = hosted::<3, 1>(&[(1, Role::Write), (2, Role::Read)], ["before"], true);
     assert_eq!(net.read(c, t), Some(s("before")));
     let l = net.label(a);
@@ -271,7 +271,7 @@ fn refused_step_places_still_spec_sync_5() {
     }
     net.advance(1_000);
     assert_eq!(net.host_path(host, &l).len(), 1, "the step still waits");
-    assert!(ids.iter().all(|id| net.host_ids(host, &l).contains(id)), "placed under the host's head");
+    assert!(ids.iter().all(|id| net.host_ids(host, &l).contains(id)), "held at the host under its head");
     assert_eq!(net.read(b, t), Some(s("after")));
     // the removed reader comes back: it opens the old head there, but cannot read the new write
     net.blocked_peers.extend([(a, c), (b, c)]);
@@ -315,8 +315,8 @@ fn deletes_wait_for_a_role_commit_the_host_lacks_spec_sync_7() {
     assert!(old.iter().all(|id| !net.deleted.contains_key(&(a, l, *id))), "no delete of it sent");
 }
 
-// spec/sync.md §5 (re-registration, placing order), spec/permissions.md §3-§4 (stranded): an
-// admin rotating out a holder issues a child step at the host after placing the rotation
+// spec/sync.md §5 (re-registration, logging order), spec/permissions.md §3-§4 (stranded): an
+// admin rotating out a holder issues a child step at the host after logging the rotation
 // commit; the remaining writer follows; the removed holder's open walks to the new step, its
 // claim is refused and it sends a stranded notice to the admin's inbox, which re-seals nobody:
 // it is no current holder (spec/crypto.md §4, removed holder).
@@ -1047,7 +1047,7 @@ fn latest_snapshot(net: &mut Net, n: usize, t: osis_base::Tid, k: &Ak, acts: Vec
 // spec/commits.md §5: nodes that dropped a body under a snapshot (out of history, any writer's
 // cover) and learn later that its actor had lost the purge right have only history less: the
 // snapshot stands (demoted to write) and all read alike, a node coming later too, with nothing
-// placed again, the admin away throughout dropping it too; or the snapshot falls (demoted to
+// logged again, the admin away throughout dropping it too; or the snapshot falls (demoted to
 // read), the admin's kept copy comes back and all read alike.
 #[test]
 fn stale_drop_reads_alike_spec_commits_5() {
@@ -1089,13 +1089,13 @@ fn stale_drop_reads_alike_spec_commits_5() {
         match to {
             Role::Read => {
                 assert_eq!(want, Some(s("b's")), "the fallen snapshot's own write goes");
-                assert!(there, "the holder placed it again and the author took it");
+                assert!(there, "the holder logged it again and the author pulled it");
             }
             _ => {
                 assert_eq!(want, Some(s("x'sb's")));
                 assert!(!there, "history stays less");
                 let live = net.host_ids(host, &l);
-                assert!(blobs_of(&mut net, a, &l, c).iter().all(|id| !live.contains(id)), "not placed again");
+                assert!(blobs_of(&mut net, a, &l, c).iter().all(|id| !live.contains(id)), "not logged again");
             }
         }
         // a node that was away for all of it reads alike, whatever it finds
@@ -1109,7 +1109,7 @@ fn stale_drop_reads_alike_spec_commits_5() {
 
 // spec/permissions.md §5.2, spec/commits.md §5: the snapshot a body dropped under falls while another
 // without the right, which it does not cover and which arrived after the drop, still covers the
-// body: no one places the body (may-hold), the dropper, missing it again, does not fetch it and
+// body: no one logs the body (may-hold), the dropper, missing it again, does not fetch it and
 // reads alike through that snapshot's copies.
 #[test]
 fn snapshot_falls_rightless_one_covers_spec_perm_5_2() {
@@ -1156,7 +1156,7 @@ fn snapshot_falls_rightless_one_covers_spec_perm_5_2() {
     let l = net.label(a);
     let live = net.host_ids(host, &l);
     for n in [a, b, w] {
-        assert!(blobs_of(&mut net, n, &l, c).iter().all(|id| !live.contains(id)), "no one places it: may-hold (node {n})");
+        assert!(blobs_of(&mut net, n, &l, c).iter().all(|id| !live.contains(id)), "no one logs it: may-hold (node {n})");
     }
     assert!(net.engine(b).suspects().unwrap().is_empty(), "the flag is dormant: the held snapshot lists it");
 }
@@ -1442,11 +1442,11 @@ fn log_len(net: &Net, host: usize, l: &osis_base::LabelId) -> usize {
     a.len() + d.len()
 }
 
-// spec/sync.md §6, §7 (what a node deletes it would not place): B writes C on a map and t:seq,
+// spec/sync.md §6, §7 (what a node deletes it would not log): B writes C on a map and t:seq,
 // then replaces part of each (C's other writes stay live), compacts t:seq, and, the admin A away,
 // the map; it drops C under both snapshots and deletes it at the host. A demotes B to read with a
 // frontier not listing the map snapshot: it falls, C's live map write is covered by nothing, so A,
-// which kept C's map part (it never held that snapshot), places it. B takes C's map delta back;
+// which kept C's map part (it never held that snapshot), logs it. B takes C's map delta back;
 // its blob is must-not-hold for B (the t:seq delta dropped), and the fallen snapshot B recorded as
 // the map delta's carrier carries nothing: B leaves the blob (a reader writes no snapshot) and the
 // label goes quiet.
@@ -1497,7 +1497,7 @@ fn fallen_carrier_carries_nothing_spec_sync_7() {
         net.advance(5 * 60_000);
         net.run();
     }
-    assert_eq!(log_len(&net, host, &l), before, "no placing and delete loop");
+    assert_eq!(log_len(&net, host, &l), before, "no log and delete loop");
     assert!(net.engine(b).body_not_dropped(&c, &t, &map), "B took C's map delta back");
     assert!(!net.engine(b).body_not_dropped(&c, &t, &seq));
     assert!(blobs_of(&mut net, a, &l, c).iter().any(|id| net.host_ids(host, &l).contains(id)), "A placed C again");
@@ -1508,9 +1508,9 @@ fn fallen_carrier_carries_nothing_spec_sync_7() {
 // never hears of its blob) judges X, its own register write, out of history: it compacts, drops X
 // and deletes it at the host. Admin a holds the setting keeping the register for good, so X is in
 // history there and a keeps it; b's snapshot under the label covers it, so a never places it
-// again: X's blobs leave the host once and the label goes quiet (no placing and delete repeat).
+// again: X's blobs leave the host once and the label goes quiet (no log and delete repeat).
 #[test]
-fn one_side_lacking_the_setting_no_place_delete_repeat_spec_sync_7() {
+fn one_side_lacking_the_setting_no_log_delete_repeat_spec_sync_7() {
     let mut net = Net::new();
     let host = net.add_host();
     let a = net.node(1, &[host]);
@@ -1553,7 +1553,7 @@ fn one_side_lacking_the_setting_no_place_delete_repeat_spec_sync_7() {
         net.run();
         assert!(xs.iter().all(|id| !net.host_ids(host, &l).contains(id)), "X stays out of the host");
     }
-    assert_eq!(log_len(&net, host, &l), before, "no placing and delete repeat");
+    assert_eq!(log_len(&net, host, &l), before, "no log and delete repeat");
     assert!(net.engine(a).body_not_dropped(&x, &t, &k) && !net.engine(b).body_not_dropped(&x, &t, &k));
 }
 
@@ -1651,7 +1651,7 @@ fn held_snapshot_keeps_the_chunks_it_links_spec_sync_7() {
 }
 
 // spec/sync.md §1 (chunk reuse: the link alone decides), §7 Freed links: a node that never received the commit introducing a value's chunks (its
-// author compacted it and deleted it at the host first) reuses them on its next edit, placing
+// author compacted it and deleted it at the host first) reuses them on its next edit, logging
 // the changed chunks and the root's links whatever the value's size, and once nothing it holds
 // links them deletes them at the host by its own delete keys.
 #[test]

@@ -358,7 +358,7 @@ fn redeem_after_a_node_removal_spec_permissions_7() {
 
 // spec/permissions.md §7: the common race: a link passed on before its label reached the peer is no ended link: the redeemer waits for it
 #[test]
-fn redeem_waits_for_a_link_still_placing_spec_permissions_7() {
+fn redeem_waits_for_a_link_not_yet_pulled_spec_permissions_7() {
     let mut w = World::new();
     let host = w.add_host();
     let alice = w.account(1, &[host]);
@@ -371,7 +371,7 @@ fn redeem_waits_for_a_link_still_placing_spec_permissions_7() {
     let mut redeem = std::pin::pin!(carol.redeem(&link));
     let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
     for _ in 0..10 {
-        assert!(redeem.as_mut().poll(&mut cx).is_pending(), "still placing, not ended");
+        assert!(redeem.as_mut().poll(&mut cx).is_pending(), "not yet pulled, not ended");
         w.advance(1000);
         w.run();
     }
@@ -510,9 +510,9 @@ fn redeem_cut_off_mid_read_is_no_verdict_spec_permissions_7() {
     assert!(!alice.grants(k).unwrap().contains_key(&carol.me()));
 }
 
-// spec/permissions.md §7 (Redeem), §3: a link read while its maker's placing stalled, K's head there and K's commits not: the failed redemption drops what the head gave, and a retry opens K's label anew and joins (the steps stop the placing at points inside that stretch)
+// spec/permissions.md §7 (Redeem), §3: a link read while the pull of its maker's entries stalled, K's head there and K's commits not: the failed redemption drops what the head gave, and a retry opens K's label anew and joins (the steps stop the pull at points inside that stretch)
 #[test]
-fn retry_after_a_stalled_placing_spec_permissions_7() {
+fn retry_after_a_stalled_pull_spec_permissions_7() {
     for cut in [14, 20, 26] {
         let mut w = World::new();
         let host = w.add_host();

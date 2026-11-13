@@ -90,7 +90,7 @@ fn snapshot_lists_only_traced_sessions_spec_crdt_8() {
 // of A's two writes per aspect, so its tags snapshot lists A's session short of them; its register
 // snapshot passes the hole (spec/crdt.md §8: the later register write replaces the aspect whole, so
 // every earlier write of A's session there is applied, dead). When the earlier writes come, the
-// dead register write is covered (holders must not keep placing it for a right holder to delete,
+// dead register write is covered (holders must not keep logging it for a right holder to delete,
 // `snapshot_rights`), and the live tag is not.
 #[test]
 fn frontier_gap_covers_what_joins_unchanged_spec_commits_5() {

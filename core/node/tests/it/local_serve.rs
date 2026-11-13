@@ -698,7 +698,7 @@ fn own_write_placed_under_a_hosted_label_with_no_host_connected_spec_sync_5() {
     assert_eq!(placed.len(), 1, "placed in its own store with no host connected");
     net.blocked.remove(&(a, h));
     net.advance(60_000);
-    assert!(placed.iter().all(|b| net.host_ids(h, &l).contains(b)), "the host pass places that entry");
+    assert!(placed.iter().all(|b| net.host_ids(h, &l).contains(b)), "the host pulls that entry");
 }
 
 /// Node `n` writes `v` to `t`'s register, expiring a year out: below the compaction trigger,
@@ -744,12 +744,12 @@ fn own_entries_covered_while_the_host_is_away_leave_spec_sync_5() {
     assert_eq!(of_c.len(), 1, "the newest write stays placed");
     net.blocked.remove(&(a, h));
     net.advance(60_000);
-    assert!(of_c.iter().all(|b| net.host_ids(h, &l).contains(b)), "the host pass places the newest write");
+    assert!(of_c.iter().all(|b| net.host_ids(h, &l).contains(b)), "the host pulls the newest write");
     assert_eq!(net.read(a, t), Some(s("v00000112")));
 }
 
-// spec/sync.md §5 (Placed, deleting at a host), §6 (Tombstones): an own entry whose placing is
-// unanswered when newer own writes cover it leaves the node's store, and the host's late OK
+// spec/sync.md §5 (Placed, deleting at a host), §6 (Tombstones): an own entry the host has
+// not pulled yet when newer own writes cover it leaves the node's store, and the host's late OK
 // records it again as present there, so the host pass deletes it there too.
 #[test]
 fn covered_own_entry_mid_pull_leaves_the_host_too_spec_sync_5() {
@@ -843,7 +843,7 @@ fn own_duplicate_case(v: &str) -> bool {
     net.drop_link(a, h1);
     net.run();
     assert_eq!(of(&mut net, a), at_h1, "a's own copy went as the higher duplicate");
-    assert!(!net.host_ids(h1, &l).contains(&own[0]), "never placed");
+    assert!(!net.host_ids(h1, &l).contains(&own[0]), "never held at the host");
     net.blocked.remove(&(a, h2));
     net.advance(60_000);
     net.run();
@@ -852,7 +852,7 @@ fn own_duplicate_case(v: &str) -> bool {
     true
 }
 
-// spec/sync.md §5 (Placed, deleting at a host): an own entry whose placing the host took but
+// spec/sync.md §5 (Placed, deleting at a host): an own entry the host pulled but
 // whose answer was lost with the connection, covered meanwhile, leaves the host once the node
 // is back, whatever it dropped of it locally: the tombstone keeps what the entry was, so the
 // host announcing it records it as present there and the host pass deletes it; a restart
@@ -872,7 +872,7 @@ fn lost_answer(restart: bool, days: u64) {
     let of = |net: &mut Net, c| net.sync(a).entries(&l).into_iter().filter(|(_, k)| matches!(k, EntryKind::Commit { commit, .. } if *commit == c)).map(|(id, _)| id).collect::<Vec<_>>();
     let e2 = of(&mut net, c2);
     assert_eq!(e2.len(), 1, "v2 placed");
-    assert!(net.host_ids(h, &l).contains(&e2[0]), "the host took v2's placing");
+    assert!(net.host_ids(h, &l).contains(&e2[0]), "the host pulled v2's entry");
     net.blocked.insert((a, h));
     net.drop_link(a, h);
     // its answers, held, are for a connection gone
@@ -1094,7 +1094,7 @@ fn wrong_bytes_for_a_node_walk_nothing_spec_sync_7() {
 }
 
 /// spec/sync.md §6 (Tombstones), §3 (certificate copies' linked blobs), spec/commits.md §5: a
-/// certificate copy and the blobs it links, whose placing answers were lost with the connection
+/// certificate copy and the blobs it links, whose pull answers were lost with the connection
 /// (`lost`) or arrive after the purge, leave the host once the copied delta is purged and the
 /// host reports them.
 fn certificate_copy_answered_late(lost: bool) {

@@ -513,8 +513,8 @@ impl SyncEngine {
             }
             // a report counts from a source that passes the commit on to whoever this node
             // would have reached: under a label with no host any co-reader's; under one with
-            // hosts only an admin of the label's actor, which places the actor's role commits
-            // a host lacks when it re-registers there (spec/sync.md §5, Re-registration)
+            // hosts only an admin of the label's actor, which logs the actor's role commits
+            // a host lacks for it to pull when it re-registers there (spec/sync.md §5, Re-registration)
             let carrier = if super::peers::hostless(&gl.hosts) {
                 None
             } else {

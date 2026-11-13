@@ -449,7 +449,7 @@ pub struct State {
     /// `body_deleted`) is not placed there again while its live writes are carried (spec/sync.md
     /// §6). In memory, from `tombs` at load where the blob's record is known;
     /// forgotten with the tombstone (`TOMBSTONE_LIFETIME`, minor consequence: at 0 a right
-    /// holder whose bounds are dated later places it again every pass until its own bound, at
+    /// holder whose bounds are dated later logs it again every pass until its own bound, at
     /// infinity memory grows with deletions; live writes are carried either way).
     pub deleted: BTreeMap<DeletedBody, u64>,
     /// Commits to look at for forgetting (`forget_forgettable`): one's last part dropped, entry

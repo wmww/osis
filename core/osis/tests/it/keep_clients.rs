@@ -693,7 +693,7 @@ fn a_commit_beside_a_copy_spec_permissions_3() {
     assert_eq!(b.retained_copies().unwrap(), vec![g]);
 }
 
-// spec/permissions.md §3 (Keep; places and serves nothing of it): what Bob's node holds of a copy goes nowhere: added to a group of his, shared, it does not reach that group's reader; his own write on it, unsent at the kick, stays out at Alice's
+// spec/permissions.md §3 (Keep; logs and serves nothing of it): what Bob's node holds of a copy goes nowhere: added to a group of his, shared, it does not reach that group's reader; his own write on it, unsent at the kick, stays out at Alice's
 #[test]
 fn a_copy_goes_nowhere_spec_permissions_3() {
     let (mut w, a, b, bob, g, m) = sim(Some(true));

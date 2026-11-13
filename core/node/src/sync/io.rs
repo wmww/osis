@@ -202,7 +202,7 @@ pub struct PassStats {
     /// Entries thrown out as unjudgeable (`mark_awaits`): each is fetched again.
     pub awaits: u64,
     pub full: u64,
-    /// Bodies judged for placing, entries judged for deletion.
+    /// Bodies judged for logging, entries judged for deletion.
     pub bodies: u64,
     pub entries: u64,
     /// Blobs tried as inbox blobs (a KEM per held key of each actor whose inbox the label is).

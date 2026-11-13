@@ -486,7 +486,7 @@ impl SyncEngine {
                 self.mark_labels(&[l]);
             }
         }
-        // bodies waiting for a linked blob place it now it is here (`Left::links`)
+        // bodies waiting for a linked blob log it now it is here (`Left::links`)
         self.touched.blobs.extend(blobs.iter().map(|(b, _)| *b));
         // an entry these bytes make servable logs in their transaction, with its row
         if !blobs.is_empty() {
@@ -543,7 +543,7 @@ impl SyncEngine {
     /// (spec/sync.md §5): no wrap from anyone, a writer included, replaces one that opens to the
     /// blob's key, and a body stays readable through a host whose wrap is useless: a node knowing
     /// the key takes only a wrap opening to it and counts the host giving any other as lacking
-    /// the entry (`State::holds_at`), so a writer places a fresh encryption. Knowing
+    /// the entry (`State::holds_at`), so a writer logs a fresh encryption. Knowing
     /// no key, it prefers what opens; a wrap that opened to a wrong key (`Kind::Bad`) gives way.
     /// `stamped`: under the head's write key; `held_stamped`: the host holds it stamped under any
     /// (a hostile host saying so loses only its own entry here).
@@ -2020,7 +2020,7 @@ impl SyncEngine {
     /// key and ciphertext: a dropped body's copies go, spec/commits.md §5). A pending commit's true copy
     /// goes so too, a junk copy perhaps holding its slot (`redeliver` then finds nothing): keeping it
     /// would store what a sender floods and deletes, and the deletion is what a body's holders repair
-    /// by placing it again.
+    /// by logging it again.
     pub(crate) fn forget_blob(&mut self, b: &BlobId) -> Result<()> {
         let Some(r) = self.state.blobs.get(b).cloned() else { return Ok(()) };
         let unused = !self.state.named(b);
@@ -2073,7 +2073,7 @@ impl SyncEngine {
     /// that fell, or dropped while invalid and valid since, §6): unopened again, so a pass fetches
     /// them where present (`refetch`), the reply bringing the wrap back. Bytes still held (the
     /// drop and its undoing in one step, before `forget_dropped`) go first: the fetch is the one
-    /// way back. A body deleted everywhere comes back only when a holder places it again. `None`:
+    /// way back. A body deleted everywhere comes back only when a holder logs it again. `None`:
     /// every commit (at start: a crash may have come between the engine's change and this).
     pub(crate) fn reopen_undropped(&mut self, commits: Option<&BTreeSet<osis_base::CommitId>>) -> Result<()> {
         if commits.is_some_and(BTreeSet::is_empty) {

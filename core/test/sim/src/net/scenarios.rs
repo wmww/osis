@@ -313,8 +313,8 @@ pub fn stranded_reseal(s: Seeds) -> Res<Report> {
     sim.finish()
 }
 
-/// A host loses its data (spec/sync.md §6: a writer places every must-hold body the label
-/// lacks): writers re-register the labels and place again; the quiescent check finds every
+/// A host loses its data (spec/sync.md §6: a writer logs every must-hold body the label
+/// lacks): writers re-register the labels and the host pulls again; the quiescent check finds every
 /// must-hold body back.
 pub fn host_loses_data(s: Seeds) -> Res<Report> {
     let (mut sim, s) = setup("host_loses_data", s, NetWeights { crash: 1, restart: 2, ..NetWeights::default() }, |sim| {
@@ -505,7 +505,7 @@ pub fn grant_lost_on_crash(s: Seeds) -> Res<Report> {
 }
 
 /// Bytes of the chunks of `new`'s canonical encoding whose content `old`'s lacks: what any
-/// content-defined writer must place for the edit.
+/// content-defined writer must log for the edit.
 fn new_chunk_bytes(old: &[u8], new: &[u8]) -> u64 {
     let cuts = |d: &[u8]| -> Vec<Vec<u8>> {
         let e = osis_base::encode(&Value::Bytes(d.to_vec()));
@@ -525,7 +525,7 @@ fn new_chunk_bytes(old: &[u8], new: &[u8]) -> u64 {
 /// Two nodes of one account edit a large blob of many chunks in turn through one host
 /// (spec/requirements.md Scale: a change inside a huge value costs O(change); spec/sync.md §1
 /// chunk reuse): each reads the value whole (fetching the chunks it lacks), changes a few
-/// bytes and writes it back; what it places per edit stays within 1.2x of the chunks the
+/// bytes and writes it back; what it logs per edit stays within 1.2x of the chunks the
 /// edit changed, plus the tree's root node and a fixed allowance for the commit and protocol.
 pub fn large_edits(s: Seeds) -> Res<Report> {
     let seed = s.seed;
@@ -740,7 +740,7 @@ pub fn member_churn(s: Seeds) -> Res<Report> {
 /// A snapshot dropped under a cover that turns invalid (spec/permissions.md §5.2, spec/sync.md
 /// §6, §7): A compacts the tags (S1); while A is away, C writes and compacts over it (S2) and W
 /// drops S1 under S2's cover, deleting it at the host; A, not having seen S2, removes C (S2
-/// invalid). S1 is missing again at W; A, holding it uncovered, places it again while it has a
+/// invalid). S1 is missing again at W; A, holding it uncovered, logs it again while it has a
 /// live write; W fetches it, and A and W read alike. Random writes while A is away: a part W
 /// dropped under S2 and deleted reaches A never, and its commit applies there without it
 /// (S2 lists it, spec/commits.md §4). A snapshot of A's or W's after S1 (W's own trigger before
@@ -803,7 +803,7 @@ pub fn coverer_revoked(s: Seeds) -> Res<Report> {
     sim.unsever(Party::N(a), Party::S(s));
     sim.run(40)?;
     sim.run_until_quiescent(60)?;
-    // A places S1 again only while it has a live write (spec/sync.md §6): random writes may
+    // A logs S1 again only while it has a live write (spec/sync.md §6): random writes may
     // have removed them all
     let p = part(&mut sim)?;
     let live = sim.engine(a)?.delta_live(&s1, &t, &k).map_err(|e| sim.fail(e.to_string()))?;
@@ -824,7 +824,7 @@ pub fn coverer_revoked(s: Seeds) -> Res<Report> {
 /// while live, and is covered like a replaced one where it does not); such a body
 /// leaves the host (a node that never held that snapshot, superseded early, may keep its copy).
 /// Everyone reads alike, the fresh node too, whichever bodies it got; the labels go quiet
-/// (`finish`: no place and delete loop).
+/// (`finish`: no log and delete loop).
 pub fn snapshot_rights(s: Seeds) -> Res<Report> {
     use osis_proto::LabelStore;
     use osis_schema::{History, PurgeBy, Retention};

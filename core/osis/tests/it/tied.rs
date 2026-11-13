@@ -460,7 +460,7 @@ fn inherited_inbox_opens() {
 // places it under G's labels): Dave, admin of Bob's card through his tag H only (he syncs no
 // label holding the tag G and holds no `keys.0` of G, so no inbox blob goes), removes G's grant on
 // the card added to G and H; Alice, G's admin, learns it through H and places it under G's
-// label, so Carol learns it too (before, she placed the card's bodies Alice deleted there
+// label, so Carol learns it too (before, she logged the card's bodies Alice deleted there
 // again on every pass). The card's new deposit seed: not from that copy; Carol still reaches the
 // card's own sync ID (issues/removed-holder-reads-fresh-deposit-seed.md).
 #[test]
@@ -501,7 +501,7 @@ fn group_admin_learns_removal_elsewhere() {
     let before = of_card(&carol);
     w.advance(3_600_000);
     w.run();
-    assert_eq!(of_card(&carol), before, "Carol places nothing of the card again");
+    assert_eq!(of_card(&carol), before, "Carol logs nothing of the card again");
 }
 
 // spec/sync.md §3: a removal by someone who knows the group's keys comes by its inbox: the admin's copy, with the remover's chain, leaves out the thing's newest `keys.0` (a later reader of the group never learns the fresh seed: `zoe` below; Carol, a reader until the removal, can: issues/removed-holder-reads-fresh-deposit-seed.md)

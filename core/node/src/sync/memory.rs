@@ -91,7 +91,7 @@ impl PerLabel {
 /// Never-fitting entries remembered per label (`Memory::unfit`). Resource bound: about 100 bytes
 /// each, 400 KiB per label at the bound; a host's cap holds a few hundred such entries per
 /// label (about 25 KB each at the least), so honest hosts never reach it (0: each is fetched
-/// again at every reconciliation; infinity: a writer placing and deleting such entries grows
+/// again at every reconciliation; infinity: a writer logging and deleting such entries grows
 /// the set for good).
 const UNFIT_MAX: usize = 1 << 12;
 
@@ -244,7 +244,7 @@ impl SyncEngine {
     /// wait unopened: whatever brings their bytes again opens them), and the streams carrying a
     /// label whose closure holds `t` list their memory entries again (`stream_relist`). A durable
     /// commit forgotten under the fallen snapshot left no tombstone: it reads as never received,
-    /// and a holder placing it as must-hold brings it.
+    /// and a holder logging it as must-hold brings it.
     fn relist_fallen(&mut self, t: &Tid, ak: &osis_base::Ak, out: &mut Vec<Action>) -> Result<()> {
         let on = |f: &Forgotten| matches!(f.why, MemoryDrop::Covered { .. } | MemoryDrop::Superseded { .. }) && f.header.aspects.iter().any(|a| a.tid == *t && a.ak == *ak);
         let memory: Vec<CommitId> = self.memory.forgotten.iter().filter(|(c, f)| on(f) && !self.engine.holds_memory(c)).map(|(c, _)| *c).collect();

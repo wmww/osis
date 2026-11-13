@@ -35,7 +35,7 @@ pub(crate) struct Touched {
     pub commits: BTreeSet<CommitId>,
     /// The aspects of changed commits: the commits waiting on their state.
     pub states: BTreeSet<(Tid, Ak)>,
-    /// Blobs that arrived or came with a changed commit (a body linking them places them now).
+    /// Blobs that arrived or came with a changed commit (a body linking them logs them now).
     pub blobs: BTreeSet<BlobId>,
     /// Entries held here newly shown at a source (`State::shown`): no verdict here changes, so
     /// the own part does not judge them again; they wake what waits on them (a delete waiting
@@ -209,7 +209,7 @@ pub(crate) struct Waits {
     /// Commits whose verdict waits on an aspect's state (liveness).
     pub aspects: BTreeMap<(Tid, Ak), BTreeSet<CommitId>>,
     /// Blobs a body links that this node neither holds nor has an entry of: the commits that
-    /// place them once they arrive.
+    /// log them once they arrive.
     pub links: BTreeMap<BlobId, BTreeSet<CommitId>>,
     /// Commits whose delete waits for a delete key this node lacks: judged again when held
     /// epochs may have changed.
