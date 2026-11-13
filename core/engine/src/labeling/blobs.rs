@@ -542,7 +542,7 @@ impl Engine {
         let Some(a) = self.core.secret_actor(g) else { return Ok(None) };
         let Some(h) = self.header(c) else { return Ok(None) };
         let Some(ai) = h.aspect_index(&a, "keys.0") else { return Ok(None) };
-        if !h.aspect_index(&a, "secrets.0").is_some() {
+        if h.aspect_index(&a, "secrets.0").is_none() {
             return Ok(None);
         }
         let id = *c;
