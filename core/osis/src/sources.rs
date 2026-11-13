@@ -417,8 +417,13 @@ impl ReadOnly {
     /// node with whether it is up, the groups a connected one reports where this node does not
     /// sync them. A group with a source node shows only what that node reports: never this
     /// engine's copy, which is behind or catching up. Each connection is asked, unless this thread
-    /// must not wait (`may_wait`): then each adds the last status it sent (`Heard`).
+    /// must not wait (`may_wait`): then each adds the last status it sent (`Heard`). Served to this
+    /// node's own processes (the port worker), none adds groups: their calls through this node
+    /// fail, and two nodes sourcing groups at each other would feed each other's counts forever.
     pub(crate) fn merged_status(&self, local: Status) -> Status {
+        if crate::port::serve::on_worker() {
+            return self.merge_status(local, |_| None);
+        }
         self.follow_connections();
         let wait = self.may_wait();
         self.merge_status(local, |r| if wait { heard_now(r) } else { lock(&r.heard).status.clone() })

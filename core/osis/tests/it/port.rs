@@ -214,7 +214,7 @@ impl Raw {
         r
     }
 
-    fn unix(sock: &std::path::Path) -> Raw {
+    pub(crate) fn unix(sock: &std::path::Path) -> Raw {
         let uid = {
             let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
             let _g = rt.enter();
@@ -300,7 +300,7 @@ impl Raw {
         self.call(id, method, args)
     }
 
-    fn call(&mut self, id: u64, method: u64, args: Vec<Value>) -> Outcome {
+    pub(crate) fn call(&mut self, id: u64, method: u64, args: Vec<Value>) -> Outcome {
         self.ask(call(id, method, args)).unwrap()
     }
 }

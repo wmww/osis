@@ -374,6 +374,25 @@ fn status_in_a_callback_shows_a_group_at_its_node() {
     drop(x.host);
 }
 
+// spec: none (API surface); notes/api.md Sync configuration and status: the status a node serves its own account's processes is its own: a group it reads at another node, whose calls through it fail, is absent there, even once its own status reads heard that node (two nodes sourcing groups at each other would otherwise feed each other's counts forever)
+#[test]
+fn served_status_leaves_out_groups_read_elsewhere() {
+    let x = world();
+    x.connect_p();
+    x.to_node();
+    let d = crate::port::Dir::new();
+    let sock = d.0.join("p.sock");
+    x.p.listen_socket_at(&sock).unwrap();
+    assert!(x.p.status().unwrap().groups.contains_key(&x.g), "P's own read shows it");
+    let mut raw = crate::port::Raw::unix(&sock);
+    assert!(matches!(raw.auth_by([1; 16], None), Ok(osis_proto::Outcome::Ok { .. })));
+    let served = raw.call(1, 15, vec![]);
+    let osis_proto::Outcome::Ok { value } = served else { panic!("{served:?}") };
+    assert!(!format!("{value:?}").contains(&format!("{:?}", x.g)), "{value:?}");
+    drop(raw);
+    drop(x.host);
+}
+
 // spec/sync.md §10, notes/client-port.md §6: moves with writes pending on either side refuse, changing nothing, and each write stays where it is readable: a local write not yet at a peer holds the move away; going home while this engine cannot catch up, or while the node holds a write no peer has, keeps the source, so calls still go to the node and the local copy never answers behind
 #[test]
 fn moves_with_pending_writes_refuse() {
