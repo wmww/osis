@@ -9,8 +9,8 @@
 - A local drop as covered needs no right of the node's own (the snapshot's commit holds it): the spec's "the node itself holds it now" binds compaction's host deletion, not modeled.
 - A leftover holding no value of its own is terminal (AMBIGUITIES.md 9): a purge's fall makes its body never received, a lost read access (Keep copies) is not modeled.
 - Role-class bodies are always kept.
-- Commit IDs are unique in the input; duplicates and copies of a delta (spec/commits.md §4 Copies) are not modeled. Arrival order is not modeled beyond `Body::Dropped` (its commit applied): "a commit such a part applied before T stays applied" holds only through a dropped part, and late parts of applied commits are parts held from the start.
-- A parked part a purge drops (`Gone`) still counts as held for its commit's pending until `act` makes it missing (its judgment needs the applied set). No bad-by-itself deltas, so no bad-input blobs.
+- Commit IDs are unique in the input; duplicates and copies of a delta (spec/commits.md §4 Copies) are not modeled. Arrival order is not modeled: late parts of applied commits are parts held from the start.
+- A parked part a purge drops (`Gone`) still counts as held (a commit whose other parts are all unjudgeable applies) until `act` makes it missing (its judgment needs the applied set). No bad-by-itself deltas, so no bad-input blobs.
 
 **Clock and stamps**
 - `ts = wall_ms * 2^16 + logical`; `now` is the node's wall clock. Session-form commits only as `Held::dots` ranges (the generator writes commit form only); no snapshot `Frontiers` or `Absorbed`.
