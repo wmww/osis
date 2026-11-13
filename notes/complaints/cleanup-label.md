@@ -1,3 +1,0 @@
-# cleanup-label
-- tools/dead_pub.py misses a pub method defined under one name on two types (`BlobWriter::with_page_params` and `BlobReader::with_page_params`, used only by osis-label's tests): each definition reads as the other's use. It also does not flag items that are `pub` but used only inside their own crate (`entry_domain`, `by_from_value`, `verify_path`, `address_from_value`, `MAX_GROUPS` were); a narrower-visibility report would have found them.
-- Review: the gate hit a sim seed failing on main (`no_host_chain`, also before net-3i3c2); the gate starts sims at random seeds, so each review meets a new main failure and bisects it by hand (three rebuilds of the sim at other revisions here).

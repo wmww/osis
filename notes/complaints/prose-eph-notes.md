@@ -1,2 +1,0 @@
-- tools/policy.py's doc_refs checks only `file.md, Section` and `file.md (Section` forms; the common `notes/x.md Section` form (most code comments citing notes/ephemeral.md) is unchecked, so stale citations ("step 3", "covers drop live bodies") went unnoticed. Worth extending.
-- Several identifiers in these notes had gone stale with no signal (`At::roles_behind`, `Engine::body_live`, `REC_OVERHEAD`, `Core::cover_cache`, host/proto test names): a backticked-identifier existence check over notes/ would catch them.
