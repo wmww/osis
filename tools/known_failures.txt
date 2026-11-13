@@ -14,6 +14,4 @@ sim-sweep:ephemeral 0/43 issues/ephemeral-sim-reader-holds-unlisted-commits.md e
 ephemeral::ephemeral_reverts_with_restarts_alike_large_spec_crdt_4_6 OSIS_EPH_START=704201441278 issues/ephemeral-restarts-reader-loses-value-seed.md failed: seed \d+: Tid\(\w+\)$
 sim-sweep:work_sets 43254590189/43254590194 issues/work-sets-delete-storm-194.md message storm: 5000 deliveries
 sim-sweep:member_churn 720956814942/720956814950 issues/work-sets-delete-storm-194.md message storm: \d+ deliveries without the queue emptying
-sim-sweep:evil_host_drops 455770488995/455770489005 issues/evil-host-drops-storm-489005.md message storm: \d+ deliveries without the queue emptying
 ephemeral::ephemeral_reverts_with_restarts_alike_large_spec_crdt_4_6 OSIS_EPH_START=6 issues/ephemeral-reverts-restarts-loop.md no quiescence after \d+ rounds
-sim-sweep:evil_host_drops 941804269790/941804269794 issues/evil-host-drops-storm-489005.md not quiescent after \d+ rounds
