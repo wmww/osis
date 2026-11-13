@@ -8,6 +8,7 @@ use osis::internals::Internals as _;
 use crate::common::*;
 use osis::{Body, CommitEvent, CommitFrom, CommitId, CommitKind, CommitQuery, Error, Osis, Role, Scope, SyncScope, Tid, Value};
 use osis_sim::world::World;
+use std::collections::BTreeSet;
 use std::sync::mpsc::{Receiver, channel};
 use std::time::Duration;
 
@@ -782,24 +783,29 @@ fn delete_unlists_an_add_not_received_spec_crdt_5_5() {
 }
 
 // spec/requirements.md (Data model: removing drops only what the remover had seen), spec/crdt.md
-// §5.5: an add the deleting node never heard of, not even its commit header, survives the delete.
-// N is an item of G at both; A adds it to H too, which B has not received at all when it deletes
-// N: once synced, N is out of G and still listed in H, at A as at B, its content deleted.
+// §5.5: an add the deleting node never heard of, not even its commit header, survives the delete,
+// in a group it lists the thing in too. N is an item of G at both; A removes it from G and adds
+// it again, and adds it to H, none of which B has received when it deletes N later: once synced,
+// N's content is deleted and it is still listed in G and H, at A as at B.
 #[test]
 fn delete_keeps_an_add_never_seen_spec_crdt_5_5() {
-    let (a, b, _) = paired();
+    let (a, b, c) = paired();
     let (g, h, n) = a.commit_with(|w| Ok((w.create()?, w.create()?, w.create()?))).unwrap();
     a.commit_set(n, untyped(msg()), &s("x")).unwrap();
     a.commit_with(|w| w.group(g).add(osis::Member::Item(n))).unwrap();
     deliver(&a, &b);
+    a.commit_with(|w| w.group(g).remove(osis::Member::Item(n))).unwrap();
+    a.commit_with(|w| w.group(g).add(osis::Member::Item(n))).unwrap();
     a.commit_with(|w| w.group(h).add(osis::Member::Item(n))).unwrap();
-    assert_eq!(b.groups_of(n).unwrap().item_of, vec![g], "B has not heard of H's add");
+    assert_eq!(b.groups_of(n).unwrap().item_of, vec![g], "B has not heard of A's adds");
+    c.advance(1000);
     b.commit_with(|w| w.delete(n)).unwrap();
+    let both = BTreeSet::from([g, h]);
     for _ in 0..2 {
         deliver(&b, &a);
         deliver(&a, &b);
         for (who, d) in [("A", &a), ("B", &b)] {
-            assert_eq!(d.groups_of(n).unwrap().item_of, vec![h], "N listed in H alone at {who}");
+            assert_eq!(d.groups_of(n).unwrap().item_of.into_iter().collect::<BTreeSet<_>>(), both, "N listed in G and H at {who}");
             assert!(!d.has_content(n).unwrap(), "N deleted at {who}");
         }
     }
