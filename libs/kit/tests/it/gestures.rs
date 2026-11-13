@@ -389,3 +389,65 @@ fn only_a_tap_on_a_field_wants_the_keyboard() {
     s.up(PointerType::Mouse, a, 50);
     assert_eq!(s.platform.keyboard, vec![true]);
 }
+
+/// A secondary mouse drag is no drag: it reorders nothing (a long press is a touch's alone).
+#[test]
+fn a_secondary_mouse_drag_reorders_nothing() {
+    let mut s = Screen::list();
+    let (a, b) = (s.rect(ROWS[0]).center(), s.rect(ROWS[3]).center() + (0.0, 1.0));
+    s.down_with(PointerType::Mouse, PointerButton::Secondary, a, 1000);
+    for i in 1..=10 {
+        let current = s.state(a.lerp(b, f64::from(i) / 10.0), 20, Some(PointerButton::Secondary));
+        s.event(PointerEvent::Move(PointerUpdate { pointer: Screen::info(PointerType::Mouse), current, coalesced: Vec::new(), predicted: Vec::new() }));
+    }
+    s.up_with(PointerType::Mouse, PointerButton::Secondary, b, 0);
+    assert_eq!(s.did(), vec![]);
+}
+
+/// A touch the platform cancels ends as nothing: a picked-up row goes back, a held touch is no
+/// tap, and its timer running out later does nothing.
+#[test]
+fn a_cancelled_touch_does_nothing() {
+    let mut s = Screen::list();
+    let (a, b) = (s.rect(ROWS[0]).center(), s.rect(ROWS[3]).center() + (0.0, 1.0));
+    s.down(PointerType::Touch, a, 1000);
+    s.hold();
+    s.move_to(PointerType::Touch, b, 50);
+    s.event(PointerEvent::Cancel(Screen::info(PointerType::Touch)));
+    s.up(PointerType::Touch, b, 10);
+    assert_eq!(s.did(), vec![]);
+    s.down(PointerType::Touch, a, 1000);
+    s.event(PointerEvent::Cancel(Screen::info(PointerType::Touch)));
+    s.hold();
+    s.up(PointerType::Touch, a, 10);
+    s.move_to(PointerType::Touch, b, 50);
+    assert_eq!(s.did(), vec![]);
+    assert!(!s.root.get_widget_with_tag(ROWS[0]).unwrap().ctx().is_hovered());
+}
+
+/// A timer from a touch already lifted does nothing to the next touch, which is still a tap.
+#[test]
+fn a_stale_long_press_timer_does_nothing() {
+    let mut s = Screen::list();
+    let p = s.rect(ROWS[1]).center();
+    s.down(PointerType::Touch, p, 1000);
+    s.up(PointerType::Touch, p, 50);
+    let stale = *s.alarms.borrow().last().unwrap();
+    s.down(PointerType::Touch, p, 1000);
+    s.input.long_press(&mut s.root, &mut s.platform, stale);
+    s.up(PointerType::Touch, p, 50);
+    assert_eq!(s.did(), vec![Did::Press, Did::Press]);
+}
+
+/// A fling toward an edge stops there.
+#[test]
+fn a_fling_stops_at_the_edge() {
+    let mut s = Screen::list();
+    let top = s.rect(ROWS[0]).y0;
+    let p = s.rect(ROWS[1]).center();
+    // already at the top: a flick down has nothing to scroll
+    s.drag(PointerType::Touch, p, p + (0.0, 60.0), 60);
+    s.frames(1);
+    assert!(!s.input.flinging());
+    assert_eq!(s.rect(ROWS[0]).y0, top);
+}

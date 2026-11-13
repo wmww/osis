@@ -13,7 +13,7 @@
 use crate::theme::Look;
 use masonry::accesskit::{Action, Node, Role};
 use masonry::core::keyboard::{Key, KeyState, NamedKey};
-use masonry::core::{AccessCtx, AccessEvent, BoxConstraints, ChildrenIds, EventCtx, LayoutCtx, NewWidget, PaintCtx, PointerEvent, PointerScrollEvent, PropertiesMut, PropertiesRef, RegisterCtx, TextEvent, Update, UpdateCtx, Widget, WidgetMut, WidgetPod};
+use masonry::core::{AccessCtx, AccessEvent, BoxConstraints, ChildrenIds, EventCtx, LayoutCtx, NewWidget, PaintCtx, PointerButton, PointerEvent, PointerScrollEvent, PropertiesMut, PropertiesRef, RegisterCtx, TextEvent, Update, UpdateCtx, Widget, WidgetMut, WidgetPod};
 use masonry::kurbo::{Affine, Point, Rect, Size};
 use masonry::peniko::Fill;
 use masonry::vello::Scene;
@@ -384,7 +384,9 @@ impl Widget for VirtualList {
                 ctx.request_focus();
                 let p = ctx.local_position(e.state.position);
                 let n = self.movable();
-                self.press = self.rects.iter().take(n).position(|r| r.contains(p)).map(|i| (i, p));
+                // a drag is the primary button's, or a touch's after a long press
+                let drags = matches!(e.button, None | Some(PointerButton::Primary)) || crate::input::is_long_press(e);
+                self.press = self.rects.iter().take(n).position(|r| drags && r.contains(p)).map(|i| (i, p));
                 self.drop = None;
                 // a long press picks the row up at once (a mouse picks it up once it moves)
                 if crate::input::is_long_press(e)
