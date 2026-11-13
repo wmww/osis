@@ -60,15 +60,22 @@ pub struct Global {
     pub connect_secret: Option<PathBuf>,
 }
 
-/// Write flags of `set`, `overwrite`, `rm`, `op`.
+/// When the commit expires (`group add`, and the write flags).
 #[derive(Args, Debug, Clone, Default)]
-pub struct WriteFlags {
+pub struct ExpiryFlags {
     /// The commit expires after DUR
     #[arg(long, value_name = "DUR")]
     pub expires_in: Option<String>,
     /// The commit expires at TS (RFC 3339 or ms)
     #[arg(long, value_name = "TS", conflicts_with = "expires_in")]
     pub expires_at: Option<String>,
+}
+
+/// Write flags of `set`, `overwrite`, `fire`, `op`.
+#[derive(Args, Debug, Clone, Default)]
+pub struct WriteFlags {
+    #[command(flatten)]
+    pub e: ExpiryFlags,
     /// Who may purge it besides admins: by=admin|author_or_admin|writer (what history keeps is the thing's retention^.0)
     #[arg(long, value_name = "SPEC")]
     pub retention: Option<String>,
@@ -579,12 +586,9 @@ pub enum MemberCmd {
         t: String,
         #[arg(long)]
         subgroup: bool,
-        /// The commit, so the membership, expires after DUR
-        #[arg(long, value_name = "DUR")]
-        expires_in: Option<String>,
-        /// The commit, so the membership, expires at TS (RFC 3339 or ms)
-        #[arg(long, value_name = "TS", conflicts_with = "expires_in")]
-        expires_at: Option<String>,
+        // the membership goes when the commit expires
+        #[command(flatten)]
+        e: ExpiryFlags,
     },
     /// Remove T from group G: an item, or with --subgroup a subgroup
     Rm {

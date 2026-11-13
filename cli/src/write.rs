@@ -1,7 +1,7 @@
 //! Write commands (notes/cli.md Command table, Things and aspects): each applies to a `Write`, so a
 //! single command and a `write` script line share one implementation.
 
-use crate::args::{CreateArgs, FireArgs, MemberCmd, OpArgs, GroupsArgs, RmArgs, ScriptCmd, ScriptLine, SetArgs, WriteFlags};
+use crate::args::{CreateArgs, ExpiryFlags, FireArgs, MemberCmd, OpArgs, GroupsArgs, RmArgs, ScriptCmd, ScriptLine, SetArgs, WriteFlags};
 use crate::text::{self, PStep};
 use crate::{Ctx, parse_dur, parse_ts, usage};
 use clap::Parser;
@@ -64,8 +64,8 @@ fn type_at(key: &DynamicAspectKey, p: &Path) -> Option<ValueType> {
     text::type_at_path(key.value_type()?.get(), &p.0)
 }
 
-fn expiry(within: &Option<String>, at: &Option<String>) -> anyhow::Result<Option<Expiry>> {
-    Ok(match (within, at) {
+fn expiry(e: &ExpiryFlags) -> anyhow::Result<Option<Expiry>> {
+    Ok(match (&e.expires_in, &e.expires_at) {
         (Some(d), _) => Some(Expiry::In(parse_dur(d)?)),
         (_, Some(t)) => Some(Expiry::At(Time(parse_ts(t)?))),
         _ => None,
@@ -264,7 +264,7 @@ fn member(t: osis::Tid, subgroup: bool) -> Member {
 
 fn apply_one(ctx: &mut Ctx<'_>, w: &mut osis::Write<'_>, c: &ScriptCmd, did: &mut Did) -> anyhow::Result<()> {
     if let ScriptCmd::Set(SetArgs { w: f, .. }) | ScriptCmd::Overwrite(SetArgs { w: f, .. }) | ScriptCmd::Fire(FireArgs { w: f, .. }) | ScriptCmd::Op(OpArgs { w: f, .. }) = c {
-        commit_expiry(w, did, expiry(&f.expires_in, &f.expires_at)?)?;
+        commit_expiry(w, did, expiry(&f.e)?)?;
     }
     match c {
         ScriptCmd::Create(a) => create(ctx, w, a, did),
@@ -273,9 +273,9 @@ fn apply_one(ctx: &mut Ctx<'_>, w: &mut osis::Write<'_>, c: &ScriptCmd, did: &mu
         ScriptCmd::Fire(a) => fire(ctx, w, a),
         ScriptCmd::Rm(a) => rm(ctx, w, a),
         ScriptCmd::Op(a) => op(ctx, w, a),
-        ScriptCmd::Group(MemberCmd::Add { g, t, subgroup, expires_in, expires_at }) => {
+        ScriptCmd::Group(MemberCmd::Add { g, t, subgroup, e }) => {
             let (g, m) = (ctx.tid(g)?, member(ctx.tid(t)?, *subgroup));
-            commit_expiry(w, did, expiry(expires_in, expires_at)?)?;
+            commit_expiry(w, did, expiry(e)?)?;
             Ok(w.group(g).add(m)?)
         }
         ScriptCmd::Group(MemberCmd::Rm { g, t, subgroup }) => Ok(w.group(ctx.tid(g)?).remove(member(ctx.tid(t)?, *subgroup))?),
