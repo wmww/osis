@@ -129,6 +129,11 @@ impl Pending {
     }
 }
 
+/// `Session::fits` of a connection whose output is `own` and holding `holding`.
+fn fits(own: usize, holding: usize, share: usize, left: usize, size: usize) -> bool {
+    (own == 0 || holding.saturating_add(size) <= share) && size <= left
+}
+
 /// Bytes of the `Send` outputs in `out`.
 fn sent_bytes(out: &[SessionOutput]) -> usize {
     out.iter().map(|o| if let SessionOutput::Send(b) = o { b.len() } else { 0 }).sum()
@@ -357,7 +362,7 @@ impl Session {
     /// Whether `size` more bytes of output fit the room: the share (or no output of its own:
     /// a reservation for a reply to come is not held against what answers it) and what is left.
     fn fits(&self, out: &[SessionOutput], size: usize) -> bool {
-        (self.own(out) == 0 || self.holding(out).saturating_add(size) <= self.share) && size <= self.left(out)
+        fits(self.own(out), self.holding(out), self.share, self.left(out), size)
     }
 
     /// Whether an Auth was answered by a Reply (notes/client-port.md §3): the session counts as
@@ -476,7 +481,7 @@ impl Session {
                 before,
                 now,
                 |len| {
-                    let ok = (o + extra == 0 || h + extra + len <= share) && extra + len <= left;
+                    let ok = fits(o + extra, h + extra, share, left.saturating_sub(extra), len);
                     if ok {
                         extra += len;
                     }
