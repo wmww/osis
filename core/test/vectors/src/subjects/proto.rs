@@ -65,14 +65,12 @@ pub fn messages() -> VecFile {
     let id = bytes(32, 0x01);
     let item = Value::List(vec![bytes(32, 1), Value::List(vec![]), Value::List(vec![]), bytes(64, 3)]);
     let list = |v: &Value, n: usize| Value::List(vec![v.clone(); n]);
-    let step = Value::Bytes(f.genesis.to_bytes());
     let fetched = Value::List(vec![id.clone(), Value::List(vec![])]);
     let empty = Value::List(vec![]);
     let caps: Vec<(&str, Value, Value, usize, Vec<Value>)> = vec![
         ("delete of 1025 items", Value::List(vec![int(14), int(1), label.clone(), list(&item, 1025)]), item.clone(), 1025, vec![]),
         ("fetch of 1025 ids", Value::List(vec![int(19), int(1), label.clone(), int(16_384), list(&id, 1025)]), id.clone(), 1025, vec![]),
         ("fetch reply of 1025 items", Value::List(vec![int(20), int(1), list(&fetched, 1025)]), fetched.clone(), 1025, vec![]),
-        ("path reply of 1025 steps", Value::List(vec![int(9), int(1), list(&step, 1025), Value::Bool(false)]), step.clone(), 1025, vec![Value::Bool(false)]),
     ];
     for (name, full, item, n, tail) in caps {
         cases.push(repeated(name, "cap", full, item, n, &tail));
@@ -87,7 +85,7 @@ pub fn messages() -> VecFile {
         ("trailing byte", "cbor", vec![0x82, 0x01, 0x01, 0x00]),
         ("indefinite array", "cbor", vec![0x9f, 0x01, 0x01, 0xff]),
         ("deposit wrap of 48 bytes", "size", cbor::encode(&Value::List(vec![int(37), int(1), Value::List(vec![Value::List(vec![int(2), label.clone(), bytes(1, 1), bytes(48, 0), bytes(64, 0)])])]))),
-        ("step that does not parse", "step", cbor::encode(&Value::List(vec![int(6), int(1), bytes(300, 0)]))),
+        ("step that does not parse", "step", cbor::encode(&Value::List(vec![int(7), int(1), label.clone(), bytes(300, 0), Value::List(vec![])]))),
         ("empty delete", "count", cbor::encode(&Value::List(vec![int(14), int(1), label.clone(), empty.clone()]))),
     ];
     for (name, rule, enc) in rejects {
@@ -95,7 +93,7 @@ pub fn messages() -> VecFile {
         cases.push(case(name, SPEC).with("hex", hex(&enc)).with("reject", rule).with("answer", r.code().0.to_string()));
     }
     // retired kinds are unknown
-    for kind in [10, 12, 13, 15, 16, 17, 18, 21, 22, 23] {
+    for kind in [4, 5, 6, 8, 9, 10, 12, 13, 15, 16, 17, 18, 21, 22, 23] {
         let enc = cbor::encode(&Value::List(vec![int(kind), int(7), label.clone()]));
         let r = Message::decode(&enc).expect_err("retired kind");
         assert_eq!(r.error, osis_proto::Error::UnknownKind(kind as u64));
