@@ -390,14 +390,10 @@ impl Ctx<'_> {
         Ok(())
     }
 
-    pub fn json(&mut self, j: &J) -> anyhow::Result<()> {
-        self.line(&j.text())
-    }
-
     /// Emits `text` lines or the JSON document.
     pub fn emit(&mut self, text: &[String], j: J) -> anyhow::Result<()> {
         if self.g.json {
-            self.json(&j)
+            self.line(&j.text())
         } else {
             for l in text {
                 self.line(l)?;
@@ -420,10 +416,6 @@ impl Ctx<'_> {
     /// The `--timeout` bound (default 30 s; `0`: none).
     pub fn timeout(&self) -> anyhow::Result<Option<Duration>> {
         timeout_of(&self.g, Some(DEFAULT_WAIT))
-    }
-
-    pub fn timeout_or(&self, default: Option<Duration>) -> anyhow::Result<Option<Duration>> {
-        timeout_of(&self.g, default)
     }
 
     /// Resolves a tid argument: `osis://…`, bare, `me`, `home`, `node`, `$var`.

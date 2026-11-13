@@ -25,10 +25,6 @@ pub fn role_text(r: Role) -> &'static str {
     ROLES.iter().find(|x| x.1 == r).map_or("?", |x| x.0)
 }
 
-fn grant_opts(until: &Option<String>, may_grant: &Option<String>) -> anyhow::Result<GrantOpts> {
-    Ok(GrantOpts { until: opt_ts(until)?, may_grant: may_grant.as_deref().map(parse_role).transpose()? })
-}
-
 pub(crate) fn parse_role(s: &str) -> anyhow::Result<Role> {
     ROLES.iter().find(|x| x.0 == s).map(|x| x.1).ok_or_else(|| usage(format!("role: sync, read, write or admin (got {s:?})")))
 }
@@ -46,11 +42,6 @@ fn emit_commit(ctx: &mut Ctx<'_>, c: Option<CommitId>) -> anyhow::Result<()> {
 
 pub(crate) fn parse_id(s: &str) -> anyhow::Result<CommitId> {
     s.parse().map_err(|_| usage(format!("not a commit id: {s}")))
-}
-
-/// The commit behind a commit id, as `inspect` asks.
-fn parse_commit(s: &str) -> anyhow::Result<osis::internals::RawCommitId> {
-    Ok(osis::internals::CommitRaw::raw(&parse_id(s)?))
 }
 
 fn ts_text(raw: bool, ms: u64) -> String {
@@ -141,15 +132,6 @@ fn tagged(rel: &[(&str, &Vec<Tid>)]) -> Vec<String> {
 
 fn links_j(ls: &[osis::LinkInfo]) -> J {
     J::Arr(ls.iter().map(|l| J::obj([("id", J::str(l.id.to_string())), ("target", J::tid(l.target)), ("role", J::str(role_text(l.role).to_string())), ("single_use", J::Bool(l.single_use))])).collect())
-}
-
-fn set_role_opts(d: &SetRoleFlags) -> SetRoleOpts {
-    SetRoleOpts { retain_copy: d.retain_copy }
-}
-
-/// A role, or `none`.
-fn opt_role(s: &str) -> anyhow::Result<Option<Role>> {
-    if s == "none" { Ok(None) } else { parse_role(s).map(Some) }
 }
 
 fn scope(ctx: &Ctx<'_>, s: &Scope) -> anyhow::Result<osis::Scope> {
@@ -407,7 +389,7 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
         }
         Cmd::Node(NodeCmd::Rm { node, d, end_links }) => {
             let n = ctx.tid(&node)?;
-            let o = set_role_opts(&d);
+            let o = SetRoleOpts { retain_copy: d.retain_copy };
             let open = db.remove_node(n, o)?;
             if end_links {
                 for l in &open {
@@ -571,10 +553,11 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
                 Some(r) => parse_role(&r)?,
                 None => db.grants(t)?.get(&m).map(|e| e.role).ok_or_else(|| exit(3, "no such grant"))?,
             };
-            Ok(db.grant(t, m, role, grant_opts(&until, &may_grant)?)?)
+            Ok(db.grant(t, m, role, GrantOpts { until: opt_ts(&until)?, may_grant: may_grant.as_deref().map(parse_role).transpose()? })?)
         }
         Cmd::SetRole { t, holder, role, d } => {
-            let (t, m, role, o) = (ctx.tid(&t)?, ctx.tid(&holder)?, opt_role(&role)?, set_role_opts(&d));
+            let role = if role == "none" { None } else { Some(parse_role(&role)?) };
+            let (t, m, o) = (ctx.tid(&t)?, ctx.tid(&holder)?, SetRoleOpts { retain_copy: d.retain_copy });
             Ok(db.set_role(t, m, role, o)?)
         }
         Cmd::Leave { t, holder } => {
@@ -979,7 +962,7 @@ fn stream_pages(ctx: &mut Ctx<'_>, rx: &mpsc::Receiver<(String, bool)>, count: O
 /// does not). `best_effort`: write errors are ignored (the lines are diagnostics, not what the
 /// command is run for).
 pub(crate) fn stream<T>(ctx: &mut Ctx<'_>, rx: &mpsc::Receiver<T>, count: Option<usize>, what: &str, best_effort: bool, line: impl Fn(&Ctx<'_>, T) -> (String, bool)) -> anyhow::Result<()> {
-    let end = deadline(ctx.timeout_or(None)?);
+    let end = deadline(crate::timeout_of(&ctx.g, None)?);
     let mut n = 0;
     while count.is_none_or(|c| n < c) {
         let r = match end {
@@ -1355,7 +1338,7 @@ fn inspect(ctx: &mut Ctx<'_>, i: InspectCmd) -> anyhow::Result<()> {
             }
         }
         InspectCmd::Commit { id } => {
-            let id = parse_commit(&id)?;
+            let id = osis::internals::CommitRaw::raw(&parse_id(&id)?);
             let h = db.engine(|e| e.header(&id)).ok_or_else(|| exit(3, "commit not held"))?;
             lines.push(format!("{h:#?}"));
             for (p, reason) in db.engine(|e| e.pending()) {
