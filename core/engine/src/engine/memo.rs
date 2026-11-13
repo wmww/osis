@@ -545,12 +545,6 @@ impl<K: Hash + Eq + Clone, V: Clone + PartialEq + std::fmt::Debug> Memo<K, V> {
         self.entries.borrow().get(k).filter(|e| e.holds()).map(|e| e.value.clone())
     }
 
-    /// Drops the answer kept for `k`: for an input no stamp covers that the asker checks of the
-    /// kept answer itself (`Engine::tree_refs`: a node blob a walk lacked, held now).
-    pub fn forget(&self, k: &K) {
-        self.entries.borrow_mut().remove(k);
-    }
-
     /// Keeps `value` as `k`'s answer at the stamps of now. For a writer that held `k`'s answer
     /// (`held`), changed what it was read from and knows what a fresh run gives after that
     /// (a state decoded once and patched by each join costs the join, not the state). Nothing

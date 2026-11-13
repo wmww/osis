@@ -444,6 +444,7 @@ fn destroy_thing(tx: &mut Tx<'_>, t: &Tid, changed: &mut BTreeSet<(Tid, Ak)>) ->
     if !keep {
         tx.txn.remove_local(&[records::CREATED, t.as_bytes()].concat(), Shred::Yes)?;
         tx.core.ix.held.forget_record(t);
+        tx.core.tree_reach.remove(t);
         crate::rotation::merge::forget(tx, t)?;
         if forget {
             forget_released(tx, t)?;

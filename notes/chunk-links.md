@@ -4,7 +4,7 @@
 Tess's goals: no size cap from lists, small snapshots, one mechanism; a node that cannot read learns no tree shape (which pieces belong to which commit, which pieces edits share).
 
 ## Principle
-A link is the whole authority to read and to delete its blob: whoever holds the link and knows its thing computes the blob's commitments (link blind, thing blind) and, with the delete key of a level, signs its delete. A piece goes once no held body or live state of its thing links it (`Core::tree_refs`). The storing node checks each delete against the prefix.
+A link is the whole authority to read and to delete its blob: whoever holds the link and knows its thing computes the blob's commitments (link blind, thing blind) and, with the delete key of a level, signs its delete. A piece goes once no held body or live state of its thing links it (`Core::tree_reach`). The storing node checks each delete against the prefix.
 
 ## The link
 - `LINK := [content hash, blob ID, suite || key, salt, [DeleteKey*]]` (spec/data-model.md §5, §6) everywhere a LINK stands: value roots, tree-node children, page links, link pages, header lists, a linked frontier, a `ThingList`.
@@ -28,7 +28,7 @@ A link is the whole authority to read and to delete its blob: whoever holds the 
 - **Fetch and memory gate**: by walking what a commit links (`apply/reach.rs`, `Engine::blob_wants`); the gate is staged (commit blob, pages, roots' claimed lengths), lengths are claims enforced as resolved (spec/wire.md §6).
 - **Upload**: a body's walk (`Engine::body_links`).
 - **Trigger** (spec/sync.md §7): a body weighs the tree its links free (a walk stopping at blobs a live state links); the estimate grows per join by what the unlinked trees hold beyond the linked ones (a level-aligned walk, flat in value size); a snapshot weighs its encoded state alone.
-- **Repair** (spec/sync.md §1): judged at the losing label's settled pass, after the deleting batch applies (notes/engine-paged.md); `Engine::relink` asks each thing of the closure whether its live states link the lost blob (memoized tree walks; a rare path, no index).
+- **Repair** (spec/sync.md §1): judged at the losing label's settled pass, after the deleting batch applies (notes/engine-paged.md); `Engine::relink` asks each thing of the closure whether its live states link the lost blob (the counted trees, `tree_refs::state_refs_in`; every thing of the closure is asked, a rare path).
 - **Relay-only commits** never page (spec/commits.md §2): a delta linking a page is bad input (`verify::NoPages`).
 - **Commit size**: no list bounds it; one commit blob (`MAX_BLOB`) does, which Tess judged ample (notes/whole-commits.md).
 

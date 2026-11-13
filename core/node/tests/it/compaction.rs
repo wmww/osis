@@ -422,7 +422,9 @@ fn tree_garbage(net: &mut Net, host: usize, n: usize, t: Tid, sizes: &mut std::c
 /// What `edits` one-byte edits of a value of `chunks` × 64 KiB (random bytes) at spread positions
 /// leave, the value written once and synced first. After any edit, the most: tree garbage at the writer and
 /// at the host (`tree_garbage`), plain deltas the writer holds on the aspect; and the trigger's
-/// tree blobs sized and bodies weighed per edit.
+/// tree blobs sized and bodies weighed per edit, and the blobs the tree refs read per edit (tree
+/// nodes and body parts: what a dropped body's pieces and the weighing are judged against,
+/// `Engine::tree_refs`).
 #[derive(Debug, Clone, Copy)]
 struct Rewritten {
     at_writer: usize,
@@ -430,6 +432,7 @@ struct Rewritten {
     deltas: usize,
     sized: f64,
     weighed: f64,
+    refs: f64,
 }
 
 fn rewritten(chunks: usize, edits: usize) -> Rewritten {
@@ -446,7 +449,7 @@ fn rewritten(chunks: usize, edits: usize) -> Rewritten {
     };
     write(&mut net, &x);
     let mut sizes = Default::default();
-    let mut out = Rewritten { at_writer: 0, at_the_peer: 0, deltas: 0, sized: 0.0, weighed: 0.0 };
+    let mut out = Rewritten { at_writer: 0, at_the_peer: 0, deltas: 0, sized: 0.0, weighed: 0.0, refs: 0.0 };
     osis_node::costs::take();
     for i in 0..edits {
         let at = (i * 7919 * 65536 + 4099) % x.len();
@@ -460,6 +463,7 @@ fn rewritten(chunks: usize, edits: usize) -> Rewritten {
     let costs = osis_node::costs::take();
     let per = |name: &str| costs.iter().find(|c| c.0 == name).map_or(0, |c| c.2) as f64 / edits as f64;
     (out.sized, out.weighed) = (per("compact: tree blobs sized"), per("compact: bodies weighed"));
+    out.refs = per("tree refs: blobs read") + per("tree refs: parts read");
     assert_eq!(net.engine(r).get_full(&t, &k.1).unwrap(), Some(Value::Bytes(x)), "the reader reads the value");
     out
 }
@@ -484,10 +488,11 @@ fn rewritten_value_leaves_bounded_tree_garbage_spec_sync_7() {
     }
 }
 
-// spec/sync.md §7 Trigger, notes/coordination.md (count work): the trigger's work per edit of a
-// large value is flat at n and 10n chunks (it sizes the blobs an edit lists and the replaced
-// ones a weighing finds, never the value's whole tree), and an edit's replaced tree blobs wait
-// for one more edit at most, at either size.
+// spec/sync.md §7 Trigger, Freed links, notes/coordination.md (count work): the trigger's work
+// per edit of a large value is flat at n and 10n chunks (it sizes the blobs an edit lists and the
+// replaced ones a weighing finds, never the value's whole tree), as is the tree refs' (a drop's
+// pieces and the weighing judged against what the edit changed, never a walk of the whole tree),
+// and an edit's replaced tree blobs wait for one more edit at most, at either size.
 #[test]
 fn trigger_work_flat_in_value_size_spec_sync_7() {
     let small = rewritten(8, 6);
@@ -495,6 +500,7 @@ fn trigger_work_flat_in_value_size_spec_sync_7() {
     println!("8 chunks {small:?}\n80 chunks {large:?}");
     assert!(small.sized > 0.0 && small.weighed > 0.0, "the trigger sized and weighed: {small:?}");
     assert!(large.sized <= small.sized * 1.5 + 1.0 && large.weighed <= small.weighed * 1.5 + 1.0, "work per edit grew with the value: {small:?} at 8 chunks, {large:?} at 80");
+    assert!(small.refs > 0.0 && large.refs <= small.refs * 1.5 + 1.0, "tree refs work per edit grew with the value: {small:?} at 8 chunks, {large:?} at 80");
     for (chunks, r) in [(8, small), (80, large)] {
         assert!(r.at_writer <= ONE_EDIT && r.at_the_peer <= ONE_EDIT && r.deltas <= 1, "{chunks} chunks: {r:?}");
     }

@@ -972,6 +972,8 @@ pub(crate) struct CoreMark {
     dirty: bool,
     /// `records_read.changes()`: a record or leftover written since moves every record.
     records: u64,
+    /// `reach_log`'s length.
+    reached: usize,
 }
 
 /// A held compaction snapshot of an aspect: `ts`, ID, frontiers, `Absorbed` (commit, author),
@@ -1241,8 +1243,13 @@ pub struct Core {
     /// `Engine::part_keeps` per commit but for the clock (`retention::bounds::commit_bounds`,
     /// `memo`).
     pub(crate) part_bounds: memo::Memo<CommitId, Arc<Vec<(u64, u64)>>>,
-    /// The trees each source of a thing links (`Engine::tree_refs`, `memo`).
-    pub(crate) tree_refs: memo::Memo<(Tid, tree_refs::Source), Arc<Trees>>,
+    /// The roots each source of a thing links (`Engine::tree_refs`, `memo`).
+    pub(crate) tree_roots: memo::Memo<(Tid, tree_refs::Source), Arc<Vec<osis_base::Link>>>,
+    /// The trees of each thing's sources, counted as their roots moved (`tree_refs::Reach`).
+    pub(crate) tree_reach: HashMap<Tid, tree_refs::ThingReach>,
+    /// The things whose `tree_reach` a question took since the transaction began: a failed step
+    /// or transaction drops theirs (`forget_reach_since`), as it may have read blobs it held.
+    pub(crate) reach_log: Vec<Tid>,
     /// At or before the earliest retention timer held (wall ms; `u64::MAX`: none): set by
     /// `tick` and at open, lowered by every timer put (`Engine::timers_due`).
     pub timer_floor: u64,
@@ -1445,7 +1452,9 @@ impl Core {
             replaced_dates: self.replaced_dates.clone(),
             waiting_carries: self.waiting_carries.clone(),
             part_bounds: self.part_bounds.clone(),
-            tree_refs: self.tree_refs.clone(),
+            tree_roots: self.tree_roots.clone(),
+            tree_reach: self.tree_reach.clone(),
+            reach_log: self.reach_log.clone(),
             timer_floor: self.timer_floor.clone(),
             none_due: self.none_due.clone(),
             settings_due: self.settings_due.clone(),
@@ -1859,7 +1868,16 @@ impl Core {
         self.waits.retake_committed();
         self.written.clear();
         self.cut_subs.clear();
+        self.reach_log.clear();
         self.dirty = false;
+    }
+
+    /// Drops the `tree_reach` of every thing a question took since `n` (`reach_log`): what it
+    /// read of a blob a failed step or transaction held is read anew.
+    pub(crate) fn forget_reach_since(&mut self, n: usize) {
+        for t in self.reach_log.split_off(n.min(self.reach_log.len())) {
+            self.tree_reach.remove(&t);
+        }
     }
 
     /// A point to undo back to (`rollback_to`): the start of a transaction or of a step
@@ -1885,6 +1903,7 @@ impl Core {
             memory_tx: self.memory_tx,
             dirty: self.dirty,
             records: self.records_read.changes(),
+            reached: self.reach_log.len(),
         }
     }
 
@@ -2005,6 +2024,10 @@ impl Core {
             memory_room: _,
             memory_waits: _,
             walks: _,
+            // brought up to date from the roots at each question; a failed step or transaction
+            // drops what it may have read of blobs it held (`forget_reach_since`)
+            tree_reach: _,
+            reach_log: _,
             // memos: each answer holds while what it read does (`memo`); the stamps of what a
             // rollback restores move
             states_read: _,
@@ -2026,7 +2049,7 @@ impl Core {
             replaced_dates: _,
             waiting_carries: _,
             part_bounds: _,
-            tree_refs: _,
+            tree_roots: _,
             departures: _,
             reseal_scans: _,
             // caches, dropped when anything changed (`states` and `pages` per written aspect)
@@ -2282,7 +2305,9 @@ impl Core {
             replaced_dates: memo::Memo::new("replaced at"),
             waiting_carries: memo::Memo::new("waiting snapshot: judged"),
             part_bounds: memo::Memo::new("part bounds"),
-            tree_refs: memo::Memo::new("tree refs"),
+            tree_roots: memo::Memo::new("tree roots"),
+            tree_reach: HashMap::new(),
+            reach_log: Vec::new(),
             timer_floor: 0,
             none_due: BTreeSet::new(),
             cover_candidates: BTreeMap::new(),
@@ -2661,6 +2686,7 @@ impl Tx<'_> {
             Err(e) => {
                 self.txn.rollback_to(sp);
                 self.blobs.rollback_to(held);
+                self.core.forget_reach_since(m.reached);
                 self.core.rollback_to(m);
                 Err(e)
             }
@@ -3698,6 +3724,7 @@ impl Engine {
             Err(e) => {
                 self.core.walks_done = None;
                 self.core.cut_subs.clear();
+                self.core.forget_reach_since(start.reached);
                 self.core.rollback_to(start);
                 Err(e)
             }

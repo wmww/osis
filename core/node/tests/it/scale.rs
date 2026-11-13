@@ -1604,8 +1604,8 @@ fn kept_overwrite_reads_no_body_spec_commits_5() {
 }
 
 /// A thing holding `n` bodies on other aspects and a large value: the work of judging the chunks
-/// one more write-and-compact of the value drops (parts read, tree blobs walked), after a first
-/// round asked about the thing once.
+/// one more write-and-compact of the value drops (parts read, tree links counted and blobs read),
+/// after a first round asked about the thing once.
 fn chunk_drop(n: usize) -> (u64, u64) {
     let (mut net, _host, [a], _g, [t]) = crate::net::hosted::<1, 1>(&[], ["x"], false);
     let blob = Ak::new(crate::net::BLOB.ak()).unwrap();
@@ -1632,7 +1632,7 @@ fn chunk_drop(n: usize) -> (u64, u64) {
     round(&mut net, 600_000);
     let c: BTreeMap<_, _> = osis_node::costs::take().into_iter().map(|(k, _, c)| (k, c)).collect();
     let n = |k: &str| c.get(k).copied().unwrap_or(0);
-    (n("tree refs: parts read"), n("tree refs: tree blobs"))
+    (n("tree refs: parts read"), n("tree refs: links counted") + n("tree refs: blobs read"))
 }
 
 // spec/sync.md §7 (a dropped body's chunk goes once nothing held links it); spec/requirements.md,
@@ -1643,7 +1643,7 @@ fn chunk_drop_judgment_is_flat() {
     let (small, big) = (chunk_drop(10), chunk_drop(100));
     assert!(small.0 > 0, "the round judged dropped chunks");
     flat("chunk drop: parts read", small.0, big.0);
-    flat("chunk drop: tree blobs", small.1, big.1);
+    flat("chunk drop: tree links", small.1, big.1);
 }
 
 /// A map of `n` lasting entries, then `n` entries each its own commit expiring a second after the

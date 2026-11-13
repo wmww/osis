@@ -426,7 +426,7 @@ pub(crate) fn links_in(v: &Value, out: &mut Vec<Link>) {
 /// What a link reaches one step down: a tree node's children (with whether they are chunks),
 /// or the links inside a page or link page; `Ok(None)` for anything else (a chunk);
 /// `Err(Missing)` when the blob is not held.
-fn below(blobs: &mut TxBlobs<'_, '_>, dedup: &Secret32, link: &Link) -> Result<Option<(bool, Vec<Link>)>> {
+pub(crate) fn below(blobs: &mut TxBlobs<'_, '_>, dedup: &Secret32, link: &Link) -> Result<Option<(bool, Vec<Link>)>> {
     let blob = blobs.fetch(&link.blob)?;
     Ok(kids_of(Some(dedup), link, &blob))
 }

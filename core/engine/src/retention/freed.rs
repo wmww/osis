@@ -544,8 +544,8 @@ mod tests {
         let root = e.run(|tx| part_links(tx, &cs[1], 0)).unwrap()[0];
         let bytes = e.blob(&root.blob).unwrap().unwrap();
         e.run(|tx| tx.blobs.release(&root.blob, false)).unwrap();
-        // a held source's node released (only a test does so): its kept walk is read anew
-        e.core.tree_refs = crate::engine::memo::Memo::new("tree refs");
+        // a held source's node released (only a test does so): its counted trees are read anew
+        e.core.tree_reach.clear();
         assert!(judge_all(e).freed.is_empty(), "judged links wait while a held tree is unknown");
         e.put_blobs(vec![(root.blob, bytes)]).unwrap();
         let j = e.judge_freed(&BTreeSet::new()).unwrap();
