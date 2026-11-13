@@ -413,8 +413,10 @@ pub(crate) mod tests {
         SigningSecret::from_seed(&Secret32::from_bytes([n; 32]))
     }
 
+    /// `secret(n)`'s public key, the pool derived once per process.
     fn key(n: u8) -> VerifyingKey {
-        secret(n).verifying_key()
+        static KEYS: std::sync::OnceLock<Vec<VerifyingKey>> = std::sync::OnceLock::new();
+        KEYS.get_or_init(|| (0..=u8::MAX).map(|n| secret(n).verifying_key()).collect())[usize::from(n)]
     }
 
     /// A path whose role keys follow `pick(step, role)` (keys from a small pool, so they repeat).
