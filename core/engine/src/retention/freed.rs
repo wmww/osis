@@ -585,6 +585,27 @@ mod tests {
         assert!(live.iter().all(|b| e.has_blob(b)), "t2's tree held");
     }
 
+    // spec/sync.md §7 Freed links (a piece goes once no held source of its thing links it): a
+    // value of the thing links a live tree's root blob by a wrong key. The tree stays linked
+    // whichever link to that blob is counted first (here the wrong one: its aspect sorts first,
+    // counted afresh as at open).
+    #[test]
+    fn a_wrong_key_link_to_a_live_node_keeps_its_tree_spec_sync_7() {
+        let (mut lp, t, a, _) = three_replaces();
+        let e = &mut lp.peers[0].engine;
+        let Some(Value::Link(l)) = e.get(&t, &a).unwrap() else { panic!("t holds a large value") };
+        let tree = e.live_trees(&t).unwrap().blobs;
+        assert!(tree.len() > 2, "a tree of nodes and chunks");
+        let mut wrong = *l;
+        wrong.key = [7; 32];
+        let mut m = Mutation::new();
+        m.set(t, &Ak::new("x:a.0").unwrap(), &Value::Link(Box::new(wrong))).unwrap();
+        lp.peers[0].commit(m).unwrap();
+        let e = &mut lp.peers[0].engine;
+        e.core.tree_reach.clear();
+        assert_eq!(e.tree_refs(&t, &tree).unwrap().blobs, tree, "the live tree stays linked");
+    }
+
     // spec/sync.md §7 Freed links (the walk stops at shared nodes), notes/coordination.md (check
     // scaling): dropping an edited version of a value frees what the edit replaced, flat in the
     // value's size; the freed set holds no more.

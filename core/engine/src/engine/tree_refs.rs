@@ -3,8 +3,8 @@
 //! links it, by any body or state of its thing: a reused chunk or a snapshot's value included).
 //!
 //! Kept by what moved, never walked whole (`Reach`, per thing: one over its live states, one over
-//! its held bodies): a count per blob of the links to it, from a source's roots and from the
-//! nodes counted (a node's links count while it does). Each source's roots (the links its values
+//! its held bodies): a count per link (by what opens it: blob, hash, key) of the times it is
+//! linked, from a source's roots and from the nodes counted (a node's links count while it does). Each source's roots (the links its values
 //! hold) are a memo (`Core::tree_roots`), read again only when its record, leftovers, header or
 //! state moved; a question first counts each source whose roots moved since they were counted:
 //! the roots it linked and unlinked, and below them only the nodes counted for the first time or
@@ -34,7 +34,7 @@ pub(crate) enum Source {
     Body(CommitId),
 }
 
-/// The roots of source `s` of thing `t`: the links its values hold, one per blob.
+/// The roots of source `s` of thing `t`: the links its values hold.
 fn roots_of(tx: &mut Tx<'_>, t: &Tid, s: &Source) -> Result<Vec<Link>> {
     let mut roots: Vec<Link> = Vec::new();
     match s {
@@ -52,7 +52,7 @@ fn roots_of(tx: &mut Tx<'_>, t: &Tid, s: &Source) -> Result<Vec<Link>> {
         }
     }
     roots.sort_unstable_by_key(|l| l.blob);
-    roots.dedup_by_key(|l| l.blob);
+    roots.dedup();
     Ok(roots)
 }
 
@@ -84,7 +84,7 @@ fn sources(tx: &mut Tx<'_>, t: &Tid, states: bool) -> Result<BTreeSet<Source>> {
     Ok(out)
 }
 
-/// What one counted blob's read found.
+/// What one counted link's read found.
 #[derive(Clone, Debug, Default)]
 enum Read {
     /// Not read: every link to it counted is a chunk's (a level-1 node's child).
@@ -97,12 +97,20 @@ enum Read {
     Missing,
 }
 
-/// One counted blob.
+/// What a read of a link depends on: its blob, its content hash and its key. Two links to one
+/// blob that differ in these are counted apart (one may open what the other cannot).
+type Opens = (BlobId, [u8; 32], [u8; 32]);
+
+fn opens(l: &Link) -> Opens {
+    (l.blob, l.hash, l.key)
+}
+
+/// One counted link.
 #[derive(Clone, Debug)]
 struct Counted {
-    /// The link it was first counted by (what it is read with).
+    /// What it is read with.
     link: Link,
-    /// Links to it counted.
+    /// Times counted.
     refs: u64,
     /// Those not as a chunk: it is read while one is.
     inner: u64,
@@ -114,10 +122,10 @@ struct Counted {
 pub(crate) struct Reach {
     /// The roots counted, by source.
     roots: HashMap<Source, Arc<Vec<Link>>>,
-    /// Every blob a counted link reaches.
-    blobs: HashMap<BlobId, Counted>,
-    /// The counted blobs read while not held.
-    missing: BTreeSet<BlobId>,
+    /// Every link counted (by blob first: `links_to`).
+    links: BTreeMap<Opens, Counted>,
+    /// The counted links read while not held.
+    missing: BTreeSet<Opens>,
 }
 
 /// A thing's two reaches: its live states', its held bodies'.
@@ -129,7 +137,8 @@ pub(crate) struct ThingReach {
 
 impl Reach {
     /// Counts the roots of `now` (every source of its kind, through `Core::tree_roots`) where they
-    /// moved since counted, then reads the missing nodes held now.
+    /// moved since counted (the old roots down, the new up: `count` sums them, so the roots kept
+    /// move nothing), then reads the missing nodes held now.
     fn update(&mut self, tx: &mut Tx<'_>, t: &Tid, dedup: Option<&Secret32>, now: BTreeSet<Source>) -> Result<()> {
         // a thing with no dedup secret has no trees here (`trees_of`)
         let now = if dedup.is_some() { now } else { BTreeSet::new() };
@@ -143,81 +152,58 @@ impl Reach {
         for s in now {
             let k = (*t, s);
             let new = Memo::get_in(tx, |tx| &tx.core.tree_roots, &k, |tx| roots_of(tx, &k.0, &k.1).map(Arc::new))?;
-            let old = self.roots.get(&k.1);
-            if old.is_some_and(|o| Arc::ptr_eq(o, &new)) {
-                continue;
-            }
-            // both sorted by blob, one link per blob
-            let old: &[Link] = old.map_or(&[], |o| o.as_slice());
-            let (mut i, mut j) = (0, 0);
-            while i < old.len() || j < new.len() {
-                match (old.get(i), new.get(j)) {
-                    (Some(a), Some(b)) if a == b => (i, j) = (i + 1, j + 1),
-                    (Some(a), Some(b)) if a.blob == b.blob => {
-                        moved.push((*a, false, -1));
-                        moved.push((*b, false, 1));
-                        (i, j) = (i + 1, j + 1);
-                    }
-                    (Some(a), Some(b)) if a.blob < b.blob => {
-                        moved.push((*a, false, -1));
-                        i += 1;
-                    }
-                    (Some(a), None) => {
-                        moved.push((*a, false, -1));
-                        i += 1;
-                    }
-                    (_, Some(b)) => {
-                        moved.push((*b, false, 1));
-                        j += 1;
-                    }
-                    (None, None) => break,
+            if let Some(old) = self.roots.get(&k.1) {
+                if Arc::ptr_eq(old, &new) {
+                    continue;
                 }
+                moved.extend(old.iter().map(|l| (*l, false, -1)));
             }
+            moved.extend(new.iter().map(|l| (*l, false, 1)));
             self.roots.insert(k.1, new);
         }
         if let Some(d) = dedup {
             self.count(tx, d, moved)?;
             // a node a read lacked, held now
             let mut kids = Vec::new();
-            for b in self.missing.clone() {
-                if !tx.blobs.held(&b)? {
+            for o in self.missing.clone() {
+                if !tx.blobs.held(&o.0)? {
                     continue;
                 }
-                let Some(c) = self.blobs.get_mut(&b) else { continue };
+                let Some(c) = self.links.get_mut(&o) else { continue };
                 c.read = read(tx, d, &c.link)?;
                 if let Read::Kids(k) = &c.read {
                     kids.extend(k.iter().map(|(k, chunk)| (*k, *chunk, 1)));
-                    self.missing.remove(&b);
+                    self.missing.remove(&o);
                 }
             }
             self.count(tx, d, kids)?;
         } else {
-            self.blobs.clear();
+            self.links.clear();
             self.missing.clear();
         }
         Ok(())
     }
 
     /// Counts `links` (each with whether it is a chunk, and by how much), and below them what that
-    /// changes, a level at a time: a blob first counted as no chunk is read and its links counted
-    /// up, one no longer counted so has them counted down. A level's changes are summed per blob
+    /// changes, a level at a time: a link first counted as no chunk is read and its links counted
+    /// up, one no longer counted so has them counted down. A level's changes are summed per link
     /// first, so the links a new node shares with the one it replaced move no count.
     fn count(&mut self, tx: &mut Tx<'_>, dedup: &Secret32, links: Vec<(Link, bool, i64)>) -> Result<()> {
         let mut level = links;
         while !level.is_empty() {
-            // per blob: (link, links to it, those not as a chunk)
-            let mut sums: BTreeMap<BlobId, (Link, i64, i64)> = BTreeMap::new();
+            // per link: (link, times counted, those not as a chunk)
+            let mut sums: BTreeMap<Opens, (Link, i64, i64)> = BTreeMap::new();
             for (l, chunk, n) in level.drain(..) {
-                let x = sums.entry(l.blob).or_insert((l, 0, 0));
+                let x = sums.entry(opens(&l)).or_insert((l, 0, 0));
                 x.1 += n;
                 x.2 += if chunk { 0 } else { n };
             }
-            for (b, (l, refs, inner)) in sums {
+            for (o, (l, refs, inner)) in sums {
                 if refs == 0 && inner == 0 {
                     continue;
                 }
                 crate::costs::count("tree refs: links counted", 1);
-                let c = self.blobs.entry(b).or_insert_with(|| Counted { link: l, refs: 0, inner: 0, read: Read::No });
+                let c = self.links.entry(o).or_insert_with(|| Counted { link: l, refs: 0, inner: 0, read: Read::No });
                 let was = c.inner;
                 let moved = |x: u64, n: i64| x.checked_add_signed(n).ok_or(Error::Corrupt("tree refs: a link counted down below zero"));
                 (c.refs, c.inner) = (moved(c.refs, refs)?, moved(c.inner, inner)?);
@@ -226,7 +212,7 @@ impl Reach {
                     match &c.read {
                         Read::Kids(k) => level.extend(k.iter().map(|(k, chunk)| (*k, *chunk, 1))),
                         Read::Missing => {
-                            self.missing.insert(b);
+                            self.missing.insert(o);
                         }
                         Read::No => {}
                     }
@@ -234,21 +220,26 @@ impl Reach {
                     match std::mem::take(&mut c.read) {
                         Read::Kids(k) => level.extend(k.into_iter().map(|(k, chunk)| (k, chunk, -1))),
                         Read::Missing => {
-                            self.missing.remove(&b);
+                            self.missing.remove(&o);
                         }
                         Read::No => {}
                     }
                 }
                 if c.refs == 0 {
-                    self.blobs.remove(&b);
+                    self.links.remove(&o);
                 }
             }
         }
         Ok(())
     }
 
+    /// Whether a counted link names blob `b`.
+    fn links_to(&self, b: &BlobId) -> bool {
+        self.links.range((*b, [0; 32], [0; 32])..=(*b, [u8::MAX; 32], [u8::MAX; 32])).next().is_some()
+    }
+
     fn is_empty(&self) -> bool {
-        self.roots.is_empty() && self.blobs.is_empty()
+        self.roots.is_empty() && self.links.is_empty()
     }
 }
 
@@ -321,8 +312,8 @@ fn refs_in(tx: &mut Tx<'_>, t: &Tid, blobs: &BTreeSet<BlobId>, states: bool) -> 
     }
     let mut out = Trees::default();
     for x in [Some(&r.states), (!states).then_some(&r.bodies)].into_iter().flatten() {
-        out.blobs.extend(blobs.iter().filter(|b| x.blobs.contains_key(b)));
-        out.missing.extend(x.missing.iter().copied());
+        out.blobs.extend(blobs.iter().filter(|b| x.links_to(b)));
+        out.missing.extend(x.missing.iter().map(|o| o.0));
     }
     if !(r.states.is_empty() && r.bodies.is_empty()) {
         tx.core.tree_reach.insert(t, r);
