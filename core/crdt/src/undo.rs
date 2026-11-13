@@ -7,6 +7,7 @@
 use crate::error::Error;
 use crate::fragment::{Bag, Eid, Elem, Entry, Enum, Fragment, Map, Meta, RegWrite, Register, Set, Struct};
 use crate::ops::{Writer, create, key_state, present_slot, remove, replace};
+use crate::paging::Step;
 use crate::seq;
 use crate::stamp::{CounterRange, Dot, Source};
 use crate::view::View;
@@ -254,55 +255,35 @@ fn undo_at<V: View>(w: &mut Writer, u: &Undone, o: &Fragment, s: Option<&Fragmen
             }
             Fragment::Map(Map::new(Meta::default(), entries))
         }
-        Fragment::Struct(x) => {
-            if x.meta.reset.is_some()
-                && let Some(f) = undo_reset(w, b, view)?
-            {
-                return Ok(Some(f));
-            }
-            let prev = chosen(b);
-            let mut fields = BTreeMap::new();
-            for (id, f) in &x.fields {
-                let Some(fview) = view.field(*id) else { continue };
-                let sub = match &slot {
-                    Some(Fragment::Struct(c)) => c.fields.get(id),
-                    _ => None,
-                };
-                let pre = match &prev {
-                    Some(Fragment::Struct(p)) => p.fields.get(id),
-                    _ => None,
-                };
-                if let Some(c) = undo_at(w, u, f, sub, pre, here, &fview, false)? {
-                    fields.insert(*id, c);
-                }
-            }
-            Fragment::Struct(Struct { meta: Meta::default(), fields })
-        }
-        Fragment::Enum(x) => {
+        Fragment::Struct(Struct { meta, fields: xs }) | Fragment::Enum(Enum { meta, payloads: xs, .. }) => {
+            let case = match o {
+                Fragment::Enum(e) => Some(e.case.is_some()),
+                _ => None,
+            };
             // a case change is a reset (§5.4)
-            if (x.meta.reset.is_some() || x.case.is_some())
+            if (meta.reset.is_some() || case == Some(true))
                 && let Some(f) = undo_reset(w, b, view)?
             {
                 return Ok(Some(f));
             }
             let prev = chosen(b);
-            let mut payloads = BTreeMap::new();
-            for (id, f) in &x.payloads {
-                let Some(pview) = view.case(*id) else { continue };
-                let sub = match &slot {
-                    Some(Fragment::Enum(c)) => c.payloads.get(id),
-                    _ => None,
+            let mut out = BTreeMap::new();
+            for (id, f) in xs {
+                let (step, cview) = match case {
+                    Some(_) => (Step::Case(*id), view.case(*id)),
+                    None => (Step::Field(*id), view.field(*id)),
                 };
-                // also a case not current before: a concurrent case write may show there
-                let pre = match &prev {
-                    Some(Fragment::Enum(p)) => p.payloads.get(id),
-                    _ => None,
-                };
-                if let Some(c) = undo_at(w, u, f, sub, pre, here, &pview, false)? {
-                    payloads.insert(*id, c);
+                let Some(cview) = cview else { continue };
+                // of an enum also a case not current before: a concurrent case write may show there
+                let pre = prev.as_ref().and_then(|p| p.step(&step));
+                if let Some(c) = undo_at(w, u, f, slot.and_then(|c| c.step(&step)), pre, here, &cview, false)? {
+                    out.insert(*id, c);
                 }
             }
-            Fragment::Enum(Enum { meta: Meta::default(), case: None, payloads })
+            match case {
+                Some(_) => Fragment::Enum(Enum { meta: Meta::default(), case: None, payloads: out }),
+                None => Fragment::Struct(Struct { meta: Meta::default(), fields: out }),
+            }
         }
         Fragment::Seq(x) => {
             if x.meta.reset.is_some()
