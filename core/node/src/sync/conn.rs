@@ -96,7 +96,7 @@ pub(crate) struct LConn {
     /// lacking (it pulls them): while any is and the peer is not full, the label is not caught
     /// up there (`label_status`).
     pub lacking: usize,
-    /// Bodies this node places, stamped for the peer's head, that the peer refused under that
+    /// Bodies this node logs, stamped for the peer's head, that the peer refused under that
     /// stamp and head (spec/sync.md §10, Refused; `State::refused`), at the last pass: it will
     /// not take them, so nothing waits for them, and status names it (`refused_by`).
     pub refused: usize,

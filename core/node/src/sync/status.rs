@@ -15,7 +15,7 @@ impl SyncEngine {
             let mut failed = BTreeSet::new();
             let passed = self.state.passed.contains(&l.id);
             // the hosts whose last answer refused it (code 14), connected now or not, and those
-            // full for it or refusing a body this node places there (`LConn::full`, `refused`)
+            // full for it or refusing a body this node logs for it (`LConn::full`, `refused`)
             let full = |k: &HostKey| self.conns.values().any(|c| c.up && c.host == *k && c.labels.get(&l.id).is_some_and(|x| x.full || x.refused > 0));
             let refused_by = l.hosts.iter().filter(|a| self.refusals.get(&(a.key, l.id)).is_some_and(|(_, code)| *code == Code::NOT_ADMITTED) || full(&a.key)).cloned().collect();
             let mut st = LabelStatus { group: g, label: l.id, hosts: l.hosts.len(), sources: 0, idle: 0, opening: 0, stranded: false, refused_by, leaving, last_sync: None, passed, replaced: l.replaced };

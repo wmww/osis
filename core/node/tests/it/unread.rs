@@ -768,7 +768,7 @@ fn a_body_refused_for_a_tombstone_holds_no_delete_back_spec_sync_10() {
 }
 
 // spec/sync.md §7 (Role view first), §10 (Refused): a peer that cannot read L refuses an entry a
-// writer places there under the peer's head (as it answers a stamp under keys it does not hold
+// writer logs for it under the peer's head (as it answers a stamp under keys it does not hold
 // yet, code 1) and says so. The writer's deletes there wait on it no more, the claim deletes
 // nothing of the writer's and status names the peer; once the peer's head moves (it gets the
 // keys) the entry is offered again and taken.

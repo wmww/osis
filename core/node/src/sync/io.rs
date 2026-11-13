@@ -227,7 +227,7 @@ pub struct LabelStatus {
     /// Every host refused every key this node holds: none can serve it here (waits for a re-seal).
     pub stranded: bool,
     /// Hosts whose last refusal in a row was "not admitted" (code 14), connected now or not, and
-    /// connected ones full for it or refusing a body this node places there (spec/sync.md §10,
+    /// connected ones full for it or refusing a body this node logs for it (spec/sync.md §10,
     /// Full, Refused): nodes this node holds to serve it, that will not take it, or not all of it.
     pub refused_by: Vec<Address>,
     /// This node left the group and keeps its secrets until its self-removal is placed
