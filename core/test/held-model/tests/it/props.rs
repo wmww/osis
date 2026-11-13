@@ -179,16 +179,14 @@ fn settled_histories_keep_their_laws_large_spec_commits_5() {
 }
 
 fn settled_histories_keep_their_laws(seeds: Vec<u64>) {
-    let past_bound = std::sync::atomic::AtomicUsize::new(0);
     each(seeds, |seed| {
         let h = settle(history(seed, LEN), None, seed, &mut Seen::default());
         let o = evaluate(&h);
         assert!(o.forbidden.is_empty(), "seed {seed}: {:?}", o.forbidden);
         purge_on_replace_gone(&h, &o, seed);
         changes_only_at_deadlines(&h, o, seed);
-        past_bound.fetch_add(optional_drops_keep_reads(h, seed), std::sync::atomic::Ordering::Relaxed);
+        optional_drops_keep_reads(h, seed);
     });
-    assert!(past_bound.into_inner() > 0, "no signal dropped past its bound");
 }
 
 /// Once a node holding the right has acted, no body under purge on replace is held, none dropped
@@ -226,13 +224,11 @@ fn changes_only_at_deadlines(h: &Held, mut o: Outcome, seed: u64) {
     assert_eq!(ol, o, "seed {seed}: output changed before its first deadline {next:?}");
 }
 
-/// Each optional drop in turn changes no read and no history(); the drops past their bound.
-fn optional_drops_keep_reads(mut h: Held, seed: u64) -> usize {
-    let mut past_bound = 0;
+/// Each optional drop in turn changes no read and no history().
+fn optional_drops_keep_reads(mut h: Held, seed: u64) {
     for _ in 0..12 {
         let o = evaluate(&h);
         let Some((&pr, _)) = o.fates.iter().find(|(_, f)| matches!(f, Fate::MayDrop(_))) else { break };
-        past_bound += usize::from(o.fates[&pr] == Fate::MayDrop(DropWhy::PastBound));
         let n = act(&h, &o, Some(pr));
         let on = evaluate(&n);
         let some = |o: &Outcome| o.reads.iter().filter(|(_, r)| r.is_some()).map(|(k, r)| (*k, r.clone())).collect::<BTreeMap<_, _>>();
@@ -240,7 +236,6 @@ fn optional_drops_keep_reads(mut h: Held, seed: u64) -> usize {
         assert_eq!(on.history, o.history, "seed {seed}: dropping {pr:?} ({:?}) changed history()", o.fates[&pr]);
         h = settle(n, None, seed, &mut Seen::default());
     }
-    past_bound
 }
 
 /// What a node has seen across settles: the aspects of parts that went at their expiry while
@@ -379,7 +374,7 @@ fn creations_last_read_like_creations_first(seeds: Vec<u64>) {
 }
 
 /// The shapes `histories_reach_destructions_unknown_things_and_settings` asks the generator for.
-const SHAPES: [&str; 8] = ["expiry", "purge", "unknown", "late setting", "invalid setting", "history", "signal history", "purge on replace"];
+const SHAPES: [&str; 9] = ["expiry", "purge", "unknown", "late setting", "invalid setting", "history", "signal history", "purge on replace", "signal past its bound"];
 
 /// The commit `late_commit_converges_after_repair` withholds from `h`, seed's history.
 fn late_of(seed: u64, h: &Held) -> usize {
@@ -388,7 +383,7 @@ fn late_of(seed: u64, h: &Held) -> usize {
 
 /// What seed's history reaches, by name: each of `SHAPES` (things destroyed by expiry and by purge,
 /// parts thrown out as unknown, a late and an invalid setting, a body in history, a signal's, a
-/// body under purge on replace), a body a node may drop as covered, and the fate of each part of
+/// body under purge on replace, a signal a node may drop past its keep bound), a body a node may drop as covered, and the fate of each part of
 /// the commit `late_of` withholds.
 fn kinds(seed: u64) -> BTreeSet<String> {
     let h = history(seed, LEN);
@@ -410,6 +405,7 @@ fn kinds(seed: u64) -> BTreeSet<String> {
         o.history.keys().any(|k| !k.1.signal),
         o.history.keys().any(|k| k.1.signal),
         !o.under_purge.is_empty(),
+        o.fates.values().any(|f| *f == Fate::MayDrop(DropWhy::PastBound)),
     ];
     let mut k: BTreeSet<String> = SHAPES.iter().zip(reached).filter(|x| x.1).map(|x| x.0.to_string()).collect();
     let kind = |f: &Fate| match f {
@@ -461,8 +457,9 @@ fn covering(n: u64, late: bool) -> Vec<u64> {
 
 // spec: none (the generator's reach): the histories destroy things by expiry and by purge, throw
 // parts out on things a node holds no creation of, and hold settings (late ones, invalid ones),
-// bodies in history (signals too) and bodies under purge on replace, each in at least one seed in
-// a hundred
+// bodies in history (signals too), bodies under purge on replace and signals a node may drop past
+// their keep bound (the optional drop `settled_histories_keep_their_laws` checks), each in at least
+// one seed in a hundred
 #[test]
 fn histories_reach_destructions_unknown_things_and_settings() {
     let seen = &reach()[..100];
@@ -472,3 +469,4 @@ fn histories_reach_destructions_unknown_things_and_settings() {
         assert!(count(what) > 0, "{what}: none of 100");
     }
 }
+
