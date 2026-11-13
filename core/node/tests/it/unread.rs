@@ -767,6 +767,76 @@ fn a_body_refused_for_a_tombstone_holds_no_delete_back_spec_sync_10() {
     assert!(of(&mut net, kept).iter().any(|id| held.contains(id)), "the kept body is at the peer again, under a new encryption");
 }
 
+// spec/sync.md §7 (Role view first), §10 (Refused): a peer that cannot read L refuses an entry a
+// writer places there under the peer's head (as it answers a stamp under keys it does not hold
+// yet, code 1) and says so. The writer's deletes there wait on it no more, the claim deletes
+// nothing of the writer's and status names the peer; once the peer's head moves (it gets the
+// keys) the entry is offered again and taken.
+#[test]
+fn a_refused_entry_holds_no_delete_back_and_comes_again_once_the_head_moves_spec_sync_10() {
+    let mut net = Net::new();
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let b = net.node(2, &[host]);
+    let g = net.group(a, &[(b, Role::Read)], &[host]);
+    let t = net.item(a, g, g, "t");
+    let u = net.item(a, g, g, "u");
+    net.keep(a, u, &[("t:gone.0", PURGE)]);
+    net.run();
+    let l = net.label(a);
+    let mut m = Mutation::new();
+    m.set(u, &GONE, &s("old")).unwrap();
+    let old = net.engine(a).commit(m).unwrap().unwrap();
+    net.feed(a, osis_node::sync::Event::Local);
+    net.run();
+    net.advance(61_000);
+    let of = |net: &mut Net, c: osis_base::CommitId| -> Vec<BlobId> { net.sync(a).entries(&l).into_iter().filter(|(_, k)| matches!(k, osis_node::sync::EntryKind::Commit { commit, .. } if *commit == c)).map(|(id, _)| id).collect() };
+    let purged = of(&mut net, old);
+    assert!(!purged.is_empty() && purged.iter().all(|id| net.host_ids(host, &l).contains(id)), "at the peer");
+    // a's write never reaches the peer, which says it refused it
+    let e = net.write(a, t, "e");
+    net.lose_deposits.insert(e);
+    net.feed(a, osis_node::sync::Event::Local);
+    net.run();
+    let refused = of(&mut net, e);
+    assert!(!refused.is_empty() && refused.iter().all(|id| !net.host_ids(host, &l).contains(id)), "not at the peer");
+    let events = refused.iter().map(|id| (l, Ev::Refused(*id, Code::REFUSED))).collect();
+    net.host_inject(host, a, &Message::Stream(Box::new(osis_proto::msg::Stream { events, cursor: None, report: false })));
+    net.run();
+    assert!(net.refused_at(a, &l), "status names the peer");
+    net.restart(a, 9);
+    net.run();
+    assert!(net.refused_at(a, &l), "a restart keeps the refusal");
+    // the purge's deletes go there
+    let mut m = Mutation::new();
+    m.set(u, &GONE, &s("new")).unwrap();
+    net.engine(a).commit(m).unwrap().unwrap();
+    net.feed(a, osis_node::sync::Event::Local);
+    for _ in 0..3 {
+        net.run();
+        net.advance(61_000);
+    }
+    let held = net.host_ids(host, &l);
+    assert!(purged.iter().all(|id| !held.contains(id)), "the purged body went from the peer");
+    assert!(refused.iter().all(|id| !held.contains(id)), "the refused entry is not there");
+    assert_eq!(of(&mut net, e), refused, "a keeps what the peer refused");
+    assert_eq!(net.read(a, t), Some(s("e")));
+    // the peer gets the keys: its head moves (a removal's rotation), and the entry comes again
+    net.lose_deposits.clear();
+    let tb = net.tid(b);
+    let done = net.engine(a).demote(&g, &osis_node::flows::Demotion { holder: tb, new: None, retain: None }).unwrap();
+    let acts = net.sync(a).carry_out(done).unwrap();
+    net.actions(a, acts);
+    for _ in 0..3 {
+        net.run();
+        net.advance(61_000);
+    }
+    assert_eq!(net.host_path(host, &l).len(), 2, "the peer's head moved");
+    let held = net.host_ids(host, &l);
+    assert!(refused.iter().all(|id| held.contains(id)), "the entry is taken there");
+    assert!(!net.refused_at(a, &l), "status names the peer no more");
+}
+
 /// A Behind item on `l` by step `i`'s sync key, naming that step or (`named` false) none, signed
 /// over the listener's challenge and key (or `sig` given).
 fn behind_item(p: &Dialer, l: &Label, i: usize, named: bool) -> OfferItem {

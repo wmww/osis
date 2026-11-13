@@ -62,7 +62,7 @@ impl Code {
 }
 
 
-/// `event := [0, blob_id, Opt(blob), wrap, Opt(stamp)] | [1, blob_id] | [3, step]`.
+/// `event := [0, blob_id, Opt(blob), wrap, Opt(stamp)] | [1, blob_id] | [2, full] | [3, step] | [4, blob_id, code]`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[allow(clippy::large_enum_variant)] // steps carry parsed keys; boxing buys nothing here
 pub enum Event {
@@ -74,6 +74,9 @@ pub enum Event {
     /// The sending node, which cannot read the label, refused an entry of it it pulled for room
     /// (true), or has room again (false): carried by a Stream without cursor (spec/sync.md §10).
     Full(bool),
+    /// The sending node, which cannot read the label, refused an entry of it it pulled, for
+    /// anything but room (`Full`): carried by a Stream without cursor (spec/sync.md §10).
+    Refused(BlobId, Code),
 }
 
 /// A Fetch reply item: the entry of the label, or none.
@@ -706,6 +709,7 @@ fn event(v: Value) -> Result<Event, Error> {
         (1, 1) => Event::Deleted(BlobId(f.fixed()?)),
         (2, 1) => Event::Full(f.bool()?),
         (3, 1) => Event::Head(step(&mut f)?),
+        (4, 2) => Event::Refused(BlobId(f.fixed()?), Code(f.uint()?)),
         _ => return Err(Error::Malformed("event")),
     };
     f.end()?;
@@ -718,6 +722,7 @@ pub(crate) fn event_value(e: &Event) -> Value {
         Event::Deleted(id) => vec![Value::uint(1), Value::bytes(&id.0)],
         Event::Full(full) => vec![Value::uint(2), Value::Bool(*full)],
         Event::Head(step) => vec![Value::uint(3), step_value(step)],
+        Event::Refused(id, code) => vec![Value::uint(4), Value::bytes(&id.0), Value::uint(code.0)],
     })
 }
 
@@ -787,6 +792,7 @@ pub fn event_size(e: &Event) -> usize {
     match e {
         Event::Added { blob, .. } => 180 + blob.as_ref().map_or(0, |b| b.len()),
         Event::Deleted(_) | Event::Full(_) => 40,
+        Event::Refused(..) => 50,
         Event::Head(_) => 10 + MAX_STEP_BYTES,
     }
 }

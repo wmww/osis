@@ -65,6 +65,8 @@ const PASSED: &[u8] = b"y/B";
 const OWED: &[u8] = b"y/y";
 /// Own entries a co-reader source reported holding (`State::applied`).
 const APPLIED: &[u8] = b"y/A";
+/// Entries a peer that cannot read their label refused (`State::refused`).
+const REFUSED: &[u8] = b"y/R";
 
 /// A followed link's sharer node (spec/permissions.md §7): dialed at the link's `peer://`
 /// addresses for K's labels and the target's, nothing else.
@@ -425,6 +427,10 @@ pub struct State {
     /// entry's wrap never changes there, spec/sync.md §5). Forgotten after `TOMBSTONE_LIFETIME`,
     /// when the host's tombstone is gone too; not while the host still holds the entry.
     pub gone: BTreeMap<(HostKey, LabelId, BlobId), u64>,
+    /// Entries a peer that cannot read their label refused when it pulled them, for anything but
+    /// room (spec/sync.md §10, Refused): the stamp it refused and its head here then. Not taken
+    /// there while both stand; either changing, it is offered again (`SyncEngine::at_source`).
+    refused: BTreeMap<(LabelId, BlobId, HostKey), (Signature, osis_label::StepId)>,
     /// The wraps behind those of `gone` that opened under no read secret when heard, while the host
     /// holds the entry: possibly under an epoch not held yet (`SyncEngine::recheck_doubts`).
     pub doubts: BTreeMap<(HostKey, LabelId, BlobId), [u8; WRAP_LEN]>,
@@ -828,6 +834,11 @@ impl State {
                 }
                 b"3" => {
                     s.doubts.insert((r.arr()?, LabelId(r.arr()?), BlobId(r.arr()?)), Rd::new(&v).arr()?);
+                }
+                b"R" => {
+                    let k = (LabelId(r.arr()?), BlobId(r.arr()?), r.arr()?);
+                    let mut x = Rd::new(&v);
+                    s.refused.insert(k, (Signature(x.arr()?), osis_label::StepId(x.arr()?)));
                 }
                 b"s" => {
                     let at = Rd::new(&v).u64()?;
@@ -1510,6 +1521,10 @@ impl State {
         for c in self.inbox_chain.remove(&(l, b)).unwrap_or_default() {
             self.carry(c, false);
         }
+        let refused: Vec<HostKey> = self.refused.range((l, b, [0; 32])..=(l, b, [0xff; 32])).map(|(k, _)| k.2).collect();
+        for h in refused {
+            self.set_refused(h, l, b, None);
+        }
         self.version += 1;
         self.losses += 1;
         if e.memory {
@@ -1641,6 +1656,7 @@ impl State {
             // shown there: no verdict here changes (`Touched::shown`)
             if self.present.insert((s, l, b)) {
                 self.present_by.insert((l, b, s));
+                self.set_refused(s, l, b, None);
                 let t = match self.entries.get(&(l, b)).map(|e| &e.kind) {
                     Some(Kind::Commit { commit, .. }) => Touch::Commit(*commit),
                     _ => Touch::Blob(b),
@@ -1658,6 +1674,29 @@ impl State {
             self.del_of(&l, &b, k);
             self.drop_doubt(s, l, b);
         }
+    }
+
+    /// Records that host `s` refused entry `b` of `l` under `at` (its stamp, the host's head
+    /// here), or clears that (`refused`).
+    pub fn set_refused(&mut self, s: HostKey, l: LabelId, b: BlobId, at: Option<(Signature, osis_label::StepId)>) {
+        let k = key(REFUSED, &[&l.0, &b.0, &s]);
+        match at {
+            Some(at) => {
+                if self.refused.insert((l, b, s), at) != Some(at) {
+                    self.put_of(&l, &b, k, Wr::new().raw(&at.0.0).raw(&at.1.0).take());
+                }
+            }
+            None => {
+                if self.refused.remove(&(l, b, s)).is_some() {
+                    self.del_of(&l, &b, k);
+                }
+            }
+        }
+    }
+
+    /// What host `s` refused entry `b` of `l` under (`refused`).
+    pub fn refused_at(&self, s: &HostKey, l: &LabelId, b: &BlobId) -> Option<(Signature, osis_label::StepId)> {
+        self.refused.get(&(*l, *b, *s)).copied()
     }
 
     /// Marks a present entry deposited at a host, or not (stamped there).

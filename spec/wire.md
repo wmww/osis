@@ -268,7 +268,7 @@ item   := [blob_id, [[level, dsig]*], sig]
 outcome := [0, value] | [1, code, detail*]
 payload := [0, value] | [1] | [2, value]
 suspect := [thing, ak, digest]
-event  := [0, blob_id, Opt(blob), wrap, Opt(stamp)] | [1, blob_id] | [2, full] | [3, step]
+event  := [0, blob_id, Opt(blob), wrap, Opt(stamp)] | [1, blob_id] | [2, full] | [3, step] | [4, blob_id, code]
 ```
 Kinds 4-6, 8-10, 12, 13, 15-18 and 21-23 and status codes 10 and 15 are retired: never sent, never reused; a retired kind is unknown (answered Error 11).
 Steps and claim sets (§8) and `entry_box` (a `box` value, §7) are their canonical bytes as byte strings; blobs are byte strings; `wrap` 57 bytes; `sig`, `dsig`, `stamp` raw 64-byte Ed25519 signatures; `*_pk` raw 32-byte keys.
@@ -299,7 +299,7 @@ Steps and claim sets (§8) and `entry_box` (a `box` value, §7) are their canoni
   - else each `dsig` by that level's delete key, verifying under the commitment at that level of at least one of the blob prefix's groups (spec/crypto.md §7), every group covered by at least one pair, and `sig` by the head's write key when any level is 3, else its sync key (spec/sync.md §5). A pair verifying under no group refuses the item.
   - An item whose entry is not held: by the delete key, 0 when a tombstone of the blob exists (a repeated delete is idempotent), else 1; with levels, 1 (the prefix to check them against is gone).
   - Status gives one code per item in order.
-- **Events**: 0 an entry added or a deposited one stamped, its wrap and stamp replaced (no stamp: deposited), 1 deleted (in a Stream with no cursor: a pulled entry the sender refused for its tombstone, spec/sync.md §10 Tombstoned), 2 the sender is full for the label (`full` a bool: true full, false room again; only in a Stream with no cursor, spec/sync.md §10 Full), 3 a new head (without claim set). Expiry produces no event.
+- **Events**: 0 an entry added or a deposited one stamped, its wrap and stamp replaced (no stamp: deposited), 1 deleted, 2 the sender is full for the label (`full` a bool: true full, false room again; only in a Stream with no cursor, spec/sync.md §10 Full), 3 a new head (without claim set), 4 the sender refused a pulled entry for anything but room, with the refusal's code (only in a Stream with no cursor, spec/sync.md §10 Refused). Expiry produces no event.
 - **Fetch** (spec/sync.md §10): items in request order, possibly a prefix of the request when the reply would exceed `max_reply` (in `SMALL_REPLY..=REPLY_BUDGET`), possibly none below `REPLY_BUDGET`; the requester asks the rest again under `REPLY_BUDGET`.
 - **Stranded** and **Suspect** (spec/permissions.md §4): node to node only, answered Ok whatever the receiver does with them. Stranded names a label the sender is stranded on and the holder (a tid) it reads the label's actor through, with that holder's holder keys (§9); Suspect carries suspect entries of things in the label's closure, `thing` a tid, `ak` an AK, `digest` 16 bytes, as many as fit `MAX_MESSAGE` per message.
 - **Client port** (kinds 24-29): served on every listener of a node (spec/sync.md §10, One key). `session_id` is 16 bytes; `secret` is exactly 32 bytes.

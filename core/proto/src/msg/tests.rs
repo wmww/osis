@@ -99,6 +99,15 @@ fn a_stream_with_no_events_round_trips_spec_wire_11_2() {
     assert_eq!(Message::decode(&m.encode()), Ok(m));
 }
 
+// spec/wire.md §11.2 Events: each event of a Stream with no cursor (Full, Refused) round-trips
+#[test]
+fn cursorless_events_round_trip_spec_wire_11_2() {
+    let l = LabelId([0x0a; 16]);
+    let events = vec![(l, Event::Full(true)), (l, Event::Refused(BlobId([0xb1; 32]), Code::NOT_HEAD)), (l, Event::Refused(BlobId([0xb2; 32]), Code::TOMBSTONED))];
+    let m = Message::Stream(Box::new(crate::msg::Stream { events, cursor: None, report: false }));
+    assert_eq!(Message::decode(&m.encode()), Ok(m));
+}
+
 // spec/wire.md §11.2: per-message caps
 #[test]
 fn caps() {

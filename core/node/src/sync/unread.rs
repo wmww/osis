@@ -280,7 +280,8 @@ impl SyncEngine {
         let mut taken = Vec::new();
         let mut pending = Vec::new();
         let mut refused = Vec::new();
-        let mut tombstoned = Vec::new();
+        // refused for anything but room, with its code: the reader is told (`Event::Refused`)
+        let mut told = Vec::new();
         // refused for room while full: announced again, the reader is told (a new connection)
         let was_refused = self.unread.full.get(&l).map(|f| f.refused.clone()).unwrap_or_default();
         {
@@ -301,7 +302,7 @@ impl SyncEngine {
                     None => match hub.blob(&blob_id).map_err(hub_err)? {
                         Some(b) => b,
                         None if osis_proto::store::LabelStore::tombstoned(&*hub, &l, &blob_id).map_err(hub_err)? => {
-                            tombstoned.push(blob_id);
+                            told.push((blob_id, Code::TOMBSTONED));
                             continue;
                         }
                         None => {
@@ -320,8 +321,8 @@ impl SyncEngine {
                         } else if c == Code::STORAGE_CAP {
                             let memory = osis_label::Prefix::parse(&bytes).is_ok_and(|p| p.class().in_memory());
                             refused.push((blob_id, Some(hub.room(&l, memory).map_err(hub_err)?)));
-                        } else if c == Code::TOMBSTONED {
-                            tombstoned.push(blob_id);
+                        } else {
+                            told.push((blob_id, c));
                         }
                     }
                 }
@@ -335,10 +336,11 @@ impl SyncEngine {
         if !refused.is_empty() {
             self.unread_refused(conn, l, refused, out)?;
         }
-        // refused for this store's tombstone: the reader is told it is deleted here, as the
-        // deletion's event would have (one it never read: it lists no such entry here)
-        if !tombstoned.is_empty() {
-            let events = tombstoned.into_iter().map(|b| (l, osis_proto::Event::Deleted(b))).collect();
+        // refused for anything but room (its stamp under keys of no head here, expired, this
+        // store's tombstone, ...): the reader is told with the code, so it neither waits for this
+        // node to take it nor offers it again until its stamp or this node's head changes
+        if !told.is_empty() {
+            let events = told.into_iter().map(|(b, c)| (l, osis_proto::Event::Refused(b, c))).collect();
             self.shared_send(conn, osis_proto::Message::Stream(Box::new(osis_proto::msg::Stream { events, cursor: None, report: false })), out)?;
         }
         self.stream_crossed(conn, taken);

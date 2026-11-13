@@ -413,6 +413,7 @@ fn events(evs: &[(osis_base::LabelId, osis_proto::Event)]) -> String {
             osis_proto::Event::Deleted(b) => format!("{}-{}", short(&l.0), short(&b.0)),
             osis_proto::Event::Head(_) => format!("{} head", short(&l.0)),
             osis_proto::Event::Full(f) => format!("{} full {f}", short(&l.0)),
+            osis_proto::Event::Refused(b, c) => format!("{}-{} refused {}", short(&l.0), short(&b.0), c.0),
         })
         .collect();
     v.join(" ")

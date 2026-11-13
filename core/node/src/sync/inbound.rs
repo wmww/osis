@@ -420,8 +420,23 @@ impl SyncEngine {
                 }
                 // a reader's deletion says only that it no longer has the entry (a host's that
                 // reads the label too: it judges its own store)
-                LogEvent::Deleted(_) if reader.is_some() || conn.is_some_and(|c| self.shared_reads(c, &l)) => {}
-                LogEvent::Deleted(b) => {
+                LogEvent::Deleted(_) | LogEvent::Refused(..) if reader.is_some() || conn.is_some_and(|c| self.shared_reads(c, &l)) => {}
+                // a pulled entry the peer refused for anything but its tombstone: not taken there
+                // under its stamp and the peer's head here now, the head the peer refused it under
+                // (one connection carries both in order); a claim only stops this node waiting
+                // for it there (`at_source`)
+                LogEvent::Refused(b, code) if code != Code::TOMBSTONED => {
+                    let at = conn.and_then(|c| self.lc(c, &l)?.head.as_ref().map(|h| h.id()));
+                    let stamp = self.state.entries.get(&(l, b)).and_then(|e| e.stamp);
+                    if let (Some(s), Some(at), Some(stamp)) = (host, at, stamp)
+                        && !self.state.is_present(&s, &l, &b)
+                    {
+                        self.state.set_refused(s, l, b, Some((stamp, at)));
+                        self.mark_labels(&[l]);
+                    }
+                }
+                // refused for its tombstone: deleted there
+                LogEvent::Deleted(b) | LogEvent::Refused(b, _) => {
                     // the peer refuses this blob ID while its tombstone lasts: a body it must
                     // hold goes there under another encryption (`encrypt_again`); this node's
                     // certificate copy it never showed (its tombstone came first) is copied again

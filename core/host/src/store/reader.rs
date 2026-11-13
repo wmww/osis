@@ -65,7 +65,7 @@ impl HostStore {
     }
 
     /// Logs node sync's row of `blob` under `label` again, unchanged, so its streams show it
-    /// again (a peer that refused it under an older head). Whether there was one.
+    /// again (offered again to a peer that refused it: spec/sync.md §10 Refused). Whether there was one.
     pub fn reader_relog(&mut self, label: &LabelId, blob: &BlobId) -> Result<bool, StoreError> {
         let Some(r) = self.row(label, blob)? else { return Ok(false) };
         self.own(|s| s.own_put(label, blob, r.meta.wrap, r.meta.stamp, true))

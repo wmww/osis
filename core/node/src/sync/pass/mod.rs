@@ -635,7 +635,7 @@ impl SyncEngine {
         let mut deposits = Vec::new();
         let on_head = p.id == own.id;
         let again = self.encrypt_again(host, own, (sends, behind), bodies, snaps, left)?;
-        let mut lacking = 0;
+        let (mut lacking, mut refused_here) = (0, 0);
         for o in sends.iter().chain(&again) {
             if !lacks(self, &o.id) {
                 continue;
@@ -650,11 +650,26 @@ impl SyncEngine {
             }
             let Some(e) = self.state.entries.get(&(l, o.id)).cloned() else { continue };
             let stamped = e.stamp.is_some_and(|s| osis_label::verify_stamp(&p.stamps, &l, &o.id, &e.wrap, &s).is_ok());
-            // what it pulls once it reads it: stamped for its head now or by this pass (a
-            // deposit is the outbox's to wait for; an older head's key this node lacks stamps
-            // nothing)
-            let takes = stamped || (own.keys.write.is_some() && (on_head || (p.keys.write.is_some() && !self.stamp_serves_a_source(l, o.id, &e))));
+            // refused there (spec/sync.md §10, Refused) under its stamp and the source's head
+            // now: not taken there, nothing waits for it. Either changed since: offered again, a
+            // stamp changed by its own event, a head moved by showing it again here
+            let refused = match self.state.refused_at(&host, &l, &o.id) {
+                Some((s, at)) if Some(s) == e.stamp && at == p.id => true,
+                Some((s, _)) => {
+                    self.state.set_refused(host, l, o.id, None);
+                    if Some(s) == e.stamp {
+                        self.state.relog(l, o.id);
+                    }
+                    false
+                }
+                None => false,
+            };
+            // what it pulls once it reads it: stamped for its head now (not refused so) or by
+            // this pass (a deposit is the outbox's to wait for; an older head's key this node
+            // lacks stamps nothing)
+            let takes = (stamped && !refused) || (!stamped && own.keys.write.is_some() && (on_head || (p.keys.write.is_some() && !self.stamp_serves_a_source(l, o.id, &e))));
             lacking += usize::from(takes);
+            refused_here += usize::from(refused && stamped);
             // what the source takes once it pulls it, on this node's head or an older one:
             // deletes wait for it (a delete judged by a role commit or a cover it lacks shows
             // its other readers a value gone that is live for them, and they place it again; a
@@ -674,10 +689,6 @@ impl SyncEngine {
                         self.stamp_entry(l, o.id, e, wk, o.prio <= 1);
                     }
                 }
-                // stamped for its head: one it read before its head moved here was refused under
-                // the old head's keys (a stamp for a step not registered there yet), so it is
-                // shown again, once per head move
-                Some(_) if stamped => self.relog_for_head(conn, l, o.id)?,
                 Some(_) => {}
                 None if !stamped && (self.mine(&e) || matches!(o.of, Some(Touch::Commit(_)))) => deposits.push(o.id),
                 None => {}
@@ -685,6 +696,7 @@ impl SyncEngine {
         }
         if let Some(lc) = self.lc_mut(conn, &l) {
             lc.lacking = lacking;
+            lc.refused = refused_here;
         }
         self.deposit_items(conn, &p, deposits, out)?;
         self.clear_deposits(conn, host, &p, out)?;
@@ -718,22 +730,6 @@ impl SyncEngine {
             Ok(at)
         })?;
         Ok(at.filter(|p| reported.is_none_or(|r| r < *p)))
-    }
-
-    /// Entry `id` of `l` shown again to source `conn` (`State::relog`) when its latest event is
-    /// before the source's head last moved (`LConn::head_moved_at`) and the source had reported
-    /// reading past it by then (`LConn::head_moved_read`).
-    fn relog_for_head(&mut self, conn: ConnId, l: LabelId, id: BlobId) -> Result<()> {
-        let Some(moved) = self.lc(conn, &l).and_then(|x| x.head_moved_at) else { return Ok(()) };
-        // read there under the old head: reported read when the head moved (one read after it
-        // was taken, or comes as any; its echo may lag the source's reports)
-        let Some(read) = self.lc(conn, &l).and_then(|x| x.head_moved_read) else { return Ok(()) };
-        self.state.flush(&mut self.engine)?;
-        let latest = self.engine.run(|tx| { let p = super::state::hub(tx)?.node_log(|t| t.log_entry_latest(&l, &id))?; Ok(p) })?;
-        if latest.is_some_and(|p| p < moved && p <= read) {
-            self.state.relog(l, id);
-        }
-        Ok(())
     }
 
     /// Whether entry `id`'s stamp verifies under the head of a source of `l`.

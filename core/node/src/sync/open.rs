@@ -148,8 +148,7 @@ impl SyncEngine {
             report_at: None,
             full: false,
             lacking: 0,
-            head_moved_at: None,
-            head_moved_read: None,
+            refused: 0,
             writers: Vec::new(),
         }
     }
@@ -967,18 +966,10 @@ impl SyncEngine {
         let keys = self.engine.head_keys(&g, index, &step)?;
         self.state.set_head(host, l, &step);
         let mut moved = false;
-        // what this node had logged by now the peer may have read under the old head
-        self.state.flush(&mut self.engine)?;
-        let read = Some(self.engine.run(|tx| { let p = super::state::hub(tx)?.node_log(|t| t.log_end())?; Ok(p) })?);
-        let reported = self.stream_reported(conn, &l);
         if let Some(lc) = self.lc_mut(conn, &l) {
             moved = lc.head.as_ref().is_some_and(|h| h.id() != step.id());
             lc.head = Some(step);
             lc.keys = keys;
-            if moved {
-                lc.head_moved_at = read;
-                lc.head_moved_read = reported;
-            }
         }
         // the stamps the peer takes changed: every entry is judged against them again
         if moved {

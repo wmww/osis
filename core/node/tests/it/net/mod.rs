@@ -1862,6 +1862,12 @@ impl Net {
         self.sync(n).label_status().into_iter().find(|s| s.label == *l).is_some_and(|s| !s.refused_by.is_empty())
     }
 
+    /// Host `s` sends node `n` message `m` on their connection (a hostile host's own frame).
+    pub fn host_inject(&mut self, s: usize, n: usize, m: &osis_proto::Message) {
+        let c = self.conn_to(n, s).unwrap();
+        self.queue.push_back(Msg::ToNode(n, self.nodes[n].life, c, osis_proto::encode_frame(&m.encode())));
+    }
+
     /// Node `n`'s connection to host `s`, if up (to inject a hostile host's frames).
     pub fn conn_to(&self, n: usize, s: usize) -> Option<ConnId> {
         self.links.iter().find(|((x, _), (y, _))| *x == n && *y == s).map(|((_, c), _)| *c)

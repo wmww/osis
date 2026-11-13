@@ -88,12 +88,6 @@ pub(crate) struct LConn {
     /// The node log position the peer's reports must reach before a step is registered here:
     /// the role commits it lacks were logged under its head and go first (`roles_unreported`).
     pub report_at: Option<u64>,
-    /// This node's log end when the peer's head here last moved: entries logged before then the
-    /// peer may have read and refused under the old head's keys (`relog_for_head`).
-    pub head_moved_at: Option<u64>,
-    /// How far the peer had reported reading this node's log when its head here last moved:
-    /// what it read up to there it read under the old head (`relog_for_head`).
-    pub head_moved_read: Option<u64>,
     /// The peer said it refused an entry of the label it pulled for room and has none again
     /// yet (spec/sync.md §10, Full): what it lacks it lacks, and nothing waits for it to take
     /// it.
@@ -102,6 +96,10 @@ pub(crate) struct LConn {
     /// lacking (it pulls them): while any is and the peer is not full, the label is not caught
     /// up there (`label_status`).
     pub lacking: usize,
+    /// Bodies this node places, stamped for the peer's head, that the peer refused under that
+    /// stamp and head (spec/sync.md §10, Refused; `State::refused`), at the last pass: it will
+    /// not take them, so nothing waits for them, and status names it (`refused_by`).
+    pub refused: usize,
     /// A child step refused for now: no pass registers one before this (wall ms).
     pub step_retry: u64,
     /// Child steps refused in a row (the back-off doubles per refusal; an open or a registered
