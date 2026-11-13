@@ -484,21 +484,9 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
         }
         Cmd::Backlinks { t, watch: true, count } => {
             let t = ctx.tid(&t)?;
-            let json_out = ctx.g.json;
-            let (tx, rx) = mpsc::channel::<(String, bool)>();
-            // the first call is the page now: printed, not counted
-            let mut initial = true;
-            let _sub = db.on_backlinks_change(t, &osis::BacklinkQuery::default(), move |_, r| {
-                let l = match (r, json_out) {
-                    (Ok(p), true) => backlinks_json(&p.backlinks).text(),
-                    (Ok(p), false) => backlink_lines(&p.backlinks).join(", "),
-                    (Err(e), true) => J::obj([("error", J::str(e.to_string()))]).text(),
-                    (Err(e), false) => format!("(error: {e})"),
-                };
-                let _ = tx.send((l, !std::mem::take(&mut initial)));
-            })?;
-            let timeout = ctx.timeout_or(None)?;
-            stream(ctx, &rx, count, timeout, "change", false, |_, (l, counts)| (l, counts))
+            let (mut f, rx) = page_sink(ctx.g.json, |p: &osis::BacklinkPage| (backlink_lines(&p.backlinks).join(", "), backlinks_json(&p.backlinks)));
+            let _sub = db.on_backlinks_change(t, &osis::BacklinkQuery::default(), move |_, r| f(r))?;
+            stream_pages(ctx, &rx, count)
         }
         Cmd::Watch { t, ak, path, count } => watch(ctx, &t, ak.as_deref(), path.as_deref(), count),
         Cmd::Writes { t, ak, scope: s, list, next } => {
@@ -563,22 +551,10 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
         }
         Cmd::Grants { t, watch: false, .. } => grants(ctx, &t),
         Cmd::Grants { t, watch: true, count } => {
-            let t = ctx.tid(&t)?;
-            let (raw, json_out) = (ctx.g.raw, ctx.g.json);
-            let (tx, rx) = mpsc::channel::<(String, bool)>();
-            // the first call is the grants now: printed, not counted
-            let mut initial = true;
-            let _sub = db.on_grants_change(t, move |_, r| {
-                let l = match (r, json_out) {
-                    (Ok(r), true) => grants_json(&r).text(),
-                    (Ok(r), false) => grants_lines(&r, raw).join(", "),
-                    (Err(e), true) => J::obj([("error", J::str(e.to_string()))]).text(),
-                    (Err(e), false) => format!("(error: {e})"),
-                };
-                let _ = tx.send((l, !std::mem::take(&mut initial)));
-            })?;
-            let timeout = ctx.timeout_or(None)?;
-            stream(ctx, &rx, count, timeout, "change", false, |_, (l, counts)| (l, counts))
+            let (t, raw) = (ctx.tid(&t)?, ctx.g.raw);
+            let (mut f, rx) = page_sink(ctx.g.json, move |r: &osis::Grants| (grants_lines(r, raw).join(", "), grants_json(r)));
+            let _sub = db.on_grants_change(t, move |_, r| f(r))?;
+            stream_pages(ctx, &rx, count)
         }
         Cmd::Holders { t } => {
             let hs = db.holders(ctx.tid(&t)?)?;
@@ -1010,6 +986,27 @@ fn change_line(ctx: &Ctx<'_>, c: &Change<Value>, ty: Ty<'_>) -> String {
             c.ak.as_str()
         )
     }
+}
+
+/// A page subscription's callback, each call a line of `rx` (text or JSON by `json`): the first,
+/// the page now, printed but not counted.
+fn page_sink<T>(json: bool, show: impl Fn(&T) -> (String, J) + Send + 'static) -> (impl FnMut(osis::Result<T>) + Send + 'static, mpsc::Receiver<(String, bool)>) {
+    let (tx, rx) = mpsc::channel();
+    let mut initial = true;
+    let f = move |r: osis::Result<T>| {
+        let l = match r {
+            Ok(p) => show(&p),
+            Err(e) => (format!("(error: {e})"), J::obj([("error", J::str(e.to_string()))])),
+        };
+        let _ = tx.send((if json { l.1.text() } else { l.0 }, !std::mem::take(&mut initial)));
+    };
+    (f, rx)
+}
+
+/// Prints `page_sink`'s lines until `count` changes or `--timeout`.
+fn stream_pages(ctx: &mut Ctx<'_>, rx: &mpsc::Receiver<(String, bool)>, count: Option<usize>) -> anyhow::Result<()> {
+    let timeout = ctx.timeout_or(None)?;
+    stream(ctx, rx, count, timeout, "change", false, |_, l| l)
 }
 
 /// Prints lines from `rx` until `count` lines, the timeout, or the senders are gone.
