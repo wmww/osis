@@ -682,16 +682,29 @@ fn purged_part_lists_until_its_expiry_spec_commits_7() {
 }
 
 // spec/requirements.md (Decentralization: a commit holds at least 2 000 changes, of values of
-// any size): the worst shape for the floor, 2 000 changes on 2 000 different things (each its own
-// keys and framing), with one large value beside them (in blobs of its own, past `MAX_BLOB`
-// itself), is one commit within `MAX_BLOB` that another node applies whole.
+// any size): the worst shape for the floor, one change on each of 2 000 different things (each its
+// own keys and framing), with one large value beside them (in blobs of its own, past `MAX_BLOB`
+// itself), is one commit within `MAX_BLOB` that another node applies whole. At the floor's size
+// (about 8 s in the test profile: issues/commit-cost-quadratic-in-things.md).
 #[test]
-fn two_thousand_changes_on_as_many_things_spec_requirements_decentralization() {
+#[ignore = "property: the floor's size, about 8 s"]
+fn changes_on_as_many_things_large_spec_requirements_decentralization() {
+    changes_on_as_many_things(2_000);
+}
+
+// spec/requirements.md (Decentralization): the floor's shape at a few hundred things.
+#[test]
+fn changes_on_as_many_things_spec_requirements_decentralization() {
+    changes_on_as_many_things(300);
+}
+
+fn changes_on_as_many_things(n: usize) {
     let (a, b, _c) = paired();
     let mut things = Vec::new();
-    for _ in 0..4 {
+    while things.len() < n {
         let mut w = a.write();
-        things.extend((0..500).map(|_| w.create().unwrap()));
+        let k = (n - things.len()).min(500);
+        things.extend((0..k).map(|_| w.create().unwrap()));
         w.commit().unwrap();
     }
     deliver(&a, &b);
