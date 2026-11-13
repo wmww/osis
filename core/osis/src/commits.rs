@@ -381,8 +381,7 @@ impl ReadOnly {
         self.track_commits(&Address::Writes(scope.clone()), None)?;
         if let Source::Node(r) = self.source_scope(Some(scope))? {
             let m = if redo { crate::port::method::REDO_TARGET } else { crate::port::method::UNDO_TARGET };
-            let v = r.call(m, vec![crate::port::codec::v(scope)])?;
-            return crate::port::codec::Args::of(vec![v]).opt()?.map(|v| crate::port::codec::of::<Commit>(v).map(|c| c.reporting(self))).transpose();
+            return Ok(crate::port::codec::of::<Option<Commit>>(r.call(m, vec![crate::port::codec::v(scope)])?)?.map(|c| c.reporting(self)));
         }
         let Some(c) = self.target_id(scope, redo)? else { return Ok(None) };
         self.commit_here(c)
@@ -485,8 +484,7 @@ impl Osis {
     /// undone instead).
     pub fn undo(&self, scope: &Scope) -> Result<Option<Commit>> {
         if let Source::Node(r) = self.source_write_scope(scope)? {
-            let v = r.call_once(crate::port::method::UNDO, vec![crate::port::codec::v(scope)])?;
-            return crate::port::codec::Args::of(vec![v]).opt()?.map(|v| crate::port::codec::of::<Commit>(v).map(|c| c.reporting(self))).transpose();
+            return Ok(crate::port::codec::of::<Option<Commit>>(r.call_once(crate::port::method::UNDO, vec![crate::port::codec::v(scope)])?)?.map(|c| c.reporting(self)));
         }
         self.step(scope, false)
     }
@@ -495,8 +493,7 @@ impl Osis {
     /// came after it there: reverts the undo. `None` when there is none.
     pub fn redo(&self, scope: &Scope) -> Result<Option<Commit>> {
         if let Source::Node(r) = self.source_write_scope(scope)? {
-            let v = r.call_once(crate::port::method::REDO, vec![crate::port::codec::v(scope)])?;
-            return crate::port::codec::Args::of(vec![v]).opt()?.map(|v| crate::port::codec::of::<Commit>(v).map(|c| c.reporting(self))).transpose();
+            return Ok(crate::port::codec::of::<Option<Commit>>(r.call_once(crate::port::method::REDO, vec![crate::port::codec::v(scope)])?)?.map(|c| c.reporting(self)));
         }
         self.step(scope, true)
     }

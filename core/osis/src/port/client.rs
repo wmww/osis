@@ -1132,14 +1132,8 @@ impl Osis {
     /// A write at `r`, under a fresh nonce (a reply lost to a `TooLarge` retry is answered
     /// again from the node's memory).
     pub(crate) fn node_write(&self, r: &Connection, wire: Vec<Value>) -> Result<Option<crate::Commit>> {
-        let v = r.call_once(method::WRITE, wire)?;
-        let o = c::Args::of(vec![v]).opt()?;
-        o.map(|v| c::of::<crate::Commit>(v).map(|c| c.reporting(self))).transpose()
+        Ok(c::of::<Option<crate::Commit>>(r.call_once(method::WRITE, wire)?)?.map(|c| c.reporting(self)))
     }
-
-
-
-
 
     /// Waits for the connected node's deliveries for changes made so far to reach the
     /// dispatcher queue (`settle` then runs them).
@@ -1154,7 +1148,7 @@ impl Osis {
 fn sub_error(v: &Value) -> Option<Error> {
     if let Value::List(l) = v
         && l.first().and_then(Value::as_uint) == Some(1)
-        && let Ok(Err(e)) = c::read(v.clone())
+        && let Ok(Err(e)) = c::of::<Result<Value>>(v.clone())
     {
         return Some(e);
     }
@@ -1167,7 +1161,7 @@ type Delivered = (Tid, osis_base::Ak, Result<Option<Value>>, crate::watch::Origi
 /// An aspect delivery `[tid, ak, read, source]`.
 fn delivery(v: Value) -> Result<Delivered> {
     let mut a = c::Args::new(v)?;
-    let (t, ak, r, s) = (a.tid()?, a.ak()?, c::read(a.next()?)?, a.get()?);
+    let (t, ak, r, s) = (a.tid()?, a.ak()?, a.get()?, a.get()?);
     a.end()?;
     Ok((t, ak, r, s))
 }
@@ -1246,15 +1240,15 @@ impl Osis {
                 if let Some(e) = sub_error(&v) {
                     return put(Err(e));
                 }
-                match c::Args::of(vec![v]).opt() {
-                    Ok(Some(o)) => put(c::outcome_of(o).unwrap_or_else(Err)),
+                match c::of::<Option<Result<Value>>>(v) {
+                    Ok(Some(o)) => put(o),
                     Ok(None) => {}
                     Err(e) => put(Err(e)),
                 }
             }
             PortEvent::Notify(Payload::Delivery { value }) => {
-                if let Ok(Some(o)) = c::Args::of(vec![value]).opt() {
-                    put(c::outcome_of(o).unwrap_or_else(Err));
+                if let Ok(Some(o)) = c::of::<Option<Value>>(value) {
+                    put(c::of(o).unwrap_or_else(Err));
                 }
             }
             PortEvent::Notify(Payload::Lapsed | Payload::TooLarge { .. }) | PortEvent::Closed => put(Err(net(LOST))),
@@ -1320,15 +1314,14 @@ impl crate::handle::ReadOnly {
     /// The length of a string or blob at the connected node (`None`: absent).
     pub(crate) fn node_len(&self, r: &Connection, tid: Tid, ak: &osis_base::Ak, path: &osis_schema::Path) -> Result<Option<u64>> {
         let v = r.call(method::BYTE_LEN, vec![Value::Tid(tid), c::v(ak), c::v(path)])?;
-        c::Args::of(vec![v]).opt()?.map(|n| n.as_uint().ok_or_else(|| c::bad("length"))).transpose()
+        c::of(v)
     }
 }
 
 impl crate::handle::ReadOnly {
     /// `get` / `get_path` at `r`.
     pub(crate) fn node_get(&self, r: &Connection, tid: Tid, ak: &osis_base::Ak, path: &osis_schema::Path) -> Result<Option<Value>> {
-        let v = r.call(method::GET, vec![Value::Tid(tid), c::v(ak), c::v(path)])?;
-        c::read(v)?
+        c::of(r.call(method::GET, vec![Value::Tid(tid), c::v(ak), c::v(path)])?)?
     }
 }
 
@@ -1352,7 +1345,7 @@ impl crate::handle::ReadOnly {
     /// One `stream_read` page.
     pub(crate) fn node_read(&self, r: &Connection, tid: Tid, ak: &osis_base::Ak, path: &osis_schema::Path, offset: u64, n: usize) -> Result<Vec<u8>> {
         let v = r.call_big(method::STREAM_READ, vec![Value::Tid(tid), c::v(ak), c::v(path), u(offset), u(n as u64)], n.saturating_add(SMALL_REPLY))?;
-        c::Args::of(vec![v]).bytes()
+        c::bytes(v)
     }
 }
 
@@ -1405,7 +1398,7 @@ impl crate::handle::ReadOnly {
             let Delivery::Port(ev) = d else { return };
             match ev {
                 PortEvent::Initial(v) => {
-                    let value = c::read(v).unwrap_or_else(Err);
+                    let value = c::of(v).unwrap_or_else(Err);
                     last = Some(value.clone());
                     f(db, Change { tid, ak: ak2.clone(), value, origin: Origin::Initial });
                 }
@@ -1440,9 +1433,9 @@ impl crate::handle::ReadOnly {
                 // the first, or again after a reconnect: what changed in the gap, what went too
                 PortEvent::Initial(v) => {
                     let mut now: BTreeMap<osis_base::Ak, Result<Option<Value>>> = BTreeMap::new();
-                    for x in c::Args::of(vec![v]).list().unwrap_or_default() {
+                    for x in c::list(v).unwrap_or_default() {
                         let Ok(mut a) = c::Args::new(x) else { continue };
-                        let (Ok(ak), Ok(Ok(value))) = (a.ak(), a.next().map(c::read)) else { continue };
+                        let (Ok(ak), Ok(value)) = (a.ak(), a.get()) else { continue };
                         now.insert(ak, value);
                     }
                     for ak in std::mem::take(&mut last).into_keys() {
@@ -1547,8 +1540,7 @@ impl crate::handle::ReadOnly {
     /// A page of the commits at `at` at the connected node, within what one reply carries.
     /// `LISTED_COMMIT`: commit `id` as listed at `at` at the node.
     pub(crate) fn node_listed_commit(&self, r: &Connection, at: &crate::commits::Address, id: crate::CommitId) -> Result<Option<crate::Commit>> {
-        let v = r.call(method::LISTED_COMMIT, vec![c::v(at), c::v(&id)])?;
-        c::Args::of(vec![v]).opt()?.map(|v| c::of::<crate::Commit>(v).map(|x| x.reporting(self))).transpose()
+        Ok(c::of::<Option<crate::Commit>>(r.call(method::LISTED_COMMIT, vec![c::v(at), c::v(&id)])?)?.map(|x| x.reporting(self)))
     }
 
     pub(crate) fn node_listing(&self, r: &Connection, at: &crate::commits::Address, q: &crate::CommitQuery) -> Result<crate::CommitPage> {

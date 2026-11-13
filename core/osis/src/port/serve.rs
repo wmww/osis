@@ -390,7 +390,7 @@ impl Worker {
         let Kind::Task(Some(t)) = &mut s.kind else { return };
         let std::task::Poll::Ready(r) = poll_task(&self.tx, conn, id, t) else { return };
         s.kind = Kind::Task(None);
-        lock(&s.pending).queue.push_back((Value::List(vec![c::outcome(r).to_value()]), 0));
+        lock(&s.pending).queue.push_back((Value::List(vec![c::v(&r)]), 0));
         self.want_room(db, conn);
     }
 
@@ -400,7 +400,7 @@ impl Worker {
         for (conn, cn) in &mut self.conns {
             for s in cn.subs.values_mut().filter(|s| matches!(s.kind, Kind::Task(Some(_)))) {
                 s.kind = Kind::Task(None);
-                lock(&s.pending).queue.push_back((Value::List(vec![c::outcome(Err(Error::Closed)).to_value()]), 0));
+                lock(&s.pending).queue.push_back((Value::List(vec![c::v(&Err::<Value, _>(Error::Closed))]), 0));
                 told.push(*conn);
             }
         }
@@ -559,7 +559,7 @@ impl Worker {
                 let (tid, ak, path) = (a.tid()?, a.ak()?, a.get::<osis_schema::Path>()?);
                 let key = db.aspect_key(ak.as_str())?;
                 let r = if path.0.is_empty() { db.at(tid, crate::DynamicAspectKey::untyped(ak)).get() } else { db.at(tid, key).path(path).get() };
-                c::read_v(&r)
+                c::v(&r)
             }
             method::ASPECTS => Value::List(db.aspects(a.tid()?)?.iter().map(c::v).collect()),
             method::HAS_CONTENT => b(db.has_content(a.tid()?)?),
@@ -619,13 +619,13 @@ impl Worker {
                 }
                 db.register_schema(&file, &src)?;
                 self.schemas.insert(h, src.len());
-                Value::List(vec![])
+                nothing()
             }
             method::BYTE_LEN | method::STREAM_READ => {
                 let (tid, ak, path) = (a.tid()?, a.ak()?, a.get::<osis_schema::Path>()?);
                 let s = db.at(tid, crate::DynamicAspectKey::untyped(ak)).path(path).stream()?;
                 if m == method::BYTE_LEN {
-                    c::opt(s, |s| u(s.len()))
+                    c::v(&s.map(|s| s.len()))
                 } else {
                     let (off, n) = (a.uint()?, usize::try_from(a.uint()?).unwrap_or(usize::MAX).min(STREAM_CHUNK));
                     let mut s = s.ok_or(Error::Invalid("no value to stream".into()))?;
@@ -638,71 +638,69 @@ impl Worker {
             method::NOW => u(db.now()?.0),
             method::ADD_CLIENT => {
                 let until = a.opt_wall()?;
-                let (actor, secret) = db.add_client(until)?;
-                Value::List(vec![Value::Tid(actor), Value::bytes(secret.expose())])
+                c::v(&db.add_client(until)?)
             }
-            method::CLIENTS => Value::List(db.clients()?.iter().map(|x| Value::List(vec![Value::Tid(x.actor), c::v(&x.until)])).collect()),
+            method::CLIENTS => c::v(&db.clients()?),
             method::REMOVE_CLIENT => b(db.remove_client(a.tid()?)?),
-            method::ROTATE_CLIENT_SECRET => Value::bytes(db.rotate_client_secret(a.tid()?)?.expose()),
-            method::RETAINED_COPIES => Value::List(db.retained_copies()?.into_iter().map(Value::Tid).collect()),
+            method::ROTATE_CLIENT_SECRET => c::v(&db.rotate_client_secret(a.tid()?)?),
+            method::RETAINED_COPIES => c::v(&db.retained_copies()?),
             method::DROP_RETAINED_COPY => {
                 db.drop_retained_copy(a.tid()?)?;
-                Value::List(vec![])
+                nothing()
             }
-            method::SAVED_PEERS => Value::List(db.saved_peers()?.iter().map(|h| Value::Str(h.to_string())).collect()),
-            method::PEERS => Value::List(db.peers(a.tid()?)?.iter().map(|h| Value::Str(h.to_string())).collect()),
+            method::SAVED_PEERS => c::v(&db.saved_peers()?),
+            method::PEERS => c::v(&db.peers(a.tid()?)?),
             method::NUDGE_SYNC => {
                 db.nudge_sync()?;
-                Value::List(vec![])
+                nothing()
             }
             method::SYNC => {
                 let g = a.tid()?;
-                let hosts = a.list()?.into_iter().map(|h| c::Args::of(vec![h]).text()?.parse()).collect::<Result<Vec<crate::Address>>>()?;
-                db.sync(g, &hosts)?;
-                Value::List(vec![])
+                db.sync(g, &a.get::<Vec<crate::Address>>()?)?;
+                nothing()
             }
             method::GRANT => {
                 db.grant(a.tid()?, a.tid()?, a.get()?, a.get()?)?;
-                Value::List(vec![])
+                nothing()
             }
             method::REVOKE_LINK => {
                 db.revoke_link(crate::share::LinkId(a.tid()?))?;
-                Value::List(vec![])
+                nothing()
             }
             method::SET_ROLE => {
                 let (target, holder) = (a.tid()?, a.tid()?);
                 let role = a.get()?;
                 db.set_role(target, holder, role, a.get()?)?;
-                Value::List(vec![])
+                nothing()
             }
             method::ADD_WITH_GRANT => {
                 db.add_with_grant(a.get()?, a.tid()?, a.get()?)?;
-                Value::List(vec![])
+                nothing()
             }
-            method::NODES => Value::List(db.nodes()?.iter().map(|x| Value::List(vec![Value::Tid(x.node), c::v(&x.role)])).collect()),
+            method::NODES => c::v(&db.nodes()?),
             method::ADD_PEER | method::REMOVE_PEER => {
-                let h: crate::Address = a.text()?.parse()?;
+                let h: crate::Address = a.get()?;
                 if m == method::ADD_PEER { db.add_peer(&h)? } else { db.remove_peer(&h)? }
                 nothing()
             }
-            method::PAIR_OFFER => Value::Str(db.pair_offer()?.to_string()),
+            method::PAIR_OFFER => c::v(&db.pair_offer()?),
             method::PAIR_ACCEPT => {
-                let (node, reply) = db.pair_accept(&a.text()?.parse()?)?;
+                let (node, reply) = db.pair_accept(&a.get()?)?;
                 let pad = vec![0; db.inner.port.pad_pair_reply.swap(0, Ordering::AcqRel)];
-                Value::List(vec![Value::Tid(node), Value::Str(reply.to_string()), Value::Bytes(pad)])
+                Value::List(vec![Value::Tid(node), c::v(&reply), Value::Bytes(pad)])
             }
-            method::CONTACT_CARD => Value::Str(db.contact_card()?.to_string()),
+            method::CONTACT_CARD => c::v(&db.contact_card()?),
             method::PROFILE_OF => c::v(&db.profile_of(a.tid()?)?),
-            method::INVITE_REQUESTS => Value::List(db.invite_requests()?.iter().map(|i| Value::bytes(i.bytes())).collect()),
+            method::INVITE_REQUESTS => c::v(&db.invite_requests()?),
             method::ACCEPT_INVITE => {
-                db.accept_invite(crate::InviteId::from_bytes(&a.bytes()?)?)?;
+                db.accept_invite(a.get()?)?;
                 nothing()
             }
             method::DECLINE_INVITE => {
-                db.decline_invite(crate::InviteId::from_bytes(&a.bytes()?)?)?;
+                db.decline_invite(a.get()?)?;
                 nothing()
             }
-            method::SYNC_IDS => Value::List(db.sync_ids(a.tid()?)?.iter().map(|x| Value::Str(x.to_string())).collect()),
+            method::SYNC_IDS => c::v(&db.sync_ids(a.tid()?)?),
             method::ROTATE_PEER_ADDRESS => {
                 db.rotate_peer_address()?;
                 nothing()
@@ -740,7 +738,7 @@ impl Worker {
             }
             method::LEAVE => {
                 db.leave(a.tid()?, a.tid()?)?;
-                Value::List(vec![])
+                nothing()
             }
             method::HOLDERS => c::v(&db.holders(a.tid()?)?),
             method::LINKS => c::v(&db.links()?),
@@ -748,7 +746,7 @@ impl Worker {
                 let (t, r) = (a.tid()?, a.get()?);
                 let until = a.opt_wall()?;
                 let o = crate::LinkOpts { until, single_use: a.bool()?, direct: a.bool()? };
-                Value::Str(db.make_link(t, r, o)?.to_string())
+                c::v(&db.make_link(t, r, o)?)
             }
             _ => return Err(unsupported(&format!("method {m}"))),
         };
@@ -862,7 +860,7 @@ impl Worker {
                         None => db.commit_told_here(at, id, Some(row)),
                     };
                     let Ok(Some(e)) = told else { return };
-                    queue(&mut lock(&p), Value::List(vec![c::v(&id), c::opt(Some(&e), c::v)]))
+                    queue(&mut lock(&p), Value::List(vec![c::v(&id), c::v(&Some(e))]))
                 }
                 Delivery::Commit { id, fired: None, .. } => lock(&p).note_commit(id, &held2),
                 Delivery::Grants | Delivery::Status(_) | Delivery::Due => lock(&p).dirty = true,
@@ -878,10 +876,10 @@ impl Worker {
             match &kind {
                 Kind::Aspect(_, read, sent) => {
                     let v = read.0(r);
-                    initial = Ok(c::read_v(&v));
+                    initial = Ok(c::v(&v));
                     *lock(sent) = Some(crate::watch::digest(&v));
                 }
-                Kind::Thing(t) => initial = r.aspects(*t).map(|aks| Value::List(aks.iter().map(|ak| Value::List(vec![c::v(ak), c::read_v(&r.value(*t, ak))])).collect())),
+                Kind::Thing(t) => initial = r.aspects(*t).map(|aks| Value::List(aks.iter().map(|ak| Value::List(vec![c::v(ak), c::v(&r.value(*t, ak))])).collect())),
                 Kind::Grants(t) => initial = Ok(c::v(&r.grants(*t))),
                 Kind::Backlinks(t, q, _) => {
                     r.e.watch_references();
@@ -910,7 +908,7 @@ impl Worker {
     /// this worker; the Reply carries the outcome when it is known at once, else the one Notify.
     fn sub_task(&mut self, conn: ConnId, id: Id, max_reply: usize, mut t: Task) -> Value {
         let (kind, initial) = match poll_task(&self.tx, conn, id, &mut t) {
-            std::task::Poll::Ready(r) => (Kind::Task(None), c::opt(Some(r), |r| c::outcome(r).to_value())),
+            std::task::Poll::Ready(r) => (Kind::Task(None), Value::List(vec![c::v(&r)])),
             std::task::Poll::Pending => (Kind::Task(Some(t)), Value::List(vec![])),
         };
         if let Some(c) = self.conns.get_mut(&conn) {
@@ -1051,13 +1049,13 @@ fn due(db: &Osis, kind: &Kind, g: &Pending) -> Vec<(Value, Option<crate::watch::
                     *lock(sent) = Some(crate::watch::digest(&v));
                     v
                 });
-                let v = Value::List(vec![Value::Tid(*t), c::v(ak), c::read_v(&now), c::v(src)]);
+                let v = Value::List(vec![Value::Tid(*t), c::v(ak), c::v(&now), c::v(src)]);
                 out.push((v, Some(*src)));
             }
         }
         Kind::Thing(t) => {
             for (ak, src) in &g.aks {
-                let v = Value::List(vec![Value::Tid(*t), c::v(ak), c::read_v(&db.read_local(|r| r.value(*t, ak))), c::v(src)]);
+                let v = Value::List(vec![Value::Tid(*t), c::v(ak), c::v(&db.read_local(|r| r.value(*t, ak))), c::v(src)]);
                 out.push((v, Some(*src)));
             }
         }

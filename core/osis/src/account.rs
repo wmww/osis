@@ -194,8 +194,7 @@ impl Osis {
     /// `Unsupported` on a client with its own actor.
     pub fn pair_offer(&self) -> Result<PairOffer> {
         if !self.has_store() {
-            let v = self.rcall(crate::port::method::PAIR_OFFER, vec![])?;
-            return crate::port::codec::Args::of(vec![v]).text()?.parse();
+            return crate::port::codec::of(self.rcall(crate::port::method::PAIR_OFFER, vec![])?);
         }
         let (me, home, node) = (self.me(), self.home(), self.node());
         let hosts: Vec<Value> = self.saved_peers()?.iter().map(|s| Value::Str(s.to_string())).collect();
@@ -217,9 +216,9 @@ impl Osis {
     pub fn pair_accept(&self, req: &PairRequest) -> Result<(Tid, PairReply)> {
         if !self.has_store() {
             // once: a `TooLarge` retry would find the offer used
-            let v = self.primary_call_big(crate::port::method::PAIR_ACCEPT, vec![Value::Str(req.to_string())], osis_proto::session::REPLY_BUDGET)?;
+            let v = self.primary_call_big(crate::port::method::PAIR_ACCEPT, vec![crate::port::codec::v(req)], osis_proto::session::REPLY_BUDGET)?;
             let mut a = crate::port::codec::Args::new(v)?;
-            return Ok((a.tid()?, a.text()?.parse()?));
+            return Ok((a.tid()?, a.get()?));
         }
         let items = unpack(&req.0, REQUEST)?;
         let [_, Value::Tid(node), pks, Value::Bytes(_)] = items.as_slice() else { return Err(Error::Invalid("malformed pairing request".into())) };

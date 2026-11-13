@@ -613,8 +613,7 @@ impl ReadOnly {
     pub fn profile_of(&self, account: Tid) -> Result<Option<Tid>> {
         if !self.has_store() {
             self.untrackable("profile_of on a thin client")?;
-            let v = self.rcall(crate::port::method::PROFILE_OF, vec![Value::Tid(account)])?;
-            return crate::port::codec::Args::of(vec![v]).opt()?.map(|t| crate::port::codec::Args::of(vec![t]).tid()).transpose();
+            return crate::port::codec::of(self.rcall(crate::port::method::PROFILE_OF, vec![Value::Tid(account)])?);
         }
         let key = format!("{PROFILE_OF}{account}");
         let b = self.read_answer(|| key.clone(), crate::watch::Filter::Due(crate::watch::Watch::Local), {
@@ -631,8 +630,7 @@ impl ReadOnly {
     pub fn saved_peers(&self) -> Result<Vec<Address>> {
         if !self.has_store() {
             self.untrackable("saved_peers on a thin client")?;
-            let v = self.rcall(crate::port::method::SAVED_PEERS, vec![])?;
-            return crate::port::codec::Args::of(vec![v]).list()?.into_iter().map(|h| crate::port::codec::Args::of(vec![h]).text()?.parse()).collect();
+            return crate::port::codec::of(self.rcall(crate::port::method::SAVED_PEERS, vec![])?);
         }
         self.track_saved_peers()?;
         Ok(self.host_addrs().into_iter().map(Address).collect())
@@ -959,8 +957,7 @@ impl Osis {
     /// `drop_retained_copy` erases one.
     pub fn retained_copies(&self) -> Result<Vec<Tid>> {
         if !self.has_store() {
-            let v = self.rcall(crate::port::method::RETAINED_COPIES, vec![])?;
-            return crate::port::codec::Args::of(vec![v]).list()?.into_iter().map(|x| crate::port::codec::Args::of(vec![x]).tid()).collect();
+            return crate::port::codec::of(self.rcall(crate::port::method::RETAINED_COPIES, vec![])?);
         }
         Ok(self.engine(|e| {
             let mut v = e.kept_copies();
@@ -986,8 +983,8 @@ impl Osis {
     /// roster, so a link at `Sync` is `Invalid` (grant sync to the holder's account instead).
     pub fn make_link(&self, target: Tid, role: Role, opts: LinkOpts) -> Result<ShareLink> {
         if let crate::sources::Source::Node(r) = self.source_write(target)? {
-            let v = r.call(crate::port::method::MAKE_LINK, vec![Value::Tid(target), crate::port::codec::v(&role), crate::port::codec::opt(opts.until, |w| Value::uint(w.0)), Value::Bool(opts.single_use), Value::Bool(opts.direct)])?;
-            return Ok(ShareLink(crate::port::codec::Args::of(vec![v]).text()?));
+            let v = r.call(crate::port::method::MAKE_LINK, vec![Value::Tid(target), crate::port::codec::v(&role), crate::port::codec::v(&opts.until), Value::Bool(opts.single_use), Value::Bool(opts.direct)])?;
+            return crate::port::codec::of(v);
         }
         let hosts = self.host_addrs();
         let me = self.me();
@@ -1037,8 +1034,7 @@ impl Osis {
     pub async fn redeem(&self, link: &ShareLink) -> Result<Tid> {
         if !self.has_store() {
             link.parse()?;
-            let v = self.rtask(crate::port::method::REDEEM, vec![Value::Str(link.0.clone())]).await?;
-            return crate::port::codec::Args::of(vec![v]).tid();
+            return crate::port::codec::of(self.rtask(crate::port::method::REDEEM, vec![crate::port::codec::v(link)]).await?);
         }
         let link = link.parse()?;
         let (k, target) = (link.k, link.target);
@@ -1220,8 +1216,7 @@ impl Osis {
     /// `Unsupported` on a client with its own actor.
     pub fn contact_card(&self) -> Result<ContactCard> {
         if !self.has_store() {
-            let v = self.rcall(crate::port::method::CONTACT_CARD, vec![])?;
-            return Ok(ContactCard(crate::port::codec::Args::of(vec![v]).text()?));
+            return crate::port::codec::of(self.rcall(crate::port::method::CONTACT_CARD, vec![])?);
         }
         if let Some(b) = self.engine(|e| e.app_record(CONTACT))? {
             return Ok(ContactCard(String::from_utf8(b).map_err(|_| Error::Storage("contact record".into()))?));
@@ -1280,8 +1275,7 @@ impl Osis {
     pub async fn import_contact(&self, card: &ContactCard) -> Result<Tid> {
         if !self.has_store() {
             card.parse()?;
-            let v = self.rtask(crate::port::method::IMPORT_CONTACT, vec![Value::Str(card.0.clone())]).await?;
-            return crate::port::codec::Args::of(vec![v]).tid();
+            return crate::port::codec::of(self.rtask(crate::port::method::IMPORT_CONTACT, vec![crate::port::codec::v(card)]).await?);
         }
         let link = card.parse()?;
         let (k, p, label) = (link.k, link.target, link.k_label);
@@ -1334,8 +1328,7 @@ impl Osis {
     /// `Unsupported` on a client with its own actor.
     pub fn invite_requests(&self) -> Result<Vec<InviteId>> {
         if !self.has_store() {
-            let v = self.rcall(crate::port::method::INVITE_REQUESTS, vec![])?;
-            return crate::port::codec::Args::of(vec![v]).list()?.into_iter().map(|b| InviteId::from_bytes(&crate::port::codec::Args::of(vec![b]).bytes()?)).collect();
+            return crate::port::codec::of(self.rcall(crate::port::method::INVITE_REQUESTS, vec![])?);
         }
         Ok(self.locked(|x| x.sync.invite_requests())?.into_iter().map(InviteId).collect())
     }
@@ -1346,7 +1339,7 @@ impl Osis {
     /// `Unsupported` on a client with its own actor.
     pub fn accept_invite(&self, id: InviteId) -> Result<()> {
         if !self.has_store() {
-            return self.rcall(crate::port::method::ACCEPT_INVITE, vec![Value::Bytes(id.bytes().to_vec())]).map(drop);
+            return self.rcall(crate::port::method::ACCEPT_INVITE, vec![crate::port::codec::v(&id)]).map(drop);
         }
         self.try_act(|x| {
             let (found, acts) = x.sync.accept_invite(id.0)?;
@@ -1362,7 +1355,7 @@ impl Osis {
     /// `Unsupported` on a client with its own actor.
     pub fn decline_invite(&self, id: InviteId) -> Result<()> {
         if !self.has_store() {
-            return self.rcall(crate::port::method::DECLINE_INVITE, vec![Value::Bytes(id.bytes().to_vec())]).map(drop);
+            return self.rcall(crate::port::method::DECLINE_INVITE, vec![crate::port::codec::v(&id)]).map(drop);
         }
         if !self.locked(|x| x.sync.decline_invite(id.0))? {
             return Err(Error::Invalid("no such invite request".into()));
@@ -1375,11 +1368,7 @@ impl Osis {
     /// `Unsupported` on a client with its own actor.
     pub fn nodes(&self) -> Result<Vec<AccountNode>> {
         if !self.has_store() {
-            let v = self.rcall(crate::port::method::NODES, vec![])?;
-            return crate::port::codec::Args::of(vec![v]).list()?.into_iter().map(|d| {
-                let mut a = crate::port::codec::Args::new(d)?;
-                Ok(AccountNode { node: a.tid()?, role: a.get()? })
-            }).collect();
+            return crate::port::codec::of(self.rcall(crate::port::method::NODES, vec![])?);
         }
         let home = self.home();
         let node_ak = Ak::new("node.0").map_err(|_| Error::Invalid("ak".into()))?;
@@ -1412,12 +1401,11 @@ impl Osis {
     /// does not sync here, and for one nobody else is known for. `Unsupported` on a client with its
     /// own actor.
     pub fn peers(&self, group: Tid) -> Result<Vec<Address>> {
-        let parse = |v: Value| -> Result<Vec<Address>> { crate::port::codec::Args::of(vec![v]).list()?.into_iter().map(|h| crate::port::codec::Args::of(vec![h]).text()?.parse()).collect() };
         if !self.has_store() {
-            return parse(self.rcall(crate::port::method::PEERS, vec![Value::Tid(group)])?);
+            return crate::port::codec::of(self.rcall(crate::port::method::PEERS, vec![Value::Tid(group)])?);
         }
         if let crate::sources::Source::Node(r) = self.source(group) {
-            return parse(r.call(crate::port::method::PEERS, vec![Value::Tid(group)])?);
+            return crate::port::codec::of(r.call(crate::port::method::PEERS, vec![Value::Tid(group)])?);
         }
         Ok(self.locked(|l| l.sync.group_peers(&group)).into_iter().map(Address).collect())
     }
@@ -1433,7 +1421,7 @@ impl Osis {
     /// `Unsupported` on a client with its own actor.
     pub fn add_peer(&self, peer: &Address) -> Result<()> {
         if !self.has_store() {
-            return self.rcall(crate::port::method::ADD_PEER, vec![Value::Str(peer.to_string())]).map(drop);
+            return self.rcall(crate::port::method::ADD_PEER, vec![crate::port::codec::v(peer)]).map(drop);
         }
         let mut v = self.saved_peers()?;
         if !v.contains(peer) {
@@ -1446,7 +1434,7 @@ impl Osis {
     /// holders besides this account's nodes keeps its last one. `Unsupported` on a client with its own actor.
     pub fn remove_peer(&self, peer: &Address) -> Result<()> {
         if !self.has_store() {
-            return self.rcall(crate::port::method::REMOVE_PEER, vec![Value::Str(peer.to_string())]).map(drop);
+            return self.rcall(crate::port::method::REMOVE_PEER, vec![crate::port::codec::v(peer)]).map(drop);
         }
         let mut v = self.saved_peers()?;
         v.retain(|x| x != peer);
@@ -1471,7 +1459,7 @@ impl Osis {
     /// `Unsupported` on a client with its own actor.
     pub fn sync(&self, group: Tid, peers: &[Address]) -> Result<()> {
         if let crate::sources::Source::Node(r) = self.source_write(group)? {
-            return r.call(crate::port::method::SYNC, vec![Value::Tid(group), Value::List(peers.iter().map(|h| Value::Str(h.to_string())).collect())]).map(drop);
+            return r.call(crate::port::method::SYNC, vec![Value::Tid(group), crate::port::codec::v(&peers.to_vec())]).map(drop);
         }
         self.sync_here(group, peers, false)
     }
@@ -1615,12 +1603,12 @@ impl Osis {
     /// `Unsupported` on a client with its own actor.
     pub fn export_bundle(&self, groups: &[Tid], mut out: impl std::io::Write) -> Result<()> {
         if !self.has_store() {
-            use crate::port::{STREAM_CHUNK, codec::{Args, v}, method};
-            let len = Args::of(vec![self.rcall(method::EXPORT_BUNDLE, vec![v(&groups.to_vec())])?]).uint()?;
+            use crate::port::{STREAM_CHUNK, codec::{bytes, of, v}, method};
+            let len: u64 = of(self.rcall(method::EXPORT_BUNDLE, vec![v(&groups.to_vec())])?)?;
             let mut off = 0;
             while off < len {
                 let page = self.primary_call_big(method::BUNDLE_READ, vec![Value::uint(off), Value::uint(STREAM_CHUNK as u64)], STREAM_CHUNK.saturating_add(osis_proto::window::SMALL_REPLY))?;
-                let page = Args::of(vec![page]).bytes()?;
+                let page = bytes(page)?;
                 if page.is_empty() {
                     return Err(Error::Network("the connection to the node changed during an export: run it again".into()));
                 }

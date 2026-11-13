@@ -186,13 +186,12 @@ impl Osis {
     /// does not sync). Pass them to whoever runs such a node, for `Serving::admitted` or `caps`.
     /// `Unsupported` on a client with its own actor.
     pub fn sync_ids(&self, group: Tid) -> Result<Vec<SyncId>> {
-        let ids = |v: osis_base::Value| crate::port::codec::Args::of(vec![v]).list()?.into_iter().map(|x| crate::port::codec::Args::of(vec![x]).text()?.parse()).collect();
         if !self.has_store() {
-            return ids(self.rcall(crate::port::method::SYNC_IDS, vec![osis_base::Value::Tid(group)])?);
+            return crate::port::codec::of(self.rcall(crate::port::method::SYNC_IDS, vec![osis_base::Value::Tid(group)])?);
         }
         // a group this node reads at another: there it syncs, not here
         if let crate::sources::Source::Node(r) = self.source(group) {
-            return ids(r.call(crate::port::method::SYNC_IDS, vec![osis_base::Value::Tid(group)])?);
+            return crate::port::codec::of(r.call(crate::port::method::SYNC_IDS, vec![osis_base::Value::Tid(group)])?);
         }
         Ok(self.locked(|l| l.sync.label_status().iter().filter(|s| s.group == group).map(|s| SyncId(s.label)).collect()))
     }

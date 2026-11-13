@@ -437,8 +437,7 @@ impl ReadOnly {
     pub fn aspects(&self, tid: Tid) -> Result<Vec<Ak>> {
         if let crate::sources::Source::Node(r) = self.source(tid) {
             self.track_remote_thing(&r, tid, thing_key("aspects", tid))?;
-            let v = r.call(m::ASPECTS, vec![Value::Tid(tid)])?;
-            return crate::port::codec::Args::of(vec![v]).get();
+            return crate::port::codec::of(r.call(m::ASPECTS, vec![Value::Tid(tid)])?);
         }
         self.read_answer(|| thing_key("aspects", tid), thing(tid), move |r| r.aspects(tid))
     }
@@ -476,8 +475,7 @@ impl ReadOnly {
     pub fn role_on(&self, tid: Tid) -> Result<Option<Role>> {
         if let crate::sources::Source::Node(r) = self.source(tid) {
             self.untrackable("role_on at a connected node")?;
-            let v = r.call(m::ROLE_ON, vec![Value::Tid(tid)])?;
-            return crate::port::codec::Args::of(vec![v]).get();
+            return crate::port::codec::of(r.call(m::ROLE_ON, vec![Value::Tid(tid)])?);
         }
         self.read_answer(|| thing_key("role_on", tid), Filter::Due(Watch::Roles), move |r| r.role_on(tid))
     }
@@ -488,8 +486,7 @@ impl ReadOnly {
     pub fn has_content(&self, tid: Tid) -> Result<bool> {
         if let crate::sources::Source::Node(r) = self.source(tid) {
             self.track_remote_thing(&r, tid, thing_key("has_content", tid))?;
-            let v = r.call(m::HAS_CONTENT, vec![Value::Tid(tid)])?;
-            return crate::port::codec::Args::of(vec![v]).bool();
+            return crate::port::codec::of(r.call(m::HAS_CONTENT, vec![Value::Tid(tid)])?);
         }
         self.read_answer(|| thing_key("has_content", tid), thing(tid), move |r| r.knows(tid))
     }
@@ -498,17 +495,12 @@ impl ReadOnly {
         self.read_local(|r| r.holds(tid))
     }
 
-    fn node_stamp(&self, r: &crate::port::client::Connection, m: u64, tid: Tid) -> Result<Option<ThingStamp>> {
-        let v = r.call(m, vec![Value::Tid(tid)])?;
-        crate::port::codec::Args::of(vec![v]).opt()?.map(crate::port::codec::of).transpose()
-    }
-
     /// When the thing was created: the oldest valid commit carrying its creation; `None` while it
     /// is unknown here, or once it was destroyed (`Write::purge`, `Write::release`, an expiry).
     pub fn created(&self, tid: Tid) -> Result<Option<ThingStamp>> {
         if let crate::sources::Source::Node(r) = self.source(tid) {
             self.track_remote_thing(&r, tid, thing_key("created", tid))?;
-            return self.node_stamp(&r, m::CREATED, tid);
+            return crate::port::codec::of(r.call(m::CREATED, vec![Value::Tid(tid)])?);
         }
         Ok(self.read_answer(|| thing_key("created", tid), Filter::Due(Watch::CommitsOf(tid)), move |r| r.created(tid)))
     }
@@ -519,7 +511,7 @@ impl ReadOnly {
     pub fn changed(&self, tid: Tid) -> Result<Option<ThingStamp>> {
         if let crate::sources::Source::Node(r) = self.source(tid) {
             self.track_remote_thing(&r, tid, thing_key("changed", tid))?;
-            return self.node_stamp(&r, m::CHANGED, tid);
+            return crate::port::codec::of(r.call(m::CHANGED, vec![Value::Tid(tid)])?);
         }
         Ok(self.read_answer(|| thing_key("changed", tid), Filter::Due(Watch::CommitsOf(tid)), move |r| r.changed(tid)))
     }
@@ -547,7 +539,7 @@ impl Osis {
     /// reached.
     pub fn now(&self) -> Result<Time> {
         if !self.has_store() {
-            return self.rcall(m::NOW, vec![])?.as_uint().map(Time).ok_or_else(|| crate::port::codec::bad("time"));
+            return crate::port::codec::of(self.rcall(m::NOW, vec![])?);
         }
         Ok(self.engine(|e| e.now()))
     }

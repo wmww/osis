@@ -48,10 +48,6 @@ pub struct Client {
     pub until: Option<Time>,
 }
 
-fn secret_of(v: Value) -> Result<ClientSecret> {
-    v.as_array::<32>().map(ClientSecret::from_bytes).ok_or_else(|| crate::port::codec::bad("client secret"))
-}
-
 impl Osis {
     /// Registers a client: a new actor of this account, which the account's nodes can grant to.
     /// Returns the actor and the secret, shown only here. An `until` not in the future is `Invalid`. Grants decide what the
@@ -59,9 +55,7 @@ impl Osis {
     /// `Unsupported` on a client with its own actor.
     pub fn add_client(&self, until: Option<Time>) -> Result<(Tid, ClientSecret)> {
         if !self.has_store() {
-            let v = self.rcall(method::ADD_CLIENT, vec![crate::port::codec::opt(until, |w| Value::uint(w.0))])?;
-            let mut a = crate::port::codec::Args::new(v)?;
-            return Ok((a.tid()?, secret_of(a.next()?)?));
+            return crate::port::codec::of(self.rcall(method::ADD_CLIENT, vec![crate::port::codec::v(&until)])?);
         }
         let now = self.now()?;
         if until.is_some_and(|u| u <= now) {
@@ -93,13 +87,7 @@ impl Osis {
     /// `Unsupported` on a client with its own actor.
     pub fn clients(&self) -> Result<Vec<Client>> {
         if !self.has_store() {
-            let v = self.rcall(method::CLIENTS, vec![])?;
-            return crate::port::codec::Args::of(vec![v]).list()?.into_iter().map(|c| {
-                let mut a = crate::port::codec::Args::new(c)?;
-                let actor = a.tid()?;
-                let until = a.opt()?.map(|w| w.as_uint().map(Time).ok_or_else(|| crate::port::codec::bad("time"))).transpose()?;
-                Ok(Client { actor, until })
-            }).collect();
+            return crate::port::codec::of(self.rcall(method::CLIENTS, vec![])?);
         }
         Ok(self.at(self.node(), ct::CLIENTS).get()?.unwrap_or_default().into_iter().map(|(actor, c)| Client { actor, until: c.until }).collect())
     }
@@ -116,8 +104,7 @@ impl Osis {
     /// `Unsupported` on a client with its own actor.
     pub fn remove_client(&self, actor: Tid) -> Result<bool> {
         if !self.has_store() {
-            let v = self.rcall(method::REMOVE_CLIENT, vec![Value::Tid(actor)])?;
-            return crate::port::codec::Args::of(vec![v]).bool();
+            return crate::port::codec::of(self.rcall(method::REMOVE_CLIENT, vec![Value::Tid(actor)])?);
         }
         let node = self.node();
         let Some(e) = self.at(node, ct::CLIENTS).get()?.unwrap_or_default().remove(&actor) else { return Ok(false) };
@@ -144,7 +131,7 @@ impl Osis {
     /// `Unsupported` on a client with its own actor.
     pub fn rotate_client_secret(&self, actor: Tid) -> Result<ClientSecret> {
         if !self.has_store() {
-            return secret_of(self.rcall(method::ROTATE_CLIENT_SECRET, vec![Value::Tid(actor)])?);
+            return crate::port::codec::of(self.rcall(method::ROTATE_CLIENT_SECRET, vec![Value::Tid(actor)])?);
         }
         let node = self.node();
         let e = self.at(node, ct::CLIENTS).get()?.unwrap_or_default().remove(&actor).ok_or_else(|| Error::Invalid(format!("no client {actor}")))?;

@@ -392,7 +392,7 @@ impl<'d> Write<'d> {
 
     /// The write in its wire form (notes/client-port.md §2): `[actor, [ak*], [op*], expires?]`.
     fn wire(&self, there: &crate::port::client::Connection) -> Result<Vec<Value>> {
-        use crate::port::codec::{op_v, opt, u, v};
+        use crate::port::codec::{op_v, u, v};
         if self.ops.len() > crate::port::MAX_WRITE_OPS {
             return Err(Error::Invalid(format!("a write to another node holds at most {} ops", crate::port::MAX_WRITE_OPS)));
         }
@@ -413,14 +413,14 @@ impl<'d> Write<'d> {
                     WriteOp::Retain { by, key, thing } => vec![u(13), t(*by), u(u64::from(*key)), t(*thing)],
                     WriteOp::PurgeCommit { tid, key, commit } => vec![u(8), t(*tid), u(u64::from(*key)), Value::bytes(&commit.0)],
                     WriteOp::PurgeAuthor { tid, key, actor } => vec![u(9), t(*tid), u(u64::from(*key)), t(*actor)],
-                    WriteOp::Fire { tid, key, v, replaces } => vec![u(10), t(*tid), u(u64::from(*key)), v.clone(), opt(replaces.as_ref(), |c| Value::bytes(&c.0))],
+                    WriteOp::Fire { tid, key, v, replaces } => vec![u(10), t(*tid), u(u64::from(*key)), v.clone(), crate::port::codec::v(replaces)],
                 }))
             })
             .collect::<Result<Vec<Value>>>()?;
         // not named by `act_as`: whoever this process is at that node
         let actor = if self.actor == self.db.me() { there.acts_as().unwrap_or(self.actor) } else { self.actor };
         let expires = self.expires.map(|e| expiry_at(self.db, e)).transpose()?;
-        Ok(vec![t(actor), Value::List(self.keys.iter().map(|k| crate::port::codec::v(&k.ak)).collect()), Value::List(ops), opt(expires, |at| u(at.0))])
+        Ok(vec![t(actor), Value::List(self.keys.iter().map(|k| v(&k.ak)).collect()), Value::List(ops), v(&expires)])
     }
 
     /// The engine mutation of the recorded ops, against the state `r` holds (`delete`).
@@ -579,7 +579,7 @@ impl Osis {
             return Err(Error::Invalid(why));
         }
         let raw = a.list()?;
-        let expires = a.opt()?.map(|v| crate::port::codec::Args::of(vec![v]).uint().map(|t| Expiry::At(Time(t)))).transpose()?;
+        let expires = a.opt_wall()?.map(Expiry::At);
         a.end()?;
         if raw.len() > crate::port::MAX_WRITE_OPS {
             return Err(bad("write (too many ops)"));
@@ -621,7 +621,7 @@ impl Osis {
                 9 => WriteOp::PurgeAuthor { tid: o.tid()?, key: key(o.uint()?)?, actor: o.tid()? },
                 10 => {
                     let (tid, k, v) = (o.tid()?, key(o.uint()?)?, o.next()?);
-                    let replaces = o.opt()?.map(crate::port::codec::of).transpose()?;
+                    let replaces = o.get()?;
                     if self.acting.is_some() && op_links(&PathOp { path: Vec::new(), op: Op::Set(v.clone()) }) {
                         return Err(Error::Invalid("a client writes values, not links".into()));
                     }

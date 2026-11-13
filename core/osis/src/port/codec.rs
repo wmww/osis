@@ -8,7 +8,10 @@
 use crate::commits::{Address as At, Body, Commit, CommitKind, CommitPage, CommitQuery, NotUndoableReason, Part, Scope};
 use crate::error::{Error, Result};
 use crate::read::{Grant, Grants, GroupsOf, Stamp, ThingStamp};
-use crate::share::{GrantOpts, GroupSync, Holder, HolderKind, Address, LinkId, LinkInfo, Member, SetRoleOpts, Status, SyncScope, SyncState};
+use crate::share::{AccountNode, ContactCard, GrantOpts, GroupSync, Holder, HolderKind, Address, InviteId, LinkId, LinkInfo, Member, SetRoleOpts, ShareLink, Status, SyncScope, SyncState};
+use crate::account::{PairOffer, PairReply, PairRequest};
+use crate::clients::{Client, ClientSecret};
+use crate::serving::SyncId;
 use crate::watch::{DerivedFrom, Origin};
 use crate::backlinks::{Backlink, BacklinkPage, BacklinkQuery};
 use crate::commit_id::{CommitFrom, CommitId, CommitPos};
@@ -26,10 +29,6 @@ pub(crate) fn u(n: u64) -> Value {
     Value::uint(n)
 }
 
-pub(crate) fn opt<T>(x: Option<T>, f: impl FnOnce(T) -> Value) -> Value {
-    Value::opt(x.map(f))
-}
-
 /// A type as a port value, both directions (`internals::Port` for tests).
 #[doc(hidden)]
 pub trait Port: Sized {
@@ -42,15 +41,28 @@ pub(crate) fn of<T: Port>(v: Value) -> Result<T> {
     T::from_port(v)
 }
 
+/// `v` as bytes.
+pub(crate) fn bytes(v: Value) -> Result<Vec<u8>> {
+    match v {
+        Value::Bytes(b) => Ok(b),
+        _ => Err(bad("bytes")),
+    }
+}
+
+/// `v` as a list.
+pub(crate) fn list(v: Value) -> Result<Vec<Value>> {
+    match v {
+        Value::List(l) => Ok(l),
+        _ => Err(bad("list")),
+    }
+}
+
 /// Reads positions of a list value.
 pub(crate) struct Args(std::vec::IntoIter<Value>);
 
 impl Args {
     pub fn new(v: Value) -> Result<Args> {
-        match v {
-            Value::List(l) => Ok(Args(l.into_iter())),
-            _ => Err(bad("list")),
-        }
+        list(v).map(Args::of)
     }
     pub fn of(l: Vec<Value>) -> Args {
         Args(l.into_iter())
@@ -78,16 +90,10 @@ impl Args {
         self.get()
     }
     pub fn bytes(&mut self) -> Result<Vec<u8>> {
-        match self.next()? {
-            Value::Bytes(b) => Ok(b),
-            _ => Err(bad("bytes")),
-        }
+        bytes(self.next()?)
     }
     pub fn list(&mut self) -> Result<Vec<Value>> {
-        match self.next()? {
-            Value::List(l) => Ok(l),
-            _ => Err(bad("list")),
-        }
+        list(self.next()?)
     }
     pub fn opt(&mut self) -> Result<Option<Value>> {
         self.get()
@@ -263,7 +269,7 @@ impl Port for RawCommitId {
         Value::bytes(&self.0)
     }
     fn from_port(v: Value) -> Result<RawCommitId> {
-        Args::of(vec![v]).bytes()?.try_into().map(RawCommitId).map_err(|_| bad("commit id"))
+        bytes(v)?.try_into().map(RawCommitId).map_err(|_| bad("commit id"))
     }
 }
 
@@ -285,13 +291,62 @@ impl Port for LinkId {
     }
 }
 
-/// An address as its text.
-impl Port for Address {
+/// A type as its text (`Display`, checked by `FromStr`).
+macro_rules! port_text {
+    ($($t:ty),+) => {$(
+        impl Port for $t {
+            fn to_port(&self) -> Value {
+                Value::Str(self.to_string())
+            }
+            fn from_port(v: Value) -> Result<Self> {
+                of::<String>(v)?.parse()
+            }
+        }
+    )+};
+}
+
+port_text!(Address, ShareLink, ContactCard, SyncId, PairOffer, PairRequest, PairReply);
+
+impl Port for InviteId {
     fn to_port(&self) -> Value {
-        Value::Str(self.to_string())
+        Value::bytes(self.bytes())
     }
-    fn from_port(v: Value) -> Result<Address> {
-        of::<String>(v)?.parse()
+    fn from_port(v: Value) -> Result<InviteId> {
+        InviteId::from_bytes(&bytes(v)?)
+    }
+}
+
+impl Port for ClientSecret {
+    fn to_port(&self) -> Value {
+        Value::bytes(self.expose())
+    }
+    fn from_port(v: Value) -> Result<ClientSecret> {
+        v.as_array::<32>().map(ClientSecret::from_bytes).ok_or_else(|| bad("client secret"))
+    }
+}
+
+/// `[0, value]`, or an error as a Reply's (`[1, code, detail*]`).
+impl<T: Port> Port for Result<T> {
+    fn to_port(&self) -> Value {
+        match self {
+            Ok(x) => Value::List(vec![u(0), x.to_port()]),
+            Err(e) => outcome_err(e).to_value(),
+        }
+    }
+    fn from_port(v: Value) -> Result<Result<T>> {
+        let mut a = Args::new(v)?;
+        match a.uint()? {
+            0 => {
+                let x = a.get()?;
+                a.end()?;
+                Ok(Ok(x))
+            }
+            1 => {
+                let code = a.uint()?;
+                Ok(Err(error_of(code, a.rest())))
+            }
+            _ => Err(bad("result")),
+        }
     }
 }
 
@@ -301,7 +356,7 @@ impl<T: Port> Port for Option<T> {
         Value::opt(self.as_ref().map(T::to_port))
     }
     fn from_port(v: Value) -> Result<Option<T>> {
-        let mut l = Args::of(vec![v]).list()?;
+        let mut l = list(v)?;
         match l.len() {
             0 => Ok(None),
             1 => l.pop().map(T::from_port).transpose(),
@@ -315,7 +370,7 @@ impl<T: Port> Port for Vec<T> {
         Value::List(self.iter().map(T::to_port).collect())
     }
     fn from_port(v: Value) -> Result<Vec<T>> {
-        Args::of(vec![v]).list()?.into_iter().map(T::from_port).collect()
+        list(v)?.into_iter().map(T::from_port).collect()
     }
 }
 
@@ -382,6 +437,8 @@ port_struct!(LinkInfo { id, target, role, until, single_use });
 port_struct!(Backlink { tid, ak });
 port_struct!(BacklinkQuery { after, limit });
 port_struct!(BacklinkPage { backlinks, more });
+port_struct!(AccountNode { node, role });
+port_struct!(Client { actor, until });
 
 impl Port for Path {
     fn to_port(&self) -> Value {
@@ -461,7 +518,7 @@ impl Port for Grants {
     }
     fn from_port(v: Value) -> Result<Grants> {
         let mut out = Grants::new();
-        for x in Args::of(vec![v]).list()? {
+        for x in list(v)? {
             let mut a = Args::new(x)?;
             let t = a.tid()?;
             let e = Grant { role: a.get()?, until: a.get()?, may_grant: a.get()?, with_membership: a.get()? };
@@ -587,43 +644,6 @@ pub(crate) fn op(v: Value) -> Result<PathOp> {
     };
     o.end()?;
     Ok(PathOp { path, op })
-}
-
-/// A read's result: `[0, Opt(value)]` or an error.
-pub(crate) fn read_v(r: &Result<Option<Value>>) -> Value {
-    match r {
-        Ok(v) => Value::List(vec![u(0), v.to_port()]),
-        Err(e) => outcome_err(e).to_value(),
-    }
-}
-
-pub(crate) fn read(v: Value) -> Result<Result<Option<Value>>> {
-    let mut a = Args::new(v)?;
-    match a.uint()? {
-        0 => {
-            let x = a.opt()?;
-            a.end()?;
-            Ok(Ok(x))
-        }
-        1 => {
-            let code = a.uint()?;
-            Ok(Err(error_of(code, a.rest())))
-        }
-        _ => Err(bad("read result")),
-    }
-}
-
-/// An outcome carried as a value (a row that waits): the Reply's own forms.
-pub(crate) fn outcome_of(v: Value) -> Result<Result<Value>> {
-    let mut a = Args::new(v)?;
-    match a.uint()? {
-        0 => Ok(Ok(a.next()?)),
-        1 => {
-            let code = a.uint()?;
-            Ok(Err(error_of(code, a.rest())))
-        }
-        _ => Err(bad("result")),
-    }
 }
 
 /// A call's result as a Reply outcome.
