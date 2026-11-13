@@ -135,6 +135,19 @@ n=$((n + 1)); [ "$got" = "exit 1, res default-tests 101, hung 1, b ran 1" ] || {
 n=$((n + 1)); [ "$took" -lt 60 ] || { echo "FAIL held hang: took ${took}s"; fail=1; }
 n=$((n + 1)); ! kill -0 "$(cat hung.pid)" 2>/dev/null || { echo "FAIL held hang: the hung process $(cat hung.pid) still runs"; fail=1; kill "$(cat hung.pid)"; }
 n=$((n + 1)); [ "$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import gate_failures; print([x[0] for x in gate_failures.cargo_failures(open("runs.1.log").read())])' "$(dirname "$gate")")" = "['a::spin']" ] || { echo "FAIL held hang: the summary does not name a::spin"; fail=1; }
+# a one-thread target (`test NAME ... ` printed at its start) whose cargo dies, its test orphaned
+# holding the output pipe: the watcher (their subreaper) still stops it and names the test
+cat > fakebin/cargo <<'FAKE'
+#!/bin/sh
+printf '     Running tests/a.rs (a-1)\n\nrunning 1 test\ntest a::spin ... '
+sh -c 'echo $$ > hung.pid; exec sleep 300' &
+while [ ! -s hung.pid ]; do :; done
+kill -9 $$
+FAKE
+rm -f hung.pid
+rc=0; out=$(env GATE_HANG_S=1 PATH="$PWD/fakebin:$PATH" python3 "$(dirname "$gate")/test_watch.py" cargo test 2>&1) || rc=$?
+n=$((n + 1)); [ "$rc $(printf '%s\n' "$out" | grep -c -e '^gate: hung test: a::spin$' -e '^gate: hung: stopped [0-9].*, 1 processes$')" = "137 2" ] || { echo "FAIL orphan hang: rc $rc, out '$out'"; fail=1; }
+n=$((n + 1)); ! kill -0 "$(cat hung.pid)" 2>/dev/null || { echo "FAIL orphan hang: $(cat hung.pid) still runs"; fail=1; kill "$(cat hung.pid)"; }
 rm -rf runs runs.* ran fakebin hung.pid
 echo "gate selection: $n cases, $([ $fail = 0 ] && echo ok || echo FAILED)"
 exit $fail

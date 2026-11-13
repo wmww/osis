@@ -469,4 +469,3 @@ fn histories_reach_destructions_unknown_things_and_settings() {
         assert!(count(what) > 0, "{what}: none of 100");
     }
 }
-

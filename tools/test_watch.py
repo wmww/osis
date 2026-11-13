@@ -1,18 +1,21 @@
 #!/usr/bin/env python3
 """Runs a `cargo test` command with a hang bound (notes/gate.md, Hung tests): its output (stderr
 merged) passes through unchanged, and when no test of the running target has finished for HANG
-times the `test` wall limit (notes/build.md, Time limits), counted from the target's start or its
-last finished test, the target is stopped: every process below each `cargo` process in CMD's tree
-(the test binary or rustdoc and what they started), by PID, never by name. It first prints
+times the `test` wall limit (notes/build.md, Time limits), and at least twice libtest's 60-second
+notice, counted from the target's start or its last finished test, the target is stopped: every
+process below each `cargo` process in CMD's tree (the test binary or rustdoc and what they
+started) and every orphan of that tree (the watcher is their subreaper), by PID, never by name. It
+first prints
 `gate: hung: WHY` and a `gate: hung test: NAME` line per test still running (those libtest said
 had run over 60 seconds and that have not finished since; a test starts only when another ends or
 its target starts, so each has run the whole bound). cargo then goes on with the next target
-(`--no-fail-fast`); tools/gate_failures.py reports each named test as failed, "hung".
+(`--no-fail-fast`); tools/gate_failures.py reports each named test as failed, "hung". On SIGTERM
+or SIGHUP the watcher kills its whole tree and exits 128 + the signal.
 
   tools/test_watch.py CMD...    exits with CMD's exit status
 GATE_HANG_S, if set, is the bound in seconds instead (tools/gate_select_test.sh's fake hang).
 """
-import os, re, select, signal, subprocess, sys, time
+import ctypes, os, re, select, signal, subprocess, sys, time
 
 sys.dont_write_bytecode = True
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -21,9 +24,11 @@ import limits
 # R: a run-away bound. 0: every target is stopped before its first test ends; infinity: a hung test
 # holds the gate and the box-wide heavy lock until someone notices. Past it a test has run 10 times
 # its limit, five times the overrun that starts an investigation (notes/build.md, Time limits): a
-# hang, or a test so slow that failing it costs nothing. On fastbox-0 110 s, past libtest's
-# 60-second notice, so the running tests are named.
+# hang, or a test so slow that failing it costs nothing. The wall limit shrinks with the box's
+# threads, a single test's wall does not: the floor, twice libtest's notice, keeps the bound past
+# it on any box, so the running tests are named (fastbox-0: 10 x 11 s, so 120 s).
 HANG = 10
+NOTICE = 60
 SEGMENT = re.compile(r"^\s+(Running |Doc-tests )")
 FINISHED = re.compile(r"^test (.+?) \.\.\. (ok|FAILED|ignored)")
 SLOW = re.compile(r"^test (.+) has been running for over 60 seconds$")
@@ -37,7 +42,7 @@ def bound():
     if lim is None:
         print(f"gate: no hang bound: {why}", flush=True)
         return None
-    return HANG * lim[1]
+    return max(HANG * lim[1], 2 * NOTICE)
 
 
 def stat(pid):
@@ -75,12 +80,16 @@ def below(t, p):
     return out
 
 
-def stop(root):
-    """Kills the running target below root: what runs below each `cargo` in its tree (all of it
-    when none is a cargo). Returns (roots stopped as `pid (comm)`, processes killed)."""
-    t = tree(root)
-    cargos = [p for p, (comm, _, _) in t.items() if comm == "cargo"]
-    tops = [c for c, (comm, pp, _) in t.items() if pp in cargos and comm != "cargo"] if cargos else [root]
+def stop(child, everything=False):
+    """Kills the running target: what runs below each `cargo` in child's tree (all of child's tree
+    when none is a cargo, or with `everything`), and every orphan reparented to this watcher.
+    Returns (roots stopped as `pid (comm)`, processes killed)."""
+    me = os.getpid()
+    t = tree(me)
+    orphans = [c for c, (_, pp, _) in t.items() if pp == me and c != child]
+    cargos = [p for p in below(t, child) if p in t and t[p][0] == "cargo"]
+    tops = [c for c, (comm, pp, _) in t.items() if pp in cargos and comm != "cargo"] if cargos and not everything else [child]
+    tops = [p for p in tops + orphans if p in t]
     victims = [q for p in tops for q in below(t, p)]
     fds = []
     for q in victims:
@@ -107,7 +116,15 @@ def main():
     if len(sys.argv) < 2:
         sys.exit(__doc__)
     hang = bound()
+    # PR_SET_CHILD_SUBREAPER: a process orphaned below (its cargo killed) stays in this tree
+    ctypes.CDLL(None).prctl(36, 1, 0, 0, 0)
     child = subprocess.Popen(sys.argv[1:], stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+
+    def quit(sig, _):
+        stop(child.pid, everything=True)
+        os._exit(128 + sig)
+    for sig in (signal.SIGTERM, signal.SIGHUP):
+        signal.signal(sig, quit)
     fd, out = child.stdout.fileno(), sys.stdout.buffer
     # the clock runs inside a target: since its start or its last finished test
     last, slow, part = None, {}, b""
@@ -115,6 +132,13 @@ def main():
         wait = None if last is None or hang is None else max(0.0, last + hang - time.monotonic())
         ready, _, _ = select.select([fd], [], [], wait)
         if not ready:
+            # libtest on one thread prints `test NAME ... ` when the test starts, and no notice
+            if m := re.match(rb"^test (.+) \.\.\. $", part):
+                slow[m.group(1).decode(errors="replace")] = True
+            if part:
+                out.write(b"\n")
+                out.flush()
+                part = b""
             names = list(slow)
             print(f"gate: hung: no test finished for {hang:.0f} s", flush=True)
             for n in names:
