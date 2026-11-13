@@ -932,9 +932,9 @@ fn drop_gone(tx: &mut Tx<'_>, c: &CommitId, ai: usize, changed: &mut BTreeSet<(T
     if gone.is_empty() {
         let Some(k) = m.header.aspects.get(ai).map(|a| (a.tid, a.ak.clone())) else { return Ok(()) };
         let Some(list) = tx.core.ix.valueless.get(&k).filter(|l| !l.is_empty() && m.header.kind.is_compaction()).cloned() else { return Ok(()) };
+        // the state took it stripped (`apply::join_into_state`): only the stored body changes
         if crate::apply::carries_any(tx, c, ai, &list)? {
             strip_carried(tx, c, ai)?;
-            crate::apply::rebuild(tx, &k.0, &k.1)?;
             changed.insert(k);
         }
         return Ok(());

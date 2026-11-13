@@ -195,6 +195,39 @@ fn purge_drops_late_snapshot_spec_commits_5() {
     check(&mut lp.peers[j].engine, "snapshot part last, restarted");
 }
 
+// spec/crdt.md §4.7 Copies, spec/commits.md §5 Purge: a snapshot copying a write held value-less
+// here (purged, nothing written over it), arriving alone after the purge, brings no value back
+#[test]
+fn late_snapshot_of_purged_value_reads_nothing_spec_crdt_4_7() {
+    let mut lp = net(2, 0);
+    let t = new_thing(&mut lp, 0);
+    let reg = ak("t:reg.0");
+    let secret = set(&mut lp, 0, t, &REG, "secret");
+    let snap = lp.peers[0].engine.snapshot(&t, &reg).unwrap().unwrap();
+    let spk = lp.peers[0].engine.package(&snap).unwrap().unwrap();
+    lp.advance(5);
+    // the request rides a write elsewhere: nothing is written over the secret
+    let u = new_thing(&mut lp, 0);
+    let mut m = Mutation::new();
+    m.set(u, &REG, &s("other")).unwrap();
+    m.purge_commit(secret, t, reg.clone());
+    lp.peers[0].commit(m).unwrap();
+    for p in packages(&mut lp, 0).into_iter().filter(|p| p.id != snap) {
+        lp.deliver(1, &p).unwrap();
+    }
+    lp.peers[1].engine.set_syncing(t, true).unwrap();
+    lp.peers[1].reexamine().unwrap();
+    assert!(!lp.peers[1].engine.body_not_dropped(&secret, &t, &reg));
+    assert_ne!(lp.peers[1].engine.get(&t, &reg).unwrap(), Some(s("secret")), "purged");
+    // the purger holds the secret's leftover over the earlier write: what its copy leaves
+    let purged = lp.peers[0].engine.get(&t, &reg).unwrap();
+    assert_ne!(purged, Some(s("secret")));
+    lp.deliver(1, &spk).unwrap();
+    assert_eq!(lp.peers[1].engine.get(&t, &reg).unwrap(), purged, "the snapshot's copy joins value-less");
+    lp.peers[1].restart(0x5b11).unwrap();
+    assert_eq!(lp.peers[1].engine.get(&t, &reg).unwrap(), purged, "restarted");
+}
+
 // spec/crdt.md §8: snapshot frontiers cover only writes the state reflects (valid ones).
 #[test]
 fn snapshot_frontier_valid_only_spec_crdt_8() {
