@@ -145,7 +145,7 @@ fn world(seed: u64) -> Library {
     lib
 }
 
-// notes/expiry-creation-design.md §6 step 6: at quiescence, every valid grant with a reachable
+// notes/expiry-creation-design.md §5 (Unjudgeable parts): at quiescence, every valid grant with a reachable
 // label reads as if everything reachable had arrived creation-first; forged boxes change no read.
 // Every arrival order.
 #[test]
