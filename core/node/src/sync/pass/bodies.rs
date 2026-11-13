@@ -36,7 +36,7 @@ impl SyncEngine {
             // right holder dropped covered deltas from, a superset), unless it is must-not-hold
             // (`holds_nothing`, spec/sync.md §6)
             let here = entry.is_some_and(|id| source.is_none_or(|s| self.state.is_present(s, &l, &id)));
-            if !here && self.carried_by(source, &l, &b.commit, &needed) {
+            if !here && self.carried_by(source, &l, &b.commit, &needed, b.to_label) {
                 continue;
             }
             // a right holder deleted it here: its keep bounds, judged from what it holds, passed
@@ -175,7 +175,7 @@ impl SyncEngine {
         let keeps = self.engine.part_keeps(&b.commit)?;
         let unjudged = h.ephemeral.is_some() && self.refused_there(source, &l);
         for ai in parts {
-            if self.must_carry(&h, &b.commit, &keeps, *ai, snaps, note)? && !self.carried_by(source, &l, &b.commit, &[*ai]) && !unjudged {
+            if self.must_carry(&h, &b.commit, &keeps, *ai, snaps, note)? && !self.carried_by(source, &l, &b.commit, &[*ai], b.to_label) && !unjudged {
                 return Ok(false);
             }
         }
@@ -231,9 +231,10 @@ impl SyncEngine {
 
     /// Whether an entry of commit `c` holding `parts` is present at `source` under `l` (any
     /// entry when `None`: this node's own served state), checked genuine: a forged blob listing
-    /// the parts holds nothing, nor a must-not-hold one (`holds_nothing`).
-    pub(super) fn carried_by(&mut self, source: Option<&PeerKey>, l: &LabelId, c: &CommitId, parts: &[usize]) -> bool {
-        let ids: Vec<BlobId> = self.state.entries_of(l, c).filter(|(id, e)| !e.cert && matches!(&e.kind, Kind::Commit { parts: p, .. } if parts.iter().all(|x| p.contains(x)) && !self.holds_nothing(c, p)) && source.is_none_or(|s| self.state.holds_at(s, l, id))).map(|(id, _)| id).collect();
+    /// the parts holds nothing, nor a must-not-hold one (`holds_nothing`). `copy`: the body is a
+    /// per-label copy (`Body::to_label`), which only a copy holds.
+    pub(super) fn carried_by(&mut self, source: Option<&PeerKey>, l: &LabelId, c: &CommitId, parts: &[usize], copy: bool) -> bool {
+        let ids: Vec<BlobId> = self.state.entries_of(l, c).filter(|(id, e)| !e.cert && (!copy || self.is_copy(id)) && matches!(&e.kind, Kind::Commit { parts: p, .. } if parts.iter().all(|x| p.contains(x)) && !self.holds_nothing(c, p)) && source.is_none_or(|s| self.state.holds_at(s, l, id))).map(|(id, _)| id).collect();
         ids.into_iter().any(|id| self.genuine(&id))
     }
 
@@ -293,13 +294,20 @@ impl SyncEngine {
         // this node's served state (`source` `None`) serves only what it holds: an entry whose
         // bytes it dropped (a snapshot dropped a part of the blob it does not serve here, on
         // another thing) is no entry of the body, which is placed again as a blob of its own
-        let mut ids: Vec<BlobId> = cands.into_iter().filter(|(id, parts)| self.readable(&g, &b.commit, parts) == b.parts && (source.is_some() || self.engine.has_blob(id))).map(|(id, _)| id).collect();
+        // a per-label copy's body is held only by a copy: the label's readers cannot open a
+        // shared blob's sections (`Body::to_label`)
+        let mut ids: Vec<BlobId> = cands.into_iter().filter(|(id, parts)| self.readable(&g, &b.commit, parts) == b.parts && (!b.to_label || self.is_copy(id)) && (source.is_some() || self.engine.has_blob(id))).map(|(id, _)| id).collect();
         match source {
             Some(source) => ids.sort_by_key(|id| !self.state.is_present(source, l, id)),
             // one useless at no source first
             None => ids.sort_by_key(|id| self.state.useless_anywhere(l, id)),
         }
         ids.into_iter().find(|id| self.genuine(id))
+    }
+
+    /// Whether blob `id` is a copy (`BlobRec::cert`): its one section under its blob key.
+    pub(super) fn is_copy(&self, id: &BlobId) -> bool {
+        self.state.blobs.get(id).is_some_and(|r| r.cert)
     }
 
     /// Whether every delta of commit blob `id` hashes to its header entry (spec/commits.md §4;
@@ -472,7 +480,7 @@ impl SyncEngine {
             if let Some(needed) = self.must_hold(b, &snaps, &snapping, &mut note)? {
                 // not placed again (`body_sends`); one held there is checked whatever deletes of
                 // other copies of it took (a duplicate's, the luck of the order a pass drew)
-                if !self.carried_by(Some(source), l, &b.commit, &needed) && self.delete_stands(Some(source), *l, b, &needed, &snaps, &mut note)? {
+                if !self.carried_by(Some(source), l, &b.commit, &needed, b.to_label) && self.delete_stands(Some(source), *l, b, &needed, &snaps, &mut note)? {
                     continue;
                 }
                 v.must_hold.push((b.commit, needed));

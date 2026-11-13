@@ -187,7 +187,10 @@ impl SyncEngine {
                 Some(s) => self.state.is_gone_at(s, l, id),
                 None => self.state.useless_anywhere(l, id),
             };
-            let same: Vec<BlobId> = self.state.entries_of(l, commit).filter(|(b, o)| (b < id || (useless && b != id)) && !o.cert && matches!(&o.kind, Kind::Commit { ais: a, .. } if a == ais) && match source {
+            // a copy and a shared blob are no duplicates: a label whose readers cannot open the
+            // shared one's sections holds a copy beside it (`entry_for`, a secret actor destroyed)
+            let copy = self.is_copy(id);
+            let same: Vec<BlobId> = self.state.entries_of(l, commit).filter(|(b, o)| (b < id || (useless && b != id)) && !o.cert && self.state.blobs.get(b).is_some_and(|r| r.cert) == copy && matches!(&o.kind, Kind::Commit { ais: a, .. } if a == ais) && match source {
                 Some(s) => self.state.holds_at(s, l, b),
                 None => !self.state.useless_anywhere(l, b) && self.engine.has_blob(b),
             }).map(|(b, _)| b).collect();
@@ -605,7 +608,7 @@ impl SyncEngine {
                 continue;
             }
             let dropped = m.body_gone(ai);
-            if !dropped && self.carried_by(source, l, commit, &[ai]) || self.snapshot_carries(at, commit, &t, &a, dropped)? {
+            if !dropped && self.carried_by(source, l, commit, &[ai], false) || self.snapshot_carries(at, commit, &t, &a, dropped)? {
                 continue;
             }
             all = false;

@@ -478,8 +478,9 @@ impl Engine {
                 // rotation, its grants, a cross-published `label.0`), whose boxes are what gives
                 // the readers that thing's secrets, so its own section cannot be under them
                 // (certificate blobs are copies for the same reason), or a part whose thing's
-                // secret neither derives from the actor's nor comes through the closure
-                let derivable = |ai: usize| h.aspects.get(ai).is_some_and(|a| self.core.secret_actor(&a.tid).is_some_and(|x| x == ctx.actor || ctx.closure.contains(&x)));
+                // secret neither derives from the actor's nor comes through the closure (a destroyed
+                // actor's boxes went with it: its secrets come through nothing)
+                let derivable = |ai: usize| h.aspects.get(ai).is_some_and(|a| self.core.secret_actor(&a.tid).is_some_and(|x| x == ctx.actor || (ctx.closure.contains(&x) && !self.core.destroyed(&x))));
                 // (a `created.0` part carries no boxes: a records-only role commit is shared)
                 let role_elsewhere = h.kind.is_role() && readable.iter().any(|ai| h.aspects.get(*ai).is_some_and(|a| a.tid != ctx.actor && a.ak.as_str() != "created.0"));
                 b.to_label = role_elsewhere || readable.iter().any(|ai| !derivable(*ai));

@@ -971,9 +971,11 @@ fn a_fresh_node_demotes_and_nothing_comes_back_spec_perm_6() {
 }
 
 // spec/commits.md §4 (a node never waits for a part), §5 (a lasting commit's header stays under its
-// labels): a request whose one delta is dead stays as a header-only blob; its killer expires, so a
-// new node gets the header from the host with nothing later on the aspect. Both headers apply at
-// once, the request standing.
+// labels; Purge, the writer's re-snapshot): a request whose one delta is dead stays as a header-only
+// blob; its killer expires, so a new node gets the header from the host with nothing later on the
+// aspect. Both headers apply at once, the request standing. The request resets nothing on the
+// purged aspect: the new node, which never held the purged write, reads what the purger reads, not
+// the older value it replaced.
 #[test]
 fn a_lasting_request_applies_when_its_killer_left_spec_commits_4() {
     let Chat { mut net, host, a, b, n, t, l } = chat();
@@ -1012,6 +1014,8 @@ fn a_lasting_request_applies_when_its_killer_left_spec_commits_4() {
     assert_eq!(pending(&mut net, n), 0);
     assert!(net.engine(n).header(&p).is_some() && net.engine(n).header(&c).is_some());
     assert_eq!(net.engine(n).purged_on(&t, &k()).unwrap().get(&c), Some(&p));
+    assert_eq!(net.read(a, t), None, "the purged write wins value-less");
+    assert_eq!(net.read(n, t), net.read(a, t), "the new node reads as the purger");
 }
 
 // spec/commits.md §5 Forgetting (purged leftovers), spec/requirements.md (peer input never causes

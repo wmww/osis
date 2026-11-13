@@ -1470,37 +1470,47 @@ fn removing_a_destroyed_only_admin_of_a_plain_thing_is_refused_spec_permissions_
     assert!(matches!(err, Some(osis_node::Error::Misuse(m)) if m.contains("no admin")), "refused: {err:?}");
 }
 
-// spec/commits.md §5 (A thing's mintings travel with its record), spec/permissions.md §4: t, first admin
-// of x and outside g's closure, is purged; time passes, so every node judges what sits under g's
+// spec/commits.md §5 (A thing's mintings travel with its record), spec/permissions.md §4, spec/sync.md
+// §3 (Per-label copies): t, first admin of x (b granted admin on t, so t has secrets of its own), is
+// purged, outside g's closure or listed in g; time passes, so every node judges what sits under g's
 // label, and then a node is granted g. The request destroying t stays there for x's sake (every node
-// holding x needs it), so the newcomer reads t as destroyed as the others do
+// holding x needs it), so the newcomer reads t as destroyed as the others do; x's body, sealed under
+// t's secrets whose boxes went with t, goes there as a per-label copy, so the newcomer reads x
 #[test]
 fn a_destruction_by_purge_stays_under_a_dependents_label_for_a_newcomer_spec_commits_5() {
-    let Setup { mut net, a, b, c, g } = setup();
-    let mut m = Mutation::new();
-    let t = net.engine(a).new_thing(&mut m, g);
-    m.set(t, &REG, &s("t")).unwrap();
-    net.engine(a).commit(m).unwrap().unwrap();
-    net.run();
-    let tb = net.tid(b);
-    net.grant(a, t, tb, Role::Admin);
-    net.run();
-    let x = net.item(a, g, t, "x");
-    net.run();
-    net.advance(10);
-    purge_thing(&mut net, a, t);
-    net.run();
-    for _ in 0..3 {
-        net.advance(70_000);
+    for listed in [false, true] {
+        let Setup { mut net, a, b, c, g } = setup();
+        let mut m = Mutation::new();
+        let t = net.engine(a).new_thing(&mut m, g);
+        m.set(t, &REG, &s("t")).unwrap();
+        if listed {
+            let mut items = net.engine(a).get_typed(&g, &ct::GROUP).unwrap().unwrap_or_default();
+            items.items.insert(t);
+            m.set(g, &ct::GROUP, &items).unwrap();
+        }
+        net.engine(a).commit(m).unwrap().unwrap();
+        net.run();
+        let tb = net.tid(b);
+        net.grant(a, t, tb, Role::Admin);
+        net.run();
+        let x = net.item(a, g, t, "x");
+        net.run();
+        net.advance(10);
+        purge_thing(&mut net, a, t);
+        net.run();
+        for _ in 0..3 {
+            net.advance(70_000);
+        }
+        for n in [a, b, c] {
+            assert!(!net.engine(n).knows(&t), "listed {listed}, node {n}: t was destroyed");
+            assert_eq!(net.read(n, x), Some(s("x")), "listed {listed}, node {n}: x reads");
+        }
+        let d = granted_later(&mut net, a, g);
+        assert_eq!(net.read(d, x), Some(s("x")), "listed {listed}, d: x reads");
+        assert!(net.engine(d).core.created(&t).is_some(), "listed {listed}, d: t's record, x names it");
+        assert!(!net.engine(d).knows(&t), "listed {listed}, d: t was destroyed");
+        assert_eq!(net.engine(d).roster(&x), net.engine(a).roster(&x), "listed {listed}, d: x's roster as at a");
     }
-    for n in [a, b, c] {
-        assert!(!net.engine(n).knows(&t), "node {n}: t was destroyed");
-    }
-    let d = granted_later(&mut net, a, g);
-    assert_eq!(net.read(d, x), Some(s("x")), "d: x reads");
-    assert!(net.engine(d).core.created(&t).is_some(), "d: t's record, x names it");
-    assert!(!net.engine(d).knows(&t), "d: t was destroyed");
-    assert_eq!(net.engine(d).roster(&x), net.engine(a).roster(&x), "d: x's roster as at a");
 }
 
 // spec/commits.md §5 (A thing's mintings travel with its record), spec/permissions.md §4, notes/growth.md:
