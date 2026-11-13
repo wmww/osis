@@ -1,4 +1,4 @@
-//! Search driver for the roles model: `[samples] [as|exempt|strat|stratw|frontier|edges|edges-prov|joint|disputes|disputes-random|digest|addenda|addenda-exh|addenda-covers|addenda-cost|epochs|epochs-exh]`.
+//! Search driver for the roles model: `[samples] [as|exempt|strat|stratw|frontier|edges|edges-prov|joint|disputes|disputes-random|digest|addenda|addenda-exh|addenda-covers|addenda-cost|epochs|epochs-exh|epochs-exh-c]`.
 
 use roles_model::{edges, joint, single};
 
@@ -11,8 +11,8 @@ fn main() {
                 println!("{name} {d:016x}");
             }
         }
-        Some(m @ ("epochs" | "epochs-exh")) => {
-            if roles_model::epochs::run(samples, m == "epochs-exh") > 0 {
+        Some(m @ ("epochs" | "epochs-exh" | "epochs-exh-c")) => {
+            if roles_model::epochs::run(samples, m) > 0 {
                 std::process::exit(1);
             }
         }

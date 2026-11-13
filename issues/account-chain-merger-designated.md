@@ -4,7 +4,7 @@
 > Tags: keys, perm, accounts
 
 ## Shape
-The same pattern as the role merger that joint sealing removed (notes/crypto.md, Forks stand): a designated party any of whose devices may vanish. Holder-actor sealing no longer needs the account's fork merged (an account anchored at two heads is sealed jointly), so what still depends on the chain merge is the account's own bookkeeping: listings of commits at closed epochs (spec/permissions.md §5.5, Listings: "a rotation off it is answered by the merge ending the fork"), doubt (§5.4), and naming forks (issues/write-at-removed-nodes-rotation-lost.md).
+The same pattern as the role merger that joint sealing removed (notes/crypto.md, Forks stand): a designated party any of whose devices may vanish. Holder-actor sealing no longer needs the account's fork merged (an account anchored at two heads is sealed jointly), so what still depends on the chain merge is the account's own bookkeeping: listings of commits at closed epochs (spec/permissions.md §5.5, Listings: "a rotation off it is answered by the merge ending the fork"), doubt (§5.4), and naming forks: a node's writes at a removed node's rotation count only by its listing answering the merge that leaves that rotation void (§5.5, Epoch rule).
 
 ## To study
 - What a standing chain fork actually costs when nobody merges it (which commits fail to count, at which nodes).

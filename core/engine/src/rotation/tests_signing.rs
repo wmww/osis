@@ -867,3 +867,26 @@ fn a_re_added_nodes_later_rotation_is_authorized_spec_permissions_5_4() {
     assert_eq!(v.authorized_by(&rot), Some(node), "minted by the re-added node after its re-add");
     assert_eq!(v.open(), rot, "node 0 follows it");
 }
+
+// spec/permissions.md §5.4 (Nodes of P): only a removal that counts puts its node beside it.
+// The laptop (node 2), not yet holding its own removal, removes the tablet (node 1); the phone
+// (node 0) has removed the laptop and gets that removal alone, after its rotation closed the
+// epoch it is signed at, so it counts for nothing (as one a removed node forges there would),
+// and the tablet's later rotation stands for D's roster at the phone
+#[test]
+fn a_removal_that_does_not_count_puts_nothing_beside_it_spec_permissions_5_4() {
+    let (mut lp, a, _) = world(3, 3);
+    let tablet = lp.peers[1].engine.tid();
+    let bad = remove(&mut lp, 2, a.devices, 1);
+    let done = remove(&mut lp, 0, a.devices, 2);
+    send(&mut lp, 0, 1, &done.commits);
+    lp.advance(5);
+    send(&mut lp, 2, 0, &bad.commits[..1]);
+    assert!(lp.peers[0].engine.core.key_holders(&a.devices).iter().any(|(m, _)| *m == tablet), "the tablet's removal does not count");
+    lp.advance(5);
+    let r = lp.peers[1].engine.run(|tx| crate::flows::signing::rotate_in(tx, a.account, &[], &mut Done::default())).unwrap().unwrap();
+    send(&mut lp, 1, 0, &[r]);
+    let v = lp.peers[0].engine.core.account_view(&a.account).unwrap();
+    assert_eq!(v.authorized_by(&r), Some(tablet), "the tablet's rotation stands");
+    assert_eq!(v.open(), r);
+}

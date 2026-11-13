@@ -401,16 +401,14 @@ impl Core {
         (self.ix.rotations.get(p).copied().unwrap_or(0), self.sides.account(p), a.map_or(0, |a| a.keys.len()), roster)
     }
 
-    /// Per node of account `p`'s devices actor `d`, the epochs `p`'s held edge writes on it are
-    /// signed at: (removals, grants).
+    /// Per node of account `p`'s devices actor `d`, the epochs `p`'s counting edge writes on it
+    /// are signed at: (removals, grants). A removal that does not count (one held at an epoch
+    /// closed before it arrived, a removed node's forgery there) puts nothing beside it.
     fn roster_epochs(&self, p: &Tid, d: &Tid) -> BTreeMap<Tid, (BTreeSet<CommitId>, BTreeSet<CommitId>)> {
+        use osis_perm::HeldSet;
         let mut out: BTreeMap<Tid, (BTreeSet<CommitId>, BTreeSet<CommitId>)> = BTreeMap::new();
-        let Ok(roles) = osis_base::Ak::new("roles.0") else { return out };
-        for (_, c) in self.ix.by_aspect.get(&(*d, roles)).into_iter().flatten() {
-            let (Some(rc), Some(e)) = (self.ix.held.edge_commit(c), self.ix.commits.get(c).and_then(|m| m.view.epoch)) else { continue };
-            if rc.author != *p {
-                continue;
-            }
+        for rc in self.ix.held.edge_commits(d).iter().filter(|rc| rc.author == *p) {
+            let Some(e) = self.ix.commits.get(&rc.id).and_then(|m| m.view.epoch) else { continue };
             for o in rc.ops.iter().filter(|o| o.target == *d) {
                 let x = out.entry(o.holder).or_default();
                 if o.edge.is_none() { x.0.insert(e) } else { x.1.insert(e) };

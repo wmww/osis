@@ -83,7 +83,8 @@
 //! function of the held set and the side; worlds are checked at every observer and every
 //! prefix of its receipts.
 //!
-//! Search: `roles-model -- N epochs` (random), `-- 0 epochs-exh` (three exhaustive families).
+//! Search: `roles-model -- N epochs` (random), `-- 0 epochs-exh` (exhaustive families A and B),
+//! `-- 0 epochs-exh-c` (family C): each within one `tools/heavy` hold.
 
 use crate::shrink::LATE;
 use crate::Rng;
@@ -677,7 +678,9 @@ impl World {
 
     /// Rotation q stands for D's roster (spec/permissions.md §5.4, Nodes of P): for the removal
     /// of its minter `held` holds, q is on the line of the epoch the removal is signed at (made
-    /// before it) or descends from the rotation naming it (made after a re-add).
+    /// before it) or descends from the rotation naming it (made after a re-add). A re-add here is
+    /// a time with no grant commit, so that rotation stands in for the spec's re-grant epoch: it
+    /// lets stand more than the spec (a fork from an unaware sibling's epoch on its line).
     pub fn stands(&self, held: &[bool], q: usize) -> bool {
         let Some(rc) = self.removal_commit_of(self.items[q].author).filter(|&rc| held[rc]) else { return true };
         let (e, id) = (self.items[rc].epoch.unwrap(), self.items[rc].id);
@@ -1565,8 +1568,8 @@ impl Builder {
         // Every epoch current in the rotator's own view (its side), and every epoch of a
         // held fork it has not merged out: the other line whole. It names the ones its roster
         // authorizes (minted by a node whose removal commit it does not hold, or re-added, every
-        // rotation on their lines standing: `World::stands`), less a re-added node's forks from
-        // while it was removed.
+        // rotation on their lines standing: `World::stands`), from what it holds alone (a
+        // re-added node's fork from while it was removed included, as the spec names it).
         let v = self.w.judge_at(n, &held);
         let unmerged = self.unmerged(n, t);
         let hv: Vec<bool> = self.w.items.iter().map(|i| i.recv[n] <= t).collect();
@@ -1579,7 +1582,7 @@ impl Builder {
                 let current = held[i] && ((v.counting[i] && !v.closed.contains(e)) || unmerged.contains(&i));
                 if current && *e != at {
                     supersedes.push(*e);
-                    if authorized(i) && !self.w.items[i].hostile {
+                    if authorized(i) {
                         names.push(self.w.items[i].id);
                     }
                 }
@@ -2235,8 +2238,10 @@ pub fn family_c(shard: usize, shards: usize, f: &mut impl FnMut(World)) -> u64 {
     let companions: [Option<C>; 5] = [None, Some((S, false, 5, [0, 0, 0, 0])), Some((X, false, 5, [LATE, 0, 0, 0])), Some((0, false, 5, [0, 0, 0, 0])), Some((X, false, 7, [0, 0, LATE, 0]))];
     let mut count = 0;
     let mut k = 0usize;
-    // X rotating offline at t 2 (before its removal): its rotation's delay to S and to node 0.
-    let x_rots: [Option<(u32, u32)>; 4] = [None, Some((0, 3)), Some((0, 0)), Some((4, 3))];
+    // X rotating offline at t 2 (before its removal): its rotation's delay to S and to node 0
+    // (S writes or rotates at X's epoch before the removal reaches it; node 0 removes X at X's
+    // epoch, the rotation on the removal's line). Two, so the family fits one heavy hold.
+    let x_rots: [Option<(u32, u32)>; 3] = [None, Some((0, 3)), Some((0, 0))];
     for x_rot in x_rots {
     for ts in [3u32, 4, 5] {
         for (p_to_s, r_to_s) in [(4u32, 4u32), (1, 4), (4, 1)] {
@@ -2337,11 +2342,11 @@ fn parallel(f: impl Fn(usize, usize, &mut Stats) -> u64 + Sync) -> (u64, Stats) 
     (n, st)
 }
 
-/// Runs the search and prints its tallies; returns the hard failures found (the driver exits
-/// nonzero on any).
-pub fn run(samples: u64, exhaustive_family: bool) -> u64 {
+/// Runs search `mode` (`epochs`, `epochs-exh`: families A and B, `epochs-exh-c`: family C) and
+/// prints its tallies; returns the hard failures found (the driver exits nonzero on any).
+pub fn run(samples: u64, mode: &str) -> u64 {
     let mut fails = vec![];
-    if exhaustive_family {
+    if mode == "epochs-exh" {
         let (n, st) = parallel(|th, threads, st| family_a(th, threads, &mut |w| check(&w, st)));
         println!("family A (one label): {n} worlds");
         st.print("epochs-exh A");
@@ -2350,6 +2355,7 @@ pub fn run(samples: u64, exhaustive_family: bool) -> u64 {
         println!("family B (labels, successive removals, re-add, bound): {n} worlds");
         st.print("epochs-exh B");
         fails.push(st);
+    } else if mode == "epochs-exh-c" {
         let (n, st) = parallel(|th, threads, st| family_c(th, threads, &mut |w| check(&w, st)));
         println!("family C (a sibling rotating after a removal it has not received, X rotating before it): {n} worlds");
         st.print("epochs-exh C");
