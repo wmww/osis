@@ -5356,12 +5356,22 @@ fn memory_snapshot_invalid_on_arrival_not_covered_spec_permissions_6() {
         lp.deliver(i, &gone).unwrap();
     }
     lp.deliver(1, &back).unwrap();
-    lp.advance(10);
-    let s1 = memory_snapshot(&mut lp, 1, d);
-    let s0 = memory_snapshot(&mut lp, 0, d);
+    // 1's the lower ID: a fresh write and a fresh pair until it is (each pair a coin toss)
+    let (s1, s0) = (0..64)
+        .find_map(|n| {
+            if n > 0 {
+                let y = memory_op(&mut lp, 0, d, "t:tags+.0", Vec::new(), Op::Add(s(&format!("Y{n}"))), None);
+                for i in [1, 2] {
+                    memory_deliver(&mut lp, i, &y);
+                }
+            }
+            lp.advance(10);
+            let (s1, s0) = (memory_snapshot(&mut lp, 1, d), memory_snapshot(&mut lp, 0, d));
+            (s1.0 < s0.0).then_some((s1, s0))
+        })
+        .expect("1's snapshot the lower");
     let ts = |i: usize, c: &osis_base::CommitId| lp.peers[i].engine.header(c).unwrap().ts;
     assert_eq!(ts(1, &s1.0), ts(0, &s0.0), "covered-equal");
-    assert!(s1.0 < s0.0, "1's is the lower");
     memory_deliver(&mut lp, 1, &s0);
     memory_deliver(&mut lp, 2, &s0);
     memory_deliver(&mut lp, 2, &s1);
