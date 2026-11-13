@@ -2441,3 +2441,53 @@ fn forged_edge_copy_cached_placement_spec_6() {
         }
     }
 }
+
+/// §5.7 move, §6.1: one replica lacking a deleted element's creation and one holding it make
+/// the same move; once each holds everything they read alike, and undoing both moves restores
+/// the read from before them, whichever move is newer.
+#[test]
+fn move_unplaced_record_converges_spec_5_7() {
+    let view = text_view();
+    let ins = |at: usize, x: &str| op(Op::Insert { at, items: vec![s(x)] });
+    for later in [false, true] {
+        let mut b = Replica::new(2);
+        let (xc, _, _) = b.commit(1, &[ins(0, "x")], &view).unwrap();
+        let (y, _, _) = b.commit(2, &[ins(1, "y")], &view).unwrap();
+        let (del, _, _) = b.commit(3, &[op(Op::Delete { at: 0, len: 1 })], &view).unwrap();
+        let mut a = Replica::new(1);
+        a.commit(4, &[ins(0, "u")], &view);
+        a.commit(5, &[ins(0, "zw")], &view);
+        a.state.join(y);
+        a.state.join(del);
+        // c holds a's text and x's creation
+        let mut c = Replica { state: a.state.clone(), src: session_of(3), lo: 1 };
+        c.state.join(xc.clone());
+        assert_eq!(c.state.read(), Some(s("zwuy")));
+        let mut full = c.state.clone();
+        let mv = [op(Op::Move { at: 2, len: 1, to: 0 }), op(Op::Move { at: 2, len: 2, to: 0 })];
+        let (ta, tc) = if later { (7, 6) } else { (6, 7) };
+        let (ab, cb) = (a.state.clone(), c.state.clone());
+        let (da, sa, ra) = a.commit(ta, &mv, &view).unwrap();
+        let (dc, sc, rc) = c.commit(tc, &mv, &view).unwrap();
+        for d in [&da, &dc] {
+            full.join(d.clone());
+        }
+        // a's own read before x's creation arrives, then everything joined
+        assert_eq!(a.state.read(), Some(s("wyuz")));
+        a.state.join(xc.clone());
+        a.state.join(dc.clone());
+        c.state.join(da.clone());
+        assert_eq!(a.state, c.state);
+        assert_eq!(a.state.read(), Some(s("wyuz")), "later {later}");
+        let ua = undo(&mut Writer::new(ts(8 << 16), sa.clone(), a.lo), &Undone { delta: &da, source: &sa, range: ra }, &a.state, &ab, &view).unwrap();
+        let uc = undo(&mut Writer::new(ts(9 << 16), sc.clone(), c.lo), &Undone { delta: &dc, source: &sc, range: rc }, &c.state, &cb, &view).unwrap();
+        for u in [ua, uc].into_iter().flatten() {
+            full.join(u.clone());
+            a.state.join(u.clone());
+            c.state.join(u);
+        }
+        assert_eq!(a.state, c.state);
+        assert_eq!(a.state.read(), Some(s("zwuy")), "both undone, later {later}");
+    }
+}
+
