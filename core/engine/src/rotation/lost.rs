@@ -643,7 +643,7 @@ impl Engine {
         self.run(|tx| {
             tx.txn.put_local(&[BEARERS, l.as_bytes()].concat(), &[], osis_store::Shred::No)?;
             tx.core.ix.bearers.insert(*l);
-            Ok(())
+            crate::flows::retake(tx)
         })
     }
 

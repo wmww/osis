@@ -711,6 +711,8 @@ pub(crate) fn rejudged(tx: &mut Tx<'_>, held_changed: bool) -> Result<Vec<(Tid, 
     for (tid, ak) in &flipped {
         observe_state(tx, tid, ak)?;
     }
+    // roles may have grown: boxes kept out for want of them open now
+    crate::flows::retake(tx)?;
     Ok(flipped)
 }
 

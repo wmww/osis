@@ -46,7 +46,7 @@ pub(crate) fn send(lp: &mut LocalPeer, from: usize, to: usize, ids: &[CommitId])
 
 /// `spread` as labels carry commits (`SealedPackage`): each peer opens only what the read
 /// secrets it holds unwrap.
-fn spread_sealed(lp: &mut LocalPeer) {
+pub(crate) fn spread_sealed(lp: &mut LocalPeer) {
     let n = lp.peers.len();
     for _ in 0..2 {
         for a in 0..n {

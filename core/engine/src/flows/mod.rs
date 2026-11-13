@@ -373,6 +373,26 @@ pub(crate) fn reopen_dependents(tx: &mut Tx<'_>, learned: Tid) -> Result<()> {
     Ok(())
 }
 
+/// Re-opens the `secrets.0` of every actor whose applied boxes gave secrets `rotation::may_take`
+/// kept out (`Waits::untaken`) where the node's roles now give them: a box applied before the
+/// grant that makes it the node's (a rotation by another admin, a re-seal) is taken once the grant
+/// applies. Called wherever roles may have grown (`apply::rejudged`, a bearer kept).
+pub(crate) fn retake(tx: &mut Tx<'_>) -> Result<()> {
+    let core = &*tx.core;
+    let due = core.waits.untaken_due(|a, r| crate::rotation::may_take(core, a, r));
+    for a in due {
+        tx.core.waits.retaken(&a);
+        let s = secrets_in(tx, &a)?;
+        let alts = secrets_alts(tx, &a)?;
+        tx.core.touch();
+        if tx.core.ingest_secrets(&a, &s, crate::engine::secrets::SecretsRead::State, &alts) {
+            save_epochs(tx, &a)?;
+            reopen_dependents(tx, a)?;
+        }
+    }
+    Ok(())
+}
+
 /// Re-opens every held `secrets.0` (after a key actor was taken up), to a fixpoint: what an
 /// actor learns reopens its dependents at once (`reopen_dependents`, so a holder-actor chain
 /// opens in one sweep whatever its tid order); sweeps repeat until one learns nothing (held

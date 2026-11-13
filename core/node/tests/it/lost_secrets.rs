@@ -191,3 +191,156 @@ fn a_concurrent_rotation_gives_no_lost_secret_spec_permissions_3() {
     lp.peers[1].engine.drop_lost_due().unwrap();
     assert!(!held(&lp), "the concurrent rotation's box gives none back");
 }
+
+/// x made by node 0, node 2 its admin, node 1 reading it; then node 1 removed (its trigger
+/// run) when `removed`. Node 0 then grants node 1 read (`g`); node 2, having seen the grant,
+/// rotates x boxing every holder (`r`), and writes `w` under the new epoch: none reach node 1.
+struct Granted {
+    lp: osis_node::local_peer::LocalPeer,
+    x: Tid,
+    g: Vec<osis_base::CommitId>,
+    r: osis_base::CommitId,
+    w: osis_base::CommitId,
+}
+
+fn granted_then_rotated(removed: bool) -> Granted {
+    use crate::common::{edge, new_thing};
+    let mut lp = crate::common::net(3, 0);
+    lp.sync_all().unwrap();
+    let x = new_thing(&mut lp, 0);
+    let (a, b, c) = (lp.peers[0].engine.me(), lp.peers[1].engine.me(), lp.peers[2].engine.me());
+    lp.peers[0].engine.grant(&x, &c, &edge(Role::Admin)).unwrap();
+    if removed {
+        lp.peers[0].engine.grant(&x, &b, &edge(Role::Read)).unwrap();
+    }
+    lp.sync_all().unwrap();
+    if removed {
+        lp.peers[0].engine.demote(&x, &osis_node::flows::Demotion { holder: b, new: None, retain: None }).unwrap();
+        lp.sync_all().unwrap();
+        lp.peers[1].engine.drop_lost_due().unwrap();
+        assert!(lp.peers[1].engine.read_secrets(&x).is_empty(), "the removal dropped x's secrets");
+    }
+    let g = lp.peers[0].engine.grant(&x, &b, &edge(Role::Read)).unwrap().commits;
+    lp.sync(0, 2).unwrap();
+    let r = lp.peers[2].engine.rotate_boxing_only(&[x], &[Role::Read], &[a, b, c]).unwrap().unwrap();
+    let mut m = Mutation::new();
+    m.set(x, &crate::common::REG, &s("after")).unwrap();
+    let w = lp.peers[2].engine.commit(m).unwrap().unwrap();
+    Granted { lp, x, g, r, w }
+}
+
+/// Node 1 holds node 2's newest read epoch of x and reads its write under it.
+fn reads_newest(gr: &mut Granted) {
+    let newest = gr.lp.peers[2].engine.epochs(&gr.x).unwrap().read.newest_held().unwrap().0;
+    let at1 = gr.lp.peers[1].engine.epochs(&gr.x).unwrap();
+    assert!(at1.read.secret(&newest).is_some(), "the rotation's epoch reached the grantee");
+    assert_eq!(gr.lp.peers[1].engine.get(&gr.x, &crate::common::ak("t:reg.0")).unwrap(), Some(s("after")));
+}
+
+// A grant (first or after a removal) and a rotation boxing the grantee, in either order: the
+// grantee takes the rotation's box (a box applied before its grant is opened once the grant
+// applies, never lost)
+#[test]
+fn a_grant_and_a_rotation_in_either_order_give_the_newest_epoch_spec_permissions_3() {
+    for removed in [false, true] {
+        for grant_first in [true, false] {
+            let mut gr = granted_then_rotated(removed);
+            let (g, rw) = (gr.g.clone(), [gr.r, gr.w]);
+            if grant_first {
+                crate::flows::send(&mut gr.lp, 0, 1, &g);
+                crate::flows::send(&mut gr.lp, 2, 1, &rw);
+            } else {
+                crate::flows::send(&mut gr.lp, 2, 1, &rw);
+                crate::flows::send(&mut gr.lp, 0, 1, &g);
+            }
+            gr.lp.peers[1].engine.drop_lost_due().unwrap();
+            reads_newest(&mut gr);
+        }
+    }
+}
+
+// After a removal, an entry box of x's current epoch (a link's label, spec/sync.md §2) is taken
+// once the re-grant applied; one opened before the re-grant applies is refused, and the re-grant
+// gives that secret anyway
+#[test]
+fn an_entry_box_around_a_re_grant_spec_permissions_3() {
+    for grant_first in [true, false] {
+        let mut gr = granted_then_rotated(true);
+        let g = gr.g.clone();
+        let (e, sec) = {
+            let ep = gr.lp.peers[0].engine.epochs(&gr.x).unwrap();
+            let (e, s) = ep.read.newest_held().unwrap();
+            (e, s.clone())
+        };
+        if grant_first {
+            crate::flows::send(&mut gr.lp, 0, 1, &g);
+            gr.lp.peers[1].engine.learn_secret(&gr.x, Role::Read, e, sec).unwrap();
+        } else {
+            assert!(!gr.lp.peers[1].engine.learn_secret(&gr.x, Role::Read, e, sec).unwrap(), "lost: refused");
+            crate::flows::send(&mut gr.lp, 0, 1, &g);
+        }
+        gr.lp.peers[1].engine.drop_lost_due().unwrap();
+        assert!(gr.lp.peers[1].engine.epochs(&gr.x).unwrap().read.secret(&e).is_some(), "the re-granted epoch is held");
+    }
+}
+
+/// Node `x`'s account joins by `link`: follows K's label by the link key, redeems, drops the key.
+fn join(net: &mut Net, x: usize, px: Tid, link: &osis_label::ShareLink) {
+    let held = net.engine(x).hold_key_actor(link.seed.clone()).unwrap();
+    let acts = net.sync(x).follow(held, link.k, link.k_label, link.hosts.clone());
+    net.actions(x, acts);
+    net.run();
+    let done = net.engine(x).redeem(link, &px, false).unwrap();
+    net.engine(x).drop_key_actor(&held);
+    carry(net, x, done);
+    net.run();
+}
+
+// A member removed after joining by a link joins again by a new link (spec/permissions.md §7):
+// the ended edge it holds refuses no box of the re-grant, entry box or grant, and it reads again
+#[test]
+fn a_removed_member_rejoins_by_a_new_link_spec_permissions_3() {
+    let mut net = Net::bare();
+    let host = net.add_host();
+    let home = vec![net.address(host)];
+    let (a, b) = (net.node(40, &[host]), net.node(41, &[host]));
+    let account = |net: &mut Net, n: usize| {
+        let (p, done) = net.engine(n).create_account(&home).unwrap();
+        carry(net, n, done);
+        p.account
+    };
+    let (pa, pb) = (account(&mut net, a), account(&mut net, b));
+    net.run();
+    let e = net.engine(a);
+    let mut m = Mutation::new();
+    let c = e.new_thing(&mut m, pa);
+    m.set(c, &crate::common::REG, &s("hi")).unwrap();
+    e.commit(m).unwrap();
+    let done = net.engine(a).give_own_secrets_on(&c, &home).unwrap();
+    carry(&mut net, a, done);
+    net.run();
+    let spec = osis_node::flows::LinkSpec { target: c, role: Role::Read, until: None, hosts: home.clone(), peers: Vec::new(), single_use: false };
+    let (link, _, done) = net.engine(a).create_link(&pa, &spec).unwrap();
+    carry(&mut net, a, done);
+    net.run();
+    join(&mut net, b, pb, &link);
+    assert_eq!(net.read(b, c), Some(s("hi")));
+    let done = net.engine(a).demote(&link.k, &osis_node::flows::Demotion { holder: pb, new: None, retain: None }).unwrap();
+    carry(&mut net, a, done);
+    for _ in 0..3 {
+        net.advance(31_000);
+    }
+    assert!(net.engine(b).read_secrets(&c).is_empty(), "removed: c's secrets dropped");
+    let (link2, _, done) = net.engine(a).create_link(&pa, &spec).unwrap();
+    carry(&mut net, a, done);
+    net.run();
+    join(&mut net, b, pb, &link2);
+    for _ in 0..3 {
+        net.advance(31_000);
+    }
+    net.write(a, c, "again");
+    for _ in 0..3 {
+        net.advance(31_000);
+    }
+    assert_eq!(net.read(b, c), Some(s("again")), "the rejoined member reads c");
+}

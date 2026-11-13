@@ -45,6 +45,10 @@ pub(crate) struct Waits {
     /// (`Engine::copy_stale`), by those things' secret actor: fetched again once the node holds
     /// secrets of it (`read_again`). In memory: a restart fetches every missing part again.
     unread: BTreeMap<Tid, BTreeSet<CommitId>>,
+    /// Roles of actors whose applied boxes gave secrets the node's roles did not give then
+    /// (`rotation::may_take`): taken again once they do (`flows::retake`). In memory: the open's
+    /// `reopen_all` refuses and lists them again.
+    untaken: BTreeMap<Tid, BTreeSet<osis_base::Role>>,
 }
 
 impl Waits {
@@ -135,6 +139,21 @@ impl Waits {
     /// Commit `id` has parts not taken on content under `actor`, which the node cannot read.
     pub fn awaits_reading(&mut self, actor: Tid, id: CommitId) {
         self.unread.entry(actor).or_default().insert(id);
+    }
+
+    /// An applied box of `actor` gave role `r`'s secrets the node's roles did not give.
+    pub fn untaken(&mut self, actor: Tid, r: osis_base::Role) {
+        self.untaken.entry(actor).or_default().insert(r);
+    }
+
+    /// The actors with an untaken role `may` allows.
+    pub fn untaken_due(&self, may: impl Fn(&Tid, osis_base::Role) -> bool) -> Vec<Tid> {
+        self.untaken.iter().filter(|(a, rs)| rs.iter().any(|r| may(a, *r))).map(|(a, _)| *a).collect()
+    }
+
+    /// `actor`'s untaken roles, taken off the list (opened again).
+    pub fn retaken(&mut self, actor: &Tid) {
+        self.untaken.remove(actor);
     }
 
     /// The commits waiting for the node to read `actor` (`awaits_reading`), taken.

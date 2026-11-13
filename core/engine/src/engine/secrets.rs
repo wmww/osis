@@ -242,7 +242,11 @@ impl Core {
     /// (spec/crypto.md §4), `secrets` read as `read` says. Returns whether anything changed.
     /// `alts`: the live entries of history keys holding several (each tried).
     pub(crate) fn ingest_secrets(&mut self, actor: &Tid, secrets: &Secrets, read: SecretsRead<'_>, alts: &HistoryAlts) -> bool {
-        let Some(epochs) = self.ingest_view(actor, secrets, read, alts) else { return false };
+        let (epochs, untaken) = self.ingest_view(actor, secrets, read, alts);
+        for r in untaken {
+            self.waits.untaken(*actor, r);
+        }
+        let Some(epochs) = epochs else { return false };
         self.ix.secrets.insert(*actor, epochs);
         self.role_changed();
         self.read_again(actor);
@@ -272,8 +276,9 @@ impl Core {
         ROLES.iter().all(|r| e.role(*r).held().next().is_none()) && e.holds_any()
     }
 
-    /// What `ingest_secrets` would make of `actor`'s epochs, when it changes them.
-    pub(crate) fn ingest_view(&self, actor: &Tid, secrets: &Secrets, read: SecretsRead<'_>, alts: &HistoryAlts) -> Option<ActorEpochs> {
+    /// What `ingest_secrets` would make of `actor`'s epochs, when it changes them, and the roles
+    /// whose secrets an applied box gave but `rotation::may_take` kept out.
+    pub(crate) fn ingest_view(&self, actor: &Tid, secrets: &Secrets, read: SecretsRead<'_>, alts: &HistoryAlts) -> (Option<ActorEpochs>, Vec<Role>) {
         let before = self.ix.secrets.get(actor).cloned();
         let unchecked = match read {
             SecretsRead::Pending(u) => Some(u),
@@ -281,7 +286,7 @@ impl Core {
         };
         // a bounded number of actors held through reading-only secrets alone
         if unchecked.is_some() && self.reading_full(actor) {
-            return None;
+            return (None, Vec::new());
         }
         let mut epochs = before.clone().unwrap_or_default();
         // an epoch whose history key the read stands for names and lists only what its live
@@ -320,16 +325,22 @@ impl Core {
         // box gives a role's secrets only where the node's roles give them now (`may_take`),
         // whatever the box (a forgotten part rejoining, a late rotation, a holder actor's chain);
         // a pending one's are a grant's still to be judged, read until it is
-        // (`keys::forget_unchecked`)
+        // (`keys::forget_unchecked`). What it keeps out is opened again once the node's roles
+        // give it (`flows::retake`): a box may apply before the grant that makes it ours.
+        let mut untaken = Vec::new();
         if unchecked.is_none() {
             for r in ROLES {
                 if !crate::rotation::may_take(self, actor, r) {
-                    *epochs.role_mut(r) = before.as_ref().map(|b| b.role(r).clone()).unwrap_or_default();
+                    let was = before.as_ref().map(|b| b.role(r).clone()).unwrap_or_default();
+                    if *epochs.role(r) != was {
+                        untaken.push(r);
+                    }
+                    *epochs.role_mut(r) = was;
                 }
             }
         }
         let held_any = epochs.holds_any();
-        (held_any && Some(&epochs) != before.as_ref()).then_some(epochs)
+        ((held_any && Some(&epochs) != before.as_ref()).then_some(epochs), untaken)
     }
 
     /// `ingest_secrets` over the entries of `actor`'s `secrets.0` state `st` that a change touched:
@@ -1012,7 +1023,7 @@ mod tests {
         core.ix.secrets.insert(actor, seed);
         let mut secrets = Secrets::default();
         secrets.history.insert(osis_keys::aspects::history_key(Role::Read, &unheld), vec![0; 48]);
-        let got = core.ingest_view(&actor, &secrets, SecretsRead::State, &HistoryAlts::new()).unwrap();
+        let got = core.ingest_view(&actor, &secrets, SecretsRead::State, &HistoryAlts::new()).0.unwrap();
         let i = got.read.get(&unheld).unwrap();
         assert!(i.names.is_empty() && i.supersedes.is_empty(), "{i:?}");
     }
