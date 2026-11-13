@@ -117,7 +117,7 @@ pub struct Outcome {
     /// holds the right: the covering snapshot `me` owes in the transaction in which that comes to
     /// hold (`cover`). A node without the right owes none.
     pub owed: BTreeSet<PartRef>,
-    /// Bodies dropped as covered whose cover no longer stands (invalid, purged, or not held):
+    /// Bodies dropped as covered whose cover no longer stands (invalid or not held):
     /// never received, to be fetched again (spec/permissions.md §5.2).
     pub uncovered: BTreeSet<PartRef>,
     /// Every clock value after `now` at which the output may change with the held set unchanged
@@ -755,13 +755,11 @@ fn judge(h: &Held) -> (Outcome, Timeline) {
     }
     o.fates = fates;
 
-    // A dropped body whose cover no longer stands (or whose purge fell) counts as never received.
-    let stands = |by: CommitId, pr: PartRef, t: ThingId, a: Aspect| -> bool {
+    // A dropped body whose cover no longer stands counts as never received.
+    let stands = |by: CommitId, t: ThingId, a: Aspect| -> bool {
         by_id.get(&by).is_some_and(|s| {
-            if s.kind != CommitKind::Snapshot {
-                return o.purged.contains_key(&pr);
-            }
-            o.applied.contains(&s.id)
+            s.kind == CommitKind::Snapshot
+                && o.applied.contains(&s.id)
                 && s.parts.iter().enumerate().any(|(j, q)| {
                     q.thing == t && q.aspect == a && matches!(q.body, Body::Held(_) | Body::Dropped(_)) && o.valid.get(&(s.id, j)) == Some(&true)
                 })
@@ -770,7 +768,7 @@ fn judge(h: &Held) -> (Outcome, Timeline) {
     for c in &h.commits {
         for (i, p) in c.parts.iter().enumerate() {
             if let Body::Dropped(by) = p.body {
-                if !stands(by, (c.id, i), p.thing, p.aspect) {
+                if !stands(by, p.thing, p.aspect) {
                     o.uncovered.insert((c.id, i));
                 }
             }

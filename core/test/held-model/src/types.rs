@@ -160,10 +160,9 @@ pub enum Body {
     Held(Delta),
     /// Never received (or counting as never received).
     Missing,
-    /// Dropped here as covered by that snapshot commit's part on the aspect, or a snapshot dropped
-    /// as named by that purge request: it contributes nothing while the cover stands (valid, not
-    /// purged, held or dropped covered itself) or the request drops it; once not, the body counts
-    /// as never received and is fetched again (`Outcome::uncovered`).
+    /// Dropped here as covered by that snapshot commit's part on the aspect: it contributes
+    /// nothing while the cover stands (valid, held or dropped covered itself); once not, the body
+    /// counts as never received and is fetched again (`Outcome::uncovered`).
     /// Its commit applied when it was held, so it counts as a held part that does not wait
     /// (arrival order is not modeled).
     Dropped(CommitId),
