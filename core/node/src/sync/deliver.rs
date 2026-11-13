@@ -392,6 +392,11 @@ impl SyncEngine {
                 }
                 for t in under {
                     for g in self.groups_holding(&t) {
+                        // a group enclosing `t` that does not read it holds nothing of `t`: its
+                        // labels need `t`'s chain only where `t` holds an edge, another `under`
+                        if g != t && !self.engine.reads_in(&g, &t) {
+                            continue;
+                        }
                         for c in &commits {
                             self.place_chain(&g, c, k)?;
                         }

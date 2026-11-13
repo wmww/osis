@@ -293,3 +293,37 @@ fn a_chain_through_an_unread_closure_thing_reaches_readers_spec_sync_3() {
     assert_eq!(write_through_a_team(false), Some(s("w")), "the team outside g's closure");
     assert_eq!(write_through_a_team(true), Some(s("w")), "the team an item of g");
 }
+
+// spec/permissions.md §3 (a removal and the new `keys.0` go under the labels the removed party
+// could read), spec/sync.md §3 (entitlement): team `team` is listed in g, which does not read it
+// and on which it holds no role. Removing c from the team leaves g's label without the removal:
+// reader b of g, who never reads the team, gets no entry of it.
+#[test]
+fn a_removal_from_an_unread_closure_thing_stays_off_its_group_spec_permissions_3() {
+    let (mut net, host, [a, b, c]) = crate::net::hosted_nodes::<3>();
+    let g = net.group(a, &[(b, Role::Read)], &[host]);
+    let team = net.group(a, &[(c, Role::Write)], &[host]);
+    let mut def = net.engine(a).get_typed(&g, &ct::GROUP).unwrap().unwrap_or_default();
+    def.items.insert(team);
+    let mut m = Mutation::new();
+    m.set(g, &ct::GROUP, &def).unwrap();
+    net.engine(a).commit(m).unwrap();
+    net.run();
+    for _ in 0..3 {
+        net.advance(15_000);
+    }
+    assert!(net.engine(a).closure(&g).contains(&team) && !net.engine(a).may_read(&g, &team), "the team in g's closure, unread");
+    let x = net.tid(c);
+    let d = osis_node::flows::Demotion { holder: x, new: None, retain: None };
+    let done = net.engine(a).demote(&team, &d).unwrap();
+    let removal = *done.commits.last().unwrap();
+    let acts = net.sync(a).carry_out(done).unwrap();
+    net.actions(a, acts);
+    net.run();
+    for _ in 0..3 {
+        net.advance(15_000);
+    }
+    let l = net.group_labels(b).into_iter().find(|(y, _)| *y == g).unwrap().1.id;
+    let named = |k: &osis_node::sync::EntryKind| matches!(k, osis_node::sync::EntryKind::Commit { commit, .. } | osis_node::sync::EntryKind::Awaits { commit, .. } if *commit == removal);
+    assert!(!net.sync(b).entries(&l).iter().any(|(_, k)| named(k)), "the removal is under g's label");
+}

@@ -416,8 +416,18 @@ impl Engine {
 
     /// Whether the actor of `ctx` may read `t` (spec/sync.md §3).
     pub(super) fn reads(&self, ctx: &BodyCtx, t: &Tid) -> bool {
+        self.actor_reads(&ctx.actor, t)
+    }
+
+    /// Whether the actor of group `g` may read `t` (`reads`).
+    pub fn reads_in(&self, g: &Tid, t: &Tid) -> bool {
+        let actor = self.group_actor(g);
+        self.actor_reads(&actor, t)
+    }
+
+    fn actor_reads(&self, actor: &Tid, t: &Tid) -> bool {
         // the readers of an account's devices actor are its nodes: they read what the account reads
-        let reader = self.core.account_devices().filter(|x| x.1 == ctx.actor).map_or(ctx.actor, |x| x.0);
+        let reader = self.core.account_devices().filter(|x| x.1 == *actor).map_or(*actor, |x| x.0);
         self.core.may_read(&reader, &self.core.reader_of(t))
     }
 

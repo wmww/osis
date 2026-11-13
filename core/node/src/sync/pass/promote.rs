@@ -10,9 +10,9 @@ impl SyncEngine {
     /// `judged_valid`: a single-use race loser's role commit holds a void grant beside the valid
     /// removal of its link key the label needs. One copy per commit and part, however many
     /// encryptions are deposited; duplicates and what the label does not need wait for
-    /// clearing. A part the label must hold: one on a thing of its closure (its bodies: the
+    /// clearing. A part the label must hold: one its bodies carry (`Engine::body_carried`: the
     /// deletion judgment goes on from there), or a role commit's part writing or boxing an edge
-    /// of a closure thing (a grant to the label's actor, a removal of it:
+    /// of a closure thing its actor reads (a grant to the label's actor, a removal of it:
     /// `Engine::holders_named`), or a key actor's newest card (each aspect's newest valid write
     /// by itself). Never another chain certificate on its own (a role commit or creation outside
     /// the closure, a superseded card): it goes in the author's chain of a commit the label must
@@ -30,16 +30,17 @@ impl SyncEngine {
         }
         let Some(valid) = self.engine.valid_parts(&commit) else { return Ok(false) };
         let Some(h) = self.engine.header(&commit) else { return Ok(false) };
-        let closure = self.engine.closure(g);
+        let ctx = self.engine.body_ctx(g);
+        let carried = self.engine.body_carried(&ctx, &h);
         let named = if h.kind.is_role() { self.engine.holders_named(&commit) } else { Default::default() };
         let mut need = Vec::new();
         for ai in parts.iter().filter(|ai| valid.contains(ai)) {
             let Some(a) = h.aspects.get(*ai) else { continue };
-            let about = named.get(ai).is_some_and(|hs| hs.iter().any(|x| closure.contains(x)));
+            let about = named.get(ai).is_some_and(|hs| hs.iter().any(|x| ctx.closure.contains(x) && self.engine.reads_in(g, x)));
             // a key actor's newest card, which no chain carries but its `keys.0` (spec/sync.md
             // §3: co-readers dial a node by its `reach.0`): one per aspect, its rewrites not
             let card = is_card(a.ak.as_str()) && a.tid == h.author && self.engine.latest_by(&a.tid, a.ak.as_str(), Some(&h.author)) == Some(commit);
-            if closure.contains(&a.tid) || about || card {
+            if carried.contains(ai) || about || card {
                 need.push(*ai);
             }
         }

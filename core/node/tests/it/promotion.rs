@@ -261,3 +261,28 @@ fn a_readers_grants_to_the_group_stay_within_the_budget_spec_sync_5() {
     }
     assert!(n <= osis_base::format::DEPOSITS_WAITING, "{n} of 40 grants stamped");
 }
+
+// spec/sync.md §5 (Promotion: a delta the label's bodies carry, not every closure delta): reader
+// `r` admins team `t`, an actor listed in the group that the group's actor does not read (writer
+// `a` does, as a member); the role commits `r` writes on `t`, each naming a fresh holder, are
+// nothing the label must hold: deposited, none is stamped.
+#[test]
+fn a_readers_role_commits_on_an_unread_closure_thing_are_not_promoted_spec_sync_5() {
+    let (mut net, host, a, r, g, l) = reader_of_a_group();
+    let t = net.group(r, &[(a, Role::Read)], &[host]);
+    let mut def = net.engine(a).get_typed(&g, &osis_schema::core_types::GROUP).unwrap().unwrap_or_default();
+    def.items.insert(t);
+    let mut m = osis_node::Mutation::new();
+    m.set(g, &osis_schema::core_types::GROUP, &def).unwrap();
+    net.engine(a).commit(m).unwrap();
+    net.run();
+    net.advance(60_000);
+    assert!(net.engine(a).closure(&g).contains(&t) && !net.engine(a).may_read(&g, &t), "t in g's closure, unread");
+    let commits: BTreeMap<CommitId, Vec<usize>> = (0..20u8).map(|i| set_edge(net.engine(r), t, Tid::from_bytes([i; 15]), Role::Read)).collect::<Vec<_>>().into_iter().map(|c| whole(&mut net, r, c)).collect();
+    let ids = flood(&mut net, r, (host, g, l), &commits, 1);
+    for _ in 0..5 {
+        net.advance(60_000);
+    }
+    let n = ids.values().flatten().filter(|id| stamped(&net, host, &l, id)).count();
+    assert_eq!(n, 0, "{n} of {} stamped", ids.len());
+}
