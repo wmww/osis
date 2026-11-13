@@ -145,15 +145,18 @@ mod file {
     pub struct FileRoot {
         path: PathBuf,
         faults: Option<Faults>,
+        /// A slot's sync failed since the last `repair`: the disk may hold an older record in
+        /// either slot though both read the newest, so `repair` writes both again.
+        unsynced: bool,
     }
 
     impl FileRoot {
         pub fn new(path: PathBuf) -> FileRoot {
-            FileRoot { path, faults: None }
+            FileRoot { path, faults: None, unsynced: false }
         }
         /// Each slot write counts as one write of `faults` (crash tests).
         pub fn with_faults(path: PathBuf, faults: Faults) -> FileRoot {
-            FileRoot { path, faults: Some(faults) }
+            FileRoot { path, faults: Some(faults), unsynced: false }
         }
 
         fn encode(seq: u64, r: &RootRecord) -> [u8; SLOT] {
@@ -196,17 +199,18 @@ mod file {
         }
 
         /// Writes and syncs one slot. A failed sync is `Unsynced`: `repair` writes the slot again.
-        fn write_slot(&self, f: &mut File, slot: u64, bytes: &[u8; SLOT]) -> Result<(), BackendError> {
+        fn write_slot(&mut self, f: &mut File, slot: u64, bytes: &[u8; SLOT]) -> Result<(), BackendError> {
             let sync = match &self.faults {
                 Some(faults) => faults.check()?,
                 None => Synced::Yes,
             };
             f.seek(SeekFrom::Start(slot * SLOT as u64)).map_err(io)?;
             f.write_all(bytes).map_err(io)?;
-            if sync == Synced::No {
+            if sync == Synced::No || f.sync_all().is_err() {
+                self.unsynced = true;
                 return Err(BackendError::Unsynced);
             }
-            f.sync_all().map_err(|_| BackendError::Unsynced)
+            Ok(())
         }
     }
 
@@ -234,17 +238,20 @@ mod file {
             Ok(())
         }
 
-        /// A crash between the slot writes leaves the old record in one slot: overwrite it.
+        /// A crash between the slot writes leaves the old record in one slot, and a failed sync
+        /// may leave it on disk though it reads as replaced: overwrite both slots.
         fn repair(&mut self) -> Result<(), BackendError> {
             let slots = self.slots()?;
             let Some((_, seq, rec)) = slots.iter().max_by_key(|(_, s, _)| *s) else { return Ok(()) };
-            if slots.len() == 2 && slots.iter().all(|(_, s, _)| s == seq) {
+            if !self.unsynced && slots.len() == 2 && slots.iter().all(|(_, s, _)| s == seq) {
                 return Ok(());
             }
             let bytes = osis_crypto::Zeroizing::new(Self::encode(*seq, rec));
             let mut f = OpenOptions::new().read(true).write(true).open(&self.path).map_err(io)?;
             self.write_slot(&mut f, 0, &bytes)?;
-            self.write_slot(&mut f, 1, &bytes)
+            self.write_slot(&mut f, 1, &bytes)?;
+            self.unsynced = false;
+            Ok(())
         }
 
         /// Overwrites both slots in place (each synced), then removes the file and syncs its
@@ -308,6 +315,19 @@ mod tests {
         r.repair().unwrap();
         assert!(!std::fs::read(&path).unwrap().windows(32).any(|w| w == [0xc3; 32]), "old key left after repair");
         assert_eq!(r.load().unwrap(), Some(rec(4, 0xd4)));
+        // A failed sync of the second slot: both read the new record, the disk may still hold
+        // the old one, so repair writes both again.
+        faults.at(1, crate::Fault::Unsynced);
+        assert_eq!(r.store(&rec(5, 0xe5)), Err(BackendError::Unsynced));
+        faults.at(0, crate::Fault::Crash);
+        assert_eq!(r.repair(), Err(BackendError::Crashed), "repair writes again");
+        faults.revive();
+        let w = faults.writes();
+        r.repair().unwrap();
+        assert_eq!(faults.writes(), w + 2, "both slots");
+        r.repair().unwrap();
+        assert_eq!(faults.writes(), w + 2, "once");
+        assert_eq!(r.load().unwrap(), Some(rec(5, 0xe5)));
         // Erase: no record, no file; a second erase finds nothing.
         r.erase().unwrap();
         assert!(!path.exists());

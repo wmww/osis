@@ -584,6 +584,33 @@ fn a_commit_whose_sync_failed_is_never_reported_landed() {
     }
 }
 
+// spec/commits.md §4 (notes/local-store.md, Failed writes): a spill whose sync failed leaves
+// what the backend reads unknown as a commit's does: `Broken` until a reopen, and after a power
+// cut the store opens at its last commit.
+#[test]
+fn a_spill_whose_sync_failed_leaves_the_store_broken() {
+    for dev in devices("unsynced-spill") {
+        let name = dev.name();
+        let mut rng = SeededRng::from_u64(0);
+        drop(put_x(&*dev, &mut rng));
+        let cfg = StoreConfig { spill_bytes: 100, ..cfg() };
+        let mut s = Store::open(dev.backend(), dev.root(), cfg).unwrap();
+        dev.faults().at(0, Fault::Unsynced);
+        let mut t = s.transaction(&mut rng).unwrap();
+        let tb = t.table(&tid(1), &ak("t.0"), 0).unwrap().unwrap();
+        let r = (0..20u32).try_for_each(|i| t.table_put(tb, &i.to_be_bytes(), vec![1; 30], Shred::No).map(drop));
+        assert!(r.is_err() && dev.faults().writes() == 1, "{name}: the first spill's sync failed");
+        drop(t);
+        dev.faults().revive();
+        assert_eq!(s.transaction(&mut rng).err(), Some(Error::Broken), "{name}: outcome unknown");
+        drop(s);
+        dev.power_cut();
+        let mut s = Store::open(dev.backend(), dev.root(), cfg).unwrap();
+        assert!(has(&mut s, &mut rng, b"x") && !has(&mut s, &mut rng, &0u32.to_be_bytes()), "{name}: last commit");
+        assert!(put_k(&mut s, &mut rng, b"k", Shred::Yes) == (true, true), "{name}: works on");
+    }
+}
+
 // spec/commits.md §4 on redb: a write of the file can fail anywhere in redb's commit, its sync
 // included (which drops the writes since the last sync at a power cut). A failed write reports
 // the outcome it leaves; a failed sync leaves it unknown (`Err`, the store `Broken`); either way
