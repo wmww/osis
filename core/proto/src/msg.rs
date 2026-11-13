@@ -300,11 +300,10 @@ pub fn peek_head(body: &[u8]) -> Option<(u64, Id)> {
     Some((kind, Id::try_from(id).ok()?))
 }
 
-/// Kinds that answer a request, by its id: every kind with an id that is no request (Notify
-/// and the stream's Stream, Applied, Digest and Members answer none). Retired kinds (4-6,
-/// 8-10, 12, 13, 15-18, 21-23) are neither.
+/// Kinds that answer a request, by its id (spec/wire.md §11.2: Error, Ok, Pong, Status,
+/// FetchReply, Reply, Proved, Resumed, Shared, PullReply).
 pub fn is_reply_kind(kind: u64) -> bool {
-    kind <= 46 && !is_request_kind(kind) && !matches!(kind, 4..=6 | 8..=10 | 12 | 13 | 15..=18 | 21..=23 | 29 | 43..=46)
+    matches!(kind, 0 | 1 | 3 | 11 | 20 | 26 | 33 | 35 | 39 | 42)
 }
 
 /// Kinds that are requests (spec/wire.md §11.2: those with `->`).
@@ -499,27 +498,7 @@ impl Message {
 }
 
 fn decode_body(kind: u64, id: Id, v: Value) -> Result<Message, Error> {
-    let n = match kind {
-        1 | 40 => 2,
-        0 | 2 | 3 | 11 | 20 | 26 | 28 | 32 | 33 | 37 | 38 | 39 | 44 | 45 => 3,
-        14 | 24 | 27 | 29 | 31 | 34 | 35 => 4,
-        7 | 19 | 25 => 5,
-        30 => 6,
-        41 => 8,
-        36 | 42 => 9,
-        43 => 5,
-        46 => 4,
-        _ => return Err(Error::UnknownKind(kind)),
-    };
-    // Pushes have no reply (id 0); every request and reply has a real id; an Error answering a
-    // broken frame may carry 0.
-    match (kind, id) {
-        (29 | 43..=46, 0) | (0, _) => {}
-        (29 | 43..=46, _) => return Err(Error::Malformed("id of a message without reply")),
-        (_, 0) => return Err(Error::Malformed("id 0")),
-        _ => {}
-    }
-    let mut f = Fields::exact(v, n, "message")?;
+    let mut f = Fields::range(v, 2, usize::MAX, "message")?;
     f.next()?;
     f.next()?;
     let msg = match kind {
@@ -622,7 +601,14 @@ fn decode_body(kind: u64, id: Id, v: Value) -> Result<Message, Error> {
         _ => return Err(Error::UnknownKind(kind)),
     };
     f.end()?;
-    Ok(msg)
+    // Pushes have no reply (id 0); every request and reply has a real id; an Error answering a
+    // broken frame may carry 0.
+    match (kind, id) {
+        (29 | 43..=46, 0) | (0, _) => Ok(msg),
+        (29 | 43..=46, _) => Err(Error::Malformed("id of a message without reply")),
+        (_, 0) => Err(Error::Malformed("id 0")),
+        _ => Ok(msg),
+    }
 }
 
 /// `suspect := [thing, ak, digest]`.

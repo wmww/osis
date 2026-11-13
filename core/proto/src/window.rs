@@ -48,12 +48,13 @@ pub const MAX_AHEAD: usize = crate::session::SEND_QUEUE + MAX_UNANSWERED;
 /// 0 for a message that is no request.
 pub fn allowance(msg: &Message) -> usize {
     use Message as M;
+    let max_reply = |m: u64| usize::try_from(m).unwrap_or(usize::MAX);
     match msg {
         M::Prove { .. } => MAX_MESSAGE,
-        M::Fetch { max_reply, .. } | M::Call { max_reply, .. } | M::Sub { max_reply, .. } => usize::try_from(*max_reply).unwrap_or(usize::MAX),
-        M::Pull(p) => usize::try_from(p.max_reply).unwrap_or(usize::MAX),
-        M::Ping { .. } | M::Register { .. } | M::Delete { .. } | M::Auth { .. } | M::Unsub { .. } | M::Resume { .. } | M::Beacons { .. } | M::Offer { .. } | M::Lost { .. } | M::NoRecord { .. } | M::Stranded { .. } | M::Suspect { .. } => SMALL_REPLY,
-        M::Error { .. } | M::Ok { .. } | M::Pong { .. } | M::Status { .. } | M::FetchReply { .. } | M::Reply { .. } | M::Notify { .. } | M::Proved { .. } | M::Resumed { .. } | M::Shared { .. } | M::PullReply(_) | M::Stream(_) | M::Applied { .. } | M::Digest { .. } | M::Members { .. } => 0,
+        M::Fetch { max_reply: m, .. } | M::Call { max_reply: m, .. } | M::Sub { max_reply: m, .. } => max_reply(*m),
+        M::Pull(p) => max_reply(p.max_reply),
+        m if m.is_request() => SMALL_REPLY,
+        _ => 0,
     }
 }
 /// A requester's window (spec/sync.md §6): requests go in the order made while the bytes in

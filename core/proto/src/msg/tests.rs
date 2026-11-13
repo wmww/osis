@@ -13,12 +13,28 @@ fn resume_caps_spec_wire_11_2() {
     assert!(Message::decode(&osis_base::cbor::encode(&short)).is_err());
 }
 
-// spec/wire.md §11.2: every kind `Message::kind` names decodes at some arity: the per-kind field
-// table in `decode_body` and its match stay in step, not only for the examples listed
+// spec/wire.md §11.2: every kind `Message::kind` names has a decode arm, not only the examples
 #[test]
 fn every_kind_is_in_the_decode_table() {
     for kind in kinds() {
-        assert!(!unknown_at_every_arity(kind), "kind {kind} has no field count or decode arm");
+        assert!(!unknown_at_every_arity(kind), "kind {kind} has no decode arm");
+    }
+}
+
+// spec/wire.md §11.2: a message takes exactly its layout's fields: one more or one fewer is
+// malformed; a kind with an id that is no request is a reply
+#[test]
+fn exact_arity_spec_wire_11_2() {
+    for (name, m) in messages() {
+        let Value::List(items) = m.to_value() else { unreachable!() };
+        let mut more = items.clone();
+        more.push(Value::Int(0));
+        let mut fewer = items;
+        fewer.pop();
+        for v in [more, fewer] {
+            assert_eq!(rejected(Value::List(v)).code(), Code::MALFORMED, "{name}");
+        }
+        assert_eq!(is_reply_kind(m.kind()), !m.is_request() && m.id() != 0, "{name}");
     }
 }
 
