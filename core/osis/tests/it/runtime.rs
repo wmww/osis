@@ -754,7 +754,7 @@ fn driver_panic_fails_waiters() {
     assert_eq!(db.close().unwrap(), osis::Close::Closed);
 }
 
-// spec: none (API surface, notes/api.md Rules): a wait known never to finish fails: a link naming no peer, on a node that dials nobody directly
+// spec: none (API surface, notes/api-design.md Local and synchronous): a wait known never to finish fails: a link naming no peer, on a node that dials nobody directly
 #[tokio::test]
 async fn direct_link_with_peers_off_fails_at_once() {
     let net = osis_transport::Net::new(0);
@@ -771,7 +771,7 @@ async fn direct_link_with_peers_off_fails_at_once() {
     assert!(matches!(r, Err(osis::Error::Network(_))), "{r:?}");
 }
 
-// spec: none (API surface, notes/api.md Rules): a wait holding no handle (the client port's) hears when the node goes
+// spec: none (API surface, notes/api-implementation.md Futures): a wait holding no handle (the client port's) hears when the node goes
 #[tokio::test]
 async fn node_going_answers_a_wait_with_no_handle() {
     let net = osis_transport::Net::new(0);

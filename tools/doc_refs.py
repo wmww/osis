@@ -68,16 +68,20 @@ def identifier(rest):
     return "_" in w or "::" in w or (len(w) > 1 and w.isupper())
 
 
-def refs(rel, text, read):
-    """Stale pointers in `text` (file `rel`); `read(p)` gives a doc's text, or None if it does not exist."""
-    cache = {}
+def refs(rel, text, read, cache=None):
+    """Stale pointers in `text` (file `rel`); `read(p)` gives a doc's text, or None if it does not exist.
+    `cache` (shared across calls with one `read`) keeps each doc's sections and leads."""
+    cache = {} if cache is None else cache
+
+    def sec(p, n):
+        if (p, n) not in cache:
+            cache[p, n] = section(read(p), n)
+        return cache[p, n]
 
     def cands(p, nums):
-        key = (p, nums)
-        if key not in cache:
-            t = read(p)
-            cache[key] = leads(section(t, nums[0]) if len(nums) == 1 else t)
-        return cache[key]
+        if (p, nums) not in cache:
+            cache[p, nums] = leads(sec(p, nums[0]) if len(nums) == 1 else read(p))
+        return cache[p, nums]
 
     for m in PATH.finditer(text):
         p = m.group(1)
@@ -92,7 +96,7 @@ def refs(rel, text, read):
         s = SECS.match(text, end)
         if s:
             nums = tuple(re.findall(NUM, s.group(0)))
-            missing = [n for n in nums if section(t, n) is None]
+            missing = [n for n in nums if sec(p, n) is None]
             if missing:
                 yield where(), f"{p} §{', §'.join(missing)}: no such numbered section"
                 continue
@@ -112,7 +116,7 @@ def refs(rel, text, read):
 def check():
     tracked = subprocess.run(["git", "ls-files"], cwd=ROOT, capture_output=True, text=True).stdout.split()
     ignored = {l.strip() for l in open(os.path.join(ROOT, ".gitignore")) if l.strip().endswith(".md")}
-    docs = {}
+    docs, cache = {}, {}
 
     def read(p):
         if p not in docs:
@@ -125,7 +129,7 @@ def check():
                 or not rel.endswith((".md", ".rs", ".py", ".sh", ".tla", ".cfg", ".toml", ".txt", ".osis")) \
                 or not os.path.isfile(os.path.join(ROOT, rel)):
             continue
-        for where, msg in refs(rel, open(os.path.join(ROOT, rel), errors="replace").read(), read):
+        for where, msg in refs(rel, open(os.path.join(ROOT, rel), errors="replace").read(), read, cache):
             yield f"{where}: {msg}"
 
 
