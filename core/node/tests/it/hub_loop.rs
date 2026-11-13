@@ -261,7 +261,8 @@ async fn clients_end_to_end() {
     for c in [&mut a, &mut b] {
         c.open(&l).await;
     }
-    let ev = a.run(Command::Delete { label: l.id, items: vec![item] }).await;
+    // the node's own shared-set and stream messages (Beacons, a Pull of L) may come between
+    let ev: Vec<ClientEvent> = a.run(Command::Delete { label: l.id, items: vec![item] }).await.into_iter().filter(|e| !matches!(e, ClientEvent::Peer(_))).collect();
     assert!(matches!(&ev[..], [ClientEvent::DeleteStatus { codes, .. }] if codes == &[Code::OK]), "{ev:?}");
     assert_eq!(held(&host, l.id).await, sorted([0, 2].into_iter().map(bid).collect()));
     host.stop().await;
