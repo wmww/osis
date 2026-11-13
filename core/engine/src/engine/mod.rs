@@ -1882,6 +1882,13 @@ impl Core {
         }
     }
 
+    /// Whether anything stored or indexed changed since `m` (what `rollback_to` drops every cache
+    /// for).
+    fn changed_since(&mut self, m: &CoreMark) -> bool {
+        // a record written alone (`put_commit`, `leftover::put`) changes no index: its stamp says
+        self.dirty || self.written.len() > m.written || self.ix.mark() != m.ix || self.records_read.changes() != m.records
+    }
+
     /// Undoes every change to the indexes, the sides, the queued events and the work lists of the
     /// running transaction since `m`, and drops every cache (they stay when nothing was changed:
     /// a failed read keeps them). The timelines follow the restored held set. Each field's class
@@ -1889,8 +1896,7 @@ impl Core {
     pub(crate) fn rollback_to(&mut self, m: CoreMark) {
         let sides_back = self.sides.journaled() > m.sides.0 + m.sides.1;
         self.sides.rollback_to(m.sides);
-        // a record written alone (`put_commit`, `leftover::put`) changes no index: its stamp says
-        if self.dirty || self.written.len() > m.written || self.ix.mark() != m.ix || self.records_read.changes() != m.records {
+        if self.changed_since(&m) {
             self.live_bodies.clear();
             self.bodies.clear();
             self.decoded.clear();
@@ -3436,7 +3442,8 @@ impl Engine {
     /// changed in memory undone (`Core::rollback_to`), so it changes nothing. A read does none
     /// of a transaction's end work (`run`): that work follows changes, and a read keeps none.
     /// Caches it filled stay (they hold what is stored). Only for an `f` that changes nothing it
-    /// should keep: a change (a lazy take-up) would be undone, dropping every cache, at each call.
+    /// should keep: a change (a lazy take-up) would be undone, dropping every cache, at each call,
+    /// so a debug build panics at one that changed the store or the indexes.
     pub(crate) fn read<T>(&mut self, f: impl FnOnce(&mut Tx<'_>) -> Result<T>) -> Result<T> {
         let _s = crate::costs::span("read");
         if self.blobs_unsettled {
@@ -3450,7 +3457,13 @@ impl Engine {
         }
         let start = self.core.mark();
         let txn = self.store.transaction(&mut self.store_rng)?;
-        let r = f(&mut Tx { txn, blobs: blobs::Cipher::new(&*self.blobs, self.blob_seq), core: &mut self.core, rng: &mut *self.rng });
+        let mut tx = Tx { txn, blobs: blobs::Cipher::new(&*self.blobs, self.blob_seq), core: &mut self.core, rng: &mut *self.rng };
+        let r = f(&mut tx);
+        // a read that changed something would have its change undone, and every cache dropped, at
+        // every call
+        let wrote = tx.txn.wrote();
+        drop(tx);
+        debug_assert!(!wrote && !self.core.changed_since(&start), "Engine::read changed the store or the indexes");
         self.core.rollback_to(start);
         self.core.cut_subs.clear();
         r
@@ -3898,39 +3911,23 @@ mod tests {
         m.set(t, &Ak::new("t:reg.0").unwrap(), &Value::Str(v.into())).unwrap();
     }
 
-    // spec: none (engine internals). A read changes nothing (`Engine::read`): a commit written
-    // inside one leaves the indexes, the values read and the store as they were, and the next
-    // write goes on from there.
+    // spec: none (engine internals). A read changes nothing (`Engine::read`): one that writes is
+    // caught (debug builds) rather than undone at every call.
     #[test]
-    fn a_read_changes_nothing() {
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "Engine::read changed the store or the indexes")]
+    fn a_read_that_writes_is_caught() {
         let mut lp = LocalPeer::fresh(1, WallMs(1_700_000_000_000));
         let p = &mut lp.peers[0];
         let a = p.engine.me();
         let mut m = Mutation::new();
         let t = p.engine.new_thing(&mut m, a);
-        write(&mut m, t, "old");
         p.engine.commit(m).unwrap();
-        let reg = Ak::new("t:reg.0").unwrap();
-        let before = digest(p);
-        let queued = p.engine.core.events.queued();
-        let id = p
-            .engine
-            .read(|tx| {
-                let mut m = Mutation::new();
-                write(&mut m, t, "read");
-                super::Engine::commit_tx(tx, m)
-            })
-            .unwrap();
-        assert!(id.is_some(), "the commit was made inside the read");
-        assert_eq!(digest(p), before, "a read changed the indexes");
-        assert_eq!(p.engine.core.events.queued(), queued, "a read left events to send");
-        assert_eq!(p.engine.get(&t, &reg).unwrap(), Some(Value::Str("old".into())));
-        p.engine.check_index();
-        let mut m = Mutation::new();
-        write(&mut m, t, "new");
-        p.engine.commit(m).unwrap();
-        assert_eq!(p.engine.get(&t, &reg).unwrap(), Some(Value::Str("new".into())));
-        p.engine.check_index();
+        let _ = p.engine.read(|tx| {
+            let mut m = Mutation::new();
+            write(&mut m, t, "read");
+            super::Engine::commit_tx(tx, m)
+        });
     }
 
     // spec/commits.md §4 (one storage transaction per commit): a transaction whose store commit

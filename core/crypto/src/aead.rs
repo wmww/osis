@@ -2,7 +2,7 @@
 
 use crate::{Error, SUITE_1, Secret32};
 use zeroize::Zeroizing;
-use chacha20poly1305::aead::{Aead, KeyInit, Payload};
+use chacha20poly1305::aead::{Aead, AeadInPlace, KeyInit, Payload};
 use chacha20poly1305::XChaCha20Poly1305;
 
 pub const TAG_LEN: usize = 16;
@@ -14,6 +14,12 @@ pub fn seal(key: &[u8; 32], nonce: &[u8; NONCE_LEN], ad: &[u8], plaintext: &[u8]
     XChaCha20Poly1305::new(key.into())
         .encrypt(nonce.into(), Payload { msg: plaintext, aad: ad })
         .map_err(|_| Error::TooLarge)
+}
+
+/// `seal` in place: `buf` becomes the ciphertext and the tag is returned (`seal`'s output is
+/// `buf || tag`). A buffer built to hold a plaintext then holds none, so it needs no wipe.
+pub fn seal_in_place(key: &[u8; 32], nonce: &[u8; NONCE_LEN], ad: &[u8], buf: &mut [u8]) -> Result<[u8; TAG_LEN], Error> {
+    XChaCha20Poly1305::new(key.into()).encrypt_in_place_detached(nonce.into(), ad, buf).map(Into::into).map_err(|_| Error::TooLarge)
 }
 
 pub fn open(key: &[u8; 32], nonce: &[u8; NONCE_LEN], ad: &[u8], ciphertext: &[u8]) -> Result<Vec<u8>, Error> {
@@ -120,6 +126,9 @@ mod tests {
             "c0875924c1c7987947deafd8780acf49"
         ));
         assert_eq!(seal(&key, &nonce, &ad, pt).unwrap(), ct);
+        let mut buf = pt.to_vec();
+        let tag = seal_in_place(&key, &nonce, &ad, &mut buf).unwrap();
+        assert_eq!([buf, tag.to_vec()].concat(), ct, "in place: the same ciphertext and tag");
         assert_eq!(open(&key, &nonce, &ad, &ct).unwrap(), pt);
         assert_eq!(open(&key, &nonce, b"", &ct), Err(Error::Decrypt));
         assert_eq!(open(&key, &nonce, &ad, &ct[..10]), Err(Error::Decrypt));

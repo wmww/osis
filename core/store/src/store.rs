@@ -349,6 +349,11 @@ impl Transaction<'_> {
         self.memory = sp.memory;
     }
 
+    /// Whether this transaction changed anything (rows in either layer, blobs).
+    pub fn wrote(&self) -> bool {
+        !self.d.is_empty() || !self.mem.undo.is_empty()
+    }
+
     /// Memory mode: new rows go to the memory overlay (a memory commit's application).
     pub fn set_memory(&mut self, on: bool) {
         self.memory = on;

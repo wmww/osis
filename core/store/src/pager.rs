@@ -22,7 +22,7 @@ use crate::codec::{R, W};
 use crate::root::{RootRecord, RootStorage};
 use crate::Error;
 use osis_base::BlobId;
-use osis_crypto::aead::{self, NONCE_LEN};
+use osis_crypto::aead::{self, NONCE_LEN, TAG_LEN};
 use osis_crypto::{CryptoRngCore, Secret32, Zeroizing, padme};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
@@ -162,12 +162,25 @@ fn padded_len(row: &[u8], len: usize) -> usize {
 fn seal(key: &Secret32, row: &[u8], plaintext: &[u8], rng: &mut dyn CryptoRngCore) -> Result<Vec<u8>, Error> {
     let mut nonce = [0u8; NONCE_LEN];
     rng.fill_bytes(&mut nonce);
-    let mut padded = Zeroizing::new(Vec::with_capacity(padded_len(row, plaintext.len())));
-    padded.extend_from_slice(plaintext);
-    padded.push(0x80);
-    padded.resize(padded_len(row, plaintext.len()), 0);
-    let ct = aead::seal(key.expose(), &nonce, row, &padded).map_err(|_| Error::Misuse("unit too large"))?;
-    Ok([&nonce[..], &ct].concat())
+    let len = NONCE_LEN + padded_len(row, plaintext.len());
+    // `nonce || padded plaintext`, sealed in place: once sealed it holds no plaintext, so unlike
+    // a padded copy it needs no wipe (`Zeroizing` byte by byte was half of a seal's work)
+    let mut out = Vec::with_capacity(len + TAG_LEN);
+    out.extend_from_slice(&nonce);
+    out.extend_from_slice(plaintext);
+    out.push(0x80);
+    out.resize(len, 0);
+    let (_, padded) = out.split_at_mut(NONCE_LEN);
+    match aead::seal_in_place(key.expose(), &nonce, row, padded) {
+        Ok(tag) => {
+            out.extend_from_slice(&tag);
+            Ok(out)
+        }
+        Err(_) => {
+            drop(Zeroizing::new(out));
+            Err(Error::Misuse("unit too large"))
+        }
+    }
 }
 
 /// Opens and unpads a row; the padded length must be `padded_len`'s.

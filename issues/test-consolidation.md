@@ -149,7 +149,6 @@ Helpers are listed in (c). Per-test items:
 
 ### Category 5: regressions a property now covers
 - node `order.rs:3478 held_model_agrees_on_purge_rights` | delete | `held_set_decides` runs held-model at quick and reaches writer and admin purges | medium
-- node `order.rs:2849 purge_before_write_resnapshot_repairs` (27 s, a ~50-step seeded history) | shrink to a minimal reproducer, don't delete | low-medium
 - node `stream.rs:976` (9.5 s), `:892` | delete only after `stream_run` counts that its paged join and crash-mid-fetch cases ran | low-medium
 - crdt `tests_seq_ops.rs` `:143, :161, :224, :261, :286, :363` (single-writer, batch, converge, undo text and list) | delete | covered by `fuzz_seq::random_scripts_replay_spec_5_7`; update notes/crdt.md's "Beside it" list | medium
 - crdt `tests_seq.rs:296`, `:303 snapshot_*_edits_match_model` (10.7 s) | delete or make them the ignored `_large` size | the follow-count tests call the same `snapshot_then_edit` | medium

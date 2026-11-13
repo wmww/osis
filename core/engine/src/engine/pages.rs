@@ -2279,14 +2279,16 @@ mod tests {
                 assert!(stored.order() == place_whole_pass(&st).order(), "step {step}: stored placement differs from a whole pass");
                 kept_placement += 1;
             }
-            if let Ranged::Damaged(p) = read_all(&mut txn, &unit) {
+            let mut got = read_all(&mut txn, &unit);
+            if let Ranged::Damaged(p) = &got {
                 rebuilt += 1;
                 let (mut f, mut idx) = session.take().unwrap();
                 ensure_path(&mut txn, &tid, &ak, &mut idx, &mut f, &field()).unwrap();
-                rebuild_placement(&mut txn, &tid, &ak, &mut idx, &f, &p).unwrap();
+                rebuild_placement(&mut txn, &tid, &ak, &mut idx, &f, p).unwrap();
                 session = Some((f, idx));
+                got = read_all(&mut txn, &unit);
             }
-            let Ranged::Read(p, dots, total) = read_all(&mut txn, &unit) else { panic!("step {step}: no placement after a rebuild") };
+            let Ranged::Read(p, dots, total) = got else { panic!("step {step}: no placement after a rebuild") };
             assert_eq!((dots.len(), total), (want.len(), want.len()), "step {step}");
             assert!(dots == want, "step {step}: placement differs from a whole pass");
             assert_eq!(p, vec![Step::Field(1)]);
