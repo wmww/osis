@@ -765,6 +765,59 @@ mod tests {
         });
     }
 
+    // spec/sync.md §10 (mutual auth, Ed25519 only): a client presenting a P-256 raw key is refused.
+    #[test]
+    #[ignore]
+    fn client_p256_key_refused() {
+        use ring::signature::{EcdsaKeyPair, KeyPair, ECDSA_P256_SHA256_ASN1_SIGNING as P256};
+        const P256_SPKI: [u8; 26] = [0x30, 0x59, 0x30, 0x13, 0x06, 0x07, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02, 0x01, 0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07, 0x03, 0x42, 0x00];
+        let rng = ring::rand::SystemRandom::new();
+        let pk8 = EcdsaKeyPair::generate_pkcs8(&P256, &rng).unwrap();
+        let point = EcdsaKeyPair::from_pkcs8(&P256, pk8.as_ref(), &rng).unwrap().public_key().as_ref().to_vec();
+        let der = rustls::pki_types::PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(pk8.as_ref().to_vec()));
+        let signer = rustls::crypto::ring::sign::any_ecdsa_type(&der).unwrap();
+        let me = Arc::new(CertifiedKey::new(vec![CertificateDer::from([&P256_SPKI[..], &point].concat())], signer));
+        rt().block_on(async {
+            let (mut l, sa) = listener(9).await;
+            let ep = endpoint();
+            let connecting = ep.connect_with(lax_client(false, Some(me)), sa, SNI_NAME).unwrap();
+            if let Ok(Ok(c)) = tokio::time::timeout(Duration::from_secs(5), connecting).await {
+                tokio::time::timeout(Duration::from_secs(5), c.closed()).await.unwrap();
+            }
+            assert!(!matches!(tokio::time::timeout(Duration::from_secs(1), l.accept()).await, Ok(Ok(_))));
+        });
+    }
+
+    // spec/sync.md §10 (raw Ed25519 keys only; the dialer pins the listener's key): the dialing
+    // verifier takes exactly the pinned key, the listening one any Ed25519 key; both offer only
+    // the ed25519 scheme and need raw keys.
+    #[test]
+    fn verifiers_take_ed25519_keys_only() {
+        let (k, other) = (keypair(&[1; 32]).unwrap().0, keypair(&[2; 32]).unwrap().0);
+        // an X25519 SPKI (OID 1.3.101.110): Ed25519's shape, not a signing key
+        let x25519 = CertificateDer::from([&[0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x6e, 0x03, 0x21, 0x00][..], &k[..]].concat());
+        let long = CertificateDer::from([&spki(&k)[..], &[0]].concat());
+        let name = ServerName::try_from(SNI_NAME).unwrap();
+        let dialing = |c: &CertificateDer<'_>| {
+            let pin = PinnedKey::new(k);
+            let ok = pin.verify_server_cert(c, &[], &name, &[], UnixTime::now()).is_ok();
+            assert_eq!(pin.mismatched(), !ok);
+            ok
+        };
+        assert!(dialing(&CertificateDer::from(spki(&k))));
+        assert!(!dialing(&CertificateDer::from(spki(&other))));
+        assert!(!dialing(&x25519));
+        assert!(!dialing(&long));
+        let listening = |c: &CertificateDer<'_>| AnyClientKey.verify_client_cert(c, &[], UnixTime::now()).is_ok();
+        assert!(listening(&CertificateDer::from(spki(&other))));
+        assert!(!listening(&x25519));
+        assert!(!listening(&long));
+        assert!(AnyClientKey.offer_client_auth() && AnyClientKey.client_auth_mandatory());
+        let pin = PinnedKey::new(k);
+        assert_eq!((pin.supported_verify_schemes(), pin.requires_raw_public_keys()), (vec![SignatureScheme::ED25519], true));
+        assert_eq!((AnyClientKey.supported_verify_schemes(), AnyClientKey.requires_raw_public_keys()), (vec![SignatureScheme::ED25519], true));
+    }
+
     // spec/sync.md §10 (no 0-rtt): the serving side issues no session tickets, so a client asking for
     // 0-RTT cannot use it on its next connection.
     #[test]
