@@ -106,7 +106,7 @@ fn commit_across_labels_applies_from_one_label_across_restart_spec_commits_4() {
     s.finish().unwrap();
 }
 
-// harness (power loss): a host whose store crashed mid-write is down from that call on, whichever
+// spec: none (test harness, power loss): a host whose store crashed mid-write is down from that call on, whichever
 // part of it made the write (its hub, or its node sync storing what it pulled from a node's
 // stream); never left up on a dead store (its connections stall) nor revived in place by
 // quiescence. The writer comes back from a partition with a commit only it holds; each round the
