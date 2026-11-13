@@ -1939,6 +1939,22 @@ fn random_window_run(seed: u64) {
 /// `inflight`: half the steps end after one hop of delivery instead of settling, so later
 /// writes meet entries not yet pulled (coalesced, spec/sync.md §9), and the second host is
 /// at times slow (its messages held back for some steps).
+/// Four writers of node 0's group at a host with ephemeral cap `cap` (and a second, uncapped,
+/// unless `single`), and node 0's window (`window`), synced.
+fn window_world(single: bool, cap: u64) -> (Net, (Vec<usize>, Vec<usize>, Tid, Tid)) {
+    let mut net = Net::new();
+    let s1 = net.add_host_with(osis_host::HostPolicy { ephemeral_bytes: cap, ..osis_host::HostPolicy::default() });
+    let s2 = net.add_host();
+    let hosts: Vec<usize> = if single { vec![s1] } else { vec![s1, s2] };
+    let nodes: Vec<usize> = (0..4).map(|i| net.node(1 + i, &hosts)).collect();
+    let grants: Vec<(usize, Role)> = nodes[1..].iter().map(|n| (*n, Role::Write)).collect();
+    let g = net.group(nodes[0], &grants, &hosts);
+    net.run();
+    let w = window(&mut net, nodes[0], g, "w");
+    net.run();
+    (net, (hosts, nodes, g, w))
+}
+
 fn random_window_run_on(seed: u64, single: bool, inflight: bool) {
     let mut x = seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1;
     let mut rnd = move |n: u64| {
@@ -1956,19 +1972,7 @@ fn random_window_run_on(seed: u64, single: bool, inflight: bool) {
     let (mut net, (hosts, nodes, _, w)) = if !capped {
         churn_world()
     } else {
-        Net::cached(&format!("ephemeral::window_world/{single}/{cap}"), || {
-            let mut net = Net::new();
-            let s1 = net.add_host_with(osis_host::HostPolicy { ephemeral_bytes: cap, ..osis_host::HostPolicy::default() });
-            let s2 = net.add_host();
-            let hosts: Vec<usize> = if single { vec![s1] } else { vec![s1, s2] };
-            let nodes: Vec<usize> = (0..4).map(|i| net.node(1 + i, &hosts)).collect();
-            let grants: Vec<(usize, Role)> = nodes[1..].iter().map(|n| (*n, Role::Write)).collect();
-            let g = net.group(nodes[0], &grants, &hosts);
-            net.run();
-            let w = window(&mut net, nodes[0], g, "w");
-            net.run();
-            (net, (hosts, nodes, g, w))
-        })
+        Net::cached(&format!("ephemeral::window_world/{single}/{cap}"), || window_world(single, cap))
     };
     // the hosts in the order made: s1 (capped, if any) then s2
     let (s1, s2) = (0, 1);
@@ -2732,6 +2736,26 @@ fn held_again_judged_by_the_join_not_its_forgotten_cover_spec_sync_9() {
     }
     for n in [b, c, d] {
         assert_eq!(net.eph_read(n, w, FLAG), net.eph_read(a, w, FLAG), "node {n} reads the flag as a");
+    }
+}
+
+// spec/sync.md §6 (must-hold needs a positive uncovered; random_window_one_capped_host_large
+// seed 889902233287 shrunk): four writers at one host whose ephemeral cap is about two
+// snapshots of the map write in turn, so the trigger compacts and the host refuses snapshots
+// for room. A writer keeps its own snapshot under a co-writer's later one it forgot (covered by a
+// third the host refused): it holds no snapshot left at the label to judge its own by, so its own
+// is not established uncovered. Placed anyway, the co-writer deletes it under the snapshot left
+// there at once and the writer places it again under a fresh encryption: a message storm.
+#[test]
+fn snapshot_not_held_leaves_what_it_may_cover_unplaced_spec_sync_6() {
+    let cap = 8_000;
+    let (mut net, (_, nodes, _, w)) = Net::cached(&format!("ephemeral::window_world/true/{cap}"), || window_world(true, cap));
+    for (n, k, v) in [(3, "k1", "v0"), (1, "k1", "v3"), (2, "k3", "v4"), (1, "k1", "v5"), (0, "k3", "v6"), (1, "k0", "v7"), (1, "k1", "v8"), (1, "k0", "v9"), (0, "k1", "v10"), (3, "k2", "v11"), (1, "k0", "v12")] {
+        let mut m = Mutation::new();
+        m.op(w, &eph(NOTES), PathOp { path: vec![PathSeg::Key(s(k))], op: Op::Set(s(v)) }).unwrap();
+        net.engine(nodes[n]).write(m).unwrap();
+        // settles, or panics naming a loop
+        net.run();
     }
 }
 

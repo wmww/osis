@@ -203,7 +203,15 @@ impl SyncEngine {
     /// to be dialed again (`retrying`) is no work in flight here: whether it can be reached is
     /// the caller's to know.
     pub fn is_idle(&self) -> bool {
-        !self.passes_due() && self.conns.values().all(|c| (c.is_ready() || c.dial_key().is_none()) && c.pending.is_empty() && c.labels.values().all(|l| !l.phase.is_open() || l.settled()))
+        self.is_idle_but_unanswered_at(|_| false)
+    }
+
+    /// `is_idle`, counting this node's requests that a peer `at` names has not answered as no
+    /// work (tests): a dishonest host may skip a reply for good, its own requests moving the
+    /// stall clock (spec/sync.md §6 Stall), so nothing ever ends that wait.
+    #[doc(hidden)]
+    pub fn is_idle_but_unanswered_at(&self, at: impl Fn(&[u8; 32]) -> bool) -> bool {
+        !self.passes_due() && self.conns.values().all(|c| (c.is_ready() || c.dial_key().is_none()) && (c.pending.is_empty() || c.dial_key().is_some_and(|k| at(&k))) && c.labels.values().all(|l| !l.phase.is_open() || l.settled()))
     }
 
     /// A one-line summary of each label on each connection (tests, diagnostics).

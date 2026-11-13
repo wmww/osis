@@ -283,7 +283,7 @@ Each operation names a label. Writes are signed with the role keys of the host's
   - A delta is **kept** while it is before its keep-at-least bound (in history by the settings the node holds, spec/commits.md §5 The setting). One out of history is neither must-hold nor fetched; a node that dropped it fetches it none when a later setting puts it back in history.
   - **must-hold**: in the required set and, for a closure body, one of:
     - a delta of it kept, whatever snapshot covers it;
-    - established uncovered: the node can join it and no held snapshot of the aspect under the label covers it (spec/commits.md §5); a signal's delta is never joined, so it is must-hold only while kept.
+    - established uncovered: the node can join it, no held snapshot of the aspect under the label covers it (spec/commits.md §5), and the label holds no snapshot of the aspect that this node does not hold (forgotten, dropped) stamped later than the body (one stamped no later never saw it, spec/crdt.md §2.2); a signal's delta is never joined, so it is must-hold only while kept.
   - **Header-only blob**: in the required set only as a certificate (above) or as the lasting header of a commit lasting on a thing of the closure whose actor the label's reads (spec/commits.md §5), with no other body of the commit wanted there, and then is must-hold, whatever snapshot covers it. One of a commit with a permanent delta or a purge request that is not lasting here is may-hold, but on a thing destroyed by release alone (no header of it lasts): another node may judge it lasting.
   - **must-not-hold**, any of:
     - purged;

@@ -71,3 +71,4 @@ osis-node::sync_rows  deferred: 3h2
 osis-node::unplaced_memory_commits  deferred: 3h2
 osis-node::work_waiting  deferred: 3h2
 osis-node::label_passes  deferred: 3h2
+osis-node::is_idle  test hook: node tests wait for quiescence (the simulator uses is_idle_but_unanswered_at)

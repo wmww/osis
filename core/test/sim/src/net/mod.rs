@@ -2332,7 +2332,8 @@ impl NetSim {
         let Some(x) = self.nodes.get(n).filter(|x| x.up) else { return true };
         let Some(sync) = x.sync.as_ref() else { return false };
         let waits = |s: usize| self.hosts.get(s).is_some_and(|h| h.up && sync.retrying(&h.key).is_some()) && !self.is_blocked(Party::N(n), Party::S(s));
-        sync.is_idle() && !(0..self.hosts.len()).any(waits)
+        let dishonest = |k: &[u8; 32]| self.dishonest.iter().any(|s| self.hosts.get(*s).is_some_and(|h| h.key == *k));
+        sync.is_idle_but_unanswered_at(dishonest) && !(0..self.hosts.len()).any(waits)
     }
 
     /// What changes while the system is still moving: nodes' commits and pending, hosts' node logs.

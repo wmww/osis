@@ -93,6 +93,9 @@ impl SyncEngine {
         let aspects: Vec<(Tid, Ak)> = b.parts.iter().filter_map(|ai| h.aspects.get(*ai)).map(|a| (a.tid, a.ak.clone())).collect();
         let mut before = false;
         let mut covered = !aspects.is_empty();
+        // an aspect where a snapshot under the label may cover the body, unjudged here (not
+        // held: forgotten or dropped as covered in turn), is not established uncovered
+        let mut unjudged = false;
         let mut needed = Vec::new();
         let keeps = self.engine.part_keeps(&b.commit)?;
         for (ai, (t, a)) in b.parts.iter().zip(&aspects) {
@@ -101,25 +104,41 @@ impl SyncEngine {
             // a signal's delta is never joined, so never established uncovered: must-hold only
             // while kept (spec/sync.md §6, spec/commits.md §5 Signals)
             let mut c = a.signal();
+            let mut open = false;
             for s in snaps.get(&(*t, a.clone())).into_iter().flatten().filter(|_| !c) {
-                if *s != b.commit && self.covered_noted(s, &b.commit, t, a, note)? == Some(true) {
-                    // covered-equal snapshots (equal `ts`): the one with the higher commit ID goes
-                    if is_snapshot(h.kind) && self.covered_noted(&b.commit, s, t, a, note)? == Some(true) && b.commit < *s {
-                        continue;
+                if *s == b.commit {
+                    continue;
+                }
+                match self.covered_noted(s, &b.commit, t, a, note)? {
+                    Some(true) => {
+                        // covered-equal snapshots (equal `ts`): the one with the higher commit ID goes
+                        if is_snapshot(h.kind) && self.covered_noted(&b.commit, s, t, a, note)? == Some(true) && b.commit < *s {
+                            continue;
+                        }
+                        c = true;
+                        break;
                     }
-                    c = true;
-                    break;
+                    // one stamped no later than the body never saw it (spec/crdt.md §2.2, HLC
+                    // rules), so covers none of it
+                    None => open |= self.stamp_of(s).is_none_or(|x| x > h.ts),
+                    Some(false) => {}
                 }
             }
+            unjudged |= open && !c;
             covered &= c;
             if kept || !c {
                 needed.push(*ai);
             }
         }
-        let known = !unsettled.contains(&None) && !aspects.iter().any(|k| unsettled.contains(&Some(k.clone())));
+        let known = !unjudged && !unsettled.contains(&None) && !aspects.iter().any(|k| unsettled.contains(&Some(k.clone())));
         let covered = if covered || known { Some(covered) } else { None };
         let must = classify(&Facts { required: true, closure: true, before_at_least: before, covered, ..Facts::default() }) == Hold::Must;
         Ok(must.then_some(needed))
+    }
+
+    /// The `ts` of commit `c`: held, or a memory commit forgotten here.
+    fn stamp_of(&self, c: &CommitId) -> Option<osis_base::Ts> {
+        self.engine.header(c).map(|h| h.ts).or_else(|| self.memory.forgotten.get(c).map(|f| f.header.ts))
     }
 
     /// Whether part `p` of commit `c` is kept whatever covers it (spec/sync.md §6): before its
