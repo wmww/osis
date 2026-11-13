@@ -61,7 +61,7 @@ impl Float {
 
 /// Tag numbers with a meaning in this build; never held by `Unknown`. The reserved STRUCT tag
 /// is not one: a later version may define it, so it is preserved like any unknown tag.
-pub fn is_known_tag(tag: u64) -> bool {
+fn is_known_tag(tag: u64) -> bool {
     matches!(tag, TAG_SET | TAG_TID | TAG_ENUM | TAG_LINK)
 }
 

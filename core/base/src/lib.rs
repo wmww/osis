@@ -29,4 +29,4 @@ pub use error::{Classified, ErrorClass};
 pub use ids::{Ak, AkError, BlobId, CommitId, CreationRecord, Del, LabelId, Link, Markers, PurgeBy, Role, SIGNING_KEY_ED25519, Tid, TidParseError};
 pub use time::{Clock, ManualClock, SystemClock, Time, Ts, WallMs};
 pub use sorted::{ValueMap, ValueSet};
-pub use value::{Float, Unknown, Value, is_known_tag};
+pub use value::{Float, Unknown, Value};
