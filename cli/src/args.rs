@@ -387,12 +387,8 @@ pub enum Cmd {
         watch: bool,
     },
     /// Sync now and wait until everything (or G) is caught up with every connected node; with nobody connected it waits (until --timeout)
+    #[command(visible_alias = "wait")]
     Sync {
-        #[arg(long, value_name = "G")]
-        group: Option<String>,
-    },
-    /// Wait until everything (or G) is caught up with every connected node; with nobody connected it waits (until --timeout)
-    Wait {
         #[arg(long, value_name = "G")]
         group: Option<String>,
     },

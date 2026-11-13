@@ -205,24 +205,16 @@ pub(crate) fn not_built(what: &'static str) -> anyhow::Error {
 fn needs_net(c: &Cmd) -> bool {
     matches!(
         c,
-        Cmd::Pair(_)
-            | Cmd::Node(NodeCmd::Rm { .. })
+        Cmd::Node(NodeCmd::Rm { .. })
             | Cmd::SetRole { .. }
             | Cmd::Link(LinkCmd::Redeem { .. } | LinkCmd::Revoke { .. })
             | Cmd::Card(CardCmd::Import { .. })
             | Cmd::Chat(_)
             | Cmd::Status { .. }
             | Cmd::Sync { .. }
-            | Cmd::Wait { .. }
-            | Cmd::Serve { .. }
             | Cmd::Group(GroupCmd::Source { to: Some(_), .. })
-            | Cmd::Watch { .. }
-            | Cmd::Writes { list: ListArgs { follow: true, .. }, .. }
-            | Cmd::Fired { list: ListArgs { follow: true, .. }, .. }
-            | Cmd::Grants { watch: true, .. }
-            | Cmd::Backlinks { watch: true, .. }
-            | Cmd::Diag { follow: true }
-    ) || delivers(c)
+    ) || stays_up(c)
+        || delivers(c)
 }
 
 /// Commands that stay up until stopped, so they are on the local network (unless `--no-lan`).
@@ -739,7 +731,7 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
             stream_lines(ctx, &rx, None, timeout)
         }
         // `wait_synced` asks its peers to sync first: `sync` and `wait` are one call
-        Cmd::Sync { group } | Cmd::Wait { group } => {
+        Cmd::Sync { group } => {
             let s = match group {
                 Some(g) => SyncScope::Thing(ctx.tid(&g)?),
                 None => SyncScope::All,
