@@ -155,6 +155,8 @@ instances=(
   "netopen net MCOpen O_kk_pair.cfg fail"          # witness: two stores open both ways on one connection
   "netopen net MCOpen ON_side.cfg fail"            # negative control: no side byte, a signature is reflected or relayed
   "netopen net MCOpen ON_answer.cfg fail"          # negative control: a tag on a public value opens
+  "netopen net MCOpen ON_old.cfg fail"             # negative control: an older step's sync key answers (a removed holder)
+  "netopen net MCOpen ON_proofpub.cfg fail"        # negative control: the proof's match from the public sync key
   "netopen net MCOpen O_nolisten.cfg pass"         # rejected option: listeners never sign is safe ...
   "netopen net MCOpen O_nolisten_kk.cfg pass"      # ... and two stores never open both ways on one connection
 )

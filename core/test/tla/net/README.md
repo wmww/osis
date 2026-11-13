@@ -19,7 +19,7 @@ A record says only what need not be sent again: a connection first proves the tw
 - `RuleHolds`: when quiet, L is open on both sides or neither, exactly when each side's rule holds on what it holds now.
 - `UntilEnds`: when quiet, no open rests on a proof a rotation made stale: the requester's report of passing `until` always arrives.
 - `EpochReached`: a holder with L open on both sides at a rotation, no record lost, reaches the new epoch.
-- NetOpen: `Safe` (no honest node opens L toward a node holding only L's public values, which replays any signature it was sent), `NoPair` (a witness, expected violated: two honest nodes open L both ways on one connection).
+- NetOpen: `Safe` (no honest node opens L toward a removed holder holding L's public values and an older step's sync secret, which replays any signature it was sent), `NoPair` (a witness, expected violated: two honest nodes open L both ways on one connection).
 - NetBlind: `Carried` (a delete never takes a body whose covering snapshot the peer does not hold), `Placed` (quiet: the peer holds what the reader holds live), `DeletesReach` (quiet: the peer holds nothing the reader covers).
 
 ## Results
@@ -51,10 +51,10 @@ TLC 2.19, 12 workers. Positive cfgs pass; each `*N_*` fails with the listed prop
 | S_members | role gained and lost mid-connection, rejoin from lag (by name) | pass | 19,360,038 |
 | B_all | a peer that cannot read: drop, backup restore, record loss | pass | 4,185 |
 | B_live | settles | pass, `Settles` | 486 |
-| O_rk | a reader, an unread holder, Adv | pass | 24,361 |
-| O_kk | two unread holders, Adv | pass | 8,637 |
-| O_rk_pair, O_kk_pair | witness: both ways on one connection | `NoPair` violated (reachable) | 268, 279 |
-| O_nolisten, O_nolisten_kk | rejected option: listeners never sign, no side byte | pass; two unread holders never open both ways on one connection | 7,857, 4,103 |
+| O_rk | a reader, an unread holder, Adv (a removed holder) | pass | 250,861 |
+| O_kk | two unread holders, Adv | pass | 21,829 |
+| O_rk_pair, O_kk_pair | witness: both ways on one connection | `NoPair` violated (reachable) | |
+| O_nolisten, O_nolisten_kk | rejected option: listeners never sign, no side byte | pass; two unread holders never open both ways on one connection | 53,517, 10,173 |
 
-Rule removals: `SN_infer_lit`, `SN_infer_knew` NoWriteLost; `SN_history` ReconnectCost; `SN_listdels` DeletionsArrive; `SN_inc`, `SN_copies`, `SN_sreconcile`, `SN_joindur`, `SN_joinans`, `SN_lostolder`, `SN_cursor`, `SN_rearm` CaughtUpHolds; `SN_gate` ServedRight; `SN_bothpull` Settles; `TN_pending`, `TN_ack`, `TN_untilack`, `TN_arrival`, `TN_tag`, `TN_genbase`, `TN_byrole`, `TN_reconcile`, `TN_retest`, `TN_decline`, `TN_offergate`, `TN_reptested` RuleHolds; `TN_until` EpochReached; `TN_report`, `TN_cursorrep` UntilEnds; `BN_upack`, `BN_whole` Placed; `BN_cover` Carried; `BN_known` DeletesReach; `ON_side` (no side byte: a signature reflected across two connections), `ON_answer` (a tag on a public value opens) Safe.
+Rule removals: `SN_infer_lit`, `SN_infer_knew` NoWriteLost; `SN_history` ReconnectCost; `SN_listdels` DeletionsArrive; `SN_inc`, `SN_copies`, `SN_sreconcile`, `SN_joindur`, `SN_joinans`, `SN_lostolder`, `SN_cursor`, `SN_rearm` CaughtUpHolds; `SN_gate` ServedRight; `SN_bothpull` Settles; `TN_pending`, `TN_ack`, `TN_untilack`, `TN_arrival`, `TN_tag`, `TN_genbase`, `TN_byrole`, `TN_reconcile`, `TN_retest`, `TN_decline`, `TN_offergate`, `TN_reptested` RuleHolds; `TN_until` EpochReached; `TN_report`, `TN_cursorrep` UntilEnds; `BN_upack`, `BN_whole` Placed; `BN_cover` Carried; `BN_known` DeletesReach; `ON_side` (no side byte: a signature reflected), `ON_answer` (a tag on a public value opens), `ON_old` (an older step's sync key answers), `ON_proofpub` (the proof from the public sync key) Safe.
 
