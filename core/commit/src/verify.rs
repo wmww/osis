@@ -47,42 +47,37 @@ pub fn writer_ctx(form: Form, kind: crate::Kind, ts: osis_base::Ts, author: Tid,
     DeltaCtx { ts, own: form.own_source(author, CommitId([0; 32])), range: CounterRange { lo, hi }, kind: kind.delta_kind() }
 }
 
-/// A received delta's page source: a page or link page its commit's chunk list does not name as
-/// a blob of this delta (`ai`) is bad input (spec/wire.md §4 field 8: the list names every blob
-/// the deltas introduce, and a page is always introduced by its delta), so nothing outside the
-/// list is read as a page.
-struct Listed<'a, 'h> {
-    inner: &'a mut dyn PageSource,
-    chunks: &'h [crate::ChunkEntry],
-    ai: usize,
-}
+/// The page source of a relay-only commit's deltas, which never page (spec/commits.md §2): any
+/// page is bad input.
+struct NoPages;
 
-impl PageSource for Listed<'_, '_> {
-    fn get(&mut self, link: &osis_base::Link) -> Result<Vec<u8>, osis_crdt::PageError> {
-        if self.chunks.binary_search_by(|c| c.blob.cmp(&link.blob)).ok().and_then(|i| self.chunks.get(i)).is_none_or(|c| c.ai != self.ai) {
-            return Err(osis_crdt::PageError::Corrupt);
-        }
-        self.inner.get(link)
+impl PageSource for NoPages {
+    fn get(&mut self, _: &osis_base::Link) -> Result<Vec<u8>, osis_crdt::PageError> {
+        Err(osis_crdt::PageError::Corrupt)
     }
     fn params(&self) -> osis_crdt::PageParams {
-        self.inner.params()
+        osis_crdt::PageParams::FORMAT
     }
+}
+
+/// Whether `h` is a relay-only commit's header, whose deltas are read with `NoPages`.
+fn relay_only(h: &Header) -> bool {
+    h.ephemeral.is_some_and(|c| c != crate::header::EphClass::Plain)
 }
 
 /// Checks one part's delta hash under the dedup secret of its thing and decodes it against the
-/// header facts (range check, spec/crdt.md §2.3). Pages of a paged delta come from `pages`,
-/// only those the header's chunk list names (`Listed`).
+/// header facts (range check, spec/crdt.md §2.3). Pages of a paged delta come from `pages`.
 pub fn verify_part<'a>(h: &Header, id: &CommitId, part: &Part, dedup: &Secret32, interner: &'a mut Interner, pages: Option<&'a mut dyn PageSource>) -> Result<Decoded, Error> {
     let a = h.aspects.get(part.ai).ok_or(Error::Malformed("part aspect index out of range"))?;
     if delta_hash(dedup, &part.delta) != a.hash {
         return Err(Error::DeltaHash { ai: part.ai });
     }
     let cx = delta_ctx(h, id, part.ai, interner)?;
-    let mut listed = pages.map(|inner| Listed { inner, chunks: &h.chunks, ai: part.ai });
-    let pages: Option<&mut dyn PageSource> = listed.as_mut().map(|l| l as &mut dyn PageSource);
+    let mut none = NoPages;
+    let pages: Option<&mut dyn PageSource> = if relay_only(h) { Some(&mut none) } else { pages.map(|p| p as &mut dyn PageSource) };
     let d = match cx.kind {
-        DeltaKind::Snapshot => Decoded::Snapshot(decode_snapshot(&part.delta, &cx, interner, pages)?),
-        DeltaKind::Writer => Decoded::Delta(decode_delta(&part.delta, &cx, interner, pages)?),
+        DeltaKind::Snapshot => Decoded::Snapshot(decode_snapshot(&part.delta, &cx, &mut *interner, pages)?),
+        DeltaKind::Writer => Decoded::Delta(decode_delta(&part.delta, &cx, &mut *interner, pages)?),
     };
     check_fragment(a.ak.as_str(), d.fragment())?;
     Ok(d)
@@ -97,8 +92,8 @@ pub fn stream_part<'a>(h: &Header, id: &CommitId, part: &Part, dedup: &Secret32,
         return Err(Error::DeltaHash { ai: part.ai });
     }
     let cx = delta_ctx(h, id, part.ai, interner)?;
-    let mut listed = pages.map(|inner| Listed { inner, chunks: &h.chunks, ai: part.ai });
-    let pages: Option<&mut dyn PageSource> = listed.as_mut().map(|l| l as &mut dyn PageSource);
+    let mut none = NoPages;
+    let pages: Option<&mut dyn PageSource> = if relay_only(h) { Some(&mut none) } else { pages.map(|p| p as &mut dyn PageSource) };
     // `check_fragment` holds of the whole iff of every piece (per record, per position); a bad
     // delta still streams to its end, so a decoding error wins as in `verify_part`
     let ak = a.ak.as_str();
@@ -113,8 +108,8 @@ pub fn stream_part<'a>(h: &Header, id: &CommitId, part: &Part, dedup: &Secret32,
         if keyed.is_ok() { each(f) } else { Ok(()) }
     };
     let out = match cx.kind {
-        DeltaKind::Snapshot => stream_snapshot(&part.delta, &cx, interner, pages, &mut each).map(Some)?,
-        DeltaKind::Writer => stream_delta(&part.delta, &cx, interner, pages, &mut each).map(|_| None)?,
+        DeltaKind::Snapshot => stream_snapshot(&part.delta, &cx, &mut *interner, pages, &mut each).map(Some)?,
+        DeltaKind::Writer => stream_delta(&part.delta, &cx, &mut *interner, pages, &mut each).map(|_| None)?,
     };
     keyed?;
     Ok(out)

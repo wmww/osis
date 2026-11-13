@@ -719,7 +719,7 @@ impl super::Core {
             }
         }
         let tables = tables(ix).into_iter().map(|(n, t)| (n, format!("{t:?}"))).collect();
-        IndexDigest { commits, held: self.held_digest(), by_chunk: (*ix.by_chunk).clone(), snapshots, dropped_snapshots, tables }
+        IndexDigest { commits, held: self.held_digest(), snapshots, dropped_snapshots, tables }
     }
 
     /// `IndexDigest::held`.
@@ -741,7 +741,6 @@ impl super::Core {
         a.commits.len() == b.commits.len()
             && a.commits.iter().zip(b.commits.iter()).all(|((x, m), (y, n))| x == y && commit_digest(m) == commit_digest(n))
             && self.held_digest() == o.held_digest()
-            && *a.by_chunk == *b.by_chunk
             && *a.snapshots == *b.snapshots
             && *a.dropped_snapshots == *b.dropped_snapshots
             && tables(a).iter().zip(tables(b).iter()).all(|((_, x), (_, y))| x.same(*y))
@@ -791,7 +790,6 @@ pub struct IndexDigest {
     /// Per held thing: its edge commits, sorted, and whether its creation
     /// record is held.
     pub held: BTreeMap<Tid, (Vec<CommitId>, bool)>,
-    pub by_chunk: BTreeMap<osis_base::BlobId, std::collections::BTreeSet<CommitId>>,
     /// Per compaction snapshot: its `snapshots` entries, with their aspect.
     pub snapshots: BTreeMap<CommitId, Vec<(Tid, Ak, String)>>,
     /// Per snapshot: the aspects listing it in `dropped_snapshots`.
@@ -825,7 +823,6 @@ pub struct CommitDigest {
 pub enum IndexField {
     Commit(CommitId),
     Held(Tid),
-    ByChunk,
     Snapshots(CommitId),
     DroppedSnapshots(CommitId),
     Table(&'static str),
@@ -835,13 +832,10 @@ impl IndexDigest {
     /// Every field where `self` and `other` differ, in field order.
     pub fn diff(&self, other: &Self) -> Vec<IndexField> {
         // destructured: a new field fails to compile until it is compared
-        let IndexDigest { commits, held, by_chunk, snapshots, dropped_snapshots, tables } = self;
+        let IndexDigest { commits, held, snapshots, dropped_snapshots, tables } = self;
         let mut out = Vec::new();
         keyed(commits, &other.commits, IndexField::Commit, &mut out);
         keyed(held, &other.held, IndexField::Held, &mut out);
-        if *by_chunk != other.by_chunk {
-            out.push(IndexField::ByChunk);
-        }
         keyed(snapshots, &other.snapshots, IndexField::Snapshots, &mut out);
         keyed(dropped_snapshots, &other.dropped_snapshots, IndexField::DroppedSnapshots, &mut out);
         keyed(tables, &other.tables, IndexField::Table, &mut out);
@@ -854,7 +848,6 @@ impl IndexDigest {
         match f {
             IndexField::Commit(c) => s(self.commits.get(c).map(|x| x as _)),
             IndexField::Held(t) => s(self.held.get(t).map(|x| x as _)),
-            IndexField::ByChunk => s(Some(&self.by_chunk)),
             IndexField::Snapshots(c) => s(self.snapshots.get(c).map(|x| x as _)),
             IndexField::DroppedSnapshots(c) => s(self.dropped_snapshots.get(c).map(|x| x as _)),
             IndexField::Table(n) => self.tables.get(n).cloned(),

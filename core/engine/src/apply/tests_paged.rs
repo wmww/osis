@@ -598,14 +598,12 @@ fn forge_snapshot_in(w: &mut World, by: usize, ak: &Ak, ts: osis_base::Ts, f: os
     let mut blobs = osis_label::MemoryBlobs::default();
     let mut rng = osis_crypto::SeededRng::from_u64(0);
     let snap = osis_crdt::Snapshot { absorbed: Default::default(), facts: Default::default(), nonce: [7; 16], fragment: f, frontiers: Default::default() };
-    let (bytes, written) = {
+    let bytes = {
         let mut sink = Mutating { inner: osis_label::BlobWriter::new(&framing, &mut blobs, &mut rng), n: 0, mutate };
-        let b = osis_crdt::encode_snapshot(&snap, &writer_ctx(Form::Commit, Kind::ContentSnapshot, ts, author, 0, 0), Some(&mut sink)).unwrap();
-        (b, sink.inner.written().to_vec())
+        osis_crdt::encode_snapshot(&snap, &writer_ctx(Form::Commit, Kind::ContentSnapshot, ts, author, 0, 0), Some(&mut sink)).unwrap()
     };
     let mut aw = AspectWrite::new(t, ak.clone(), 0, 0, bytes);
     aw.retention = retention;
-    aw.chunks = written.iter().filter(|w| blobs.0.contains_key(&w.id)).map(|w| osis_commit::ChunkWrite::introduced(w.id, w.blind)).collect();
     let mut cb = CommitBuilder::new(Kind::ContentSnapshot, ts, author, author, Form::Commit);
     cb.aspects.push(aw);
     cb.blind = Some(blind);

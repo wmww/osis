@@ -30,13 +30,12 @@ prop_compose! {
     fn header()(
         author in tid(), actor in tid(), kind in 0u64..4, wall in 0u64..1 << 46, form in any::<bool>(), expires in proptest::option::of(0u64..1 << 50),
         aspects in proptest::collection::vec(aspect(), 0..4),
-        chunks in proptest::collection::vec((any::<[u8; 32]>(), proptest::collection::vec(0usize..5, 0..3)), 0..3),
         purge in proptest::collection::vec((proptest::option::of(any::<[u8; 32]>()), tid()), 0..3),
         undoes in proptest::option::of(any::<[u8; 32]>()),
         blind in any::<[u8; 16]>(),
         keys in proptest::collection::vec((1u8..4, any::<u8>()), 0..4),
         frontier in proptest::option::of(any::<i64>()),
-        links in proptest::collection::vec(proptest::option::of(link()), 5),
+        links in proptest::collection::vec(proptest::option::of(link()), 4),
     ) -> Header {
         let mut l = Links::default();
         for (f, x) in ListField::ALL.into_iter().zip(links) {
@@ -47,7 +46,6 @@ prop_compose! {
             form: if form { Form::Commit } else { SESSION },
             expires,
             aspects,
-            chunks: chunks.into_iter().map(|(b, keys)| ChunkEntry { blob: BlobId(b), ai: 0, keys, blind: [b[0]; 16] }).collect(),
             purge: purge.into_iter().map(|(c, tid)| match c {
                 Some(c) => PurgeItem::Commit { tid, ak: Ak::new("p.0").unwrap(), ts: ts(c[0] as u64), src: if c[1] % 2 == 0 { osis_crdt::Source::commit(CommitId(c)) } else { osis_crdt::Source::session(osis_crdt::Session { node: tid, nonce: [c[2]; 16] }) } },
                 None if tid.as_bytes()[0] % 2 == 0 => PurgeItem::Aspect { tid, ak: Ak::new("p.0").unwrap() },
@@ -68,12 +66,6 @@ prop_compose! {
         }
         h.aspects.sort_by_key(|a| crate::header::aspect_key(&a.tid, &a.ak));
         h.aspects.dedup_by_key(|a| crate::header::aspect_key(&a.tid, &a.ak));
-        for c in &mut h.chunks {
-            c.keys.sort();
-            c.keys.dedup();
-        }
-        h.chunks.sort_by_key(|c| c.blob);
-        h.chunks.dedup_by_key(|c| c.blob);
         h.purge.sort_by_key(crate::header::purge_bytes);
         h.purge.dedup();
         h.keys.sort_by_key(crate::header::key_bytes);
@@ -83,7 +75,6 @@ prop_compose! {
             if h.links.get(f).is_some() {
                 match f {
                     ListField::Aspects => h.aspects.clear(),
-                    ListField::Chunks => h.chunks.clear(),
                     ListField::Purge => h.purge.clear(),
                     ListField::Keys => h.keys.clear(),
                     ListField::Frontier => h.frontier = None,

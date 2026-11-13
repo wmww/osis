@@ -1,6 +1,6 @@
 //! What the trees of a thing's held bodies and live states link (`Engine::tree_refs`): what a
 //! dropped body's chunk is judged against (spec/sync.md §1, §7: a blob goes only when nothing held
-//! links it; a reused chunk or a snapshot's value is in no chunk list of the bodies linking it).
+//! links it, by any body or state of its thing: a reused chunk or a snapshot's value included).
 //!
 //! Each source's trees (a held commit's parts on the thing, an aspect's state) are a memo
 //! (`Core::tree_refs`): read again only when its record, leftovers, header or state moved. Blob

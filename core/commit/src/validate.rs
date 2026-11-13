@@ -22,7 +22,6 @@ impl Header {
         let ord = |ok: bool, what: &'static str| if ok { Ok(()) } else { Err(Error::Malformed(what)) };
         ord(!self.aspects.is_empty(), "no aspects")?;
         ord(strictly_ascending(&self.aspects, |a| aspect_key(&a.tid, &a.ak)), "aspects not sorted and distinct")?;
-        ord(strictly_ascending(&self.chunks, |c| c.blob), "chunks not sorted and distinct")?;
         ord(strictly_ascending(&self.purge, purge_bytes), "purge not sorted and distinct")?;
         ord(strictly_ascending(&self.keys, key_bytes), "delete keys not sorted and distinct")?;
         // a linked list's blobs commit to the level-2 key alone (spec/wire.md §5): its links
@@ -125,13 +124,6 @@ impl Header {
         if used.iter().any(|u| !u) {
             return Err(Error::Malformed("delete key no aspect calls for"));
         }
-        for c in &self.chunks {
-            ord(strictly_ascending(&c.keys, |i| *i), "chunk delete keys not ascending")?;
-            let a = self.aspects.get(c.ai).ok_or(Error::Malformed("chunk aspect index out of range"))?;
-            if c.keys.iter().any(|i| !a.keys.contains(i)) {
-                return Err(Error::Malformed("chunk delete key not of its aspect"));
-            }
-        }
         if !self.purge.is_empty() {
             if kind.is_role() {
                 return Err(Error::Invalid("purge request on a role commit"));
@@ -147,7 +139,7 @@ impl Header {
             return Err(Error::Invalid("frontier outside a role commit"));
         }
         // a rotation of an account's signing chain: on a role commit signed at an epoch it
-        // supersedes, its lists ascending and distinct (spec/wire.md §4 field 16)
+        // supersedes, its lists ascending and distinct (spec/wire.md §4 field 15)
         if let Some(r) = &self.rotation {
             if kind != Kind::Role {
                 return Err(Error::Invalid("rotation outside a role commit"));
@@ -168,10 +160,6 @@ impl Header {
             }
             if !self.purge.is_empty() || self.links != crate::header::Links::default() {
                 return Err(Error::Invalid("ephemeral commit with a purge or linked lists"));
-            }
-            // a relay-only commit's deltas never page (spec/commits.md §2)
-            if c != crate::header::EphClass::Plain && !self.chunks.is_empty() {
-                return Err(Error::Invalid("relay-only commit with chunks"));
             }
             if self.aspects.iter().any(|a| a.retention != EPHEMERAL_RETENTION) {
                 return Err(Error::Invalid("ephemeral commit with a retention other than writer"));

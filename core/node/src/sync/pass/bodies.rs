@@ -61,15 +61,7 @@ impl SyncEngine {
             let of = Some(Touch::Commit(b.commit));
             sends.push(Out { prio, id, fresh, of });
             if keys.is_writer() {
-                let mut linked = self.chunk_blobs(&b.commit)?;
-                // chunks the header lists that are not here yet go up once they arrive
-                if let Some(h) = self.engine.header(&b.commit) {
-                    for ch in &h.chunks {
-                        if !linked.contains(&ch.blob) {
-                            left.link(ch.blob, b.commit);
-                        }
-                    }
-                }
+                let mut linked = self.list_blobs(&b.commit)?;
                 linked.extend(self.body_blobs(&l, b, left)?);
                 // a memory commit's pages are of its class (spec/wire.md §5)
                 let memory = self.engine.header(&b.commit).is_some_and(|h| h.ephemeral.is_some());
@@ -388,39 +380,42 @@ impl SyncEngine {
         Ok(Some(id))
     }
 
-    /// Chunk, page and header-list blobs a commit references that this node holds.
-    pub(super) fn chunk_blobs(&mut self, c: &CommitId) -> Result<Vec<BlobId>> {
-        Ok(self.engine.package(c)?.map(|p| p.blobs.into_iter().map(|(id, _)| id).collect()).unwrap_or_default())
+    /// The header-list blobs of a commit that this node holds.
+    pub(super) fn list_blobs(&mut self, c: &CommitId) -> Result<Vec<BlobId>> {
+        Ok(self.engine.header_list_blobs(c)?.into_iter().collect())
     }
 
-    /// Blobs the body's own delta values link (trees of large values, pages), listed by its
-    /// commit or not: reused chunks and a snapshot's values belong to the closure too
-    /// (spec/sync.md §3), so a reader under a new label (replacement, a move) gets them. Those
-    /// held here or already an entry under `l`; the walk is cached per body once complete.
+    /// Blobs the body's own delta values link (trees of large values, pages): reused chunks and
+    /// a snapshot's values belong to the closure too (spec/sync.md §3), so a reader under a new
+    /// label (replacement, a move) gets them. Those held here or already an entry under `l`; the
+    /// walk is cached per body once complete.
     pub(super) fn body_blobs(&mut self, l: &LabelId, b: &Body, left: &mut Left) -> Result<Vec<BlobId>> {
-        let key = (b.commit, b.parts.clone());
-        let all = match self.body_links.get(&key) {
-            Some(x) => x.clone(),
-            None => {
-                let pt = self.engine.body_plaintext(b)?;
-                let r = self.engine.body_links(&pt)?;
-                let all: Vec<BlobId> = r.blobs.into_iter().collect();
-                if r.missing.is_empty() {
-                    self.body_links.insert(key, all.clone());
-                } else {
-                    // the walk goes on once the missing nodes are here
-                    for m in r.missing {
-                        left.link(m, b.commit);
-                    }
-                }
-                all
-            }
-        };
+        let (all, missing) = self.body_walk(b)?;
+        // the walk goes on once the missing nodes are here
+        for m in missing {
+            left.link(m, b.commit);
+        }
         let (here, not): (Vec<BlobId>, Vec<BlobId>) = all.into_iter().partition(|id| self.state.entries.contains_key(&(*l, *id)) || self.engine.has_blob(id));
         for id in not {
             left.link(id, b.commit);
         }
         Ok(here)
+    }
+
+    /// What the body's delta values link (`Engine::body_links`, through the node and page blobs
+    /// held), and the node blobs the walk lacks; cached per body once complete.
+    pub(in crate::sync) fn body_walk(&mut self, b: &Body) -> Result<(Vec<BlobId>, BTreeSet<BlobId>)> {
+        let key = (b.commit, b.parts.clone());
+        if let Some(x) = self.body_links.get(&key) {
+            return Ok((x.clone(), BTreeSet::new()));
+        }
+        let pt = self.engine.body_plaintext(b)?;
+        let r = self.engine.body_links(&pt)?;
+        let all: Vec<BlobId> = r.blobs.into_iter().collect();
+        if r.missing.is_empty() {
+            self.body_links.insert(key, all.clone());
+        }
+        Ok((all, r.missing))
     }
 
     /// Whether this node placed the entry (its certificates, role writes).

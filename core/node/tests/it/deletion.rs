@@ -1585,7 +1585,7 @@ fn held_snapshot_keeps_the_chunks_it_links_spec_sync_7() {
     let v1 = noise(1 << 20, 1);
     let mut v2 = v1.clone();
     v2.splice(500_000..500_000, noise(50, 2));
-    // v2 reuses v1's chunks: they are in v1's chunk list only
+    // v2 reuses v1's chunks: v1 wrote them
     for v in [&v1, &v2] {
         let mut m = Mutation::new();
         m.set(t, &BLOB, &osis_base::Value::Bytes(v.clone())).unwrap();
@@ -1615,8 +1615,7 @@ fn held_snapshot_keeps_the_chunks_it_links_spec_sync_7() {
     assert_eq!(kept, 0, "blobs nothing held links kept, of {}", tree.len());
 }
 
-// spec/sync.md §1 (chunk reuse: the link alone decides), §7, spec/wire.md §4 (a snapshot lists
-// the blobs it links): a node that never received the commit introducing a value's chunks (its
+// spec/sync.md §1 (chunk reuse: the link alone decides), §7 Freed links: a node that never received the commit introducing a value's chunks (its
 // author compacted it and deleted it at the host first) reuses them on its next edit, uploading
 // the changed chunks and the root's links whatever the value's size, and once nothing it holds
 // links them deletes them at the host by its own delete keys.
@@ -1717,11 +1716,10 @@ fn chunks_outliving_their_introducer_leave_the_host_spec_commits_5() {
         osis_crypto::RngCore::fill_bytes(&mut osis_crypto::SeededRng::from_u64(seed), &mut v);
         v
     };
-    // the value written again twice: the replaces list none of its blobs and replace no tree, so
-    // they weigh too little for a snapshot (spec/sync.md §7 Trigger)
+    // the value written again twice: the replaces reuse every blob of its tree
     let v1 = noise(2560 << 10, 1);
     let mut first = None;
-    // two later own replaces cover the first (spec/commits.md §5 Own bodies)
+    // two later own replaces (or a snapshot) cover the first (spec/commits.md §5 Own bodies)
     for v in [&v1, &v1, &v1] {
         let mut m = Mutation::new();
         m.op(t, &BLOB, osis_crdt::PathOp { path: vec![], op: osis_crdt::Op::Replace(osis_base::Value::Bytes(v.clone())) }).unwrap();
@@ -1729,20 +1727,21 @@ fn chunks_outliving_their_introducer_leave_the_host_spec_commits_5() {
         net.run();
     }
     let first = first.unwrap();
-    // the introducer is dropped under the replace, deleted at the host, its tombstone aged out
+    // the introducer is dropped under a cover, deleted at the host, its tombstone aged out
     net.advance(osis_base::format::TOMBSTONE_LIFETIME_MS + 60_000);
     net.run();
     net.advance(osis_base::format::TOMBSTONE_LIFETIME_MS + 60_000);
     net.run();
     let tree = net.engine(a).live_trees(&t).unwrap().blobs;
-    assert!(net.engine(a).commit_ids().iter().all(|c| !net.engine(a).header(c).unwrap().kind.is_compaction()), "no snapshot");
-    assert!(!net.engine(a).body_not_dropped(&first, &t, &Ak::new(BLOB.ak()).unwrap()), "the first write dropped under the replaces");
+    assert!(!net.engine(a).body_not_dropped(&first, &t, &Ak::new(BLOB.ak()).unwrap()), "the first write dropped under a cover");
     assert!(net.engine(a).header(&first).is_none(), "the introducer is forgotten");
-    // a small write, compacted
-    let mut m = Mutation::new();
-    m.set(t, &BLOB, &osis_base::Value::Bytes(vec![1, 2, 3])).unwrap();
-    net.engine(a).commit(m).unwrap();
-    net.run();
+    // two small writes, compacted (the trigger needs two bodies, spec/sync.md §7 Trigger)
+    for v in [vec![1, 2, 3], vec![4]] {
+        let mut m = Mutation::new();
+        m.set(t, &BLOB, &osis_base::Value::Bytes(v)).unwrap();
+        net.engine(a).commit(m).unwrap();
+        net.run();
+    }
     net.advance(4_000_000);
     net.advance(4_000_000);
     let at_the_peer: std::collections::BTreeSet<_> = net.host_ids(host, &l).into_iter().collect();
@@ -1804,7 +1803,7 @@ fn chunk_delete_waits_for_its_role_commits_at_the_host_spec_sync_7() {
     let write = with_retention(&mut net, b, t, &big, osis_schema::Retention { by: osis_schema::PurgeBy::Writer });
     net.run();
     let l = net.label(a);
-    let chunks: Vec<osis_base::BlobId> = net.engine(b).header(&write).unwrap().chunks.iter().map(|ch| ch.blob).collect();
+    let chunks: Vec<osis_base::BlobId> = crate::common::linked_blobs(net.engine(b), &write);
     let at_the_peer = |net: &Net| -> usize { let held = net.host_ids(host, &l); chunks.iter().filter(|x| held.contains(x)).count() };
     assert!(!chunks.is_empty() && at_the_peer(&net) == chunks.len(), "b's value is chunked, at the host");
     net.blocked.insert((a, host));
@@ -1834,7 +1833,7 @@ fn chunk_delete_waits_for_its_role_commits_at_the_host_spec_sync_7() {
     assert_eq!(dels(&net), chunks.len(), "each chunk deleted once");
     let me = net.engine(b).me();
     let ids = net.engine(c).commit_ids();
-    assert_eq!(ids.into_iter().filter(|x| net.engine(c).header(x).is_some_and(|h| h.author == me && !h.chunks.is_empty())).count(), 1, "b re-encrypted no chunks");
+    assert_eq!(ids.into_iter().filter(|x| *x != write && net.engine(c).header(x).is_some_and(|h| h.author == me && h.aspects.iter().any(|a| a.tid == t))).count(), 0, "b re-encrypted no chunks: it wrote nothing more on t");
     assert_eq!(net.read(b, t), None);
     assert_eq!(net.read(c, t), None);
 }

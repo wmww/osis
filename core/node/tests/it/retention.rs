@@ -2902,7 +2902,9 @@ fn none_writer_without_the_right_adds_no_cover_spec_commits_5() {
     sync(&mut lp, 2, 0);
     assert!(!lp.peers[0].engine.body_not_dropped(&c1, &t, &k));
     let admin = lp.peers[0].engine.me();
-    let own: Vec<_> = snapshots_held(&mut lp, 0, t, &k).into_iter().filter(|c| lp.peers[0].engine.header(c).is_some_and(|h| h.author == admin)).collect();
+    // written, held or not: a cover of the same stamp (the editor's) may drop it after, by ID
+    let e = &mut lp.peers[0].engine;
+    let own: Vec<_> = e.commit_ids().into_iter().filter(|c| e.header(c).is_some_and(|h| h.kind == Kind::ContentSnapshot && h.author == admin && h.aspects.iter().any(|a| a.tid == t && a.ak == k))).collect();
     assert_eq!(own.len(), 1, "the admin covers it with the right");
 }
 

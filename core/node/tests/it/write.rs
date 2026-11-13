@@ -270,9 +270,8 @@ fn new_chunk_bytes(old: &[u8], new: &[u8]) -> usize {
 }
 
 // spec/requirements.md (Scale: a change inside a huge value costs O(change)); spec/sync.md §1
-// (a chunk reused by a later delta keeps its blob and prefix); spec/commits.md §1 (the chunk list
-// holds the blobs the deltas introduce): editing a value of many chunks writes, and lists for
-// upload, only the chunks the edit changed plus the tree's root node.
+// (a chunk reused by a later delta keeps its blob and prefix): editing a value of many chunks
+// writes, and adds for upload, only the chunks the edit changed plus the tree's root node.
 #[test]
 fn large_edit_reuses_chunks_spec_sync_1() {
     let mut p = peer(0);
@@ -283,7 +282,9 @@ fn large_edit_reuses_chunks_spec_sync_1() {
     let mut cur = noise(4 << 20, 1);
     m.set(t, &a, &Value::Bytes(cur.clone())).unwrap();
     let first = p.commit(m).unwrap().unwrap();
-    let blobs = |p: &mut Peer, c| p.engine.package(&c).unwrap().unwrap().blobs.iter().map(|(_, b)| b.len()).sum::<usize>();
+    // the bytes of the blobs commit `c` links that no earlier one did (`seen`)
+    let mut seen = std::collections::BTreeSet::new();
+    let mut blobs = |p: &mut Peer, c| p.engine.package(&c).unwrap().unwrap().blobs.iter().filter(|(id, _)| seen.insert(*id)).map(|(_, b)| b.len()).sum::<usize>();
     let whole = blobs(&mut p, first);
     let chunks = osis_base::chunker::chunk_lengths(&osis_base::encode(&Value::Bytes(cur.clone())), osis_base::ChunkParams::FORMAT).len();
     assert!(chunks > 30, "{chunks} chunks");
@@ -502,11 +503,10 @@ fn list_edits_match_whole(with_large: bool) {
     assert!(at_window >= 20 && stale_edits >= 4, "{at_window} at their window, {stale_edits} stale");
 }
 
-// spec/commits.md §1 (the chunk list holds the blobs the deltas introduce): an edit replacing a
-// large item the list no longer holds (deleted concurrently) changes nothing there; the tree
-// written for the replacement is neither listed nor kept.
+// spec/data-model.md §6: an edit replacing a large item the list no longer holds (deleted
+// concurrently) changes nothing there; the commit links no tree written for the replacement.
 #[test]
-fn edit_of_gone_item_lists_nothing_spec_commits_1() {
+fn edit_of_gone_item_links_nothing_spec_dm_6() {
     let mut p = peer(0);
     let me = p.engine.me();
     let (key, a) = (&common::LIST, ak("t:list.0"));
@@ -523,10 +523,10 @@ fn edit_of_gone_item_lists_nothing_spec_commits_1() {
     let mut m = Mutation::new();
     m.op(t, key, PathOp { path: vec![], op: Op::Edit { base, new } }).unwrap();
     let c = p.commit(m).unwrap();
-    let listed = c.map_or(0, |c| p.engine.package(&c).unwrap().unwrap().blobs.len());
+    let linked = c.map_or(0, |c| p.engine.package(&c).unwrap().unwrap().blobs.len());
     let got = p.engine.get_full(&t, &a).unwrap();
     let large = matches!(&got, Some(Value::List(l)) if l.iter().any(|v| matches!(v, Value::Str(s) if s.len() > 1000)));
-    assert!(large || listed == 0, "{listed} blobs listed for a value the list does not hold: {got:?}");
+    assert!(large || linked == 0, "{linked} blobs linked for a value the list does not hold: {got:?}");
 }
 
 fn op_at(p: &mut Peer, t: osis_base::Tid, a: &Ak, path: Vec<PathSeg>, op: Op) -> bool {

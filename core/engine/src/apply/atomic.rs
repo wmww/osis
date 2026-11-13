@@ -93,9 +93,6 @@ pub(crate) fn index_commit(core: &mut Core, id: &CommitId, h: &crate::engine::Vi
             core.ix.epochs_due.insert(h.author);
         }
     }
-    for b in &h.chunks {
-        core.ix.by_chunk.insert(*b, *id);
-    }
     crate::engine::edits::index_commit(core, id, h);
 }
 

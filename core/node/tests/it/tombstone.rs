@@ -465,7 +465,7 @@ fn a_purged_value_leaves_its_chunks_spec_commits_5() {
     let big: String = (0..300_000u32).map(|i| char::from(b'a' + (i.wrapping_mul(2654435761) >> 27) as u8 % 26)).collect();
     let c = msg(&mut net, b, t, &big, permanent());
     net.run();
-    let chunks: Vec<osis_base::BlobId> = net.engine(a).header(&c).unwrap().chunks.iter().map(|ch| ch.blob).collect();
+    let chunks: Vec<osis_base::BlobId> = crate::common::linked_blobs(net.engine(a), &c);
     assert!(!chunks.is_empty() && chunks.iter().all(|id| net.host_ids(host, &l).contains(id)));
     let p = purge(&mut net, a, t, c, permanent());
     net.run();

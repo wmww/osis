@@ -1323,7 +1323,7 @@ fn purged_chunks_served(local: bool) -> (usize, usize) {
     let c = net.engine(b).commit(m).unwrap().unwrap();
     net.run();
     let l = label_of(&mut net, b, gs[0]);
-    let chunks: Vec<osis_base::BlobId> = net.engine(b).header(&c).unwrap().chunks.iter().map(|ch| ch.blob).collect();
+    let chunks: Vec<osis_base::BlobId> = crate::common::linked_blobs(net.engine(b), &c);
     assert!(!chunks.is_empty() && chunks.iter().all(|x| net.sync(b).holds_blob(x)), "b holds a chunked value");
     assert!(net.engine(a).header(&c).is_some(), "a holds the commit");
     let served = std::rc::Rc::new(std::cell::RefCell::new(std::collections::BTreeSet::new()));

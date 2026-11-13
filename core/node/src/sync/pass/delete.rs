@@ -388,30 +388,28 @@ impl SyncEngine {
         Some((Hold::MustNot(Why::Dropped), live, aspects))
     }
 
-    /// Unopened entries present at `host` under replaced label `l` that only content commits
-    /// list (their chunks, tree nodes and pages): no role-class commit or certificate
-    /// kept there needs them (spec/sync.md §2). A blob no held commit lists stays.
-    pub(crate) fn replaced_leftovers(&self, host: &HostKey, l: &LabelId) -> Vec<BlobId> {
+    /// Unopened entries present at `host` under replaced label `l` of `g` that the deltas of a
+    /// held content commit of the closure link (their chunks, tree nodes and pages) and no
+    /// role-class commit's do: no role-class commit or certificate kept there needs them
+    /// (spec/sync.md §2). A blob no held commit links stays, and every one while a role-class
+    /// commit's trees are not all held. Walks the closure's bodies (cached per body once
+    /// complete): a replaced label's path alone.
+    pub(crate) fn replaced_leftovers(&mut self, g: &Tid, host: &HostKey, l: &LabelId) -> Result<Vec<BlobId>> {
         let unknown: BTreeSet<BlobId> = self.state.present_at(host, l).into_iter().filter(|b| self.state.entries.get(&(*l, *b)).is_some_and(|e| e.kind == Kind::Unknown)).collect();
         if unknown.is_empty() {
-            return Vec::new();
+            return Ok(Vec::new());
         }
-        let core = &self.engine.core;
-        // the commits listing each (`by_chunk`, their views)
-        unknown
-            .into_iter()
-            .filter(|b| {
-                let listers = core.ix.by_chunk.get(b).into_iter().flatten().filter_map(|c| core.ix.commits.get(c));
-                let mut any = false;
-                for m in listers {
-                    if !replaced_content(m.view.aspects.iter().map(|a| &a.ak)) {
-                        return false;
-                    }
-                    any = true;
-                }
-                any
-            })
-            .collect()
+        let (mut content, mut kept) = (BTreeSet::new(), BTreeSet::new());
+        for b in self.engine.label_bodies_meta(g)? {
+            let Some(h) = self.engine.header(&b.commit) else { continue };
+            let is_content = super::replaced_content(h.aspects.iter().map(|a| &a.ak));
+            let (links, missing) = self.body_walk(&b)?;
+            if !is_content && !missing.is_empty() {
+                return Ok(Vec::new());
+            }
+            if is_content { &mut content } else { &mut kept }.extend(links);
+        }
+        Ok(unknown.into_iter().filter(|b| content.contains(b) && !kept.contains(b)).collect())
     }
 
     /// Whether an entry of commit `c` holding `parts` is another node's card that no holder
@@ -529,7 +527,7 @@ impl SyncEngine {
         // under a replaced label the chunk and page entries of content commits go with them
         // (spec/sync.md §2: only role-class commits and certificates stay)
         if keys.delete.is_some() && self.is_replaced(g, &l) {
-            for b in self.replaced_leftovers(&host, &l) {
+            for b in self.replaced_leftovers(g, &host, &l)? {
                 if busy(self, &sent, &b) {
                     continue;
                 }

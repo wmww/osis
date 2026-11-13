@@ -595,7 +595,7 @@ fn purge_shreds_only_unique_chunks_spec_sync_7() {
     let shared: BTreeSet<_> = first.intersection(&live).copied().collect();
     let unique: BTreeSet<_> = first.difference(&live).copied().collect();
     assert!(shared.len() > unique.len() && !unique.is_empty(), "shared {} unique {}", shared.len(), unique.len());
-    assert!(second.is_disjoint(&first), "reused chunks are not listed again");
+    assert!(shared.is_subset(&second), "the edit links the shared chunks' blobs: reused, not written again");
     let l = net.label(a);
     let at_the_peer = |net: &Net| -> BTreeSet<osis_base::BlobId> { net.host_ids(host, &l).into_iter().collect() };
     assert!(first.is_subset(&at_the_peer(&net)));

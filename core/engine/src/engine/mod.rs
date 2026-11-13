@@ -432,8 +432,6 @@ pub struct View {
     /// A role commit's frontier (`validity::header_frontier`; perm's adaptation reads it
     /// for demotions); `None` on other kinds.
     pub frontier: Option<Arc<osis_perm::Frontier>>,
-    /// The blobs of the chunk list (`Core::by_chunk`).
-    pub chunks: Vec<osis_base::BlobId>,
     /// It carries a request, a purge or a release (`Header::requests`; `retention::lasting`).
     pub purges: bool,
     /// The epoch an account's commit is signed at (spec/wire.md §4): what the epoch rule reads
@@ -464,7 +462,6 @@ impl View {
             memory: h.ephemeral.is_some(),
             aspects: h.aspects.iter().map(|a| AspectView { tid: a.tid, ak: a.ak.clone(), lo: a.lo, hi: a.hi, replaces: a.replaces }).collect(),
             frontier: if h.kind == osis_commit::Kind::Role { crate::apply::validity::header_frontier(h) } else { None },
-            chunks: h.chunks.iter().map(|c| c.blob).collect(),
             purges: h.has_request(),
             epoch: h.epoch,
         }
@@ -605,7 +602,6 @@ fn fallback_header(v: &View) -> Header {
         form: v.form,
         expires: None,
         aspects: v.aspects.iter().map(|a| osis_commit::AspectEntry { tid: a.tid, ak: a.ak.clone(), lo: a.lo, hi: a.hi, retention: Default::default(), keys: Vec::new(), hash: [0; 32], replaces: a.replaces }).collect(),
-        chunks: Vec::new(),
         purge: Vec::new(),
         undoes: None,
         blind: [0; 16],
@@ -796,8 +792,6 @@ indexes! {
     /// Per author or actor, its held durable commits with a part not dropped on another thing
     /// (`signers_elsewhere`): what a destroyed key actor's record verifies (`retention::destroy::dependents`).
     pub signed: JMap<Tid, u64>,
-    /// The commits whose header lists each chunk blob (`View::chunks`).
-    pub by_chunk: JSetMap<osis_base::BlobId, CommitId>,
     /// Node- and session-form ranges per (tid, ak, own source): (lo, commit) -> hi. Keyed by
     /// commit too: equivocating commits of one range are all held (spec/commits.md §4).
     pub ranges: JNested<(Tid, Ak, osis_crdt::Source), (u64, CommitId), u64>,

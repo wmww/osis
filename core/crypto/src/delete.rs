@@ -90,9 +90,9 @@ pub fn link_blind(key: &[u8; 32]) -> [u8; 16] {
 }
 
 /// The blind a linked blob's commitments use: the first 16 bytes of `kdf("thing blind",
-/// link blind, tid)`, `thing` the thing whose dedup secret keys the blob's link. A chunk list
-/// entry carries the link blind; whoever deletes through it binds the entry's thing, so an entry
-/// naming a blob of another thing names commitments the blob does not bear (spec/crypto.md §7).
+/// link blind, tid)`, `thing` the thing whose dedup secret keys the blob's link. Whoever deletes
+/// through a link binds the link's thing, so a link to a blob of another thing names commitments
+/// the blob does not bear (spec/crypto.md §7).
 pub fn thing_blind(link_blind: &[u8; 16], thing: &[u8]) -> [u8; 16] {
     let k = kdf(kdf::THING_BLIND, link_blind, thing);
     let mut b = [0u8; 16];

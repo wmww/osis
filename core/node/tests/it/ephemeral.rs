@@ -3509,11 +3509,11 @@ fn expired_commit_held_as_leftover_spec_crdt_4_7() {
     }
 }
 
-/// The page blobs node `n`'s held memory commits on `w` list (spec/crdt.md §8).
+/// The page blobs node `n`'s held memory commits on `w` link (spec/crdt.md §8).
 fn eph_pages(net: &mut Net, n: usize, w: Tid) -> usize {
     let e = net.engine(n);
-    let ids: Vec<osis_base::CommitId> = e.memory_commits().into_iter().map(|x| x.0).collect();
-    ids.iter().filter_map(|c| e.header(c)).filter(|h| h.aspects.iter().any(|a| a.tid == w)).map(|h| h.chunks.len()).sum()
+    let ids: Vec<osis_base::CommitId> = e.memory_commits().into_iter().map(|x| x.0).filter(|c| e.header(c).is_some_and(|h| h.aspects.iter().any(|a| a.tid == w))).collect();
+    ids.iter().map(|c| crate::common::linked_blobs(e, c).len()).sum()
 }
 
 /// Notes by key and length (large values compared without printing them).
@@ -3586,7 +3586,7 @@ fn large_value_chunks_syncs_and_goes_spec_data_model_6() {
     let mut m = Mutation::new();
     m.op(w, &eph(NOTES), PathOp { path: vec![PathSeg::Key(s("big"))], op: Op::Set(s(&big)) }).unwrap();
     let id = net.engine(a).write(m).unwrap().unwrap().id;
-    let tree: BTreeSet<osis_base::BlobId> = net.engine(a).header(&id).unwrap().chunks.iter().map(|ch| ch.blob).collect();
+    let tree: BTreeSet<osis_base::BlobId> = crate::common::linked_blobs(net.engine(a), &id).into_iter().collect();
     assert!(tree.len() >= 80, "a chunk tree: {}", tree.len());
     local(&mut net, a);
     net.run();
@@ -3678,7 +3678,7 @@ fn large_value_carried_by_anothers_snapshot_goes_spec_sync_7() {
     let mut m = Mutation::new();
     m.op(w, &eph(NOTES), PathOp { path: vec![PathSeg::Key(s("big"))], op: Op::Set(s(&big)) }).unwrap();
     let id = net.engine(a).write(m).unwrap().unwrap().id;
-    let tree: BTreeSet<osis_base::BlobId> = net.engine(a).header(&id).unwrap().chunks.iter().map(|ch| ch.blob).collect();
+    let tree: BTreeSet<osis_base::BlobId> = crate::common::linked_blobs(net.engine(a), &id).into_iter().collect();
     local(&mut net, a);
     net.run();
     assert!(tree.iter().all(|t| net.engine(b).has_blob(t)), "b holds its tree");
@@ -3742,7 +3742,7 @@ fn paged_write_over_peer_link_spec_crdt_8() {
 }
 
 // spec/crdt.md §8, spec/sync.md §9 Caps: a receiver's pre-decode bound counts the pages an
-// ephemeral commit lists, not a blob a value links: a note holding a link to a large durable
+// ephemeral commit links, not a durable blob a value links: a note holding a link to a large durable
 // value the receiver holds applies there as any small note does
 #[test]
 fn value_link_is_no_page_spec_crdt_8() {
@@ -3800,7 +3800,7 @@ fn grown_past_a_blob_compacts_spec_sync_9() {
     let old_pages: BTreeSet<osis_base::BlobId> = {
         let e = net.engine(a);
         let ids: Vec<osis_base::CommitId> = e.memory_commits().into_iter().map(|x| x.0).collect();
-        ids.iter().filter_map(|c| e.header(c)).flat_map(|h| h.chunks.iter().map(|ch| ch.blob).collect::<Vec<_>>()).collect()
+        ids.iter().flat_map(|c| crate::common::linked_blobs(e, c)).collect()
     };
     let acts = net.sync(a).compact_ephemeral_now().unwrap();
     net.actions(a, acts);
@@ -3811,18 +3811,19 @@ fn grown_past_a_blob_compacts_spec_sync_9() {
         e.memory_commits().into_iter().map(|x| x.0).filter(|c| e.header(c).is_some_and(|h| h.kind.is_compaction() && h.aspects.iter().any(|x| x.tid == w && x.ak.as_str() == NOTES))).collect()
     };
     assert_eq!(snaps.len(), 1, "one snapshot of the notes");
-    let pages = net.engine(a).header(&snaps[0]).unwrap().chunks.len();
+    let pages = crate::common::linked_blobs(net.engine(a), &snaps[0]).len();
     assert!(pages >= 12, "the snapshot pages: {pages}");
     for n in [a, b, c] {
         assert_eq!(shape(&notes(&mut net, n, w)), shape(&want), "node {n} after compaction");
         // what is left of others' bodies: the snapshot (an author keeps its own until its own snapshot)
         let e = net.engine(n);
-        let others: usize = e.memory_commits().into_iter().filter(|x| !x.2 && x.0 != snaps[0]).filter_map(|x| e.header(&x.0)).filter(|h| h.aspects.iter().any(|a| a.tid == w)).map(|h| h.chunks.len()).sum();
+        let others: Vec<osis_base::CommitId> = e.memory_commits().into_iter().filter(|x| !x.2 && x.0 != snaps[0]).map(|x| x.0).filter(|c| e.header(c).is_some_and(|h| h.aspects.iter().any(|a| a.tid == w))).collect();
+        let others: usize = others.iter().map(|c| crate::common::linked_blobs(e, c).len()).sum();
         assert_eq!(others, 0, "node {n} holds no page of others' covered bodies");
     }
     let ids: BTreeSet<osis_base::BlobId> = net.hosts[host].hub.store().ephemeral_ids(&l).into_iter().collect();
     assert!(old_pages.len() >= 12 && old_pages.iter().all(|b| !ids.contains(b)), "the covered bodies' pages left the host");
-    let snap_pages: BTreeSet<osis_base::BlobId> = net.engine(a).header(&snaps[0]).unwrap().chunks.iter().map(|ch| ch.blob).collect();
+    let snap_pages: BTreeSet<osis_base::BlobId> = crate::common::linked_blobs(net.engine(a), &snaps[0]).into_iter().collect();
     assert!(snap_pages.is_subset(&ids), "the snapshot's pages are at the host");
     assert!(old_pages.iter().all(|b| !net.engine(a).has_blob(b)), "a holds no page of the bodies it forgot");
 }
@@ -3876,8 +3877,8 @@ fn page_before_its_commit_counts_spec_sync_9() {
     net.engine(a).write(m).unwrap();
     let pages: Vec<osis_base::BlobId> = {
         let e = net.engine(a);
-        let ids: Vec<CommitId> = e.memory_commits().into_iter().map(|x| x.0).collect();
-        ids.iter().filter_map(|c| e.header(c)).filter(|h| h.aspects.iter().any(|x| x.tid == w)).flat_map(|h| h.chunks.iter().map(|ch| ch.blob).collect::<Vec<_>>()).collect()
+        let ids: Vec<CommitId> = e.memory_commits().into_iter().map(|x| x.0).filter(|c| e.header(c).is_some_and(|h| h.aspects.iter().any(|x| x.tid == w))).collect();
+        ids.iter().flat_map(|c| crate::common::linked_blobs(e, c)).collect()
     };
     assert!(pages.len() >= 4, "paged: {}", pages.len());
     let l = net.label(a);
@@ -3909,7 +3910,7 @@ fn tiny_entries(net: &mut Net, a: usize, w: Tid, n: usize) -> (osis_commit::Comm
     }
     let id = net.engine(a).write(m).unwrap().unwrap().id;
     let blob = net.engine(a).memory_blob(&id).unwrap().unwrap();
-    let pages = blob.header.chunks.iter().map(|ch| (ch.blob, net.engine(a).blob(&ch.blob).unwrap().unwrap())).collect();
+    let pages = crate::common::linked_blobs(net.engine(a), &id).into_iter().map(|b| (b, net.engine(a).blob(&b).unwrap().unwrap())).collect();
     (blob, pages)
 }
 

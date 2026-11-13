@@ -47,7 +47,6 @@ pub(crate) fn sample_header() -> Header {
             hash: [9; 32],
             replaces: Some(CommitId([8; 32])),
         }],
-        chunks: vec![],
         purge: vec![],
         undoes: Some(CommitId([4; 32])),
         blind: [5; 16],
@@ -60,7 +59,7 @@ pub(crate) fn sample_header() -> Header {
     }
 }
 
-// spec/wire.md §4 fields 15, 16: an account's epoch and a rotation round-trip; a rotation sits
+// spec/wire.md §4 fields 14, 15: an account's epoch and a rotation round-trip; a rotation sits
 // only on a role commit, supersedes the epoch it is signed at, and keeps its lists ascending.
 #[test]
 fn rotation_header_spec_wire_4() {
@@ -181,12 +180,12 @@ fn header_rejects_malformed() {
     assert!(matches!(mutate(3, Value::Int(6)), Error::Malformed(_)));
     assert!(matches!(mutate(5, Value::Int(2)), Error::Malformed(_)));
     assert!(matches!(mutate(6, Value::List(vec![Value::Int(1), Value::Int(2)])), Error::Malformed(_)));
-    assert!(matches!(mutate(10, Value::List(vec![Value::Int(1), Value::Int(2)])), Error::Malformed(_)));
-    assert!(matches!(mutate(11, Value::Bytes(vec![0; 15])), Error::Malformed(_)));
-    assert!(matches!(mutate(12, Value::List(vec![Value::List(vec![Value::Int(4), Value::Bytes(dkey(1, 1).key.to_vec())])])), Error::Malformed(_)));
+    assert!(matches!(mutate(9, Value::List(vec![Value::Int(1), Value::Int(2)])), Error::Malformed(_)));
+    assert!(matches!(mutate(10, Value::Bytes(vec![0; 15])), Error::Malformed(_)));
+    assert!(matches!(mutate(11, Value::List(vec![Value::List(vec![Value::Int(4), Value::Bytes(dkey(1, 1).key.to_vec())])])), Error::Malformed(_)));
     // a delete key of the wrong length, or not a valid point
-    assert!(matches!(mutate(12, Value::List(vec![Value::List(vec![Value::Int(1), Value::Bytes(vec![0; 16])])])), Error::Malformed(_)));
-    assert!(matches!(mutate(12, Value::List(vec![Value::List(vec![Value::Int(1), Value::Bytes(vec![0; 32])])])), Error::Malformed(_)));
+    assert!(matches!(mutate(11, Value::List(vec![Value::List(vec![Value::Int(1), Value::Bytes(vec![0; 16])])])), Error::Malformed(_)));
+    assert!(matches!(mutate(11, Value::List(vec![Value::List(vec![Value::Int(1), Value::Bytes(vec![0; 32])])])), Error::Malformed(_)));
     let mut short = items.clone();
     short.pop();
     assert!(Header::decode(&osis_base::encode(&Value::List(short))).is_err());

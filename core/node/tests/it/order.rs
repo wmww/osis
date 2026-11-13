@@ -1332,14 +1332,14 @@ pub(crate) fn play_with(seed: u64, steps: &[Step], addenda: bool) -> Played {
                 let mut m = Mutation::new();
                 m.set(th(t), &BIG, &Value::Map(big)).unwrap();
                 let id = lp.peers[by].commit(m).unwrap().expect("a write");
-                assert!(!lp.peers[by].engine.header(&id).unwrap().chunks.is_empty(), "paged");
+                assert!(!crate::common::linked_blobs(&mut lp.peers[by].engine, &id).is_empty(), "paged");
                 Some(by)
             }
             Step::Large { by, t } => {
                 let mut m = Mutation::new();
                 m.set(th(t), &BLOB, &Value::Bytes(vec![7; osis_base::format::CHUNK_THRESHOLD + 1])).unwrap();
                 let id = lp.peers[by].commit(m).unwrap().expect("a write");
-                assert!(!lp.peers[by].engine.header(&id).unwrap().chunks.is_empty(), "chunked");
+                assert!(!crate::common::linked_blobs(&mut lp.peers[by].engine, &id).is_empty(), "chunked");
                 Some(by)
             }
             Step::LinkedDemote { by, t, holder } => {

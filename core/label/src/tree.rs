@@ -75,7 +75,7 @@ pub fn bears(prefix: &Prefix, del: &Del, blind: &[u8; 16]) -> bool {
     claimed.is_ok_and(|c| c == borne)
 }
 
-/// One blob written (the header's chunk list, spec/wire.md §4).
+/// One blob a `BlobWriter` wrote.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Written {
     pub id: BlobId,
@@ -467,7 +467,7 @@ mod tests {
     }
 
     // spec/crdt.md §8, spec/sync.md §6, spec/commits.md §1: a paged snapshot goes out through
-    // BlobWriter (pages framed with the delta's expiry and delete keys, listed for the chunk list) and
+    // BlobWriter (pages framed with the delta's expiry and delete keys) and
     // back through BlobReader; without a page the commit cannot apply (Missing, fetch and retry).
     #[test]
     fn paged_snapshot() {

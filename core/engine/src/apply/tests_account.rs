@@ -51,7 +51,7 @@ mod tests {
         (pt, built.commit.encode())
     }
 
-    // spec/wire.md §4 fields 15, 16 and the inner signature; spec/permissions.md §4: an account's
+    // spec/wire.md §4 fields 14, 15 and the inner signature; spec/permissions.md §4: an account's
     // commit is signed by the epoch its header names, the first by the key its creation record
     // commits to; one at an epoch whose rotation is not held is pending; a commit by an account
     // without its epoch and inner signature, or signed by another epoch's key, is refused.

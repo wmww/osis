@@ -9,12 +9,11 @@ Encoding: spec/wire.md §4. Fields:
 - `ts` (spec/crdt.md §2.2) and the dot form, commit or session (§3).
 - Optional `expires` (§6), the expiry of every delta of the commit.
 - Aspect list: per touched `(tid, ak)`: counter range `[lo, hi)`, retention (§5), the delta hash of its one delta, and for a durable signal's delta optionally the fire it `replaces` (§5 Signals).
-- Chunk list: the chunk, tree-node and page blobs the deltas introduce, and in a compaction snapshot or an ephemeral commit every other blob of its class its deltas link (§2), each with its delta, the indices of the delete keys it commits to and its link blind (spec/crypto.md §7): an ephemeral commit applies once it holds them. Deleting goes by link, not by this list (spec/sync.md §7 Freed links).
 - Optional purge request (§5), optional `undoes: commit ID` (§7).
 - A 16-byte random blind (the commit blob's, spec/crypto.md §7) and the delete keys with their levels; per aspect, the indices of the keys its deltas call for.
 - Explicit removals and edge writes that audit only: the frontier (spec/permissions.md §5.1 step 4), inline or as a link to a chunk tree when it exceeds `CHUNK_THRESHOLD` (spec/data-model.md §6).
 - Optional ephemeral marker: an ephemeral commit or a relay-only one (§2).
-- The aspect, chunk, purge and delete-key lists are each inline, or a link to a chunk tree of the list's canonical bytes when it exceeds `CHUNK_THRESHOLD`; those blobs carry the commit's level-2 commitment (spec/wire.md §5) and go under every label the commit's blob goes under (spec/sync.md §3).
+- The aspect, purge and delete-key lists are each inline, or a link to a chunk tree of the list's canonical bytes when it exceeds `CHUNK_THRESHOLD`; those blobs carry the commit's level-2 commitment (spec/wire.md §5) and go under every label the commit's blob goes under (spec/sync.md §3).
 - Signature (spec/crypto.md §2).
 
 - **Commit ID** = BLAKE3 of the canonical header without the signature. The signature is over the commit ID (spec/crypto.md §2).
@@ -47,7 +46,7 @@ Encoding: spec/wire.md §4. Fields:
 
   With the relay marker instead it is **relay-only**: writes of ephemeral signal (`+~`) aspects, commit form, snapshot deltas with empty tables. For an ephemeral commit of either form and any marker:
   - **Records**: it carries no creation record; its things' records come in durable commits, and a part on a thing whose record is not held waits for it (§4).
-  - **Shape**: every delta has retention `writer` (§5). It carries no purge request (its deltas are purged by durable requests as any delta, §5 Purge) and no list by link. Its large values are chunk trees and its deltas page as a durable commit's (spec/data-model.md §6, spec/crdt.md §8); its chunk list names every ephemeral blob its deltas link: its pages and trees, and those of other commits it links (a reused chunk, a tree a snapshot carries). A relay-only commit's deltas never page (each must fit a blob alone, its chunk list is empty), and it carries no `expires` and no `undoes`.
+  - **Shape**: every delta has retention `writer` (§5). It carries no purge request (its deltas are purged by durable requests as any delta, §5 Purge) and no list by link. Its large values are chunk trees and its deltas page as a durable commit's (spec/data-model.md §6, spec/crdt.md §8). A relay-only commit's deltas never page (each must fit a blob alone: one linking a page is bad input), and it carries no `expires` and no `undoes`.
   - **Holding**: nodes and hosts hold ephemeral commits in memory only (spec/sync.md §4, §9). Nothing of them joins durable state.
   - **Receiving**: a receiver verifies, judges and applies it as the durable commit of its kind (§4, spec/permissions.md §5.2):
     - a content commit as one, with pending, apply and un-merge;

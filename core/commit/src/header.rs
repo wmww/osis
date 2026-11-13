@@ -5,7 +5,7 @@ use crate::Error;
 use crate::cbor::item;
 use osis_base::cbor::{Item, encode_into, put_array, put_bytes, put_link, put_text, put_uint};
 use osis_base::format::{CHUNK_THRESHOLD, DELETE_ADMIN, DELETE_WRITER, FORMAT_VERSION, MAX_BLOB, MAX_OBJECT_DEPTH, TAG_SET, TID_LEN};
-use osis_base::{Ak, BlobId, CommitId, Limits, Link, Reader, Tid, Ts, Value};
+use osis_base::{Ak, CommitId, Limits, Link, Reader, Tid, Ts, Value};
 use osis_crdt::DeltaKind;
 use osis_base::SIGNING_KEY_ED25519;
 use osis_crypto::{Domain, KemPublicKey, Signature, VerifyingKey};
@@ -149,20 +149,6 @@ impl DeleteKey {
     }
 }
 
-/// A chunk, tree-node or page blob the deltas introduce (a snapshot: link), with the delete keys
-/// its prefix commits to and its link blind (spec/wire.md §4, spec/crypto.md §7).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ChunkEntry {
-    pub blob: BlobId,
-    /// Index into the header's aspects: the delta whose blob it is (its thing binds the blob's
-    /// commitments, spec/crypto.md §7).
-    pub ai: usize,
-    /// Ascending indices into the header's delete keys, among those of aspect `ai`.
-    pub keys: Vec<usize>,
-    /// The blob's link blind: its commitments' blind, bound to the thing of aspect `ai`.
-    pub blind: [u8; 16],
-}
-
 /// A purge request item (spec/wire.md §4).
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum PurgeItem {
@@ -218,21 +204,19 @@ impl PurgeItem {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ListField {
     Aspects,
-    Chunks,
     Purge,
     Keys,
     Frontier,
 }
 
 impl ListField {
-    pub const ALL: [ListField; 5] = [ListField::Aspects, ListField::Chunks, ListField::Purge, ListField::Keys, ListField::Frontier];
+    pub const ALL: [ListField; 4] = [ListField::Aspects, ListField::Purge, ListField::Keys, ListField::Frontier];
 }
 
 /// Root links of the lists that go by link; `None` = inline.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Links {
     pub aspects: Option<Link>,
-    pub chunks: Option<Link>,
     pub purge: Option<Link>,
     pub keys: Option<Link>,
     pub frontier: Option<Link>,
@@ -242,7 +226,6 @@ impl Links {
     pub fn get(&self, f: ListField) -> Option<&Link> {
         match f {
             ListField::Aspects => self.aspects.as_ref(),
-            ListField::Chunks => self.chunks.as_ref(),
             ListField::Purge => self.purge.as_ref(),
             ListField::Keys => self.keys.as_ref(),
             ListField::Frontier => self.frontier.as_ref(),
@@ -251,7 +234,6 @@ impl Links {
     pub fn set(&mut self, f: ListField, l: Option<Link>) {
         let slot = match f {
             ListField::Aspects => &mut self.aspects,
-            ListField::Chunks => &mut self.chunks,
             ListField::Purge => &mut self.purge,
             ListField::Keys => &mut self.keys,
             ListField::Frontier => &mut self.frontier,
@@ -273,7 +255,6 @@ pub struct Header {
     /// The commit's expiry T, wall ms (spec/commits.md §6): every delta of it expires then.
     pub expires: Option<u64>,
     pub aspects: Vec<AspectEntry>,
-    pub chunks: Vec<ChunkEntry>,
     pub purge: Vec<PurgeItem>,
     pub undoes: Option<CommitId>,
     /// 16 random bytes blinding the commitments of every blob of the commit (spec/crypto.md §7).
@@ -376,14 +357,6 @@ pub(crate) fn key_bytes(t: &DeleteKey) -> Vec<u8> {
     out
 }
 
-fn put_chunk(out: &mut Vec<u8>, c: &ChunkEntry) {
-    put_array(out, 4);
-    put_bytes(out, &c.blob.0);
-    put_uint(out, c.ai as u64);
-    put_idxs(out, &c.keys);
-    put_bytes(out, &c.blind);
-}
-
 fn put_purge(out: &mut Vec<u8>, p: &PurgeItem) {
     match p {
         PurgeItem::Commit { tid, ak, ts, src } => {
@@ -444,10 +417,6 @@ impl Header {
                 put_array(out, self.aspects.len());
                 self.aspects.iter().for_each(|a| put_aspect(out, a));
             }
-            ListField::Chunks => {
-                put_array(out, self.chunks.len());
-                self.chunks.iter().for_each(|c| put_chunk(out, c));
-            }
             ListField::Purge => {
                 put_array(out, self.purge.len());
                 self.purge.iter().for_each(|p| put_purge(out, p));
@@ -493,7 +462,7 @@ impl Header {
     }
 
     pub(crate) fn encode_into(&self, out: &mut Vec<u8>) {
-        put_array(out, 17);
+        put_array(out, 16);
         put_uint(out, self.version);
         put_tid_bytes(out, &self.author);
         put_tid_bytes(out, &self.actor);
@@ -502,7 +471,6 @@ impl Header {
         self.form.put(out);
         put_opt(out, self.expires, put_uint);
         self.put_position(out, ListField::Aspects);
-        self.put_position(out, ListField::Chunks);
         self.put_position(out, ListField::Purge);
         put_opt(out, self.undoes, |out, c| put_bytes(out, &c.0));
         put_bytes(out, &self.blind);
@@ -526,7 +494,6 @@ impl Header {
     pub(crate) fn list_is_empty(&self, f: ListField) -> bool {
         match f {
             ListField::Aspects => self.aspects.is_empty(),
-            ListField::Chunks => self.chunks.is_empty(),
             ListField::Purge => self.purge.is_empty(),
             ListField::Keys => self.keys.is_empty(),
             ListField::Frontier => self.frontier.is_none(),
@@ -552,7 +519,6 @@ pub fn verify_merge(id: &CommitId, sig: &Signature, fork_key: &VerifyingKey) -> 
 // About the fewest bytes an item takes: what a list reserves for by its count, so a count the bytes
 // cannot pay for reserves nothing. A wrong value only costs a reallocation.
 const MIN_ASPECT: usize = 58;
-const MIN_CHUNK: usize = 53;
 const MIN_PURGE: usize = 20;
 const MIN_KEY: usize = 35;
 const MIN_ID: usize = 33;
@@ -620,15 +586,6 @@ fn read_key(r: &mut Reader<'_>, check: bool) -> Result<DeleteKey, Error> {
     Ok(key)
 }
 
-fn read_chunk(r: &mut Reader<'_>) -> Result<ChunkEntry, Error> {
-    if r.array()? != 4 {
-        return Err(Error::Malformed("chunk arity"));
-    }
-    let blob = BlobId(r.fixed()?);
-    let ai = usize::try_from(r.uint()?).map_err(|_| Error::Malformed("chunk aspect index"))?;
-    Ok(ChunkEntry { blob, ai, keys: read_idxs(r)?, blind: r.fixed()? })
-}
-
 fn read_purge(r: &mut Reader<'_>) -> Result<PurgeItem, Error> {
     match r.array()? {
         2 => Ok(PurgeItem::Aspect { tid: read_tid(r)?, ak: read_ak(r)? }),
@@ -671,7 +628,6 @@ impl Header {
         let r = &mut Reader::new(bytes);
         match f {
             ListField::Aspects => self.aspects = read_items(r, MIN_ASPECT, read_aspect)?,
-            ListField::Chunks => self.chunks = read_items(r, MIN_CHUNK, read_chunk)?,
             ListField::Purge => self.purge = read_items(r, MIN_PURGE, read_purge)?,
             ListField::Keys => self.keys = read_items(r, MIN_KEY, |r| read_key(r, check))?,
             ListField::Frontier => {}
@@ -716,7 +672,7 @@ impl Header {
         if version != FORMAT_VERSION {
             return Err(Error::Malformed("format version"));
         }
-        let Some([_, author, actor, kind, ts, form, expires, aspects, chunks, purge, undoes, blind, keys, frontier, ephemeral, epoch, rotation]) = items.tuple() else {
+        let Some([_, author, actor, kind, ts, form, expires, aspects, purge, undoes, blind, keys, frontier, ephemeral, epoch, rotation]) = items.tuple() else {
             return Err(Error::Malformed("header arity"));
         };
         let mut h = Header {
@@ -728,7 +684,6 @@ impl Header {
             form: Form::read(form)?,
             expires: item::opt(expires)?.map(item::uint).transpose()?,
             aspects: Vec::new(),
-            chunks: Vec::new(),
             purge: Vec::new(),
             undoes: item::opt(undoes)?.map(|c| item::bytes(c).map(CommitId)).transpose()?,
             blind: item::bytes(blind)?,
@@ -740,7 +695,6 @@ impl Header {
             rotation: item::opt(rotation)?.map(RotationHeader::read).transpose()?,
         };
         h.take_position(ListField::Aspects, aspects, stored)?;
-        h.take_position(ListField::Chunks, chunks, stored)?;
         h.take_position(ListField::Purge, purge, stored)?;
         h.take_position(ListField::Keys, keys, stored)?;
         h.take_position(ListField::Frontier, frontier, stored)?;

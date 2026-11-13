@@ -3653,11 +3653,11 @@ fn invalid_reuse_lends_relink_no_expiry_spec_sync_1() {
     assert_eq!(lp.peers[0].receive(&blob.encode(), Vec::new()).unwrap(), Ingested::Applied(id));
     let e = &mut lp.peers[0].engine;
     let lost = e.live_trees(&t).unwrap().blobs;
-    let c = e.relink(&lost, &mut |_, _| true).unwrap().expect("a rewrite");
+    let c = e.relink(&lost, &[t].into(), &mut |_, _| true).unwrap().expect("a rewrite");
     assert_eq!(e.header(&c).unwrap().expires, None, "the own commit's expiry, not the reader's");
 }
 
-// spec/wire.md position 13, spec/permissions.md §5.1 step 4 (writer rule): an explicit edge
+// spec/wire.md §4 position 12, spec/permissions.md §5.1 step 4 (writer rule): an explicit edge
 // write carries a frontier iff it audits. A lower role with none is refused (it would drop
 // every write of the holder's), as is a frontier on a write whose `until` is alive (it audits
 // nothing); `Engine::needs_frontier` says which.

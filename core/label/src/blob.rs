@@ -8,8 +8,6 @@ use osis_crypto::{CryptoRngCore, Secret32, VerifyingKey, commitment, decrypt_blo
 
 /// At most one commitment per level in a group.
 const MAX_LEVELS: usize = 3;
-/// Longest prefix of a chunk, tree node or page: one group of at most three commitments.
-pub const LINKED_PREFIX_MAX: usize = PREFIX_FIXED_LEN + 1 + MAX_LEVELS * COMMITMENT_LEN;
 /// Most groups a prefix lists: its le16 count (spec/wire.md §5).
 pub const MAX_GROUPS: usize = u16::MAX as usize;
 
@@ -226,16 +224,6 @@ impl Prefix {
     pub fn agrees(&self, expiry: Option<WallMs>, hb: &[u8; 16], groups: &[Vec<osis_commit::DeleteKey>], class: Class) -> bool {
         Prefix::for_delete_keys(self.salt, hb, expiry, groups).is_ok_and(|p| p.with_class(class) == *self)
     }
-}
-
-/// The class of the blob whose first `PREFIX_FIXED_LEN` bytes (or more) are `head`: what a
-/// reader that needs only the class reads of it. `None` for anything `Prefix::parse` would not
-/// take that far.
-pub fn blob_class(head: &[u8]) -> Option<Class> {
-    if head.first() != Some(&BLOB_FRAMING_VERSION) {
-        return None;
-    }
-    head.get(1 + 16 + 8).and_then(|b| Class::from_byte(*b))
 }
 
 /// The bytes of a blob's prefix (what a host keeps to check delete signatures): the parsed

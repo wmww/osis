@@ -292,17 +292,11 @@ impl Peer {
 
 impl Engine {
     /// A held commit with every blob it references that this node holds (pages, chunks and
-    /// header-list trees), for relaying.
+    /// tree nodes its deltas link, header-list trees), for relaying.
     pub fn package(&mut self, id: &CommitId) -> Result<Option<Package>> {
         let Some(bytes) = self.commit_bytes(id)? else { return Ok(None) };
-        let mut ids: BTreeSet<BlobId> = BTreeSet::new();
-        if let Some(h) = self.header(id) {
-            ids.extend(h.chunks.iter().map(|c| c.blob));
-            let links: Vec<Link> = osis_commit::ListField::ALL.iter().filter_map(|f| h.links.get(*f).copied()).collect();
-            for l in links {
-                self.tree_blobs(&l, &h.actor, &mut ids)?;
-            }
-        }
+        let mut ids: BTreeSet<BlobId> = self.body_links(&bytes)?.blobs;
+        ids.extend(self.header_list_blobs(id)?);
         let mut blobs = Vec::new();
         for b in ids {
             if let Some(x) = self.blob(&b)? {
@@ -311,6 +305,18 @@ impl Engine {
         }
         let lists = self.list_blob(id, None)?.into_iter().collect();
         Ok(Some(Package { id: *id, bytes, blobs, lists }))
+    }
+
+    /// The blobs of a held commit's linked header lists that this node holds.
+    pub fn header_list_blobs(&mut self, id: &CommitId) -> Result<BTreeSet<BlobId>> {
+        let mut ids = BTreeSet::new();
+        if let Some(h) = self.header(id) {
+            let links: Vec<Link> = osis_commit::ListField::ALL.iter().filter_map(|f| h.links.get(*f).copied()).collect();
+            for l in links {
+                self.tree_blobs(&l, &h.actor, &mut ids)?;
+            }
+        }
+        Ok(ids.into_iter().filter(|b| self.has_blob(b)).collect())
     }
 
     /// A held commit sealed as labels carry it (`SealedPackage`): its blob framed with a fresh

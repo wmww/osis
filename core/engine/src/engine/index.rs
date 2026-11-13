@@ -29,7 +29,7 @@ pub(super) const VERSION_KEY: &[u8] = b"i/v";
 const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "/", env!("OSIS_INDEX_RULES"));
 /// Per commit (`meta_row`): one byte per part (bit 0 valid, bits 1-2 the rotation role it
 /// needs: 0 none, 1 read, 2 write, 3 admin; bit 3 a grant's overreach), then its header's
-/// `View` (a role commit's frontier and every chunk list with it), so an open indexes and adapts the commit
+/// `View` (a role commit's frontier with it), so an open indexes and adapts the commit
 /// without decoding its header.
 pub(super) const METAS: &[u8] = b"node/metas";
 // The derived indexes live in rebuildable store index tables of their own (a node's local
@@ -732,10 +732,6 @@ pub(super) fn meta_row(core: &Core, id: &CommitId, m: &Meta) -> Vec<u8> {
             w = w.raw(&c.0);
         }
     }
-    w = w.u32(v.chunks.len() as u32);
-    for b in &v.chunks {
-        w = w.raw(&b.0);
-    }
     match &v.frontier {
         None => w = w.u8(0),
         Some(f) => {
@@ -826,10 +822,6 @@ fn parse_meta_row(row: &[u8]) -> Result<(&[u8], super::View, PartsShown)> {
         let replaces = if bits & 1 != 0 { Some(CommitId(r.arr()?)) } else { None };
         aspects.push(super::AspectView { tid, ak, lo, hi, replaces });
     }
-    let mut chunks = Vec::new();
-    for _ in 0..r.u32()? {
-        chunks.push(osis_base::BlobId(r.arr()?));
-    }
     let frontier = match r.u8()? {
         0 => None,
         1 => {
@@ -847,7 +839,7 @@ fn parse_meta_row(row: &[u8]) -> Result<(&[u8], super::View, PartsShown)> {
         shown.push((ai, read_showing(&mut r)?));
     }
     r.end()?;
-    Ok((parts, super::View { ts, kind, form, author, actor, linked, memory, aspects, frontier, chunks, purges, epoch }, shown))
+    Ok((parts, super::View { ts, kind, form, author, actor, linked, memory, aspects, frontier, purges, epoch }, shown))
 }
 
 /// A commit record's head and its blob bytes.

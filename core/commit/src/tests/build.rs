@@ -366,32 +366,33 @@ fn wide_struct_delta_fits_spec_commits_1() {
     assert!(matches!(attempt(enc(PageParams { target: usize::MAX, ..small })), Err(Error::Build(_))));
 }
 
-// spec/wire.md §4 field 8, spec/crdt.md §8: the chunk list names every page a delta
-// introduces, so a delta linking a page its commit does not list is bad input: the page is
-// never read as one (an ephemeral holder's room check counts only listed pages)
+// spec/commits.md §2: a relay-only commit's deltas never page, so one linking a page is bad
+// input whatever pages its reader holds (no one holds a relay-only commit's blobs).
 #[test]
-fn page_outside_chunk_list_refused_spec_wire_4() {
-    use osis_crdt::{MemoryPages, PageParams};
+fn relay_only_delta_never_pages_spec_commits_2() {
+    use osis_crdt::{MemoryPages, PageParams, Snapshot};
     let at = ts(1_000_000);
     let v = Value::Map((0..65).map(|i| (Value::Int(i), Value::Str("w".repeat(1000)))).collect());
     let mut w = Writer::new(at, SESSION.own_source(t(1), CommitId([0; 32])), 1);
     let fragment = create(&mut w, &Wide(true), &v).unwrap();
-    let hi = w.range().hi;
     let small = PageParams { target: 4096, cut: osis_base::ChunkParams { min: 1024, max: 4096, mask_bits: 8 }, fanout: 8, ..PageParams::FORMAT };
-    let mut pages = MemoryPages::with_params(small);
-    let delta = encode_delta(&Delta { nonce: [1; 16], fragment }, &writer_ctx(SESSION, Kind::Content, at, t(1), 1, hi), Some(&mut pages)).unwrap();
-    let mut links = Vec::new();
-    osis_base::visit_links(&delta, &osis_base::Limits { max_depth: osis_base::format::MAX_OBJECT_DEPTH, max_bytes: delta.len() }, &mut |l| links.push(l.blob)).unwrap();
-    assert!(links.len() >= 2, "paged: {}", links.len());
-    let commit = |chunks: &[osis_base::BlobId]| {
-        let mut b = CommitBuilder::new(Kind::Content, at, t(1), t(2), SESSION);
-        let mut a = AspectWrite::new(t(3), Ak::new("app:w.0").unwrap(), 1, hi, delta.clone());
-        a.chunks = chunks.iter().map(|c| crate::ChunkWrite::introduced(*c, [0; 16])).collect();
+    let cx = writer_ctx(Form::Commit, Kind::ContentSnapshot, at, t(1), 0, 0);
+    let commit = |relay: bool, pages: &mut MemoryPages| {
+        let s = Snapshot { nonce: [1; 16], fragment: fragment.clone(), frontiers: Default::default(), absorbed: Default::default(), facts: Default::default() };
+        let delta = osis_crdt::encode_snapshot(&s, &cx, Some(pages)).unwrap();
+        let mut b = CommitBuilder::new(Kind::ContentSnapshot, at, t(1), t(2), Form::Commit);
+        let mut a = AspectWrite::new(t(3), Ak::new("app:w.0").unwrap(), 0, 0, delta);
+        a.retention = crate::retention::EPHEMERAL_RETENTION;
         b.aspects.push(a);
+        b.ephemeral = Some(if relay { EphClass::Relay } else { EphClass::Plain });
         build(b, &mut MemoryBlobs::default()).unwrap().commit
     };
-    verify_blob(&commit(&links), &key().verifying_key(), &dedup, Some(&mut pages)).unwrap();
-    let err = verify_blob(&commit(&links[1..]), &key().verifying_key(), &dedup, Some(&mut pages)).unwrap_err();
+    let mut pages = MemoryPages::with_params(small);
+    let plain = commit(false, &mut pages);
+    assert!(!pages.is_empty(), "paged");
+    verify_blob(&plain, &key().verifying_key(), &dedup, Some(&mut pages)).unwrap();
+    let relay = commit(true, &mut pages);
+    let err = verify_blob(&relay, &key().verifying_key(), &dedup, Some(&mut pages)).unwrap_err();
     assert_eq!(osis_base::Classified::class(&err), osis_base::ErrorClass::BadInput, "{err}");
 }
 
@@ -409,35 +410,6 @@ fn purge_rewrite() {
     verify_blob(&back, &key().verifying_key(), &dedup, None).unwrap();
     assert!(prefix_groups(&c.header, r.parts.iter().map(|p| p.ai)).unwrap().len() == 2);
     assert!(prefix_groups(&c.header, []).unwrap().is_empty());
-}
-
-// spec/wire.md §4, §5: the chunk list holds, per introduced blob, the indices of its delta's
-// delete keys in the header and its link blind; a blob listed with some levels (a snapshot's
-// linked one) indexes those keys alone.
-#[test]
-fn chunk_list() {
-    let mut b = content(1);
-    b.aspects[0].retention = Retention { by: PurgeBy::Writer };
-    b.aspects[0].chunks = vec![
-        crate::ChunkWrite::introduced(osis_base::BlobId([9; 32]), [9; 16]),
-        crate::ChunkWrite::introduced(osis_base::BlobId([3; 32]), [3; 16]),
-        crate::ChunkWrite { blob: osis_base::BlobId([5; 32]), blind: [5; 16], levels: Some(vec![1, 3]) },
-    ];
-    let built = build(b, &mut MemoryBlobs::default()).unwrap();
-    let h = &built.commit.header;
-    assert_eq!(h.chunks.iter().map(|c| c.blob.0[0]).collect::<Vec<_>>(), vec![3, 5, 9]);
-    for c in &h.chunks {
-        assert_eq!(c.blind, [c.blob.0[0]; 16]);
-        let levels: Vec<u8> = c.keys.iter().map(|i| h.keys[*i].level).collect();
-        if c.blob.0[0] == 5 {
-            assert_eq!(levels, vec![1, 3]);
-        } else {
-            assert_eq!(c.keys, h.aspects[0].keys);
-            assert_eq!(levels, vec![1, 2, 3]);
-        }
-    }
-    let back = Header::decode(&h.encode()).unwrap();
-    assert_eq!(back.chunks, h.chunks);
 }
 
 // spec/commits.md §1 (the whole commit fits `MAX_BLOB`, or the writer refuses it): the

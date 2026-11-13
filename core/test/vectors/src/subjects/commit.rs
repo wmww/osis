@@ -226,19 +226,17 @@ impl osis_crypto::RngCore for Recording {
 impl osis_crypto::CryptoRng for Recording {}
 
 fn more_accepted() -> Vec<Record> {
-    use osis_base::BlobId;
     let mut out = Vec::new();
-    // commit form, expiring, chunks, undoes
+    // commit form, expiring, undoes
     let at = ts(1_700_000_004_000);
     let mut b = CommitBuilder::new(Kind::Content, at, AUTHOR, ACTOR, Form::Commit);
     let mut a = AspectWrite::new(THING, Ak::new("app:title.0").unwrap(), 1, 2, delta(Form::Commit, Kind::Content, at, 1, Value::Str("typed".into()), 6));
     b.expires = Some(at.wall_ms().0 + 86_400_000);
     a.retention = Retention { by: PurgeBy::Writer };
-    a.chunks = vec![osis_commit::ChunkWrite::introduced(BlobId([0x28; 32]), [0x29; 16]), osis_commit::ChunkWrite::introduced(BlobId([0x2a; 32]), [0x2b; 16])];
     b.aspects.push(a);
     b.undoes = Some(CommitId([0x2c; 32]));
     let c = built(b);
-    out.push(record("commit form, expiry, chunks, undoes", "spec/wire.md §4; spec/commits.md §3, §5, §6, §7", &c));
+    out.push(record("commit form, expiry, undoes", "spec/wire.md §4; spec/commits.md §3, §5, §6, §7", &c));
     // purge request, with a creation
     let at = ts(1_700_000_005_000);
     let mut b = CommitBuilder::new(Kind::Content, at, AUTHOR, ACTOR, SESSION);
@@ -322,15 +320,6 @@ fn more_rejected(content: &Header) -> Vec<Record> {
     x.validate().unwrap();
     x.frontier = frontier;
     out.push(reject("frontier on a role compaction snapshot", "spec/wire.md §4", &x, "frontier"));
-    let mut x = content.clone();
-    x.chunks.push(ChunkEntry { blob: osis_base::BlobId([1; 32]), ai: 0, keys: vec![1, 0], blind: [0; 16] });
-    out.push(reject("chunk delete keys out of order", "spec/wire.md §4", &x, "chunk-keys"));
-    let mut x = content.clone();
-    x.chunks.push(ChunkEntry { blob: osis_base::BlobId([1; 32]), ai: 0, keys: vec![9], blind: [0; 16] });
-    out.push(reject("chunk delete key not of its aspect", "spec/wire.md §4", &x, "chunk-keys"));
-    let mut x = content.clone();
-    x.chunks.push(ChunkEntry { blob: osis_base::BlobId([1; 32]), ai: 9, keys: vec![], blind: [0; 16] });
-    out.push(reject("chunk aspect index out of range", "spec/wire.md §4", &x, "chunk-keys"));
     let mut x = content.clone();
     x.aspects[0].retention = retention::KEPT_RETENTION;
     x.aspects[0].keys.clear();

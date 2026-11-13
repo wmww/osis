@@ -362,7 +362,7 @@ fn scope(e: &mut Engine, held: &[(CommitId, Arc<Header>, bool)]) -> Scope {
     for (id, h, applied) in held {
         let commit_out = if h.kind == Kind::RoleSnapshot {
             Some("role snapshot")
-        } else if !h.chunks.is_empty() {
+        } else if !crate::common::linked_blobs(e, id).is_empty() {
             Some("paged")
         } else if h.ephemeral.is_some() {
             Some("ephemeral")

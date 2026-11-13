@@ -52,7 +52,7 @@ fn purged_chunks_leave_local_label_spec_sync_5() {
     m.set(t, &GONE, &s(&big)).unwrap();
     let c = net.engine(a).commit(m).unwrap().unwrap();
     net.run();
-    let chunks: Vec<BlobId> = net.engine(a).header(&c).unwrap().chunks.iter().map(|ch| ch.blob).collect();
+    let chunks: Vec<BlobId> = crate::common::linked_blobs(net.engine(a), &c);
     assert!(!chunks.is_empty(), "a chunked value");
     let Some(osis_base::Value::Link(root)) = net.engine(a).get(&t, &Ak::new(GONE.ak()).unwrap()).unwrap() else { panic!("a large value") };
     assert!(chunks.len() > 1 && chunks.contains(&root.blob), "a root node over chunks");
@@ -962,7 +962,7 @@ fn chunks_purged(lost: bool, writer: bool) {
     let c = net.engine(w).commit(m).unwrap().unwrap();
     net.feed(w, Event::Local);
     net.run();
-    let chunks: Vec<BlobId> = net.engine(w).header(&c).unwrap().chunks.iter().map(|ch| ch.blob).collect();
+    let chunks: Vec<BlobId> = crate::common::linked_blobs(net.engine(w), &c);
     assert!(!chunks.is_empty(), "a chunked value");
     let at_the_peer = |net: &mut Net| chunks.iter().filter(|id| net.host_ids(h, &l).contains(id)).count();
     assert!(at_the_peer(&mut net) > 0, "the host took chunks");
@@ -1029,7 +1029,7 @@ fn never_held_chunks_deleted(hostile: bool) {
     let mut m = osis_node::Mutation::new();
     m.set(t, &GONE, &s(&big)).unwrap();
     let c = net.engine(a).commit(m).unwrap().unwrap();
-    let chunks: Vec<BlobId> = net.engine(a).header(&c).unwrap().chunks.iter().map(|ch| ch.blob).collect();
+    let chunks: Vec<BlobId> = crate::common::linked_blobs(net.engine(a), &c);
     assert!(!chunks.is_empty(), "a chunked value");
     let Some(osis_base::Value::Link(root)) = net.engine(a).get(&t, &Ak::new(GONE.ak()).unwrap()).unwrap() else { panic!("a large value") };
     assert!(chunks.len() > 1 && chunks.contains(&root.blob), "a root node over chunks");

@@ -395,18 +395,19 @@ fn fallen_own_snapshot_lifts_own_tombstone_spec_sync_7() {
     assert_eq!(map_of(&mut net, b, t), want, "b got y back");
 }
 
-/// Bytes of blobs listed on `t`'s blob aspect that node `n`'s live trees no longer link: (held by
-/// `n`, kept by the host under `n`'s label). `sizes`: every listed blob's length, filled as seen.
+/// Bytes of blobs commits on `t`'s blob aspect linked that node `n`'s live trees no longer link:
+/// (held by `n`, kept by the host under `n`'s label). `sizes`: every linked blob's length, filled
+/// as seen.
 fn tree_garbage(net: &mut Net, host: usize, n: usize, t: Tid, sizes: &mut std::collections::BTreeMap<osis_base::BlobId, usize>) -> (usize, usize) {
     let k = (t, Ak::new(BLOB.ak()).unwrap());
     let e = net.engine(n);
     let on: Vec<CommitId> = e.core.durable_on(&k).collect();
     for c in on {
-        for ch in e.header(&c).map(|h| h.chunks.clone()).unwrap_or_default() {
-            if !sizes.contains_key(&ch.blob)
-                && let Some(b) = e.blob(&ch.blob).unwrap()
+        for id in crate::common::linked_blobs(e, &c) {
+            if !sizes.contains_key(&id)
+                && let Some(b) = e.blob(&id).unwrap()
             {
-                sizes.insert(ch.blob, b.len());
+                sizes.insert(id, b.len());
             }
         }
     }
@@ -471,9 +472,8 @@ const ONE_EDIT: usize = 2 * osis_base::format::CHUNK_MAX + 16 * 1024;
 // spec/sync.md §7 Trigger (a body weighs what dropping it frees, a replaced value's tree blobs
 // no live state links included): a large value edited in place n and 10n times leaves, after
 // any edit, one edit's replaced tree blobs at most at the writer and the host, and one delta
-// held: each edit's replaced chunk outweighs twice the snapshot (a value under about 700
-// chunks), so the trigger compacts at every second edit, not once enough edits outweigh the
-// snapshot's chunk list.
+// held: each edit's replaced chunk outweighs twice the snapshot (its root link), so the trigger
+// compacts at every second edit.
 #[test]
 fn rewritten_value_leaves_bounded_tree_garbage_spec_sync_7() {
     let small = rewritten(24, 4);
@@ -500,18 +500,17 @@ fn trigger_work_flat_in_value_size_spec_sync_7() {
     }
 }
 
-// spec/sync.md §7 Trigger: a large value set to a small one unlinks a tree its write lists none
+// spec/sync.md §7 Trigger: a large value set to a small one unlinks a tree its write links none
 // of; the trigger counts it all the same (the estimate grows by what the write unlinked past
 // what it linked), so the whole tree goes from the writer and the host as soon as two bodies
-// are held, here by the next small write, not once enough small writes outweigh the
-// snapshot's chunk list.
+// are held, here by the next small write.
 #[test]
 fn shrunk_value_tree_goes_by_the_next_write_spec_sync_7() {
     let (mut net, host, [a, _r], _g, [t]) = hosted::<2, 1>(&[(1, Role::Read)], ["x"], true);
     let mut x = vec![0u8; 80 * 65536];
     osis_crypto::RngCore::fill_bytes(&mut osis_crypto::SeededRng::from_u64(7), &mut x);
     let mut sizes = Default::default();
-    // an edit first: compacted, the snapshot lists the tree
+    // an edit first: compacted, the snapshot links the tree
     let mut y = x.clone();
     y[4099] ^= 0x5a;
     for v in [x, y, vec![1], vec![2]] {
@@ -524,4 +523,33 @@ fn shrunk_value_tree_goes_by_the_next_write_spec_sync_7() {
     }
     assert!(sizes.len() > 40, "the value went up in chunks");
     assert_eq!(tree_garbage(&mut net, host, a, t, &mut sizes), (0, 0), "the replaced tree is gone");
+}
+
+/// A snapshot of `t:big.0` holding three large strings of `len` bytes each: its header's and its
+/// blob's bytes, and how many blobs it links.
+fn big_snapshot(len: usize) -> (usize, usize, usize) {
+    let mut lp = crate::common::net(1, 0);
+    let t = crate::common::new_thing(&mut lp, 0);
+    let mut m = Mutation::new();
+    for k in 0..3u32 {
+        let v: String = (0..len as u32).map(|i| char::from(b'a' + ((i ^ (k << 28)).wrapping_mul(2_654_435_761) >> 27) as u8 % 26)).collect();
+        m.op(t, &crate::common::BIG, PathOp { path: vec![PathSeg::Key(s(&format!("k{k}")))], op: Op::Set(s(&v)) }).unwrap();
+    }
+    lp.peers[0].commit(m).unwrap().unwrap();
+    let e = &mut lp.peers[0].engine;
+    let c = e.snapshot(&t, &Ak::new("t:big.0").unwrap()).unwrap().unwrap();
+    let header = e.header(&c).unwrap().encode().len();
+    let blob = e.commit_bytes(&c).unwrap().unwrap().len();
+    (header, blob, crate::common::linked_blobs(e, &c).len())
+}
+
+// spec/wire.md §4, spec/sync.md §7: a snapshot lists none of the blobs its values link, so it is
+// the same size whatever they hold: three large values of n and 10n chunks give a snapshot of
+// equal header and blob bytes, its values' root links alone.
+#[test]
+fn snapshot_size_flat_in_value_size_spec_wire_4() {
+    let (small, large) = (big_snapshot(512 << 10), big_snapshot(5 << 20));
+    println!("snapshot (header B, blob B, linked blobs): 3 x 512 KiB {small:?}, 3 x 5 MiB {large:?}");
+    assert!(large.2 >= 5 * small.2, "the values grew: {small:?} {large:?}");
+    assert_eq!((small.0, small.1), (large.0, large.1), "the snapshot did not");
 }

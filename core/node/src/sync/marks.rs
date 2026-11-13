@@ -129,8 +129,7 @@ impl SyncEngine {
             self.own_keys = now;
             changed = true;
         }
-        // changed commits: their aspects' states (verdicts waiting on them), their chunks (bodies
-        // waiting on a linked blob), and the blobs of their dropped parts
+        // changed commits: their aspects' states (verdicts waiting on them)
         let ch = self.engine.take_changed();
         let undropped: BTreeSet<_> = ch.undropped.union(&ch.wakes.woken).copied().collect();
         self.reopen_undropped(Some(&undropped))?;
@@ -142,7 +141,6 @@ impl SyncEngine {
             wide |= h.is_none();
             if let Some(h) = h {
                 self.touched.states.extend(h.aspects.iter().map(|a| (a.tid, a.ak.clone())));
-                self.touched.blobs.extend(h.chunks.iter().map(|ch| ch.blob));
                 if h.kind.is_role() {
                     scoped.extend(h.aspects.iter().map(|a| a.tid));
                     self.touched.clock |= h.ts.wall_ms().0 > self.state.now;

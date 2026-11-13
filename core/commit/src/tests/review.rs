@@ -167,7 +167,7 @@ fn linked_as(f: ListField, bytes: &[u8], d: &osis_crypto::Secret32, m: &mut Memo
     })
     .unwrap();
     let mut h = sample_header();
-    (h.aspects, h.chunks, h.purge, h.keys, h.frontier) = (vec![], vec![], vec![], vec![], None);
+    (h.aspects, h.purge, h.keys, h.frontier) = (vec![], vec![], vec![], None);
     h.links.set(f, Some(link));
     h
 }
@@ -210,7 +210,7 @@ fn hostile_list_refused_by_shape() {
     let mut in_set = vec![0xa1, 0];
     osis_base::cbor::head(&mut in_set, 6, osis_base::format::TAG_SET);
     in_set.extend(&maps);
-    let cases = [(ListField::Aspects, &maps), (ListField::Chunks, &maps), (ListField::Purge, &maps), (ListField::Keys, &maps), (ListField::Frontier, &maps), (ListField::Frontier, &in_frontier), (ListField::Frontier, &in_set)];
+    let cases = [(ListField::Aspects, &maps), (ListField::Purge, &maps), (ListField::Keys, &maps), (ListField::Frontier, &maps), (ListField::Frontier, &in_frontier), (ListField::Frontier, &in_set)];
     let headers: Vec<_> = cases.map(|(f, bytes)| (f, linked_as(f, bytes, &d, &mut m))).into();
     let start = peak_mib();
     for (f, mut h) in headers {
@@ -226,7 +226,6 @@ fn held(h: &Header) -> usize {
     use std::mem::size_of_val as size;
     let ak = |a: &Ak| a.as_str().len();
     h.aspects.capacity() * size_of::<AspectEntry>() + h.aspects.iter().map(|a| ak(&a.ak) + size(a.keys.as_slice())).sum::<usize>()
-        + h.chunks.capacity() * size_of::<ChunkEntry>() + h.chunks.iter().map(|c| size(c.keys.as_slice())).sum::<usize>()
         + h.purge.capacity() * size_of::<PurgeItem>() + h.purge.iter().map(|p| ak(p.ak())).sum::<usize>()
 }
 
@@ -251,7 +250,6 @@ fn list_items_cost_at_most_their_bytes_times_six() {
     };
     let lists = [
         (ListField::Aspects, array(n / 57, |i| [&[0x88][..], &tid(i), &[0x63, b'a', b'.', b'0', 1, 2, 0, 0x80], &id(0), &[0x80]].concat())),
-        (ListField::Chunks, array(n / 54, |i| [&[0x84][..], &id(i), &[0x00, 0x80, 0x50], &[0; 16]].concat())),
         (ListField::Purge, array(n / 21, |i| [&[0x82][..], &tid(i), &[0x63, b'a', b'.', b'0']].concat())),
     ];
     for (f, bytes) in lists {
@@ -271,20 +269,19 @@ fn list_items_ascend_and_frontier_shape() {
     let d = sec(0xd0, &t(2));
     let mut m = MemoryBlobs::default();
     let item = |i: usize| {
-        let mut b = vec![0x84, 0x58, 32];
+        let mut b = vec![0x82, 0x4f];
         b.extend(&(i as u64).to_be_bytes());
-        b.extend([0; 24]);
-        b.extend([0x00, 0x80, 0x50]);
-        b.extend([0; 16]);
+        b.extend([0; 7]);
+        b.extend([0x63, b'a', b'.', b'0']);
         b
     };
-    let n = (CHUNK_THRESHOLD_PLUS + 100) / 54;
+    let n = (CHUNK_THRESHOLD_PLUS + 100) / 21;
     let ok = array(n, item);
-    let mut h = linked_as(ListField::Chunks, &ok, &d, &mut m);
+    let mut h = linked_as(ListField::Purge, &ok, &d, &mut m);
     h.resolve(&mut m, &d).unwrap();
-    assert_eq!(h.chunks.len(), n);
+    assert_eq!(h.purge.len(), n);
     let again = array(n, |i| item(i.min(n - 2)));
-    let mut h = linked_as(ListField::Chunks, &again, &d, &mut m);
+    let mut h = linked_as(ListField::Purge, &again, &d, &mut m);
     assert!(matches!(h.resolve(&mut m, &d), Err(Error::Malformed("list items not sorted and distinct"))));
 
     let frontier = |n: usize, id: &dyn Fn(usize) -> usize, extra: &[u8]| {

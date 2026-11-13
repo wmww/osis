@@ -358,7 +358,7 @@ fn purged_chunks_leave_the_host_spec_sync_5() {
     let c = net.engine(a).commit(m).unwrap().unwrap();
     net.run();
     let l = net.label(a);
-    let chunks: Vec<osis_base::BlobId> = net.engine(a).header(&c).unwrap().chunks.iter().map(|ch| ch.blob).collect();
+    let chunks: Vec<osis_base::BlobId> = crate::common::linked_blobs(net.engine(a), &c);
     assert!(!chunks.is_empty(), "a chunked value");
     assert!(chunks.iter().all(|id| net.host_ids(host, &l).contains(id)), "chunks uploaded");
     let mut m = osis_node::Mutation::new();
@@ -390,7 +390,7 @@ fn writer_purge_deletes_chunks_by_delete_key_spec_crypto_7() {
     let c = net.engine(a).commit(m).unwrap().unwrap();
     net.run();
     let l = net.label(a);
-    let chunks: Vec<osis_base::BlobId> = net.engine(a).header(&c).unwrap().chunks.iter().map(|ch| ch.blob).collect();
+    let chunks: Vec<osis_base::BlobId> = crate::common::linked_blobs(net.engine(a), &c);
     assert!(!chunks.is_empty(), "a chunked value");
     assert!(chunks.iter().all(|id| net.host_ids(host, &l).contains(id)), "chunks uploaded");
     // the admin (holder of the delete key) is gone: only the writer's delete key can delete

@@ -68,9 +68,6 @@ pub(crate) fn unindex_commit(tx: &mut Tx<'_>, id: &CommitId) -> Result<()> {
         core.ix.names_due.remove(id);
     }
     super::validity::forget_addenda(core, id, &v.aspects);
-    for b in &v.chunks {
-        core.ix.by_chunk.remove(b, id);
-    }
     core.ix.void.remove(id);
     core.ix.pending.remove(id);
     core.stale_commits.remove(id);

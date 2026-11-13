@@ -1241,7 +1241,7 @@ pub(crate) fn self_removal(core: &Core, author: &Tid, target: &Tid, holder: &Tid
 }
 
 /// Rules of a role commit that need its deltas
-/// (spec/commits.md §2, spec/wire.md §4 position 13).
+/// (spec/commits.md §2, spec/wire.md §4 position 12).
 pub(crate) fn check_content_rules(core: &Core, h: &Header, parts: &[(usize, Decoded)]) -> Result<()> {
     if h.kind != Kind::Role {
         return Ok(());

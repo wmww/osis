@@ -1,7 +1,7 @@
 //! The commit builder (spec/commits.md §1, spec/wire.md §4).
 
 use crate::blob::{CommitBlob, Part, Sigs};
-use crate::header::{AspectEntry, ChunkEntry, DeleteKey, Form, Header, Kind, Links, ListField, PurgeItem, RotationHeader, aspect_key, key_bytes, purge_bytes};
+use crate::header::{AspectEntry, DeleteKey, Form, Header, Kind, Links, ListField, PurgeItem, RotationHeader, aspect_key, key_bytes, purge_bytes};
 use crate::groups::check_fits;
 use crate::keys::{Prefix, Secrets, delete_keys};
 use crate::lists::{BlobSink, write_list};
@@ -26,10 +26,6 @@ pub struct AspectWrite {
     /// Resolved retention ([`crate::retention`] helpers: fixed, override, schema default,
     /// untyped default; snapshot).
     pub retention: Retention,
-    /// The delta's chunk list (spec/wire.md §4): the chunk, tree-node and page blobs it
-    /// introduces (framed with this aspect's delete keys, [`delete_keys`]), and for a compaction
-    /// snapshot the other blobs it links.
-    pub chunks: Vec<ChunkWrite>,
     /// The fire this delta claims to replace (spec/commits.md §5 Signals).
     pub replaces: Option<CommitId>,
 }
@@ -37,25 +33,7 @@ pub struct AspectWrite {
 impl AspectWrite {
     /// One delta with untyped defaults; set the other fields as needed.
     pub fn new(tid: Tid, ak: Ak, lo: u64, hi: u64, delta: Vec<u8>) -> AspectWrite {
-        AspectWrite { tid, ak, lo, hi, delta, retention: Retention::default(), chunks: Vec::new(), replaces: None }
-    }
-}
-
-/// One blob of an aspect's chunk list (spec/wire.md §4).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ChunkWrite {
-    pub blob: BlobId,
-    /// Its link blind (spec/crypto.md §7).
-    pub blind: [u8; 16],
-    /// The levels of the aspect's delete keys the blob commits to; `None`: every one (a blob the
-    /// delta introduces).
-    pub levels: Option<Vec<u8>>,
-}
-
-impl ChunkWrite {
-    /// A blob the delta introduces.
-    pub fn introduced(blob: BlobId, blind: [u8; 16]) -> ChunkWrite {
-        ChunkWrite { blob, blind, levels: None }
+        AspectWrite { tid, ak, lo, hi, delta, retention: Retention::default(), replaces: None }
     }
 }
 
@@ -142,19 +120,16 @@ impl CommitBuilder {
             let hash = delta_hash(&dedup, &a.delta);
             let (lo, hi) = if kind.has_own_writes() { (a.lo, a.hi) } else { (0, 0) };
             aspect_keys.push(delete_keys(secrets, &a.tid, &a.retention)?);
-            entries.push((
-                AspectEntry {
-                    tid: a.tid,
-                    ak: a.ak,
-                    lo,
-                    hi,
-                    retention: a.retention,
-                    keys: Vec::new(),
-                    hash,
-                    replaces: a.replaces,
-                },
-                a.chunks,
-            ));
+            entries.push(AspectEntry {
+                tid: a.tid,
+                ak: a.ak,
+                lo,
+                hi,
+                retention: a.retention,
+                keys: Vec::new(),
+                hash,
+                replaces: a.replaces,
+            });
             deltas.push(a.delta);
         }
 
@@ -165,22 +140,11 @@ impl CommitBuilder {
         }
         let keys: Vec<DeleteKey> = table.into_values().collect();
         let positions: BTreeMap<DeleteKey, usize> = keys.iter().enumerate().map(|(i, t)| (*t, i)).collect();
-        let mut chunks = Vec::new();
-        for (ai, ((entry, cs), ks)) in entries.iter_mut().zip(&aspect_keys).enumerate() {
+        for (entry, ks) in entries.iter_mut().zip(&aspect_keys) {
             let mut idx = ks.iter().map(|k| positions.get(k).copied().ok_or(Error::Build("delete key table"))).collect::<Result<Vec<_>, _>>()?;
             idx.sort_unstable();
-            for c in cs.iter() {
-                let keys = match &c.levels {
-                    None => idx.clone(),
-                    Some(levels) => ks.iter().filter(|k| levels.contains(&k.level)).map(|k| positions.get(k).copied().ok_or(Error::Build("delete key table"))).collect::<Result<std::collections::BTreeSet<_>, _>>()?.into_iter().collect(),
-                };
-                chunks.push(ChunkEntry { blob: c.blob, ai, keys, blind: c.blind });
-            }
             entry.keys = idx;
         }
-        // a blob two deltas list goes once, as the first lists it
-        chunks.sort_by_key(|c| c.blob);
-        chunks.dedup_by_key(|c| c.blob);
         let mut purge = std::mem::take(&mut self.purge);
         purge.sort_by_cached_key(purge_bytes);
 
@@ -192,8 +156,7 @@ impl CommitBuilder {
             ts: self.ts,
             form: self.form,
             expires: self.expires,
-            aspects: entries.into_iter().map(|e| e.0).collect(),
-            chunks,
+            aspects: entries,
             purge,
             undoes: self.undoes,
             blind,

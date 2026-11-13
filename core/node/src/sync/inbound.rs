@@ -135,8 +135,10 @@ impl SyncEngine {
             *e = (now.saturating_add(e.1), e.1.saturating_mul(2).min(RELINK_BACKOFF_MAX_MS));
             true
         };
-        let pending = self.relink_pending.clone();
-        let r = self.engine.relink(&pending, &mut allow);
+        // the blobs, looked for among the things of the closures they were lost under
+        let pending: BTreeSet<osis_base::BlobId> = self.relink_pending.values().flatten().copied().collect();
+        let things: BTreeSet<Tid> = self.relink_pending.keys().flat_map(|g| self.engine.closure(g).iter().copied().collect::<Vec<_>>()).collect();
+        let r = self.engine.relink(&pending, &things, &mut allow);
         match next {
             Some(n) => self.relink_at = n,
             None => self.relink_pending.clear(),
@@ -468,9 +470,9 @@ impl SyncEngine {
         // a chunk a live value here links, deleted by a purger that had not seen its reuse:
         // written again re-encrypted, one commit for the batch (spec/sync.md §1); not one a
         // replaced label lost (its content goes, the replacement holds it)
-        let replaced = self.group_of(&l, conn).is_some_and(|g| self.is_replaced(&g, &l));
-        if !lost.is_empty() && !replaced {
-            self.relink_pending.extend(lost);
+        let group = self.group_of(&l, conn).filter(|g| !self.is_replaced(g, &l));
+        if let Some(g) = group.filter(|_| !lost.is_empty()) {
+            self.relink_pending.entry(g).or_default().extend(lost);
             self.relink_at = 0;
             self.relink_lost()?;
         }
@@ -1918,8 +1920,8 @@ impl SyncEngine {
                     lost.insert(b);
                 }
             }
-            if !lost.is_empty() && !self.group_of(&l, Some(conn)).is_some_and(|g| self.is_replaced(&g, &l)) {
-                self.relink_pending.extend(lost);
+            if let Some(g) = self.group_of(&l, Some(conn)).filter(|g| !lost.is_empty() && !self.is_replaced(g, &l)) {
+                self.relink_pending.entry(g).or_default().extend(lost);
                 self.relink_at = 0;
                 self.relink_lost()?;
             }

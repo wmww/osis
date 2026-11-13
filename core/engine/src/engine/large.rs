@@ -355,8 +355,8 @@ pub(crate) fn lookup_form(v: &Value, dedup: &Secret32) -> Result<Value> {
 /// Chunks the large positions of `ops` on `(tid, ak)` under `framing`, reusing the tree each
 /// position holds now (spec/sync.md §1: a reused chunk keeps its blob unless the re-encryption
 /// rule says otherwise, judged by each old link's blind; one this node no longer holds is
-/// written afresh). Returns the blobs written: the delta's chunk list; reused blobs are not in
-/// it. `fresh`: blobs never reused.
+/// written afresh). Returns the blobs written (reused ones are not). `fresh`: blobs never
+/// reused.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn chunk_ops(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, ops: &mut [PathOp], edits: &[Option<ListEdit>], schema: Option<&Schema>, framing: &Framing, fresh: &BTreeSet<BlobId>) -> Result<Vec<Written>> {
     // what the ops address is loaded (`commit_in`)
@@ -453,15 +453,6 @@ pub(crate) fn kids_of(dedup: Option<&Secret32>, link: &Link, blob: &[u8]) -> Opt
     Some((false, out))
 }
 
-/// The bytes under tree root `link` as its node states them (0 when the node is not held or is
-/// no tree node): the compaction trigger's estimate (`retention::compact::Trigger::unlinked`),
-/// so the node's hash goes unchecked.
-pub(crate) fn tree_len(tx: &mut Tx<'_>, link: &Link) -> Result<u64> {
-    let Some(blob) = tx.blobs.get(&link.blob)? else { return Ok(0) };
-    let Ok((_, pt)) = osis_label::open(&blob, &Secret32::from_bytes(link.key)) else { return Ok(0) };
-    Ok(osis_label::tree::parse_node(&pt).map_or(0, |(_, kids)| kids.iter().fold(0u64, |a, (_, n)| a.saturating_add(*n))))
-}
-
 /// Blob IDs of the trees under some roots (`Engine::live_trees`, `Engine::tree_refs`).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Trees {
@@ -539,12 +530,13 @@ impl Engine {
 
     /// Chunks or tree nodes `lost`, gone from every host of a label, that this node's own
     /// commit links (spec/sync.md §1: a purger that had not seen this node's reuse judged them
-    /// dead). For each aspect whose newest own commit linking one is held: every large position
+    /// dead), looked for among `things` (the label's closure: those whose live states link a
+    /// held one). For each aspect whose newest own commit linking one is held: every large position
     /// of the current value whose tree holds one is written again (`Op::Put` at that position:
     /// no reset, so every other write stays), with the lost blobs re-encrypted and the own
     /// commit's retention and expiry. `allow` gates each aspect (the caller's back-off). Needs
     /// write on the thing and the aspect's schema registered here. One commit, if any.
-    pub fn relink(&mut self, lost: &BTreeSet<BlobId>, allow: &mut dyn FnMut(&Tid, &Ak) -> bool) -> Result<Option<CommitId>> {
+    pub fn relink(&mut self, lost: &BTreeSet<BlobId>, things: &BTreeSet<Tid>, allow: &mut dyn FnMut(&Tid, &Ak) -> bool) -> Result<Option<CommitId>> {
         let held: BTreeSet<BlobId> = self.run(|tx| {
             let mut out = BTreeSet::new();
             for b in lost {
@@ -558,9 +550,15 @@ impl Engine {
             return Ok(None);
         }
         let me = self.core.writer()?;
-        // reuse links within one position of one aspect: the aspects of the commits listing it
-        let core = &self.core;
-        let cands: BTreeSet<(Tid, Ak)> = held.iter().flat_map(|b| core.ix.by_chunk.get(b).into_iter().flatten()).filter_map(|c| core.ix.commits.get(c)).flat_map(|m| m.view.aspects.iter().map(|a| (a.tid, a.ak.clone()))).collect();
+        // reuse links within one position of one aspect: the aspects of the things whose live
+        // states link one (the tree memo; a rare path, so every thing of the closure is asked)
+        let mut cands: BTreeSet<(Tid, Ak)> = BTreeSet::new();
+        for t in things {
+            if self.run(|tx| crate::engine::tree_refs::state_refs_in(tx, t, &held))?.blobs.is_empty() {
+                continue;
+            }
+            cands.extend(self.aspects(t)?.into_iter().map(|ak| (*t, ak)));
+        }
         let now = self.now().0;
         let mut m = super::Mutation::new();
         m.fresh.clone_from(&held);

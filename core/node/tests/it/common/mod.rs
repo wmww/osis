@@ -350,3 +350,16 @@ pub fn part_keep(e: &mut Engine, c: &CommitId, t: &Tid, a: &Ak) -> u64 {
 pub fn stamp_item(h: &osis_commit::Header, c: CommitId, tid: Tid, ak: osis_base::Ak) -> osis_commit::PurgeItem {
     osis_commit::PurgeItem::Commit { tid, ak, ts: h.ts, src: h.form.own_source(h.author, c) }
 }
+
+/// The blobs a held commit's deltas link (their pages and their values' trees, through the node
+/// and page blobs `e` holds; spec/sync.md §3), durable or in memory; none when not held.
+pub fn linked_blobs(e: &mut Engine, c: &CommitId) -> Vec<osis_base::BlobId> {
+    let bytes = match e.commit_bytes(c) {
+        Ok(Some(b)) => b,
+        _ => match e.memory_blob(c) {
+            Ok(Some(b)) => b.encode(),
+            _ => return Vec::new(),
+        },
+    };
+    e.body_links(&bytes).map(|t| t.blobs.into_iter().collect()).unwrap_or_default()
+}

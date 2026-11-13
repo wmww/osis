@@ -119,7 +119,7 @@ fn large_value_spec_dm_6() {
     let mut m = Mutation::new();
     m.set(t, &BLOB, &Value::Bytes(data.clone())).unwrap();
     let id = lp.peers[0].commit(m).unwrap().unwrap();
-    assert!(!lp.peers[0].engine.header(&id).unwrap().chunks.is_empty());
+    assert!(!linked_blobs(&mut lp.peers[0].engine, &id).is_empty());
     assert!(matches!(lp.peers[0].engine.get(&t, &ak("t:blob.0")).unwrap(), Some(Value::Link(_))));
     assert_eq!(lp.peers[0].engine.get_full(&t, &ak("t:blob.0")).unwrap(), Some(Value::Bytes(data.clone())));
     let mut m = Mutation::new();

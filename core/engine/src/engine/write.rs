@@ -9,7 +9,7 @@ use super::blobs::{ListBlobs, TxBlobs};
 use super::secrets::CommitSecrets;
 use super::{Core, Engine, Tx};
 use crate::error::{Error, Result};
-use osis_commit::{AspectWrite, ChunkWrite, CommitBuilder, Form, Kind, PurgeItem, writer_ctx};
+use osis_commit::{AspectWrite, CommitBuilder, Form, Kind, PurgeItem, writer_ctx};
 use osis_base::{Ak, ChainStep, CommitId, CreationRecord, Role, Tid, Ts, Value, WallMs, record_chain};
 use osis_crdt::{AnyView, Batch, CounterRange, Delta, Fragment, Op, PathOp, Source, View, Writer, encode_delta};
 use osis_label::{BlobWriter, Framing};
@@ -542,45 +542,6 @@ pub(crate) fn framing_for(core: &Core, memory: bool, plan: &CommitPlan, publishe
     Ok(Framing { thing: *tid, dedup, expiry: plan.expires.map(WallMs), class, keys: keys.iter().map(|k| Ok((k.level, k.verifying_key()?))).collect::<std::result::Result<_, osis_commit::Error>>()? })
 }
 
-/// The chunk-list entry for a blob a commit links and does not introduce (spec/wire.md §4): its
-/// link blind and the levels of `framing`'s keys its held prefix commits to (under the blind
-/// bound to `framing`'s thing); `None` when the blob is not held here or is of the other class
-/// (a memory value's link to a durable tree is no blob of it), or, in a durable commit, commits
-/// to none of them: an entry naming no commitment the blob bears deletes nothing (spec/sync.md §7).
-fn linked_chunk(tx: &mut Tx<'_>, framing: &Framing, l: &osis_base::Link) -> Result<Option<ChunkWrite>> {
-    let Some(head) = tx.blobs.read(&l.blob, 0, osis_label::LINKED_PREFIX_MAX)? else { return Ok(None) };
-    let Ok(prefix) = osis_label::Prefix::parse(&head) else { return Ok(None) };
-    if osis_label::blob_class(&head) != Some(framing.class) {
-        return Ok(None);
-    }
-    let blind = osis_crypto::link_blind(&l.key);
-    let theirs: BTreeSet<&[u8; 33]> = prefix.commitments().collect();
-    let levels: Vec<u8> = framing.keys.iter().filter(|(lv, k)| osis_crypto::commitment(*lv, k, prefix.salt(), &framing.blind(&blind)).is_ok_and(|c| theirs.contains(&c))).map(|(lv, _)| *lv).collect();
-    if levels.is_empty() && framing.class == osis_label::Class::Durable {
-        return Ok(None);
-    }
-    Ok(Some(ChunkWrite { blob: l.blob, blind, levels: Some(levels) }))
-}
-
-/// How many blobs a snapshot of `(tid, ak)` by `node` whose delta encodes to `delta` lists
-/// (`write_snapshot`: it reuses the state's trees, introducing none): the links `linked_chunk`
-/// keeps under the snapshot's framing, of the transaction's class. Compaction weighs a snapshot
-/// by what it lists (`compact::snapshot_cost`); 0 where this node could not frame it.
-pub(crate) fn snapshot_listed(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, node: Tid, delta: &[u8]) -> Result<usize> {
-    let memory = tx.txn.is_memory();
-    let kind = if is_role_class(ak.as_str()) { Kind::RoleSnapshot } else { Kind::ContentSnapshot };
-    let plan = CommitPlan { kind, ts: Ts::default(), actor: node, form: Form::Commit, creates: Default::default(), purge: Vec::new(), undoes: None, frontier: None, signer: node, blind: [0; 16], expires: None, restores: false, rotation: None };
-    let published = super::secrets::published_keys(tx, &plan.creates, [*tid])?;
-    let wanted = osis_commit::retention::snapshot_retention(ak.as_str());
-    let Ok((retention, _)) = settle(tx.core, memory, kind, plan.ts, tid, ak, None, false, Some(wanted), None) else { return Ok(0) };
-    let Ok(framing) = framing_for(tx.core, memory, &plan, &published, tid, &retention) else { return Ok(0) };
-    let mut n = 0;
-    for l in super::large::delta_links(tx, &framing.dedup, delta)? {
-        n += usize::from(linked_chunk(tx, &framing, &l)?.is_some());
-    }
-    Ok(n)
-}
-
 /// A creation takes its commit's other deltas' expiry (a one-commit disappearing message).
 fn fit_creations(aspects: &mut [((Tid, Ak), AspectMut)]) {
     let other = |ak: &Ak| ak.as_str() != CREATED.ak() && ak.as_str() != osis_commit::retention::RETENTION;
@@ -691,36 +652,13 @@ pub(crate) fn build_and_apply(tx: &mut Tx<'_>, plan: CommitPlan, deltas: Vec<Res
             None => encode_delta(&Delta { nonce, fragment }, &cx, Some(&mut bw)),
         };
         let bytes = encoded?;
-        let mut written: Vec<osis_label::Written> = bw.written().to_vec();
         drop(bw);
-        let memory = tx.txn.is_memory();
-        // a commit lists the blobs its delta introduces, each with its link blind; one that must
-        // hold what it links also lists every other blob of its class the delta links, with the
-        // keys its held prefix commits to (spec/wire.md §4): a compaction snapshot, which stands
-        // for the bodies it covers (a node holding it alone deletes what nothing links any more),
-        // and a memory commit, applied only once what it lists is held, a blob going here once no
-        // held commit lists it (`unindex_commit`)
-        let lists_links = memory || matches!(plan.kind, Kind::ContentSnapshot | Kind::RoleSnapshot);
         // trees written for values the resolved delta does not hold (an edit's item paired
-        // with one deleted concurrently) are neither listed nor kept
-        let mut own = d.chunks;
-        let links = if !own.is_empty() || lists_links { super::large::delta_links(tx, &framing.dedup, &bytes)? } else { Vec::new() };
-        if !own.is_empty() {
-            let linked: BTreeSet<osis_base::BlobId> = links.iter().map(|l| l.blob).collect();
-            let (keep, drop): (Vec<_>, Vec<_>) = own.into_iter().partition(|w| linked.contains(&w.id));
-            for w in &drop {
-                tx.blobs.release(&w.id, memory)?;
-            }
-            own = keep;
-        }
-        written.extend(own);
-        let mut chunks: Vec<ChunkWrite> = written.iter().map(|w| ChunkWrite::introduced(w.id, w.blind)).collect();
-        if lists_links {
-            let introduced: BTreeSet<osis_base::BlobId> = written.iter().map(|w| w.id).collect();
-            for l in links.iter().filter(|l| !introduced.contains(&l.blob)) {
-                if let Some(c) = linked_chunk(tx, &framing, l)? {
-                    chunks.push(c);
-                }
+        // with one deleted concurrently) are not kept
+        if !d.chunks.is_empty() {
+            let linked: BTreeSet<osis_base::BlobId> = super::large::delta_links(tx, &framing.dedup, &bytes)?.iter().map(|l| l.blob).collect();
+            for w in d.chunks.iter().filter(|w| !linked.contains(&w.id)) {
+                tx.blobs.release(&w.id, tx.txn.is_memory())?;
             }
         }
         if plan.form.counted() && plan.kind.has_own_writes() {
@@ -731,7 +669,7 @@ pub(crate) fn build_and_apply(tx: &mut Tx<'_>, plan: CommitPlan, deltas: Vec<Res
         }
         // hostile test authors only (`Engine::commit_forged`): the header hashes what is sent
         let bytes = if tx.core.forge_bad.contains(&(d.tid, d.ak.clone())) { osis_base::encode(&osis_base::Value::List(vec![osis_base::Value::Int(1)])) } else { bytes };
-        writes.push(AspectWrite { tid: d.tid, ak: d.ak, lo: d.lo, hi: d.hi, delta: bytes, retention, chunks, replaces: d.replaces });
+        writes.push(AspectWrite { tid: d.tid, ak: d.ak, lo: d.lo, hi: d.hi, delta: bytes, retention, replaces: d.replaces });
     }
     let mut b = CommitBuilder::new(plan.kind, plan.ts, node, plan.actor, plan.form);
     b.expires = plan.expires;

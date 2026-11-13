@@ -379,7 +379,7 @@ impl SyncEngine {
     /// syncing it for good; `labels` retires it after `ROLE_KEEP` whatever.
     pub(crate) fn retire_at(&mut self, host: super::state::HostKey, g: &Tid, l: LabelId) -> Result<()> {
         // content commits' chunks and pages go too
-        if !self.replaced_leftovers(&host, &l).is_empty() {
+        if !self.replaced_leftovers(g, &host, &l)?.is_empty() {
             return Ok(());
         }
         for b in self.state.present_at(&host, &l) {
