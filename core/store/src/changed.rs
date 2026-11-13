@@ -9,7 +9,7 @@
 //! credentials, so overwrites shred nothing.
 
 use crate::codec::{R, W};
-use crate::store::{Shred, Transaction, kind};
+use crate::store::{Shred, Transaction, kind, tail};
 use crate::Error;
 use osis_base::LabelId;
 
@@ -70,7 +70,7 @@ impl Transaction<'_> {
     pub fn changed_labels(&mut self) -> Result<Vec<LabelId>, Error> {
         let mut out = Vec::new();
         self.cat_each(SLOT, |_, k, _| {
-            out.push(LabelId(k.get(2..18).and_then(|x| x.try_into().ok()).ok_or(Error::Corrupt("changed_at slot"))?));
+            out.push(LabelId(tail(&k)?));
             Ok(())
         })?;
         Ok(out)

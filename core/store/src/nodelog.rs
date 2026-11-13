@@ -30,7 +30,7 @@
 //! shreds.
 
 use crate::codec::{R, W};
-use crate::store::{PAGE, Shred, Transaction, kind};
+use crate::store::{PAGE, Shred, Transaction, kind, tail};
 use crate::Error;
 use osis_base::format::TOMBSTONE_LIFETIME_MS;
 use osis_base::{BlobId, LabelId};
@@ -296,9 +296,8 @@ impl Transaction<'_> {
     pub fn log_heads(&mut self) -> Result<Vec<(LabelId, [u8; 32])>, Error> {
         let mut out = Vec::new();
         self.cat_each(HEAD_SLOT, |_, k, v| {
-            let label: [u8; 16] = k.get(2..18).and_then(|x| x.try_into().ok()).ok_or(Error::Corrupt("node log slot"))?;
             let head: [u8; 32] = v.get(8..).and_then(|x| x.try_into().ok()).ok_or(Error::Corrupt("node log slot"))?;
-            out.push((LabelId(label), head));
+            out.push((LabelId(tail(&k)?), head));
             Ok(())
         })?;
         Ok(out)

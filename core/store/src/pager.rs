@@ -556,26 +556,7 @@ impl Pager {
         let none = || Error::Misuse("test copy: the backend or root has none");
         let backend = self.backend.test_copy_boxed().ok_or_else(none)?;
         let root = self.root.test_copy_boxed().ok_or_else(none)?;
-        Ok(Pager {
-            backend,
-            root,
-            cfg: self.cfg,
-            epoch: self.epoch,
-            root_key: self.root_key.clone(),
-            top_ver: self.top_ver,
-            next_ver: self.next_ver,
-            open_spills: self.open_spills.clone(),
-            meta: self.meta,
-            top: self.top.clone(),
-            nodes: self.nodes.clone(),
-            units: self.units.clone(),
-            unit_bytes: self.unit_bytes,
-            decoded: self.decoded,
-            failed: self.failed,
-            lost: self.lost,
-            writes: self.writes,
-            changes: self.changes,
-        })
+        Ok(Pager { backend, root, root_key: self.root_key.clone(), open_spills: self.open_spills.clone(), top: self.top.clone(), nodes: self.nodes.clone(), units: self.units.clone(), ..*self })
     }
 
     /// The memory overlay changed in a commit (`Store::changes`).

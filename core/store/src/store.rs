@@ -89,7 +89,7 @@ fn u64_value(v: Option<Vec<u8>>) -> Result<Option<u64>, Error> {
     .transpose()
 }
 
-fn tail<const N: usize>(key: &[u8]) -> Result<[u8; N], Error> {
+pub(crate) fn tail<const N: usize>(key: &[u8]) -> Result<[u8; N], Error> {
     key.get(key.len().saturating_sub(N)..).and_then(|t| t.try_into().ok()).ok_or(Error::Corrupt("catalog key"))
 }
 

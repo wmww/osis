@@ -13,7 +13,7 @@
 //! generation of the peer's filter, as received (a whole one replaces every row before it).
 
 use crate::codec::{R, W};
-use crate::store::{PAGE, Shred, Transaction, kind};
+use crate::store::{PAGE, Shred, Transaction, kind, tail};
 use crate::Error;
 use osis_base::{LabelId, Tid};
 use osis_base::format::TID_LEN;
@@ -116,13 +116,9 @@ fn lag_index_key(l: &LabelId, id: &RecordId) -> Vec<u8> {
 
 fn opt_bytes(w: &mut W, v: &Option<Vec<u8>>) {
     match v {
-        Some(b) => {
-            w.u8(1).bytes(b);
-        }
-        None => {
-            w.u8(0);
-        }
-    }
+        Some(b) => w.u8(1).bytes(b),
+        None => w.u8(0),
+    };
 }
 
 fn read_opt_bytes(r: &mut R<'_>) -> Result<Option<Vec<u8>>, Error> {
@@ -181,29 +177,18 @@ impl Member {
         let mut w = W::new();
         w.u8(self.class);
         match &self.beacon {
-            Some(b) => {
-                w.u8(1).raw(b);
-            }
-            None => {
-                w.u8(0);
-            }
-        }
+            Some(b) => w.u8(1).raw(b),
+            None => w.u8(0),
+        };
         match self.until {
-            Some(p) => {
-                w.u8(1).u64(p);
-            }
-            None => {
-                w.u8(0);
-            }
-        }
+            Some(p) => w.u8(1).u64(p),
+            None => w.u8(0),
+        };
         match &self.at {
             At::Stream => {
                 w.u8(0);
             }
-            At::Join(c) => {
-                w.u8(1);
-                opt_bytes(&mut w, c);
-            }
+            At::Join(c) => opt_bytes(w.u8(1), c),
         }
         w.take()
     }
@@ -228,13 +213,6 @@ fn row_bytes(key: &[u8], value: &[u8]) -> u64 {
     (key.len() + value.len()) as u64
 }
 
-fn tail_id(k: &[u8]) -> Result<RecordId, Error> {
-    k.len().checked_sub(16).and_then(|at| k.get(at..)).and_then(|x| x.try_into().ok()).ok_or(Error::Corrupt("peer record key"))
-}
-
-fn tail_label(k: &[u8]) -> Result<LabelId, Error> {
-    k.len().checked_sub(16).and_then(|at| k.get(at..)).and_then(|x| x.try_into().ok()).map(LabelId).ok_or(Error::Corrupt("peer record key"))
-}
 
 impl Transaction<'_> {
     fn record_meta(&mut self) -> Result<(u64, u64), Error> {
@@ -298,7 +276,7 @@ impl Transaction<'_> {
         let mut ids = BTreeSet::new();
         for a in actors {
             self.cat_each(&[ACTOR, a.as_bytes()].concat(), |_, k, _| {
-                ids.insert(tail_id(&k)?);
+                ids.insert(tail(&k)?);
                 Ok(())
             })?;
         }
@@ -366,7 +344,7 @@ impl Transaction<'_> {
     pub fn record_members(&mut self, id: &RecordId) -> Result<Vec<(LabelId, Member)>, Error> {
         let mut out = Vec::new();
         self.cat_each(&[MEMBER, id].concat(), |_, k, v| {
-            out.push((tail_label(&k)?, Member::decode(&v)?));
+            out.push((LabelId(tail(&k)?), Member::decode(&v)?));
             Ok(())
         })?;
         Ok(out)
@@ -421,7 +399,7 @@ impl Transaction<'_> {
     pub fn records_holding(&mut self, l: &LabelId) -> Result<Vec<(Record, Member)>, Error> {
         let mut out = Vec::new();
         self.cat_each(&[INDEX, &l.0].concat(), |t, k, _| {
-            let id = tail_id(&k)?;
+            let id = tail(&k)?;
             if let (Some(rec), Some(m)) = (t.record(&id)?, t.cat_get(&member_key(&id, l))?) {
                 out.push((rec, Member::decode(&m)?));
             }
@@ -526,7 +504,7 @@ impl Transaction<'_> {
     pub(crate) fn records_forget_label(&mut self, l: &LabelId) -> Result<(), Error> {
         for (prefix, is_lag) in [(INDEX, false), (LAG_INDEX, true)] {
             self.cat_each(&[prefix, &l.0].concat(), |t, k, _| {
-                let id = tail_id(&k)?;
+                let id = tail(&k)?;
                 let Some(mut rec) = t.record(&id)? else { return t.cat_remove(&k, Shred::No).map(drop) };
                 let before = rec.cost();
                 if is_lag {
@@ -547,7 +525,7 @@ impl Transaction<'_> {
         for (l, _) in self.record_members(&rec.id)? {
             self.record_drop_member(&mut rec, &l)?;
         }
-        self.cat_each(&[LAG, &rec.id].concat(), |t, k, _| t.record_drop_lag(&rec.id, &tail_label(&k)?).map(drop))?;
+        self.cat_each(&[LAG, &rec.id].concat(), |t, k, _| t.record_drop_lag(&rec.id, &LabelId(tail(&k)?)).map(drop))?;
         for (k, _) in self.record_filter_rows(&rec.id)? {
             self.cat_remove(&k, Shred::No)?;
         }
@@ -576,7 +554,7 @@ impl Transaction<'_> {
             let n = rows.len();
             let mut any = false;
             for (k, _) in rows {
-                let (seq, id) = (k.get(2..10).and_then(|x| x.try_into().ok()).map(u64::from_be_bytes).ok_or(Error::Corrupt("peer record key"))?, tail_id(&k)?);
+                let (seq, id) = (k.get(2..10).and_then(|x| x.try_into().ok()).map(u64::from_be_bytes).ok_or(Error::Corrupt("peer record key"))?, tail(&k)?);
                 from = [&seq.to_be_bytes()[..], &id, &[0]].concat();
                 if in_use.contains(&id) {
                     continue;
