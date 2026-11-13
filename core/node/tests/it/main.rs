@@ -67,6 +67,7 @@ mod receive;
 mod retention;
 mod sessions;
 mod review;
+mod reseals;
 mod revokes;
 mod scale;
 mod shred;

@@ -290,6 +290,8 @@ impl Net {
 }
 
 /// `Net::new`, one host, `N` nodes at it (seeds 1 to `N`, in order): built once (`Net::cached`).
+/// Their accounts' inboxes list no host (no `home_at_hosts`), so a grant or re-seal to them goes
+/// only over a direct connection, which these nodes never make: it stays pending.
 pub fn hosted_nodes<const N: usize>() -> (Net, usize, [usize; N]) {
     let (net, (host, nodes)) = Net::cached(&format!("hosted_nodes/{N}"), || {
         let mut net = Net::new();
