@@ -10,7 +10,7 @@ The default base is the merge base with origin/main as last fetched, as in the g
 
 The set: every property test, at small size, of the crates the paths touch and their dependents
 (the Cargo graph), and every sim scenario if osis-sim is one of those; `--all` selects every crate.
-A file in PINNED (run-time data an instant check fixes completely) selects nothing.
+A file in PINNED (run-time data whose meaning an instant check fixes) selects nothing.
 A dependent is reached through normal and build edges; a dev edge selects that one crate and
 stops, since a dev dependency is linked only into that crate's own tests.
 
@@ -42,7 +42,7 @@ OUTSIDE = (
     ("core/test/tla/", "core/test/tla/run.sh <module> for an edited module"),
     ("core/test/fuzz/", "fuzz targets, by hand"),
 )
-# Files inside a crate that compile into nothing and whose whole content an instant check fixes
+# Files inside a crate that compile into nothing and whose meaning to every reader an instant check fixes
 # from the sources: an edit that could change what a test sees fails that check, so no test is
 # selected. A file listed here must be read at run time only (no include_str!, no build.rs).
 PINNED = (
