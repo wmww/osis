@@ -461,7 +461,9 @@ pub fn attack(ev: &Evidence, ciphers: Option<&Ciphers>) -> Vec<Recovered> {
             todo.map(|(i, (id, b))| (i, f.blobs.remove(&(*id, b.clone())).unwrap_or_default())).collect()
         });
         // tens of thousands of candidates per blob: one thread per blob keeps a test's wall short
-        let tried: Vec<(usize, BlobFailed, Option<(Vec<u8>, bool)>)> = std::thread::scope(|sc| {
+        // (blob, its tries that failed, its plaintext and whether a wrap gave the key)
+        type Tried = (usize, BlobFailed, Option<(Vec<u8>, bool)>);
+        let tried: Vec<Tried> = std::thread::scope(|sc| {
             let hs: Vec<_> = jobs
                 .into_iter()
                 .map(|(i, mut failed)| {
