@@ -642,27 +642,34 @@ fn a_lost_store_retries_after_a_wait() {
 // included (which drops the writes since the last sync at a power cut). A failed write reports
 // the outcome it leaves; a failed sync leaves it unknown (`Err`) and the store recovers in place
 // at the next call, reading what the disk holds; with no reopen, every `Ok` commit, those after
-// a failed sync included, survives a power cut
+// a failed sync included, survives a power cut. Each fault point starts from the same store: a
+// fault that lands changes the next commit's write count (redb flushes its pages in no fixed
+// order, so a fault after its header write can land), and the sweep must reach the sync.
 #[test]
 fn a_failed_redb_write_anywhere_in_a_commit_reports_its_outcome() {
-    let dev = FileDevice::new("redb-any-write");
-    let mut rng = SeededRng::from_u64(0);
-    let mut s = put_x(&dev, &mut rng);
-    let mut outcomes = Vec::new();
+    use std::sync::atomic::Ordering::SeqCst;
     for shred in [Shred::No, Shred::Yes] {
         let (mut landed, mut failed, mut lost) = (false, false, false);
         for n in 1.. {
-            let k = format!("k-{shred:?}-{n}").into_bytes();
+            let dev = FileDevice::new(&format!("redb-any-write-{shred:?}-{n}"));
+            let mut rng = SeededRng::from_u64(0);
+            let mut s = put_x(&dev, &mut rng);
             let unknown = s.writes().unknown;
-            dev.trap.store(n, std::sync::atomic::Ordering::SeqCst);
-            let ok = put_k(&mut s, &mut rng, &k, shred);
-            let reached = dev.trap.swap(0, std::sync::atomic::Ordering::SeqCst) == 0;
+            dev.trap.store(n, SeqCst);
+            let ok = put_k(&mut s, &mut rng, b"k", shred);
+            let reached = dev.trap.swap(0, SeqCst) == 0;
             let unsure = s.writes().unknown > unknown;
+            assert!(!unsure || !ok, "{shred:?}: fault at file write {n}: an unknown outcome is Err");
             // the store recovers at once (the trap is off)
-            let present = has(&mut s, &mut rng, &k);
+            let present = has(&mut s, &mut rng, b"k");
             assert!(ok || unsure || !present, "{shred:?}: fault at file write {n}: Err, yet landed");
             assert!(!ok || present, "{shred:?}: fault at file write {n}: Ok, yet absent");
-            outcomes.push((k, ok));
+            assert!(put_k(&mut s, &mut rng, b"after", shred), "{shred:?}: works on after a fault at file write {n}");
+            drop(s);
+            dev.power_cut();
+            let mut s = reopen(&dev);
+            assert!(!ok || has(&mut s, &mut rng, b"k"), "{shred:?}: fault at file write {n}: reported landed, lost to a power cut");
+            assert!(has(&mut s, &mut rng, b"after"), "{shred:?}: the commit after a fault at file write {n} lost to a power cut");
             if !reached {
                 assert!(ok, "{shred:?}: no fault, committed");
                 break;
@@ -673,12 +680,6 @@ fn a_failed_redb_write_anywhere_in_a_commit_reports_its_outcome() {
         if shred == Shred::Yes {
             assert!(landed, "a fault after the root record was stored: landed");
         }
-    }
-    drop(s);
-    dev.power_cut();
-    let mut s = reopen(&dev);
-    for (k, ok) in outcomes {
-        assert!(!ok || has(&mut s, &mut rng, &k), "{} reported landed, lost to a power cut", String::from_utf8_lossy(&k));
     }
 }
 
