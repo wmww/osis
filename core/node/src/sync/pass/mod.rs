@@ -64,13 +64,14 @@ struct Out {
     of: Option<Touch>,
 }
 
-/// The bodies wanted under a label, by commit (`judge`).
-type Desired = BTreeMap<CommitId, Vec<Vec<usize>>>;
+/// The bodies wanted under a label, by commit (`judge`): their parts, and whether each is a
+/// per-label copy (`Body::to_label`).
+type Desired = BTreeMap<CommitId, Vec<(Vec<usize>, bool)>>;
 
 fn desired(bodies: &[Body]) -> Desired {
     let mut m: Desired = BTreeMap::new();
     for b in bodies {
-        m.entry(b.commit).or_default().push(b.parts.clone());
+        m.entry(b.commit).or_default().push((b.parts.clone(), b.to_label));
     }
     m
 }

@@ -117,7 +117,7 @@ impl SyncEngine {
         let aspects: Vec<(Tid, Ak)> = parts.iter().filter_map(|ai| h.aspects.get(*ai)).map(|a| (a.tid, a.ak.clone())).collect();
         // a minting's header alone its things' witnesses supersede (spec/commits.md §5, A thing's
         // mintings travel with its record)
-        if opened.is_empty() && settled && !desired.get(commit).is_some_and(|d| d.iter().any(|p| p.is_empty())) {
+        if opened.is_empty() && settled && !desired.get(commit).is_some_and(|d| d.iter().any(|(p, _)| p.is_empty())) {
             match self.superseded_minting(g, l, source, commit, &h) {
                 Some(true) => return Ok(Some((Hold::MustNot(Why::Outside), false, Vec::new()))),
                 // its witness not up yet: judged again next pass
@@ -171,7 +171,9 @@ impl SyncEngine {
         if e.cert {
             return Ok(Some((Hold::May, false, aspects)));
         }
-        let desired: Vec<&Vec<usize>> = desired.get(commit).into_iter().flatten().collect();
+        // the label's body of exactly these parts is a per-label copy: only a copy holds it
+        let copy_body = desired.get(commit).is_some_and(|d| d.iter().any(|(p, c)| *c && p == parts));
+        let desired: Vec<&Vec<usize>> = desired.get(commit).into_iter().flatten().map(|(p, _)| p).collect();
         let mut f = Facts { required: false, closure: true, covered: None, ..Facts::default() };
         if desired.contains(&parts) {
             f.required = true;
@@ -187,13 +189,30 @@ impl SyncEngine {
                 Some(s) => self.state.is_gone_at(s, l, id),
                 None => self.state.useless_anywhere(l, id),
             };
-            // a copy and a shared blob are no duplicates: a label whose readers cannot open the
-            // shared one's sections holds a copy beside it (`entry_for`, a secret actor destroyed)
+            // copies and shared blobs: where the body is a per-label copy, a shared blob holds
+            // none of it (the label's readers may not open its sections, `entry_for`), so it goes
+            // once a copy is there, whatever its ID, and a copy is a duplicate of copies alone;
+            // elsewhere a copy and a shared blob are no duplicates of each other (a node still
+            // seeing the body shared must not delete the copy a node seeing it as a copy placed)
             let copy = self.is_copy(id);
-            let same: Vec<BlobId> = self.state.entries_of(l, commit).filter(|(b, o)| (b < id || (useless && b != id)) && !o.cert && self.state.blobs.get(b).is_some_and(|r| r.cert) == copy && matches!(&o.kind, Kind::Commit { ais: a, .. } if a == ais) && match source {
-                Some(s) => self.state.holds_at(s, l, b),
-                None => !self.state.useless_anywhere(l, b) && self.engine.has_blob(b),
-            }).map(|(b, _)| b).collect();
+            let same: Vec<BlobId> = self
+                .state
+                .entries_of(l, commit)
+                .filter(|(b, o)| {
+                    let other = self.state.blobs.get(b).is_some_and(|r| r.cert);
+                    let unusable = useless || (copy_body && !copy && other);
+                    let kinds = if copy_body { other || !copy } else { other == copy };
+                    (b < id || (unusable && b != id))
+                        && kinds
+                        && !o.cert
+                        && matches!(&o.kind, Kind::Commit { ais: a, .. } if a == ais)
+                        && match source {
+                            Some(s) => self.state.holds_at(s, l, b),
+                            None => !self.state.useless_anywhere(l, b) && self.engine.has_blob(b),
+                        }
+                })
+                .map(|(b, _)| b)
+                .collect();
             f.duplicate_higher = same.into_iter().any(|b| self.genuine(&b));
         } else if desired.iter().any(|d| d.iter().all(|p| parts.contains(p))) {
             // a superset: more of the commit than the label's bodies ask for holds them too
@@ -340,7 +359,7 @@ impl SyncEngine {
         let closure = self.engine.closure(g);
         let outside = |t: &Tid| !closure.contains(t) && core.destroyed(t);
         let about: BTreeSet<Tid> = if opened.is_empty() {
-            if desired.get(c).is_some_and(|d| d.iter().any(|p| p.is_empty())) {
+            if desired.get(c).is_some_and(|d| d.iter().any(|(p, _)| p.is_empty())) {
                 return None;
             }
             self.header_certifies(&closure, h)

@@ -1475,11 +1475,12 @@ fn removing_a_destroyed_only_admin_of_a_plain_thing_is_refused_spec_permissions_
 // purged, outside g's closure or listed in g; time passes, so every node judges what sits under g's
 // label, and then a node is granted g. The request destroying t stays there for x's sake (every node
 // holding x needs it), so the newcomer reads t as destroyed as the others do; x's body, sealed under
-// t's secrets whose boxes went with t, goes there as a per-label copy, so the newcomer reads x
+// t's secrets whose boxes went with t, goes there as a per-label copy, so the newcomer reads x, and
+// the shared blob placed before the destruction goes as the copy's duplicate (spec/sync.md §7)
 #[test]
 fn a_destruction_by_purge_stays_under_a_dependents_label_for_a_newcomer_spec_commits_5() {
     for listed in [false, true] {
-        let Setup { mut net, a, b, c, g } = setup();
+        let (mut net, host, [a, b, c], g, []) = hosted::<3, 0>(&[(1, Role::Write), (2, Role::Admin)], [], true);
         let mut m = Mutation::new();
         let t = net.engine(a).new_thing(&mut m, g);
         m.set(t, &REG, &s("t")).unwrap();
@@ -1510,6 +1511,19 @@ fn a_destruction_by_purge_stays_under_a_dependents_label_for_a_newcomer_spec_com
         assert!(net.engine(d).core.created(&t).is_some(), "listed {listed}, d: t's record, x names it");
         assert!(!net.engine(d).knows(&t), "listed {listed}, d: t was destroyed");
         assert_eq!(net.engine(d).roster(&x), net.engine(a).roster(&x), "listed {listed}, d: x's roster as at a");
+        // no shared blob stays beside a copy: one entry per commit of x under g at the host
+        let l = net.group_labels(a).into_iter().find(|(y, _)| *y == g).unwrap().1.id;
+        let ids = net.host_ids(host, &l);
+        let mut per: std::collections::BTreeMap<CommitId, usize> = Default::default();
+        for (id, k) in net.sync(a).entries(&l) {
+            if let osis_node::sync::EntryKind::Commit { commit, .. } = k
+                && ids.contains(&id)
+                && net.engine(a).header(&commit).is_some_and(|h| h.aspects.iter().any(|y| y.tid == x))
+            {
+                *per.entry(commit).or_default() += 1;
+            }
+        }
+        assert!(!per.is_empty() && per.values().all(|n| *n == 1), "listed {listed}: one entry per commit of x: {per:?}");
     }
 }
 
