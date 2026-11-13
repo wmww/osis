@@ -46,8 +46,11 @@ impl Start {
         let unreadable = |error| Failure { error, fresh: true };
         std::fs::create_dir_all(&self.dir).map_err(|e| unreadable(format!("{}: {e}", self.dir.display())))?;
         let w = self.waker.clone();
-        // the store's own errors name it
-        let db = crate::store::open(&self.dir, self.peers.clone(), Arc::new(move || w.wake())).map_err(|e| Failure { fresh: e != osis::Error::InUse, error: e.to_string() })?;
+        // the store's own errors name it; `InUse` carries nothing, so it is named here
+        let db = crate::store::open(&self.dir, self.peers.clone(), Arc::new(move || w.wake())).map_err(|e| match e {
+            osis::Error::InUse => Failure { error: format!("{}: {e}", self.dir.display()), fresh: false },
+            e => unreadable(e.to_string()),
+        })?;
         let later = || -> Result<Ui, String> {
             let data = (self.data)(db.clone())?;
             data.main_group().map_err(|e| e.to_string())?;

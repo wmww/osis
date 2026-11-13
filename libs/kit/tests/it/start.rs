@@ -167,7 +167,7 @@ fn a_healthy_store_is_never_offered_start_fresh() {
     let dir = base.join("store");
     let held = osis_kit::store::open(&dir, Vec::new(), Arc::new(|| {})).unwrap();
     let w = Window::open(&dir);
-    assert!(w.ui.error().is_some_and(|e| e.contains("in use")), "{:?}", w.ui.error());
+    assert!(w.ui.error().is_some_and(|e| e.contains("in use") && e.contains(dir.to_str().unwrap())), "{:?}", w.ui.error());
     assert_eq!(w.button(), None, "in use: no start fresh");
     drop(w);
     assert!(matches!(held.close(), Ok(osis::Close::Closed)));
