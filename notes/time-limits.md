@@ -177,4 +177,5 @@ Format: `- <date time> <box> `<limit>` [<test>] <CPU|wall> <measured>/<limit> s 
 ## Investigations
 One section per investigation: date and box, the trigger (hits or the run over 2x), what was tried, the outcome (fixed, or a raised limit with why no good solution was found). Tess reviews every raise.
 
+- 2026-11-13 fastbox-0 purge-tombstones-perm review gate (sim harness only), no lock wait, no failure: `gate` within (CPU 1850/3008 s, wall 177/220 s); `gate.hold` within (CPU 1838/2788 s, wall 164/177 s); over its share: `gate.sim` wall 47/34 s (1.39x) at load 13 (CPU within, 677/693 s); `default-tests` wall 114 s against its 84 s share (CPU within, 1154/1183 s). Load. No limit raised.
 - 2026-11-10 ostrich, the gate against the 5-minute cap (`gate`, `gate.hold` 4.3x): issues/gate-five-minutes.md (what was measured and profiled, what was fixed, what each remaining fix would save). No limit raised.
