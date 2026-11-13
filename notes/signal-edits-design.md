@@ -86,6 +86,6 @@ The model is `core/test/held-model/src/edits.rs`; the engine `core/engine/src/en
 - An original leaving the listing by time (expiry, keep bound, tombstone end) frees its versions when its timer runs. The node runs due timers before every API call (`expire_due`), as for expiry, so no call sees the gap; only a raw engine read between the bound and `tick` does.
 - A claim sorting before its original is model-tested only: an engine test needs two nodes of one account with skewed clocks.
 
-## For Tess (issues/signal-edits-requirements.md)
-- **Requirements line:** "A signal has no current value, only entries" would gain "an entry can be replaced by its author". A signal still has no current value, but this is a change to the requirements, so it needs your OK.
-- **Disappearing chats:** an edit does not extend the timer, it ends with the original. Say if you'd rather an edit restart it.
+## Tess's decisions
+- spec/requirements.md: a signal entry's author can replace it, and readers see the newest version in the original's place.
+- Disappearing chats: an edit ends with the original; it never extends the timer.
