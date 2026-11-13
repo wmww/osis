@@ -734,12 +734,15 @@ fn a_commit_found_landed_after_a_failed_sync_reaches_watches() {
         thing(&db);
         db.settle();
         let now = db.at(t, untyped(k)).get().unwrap();
-        let heard: Vec<_> = value.try_iter().map(|x| x.0.unwrap()).collect();
+        let (heard, origins): (Vec<_>, Vec<_>) = value.try_iter().map(|x| (x.0.unwrap(), x.1)).unzip();
         let thing_heard: Vec<_> = things.try_iter().map(|x| x.unwrap()).collect();
         let commits_heard = commits.try_iter().count();
         if r.is_ok() || now == Some(s("public")) {
             landed += usize::from(r.is_err());
             assert_eq!(heard.last(), Some(&now), "write {n}: the value watch");
+            if r.is_err() {
+                assert_eq!(origins.last(), Some(&osis::Origin::Derived(osis::DerivedFrom::Recovered)), "write {n}");
+            }
             assert_eq!(thing_heard.last(), Some(&now), "write {n}: the thing watch");
             assert!(commits_heard > 0, "write {n}: the commit listener");
         } else {
