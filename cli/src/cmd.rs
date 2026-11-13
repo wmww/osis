@@ -19,13 +19,10 @@ use std::sync::Arc;
 use std::task::{Context, Poll, Wake, Waker};
 use std::time::{Duration, Instant};
 
+const ROLES: [(&str, Role); 4] = [("sync", Role::Sync), ("read", Role::Read), ("write", Role::Write), ("admin", Role::Admin)];
+
 pub fn role_text(r: Role) -> &'static str {
-    match r {
-        Role::Sync => "sync",
-        Role::Read => "read",
-        Role::Write => "write",
-        Role::Admin => "admin",
-    }
+    ROLES.iter().find(|x| x.1 == r).map_or("?", |x| x.0)
 }
 
 fn grant_opts(until: &Option<String>, may_grant: &Option<String>) -> anyhow::Result<GrantOpts> {
@@ -33,13 +30,7 @@ fn grant_opts(until: &Option<String>, may_grant: &Option<String>) -> anyhow::Res
 }
 
 pub(crate) fn parse_role(s: &str) -> anyhow::Result<Role> {
-    match s {
-        "sync" => Ok(Role::Sync),
-        "read" => Ok(Role::Read),
-        "write" => Ok(Role::Write),
-        "admin" => Ok(Role::Admin),
-        _ => Err(usage(format!("role: sync, read, write or admin (got {s:?})"))),
-    }
+    ROLES.iter().find(|x| x.0 == s).map(|x| x.1).ok_or_else(|| usage(format!("role: sync, read, write or admin (got {s:?})")))
 }
 
 /// A commit id, as `inspect` prints it.

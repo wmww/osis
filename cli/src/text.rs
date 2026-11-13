@@ -404,33 +404,13 @@ pub fn parse_path(s: &str, ty: Ty<'_>, aliases: Aliases<'_>) -> Result<Vec<PStep
             '.' => {
                 p.pos += 1;
                 let w = p.word();
-                let st = match &k {
-                    Kind::Struct(st) => Some(st),
-                    _ => None,
-                };
-                let (id, ft) = match w.parse::<u64>() {
-                    Ok(id) => (id, st.and_then(|st| field(st, id)).map(|f| f.ty.clone())),
-                    Err(_) => {
-                        let f = st.and_then(|st| st.iter().find(|f| f.name == w)).ok_or_else(|| p.err(&format!("unknown field {w:?}")))?;
-                        (f.id, Some(f.ty.clone()))
-                    }
-                };
+                let (id, ft) = p.field_named(if let Kind::Struct(st) = &k { st } else { &[] }, w)?;
                 (PStep::Step(Step::Field(id)), ft)
             }
             '#' => {
                 p.pos += 1;
                 let w = p.word();
-                let en = match &k {
-                    Kind::Enum(e) => Some(e),
-                    _ => None,
-                };
-                let (id, pt) = match w.parse::<u64>() {
-                    Ok(id) => (id, en.and_then(|e| case(e, id)).and_then(|c| c.value.clone())),
-                    Err(_) => {
-                        let c = en.and_then(|e| e.iter().find(|c| c.name == w)).ok_or_else(|| p.err(&format!("unknown case {w:?}")))?;
-                        (c.id, c.value.clone())
-                    }
-                };
+                let (id, pt) = p.case_named(if let Kind::Enum(e) = &k { e } else { &[] }, w)?;
                 (PStep::Step(Step::Case(id)), pt)
             }
             '[' => {
@@ -643,20 +623,12 @@ impl<'a> Parser<'a> {
                         })?;
                         self.unique(m)
                     }
-                    Kind::Map(kt, vt) => {
-                        let (kt, vt) = (kt.get(), vt.get());
+                    k => {
+                        let (kt, vt) = if let Kind::Map(kt, vt) = k { (Some(kt.get()), Some(vt.get())) } else { (None, None) };
                         let m = self.items('}', |p| {
-                            let kk = p.value(Some(&kt))?;
+                            let kk = p.value(kt.as_ref())?;
                             p.expect(':')?;
-                            Ok((kk, p.value(Some(&vt))?))
-                        })?;
-                        self.unique(m)
-                    }
-                    _ => {
-                        let m = self.items('}', |p| {
-                            let kk = p.value(None)?;
-                            p.expect(':')?;
-                            Ok((kk, p.value(None)?))
+                            Ok((kk, p.value(vt.as_ref())?))
                         })?;
                         self.unique(m)
                     }
@@ -678,18 +650,8 @@ impl<'a> Parser<'a> {
                     }
                     return Ok(Value::Set(set));
                 }
-                let w = self.word().to_string();
-                let en = match &k {
-                    Kind::Enum(e) => Some(e),
-                    _ => None,
-                };
-                let (id, pt) = match w.parse::<u64>() {
-                    Ok(id) => (id, en.and_then(|e| case(e, id)).and_then(|c| c.value.clone())),
-                    Err(_) => {
-                        let c = en.and_then(|e| e.iter().find(|c| c.name == w)).ok_or_else(|| self.err(&format!("unknown case {w:?}")))?;
-                        (c.id, c.value.clone())
-                    }
-                };
+                let w = self.word();
+                let (id, pt) = self.case_named(if let Kind::Enum(e) = &k { e } else { &[] }, w)?;
                 let payload = if self.peek() == Some('(') {
                     self.pos += 1;
                     let v = self.value(pt.as_ref().map(NestedType::get).as_ref())?;
@@ -738,10 +700,23 @@ impl<'a> Parser<'a> {
         } else {
             self.word().to_string()
         };
-        if let Ok(id) = name.parse::<u64>() {
+        self.field_named(st, &name)
+    }
+
+    /// A field of `st` by id or name: its id and type (an id `st` lacks: untyped).
+    fn field_named(&self, st: &[RecordField], w: &str) -> Result<(u64, Option<NestedType>), String> {
+        if let Ok(id) = w.parse::<u64>() {
             return Ok((id, field(st, id).map(|f| f.ty.clone())));
         }
-        st.iter().find(|f| f.name == name).map(|f| (f.id, Some(f.ty.clone()))).ok_or_else(|| self.err(&format!("unknown field {name:?}")))
+        st.iter().find(|f| f.name == w).map(|f| (f.id, Some(f.ty.clone()))).ok_or_else(|| self.err(&format!("unknown field {w:?}")))
+    }
+
+    /// A case of `en` by id or name: its id and payload type (an id `en` lacks: untyped).
+    fn case_named(&self, en: &[TypeCase], w: &str) -> Result<(u64, Option<NestedType>), String> {
+        if let Ok(id) = w.parse::<u64>() {
+            return Ok((id, case(en, id).and_then(|c| c.value.clone())));
+        }
+        en.iter().find(|c| c.name == w).map(|c| (c.id, c.value.clone())).ok_or_else(|| self.err(&format!("unknown case {w:?}")))
     }
 
     /// Comma-separated items up to `close` (trailing comma allowed).
