@@ -34,7 +34,7 @@ pub fn inbox() -> VecFile {
             .with("ephemeral", hex(&eph))
             .with("mlkem-m", hex(&m))
             .with("prefix", hex(&prefix.to_bytes()))
-            .with("payload", hex(&encode(&payload.to_value().unwrap())))
+            .with("payload", hex(&encode(&payload.to_value())))
             .with("blob", hex(&blob))
             .with("blob-id", hex(&osis_label::blob_id(&blob).0)),
     ];

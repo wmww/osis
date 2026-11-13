@@ -9,12 +9,12 @@ use osis_crypto::{CryptoRngCore, Secret32, VerifyingKey, commitment, decrypt_blo
 /// At most one commitment per level in a group.
 const MAX_LEVELS: usize = 3;
 /// Most groups a prefix lists: its le16 count (spec/wire.md §5).
-pub const MAX_GROUPS: usize = u16::MAX as usize;
+const MAX_GROUPS: usize = u16::MAX as usize;
 
 /// A delete level (spec/wire.md §1): 1 thing admin, 2 author chain, 3 thing write.
 pub type Level = u8;
 
-/// A blob's class (spec/wire.md §5, spec/sync.md §1): what a host does with it. Durable
+/// A blob's class (spec/wire.md §5, spec/sync.md §1): what a peer does with it. Durable
 /// blobs are stored; ephemeral ones are held in memory only; relay-only ones are pushed to the
 /// label's current subscribers and held by nobody.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -26,7 +26,7 @@ pub enum Class {
 }
 
 impl Class {
-    pub fn from_byte(b: u8) -> Option<Class> {
+    fn from_byte(b: u8) -> Option<Class> {
         [Class::Durable, Class::Ephemeral, Class::Relay].into_iter().find(|c| *c as u8 == b)
     }
 
@@ -77,19 +77,12 @@ impl Prefix {
     /// group, one commitment per `(level, key)`, the key blinded by this prefix's salt and the
     /// blob's blind `hb` (its link blind, spec/crypto.md §7). A repeated pair gives one commitment.
     pub fn for_keys(salt: [u8; 16], hb: &[u8; 16], expiry: Option<WallMs>, keys: &[(Level, VerifyingKey)]) -> Result<Prefix, Error> {
-        Prefix::for_groups(salt, hb, expiry, &[keys.to_vec()])
+        Prefix::new(salt, expiry, vec![commitments(&salt, hb, keys)?])
     }
 
     /// Prefix of a blob whose deltas' delete-key sets are `groups`, in their order.
     pub fn for_groups(salt: [u8; 16], hb: &[u8; 16], expiry: Option<WallMs>, groups: &[Vec<(Level, VerifyingKey)>]) -> Result<Prefix, Error> {
-        let mut out = Vec::with_capacity(groups.len());
-        for keys in groups {
-            let mut ks = keys.to_vec();
-            ks.sort_by_key(|(l, k)| (*l, k.to_bytes()));
-            ks.dedup();
-            out.push(ks.iter().map(|(l, k)| commitment(*l, k, &salt, hb)).collect::<Result<Vec<_>, _>>()?);
-        }
-        Prefix::new(salt, expiry, out)
+        Prefix::new(salt, expiry, groups.iter().map(|keys| commitments(&salt, hb, keys)).collect::<Result<_, _>>()?)
     }
 
     /// `for_groups` of a commit's delete-key groups (`osis_commit::prefix_groups`).
@@ -226,7 +219,15 @@ impl Prefix {
     }
 }
 
-/// The bytes of a blob's prefix (what a host keeps to check delete signatures): the parsed
+/// One group's commitments: one per distinct `(level, key)`.
+fn commitments(salt: &[u8; 16], hb: &[u8; 16], keys: &[(Level, VerifyingKey)]) -> Result<Group, Error> {
+    let mut ks = keys.to_vec();
+    ks.sort_by_key(|(l, k)| (*l, k.to_bytes()));
+    ks.dedup();
+    Ok(ks.iter().map(|(l, k)| commitment(*l, k, salt, hb)).collect::<Result<_, _>>()?)
+}
+
+/// The bytes of a blob's prefix (what a node that cannot read the blob keeps to check delete signatures): the parsed
 /// prefix, or the version byte alone for a framing version this build does not know.
 pub fn prefix_bytes(blob: &[u8]) -> &[u8] {
     let n = match Prefix::parse(blob) {
@@ -236,7 +237,7 @@ pub fn prefix_bytes(blob: &[u8]) -> &[u8] {
     blob.get(..n).unwrap_or(blob)
 }
 
-/// A host's view of a blob: its prefix, or none for an unknown framing version (spec/wire.md
+/// A blob as a node that cannot read it sees it: its prefix, or none for an unknown framing version (spec/wire.md
 /// §5: stored and relayed as a blob with no expiry and no commitments). Checks `MAX_BLOB`.
 pub fn host_prefix(blob: &[u8]) -> Result<Option<Prefix>, Error> {
     check_size(blob)?;

@@ -13,7 +13,7 @@ use osis_base::{CreationRecord, LabelId, Tid, Value, WallMs};
 use osis_crypto::{CryptoRngCore, KemPublicKey, KemSecret, VerifyingKey, open_inbox, seal_inbox};
 use osis_schema::Codec;
 
-/// A label of the thing's own: its ID and host addresses.
+/// A label of the thing's own: its ID and peer addresses.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InboxLabel {
     pub id: LabelId,
@@ -50,7 +50,7 @@ pub struct InboxPayload {
 }
 
 impl InboxPayload {
-    pub fn to_value(&self) -> Result<Value, Error> {
+    pub fn to_value(&self) -> Value {
         let mut things = Vec::with_capacity(self.things.len());
         for t in &self.things {
             let label = match &t.label {
@@ -63,11 +63,7 @@ impl InboxPayload {
                 Value::List(t.delete_keys.iter().map(|(a, w)| Value::List(vec![Value::bytes(&a.to_bytes()), Value::bytes(&w.to_bytes())])).collect()),
             ]));
         }
-        let mut records: Vec<&CreationRecord> = self.records.iter().collect();
-        records.sort_by_key(|r| r.tid());
-        records.dedup_by_key(|r| r.tid());
-        let records = records.into_iter().map(CreationRecord::to_value).collect();
-        Ok(Value::List(vec![self.commit.clone(), Value::List(things), Value::List(self.chain.clone()), Value::List(records)]))
+        Value::List(vec![self.commit.clone(), Value::List(things), Value::List(self.chain.clone()), records_value(&self.records)])
     }
 
     /// The commit's plaintext, its decoded form freed first so that decoding the plaintext again
@@ -83,10 +79,7 @@ impl InboxPayload {
         if !chain.iter().all(|c| matches!(c, Value::List(_))) {
             return Err(Error::Malformed("inbox chain"));
         }
-        let records = records.iter().map(|r| CreationRecord::from_value(r).ok_or(Error::Malformed("inbox record"))).collect::<Result<Vec<_>, _>>()?;
-        if !records.windows(2).all(|w| matches!(w, [x, y] if x.tid() < y.tid())) {
-            return Err(Error::Malformed("inbox records not sorted by tid"));
-        }
+        let records = records_from(&records)?;
         let mut out: Vec<InboxThing> = Vec::with_capacity(things.len());
         for t in &things {
             let Value::List(f) = t else { return Err(Error::Malformed("inbox thing")) };
@@ -143,10 +136,7 @@ pub struct HolderKeys {
 
 impl HolderKeys {
     pub fn to_values(&self) -> [Value; 2] {
-        let mut records: Vec<&CreationRecord> = self.records.iter().collect();
-        records.sort_by_key(|r| r.tid());
-        records.dedup_by_key(|r| r.tid());
-        [Value::List(self.commits.clone()), Value::List(records.into_iter().map(CreationRecord::to_value).collect())]
+        [Value::List(self.commits.clone()), records_value(&self.records)]
     }
 
     pub fn from_values(commits: &Value, records: &Value) -> Result<HolderKeys, Error> {
@@ -154,12 +144,25 @@ impl HolderKeys {
         if !commits.iter().all(|c| matches!(c, Value::List(_))) {
             return Err(Error::Malformed("holder keys commits"));
         }
-        let records = records.iter().map(|r| CreationRecord::from_value(r).ok_or(Error::Malformed("holder keys record"))).collect::<Result<Vec<_>, _>>()?;
-        if !records.windows(2).all(|w| matches!(w, [x, y] if x.tid() < y.tid())) {
-            return Err(Error::Malformed("holder keys records not sorted by tid"));
-        }
-        Ok(HolderKeys { commits: commits.clone(), records })
+        Ok(HolderKeys { commits: commits.clone(), records: records_from(records)? })
     }
+}
+
+/// Creation records ascending by tid, distinct.
+fn records_value(records: &[CreationRecord]) -> Value {
+    let mut records: Vec<&CreationRecord> = records.iter().collect();
+    records.sort_by_key(|r| r.tid());
+    records.dedup_by_key(|r| r.tid());
+    Value::List(records.into_iter().map(CreationRecord::to_value).collect())
+}
+
+/// Creation records, which must be ascending by tid and distinct.
+fn records_from(records: &[Value]) -> Result<Vec<CreationRecord>, Error> {
+    let records = records.iter().map(|r| CreationRecord::from_value(r).ok_or(Error::Malformed("creation record"))).collect::<Result<Vec<_>, _>>()?;
+    if !records.windows(2).all(|w| matches!(w, [x, y] if x.tid() < y.tid())) {
+        return Err(Error::Malformed("creation records not sorted by tid"));
+    }
+    Ok(records)
 }
 
 impl StrandedNotice {
@@ -203,7 +206,7 @@ pub fn seal_stranded_notice(recipient: &Tid, kem: &KemPublicKey, notice: &Strand
 /// (the sender's wall ms) + `INBOX_LIFETIME`, no commitments. Its entry's wrap is a
 /// filler (`osis_crypto::filler_wrap`).
 pub fn seal_inbox_blob(recipient: &Tid, kem: &KemPublicKey, payload: &InboxPayload, now: WallMs, rng: &mut dyn CryptoRngCore) -> Result<Vec<u8>, Error> {
-    seal(recipient, kem, &payload.to_value()?, now, rng)
+    seal(recipient, kem, &payload.to_value(), now, rng)
 }
 
 fn seal(recipient: &Tid, kem: &KemPublicKey, v: &Value, now: WallMs, rng: &mut dyn CryptoRngCore) -> Result<Vec<u8>, Error> {
@@ -293,11 +296,11 @@ mod tests {
     fn rejections() {
         let mut p = payload();
         p.things.reverse();
-        assert!(InboxPayload::from_value(p.to_value().unwrap()).is_err());
+        assert!(InboxPayload::from_value(p.to_value()).is_err());
         let mut p = payload();
         p.things[1].tid = p.things[0].tid;
-        assert!(InboxPayload::from_value(p.to_value().unwrap()).is_err());
+        assert!(InboxPayload::from_value(p.to_value()).is_err());
         assert!(InboxPayload::from_value(Value::List(vec![Value::Int(0), Value::List(vec![])])).is_err());
-        assert_eq!(InboxPayload::from_value(payload().to_value().unwrap()).unwrap(), payload());
+        assert_eq!(InboxPayload::from_value(payload().to_value()).unwrap(), payload());
     }
 }
