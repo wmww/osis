@@ -21,9 +21,9 @@ const THRESHOLDS: Thresholds = Thresholds { double_tap: Duration::from_millis(30
 
 /// A platform that records what it was asked.
 #[derive(Default)]
-struct Recorder {
-    keyboard: Vec<bool>,
-    clipboard: Option<String>,
+pub(crate) struct Recorder {
+    pub(crate) keyboard: Vec<bool>,
+    pub(crate) clipboard: Option<String>,
 }
 
 impl Platform for Recorder {

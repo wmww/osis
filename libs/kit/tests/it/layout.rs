@@ -35,7 +35,7 @@ impl Screen {
         };
         let rr = RenderRoot::new(tree(ui.look()), |_| {}, opts);
         let mut s = Screen { ui, rr, d };
-        s.ui.start(&mut s.rr, 1.0, false);
+        s.ui.start(&mut s.rr, Box::new(crate::input::Recorder::default()), 1.0, false);
         s.ui.wake(&mut s.rr);
         s
     }
