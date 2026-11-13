@@ -92,6 +92,14 @@ impl Seeds {
     pub fn announce(&self, name: &str) {
         visible(self.overridden, &format!("{name}: {self}"));
     }
+
+    /// `run_seeds` over this range, announced (`announce`), its summary past libtest's capture
+    /// when overridden.
+    pub fn run<T: Send>(&self, name: &str, replay: impl Fn(u64) -> String + Sync, f: impl Fn(u64) -> T + Sync) -> Vec<T> {
+        self.announce(name);
+        let seeds: Vec<u64> = self.range.clone().collect();
+        run_seeds(name, &seeds, self.overridden, replay, f)
+    }
 }
 
 impl std::fmt::Display for Seeds {
@@ -108,16 +116,6 @@ pub fn visible(uncaptured: bool, line: &str) {
         let _ = writeln!(std::io::stderr().lock(), "{line}");
     } else {
         eprintln!("{line}");
-    }
-}
-
-impl Seeds {
-    /// `run_seeds` over this range, announced (`announce`), its summary past libtest's capture
-    /// when overridden.
-    pub fn run<T: Send>(&self, name: &str, replay: impl Fn(u64) -> String + Sync, f: impl Fn(u64) -> T + Sync) -> Vec<T> {
-        self.announce(name);
-        let seeds: Vec<u64> = self.range.clone().collect();
-        run_seeds(name, &seeds, self.overridden, replay, f)
     }
 }
 

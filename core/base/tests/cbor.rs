@@ -223,13 +223,10 @@ fn hex(s: &str) -> Vec<u8> {
     osis_base::hex::decode(s).unwrap()
 }
 
+/// A tag's head in hex: tag numbers here are all 256..65535, a 3-byte head.
 fn tag_head(t: u64) -> String {
-    let mut out = Vec::new();
-    // Tag numbers here are all 256..65535: 3-byte head.
     assert!((256..65536).contains(&t));
-    out.push(0xd9);
-    out.extend((t as u16).to_be_bytes());
-    out.iter().map(|b| format!("{b:02x}")).collect()
+    format!("d9{t:04x}")
 }
 
 // §5: known encodings of each kind.
@@ -420,7 +417,7 @@ fn rejections() {
         (format!("{en} 01"), TagContent(TAG_ENUM)),
         (format!("{ln} 82 5820{} 5820{}", "00".repeat(32), "00".repeat(32)), TagContent(TAG_LINK)),
         (format!("{ln} 83 5820{} 5820{} 5820{}", "00".repeat(32), "00".repeat(32), "00".repeat(32)), TagContent(TAG_LINK)),
-        // a link of the old three-item shape, or with its Del out of rule
+        // a link of three items, or with its Del out of rule
         (format!("{ln} 83 5820{} 5820{} 5821{}", "00".repeat(32), "00".repeat(32), "00".repeat(33)), TagContent(TAG_LINK)),
         (format!("{ln} 85 5820{z} 5820{z} 5821{} 50{} 81 82 04 5820{z}", "00".repeat(33), "00".repeat(16), z = "00".repeat(32)), TagContent(TAG_LINK)),
         (format!("{ln} 85 5820{z} 5820{z} 5821{} 50{} 81 82 00 5820{z}", "00".repeat(33), "00".repeat(16), z = "00".repeat(32)), TagContent(TAG_LINK)),
@@ -557,7 +554,7 @@ fn hostile_shapes() -> Vec<Shape> {
             let mut out = Vec::with_capacity(n);
             osis_base::cbor::head(&mut out, osis_base::cbor::MAJOR_MAP, count as u64);
             for i in 0..count as i64 {
-                encode_into_int(&mut out, i);
+                osis_base::cbor::encode_into(&Value::Int(i), &mut out);
                 out.push(0);
             }
             out
@@ -592,10 +589,6 @@ fn lying_shapes() -> Vec<Shape> {
             spine
         }),
     ]
-}
-
-fn encode_into_int(out: &mut Vec<u8>, i: i64) {
-    osis_base::cbor::encode_into(&Value::Int(i), out);
 }
 
 #[cfg(target_os = "linux")]
@@ -689,7 +682,7 @@ fn value_stays_small() {
     assert!(size_of::<Value>() <= 32, "{}", size_of::<Value>());
 }
 
-// `ValueMap` and `ValueSet` behave as the `BTreeMap` and `BTreeSet` they replaced, equal link keys
+// `ValueMap` and `ValueSet` behave as a `BTreeMap` and `BTreeSet`, equal link keys
 // included: the same entries in the same order by any mix of operations.
 proptest! {
     #[test]
