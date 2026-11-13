@@ -18,7 +18,6 @@ mod ops;
 mod page;
 mod paging;
 mod page_index;
-mod remap;
 mod seq;
 mod shape;
 mod seq_diff;
@@ -33,6 +32,7 @@ mod touch;
 mod state;
 mod undo;
 mod view;
+mod walk;
 mod winners;
 mod wire;
 

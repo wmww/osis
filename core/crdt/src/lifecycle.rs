@@ -3,7 +3,7 @@
 
 use crate::changes::Changes;
 use crate::fragment::{Bag, Eid, Elem, Entry, Enum, Fragment, Map, Meta, Register, Set, Slots, Struct};
-use crate::remap::{Next, Rec, Visit, walk};
+use crate::walk::{Next, Rec, Visit, walk};
 use crate::seq::{self, Seq, SeqContent, SeqElem};
 use crate::stamp::{Dot, Stamp};
 use std::collections::BTreeMap;

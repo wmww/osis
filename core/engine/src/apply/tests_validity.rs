@@ -274,9 +274,10 @@ mod tests {
         let own = crate::engine::Owned::Range { src: Source::session(osis_crdt::Session { node: b, nonce: [0; osis_crdt::SESSION_NONCE_LEN] }), lo: range.lo, hi: range.hi };
         let granted = std::collections::BTreeMap::from([((t, g), Role::Read)]);
         assert!(super::super::validity::grantee_boxes_only(&t, &d, &granted, &own), "an honest put");
-        let (g_dot, _) = box_entries(&d).remove(0);
-        let mut forged = d.clone();
-        forged.map_dots(&|x| (*x == g_dot).then(|| a_dot.clone()));
+        // the same put written at the admin's entry dot
+        let mut batch = Batch::new(&st, Writer::new(ts, a_dot.src.clone(), a_dot.ctr));
+        batch.apply(&PathOp { path: vec![PathSeg::Field(0), PathSeg::Key(g_key.to_value())], op: Op::Put(bx.to_value()) }, &view).unwrap();
+        let (forged, _) = batch.finish().unwrap();
         assert_eq!(box_entries(&forged).remove(0).0, a_dot);
         assert!(!super::super::validity::grantee_boxes_only(&t, &forged, &granted, &own), "a write into the admin's entry");
     }
