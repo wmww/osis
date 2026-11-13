@@ -37,11 +37,13 @@ use crate::handle::{Locked, Osis, ReadOnly};
 use crate::port::client::Connection;
 use crate::port::method;
 use crate::share::{Address, Status, SyncScope};
-use crate::watch::{Msg, PortEvent};
+use crate::port::client::CallbackOf;
+use crate::watch::{Callback, Delivery, Filter, Msg, PortEvent, Subscription, lock};
+use osis_proto::Payload;
 use osis_base::{CommitId as RawCommitId, Tid, Value};
 use osis_node::Engine;
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::sync::atomic::Ordering;
 
 /// The local record of `group_sources`: a line `tid url#key` per group with a source node.
@@ -118,6 +120,42 @@ fn scope_of(e: &Engine, t: Tid) -> BTreeSet<Tid> {
 
 fn node_named(l: &Locked, addr: &Address) -> Arc<Connection> {
     l.connections.iter().find(|r| r.addr == *addr).cloned().unwrap_or_else(|| Connection::absent(addr))
+}
+
+/// What `r` reports of sync now, if it can say.
+fn ask_status(r: &Connection) -> Option<Status> {
+    crate::port::codec::of(r.call(method::STATUS, vec![]).ok()?).ok()
+}
+
+/// `status_feed`'s state: the last status this engine and each connection sent, and the last
+/// merged one `f` got (`None` after an `Err`).
+struct Feed {
+    f: CallbackOf<Result<Status>>,
+    local: Option<Status>,
+    heard: Vec<Heard>,
+    last: Option<Status>,
+}
+
+/// A connection a status feed follows: what it last sent (`None`: nothing, or down), and whether
+/// its subscription told anything yet.
+struct Heard {
+    r: Arc<Connection>,
+    sub: Option<Subscription>,
+    told: bool,
+    status: Option<Status>,
+}
+
+/// Merges what `feed` holds and calls its `f` when that differs from the last call. Nothing
+/// before the first local status (`status_feed`'s initial call).
+fn feed_status(db: &Osis, feed: &Arc<Mutex<Feed>>) {
+    let mut g = lock(feed);
+    let Some(local) = g.local.clone() else { return };
+    let s = db.merge_status(local, |r| g.heard.iter().find(|h| Arc::ptr_eq(&h.r, r)).and_then(|h| h.status.clone()));
+    if g.last.as_ref() == Some(&s) {
+        return;
+    }
+    g.last = Some(s.clone());
+    (g.f)(db, Ok(s));
 }
 
 /// The module comment's rule.
@@ -396,10 +434,17 @@ impl ReadOnly {
     /// A status of this engine `local`, with what the connections add: each connected or source
     /// node with whether it is up, the groups a connected one reports where this node does not
     /// sync them. A group with a source node shows only what that node reports: never this
-    /// engine's copy, which is behind or catching up.
-    pub(crate) fn merged_status(&self, mut local: Status) -> Result<Status> {
+    /// engine's copy, which is behind or catching up. Each connection is asked, unless this thread
+    /// must not wait (`may_wait`): then their groups are absent.
+    pub(crate) fn merged_status(&self, local: Status) -> Status {
+        let wait = self.may_wait();
+        self.merge_status(local, |r| if wait { ask_status(r) } else { None })
+    }
+
+    /// `merged_status` with what each connection reports from `there` (`None`: nothing).
+    fn merge_status(&self, mut local: Status, mut there: impl FnMut(&Arc<Connection>) -> Option<Status>) -> Status {
         if !self.has_sources() {
-            return Ok(local);
+            return local;
         }
         let client = !self.has_store();
         let (connections, group_sources, split) = self.locked(|l| {
@@ -419,11 +464,7 @@ impl ReadOnly {
         local.two_sources = split;
         for r in connections {
             local.node_connections.push(NodeConnection { address: r.addr.clone(), connected: r.connected() });
-            if !self.may_wait() {
-                continue;
-            }
-            let Ok(v) = r.call(method::STATUS, vec![]) else { continue };
-            let Ok(there) = crate::port::codec::of::<crate::Status>(v) else { continue };
+            let Some(there) = there(&r) else { continue };
             local.connected = local.connected.saturating_add(there.connected);
             local.two_sources.extend(there.two_sources);
             for (g, s) in there.groups {
@@ -434,7 +475,7 @@ impl ReadOnly {
                 }
             }
         }
-        Ok(local)
+        local
     }
 
     /// Mirrors a schema's source to the connected nodes (notes/client-port.md §1), now and on each
@@ -486,6 +527,85 @@ impl ReadOnly {
         Ok(r)
     }
 
+    /// `Osis::on_status_change`: `f` with the merged status first, then at each change of it. It
+    /// asks no node at a change: it keeps the last status this engine and each connection sent
+    /// (each connection's `filter::STATUS` subscription), merges them again when one sends anew, a
+    /// connection goes down or up, or the connections or group sources change (`Locked::sources_moved`), and
+    /// calls `f` when the result differs. A connection that is down has no groups to add.
+    pub(crate) fn status_feed(&self, f: CallbackOf<Result<Status>>) -> Result<Subscription> {
+        let feed = Arc::new(Mutex::new(Feed { f, local: None, heard: Vec::new(), last: None }));
+        self.follow_connections(&feed);
+        let local = feed.clone();
+        self.locked(|l| {
+            let mut first = Some(crate::share::status_of(&mut l.sync)?);
+            let cb: Callback = Box::new(move |db, d| match d {
+                Delivery::Initial => {
+                    if let Some(s) = first.take() {
+                        lock(&local).local = Some(s);
+                        feed_status(db, &local);
+                    }
+                }
+                Delivery::Status(Ok(s)) => {
+                    lock(&local).local = Some(s);
+                    db.follow_connections(&local);
+                    feed_status(db, &local);
+                }
+                Delivery::Status(Err(e)) => {
+                    let mut g = lock(&local);
+                    g.last = None;
+                    (g.f)(db, Err(e));
+                }
+                _ => {}
+            });
+            Ok(self.subscribe_in(l, Filter::Status, true, cb))
+        })
+    }
+
+    /// Subscribes `feed` to each connection's status it does not follow yet, and stops following
+    /// those that went. Off the dispatcher, each new one is asked once too, so the first call has it.
+    fn follow_connections(&self, feed: &Arc<Mutex<Feed>>) {
+        let now: Vec<Arc<Connection>> = if self.sources_apply() { self.locked(|l| l.connections.clone()) } else { Vec::new() };
+        let (new, gone) = {
+            let mut g = lock(feed);
+            let (kept, gone): (Vec<Heard>, Vec<Heard>) = std::mem::take(&mut g.heard).into_iter().partition(|h| now.iter().any(|r| Arc::ptr_eq(r, &h.r)));
+            g.heard = kept;
+            let new: Vec<Arc<Connection>> = now.into_iter().filter(|r| !g.heard.iter().any(|h| Arc::ptr_eq(r, &h.r))).collect();
+            g.heard.extend(new.iter().map(|r| Heard { r: r.clone(), sub: None, told: false, status: None }));
+            (new, gone)
+        };
+        // their subscriptions end off the feed's lock
+        drop(gone);
+        let wait = self.may_wait();
+        for r in new {
+            let weak = Arc::downgrade(feed);
+            let at = r.clone();
+            let cb: Callback = Box::new(move |db, d| {
+                let (Some(feed), Delivery::Port(ev)) = (weak.upgrade(), d) else { return };
+                let status = match ev {
+                    PortEvent::Initial(v) | PortEvent::Notify(Payload::Delivery { value: v }) => crate::port::codec::of::<Status>(v).ok(),
+                    // gone, or no more from it: nothing it said holds
+                    PortEvent::Notify(_) | PortEvent::Closed => None,
+                };
+                {
+                    let mut g = lock(&feed);
+                    let Some(h) = g.heard.iter_mut().find(|h| Arc::ptr_eq(&h.r, &at)) else { return };
+                    h.told = true;
+                    h.status = status;
+                }
+                feed_status(db, &feed);
+            });
+            let sub = self.node_status_sub(&r, cb);
+            let first = if wait { ask_status(&r) } else { None };
+            let mut g = lock(feed);
+            if let Some(h) = g.heard.iter_mut().find(|h| Arc::ptr_eq(&h.r, &r)) {
+                h.sub = Some(sub);
+                // what the subscription told is newer
+                if !h.told {
+                    h.status = first;
+                }
+            }
+        }
+    }
 }
 
 impl Osis {
@@ -611,6 +731,7 @@ impl Osis {
         Ok(self.locked(|l| {
             let (gone, kept) = std::mem::take(&mut l.connections).into_iter().partition::<Vec<_>, _>(|r| r.addr == *addr);
             l.connections = kept;
+            l.sources_moved = !gone.is_empty();
             // a call or wait in flight holds it too: it ends now, and they hear so
             gone.iter().for_each(|r| r.end());
             !gone.is_empty()
@@ -625,6 +746,7 @@ impl Osis {
 }
 
 fn save_sources(l: &mut Locked) -> Result<()> {
+    l.sources_moved = true;
     l.show_sources();
     let text: Vec<String> = l.group_sources.iter().map(|(g, a)| format!("{} {a}", g.to_uri())).collect();
     l.engine().set_app_record(SOURCES, text.join("\n").as_bytes())?;

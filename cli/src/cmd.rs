@@ -1170,14 +1170,21 @@ fn status(ctx: &mut Ctx<'_>) -> anyhow::Result<()> {
 
 fn status_lines(s: &osis::Status, raw: bool) -> Vec<String> {
     let groups = s.groups.iter().map(|(g, x)| {
-        format!("{} {:?} {}", g.to_uri(), x.state, x.last_sync.map_or("-".into(), |t| ts_text(raw, t.0)))
+        let mut line = format!("{} {:?} {}", g.to_uri(), x.state, x.last_sync.map_or("-".into(), |t| ts_text(raw, t.0)));
+        if x.leaving {
+            line.push_str(" leaving");
+        }
+        if !x.refused_by.is_empty() {
+            line.push_str(&format!(" refused by {}", x.refused_by.iter().map(ToString::to_string).collect::<Vec<_>>().join(" ")));
+        }
+        line
     });
     // writes on these are refused until a group moves (Osis::group_source)
     std::iter::once(format!("connected {}", s.connected)).chain(groups).chain(s.two_sources.iter().map(|t| format!("{} two sources: writes refused", t.to_uri()))).collect()
 }
 
 fn status_json(s: &osis::Status) -> J {
-    let groups = s.groups.iter().map(|(g, x)| J::obj([("group", J::tid(*g)), ("state", J::str(format!("{:?}", x.state))), ("last_sync", J::opt(x.last_sync.map(|t| J::int(t.0))))]));
+    let groups = s.groups.iter().map(|(g, x)| J::obj([("group", J::tid(*g)), ("state", J::str(format!("{:?}", x.state))), ("last_sync", J::opt(x.last_sync.map(|t| J::int(t.0)))), ("leaving", J::Bool(x.leaving)), ("refused_by", J::strs(&x.refused_by))]));
     J::obj([("groups", J::Arr(groups.collect())), ("connected", J::int(s.connected as u64)), ("two_sources", J::tids(&s.two_sources))])
 }
 
@@ -1593,6 +1600,17 @@ mod tests {
         s.two_sources.insert(t);
         assert_eq!(super::status_lines(&s, true), vec!["connected 0".to_string(), format!("{} two sources: writes refused", t.to_uri())]);
         assert_eq!(super::status_json(&s).text(), format!("{{\"groups\":[],\"connected\":0,\"two_sources\":[\"{}\"]}}", t.to_uri()));
+    }
+
+    // notes/api.md Sync configuration and status: `status` shows a group's `leaving` and `refused_by`, in both forms.
+    #[test]
+    fn status_shows_leaving_and_refused_by_notes_api() {
+        let g = osis::Tid::from_bytes([7; 15]);
+        let a = osis::Address::new(&"quic://h:1".parse().unwrap(), [8; 32]);
+        let mut s = osis::Status::default();
+        s.groups.insert(g, osis::GroupSync { state: osis::SyncState::Refused, last_sync: None, refused_by: vec![a.clone()], leaving: true });
+        assert_eq!(super::status_lines(&s, true)[1], format!("{} Refused - leaving refused by {a}", g.to_uri()));
+        assert!(super::status_json(&s).text().contains(&format!("\"leaving\":true,\"refused_by\":[\"{a}\"]")));
     }
 
     // notes/cli.md Design: `edit`'s temp file is new (`create_new`), randomly named, owner-only.

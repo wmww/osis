@@ -55,7 +55,7 @@ impl Osis {
             let events = sync.engine_mut().test_subscribe_with(pending, false);
             Ok((sync, events))
         })?;
-        let locked = Locked { sync, events, seq: l.seq, waiters: Vec::new(), status: l.status.clone(), offers: l.offers.clone(), connections: Vec::new(), group_sources: l.group_sources.clone(), status_failed: l.status_failed };
+        let locked = Locked { sync, events, seq: l.seq, waiters: Vec::new(), status: l.status.clone(), offers: l.offers.clone(), connections: Vec::new(), group_sources: l.group_sources.clone(), status_failed: l.status_failed, sources_moved: false };
         drop(l);
         let port = crate::port::serve::Port::new();
         port.panic_next.store(i.port.panic_next.load(Ordering::Acquire), Ordering::Release);

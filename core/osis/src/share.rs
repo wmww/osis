@@ -5,7 +5,7 @@
 
 use crate::error::{Error, Result};
 use crate::handle::{Locked, Osis, ReadOnly, save_peers};
-use crate::watch::{Delivery, Filter, Subscription};
+use crate::watch::Subscription;
 use osis_base::{Role, Tid, Value, Time};
 use osis_node::flows;
 use osis_node::sync::SyncEngine;
@@ -632,7 +632,8 @@ impl ReadOnly {
         Ok(self.host_addrs().into_iter().map(Address).collect())
     }
 
-    /// How sync stands now.
+    /// How sync stands now. Called in a callback, groups read at another node are absent: a callback
+    /// never waits on another node (`on_status_change` follows them).
     pub fn status(&self) -> Result<Status> {
         self.track_status()?;
         let acting = self.acting;
@@ -646,7 +647,7 @@ impl ReadOnly {
         if acting.is_some() {
             return Ok(local);
         }
-        self.merged_status(local)
+        Ok(self.merged_status(local))
     }
 }
 
@@ -1490,27 +1491,10 @@ impl Osis {
 
 
     /// Calls `f` with the status now (through the dispatcher) and on every change, a node that
-    /// cannot be reached shown as such (`Status::node_connections`). A change asks no node, so a
-    /// group whose source is another node shows only in the first. `Err`: the store could not say; the
-    /// next status that can be read follows.
-    pub fn on_status_change(&self, mut f: impl FnMut(&Osis, Result<Status>) + Send + 'static) -> Result<Subscription> {
-        if !self.has_store() {
-            return self.node_on_status_change(Box::new(f));
-        }
-        // a node with connections shows them too: not a watch of them, a status at each change here
-        let first = self.status()?;
-        Ok(self.subscribe(Filter::Status, true, move |_| {
-            let mut first = Some(first);
-            Box::new(move |db, d| match d {
-                Delivery::Initial => {
-                    if let Some(s) = first.take() {
-                        f(db, Ok(s))
-                    }
-                }
-                Delivery::Status(s) => f(db, s.and_then(|s| db.merged_status(s))),
-                _ => {}
-            })
-        }))
+    /// cannot be reached shown as such (`Status::node_connections`) and its groups absent until it
+    /// is back. `Err`: the store could not say; the next status that can be read follows.
+    pub fn on_status_change(&self, f: impl FnMut(&Osis, Result<Status>) + Send + 'static) -> Result<Subscription> {
+        self.status_feed(Box::new(f))
     }
 
     /// Resolves once every group in scope is `SyncState::Synced` and every pending delivery in

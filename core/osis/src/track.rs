@@ -251,28 +251,13 @@ impl ReadOnly {
         Ok(())
     }
 
-    /// On a tracking handle: the status read next is listened to.
+    /// On a tracking handle: the status read next is listened to, as `on_status_change` follows it.
     pub(crate) fn track_status(&self) -> Result<()> {
         let Some(set) = self.tracking.clone() else { return Ok(()) };
-        if !self.has_store() {
-            return self.track_remote("status".into(), |gate| {
-                let w = Arc::downgrade(&set);
-                self.node_on_status_change(Box::new(move |db, r| gate.called_fire(&w, db, r.is_err())))
-            });
-        }
-        self.locked(|l| {
-            self.track_in(l, &set, "status".into(), None, |gate| {
-                let w = Arc::downgrade(&set);
-                (Filter::Status, Box::new(move |db, d| {
-                    match d {
-                        Delivery::Status(_) => gate.fire(&w, db),
-                        Delivery::Moved => gate.ended(&w, db),
-                        _ => {}
-                    }
-                }))
-            });
-        });
-        Ok(())
+        self.track_remote("status".into(), |gate| {
+            let w = Arc::downgrade(&set);
+            self.status_feed(Box::new(move |db, _| gate.called_fire(&w, db, false)))
+        })
     }
 
     /// A read at a connected node: subscribes first (its listener, once), then the caller reads;

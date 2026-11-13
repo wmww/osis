@@ -273,6 +273,58 @@ fn status_shows_a_group_as_its_source_does() {
     drop(x.host);
 }
 
+// spec: none (API surface); notes/api.md Sync configuration and status: a status listener answers as `status` does, at every call: a group sourced at another node shows that node's word across later changes here, a change there calls it, the group is absent while the connection is down and back when it is up; a thin client's listener shows the node's groups alike
+#[test]
+fn a_status_listener_follows_a_group_at_its_node() {
+    let x = world();
+    x.connect_p();
+    x.to_node();
+    let (tx, rx) = channel();
+    let _sub = x.p.on_status_change(move |_, s| drop(tx.send(s.unwrap()))).unwrap();
+    let next_until = |what: &str, f: &dyn Fn(&osis::Status) -> bool| loop {
+        let s = rx.recv_timeout(W).unwrap_or_else(|_| panic!("not reached: {what}"));
+        if f(&s) {
+            return s;
+        }
+    };
+    let up = |s: &osis::Status| s.node_connections.iter().any(|c| c.address == x.nc && c.connected);
+    assert!(next_until("first", &|_| true).groups.contains_key(&x.g), "the first call has it");
+    // a change here: still the node's word for the group
+    let h = x.p.commit_with(|w| w.create()).unwrap();
+    x.p.sync(h, &[]).unwrap();
+    let s = next_until("the new group", &|s| s.groups.contains_key(&h));
+    assert!(s.groups.contains_key(&x.g), "{s:?}");
+    // a change at the node calls it: a write there no peer has yet, then the peer has it
+    x.net.partition("n", "s");
+    x.set_n("n1");
+    next_until("syncing at the node", &|s| s.groups.get(&x.g).is_some_and(|g| g.state == SyncState::Syncing));
+    x.net.heal("n", "s");
+    let _ = x.n.nudge_sync();
+    next_until("synced at the node", &|s| s.groups.get(&x.g).is_some_and(|g| g.state == SyncState::Synced));
+    // down: absent, and back with the connection
+    x.net.partition("p", "n");
+    x.net.disconnect("p", "n");
+    let s = next_until("down", &|s| !up(s));
+    assert!(!s.groups.contains_key(&x.g), "{s:?}");
+    x.net.heal("p", "n");
+    next_until("back", &|s| up(s) && s.groups.contains_key(&x.g));
+    // the connection ended and made anew: followed again
+    assert!(x.p.disconnect_node(&x.nc).unwrap());
+    let s = next_until("ended", &|s| !up(s));
+    assert!(!s.groups.contains_key(&x.g), "{s:?}");
+    x.connect_p();
+    next_until("connected anew", &|s| up(s) && s.groups.contains_key(&x.g));
+    // a thin client's listener: the node's groups at the first call and at a change there
+    let c = x.thin("c1");
+    let (ct, cr) = channel();
+    let _c = c.on_status_change(move |_, s| drop(ct.send(s.unwrap()))).unwrap();
+    assert!(cr.recv_timeout(W).unwrap().groups.contains_key(&x.g), "the first call has it");
+    x.net.partition("n", "s");
+    x.set_n("n2");
+    while cr.recv_timeout(W).unwrap().groups.get(&x.g).is_none_or(|g| g.state != SyncState::Syncing) {}
+    drop(x.host);
+}
+
 // spec/sync.md §10, notes/client-port.md §6: moves with writes pending on either side refuse, changing nothing, and each write stays where it is readable: a local write not yet at a peer holds the move away; going home while this engine cannot catch up, or while the node holds a write no peer has, keeps the source, so calls still go to the node and the local copy never answers behind
 #[test]
 fn moves_with_pending_writes_refuse() {

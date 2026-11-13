@@ -1080,7 +1080,9 @@ impl Osis {
         // one that is down by an old secret (rotated, say) may never come up: the new login replaces it
         let same = |r: &Connection| r.secret.as_ref() == Some(&login.secret.0);
         let known = self.locked(|l| {
+            let was = l.connections.len();
             l.connections.retain(|r| r.addr != login.addr || r.ended().is_none() && (r.connected() || same(r)));
+            l.sources_moved = l.connections.len() != was;
             l.connections.iter().find(|r| r.addr == login.addr).cloned()
         });
         let r = match known {
@@ -1088,7 +1090,10 @@ impl Osis {
             Some(r) => r,
             None => {
                 let r = spawn_client(login, &self.inner.transport, self.inner.limit, self.inner.connection_wait, self.inner.clock.clone())?;
-                self.locked(|l| l.connections.push(r.clone()));
+                self.locked(|l| {
+                    l.connections.push(r.clone());
+                    l.sources_moved = true;
+                });
                 self.inner.has_sources.store(true, Ordering::Release);
                 r
             }
@@ -1097,7 +1102,10 @@ impl Osis {
         // known to be no use: it goes; else it stays and keeps trying
         match r.ended().or_else(|| first.err().filter(|e| matches!(e, Error::Refused(_) | Error::Invalid(_)))) {
             Some(e) => {
-                self.locked(|l| l.connections.retain(|x| !Arc::ptr_eq(x, &r)));
+                self.locked(|l| {
+                    l.connections.retain(|x| !Arc::ptr_eq(x, &r));
+                    l.sources_moved = true;
+                });
                 Err(e)
             }
             None => Ok(()),
@@ -1352,15 +1360,10 @@ impl crate::handle::ReadOnly {
         Ok(self.node_sub(r, at.things().first().copied(), filter, true, cb)?.0)
     }
 
-    /// `on_status_change` at the node of a handle with no store.
-    pub(crate) fn node_on_status_change(&self, mut f: CallbackOf<Result<crate::share::Status>>) -> Result<Subscription> {
-        // every change, and the connection going down or up, shows as the merged status now
-        let cb: Callback = Box::new(move |db, d| {
-            if matches!(d, Delivery::Port(_)) {
-                f(db, db.status());
-            }
-        });
-        self.node_sub_kept(self.primary(), None, Value::List(vec![u(super::filter::STATUS)]), cb)
+    /// A status subscription at `r` (`filter::STATUS`) for `cb`, kept across reconnects; it waits
+    /// for nothing.
+    pub(crate) fn node_status_sub(&self, r: &Arc<Connection>, cb: Callback) -> Subscription {
+        self.node_sub_quiet(r, None, Value::List(vec![u(super::filter::STATUS)]), cb)
     }
 
     /// `on_change` at `path` at a connected node: the initial value, then each change that
@@ -1514,13 +1517,19 @@ impl crate::handle::ReadOnly {
         if r.down().is_none() {
             return Ok(self.node_sub(r, on, filter, true, cb)?.0);
         }
+        Ok(self.node_sub_quiet(r, on, filter, cb))
+    }
+
+    /// A subscription at `r` that waits for nothing: the callback hears its first value, or `Closed`
+    /// while down and the first value when it is up.
+    fn node_sub_quiet(&self, r: &Arc<Connection>, on: Option<Tid>, filter: Value, cb: Callback) -> Subscription {
         let token = next_token();
         let sub = self.port_register(r, token, on, cb);
         // the handle of a stand-in has no connection to tell it
         if r.send(Cmd::Sub { token, filter, again: true, sink: self.port_sink(token, None) }).is_err() {
             self.port_sink(token, None)(PortEvent::Closed);
         }
-        Ok(sub)
+        sub
     }
 
     /// The dispatcher's side of a subscription at `r`.
