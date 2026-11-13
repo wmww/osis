@@ -342,9 +342,8 @@ impl Ctx<'_> {
     fn new<'a>(g: Global, db: Osis, sel: Store, out: &'a mut dyn Write, stdin: &'a mut dyn BufRead, tty: bool) -> anyhow::Result<Ctx<'a>> {
         let mut paths = match &sel {
             // a thin client has no store, so no registered schemas
-            Store::Dir(_) if g.node.is_some() => Vec::new(),
-            Store::Dir(d) => registered(d)?,
-            Store::Memory(_) => Vec::new(),
+            Store::Dir(d) if g.node.is_none() => registered(d)?,
+            _ => Vec::new(),
         };
         paths.extend(g.schemas.iter().cloned());
         for p in paths {
