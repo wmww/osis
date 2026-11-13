@@ -8,6 +8,7 @@
 
 ## Names
 - Thing lists (`Engine::hold_lists`; `Engine::ingest_with_lists` holds a batch's list blobs before its rotation applies) and `listing.0` deltas (`lists::note_listing`) become name rows (`tn/` commit‖thing‖source, `tb/` source‖commit‖thing). Certs stay for good (`tl/`), as role commits do.
+- A name is judged once its source is held: a rotation's lists are kept before it applies (`ingest_with_lists`, own writes) and it may wait for a head not here, so `keep_certs` marks nothing due for a rotation not held; its arrival judges what it names (`refresh_epochs`, a rotation whose count moved). A listing's names are judged as it applies.
 - A list for a rotation not held is not kept: node-sync keeps the entry as `Kind::List { held: false }` until the rotation arrives.
 - Inner and merge signatures are kept per rotation (`ix.rotation_sigs`, persisted); merge signatures are verified at chain build (`osis_commit::verify_merge`).
 
