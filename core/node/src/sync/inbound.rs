@@ -1844,21 +1844,20 @@ impl SyncEngine {
     }
 
     /// A new head in the log of a peer that cannot read `l`, open there: a child of the current
-    /// one or a recorded step moves on; when its credential is another (a new sync key, or the
-    /// open was by a claim, which is the old step's) the open by the old one ends, and L tests
-    /// the new head's credential (`shared_end`). A head past both is walked to by Behind items
-    /// from the current one (spec/sync.md §5, Behind). A hint's label opened knowing no step takes
-    /// the first head bearing the sync key it opened by; another ends the open, the head taken on
-    /// the peer's word (only a Hit on its credential opens anything).
+    /// one or a recorded step moves on (`open_moved`: when its credential is another the open by
+    /// the old one ends). Any other doubts the current one (`doubt`): Behind items walk from it to
+    /// the peer's path (spec/sync.md §5, Behind). A hint's label opened knowing no step takes the
+    /// first head bearing the sync key it opened by; another ends the open, the head taken on the
+    /// peer's word (only a Hit on its credential opens anything).
     pub(crate) fn new_head(&mut self, conn: ConnId, l: LabelId, step: Step, out: &mut Vec<super::Action>) -> Result<()> {
         let Some(lc) = self.lc(conn, &l) else { return Ok(()) };
-        let super::Phase::Open { by } = &lc.phase else { return Ok(()) };
+        let super::Phase::Open { by, .. } = &lc.phase else { return Ok(()) };
         let by = by.as_ref().map(|k| k.verifying_key());
         let cur = lc.head.clone();
         if cur.as_ref().is_some_and(|h| h.id() == step.id()) {
             return Ok(());
         }
-        let (g, claimed) = (lc.group, lc.keys.sync.is_none());
+        let g = lc.group;
         let Some(h) = cur else {
             let ended = by != Some(step.keys.sync);
             self.set_head(conn, l, step)?;
@@ -1867,17 +1866,12 @@ impl SyncEngine {
         let recorded = self.group_label(&g, &l).is_some_and(|gl| gl.steps.contains_key(&step.id()));
         let child = step.verify_child(&h).is_ok();
         if !child && !recorded {
-            return self.behind(conn, l, out);
+            return self.doubt(conn, l, out);
         }
-        let ended = step.keys.sync != h.keys.sync || claimed;
         if child {
             self.record_steps(&g, &l, &[h, step.clone()], None)?;
         }
-        self.set_head(conn, l, step)?;
-        if ended {
-            self.shared_end(conn, l, out)?;
-        }
-        Ok(())
+        self.open_moved(conn, l, step, out)
     }
 
     /// The stream of the peer on `conn` (one that cannot read `l`) read `l` to its end (`stream_reply`): a pass end there,

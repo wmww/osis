@@ -1080,6 +1080,78 @@ fn a_peer_on_an_older_head_is_moved_by_any_reader_spec_sync_5() {
     assert_eq!(net.read(c, t), Some(net::s("after")), "c reads through s alone: {:?}", net.sync(c).label_status());
 }
 
+// spec/sync.md §5 (Opens, Behind), notes/node-sync.md (Label states): two admins' sibling steps
+// share their keys, so a reader's Hit by that sync key opens at the sibling the peer holds while
+// its walk found its own branch's step, which has a recorded child. The open head is doubted and
+// walked back to the peer's path by Behind items: the reader sends at most the one refused
+// Register, then settles open at the peer's step, sending nothing more.
+#[test]
+fn a_reader_opened_at_a_sibling_registers_once_spec_sync_5() {
+    let mut net = Net::new();
+    let s = net.add_host();
+    let s2 = net.add_host();
+    let a = net.node(1, &[s, s2]);
+    let b = net.node(2, &[s, s2]);
+    let c = net.node(3, &[s, s2]);
+    let x = net.node(4, &[s2]);
+    // c knows no head of s: it opens where its walk finds a credential shown; x relays nothing
+    // between s and s2
+    net.blocked.extend([(c, s), (x, s)]);
+    let g = net.group(a, &[(b, Role::Admin), (c, Role::Read), (x, Role::Read)], &[s, s2]);
+    let t = net.item(a, g, g, "item");
+    net.run();
+    assert_eq!(net.read(c, t), Some(net::s("item")));
+    let l = net.label(a);
+    let genesis = net.host_path(s, &l);
+    assert_eq!(genesis.len(), 1);
+    // b reaches s alone, a and c s2 alone: each admin's child of the genesis, same keys
+    cut(&mut net, b, s2);
+    cut(&mut net, a, s);
+    let g0 = genesis[0].id();
+    let theirs = net.engine(b).issue_step(&g, &l, &g0, true).unwrap().0.unwrap().0;
+    let ours = net.engine(a).issue_step(&g, &l, &g0, true).unwrap().0.unwrap().0;
+    assert_eq!((theirs.keys, theirs.prev), (ours.keys, ours.prev), "siblings sharing their keys");
+    assert_ne!(theirs.id(), ours.id());
+    net.run();
+    net.advance(61_000);
+    assert_eq!(net.host_path(s, &l).last().map(|x| x.id()), Some(theirs.id()));
+    assert_eq!(net.host_path(s2, &l).last().map(|x| x.id()), Some(ours.id()));
+    // b away: no admin moves s past `theirs`
+    net.set_online(b, false);
+    // a rotation on a's branch: c records its child of `ours`, under another sync key
+    let (at, bt, ct_, xt) = (net.tid(a), net.tid(b), net.tid(c), net.tid(x));
+    let e = net.engine(a);
+    let rs = recipients_of(e, &[(at, Role::Admin), (bt, Role::Admin), (ct_, Role::Read)]);
+    remove_holder(e, g, xt, &rs, 45);
+    net.run();
+    net.advance(61_000);
+    let path = net.host_path(s2, &l);
+    assert_eq!(path.len(), 3, "the child registered at s2");
+    assert_ne!(path[2].keys.sync, ours.keys.sync);
+    // c moves to s: its walk shows `ours` by the shared sync key, and s holds `theirs`
+    cut(&mut net, c, s2);
+    rejoin(&mut net, c, s);
+    net.diagnostics(c);
+    for _ in 0..3 {
+        net.advance(61_000);
+    }
+    let refused = |d: &[String]| d.iter().filter(|x| x.contains("step refused")).count();
+    let d = net.diagnostics(c);
+    assert!(refused(&d) <= 1, "one Register at most: {d:?}");
+    let conn = net.conn_to(c, s).expect("connected");
+    assert!(net.sync(c).shared_members(conn).contains(&l), "L open at s");
+    assert_eq!(net.host_path(s, &l).last().map(|x| x.id()), Some(theirs.id()), "s keeps its branch");
+    // settled: nothing more goes
+    let behind = net.sync(c).pass_stats().behind_sent;
+    for _ in 0..3 {
+        net.advance(61_000);
+    }
+    let d = net.diagnostics(c);
+    assert_eq!(refused(&d), 0, "{d:?}");
+    assert_eq!(net.sync(c).pass_stats().behind_sent, behind, "no Behind item");
+    assert!(net.sync(c).shared_members(conn).contains(&l));
+}
+
 // spec/sync.md §5 (Register: relayable by any node), issues/net-one-peer.md 3h2 (Stale head): a
 // peer listed for L (in `label.0`) that lacks L entirely gets the recorded path, genesis first,
 // from a reader that is no admin: its walk finds no credential shown, a Behind item on its

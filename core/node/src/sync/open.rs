@@ -343,7 +343,7 @@ impl SyncEngine {
             self.refusals.remove(&(host, l));
         }
         if let Some(lc) = self.lc_mut(conn, &l) {
-            lc.phase = Phase::Open { by: by.map(Box::new) };
+            lc.phase = Phase::Open { by: by.map(Box::new), doubted: None };
             (lc.step_retry, lc.step_refusals) = (0, 0);
         }
         self.stream_source_gained(conn, &l, out)?;
@@ -459,12 +459,80 @@ impl SyncEngine {
     /// by, a link's label asks by its key actor's signing key, naming no step: answered with the
     /// head's entry box for its static entry, or refused (the head does not list it). Holding no
     /// key to ask by, or no shared set there to send it on, `l` fails here (tried again after
-    /// `resync_ms`). Open there (a stream head past the open head), on the open head: L stays
-    /// open, the answer moves its head (`new_head`).
+    /// `resync_ms`). Open there, on the open head (`doubt`): L stays open, the answer moves its
+    /// head.
     pub(crate) fn behind(&mut self, conn: ConnId, l: LabelId, out: &mut Vec<super::Action>) -> Result<()> {
         let Some(open) = self.lc(conn, &l).map(|x| x.phase.is_open()) else { return Ok(()) };
         let from = if open { self.lc(conn, &l).and_then(|x| x.head.clone()) } else { self.newest_known(conn, &l) };
         self.behind_from(conn, l, from, out)
+    }
+
+    /// The open head of `l` on `conn` is not where the peer is: the peer refused a child of it (9),
+    /// or its stream named a head that is neither a child of it nor recorded (two admins' sibling
+    /// steps share their keys, so a Hit opens at whichever the peer holds, and a walk assumes
+    /// this node's own branch). No child is registered under it (`doubting`), and a Behind item on
+    /// it asks for the steps after it (spec/sync.md §5, Behind); refused, off the peer's path, the
+    /// nearest earlier step holding a credential asks next (`doubt_answered`). L stays open; the
+    /// answer, or a head the stream names, moves its head. Once per head.
+    pub(crate) fn doubt(&mut self, conn: ConnId, l: LabelId, out: &mut Vec<super::Action>) -> Result<()> {
+        let Some(lc) = self.lc_mut(conn, &l) else { return Ok(()) };
+        let head = lc.head.as_ref().map(Step::id);
+        let Phase::Open { doubted, .. } = &mut lc.phase else { return Ok(()) };
+        if head.is_none() || *doubted == head {
+            return Ok(());
+        }
+        *doubted = head;
+        self.behind(conn, l, out)
+    }
+
+    /// Whether `l` is open on `conn` at a head the peer refused a child of or named another head
+    /// past (`doubt`): nothing is registered under it until the head moves.
+    pub(crate) fn doubting(&self, conn: ConnId, l: &LabelId) -> bool {
+        self.lc(conn, l).is_some_and(|x| matches!(&x.phase, Phase::Open { doubted: Some(d), .. } if x.head.as_ref().is_some_and(|h| h.id() == *d)))
+    }
+
+    /// A Behind item on `asked`, asked while doubting the open head (`doubt`), was refused: 4,
+    /// past the peer's budget for one Offer, a child is registered again after a back-off (its
+    /// 9 doubts again); else `asked` is off the peer's path (or the peer's head, its child
+    /// refused for another reason): the nearest earlier recorded step holding a credential asks
+    /// next. None left: L stays open at the head, registering nothing under it, until the stream
+    /// names another.
+    fn doubt_answered(&mut self, conn: ConnId, l: LabelId, asked: &Step, code: Code, out: &mut Vec<super::Action>) -> Result<()> {
+        if code == Code::RATE_LIMITED {
+            let (now, first, cap) = (self.now(), self.cfg.retry_ms, self.cfg.resync_ms);
+            let Some(lc) = self.lc_mut(conn, &l) else { return Ok(()) };
+            if let Phase::Open { doubted, .. } = &mut lc.phase {
+                *doubted = None;
+            }
+            lc.step_retry = now.saturating_add(backoff(first, cap, lc.step_refusals));
+            lc.step_refusals = lc.step_refusals.saturating_add(1);
+            let at = lc.step_retry;
+            self.settle_by(at, l);
+            return Ok(());
+        }
+        match self.asked_before(conn, l, asked) {
+            Some(p) => self.behind_from(conn, l, Some(p), out),
+            None => {
+                self.diag(format!("label {l:?}: open at a head off the peer's path, no earlier step to ask on"));
+                Ok(())
+            }
+        }
+    }
+
+    /// Takes `step`, on the peer's path, as the head of open `l` on `conn`: when its credential is
+    /// another (a new sync key, or the open was by a claim, which is the old step's) the open by
+    /// the old one ends, and L tests the new head's credential (`shared_end`).
+    pub(crate) fn open_moved(&mut self, conn: ConnId, l: LabelId, step: Step, out: &mut Vec<super::Action>) -> Result<()> {
+        let Some(lc) = self.lc(conn, &l) else { return Ok(()) };
+        if lc.head.as_ref().is_some_and(|h| h.id() == step.id()) {
+            return Ok(());
+        }
+        let ended = lc.keys.sync.is_none() || lc.head.as_ref().is_some_and(|h| h.keys.sync != step.keys.sync);
+        self.set_head(conn, l, step)?;
+        if ended {
+            self.shared_end(conn, l, out)?;
+        }
+        Ok(())
     }
 
     /// `behind` on step `from` (none: a hint's, knowing no step). A step the peer refused a
@@ -473,7 +541,7 @@ impl SyncEngine {
         let Some(lc) = self.lc(conn, &l) else { return Ok(()) };
         let (g, index, open) = (lc.group, lc.index, lc.phase.is_open());
         let (by, refused) = match &lc.phase {
-            Phase::Open { by } => (by.as_deref().cloned(), Vec::new()),
+            Phase::Open { by, .. } => (by.as_deref().cloned(), Vec::new()),
             Phase::Behind { refused } => (None, refused.clone()),
             _ => (None, Vec::new()),
         };
@@ -501,13 +569,16 @@ impl SyncEngine {
         }
         if asks.is_empty() {
             self.diag(format!("label {l:?}: behind the peer's head with no key to ask by"));
-            self.fail(conn, l);
+            // open: membership stays; nothing is registered under the doubted head
+            if !open {
+                self.fail(conn, l);
+            }
             return Ok(());
         }
         if let Some(lc) = self.lc_mut(conn, &l).filter(|_| !open) {
             lc.phase = Phase::Behind { refused };
         }
-        if !self.shared_behind(conn, l, asks, by_static, out)? {
+        if !self.shared_behind(conn, l, asks, by_static, out)? && !open {
             self.fail(conn, l);
         }
         Ok(())
@@ -539,7 +610,13 @@ impl SyncEngine {
         if !steps.is_empty() && !verified {
             self.diag(format!("label {l:?}: a Behind item answered with steps that do not verify"));
         }
+        // an answer to a doubt of the open head (`doubt`); any other answer while open crossed
+        // the open or a head move, and asks nothing any more
+        let doubting = self.doubting(conn, &l);
         let Some(last) = steps.last().cloned().filter(|_| verified) else {
+            if let Some(a) = asked.as_ref().filter(|_| doubting) {
+                return self.doubt_answered(conn, l, a, code, out);
+            }
             if matches!(phase, Phase::Behind { .. }) {
                 return match asked {
                     // past the peer's budget for one Offer: asked again after a back-off
@@ -600,18 +677,8 @@ impl SyncEngine {
             }
         }
         match phase {
-            // asked on the open head: each a child of the head before it, the head moves along
-            // to the peer's (an answer asked before L opened names no step of it)
-            Phase::Open { .. } => {
-                let head = self.lc(conn, &l).and_then(|x| x.head.as_ref().map(Step::id));
-                if asked.is_none_or(|a| Some(a.id()) != head) {
-                    return Ok(());
-                }
-                for st in steps {
-                    self.new_head(conn, l, st, out)?;
-                }
-                Ok(())
-            }
+            // asked on the doubted open head or a step before it: the last is on the peer's path
+            Phase::Open { .. } if doubting && asked.is_some() => self.open_moved(conn, l, last, out),
             Phase::Behind { .. } => {
                 if let Some(lc) = self.lc_mut(conn, &l) {
                     lc.head = Some(last.clone());
@@ -755,8 +822,23 @@ impl SyncEngine {
                 }
                 Ok(())
             }
-            // a child step refused (the peer's head moved: its stream's head event says where to,
-            // or ended the open), or the rest of a path's steps whose registration ended
+            // the open head's child refused: the head is not the peer's (its stream may name the
+            // new one, or the peer holds a sibling sharing its keys): doubted, never registered
+            // under again (`doubt`); a child of a head the stream moved past since: the next pass
+            // registers under the new one
+            (Request::Register, Some(Phase::Open { .. })) => {
+                let head = self.lc(conn, &l).and_then(|x| x.head.as_ref().map(Step::id));
+                let Some(lc) = self.lc_mut(conn, &l) else { return Ok(()) };
+                let under_head = lc.registering.take().is_some_and(|(s, _)| s.prev.is_some() && s.prev == head);
+                self.diag(format!("label {l:?}: step refused (code {})", code.0));
+                if under_head {
+                    return self.doubt(conn, l, out);
+                }
+                self.mark_labels(&[l]);
+                Ok(())
+            }
+            // a child step refused after the open ended, or the rest of a path's steps whose
+            // registration ended
             (Request::Register, _) => {
                 if let Some(lc) = self.lc_mut(conn, &l) {
                     lc.registering = None;

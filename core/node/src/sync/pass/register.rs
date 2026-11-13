@@ -62,7 +62,8 @@ impl SyncEngine {
         // under the source's head: what it places is wrapped under the newest read epoch, so a
         // removed holder still opening that head gets nothing it can read (spec/sync.md §5)
         let Some(head) = head else { return Ok(false) };
-        if retry > self.now() || self.is_replaced(&g, &l) {
+        // a head the peer refused a child of is not where the peer is: nothing goes under it
+        if retry > self.now() || self.is_replaced(&g, &l) || self.doubting(conn, &l) {
             return Ok(false);
         }
         let (step, set) = match self.recorded_child(&g, &l, &head.id()) {

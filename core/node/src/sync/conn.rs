@@ -37,8 +37,11 @@ pub(crate) enum Phase {
     Behind { refused: Vec<osis_label::StepId> },
     /// A member of the connection's shared set. `by`: the key whose open signature opened it at
     /// a peer that cannot read L (a sync key, or a claim's; none by read credentials or a static
-    /// entry), its credential there until the head moves past it (`new_head`).
-    Open { by: Option<Box<osis_crypto::SigningSecret>> },
+    /// entry), its credential there until the head moves past it (`new_head`). `doubted`: the
+    /// head the peer refused a child of, or named another head past (two admins' sibling steps
+    /// share their keys, so a Hit opens at whichever the peer holds): no child is registered
+    /// under it, and Behind items walk back from it to the peer's path (`SyncEngine::doubt`).
+    Open { by: Option<Box<osis_crypto::SigningSecret>>, doubted: Option<osis_label::StepId> },
     /// No key opens it here (`entry_refused`: the peer answered a Behind item by this node's
     /// static entry with a refusal, its head not listing it, `SyncEngine::static_entry_refused`).
     Failed { entry_refused: bool },

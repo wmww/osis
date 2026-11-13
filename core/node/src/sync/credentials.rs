@@ -165,7 +165,7 @@ impl SyncEngine {
             let key = match phase {
                 // the head's: its sync key held, else this node's claim key its set lists, else the
                 // key it opened by (an open the head's move ended is no longer open: `new_head`)
-                super::Phase::Open { by } => match (sync, head, by.map(|b| *b)) {
+                super::Phase::Open { by, .. } => match (sync, head, by.map(|b| *b)) {
                     (Some(k), ..) => Some(k),
                     (None, Some(h), by) => self.step_key(&g, index, l, &h).or(by),
                     (None, None, by) => by,
