@@ -7,7 +7,7 @@ Files: `SyncConvergence.tla` (the model), `MC.tla` (scenario constants), one `.c
 `../run.sh sync` (about 40 s at one worker; the other cfgs by name, `../run.sh sync <cfg>`); it fetches TLC into `~/.cache/tla/` if missing. By hand, from this directory (Java 11+):
 ```
 java -XX:+UseParallelGC -cp ~/.cache/tla/tla2tools.jar tlc2.TLC -workers 1 \
-  -metadir /tmp/tlc-states -config deposit.cfg MC
+  -metadir ../../../../target/tlc-states -config deposit.cfg MC
 ```
 Keep state directories out of the repo (`-metadir`).
 

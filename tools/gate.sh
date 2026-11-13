@@ -14,9 +14,10 @@
 # app/, osis-android app/android/: workspace members outside default-members) has its own steps. A
 # diff touching only libs/kit/ or app/ runs only the GUI steps; any other diff runs the core steps,
 # whose lint covers the GUI too (an osis API change must not silently break the app); both, both. The
-# unification check runs when a Cargo.toml, Cargo.lock or .cargo/ changed. On main itself, with no
-# merge base, or with --all, everything runs and the selection is every crate. --base REV compares
-# against REV instead of the merge base with main. --plan prints the step selection (core, gui,
+# unification check runs when a Cargo.toml, Cargo.lock or .cargo/ changed. On origin/main itself, with no
+# merge base, or with --all, everything runs and the selection is every crate. The base is the merge
+# base with origin/main, fetched first (local main lags: coordinators push from worktrees); --base
+# REV compares against REV instead. --plan prints the step selection (core, gui,
 # unify, select: all, diff or none) and exits (tested by tools/gate_select_test.sh); the tests a
 # `select=diff` picks: tools/test_select.py [--base REV].
 # A diff whose non-GUI paths are all Markdown under spec/, notes/ and issues/ (core=docs) runs the
@@ -83,7 +84,13 @@ if [ -n "$held" ]; then
   awk '$2 != 0 { f = 1 } END { exit f }' "$results"
   exit
 fi
-[ -n "$base" ] || base=$(git merge-base HEAD main 2>/dev/null || true)
+# origin's main, fetched: the base of the selection and what HEAD must contain. Local main lags (the
+# coordinators push from worktrees): diffing against it counts other branches' merged work as this one's.
+if git remote get-url origin > /dev/null 2>&1; then
+  timeout 60 git fetch -q origin main 2>/dev/null || echo "gate: fetching origin main failed; using the last fetched one" >&2
+fi
+om=$(git rev-parse -q --verify refs/remotes/origin/main || true)
+[ -n "$base" ] || [ -z "$om" ] || base=$(git merge-base HEAD "$om" 2>/dev/null || true)
 core=1
 gui=1
 unify=1
@@ -120,11 +127,9 @@ else
   select=diff
 fi
 if [ -n "$plan" ]; then echo "core=${core:-0} gui=${gui:-0} unify=${unify:-0} select=$select"; exit 0; fi
-# a branch not on origin's main gates code other than what merges (local main lags when the other
-# box merges): refuse it
-timeout 60 git fetch -q origin main 2>/dev/null || echo "gate: fetching origin main failed; checking against the last fetched one" >&2
-if git rev-parse -q --verify refs/remotes/origin/main > /dev/null && ! git merge-base --is-ancestor refs/remotes/origin/main HEAD; then
-  echo "gate: HEAD does not contain origin/main ($(git rev-list --count HEAD..refs/remotes/origin/main) commits behind): git fetch && git rebase origin/main" >&2; exit 2
+# a branch not on origin's main gates code other than what merges: refuse it
+if [ -n "$om" ] && ! git merge-base --is-ancestor "$om" HEAD; then
+  echo "gate: HEAD does not contain origin/main ($(git rev-list --count "HEAD..$om") commits behind): git rebase origin/main" >&2; exit 2
 fi
 # Feature unification is selection-invariant (notes/build.md, Feature unification): after the
 # whole-workspace build (GUI included), building the default members, or any one member alone,
@@ -228,7 +233,7 @@ limited build builds
 if [ -n "$unify" ]; then
   limited gate.unify unification_check
 else
-  echo "== unification check skipped (no Cargo.toml, Cargo.lock or .cargo/ change since main)"
+  echo "== unification check skipped (no Cargo.toml, Cargo.lock or .cargo/ change since origin/main)"
 fi
 deny() {
   step sh -c 'for f in schema/*.osis; do printf "%s: " "$f"; cargo run --locked --quiet --bin osis -- schema check "$f" || exit 1; done'

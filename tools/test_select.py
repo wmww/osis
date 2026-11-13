@@ -6,6 +6,8 @@ size, computed from what it touched. tools/gate.sh runs them in its one hold of 
   tools/test_select.py --paths PATH...                            select for these paths, not a diff
   tools/test_select.py --emit [--base REV | --all] [--offset N]   for the gate: `build CMD` and `run LIMIT CMD` lines
 
+The default base is the merge base with origin/main as last fetched, as in the gate (local main lags).
+
 The set: every property test, at small size, of the crates the paths touch and their dependents
 (the Cargo graph), and every sim scenario if osis-sim is one of those; `--all` selects every crate.
 A dependent is reached through normal and build edges; a dev edge selects that one crate and
@@ -68,7 +70,7 @@ def metadata():
 
 def changed(base):
     if base is None:
-        base = run("git", "merge-base", "HEAD", "main").strip()
+        base = run("git", "merge-base", "HEAD", "refs/remotes/origin/main").strip()
     diff = run("git", "diff", "--no-renames", "--name-only", "-z", base, "--")
     new = run("git", "ls-files", "--others", "--exclude-standard", "-z")
     return sorted({p for p in (diff + new).split("\0") if p})

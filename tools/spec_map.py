@@ -299,19 +299,22 @@ def render():
 
 def main():
     args = sys.argv[1:]
-    if len(args) > 1 or any(a not in ("--uncited", "--gaps") for a in args):
-        sys.exit(f"usage: spec_map.py [--uncited | --gaps] (got {' '.join(args)})")
+    if any(a not in ("--uncited", "--gaps") for a in args):
+        sys.exit(f"usage: spec_map.py [--uncited] [--gaps] (got {' '.join(args)})")
     text, uncited, open_r, problems = render()
-    if "--uncited" in sys.argv:
-        for u in uncited:
-            print(f"uncited test: {u}")
-        sys.exit(1 if uncited else 0)
-    if "--gaps" in sys.argv:
-        for f, s, a in open_r:
-            print(f"no test or issue: {f} §{s} ({a})")
-        for p in problems:
-            print(p)
-        sys.exit(1 if open_r or problems else 0)
+    if args:
+        bad = False
+        if "--uncited" in args:
+            for u in uncited:
+                print(f"uncited test: {u}")
+            bad |= bool(uncited)
+        if "--gaps" in args:
+            for f, s, a in open_r:
+                print(f"no test or issue: {f} §{s} ({a})")
+            for p in problems:
+                print(p)
+            bad |= bool(open_r or problems)
+        sys.exit(1 if bad else 0)
     with open(OUT, "w") as f:
         f.write(text)
     print(f"wrote {os.path.relpath(OUT, ROOT)}")

@@ -75,6 +75,9 @@ git("config", "user.email", "t@t")
 git("config", "user.name", "t")
 git("add", "-A")
 git("commit", "-qm", "init")
+# the default base is the merge base with origin/main: a remote whose main is this one
+git("remote", "add", "origin", ".")
+git("fetch", "-q", "origin", "main")
 
 t = out("--paths", "notes/a.md")
 check("notes only", t, "selects nothing: notes/a.md", "crates selected: 0 of 6", "nothing to run", absent=["cargo test"])
@@ -106,7 +109,7 @@ check("schema without a reader", t, "schema/orphan.osis (no workspace crate read
 t = out("--paths", "core/test/tla/x.tla", "weird.txt")
 check("outside any crate", t, "(core/test/tla/run.sh", "weird.txt (no crate, not classified", "nothing to run")
 
-# a real diff: uses merge-base with main and picks up untracked files
+# a real diff: uses merge-base with origin/main and picks up untracked files
 git("checkout", "-qb", "t")
 write("core/leaf/src/lib.rs", PROP.format("leaf_large") + "// edit\n")
 git("add", "-A")

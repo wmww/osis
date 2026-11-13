@@ -181,7 +181,9 @@ if [ ! -f "$jar" ]; then
   mv "$jar.tmp" "$jar"
 fi
 
-meta=$(mktemp -d)
+# TLC states on disk under the worktree's target/, never tmpfs /tmp (RAM is the constraint)
+mkdir -p "$here/../../../target"
+meta=$(mktemp -d "$here/../../../target/tlc.XXXXXX")
 trap 'rm -rf "$meta"' EXIT
 failed=0
 total=$(date +%s)

@@ -7,7 +7,7 @@ Usage: tools/rename-table [REV | A..B | -]
   REV    the changes of commit REV (against its first parent)
   A..B   the diff between A and B
   -      a unified diff on stdin
-  none   the merge base with main against the working tree (committed or not)
+  none   the merge base with origin/main against the working tree (committed or not)
 
 Per hunk, each run of removed lines is compared with the run of added lines after it, token by
 token (identifiers: [A-Za-z_][A-Za-z0-9_]*). A replaced span of equal length pairs token for
@@ -33,7 +33,7 @@ def diff_text(argv):
     if len(argv) > 1:
         sys.exit(__doc__.split("\n\n")[1])
     if not argv:
-        base = subprocess.run(["git", "merge-base", "HEAD", "main"], check=True, capture_output=True, text=True).stdout.strip()
+        base = subprocess.run(["git", "merge-base", "HEAD", "refs/remotes/origin/main"], check=True, capture_output=True, text=True).stdout.strip()
         return git_diff([base])
     a = argv[0]
     if a == "-":

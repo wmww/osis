@@ -11,8 +11,8 @@
 # dirs: a test reading fixtures reads the checked-out ones. Refuses the main checkout (build only
 # in task worktrees). Killed hard (SIGKILL) mid-build, it leaves HEAD detached at REV: check the
 # branch it printed out again. Interrupted mid-build (seen with Ctrl-C), the next build here may
-# fail to link with undefined symbols: delete the newest target/debug/incremental/{it,osis_node,
-# osis_engine}-* dirs.
+# fail to link with undefined symbols: `cargo clean -p <crate>` for the crate the error names
+# (notes/build.md, Footguns; deleting incremental dirs leaves a fresh-looking rlib unrebuilt).
 set -eu
 usage="usage: tools/bin-at REV OUT [--release] [-p CRATE] [--test NAME | --lib CRATE] [--patch FILE]... [--take PATH]..."
 [ $# -ge 2 ] || { echo "$usage" >&2; exit 2; }

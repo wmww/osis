@@ -4,8 +4,8 @@
 A branch proves itself in its worktree; main is only fast-forwarded, never built. The reviewer gates once per branch; a worker never does (notes/coordination.md, Test budget). Stage costs and limits: notes/build.md, Time limits.
 
 ## Running it
-`tools/gate.sh [--all] [--base REV] [--plan]` from the worktree root, after `git fetch && git rebase origin/main` and reading the rebase's result. No pipe, no `tools/heavy` around it (it takes the lock itself; a nested one refuses). It refuses a tree mid-rebase or with conflicts, and a HEAD that lacks origin/main (it fetches first; local main lags when the other box merges).
-- `--base REV`: diff against REV instead of the merge base with main. `--all`: select every crate (as on main, or with no merge base). `--plan`: print `core= gui= unify= select=all|diff|none` and exit.
+`tools/gate.sh [--all] [--base REV] [--plan]` from the worktree root, after `git fetch && git rebase origin/main` and reading the rebase's result. No pipe, no `tools/heavy` around it (it takes the lock itself; a nested one refuses). It fetches origin/main and uses it as the base, never local main (coordinators push from worktrees, so local main lags; a diff against it counts other branches' merged work as this one's). It refuses a tree mid-rebase or with conflicts, and a HEAD that lacks origin/main.
+- `--base REV`: diff against REV instead of the merge base with origin/main. `--all`: select every crate (as on origin/main, or with no merge base). `--plan`: print `core= gui= unify= select=all|diff|none` and exit.
 - Exit 0 `== gate passed`; 3 `== gate FAILED, KNOWN failures only`; 1 `== gate FAILED: N NEW, M KNOWN`; 2 bad use or refused.
 - Then the coordinator: `git checkout main && git merge --ff-only <branch> && git push`. Task branches are never pushed.
 
@@ -22,7 +22,7 @@ Each prints its wall and CPU-s (compare CPU-s; wall follows load) and checks its
 9. The summary (below).
 
 ## Components pay for themselves
-Iterating on one project must not run the others' checks. The paths changed since the merge base (committed or not) pick the steps:
+Iterating on one project must not run the others' checks. The paths changed since the merge base with origin/main (committed or not) pick the steps:
 - only libs/kit/ or app/: the GUI lint and tests, unification if a manifest changed, deny.
 - every other path Markdown under spec/, notes/ or issues/ (`core=docs`): steps 1-2, plus the GUI steps if the GUI changed. A Rust line that reads or includes a file there (`git grep` in gate.sh, one-line calls only) sends the full gate and names it.
 - anything else: every step; the GUI lint always (an osis API change must not silently break the app), the GUI tests only if the GUI changed.

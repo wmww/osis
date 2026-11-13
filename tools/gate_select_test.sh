@@ -15,6 +15,8 @@ for f in Cargo.toml core/engine/a.rs core/osis/a.rs libs/kit/src/a.rs libs/chat/
   seq 1 40 > "$f"
 done
 git add -A; git commit -qm init
+# origin: the gate's base is the merge base with origin/main (fetched), never local main
+git init -q --bare ../up.git; git remote add origin ../up.git; git push -q origin main
 fail=0 n=0
 # check NAME EXPECTED [gate args]: runs from the current directory
 check() {
@@ -77,7 +79,7 @@ git checkout -q --detach
 check "detached HEAD" "core=0 gui=1 unify=0 select=none"
 git checkout -q t
 # a source on main reading notes/: a notes-only branch then runs everything, naming it (last: main changes)
-git checkout -q main; echo 'let _ = std::fs::read_to_string("../notes/n.md");' > core/osis/r.rs; git add -A; git commit -qm reader
+git checkout -q main; echo 'let _ = std::fs::read_to_string("../notes/n.md");' > core/osis/r.rs; git add -A; git commit -qm reader; git push -q origin main
 case_ "notes only, a source reads notes" "gate: docs-only diff, but these read spec/, notes/ or issues/ (add them to the docs step): full gate
 core/osis/r.rs:1:let _ = std::fs::read_to_string(\"../notes/n.md\");
 core=1 gui=0 unify=0 select=diff" "echo x >> notes/n.md"
@@ -86,8 +88,13 @@ check "uncommitted kit edit, no commits (base = HEAD)" "core=1 gui=1 unify=1 sel
 git checkout -q libs/kit/src/a.rs
 git checkout -q --orphan orph; git commit -qm orphan
 check "no merge base" "core=1 gui=1 unify=1 select=all"
-git checkout -q t; git branch -qm main old
-check "no main branch" "core=1 gui=1 unify=1 select=all"
+# local main behind origin/main (pushed from another checkout): origin's work is not the branch's
+git checkout -q main; echo x >> core/osis/a.rs; git commit -qam "merged elsewhere"; git push -q origin main; git reset -q --hard HEAD^
+git checkout -q -b lag origin/main; echo x >> libs/kit/src/a.rs; git commit -qam lag
+check "local main behind origin/main" "core=0 gui=1 unify=0 select=none"
+check "--base local main" "core=1 gui=1 unify=0 select=diff" --base main
+git checkout -q t; git remote remove origin
+check "no origin/main" "core=1 gui=1 unify=1 select=all"
 # the hold's runner (--held): only under tools/heavy (HEAVY_HELD), each `run LIMIT CMD` line in order with
 # stdin closed, every one run, `LIMIT EXIT LOG` per run in runs.res; exit 1 if any failed; `build` lines are not its
 held() {
