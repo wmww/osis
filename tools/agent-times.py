@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """Where a coordinator session's agents spent their time.
 
-  tools/agent-times.py [SESSION] [--since HH:MM | --since YYYY-MM-DDTHH:MM+HH:MM] [--long N]
+  tools/agent-times.py [SESSION] [--since HH:MM | --since YYYY-MM-DDTHH:MM+HH:MM | --since COMMIT] [--long N]
 
 SESSION is a session's transcript dir (~/.claude/projects/<project>/<session>), its subagents/ dir
 or its /tmp tasks/ dir; the default is this repo's project session that most recently ran agents.
 
-One row per agent: total time (idle spells after it ended a turn left out), model time (no
+One row per agent: total time (idle spells after it ended a turn or hit a usage limit left out), model time (no
 foreground tool running: thinking and writing) and minutes per kind of work, as columns for the
 kinds that took most time over all agents. A command counts from its call to its result, or for a
 background one to its completion notice, so background and parallel work overlap and a row need
@@ -19,7 +19,8 @@ run) and names agents that wrote wait loops. Then, from tools/heavy's log, each 
 its waits and holds, and the CPU-s and cores its locked runs used (a run is charged to the agent whose
 running command named tools/heavy or gate.sh when the run asked for the lock).
 --long N lists each agent's N longest commands (a minute or more). --since HH:MM is the last such
-local time (yesterday if later than now); an ISO date-time must carry its UTC offset. The watchdog
+local time (yesterday if later than now); an ISO date-time must carry its UTC offset; a commit
+(hash or ref) means its commit time. The watchdog
 (notes/coordination.md) reads this first.
 """
 import datetime as dt, glob, json, os, re, statistics, subprocess, sys
@@ -48,7 +49,11 @@ if "since" in opts:
         try:
             since = dt.datetime.fromisoformat(v.replace("Z", "+00:00"))
         except ValueError:
-            sys.exit(f"--since {v!r}: expected HH:MM or an ISO date-time with offset")
+            commit = subprocess.run(["git", "show", "-s", "--format=%cI", v + "^{commit}", "--"], capture_output=True,
+                                    text=True, cwd=os.path.dirname(os.path.abspath(__file__))).stdout.strip()
+            if not commit:
+                sys.exit(f"--since {v!r}: expected HH:MM, an ISO date-time with offset or a commit")
+            since = dt.datetime.fromisoformat(commit)
         if since.tzinfo is None:
             sys.exit(f"--since {v!r}: give the UTC offset (e.g. {v}+01:00)")
 
@@ -240,7 +245,9 @@ def analyze(path):
                 idle.append((idle_from, t))
             idle_from = None
         elif o.get("type") == "assistant":
-            idle_from = t if msg.get("stop_reason") == "end_turn" else None
+            # a turn ends at end_turn, or at a usage-limit pause (a synthetic rate_limit message)
+            paused = msg.get("model") == "<synthetic>" and o.get("error") == "rate_limit"
+            idle_from = t if msg.get("stop_reason") == "end_turn" or paused else None
         if not isinstance(c, list):
             continue
         for b in c:
