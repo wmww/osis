@@ -5862,6 +5862,55 @@ fn fallen_snapshot_lifts_own_tombstone_spec_sync_9() {
     assert_eq!(net.eph_read(a, t, STATE), Some(s("y")));
 }
 
+// spec/sync.md §6 Reader, §9 (A snapshot turning invalid): a reader deposits a must-hold body it
+// holds and no entry of. Writer w covers its write x by a snapshot S and deletes x at the host;
+// the admin, reading nothing meanwhile, demotes w, so S is invalid (the admin had not received
+// it) and falls at w, and x stays valid. Reader r, never hearing of S, keeps x with no entry of
+// it. The admin restarts before its relay delay for x passed: r alone holds x, deposits it, and
+// the admin promotes it (`ephemeral_reverts_with_restarts_alike_large_spec_crdt_4_6` seed
+// 750697698832: there the reader is w itself, its x back from a holder)
+#[test]
+fn reader_alone_holding_a_value_deposits_it_spec_sync_6() {
+    let (mut net, _host, [a, w, r], g, []) = hosted::<3, 0>(&[(1, Role::Write), (2, Role::Read)], [], true);
+    let t = made_synced(&mut net, a, g);
+    let l = net.label(a);
+    let mut m = Mutation::new();
+    m.set(t, &eph(STATE), &s("x")).unwrap();
+    let x = net.engine(w).write(m).unwrap().unwrap().id;
+    local(&mut net, w);
+    net.run();
+    assert_eq!((net.eph_read(a, t, STATE), net.eph_read(r, t, STATE)), (Some(s("x")), Some(s("x"))));
+    net.held_to.insert(a);
+    let acts = net.sync(w).compact_ephemeral_now().unwrap();
+    net.actions(w, acts);
+    let entries = |net: &mut Net, n: usize, c: CommitId| -> Vec<osis_base::BlobId> {
+        net.sync(n).entries(&l).into_iter().filter(|(_, k)| matches!(k, osis_node::sync::EntryKind::Commit { commit, .. } if *commit == c)).map(|(id, _)| id).collect()
+    };
+    let snapshot = net.engine(w).memory_commits().into_iter().map(|(c, _, _)| c).find(|c| *c != x).unwrap();
+    let hidden = entries(&mut net, w, snapshot);
+    assert!(!hidden.is_empty() && !memory_ids(&mut net, w).contains(&x), "x covered by w's snapshot");
+    net.hide_blobs.entry(r).or_default().extend(hidden);
+    net.run();
+    assert!(entries(&mut net, r, x).is_empty(), "w deleted x at the host");
+    let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
+    let d = osis_node::flows::Demotion { holder: net.tid(w), new: Some(edge), retain: None };
+    let done = net.engine(a).demote(&g, &d).unwrap();
+    let acts = net.sync(a).carry_out(done).unwrap();
+    net.actions(a, acts);
+    net.release();
+    net.run();
+    assert_eq!(net.engine(w).valid_parts(&snapshot), Some(BTreeSet::new()), "the snapshot fell");
+    assert!(memory_ids(&mut net, r).contains(&x));
+    net.restart(a, 7);
+    net.run();
+    assert_eq!(net.eph_read(a, t, STATE), None, "no host holds x");
+    for _ in 0..3 {
+        net.advance(31_000);
+    }
+    assert_eq!(net.eph_read(a, t, STATE), Some(s("x")), "r deposited x");
+    assert_eq!(net.eph_read(w, t, STATE), Some(s("x")));
+}
+
 // spec/sync.md §6 (outside the required set), §7 (A snapshot turning invalid): writer b's
 // snapshot S2 of the group's list covers its S1, which covers the commit listing window w; S2
 // falls with b's demotion (the admin never received it), so b holds the earlier parts of that

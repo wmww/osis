@@ -10,3 +10,4 @@ tests_laws::entry_copies::forged_entry_copies_join_and_expire_alike_spec_5_6 OSI
 ephemeral::ephemeral_reverts_with_restarts_alike_large_spec_crdt_4_6 OSIS_EPH_START=750697698832 issues/eph-revert-restart-reads-differ.md failed: seed \d+: Tid\([^)]*\)(?! listed)
 ephemeral::random_window_one_capped_host_large OSIS_EPH_START=889902233287 issues/sync-never-quiet-two-seeds.md no quiescence after \d+ rounds \(\d+ messages\): a loop
 sim-sweep:evil_host_drops 889902233282/889902233296 issues/sync-never-quiet-two-seeds.md not quiescent after \d+ rounds
+props::arrival_orders_read_alike_after_repair_large_spec_commits_5 OSIS_HELD_START=428367310133 issues/held-model-arrival-order-seed.md order \d+: \[\(\(\d+, Aspect \{.*\}\), None, Some\(

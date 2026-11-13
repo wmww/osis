@@ -436,10 +436,13 @@ impl SyncEngine {
         e.cert || matches!(&e.kind, Kind::Commit { commit, .. } if self.own(commit))
     }
 
-    /// A non-writer deposits its own role writes (an invite grant, a self-removal,
-    /// spec/sync.md §3) and requests (a destruction by an admin of the thing alone).
+    /// A non-writer deposits a must-hold body it holds no entry of (spec/sync.md §6 Reader):
+    /// one it judges valid, and its own role writes (an invite grant, a self-removal, spec/sync.md
+    /// §3) and requests (a destruction by an admin of the thing alone) whatever it judges. Else a
+    /// value a reader alone holds, its entries deleted (its own write under its own snapshot that
+    /// fell with its demotion) and every writer holding it restarted, reaches no one again.
     pub(super) fn may_deposit(&self, keys: &HeadKeys, b: &Body) -> bool {
-        keys.deposit.is_some() && self.judges_deletes(b) && self.own(&b.commit)
+        keys.deposit.is_some() && ((self.judges_deletes(b) && self.own(&b.commit)) || self.engine.judged_valid(&b.commit, &b.parts))
     }
 
     /// A body's place in a pass's order: placed first by a flow, then what deletes are judged
