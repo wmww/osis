@@ -16,7 +16,7 @@ for f in Cargo.toml core/engine/a.rs core/osis/a.rs libs/kit/src/a.rs libs/chat/
 done
 git add -A; git commit -qm init
 # origin: the gate's base is the merge base with origin/main (fetched), never local main
-git init -q --bare ../up.git; git remote add origin ../up.git; git push -q origin main
+git init -q --bare -b main ../up.git; git remote add origin ../up.git; git push -q origin main
 fail=0 n=0
 # check NAME EXPECTED [gate args]: runs from the current directory
 check() {
