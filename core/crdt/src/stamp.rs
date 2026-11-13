@@ -125,14 +125,6 @@ impl Source {
             _ => None,
         }
     }
-    /// The node its writes belong to: a `Session` source's node, a `Derived` source's underlying
-    /// author's (§2.1); `None` for a `Commit` source.
-    pub fn node_of(&self) -> Option<Tid> {
-        match self.author().kind() {
-            SourceKind::Session(s) => Some(s.node),
-            _ => None,
-        }
-    }
 }
 
 impl PartialEq for Source {
