@@ -76,7 +76,7 @@ impl ValueStream {
         }
     }
 
-    /// Payload length in bytes.
+    /// Payload length in bytes, known without reading the value.
     pub fn len(&self) -> u64 {
         self.len
     }
@@ -212,11 +212,6 @@ impl<K: ValueKey, H: std::borrow::Borrow<ReadOnly>> PathRef<'_, '_, K, H> {
             Some((tid, v)) => Ok(Some(ValueStream::open(db, tid, v)?)),
             None => Ok(None),
         }
-    }
-
-    /// The length in bytes of the string or blob here, without reading it whole.
-    pub fn byte_len(&self) -> Result<Option<u64>> {
-        Ok(self.stream()?.map(|s| s.len()))
     }
 }
 

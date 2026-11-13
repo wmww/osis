@@ -179,7 +179,6 @@ fn too_large_then_stream_read() {
     let mut got = Vec::new();
     std::io::Read::read_to_end(&mut s, &mut got).unwrap();
     assert!(got == big, "stream equals the value");
-    assert_eq!(c.at(t, osis::DynamicAspectKey::untyped(k)).path(osis::p![]).byte_len().unwrap(), Some(big.len() as u64));
     drop(c);
     assert_eq!(n.close().unwrap(), osis::Close::Closed);
 }

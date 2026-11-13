@@ -668,7 +668,7 @@ fn stream_len_set_stream_spec_data_model_6() {
     w.at(t, osis::DynamicAspectKey::untyped(k.clone())).path(osis::p![]).set_stream(&data[..]).unwrap();
     w.commit().unwrap();
     assert_eq!(db.at(t, osis::DynamicAspectKey::untyped(k.clone())).get(), Err(Error::TooLarge { limit: 64 * 1024 }));
-    assert_eq!(db.at(t, osis::DynamicAspectKey::untyped(k.clone())).path(osis::p![]).byte_len().unwrap(), Some(300_000));
+    assert_eq!(db.at(t, osis::DynamicAspectKey::untyped(k.clone())).path(osis::p![]).stream().unwrap().map(|s| s.len()), Some(300_000));
     let mut st = db.at(t, osis::DynamicAspectKey::untyped(k.clone())).path(osis::p![]).stream().unwrap().unwrap();
     let mut all = Vec::new();
     st.read_to_end(&mut all).unwrap();
@@ -697,10 +697,10 @@ fn stream_len_set_stream_spec_data_model_6() {
     // a small value streams too; absent reads None; a non-string fails
     let small = ak("t:small.0");
     db.commit_set(t, osis::DynamicAspectKey::untyped(small.clone()), &s("hello")).unwrap();
-    assert_eq!(db.at(t, osis::DynamicAspectKey::untyped(small.clone())).path(osis::p![]).byte_len().unwrap(), Some(5));
-    assert_eq!(db.at(t, osis::DynamicAspectKey::untyped(ak("t:none.0"))).path(osis::p![]).byte_len().unwrap(), None);
+    assert_eq!(db.at(t, osis::DynamicAspectKey::untyped(small.clone())).path(osis::p![]).stream().unwrap().map(|s| s.len()), Some(5));
+    assert_eq!(db.at(t, osis::DynamicAspectKey::untyped(ak("t:none.0"))).path(osis::p![]).stream().unwrap().map(|s| s.len()), None);
     db.commit_set(t, osis::DynamicAspectKey::untyped(ak("t:n.0")), &Value::Int(1)).unwrap();
-    assert!(matches!(db.at(t, osis::DynamicAspectKey::untyped(ak("t:n.0"))).path(osis::p![]).byte_len(), Err(Error::Invalid(_))));
+    assert!(matches!(db.at(t, osis::DynamicAspectKey::untyped(ak("t:n.0"))).path(osis::p![]).stream(), Err(Error::Invalid(_))));
 }
 
 // spec/requirements.md (Offline and network), notes/api.md Diagnostics: a thing added only to a

@@ -3,7 +3,6 @@
 # Kinds of reason: public API (the `osis` crate's surface for apps), test hook (an integration test in
 # tests/ needs it, where #[cfg(test)] cannot reach), table (one of a uniform set).
 
-osis::byte_len  public API: a large value's size without reading it (notes/api.md)
 osis::disconnect_node  public API: ends what `connect_node` (the CLI's) opened
 osis::on_dispute  public API: the dispute listener (crate docs, notes/listener-design.md)
 osis::retaining  public API: keeps a thing alive from an aspect (the crate docs' example)
