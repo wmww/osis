@@ -647,23 +647,26 @@ pub(crate) fn own_delete_keys(tx: &mut crate::engine::Tx<'_>, t: &Tid) -> Result
 }
 
 impl crate::Engine {
-    /// [`own_delete_keys`] of `t`.
+    /// [`own_delete_keys`] of `t`. This and the role reads below run as transactions, not
+    /// reads (`Engine::read`): `published_keys` takes up applied inbox hints
+    /// (`Core::promote_hints`), which a read would undo, to take up again (every cache dropped)
+    /// at each call.
     pub fn own_delete_keys(&mut self, t: &Tid) -> Result<Option<(VerifyingKey, VerifyingKey)>> {
         let t = *t;
-        self.read(|tx| own_delete_keys(tx, &t))
+        self.run(|tx| own_delete_keys(tx, &t))
     }
 
     /// [`holds_delete_keys_in`], for tests.
     #[cfg(test)]
     pub(crate) fn holds_delete_keys(&mut self, t: &Tid) -> Result<bool> {
         let t = *t;
-        self.read(|tx| holds_delete_keys_in(tx, &t))
+        self.run(|tx| holds_delete_keys_in(tx, &t))
     }
 
     /// [`usable_role`]: `role` on `t` as this node can use it now.
     pub fn usable_role(&mut self, t: &Tid, role: Option<Role>) -> Result<Option<Role>> {
         let t = *t;
-        self.read(|tx| usable_role(tx, &t, role))
+        self.run(|tx| usable_role(tx, &t, role))
     }
 
     /// Notes the delete keys the inbox payload of commit `c` names (spec/wire.md §9) as

@@ -3427,7 +3427,8 @@ impl Engine {
     /// What `f` returns, run as a read: in a store transaction dropped after, and whatever `f`
     /// changed in memory undone (`Core::rollback_to`), so it changes nothing. A read does none
     /// of a transaction's end work (`run`): that work follows changes, and a read keeps none.
-    /// Caches it filled stay (they hold what is stored).
+    /// Caches it filled stay (they hold what is stored). Only for an `f` that changes nothing it
+    /// should keep: a change (a lazy take-up) would be undone, dropping every cache, at each call.
     pub(crate) fn read<T>(&mut self, f: impl FnOnce(&mut Tx<'_>) -> Result<T>) -> Result<T> {
         let _s = crate::costs::span("read");
         if self.blobs_unsettled {
@@ -3887,6 +3888,7 @@ mod tests {
         p.engine.commit(m).unwrap();
         let reg = Ak::new("t:reg.0").unwrap();
         let before = digest(p);
+        let queued = p.engine.core.events.queued();
         let id = p
             .engine
             .read(|tx| {
@@ -3897,6 +3899,7 @@ mod tests {
             .unwrap();
         assert!(id.is_some(), "the commit was made inside the read");
         assert_eq!(digest(p), before, "a read changed the indexes");
+        assert_eq!(p.engine.core.events.queued(), queued, "a read left events to send");
         assert_eq!(p.engine.get(&t, &reg).unwrap(), Some(Value::Str("old".into())));
         p.engine.check_index();
         let mut m = Mutation::new();
