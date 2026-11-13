@@ -204,9 +204,9 @@ pub struct Applied {
 }
 
 pub struct Timeline {
-    pub world: World,
+    /// `world` and `applied` are fixed once walked (`demotions` keeps its answers).
+    world: World,
     pub initial: Edges,
-    /// Fixed once walked (`demotions` keeps its answers).
     applied: Vec<Applied>,
     /// `demotions`' answers by (thing, X, need), as indices into `applied`.
     demoted: std::sync::Mutex<BTreeMap<(ThingId, NodeId, Role), Vec<usize>>>,

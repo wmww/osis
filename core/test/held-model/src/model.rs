@@ -811,7 +811,7 @@ fn judge(h: &Held) -> (Outcome, Timeline) {
             }
         }
     }
-     (o, tl)
+    (o, tl)
 }
 
 /// The wall ms before which a commit's bodies are must-hold at every node whatever the settings:
