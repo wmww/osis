@@ -831,6 +831,11 @@ indexes! {
     /// Things with secrets of their own here (`apply::keys::refresh_own_keys`): a held commit's
     /// valid `keys.0` part wrote a keyset.
     pub own_keys: JSet<Tid>,
+    /// Derived read epochs of things this node sealed a section under while the thing was plain
+    /// here, until a rotation of it carries them (`rotation::merge`; `records::DERIVED_WRITTEN`).
+    /// A key emptied stays until the next open: removing it would move every memo that read an
+    /// absent key (each actor's rotation run).
+    pub derived_written: JMap<Tid, BTreeSet<osis_crypto::Epoch>>,
     /// Held commits whose `keys.0` part on a thing wrote a keyset in its body, any validity
     /// (`records::OWN_KEYS`): thing -> commits.
     pub keyset_parts: JSetMap<Tid, CommitId>,

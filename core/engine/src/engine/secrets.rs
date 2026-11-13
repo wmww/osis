@@ -65,15 +65,23 @@ impl Core {
     }
 
     fn chain_epochs(&self, tid: &Tid) -> Option<ActorEpochs> {
+        let (mut e, chain) = self.derivation(tid)?;
+        for t in chain.iter().rev() {
+            e = ActorEpochs::derived(&e, t);
+        }
+        Some(e)
+    }
+
+    /// The epochs `tid`'s derive from (spec/crypto.md §3): those of the first actor up its record
+    /// chain whose epochs this node holds, itself first, and the plain things from `tid` up to
+    /// below it, nearest first (empty: `tid`'s own).
+    pub(crate) fn derivation(&self, tid: &Tid) -> Option<(ActorEpochs, Vec<Tid>)> {
         let mut chain = Vec::new();
         for step in self.record_chain(tid) {
             let cur = step.thing()?;
             let held = (cur == self.id.tid()).then(|| self.id.epochs()).or_else(|| self.key_actors.get(&cur).map(|k| k.epochs())).or_else(|| self.account_epochs(&cur)).or_else(|| self.own_epochs(&cur));
-            if let Some(mut e) = held {
-                for t in chain.iter().rev() {
-                    e = ActorEpochs::derived(&e, t);
-                }
-                return Some(e);
+            if let Some(e) = held {
+                return Some((e, chain));
             }
             if self.ix.own_keys.contains(&cur) {
                 return None;
@@ -374,16 +382,22 @@ impl Core {
     /// and labels registered under them can be stepped, and supersede what they derive from the
     /// base actor's (spec/crypto.md §3). A derived epoch's ID names its secret, so only a base
     /// actor epoch whose secret is held matches. Computed whenever the view is (`own_epochs`),
-    /// never stored: the base actor's epochs change with what is held.
+    /// never stored: the base actor's epochs change with what is held. The derived epochs it
+    /// holds: those its own state keys, and the read epochs this node wrote it under while it
+    /// was plain here (`wrote_derived`: current until a rotation's history carries them).
     fn adopt_derived(&self, actor: &Tid, epochs: &mut ActorEpochs) {
         let Some(d) = self.base_derived(actor) else { return };
         for r in ROLES {
             for (ep, info) in d.role(r).epochs() {
                 let sticky = epochs.role(r).get(ep).is_some_and(|i| i.established.is_some_and(Provenance::sticky));
-                if info.established.is_some() && info.secret.is_some() && epochs.role(r).get(ep).is_some() && !sticky {
+                let known = epochs.role(r).get(ep).is_some() || r == Role::Read && self.wrote_derived(actor, ep);
+                if info.established.is_some() && info.secret.is_some() && known && !sticky {
                     let own = epochs.role_mut(r).observe(*ep);
                     own.established = Some(Provenance::Derived);
                     own.supersedes.extend(info.supersedes.iter().copied());
+                    if own.secret.is_none() {
+                        own.secret = info.secret.clone();
+                    }
                 }
             }
         }

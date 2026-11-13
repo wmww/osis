@@ -12,6 +12,7 @@
 pub(crate) mod departures;
 mod lost;
 pub(crate) mod members;
+pub(crate) mod merge;
 #[cfg(test)]
 mod tests_account;
 #[cfg(test)]
@@ -284,7 +285,8 @@ enum Due {
 /// not only the newest, does not cover a known departure (one whose secret this node lacks
 /// covers nothing: it is superseded unread), or some current epoch, held or not, has a stale box
 /// (rule 2) or a box to an actor whose grant is keyless (the knowing re-key, rule 4), or is
-/// orphaned (`orphaned`); one due only for current epochs whose secret this node lacks, where
+/// orphaned (`orphaned`), or is a derived read epoch this node wrote under (`merge::due`); one
+/// due only for current epochs whose secret this node lacks, where
 /// its new epoch boxes a rotator (`boxes_rotator`). With `Due::PassEnd` also when an unsuperseded
 /// epoch is not current here and `who` withdraws it. A fork alone is due nothing: it stands
 /// until the role next rotates (spec/crypto.md §4). No secret of the role is needed; the commit
@@ -316,6 +318,8 @@ fn rotation_due(tx: &mut Tx<'_>, who: &Tid, a: &Tid, mode: Due, kept: &BTreeSet<
             }
         }
         due = due || unread && boxes_rotator(tx, who, a, r)?;
+        // a derived epoch this node wrote under, current until a rotation carries it
+        due = due || r == Role::Read && merge::due(tx, a)?;
         // withdraw: an unsuperseded epoch whose names this node does not meet, by its maker,
         // or by any node that may rotate when its maker may not (or is unknown: a snapshot's
         // epoch); withdraws by several fork, which stands
@@ -505,7 +509,8 @@ pub(crate) fn record(tx: &mut Tx<'_>, a: Tid, rot: &Rotation) -> Result<()> {
     rot.record(e);
     save_epochs(tx, &a)?;
     // the history boxes the new secrets open (spec/crypto.md §4), as a rebuild reads them
-    crate::apply::observe_state(tx, &a, &flows::ak("secrets.0")?)
+    crate::apply::observe_state(tx, &a, &flows::ak("secrets.0")?)?;
+    merge::settle(tx, &a).map(|_| ())
 }
 
 /// Rotates `roles` of `a` in a commit of its own (a cascade rotation: changes no edge), signed

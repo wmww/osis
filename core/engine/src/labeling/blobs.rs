@@ -280,7 +280,8 @@ impl Engine {
     /// to the delete-key groups of every section's aspects. A part whose thing's current secret
     /// this node does not hold is left out (a key actor's own record or card, which travels as a
     /// certificate copy), unless the body needs it (`b.parts`): then `None`, nothing is sealed
-    /// now.
+    /// now. A plain thing's derived epoch sealed under is noted (`note_sealed`, spec/crypto.md §4
+    /// Current).
     pub fn seal(&mut self, b: &Body, class: osis_label::Class, extra: &[Section], rng: &mut dyn CryptoRngCore) -> Result<Option<Sealed>> {
         let pt = self.body_plaintext(b)?;
         if pt.is_empty() {
@@ -290,10 +291,25 @@ impl Engine {
         let resolved = self.resolved_header(&c);
         let things: Vec<Tid> = resolved.aspects.iter().map(|a| a.tid).collect();
         let id = c.id();
-        let env = osis_commit::seal_commit(&c, |ai| things.get(ai).copied(), |t, parts| t.and_then(|t| self.wrap_secret(&t, Some((&id, parts))).ok().flatten().map(|s| (s, self.section_chain(&t)))), extra, rng)?;
+        let mut under = Vec::new();
+        let env = osis_commit::seal_commit(
+            &c,
+            |ai| things.get(ai).copied(),
+            |t, parts| {
+                let t = (*t)?;
+                let (e, s) = self.wrap_under(&t, Some((&id, parts))).ok().flatten()?;
+                under.push((t, e));
+                Some((s, self.section_chain(&t)))
+            },
+            extra,
+            rng,
+        )?;
         let s = frame_envelope(&env, &resolved, class, rng, &c)?;
         if b.parts.iter().any(|p| !s.parts.contains(p)) {
             return Ok(None);
+        }
+        for (t, e) in &under {
+            self.note_sealed(t, e)?;
         }
         Ok(Some(s))
     }
@@ -518,15 +534,20 @@ impl Engine {
     /// derive from, which goes under the newest epoch its rotation supersedes. `None`: no
     /// current secret held (stranded: nothing is placed).
     pub fn wrap_secret(&mut self, g: &Tid, c: Option<(&CommitId, &[usize])>) -> Result<Option<Secret32>> {
+        Ok(self.wrap_under(g, c)?.map(|(_, s)| s))
+    }
+
+    /// `wrap_secret` with its epoch.
+    fn wrap_under(&mut self, g: &Tid, c: Option<(&CommitId, &[usize])>) -> Result<Option<(Epoch, Secret32)>> {
         let Some(e) = self.epochs(g) else { return Ok(None) };
         if let Some((c, parts)) = c
             && self.carries_secrets(g, c, parts)
             && let Some(ep) = self.rotation_wrap_epoch(g, c)?
             && let Some(s) = e.read.secret(&ep)
         {
-            return Ok(Some(s.clone()));
+            return Ok(Some((ep, s.clone())));
         }
-        Ok(osis_keys::wrap_epoch(&e.read).and_then(|ep| e.read.secret(&ep).cloned()))
+        Ok(osis_keys::wrap_epoch(&e.read).and_then(|ep| e.read.secret(&ep).map(|s| (ep, s.clone()))))
     }
 
     /// Held read secrets of a group, newest first; then those derived from its first admin's (a

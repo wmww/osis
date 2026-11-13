@@ -577,6 +577,15 @@ impl ActorEpochs {
         Ok(a)
     }
 
+    /// The epoch and secret of role `r` of plain thing `tid` derived from base actor epoch `e`
+    /// with secret `s` (spec/crypto.md §3): one entry of `derived`.
+    pub fn derived_epoch(tid: &Tid, r: Role, e: &Epoch, s: &Secret32) -> (Epoch, Secret32) {
+        let ds = thing_role_secret(s, r, tid);
+        // never falls back: n is below the cap, within the int range
+        let de = Epoch::derive(tid, r, derived_n(e.n()), &ds).unwrap_or(*e);
+        (de, ds)
+    }
+
     /// A plain thing's derived role secrets `kdf("thing <role>", base actor's secret, tid)`, one per
     /// epoch of the base actor, forks included, each at the epoch with n `derived_n` of the base actor's
     /// that the nonce rule gives it (spec/crypto.md §3). Established (`Derived`) where the
@@ -589,16 +598,13 @@ impl ActorEpochs {
             let ids: BTreeMap<Epoch, (Epoch, Option<Secret32>)> = o
                 .map
                 .iter()
-                .map(|(e, i)| {
-                    let ds = i.secret.as_ref().map(|s| thing_role_secret(s, r, tid));
-                    let n = derived_n(e.n());
-                    let de = match &ds {
-                        Some(s) => Epoch::derive(tid, r, n, s),
-                        None => Epoch::new(n, placeholder_nonce(e)),
-                    };
+                .map(|(e, i)| match &i.secret {
+                    Some(s) => {
+                        let (de, ds) = ActorEpochs::derived_epoch(tid, r, e, s);
+                        (*e, (de, Some(ds)))
+                    }
                     // never falls back: n is below the cap, within the int range
-                    let de = de.unwrap_or(*e);
-                    (*e, (de, ds))
+                    None => (*e, (Epoch::new(derived_n(e.n()), placeholder_nonce(e)).unwrap_or(*e), None)),
                 })
                 .collect();
             let id = |e: &Epoch| ids.get(e).map_or(*e, |x| x.0);

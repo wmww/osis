@@ -1779,6 +1779,7 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
         Ok(())
     })?;
     tx.core.ix.rotations_due.extend(due);
+    crate::rotation::merge::load(tx)?;
     let mut vl = Vec::new();
     tx.scan(records::VALUELESS, |k, v| {
         vl.push((k.to_vec(), v));

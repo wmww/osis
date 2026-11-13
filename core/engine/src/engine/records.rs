@@ -63,6 +63,10 @@ pub const ROTATIONS_DUE: &[u8] = b"rd/";
 /// Commits whose `keys.0` part on a thing wrote a keyset in its body (`Indexes::keyset_parts`;
 /// kept while the commit is held, whatever becomes of the body): `g/` + tid + commit ID.
 pub const OWN_KEYS: &[u8] = b"g/";
+/// Derived read epochs this node sealed a section under while their thing was plain here, not
+/// yet carried by a rotation of it (`Indexes::derived_written`, `rotation::merge`): `dw/` + tid +
+/// the epoch's n (8 bytes, big endian) + nonce, empty.
+pub const DERIVED_WRITTEN: &[u8] = b"dw/";
 /// Suspect aspects (`retention::suspect`): `q/` + aspect key, le64 wall ms last
 /// raised, then per body its commit ID, aspect index and `Why` bits.
 pub const SUSPECT: &[u8] = b"q/";

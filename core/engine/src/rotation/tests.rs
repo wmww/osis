@@ -2253,3 +2253,53 @@ fn orphaned_rotations_do_not_trade_spec_crypto_4() {
     }
     assert!(writes(&lp, 1) && writes(&lp, 2), "H's writers hold D's write epoch through T");
 }
+
+// spec/crypto.md §4 Current (a derived epoch written under): T is plain under group F (peer 0
+// its first admin, peer 1 an admin). Peer 0 gives T secrets of its own by granting t1 (peer 2,
+// no member of F) while peer 1 hears nothing; peer 1 rotates F (removing peer 3) and writes T,
+// its section sealed under the derived secret of F's new epoch, which T's own epochs' history
+// does not carry. Placed later under T's label, a node reuses that blob, wrapped under T's
+// current read secret (node-sync `place`). Once peer 1 holds T's own epochs, that derived
+// epoch is current at it until a rotation carries it: it rotates T, and t1 reads the write.
+#[test]
+fn derived_write_after_own_secrets_is_merged_spec_crypto_4() {
+    let (mut lp, f, tids) = granted(4, &[(1, Role::Admin), (3, Role::Read)]);
+    let x = osis_base::Ak::new("x:a.0").unwrap();
+    let mut m = Mutation::new();
+    let t = lp.peers[0].engine.new_thing(&mut m, f);
+    m.set(t, &x, &osis_base::Value::Str("first".into())).unwrap();
+    lp.peers[0].commit(m).unwrap();
+    lp.sync_all().unwrap();
+    lp.peers[0].engine.grant(&t, &tids[2], &edge(Role::Read)).unwrap();
+    lp.sync(0, 2).unwrap();
+    assert_eq!(lp.peers[2].engine.get(&t, &x).unwrap(), Some(osis_base::Value::Str("first".into())));
+    // peer 1, unaware of T's own secrets
+    lp.peers[1].engine.demote(&f, &Demotion { holder: tids[3], new: None, retain: None }).unwrap();
+    let mut m = Mutation::new();
+    m.set(t, &x, &osis_base::Value::Str("derived".into())).unwrap();
+    let w = lp.peers[1].commit(m).unwrap().unwrap();
+    let body = lp.peers[1].engine.body(&w).unwrap().unwrap();
+    let sealed = lp.peers[1].engine.seal(&body, osis_label::Class::Durable, &[], &mut osis_crypto::SeededRng::from_u64(7)).unwrap().unwrap();
+    // what it sealed under is kept across a restart
+    lp.peers[1].restart(0).unwrap();
+    // others get every commit but the write itself, which reaches them only as that blob
+    let but_w = |lp: &mut LocalPeer, to: usize| {
+        for pk in lp.packages(1).unwrap().into_iter().filter(|pk| pk.id != w) {
+            let _ = lp.deliver(to, &pk);
+        }
+    };
+    // peer 0 rotates T first (its box to F is stale), carrying no secret of peer 1's write
+    but_w(&mut lp, 0);
+    assert!(!lp.peers[0].engine.ensure_rotated(&t).unwrap().0.commits.is_empty(), "peer 0 re-keys T");
+    lp.sync(0, 1).unwrap();
+    lp.sync(0, 2).unwrap();
+    assert!(!lp.peers[1].engine.ensure_rotated(&t).unwrap().0.commits.is_empty(), "peer 1 merges T");
+    but_w(&mut lp, 2);
+    let secret = lp.peers[1].engine.wrap_secret(&t, None).unwrap().unwrap();
+    let wrap = osis_crypto::wrap(&secret, &sealed.id, &sealed.key, body.order).unwrap();
+    let pk = crate::local_peer::SealedPackage { id: w, entries: vec![crate::local_peer::SealedEntry { id: sealed.id, blob: sealed.blob, wraps: vec![(t, wrap)] }], blobs: Vec::new() };
+    lp.peers[2].engine.open_package(&pk).unwrap();
+    assert_eq!(lp.peers[2].engine.get(&t, &x).unwrap(), Some(osis_base::Value::Str("derived".into())), "t1 reads the derived write");
+    assert!(lp.peers[1].engine.ensure_rotated(&t).unwrap().0.commits.is_empty(), "merged once");
+    lp.peers[1].engine.check_index();
+}
