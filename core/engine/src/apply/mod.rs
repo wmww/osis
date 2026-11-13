@@ -2037,6 +2037,9 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
             // reads from the index or not at all (a rebuild holds none to end)
             "keys.0" => {}
             "secrets.0" if fast => {}
+            // seeds are judged by D's epochs established, known only once loaded: the open
+            // takes them up after (`Engine::take_account`), a reload keeps those held
+            "account.0" => {}
             // a state-list row is a state (`Tx::derive`)
             "label.0" => {
                 tx.core.ix.labeled.insert(tid);

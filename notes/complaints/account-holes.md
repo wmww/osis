@@ -1,3 +1,4 @@
 # account-holes
 - A seconds-long TLC run (`run.sh account` at 8 workers) waited 30+ min for the heavy lock behind another branch's sweep; reran at one worker unlocked (notes/build.md allows it). The brief said "TLC only via tools/heavy", which conflicts with notes/build.md for small instances.
 - `Engine::check` after an open asserts no header is decoded: judging D's epochs (establishment reads names) from `observe_state` at load trips it; compute such judgments lazily, only for entries new here.
+- Review: the load-time decode the line above names was still hit (check_index copies `accounts`, so take_seeds judged pending entries mid-load); only sim `stranded_reseal` in the gate showed it, no engine test. Fixed by not taking seeds at load.
