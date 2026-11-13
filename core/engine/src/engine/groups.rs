@@ -1,6 +1,7 @@
 //! `groups.0` (spec/data-model.md §8): every group whose items, directly or through subgroups
 //! (cycles allowed), contain the thing. Kept incrementally: a `group.0` change recomputes only the
-//! changed group and the groups above it (O(their reach)), never every group.
+//! changed group and the groups above it (O(their reach)), never every group. A join refreshes
+//! the definition from the tids it touches (`touched`, `refresh`), reading only their records.
 
 use super::Engine;
 use crate::error::Result;
@@ -37,6 +38,93 @@ pub(crate) fn gains(before: Option<&Fragment>, delta: &Fragment) -> BTreeSet<Tid
     after.join(delta.clone());
     let (i, s) = def(&after);
     i.difference(&items).chain(s.difference(&subs)).copied().collect()
+}
+
+/// The tids whose listing in group `g`'s `group.0` a join of `delta` may change: those its
+/// elements hold and those of the state's records at its reach (`Fragment::reach`: an element it
+/// resets, a record of a tid it removes), read from the pages the join touches anyway. `None`
+/// where it resets a position (read the whole state after).
+pub(crate) fn touched(tx: &mut super::Tx<'_>, g: &Tid, ak: &Ak, delta: &Fragment) -> Result<Option<BTreeSet<Tid>>> {
+    if delta.has_position_reset() {
+        return Ok(None);
+    }
+    tx.load_lazy(g, ak)?;
+    let touch = super::pages::touch_of(delta, tx.core.pages.get(&(*g, ak.clone())));
+    tx.ensure_touch(g, ak, &touch)?;
+    let mut out = BTreeSet::new();
+    let mut add = |f: &Fragment| {
+        f.each_value(&mut |v| {
+            if let Value::Tid(t) = v {
+                out.insert(*t);
+            }
+        })
+    };
+    add(delta);
+    if let Some(st) = tx.cached(g, ak) {
+        add(&st.reach(delta));
+    }
+    Ok(Some(out))
+}
+
+/// Refreshes group `g`'s definition in the index for the tids `tids` (`touched`) after a join,
+/// reading only their records (a paged state's value index): O(the change), not O(the group).
+/// A join without a position reset leaves a present state present, so a group listed stays
+/// listed; one not listed yet is read whole.
+pub(crate) fn refresh(tx: &mut super::Tx<'_>, g: &Tid, ak: &Ak, tids: &BTreeSet<Tid>) -> Result<()> {
+    if !tx.core.ix.groups.defs.contains_key(g) {
+        return crate::apply::observe_state(tx, g, ak);
+    }
+    let paths: Vec<Vec<PathSeg>> = tids.iter().flat_map(|t| [ITEMS, SUBGROUPS].map(|f| vec![PathSeg::Field(f), PathSeg::Key(Value::Tid(*t))])).collect();
+    tx.ensure_paths(g, ak, &paths)?;
+    // the live ones among them, per field (what is loaded holds every record of each)
+    let live = |f: u64| -> BTreeSet<Tid> {
+        match tx.cached(g, ak).and_then(|s| s.read_at(&[PathSeg::Field(f)])) {
+            Some(Value::Set(s)) => s.into_iter().filter_map(|v| if let Value::Tid(t) = v { Some(t) } else { None }).filter(|t| tids.contains(t)).collect(),
+            _ => BTreeSet::new(),
+        }
+    };
+    let (items, subs) = (live(ITEMS), live(SUBGROUPS));
+    let Some(was) = tx.core.ix.groups.defs.get(g) else { return Ok(()) };
+    let same = |now: &BTreeSet<Tid>, was: &BTreeSet<Tid>| tids.iter().all(|t| now.contains(t) == was.contains(t));
+    if !(same(&items, &was.0) && same(&subs, &was.1)) {
+        let mut def = was.clone();
+        for t in tids {
+            for (now, d) in [(&items, &mut def.0), (&subs, &mut def.1)] {
+                if now.contains(t) {
+                    d.insert(*t);
+                } else {
+                    d.remove(t);
+                }
+            }
+        }
+        // an ephemeral membership carries nothing durable away (`Core::note_cut`)
+        if !tx.core.memory_tx {
+            tx.core.note_cut(g, Some(&def));
+        }
+        tx.core.ix.groups.set(*g, Some(def));
+    }
+    #[cfg(debug_assertions)]
+    check_refreshed(tx, g, ak)?;
+    Ok(())
+}
+
+/// Debug builds: the definition `refresh` left equals the whole state's (unseen: the cache as it
+/// was, no cost recorded).
+#[cfg(debug_assertions)]
+fn check_refreshed(tx: &mut super::Tx<'_>, g: &Tid, ak: &Ak) -> Result<()> {
+    let k = (*g, ak.clone());
+    let cached = (tx.core.states.get(&k).cloned(), tx.core.pages.get(&k).cloned());
+    let whole = crate::costs::paused(|| -> Result<_> { Ok(crate::apply::atomic::group_def(tx.state(g, ak)?.and_then(Fragment::read))) })?;
+    match cached.0 {
+        Some(s) => tx.core.states.insert(k.clone(), s),
+        None => tx.core.states.remove(&k),
+    };
+    match cached.1 {
+        Some(p) => tx.core.pages.insert(k, p),
+        None => tx.core.pages.remove(&k),
+    };
+    debug_assert_eq!(tx.core.ix.groups.defs.get(g), whole.as_ref(), "the group index of {g:?} refreshed from a join differs from its whole state");
+    Ok(())
 }
 
 impl Engine {

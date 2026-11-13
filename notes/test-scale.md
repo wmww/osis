@@ -10,6 +10,7 @@ Default tests, against spec/requirements.md (Scale): each runs one operation at 
 |---|---|---|
 | map entry edit, at the root and in a map entry | node `scale::map_edit_is_flat` (500 / 5000 entries of 200 B) | store bytes 30 / 40 KB; a new session's read of one key 2 pages, its first edit 3 loaded and 1 written |
 | set ops by value | `scale::set_by_value_is_flat` (10^3 / 10^4) | each op in a new session: 1-3 pages loaded, 0-1 written |
+| group membership change | `scale::group_change_is_flat` (4·10^3 / 4·10^4 items) | remove, add back, add new, each in a new session: 2-3 pages loaded, 1 written (the group index refreshed from the tids touched) |
 | text by index | `scale::text_edits_are_flat` (by hand: 80k / 800k chars) | read of 100 chars 2-3 pages; insert, delete, edit, undo 3 loaded, 4-5 written; a move loads every placement block (issues/text-move-loads-placement.md, `repro_text_move_loads_placement`) |
 | removal from a roster | `scale::roster_removal_is_linear` (20 / 200 writers) | rotation commit 2.76 KB per remaining holder (budget 3000 B past 4 KiB); one more `secrets.0` entry flat |
 | purge on replace pays its state | `scale::purge_on_replace_pays_its_state` (200 / 2000 entries of 100 B) | store bytes per replacing edit linear (713 KB at 2000: 465 KB rows, 246 KB the snapshot's body blob); no history 43 / 32 KB |

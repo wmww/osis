@@ -28,6 +28,7 @@ mod edits;
 mod deposit_queue;
 mod deposits;
 mod fill;
+mod groups;
 mod growth;
 mod finalize;
 #[cfg(feature = "driver")]

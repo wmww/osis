@@ -374,7 +374,12 @@ fn join_part(tx: &mut Tx<'_>, h: &Header, id: &CommitId, blob: &CommitBlob, ai: 
         if !v {
             return Ok(());
         }
-        j.touched.note(&tid, &ak, &f);
+        if ak.as_str() == "group.0" {
+            let tids = crate::engine::groups::touched(tx, &tid, &ak, &f)?;
+            j.touched.group(&tid, &ak, tids);
+        } else {
+            j.touched.note(&tid, &ak, &f);
+        }
         // the oracle world joins whole (`tests_paged`): only the join differs
         #[cfg(test)]
         if tx.core.whole_apply {
@@ -857,13 +862,17 @@ fn with_held(tx: &mut Tx<'_>, h: &Header, id: &CommitId, parts: &Parts) -> Resul
     Ok((out, n))
 }
 
-/// The `secrets.0` entries a commit's joins touched, per aspect (`None`: anything may have
-/// changed, read the whole state).
+/// What a commit's joins touched, per aspect: the `secrets.0` entries, the tids a `group.0`
+/// lists or stops listing (`None`: anything may have changed, read the whole state).
 #[derive(Default)]
-pub(super) struct Touched(std::collections::BTreeMap<(Tid, Ak), Option<SecretsKeys>>);
+pub(super) struct Touched(std::collections::BTreeMap<(Tid, Ak), Option<Seen>>);
 
-/// Keys of the box and history-box entries a change touched.
-type SecretsKeys = (Vec<Value>, Vec<Value>);
+enum Seen {
+    /// Keys of the box and history-box entries.
+    Secrets(Vec<Value>, Vec<Value>),
+    /// Tids whose listing may have changed (`groups::touched`).
+    Group(BTreeSet<Tid>),
+}
 
 impl Touched {
     pub(super) fn note(&mut self, tid: &Tid, ak: &Ak, f: &Fragment) {
@@ -871,11 +880,18 @@ impl Touched {
             return;
         }
         let keys = crate::engine::secrets::touched_keys(f);
-        match (self.0.entry((*tid, ak.clone())).or_insert_with(|| Some((Vec::new(), Vec::new()))), keys) {
-            (Some(acc), Some((b, h))) => {
-                acc.0.extend(b);
-                acc.1.extend(h);
+        match (self.0.entry((*tid, ak.clone())).or_insert_with(|| Some(Seen::Secrets(Vec::new(), Vec::new()))), keys) {
+            (Some(Seen::Secrets(b0, h0)), Some((b, h))) => {
+                b0.extend(b);
+                h0.extend(h);
             }
+            (slot, _) => *slot = None,
+        }
+    }
+    /// A `group.0` join that may change the listing of `tids` (`None`: of any).
+    pub(super) fn group(&mut self, tid: &Tid, ak: &Ak, tids: Option<BTreeSet<Tid>>) {
+        match (self.0.entry((*tid, ak.clone())).or_insert_with(|| Some(Seen::Group(BTreeSet::new()))), tids) {
+            (Some(Seen::Group(acc)), Some(t)) => acc.extend(t),
             (slot, _) => *slot = None,
         }
     }
@@ -884,10 +900,11 @@ impl Touched {
     }
 }
 
-/// `observe_state`, reading only the touched `secrets.0` entries where known.
+/// `observe_state`, reading only the touched `secrets.0` entries and `group.0` records where known.
 fn observe_touched(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, touched: &Touched) -> Result<()> {
     match touched.0.get(&(*tid, ak.clone())) {
-        Some(Some((boxes, history))) => observe_secrets_keys(tx, tid, boxes, history),
+        Some(Some(Seen::Secrets(boxes, history))) => observe_secrets_keys(tx, tid, boxes, history),
+        Some(Some(Seen::Group(tids))) => crate::engine::groups::refresh(tx, tid, ak, tids),
         _ => observe_state(tx, tid, ak),
     }
 }

@@ -190,9 +190,7 @@ fn tid_removals(n: usize) -> Vec<(u64, u64, u64)> {
 
 // spec/crdt.md §5.5, spec/requirements.md Scale (deleting costs what changed): removing a tid from
 // a paged set and adding it back, each in a new session, loads and writes only their pages (the
-// value index finds the tid's records), and the commit is one record, at n and 10n members. (A
-// group's `group.0` is read whole after any change for the group index:
-// issues/group-change-reads-whole-group.md.)
+// value index finds the tid's records), and the commit is one record, at n and 10n members.
 #[test]
 fn tid_removal_is_flat() {
     let (small, big) = (tid_removals(4000), tid_removals(40_000));
@@ -200,6 +198,48 @@ fn tid_removal_is_flat() {
         flat(&format!("{what}: pages loaded"), small[i].0, big[i].0);
         flat(&format!("{what}: pages written"), small[i].1, big[i].1);
         flat(&format!("{what}: commit bytes"), small[i].2, big[i].2);
+    }
+}
+
+/// A group of n items: removing one, adding it back and adding a new one, each in a new session
+/// (pages loaded, pages written); the group index follows each.
+fn group_changes(n: usize) -> Vec<(u64, u64)> {
+    let mut lp = net(1, 0);
+    let b = lp.peers[0].backend.clone();
+    let g = new_thing(&mut lp, 0);
+    let t = |i: usize| {
+        let mut b = [0u8; 15];
+        b[7..].copy_from_slice(&(i as u64).to_be_bytes());
+        Tid::from_bytes(b)
+    };
+    let mut m = Mutation::new();
+    m.set(g, &ct::GROUP, &ct::Group { items: (0..n).map(t).collect(), subgroups: Default::default() }).unwrap();
+    lp.peers[0].commit(m).unwrap().unwrap();
+    let mut out = Vec::new();
+    let items = vec![PathSeg::Field(0)];
+    for (k, (op, x, member)) in [(Op::Remove(Value::Tid(t(n / 3))), n / 3, false), (Op::Add(Value::Tid(t(n / 3))), n / 3, true), (Op::Add(Value::Tid(t(n))), n, true)].into_iter().enumerate() {
+        lp.peers[0].restart(k as u64).unwrap();
+        let (c, w) = measured(&b, || {
+            let mut m = Mutation::new();
+            m.op(g, &ct::GROUP, PathOp { path: items.clone(), op }).unwrap();
+            lp.peers[0].commit(m).unwrap()
+        });
+        assert!(c.is_some());
+        assert_eq!(lp.peers[0].engine.groups_of(&t(x)).contains(&g), member);
+        out.push((w.loads(), w.page_writes()));
+    }
+    out
+}
+
+// spec/data-model.md §8, spec/requirements.md Scale (deleting costs what changed): a membership
+// change of a paged group loads and writes only the pages of the tids it names, the group index
+// following it from those, at n and 10n items.
+#[test]
+fn group_change_is_flat() {
+    let (small, big) = (group_changes(4000), group_changes(40_000));
+    for (i, what) in ["remove an item", "add it back", "add a new item"].iter().enumerate() {
+        flat(&format!("{what}: pages loaded"), small[i].0, big[i].0);
+        flat(&format!("{what}: pages written"), small[i].1, big[i].1);
     }
 }
 
