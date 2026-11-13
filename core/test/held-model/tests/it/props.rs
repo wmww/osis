@@ -5,7 +5,12 @@ use std::collections::{BTreeMap, BTreeSet};
 
 /// Reads with absent aspects left out (an aspect with nothing held is not listed).
 pub fn reads(h: &Held) -> BTreeMap<(ThingId, Aspect), Value> {
-    evaluate(h).reads.into_iter().filter_map(|(k, r)| Some((k, r?))).collect()
+    present(&evaluate(h))
+}
+
+/// An outcome's reads, absent aspects left out.
+fn present(o: &Outcome) -> BTreeMap<(ThingId, Aspect), Value> {
+    o.reads.iter().filter_map(|(k, r)| Some((*k, r.clone()?))).collect()
 }
 
 /// The default tests' seeds before `covering` adds the generator's rarer shapes: a tenth of the
@@ -71,8 +76,10 @@ fn output_is_a_function_of_the_held_set(seeds: Vec<u64>) {
 /// (`Outcome::revisit`), as are a destroyed thing's parts: a destruction that falls (a demotion of its
 /// purger arriving later) is repaired like any purge that falls.
 fn settle(mut h: Held, full: Option<&Held>, seed: u64, seen: &mut Seen) -> Held {
+    // `evaluate(&h)` when the round before judged it already
+    let mut judged: Option<Outcome> = None;
     for round in 0..16 {
-        let o = evaluate(&h);
+        let o = judged.take().unwrap_or_else(|| evaluate(&h));
         let mut n = act(&h, &o, None);
         seen.revisit.extend(o.revisit.iter().copied());
         let again: Vec<PartRef> = o.fates.iter().filter(|(_, f)| matches!(f, Fate::NeverReceived)).map(|(pr, _)| *pr).chain(o.uncovered.iter().copied()).collect();
@@ -91,8 +98,13 @@ fn settle(mut h: Held, full: Option<&Held>, seed: u64, seen: &mut Seen) -> Held 
         }
         // a part gone at its expiry or purge while waiting can make its commit apply (as a header
         // alone, its purge request with it): then reads may change; a drop or strip changes none
-        if n != h && evaluate(&n).applied == o.applied {
-            assert_eq!(reads(&n), reads(&h), "seed {seed} round {round}: forced fates changed a read");
+        let mut on = None;
+        if n != h {
+            let x = evaluate(&n);
+            if x.applied == o.applied {
+                assert_eq!(present(&x), present(&o), "seed {seed} round {round}: forced fates changed a read");
+            }
+            on = Some(x);
         }
         if let Some(full) = full {
             // a body dropped as invalid is missing from then on, so fetched again once it turns
@@ -122,11 +134,13 @@ fn settle(mut h: Held, full: Option<&Held>, seed: u64, seen: &mut Seen) -> Held 
                 let dst = &mut dst.parts[i];
                 dst.body = src.body.clone();
                 dst.stripped.clear();
+                on = None;
             }
             for &id in &seen.revisit {
                 let Some(c) = full.commits.iter().find(|x| x.id == id) else { continue };
                 if !n.commits.iter().any(|x| x.id == id) {
                     n.commits.push(c.clone());
+                    on = None;
                 }
             }
         }
@@ -134,6 +148,7 @@ fn settle(mut h: Held, full: Option<&Held>, seed: u64, seen: &mut Seen) -> Held 
             return h;
         }
         h = n;
+        judged = on;
     }
     let o = evaluate(&h);
     let show: Vec<_> = h.commits.iter().flat_map(|c| c.parts.iter().enumerate().map(move |(i, p)| (c, i, p))).filter(|(c, i, _)| o.owed.contains(&(c.id, *i)) || o.uncovered.contains(&(c.id, *i)) || matches!(o.fates.get(&(c.id, *i)), Some(Fate::NeverReceived | Fate::MustDrop(_)))).map(|(c, i, p)| (c.id, c.kind, c.expires, p.retention, &p.body, o.fates.get(&(c.id, i)), o.owed.contains(&(c.id, i)), o.uncovered.contains(&(c.id, i)))).collect();
