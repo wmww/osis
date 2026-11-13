@@ -3460,11 +3460,11 @@ impl Engine {
     /// Runs `f` in one store transaction; events go out once it is durable.
     pub fn run<T>(&mut self, f: impl FnOnce(&mut Tx<'_>) -> Result<T>) -> Result<T> {
         let _s = crate::costs::span("tx");
-        // a memo running `f` reads what `f` reads: the transaction's own work around it (settling,
-        // its end's follow-ups, persisting, checks) is no part of `f`'s answer
         // a store write's outcome was unknown (its sync failed): a commit answered `Err` may have
         // landed after all, so once the store works again everything is read as an open reads
         // it, under a fresh session (that commit's counters may be taken)
+        // a memo running `f` reads what `f` reads: the transaction's own work around it (settling,
+        // its end's follow-ups, persisting, checks) is no part of `f`'s answer
         let unknown = self.store.writes().unknown;
         if unknown != self.unknown_seen {
             let seen = std::mem::replace(&mut self.unknown_seen, unknown);
