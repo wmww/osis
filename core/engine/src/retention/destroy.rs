@@ -303,18 +303,8 @@ pub(crate) fn apply_destructions(tx: &mut Tx<'_>) -> Result<()> {
 
 /// `t`'s destruction fell: the parts it dropped are fetched again (spec/commits.md §5 Destruction).
 fn reopen_fallen(tx: &mut Tx<'_>, t: &Tid) -> Result<()> {
-    let commits: Vec<CommitId> = tx.core.on_thing(t).collect();
     // a keys.0 part's keysets left with its dropped record
-    let mut keysets = false;
-    for c in commits {
-        let Some(m) = tx.core.ix.commits.get(&c) else { continue };
-        let destroyed: Vec<(usize, bool)> = m.dropped_parts().filter(|(_, d)| d.why == DropFor::Destroyed).filter_map(|(ai, _)| m.header.aspects.get(ai).filter(|a| a.tid == *t).map(|a| (ai, a.ak.as_str() == "keys.0"))).collect();
-        for (ai, is_keys) in destroyed {
-            keysets |= is_keys;
-            super::reopen_to_fetch(tx, &c, ai)?;
-        }
-    }
-    if keysets {
+    if reopen_destroyed(tx, t, |_| true)? {
         crate::apply::keys::rebuild_keysets(tx, &BTreeSet::from([*t]))?;
     }
     // reads of the thing and its roles move, and whatever waited on the thing is judged again
@@ -327,15 +317,24 @@ fn reopen_fallen(tx: &mut Tx<'_>, t: &Tid) -> Result<()> {
 /// node later): what that drop took of its frozen history (`judges_destruction` but its mintings,
 /// which stay destroyed) counts as never received and is fetched again (spec/commits.md §5 Destruction).
 pub(crate) fn record_back(tx: &mut Tx<'_>, t: &Tid) -> Result<()> {
+    reopen_destroyed(tx, t, |ak| judges_destruction(ak) && ak != CREATED)?;
+    Ok(())
+}
+
+/// The parts on `t` of the aspects `on` names that `t`'s destruction dropped count as never
+/// received and are fetched again. Whether one was a `keys.0` part.
+fn reopen_destroyed(tx: &mut Tx<'_>, t: &Tid, on: impl Fn(&str) -> bool) -> Result<bool> {
     let commits: Vec<CommitId> = tx.core.on_thing(t).collect();
+    let mut keys = false;
     for c in commits {
         let Some(m) = tx.core.ix.commits.get(&c) else { continue };
-        let destroyed: Vec<usize> = m.dropped_parts().filter(|(_, d)| d.why == DropFor::Destroyed).filter_map(|(ai, _)| m.header.aspects.get(ai).filter(|a| a.tid == *t && judges_destruction(a.ak.as_str()) && a.ak.as_str() != CREATED).map(|_| ai)).collect();
-        for ai in destroyed {
+        let destroyed: Vec<(usize, bool)> = m.dropped_parts().filter(|(_, d)| d.why == DropFor::Destroyed).filter_map(|(ai, _)| m.header.aspects.get(ai).filter(|a| a.tid == *t && on(a.ak.as_str())).map(|a| (ai, a.ak.as_str() == "keys.0"))).collect();
+        for (ai, is_keys) in destroyed {
+            keys |= is_keys;
             super::reopen_to_fetch(tx, &c, ai)?;
         }
     }
-    Ok(())
+    Ok(keys)
 }
 
 /// What reads differently once `t` reads as gone or back while its record stays held.
@@ -539,7 +538,7 @@ fn forget_released(tx: &mut Tx<'_>, t: &Tid) -> Result<()> {
 }
 
 /// Every per-aspect row of `(t, ak)` goes, as on a node that never held a part of it.
-fn forget_aspect_rows(tx: &mut Tx<'_>, t: &Tid, ak: &Ak) -> Result<()> {
+pub(super) fn forget_aspect_rows(tx: &mut Tx<'_>, t: &Tid, ak: &Ak) -> Result<()> {
     let k = (*t, ak.clone());
     tx.core.ix.forgotten.remove(&k);
     if tx.core.ix.valueless.remove(&k).is_some() {
@@ -548,16 +547,8 @@ fn forget_aspect_rows(tx: &mut Tx<'_>, t: &Tid, ak: &Ak) -> Result<()> {
     for p in [records::ASPECTS, records::VALUELESS, records::PURGES, records::SUSPECT, records::FORGOTTEN] {
         tx.txn.remove_local(&records::aspect_key(p, t, ak), Shred::Yes)?;
     }
-    let mut rows = Vec::new();
     for p in [records::LEFTOVER, records::PURGES_NAMED] {
-        let prefix = records::aspect_key(p, t, ak);
-        tx.scan(&prefix, |k, _| {
-            rows.push([prefix.as_slice(), k].concat());
-            Ok(())
-        })?;
-    }
-    for k in rows {
-        tx.txn.remove_local(&k, Shred::Yes)?;
+        tx.remove_scanned(&records::aspect_key(p, t, ak), |_| Ok(true))?;
     }
     Ok(())
 }

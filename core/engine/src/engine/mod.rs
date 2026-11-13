@@ -3022,6 +3022,21 @@ impl Tx<'_> {
     }
 
     /// Scans local records under `prefix` (keys returned without it).
+    /// Removes, shredded, every local record under `prefix` whose key past it `pred` takes.
+    pub(crate) fn remove_scanned(&mut self, prefix: &[u8], pred: impl Fn(&[u8]) -> Result<bool>) -> Result<()> {
+        let mut gone = Vec::new();
+        self.scan(prefix, |k, _| {
+            if pred(k)? {
+                gone.push([prefix, k].concat());
+            }
+            Ok(())
+        })?;
+        for k in gone {
+            self.txn.remove_local(&k, Shred::Yes)?;
+        }
+        Ok(())
+    }
+
     pub fn scan(&mut self, prefix: &[u8], mut f: impl FnMut(&[u8], Vec<u8>) -> Result<()>) -> Result<()> {
         let mut from: Vec<u8> = Vec::new();
         loop {

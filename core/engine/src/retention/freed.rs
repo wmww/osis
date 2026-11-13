@@ -292,18 +292,11 @@ fn judge_blobs(tx: &mut Tx<'_>, blobs: &BTreeSet<BlobId>) -> Result<(Judgment, V
 /// `aspects`, `parts`: those forgotten, sources no more though still indexed meanwhile.
 pub(crate) fn lost(tx: &mut Tx<'_>, things: &BTreeSet<Tid>, roots: BTreeMap<Tid, Vec<Link>>, aspects: &BTreeSet<(Tid, Ak)>, parts: &BTreeMap<CommitId, BTreeSet<usize>>) -> Result<BTreeSet<BlobId>> {
     // rare (a role change): a scan of every row, keeping those of `things` alone
-    let mut gone = Vec::new();
-    tx.scan(records::FREED, |k, _| {
+    tx.remove_scanned(records::FREED, |k| {
         let mut r = Rd::new(k);
         let _blob: [u8; 32] = r.arr()?;
-        if things.contains(&r.tid()?) {
-            gone.push(k.to_vec());
-        }
-        Ok(())
+        Ok(things.contains(&r.tid()?))
     })?;
-    for k in gone {
-        tx.txn.remove_local(&[records::FREED, &k].concat(), Shred::Yes)?;
-    }
     // their waits go too: nothing is fetched for a thing lost
     tx.core.freed_waits.retain(|_, s| {
         s.retain(|(t, _)| !things.contains(t));

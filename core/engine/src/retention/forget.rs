@@ -217,21 +217,7 @@ pub(crate) fn forget(tx: &mut Tx<'_>, lost: &[Tid], held: &BTreeMap<Tid, u64>) -
     for (t, ak) in &aspects {
         crate::engine::refs::clear(tx, t, ak)?;
         tx.txn.drop_aspect(t, ak)?;
-        for p in [records::ASPECTS, records::VALUELESS, records::PURGES, records::SUSPECT, records::FORGOTTEN] {
-            tx.txn.remove_local(&records::aspect_key(p, t, ak), Shred::Yes)?;
-        }
-        tx.core.ix.forgotten.remove(&(*t, ak.clone()));
-        let mut rows = Vec::new();
-        for p in [records::LEFTOVER, records::PURGES_NAMED] {
-            let prefix = records::aspect_key(p, t, ak);
-            tx.scan(&prefix, |k, _| {
-                rows.push([prefix.as_slice(), k].concat());
-                Ok(())
-            })?;
-        }
-        for k in rows {
-            tx.txn.remove_local(&k, Shred::Yes)?;
-        }
+        super::destroy::forget_aspect_rows(tx, t, ak)?;
     }
     for t in &out.things {
         tx.txn.remove_local(&[records::SYNCING, t.as_bytes()].concat(), Shred::No)?;
@@ -242,30 +228,16 @@ pub(crate) fn forget(tx: &mut Tx<'_>, lost: &[Tid], held: &BTreeMap<Tid, u64>) -
     super::leaving::forget_things(tx, &out.things)?;
     // timers of forgotten parts
     let hit = |c: &CommitId, ai: usize| out.commits.contains(c) || parts.get(c).is_some_and(|s| s.contains(&ai));
-    let mut stale = Vec::new();
-    tx.scan(records::TIMER, |k, _| {
+    tx.remove_scanned(records::TIMER, |k| {
         let (_, c, ai) = records::parse_timer(k)?;
-        if hit(&c, ai) {
-            stale.push([records::TIMER, k].concat());
-        }
-        Ok(())
+        Ok(hit(&c, ai))
     })?;
-    for k in stale {
-        tx.txn.remove_local(&k, Shred::Yes)?;
-    }
     // what a purge request dropped there (`retention::lasting`)
-    let mut named = Vec::new();
-    tx.scan(records::NAMED_PERMANENT, |k, _| {
+    tx.remove_scanned(records::NAMED_PERMANENT, |k| {
         let mut r = Rd::new(k);
         let (c, t) = (CommitId(r.arr()?), r.tid()?);
-        if out.commits.contains(&c) || out.things.contains(&t) {
-            named.push([records::NAMED_PERMANENT, k].concat());
-        }
-        Ok(())
+        Ok(out.commits.contains(&c) || out.things.contains(&t))
     })?;
-    for k in named {
-        tx.txn.remove_local(&k, Shred::Yes)?;
-    }
     // labels of forgotten groups, from their `label.0` (kept)
     for g in out.things.clone() {
         out.labels.extend(crate::flows::labels::labels_in(tx, &g)?);
