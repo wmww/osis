@@ -144,7 +144,7 @@ pub(crate) fn run(ctx: &mut Ctx<'_>, c: ChatCmd) -> anyhow::Result<()> {
             let o = Options { name, purge, edit, disappear: disappear.as_deref().map(parse_dur).transpose()?, retain_copies: !no_retain_copy, peers };
             let t = osis_chat::create(&db, &o)?;
             send_out(ctx, Some(t))?;
-            ctx.emit(&[t.to_uri()], J::obj([("tid", J::tid(t))]))
+            ctx.one("tid", t.to_uri())
         }
         ChatCmd::Add { chat, account, role } => {
             let t = ctx.tid(&chat)?;
@@ -155,7 +155,7 @@ pub(crate) fn run(ctx: &mut Ctx<'_>, c: ChatCmd) -> anyhow::Result<()> {
             let t = ctx.tid(&chat)?;
             let l = db.make_link(t, parse_role(&role)?, LinkOpts { until: None, single_use, direct: false })?;
             send_out(ctx, Some(t))?;
-            ctx.emit(&[l.to_string()], J::obj([("link", J::str(l.to_string()))]))
+            ctx.one("link", l)
         }
         ChatCmd::Join { link } => {
             let l: osis::ShareLink = ctx.arg_text(&link)?.parse()?;
@@ -165,7 +165,7 @@ pub(crate) fn run(ctx: &mut Ctx<'_>, c: ChatCmd) -> anyhow::Result<()> {
             if !db.has_store() {
                 catch_up(ctx, t);
             }
-            ctx.emit(&[t.to_uri()], J::obj([("tid", J::tid(t))]))
+            ctx.one("tid", t.to_uri())
         }
         ChatCmd::Kick { chat, account, erase, retain_copy, purge } => {
             let (t, p) = (ctx.tid(&chat)?, ctx.tid(&account)?);
@@ -186,7 +186,7 @@ pub(crate) fn run(ctx: &mut Ctx<'_>, c: ChatCmd) -> anyhow::Result<()> {
             let reply_to = reply_to.as_deref().map(parse_id).transpose()?.map(|r| r.to_string());
             let m = osis_chat::send(&db, t, &schema::Message { text, name: from, reply_to })?;
             send_out(ctx, None)?;
-            ctx.emit(&[m.to_string()], J::obj([("id", J::str(m.to_string()))]))
+            ctx.one("id", m)
         }
         ChatCmd::Read { chat, max, before, after } => {
             let t = ctx.tid(&chat)?;
@@ -271,7 +271,7 @@ pub(crate) fn run(ctx: &mut Ctx<'_>, c: ChatCmd) -> anyhow::Result<()> {
             let m = parse_id(&i)?;
             osis_chat::edit(&db, t, m, &text)?;
             send_out(ctx, None)?;
-            ctx.emit(&[m.to_string()], J::obj([("id", J::str(m.to_string()))]))
+            ctx.one("id", m)
         }
         ChatCmd::Resend { chat, id: i } => {
             // one's own message turned invalid (`OwnWriteInvalid`), its text, name and reply as a
@@ -285,7 +285,7 @@ pub(crate) fn run(ctx: &mut Ctx<'_>, c: ChatCmd) -> anyhow::Result<()> {
             }
             let new = osis_chat::send(&db, t, &body)?;
             send_out(ctx, None)?;
-            ctx.emit(&[new.to_string()], J::obj([("id", J::str(new.to_string()))]))
+            ctx.one("id", new)
         }
         ChatCmd::Delete { chat, id: i } => {
             // the message and every version of it here

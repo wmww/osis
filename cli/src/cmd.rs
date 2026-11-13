@@ -395,7 +395,7 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
         Cmd::Pair(PairCmd::Offer) => {
             // print the offer, read the new node's request, print the reply and its node
             let o = db.pair_offer()?;
-            ctx.emit(&[o.to_string()], J::obj([("offer", J::str(o.to_string()))]))?;
+            ctx.one("offer", o)?;
             let mut line = String::new();
             ctx.stdin.read_line(&mut line)?;
             let (node, reply) = db.pair_accept(&line.parse()?)?;
@@ -591,12 +591,12 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
         Cmd::Chat(c) => crate::chat::run(ctx, c),
         Cmd::Link(LinkCmd::Make { t, role, until, single_use }) => {
             let l = db.make_link(ctx.tid(&t)?, parse_role(&role)?, LinkOpts { until: opt_ts(&until)?, single_use, direct: false })?;
-            ctx.emit(&[l.to_string()], J::obj([("link", J::str(l.to_string()))]))
+            ctx.one("link", l)
         }
         Cmd::Link(LinkCmd::Redeem { link }) => {
             let l: osis::ShareLink = ctx.arg_text(&link)?.parse()?;
             let t = confirm(ctx, db.redeem(&l))?;
-            ctx.emit(&[t.to_uri()], J::obj([("tid", J::tid(t))]))
+            ctx.one("tid", t.to_uri())
         }
         Cmd::Link(LinkCmd::Ls { t }) => {
             let mut ls = db.links()?;
@@ -613,7 +613,7 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
         }
         Cmd::Card(CardCmd::Show) => {
             let c = db.contact_card()?;
-            ctx.emit(&[c.to_string()], J::obj([("card", J::str(c.to_string()))]))
+            ctx.one("card", c)
         }
         Cmd::Card(CardCmd::Profile { account }) => {
             let p = match account {
@@ -621,14 +621,14 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
                 None => Some(db.profile()?),
             };
             match p {
-                Some(p) => ctx.emit(&[p.to_uri()], J::obj([("profile", J::tid(p))])),
+                Some(p) => ctx.one("profile", p.to_uri()),
                 None => Err(exit(3, "no profile known for that account")),
             }
         }
         Cmd::Card(CardCmd::Import { card }) => {
             let c: osis::ContactCard = ctx.arg_text(&card)?.parse()?;
             let a = confirm(ctx, db.import_contact(&c))?;
-            ctx.emit(&[a.to_uri()], J::obj([("actor", J::tid(a))]))
+            ctx.one("actor", a.to_uri())
         }
         Cmd::Disputes(DisputeCmd::Ls) => {
             let (ds, left) = db.disputes()?;
@@ -637,33 +637,26 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
                 osis::Side::Holder => "holder".to_string(),
                 osis::Side::Version(c) => c.to_string(),
             };
-            let chosen = |d: &osis::Dispute| if d.chosen() { " chosen" } else { "" };
-            let mut lines: Vec<String> = ds
+            let (mut lines, js): (Vec<String>, Vec<J>) = ds
                 .iter()
-                .map(|d| match d {
-                    osis::Dispute::Removal { id, target, author, holder, side: s, .. } => format!("{id} {} {} {} {}{}", target.to_uri(), author.to_uri(), holder.to_uri(), side(*s), chosen(d)),
-                    osis::Dispute::Account { id, versions, side: s, .. } => format!("{id} {} {}{}", versions.iter().map(|l| l.to_string()).collect::<Vec<_>>().join(","), side(*s), chosen(d)),
+                .map(|d| {
+                    let (chosen, flag) = if d.chosen() { (" chosen", "true") } else { ("", "false") };
+                    match d {
+                        osis::Dispute::Removal { id, target, author, holder, side: s, .. } => (
+                            format!("{id} {} {} {} {}{chosen}", target.to_uri(), author.to_uri(), holder.to_uri(), side(*s)),
+                            J::obj([("id", J::str(id.to_string())), ("target", J::tid(*target)), ("author", J::tid(*author)), ("holder", J::tid(*holder)), ("side", J::str(side(*s))), ("chosen", J::str(flag))]),
+                        ),
+                        osis::Dispute::Account { id, account, versions, side: s, .. } => (
+                            format!("{id} {} {}{chosen}", versions.iter().map(|l| l.to_string()).collect::<Vec<_>>().join(","), side(*s)),
+                            J::obj([("id", J::str(id.to_string())), ("account", J::tid(*account)), ("versions", J::strs(versions)), ("side", J::str(side(*s))), ("chosen", J::str(flag))]),
+                        ),
+                    }
                 })
-                .collect();
+                .unzip();
             if left > 0 {
                 lines.push(format!("{left} not examined"));
             }
-            let flag = |d: &osis::Dispute| J::str(if d.chosen() { "true" } else { "false" });
-            let j = J::obj([
-                (
-                    "disputes",
-                    J::Arr(
-                        ds.iter()
-                            .map(|d| match d {
-                                osis::Dispute::Removal { id, target, author, holder, side: s, .. } => J::obj([("id", J::str(id.to_string())), ("target", J::tid(*target)), ("author", J::tid(*author)), ("holder", J::tid(*holder)), ("side", J::str(side(*s))), ("chosen", flag(d))]),
-                                osis::Dispute::Account { id, account, versions, side: s, .. } => J::obj([("id", J::str(id.to_string())), ("account", J::tid(*account)), ("versions", J::strs(versions)), ("side", J::str(side(*s))), ("chosen", flag(d))]),
-                            })
-                            .collect(),
-                    ),
-                ),
-                ("unexamined", J::int(left as i64)),
-            ]);
-            ctx.emit(&lines, j)
+            ctx.emit(&lines, J::obj([("disputes", J::Arr(js)), ("unexamined", J::int(left as i64))]))
         }
         Cmd::Disputes(DisputeCmd::Choose { id, side }) => {
             let side = match side.as_str() {
@@ -711,8 +704,7 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
             }
             let g = ctx.tid(&g)?;
             let Some(to) = to else {
-                let at = db.group_sources().get(&g).map_or("local".to_string(), |a| a.to_string());
-                return ctx.emit(std::slice::from_ref(&at), J::obj([("source", J::str(at.clone()))]));
+                return ctx.one("source", db.group_sources().get(&g).map_or("local".to_string(), |a| a.to_string()));
             };
             let to = if to == "local" { osis::GroupSource::Local } else { osis::GroupSource::Node(to.parse()?) };
             wait(ctx, db.group_source(g, to))
@@ -1409,8 +1401,7 @@ fn serve(ctx: &mut Ctx<'_>, serving: ServingFlags, listen: &[String]) -> anyhow:
     }
     if !urls.is_empty() {
         for a in db.listen(&urls).map_err(|e| exit(6, format!("listen: {e}")))? {
-            let a = a.to_string();
-            ctx.emit(std::slice::from_ref(&a), J::obj([("address", J::str(a.clone()))]))?;
+            ctx.one("address", a)?;
         }
         ctx.out.flush()?;
     }

@@ -406,6 +406,12 @@ impl Ctx<'_> {
         }
     }
 
+    /// Emits one text line, or the JSON object `{key: text}`.
+    pub fn one(&mut self, key: &str, text: impl ToString) -> anyhow::Result<()> {
+        let t = text.to_string();
+        self.emit(std::slice::from_ref(&t), J::obj([(key, J::Str(t.clone()))]))
+    }
+
     /// Emits text lines, or the JSON array of them.
     pub fn list(&mut self, lines: &[String]) -> anyhow::Result<()> {
         self.emit(lines, J::strs(lines))
