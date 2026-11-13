@@ -2491,3 +2491,27 @@ fn move_unplaced_record_converges_spec_5_7() {
     }
 }
 
+
+
+/// §5.7 paste: a paste whose dots no longer lie in the placement in the clipboard's order fails
+/// (the caller inserts), so a paste reads as the clipboard's text. Here a paste re-anchors `d`
+/// (below `x`, outside the pasted slice) at `f`, before `q`.
+#[test]
+fn paste_out_of_clipboard_order_fails_spec_5_7() {
+    let view = text_view();
+    let mut a = Replica::new(1);
+    a.commit(1, &[op(Op::Insert { at: 0, items: vec![s("xd")] })], &view);
+    a.commit(2, &[op(Op::Insert { at: 1, items: vec![s("cfq")] })], &view);
+    assert_eq!(read_str(&a.state), "xcfqd");
+    let xc = crate::cut_dots(&a.state, 0, 2).unwrap();
+    let qd = crate::cut_dots(&a.state, 3, 2).unwrap();
+    a.commit(3, &[op(Op::Delete { at: 3, len: 2 }), op(Op::Delete { at: 0, len: 2 })], &view);
+    assert_eq!(read_str(&a.state), "f");
+    // q goes from below f to HEAD, f to HEAD before it
+    a.commit(4, &[op(Op::Move { at: 0, len: 1, to: 0 })], &view);
+    // d hangs below x outside the slice: re-anchored at f, the visible element before x
+    a.commit(5, &[op(Op::Paste { dots: xc, at: 0 })], &view);
+    assert_eq!(read_str(&a.state), "xcf");
+    let mut b = Batch::new(&a.state, Writer::new(ts(6 << 16), a.src.clone(), a.lo));
+    assert!(b.apply(&op(Op::Paste { dots: qd, at: 3 }), &view).is_err(), "d lies before q");
+}

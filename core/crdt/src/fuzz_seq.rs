@@ -774,6 +774,15 @@ mod tests {
         replay(&s);
     }
 
+    /// §5.7 paste: a commit of a move and two pastes, the second's clipboard taken from the state
+    /// before the commit, where the first paste re-anchored its last char below the run (shrunk
+    /// from a random script): reads like the same ops on a plain sequence, or writes nothing.
+    #[test]
+    fn second_paste_of_a_commit_replays_spec_5_7() {
+        let s = Script{list:false,steps:vec![Step::Ops{r:0,ops:vec![LocalOp::Edit{at:16717,del:161,item:203,stale:false}],skew:0,per:0},Step::Join{to:1,pick:43,n:2,per:0,merged:false},Step::Ops{r:1,ops:vec![LocalOp::Set{item:71}],skew:0,per:0},Step::Ops{r:1,ops:vec![LocalOp::Set{item:125}],skew:0,per:0},Step::Ops{r:1,ops:vec![LocalOp::Set{item:81}],skew:0,per:0},Step::Ops{r:1,ops:vec![LocalOp::Move{at:43,len:229,to:7725},LocalOp::Paste{run:12,at:14304},LocalOp::Paste{run:135,at:17017}],skew:0,per:0}]};
+        replay(&s);
+    }
+
     /// Shrinks the failing script of `OSIS_SHRINK=<seed>` (as `random_scripts_replay_spec_5_7`
     /// makes it) by dropping steps and ops while it still panics; prints the result.
     #[test]

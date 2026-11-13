@@ -258,8 +258,9 @@ pub(crate) fn op<V: View>(w: &mut Writer, text: bool, s: Option<&dyn SeqRead>, v
             let vis = visible(s);
             let p = &vis.0.p;
             let idx: Vec<usize> = dots.iter().filter_map(|d| vis.0.index(d)).collect();
-            let (Some(i0), Some(i1)) = (idx.iter().min(), idx.iter().max()) else { return Err(Error::Mismatch("the clipboard no longer matches")) };
-            if idx.len() != dots.len() {
+            // the clipboard's dots in its order in the placement: the paste reads as its text
+            let (Some(i0), Some(i1)) = (idx.first(), idx.last()) else { return Err(Error::Mismatch("the clipboard no longer matches")) };
+            if idx.len() != dots.len() || !idx.is_sorted_by(|a, b| a < b) {
                 return Err(Error::Mismatch("the clipboard no longer matches"));
             }
             let range = dots_of(p, *i0..*i1 + 1);

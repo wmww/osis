@@ -460,6 +460,7 @@ Text is `list<char>` with run compression and immutable element content; list el
     2. root 1 to the destination anchor;
     3. root j>1 to the last element, in placement order, of root j-1's moved subtree (its subtree minus the `outside` subtrees).
   - Interior elements of the range are never rewritten.
+- `paste(dots, after: index|HEAD)` (text only): restores cut elements `dots` (the visible elements a cut deleted, in read order). It fails (the clipboard no longer matches; the writer inserts the text instead) unless every dot is an element holding its creation and char, the dots lie in the placement order in their given order, and no visible element other than them lies between the first and the last. Else: `move` of that slice (`pred`: the visible element before it), then `undelete(dots)`; so the paste reads as the clipboard's text.
 - List element edits: `set_field`/nested ops on element i → record `[dot, 1, [], [nested fragment], [], []]`.
 - `replace(items)`: fragment reset `D`, then a creation run. Old elements lose every write below `D`, and their records with no write left go. `remove_aspect` is the same without the creation run: the aspect reads absent.
 

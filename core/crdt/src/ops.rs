@@ -142,7 +142,8 @@ pub enum Op {
     /// sequence without it (§5.7).
     Move { at: usize, len: usize, to: usize },
     /// Text paste of cut elements `dots` (`cut_dots`) at visible index `at` of the text without
-    /// them: a move plus an undelete (§5.7 move and undelete; client side: notes/crdt.md, clipboard). Fails if a dot or its char is gone.
+    /// them: a move plus an undelete (§5.7 paste; client side: notes/crdt.md, clipboard). Fails
+    /// when the clipboard no longer matches (the caller inserts).
     Paste { dots: Vec<Dot>, at: usize },
     /// Sequence edit from `base` to `new` (`diff_values`), rebased onto the current sequence by
     /// matching `base` to its read (notes/api.md `edit`).
