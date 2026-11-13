@@ -179,10 +179,11 @@ impl SyncEngine {
                 self.state.memory_in_closure.insert((*l, *id));
             }
             // the duplicate with the higher blob ID goes (spec/sync.md §7): the same delta set
-            // (each encryption has its own salt), deltas the label's actor may not read included
-            // (a blob holding one another node dropped is must-not-hold there, no copy), only a
-            // genuine one (a forged duplicate must not get the real entry deleted); one whose wrap is of no use there counts as no copy,
-            // and goes itself once there is one, whatever its ID
+            // (each encryption has its own salt), not only the same body (a blob holding a delta
+            // another node dropped is must-not-hold there, no copy of its rewrite), only a
+            // genuine one (a forged duplicate must not get the real entry deleted); one whose
+            // wrap is of no use there counts as no copy, and goes itself once there is one,
+            // whatever its ID
             // (in this node's own store: useless at a source, where another encryption replaces it;
             // one whose bytes it dropped is no copy either, as `entry_for` places the body anew)
             let useless = match host {

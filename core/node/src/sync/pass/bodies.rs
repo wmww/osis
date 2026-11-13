@@ -149,7 +149,8 @@ impl SyncEngine {
     /// Whether a delete took body `b` from `l` (a blob of the commit whose `readable` parts are the
     /// body's, from this node's store, or at `host`: an entry of it gone there and not present,
     /// not a wrap of no use) and it stays out: every one of its `parts` only a blob can carry
-    /// (`must_carry`) is held there (at `host`) by another genuine blob of the commit, and no purge that fell may have been what took it (spec/sync.md §6).
+    /// (`must_carry`) is held there (at `host`) by another genuine blob of the commit, and no
+    /// purge that fell may have been what took it (spec/sync.md §6).
     /// A memory body's delete stands too while memory entries this node refused for its cap are
     /// held there (`refused_there`): a delete-key holder deletes only once the carrier is there,
     /// and this node, not reading those entries, cannot show it is not (a fresh encryption past
