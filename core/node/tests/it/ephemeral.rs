@@ -508,6 +508,33 @@ fn delete_purges_ephemeral_state_where_the_thing_stays_spec_sync_9() {
     assert!(net.engine(c).groups_of(&w).contains(&g2), "still in g2");
 }
 
+// spec/sync.md §9 Delete, spec/commits.md §5 Purge: the delete purges by stamp, not by arrival:
+// an ephemeral write stamped before it on an aspect it names, reaching holders only after it (its
+// writer offline at the delete), is purged at every holder, its writer included; one stamped
+// after it stands
+#[test]
+fn delete_purges_earlier_writes_arriving_after_it_spec_sync_9() {
+    let (mut net, _host, [a, b, c], g, []) = hosted::<3, 0>(&[(1, Role::Write), (2, Role::Write)], [], true);
+    let w = window(&mut net, a, g, "secret");
+    note(&mut net, a, w, "a", "a");
+    net.run();
+    net.set_online(c, false);
+    note(&mut net, c, w, "early", "c");
+    net.advance(1_000);
+    let mut m = Mutation::new();
+    m.deleting(w);
+    net.engine(a).write(m).unwrap();
+    local(&mut net, a);
+    net.run();
+    net.advance(1_000);
+    note(&mut net, c, w, "late", "c");
+    net.set_online(c, true);
+    net.advance(15_000);
+    for n in [a, b, c] {
+        assert_eq!((net.eph_read(n, w, STATE), notes(&mut net, n, w)), (None, map(&[("late", "c")])), "node {n}");
+    }
+}
+
 // spec/sync.md §9 Delete: a synced thing (g itself) in no group with only ephemeral content:
 // its delete is a commit of its purge request alone, which clears the values at every holder;
 // their entries leave the host

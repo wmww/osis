@@ -677,13 +677,13 @@ fn local_ephemeral_changes_reach_listeners_once_spec_data_model_1() {
     assert_eq!((ch.value, local(ch.origin)), (Ok(Some(Value::Int(1))), back.stamp.id), "a revert is a local ephemeral commit");
     db.settle();
     assert!(rx.try_recv().is_err(), "told once each");
-    // a delete: derived
+    // a delete: its commit
     let mut w = db.write();
     w.delete(x).unwrap();
     let del = w.commit().unwrap().unwrap();
     let ch = recv(&rx);
     assert_eq!((ch.value, local(ch.origin)), (Ok(None), del.stamp.id));
-    // an undone creation: derived
+    // an undone creation: the undo commit
     let made = db.commit_with(|w| { let y = w.create()?; w.at(y, osis::DynamicAspectKey::untyped(ak("app:n.0"))).set(&Value::Int(0))?; Ok(y) }).unwrap();
     let created = db.created(made).unwrap().unwrap().id;
     db.commit_set(made, draft.clone(), &Value::Int(3)).unwrap();
