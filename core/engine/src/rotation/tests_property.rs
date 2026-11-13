@@ -80,6 +80,9 @@ struct Run {
     /// after each write, not each step: a rotation removes the boxes at the epochs it supersedes,
     /// so a box another write of the same step replaced is in no later state.
     states: Vec<(Tid, ct::Secrets)>,
+    /// The boxes to a holder actor at a keyset the first node holding them held superseded (a
+    /// stale box, spec/crypto.md §4 Stale): no honest node writes one, so none is a hand-on.
+    stale: BTreeSet<BoxAt>,
     secrets: BTreeMap<Key, osis_crypto::Secret32>,
     /// When each peer first held each secret (an index into `log`).
     first: BTreeMap<(usize, Key), usize>,
@@ -97,6 +100,14 @@ impl Drop for Run {
 }
 
 impl Run {
+    fn new(lp: LocalPeer, actors: Vec<(Tid, usize)>, rng: Rng) -> Run {
+        let tids: Vec<Tid> = (0..N).map(|i| lp.peers[i].engine.me()).collect();
+        let mut run = Run { lp, tids, actors, ever: vec![BTreeSet::new(); N], handed: vec![BTreeMap::new(); N], made: BTreeMap::new(), resealed: Vec::new(), states: Vec::new(), stale: BTreeSet::new(), secrets: BTreeMap::new(), rng, hostile: BTreeSet::new(), log: Vec::new(), first: BTreeMap::new(), holder_rotated: false };
+        run.log.push(format!("actors {:?} (owners), peers {:?}", run.actors, run.tids));
+        run.note();
+        run
+    }
+
     fn all(&self) -> Vec<Tid> {
         self.actors.iter().map(|a| a.0).collect()
     }
@@ -126,10 +137,28 @@ impl Run {
                 if let Some(s) = self.lp.peers[p].engine.get_typed(a, &ct::SECRETS).unwrap()
                     && !self.states.iter().any(|x| x.0 == *a && x.1 == s)
                 {
+                    self.stale.extend(self.stale_boxes(p, *a, &s));
                     self.states.push((*a, s));
                 }
             }
         }
+    }
+
+    /// The boxes new in state `s` of actor `a` (in no state of it met before) to a holder actor
+    /// at a keyset peer `p`, the first node holding them, holds superseded.
+    fn stale_boxes(&self, p: usize, a: Tid, s: &ct::Secrets) -> Vec<BoxAt> {
+        use osis_keys::aspects::from_schema;
+        let core = &self.lp.peers[p].engine.core;
+        let new = |k, b| !self.states.iter().any(|x| x.0 == a && x.1.boxes.get(k) == Some(b));
+        let sealed = s.boxes.iter().filter(|(k, b)| !self.tids.contains(&k.holder) && new(*k, *b)).filter_map(|(k, b)| {
+            let via = match b {
+                ct::SecretBox::Sealed(sb) => from_schema(sb.keyset.as_ref()?).ok()?,
+                ct::SecretBox::Symmetric(sb) => from_schema(&sb.epoch).ok()?,
+            };
+            Some((k, from_schema(&k.epoch).ok()?, via))
+        });
+        let superseded = |m: &Tid, r: Role, k: &Epoch| core.epochs(m).is_some_and(|ep| ep.role(r).epochs().any(|(_, info)| info.rotations.iter().any(|(_, list)| list.contains(k))));
+        sealed.filter(|(k, _, via)| superseded(&k.holder, k.role, via)).map(|(k, e, _)| (a, k.role, e, k.holder)).collect()
     }
 
     /// Peer `i` granted peer `j` role `r` on `t`: notes what that handed `j` (`handed`), on `t`
@@ -148,9 +177,10 @@ impl Run {
             let carried: BTreeSet<Key> = carried.copied().collect();
             // a handed secret of `t` opens every box to `t` at it written so far, at any node,
             // not only those its author had received: the author holds the secret, so it opens
-            // them too (a secret once shared cannot be un-shared)
+            // them too (a secret once shared cannot be un-shared); a stale box is a leak, not a
+            // hand-on
             let nobody = Tid::from_bytes([0; osis_base::format::TID_LEN]);
-            let reach = opens_in(&self.lp, &self.states, &self.secrets, nobody, boxed.union(&carried).copied().collect(), &BTreeSet::new());
+            let reach = opens_in(&self.lp, &self.states, &self.secrets, nobody, boxed.union(&carried).copied().collect(), &self.stale);
             let above = after.difference(&before).chain(&reach).filter(|k| k.0 != t);
             for k in boxed.iter().chain(&carried).chain(above).filter(|k| !self.ever[j].contains(k)) {
                 self.handed[j].entry(*k).or_insert(self.log.len());
@@ -385,9 +415,7 @@ fn rotation_history(seed: u64, every_tx: bool) -> Reached {
         }
     }
     lp.sync_all().unwrap();
-    let mut run = Run { lp, tids, actors, ever: vec![BTreeSet::new(); N], handed: vec![BTreeMap::new(); N], made: BTreeMap::new(), resealed: Vec::new(), states: Vec::new(), secrets: BTreeMap::new(), rng, hostile: BTreeSet::new(), log: Vec::new(), first: BTreeMap::new(), holder_rotated: false };
-    run.log.push(format!("actors {:?} (owners), peers {:?}", run.actors, run.tids));
-    run.note();
+    let mut run = Run::new(lp, actors, rng);
     reached.cycle = k > 1;
     // the commits lowering an edge: what the withheld admin may miss
     let mut departing: BTreeSet<CommitId> = BTreeSet::new();
@@ -845,5 +873,59 @@ fn rotation_holds_spec_crypto_4() {
 fn rotation_holds_large_spec_crypto_4() {
     let s = osis_base::testenv::Seeds::from_env("OSIS_ROTATION_START", "OSIS_ROTATION_SEEDS", osis_base::testenv::large(0..1_000));
     tally(&s.run("rotation::tests_property::rotation_holds_large_spec_crypto_4", replay, |s| rotation_history(s, false)));
+}
+
+/// Peer `i` acts (`f`), logged, its new epochs recorded and the states noted, as a generated step
+/// is (the log line first: a secret first held after a grant's step counts as handed by it).
+fn step(run: &mut Run, i: usize, f: impl FnOnce(&mut Run)) {
+    let before = run.before(i);
+    f(run);
+    run.log.push(format!("peer {i} acts"));
+    run.record(i, &before);
+    run.note();
+}
+
+// The checker's hand-on through a holder actor (spec/crypto.md §4, Boxes; seed 636429853021):
+// M admin of G, A (peer 1) admin of M, D (peer 2) admin of G. The owner demotes D to reader,
+// rotating G's admin to e1 boxed to M at keyset k, and removes A from M. A, having received
+// neither, grants D admin of M, boxing k; D, not yet holding A's removal, opens e1 through the
+// box to M at k. The grant settles invalid. A holds k, so opens that box though its node never
+// received it: e1 is handed on, not leaked (`Run::grant` counts every box at a handed keyset).
+#[test]
+fn handed_keyset_opens_boxes_its_author_never_received_spec_crypto_4() {
+    let mut lp = LocalPeer::new(N, 1, WallMs(1_700_000_000_000)).unwrap();
+    lp.sync_all().unwrap();
+    let (a, d) = (lp.peers[1].engine.me(), lp.peers[2].engine.me());
+    let g = group(&mut lp, 0);
+    let m = group(&mut lp, 0);
+    lp.peers[0].engine.grant(&g, &m, &edge(Role::Admin)).unwrap();
+    lp.peers[0].engine.grant(&m, &a, &edge(Role::Admin)).unwrap();
+    lp.peers[0].engine.grant(&g, &d, &edge(Role::Admin)).unwrap();
+    lp.sync_all().unwrap();
+    let mut run = Run::new(lp, vec![(g, 0), (m, 0)], Rng(1));
+    let admin = |run: &Run| run.lp.peers[0].engine.epochs(&g).and_then(|e| e.role(Role::Admin).newest_held().map(|x| x.0)).unwrap();
+    step(&mut run, 0, |run| {
+        run.lp.peers[0].clock.advance(1_000);
+        run.lp.peers[0].engine.demote(&g, &Demotion { holder: d, new: Some(edge(Role::Read)), retain: None }).unwrap();
+    });
+    let e1 = admin(&run);
+    run.lp.sync(0, 2).unwrap();
+    run.note();
+    step(&mut run, 0, |run| {
+        run.lp.peers[0].clock.advance(2_000);
+        run.lp.peers[0].engine.demote(&m, &Demotion { holder: a, new: None, retain: None }).unwrap();
+        run.lp.peers[0].engine.ensure_rotated(&g).unwrap();
+    });
+    step(&mut run, 1, |run| {
+        run.lp.peers[1].clock.advance(3_000);
+        run.grant(1, 2, m, Role::Admin);
+    });
+    assert!(!run.ever[1].contains(&(g, Role::Admin, e1)), "A never held e1");
+    run.lp.sync(1, 2).unwrap();
+    run.note();
+    assert!(run.ever[2].contains(&(g, Role::Admin, e1)), "D opens e1 through the box to M at k");
+    settle(&mut run, 1, true);
+    assert_eq!(run.key_role(0, &m, 2), None, "the grant is invalid");
+    check(&mut run, 1, true);
 }
 
