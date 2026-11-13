@@ -3,7 +3,7 @@
 > Priority: normal
 > Tags: engine, spec, retention
 
-Design: spec/commits.md §5-§7, notes/engine-retention.md. Model findings: core/test/held-model/AMBIGUITIES.md (held-model-4, thing-level history).
+Design: spec/commits.md §5-§7, notes/engine-retention.md. Model findings: core/test/held-model/AMBIGUITIES.md (Covers and fetching again, Thing-level history).
 
 ## Left
 - **Ephemeral (open)**: an expiring delta is covered by the join like any body, which does not replace spec/sync.md §9 Superseded parts: a map key's rewrite (`KeepAlive`, a cursor map) is a `Put`, a fresh entry, and the old entry stays live in the CRDT (shadowed only in the read), so no cover drops it; without the rule a cursor holds every move to its expiry (measured: 60 moves, 60 commits and host entries, against 1). Options: keep the rule and its second session; a move that removes the old entry (dead, so covered), at a map tombstone per move held in every holder's state; a crdt change (a put that replaces the key's own entries). notes/ephemeral.md Superseded expiring writes (kept, with its reason); issues/connection-lived-data.md.
