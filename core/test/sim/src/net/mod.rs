@@ -407,6 +407,12 @@ pub struct NetSim {
     pub lan_drop_pct: u32,
 }
 
+/// `s` cut to `max` chars for the trace, or whole under `OSIS_SIM_TRACE_FULL`.
+pub(crate) fn clip(s: &str, max: usize) -> String {
+    static FULL: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if *FULL.get_or_init(|| std::env::var_os("OSIS_SIM_TRACE_FULL").is_some()) { s.to_string() } else { s.chars().take(max).collect() }
+}
+
 /// Stream events in short: per event its label's first bytes, then `+id` (an Added; `s` stamped,
 /// `b` with its bytes), `-id` (a Deleted) or `head`.
 fn events(evs: &[(osis_base::LabelId, osis_proto::Event)]) -> String {
@@ -446,7 +452,7 @@ fn frames(b: &[u8]) -> String {
             Err(_) => format!("<{} bytes>", f.len()),
         };
         let max = if s.starts_with("Stream ") || s.starts_with("PullReply ") { 4000 } else { 160 };
-        v.push(s.chars().take(max).collect::<String>());
+        v.push(clip(&s, max));
     }
     if v.is_empty() { format!("<{} bytes>", b.len()) } else { v.join(" | ") }
 }
@@ -944,7 +950,7 @@ impl NetSim {
         }
         for d in diags {
             self.report.diagnostics = self.report.diagnostics.saturating_add(1);
-            self.note(format!("node {n} diagnostic: {}", d.chars().take(160).collect::<String>()));
+            self.note(format!("node {n} diagnostic: {}", clip(&d, 160)));
         }
         Ok(())
     }
@@ -1301,7 +1307,7 @@ impl NetSim {
                     }
                 }
                 HubOutput::Up(hc, up) => ups.push((hc, up)),
-                HubOutput::Diagnostic(d) => self.note(format!("node {n} hub diagnostic: {}", d.chars().take(160).collect::<String>())),
+                HubOutput::Diagnostic(d) => self.note(format!("node {n} hub diagnostic: {}", clip(&d, 160))),
             }
         }
         if ups.is_empty() && !moved {
@@ -1396,7 +1402,7 @@ impl NetSim {
                 HubOutput::Moved => moved = true,
                 HubOutput::Diagnostic(d) => {
                     self.report.diagnostics = self.report.diagnostics.saturating_add(1);
-                    self.note(format!("host {s} diagnostic: {}", d.chars().take(160).collect::<String>()));
+                    self.note(format!("host {s} diagnostic: {}", clip(&d, 160)));
                 }
             }
         }

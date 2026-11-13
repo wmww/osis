@@ -181,7 +181,7 @@ fn convergence(sim: &mut NetSim) -> Res<()> {
                     && dm == dn
                     && rm != rn
                 {
-                    let (rm, rn): (String, String) = (rm.chars().take(200).collect(), rn.chars().take(200).collect());
+                    let (rm, rn) = (super::clip(rm, 200), super::clip(rn, 200));
                     return Err(sim.fail(format!("divergence: nodes {m} and {n} hold the same {} deltas of {} {} but read {rm} vs {rn}", dm.len(), k.0, k.1)));
                 }
             }

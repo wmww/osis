@@ -213,10 +213,10 @@ impl NetSim {
                         }
                     }
                     SessionOutput::Peer(m) => {
-                        self.note(format!("rogue at s{}: {}", r.s, format!("{m:?}").chars().take(140).collect::<String>()));
+                        self.note(format!("rogue at s{}: {}", r.s, super::clip(&format!("{m:?}"), 140)));
                         r.events.push(*m);
                     }
-                    other => self.note(format!("rogue at s{}: {}", r.s, format!("{other:?}").chars().take(140).collect::<String>())),
+                    other => self.note(format!("rogue at s{}: {}", r.s, super::clip(&format!("{other:?}"), 140))),
                 }
                 continue;
             }
