@@ -687,6 +687,11 @@ fn tables(ix: &super::Indexes) -> [(&'static str, &dyn Table); 28] {
     ]
 }
 
+/// `Indexes::derived_written` as an open loads it: an emptied entry stays in memory until then.
+fn derived_written(ix: &super::Indexes) -> BTreeMap<Tid, &std::collections::BTreeSet<osis_crypto::Epoch>> {
+    ix.derived_written.iter().filter(|(_, s)| !s.is_empty()).map(|(t, s)| (*t, s)).collect()
+}
+
 /// A commit's `CommitDigest`, its `rest` empty, and what `rest` shows.
 fn commit_digest(m: &super::Meta) -> (CommitDigest, (&osis_base::WallMs, &crate::events::Origin, &super::View)) {
     let n = m.hold.len();
@@ -720,7 +725,8 @@ impl super::Core {
                 dropped_snapshots.entry(*c).or_default().push((*t, a.clone()));
             }
         }
-        let tables = tables(ix).into_iter().map(|(n, t)| (n, format!("{t:?}"))).collect();
+        let mut tables: BTreeMap<&'static str, String> = tables(ix).into_iter().map(|(n, t)| (n, format!("{t:?}"))).collect();
+        tables.insert("derived_written", format!("{:?}", derived_written(ix)));
         IndexDigest { commits, held: self.held_digest(), snapshots, dropped_snapshots, tables }
     }
 
@@ -746,6 +752,7 @@ impl super::Core {
             && *a.snapshots == *b.snapshots
             && *a.dropped_snapshots == *b.dropped_snapshots
             && tables(a).iter().zip(tables(b).iter()).all(|((_, x), (_, y))| x.same(*y))
+            && derived_written(a) == derived_written(b)
             && self.perm_parts(false) == o.perm_parts(false)
     }
 

@@ -834,7 +834,7 @@ indexes! {
     /// Derived read epochs of things this node sealed a section under while the thing was plain
     /// here, until a rotation of it carries them (`rotation::merge`; `records::DERIVED_WRITTEN`).
     /// A key emptied stays until the next open: removing it would move every memo that read an
-    /// absent key (each actor's rotation run).
+    /// absent key (each actor's rotation run). `check_index` compares the non-empty keys.
     pub derived_written: JMap<Tid, BTreeSet<osis_crypto::Epoch>>,
     /// Held commits whose `keys.0` part on a thing wrote a keyset in its body, any validity
     /// (`records::OWN_KEYS`): thing -> commits.

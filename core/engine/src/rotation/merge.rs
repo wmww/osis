@@ -95,6 +95,18 @@ pub(crate) fn settle(tx: &mut Tx<'_>, a: &Tid) -> Result<Option<osis_keys::Actor
     Ok(Some(view))
 }
 
+/// Lets go of every derived read epoch of `t` this node wrote under: `t` is gone here (its
+/// destruction kept nothing of it, `retention::destroy`), as on a node that never held it.
+pub(crate) fn forget(tx: &mut Tx<'_>, t: &Tid) -> Result<()> {
+    let Some(written) = tx.core.ix.derived_written.get(t).filter(|s| !s.is_empty()).cloned() else { return Ok(()) };
+    // emptied, not removed (`Indexes::derived_written`)
+    tx.core.ix.derived_written.upsert(*t, BTreeSet::new, BTreeSet::clear);
+    for e in &written {
+        tx.txn.remove_local(&key(t, e), Shred::No)?;
+    }
+    Ok(())
+}
+
 /// The `records::DERIVED_WRITTEN` key of (`t`, `e`).
 fn key(t: &Tid, e: &Epoch) -> Vec<u8> {
     [records::DERIVED_WRITTEN, t.as_bytes().as_slice(), &e.n().to_be_bytes(), e.nonce()].concat()
