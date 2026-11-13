@@ -52,10 +52,13 @@ impl SyncEngine {
             }
             let (id, fresh) = match entry {
                 Some(id) => (id, false),
-                None if read_ok && (keys.is_writer() || self.may_deposit(keys, b)) => match self.place(g, l, b, false)? {
-                    Some(id) => (id, true),
-                    None => continue,
-                },
+                None if read_ok && (keys.is_writer() || self.may_deposit(keys, b)) => {
+                    let again = self.delete_took(source, l, b);
+                    match self.place(g, l, b, false, again)? {
+                        Some(id) => (id, true),
+                        None => continue,
+                    }
+                }
                 None => continue,
             };
             let of = Some(Touch::Commit(b.commit));
@@ -155,16 +158,14 @@ impl SyncEngine {
     /// held there (`refused_there`): a delete-key holder deletes only once the carrier is there,
     /// and this node, not reading those entries, cannot show it is not (a fresh encryption past
     /// that delete would be deleted again, forever).
+    /// A delete this node finds unfounded (a part to carry with no carrier there) stands too once
+    /// it took a blob this node sealed to place the body again past such a delete (`BlobRec::
+    /// again`): the right holder judges it covered by a snapshot this node does not hold (one
+    /// on its way, or a host keeping it from this node), and placing it again would only be
+    /// deleted again, one fresh blob and tombstone per round trip. It stands while that
+    /// tombstone lasts.
     pub(super) fn delete_stands(&mut self, source: Option<&PeerKey>, l: LabelId, b: &Body, parts: &[usize], snaps: &Snaps, note: &mut Note) -> Result<bool> {
-        // compared on what the label's actor reads, as the body is: a deleted blob holding more
-        // it reads was another body (a rewrite replaced it for a dropped part)
-        let Some(g) = self.group_of(&l, None) else { return Ok(false) };
-        let mut deleted: Vec<Vec<usize>> = self.state.deleted_bodies(l, b.commit).cloned().collect();
-        if let Some(h) = source {
-            let there = self.state.entries_of(&l, &b.commit).filter(|(id, _)| self.state.is_gone_at(h, &l, id) && !self.state.is_present(h, &l, id));
-            deleted.extend(there.filter_map(|(_, e)| if let Kind::Commit { parts, .. } = &e.kind { Some(parts.clone()) } else { None }).collect::<Vec<_>>());
-        }
-        if !deleted.into_iter().any(|p| self.readable(&g, &b.commit, &p) == b.parts) {
+        if !self.delete_took(source, l, b) {
             return Ok(false);
         }
         // expiring within the clock drift allowed: a holder whose clock is ahead took it at expiry
@@ -176,10 +177,34 @@ impl SyncEngine {
         let unjudged = h.ephemeral.is_some() && self.refused_there(source, &l);
         for ai in parts {
             if self.must_carry(&h, &b.commit, &keeps, *ai, snaps, note)? && !self.carried_by(source, &l, &b.commit, &[*ai], b.to_label) && !unjudged {
-                return Ok(false);
+                return Ok(self.again_deleted(source, l, b));
             }
         }
         Ok(!self.engine.named_by_a_fallen_purge(&b.commit, parts)?)
+    }
+
+    /// Whether a delete took body `b` from `l`: a blob of the commit whose `readable` parts are
+    /// the body's, from this node's store (`State::deleted_bodies`), or at `source` (an entry of
+    /// it gone there and not present: not a wrap of no use).
+    pub(super) fn delete_took(&mut self, source: Option<&PeerKey>, l: LabelId, b: &Body) -> bool {
+        // compared on what the label's actor reads, as the body is: a deleted blob holding more
+        // it reads was another body (a rewrite replaced it for a dropped part)
+        let Some(g) = self.group_of(&l, None) else { return false };
+        let mut deleted: Vec<Vec<usize>> = self.state.deleted_bodies(l, b.commit).cloned().collect();
+        if let Some(h) = source {
+            let there = self.state.entries_of(&l, &b.commit).filter(|(id, _)| self.state.is_gone_at(h, &l, id) && !self.state.is_present(h, &l, id));
+            deleted.extend(there.filter_map(|(_, e)| if let Kind::Commit { parts, .. } = &e.kind { Some(parts.clone()) } else { None }).collect::<Vec<_>>());
+        }
+        deleted.into_iter().any(|p| self.readable(&g, &b.commit, &p) == b.parts)
+    }
+
+    /// Whether a blob this node sealed to place body `b` again past a delete (`BlobRec::again`)
+    /// was deleted under `l` too: tombstoned here, or gone at `source` and not present there.
+    fn again_deleted(&mut self, source: Option<&PeerKey>, l: LabelId, b: &Body) -> bool {
+        let Some(g) = self.group_of(&l, None) else { return false };
+        let st = &self.state;
+        let gone: Vec<Vec<usize>> = st.by_commit.get(&b.commit).into_iter().flatten().filter_map(|id| st.blobs.get(id).filter(|r| r.again).map(|r| (id, r))).filter(|(id, _)| st.tombs.contains_key(&(l, **id)) || source.is_some_and(|s| st.is_gone_at(s, &l, id) && !st.is_present(s, &l, id))).map(|(_, r)| r.parts.clone()).collect();
+        gone.into_iter().any(|p| self.readable(&g, &b.commit, &p) == b.parts)
     }
 
     /// Whether every part's aspect of commit `c` is covered by a snapshot under `l`.
@@ -344,7 +369,8 @@ impl SyncEngine {
     /// tombstoned there; for a certificate copy, this node's own copy of exactly its parts), else
     /// a fresh one (`Engine::seal`: every held part in sections, the sections this node could not
     /// open copied verbatim; a copy: `Engine::seal_to`); wrapped for the label.
-    pub(crate) fn place(&mut self, g: &Tid, l: LabelId, b: &Body, cert: bool) -> Result<Option<BlobId>> {
+    /// `again`: placed past a delete (`BlobRec::again`, kept on a blob sealed now).
+    pub(crate) fn place(&mut self, g: &Tid, l: LabelId, b: &Body, cert: bool, again: bool) -> Result<Option<BlobId>> {
         let Some(secret) = self.engine.wrap_secret(g, Some((&b.commit, &b.parts)))? else { return Ok(None) };
         // a memory commit's blobs carry its class and live in memory (spec/sync.md §9)
         let class = self.engine.header(&b.commit).map_or(osis_label::Class::Durable, |h| osis_label::Class::of_marker(h.ephemeral));
@@ -381,7 +407,7 @@ impl SyncEngine {
                     self.engine.put_blobs(vec![(s.id, s.blob)])?;
                 }
                 // a copy is recorded as one: never reused for a body (`blob_for`)
-                self.state.add_blob(s.id, BlobRec { commit: b.commit, parts: s.parts.clone(), ais: s.ais.clone(), key: s.key.clone(), cert: own, memory });
+                self.state.add_blob(s.id, BlobRec { commit: b.commit, parts: s.parts.clone(), ais: s.ais.clone(), key: s.key.clone(), cert: own, memory, again });
                 (s.id, s.key, s.parts, s.ais)
             }
         };

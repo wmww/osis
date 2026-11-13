@@ -764,7 +764,9 @@ impl SyncEngine {
                 self.relay_now.insert(l);
                 continue;
             }
-            let Some(id) = self.place(&g, l, &b, cert)? else { continue };
+            // a body deleted there (not one under a useless wrap) goes as a placement again
+            let replaces = !cert && !self.state.is_present(&source, &l, &o.id);
+            let Some(id) = self.place(&g, l, &b, cert, replaces)? else { continue };
             if cert {
                 self.place_linked(l, &c, &parts.iter().copied().collect())?;
                 self.state.add_cert(l, c);

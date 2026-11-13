@@ -857,3 +857,75 @@ fn no_step_under_an_unrecorded_head_spec_sync_5() {
     assert!(!d.iter().any(|x| x.contains("pass of")), "every pass ran: {d:?}");
     assert!(net.host_ids(s, &l).len() > before.len(), "c's write reached the peer");
 }
+
+
+// spec/sync.md §6 (a delete stands once it took a body placed again past one), notes/peers.md
+// (a host lying in its log): host `h` never lists admin b's covering snapshots to writer a. b
+// deletes a's write as covered; a, seeing no cover, places it again once, b deletes that too, and
+// the delete stands: no fresh blob and tombstone per round trip at either writer (else a storm
+// growing both stores). Quiet from then on: the host logs nothing more, both stores hold steady
+// (rows and bytes), across a restart of a.
+#[test]
+fn a_host_hiding_a_cover_from_one_writer_costs_one_placement_again_spec_sync_6() {
+    use osis_node::sync::EntryKind;
+    use std::collections::BTreeSet;
+    let mut net = Net::new();
+    let h = net.add_host();
+    let a = net.node(1, &[h]);
+    let b = net.node(2, &[h]);
+    let g = net.group(b, &[(a, Role::Write)], &[h]);
+    let t = net.item(b, g, g, "first");
+    net.run();
+    let reg = Ak::new("t:reg.0").unwrap();
+    let mut m = osis_node::Mutation::new();
+    m.set(t, &reg, &s("a's")).unwrap();
+    let c = net.engine(a).commit(m).unwrap().unwrap();
+    net.run();
+    let l = net.label(a);
+    let known: BTreeSet<_> = net.sync(a).entries(&l).into_iter().map(|(id, _)| id).collect();
+    let of_c = |k: &EntryKind| matches!(k, EntryKind::Commit { commit, .. } if *commit == c);
+    // what b logs from now on, a's write placed again aside, the host never lists to a
+    let hide = |net: &mut Net| {
+        let hidden = net.sync(b).entries(&l).into_iter().filter(|(id, k)| !known.contains(id) && !of_c(k)).map(|(id, _)| id).collect();
+        net.hide_blobs.insert(a, hidden);
+    };
+    let mut placed: BTreeSet<osis_base::BlobId> = BTreeSet::new();
+    for i in 0..12 {
+        let mut m = osis_node::Mutation::new();
+        m.set(t, &reg, &s(&format!("b{i}"))).unwrap();
+        net.engine(b).commit(m).unwrap().unwrap();
+        net.feed(b, Event::Local);
+        for ms in [0, 1_000] {
+            net.tick(ms);
+            for _ in 0..200 {
+                if net.queue_len() == 0 {
+                    break;
+                }
+                hide(&mut net);
+                net.round();
+                for n in [a, b] {
+                    placed.extend(net.sync(n).entries(&l).into_iter().filter(|(_, k)| of_c(k)).map(|(id, _)| id));
+                }
+            }
+        }
+    }
+    hide(&mut net);
+    // `run` asserts quiescence: no loop
+    net.run();
+    assert_eq!(placed.len(), 2, "a's write placed and placed again once: {placed:?}");
+    assert!(net.engine(b).header(&c).is_some() && net.engine(b).held_bodies(&t, &reg) < 4, "b compacted a's write");
+    assert_eq!(net.read(a, t), Some(s("a's")), "a sees none of b's writes");
+    let census = |net: &mut Net| (net.engine(a).local_census().unwrap(), net.engine(b).local_census().unwrap(), net.logged_at(h, &l));
+    // b's item commit a holds uncovered too goes again once, at a's next pass
+    net.advance(31_000);
+    let before = census(&mut net);
+    for i in 0..10 {
+        // a restart forgets nothing of it (`BlobRec::again` is stored)
+        if i == 5 {
+            net.restart(a, 1);
+        }
+        net.advance(31_000);
+    }
+    let after = census(&mut net);
+    assert!(before == after, "nothing more placed, deleted or kept:\n{before:?}\n{after:?}");
+}

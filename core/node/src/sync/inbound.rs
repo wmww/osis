@@ -1392,7 +1392,7 @@ impl SyncEngine {
                         return Ok(());
                     }
                     if !self.state.blobs.contains_key(&b) {
-                        self.state.add_blob(b, BlobRec { commit, parts: parts.clone(), ais: o.ais.clone(), key, cert: e.cert || o.copy, memory: e.memory });
+                        self.state.add_blob(b, BlobRec { commit, parts: parts.clone(), ais: o.ais.clone(), key, cert: e.cert || o.copy, memory: e.memory, again: false });
                     }
                     e.salt = prefix.as_ref().map(|p| *p.salt());
                     e.kind = Kind::Commit { commit, parts, ais: o.ais };
