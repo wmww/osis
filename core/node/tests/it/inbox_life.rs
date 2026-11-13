@@ -1828,3 +1828,83 @@ fn a_padded_record_blob_is_never_stamped_spec_sync_5() {
     assert!(promoted, "the card went up stamped");
     assert!(osis_proto::LabelStore::entry(&*store, &l, &id).unwrap().is_none_or(|m| m.stamp.is_none()), "never stamped");
 }
+
+/// An account of node `n`'s own at `host`.
+fn account_at(net: &mut Net, host: usize, n: usize) -> Tid {
+    let addr = net.address(host);
+    let (p, done) = net.engine(n).create_account(std::slice::from_ref(&addr)).unwrap();
+    let acts = net.sync(n).carry_out(done).unwrap();
+    net.actions(n, acts);
+    net.run();
+    p.account
+}
+
+/// `a` removes `holder` from `g`.
+fn demote(net: &mut Net, a: usize, g: Tid, holder: Tid) {
+    let d = osis_node::flows::Demotion { holder, new: None, retain: None };
+    let done = net.engine(a).demote(&g, &d).unwrap();
+    let acts = net.sync(a).carry_out(done).unwrap();
+    net.actions(a, acts);
+}
+
+/// Steps `net` until `n`'s label `l` is in its shared set at `host` (ticking when nothing is
+/// queued); whether it got there.
+fn open_at(net: &mut Net, n: usize, host: usize, l: &LabelId) -> bool {
+    for _ in 0..100_000 {
+        if net.conn_to(n, host).is_some_and(|c| net.sync(n).shared_members(c).contains(l)) {
+            return true;
+        }
+        if !net.step() {
+            net.tick(5_000);
+        }
+    }
+    false
+}
+
+/// `f` while `b` hears nothing from `host`; then `b` hears all but the blobs there.
+fn moved_unheard(net: &mut Net, b: usize, host: usize, f: impl FnOnce(&mut Net)) {
+    net.held_to.insert(b);
+    f(net);
+    net.run();
+    let ids = net.labels_at(host).iter().flat_map(|x| net.host_ids(host, x)).collect();
+    net.hide_blobs.insert(b, ids);
+    net.release();
+}
+
+// spec/sync.md §5 (Opens, Credential), §10 (Shared set): Bob, granted while away across a
+// rotation, opens g's label at a node that cannot read it by his claim on its head, knowing no
+// step of it yet; the head moves while he reads nothing there. The open by the old step's claim
+// ends, and the head the peer's stream named is the newest step he knows there: his claim on it
+// opens L again, no Behind item asked.
+#[test]
+fn a_claim_open_ended_by_a_head_move_opens_at_the_new_head_spec_sync_5() {
+    let (mut net, host, a, b, _, bob, g, _) = alice_and_bob_at(Vec::new());
+    let (c, d) = (net.node(3, &[host]), net.node(4, &[host]));
+    let carol = account_at(&mut net, host, c);
+    let dave = account_at(&mut net, host, d);
+    net.pair(c, a);
+    net.pair(d, a);
+    grant(&mut net, a, g, carol);
+    grant(&mut net, a, g, dave);
+    net.run();
+    net.set_online(b, false);
+    grant(&mut net, a, g, bob);
+    net.run();
+    demote(&mut net, a, g, carol);
+    net.run();
+    let l = net.sync(a).labels().into_iter().find(|(x, _)| *x == g).unwrap().1.id;
+    for x in [a, c, d] {
+        net.blocked_peers.extend([(x, b), (b, x)]);
+    }
+    net.set_online(b, true);
+    net.feed(b, osis_node::sync::Event::Local);
+    assert!(open_at(&mut net, b, host, &l), "open by a claim on the head");
+    let behind = net.sync(b).pass_stats().behind_sent;
+    moved_unheard(&mut net, b, host, |net| demote(net, a, g, dave));
+    for _ in 0..2 {
+        net.advance(70_000);
+    }
+    let cn = net.conn_to(b, host).unwrap();
+    assert!(net.sync(b).shared_members(cn).contains(&l), "open again");
+    assert_eq!(net.sync(b).pass_stats().behind_sent - behind, 0, "no Behind item");
+}

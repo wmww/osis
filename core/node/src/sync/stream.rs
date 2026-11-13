@@ -1035,7 +1035,7 @@ impl SyncEngine {
     /// The connections `l` comes by now: hosts with it open, and readers with it in their shared
     /// set.
     pub(crate) fn sources_of(&self, l: &LabelId) -> Vec<ConnId> {
-        let hosts = self.conns.iter().filter(|(_, c)| c.up && c.labels.get(l).is_some_and(|x| x.phase == super::Phase::Open)).map(|(id, _)| *id);
+        let hosts = self.conns.iter().filter(|(_, c)| c.up && c.labels.get(l).is_some_and(|x| x.phase.is_open())).map(|(id, _)| *id);
         let readers = self.records.shared.iter().filter(|(id, s)| s.has(l) && !self.conns.get(id).is_some_and(|c| !c.peer)).map(|(id, _)| *id);
         hosts.chain(readers).collect()
     }

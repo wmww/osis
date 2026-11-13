@@ -78,12 +78,15 @@ impl SyncEngine {
         self.send_outbox(out)
     }
 
-    /// The sync key of the newest step this node reached of `l` at `conn`'s host: the head, else
-    /// where its walk stopped, else the head last known there, else the newest step `label.0`
-    /// records; all zeros knowing none.
+    /// The sync key of the newest step this node reached of `l` at `conn`'s host: the newest known
+    /// there (`LConn::head`), else the last of a path being registered, else the head last known
+    /// there, else the newest step `label.0` records; all zeros knowing none.
     fn reached_key(&mut self, conn: ConnId, g: &Tid, l: &LabelId) -> [u8; 32] {
         let host = self.conns.get(&conn).map(|c| c.host);
-        let known = self.lc(conn, l).and_then(|x| x.head.clone().or_else(|| x.walk.clone()).or_else(|| x.path.last().cloned())).or_else(|| host.and_then(|h| self.state.heads.get(&(h, *l)).cloned()));
+        let known = self.lc(conn, l).and_then(|x| x.head.clone().or_else(|| match &x.phase {
+            super::Phase::Registering { path } => path.last().cloned(),
+            _ => None,
+        })).or_else(|| host.and_then(|h| self.state.heads.get(&(h, *l)).cloned()));
         let step = match known {
             Some(s) => Some(s),
             None => self.engine.labels_of(g).into_iter().find(|x| x.id == *l).and_then(|x| x.tips().first().and_then(|t| x.steps.get(t)).map(|s| s.0.clone())),

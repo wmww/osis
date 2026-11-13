@@ -26,12 +26,12 @@ impl SyncEngine {
                     st.opening += usize::from(c.up && !c.session.is_ready() && host.is_some());
                     continue;
                 };
-                if x.phase == Phase::Failed && host.is_some() {
+                if x.phase.is_failed() && host.is_some() {
                     failed.insert(c.host);
                 }
-                st.opening += usize::from(c.up && matches!(x.phase, Phase::Testing | Phase::Behind) && host.is_some());
+                st.opening += usize::from(c.up && matches!(x.phase, Phase::Testing { .. } | Phase::Behind { .. }) && host.is_some());
                 // a host the label no longer names is on its way out: no source of it
-                if c.up && x.phase == Phase::Open && host.is_some() {
+                if c.up && x.phase.is_open() && host.is_some() {
                     st.sources += 1;
                     if x.idle() && c.session.outstanding() == 0 {
                         st.idle += 1;
@@ -79,9 +79,9 @@ impl SyncEngine {
     pub fn static_entry_refused(&mut self, l: &LabelId) -> bool {
         let routes = self.wanted_labels().into_iter().find(|(_, x, _)| x == l).map_or(Vec::new(), |(_, _, r)| r);
         let on: Vec<&LConn> = self.conns.values().filter_map(|c| c.labels.get(l)).collect();
-        let failed = |h: &state::HostKey| self.conns.values().any(|c| c.host == *h && c.labels.get(l).is_some_and(|x| x.phase == Phase::Failed));
-        let refused = on.iter().any(|x| x.static_refused) || self.shared_static_missing(l);
-        routes.iter().all(failed) && on.iter().all(|x| x.phase == Phase::Failed) && refused
+        let failed = |h: &state::HostKey| self.conns.values().any(|c| c.host == *h && c.labels.get(l).is_some_and(|x| x.phase.is_failed()));
+        let refused = on.iter().any(|x| matches!(x.phase, Phase::Failed { entry_refused: true })) || self.shared_static_missing(l);
+        routes.iter().all(failed) && on.iter().all(|x| x.phase.is_failed()) && refused
     }
 
     /// Sync connections up, whichever side dialed: a client's session is none.
@@ -195,7 +195,7 @@ impl SyncEngine {
     /// Whether every open label on every connection has completed a pass and nothing is
     /// outstanding (tests, simulator quiescence).
     pub fn is_idle(&self) -> bool {
-        !self.passes_due() && self.conns.values().all(|c| c.session.outstanding() == 0 && c.labels.values().all(|l| l.phase != Phase::Open || l.settled()))
+        !self.passes_due() && self.conns.values().all(|c| c.session.outstanding() == 0 && c.labels.values().all(|l| !l.phase.is_open() || l.settled()))
     }
 
     /// A one-line summary of each label on each connection (tests, diagnostics).

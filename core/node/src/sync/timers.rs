@@ -66,7 +66,7 @@ impl SyncEngine {
             .conns
             .iter_mut()
             .filter_map(|(id, c)| {
-                let due: Vec<LabelId> = c.labels.iter().filter(|(_, l)| l.phase == Phase::Testing && l.registering.is_none() && l.last_sync.saturating_add(self.cfg.resync_ms) <= now).map(|(l, _)| *l).collect();
+                let due: Vec<LabelId> = c.labels.iter().filter(|(_, l)| l.phase.is_testing() && l.registering.is_none() && l.last_sync.saturating_add(self.cfg.resync_ms) <= now).map(|(l, _)| *l).collect();
                 for l in &due {
                     c.req.walked.remove(l);
                 }
@@ -79,7 +79,7 @@ impl SyncEngine {
         // labels no key opened, and registrations refused for now once their back-off passed: try
         // again from scratch
         let again = |l: &LConn| match l.phase {
-            Phase::Failed => l.last_sync.saturating_add(self.cfg.resync_ms) <= now,
+            Phase::Failed { .. } => l.last_sync.saturating_add(self.cfg.resync_ms) <= now,
             Phase::Refused { retry_at } => retry_at <= now,
             _ => false,
         };
@@ -87,7 +87,7 @@ impl SyncEngine {
         for (conn, label, g) in reopen {
             // every thing a hint names this label under gets a new turn; not at a refusal's
             // retry (its back-off is short, and a host named by a sender could cut every round)
-            if self.lc(conn, &label).is_some_and(|x| x.phase == Phase::Failed) {
+            if self.lc(conn, &label).is_some_and(|x| x.phase.is_failed()) {
                 let hints = self.hint_failed.len();
                 self.hint_failed.retain(|x| x.0 != label);
                 if self.hint_failed.len() != hints {
@@ -129,7 +129,7 @@ impl SyncEngine {
                 // a label not open re-tries after `resync_ms`; an open one needs no time of its
                 // own (a fill's stalled batch wakes by `settle_by`), what comes due for it waits
                 // for the next tick
-                if l.phase == Phase::Failed || (l.phase == Phase::Testing && l.registering.is_none()) {
+                if l.phase.is_failed() || (l.phase.is_testing() && l.registering.is_none()) {
                     at(l.last_sync.saturating_add(resync));
                 }
                 if let Phase::Refused { retry_at } = l.phase {

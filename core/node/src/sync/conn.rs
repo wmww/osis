@@ -21,24 +21,44 @@ pub(crate) fn in_flight(c: &Conn, m: &BTreeMap<(LabelId, osis_base::BlobId), (u6
     m.get(&k).is_some_and(|(t, tag)| now < t.saturating_add(RESEND_MS) || !c.session.answered(*tag))
 }
 
-/// Open state of a label on a connection.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// Open state of a label on a connection: one per (connection, label), and `Open` exactly while
+/// the label is a member of the connection's shared set (notes/node-sync.md, Label states).
+#[derive(Clone, Debug)]
 pub(crate) enum Phase {
-    /// Waiting for the peer's filter: the credential of the newest recorded head (or of the step
-    /// the walk found shown, `LConn::shown`) is tested at each arrival, and a Hit opens it
-    /// (issues/net-one-peer.md 3h2, Stale head).
-    Testing,
-    /// Registering the recorded path at a peer that lacks the label.
-    Registering,
-    /// The peer's head is past the newest step this node knows: a Behind item asks for the
-    /// next step (`SyncEngine::behind`).
-    Behind,
-    Open,
-    /// No key opens it here.
-    Failed,
+    /// Waiting for the peer's filter: each arrival tests the credential of `shown` (a recorded
+    /// step whose credential the walk found shown), else of the newest step known there
+    /// (`SyncEngine::newest_known`), and a Hit opens it (issues/net-one-peer.md 3h2, Stale head).
+    Testing { shown: Option<Box<(Step, osis_crypto::SigningSecret)>> },
+    /// Registering the recorded path at a peer that lacks the label: its steps not answered yet.
+    Registering { path: Vec<Step> },
+    /// The peer's head is past the newest step known, or off it: Behind items ask
+    /// (`SyncEngine::behind`); `refused`, the recorded steps the peer refused one on in this
+    /// walk, not asked again.
+    Behind { refused: Vec<osis_label::StepId> },
+    /// A member of the connection's shared set. `by`: the key whose open signature opened it at
+    /// a peer that cannot read L (a sync key, or a claim's; none by read credentials or a static
+    /// entry), its credential there until the head moves past it (`new_head`).
+    Open { by: Option<Box<osis_crypto::SigningSecret>> },
+    /// No key opens it here (`entry_refused`: the peer answered a Behind item by this node's
+    /// static entry with a refusal, its head not listing it, `SyncEngine::static_entry_refused`).
+    Failed { entry_refused: bool },
     /// The peer refused registering it for now (not admitted, full, the rate) or does not hold it
     /// and this node cannot register it: tested again from scratch at `retry_at` (wall ms).
     Refused { retry_at: u64 },
+}
+
+impl Phase {
+    pub(crate) fn is_open(&self) -> bool {
+        matches!(self, Phase::Open { .. })
+    }
+
+    pub(crate) fn is_testing(&self) -> bool {
+        matches!(self, Phase::Testing { .. })
+    }
+
+    pub(crate) fn is_failed(&self) -> bool {
+        matches!(self, Phase::Failed { .. })
+    }
 }
 
 /// One label on one connection.
@@ -48,6 +68,9 @@ pub(crate) struct LConn {
     /// The label's index (recorded, or the hint's).
     pub index: u64,
     pub phase: Phase,
+    /// The newest step of the label known at the peer here: its head while open (its stream
+    /// names each move), else where a Behind walk, a static entry's grant or the last open there
+    /// got to.
     pub head: Option<Step>,
     pub keys: HeadKeys,
     /// `SyncEngine::seq` when the connection's last Pull was sent: its end is no pass end after
@@ -83,28 +106,9 @@ pub(crate) struct LConn {
     pub step_refusals: u32,
     /// Failed: when it failed; Testing: when it was last walked (each again `resync_ms` on).
     pub last_sync: u64,
-    /// The recorded path's steps whose registration is not answered yet.
-    pub path: Vec<Step>,
-    /// A verified step of the peer's path past `label.0`'s (a static entry's grant's head, or
-    /// where a Behind walk got to): the newest step known there (`SyncEngine::newest_known`).
-    pub walk: Option<Step>,
-    /// The peer answered a Behind item by this node's static entry with a refusal: its head
-    /// does not list it (`SyncEngine::static_entry_refused`).
-    pub static_refused: bool,
-    /// Steps a Behind item on was refused in this walk (off the peer's path, or its head): not
-    /// asked again until the walk ends (`SyncEngine::behind_from`).
-    pub behind_refused: Vec<osis_label::StepId>,
-    /// The head the peer's stream named past the open head, which Behind items walk to.
-    pub walk_to: Option<osis_label::StepId>,
-    /// A recorded step and the key of its credential the peer's filter showed when the newest
-    /// recorded head's was not: it is Hit, and L opens at that step (`walked`).
-    pub shown: Option<(Step, osis_crypto::SigningSecret)>,
     /// A listing from the start under way here: what was present here before it, and whether
     /// the peer marked it trimmed (`known_join`, `stream_read`).
     pub relisted: Option<(BTreeSet<osis_base::BlobId>, bool)>,
-    /// The key whose open signature this node's Hit opened the label by here (a sync key, or a
-    /// claim's): what it tests there while it holds no secret of the head yet (`peer_creds`).
-    pub hit_key: Option<osis_crypto::SigningSecret>,
     /// Write keys of steps verified here that `label.0` does not record (a grant's path, a
     /// Behind walk's): stamps under them vouch for an entry.
     pub writers: Vec<osis_crypto::VerifyingKey>,
@@ -118,7 +122,7 @@ impl LConn {
 
     /// A fill here has not all that judging needs.
     pub(super) fn first_waits(&self) -> bool {
-        self.phase == Phase::Open && self.fill.as_ref().is_some_and(|f| !f.first_done)
+        self.phase.is_open() && self.fill.as_ref().is_some_and(|f| !f.first_done)
     }
 
     /// Ready, with no fill under way: nothing to do here until something changes.
@@ -225,6 +229,7 @@ impl SyncEngine {
     pub(crate) fn lc(&self, conn: ConnId, l: &LabelId) -> Option<&LConn> {
         self.conns.get(&conn)?.labels.get(l)
     }
+
 
     pub(crate) fn lc_mut(&mut self, conn: ConnId, l: &LabelId) -> Option<&mut LConn> {
         self.conns.get_mut(&conn)?.labels.get_mut(l)
@@ -470,7 +475,7 @@ impl SyncEngine {
                 // failed under another thing or a hint's other index (a hint's sender named this
                 // label so): it starts again as what wants it now
                 let index = self.state.hints.get(l).filter(|h| h.via.is_none() && h.thing == *g).map(|h| h.index);
-                let known = self.conns.get(&conn).and_then(|c| c.labels.get(l)).is_some_and(|x| (x.group == *g && index.is_none_or(|i| i == x.index)) || !matches!(x.phase, Phase::Failed | Phase::Refused { .. }));
+                let known = self.conns.get(&conn).and_then(|c| c.labels.get(l)).is_some_and(|x| (x.group == *g && index.is_none_or(|i| i == x.index)) || !matches!(x.phase, Phase::Failed { .. } | Phase::Refused { .. }));
                 if !known && hosts.contains(&host) {
                     self.start_label(conn, *g, *l, out)?;
                 }

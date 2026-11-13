@@ -324,11 +324,15 @@ impl SyncEngine {
         self.conns.get(&conn).is_some_and(|c| !c.peer) && self.records.shared.get(&conn).is_some_and(|s| s.members.contains_key(l))
     }
 
-    /// A head of a label on `conn`, a peer that cannot read it, moved: a sync-key open by an old
-    /// head's key ends (`shared_rejudge`) and every head open there is tested against the peer's
-    /// filter.
-    pub(super) fn shared_head_opened(&mut self, conn: ConnId, out: &mut Vec<Action>) -> Result<()> {
-        self.shared_rejudge(conn, out)?;
+    /// The open of `l` on `conn`, at a peer that cannot read it, ended by its head moving past the
+    /// credential it was made by (spec/sync.md §5): closed with a Lost (`shared_close`), it
+    /// tests the new head's credential.
+    pub(super) fn shared_end(&mut self, conn: ConnId, l: LabelId, out: &mut Vec<Action>) -> Result<()> {
+        if self.shared_member(conn, &l) {
+            let stopped = self.shared_stopped(conn, &l)?;
+            self.shared_close(conn, &l, super::stream::Stop::Here, out)?;
+            self.shared_send_lost(conn, vec![(l, stopped)], out)?;
+        }
         self.shared_retest(conn, out)
     }
 
@@ -944,7 +948,7 @@ impl SyncEngine {
         let Some(s) = self.records.shared.get(&conn).filter(|s| s.peer.is_some() && !s.test_due && s.pending.offers_unanswered == 0) else { return Ok(()) };
         let arrival = s.arrivals;
         let Some(c) = self.conns.get(&conn).filter(|c| !c.peer) else { return Ok(()) };
-        let unopened: Vec<LabelId> = c.labels.iter().filter(|(l, x)| matches!(x.phase, super::Phase::Testing | super::Phase::Open) && x.registering.is_none() && !s.members.contains_key(l) && c.req.walked.get(l) != Some(&arrival)).map(|(l, _)| *l).collect();
+        let unopened: Vec<LabelId> = c.labels.iter().filter(|(l, x)| x.phase.is_testing() && x.registering.is_none() && c.req.walked.get(l) != Some(&arrival)).map(|(l, _)| *l).collect();
         if unopened.is_empty() {
             return Ok(());
         }
@@ -1410,6 +1414,18 @@ impl SyncEngine {
         s.acked_pos = s.acked_pos.min(at.saturating_sub(1));
         s.test_due = true;
         self.stream_leave(conn, l, at, stop)?;
+        // `Phase::Open` is membership: it waits for the peer's filter again, from the next
+        // arrival on (one follows the head's move or judgment that ended it), at the newest step
+        // known there
+        let arrival = self.records.shared.get(&conn).map_or(0, |s| s.arrivals);
+        let now = self.now();
+        if let Some(c) = self.conns.get_mut(&conn)
+            && let Some(lc) = c.labels.get_mut(l).filter(|x| x.phase.is_open())
+        {
+            lc.phase = super::Phase::Testing { shown: None };
+            lc.last_sync = now;
+            c.req.walked.insert(*l, arrival);
+        }
         if was && self.is_unread(l)? {
             self.hub_down(conn, osis_host::Down::Shut(*l), out);
         }
@@ -1756,11 +1772,13 @@ impl SyncEngine {
                         {
                             let hit = beacon_hit(&c.value, &c.label.0, &c.beacon, (s.by_listener, &s.key, &s.dialer, &s.listener));
                             s.offered.remove(&hit);
-                            // not shown until the next arrival: the walk passes it
+                            // not shown until the next arrival: the walk passes it, and walks on now
+                            // past a step it found shown (a filter keeps a moved head's entries)
                             if let Some(x) = self.conns.get_mut(&conn) {
                                 x.req.refused.insert((c.label, c.value));
-                                if let Some(lc) = x.labels.get_mut(&c.label).filter(|lc| lc.shown.as_ref().is_some_and(|(_, k)| k.verifying_key().to_bytes() == c.value)) {
-                                    lc.shown = None;
+                                if let Some(lc) = x.labels.get_mut(&c.label).filter(|lc| matches!(&lc.phase, super::Phase::Testing { shown: Some(x) } if x.1.verifying_key().to_bytes() == c.value)) {
+                                    lc.phase = super::Phase::Testing { shown: None };
+                                    x.req.walked.remove(&c.label);
                                 }
                             }
                         }

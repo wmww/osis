@@ -225,8 +225,8 @@ impl SyncEngine {
         for c in self.conns.values() {
             let Some(x) = c.labels.get(l) else { continue };
             match x.phase {
-                Phase::Failed | Phase::Refused { .. } => refused = true,
-                Phase::Open => {
+                Phase::Failed { .. } | Phase::Refused { .. } => refused = true,
+                Phase::Open { .. } => {
                     open += 1;
                     if x.idle() && c.session.outstanding() == 0 {
                         idle += 1;
@@ -795,7 +795,7 @@ impl SyncEngine {
             for l in self.synced.by_actor.get(&a).into_iter().flatten() {
                 let Some((_, hosts)) = self.synced.actors.get(l) else { continue };
                 for (id, c) in self.conns.iter().filter(|(_, c)| !c.peer && hosts.contains(&c.host)) {
-                    let live = c.labels.get(l).is_some_and(|x| x.phase == Phase::Open && x.synced && x.fill.is_none());
+                    let live = c.labels.get(l).is_some_and(|x| x.phase.is_open() && x.synced && x.fill.is_none());
                     if live && self.passes.get(&(c.host, *l)).is_none_or(|p| p.0 <= since) {
                         ask.push(*id);
                     }

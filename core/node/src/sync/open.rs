@@ -131,7 +131,7 @@ impl SyncEngine {
         LConn {
             group,
             index,
-            phase: Phase::Testing,
+            phase: Phase::Testing { shown: None },
             head: None,
             keys: HeadKeys::default(),
             sync_seq: 0,
@@ -141,13 +141,6 @@ impl SyncEngine {
             step_retry: 0,
             step_refusals: 0,
             last_sync: 0,
-            path: Vec::new(),
-            walk: None,
-            walk_to: None,
-            static_refused: false,
-            behind_refused: Vec::new(),
-            shown: None,
-            hit_key: None,
             relisted: None,
             report_at: None,
             full: false,
@@ -195,11 +188,26 @@ impl SyncEngine {
         }
     }
 
-    /// The newest step of `l` this node knows at `conn`: one past the recorded path that a
-    /// static entry's grant or a Behind walk verified there, else the newest recorded head.
+    /// The newest step of `l` this node knows at `conn` (`LConn::head`: the head there while
+    /// open, else where a walk, a grant or the last open there got to), else the newest recorded
+    /// head.
     pub(crate) fn newest_known(&mut self, conn: ConnId, l: &LabelId) -> Option<Step> {
-        let (g, walk) = self.lc(conn, l).map(|x| (x.group, x.walk.clone()))?;
-        walk.or_else(|| self.newest_step(&g, l))
+        let (g, head) = self.lc(conn, l).map(|x| (x.group, x.head.clone()))?;
+        head.or_else(|| self.newest_step(&g, l))
+    }
+
+    /// The key a Hit on `step`'s credential at `conn` signs with: its sync key when held, else
+    /// this node's claim key its held claim set lists, else (the set not held) the claim key of
+    /// this node's on it that the peer's latest filter shows and did not refuse since.
+    pub(crate) fn test_key(&mut self, conn: ConnId, l: &LabelId, step: &Step) -> Option<SigningSecret> {
+        let (g, index) = self.lc(conn, l).map(|x| (x.group, x.index))?;
+        match self.step_keys(&g, index, l, step) {
+            (keys, true) => keys.into_iter().next(),
+            (keys, false) => keys.into_iter().find(|k| {
+                let v = k.verifying_key().to_bytes();
+                !self.conns.get(&conn).is_some_and(|c| c.req.refused.contains(&(*l, v))) && self.shared_shows(conn, l, &v)
+            }),
+        }
     }
 
     /// The sync key a hint's label (no step known) is Hit by at `conn`: of the sync secrets held
@@ -279,8 +287,7 @@ impl SyncEngine {
         match shown {
             Some(x) => {
                 if let Some(lc) = self.lc_mut(conn, &l) {
-                    lc.phase = Phase::Testing;
-                    lc.shown = Some(x);
+                    lc.phase = Phase::Testing { shown: Some(Box::new(x)) };
                 }
                 self.shared_retest(conn, out)
             }
@@ -292,31 +299,34 @@ impl SyncEngine {
                 // peer lacking L (a new label); a 9 to it is answered by a Behind item
                 let genesis = newest.as_ref().is_none_or(|s| s.prev.is_none());
                 if held && !genesis && !self.conns.get(&conn).is_some_and(|c| c.req.registered.contains_key(&l)) {
-                    return self.behind(conn, l, None, out);
+                    return self.behind(conn, l, out);
                 }
                 self.register_path(conn, l, out)
             }
         }
     }
 
-    /// `l` became a member of `conn`'s shared set, its peer unable to read it, where it waits for the
-    /// peer's filter (a Hit on this node's credential, a static entry's grant, the peer's own Hit,
-    /// or a record restored on connecting): L is open there at the step it was tested at (the
-    /// walk's, else the newest known), or, restored, at the head last known there. A hint's label
-    /// knowing no step opens with no head: the stream's head event names it (`new_head`).
+    /// `l` became a member of `conn`'s shared set (a Hit on this node's credential, a static
+    /// entry's grant, the peer's own Hit, read credentials, or a record restored on connecting):
+    /// open there, whatever it waited for (`Phase::Open` is membership), at the step it was tested
+    /// at (the walk's, else the newest known), or, restored, at the head last known there. A
+    /// hint's label knowing no step opens with no head: the stream's head event names it
+    /// (`new_head`).
     pub(crate) fn member_unread_there(&mut self, conn: ConnId, l: LabelId, restored: bool, out: &mut Vec<super::Action>) -> Result<()> {
         let Some(c) = self.conns.get(&conn).filter(|c| !c.peer) else { return Ok(()) };
         let host = c.host;
-        // one failed at an earlier arrival opens once a Hit on its credential did (keys gained
-        // since, a static entry its peer shows since)
-        let Some(lc) = c.labels.get(&l).filter(|x| matches!(x.phase, Phase::Testing | Phase::Failed)) else { return Ok(()) };
-        let (g, index, shown) = (lc.group, lc.index, lc.shown.clone());
+        let Some(lc) = c.labels.get(&l).filter(|x| !x.phase.is_open()) else { return Ok(()) };
+        let (g, index) = (lc.group, lc.index);
+        let shown = match &lc.phase {
+            Phase::Testing { shown } => shown.as_deref().cloned(),
+            _ => None,
+        };
         let known = if restored { self.state.heads.get(&(host, l)).cloned() } else { None };
-        let (step, key) = match shown {
+        let (step, by) = match shown {
             Some((s, k)) => (Some(s), Some(k)),
             None => match known.or_else(|| self.newest_known(conn, &l)) {
                 Some(step) => {
-                    let key = self.step_key(&g, index, &l, &step);
+                    let key = self.test_key(conn, &l, &step);
                     (Some(step), key)
                 }
                 None => (None, self.hint_key(conn, &l, &g, index)),
@@ -330,11 +340,7 @@ impl SyncEngine {
             self.refusals.remove(&(host, l));
         }
         if let Some(lc) = self.lc_mut(conn, &l) {
-            lc.phase = Phase::Open;
-            lc.shown = None;
-            lc.walk = None;
-            lc.behind_refused.clear();
-            lc.hit_key = key;
+            lc.phase = Phase::Open { by: by.map(Box::new) };
             (lc.step_retry, lc.step_refusals) = (0, 0);
         }
         self.stream_source_gained(conn, &l, out)?;
@@ -350,10 +356,8 @@ impl SyncEngine {
     pub(crate) fn fail(&mut self, conn: ConnId, l: LabelId) {
         let now = self.now();
         let Some(lc) = self.lc_mut(conn, &l) else { return };
-        lc.phase = Phase::Failed;
+        lc.phase = Phase::Failed { entry_refused: false };
         lc.last_sync = now;
-        lc.walk_to = None;
-        lc.behind_refused.clear();
         let tried = (l, lc.group, lc.index);
         if self.state.hints.get(&l).is_some_and(|h| h.via.is_none()) {
             self.hint_failed.insert(tried);
@@ -399,7 +403,7 @@ impl SyncEngine {
         }
         self.record_steps(&g, &l, &grant.steps, None)?;
         if let Some(lc) = self.lc_mut(conn, &l) {
-            lc.walk = Some(head.clone());
+            lc.head = Some(head.clone());
             for st in &grant.steps {
                 if !lc.writers.contains(&st.keys.write) {
                     lc.writers.push(st.keys.write);
@@ -446,36 +450,37 @@ impl SyncEngine {
 
     /// The peer on `conn` holds `l` at a head past the newest step this node knows there, or lacks
     /// it (its filter shows no credential of it, a stream head off it): a Behind item on that step,
-    /// by a credential of it this node holds (its sync key, else the claim key it opened by there,
+    /// by a credential of it this node holds (its sync key, else the key it opened by there,
     /// else its claim keys), asks for its child (spec/sync.md §5, Behind). A hint's label, knowing no step, asks by
     /// every sync key it holds at once, naming none. Not open there and holding no sync key to ask
     /// by, a link's label asks by its key actor's signing key, naming no step: answered with the
     /// head's entry box for its static entry, or refused (the head does not list it). Holding no
     /// key to ask by, or no shared set there to send it on, `l` fails here (tried again after
-    /// `resync_ms`). `to`: the head the peer's stream named, walked to
-    /// while `l` stays open there.
-    pub(crate) fn behind(&mut self, conn: ConnId, l: LabelId, to: Option<StepId>, out: &mut Vec<super::Action>) -> Result<()> {
-        // open there: a member of the shared set (an open the head's move ended walks as one
-        // not open)
-        let Some(open) = self.lc(conn, &l).map(|x| x.phase == Phase::Open) else { return Ok(()) };
-        let open = open && self.shared_member(conn, &l);
+    /// `resync_ms`). Open there (a stream head past the open head), on the open head: L stays
+    /// open, the answer moves its head (`new_head`).
+    pub(crate) fn behind(&mut self, conn: ConnId, l: LabelId, out: &mut Vec<super::Action>) -> Result<()> {
+        let Some(open) = self.lc(conn, &l).map(|x| x.phase.is_open()) else { return Ok(()) };
         let from = if open { self.lc(conn, &l).and_then(|x| x.head.clone()) } else { self.newest_known(conn, &l) };
-        self.behind_from(conn, l, from, to, out)
+        self.behind_from(conn, l, from, out)
     }
 
     /// `behind` on step `from` (none: a hint's, knowing no step). A step the peer refused a
     /// Behind item on in this walk is not asked again.
-    fn behind_from(&mut self, conn: ConnId, l: LabelId, from: Option<Step>, to: Option<StepId>, out: &mut Vec<super::Action>) -> Result<()> {
-        let Some((g, index, open)) = self.lc(conn, &l).map(|x| (x.group, x.index, x.phase == Phase::Open)) else { return Ok(()) };
-        let open = open && self.shared_member(conn, &l);
-        let from = from.filter(|s| self.lc(conn, &l).is_none_or(|x| !x.behind_refused.contains(&s.id())));
-        let none_left = from.is_none() && self.lc(conn, &l).is_some_and(|x| !x.behind_refused.is_empty());
+    fn behind_from(&mut self, conn: ConnId, l: LabelId, from: Option<Step>, out: &mut Vec<super::Action>) -> Result<()> {
+        let Some(lc) = self.lc(conn, &l) else { return Ok(()) };
+        let (g, index, open) = (lc.group, lc.index, lc.phase.is_open());
+        let (by, refused) = match &lc.phase {
+            Phase::Open { by } => (by.as_deref().cloned(), Vec::new()),
+            Phase::Behind { refused } => (None, refused.clone()),
+            _ => (None, Vec::new()),
+        };
+        let from = from.filter(|s| !refused.contains(&s.id()));
+        let none_left = from.is_none() && !refused.is_empty();
         let held: Vec<SigningSecret> = self.engine.epochs(&g).map(|e| e.sync.held_newest_first().into_iter().map(|(_, x)| label_role_key(LabelRole::Sync, x, index)).collect()).unwrap_or_default();
-        let hit_key = self.lc(conn, &l).and_then(|x| x.hit_key.clone()).filter(|_| open);
         let mut asks: Vec<(Option<Step>, SigningSecret)> = match from {
             // the step's sync key, else the claim key it opened by there, else its claim keys
             Some(s) => {
-                let keys = match held.into_iter().find(|k| k.verifying_key() == s.keys.sync).or(hit_key) {
+                let keys = match held.into_iter().find(|k| k.verifying_key() == s.keys.sync).or(by) {
                     Some(k) => vec![k],
                     None => self.step_keys(&g, index, &l, &s).0,
                 };
@@ -496,11 +501,8 @@ impl SyncEngine {
             self.fail(conn, l);
             return Ok(());
         }
-        if let Some(lc) = self.lc_mut(conn, &l) {
-            if !open {
-                lc.phase = Phase::Behind;
-            }
-            lc.walk_to = to;
+        if let Some(lc) = self.lc_mut(conn, &l).filter(|_| !open) {
+            lc.phase = Phase::Behind { refused };
         }
         if !self.shared_behind(conn, l, asks, by_static, out)? {
             self.fail(conn, l);
@@ -533,7 +535,7 @@ impl SyncEngine {
             self.diag(format!("label {l:?}: a Behind item answered with steps that do not verify"));
         }
         let Some(last) = steps.last().cloned().filter(|_| verified) else {
-            if phase == Phase::Behind {
+            if matches!(phase, Phase::Behind { .. }) {
                 return match asked {
                     None => {
                         self.refused_for_now(conn, l, Code::UNKNOWN_LABEL);
@@ -552,7 +554,7 @@ impl SyncEngine {
                     }
                     // a step the peer gave as a child (on its path): its head, showing none of
                     // this node's credentials: stranded there (spec/permissions.md §4)
-                    Some(a) if self.lc(conn, &l).and_then(|x| x.walk.as_ref()).is_some_and(|w| w.id() == a.id()) => {
+                    Some(a) if self.lc(conn, &l).and_then(|x| x.head.as_ref()).is_some_and(|w| w.id() == a.id()) => {
                         self.fail(conn, l);
                         self.stranded(conn, g, l, out)
                     }
@@ -560,11 +562,11 @@ impl SyncEngine {
                     // or its head showing none of this node's credentials: the nearest recorded
                     // step before it holding a credential asks next, each step once a walk
                     Some(a) => {
-                        if let Some(lc) = self.lc_mut(conn, &l) {
-                            lc.behind_refused.push(a.id());
+                        if let Some(Phase::Behind { refused }) = self.lc_mut(conn, &l).map(|x| &mut x.phase) {
+                            refused.push(a.id());
                         }
                         match self.asked_before(conn, l, &a) {
-                            Some(p) => self.behind_from(conn, l, Some(p), None, out),
+                            Some(p) => self.behind_from(conn, l, Some(p), out),
                             None => {
                                 self.fail(conn, l);
                                 Ok(())
@@ -588,19 +590,21 @@ impl SyncEngine {
             }
         }
         match phase {
-            Phase::Open => {
-                // each a child of the head before it: the head moves along to the peer's
+            // asked on the open head: each a child of the head before it, the head moves along
+            // to the peer's (an answer asked before L opened names no step of it)
+            Phase::Open { .. } => {
+                let head = self.lc(conn, &l).and_then(|x| x.head.as_ref().map(Step::id));
+                if asked.is_none_or(|a| Some(a.id()) != head) {
+                    return Ok(());
+                }
                 for st in steps {
                     self.new_head(conn, l, st, out)?;
                 }
-                if let Some(lc) = self.lc_mut(conn, &l) {
-                    lc.walk_to = None;
-                }
                 Ok(())
             }
-            Phase::Behind => {
+            Phase::Behind { .. } => {
                 if let Some(lc) = self.lc_mut(conn, &l) {
-                    lc.walk = Some(last.clone());
+                    lc.head = Some(last.clone());
                 }
                 self.step_known(conn, l, last, asked.is_some(), out)
             }
@@ -621,7 +625,7 @@ impl SyncEngine {
             if n > gl.steps.len() {
                 return None;
             }
-            let refused = self.lc(conn, &l).is_some_and(|x| x.behind_refused.contains(&id));
+            let refused = self.lc(conn, &l).is_some_and(|x| matches!(&x.phase, Phase::Behind { refused } if refused.contains(&id)));
             if !refused && !self.step_keys(&g, index, &l, &st).0.is_empty() {
                 return Some(st);
             }
@@ -637,7 +641,7 @@ impl SyncEngine {
     fn step_known(&mut self, conn: ConnId, l: LabelId, step: Step, verified: bool, out: &mut Vec<super::Action>) -> Result<()> {
         let Some((g, index)) = self.lc(conn, &l).map(|x| (x.group, x.index)) else { return Ok(()) };
         if let Some(lc) = self.lc_mut(conn, &l) {
-            lc.phase = Phase::Testing;
+            lc.phase = Phase::Testing { shown: None };
         }
         let refused = |s: &Self, k: &[u8; 32]| s.conns.get(&conn).is_some_and(|c| c.req.refused.contains(&(l, *k)));
         let keys: Vec<SigningSecret> = self.step_keys(&g, index, &l, &step).0.into_iter().filter(|k| !refused(self, &k.verifying_key().to_bytes())).collect();
@@ -645,7 +649,7 @@ impl SyncEngine {
         let shown = keys.into_iter().find(|k| self.shared_shows(conn, &l, &k.verifying_key().to_bytes()));
         match shown {
             Some(k) => self.walked(conn, l, Some((step, k)), out),
-            None if held => self.behind(conn, l, None, out),
+            None if held => self.behind(conn, l, out),
             None if !verified => {
                 self.fail(conn, l);
                 Ok(())
@@ -663,7 +667,7 @@ impl SyncEngine {
     /// back-off); else its head does not list the entry: refused there
     /// (`static_entry_refused`).
     pub(crate) fn static_answered(&mut self, conn: ConnId, l: LabelId, entry: &[u8; 32], code: Code, grant: Option<&osis_proto::msg::Grant>, out: &mut Vec<super::Action>) -> Result<()> {
-        if self.lc(conn, &l).is_none_or(|x| x.phase != Phase::Behind) {
+        if self.lc(conn, &l).is_none_or(|x| !matches!(x.phase, Phase::Behind { .. })) {
             return Ok(());
         }
         match (code, grant) {
@@ -680,11 +684,11 @@ impl SyncEngine {
                 Ok(())
             }
             _ => {
-                if let Some(lc) = self.lc_mut(conn, &l) {
-                    lc.static_refused = true;
-                }
                 self.diag(format!("label {l:?}: the peer's head does not list this node's static entry"));
                 self.fail(conn, l);
+                if let Some(lc) = self.lc_mut(conn, &l) {
+                    lc.phase = Phase::Failed { entry_refused: true };
+                }
                 Ok(())
             }
         }
@@ -704,7 +708,7 @@ impl SyncEngine {
             // a pass's step refused for now (a full peer, the rate, not admitted): the open stays,
             // a later pass registers again after a back-off (else every pass sent it again), and
             // the pass that waited for the step runs now under the peer's head
-            (Request::Register, Some(Phase::Open)) if matches!(code, Code::STORAGE_CAP | Code::RATE_LIMITED | Code::NOT_ADMITTED) => {
+            (Request::Register, Some(Phase::Open { .. })) if matches!(code, Code::STORAGE_CAP | Code::RATE_LIMITED | Code::NOT_ADMITTED) => {
                 let (now, first, cap) = (self.now(), self.cfg.retry_ms, self.cfg.resync_ms);
                 if let Some(lc) = self.lc_mut(conn, &l) {
                     lc.registering = None;
@@ -719,7 +723,7 @@ impl SyncEngine {
             }
             // registering a path refused for now (not admitted: a peer learns what it admits by
             // syncing, spec/data-model.md §9): tested again after a back-off
-            (Request::Register, Some(Phase::Registering)) if matches!(code, Code::STORAGE_CAP | Code::RATE_LIMITED | Code::NOT_ADMITTED) => {
+            (Request::Register, Some(Phase::Registering { .. })) if matches!(code, Code::STORAGE_CAP | Code::RATE_LIMITED | Code::NOT_ADMITTED) => {
                 self.refused_for_now(conn, l, code);
                 Ok(())
             }
@@ -727,23 +731,22 @@ impl SyncEngine {
             // not a child of its head): the steps after it still register. The last answered
             // 9: a genesis alone is asked past by a Behind item; a longer path's Behind item was
             // refused (or none could go): the peer holds L off this node's path
-            (Request::Register, Some(Phase::Registering)) if code == Code::NOT_HEAD => {
-                let Some(lc) = self.lc_mut(conn, &l) else { return Ok(()) };
-                if !lc.path.is_empty() {
-                    lc.path.remove(0);
+            (Request::Register, Some(Phase::Registering { .. })) if code == Code::NOT_HEAD => {
+                let Some(Phase::Registering { path }) = self.lc_mut(conn, &l).map(|x| &mut x.phase) else { return Ok(()) };
+                if !path.is_empty() {
+                    path.remove(0);
                 }
-                if lc.path.is_empty() {
+                if path.is_empty() {
                     if self.newest_known(conn, &l).is_some_and(|s| s.prev.is_none()) {
-                        return self.behind(conn, l, None, out);
+                        return self.behind(conn, l, out);
                     }
                     self.diag(format!("label {l:?}: the peer holds it off the recorded path"));
                     self.fail(conn, l);
                 }
                 Ok(())
             }
-            // the rest of a path's steps whose registration ended
-            (Request::Register, Some(Phase::Refused { .. } | Phase::Testing | Phase::Behind | Phase::Failed)) => Ok(()),
-            // a child step refused (the peer's head moved: its stream's head event says where to)
+            // a child step refused (the peer's head moved: its stream's head event says where to,
+            // or ended the open), or the rest of a path's steps whose registration ended
             (Request::Register, _) => {
                 if let Some(lc) = self.lc_mut(conn, &l) {
                     lc.registering = None;
@@ -790,11 +793,10 @@ impl SyncEngine {
                 return Ok(());
             }
             // a hint's label: the peer may hold it at a head past the sync keys held
-            return self.behind(conn, l, None, out);
+            return self.behind(conn, l, out);
         };
         if let Some(lc) = self.lc_mut(conn, &l) {
-            lc.phase = Phase::Registering;
-            lc.path = path.iter().map(|(s, _)| s.clone()).collect();
+            lc.phase = Phase::Registering { path: path.iter().map(|(s, _)| s.clone()).collect() };
         }
         for (step, claim_set) in path {
             self.command(conn, Command::Register { label: l, step, claim_set }, out)?;
@@ -806,11 +808,11 @@ impl SyncEngine {
     /// issued.
     pub(crate) fn registered(&mut self, conn: ConnId, l: LabelId, out: &mut Vec<super::Action>) -> Result<()> {
         let Some(lc) = self.lc_mut(conn, &l) else { return Ok(()) };
-        if lc.phase == Phase::Registering {
-            if !lc.path.is_empty() {
-                lc.path.remove(0);
+        if let Phase::Registering { path } = &mut lc.phase {
+            if !path.is_empty() {
+                path.remove(0);
             }
-            if lc.path.is_empty() {
+            if path.is_empty() {
                 let at = (self.records.shared.get(&conn).map_or(0, |s| s.arrivals), self.now());
                 if let Some(c) = self.conns.get_mut(&conn) {
                     c.req.registered.insert(l, at);
@@ -844,7 +846,7 @@ impl SyncEngine {
         self.set_head(conn, l, step)?;
         if ended {
             // the open by the old key ends; the next filter shows the new one's
-            self.shared_head_opened(conn, out)?;
+            self.shared_end(conn, l, out)?;
         }
         self.run_dirty(out)
     }
@@ -854,9 +856,7 @@ impl SyncEngine {
     /// registered L there, `member_unread_there` waiting for no Testing then) is open there at once.
     pub(crate) fn retest_label(&mut self, conn: ConnId, l: LabelId, out: &mut Vec<super::Action>) -> Result<()> {
         if let Some(lc) = self.lc_mut(conn, &l) {
-            lc.phase = Phase::Testing;
-            lc.shown = None;
-            lc.path.clear();
+            lc.phase = Phase::Testing { shown: None };
         }
         if self.shared_member(conn, &l) {
             return self.member_unread_there(conn, l, false, out);

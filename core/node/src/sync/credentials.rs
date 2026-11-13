@@ -161,20 +161,20 @@ impl SyncEngine {
         let mut out = BTreeMap::new();
         for l in labels {
             let Some(lc) = self.conns.get(&conn).filter(|c| !c.peer).and_then(|c| c.labels.get(l)) else { continue };
-            let (g, index) = (lc.group, lc.index);
-            let key = match lc.phase {
-                super::Phase::Open => match (lc.keys.sync.clone(), lc.head.clone(), lc.hit_key.clone()) {
+            let (g, index, phase, sync, head) = (lc.group, lc.index, lc.phase.clone(), lc.keys.sync.clone(), lc.head.clone());
+            let key = match phase {
+                // the head's: its sync key held, else this node's claim key its set lists, else the
+                // key it opened by (an open the head's move ended is no longer open: `new_head`)
+                super::Phase::Open { by } => match (sync, head, by.map(|b| *b)) {
                     (Some(k), ..) => Some(k),
-                    (None, Some(h), hit) => self.step_key(&g, index, l, &h).or(hit),
-                    (None, None, hit) => hit,
+                    (None, Some(h), by) => self.step_key(&g, index, l, &h).or(by),
+                    (None, None, by) => by,
                 },
                 // a failed one too: what it holds may have changed since (`member_unread_there`)
-                super::Phase::Testing | super::Phase::Failed => match lc.shown.clone() {
-                    Some((_, k)) => Some(k),
-                    None => match self.newest_known(conn, l) {
-                        Some(s) => self.step_key(&g, index, l, &s),
-                        None => self.hint_key(conn, l, &g, index),
-                    },
+                super::Phase::Testing { shown: Some(x) } => Some(x.1),
+                super::Phase::Testing { shown: None } | super::Phase::Failed { .. } => match self.newest_known(conn, l) {
+                    Some(s) => self.test_key(conn, l, &s),
+                    None => self.hint_key(conn, l, &g, index),
                 },
                 _ => None,
             };

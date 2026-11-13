@@ -74,7 +74,7 @@ impl SyncEngine {
                         }
                         // new secrets may open a label that failed: retry at the next tick
                         for c in self.conns.values_mut() {
-                            for l in c.labels.values_mut().filter(|l| l.phase == Phase::Failed) {
+                            for l in c.labels.values_mut().filter(|l| l.phase.is_failed()) {
                                 l.last_sync = 0;
                             }
                         }

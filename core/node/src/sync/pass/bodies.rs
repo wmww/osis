@@ -450,7 +450,7 @@ impl SyncEngine {
     /// This node's verdicts on label `l` at `host` under the keys its last pass there used
     /// (simulator invariants, spec/sync.md §6); `None` when the label is not open there.
     pub fn verdicts(&mut self, host: &HostKey, l: &LabelId) -> Result<Option<Verdicts>> {
-        let Some(lc) = self.conns.values().filter(|c| c.host == *host).find_map(|c| c.labels.get(l).filter(|x| x.phase == crate::sync::Phase::Open)) else { return Ok(None) };
+        let Some(lc) = self.conns.values().filter(|c| c.host == *host).find_map(|c| c.labels.get(l).filter(|x| x.phase.is_open())) else { return Ok(None) };
         let (g, keys) = (lc.group, lc.keys.clone());
         let mut v = Verdicts { writer: keys.is_writer(), ..Verdicts::default() };
         let bodies = self.bodies_under(&g, l)?;

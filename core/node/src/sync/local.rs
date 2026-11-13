@@ -392,7 +392,7 @@ impl SyncEngine {
         self.retired_at.insert((host, l));
         let hosts: Vec<_> = self.engine.group_labels(g)?.into_iter().find(|x| x.id == l).map(|x| x.hosts).unwrap_or_default();
         // a host where no key opens the label (taken by whoever replaced it) counts as done
-        let failed = |k: &super::state::HostKey| self.conns.values().any(|c| c.host == *k && c.labels.get(&l).is_some_and(|x| x.phase == Phase::Failed));
+        let failed = |k: &super::state::HostKey| self.conns.values().any(|c| c.host == *k && c.labels.get(&l).is_some_and(|x| x.phase.is_failed()));
         if hosts.iter().all(|a| self.retired_at.contains(&(a.key, l)) || failed(&a.key)) {
             self.state.retire(l);
         }
@@ -706,7 +706,7 @@ impl SyncEngine {
         let labels = self.labels();
         labels.iter().filter(|(g, l)| things.contains(g) && !l.replaced).any(|(_, l)| {
             let phases = || self.conns.values().filter(|c| c.session.is_ready() && l.hosts.iter().any(|a| a.key == c.host)).map(|c| c.labels.get(&l.id).map(|x| &x.phase));
-            phases().any(|p| p.is_none_or(|x| matches!(x, Phase::Testing | Phase::Registering | Phase::Behind))) && !phases().any(|p| matches!(p, Some(Phase::Open)))
+            phases().any(|p| p.is_none_or(|x| matches!(x, Phase::Testing { .. } | Phase::Registering { .. } | Phase::Behind { .. }))) && !phases().any(|p| matches!(p, Some(Phase::Open { .. })))
         })
     }
 

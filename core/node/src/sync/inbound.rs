@@ -6,7 +6,7 @@
 //! fetched before apply; ephemeral entries go to the ephemeral lane (`ephemeral`).
 
 use super::state::{BlobRec, Entry, Hint, Kind, HostKey};
-use super::{ConnId, Phase, RELINK_BACKOFF_MAX_MS, RELINK_BACKOFF_MS, SyncEngine};
+use super::{ConnId, RELINK_BACKOFF_MAX_MS, RELINK_BACKOFF_MS, SyncEngine};
 use crate::error::Result;
 use crate::Ingested;
 use osis_base::{BlobId, Classified, CommitId, ErrorClass, LabelId, Tid};
@@ -110,7 +110,7 @@ impl SyncEngine {
             return Some(g);
         }
         let on: Vec<&super::LConn> = self.conns.values().filter_map(|c| c.labels.get(l)).collect();
-        if let Some(x) = on.iter().find(|x| x.phase == super::Phase::Open).or(on.first()) {
+        if let Some(x) = on.iter().find(|x| x.phase.is_open()).or(on.first()) {
             return Some(x.group);
         }
         self.state.hints.get(l).map(|h| h.thing)
@@ -1843,38 +1843,31 @@ impl SyncEngine {
         self.state.flush(&mut self.engine)
     }
 
-    /// A new head in the log of a peer that cannot read `l`: a child of the current one or a
-    /// recorded step moves on; when its credential is another (a new sync key, or the open was
-    /// by a claim, which is the old step's) the open by the old one ends, and the next filter
-    /// shows the new one's (`shared_head_opened`). A head past both is walked to by Behind items
+    /// A new head in the log of a peer that cannot read `l`, open there: a child of the current
+    /// one or a recorded step moves on; when its credential is another (a new sync key, or the
+    /// open was by a claim, which is the old step's) the open by the old one ends, and L tests
+    /// the new head's credential (`shared_end`). A head past both is walked to by Behind items
     /// from the current one (spec/sync.md §5, Behind). A hint's label opened knowing no step takes
-    /// the first head bearing the sync key it opened by (the peer's word: a hint's key opens only
-    /// a head of that key). A label not open there learns the head where it opens.
+    /// the first head bearing the sync key it opened by; another ends the open, the head taken on
+    /// the peer's word (only a Hit on its credential opens anything).
     pub(crate) fn new_head(&mut self, conn: ConnId, l: LabelId, step: Step, out: &mut Vec<super::Action>) -> Result<()> {
         let Some(lc) = self.lc(conn, &l) else { return Ok(()) };
-        if lc.phase != super::Phase::Open {
-            return Ok(());
-        }
+        let super::Phase::Open { by } = &lc.phase else { return Ok(()) };
+        let by = by.as_ref().map(|k| k.verifying_key());
         let cur = lc.head.clone();
         if cur.as_ref().is_some_and(|h| h.id() == step.id()) {
             return Ok(());
         }
-        let (g, claimed, hit) = (lc.group, lc.keys.sync.is_none(), lc.hit_key.as_ref().map(|k| k.verifying_key()));
+        let (g, claimed) = (lc.group, lc.keys.sync.is_none());
         let Some(h) = cur else {
-            if hit == Some(step.keys.sync) {
-                return self.set_head(conn, l, step);
-            }
-            // past the key it opened by: tested again by the hint's keys
-            if let Some(lc) = self.lc_mut(conn, &l) {
-                lc.phase = super::Phase::Testing;
-                lc.hit_key = None;
-            }
-            return self.shared_head_opened(conn, out);
+            let ended = by != Some(step.keys.sync);
+            self.set_head(conn, l, step)?;
+            return if ended { self.shared_end(conn, l, out) } else { Ok(()) };
         };
         let recorded = self.group_label(&g, &l).is_some_and(|gl| gl.steps.contains_key(&step.id()));
         let child = step.verify_child(&h).is_ok();
         if !child && !recorded {
-            return self.behind(conn, l, Some(step.id()), out);
+            return self.behind(conn, l, out);
         }
         let ended = step.keys.sync != h.keys.sync || claimed;
         if child {
@@ -1882,7 +1875,7 @@ impl SyncEngine {
         }
         self.set_head(conn, l, step)?;
         if ended {
-            self.shared_head_opened(conn, out)?;
+            self.shared_end(conn, l, out)?;
         }
         Ok(())
     }
@@ -2189,7 +2182,7 @@ impl SyncEngine {
         let mut todo: Vec<(ConnId, LabelId, Vec<BlobId>)> = Vec::new();
         for (conn, c) in &self.conns {
             for (l, lc) in &c.labels {
-                if lc.phase != Phase::Open {
+                if !lc.phase.is_open() {
                     continue;
                 }
                 let v: Vec<BlobId> = ids.iter().filter(|b| under(l, b) && self.state.is_present(&c.host, l, b)).copied().collect();

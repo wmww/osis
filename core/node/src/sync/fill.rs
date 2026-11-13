@@ -4,7 +4,7 @@
 //! order, and when the pass ends.
 
 use super::state::Kind;
-use super::{ConnId, HostKey, LConn, Phase, SyncEngine};
+use super::{ConnId, HostKey, LConn, SyncEngine};
 use crate::error::Result;
 use osis_base::{BlobId, LabelId};
 use osis_proto::client::STALL_TIMEOUT_MS;
@@ -114,7 +114,7 @@ impl SyncEngine {
         let Some(c) = self.conns.get_mut(&conn) else { return Ok(()) };
         let host = c.host;
         let Some(lc) = c.labels.get_mut(&l) else { return Ok(()) };
-        if lc.phase != Phase::Open || !lc.fill.as_ref().is_some_and(|f| f.listed) {
+        if !lc.phase.is_open() || !lc.fill.as_ref().is_some_and(|f| f.listed) {
             return Ok(());
         }
         let Some(mut f) = lc.fill.take() else { return Ok(()) };
@@ -201,6 +201,6 @@ impl SyncEngine {
 
     /// Whether `l` is filling at a host it is open at: entries that open may be unfetched.
     pub(crate) fn filling(&self, l: &LabelId) -> bool {
-        self.conns.values().any(|c| c.labels.get(l).is_some_and(|x| x.phase == Phase::Open && x.fill.is_some()))
+        self.conns.values().any(|c| c.labels.get(l).is_some_and(|x| x.phase.is_open() && x.fill.is_some()))
     }
 }

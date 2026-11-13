@@ -369,7 +369,7 @@ impl SyncEngine {
         let mut fresh = Vec::new();
         for (id, c) in &self.conns {
             for (l, x) in &c.labels {
-                if c.up && x.phase == super::Phase::Open && x.ready() && x.keys.epochs[0].is_some() && !self.work.get(l).is_some_and(|w| w.acted.contains(id)) && self.read_as_host(*id, l) {
+                if c.up && x.phase.is_open() && x.ready() && x.keys.epochs[0].is_some() && !self.work.get(l).is_some_and(|w| w.acted.contains(id)) && self.read_as_host(*id, l) {
                     fresh.push(*l);
                 }
             }
@@ -392,7 +392,7 @@ impl SyncEngine {
         if all {
             self.passed_at = self.now();
         }
-        let sourced = self.conns.values().any(|c| c.labels.values().any(|x| x.phase == super::Phase::Open));
+        let sourced = self.conns.values().any(|c| c.labels.values().any(|x| x.phase.is_open()));
         if !sourced && !self.serves_readers() {
             self.passing = false;
             return Ok(());
@@ -437,7 +437,7 @@ impl SyncEngine {
     /// opened it by a sync-key or claim Hit and whose stream read it to their log's end, with
     /// nothing registering there. A peer that reads it is none (it judges its own store).
     pub(crate) fn sources(&self, l: &LabelId) -> Vec<ConnId> {
-        self.conns.iter().filter(|(id, c)| c.up && c.labels.get(l).is_some_and(|x| x.phase == super::Phase::Open && x.ready()) && self.read_as_host(**id, l) && !self.shared_reads(**id, l)).map(|(id, _)| *id).collect()
+        self.conns.iter().filter(|(id, c)| c.up && c.labels.get(l).is_some_and(|x| x.phase.is_open() && x.ready()) && self.read_as_host(**id, l) && !self.shared_reads(**id, l)).map(|(id, _)| *id).collect()
     }
 
     /// The keys of `head` this node may use, and whether it may place under read: never encrypt
