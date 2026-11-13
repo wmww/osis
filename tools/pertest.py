@@ -76,7 +76,13 @@ def run(out, jobs, match):
         json.dump(todo, f)
     me = [sys.executable, os.path.abspath(__file__), "measure", out, str(jobs)]
     lock = [] if jobs == 1 or os.environ.get("HEAVY_HELD") else [os.path.join(ROOT, "tools", "heavy")]
-    return subprocess.call(lock + me)
+    try:
+        return subprocess.call(lock + me)
+    finally:
+        # the copies go however the run ends
+        shutil.rmtree(copy, ignore_errors=True)
+        if os.path.exists(out + ".todo"):
+            os.remove(out + ".todo")
 
 
 def measure(out, jobs):
@@ -92,8 +98,6 @@ def measure(out, jobs):
     with ThreadPoolExecutor(jobs) as ex, open(out, "w") as f:
         for r in ex.map(one, todo):
             f.write("\t".join(map(str, (r[0], r[1], r[2], f"{r[3]:.2f}", r[4]))) + "\n")
-    shutil.rmtree(out + ".bins", ignore_errors=True)
-    os.remove(out + ".todo")
     rows = load(out)
     bad = [k for k, (_, _, rc) in rows.items() if rc]
     print(f"{sum(v[0] for v in rows.values()) / 1e9:.1f} G, {sum(v[1] for v in rows.values()):.0f} CPU-s; "
