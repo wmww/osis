@@ -530,6 +530,35 @@ mod tests {
         assert_eq!(e.freed_wants().count(), 0);
     }
 
+    // spec/sync.md §7 Freed links (a held source's node not held blocks judgments until held): a
+    // step, then a transaction, that held such a node, counted the tree under it and failed
+    // leaves it missing: what was counted from the node goes with it.
+    #[test]
+    fn a_failed_step_forgets_what_it_counted_below_a_node_it_held_spec_sync_7() {
+        let (mut lp, t, _, cs) = three_replaces();
+        let e = &mut lp.peers[0].engine;
+        let root = e.run(|tx| part_links(tx, &cs[1], 0)).unwrap()[0];
+        let bytes = e.blob(&root.blob).unwrap().unwrap();
+        e.run(|tx| tx.blobs.release(&root.blob, false)).unwrap();
+        // a held source's node released (only a test does so): its counted trees are read anew
+        e.core.tree_reach.clear();
+        let ask = BTreeSet::from([root.blob]);
+        assert!(e.tree_refs(&t, &ask).unwrap().missing.contains(&root.blob), "not held: missing");
+        let held_and_asked = |tx: &mut crate::engine::Tx<'_>| -> Result<()> {
+            tx.store_blobs(vec![(root.blob, bytes.clone())])?;
+            assert!(crate::engine::tree_refs::tree_refs_in(tx, &t, &ask)?.missing.is_empty(), "held: read");
+            Err(crate::error::Error::BadInput("failed (tests)"))
+        };
+        e.run(|tx| {
+            assert!(tx.step(crate::engine::Step::Part, held_and_asked).is_err());
+            Ok(())
+        })
+        .unwrap();
+        assert!(e.tree_refs(&t, &ask).unwrap().missing.contains(&root.blob), "a failed step's read went");
+        assert!(e.run(held_and_asked).is_err());
+        assert!(e.tree_refs(&t, &ask).unwrap().missing.contains(&root.blob), "a failed transaction's read went");
+    }
+
     // spec/sync.md §7 Freed links: a link judged freed whose next judgment waits for a held
     // source's node (a co-writer's new tree not fetched yet) is handed on again once the node
     // comes, as one judged anew: its entries are judged again under their own label, whichever
