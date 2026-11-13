@@ -173,9 +173,8 @@ pub(crate) fn keyset_departures(tx: &mut Tx<'_>, x: &Tid) -> Result<Vec<Departur
 /// every write a covering epoch must name (`Departure::needed`); the first epoch covers none,
 /// nor one of which this node holds no counting rotation (not by order: a concurrent rotation
 /// ordered after the removal by a node not holding it sealed its seed under D's epoch the
-/// removed node opens). A departure no keyset of
-/// `x` held is known to cover leaves `x` out until one is (a stranded report carries it,
-/// spec/permissions.md §4).
+/// removed node opens). A departure no keyset of `x` held is known to cover leaves `x` out
+/// until one is (a stranded report carries it, spec/permissions.md §4).
 fn uncovered(tx: &mut Tx<'_>, x: &Tid, r: Role, k: &osis_crypto::Epoch, deps: &[Departure]) -> Result<bool> {
     if tx.core.is_account(x) {
         // only the account's own nodes hold D's departures
