@@ -66,7 +66,7 @@ One actor, one key role. Admins a (the merger) and b rotate, grant, remove, re-s
 | `X_cut_nocarry` | carry rule off | fail `NoPast` |
 | `X_cut_nofloor` | boxing rule off | fail `NoPast` (b holds the cut but not the rotation before it, so sees epoch 0 still current, and re-seals n there) |
 | `X_names_noreplace` | no re-placing | fail `Unlocked` (n never meets the cut's names) |
-| `X_host_nomaker` | carry rule on e's floor alone | fail `NoPast` (p adds epoch 0 into h's epoch) |
+| `X_host_nomaker` | carry rule on e's floor alone | fail `NoPast` (h's floor-0 epoch lists only epoch 0, beside its cut; a co-holder adds epoch 0 there) |
 | `X_acc_nogfloor` | a grant with history gives floor 0 whoever writes it | fail `NoPast` (a tip-adds epoch 0 to q) |
 | `X_cap_nocap` | floors above n valid | fail `NoPast` (m's high floor passes to the removal's rotation, which a's rotation after n's cut carries to n) |
 | `X_host2_nolist` | floors read as written | fail `NewReads` (h's floor-0 epoch after n's cut is never boxed to n) |
@@ -77,7 +77,9 @@ One actor, one key role. Admins a (the merger) and b rotate, grant, remove, re-s
 - **Holder actors** (Seal, left out, stale): a party's floor is the least over its paths (A party's floor, above). The model has single-node parties.
 - **Compaction snapshots** (above): the model has none.
 - **Hostile n**: the model keeps a hostile rotation's n honest (the greatest listed n plus one). A larger n raises the n of every rotation after it, so a later cut still sits above its floor; beside a cut it acts as a concurrent cut (content beside the grant). A smaller n supersedes nothing at or above it.
-- **Hostile box removals**: any writer may remove boxes (a rotation removes those at the epochs its history box carries); not specific to cuts, not modelled.
+- **Grant changes**: a party's newest grant may be a change of its grant (role, `until`, renewal) rather than a new one. The history choice rides on the grant value and a change keeps it unless its writer shows history (Showing history later); else promoting or renewing a history-less holder hands it history by the author's floor.
+- **Hostile boxes**: the model's hostile rotation boxes by the boxing rule. Extra boxes hand only what their writer opens (counted in `NoPast`); missing boxes and removed ones (any writer may remove boxes) lock holders out, not specific to cuts (notes/crypto.md, Lockouts).
+- **A hostile member re-added without history**: the model's hostile m rotates only before its removal. An epoch made knowing the removal is carried only by a node holding the removal, where m's later writes count only with its re-add, which gives m its floor.
 - Withdraw, void names, labels and steps (open question 3).
 
 ### Open questions

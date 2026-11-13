@@ -206,7 +206,7 @@ issues/history-less-grant.md (Design). One actor, one key role. Admins a (the me
 | `X_cut_nocarry` | carry rule off (run.sh) | **fails** `NoPast` | | 1 s |
 | `X_cut_nofloor` | boxing rule off (run.sh) | **fails** `NoPast` (b holds the cut but not the rotation before it, sees epoch 0 current, re-seals n there) | | 1 s |
 | `X_names_noreplace` | `Replace = FALSE` (run.sh) | **fails** `Unlocked` (n never meets the cut's names) | | 1 s |
-| `X_host_nomaker` | the carry rule blind to e's maker (run.sh) | **fails** `NoPast` (h's rotation after its cut; p adds epoch 0 there, which h holds as its maker) | | 4 s |
+| `X_host_nomaker` | the carry rule blind to e's maker (run.sh) | **fails** `NoPast` (h's floor-0 epoch lists only epoch 0, beside its cut; a co-holder adds epoch 0 there, which h holds as its maker) | | 4 s |
 | `X_acc_nogfloor` | a grant with history gives floor 0 whoever writes it (run.sh) | **fails** `NoPast` (a tip-adds epoch 0, dropped by h's cut, to h's accomplice q) | | 4 s |
 | `X_cap_nocap` | floors above n valid, `HiF = 2` (run.sh) | **fails** `NoPast` (m's floor-3 epoch at n 1; a's removal of m lists it and takes floor 3; a cuts n at 3; a's next rotation carries the removal's epoch to n) | | 13 s |
 | `X_host2_nolist` | floors read as written; no reader, `MaxC = 5` (run.sh) | **fails** `NewReads` (h lists n's cut with floor 0: nobody may box n there, and the merge drops it) | | 18 s |

@@ -5,3 +5,4 @@
 - An attacker that picks any listing and floor multiplies the state space by the subsets of known epochs times the floors: size such instances from a one-worker probe first (one hostile rotation, `MaxC` 5-6), never by adding a second actor blind.
 - The same instance's time swings with box load near the hold limit (`X_later` 181 s, then over 226 s unfinished at load 20): leave a 30% margin.
 - `run.sh` still uses `mktemp -d` (tmpfs) for its metadir; by-hand runs here used a directory under the worktree's `target/`.
+- Review: `run.sh` judges a negative control by fail alone, not by which invariant fails; a control failing for another reason (or a TLC-level violation of the wrong property) passes as `ok`. Spot-checked traces by hand.
