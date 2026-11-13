@@ -1,5 +1,5 @@
 # Expiry does not commute with join: a Derived creation prunes a flag, then expires whole
-> Summary: A forged `Derived` text creation above a flag write on its element prunes the flag (§4.2), and expiry then takes the creation entirely (§4.7 Embedded character), so stripping before the join keeps a flag-only record that stripping after drops. Two spec rules conflict; needs a design decision. Found by `tests_laws::entry_copies::forged_entry_copies_join_and_expire_alike_spec_5_6` at `OSIS_CRDT_SEED` 917311, 4402113, 77310519, 2854516606.
+> Summary: A forged `Derived` text creation above a flag write on its element prunes the flag (§4.2), and expiry then takes the creation entirely (§4.7 Embedded character), so stripping before the join keeps a flag-only record that stripping after drops. Two spec rules conflict; needs a design decision. Found by `tests_laws::entry_copies::forged_entry_copies_join_and_expire_alike_spec_5_6`, which fails at about 3 in 4 `OSIS_CRDT_SEED` values (passes at the committed seed, which is all the gate runs).
 > Priority: normal
 > Tags: crdt, tests
 

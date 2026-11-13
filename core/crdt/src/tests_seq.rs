@@ -447,7 +447,7 @@ fn slots_join_follows_cache_spec_7() {
     };
     let (mut joins, mut kept) = (0, 0);
     for seed in (1..12).step_by(2) {
-        let mut r = crate::testutil::rng(seed);
+        let mut r = crate::testutil::fixed(seed);
         let (mut m, mut ours) = (None, Fragment::default());
         let mut w = MWriter::new(MSource::session(1, 0), 50 << 16, 1);
         put(mops::create(&mut w, &Ty::Text, &MValue::Str("xy".into())), &mut m, &mut ours);
