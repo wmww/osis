@@ -79,7 +79,7 @@ fn echo(sched: &Sched, mut l: P2pListener<MemUdp>) -> Rc<RefCell<Vec<bool>>> {
     let (sp, s2) = (sched.spawner(), seen.clone());
     sched.spawn(async move {
         while let Ok(c) = l.accept().await {
-            s2.borrow_mut().push(c.is_relayed());
+            s2.borrow_mut().push(c.relayed());
             let sp2 = sp.clone();
             sp.spawn(async move {
                 while let Ok((mut tx, mut rx)) = c.accept_stream().await {
@@ -165,7 +165,7 @@ fn punch_in(mut w: World, a: MemUdp, b: MemUdp, b_at: &str, seen: &str) -> (bool
             // every packet of the punch goes out in its first resends: a punch that has not
             // got through after this long never does
             net.sleep(10_000).await;
-            if !c.is_relayed() {
+            if !c.relayed() {
                 rt.unwrap();
                 return (true, true);
             }
@@ -176,7 +176,7 @@ fn punch_in(mut w: World, a: MemUdp, b: MemUdp, b_at: &str, seen: &str) -> (bool
             };
             let next = a.dial(&addr).await.unwrap();
             let _ = round_trip(&next, b"again").await;
-            assert_eq!(next.is_relayed(), !switched, "a switch leaves a parked direct connection");
+            assert_eq!(next.relayed(), !switched, "a switch leaves a parked direct connection");
             (false, switched)
         })
         .unwrap();
@@ -203,11 +203,11 @@ fn punch_before_stream_open_stays_relayed_spec_sync_10() {
     w.sched
         .block_on(async move {
             let c = a.dial(&addr).await.unwrap();
-            assert!(c.is_relayed());
+            assert!(c.relayed());
             // the direct attempt completes here
             net.sleep(10_000).await;
             let _s = round_trip(&c, b"over the relay").await;
-            assert!(c.is_relayed());
+            assert!(c.relayed());
         })
         .unwrap();
 }
@@ -270,7 +270,7 @@ fn one_punch_and_none_to_a_refused_address_spec_sync_10() {
         .block_on(async move {
             let c = a.dial(&addr).await.unwrap();
             let _s = round_trip(&c, b"relayed").await;
-            assert!(c.is_relayed());
+            assert!(c.relayed());
         })
         .unwrap();
     w.sched.run();
@@ -356,7 +356,7 @@ fn direct_items_spec_sync_10() {
     let a = P2p::new(host(&w.net, "a", "10.9.0.2", "203.0.113.9", Some(Nat::SYMMETRIC)));
     let r = w.sched.block_on(async move {
         let c = a.dial(&Address { url: "peer://192.0.2.7:7000".into(), key: kb }).await.unwrap();
-        assert!(!c.is_relayed());
+        assert!(!c.relayed());
         let _ = round_trip(&c, b"direct").await;
         let wrong = a.dial(&Address { url: "peer://192.0.2.7:7000".into(), key: [9; 32] }).await;
         let none = a.dial(&Address { url: "peer://192.0.2.8:7000".into(), key: kb }).await;
@@ -391,7 +391,7 @@ fn relayed_keys_spec_sync_10() {
         let c2 = a2.dial_as(&Address { url: u2.clone(), key: kb }, &secret(5)).await.unwrap();
         let s2 = lb.accept().await.unwrap();
         let none = a2.dial(&Address { url: u2, key: [7; 32] }).await.err();
-        assert!(c1.is_relayed() && c2.is_relayed() && s1.is_relayed() && s2.is_relayed());
+        assert!(c1.relayed() && c2.relayed() && s1.relayed() && s2.relayed());
         // one stream per relayed connection
         assert!(matches!(c1.open_stream().await, Err(Error::Protocol(_))));
         (s1.peer_key(), s2.peer_key(), none)
@@ -768,9 +768,9 @@ fn quic_relay_loopback_spec_sync_10() {
         assert_eq!(c.peer_key(), kb);
         if let Err(e) = session(&c).await {
             // a relayed connection closes once the direct one completes; the next dial takes that
-            assert!(c.is_relayed(), "{e:?}");
+            assert!(c.relayed(), "{e:?}");
             let d = a.dial_as(&addr, &secret(5)).await.unwrap();
-            assert!(!d.is_relayed());
+            assert!(!d.relayed());
             session(&d).await.unwrap();
         }
         echo.abort();
@@ -835,7 +835,7 @@ fn quic_relay_unread_sessions_spec_sync_10() {
         let mut writers = Vec::new();
         for _ in 0..UNREAD {
             let c = a.dial(&addr).await.unwrap();
-            assert!(c.is_relayed());
+            assert!(c.relayed());
             let (mut tx, rx) = c.open_stream().await.unwrap();
             writers.push(tokio::spawn(async move {
                 let _ = tx.write_all(&vec![0u8; 2 << 20]).await;
@@ -1069,9 +1069,9 @@ fn quic_relay_dual_stack_spec_sync_10() {
             assert_eq!(c.peer_key(), kb);
             if let Err(e) = session(&c).await {
                 // a relayed connection closes once the direct one completes; the next dial takes that
-                assert!(c.is_relayed(), "{e:?}");
+                assert!(c.relayed(), "{e:?}");
                 let d = a.dial_as(&addr, &own).await.unwrap();
-                assert!(!d.is_relayed());
+                assert!(!d.relayed());
                 session(&d).await.unwrap();
             }
         }
@@ -1097,7 +1097,7 @@ fn quic_dial_mixed_families_spec_sync_10() {
         let accept = tokio::spawn(async move { lb.accept().await.map(|_| ()) });
         let c = P2p::new(QuicUdp::new()).dial(&Address { url, key: kb }).await.unwrap();
         assert_eq!(c.peer_key(), kb);
-        assert!(!c.is_relayed());
+        assert!(!c.relayed());
         accept.await.unwrap().unwrap();
     });
 }

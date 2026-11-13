@@ -504,12 +504,6 @@ impl<C: Connection> Clone for P2pConn<C> {
     }
 }
 
-impl<C: Connection> P2pConn<C> {
-    pub fn is_relayed(&self) -> bool {
-        matches!(self, P2pConn::Relayed(_))
-    }
-}
-
 pub enum P2pSend<C: Connection> {
     Direct(C::Send),
     Relayed(TlsSend<C::Send>),
