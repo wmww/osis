@@ -1222,6 +1222,7 @@ fn status_json(s: &osis::Status) -> J {
 /// One diagnostic as `diag` prints it (text or a JSON line): its kind, what it names, its detail.
 fn diag_line(d: &osis::Diagnostic, json: bool) -> String {
     use osis::Diagnostic as D;
+    let shown;
     let (kind, tids, commit, peer, detail): (&str, Vec<Tid>, Option<osis::CommitId>, Option<Tid>, &str) = match d {
         D::NotSynced { thing, group, detail } => ("NotSynced", std::iter::once(*thing).chain(*group).collect(), None, None, detail),
         D::Uncommitted { thing, detail } => ("Uncommitted", vec![*thing], None, None, detail),
@@ -1238,7 +1239,10 @@ fn diag_line(d: &osis::Diagnostic, json: bool) -> String {
         D::InputCapped { detail } => ("InputCapped", vec![], None, None, detail),
         D::Parked { things, commit, peer, detail } => ("Parked", things.clone(), *commit, *peer, detail),
         D::Handled { things, commit, peer, detail } => ("Handled", things.clone(), *commit, *peer, detail),
-        other => ("Other", vec![], None, None, Box::leak(other.to_string().into_boxed_str())),
+        other => {
+            shown = other.to_string();
+            ("Other", vec![], None, None, &shown)
+        }
     };
     if json {
         J::obj([
