@@ -2229,19 +2229,13 @@ fn a_rewrite_without_an_unread_delta_is_no_duplicate_spec_sync_7() {
     assert_eq!(deletes, [0, 0, 0], "deletes by a, b and w");
 }
 
-// spec/sync.md §6 (Placed again once; once no valid snapshot under the label covers it, its
-// holders place it again): writer b holds its write C; admin x compacts it under S, which the host
-// keeps from b (a cover on its way), drops C and deletes it; b places C again once, x deletes that
-// too and the delete stands: quiet. Owner a, away and never holding C or S, demotes x to read: S
-// falls and the label's head moves. b, C's only holder, places it again and every node reads it
-// (a stand lasting the tombstone's life left C at b alone).
-#[test]
-fn a_placement_again_deleted_goes_again_once_the_head_moves_spec_sync_6() {
-    let (mut net, host, [a, x, b], g, [t]) = hosted::<3, 1>(&[(1, Role::Admin), (2, Role::Write)], ["x"], true);
-    let l = net.label(a);
+/// Admin x compacts writer b's write C on `t` under S, which the host keeps from b (a cover on its
+/// way), drops C and deletes it from `l`; b places C again once, x deletes that too and the delete
+/// stands: quiet, C at b alone. Owner a is away throughout. Returns whether C is at `host`.
+fn cover_kept_from_b(net: &mut Net, host: usize, [a, x, b]: [usize; 3], t: osis_base::Tid, l: osis_base::LabelId) -> impl Fn(&mut Net) -> bool + use<> {
     let k = Ak::new(SEQ.ak()).unwrap();
     net.set_online(a, false);
-    let c = insert(&mut net, b, t, "b's");
+    let c = insert(net, b, t, "b's");
     net.run();
     let known: std::collections::BTreeSet<_> = net.sync(x).entries(&l).into_iter().map(|(id, _)| id).collect();
     let of_c = |k: &EntryKind| matches!(k, EntryKind::Commit { commit, .. } if *commit == c);
@@ -2250,8 +2244,8 @@ fn a_placement_again_deleted_goes_again_once_the_head_moves_spec_sync_6() {
         let hidden = net.sync(x).entries(&l).into_iter().filter(|(id, k)| !known.contains(id) && !of_c(k)).map(|(id, _)| id).collect();
         net.hide_blobs.insert(b, hidden);
     };
-    hide(&mut net);
-    insert(&mut net, x, t, "x's");
+    hide(net);
+    insert(net, x, t, "x's");
     let acts = net.sync(x).compact_now(&t, &k).unwrap();
     net.actions(x, acts);
     for ms in [0, 20 * 60_000, 2 * 3_600_000] {
@@ -2263,15 +2257,27 @@ fn a_placement_again_deleted_goes_again_once_the_head_moves_spec_sync_6() {
             if net.queue_len() == 0 {
                 break;
             }
-            hide(&mut net);
+            hide(net);
             net.round();
         }
     }
     // `run` asserts quiescence: the delete of the placement again stands
     net.run();
     assert!(!net.engine(x).body_not_dropped(&c, &t, &k) && net.engine(b).body_not_dropped(&c, &t, &k), "x dropped C, b keeps it");
-    let at = |net: &mut Net| blobs_of(net, b, &l, c).iter().any(|id| net.host_ids(host, &l).contains(id));
-    assert!(!at(&mut net), "C is not at the host");
+    let at = move |net: &mut Net| blobs_of(net, b, &l, c).iter().any(|id| net.host_ids(host, &l).contains(id));
+    assert!(!at(net), "C is not at the host");
+    at
+}
+
+// spec/sync.md §6 (Placed again once; once no valid snapshot under the label covers it, its
+// holders place it again): `cover_kept_from_b`. Owner a, away and never holding C or S, demotes x
+// to read: S falls and the label's head moves. b, C's only holder, places it again and every node
+// reads it (a stand lasting the tombstone's life left C at b alone).
+#[test]
+fn a_placement_again_deleted_goes_again_once_the_head_moves_spec_sync_6() {
+    let (mut net, host, [a, x, b], g, [t]) = hosted::<3, 1>(&[(1, Role::Admin), (2, Role::Write)], ["x"], true);
+    let l = net.label(a);
+    let at = cover_kept_from_b(&mut net, host, [a, x, b], t, l);
     let xt = net.tid(x);
     demote(&mut net, a, g, xt, Role::Read);
     net.hide_blobs.remove(&b);
@@ -2283,4 +2289,35 @@ fn a_placement_again_deleted_goes_again_once_the_head_moves_spec_sync_6() {
     assert_eq!(read(&mut net, b), Some(s("b's")));
     assert_eq!(read(&mut net, a), Some(s("b's")), "a reads C");
     assert_eq!(read(&mut net, x), Some(s("b's")), "x reads C");
+}
+
+// spec/sync.md §6 (Placed again once), spec/permissions.md §3 (a removal rotates the actor left
+// only; a thing above it rotates when next encrypted under): `cover_kept_from_b` with x admin on G
+// only through team T. a removes x from T: S falls, G's head moves all the same (a rotates G, its
+// box to T stale), and b places C again.
+#[test]
+fn a_placement_again_deleted_goes_again_once_a_team_demotion_moves_the_head_spec_sync_6() {
+    let mut net = Net::new();
+    let host = net.add_host();
+    let [a, x, b] = [1, 2, 3].map(|i| net.node(i, &[host]));
+    let tm = net.group(a, &[(x, Role::Admin)], &[host]);
+    let g = net.group(a, &[(b, Role::Write)], &[host]);
+    net.grant(a, g, tm, Role::Admin);
+    let t = net.item(a, g, g, "x");
+    net.run();
+    assert_eq!(net.engine(x).role_on(&g), Some(Role::Admin));
+    let l = net.group_labels(b).into_iter().find(|(x, _)| *x == g).unwrap().1.id;
+    let at = cover_kept_from_b(&mut net, host, [a, x, b], t, l);
+    let steps = |net: &mut Net| net.engine(a).get_typed(&g, &ct::LABEL).unwrap().unwrap().values().map(|v| v.steps.len()).sum::<usize>();
+    let before = steps(&mut net);
+    let xt = net.tid(x);
+    demote(&mut net, a, tm, xt, Role::Read);
+    net.hide_blobs.remove(&b);
+    net.set_online(a, true);
+    net.run();
+    net.advance(61_000);
+    assert_eq!(net.engine(x).role_on(&g), Some(Role::Read), "x reads G only");
+    assert!(steps(&mut net) > before, "G's head moved");
+    assert!(at(&mut net), "b placed C again");
+    assert_eq!(net.engine(a).get_typed(&t, &SEQ).unwrap(), Some(s("b's")), "a reads C");
 }

@@ -928,4 +928,21 @@ fn a_host_hiding_a_cover_from_one_writer_costs_one_placement_again_spec_sync_6()
     }
     let after = census(&mut net);
     assert!(before == after, "nothing more placed, deleted or kept:\n{before:?}\n{after:?}");
+    // once the deleted placement's record ends (its tombstone's life) a pass comes, nothing else
+    // touching the write: it goes again (an old blob ID, the host's tombstone gone too), b
+    // deletes it, and quiet again
+    net.tick(osis_base::format::TOMBSTONE_LIFETIME_MS + 1_000);
+    let mut back = false;
+    for _ in 0..200 {
+        if net.queue_len() == 0 {
+            break;
+        }
+        hide(&mut net);
+        net.round();
+        let ids = net.host_ids(h, &l);
+        back |= net.sync(a).entries(&l).into_iter().any(|(id, k)| of_c(&k) && ids.contains(&id));
+    }
+    hide(&mut net);
+    net.run();
+    assert!(back, "a's write went to the host again past the tombstone");
 }

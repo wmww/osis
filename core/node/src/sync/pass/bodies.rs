@@ -41,7 +41,9 @@ impl SyncEngine {
             }
             // a right holder deleted it here: its keep bounds, judged from what it holds, passed
             // there (spec/commits.md §5); not placed again while its live writes are carried
-            if !here && self.delete_stands(source, (l, p.id), b, &needed, snaps, &mut note)? {
+            let stands = !here && self.delete_stands(source, (l, p.id), b, &needed, snaps, &mut note)?;
+            note.leave(b.commit, left);
+            if stands {
                 continue;
             }
             // another node's commit not at this source: its author (or a co-writer) first
@@ -179,7 +181,7 @@ impl SyncEngine {
         let unjudged = h.ephemeral.is_some() && self.refused_there(source, &l);
         for ai in parts {
             if self.must_carry(&h, &b.commit, &keeps, *ai, snaps, note)? && !self.carried_by(source, &l, &b.commit, &[*ai], b.to_label) && !unjudged {
-                return Ok(self.again_deleted(source, (l, head), b));
+                return Ok(self.again_deleted(source, (l, head), b, note));
             }
         }
         Ok(!self.engine.named_by_a_fallen_purge(&b.commit, parts)?)
@@ -202,12 +204,17 @@ impl SyncEngine {
 
     /// Whether a blob this node sealed to place body `b` again past a delete at label head
     /// `head` (`BlobRec::again`) was deleted under `l` too: tombstoned here, or gone at `source`
-    /// and not present there.
-    fn again_deleted(&mut self, source: Option<&PeerKey>, (l, head): (LabelId, osis_label::StepId), b: &Body) -> bool {
+    /// and not present there, until that record ends (`State::deleted_until`), when a pass comes.
+    fn again_deleted(&mut self, source: Option<&PeerKey>, (l, head): (LabelId, osis_label::StepId), b: &Body, note: &mut Note) -> bool {
         let Some(g) = self.group_of(&l, None) else { return false };
+        let now = self.now();
         let st = &self.state;
-        let gone: Vec<Vec<usize>> = st.by_commit.get(&b.commit).into_iter().flatten().filter_map(|id| st.blobs.get(id).filter(|r| r.again == Some(head)).map(|r| (id, r))).filter(|(id, _)| st.tombs.contains_key(&(l, **id)) || source.is_some_and(|s| st.is_gone_at(s, &l, id) && !st.is_present(s, &l, id))).map(|(_, r)| r.parts.clone()).collect();
-        gone.into_iter().any(|p| self.readable(&g, &b.commit, &p) == b.parts)
+        let gone: Vec<(Vec<usize>, u64)> = st.by_commit.get(&b.commit).into_iter().flatten().filter(|id| st.blobs.get(id).is_some_and(|r| r.again == Some(head))).filter_map(|id| Some((st.blobs.get(id)?.parts.clone(), st.deleted_until(source, &l, id).filter(|t| *t > now)?))).collect();
+        let until = gone.into_iter().filter(|(p, _)| self.readable(&g, &b.commit, p) == b.parts).map(|(_, t)| t).max();
+        if let Some(t) = until {
+            note.at(t);
+        }
+        until.is_some()
     }
 
     /// Whether every part's aspect of commit `c` is covered by a snapshot under `l`.

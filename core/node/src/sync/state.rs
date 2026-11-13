@@ -1711,6 +1711,15 @@ impl State {
         }
     }
 
+    /// When this node's record that blob `b` left `l` ends (`expire_tombs`): its tombstone here,
+    /// else its being gone at `s` while not present there; none when neither holds.
+    pub fn deleted_until(&self, s: Option<&PeerKey>, l: &LabelId, b: &BlobId) -> Option<u64> {
+        let life = if self.memory_entries.contains(&(*l, *b)) { osis_base::format::MAX_DRIFT_MS } else { osis_base::format::TOMBSTONE_LIFETIME_MS };
+        let tomb = self.tombs.get(&(*l, *b)).map(|t| t.at);
+        let gone = s.filter(|s| !self.is_present(s, l, b)).and_then(|s| self.gone.get(&(*s, *l, *b)).copied());
+        tomb.into_iter().chain(gone).max().map(|t| t.saturating_add(life))
+    }
+
     /// Forgets tombstones, and hosts' tombstoned answers, past their lifetime.
     pub fn expire_tombs(&mut self, now: u64) {
         // a memory entry's tombstone lasts `MAX_DRIFT`, as a host's does (spec/sync.md §5)

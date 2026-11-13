@@ -753,10 +753,11 @@ impl SyncEngine {
             } else {
                 let readable = self.readable(&g, &c, &parts);
                 let Some(b) = bodies.iter().find(|b| b.commit == c && b.parts == readable).cloned() else { continue };
-                if self.delete_stands(Some(&source), (l, own.id), &b, &b.parts, snaps, &mut note)? || self.entry_for(Some(&source), &l, &b).is_some_and(|x| self.state.is_present(&source, &l, &x)) {
+                let stands = self.delete_stands(Some(&source), (l, own.id), &b, &b.parts, snaps, &mut note)?;
+                note.leave(c, left);
+                if stands || self.entry_for(Some(&source), &l, &b).is_some_and(|x| self.state.is_present(&source, &l, &x)) {
                     continue;
                 }
-                note.leave(c, left);
                 b
             };
             left.commits.insert(c);
