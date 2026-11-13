@@ -162,6 +162,7 @@ Each only made a bug unlikely (class X); the code ends by a fixpoint, a window o
 |---|---|---|
 | `INCARNATIONS_KEPT` 4096 (`store/nodelog.rs`) | R (oldest evicted: a cursor on an evicted incarnation is no cursor, one listing for that peer) | every cursor before an appending start no cursor, a listing per peer / disk grows with appending starts |
 | store `PAGE` 256 (`store/store.rs`: rows a node-log sweep or forget scan handles per call) | P (only how the work is split into transactions) | no progress / one transaction holds the whole sweep |
+| host `PAGE` 256 (`host/store/unread.rs`: labels read per page while listing the unread ones) | P (only how the listing is split into reads) | lists nothing / one read holds every label |
 | `P` 8 (filter's false-positive bits) | P | every own credential a refused 32 B Hit / 32-byte beacons sent whole; both correct |
 | whole-filter re-send at doubling (additions up to n of the whole) | P (receiver enforces the same limit) | re-send each change / false positives grow only |
 | `RECORD_BUDGET` 256 MiB (`store/record.rs`) | R (evict least recently used record not in use; a filter that does not fit is tested and not stored) | every connection a first contact / disk |
