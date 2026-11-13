@@ -1,5 +1,5 @@
 # member_churn: a label stays Failed at a host at quiescence
-> Summary: sim `member_churn` setup 921485473073 seed 921485473124 fails at step 151: node 2's label b6e1af25.. of group LBhI6MHy.. is `Failed { entry_refused: false }` on its connection to host 0 at quiescence (no key opens it there) while the sim expects it open. Fails on main 9c4158d2c alike.
+> Summary: sim `member_churn` setup 921485473073 seed 921485473124 fails at step 151: node 2's label b6e1af25.. of group LBhI6MHy.. is `Failed { entry_refused: false }` on its connection to host 0 at quiescence (no key opens it there) while the sim expects it open. Fails on main 65bdadb74 alike.
 > Priority: normal
 > Tags: sync, sim, tests
 
