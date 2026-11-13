@@ -258,7 +258,7 @@ impl crate::engine::Engine {
             .filter_map(|p| {
                 let v = self.core.account_view(&p)?;
                 let chosen = self.core.sides.account(&p);
-                Some(AccountDisputeInfo { account: p, lines: v.heads(), side: v.open(), chosen: chosen.is_some() })
+                Some(AccountDisputeInfo { account: p, lines: v.heads(), side: v.preferred(), chosen: chosen.is_some() })
             })
             .collect()
     }

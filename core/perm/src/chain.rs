@@ -3,11 +3,12 @@
 //! the held rotations, the side and the receipt order; nothing here reads `ts`, counters or
 //! signatures (the caller checks those and states the result in `Rotation::signed`).
 //!
-//! Principle: a node reads one line. A fork (several heads, or a dispute) is resolved as every
-//! dispute is: each node follows its side, by default the line it received first; a merge ends
-//! a fork; a side set overrides. The open epoch is the head followed, and every other epoch is
-//! closed. `joins` (descent from every anchor) is the key level's anchoring rule (osis-keys
-//! `seal_keyset`).
+//! Principle: forks stand. Every head is open and every other epoch closed; nothing merges a
+//! fork for being one (the next rotation for any reason supersedes every head). Only a dispute
+//! (lines rejecting each other) is read by side: each node's, by default the party whose line it
+//! received first. The preferred head (on the side's line, else received first) is where a node
+//! of the account signs, never what counts. `joins` (descent from every anchor) is the key
+//! level's anchoring rule (osis-keys `seal_keyset`).
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -70,8 +71,8 @@ pub struct Chain<E> {
     side: Option<E>,
     /// The counting epochs no counting rotation descends from.
     heads: BTreeSet<E>,
-    /// The head followed: the one open epoch.
-    followed: E,
+    /// Of the heads holding the side (all when none does), the one received first.
+    preferred: E,
 }
 
 impl<E: Ord + Copy> Chain<E> {
@@ -89,7 +90,7 @@ impl<E: Ord + Copy> Chain<E> {
                 rots.insert(id, r);
             }
         }
-        let mut c = Chain { root, rots, lines: BTreeMap::new(), rejects: BTreeSet::new(), counting: BTreeSet::new(), parties: BTreeSet::new(), side: None, heads: BTreeSet::new(), followed: root };
+        let mut c = Chain { root, rots, lines: BTreeMap::new(), rejects: BTreeSet::new(), counting: BTreeSet::new(), parties: BTreeSet::new(), side: None, heads: BTreeSet::new(), preferred: root };
         c.lines = c.rots.keys().map(|&r| (r, c.line_of(r))).collect();
         c.rejects = c.rejections();
         c.parties = c.contesting();
@@ -98,7 +99,7 @@ impl<E: Ord + Copy> Chain<E> {
         c.counting = c.count(c.side);
         c.heads = c.heads_of();
         let on_side: BTreeSet<E> = c.heads.iter().copied().filter(|h| c.side.is_some_and(|s| c.on_line(*h, s))).collect();
-        c.followed = c.first_line(if on_side.is_empty() { &c.heads } else { &on_side }, &rank).unwrap_or(root);
+        c.preferred = c.first_line(if on_side.is_empty() { &c.heads } else { &on_side }, &rank).unwrap_or(root);
         c
     }
 
@@ -254,17 +255,17 @@ impl<E: Ord + Copy> Chain<E> {
         *e == self.root || self.counts(e)
     }
 
-    /// The counting rotations closing epoch `e`: every one it does not descend from. The
-    /// followed head has some in a fork (the other heads): they matter once it closes too (the
-    /// cutoff, spec/permissions.md §5.5).
+    /// The counting rotations closing epoch `e`: every one it does not descend from. A
+    /// head has some in a fork (the other heads): a lister reads them for the cutoff once it
+    /// closes (spec/permissions.md §5.5).
     pub fn closers(&self, e: &E) -> Vec<E> {
         let line = self.lines.get(e);
         self.counting.iter().copied().filter(|r| !line.is_some_and(|l| l.contains(r))).collect()
     }
 
-    /// Whether epoch `e` is open: it is the head followed.
+    /// Whether epoch `e` is open: it is a head.
     pub fn open(&self, e: &E) -> bool {
-        *e == self.followed
+        self.heads.contains(e)
     }
 
     /// Held rotation `r`'s line: itself and every held rotation it descends from.
@@ -287,26 +288,15 @@ impl<E: Ord + Copy> Chain<E> {
         self.side
     }
 
-    /// The heads: the counting epochs no counting rotation descends from. More than one is a
-    /// fork, which a merge ends.
+    /// The heads: the counting epochs no counting rotation descends from, every one open. More
+    /// than one is a fork, which stands.
     pub fn heads(&self) -> &BTreeSet<E> {
         &self.heads
     }
 
-    /// The head followed, the one open epoch: among the heads whose line holds the side (all
-    /// of them when none does), the one whose line holds the rotations not on every one's line
-    /// received first.
-    pub fn followed(&self) -> E {
-        self.followed
-    }
-
-    /// Whether the reading is in doubt: a dispute, or a fork where a head not followed has on
-    /// its line a merge (a rotation superseding more than the epoch it rotates) the followed
-    /// head's line lacks. A lone rotation beside the followed line is what any one node's
-    /// concurrent rotation, or a removed node's fork, looks like, and the next merge ends it.
-    pub fn in_doubt(&self) -> bool {
-        let followed = self.lines.get(&self.followed);
-        let merge = |r: &E| self.rots.get(r).is_some_and(|x| x.supersedes.iter().any(|e| *e != x.at));
-        self.dispute() || self.heads.iter().filter(|h| **h != self.followed).any(|h| self.lines.get(h).into_iter().flatten().any(|r| merge(r) && !followed.is_some_and(|l| l.contains(r))))
+    /// The preferred head: among the heads whose line holds the side (all of them when none
+    /// does), the one whose line holds the rotations not on every one's line received first.
+    pub fn preferred(&self) -> E {
+        self.preferred
     }
 }

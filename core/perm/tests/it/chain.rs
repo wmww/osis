@@ -1,5 +1,6 @@
-//! An account's signing chain (spec/crypto.md §9, spec/permissions.md §5.4): counting and the
-//! head followed are a function of the held rotations, the side and the receipt order. Each test is a hand world of
+//! An account's signing chain (spec/crypto.md §9, spec/permissions.md §5.4): counting, the open
+//! heads and the preferred one are a function of the held rotations, the side and the receipt
+//! order. Each test is a hand world of
 //! core/test/roles-model `epochs` (`forks_merges_and_supersedes_entries`, `thief_fork_and_dispute`,
 //! `removed_node_holding_a_sibling_epoch`); a rotation's ID is the epoch it mints, the root 0.
 
@@ -32,16 +33,17 @@ fn fork() -> Vec<Rotation<u32>> {
 }
 
 #[test]
-fn fork_rotations_both_count_and_the_first_received_is_followed() {
+fn fork_rotations_both_count_and_both_are_open() {
     let c = chain(&fork(), None);
     assert!(c.counts(&1) && c.counts(&2) && !c.dispute());
     assert_eq!(c.heads(), &set(&[1, 2]));
-    assert!(c.open(&1) && !c.open(&2) && !c.open(&0) && !c.in_doubt(), "the line received first is read, silently");
+    assert!(c.open(&1) && c.open(&2) && !c.open(&0), "the fork stands, silently");
     assert_eq!(c.closers(&1), vec![2], "the other head still closes it for the cutoff");
+    assert_eq!(c.preferred(), 1);
     let c = received_as(&fork(), None, &[2, 1]);
-    assert!(c.open(&2) && !c.open(&1));
+    assert!(c.open(&2) && c.open(&1) && c.preferred() == 2);
     let c = received_as(&fork(), Some(2), &[1, 2]);
-    assert!(c.open(&2), "the side overrides the receipt order");
+    assert_eq!(c.preferred(), 2, "the side overrides the receipt order");
 }
 
 /// The removal 1, a fork 2 by the removed node merged out by 3; the removed node forks again
@@ -51,26 +53,23 @@ fn refork() -> Vec<Rotation<u32>> {
 }
 
 #[test]
-fn a_refork_beside_a_merged_line_hides_nothing_where_the_line_came_first() {
+fn a_refork_beside_a_merged_line_hides_nothing_whichever_came_first() {
     let r = refork();
-    let c = received_as(&r, None, &[1, 2, 3, 4]);
-    assert!(c.counts(&3) && c.counts(&4) && !c.counts(&2) && !c.dispute());
-    assert_eq!(c.heads(), &set(&[3, 4]));
-    assert!(c.open(&3) && !c.in_doubt(), "the line followed stays open: the lone fork is closed");
-    // A reader the fork reached first follows it, in doubt: the other line carries a merge.
-    let c = received_as(&r, None, &[4, 1, 2, 3]);
-    assert!(c.open(&4) && c.in_doubt());
-    let c = received_as(&r, Some(3), &[4, 1, 2, 3]);
-    assert!(c.open(&3), "switching to the merged line");
-    // The next merge rejects the fork unnamed and ends the fork at every reader.
+    for received in [[1, 2, 3, 4], [4, 1, 2, 3]] {
+        let c = received_as(&r, None, &received);
+        assert!(c.counts(&3) && c.counts(&4) && !c.counts(&2) && !c.dispute());
+        assert_eq!(c.heads(), &set(&[3, 4]));
+        assert!(c.open(&3) && c.open(&4), "both heads are open until a rotation of P's rejects the fork");
+    }
+    // The next rotation rejects the fork unnamed at every reader.
     let mut m = r.clone();
     m.push(rot(5, 3, &[3, 4], &[]));
     for received in [[1, 2, 3, 4, 5], [4, 1, 2, 3, 5]] {
         let c = received_as(&m, None, &received);
-        assert!(c.open(&5) && !c.counts(&4) && c.heads().len() == 1 && !c.in_doubt());
+        assert!(c.open(&5) && !c.counts(&4) && c.heads().len() == 1 && !c.dispute());
     }
     let c = received_as(&m, Some(4), &[4, 1, 2, 3, 5]);
-    assert!(c.open(&4) && !c.counts(&5), "a side set holds against the merge");
+    assert!(c.open(&4) && !c.counts(&5), "a side set holds against the rotation");
 }
 
 #[test]
@@ -119,7 +118,7 @@ fn thief() -> Vec<Rotation<u32>> {
 fn removed_nodes_fork_is_void_once_the_owners_merge_is_held() {
     let t = thief();
     let c = chain(&t[..2], None);
-    assert!(c.counts(&1) && c.counts(&10) && c.open(&1) && !c.open(&10), "before the merge the fork counts; the removal, received first, is followed");
+    assert!(c.counts(&1) && c.counts(&10) && c.open(&1) && c.open(&10), "before the merge the fork counts, open (the fork window)");
     let c = chain(&t[..3], None);
     assert!(c.counts(&30) && c.counts(&1) && !c.counts(&10) && !c.dispute());
 }
@@ -129,8 +128,8 @@ fn mutual_rejection_reports_a_dispute_and_defaults_to_the_first_received_line() 
     let t = thief();
     let c = received_as(&t, None, &[1, 10, 30, 40]);
     assert_eq!(c.parties(), &set(&[30, 40]));
-    assert!(c.in_doubt());
-    assert_eq!((c.side(), c.followed()), (Some(30), 30));
+    assert!(c.dispute());
+    assert_eq!((c.side(), c.preferred()), (Some(30), 30));
     assert_eq!(received_as(&t, None, &[10, 1, 40, 30]).side(), Some(40));
     let owner = chain(&t, Some(30));
     assert!(owner.dispute() && owner.counts(&1) && owner.counts(&30) && !owner.counts(&10) && !owner.counts(&40));
@@ -156,9 +155,9 @@ fn sibling(signed: bool) -> Vec<Rotation<u32>> {
 }
 
 #[test]
-fn removal_closes_a_concurrent_siblings_epoch() {
+fn removal_beside_a_siblings_epoch_closes_it_for_the_cutoff_only() {
     let c = received_as(&sibling(true)[..2], None, &[2, 1]);
-    assert!(c.counts(&1) && c.counts(&2) && c.open(&2) && !c.open(&1));
+    assert!(c.counts(&1) && c.counts(&2) && c.open(&2) && c.open(&1), "both open until a rotation of P's supersedes the sibling's");
     assert_eq!(c.closers(&1), vec![2]);
 }
 

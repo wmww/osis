@@ -20,6 +20,10 @@ pub struct Keysets {
     /// The key of each held valid keyset's earliest held valid body, where known (an account's
     /// chain is whole: none).
     pub since: BTreeMap<Epoch, osis_perm::Point>,
+    /// Every valid keyset is current (an account's: its heads, forks standing): the seal goes
+    /// jointly at every one that is or descends from each anchor, never at one of them alone, so
+    /// a removed node holding a head beside its removal opens nothing the others do not.
+    pub heads: bool,
 }
 
 impl Keysets {
@@ -54,7 +58,8 @@ impl Keysets {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Seal {
     /// Box M at these keysets: one, or, jointly (a box opening only for a holder of each), one
-    /// per anchor where no keyset is past every anchor (they fork).
+    /// per anchor where no keyset is past every anchor (they fork), or an account's every head
+    /// past the anchors (`Keysets::heads`).
     At(BTreeSet<Epoch>),
     /// M is left out of the role and the roles above, re-sealed once a keyset exists.
     Out,
@@ -65,8 +70,8 @@ pub enum Seal {
 /// `left_out` names (the keysets of M A's current keysets record M was left out at, those held
 /// valid counting, each with the latest earliest-body key of those recording it). The anchors
 /// are the epochs of M the boxes to M at A's current epochs name, those held valid counting. M is
-/// sealed at the newest candidate that is or descends from each anchor (the rule an account's
-/// signing chain opens its epochs by, `osis_perm::chain`); with none, jointly at, per anchor no
+/// sealed at the newest candidate that is or descends from each anchor (an account's: jointly at
+/// every such candidate, `Keysets::heads`); with none, jointly at, per anchor no
 /// other anchor descends from, the newest candidate that is or descends from it, those another
 /// descends from dropped; `Out` when some anchor has none (no anchors: none at all).
 ///
@@ -94,7 +99,12 @@ pub fn seal_keyset(keysets: &Keysets, anchors: &BTreeSet<Epoch>, tainted: &BTree
     let past = |k: &&Epoch| left_out.iter().filter(|(q, _)| keysets.valid.contains_key(q)).all(|(q, at)| keysets.past(k, q, at));
     let candidates: Vec<&Epoch> = keysets.valid.keys().filter(|k| !tainted.contains(k)).filter(past).collect();
     let joins_all = |k: &&&Epoch| joins(***k, anchors.iter().copied(), |x| keysets.parents(x));
-    if let Some(k) = newest_of(candidates.iter().filter(joins_all).copied()) {
+    if keysets.heads {
+        let all: BTreeSet<Epoch> = candidates.iter().filter(joins_all).map(|k| **k).collect();
+        if !all.is_empty() {
+            return Seal::At(all);
+        }
+    } else if let Some(k) = newest_of(candidates.iter().filter(joins_all).copied()) {
         return Seal::At(BTreeSet::from([k]));
     }
     let frontier = anchors.iter().filter(|a| !anchors.iter().any(|b| b != *a && keysets.descends(b, a)));

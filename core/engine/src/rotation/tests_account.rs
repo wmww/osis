@@ -168,11 +168,12 @@ fn account_key_open_follows_the_rotations_held_spec_sync_10() {
 }
 
 // spec/permissions.md §5.4, spec/crypto.md §4 (Account keysets), §7: concurrent rotations fork the
-// chain; a reader holding both follows one head (the one received first), so boxes to the account
-// are sealed at it, every other epoch's box is stale, and its key is the delete key; a lone fork
-// is no dispute
+// chain and the fork stands: a reader holding both reads both heads open, so a box to the
+// account is sealed jointly at both (only a holder of each opens it), neither head's box is
+// stale, the first epoch's is; the preferred head (received first) gives the delete key; a lone
+// fork is no dispute
 #[test]
-fn forked_account_follows_one_head_spec_permissions_5_4() {
+fn forked_account_reads_every_head_spec_permissions_5_4() {
     let mut lp = peers(2);
     let (a, bytes) = created(&mut lp);
     let held = lp.peers[0].engine.core.accounts.get(&a.account).unwrap().clone();
@@ -190,15 +191,15 @@ fn forked_account_follows_one_head_spec_permissions_5_4() {
     }
     let v = e.core.account_view(&a.account).unwrap();
     assert_eq!(v.heads().len(), 2);
-    // received in one millisecond: the lower ID is the earlier
-    let followed = v.open();
-    assert_eq!(followed, *ids.iter().min().unwrap());
-    let keys = if followed == ids[0] { &x } else { &y };
+    assert!(ids.iter().all(|h| v.is_open(h)), "both heads are open");
+    // received in one millisecond: the lower ID is the preferred
+    let preferred = v.preferred();
+    assert_eq!(preferred, *ids.iter().min().unwrap());
+    let keys = if preferred == ids[0] { &x } else { &y };
     let name = |k: &AccountEpochKeys, h: u64| account_epoch(h, &k.signing.verifying_key()).unwrap();
     let (none, ks) = (BTreeSet::new(), e.run(|tx| keysets_of(tx, &a.account, Role::Read, None)).unwrap());
-    assert_eq!(osis_keys::seal_keyset(&ks, &none, &none, &Default::default()), osis_keys::Seal::At([name(keys, 1)].into()));
-    let other = if followed == ids[0] { &y } else { &x };
-    assert!(stale(&name(&first, 0), &ks, &none) && stale(&name(other, 1), &ks, &none) && !stale(&name(keys, 1), &ks, &none));
+    assert_eq!(osis_keys::seal_keyset(&ks, &none, &none, &Default::default()), osis_keys::Seal::At([name(&x, 1), name(&y, 1)].into()), "sealed jointly at both heads");
+    assert!(stale(&name(&first, 0), &ks, &none) && !stale(&name(&x, 1), &ks, &none) && !stale(&name(&y, 1), &ks, &none));
     assert_eq!(e.core.account_delete_key(&a.account).unwrap(), keys.signing.verifying_key());
     assert!(e.account_disputes().is_empty(), "a lone fork is no dispute");
 }

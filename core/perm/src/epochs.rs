@@ -67,7 +67,7 @@ pub enum EpochStanding<E> {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Epochs<E, T> {
     chain: Chain<E>,
-    /// The held epoch that is open (the head followed), as a set.
+    /// The held epochs that are open (the heads).
     open: BTreeSet<E>,
     /// Per held epoch that is not open (counting or void), its closers.
     closers: BTreeMap<E, BTreeSet<E>>,

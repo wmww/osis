@@ -121,18 +121,17 @@ fn write_only_a_witness_received_counts() {
 }
 
 /// Node 2 rotates (1) before X's removal (2) reaches it, boxing X epoch 1. X's later write at
-/// its old epoch (100) and at the sibling's (101) both fall where the removal's line is
-/// followed: the removal closes the sibling's epoch, and node 0's merge (4, signed at 1) closes
-/// both again; X's fork (3) counts only in the window before the merge, as the sibling's line
-/// does at a reader that follows it.
+/// its old epoch (100) falls with the removal; at the sibling's (101) it counts while that
+/// epoch is a head, whichever arrived first, until a rotation of P's (4, signed at 2 and at 1)
+/// supersedes it; X's fork (3) counts only in the window before it.
 #[test]
 fn later_write_does_not_count_at_its_old_epoch_or_a_siblings() {
     let commits = [c(100, 0), c(101, 1), c(102, 3)];
     let rots = [rot(1, 0, &[0], &[]), rot(2, 0, &[0], &[]), rot(3, 1, &[1, 2], &[]), rot(4, 2, &[1, 2, 3], &[1])];
-    let e = judge_as(&rots[..2], &[2, 1], &commits, (&[list(1, &[]), list(2, &[])], &[], &[]));
-    assert!(!e.counts(&100) && !e.counts(&101), "the removal closes the sibling's epoch");
-    let e = judge_as(&rots[..2], &[1, 2], &commits, (&[list(1, &[]), list(2, &[])], &[], &[]));
-    assert!(!e.counts(&100) && e.counts(&101), "the fork window at a reader the sibling's rotation reached first");
+    for received in [[2, 1], [1, 2]] {
+        let e = judge_as(&rots[..2], &received, &commits, (&[list(1, &[]), list(2, &[])], &[], &[]));
+        assert!(!e.counts(&100) && e.counts(&101), "the sibling's epoch is open until it is superseded");
+    }
     let window = judge(&rots[..3], &commits, (&[list(3, &[101])], &[], &[]));
     assert!(window.counts(&101) && window.counts(&102), "the fork window: X's fork rejects the removal");
     let merged = judge(&rots, &commits, (&[list(3, &[101]), list(4, &[])], &[], &[]));
@@ -320,8 +319,8 @@ fn epochs_diff(w: &World, o: usize, held: &[bool], v: &Verdict) -> Option<String
     // P's nodes are given their roster's side (the devices actor's line); without one, or for
     // anyone else, perm takes its default from the receipt order.
     let e = perm_epochs(w, o, held, w.roster_side(o, held));
-    // Which rotations take part (held with their chain): the disputes, the side, the head
-    // followed.
+    // Which rotations take part (held with their chain): the disputes, the side, the preferred
+    // head.
     let parties: BTreeSet<u32> = v.parties.iter().map(|&i| pid(w, i)).collect();
     if *e.chain().parties() != parties {
         return Some(format!("observer n{o}: parties model {parties:?}, perm {:?}", e.chain().parties()));
@@ -329,11 +328,12 @@ fn epochs_diff(w: &World, o: usize, held: &[bool], v: &Verdict) -> Option<String
     if e.chain().side() != side.map(|s| pid(w, s)) {
         return Some(format!("observer n{o}: side model {side:?}, perm {:?}", e.chain().side()));
     }
-    if e.chain().followed() != v.followed.map_or(0, |f| pid(w, f)) {
-        return Some(format!("observer n{o}: followed model {:?}, perm {:?}", v.followed, e.chain().followed()));
+    if e.chain().preferred() != v.preferred.map_or(0, |f| pid(w, f)) {
+        return Some(format!("observer n{o}: preferred model {:?}, perm {:?}", v.preferred, e.chain().preferred()));
     }
-    if e.chain().in_doubt() != w.in_doubt(held, v) {
-        return Some(format!("observer n{o}: in doubt model {}, perm {}", w.in_doubt(held, v), e.chain().in_doubt()));
+    let heads: BTreeSet<u32> = if v.heads.is_empty() { [0].into() } else { v.heads.iter().map(|&h| pid(w, h)).collect() };
+    if *e.chain().heads() != heads {
+        return Some(format!("observer n{o}: heads model {heads:?}, perm {:?}", e.chain().heads()));
     }
     let rooted = w.rooted(held);
     let minted = |ep: u32| ep == 0 || (0..w.items.len()).any(|r| rooted[r] && matches!(w.items[r].kind, Kind::Rotation { new, .. } if new == ep));

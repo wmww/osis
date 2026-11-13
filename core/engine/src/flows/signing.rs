@@ -62,6 +62,8 @@ pub(crate) fn rotate_in(tx: &mut Tx<'_>, p: Tid, also: &[CommitId], done: &mut D
     let v = tx.core.account_view(&p).ok_or(Error::Misuse("no signing chain for the account"))?;
     let signing = tx.core.account_signing(&p).ok().flatten();
     let mut names = Vec::new();
+    // a removed node's rotation no authorized one supersedes yet: superseded unnamed, rejected
+    let reject = unanswered(tx, &p, &v)?;
     let (at, supersedes, merge_keys, closes) = match signing {
         Some((e, _)) if v.heads().len() == 1 => (None, vec![e], Vec::new(), vec![e]),
         // an open epoch whose seed is not here yet (its removal has not arrived): nothing to act at
@@ -81,6 +83,13 @@ pub(crate) fn rotate_in(tx: &mut Tx<'_>, p: Tid, also: &[CommitId], done: &mut D
             (Some((first, k)), heads.clone(), named.into_iter().skip(1).map(|x| x.1.signing.clone()).collect(), heads)
         }
     };
+    let (mut supersedes, mut closes) = (supersedes, closes);
+    for r in reject {
+        if !supersedes.contains(&r) {
+            supersedes.push(r);
+            closes.push(r);
+        }
+    }
     // after the heads' seeds are known held: rotating D first signs as the account
     let Some(under) = seed_under(tx, &p, &held.devices, done)? else { return Ok(None) };
     // per thing: role-class and purge-request commits, then plain ones by receipt
@@ -263,15 +272,17 @@ pub(crate) fn answer_rotations(tx: &mut Tx<'_>) -> Result<()> {
 
 /// The commits of account `p` at `epochs` the cutoff lets this node name (spec/permissions.md
 /// §5.5, Cutoff) that no word held names: received before the earliest closer of their epoch held
-/// (at an epoch with none, every one received), or (`own`) made by this node, per its inner
-/// signature. Rotations count by the chain; ephemeral commits are named as durable ones.
+/// that ends it (`ends`; at an epoch with none, every one received), or (`own`, a node of `p`)
+/// made by this node, per its inner signature. Rotations count by the chain; ephemeral commits
+/// are named as durable ones.
 fn nameable(tx: &mut Tx<'_>, p: &Tid, v: &super::account::AccountView, epochs: &[CommitId], own: bool) -> Result<Vec<(CommitId, crate::engine::Meta)>> {
     let me = tx.core.id.tid();
+    let departures = if own { Some(departures(tx, p, v)?) } else { None };
     let mut out = Vec::new();
     for e in epochs {
-        let closers = v.closers(e);
+        let closers: BTreeSet<CommitId> = v.closers(e).into_iter().filter(|c| ends(v, departures.as_ref(), e, c)).collect();
         let earliest = closers.iter().filter_map(|c| tx.core.ix.commits.get(c).map(|m| m.received)).min();
-        let open = v.open() == *e;
+        let open = v.is_open(e);
         let at: Vec<CommitId> = tx.core.ix.by_epoch.get(&(*p, *e)).into_iter().flatten().copied().collect();
         for c in at {
             let Some(m) = tx.core.ix.commits.get(&c).cloned() else { continue };
@@ -299,9 +310,10 @@ fn answer_rotation(tx: &mut Tx<'_>, r: &CommitId) -> Result<bool> {
         return Ok(true);
     }
     if tx.core.accounts.contains_key(&p) {
-        // a fork off the line this node follows is answered by the merge that ends it, which
-        // closes all it closes: a removed node re-forking costs no listing per fork
-        if !v.on_open_line(r) {
+        // a rotation D's roster does not authorize (a removed node's fork) is answered by the
+        // rotation superseding it, which closes all it closes: a removed node re-forking costs
+        // no listing per fork
+        if v.authorized_by(r).is_none() {
             return Ok(true);
         }
         return listing(tx, p, &v, r);
@@ -321,7 +333,9 @@ fn listing(tx: &mut Tx<'_>, p: Tid, v: &super::account::AccountView, r: &CommitI
         return Ok(false);
     }
     let mut names: BTreeMap<Tid, BTreeSet<CommitId>> = BTreeMap::new();
-    for (c, m) in nameable(tx, &p, v, &v.closed_by(r), true)? {
+    // an open epoch's commits count unnamed: they are named once a rotation closes it
+    let closed: Vec<CommitId> = v.closed_by(r).into_iter().filter(|e| !v.is_open(e)).collect();
+    for (c, m) in nameable(tx, &p, v, &closed, true)? {
         for t in things_of(&m.view) {
             names.entry(t).or_default().insert(c);
         }
@@ -348,7 +362,8 @@ fn listing(tx: &mut Tx<'_>, p: Tid, v: &super::account::AccountView, r: &CommitI
 fn witness(tx: &mut Tx<'_>, p: Tid, v: &super::account::AccountView, r: &CommitId) -> Result<bool> {
     let Some(me) = tx.core.member().filter(|_| tx.core.addenda_on) else { return Ok(true) };
     let mut out: BTreeMap<Tid, BTreeSet<CommitId>> = BTreeMap::new();
-    for (c, m) in nameable(tx, &p, v, &v.closed_by(r), false)? {
+    let closed: Vec<CommitId> = v.closed_by(r).into_iter().filter(|e| !v.is_open(e)).collect();
+    for (c, m) in nameable(tx, &p, v, &closed, false)? {
         let w = &m.view;
         if w.purges || w.kind != osis_commit::Kind::Content {
             continue;
@@ -387,13 +402,104 @@ pub(crate) fn leave(tx: &mut Tx<'_>, p: Tid, d: Tid) -> Result<()> {
     crate::rotation::mark_lost_due(tx, held)
 }
 
+/// The counting removals from account `p`'s devices actor D of a node of D, with that node.
+fn removals(tx: &mut Tx<'_>, p: &Tid, d: &Tid) -> Result<Vec<(CommitId, Tid)>> {
+    let roles = osis_base::Ak::new("roles.0").map_err(|_| Error::Misuse("ak"))?;
+    let core = &*tx.core;
+    Ok(core.ix.by_aspect.get(&(*d, roles)).into_iter().flatten().filter_map(|(_, c)| {
+        let rc = core.ix.held.edge_commit(c).filter(|rc| rc.author == *p)?;
+        let o = rc.ops.iter().find(|o| o.target == *d && o.edge.is_none() && core.is_key_actor(&o.holder))?;
+        core.ix.commits.get(c).filter(|m| core.standing(c, &m.view) == osis_perm::EpochStanding::Counts).map(|_| (*c, o.holder))
+    }).collect())
+}
+
+/// The departures of this node's account `p` that rotations D's roster authorizes cover: per held
+/// counting such rotation, the counting removals from D its thing list for D names, each with
+/// the node it removes.
+#[derive(Default)]
+struct Departures {
+    named: BTreeMap<CommitId, BTreeSet<CommitId>>,
+    node: BTreeMap<CommitId, Tid>,
+    /// Removed nodes D's roster holds again.
+    back: BTreeSet<Tid>,
+}
+
+impl Departures {
+    /// Every removal some such rotation names.
+    fn all(&self) -> BTreeSet<CommitId> {
+        self.named.values().flatten().copied().collect()
+    }
+
+    /// The removals rotations on held rotation `r`'s line name; none for the first epoch.
+    fn covered(&self, v: &super::account::AccountView, r: &CommitId) -> BTreeSet<CommitId> {
+        v.line(r).into_iter().flatten().filter_map(|s| self.named.get(s)).flatten().copied().collect()
+    }
+
+    /// The nodes those removals remove that D's roster does not hold again (a re-added node's
+    /// removal ends nothing).
+    fn removed(&self, v: &super::account::AccountView, r: &CommitId) -> BTreeSet<Tid> {
+        self.covered(v, r).iter().filter_map(|c| self.node.get(c)).filter(|n| !self.back.contains(n)).copied().collect()
+    }
+}
+
+fn departures(tx: &mut Tx<'_>, p: &Tid, v: &super::account::AccountView) -> Result<Departures> {
+    let mut out = Departures::default();
+    let Some(d) = tx.core.accounts.get(p).map(|a| a.devices) else { return Ok(out) };
+    let roster: BTreeSet<Tid> = tx.core.key_holders(&d).into_iter().map(|(m, _)| m).collect();
+    for (c, n) in removals(tx, p, &d)? {
+        if roster.contains(&n) {
+            out.back.insert(n);
+        }
+        out.node.insert(c, n);
+        for (t, s) in super::lists::names_of(tx, &c)? {
+            if t == d && v.rotation_counts(&s) && v.authorized_by(&s).is_some() {
+                out.named.entry(s).or_default().insert(c);
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Whether closer `c` of held epoch `e` ends it for the cutoff (spec/permissions.md §5.5,
+/// Cutoff): `c` descends from `e`, or (`departures`, a node of the account reading D's lists)
+/// `c`'s line names the removal of a node `e`'s line names none of, so `e` may be boxed to it.
+/// A rotation beside `e` naming no one more (a concurrent rotation of the same heads, or one
+/// removing the same node) ends nothing: forks stand. Without D's lists (a witness) every closer
+/// ends it.
+fn ends(v: &super::account::AccountView, departures: Option<&Departures>, e: &CommitId, c: &CommitId) -> bool {
+    let Some(dep) = departures else { return true };
+    if *e == osis_commit::FIRST_EPOCH || v.line(c).is_some_and(|l| l.contains(e)) {
+        return true;
+    }
+    let mine = dep.removed(v, e);
+    dep.removed(v, c).iter().any(|x| !mine.contains(x))
+}
+
+/// The held rotations of this node's account `p` minted by a node D no longer holds whose
+/// epoch no counting rotation D's roster authorizes supersedes, once an authorized rotation
+/// held names that node's removal (so the removal's line is held: rejecting earlier would
+/// reject what it is signed at): a removed node's forks, each a head wherever the roster is not
+/// read until a rotation of the account supersedes it unnamed.
+fn unanswered(tx: &mut Tx<'_>, p: &Tid, v: &super::account::AccountView) -> Result<Vec<CommitId>> {
+    let Some(d) = tx.core.accounts.get(p).map(|a| a.devices) else { return Ok(Vec::new()) };
+    let named = departures(tx, p, v)?.all();
+    let removed: BTreeSet<Tid> = removals(tx, p, &d)?.into_iter().filter(|(c, _)| named.contains(c)).map(|(_, n)| n).collect();
+    Ok(v.rotation_ids().into_iter().filter(|r| v.holds(r) && v.removed_minter(r).is_some_and(|n| removed.contains(&n)) && !v.superseded_by_authorized(r)).collect())
+}
+
 /// What a node of this node's account owes its signing chain (spec/permissions.md §3, §5.5),
-/// made now: in a fork, the merge of the heads, by one node (`merger`); and the
-/// rotation a counting removal from D requires that no counting rotation on the open epoch's
-/// line that D's roster authorizes names (one made beside another rotation it did not hold, by
-/// a node that did not rotate or was removed since, or above a fork a merge rejected), naming
-/// it. Looked at when the account's commits moved (`Core::signing_due`); D's role history is
-/// its device count's.
+/// made now. Any node of the account makes it, none designated: forks stand, so a fork alone
+/// owes nothing, and two nodes' rotations made at once fork and stand. One rotation
+/// superseding every head (`rotate_in`) is owed when a removed node's fork stands unanswered
+/// (`unanswered`), a head is blocked here (its line lacks a departure an authorized rotation
+/// held names: it may be boxed to the departed node), or a counting removal from D no
+/// authorized rotation names may be named by this node by the cutoff (its own, or received
+/// before the earliest closer ending its epoch), or is named by a rotation that stands (made by
+/// a node since removed, before its removal: its word from then stands), which the rotation
+/// names. A removal named only by a rotation beside its maker's removal (a removed node's fork)
+/// falls with that fork unless the cutoff lets this node name it: a removed node removes no one
+/// for good. Looked at when the account's commits
+/// moved (`Core::signing_due`); D's role history is its device count's.
 pub(crate) fn rotations_due(tx: &mut Tx<'_>, done: &mut Done) -> Result<Option<CommitId>> {
     if !std::mem::take(&mut tx.core.signing_due) {
         return Ok(None);
@@ -404,33 +510,27 @@ pub(crate) fn rotations_due(tx: &mut Tx<'_>, done: &mut Done) -> Result<Option<C
     // a seed taken up moves what the account's epochs judge
     crate::apply::rejudged(tx, false)?;
     let Some(v) = tx.core.account_view(&p) else { return Ok(None) };
-    let roles = osis_base::Ak::new("roles.0").map_err(|_| Error::Misuse("ak"))?;
-    let removals: Vec<CommitId> = tx.core.ix.by_aspect.get(&(d, roles)).into_iter().flatten().map(|(_, c)| *c).filter(|c| {
-        let core = &*tx.core;
-        core.ix.held.edge_commit(c).is_some_and(|rc| rc.author == p && rc.ops.iter().any(|o| o.target == d && o.edge.is_none() && core.is_key_actor(&o.holder)))
-            && core.ix.commits.get(c).is_some_and(|m| core.standing(c, &m.view) == osis_perm::EpochStanding::Counts)
-    }).collect();
+    let dep = departures(tx, &p, &v)?;
+    let named = dep.all();
     let mut unnamed = Vec::new();
-    for c in removals {
-        // an account epoch covers a removal only by an authorized rotation on its line naming it
-        // (`rotation::uncovered`): one named only off the open line (a merge rejected the fork
-        // above it) or by a minter removed since is named again
-        if !super::lists::names_of(tx, &c)?.iter().any(|(t, s)| *t == d && v.rotation_counts(s) && v.authorized_by(s).is_some() && v.on_open_line(s)) {
+    for (c, _) in removals(tx, &p, &d)? {
+        if named.contains(&c) {
+            continue;
+        }
+        let standing = super::lists::names_of(tx, &c)?.iter().any(|(t, s)| *t == d && v.rotation_counts(s) && v.stands(s));
+        let Some(e) = tx.core.ix.commits.get(&c).and_then(|m| m.view.epoch) else { continue };
+        if standing || nameable(tx, &p, &v, &[e], true)?.iter().any(|x| x.0 == c) {
             unnamed.push(c);
         }
     }
-    let merging = v.heads().len() > 1;
-    if merging && !merger(tx, &v) || !merging && unnamed.is_empty() {
+    let blocked = v.heads().iter().any(|h| {
+        let line = dep.covered(&v, h);
+        named.iter().any(|c| !line.contains(c))
+    });
+    if unnamed.is_empty() && !blocked && unanswered(tx, &p, &v)?.is_empty() {
         return Ok(None);
     }
     rotate_in(tx, p, &unnamed, done)
-}
-
-/// Whether this node merges the heads (one merger, so the merges do not fork again): the node
-/// whose rotation is the lowest head D's roster authorizes (`AccountView::authorized_by`, the
-/// rule this node's side follows too).
-fn merger(tx: &Tx<'_>, v: &super::account::AccountView) -> bool {
-    v.heads().iter().find_map(|h| v.authorized_by(h)) == Some(tx.core.id.tid())
 }
 
 impl Engine {
