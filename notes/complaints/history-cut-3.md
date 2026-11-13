@@ -5,3 +5,4 @@
 - `run.sh` still makes its metadir with `mktemp -d` (tmpfs); set `TMPDIR` to a scratch dir to keep TLC state off /tmp.
 - Each `tools/heavy` call waited 400-460 s for the lock behind other runs; the instances themselves took 1-200 s.
 - The brief asked for `GoneFresh` to "become required", but it already was, and its old meaning (a removed member's new node opens nothing from before its removal) is what the decision gives up; it was redefined rather than kept.
+- Review: a flaky store test merged on main (1 in 20) failed this TLA-only branch's gate; the gate's rebuild over main's new store commits cost 247 s of a 447 s gate.
