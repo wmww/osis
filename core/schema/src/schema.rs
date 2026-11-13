@@ -488,7 +488,7 @@ fn named_refs(t: &Type, f: &mut dyn FnMut(&str, &[Type])) {
 
 /// Strongly connected components (iterative Tarjan): component number per node. A node alone
 /// without a self-edge gets its own component like any other; callers compare components.
-fn sccs<'a>(edges: &BTreeMap<&'a str, Vec<&'a str>>) -> BTreeMap<&'a str, usize> {
+pub(crate) fn sccs<'a>(edges: &BTreeMap<&'a str, Vec<&'a str>>) -> BTreeMap<&'a str, usize> {
     let (mut index, mut low, mut comp) = (BTreeMap::new(), BTreeMap::<&str, usize>::new(), BTreeMap::new());
     let (mut stack, mut on) = (Vec::new(), BTreeSet::new());
     let (mut counter, mut ncomp) = (0usize, 0usize);

@@ -11,7 +11,7 @@
 //! are named after their position (`NoteTyping`, `BoxSealed`).
 
 use crate::error::Error;
-use crate::schema::Schema;
+use crate::schema::{Schema, sccs};
 use crate::types::Type;
 use osis_base::Ak;
 use std::collections::{BTreeMap, BTreeSet};
@@ -210,40 +210,25 @@ fn params_in(t: &Type) -> Vec<String> {
 
 /// Named types that reach themselves outside collections (they need a `Box`).
 fn recursive_types(s: &Schema) -> BTreeSet<String> {
-    fn refs(t: &Type, out: &mut BTreeSet<String>) {
+    fn refs<'a>(t: &'a Type, out: &mut Vec<&'a str>) {
         match t {
             Type::List(_) | Type::Set(_) | Type::Map(..) => return, // collections break the size cycle
-            Type::Named(n, _) => {
-                out.insert(n.clone());
-            }
+            Type::Named(n, _) => out.push(n),
             _ => {}
         }
         t.children().into_iter().for_each(|c| refs(c, out));
     }
-    let direct: BTreeMap<&String, BTreeSet<String>> = s
+    let edges: BTreeMap<&str, Vec<&str>> = s
         .types
         .iter()
         .map(|(n, d)| {
-            let mut out = BTreeSet::new();
+            let mut out = Vec::new();
             refs(&d.body, &mut out);
-            (n, out)
+            (n.as_str(), out)
         })
         .collect();
-    let mut rec = BTreeSet::new();
-    for start in s.types.keys() {
-        let mut stack: Vec<String> = direct.get(start).map(|d| d.iter().cloned().collect()).unwrap_or_default();
-        let mut seen = BTreeSet::new();
-        while let Some(n) = stack.pop() {
-            if &n == start {
-                rec.insert(start.clone());
-                break;
-            }
-            if seen.insert(n.clone()) {
-                stack.extend(direct.get(&n).into_iter().flatten().cloned());
-            }
-        }
-    }
-    rec
+    let comp = sccs(&edges);
+    edges.iter().filter(|(n, rs)| rs.iter().any(|r| comp.get(r) == comp.get(*n))).map(|(n, _)| n.to_string()).collect()
 }
 
 fn camel(s: &str) -> String {
