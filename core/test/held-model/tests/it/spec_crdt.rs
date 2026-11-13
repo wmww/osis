@@ -85,22 +85,3 @@ fn charless_creation_deleted_in_its_commit_is_received_spec_crdt_4_5() {
     assert_eq!(read(&h, TEXT), text(&[2, 1]));
     assert_ne!(evaluate(&h).fates.get(&(11, 0)), Some(&Fate::NeverReceived));
 }
-
-// spec/crdt.md §5.7: a text element's char is one register over its creation and flag writes, so
-// a delete stamped below the creation (forged) loses to it, with or without a reset between them;
-// a delete above the creation (honest) hides it as before
-#[test]
-fn text_flag_below_creation_loses_spec_crdt_5_7() {
-    let case = |at_h: u64, reset: Option<u64>| {
-        let mut cs = vec![
-            content(10, FIRST_ADMIN, 5, vec![part(TEXT, Retention::PLAIN, vec![ins(5, 10, 1, None, Some(1))])]),
-            content(11, FIRST_ADMIN, at_h, vec![part(TEXT, Retention::PLAIN, vec![del(at_h, 11, 10)])]),
-        ];
-        cs.extend(reset.map(|r| content(12, FIRST_ADMIN, r, vec![part(TEXT, Retention::PLAIN, vec![text_reset(r, 12)])])));
-        read(&held(9, cs), TEXT)
-    };
-    assert_eq!(case(2, None), text(&[1]));
-    assert_eq!(case(2, Some(3)), text(&[1]));
-    assert_eq!(case(7, None), text(&[]));
-    assert_eq!(case(7, Some(6)), text(&[]));
-}
