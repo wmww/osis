@@ -62,6 +62,13 @@ instances=(
   "cut rotation Cut X_cut_nocarry.cfg fail"      # negative control: carry rule off
   "cut rotation Cut X_cut_nofloor.cfg fail"      # negative control: boxing rule off
   "cut rotation Cut X_names_noreplace.cfg fail"  # negative control: no re-placing of role commits
+  "cut rotation Cut X_host.cfg pass"             # a hostile history-less writer rotating with any floor or listing
+  "cut rotation Cut X_gone.cfg pass"
+  "cut rotation Cut X_host_nomaker.cfg fail"     # negative control: the carry rule blind to e's maker
+  "cut rotation Cut X_acc_nogfloor.cfg fail"     # negative control: a history-less admin grants history
+  "cut rotation Cut X_cap_nocap.cfg fail"        # negative control: a floor above n
+  "cut rotation Cut X_host2_nolist.cfg fail"     # negative control: floors read as written
+  "cut rotation Cut X_gone_keep.cfg fail"        # negative control: a departed holder's boxes left where nothing is carried
   "finalize rotation Finalize F_named_bogus.cfg pass" # notes/permissions.md (Keys)
   "finalize rotation Finalize F_old_seed3.cfg fail"   # negative control: a name met by its commit alone
   "cover rotation Cover C_drop.cfg pass"         # notes/crypto.md (The pin)
