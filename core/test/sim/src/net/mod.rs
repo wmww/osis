@@ -780,6 +780,9 @@ impl NetSim {
     fn host_feed(&mut self, s: usize, ev: Event) -> Res<()> {
         let now = self.now();
         let Some(acts) = self.hosts.get_mut(s).filter(|h| h.up).and_then(|h| h.sync.as_mut()).map(|sy| sy.handle(ev)) else { return Ok(()) };
+        if self.host_crashed_mid_write(s)? {
+            return Ok(());
+        }
         for a in acts {
             match a {
                 Action::Hub { conn, down } => {
@@ -1296,6 +1299,12 @@ impl NetSim {
                 HubOutput::Diagnostic(d) => self.note(format!("node {n} hub diagnostic: {}", d.chars().take(160).collect::<String>())),
             }
         }
+        // its hub shares the node's disk: a write there that crashed takes the node down
+        if self.nodes.get(n).is_some_and(|x| x.up && x.faults.crashed()) {
+            self.report.crashes = self.report.crashes.saturating_add(1);
+            self.note(format!("node {n} crashed mid-write"));
+            return self.node_down(n);
+        }
         if ups.is_empty() && !moved {
             return Ok(());
         }
@@ -1304,10 +1313,8 @@ impl NetSim {
 
     fn hub_out(&mut self, s: usize, out: Vec<HubOutput>) -> Res<()> {
         let ups = self.hub_outputs(s, out);
-        if self.hosts.get(s).is_some_and(|x| x.up && x.faults.crashed()) {
-            self.report.host_crashes = self.report.host_crashes.saturating_add(1);
-            self.note(format!("host {s} crashed mid-write"));
-            return self.host_down(s);
+        if self.host_crashed_mid_write(s)? {
+            return Ok(());
         }
         // node sync above the hub, by function call as the node's driver does
         match ups {
@@ -1316,7 +1323,19 @@ impl NetSim {
         }
     }
 
-    /// Carries out a hub's outputs (a crash mid-write is `hub_out`'s to act on); what goes up to
+    /// After any call into host `s` (its hub or its node sync): a write that crashed its store
+    /// takes it down, as power loss would, before anything else of it runs.
+    fn host_crashed_mid_write(&mut self, s: usize) -> Res<bool> {
+        if !self.hosts.get(s).is_some_and(|x| x.up && x.faults.crashed()) {
+            return Ok(false);
+        }
+        self.report.host_crashes = self.report.host_crashes.saturating_add(1);
+        self.note(format!("host {s} crashed mid-write"));
+        self.host_down(s)?;
+        Ok(true)
+    }
+
+    /// Carries out a hub's outputs (a crash mid-write is `host_crashed_mid_write`'s to act on); what goes up to
     /// node sync, if anything.
     fn hub_outputs(&mut self, s: usize, out: Vec<HubOutput>) -> Option<Vec<(u64, osis_host::Up)>> {
         let mut ups = Vec::new();

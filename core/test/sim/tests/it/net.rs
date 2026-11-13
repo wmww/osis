@@ -105,3 +105,58 @@ fn commit_across_labels_applies_from_one_label_across_restart_spec_commits_4() {
     assert_eq!(e.get_typed(&i1, &REG).unwrap(), Some(word.clone()));
     s.finish().unwrap();
 }
+
+// harness (power loss): a host whose store crashed mid-write is down from that call on, whichever
+// part of it made the write (its hub, or its node sync storing what it pulled from a node's
+// stream); never left up on a dead store (its connections stall) nor revived in place by
+// quiescence. The writer comes back from a partition with a commit only it holds; each round the
+// host crashes at the next of the writes that follow, until they run out.
+#[test]
+fn host_store_crash_takes_host_down() {
+    use osis_base::{Role, Value};
+    use osis_node::Mutation;
+    use osis_sim::dice::Dice;
+    use osis_sim::net::Party;
+    use osis_sim::net::scenarios::{clock, persons, shared_group, sim};
+    use osis_sim::workload::REG;
+    use osis_store::Fault;
+
+    let mut d = Dice::new(0);
+    let mut s = sim("host_store_crash", 0, Default::default());
+    let (s0, s1) = (s.add_host().unwrap(), s.add_host().unwrap());
+    let a = s.add_node(&[s0, s1], clock(&mut d)).unwrap();
+    let w = s.add_node(&[s0], clock(&mut d)).unwrap();
+    let c = s.add_node(&[s1], clock(&mut d)).unwrap();
+    s.sever(Party::N(w), Party::S(s1));
+    s.sever(Party::N(c), Party::S(s0));
+    let [pa, pw, pc] = persons(&mut s, [a, w, c], [s0, s0, s1]).unwrap();
+    let g = shared_group(&mut s, a, pa, &[s0, s1], &[(pw, Role::Write), (pc, Role::Read)]).unwrap();
+    let i = s.item(w, g).unwrap();
+    s.quiet(40).unwrap();
+    let mut at = 0;
+    loop {
+        s.partition(Party::N(w), Party::S(s0));
+        let mut m = Mutation::new();
+        m.set(i, &REG, &Value::Str(format!("{at}"))).unwrap();
+        s.commit(w, m).unwrap();
+        s.settle().unwrap();
+        s.hosts[s0].faults.at(at, Fault::Crash);
+        s.heal(Party::N(w), Party::S(s0));
+        for _ in 0..3 {
+            s.advance(61_000).unwrap();
+            s.settle().unwrap();
+            let h = &s.hosts[s0];
+            assert!(!(h.up && h.faults.crashed()), "crash at write {at}: host left up on a dead store");
+        }
+        if s.hosts[s0].up {
+            break;
+        }
+        s.restart_host(s0).unwrap();
+        at += 1;
+        assert!(at < 32, "a host write per round, at least");
+    }
+    assert!(at > 0, "no planned crash reached");
+    s.hosts[s0].faults.revive();
+    s.run_until_quiescent(60).unwrap();
+    s.finish().unwrap();
+}
