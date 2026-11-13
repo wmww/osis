@@ -582,6 +582,9 @@ impl Groups {
             }
         }
         self.moved.extend(moved);
+        // every path that edits the index (a refresh, a whole set, a rolled-back step)
+        #[cfg(debug_assertions)]
+        crate::costs::paused(|| self.check_around(&g));
     }
 
     /// Edits `g`'s listing (`refresh`: per tid), logged.
@@ -755,6 +758,8 @@ mod tests {
         let mut g = Groups::default();
         let mut defs: BTreeMap<Tid, Def> = BTreeMap::new();
         let n = |rng: &mut SeededRng| (rng.next_u32() % 12) as u8;
+        // an item: a plain thing, or a quarter of the time a group (its contents stay out)
+        let item = |rng: &mut SeededRng| t(n(rng) + if rng.next_u32().is_multiple_of(4) { 0 } else { 20 });
         for step in 0..600 {
             let (was, listed) = (naive(&defs, &all), listings(&defs, &all));
             // closures asked for before (kept), some still held
@@ -770,13 +775,13 @@ mod tests {
                     g.set(k, None);
                 }
                 2..=6 => {
-                    let items: BTreeSet<Tid> = (0..n(&mut rng) % 4).map(|_| t(n(&mut rng) + 20)).collect();
+                    let items: BTreeSet<Tid> = (0..n(&mut rng) % 4).map(|_| item(&mut rng)).collect();
                     let subs: BTreeSet<Tid> = (0..n(&mut rng) % 3).map(|_| t(n(&mut rng))).collect();
                     defs.insert(k, (items.clone(), subs.clone()));
                     g.set(k, Some((items, subs)));
                 }
                 _ if defs.contains_key(&k) => {
-                    let (f, x) = if n(&mut rng) % 2 == 0 { (ITEMS, t(n(&mut rng) + 20)) } else { (SUBGROUPS, t(n(&mut rng))) };
+                    let (f, x) = if n(&mut rng) % 2 == 0 { (ITEMS, item(&mut rng)) } else { (SUBGROUPS, t(n(&mut rng))) };
                     let on = n(&mut rng) % 2 == 0;
                     let d = defs.get_mut(&k).unwrap();
                     let s = if f == ITEMS { &mut d.0 } else { &mut d.1 };
