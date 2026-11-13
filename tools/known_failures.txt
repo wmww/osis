@@ -4,6 +4,7 @@
 # unit of NAME (each seed line of its panic, or its whole panic) must match
 # (tools/gate_failures.py).
 order::held_set_decides_plain OSIS_ORDER_START=539131766525 issues/order-required-floor-plain.md held_set_decides: \w+ seeds ran, but not
+order::held_set_decides_plain OSIS_ORDER_START=632680797673 issues/order-required-floor-plain.md held_set_decides: none of \d+ Undo steps made a commit
 keep::any_order_until_keeps_no_more_large OSIS_KEEP_START=636109736897 issues/keep-until-order-seed.md kept only by order
 rotation::tests_property::rotation_holds_large_spec_crypto_4 OSIS_ROTATION_START=1044279127 issues/rotation-holder-lacks-box-seed.md with key access lacks a box
 ephemeral::random_window_one_capped_host_large OSIS_EPH_START=1811714465 issues/capped-host-stale-ephemeral-entry.md the full host keeps entries .* no node holds
@@ -15,3 +16,4 @@ sim-sweep:evil_host_drops 0/138 issues/evil-host-drops-s0-churn.md not quiescent
 sim-sweep:folders 636429852973/636429852979 issues/folders-sim-message-storm.md message storm: \d+ deliveries without the queue emptying
 sim-sweep:ephemeral 0/43 issues/ephemeral-sim-reader-holds-unlisted-commits.md ephemeral divergence on
 ephemeral::ephemeral_reverts_with_restarts_alike_large_spec_crdt_4_6 OSIS_EPH_START=704201441278 issues/ephemeral-restarts-reader-loses-value-seed.md failed: seed \d+: Tid\(\w+\)$
+sim-sweep:work_sets 43254590189/43254590194 issues/work-sets-delete-storm-194.md message storm: 5000 deliveries
