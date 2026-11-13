@@ -2,7 +2,7 @@
 > Summary: Every grant carries the history box, which opens every earlier epoch, so a new holder reads all retained content. Tess wants adding members without revealing history as a core option, not a chain of chats (notes/chat.md Left out, segments). Also useful for documents and folders, which cannot be segmented. Design below is model-checked (core/test/tla/rotation/Cut.tla): a cut rotation, a floor per keyset, and a carry rule on history entries that also judges the epoch's maker, checked against a hostile writer granted without history.
 > Priority: normal
 > Tags: security, spec, permissions, keys, crypto, engine
-> Queued: after net step 8 (or beside the late net steps when agents are free); design checked in the model, open questions below
+> Queued: after net step 8 (or beside the late net steps when agents are free); design checked in the model; Tess's two answers below need one model update before the build
 
 History is a separate entry any holder of the old secret may add to a current epoch's history (spec/crypto.md §4, History add), and every rotation, grant and re-seal writes what its writer holds into the shared history box: without a rule change, any co-holder re-adds pre-grant secrets to the newcomer's epoch. A first sync (spec/sync.md §6) fetches what does not open last, after everything else; a holder with no old secrets would fetch and hold such bodies for nothing, so this option should stop that: the same stop a node-local cap would be (issues/partial-history-fetch.md).
 
@@ -82,7 +82,7 @@ One actor, one key role. Admins a (the merger) and b rotate, grant, remove, re-s
 - **A hostile member re-added without history**: the model's hostile m rotates only before its removal. An epoch made knowing the removal is carried only by a node holding the removal, where m's later writes count only with its re-add, which gives m its floor.
 - Withdraw, void names, labels and steps (open question 3).
 
-### Open questions
-1. **A re-added member's new device** (`X_readd_fresh` fails `ReaddFresh`): a member removed and re-added without history keeps the old messages its existing devices already hold, but a device it adds later sees none of them. Fix if wanted: the re-add also boxes the member at the epochs its removal's rotation listed (one box per such epoch). Tess: should a new device see what the member could read before its removal, or only what its devices already hold?
-2. **Two history-less adds at once** (`X_two_strict`): when two admins each add someone without history at the same moment, each newcomer can read what was written around the other's add (never anything from before its own). Taken as the simple rule unless Tess objects.
+### Decided (Tess)
+1. **New devices see what old devices display:** a member's new device may sync anything its account's existing devices display. So a re-add without history also boxes the member at the epochs its removal's rotation listed (one box per such epoch), and the departed-holders box removal (Departed holders' boxes, above) goes: a removed member's later device opens what its earlier devices could. Model to update before the build: `ReaddFresh` and `GoneFresh` become required properties, `X_readd_fresh` a passing instance, the box-removal clause and its control dropped, `X_rmrace` rechecked without it.
+2. **Two history-less adds at once:** each newcomer can read what was written around the other's add, never anything from before its own (accepted).
 3. **Labels and steps** (build): spec/sync.md §2 Role keys in use assumes every holder holds older secrets by history; a history-less holder opens from its cut's step on, and a walk to an older step must not strand it. Not modelled.
