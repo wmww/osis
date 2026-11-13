@@ -628,7 +628,7 @@ pub(crate) fn retain_now(core: &Core, tid: &Tid) -> bool {
 /// alone: no header is decoded.
 pub(crate) fn settings(core: &Core, tid: &Tid) -> Arc<Settings> {
     let Some(all) = core.ix.retention.get(tid) else { return Arc::default() };
-    let valid = |p: &Point| core.ix.commits.get(&p.commit).is_some_and(|m| m.view.aspects.iter().position(|a| a.tid == *tid && a.ak.as_str() == osis_commit::retention::RETENTION).is_some_and(|ai| m.valid_at(ai)));
+    let valid = |p: &Point| core.ix.commits.get(&p.commit).is_some_and(|m| m.view.aspect(tid, osis_commit::retention::RETENTION).is_some_and(|ai| m.valid_at(ai)));
     Arc::new(all.iter().filter(|x| valid(&x.0)).cloned().collect())
 }
 
@@ -749,7 +749,7 @@ impl<'a> Judge<'a> {
         let mut valid = Settings::new();
         for x in core.ix.retention.get(t).into_iter().flatten() {
             let Some(m) = core.ix.commits.get(&x.0.commit) else { continue };
-            let ai = m.view.aspects.iter().position(|a| a.tid == *t && a.ak.as_str() == osis_commit::retention::RETENTION);
+            let ai = m.view.aspect(t, osis_commit::retention::RETENTION);
             if ai.is_some_and(|ai| self.part(&m.header, &x.0.commit, ai)) {
                 debug_assert!(core.ix.held.ever_admins(t).contains(&x.0.node), "a valid setting's author is a possible admin");
                 valid.push(x.clone());
@@ -947,7 +947,7 @@ impl osis_keys::possession::View for Possession<'_> {
 /// changes) and of the held valid keysets of the holders it boxes or proves and of `a`'s holders
 /// (`stale_commits` when they change, `apply::keys::keyset_changed`), read before its key.
 fn possessed(core: &Core, tl: &osis_perm::Timeline, h: &Header, id: &CommitId, ai: usize, a: &osis_commit::AspectEntry) -> bool {
-    let ki = h.aspects.iter().position(|b| b.tid == a.tid && b.ak.as_str() == "keys.0");
+    let ki = h.aspect_index(&a.tid, "keys.0");
     let keys = ki.map(|ki| (ki, core.ix.shown.get(&(*id, ki))));
     let own = || core.ix.rotation_role.get(&(*id, ai)).copied().unwrap_or(Role::Write);
     // a rotation needs the right to rotate its highest rotated role (at least write)

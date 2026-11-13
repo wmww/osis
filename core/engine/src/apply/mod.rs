@@ -466,7 +466,7 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
     // so later (its bad parts dropped, its pages resolving its header) goes then (`ingest_class`)
     let mut unjudged: BTreeMap<usize, Reason> = BTreeMap::new();
     for (ai, a) in h.aspects.iter().enumerate() {
-        if skip.contains(&ai) || !blob.parts.iter().any(|p| p.ai == ai) {
+        if skip.contains(&ai) || blob.part(ai).is_none() {
             continue;
         }
         if let Some(wait) = thing_wait(tx.core, &h, a, &record, &chain_rec) {
@@ -1323,7 +1323,7 @@ impl Engine {
             let core = &*tx.core;
             let record = |t: &Tid| core.created(t).cloned();
             let chain_rec = |t: &Tid, core: &crate::engine::Core| core.created(t).cloned();
-            Ok(parts.iter().filter(|ai| !b.parts.iter().any(|p| p.ai == **ai)).filter_map(|ai| thing_wait(core, &b.header, b.header.aspects.get(*ai)?, &record, &chain_rec)).filter_map(|r| awaited(&r)).collect())
+            Ok(parts.iter().filter(|ai| b.part(**ai).is_none()).filter_map(|ai| thing_wait(core, &b.header, b.header.aspects.get(*ai)?, &record, &chain_rec)).filter_map(|r| awaited(&r)).collect())
         })
     }
 
@@ -1903,7 +1903,7 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
             }
             let h = Arc::new(blob.header.clone());
             let valid = vec![true; h.aspects.len()];
-            let missing = (0..h.aspects.len()).filter(|ai| !blob.parts.iter().any(|p| p.ai == *ai) && !head.dropped.contains_key(ai) && !head.stripped.contains(ai)).collect();
+            let missing = (0..h.aspects.len()).filter(|ai| blob.part(*ai).is_none() && !head.dropped.contains_key(ai) && !head.stripped.contains(ai)).collect();
             let m = Meta::new(h.clone(), valid, head, missing);
             // what a dropped part judged, kept in its record (`Dropped::role`)
             for (ai, d) in m.dropped_parts() {
@@ -1973,7 +1973,7 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
         for blob in bodies {
             let id = blob.id();
             let b = blob;
-            let parts = examine_stored(tx, &b, &id)?;
+            let parts = examine_stored(tx, &b.header, &b.parts, &id)?;
             let read = PartsRead::of(&b.header, &parts);
             atomic::note_rotation_sigs(tx.core, &b.header, &id, &b.sigs);
             validity::note_required(tx.core, &b.header, &id, &read);
@@ -2107,33 +2107,32 @@ pub(crate) fn checked(bytes: &[u8]) -> osis_crdt::Checked<'_> {
 
 /// Decodes the parts of a stored commit record (or of one about to be stored: a blob `examine`
 /// accepted) whole, decode-only (`checked`, `osis_commit::read_part_whole`).
-fn examine_stored(tx: &mut Tx<'_>, blob: &CommitBlob, id: &CommitId) -> Result<Vec<(usize, Decoded)>> {
-    let h = blob.header.clone();
+fn examine_stored<'p>(tx: &mut Tx<'_>, h: &Header, parts: impl IntoIterator<Item = &'p osis_commit::Part>, id: &CommitId) -> Result<Vec<(usize, Decoded)>> {
     let mut out = Vec::new();
     let mut interner = Interner::new();
-    for p in &blob.parts {
+    for p in parts {
         let a = h.aspects.get(p.ai).ok_or(Error::Corrupt("part index"))?;
         let dedup = tx.core.dedup(&a.tid).ok_or(Error::Corrupt("dedup"))?;
         let mut blobs = TxBlobs::new(&mut tx.blobs, tx.txn.is_memory());
         let mut paged = BlobReader::new(&dedup, &mut blobs);
         let reader: &mut dyn osis_crdt::PageSource = &mut paged;
-        out.push((p.ai, osis_commit::read_part_whole(&h, id, p.ai, checked(&p.delta), &mut interner, Some(reader)).map_err(|_| Error::Corrupt("stored delta"))?));
+        out.push((p.ai, osis_commit::read_part_whole(h, id, p.ai, checked(&p.delta), &mut interner, Some(reader)).map_err(|_| Error::Corrupt("stored delta"))?));
     }
     Ok(out)
 }
 
 /// What perm's adaptation reads of a held role commit: its held `roles.0` parts.
 pub(crate) fn edge_parts(tx: &mut Tx<'_>, id: &CommitId) -> Result<validity::EdgeParts> {
+    // the header decoded only for a held record
     let Some(h) = tx.core.ix.commits.get(id).map(|m| m.header.clone()) else { return Ok(validity::EdgeParts::default()) };
     let Some(blob) = tx.get_commit(id)? else { return Ok(validity::EdgeParts::default()) };
-    edge_parts_of(tx, id, &h, Arc::unwrap_or_clone(blob))
+    edge_parts_of(tx, id, &h, &blob)
 }
 
 /// `edge_parts` of a commit record's blob (`h`: its resolved header).
-pub(crate) fn edge_parts_of(tx: &mut Tx<'_>, id: &CommitId, h: &Header, mut blob: CommitBlob) -> Result<validity::EdgeParts> {
-    blob.header = h.clone();
-    blob.parts.retain(|p| h.aspects.get(p.ai).is_some_and(|a| validity::edge_ak(a.ak.as_str())));
-    Ok(validity::EdgeParts::of(h, &examine_stored(tx, &blob, id)?))
+pub(crate) fn edge_parts_of(tx: &mut Tx<'_>, id: &CommitId, h: &Header, blob: &CommitBlob) -> Result<validity::EdgeParts> {
+    let edges = blob.parts.iter().filter(|p| h.aspects.get(p.ai).is_some_and(|a| validity::edge_ak(a.ak.as_str())));
+    Ok(validity::EdgeParts::of(h, &examine_stored(tx, h, edges, id)?))
 }
 
 /// The decoded part of a held commit on aspect `ai`.
@@ -2158,16 +2157,15 @@ pub(crate) fn each_held_piece(tx: &mut Tx<'_>, id: &CommitId, ai: usize, f: &mut
 /// `each_held_piece` handing over the pieces themselves, only the pages `want` names (a
 /// stripped part's leftover is one skeleton).
 fn each_held_page(tx: &mut Tx<'_>, id: &CommitId, ai: usize, want: Option<osis_crdt::Want<'_>>, f: &mut dyn FnMut(&mut Tx<'_>, osis_crdt::Piece) -> Result<()>) -> Result<Option<Option<crate::engine::Gives>>> {
-    let Some(m) = tx.core.ix.commits.get(id).cloned() else { return Ok(None) };
-    let h = m.header.clone();
+    let Some((h, stripped)) = tx.core.ix.commits.get(id).map(|m| (m.header.clone(), m.stripped(ai))) else { return Ok(None) };
     let Some(a) = h.aspects.get(ai) else { return Ok(None) };
-    if m.stripped(ai) {
+    if stripped {
         let Some(l) = crate::retention::leftover::get(tx, &a.tid, &a.ak, id, ai)? else { return Err(Error::Corrupt("leftover missing")) };
         f(tx, osis_crdt::Piece::Skeleton(l.fragment))?;
         return Ok(Some(l.gives));
     }
     let Some(blob) = tx.get_commit(id)? else { return Ok(None) };
-    let Some(p) = blob.parts.iter().find(|p| p.ai == ai) else { return Ok(None) };
+    let Some(p) = blob.part(ai) else { return Ok(None) };
     let dedup = tx.core.dedup(&a.tid).ok_or(Error::Corrupt("dedup"))?;
     // counted with its pages (`atomic::SharedPages`)
     crate::costs::count("stream: bytes", p.delta.len() as u64);
@@ -2181,7 +2179,7 @@ fn each_held_page(tx: &mut Tx<'_>, id: &CommitId, ai: usize, want: Option<osis_c
 pub(crate) fn held_part_at(tx: &mut Tx<'_>, id: &CommitId, ai: usize, at: &osis_crdt::Fragment) -> Result<(osis_crdt::Fragment, Option<Option<crate::engine::Gives>>)> {
     let stored = match tx.core.ix.commits.get(id).is_some_and(|m| m.stripped(ai)) {
         true => None,
-        false => tx.get_commit(id)?.and_then(|b| b.parts.iter().find(|p| p.ai == ai).cloned()),
+        false => tx.get_commit(id)?.and_then(|b| b.part(ai).cloned()),
     };
     let kept = stored.as_ref().and_then(|p| tx.core.decoded.page_index(id, p));
     let wanted = kept.as_ref().map(|k| k.wanted(at));
@@ -2207,23 +2205,22 @@ pub(crate) fn stores_part(tx: &mut Tx<'_>, id: &CommitId, ai: usize) -> Result<b
     if tx.core.ix.commits.get(id).is_some_and(|m| m.stripped(ai)) {
         return Ok(true);
     }
-    Ok(tx.get_commit(id)?.is_some_and(|b| b.parts.iter().any(|p| p.ai == ai)))
+    Ok(tx.get_commit(id)?.is_some_and(|b| b.part(ai).is_some()))
 }
 
 /// Decoded parts of a held commit on the aspects `keep` selects, with their aspect indexes (a
 /// stripped part as its leftover).
 pub(crate) fn held_parts_at(tx: &mut Tx<'_>, id: &CommitId, keep: &dyn Fn(usize) -> bool) -> Result<Vec<(usize, Decoded)>> {
     let Some(stored) = tx.get_commit(id)? else { return Ok(Vec::new()) };
-    let Some(m) = tx.core.ix.commits.get(id).cloned() else { return Ok(Vec::new()) };
+    let Some((header, stripped)) = tx.core.ix.commits.get(id).map(|m| (m.header.clone(), m.stripped_parts().filter(|ai| keep(*ai)).collect::<Vec<_>>())) else { return Ok(Vec::new()) };
     // each stored part decoded once per write of the record (`Core::decoded`)
     let mut out = Vec::new();
     for p in stored.parts.iter().filter(|p| keep(p.ai)) {
         let d = match tx.core.decoded.part(id, p) {
             Some(d) => d,
             None => {
-                let one = CommitBlob { header: (*m.header).clone(), sigs: stored.sigs.clone(), parts: vec![p.clone()] };
                 drop(crate::costs::span("part decode"));
-                let d = Arc::new(examine_stored(tx, &one, id)?.pop().map(|x| x.1).ok_or(Error::Corrupt("stored delta"))?);
+                let d = Arc::new(examine_stored(tx, &header, [p], id)?.pop().map(|x| x.1).ok_or(Error::Corrupt("stored delta"))?);
                 tx.core.decoded.keep_part(*id, p, d.clone());
                 d
             }
@@ -2232,8 +2229,8 @@ pub(crate) fn held_parts_at(tx: &mut Tx<'_>, id: &CommitId, keep: &dyn Fn(usize)
     }
     // cost tests: bodies read, decoded or kept
     crate::costs::count("part read", out.len() as u64);
-    for ai in m.stripped_parts().filter(|ai| keep(*ai)).collect::<Vec<_>>() {
-        let Some(a) = m.header.aspects.get(ai) else { continue };
+    for ai in stripped {
+        let Some(a) = header.aspects.get(ai) else { continue };
         let Some(l) = crate::retention::leftover::get(tx, &a.tid, &a.ak, id, ai)? else { return Err(Error::Corrupt("leftover missing")) };
         let d = leftover_part(l);
         let at = out.partition_point(|x| x.0 < ai);

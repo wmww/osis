@@ -246,10 +246,10 @@ impl SyncEngine {
     /// commit forgotten under the fallen snapshot left no tombstone: it reads as never received,
     /// and a holder logging it as must-hold brings it.
     fn relist_fallen(&mut self, t: &Tid, ak: &osis_base::Ak, out: &mut Vec<Action>) -> Result<()> {
-        let on = |f: &Forgotten| matches!(f.why, MemoryDrop::Covered { .. } | MemoryDrop::Superseded { .. }) && f.header.aspects.iter().any(|a| a.tid == *t && a.ak == *ak);
+        let on = |f: &Forgotten| matches!(f.why, MemoryDrop::Covered { .. } | MemoryDrop::Superseded { .. }) && f.header.aspect_index(t, ak.as_str()).is_some();
         let memory: Vec<CommitId> = self.memory.forgotten.iter().filter(|(c, f)| on(f) && !self.engine.holds_memory(c)).map(|(c, _)| *c).collect();
         let ix = &self.engine.core.ix;
-        let missing = |c: &CommitId| ix.commits.get(c).is_some_and(|m| !m.view.memory && m.view.aspects.iter().position(|a| a.tid == *t && a.ak == *ak).is_some_and(|ai| m.missing(ai)));
+        let missing = |c: &CommitId| ix.commits.get(c).is_some_and(|m| !m.view.memory && m.view.aspect(t, ak.as_str()).is_some_and(|ai| m.missing(ai)));
         let durable: BTreeSet<CommitId> = ix.by_aspect.get(&(*t, ak.clone())).into_iter().flatten().map(|(_, c)| *c).filter(|c| missing(c)).collect();
         // deleted here as covered: those deletions no longer stand (a role change, rare: the
         // tombstones, kept their lifetime, are scanned)

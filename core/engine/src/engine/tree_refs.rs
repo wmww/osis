@@ -36,8 +36,7 @@ fn trees_of(tx: &mut Tx<'_>, t: &Tid, s: &Source) -> Result<Trees> {
             }
         }
         Source::Body(c) => {
-            let Some(m) = tx.core.ix.commits.get(c).cloned() else { return Ok(Trees::default()) };
-            let on: Vec<usize> = m.header.aspects.iter().enumerate().filter(|(ai, a)| a.tid == *t && m.holds(*ai)).map(|(ai, _)| ai).collect();
+            let Some(on) = tx.core.ix.commits.get(c).map(|m| m.view.aspects_on(t).filter(|ai| m.holds(*ai)).collect::<Vec<usize>>()) else { return Ok(Trees::default()) };
             crate::costs::count("tree refs: parts read", on.len() as u64);
             for ai in on {
                 roots.extend(crate::retention::freed::part_links(tx, c, ai)?);

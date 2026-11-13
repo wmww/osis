@@ -220,7 +220,7 @@ pub(crate) fn grant_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, holder
 fn current_entry(tx: &Tx<'_>, target: &Tid, holder: &Tid) -> Option<(osis_crdt::Dot, osis_base::Value)> {
     let c = tx.core.timelines.get(target)?.in_force(holder, target)?;
     let view = &tx.core.ix.commits.get(&c)?.view;
-    let ai = view.aspects.iter().position(|a| a.tid == *target && a.ak.as_str() == "roles.0")?;
+    let ai = view.aspect(target, "roles.0")?;
     let own = crate::engine::Owned::of_view(view, &c, ai)?;
     tx.core.ix.holder_keys.iter().find(|((t, d), m)| t == target && *m == holder && own.owns(d.origin())).map(|((_, d), m)| (d.clone(), osis_base::Value::Tid(*m)))
 }

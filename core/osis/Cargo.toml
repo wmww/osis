@@ -32,4 +32,5 @@ osis-schema.workspace = true
 
 [dev-dependencies]
 osis-sim.workspace = true
+osis-perm.workspace = true
 osis-host.workspace = true

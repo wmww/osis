@@ -278,6 +278,31 @@ pub fn entries_moved() -> u64 {
     panic!("entries_moved counts in debug builds only");
 }
 
+#[cfg(debug_assertions)]
+thread_local! {
+    /// Things role walks reached on this thread (`roles_reached`).
+    static REACHED: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Counts `n` things a role walk reached (`View::roles_walk`).
+pub(crate) fn count_reached(n: usize) {
+    #[cfg(debug_assertions)]
+    REACHED.with(|m| m.set(m.get() + n as u64));
+    #[cfg(not(debug_assertions))]
+    let _ = n;
+}
+
+/// Things every role walk on this thread reached so far, debug checks' walks included (scale
+/// checks: a commit on n things walks O(n)). Debug builds only, as `commits_walked`.
+#[doc(hidden)]
+#[allow(clippy::panic)]
+pub fn roles_reached() -> u64 {
+    #[cfg(debug_assertions)]
+    return REACHED.with(|m| m.get());
+    #[cfg(not(debug_assertions))]
+    panic!("roles_reached counts in debug builds only");
+}
+
 /// Runs `f` with this thread's walk count off (debug checks: their work is not the measured
 /// code's).
 #[doc(hidden)]

@@ -677,6 +677,7 @@ impl<'a> View<'a> {
                 });
             }
         }
+        crate::walk::count_reached(best.len());
         (best, expires)
     }
 

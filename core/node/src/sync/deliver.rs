@@ -519,7 +519,7 @@ impl SyncEngine {
                 None
             } else {
                 let ka = self.keys_actor(&g);
-                Some((ka, h.aspects.iter().any(|a| a.tid == ka && a.ak.as_str() == "roles.0")))
+                Some((ka, h.aspect_index(&ka, "roles.0").is_some()))
             };
             let ts = osis_base::Ts::make(osis_base::WallMs(self.engine.core.time.get()), 0).unwrap_or_default();
             let core = &self.engine.core;

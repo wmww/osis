@@ -541,8 +541,8 @@ impl Engine {
     fn rotation_wrap_epoch(&mut self, g: &Tid, c: &CommitId) -> Result<Option<Epoch>> {
         let Some(a) = self.core.secret_actor(g) else { return Ok(None) };
         let Some(h) = self.header(c) else { return Ok(None) };
-        let Some(ai) = h.aspects.iter().position(|x| x.tid == a && x.ak.as_str() == "keys.0") else { return Ok(None) };
-        if !h.aspects.iter().any(|x| x.tid == a && x.ak.as_str() == "secrets.0") {
+        let Some(ai) = h.aspect_index(&a, "keys.0") else { return Ok(None) };
+        if !h.aspect_index(&a, "secrets.0").is_some() {
             return Ok(None);
         }
         let id = *c;

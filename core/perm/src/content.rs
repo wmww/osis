@@ -21,6 +21,16 @@ pub(crate) struct Replay {
     first: BTreeMap<Tid, Option<Point>>,
 }
 
+/// `first_held_replayed`'s search for one (node, role): the edges after the first `pos` history
+/// changes (`None`: not even the initial state searched), and where each thing was first held.
+#[cfg(debug_assertions)]
+#[derive(Clone, Default)]
+pub(crate) struct BruteReplay {
+    pos: Option<usize>,
+    edges: crate::graph::Edges,
+    first: BTreeMap<Tid, Option<Point>>,
+}
+
 /// Validity of one delta.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Validity {
@@ -214,19 +224,32 @@ impl Timeline {
         }
     }
 
-    /// `first_held_uncached` by a search at every change (debug check).
+    /// `first_held_uncached` by a search at every change (debug check): the node's roles walked
+    /// whole after each change, kept per (node, role) like `Replay` and gone on with only as far
+    /// as `thing` needs, so checking every thing of a commit walks the history once.
     #[cfg(debug_assertions)]
     fn first_held_replayed(&self, x: &Tid, thing: &Tid, required: Role) -> Option<Option<Point>> {
-        let mut edges = crate::graph::Edges::default();
-        let holds = |edges: &crate::graph::Edges, ts: Ts| View::new(&self.input.records, edges, Some(ts)).roles_from(x).get(thing).copied() >= Some(required);
-        if holds(&edges, Ts::default()) {
-            return Some(None);
-        }
-        for c in &self.walked.history {
-            edges.set(&self.input.records, c.holder, c.target, c.edge);
-            if holds(&edges, c.point.ts) {
-                return Some(Some(c.point));
+        let mut replays = self.memo.first_held_replays.lock().unwrap_or_else(|e| e.into_inner());
+        let r = replays.entry((*x, required)).or_default();
+        let holds = |edges: &crate::graph::Edges, ts: Ts, p: Option<Point>, first: &mut BTreeMap<Tid, Option<Point>>| {
+            for (t, role) in View::new(&self.input.records, edges, Some(ts)).roles_from(x) {
+                if role >= required {
+                    first.entry(t).or_insert(p);
+                }
             }
+        };
+        if r.pos.is_none() {
+            holds(&r.edges, Ts::default(), None, &mut r.first);
+            r.pos = Some(0);
+        }
+        while let Some(i) = r.pos {
+            if let Some(p) = r.first.get(thing) {
+                return Some(*p);
+            }
+            let Some(c) = self.walked.history.get(i) else { break };
+            r.edges.set(&self.input.records, c.holder, c.target, c.edge);
+            holds(&r.edges, c.point.ts, Some(c.point), &mut r.first);
+            r.pos = Some(i + 1);
         }
         None
     }

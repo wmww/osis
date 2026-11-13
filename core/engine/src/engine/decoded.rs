@@ -6,10 +6,12 @@
 //! first read until the record is written again or removed (`Tx::put_commit`,
 //! `Tx::remove_commit`: the only writers) or a changing transaction rolls back.
 //!
-//! Debug builds keep with each entry the bytes it was decoded from and compare them at every hit
-//! with the bytes read now: the record's stored bytes, the part in the record read. A stale or
-//! misfiled entry differs; decoding the same bytes again would only repeat a pure function, and
-//! an entry is never changed in place (`Arc`). Whether a part's pages are still held is not this
+//! Debug builds keep with each entry the bytes it was decoded from and compare them with the
+//! bytes read now: the part in the record read at every hit, the record's stored bytes at its
+//! hits 1, 2, 4, 8 and so on (a read of the record costs its size, and a commit on n things reads
+//! it once per part: n² at every hit). A stale or misfiled entry differs, and stays stale, so a
+//! later sample still sees it; decoding the same bytes again would only repeat a pure function,
+//! and an entry is never changed in place (`Arc`). Whether a part's pages are still held is not this
 //! cache's to check: `apply::check_rebuilt` reads held bodies with their pages past it.
 //!
 //! Beside them, a paged part's page index (`osis_crdt::PageIndex`, one entry per leaf page),
@@ -28,12 +30,25 @@ use std::sync::Arc;
 /// open stays decoded in memory.
 const DECODED_MAX: usize = 16 << 20;
 
-#[derive(Clone)]
 struct KeptRecord {
     blob: Arc<CommitBlob>,
-    /// Debug builds: the stored bytes it was decoded from.
+    /// Debug builds: the stored bytes it was decoded from, and its hits so far.
     #[cfg(debug_assertions)]
     stored: Vec<u8>,
+    #[cfg(debug_assertions)]
+    hits: std::sync::atomic::AtomicU64,
+}
+
+impl Clone for KeptRecord {
+    fn clone(&self) -> KeptRecord {
+        KeptRecord {
+            blob: self.blob.clone(),
+            #[cfg(debug_assertions)]
+            stored: self.stored.clone(),
+            #[cfg(debug_assertions)]
+            hits: std::sync::atomic::AtomicU64::new(self.hits.load(std::sync::atomic::Ordering::Relaxed)),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -61,12 +76,14 @@ pub(crate) struct DecodedCommits {
 }
 
 impl DecodedCommits {
-    /// The kept blob of `id`. Debug builds: `_stored` reads the record's stored bytes now, which
-    /// must be those it was decoded from.
+    /// The kept blob of `id`. Debug builds, sampled (the module doc): `_stored` reads the
+    /// record's stored bytes now, which must be those it was decoded from.
     pub(crate) fn record<E>(&self, id: &CommitId, _stored: impl FnOnce() -> Result<Option<Vec<u8>>, E>) -> Result<Option<Arc<CommitBlob>>, E> {
         let Some(k) = self.records.get(id) else { return Ok(None) };
         #[cfg(debug_assertions)]
-        assert!(_stored()?.as_ref() == Some(&k.stored), "decoded record of {id:?} went stale");
+        if (k.hits.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1).is_power_of_two() {
+            assert!(_stored()?.as_ref() == Some(&k.stored), "decoded record of {id:?} went stale");
+        }
         Ok(Some(k.blob.clone()))
     }
 
@@ -82,7 +99,7 @@ impl DecodedCommits {
     /// Keeps `blob`, decoded from the record's stored bytes `stored`.
     pub(crate) fn keep_record(&mut self, id: CommitId, blob: Arc<CommitBlob>, stored: &[u8]) {
         if self.room(stored.len().saturating_add(Self::debug_copy(stored.len()))) {
-            self.records.insert(id, KeptRecord { blob, #[cfg(debug_assertions)] stored: stored.to_vec() });
+            self.records.insert(id, KeptRecord { blob, #[cfg(debug_assertions)] stored: stored.to_vec(), #[cfg(debug_assertions)] hits: Default::default() });
         }
     }
 

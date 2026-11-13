@@ -422,7 +422,7 @@ struct Weighed {
 fn body_bytes(tx: &mut Tx<'_>, blob: &CommitBlob, ai: usize) -> Result<Weighed> {
     let mut sum = 0usize;
     let mut pages = BTreeSet::new();
-    for p in blob.parts.iter().filter(|p| p.ai == ai) {
+    if let Some(p) = blob.part(ai) {
         sum = sum.saturating_add(p.delta.len());
         let r = each_page(tx, &p.delta, &mut |b, _| {
             sum = sum.saturating_add(b.len());

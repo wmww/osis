@@ -148,7 +148,7 @@ impl Engine {
                     heap = heap.saturating_add(f.approx_bytes());
                     Ok(())
                 })?;
-                let bytes = blob.parts.iter().filter(|p| p.ai == ai).fold(0usize, |b, p| b.saturating_add(p.delta.len()));
+                let bytes = blob.part(ai).map_or(0, |p| p.delta.len());
                 sum = sum.saturating_add(part_charge(heap, bytes));
             }
             Ok(sum)

@@ -69,7 +69,7 @@ pub(crate) fn folded(core: &Core, c: &CommitId, tid: &Tid, ak: &Ak) -> bool {
         return false;
     }
     let Some(m) = core.ix.commits.get(c) else { return false };
-    let claims = m.view.aspects.iter().any(|a| a.tid == *tid && a.ak == *ak && a.replaces.is_some());
+    let claims = m.view.aspect(tid, ak.as_str()).and_then(|ai| m.view.aspects.get(ai)).is_some_and(|a| a.replaces.is_some());
     claims && !core.ix.originals.get(&(*tid, ak.clone())).is_some_and(|s| s.contains(&(m.view.ts, *c)))
 }
 
@@ -82,7 +82,7 @@ pub(crate) type OriginalsAtStart = std::collections::BTreeMap<((Tid, Ak), (Ts, C
 /// original, which `settle` names. `start`: `Indexes::originals`' changed elements and whether
 /// each was in.
 pub(crate) fn unheard(tx: &mut Tx<'_>, c: &CommitId, v: &View, tid: &Tid, ak: &Ak, start: &OriginalsAtStart, existed: bool) -> Result<bool> {
-    if !durable_signal(ak) || !v.aspects.iter().any(|a| a.tid == *tid && a.ak == *ak && a.replaces.is_some()) {
+    if !durable_signal(ak) || !v.aspect(tid, ak.as_str()).and_then(|ai| v.aspects.get(ai)).is_some_and(|a| a.replaces.is_some()) {
         return Ok(false);
     }
     let (k, place) = ((*tid, ak.clone()), (v.ts, *c));
@@ -176,7 +176,7 @@ pub(crate) fn settle(tx: &mut Tx<'_>) -> Result<()> {
     }
     for (tid, ak, c) in &whole {
         refold(tx, tid, ak, c)?;
-        let Some((ai, named)) = tx.core.ix.commits.get(c).and_then(|m| Some((m.aspect(tid, ak)?, m.view.aspects.iter().find(|a| a.tid == *tid && a.ak == *ak)?.replaces))) else { continue };
+        let Some((ai, named)) = tx.core.ix.commits.get(c).and_then(|m| { let ai = m.aspect(tid, ak)?; Some((ai, m.view.aspects.get(ai)?.replaces)) }) else { continue };
         // a claim's change (a bound passed: from the timer) changes its original's reading
         if let Some(o) = named.filter(|o| tx.core.ix.commits.contains_key(o)) {
             tx.core.commits_named(*tid, ak.clone(), o);

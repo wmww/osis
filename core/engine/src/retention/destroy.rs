@@ -476,7 +476,7 @@ fn forget_released(tx: &mut Tx<'_>, t: &Tid) -> Result<()> {
     for c in commits {
         let Some(m) = tx.core.ix.commits.get(&c) else { continue };
         let aspects = &m.header.aspects;
-        let on_t: Vec<usize> = aspects.iter().enumerate().filter(|(_, a)| a.tid == *t).map(|(ai, _)| ai).collect();
+        let on_t: Vec<usize> = m.view.aspects_on(t).collect();
         // not held (missing, or dropped) on a thing whose record is not held
         let unknown = |ai: &usize| !m.holds(*ai) && aspects.get(*ai).is_some_and(|a| tx.core.created(&a.tid).is_none());
         // a marked part whose thing's record came back is live again until its copy joins

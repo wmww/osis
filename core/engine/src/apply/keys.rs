@@ -257,7 +257,7 @@ pub(crate) fn refresh_own_keys(tx: &mut Tx<'_>, things: &std::collections::BTree
                 tx.txn.remove_local(&crate::engine::records::own_keys_key(t, &id), Shred::No)?;
                 continue;
             };
-            own |= m.view.aspects.iter().enumerate().any(|(ai, a)| a.tid == *t && a.ak.as_str() == "keys.0" && m.valid_at(ai));
+            own |= m.view.aspect(t, "keys.0").is_some_and(|ai| m.valid_at(ai));
         }
         if own == tx.core.ix.own_keys.contains(t) {
             continue;
@@ -525,7 +525,7 @@ pub(crate) fn revalidated(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()
         None => {}
     }
     let mut keys = KeysWrite::default();
-    if let Some(ki) = h.aspects.iter().position(|x| x.tid == a.tid && x.ak.as_str() == "keys.0")
+    if let Some(ki) = h.aspect_index(&a.tid, "keys.0")
         && let Some(Decoded::Delta(d)) = super::held_part(tx, c, ki)?
     {
         keys = keys_write(&d.fragment);

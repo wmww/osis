@@ -65,7 +65,7 @@ impl Engine {
             let Some(m) = self.core.ix.commits.get(c) else { return false };
             !self.core.ix.pending.contains_key(c)
                 && author.is_none_or(|a| m.header.author == *a)
-                && m.header.aspects.iter().enumerate().any(|(i, a)| a.tid == *tid && a.ak.as_str() == ak && m.valid_at(i))
+                && m.view.aspect(tid, ak).is_some_and(|i| m.valid_at(i))
         })
     }
 
@@ -85,7 +85,7 @@ impl Engine {
     pub fn aspect_commit(&self, tid: &Tid, ak: &str) -> Option<(CommitId, BTreeSet<usize>)> {
         let c = self.latest_on(tid, ak)?;
         let h = self.header(&c)?;
-        let ais: BTreeSet<usize> = h.aspects.iter().enumerate().filter(|(_, a)| a.tid == *tid && a.ak.as_str() == ak).map(|(i, _)| i).collect();
+        let ais: BTreeSet<usize> = h.aspect_index(tid, ak).into_iter().collect();
         Some((c, ais))
     }
 
@@ -95,7 +95,7 @@ impl Engine {
         let mut out = Vec::new();
         for (_, c) in held {
             let Some(m) = self.core.ix.commits.get(c).filter(|_| !self.core.ix.pending.contains_key(c)) else { continue };
-            let ais: BTreeSet<usize> = m.header.aspects.iter().enumerate().filter(|(i, a)| a.tid == *tid && a.ak.as_str() == ak && m.valid_at(*i)).map(|(i, _)| i).collect();
+            let ais: BTreeSet<usize> = m.view.aspect(tid, ak).filter(|i| m.valid_at(*i)).into_iter().collect();
             if !ais.is_empty() {
                 out.push((*c, ais));
             }
@@ -136,7 +136,7 @@ impl Engine {
     /// on `t`, or a reading-only read candidate from it (its box opened).
     pub fn boxed_by(&self, c: &CommitId, t: &Tid) -> bool {
         if let Some(m) = self.core.ix.commits.get(c) {
-            return m.header.aspects.iter().enumerate().any(|(i, a)| a.tid == *t && a.ak.as_str() == "secrets.0" && m.valid_at(i));
+            return m.view.aspect(t, "secrets.0").is_some_and(|i| m.valid_at(i));
         }
         self.core.ix.secrets.get(t).is_some_and(|e| e.role(osis_base::Role::Read).epochs().any(|(_, i)| i.reading.iter().any(|u| u.commit == *c)))
     }

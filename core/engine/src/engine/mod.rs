@@ -308,7 +308,7 @@ impl Meta {
     }
     /// The index of aspect `(tid, ak)` in the commit.
     pub(crate) fn aspect(&self, tid: &Tid, ak: &Ak) -> Option<usize> {
-        self.view.aspects.iter().position(|a| a.tid == *tid && a.ak == *ak)
+        self.view.aspect(tid, ak.as_str())
     }
     /// Whether part `ai` is valid here.
     pub(crate) fn valid_at(&self, ai: usize) -> bool {
@@ -457,6 +457,8 @@ pub struct AspectView {
 
 impl View {
     pub fn of(h: &Header) -> View {
+        // what `View::aspect` searches by (spec/wire.md §4)
+        debug_assert!(h.aspects.is_sorted_by_key(|a| (a.tid, a.ak.as_str().len(), a.ak.as_str().as_bytes())), "aspects sorted");
         View {
             ts: h.ts,
             kind: h.kind,
@@ -470,6 +472,16 @@ impl View {
             purges: h.has_request(),
             epoch: h.epoch,
         }
+    }
+
+    /// The index of aspect `(tid, ak)` (`osis_commit::aspect_position`).
+    pub fn aspect(&self, tid: &Tid, ak: &str) -> Option<usize> {
+        osis_commit::aspect_position(&self.aspects, tid, ak, |a| (&a.tid, a.ak.as_str()))
+    }
+
+    /// The indexes of its aspects on `tid` (`osis_commit::aspects_on`).
+    pub fn aspects_on(&self, tid: &Tid) -> std::ops::Range<usize> {
+        osis_commit::aspects_on(&self.aspects, tid, |a| &a.tid)
     }
 }
 
@@ -1795,7 +1807,7 @@ impl Core {
         self.live_bodies.retain(|c, m| {
             drop(crate::costs::span("live bodies: walked"));
             m.remove(&k);
-            !m.is_empty() && !commits.get(c).is_some_and(|m| m.header.aspects.iter().any(|x| x.tid == *tid && x.ak == *ak))
+            !m.is_empty() && !commits.get(c).is_some_and(|m| m.aspect(tid, ak).is_some())
         });
     }
 
@@ -2370,7 +2382,7 @@ impl Core {
     /// `Core::judged_from`). `rotation_seq` never rolls back, so a number is never given twice.
     pub(crate) fn note_rotation(&mut self, m: &Meta) {
         // from the view: an open decodes no header. Every rotation writes its account's `keys.0`.
-        if m.view.kind.is_role() && m.view.aspects.iter().any(|a| a.tid == m.view.author && a.ak.as_str() == "keys.0") {
+        if m.view.kind.is_role() && m.view.aspect(&m.view.author, "keys.0").is_some() {
             self.rotation_seq = self.rotation_seq.saturating_add(1);
             self.ix.rotations.insert(m.view.author, self.rotation_seq);
             self.ix.epochs_due.insert(m.view.author);
@@ -2382,6 +2394,8 @@ impl Core {
     /// Sets `id`'s meta: every change to what a part holds goes through here or `take_meta`, so
     /// the indexes derived from it stay exact.
     pub(crate) fn put_meta(&mut self, id: CommitId, m: Meta) {
+        // scale checks: each call walks every part of the commit
+        crate::costs::count("meta: parts indexed", m.view.aspects.len() as u64);
         let had = self.ix.commits.get(&id).map(missing_of).unwrap_or_default();
         self.index_missing(&id, &had, &missing_of(&m));
         let was = self.ix.commits.get(&id).map(signers_elsewhere).unwrap_or_default();
@@ -2401,6 +2415,7 @@ impl Core {
 
     pub(crate) fn take_meta(&mut self, id: &CommitId) -> Option<Meta> {
         let m = self.ix.commits.remove(id)?;
+        crate::costs::count("meta: parts indexed", m.view.aspects.len() as u64);
         self.index_missing(id, &missing_of(&m), &BTreeSet::new());
         self.note_signed(&signers_elsewhere(&m), &[]);
         self.note_rotation(&m);
@@ -2535,7 +2550,7 @@ impl Core {
     /// the body; spec/crdt.md §4.7): `None` if that commit is not known.
     pub fn write_expiry(&self, tid: &Tid, ak: &Ak, d: &Dot) -> Option<Option<u64>> {
         let m = self.ix.commits.get(&self.commit_of(tid, ak, d)?)?;
-        m.header.aspects.iter().find(|x| x.tid == *tid && x.ak == *ak).map(|_| m.header.expires)
+        m.aspect(tid, ak).map(|_| m.header.expires)
     }
 }
 
@@ -2982,7 +2997,7 @@ impl Tx<'_> {
             match edges {
                 Some(p) => index::put_edges(self, id, p, shred)?,
                 None => {
-                    let p = crate::apply::edge_parts_of(self, id, &meta.header, blob.clone())?;
+                    let p = crate::apply::edge_parts_of(self, id, &meta.header, blob)?;
                     index::put_edges(self, id, &p, shred)?;
                 }
             }

@@ -121,7 +121,7 @@ pub(crate) fn part_links(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<Vec
             l.fragment.values(&mut |v| crate::engine::large::links_in(v, &mut out));
         }
     } else if let Some(blob) = tx.get_commit(c)?
-        && let Some(p) = blob.parts.iter().find(|p| p.ai == ai)
+        && let Some(p) = blob.part(ai)
     {
         out = crate::engine::large::delta_roots(&p.delta);
     }
@@ -339,7 +339,7 @@ pub(crate) fn kept_refs(tx: &mut Tx<'_>, t: &Tid, blobs: &BTreeSet<BlobId>, aspe
     let t = *t;
     let srcs = sources_of(tx, &t)?;
     let core = &*tx.core;
-    let body_gone = |c: &CommitId| core.ix.commits.get(c).is_none_or(|m| m.header.aspects.iter().enumerate().filter(|(ai, a)| a.tid == t && m.holds(*ai)).all(|(ai, _)| parts.get(c).is_some_and(|w| w.contains(&ai))));
+    let body_gone = |c: &CommitId| core.ix.commits.get(c).is_none_or(|m| m.view.aspects_on(&t).filter(|ai| m.holds(*ai)).all(|ai| parts.get(c).is_some_and(|w| w.contains(&ai))));
     let skip: BTreeSet<Source> = srcs
         .into_iter()
         .filter(|s| match s {

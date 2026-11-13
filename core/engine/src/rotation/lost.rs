@@ -253,7 +253,7 @@ impl Engine {
                 let Some((_, bytes)) = tx.txn.get_pending(&id)? else { continue };
                 let Ok(blob) = osis_commit::CommitBlob::decode_stored(&bytes) else { continue };
                 let h = &blob.header;
-                if h.aspects.iter().any(|x| x.tid == a && x.ak.as_str() == "keys.0") && tx.core.role_now(&h.author, &a) == Some(Role::Admin) && authentic(tx.core, &blob, &id, &a) {
+                if h.aspect_index(&a, "keys.0").is_some() && tx.core.role_now(&h.author, &a) == Some(Role::Admin) && authentic(tx.core, &blob, &id, &a) {
                     return Ok(true);
                 }
             }

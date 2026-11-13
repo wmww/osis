@@ -29,6 +29,6 @@ pub use groups::{COMMIT_PAST_BLOB, blob_bound, blob_expiry, prefix_expiry, prefi
 pub use lists::{BlobSink, BlobSource, MemoryBlobs, read_list, write_list};
 pub use osis_base::format::MAX_LIST_BYTES;
 pub use error::Error;
-pub use header::{AspectEntry, DeleteKey, EphClass, FIRST_EPOCH, FOREVER, Form, Header, Kind, Links, ListField, PurgeItem, RotationHeader, frontier_value, verify_merge, verify_signature};
+pub use header::{AspectEntry, aspect_position, aspects_on, DeleteKey, EphClass, FIRST_EPOCH, FOREVER, Form, Header, Kind, Links, ListField, PurgeItem, RotationHeader, frontier_value, verify_merge, verify_signature};
 pub use keys::{Prefix, Secrets, delete_keys};
 pub use verify::{Decoded, check_entry_keys, delta_ctx, read_part, read_part_whole, stream_part, verify_blob, verify_part, writer_ctx};

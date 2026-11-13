@@ -162,7 +162,7 @@ impl Engine {
                 && let Some(first_admin) = self.first_admin(&t)
             {
                 let ids: Vec<osis_base::CommitId> = self.core.on_thing(&t).collect();
-                let here = ids.iter().any(|c| self.core.ix.commits.get(c).is_some_and(|m| m.origin == crate::events::Origin::Local && m.view.aspects.iter().any(|a| a.tid == t && a.ak.as_str() == LINK_SEED)));
+                let here = ids.iter().any(|c| self.core.ix.commits.get(c).is_some_and(|m| m.origin == crate::events::Origin::Local && m.view.aspect(&t, LINK_SEED).is_some()));
                 out.push(HeldLink { k: *k, l: crate::identity::key_actor_tid(&Secret32::from_bytes(seed)), first_admin, target: *target, single_use: *single_use, here });
             }
         }

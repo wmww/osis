@@ -102,6 +102,11 @@ impl CommitBlob {
         self.header.id()
     }
 
+    /// The part on aspect `ai`, if held (a search: `parts` is sorted).
+    pub fn part(&self, ai: usize) -> Option<&Part> {
+        self.parts.binary_search_by_key(&ai, |p| p.ai).ok().and_then(|i| self.parts.get(i))
+    }
+
     /// Canonical bytes of the opened form (unpadded).
     pub fn encode(&self) -> Vec<u8> {
         let mut out = Vec::new();

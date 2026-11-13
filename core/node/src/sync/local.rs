@@ -147,7 +147,7 @@ impl CoverPass<'_> {
                 if let Some(h) = self.engine.header(&c)
                     && let Some(x) = h.expires
                     && x > now.0
-                    && h.aspects.iter().position(|a| a.tid == *t && a.ak == *ak).is_some_and(|ai| self.engine.part_held(&c, ai))
+                    && h.aspect_index(t, ak.as_str()).is_some_and(|ai| self.engine.part_held(&c, ai))
                 {
                     left.at(x, super::state::Touch::Commit(c));
                 }

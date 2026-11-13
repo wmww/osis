@@ -2676,6 +2676,7 @@ dependencies = [
  "osis-host",
  "osis-label",
  "osis-node",
+ "osis-perm",
  "osis-proto",
  "osis-schema",
  "osis-sim",

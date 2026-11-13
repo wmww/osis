@@ -724,7 +724,7 @@ impl SyncEngine {
     /// dropped in turn (a carrier dropped before it went up carries nothing: its writes moved to
     /// a later snapshot, or a new one is due).
     fn carrier_of(&self, body: &CommitId, t: &Tid, a: &Ak) -> Option<CommitId> {
-        let has = |h: &osis_commit::Header| h.aspects.iter().any(|x| x.tid == *t && x.ak == *a);
+        let has = |h: &osis_commit::Header| h.aspect_index(t, a.as_str()).is_some();
         let on = |c: &CommitId| self.engine.header(c).is_some_and(|h| has(&h)) || self.memory.forgotten.get(c).is_some_and(|f| has(&f.header));
         let next = |c: &CommitId| -> Vec<CommitId> {
             let mut v: Vec<CommitId> = self.state.carriers.get(c).map(|x| x.by.iter().rev().copied().collect()).unwrap_or_default();

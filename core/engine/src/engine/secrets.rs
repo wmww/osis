@@ -471,7 +471,7 @@ impl osis_keys::Held for NamesHeld<'_> {
     /// on a holder actor it wrote through, an audit).
     fn met(&self, n: &Name) -> bool {
         let applied = self.core.ix.commits.get(&n.key.commit).is_some_and(|m| {
-            m.header.aspects.iter().position(|a| a.tid == self.actor && a.ak.as_str() == "roles.0").is_none_or(|ai| !m.missing(ai))
+            m.header.aspect_index(&self.actor, "roles.0").is_none_or(|ai| !m.missing(ai))
         });
         applied && self.resolved(&n.key.commit) && if n.void { !self.applies(&n.key.commit, &n.holder) } else { self.stands(&n.key, Some(&n.holder)) }
     }
@@ -705,8 +705,8 @@ impl Core {
             let ok: Vec<(Tid, Value)> = hints
                 .into_iter()
                 .filter(|(t, _)| {
-                    let mut touched = h.aspects.iter().enumerate().filter(|(_, a)| a.tid == *t).peekable();
-                    touched.peek().is_some() && touched.all(|(i, _)| m.valid_at(i))
+                    let mut touched = h.aspects_on(t).peekable();
+                    touched.peek().is_some() && touched.all(|i| m.valid_at(i))
                 })
                 .filter(|(t, _)| crate::engine::write::role_of(self, &h.author, t, h.ts) == Some(Role::Admin))
                 .collect();

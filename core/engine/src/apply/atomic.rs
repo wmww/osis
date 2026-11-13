@@ -248,7 +248,7 @@ pub(super) fn each_piece(tx: &mut Tx<'_>, h: &Header, id: &CommitId, blob: &Comm
         PartRef::Whole(d) => return f(tx, d.fragment().clone()),
         PartRef::Streamed(s) => s,
     };
-    let p = blob.parts.iter().find(|p| p.ai == s.ai).ok_or(Error::Corrupt("streamed part"))?;
+    let p = blob.part(s.ai).ok_or(Error::Corrupt("streamed part"))?;
     stream_stored(tx, h, id, s.ai, super::checked(&p.delta), &s.dedup, None, &mut |tx, p| f(tx, piece_fragment(p))).map(|_| ())
 }
 
@@ -297,6 +297,9 @@ struct Joins {
     /// joins superseded: the bodies they replaced are judged again (`retention::mark_killed`),
     /// after the commit's record.
     pub joined: Vec<(Tid, Ak, Killed)>,
+    /// The parts found to be whole replaces (`Hold::Body::whole`), marked at once after the
+    /// joins: one `put_meta` per commit, not per part.
+    pub whole: Vec<usize>,
 }
 
 /// Joins every part of commit `id` (`valid`: per aspect), in part order, a piece at a time.
@@ -313,6 +316,7 @@ fn joins(tx: &mut Tx<'_>, h: &Header, id: &CommitId, blob: &CommitBlob, parts: &
     for (ai, part) in in_order(parts) {
         join_part(tx, h, id, blob, ai, part, valid.get(ai).copied().unwrap_or(false), &mut j)?;
     }
+    note_whole(tx, id, &j.whole);
     Ok(j)
 }
 
@@ -355,7 +359,9 @@ fn join_part(tx: &mut Tx<'_>, h: &Header, id: &CommitId, blob: &CommitBlob, ai: 
                 whole |= crate::retention::snapshot::replaces(&f);
                 Ok(())
             })?;
-            note_whole(tx, id, ai, whole);
+            if whole {
+                j.whole.push(ai);
+            }
         }
         return Ok(());
     }
@@ -379,7 +385,9 @@ fn join_part(tx: &mut Tx<'_>, h: &Header, id: &CommitId, blob: &CommitBlob, ai: 
         tx.evict_pages(&tid, &ak);
         Ok(())
     })?;
-    note_whole(tx, id, ai, whole);
+    if whole {
+        j.whole.push(ai);
+    }
     if snap {
         note_carried(tx.core, &tid, &ak, id, carried);
     }
@@ -651,14 +659,16 @@ fn note_held_rules(tx: &mut Tx<'_>, h: &Header, id: &CommitId, parts: &Parts) ->
     Ok(())
 }
 
-/// Marks part `ai` of commit `id` as a whole replace (`Hold::Body::whole`), so it stands in the own
-/// indexes (`Core::put_meta`).
-fn note_whole(tx: &mut Tx<'_>, id: &CommitId, ai: usize, whole: bool) {
-    if !whole {
+/// Marks parts `whole` of commit `id` as whole replaces (`Hold::Body::whole`), so they stand in
+/// the own indexes (`Core::put_meta`).
+fn note_whole(tx: &mut Tx<'_>, id: &CommitId, whole: &[usize]) {
+    if whole.is_empty() {
         return;
     }
     if let Some(mut m) = tx.core.ix.commits.get(id).cloned() {
-        m.set_whole(ai);
+        for ai in whole {
+            m.set_whole(*ai);
+        }
         tx.core.put_meta(*id, m);
     }
 }

@@ -684,21 +684,10 @@ fn purged_part_lists_until_its_expiry_spec_commits_7() {
 // spec/requirements.md (Decentralization: a commit holds at least 2 000 changes, of values of
 // any size): the worst shape for the floor, one change on each of 2 000 different things (each its
 // own keys and framing), with one large value beside them (in blobs of its own, past `MAX_BLOB`
-// itself), is one commit within `MAX_BLOB` that another node applies whole. At the floor's size
-// (about 8 s in the test profile: issues/commit-cost-quadratic-in-things.md).
-#[test]
-#[ignore = "property: the floor's size, about 8 s"]
-fn changes_on_as_many_things_large_spec_requirements_decentralization() {
-    changes_on_as_many_things(2_000);
-}
-
-// spec/requirements.md (Decentralization): the floor's shape at a few hundred things.
+// itself), is one commit within `MAX_BLOB` that another node applies whole.
 #[test]
 fn changes_on_as_many_things_spec_requirements_decentralization() {
-    changes_on_as_many_things(300);
-}
-
-fn changes_on_as_many_things(n: usize) {
+    let n = 2_000;
     let (a, b, _c) = paired();
     let mut things = Vec::new();
     while things.len() < n {
@@ -727,4 +716,56 @@ fn changes_on_as_many_things(n: usize) {
         assert_eq!(b.at(*t, key.clone()).get().unwrap(), Some(Value::Int(i as i64)), "thing {i}");
     }
     assert_eq!(b.at(large, key).get().unwrap(), Some(Value::Bytes(big)));
+}
+
+// notes/coordination.md (Check scaling), spec/requirements.md (Decentralization): writing and
+// applying one commit on n things does work linear in n, every counted kind of it (engine
+// phases and counts, perm's role walks, debug checks' walks included).
+#[test]
+fn commit_work_linear_in_things_spec_requirements_decentralization() {
+    let small = commit_work(50);
+    let big = commit_work(500);
+    // `linear` as notes/testing.md (Scale checks) has it: at 10n at most 15x + 15 the count at n
+    let over: Vec<_> = big.iter().map(|(k, n)| (k, small.get(k).copied().unwrap_or(0), *n)).filter(|(_, s, b)| *b > 15 * s + 15).collect();
+    assert!(over.is_empty(), "work at n and 10n (kind, n, 10n): {over:?}");
+}
+
+/// Per kind, the work of creating `n` things in one commit and delivering it, then of writing
+/// one commit with a change on each of them and of applying it on another node.
+fn commit_work(n: usize) -> std::collections::BTreeMap<String, u64> {
+    use osis::internals::node::costs;
+    let (a, b, _c) = paired();
+    let mut work = std::collections::BTreeMap::new();
+    let mut add = |side: &str, cs: Vec<(&'static str, std::time::Duration, u64)>, reached: u64| {
+        for (k, _, n) in cs {
+            work.insert(format!("{side} {k}"), n);
+        }
+        work.insert(format!("{side} perm: roles reached"), reached);
+    };
+    // creating the n things: one commit, written and delivered
+    costs::take();
+    let r0 = osis_perm::roles_reached();
+    let mut w = a.write();
+    let things: Vec<_> = (0..n).map(|_| w.create().unwrap()).collect();
+    w.commit().unwrap();
+    deliver(&a, &b);
+    add("create", costs::take(), osis_perm::roles_reached() - r0);
+    let key = osis::DynamicAspectKey::untyped(ak("t:x.0"));
+    let before: std::collections::BTreeSet<_> = a.engine(|e| e.commit_ids()).into_iter().collect();
+    costs::take();
+    let r0 = osis_perm::roles_reached();
+    let mut w = a.write();
+    for (i, t) in things.iter().enumerate() {
+        w.at(*t, key.clone()).set(&Value::Int(i as i64)).unwrap();
+    }
+    w.commit().unwrap();
+    add("write", costs::take(), osis_perm::roles_reached() - r0);
+    let new: Vec<_> = a.engine(|e| e.commit_ids()).into_iter().filter(|id| !before.contains(id)).collect();
+    let pk = a.engine(|e| e.package(&new[0]).unwrap().unwrap());
+    costs::take();
+    let r0 = osis_perm::roles_reached();
+    b.engine(|e| e.ingest(&pk.bytes, pk.blobs.clone()).unwrap());
+    add("apply", costs::take(), osis_perm::roles_reached() - r0);
+    assert_eq!(b.at(things[n - 1], key).get().unwrap(), Some(Value::Int(n as i64 - 1)));
+    work
 }

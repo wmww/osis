@@ -163,7 +163,35 @@ pub enum PurgeItem {
     Author { tid: Tid, ak: Ak, actor: Tid },
 }
 
+/// The index of the entry on `(tid, ak)` in `items`, sorted and distinct as a header's aspects
+/// are (spec/wire.md §4: by the canonical bytes of `[tid, ak]`, which order by tid, then by the
+/// key's length, then its bytes): a search.
+pub fn aspect_position<T>(items: &[T], tid: &Tid, ak: &str, key: impl Fn(&T) -> (&Tid, &str)) -> Option<usize> {
+    let want = (tid, ak.len(), ak.as_bytes());
+    items
+        .binary_search_by(|x| {
+            let (t, a) = key(x);
+            (t, a.len(), a.as_bytes()).cmp(&want)
+        })
+        .ok()
+}
+
+/// The indexes of the entries on `tid` in `items`, sorted as `aspect_position` reads them.
+pub fn aspects_on<T>(items: &[T], tid: &Tid, key: impl Fn(&T) -> &Tid) -> std::ops::Range<usize> {
+    items.partition_point(|x| key(x) < tid)..items.partition_point(|x| key(x) <= tid)
+}
+
 impl Header {
+    /// The index of its aspect `(tid, ak)` (`aspect_position`).
+    pub fn aspect_index(&self, tid: &Tid, ak: &str) -> Option<usize> {
+        aspect_position(&self.aspects, tid, ak, |a| (&a.tid, a.ak.as_str()))
+    }
+
+    /// The indexes of its aspects on `tid` (`aspects_on`).
+    pub fn aspects_on(&self, tid: &Tid) -> std::ops::Range<usize> {
+        aspects_on(&self.aspects, tid, |a| &a.tid)
+    }
+
     /// Whether this commit is a release request: it carries `released.0` deltas (`validate`: those
     /// alone; spec/commits.md §5 Destruction).
     pub fn is_release(&self) -> bool {

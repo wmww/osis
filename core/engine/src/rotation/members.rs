@@ -197,7 +197,7 @@ fn held_invalid(tx: &mut Tx<'_>, m: &Tid, r: Role, k: &Epoch) -> Result<bool> {
     let ids: Vec<osis_base::CommitId> = tx.core.ix.keyset_parts.get(m).into_iter().flatten().copied().collect();
     for id in ids {
         let Some(meta) = tx.core.ix.commits.get(&id).cloned() else { continue };
-        let Some(ai) = meta.view.aspects.iter().position(|a| a.tid == *m && a.ak.as_str() == "keys.0") else { continue };
+        let Some(ai) = meta.view.aspect(m, "keys.0") else { continue };
         if meta.valid_at(ai) {
             continue;
         }
@@ -450,7 +450,7 @@ pub(crate) fn boxed_keysets(tx: &mut Tx<'_>, a: &Tid, r: Role, e: &Epoch) -> Res
 fn proved_keysets(core: &Core, a: &Tid, r: Role, e: &Epoch) -> Vec<(Tid, Epoch)> {
     let Some((_, c)) = core.ix.epoch_intro.get(&(*a, r, *e)) else { return Vec::new() };
     let Some(m) = core.ix.commits.get(c) else { return Vec::new() };
-    let Some(ki) = m.header.aspects.iter().position(|x| x.tid == *a && x.ak.as_str() == "keys.0") else { return Vec::new() };
+    let Some(ki) = m.header.aspect_index(a, "keys.0") else { return Vec::new() };
     let Some(x) = core.ix.shown.get(&(*c, ki)) else { return Vec::new() };
     x.shown.iter().filter(|s| s.role == r && (!core.is_key_actor(&s.holder) || core.is_account(&s.holder))).map(|s| (s.holder, s.keyset)).collect()
 }
