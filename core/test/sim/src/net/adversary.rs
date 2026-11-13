@@ -233,11 +233,13 @@ fn run_noting(sim: &mut NetSim, n: u64, nodes: [usize; 2], g: Tid, holder: Tid, 
 
 /// A writer's malformed blobs (spec/sync.md §5, spec/commits.md §4; spec/versioning.md §2:
 /// malformed data is rejected, never parked), stamped with its write key and placed in the host's
-/// store as the host's pull from that writer would take them (`host_put`): garbage bytes, a
-/// well-framed blob of garbage, a real commit under a prefix that disagrees with its header, a
-/// wrap for another blob; then a frame that is no message on a connection of its own. Expected:
-/// the host keeps them (it cannot judge them), honest nodes reject them without failing, keep
-/// syncing and converge.
+/// store as the host's pull from that writer would take them (`host_put`): garbage bytes of an
+/// unknown framing version, a well-framed blob of garbage, a real commit under a prefix that
+/// disagrees with its header, a wrap for another blob; then a frame that is no message on a
+/// connection of its own. Expected: the host keeps them (it cannot judge what lies past a prefix,
+/// spec/wire.md §5), honest nodes reject them without failing, keep syncing and converge. Garbage
+/// under framing version 1 is a prefix the host must read (class, expiry, commitments: spec/wire.md
+/// §5, spec/requirements.md Privacy), so the host refuses it as malformed (code 2).
 pub fn malformed_blobs(s: Seeds) -> Res<Report> {
     let (mut sim, (s, a, b, m, g, t, c)) = setup("malformed_blobs", s, NetWeights::default(), |sim| {
         let mut d = Dice::new(sim.seed ^ 0x6a);
@@ -257,11 +259,17 @@ pub fn malformed_blobs(s: Seeds) -> Res<Report> {
     sim.quiet(40)?;
     let k = sim.label_keys(m, s, &g)?;
     let mut entries = Vec::new();
-    // garbage bytes, stamped: no prefix
-    let junk: Vec<u8> = (0..300).map(|_| sim.dice.u64() as u8).collect();
-    let jid = osis_label::blob_id(&junk);
+    // garbage bytes, stamped: a framing version past 1, kept as opaque durable bytes; under
+    // version 1 with an invalid class byte, refused (spec/wire.md §5)
+    let junk: Vec<u8> = (0..300).map(|i| (sim.dice.u64() as u8).max(if i == 0 { 2 } else { 0 })).collect();
     let jkey = osis_crypto::Secret32::from_bytes([7; 32]);
-    entries.push(stamped(&sim, &k, &jid, junk, &jkey)?);
+    let bad: Vec<u8> = junk.iter().enumerate().map(|(i, &x)| match i { 0 => 1, 25 => x.max(3), _ => x }).collect();
+    let bad = stamped(&sim, &k, &osis_label::blob_id(&bad), bad, &jkey)?;
+    let code = sim.host_put(s, k.label, &bad)?;
+    if code != Code::MALFORMED {
+        return Err(sim.fail(format!("the host took a version 1 blob with a bad prefix: {code:?}")));
+    }
+    entries.push(stamped(&sim, &k, &osis_label::blob_id(&junk), junk, &jkey)?);
     // a well-framed blob of garbage plaintext
     let pt: Vec<u8> = (0..200).map(|_| sim.dice.u64() as u8).collect();
     let (id, blob, key) = seal(&mut sim, &pt)?;
@@ -280,7 +288,7 @@ pub fn malformed_blobs(s: Seeds) -> Res<Report> {
         let (id2, blob2, _) = seal(&mut sim, &env.encode())?;
         entries.push(stamped(&sim, &k, &id2, blob2, &key)?);
     }
-    // a blob whose framing version the host does not know is kept (spec/wire.md §5)
+    // the host keeps each: it cannot judge past a prefix it parses or a version it does not know
     for e in &entries {
         let code = sim.host_put(s, k.label, e)?;
         if code != Code::OK {
