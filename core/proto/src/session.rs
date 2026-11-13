@@ -6,7 +6,7 @@
 //! driver feeds stream bytes and carries out the outputs.
 
 use crate::Error;
-use crate::frame::{FrameDecoder, encode_frame, send};
+use crate::frame::{FrameDecoder, encode_frame};
 use crate::hello::{Hello, PROTOCOL_VERSION, negotiate};
 use crate::msg::*;
 use crate::relay::RelayVerdict;
@@ -131,8 +131,13 @@ impl Pending {
 }
 
 /// Bytes of the `Send` outputs in `out`.
-fn sent_bytes(out: &[SessionOutput]) -> u64 {
-    out.iter().map(|o| if let SessionOutput::Send(b) = o { b.len() as u64 } else { 0 }).sum()
+fn sent_bytes(out: &[SessionOutput]) -> usize {
+    out.iter().map(|o| if let SessionOutput::Send(b) = o { b.len() } else { 0 }).sum()
+}
+
+/// Frames `msg` as an output.
+fn send(out: &mut Vec<SessionOutput>, msg: Message) {
+    out.push(SessionOutput::Send(encode_frame(&msg.encode())));
 }
 
 /// A relay-only entry (spec/sync.md §5): accepted by stamp, passed on to the label's other
@@ -395,12 +400,8 @@ impl Session {
         if self.holds(store, label)? {
             return Ok(true);
         }
-        self.end_open(label);
-        Ok(false)
-    }
-
-    fn end_open(&mut self, label: &LabelId) {
         self.opened.remove(label);
+        Ok(false)
     }
 
     pub fn is_closed(&self) -> bool {
@@ -421,10 +422,7 @@ impl Session {
     /// Push room for Notifies: what fits `REPLY_BUDGET` behind the unwritten bytes (all of it
     /// when none are unwritten) and the node's room (`fits`); none below `SMALL_REPLY`.
     fn room(&self, out: &[SessionOutput]) -> Option<usize> {
-        let r = match self.backlog(out) {
-            0 => REPLY_BUDGET,
-            b => REPLY_BUDGET.saturating_sub(b),
-        };
+        let r = REPLY_BUDGET.saturating_sub(self.backlog(out));
         // the share against the connection's own output only: a request waiting for these
         // pushes (a client-port settle) does not hold back the room that answers it
         let o = self.own(out);
@@ -434,16 +432,13 @@ impl Session {
 
     /// Bytes written and not taken by the transport, with those in `out` (0 without reports).
     fn backlog(&self, out: &[SessionOutput]) -> usize {
-        let Some(t) = self.taken else { return 0 };
-        let o: usize = out.iter().map(|x| if let SessionOutput::Send(b) = x { b.len() } else { 0 }).sum();
-        usize::try_from(self.written.saturating_sub(t)).unwrap_or(usize::MAX).saturating_add(o)
+        if self.taken.is_none() { 0 } else { self.unsent(out) }
     }
 
     /// Bytes written and not taken (as far as reported), with those in `out`.
     fn unsent(&self, out: &[SessionOutput]) -> usize {
-        let o: usize = out.iter().map(|x| if let SessionOutput::Send(b) = x { b.len() } else { 0 }).sum();
         let w = self.taken.map_or(0, |t| usize::try_from(self.written.saturating_sub(t)).unwrap_or(usize::MAX));
-        w.saturating_add(o)
+        w.saturating_add(sent_bytes(out))
     }
 
     /// Whether a push of about `size` bytes waits: something is unwritten and it would not fit
@@ -480,7 +475,7 @@ impl Session {
         self.run_pending(now, store, &mut out);
         if !self.closed {
             // the node's own requests go within the room too
-            let before = self.written.saturating_add(sent_bytes(&out));
+            let before = self.written.saturating_add(sent_bytes(&out) as u64);
             let (h, o, left, share) = (self.holding(&out), self.own(&out), self.left(&out), self.share);
             let mut extra = 0usize;
             let mut sends = Vec::new();
@@ -498,7 +493,7 @@ impl Session {
             );
             out.extend(sends);
         }
-        self.written = self.written.saturating_add(sent_bytes(&out));
+        self.written = self.written.saturating_add(sent_bytes(&out) as u64);
         out
     }
 
@@ -562,10 +557,14 @@ impl Session {
                 Ok(Some(h)) => {
                     self.opened.insert(l, h.keys.sync);
                 }
-                Ok(None) => self.end_open(&l),
+                Ok(None) => {
+                    self.opened.remove(&l);
+                }
                 Err(e) => out.push(SessionOutput::StoreError(e)),
             },
-            SessionInput::Shut(l) => self.end_open(&l),
+            SessionInput::Shut(l) => {
+                self.opened.remove(&l);
+            }
             SessionInput::Notify(notes) => {
                 // spends the room granted, or gives it back (none)
                 self.granted = 0;
@@ -865,7 +864,6 @@ impl Session {
         let levels = item.levels();
         let Ok(digest) = delete_digest(label, &item.blob, &levels) else { return Ok(Code::MALFORMED) };
         let key = match key_for_levels(&levels) {
-            Ok(LabelRole::Delete) => StepKey::Delete,
             Ok(role) => key_of_role(role),
             Err(_) => return Ok(Code::REFUSED),
         };
@@ -901,29 +899,16 @@ impl Session {
     /// One Delete item (spec/sync.md §5). A delete-key signature is checked against the blob's
     /// prefix: without the entry it cannot be (nor a tombstone revealed).
     fn delete(&mut self, store: &mut dyn LabelStore, now: u64, label: &LabelId, item: &DeleteItem) -> Result<Code, StoreError> {
-        if self.keys(store, label)?.is_none() {
-            return Ok(Code::UNKNOWN_LABEL);
-        }
-        if delete_digest(label, &item.blob, &item.levels()).is_err() {
-            return Ok(Code::MALFORMED);
-        }
-        let entry = store.entry(label, &item.blob)?;
-        if entry.is_none() {
-            // a level's signature needs the prefix; the delete key's alone can be checked
-            if !item.by.is_empty() {
-                return Ok(Code::REFUSED);
-            }
-            let code = self.delete_auth(store, label, item)?;
-            if code != Code::OK {
-                return Ok(code);
-            }
-            return Ok(if store.tombstoned(label, &item.blob)? { Code::OK } else { Code::REFUSED });
+        let held = store.entry(label, &item.blob)?.is_some();
+        // a level's signature needs the prefix; the delete key's alone can be checked
+        if !held && !item.by.is_empty() {
+            return Ok(Code::REFUSED);
         }
         let code = self.delete_auth(store, label, item)?;
         if code != Code::OK {
             return Ok(code);
         }
-        store.delete(label, &item.blob, now)
+        if held { store.delete(label, &item.blob, now) } else { Ok(if store.tombstoned(label, &item.blob)? { Code::OK } else { Code::REFUSED }) }
     }
 }
 
@@ -939,9 +924,7 @@ pub enum Taken {
 /// one is refused. Used by node sync's pull of a sync ID it cannot read.
 #[allow(clippy::too_many_arguments)]
 pub fn put_stamped(store: &mut dyn LabelStore, now: u64, label: &LabelId, blob_id: BlobId, blob: &[u8], wrap: Wrap, stamp: Signature, role: bool) -> Result<Taken, StoreError> {
-    let Ok(prefix) = host_prefix(blob) else { return Ok(Taken::Code(Code::MALFORMED)) };
-    let class = prefix.as_ref().map(|p| p.class()).unwrap_or_default();
-    let expiry = prefix.and_then(|p| p.expiry()).map(|t| t.0);
+    let Some((class, expiry)) = class_expiry(blob) else { return Ok(Taken::Code(Code::MALFORMED)) };
     if class == Class::Relay {
         return Ok(match store.relay(label, &blob_id, blob.len(), expiry, now)? {
             RelayVerdict::Push => Taken::Relay(Relayed { label: *label, blob_id, blob: blob.into(), wrap, stamp }),
@@ -949,13 +932,24 @@ pub fn put_stamped(store: &mut dyn LabelStore, now: u64, label: &LabelId, blob_i
             RelayVerdict::Refused(c) => Taken::Code(c),
         });
     }
-    if expiry.is_some_and(|t| t <= now) {
-        return Ok(Taken::Code(Code::EXPIRED));
+    Ok(Taken::Code(put_live(store, label, Put { blob_id, blob, wrap, stamp: Some(stamp), expiry, ephemeral: class.in_memory(), now, role })?))
+}
+
+/// The class and expiry of a blob's prefix; none when it does not parse.
+fn class_expiry(blob: &[u8]) -> Option<(Class, Option<u64>)> {
+    let prefix = host_prefix(blob).ok()?;
+    Some((prefix.as_ref().map(|p| p.class()).unwrap_or_default(), prefix.and_then(|p| p.expiry()).map(|t| t.0)))
+}
+
+/// `LabelStore::put` of an authorized entry, unless it expired or its blob is tombstoned.
+fn put_live(store: &mut dyn LabelStore, label: &LabelId, put: Put<'_>) -> Result<Code, StoreError> {
+    if put.expiry.is_some_and(|t| t <= put.now) {
+        return Ok(Code::EXPIRED);
     }
-    if store.tombstoned(label, &blob_id)? {
-        return Ok(Taken::Code(Code::TOMBSTONED));
+    if store.tombstoned(label, &put.blob_id)? {
+        return Ok(Code::TOMBSTONED);
     }
-    Ok(Taken::Code(store.put(label, Put { blob_id, blob, wrap, stamp: Some(stamp), expiry, ephemeral: class.in_memory(), now, role })?))
+    store.put(label, put)
 }
 
 /// A stamped entry pulled from a reader of `label` at a node that cannot read it (spec/sync.md
@@ -983,25 +977,11 @@ pub fn deposit(store: &mut dyn LabelStore, now: u64, label: &LabelId, k: &HeadKe
     if code != Code::OK {
         return Ok((code, false));
     }
-    let Ok(prefix) = host_prefix(blob) else { return Ok((Code::MALFORMED, true)) };
-    let class = prefix.as_ref().map(|p| p.class()).unwrap_or_default();
-    let expiry = prefix.and_then(|p| p.expiry()).map(|t| t.0);
+    let Some((class, expiry)) = class_expiry(blob) else { return Ok((Code::MALFORMED, true)) };
     if class == Class::Relay {
         return Ok((Code::REFUSED, true));
     }
-    if expiry.is_some_and(|t| t <= now) {
-        return Ok((Code::EXPIRED, true));
-    }
-    if store.tombstoned(label, &blob_id)? {
-        return Ok((Code::TOMBSTONED, true));
-    }
-    Ok((store.put(label, Put { blob_id, blob, wrap, stamp: None, expiry, ephemeral: class.in_memory(), now, role })?, true))
-}
-
-impl From<Vec<u8>> for SessionOutput {
-    fn from(frame: Vec<u8>) -> SessionOutput {
-        SessionOutput::Send(frame)
-    }
+    Ok((put_live(store, label, Put { blob_id, blob, wrap, stamp: None, expiry, ephemeral: class.in_memory(), now, role })?, true))
 }
 
 
