@@ -5,3 +5,4 @@
 - The 3-line repeated-window scan found the main target (nine hand-written paged catalog loops in record/nodelog/changed) in seconds.
 - Catalog key helpers (`local_key`, `pending_key`, `table_key`) cost more lines than the inline `concat()`s they replaced (+26/-12): reverted. The lesson holds.
 - notes/local-store.md and issues/root-key-erasure-tier.md said a diagnostic reports the root tier; nothing ever read it.
+- Review: local `main` lagged origin/main by six commits, so `tools/gate.sh --plan` selected the GUI steps from main's app commits; `--base origin/main` gave the branch's own diff. The gate could default its base to origin/main.
