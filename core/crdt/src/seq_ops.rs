@@ -252,26 +252,20 @@ pub(crate) fn op<V: View>(w: &mut Writer, text: bool, s: Option<&dyn SeqRead>, v
                 return Err(Error::Mismatch("paste is a text op"));
             }
             let held = |d: &Dot| s.rec(d).is_some_and(|e| e.held_char().is_some());
-            if dots.is_empty() || !dots.iter().all(held) {
-                return Err(Error::Mismatch("the clipboard no longer matches"));
-            }
             let vis = visible(s);
             let p = &vis.0.p;
             let idx: Vec<usize> = dots.iter().filter_map(|d| vis.0.index(d)).collect();
-            // the clipboard's dots in its order in the placement: the paste reads as its text
-            let (Some(i0), Some(i1)) = (idx.first(), idx.last()) else { return Err(Error::Mismatch("the clipboard no longer matches")) };
-            if idx.len() != dots.len() || !idx.is_sorted_by(|a, b| a < b) {
-                return Err(Error::Mismatch("the clipboard no longer matches"));
-            }
-            let range = dots_of(p, *i0..*i1 + 1);
-            // visible text inside the remembered range: the clipboard no longer matches
+            // the clipboard's dots held, in its order in the placement, with no other visible
+            // text between them: the paste reads as its text
             let clip: HashSet<&Dot> = dots.iter().collect();
-            if range.iter().any(|d| !clip.contains(d) && s.rec(d).is_some_and(|e| is_visible(e, text))) {
-                return Err(Error::Mismatch("the clipboard no longer matches"));
-            }
-            let dest = anchor_outside(&vis, *i0..*i1 + 1, *at)?;
-            let pred = pred_of(p, *i0);
-            *out.elems_mut() = move_writes(w, p, *i0..*i1 + 1, pred, dest, &|d| s.holding(d).is_some_and(|e| !e.pos.is_empty()));
+            let other_text = |r: &[Dot]| r.iter().any(|d| !clip.contains(d) && s.rec(d).is_some_and(|e| is_visible(e, text)));
+            let (i0, i1) = match (idx.first(), idx.last()) {
+                (Some(&i0), Some(&i1)) if dots.iter().all(held) && idx.len() == dots.len() && idx.is_sorted_by(|a, b| a < b) && !other_text(&dots_of(p, i0..i1 + 1)) => (i0, i1),
+                _ => return Err(Error::Mismatch("the clipboard no longer matches")),
+            };
+            let dest = anchor_outside(&vis, i0..i1 + 1, *at)?;
+            let pred = pred_of(p, i0);
+            *out.elems_mut() = move_writes(w, p, i0..i1 + 1, pred, dest, &|d| s.holding(d).is_some_and(|e| !e.pos.is_empty()));
             check_bare(&out)?;
             let d = w.delta_stamp();
             for dot in dots {
