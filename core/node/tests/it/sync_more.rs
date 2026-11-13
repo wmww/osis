@@ -1832,10 +1832,11 @@ fn a_head_moved_past_while_away_is_opened_again_spec_sync_10() {
 
 // spec/sync.md §5 (Behind), §2 (Claim set): a reader away across two rotations, holding neither
 // new epoch's sync secret, catches up at a node that cannot read L with no other reader online:
-// one Behind item on the step it holds the sync key of gives both new steps, and its claim at the
-// head is shown and opens L.
+// a Behind item on the step it holds the sync key of gives the first new step (an answer stops at
+// another sync key), one by its claim there gives the head, and its claim at the head is shown
+// and opens L.
 #[test]
-fn two_rotations_missed_are_crossed_by_one_behind_item_spec_sync_5() {
+fn two_rotations_missed_are_crossed_by_a_behind_item_each_spec_sync_5() {
     let (mut net, host, [a, b, x, y], g, []) = hosted::<4, 0>(&[(1, Role::Read), (2, Role::Read), (3, Role::Read)], [], true);
     let l = net.label(a);
     net.set_online(b, false);
@@ -1857,5 +1858,5 @@ fn two_rotations_missed_are_crossed_by_one_behind_item_spec_sync_5() {
     net.set_online(b, true);
     net.advance(61_000);
     assert_eq!(net.read(b, t), Some(s("after")), "b reads L at the head, no other reader online");
-    assert_eq!(net.sync(b).pass_stats().behind_sent - behind, 1, "one Behind item");
+    assert_eq!(net.sync(b).pass_stats().behind_sent - behind, 2, "a Behind item per rotation crossed");
 }

@@ -153,7 +153,7 @@ RULES = [
     ("spec/permissions.md", "7", "link finalized", "MUST write it once L's edge expired or was self-removed"),
     ("spec/permissions.md", "7", "joiner's leave", "A node of the account MUST write it once it holds that history"),
     ("spec/sync.md", "2", "home label", "MUST also create its label"),
-    ("spec/sync.md", "5", "behind", "the steps after it on its path to its head"),
+    ("spec/sync.md", "5", "behind", "through the first whose sync key is not the named step's"),
     ("spec/sync.md", "5", "behind static", "the head's entry box for that entry and the path from genesis"),
     ("spec/sync.md", "5", "delete opened", "taken at a node that cannot read L only on a connection where L is open"),
     ("spec/sync.md", "5", "register", "refuse anything else"),

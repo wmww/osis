@@ -788,8 +788,8 @@ fn behind_answers(s: &mut Setup, items: Vec<OfferItem>) -> Vec<(Code, Option<Vec
 
 // spec/sync.md §5 (Behind), spec/wire.md §11.2 (Offer): a node keeping L unread answers a Behind
 // item by a credential of a step on its path other than its head (its sync key, a claim of its
-// held set) with the steps after it to the head, each verifying under the one before; naming no
-// step, after the newest step bearing the sync key. One on the head, by a key that is no credential of the step
+// held set) with the steps after it through the first under another sync key, each verifying
+// under the one before; naming no step, the step after the newest bearing the sync key. One on the head, by a key that is no credential of the step
 // (a claim naming no step), or with a signature over another connection's challenge is refused
 // (14), one on a label not kept here answered 13, carrying nothing; nothing opens.
 // spec/sync.md §5 (behind)
@@ -818,7 +818,7 @@ fn a_behind_item_gets_its_steps_child_spec_sync_5() {
     let steps = l.steps.clone();
     let ans = behind_answers(&mut s, items);
     let l = &s.l;
-    assert_eq!(ans[0], (Code::OK, Some(steps[1..].to_vec())), "the steps after step 0 to the head");
+    assert_eq!(ans[0], (Code::OK, Some(steps[1..2].to_vec())), "the step after step 0, the first under another sync key");
     steps[1].verify_child(&l.steps[0]).unwrap();
     steps[2].verify_child(&l.steps[1]).unwrap();
     assert_eq!(ans[1], (Code::OK, Some(steps[2..].to_vec())), "naming none: after the newest step bearing the key");
@@ -830,6 +830,93 @@ fn a_behind_item_gets_its_steps_child_spec_sync_5() {
     assert_eq!(ans[7], (Code::NOT_ADMITTED, None), "a claim names its step");
     assert!(s.net.sync(s.b).shared_members(s.p.conn).is_empty(), "nothing opens");
     assert_eq!(s.net.sync(s.b).pass_stats().behind_answered, 3);
+}
+
+/// Dials node `b` again as the hand dialer, its shared set started (NoRecord).
+fn redial(s: &mut Setup) {
+    s.p = dial_with(&mut s.net, s.b, CHALLENGE);
+    shared_of(&send(&mut s.net, s.b, &mut s.p, Message::NoRecord { id: 1 << 31 }));
+}
+
+// spec/sync.md §5 (Behind), notes/label-access.md (One step at a time): a reader removed at a
+// rotation keeps its old sync secret, and no time ends a sync key as a credential: long past
+// `ROLE_KEEP` (claim sets dropped), its Behind items, naming its step or none, learn the steps
+// under its own sync key and the first rotation past them, and nothing after: not how many
+// rotations followed, nor the head's sync key.
+#[test]
+fn a_removed_reader_learns_at_most_the_next_rotation_spec_sync_5() {
+    let mut s = setup();
+    // step 1 keeps step 0's sync key; steps 2-4 each rotate it (step 2 removes the reader)
+    s.l.rotate_keeping_sync(0x41);
+    command(&mut s.net, s.b, &mut s.p, s.l.register_cmd(1));
+    for b in [0x61, 0x63, 0x65] {
+        s.l.rotate(b);
+        let i = s.l.steps.len() - 1;
+        command(&mut s.net, s.b, &mut s.p, s.l.register_cmd(i));
+    }
+    assert_eq!(s.l.steps[1].keys.sync, s.l.steps[0].keys.sync);
+    s.net.advance(osis_base::format::ROLE_KEEP_MS + 61_000);
+    redial(&mut s);
+    let (p, l) = (&s.p, &s.l);
+    let items = vec![behind_item(p, l, 0, true), behind_item(p, l, 0, false), behind_item(p, l, 1, true)];
+    let steps = l.steps.clone();
+    let ans = behind_answers(&mut s, items);
+    assert_eq!(ans[0], (Code::OK, Some(steps[1..3].to_vec())), "naming step 0: its sync key's run and the first rotation");
+    assert_eq!(ans[1], (Code::OK, Some(steps[2..3].to_vec())), "naming none: the first rotation alone");
+    assert_eq!(ans[2], (Code::OK, Some(steps[2..3].to_vec())), "naming step 1: the first rotation alone");
+    assert!(s.net.sync(s.b).shared_members(s.p.conn).is_empty(), "nothing opens");
+}
+
+// spec/sync.md §5 (Behind), spec/permissions.md §7: a used or revoked link's key actor, named by
+// the static entry of an old step's claim set, asking by a Behind item on that step learns the
+// steps through the first rotation past it and nothing after; naming no step it is refused where
+// the head does not list it (a Static item's grant), and once the old step's claim set is
+// dropped (`ROLE_KEEP`) it is refused on the step too.
+#[test]
+fn a_revoked_link_learns_at_most_the_next_rotation_spec_sync_5() {
+    let mut s = setup();
+    for b in [0x61, 0x63, 0x65] {
+        s.l.rotate(b);
+        let i = s.l.steps.len() - 1;
+        command(&mut s.net, s.b, &mut s.p, s.l.register_cmd(i));
+    }
+    let by = |p: &Dialer, l: &Label, step: Option<osis_label::StepId>| OfferItem::Behind { label: l.id, step, key: l.key_actor.verifying_key().to_bytes(), sig: osis_crypto::sign_open(&l.key_actor, &l.id, &p.hello, &LISTENER) };
+    let (p, l) = (&s.p, &s.l);
+    let items = vec![by(p, l, Some(l.steps[0].id())), by(p, l, Some(l.steps[1].id()))];
+    let steps = l.steps.clone();
+    let ans = offer_answers(&mut s, items);
+    let got = |a: &(Code, Option<osis_proto::msg::Grant>)| (a.0, a.1.as_ref().map(|g| (g.entry_box.is_none(), g.steps.clone())));
+    assert_eq!(got(&ans[0]), (Code::OK, Some((true, steps[1..2].to_vec()))), "on step 0: step 1 alone");
+    assert_eq!(got(&ans[1]), (Code::OK, Some((true, steps[2..3].to_vec()))), "on step 1: step 2 alone");
+    s.net.advance(osis_base::format::ROLE_KEEP_MS + 61_000);
+    redial(&mut s);
+    let (p, l) = (&s.p, &s.l);
+    let items = vec![by(p, l, Some(l.steps[0].id()))];
+    let ans = offer_answers(&mut s, items);
+    assert_eq!(got(&ans[0]), (Code::NOT_ADMITTED, None), "its claim set dropped: nothing");
+}
+
+// spec/sync.md §5 (Behind), notes/flow-control.md (Hub stall bounds): an Offer of 1024 Behind
+// items each naming the genesis step by its sync key reads one step per item (the first under
+// another sync key) whatever the number of steps after it, and every item is answered.
+#[test]
+fn behind_items_on_genesis_read_a_step_each_spec_sync_5() {
+    let reads = |rotations: u8| {
+        let mut s = setup();
+        for k in 0..rotations {
+            s.l.rotate(0x61 + 2 * k);
+            let i = s.l.steps.len() - 1;
+            command(&mut s.net, s.b, &mut s.p, s.l.register_cmd(i));
+        }
+        let items = (0..1024).map(|_| behind_item(&s.p, &s.l, 0, true)).collect();
+        let before = s.net.sync(s.b).pass_stats();
+        let ans = behind_answers(&mut s, items);
+        let after = s.net.sync(s.b).pass_stats();
+        assert!(ans.iter().all(|a| a.0 == Code::OK && a.1.as_ref().is_some_and(|x| x.len() == 1)), "{rotations} rotations: one step each");
+        (after.behind_steps - before.behind_steps, after.behind_answered - before.behind_answered)
+    };
+    assert_eq!(reads(2), (1024, 1024));
+    assert_eq!(reads(12), (1024, 1024), "flat in the steps past genesis");
 }
 
 // spec/sync.md §5 (Behind), spec/wire.md §11.2 (Offer): a Behind item by a key actor's signing

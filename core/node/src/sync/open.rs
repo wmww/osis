@@ -514,18 +514,20 @@ impl SyncEngine {
     }
 
     /// Behind items on `asked` (none: a hint's) were answered, `steps` the first answer's steps
-    /// after it to the peer's head (spec/sync.md §5, Behind): each verified under the one before,
+    /// after it, through the first under another sync key (spec/sync.md §5, Behind): each verified under the one before,
     /// the first under `asked`'s delete key (a hint's is the peer's word: it knows no parent; its
     /// credential opens only if the peer's filter lists it), the last is the newest step known
     /// there. Open there, the head moves along them; else the last one's credential is tested
     /// against the peer's latest filter: shown, it is Hit; not shown, a Behind item asks on while
     /// this node holds a credential of it, else L is stranded there (tried again after
     /// `resync_ms`; `step_known`). None given: a hint's label
-    /// is not at the peer yet (tried again after a back-off); `unknown` (13), the peer does not
-    /// keep L: the recorded path goes there; else (14) the step given as a child was the peer's
+    /// is not at the peer yet (tried again after a back-off); 4, past the peer's budget for one
+    /// Offer: tried again after a back-off; 13, the peer does not keep L: the recorded path goes
+    /// there; else (14) the step given as a child was the peer's
     /// head (stranded), or a recorded one is off its path: an earlier step asks
     /// (`asked_before`).
-    pub(crate) fn behind_answered(&mut self, conn: ConnId, l: LabelId, asked: Option<Step>, steps: Vec<Step>, unknown: bool, out: &mut Vec<super::Action>) -> Result<()> {
+    pub(crate) fn behind_answered(&mut self, conn: ConnId, l: LabelId, asked: Option<Step>, steps: Vec<Step>, code: Code, out: &mut Vec<super::Action>) -> Result<()> {
+        let unknown = code == Code::UNKNOWN_LABEL;
         let Some((g, phase)) = self.lc(conn, &l).map(|x| (x.group, x.phase.clone())) else { return Ok(()) };
         // each step a child of the one before, the first of the asked one (a hint's: the peer's word)
         let mut parent = asked.as_ref();
@@ -540,6 +542,11 @@ impl SyncEngine {
         let Some(last) = steps.last().cloned().filter(|_| verified) else {
             if matches!(phase, Phase::Behind { .. }) {
                 return match asked {
+                    // past the peer's budget for one Offer: asked again after a back-off
+                    _ if code == Code::RATE_LIMITED => {
+                        self.refused_for_now(conn, l, code);
+                        Ok(())
+                    }
                     None => {
                         self.refused_for_now(conn, l, Code::UNKNOWN_LABEL);
                         Ok(())
@@ -666,8 +673,8 @@ impl SyncEngine {
 
     /// A Behind item by the static entry `entry` of `l` was answered (spec/sync.md §5, Behind):
     /// with the head's entry box and the path, the secrets learnt, the head is the newest step
-    /// known there (`step_known`); 13, the peer does not hold `l` yet (tried again after a
-    /// back-off); else its head does not list the entry: refused there
+    /// known there (`step_known`); 13, the peer does not hold `l` yet, or 4, past its budget for
+    /// one Offer (tried again after a back-off); else its head does not list the entry: refused there
     /// (`static_entry_refused`).
     pub(crate) fn static_answered(&mut self, conn: ConnId, l: LabelId, entry: &[u8; 32], code: Code, grant: Option<&osis_proto::msg::Grant>, out: &mut Vec<super::Action>) -> Result<()> {
         if self.lc(conn, &l).is_none_or(|x| !matches!(x.phase, Phase::Behind { .. })) {
@@ -682,7 +689,7 @@ impl SyncEngine {
                 let Some(head) = g.steps.last().cloned() else { return Ok(()) };
                 self.step_known(conn, l, head, true, out)
             }
-            (Code::UNKNOWN_LABEL, _) => {
+            (Code::UNKNOWN_LABEL | Code::RATE_LIMITED, _) => {
                 self.refused_for_now(conn, l, code);
                 Ok(())
             }

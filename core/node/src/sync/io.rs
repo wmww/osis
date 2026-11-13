@@ -173,9 +173,11 @@ pub struct PassStats {
     pub inbox_keys: u64,
     /// Credentials of earlier recorded steps a walk tested against a peer's filter.
     pub walk_tests: u64,
-    /// Behind items sent, and answered with a child step (spec/sync.md §5, Behind).
+    /// Behind items sent, answered with steps, and the steps read answering them (spec/sync.md
+    /// §5, Behind).
     pub behind_sent: u64,
     pub behind_answered: u64,
+    pub behind_steps: u64,
     /// `changed_at` passes and the labels they fingerprinted (`stamp_changes`).
     pub changed_passes: u64,
     pub changed_labels: u64,

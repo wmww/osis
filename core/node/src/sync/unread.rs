@@ -176,16 +176,21 @@ impl SyncEngine {
 
     /// The answer to a Behind item on `l` (spec/sync.md §5, Behind), its key `key` shown by `sig`,
     /// an open signature over this side's Hello challenge and the listener's key (`challenge`,
-    /// `listener`): the steps after `step` on the hub store's path to its head when it is not the
-    /// head and `key` is a credential of it (its sync key, a claim of its held claim set, or a key
-    /// actor's signing key whose static entry the set lists); naming no step, by a sync key, those
-    /// after the newest step bearing it; naming no step, by a key actor's
-    /// signing key whose static entry the head's claim set lists, the head's entry box for it and
-    /// the path (a Static item's grant). A label this node neither keeps nor reads is unknown.
-    /// Index lookups and a step read per step crossed, whatever the path's length before the
-    /// named step (a static entry's grant reads the path, as a Static item's does).
+    /// `listener`): when `step` is not the head and `key` is a credential of it (its sync key, a
+    /// claim of its held claim set, or a key actor's signing key whose static entry the set
+    /// lists), the steps after it on the hub store's path through the first whose sync key is not
+    /// its own (one sync key's run: an old credential learns one rotation past what it read);
+    /// naming no step, by a sync key, the step after the newest bearing it; naming no step, by a
+    /// key actor's signing key whose static entry the head's claim set lists, the head's entry box
+    /// for it and the path (a Static item's grant). A label this node neither keeps nor reads is
+    /// unknown. `budget` is the steps the Offer's answers may still carry (what one reply holds):
+    /// each step read takes one; spent, the answer is the steps read so far, none read refused for
+    /// now.
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn unread_behind(&mut self, l: &LabelId, step: Option<&osis_label::StepId>, key: &[u8; 32], sig: &Signature, challenge: &[u8; 32], listener: &[u8; 32]) -> Result<BehindAnswer> {
+    pub(crate) fn unread_behind(&mut self, l: &LabelId, step: Option<&osis_label::StepId>, key: &[u8; 32], sig: &Signature, challenge: &[u8; 32], listener: &[u8; 32], budget: &mut usize) -> Result<BehindAnswer> {
+        if *budget == 0 {
+            return Ok(BehindAnswer::ForNow);
+        }
         if !self.is_unread(l)? {
             return Ok(if self.things().contains_key(l) { BehindAnswer::Refused } else { BehindAnswer::Unknown });
         }
@@ -201,7 +206,11 @@ impl SyncEngine {
                 None => {
                     drop(hub);
                     let entry = osis_crypto::static_entry(l, &pk);
-                    return Ok(self.unread_grant(l, &entry)?.map_or(BehindAnswer::Refused, |g| BehindAnswer::Grant(Box::new(g))));
+                    let Some(g) = self.unread_grant(l, &entry)? else { return Ok(BehindAnswer::Refused) };
+                    // the path read; past what the reply still holds it does not go
+                    let fits = g.steps.len() <= *budget;
+                    *budget = budget.saturating_sub(g.steps.len());
+                    return Ok(if fits { BehindAnswer::Grant(Box::new(g)) } else { BehindAnswer::ForNow });
                 }
             },
         };
@@ -218,18 +227,28 @@ impl SyncEngine {
         if at.keys.sync != pk && !(step.is_some() && listed()?) {
             return Ok(BehindAnswer::Refused);
         }
-        // the steps after it to the head, by the child index
+        // the steps after it by the child index, through the first under another sync key
         let mut steps = Vec::new();
-        let mut at = id;
-        while let Some(c) = hub.child(l, Some(&at)).map_err(hub_err)? {
-            if steps.len() >= osis_proto::store::MAX_PATH {
-                return Ok(BehindAnswer::Refused);
-            }
+        let mut cur = id;
+        while *budget > 0
+            && let Some(c) = hub.child(l, Some(&cur)).map_err(hub_err)?
+        {
             let Some(st) = hub.step(l, &c).map_err(hub_err)? else { break };
+            *budget -= 1;
+            let rotated = st.keys.sync != at.keys.sync;
             steps.push(st);
-            at = c;
+            cur = c;
+            if rotated {
+                break;
+            }
         }
-        Ok(if steps.is_empty() { BehindAnswer::Refused } else { BehindAnswer::Steps(steps) })
+        Ok(if !steps.is_empty() {
+            BehindAnswer::Steps(steps)
+        } else if *budget == 0 {
+            BehindAnswer::ForNow
+        } else {
+            BehindAnswer::Refused
+        })
     }
 
     /// Where a member of unread `l` opened by a credential its head no longer bears ends
@@ -469,7 +488,9 @@ pub(crate) enum BehindAnswer {
     Unknown,
     /// Anything else refused (code 14).
     Refused,
-    /// The steps after the named one to the head, in order.
+    /// Not answered within the Offer's budget (code 4, refused for now).
+    ForNow,
+    /// The steps after the named one, in order, through the first under another sync key.
     Steps(Vec<Step>),
     /// A static entry the head lists: its entry box and the path.
     Grant(Box<osis_proto::msg::Grant>),

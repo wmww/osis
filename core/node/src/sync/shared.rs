@@ -1125,9 +1125,14 @@ impl SyncEngine {
         }
         drop(judge);
         let (challenge, listener) = (if s.by_listener { s.listener } else { s.dialer }, s.key);
+        // the steps one reply holds: Behind answers read no more per Offer (notes/flow-control.md,
+        // Hub stall bounds)
+        let full = osis_proto::serving::REPLY_BUDGET / osis_proto::msg::MAX_STEP_BYTES;
+        let mut budget = full;
         for (i, l, step, key, sig) in behinds {
-            let answer = match self.unread_behind(&l, step.as_ref(), &key, &sig, &challenge, &listener)? {
+            let answer = match self.unread_behind(&l, step.as_ref(), &key, &sig, &challenge, &listener, &mut budget)? {
                 super::unread::BehindAnswer::Unknown => (Code::UNKNOWN_LABEL, None, None),
+                super::unread::BehindAnswer::ForNow => (Code::RATE_LIMITED, None, None),
                 super::unread::BehindAnswer::Refused => continue,
                 super::unread::BehindAnswer::Steps(steps) => {
                     self.stats.behind_answered += 1;
@@ -1139,6 +1144,7 @@ impl SyncEngine {
                 *c = answer;
             }
         }
+        self.stats.behind_steps += (full - budget) as u64;
         for (i, l, entry) in unread_grants {
             let grant = self.unread_grant(&l, &entry)?.map(Box::new);
             if let Some(c) = codes.get_mut(i) {
@@ -1745,7 +1751,7 @@ impl SyncEngine {
                 // failed grants' Hits: answered for good, after the close below re-marks L
                 let mut declined = Vec::new();
                 // Behind items' answers per label, in order: the first child answered settles it
-                let mut behinds: Vec<(LabelId, Option<osis_label::Step>, Vec<osis_label::Step>, bool)> = Vec::new();
+                let mut behinds: Vec<(LabelId, Option<osis_label::Step>, Vec<osis_label::Step>, Code)> = Vec::new();
                 // Behind items by a static entry: (label, entry, code, grant)
                 let mut statics = Vec::new();
                 for (item, (code, tag, grant)) in items.into_iter().zip(codes) {
@@ -1755,7 +1761,7 @@ impl SyncEngine {
                     }
                     if let AskedItem::Behind(l, step) = item {
                         let steps = grant.filter(|_| code == Code::OK).map(|g| g.steps).unwrap_or_default();
-                        behinds.push((l, step.map(|x| *x), steps, code == Code::UNKNOWN_LABEL));
+                        behinds.push((l, step.map(|x| *x), steps, code));
                         continue;
                     }
                     if let AskedItem::Static(l, entry) = item {
@@ -1830,9 +1836,11 @@ impl SyncEngine {
                     self.static_answered(conn, l, &entry, code, grant.as_deref(), out)?;
                 }
                 let mut done: BTreeSet<LabelId> = BTreeSet::new();
-                for (l, step, steps, unknown) in behinds.iter().filter(|x| !x.2.is_empty()).chain(behinds.iter().filter(|x| x.2.is_empty())) {
+                // steps first, then refused for now (a hint's other keys may still be answered)
+                behinds.sort_by_key(|x| (x.2.is_empty(), x.3 != Code::RATE_LIMITED));
+                for (l, step, steps, code) in &behinds {
                     if done.insert(*l) {
-                        self.behind_answered(conn, *l, step.clone(), steps.clone(), *unknown, out)?;
+                        self.behind_answered(conn, *l, step.clone(), steps.clone(), *code, out)?;
                     }
                 }
                 // this tester's credential is gone (issues/net-shared-set.md, Divergence), unless

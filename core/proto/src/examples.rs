@@ -115,6 +115,8 @@ pub struct Label {
     /// The key actor every claim set lists by static entry.
     pub key_actor: SigningSecret,
     pub admin: u8,
+    /// Each step's sync secret byte.
+    syncs: Vec<u8>,
 }
 
 const DEPOSIT_SEED: u8 = 0x30;
@@ -122,15 +124,16 @@ const DEPOSIT_SEED: u8 = 0x30;
 impl Label {
     pub fn new(admin: u8) -> Label {
         let id = genesis_label(&s32(admin), 0);
-        let mut l = Label { id, keys: vec![], steps: vec![], sets: vec![], reader: X25519Secret::from_secret(&s32(0x31)), key_actor: SigningSecret::from_seed(&s32(0x32)), admin };
-        l.step_with(1, None);
+        let mut l = Label { id, keys: vec![], steps: vec![], sets: vec![], reader: X25519Secret::from_secret(&s32(0x31)), key_actor: SigningSecret::from_seed(&s32(0x32)), admin, syncs: vec![] };
+        l.step_with(1, 1, None);
         l
     }
 
-    /// A step with read secret `b`, write `b + 1`, sync `b ^ 0x80`, the admin secret (a child of
-    /// the head signed by `parent`, else the genesis step).
-    fn step_with(&mut self, b: u8, parent: Option<SigningSecret>) -> (Step, ClaimSet) {
-        let (read, write, adm, sync) = (s32(b), s32(b + 1), s32(self.admin), s32(b ^ 0x80));
+    /// A step with read secret `b`, write `b + 1`, sync `sync ^ 0x80`, the admin secret (a child
+    /// of the head signed by `parent`, else the genesis step).
+    fn step_with(&mut self, b: u8, sync: u8, parent: Option<SigningSecret>) -> (Step, ClaimSet) {
+        self.syncs.push(sync);
+        let (read, write, adm, sync) = (s32(b), s32(b + 1), s32(self.admin), s32(sync ^ 0x80));
         let pk = StepKeys::derive(&sync, &write, &adm, 0, &s32(DEPOSIT_SEED), &self.id);
         let keys = Keys {
             sync: label_role_key(LabelRole::Sync, &sync, 0),
@@ -157,7 +160,14 @@ impl Label {
     /// A child step under new read and write secrets (`b`, `b + 1`).
     pub fn rotate(&mut self, b: u8) -> (Step, ClaimSet) {
         let parent = self.head_keys().delete.clone();
-        self.step_with(b, Some(parent))
+        self.step_with(b, b, Some(parent))
+    }
+
+    /// A child step under new read and write secrets (`b`, `b + 1`) and the head's sync secret.
+    pub fn rotate_keeping_sync(&mut self, b: u8) -> (Step, ClaimSet) {
+        let parent = self.head_keys().delete.clone();
+        let sync = self.syncs.last().copied().unwrap_or(1);
+        self.step_with(b, sync, Some(parent))
     }
 
     pub fn head_keys(&self) -> &Keys {

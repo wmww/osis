@@ -1742,13 +1742,15 @@ fn catch_up(steps: usize, crossed: usize) -> (u64, u64, usize) {
 }
 
 // spec/sync.md §5 (Behind), spec/requirements.md (Scale): a reader behind a peer's head by k
-// steps catches up with one Behind item, answered once with the k steps, and registers nothing,
-// whether the label's history holds n or 10n steps before them.
+// rotations catches up with one Behind item and answer per rotation crossed (an answer stops at
+// the first step under another sync key), and registers nothing, whether the label's history
+// holds n or 10n steps before them.
 #[test]
-fn a_catch_up_takes_one_behind_item_spec_sync_5() {
+fn a_catch_up_takes_one_behind_item_per_rotation_spec_sync_5() {
     for crossed in [1, 3] {
         let (small, big) = (catch_up(1, crossed), catch_up(10, crossed));
         assert_eq!(small, big, "{crossed} crossed: at 1 and 10 earlier steps");
-        assert_eq!(small, (1, 1, 0), "{crossed} crossed: one Behind item and answer, no Register");
+        let k = crossed as u64;
+        assert_eq!(small, (k, k, 0), "{crossed} crossed: one Behind item and answer each, no Register");
     }
 }
