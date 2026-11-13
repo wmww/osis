@@ -31,7 +31,7 @@ pub(crate) fn pending_drops(tx: &mut Tx<'_>, id: &CommitId, blob: &mut osis_comm
         let Some(a) = h.aspects.get(ai) else { continue };
         if pending_expired(tx, h, ai) {
             blob.parts.retain(|p| p.ai != ai);
-            strip_pending(tx, id, ai, true)?;
+            strip_pending(tx, id, ai)?;
             suspect::raise(tx, &a.tid, &a.ak, suspect::Why::PendingExpiry, &[(*id, ai)])?;
             continue;
         }
@@ -77,7 +77,8 @@ fn strip_carried_waiting(tx: &mut Tx<'_>, id: &CommitId, blob: &mut osis_commit:
     tx.core.touch();
     // node-sync forgets the blobs holding it (`Engine::spent_copy`)
     tx.core.mark_changed(*id);
-    rewrite_stored(tx, id, h, ai)
+    rewrite_stored(tx, id, |b| empty_slot(b, ai))?;
+    Ok(())
 }
 
 /// Snapshot part `part` (aspect `ai` of commit `id`, header `h`) stripped of the copies its
@@ -87,15 +88,7 @@ fn carried(tx: &mut Tx<'_>, id: &CommitId, part: &osis_commit::Part, h: &Header,
     let Some(a) = h.aspects.get(ai) else { return Ok(None) };
     let Some(list) = tx.core.ix.valueless.get(&(a.tid, a.ak.clone())).filter(|l| !l.is_empty()).cloned() else { return Ok(None) };
     let Some(dedup) = tx.core.dedup(&a.tid) else { return Err(()) };
-    let mut interner = osis_crdt::Interner::new();
-    let mut blobs = crate::engine::blobs::TxBlobs::new(&mut tx.blobs, tx.txn.is_memory());
-    let mut paged = osis_label::BlobReader::new(&dedup, &mut blobs);
-    let reader: &mut dyn osis_crdt::PageSource = &mut paged;
-    let snap = match osis_commit::verify_part(h, id, part, &dedup, &mut interner, Some(reader)) {
-        Ok(Decoded::Snapshot(snap)) => snap,
-        Err(e) if crate::apply::is_missing_page(&e) || osis_base::Classified::class(&e) == osis_base::ErrorClass::Parked => return Err(()),
-        _ => return Ok(None),
-    };
+    let Some(Decoded::Snapshot(snap)) = verify_waiting(tx, id, part, h, &dedup)? else { return Ok(None) };
     let mut f = snap.fragment.clone();
     f.strip(&|d| super::sorted_owns(&list, d));
     if f == snap.fragment {
@@ -104,22 +97,52 @@ fn carried(tx: &mut Tx<'_>, id: &CommitId, part: &osis_commit::Part, h: &Header,
     Ok(Some(leftover::Leftover { fragment: f, gives: Some((snap.frontiers, snap.absorbed.into_iter().collect(), snap.facts)) }))
 }
 
-/// The stored pending copy of `id` (header `h`), if any, with slot `ai` emptied (`emptied`),
-/// shredded.
-fn rewrite_stored(tx: &mut Tx<'_>, id: &CommitId, h: &Header, ai: usize) -> Result<()> {
-    if tx.core.ix.pending.contains_key(id)
-        && let Some((kind, bytes)) = tx.txn.get_pending(id)?
-        && let Ok(mut b) = osis_commit::CommitBlob::decode_stored(&bytes)
-    {
-        for p in b.parts.iter_mut().filter(|p| p.ai == ai) {
-            p.delta = emptied();
-        }
-        tx.in_class(h.ephemeral.is_some(), |tx| {
+/// The stored pending copy of `id`, if any, edited by `edit` and stored again where it says it
+/// changed anything, shredded, in its class (a memory commit's in memory, whichever transaction
+/// runs this). Its header, and whether it changed.
+fn rewrite_stored(tx: &mut Tx<'_>, id: &CommitId, edit: impl FnOnce(&mut osis_commit::CommitBlob) -> bool) -> Result<Option<(Header, bool)>> {
+    if !tx.core.ix.pending.contains_key(id) {
+        return Ok(None);
+    }
+    let Some((kind, bytes)) = tx.txn.get_pending(id)? else { return Ok(None) };
+    let Ok(mut b) = osis_commit::CommitBlob::decode_stored(&bytes) else { return Ok(None) };
+    let changed = edit(&mut b);
+    if changed {
+        tx.in_class(b.header.ephemeral.is_some(), |tx| {
             tx.txn.remove_pending(id, Shred::Yes)?;
             Ok(tx.txn.put_pending(id, kind, &b.encode())?)
         })?;
     }
-    Ok(())
+    Ok(Some((b.header, changed)))
+}
+
+/// Empties slot `ai` of a stored pending copy (`emptied`).
+fn empty_slot(b: &mut osis_commit::CommitBlob, ai: usize) -> bool {
+    for p in b.parts.iter_mut().filter(|p| p.ai == ai) {
+        p.delta = emptied();
+    }
+    true
+}
+
+/// Takes slot `ai` out of a stored pending copy: whether it held one.
+fn take_slot(b: &mut osis_commit::CommitBlob, ai: usize) -> bool {
+    let n = b.parts.len();
+    b.parts.retain(|p| p.ai != ai);
+    b.parts.len() != n
+}
+
+/// Part `part` of commit `id` (header `h`) checked and decoded as `apply::examine` would, `Err`
+/// when it cannot be read yet (a page away; parked: this build cannot read it), `Ok(None)` when bad.
+fn verify_waiting(tx: &mut Tx<'_>, id: &CommitId, part: &osis_commit::Part, h: &Header, dedup: &osis_crypto::Secret32) -> std::result::Result<Option<Decoded>, ()> {
+    let mut interner = osis_crdt::Interner::new();
+    let mut blobs = crate::engine::blobs::TxBlobs::new(&mut tx.blobs, tx.txn.is_memory());
+    let mut paged = osis_label::BlobReader::new(dedup, &mut blobs);
+    let reader: &mut dyn osis_crdt::PageSource = &mut paged;
+    match osis_commit::verify_part(h, id, part, dedup, &mut interner, Some(reader)) {
+        Ok(d) => Ok(Some(d)),
+        Err(e) if crate::apply::is_missing_page(&e) || osis_base::Classified::class(&e) == osis_base::ErrorClass::Parked => Err(()),
+        Err(_) => Ok(None),
+    }
 }
 
 /// The part of aspect `ai` of pending commit `id` (in `blob`, header `h`) that a held purge
@@ -141,13 +164,9 @@ fn strip_purged(tx: &mut Tx<'_>, id: &CommitId, blob: &mut osis_commit::CommitBl
     let Some(a) = h.aspects.get(ai) else { return Ok(()) };
     let Some(dedup) = tx.core.dedup(&a.tid) else { return Ok(()) };
     let Some(p) = blob.parts.iter_mut().find(|p| p.ai == ai && p.delta != emptied()) else { return Ok(()) };
-    let mut interner = osis_crdt::Interner::new();
-    let mut blobs = crate::engine::blobs::TxBlobs::new(&mut tx.blobs, tx.txn.is_memory());
-    let mut paged = osis_label::BlobReader::new(&dedup, &mut blobs);
-    let reader: &mut dyn osis_crdt::PageSource = &mut paged;
-    // done: stripped and emptied; else it goes
-    let done = match osis_commit::verify_part(h, id, p, &dedup, &mut interner, Some(reader)) {
-        Ok(Decoded::Delta(mut d)) => {
+    // done: stripped and emptied; else it goes (spec/commits.md §5; parked: spec/versioning.md §2)
+    let done = match verify_waiting(tx, id, p, h, &dedup) {
+        Ok(Some(Decoded::Delta(mut d))) => {
             d.fragment.strip(&|x| o.iter().any(|y| y.owns(x)));
             let mut kept = leftover::get(tx, &a.tid, &a.ak, id, ai)?.map(|l| l.fragment).unwrap_or_default();
             kept.join(d.fragment);
@@ -155,9 +174,8 @@ fn strip_purged(tx: &mut Tx<'_>, id: &CommitId, blob: &mut osis_commit::CommitBl
             leftover::put(tx, &a.tid, &a.ak, id, ai, &leftover::Leftover { fragment: kept, gives: None })?;
             true
         }
-        // what cannot be stripped goes (spec/commits.md §5; parked: spec/versioning.md §2)
-        Err(e) if crate::apply::is_missing_page(&e) || osis_base::Classified::class(&e) == osis_base::ErrorClass::Parked => false,
-        _ => return Ok(()),
+        Err(()) => false,
+        Ok(_) => return Ok(()),
     };
     if !done {
         blob.parts.retain(|p| p.ai != ai);
@@ -166,24 +184,7 @@ fn strip_purged(tx: &mut Tx<'_>, id: &CommitId, blob: &mut osis_commit::CommitBl
     tx.core.touch();
     // node-sync forgets the blobs holding it (`Engine::spent_copy`)
     tx.core.mark_changed(*id);
-    // the stored copy, shredded, in its class (a memory commit's in memory, whichever transaction
-    // applies the request)
-    if tx.core.ix.pending.contains_key(id)
-        && let Some((kind, bytes)) = tx.txn.get_pending(id)?
-        && let Ok(mut b) = osis_commit::CommitBlob::decode_stored(&bytes)
-    {
-        if done {
-            for p in b.parts.iter_mut().filter(|p| p.ai == ai) {
-                p.delta = emptied();
-            }
-        } else {
-            b.parts.retain(|p| p.ai != ai);
-        }
-        tx.in_class(h.ephemeral.is_some(), |tx| {
-            tx.txn.remove_pending(id, Shred::Yes)?;
-            Ok(tx.txn.put_pending(id, kind, &b.encode())?)
-        })?;
-    }
+    rewrite_stored(tx, id, |b| if done { empty_slot(b, ai) } else { take_slot(b, ai) })?;
     Ok(())
 }
 
@@ -302,27 +303,17 @@ pub(crate) fn stripped_joined(tx: &mut Tx<'_>, id: &CommitId, joined: &[(usize, 
 }
 
 /// Part `ai` of the stored pending copy of `c` (waiting or parked), if any, goes (`pending_drops`,
-/// `hold_valueless`), flagged suspect (`flag`); node-sync then forgets the blobs holding it
+/// `hold_valueless`), flagged suspect; node-sync then forgets the blobs holding it
 /// (`mark_changed`).
-pub(super) fn strip_pending(tx: &mut Tx<'_>, c: &CommitId, ai: usize, flag: bool) -> Result<()> {
-    if !tx.core.ix.pending.contains_key(c) {
-        return Ok(());
-    }
-    let Some((kind, bytes)) = tx.txn.get_pending(c)? else { return Ok(()) };
-    let Ok(mut blob) = osis_commit::CommitBlob::decode_stored(&bytes) else { return Ok(()) };
-    forget_waiting_leftover(tx, &blob.header, c, ai)?;
-    let n = blob.parts.len();
-    blob.parts.retain(|p| p.ai != ai);
-    if blob.parts.len() == n {
+pub(super) fn strip_pending(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()> {
+    let Some((h, taken)) = rewrite_stored(tx, c, |b| take_slot(b, ai))? else { return Ok(()) };
+    forget_waiting_leftover(tx, &h, c, ai)?;
+    if !taken {
         return Ok(());
     }
     tx.core.touch();
     tx.core.mark_changed(*c);
-    tx.in_class(blob.header.ephemeral.is_some(), |tx| {
-        tx.txn.remove_pending(c, Shred::Yes)?;
-        Ok(tx.txn.put_pending(c, kind, &blob.encode())?)
-    })?;
-    if flag && let Some(a) = blob.header.aspects.get(ai) {
+    if let Some(a) = h.aspects.get(ai) {
         suspect::raise(tx, &a.tid, &a.ak, suspect::Why::PendingExpiry, &[(*c, ai)])?;
     }
     Ok(())

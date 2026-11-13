@@ -529,9 +529,7 @@ fn reopen_to_fetch(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<Option<cr
         m.set_hold(ai, Hold::Missing(Missing::ToFetch));
         tx.core.put_meta(*c, m.clone());
     }
-    if let Some(ch) = &mut tx.core.changed {
-        ch.undropped.insert(*c);
-    }
+    refetch(tx, c);
     Ok(m)
 }
 
@@ -690,12 +688,11 @@ fn make_leftover(tx: &mut Tx<'_>, c: &CommitId, ai: usize, o: &[Owned], extra: &
     list_valueless(tx, &a.tid, &a.ak, o);
     let all = writes_of(&m.header, c, ai);
     let mut body: Option<Fragment> = None;
-    let mut gives: Option<crate::engine::Gives> = None;
-    let held = crate::apply::each_held_piece(tx, c, ai, &mut |_, f| {
+    let gives = crate::apply::each_held_piece(tx, c, ai, &mut |_, f| {
         body.get_or_insert_default().join(f);
         Ok(())
-    })?;
-    gives = held.flatten().or(gives);
+    })?
+    .flatten();
     for f in extra {
         body.get_or_insert_default().join(f.clone());
     }
@@ -767,16 +764,13 @@ fn make_leftover(tx: &mut Tx<'_>, c: &CommitId, ai: usize, o: &[Owned], extra: &
 /// (spec/crdt.md §4.7 Copies, spec/commits.md §5): held as its leftover from now on, those copies
 /// value-less. Store only: the caller rebuilds the aspect.
 pub(crate) fn strip_carried(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()> {
-    let Some(m) = tx.core.ix.commits.get(c).cloned() else { return Ok(()) };
     let mut body: Option<Fragment> = None;
     let held = crate::apply::each_held_piece(tx, c, ai, &mut |_, f| {
         body.get_or_insert_default().join(f);
         Ok(())
     })?;
-    let Some(mut body) = body else { return Ok(()) };
-    tx.core.touch();
-    strip_leftover(tx.core, &m.header, ai, &mut body);
-    put_leftover(tx, c, ai, m, body, held.flatten())
+    let Some(body) = body else { return Ok(()) };
+    hold_carrier(tx, c, ai, body, held.flatten())
 }
 
 /// Snapshot part `ai` of applied commit `c` joined as its leftover `body` (stripped while it
@@ -889,7 +883,7 @@ fn hold_valueless(tx: &mut Tx<'_>, c: &CommitId, ai: usize, purged: bool, change
     if purged {
         purge_pending(tx, c, ai)?;
     } else {
-        strip_pending(tx, c, ai, true)?;
+        strip_pending(tx, c, ai)?;
     }
     let Some(m) = tx.core.ix.commits.get(c).cloned() else { return Ok(()) };
     let own = writes_of(&m.header, c, ai);
@@ -928,7 +922,7 @@ fn drop_gone(tx: &mut Tx<'_>, c: &CommitId, ai: usize, changed: &mut BTreeSet<(T
         }
         return Ok(());
     }
-    strip_pending(tx, c, ai, true)?;
+    strip_pending(tx, c, ai)?;
     if let Some(k) = make_leftover(tx, c, ai, &gone, &[], false)? {
         changed.insert(k);
     }
