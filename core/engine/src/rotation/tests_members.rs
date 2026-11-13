@@ -616,6 +616,31 @@ fn fork_missing_a_known_removal_seals_jointly_spec_crypto_4() {
     assert_eq!(leaked(&mut lp, 3, &[m, a], d, start), Vec::<Tid>::new());
 }
 
+// spec/crypto.md §4 (Encrypting under: the box clause; a joint box judged as a whole): as
+// `fork_missing_a_known_removal_seals_jointly_spec_crypto_4`, a1's epoch w boxes M jointly at k2
+// and k3. m2 (lacking k3) makes N with a1 a reader; a1 grants N on A (w boxes N), then m2 grants M
+// on N, sealed at k2 alone. D opens k2, so N's epoch, so w: a1 may not encrypt under w though the
+// joint box to M at k2 is not blocked.
+#[test]
+fn keyset_in_joint_box_reached_alone_blocks_spec_crypto_4() {
+    let none = BTreeSet::new();
+    let (mut lp, m, a, _, _) = forked_anchors();
+    let (d, a1) = (lp.peers[1].engine.me(), lp.peers[3].engine.me());
+    lp.peers[0].clock.advance(60_000);
+    removal(&mut lp, 0, m, d);
+    send_skipping(&mut lp, 0, 3, &none);
+    lp.peers[3].engine.ensure_rotated(&a).unwrap();
+    assert_eq!(sealed_keysets(&mut lp, 3, a, m).len(), 2, "M sealed jointly");
+    let n = group(&mut lp, 2);
+    lp.peers[2].engine.grant(&n, &a1, &edge(Role::Read)).unwrap();
+    send_skipping(&mut lp, 2, 3, &none);
+    lp.peers[3].engine.grant(&a, &n, &edge(Role::Read)).unwrap();
+    assert!(blocked_at(&mut lp, 3, a).is_empty(), "N's epoch boxes nothing yet");
+    lp.peers[2].engine.grant(&n, &m, &edge(Role::Read)).unwrap();
+    send_skipping(&mut lp, 2, 3, &none);
+    assert!(blocked_at(&mut lp, 3, a).contains(&Role::Read), "w reaches k2 alone through N");
+}
+
 // spec/crypto.md §4 (Seal: a joint box held back where every keyset it names misses a departure;
 // model `JointRule.tla` `NoPooledLeak`): A's anchors for M fork at k1 and k2 (as
 // `forked_anchors`), and a1 reads M too, so it judges M's keysets by their history. m1 removes D1

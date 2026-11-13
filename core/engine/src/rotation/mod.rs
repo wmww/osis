@@ -97,7 +97,7 @@ pub fn blocked_roles_of(tx: &mut Tx<'_>, who: &Tid, a: &Tid, deps: &[Departure],
 /// under an epoch boxing M at such a keyset, at any height above M: the party removed from M
 /// opens none of it, M's rotation made or not (model `D0_above`, `D0_readers_out`,
 /// `NoLeakAbove`). Walked over the boxes without recursion (chains have no depth bound) but
-/// at a joint box, each (actor, epoch) once (boxes may cycle).
+/// at a joint box, each (actor, epoch) once per walk (boxes may cycle).
 pub(crate) fn blocked_epoch(tx: &mut Tx<'_>, who: &Tid, a: &Tid, r: Role, e: &osis_crypto::Epoch, deps: &[Departure], walk: Walk) -> Result<bool> {
     let mut own = None;
     Ok(walk_from(tx, who, a, r, (*a, *e, true), deps, walk, false, BTreeSet::new(), &mut own)?.is_some())
@@ -188,16 +188,19 @@ fn walk_from(tx: &mut Tx<'_>, who: &Tid, a: &Tid, r: Role, root: (Tid, osis_cryp
                 }
                 continue;
             }
-            // a joint box: each keyset it names judged on its own walk, the box as a whole
-            let fresh: Vec<osis_crypto::Epoch> = js.iter().copied().filter(|j| !seen.contains(&(m, *j))).collect();
+            // a joint box: each keyset it names judged on its own walk, the box as a whole. A
+            // keyset already on this walk (or an enclosing one) counts as not blocked here: that
+            // walk judges it, and blocks for it whatever this box does. The keysets are not marked
+            // seen: one reached alone by another box is still walked.
             let mut why = BTreeMap::new();
-            for j in &fresh {
+            for j in js.iter().filter(|j| !seen.contains(&(m, **j))) {
                 if let Some(b) = walk_from(tx, who, a, r, (m, *j, next), deps, walk, true, seen.clone(), own)? {
                     why.insert(*j, b);
                 }
             }
-            if !fresh.is_empty() && !joint_blocked(why.clone(), fresh.len()).is_empty() {
-                if why.values().any(|b| *b == Block::Box) {
+            let boxed = why.values().any(|b| *b == Block::Box);
+            if !joint_blocked(why, js.len()).is_empty() {
+                if boxed {
                     return Ok(Some(Block::Box));
                 }
                 if !full {
@@ -205,7 +208,6 @@ fn walk_from(tx: &mut Tx<'_>, who: &Tid, a: &Tid, r: Role, root: (Tid, osis_cryp
                 }
                 missed = true;
             }
-            seen.extend(js.iter().map(|j| (m, *j)));
         }
     }
     Ok(missed.then_some(Block::Departure))
