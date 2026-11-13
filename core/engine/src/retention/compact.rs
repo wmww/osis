@@ -82,7 +82,7 @@ struct Est {
     /// The snapshot cost found then.
     snapshot: usize,
     /// Per session source with bodies held behind a gap when last weighed: the first counter its
-    /// frontier walk did not pass (`snapshot::walk_source`; a missing, invalid or purged body, or
+    /// frontier walk did not pass (`snapshot::walk_source`; a missing or invalid body, or
     /// counters not held). A body behind it counts for nothing (no snapshot drops it) until a
     /// held body or snapshot passes the gap (`Trigger::gap_passed`), which counts every body the walk
     /// then passes: O(the bodies that start to count), so a gap that stays costs writes nothing
@@ -144,7 +144,7 @@ impl Trigger {
     /// held behind it (`gap_passed`).
     fn snapshot_held(tx: &mut Tx<'_>, s: &CommitId, k: &(Tid, Ak)) -> Result<()> {
         let Some(stops) = tx.core.compaction.est.get(k).map(|e| e.stops.clone()).filter(|x| !x.is_empty()) else { return Ok(()) };
-        if !super::snapshot::claims(tx.core, s, &k.0, &k.1, tx.now().0) {
+        if !super::snapshot::claims(tx.core, s, &k.0, &k.1) {
             return Ok(());
         }
         let Some(fr) = tx.core.ix.snapshots.get(k).and_then(|v| v.iter().find(|x| x.1 == *s)).map(|x| x.2.clone()) else { return Ok(()) };
@@ -163,11 +163,10 @@ impl Trigger {
     /// (`held_counts`; `filler`, the one passing it, by its blob in hand), and the source's stop
     /// moves to where the walk stops, if it does. O(the bodies passed).
     fn gap_passed(tx: &mut Tx<'_>, k: &(Tid, Ak), src: &osis_crdt::Source, next: u64, from: u64, filler: Option<(&CommitId, &CommitBlob)>) -> Result<()> {
-        let now = tx.now().0;
         let mut passed = Vec::new();
         let (stop, stopped) = {
             let core = &*tx.core;
-            let valid_on = |c: &CommitId| super::snapshot::claims(core, c, &k.0, &k.1, now);
+            let valid_on = |c: &CommitId| super::snapshot::claims(core, c, &k.0, &k.1);
             let ranges = core.ix.ranges.get(&(k.0, k.1.clone(), src.clone())).into_iter().flat_map(|r| r.range((from, CommitId([0; 32]))..));
             let resets = |c: &CommitId| !k.1.ephemeral() && super::snapshot::own_replace(core, c, &k.0, &k.1);
             super::snapshot::walk_source(&valid_on, &resets, ranges, next, u64::MAX, &mut |c| passed.push(c))
@@ -496,7 +495,7 @@ fn held_bytes<'b>(tx: &mut Tx<'_>, blobs: impl Iterator<Item = &'b BlobId>) -> R
 /// and its cost: those a cover drops (`retention::drops_as_covered`, the drop's own judgment: a
 /// purge's leftover stays), whose writes the snapshot claims (its frontier walk passes them or
 /// `Absorbed` lists them: `snapshot::claims`, the writer's own judgment; not one behind an
-/// invalid, missing or purged body of its session), and not ones with an expiry before it,
+/// invalid or missing body of its session), and not ones with an expiry before it,
 /// which a snapshot covers only as their leftover. Counted otherwise, a body no snapshot drops
 /// would fire the trigger at every step. A leftover counts as a part with no delta bytes. Also,
 /// per session source with a body held behind a gap its walk did not pass, where it stopped
@@ -532,7 +531,7 @@ fn candidates(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, me: Tid) -> Result<(Vec<Candi
             *e = (*e).max(lo);
         }
     }
-    let valid_on = |c: &CommitId| super::snapshot::claims(tx.core, c, tid, ak, now);
+    let valid_on = |c: &CommitId| super::snapshot::claims(tx.core, c, tid, ak);
     let (frontiers, reflected) = super::snapshot::frontiers_upto(tx, tid, ak, memory, &valid_on, Some(&upto));
     let mut stops = Stops::new();
     // (commit, part, its weight, a snapshot, a leftover)

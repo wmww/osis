@@ -374,8 +374,8 @@ A node sends a push (a Stream, §10, or a client-port Notify) only while its byt
     - A snapshot stamped no later and covered by another goes the same way.
     - Of covered-equal snapshots the higher commit ID goes (§7).
   - **A snapshot turning invalid**: as §7; a node that may write the aspect and still holds a valid ephemeral part of it also writes a snapshot of the aspect from its state and logs it (a new commit, which a host's delete tombstone on the old entries, §5, does not stop).
-  - **Frontier**: a snapshot's frontier stops below a body of a session that is invalid, missing or held value-less for a purge request at the writer (spec/crdt.md §8), so that session's later bodies are not covered until it is valid and held there with its values.
-  - **New sessions**: a node one of whose session-form writes under its current sessions turns invalid, or is held value-less for a purge request, begins new sessions (spec/crdt.md §2.1) for what it writes from then on.
+  - **Frontier**: a snapshot's frontier stops below a body of a session that is invalid or missing at the writer (spec/crdt.md §8), so that session's later bodies are not covered until it is valid and held there.
+  - **New sessions**: a node one of whose session-form writes under its current sessions turns invalid begins new sessions (spec/crdt.md §2.1) for what it writes from then on.
   - **Deleting at a host**: a writer deletes the entries of a dropped commit at a host (spec/crypto.md §7, level 3) once an entry of a snapshot covering it is held there. One dropped for no coverer (expired, its things freed) goes at once.
     - **Full host**: once it forgot the commit, the writer deletes its entries at a host that has told it that it is full for the label (§10 Full) at once, without the covering snapshot there (which waits there for the room they hold), unless an entry of the commit left that host since the writer forgot it: a holder placed it again, and it waits for its covering snapshot there.
     - A forgotten commit's pages and trees go by its freed links (§7).

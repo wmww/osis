@@ -160,8 +160,7 @@ pub(crate) fn reaches((fr, abs): (&Frontiers, &[(CommitId, Tid)]), h: &Header, c
 /// aspect (spec/crdt.md §1), so those writes are applied as dead, whether held, forgotten under
 /// own replaces, or never received. An invalid or missing body stops its source's frontier below
 /// it (the snapshot does not carry its writes, so it must not claim them), and what follows in
-/// that source is not reflected. So does a body held value-less for a purge (the callers'
-/// `valid_on`, `retention::held_purged`).
+/// that source is not reflected (the callers' `valid_on`).
 pub(crate) fn frontiers_now(tx: &Tx<'_>, tid: &Tid, ak: &Ak, memory: bool, valid_on: &dyn Fn(&CommitId) -> bool) -> (Frontiers, BTreeSet<CommitId>) {
     frontiers_upto(tx, tid, ak, memory, valid_on, None)
 }
@@ -327,10 +326,12 @@ pub(crate) fn facts_of(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, st: &Fragment) -> Re
 /// Whether a snapshot of `(tid, ak)` written now at wall ms `now` claims the writes of `c`'s part
 /// (`frontiers_now`'s walk passes it, `Absorbed` lists it): valid here; held, as a part still
 /// missing gives the state nothing (applied without it, spec/commits.md §4), but an expiring
-/// one, whose writes would go value-less here anyway; not held value-less for a purge
-/// (`retention::held_purged`). The writer and the compaction trigger both ask it.
-pub(crate) fn claims(core: &Core, c: &CommitId, tid: &Tid, ak: &Ak, now: u64) -> bool {
-    core.ix.commits.get(c).is_some_and(|m| m.aspect(tid, ak).is_some_and(|ai| m.valid_at(ai) && (!m.missing(ai) || m.header.expires.is_some()) && !super::held_purged(core, c, tid, ak, ai, now)))
+/// one, whose writes would go value-less here anyway. A part held value-less for a purge is
+/// claimed: the snapshot carries its writes value-less, and no node counts a body it lacks
+/// covered by a value-less copy (`covered_join`), so a fall of the purge brings it back. The
+/// writer and the compaction trigger both ask it.
+pub(crate) fn claims(core: &Core, c: &CommitId, tid: &Tid, ak: &Ak) -> bool {
+    core.ix.commits.get(c).is_some_and(|m| m.aspect(tid, ak).is_some_and(|ai| m.valid_at(ai) && (!m.missing(ai) || m.header.expires.is_some())))
 }
 
 /// Whether a commit's own writes are judged by its ID (commit form: a snapshot lists those whose
@@ -654,8 +655,7 @@ pub(crate) fn write_snapshot(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, memory: bool) 
     if ak.as_str() == "secrets.0" && !crate::apply::keys::may_compact(tx.core, &tid, &st) {
         return Err(Error::Misuse("secrets.0 keys an epoch not established here (spec/crypto.md §4)"));
     }
-    let now = tx.now().0;
-    let valid_on = |c: &CommitId| claims(tx.core, c, &tid, &ak, now);
+    let valid_on = |c: &CommitId| claims(tx.core, c, &tid, &ak);
     // frontiers cover only counters whose writes this state reflects: applied, valid, of
     // the sessions that occur in it (spec/crdt.md §8: a session with no write left in the
     // state is pruned with them), from the held valid snapshots' frontiers on (`frontiers_now`)

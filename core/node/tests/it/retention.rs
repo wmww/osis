@@ -3652,12 +3652,12 @@ fn purge_on_replace_of_ephemeral_write_spec_commits_5() {
     }
 }
 
-// spec/crdt.md §8, spec/sync.md §9 Frontier and New sessions: a snapshot written after a purge
-// does not claim the purged write (its frontier stops below it), so when the purge falls the
-// write is missing again, not covered, and a copy brings it back, at its own author too; that author writes on
-// under a fresh session, past the hole.
+// spec/commits.md §5 Covered, spec/crdt.md §8: a snapshot written after a purge carries the
+// purged write value-less, so when the purge falls the write is missing again, not covered by
+// that value-less copy, and a copy brings it back, at its own author too. A purge leaves its
+// author's session alone: it writes on under the same one.
 #[test]
-fn snapshot_after_purge_leaves_the_write_to_come_back_spec_crdt_8() {
+fn snapshot_after_purge_leaves_the_write_to_come_back_spec_commits_5() {
     let (mut lp, t, x, _w) = admin_writer(4);
     let k = ak("t:n+.0");
     lp.advance(5);
@@ -3675,7 +3675,7 @@ fn snapshot_after_purge_leaves_the_write_to_come_back_spec_crdt_8() {
     let e = &mut lp.peers[2].engine;
     assert_eq!(e.get(&t, &k).unwrap(), None, "purged at its author");
     let (_, later) = eph_set(&mut lp, 2, t, &ak("t:other+.0"), "later");
-    assert_ne!(form(&later), form(&copy), "a fresh session past the hole");
+    assert_eq!(form(&later), form(&copy), "the same session");
     let e = &mut lp.peers[2].engine;
     let snap = e.snapshot(&t, &k).unwrap().expect("a snapshot of the leftover");
     lp.advance(5);
@@ -3687,7 +3687,7 @@ fn snapshot_after_purge_leaves_the_write_to_come_back_spec_crdt_8() {
     // covered, node-sync would neither fetch the write nor keep it at hosts
     assert_ne!(e.covered(&snap, &c, &t, &k).unwrap(), Some(true), "missing, not covered");
     e.ingest_memory(&copy, u64::MAX).unwrap();
-    assert_eq!(e.get(&t, &k).unwrap(), Some(s("kept")), "back: the snapshot did not claim it");
+    assert_eq!(e.get(&t, &k).unwrap(), Some(s("kept")), "back: its value-less copy did not cover it");
 }
 
 // notes/ephemeral.md Own bodies under own covers, spec/sync.md §9: under purge on replace an

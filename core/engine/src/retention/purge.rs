@@ -656,13 +656,6 @@ pub(super) fn purge_one(tx: &mut Tx<'_>, pc: &CommitId, c: &CommitId, ai: usize,
     // every held body carrying the purged values, snapshots included, is stripped of them by the
     // rebuild this runs (`apply::rebuild`, spec/commits.md §5)
     hold_valueless(tx, c, ai, true, changed)?;
-    // an own write of the current sessions held value-less stops every snapshot's frontier for
-    // its session below it (`retention::held_purged`): what this node writes from now on goes
-    // under fresh sessions, past the hole (`Core::fresh_session`, as when one turns invalid)
-    let own = tx.core.me() == Some(m.header.author) || tx.core.accounts.contains_key(&m.header.author);
-    if own && matches!(m.header.form, osis_commit::Form::Session(n) if tx.core.current_sessions().contains(&n)) {
-        tx.core.fresh_session();
-    }
     Ok(true)
 }
 

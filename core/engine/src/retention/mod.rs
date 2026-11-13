@@ -581,11 +581,7 @@ pub(crate) fn valueless(core: &Core, c: &CommitId, ai: usize) -> bool {
 }
 
 /// Whether part `ai` of `c` on `(tid, ak)` is held value-less for a purge request: its own writes
-/// on the value-less list, not past its expiry (an expired one is value-less for good). A
-/// snapshot's frontier stops below it as below an invalid or missing body (`snapshot::frontiers_upto`,
-/// spec/crdt.md §8): the snapshot holds its writes value-less, and claiming them would count the
-/// part covered once the purge falls and it is missing, so the restored value would be neither
-/// fetched nor kept must-hold.
+/// on the value-less list, not past its expiry (an expired one is value-less for good).
 pub(crate) fn held_purged(core: &Core, c: &CommitId, tid: &Tid, ak: &Ak, ai: usize, now: u64) -> bool {
     if !core.ix.valueless.contains_key(&(*tid, ak.clone())) {
         return false;
