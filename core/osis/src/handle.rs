@@ -484,7 +484,10 @@ fn parts(store: &Store, hub: bool) -> Result<(Box<dyn osis_store::Backend>, Box<
             let bad = |e: &dyn std::fmt::Display| Error::Storage(format!("{}: {e}", p.display()));
             d.create(p).map_err(|e| bad(&e))?;
             let (db, root) = if hub { ("host.redb", "host.root") } else { ("db.redb", "root") };
-            let b = osis_store::RedbBackend::open(&p.join(db)).map_err(|e| bad(&e))?;
+            let b = osis_store::RedbBackend::open(&p.join(db)).map_err(|e| match e {
+                osis_store::BackendError::InUse => Error::InUse,
+                e => bad(&e),
+            })?;
             Ok((Box::new(b), Box::new(osis_store::FileRoot::new(p.join(root)))))
         }
     }

@@ -277,8 +277,7 @@ fn stop_serving_drops_what_it_kept_spec_data_model_9() {
 }
 
 // notes/api.md Handle and lifecycle: `close` with `Runtime::Own` returns once the driver, and with it
-// the peer, is gone, so the serving store is free: reopening at once serves again (not "Database
-// already open"). spec: none (an API property)
+// the peer, is gone, so the serving store is free: reopening at once serves again (not `InUse`). spec: none (an API property)
 #[test]
 fn own_runtime_close_frees_serving_store() {
     let dir = std::env::temp_dir().join(format!("osis-host-reopen-{}", std::process::id()));

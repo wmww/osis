@@ -121,4 +121,6 @@ impl ApiCode {
     pub const REFUSED: u64 = 13;
     /// No detail: the node closed while the call was in hand.
     pub const CLOSED: u64 = 14;
+    /// No detail: the node's store is open elsewhere.
+    pub const IN_USE: u64 = 15;
 }

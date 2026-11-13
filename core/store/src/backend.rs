@@ -16,6 +16,8 @@ pub enum BackendError {
     /// lost to a power cut, and so may whatever is written after it on this storage (a failed
     /// fsync drops pages from write-back). Its outcome is unknown.
     Unsynced,
+    /// The storage is locked by another open of it: another process, or an open in this one.
+    InUse,
 }
 
 osis_base::impl_error!(BackendError {
@@ -23,6 +25,7 @@ osis_base::impl_error!(BackendError {
     Fault => ("injected storage fault"),
     Crashed => ("storage crashed"),
     Unsynced => ("storage sync failed"),
+    InUse => ("in use by another open of it"),
 });
 
 impl Classified for BackendError {

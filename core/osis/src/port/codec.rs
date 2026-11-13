@@ -663,6 +663,7 @@ pub(crate) fn outcome_err(e: &Error) -> Outcome {
         Error::Unsynced { groups } => (ApiCode::UNSYNCED, vec![groups.to_port()]),
         Error::Invalid(m) => (ApiCode::INVALID, vec![t(m)]),
         Error::Storage(m) => (ApiCode::STORAGE, vec![t(m)]),
+        Error::InUse => (ApiCode::IN_USE, vec![]),
         Error::Network(m) => (ApiCode::NETWORK, vec![t(m)]),
         Error::OutcomeUnknown => (ApiCode::OUTCOME_UNKNOWN, vec![]),
         Error::Unsupported(m) => (ApiCode::UNSUPPORTED, vec![t(m)]),
@@ -692,6 +693,7 @@ pub(crate) fn error_of(code: u64, detail: Vec<Value>) -> Error {
             ApiCode::REFUSED => Error::Refused(text(&mut a)),
             ApiCode::OUTCOME_UNKNOWN => Error::OutcomeUnknown,
             ApiCode::CLOSED => Error::Closed,
+            ApiCode::IN_USE => Error::InUse,
             _ => Error::Invalid(format!("port: error code {code}")),
         })
     })();

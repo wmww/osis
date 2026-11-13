@@ -57,6 +57,7 @@ pub fn category(e: &Error) -> (i32, &'static str) {
         Error::Invalid(_) => (7, "Invalid"),
         Error::NotUndoable { .. } => (1, "NotUndoable"),
         Error::Storage(_) => (1, "Storage"),
+        Error::InUse => (8, "InUse"),
         Error::Unsupported(_) => (1, "Unsupported"),
         Error::Closed => (1, "Closed"),
     }
@@ -196,19 +197,7 @@ fn read_secret(file: &Path) -> anyhow::Result<osis::ClientSecret> {
     Ok(osis::ClientSecret::from_bytes(bytes))
 }
 
-const PID_FILE: &str = "pid";
 const SCHEMAS_FILE: &str = "cli.toml";
-
-/// Maps the store's lock failure to exit 8 with the holder's pid.
-fn lock_err(dir: &Path, e: Error) -> anyhow::Error {
-    match &e {
-        Error::Storage(m) if m.contains("already open") => {
-            let pid = std::fs::read_to_string(dir.join(PID_FILE)).map(|p| p.trim().to_string()).unwrap_or_else(|_| "?".into());
-            exit(8, format!("store in use by pid {pid}"))
-        }
-        _ => e.into(),
-    }
-}
 
 /// Opens an existing store (exit 8 when missing or locked). Locked by a daemon (`osis serve`)
 /// whose socket answers, the invocation is that daemon's client instead (`use_daemon`, unless the
@@ -225,13 +214,9 @@ fn open(sel: &Store, g: &Global, net: Network, use_daemon: bool) -> anyhow::Resu
             let login = connect_flags(g)?;
             let db = match Osis::open(sel.clone(), config(g, net)) {
                 Ok(db) => db,
-                Err(Error::Storage(m)) if use_daemon && m.contains("already open") => match daemon(d, g) {
-                    Some(db) => return Ok(db),
-                    None => return Err(lock_err(d, Error::Storage(m))),
-                },
-                Err(e) => return Err(lock_err(d, e)),
+                Err(Error::InUse) if use_daemon => return daemon(d, g),
+                Err(e) => return Err(e.into()),
             };
-            let _ = std::fs::write(d.join(PID_FILE), std::process::id().to_string());
             if let Some(l) = login {
                 match crate::cmd::within(connect_wait(g)?, db.connect_node(&l)) {
                     // a node down fails what goes there, as `Network`; the rest of the store works
@@ -249,9 +234,14 @@ fn open(sel: &Store, g: &Global, net: Network, use_daemon: bool) -> anyhow::Resu
 }
 
 /// The daemon serving the store at `d`, as a client acting as the node's account
-/// (notes/client-port.md §5). None when there is no live one.
-fn daemon(d: &Path, g: &Global) -> Option<Osis> {
-    crate::cmd::within(connect_wait(g).ok()?, Osis::connect_socket(d, app_config(g))).ok()
+/// (notes/client-port.md §5). Nothing answering on its socket is `InUse`, saying why (the store's
+/// holder may serve no socket: the app, or a command); any other failure is itself.
+fn daemon(d: &Path, g: &Global) -> anyhow::Result<Osis> {
+    let wait = connect_wait(g)?;
+    crate::cmd::within(wait, Osis::connect_socket(d, app_config(g))).map_err(|e| match e {
+        Error::Network(_) => anyhow::Error::new(e).context(Error::InUse),
+        e => anyhow::Error::new(e).context("store in use; reaching its daemon"),
+    })
 }
 
 /// The node named by `--node`, as the client `--client-secret` stands for (notes/client-port.md
@@ -284,14 +274,7 @@ fn create(sel: &Store, g: &Global, peers: Vec<osis::Address>) -> anyhow::Result<
     }
     // `init` runs sync only to reach the peers it is given
     let net = if peers.is_empty() { Network::None } else { Network::Sync };
-    let db = Osis::create(sel.clone(), &peers, config(g, net)).map_err(|e| match sel {
-        Store::Dir(d) => lock_err(d, e),
-        _ => e.into(),
-    })?;
-    if let Store::Dir(d) = sel {
-        let _ = std::fs::write(d.join(PID_FILE), std::process::id().to_string());
-    }
-    Ok(db)
+    Ok(Osis::create(sel.clone(), &peers, config(g, net))?)
 }
 
 /// Schema paths registered in `<store>/cli.toml`: `schemas = [ "path", ... ]`, one per line.

@@ -35,6 +35,9 @@ pub enum Error {
     Invalid(String),
     /// Local storage failed (or a local record is corrupt).
     Storage(String),
+    /// The store is open elsewhere: in another process, or in a node of this process not yet
+    /// closed (`Osis::close` waits until it is free).
+    InUse,
     /// Another node could not be reached, or this one has no network (`Runtime::None`).
     Network(String),
     /// A write through another node may or may not have applied (its reply was lost and the node
@@ -61,6 +64,7 @@ osis_base::impl_error!(Error {
     Unsynced { groups } => ("could not sync {} group(s)", groups.len()),
     Invalid(m) => ("invalid: {m}"),
     Storage(m) => ("storage: {m}"),
+    InUse => ("store in use by another process or another open node"),
     Network(m) => ("network: {m}"),
     OutcomeUnknown => ("outcome unknown: the write may have applied, read before repeating it"),
     Unsupported(m) => ("not available on this handle: {m}"),
@@ -85,6 +89,7 @@ impl From<osis_node::Error> for Error {
             N::Permission { tid } => Error::Permission { tid, needs: Role::Write },
             N::UnknownThing(tid) => Error::UnknownThing { tid },
             N::Path(p) => p.into(),
+            N::Store(osis_store::Error::Backend(osis_store::BackendError::InUse)) => Error::InUse,
             N::Store(e) => Error::Storage(e.to_string()),
             N::Corrupt(m) => Error::Storage(m.into()),
             N::Misuse(m) => Error::Invalid(m.into()),

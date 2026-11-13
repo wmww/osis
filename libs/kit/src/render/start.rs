@@ -1,8 +1,9 @@
 //! Starting the UI, the same on every shell: make the store dir, open the store in it, the app's
-//! `Data` over it, its main group, then `Ui`. A store that cannot open (before stability, data an
-//! older build wrote may not load) shows why instead, in the app's look, with one way on: start
-//! fresh, which moves the store aside to a sibling path (kept, never deleted), says where, and
-//! opens a new one in its place. With nothing at the path there is nothing to move and no action.
+//! `Data` over it, its main group, then `Ui`. A failure shows why instead, in the app's look. Where
+//! the store itself cannot be read (before stability, data an older build wrote may not load) it
+//! offers one way on: start fresh, which moves the store aside to a sibling path (kept, never
+//! deleted), says where, and opens a new one in its place. A store in use elsewhere, a later step
+//! failing, or nothing at the path to move: no action.
 
 use super::{Attached, ROOT, Ui, set_root_insets};
 use crate::masonry::app::RenderRoot;
@@ -41,15 +42,30 @@ impl Start {
         Started { start: self, shown, attached: None, scale: 1.0, dark: false, insets: [0.0; 4] }
     }
 
-    fn ui(&self) -> Result<Ui, String> {
-        std::fs::create_dir_all(&self.dir).map_err(|e| format!("{}: {e}", self.dir.display()))?;
+    fn ui(&self) -> Result<Ui, Failure> {
+        let unreadable = |error| Failure { error, fresh: true };
+        std::fs::create_dir_all(&self.dir).map_err(|e| unreadable(format!("{}: {e}", self.dir.display())))?;
         let w = self.waker.clone();
         // the store's own errors name it
-        let db = crate::store::open(&self.dir, self.peers.clone(), Arc::new(move || w.wake())).map_err(|e| e.to_string())?;
-        let data = (self.data)(db)?;
-        data.main_group().map_err(|e| e.to_string())?;
-        Ui::new(data, self.waker.clone()).map_err(|e| e.to_string())
+        let db = crate::store::open(&self.dir, self.peers.clone(), Arc::new(move || w.wake())).map_err(|e| Failure { fresh: e != osis::Error::InUse, error: e.to_string() })?;
+        let later = || -> Result<Ui, String> {
+            let data = (self.data)(db.clone())?;
+            data.main_group().map_err(|e| e.to_string())?;
+            Ui::new(data, self.waker.clone()).map_err(|e| e.to_string())
+        };
+        // the store is fine: closed, so trying again (a restart) finds it free
+        later().map_err(|error| {
+            let _ = db.close();
+            Failure { error, fresh: false }
+        })
     }
+}
+
+/// Why the UI did not start, and whether start fresh is offered: only where the store itself
+/// cannot be read.
+struct Failure {
+    error: String,
+    fresh: bool,
 }
 
 /// What a shell started: the UI over its store, or the screen saying why the store could not
@@ -72,7 +88,7 @@ enum Shown {
 
 struct Failed {
     error: String,
-    /// Where start fresh moves the store; `None`: nothing is there to move.
+    /// Where start fresh moves the store; `None`: not offered, or nothing is there to move.
     aside: Option<PathBuf>,
     look: Arc<Look>,
     /// The start fresh button, once shown.
@@ -80,8 +96,8 @@ struct Failed {
 }
 
 impl Failed {
-    fn new(error: String, dir: &Path) -> Failed {
-        Failed { error, aside: aside(dir), look: Arc::new(Look::new(&Theme::named(None), false, None)), fresh: None }
+    fn new(f: Failure, dir: &Path) -> Failed {
+        Failed { error: f.error, aside: aside(dir).filter(|_| f.fresh), look: Arc::new(Look::new(&Theme::named(None), false, None)), fresh: None }
     }
 
     /// Shows the failure screen under the root, in the default theme.

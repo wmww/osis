@@ -21,8 +21,11 @@ struct Window {
 
 impl Window {
     fn open(dir: &Path) -> Window {
-        let data = |db| Ok(Data::new(db, Arc::new(Small::default()), Registry::kit()));
-        let mut ui = Start { dir: dir.to_path_buf(), peers: Vec::new(), waker: Waker::new(|| {}), data: Box::new(data) }.open();
+        Window::open_with(dir, Box::new(|db| Ok(Data::new(db, Arc::new(Small::default()), Registry::kit()))))
+    }
+
+    fn open_with(dir: &Path, data: Box<dyn Fn(osis::Osis) -> Result<Data, String>>) -> Window {
+        let mut ui = Start { dir: dir.to_path_buf(), peers: Vec::new(), waker: Waker::new(|| {}), data }.open();
         let opts = RenderRootOptions {
             default_properties: Arc::new(osis_kit::masonry::theme::default_property_set()),
             use_system_fonts: false,
@@ -152,6 +155,29 @@ fn start_fresh_takes_a_free_name_and_needs_something_to_move() {
     let mut w = Window::open(&base.join("store.old-2").join("store"));
     assert!(w.shows("The store could not be opened"));
     assert_eq!(w.button(), None);
+    drop(w);
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+/// Start fresh is only for a store that cannot be read: a store open elsewhere says so and offers
+/// nothing, and so does a later step failing (the app's data setup), which leaves the store free.
+#[test]
+fn a_healthy_store_is_never_offered_start_fresh() {
+    let base = scratch("healthy");
+    let dir = base.join("store");
+    let held = osis_kit::store::open(&dir, Vec::new(), Arc::new(|| {})).unwrap();
+    let w = Window::open(&dir);
+    assert!(w.ui.error().is_some_and(|e| e.contains("in use")), "{:?}", w.ui.error());
+    assert_eq!(w.button(), None, "in use: no start fresh");
+    drop(w);
+    assert!(matches!(held.close(), Ok(osis::Close::Closed)));
+    let w = Window::open_with(&dir, Box::new(|_| Err("no such theme".to_string())));
+    assert_eq!(w.ui.error(), Some("no such theme"));
+    assert_eq!(w.button(), None, "a later step: no start fresh");
+    drop(w);
+    let mut w = Window::open(&dir);
+    assert_eq!(w.ui.error(), None, "the failed start closed the store");
+    assert!(w.shows("Search"));
     drop(w);
     let _ = std::fs::remove_dir_all(&base);
 }

@@ -678,24 +678,34 @@ fn verbose_prints_diagnostics_plan_cli_4() {
     assert!(o.err.contains("\"kind\":\"NotSynced\""), "{}", o.err);
 }
 
-// notes/cli.md Design (daemon), notes/client-port.md §5: a locked store with no live daemon on its socket is exit 8 at once, whether no socket is there or a dead daemon's is left: and another node's socket never answers for this store
+// notes/cli.md Design (daemon), notes/client-port.md §5: a locked store with no live daemon on its socket is exit 8 at once, kind `InUse`, saying why nothing answered, whether no socket is there or a dead daemon's is left: and another node's socket never answers for this store. A failure that is not the lock is itself: a bad `--timeout` is a usage error
 #[test]
 fn locked_store_with_no_live_daemon() {
     let d = tmp("nodaemon");
     let ds = d.to_str().unwrap();
     let call = |args: &[&str]| {
         let (mut o, mut e) = (Vec::new(), Vec::new());
-        let code = osis_cli::main_with(["osis", "--no-lan", "-s", ds, "--timeout", "0"].iter().chain(args).copied(), &mut &b""[..], &mut o, &mut e);
+        let code = osis_cli::main_with(["osis", "--no-lan", "-s", ds].iter().chain(args).copied(), &mut &b""[..], &mut o, &mut e);
         (code, String::from_utf8(e).unwrap())
     };
     assert_eq!(call(&["init"]).0, 0);
     let held = osis::internals::open(osis::internals::Opening::dir(&d)).unwrap();
     let in_use = |what: &str| {
-        let (code, err) = call(&["whoami"]);
+        let (code, err) = call(&["--timeout", "0", "whoami"]);
         assert_eq!(code, 8, "{what}: {err}");
-        assert!(err.contains("store in use"), "{what}: {err}");
+        assert!(err.contains("store in use") && err.contains("network"), "says why no daemon answered: {what}: {err}");
+        let (code, err) = call(&["--timeout", "0", "--json", "whoami"]);
+        assert_eq!(code, 8, "{what}: {err}");
+        assert!(err.contains("\"kind\":\"InUse\""), "{what}: {err}");
     };
     in_use("no socket");
+    let (code, err) = call(&["--timeout", "soon", "whoami"]);
+    assert_eq!(code, 2, "a bad --timeout is itself: {err}");
+    assert!(!err.contains("in use"), "{err}");
+    // a command that holds the store itself never asks a daemon
+    let (code, err) = call(&["inspect", "thing", "me"]);
+    assert_eq!(code, 8, "{err}");
+    assert!(err.contains("store in use") && !err.contains("daemon"), "{err}");
     // a dead daemon's socket: bound, then nobody there
     let sock = osis::internals::socket_path(&d).unwrap();
     drop(std::os::unix::net::UnixListener::bind(&sock).unwrap());

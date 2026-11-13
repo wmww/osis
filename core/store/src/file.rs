@@ -16,6 +16,15 @@ fn io(e: impl std::fmt::Display) -> BackendError {
     BackendError::Io(e.to_string())
 }
 
+/// A failure to open the storage: `InUse` where it is redb's file lock (`FileBackend::new`'s
+/// error, carried as the io error's source).
+fn open_err(e: std::io::Error) -> BackendError {
+    match e.get_ref().and_then(|s| s.downcast_ref::<redb::DatabaseError>()) {
+        Some(redb::DatabaseError::DatabaseAlreadyOpen) => BackendError::InUse,
+        _ => io(e),
+    }
+}
+
 /// Opens the database, again after each failed call; given whether a sync of the file failed
 /// since this backend first opened it.
 type Opener = Box<dyn Fn(bool) -> Result<Database, BackendError> + Send>;
@@ -91,11 +100,12 @@ impl RedbBackend {
 
     /// Opens or creates a database on the storage `open` gives, called again for each reopen
     /// with whether a sync failed since the first: it must then read what the disk holds, never
-    /// pages whose sync failed (`drop_cache`), or fail. Tests inject faults through it.
+    /// pages whose sync failed (`drop_cache`), or fail. Tests inject faults through it. `open`
+    /// passes `FileBackend::new`'s error on as `io::Error::other`, so a held lock is `InUse`.
     pub fn with_storage<S: StorageBackend>(open: impl Fn(bool) -> std::io::Result<S> + Send + 'static) -> Result<RedbBackend, BackendError> {
         let unsynced = Arc::new(AtomicBool::new(false));
         let watch = unsynced.clone();
-        let open = move |sync_failed| Builder::new().create_with_backend(Watched { inner: open(sync_failed).map_err(io)?, unsynced: watch.clone() }).map_err(io);
+        let open = move |sync_failed| Builder::new().create_with_backend(Watched { inner: open(sync_failed).map_err(open_err)?, unsynced: watch.clone() }).map_err(io);
         let b = RedbBackend { open: Box::new(open), db: RefCell::new(None), unsynced, sync_failed: std::cell::Cell::new(false) };
         b.call(|_| Ok(()))?;
         Ok(b)

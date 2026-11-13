@@ -630,6 +630,40 @@ fn a_store_it_cannot_write_names_the_file() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+// notes/api.md Errors: a store open elsewhere, by a node of this process not yet closed or by
+// another process, fails `InUse` (not `Storage`: nothing is wrong with it), and opens once
+// closed. spec: none (an API property)
+#[test]
+fn a_store_open_elsewhere_is_in_use() {
+    // the other process: this test, run again, holding the store until its stdin closes
+    if let Some(dir) = std::env::var_os("OSIS_HOLD_STORE") {
+        let _held = osis::internals::open(osis::internals::Opening::at(Store::Dir(dir.into()))).unwrap();
+        println!("held");
+        let _ = std::io::Read::read_to_end(&mut std::io::stdin(), &mut Vec::new());
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!("osis-in-use-{}-{}", std::process::id(), rand_suffix()));
+    let open = || osis::internals::open(osis::internals::Opening::at(Store::Dir(dir.clone())));
+    let db = osis::internals::create(osis::internals::Opening::at(Store::Dir(dir.clone()))).unwrap();
+    assert_eq!(open().map(|_| ()).unwrap_err(), osis::Error::InUse, "a node of this process");
+    assert_eq!(db.close().unwrap(), osis::Close::Closed);
+    let mut other = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "runtime::a_store_open_elsewhere_is_in_use", "--nocapture", "--test-threads", "1"])
+        .env("OSIS_HOLD_STORE", &dir)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut out = std::io::BufRead::lines(std::io::BufReader::new(other.stdout.take().unwrap()));
+    assert!(out.by_ref().any(|l| l.unwrap().contains("held")), "the other process opened the store");
+    assert_eq!(open().map(|_| ()).unwrap_err(), osis::Error::InUse, "another process");
+    drop(other.stdin.take());
+    out.for_each(drop);
+    assert!(other.wait().unwrap().success());
+    assert_eq!(open().unwrap().close().unwrap(), osis::Close::Closed, "free once the other process ends");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 fn rand_suffix() -> u64 {
     use std::hash::{BuildHasher, Hasher};
     let mut h = std::collections::hash_map::RandomState::new().build_hasher();
