@@ -176,8 +176,8 @@ pub struct Ui {
     system_dark: bool,
     /// Physical pixels per logical pixel.
     scale: f64,
-    /// What the window's insets cover across (logical px, left plus right).
-    insets_across: f64,
+    /// What covers the window's edges (physical px: left, top, right, bottom).
+    insets: [f64; 4],
     search_ids: Vec<WidgetId>,
     /// Stacks showing what is there without a search (child 0) or the results (child 1).
     search_stacks: Vec<WidgetId>,
@@ -240,7 +240,7 @@ impl Ui {
             slots: HashMap::new(),
             system_dark: false,
             scale: 1.0,
-            insets_across: 0.0,
+            insets: [0.0; 4],
             search_ids: Vec::new(),
             search_stacks: Vec::new(),
             searching: false,
@@ -269,7 +269,8 @@ impl Ui {
 
     /// Whether the rail fits in the window's width clear of its insets, in `look`.
     fn rail_fits(&self, rr: &RenderRoot, look: &Look) -> bool {
-        f64::from(rr.size().width) / self.scale.max(0.1) - self.insets_across >= rail_needs(look)
+        let [l, _, r, _] = self.insets;
+        (f64::from(rr.size().width) - l - r) / self.scale.max(0.1) >= rail_needs(look)
     }
 
     /// Brings the screen to what the graph says.
@@ -825,7 +826,10 @@ impl Ui {
 
     /// The window's size or scale changed: the rail coming or going rebuilds the screen.
     pub fn resized(&mut self, rr: &mut RenderRoot, scale: f64) {
-        self.scale = scale;
+        if scale != self.scale {
+            self.scale = scale;
+            self.root_insets(rr);
+        }
         self.rail_check(rr);
     }
 
@@ -860,11 +864,16 @@ impl Ui {
     /// What covers the window's edges (physical pixels: left, top, right, bottom): the screen is
     /// laid out clear of it, and the width that leaves is what the layout follows.
     pub fn set_insets(&mut self, rr: &mut RenderRoot, insets: [f64; 4]) {
-        let s = self.scale.max(0.1);
-        let i = crate::masonry::kurbo::Insets::new(insets[0] / s, insets[1] / s, insets[2] / s, insets[3] / s);
-        rr.edit_widget_with_tag(ROOT, |mut r| Root::set_insets(&mut r, i));
-        self.insets_across = i.x0 + i.x1;
+        self.insets = insets;
+        self.root_insets(rr);
         self.rail_check(rr);
+    }
+
+    /// Gives Root the insets in logical px at the current scale.
+    fn root_insets(&mut self, rr: &mut RenderRoot) {
+        let (s, i) = (self.scale.max(0.1), self.insets);
+        let i = crate::masonry::kurbo::Insets::new(i[0] / s, i[1] / s, i[2] / s, i[3] / s);
+        rr.edit_widget_with_tag(ROOT, |mut r| Root::set_insets(&mut r, i));
     }
 
     /// Whether a field was focused for the user to type in since the last call (a shell with an

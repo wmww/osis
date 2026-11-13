@@ -104,3 +104,26 @@ fn rail_needs_follow_the_look() {
     s.ui.wake(&mut s.rr);
     assert_eq!(s.rail_and_back(), (true, false));
 }
+
+/// The rail needs its width clear of the window's insets: a side inset arriving after start can
+/// take it away, and its going brings it back; top and bottom insets do not count. Insets are
+/// physical pixels, so a new scale changes what they cover.
+#[test]
+fn insets_take_their_width() {
+    let at = needs("glass").ceil() as u32;
+    let mut s = Screen::new("glass", at + 10);
+    assert_eq!(s.rail_and_back(), (true, false));
+    s.ui.set_insets(&mut s.rr, [0.0, 300.0, 0.0, 300.0]);
+    assert_eq!(s.rail_and_back(), (true, false), "top and bottom");
+    s.ui.set_insets(&mut s.rr, [6.0, 0.0, 6.0, 0.0]);
+    assert_eq!(s.rail_and_back(), (false, true), "left and right");
+    // insets are physical: at twice the scale the same ones cover half as much
+    s.rr.handle_window_event(WindowEvent::Rescale(2.0));
+    s.rr.handle_window_event(WindowEvent::Resize(PhysicalSize::new(2 * (at + 10), 1400)));
+    s.ui.resized(&mut s.rr, 2.0);
+    assert_eq!(s.rail_and_back(), (true, false), "at scale 2");
+    s.ui.set_insets(&mut s.rr, [12.0, 0.0, 12.0, 0.0]);
+    assert_eq!(s.rail_and_back(), (false, true));
+    s.ui.set_insets(&mut s.rr, [0.0; 4]);
+    assert_eq!(s.rail_and_back(), (true, false));
+}
