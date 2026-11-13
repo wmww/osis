@@ -440,7 +440,7 @@ Rotate(x, a, extra, race, po) ==
               forged |-> FALSE, half |-> FALSE,
               race |-> race,
               at |-> done \cup extra,
-              kw |-> (Known(x) \cup extra) \cap Deps,
+              kw |-> {dp \in (Known(x) \cup extra) \cap Deps : WDep(dp)},
               bog |-> "",
               \* "mark": each actor left out, at its blocked Seal keyset or
               \* the marks it was left out at before
