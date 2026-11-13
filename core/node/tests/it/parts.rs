@@ -212,7 +212,7 @@ fn parked_part_waits_alone_spec_versioning_2() {
     let id = blob.id();
     let e = &mut lp.peers[1].engine;
     let r = e.ingest(&part(h), Vec::new()).unwrap();
-    assert!(matches!(r, Ingested::Parked(_)), "{r:?}");
+    assert!(matches!(r, Ingested::Applied(_)), "the header waits for no part: {r:?}");
     e.set_syncing(h, true).unwrap();
     let _ = e.ingest(&part(g), Vec::new());
     e.reexamine().unwrap();
@@ -799,6 +799,11 @@ enum Made {
 /// Peer 0's signed commit of `parts` (thing, key, what, expiry in ms from now: one per commit,
 /// spec/commits.md §6), as no writer here makes it.
 fn forge(f: &mut Forge, parts: &[(Tid, &str, Made, Option<u64>)]) -> CommitBlob {
+    forge_with(f, parts, Vec::new())
+}
+
+/// `forge` carrying purge request `purge`.
+fn forge_with(f: &mut Forge, parts: &[(Tid, &str, Made, Option<u64>)], purge: Vec<osis_commit::PurgeItem>) -> CommitBlob {
     use crate::common::*;
     use osis_commit::{AspectWrite, CommitBuilder, Kind, MemoryBlobs, writer_ctx};
     use osis_crdt::{Delta, Writer, create, encode_delta};
@@ -811,6 +816,7 @@ fn forge(f: &mut Forge, parts: &[(Tid, &str, Made, Option<u64>)]) -> CommitBlob 
     let own = form.own_source(author, osis_base::CommitId([0; 32]));
     let now = e.now().0;
     let mut cb = CommitBuilder::new(Kind::Content, ts, author, author, form);
+    cb.purge = purge;
     for (n, (t, k, how, exp)) in parts.iter().enumerate() {
         let mut w = Writer::new(ts, own.clone(), 1000 + n as u64 * 100);
         let c = create(&mut w, &osis_crdt::AnyView, &s("ok")).unwrap();
@@ -868,7 +874,7 @@ fn parked_part_goes_at_its_expiry_spec_commits_5() {
     for things in [&[x][..], &[x, y]] {
         let mut p = new(live);
         let r = p.engine.ingest(&cut(&b, things), Vec::new()).unwrap();
-        assert_eq!(matches!(r, Ingested::Parked(_)), things.len() == 1, "{r:?}");
+        assert!(matches!(r, Ingested::Applied(_)), "{r:?}");
         assert_eq!(p.engine.pending(), vec![(b.id(), Reason::Parked)]);
         p.clock.advance(5000);
         p.tick().unwrap();
@@ -882,6 +888,38 @@ fn parked_part_goes_at_its_expiry_spec_commits_5() {
     p.reexamine().unwrap();
     assert!(!copy_held(&mut p), "no copy past T");
     assert_eq!(p.engine.pending(), vec![]);
+}
+
+// spec/commits.md §4 (Pending, Order independence): nothing waits for a part, the header included.
+// A purge request whose only part is parked applies, from the whole blob or from a header-only copy
+// first (as a node holds it after a destruction dropped the part and fell): the write it names reads
+// alike, and the part waits under the applied commit.
+#[test]
+fn purge_whose_only_part_is_parked_applies_spec_commits_4() {
+    use crate::common::*;
+    for header_first in [false, true] {
+        let mut f = forge_setup();
+        let x = f.x;
+        let mut m = Mutation::new();
+        m.set(x, &REG, &s("ok")).unwrap();
+        let w = f.lp.peers[0].commit(m).unwrap().unwrap();
+        let w = f.lp.peers[0].engine.package(&w).unwrap().unwrap();
+        let me = f.lp.peers[0].engine.me();
+        let b = forge_with(&mut f, &[(x, "t:future.0", Made::Parked, None)], vec![osis_commit::PurgeItem::Author { tid: x, ak: ak("t:reg.0"), actor: me }]);
+        let mut p = Peer::new(FRESH, f.lp.peers[0].engine.now()).unwrap();
+        for pk in f.setup.iter().chain([&w]) {
+            p.engine.ingest(&pk.bytes, pk.blobs.clone()).unwrap();
+        }
+        assert_eq!(p.engine.get(&x, &ak("t:reg.0")).unwrap(), Some(s("ok")));
+        let copies = if header_first { [cut(&b, &[]), b.encode()] } else { [b.encode(), cut(&b, &[])] };
+        for c in copies {
+            p.engine.ingest(&c, Vec::new()).unwrap();
+        }
+        p.reexamine().unwrap();
+        assert_eq!(p.engine.get(&x, &ak("t:reg.0")).unwrap(), None, "header first: {header_first}");
+        assert!(p.engine.header(&b.id()).is_some(), "header first: {header_first}");
+        assert_eq!(p.engine.pending(), vec![(b.id(), Reason::Parked)], "header first: {header_first}");
+    }
 }
 
 // spec/versioning.md §2, spec/commits.md §5: a purge request applies to a part this build cannot read.
@@ -907,7 +945,7 @@ fn parked_part_goes_at_its_purge_spec_commits_5() {
         }
         let parked = || b.encode();
         if parked_first {
-            assert!(matches!(p.engine.ingest(&parked(), Vec::new()).unwrap(), Ingested::Parked(_)));
+            assert!(matches!(p.engine.ingest(&parked(), Vec::new()).unwrap(), Ingested::Applied(_)));
             p.engine.ingest(&rq.bytes, rq.blobs.clone()).unwrap();
         } else {
             p.engine.ingest(&rq.bytes, rq.blobs.clone()).unwrap();

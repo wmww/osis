@@ -79,8 +79,9 @@ Encoding: spec/wire.md §4. Fields:
   - it is parked (spec/versioning.md §2);
   - its author is an account and the rotation minting the epoch it names is not held (spec/permissions.md §5.5);
   - its `ts` is more than `MAX_DRIFT` ahead (spec/crdt.md §2.2);
-  - a header list or frontier given by link (spec/wire.md §4) is not resolved;
-  - the node holds parts of it and every one waits.
+  - a header list or frontier given by link (spec/wire.md §4) is not resolved.
+
+  Nothing else makes it pending: what its parts wait for never holds its header (Apply).
 - **Pending storage**: a pending commit, and a held part that waits, is kept only while the node holds something carrying its commit: a label entry of it, an inbox blob carrying it or its author's chain (spec/sync.md §3), or the newest stranded report on a label naming a current holder whose keys carry it (spec/permissions.md §4). With none left it counts as never received until a carrier brings it again. Unstamped entries that give the node nothing held (unopened, parked, unjudgeable, their commit pending, or their commit known only for a part dropped as invalid, spec/permissions.md §6) count against its local bounds on unvouched input per label and source; past them it keeps neither the entry nor what pends from it or is known of its commit, and reports that to the app.
 - **Unjudgeable**: a node keeps no part it cannot judge and keeps what it needs to fetch what judges it.
   - A commit is unjudgeable while its author's or actor's `created.0` record is unknown; so is a held part while its thing's record or a record on its thing's chain (spec/permissions.md §1) is unknown, or the author is not on that chain and no record edge or holder named by an applied part's edge write, whether the walk applies it or not, leads from the author to it.
@@ -92,11 +93,11 @@ Encoding: spec/wire.md §4. Fields:
   - A commit that awaits is as if it had not arrived: a deletion decided meanwhile (a covering snapshot's author dropped by it, a body removed) stands, and the deleted body counts as never received until it is fetched again.
   - **Limits**: an insider can exhaust the reading-only budget and delay honest grants until its entries leave. A hostile writer with a k-aspect blob can cause k refetches by publishing k records one at a time.
 
-  A commit with no part held applies as its header alone, and counts as a commit on each aspect its header lists.
+  A commit with no part held, or whose every held part waits, applies as its header alone, and counts as a commit on each aspect its header lists.
 - A held **part waits** while any of these holds:
   - a page of it is not held (spec/crdt.md §8);
   - it is parked (spec/versioning.md §2).
-- **Apply**: a node applies in one storage transaction every part it holds that does not wait, and fires listeners after. Nothing waits for a part: a waiting part waits alone, counts as not received and joins when its wait ends, and a delta the node does not hold (stripped from the blob, in a section it does not open, never come) is absent, the commit reading as one without that delta's body (§5). Chunk blobs of large atomic values (spec/data-model.md §6) are not waited for.
+- **Apply**: a node applies in one storage transaction every part it holds that does not wait, and fires listeners after. Nothing waits for a part, the header included: a waiting part waits alone, counts as not received and joins when its wait ends, and a delta the node does not hold (stripped from the blob, in a section it does not open, never come) is absent, the commit reading as one without that delta's body (§5). Chunk blobs of large atomic values (spec/data-model.md §6) are not waited for.
 - **Order independence**: which parts apply is a function of the parts and other data held, never of arrival order or of which parts came together.
 - A thing's **possible admins**, by the role commits the node has applied (a pending one, parked included, gives nothing), of any validity and whatever followed: the least set holding the thing and, with each member, its first admin and any holder named with admin on that member by an edge write a member signed.
 - A thing's **possible writers**, by the same data: the least set holding the possible admins of the thing and of each member, and any holder named with write or above on the thing or on a member by one of that thing's or that member's possible admins.
@@ -202,7 +203,7 @@ Every delta carries **retention** on the wire: who may purge it (its purgeable-b
   - The node does not fetch it on its own.
   - A copy that arrives again joins as a late part and is judged again.
   - Its holders log it while it is must-hold (spec/sync.md §6), so nodes holding the same bodies read alike.
-- **A waiting part past its expiry**: a part that waits (§4) when its expiry passes goes from the node at T, and one arriving past T goes if it waits. Either counts as never received: its non-value writes join only through snapshots. Every local copy goes with it. That node may read what came before the part until it holds a writer's next compaction while that counts (spec/sync.md §7; one dropped while it did not count repairs nothing until it comes again, Invalid); a commit such a part applied before T stays applied.
+- **A waiting part past its expiry**: a part that waits (§4) when its expiry passes goes from the node at T, and one arriving past T goes if it waits. Either counts as never received: its non-value writes join only through snapshots. Every local copy goes with it. That node may read what came before the part until it holds a writer's next compaction while that counts (spec/sync.md §7; one dropped while it did not count repairs nothing until it comes again, Invalid).
 - **A waiting part under a purge**: a waiting part that an applied purge request names whose author may purge it (judged once the node holds the request and the commit's header) is held value-less from then on.
   - The node keeps it as its leftover (spec/crdt.md §4.7) and no other local copy of it; it waits and applies as that, so nodes holding the same commits read alike.
   - With a page of it not held, or parked (spec/versioning.md §2), it cannot be stripped: it goes at once with every local copy, as a part missing when purged.

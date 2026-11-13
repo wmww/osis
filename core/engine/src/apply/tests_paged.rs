@@ -239,19 +239,21 @@ impl World {
         let from = r.below(NODES as u64) as usize;
         let to = (from + 1 + r.below(NODES as u64 - 1) as usize) % NODES;
         let mut pks: Vec<Package> = self.lp.packages(from).unwrap();
+        // a commit applied as its header with parts waiting is still sent
         let held: Vec<CommitId> = self.lp.peers[to].engine.commit_ids();
-        pks.retain(|p| !held.contains(&p.id));
+        let waiting: Vec<CommitId> = self.lp.peers[to].engine.pending().into_iter().map(|x| x.0).collect();
+        pks.retain(|p| !held.contains(&p.id) || waiting.contains(&p.id));
         for i in (1..pks.len()).rev() {
             pks.swap(i, r.below(i as u64 + 1) as usize);
         }
         for pk in pks {
             if !pk.blobs.is_empty() && r.below(3) == 0 {
                 let bare = Package { blobs: Vec::new(), ..pk.clone() };
-                let out = self.lp.deliver(to, &bare);
-                self.log.push(format!("{from}->{to} bare {:?}: {out:?}", pk.id));
+                let out = deliver(&mut self.lp, to, &bare);
+                self.log.push(format!("{from}->{to} bare {:?}: {out}", pk.id));
             }
-            let out = self.lp.deliver(to, &pk);
-            self.log.push(format!("{from}->{to} {:?}: {out:?}", pk.id));
+            let out = deliver(&mut self.lp, to, &pk);
+            self.log.push(format!("{from}->{to} {:?}: {out}", pk.id));
         }
     }
 
@@ -266,8 +268,8 @@ impl World {
             for to in 0..NODES {
                 if from != to {
                     for pk in self.lp.packages(from).unwrap() {
-                        let out = self.lp.deliver(to, &pk);
-                        self.log.push(format!("{from}->{to} {:?}: {out:?}", pk.id));
+                        let out = deliver(&mut self.lp, to, &pk);
+                        self.log.push(format!("{from}->{to} {:?}: {out}", pk.id));
                     }
                 }
             }
@@ -413,10 +415,10 @@ fn both(script: impl Fn(&mut World) -> Vec<Package>) -> (BTreeMap<&'static str, 
         let pks = script(&mut w);
         crate::costs::take();
         for pk in &pks {
-            let out = w.lp.deliver(3, pk);
-            w.log.push(format!("{:?}: {out:?}", pk.id));
+            let out = deliver(&mut w.lp, 3, pk);
+            w.log.push(format!("{:?}: {out}", pk.id));
             if !whole {
-                outs.push(format!("{out:?}"));
+                outs.push(out);
             }
         }
         if !whole {
@@ -432,6 +434,14 @@ fn both(script: impl Fn(&mut World) -> Vec<Package>) -> (BTreeMap<&'static str, 
         panic!("page-by-page apply differs from whole\n{}", first_diff(x, y, ["page by page", "whole"]));
     }
     (counts, outs)
+}
+
+/// Delivers `pk` to node `to`: the outcome, and what of the commit waits there after (a part
+/// waits under its applied commit, spec/commits.md §4).
+fn deliver(lp: &mut LocalPeer, to: usize, pk: &Package) -> String {
+    let out = lp.deliver(to, pk);
+    let waits = lp.peers[to].engine.pending().into_iter().find(|x| x.0 == pk.id).map(|x| x.1);
+    format!("{out:?} waits {waits:?}")
 }
 
 /// The packages of `ids` from node `from`.

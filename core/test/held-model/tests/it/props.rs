@@ -99,13 +99,10 @@ fn settle(mut h: Held, full: Option<&Held>, seed: u64, seen: &mut Seen) -> Held 
             let id = COVER_ID + written + k as CommitId;
             n.commits.push(cover(&h, &o, t, a, id, h.now * MS + 1 + written as u64 + k as u64));
         }
-        // a part gone at its expiry or purge while waiting can make its commit apply (as a header
-        // alone, its purge request with it): then reads may change; a drop or strip changes none
+        // a drop or strip changes no read
         if n != h {
             let x = evaluate(&n);
-            if x.applied == o.applied {
-                assert_eq!(present(&x), present(&o), "seed {seed} round {round}: forced fates changed a read");
-            }
+            assert_eq!(present(&x), present(&o), "seed {seed} round {round}: forced fates changed a read");
             judged = Some((n.clone(), x));
         }
         if let Some(full) = full {
@@ -121,7 +118,7 @@ fn settle(mut h: Held, full: Option<&Held>, seed: u64, seen: &mut Seen) -> Held 
                 for (i, p) in c.parts.iter().enumerate() {
                     let src = &fc.parts[i];
                     let valid = !o.applied.contains(&c.id) || o.valid.get(&(c.id, i)) == Some(&true);
-                    if p.body == Body::Missing && matches!(src.body, Body::Held(_)) && valid {
+                    if p.body == Body::Missing && matches!(src.body, Body::Held(_) | Body::Parked) && valid {
                         let mut t = h.clone();
                         t.commits.iter_mut().find(|x| x.id == c.id).unwrap().parts[i].body = src.body.clone();
                         if !matches!(evaluate(&t).fates.get(&(c.id, i)), Some(Fate::MustDrop(_) | Fate::NeverReceived)) {

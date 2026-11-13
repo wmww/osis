@@ -86,10 +86,6 @@ Each entry: the spec text, the problem, the model's choice (and where in the cod
 
 ## Apply and timing
 
-40. **A dropped body and "holds parts of it".** spec/commits.md §4 Pending: "the node holds parts of it and every one waits"; a body dropped as covered is no longer held. A commit whose joined part was dropped, with another part held later that waits, would then pend, un-applying what applied; §5 says "a commit such a part applied before T stays applied" only for expiry. Choice: a dropped body counts as a held part that does not wait (`applies`): the commit stays applied.
-
-41. **A waiting part past its expiry and Pending.** spec/commits.md §5: it "goes from the node at T"; §4 Pending counts the parts held. Choice: from T it is not held, so a commit whose held parts all waited and expired applies as its header alone (`applies`); before T it pends.
-
 43. **A waiting part of an applied commit under a purge.** spec/commits.md §5 Purge: "Every node applying it drops ... the named deltas" vs A waiting part under a purge: "held value-less ... it waits and applies as that". With apply no longer atomic, a part may wait alone in an applied commit. Choice: it is a waiting part (`Leftover(PendingPurged)`, its values not held, not in `purged`) until it joins.
 
 ## Covers and fetching again

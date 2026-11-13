@@ -337,7 +337,7 @@ fn join_held<'a>(h: &'a Held, parked: &BTreeSet<CommitId>) -> Joined<'a> {
             .collect();
         // parked parts wait; nothing else does
         let w: BTreeSet<PartRef> = parts().filter(|(c, i, p)| !t.contains(&(c.id, *i)) && p.body == Body::Parked).map(|(c, i, _)| (c.id, i)).collect();
-        let a: BTreeSet<CommitId> = live.iter().filter(|c| applies(c, &w, &t, &world, h.now)).map(|c| c.id).collect();
+        let a: BTreeSet<CommitId> = live.iter().filter(|c| applies(c, &t, &world)).map(|c| c.id).collect();
         if a == applied && w == waiting && t == thrown {
             break view;
         }
@@ -423,22 +423,16 @@ fn without(c: &Commit, waiting: &BTreeSet<PartRef>) -> Commit {
     c
 }
 
-/// spec/commits.md §4 Pending (drift is `parked`): the author's record known, and a held part that
-/// does not wait or no part held; a commit holding only parts the node does not hold is thrown
-/// out (`unknown`). A waiting part past its expiry has gone (§5); a dropped body's commit
-/// applied when it was held (README.md).
-fn applies(c: &Commit, waiting: &BTreeSet<PartRef>, thrown: &BTreeSet<PartRef>, world: &World, now: u64) -> bool {
+/// spec/commits.md §4 Pending (drift is `parked`): the author's record known; nothing waits for a
+/// part, so its parts' waits never hold the header. A commit holding only parts the node does not
+/// hold is thrown out (`unknown`).
+fn applies(c: &Commit, thrown: &BTreeSet<PartRef>, world: &World) -> bool {
     if !judgeable(world, c) {
         return false;
     }
-    let held: Vec<usize> = (0..c.parts.len())
-        .filter(|&i| {
-            let gone = waiting.contains(&(c.id, i)) && expired(c, now);
-            matches!(c.parts[i].body, Body::Held(_) | Body::Parked | Body::Dropped(_)) && !gone && !thrown.contains(&(c.id, i))
-        })
-        .collect();
+    let held = |i: usize| matches!(c.parts[i].body, Body::Held(_) | Body::Parked | Body::Dropped(_)) && !thrown.contains(&(c.id, i));
     let any_thrown = (0..c.parts.len()).any(|i| thrown.contains(&(c.id, i)));
-    (held.is_empty() && !any_thrown) || held.iter().any(|&i| !waiting.contains(&(c.id, i)))
+    !any_thrown || (0..c.parts.len()).any(held)
 }
 
 fn parked(h: &Held) -> BTreeSet<CommitId> {

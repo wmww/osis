@@ -270,10 +270,9 @@ fn parked_spec_versioning_2() {
     let built = b.build(&forge_key, &Dedup(vec![rec]), &mut MemoryBlobs::default(), &mut SeededRng::from_u64(0)).unwrap();
     let bytes = built.commit.encode();
     let r = lp.peers[1].receive(&bytes, Vec::new()).unwrap();
-    assert!(matches!(r, Ingested::Parked(_)), "{r:?}");
+    assert!(matches!(r, Ingested::Applied(_)), "its header waits for no part: {r:?}");
     lp.peers[1].reexamine().unwrap();
-    assert_eq!(lp.peers[1].engine.pending().len(), 1);
-    assert_eq!(lp.peers[1].engine.commit_bytes(&built.commit.id()).unwrap(), Some(bytes));
+    assert_eq!(lp.peers[1].engine.pending(), vec![(built.commit.id(), osis_node::Reason::Parked)], "the part kept as bytes");
     // an unknown format version: the header does not even decode
     let mut v = osis_base::decode(&built.commit.encode(), &osis_base::Limits::DEFAULT).unwrap();
     if let Value::List(items) = &mut v

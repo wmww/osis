@@ -150,3 +150,24 @@ fn only_part_unjudgeable_is_thrown_out_spec_commits_4() {
         assert_eq!(o.revisit, [10].into());
     }
 }
+
+// spec/commits.md §4 (Pending, Order independence): nothing waits for a part, the header included.
+// A purge request whose only part is parked applies, so it reads alike with that part held parked
+// and with it not held: the two states a node reaches when a destruction drops the parked part
+// and then falls before the part is fetched again (held-model seed 428367310133 against the
+// whole history at once), and when a header-only copy comes before the blob.
+#[test]
+fn purge_whose_only_part_waits_applies_spec_commits_4() {
+    let mut p = purge(20, FIRST_ADMIN, 2, PurgeItem::Author { thing: T, aspect: REG, author: FIRST_ADMIN });
+    p.parts[0].body = Body::Parked;
+    let w = reg(10, FIRST_ADMIN, 1, REG, Retention::PLAIN, 7);
+    let parked = held(3, vec![w.clone(), p.clone()]);
+    let header = held(3, vec![w, missing(p, 0)]);
+    for hd in [&parked, &header] {
+        let o = evaluate(hd);
+        assert!(o.applied.contains(&20));
+        assert_eq!(o.fates[&(10, 0)], Fate::Leftover(LeftoverWhy::Purged));
+        assert_eq!(read(hd, REG), None);
+    }
+    assert_eq!(evaluate(&parked).fates[&(20, 0)], Fate::Keep(KeepWhy::Pending));
+}
