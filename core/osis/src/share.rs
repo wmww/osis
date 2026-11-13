@@ -579,11 +579,8 @@ impl ReadOnly {
             // the ways looked behind so far, per actor: a way none of them beats goes behind it too,
             // else a member's role through a nested actor is that of the actor's first way in
             let mut seen: BTreeMap<Tid, Vec<(Role, Option<Time>)>> = BTreeMap::new();
-            let mut queue = std::collections::VecDeque::from([(target, None, None, Vec::new())]);
+            let mut queue = std::collections::VecDeque::<(Tid, Option<Role>, Option<Time>, Vec<Tid>)>::from([(target, None, None, Vec::new())]);
             while let Some((at, role, until, through)) = queue.pop_front() {
-                let role: Option<Role> = role;
-                let until: Option<Time> = until;
-                let through: Vec<Tid> = through;
                 for (actor, g) in r.grants(at) {
                     if actor == target || through.contains(&actor) {
                         continue;

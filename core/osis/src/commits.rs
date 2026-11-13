@@ -659,9 +659,7 @@ impl crate::handle::ReadOnly {
     /// Commit `id` at this engine with every listed part the caller may read; `None` when it is
     /// not held here.
     pub(crate) fn commit_here(&self, id: CommitId) -> Result<Option<Commit>> {
-        let (mat, actor) = (self.inner.limit, self.acting);
-        let c = self.locked(|l| commit_in(&mut Reader { e: l.engine(), limit: mat, actor }, id))?;
-        Ok(c.map(|c| c.reporting(self)))
+        Ok(self.read_local(|r| commit_in(r, id))?.map(|c| c.reporting(self)))
     }
 
     /// Where calls at `a` go.
