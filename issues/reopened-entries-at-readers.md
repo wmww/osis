@@ -1,5 +1,5 @@
 # Reopened entries at a label read only from readers may never be fetched again
-> Summary: suspected, not reproduced. `reopen_undropped` leaves entries `Unknown` for a source's `refetch`, but a label with no source (only co-reader streams) has no pass that fetches them: nothing puts them in `reask`. And `stream_settle_all` drops a reasked entry whose blob is asked already under another label, whose reply brings only that label's wrap (`opens_here`). Either leaves an entry unopened for good.
+> Summary: suspected, not reproduced. `reopen_undropped` leaves entries `Unknown` for a source's `refetch`, but a label with no source (only co-reader streams) has no pass that fetches them: nothing puts them in `reask`. And `stream_settle_all` drops a reasked entry whose blob is asked already under another label, whose reply brings only that label's wrap (`opens_here`); the `settle_by` pass `asked_for` books fetches it again only at a label with a source. Either leaves an entry unopened for good.
 > Priority: low
 > Tags: sync, tests
 
