@@ -271,7 +271,7 @@ async fn clients_end_to_end() {
     assert!(matches!(&a.run(|id| l.register(id, 0)).await[..], [Message::Ok { .. }]));
     take(&host, &l, (0..3).map(blob).collect()).await;
     assert_eq!(held(&host, l.id).await, sorted((0..3).map(bid).collect()));
-    let item = osis_label::DeleteItem::sign(&l.head_keys().delete, &l.id, bid(1)).unwrap();
+    let item = osis_label::DeleteItem::sign(&l.head_keys().delete, &l.id, bid(1));
     let ev = b.run(|id| Message::Delete { id, label: l.id, items: vec![item.clone()] }).await;
     assert!(matches!(&ev[..], [Message::Error { code: Code::NOT_OPENED, .. }]), "{ev:?}");
     for c in [&mut a, &mut b] {
@@ -336,9 +336,9 @@ async fn flood_does_not_delay_others() {
     let done = |held: usize| FLOOD - held as u64;
     // the flood: one delete frame per held entry, padded with items to 16 KiB, written at once,
     // its replies never read
-    let junk = osis_label::DeleteItem::sign(&l.head_keys().delete, &l.id, BlobId([0xee; 32])).unwrap();
+    let junk = osis_label::DeleteItem::sign(&l.head_keys().delete, &l.id, BlobId([0xee; 32]));
     let frame = |n: u64, pad: usize| {
-        let mut items = vec![osis_label::DeleteItem::sign(&l.head_keys().delete, &l.id, bid(1000 + n)).unwrap()];
+        let mut items = vec![osis_label::DeleteItem::sign(&l.head_keys().delete, &l.id, bid(1000 + n))];
         items.extend(std::iter::repeat_n(junk.clone(), pad));
         encode_frame(&Message::Delete { id: (1 << 30) + n as u32, label: l.id, items }.encode())
     };
@@ -421,7 +421,7 @@ async fn one_connection_serves_hosted_and_read_labels() {
     .unwrap();
     assert!(pushed.iter().any(|(x, e)| *x == m && matches!(e, osis_proto::Event::Added { blob_id, .. } if !held.contains(blob_id))), "{pushed:?}");
     // and L still, on the same connection: open there (its Deletes taken)
-    let item = osis_label::DeleteItem::sign(&l.head_keys().delete, &l.id, bid(5)).unwrap();
+    let item = osis_label::DeleteItem::sign(&l.head_keys().delete, &l.id, bid(5));
     let ev: Vec<Message> = c.run(|id| Message::Delete { id, label: l.id, items: vec![item] }).await.into_iter().filter(|e| !e.for_node()).collect();
     assert!(matches!(&ev[..], [Message::Status { .. }]), "{ev:?}");
     host.stop().await;

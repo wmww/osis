@@ -188,7 +188,7 @@ fn a_reader_opens_an_unread_label_by_sync_key_pulls_takes_and_deletes_spec_sync_
     let e = s.l.entry(blob(3));
     let msgs = take(&mut s, e);
     assert!(added(&pushed(&msgs), l).contains(&third_id), "an entry taken is pushed to the follower: {msgs:?}");
-    let item = DeleteItem::sign(&s.l.head_keys().delete, &l, third_id).unwrap();
+    let item = DeleteItem::sign(&s.l.head_keys().delete, &l, third_id);
     let evs = request(&mut s.net, s.b, &mut s.p, |id| Message::Delete { id, label: l, items: vec![item] });
     assert!(pushed(&shared_of(&evs)).iter().any(|(x, e)| *x == l && *e == Ev::Deleted(third_id)), "and its deletion: {evs:?}");
 }
@@ -1206,7 +1206,7 @@ fn a_delete_is_taken_only_under_an_open_spec_sync_5() {
     let mut s = setup();
     let l = s.l.id;
     let delete = |s: &mut Setup, n: u64| {
-        let item = DeleteItem::sign(&s.l.head_keys().delete, &l, osis_label::blob_id(&blob(n))).unwrap();
+        let item = DeleteItem::sign(&s.l.head_keys().delete, &l, osis_label::blob_id(&blob(n)));
         request(&mut s.net, s.b, &mut s.p, |id| Message::Delete { id, label: l, items: vec![item] })
     };
     let refused = |ev: &[Message]| ev.iter().any(|e| matches!(e, Message::Error { code: Code::NOT_OPENED, .. }));

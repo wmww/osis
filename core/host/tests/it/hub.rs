@@ -91,7 +91,7 @@ fn deletes_and_tombstones() {
     }
     let k = l.head_keys().clone();
     let by = |b: &[u8], n: u64, level: u8, t: &osis_crypto::Secret32, signer: &SigningSecret| DeleteItem::sign_by(signer, &[(level, &dk(t))], &salt(n), &HB, &l.id, osis_label::blob_id(b)).unwrap();
-    let plain_by = |signer: &SigningSecret| DeleteItem::sign(signer, &l.id, osis_label::blob_id(&plain)).unwrap();
+    let plain_by = |signer: &SigningSecret| DeleteItem::sign(signer, &l.id, osis_label::blob_id(&plain));
     let ev = w.run(a, |id| Message::Delete { id, label: l.id, items: vec![by(&b3, 10, 3, &t3, &k.sync), by(&b3, 10, 3, &t1, &k.write), by(&b1, 11, 1, &t1, &k.sync), plain_by(&k.write)] });
     assert_eq!(statuses(&ev), vec![Code::REFUSED, Code::REFUSED, Code::OK, Code::REFUSED]);
     let ev = w.run(a, |id| Message::Delete { id, label: l.id, items: vec![by(&b3, 10, 3, &t3, &k.write), plain_by(&k.delete)] });
@@ -127,7 +127,7 @@ fn deletes_and_expiry() {
     let eid = osis_label::blob_id(&expiring);
     assert_eq!(live(&w, h, &l), vec![tid]);
     assert!(!w.hubs[h].store().tombstoned(&l.id, &eid).unwrap());
-    assert_eq!(statuses(&w.run(a, |id| Message::Delete { id, label: l.id, items: vec![DeleteItem::sign(&dk, &l.id, tid).unwrap()] })), vec![Code::OK]);
+    assert_eq!(statuses(&w.run(a, |id| Message::Delete { id, label: l.id, items: vec![DeleteItem::sign(&dk, &l.id, tid)] })), vec![Code::OK]);
     assert!(live(&w, h, &l).is_empty());
     assert!(w.hubs[h].store().tombstoned(&l.id, &tid).unwrap());
     assert_eq!(pull(&w, h, &l, &l.entry(expiring)), Code::EXPIRED);
@@ -242,7 +242,7 @@ fn restart_keeps_state() {
     w.setup(a, &l);
     w.open(a, &l);
     assert_eq!(pull_all(&w, h, &l, 0..5), vec![Code::OK; 5]);
-    let item = DeleteItem::sign(&l.head_keys().delete, &l.id, bid(0)).unwrap();
+    let item = DeleteItem::sign(&l.head_keys().delete, &l.id, bid(0));
     assert_eq!(statuses(&w.run(a, |id| Message::Delete { id, label: l.id, items: vec![item] })), vec![Code::OK]);
     w.restart(h, HostPolicy::default());
     w.advance(1_000);

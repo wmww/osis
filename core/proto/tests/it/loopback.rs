@@ -201,7 +201,7 @@ fn deletes() {
     assert_eq!(statuses(&ev), vec![Code::REFUSED, Code::REFUSED, Code::REFUSED, Code::OK]);
     let ev = net.run(0, |id| Message::Delete { id, label: l.id, items: vec![item(&b3, 10, (3, &t3), &k.write)] });
     assert_eq!(statuses(&ev), vec![Code::OK]);
-    let ev = net.run(0, |id| Message::Delete { id, label: l.id, items: vec![DeleteItem::sign(&k.delete, &l.id, osis_label::blob_id(&b_plain)).unwrap()] });
+    let ev = net.run(0, |id| Message::Delete { id, label: l.id, items: vec![DeleteItem::sign(&k.delete, &l.id, osis_label::blob_id(&b_plain))] });
     assert_eq!(statuses(&ev), vec![Code::OK]);
     for b in [&b3, &b1, &b_plain] {
         let id = osis_label::blob_id(b);
@@ -224,7 +224,7 @@ fn deletes_need_an_open_under_the_heads_sync_key_spec_sync_5() {
         n += 1;
         let b = blob(100 + n);
         net.hold(l, &b);
-        let item = DeleteItem::sign(&l.head_keys().delete, &l.id, osis_label::blob_id(&b)).unwrap();
+        let item = DeleteItem::sign(&l.head_keys().delete, &l.id, osis_label::blob_id(&b));
         net.run(i, |id| Message::Delete { id, label: l.id, items: vec![item] })
     };
     let refused = |ev: &[Message]| matches!(ev, [Message::Error { code: Code::NOT_OPENED, .. }]);
@@ -565,7 +565,7 @@ fn queued_requests_stay_within_the_unanswered_bound() {
     let n = 4 * WINDOW / SMALL_REPLY;
     let mut co = Vec::new();
     for k in 0..n as u64 {
-        let item = DeleteItem::sign(&l.head_keys().delete, &l.id, bid(k)).unwrap();
+        let item = DeleteItem::sign(&l.head_keys().delete, &l.id, bid(k));
         co.extend(net.clients[1].request(net.now, |id| Message::Delete { id, label: l.id, items: vec![item] }).1);
     }
     assert!(sent_msgs(&co).len() < n, "the window holds some back");

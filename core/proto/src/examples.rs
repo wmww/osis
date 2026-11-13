@@ -242,7 +242,7 @@ pub fn messages() -> Vec<(&'static str, Message)> {
         ("pong", Message::Pong { id: 3, wall_ms: 1_700_000_000_123 }),
         ("register", Message::Register { id: 7, label: l, step: f.genesis.clone(), claim_set: Some(f.genesis_claims.clone()) }),
         ("status", Message::Status { id: 10, codes: vec![Code::OK, Code::NOT_HEAD] }),
-        ("delete", Message::Delete { id: 14, label: l, items: vec![DeleteItem::sign(&f.delete, &l, id(0xd1)).expect("fixed delete"), DeleteItem::sign_by(&f.sync, &[(2, &dk)], &[0x7d; 16], &[0x7e; 16], &l, id(0xd2)).expect("fixed delete")] }),
+        ("delete", Message::Delete { id: 14, label: l, items: vec![DeleteItem::sign(&f.delete, &l, id(0xd1)), DeleteItem::sign_by(&f.sync, &[(2, &dk)], &[0x7d; 16], &[0x7e; 16], &l, id(0xd2)).expect("fixed delete")] }),
         ("fetch", Message::Fetch { id: crate::msg::NODE_IDS | 19, label: l, max_reply: 32_768, ids: vec![id(0xb2), id(0xb5)] }),
         (
             "fetch reply",

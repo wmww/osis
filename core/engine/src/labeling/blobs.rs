@@ -647,7 +647,7 @@ impl Engine {
 /// epochs only (spec/crypto.md §4), one signature per group.
 pub fn delete_item(keys: &HeadKeys, label: &LabelId, blob: BlobId, blinding: Option<(&[u8; 16], &[u8; 16])>, groups: &[Vec<(u8, DeleteSecret)>]) -> Option<osis_label::DeleteItem> {
     if let Some(d) = &keys.delete {
-        return osis_label::DeleteItem::sign(d, label, blob).ok();
+        return Some(osis_label::DeleteItem::sign(d, label, blob));
     }
     delete_item_by_level(keys, label, blob, blinding?, groups)
 }

@@ -51,7 +51,7 @@ fn reader_cannot_write() {
     // a badly signed deposit learns its code only (spec/sync.md §5)
     assert_eq!(deposit_verified(&w, H, l.deposit(blob(2), &sk)), (Code::REFUSED, false));
     assert_eq!(pull_all(&w, H, &l, [3]), vec![Code::OK]);
-    let item = DeleteItem::sign(&sk, &l.id, bid(3)).unwrap();
+    let item = DeleteItem::sign(&sk, &l.id, bid(3));
     assert_eq!(statuses(&w.run(c, |id| Message::Delete { id, label: l.id, items: vec![item] })), vec![Code::REFUSED]);
     // a register under a stranger's key: code 9 alone, never the head (spec/sync.md §5)
     let mut fork = Label::new(3);
@@ -107,7 +107,7 @@ fn budget_and_tombstone() {
         assert_eq!(deposit(&w, H, l.deposit(blob(n), &dk)), Code::OK);
     }
     assert_eq!(deposit(&w, H, l.deposit(blob(max), &dk)), Code::BUDGET_FULL);
-    let item = DeleteItem::sign(&l.head_keys().delete, &l.id, bid(0)).unwrap();
+    let item = DeleteItem::sign(&l.head_keys().delete, &l.id, bid(0));
     assert_eq!(statuses(&w.run(c, |id| Message::Delete { id, label: l.id, items: vec![item] })), vec![Code::OK]);
     assert_eq!(deposit(&w, H, l.deposit(blob(0), &dk)), Code::TOMBSTONED);
     assert_eq!(pull_all(&w, H, &l, [0]), vec![Code::TOMBSTONED]);

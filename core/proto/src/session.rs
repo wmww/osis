@@ -1224,7 +1224,7 @@ mod tests {
 
     /// A Delete item of a blob this store does not hold, signed by delete secret `k`.
     fn delete_by(k: u8, label: &LabelId) -> DeleteItem {
-        DeleteItem::sign(&crate::store::tests::secret(k), label, BlobId([0xd1; 32])).unwrap()
+        DeleteItem::sign(&crate::store::tests::secret(k), label, BlobId([0xd1; 32]))
     }
 
     /// A session on which node sync opened `label` (its Deletes taken).
@@ -1451,7 +1451,7 @@ mod tests {
         let reqs = [
             Message::Ping { id: 1, wall_ms: 0 },
             l.register(2, 0),
-            Message::Delete { id: 3, label: l.id, items: vec![DeleteItem::sign(&l.head_keys().delete, &l.id, BlobId([1; 32])).unwrap()] },
+            Message::Delete { id: 3, label: l.id, items: vec![DeleteItem::sign(&l.head_keys().delete, &l.id, BlobId([1; 32]))] },
             Message::Auth { id: 4, secret: None, session: [0; 16] },
             Message::Prove { id: 5, proofs: vec![] },
         ];

@@ -81,9 +81,9 @@ pub fn delete_digest(label: &LabelId, blob: &BlobId, levels: &[Level]) -> [u8; 3
 
 impl DeleteItem {
     /// Signed by the head's delete key alone.
-    pub fn sign(delete: &SigningSecret, label: &LabelId, blob: BlobId) -> Result<DeleteItem, Error> {
+    pub fn sign(delete: &SigningSecret, label: &LabelId, blob: BlobId) -> DeleteItem {
         let sig = delete.sign(Domain::Delete, &delete_digest(label, &blob, &[]));
-        Ok(DeleteItem { blob, by: Vec::new(), sig })
+        DeleteItem { blob, by: Vec::new(), sig }
     }
 
     /// Signed by the delete keys `dks` (one per level used, levels distinct) under the blob's
@@ -221,7 +221,7 @@ mod tests {
         let prefix = Prefix::for_keys(salt, &hb, None, &[(2, d2.verifying_key()), (3, d3.verifying_key())]).unwrap();
         let b = BlobId([9; 32]);
         let by = |key: &SigningSecret, dks: &[(Level, &DeleteSecret)], salt: &[u8; 16], hb: &[u8; 16]| DeleteItem::sign_by(key, dks, salt, hb, &l, b).unwrap();
-        DeleteItem::sign(&g.delete(), &l, b).unwrap().verify(&s0, None).unwrap();
+        DeleteItem::sign(&g.delete(), &l, b).verify(&s0, None).unwrap();
         by(&sync, &[(2, &d2)], &salt, &hb).verify(&s0, Some(&prefix)).unwrap();
         by(&write, &[(3, &d3)], &salt, &hb).verify(&s0, Some(&prefix)).unwrap();
         // level 3 needs the write key, level 2 the sync key; both levels at once the write key
@@ -245,7 +245,7 @@ mod tests {
         let mut moved = by(&sync, &[(2, &d2)], &salt, &hb);
         moved.by = moved.by.iter().map(|(_, s)| (3, *s)).collect();
         assert!(moved.verify(&s0, Some(&prefix)).is_err());
-        assert!(DeleteItem::sign(&sync, &l, b).unwrap().verify(&s0, None).is_err());
+        assert!(DeleteItem::sign(&sync, &l, b).verify(&s0, None).is_err());
         // groups (spec/sync.md §5): a Delete needs a signature under every group; an empty group
         // blocks a Delete by level; no group refuses one; the author key shared by both
         // groups covers both with one signature

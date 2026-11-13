@@ -414,7 +414,7 @@ fn one_commit_per_message() {
     assert_eq!(pull_all(&w, h, &l, 0..1024), vec![Code::OK; 1024]);
     let before = w.faults[h].writes();
     let key = l.head_keys().delete.clone();
-    let items = (0..1024).map(|n| DeleteItem::sign(&key, &l.id, osis_label::blob_id(&blob(n))).unwrap()).collect();
+    let items = (0..1024).map(|n| DeleteItem::sign(&key, &l.id, osis_label::blob_id(&blob(n)))).collect();
     assert_eq!(statuses(&w.run(c, |id| Message::Delete { id, label: l.id, items })), vec![Code::OK; 1024]);
     assert!(w.faults[h].writes() - before <= 3, "{} durable writes of a delete", w.faults[h].writes() - before);
     assert!(live(&w, h, &l).is_empty());
@@ -439,7 +439,7 @@ fn failed_commit_sends_nothing() {
         let a = w.connect(h);
         w.open(a, &l);
         w.faults[h].at(at, Fault::Fail);
-        let items = ids.iter().map(|id| DeleteItem::sign(&key, &l.id, *id).unwrap()).collect();
+        let items = ids.iter().map(|id| DeleteItem::sign(&key, &l.id, *id)).collect();
         let ev = w.run(a, |id| Message::Delete { id, label: l.id, items });
         let landed = at == 2;
         assert_eq!(statuses(&ev), if landed { vec![Code::OK; 2] } else { vec![] }, "write {at}: {ev:?}");
@@ -449,7 +449,7 @@ fn failed_commit_sends_nothing() {
     }
     let a3 = w.connect(h);
     w.open(a3, &l);
-    let item = DeleteItem::sign(&key, &l.id, osis_label::blob_id(&blob(10))).unwrap();
+    let item = DeleteItem::sign(&key, &l.id, osis_label::blob_id(&blob(10)));
     assert_eq!(statuses(&w.run(a3, |id| Message::Delete { id, label: l.id, items: vec![item] })), vec![Code::OK]);
     assert!(!live(&w, h, &l).contains(&osis_label::blob_id(&blob(10))));
 }
