@@ -526,7 +526,7 @@ impl SyncEngine {
         let started_ = self.engine.now().0;
         let SyncEngine {
             engine: _, events: _, rng: _, cfg: _, hub_store: _, next_conn: _, diagnostics: _, store_writes: _, restart_due: _, restarted_at: _, hosting: _,
-            forget_seeded, pending_seeded, unvouched_reported, conns, retry, redialed, stand_in, redeeming, provers_mark, own_key, state, seq, passes, wake, last_tick, outbox, local_inbox, left, lifetimes_heard, first, relay_now, body_links, inbox_opened, vetted, hint_failed, inbox_copied, inbox_moved, secrets_counted, reading_counted, unsettled_memo, relink_backoff, relink_pending, reask, relink_at, retired_at, deferred, genuine, reread_boxes, start_look, redelivered, awaits_secrets, retry_inbox, inbox_awaits, inbox_plain, unchecked_swept, settle_at, held_since, pass_due, due_labels, own_wrote, fill_due, passed_at, passing, work, deposit_seen, stranded_sent, stranded_on, stranded_asks, resealed, suspects_sent, suspects_gen, suspects_due, repair_state, links_failed, joined_touched, joined_failed, tied, synced, synced_of, served, hub_conns, refusals, covered_judged, stats, records, streams, changed_due, changed_gen, touched, own_keys, lan, lan_rotate, reach_account, served_cache, unread, charges, blob_sizes, swept, peer_cache, peer_received, peer_passes, sources_gen, shared_dirty, changed_moved, role_change, pass_wanted, started, rotation_at, placed_cache, placed_waiting, rotated, last_synced, clients_moved, prefix_checked, memory,
+            forget_seeded, pending_seeded, unvouched_reported, conns, retry, redialed, stand_in, redeeming, provers_mark, own_key, state, seq, passes, wake, last_tick, outbox, local_inbox, left, lifetimes_heard, first, relay_now, body_links, inbox_opened, vetted, hint_failed, inbox_copied, inbox_moved, secrets_counted, reading_counted, unsettled_memo, relink_backoff, relink_pending, reask, relink_at, retired_at, deferred, genuine, reread_boxes, start_look, redelivered, awaits_secrets, retry_inbox, inbox_awaits, inbox_plain, unchecked_swept, settle_at, held_since, pass_due, due_labels, own_wrote, fill_due, passed_at, passing, work, deposit_seen, stranded_sent, stranded_on, stranded_asks, resealed, suspects_sent, suspects_gen, suspects_due, repair_state, links_failed, joined_touched, joined_failed, tied, synced, synced_of, served, hub_conns, rooms, refusals, covered_judged, stats, records, streams, changed_due, changed_gen, touched, own_keys, lan, lan_rotate, reach_account, served_cache, unread, charges, blob_sizes, swept, peer_cache, peer_received, peer_passes, sources_gen, shared_dirty, changed_moved, role_change, pass_wanted, started, rotation_at, placed_cache, placed_waiting, rotated, last_synced, clients_moved, prefix_checked, memory,
         } = self;
         *forget_seeded = false;
         *pending_seeded = false;
@@ -599,6 +599,7 @@ impl SyncEngine {
         *synced_of = crate::engine::memo::Memo::new("labels synced");
         *served = BTreeMap::new();
         *hub_conns = BTreeMap::new();
+        *rooms = BTreeMap::new();
         *refusals = BTreeMap::new();
         *covered_judged = BTreeSet::new();
         *stats = PassStats::default();
@@ -667,8 +668,12 @@ impl SyncEngine {
     /// starts again from the store as an open does, every connection closed (dialed again as at
     /// a start), so what it had taken is fetched again.
     fn restart_in_place(&mut self, out: &mut Vec<Action>) {
-        for conn in self.conns.keys().copied().collect::<Vec<_>>() {
-            out.push(Action::Close { conn });
+        // a dialed connection up is the hub's session; one not up yet is its dial
+        for (conn, c) in &self.conns {
+            out.push(match c.hub {
+                Some(hub) => Action::Hub { conn: hub, down: osis_host::Down::Close },
+                None => Action::Close { conn: *conn },
+            });
         }
         for conn in self.served.keys().copied().collect::<Vec<_>>() {
             self.close_served(conn, out);

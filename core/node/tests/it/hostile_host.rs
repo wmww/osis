@@ -726,7 +726,7 @@ fn a_removed_entry_shown_again_is_not_promoted_spec_sync_5() {
     assert!(!before.contains(&id) && net.engine(b).blob(&id).unwrap().is_some(), "removed at the host, its bytes kept");
     let conn = net.conn_to(b, host).unwrap();
     let e = osis_proto::Event::Added { blob_id: id, blob: Some(blob), wrap, stamp: None };
-    net.feed(b, Event::Bytes { conn, bytes: frame(crate::net::stream_msg(l, vec![e], (1 << 40) + 5)) });
+    net.receive(b, conn, frame(crate::net::stream_msg(l, vec![e], (1 << 40) + 5)));
     net.run();
     net.advance(MAX_DRIFT_MS);
     net.run();
