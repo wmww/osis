@@ -506,6 +506,58 @@ fn delete_purges_ephemeral_state_where_the_thing_stays_spec_sync_9() {
     assert!(net.engine(c).groups_of(&w).contains(&g2), "still in g2");
 }
 
+// spec/sync.md §9 Delete: a delete leaving the thing in g2, a group the deleter only reads, its
+// ephemeral entries held there by the other holders (g2's writer b, its reader c): the purged
+// entries leave g2's host, and once settled nothing is placed there or deleted again (no holder
+// deletes what another re-places)
+#[test]
+fn delete_into_unwritable_group_settles_spec_sync_9() {
+    let (mut net, host, [a, b, c], g, []) = hosted::<3, 0>(&[(1, Role::Write)], [], true);
+    let w = window(&mut net, a, g, "secret");
+    net.run();
+    note(&mut net, b, w, "k", "b");
+    net.run();
+    // g2 is b's: a and c read it; a lets g2 read g's things, b puts w in g2
+    let addr = net.hosts[host].address.clone();
+    let g2 = net.group_at(b, &[(a, Role::Read), (c, Role::Read)], vec![addr]);
+    let done = net.engine(a).grant(&g, &g2, &crate::common::edge(Role::Read)).unwrap();
+    let acts = net.sync(a).carry_out(done).unwrap();
+    net.actions(a, acts);
+    net.run();
+    let mut m = Mutation::new();
+    m.op(g2, &ct::GROUP, PathOp { path: vec![PathSeg::Field(0)], op: Op::Add(Value::Tid(w)) }).unwrap();
+    net.engine(b).write(m).unwrap();
+    local(&mut net, b);
+    net.run();
+    net.advance(15_000);
+    assert_eq!((net.eph_read(c, w, STATE), notes(&mut net, c, w)), (Some(s("secret")), map(&[("k", "b")])), "c holds w through g2");
+    let l2 = label_of(&mut net, b, g2);
+    let before = net.hosts[host].hub.store().ephemeral_ids(&l2);
+    assert_eq!(before.len(), 2, "a's and b's writes under g2 at the host");
+    let mut m = Mutation::new();
+    m.op(g, &ct::GROUP, PathOp { path: vec![PathSeg::Field(0)], op: Op::Remove(Value::Tid(w)) }).unwrap();
+    m.deleting(w);
+    net.engine(a).write(m).unwrap();
+    local(&mut net, a);
+    net.run();
+    for _ in 0..3 {
+        net.advance(15_000);
+    }
+    for n in [a, b, c] {
+        assert_eq!((net.eph_read(n, w, STATE), net.eph_read(n, w, NOTES)), (None, None), "node {n}");
+        assert!(net.engine(n).groups_of(&w).contains(&g2), "node {n}: still in g2");
+    }
+    let held = net.hosts[host].hub.store().ephemeral_ids(&l2);
+    assert!(before.iter().all(|e| !held.contains(e)), "the purged writes' entries left g2's host");
+    net.shown.clear();
+    net.deleted.clear();
+    for _ in 0..5 {
+        net.advance(15_000);
+    }
+    assert_eq!((net.shown.values().sum::<usize>(), net.deleted.values().sum::<usize>()), (0, 0), "settled: shown {:?}, deleted {:?}", net.shown, net.deleted);
+    assert_eq!(net.hosts[host].hub.store().ephemeral_ids(&l2), held, "g2's ephemeral entries at the host unchanged");
+}
+
 // spec/sync.md §9 Delete, spec/commits.md §5 Purge: the delete purges by stamp, not by arrival:
 // an ephemeral write stamped before it on an aspect it names, reaching holders only after it (its
 // writer offline at the delete), is purged at every holder, its writer included; one stamped
