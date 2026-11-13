@@ -6,7 +6,7 @@
 - Oriented around data, not functionality: no "tab for notes, tab for calendar". Views show whatever combination of things they can meaningfully place.
 - Responsive and lightweight on every device; webview is out. Native first, web later.
 - Build first in something light, simple and running everywhere; if the UX suffers, rebuild differently. Platform work (Rust embedding, possibly an iOS shell of our own) is accepted for the sake of the right foundations in text, accessibility and low-level control.
-- Convergent design, not a mobile/desktop split: one layout keyed on width and input kind, phone layout designed first, desktop adds columns. Touch on desktop supported.
+- Convergent design, not a mobile/desktop split: the layout follows the space it is given, small first; the rest adds columns. Platform, input kind and window size are independent (Tess): touch has nothing to do with Android, Android nothing to do with a small window. Code keys each behaviour on what it is about (the pointer's type, the space given), never on the OS (Platforms and input).
 - Do not copy the mockup closely: it is a test bed for the look and the theme spec. The app leans simpler and less distracting and chooses its own structure and UX. UX is figured out along the way, iterating once there is something to play with.
 - Motion: almost none; only unobtrusive fades or motion that adds clarity.
 
@@ -124,7 +124,16 @@ Alternatives weighed:
 - **Xilem** on top of Masonry: duplicates osis's reactivity.
 - **egui**: lightest and everywhere, but the look is hard to escape and mobile text input is weak. **iced**, **GPUI**: desktop only. **Dioxus native**: immature, mobile is webview. **Compose Multiplatform**: Kotlin, JVM desktop. Flutter and webviews excluded by Tess.
 
-## Platform work accepted
+## Platforms and input
+Principle: a platform shell supplies only what really differs by platform, through one interface; every decision is common code keyed on what it is about. A `cfg(target_os)` outside a shell (and outside masonry's own platform glue) is the smell.
+- **Shell supplies**: raw input events (pointer with its type, keys, input-method edits), the platform's own gesture thresholds (double-tap time and slop, long-press time, touch slop), the clipboard (read and write), the soft keyboard (show, hide; a no-op where the platform decides itself), a native selection menu where the platform has one, the surface, insets, Back, scale and dark mode.
+- **Common code decides**: gestures (tap counting, long press, drag versus scroll), when the soft keyboard is wanted, what the selection menu holds and where, the layout.
+- **Gestures by pointer type**: a mouse drag selects text and reorders rows; a touch drag scrolls (with fling), a touch long press selects a word in text (handles to adjust it) and picks up a row to reorder. A pen is touch here unless it has a reason not to be.
+- **Soft keyboard**: focus is where keys go; it never shows the keyboard by itself (home's search is focused at start so a hardware keyboard types into it). The keyboard is wanted when the user activates a field (a tap or click on it) or the view marks a field as wanting typing when it appears (a new thing's title). Whether a soft keyboard then shows is the platform's (none with a hardware keyboard).
+- **Selection menu**: cut, copy, paste, select all, as the selection and clipboard allow, at the selection. Opened by a touch long press or tap on the selection, and by a secondary click. kit decides when, what and where; the shell shows the platform's own menu when it has one (Android: a floating `ActionMode`, which also carries the system's and other apps' text actions), else kit draws it.
+- **Layout**: from the space given, never from a named device class. The rail shows when it and a page at its smallest useful width fit side by side; Back on a page shows when nothing else leads home (no rail).
+
+Platform work accepted:
 - Desktop (Linux, Windows, macOS): winit. Test with the gui-testing skill.
 - Android: a View of our own run on the UI thread (osis-android, notes/android.md): Android's keyboard works only through a View's input connection; AccessKit has an Android backend, unwired.
 - iOS: winit's backend is thinly exercised, IME weak, no AccessKit backend. Expect a UIKit shell of our own hosting the render surface and feeding touch, keyboard and VoiceOver into Masonry.

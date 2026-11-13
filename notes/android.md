@@ -30,7 +30,6 @@
 - Untested on a real phone. Untested anywhere: QUIC sync, joining, rotation, dark mode switching (`nativeConfig`).
 
 ## Open
-- Touch: a drag is a mouse drag (masonry and kit's `VirtualList` see the pointer type but treat it alike): a vertical swipe on Cards reorders instead of scrolling, a drag in a text field selects. issues/android-touch.md.
-- Text selection on touch: no long-press word selection, handles or floating toolbar (cut, copy, paste); the paste chips stand in for paste. In issues/android-touch.md.
+- Touch, selection menu, keyboard rule, clipboard: issues/platform-input.md.
 - `requestCursorUpdates` answers false: no `CursorAnchorInfo`, which floating candidate windows and stylus handwriting use.
 - Logs at info to logcat: no app code logs links, keys or messages; errors carry the store path. Dependencies (masonry, wgpu, quinn) log far more at debug/trace, unaudited: keep the cap at info.
