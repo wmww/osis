@@ -708,3 +708,45 @@ fn removed_writer_stale_label_key_refused_spec_sync_5() {
     assert!(blobs.iter().all(|(id, _)| net.host_ids(host, &l).contains(id)), "a removed holder's delete went through");
 }
 
+
+// spec/sync.md §5 Promotion, §6 Tombstones: a host showing again an entry its writer removed
+// (one that kept it past the delete) is judged there as any entry, never taken for a deposit:
+// the writer promotes no blob within its tombstone, so nothing new goes to the host. Here the
+// removed blob holds a live part a snapshot covers, its bytes kept, its other part re-placed.
+#[test]
+fn a_removed_entry_shown_again_is_not_promoted_spec_sync_5() {
+    use osis_node::sync::EntryKind;
+    use osis_schema::RawKey;
+    let mut net = Net::new();
+    let host = net.add_host();
+    let (a, b) = (net.node(1, &[host]), net.node(2, &[host]));
+    let g = net.group(a, &[(b, Role::Write)], &[host]);
+    let t = net.item(a, g, g, "x");
+    net.run();
+    let l = net.label(a);
+    let mut m = osis_node::Mutation::new();
+    m.set(t, &REG, &s("one")).unwrap();
+    m.set(t, &GONE, &s("kept")).unwrap();
+    let c = net.engine(b).commit(m).unwrap().unwrap();
+    net.run();
+    let ids = net.sync(b).entries(&l).into_iter().filter(|(_, k)| matches!(k, EntryKind::Commit { commit, .. } if *commit == c)).map(|(id, _)| id).collect::<Vec<_>>();
+    let [id] = ids[..] else { panic!("{ids:?}") };
+    let blob = net.engine(b).blob(&id).unwrap().unwrap();
+    let (wrap, _) = net.sync(b).entry_meta(&l, &id).unwrap();
+    net.advance(osis_base::format::ROLE_KEEP_MS + 3_600_000);
+    net.run();
+    let acts = net.sync(a).compact_now(&t, &Ak::new(REG.ak()).unwrap()).unwrap();
+    net.actions(a, acts);
+    net.run();
+    net.advance(MAX_DRIFT_MS);
+    net.run();
+    let before = net.host_ids(host, &l);
+    assert!(!before.contains(&id) && net.engine(b).blob(&id).unwrap().is_some(), "removed at the host, its bytes kept");
+    let conn = net.conn_to(b, host).unwrap();
+    let e = osis_proto::Event::Added { blob_id: id, blob: Some(blob), wrap, stamp: None };
+    net.feed(b, Event::Bytes { conn, bytes: frame(crate::net::stream_msg(l, vec![e], (1 << 40) + 5)) });
+    net.run();
+    net.advance(MAX_DRIFT_MS);
+    net.run();
+    assert_eq!(net.host_ids(host, &l), before, "the writer placed something for the removed entry");
+}
