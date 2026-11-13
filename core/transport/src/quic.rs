@@ -71,20 +71,18 @@ impl Handshakes {
     }
 }
 
-/// A listener's accept loop: every incoming connection's `handshake` in its own task
-/// (`Handshakes`, at most `MAX_INCOMING` at once), the connections it yields into the returned
-/// channel for `accept`.
-pub(crate) fn accept_loop<I, C, AF, HF>(mut incoming: impl FnMut() -> AF + Send + 'static, handshake: impl Fn(I) -> HF + Send + 'static) -> tokio::sync::mpsc::Receiver<C>
+/// An endpoint's accept loop: every incoming connection's `handshake` in its own task
+/// (`Handshakes`, at most `MAX_INCOMING` at once), so a silent or slow client blocks nobody; the
+/// connections it yields go into the returned channel for `accept`.
+fn accept_loop<C, HF>(ep: quinn::Endpoint, handshake: impl Fn(quinn::Incoming) -> HF + Send + 'static) -> tokio::sync::mpsc::Receiver<C>
 where
-    AF: std::future::Future<Output = Option<I>> + Send,
-    I: Send + 'static,
     HF: std::future::Future<Output = Option<C>> + Send + 'static,
     C: Send + 'static,
 {
     let (tx, rx) = tokio::sync::mpsc::channel(64);
     let hs = Handshakes::new(MAX_INCOMING);
     tokio::spawn(async move {
-        while let Some(inc) = incoming().await {
+        while let Some(inc) = ep.accept().await {
             let (tx, hand) = (tx.clone(), handshake(inc));
             hs.spawn(async move {
                 if let Some(c) = hand.await {
@@ -103,16 +101,6 @@ fn conn_err(e: quinn::ConnectionError) -> Error {
         E::VersionMismatch | E::TransportError(_) => Error::Protocol(e.to_string()),
         E::CidsExhausted => Error::Io(e.to_string()),
     }
-}
-
-async fn open_bi(c: &quinn::Connection) -> Result<(QuicSend, QuicRecv), Error> {
-    let (s, r) = c.open_bi().await.map_err(conn_err)?;
-    Ok((QuicSend(s), QuicRecv(r)))
-}
-
-async fn accept_bi(c: &quinn::Connection) -> Result<(QuicSend, QuicRecv), Error> {
-    let (s, r) = c.accept_bi().await.map_err(conn_err)?;
-    Ok((QuicSend(s), QuicRecv(r)))
 }
 
 pub struct QuicSend(quinn::SendStream);
@@ -352,7 +340,7 @@ pub(crate) fn server_tls(me: Arc<CertifiedKey>, alpn: &[&[u8]]) -> Result<rustls
 
 /// quinn client settings over `client_tls`; the server may open streams and send within
 /// `limits` (`p2p::dialer_limits`).
-pub(crate) fn client_config(me: Arc<CertifiedKey>, verifier: Arc<dyn ServerCertVerifier>, alpn: &[u8], limits: (u32, u32, u64)) -> Result<quinn::ClientConfig, Error> {
+fn client_config(me: Arc<CertifiedKey>, verifier: Arc<dyn ServerCertVerifier>, alpn: &[u8], limits: (u32, u32, u64)) -> Result<quinn::ClientConfig, Error> {
     let qc = quinn::crypto::rustls::QuicClientConfig::try_from(client_tls(me, verifier, alpn)?).map_err(|e| Error::Io(e.to_string()))?;
     let mut cfg = quinn::ClientConfig::new(Arc::new(qc));
     cfg.transport_config(transport_config(limits)?);
@@ -375,26 +363,36 @@ pub(crate) fn random_seed() -> Result<zeroize::Zeroizing<[u8; 32]>, Error> {
     Ok(seed)
 }
 
-/// The client key of a connection the serving side accepted.
-pub(crate) fn client_key(c: &quinn::Connection) -> Option<PublicKey> {
-    c.peer_identity()
-        .and_then(|id| id.downcast::<Vec<CertificateDer<'static>>>().ok())
-        .and_then(|certs| certs.first().and_then(|d| key_of_spki(d.as_ref())))
+/// A connection the serving side accepted, with its client's key; closed when the key is no
+/// Ed25519 key.
+fn keyed(c: quinn::Connection) -> Option<QuicConn> {
+    let peer = c.peer_identity().and_then(|id| id.downcast::<Vec<CertificateDer<'static>>>().ok()).and_then(|certs| certs.first().and_then(|d| key_of_spki(d.as_ref())));
+    match peer {
+        Some(peer) => Some(QuicConn { c, peer }),
+        None => {
+            c.close(0u32.into(), b"key");
+            None
+        }
+    }
 }
 
-/// A client handshake from a fresh UDP socket (ends at `IDLE_TIMEOUT` of silence).
-async fn handshake(
-    sa: SocketAddr,
-    url: &str,
-    me: Arc<CertifiedKey>,
-    verifier: Arc<dyn ServerCertVerifier>,
-    alpn: &[u8],
-) -> Result<quinn::Connection, Error> {
-    let cfg = client_config(me, verifier, alpn, crate::p2p::dialer_limits(crate::p2p::Alpn::Osis, false))?;
-    let bind: SocketAddr = if sa.is_ipv6() { (std::net::Ipv6Addr::UNSPECIFIED, 0).into() } else { (std::net::Ipv4Addr::UNSPECIFIED, 0).into() };
-    let ep = quinn::Endpoint::client(bind).map_err(|e| Error::Io(e.to_string()))?;
-    let connecting = ep.connect_with(cfg, sa, SNI_NAME).map_err(|e| Error::BadUrl(format!("{url}: {e}")))?;
-    connecting.await.map_err(handshake_err)
+/// A client handshake on `ep` to `to`, which must present `key` (ends at `IDLE_TIMEOUT` of
+/// silence): as `own`'s static key, else a fresh one; the server may open streams and send within
+/// `dialer_limits`.
+async fn connect(ep: &quinn::Endpoint, to: SocketAddr, key: PublicKey, own: Option<&crate::StaticSecret>, alpn: crate::p2p::Alpn) -> Result<QuicConn, Error> {
+    let limits = crate::p2p::dialer_limits(alpn, own.is_some());
+    let me = match own {
+        Some(s) => keypair(s.as_bytes())?.1,
+        None => keypair(&*random_seed()?)?.1,
+    };
+    let pin = PinnedHost::new(key);
+    let cfg = client_config(me, pin.clone(), alpn.bytes(), limits)?;
+    let connecting = ep.connect_with(cfg, to, SNI_NAME).map_err(|e| Error::BadUrl(format!("{to}: {e}")))?;
+    match connecting.await {
+        Ok(c) => Ok(QuicConn { c, peer: key }),
+        Err(_) if pin.mismatched() => Err(Error::KeyMismatch),
+        Err(e) => Err(handshake_err(e)),
+    }
 }
 
 /// The QUIC transport. Each dial uses its own UDP socket, so a host cannot link a client's
@@ -412,18 +410,12 @@ impl Quic {
         keypair(secret.as_bytes()).map(|k| k.0)
     }
 
+    /// Dials from a fresh UDP socket.
     async fn dial_inner(&self, addr: &Address, own: Option<&crate::StaticSecret>) -> Result<QuicConn, Error> {
         let sa = resolve(&addr.url).await?;
-        let me = match own {
-            Some(s) => keypair(s.as_bytes())?.1,
-            None => keypair(&*random_seed()?)?.1,
-        };
-        let pin = PinnedHost::new(addr.key);
-        match handshake(sa, &addr.url, me, pin.clone(), ALPN).await {
-            Ok(c) => Ok(QuicConn { c, peer: addr.key }),
-            Err(_) if pin.mismatched() => Err(Error::KeyMismatch),
-            Err(e) => Err(e),
-        }
+        let bind: SocketAddr = if sa.is_ipv6() { (std::net::Ipv6Addr::UNSPECIFIED, 0).into() } else { (std::net::Ipv4Addr::UNSPECIFIED, 0).into() };
+        let ep = quinn::Endpoint::client(bind).map_err(|e| Error::Io(e.to_string()))?;
+        connect(&ep, sa, addr.key, own, crate::p2p::Alpn::Osis).await
     }
 
     async fn listen_inner(&self, cfg: ListenConfig) -> Result<QuicListener, Error> {
@@ -432,22 +424,7 @@ impl Quic {
         let sc = server_config(me, &[ALPN])?;
         let ep = quinn::Endpoint::server(sc, sa).map_err(|e| Error::Io(e.to_string()))?;
         let local = ep.local_addr().map_err(|e| Error::Io(e.to_string()))?;
-        // handshakes run concurrently (`accept_loop`), so a silent or slow client blocks nobody
-        let e2 = ep.clone();
-        let incoming = move || {
-            let e = e2.clone();
-            async move { e.accept().await }
-        };
-        let rx = accept_loop(incoming, |inc: quinn::Incoming| async move {
-            let c = inc.await.ok()?;
-            match client_key(&c) {
-                Some(peer) => Some(QuicConn { c, peer }),
-                None => {
-                    c.close(0u32.into(), b"key");
-                    None
-                }
-            }
-        });
+        let rx = accept_loop(ep.clone(), |inc: quinn::Incoming| async move { keyed(inc.await.ok()?) });
         Ok(QuicListener { ep, rx, addr: Address { url: format!("{SCHEME}://{local}"), key: pk } })
     }
 }
@@ -506,7 +483,7 @@ pub struct QuicConn {
 
 /// A failed handshake: the peer's protocol or TLS failures are `Protocol` (BadInput, not
 /// retried), loss of contact `Unreachable`.
-pub(crate) fn handshake_err(e: quinn::ConnectionError) -> Error {
+fn handshake_err(e: quinn::ConnectionError) -> Error {
     use quinn::ConnectionError as E;
     match e {
         E::VersionMismatch | E::TransportError(_) | E::ConnectionClosed(_) | E::ApplicationClosed(_) => Error::Protocol(e.to_string()),
@@ -529,11 +506,13 @@ impl Connection for QuicConn {
     }
 
     async fn open_stream(&self) -> Result<(QuicSend, QuicRecv), Error> {
-        open_bi(&self.c).await
+        let (s, r) = self.c.open_bi().await.map_err(conn_err)?;
+        Ok((QuicSend(s), QuicRecv(r)))
     }
 
     async fn accept_stream(&self) -> Result<(QuicSend, QuicRecv), Error> {
-        accept_bi(&self.c).await
+        let (s, r) = self.c.accept_bi().await.map_err(conn_err)?;
+        Ok((QuicSend(s), QuicRecv(r)))
     }
 
     fn close(&self) {
@@ -573,48 +552,34 @@ impl crate::p2p::Udp for QuicUdp {
     }
 
     fn bind(&self, at: SocketAddr, secret: Option<&crate::StaticSecret>) -> Result<QuicSock, Error> {
-        let io = |e: std::io::Error| Error::Io(e.to_string());
         let server = match secret {
             Some(s) => Some(server_config(keypair(s.as_bytes())?.1, &[ALPN, crate::p2p::RELAY_ALPN])?),
             None => None,
         };
         // bound here, as quinn binds (an IPv6 socket serves both families), so punches can go
         // out of the same socket
-        let raw = socket2::Socket::new(socket2::Domain::for_address(at), socket2::Type::DGRAM, Some(socket2::Protocol::UDP)).map_err(io)?;
+        let raw = socket2::Socket::new(socket2::Domain::for_address(at), socket2::Type::DGRAM, Some(socket2::Protocol::UDP))?;
         if at.is_ipv6() {
             let _ = raw.set_only_v6(false);
         }
-        raw.bind(&at.into()).map_err(io)?;
+        raw.bind(&at.into())?;
         let udp: std::net::UdpSocket = raw.into();
-        let punch = udp.try_clone().map_err(io)?;
-        let ep = quinn::Endpoint::new(quinn::EndpointConfig::default(), server, udp, std::sync::Arc::new(quinn::TokioRuntime)).map_err(io)?;
-        let local = ep.local_addr().map_err(io)?;
+        let punch = udp.try_clone()?;
+        let ep = quinn::Endpoint::new(quinn::EndpointConfig::default(), server, udp, std::sync::Arc::new(quinn::TokioRuntime))?;
+        let local = ep.local_addr()?;
         let rx = match secret {
-            Some(_) => {
-                let e2 = ep.clone();
-                let incoming = move || {
-                    let e = e2.clone();
-                    async move { e.accept().await }
+            Some(_) => accept_loop(ep.clone(), |inc: quinn::Incoming| async move {
+                use crate::p2p::Alpn;
+                let from = canonical(inc.remote_address());
+                let c = inc.await.ok()?;
+                let proto = c.handshake_data().and_then(|h| h.downcast::<quinn::crypto::rustls::HandshakeData>().ok()).and_then(|h| h.protocol);
+                let alpn = match proto.as_deref() {
+                    Some(a) if a == ALPN => Alpn::Osis,
+                    Some(a) if a == crate::p2p::RELAY_ALPN => Alpn::Relay,
+                    _ => None?,
                 };
-                accept_loop(incoming, |inc: quinn::Incoming| async move {
-                    use crate::p2p::Alpn;
-                    let from = canonical(inc.remote_address());
-                    let c = inc.await.ok()?;
-                    let proto = c.handshake_data().and_then(|h| h.downcast::<quinn::crypto::rustls::HandshakeData>().ok()).and_then(|h| h.protocol);
-                    let alpn = match proto.as_deref() {
-                        Some(a) if a == ALPN => Alpn::Osis,
-                        Some(a) if a == crate::p2p::RELAY_ALPN => Alpn::Relay,
-                        _ => None?,
-                    };
-                    match client_key(&c) {
-                        Some(peer) => Some((QuicConn { c, peer }, alpn, from)),
-                        None => {
-                            c.close(0u32.into(), b"key");
-                            None
-                        }
-                    }
-                })
-            }
+                Some((keyed(c)?, alpn, from))
+            }),
             None => tokio::sync::mpsc::channel(1).1,
         };
         Ok(QuicSock { ep, punch, local, rx: tokio::sync::Mutex::new(rx) })
@@ -655,19 +620,7 @@ impl crate::p2p::Sock for QuicSock {
     }
 
     async fn dial(&self, to: SocketAddr, key: PublicKey, own: Option<crate::StaticSecret>, alpn: crate::p2p::Alpn) -> Result<QuicConn, Error> {
-        let limits = crate::p2p::dialer_limits(alpn, own.is_some());
-        let me = match own {
-            Some(s) => keypair(s.as_bytes())?.1,
-            None => keypair(&*random_seed()?)?.1,
-        };
-        let pin = PinnedHost::new(key);
-        let cfg = client_config(me, pin.clone(), alpn.bytes(), limits)?;
-        let connecting = self.ep.connect_with(cfg, to, SNI_NAME).map_err(|e| Error::BadUrl(format!("{to}: {e}")))?;
-        match connecting.await {
-            Ok(c) => Ok(QuicConn { c, peer: key }),
-            Err(_) if pin.mismatched() => Err(Error::KeyMismatch),
-            Err(e) => Err(handshake_err(e)),
-        }
+        connect(&self.ep, to, key, own.as_ref(), alpn).await
     }
 
     async fn accept(&self) -> Result<(QuicConn, crate::p2p::Alpn, SocketAddr), Error> {
@@ -739,7 +692,7 @@ mod tests {
         rt().block_on(async {
             let (_l, sa) = listener(1).await;
             let me = keypair(&[2; 32]).unwrap().1;
-            let r = handshake(sa, "x", me, Arc::new(Lax(false)), b"nope").await;
+            let r = handshake(sa, me, Arc::new(Lax(false)), b"nope").await;
             let e = r.err().unwrap();
             assert!(matches!(e, Error::Protocol(_)), "{e:?}");
             assert_eq!(osis_base::Classified::class(&e), osis_base::ErrorClass::BadInput);
@@ -756,7 +709,7 @@ mod tests {
         let stall = std::thread::spawn(move || {
             rt().block_on(async move {
                 let me = keypair(&[4; 32]).unwrap().1;
-                let _ = handshake(sa, "x", me, Arc::new(Lax(true)), ALPN).await;
+                let _ = handshake(sa, me, Arc::new(Lax(true)), ALPN).await;
             })
         });
         main.block_on(async {
@@ -788,6 +741,12 @@ mod tests {
 
     fn endpoint() -> quinn::Endpoint {
         quinn::Endpoint::client((std::net::Ipv4Addr::UNSPECIFIED, 0).into()).unwrap()
+    }
+
+    /// A client handshake to `sa` from a fresh socket, the host's key checked by `verifier`.
+    async fn handshake(sa: SocketAddr, me: Arc<CertifiedKey>, verifier: Arc<dyn ServerCertVerifier>, alpn: &[u8]) -> Result<quinn::Connection, Error> {
+        let cfg = client_config(me, verifier, alpn, (MAX_STREAMS, STREAM_WINDOW, u64::from(CONN_WINDOW))).unwrap();
+        endpoint().connect_with(cfg, sa, SNI_NAME).unwrap().await.map_err(handshake_err)
     }
 
     // spec/sync.md §10: handshakes have no deadline; past the cap the oldest in progress goes
