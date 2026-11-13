@@ -1292,6 +1292,38 @@ fn a_position_never_passes_a_dropped_push_spec_sync_10() {
     assert_eq!(net.read(a, t), Some(s("pushed while full")));
 }
 
+// spec/sync.md §10 (Stream): numbered pushes cost an honest stream nothing: writes followed one by
+// one arrive by pushes alone, with no PullReply re-reading after any
+#[test]
+fn in_order_pushes_need_no_reply_spec_sync_10() {
+    let (mut net, a, b, gs) = paired(1);
+    net.item(b, gs[0], gs[0], "x");
+    net.run();
+    let counts = std::rc::Rc::new(std::cell::Cell::new((0u32, 0u32)));
+    let seen = counts.clone();
+    net.tamper_link = Some((b, a));
+    net.tamper = Some(Box::new(move |m| {
+        let (r, p) = seen.get();
+        match m {
+            osis_proto::Message::PullReply(_) => seen.set((r + 1, p)),
+            osis_proto::Message::Stream(x) if x.cursor.is_some() => seen.set((r, p + 1)),
+            _ => {}
+        }
+        None
+    }));
+    let ts: Vec<_> = (0..5).map(|i| {
+        let t = net.item(b, gs[0], gs[0], &format!("w{i}"));
+        net.run();
+        t
+    }).collect();
+    for (i, t) in ts.iter().enumerate() {
+        assert_eq!(net.read(a, *t), Some(s(&format!("w{i}"))));
+    }
+    let (replies, pushes) = counts.get();
+    assert!(pushes >= 5, "each write came by a push: {pushes}");
+    assert_eq!(replies, 0, "no reply read again");
+}
+
 // spec/sync.md §10 (Stream): a push the peer lost on the way (a dishonest host or co-reader
 // dropping it) is found by the next one, which does not follow on from the last taken: the stream
 // reads again from its cursor, so the lost push's write arrives with no reconnect or restart
