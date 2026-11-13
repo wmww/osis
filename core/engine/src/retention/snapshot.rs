@@ -408,6 +408,16 @@ pub(crate) fn own_covers(core: &Core, c: &CommitId, tid: &Tid, ak: &Ak) -> Vec<C
     own_replaces(core, tid, ak, &m.view.author).rev().take_while(|x| x.0 > ts).take(2).map(|x| x.1).collect()
 }
 
+/// Whether `s` drops held body `c` as its cover: `covered`, but of two covered-equal snapshots only
+/// the higher commit ID goes (spec/sync.md §7).
+pub(crate) fn drops_under(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<bool> {
+    if covered(tx, s, c, tid, ak)? != Some(true) {
+        return Ok(false);
+    }
+    let snapshot = tx.core.ix.commits.get(c).is_some_and(|m| m.view.kind.is_compaction());
+    Ok(!(snapshot && c < s && covered(tx, c, s, tid, ak)? == Some(true)))
+}
+
 /// `Engine::covered` in `tx`: a plain commit `s` covers `c` only as its author's own replace
 /// (spec/commits.md §5, Own replaces), with a second own replace later than `c`, so what
 /// `c`'s author wrote before their last replace stays: a function of the commits held here,

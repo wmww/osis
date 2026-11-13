@@ -14,7 +14,6 @@
 //! arrives (`wake_covers`), so the last to arrive of body, replacement, role and keys triggers the
 //! cover. A cover that fails leaves the body and never fails the transaction.
 
-use super::covered;
 use crate::engine::write::{MayWrite, may_write_on};
 use crate::engine::{Core, DropFor, Step, Tx};
 use crate::error::Result;
@@ -28,15 +27,10 @@ use std::collections::BTreeSet;
 fn coverer(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak, right: bool) -> Result<Option<CommitId>> {
     let mut snaps: Vec<(Ts, CommitId)> = tx.core.ix.snapshots.get(&(*tid, ak.clone())).into_iter().flatten().map(|x| (x.0, x.1)).filter(|x| x.1 != *c).collect();
     snaps.sort();
-    let snapshot = tx.core.ix.commits.get(c).is_some_and(|m| m.view.kind.is_compaction());
     for (_, s) in snaps.into_iter().rev() {
-        if (right && !super::purge::snapshot_right(tx.core, &s, c, tid, ak)) || covered(tx, &s, c, tid, ak)? != Some(true) {
-            continue;
+        if (!right || super::purge::snapshot_right(tx.core, &s, c, tid, ak)) && super::snapshot::drops_under(tx, &s, c, tid, ak)? {
+            return Ok(Some(s));
         }
-        if snapshot && *c < s && covered(tx, c, &s, tid, ak)? == Some(true) {
-            continue;
-        }
-        return Ok(Some(s));
     }
     Ok(None)
 }

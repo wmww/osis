@@ -221,7 +221,7 @@ pub(crate) fn drop_covered(tx: &mut Tx<'_>, aspects: &BTreeSet<(Tid, Ak)>, keep:
         // the state a drop reads is unchanged by the others)
         let r = crate::apply::run_batched(tx, |tx| {
             for c in bodies {
-                let Some((ai, is_snapshot, author)) = held_on(tx, &c, tid, ak) else { continue };
+                let Some((ai, _, author)) = held_on(tx, &c, tid, ak) else { continue };
                 for (s, snap_author) in &snaps {
                     if new_snap.is_some_and(|n| *n != c && *n != *s) {
                         continue;
@@ -229,15 +229,12 @@ pub(crate) fn drop_covered(tx: &mut Tx<'_>, aspects: &BTreeSet<(Tid, Ak)>, keep:
                     if *s == c || !holds(tx, s) || !holds(tx, &c) || (Some(author) == me && Some(*snap_author) != me) {
                         continue;
                     }
-                    if super::covered(tx, s, &c, tid, ak)? != Some(true) {
+                    if !super::snapshot::drops_under(tx, s, &c, tid, ak)? {
                         continue;
                     }
                     // kept history stays to its keep bound (spec/commits.md §5)
                     if super::bounds::part_keep(tx, &c, tid, ak)? > tx.now().0 {
                         break;
-                    }
-                    if is_snapshot && c < *s && super::covered(tx, &c, s, tid, ak)? == Some(true) {
-                        continue;
                     }
                     // a bare leftover not past its expiry (purged) stays (`drop_part_for`)
                     super::drop_part_for(tx, &c, ai, super::DropFor::Cover)?;
