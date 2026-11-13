@@ -419,13 +419,17 @@ fn leaves_and_appends_extend() {
     let mut inc = Timelines::new();
     let touched: BTreeSet<Tid> = held.things().into_iter().collect();
     inc.update_touched(&held, &touched);
+    // chain certificates asked before the leaf's record came are not kept past it
+    for m in &n {
+        let _ = inc.get(&g).unwrap().certificates(m, &leaf);
+    }
     let held = w.held();
     let c = inc.update_touched(&held, &BTreeSet::from([leaf]));
     assert!(c.evaluated.is_empty(), "{c:?}");
     assert_eq!(c.extended, BTreeSet::from([leaf]));
     // O(1) in the component: no re-partition, no held-set gathering
     assert_eq!(inc.appended(), 1);
-    assert!(check(&held, &inc, &n).is_none());
+    assert!(check_more(&held, &inc, &n).is_none(), "{:?}", check_more(&held, &inc, &n));
     let prev = w.held();
     w.set(k, g, leaf, edge(osis_base::Role::Read), 20, &[]);
     let held = w.held();
