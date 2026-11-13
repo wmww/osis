@@ -540,8 +540,10 @@ impl SyncEngine {
     fn behind_from(&mut self, conn: ConnId, l: LabelId, from: Option<Step>, out: &mut Vec<super::Action>) -> Result<()> {
         let Some(lc) = self.lc(conn, &l) else { return Ok(()) };
         let (g, index, open) = (lc.group, lc.index, lc.phase.is_open());
+        let at_head = from.as_ref().is_some_and(|s| lc.head.as_ref().is_some_and(|h| h.id() == s.id()));
         let (by, refused) = match &lc.phase {
-            Phase::Open { by, .. } => (by.as_deref().cloned(), Vec::new()),
+            // the key it opened by is a credential of the open head only (a claim key is per step)
+            Phase::Open { by, .. } => (by.as_deref().cloned().filter(|_| at_head), Vec::new()),
             Phase::Behind { refused } => (None, refused.clone()),
             _ => (None, Vec::new()),
         };
@@ -549,7 +551,7 @@ impl SyncEngine {
         let none_left = from.is_none() && !refused.is_empty();
         let held: Vec<SigningSecret> = self.engine.epochs(&g).map(|e| e.sync.held_newest_first().into_iter().map(|(_, x)| label_role_key(LabelRole::Sync, x, index)).collect()).unwrap_or_default();
         let mut asks: Vec<(Option<Step>, SigningSecret)> = match from {
-            // the step's sync key, else the claim key it opened by there, else its claim keys
+            // the step's sync key, else (the open head) the key it opened by there, else its claim keys
             Some(s) => {
                 let keys = match held.into_iter().find(|k| k.verifying_key() == s.keys.sync).or(by) {
                     Some(k) => vec![k],
