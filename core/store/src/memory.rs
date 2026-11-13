@@ -1,6 +1,6 @@
 //! `MemoryBackend` (tests, simulator) and the shared fault plan that also drives `MemoryRoot`.
 
-use crate::backend::{Backend, BackendError, KeyValue, Op, WriteBatch, blob_slice};
+use crate::backend::{Backend, BackendError, KeyValue, Op, WriteBatch, blob_slice, lock};
 use osis_base::BlobId;
 use std::collections::{BTreeMap, HashMap};
 use std::ops::Bound;
@@ -96,10 +96,10 @@ impl Faults {
     /// plan shared by a device's backend and root stays one plan in the copy.
     #[doc(hidden)]
     pub fn test_copy(&self) -> Faults {
-        Faults(osis_base::copying::remap(&self.0, |m| Mutex::new(m.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone())))
+        Faults(osis_base::copying::remap(&self.0, |m| Mutex::new(lock(m).clone())))
     }
     fn lock(&self) -> MutexGuard<'_, FaultState> {
-        self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+        lock(&self.0)
     }
 }
 
@@ -187,19 +187,10 @@ impl MemoryBackend {
         let rows: usize = d.kv.iter().map(|(k, v)| k.len() + v.len()).sum();
         (rows as u64, d.blobs.values().map(Vec::len).sum::<usize>() as u64, d.blobs.len() as u64)
     }
-    /// An independent copy of the durable state, as a backup takes it (sharing the faults, no
-    /// history).
+    /// An independent copy of the durable state, recorded history and counters, sharing the
+    /// faults: a backup, or one device set up once and run down several paths.
     pub fn copy(&self) -> MemoryBackend {
-        let d = self.lock();
-        let data = Data { kv: d.kv.clone(), blobs: d.blobs.clone(), history: None, blob_history: Vec::new(), sealed: HashMap::new(), syncs: 0, io: Io::default() };
-        MemoryBackend { data: Arc::new(Mutex::new(data)), faults: self.faults.clone() }
-    }
-    /// An independent copy of the durable state and of what was recorded (sharing the faults):
-    /// one device set up once, then run down several paths.
-    pub fn fork(&self) -> MemoryBackend {
-        let d = self.lock();
-        let data = Data { kv: d.kv.clone(), blobs: d.blobs.clone(), history: d.history.clone(), blob_history: d.blob_history.clone(), sealed: d.sealed.clone(), syncs: d.syncs, io: d.io };
-        MemoryBackend { data: Arc::new(Mutex::new(data)), faults: self.faults.clone() }
+        MemoryBackend { data: Arc::new(Mutex::new(self.lock().clone())), faults: self.faults.clone() }
     }
     /// Tests only (world copies, `osis_base::copying`): an exact copy of the data, recorded
     /// history, counters and fault plan (`Faults::test_copy`), sharing none of them; two handles
@@ -207,7 +198,7 @@ impl MemoryBackend {
     /// product: a node and its copy would reuse one identity, session and rng stream.
     #[doc(hidden)]
     pub fn test_copy(&self) -> MemoryBackend {
-        MemoryBackend { data: osis_base::copying::remap(&self.data, |m| Mutex::new(m.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone())), faults: self.faults.test_copy() }
+        MemoryBackend { data: osis_base::copying::remap(&self.data, |m| Mutex::new(lock(m).clone())), faults: self.faults.test_copy() }
     }
     /// Drops every value and blob (a removed database file).
     pub fn erase(&self) {
@@ -231,7 +222,7 @@ impl MemoryBackend {
         self.lock().io
     }
     fn lock(&self) -> MutexGuard<'_, Data> {
-        self.data.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+        lock(&self.data)
     }
 }
 
@@ -305,13 +296,6 @@ impl Backend for MemoryBackend {
         {
             d.sealed.insert(tag, *key);
         }
-    }
-
-    fn get_blob(&self, id: &BlobId) -> Result<Option<Vec<u8>>, BackendError> {
-        let mut d = self.lock();
-        let b = d.blobs.get(id).cloned();
-        d.io.read(b.as_ref().map(Vec::len));
-        Ok(b)
     }
 
     fn read_blob(&self, id: &BlobId, offset: u64, len: usize) -> Result<Option<Vec<u8>>, BackendError> {

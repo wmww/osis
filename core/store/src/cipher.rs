@@ -6,6 +6,7 @@
 //!
 //! `BlobArea` is the plain one, a store of blobs only, for an engine with no node (tests).
 
+use crate::backend::lock;
 use crate::{Error, Store, Suspended};
 use osis_base::BlobId;
 use std::any::Any;
@@ -121,10 +122,6 @@ fn decode_note(k: &[u8], v: &[u8]) -> Option<Note> {
         rest = rest.get(4 + n..)?;
     }
     Some(Note { seq, holds, releases, removals })
-}
-
-fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
-    m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// Tests only: `store`'s copy inside a world copy (`osis_base::copying::remap`), so every holder

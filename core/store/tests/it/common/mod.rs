@@ -138,9 +138,6 @@ impl Backend for FaultyRedb {
         }
         self.inner.commit(batch)
     }
-    fn get_blob(&self, id: &BlobId) -> Result<Option<Vec<u8>>, BackendError> {
-        self.inner.get_blob(id)
-    }
     fn read_blob(&self, id: &BlobId, offset: u64, len: usize) -> Result<Option<Vec<u8>>, BackendError> {
         self.inner.read_blob(id, offset, len)
     }

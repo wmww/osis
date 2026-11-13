@@ -131,10 +131,6 @@ impl Backend for RedbBackend {
         })
     }
 
-    fn get_blob(&self, id: &BlobId) -> Result<Option<Vec<u8>>, BackendError> {
-        self.read(BLOBS, |t| Ok(t.get(id.0.as_slice())?.map(|v| v.value().to_vec())))
-    }
-
     /// redb reads the whole value (at most `MAX_BLOB`) before slicing.
     fn read_blob(&self, id: &BlobId, offset: u64, len: usize) -> Result<Option<Vec<u8>>, BackendError> {
         self.read(BLOBS, |t| Ok(t.get(id.0.as_slice())?.map(|v| blob_slice(v.value(), offset, len))))

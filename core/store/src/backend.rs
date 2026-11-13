@@ -10,7 +10,7 @@ pub enum BackendError {
     Io(String),
     /// Injected by a `Faults` plan (tests, simulator).
     Fault,
-    /// The simulated device crashed; nothing more is written until reopened.
+    /// The simulated device crashed; nothing more is written until `Faults::revive`.
     Crashed,
 }
 
@@ -85,7 +85,6 @@ pub trait Backend: Send {
     fn scan(&self, start: &[u8], end: Option<&[u8]>, limit: usize) -> Result<Vec<KeyValue>, BackendError>;
     /// Applies `batch` atomically; durable when it returns `Ok`.
     fn commit(&mut self, batch: WriteBatch) -> Result<(), BackendError>;
-    fn get_blob(&self, id: &BlobId) -> Result<Option<Vec<u8>>, BackendError>;
     /// Bytes `offset..offset+len` of a blob (clipped at its end); `None` if absent.
     fn read_blob(&self, id: &BlobId, offset: u64, len: usize) -> Result<Option<Vec<u8>>, BackendError>;
     fn blob_len(&self, id: &BlobId) -> Result<Option<u64>, BackendError>;
@@ -101,6 +100,10 @@ pub trait Backend: Send {
     /// to be written, was sealed under `key`.
     #[doc(hidden)]
     fn note_sealed(&self, _value: &[u8], _key: &[u8; 32]) {}
+
+    fn get_blob(&self, id: &BlobId) -> Result<Option<Vec<u8>>, BackendError> {
+        self.read_blob(id, 0, usize::MAX)
+    }
 
     /// Up to `limit` pairs whose key starts with `prefix`.
     fn scan_prefix(&self, prefix: &[u8], limit: usize) -> Result<Vec<KeyValue>, BackendError> {
@@ -153,6 +156,11 @@ pub fn prefix_end(prefix: &[u8]) -> Option<Vec<u8>> {
         }
     }
     None
+}
+
+/// Locks `m`, a poisoned lock's data as it stands.
+pub(crate) fn lock<T>(m: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// Clips `offset..offset+len` to a blob of `blob.len()` bytes.

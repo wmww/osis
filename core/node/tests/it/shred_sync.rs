@@ -129,12 +129,12 @@ fn purged_synced_body_crash_safe_spec_commits_5() {
     net.set_online(b, false);
     // the synced node's device (the engine's store and the hub's), run down each crash path
     // from a fresh copy
-    let (backend, root) = (net.nodes[b].backend.fork(), net.nodes[b].root.copy());
-    let hub = (net.nodes[b].hub_disk.0.fork(), net.nodes[b].hub_disk.1.copy());
+    let (backend, root) = (net.nodes[b].backend.copy(), net.nodes[b].root.copy());
+    let hub = (net.nodes[b].hub_disk.0.copy(), net.nodes[b].hub_disk.1.copy());
     for n in 0.. {
-        net.nodes[b].backend = backend.fork();
+        net.nodes[b].backend = backend.copy();
         net.nodes[b].root = root.copy();
-        net.nodes[b].hub_disk = (hub.0.fork(), hub.1.copy());
+        net.nodes[b].hub_disk = (hub.0.copy(), hub.1.copy());
         net.restart(b, 70);
         f.at(n, Fault::Crash);
         if purge(&mut net, b, &parts).is_ok() {

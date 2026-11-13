@@ -1,7 +1,7 @@
 //! `RootStorage`: the one place the platform can erase, holding the key tree's root key
 //! (notes/local-store.md, Key tree). Replacing the record must destroy the previous one.
 
-use crate::backend::BackendError;
+use crate::backend::{BackendError, lock};
 use crate::memory::Faults;
 use osis_crypto::Secret32;
 use std::sync::{Arc, Mutex};
@@ -60,19 +60,15 @@ impl MemoryRoot {
     pub fn with_faults(faults: Faults) -> MemoryRoot {
         MemoryRoot { slot: Arc::default(), faults }
     }
-    /// An independent copy of the record (`MemoryBackend::copy`).
+    /// An independent copy of the record, sharing the faults (`MemoryBackend::copy`).
     pub fn copy(&self) -> MemoryRoot {
-        let r = self.slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
-        MemoryRoot { slot: Arc::new(Mutex::new(r)), faults: self.faults.clone() }
+        MemoryRoot { slot: Arc::new(Mutex::new(lock(&self.slot).clone())), faults: self.faults.clone() }
     }
-}
-
-impl MemoryRoot {
     /// Tests only (world copies): an exact copy of the record and fault plan, sharing neither
     /// (`MemoryBackend::test_copy`).
     #[doc(hidden)]
     pub fn test_copy(&self) -> MemoryRoot {
-        MemoryRoot { slot: osis_base::copying::remap(&self.slot, |m| Mutex::new(m.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone())), faults: self.faults.test_copy() }
+        MemoryRoot { slot: osis_base::copying::remap(&self.slot, |m| Mutex::new(lock(m).clone())), faults: self.faults.test_copy() }
     }
 }
 
@@ -81,11 +77,11 @@ impl RootStorage for MemoryRoot {
         Some(Box::new(self.test_copy()))
     }
     fn load(&self) -> Result<Option<RootRecord>, BackendError> {
-        Ok(self.slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone())
+        Ok(lock(&self.slot).clone())
     }
     fn store(&mut self, record: &RootRecord) -> Result<(), BackendError> {
         self.faults.check()?;
-        *self.slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(record.clone());
+        *lock(&self.slot) = Some(record.clone());
         Ok(())
     }
     fn tier(&self) -> RootTier {
@@ -93,7 +89,7 @@ impl RootStorage for MemoryRoot {
     }
     fn erase(&mut self) -> Result<(), BackendError> {
         self.faults.check()?;
-        *self.slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+        *lock(&self.slot) = None;
         Ok(())
     }
 }
