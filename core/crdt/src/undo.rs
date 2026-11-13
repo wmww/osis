@@ -8,7 +8,7 @@ use crate::error::Error;
 use crate::fragment::{Bag, Eid, Elem, Entry, Enum, Fragment, Map, Meta, RegWrite, Register, Set, Struct};
 use crate::ops::{Writer, create, key_state, present_slot, remove, replace};
 use crate::seq;
-use crate::stamp::{CounterRange, Dot, Source, Stamp};
+use crate::stamp::{CounterRange, Dot, Source};
 use crate::view::View;
 use std::collections::BTreeMap;
 
@@ -100,41 +100,37 @@ fn undo_at<V: View>(w: &mut Writer, u: &Undone, o: &Fragment, s: Option<&Fragmen
         }
         Fragment::Bag(x) => {
             let prev = chosen(b);
-            let ev = view.element();
+            let pe = match &prev {
+                Some(Fragment::Bag(p)) => Some(&p.elems),
+                _ => None,
+            };
+            let reset = x.meta.reset.is_some();
             let mut elems = BTreeMap::new();
-            if x.meta.reset.is_some() {
-                // §5.2: cancel the undone commit's own contribution, re-add the pre-reset live ones
-                for d in x.elems.keys().filter(|d| u.made(d)) {
+            // §5.2: cancel the undone commit's own contributions, and re-add the live ones it
+            // reset, or those it cancelled (it was an undo: redo)
+            let mut back = Vec::new();
+            for (d, e) in &x.elems {
+                if u.made(d) && (reset || e.frag.is_some()) {
                     elems.insert(d.clone(), Elem::tomb(&r));
+                } else if !reset && e.reset.is_some() {
+                    back.extend(pe.and_then(|p| p.get_key_value(d)));
                 }
-                if let Some(Fragment::Bag(p)) = &prev {
-                    for (pd, e) in &p.elems {
-                        let Some(f) = e.frag.as_deref() else { continue };
-                        let Some(v) = f.read() else { continue };
-                        w.copy_dot(pd);
-                        w.copy_from(f);
-                        let (d, e) = contribution(w, ev.as_ref(), v, &r)?;
-                        elems.insert(d, e);
-                    }
-                }
-            } else {
-                for (d, e) in &x.elems {
-                    if e.frag.is_some() && u.made(d) {
-                        elems.insert(d.clone(), Elem::tomb(&r));
-                    } else if e.reset.is_some() {
-                        // the undone commit cancelled a contribution (an undo): re-add it (redo)
-                        let f = match &prev {
-                            Some(Fragment::Bag(p)) => p.elems.get(d).and_then(|x| x.frag.as_deref()),
-                            _ => None,
-                        };
-                        if let Some((f, v)) = f.and_then(|f| Some((f, f.read()?))) {
-                            w.copy_dot(d);
-                            w.copy_from(f);
-                            let (d, e) = contribution(w, ev.as_ref(), v, &r)?;
-                            elems.insert(d, e);
-                        }
-                    }
-                }
+            }
+            if reset {
+                back.extend(pe.into_iter().flatten());
+            }
+            let ev = view.element();
+            for (pd, e) in back {
+                let Some((f, v)) = e.frag.as_deref().and_then(|f| Some((f, f.read()?))) else { continue };
+                w.copy_dot(pd);
+                w.copy_from(f);
+                // created under the element view, else a register write at the undo's stamp
+                let d = w.fresh().dot;
+                let f = match &ev {
+                    Some(ev) => create(w, ev, &v)?,
+                    None => Fragment::Register(Register { reset: None, write: Some(RegWrite { stamp: r.clone(), value: Some(v) }) }),
+                };
+                elems.insert(d, Elem::of_frag(f));
             }
             Fragment::Bag(Bag { kind: x.kind, meta: Meta::default(), elems })
         }
@@ -340,17 +336,6 @@ fn undo_at<V: View>(w: &mut Writer, u: &Undone, o: &Fragment, s: Option<&Fragmen
 fn entry_frag(p: &Fragment, id: &Eid, k: &osis_base::Value) -> Option<Fragment> {
     let Fragment::Map(m) = p else { return None };
     key_state(m, &m.live_ids(k)).or_else(|| m.record_frag(id).map(|f| f.into_owned()))
-}
-
-/// A new bag contribution of `v` with a fresh dot: created under the element view, else a
-/// register write at the undo's stamp `r`.
-fn contribution<V: View>(w: &mut Writer, ev: Option<&V>, v: osis_base::Value, r: &Stamp) -> Result<(Dot, Elem), Error> {
-    let d = w.fresh().dot;
-    let f = match ev {
-        Some(ev) => create(w, ev, &v)?,
-        None => Fragment::Register(Register { reset: None, write: Some(RegWrite { stamp: r.clone(), value: Some(v) }) }),
-    };
-    Ok((d, Elem::of_frag(f)))
 }
 
 /// Whether undoing `u` writes back content the delta replaced (spec/crdt.md §4.6), judged by
