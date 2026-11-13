@@ -118,15 +118,14 @@ impl Charge {
 #[derive(Clone, Debug)]
 struct Pending {
     msg: Result<Message, crate::msg::Rejected>,
-    frame: usize,
-    allowance: usize,
+    charge: Charge,
 }
 
 impl Pending {
     /// The room it needs to run: its reply allowance (an Error for a frame that does not
     /// decode).
     fn need(&self) -> usize {
-        if self.msg.is_err() { crate::window::SMALL_REPLY } else { self.allowance }
+        if self.msg.is_err() { crate::window::SMALL_REPLY } else { self.charge.allowance }
     }
 }
 
@@ -457,13 +456,7 @@ impl Session {
     /// Bytes received and held: a partial frame, frames waiting to run (`pending`) and those
     /// of requests handed up and not answered.
     pub fn buffered(&self) -> usize {
-        self.pending.iter().fold(self.decoder.pending().saturating_add(self.asked_bytes.frame), |b, p| b.saturating_add(p.frame))
-    }
-
-    /// Bytes written and not taken by the transport, as far as reported (`SessionInput::Taken`;
-    /// none before the first report).
-    pub fn unread(&self) -> usize {
-        self.unsent(&[])
+        self.pending.iter().fold(self.decoder.pending().saturating_add(self.asked_bytes.frame), |b, p| b.saturating_add(p.charge.frame))
     }
 
     pub fn handle(&mut self, now: u64, store: &mut dyn LabelStore, input: SessionInput) -> Vec<SessionOutput> {
@@ -520,7 +513,7 @@ impl Session {
                 // frame bytes plus reply allowances of the requests received and not run, all
                 // unanswered when the last was sent, and of those handed out earlier and still
                 // unanswered (`MAX_UNANSWERED`)
-                let mut charged = self.pending.iter().fold(self.asked_bytes.total(), |c, p| c.saturating_add(p.frame).saturating_add(p.allowance));
+                let mut charged = self.pending.iter().fold(self.asked_bytes.total(), |c, p| c.saturating_add(p.charge.total()));
                 while !self.closed {
                     // before the peer's Hello only a Hello-sized frame is taken (spec/wire.md §11.1)
                     self.decoder.set_max(if self.version.is_some() { osis_base::format::MAX_MESSAGE } else { crate::frame::MAX_HELLO_BYTES });
@@ -669,7 +662,7 @@ impl Session {
             self.close(out);
             return;
         }
-        self.pending.push_back(Pending { msg, frame, allowance });
+        self.pending.push_back(Pending { msg, charge: Charge { frame, allowance } });
     }
 
     /// Runs the frames waiting, in order, while each one's reply fits the room (`fits`).
@@ -710,7 +703,7 @@ impl Session {
             }
         };
         let id = msg.id();
-        let charge = Charge { frame: p.frame, allowance: p.allowance };
+        let charge = p.charge;
         if matches!(msg, Message::Auth { .. } | Message::Call { .. } | Message::Sub { .. } | Message::Unsub { .. }) {
             if let Some(reply) = self.api_request(msg, charge, out) {
                 send(out, reply);
