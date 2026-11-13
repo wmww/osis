@@ -604,7 +604,7 @@ mod tests {
             assert_eq!(h.ever_writers(&t.tid()), writers);
             // forgeries by an outsider and by whom it names: nothing moves
             if let Some(out) = a.iter().copied().find(|x| !want.contains(x)) {
-                let puppet = Tid::of_record(&actor(99));
+                let puppet = actor(99).tid();
                 h.add_commit(grant(1000, out, t.tid(), out, Role::Admin));
                 h.add_commit(grant(1001, out, t.tid(), puppet, Role::Admin));
                 h.add_commit(grant(1002, puppet, t.tid(), a[0], Role::Admin));

@@ -18,10 +18,7 @@ pub enum RecordLink {
 impl CreationRecord {
     /// What the record puts above its thing.
     pub fn record_link(&self) -> RecordLink {
-        match self {
-            CreationRecord::Thing { admin, .. } => RecordLink::Admin(*admin),
-            CreationRecord::KeyActor { .. } => RecordLink::Key,
-        }
+        self.first_admin().map_or(RecordLink::Key, RecordLink::Admin)
     }
 }
 

@@ -19,16 +19,6 @@ impl Tid {
     pub const fn as_bytes(&self) -> &[u8; TID_LEN] {
         &self.0
     }
-    /// The tid of a creation record (spec/wire.md §3).
-    #[doc(hidden)]
-    pub fn of_record(record: &CreationRecord) -> Tid {
-        let h = hash::hash(&encode(&record.to_value()));
-        let mut b = [0u8; TID_LEN];
-        for (d, s) in b.iter_mut().zip(h) {
-            *d = s;
-        }
-        Tid(b)
-    }
     /// `osis://` plus the text form.
     pub fn to_uri(&self) -> String {
         format!("osis://{self}")
@@ -154,11 +144,15 @@ impl CreationRecord {
             CreationRecord::Thing { nonce, .. } | CreationRecord::KeyActor { nonce, .. } => nonce,
         }
     }
+    /// The thing's tid: the first 15 bytes of BLAKE3 of the record's encoding (spec/wire.md §3).
     pub fn tid(&self) -> Tid {
-        Tid::of_record(self)
+        let h = hash::hash(&encode(&self.to_value()));
+        let mut b = [0u8; TID_LEN];
+        for (d, s) in b.iter_mut().zip(h) {
+            *d = s;
+        }
+        Tid(b)
     }
-    /// The first admin (spec/permissions.md §1): the next actor up the record chain, whose
-    /// secrets a plain thing derives from (none for a key actor).
     /// Whether this is a share link's actor K (spec/permissions.md §7).
     pub fn is_link(&self) -> bool {
         self.link_target().is_some()
@@ -174,6 +168,8 @@ impl CreationRecord {
     pub fn is_account(&self) -> bool {
         matches!(self, CreationRecord::KeyActor { account: true, .. })
     }
+    /// The first admin (spec/permissions.md §1): the next actor up the record chain, whose
+    /// secrets a plain thing derives from (none for a key actor).
     pub fn first_admin(&self) -> Option<Tid> {
         match self {
             CreationRecord::Thing { admin, .. } => Some(*admin),
@@ -528,7 +524,6 @@ impl PurgeBy {
         self == PurgeBy::Writer
     }
 }
-
 
 /// A role, ordered sync < read < write < admin. `Sync` holds and serves a thing's sync IDs and
 /// reads nothing of it (spec/permissions.md §1).
