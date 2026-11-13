@@ -791,15 +791,17 @@ impl StreamAt {
 }
 
 impl State {
-    /// Loads every record.
+    /// Loads every record (tests: a fresh start).
+    #[cfg(test)]
     pub fn load(engine: &mut Engine) -> Result<State> {
         Self::reload(engine, &State::default())
     }
 
     /// Loads every record, keeping `old`'s memory class: no store holds those records, the
     /// engine's memory commits they are about stay held, and a failed store write leaves them as
-    /// it leaves the engine's memory overlay. Presence at peers is not kept (per connection,
-    /// spec/sync.md §9).
+    /// it leaves the engine's memory overlay (a start, a restart in place, a forgetting of lost
+    /// things after `forget_memory`). Presence at peers is not kept (per connection, spec/sync.md
+    /// §9).
     pub fn reload(engine: &mut Engine, old: &State) -> Result<State> {
         let recs = engine.run(|tx| {
             let mut v = Vec::new();
@@ -983,6 +985,33 @@ impl State {
         self.leftover_charge.clone_from(&old.leftover_charge);
         self.memory_sizes.clone_from(&old.memory_sizes);
         self.mem_log = old.mem_log.clone();
+    }
+
+    /// Forgets the memory class's records about what the engine forgot with lost access (before
+    /// `reload` keeps the rest, as `retention::forget` removes the stored ones): the entries and
+    /// tombstones under `labels`, the entries of `commits` (forgotten whole: their charge goes),
+    /// the leftover charges and carriers of `commits`, leftover charges under `labels`. The
+    /// memory blobs of the entries dropped and of `commits`, for `SyncEngine::forget_blob`.
+    pub fn forget_memory(&mut self, labels: &BTreeSet<LabelId>, commits: &BTreeSet<CommitId>) -> Vec<BlobId> {
+        let of = |s: &State, l: &LabelId, b: &BlobId| labels.contains(l) || matches!(s.entries.get(&(*l, *b)).map(|e| &e.kind), Some(Kind::Commit { commit, .. }) if commits.contains(commit));
+        let dropped: Vec<(LabelId, BlobId)> = self.memory_entries.iter().filter(|(l, b)| of(self, l, b)).copied().collect();
+        let mut blobs: Vec<BlobId> = commits.iter().flat_map(|c| self.by_commit.get(c).into_iter().flatten()).copied().filter(|b| self.blobs.get(b).is_some_and(|r| r.memory)).collect();
+        for (l, b) in dropped {
+            self.drop_entry(l, b);
+            self.tombs.remove(&(l, b));
+            self.memory_entries.remove(&(l, b));
+            blobs.push(b);
+        }
+        let leftover: Vec<(CommitId, BTreeSet<LabelId>, u64)> = self.leftover_charge.iter().map(|(c, (ls, n))| (*c, ls.clone(), *n)).collect();
+        for (c, ls, n) in leftover {
+            let kept: BTreeSet<LabelId> = ls.difference(labels).copied().collect();
+            if commits.contains(&c) || kept.len() < ls.len() {
+                self.charge_leftover(c, kept, (!commits.contains(&c)).then_some(n));
+            }
+        }
+        self.carriers.retain(|c, x| !(x.memory && commits.contains(c)));
+        self.memory_commits.retain(|c| !commits.contains(c));
+        blobs
     }
 
     /// The hub's store is the truth for ciphertext (issues/net-one-peer.md step 4): at load every

@@ -6497,3 +6497,48 @@ fn ephemeral_state_converges_across_a_failed_write_spec_sync_6() {
         }
     }
 }
+
+// notes/node-sync.md Failed writes, notes/ephemeral.md Holders: a node forgetting what it lost
+// access to keeps its records of the ephemeral entries under the labels it still syncs, and
+// forgets those of the labels it lost. A reader alone holds a value of G1 (its host and its
+// writer restarted while the reader could not reach that host) when it loses G2; it still places
+// the value at G1's host again, where the writer gets it back
+#[test]
+fn losing_one_label_keeps_ephemeral_entries_of_another_spec_sync_9() {
+    let mut net = Net::new();
+    let (h1, h2) = (net.add_host(), net.add_host());
+    let a = net.node(1, &[h1, h2]);
+    let r = net.node(2, &[h1, h2]);
+    let g1 = net.group(a, &[(r, Role::Read)], &[h1]);
+    let g2 = net.group(a, &[(r, Role::Read)], &[h2]);
+    let w1 = window(&mut net, a, g1, "v");
+    let w2 = window(&mut net, a, g2, "x");
+    net.run();
+    assert_eq!((net.eph_read(r, w1, STATE), net.eph_read(r, w2, STATE)), (Some(s("v")), Some(s("x"))));
+    let label = |net: &mut Net, g: Tid| net.group_labels(r).into_iter().find(|(x, _)| *x == g).unwrap().1.id;
+    let l2 = label(&mut net, g2);
+    assert!(net.sync(r).ephemeral_bytes(&l2) > 0, "G2's value charged");
+    net.blocked.insert((r, h1));
+    net.drop_link(r, h1);
+    net.restart_host(h1);
+    net.restart(a, 11);
+    net.run();
+    assert_eq!(net.eph_read(a, w1, STATE), None, "lost with the restarts");
+    let rt = net.tid(r);
+    let done = net.engine(a).demote(&g2, &osis_node::flows::Demotion { holder: rt, new: None, retain: None }).unwrap();
+    let acts = net.sync(a).carry_out(done).unwrap();
+    net.actions(a, acts);
+    for _ in 0..3 {
+        net.advance(31_000);
+    }
+    assert_eq!(net.engine(r).role_on(&g2), None, "the reader lost G2");
+    assert_eq!(net.eph_read(r, w2, STATE), None, "and forgot its value");
+    assert!(net.sync(r).ephemeral_held_entries(&l2).is_empty(), "no record of G2's entries");
+    assert_eq!(net.sync(r).ephemeral_bytes(&l2), 0, "nor their charge");
+    net.blocked.remove(&(r, h1));
+    for _ in 0..3 {
+        net.advance(31_000);
+    }
+    assert_eq!(net.eph_read(r, w1, STATE), Some(s("v")));
+    assert_eq!(net.eph_read(a, w1, STATE), Some(s("v")), "the reader brought it back");
+}

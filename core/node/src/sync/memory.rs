@@ -75,6 +75,15 @@ impl PerLabel {
         !had
     }
 
+    /// Forgets every entry of `l`.
+    pub fn forget(&mut self, l: &LabelId) {
+        if let Some((q, _)) = self.order.remove(l) {
+            for b in q {
+                self.map.remove(&(*l, b));
+            }
+        }
+    }
+
     pub fn remove(&mut self, l: LabelId, b: BlobId) {
         if let Some(w) = self.map.remove(&(l, b))
             && let Some((q, total)) = self.order.get_mut(&l)
