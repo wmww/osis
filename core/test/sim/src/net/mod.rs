@@ -797,12 +797,11 @@ impl NetSim {
         if self.host_crashed_mid_write(s)? {
             return Ok(());
         }
+        // the hub takes the downs after the rest, as in `actions`
+        let mut downs = Vec::new();
         for a in acts {
             match a {
-                Action::Hub { conn, down } => {
-                    let out = self.hosts.get_mut(s).and_then(|x| x.hub.as_mut()).map(|h| h.down(now, vec![(conn, down)])).unwrap_or_default();
-                    self.hub_out(s, out)?;
-                }
+                Action::Hub { conn, down } => downs.push((conn, down)),
                 Action::Wake { at } => {
                     if let Some(h) = self.hosts.get_mut(s) {
                         h.wake = Some(at);
@@ -812,7 +811,11 @@ impl NetSim {
                 _ => {}
             }
         }
-        Ok(())
+        if downs.is_empty() {
+            return Ok(());
+        }
+        let out = self.hosts.get_mut(s).and_then(|x| x.hub.as_mut()).map(|h| h.down(now, downs)).unwrap_or_default();
+        self.hub_out(s, out)
     }
 
     fn host(&mut self, s: usize) -> Res<&mut NetHost> {
@@ -930,7 +933,13 @@ impl NetSim {
         if self.node_crashed_mid_write(n)? {
             return Ok(());
         }
-        self.actions(n, acts)
+        self.actions(n, acts)?;
+        // the wake a node last asked for is the one held: it does not ask again
+        let wakes = self.nodes.get(n).filter(|x| x.up).and_then(|x| Some((x.wake, x.sync.as_ref()?.asked_wake())));
+        match wakes {
+            Some((held, asked)) if held != asked => Err(self.fail(format!("node {n} holds wake {held:?}, asked {asked:?}"))),
+            _ => Ok(()),
+        }
     }
 
     /// Checker events and diagnostics of node `n`.

@@ -1002,7 +1002,10 @@ impl Net {
         acts
     }
 
+    /// Carries out node `n`'s actions in order, as its driver does: its hub takes the downs
+    /// after the rest, so a nested call's `Wake` is not overwritten by this call's older one.
     pub fn actions(&mut self, n: usize, acts: Vec<Action>) {
+        let mut downs = Vec::new();
         for a in acts {
             if std::env::var_os("OSIS_SYNC_TRACE").is_some() {
                 eprintln!("node {n} action {}", format!("{a:?}").chars().take(300).collect::<String>());
@@ -1048,14 +1051,15 @@ impl Net {
                 Action::Close { .. } => {}
                 Action::Wake { at } => self.nodes[n].wake = Some(at),
                 // peers are found by their current `reach.0`
-                Action::Hub { conn, down } => {
-                    let now = self.node_now(n);
-                    let out = self.nodes[n].hub.down(now, vec![(conn, down)]);
-                    self.node_hub_out(n, out);
-                }
+                Action::Hub { conn, down } => downs.push((conn, down)),
                 a @ (Action::Request { .. } | Action::Room { .. } | Action::Ended { .. }) => self.port.push((n, a)),
                 Action::Reach | Action::Host(_) => {}
             }
+        }
+        if !downs.is_empty() {
+            let now = self.node_now(n);
+            let out = self.nodes[n].hub.down(now, downs);
+            self.node_hub_out(n, out);
         }
     }
 

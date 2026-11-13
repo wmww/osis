@@ -6,6 +6,13 @@ use osis_engine::Result;
 use std::sync::Arc;
 
 impl SyncEngine {
+    /// The wake this node last asked its driver for (`Action::Wake`): the one its driver must
+    /// hold, as it is not asked again.
+    #[doc(hidden)]
+    pub fn asked_wake(&self) -> Option<u64> {
+        self.wake
+    }
+
     /// Tests only: an exact copy of this sync engine as it stands, on `clock` (the copy's node's
     /// wall clock), sharing no mutable state with it (notes/test-harnesses.md, Copied worlds): its
     /// engine (`Engine::test_copy`), connections, work sets, caches and memos, its rng going on

@@ -239,13 +239,6 @@ impl SyncEngine {
         self.retry.get(key).map(|(_, t, _)| t.saturating_sub(self.now()))
     }
 
-    /// The wake this node last asked its driver for (`Action::Wake`; tests): the driver must
-    /// hold this one, it is not asked again.
-    #[doc(hidden)]
-    pub fn asked_wake(&self) -> Option<u64> {
-        self.wake
-    }
-
     /// Diagnostics since the last call (tests).
     pub fn take_diagnostics(&mut self) -> Vec<String> {
         std::mem::take(&mut self.diagnostics)
