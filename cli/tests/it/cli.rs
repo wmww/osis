@@ -435,6 +435,11 @@ fn watch_initial_not_counted_plan_cli_4() {
     assert_eq!((o.code, o.line()), (6, "initial - - a:m.0 2"), "{}", o.err);
     let o = s.call(&["--timeout", "50ms", "grants", "me", "--watch", "--count", "1"], "");
     assert_eq!((o.code, o.out.lines().count(), o.err.trim()), (6, 1, "error: timed out after 0 change(s)"), "{}", o.out);
+    // status --watch prints status's lines on one line, or its JSON under --json
+    let o = s.call(&["--json", "--timeout", "50ms", "status", "--watch"], "");
+    assert_eq!(o.code, 0, "{}", o.err);
+    assert!(o.out.lines().next().is_some_and(|l| l.starts_with("{\"groups\":")), "{}", o.out);
+    assert_eq!(s.ok(&["--json", "retained"]).line(), "[]");
 }
 
 const SCHEMA: &str = "revision 1;
@@ -574,7 +579,7 @@ fn chat_commands_plan_cli() {
     assert_ne!(s.code(&["chat", "resend", &c, &two]), 0, "delivered: nothing to send again");
     assert!(s.ok(&["chat", "participants", &c]).out.contains("Admin"));
     assert_ne!(s.code(&["chat", "create", "--purge", "x"]), 0);
-    assert_ne!(s.code(&["chat", "edit", &c, "not/an/id", "x"]), 0);
+    assert_eq!(s.code(&["chat", "edit", &c, "not/an/id", "x"]), 2, "an unparsable id is a usage error");
     // keep: earlier versions in `earlier`, newest first; off: refused
     let k = s.ok(&["chat", "create", "--edit", "keep"]).line().to_string();
     let m = s.ok(&["chat", "post", &k, "one"]).line().to_string();
