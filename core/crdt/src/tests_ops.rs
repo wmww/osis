@@ -1003,3 +1003,33 @@ fn tid_removal_covers_what_the_remover_saw_spec_5_5() {
         assert_eq!(back.read(), just_t, "undone");
     }
 }
+
+/// spec/crdt.md §5.2, §5.6 Live: `values` names every value a fragment holds, a bag's numbers and
+/// the key of a record written into without its creation included; `each_value` names neither.
+#[test]
+fn values_and_each_value_differ_in_bags_and_uncreated_keys_spec_5_6() {
+    let ty = Ty::Struct([(1, Ty::Counter), (2, Ty::Map(Box::new(Ty::Register), Box::new(Ty::Register)))].into_iter().collect());
+    let view = TyView(ty);
+    let (k, x, y) = (Value::Str("k".into()), Value::Str("x".into()), Value::Str("y".into()));
+    let write = |st: &Fragment, s: u8, t: u64, ops: &[PathOp]| {
+        let mut b = Batch::new(st, Writer::new(ts(t << 16), sess(Tid::from_bytes([s; 15])), 1));
+        ops.iter().for_each(|op| b.apply(op, &view).unwrap());
+        b.finish().unwrap().0
+    };
+    let at_k = |v: &Value| PathOp { path: vec![PathSeg::Field(2), PathSeg::Key(k.clone())], op: Op::Set(v.clone()) };
+    let st = write(&Fragment::default(), 1, 1, &[at_k(&x)]);
+    // a write into the key's live record: no creation; and a counter increment
+    let d = write(&st, 2, 2, &[at_k(&y), PathOp { path: vec![PathSeg::Field(1)], op: Op::Inc(Value::Int(5)) }]);
+    let set = |f: &Fragment, all: bool| {
+        let mut out = std::collections::BTreeSet::new();
+        let mut add = |v: &Value| drop(out.insert(v.clone()));
+        if all { f.values(&mut add) } else { f.each_value(&mut add) }
+        out
+    };
+    assert_eq!(set(&d, true), [k.clone(), y.clone(), Value::Int(5)].into_iter().collect());
+    assert_eq!(set(&d, false), [y.clone()].into_iter().collect());
+    let mut s = st.clone();
+    s.join(d);
+    assert_eq!(set(&s, true), [k.clone(), y.clone(), Value::Int(5)].into_iter().collect());
+    assert_eq!(set(&s, false), [k, y].into_iter().collect());
+}
