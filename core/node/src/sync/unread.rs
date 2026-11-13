@@ -269,8 +269,9 @@ impl SyncEngine {
     /// write key); a relay-only one passes the store's relay gate and goes on to the other members
     /// sharing `l`. A deposited entry (no stamp) is not taken: it carries no deposit signature,
     /// so deposits reach this node only as Deposit items. Deletions and heads do nothing (a
-    /// delete comes by a delete-key holder's Delete, a head by Register). One refused for this
-    /// store's tombstone is told to the reader as a Deleted event. Returns the stamped entries
+    /// delete comes by a delete-key holder's Delete, a head by Register). One refused for room makes
+    /// it full (`unread_refused`); one refused for anything else is told to the reader as a
+    /// Refused event with its code. Returns the stamped entries
     /// announced without bytes that the store lacks: owed until fetched, then taken in the order
     /// announced (`unread_take_held`).
     pub(crate) fn unread_events(&mut self, conn: ConnId, l: LabelId, events: Vec<osis_proto::Event>, out: &mut Vec<Action>) -> Result<BTreeSet<BlobId>> {
