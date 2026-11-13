@@ -42,8 +42,14 @@ fn echo_listener(sp: &Spawner, mut l: MemListener) {
     });
 }
 
-async fn mk_listener(net: Net, name: &'static str, s: u8) -> MemListener {
-    net.endpoint(name).listen(ListenConfig { url: format!("mem://{name}"), secret: secret(s) }).await.unwrap()
+/// A net under a scheduler, both seeded with `seed`, and a listener at `mem://listener` (secret 7).
+fn setup(seed: u64) -> (Net, Sched, MemListener, Address) {
+    let net = Net::new(seed);
+    let mut s = Sched::new(seed, Some(net.clone()));
+    let ep = net.endpoint("listener");
+    let l = s.block_on(async move { ep.listen(ListenConfig { url: "mem://listener".into(), secret: secret(7) }).await.unwrap() }).unwrap();
+    let addr = l.address();
+    (net, s, l, addr)
 }
 
 async fn echo(c: &MemConn, data: &[u8]) -> Vec<u8> {
@@ -53,13 +59,10 @@ async fn echo(c: &MemConn, data: &[u8]) -> Vec<u8> {
     read_to_end(&mut rx).await.unwrap()
 }
 
-// spec/sync.md §10: ordered bidirectional byte stream; the client checks the host key; ephemeral client keys.
+// spec/sync.md §10: ordered bidirectional byte stream; the dialer checks the listener's key; ephemeral dialer keys.
 #[test]
 fn round_trip_and_keys() {
-    let net = Net::new(0);
-    let mut s = Sched::new(0, Some(net.clone()));
-    let l = s.block_on(mk_listener(net.clone(), "listener", 7)).unwrap();
-    let addr = l.address();
+    let (net, mut s, l, addr) = setup(0);
     assert_eq!(addr.key, secret(7).public_key());
     echo_listener(&s.spawner(), l);
     let cli = net.endpoint("cli");
@@ -76,13 +79,10 @@ fn round_trip_and_keys() {
     assert_eq!(out, (b"hello".to_vec(), b"world".to_vec()));
 }
 
-// spec/sync.md §10: each connection gets a fresh ephemeral client key, seen as the host's peer key.
+// spec/sync.md §10: each connection gets a fresh ephemeral dialer key, the listener's peer key.
 #[test]
 fn ephemeral_client_keys_differ() {
-    let net = Net::new(0);
-    let mut s = Sched::new(0, Some(net.clone()));
-    let mut l = s.block_on(mk_listener(net.clone(), "listener", 7)).unwrap();
-    let addr = l.address();
+    let (net, mut s, mut l, addr) = setup(0);
     let cli = net.endpoint("cli");
     let keys = s
         .block_on(async move {
@@ -97,14 +97,10 @@ fn ephemeral_client_keys_differ() {
     assert_ne!(keys.0, keys.2);
 }
 
-// spec/sync.md §10: a client MUST check the host's key against the address.
-// spec/sync.md §10 (host key check)
+// spec/sync.md §10: a dialer MUST check the listener's key against the address.
 #[test]
 fn pinned_key_mismatch_refused() {
-    let net = Net::new(0);
-    let mut s = Sched::new(0, Some(net.clone()));
-    let l = s.block_on(mk_listener(net.clone(), "listener", 7)).unwrap();
-    let mut addr = l.address();
+    let (net, mut s, _l, mut addr) = setup(0);
     addr.key[0] ^= 1;
     let cli = net.endpoint("cli");
     let r = s.block_on(async move { cli.dial(&addr).await.map(|_| ()) }).unwrap();
@@ -134,10 +130,7 @@ fn unknown_scheme_and_unreachable() {
 // spec/sync.md §10: a partition holds data and refuses dials; after healing the stream completes intact.
 #[test]
 fn partition_heals() {
-    let net = Net::new(0);
-    let mut s = Sched::new(0, Some(net.clone()));
-    let l = s.block_on(mk_listener(net.clone(), "listener", 7)).unwrap();
-    let addr = l.address();
+    let (net, mut s, l, addr) = setup(0);
     echo_listener(&s.spawner(), l);
     let cli = net.endpoint("cli");
     let (c1, a1) = (cli.clone(), addr.clone());
@@ -161,10 +154,7 @@ fn partition_heals() {
 // spec/sync.md §10: a reset connection fails pending and later operations on both sides.
 #[test]
 fn disconnect_resets() {
-    let net = Net::new(0);
-    let mut s = Sched::new(0, Some(net.clone()));
-    let mut l = s.block_on(mk_listener(net.clone(), "listener", 7)).unwrap();
-    let addr = l.address();
+    let (net, mut s, mut l, addr) = setup(0);
     let cli = net.endpoint("cli");
     let res = Rc::new(RefCell::new(Vec::new()));
     let r1 = res.clone();
@@ -202,10 +192,7 @@ fn disconnect_resets() {
 // spec: none (dropping the last handle of a side closes the connection)
 #[test]
 fn drop_closes() {
-    let net = Net::new(0);
-    let mut s = Sched::new(0, Some(net.clone()));
-    let mut l = s.block_on(mk_listener(net.clone(), "listener", 7)).unwrap();
-    let addr = l.address();
+    let (net, mut s, mut l, addr) = setup(0);
     let cli = net.endpoint("cli");
     let c = s.block_on(async move { cli.dial(&addr).await.unwrap() }).unwrap();
     let sc = s.block_on(async move { l.accept().await.unwrap() }).unwrap();
@@ -217,11 +204,8 @@ fn drop_closes() {
 
 /// Runs a faulty-network scenario; returns the delivery log (virtual step, client, bytes so far).
 fn scenario(seed: u64) -> Vec<(u64, usize, usize)> {
-    let net = Net::new(seed);
+    let (net, mut s, l, addr) = setup(seed);
     net.set_faults(Faults { latency: 2, jitter: 5, bandwidth: Some(1000) });
-    let mut s = Sched::new(seed, Some(net.clone()));
-    let l = s.block_on(mk_listener(net.clone(), "listener", 7)).unwrap();
-    let addr = l.address();
     echo_listener(&s.spawner(), l);
     let log = Rc::new(RefCell::new(Vec::new()));
     for i in 0..3usize {
@@ -264,11 +248,8 @@ fn deterministic_under_seed() {
 // spec/sync.md §10: a large transfer arrives intact and in order through a capped link.
 #[test]
 fn large_transfer_capped() {
-    let net = Net::new(0);
+    let (net, mut s, l, addr) = setup(0);
     net.set_faults(Faults { latency: 1, jitter: 0, bandwidth: Some(64 * 1024) });
-    let mut s = Sched::new(0, Some(net.clone()));
-    let l = s.block_on(mk_listener(net.clone(), "listener", 7)).unwrap();
-    let addr = l.address();
     echo_listener(&s.spawner(), l);
     let cli = net.endpoint("cli");
     let data: Vec<u8> = (0..(4u32 << 20)).map(|k| (k ^ (k >> 11)) as u8).collect();
@@ -294,10 +275,7 @@ fn virtual_sleep() {
 // spec/sync.md §10: closing a listener resets connections it never accepted; the dialer sees Closed, no hang.
 #[test]
 fn listener_close_resets_queued() {
-    let net = Net::new(0);
-    let mut s = Sched::new(0, Some(net.clone()));
-    let l = s.block_on(mk_listener(net.clone(), "listener", 7)).unwrap();
-    let addr = l.address();
+    let (net, mut s, l, addr) = setup(0);
     let cli = net.endpoint("cli");
     let c = s.block_on(async move { cli.dial(&addr).await.unwrap() }).unwrap();
     drop(l);
@@ -309,10 +287,7 @@ fn listener_close_resets_queued() {
 // spec/sync.md §10: a pending read on a queued connection ends when the listener closes.
 #[test]
 fn listener_close_ends_pending_read() {
-    let net = Net::new(0);
-    let mut s = Sched::new(0, Some(net.clone()));
-    let l = s.block_on(mk_listener(net.clone(), "listener", 7)).unwrap();
-    let addr = l.address();
+    let (net, mut s, l, addr) = setup(0);
     let cli = net.endpoint("cli");
     let got = Rc::new(RefCell::new(None));
     let g = got.clone();
@@ -334,12 +309,9 @@ type Log = Vec<(u64, usize, usize)>;
 
 /// Three clients echo through a partition, a heal and a kill; returns the delivery log and outcomes.
 fn faulty(seed: u64) -> (Log, Vec<(usize, bool)>) {
-    let net = Net::new(seed);
+    let (net, mut s, l, addr) = setup(seed);
     net.set_faults(Faults { latency: 1, jitter: 4, bandwidth: Some(0) }); // 0 is taken as 1
-    let mut s = Sched::new(seed, Some(net.clone()));
     s.set_max_steps(200_000);
-    let l = s.block_on(mk_listener(net.clone(), "listener", 7)).unwrap();
-    let addr = l.address();
     echo_listener(&s.spawner(), l);
     let log = Rc::new(RefCell::new(Vec::new()));
     let ends = Rc::new(RefCell::new(Vec::new()));

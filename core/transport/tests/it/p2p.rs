@@ -58,6 +58,15 @@ fn world_at(seed: u64, cfg: RelayConfig, at: &str, nat: Option<IpAddr>) -> World
     World { net, sched, relay, _relay_l: l }
 }
 
+/// `udp` listens at `<at>:7000` and registers at `w`'s relay, under `w`'s scheduler.
+fn listen_via(w: &mut World, udp: MemUdp, at: &str, s: u8) -> P2pListener<MemUdp> {
+    let b = P2p::new(udp);
+    let url = format!("peer://{at}:7000 {}", w.relay.item());
+    let l = w.sched.block_on(async move { b.listen(ListenConfig { url, secret: secret(s) }).await.unwrap() }).unwrap();
+    w.sched.run();
+    l
+}
+
 fn anyone() -> RelayConfig {
     RelayConfig::new(Arc::new(|_| true))
 }
@@ -142,10 +151,7 @@ fn punch_counted(seed: u64, nat_a: Option<Nat>, nat_b: Option<Nat>) -> ((bool, b
 
 /// `punch` between hosts `a` and `b` (at `b_at`) of world `w`; the relay must see `b` at `seen`.
 fn punch_in(mut w: World, a: MemUdp, b: MemUdp, b_at: &str, seen: &str) -> (bool, bool) {
-    let b = P2p::new(b);
-    let url = format!("peer://{b_at}:7000 {}", w.relay.item());
-    let lb = w.sched.block_on(async move { b.listen(ListenConfig { url, secret: secret(2) }).await.unwrap() }).unwrap();
-    w.sched.run();
+    let lb = listen_via(&mut w, b, b_at, 2);
     let kb = lb.address().key;
     // observed address: the NAT's public address (or the host's own)
     let obs = lb.observed();
@@ -192,10 +198,8 @@ fn punch_in(mut w: World, a: MemUdp, b: MemUdp, b_at: &str, seen: &str) -> (bool
 #[test]
 fn punch_before_stream_open_stays_relayed_spec_sync_10() {
     let mut w = world(0, anyone());
-    let b = P2p::new(host(&w.net, "b", "10.0.0.2", "203.0.113.2", Some(Nat::CONE)));
-    let url = format!("peer://10.0.0.2:7000 {}", w.relay.item());
-    let lb = w.sched.block_on(async move { b.listen(ListenConfig { url, secret: secret(2) }).await.unwrap() }).unwrap();
-    w.sched.run();
+    let b = host(&w.net, "b", "10.0.0.2", "203.0.113.2", Some(Nat::CONE));
+    let lb = listen_via(&mut w, b, "10.0.0.2", 2);
     let addr = Address { url: peer_url(&[w.relay.item()]), key: lb.address().key };
     let _seen = echo(&w.sched, lb);
     let a = P2p::new(host(&w.net, "a", "10.0.1.2", "203.0.113.1", Some(Nat::CONE)));
@@ -259,10 +263,7 @@ fn one_punch_and_none_to_a_refused_address_spec_sync_10() {
     let mut w = world(0, anyone());
     let b = host(&w.net, "b", "10.0.0.2", "203.0.113.2", Some(Nat::CONE));
     let a = host(&w.net, "a", "10.0.1.2", "", None);
-    let b = P2p::new(b);
-    let url = format!("peer://10.0.0.2:7000 {}", w.relay.item());
-    let lb = w.sched.block_on(async move { b.listen(ListenConfig { url, secret: secret(2) }).await.unwrap() }).unwrap();
-    w.sched.run();
+    let lb = listen_via(&mut w, b, "10.0.0.2", 2);
     let addr = Address { url: peer_url(&[w.relay.item()]), key: lb.address().key };
     let _seen = echo(&w.sched, lb);
     let a = P2p::new(a);
@@ -375,10 +376,8 @@ fn direct_items_spec_sync_10() {
 #[test]
 fn relayed_keys_spec_sync_10() {
     let mut w = world(0, anyone());
-    let b = P2p::new(host(&w.net, "b", "10.0.0.2", "203.0.113.2", Some(Nat::SYMMETRIC)));
-    let url = format!("peer://10.0.0.2:7000 {}", w.relay.item());
-    let mut lb = w.sched.block_on(async move { b.listen(ListenConfig { url, secret: secret(2) }).await.unwrap() }).unwrap();
-    w.sched.run();
+    let b = host(&w.net, "b", "10.0.0.2", "203.0.113.2", Some(Nat::SYMMETRIC));
+    let mut lb = listen_via(&mut w, b, "10.0.0.2", 2);
     let kb = lb.address().key;
     let a = P2p::new(host(&w.net, "a", "10.0.1.2", "203.0.113.1", Some(Nat::SYMMETRIC)));
     let url = peer_url(&[w.relay.item()]);
@@ -448,10 +447,8 @@ fn relay_dial_grants_relay_no_streams() {
 fn relay_cannot_impersonate_spec_sync_10() {
     let mut w = world(0, anyone());
     let (rk, ra) = (w.relay.key, w.relay.addr);
-    let z = P2p::new(host(&w.net, "z", "192.0.2.3", "", None));
-    let url = format!("peer://192.0.2.3:7000 {}", w.relay.item());
-    let lz = w.sched.block_on(async move { z.listen(ListenConfig { url, secret: secret(3) }).await.unwrap() }).unwrap();
-    w.sched.run();
+    let z = host(&w.net, "z", "192.0.2.3", "", None);
+    let lz = listen_via(&mut w, z, "192.0.2.3", 3);
     let kz = lz.address().key;
     let _seen = echo(&w.sched, lz);
     // the hostile relay: answers any dial with a stream to Z through the honest relay
@@ -467,9 +464,7 @@ fn relay_cannot_impersonate_spec_sync_10() {
         let _ = read_n(&mut r, 33).await;
         let up = m.bind(sa("0.0.0.0:0"), None).unwrap().dial(ra, rk, None, Alpn::Relay).await.unwrap();
         let (mut ut, mut ur) = up.open_stream().await.unwrap();
-        let mut req = vec![2];
-        req.extend_from_slice(&kz);
-        ut.write_all(&req).await.unwrap();
+        ut.write_all(&[&[2], &kz[..]].concat()).await.unwrap();
         let reply = read_n(&mut ur, 19).await;
         t.write_all(&reply).await.unwrap();
         net.spawn(pipe(r, ut));
@@ -538,9 +533,7 @@ fn relay_wire_spec_sync_10() {
         let sa_ = a.bind(sa("0.0.0.0:5000"), None).unwrap();
         let ca = sa_.dial(ra, rk, None, Alpn::Relay).await.unwrap();
         let (mut ta, mut ra2) = ca.open_stream().await.unwrap();
-        let mut req = vec![2];
-        req.extend_from_slice(&allowed);
-        ta.write_all(&req).await.unwrap();
+        ta.write_all(&[&[2], &allowed[..]].concat()).await.unwrap();
         let reply = read_n(&mut ra2, 19).await;
         assert_eq!(reply[0], 0);
         assert_eq!(reply[1..19], wire_addr(sa("192.0.2.5:5000"))[..]);
@@ -559,18 +552,14 @@ fn relay_wire_spec_sync_10() {
         for (host, same) in [(&a, true), (&b, false)] {
             let c2 = host.bind(sa("0.0.0.0:0"), None).unwrap().dial(ra, rk, None, Alpn::Relay).await.unwrap();
             let (mut t2, mut r2) = c2.open_stream().await.unwrap();
-            let mut req = vec![2];
-            req.extend_from_slice(&allowed);
-            t2.write_all(&req).await.unwrap();
+            t2.write_all(&[&[2], &allowed[..]].concat()).await.unwrap();
             assert_eq!(read_n(&mut r2, 19).await[0], 0);
             let (_f2, mut g2) = cb.accept_stream().await.unwrap();
             assert_eq!(read_n(&mut g2, 16).await == tag, same);
         }
         // a key nobody registered
         let (mut tu, mut ru) = ca.open_stream().await.unwrap();
-        let mut req = vec![2];
-        req.extend_from_slice(&[7; 32]);
-        tu.write_all(&req).await.unwrap();
+        tu.write_all(&[&[2], &[7; 32][..]].concat()).await.unwrap();
         assert_eq!(read_n(&mut ru, 1).await, [2]);
         true
     });
@@ -599,9 +588,7 @@ fn relay_limits_spec_sync_10() {
         let sa_ = a.bind(sa("0.0.0.0:5000"), None).unwrap();
         let ca = sa_.dial(ra, rk, None, Alpn::Relay).await.unwrap();
         let (mut ta, mut ra2) = ca.open_stream().await.unwrap();
-        let mut req = vec![2];
-        req.extend_from_slice(&secret(2).public_key());
-        ta.write_all(&req).await.unwrap();
+        ta.write_all(&[&[2], &secret(2).public_key()[..]].concat()).await.unwrap();
         assert_eq!(read_n(&mut ra2, 19).await[0], 0);
         let (_fb, mut gb) = cb.accept_stream().await.unwrap();
         let _ = read_n(&mut gb, 16).await;
@@ -619,9 +606,7 @@ fn relay_limits_spec_sync_10() {
         let sc = c.bind(sa("0.0.0.0:5001"), None).unwrap();
         let cc = sc.dial(ra, rk, None, Alpn::Relay).await.unwrap();
         let (mut t3, mut r3) = cc.open_stream().await.unwrap();
-        let mut req = vec![2];
-        req.extend_from_slice(&[7; 32]);
-        t3.write_all(&req).await.unwrap();
+        t3.write_all(&[&[2], &[7; 32][..]].concat()).await.unwrap();
         assert_eq!(read_n(&mut r3, 1).await, [2], "c served");
         assert!(ra2.read(&mut [0u8; 8]).await.is_err(), "a's oldest connection closed");
         drop(r2);
@@ -641,10 +626,8 @@ fn relay_limits_spec_sync_10() {
 fn registration_refused_spec_sync_10() {
     let mut w = world(0, RelayConfig::new(Arc::new(|_| false)));
     w.sched.set_max_steps(200);
-    let b = P2p::new(host(&w.net, "b", "192.0.2.2", "", None));
-    let url = format!("peer://192.0.2.2:7000 {}", w.relay.item());
-    let lb = w.sched.block_on(async move { b.listen(ListenConfig { url, secret: secret(2) }).await.unwrap() }).unwrap();
-    w.sched.run();
+    let b = host(&w.net, "b", "192.0.2.2", "", None);
+    let lb = listen_via(&mut w, b, "192.0.2.2", 2);
     assert!(lb.observed().is_empty());
     let a = P2p::new(host(&w.net, "a", "192.0.2.5", "", None));
     let addr = Address { url: peer_url(&[w.relay.item()]), key: lb.address().key };
@@ -687,6 +670,30 @@ fn nat_model() {
     assert!(matches!(err, Some(Error::Unreachable(_))));
 }
 
+/// Echoes the first stream of `c` (real QUIC), then waits for the dialer's close.
+async fn quic_echo(c: P2pConn<QuicConn>) {
+    if let Ok((mut tx, mut rx)) = c.accept_stream().await {
+        let mut b = [0u8; 1024];
+        while let Ok(n) = rx.read(&mut b).await {
+            if n == 0 || tx.write_all(&b[..n]).await.is_err() {
+                break;
+            }
+        }
+        let _ = tx.finish().await;
+        let _ = c.accept_stream().await;
+    }
+}
+
+/// Waits (up to 5 s) until `l` is registered at `n` relays.
+async fn registered(l: &P2pListener<QuicUdp>, n: usize) {
+    for _ in 0..100 {
+        if l.observed().len() == n {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+}
+
 /// Sends, reads the echo, finishes and reads the end.
 async fn session<C: Connection>(c: &C) -> Result<(), Error> {
     let (mut tx, mut rx) = c.open_stream().await?;
@@ -723,12 +730,7 @@ fn quic_relay_loopback_spec_sync_10() {
         let b = P2p::new(QuicUdp::new());
         let mut lb = b.listen(ListenConfig { url: format!("peer://127.0.0.1:0 {}", relay.item()), secret: secret(2) }).await.unwrap();
         let kb = lb.address().key;
-        for _ in 0..100 {
-            if !lb.observed().is_empty() {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        }
+        registered(&lb, 1).await;
         let bound = lb.address().url.strip_prefix("peer://").unwrap().split(' ').next().unwrap().parse::<SocketAddr>().unwrap();
         assert_eq!(lb.observed(), vec![(relay.clone(), bound)]);
         assert_eq!(r.relayed_keys(), vec![kb]);
@@ -736,9 +738,7 @@ fn quic_relay_loopback_spec_sync_10() {
         let s = QuicUdp::new().bind(sa("127.0.0.1:0"), None).unwrap();
         let c = s.dial(ra, relay.key, None, Alpn::Relay).await.unwrap();
         let (mut t, mut rr) = c.open_stream().await.unwrap();
-        let mut req = vec![2];
-        req.extend_from_slice(&kb);
-        t.write_all(&req).await.unwrap();
+        t.write_all(&[&[2], &kb[..]].concat()).await.unwrap();
         let reply = read_n(&mut rr, 19).await;
         assert_eq!(reply[0], 0);
         assert_eq!(reply[1..19], wire_addr(s.local())[..]);
@@ -746,19 +746,7 @@ fn quic_relay_loopback_spec_sync_10() {
         // through the relay with p2p
         let echo = tokio::spawn(async move {
             loop {
-                let c = lb.accept().await.unwrap();
-                tokio::spawn(async move {
-                    if let Ok((mut tx, mut rx)) = c.accept_stream().await {
-                        let mut b = [0u8; 1024];
-                        while let Ok(n) = rx.read(&mut b).await {
-                            if n == 0 || tx.write_all(&b[..n]).await.is_err() {
-                                break;
-                            }
-                        }
-                        let _ = tx.finish().await;
-                        let _ = c.accept_stream().await;
-                    }
-                });
+                tokio::spawn(quic_echo(lb.accept().await.unwrap()));
             }
         });
         let a = P2p::new(QuicUdp::new());
@@ -800,12 +788,7 @@ fn quic_relay_unread_sessions_spec_sync_10() {
         let b = P2p::new(QuicUdp::new());
         let mut lb = b.listen(ListenConfig { url: format!("peer://[::1]:0 {}", relay6.item()), secret: secret(2) }).await.unwrap();
         let kb = lb.address().key;
-        for _ in 0..100 {
-            if !lb.observed().is_empty() {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        }
+        registered(&lb, 1).await;
         // the first UNREAD connections are held and never read; later ones are echoed
         let target = tokio::spawn(async move {
             let mut held = Vec::new();
@@ -815,18 +798,7 @@ fn quic_relay_unread_sessions_spec_sync_10() {
                     held.push(c);
                     continue;
                 }
-                tokio::spawn(async move {
-                    if let Ok((mut tx, mut rx)) = c.accept_stream().await {
-                        let mut b = [0u8; 1024];
-                        while let Ok(n) = rx.read(&mut b).await {
-                            if n == 0 || tx.write_all(&b[..n]).await.is_err() {
-                                break;
-                            }
-                        }
-                        let _ = tx.finish().await;
-                        let _ = c.accept_stream().await;
-                    }
-                });
+                tokio::spawn(quic_echo(c));
             }
         });
         let a = P2p::new(QuicUdp::new());
@@ -866,9 +838,7 @@ async fn raw_dials(m: &MemUdp, relay: &Relay, key: [u8; 32], n: usize) -> (Vec<u
         let c = s.dial(relay.addr, relay.key, None, Alpn::Relay).await.unwrap();
         for _ in 0..16.min(n - answers.len()) {
             let (mut t, mut r) = c.open_stream().await.unwrap();
-            let mut req = vec![2];
-            req.extend_from_slice(&key);
-            t.write_all(&req).await.unwrap();
+            t.write_all(&[&[2], &key[..]].concat()).await.unwrap();
             answers.push(read_n(&mut r, 1).await[0]);
             held.push((t, r));
         }
@@ -884,10 +854,8 @@ async fn raw_dials(m: &MemUdp, relay: &Relay, key: [u8; 32], n: usize) -> (Vec<u
 #[test]
 fn silent_dials_do_not_block_spec_sync_10() {
     let mut w = world(0, anyone());
-    let b = P2p::new(host(&w.net, "b", "10.0.0.2", "203.0.113.2", Some(Nat::SYMMETRIC)));
-    let url = format!("peer://10.0.0.2:7000 {}", w.relay.item());
-    let lb = w.sched.block_on(async move { b.listen(ListenConfig { url, secret: secret(2) }).await.unwrap() }).unwrap();
-    w.sched.run();
+    let b = host(&w.net, "b", "10.0.0.2", "203.0.113.2", Some(Nat::SYMMETRIC));
+    let lb = listen_via(&mut w, b, "10.0.0.2", 2);
     let kb = lb.address().key;
     let _seen = echo(&w.sched, lb);
     let m = host(&w.net, "m", "192.0.2.66", "", None);
@@ -1033,31 +1001,14 @@ fn quic_relay_dual_stack_spec_sync_10() {
         let b = P2p::new(QuicUdp::new());
         let mut lb = b.listen(ListenConfig { url: format!("peer://[::]:0 {} {}", relays[0].item(), relays[1].item()), secret: secret(2) }).await.unwrap();
         let kb = lb.address().key;
-        for _ in 0..100 {
-            if lb.observed().len() == 2 {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        }
+        registered(&lb, 2).await;
         let port = lb.address().url.strip_prefix("peer://").unwrap().split(' ').next().unwrap().parse::<SocketAddr>().unwrap().port();
         let mut seen = lb.observed();
         seen.sort_by_key(|(r, _)| r.addr.is_ipv4());
         assert_eq!(seen, vec![(relays[0].clone(), sa(&format!("[::1]:{port}"))), (relays[1].clone(), sa(&format!("127.0.0.1:{port}")))]);
         let echo = tokio::spawn(async move {
             loop {
-                let c = lb.accept().await.unwrap();
-                tokio::spawn(async move {
-                    if let Ok((mut tx, mut rx)) = c.accept_stream().await {
-                        let mut b = [0u8; 1024];
-                        while let Ok(n) = rx.read(&mut b).await {
-                            if n == 0 || tx.write_all(&b[..n]).await.is_err() {
-                                break;
-                            }
-                        }
-                        let _ = tx.finish().await;
-                        let _ = c.accept_stream().await;
-                    }
-                });
+                tokio::spawn(quic_echo(lb.accept().await.unwrap()));
             }
         });
         for relay in &relays {

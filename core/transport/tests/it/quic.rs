@@ -54,7 +54,7 @@ async fn echo(c: &QuicConn, data: &[u8]) -> Vec<u8> {
     read_to_end(&mut r).await
 }
 
-// spec/sync.md §10: pinned host key, ephemeral client key per connection, ordered byte stream.
+// spec/sync.md §10: pinned listener key, ephemeral dialer key per connection, ordered byte stream.
 #[test]
 #[ignore]
 fn quic_round_trip_keys() {
@@ -74,8 +74,7 @@ fn quic_round_trip_keys() {
     });
 }
 
-// spec/sync.md §10: a client MUST check the host's key against the address.
-// spec/sync.md §10 (host key check)
+// spec/sync.md §10: a dialer MUST check the listener's key against the address.
 #[test]
 #[ignore]
 fn quic_pinned_key_mismatch_refused() {
