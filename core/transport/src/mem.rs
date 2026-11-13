@@ -122,6 +122,21 @@ impl Conn {
     fn open_by(&self, side: usize) -> usize {
         self.streams.values().filter(|s| s.opener == side && !(s.accepted && s.halves.get(1 - side) == Some(&0))).count()
     }
+
+    /// Its endpoints, ordered as `pair`.
+    fn pair(&self) -> (String, String) {
+        let [a, b] = &self.ends;
+        pair(a, b)
+    }
+
+    /// A handle on side `side` (0 or 1) of this connection `id`, which sees the other end at
+    /// `remote` (a NAT-model socket's connection) or else by its endpoint name.
+    fn handle(&self, net: &Net, id: u64, side: usize, remote: Option<SocketAddr>) -> MemConn {
+        let ([k0, k1], [e0, e1]) = (&self.keys, &self.ends);
+        let (peer, end) = if side == 0 { (*k1, e1) } else { (*k0, e0) };
+        let source = remote.map_or_else(|| name_source(end), |r| crate::ip_source(r.ip()));
+        MemConn(Arc::new(Handle { net: net.clone(), id, side, peer, source, remote }))
+    }
 }
 
 #[derive(Default)]
@@ -149,7 +164,7 @@ fn pair(a: &str, b: &str) -> (String, String) {
     if a <= b { (a.to_owned(), b.to_owned()) } else { (b.to_owned(), a.to_owned()) }
 }
 
-fn wake(w: &mut Option<Waker>) {
+pub(crate) fn wake(w: &mut Option<Waker>) {
     if let Some(w) = w.take() {
         w.wake();
     }
@@ -222,8 +237,20 @@ impl Conn {
 
 impl State {
     fn is_cut(&self, c: &Conn) -> bool {
-        let [a, b] = &c.ends;
-        self.cut.contains(&pair(a, b))
+        self.cut.contains(&c.pair())
+    }
+
+    /// Whether data not held by a partition is in flight.
+    fn in_flight(&self) -> bool {
+        self.conns.values().any(|c| !self.is_cut(c) && c.has_flight())
+    }
+
+    /// Resets every open connection `f` picks.
+    fn close_where(&mut self, f: impl Fn(&Conn) -> bool) {
+        let ids: Vec<u64> = self.conns.iter().filter(|(_, c)| !c.closed && f(c)).map(|(i, _)| *i).collect();
+        for id in ids {
+            self.close(id);
+        }
     }
 
     fn deliver_conn(&mut self, id: u64) {
@@ -289,22 +316,21 @@ impl State {
 
     /// A new connection between endpoints `ends` (side 0 dialed) presenting `keys`, side 1 not
     /// yet accepted (`accept_conn`), side `i` opening at most `limit[i]` streams at once; the
-    /// dialer's handle, which sees side 1 at `remote`.
-    pub(crate) fn new_conn(&mut self, net: &Net, ends: [String; 2], keys: [PublicKey; 2], limit: [usize; 2], remote: SocketAddr) -> (u64, MemConn) {
+    /// dialer's handle, which sees side 1 at `remote` (`Conn::handle`).
+    pub(crate) fn new_conn(&mut self, net: &Net, ends: [String; 2], keys: [PublicKey; 2], limit: [usize; 2], remote: Option<SocketAddr>) -> (u64, MemConn) {
         let id = self.id();
-        let peer = keys[1];
-        self.conns.insert(id, Conn::new(ends, keys, limit));
-        let h = Handle { net: net.clone(), id, side: 0, peer, source: crate::ip_source(remote.ip()), remote: Some(remote) };
-        (id, MemConn(Arc::new(h)))
+        let c = Conn::new(ends, keys, limit);
+        let h = c.handle(net, id, 0, remote);
+        self.conns.insert(id, c);
+        (id, h)
     }
 
-    /// Side 1 of connection `id`, which sees side 0 at `remote`; `None` once reset.
-    pub(crate) fn accept_conn(&mut self, net: &Net, id: u64, remote: SocketAddr) -> Option<MemConn> {
+    /// Side 1 of connection `id`, which sees side 0 at `remote` (`Conn::handle`); `None` once reset.
+    pub(crate) fn accept_conn(&mut self, net: &Net, id: u64, remote: Option<SocketAddr>) -> Option<MemConn> {
         let c = self.live(id)?;
         let [_, d1] = &mut c.dropped;
         *d1 = false;
-        let [peer, _] = c.keys;
-        Some(MemConn(Arc::new(Handle { net: net.clone(), id, side: 1, peer, source: crate::ip_source(remote.ip()), remote: Some(remote) })))
+        Some(c.handle(net, id, 1, remote))
     }
 }
 
@@ -394,21 +420,14 @@ impl Net {
 
     /// Resets every connection between endpoints `a` and `b`.
     pub fn disconnect(&self, a: &str, b: &str) {
-        let mut st = lock(&self.0);
         let p = pair(a, b);
-        let ids: Vec<u64> = st.conns.iter().filter(|(_, c)| !c.closed && pair(&c.ends[0], &c.ends[1]) == p).map(|(i, _)| *i).collect();
-        for id in ids {
-            st.close(id);
-        }
+        lock(&self.0).close_where(|c| c.pair() == p);
     }
 
     /// Resets every connection of endpoint `a` and closes its listeners.
     pub fn kill(&self, a: &str) {
         let mut st = lock(&self.0);
-        let ids: Vec<u64> = st.conns.iter().filter(|(_, c)| !c.closed && c.ends.iter().any(|e| e == a)).map(|(i, _)| *i).collect();
-        for id in ids {
-            st.close(id);
-        }
+        st.close_where(|c| c.ends.iter().any(|e| e == a));
         let names: Vec<String> = st.listeners.iter().filter(|(_, l)| l.endpoint == a).map(|(n, _)| n.clone()).collect();
         for n in names {
             st.drop_listener(&n, None);
@@ -433,8 +452,7 @@ impl Net {
     /// Jumps to the step before the next timer when nothing is in flight, so `step` fires it.
     pub(crate) fn skip_idle(&self) {
         let mut st = lock(&self.0);
-        let flight = st.conns.values().any(|c| !st.is_cut(c) && c.has_flight());
-        if let (false, Some(&(at, _))) = (flight, st.timers.keys().next()) {
+        if let (false, Some(&(at, _))) = (st.in_flight(), st.timers.keys().next()) {
             st.step = st.step.max(at.saturating_sub(1));
         }
     }
@@ -446,7 +464,7 @@ impl Net {
     /// Whether stepping would deliver something or fire a timer (data held by a partition does not count).
     pub fn pending(&self) -> bool {
         let st = lock(&self.0);
-        !st.timers.is_empty() || st.conns.values().any(|c| !st.is_cut(c) && c.has_flight())
+        !st.timers.is_empty() || st.in_flight()
     }
 
     /// Open connections.
@@ -457,7 +475,7 @@ impl Net {
     /// Open connections between endpoints `a` and `b`.
     pub fn connections_between(&self, a: &str, b: &str) -> usize {
         let p = pair(a, b);
-        lock(&self.0).conns.values().filter(|c| !c.closed && pair(&c.ends[0], &c.ends[1]) == p).count()
+        lock(&self.0).conns.values().filter(|c| !c.closed && c.pair() == p).count()
     }
 
     /// Completes after `steps` virtual steps.
@@ -536,26 +554,23 @@ impl Transport for InProcess {
 
 impl InProcess {
     fn dial_with(&self, addr: &Address, own: Option<PublicKey>) -> Result<MemConn, Error> {
-        crate::check_url(&addr.url)?;
         let mut st = lock(&self.net.0);
         let name = mem_name(&addr.url)?;
         let Some(l) = st.listeners.get(name) else { return Err(Error::Unreachable(addr.url.clone())) };
         let (lend, lkey) = (l.endpoint.clone(), l.key);
-        if st.cut.contains(&pair(&self.name, &lend)) {
+        if st.cut(&self.name, &lend) {
             return Err(Error::Unreachable(addr.url.clone()));
         }
         if lkey != addr.key {
             return Err(Error::KeyMismatch);
         }
         let mine = own.unwrap_or_else(|| st.rng.bytes32());
-        let source = name_source(&lend);
-        let id = st.id();
-        st.conns.insert(id, Conn::new([self.name.clone(), lend], [mine, lkey], [usize::MAX; 2]));
+        let (id, c) = st.new_conn(&self.net, [self.name.clone(), lend], [mine, lkey], [usize::MAX; 2], None);
         if let Some(l) = st.listeners.get_mut(name) {
             l.queue.push_back(id);
             wake(&mut l.waker);
         }
-        Ok(MemConn(Arc::new(Handle { net: self.net.clone(), id, side: 0, peer: lkey, source, remote: None })))
+        Ok(c)
     }
 }
 
@@ -578,12 +593,8 @@ impl Listener for MemListener {
                 };
                 match l.queue.pop_front() {
                     Some(id) => {
-                        if let Some(c) = st.live(id) {
-                            let [_, d1] = &mut c.dropped;
-                            *d1 = false;
-                            let [peer, _] = c.keys;
-                            let source = name_source(c.ends.first().map_or("", String::as_str));
-                            return Poll::Ready(Ok(MemConn(Arc::new(Handle { net: self.net.clone(), id, side: 1, peer, source, remote: None }))));
+                        if let Some(c) = st.accept_conn(&self.net, id, None) {
+                            return Poll::Ready(Ok(c));
                         }
                         // reset before accept: side 0 dropping removes it
                     }

@@ -18,7 +18,7 @@
 //! segment's loss (`Net::set_lan_loss`). Packets between two hosts' addresses on a shared
 //! segment pass directly, whatever NATs they are behind.
 
-use crate::mem::{MemConn, Net, State};
+use crate::mem::{wake, MemConn, Net, State};
 use crate::p2p::{Alpn, Sock, Udp as UdpT};
 use crate::lan::{Announce, LanFuture, LanSocket, ALL_NODES};
 use crate::{Error, PublicKey, StaticSecret};
@@ -214,9 +214,8 @@ impl State {
     fn lan_unbind(&mut self, at: SocketAddr, id: Option<u64>) {
         if self.udp.lan_socks.get(&at).is_some_and(|e| id.is_none_or(|i| i == e.id))
             && let Some(mut e) = self.udp.lan_socks.remove(&at)
-            && let Some(w) = e.waker.take()
         {
-            w.wake();
+            wake(&mut e.waker);
         }
     }
 
@@ -250,9 +249,7 @@ impl State {
             }
             if let Some(e) = self.udp.lan_socks.get_mut(&at) {
                 e.heard.push_back((*a, src));
-                if let Some(w) = e.waker.take() {
-                    w.wake();
-                }
+                wake(&mut e.waker);
             }
         }
     }
@@ -262,9 +259,7 @@ impl State {
         if self.udp.socks.get(&at).is_some_and(|e| id.is_none_or(|i| i == e.id))
             && let Some(mut e) = self.udp.socks.remove(&at)
         {
-            if let Some(w) = e.waker.take() {
-                w.wake();
-            }
+            wake(&mut e.waker);
             for (c, _, _) in e.queue {
                 self.close(c);
             }
@@ -325,17 +320,23 @@ impl MemUdp {
         }
     }
 
-    /// An announcement socket of this host, whose segments it hears, at `port`.
-    pub fn lan_socket(&self, port: u16) -> Result<MemLan, Error> {
-        let mut st = self.net.state();
+    /// The address of this host at `port` in `taken` (0: the first free port from 50000), if free.
+    fn free<V>(&self, taken: &BTreeMap<SocketAddr, V>, port: u16) -> Result<SocketAddr, Error> {
         let port = match port {
-            0 => (50000..=u16::MAX).find(|p| !st.udp.lan_socks.contains_key(&SocketAddr::new(self.ip, *p))).ok_or_else(|| Error::Io("no free port".into()))?,
+            0 => (50000..=u16::MAX).find(|p| !taken.contains_key(&SocketAddr::new(self.ip, *p))).ok_or_else(|| Error::Io("no free port".into()))?,
             p => p,
         };
         let addr = SocketAddr::new(self.ip, port);
-        if st.udp.lan_socks.contains_key(&addr) {
+        if taken.contains_key(&addr) {
             return Err(Error::Io(format!("address in use: {addr}")));
         }
+        Ok(addr)
+    }
+
+    /// An announcement socket of this host, whose segments it hears, at `port`.
+    pub fn lan_socket(&self, port: u16) -> Result<MemLan, Error> {
+        let mut st = self.net.state();
+        let addr = self.free(&st.udp.lan_socks, port)?;
         let id = st.id();
         st.udp.lan_socks.insert(addr, LanEntry { id, endpoint: self.name.clone(), heard: VecDeque::new(), waker: None });
         Ok(MemLan { net: self.net.clone(), name: self.name.clone(), addr, id })
@@ -351,16 +352,9 @@ impl UdpT for MemUdp {
             return Err(Error::Io(format!("{at} is not this host's")));
         }
         let mut st = self.net.state();
-        let port = match at.port() {
-            0 => (50000..=u16::MAX).find(|p| !st.udp.socks.contains_key(&SocketAddr::new(self.ip, *p))).ok_or_else(|| Error::Io("no free port".into()))?,
-            p => p,
-        };
-        let addr = SocketAddr::new(self.ip, port);
-        if st.udp.socks.contains_key(&addr) {
-            return Err(Error::Io(format!("address in use: {addr}")));
-        }
+        let addr = self.free(&st.udp.socks, at.port())?;
         let id = st.id();
-        let key = secret.map(crate::StaticSecret::public_key);
+        let key = secret.map(StaticSecret::public_key);
         st.udp.socks.insert(addr, Entry { id, endpoint: self.name.clone(), key, queue: VecDeque::new(), waker: None });
         Ok(MemSock { net: self.net.clone(), name: self.name.clone(), addr, id })
     }
@@ -456,12 +450,10 @@ impl MemSock {
             None => st.rng().bytes32(),
         };
         let limit = [crate::quic::MAX_STREAMS as usize, crate::p2p::dialer_limits(alpn, own.is_some()).0 as usize];
-        let (id, c) = st.new_conn(&self.net, [self.name.clone(), endpoint], [mine, theirs], limit, to);
+        let (id, c) = st.new_conn(&self.net, [self.name.clone(), endpoint], [mine, theirs], limit, Some(to));
         if let Some(e) = st.udp.socks.get_mut(&at) {
             e.queue.push_back((id, alpn, src));
-            if let Some(w) = e.waker.take() {
-                w.wake();
-            }
+            wake(&mut e.waker);
         }
         Ok(Some(c))
     }
@@ -497,7 +489,7 @@ impl Sock for MemSock {
                     e.waker = Some(cx.waker().clone());
                     return Poll::Pending;
                 };
-                if let Some(conn) = st.accept_conn(&self.net, c, src) {
+                if let Some(conn) = st.accept_conn(&self.net, c, Some(src)) {
                     return Poll::Ready(Ok((conn, alpn, src)));
                 }
             }
