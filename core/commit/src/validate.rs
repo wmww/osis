@@ -1,7 +1,7 @@
 //! Structural validation of a resolved header (spec/wire.md §4, spec/commits.md §2, §5, §6).
 
 use crate::cbor::strictly_ascending;
-use crate::header::{FOREVER, Header, Kind, aspect_order, purge_bytes};
+use crate::header::{EphClass, FOREVER, Form, Header, Kind, Links, ListField, PurgeItem, aspect_order, purge_bytes};
 use crate::retention::{CREATED, EPHEMERAL_RETENTION, RELEASED, RETENTION, delete_levels, fixed_retention, release_expires};
 use crate::Error;
 use osis_base::format::{DELETE_AUTHOR, FORMAT_VERSION};
@@ -28,14 +28,13 @@ impl Header {
         // name that key, or nothing without one (`Header::resolve` holds every link of a list
         // tree to its root's Del)
         let list_del = osis_base::Del::from_keys(self.keys.iter().filter(|k| k.level == DELETE_AUTHOR).map(|k| (k.level, k.key)));
-        for f in crate::header::ListField::ALL {
+        for f in ListField::ALL {
             if let Some(l) = self.links.get(f) {
                 ord(Some(l.del) == list_del, "header list link Del other than the level-2 key")?;
             }
         }
 
         let kind = self.kind;
-        use crate::header::Form;
         // session form belongs to content commits: role writes are commit form, so no later commit
         // can void them, and a snapshot has no own writes (spec/commits.md §3)
         if matches!(self.form, Form::Session(_)) && kind != Kind::Content {
@@ -131,7 +130,7 @@ impl Header {
             if self.purge.iter().any(|p| is_role_class(p.ak().as_str())) {
                 return Err(Error::Invalid("purge request naming role-class deltas"));
             }
-            if self.purge.iter().filter(|p| matches!(p, crate::header::PurgeItem::Author { .. })).count() > osis_base::format::MAX_AUTHOR_ITEMS {
+            if self.purge.iter().filter(|p| matches!(p, PurgeItem::Author { .. })).count() > osis_base::format::MAX_AUTHOR_ITEMS {
                 return Err(Error::Invalid("too many purge items by author"));
             }
         }
@@ -158,13 +157,13 @@ impl Header {
             if !matches!(kind, Kind::Content | Kind::ContentSnapshot) {
                 return Err(Error::Invalid("ephemeral commit neither a content commit nor a content snapshot"));
             }
-            if !self.purge.is_empty() || self.links != crate::header::Links::default() {
+            if !self.purge.is_empty() || self.links != Links::default() {
                 return Err(Error::Invalid("ephemeral commit with a purge or linked lists"));
             }
             if self.aspects.iter().any(|a| a.retention != EPHEMERAL_RETENTION) {
                 return Err(Error::Invalid("ephemeral commit with a retention other than writer"));
             }
-            if c != crate::header::EphClass::Plain && (self.expires.is_some() || self.undoes.is_some()) {
+            if c == EphClass::Relay && (self.expires.is_some() || self.undoes.is_some()) {
                 return Err(Error::Invalid("relay-only commit with an expiry or an undo"));
             }
         }

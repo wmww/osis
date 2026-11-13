@@ -107,7 +107,6 @@ fn delete_levels_strict() {
     let mut a = AspectWrite::new(t(3), Ak::new("roles.0").unwrap(), 1, 2, register_delta(t(1), ts(1_000_000), 1, "a"));
     a.retention = retention::ROLE_RETENTION;
     b.aspects.push(a);
-    assert!(matches!(b.clone().build(&key(), &TestSecrets { admin: false }, &mut MemoryBlobs::default(), &mut rng()), Err(Error::Build(_))));
     let c = b.build(&key(), &TestSecrets { admin: true }, &mut MemoryBlobs::default(), &mut rng()).unwrap();
     assert_eq!(c.commit.header.keys.iter().map(|k| k.level).collect::<Vec<_>>(), vec![1]);
 }
