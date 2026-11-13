@@ -1,5 +1,5 @@
 # Networking rework model: assumptions
-> Summary: What NetStream.tla, NetShared.tla and NetBlind.tla abstract away from issues/net-reconnect.md and issues/net-shared-set.md, and what is still stronger than reality.
+> Summary: What NetStream.tla, NetShared.tla, NetBlind.tla and NetOpen.tla abstract away from issues/net-reconnect.md and issues/net-shared-set.md, and what is still stronger than reality.
 
 - One node and one peer (b, or c, a copy of b's store at any instant); one sync ID in NetShared, one or two in NetStream. A store restored from a backup is modelled as c replacing b; two live copies as c beside b.
 - A connection is an ordered pair of queues, reliable and private between the two nodes: the connection layer is encrypted end to end whatever carries it (issues/net-rework.md, Reachable through anything). Each side proves actors over the connection's challenges; r and every Hit reach only the other end. A node between is not modelled, nor a choice of paths; nothing above the connection layer assumes a directly reachable peer.
@@ -15,3 +15,4 @@
 - `EpochReached` claims only a holder open on both sides when the rotation happened, no record lost: a one-sided open or a lost record may leave a holder a rotation behind, stranded until a node both can match, as issues/net-shared-set.md accepts.
 - Bounds that exclude classes of bug: one credential per side in NetShared, so additions equal the whole filter; `TN_genbase` fails RuleHolds through a copied store, which shows the base check is needed but not the two-credential case. Its argument: additions to a generation the receiver does not hold would be taken as the whole filter, the receiver would lack the sender's earlier credentials for its tests, and a pair is missed with nothing pending; code 13 and the whole filter close it.
 - `Settles` is checked with bounded faults, so it says nothing of a connection that keeps dropping.
+- NetOpen: one sync ID at one head; every filter shows every credential to everyone (the worst case for read credentials); J is a constant (a reader judges every honest peer a holder, an unread holder judges nobody); no rotation, record, Behind or walk. It checks who may open L and the signature domain, not how the pending set finds a pair. Adv holds no secret of L's head: a removed holder's old secret signs for a head nobody verifies under, so it is left out.

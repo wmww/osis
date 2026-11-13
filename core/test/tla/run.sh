@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Run one TLA+ module's TLC instances. Usage: run.sh <module> [cfg...]
-#   <module>: sync, sides, rotation, joint, jointrule, depth0, lockout, cut, finalize, cover, tail, authority, account, netstream, netshared, netblind
+#   <module>: sync, sides, rotation, joint, jointrule, depth0, lockout, cut, finalize, cover, tail, authority, account, netstream, netshared, netblind, netopen
 #   no cfg: the module's instances listed below (each module under 3 min at
 #   one worker); with cfg names: those instances instead (the larger ones
 #   in the module's README, by hand), judged only if listed below.
@@ -149,6 +149,14 @@ instances=(
   "netblind net MCBlind BN_whole.cfg fail"
   "netblind net MCBlind BN_cover.cfg fail"
   "netblind net MCBlind BN_known.cfg fail"
+  "netopen net MCOpen O_rk.cfg pass"               # issues/net-6c-plan.md: each side opens only on its own proof
+  "netopen net MCOpen O_kk.cfg pass"
+  "netopen net MCOpen O_rk_pair.cfg fail"          # witness: a reader and a store open both ways on one connection
+  "netopen net MCOpen O_kk_pair.cfg fail"          # witness: two stores open both ways on one connection
+  "netopen net MCOpen ON_side.cfg fail"            # negative control: no side byte, a signature is reflected or relayed
+  "netopen net MCOpen ON_answer.cfg fail"          # negative control: a tag on a public value opens
+  "netopen net MCOpen O_nolisten.cfg pass"         # rejected option: listeners never sign is safe ...
+  "netopen net MCOpen O_nolisten_kk.cfg pass"      # ... and two stores never open both ways on one connection
 )
 
 module=${1:-}
@@ -159,7 +167,7 @@ for line in "${instances[@]}"; do
   [ "$m" = "$module" ] && dir=$d tla=$t
 done
 if [ -z "$dir" ]; then
-  echo "usage: $0 sync|sides|rotation|joint|jointrule|depth0|lockout|cut|finalize|cover|tail|authority|account|netstream|netshared|netblind [cfg...]" >&2
+  echo "usage: $0 sync|sides|rotation|joint|jointrule|depth0|lockout|cut|finalize|cover|tail|authority|account|netstream|netshared|netblind|netopen [cfg...]" >&2
   exit 2
 fi
 
