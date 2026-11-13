@@ -116,17 +116,43 @@ impl SyncEngine {
         self.state.hints.get(l).map(|h| h.thing)
     }
 
-    /// Re-encrypts the deleted chunks waiting in `relink_pending` (`Engine::relink`), at most
-    /// once per back-off interval per aspect; those an aspect's back-off holds back wait until it
-    /// passes (retried on ticks), the rest are done.
-    pub(crate) fn relink_lost(&mut self) -> Result<()> {
-        let now = self.now();
-        if self.relink_pending.is_empty() || now < self.relink_at {
+    /// Chunks `lost` from every host of `l`: judged for repair at the label's next settled pass
+    /// (`relink_lost`), once what the batch that deleted them brought is applied.
+    pub(crate) fn relink_later(&mut self, l: LabelId, lost: BTreeSet<osis_base::BlobId>) {
+        if !lost.is_empty() {
+            self.relink_pending.entry(l).or_default().extend(lost);
+            self.mark_labels(&[l]);
+        }
+    }
+
+    /// A tick: the labels whose repair an aspect's back-off held back pass once it lets them.
+    pub(crate) fn relink_due(&mut self) {
+        if self.relink_at.is_some_and(|at| self.now() >= at) {
+            self.relink_at = None;
+            let ls: Vec<LabelId> = self.relink_pending.keys().copied().collect();
+            self.mark_labels(&ls);
+        }
+    }
+
+    /// Repair (spec/sync.md §1) at `l`'s pass under group `g`: re-encrypts the chunks `l` lost
+    /// that a live value of `g`'s closure links (`Engine::relink`), judged by this node's view
+    /// with the label settled, as deletes are: nothing while an entry of it is unopened, and no
+    /// aspect a pending commit touches (`unsettled`). Those wait for a later pass, as do those
+    /// an aspect's back-off holds back (at most once per interval per aspect, `relink_at`).
+    pub(crate) fn relink_lost(&mut self, g: &Tid, l: LabelId, unsettled: &super::pass::Unsettled) -> Result<()> {
+        if unsettled.contains(&None) {
             return Ok(());
         }
+        let Some(pending) = self.relink_pending.get(&l).cloned() else { return Ok(()) };
+        let now = self.now();
         let backoff = &mut self.relink_backoff;
         let mut next: Option<u64> = None;
+        let mut waits = false;
         let mut allow = |t: &Tid, ak: &osis_base::Ak| {
+            if unsettled.contains(&Some((*t, ak.clone()))) {
+                waits = true;
+                return false;
+            }
             let e = backoff.entry((*t, ak.clone())).or_insert((0, RELINK_BACKOFF_MS));
             if now < e.0 {
                 next = Some(next.map_or(e.0, |n| n.min(e.0)));
@@ -135,18 +161,18 @@ impl SyncEngine {
             *e = (now.saturating_add(e.1), e.1.saturating_mul(2).min(RELINK_BACKOFF_MAX_MS));
             true
         };
-        // the blobs, looked for among the things of the closures they were lost under
-        let pending: BTreeSet<osis_base::BlobId> = self.relink_pending.values().flatten().copied().collect();
-        let things: BTreeSet<Tid> = self.relink_pending.keys().flat_map(|g| self.engine.closure(g).iter().copied().collect::<Vec<_>>()).collect();
+        let things: BTreeSet<Tid> = self.engine.closure(g).iter().copied().collect();
         let r = self.engine.relink(&pending, &things, &mut allow);
-        match next {
-            Some(n) => self.relink_at = n,
-            None => self.relink_pending.clear(),
+        if let Some(n) = next {
+            self.relink_at = Some(self.relink_at.map_or(n, |a| a.min(n)));
+        }
+        if next.is_none() && !waits {
+            self.relink_pending.remove(&l);
         }
         match r {
             Err(e @ crate::Error::Store(_)) => Err(e),
             Err(e) => {
-                self.relink_pending.clear();
+                self.relink_pending.remove(&l);
                 self.diag(format!("re-encrypting deleted chunks: {e}"));
                 Ok(())
             }
@@ -480,12 +506,9 @@ impl SyncEngine {
             }
         }
         // a chunk a live value here links, deleted by a purger that had not seen its reuse:
-        // written again re-encrypted, one commit for the batch (spec/sync.md §1)
-        if let Some(g) = self.group_of(&l, conn).filter(|_| !lost.is_empty()) {
-            self.relink_pending.entry(g).or_default().extend(lost);
-            self.relink_at = 0;
-            self.relink_lost()?;
-        }
+        // written again re-encrypted at the label's pass, by what this batch brought too
+        // (spec/sync.md §1)
+        self.relink_later(l, lost);
         let filling = conn.is_some_and(|c| self.lc(c, &l).is_some_and(|x| x.fill.is_some()));
         // a push to a stream read to its end brings the log to its end: a pass end
         let pushed = conn.and_then(|c| self.conns.get(&c)).and_then(|c| c.labels.get(&l)).is_some_and(|x| x.synced && x.fill.is_none());
@@ -1932,11 +1955,7 @@ impl SyncEngine {
                     lost.insert(b);
                 }
             }
-            if let Some(g) = self.group_of(&l, Some(conn)).filter(|_| !lost.is_empty()) {
-                self.relink_pending.entry(g).or_default().extend(lost);
-                self.relink_at = 0;
-                self.relink_lost()?;
-            }
+            self.relink_later(l, lost);
         }
         // read there to its end the first time since it joined, which listed the memory entries
         // it holds there: one with no body here to come (its commit forgotten, or known only for

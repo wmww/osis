@@ -1873,6 +1873,56 @@ fn chunk_delete_waits_for_its_role_commits_at_the_host_spec_sync_7() {
     assert_eq!(net.read(c, t), None);
 }
 
+// spec/sync.md §1 Repair, §7: repair judges by the node's view after the batch that brought
+// the deletes applies. b, away while writer c purges b's large value and deletes its chunks
+// (in the second case c is a reader that a promotes first), reads the host's log on its
+// return: the promotion, the purge and the chunk deletes come in one batch. b applies them
+// before judging the deletes, so it writes nothing again and reads the value gone.
+#[test]
+fn chunk_deletes_judged_after_their_batch_applies_spec_sync_1() {
+    for promoted in [false, true] {
+        let (mut net, host, [a, b, c], g, [t]) = hosted::<3, 1>(&[(1, Role::Write), (2, Role::Write)], ["x"], true);
+        let tc = net.tid(c);
+        if promoted {
+            demote(&mut net, a, g, tc, Role::Read);
+            net.run();
+        }
+        let big: String = (0..300_000u32).map(|i| char::from(b'a' + (i.wrapping_mul(2654435761) >> 27) as u8 % 26)).collect();
+        let write = with_retention(&mut net, b, t, &big, osis_schema::Retention { by: osis_schema::PurgeBy::Writer });
+        net.run();
+        let l = net.label(c);
+        let chunks: Vec<osis_base::BlobId> = crate::common::linked_blobs(net.engine(b), &write);
+        let at_the_host = |net: &Net| -> usize { let held = net.host_ids(host, &l); chunks.iter().filter(|x| held.contains(x)).count() };
+        assert!(!chunks.is_empty() && at_the_host(&net) == chunks.len(), "b's value is chunked, at the host");
+        assert!(net.read(c, t).is_some(), "c reads b's value");
+        net.set_online(b, false);
+        if promoted {
+            let edge = ct::Edge { role: Role::Write, until: None, invite: None, tied: None };
+            let done = net.engine(a).grant(&g, &tc, &edge).unwrap();
+            let acts = net.sync(a).carry_out(done).unwrap();
+            net.actions(a, acts);
+            net.run();
+        }
+        purge_reg(&mut net, c, t, write);
+        local(&mut net, c);
+        net.run();
+        net.advance(31_000);
+        net.run();
+        assert_eq!(at_the_host(&net), 0, "c deleted the chunks at the host (promoted {promoted})");
+        net.set_online(b, true);
+        net.advance(6_000);
+        net.run();
+        net.advance(31_000);
+        net.run();
+        let me = net.engine(b).me();
+        let ids = net.engine(b).commit_ids();
+        assert_eq!(ids.into_iter().filter(|x| *x != write && net.engine(b).header(x).is_some_and(|h| h.author == me && h.aspects.iter().any(|a| a.tid == t))).count(), 0, "b wrote nothing again on t (promoted {promoted})");
+        assert_eq!(at_the_host(&net), 0, "no chunk came back (promoted {promoted})");
+        assert_eq!(net.read(b, t), None, "promoted {promoted}");
+        assert_eq!(net.read(c, t), None, "promoted {promoted}");
+    }
+}
+
 fn local(net: &mut Net, n: usize) {
     let acts = net.sync(n).handle(osis_node::sync::Event::Local);
     net.actions(n, acts);

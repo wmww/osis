@@ -567,6 +567,7 @@ impl SyncEngine {
             self.local_deletions(&p.at(&snaps, settled, false, false), &bodies, &scope, &mut left)?;
             self.reseal(&g, l)?;
         }
+        self.relink_lost(&g, l, &unsettled)?;
         w.leave(left);
         Ok(())
     }

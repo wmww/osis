@@ -174,14 +174,15 @@ pub struct SyncEngine {
     /// Re-encrypting deleted chunks (`Engine::relink`) per aspect: when allowed next, and the
     /// interval after that (doubling, `RELINK_BACKOFF_MS` to `RELINK_BACKOFF_MAX_MS`).
     pub(crate) relink_backoff: BTreeMap<(Tid, osis_base::Ak), (u64, u64)>,
-    /// Deleted chunks an aspect's back-off holds back, by the group whose label lost them, and
-    /// when to try them again (memory only).
-    pub(crate) relink_pending: BTreeMap<Tid, BTreeSet<osis_base::BlobId>>,
+    /// Chunks deleted from every host, by the label that lost them: judged for repair at the
+    /// label's next settled pass (`relink_lost`), kept while unsettled or held back (memory only).
+    pub(crate) relink_pending: BTreeMap<LabelId, BTreeSet<osis_base::BlobId>>,
     /// Entries reopened when what their commit awaited came (`reopen_awaiting`): opened where
     /// their bytes are here, else asked again of a peer whose shared set has their label
     /// (`stream_settle_all`).
     pub(crate) reask: BTreeSet<(LabelId, osis_base::BlobId)>,
-    pub(crate) relink_at: u64,
+    /// When an aspect's back-off lets `relink_pending` be tried again: its labels pass then.
+    pub(crate) relink_at: Option<u64>,
     /// Certificate copies waiting for a rotation.
     pub(crate) deferred: Vec<Deferred>,
     /// Commit blobs whose every delta was checked against its header hash (`true`) or found
@@ -552,7 +553,7 @@ impl SyncEngine {
         *relink_backoff = BTreeMap::new();
         *relink_pending = BTreeMap::new();
         *reask = BTreeSet::new();
-        *relink_at = 0;
+        *relink_at = None;
         *deferred = Vec::new();
         *genuine = BTreeMap::new();
         *reread_boxes = true;
@@ -896,7 +897,7 @@ impl SyncEngine {
             Event::Tick => {
                 self.timers(out)?;
                 self.serve_timers(out);
-                self.relink_lost()?;
+                self.relink_due();
             }
             Event::Local => {}
             Event::Up { conn, hub } => self.dialed(conn, hub, out),

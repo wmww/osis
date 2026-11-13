@@ -28,6 +28,7 @@
     - a held, unexpired delta of the node's own commit or compaction snapshot links the blob through its large values' trees;
     - every host of a label it syncs has deleted the blob (a purger that had not seen the reuse);
     - the node may write the aspect and holds the blob.
+  - It judges these by its view once it has applied every entry of the label it can open (those it learned of with the deletion included) and holds no commit pending (not parked) on the aspect.
   - To repair, it writes each large position of the aspect's current value whose tree holds the blob again, whole and without a reset (`put_new`, spec/crdt.md §5.6), reusing every other chunk and re-encrypting that blob, with that delta's retention and expiry (a snapshot's: the aspect's default retention, no expiry).
   - How often is local policy.
 

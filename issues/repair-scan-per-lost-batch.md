@@ -3,6 +3,6 @@
 > Priority: low
 > Tags: engine, node-sync, security
 
-- Where: `SyncEngine::relink_lost` (core/node/src/sync/inbound.rs) runs on each event batch with a lost blob (`relink_at = 0`); `Engine::relink` (core/engine/src/engine/large.rs) loops `tree_refs::state_refs_in` over the closure.
+- Where: `SyncEngine::relink_lost` (core/node/src/sync/inbound.rs) runs at the label's next settled pass after a batch with a lost blob (and at each later pass while a pending commit's aspect holds a candidate back); `Engine::relink` (core/engine/src/engine/large.rs) loops `tree_refs::state_refs_in` over the closure.
 - Bound: lookups in `Core::tree_refs` per thing (walks are memoized), so cost is like a full pass's; only a host that is the label's only host can trigger it (the blob must be gone from every host).
 - Options: skip blobs already judged linked since the last batch, or rate the scan by the same back-off as the rewrite.
