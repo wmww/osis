@@ -201,12 +201,15 @@ fn tid_removal_is_flat() {
     }
 }
 
-/// A group of n items: removing one, adding it back and adding a new one, each in a new session
-/// (pages loaded, pages written); the group index follows each.
-fn group_changes(n: usize) -> Vec<(u64, u64)> {
+/// A group g of n items, nested 3 deep (q lists p, p lists g as subgroups): removing an item,
+/// adding it back and adding a new one, each in a new session with q's closure asked for before
+/// (pages loaded, pages written, group index work: the change and the answers after it); the
+/// group index and q's closure follow each. And the opens before them: (group states read whole,
+/// group index work).
+fn group_changes(n: usize) -> (Vec<[u64; 3]>, Vec<[u64; 2]>) {
     let mut lp = net(1, 0);
     let b = lp.peers[0].backend.clone();
-    let g = new_thing(&mut lp, 0);
+    let (g, p, q) = (new_thing(&mut lp, 0), new_thing(&mut lp, 0), new_thing(&mut lp, 0));
     let t = |i: usize| {
         let mut b = [0u8; 15];
         b[7..].copy_from_slice(&(i as u64).to_be_bytes());
@@ -214,32 +217,47 @@ fn group_changes(n: usize) -> Vec<(u64, u64)> {
     };
     let mut m = Mutation::new();
     m.set(g, &ct::GROUP, &ct::Group { items: (0..n).map(t).collect(), subgroups: Default::default() }).unwrap();
+    m.set(p, &ct::GROUP, &ct::Group { items: Default::default(), subgroups: BTreeSet::from([g]) }).unwrap();
+    m.set(q, &ct::GROUP, &ct::Group { items: Default::default(), subgroups: BTreeSet::from([p]) }).unwrap();
     lp.peers[0].commit(m).unwrap().unwrap();
-    let mut out = Vec::new();
+    let (mut out, mut opens) = (Vec::new(), Vec::new());
     let items = vec![PathSeg::Field(0)];
     for (k, (op, x, member)) in [(Op::Remove(Value::Tid(t(n / 3))), n / 3, false), (Op::Add(Value::Tid(t(n / 3))), n / 3, true), (Op::Add(Value::Tid(t(n))), n, true)].into_iter().enumerate() {
-        lp.peers[0].restart(k as u64).unwrap();
+        let (r, w) = measured(&b, || lp.peers[0].restart(k as u64));
+        r.unwrap();
+        opens.push([w.n("group.0 read whole"), w.n("group index")]);
+        assert!(lp.peers[0].engine.closure(&q).len() > n);
         let (c, w) = measured(&b, || {
             let mut m = Mutation::new();
             m.op(g, &ct::GROUP, PathOp { path: items.clone(), op }).unwrap();
-            lp.peers[0].commit(m).unwrap()
+            let c = lp.peers[0].commit(m).unwrap();
+            let e = &lp.peers[0].engine;
+            assert_eq!(e.groups_of(&t(x)), if member { BTreeSet::from([g, p, q]) } else { BTreeSet::new() });
+            assert_eq!(e.closure(&q).contains(&t(x)), member);
+            c
         });
         assert!(c.is_some());
-        assert_eq!(lp.peers[0].engine.groups_of(&t(x)).contains(&g), member);
-        out.push((w.loads(), w.page_writes()));
+        assert_eq!(w.n("group.0 read whole"), 0, "a membership change reads no group whole");
+        out.push([w.loads(), w.page_writes(), w.n("group index")]);
     }
-    out
+    (out, opens)
 }
 
-// spec/data-model.md §8, spec/requirements.md Scale (deleting costs what changed): a membership
-// change of a paged group loads and writes only the pages of the tids it names, the group index
-// following it from those, at n and 10n items.
+// spec/data-model.md §8, spec/requirements.md Scale (deleting costs what changed; no whole value
+// in memory): a membership change of a paged group nested 3 deep loads and writes only the pages
+// of the tids it names, and the group index follows it (the groups above, a closure asked for
+// before) in work O(change), at n and 10n items. An open reads no group's state whole.
 #[test]
 fn group_change_is_flat() {
-    let (small, big) = (group_changes(4000), group_changes(40_000));
+    let ((small, small_open), (big, big_open)) = (group_changes(4000), group_changes(40_000));
     for (i, what) in ["remove an item", "add it back", "add a new item"].iter().enumerate() {
-        flat(&format!("{what}: pages loaded"), small[i].0, big[i].0);
-        flat(&format!("{what}: pages written"), small[i].1, big[i].1);
+        flat(&format!("{what}: pages loaded"), small[i][0], big[i][0]);
+        flat(&format!("{what}: pages written"), small[i][1], big[i][1]);
+        flat(&format!("{what}: group index work"), small[i][2], big[i][2]);
+    }
+    for (o, b) in small_open.iter().zip(&big_open) {
+        assert_eq!((o[0], b[0]), (0, 0), "an open reads no group state whole");
+        linear("open: group index work", o[1], b[1]);
     }
 }
 

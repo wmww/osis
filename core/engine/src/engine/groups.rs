@@ -1,14 +1,14 @@
 //! `groups.0` (spec/data-model.md §8): every group whose items, directly or through subgroups
-//! (cycles allowed), contain the thing. Kept incrementally: a `group.0` change recomputes only the
-//! changed group and the groups above it (O(their reach)), never every group. A join refreshes
-//! the definition from the tids it touches (`touched`, `refresh`), reading only their records.
+//! (cycles allowed), contain the thing. The index holds each listing edge both ways and is kept
+//! by edits: a join refreshes the listing of the tids it touches (`touched`, `refresh`), reading
+//! only their records; what derives from it is walked when asked or edited in place (`Groups`).
 
 use super::Engine;
 use crate::error::Result;
 use osis_base::{Ak, CommitId, Tid, Value};
 use osis_crdt::{Dot, DotRange, Fragment, PathSeg};
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 /// A `group.0` definition: (items, subgroups).
 pub(crate) type Def = (BTreeSet<Tid>, BTreeSet<Tid>);
@@ -51,65 +51,99 @@ pub(crate) fn touched(tx: &mut super::Tx<'_>, g: &Tid, ak: &Ak, delta: &Fragment
     tx.load_lazy(g, ak)?;
     let touch = super::pages::touch_of(delta, tx.core.pages.get(&(*g, ak.clone())));
     tx.ensure_touch(g, ak, &touch)?;
-    let mut out = BTreeSet::new();
-    let mut add = |f: &Fragment| {
-        f.each_value(&mut |v| {
-            if let Value::Tid(t) = v {
-                out.insert(*t);
-            }
-        })
-    };
-    add(delta);
+    let mut out = tids_in(delta);
     if let Some(st) = tx.cached(g, ak) {
-        add(&st.reach(delta));
+        out.extend(tids_in(&st.reach(delta)));
     }
     Ok(Some(out))
 }
 
-/// Refreshes group `g`'s definition in the index for the tids `tids` (`touched`) after a join,
-/// reading only their records (a paged state's value index): O(the change), not O(the group).
-/// A join without a position reset leaves a present state present, so a group listed stays
-/// listed; one not listed yet is read whole.
-pub(crate) fn refresh(tx: &mut super::Tx<'_>, g: &Tid, ak: &Ak, tids: &BTreeSet<Tid>) -> Result<()> {
-    if !tx.core.ix.groups.defs.contains_key(g) {
-        return crate::apply::observe_state(tx, g, ak);
-    }
+/// The tids `f`'s records hold.
+fn tids_in(f: &Fragment) -> BTreeSet<Tid> {
+    let mut out = BTreeSet::new();
+    f.each_value(&mut |v| {
+        if let Value::Tid(t) = v {
+            out.insert(*t);
+        }
+    });
+    out
+}
+
+/// Which of `tids` group `g`'s `group.0` lists, (as items, as subgroups), reading only their
+/// records (a paged state's value index: `ensure_paths` loads every record of each).
+fn listed_of(tx: &mut super::Tx<'_>, g: &Tid, ak: &Ak, tids: &BTreeSet<Tid>) -> Result<(BTreeSet<Tid>, BTreeSet<Tid>)> {
     let paths: Vec<Vec<PathSeg>> = tids.iter().flat_map(|t| [ITEMS, SUBGROUPS].map(|f| vec![PathSeg::Field(f), PathSeg::Key(Value::Tid(*t))])).collect();
     tx.ensure_paths(g, ak, &paths)?;
-    // the live ones among them, per field (what is loaded holds every record of each)
     let live = |f: u64| -> BTreeSet<Tid> {
         match tx.cached(g, ak).and_then(|s| s.read_at(&[PathSeg::Field(f)])) {
             Some(Value::Set(s)) => s.into_iter().filter_map(|v| if let Value::Tid(t) = v { Some(t) } else { None }).filter(|t| tids.contains(t)).collect(),
             _ => BTreeSet::new(),
         }
     };
-    let (items, subs) = (live(ITEMS), live(SUBGROUPS));
-    let Some(was) = tx.core.ix.groups.defs.get(g) else { return Ok(()) };
-    let same = |now: &BTreeSet<Tid>, was: &BTreeSet<Tid>| tids.iter().all(|t| now.contains(t) == was.contains(t));
-    if !(same(&items, &was.0) && same(&subs, &was.1)) {
-        let mut def = was.clone();
-        for t in tids {
-            for (now, d) in [(&items, &mut def.0), (&subs, &mut def.1)] {
-                if now.contains(t) {
-                    d.insert(*t);
-                } else {
-                    d.remove(t);
-                }
-            }
-        }
+    Ok((live(ITEMS), live(SUBGROUPS)))
+}
+
+/// Refreshes group `g`'s listing in the index for the tids `tids` (`touched`) after a join,
+/// reading only their records: O(the change), not O(the group). A join without a position
+/// reset leaves a present state present, so a group defined stays defined; one not defined yet
+/// is read whole.
+pub(crate) fn refresh(tx: &mut super::Tx<'_>, g: &Tid, ak: &Ak, tids: &BTreeSet<Tid>) -> Result<()> {
+    if !tx.core.ix.groups.is_defined(g) {
+        return crate::apply::observe_state(tx, g, ak);
+    }
+    let (items, subs) = listed_of(tx, g, ak, tids)?;
+    let ix = &tx.core.ix.groups;
+    let edits: Vec<Edit> = tids.iter().flat_map(|t| [(ITEMS, &items), (SUBGROUPS, &subs)].map(|(f, now)| (f, *t, now.contains(t)))).filter(|(f, t, on)| ix.listed(g, *f, t) != *on).collect();
+    if !edits.is_empty() {
         // an ephemeral membership carries nothing durable away (`Core::note_cut`)
         if !tx.core.memory_tx {
-            tx.core.note_cut(g, Some(&def));
+            let cut: Vec<Tid> = edits.iter().filter(|(f, _, on)| *f == SUBGROUPS && !on).map(|e| e.1).collect();
+            tx.core.note_cut(g, &cut);
         }
-        tx.core.ix.groups.set(*g, Some(def));
+        tx.core.ix.groups.change(*g, &edits);
     }
     #[cfg(debug_assertions)]
     check_refreshed(tx, g, ak)?;
     Ok(())
 }
 
-/// Debug builds: the definition `refresh` left equals the whole state's (unseen: the cache as it
-/// was, no cost recorded).
+/// At open: group `g`'s definition into the index, a page at a time (`pages::page_keys`): each
+/// page's tids read with all their records (`listed_of`), the pages dropped again, so no whole
+/// definition is held but the index's.
+pub(crate) fn load(tx: &mut super::Tx<'_>, g: &Tid, ak: &Ak) -> Result<()> {
+    tx.load_lazy(g, ak)?;
+    let k = (*g, ak.clone());
+    let keys = match tx.core.pages.get(&k) {
+        Some(idx) => super::pages::page_keys(&mut tx.txn, g, ak, idx)?,
+        None => None,
+    };
+    let Some(keys) = keys else {
+        // unpaged (small), or paged in a way read only whole
+        let def = crate::apply::atomic::group_def(tx.state(g, ak)?.and_then(Fragment::read));
+        if let Some(d) = def {
+            tx.core.ix.groups.load(*g, true, d.0.iter(), d.1.iter());
+        }
+        tx.evict_pages(g, ak);
+        return Ok(());
+    };
+    // the collections left unpaged are in the skeleton whole
+    let skeleton = tx.cached(g, ak).and_then(def_of);
+    let (items, subs) = skeleton.clone().unwrap_or_default();
+    tx.core.ix.groups.load(*g, skeleton.is_some(), items.iter(), subs.iter());
+    for key in keys {
+        let page = super::pages::page_at(&mut tx.txn, g, ak, &key)?;
+        let (items, subs) = listed_of(tx, g, ak, &tids_in(&page))?;
+        tx.core.ix.groups.load(*g, !items.is_empty() || !subs.is_empty(), items.iter(), subs.iter());
+        tx.evict_pages(g, ak);
+    }
+    #[cfg(debug_assertions)]
+    check_refreshed(tx, g, ak)?;
+    Ok(())
+}
+
+/// Debug builds: `g`'s listing in the index equals the whole state's definition, the index
+/// derived from it agrees (each member lists `g` back), and every closure kept of a group above
+/// `g` equals one derived anew (unseen: the cache as it was, no cost recorded).
 #[cfg(debug_assertions)]
 fn check_refreshed(tx: &mut super::Tx<'_>, g: &Tid, ak: &Ak) -> Result<()> {
     let k = (*g, ak.clone());
@@ -123,14 +157,18 @@ fn check_refreshed(tx: &mut super::Tx<'_>, g: &Tid, ak: &Ak) -> Result<()> {
         Some(p) => tx.core.pages.insert(k, p),
         None => tx.core.pages.remove(&k),
     };
-    debug_assert_eq!(tx.core.ix.groups.defs.get(g), whole.as_ref(), "the group index of {g:?} refreshed from a join differs from its whole state");
+    crate::costs::paused(|| {
+        let ix = &tx.core.ix.groups;
+        debug_assert_eq!(ix.def(g), whole, "the group index of {g:?} refreshed from a join differs from its whole state");
+        ix.check_around(g);
+    });
     Ok(())
 }
 
 impl Engine {
     /// Groups containing the thing, transitively (`groups.0`).
     pub fn groups_of(&self, tid: &Tid) -> BTreeSet<Tid> {
-        self.core.ix.groups.of.get(tid).cloned().unwrap_or_default()
+        self.core.ix.groups.groups_of(tid)
     }
 
     /// The groups whose closure holds the thing (spec/sync.md §3): itself, the groups containing
@@ -140,12 +178,9 @@ impl Engine {
     }
 
     /// The groups whose `group.0` lists the thing directly: (as an item, as a subgroup). From
-    /// the in-memory group index, rebuilt from the definitions at open.
+    /// the in-memory group index, loaded from the definitions at open.
     pub fn listed_in(&self, tid: &Tid) -> (BTreeSet<Tid>, BTreeSet<Tid>) {
-        let ix = &self.core.ix.groups;
-        // a group listing it as an item contains it: `of` is a superset of those
-        let items = ix.of.get(tid).into_iter().flatten().filter(|g| ix.defs.get(g).is_some_and(|d| d.0.contains(tid))).copied().collect();
-        (items, ix.parents_of(tid).collect())
+        self.core.ix.groups.listed_in(tid)
     }
 }
 
@@ -174,11 +209,7 @@ impl Engine {
 
 /// `Engine::listing_groups`.
 pub(crate) fn listing_groups(tx: &mut super::Tx<'_>, t: &Tid) -> Result<(BTreeSet<Tid>, BTreeSet<Tid>)> {
-    let (mut items, mut subs) = {
-        let ix = &tx.core.ix.groups;
-        let items: BTreeSet<Tid> = ix.of.get(t).into_iter().flatten().filter(|g| ix.defs.get(g).is_some_and(|d| d.0.contains(t))).copied().collect();
-        (items, ix.parents_of(t).collect::<BTreeSet<Tid>>())
-    };
+    let (mut items, mut subs) = tx.core.ix.groups.listed_in(t);
     let missing = missing_groups(tx.core, |g| g != t && !(items.contains(g) && subs.contains(g)))?;
     for g in partial_groups(tx, missing)? {
         items.insert(g);
@@ -255,13 +286,11 @@ impl super::Core {
         self.ix.groups.enclosing(t).iter().any(|g| self.ix.labeled.contains(g))
     }
 
-    /// Before group `g`'s definition becomes `def`: each subgroup it cuts while a synced group
-    /// carries `g` (`cut_subs`), whatever cut it (a write here or elsewhere, an expiry).
-    pub(crate) fn note_cut(&mut self, g: &Tid, def: Option<&Def>) {
-        let Some((_, was)) = self.ix.groups.defs.get(g) else { return };
-        let cut: Vec<Tid> = was.iter().filter(|s| !def.is_some_and(|d| d.1.contains(*s))).copied().collect();
+    /// Before group `g` stops listing the subgroups `cut`: those cut while a synced group
+    /// carries `g` (`cut_subs`), whatever cut them (a write here or elsewhere, an expiry).
+    pub(crate) fn note_cut(&mut self, g: &Tid, cut: &[Tid]) {
         if !cut.is_empty() && self.ix.groups.above(g).iter().any(|a| self.ix.labeled.contains(a)) {
-            self.cut_subs.extend(cut);
+            self.cut_subs.extend(cut.iter().copied());
         }
     }
 
@@ -273,8 +302,7 @@ impl super::Core {
         if cut.is_empty() {
             return Vec::new();
         }
-        let was = self.ix.groups.before();
-        let held: BTreeSet<Tid> = cut.iter().flat_map(|s| self.ix.groups.reach_before(&was, s)).collect();
+        let held = self.ix.groups.closures_at_start(&cut);
         held.into_iter().filter(|t| !self.carried(t) && !self.destroyed(t)).collect()
     }
 }
@@ -293,71 +321,150 @@ impl Engine {
     }
 }
 
-/// The `group.0` definitions and what they derive.
-#[derive(Clone, Debug, Default)]
+/// A listing edit of a group: (field, tid, listed after).
+pub(crate) type Edit = (u64, Tid, bool);
+
+/// An edit of the index as it was before (`Journaled`): a group defined or not, a tid listed in
+/// a group's field or not.
+#[derive(Clone, Copy, Debug)]
+enum Logged {
+    Defined(Tid, bool),
+    Listed(Tid, u64, Tid, bool),
+}
+
+/// The `group.0` index (spec/data-model.md §8), kept by membership edits, each O(the change)
+/// (spec/requirements.md Scale): the groups defined, each group's items and subgroups and the
+/// reverse of both. What derives from it is walked when asked (`above`, `groups_of`,
+/// `enclosing`, a closure the first time); closures asked for are kept and edited in place.
+#[derive(Default)]
 pub struct Groups {
-    /// `group.0` of each group thing: (items, subgroups).
-    pub defs: BTreeMap<Tid, (BTreeSet<Tid>, BTreeSet<Tid>)>,
-    /// Subgroup -> groups listing it.
-    parents: BTreeMap<Tid, BTreeSet<Tid>>,
-    /// Thing -> groups containing it, transitively (`groups.0`).
-    pub of: BTreeMap<Tid, BTreeSet<Tid>>,
-    /// Group -> its closure (spec/sync.md §3): itself, its subgroups and the things it contains,
-    /// transitively (groups listing something). The same `Arc` while the closure does not
-    /// change, so node-sync reuses what it derived from it (`Arc::ptr_eq`).
-    pub closures: BTreeMap<Tid, Arc<BTreeSet<Tid>>>,
-    /// Definitions replaced by the running transaction (`Journaled`).
-    log: Vec<(Tid, Option<Def>)>,
-    /// Things whose `groups_of` answer the running transaction changed (`Event::Groups`).
+    /// Groups with a `group.0` state.
+    defined: BTreeSet<Tid>,
+    /// Group -> its items.
+    items: Edges,
+    /// Thing -> the groups listing it as an item.
+    item_of: Edges,
+    /// Group -> its subgroups.
+    subs: Edges,
+    /// Subgroup -> the groups listing it.
+    parents: Edges,
+    /// Closures asked for (`closure`, spec/sync.md §3), edited in place as they change: the same
+    /// `Arc` while unchanged, so node-sync reuses what it derived from it (`Arc::ptr_eq`). One
+    /// still held elsewhere is copied by its first change.
+    closures: Mutex<BTreeMap<Tid, Arc<BTreeSet<Tid>>>>,
+    /// Edits made by the running transaction (`Journaled`).
+    log: Vec<Logged>,
+    /// Things whose `groups_of` answer the running transaction changed, and groups whose
+    /// closure it changed (`Event::Groups`).
     pub(crate) moved: BTreeSet<Tid>,
 }
 
+impl Clone for Groups {
+    fn clone(&self) -> Groups {
+        Groups {
+            defined: self.defined.clone(),
+            items: self.items.clone(),
+            item_of: self.item_of.clone(),
+            subs: self.subs.clone(),
+            parents: self.parents.clone(),
+            closures: Mutex::new(self.kept().clone()),
+            log: self.log.clone(),
+            moved: self.moved.clone(),
+        }
+    }
+}
+
+/// The index's contents (`Core::same_index`, the index check); kept closures and the journal
+/// aside.
+impl std::fmt::Debug for Groups {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Groups").field("defined", &self.defined).field("items", &self.items).field("item_of", &self.item_of).field("subs", &self.subs).field("parents", &self.parents).finish()
+    }
+}
+
+/// The index's contents, as `Debug` shows them.
+impl PartialEq for Groups {
+    fn eq(&self, o: &Groups) -> bool {
+        (&self.defined, &self.items, &self.item_of, &self.subs, &self.parents) == (&o.defined, &o.items, &o.item_of, &o.subs, &o.parents)
+    }
+}
+
+/// Tid -> tids: one direction of a listing.
+type Edges = BTreeMap<Tid, BTreeSet<Tid>>;
+
+/// The bounds of a range over every tid.
+const TID_MIN: Tid = Tid::from_bytes([0; 15]);
+const TID_MAX: Tid = Tid::from_bytes([0xff; 15]);
+
 impl Groups {
-    /// What `g` reaches through its definition and its subgroups': (the things it contains,
-    /// its closure). The closure adds `g` and every subgroup on the way.
-    fn reach(&self, g: &Tid) -> (BTreeSet<Tid>, BTreeSet<Tid>) {
-        let mut out = BTreeSet::new();
-        let mut seen = BTreeSet::new();
-        let mut stack = vec![*g];
-        while let Some(x) = stack.pop() {
-            if !seen.insert(x) {
-                continue;
-            }
-            if let Some((items, subs)) = self.defs.get(&x) {
-                out.extend(items.iter().copied());
-                stack.extend(subs.iter().copied());
-            }
-        }
-        seen.extend(out.iter().copied());
-        (out, seen)
+    fn kept(&self) -> MutexGuard<'_, BTreeMap<Tid, Arc<BTreeSet<Tid>>>> {
+        self.closures.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// The definitions the running transaction's journal replaced, as they were when it began.
-    fn before(&self) -> BTreeMap<Tid, Option<&Def>> {
-        let mut was = BTreeMap::new();
-        for (x, d) in &self.log {
-            was.entry(*x).or_insert(d.as_ref());
-        }
-        was
+    /// The listing of field `f` (`ITEMS` or `SUBGROUPS`): group -> tids, tid -> groups.
+    fn maps(&self, f: u64) -> (&Edges, &Edges) {
+        if f == ITEMS { (&self.items, &self.item_of) } else { (&self.subs, &self.parents) }
     }
 
-    /// `g`'s closure when the running transaction began: `reach` over `was` (`before`) and the
-    /// definitions it did not replace.
-    fn reach_before(&self, was: &BTreeMap<Tid, Option<&Def>>, g: &Tid) -> BTreeSet<Tid> {
-        let mut out = BTreeSet::new();
-        let mut seen = BTreeSet::new();
-        let mut stack = vec![*g];
-        while let Some(x) = stack.pop() {
-            if !seen.insert(x) {
-                continue;
+    fn maps_mut(&mut self, f: u64) -> (&mut Edges, &mut Edges) {
+        if f == ITEMS { (&mut self.items, &mut self.item_of) } else { (&mut self.subs, &mut self.parents) }
+    }
+
+    /// Whether `g` has a `group.0` state.
+    pub(crate) fn is_defined(&self, g: &Tid) -> bool {
+        self.defined.contains(g)
+    }
+
+    /// The groups with a `group.0` state.
+    pub(crate) fn defined(&self) -> impl Iterator<Item = &Tid> {
+        self.defined.iter()
+    }
+
+    /// Whether `g`'s field `f` lists `t`.
+    pub(crate) fn listed(&self, g: &Tid, f: u64, t: &Tid) -> bool {
+        self.maps(f).0.get(g).is_some_and(|s| s.contains(t))
+    }
+
+    /// What `g`'s field `f` lists.
+    pub(crate) fn listing(&self, g: &Tid, f: u64) -> impl Iterator<Item = &Tid> {
+        self.maps(f).0.get(g).into_iter().flatten()
+    }
+
+    /// `g`'s whole definition: O(the group), for checks.
+    pub(crate) fn def(&self, g: &Tid) -> Option<Def> {
+        self.defined.contains(g).then(|| (self.listing(g, ITEMS).copied().collect(), self.listing(g, SUBGROUPS).copied().collect()))
+    }
+
+    /// The groups listing `t` directly: (as an item, as a subgroup).
+    pub(crate) fn listed_in(&self, t: &Tid) -> (BTreeSet<Tid>, BTreeSet<Tid>) {
+        let of = |m: &Edges| m.get(t).cloned().unwrap_or_default();
+        (of(&self.item_of), of(&self.parents))
+    }
+
+    /// Lists or unlists `t` in `g`'s field `f`, both ways; whether that changed it.
+    fn link(&mut self, g: Tid, f: u64, t: Tid, on: bool) -> bool {
+        let (fwd, rev) = self.maps_mut(f);
+        if on {
+            if !fwd.entry(g).or_default().insert(t) {
+                return false;
             }
-            if let Some((items, subs)) = was.get(&x).copied().unwrap_or(self.defs.get(&x)) {
-                out.extend(items.iter().copied());
-                stack.extend(subs.iter().copied());
+            rev.entry(t).or_default().insert(g);
+            return true;
+        }
+        let Some(s) = fwd.get_mut(&g) else { return false };
+        if !s.remove(&t) {
+            return false;
+        }
+        if s.is_empty() {
+            fwd.remove(&g);
+        }
+        if let Some(r) = rev.get_mut(&t) {
+            r.remove(&g);
+            if r.is_empty() {
+                rev.remove(&t);
             }
         }
-        out.extend(seen);
-        out
+        true
     }
 
     /// `g` and every group above it through subgroup lists.
@@ -369,130 +476,174 @@ impl Groups {
                 stack.extend(self.parents.get(&x).into_iter().flatten().copied());
             }
         }
+        crate::costs::count("group index", seen.len() as u64);
         seen
+    }
+
+    /// The groups containing `t` (`groups.0`): above each group listing it as an item.
+    pub(crate) fn groups_of(&self, t: &Tid) -> BTreeSet<Tid> {
+        self.item_of.get(t).into_iter().flatten().flat_map(|g| self.above(g)).collect()
     }
 
     /// The groups whose closure holds `t`: `t`, the groups containing it and those above it.
     pub(crate) fn enclosing(&self, t: &Tid) -> BTreeSet<Tid> {
         let mut out = self.above(t);
-        out.extend(self.of.get(t).into_iter().flatten().copied());
+        out.extend(self.groups_of(t));
         out
     }
 
-    /// Removes `a`'s closure and what derives from it; the closure, if any.
-    fn unlist(&mut self, a: &Tid) -> Option<Arc<BTreeSet<Tid>>> {
-        let old = self.closures.remove(a)?;
-        // `a` is in `of[a]` only when it reaches itself, a subgroup in its closure is in `of[a]`
-        // only when also contained: removing `a` is right either way
-        for x in old.iter() {
-            if let Some(s) = self.of.get_mut(x) {
-                s.remove(a);
-                if s.is_empty() {
-                    self.of.remove(x);
-                }
+    /// The closure of `g` (spec/sync.md §3) by `listing` (a group's field): `g`, the subgroups it
+    /// reaches and their items.
+    fn reach_by(&self, g: &Tid, listing: &dyn Fn(&Tid, u64) -> Vec<Tid>) -> BTreeSet<Tid> {
+        let mut out = BTreeSet::new();
+        let mut seen = BTreeSet::new();
+        let mut stack = vec![*g];
+        while let Some(x) = stack.pop() {
+            if seen.insert(x) {
+                out.extend(listing(&x, ITEMS));
+                stack.extend(listing(&x, SUBGROUPS));
             }
         }
-        Some(old)
+        crate::costs::count("group index", (seen.len() + out.len()) as u64);
+        out.extend(seen);
+        out
     }
 
-    /// Lists `a`'s closure, keeping `old` (its closure before) when it is unchanged.
-    fn list(&mut self, a: &Tid, old: Option<Arc<BTreeSet<Tid>>>) {
-        let (r, c) = self.reach(a);
-        for x in &r {
-            self.of.entry(*x).or_default().insert(*a);
-        }
-        if c.len() > 1 || !r.is_empty() {
-            let c = match old {
-                Some(o) if *o == c => o,
-                _ => Arc::new(c),
-            };
-            self.closures.insert(*a, c);
-        }
-    }
-
-    /// The groups listing `g` as a subgroup.
-    pub(crate) fn parents_of(&self, g: &Tid) -> impl Iterator<Item = Tid> + '_ {
-        self.parents.get(g).into_iter().flatten().copied()
+    fn reach(&self, g: &Tid) -> BTreeSet<Tid> {
+        self.reach_by(g, &|x, f| self.listing(x, f).copied().collect())
     }
 
     /// The closure of `g`: itself, its subgroups and every thing it contains, transitively.
+    /// Derived the first time it is asked for (O(the closure)), then kept.
     pub fn closure(&self, g: &Tid) -> Arc<BTreeSet<Tid>> {
-        self.closures.get(g).cloned().unwrap_or_else(|| Arc::new(BTreeSet::from([*g])))
-    }
-
-    /// Sets (or with `None` removes) the definition of group `g` and updates what derives from it.
-    pub fn set(&mut self, g: Tid, def: Option<(BTreeSet<Tid>, BTreeSet<Tid>)>) {
-        if self.defs.get(&g) == def.as_ref() {
-            return;
+        if let Some(c) = self.kept().get(g) {
+            return c.clone();
         }
-        self.log.push((g, self.defs.get(&g).cloned()));
-        self.apply(g, def)
+        let c = Arc::new(self.reach(g));
+        self.kept().insert(*g, c.clone());
+        c
     }
 
-    fn apply(&mut self, g: Tid, def: Option<(BTreeSet<Tid>, BTreeSet<Tid>)>) {
-        let above = self.above(&g);
-        let was = self.defs.get(&g).cloned().unwrap_or_default();
-        let now = def.clone().unwrap_or_default();
-        self.moved.extend(was.0.symmetric_difference(&now.0).chain(was.1.symmetric_difference(&now.1)).copied());
-        let mut old = BTreeMap::new();
-        for a in &above {
-            if let Some(c) = self.unlist(a) {
-                old.insert(*a, c);
+    /// The closures of `gs` when the running transaction began (its edits undone), together.
+    pub(crate) fn closures_at_start(&self, gs: &BTreeSet<Tid>) -> BTreeSet<Tid> {
+        let mut was: BTreeMap<(Tid, u64, Tid), bool> = BTreeMap::new();
+        for e in &self.log {
+            if let Logged::Listed(g, f, t, on) = e {
+                was.entry((*g, *f, *t)).or_insert(*on);
             }
         }
-        if let Some((_, subs)) = self.defs.remove(&g) {
-            for s in subs {
-                if let Some(p) = self.parents.get_mut(&s) {
-                    p.remove(&g);
-                    if p.is_empty() {
-                        self.parents.remove(&s);
+        let listing = |x: &Tid, f: u64| -> Vec<Tid> {
+            let mut l: BTreeSet<Tid> = self.listing(x, f).copied().collect();
+            for ((_, _, t), on) in was.range((*x, f, TID_MIN)..=(*x, f, TID_MAX)) {
+                if *on {
+                    l.insert(*t);
+                } else {
+                    l.remove(t);
+                }
+            }
+            l.into_iter().collect()
+        };
+        gs.iter().flat_map(|g| self.reach_by(g, &listing)).collect()
+    }
+
+    /// Makes `edits` (each a change) to `g`'s listing and what derives from it: `moved` and the
+    /// kept closures. The things whose enclosing groups may change are the tids edited and the
+    /// closure of each subgroup edited, as it was: every edge edited starts at `g`, so what an
+    /// added edge makes reachable is an edited tid or under an edited subgroup already.
+    fn apply(&mut self, g: Tid, edits: &[Edit]) {
+        let mut xs = BTreeSet::new();
+        for (f, t, _) in edits {
+            xs.insert(*t);
+            if *f == SUBGROUPS {
+                xs.extend(self.reach(t));
+            }
+        }
+        let before: Vec<(Tid, BTreeSet<Tid>)> = xs.into_iter().map(|x| (x, self.enclosing(&x))).collect();
+        for (f, t, on) in edits {
+            if self.link(g, *f, *t, *on) {
+                self.moved.insert(*t);
+            }
+        }
+        let after: Vec<BTreeSet<Tid>> = before.iter().map(|(x, _)| self.enclosing(x)).collect();
+        let mut moved = Vec::new();
+        let kept = self.closures.get_mut().unwrap_or_else(PoisonError::into_inner);
+        for ((x, was), now) in before.iter().zip(&after) {
+            for a in was.symmetric_difference(now) {
+                // `x` entered or left `a`'s closure; what `a` holds is an answer too
+                moved.extend([*x, *a]);
+                if let Some(c) = kept.get_mut(a) {
+                    let c = Arc::make_mut(c);
+                    if now.contains(a) {
+                        c.insert(*x);
+                    } else {
+                        c.remove(x);
                     }
                 }
             }
         }
-        if let Some(d) = def {
-            for s in &d.1 {
-                self.parents.entry(*s).or_default().insert(g);
-            }
-            self.defs.insert(g, d);
-        }
-        for a in &above {
-            let before = old.remove(a);
-            let was = before.clone().unwrap_or_default();
-            self.list(a, before);
-            let now = self.closures.get(a).cloned().unwrap_or_default();
-            if !Arc::ptr_eq(&was, &now) {
-                self.moved.extend(was.symmetric_difference(&now).copied());
-                // what the group holds is an answer too (a listing of its writes)
-                self.moved.insert(*a);
+        self.moved.extend(moved);
+    }
+
+    /// Edits `g`'s listing (`refresh`: per tid), logged.
+    pub(crate) fn change(&mut self, g: Tid, edits: &[Edit]) {
+        let edits: Vec<Edit> = edits.iter().filter(|(f, t, on)| self.listed(&g, *f, t) != *on).copied().collect();
+        crate::costs::count("group index", edits.len() as u64);
+        self.log.extend(edits.iter().map(|(f, t, on)| Logged::Listed(g, *f, *t, !on)));
+        self.apply(g, &edits);
+    }
+
+    /// Notes `g` defined or not, logged.
+    fn define(&mut self, g: Tid, on: bool) {
+        let was = self.defined.contains(&g);
+        if was != on {
+            self.log.push(Logged::Defined(g, was));
+            if on {
+                self.defined.insert(g);
+            } else {
+                self.defined.remove(&g);
             }
         }
     }
 
-    /// Sets a definition without deriving (`rebuild` follows): loading every group at open.
-    pub fn set_def(&mut self, g: Tid, def: Option<(BTreeSet<Tid>, BTreeSet<Tid>)>) {
-        if let Some((_, subs)) = self.defs.remove(&g) {
-            for s in subs {
-                if let Some(p) = self.parents.get_mut(&s) {
-                    p.remove(&g);
-                }
-            }
+    /// Sets (or with `None` removes) the whole definition of `g`, from a whole read: O(the
+    /// group).
+    pub fn set(&mut self, g: Tid, def: Option<Def>) {
+        let (items, subs) = def.as_ref().map_or((None, None), |d| (Some(&d.0), Some(&d.1)));
+        let mut edits = Vec::new();
+        for (f, now) in [(ITEMS, items), (SUBGROUPS, subs)] {
+            edits.extend(self.listing(&g, f).filter(|t| !now.is_some_and(|n| n.contains(*t))).map(|t| (f, *t, false)));
+            edits.extend(now.into_iter().flatten().filter(|t| !self.listed(&g, f, t)).map(|t| (f, *t, true)));
         }
-        if let Some(d) = def {
-            for s in &d.1 {
-                self.parents.entry(*s).or_default().insert(g);
-            }
-            self.defs.insert(g, d);
-        }
+        self.define(g, def.is_some());
+        self.change(g, &edits);
     }
 
-    /// Derives everything from the definitions: O(sum of each group's reach).
-    pub fn rebuild(&mut self) {
-        self.of.clear();
-        self.closures.clear();
-        let gs: Vec<Tid> = self.defs.keys().copied().collect();
-        for g in gs {
-            self.list(&g, None);
+    /// At open (`load`): `g` listing `items` and `subs` besides what it lists already, and with
+    /// `defined` defined; not logged, nothing told.
+    pub(crate) fn load<'a>(&mut self, g: Tid, defined: bool, items: impl Iterator<Item = &'a Tid>, subs: impl Iterator<Item = &'a Tid>) {
+        if defined {
+            self.defined.insert(g);
+        }
+        let mut n = 0;
+        for (f, t) in items.map(|t| (ITEMS, t)).chain(subs.map(|t| (SUBGROUPS, t))) {
+            self.link(g, f, *t, true);
+            n += 1;
+        }
+        crate::costs::count("group index", n);
+    }
+
+    /// Debug builds: each tid `g` lists lists `g` back, and every kept closure of a group above
+    /// `g` equals one derived anew.
+    #[cfg(debug_assertions)]
+    pub(crate) fn check_around(&self, g: &Tid) {
+        for f in [ITEMS, SUBGROUPS] {
+            for t in self.listing(g, f) {
+                debug_assert!(self.maps(f).1.get(t).is_some_and(|r| r.contains(g)), "the group index of {g:?}: {t:?} is not listed back");
+            }
+        }
+        let kept: Vec<(Tid, Arc<BTreeSet<Tid>>)> = self.above(g).into_iter().filter_map(|a| self.kept().get(&a).map(|c| (a, c.clone()))).collect();
+        for (a, c) in kept {
+            debug_assert_eq!(*c, self.reach(&a), "the kept closure of {a:?} differs from one derived anew");
         }
     }
 }
@@ -500,7 +651,7 @@ impl Groups {
 impl super::journal::Journaled for Groups {
     #[cfg(test)]
     fn contents(&self) -> String {
-        format!("{:?} {:?} {:?} {:?}", self.defs, self.parents, self.of, self.closures)
+        format!("{:?} {:?} {:?} {:?} {:?}", self.defined, self.items, self.item_of, self.subs, self.parents)
     }
     type Mark = (usize, BTreeSet<Tid>);
     fn commit(&mut self) {
@@ -511,82 +662,146 @@ impl super::journal::Journaled for Groups {
     }
     fn rollback_to(&mut self, (m, moved): Self::Mark) {
         while self.log.len() > m {
-            let Some((g, def)) = self.log.pop() else { break };
-            self.apply(g, def);
+            match self.log.pop() {
+                Some(Logged::Defined(g, was)) => {
+                    if was {
+                        self.defined.insert(g);
+                    } else {
+                        self.defined.remove(&g);
+                    }
+                }
+                Some(Logged::Listed(g, f, t, was)) => self.apply(g, &[(f, t, was)]),
+                None => break,
+            }
         }
         // a change rolled back is told by no event; the transaction's earlier steps still are
         self.moved = moved;
     }
 }
 
-
-
 #[cfg(test)]
 mod tests {
-    use super::Groups;
+    use super::{Def, Groups, ITEMS, SUBGROUPS};
+    use crate::engine::journal::Journaled;
     use osis_base::Tid;
+    use osis_crypto::{RngCore, SeededRng};
     use std::collections::{BTreeMap, BTreeSet};
+    use std::sync::Arc;
 
     fn t(n: u8) -> Tid {
         Tid::from_bytes([n; 15])
     }
 
-    /// The reference: every group's reach from scratch.
-    fn naive(defs: &BTreeMap<Tid, (BTreeSet<Tid>, BTreeSet<Tid>)>) -> BTreeMap<Tid, BTreeSet<Tid>> {
-        let mut g = Groups { defs: defs.clone(), ..Default::default() };
-        let mut out: BTreeMap<Tid, BTreeSet<Tid>> = BTreeMap::new();
-        for k in defs.keys() {
-            for x in g.reach(k).0 {
-                out.entry(x).or_default().insert(*k);
-            }
-        }
-        g.rebuild();
-        assert_eq!(g.of, out);
-        out
+    /// The reference, from the definitions alone: each group's closure (spec/sync.md §3: the
+    /// group, its subgroups at any depth and their items) and each thing's containing groups.
+    struct Naive {
+        closure: BTreeMap<Tid, BTreeSet<Tid>>,
+        of: BTreeMap<Tid, BTreeSet<Tid>>,
     }
 
-    // spec/data-model.md §8: `groups.0` holds every group containing the thing through items and
-    // subgroups (cycles allowed); incremental updates equal a recomputation from scratch.
+    fn naive(defs: &BTreeMap<Tid, Def>, all: &[Tid]) -> Naive {
+        let mut closure = BTreeMap::new();
+        let mut of: BTreeMap<Tid, BTreeSet<Tid>> = BTreeMap::new();
+        for a in all {
+            let (mut items, mut seen) = (BTreeSet::new(), BTreeSet::new());
+            let mut stack = vec![*a];
+            while let Some(x) = stack.pop() {
+                if seen.insert(x) && let Some((i, s)) = defs.get(&x) {
+                    items.extend(i.iter().copied());
+                    stack.extend(s.iter().copied());
+                }
+            }
+            for x in &items {
+                of.entry(*x).or_default().insert(*a);
+            }
+            items.extend(seen);
+            closure.insert(*a, items);
+        }
+        Naive { closure, of }
+    }
+
+    /// Every answer of `g` equals the reference's; `moved` holds exactly the things whose
+    /// listing or containing groups changed since `was` and the groups whose closure changed.
+    fn check(g: &Groups, defs: &BTreeMap<Tid, Def>, all: &[Tid], was: &Naive, listed: &BTreeMap<Tid, (BTreeSet<Tid>, BTreeSet<Tid>)>) {
+        let now = naive(defs, all);
+        let mut moved = BTreeSet::new();
+        for x in all {
+            let of = now.of.get(x).cloned().unwrap_or_default();
+            assert_eq!(g.groups_of(x), of);
+            let enclosing: BTreeSet<Tid> = all.iter().filter(|a| now.closure[*a].contains(x)).copied().collect();
+            assert_eq!(g.enclosing(x), enclosing);
+            assert_eq!(*g.closure(x), now.closure[x]);
+            let l = (defs.iter().filter(|(_, d)| d.0.contains(x)).map(|(a, _)| *a).collect(), defs.iter().filter(|(_, d)| d.1.contains(x)).map(|(a, _)| *a).collect());
+            assert_eq!(g.listed_in(x), l);
+            if listed.get(x) != Some(&l) || was.closure[x] != now.closure[x] || all.iter().any(|a| was.closure[a].contains(x) != now.closure[a].contains(x)) {
+                moved.insert(*x);
+            }
+        }
+        assert_eq!(g.moved, moved);
+    }
+
+    fn listings(defs: &BTreeMap<Tid, Def>, all: &[Tid]) -> BTreeMap<Tid, (BTreeSet<Tid>, BTreeSet<Tid>)> {
+        all.iter().map(|x| (*x, (defs.iter().filter(|(_, d)| d.0.contains(x)).map(|(a, _)| *a).collect(), defs.iter().filter(|(_, d)| d.1.contains(x)).map(|(a, _)| *a).collect()))).collect()
+    }
+
+    // spec/data-model.md §8, spec/sync.md §3: the index kept by edits (whole sets, per-tid edits,
+    // rolled-back steps; cycles allowed) answers as a derivation from scratch: `groups.0`,
+    // listings, closures (kept ones edited in place; an unchanged one the same `Arc`) and what
+    // a step tells moved.
     #[test]
     fn incremental_groups_spec_data_model_8() {
-        let mut rng = osis_crypto::SeededRng::from_u64(0);
+        let mut rng = SeededRng::from_u64(0);
+        let all: Vec<Tid> = (0..12).chain(20..32).map(t).collect();
         let mut g = Groups::default();
-        let mut defs = BTreeMap::new();
-        for _ in 0..400 {
-            let n = |rng: &mut osis_crypto::SeededRng| (osis_crypto::RngCore::next_u32(rng) % 12) as u8;
+        let mut defs: BTreeMap<Tid, Def> = BTreeMap::new();
+        let n = |rng: &mut SeededRng| (rng.next_u32() % 12) as u8;
+        for step in 0..600 {
+            let (was, listed) = (naive(&defs, &all), listings(&defs, &all));
+            // closures asked for before (kept), some still held
+            let held: Vec<(Tid, Arc<BTreeSet<Tid>>)> = (0..3).map(|_| t(n(&mut rng))).map(|a| (a, g.closure(&a))).collect();
+            g.moved.clear();
             let k = t(n(&mut rng));
-            let def = if n(&mut rng) < 2 {
-                None
-            } else {
-                let items: BTreeSet<Tid> = (0..n(&mut rng) % 4).map(|_| t(n(&mut rng) + 20)).collect();
-                let subs: BTreeSet<Tid> = (0..n(&mut rng) % 3).map(|_| t(n(&mut rng))).collect();
-                Some((items, subs))
-            };
-            match &def {
-                Some(d) => defs.insert(k, d.clone()),
-                None => defs.remove(&k),
-            };
-            g.set(k, def);
-            assert_eq!(g.of, naive(&defs));
-            // spec/sync.md §3: a closure is the group, its subgroups at any depth and their items
-            for a in defs.keys() {
-                let (mut want, mut seen) = (BTreeSet::new(), BTreeSet::new());
-                let mut stack = vec![*a];
-                while let Some(x) = stack.pop() {
-                    if seen.insert(x) && let Some((items, subs)) = defs.get(&x) {
-                        want.extend(items.iter().copied());
-                        stack.extend(subs.iter().copied());
+            let rollback = step % 7 == 3;
+            let mark = g.mark();
+            let saved = defs.clone();
+            match n(&mut rng) {
+                0 | 1 => {
+                    defs.remove(&k);
+                    g.set(k, None);
+                }
+                2..=6 => {
+                    let items: BTreeSet<Tid> = (0..n(&mut rng) % 4).map(|_| t(n(&mut rng) + 20)).collect();
+                    let subs: BTreeSet<Tid> = (0..n(&mut rng) % 3).map(|_| t(n(&mut rng))).collect();
+                    defs.insert(k, (items.clone(), subs.clone()));
+                    g.set(k, Some((items, subs)));
+                }
+                _ if defs.contains_key(&k) => {
+                    let (f, x) = if n(&mut rng) % 2 == 0 { (ITEMS, t(n(&mut rng) + 20)) } else { (SUBGROUPS, t(n(&mut rng))) };
+                    let on = n(&mut rng) % 2 == 0;
+                    let d = defs.get_mut(&k).unwrap();
+                    let s = if f == ITEMS { &mut d.0 } else { &mut d.1 };
+                    if on {
+                        s.insert(x);
+                    } else {
+                        s.remove(&x);
                     }
+                    g.change(k, &[(f, x, on)]);
                 }
-                want.extend(seen);
-                assert_eq!(*g.closure(a), want);
-                for t in &want {
-                    assert!(g.enclosing(t).contains(a));
+                _ => {}
+            }
+            if rollback {
+                g.rollback_to(mark);
+                defs = saved;
+                g.moved.clear();
+                check(&g, &defs, &all, &naive(&defs, &all), &listed);
+            } else {
+                check(&g, &defs, &all, &was, &listed);
+                g.commit();
+                for (a, c) in held {
+                    assert_eq!(Arc::ptr_eq(&c, &g.closure(&a)), *c == *g.closure(&a), "an unchanged closure is the same Arc");
                 }
             }
-            for (a, c) in &g.closures {
-                assert!(defs.contains_key(a) && c.len() > 1 || g.of.get(a).is_some_and(|s| s.contains(a)));
-            }
+            assert_eq!(g.defined().copied().collect::<BTreeSet<_>>(), defs.keys().copied().collect());
         }
     }
 }

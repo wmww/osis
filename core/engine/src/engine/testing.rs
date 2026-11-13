@@ -675,7 +675,7 @@ fn tables(ix: &super::Indexes) -> [(&'static str, &dyn Table); 28] {
         ("keyset_parts", &*ix.keyset_parts),
         ("holder_keys", &*ix.holder_keys),
         ("unresolved", &*ix.unresolved),
-        ("groups", &ix.groups.of),
+        ("groups", &ix.groups),
         ("secrets", &*ix.secrets),
         ("void", &*ix.void),
         ("destroyed_for_good", &*ix.destroyed_for_good),

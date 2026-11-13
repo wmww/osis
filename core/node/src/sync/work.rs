@@ -21,8 +21,8 @@ use osis_base::{Ak, BlobId, CommitId, LabelId, Tid};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-/// Whether closures `a` and `b` are the same: one `Arc` while unchanged (`Groups::closures`;
-/// a group containing nothing gets a new one each time).
+/// Whether closures `a` and `b` are the same: one `Arc` while unchanged (`Groups::closure`;
+/// a closure rolled back to what it was is a new one).
 pub(crate) fn same_closure(a: &Arc<BTreeSet<Tid>>, b: &Arc<BTreeSet<Tid>>) -> bool {
     Arc::ptr_eq(a, b) || a.len() <= 1 && a == b
 }
@@ -479,7 +479,7 @@ impl SyncEngine {
             if std::mem::take(&mut w.touched.clock) {
                 w.until = self.roster_horizon(closure, g);
             }
-            // an unchanged closure is the same `Arc` (`Groups::closures`)
+            // an unchanged closure is the same `Arc` (`Groups::closure`)
             if !same_closure(closure, &w.closure) {
                 things.extend(closure.symmetric_difference(&w.closure).copied());
             }

@@ -84,7 +84,7 @@ impl Engine {
 
     /// The things of a group's closure (spec/sync.md §3): the group and every thing it contains
     /// through `group.0`, transitively through subgroups. The same `Arc` while it does not change
-    /// (`Groups::closures`), so node-sync reuses what it derived from it.
+    /// (`Groups::closure`), so node-sync reuses what it derived from it.
     pub fn closure(&self, g: &Tid) -> std::sync::Arc<BTreeSet<Tid>> {
         self.core.ix.groups.closure(g)
     }

@@ -2028,11 +2028,8 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
     })?;
     for (tid, ak) in aspects {
         match ak.as_str() {
-            // definitions first, derived once below
-            "group.0" => {
-                let v = tx.state(&tid, &ak)?.and_then(osis_crdt::Fragment::read);
-                tx.core.ix.groups.set_def(tid, atomic::group_def(v));
-            }
+            // a page at a time, no definition read whole
+            "group.0" => crate::engine::groups::load(tx, &tid, &ak)?,
             // what observing a `keys.0` state derives is the delete hints it ends, which a load
             // reads from the index or not at all (a rebuild holds none to end)
             "keys.0" => {}
@@ -2047,7 +2044,6 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
             _ => atomic::observe_state(tx, &tid, &ak)?,
         }
     }
-    tx.core.ix.groups.rebuild();
     if fast {
         // every delta's validity is persisted: nothing to re-judge
         tx.core.stale_things.clear();

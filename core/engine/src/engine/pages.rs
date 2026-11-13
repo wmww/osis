@@ -1517,6 +1517,30 @@ fn set_pages(txn: &mut Transaction<'_>, t: Table, set: &PageSet) -> Result<Vec<F
     Ok(out)
 }
 
+/// The row keys of every page of the paged state `idx` of `(tid, ak)`, to read one at a time
+/// (`page_at`); `None` where a collection is a sequence or paged inside another's elements
+/// (read those whole).
+pub fn page_keys(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &StatePages) -> Result<Option<Vec<Vec<u8>>>> {
+    if idx.sets.values().any(is_seq) || idx.sets.keys().any(|p| idx.sets.keys().any(|q| q.len() < p.len() && p.starts_with(q))) {
+        return Ok(None);
+    }
+    let t = table(txn, tid, ak)?;
+    let mut out = Vec::new();
+    for set in idx.sets.values() {
+        out.extend(set_rows(txn, t, set)?);
+    }
+    Ok(Some(out))
+}
+
+/// The page at row `key` (`page_keys`) of `(tid, ak)`, as its collection holds it (not loaded
+/// into the state).
+pub fn page_at(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, key: &[u8]) -> Result<Fragment> {
+    let _s = crate::costs::span("state page load");
+    let t = table(txn, tid, ak)?;
+    let row = txn.table_get(t, key)?.ok_or(Error::Corrupt("state page missing"))?;
+    Ok(parse_page_row(&row)?.1)
+}
+
 /// The row keys of a paged collection's pages, in order.
 fn set_rows(txn: &mut Transaction<'_>, t: Table, set: &PageSet) -> Result<Vec<Vec<u8>>> {
     let mut out = Vec::new();

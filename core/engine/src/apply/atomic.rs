@@ -983,10 +983,12 @@ pub(crate) fn observe_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
         }
         // every path that changes a `group.0` (late deltas, re-judging) updates `groups.0`
         "group.0" => {
+            let _s = crate::costs::span("group.0 read whole");
             let def = group_def(v);
             // an ephemeral membership carries nothing durable away (`Core::note_cut`)
             if !tx.core.memory_tx {
-                tx.core.note_cut(tid, def.as_ref());
+                let cut: Vec<Tid> = tx.core.ix.groups.listing(tid, crate::engine::groups::SUBGROUPS).filter(|s| !def.as_ref().is_some_and(|d| d.1.contains(*s))).copied().collect();
+                tx.core.note_cut(tid, &cut);
             }
             tx.core.ix.groups.set(*tid, def)
         }
@@ -1120,7 +1122,7 @@ pub(crate) fn check_rebuilt(tx: &mut Tx<'_>) -> Result<TxChange> {
         // and the group index, derived from it
         if ak.as_str() == "group.0" {
             let def = group_def(got.as_ref().and_then(Fragment::read));
-            debug_assert_eq!(tx.core.ix.groups.defs.get(&tid), def.as_ref(), "the group index of {tid:?} differs from its state");
+            debug_assert_eq!(tx.core.ix.groups.def(&tid), def, "the group index of {tid:?} differs from its state");
         }
     }
     Ok(change)

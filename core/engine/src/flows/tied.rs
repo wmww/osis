@@ -140,9 +140,8 @@ impl Engine {
     /// tied edge on a thing in `targets`; with `all`, of every group this node holds a `group.0`
     /// of.
     pub fn tied_unplaced(&mut self, groups: &BTreeSet<Tid>, targets: &BTreeSet<Tid>, all: bool) -> Result<BTreeSet<(Tid, Tid)>> {
-        let defs = &self.core.ix.groups.defs;
         let mut pairs: BTreeSet<(Tid, Tid)> = BTreeSet::new();
-        let gs: Box<dyn Iterator<Item = &Tid>> = if all { Box::new(defs.keys()) } else { Box::new(groups.iter()) };
+        let gs: Box<dyn Iterator<Item = &Tid>> = if all { Box::new(self.core.ix.groups.defined()) } else { Box::new(groups.iter()) };
         for g in gs {
             pairs.extend(self.core.ix.held.named_on(g).map(|t| (*t, *g)));
         }

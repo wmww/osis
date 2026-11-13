@@ -274,7 +274,7 @@ pub(crate) fn listened(core: &crate::engine::Core, tid: &Tid, ak: &Ak) -> bool {
         return false;
     }
     let Some(on) = core.commit_listeners.as_ref() else { return false };
-    on(tid) || core.ix.groups.of.get(tid).is_some_and(|g| g.iter().any(|g| on(g)))
+    on(tid) || core.ix.groups.groups_of(tid).iter().any(|g| on(g))
 }
 
 /// Before the state of `(tid, ak)` is written whole (a rebuild, a reset by pages): the commits
