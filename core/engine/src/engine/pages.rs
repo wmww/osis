@@ -1485,7 +1485,7 @@ pub fn write_touched(txn: &mut Transaction<'_>, idx: &mut StatePages, tid: &Tid,
 /// Drops the loaded pages of the paged state `f` (written already: the store holds them),
 /// keeping its skeleton, so a delta joined a page at a time holds about one page of its state
 /// (issues/durable-decode-bound.md). Not while it pages a sequence: those stay loaded for their
-/// placement (notes/crdt.md: long texts load fully for linearization).
+/// placement.
 pub fn evict(idx: &mut StatePages, f: &mut Fragment) {
     if idx.sets.values().any(is_seq) {
         return;

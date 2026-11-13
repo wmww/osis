@@ -1,0 +1,4 @@
+# prose-limits-crdt
+- notes/time-limits.md had grown to 99 KB of one-line gate reports in mixed order and formats; `tools/limits.py summary` matched hits by a `- <stamp> <box> `<name>`` prefix that most entries never had, so it re-listed nearly every old hit as unrecorded. It now skips hits up to the file's `Digested through` line.
+- notes/crdt.md lost about 25 KB in d2b71c941 (a code commit about `winners`): Known anomalies, Rejected, Sibling keys, cycle breaking, the commit floor and a dozen design reasons, while code and tests kept pointing at them (`Known anomalies`, `Commit floor`, `Sibling keys`). Restored the still-true ones. A heading-existence check over `notes/X.md, Section` pointers would catch this at the gate.
+- The Read tool caps at 25k tokens, so a 78 KB note needs two reads; an agent writing the file back from the first page alone drops the rest silently.

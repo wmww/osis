@@ -3,4 +3,4 @@
 > Priority: normal
 > Tags: tests, tools
 
-- Fix: the gate kills a test target whose output shows no test finishing for a multiple of the `test` limit (notes/time-limits.md) and reports the running tests as NEW, "hung" (the failure classification then treats it like any failure). Check what at 0 and infinity (notes/arbitrary-values.md): the multiple bounds a hang, not a slow test, which the limits already report.
+- Fix: the gate kills a test target whose output shows no test finishing for a multiple of the `test` limit (notes/build.md, Time limits) and reports the running tests as NEW, "hung" (the failure classification then treats it like any failure). Check what at 0 and infinity (notes/arbitrary-values.md): the multiple bounds a hang, not a slow test, which the limits already report.

@@ -802,7 +802,7 @@ fn move_leaves_unplaced_record_on_end_spec_5_7() {
     assert_eq!(a.state.read(), before.read());
 }
 
-/// §5.7 Undo: a move undoes by writing the old anchors back (notes/crdt.md worked example).
+/// §5.7 Undo: a move undoes by writing the old anchors back (notes/crdt.md, Sibling keys).
 #[test]
 fn move_undo_spec_5_7() {
     let mut a = Replica::new(1);

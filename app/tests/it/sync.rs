@@ -396,8 +396,8 @@ fn contact_fields_of_an_absent_struct_race() {
 }
 
 /// Renaming an email on one node while the other relabels it: one entry under the new
-/// address. (The relabel is a field write into the renamed-away entry, which brings that entry
-/// back with the field alone: spec'd CRDT behaviour, notes/crdt.md Known anomalies.)
+/// address. (The relabel is a field write into the renamed-away entry, which stays removed:
+/// removal is final, notes/crdt.md Tess's decisions.)
 #[test]
 fn email_rename_against_concurrent_edits() {
     use osis_app::contact::EMAILS;
