@@ -412,7 +412,7 @@ A node sends a push (a Stream, §10, or a client-port Notify) only while its byt
 - **`quic://host[:port]`** host addresses (port 4040 when absent, an IPv6 address in brackets):
   - QUIC v1 (RFC 9000, RFC 9001) with TLS 1.3 only, ALPN `osis`, 0-RTT MUST NOT be used.
   - Both sides MUST authenticate (client authentication is mandatory) with RFC 7250 raw public keys: an RFC 8410 Ed25519 SubjectPublicKeyInfo, signature scheme `ed25519` only, no certificates.
-  - The host's key is the address key; a client's is fresh per connection, or a host's own address key when it dials another host.
+  - The host's key is the address key; a client's is fresh per connection.
   - SNI is ignored.
   - Each sync session (spec/wire.md §11.1) runs on a bidirectional stream the client opens; the dialer closes the connection.
 - **Node keys**: a node's dialable key and its LAN transport keys are Ed25519 public keys (RFC 8032), each with a 32-byte seed as its transport secret. A node dials other nodes with an ephemeral transport key and proves the actors it acts for inside the session (Connection proofs).

@@ -88,7 +88,7 @@ impl Host {
     /// A host client dialed on `transport` with an ephemeral key.
     async fn client<T: Transport>(&self, transport: &T) -> Client {
         let target = osis_transport::Address { url: self.addr.url.clone(), key: self.addr.key };
-        let link = osis_transport::link::dial(transport, &target, None, GUARD).await.unwrap();
+        let link = osis_transport::link::dial(transport, &target, GUARD).await.unwrap();
         Client::start(link, self.addr.key).await
     }
 

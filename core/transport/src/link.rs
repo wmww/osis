@@ -4,7 +4,7 @@
 //! every stream the dialer opens as a session (spec/sync.md §10), finishes its side when a session
 //! ends, and closes only once the dialer closed or the connection sat idle without sessions.
 
-use crate::{Address, Connection, Error, Listener, Peer, PublicKey, RecvStream, SendStream, Source, StaticSecret, Transport};
+use crate::{Address, Connection, Error, Listener, Peer, PublicKey, RecvStream, SendStream, Source, Transport};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::Duration;
@@ -103,9 +103,9 @@ impl Drop for Live {
     }
 }
 
-/// Spawns the pumps of one stream. `closer`: the connection to close once our side is finished
-/// (the dialer's role). `wait` bounds the finish.
-fn session<C: Connection>((peer, peer_key, source): (Peer, PublicKey, Option<Source>), mut send: C::Send, mut recv: C::Recv, closer: Option<C>, live: Option<Live>, wait: Duration) -> Link {
+/// Spawns the pumps of one stream of `c`. `closer`: the connection to close once our side is
+/// finished (the dialer's role). `wait` bounds the finish.
+fn session<C: Connection>(c: &C, mut send: C::Send, mut recv: C::Recv, closer: Option<C>, live: Option<Live>, wait: Duration) -> Link {
     let (tx, mut wrx) = mpsc::unbounded_channel::<Vec<u8>>();
     let queued = Arc::new(AtomicUsize::new(0));
     let taken = Arc::new(AtomicU64::new(0));
@@ -149,23 +149,18 @@ fn session<C: Connection>((peer, peer_key, source): (Peer, PublicKey, Option<Sou
             }
         }
     });
-    Link { peer_key, peer, source, relayed: false, tx: LinkTx { tx, queued, taken }, rx: LinkRx { rx: rrx, want } }
+    Link { peer_key: c.peer_key(), peer: c.peer(), source: c.source(), relayed: c.relayed(), tx: LinkTx { tx, queued, taken }, rx: LinkRx { rx: rrx, want } }
 }
 
-/// Dials `addr` (as `secret`'s static key if given, else with an ephemeral key) and opens one
-/// session on it. The connection closes when the session ends.
-pub async fn dial<T: Transport>(t: &T, addr: &Address, secret: Option<&StaticSecret>, wait: Duration) -> Result<Link, Error> {
-    let c = match secret {
-        Some(s) => t.dial_as(addr, s).await?,
-        None => t.dial(addr).await?,
-    };
+/// Dials `addr` and opens one session on it. The connection closes when the session ends.
+pub async fn dial<T: Transport>(t: &T, addr: &Address, wait: Duration) -> Result<Link, Error> {
+    let c = t.dial(addr).await?;
     let (send, recv) = c.open_stream().await?;
-    let relayed = c.relayed();
-    Ok(Link { relayed, ..session((c.peer(), c.peer_key(), c.source()), send, recv, Some(c), None, wait) })
+    Ok(session(&c, send, recv, Some(c.clone()), None, wait))
 }
 
 /// Two ends of one in-process session, no transport between them: `a` sees `b_key` as its
-/// peer and `b` sees `a_key`. A node's own sessions to the host it runs go over one.
+/// peer and `b` sees `a_key`. A node reaches its own listeners over one.
 pub fn pair(a_key: PublicKey, b_key: PublicKey) -> (Link, Link) {
     let (a_tx, b_rx) = pipe();
     let (b_tx, a_rx) = pipe();
@@ -208,7 +203,7 @@ pub async fn serve<L: Listener>(mut l: L, idle: Duration, wait: Duration, out: m
                 match timeout(idle, c.accept_stream()).await {
                     Ok(Ok((send, recv))) => {
                         live.fetch_add(1, Ordering::AcqRel);
-                        let link = Link { relayed: c.relayed(), ..session::<L::Conn>((c.peer(), c.peer_key(), c.source()), send, recv, None, Some(Live(live.clone())), wait) };
+                        let link = session(&c, send, recv, None, Some(Live(live.clone())), wait);
                         if out.send(link).await.is_err() {
                             break;
                         }
@@ -227,7 +222,7 @@ pub async fn serve<L: Listener>(mut l: L, idle: Duration, wait: Duration, out: m
 mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
-    use crate::{ListenConfig, Net};
+    use crate::{ListenConfig, Net, StaticSecret};
 
     const W: Duration = Duration::from_secs(5);
 
@@ -239,12 +234,11 @@ mod tests {
         let addr = l.address();
         let (out, mut incoming) = mpsc::channel(4);
         tokio::spawn(serve(l, W, W, out));
-        let own = StaticSecret::from_bytes([2; 32]);
-        let mut a = dial(&net.endpoint("c"), &addr, Some(&own), W).await.unwrap();
+        let mut a = dial(&net.endpoint("c"), &addr, W).await.unwrap();
         assert_eq!(a.peer_key, addr.key);
         assert!(a.tx.send(b"hi".to_vec(), usize::MAX));
         let mut b = incoming.recv().await.unwrap();
-        assert_eq!(b.peer_key, own.public_key());
+        assert_ne!(b.peer_key, addr.key);
         assert_eq!(b.rx.recv().await.unwrap(), b"hi");
         assert!(b.tx.send(b"yo".to_vec(), usize::MAX));
         assert_eq!(a.rx.recv().await.unwrap(), b"yo");
@@ -278,7 +272,7 @@ mod tests {
         let addr = l.address();
         let (out, mut incoming) = mpsc::channel(4);
         tokio::spawn(serve(l, W, W, out));
-        let a = dial(&net.endpoint("c"), &addr, None, W).await.unwrap();
+        let a = dial(&net.endpoint("c"), &addr, W).await.unwrap();
         let n = 3 * WRITE_CHUNK + 5;
         assert!(a.tx.send(vec![7; n], usize::MAX));
         let mut b = incoming.recv().await.unwrap();

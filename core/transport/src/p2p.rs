@@ -822,10 +822,10 @@ impl<U: Udp> RelayServer<U> {
 
 // ---- the transport ----
 
-/// Parked direct connections by (peer key, dialer's own key if not ephemeral).
+/// Parked direct connections by peer key.
 struct Parked<C> {
     next: u64,
-    conns: BTreeMap<(PublicKey, Option<PublicKey>), (u64, C)>,
+    conns: BTreeMap<PublicKey, (u64, C)>,
 }
 
 /// The P2P transport over `U`'s sockets (module comment).
@@ -865,7 +865,7 @@ impl<U: Udp> P2p<U> {
         }
     }
 
-    fn park(&self, tag: (PublicKey, Option<PublicKey>), c: SConn<U>) {
+    fn park(&self, tag: PublicKey, c: SConn<U>) {
         let id = {
             let mut p = lock(&self.parked);
             p.next += 1;
@@ -890,126 +890,20 @@ impl<U: Udp> P2p<U> {
             }
         });
     }
-
-    async fn dial_inner(&self, addr: &Address, own: Option<StaticSecret>) -> Result<P2pConn<SConn<U>>, Error> {
-        let tag = (addr.key, own.as_ref().map(crate::StaticSecret::public_key));
-        if let Some((_, c)) = lock(&self.parked).conns.remove(&tag) {
-            return Ok(P2pConn::Direct(c));
-        }
-        let it = items(&addr.url)?;
-        if it.direct.is_empty() && it.relays.is_empty() {
-            return Err(Error::Unreachable(addr.url.clone()));
-        }
-        // a socket per address family the items use (a socket reaches its own family only); an
-        // item whose family cannot bind fails alone
-        type Slot<S> = Option<Result<Arc<S>, Error>>;
-        let (mut v4, mut v6): (Slot<U::Sock>, Slot<U::Sock>) = (None, None);
-        let mut sock_for = |to: SocketAddr| {
-            let (slot, any): (_, IpAddr) = if to.is_ipv4() { (&mut v4, Ipv4Addr::UNSPECIFIED.into()) } else { (&mut v6, Ipv6Addr::UNSPECIFIED.into()) };
-            slot.get_or_insert_with(|| self.udp.bind(SocketAddr::new(any, 0), None).map(Arc::new)).clone()
-        };
-        let (tx, mut rx) = mpsc::unbounded_channel();
-        let stop = Arc::new(Gate::default());
-        for d in it.direct {
-            match sock_for(d) {
-                Ok(sock) => direct(&self.udp, &sock, d, addr.key, own.clone(), tx.clone()),
-                Err(e) => drop(tx.send(Err(e))),
-            }
-        }
-        for r in it.relays {
-            match sock_for(r.addr) {
-                Ok(sock) => self.udp.spawn(relayed(self.udp.clone(), sock, r, addr.key, own.clone(), tx.clone(), stop.clone())),
-                Err(e) => drop(tx.send(Err(e))),
-            }
-        }
-        drop(tx);
-        let mut err = Error::Unreachable(addr.url.clone());
-        let first = loop {
-            match rx.recv().await {
-                Some(Ok(c)) => break c,
-                Some(Err(e)) => {
-                    if err != Error::KeyMismatch {
-                        err = e;
-                    }
-                }
-                None => return Err(err),
-            }
-        };
-        // relayed attempts end; direct ones run on: one completing replaces a relayed connection
-        stop.close();
-        let me = self.clone();
-        let mut relayed = match &first {
-            P2pConn::Relayed(r) => Some(Arc::downgrade(r)),
-            P2pConn::Direct(_) => None,
-        };
-        self.udp.spawn(async move {
-            while let Some(r) = rx.recv().await {
-                let Ok(c) = r else { continue };
-                // the relayed connection returned, while its user holds it open with its stream
-                // opened (`open_stream` right after `dial` must not fail: closed before that, the
-                // caller would take a switch for a failed dial and wait out its retry pause)
-                let rel = relayed.as_ref().and_then(std::sync::Weak::upgrade).filter(|r| !r.gate.is_closed() && lock(&r.stream).is_none());
-                match (c, rel) {
-                    (P2pConn::Direct(d), Some(rel)) => {
-                        relayed = None;
-                        me.park(tag, d);
-                        rel.close();
-                    }
-                    (c, _) => c.close(),
-                }
-            }
-        });
-        Ok(first)
-    }
-
-    async fn listen_inner(&self, cfg: ListenConfig) -> Result<P2pListener<U>, Error> {
-        let it = items(&cfg.url)?;
-        let [bind] = it.direct.as_slice() else { return Err(Error::BadUrl(format!("{}: one socket address to bind", cfg.url))) };
-        let sock = Arc::new(self.udp.bind(*bind, Some(&cfg.secret))?);
-        let key = cfg.secret.public_key();
-        let (tx, rx) = mpsc::channel(ACCEPT_QUEUE);
-        let stop = Arc::new(Gate::default());
-        let observed = Arc::new(Mutex::new(BTreeMap::new()));
-        let (s2, tx2, relay) = (sock.clone(), tx.clone(), self.relay.clone());
-        self.udp.spawn(async move {
-            loop {
-                match s2.accept().await {
-                    Ok((c, Alpn::Osis, _)) => {
-                        if tx2.send(P2pConn::Direct(c)).await.is_err() {
-                            return;
-                        }
-                    }
-                    Ok((c, Alpn::Relay, from)) => match &relay {
-                        Some(r) => r.serve(c, from),
-                        None => c.close(),
-                    },
-                    Err(_) => return,
-                }
-            }
-        });
-        let mut list = vec![sock.local().to_string()];
-        let fwd = Arc::new(Forwarded::default());
-        for r in it.relays {
-            list.push(r.item());
-            let reg = Registration { udp: self.udp.clone(), sock: sock.clone(), relay: r, secret: cfg.secret.clone(), tx: tx.clone(), observed: observed.clone(), fwd: fwd.clone() };
-            self.udp.spawn(reg.run(stop.clone()));
-        }
-        Ok(P2pListener { rx, addr: Address { url: crate::peer_url(&list), key }, stop, sock, observed })
-    }
 }
 
 /// A direct attempt from `sock` to `to`; its result goes to `tx`.
-fn direct<U: Udp>(udp: &U, sock: &Arc<U::Sock>, to: SocketAddr, key: PublicKey, own: Option<StaticSecret>, tx: mpsc::UnboundedSender<Result<P2pConn<SConn<U>>, Error>>) {
+fn direct<U: Udp>(udp: &U, sock: &Arc<U::Sock>, to: SocketAddr, key: PublicKey, tx: mpsc::UnboundedSender<Result<P2pConn<SConn<U>>, Error>>) {
     let s = sock.clone();
     udp.spawn(async move {
-        let _ = tx.send(s.dial(to, key, own, Alpn::Osis).await.map(P2pConn::Direct));
+        let _ = tx.send(s.dial(to, key, None, Alpn::Osis).await.map(P2pConn::Direct));
     });
 }
 
 /// An attempt through `relay`: ask it for a stream to `key`, run TLS over the stream, exchange
 /// addresses and dial the peer's from the same socket (the peer punches back). Ends early once
 /// `stop` closes or the dial is no longer waited for.
-async fn relayed<U: Udp>(udp: U, sock: Arc<U::Sock>, relay: Relay, key: PublicKey, own: Option<StaticSecret>, tx: mpsc::UnboundedSender<Result<P2pConn<SConn<U>>, Error>>, stop: Arc<Gate>) {
+async fn relayed<U: Udp>(udp: U, sock: Arc<U::Sock>, relay: Relay, key: PublicKey, tx: mpsc::UnboundedSender<Result<P2pConn<SConn<U>>, Error>>, stop: Arc<Gate>) {
     let work = async {
         let rc = sock.dial(relay.addr, relay.key, None, Alpn::Relay).await?;
         let (mut s, mut r) = rc.open_stream().await?;
@@ -1023,10 +917,7 @@ async fn relayed<U: Udp>(udp: U, sock: Arc<U::Sock>, relay: Relay, key: PublicKe
             _ => return Err(Error::Unreachable(format!("relay {} refused", relay.addr))),
         }
         let seen = read_addr(&mut r).await?;
-        let seed = zeroize::Zeroizing::new(match &own {
-            Some(s) => *s.as_bytes(),
-            None => udp.seed()?,
-        });
+        let seed = zeroize::Zeroizing::new(udp.seed()?);
         let pin = PinnedHost::new(key);
         let cfg = Arc::new(quic::client_tls(quic::keypair(&seed)?.1, pin.clone(), ALPN)?);
         let name = rustls::pki_types::ServerName::try_from(SNI_NAME).map_err(|e| Error::Io(e.to_string()))?;
@@ -1039,7 +930,7 @@ async fn relayed<U: Udp>(udp: U, sock: Arc<U::Sock>, relay: Relay, key: PublicKe
         let (mut ts, mut tr) = tls_stream(tls, s, r, raw);
         let theirs = exchange(&mut ts, &mut tr, seen).await?;
         if punchable(theirs, relay.addr) {
-            direct(&udp, &sock, theirs, key, own.clone(), tx.clone());
+            direct(&udp, &sock, theirs, key, tx.clone());
         }
         Ok(P2pConn::Relayed(Arc::new(Relayed::new(key, ip_source(relay.addr.ip()), true, (ts, tr), Some(rc)))))
     };
@@ -1178,15 +1069,109 @@ impl<U: Udp> Transport for P2p<U> {
     type Listener = P2pListener<U>;
 
     async fn dial(&self, addr: &Address) -> Result<Self::Conn, Error> {
-        self.dial_inner(addr, None).await
-    }
-
-    async fn dial_as(&self, addr: &Address, secret: &StaticSecret) -> Result<Self::Conn, Error> {
-        self.dial_inner(addr, Some(secret.clone())).await
+        let tag = addr.key;
+        if let Some((_, c)) = lock(&self.parked).conns.remove(&tag) {
+            return Ok(P2pConn::Direct(c));
+        }
+        let it = items(&addr.url)?;
+        if it.direct.is_empty() && it.relays.is_empty() {
+            return Err(Error::Unreachable(addr.url.clone()));
+        }
+        // a socket per address family the items use (a socket reaches its own family only); an
+        // item whose family cannot bind fails alone
+        type Slot<S> = Option<Result<Arc<S>, Error>>;
+        let (mut v4, mut v6): (Slot<U::Sock>, Slot<U::Sock>) = (None, None);
+        let mut sock_for = |to: SocketAddr| {
+            let (slot, any): (_, IpAddr) = if to.is_ipv4() { (&mut v4, Ipv4Addr::UNSPECIFIED.into()) } else { (&mut v6, Ipv6Addr::UNSPECIFIED.into()) };
+            slot.get_or_insert_with(|| self.udp.bind(SocketAddr::new(any, 0), None).map(Arc::new)).clone()
+        };
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let stop = Arc::new(Gate::default());
+        for d in it.direct {
+            match sock_for(d) {
+                Ok(sock) => direct(&self.udp, &sock, d, addr.key, tx.clone()),
+                Err(e) => drop(tx.send(Err(e))),
+            }
+        }
+        for r in it.relays {
+            match sock_for(r.addr) {
+                Ok(sock) => self.udp.spawn(relayed(self.udp.clone(), sock, r, addr.key, tx.clone(), stop.clone())),
+                Err(e) => drop(tx.send(Err(e))),
+            }
+        }
+        drop(tx);
+        let mut err = Error::Unreachable(addr.url.clone());
+        let first = loop {
+            match rx.recv().await {
+                Some(Ok(c)) => break c,
+                Some(Err(e)) => {
+                    if err != Error::KeyMismatch {
+                        err = e;
+                    }
+                }
+                None => return Err(err),
+            }
+        };
+        // relayed attempts end; direct ones run on: one completing replaces a relayed connection
+        stop.close();
+        let me = self.clone();
+        let mut relayed = match &first {
+            P2pConn::Relayed(r) => Some(Arc::downgrade(r)),
+            P2pConn::Direct(_) => None,
+        };
+        self.udp.spawn(async move {
+            while let Some(r) = rx.recv().await {
+                let Ok(c) = r else { continue };
+                // the relayed connection returned, while its user holds it open with its stream
+                // opened (`open_stream` right after `dial` must not fail: closed before that, the
+                // caller would take a switch for a failed dial and wait out its retry pause)
+                let rel = relayed.as_ref().and_then(std::sync::Weak::upgrade).filter(|r| !r.gate.is_closed() && lock(&r.stream).is_none());
+                match (c, rel) {
+                    (P2pConn::Direct(d), Some(rel)) => {
+                        relayed = None;
+                        me.park(tag, d);
+                        rel.close();
+                    }
+                    (c, _) => c.close(),
+                }
+            }
+        });
+        Ok(first)
     }
 
     async fn listen(&self, cfg: ListenConfig) -> Result<P2pListener<U>, Error> {
-        self.listen_inner(cfg).await
+        let it = items(&cfg.url)?;
+        let [bind] = it.direct.as_slice() else { return Err(Error::BadUrl(format!("{}: one socket address to bind", cfg.url))) };
+        let sock = Arc::new(self.udp.bind(*bind, Some(&cfg.secret))?);
+        let key = cfg.secret.public_key();
+        let (tx, rx) = mpsc::channel(ACCEPT_QUEUE);
+        let stop = Arc::new(Gate::default());
+        let observed = Arc::new(Mutex::new(BTreeMap::new()));
+        let (s2, tx2, relay) = (sock.clone(), tx.clone(), self.relay.clone());
+        self.udp.spawn(async move {
+            loop {
+                match s2.accept().await {
+                    Ok((c, Alpn::Osis, _)) => {
+                        if tx2.send(P2pConn::Direct(c)).await.is_err() {
+                            return;
+                        }
+                    }
+                    Ok((c, Alpn::Relay, from)) => match &relay {
+                        Some(r) => r.serve(c, from),
+                        None => c.close(),
+                    },
+                    Err(_) => return,
+                }
+            }
+        });
+        let mut list = vec![sock.local().to_string()];
+        let fwd = Arc::new(Forwarded::default());
+        for r in it.relays {
+            list.push(r.item());
+            let reg = Registration { udp: self.udp.clone(), sock: sock.clone(), relay: r, secret: cfg.secret.clone(), tx: tx.clone(), observed: observed.clone(), fwd: fwd.clone() };
+            self.udp.spawn(reg.run(stop.clone()));
+        }
+        Ok(P2pListener { rx, addr: Address { url: crate::peer_url(&list), key }, stop, sock, observed })
     }
 
     async fn lan(&self, port: u16) -> Result<Arc<dyn crate::lan::LanSocket>, Error> {

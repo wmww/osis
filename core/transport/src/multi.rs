@@ -1,9 +1,8 @@
 //! `Multi`: one transport over several, picked by URL scheme (spec/sync.md §10): `mem://` to
 //! `InProcess`, `quic://` to `Quic`, `peer://` to `P2p` (over `QuicUdp`, or `MemUdp` in a test
 //! net), `unix://` to `Unix` (listen only). A scheme without its transport is `UnknownScheme`.
-//! Lets one driver reach hosts and peers.
 
-use crate::{Address, Connection, Error, InProcess, ListenConfig, Listener, MemConn, MemListener, MemRecv, MemSend, PublicKey, RecvStream, SendStream, StaticSecret, Transport};
+use crate::{Address, Connection, Error, InProcess, ListenConfig, Listener, MemConn, MemListener, MemRecv, MemSend, PublicKey, RecvStream, SendStream, Transport};
 use crate::p2p::{P2pRecv, P2pSend};
 use crate::p2p::{SConn, Udp};
 use crate::{P2p, P2pConn, P2pListener, QuicUdp};
@@ -123,11 +122,6 @@ impl<U: Udp> Transport for Multi<U> {
         each!(Pick; p, t => t.dial(addr).await.map(Into::into))
     }
 
-    async fn dial_as(&self, addr: &Address, secret: &StaticSecret) -> Result<MultiConn<U>, Error> {
-        let p = self.pick_dial(&addr.url)?;
-        each!(Pick; p, t => t.dial_as(addr, secret).await.map(Into::into))
-    }
-
     async fn listen(&self, cfg: ListenConfig) -> Result<MultiListener<U>, Error> {
         let p = self.pick(&cfg.url)?;
         each!(Pick; p, t => t.listen(cfg).await.map(Into::into))
@@ -211,11 +205,7 @@ impl<U: Udp> RecvStream for MultiRecv<U> {
 mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
-    use crate::{Net, Sched};
-
-    fn me2() -> StaticSecret {
-        StaticSecret::from_bytes([7; 32])
-    }
+    use crate::{Net, Sched, StaticSecret};
 
     // spec/sync.md §10: the URL scheme picks the transport; `peer://` without `P2p` is a scheme
     // without its transport, which is unknown (parked); unix:// is never dialed.
@@ -231,8 +221,7 @@ mod tests {
             assert_eq!(key, secret.public_key());
             let c = a.dial(&Address { url: "mem://b".into(), key }).await.unwrap();
             assert_eq!(c.peer_key(), key);
-            let me = StaticSecret::from_bytes([6; 32]);
-            assert!(matches!(a.dial_as(&Address { url: crate::peer_url(&[]), key }, &me).await, Err(Error::UnknownScheme(_))));
+            assert!(matches!(a.dial(&Address { url: crate::peer_url(&[]), key }).await, Err(Error::UnknownScheme(_))));
             let none: Multi = Multi::default();
             assert!(matches!(none.dial(&Address { url: "mem://b".into(), key }).await, Err(Error::UnknownScheme(_))));
             assert!(matches!(a.dial(&Address { url: "quic://x:1".into(), key }).await, Err(Error::UnknownScheme(_))));
@@ -240,7 +229,6 @@ mod tests {
             // unix:// is listened on, never dialed through a Multi (a published address cannot reach a local socket)
             let u: Multi = Multi { unix: Some(Unix), ..Multi::default() };
             assert!(matches!(u.dial(&Address { url: "unix:///tmp/x.sock".into(), key }).await, Err(Error::UnknownScheme(_))));
-            assert!(matches!(u.dial_as(&Address { url: "unix:///tmp/x.sock".into(), key }, &me2()).await, Err(Error::UnknownScheme(_))));
             drop(l);
         });
         assert!(done.is_some());

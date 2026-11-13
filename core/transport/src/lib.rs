@@ -127,7 +127,7 @@ impl StaticSecret {
     pub fn as_bytes(&self) -> &[u8; 32] {
         &self.0
     }
-    /// The key a listener or `dial_as` with this secret presents, on every transport but `Unix`:
+    /// The key a listener (or a P2P registration) with this secret presents, on every transport but `Unix`:
     /// Ed25519 with the secret as seed (spec/sync.md §10).
     pub fn public_key(&self) -> PublicKey {
         ed25519_dalek::SigningKey::from_bytes(&self.0).verifying_key().to_bytes()
@@ -153,9 +153,6 @@ pub trait Transport: Send + Sync + 'static {
     type Conn: Connection;
     type Listener: Listener<Conn = Self::Conn>;
     fn dial(&self, addr: &Address) -> impl Future<Output = Result<Self::Conn, Error>> + Send;
-    /// Dials authenticating with the static key of `secret` instead of an ephemeral one: for a
-    /// host dialing a peer host, which must see the dialer's own key (echo suppression).
-    fn dial_as(&self, addr: &Address, secret: &StaticSecret) -> impl Future<Output = Result<Self::Conn, Error>> + Send;
     fn listen(&self, cfg: ListenConfig) -> impl Future<Output = Result<Self::Listener, Error>> + Send;
     /// The LAN loop's announcement socket at `port` (spec/sync.md §10; 0: any). A transport with
     /// no LAN has none.
@@ -164,15 +161,12 @@ pub trait Transport: Send + Sync + 'static {
     }
 }
 
-/// A shared transport (the node's driver and the host it runs dial and listen on one).
+/// A shared transport.
 impl<T: Transport> Transport for std::sync::Arc<T> {
     type Conn = T::Conn;
     type Listener = T::Listener;
     fn dial(&self, addr: &Address) -> impl Future<Output = Result<Self::Conn, Error>> + Send {
         (**self).dial(addr)
-    }
-    fn dial_as(&self, addr: &Address, secret: &StaticSecret) -> impl Future<Output = Result<Self::Conn, Error>> + Send {
-        (**self).dial_as(addr, secret)
     }
     fn listen(&self, cfg: ListenConfig) -> impl Future<Output = Result<Self::Listener, Error>> + Send {
         (**self).listen(cfg)
@@ -197,8 +191,8 @@ pub trait Listener: Send + 'static {
 pub trait Connection: Clone + Send + Sync + 'static {
     type Send: SendStream;
     type Recv: RecvStream;
-    /// The key the transport authenticated for the peer: a host's address key, a client's
-    /// per-connection ephemeral key, a peer's dialable key (spec/wire.md §11.1).
+    /// The key the transport authenticated for the peer: a listener's static key, a dialer's
+    /// per-connection ephemeral key (spec/wire.md §11.1).
     fn peer_key(&self) -> PublicKey;
     /// The peer as the transport type tells it: `Peer::Key(peer_key)` unless overridden.
     fn peer(&self) -> Peer {

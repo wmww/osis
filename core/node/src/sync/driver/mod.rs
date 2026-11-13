@@ -302,7 +302,7 @@ impl<T: Transport, H: Shared> Driver<T, H> {
                     let task = tokio::spawn(async move {
                         let dialed = match own {
                             Some(mine) => Ok(mine),
-                            None => link::dial(&*t, &addr, None, FINISH_WAIT).await.map_err(|e| e.to_string()),
+                            None => link::dial(&*t, &addr, FINISH_WAIT).await.map_err(|e| e.to_string()),
                         };
                         let _ = ev.send(match dialed {
                             Ok(l) => Ev::Up(conn, l),

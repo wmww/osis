@@ -370,8 +370,8 @@ fn direct_items_spec_sync_10() {
 }
 
 // spec/sync.md §10: through a relay the dialer pins the target's key end to end (TLS over the
-// forwarded stream) and the target sees the dialer's key: fresh per dial, or its own with dial_as;
-// a key nobody registered is unreachable.
+// forwarded stream) and the target sees the dialer's key, fresh per dial; a key nobody registered
+// is unreachable.
 #[test]
 fn relayed_keys_spec_sync_10() {
     let mut w = world(0, anyone());
@@ -388,7 +388,7 @@ fn relayed_keys_spec_sync_10() {
         let (mut t1, _r1) = c1.open_stream().await.unwrap();
         t1.write_all(b"x").await.unwrap();
         let s1 = lb.accept().await.unwrap();
-        let c2 = a2.dial_as(&Address { url: u2.clone(), key: kb }, &secret(5)).await.unwrap();
+        let c2 = a2.dial(&Address { url: u2.clone(), key: kb }).await.unwrap();
         let s2 = lb.accept().await.unwrap();
         let none = a2.dial(&Address { url: u2, key: [7; 32] }).await.err();
         assert!(c1.relayed() && c2.relayed() && s1.relayed() && s2.relayed());
@@ -397,8 +397,7 @@ fn relayed_keys_spec_sync_10() {
         (s1.peer_key(), s2.peer_key(), none)
     });
     let (k1, k2, none) = got.unwrap();
-    assert_ne!(k1, secret(5).public_key());
-    assert_eq!(k2, secret(5).public_key());
+    assert_ne!(k1, k2);
     assert!(matches!(none, Some(Error::Unreachable(_))), "{none:?}");
 }
 
@@ -764,12 +763,12 @@ fn quic_relay_loopback_spec_sync_10() {
         });
         let a = P2p::new(QuicUdp::new());
         let addr = Address { url: peer_url(&[relay.item()]), key: kb };
-        let c = a.dial_as(&addr, &secret(5)).await.unwrap();
+        let c = a.dial(&addr).await.unwrap();
         assert_eq!(c.peer_key(), kb);
         if let Err(e) = session(&c).await {
             // a relayed connection closes once the direct one completes; the next dial takes that
             assert!(c.relayed(), "{e:?}");
-            let d = a.dial_as(&addr, &secret(5)).await.unwrap();
+            let d = a.dial(&addr).await.unwrap();
             assert!(!d.relayed());
             session(&d).await.unwrap();
         }
@@ -1061,16 +1060,15 @@ fn quic_relay_dual_stack_spec_sync_10() {
                 });
             }
         });
-        for (i, relay) in relays.iter().enumerate() {
+        for relay in &relays {
             let a = P2p::new(QuicUdp::new());
             let addr = Address { url: peer_url(&[relay.item()]), key: kb };
-            let own = secret(5 + i as u8);
-            let c = a.dial_as(&addr, &own).await.unwrap();
+            let c = a.dial(&addr).await.unwrap();
             assert_eq!(c.peer_key(), kb);
             if let Err(e) = session(&c).await {
                 // a relayed connection closes once the direct one completes; the next dial takes that
                 assert!(c.relayed(), "{e:?}");
-                let d = a.dial_as(&addr, &own).await.unwrap();
+                let d = a.dial(&addr).await.unwrap();
                 assert!(!d.relayed());
                 session(&d).await.unwrap();
             }

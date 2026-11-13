@@ -902,11 +902,11 @@ enum Via {
 async fn dial_via(via: &Via, addr: &Address, wait: Duration) -> std::result::Result<osis_transport::Link, String> {
     let d = async {
         match via {
-            Via::Unix => osis_transport::link::dial(&Unix, addr, None, wait).await,
-            Via::Mem(m) => osis_transport::link::dial(&osis_transport::Multi::<osis_transport::QuicUdp> { mem: Some(m.clone()), ..Default::default() }, addr, None, wait).await,
+            Via::Unix => osis_transport::link::dial(&Unix, addr, wait).await,
+            Via::Mem(m) => osis_transport::link::dial(&osis_transport::Multi::<osis_transport::QuicUdp> { mem: Some(m.clone()), ..Default::default() }, addr, wait).await,
             Via::Net => {
                 let m = osis_transport::Multi { quic: Some(osis_transport::Quic::new()), p2p: Some(osis_transport::P2p::new(osis_transport::QuicUdp::new())), ..Default::default() };
-                osis_transport::link::dial(&m, addr, None, wait).await
+                osis_transport::link::dial(&m, addr, wait).await
             }
         }
     };

@@ -207,7 +207,7 @@ fn answer_to(m: &Message, id: Id) -> Option<Result<Outcome, Code>> {
 impl Raw {
     pub(crate) fn over<T: osis_transport::Transport>(t: &T, addr: osis_transport::Address) -> Raw {
         let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
-        let link = rt.block_on(osis_transport::link::dial(t, &addr, None, W)).unwrap();
+        let link = rt.block_on(osis_transport::link::dial(t, &addr, W)).unwrap();
         let mut r = Raw { rt, d: Dialer::new(addr.key, [3; 32]), link, events: Vec::new() };
         let o = r.d.start(0);
         r.out(o);

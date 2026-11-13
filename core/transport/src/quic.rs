@@ -405,15 +405,21 @@ impl Quic {
         Quic
     }
 
+}
+
+impl Transport for Quic {
+    type Conn = QuicConn;
+    type Listener = QuicListener;
+
     /// Dials from a fresh UDP socket.
-    async fn dial_inner(&self, addr: &Address, own: Option<&crate::StaticSecret>) -> Result<QuicConn, Error> {
+    async fn dial(&self, addr: &Address) -> Result<QuicConn, Error> {
         let sa = resolve(&addr.url).await?;
         let bind: SocketAddr = if sa.is_ipv6() { (std::net::Ipv6Addr::UNSPECIFIED, 0).into() } else { (std::net::Ipv4Addr::UNSPECIFIED, 0).into() };
         let ep = quinn::Endpoint::client(bind).map_err(|e| Error::Io(e.to_string()))?;
-        connect(&ep, sa, addr.key, own, crate::p2p::Alpn::Osis).await
+        connect(&ep, sa, addr.key, None, crate::p2p::Alpn::Osis).await
     }
 
-    async fn listen_inner(&self, cfg: ListenConfig) -> Result<QuicListener, Error> {
+    async fn listen(&self, cfg: ListenConfig) -> Result<QuicListener, Error> {
         let sa = resolve(&cfg.url).await?;
         let (pk, me) = keypair(cfg.secret.as_bytes())?;
         let sc = server_config(me, &[ALPN])?;
@@ -421,23 +427,6 @@ impl Quic {
         let local = ep.local_addr().map_err(|e| Error::Io(e.to_string()))?;
         let rx = accept_loop(ep.clone(), |inc: quinn::Incoming| async move { keyed(inc.await.ok()?) });
         Ok(QuicListener { ep, rx, addr: Address { url: format!("{SCHEME}://{local}"), key: pk } })
-    }
-}
-
-impl Transport for Quic {
-    type Conn = QuicConn;
-    type Listener = QuicListener;
-
-    async fn dial(&self, addr: &Address) -> Result<QuicConn, Error> {
-        self.dial_inner(addr, None).await
-    }
-
-    async fn dial_as(&self, addr: &Address, secret: &crate::StaticSecret) -> Result<QuicConn, Error> {
-        self.dial_inner(addr, Some(secret)).await
-    }
-
-    async fn listen(&self, cfg: ListenConfig) -> Result<QuicListener, Error> {
-        self.listen_inner(cfg).await
     }
 }
 
@@ -710,10 +699,9 @@ mod tests {
         main.block_on(async {
             tokio::time::sleep(Duration::from_millis(200)).await;
             let addr = l.address();
-            let secret = StaticSecret::from_bytes([5; 32]);
-            let c = Quic::new().dial_as(&addr, &secret).await.unwrap();
+            let c = Quic::new().dial(&addr).await.unwrap();
             let s = tokio::time::timeout(Duration::from_secs(2), l.accept()).await.unwrap().unwrap();
-            assert_eq!(s.peer_key(), secret.public_key());
+            assert_ne!(s.peer_key(), addr.key);
             drop(c);
         });
         stall.join().unwrap();

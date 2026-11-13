@@ -9,7 +9,7 @@
 //! (connections reset). Streams never lose or reorder bytes: that is the contract.
 
 use crate::util::{lock, Rng};
-use crate::{Address, Connection, Error, ListenConfig, Listener, PublicKey, RecvStream, SendStream, StaticSecret, Transport};
+use crate::{Address, Connection, Error, ListenConfig, Listener, PublicKey, RecvStream, SendStream, Transport};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::net::SocketAddr;
 use std::future::{poll_fn, Future};
@@ -529,11 +529,7 @@ impl Transport for InProcess {
     type Listener = MemListener;
 
     fn dial(&self, addr: &Address) -> impl Future<Output = Result<MemConn, Error>> + Send {
-        std::future::ready(self.dial_with(addr, None))
-    }
-
-    fn dial_as(&self, addr: &Address, secret: &StaticSecret) -> impl Future<Output = Result<MemConn, Error>> + Send {
-        std::future::ready(self.dial_with(addr, Some(secret.public_key())))
+        std::future::ready(self.connect(addr))
     }
 
     fn listen(&self, cfg: ListenConfig) -> impl Future<Output = Result<MemListener, Error>> + Send {
@@ -553,7 +549,7 @@ impl Transport for InProcess {
 }
 
 impl InProcess {
-    fn dial_with(&self, addr: &Address, own: Option<PublicKey>) -> Result<MemConn, Error> {
+    fn connect(&self, addr: &Address) -> Result<MemConn, Error> {
         let mut st = lock(&self.net.0);
         let name = mem_name(&addr.url)?;
         let Some(l) = st.listeners.get(name) else { return Err(Error::Unreachable(addr.url.clone())) };
@@ -564,7 +560,7 @@ impl InProcess {
         if lkey != addr.key {
             return Err(Error::KeyMismatch);
         }
-        let mine = own.unwrap_or_else(|| st.rng.bytes32());
+        let mine = st.rng.bytes32();
         let (id, c) = st.new_conn(&self.net, [self.name.clone(), lend], [mine, lkey], [usize::MAX; 2], None);
         if let Some(l) = st.listeners.get_mut(name) {
             l.queue.push_back(id);

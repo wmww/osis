@@ -6,7 +6,7 @@
 //! session). Path sockets only: the Linux abstract namespace (ignoring mount namespaces and file
 //! modes) is refused, as is a path longer than `sun_path` holds.
 
-use crate::{Address, Connection, Error, ListenConfig, Listener, Peer, PublicKey, RecvStream, SendStream, StaticSecret, Transport};
+use crate::{Address, Connection, Error, ListenConfig, Listener, Peer, PublicKey, RecvStream, SendStream, Transport};
 use std::future::poll_fn;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
@@ -124,10 +124,6 @@ impl Transport for Unix {
             return Err(Error::KeyMismatch);
         }
         Ok(UnixConn::new(s, uid))
-    }
-
-    async fn dial_as(&self, addr: &Address, _secret: &StaticSecret) -> Result<UnixConn, Error> {
-        self.dial(addr).await
     }
 
     /// Binds `cfg.url` (the secret is unused: the key stands for the uid). A socket file left by
@@ -273,7 +269,7 @@ impl RecvStream for UnixRecv {
 mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
-    use crate::link;
+    use crate::{link, StaticSecret};
     use std::time::Duration;
 
     const W: Duration = Duration::from_secs(5);
@@ -300,7 +296,7 @@ mod tests {
         assert_eq!(addr.key, uid_key(uid));
         let (out, mut incoming) = tokio::sync::mpsc::channel(4);
         tokio::spawn(link::serve(l, W, W, out));
-        let mut a = link::dial(&Unix, &addr, None, W).await.unwrap();
+        let mut a = link::dial(&Unix, &addr, W).await.unwrap();
         assert_eq!(a.peer, Peer::Unix { uid });
         assert!(a.tx.send(b"hi".to_vec(), usize::MAX));
         let mut b = incoming.recv().await.unwrap();
@@ -326,7 +322,7 @@ mod tests {
         l.uid = l.uid.wrapping_add(1);
         let (out, mut incoming) = tokio::sync::mpsc::channel(4);
         tokio::spawn(link::serve(l, W, W, out));
-        let mut a = link::dial(&Unix, &addr, None, W).await.unwrap();
+        let mut a = link::dial(&Unix, &addr, W).await.unwrap();
         assert!(a.tx.send(b"hi".to_vec(), usize::MAX));
         assert_eq!(tokio::time::timeout(W, a.rx.recv()).await.unwrap(), None, "closed by the listener");
         assert!(tokio::time::timeout(Duration::from_millis(200), incoming.recv()).await.is_err(), "no session");

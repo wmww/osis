@@ -330,23 +330,6 @@ fn listener_close_ends_pending_read() {
     assert_eq!(*got.borrow(), Some(Err(Error::Closed)));
 }
 
-// spec/sync.md §10: a host dialing a peer host authenticates with its own static key.
-#[test]
-fn dial_as_presents_static_key() {
-    let net = Net::new(0);
-    let mut s = Sched::new(0, Some(net.clone()));
-    let mut l = s.block_on(mk_listener(net.clone(), "listener", 7)).unwrap();
-    let addr = l.address();
-    let me = net.endpoint("peer");
-    let k = s
-        .block_on(async move {
-            let _c = me.dial_as(&addr, &secret(9)).await.unwrap();
-            l.accept().await.unwrap().peer_key()
-        })
-        .unwrap();
-    assert_eq!(k, secret(9).public_key());
-}
-
 type Log = Vec<(u64, usize, usize)>;
 
 /// Three clients echo through a partition, a heal and a kill; returns the delivery log and outcomes.
