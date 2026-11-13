@@ -28,10 +28,10 @@ use crate::masonry::core::{Capitalize, EnterKey, TextInputHints, TextPurpose};
 use crate::masonry::core::{ErasedAction, NewWidget, PointerEvent, Properties, Widget, WidgetId, WidgetTag};
 use crate::masonry::properties::Padding;
 use crate::masonry::properties::types::{CrossAxisAlignment, Length};
-use crate::masonry::widgets::{Flex, IndexedStack, Portal, Prose, SizedBox, TextAction, TextArea};
+use crate::masonry::widgets::{Flex, IndexedStack, Prose, SizedBox, TextAction, TextArea};
 use crate::theme::{Look, Mode, Theme, parse};
 use crate::widgets::style::{self, Text};
-use crate::widgets::{Blur, ChipPress, GUTTER, Limit, ListAction, MinHeight, Panel, PanelKind, Press, ROW_MIN, Root, VirtualList};
+use crate::widgets::{Blur, ChipPress, GUTTER, ListAction, Page, Panel, PanelKind, Press, ROW_MIN, Root, VirtualList};
 use crate::window::Waker;
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
@@ -496,7 +496,7 @@ impl Ui {
         col = col.with_flex_child(self.search_stack(NewWidget::new(page), results), 1.0);
         col = col.with_child(self.status_widget());
         let col = NewWidget::new_with_props(col, Properties::new().with(Padding::from_vh(look.sp(48.0), look.sp(16.0))));
-        NewWidget::new(Limit::new(col, 940.0)).erased()
+        NewWidget::new(Page::new(col, look)).erased()
     }
 
     fn thing_widget(&mut self, rail: bool) -> NewWidget<dyn Widget> {
@@ -525,7 +525,7 @@ impl Ui {
             .with_child(new)
             .with_child(rail_new)
             .with_child(self.status_widget());
-        let rail = NewWidget::new(Portal::new(NewWidget::new(MinHeight::new(NewWidget::new(rail).erased())).erased()).constrain_horizontal(true).content_must_fill(true));
+        let rail = NewWidget::new(Page::new(NewWidget::new(rail), look.clone()));
         let rail = NewWidget::new(Panel::new(rail, look.clone(), PanelKind::Panel, RAIL_PAD).fill_height(true));
         let row = Flex::row()
             .cross_axis_alignment(CrossAxisAlignment::Fill)

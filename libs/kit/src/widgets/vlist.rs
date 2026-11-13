@@ -12,11 +12,19 @@
 use crate::theme::Look;
 use masonry::accesskit::{Action, Node, Role};
 use masonry::core::keyboard::{Key, KeyState, NamedKey};
-use masonry::core::{AccessCtx, AccessEvent, BoxConstraints, ChildrenIds, EventCtx, LayoutCtx, NewWidget, PaintCtx, PointerEvent, PointerScrollEvent, PropertiesMut, PropertiesRef, RegisterCtx, ScrollDelta, TextEvent, Update, UpdateCtx, Widget, WidgetMut, WidgetPod};
+use masonry::core::{AccessCtx, AccessEvent, BoxConstraints, ChildrenIds, EventCtx, LayoutCtx, NewWidget, PaintCtx, PointerEvent, PointerScrollEvent, PropertiesMut, PropertiesRef, RegisterCtx, TextEvent, Update, UpdateCtx, Widget, WidgetMut, WidgetPod};
 use masonry::kurbo::{Affine, Point, Rect, Size};
 use masonry::peniko::Fill;
 use masonry::vello::Scene;
 use std::sync::Arc;
+use super::page::{self, LinkRef, lock};
+
+/// Paints a bar's thumb in the gutter at `x`.
+pub(crate) fn paint_thumb(scene: &mut Scene, look: &Look, x: f64, y: f64, h: f64, held: bool) {
+    let r = Rect::new(x + 3.0, y, x + 9.0, y + h);
+    let c = look.fg.multiply_alpha(if held { 0.55 } else { 0.3 });
+    scene.fill(Fill::NonZero, Affine::IDENTITY, c, None, &r.to_rounded_rect(3.0));
+}
 
 /// What the list asks of the shell.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -38,25 +46,36 @@ const MARGIN: f64 = 1.0;
 /// Least rows a window holds each way (Minor: fewer loads more often on a fast wheel; 0 follows
 /// the viewport margin alone, infinity is the whole list).
 const MIN_SIDE: usize = 16;
-/// Height a list takes where its parent leaves height unbounded (Minor: a list placed in a
-/// non-filling slot scrolls at this height; 0 shows nothing, infinity would load everything).
+/// Height a list takes where its parent leaves height unbounded and no page holds it (`Page`:
+/// a page's first list takes the page's height) (Minor: such a list, say in a list's row,
+/// scrolls at this height; 0 shows nothing, infinity would load everything).
 const UNBOUNDED: f64 = 480.0;
 /// Width kept for the bar (Minor: 0 could not be grabbed, infinity leaves no room for rows).
 pub const GUTTER: f64 = 12.0;
 /// The shortest the bar's thumb gets (Minor: below it a long list's thumb is hard to grab).
-const MIN_THUMB: f64 = 24.0;
+pub(crate) const MIN_THUMB: f64 = 24.0;
 /// What one arrow key or wheel notch moves (Minor: a scrolling speed).
-const LINE: f64 = 60.0;
+pub(crate) const LINE: f64 = 60.0;
 
-/// The bar, from the last layout (the list's own coordinates).
+/// The bar, from the last layout.
 #[derive(Clone, Copy)]
 struct Bar {
     x: f64,
-    thumb: f64,
-    y: f64,
-    track: f64,
+    /// The part of the rows seen, and where (0 top, 1 end).
+    seen: f64,
+    at: f64,
     /// Rows a track's length covers, when the whole list's length is known.
     rows: Option<f64>,
+}
+
+/// The bar as drawn (the list's own coordinates): its track is the part of the list its page
+/// shows.
+#[derive(Clone, Copy)]
+struct Track {
+    start: f64,
+    len: f64,
+    thumb: f64,
+    y: f64,
 }
 
 pub struct VirtualList {
@@ -98,11 +117,13 @@ pub struct VirtualList {
     top: f64,
     max_top: f64,
     vh: f64,
+    /// The page this list holds (`Page`), from the last layout.
+    page: Option<LinkRef>,
 }
 
 impl VirtualList {
     pub fn new(look: Arc<Look>, min: f64, max_cols: usize, gap: f64, follow: bool) -> VirtualList {
-        VirtualList { children: Vec::new(), spans: Vec::new(), look, min, max_cols, gap, fixed: None, rects: Vec::new(), press: None, drop: None, first: 0, more_before: false, more_after: false, anchor: 0, offset: 0.0, follow, stuck: follow, asked: None, total: None, jump: None, jumped: false, bar: None, grab: None, top: 0.0, max_top: 0.0, vh: 0.0 }
+        VirtualList { children: Vec::new(), spans: Vec::new(), look, min, max_cols, gap, fixed: None, rects: Vec::new(), press: None, drop: None, first: 0, more_before: false, more_after: false, anchor: 0, offset: 0.0, follow, stuck: follow, asked: None, total: None, jump: None, jumped: false, bar: None, grab: None, top: 0.0, max_top: 0.0, vh: 0.0, page: None }
     }
 
     pub fn reorderable(mut self, fixed: usize) -> Self {
@@ -250,8 +271,8 @@ impl VirtualList {
 
     /// The thumb's top is at `y`: goes where that says.
     fn drag_bar(&mut self, ctx: &mut EventCtx<'_>, y: f64) {
-        let Some(b) = self.bar else { return };
-        let frac = (y / (b.track - b.thumb).max(1.0)).clamp(0.0, 1.0);
+        let (Some(b), Some(t)) = (self.bar, self.track(ctx.window_origin().y)) else { return };
+        let frac = ((y - t.start) / (t.len - t.thumb).max(1.0)).clamp(0.0, 1.0);
         match b.rows {
             Some(rows) => self.go_to_row(ctx, (frac * rows).round() as usize),
             None => {
@@ -261,6 +282,22 @@ impl VirtualList {
                 ctx.request_layout();
             }
         }
+    }
+
+    /// The bar's track and thumb, for the list's top at window `y`.
+    fn track(&self, y: f64) -> Option<Track> {
+        let b = self.bar?;
+        let (start, end) = match &self.page {
+            Some(p) => {
+                let l = lock(p);
+                let start = (l.page_y - y).clamp(0.0, self.vh);
+                (start, (l.page_y + l.view - y).clamp(start, self.vh))
+            }
+            None => (0.0, self.vh),
+        };
+        let len = end - start;
+        let thumb = (len * b.seen).clamp(MIN_THUMB.min(len), len);
+        Some(Track { start, len, thumb, y: start + b.at.clamp(0.0, 1.0) * (len - thumb) })
     }
 
     fn end_drag(this: &mut WidgetMut<'_, Self>) {
@@ -297,12 +334,17 @@ impl Widget for VirtualList {
     fn on_pointer_event(&mut self, ctx: &mut EventCtx<'_>, _props: &mut PropertiesMut<'_>, event: &PointerEvent) {
         match event {
             PointerEvent::Scroll(PointerScrollEvent { delta, .. }) => {
-                let d = match delta {
-                    ScrollDelta::PixelDelta(p) => -p.to_logical::<f64>(ctx.get_scale_factor()).y,
-                    ScrollDelta::LineDelta(_, y) => f64::from(-*y) * 60.0,
-                    _ => 0.0,
-                };
-                // at its edge the wheel goes on to whatever scrolls this list
+                let d = page::wheel(delta, ctx.get_scale_factor());
+                // what is above the list on its page scrolls away before the rows, what is below
+                // comes back before them: the page takes the wheel while either shows
+                if let Some(p) = &self.page {
+                    let l = lock(p);
+                    let y = ctx.window_origin().y;
+                    if (d > 0.0 && y > l.page_y + 0.5) || (d < 0.0 && y + self.vh < l.page_y + l.view - 0.5) {
+                        return;
+                    }
+                }
+                // at its edge the wheel goes on to the page
                 if d != 0.0 && self.scroll(d) {
                     ctx.request_layout();
                     ctx.set_handled();
@@ -312,7 +354,7 @@ impl Widget for VirtualList {
                 let y = ctx.local_position(e.state.position).y;
                 ctx.capture_pointer();
                 ctx.request_focus();
-                let b = self.bar.unwrap_or(Bar { x: 0.0, thumb: 0.0, y: 0.0, track: 0.0, rows: None });
+                let b = self.track(ctx.window_origin().y).unwrap_or(Track { start: 0.0, len: 0.0, thumb: 0.0, y: 0.0 });
                 let on_thumb = y >= b.y && y < b.y + b.thumb;
                 let grab = if on_thumb { y - b.y } else { b.thumb / 2.0 };
                 self.grab = Some(grab);
@@ -450,6 +492,29 @@ impl Widget for VirtualList {
         let gap = self.look.sp(self.gap);
         let width = if bc.is_width_bounded() { bc.max().width } else { self.look.sp(self.min) * 3.0 + gap * 2.0 };
         let bounded = bc.max().height.is_finite();
+        // the first list laid out on a page holds it: while the page measures what is around it,
+        // it reports its rows' height and the height it is given
+        let me = ctx.widget_id();
+        self.page = page::current().filter(|p| {
+            let mut l = lock(p);
+            if l.measuring && l.list.is_none() && bounded {
+                l.list = Some(me);
+            }
+            l.list == Some(me)
+        });
+        if let Some(p) = self.page.clone()
+            && lock(&p).measuring
+        {
+            let (tops, y) = self.place_rows(ctx, width, gap);
+            for (c, t) in self.children.iter_mut().zip(tops) {
+                ctx.place_child(c, Point::new(0.0, t));
+            }
+            let whole = !(self.more_before || self.more_after);
+            let mut l = lock(&p);
+            l.content = whole.then_some(if self.children.is_empty() { 0.0 } else { y - gap });
+            l.given = bc.max().height;
+            return bc.constrain(Size::new(width, bc.max().height));
+        }
         let vh = if bounded { bc.max().height } else { UNBOUNDED };
         // rows narrow for the bar once there is more than fits
         let (mut tops, mut y) = self.place_rows(ctx, width, gap);
@@ -468,8 +533,10 @@ impl Widget for VirtualList {
             self.stuck = true;
             top = max_top;
         }
-        // the row at the top of the viewport is the new anchor
-        let at = tops.iter().rposition(|t| *t <= top).unwrap_or(0);
+        // the row at the top of the viewport is the new anchor: the first of its line, so the
+        // same rows show when the lines rewrap at another width
+        let line = tops.iter().copied().filter(|t| *t <= top).fold(0.0, f64::max);
+        let at = tops.iter().position(|t| *t == line).unwrap_or(0);
         self.anchor = at;
         self.offset = top - tops.get(at).copied().unwrap_or(0.0);
         for (c, r) in self.children.iter_mut().zip(self.rects.iter_mut()) {
@@ -478,6 +545,13 @@ impl Widget for VirtualList {
         }
         ctx.set_clip_path(Size::new(width, height).to_rect());
         (self.top, self.max_top, self.vh) = (top, max_top, height);
+        if let Some(p) = &self.page {
+            let mut l = lock(p);
+            l.at_top = top <= 0.0 && !self.more_before;
+            l.at_end = top >= max_top && !self.more_after;
+            l.stuck = self.stuck;
+            l.bar = scrolls;
+        }
         self.bar = scrolls.then(|| {
             let n = self.children.len().max(1) as f64;
             let (seen, at, rows) = match self.total {
@@ -491,8 +565,7 @@ impl Widget for VirtualList {
                 }
                 _ => (height / content.max(height), top / max_top.max(1.0), None),
             };
-            let thumb = (height * seen).clamp(MIN_THUMB.min(height), height);
-            Bar { x: width - GUTTER, thumb, y: at.clamp(0.0, 1.0) * (height - thumb), track: height, rows }
+            Bar { x: width - GUTTER, seen, at, rows }
         });
         // the rows wanted around the viewport, from their measured height
         let n = self.children.len();
@@ -521,11 +594,13 @@ impl Widget for VirtualList {
         bc.constrain(Size::new(width, height))
     }
 
-    fn paint(&mut self, _ctx: &mut PaintCtx<'_>, _props: &PropertiesRef<'_>, scene: &mut Scene) {
-        if let Some(b) = self.bar {
-            let r = Rect::new(b.x + 3.0, b.y, b.x + 9.0, b.y + b.thumb);
-            let c = self.look.fg.multiply_alpha(if self.grab.is_some() { 0.55 } else { 0.3 });
-            scene.fill(Fill::NonZero, Affine::IDENTITY, c, None, &r.to_rounded_rect(3.0));
+    fn paint(&mut self, ctx: &mut PaintCtx<'_>, _props: &PropertiesRef<'_>, scene: &mut Scene) {
+        if let Some(p) = &self.page {
+            let mut l = lock(p);
+            l.a = Some(ctx.window_origin().y - l.page_y + l.s);
+        }
+        if let (Some(b), Some(t)) = (self.bar, self.track(ctx.window_origin().y)) {
+            paint_thumb(scene, &self.look, b.x, t.y, t.thumb, self.grab.is_some());
         }
         let Some(d) = self.drop else { return };
         let (r, after) = match (self.rects.get(d), d.checked_sub(1).and_then(|i| self.rects.get(i))) {
@@ -550,8 +625,11 @@ impl Widget for VirtualList {
 
     fn accessibility(&mut self, _ctx: &mut AccessCtx<'_>, _props: &PropertiesRef<'_>, node: &mut Node) {
         node.set_clips_children();
-        node.add_action(Action::ScrollUp);
-        node.add_action(Action::ScrollDown);
+        // scrollable exactly when it shows its bar
+        if self.bar.is_some() {
+            node.add_action(Action::ScrollUp);
+            node.add_action(Action::ScrollDown);
+        }
         if let Some(t) = self.total {
             node.set_size_of_set(t);
         }

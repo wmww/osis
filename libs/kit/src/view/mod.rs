@@ -318,7 +318,7 @@ pub enum Block {
     View { key: String, spec: ViewSpec },
     /// A child view filling the space: scrolling with what is `below` it (`plain`: no panel behind
     /// it), its foot pinned under the scroll (`has_foot` makes room for it). `fills`: the child
-    /// has a list, which scrolls itself, so this holds it at the height it is given.
+    /// has a list, which takes the height the rest leaves it (one scroll runs through all of it).
     Filled { key: String, spec: ViewSpec, has_foot: bool, plain: bool, fills: bool, below: Vec<Block> },
     /// The thing's bar: back, descriptor, favorite, the context menu's button and open items.
     Bar { back: Option<Do>, descriptor: String, favorite: bool, star: Do, more: Do, menu: Vec<Chip> },

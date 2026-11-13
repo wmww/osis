@@ -12,7 +12,7 @@ use crate::masonry::widgets::{Flex, SizedBox, TextInput};
 use crate::theme::{Look, parse};
 use crate::widgets::style::{self, Text};
 use crate::list::{KeyedList, Rows};
-use crate::widgets::{Chip as KChip, ChipMark as KMark, Panel, PanelKind, Tile, TileGrid, TileIcon, TileStyle, MinHeight, VirtualList, Wrap};
+use crate::widgets::{Chip as KChip, ChipMark as KMark, Panel, PanelKind, Tile, TileGrid, TileIcon, TileStyle, Page, VirtualList, Wrap};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -255,7 +255,7 @@ impl R<'_> {
         let look = self.look.clone();
         let sp = |x: f64| look.sp(x);
         let mut body = Flex::column().cross_axis_alignment(CrossAxisAlignment::Fill).with_gap(Length::px(sp(16.0)));
-        // a child with a list scrolls that list: it takes the height, the rest stays put
+        // a child with a list takes what the page leaves it (`Page`); other content its own height
         body = if fills { body.with_flex_child(self.child(key), 1.0) } else { body.with_child(self.child(key)) };
         for b in below {
             if let Some(w) = self.block(b) {
@@ -263,8 +263,7 @@ impl R<'_> {
             }
         }
         let body = NewWidget::new_with_props(body, Properties::new().with(Padding::all(sp(28.0))));
-        let body = if fills { NewWidget::new(MinHeight::new(body.erased())).erased() } else { body.erased() };
-        let scroll: NewWidget<dyn Widget> = NewWidget::new(crate::masonry::widgets::Portal::new(body).constrain_horizontal(true).content_must_fill(true)).erased();
+        let scroll: NewWidget<dyn Widget> = NewWidget::new(Page::new(body, look.clone())).erased();
         self.built.pinned.push(key.to_string());
         let mut col = Flex::column().cross_axis_alignment(CrossAxisAlignment::Fill).with_gap(Length::px(sp(10.0)));
         col = if plain { col.with_flex_child(scroll, 1.0) } else { col.with_flex_child(NewWidget::new(Panel::new(scroll, look.clone(), PanelKind::Panel, (0.0, 0.0)).fill_height(true)), 1.0) };

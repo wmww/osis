@@ -1,10 +1,17 @@
 //! The shell's layout follows the space it is given: the rail shows exactly when it and a page
 //! fit side by side (a width from the look, not a constant), and Back on a page shows exactly when
-//! the rail does not; the screen is rebuilt only when the rail comes or goes.
+//! the rail does not; the screen is rebuilt only when the rail comes or goes. A page fills its
+//! height and width: one scrollable reaches all of it at any height, nothing scrolls when
+//! everything fits, and a wider window adds columns.
 use crate::view_tree::data;
+use osis::core::NAME;
+use osis_kit::schema::{Arrange, COLLECTION, Collection, CollectionOrder as Order, CollectionSource as Source};
+use osis_kit::masonry::accesskit::{Action, Node, Role};
 use osis_kit::masonry::app::{RenderRoot, RenderRootOptions, WindowSizePolicy};
-use osis_kit::masonry::core::{WidgetId, WindowEvent};
-use osis_kit::masonry::dpi::PhysicalSize;
+use osis_kit::masonry::core::{PointerEvent, PointerId, PointerInfo, PointerScrollEvent, PointerState, PointerType, ScrollDelta, Widget, WidgetId, WidgetRef, WindowEvent};
+use osis_kit::masonry::dpi::{PhysicalPosition, PhysicalSize};
+use osis_kit::masonry::kurbo::{Point, Rect};
+use std::collections::{BTreeSet, HashMap};
 use osis_kit::render::{ROOT, Ui, rail_needs, tree};
 use osis_kit::store::Data;
 use osis_kit::theme::{Look, Theme};
@@ -24,12 +31,35 @@ impl Screen {
         d.set_theme(theme).unwrap();
         let t = d.create_note().unwrap();
         d.set_open(Some(t)).unwrap();
+        Screen::show(d, width, 700)
+    }
+
+    /// Home in a window `width` by `height`, with `n` favorites named `fav 0`, `fav 1`, ...
+    fn home(width: u32, height: u32, n: usize) -> Screen {
+        let d = data();
+        d.set_theme("glass").unwrap();
+        // home: the account group's collection of favorites, as cards
+        let mut w = d.db.write();
+        w.at(d.main_group().unwrap(), COLLECTION).set(&Collection { source: Source::Favorites, having: Default::default(), order: Order::Own, arrange: Arrange::Cards, element: None }).unwrap();
+        w.commit().unwrap();
+        for i in 0..n {
+            let t = d.create_note().unwrap();
+            let mut w = d.db.write();
+            w.at(t, NAME).set(&format!("fav {i}")).unwrap();
+            w.commit().unwrap();
+            d.toggle_favorite(t).unwrap();
+        }
+        d.set_open(None).unwrap();
+        Screen::show(d, width, height)
+    }
+
+    fn show(d: Data, width: u32, height: u32) -> Screen {
         let ui = Ui::new(d.clone(), Waker::new(|| {})).unwrap();
         let opts = RenderRootOptions {
             default_properties: Arc::new(osis_kit::masonry::theme::default_property_set()),
             use_system_fonts: false,
             size_policy: WindowSizePolicy::User,
-            size: PhysicalSize::new(width, 700),
+            size: PhysicalSize::new(width, height),
             scale_factor: 1.0,
             test_font: None,
         };
@@ -41,15 +71,91 @@ impl Screen {
     }
 
     fn resize(&mut self, width: u32) {
-        self.rr.handle_window_event(WindowEvent::Resize(PhysicalSize::new(width, 700)));
+        self.resize_to(width, 700);
+    }
+
+    fn resize_to(&mut self, width: u32, height: u32) {
+        self.rr.handle_window_event(WindowEvent::Resize(PhysicalSize::new(width, height)));
         self.ui.resized(&mut self.rr, 1.0);
+    }
+
+    /// What a screen reader is told: every node by widget.
+    fn nodes(&mut self) -> HashMap<u64, Node> {
+        self.rr.handle_window_event(WindowEvent::EnableAccessTree);
+        let (_, update) = self.rr.redraw();
+        update.unwrap().nodes.into_iter().map(|(id, n)| (id.0, n)).collect()
     }
 
     /// What a screen reader is told is on screen.
     fn labels(&mut self) -> Vec<String> {
-        self.rr.handle_window_event(WindowEvent::EnableAccessTree);
-        let (_, update) = self.rr.redraw();
-        update.unwrap().nodes.iter().filter_map(|(_, n)| n.label().map(str::to_string)).collect()
+        self.nodes().values().filter_map(|n| n.label().map(str::to_string)).collect()
+    }
+
+    /// The window's size.
+    fn size(&self) -> (f64, f64) {
+        let s = self.rr.size();
+        (f64::from(s.width), f64::from(s.height))
+    }
+
+    /// Each favorite's tile (by label) and its rect in the window.
+    fn tiles(&mut self) -> Vec<(String, WidgetId, Rect)> {
+        let nodes = self.nodes();
+        self.tiles_in(&nodes)
+    }
+
+    fn tiles_in(&self, nodes: &HashMap<u64, Node>) -> Vec<(String, WidgetId, Rect)> {
+        let mut out = Vec::new();
+        fn walk(w: WidgetRef<'_, dyn Widget>, nodes: &HashMap<u64, Node>, out: &mut Vec<(String, WidgetId, Rect)>) {
+            if let Some(l) = nodes.get(&w.id().to_raw()).filter(|n| n.role() == Role::Button).and_then(|n| n.label())
+                && l.starts_with("fav ")
+            {
+                out.push((l.split(':').next().unwrap_or_default().to_string(), w.id(), Rect::from_origin_size(w.ctx().window_origin(), w.ctx().size())));
+            }
+            for c in w.children() {
+                walk(c, nodes, out);
+            }
+        }
+        walk(self.rr.get_layer_root(0), nodes, &mut out);
+        out
+    }
+
+    /// The favorites a user can see: some of the tile in the window, and a press there reaches it.
+    fn shown(&mut self) -> BTreeSet<String> {
+        let nodes = self.nodes();
+        self.shown_in(&nodes)
+    }
+
+    fn shown_in(&self, nodes: &HashMap<u64, Node>) -> BTreeSet<String> {
+        let (w, h) = self.size();
+        let win = Rect::new(0.0, 0.0, w, h);
+        let mut out = BTreeSet::new();
+        for (label, id, r) in self.tiles_in(nodes) {
+            let v = r.intersect(win);
+            if v.width() <= 0.0 || v.height() <= 0.0 {
+                continue;
+            }
+            if self.rr.get_layer_root(0).find_widget_under_pointer(v.center()).is_some_and(|hit| hit.id() == id) {
+                out.insert(label);
+            }
+        }
+        out
+    }
+
+    /// Turns the wheel by `dy` logical px at `at`.
+    fn wheel(&mut self, at: Point, dy: f64) {
+        let pointer = PointerInfo { pointer_id: Some(PointerId::PRIMARY), persistent_device_id: None, pointer_type: PointerType::Mouse };
+        let state = PointerState { position: PhysicalPosition::new(at.x, at.y), ..PointerState::default() };
+        self.rr.handle_pointer_event(PointerEvent::Move(osis_kit::masonry::core::PointerUpdate { pointer, current: state.clone(), coalesced: vec![], predicted: vec![] }));
+        self.rr.handle_pointer_event(PointerEvent::Scroll(PointerScrollEvent { pointer, delta: ScrollDelta::PixelDelta(PhysicalPosition::new(0.0, -dy)), state }));
+        self.ui.wake(&mut self.rr);
+        self.rr.redraw();
+    }
+
+    /// How many things on screen scroll (offer to scroll or show a bar), and how many of those
+    /// hold another.
+    fn scrollables(&mut self) -> (usize, usize) {
+        let nodes = self.nodes();
+        scrollables_in(&nodes)
     }
 
     /// (the rail's Home row shows, the page's Back to home shows)
@@ -62,6 +168,16 @@ impl Screen {
     fn screen(&self) -> WidgetId {
         self.rr.get_widget_with_tag(ROOT).unwrap().children()[0].id()
     }
+}
+
+fn scrollables_in(nodes: &HashMap<u64, Node>) -> (usize, usize) {
+    let scrolls = |id: u64| nodes.get(&id).is_some_and(|n| n.supports_action(Action::ScrollDown) || n.role() == Role::ScrollBar);
+    fn below(id: u64, nodes: &HashMap<u64, Node>, f: &dyn Fn(u64) -> bool) -> bool {
+        nodes.get(&id).is_some_and(|n| n.children().iter().any(|c| f(c.0) || below(c.0, nodes, f)))
+    }
+    let all: Vec<u64> = nodes.keys().copied().filter(|id| scrolls(*id)).collect();
+    let nested = all.iter().filter(|id| below(**id, nodes, &scrolls)).count();
+    (all.len(), nested)
 }
 
 fn needs(theme: &str) -> f64 {
@@ -126,4 +242,59 @@ fn insets_take_their_width() {
     assert_eq!(s.rail_and_back(), (false, true));
     s.ui.set_insets(&mut s.rr, [0.0; 4]);
     assert_eq!(s.rail_and_back(), (true, false));
+}
+
+/// At any window height, from very short (a soft keyboard taking most of it) to taller than
+/// everything, wheel turns at one place reach every favorite, and one thing scrolls at a time.
+#[test]
+fn one_scroll_reaches_every_row() {
+    let n = 8;
+    for h in [60, 190, 700, 4000] {
+        let mut s = Screen::home(360, h, n);
+        let at = Point::new(180.0, f64::from(h) / 2.0);
+        let mut seen = BTreeSet::new();
+        for _ in 0..100 {
+            let nodes = s.nodes();
+            seen.extend(s.shown_in(&nodes));
+            let (count, nested) = scrollables_in(&nodes);
+            assert!(count <= 1 && nested == 0, "height {h}: {count} scrollables, {nested} nested");
+            if seen.len() == n {
+                break;
+            }
+            s.wheel(at, 50.0);
+        }
+        assert_eq!(seen.len(), n, "height {h}: reached {seen:?}");
+    }
+}
+
+/// A window taller than the page needs shows no bar and nothing scrolls, at any width.
+#[test]
+fn nothing_scrolls_when_everything_fits() {
+    for (w, h) in [(360, 1600), (700, 1000), (1100, 800)] {
+        let mut s = Screen::home(w, h, 6);
+        assert_eq!(s.shown().len(), 6, "width {w}");
+        assert_eq!(s.scrollables(), (0, 0), "width {w}");
+    }
+}
+
+/// A wider window puts more favorites side by side: home's cards use the whole width.
+#[test]
+fn wider_adds_columns() {
+    let cols = |w: u32| {
+        let mut s = Screen::home(w, 900, 20);
+        let tiles = s.tiles();
+        let top = tiles.iter().map(|t| t.2.y0).fold(f64::INFINITY, f64::min);
+        tiles.iter().filter(|t| (t.2.y0 - top).abs() < 1.0).count()
+    };
+    let (narrow, wide, wider) = (cols(1100), cols(2200), cols(4400));
+    assert!(narrow < wide && wide < wider, "columns at 1100, 2200, 4400: {narrow}, {wide}, {wider}");
+}
+
+/// Rows rewrapped at another width keep the same first row at the top.
+#[test]
+fn rewrapping_keeps_the_top_row() {
+    let mut s = Screen::home(1100, 900, 12);
+    assert!(s.shown().contains("fav 0"));
+    s.resize_to(360, 900);
+    assert!(s.shown().contains("fav 0"), "{:?}", s.shown());
 }
