@@ -116,7 +116,7 @@ fn validate_role_commit() {
 // carries no fixed-retention aspect.
 #[test]
 fn validate_nobody_and_commit_expiry() {
-    let sort = |x: &mut Header| x.aspects.sort_by_key(|a| crate::header::aspect_key(&a.tid, &a.ak));
+    let sort = |x: &mut Header| x.aspects.sort_by(|a, b| crate::header::aspect_order(&a.tid, a.ak.as_str()).cmp(&crate::header::aspect_order(&b.tid, b.ak.as_str())));
     let mut h = sample_header();
     h.expires = None;
     let mut b = h.aspects[0].clone();
@@ -296,7 +296,7 @@ fn validate_release_request_spec_wire_4() {
     other.ak = Ak::new("app:title.0").unwrap();
     other.tid = t(4);
     x.aspects.push(other);
-    x.aspects.sort_by_key(|a| crate::header::aspect_key(&a.tid, &a.ak));
+    x.aspects.sort_by(|a, b| crate::header::aspect_order(&a.tid, a.ak.as_str()).cmp(&crate::header::aspect_order(&b.tid, b.ak.as_str())));
     assert!(outside(&x), "beside another aspect");
     let mut x = h.clone();
     x.purge.push(PurgeItem::Aspect { tid: t(3), ak: Ak::new("app:title.0").unwrap() });

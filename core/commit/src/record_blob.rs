@@ -17,11 +17,6 @@ pub fn encode_record_blob(records: &[CreationRecord]) -> Vec<u8> {
     osis_base::encode(&Value::List(vec![Value::Str(RECORDS_TAG.into()), Value::List(rs.iter().map(|r| r.to_value()).collect())]))
 }
 
-/// Whether a blob plaintext is a record blob's (by its first item), not a commit's.
-pub fn is_record_blob(plain: &[u8]) -> bool {
-    osis_base::decode(plain, &LIMITS).ok().and_then(|v| v.as_list().and_then(|l| l.first().cloned())) == Some(Value::Str(RECORDS_TAG.into()))
-}
-
 /// Reads a record blob's plaintext: canonical, at least one record, each a valid creation record,
 /// ascending by tid and distinct.
 pub fn decode_record_blob(plain: &[u8]) -> Result<Vec<CreationRecord>, Error> {
@@ -53,7 +48,6 @@ mod tests {
     fn record_blob_round_trips_spec_wire_3() {
         let (a, b) = (rec(1), rec(2));
         let blob = encode_record_blob(&[b.clone(), a.clone(), b.clone()]);
-        assert!(is_record_blob(&blob));
         let mut want = vec![a.clone(), b.clone()];
         want.sort_by_key(|r| r.tid());
         assert_eq!(decode_record_blob(&blob).unwrap(), want);

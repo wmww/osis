@@ -19,6 +19,7 @@ use crate::Error;
 use osis_base::cbor::{Item, MAJOR_ARRAY, MAJOR_UINT, encode_into, head, put_array, put_bytes, put_uint};
 use osis_base::{CommitId, Tid, Value};
 use osis_crypto::{CryptoRngCore, Domain, INNER_LEN, SECTION_WRAP_LEN, Secret32, Signature, SigningSecret};
+use std::borrow::Borrow;
 use std::collections::BTreeMap;
 
 /// One delta of a commit blob: its aspect's index and canonical delta (or snapshot) bytes.
@@ -26,12 +27,6 @@ use std::collections::BTreeMap;
 pub struct Part {
     pub ai: usize,
     pub delta: Vec<u8>,
-}
-
-impl Part {
-    pub fn new(ai: usize, delta: Vec<u8>) -> Part {
-        Part { ai, delta }
-    }
 }
 
 /// A commit as a node holds it: the header, its signatures and the parts it opened (its stored
@@ -165,14 +160,15 @@ impl CommitBlob {
 
     /// Aspects whose delta this blob does not hold (purged, or in a section not opened).
     pub fn missing(&self) -> Vec<usize> {
-        (0..self.header.aspects.len()).filter(|ai| self.parts.binary_search_by_key(ai, |p| p.ai).is_err()).collect()
+        (0..self.header.aspects.len()).filter(|ai| self.part(*ai).is_none()).collect()
     }
 }
 
 /// `[Part*]` (a part `[ai, delta]`) by concatenation: delta bytes are already canonical items.
-fn encode_parts(parts: &[Part], out: &mut Vec<u8>) {
+fn encode_parts(parts: &[impl Borrow<Part>], out: &mut Vec<u8>) {
     head(out, MAJOR_ARRAY, parts.len() as u64);
     for p in parts {
+        let p = p.borrow();
         head(out, MAJOR_ARRAY, 2);
         head(out, MAJOR_UINT, p.ai as u64);
         out.extend_from_slice(&p.delta);
@@ -216,16 +212,11 @@ pub struct Section {
 
 impl Section {
     /// Encoded length.
-    pub fn len(&self) -> usize {
+    pub fn encoded_len(&self) -> usize {
         use osis_base::cbor::head_len;
         let ais = head_len(self.ais.len() as u64) + self.ais.iter().map(|a| head_len(*a as u64)).sum::<usize>();
         let chain = head_len(self.chain.len() as u64) + self.chain.len() * (1 + osis_base::format::TID_LEN);
         head_len(4) + ais + chain + head_len(self.wrap.len() as u64) + self.wrap.len() + head_len(self.ciphertext.len() as u64) + self.ciphertext.len()
-    }
-
-    /// Never empty; for clippy's `len` convention.
-    pub fn is_empty(&self) -> bool {
-        false
     }
 
     fn put(&self, out: &mut Vec<u8>) {
@@ -292,12 +283,12 @@ impl Section {
 
     /// Seals `parts` (sorted) under the read secret `secret` of their thing, listing its derivation
     /// chain `chain`.
-    pub fn seal(commit: &CommitId, parts: &[Part], chain: Vec<Tid>, secret: &Secret32, rng: &mut dyn CryptoRngCore) -> Result<Section, Error> {
+    pub fn seal(commit: &CommitId, parts: &[impl Borrow<Part>], chain: Vec<Tid>, secret: &Secret32, rng: &mut dyn CryptoRngCore) -> Result<Section, Error> {
         let mut pt = Vec::new();
         encode_parts(parts, &mut pt);
         let (key, ciphertext) = osis_crypto::seal_section(commit, &pt, rng)?;
         let wrap = osis_crypto::wrap_section(secret, commit, &key, rng)?.to_vec();
-        let ais: Vec<usize> = parts.iter().map(|p| p.ai).collect();
+        let ais: Vec<usize> = parts.iter().map(|p| p.borrow().ai).collect();
         Ok(Section { ais, chain, wrap, ciphertext })
     }
 }
@@ -395,8 +386,7 @@ pub fn seal_commit<K: Ord + Clone>(c: &CommitBlob, section_of: impl Fn(usize) ->
         let ais: Vec<usize> = ps.iter().map(|p| p.ai).collect();
         let Some((secret, chain)) = secret_of(&k, &ais) else { continue };
         own.extend(ais.iter().copied());
-        let owned: Vec<Part> = ps.into_iter().cloned().collect();
-        sections.push(Section::seal(&id, &owned, chain, &secret, rng)?);
+        sections.push(Section::seal(&id, &ps, chain, &secret, rng)?);
     }
     let mut seen = own.clone();
     for s in extra {

@@ -54,20 +54,11 @@ pub fn blob_bound(c: &CommitBlob) -> usize {
     let things = h.aspects.iter().map(|a| a.tid).collect::<std::collections::BTreeSet<_>>().len().max(1);
     let groups = prefix_groups(h, 0..h.aspects.len()).map_or(h.aspects.len(), |g| g.len());
     let fixed = 1usize.saturating_add(h.encode().len()).saturating_add(c.sigs.encoded_len()).saturating_add(head_len(things as u64));
-    let section = Section { ais: Vec::new(), chain: vec![osis_base::Tid::from_bytes([0; 15]); osis_base::format::MAX_CHAIN_DEPTH], wrap: vec![0; osis_crypto::SECTION_WRAP_LEN], ciphertext: vec![0; 16 + 9] }.len();
+    let section = Section { ais: Vec::new(), chain: vec![osis_base::Tid::from_bytes([0; 15]); osis_base::format::MAX_CHAIN_DEPTH], wrap: vec![0; osis_crypto::SECTION_WRAP_LEN], ciphertext: vec![0; 16 + 9] }.encoded_len();
     let heads = h.aspects.len().saturating_add(things).saturating_mul(head_len(h.aspects.len() as u64)).saturating_add(things.saturating_mul(8));
     let parts: usize = c.parts.iter().map(part_len).fold(0, usize::saturating_add);
     let prefix = PREFIX_FIXED_LEN.saturating_add(groups.saturating_mul(1 + 3 * COMMITMENT_LEN));
     osis_crypto::blob_len(prefix, fixed.saturating_add(parts).saturating_add(things.saturating_mul(section)).saturating_add(heads))
-}
-
-/// The whole commit fits a blob of `max` bytes (spec/commits.md §1: paging keeps deltas far
-/// below `MAX_BLOB`; a commit whose paged roots still pass it is refused at the writer).
-pub(crate) fn check_fits(c: &CommitBlob, max: usize) -> Result<(), Error> {
-    if blob_bound(c) > max {
-        return Err(Error::Build(COMMIT_PAST_BLOB));
-    }
-    Ok(())
 }
 
 /// Whether part set `a` is a strict subset of `b` (aspect indices, both sorted).

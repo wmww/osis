@@ -1,7 +1,7 @@
 //! Delta verification against the header (spec/commits.md §1, §4; spec/crdt.md §2.3, §2.4).
 
 use crate::blob::{CommitBlob, Part};
-use crate::header::{Form, Header};
+use crate::header::{EphClass, Form, Header};
 use crate::Error;
 use osis_base::{CommitId, Tid};
 use osis_crdt::{Checked, CounterRange, Delta, DeltaCtx, DeltaKind, Interner, PageSource, Piece, Snapshot, decode_checked, decode_delta, decode_snapshot, stream_checked, stream_delta, stream_snapshot};
@@ -60,26 +60,27 @@ impl PageSource for NoPages {
     }
 }
 
-/// Whether `h` is a relay-only commit's header, whose deltas are read with `NoPages`.
-fn relay_only(h: &Header) -> bool {
-    h.ephemeral.is_some_and(|c| c != crate::header::EphClass::Plain)
-}
-
-/// Checks one part's delta hash under the dedup secret of its thing and decodes it against the
-/// header facts (range check, spec/crdt.md §2.3). Pages of a paged delta come from `pages`.
-pub fn verify_part<'a>(h: &Header, id: &CommitId, part: &Part, dedup: &Secret32, interner: &'a mut Interner, pages: Option<&'a mut dyn PageSource>) -> Result<Decoded, Error> {
+/// The aspect key and context of `part` once its delta hash checks under `dedup`.
+fn checked_ctx<'h>(h: &'h Header, id: &CommitId, part: &Part, dedup: &Secret32, interner: &mut Interner) -> Result<(&'h str, DeltaCtx), Error> {
     let a = h.aspects.get(part.ai).ok_or(Error::Malformed("part aspect index out of range"))?;
     if delta_hash(dedup, &part.delta) != a.hash {
         return Err(Error::DeltaHash { ai: part.ai });
     }
-    let cx = delta_ctx(h, id, part.ai, interner)?;
+    Ok((a.ak.as_str(), delta_ctx(h, id, part.ai, interner)?))
+}
+
+/// Checks one part's delta hash under the dedup secret of its thing and decodes it against the
+/// header facts (range check, spec/crdt.md §2.3). Pages of a paged delta come from `pages`; a
+/// relay-only commit's from `NoPages`.
+pub fn verify_part<'a>(h: &Header, id: &CommitId, part: &Part, dedup: &Secret32, interner: &'a mut Interner, pages: Option<&'a mut dyn PageSource>) -> Result<Decoded, Error> {
+    let (ak, cx) = checked_ctx(h, id, part, dedup, interner)?;
     let mut none = NoPages;
-    let pages: Option<&mut dyn PageSource> = if relay_only(h) { Some(&mut none) } else { pages.map(|p| p as &mut dyn PageSource) };
+    let pages: Option<&mut dyn PageSource> = if h.ephemeral == Some(EphClass::Relay) { Some(&mut none) } else { pages.map(|p| p as &mut dyn PageSource) };
     let d = match cx.kind {
         DeltaKind::Snapshot => Decoded::Snapshot(decode_snapshot(&part.delta, &cx, &mut *interner, pages)?),
         DeltaKind::Writer => Decoded::Delta(decode_delta(&part.delta, &cx, &mut *interner, pages)?),
     };
-    check_fragment(a.ak.as_str(), d.fragment())?;
+    check_fragment(ak, d.fragment())?;
     Ok(d)
 }
 
@@ -87,16 +88,11 @@ pub fn verify_part<'a>(h: &Header, id: &CommitId, part: &Part, dedup: &Secret32,
 /// the skeleton, then each leaf page. Returns a snapshot's root tables (frontiers, `Absorbed`). Pieces
 /// already handed over stay valid only if the whole call succeeds.
 pub fn stream_part<'a>(h: &Header, id: &CommitId, part: &Part, dedup: &Secret32, interner: &'a mut Interner, pages: Option<&'a mut dyn PageSource>, each: &mut dyn FnMut(osis_crdt::Fragment) -> Result<(), osis_crdt::Error>) -> Result<Option<osis_crdt::Head>, Error> {
-    let a = h.aspects.get(part.ai).ok_or(Error::Malformed("part aspect index out of range"))?;
-    if delta_hash(dedup, &part.delta) != a.hash {
-        return Err(Error::DeltaHash { ai: part.ai });
-    }
-    let cx = delta_ctx(h, id, part.ai, interner)?;
+    let (ak, cx) = checked_ctx(h, id, part, dedup, interner)?;
     let mut none = NoPages;
-    let pages: Option<&mut dyn PageSource> = if relay_only(h) { Some(&mut none) } else { pages.map(|p| p as &mut dyn PageSource) };
+    let pages: Option<&mut dyn PageSource> = if h.ephemeral == Some(EphClass::Relay) { Some(&mut none) } else { pages.map(|p| p as &mut dyn PageSource) };
     // `check_fragment` holds of the whole iff of every piece (per record, per position); a bad
     // delta still streams to its end, so a decoding error wins as in `verify_part`
-    let ak = a.ak.as_str();
     let mut keyed = Ok(());
     let mut each = |p: Piece| {
         let f = match p {

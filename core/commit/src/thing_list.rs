@@ -25,16 +25,6 @@ pub struct ThingList {
     pub salt: [u8; 16],
 }
 
-/// Reads `[commit_id*]` bytes: ascending and distinct, else bad input.
-pub fn read_ids(bytes: &[u8]) -> Result<Vec<CommitId>, Error> {
-    let v = osis_base::decode(bytes, &LIMITS)?;
-    let ids = as_list(&v)?.iter().map(|c| as_bytes(c).map(CommitId)).collect::<Result<Vec<_>, _>>()?;
-    if !strictly_ascending(&ids, |c| *c) || osis_base::encode(&v) != bytes {
-        return Err(Error::Malformed("thing list ids not sorted, distinct and canonical"));
-    }
-    Ok(ids)
-}
-
 impl ThingList {
     pub fn to_value(&self) -> Value {
         let ids = match &self.ids {
@@ -54,11 +44,14 @@ impl ThingList {
         let ids = match ids {
             Value::Link(l) => ListIds::Linked(**l),
             v => {
-                let bytes = osis_base::encode(v);
-                if bytes.len() > CHUNK_THRESHOLD {
+                if osis_base::encode(v).len() > CHUNK_THRESHOLD {
                     return Err(Error::Malformed("inline thing list above CHUNK_THRESHOLD"));
                 }
-                ListIds::Inline(read_ids(&bytes)?)
+                let ids = as_list(v)?.iter().map(|c| as_bytes(c).map(CommitId)).collect::<Result<Vec<_>, _>>()?;
+                if !strictly_ascending(&ids, |c| *c) {
+                    return Err(Error::Malformed("thing list ids not sorted and distinct"));
+                }
+                ListIds::Inline(ids)
             }
         };
         Ok(ThingList { thing: as_tid(t)?, ids, salt: as_bytes(salt)? })
@@ -98,11 +91,6 @@ pub fn encode_list_blob(certs: &[ThingCert]) -> Vec<u8> {
     osis_base::encode(&Value::List(vec![Value::Str(LIST_TAG.into()), Value::List(certs.iter().map(ThingCert::to_value).collect())]))
 }
 
-/// Whether a blob plaintext is a list blob's (by its first item), not a commit's.
-pub fn is_list_blob(plain: &[u8]) -> bool {
-    osis_base::decode(plain, &LIMITS).ok().and_then(|v| v.as_list().and_then(|l| l.first().cloned())) == Some(Value::Str(LIST_TAG.into()))
-}
-
 /// Reads a list blob's plaintext: canonical, at least one cert.
 pub fn decode_list_blob(plain: &[u8]) -> Result<Vec<ThingCert>, Error> {
     let v = osis_base::decode(plain, &LIMITS)?;
@@ -128,7 +116,6 @@ mod tests {
         let list = ThingList { thing: Tid::from_bytes([1; 15]), ids: ListIds::Inline(vec![CommitId([2; 32]), CommitId([3; 32])]), salt: [4; 16] };
         let cert = ThingCert { rotation: CommitId([5; 32]), index: 7, siblings: vec![[6; 32]; LIST_TREE_DEPTH as usize], list: list.clone() };
         let blob = encode_list_blob(std::slice::from_ref(&cert));
-        assert!(is_list_blob(&blob));
         assert_eq!(decode_list_blob(&blob).unwrap(), vec![cert.clone()]);
         let short = ThingCert { siblings: vec![[6; 32]; 3], ..cert.clone() };
         assert!(decode_list_blob(&encode_list_blob(&[short])).is_err());

@@ -64,11 +64,11 @@ prop_compose! {
             a.keys.sort();
             a.keys.dedup();
         }
-        h.aspects.sort_by_key(|a| crate::header::aspect_key(&a.tid, &a.ak));
-        h.aspects.dedup_by_key(|a| crate::header::aspect_key(&a.tid, &a.ak));
+        h.aspects.sort_by(|a, b| crate::header::aspect_order(&a.tid, a.ak.as_str()).cmp(&crate::header::aspect_order(&b.tid, b.ak.as_str())));
+        h.aspects.dedup_by(|a, b| a.tid == b.tid && a.ak == b.ak);
         h.purge.sort_by_key(crate::header::purge_bytes);
         h.purge.dedup();
-        h.keys.sort_by_key(crate::header::key_bytes);
+        h.keys.sort();
         h.keys.dedup();
         // a linked list's items are not in the header bytes
         for f in ListField::ALL {

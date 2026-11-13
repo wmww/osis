@@ -47,10 +47,7 @@ impl Kind {
     }
     /// How osis-crdt reads this kind's deltas (spec/crdt.md §2.4).
     pub fn delta_kind(self) -> DeltaKind {
-        match self {
-            Kind::ContentSnapshot | Kind::RoleSnapshot => DeltaKind::Snapshot,
-            Kind::Content | Kind::Role => DeltaKind::Writer,
-        }
+        if self.is_compaction() { DeltaKind::Snapshot } else { DeltaKind::Writer }
     }
 }
 
@@ -133,7 +130,8 @@ pub struct AspectEntry {
     pub replaces: Option<CommitId>,
 }
 
-/// A delete key with its level (spec/crypto.md §7); a valid Ed25519 key once decoded.
+/// A delete key with its level (spec/crypto.md §7); a valid Ed25519 key once decoded. Its order
+/// (level, then key) is that of its canonical bytes, the header's key order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct DeleteKey {
     pub level: u8,
@@ -167,13 +165,18 @@ pub enum PurgeItem {
 /// are (spec/wire.md §4: by the canonical bytes of `[tid, ak]`, which order by tid, then by the
 /// key's length, then its bytes): a search.
 pub fn aspect_position<T>(items: &[T], tid: &Tid, ak: &str, key: impl Fn(&T) -> (&Tid, &str)) -> Option<usize> {
-    let want = (tid, ak.len(), ak.as_bytes());
+    let want = aspect_order(tid, ak);
     items
         .binary_search_by(|x| {
             let (t, a) = key(x);
-            (t, a.len(), a.as_bytes()).cmp(&want)
+            aspect_order(t, a).cmp(&want)
         })
         .ok()
+}
+
+/// The aspect sort key: orders as the canonical bytes of `[tid, ak]` do.
+pub(crate) fn aspect_order<'a>(tid: &'a Tid, ak: &'a str) -> (&'a Tid, usize, &'a [u8]) {
+    (tid, ak.len(), ak.as_bytes())
 }
 
 /// The indexes of the entries on `tid` in `items`, sorted as `aspect_position` reads them.
@@ -378,13 +381,6 @@ fn put_key(out: &mut Vec<u8>, t: &DeleteKey) {
     put_bytes(out, &t.key);
 }
 
-/// Canonical bytes of a delete key, its sort key.
-pub(crate) fn key_bytes(t: &DeleteKey) -> Vec<u8> {
-    let mut out = Vec::new();
-    put_key(&mut out, t);
-    out
-}
-
 fn put_purge(out: &mut Vec<u8>, p: &PurgeItem) {
     match p {
         PurgeItem::Commit { tid, ak, ts, src } => {
@@ -416,15 +412,6 @@ fn put_purge(out: &mut Vec<u8>, p: &PurgeItem) {
 pub(crate) fn purge_bytes(p: &PurgeItem) -> Vec<u8> {
     let mut out = Vec::new();
     put_purge(&mut out, p);
-    out
-}
-
-/// Canonical bytes of `[tid, ak]`, the aspect sort key.
-pub(crate) fn aspect_key(t: &Tid, a: &Ak) -> Vec<u8> {
-    let mut out = Vec::new();
-    put_array(&mut out, 2);
-    put_tid_bytes(&mut out, t);
-    put_text(&mut out, a.as_str());
     out
 }
 

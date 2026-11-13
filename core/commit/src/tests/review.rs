@@ -48,40 +48,25 @@ fn created_may_expire_spec_commits_6() {
     h.validate().unwrap();
 }
 
-// spec/commits.md §2, §5: a snapshot never carries `retention^.0`, kept forever and read
-// a delta at a time; its retention is fixed.
+// spec/commits.md §2, §5: a snapshot never carries `retention^.0` (kept forever, read a delta at
+// a time, its retention fixed) or `created.0` (one minting).
 #[test]
-fn retention_setting_kinds_spec_commits_5() {
-    let mut h = sample_header();
-    let a = &mut h.aspects[0];
-    a.ak = Ak::new("retention^.0").unwrap();
-    a.retention = retention::KEPT_RETENTION;
-    a.keys.clear();
-    a.lo = 0;
-    a.hi = 0;
-    h.expires = None;
-    h.keys.clear();
-    h.kind = Kind::ContentSnapshot;
-    h.form = crate::header::Form::Commit;
-    assert!(h.validate().unwrap_err().to_string().contains("without own writes"));
+fn snapshot_never_carries_setting_or_record_spec_commits_2() {
+    for ak in ["retention^.0", "created.0"] {
+        let mut h = sample_header();
+        let a = &mut h.aspects[0];
+        a.ak = Ak::new(ak).unwrap();
+        a.retention = retention::KEPT_RETENTION;
+        a.keys.clear();
+        a.lo = 0;
+        a.hi = 0;
+        h.expires = None;
+        h.keys.clear();
+        h.kind = Kind::ContentSnapshot;
+        h.form = Form::Commit;
+        assert!(h.validate().unwrap_err().to_string().contains("without own writes"), "{ak}");
+    }
     assert_eq!(retention::fixed_retention("retention^.0"), Some(retention::KEPT_RETENTION));
-}
-
-// spec/commits.md §2 (created one minting): a durable snapshot never carries `created.0`.
-#[test]
-fn created_only_in_commits_with_own_writes() {
-    let mut h = sample_header();
-    let a = &mut h.aspects[0];
-    a.ak = Ak::new("created.0").unwrap();
-    a.retention = retention::KEPT_RETENTION;
-    a.keys.clear();
-    a.lo = 0;
-    a.hi = 0;
-    h.expires = None;
-    h.keys.clear();
-    h.kind = Kind::ContentSnapshot;
-    h.form = Form::Commit;
-    assert!(h.validate().unwrap_err().to_string().contains("without own writes"));
 }
 
 // spec/wire.md §5: one prefix group per distinct delete-key set among the blob's aspects, in
@@ -144,7 +129,7 @@ fn expiry_range() {
 fn one_level_2_key() {
     let mut h = sample_header();
     h.keys.push(crate::tests::dkey(2, 9));
-    h.keys.sort_by_key(crate::header::key_bytes);
+    h.keys.sort();
     let i = h.keys.iter().position(|k| *k == crate::tests::dkey(1, 1)).unwrap();
     let j = h.keys.iter().position(|k| *k == crate::tests::dkey(2, 2)).unwrap();
     let k = h.keys.iter().position(|k| *k == crate::tests::dkey(2, 9)).unwrap();

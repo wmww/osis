@@ -1,17 +1,16 @@
 //! The commit builder (spec/commits.md §1, spec/wire.md §4).
 
 use crate::blob::{CommitBlob, Part, Sigs};
-use crate::header::{AspectEntry, DeleteKey, Form, Header, Kind, Links, ListField, PurgeItem, RotationHeader, aspect_key, key_bytes, purge_bytes};
-use crate::groups::check_fits;
+use crate::header::{AspectEntry, DeleteKey, Form, Header, Kind, Links, ListField, PurgeItem, RotationHeader, aspect_order, purge_bytes};
+use crate::groups::{COMMIT_PAST_BLOB, blob_bound};
 use crate::keys::{Prefix, Secrets, delete_keys};
 use crate::lists::{BlobSink, write_list};
-use osis_base::format::MAX_LIST_BYTES;
 use crate::Error;
-use osis_base::format::{CHUNK_THRESHOLD, DELETE_AUTHOR, FORMAT_VERSION, MAX_BLOB};
+use osis_base::format::{CHUNK_THRESHOLD, DELETE_AUTHOR, FORMAT_VERSION, MAX_BLOB, MAX_LIST_BYTES};
 use osis_base::{Ak, BlobId, CommitId, Tid, Ts, Value};
 use osis_crypto::{CryptoRngCore, Domain, Secret32, SigningSecret, delta_hash, seal_inner};
 use osis_schema::Retention;
-use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 
 /// The writes of one `(tid, ak)` in a commit.
 #[derive(Clone, Debug)]
@@ -66,7 +65,7 @@ pub struct CommitBuilder {
     /// A rotation of the account's signing chain, with a key per fork it names (in that
     /// order) signing the merge at that fork's epoch.
     pub rotation: Option<(RotationHeader, Vec<SigningSecret>)>,
-    /// The blob bound each delta is checked against: `MAX_BLOB` (tests shrink it).
+    /// The blob bound the commit is checked against: `MAX_BLOB` (tests shrink it).
     pub(crate) max_blob: usize,
 }
 
@@ -101,7 +100,7 @@ impl CommitBuilder {
     }
 
     /// Builds the header (lists above `CHUNK_THRESHOLD` go by link through `sink`), signs it,
-    /// and checks the result against every header rule and that each delta fits a blob.
+    /// and checks the result against every header rule and that the commit fits one blob.
     pub fn build(mut self, key: &SigningSecret, secrets: &dyn Secrets, sink: &mut dyn BlobSink, rng: &mut dyn CryptoRngCore) -> Result<Built, Error> {
         let kind = self.kind;
         let blind = self.blind.unwrap_or_else(|| {
@@ -111,7 +110,7 @@ impl CommitBuilder {
         });
 
         // aspects in canonical order, with their delete keys and delta hashes
-        self.aspects.sort_by_cached_key(|a| aspect_key(&a.tid, &a.ak));
+        self.aspects.sort_by(|a, b| aspect_order(&a.tid, a.ak.as_str()).cmp(&aspect_order(&b.tid, b.ak.as_str())));
         let mut aspect_keys = Vec::with_capacity(self.aspects.len());
         let mut entries = Vec::with_capacity(self.aspects.len());
         let mut deltas = Vec::with_capacity(self.aspects.len());
@@ -133,17 +132,11 @@ impl CommitBuilder {
             deltas.push(a.delta);
         }
 
-        // delete keys: one per distinct (level, key), sorted by canonical bytes
-        let mut table: BTreeMap<Vec<u8>, DeleteKey> = BTreeMap::new();
-        for k in aspect_keys.iter().flatten() {
-            table.insert(key_bytes(k), *k);
-        }
-        let keys: Vec<DeleteKey> = table.into_values().collect();
-        let positions: BTreeMap<DeleteKey, usize> = keys.iter().enumerate().map(|(i, t)| (*t, i)).collect();
+        // delete keys: one per distinct (level, key), in their order; an aspect's ascend with
+        // its levels
+        let keys: Vec<DeleteKey> = aspect_keys.iter().flatten().copied().collect::<BTreeSet<_>>().into_iter().collect();
         for (entry, ks) in entries.iter_mut().zip(&aspect_keys) {
-            let mut idx = ks.iter().map(|k| positions.get(k).copied().ok_or(Error::Build("delete key table"))).collect::<Result<Vec<_>, _>>()?;
-            idx.sort_unstable();
-            entry.keys = idx;
+            entry.keys = ks.iter().map(|k| keys.binary_search(k).map_err(|_| Error::Build("delete key table"))).collect::<Result<_, _>>()?;
         }
         let mut purge = std::mem::take(&mut self.purge);
         purge.sort_by_cached_key(purge_bytes);
@@ -209,7 +202,11 @@ impl CommitBuilder {
         let sigs = Sigs::signed(&id, key, inner, merge);
         let parts = deltas.into_iter().enumerate().map(|(ai, delta)| Part { ai, delta }).collect();
         let commit = CommitBlob { header, sigs, parts };
-        check_fits(&commit, self.max_blob)?;
+        // paging keeps deltas far below a blob; a commit whose paged roots still pass it is
+        // refused here (spec/commits.md §1)
+        if blob_bound(&commit) > self.max_blob {
+            return Err(Error::Build(COMMIT_PAST_BLOB));
+        }
         Ok(Built { commit, list_blobs })
     }
 }

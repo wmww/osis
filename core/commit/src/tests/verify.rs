@@ -61,7 +61,7 @@ pub(crate) fn one_commit() -> (CommitBlob, SigningSecret) {
     let delta = register_delta(h.author, at, 1, "hello");
     h.aspects[0].hash = delta_hash(&sec(0xd0, &h.aspects[0].tid), &delta);
     let sigs = crate::Sigs::signed(&h.id(), &key, None, Vec::new());
-    (CommitBlob { header: h, sigs, parts: vec![Part::new(0, delta)] }, key)
+    (CommitBlob { header: h, sigs, parts: vec![Part { ai: 0, delta }] }, key)
 }
 
 // spec/wire.md §4: the commit blob plaintext round-trips (a stored record's decode-only read

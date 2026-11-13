@@ -1383,7 +1383,7 @@ impl SyncEngine {
                     commits.push(ToIngest { label: l, blob: b, size: bytes.len(), plaintext: o.plaintext, commit: o.commit });
                 }
                 // a record blob (spec/wire.md §3): records prove themselves by their hash
-                Err(_) if let Some(rs) = osis_label::open(&bytes, &key).ok().filter(|(_, pt)| osis_commit::record_blob::is_record_blob(pt)).and_then(|(_, pt)| osis_commit::record_blob::decode_record_blob(&pt).ok()) => {
+                Err(_) if let Some(rs) = osis_label::open(&bytes, &key).ok().and_then(|(_, pt)| osis_commit::record_blob::decode_record_blob(&pt).ok()) => {
                     e.kind = Kind::Records(rs.iter().map(osis_base::CreationRecord::tid).collect());
                     self.state.set_entry(l, b, e);
                     self.engine.learn_records(rs)?;
@@ -1391,7 +1391,6 @@ impl SyncEngine {
                 Err(err) => {
                     // a list blob (spec/sync.md §3): held once the batch's commits are in
                     if let Ok((_, pt)) = osis_label::open(&bytes, &key)
-                        && osis_commit::thing_list::is_list_blob(&pt)
                         && let Some(rotation) = osis_commit::thing_list::decode_list_blob(&pt).ok().and_then(|c| c.first().map(|c| c.rotation))
                     {
                         e.kind = Kind::List { rotation, held: false };
