@@ -1117,8 +1117,6 @@ impl Osis {
         self.inner.client.get().is_some_and(|t| t.primary.keyed)
     }
 
-
-
     /// `rcall` allowing a reply of `max_reply`, sent once.
     pub(crate) fn primary_call_big(&self, m: u64, args: Vec<Value>, max_reply: usize) -> Result<Value> {
         self.primary().call_big(m, args, max_reply)
@@ -1198,14 +1196,6 @@ pub(crate) type CallbackOf<T> = Box<dyn FnMut(&Osis, T) + Send>;
 pub(crate) type ChangeFn = CallbackOf<crate::watch::Change<Value>>;
 
 impl Osis {
-
-
-
-
-
-
-
-
     /// `on_diagnostic` at the connected node (its diagnostics; this process's own go nowhere).
     pub(crate) fn node_on_diagnostic(&self, mut f: CallbackOf<crate::Diagnostic>) -> Result<Subscription> {
         if let Some(e) = self.primary().ended() {
@@ -1220,7 +1210,6 @@ impl Osis {
         });
         self.node_sub_kept(self.primary(), None, Value::List(vec![u(super::filter::DIAGNOSTICS)]), cb)
     }
-
 
     /// A row that waits, at `r` (`filter::TASK`): a subscription the node answers once with the
     /// outcome of its own async call (its rule, its clock); no Call waits and nothing holds the

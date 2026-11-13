@@ -10,7 +10,6 @@ pub(crate) mod client;
 pub(crate) mod codec;
 pub(crate) mod serve;
 
-
 /// The method table (`Call.method`): each row's args and result in `codec` forms. A method number
 /// not listed is answered `Unsupported`; a row is the main actor's alone unless `for_client` lists it.
 pub(crate) mod method {

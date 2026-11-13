@@ -555,7 +555,6 @@ impl Osis {
         })
     }
 
-
     /// Calls `f` with every change of any aspect of `tid`, first
     /// once per present aspect (`Origin::Initial`, through the dispatcher). Like every
     /// callback, `f` gets the node handle, so it need not capture one (a captured clone in

@@ -128,7 +128,6 @@ impl Osis {
 }
 
 impl ReadOnly {
-
     /// `Unsupported` on a tracking handle: this read has no listener.
     pub(crate) fn untrackable(&self, what: &str) -> Result<()> {
         if self.tracking.is_some() {

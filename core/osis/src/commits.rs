@@ -387,7 +387,6 @@ impl ReadOnly {
         self.commit_here(c)
     }
 
-
     /// What a listener at `a` is told of `id` at this engine: the commit read now, or `fired`, an
     /// ephemeral signal's commit as it arrived (nobody holds it); `None` when it is not listed at
     /// `a` the caller may read.
@@ -475,8 +474,6 @@ impl Osis {
         self.on_commits(Address::Writes(scope.clone()), Box::new(f))
     }
 
-
-
     /// Undoes this actor's newest commit in effect in `scope` (a redo counts as a commit): reverts
     /// it. `None` when there is none, `NotUndoable` when it cannot be reverted (nothing older is
     /// undone instead).
@@ -511,7 +508,6 @@ impl Osis {
         let _g = lock(&self.inner.undo);
         self.target_id(scope, redo)?.map(|c| self.revert_one(c)).transpose()
     }
-
 
     /// The revert of `target`, or why there is none (never a partial revert).
     fn revert_one(&self, target: CommitId) -> Result<Commit> {

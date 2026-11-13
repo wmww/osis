@@ -786,7 +786,6 @@ impl Osis {
         }
     }
 
-
     /// Resolves once every label in scope is `Synced` (with `deliveries`, also once no delivery
     /// about one of those things is pending, any delivery for `groups` `None`); fails `Unsynced`
     /// when a label in scope is stranded. The scope: every label of `groups`, or for `None`
@@ -1212,7 +1211,6 @@ impl Osis {
         self.carry(done)
     }
 
-
     /// This account's contact card: a read link to its profile, a thing that also carries what others
     /// need to grant this account a role. Made once; later calls return the same card. `Invalid` on a node with no saved peers.
     /// `Unsupported` on a client with its own actor.
@@ -1267,7 +1265,6 @@ impl Osis {
         let card = self.contact_card()?;
         Ok(card.parse()?.target)
     }
-
 
     /// Imports a contact card: reads the profile by the card, nothing written, until the account's keys
     /// are here. Returns the account, usable in `grant`. `Invalid` as for `redeem` when the card is known to have ended; otherwise it waits
@@ -1396,7 +1393,6 @@ impl Osis {
         if was { self.links() } else { Ok(Vec::new()) }
     }
 
-
     /// Whom `group` syncs with, as far as this node knows: the peers saved on the group, then the
     /// other readers that published an address and that this node would dial. Empty for a group that
     /// does not sync here, and for one nobody else is known for. `Unsupported` on a client with its
@@ -1410,7 +1406,6 @@ impl Osis {
         }
         Ok(self.locked(|l| l.sync.group_peers(&group)).into_iter().map(Address).collect())
     }
-
 
     /// Saves a peer: a node serving at this address (`set_serving`, its `listen` address), whether or
     /// not it can read what it gets. This node stays connected to it, and what syncs from now on syncs
@@ -1442,7 +1437,6 @@ impl Osis {
         self.set_hosts(v)
     }
 
-
     fn set_hosts(&self, v: Vec<Address>) -> Result<()> {
         let me = self.me();
         self.locked(|x| {
@@ -1450,7 +1444,6 @@ impl Osis {
         })?;
         self.nudge_sync()
     }
-
 
     /// Makes `group` synced with `peers` (empty: the saved peers), needing admin on the group; other
     /// readers it publishes an address to sync with it as well. Any thing can be a group of itself, but
@@ -1731,7 +1724,6 @@ fn follow_inbox(e: &mut osis_node::Engine, me: Tid, old: &BTreeSet<osis_label::A
 const CONTACT: &str = "contact";
 /// App record prefix: `profile/<account tid>` -> profile tid text, written by `import_contact`.
 const PROFILE_OF: &str = "profile/";
-
 
 /// A held link key, forgotten when the guard goes: every outcome of a waiting call,
 /// a dropped future included.
