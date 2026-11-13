@@ -3653,15 +3653,31 @@ fn purge_on_replace_of_ephemeral_write_spec_commits_5() {
 }
 
 // spec/commits.md §5 Covered, spec/crdt.md §8: a snapshot written after a purge carries the
-// purged write value-less, so when the purge falls the write is missing again, not covered by
-// that value-less copy, and a copy brings it back, at its own author too. A purge leaves its
-// author's session alone: it writes on under the same one.
+// purged write value-less (its frontier or `Absorbed` reaching it), so when the purge falls the
+// write is missing again, not covered by that value-less copy, and a copy brings it back, at its
+// own author too; session and commit form alike. A purge leaves its author's session alone: it
+// writes on under the same one.
 #[test]
 fn snapshot_after_purge_leaves_the_write_to_come_back_spec_commits_5() {
+    for commit_form in [false, true] {
+        snapshot_after_purge_comes_back(commit_form);
+    }
+}
+
+fn snapshot_after_purge_comes_back(commit_form: bool) {
     let (mut lp, t, x, _w) = admin_writer(4);
     let k = ak("t:n+.0");
     lp.advance(5);
-    let (c, copy) = eph_set(&mut lp, 2, t, &k, "kept");
+    let (c, copy) = {
+        let e = &mut lp.peers[2].engine;
+        let mut m = Mutation::new();
+        if commit_form {
+            m.commit_form();
+        }
+        m.set(t, &k, &s("kept")).unwrap();
+        let c = e.commit_in_memory(m).unwrap().unwrap();
+        (c, e.package(&c).unwrap().unwrap().bytes)
+    };
     let form = |b: &[u8]| osis_commit::CommitBlob::decode(b).unwrap().header.form;
     lp.peers[1].engine.ingest_memory(&copy, u64::MAX).unwrap();
     lp.advance(5);
@@ -3675,7 +3691,9 @@ fn snapshot_after_purge_leaves_the_write_to_come_back_spec_commits_5() {
     let e = &mut lp.peers[2].engine;
     assert_eq!(e.get(&t, &k).unwrap(), None, "purged at its author");
     let (_, later) = eph_set(&mut lp, 2, t, &ak("t:other+.0"), "later");
-    assert_eq!(form(&later), form(&copy), "the same session");
+    if !commit_form {
+        assert_eq!(form(&later), form(&copy), "the same session");
+    }
     let e = &mut lp.peers[2].engine;
     let snap = e.snapshot(&t, &k).unwrap().expect("a snapshot of the leftover");
     lp.advance(5);
@@ -3685,9 +3703,9 @@ fn snapshot_after_purge_leaves_the_write_to_come_back_spec_commits_5() {
     let e = &mut lp.peers[2].engine;
     assert!(e.purged_on(&t, &k).unwrap().is_empty());
     // covered, node-sync would neither fetch the write nor keep it at hosts
-    assert_ne!(e.covered(&snap, &c, &t, &k).unwrap(), Some(true), "missing, not covered");
+    assert_ne!(e.covered(&snap, &c, &t, &k).unwrap(), Some(true), "commit form {commit_form}: missing, not covered");
     e.ingest_memory(&copy, u64::MAX).unwrap();
-    assert_eq!(e.get(&t, &k).unwrap(), Some(s("kept")), "back: its value-less copy did not cover it");
+    assert_eq!(e.get(&t, &k).unwrap(), Some(s("kept")), "commit form {commit_form}: back, its value-less copy did not cover it");
 }
 
 // notes/ephemeral.md Own bodies under own covers, spec/sync.md §9: under purge on replace an
