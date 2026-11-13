@@ -1493,4 +1493,21 @@ mod tests {
         assert_eq!(reply(&out), Message::Pong { id: 3, wall_ms: 42 });
         assert_eq!(c.stall_at(), None, "the answer is no request of its own");
     }
+
+    // spec/wire.md §11.1, spec/sync.md §6 (Stall): a reply that does not decode is dropped, never
+    // answered (an Error under the requester's own id would be a reply to nothing at the peer);
+    // the request stays out, so the stall clock still closes the connection if no answer comes
+    #[test]
+    fn a_broken_reply_is_dropped_and_its_request_still_stalls_spec_wire_11_1() {
+        let mut store = MemoryLabelStore::new();
+        let mut c = dialer(&mut store);
+        c.handle(0, &mut store, SessionInput::Peer(Box::new(Message::Ping { id: 1, wall_ms: 0 })));
+        // a Pong of id 1 with its wall clock a string
+        let broken = osis_base::Value::List(vec![osis_base::Value::uint(Message::Pong { id: 1, wall_ms: 0 }.kind()), osis_base::Value::uint(1), osis_base::Value::Str("x".into())]);
+        let out = c.handle(5, &mut store, SessionInput::Bytes(encode_frame(&osis_base::cbor::encode(&broken))));
+        assert!(matches!(out[..], [SessionOutput::PeerError(_)]), "{out:?}");
+        assert_eq!(c.stall_at(), Some(5 + crate::window::STALL_TIMEOUT_MS), "still out: its stall clock runs");
+        let out = c.handle(6, &mut store, SessionInput::Bytes(encode_frame(&Message::Pong { id: 1, wall_ms: 0 }.encode())));
+        assert!(matches!(&out[..], [SessionOutput::Peer(m)] if matches!(**m, Message::Pong { id: 1, .. })), "{out:?}");
+    }
 }
