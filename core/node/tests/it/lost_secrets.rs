@@ -259,6 +259,40 @@ fn a_grant_and_a_rotation_in_either_order_give_the_newest_epoch_spec_permissions
     }
 }
 
+// A box kept out for want of a role, then a restart, then the grant: the open lists it again
+// (`take_account`'s `reopen_all`)
+#[test]
+fn a_box_kept_out_across_a_restart_opens_once_the_grant_applies_spec_permissions_3() {
+    let mut gr = granted_then_rotated(true);
+    let (g, rw) = (gr.g.clone(), [gr.r, gr.w]);
+    crate::flows::send(&mut gr.lp, 2, 1, &rw);
+    gr.lp.peers[1].restart(7).unwrap();
+    crate::flows::send(&mut gr.lp, 0, 1, &g);
+    gr.lp.peers[1].engine.drop_lost_due().unwrap();
+    reads_newest(&mut gr);
+}
+
+// What a role-changing apply costs `flows::retake` is one judgment per listed actor's role,
+// whatever else the node holds: 30 things of its own and other accounts' actors it cannot read
+// (epochs observed without a secret list nothing), one actor listed (x)
+#[test]
+fn retake_judges_only_listed_actors_spec_permissions_3() {
+    let mut gr = granted_then_rotated(true);
+    for _ in 0..30 {
+        crate::common::new_thing(&mut gr.lp, 1);
+    }
+    let (g, rw) = (gr.g.clone(), [gr.r, gr.w]);
+    crate::flows::send(&mut gr.lp, 2, 1, &rw);
+    osis_node::costs::take();
+    crate::flows::send(&mut gr.lp, 0, 1, &g);
+    let c = osis_node::costs::take();
+    let n = |k: &str| c.iter().find(|x| x.0 == k).map_or(0, |x| x.2);
+    assert!(n("retake: calls") > 0);
+    assert!(n("retake: judged") <= n("retake: calls"), "{c:?}");
+    gr.lp.peers[1].engine.drop_lost_due().unwrap();
+    reads_newest(&mut gr);
+}
+
 // After a removal, an entry box of x's current epoch (a link's label, spec/sync.md §2) is taken
 // once the re-grant applied; one opened before the re-grant applies is refused, and the re-grant
 // gives that secret anyway
@@ -345,9 +379,9 @@ fn a_removed_member_rejoins_by_a_new_link_spec_permissions_3() {
     assert_eq!(net.read(b, c), Some(s("again")), "the rejoined member reads c");
 }
 
-// A copy under a label carries content its group's actor reads and certificate copies of
-// role-class parts on any thing (spec/sync.md §3): a role-class part on a thing the group
-// cannot read (an account's `account.0`) is no stale content and is taken
+// A role-class part in a copy on a thing the group cannot read (here an account's `account.0`,
+// as a relay may place any commit whole) is no stale content and is taken: each such part is
+// judged as it is used (`Engine::copy_stale`), and one left out would strand its slot
 #[test]
 fn a_copys_role_class_parts_are_never_stale_spec_permissions_3() {
     let mut lp = crate::common::net(2, 0);

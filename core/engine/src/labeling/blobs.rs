@@ -438,6 +438,11 @@ impl Engine {
     /// (spec/permissions.md §3). Node-sync takes none of them and keeps no byte of the copy;
     /// each is fetched again once this node holds secrets of its thing's secret actor
     /// (`Engine::await_reading`).
+    /// Invariant: no part taken from a copy gives a node anything of an actor it cannot read now.
+    /// Content is left out here; a role-class part is taken because each is judged as it is used:
+    /// `secrets.0` boxes by `rotation::may_take` as they open, `label.0` entry boxes by
+    /// `may_learn`, `account.0` seeds only under a devices epoch held for use
+    /// (`signing::usable_seeds`); `roles.0`, `keys.0` and `listing.0` are certificate material.
     pub fn copy_stale(&self, g: &Tid, c: &CommitBlob) -> BTreeSet<usize> {
         let actor = self.group_actor(g);
         let h = &c.header;

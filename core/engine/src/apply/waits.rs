@@ -47,8 +47,11 @@ pub(crate) struct Waits {
     unread: BTreeMap<Tid, BTreeSet<CommitId>>,
     /// Roles of actors whose applied boxes gave secrets the node's roles did not give then
     /// (`rotation::may_take`): taken again once they do (`flows::retake`). In memory: the open's
-    /// `reopen_all` refuses and lists them again.
+    /// `reopen_all` (`take_account`) refuses and lists them again.
     untaken: BTreeMap<Tid, BTreeSet<osis_base::Role>>,
+    /// Entries `retaken` took off `untaken` in the transaction running: a rollback lists them
+    /// again (`Core::rollback_to`; the secrets they gave are rolled back), a commit forgets them.
+    retaking: Vec<(Tid, BTreeSet<osis_base::Role>)>,
 }
 
 impl Waits {
@@ -153,7 +156,22 @@ impl Waits {
 
     /// `actor`'s untaken roles, taken off the list (opened again).
     pub fn retaken(&mut self, actor: &Tid) {
-        self.untaken.remove(actor);
+        if let Some(rs) = self.untaken.remove(actor) {
+            self.retaking.push((*actor, rs));
+        }
+    }
+
+    /// The transaction committed: what `retaken` took stays taken.
+    pub fn retake_committed(&mut self) {
+        self.retaking.clear();
+    }
+
+    /// The transaction (or a step of it) rolled back: what `retaken` took is listed again (a
+    /// superset is harmless: `flows::retake` judges each entry again).
+    pub fn retake_rolled_back(&mut self) {
+        for (a, rs) in self.retaking.drain(..) {
+            self.untaken.entry(a).or_default().extend(rs);
+        }
     }
 
     /// The commits waiting for the node to read `actor` (`awaits_reading`), taken.

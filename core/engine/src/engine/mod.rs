@@ -1856,6 +1856,7 @@ impl Core {
         self.ix.commit();
         self.schemas.commit();
         self.sides.commit();
+        self.waits.retake_committed();
         self.written.clear();
         self.cut_subs.clear();
         self.dirty = false;
@@ -1946,6 +1947,7 @@ impl Core {
             }
         }
         self.dirty = m.dirty;
+        self.waits.retake_rolled_back();
         self.ix.rollback_to(m.ix);
         self.schemas.rollback_to(m.schemas);
         self.memory.dropped.truncate(m.dropped);
