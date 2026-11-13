@@ -239,6 +239,15 @@ fn try_section<'a>(s: &dyn Section, tries: impl Iterator<Item = (&'a Trial, &'a 
     None
 }
 
+/// `f` of every job, one thread each, in order.
+fn par_map<J: Send, T: Send>(jobs: Vec<J>, f: impl Fn(J) -> T + Sync) -> Vec<T> {
+    let f = &f;
+    std::thread::scope(|sc| {
+        let hs: Vec<_> = jobs.into_iter().map(|j| sc.spawn(move || f(j))).collect();
+        hs.into_iter().map(|h| h.join().unwrap_or_else(|e| std::panic::resume_unwind(e))).collect()
+    })
+}
+
 /// The sections of every envelope that the trials it was not tried under open, but those this
 /// thread's earlier tries ruled out (`Failed`; `nums`: each trial's number), one thread per
 /// envelope; each recovered from its blob and `harvest`ed.
@@ -258,21 +267,13 @@ fn open_sections(envelopes: &mut [Envelope], trials: &[Trial], nums: &[usize], b
     });
     // (section index, section, tries failed on it, its plaintext if a try opened it)
     type Tried<'a> = (usize, &'a dyn Section, Bits, Option<Vec<u8>>);
-    let done: Vec<(usize, Vec<Tried>)> = std::thread::scope(|sc| {
-        let hs: Vec<_> = jobs
-            .into_iter()
-            .map(|(i, from, shut)| {
-                sc.spawn(move || {
-                    let tries = trials.iter().zip(nums).skip(from);
-                    let tried = shut.into_iter().map(|(si, s, mut failed)| {
-                        let found = try_section(s, tries.clone(), &mut failed);
-                        (si, s, failed, found)
-                    });
-                    (i, tried.collect())
-                })
-            })
-            .collect();
-        hs.into_iter().map(|h| h.join().unwrap_or_else(|e| std::panic::resume_unwind(e))).collect()
+    let done: Vec<(usize, Vec<Tried>)> = par_map(jobs, |(i, from, shut)| {
+        let tries = trials.iter().zip(nums).skip(from);
+        let tried = shut.into_iter().map(|(si, s, mut failed)| {
+            let found = try_section(s, tries.clone(), &mut failed);
+            (si, s, failed, found)
+        });
+        (i, tried.collect())
     });
     let mut found = Vec::new();
     FAILED.with_borrow_mut(|f| {
@@ -455,7 +456,6 @@ pub fn attack(ev: &Evidence, ciphers: Option<&Ciphers>) -> Vec<Recovered> {
             }
             None
         };
-        let try_blob = &try_blob;
         let jobs: Vec<(usize, BlobFailed)> = FAILED.with_borrow_mut(|f| {
             let todo = blobs.iter().enumerate().filter(|(i, _)| open_blobs.get(*i) != Some(&true));
             todo.map(|(i, (id, b))| (i, f.blobs.remove(&(*id, b.clone())).unwrap_or_default())).collect()
@@ -463,17 +463,9 @@ pub fn attack(ev: &Evidence, ciphers: Option<&Ciphers>) -> Vec<Recovered> {
         // tens of thousands of candidates per blob: one thread per blob keeps a test's wall short
         // (blob, its tries that failed, its plaintext and whether a wrap gave the key)
         type Tried = (usize, BlobFailed, Option<(Vec<u8>, bool)>);
-        let tried: Vec<Tried> = std::thread::scope(|sc| {
-            let hs: Vec<_> = jobs
-                .into_iter()
-                .map(|(i, mut failed)| {
-                    sc.spawn(move || {
-                        let found = try_blob(i, &mut failed);
-                        (i, failed, found)
-                    })
-                })
-                .collect();
-            hs.into_iter().map(|h| h.join().unwrap_or_else(|e| std::panic::resume_unwind(e))).collect()
+        let tried: Vec<Tried> = par_map(jobs, |(i, mut failed)| {
+            let found = try_blob(i, &mut failed);
+            (i, failed, found)
         });
         let mut found = Vec::new();
         FAILED.with_borrow_mut(|f| {
