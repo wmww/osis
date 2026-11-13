@@ -427,7 +427,7 @@ impl<'d> Write<'d> {
     fn build(self, r: &mut Reader<'_>, expires: Option<Time>) -> Result<Built> {
         let (acting, db) = (self.db.acting, self.db);
         let Write { ops, keys, actor, created, .. } = self;
-        let gk = DynamicAspectKey { ak: Ak::new(GROUP.ak()).unwrap_or_else(|_| unreachable!("a core AK")), schema: Some(crate::keys::core_schema()) };
+        let gk = DynamicAspectKey { ak: GROUP.name(), schema: Some(crate::keys::core_schema()) };
         let mut b = Built { m: Mutation::new(), added: Vec::new(), removed: Vec::new() };
         let key = |i: u32| keys.get(i as usize).ok_or_else(|| Error::Invalid("op names no key of its write".into()));
         // a release request carries `released.0` deltas alone (spec/commits.md §5 Destruction)
@@ -525,7 +525,7 @@ impl<'d> Write<'d> {
                 }
                 WriteOp::PurgeThing(tid) => {
                     b.m.op(tid, &osis_schema::core_types::PURGE, PathOp { path: Vec::new(), op: Op::Replace(r.e.now().to_value()) })?;
-                    b.m.purge(PurgeItem::Aspect { tid, ak: osis_base::Ak::new(osis_schema::core_types::CREATED.ak()).map_err(|_| Error::Invalid("created.0".into()))? });
+                    b.m.purge(PurgeItem::Aspect { tid, ak: osis_schema::core_types::CREATED.name() });
                 }
                 WriteOp::Delete(t) => {
                     // the durable aspects that may hold content, bodies held or not

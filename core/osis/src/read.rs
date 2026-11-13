@@ -590,11 +590,7 @@ impl Osis {
                     last.insert(ak.clone(), digest(&value));
                     f(db, Change { tid, ak, value, origin });
                 }
-                Delivery::Moved => {
-                    if let Ok(ak) = Ak::new("tid.0") {
-                        f(db, Change { tid, ak, value: Err(crate::sources::moved()), origin: Origin::Initial });
-                    }
-                }
+                Delivery::Moved => f(db, Change { tid, ak: osis_schema::core_types::TID.name(), value: Err(crate::sources::moved()), origin: Origin::Initial }),
                 _ => {}
             })
         });

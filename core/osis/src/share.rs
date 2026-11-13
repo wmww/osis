@@ -6,7 +6,7 @@
 use crate::error::{Error, Result};
 use crate::handle::{Locked, Osis, ReadOnly, save_peers};
 use crate::watch::{Delivery, Filter, Subscription};
-use osis_base::{Ak, Role, Tid, Value, Time};
+use osis_base::{Role, Tid, Value, Time};
 use osis_node::flows;
 use osis_node::sync::SyncEngine;
 use osis_schema::Codec;
@@ -1236,8 +1236,7 @@ impl Osis {
             self.inner.apply(acts);
             // the account's creation and `keys.0` commits, as certificates under P's label
             let e = x.engine();
-            let created = Ak::new("created.0").map_err(|_| Error::Invalid("ak".into()))?;
-            let keys = Ak::new("keys.0").map_err(|_| Error::Invalid("ak".into()))?;
+            let (created, keys) = (ct::CREATED.name(), ct::KEYS.name());
             let mut certs = Vec::new();
             for id in e.commit_ids() {
                 let Some(h) = e.header(&id) else { continue };
@@ -1371,7 +1370,7 @@ impl Osis {
             return crate::port::codec::of(self.rcall(crate::port::method::NODES, vec![])?);
         }
         let home = self.home();
-        let node_ak = Ak::new("node.0").map_err(|_| Error::Invalid("ak".into()))?;
+        let node_ak = ct::NODE.name();
         self.engine(|e| -> Result<Vec<AccountNode>> {
             let mut out = Vec::new();
             for (m, edge) in e.roster(&home) {

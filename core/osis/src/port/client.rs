@@ -1441,11 +1441,7 @@ impl crate::handle::ReadOnly {
                 }
                 PortEvent::Notify(Payload::TooLarge { .. }) => {}
                 // what the callback sees of an end: an error on the thing's own `tid.0`
-                PortEvent::Notify(Payload::Lapsed) | PortEvent::Closed => {
-                    if let Ok(ak) = osis_base::Ak::new("tid.0") {
-                        f(db, Change { tid, ak, value: Err(sub_ended()), origin: Origin::Initial });
-                    }
-                }
+                PortEvent::Notify(Payload::Lapsed) | PortEvent::Closed => f(db, Change { tid, ak: osis_schema::core_types::TID.name(), value: Err(sub_ended()), origin: Origin::Initial }),
             }
         });
         Ok(self.node_sub(r, Some(tid), Value::List(vec![u(super::filter::THING), Value::Tid(tid)]), true, cb)?.0)
