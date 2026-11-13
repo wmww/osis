@@ -93,7 +93,7 @@ fn parked_part_waits_alone_spec_commits_4() {
     assert_eq!(read(&hd, REG), int(1));
 }
 
-// spec/commits.md §4 (What a wait holds): a role commit's part on an unknown thing goes alone
+// spec/commits.md §4 (Unjudgeable): a role commit's part on an unknown thing goes alone
 #[test]
 fn role_commit_part_on_unknown_thing_goes_alone_spec_commits_4() {
     let mut c = edge(5, FIRST_ADMIN, 0, 1, Some(Role::Write), None);

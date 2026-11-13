@@ -9,11 +9,11 @@
 - A local drop as covered needs no right of the node's own (the snapshot's commit holds it): the spec's "the node itself holds it now" binds compaction's host deletion, not modeled.
 - A leftover holding no value of its own is terminal (AMBIGUITIES.md 9): a purge's fall makes its body never received, a lost read access (Keep copies) is not modeled.
 - Role-class bodies are always kept.
-- Commit IDs are unique in the input; duplicates and copies of a delta (spec/commits.md §4 Copies) are not modeled. Arrival order is not modeled beyond `Body::Dropped` (its commit applied) and `Held::dropped_valid`: "a commit such a part applied before T stays applied" holds only through a dropped part, and late parts of applied commits are parts held from the start.
+- Commit IDs are unique in the input; duplicates and copies of a delta (spec/commits.md §4 Copies) are not modeled. Arrival order is not modeled beyond `Body::Dropped` (its commit applied): "a commit such a part applied before T stays applied" holds only through a dropped part, and late parts of applied commits are parts held from the start.
 - A parked part a purge drops (`Gone`) still counts as held for its commit's pending until `act` makes it missing (its judgment needs the applied set). No bad-by-itself deltas, so no bad-input blobs.
 
 **Clock and stamps**
-- `ts = wall_ms * 2^16 + logical`; `now` is the node's wall clock. Commit-form dots only: no sessions, frontier tables or `Absorbed`.
+- `ts = wall_ms * 2^16 + logical`; `now` is the node's wall clock. Session-form commits only as `Held::dots` ranges (the generator writes commit form only); no snapshot `Frontiers` or `Absorbed`.
 - Unknown encodings exist only as `Body::Parked` (a part as a whole); no links, pages, chunks or list-by-link waits.
 
 **Permissions**
@@ -21,7 +21,7 @@
 - Records as writes and destruction are modeled from notes/expiry-creation-design.md §3 and spec/commits.md §4 Unjudgeable: a part on a thing whose record is not held, or that is destroyed, is not held.
 - A `created.0` part is one `Delta::Created` write; a second minting of a thing is never generated. `Held::records` are raw records from wherever they came.
 - Edge as restored: the join over the written edge only; a demoter's kept standing is not modeled beyond "R never demotes its own author" (its author is never audited by it).
-- `retention^.0`: one entry per AK name and the default; no `retain`, `expires`, `final` or `MAX_RETENTION_ENTRIES`.
+- `retention^.0`: one entry per AK name and the default; no `retain`, `final` or `MAX_RETENTION_ENTRIES`; an entry's `expires` is read by the generator's writers only.
 
 **CRDT** (values are crdt-model's: what it leaves out is left out here too)
 - Snapshots are honest: their copies equal the deltas' (a differing copy joins by the copy order, spec/permissions.md §5.2, spec/crdt.md §4.1; never generated here).
@@ -33,4 +33,4 @@
 - A node's own invalid parts are not in the listing (spec/commits.md §7: marked, read as themselves), so the fold reads only valid parts and is alike at every node.
 - A part listed needs its body held or a purge. A header-only original is not distinguished from one not held.
 - A purged part's listing is counted from the request `Outcome::purged` names (the lowest ID of those that do).
-- `final`, an edit's expiry bound under a required rule, and a purge request reaching only deltas expiring by its commit's `expires`: not modeled.
+- `final` and an edit's expiry bound (writer defaults, AMBIGUITIES.md 67): not modeled.
