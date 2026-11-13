@@ -36,7 +36,7 @@ pub(crate) fn kept_until(core: &Core, h: &Header, a: &osis_commit::AspectEntry, 
 }
 
 /// `Engine::part_keeps` of part `(tid, ak)` of `c` in `tx`: before which wall ms it leaves only
-/// by purge or expiry, a replacement dated ahead of the clock included (`clock_keep`): from then
+/// by purge or expiry, a replacement dated ahead of the clock included (`at_clock`): from then
 /// any node may drop it as covered (spec/commits.md §5 Keep bounds).
 pub(crate) fn part_keep(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<u64> {
     let (ai, h) = known_part(tx.core, c, tid, ak)?;
@@ -46,7 +46,7 @@ pub(crate) fn part_keep(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak) -> Re
 }
 
 /// What history and the purge floor keep of part `(tid, ak)` of `c` (its own aspect's setting at
-/// its own replacement, without `clock_keep`): what a listing shows of it (spec/commits.md §7
+/// its own replacement, without `at_clock`): what a listing shows of it (spec/commits.md §7
 /// Listed parts).
 pub(crate) fn body_history_keep(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<u64> {
     let (ai, h) = known_part(tx.core, c, tid, ak)?;
@@ -69,17 +69,9 @@ pub(crate) fn setting_keeps(tx: &mut Tx<'_>, c: &CommitId, ai: usize, now: u64) 
     Ok(until > now)
 }
 
-/// A body replaced at wall ms `replaced` after the node's clock is kept until the clock reaches it
-/// (spec/commits.md §5 Keep bounds: a body leaves history no earlier than replaced). Only a dated
-/// part has a `replaced` (`part_replaced_at`): where no setting keeps history for its aspect nothing is
-/// dated and it adds no bound.
-fn clock_keep(core: &Core, replaced: Option<u64>) -> u64 {
-    replaced.filter(|r| *r > core.now().0).unwrap_or(0)
-}
-
 /// The keep bound of part `ai` of `c` but for the clock: its own aspect's timeline at its own
 /// replacement (`part_replaced_at`, spec/commits.md §5 Dated only where history is kept), and
-/// that replacement (wall ms, 0: none) for `clock_keep`. A part's date and keep read only its
+/// that replacement (wall ms, 0: none) for `at_clock`. A part's date and keep read only its
 /// aspect's writes and setting, so no other part of its commit keeps it (a purge-on-replace part
 /// goes under its cover whatever its commit's kept parts keep), a covered drop on one aspect
 /// moves no other part's bound, and a part on an aspect no setting keeps has none. A part not
@@ -105,10 +97,12 @@ pub(crate) fn live_keep(core: &Core, c: &CommitId, ai: usize, a: &osis_commit::A
     super::history::of(core, &a.tid, &a.ak).live_until()
 }
 
-/// A keep bound and replacement (`part_bounds`) at the node's clock: their later when
-/// the replacement is ahead of it (`clock_keep`).
+/// A keep bound and replacement (`part_bounds`) at the node's clock: a body replaced after the
+/// clock is kept until the clock reaches it (spec/commits.md §5 Keep bounds: a body leaves history
+/// no earlier than replaced). Only a dated part has a replacement (`part_replaced_at`): where no
+/// setting keeps history for its aspect nothing is dated and it adds no bound.
 fn at_clock(core: &Core, (k, last): (u64, u64)) -> u64 {
-    k.max(clock_keep(core, (last > 0).then_some(last)))
+    if last > core.now().0 { k.max(last) } else { k }
 }
 
 /// `part_bounds` of every part of `c`, by aspect index (`Engine::part_keeps`). A memo
@@ -177,9 +171,6 @@ pub(super) fn dated_replaced_at(tx: &mut Tx<'_>, h: &Header, c: &CommitId, ai: u
 /// Debug builds: `dated_replaced_at` judged anew, no memo read (the aspect's held bodies too).
 #[cfg(debug_assertions)]
 pub(super) fn fresh_replaced_at(tx: &mut Tx<'_>, h: &Header, c: &CommitId, ai: usize) -> Result<Option<Ts>> {
-    if h.aspects.get(ai).is_some_and(|a| a.ak.signal()) {
-        return Ok(Some(h.ts));
-    }
     crate::engine::memo::unrecorded(|| judge_replaced_at(tx, h, c, ai, true))
 }
 

@@ -67,12 +67,10 @@ fn load(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Option<(u64, Vec<Entry>)>
 }
 
 fn store(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, at: u64, bodies: &[Entry]) -> Result<()> {
-    let key = records::aspect_key(records::SUSPECT, tid, ak);
     if bodies.is_empty() {
-        tx.txn.remove_local(&key, Shred::No)?;
+        tx.txn.remove_local(&records::aspect_key(records::SUSPECT, tid, ak), Shred::No)?;
     } else {
-        let memory = tx.txn.is_memory_aspect(tid, ak);
-        tx.in_class(memory, |tx| Ok(tx.txn.put_local(&key, &write(at, bodies), Shred::No)?))?;
+        tx.put_aspect_local(records::SUSPECT, tid, ak, &write(at, bodies))?;
     }
     // what reads the flags (node sync's suspect lists) is taken again
     tx.core.touch();

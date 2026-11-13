@@ -271,7 +271,7 @@ pub(crate) fn held_by_stamp(core: &Core, tid: &Tid, ak: &Ak, ts: Ts, src: &osis_
 /// commit's from its header, else as the first held valid snapshot of the aspect by `(ts, ID)`
 /// carrying it states them. One neither gives (none should be) is left to `Fact::NARROWEST`.
 pub(crate) fn facts_of(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, st: &Fragment) -> Result<osis_crdt::Facts> {
-    let carried: BTreeSet<(Ts, osis_crdt::Source)> = st.writes().into_iter().filter_map(|(d, ts)| Some((ts?, osis_crdt::fact_source(&d.src)))).collect();
+    let carried = stamps_of(st);
     let mut out = osis_crdt::Facts::new();
     let mut rest = BTreeSet::new();
     for (ts, src) in carried {
@@ -659,7 +659,7 @@ pub(crate) fn write_snapshot(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, memory: bool) 
     // frontiers cover only counters whose writes this state reflects: applied, valid, of
     // the sessions that occur in it (spec/crdt.md §8: a session with no write left in the
     // state is pruned with them), from the held valid snapshots' frontiers on (`frontiers_now`)
-    let (mut frontiers, _) = frontiers_now(tx, &tid, &ak, memory, &valid_on);
+    let (frontiers, _) = frontiers_now(tx, &tid, &ak, memory, &valid_on);
     // commit-form commits whose valid writes the state reflects
     let mut absorbed = std::collections::BTreeMap::new();
     for (_, c) in tx.core.ix.by_aspect.get(&(tid, ak.clone())).into_iter().flatten() {
@@ -668,8 +668,15 @@ pub(crate) fn write_snapshot(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, memory: bool) 
             absorbed.insert(*c, m.header.author);
         }
     }
-    // only sources that occur in the state (spec/crdt.md §8): a reader takes an absent
-    // source as one with no write left, so a frontier never grows with sessions gone by
+    build_snapshot(tx, tid, ak, st, ts, node, frontiers, absorbed).map(Some)
+}
+
+/// Writes and applies by `node` at `ts` the snapshot of `(tid, ak)` carrying `st`, its tables
+/// cut to the sources that occur in `st` (spec/crdt.md §8: a reader takes an absent source as
+/// one with no write left, so a frontier never grows with sessions gone by), with the facts of
+/// the commits it carries.
+#[allow(clippy::too_many_arguments)]
+fn build_snapshot(tx: &mut Tx<'_>, tid: Tid, ak: Ak, st: Fragment, ts: Ts, node: Tid, mut frontiers: Frontiers, mut absorbed: std::collections::BTreeMap<CommitId, Tid>) -> Result<CommitId> {
     let kind = if is_role_class(ak.as_str()) { Kind::RoleSnapshot } else { Kind::ContentSnapshot };
     let traced = osis_crdt::sources_of(&st, &osis_commit::writer_ctx(Form::Commit, kind, ts, node, 0, 0))?;
     frontiers.retain(&traced);
@@ -678,7 +685,7 @@ pub(crate) fn write_snapshot(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, memory: bool) 
     let retention = osis_commit::retention::snapshot_retention(ak.as_str());
     let plan = CommitPlan { kind, ts, actor: node, form: Form::Commit, creates: Default::default(), purge: Vec::new(), undoes: None, frontier: None, signer: node, blind: crate::engine::write::draw_blind(&mut *tx.rng), expires: None, restores: false, rotation: None };
     let d = Resolved { tid, ak, fragment: st, lo: 0, hi: 0, schema: None, retention: Some(retention), expires: None, replaces: None, frontiers: Some((frontiers, absorbed, facts)), chunks: Vec::new() };
-    build_and_apply(tx, plan, vec![d]).map(Some)
+    build_and_apply(tx, plan, vec![d])
 }
 
 impl Engine {
@@ -748,18 +755,11 @@ impl Engine {
                 }
             }
             let Some(st) = st else { return Ok(None) };
-            let kind = if is_role_class(ak.as_str()) { Kind::RoleSnapshot } else { Kind::ContentSnapshot };
-            let traced = osis_crdt::sources_of(&st, &osis_commit::writer_ctx(Form::Commit, kind, ts, node, 0, 0))?;
             let mut frontiers = Frontiers::default();
             if hi > 1 {
                 frontiers.insert(&own, hi - 1);
             }
-            frontiers.retain(&traced);
-            let facts = facts_of(tx, &tid, &ak, &st)?;
-            let retention = osis_commit::retention::snapshot_retention(ak.as_str());
-            let plan = CommitPlan { kind, ts, actor: node, form: Form::Commit, creates: Default::default(), purge: Vec::new(), undoes: None, frontier: None, signer: node, blind: crate::engine::write::draw_blind(&mut *tx.rng), expires: None, restores: false, rotation: None };
-            let d = Resolved { tid, ak, fragment: st, lo: 0, hi: 0, schema: None, retention: Some(retention), expires: None, replaces: None, frontiers: Some((frontiers, std::collections::BTreeMap::new(), facts)), chunks: Vec::new() };
-            build_and_apply(tx, plan, vec![d]).map(Some)
+            build_snapshot(tx, tid, ak, st, ts, node, frontiers, Default::default()).map(Some)
         })
     }
 

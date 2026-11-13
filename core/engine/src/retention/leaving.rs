@@ -177,7 +177,7 @@ fn left(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, p: Place, now: u64) -> Result<()> {
         moved(tx, tid, ak, &c);
         // out of history it counts for the compaction trigger, as when applied
         if held {
-            let memory = memory_class(tx.core, &c);
+            let memory = tx.is_memory_commit(&c);
             tx.in_class(memory, |tx| match tx.get_commit(&c)? {
                 Some(blob) => crate::retention::compact::Trigger::counts(tx, &c, tid, ak, &blob, ai),
                 None => Ok(()),
@@ -196,11 +196,6 @@ fn left(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, p: Place, now: u64) -> Result<()> {
             Ok(())
         }
     }
-}
-
-/// Whether held commit `c` is of the memory class.
-fn memory_class(core: &Core, c: &CommitId) -> bool {
-    core.ix.commits.get(c).is_some_and(|m| m.view.memory)
 }
 
 /// Walks `(tid, ak)` from its cursor while places leave by `now` (each `left`), moving the cursor

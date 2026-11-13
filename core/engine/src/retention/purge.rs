@@ -358,9 +358,7 @@ pub(crate) fn requests_resting_on(core: &Core, node: &Tid, things: &BTreeSet<Tid
 
 /// Is aspect `ai` of commit `c` (not applied yet) already purged by a held request?
 pub(crate) fn known_purged(tx: &mut Tx<'_>, ch: &Header, c: &CommitId, ai: usize) -> Result<bool> {
-    let Some(a) = ch.aspects.get(ai) else { return Ok(false) };
-    let requests = requests_on(tx, a, ch, c)?;
-    Ok(requests.iter().any(|(pc, p)| stands(tx.core, p, pc, a, ch, c)))
+    Ok(purged_by(tx, ch, c, ai)?.is_some())
 }
 
 /// Whether a held purge request names delta `ai` of `c`, signed by one that could ever hold the
