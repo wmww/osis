@@ -322,3 +322,21 @@ impl CipherHost for BlobArea {
         Ok(BlobArea { store: self.store.test_copy()?, rng: self.rng.test_copy(), open: self.open.as_ref().map(Suspended::test_copy), mem: self.mem.clone() })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A note's row is the bytes the hand-written encoder gave (counts, IDs, u32-prefixed
+    /// removals), and decodes back. spec: none (a local record).
+    #[test]
+    fn note_row_bytes() {
+        let n = Note { seq: 7, holds: vec![BlobId([1; 32])], releases: vec![BlobId([2; 32]), BlobId([3; 32])], removals: vec![b"ab".to_vec(), Vec::new()] };
+        let want = [&1u64.to_be_bytes()[..], &2u64.to_be_bytes(), &[1; 32], &[2; 32], &[3; 32], &[0, 0, 0, 2], b"ab", &[0, 0, 0, 0]].concat();
+        let v = encode_note(&n);
+        assert_eq!(v, want);
+        let k = [NOTE, &7u64.to_be_bytes()].concat();
+        assert_eq!(decode_note(&k, &v).unwrap(), n);
+        assert!(decode_note(&k, &v[..v.len() - 1]).is_err());
+    }
+}
