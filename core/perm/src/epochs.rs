@@ -3,7 +3,8 @@
 //! the account's commits. Nothing here reads `ts`, counters or the inner signature.
 //!
 //! Principle: closing an epoch ends the standing of what was signed at it, as a demotion ends a
-//! holder's. A commit at a closed epoch counts iff some party's word names it: the rotator's
+//! holder's. A commit at a closed epoch, void ones included (a rotation the chain rejects
+//! closes nothing honest nodes signed there), counts iff some party's word names it: the rotator's
 //! (a thing list of a counting rotation), the account's own later word (a counting listing), or
 //! another writer's (an addendum against a counting rotation closing the epoch). When each
 //! party names a commit is the one cutoff, a writer's rule (`fit_list` for the bound).
@@ -53,7 +54,7 @@ pub enum EpochStanding<E> {
     /// (a rotation) the chain counts it.
     Counts,
     /// It does not count. A counting addendum on a thing against one of `closers` (the counting
-    /// rotations closing its epoch; none when the epoch does not count, or for a rotation)
+    /// rotations closing its epoch; none for a rotation)
     /// listing it saves its plain deltas there (spec/permissions.md §5.5, the addenda fixpoint
     /// of §5.2).
     Closed(BTreeSet<E>),
@@ -68,7 +69,7 @@ pub struct Epochs<E, T> {
     chain: Chain<E>,
     /// The held epoch that is open (the head followed), as a set.
     open: BTreeSet<E>,
-    /// Per held epoch that counts and is closed, its closers.
+    /// Per held epoch that is not open (counting or void), its closers.
     closers: BTreeMap<E, BTreeSet<E>>,
     /// (commit, thing): a counting thing list or counting listing names the commit on the thing.
     named: BTreeSet<(E, T)>,
@@ -82,7 +83,7 @@ impl<E: Ord + Copy, T: Ord + Copy> Epochs<E, T> {
         let rotations: Vec<Rotation<E>> = rotations.into_iter().collect();
         let held: BTreeSet<E> = rotations.iter().map(|r| r.id).chain([root]).collect();
         let chain = Chain::new(root, rotations, side, received);
-        let held: Vec<E> = held.into_iter().filter(|e| chain.holds(e) && chain.epoch_counts(e)).collect();
+        let held: Vec<E> = held.into_iter().filter(|e| chain.holds(e)).collect();
         let open = held.iter().filter(|e| chain.open(e)).copied().collect();
         let mut e = Epochs { chain, open, closers: BTreeMap::new(), named: BTreeSet::new() };
         e.closers = held.iter().filter(|x| !e.open.contains(x)).map(|x| (*x, e.chain.closers(x).into_iter().collect())).collect();
@@ -110,8 +111,8 @@ impl<E: Ord + Copy, T: Ord + Copy> Epochs<E, T> {
     }
 
     /// Whether `c` counts whole: a held rotation counts by the chain alone; any other commit
-    /// iff its epoch is open, or counts and a counting thing list or listing on one
-    /// of its things names it.
+    /// iff its epoch is open, or is held and a counting thing list or listing on one of its
+    /// things names it.
     pub fn counts(&self, c: &AccountCommit<E, T>) -> bool {
         if self.chain.holds(&c.id) {
             return self.chain.counts(&c.id);

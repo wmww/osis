@@ -768,3 +768,102 @@ fn a_node_follows_the_merge_over_a_removed_nodes_earlier_rotation_spec_permissio
     lp.peers[1].engine.rebuild_index().unwrap();
     assert_eq!(lp.peers[1].engine.core.account_view(&a.account).unwrap().open(), m, "node 1 after a rebuild");
 }
+
+// spec/permissions.md §5.5 (Epoch rule, Listings): an honest node's writes at a removed node's
+// rotation outlive it. Laptop (node 2) rotates offline while phone (node 0) removes it; tablet
+// (node 1) got the laptop's rotation first and wrote at its epoch. The phone's merge rejects the
+// laptop's rotation, so its epoch is void; the tablet's listing names its own write there, and
+// the write counts at every node and at an outsider, as a rebuilt index reads it
+#[test]
+fn an_honest_write_at_a_removed_nodes_rotation_counts_spec_permissions_5_5() {
+    let (mut lp, a, t) = world(4, 3);
+    let x0 = lp.peers[2].engine.run(|tx| crate::flows::signing::rotate_in(tx, a.account, &[], &mut Done::default())).unwrap().unwrap();
+    send(&mut lp, 2, 1, &[x0]);
+    lp.advance(5);
+    let w = write(&mut lp, 1, t, "tablet");
+    assert_eq!(lp.peers[1].engine.header(&w).unwrap().epoch, Some(x0), "the tablet writes at the laptop's epoch");
+    lp.advance(5);
+    let done = remove(&mut lp, 0, a.devices, 2);
+    lp.advance(5);
+    send(&mut lp, 0, 1, &done.commits);
+    send(&mut lp, 2, 0, &[x0]);
+    send(&mut lp, 0, 3, &done.commits[1..]);
+    send(&mut lp, 2, 3, &[x0]);
+    let m = merge(&mut lp, &[0, 1], &[0, 1, 3]);
+    assert!(!lp.peers[0].engine.header(&m).unwrap().rotation.as_ref().unwrap().names.contains(&x0), "the merge leaves the laptop's rotation unnamed");
+    let ids = lp.peers[1].engine.commit_ids();
+    for k in [0, 3] {
+        send(&mut lp, 1, k, &ids);
+        // the write's body dropped while nothing named it is offered again
+        send(&mut lp, 1, k, &[w]);
+    }
+    for k in [0, 1, 3] {
+        assert!(!lp.peers[k].engine.core.account_view(&a.account).unwrap().rotation_counts(&x0), "peer {k}: the laptop's rotation is void");
+        assert_eq!(read(&mut lp, k, t), Some(Value::Str("tablet".into())), "peer {k}: the tablet's write counts");
+        lp.peers[k].engine.rebuild_index().unwrap();
+        assert_eq!(read(&mut lp, k, t), Some(Value::Str("tablet".into())), "peer {k} after a rebuild");
+    }
+}
+
+// spec/permissions.md §5.4 (Nodes of P): a removed node's rotation beside its removal stands
+// for D's roster nowhere, nor does a line built on it. The tablet (node 1) rotates on the
+// laptop's (node 2) rotation before the phone's (node 0) removal of the laptop reaches it: the
+// phone's merge names neither, the tablet follows the merge, and the tablet's write at its own
+// rotation's epoch counts by its listing
+#[test]
+fn a_line_on_a_removed_nodes_rotation_is_merged_out_spec_permissions_5_4() {
+    let (mut lp, a, t) = world(4, 3);
+    let x0 = lp.peers[2].engine.run(|tx| crate::flows::signing::rotate_in(tx, a.account, &[], &mut Done::default())).unwrap().unwrap();
+    send(&mut lp, 2, 1, &[x0]);
+    lp.advance(5);
+    let s1 = lp.peers[1].engine.run(|tx| crate::flows::signing::rotate_in(tx, a.account, &[], &mut Done::default())).unwrap().unwrap();
+    let w = write(&mut lp, 1, t, "tablet");
+    assert_eq!(lp.peers[1].engine.header(&w).unwrap().epoch, Some(s1));
+    lp.advance(5);
+    let done = remove(&mut lp, 0, a.devices, 2);
+    lp.advance(5);
+    send(&mut lp, 0, 1, &done.commits);
+    send(&mut lp, 2, 0, &[x0]);
+    send(&mut lp, 1, 0, &[s1]);
+    send(&mut lp, 0, 3, &done.commits[1..]);
+    send(&mut lp, 2, 3, &[x0]);
+    send(&mut lp, 1, 3, &[s1]);
+    let m = merge(&mut lp, &[0, 1], &[0, 1, 3]);
+    assert!(lp.peers[0].engine.header(&m).unwrap().rotation.as_ref().unwrap().names.is_empty(), "the merge names no line through the laptop's rotation");
+    let ids = lp.peers[1].engine.commit_ids();
+    for k in [0, 3] {
+        send(&mut lp, 1, k, &ids);
+        send(&mut lp, 1, k, &[w]);
+    }
+    for k in [0, 1, 3] {
+        let v = lp.peers[k].engine.core.account_view(&a.account).unwrap();
+        assert!(v.open() == m && !v.rotation_counts(&s1), "peer {k} follows the merge");
+        assert_eq!(read(&mut lp, k, t), Some(Value::Str("tablet".into())), "peer {k}: the tablet's write counts");
+    }
+}
+
+// spec/permissions.md §5.4 (Nodes of P): a re-added node's rotations made after its re-add
+// stand for D's roster. Node 0 removes node 2 and pairs it again; node 2 then removes node 1:
+// node 0 follows node 2's rotation, minted by a current node descending from the re-grant
+#[test]
+fn a_re_added_nodes_later_rotation_is_authorized_spec_permissions_5_4() {
+    let (mut lp, a, _) = world(3, 3);
+    let done = remove(&mut lp, 0, a.devices, 2);
+    send(&mut lp, 0, 1, &done.commits);
+    send(&mut lp, 0, 2, &done.commits);
+    lp.advance(5);
+    let node = lp.peers[2].engine.tid();
+    let done = lp.peers[0].engine.pair(&node).unwrap();
+    carry(&mut lp, 0, &done);
+    send(&mut lp, 0, 1, &done.commits);
+    lp.peers[2].engine.paired(&a.account, &done.commits[0]).unwrap();
+    lp.sync_all().unwrap();
+    lp.advance(5);
+    let r = remove(&mut lp, 2, a.devices, 1);
+    let rot = *r.commits.last().unwrap();
+    assert!(lp.peers[2].engine.header(&rot).unwrap().rotation.is_some(), "the removal's rotation");
+    send(&mut lp, 2, 0, &r.commits);
+    let v = lp.peers[0].engine.core.account_view(&a.account).unwrap();
+    assert_eq!(v.authorized_by(&rot), Some(node), "minted by the re-added node after its re-add");
+    assert_eq!(v.open(), rot, "node 0 follows it");
+}

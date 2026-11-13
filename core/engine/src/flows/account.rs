@@ -71,7 +71,8 @@ pub(crate) struct AccountView {
     /// The held rotations in receipt order, earliest first (ties by ID).
     received: Vec<CommitId>,
     /// This node's account: the held rotations D's roster authorizes, minted (by inner
-    /// signature) by a node D holds as current, with that node.
+    /// signature) by a node D holds as current, with that node, whose line holds no rotation
+    /// beside a removal of its minter from D (spec/permissions.md §5.4, Nodes of P).
     authorized: BTreeMap<CommitId, Tid>,
     epochs: BTreeMap<CommitId, EpochPublic>,
     /// The counting epochs by name: what a write or seal reads, so neither walks the chain (its
@@ -199,11 +200,12 @@ impl AccountView {
         self.rule.chain().holds(r) && self.rule.chain().counts(r)
     }
 
-    /// The counting rotations closing epoch `e`: every one it does not descend from (the
-    /// followed head's are the other heads, which bound what a merge names of it).
+    /// The counting rotations closing held epoch `e`, void or not: every one it does not
+    /// descend from (the followed head's are the other heads, which bound what a merge names
+    /// of it).
     pub(crate) fn closers(&self, e: &CommitId) -> BTreeSet<CommitId> {
         let c = self.rule.chain();
-        if !c.holds(e) || !c.epoch_counts(e) {
+        if !c.holds(e) {
             return BTreeSet::new();
         }
         c.closers(e).into_iter().collect()
@@ -399,6 +401,24 @@ impl Core {
         (self.ix.rotations.get(p).copied().unwrap_or(0), self.sides.account(p), a.map_or(0, |a| a.keys.len()), roster)
     }
 
+    /// Per node of account `p`'s devices actor `d`, the epochs `p`'s held edge writes on it are
+    /// signed at: (removals, grants).
+    fn roster_epochs(&self, p: &Tid, d: &Tid) -> BTreeMap<Tid, (BTreeSet<CommitId>, BTreeSet<CommitId>)> {
+        let mut out: BTreeMap<Tid, (BTreeSet<CommitId>, BTreeSet<CommitId>)> = BTreeMap::new();
+        let Ok(roles) = osis_base::Ak::new("roles.0") else { return out };
+        for (_, c) in self.ix.by_aspect.get(&(*d, roles)).into_iter().flatten() {
+            let (Some(rc), Some(e)) = (self.ix.held.edge_commit(c), self.ix.commits.get(c).and_then(|m| m.view.epoch)) else { continue };
+            if rc.author != *p {
+                continue;
+            }
+            for o in rc.ops.iter().filter(|o| o.target == *d) {
+                let x = out.entry(o.holder).or_default();
+                if o.edge.is_none() { x.0.insert(e) } else { x.1.insert(e) };
+            }
+        }
+        out
+    }
+
     /// The node that signed `id` (a commit of held account `a` signed at the epoch with signing
     /// key `at`) inside, read from its sealed inner signature `inner`.
     fn inner_signer(&self, a: &HeldAccount, at: &VerifyingKey, id: &CommitId, inner: &[u8; osis_crypto::INNER_LEN]) -> Option<Tid> {
@@ -437,17 +457,29 @@ impl Core {
         let chosen = self.sides.account(p);
         let mut rule = Epochs::new(FIRST_EPOCH, rotations.clone(), chosen, &received, &[], &[]);
         // a node of the account sides with the line D's roster authorizes, as its merges read it:
-        // of the held rotations minted by a node D holds as current (by inner signature), the
-        // tips, the preferred among them (spec/permissions.md §5.4, Nodes of P)
+        // of the held rotations D's roster authorizes, the tips, the preferred among them
+        // (spec/permissions.md §5.4, Nodes of P)
         let mut side = chosen;
         let mut authorized = BTreeMap::new();
         if let Some(a) = self.accounts.get(p) {
             let roster: BTreeSet<Tid> = self.key_holders(&a.devices).into_iter().map(|(m, _)| m).collect();
             let c = rule.chain();
-            for (id, at, ..) in &rots {
-                let (Some(e), Some(inner)) = (epochs.get(at), self.ix.rotation_sigs.get(id).and_then(|s| s.inner)) else { continue };
-                if let Some(n) = self.inner_signer(a, &e.signing, id, &inner).filter(|n| c.holds(id) && roster.contains(n)) {
-                    authorized.insert(*id, n);
+            let minters: BTreeMap<CommitId, Tid> = rots.iter().filter(|(id, ..)| c.holds(id)).filter_map(|(id, at, ..)| {
+                let inner = self.ix.rotation_sigs.get(id)?.inner?;
+                Some((*id, self.inner_signer(a, &epochs.get(at)?.signing, id, &inner)?))
+            }).collect();
+            // a rotation stands for the roster unless it is beside a removal of its minter: for
+            // each, the removal's epoch descends from it (made before), or it descends from a
+            // later re-grant's epoch (made after)
+            let roster_epochs = self.roster_epochs(p, &a.devices);
+            let descends = |x: &CommitId, e: &CommitId| *e == FIRST_EPOCH || c.line(x).is_some_and(|l| l.contains(e));
+            let stands = |r: &CommitId| {
+                let Some((removals, grants)) = minters.get(r).and_then(|n| roster_epochs.get(n)) else { return true };
+                removals.iter().all(|e| *e != FIRST_EPOCH && descends(e, r) || grants.iter().any(|g| g != e && descends(g, e) && descends(r, g)))
+            };
+            for (id, n) in &minters {
+                if roster.contains(n) && c.line(id).is_some_and(|l| l.iter().all(stands)) {
+                    authorized.insert(*id, *n);
                 }
             }
             if chosen.is_none() {
