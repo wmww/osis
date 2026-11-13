@@ -162,11 +162,6 @@ pub enum Frag {
     Slots { reg: Option<Box<Frag>>, slots: BTreeMap<u8, Frag> },
 }
 
-/// Later wins; of two copies of one write (equal stamps) the greater payload (§4.1 copy order).
-pub fn max_pair<T: Ord>(a: Option<(Stamp, T)>, b: Option<(Stamp, T)>) -> Option<(Stamp, T)> {
-    a.max(b)
-}
-
 /// Register join: greater stamp wins; of copies of one write the valued one (§4.7), then the greater value (canonical
 /// bytes, §4.1 copy order).
 pub fn max_valued<T: Ord>(a: Option<(Stamp, Option<T>)>, b: Option<(Stamp, Option<T>)>) -> Option<(Stamp, Option<T>)> {

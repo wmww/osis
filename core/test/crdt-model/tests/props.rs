@@ -1066,7 +1066,7 @@ fn list_delete_is_an_element_reset() {
     s2.join(older.clone());
     s2.join(del.clone());
     assert_eq!(snapshot(&s1), snapshot(&s2));
-    // the scenario that used to diverge: A's snapshot must carry C's write, so a bootstrapped node reads the same
+    // a bootstrapped node reads the same: A's snapshot carries C's write
     let (g, _) = snapshot_transfer(&s1, &Received::default(), &[]);
     let mut fresh: Option<Frag> = None;
     apply(&mut fresh, g);
