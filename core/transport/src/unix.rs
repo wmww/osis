@@ -39,16 +39,12 @@ pub fn own_uid() -> Result<u32, Error> {
     }
     let rt = match tokio::runtime::Handle::try_current() {
         Ok(_) => None,
-        Err(_) => Some(tokio::runtime::Builder::new_current_thread().enable_io().build().map_err(io)?),
+        Err(_) => Some(tokio::runtime::Builder::new_current_thread().enable_io().build()?),
     };
     let _g = rt.as_ref().map(|r| r.enter());
-    let (a, _b) = UnixStream::pair().map_err(io)?;
-    let uid = a.peer_cred().map_err(io)?.uid();
+    let (a, _b) = UnixStream::pair()?;
+    let uid = a.peer_cred()?.uid();
     Ok(*UID.get_or_init(|| uid))
-}
-
-fn io(e: std::io::Error) -> Error {
-    Error::Io(e.to_string())
 }
 
 /// The path of a `unix://` URL: absolute, no NUL, at most `MAX_PATH` bytes.
@@ -122,7 +118,7 @@ impl Transport for Unix {
     async fn dial(&self, addr: &Address) -> Result<UnixConn, Error> {
         let path = url_path(&addr.url)?;
         let s = UnixStream::connect(&path).await.map_err(|e| Error::Unreachable(format!("{}: {e}", path.display())))?;
-        let uid = s.peer_cred().map_err(io)?.uid();
+        let uid = s.peer_cred()?.uid();
         // another uid's listener is not ours, whatever key it would stand for
         if uid != own_uid()? || uid_key(uid) != addr.key {
             return Err(Error::KeyMismatch);
@@ -147,9 +143,9 @@ impl Transport for Unix {
             if UnixStream::connect(&path).await.is_ok() {
                 return Err(Error::Io(format!("{}: in use", path.display())));
             }
-            std::fs::remove_file(&path).map_err(io)?;
+            std::fs::remove_file(&path)?;
         }
-        let l = TokioListener::bind(&path).map_err(io)?;
+        let l = TokioListener::bind(&path)?;
         let uid = own_uid()?;
         Ok(UnixListener { l, file: file_id(&path), path, key: uid_key(uid), uid })
     }

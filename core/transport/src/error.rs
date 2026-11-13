@@ -30,6 +30,12 @@ osis_base::impl_error!(Error {
     Io(m) => ("transport i/o: {m}"),
 });
 
+impl From<std::io::Error> for Error {
+    fn from(e: std::io::Error) -> Error {
+        Error::Io(e.to_string())
+    }
+}
+
 impl Classified for Error {
     fn class(&self) -> ErrorClass {
         match self {

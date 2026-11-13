@@ -32,7 +32,7 @@ pub fn broadcast(port: u16) -> SocketAddr {
 pub const ALL_NODES: Ipv6Addr = Ipv6Addr::new(0xff02, 0, 0, 0, 0, 0, 0, 1);
 
 /// Where IPv6 announcements are sent: the all-nodes group at `port`, no interface named
-/// (`Lan::announce` sends it on every interface, `targets`).
+/// (`Lan`'s `announce` sends it on every interface, `targets`).
 pub fn multicast(port: u16) -> SocketAddr {
     SocketAddr::new(IpAddr::V6(ALL_NODES), port)
 }
@@ -155,18 +155,6 @@ pub trait LanSocket: Send + Sync + 'static {
     fn recv(&self) -> LanFuture<'_, (Announce, SocketAddr)>;
 }
 
-impl LanSocket for Lan {
-    fn has_v6(&self) -> bool {
-        Lan::has_v6(self)
-    }
-    fn announce<'a>(&'a self, a: &'a Announce, to: SocketAddr) -> LanFuture<'a, ()> {
-        Box::pin(Lan::announce(self, a, to))
-    }
-    fn recv(&self) -> LanFuture<'_, (Announce, SocketAddr)> {
-        Box::pin(Lan::recv(self))
-    }
-}
-
 /// UDP sockets sending and receiving announcements: IPv4 (broadcast) and, where
 /// the machine has IPv6, IPv6 (all-nodes multicast).
 pub struct Lan {
@@ -175,10 +163,6 @@ pub struct Lan {
     port: u16,
     /// Which socket `recv` looks at first (alternates, so a flood on one starves neither).
     turn: std::sync::atomic::AtomicBool,
-}
-
-fn io(e: std::io::Error) -> Error {
-    Error::Io(e.to_string())
 }
 
 /// A nonblocking UDP socket of `family` that shares its port with other nodes on the machine
@@ -214,17 +198,18 @@ impl Lan {
     /// IPv6 interfaces (`port` 0: any, for tests; IPv6 then takes the port IPv4 got). Other nodes
     /// on this machine can bind the same port.
     pub async fn bind(port: u16) -> Result<Lan, Error> {
-        let v4 = bind_v4(port).map_err(io)?;
-        let port = v4.local_addr().map_err(io)?.port();
+        let v4 = bind_v4(port)?;
+        let port = v4.local_addr()?.port();
         Ok(Lan { v4, v6: bind_v6(port).ok(), port, turn: Default::default() })
     }
 
     pub fn port(&self) -> u16 {
         self.port
     }
+}
 
-    /// Whether IPv6 announcements go out and are heard.
-    pub fn has_v6(&self) -> bool {
+impl LanSocket for Lan {
+    fn has_v6(&self) -> bool {
         self.v6.is_some()
     }
 
@@ -236,60 +221,63 @@ impl Lan {
     /// each of those interfaces at each call ("already joined" ignored): Linux delivers to it
     /// anyway (`IPV6_MULTICAST_ALL`), BSD stacks only on interfaces it joined, and interfaces
     /// come and go under one socket.
-    pub async fn announce(&self, a: &Announce, to: SocketAddr) -> Result<(), Error> {
-        let s = match (to, &self.v6) {
-            (SocketAddr::V4(_), _) => &self.v4,
-            (SocketAddr::V6(_), Some(s)) => s,
-            (SocketAddr::V6(_), None) => return Err(Error::Unreachable("no IPv6 socket".into())),
-        };
-        let scopes = if to == multicast(to.port()) { v6_scopes().await } else { Vec::new() };
-        for sc in &scopes {
-            let _ = s.join_multicast_v6(&ALL_NODES, *sc);
-        }
-        let bytes = a.encode();
-        let mut res = Ok(());
-        let mut sent = false;
-        for t in targets(to, &scopes) {
-            match s.send_to(&bytes, t).await {
-                Ok(_) => sent = true,
-                Err(e) => res = Err(io(e)),
+    fn announce<'a>(&'a self, a: &'a Announce, to: SocketAddr) -> LanFuture<'a, ()> {
+        Box::pin(async move {
+            let s = match (to, &self.v6) {
+                (SocketAddr::V4(_), _) => &self.v4,
+                (SocketAddr::V6(_), Some(s)) => s,
+                (SocketAddr::V6(_), None) => return Err(Error::Unreachable("no IPv6 socket".into())),
+            };
+            let scopes = if to == multicast(to.port()) { v6_scopes().await } else { Vec::new() };
+            for sc in &scopes {
+                let _ = s.join_multicast_v6(&ALL_NODES, *sc);
             }
-        }
-        if !sent && !scopes.is_empty() {
-            res = s.send_to(&bytes, to).await.map(|_| ()).map_err(io);
-            sent = res.is_ok();
-        }
-        if sent { Ok(()) } else { res }
+            let bytes = a.encode();
+            let mut res = Ok(());
+            let mut sent = false;
+            for t in targets(to, &scopes) {
+                match s.send_to(&bytes, t).await {
+                    Ok(_) => sent = true,
+                    Err(e) => res = Err(e.into()),
+                }
+            }
+            if !sent && !scopes.is_empty() {
+                res = s.send_to(&bytes, to).await.map(|_| ()).map_err(Error::from);
+                sent = res.is_ok();
+            }
+            if sent { Ok(()) } else { res }
+        })
     }
 
     /// The next announcement heard on either socket and its sender's address. Other datagrams,
     /// and announcements from addresses that cannot be on the LAN (`is_local`), are skipped.
-    pub async fn recv(&self) -> Result<(Announce, SocketAddr), Error> {
-        let mut b4 = [0u8; LEN + 1];
-        let mut b6 = [0u8; LEN + 1];
-        loop {
-            let v6_first = self.turn.fetch_xor(true, std::sync::atomic::Ordering::Relaxed);
-            let (n, from, v6) = std::future::poll_fn(|cx| {
-                for v6 in [v6_first, !v6_first] {
-                    let (sock, buf) = if v6 { (self.v6.as_ref(), &mut b6) } else { (Some(&self.v4), &mut b4) };
-                    let Some(sock) = sock else { continue };
-                    let mut r = tokio::io::ReadBuf::new(buf);
-                    if let Poll::Ready(x) = sock.poll_recv_from(cx, &mut r) {
-                        return Poll::Ready(x.map(|from| (r.filled().len(), from, v6)));
+    fn recv(&self) -> LanFuture<'_, (Announce, SocketAddr)> {
+        Box::pin(async move {
+            let mut b4 = [0u8; LEN + 1];
+            let mut b6 = [0u8; LEN + 1];
+            loop {
+                let v6_first = self.turn.fetch_xor(true, std::sync::atomic::Ordering::Relaxed);
+                let (n, from, v6) = std::future::poll_fn(|cx| {
+                    for v6 in [v6_first, !v6_first] {
+                        let (sock, buf) = if v6 { (self.v6.as_ref(), &mut b6) } else { (Some(&self.v4), &mut b4) };
+                        let Some(sock) = sock else { continue };
+                        let mut r = tokio::io::ReadBuf::new(buf);
+                        if let Poll::Ready(x) = sock.poll_recv_from(cx, &mut r) {
+                            return Poll::Ready(x.map(|from| (r.filled().len(), from, v6)));
+                        }
                     }
+                    Poll::Pending
+                })
+                .await?;
+                if !is_local(from.ip()) {
+                    continue;
                 }
-                Poll::Pending
-            })
-            .await
-            .map_err(io)?;
-            if !is_local(from.ip()) {
-                continue;
+                let buf = if v6 { &b6[..] } else { &b4[..] };
+                if let Some(a) = buf.get(..n).and_then(Announce::decode) {
+                    return Ok((a, from));
+                }
             }
-            let buf = if v6 { &b6[..] } else { &b4[..] };
-            if let Some(a) = buf.get(..n).and_then(Announce::decode) {
-                return Ok((a, from));
-            }
-        }
+        })
     }
 }
 
