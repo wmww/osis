@@ -37,17 +37,23 @@ struct Screen {
     alarms: Rc<RefCell<Vec<u64>>>,
     /// Event time, ns.
     now: u64,
+    /// Physical pixels per logical pixel.
+    scale: f64,
 }
 
 impl Screen {
     fn new(w: NewWidget<dyn Widget>) -> Screen {
+        Screen::scaled(w, 1.0)
+    }
+
+    fn scaled(w: NewWidget<dyn Widget>, scale: f64) -> Screen {
         let (tx, signals) = channel();
         let opts = RenderRootOptions {
             default_properties: Arc::new(osis_kit::masonry::theme::default_property_set()),
             use_system_fonts: false,
             size_policy: WindowSizePolicy::User,
             size: PhysicalSize::new(400, 300),
-            scale_factor: 1.0,
+            scale_factor: scale,
             test_font: None,
         };
         let mut root = RenderRoot::new(w, move |s| drop(tx.send(s)), opts);
@@ -56,7 +62,7 @@ impl Screen {
         let alarms = Rc::new(RefCell::new(Vec::new()));
         let a = alarms.clone();
         let input = Input::new(THRESHOLDS, Box::new(move |seq, _| a.borrow_mut().push(seq)));
-        Screen { root, signals, input, platform: Recorder::default(), alarms, now: 1_000_000_000 }
+        Screen { root, signals, input, platform: Recorder::default(), alarms, now: 1_000_000_000, scale }
     }
 
     /// A reorderable list of 30 tiles; the first four tagged.
@@ -76,13 +82,17 @@ impl Screen {
 
     /// A text field at the top of a page that scrolls.
     fn text() -> Screen {
+        Screen::text_scaled(1.0)
+    }
+
+    fn text_scaled(scale: f64) -> Screen {
         let font = osis_kit::masonry::core::StyleProperty::FontStack(osis_kit::masonry::parley::FontStack::Source("Inter".into()));
         let a = NewWidget::new_with_tag(TextArea::new_editable("hello world").with_style(font), FIELD);
         let mut col = Flex::column().cross_axis_alignment(CrossAxisAlignment::Fill).with_child(a);
         for _ in 0..40 {
             col = col.with_child(NewWidget::new(SizedBox::empty().height(Length::px(50.0))));
         }
-        Screen::new(NewWidget::new(Portal::new(NewWidget::new(col)).constrain_horizontal(true)).erased())
+        Screen::scaled(NewWidget::new(Portal::new(NewWidget::new(col)).constrain_horizontal(true)).erased(), scale)
     }
 
     fn rect<W: Widget>(&self, tag: WidgetTag<W>) -> Rect {
@@ -103,7 +113,7 @@ impl Screen {
         if let Some(b) = button {
             buttons.insert(b);
         }
-        PointerState { time: self.now, position: PhysicalPosition::new(p.x, p.y), buttons, count: 1, scale_factor: 1.0, ..Default::default() }
+        PointerState { time: self.now, position: PhysicalPosition::new(p.x * self.scale, p.y * self.scale), buttons, count: 1, scale_factor: self.scale, ..Default::default() }
     }
 
     fn down_with(&mut self, ty: PointerType, button: PointerButton, p: Point, ms: u64) {
@@ -450,4 +460,24 @@ fn a_fling_stops_at_the_edge() {
     s.frames(1);
     assert!(!s.input.flinging());
     assert_eq!(s.rect(ROWS[0]).y0, top);
+}
+
+/// At two physical pixels per logical one a touch drag still moves the page with the finger, and a
+/// wheel's line and a touchpad's physical pixels scroll the logical distance they say.
+#[test]
+fn scrolling_follows_the_scale() {
+    use osis_kit::masonry::core::{PointerScrollEvent, ScrollDelta};
+    let mut s = Screen::text_scaled(2.0);
+    let top = s.rect(FIELD).y0;
+    let q = s.rect(FIELD).center() + (0.0, 100.0);
+    s.drag(PointerType::Touch, q, q - (0.0, 80.0), 800);
+    assert!((s.rect(FIELD).y0 - (top - 80.0)).abs() < 1.0, "{top} -> {}", s.rect(FIELD).y0);
+    let wheel = |s: &mut Screen, delta| {
+        let state = s.state(q, 10, None);
+        s.event(PointerEvent::Scroll(PointerScrollEvent { pointer: Screen::info(PointerType::Mouse), delta, state }));
+    };
+    wheel(&mut s, ScrollDelta::PixelDelta(PhysicalPosition::new(0.0, 40.0)));
+    assert!((s.rect(FIELD).y0 - (top - 60.0)).abs() < 1.0, "{top} -> {}", s.rect(FIELD).y0);
+    wheel(&mut s, ScrollDelta::LineDelta(0.0, -0.5));
+    assert!((s.rect(FIELD).y0 - (top - 120.0)).abs() < 1.0, "{top} -> {}", s.rect(FIELD).y0);
 }
