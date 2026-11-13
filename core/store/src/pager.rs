@@ -471,6 +471,8 @@ pub(crate) struct Pager {
     /// A commit failed and recovering in place failed too: its outcome is unknown, so every call
     /// fails until the store is opened again.
     lost: bool,
+    /// `Store::writes`.
+    writes: crate::Writes,
     /// `Store::changes`.
     changes: u64,
 }
@@ -508,7 +510,7 @@ impl Pager {
 
     #[allow(clippy::too_many_arguments)]
     fn new(backend: Box<dyn Backend>, root: Box<dyn RootStorage>, cfg: StoreConfig, epoch: u64, root_key: Secret32, top_ver: u64, meta: Meta, top: Node) -> Pager {
-        Pager { backend, root, cfg, epoch, root_key, top_ver, next_ver: meta.next_ver, open_spills: BTreeSet::new(), meta, top, nodes: HashMap::new(), units: HashMap::new(), unit_bytes: 0, decoded: 0, failed: false, lost: false, changes: next_change() }
+        Pager { backend, root, cfg, epoch, root_key, top_ver, next_ver: meta.next_ver, open_spills: BTreeSet::new(), meta, top, nodes: HashMap::new(), units: HashMap::new(), unit_bytes: 0, decoded: 0, failed: false, lost: false, writes: crate::Writes::default(), changes: next_change() }
     }
 
     /// Opens a store, finishing or rolling back an interrupted commit. The stored shape wins
@@ -538,6 +540,15 @@ impl Pager {
         self.changes
     }
 
+    pub fn writes(&self) -> crate::Writes {
+        self.writes
+    }
+
+    fn write_failed(&mut self) {
+        self.failed = true;
+        self.writes.failed += 1;
+    }
+
     /// Tests only (`Store::test_copy`).
     pub fn test_copy(&self) -> Result<Pager, Error> {
         let none = || Error::Misuse("test copy: the backend or root has none");
@@ -560,6 +571,7 @@ impl Pager {
             decoded: self.decoded,
             failed: self.failed,
             lost: self.lost,
+            writes: self.writes,
             changes: self.changes,
         })
     }
@@ -741,7 +753,7 @@ impl Pager {
         }
         self.check()?;
         for ver in std::mem::take(&mut self.open_spills) {
-            rollback(&mut *self.backend, &W::new().u8(JOURNAL).u64(ver).take()).inspect_err(|_| self.failed = true)?;
+            rollback(&mut *self.backend, &W::new().u8(JOURNAL).u64(ver).take()).inspect_err(|_| self.write_failed())?;
         }
         let ver = self.next_ver;
         self.next_ver += 1;
@@ -873,7 +885,7 @@ impl Pager {
         self.open_spills.insert(d.ver);
         d.spills += 1;
         d.plain_bytes = 0;
-        self.backend.commit(batch).inspect_err(|_| self.failed = true)?;
+        self.backend.commit(batch).inspect_err(|_| self.write_failed())?;
         Ok(())
     }
 
@@ -888,9 +900,16 @@ impl Pager {
         }
         self.changes = next_change();
         let ver = d.ver;
-        let Err(e) = self.commit_inner(d, rng) else { return Ok(()) };
+        let Err(e) = self.commit_inner(d, rng) else {
+            self.writes.committed += 1;
+            return Ok(());
+        };
+        self.writes.failed += 1;
         match self.recover_in_place() {
-            Ok(()) if self.top_ver == ver => Ok(()),
+            Ok(()) if self.top_ver == ver => {
+                self.writes.committed += 1;
+                Ok(())
+            }
             Ok(()) => Err(e),
             Err(_) => {
                 self.lost = true;

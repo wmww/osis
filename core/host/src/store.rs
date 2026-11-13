@@ -866,6 +866,11 @@ impl HostStore {
         r.map_err(err)
     }
 
+    /// `Store::writes` of the host's store.
+    pub fn store_writes(&self) -> osis_store::Writes {
+        self.db.borrow().store.writes()
+    }
+
     /// Rows the store holds (tests, diagnostics).
     pub fn rows(&self) -> Result<u64, StoreError> {
         self.db.borrow_mut().run(|t, table| t.table_len(table)).map_err(err)

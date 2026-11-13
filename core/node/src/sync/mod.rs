@@ -141,6 +141,11 @@ pub struct SyncEngine {
     last_tick: u64,
     /// Recent diagnostics (also sent as engine events).
     diagnostics: Vec<String>,
+    /// The writes of the engine's store and the hub's as last seen, whether a failed one waits
+    /// for `restart_in_place`, and the commits counted when it last ran (`handle`).
+    store_writes: [osis_store::Writes; 2],
+    restart_due: bool,
+    restarted_at: Option<[u64; 2]>,
     /// Where each queued deposit (`State::outbox`: inbox blobs, a non-writer's own writes)
     /// stands: waiting for its host, or sent and not answered yet.
     pub(crate) outbox: BTreeMap<(HostKey, LabelId, osis_base::BlobId), local::Outgoing>,
@@ -377,154 +382,298 @@ impl SyncEngine {
         // a memory commit marks itself changed like any (`Engine::take_changed`), not by event
         let events = engine.subscribe_durable();
         engine.set_sync_records(&state::Records);
-        // keeps the changed commits from now on (`Engine::take_changed`)
-        engine.take_changed();
-        let state = State::load(&mut engine)?;
-        // deposits not answered before a restart go again
-        let outbox = state.outbox.keys().map(|k| (*k, local::Outgoing::default())).collect();
-        let inbox_moved = state.sent_inbox.keys().map(|k| k.0).collect();
-        let started = engine.now().0;
         // the engine's ciphertext store is the hub's: the node's one store
         let any: std::sync::Arc<dyn std::any::Any + Send + Sync> = engine.blobs();
         let hub_store = any.downcast::<std::sync::Mutex<osis_host::HostStore>>().map_err(|_| osis_engine::Error::Misuse("the engine's ciphertext store is not a hub store"))?;
-        Ok(SyncEngine {
+        // every other field is set by `start`
+        let store_writes = [engine.store_writes(), hub_store.lock().unwrap_or_else(std::sync::PoisonError::into_inner).store_writes()];
+        let mut s = SyncEngine {
             hub_store,
-            forget_seeded: false,
-            pending_seeded: false,
-            unvouched_reported: BTreeSet::new(),
+            forget_seeded: Default::default(),
+            pending_seeded: Default::default(),
+            unvouched_reported: Default::default(),
             engine,
             events,
             rng,
             cfg,
-            conns: BTreeMap::new(),
+            conns: Default::default(),
             next_conn: 1,
-            retry: BTreeMap::new(),
-            redialed: BTreeMap::new(),
-            stand_in: BTreeMap::new(),
-            redeeming: BTreeSet::new(),
-            provers_mark: None,
-            own_key: None,
-            state,
-            seq: 0,
-            passes: BTreeMap::new(),
-            wake: None,
-            last_tick: 0,
+            retry: Default::default(),
+            redialed: Default::default(),
+            stand_in: Default::default(),
+            redeeming: Default::default(),
+            provers_mark: Default::default(),
+            own_key: Default::default(),
+            state: Default::default(),
+            seq: Default::default(),
+            passes: Default::default(),
+            wake: Default::default(),
+            last_tick: Default::default(),
             diagnostics: Vec::new(),
-            outbox,
-            local_inbox: Vec::new(),
-            left: Some(deliver::LeftCheck::default()),
-            lifetimes_heard: None,
-            first: BTreeSet::new(),
-            relay_now: BTreeSet::new(),
-            body_links: BTreeMap::new(),
-            inbox_opened: BTreeMap::new(),
-            vetted: None,
-            hint_failed: BTreeSet::new(),
-            inbox_copied: work::InboxCopied::default(),
-            inbox_moved,
-            secrets_counted: std::cell::Cell::new(None),
-            reading_counted: std::cell::Cell::new(None),
-            unsettled_memo: None,
-            relink_backoff: BTreeMap::new(),
-            relink_pending: BTreeMap::new(),
-            reask: BTreeSet::new(),
-            relink_at: 0,
-            retired_at: BTreeSet::new(),
-            deferred: Vec::new(),
-            genuine: BTreeMap::new(),
-            reread_boxes: true,
-            start_look: true,
-            redelivered: 0,
-            awaits_secrets: (0, 0),
-            retry_inbox: BTreeSet::new(),
-            inbox_awaits: BTreeMap::new(),
-            inbox_plain: BTreeMap::new(),
-            unchecked_swept: None,
-            settle_at: BTreeMap::new(),
-            held_since: BTreeMap::new(),
-            pass_due: true,
-            due_labels: BTreeSet::new(),
-            own_wrote: false,
-            fill_due: BTreeSet::new(),
-            passed_at: 0,
-            passing: false,
-            work: BTreeMap::new(),
-            deposit_seen: BTreeMap::new(),
-            stranded_sent: BTreeSet::new(),
-            stranded_on: BTreeSet::new(),
-            stranded_asks: BTreeMap::new(),
-            resealed: BTreeMap::new(),
-            suspects_sent: BTreeMap::new(),
-            suspects_gen: None,
-            suspects_due: false,
-            repair_state: BTreeMap::new(),
-            links_failed: BTreeSet::new(),
-            joined_touched: None,
-            joined_failed: BTreeSet::new(),
-            tied: deliver::TiedWork { all: true, ..Default::default() },
+            store_writes,
+            restart_due: false,
+            restarted_at: None,
+            outbox: Default::default(),
+            local_inbox: Default::default(),
+            left: Default::default(),
+            lifetimes_heard: Default::default(),
+            first: Default::default(),
+            relay_now: Default::default(),
+            body_links: Default::default(),
+            inbox_opened: Default::default(),
+            vetted: Default::default(),
+            hint_failed: Default::default(),
+            inbox_copied: Default::default(),
+            inbox_moved: Default::default(),
+            secrets_counted: Default::default(),
+            reading_counted: Default::default(),
+            unsettled_memo: Default::default(),
+            relink_backoff: Default::default(),
+            relink_pending: Default::default(),
+            reask: Default::default(),
+            relink_at: Default::default(),
+            retired_at: Default::default(),
+            deferred: Default::default(),
+            genuine: Default::default(),
+            reread_boxes: Default::default(),
+            start_look: Default::default(),
+            redelivered: Default::default(),
+            awaits_secrets: Default::default(),
+            retry_inbox: Default::default(),
+            inbox_awaits: Default::default(),
+            inbox_plain: Default::default(),
+            unchecked_swept: Default::default(),
+            settle_at: Default::default(),
+            held_since: Default::default(),
+            pass_due: Default::default(),
+            due_labels: Default::default(),
+            own_wrote: Default::default(),
+            fill_due: Default::default(),
+            passed_at: Default::default(),
+            passing: Default::default(),
+            work: Default::default(),
+            deposit_seen: Default::default(),
+            stranded_sent: Default::default(),
+            stranded_on: Default::default(),
+            stranded_asks: Default::default(),
+            resealed: Default::default(),
+            suspects_sent: Default::default(),
+            suspects_gen: Default::default(),
+            suspects_due: Default::default(),
+            repair_state: Default::default(),
+            links_failed: Default::default(),
+            joined_touched: Default::default(),
+            joined_failed: Default::default(),
+            tied: Default::default(),
             synced: Default::default(),
             synced_of: crate::engine::memo::Memo::new("labels synced"),
-            served: BTreeMap::new(),
-            hub_conns: BTreeMap::new(),
-            refusals: BTreeMap::new(),
-            covered_judged: BTreeSet::new(),
-            stats: PassStats::default(),
-            records: records::Records::default(),
-            streams: BTreeMap::new(),
-            changed_due: true,
-            changed_gen: 0,
-            touched: work::Touched::default(),
-            own_keys: BTreeSet::new(),
-            lan: BTreeMap::new(),
-            lan_rotate: false,
-            reach_account: None,
-            served_cache: None,
-            unread: unread::Unread::default(),
-            charges: serve::Charges::default(),
-            blob_sizes: BTreeMap::new(),
-            swept: 0,
-            peer_cache: peers::PeerCache::default(),
-            peer_received: BTreeMap::new(),
-            peer_passes: BTreeMap::new(),
-            sources_gen: u64::MAX,
-            shared_dirty: false,
-            changed_moved: BTreeSet::new(),
-            role_change: BTreeMap::new(),
-            pass_wanted: BTreeSet::new(),
-            started,
-            rotation_at: BTreeMap::new(),
-            placed_cache: (u64::MAX, BTreeMap::new()),
-            placed_waiting: BTreeSet::new(),
+            served: Default::default(),
+            hub_conns: Default::default(),
+            refusals: Default::default(),
+            covered_judged: Default::default(),
+            stats: Default::default(),
+            records: Default::default(),
+            streams: Default::default(),
+            changed_due: Default::default(),
+            changed_gen: Default::default(),
+            touched: Default::default(),
+            own_keys: Default::default(),
+            lan: Default::default(),
+            lan_rotate: Default::default(),
+            reach_account: Default::default(),
+            served_cache: Default::default(),
+            unread: Default::default(),
+            charges: Default::default(),
+            blob_sizes: Default::default(),
+            swept: Default::default(),
+            peer_cache: Default::default(),
+            peer_received: Default::default(),
+            peer_passes: Default::default(),
+            sources_gen: Default::default(),
+            shared_dirty: Default::default(),
+            changed_moved: Default::default(),
+            role_change: Default::default(),
+            pass_wanted: Default::default(),
+            started: Default::default(),
+            rotation_at: Default::default(),
+            placed_cache: Default::default(),
+            placed_waiting: Default::default(),
             rotated: crate::engine::memo::Memo::new("ensure rotated"),
-            last_synced: BTreeMap::new(),
-            clients_moved: false,
-            prefix_checked: BTreeSet::new(),
-            memory: memory::Memory::default(),
+            last_synced: Default::default(),
+            clients_moved: Default::default(),
+            prefix_checked: Default::default(),
+            memory: Default::default(),
             hosting: host::Hosting::default(),
-        })
-        .and_then(|mut s| {
-            // durable commits forgotten whole whose entries were not yet deleted at hosts
-            for (c, header) in s.state.forgotten.clone() {
-                s.memory.forgotten.insert(c, memory::Forgotten { header, why: crate::engine::MemoryDrop::Gone });
-            }
-            // a forgetting a crash interrupted before its inbox check
-            s.forget_inbox()?;
-            // entries the hub's store holds that the engine's store never committed
-            let rederived = std::mem::take(&mut s.state.rederived);
-            s.take_hub_changes(rederived)?;
-            s.reopen_undropped(None)?;
-            s.reopen_all_awaiting();
-            // the keys and ciphertexts of bodies the engine dropped before a crash cut this layer
-            // off (its forget runs a step after the dropping transaction, spec/commits.md §5)
-            s.forget_dropped(None)?;
-            // peer budgets as the store holds them
-            s.charge_held();
-            // flows' deliveries a crash cut off before they were carried out
-            if let Err(e) = s.take_owed() {
-                s.diag(format!("owed deliveries: {e}"));
-            }
-            Ok(s)
-        })
+        };
+        s.start()?;
+        Ok(s)
+    }
+
+    /// What a start of node sync holds, read from the store: every field but the engine, its
+    /// event subscription, the generator, the config, the hub's store, the host config, the
+    /// connection IDs (never repeated), the diagnostics not yet taken and the store writes seen. `new`, and `restart_in_place` after a store write failed.
+    fn start(&mut self) -> Result<()> {
+        // keeps the changed commits from now on (`Engine::take_changed`)
+        self.engine.take_changed();
+        let loaded = State::load(&mut self.engine)?;
+        // deposits not answered before a restart go again
+        let outbox_ = loaded.outbox.keys().map(|k| (*k, local::Outgoing::default())).collect();
+        let inbox_moved_ = loaded.sent_inbox.keys().map(|k| k.0).collect();
+        let started_ = self.engine.now().0;
+        let SyncEngine {
+            engine: _, events: _, rng: _, cfg: _, hub_store: _, next_conn: _, diagnostics: _, store_writes: _, restart_due: _, restarted_at: _, hosting: _,
+            forget_seeded, pending_seeded, unvouched_reported, conns, retry, redialed, stand_in, redeeming, provers_mark, own_key, state, seq, passes, wake, last_tick, outbox, local_inbox, left, lifetimes_heard, first, relay_now, body_links, inbox_opened, vetted, hint_failed, inbox_copied, inbox_moved, secrets_counted, reading_counted, unsettled_memo, relink_backoff, relink_pending, reask, relink_at, retired_at, deferred, genuine, reread_boxes, start_look, redelivered, awaits_secrets, retry_inbox, inbox_awaits, inbox_plain, unchecked_swept, settle_at, held_since, pass_due, due_labels, own_wrote, fill_due, passed_at, passing, work, deposit_seen, stranded_sent, stranded_on, stranded_asks, resealed, suspects_sent, suspects_gen, suspects_due, repair_state, links_failed, joined_touched, joined_failed, tied, synced, synced_of, served, hub_conns, refusals, covered_judged, stats, records, streams, changed_due, changed_gen, touched, own_keys, lan, lan_rotate, reach_account, served_cache, unread, charges, blob_sizes, swept, peer_cache, peer_received, peer_passes, sources_gen, shared_dirty, changed_moved, role_change, pass_wanted, started, rotation_at, placed_cache, placed_waiting, rotated, last_synced, clients_moved, prefix_checked, memory,
+        } = self;
+        *forget_seeded = false;
+        *pending_seeded = false;
+        *unvouched_reported = BTreeSet::new();
+        *conns = BTreeMap::new();
+        *retry = BTreeMap::new();
+        *redialed = BTreeMap::new();
+        *stand_in = BTreeMap::new();
+        *redeeming = BTreeSet::new();
+        *provers_mark = None;
+        *own_key = None;
+        *state = loaded;
+        *seq = 0;
+        *passes = BTreeMap::new();
+        *wake = None;
+        *last_tick = 0;
+        *outbox = outbox_;
+        *local_inbox = Vec::new();
+        *left = Some(deliver::LeftCheck::default());
+        *lifetimes_heard = None;
+        *first = BTreeSet::new();
+        *relay_now = BTreeSet::new();
+        *body_links = BTreeMap::new();
+        *inbox_opened = BTreeMap::new();
+        *vetted = None;
+        *hint_failed = BTreeSet::new();
+        *inbox_copied = work::InboxCopied::default();
+        *inbox_moved = inbox_moved_;
+        *secrets_counted = std::cell::Cell::new(None);
+        *reading_counted = std::cell::Cell::new(None);
+        *unsettled_memo = None;
+        *relink_backoff = BTreeMap::new();
+        *relink_pending = BTreeMap::new();
+        *reask = BTreeSet::new();
+        *relink_at = 0;
+        *retired_at = BTreeSet::new();
+        *deferred = Vec::new();
+        *genuine = BTreeMap::new();
+        *reread_boxes = true;
+        *start_look = true;
+        *redelivered = 0;
+        *awaits_secrets = (0, 0);
+        *retry_inbox = BTreeSet::new();
+        *inbox_awaits = BTreeMap::new();
+        *inbox_plain = BTreeMap::new();
+        *unchecked_swept = None;
+        *settle_at = BTreeMap::new();
+        *held_since = BTreeMap::new();
+        *pass_due = true;
+        *due_labels = BTreeSet::new();
+        *own_wrote = false;
+        *fill_due = BTreeSet::new();
+        *passed_at = 0;
+        *passing = false;
+        *work = BTreeMap::new();
+        *deposit_seen = BTreeMap::new();
+        *stranded_sent = BTreeSet::new();
+        *stranded_on = BTreeSet::new();
+        *stranded_asks = BTreeMap::new();
+        *resealed = BTreeMap::new();
+        *suspects_sent = BTreeMap::new();
+        *suspects_gen = None;
+        *suspects_due = false;
+        *repair_state = BTreeMap::new();
+        *links_failed = BTreeSet::new();
+        *joined_touched = None;
+        *joined_failed = BTreeSet::new();
+        *tied = deliver::TiedWork { all: true, ..Default::default() };
+        *synced = Default::default();
+        *synced_of = crate::engine::memo::Memo::new("labels synced");
+        *served = BTreeMap::new();
+        *hub_conns = BTreeMap::new();
+        *refusals = BTreeMap::new();
+        *covered_judged = BTreeSet::new();
+        *stats = PassStats::default();
+        *records = records::Records::default();
+        *streams = BTreeMap::new();
+        *changed_due = true;
+        *changed_gen = 0;
+        *touched = work::Touched::default();
+        *own_keys = BTreeSet::new();
+        *lan = BTreeMap::new();
+        *lan_rotate = false;
+        *reach_account = None;
+        *served_cache = None;
+        *unread = unread::Unread::default();
+        *charges = serve::Charges::default();
+        *blob_sizes = BTreeMap::new();
+        *swept = 0;
+        *peer_cache = peers::PeerCache::default();
+        *peer_received = BTreeMap::new();
+        *peer_passes = BTreeMap::new();
+        *sources_gen = u64::MAX;
+        *shared_dirty = false;
+        *changed_moved = BTreeSet::new();
+        *role_change = BTreeMap::new();
+        *pass_wanted = BTreeSet::new();
+        *started = started_;
+        *rotation_at = BTreeMap::new();
+        *placed_cache = (u64::MAX, BTreeMap::new());
+        *placed_waiting = BTreeSet::new();
+        *rotated = crate::engine::memo::Memo::new("ensure rotated");
+        *last_synced = BTreeMap::new();
+        *clients_moved = false;
+        *prefix_checked = BTreeSet::new();
+        *memory = memory::Memory::default();
+        // durable commits forgotten whole whose entries were not yet deleted at hosts
+        for (c, header) in self.state.forgotten.clone() {
+            self.memory.forgotten.insert(c, memory::Forgotten { header, why: crate::engine::MemoryDrop::Gone });
+        }
+        // a forgetting a crash interrupted before its inbox check
+        self.forget_inbox()?;
+        // entries the hub's store holds that the engine's store never committed
+        let rederived = std::mem::take(&mut self.state.rederived);
+        self.take_hub_changes(rederived)?;
+        self.reopen_undropped(None)?;
+        self.reopen_all_awaiting();
+        // the keys and ciphertexts of bodies the engine dropped before a crash cut this layer
+        // off (its forget runs a step after the dropping transaction, spec/commits.md §5)
+        self.forget_dropped(None)?;
+        // peer budgets as the store holds them
+        self.charge_held();
+        // flows' deliveries a crash cut off before they were carried out
+        if let Err(e) = self.take_owed() {
+            self.diag(format!("owed deliveries: {e}"));
+        }
+        Ok(())
+    }
+
+    /// The writes of the engine's store and the hub's (`Store::writes`).
+    fn store_writes_now(&self) -> [osis_store::Writes; 2] {
+        [self.engine.store_writes(), self.hub_store.lock().unwrap_or_else(std::sync::PoisonError::into_inner).store_writes()]
+    }
+
+    /// A store write failed (`handle`). The store and engine are as their last commit left them
+    /// (notes/local-store.md, Failed writes recover in place), but what the step took in memory
+    /// (stream positions, entries taken, bytes it did not store) may be ahead of them: node sync
+    /// starts again from the store as an open does, every connection closed (dialed again as at
+    /// a start), so what it had taken is fetched again.
+    fn restart_in_place(&mut self, out: &mut Vec<Action>) {
+        for conn in self.conns.keys().copied().collect::<Vec<_>>() {
+            out.push(Action::Close { conn });
+        }
+        for conn in self.served.keys().copied().collect::<Vec<_>>() {
+            self.close_served(conn, out);
+        }
+        // what the failed step's engine events told is read again from the store
+        while self.events.try_recv().is_ok() {}
+        if let Err(e) = self.start() {
+            self.diag(format!("sync restart after a store error: {e}"));
+        }
     }
 
     pub fn engine(&self) -> &Engine {
@@ -689,6 +838,16 @@ impl SyncEngine {
         // a sync ID full here with room again is pulled again
         if let Err(e) = self.unread_room(&mut out) {
             self.diag(format!("room again: {e}"));
+        }
+        // a store write failed in this call or since the last, whichever path met it; a store
+        // that takes no commit since the last restart (a dead device) would only fail it again
+        let writes = self.store_writes_now();
+        self.restart_due |= writes.iter().zip(&self.store_writes).any(|(w, seen)| w.failed != seen.failed);
+        self.store_writes = writes;
+        if self.restart_due && self.restarted_at != Some(writes.map(|w| w.committed)) {
+            self.restart_due = false;
+            self.restart_in_place(&mut out);
+            self.restarted_at = Some(self.store_writes_now().map(|w| w.committed));
         }
         if let Some(at) = self.next_wake()
             && self.wake != Some(at)

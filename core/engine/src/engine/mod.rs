@@ -3118,6 +3118,11 @@ fn nonce_count(n: &Nonce) -> u64 {
 }
 
 impl Engine {
+    /// `Store::writes` of the engine's store.
+    pub fn store_writes(&self) -> osis_store::Writes {
+        self.store.writes()
+    }
+
     /// While this stands (no commit changed the store, the indexes stand, the clock stands) a
     /// read of the engine repeats itself.
     pub fn point(&self) -> ReadPoint {

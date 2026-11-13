@@ -212,7 +212,6 @@ fn a_crash_taking_bytes_leaves_no_cursor_ahead_of_its_data() {
 // at any write while a connected node takes a pushed event with its bytes: the node goes on with
 // no restart, its log matching what it holds, and converges
 #[test]
-#[ignore = "issues/node-sync-failed-step.md"]
 fn a_failed_write_taking_bytes_needs_no_restart() {
     for n in 0.. {
         let f = osis_store::Faults::new();
@@ -229,9 +228,8 @@ fn a_failed_write_taking_bytes_needs_no_restart() {
         net.run();
         let failed = f.take_failed();
         compare(&mut net, b);
-        for _ in 0..5 {
-            net.advance(61_000);
-        }
+        net.feed(b, osis_node::sync::Event::Local);
+        net.run();
         assert_eq!(net.read(b, t), Some(s("after")), "failed write {n}: converges");
         compare(&mut net, b);
         if !failed {

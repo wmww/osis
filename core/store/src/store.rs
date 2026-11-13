@@ -136,6 +136,11 @@ impl Store {
         self.pager.changes()
     }
 
+    /// Durable writes since the open (`Writes`).
+    pub fn writes(&self) -> Writes {
+        self.pager.writes()
+    }
+
     /// Table pages decoded since the open (tests count work): a page is decoded once per write
     /// of its unit while the unit stays cached.
     pub fn pages_decoded(&self) -> u64 {
@@ -209,6 +214,15 @@ impl Suspended {
     pub fn test_copy(&self) -> Suspended {
         Suspended { d: self.d.clone() }
     }
+}
+
+/// Durable writes of one open of a store: commits that landed, and failed writes (a commit, a
+/// spill, a rollback), each of which the store recovered from, so an owner holding state beside
+/// it in memory knows to read it again; a store taking commits again after one is working.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Writes {
+    pub committed: u64,
+    pub failed: u64,
 }
 
 /// A point in a transaction to undo back to (`Transaction::rollback_to`) or keep
