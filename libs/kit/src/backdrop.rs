@@ -1,6 +1,6 @@
 //! Backgrounds (notes/theming.md `pattern`): background 1 with the theme's pattern drawn in
 //! background 2 at varying opacity, no derived shades. Placement comes from seeds hashed from the
-//! open thing (and its kind), so each thing keeps its own arrangement. Plain fills, gradients
+//! open thing's tid, so each thing keeps its own arrangement. Plain fills, gradients
 //! and paths: no blur, no layers.
 
 use crate::theme::{Look, Pattern, fade};
@@ -27,7 +27,7 @@ pub fn paint(scene: &mut Scene, look: &Look, bg: Color, size: Size, seed: u64) {
     let id = Affine::IDENTITY;
     scene.fill(Fill::NonZero, id, bg, None, &r);
     let s = seeds(seed);
-    // the kind's small variation
+    // a small second variation
     let k = seeds(seed ^ 0x5bd1_e995)[0];
     let deco = look.deco;
     let d = |a: f64| fade(deco, a);
