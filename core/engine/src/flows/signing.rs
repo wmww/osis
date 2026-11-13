@@ -59,7 +59,6 @@ type PerThing = (BTreeSet<CommitId>, Vec<(osis_base::WallMs, CommitId)>);
 /// `None`: an authorized head's seed is not held here, or no head is authorized.
 pub(crate) fn rotate_in(tx: &mut Tx<'_>, p: Tid, also: &[CommitId], done: &mut Done) -> Result<Option<CommitId>> {
     let held = tx.core.accounts.get(&p).cloned().ok_or(Error::Misuse("not an account held here"))?;
-    let Some(under) = seed_under(tx, &p, &held.devices, done)? else { return Ok(None) };
     let v = tx.core.account_view(&p).ok_or(Error::Misuse("no signing chain for the account"))?;
     let signing = tx.core.account_signing(&p).ok().flatten();
     let mut names = Vec::new();
@@ -82,6 +81,8 @@ pub(crate) fn rotate_in(tx: &mut Tx<'_>, p: Tid, also: &[CommitId], done: &mut D
             (Some((first, k)), heads.clone(), named.into_iter().skip(1).map(|x| x.1.signing.clone()).collect(), heads)
         }
     };
+    // after the heads' seeds are known held: rotating D first signs as the account
+    let Some(under) = seed_under(tx, &p, &held.devices, done)? else { return Ok(None) };
     // per thing: role-class and purge-request commits, then plain ones by receipt
     let mut per: BTreeMap<Tid, PerThing> = BTreeMap::new();
     let mut listed = nameable(tx, &p, &v, &closes, true)?;
