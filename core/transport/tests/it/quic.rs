@@ -74,7 +74,7 @@ fn quic_round_trip_keys() {
     });
 }
 
-// spec/sync.md §10: a dialer MUST check the listener's key against the address.
+// spec/sync.md §10 (host key check): the dialer checks the listener's key against the address.
 #[test]
 #[ignore]
 fn quic_pinned_key_mismatch_refused() {

@@ -97,7 +97,7 @@ fn ephemeral_client_keys_differ() {
     assert_ne!(keys.0, keys.2);
 }
 
-// spec/sync.md §10: a dialer MUST check the listener's key against the address.
+// spec/sync.md §10 (host key check): the dialer checks the listener's key against the address.
 #[test]
 fn pinned_key_mismatch_refused() {
     let (net, mut s, _l, mut addr) = setup(0);

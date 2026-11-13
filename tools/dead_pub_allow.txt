@@ -27,7 +27,6 @@ osis-store::record_lag  test hook: reads a lag without spending it (`record_take
 osis-store::records_total  test hook: bytes RECORD_BUDGET bounds
 osis-transport::ADDRESS  table: the NAT kinds
 osis-transport::CONN_MEMORY  test hook: the resource bound the quic tests check
-osis-transport::is_relayed  test hook
 osis-transport::relayed_keys  test hook
 osis-transport::set_faults  test hook: memory network faults
 osis-transport::set_max_steps  test hook: scheduler step cap
