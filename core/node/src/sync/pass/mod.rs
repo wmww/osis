@@ -654,12 +654,13 @@ impl SyncEngine {
             // deposit is the outbox's to wait for)
             let takes = stamped || (own.keys.write.is_some() && (on_head || !self.stamp_serves_a_source(l, o.id, &e)));
             lacking += usize::from(takes);
-            // a role commit the source takes once it pulls it, or a body stamped for its head:
-            // deletes wait for it (a delete of what it supersedes, read there first, shows the
-            // source's other readers a value gone that is live for them, and a large value's
-            // chunks are written again, `relink_lost`). Not at a full source (deletes may be
-            // what frees room) nor one on an older head (nothing waits for its step)
-            behind_here |= on_head && !full && ((o.prio <= 1 && p.keys.is_writer()) || takes);
+            // what the source takes once it pulls it, on this node's head or an older one:
+            // deletes wait for it (a delete judged by a role commit or a cover it lacks shows
+            // its other readers a value gone that is live for them, and they place it again; a
+            // large value's chunks are written again, `relink_lost`). Not at a full source
+            // (deletes may be what frees room). Nothing waits for a step: what is stamped for
+            // the source's own head goes there meanwhile
+            behind_here |= !full && takes;
             match &own.keys.write {
                 Some(wk) if on_head && !stamped => {
                     self.stamp_entry(l, o.id, e, wk, o.prio <= 1);

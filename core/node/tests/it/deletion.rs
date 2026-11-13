@@ -280,6 +280,41 @@ fn refused_step_uploads_still_spec_sync_5() {
     assert_ne!(net.read(c, t), Some(s("after")), "nothing new readable to the removed reader");
 }
 
+// spec/sync.md §7 Role view first: a writer whose rotation the host lacks, and would take now
+// (stamped for the host's head, while the host refuses the writer's step), deletes nothing
+// there meanwhile: a co-writer judging by what the host holds cannot read the cover under the
+// new epoch, judges the covered bodies uncovered and places them again (member_churn storm).
+#[test]
+fn deletes_wait_for_a_role_commit_the_host_lacks_spec_sync_7() {
+    let (mut net, host, [a, b, c], g, [t]) = hosted::<3, 1>(&[(1, Role::Write), (2, Role::Read)], ["v1"], true);
+    let cb = net.write(b, t, "by b");
+    net.run();
+    let l = net.label(a);
+    let old = blobs_of(&mut net, a, &l, cb);
+    assert!(!old.is_empty() && old.iter().all(|id| net.host_ids(host, &l).contains(id)));
+    // the host refuses steps for its rate: it stays on the old head
+    net.restart_host_with(host, osis_host::HostPolicy { registers: 0, ..osis_host::HostPolicy::default() });
+    net.run();
+    net.advance(60_000);
+    let (at, bt, ct_) = (net.tid(a), net.tid(b), net.tid(c));
+    let e = net.engine(a);
+    let rs = recipients_of(e, &[(at, Role::Admin), (bt, Role::Write)]);
+    let rot = remove_holder(e, g, ct_, &rs, 41);
+    net.lose_deposits.insert(rot);
+    net.run();
+    net.advance(1_000);
+    assert_eq!(net.host_path(host, &l).len(), 1, "the step is refused");
+    let rot_blobs = blobs_of(&mut net, a, &l, rot);
+    assert!(rot_blobs.iter().all(|id| !net.host_ids(host, &l).contains(id)), "the host lacks the rotation");
+    let acts = net.sync(a).compact_now(&t, &Ak::new(REG.ak()).unwrap()).unwrap();
+    net.actions(a, acts);
+    net.run();
+    net.advance(1_000);
+    let ids = net.host_ids(host, &l);
+    assert!(old.iter().all(|id| ids.contains(id)), "the covered body stays while the host lacks the rotation");
+    assert!(old.iter().all(|id| !net.deleted.contains_key(&(a, l, *id))), "no delete of it sent");
+}
+
 // spec/sync.md §5 (re-registration, upload order), spec/permissions.md §3-§4 (stranded): an
 // admin rotating out a holder issues a child step at the host after uploading the rotation
 // commit; the remaining writer follows; the removed holder's open walks to the new step, its
