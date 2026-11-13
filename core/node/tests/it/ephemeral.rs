@@ -6375,6 +6375,36 @@ fn failed_write_keeps_a_readers_ephemeral_entries_spec_sync_9() {
     assert_eq!(net.eph_read(a, w, STATE), Some(s("v")), "the reader brought it back");
 }
 
+// notes/node-sync.md Failed writes: a value written while a reader's device is down reaches it
+// once the device is back, through the restarts in place that keep its ephemeral records
+#[test]
+fn ephemeral_value_written_while_a_readers_store_is_down_reaches_it_spec_sync_9() {
+    let f = osis_store::Faults::new();
+    let mut net = Net::new();
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let r = net.forensic_node(2, &[host], &f);
+    let g = net.group(a, &[(r, Role::Read)], &[host]);
+    let w = window(&mut net, a, g, "v");
+    net.run();
+    assert_eq!(net.eph_read(r, w, STATE), Some(s("v")));
+    f.at(0, osis_store::Fault::Crash);
+    let own = net.tid(r);
+    let mut m = Mutation::new();
+    net.engine(r).new_thing(&mut m, own);
+    assert!(net.engine(r).commit(m).is_err());
+    let mut m = Mutation::new();
+    m.set(w, &eph(STATE), &s("v2")).unwrap();
+    net.engine(a).write(m).unwrap();
+    local(&mut net, a);
+    net.run();
+    f.revive();
+    net.advance(70_000);
+    net.run();
+    net.advance(10_000);
+    assert_eq!(net.eph_read(r, w, STATE), Some(s("v2")));
+}
+
 // notes/node-sync.md Failed writes: a one-off failed write (the device stays up) restarts node
 // sync in place while the engine keeps its ephemeral commits; ephemeral state held, written
 // offline before it or received before it still converges, as do writes after it

@@ -600,6 +600,9 @@ impl SyncEngine {
                 self.diag(format!("ephemeral commit {commit:?}: parked (not interpreted by this build), dropped"));
                 return self.mark_bad(l, b);
             }
+            // a store failure judges nothing: the step fails (its restart in place keeps this
+            // record, so a bad mark here would outlive it)
+            Err(err @ crate::Error::Store(_)) => return Err(err),
             Err(err) => {
                 self.diag(format!("ephemeral commit {commit:?}: {err}"));
                 return self.mark_bad(l, b);

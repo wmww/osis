@@ -965,17 +965,12 @@ impl State {
     /// `old`'s memory-class records (`reload`), taken before the entries are indexed: entries,
     /// tombstones, blob records, carriers, charges, and the node log's memory part.
     fn keep_memory(&mut self, old: &State) {
-        for (k, e) in old.entries.iter().filter(|(_, e)| e.memory) {
-            self.entries.insert(*k, e.clone());
-            self.memory_entries.insert(*k);
-            if let Kind::Commit { commit, .. } = &e.kind {
-                self.memory_commits.insert(*commit);
-            }
-        }
-        for (k, t) in old.tombs.iter().filter(|(k, _)| old.memory_entries.contains(k)) {
-            self.tombs.insert(*k, t.clone());
-            self.memory_entries.insert(*k);
-        }
+        self.entries.extend(old.entries.iter().filter(|(_, e)| e.memory).map(|(k, e)| (*k, e.clone())));
+        self.tombs.extend(old.tombs.iter().filter(|(k, _)| old.memory_entries.contains(k)).map(|(k, t)| (*k, t.clone())));
+        // whole: a commit stays marked while any entry was of it, judged bad or reopened since
+        // (`set_carrier` keeps its carriers in memory)
+        self.memory_entries.clone_from(&old.memory_entries);
+        self.memory_commits.clone_from(&old.memory_commits);
         for (id, r) in old.blobs.iter().filter(|(_, r)| r.memory) {
             self.by_commit.entry(r.commit).or_default().insert(*id);
             self.blobs.insert(*id, r.clone());
