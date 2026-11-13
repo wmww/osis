@@ -29,9 +29,6 @@ impl Wake for TaskWaker {
     fn wake(self: Arc<Self>) {
         lock(&self.ready).insert(self.id);
     }
-    fn wake_by_ref(self: &Arc<Self>) {
-        lock(&self.ready).insert(self.id);
-    }
 }
 
 /// Spawns onto the `Sched` it came from, also from inside a task.

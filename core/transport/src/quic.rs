@@ -1,7 +1,7 @@
-//! `Quic`: direct host transport, `quic://host:port` (spec/sync.md §10).
+//! `Quic`: a direct transport, `quic://host:port` (spec/sync.md §10).
 //! QUIC v1 (quinn) with TLS 1.3 (rustls, ring provider), ALPN `osis`, both sides authenticated by
-//! RFC 7250 raw Ed25519 public keys: the host's is its address key (pinned by the client), the
-//! client's a fresh key per connection. No certificates, no CA. Needs a tokio runtime.
+//! RFC 7250 raw Ed25519 public keys: the listener's is its address key (pinned by the dialer), the
+//! dialer's a fresh key per connection. No certificates, no CA. Needs a tokio runtime.
 
 use crate::{Address, Connection, Error, ListenConfig, Listener, PublicKey, Transport};
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
@@ -169,25 +169,43 @@ fn verify_sig(msg: &[u8], cert: &CertificateDer<'_>, dss: &DigitallySignedStruct
     verify_tls13_signature_with_raw_key(msg, &SubjectPublicKeyInfoDer::from(cert.as_ref()), dss, &algs())
 }
 
-/// Client side: accepts exactly the pinned host key.
+/// The signature checks of every verifier here: TLS 1.3, Ed25519 raw public keys only.
+macro_rules! raw_ed25519_only {
+    () => {
+        fn verify_tls12_signature(&self, _: &[u8], _: &CertificateDer<'_>, _: &DigitallySignedStruct) -> Result<HandshakeSignatureValid, rustls::Error> {
+            Err(tls_err("tls 1.3 only"))
+        }
+        fn verify_tls13_signature(&self, msg: &[u8], cert: &CertificateDer<'_>, dss: &DigitallySignedStruct) -> Result<HandshakeSignatureValid, rustls::Error> {
+            verify_sig(msg, cert, dss)
+        }
+        fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+            vec![SignatureScheme::ED25519]
+        }
+        fn requires_raw_public_keys(&self) -> bool {
+            true
+        }
+    };
+}
+
+/// Dialing side: accepts exactly the pinned key.
 #[derive(Debug)]
-pub(crate) struct PinnedHost {
+pub(crate) struct PinnedKey {
     key: PublicKey,
     mismatch: AtomicBool,
 }
 
-impl PinnedHost {
-    pub(crate) fn new(key: PublicKey) -> Arc<PinnedHost> {
-        Arc::new(PinnedHost { key, mismatch: AtomicBool::new(false) })
+impl PinnedKey {
+    pub(crate) fn new(key: PublicKey) -> Arc<PinnedKey> {
+        Arc::new(PinnedKey { key, mismatch: AtomicBool::new(false) })
     }
 
-    /// Whether the host presented another key.
+    /// Whether the listener presented another key.
     pub(crate) fn mismatched(&self) -> bool {
         self.mismatch.load(Ordering::Relaxed)
     }
 }
 
-impl ServerCertVerifier for PinnedHost {
+impl ServerCertVerifier for PinnedKey {
     fn verify_server_cert(
         &self,
         end_entity: &CertificateDer<'_>,
@@ -200,21 +218,10 @@ impl ServerCertVerifier for PinnedHost {
             Ok(ServerCertVerified::assertion())
         } else {
             self.mismatch.store(true, Ordering::Relaxed);
-            Err(tls_err("host key does not match the address"))
+            Err(tls_err("key does not match the address"))
         }
     }
-    fn verify_tls12_signature(&self, _: &[u8], _: &CertificateDer<'_>, _: &DigitallySignedStruct) -> Result<HandshakeSignatureValid, rustls::Error> {
-        Err(tls_err("tls 1.3 only"))
-    }
-    fn verify_tls13_signature(&self, msg: &[u8], cert: &CertificateDer<'_>, dss: &DigitallySignedStruct) -> Result<HandshakeSignatureValid, rustls::Error> {
-        verify_sig(msg, cert, dss)
-    }
-    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
-        vec![SignatureScheme::ED25519]
-    }
-    fn requires_raw_public_keys(&self) -> bool {
-        true
-    }
+    raw_ed25519_only!();
 }
 
 /// Serving side: any Ed25519 client key (clients are ephemeral; authorization is above the transport).
@@ -237,18 +244,7 @@ impl ClientCertVerifier for AnyClientKey {
             None => Err(tls_err("client key is not ed25519")),
         }
     }
-    fn verify_tls12_signature(&self, _: &[u8], _: &CertificateDer<'_>, _: &DigitallySignedStruct) -> Result<HandshakeSignatureValid, rustls::Error> {
-        Err(tls_err("tls 1.3 only"))
-    }
-    fn verify_tls13_signature(&self, msg: &[u8], cert: &CertificateDer<'_>, dss: &DigitallySignedStruct) -> Result<HandshakeSignatureValid, rustls::Error> {
-        verify_sig(msg, cert, dss)
-    }
-    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
-        vec![SignatureScheme::ED25519]
-    }
-    fn requires_raw_public_keys(&self) -> bool {
-        true
-    }
+    raw_ed25519_only!();
 }
 
 fn provider() -> Arc<rustls::crypto::CryptoProvider> {
@@ -309,7 +305,7 @@ async fn resolve(url: &str) -> Result<SocketAddr, Error> {
     it.next().ok_or_else(|| Error::Unreachable(url.to_owned()))
 }
 
-/// TLS 1.3 client settings: raw key `me`, the host's key checked by `verifier`, `alpn`, no
+/// TLS 1.3 client settings: raw key `me`, the listener's key checked by `verifier`, `alpn`, no
 /// SNI, no early data.
 pub(crate) fn client_tls(me: Arc<CertifiedKey>, verifier: Arc<dyn ServerCertVerifier>, alpn: &[u8]) -> Result<rustls::ClientConfig, Error> {
     let mut tls = rustls::ClientConfig::builder_with_provider(provider())
@@ -385,7 +381,7 @@ async fn connect(ep: &quinn::Endpoint, to: SocketAddr, key: PublicKey, own: Opti
         Some(s) => keypair(s.as_bytes())?.1,
         None => keypair(&*random_seed()?)?.1,
     };
-    let pin = PinnedHost::new(key);
+    let pin = PinnedKey::new(key);
     let cfg = client_config(me, pin.clone(), alpn.bytes(), limits)?;
     let connecting = ep.connect_with(cfg, to, SNI_NAME).map_err(|e| Error::BadUrl(format!("{to}: {e}")))?;
     match connecting.await {
@@ -395,7 +391,7 @@ async fn connect(ep: &quinn::Endpoint, to: SocketAddr, key: PublicKey, own: Opti
     }
 }
 
-/// The QUIC transport. Each dial uses its own UDP socket, so a host cannot link a client's
+/// The QUIC transport. Each dial uses its own UDP socket, so a listener cannot link a dialer's
 /// connections by source port.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Quic;
@@ -455,7 +451,7 @@ impl Listener for QuicListener {
 
 impl Drop for QuicListener {
     fn drop(&mut self) {
-        self.ep.close(0u32.into(), b"");
+        self.close();
     }
 }
 
@@ -644,7 +640,7 @@ mod tests {
         (l, sa)
     }
 
-    /// Accepts any host key; optionally blocks its thread (a client that never finishes).
+    /// Accepts any listener key; optionally blocks its thread (a client that never finishes).
     #[derive(Debug)]
     struct Lax(bool);
 
@@ -655,18 +651,7 @@ mod tests {
             }
             Ok(ServerCertVerified::assertion())
         }
-        fn verify_tls12_signature(&self, _: &[u8], _: &CertificateDer<'_>, _: &DigitallySignedStruct) -> Result<HandshakeSignatureValid, rustls::Error> {
-            Err(tls_err("tls 1.3 only"))
-        }
-        fn verify_tls13_signature(&self, m: &[u8], c: &CertificateDer<'_>, d: &DigitallySignedStruct) -> Result<HandshakeSignatureValid, rustls::Error> {
-            verify_sig(m, c, d)
-        }
-        fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
-            vec![SignatureScheme::ED25519]
-        }
-        fn requires_raw_public_keys(&self) -> bool {
-            true
-        }
+        raw_ed25519_only!();
     }
 
     // spec/sync.md §10: a peer failing the protocol (wrong ALPN) is a protocol error, not retried.
@@ -726,7 +711,7 @@ mod tests {
         quinn::Endpoint::client((std::net::Ipv4Addr::UNSPECIFIED, 0).into()).unwrap()
     }
 
-    /// A client handshake to `sa` from a fresh socket, the host's key checked by `verifier`.
+    /// A client handshake to `sa` from a fresh socket, the listener's key checked by `verifier`.
     async fn handshake(sa: SocketAddr, me: Arc<CertifiedKey>, verifier: Arc<dyn ServerCertVerifier>, alpn: &[u8]) -> Result<quinn::Connection, Error> {
         let cfg = client_config(me, verifier, alpn, (MAX_STREAMS, STREAM_WINDOW, u64::from(CONN_WINDOW))).unwrap();
         endpoint().connect_with(cfg, sa, SNI_NAME).unwrap().await.map_err(handshake_err)

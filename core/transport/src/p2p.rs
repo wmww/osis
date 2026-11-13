@@ -16,7 +16,7 @@
 //!   tells neither side the other's address. After the TLS handshake each side sends its own
 //!   observed address; the target punches and the dialer dials direct from the same socket.
 
-use crate::quic::{self, PinnedHost, ALPN, IDLE_TIMEOUT, SNI_NAME};
+use crate::quic::{self, PinnedKey, ALPN, IDLE_TIMEOUT, SNI_NAME};
 use crate::util::lock;
 use crate::{evict_for, ip_source, Address, Backoff, Connection, Error, ListenConfig, Listener, PublicKey, RecvStream, SendStream, Source, StaticSecret, Transport};
 use std::collections::BTreeMap;
@@ -918,7 +918,7 @@ async fn relayed<U: Udp>(udp: U, sock: Arc<U::Sock>, relay: Relay, key: PublicKe
         }
         let seen = read_addr(&mut r).await?;
         let seed = zeroize::Zeroizing::new(udp.seed()?);
-        let pin = PinnedHost::new(key);
+        let pin = PinnedKey::new(key);
         let cfg = Arc::new(quic::client_tls(quic::keypair(&seed)?.1, pin.clone(), ALPN)?);
         let name = rustls::pki_types::ServerName::try_from(SNI_NAME).map_err(|e| Error::Io(e.to_string()))?;
         let mut tls = rustls::Connection::Client(rustls::ClientConnection::new(cfg, name).map_err(|e| Error::Io(e.to_string()))?);

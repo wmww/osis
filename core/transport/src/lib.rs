@@ -232,7 +232,7 @@ mod tests {
     use super::*;
     use std::collections::BTreeMap;
 
-    // spec: none (host policy): full slots go to the source holding the most only while it holds
+    // spec: none (relay policy): full slots go to the source holding the most only while it holds
     // two more than the newcomer's; repeated arrivals end in equal shares
     #[test]
     fn evict_for_shares_fairly() {
