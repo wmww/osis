@@ -98,6 +98,9 @@ pub struct SyncEngine {
     pub(crate) engine: Engine,
     /// Whether `forget_forgettable` has looked at every held commit since this open.
     pub(crate) forget_seeded: bool,
+    /// Destroyed things whose secrets are held for deleting their commits' entries
+    /// (`drop_destroyed_secrets`).
+    pub(crate) destroyed_secrets: memory::DestroyedSecrets,
     /// `sweep_pending` has looked at every pending commit since the start (a crash may have come
     /// between an entry leaving and its sweep).
     pub(crate) pending_seeded: bool,
@@ -388,6 +391,7 @@ impl SyncEngine {
         let mut s = SyncEngine {
             hub_store,
             forget_seeded: Default::default(),
+            destroyed_secrets: Default::default(),
             pending_seeded: Default::default(),
             unvouched_reported: Default::default(),
             engine,
@@ -516,11 +520,14 @@ impl SyncEngine {
         // deposits not answered before a restart go again
         let outbox_ = loaded.outbox.keys().map(|k| (*k, local::Outgoing::default())).collect();
         let started_ = self.engine.now().0;
+        // every one judged again: what this start knows of entries is the store's
+        let held_secrets = memory::DestroyedSecrets::all(&self.engine);
         let SyncEngine {
             engine: _, events: _, rng: _, cfg: _, hub_store: _, next_conn: _, diagnostics: _, store_writes: _, restart_due: _, restarted_at: _, hosting: _,
-            forget_seeded, pending_seeded, unvouched_reported, conns, retry, redialed, stand_in, provers_mark, own_key, state, seq, passes, wake, last_tick, outbox, local_inbox, left, lifetimes_heard, first, relay_now, body_links, inbox_opened, vetted, hint_failed, inbox_copied, secrets_counted, reading_counted, unsettled_memo, relink_backoff, relink_pending, reask, relink_at, deferred, genuine, reread_boxes, start_look, redelivered, awaits_secrets, retry_inbox, inbox_awaits, inbox_plain, unchecked_swept, settle_at, held_since, pass_due, due_labels, own_wrote, fill_due, passed_at, passing, work, deposit_seen, stranded_sent, stranded_on, stranded_asks, resealed, suspects_sent, suspects_gen, suspects_due, repair_state, links_failed, joined_touched, joined_failed, tied, synced, synced_of, hub_conns, refusals, dialed_peers, covered_judged, stats, records, streams, changed_due, changed_gen, touched, own_keys, lan, lan_rotate, reach_account, served_cache, unread, charges, blob_sizes, swept, peer_cache, peer_received, peer_passes, sources_gen, shared_dirty, changed_moved, role_change, pass_wanted, started, rotation_at, placed_cache, placed_waiting, rotated, last_synced, clients_moved, prefix_checked, memory,
+            forget_seeded, destroyed_secrets, pending_seeded, unvouched_reported, conns, retry, redialed, stand_in, provers_mark, own_key, state, seq, passes, wake, last_tick, outbox, local_inbox, left, lifetimes_heard, first, relay_now, body_links, inbox_opened, vetted, hint_failed, inbox_copied, secrets_counted, reading_counted, unsettled_memo, relink_backoff, relink_pending, reask, relink_at, deferred, genuine, reread_boxes, start_look, redelivered, awaits_secrets, retry_inbox, inbox_awaits, inbox_plain, unchecked_swept, settle_at, held_since, pass_due, due_labels, own_wrote, fill_due, passed_at, passing, work, deposit_seen, stranded_sent, stranded_on, stranded_asks, resealed, suspects_sent, suspects_gen, suspects_due, repair_state, links_failed, joined_touched, joined_failed, tied, synced, synced_of, hub_conns, refusals, dialed_peers, covered_judged, stats, records, streams, changed_due, changed_gen, touched, own_keys, lan, lan_rotate, reach_account, served_cache, unread, charges, blob_sizes, swept, peer_cache, peer_received, peer_passes, sources_gen, shared_dirty, changed_moved, role_change, pass_wanted, started, rotation_at, placed_cache, placed_waiting, rotated, last_synced, clients_moved, prefix_checked, memory,
         } = self;
         *forget_seeded = false;
+        *destroyed_secrets = held_secrets;
         *pending_seeded = false;
         *unvouched_reported = BTreeSet::new();
         *conns = BTreeMap::new();
@@ -936,6 +943,8 @@ impl SyncEngine {
         // snapshots written here are changes the passes place (the trigger and `memory_step` first)
         self.compact_due()?;
         self.memory_step(out)?;
+        // after `memory_step`: a commit forgotten whole is in `Memory::forgotten` by now
+        self.drop_destroyed_secrets()?;
         self.engine_events()?;
         // joined links that ended: this account leaves K (spec/permissions.md §7)
         if self.leave_ended_links()? {

@@ -52,6 +52,10 @@ pub const SYNCING: &[u8] = b"s/";
 /// Things destroyed for good here: a purge request destroying them is past its window
 /// (`retention::destroy::keeps`), so no minting of them is taken again: `td/` + tid. Kept for good.
 pub const DESTROYED: &[u8] = b"td/";
+/// Things destroyed here that keep nothing (their record gone) whose own secrets (`k/`) are still
+/// held for node-sync's deletes of their commits' entries (`retention::destroy::hold_secrets`):
+/// `kd/` + tid, until `Engine::drop_destroyed_secrets`.
+pub const DESTROYED_SECRETS: &[u8] = b"kd/";
 /// Commits voided by overlapping session ranges: `o/` + commit ID.
 pub const VOID: &[u8] = b"o/";
 /// `ad/<commit>`: explicit demotions this node has not answered with addenda yet

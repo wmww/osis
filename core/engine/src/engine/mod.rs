@@ -824,6 +824,9 @@ indexes! {
     pub void: JSet<CommitId>,
     /// Things destroyed for good here (`records::DESTROYED`, `retention::destroy::keeps`).
     pub destroyed_for_good: JSet<Tid>,
+    /// Destroyed things keeping nothing whose own secrets are held for node-sync's deletes alone
+    /// (`records::DESTROYED_SECRETS`, `retention::destroy::hold_secrets`).
+    pub destroyed_secrets: JSet<Tid>,
     /// Deltas whose value-carrying writes are held value-less (expired, purged).
     pub valueless: JMap<(Tid, Ak), Vec<Owned>>,
     /// Actors with secrets of their own whose epochs this node holds.
@@ -1278,6 +1281,9 @@ pub struct Core {
     /// Blobs judged freed since node-sync last took them (`Engine::take_freed_new`): their
     /// bytes go and their entries are judged again.
     pub freed_new: BTreeSet<osis_base::BlobId>,
+    /// Destroyed things whose held secrets node-sync judges again for dropping
+    /// (`Engine::take_destroyed_secrets_due`): newly held so, or a freed link of one gone.
+    pub destroyed_secrets_due: BTreeSet<Tid>,
     /// Subgroups cut this transaction from under a synced group (`Core::note_cut`): what they
     /// held is reported at its end where nothing carries it now (`Core::stranded_by_cut`); forgotten with
     /// the journal.
@@ -1463,6 +1469,7 @@ impl Core {
             freed_due: self.freed_due.clone(),
             freed_waits: self.freed_waits.clone(),
             freed_new: self.freed_new.clone(),
+            destroyed_secrets_due: self.destroyed_secrets_due.clone(),
             cut_subs: self.cut_subs.clone(),
             refold: self.refold.clone(),
             changed: self.changed.clone(),
@@ -2071,6 +2078,7 @@ impl Core {
             freed_due: _,
             freed_waits: _,
             freed_new: _,
+            destroyed_secrets_due: _,
             cut_subs: _,
             refold: _,
             none_due: _,
@@ -2316,6 +2324,7 @@ impl Core {
             freed_due: BTreeSet::new(),
             freed_waits: BTreeMap::new(),
             freed_new: BTreeSet::new(),
+            destroyed_secrets_due: BTreeSet::new(),
             cut_subs: BTreeSet::new(),
             refold: BTreeSet::new(),
             changed: None,

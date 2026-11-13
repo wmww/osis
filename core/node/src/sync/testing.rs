@@ -35,6 +35,7 @@ impl SyncEngine {
                 hub_store,
                 engine,
                 forget_seeded: self.forget_seeded.clone(),
+                destroyed_secrets: self.destroyed_secrets.clone(),
                 pending_seeded: self.pending_seeded.clone(),
                 unvouched_reported: self.unvouched_reported.clone(),
                 events,

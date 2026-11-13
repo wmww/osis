@@ -1767,6 +1767,12 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
         Ok(())
     })?;
     tx.core.ix.destroyed_for_good.extend(destroyed);
+    let mut held = Vec::new();
+    tx.scan(records::DESTROYED_SECRETS, |k, _| {
+        held.push(Tid::from_bytes(k.try_into().map_err(|_| Error::Corrupt("destroyed secrets"))?));
+        Ok(())
+    })?;
+    tx.core.ix.destroyed_secrets.extend(held);
     let mut due = Vec::new();
     tx.scan(records::ADDENDA_DUE, |k, _| {
         due.push(CommitId(k.try_into().map_err(|_| Error::Corrupt("addenda due"))?));

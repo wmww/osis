@@ -110,6 +110,11 @@ fn rows(tx: &mut Tx<'_>, prefix: &[u8]) -> Result<Vec<Freed>> {
     Ok(out)
 }
 
+/// The things a freed link is held of: deleting it needs the delete keys along their chains.
+pub(crate) fn things_with_links(tx: &mut Tx<'_>) -> Result<BTreeSet<Tid>> {
+    Ok(rows(tx, records::FREED)?.into_iter().map(|f| f.tid).collect())
+}
+
 /// The links part `ai` of held commit `c` holds: its delta's tree roots and pages, or, held as its
 /// leftover, the leftover's values' roots.
 pub(crate) fn part_links(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<Vec<Link>> {
@@ -396,6 +401,10 @@ impl Engine {
         self.run(|tx| {
             for (t, b) in done {
                 tx.txn.remove_local(&key(b, t), Shred::Yes)?;
+                // a destroyed thing's secrets held for this delete are judged again
+                if tx.core.ix.destroyed_secrets.contains(t) {
+                    tx.core.destroyed_secrets_due.insert(*t);
+                }
             }
             Ok(())
         })

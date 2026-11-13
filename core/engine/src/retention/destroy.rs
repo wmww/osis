@@ -16,7 +16,9 @@
 //! edge naming it going (`Held::take_unnamed`), a key actor's last commit held elsewhere going
 //! (`Indexes::signed`), a request's window ending (its part's `T_KEPT` timer, or its part expiring). A
 //! destroyed thing that keeps nothing leaves only the commits' headers and, once a purge request
-//! destroying it is past its window, the verdict alone (`keeps`: destroyed for good).
+//! destroying it is past its window, the verdict alone (`keeps`: destroyed for good). Its own
+//! secrets, if it had any, stay only while node-sync may still delete an entry of its commits
+//! (`hold_secrets`).
 //! What a dependent needs travels with the dependent: its holders place the record and frozen
 //! history under its labels (`Engine::destroyed_upstream`), and a node that kept nothing takes them
 //! again when it opens them (`takes_late`), so it judges a dependent reaching it later as the
@@ -307,6 +309,7 @@ fn reopen_fallen(tx: &mut Tx<'_>, t: &Tid) -> Result<()> {
     if reopen_destroyed(tx, t, |_| true)? {
         crate::apply::keys::rebuild_keysets(tx, &BTreeSet::from([*t]))?;
     }
+    unhold_secrets(tx, t)?;
     // reads of the thing and its roles move, and whatever waited on the thing is judged again
     tx.core.role_changed();
     tx.core.ix.held.record_back(*t);
@@ -441,7 +444,10 @@ fn destroy_thing(tx: &mut Tx<'_>, t: &Tid, changed: &mut BTreeSet<(Tid, Ak)>) ->
         tx.core.valueless_dirty.insert(k.clone());
         changed.insert(k);
     }
-    if !keep {
+    if keep {
+        unhold_secrets(tx, t)?;
+    } else {
+        hold_secrets(tx, t)?;
         tx.txn.remove_local(&[records::CREATED, t.as_bytes()].concat(), Shred::Yes)?;
         tx.core.ix.held.forget_record(t);
         tx.core.tree_reach.remove(t);
@@ -537,6 +543,78 @@ fn forget_released(tx: &mut Tx<'_>, t: &Tid) -> Result<()> {
     }
     super::leaving::forget_things(tx, &BTreeSet::from([*t]))?;
     Ok(())
+}
+
+/// Destroyed `t` keeps nothing here (its record goes): its own secrets, if held, are noted as
+/// held for node-sync alone (`Indexes::destroyed_secrets`, `records::DESTROYED_SECRETS`).
+///
+/// Invariant: a destroyed thing's own secrets (`Indexes::secrets`, its `k/` row) are held while it
+/// keeps (`keeps`: a dependent's content may be keyed by its epochs, reached up its record chain)
+/// and, once it keeps nothing, exactly while this node may still delete something by the delete
+/// keys `Core::delete_chain` derives from them: a freed link of it (judged here), or, under a label
+/// node-sync syncs, an entry whose sections list a part on it or a delete of a commit with a part
+/// on it within its tombstone (judged by node-sync, `SyncEngine::drop_destroyed_secrets`, when the
+/// thing is noted here, after each start, and when such an entry, delete or freed link goes).
+/// Nothing else needs them: the thing reads as absent, nothing is written on it, and a dependent
+/// reaching this node later brings what reads its parts (spec/commits.md §5 Destruction).
+fn hold_secrets(tx: &mut Tx<'_>, t: &Tid) -> Result<()> {
+    if tx.core.ix.secrets.get(t).is_none() || tx.core.ix.destroyed_secrets.contains(t) {
+        return Ok(());
+    }
+    tx.core.ix.destroyed_secrets.insert(*t);
+    tx.core.destroyed_secrets_due.insert(*t);
+    tx.txn.put_local(&[records::DESTROYED_SECRETS, t.as_bytes()].concat(), &[], Shred::No)?;
+    Ok(())
+}
+
+/// `t` keeps again, or its destruction fell: its secrets are its own again, not node-sync's.
+fn unhold_secrets(tx: &mut Tx<'_>, t: &Tid) -> Result<()> {
+    if tx.core.ix.destroyed_secrets.remove(t) {
+        tx.txn.remove_local(&[records::DESTROYED_SECRETS, t.as_bytes()].concat(), Shred::No)?;
+    }
+    Ok(())
+}
+
+impl crate::engine::Engine {
+    /// The destroyed things whose own secrets are held for node-sync's deletes alone (`hold_secrets`)
+    /// to judge again since the last call: node-sync drops each (`drop_destroyed_secrets`) once it
+    /// knows no entry of a commit with a part on it.
+    pub fn take_destroyed_secrets_due(&mut self) -> BTreeSet<Tid> {
+        let due = std::mem::take(&mut self.core.destroyed_secrets_due);
+        due.into_iter().filter(|t| self.core.ix.destroyed_secrets.contains(t)).collect()
+    }
+
+    /// The held commits with a part on `t` (their headers name the delete keys of its parts).
+    pub fn commits_on(&self, t: &Tid) -> Vec<CommitId> {
+        self.core.on_thing(t).collect()
+    }
+
+    /// Drops the secrets of each of `ts` held for node-sync alone (`hold_secrets`), node-sync
+    /// knowing no entry of a commit with a part on it: its `k/` row and `Indexes::secrets` entry go.
+    /// One with a freed link left (`retention::freed`) stays: `freed_done` hands it back. One whose
+    /// record is held again keeps them as its own.
+    pub fn drop_destroyed_secrets(&mut self, ts: &BTreeSet<Tid>) -> Result<()> {
+        let ts: Vec<Tid> = ts.iter().copied().filter(|t| self.core.ix.destroyed_secrets.contains(t)).collect();
+        if ts.is_empty() {
+            return Ok(());
+        }
+        self.run(|tx| {
+            let freed = super::freed::things_with_links(tx)?;
+            for t in ts.into_iter().filter(|t| !freed.contains(t)) {
+                unhold_secrets(tx, &t)?;
+                // its record back for a dependent (`record_back`): it keeps, so its secrets are its own
+                if tx.core.created(&t).is_some() {
+                    continue;
+                }
+                if tx.core.ix.secrets.remove(&t).is_some() {
+                    tx.core.touch();
+                    tx.core.role_changed();
+                }
+                tx.txn.remove_local(&[b"k/".as_slice(), t.as_bytes()].concat(), Shred::Yes)?;
+            }
+            Ok(())
+        })
+    }
 }
 
 /// Every per-aspect row of `(t, ak)` goes, as on a node that never held a part of it.
