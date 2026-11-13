@@ -238,7 +238,7 @@ Each operation names a label. Writes are signed with the role keys of the host's
   - A co-reader peer that syncs a label with no host serves it as its own host, while a reader can pull it (§5 Placed):
     - it issues a child step when it would re-register at a host (recorded in `label.0`);
     - it holds the bodies it holds that the label must hold (§6) and the blobs they link, its certificates, and the inbox blobs it sends to an inbox label it syncs with no host;
-- **Re-registration**: an admin node that holds the epochs a host's head registers (the write and admin ones established) and, for any role, an established epoch newer than the head's (spec/crypto.md §4; its own rotation or another node's) issues a child of that head when it next syncs that label at that host.
+- **Re-registration**: an admin node that holds the epochs a host's head registers (the write and admin ones established) and, for any role, an established epoch newer than the head's (spec/crypto.md §4; its own rotation or another node's) issues a child of that head when it next syncs that label at that host, once the head is recorded in its `label.0` (a head the host alone names may be forged).
   - Order, at that host:
     1. it logs, stamped under the head's keys, the role commits of the actor the label's keys derive from (§2) that it holds and the host lacks (the rotation commits of the epochs it registers and of those they supersede in particular), for the host to pull;
     2. it registers once the host reports reading past them (§10 Reports);
