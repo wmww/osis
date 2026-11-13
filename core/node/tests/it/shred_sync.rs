@@ -19,29 +19,51 @@ fn gone() -> Ak {
 
 const MARK: &str = "SYNCED-PURGE-MARK-6b2d";
 
-/// Node b (forensic, faults `f`) holds a's write of `MARK` to `t`, synced through a host under
-/// a group label: (net, b, t, commit).
-fn synced(f: &Faults) -> (Net, usize, osis_base::Tid, osis_base::CommitId) {
+/// Node b (forensic, faults `f`) holds a's writes of `MARK` synced through a host: one commit
+/// on items `t` and `u` of two groups (its one blob held under both groups' labels, spec/sync.md
+/// §3), one on item `v` of the first group (under one label): (net, b, [t, u, v], commits).
+fn synced(f: &Faults) -> (Net, usize, [osis_base::Tid; 3], [osis_base::CommitId; 2]) {
     let (mut net, host, [a]) = hosted_nodes::<1>();
     let b = net.forensic_node(2, &[host], f);
-    let g = net.group(a, &[(b, Role::Write)], &[host]);
-    let t = net.item(a, g, g, "x");
-    net.keep(a, t, &[("t:gone.0", PURGE)]);
-    let mut m = Mutation::new();
-    m.set(t, &GONE, &s(&format!("{MARK}{}", "x".repeat(400)))).unwrap();
-    let c = net.engine(a).commit(m).unwrap().unwrap();
+    let gs = [0, 1].map(|_| net.group(a, &[(b, Role::Write)], &[host]));
+    let ts = [gs[0], gs[1], gs[0]].map(|g| {
+        let t = net.item(a, g, g, "x");
+        net.keep(a, t, &[("t:gone.0", PURGE)]);
+        t
+    });
+    let mut cs = Vec::new();
+    for items in [&ts[..2], &ts[2..]] {
+        let mut m = Mutation::new();
+        for t in items {
+            m.set(*t, &GONE, &s(&format!("{MARK}{t:?}{}", "x".repeat(400)))).unwrap();
+        }
+        cs.push(net.engine(a).commit(m).unwrap().unwrap());
+    }
     net.run();
-    assert!(net.engine(b).body_not_dropped(&c, &t, &gone()), "b holds the body");
+    let cs = [cs[0], cs[1]];
+    assert_eq!(holds(&mut net, b, ts, cs), 3, "b holds the bodies");
     let found = net.forensic(b, MARK.as_bytes());
     assert!(found.iter().any(|f| matches!(f, Source::Blob { .. })), "the attack opens the sealed body: {found:?}");
-    (net, b, t, c)
+    (net, b, ts, cs)
 }
 
-fn purge(net: &mut Net, b: usize, t: osis_base::Tid, c: osis_base::CommitId) -> osis_node::Result<()> {
+/// `cs[0]`'s parts on `ts[..2]` and `cs[1]`'s on `ts[2]`.
+fn parts(ts: [osis_base::Tid; 3], cs: [osis_base::CommitId; 2]) -> [(osis_base::CommitId, osis_base::Tid); 3] {
+    [(cs[0], ts[0]), (cs[0], ts[1]), (cs[1], ts[2])]
+}
+
+fn purge(net: &mut Net, b: usize, ts: [osis_base::Tid; 3], cs: [osis_base::CommitId; 2]) -> osis_node::Result<()> {
     let mut m = Mutation::new();
-    m.purge_commit(c, t, gone());
-    m.remove_aspect(t, &GONE).unwrap();
+    for (c, t) in parts(ts, cs) {
+        m.purge_commit(c, t, gone());
+        m.remove_aspect(t, &GONE).unwrap();
+    }
     net.engine(b).commit(m).map(|_| ())
+}
+
+/// How many of the bodies `b` holds.
+fn holds(net: &mut Net, b: usize, ts: [osis_base::Tid; 3], cs: [osis_base::CommitId; 2]) -> usize {
+    parts(ts, cs).iter().filter(|(c, t)| net.engine(b).body_not_dropped(c, t, &gone())).count()
 }
 
 /// Node-sync's work at `b` offline, stopping at a crash of its device (`f`): the process is gone.
@@ -57,17 +79,18 @@ fn settle_offline(net: &mut Net, b: usize, f: &Faults) {
 }
 
 // spec/commits.md §5 (a purge drops every local copy), spec/requirements.md Deletion: at a node
-// that synced the body (its sealed blob, blob key and wrap held by node-sync), a purge leaves
-// nothing of it in rows, blobs, wraps or keys, online (syncing on; offline: the last, crash-free
-// run of `purged_synced_body_crash_safe_spec_commits_5`)
+// that synced the bodies (each sealed blob, blob key and wrap under each label held by
+// node-sync: one blob under two labels, one under one), a purge leaves nothing of them in rows,
+// blobs, wraps or keys, online (syncing on; offline: the last, crash-free run of
+// `purged_synced_body_crash_safe_spec_commits_5`)
 #[test]
 fn purged_synced_body_unrecoverable_spec_commits_5() {
     let f = Faults::new();
-    let (mut net, b, t, c) = synced(&f);
-    purge(&mut net, b, t, c).unwrap();
+    let (mut net, b, ts, cs) = synced(&f);
+    purge(&mut net, b, ts, cs).unwrap();
     net.feed(b, Event::Local);
     net.run();
-    assert!(!net.engine(b).body_not_dropped(&c, &t, &gone()));
+    assert_eq!(holds(&mut net, b, ts, cs), 0);
     let found = net.forensic(b, MARK.as_bytes());
     assert!(found.is_empty(), "purged content recovered from {found:?}");
 }
@@ -79,28 +102,31 @@ fn purged_synced_body_unrecoverable_spec_commits_5() {
 #[test]
 fn purged_synced_body_crash_safe_spec_commits_5() {
     let f = Faults::new();
-    let (mut net, b, t, c) = synced(&f);
+    let (mut net, b, ts, cs) = synced(&f);
     net.set_online(b, false);
-    // the synced node, run down each crash path from a fresh copy
+    // the synced node's device (the engine's store and the hub's), run down each crash path
+    // from a fresh copy
     let (backend, root) = (net.nodes[b].backend.fork(), net.nodes[b].root.copy());
+    let hub = (net.nodes[b].hub_disk.0.fork(), net.nodes[b].hub_disk.1.copy());
     for n in 0.. {
         net.nodes[b].backend = backend.fork();
         net.nodes[b].root = root.copy();
+        net.nodes[b].hub_disk = (hub.0.fork(), hub.1.copy());
         net.restart(b, 70);
         f.at(n, Fault::Crash);
-        let r = purge(&mut net, b, t, c);
+        let r = purge(&mut net, b, ts, cs);
         if r.is_ok() {
             settle_offline(&mut net, b, &f);
         }
         let crashed = f.crashed();
         f.revive();
         net.restart(b, 77);
-        if net.engine(b).body_not_dropped(&c, &t, &gone()) {
+        if holds(&mut net, b, ts, cs) > 0 {
             assert!(crashed, "write {n}");
-            purge(&mut net, b, t, c).unwrap();
+            purge(&mut net, b, ts, cs).unwrap();
         }
         settle_offline(&mut net, b, &f);
-        assert!(!net.engine(b).body_not_dropped(&c, &t, &gone()), "write {n}");
+        assert_eq!(holds(&mut net, b, ts, cs), 0, "write {n}");
         let found = net.forensic(b, MARK.as_bytes());
         assert!(found.is_empty(), "crash at write {n}: purged content recovered from {found:?}");
         if !crashed {
