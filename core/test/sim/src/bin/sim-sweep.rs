@@ -119,6 +119,8 @@ fn main() -> ExitCode {
     }
     let setup = args.setup.unwrap_or(args.from);
     eprintln!("sim-sweep: {} scenarios, setup {setup}, seeds {}..{}, {} jobs{}", chosen.len(), args.from, args.from.saturating_add(args.seeds), args.jobs, args.budget.map(|b| format!(", budget {} s", b.as_secs())).unwrap_or_default());
+    // before the silent hook: an unknown `OSIS_*` variable panics with its name
+    osis_base::testenv::check_known();
     // failures carry the panic text; the default hook would print every one twice
     std::panic::set_hook(Box::new(|_| {}));
     let start = Instant::now();

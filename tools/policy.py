@@ -130,7 +130,9 @@ def env_vars():
                     continue
                 # a name ending in `_` is a prefix (a filter over the environment)
                 used |= {v for v in re.findall(r"\bOSIS_[A-Z0-9_]+", open(path, errors="replace").read()) if not v.endswith("_")}
-    for v in sorted(used - known):
+    for v in sorted(v for v in used - known if v.startswith("OSIS_PROBE_")):
+        yield f"{v} is a throwaway probe (notes/build.md): remove it before committing"
+    for v in sorted(v for v in used - known if not v.startswith("OSIS_PROBE_")):
         yield f"{v} is read but not in core/base/testenv-known.txt"
     for v in sorted(known - used):
         yield f"{v} is in core/base/testenv-known.txt but nothing reads it"

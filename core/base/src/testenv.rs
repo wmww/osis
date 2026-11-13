@@ -22,12 +22,18 @@ fn is_known(var: &str) -> bool {
     known().iter().any(|k| k == var)
 }
 
-/// Panics if a set `OSIS_*` variable is not in `known()` (a typo would silently run defaults).
-/// The environment is scanned once per process.
+/// Names starting with this are throwaway probes (notes/build.md): never checked, never committed.
+pub const PROBE_PREFIX: &str = "OSIS_PROBE_";
+
+/// Panics, naming them, if set `OSIS_*` variables are not in `known()` (a typo would silently run
+/// defaults); `PROBE_PREFIX` names are exempt. The environment is scanned once per process.
 pub fn check_known() {
     static UNKNOWN: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
     let unknown = UNKNOWN.get_or_init(|| {
-        std::env::vars_os().filter_map(|(k, _)| k.into_string().ok()).filter(|k| k.starts_with("OSIS_") && !is_known(k)).collect()
+        std::env::vars_os()
+            .filter_map(|(k, _)| k.into_string().ok())
+            .filter(|k| k.starts_with("OSIS_") && !k.starts_with(PROBE_PREFIX) && !is_known(k))
+            .collect()
     });
     assert!(unknown.is_empty(), "unknown environment variables {unknown:?} (known: core/base/testenv-known.txt)");
 }
