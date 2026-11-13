@@ -13,15 +13,12 @@ const MSG: &str = "chat:msg~0";
 fn create(a: &Osis) -> Tid {
     let msg_rule = ct::RetentionEntry { history: Some(History::FOREVER), ..Default::default() };
     let rules = ct::RetentionSetting { rules: BTreeMap::from([(Ak::new(MSG).unwrap(), msg_rule)]), default: None, retain: true };
-    // the record alone first (`create()` alone is a role commit), as chat's `create` does, so a
-    // joiner's pending reads count members' records only
+    // as chat's `create`: one commit, then `sync`
     let mut w = a.write();
     let c = w.create().unwrap();
-    w.commit().unwrap();
-    a.sync(c, &[]).unwrap();
-    let mut w = a.write();
     w.at(c, ct::RETENTION).set(&rules).unwrap();
     w.commit().unwrap();
+    a.sync(c, &[]).unwrap();
     c
 }
 

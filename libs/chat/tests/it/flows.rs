@@ -166,6 +166,20 @@ fn create_post_read_spec_commits_5() {
     assert!(!next.more);
 }
 
+// spec/commits.md §2, §5: a chat is made whole in one commit: once `create` returns, its maker and
+// every participant read its name and history setting, never the record without them
+#[test]
+fn create_is_whole_spec_commits_2() {
+    let o = Options { name: "room".into(), edit: None, disappear: Some(Duration::from_secs(600)), ..Options::default() };
+    let Room { a, b, c, .. } = room(o);
+    for db in [&a, &b] {
+        assert_eq!(db.at(c, schema::SETTINGS).get().unwrap().map(|s| s.name), Some("room".into()));
+        let rules = db.at(c, RETENTION).get().unwrap().expect("its history setting");
+        let m = &rules.rules[&MSG.name()];
+        assert_eq!((m.history, m.expires, m.refuse_replace), (Some(osis::History::FOREVER), Some(Duration::from_secs(600)), true));
+    }
+}
+
 // notes/chat.md Edit, spec/permissions.md §5.2: edits: the message keeps its id and place, reads its newest text, marked; the old text purged by default (its versions tombstones, one message shown); another's edit is refused at its writer; keep mode keeps the versions, and one delete takes them all; off refuses edits
 #[test]
 fn edit_modes_spec_perm_5() {

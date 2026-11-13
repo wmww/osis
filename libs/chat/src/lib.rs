@@ -56,10 +56,10 @@ impl Default for Options {
 
 /// A new chat, this account its first admin, its settings written before anyone is granted:
 /// every message kept for good (expiry ends a disappearing one), replacements refused when
-/// editing is off, who may delete a message. `sync`, then one commit: a crash between leaves a
-/// synced chat of one with no settings; make another. Changing a setting later writes
-/// `retention^.0` whole; a participant who has not seen it writes as before (its messages keep
-/// the expiry they were written with).
+/// editing is off, who may delete a message. One commit makes it whole (record, `retention^.0`,
+/// settings), then `sync`: a failure there leaves a whole chat on this node alone, granted to
+/// nobody; make another. Changing a setting later writes `retention^.0` whole; a participant who
+/// has not seen it writes as before (its messages keep the expiry they were written with).
 pub fn create(db: &Osis, o: &Options) -> Result<Tid> {
     let purge = match o.purge {
         PurgeBy::AuthorOrAdmin => None,
@@ -67,19 +67,14 @@ pub fn create(db: &Osis, o: &Options) -> Result<Tid> {
         PurgeBy::Writer => Some(schema::Deletes::Anyone),
         _ => return Err(Error::Invalid("a chat's messages are purgeable by the author or admins, admins, or any writer".into())),
     };
-    // the record alone first (`create()` alone is a role commit), then the settings: a joiner
-    // reads C's record among the role commits, not from a content commit it waits on
-    // (notes/chat.md As built)
-    let mut w = db.write();
-    let c = w.create()?;
-    w.commit()?;
-    db.sync(c, &o.peers)?;
     let msg = RetentionEntry { history: Some(History::FOREVER), expires: o.disappear, refuse_replace: o.edit.is_none() };
     let setting = RetentionSetting { rules: BTreeMap::from([(MSG.name(), msg)]), default: None, retain_copies: o.retain_copies };
     let mut w = db.write();
+    let c = w.create()?;
     w.at(c, RETENTION).set(&setting)?;
     w.at(c, SETTINGS).set(&schema::Settings { name: o.name.clone(), edit: o.edit.clone().unwrap_or(EditMode::Purge), purge })?;
     w.commit()?;
+    db.sync(c, &o.peers)?;
     Ok(c)
 }
 
