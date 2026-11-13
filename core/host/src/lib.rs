@@ -1,7 +1,7 @@
 //! osis-host: hosting, a node storing and serving labels it need not read (spec/sync.md §4-§9):
 //! `HostStore` (osis-proto's `LabelStore` over its own osis-store `Store`, removals shredded,
-//! with the `HostPolicy` and the admission) and `Hub` (sans-I/O: a serving session per
-//! connection on every listener of the node, sweeps). The node's driver drives the hub in its own loop, with the store its
+//! with the `HostPolicy` and the admission) and `Hub` (sans-I/O: a session per
+//! connection, accepted on a listener of the node or dialed by node sync, sweeps). The node's driver drives the hub in its own loop, with the store its
 //! `host^.0` says (`HostConfig`, public data only; an empty one in memory while it hosts
 //! nothing), node sync above every session (`Up`, `Down`: node-kind messages and client-port
 //! requests pass through unjudged);

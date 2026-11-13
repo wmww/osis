@@ -40,7 +40,7 @@ Each was a number that only made a bug unlikely (class X); the code ends by a fi
 | `MAX_MESSAGE_ITEMS` 2^20 (osis-proto `msg`: CBOR items per message, counted before decoding) | R (densest engine reply about 760 000 items, densest §11.2-valid message about 1 021 000; a decoded item is 100-260 bytes, so at most about 270 MB per decode, one at a time in a hub) | no message decodes / about 2 GB of value tree per 9 MiB frame from any peer |
 | deposit budget `64 + 4 × claims` entries × 32 KiB (`DEPOSIT_ENTRY_BYTES`) | R (host policy) | no deposits / unbounded junk deposits |
 
-### Clock and session (`proto/client.rs`, `hello.rs`)
+### Clock and window (`proto/hello.rs`, `window.rs`)
 | value | class | 0 / ∞ |
 |---|---|---|
 | `INITIAL_PINGS` 3, `MIN_PONGS` 3, `MAX_SAMPLES` 9 | M | no offset / slow start, memory |
@@ -52,7 +52,7 @@ Each was a number that only made a bug unlikely (class X); the code ends by a fi
 | `WINDOW` 16 MiB (spec), `SMALL_REPLY` 16 KiB | R/P (per-peer buffer vs throughput, `WINDOW` per round trip; one request always goes) | one request at a time / queues overflow the caps |
 | `MAX_EMPTY_PAGES` 16 | R | first empty page fails / a cursor-only peer loops forever |
 
-### Serving (`proto/serving.rs`, `relay.rs`, `host/`)
+### Sessions (`proto/session.rs`, `relay.rs`, `host/`)
 | value | class | 0 / ∞ |
 |---|---|---|
 | hub `SWEEP_BUDGET` 1024 | P | no progress per call / unbounded call latency |

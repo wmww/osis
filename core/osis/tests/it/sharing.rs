@@ -520,10 +520,14 @@ fn retry_after_a_stalled_pull_spec_permissions_7() {
         let carol = w.account(3, &[host]);
         let g = group(&alice);
         w.run();
+        w.start_tally();
         let link = alice.make_link(g, Role::Read, Default::default()).unwrap();
         for _ in 0..cut {
             w.step(None);
         }
+        // inside the stretch: K's head registered at the host (its Ok came back); past it the
+        // redeem below succeeds
+        assert!(w.tally(&alice).get("down Ok").is_some_and(|(n, _)| *n > 0), "cut {cut}: K's head not at the host yet");
         w.set_reachable(&alice, host, false);
         assert!(w.try_until(carol.redeem(&link), 1000, 200).is_none(), "cut {cut}");
         w.set_reachable(&alice, host, true);
@@ -2092,3 +2096,4 @@ fn a_fellow_joiner_cannot_end_anothers_link_spec_permissions_7() {
     w.advance(60_000);
     assert_eq!(laptop.role_on(g).unwrap(), Some(Role::Read), "Bob was pushed off the link by Carol");
 }
+

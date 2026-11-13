@@ -161,3 +161,62 @@ fn a_deposit_refused_for_now_is_offered_again_and_lands_spec_sync_10() {
     assert_eq!(net.read(b, one), Some(s("granted")));
     assert_eq!(net.read(b, two), Some(s("granted")));
 }
+
+/// The Deposit items among `msgs`: (the Offer's id, how many).
+fn deposit_offers(msgs: &[Message]) -> Vec<(u32, usize)> {
+    msgs.iter().filter_map(|m| match m {
+        Message::Offer { id, items } => Some((*id, items.iter().filter(|i| matches!(i, OfferItem::Deposit { .. })).count())).filter(|(_, n)| *n > 0),
+        _ => None,
+    }).collect()
+}
+
+// spec/sync.md §10 Shared set (Deposit items): one refused (14) is not offered on that connection
+// again until what the sender holds changes or the receiver's next filter arrives: a peer
+// refusing for good gets it once per filter it sends, never per pass or tick
+#[test]
+fn a_refused_deposit_is_offered_again_only_at_the_peers_next_filter_spec_sync_10() {
+    let (mut net, (a, b)) = known_pair_default();
+    let ta = net.tid(a);
+    net.set_online(a, false);
+    net.run();
+    granted(&mut net, b, ta, 2);
+    net.run();
+    assert_eq!(net.sync(b).deliveries_pending(), 1, "a is offline: pending");
+    let mut p = dial_as(&mut net, a, b, CHALLENGE);
+    let mut msgs = send(&mut net, b, &mut p, Message::NoRecord { id: 1 << 31 });
+    let empty = |generation| {
+        let f = osis_proto::filter::filter_width(0);
+        Message::Beacons { id: (1 << 31) | 0x100 | generation as u32, generation, base: None, f, lo: 0, hi: 1 << f, gcs: vec![], more: false }
+    };
+    msgs.extend(send(&mut net, b, &mut p, empty(1)));
+    // the hand peer refuses every Deposit item (14), whatever time passes
+    let refuse = |net: &mut Net, p: &mut crate::connection_proofs::Dialer, msgs: Vec<Message>| -> usize {
+        let mut n = 0;
+        let mut pending = msgs;
+        loop {
+            let offers = deposit_offers(&pending);
+            if offers.is_empty() {
+                return n;
+            }
+            pending = Vec::new();
+            for (id, k) in offers {
+                n += k;
+                pending.extend(send(net, b, p, Message::Shared { id, codes: vec![(Code::NOT_ADMITTED, None, None); k] }));
+            }
+        }
+    };
+    assert_eq!(refuse(&mut net, &mut p, msgs), 1, "offered once");
+    for _ in 0..3 {
+        net.advance(60_000);
+        net.run();
+        let got = send(&mut net, b, &mut p, Message::Ping { id: 0x500, wall_ms: 0 });
+        assert_eq!(refuse(&mut net, &mut p, got), 0, "not again without a change");
+    }
+    let got = send(&mut net, b, &mut p, empty(2));
+    assert_eq!(refuse(&mut net, &mut p, got), 1, "once more at the next filter");
+    net.advance(60_000);
+    net.run();
+    let got = send(&mut net, b, &mut p, Message::Ping { id: 0x501, wall_ms: 0 });
+    assert_eq!(refuse(&mut net, &mut p, got), 0);
+    assert_eq!(net.sync(b).deliveries_pending(), 1, "still pending");
+}

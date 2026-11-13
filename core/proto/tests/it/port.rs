@@ -21,7 +21,7 @@ fn requests(out: &[SessionOutput]) -> Vec<Message> {
     out.iter().filter_map(|o| if let SessionOutput::Request(m) = o { Some((**m).clone()) } else { None }).collect()
 }
 
-/// A serving session past the Hellos.
+/// A listening session past the Hellos.
 fn serving() -> (Session, MemoryLabelStore) {
     let mut s = Session::new(SessionConfig { listener_key: [1; 32], challenge: [2; 32], dialed: false });
     let mut store = MemoryLabelStore::new();
@@ -150,8 +150,8 @@ fn serving_room_follows_the_push_rule() {
     assert!(!s.held());
 }
 
-/// Moves frames between a dialer and a serving session until both are quiet; returns what the
-/// dialer's session handed up and the serving side's requests.
+/// Moves frames between a dialer and a listening session until both are quiet; returns what the
+/// dialer's session handed up and the listener's requests.
 fn pump(c: &mut Dialer, s: &mut Session, st: &mut MemoryLabelStore, mut to_s: Vec<u8>) -> (Vec<Message>, Vec<Message>) {
     let (mut ups, mut reqs) = (Vec::new(), Vec::new());
     loop {
