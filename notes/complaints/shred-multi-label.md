@@ -1,3 +1,4 @@
 # shred-multi-label
 - `shred_sync::purged_synced_body_crash_safe` forked only the engine's backend and root per crash path, not the hub disk: every path after the first ran a rewound engine store against the hub store the previous path left, a device state that cannot occur. With a richer setup it gave a false find. Any crash loop over a node must fork `hub_disk` too (`Net` has no one-call device fork; one would close this footgun).
 - The attack's `Source::Blob { wrapped: true }` twice for one blob means a blob plus its section, not two wraps; finding which row held the wrap and which key opened it took ad hoc instrumentation of `forensic.rs`.
+- Review: the two-shape crash loop cost 3x main's (412 G against 135 G); a probe of `Faults::writes` showed every label's entries of a blob go in one write, so the crash loop needed one label only. Count a crash loop's writes per shape before widening its setup.

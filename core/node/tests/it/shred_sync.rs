@@ -19,51 +19,55 @@ fn gone() -> Ak {
 
 const MARK: &str = "SYNCED-PURGE-MARK-6b2d";
 
+/// Two blob shapes (spec/sync.md §3): one commit on items of two groups, its one blob held under
+/// both groups' labels, and one on an item of one group, under one label.
+const TWO_LABELS: &[usize] = &[0, 1];
+const ONE_LABEL: &[usize] = &[0];
+
+/// The (commit, item) parts of `MARK` that node b holds.
+type Parts = Vec<(osis_base::CommitId, osis_base::Tid)>;
+
 /// Node b (forensic, faults `f`) holds a's writes of `MARK` synced through a host: one commit
-/// on items `t` and `u` of two groups (its one blob held under both groups' labels, spec/sync.md
-/// §3), one on item `v` of the first group (under one label): (net, b, [t, u, v], commits).
-fn synced(f: &Faults) -> (Net, usize, [osis_base::Tid; 3], [osis_base::CommitId; 2]) {
+/// per entry of `shape`, on one item of each group it names (`TWO_LABELS`, `ONE_LABEL`):
+/// (net, b, parts).
+fn synced(f: &Faults, shape: &[&[usize]]) -> (Net, usize, Parts) {
     let (mut net, host, [a]) = hosted_nodes::<1>();
     let b = net.forensic_node(2, &[host], f);
-    let gs = [0, 1].map(|_| net.group(a, &[(b, Role::Write)], &[host]));
-    let ts = [gs[0], gs[1], gs[0]].map(|g| {
-        let t = net.item(a, g, g, "x");
-        net.keep(a, t, &[("t:gone.0", PURGE)]);
-        t
-    });
-    let mut cs = Vec::new();
-    for items in [&ts[..2], &ts[2..]] {
+    let n = shape.iter().flat_map(|c| c.iter()).max().map_or(0, |g| g + 1);
+    let gs: Vec<_> = (0..n).map(|_| net.group(a, &[(b, Role::Write)], &[host])).collect();
+    let mut parts = Vec::new();
+    for groups in shape {
+        let ts: Vec<_> = groups.iter().map(|g| {
+            let t = net.item(a, gs[*g], gs[*g], "x");
+            net.keep(a, t, &[("t:gone.0", PURGE)]);
+            t
+        }).collect();
         let mut m = Mutation::new();
-        for t in items {
+        for t in &ts {
             m.set(*t, &GONE, &s(&format!("{MARK}{t:?}{}", "x".repeat(400)))).unwrap();
         }
-        cs.push(net.engine(a).commit(m).unwrap().unwrap());
+        let c = net.engine(a).commit(m).unwrap().unwrap();
+        parts.extend(ts.into_iter().map(|t| (c, t)));
     }
     net.run();
-    let cs = [cs[0], cs[1]];
-    assert_eq!(holds(&mut net, b, ts, cs), 3, "b holds the bodies");
+    assert_eq!(holds(&mut net, b, &parts), parts.len(), "b holds the bodies");
     let found = net.forensic(b, MARK.as_bytes());
     assert!(found.iter().any(|f| matches!(f, Source::Blob { .. })), "the attack opens the sealed body: {found:?}");
-    (net, b, ts, cs)
+    (net, b, parts)
 }
 
-/// `cs[0]`'s parts on `ts[..2]` and `cs[1]`'s on `ts[2]`.
-fn parts(ts: [osis_base::Tid; 3], cs: [osis_base::CommitId; 2]) -> [(osis_base::CommitId, osis_base::Tid); 3] {
-    [(cs[0], ts[0]), (cs[0], ts[1]), (cs[1], ts[2])]
-}
-
-fn purge(net: &mut Net, b: usize, ts: [osis_base::Tid; 3], cs: [osis_base::CommitId; 2]) -> osis_node::Result<()> {
+fn purge(net: &mut Net, b: usize, parts: &Parts) -> osis_node::Result<()> {
     let mut m = Mutation::new();
-    for (c, t) in parts(ts, cs) {
-        m.purge_commit(c, t, gone());
-        m.remove_aspect(t, &GONE).unwrap();
+    for (c, t) in parts {
+        m.purge_commit(*c, *t, gone());
+        m.remove_aspect(*t, &GONE).unwrap();
     }
     net.engine(b).commit(m).map(|_| ())
 }
 
 /// How many of the bodies `b` holds.
-fn holds(net: &mut Net, b: usize, ts: [osis_base::Tid; 3], cs: [osis_base::CommitId; 2]) -> usize {
-    parts(ts, cs).iter().filter(|(c, t)| net.engine(b).body_not_dropped(c, t, &gone())).count()
+fn holds(net: &mut Net, b: usize, parts: &Parts) -> usize {
+    parts.iter().filter(|(c, t)| net.engine(b).body_not_dropped(c, t, &gone())).count()
 }
 
 /// Node-sync's work at `b` offline, stopping at a crash of its device (`f`): the process is gone.
@@ -78,31 +82,50 @@ fn settle_offline(net: &mut Net, b: usize, f: &Faults) {
     }
 }
 
+/// `b` holds none of the bodies, and the attack recovers nothing of them.
+fn purged(net: &mut Net, b: usize, parts: &Parts, at: &str) {
+    assert_eq!(holds(net, b, parts), 0, "{at}");
+    let found = net.forensic(b, MARK.as_bytes());
+    assert!(found.is_empty(), "{at}: purged content recovered from {found:?}");
+}
+
 // spec/commits.md §5 (a purge drops every local copy), spec/requirements.md Deletion: at a node
 // that synced the bodies (each sealed blob, blob key and wrap under each label held by
-// node-sync: one blob under two labels, one under one), a purge leaves nothing of them in rows,
-// blobs, wraps or keys, online (syncing on; offline: the last, crash-free run of
-// `purged_synced_body_crash_safe_spec_commits_5`)
+// node-sync), a purge leaves nothing of them in rows, blobs, wraps or keys, online (syncing on)
 #[test]
 fn purged_synced_body_unrecoverable_spec_commits_5() {
     let f = Faults::new();
-    let (mut net, b, ts, cs) = synced(&f);
-    purge(&mut net, b, ts, cs).unwrap();
+    let (mut net, b, parts) = synced(&f, &[TWO_LABELS, ONE_LABEL]);
+    purge(&mut net, b, &parts).unwrap();
     net.feed(b, Event::Local);
     net.run();
-    assert_eq!(holds(&mut net, b, ts, cs), 0);
-    let found = net.forensic(b, MARK.as_bytes());
-    assert!(found.is_empty(), "purged content recovered from {found:?}");
+    purged(&mut net, b, &parts, "online");
+}
+
+// spec/commits.md §5, spec/requirements.md Deletion: as above with the node offline from the
+// purge on: node-sync's entries of the dropped blobs stay while a host may hold the blob, so
+// each label's wrap of each blob must be zeroed in its row (online the entries go: no kept wrap
+// shows there)
+#[test]
+fn purged_synced_body_unrecoverable_offline_spec_commits_5() {
+    let f = Faults::new();
+    let (mut net, b, parts) = synced(&f, &[TWO_LABELS, ONE_LABEL]);
+    net.set_online(b, false);
+    purge(&mut net, b, &parts).unwrap();
+    settle_offline(&mut net, b, &f);
+    purged(&mut net, b, &parts, "offline");
 }
 
 // spec/commits.md §5, §4 (a transaction lands whole or not at all): a crash at any write of the
 // purge or of node-sync's forgetting after it leaves nothing of the body once the node restarts
 // and settles offline (the store-audit window: a crash after the purging commit and before
-// node-sync forgot the body's key and ciphertext)
+// node-sync forgot the body's key and ciphertext). One label: node-sync writes every label's
+// entries of a blob in one write (a blob under two labels takes the writes of one under one
+// label with as many parts), so no crash falls between them; the offline test covers both shapes.
 #[test]
 fn purged_synced_body_crash_safe_spec_commits_5() {
     let f = Faults::new();
-    let (mut net, b, ts, cs) = synced(&f);
+    let (mut net, b, parts) = synced(&f, &[ONE_LABEL]);
     net.set_online(b, false);
     // the synced node's device (the engine's store and the hub's), run down each crash path
     // from a fresh copy
@@ -114,21 +137,18 @@ fn purged_synced_body_crash_safe_spec_commits_5() {
         net.nodes[b].hub_disk = (hub.0.fork(), hub.1.copy());
         net.restart(b, 70);
         f.at(n, Fault::Crash);
-        let r = purge(&mut net, b, ts, cs);
-        if r.is_ok() {
+        if purge(&mut net, b, &parts).is_ok() {
             settle_offline(&mut net, b, &f);
         }
         let crashed = f.crashed();
         f.revive();
         net.restart(b, 77);
-        if holds(&mut net, b, ts, cs) > 0 {
+        if holds(&mut net, b, &parts) > 0 {
             assert!(crashed, "write {n}");
-            purge(&mut net, b, ts, cs).unwrap();
+            purge(&mut net, b, &parts).unwrap();
         }
         settle_offline(&mut net, b, &f);
-        assert_eq!(holds(&mut net, b, ts, cs), 0, "write {n}");
-        let found = net.forensic(b, MARK.as_bytes());
-        assert!(found.is_empty(), "crash at write {n}: purged content recovered from {found:?}");
+        purged(&mut net, b, &parts, &format!("crash at write {n}"));
         if !crashed {
             return;
         }
