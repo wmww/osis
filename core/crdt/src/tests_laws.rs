@@ -160,7 +160,7 @@ mod entry_copies {
         let src = 1 + r.below(2) as u8;
         let int = |r: &mut Rng| Some(Value::Int(r.below(2) as i64));
         let dot = |src: u8, ctr: u64| Dot { source: Source::session(src, 0), ctr };
-        let bag = |d: Dot, w: (Stamp, Option<Value>)| Frag::Bag { kind: BagKind::Counter, c: Default::default(), elems: BTreeMap::from([(d, Elem { reset: None, frag: Some(Box::new(Frag::Register { reset: None, write: Some(w) })) })]) };
+        let bag = |d: Dot, w: (Stamp, Option<Value>)| Frag::Bag { kind: BagKind::Counter, c: Default::default(), elems: BTreeMap::from([(d, Elem { reset: None, frag: Some(Box::new(Frag::Register { reset: None, write: Some(w) })), gone: None })]) };
         match kind {
             0 => Frag::Register { reset: None, write: Some((st(src, 5), [None, Some(str("x")), Some(str("y")), Some(Value::Int(1))][r.below(4)].clone())) },
             1 => {
@@ -340,7 +340,7 @@ mod entry_copies {
         let d = Dot { source: Source::session(1, 0), ctr: 1 };
         let w = Frag::Register { reset: None, write: Some((st(1, 5), Some(Value::Int(1)))) };
         let reg = Frag::Register { reset: None, write: Some((st(1, 5), Some(Value::Int(7)))) };
-        let forged = Frag::Bag { kind: BagKind::Counter, c: Default::default(), elems: BTreeMap::from([(Dot { source: Source::session(1, 0), ctr: 5 }, Elem { reset: None, frag: Some(Box::new(reg)) })]) };
+        let forged = Frag::Bag { kind: BagKind::Counter, c: Default::default(), elems: BTreeMap::from([(Dot { source: Source::session(1, 0), ctr: 5 }, Elem { reset: None, frag: Some(Box::new(reg)), gone: None })]) };
         assert_eq!(join(&frag(&forged), &frag(&w)), frag(&w));
         assert_eq!(join(&frag(&w), &frag(&forged)), frag(&w));
         let rec = |k: &str, f: &Frag| Frag::Map { c: Default::default(), entries: BTreeMap::from([((d.clone(), Some(str(k))), Entry { reset: None, frag: Some(Box::new(f.clone())), created: Some(st(1, 1)) })]) };
@@ -355,7 +355,7 @@ mod entry_copies {
     fn slot_copies_of_the_register_write_are_told_by_stamp_spec_7() {
         let s = Frag::Register { reset: None, write: Some((st(1, 5), Some(str("a")))) };
         let g = Frag::Register { reset: None, write: Some((st_at(2, 2, 6), Some(Value::Int(2)))) };
-        let bag = Frag::Bag { kind: BagKind::Counter, c: Default::default(), elems: BTreeMap::from([(Dot { source: Source::session(1, 0), ctr: 5 }, Elem { reset: None, frag: Some(Box::new(Frag::Register { reset: None, write: Some((st_at(4, 1, 5), Some(Value::Int(7)))) })) })]) };
+        let bag = Frag::Bag { kind: BagKind::Counter, c: Default::default(), elems: BTreeMap::from([(Dot { source: Source::session(1, 0), ctr: 5 }, Elem { reset: None, frag: Some(Box::new(Frag::Register { reset: None, write: Some((st_at(4, 1, 5), Some(Value::Int(7)))) })), gone: None })]) };
         let d = Dot { source: Source::Derived(Box::new(Dot { source: Source::session(1, 0), ctr: 5 })), ctr: 1 };
         let el = SeqElem::new(Stamp { ts: (1 << 16) + 4, dot: d.clone() }, Anchor::Head, Content::Char('z'));
         let text = Frag::Seq { text: true, c: Default::default(), elems: BTreeMap::from([(d, el)]) };

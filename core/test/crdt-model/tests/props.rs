@@ -1124,8 +1124,8 @@ fn decoder_rejects_writer_rule_violations() {
     // repeated own counter: two set elements created with one counter
     let mut elems = std::collections::BTreeMap::new();
     let reg = |v: i64| Some(Box::new(Frag::Register { reset: None, write: Some((Stamp::new(ts, own.clone(), 5), Some(Value::Int(v)))) }));
-    elems.insert(Dot { source: own.clone(), ctr: 5 }, crdt_model::state::Elem { reset: None, frag: reg(1) });
-    elems.insert(Dot { source: own.clone(), ctr: 6 }, crdt_model::state::Elem { reset: None, frag: reg(2) });
+    elems.insert(Dot { source: own.clone(), ctr: 5 }, crdt_model::state::Elem { reset: None, frag: reg(1), gone: None });
+    elems.insert(Dot { source: own.clone(), ctr: 6 }, crdt_model::state::Elem { reset: None, frag: reg(2), gone: None });
     let f = Frag::Set { c: Default::default(), elems };
     assert!(decode_delta(&enc(&f), &mut Ctx::writer(ts, own.clone(), 5, 7)).is_ok());
     let mut w = Writer::new(own.clone(), ts, 5);
@@ -1276,7 +1276,7 @@ fn set_element_is_a_register_spec_3_2() {
     let mut w = Writer::new(own.clone(), ts, 1);
     let d = w.stamp().dot;
     let nested = ops::create(&mut w, &pair, &v);
-    let bad = Frag::Set { c: Composite::default(), elems: BTreeMap::from([(d, Elem { reset: None, frag: Some(Box::new(nested)) })]) };
+    let bad = Frag::Set { c: Composite::default(), elems: BTreeMap::from([(d, Elem { reset: None, frag: Some(Box::new(nested)), gone: None })]) };
     assert!(decode_delta(&enc(&bad), &mut wcx()).is_err());
 }
 

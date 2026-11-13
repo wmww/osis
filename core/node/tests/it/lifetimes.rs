@@ -479,7 +479,8 @@ fn finding_needed_destructions_reads_what_live_things_need_at_n_and_10n() {
 // forgotten at its expiry while z's reference keeps y, so the request keeps its header for y, its
 // part on x marked forgotten (over a restart); once z lets go, y is forgotten and the request goes
 // whole. No row names x or y then but the
-// headers a live thing's commits keep (z's and w's), over a restart too
+// headers a live thing's commits keep (z's and w's, z's removal of y by value naming it), over a
+// restart too
 #[test]
 fn a_request_going_whole_after_one_of_its_things_leaves_no_row_of_it() {
     let (mut net, [a]) = local_nodes::<1>();
@@ -504,11 +505,11 @@ fn a_request_going_whole_after_one_of_its_things_leaves_no_row_of_it() {
     let e = net.engine(a);
     let mut m = Mutation::new();
     refs(&mut m, z, Value::Set(Default::default()));
-    e.commit(m).unwrap();
+    let unref = e.commit(m).unwrap().unwrap();
     assert_eq!(e.lifetime_status(&y), Status::Unknown, "forgotten once z lets go");
     assert!(e.header(&req).is_none(), "the request gone whole");
     let headers = |e: &mut Engine, t: Tid| {
-        let keep = [made, wrote].map(|c| e.local_rows_naming(&c.0).unwrap());
+        let keep = [made, wrote, unref].map(|c| e.local_rows_naming(&c.0).unwrap());
         e.local_rows_naming(t.as_bytes()).unwrap().into_iter().all(|r| keep.iter().any(|k| k.contains(&r)))
     };
     for t in [x, y] {

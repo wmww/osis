@@ -122,7 +122,7 @@ fn meta(c: &m::Composite) -> Meta {
 }
 
 fn elems(e: &BTreeMap<crdt_model::stamp::Dot, m::Elem>) -> BTreeMap<Dot, Elem> {
-    e.iter().map(|(d, e)| (dot(d), Elem { reset: ostamp(&e.reset), frag: e.frag.as_ref().map(|f| Box::new(frag(f))) })).collect()
+    e.iter().map(|(d, e)| (dot(d), Elem { reset: ostamp(&e.reset), frag: e.frag.as_ref().map(|f| Box::new(frag(f))), gone: e.gone.as_ref().map(|(s, v)| (stamp(s), value(v))) })).collect()
 }
 
 fn anchor(a: &m::Anchor) -> Anchor {
@@ -153,7 +153,7 @@ pub fn frag(f: &m::Frag) -> Fragment {
             case: case.as_ref().map(|(s, k)| CaseWrite { stamp: stamp(s), case: *k }),
             payloads: payloads.iter().map(|(k, f)| (*k, frag(f))).collect(),
         }),
-        m::Frag::Set { c, elems: e } => Fragment::Set(Set { meta: meta(c), elems: elems(e) }),
+        m::Frag::Set { c, elems: e } => Fragment::Set(Set::new(meta(c), elems(e))),
         m::Frag::Map { c, entries } => Fragment::Map(Map::new(
             meta(c),
             entries

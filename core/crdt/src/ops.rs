@@ -181,12 +181,18 @@ fn reg(w: &Writer, v: Value) -> Fragment {
 /// (§3.2, §5.5), whatever the element type.
 pub(crate) fn set_elem(w: &mut Writer, v: Value) -> (Dot, Elem) {
     let d = w.fresh().dot;
-    (d, Elem { reset: None, frag: Some(Box::new(reg(w, v))) })
+    (d, Elem::of_frag(reg(w, v)))
+}
+
+/// A value removal of tid `v` (§5.5): a fresh dot, stamped as the delta's resets.
+pub(crate) fn set_removal(w: &mut Writer, v: Value) -> (Dot, Elem) {
+    let d = w.fresh().dot;
+    (d, Elem::removal(&w.delta_stamp(), v))
 }
 
 fn contribution(w: &mut Writer, kind: BagKind, v: Value) -> Fragment {
     let d = w.fresh().dot;
-    let elems = BTreeMap::from([(d, Elem { reset: None, frag: Some(Box::new(reg(w, v))) })]);
+    let elems = BTreeMap::from([(d, Elem::of_frag(reg(w, v)))]);
     Fragment::Bag(Bag { kind, meta: Meta::default(), elems })
 }
 
@@ -234,7 +240,7 @@ pub fn create<V: View>(w: &mut Writer, view: &V, v: &Value) -> Result<Fragment, 
         (Encoding::Set, Value::Set(items)) => {
             let meta = with_w(w, items.is_empty());
             let elems = items.iter().map(|it| set_elem(w, it.clone())).collect();
-            Fragment::Set(Set { meta, elems })
+            Fragment::Set(Set::new(meta, elems))
         }
         (Encoding::Map, Value::Map(kv)) => {
             let meta = with_w(w, kv.is_empty());
@@ -292,7 +298,7 @@ pub(crate) fn present_slot(st: Option<&Fragment>, enc: Encoding) -> Option<std::
 
 /// Live set or bag elements: dot and read.
 pub(crate) fn live_elems(elems: &BTreeMap<Dot, Elem>) -> Vec<(&Dot, Value)> {
-    elems.iter().filter_map(|(d, e)| Some((d, e.frag.as_ref()?.read()?))).collect()
+    crate::fragment::live_elems(elems).map(|(d, _, v)| (d, v)).collect()
 }
 
 /// Live map entry records: key to live records, ascending (§5.6).
@@ -411,11 +417,22 @@ pub fn diff<V: View>(w: &mut Writer, st: Option<&Fragment>, view: &V, v: &Value)
             let mut elems = BTreeMap::new();
             let r = w.delta_stamp();
             visited(live.len());
+            let mut removed = BTreeSet::new();
             for (d, p) in &live {
-                // opaque elements are never removed (§9)
-                if p.as_ref().is_some_and(|p| !items.contains(p)) {
-                    elems.insert((*d).clone(), Elem::tomb(&r));
+                // opaque elements are never removed (§9); a tid by value (§5.5)
+                match p {
+                    Some(p @ Value::Tid(_)) if !items.contains(p) => {
+                        removed.insert(p.clone());
+                    }
+                    Some(p) if !items.contains(p) => {
+                        elems.insert((*d).clone(), Elem::tomb(&r));
+                    }
+                    _ => {}
                 }
+            }
+            for v in removed {
+                let (d, e) = set_removal(w, v);
+                elems.insert(d, e);
             }
             for it in items {
                 if !held.contains(it) {
@@ -423,7 +440,7 @@ pub fn diff<V: View>(w: &mut Writer, st: Option<&Fragment>, view: &V, v: &Value)
                     elems.insert(d, e);
                 }
             }
-            Fragment::Set(Set { meta: Meta::default(), elems })
+            Fragment::Set(Set::new(Meta::default(), elems))
         }
         (Encoding::Map, Fragment::Map(m), Value::Map(kv)) => {
             let kview = view.key().ok_or(Error::Mismatch("map without key type"))?;
@@ -508,13 +525,15 @@ pub(crate) fn leaf<V: View>(w: &mut Writer, cur: Option<&Fragment>, view: &V, op
                 return Ok(None);
             }
             let elems = BTreeMap::from([set_elem(w, v.clone())]);
-            Ok(Some(Fragment::Set(Set { meta: Meta::default(), elems })))
+            Ok(Some(Fragment::Set(Set::new(Meta::default(), elems))))
         }
         Op::Remove(x) => {
             let r = w.delta_stamp();
             let enc = view.encoding().or_else(|| cur.map(|c| c.chosen().encoding()));
             let slot = enc.and_then(|e| present_slot(cur, e));
             match (enc, slot.as_deref()) {
+                // a tid goes by value, whatever this state holds (§5.5)
+                (Some(Encoding::Set), _) if matches!(x, Value::Tid(_)) => Ok(Some(Fragment::Set(Set::new(Meta::default(), BTreeMap::from([set_removal(w, x.clone())]))))),
                 (Some(Encoding::Set), Some(Fragment::Set(s))) => {
                     let ev = view.element().ok_or(Error::Mismatch("set without element type"))?;
                     let elems: BTreeMap<Dot, Elem> = live_elems(&s.elems)
@@ -522,7 +541,7 @@ pub(crate) fn leaf<V: View>(w: &mut Writer, cur: Option<&Fragment>, view: &V, op
                         .filter(|(_, v)| projected(&ev, v).as_ref() == Some(x))
                         .map(|(d, _)| (d.clone(), Elem::tomb(&r)))
                         .collect();
-                    Ok((!elems.is_empty()).then(|| Fragment::Set(Set { meta: Meta::default(), elems })))
+                    Ok((!elems.is_empty()).then(|| Fragment::Set(Set::new(Meta::default(), elems))))
                 }
                 (Some(Encoding::Map), Some(Fragment::Map(m))) => {
                     let kv = view.key().ok_or(Error::Mismatch("map without key type"))?;

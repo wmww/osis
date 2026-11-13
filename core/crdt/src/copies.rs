@@ -42,10 +42,13 @@ impl Copies {
     fn frag(&mut self, f: &Fragment) {
         match f {
             Fragment::Register(r) => self.reg(r),
-            Fragment::Bag(Bag { meta: m, elems: e, .. }) | Fragment::Set(Set { meta: m, elems: e }) => {
+            Fragment::Bag(Bag { meta: m, elems: e, .. }) | Fragment::Set(Set { meta: m, elems: e, .. }) => {
                 self.meta(m);
                 for x in e.iter().filter(|(d, _)| !d.src.is_derived()).map(|(_, x)| x) {
                     self.opt(&x.reset);
+                    if let Some(g) = &x.gone {
+                        self.put(&g.0);
+                    }
                     if let Some(f) = &x.frag {
                         self.frag(f);
                     }

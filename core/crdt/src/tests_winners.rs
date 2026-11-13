@@ -3,7 +3,7 @@
 //! stamping many writes of which only some die.
 
 use crate::batch::Batch;
-use crate::fragment::{Elem, Fragment, Meta};
+use crate::fragment::{Elem, Fragment, Key, Meta};
 use crate::ops::{Op, PathOp, Writer};
 use crate::seq::{Seq, SeqContent, SeqElem};
 use crate::stamp::{Dot, Source, Stamp};
@@ -74,7 +74,28 @@ fn walk(f: &Fragment, path: &mut Vec<Place>, out: &mut Vec<Raw>) {
         }
         Fragment::Set(b) => {
             meta(out, path, &b.meta);
-            elems(&b.elems, path, out);
+            for (d, e) in &b.elems {
+                if let Some((s, v)) = &e.gone {
+                    path.push(Place::Gone(Key(std::sync::Arc::new(v.clone()))));
+                    put(out, path, Kind::Reset, s);
+                    path.pop();
+                }
+                path.push(Place::Elem(d.clone()));
+                e.reset.iter().for_each(|s| put(out, path, Kind::Reset, s));
+                match e.written() {
+                    Some((Some(v @ Value::Tid(_)), s)) => {
+                        path.push(Place::Tid(Key(std::sync::Arc::new(v.clone()))));
+                        put(out, path, Kind::Value, s);
+                        path.pop();
+                    }
+                    _ => {
+                        if let Some(x) = e.frag.as_deref() {
+                            inside(x, path, out);
+                        }
+                    }
+                }
+                path.pop();
+            }
         }
         Fragment::Struct(s) => {
             meta(out, path, &s.meta);
@@ -139,9 +160,12 @@ fn walk(f: &Fragment, path: &mut Vec<Place>, out: &mut Vec<Raw>) {
 /// register write, which implies one) or resets the list element it is inside.
 fn pruned(w: &Raw, all: &[Raw]) -> bool {
     let prefix = |p: &[Place]| w.w.path.starts_with(p);
+    // a value removal of a set: its tid's elements there, hidden (§5.5)
+    let removes = |s: &Raw| matches!((s.w.path.split_last(), w.w.path.as_slice()), (Some((Place::Gone(g), at)), [up @ .., Place::Elem(_), Place::Tid(t)]) if at == up && g == t);
     all.iter().any(|s| {
         s.w.stamp > w.w.stamp
             && match s.w.kind {
+                Kind::Reset if removes(s) => true,
                 Kind::Reset | Kind::Value => prefix(&s.w.path),
                 Kind::ElemReset => s.w.path.len() < w.w.path.len() && prefix(&s.w.path),
                 _ => false,

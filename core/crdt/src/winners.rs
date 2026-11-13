@@ -2,7 +2,7 @@
 //! write of `a` is dead in `a ⊔ b` iff it wins in `a` and not in `a ⊔ b`; retention dates bodies
 //! from that set (spec/commits.md §5).
 
-use crate::fragment::{Bag, Elem, Enum, Fragment, Map, Meta, Register, Set, Slots, Struct};
+use crate::fragment::{Bag, Elem, Enum, Fragment, Key, Map, Meta, Register, Set, Slots, Struct};
 use crate::seq::{Seq, SeqContent, SeqElem};
 use crate::stamp::{Dot, Stamp};
 use osis_base::Ts;
@@ -24,6 +24,11 @@ pub enum Place {
     /// The content of the entry or element above: below its own writes (its reset prunes it,
     /// its content's writes supersede none of its own).
     In,
+    /// A set element's register holding a tid, in place of `In`: what a value removal of the
+    /// tid prunes (§5.5).
+    Tid(Key),
+    /// A set's value removals of a tid, beside its elements (§5.5).
+    Gone(Key),
 }
 
 /// Which write at a position.
@@ -146,6 +151,24 @@ impl<T> ByWrite<T> {
     pub fn first_superseding(&self, w: &Won, date: impl Fn(&Stamp, &T) -> Option<Ts>) -> Option<Ts> {
         let undeleted = if w.kind == Kind::Created { self.0.get(&w.path).and_then(|s| s.keys().filter(|x| x.0 == Kind::Undelete).map(|x| &x.1).max()) } else { None };
         let mut best: Option<Ts> = None;
+        // a set element's tid: the value removals of it, which hide it (§5.5)
+        if w.kind == Kind::Value
+            && let [up @ .., Place::Elem(_), Place::Tid(t)] = w.path.as_slice()
+        {
+            let gone = |p: &Vec<Place>| matches!(p.split_last(), Some((Place::Gone(g), at)) if at == up && g == t);
+            let mut from = up.to_vec();
+            // the least key: the encoding 0x00
+            from.push(Place::Gone(Key(std::sync::Arc::new(osis_base::Value::Int(0)))));
+            for (_, s) in self.0.range(from..).take_while(|(p, _)| p.starts_with(up)).filter(|(p, _)| gone(p)) {
+                for ((_, st), t) in s.range((Kind::Reset, w.stamp.clone())..).take_while(|x| x.0.0 == Kind::Reset) {
+                    if *st > w.stamp
+                        && let Some(d) = date(st, t)
+                    {
+                        best = Some(best.map_or(d, |b| b.min(d)));
+                    }
+                }
+            }
+        }
         for (n, s) in on_path(&self.0, w) {
             for k in Kind::ALL {
                 for ((_, st), t) in s.range((k, w.stamp.clone())..).take_while(|x| x.0.0 == k) {
@@ -286,11 +309,29 @@ fn reg<S: Sink>(out: &mut S, path: &[Place], r: &Register) {
 
 fn elems<S: Sink>(out: &mut S, path: &mut Vec<Place>, m: &Meta, es: &BTreeMap<Dot, Elem>) {
     meta(out, path, m);
+    // of a tid's value removals only the greatest wins (one position), and an element of the
+    // tid stamped below it does not: it stays hidden (§5.5)
+    let gone = if S::ALL { BTreeMap::new() } else { crate::fragment::removed(es) };
     for (d, e) in es {
+        if let Some((s, v)) = &e.gone
+            && (S::ALL || gone.get(v) == Some(&s))
+        {
+            path.push(Place::Gone(Key(std::sync::Arc::new(v.clone()))));
+            out.put(path, Kind::Reset, s);
+            path.pop();
+        }
         path.push(Place::Elem(d.clone()));
         opt(out, path, Kind::Reset, &e.reset);
-        if let Some(f) = e.frag.as_deref() {
-            inside(f, path, out);
+        match (e.frag.as_deref(), e.written()) {
+            (Some(Fragment::Register(r)), Some((Some(v @ osis_base::Value::Tid(_)), _))) => {
+                path.push(Place::Tid(Key(std::sync::Arc::new(v.clone()))));
+                if !crate::fragment::hidden(e, &gone) {
+                    reg(out, path, r);
+                }
+                path.pop();
+            }
+            (Some(f), _) => inside(f, path, out),
+            (None, _) => {}
         }
         path.pop();
     }
@@ -305,7 +346,7 @@ fn collect<S: Sink>(f: &Fragment, path: &mut Vec<Place>, out: &mut S) {
             }
             slots.values().for_each(|x| collect(x, path, out));
         }
-        Fragment::Bag(Bag { meta: m, elems: es, .. }) | Fragment::Set(Set { meta: m, elems: es }) => elems(out, path, m, es),
+        Fragment::Bag(Bag { meta: m, elems: es, .. }) | Fragment::Set(Set { meta: m, elems: es, .. }) => elems(out, path, m, es),
         Fragment::Struct(Struct { meta: m, fields }) => {
             meta(out, path, m);
             for (k, x) in fields {

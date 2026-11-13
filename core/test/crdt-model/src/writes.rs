@@ -14,6 +14,8 @@ pub enum Step {
     Elem(Dot),
     Record(Dot, Option<Value>),
     Reset(Stamp),
+    /// A set's value removal (§5.5).
+    Gone(Stamp),
     W(Stamp),
     Write(Stamp),
     Case(Stamp),
@@ -80,10 +82,13 @@ pub fn writes(f: &Frag) -> Vec<(Name, Frag)> {
                             w
                         };
                         if let Some(r) = &el.reset {
-                            put(vec![Step::Elem(d.clone()), Step::Reset(r.clone())], one(Elem { reset: Some(r.clone()), frag: None }));
+                            put(vec![Step::Elem(d.clone()), Step::Reset(r.clone())], one(Elem { reset: Some(r.clone()), frag: None, gone: None }));
+                        }
+                        if let Some(g) = &el.gone {
+                            put(vec![Step::Elem(d.clone()), Step::Gone(g.0.clone())], one(Elem { reset: None, frag: None, gone: Some(g.clone()) }));
                         }
                         for (n, x) in el.frag.as_deref().map(writes).unwrap_or_default() {
-                            put(prefixed(Step::Elem(d.clone()), n), one(Elem { reset: None, frag: Some(Box::new(x)) }));
+                            put(prefixed(Step::Elem(d.clone()), n), one(Elem { reset: None, frag: Some(Box::new(x)), gone: None }));
                         }
                     }
                 }

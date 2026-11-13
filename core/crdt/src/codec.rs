@@ -274,12 +274,18 @@ pub(crate) fn link_groups(links: &[Link], fanout: usize) -> Vec<&[Link]> {
     out
 }
 
-/// A bag or set element `[Dot, R, Opt(Fragment)]`.
+/// A bag or set element `[Dot, R, Opt(Fragment)]`, with a value removal
+/// `[Dot, R, Opt(Fragment), Stamp, Value]` (§3.2).
 pub(crate) fn encode_elem(cx: &mut Enc, out: &mut Vec<u8>, d: &Dot, e: &Elem) -> Result<(), Error> {
-    put_array(out, 3);
+    put_array(out, if e.gone.is_some() { 5 } else { 3 });
     cx.dot(out, d);
     cx.opt_stamp(out, e.reset.as_ref());
-    opt_frag(cx, out, e.frag.as_deref())
+    opt_frag(cx, out, e.frag.as_deref())?;
+    if let Some((st, v)) = &e.gone {
+        cx.stamp(out, st);
+        encode_into(v, out);
+    }
+    Ok(())
 }
 
 fn encode_elems(cx: &mut Enc, out: &mut Vec<u8>, elems: &BTreeMap<Dot, Elem>) -> Result<(), Error> {
@@ -370,9 +376,13 @@ pub(crate) fn encode_fragment(cx: &mut Enc, out: &mut Vec<u8>, f: &Fragment) -> 
 fn encode_fragment_at(cx: &mut Enc, out: &mut Vec<u8>, f: &Fragment) -> Result<(), Error> {
     match f {
         Fragment::Register(r) => encode_register(cx, out, r),
-        Fragment::Bag(Bag { meta, elems, .. }) | Fragment::Set(Set { meta, elems }) => {
+        Fragment::Bag(Bag { meta, elems, .. }) => {
             head(cx, out, f.encoding(), meta, 4);
             encode_elems(cx, out, elems)?;
+        }
+        Fragment::Set(s) => {
+            head(cx, out, Encoding::Set, &s.meta, 4);
+            encode_elems(cx, out, &s.elems)?;
         }
         Fragment::Struct(s) => {
             head(cx, out, Encoding::Struct, &s.meta, 4);
@@ -650,18 +660,35 @@ fn decode_meta(cx: &mut Dec, r: Item, w: Item) -> Result<Meta, Error> {
     Ok(Meta { reset: cx.opt_level_stamp(r)?, w, w_valueless })
 }
 
-fn decode_elems(cx: &mut Dec, v: Item) -> Result<BTreeMap<Dot, Elem>, Error> {
+fn decode_elems(cx: &mut Dec, v: Item, set: bool) -> Result<BTreeMap<Dot, Elem>, Error> {
     let mut out = BTreeMap::new();
-    elem_items(cx, v, &mut |cx, items| decode_elem_items(cx, items, &mut out))?;
+    elem_items(cx, v, &mut |cx, items| decode_elem_items(cx, items, set, &mut out))?;
     Ok(out)
 }
 
-/// Bag or set elements into `out`.
-pub(crate) fn decode_elem_items(cx: &mut Dec, items: List, out: &mut BTreeMap<Dot, Elem>) -> Result<(), Error> {
+/// Bag or set elements into `out`; a set's value removals too (§3.2).
+pub(crate) fn decode_elem_items(cx: &mut Dec, items: List, set: bool, out: &mut BTreeMap<Dot, Elem>) -> Result<(), Error> {
     for e in items {
-        let Some([d, r, f]) = as_array(e)?.tuple() else { return Err(Error::Malformed("element")) };
+        let a = as_array(e)?;
+        let (d, r, f, gone) = match (a.tuple(), a.tuple()) {
+            (Some([d, r, f]), _) => (d, r, f, None),
+            (_, Some([d, r, f, g, v])) => (d, r, f, Some((g, v))),
+            _ => return Err(Error::Malformed("element")),
+        };
         let dot = cx.dot(d)?;
         let reset = cx.opt_level_stamp(r)?;
+        // a value removal: a set's, naming a tid (§3.3 rule 7)
+        let gone = match gone {
+            Some((g, v)) => {
+                let g = cx.level_stamp(g)?;
+                let v = v.to_value()?;
+                if !set || !matches!(v, Value::Tid(_)) {
+                    return Err(Error::Malformed("value removal"));
+                }
+                Some((g, v))
+            }
+            None => None,
+        };
         let frag = opt_stamp_only(f, |x| cx.fragment(x))?.map(Box::new);
         // a set or bag element's value is one register (§3.2), written only by the element's
         // creation, so by its dot's source (§3.3 rule 7)
@@ -671,13 +698,13 @@ pub(crate) fn decode_elem_items(cx: &mut Dec, items: List, out: &mut BTreeMap<Do
             Some(Fragment::Register(_)) => return Err(Error::Malformed("set or bag element value written by another source")),
             Some(_) => return Err(Error::Malformed("set or bag element not a register")),
         }
-        if reset.is_none() && frag.as_deref().is_none_or(Fragment::is_empty) {
+        if reset.is_none() && gone.is_none() && frag.as_deref().is_none_or(Fragment::is_empty) {
             return Err(Error::Malformed("record without a write"));
         }
-        if frag.is_some() {
+        if frag.is_some() || gone.is_some() {
             cx.claim(&dot)?;
         }
-        out.insert(dot, Elem { reset, frag });
+        out.insert(dot, Elem { reset, frag, gone });
     }
     Ok(())
 }
@@ -832,7 +859,8 @@ pub(crate) fn derived_ok(f: &Fragment) -> bool {
     let meta = |m: &Meta| ok(m.reset.as_ref()) && ok(m.w.as_ref());
     match f {
         Fragment::Register(r) => ok(r.reset.as_ref()) && ok(r.write.as_ref().map(|w| &w.stamp)),
-        Fragment::Bag(Bag { meta: m, elems, .. }) | Fragment::Set(Set { meta: m, elems }) => meta(m) && elems.values().all(|e| ok(e.reset.as_ref())),
+        Fragment::Bag(Bag { meta: m, elems, .. }) => meta(m) && elems.values().all(|e| ok(e.reset.as_ref())),
+        Fragment::Set(s) => meta(&s.meta) && s.elems.values().all(|e| ok(e.reset.as_ref()) && ok(e.gone.as_ref().map(|g| &g.0))),
         Fragment::Struct(x) => meta(&x.meta),
         Fragment::Enum(x) => meta(&x.meta) && ok(x.case.as_ref().map(|c| &c.stamp)),
         Fragment::Map(x) => meta(&x.meta) && x.entries.values().all(|e| ok(e.reset.as_ref()) && ok(e.created.as_ref())),
@@ -858,14 +886,14 @@ fn decode_fragment_at(cx: &mut Dec, v: Item, may_reset: bool) -> Result<Fragment
             let Some([_, r, w, e]) = a.tuple() else { return Err(ARITY) };
             let kind = enc.bag_kind().ok_or(Error::Malformed("bag"))?;
             let meta = decode_meta(cx, r, w)?;
-            let elems = if defer(cx, e, enc)? { BTreeMap::new() } else { decode_elems(cx, e)? };
+            let elems = if defer(cx, e, enc)? { BTreeMap::new() } else { decode_elems(cx, e, false)? };
             Fragment::Bag(Bag { kind, meta, elems })
         }
         Encoding::Set => {
             let Some([_, r, w, e]) = a.tuple() else { return Err(ARITY) };
             let meta = decode_meta(cx, r, w)?;
-            let elems = if defer(cx, e, enc)? { BTreeMap::new() } else { decode_elems(cx, e)? };
-            Fragment::Set(Set { meta, elems })
+            let elems = if defer(cx, e, enc)? { BTreeMap::new() } else { decode_elems(cx, e, true)? };
+            Fragment::Set(Set::new(meta, elems))
         }
         Encoding::Struct => {
             let Some([_, r, w, c]) = a.tuple() else { return Err(ARITY) };

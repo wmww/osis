@@ -56,6 +56,14 @@ impl Fragment {
         }
     }
 
+    /// A set's record `d`: the tid its value removal names, or its element's value (hidden or
+    /// not, §5.5); `None` for a tombstone, a value-less element or another encoding.
+    pub fn set_record_value(&self, d: &Dot) -> Option<Value> {
+        let Fragment::Set(s) = self else { return None };
+        let e = s.elems.get(d)?;
+        e.removes().or_else(|| e.written()?.0).cloned()
+    }
+
     /// The same collection holding only its root elements in `[lo, hi)`, with the own reset and
     /// `W` iff `meta`; `None` for other encodings.
     pub fn elem_range(&self, lo: Option<&Dot>, hi: Option<&Dot>, meta: bool) -> Option<Fragment> {
@@ -67,7 +75,7 @@ impl Fragment {
         let m = |x: &Meta| if meta { x.clone() } else { Meta::default() };
         Some(match self {
             Fragment::Map(x) => Fragment::Map(Map::new(m(&x.meta), r.map(|(lo, hi)| map_range(&x.entries, lo, hi).map(|(id, e)| (id.clone(), e.clone())).collect()).unwrap_or_default())),
-            Fragment::Set(x) => Fragment::Set(Set { meta: m(&x.meta), elems: sub(&x.elems, r) }),
+            Fragment::Set(x) => Fragment::Set(Set::new(m(&x.meta), sub(&x.elems, r))),
             Fragment::Bag(x) => Fragment::Bag(Bag { kind: x.kind, meta: m(&x.meta), elems: sub(&x.elems, r) }),
             Fragment::Seq(x) => Fragment::Seq(Seq::new(x.text, m(&x.meta), sub(x.elems(), r))),
             _ => return None,
@@ -276,6 +284,9 @@ pub struct PagedTouch {
     pub elems: BTreeMap<Vec<Step>, Vec<Dot>>,
     /// Per paged sequence, the delta's fragment there (what its placement follows).
     pub seqs: BTreeMap<Vec<Step>, Fragment>,
+    /// Per paged set, the tids its elements and value removals name: the records of each,
+    /// wherever they are, hide or are hidden by them (§5.5).
+    pub tids: BTreeMap<Vec<Step>, Vec<Value>>,
 }
 
 impl Fragment {
@@ -441,6 +452,12 @@ fn touched_walk(d: &Fragment, t: &Paths, path: &mut Vec<Step>, out: &mut PagedTo
         }
         if matches!(d, Fragment::Seq(_)) {
             out.seqs.insert(path.clone(), d.clone());
+        }
+        if let Fragment::Set(x) = d {
+            let tids: std::collections::BTreeSet<&Value> = x.elems.values().flat_map(crate::fragment::Elem::tids).collect();
+            if !tids.is_empty() {
+                out.tids.entry(path.clone()).or_default().extend(tids.into_iter().cloned());
+            }
         }
         out.elems.entry(path.clone()).or_default().extend(dots);
         return Some(());

@@ -275,7 +275,7 @@ fn prune_page(f: &Fragment, e: Option<&Stamp>, carry: &mut Vec<(Eid, Entry)>) ->
             Ok(())
         }
         Fragment::Bag(b) => b.elems.iter().try_for_each(|(d, x)| one(Fragment::Bag(Bag { kind: b.kind, meta: Meta::default(), elems: BTreeMap::from([(d.clone(), x.clone())]) }))),
-        Fragment::Set(x) => x.elems.iter().try_for_each(|(d, el)| one(Fragment::Set(Set { meta: Meta::default(), elems: BTreeMap::from([(d.clone(), el.clone())]) }))),
+        Fragment::Set(x) => x.elems.iter().try_for_each(|(d, el)| one(Fragment::Set(Set::new(Meta::default(), BTreeMap::from([(d.clone(), el.clone())]))))),
         Fragment::Seq(q) => q.elems().iter().try_for_each(|(d, el)| one(Fragment::Seq(Seq::new(q.text, Meta::default(), BTreeMap::from([(d.clone(), el.clone())]))))),
         Fragment::Struct(Struct { fields, .. }) | Fragment::Enum(Enum { payloads: fields, .. }) => fields.values().try_for_each(|x| prune_stable(x, e).map(drop)),
         Fragment::Register(_) | Fragment::Slots(_) => prune_stable(f, e).map(drop),
@@ -357,12 +357,12 @@ fn decode_page(dec: &mut Dec, page: Item, e: Encoding) -> Result<Fragment, Error
     let f = match e {
         Encoding::Counter | Encoding::Max | Encoding::Min => {
             let kind = e.bag_kind().ok_or(Error::Malformed("bag"))?;
-            decode_elem_items(dec, items()?, &mut elems)?;
+            decode_elem_items(dec, items()?, false, &mut elems)?;
             Fragment::Bag(Bag { kind, meta, elems })
         }
         Encoding::Set => {
-            decode_elem_items(dec, items()?, &mut elems)?;
-            Fragment::Set(Set { meta, elems })
+            decode_elem_items(dec, items()?, true, &mut elems)?;
+            Fragment::Set(Set::new(meta, elems))
         }
         Encoding::Map => {
             let mut entries = BTreeMap::new();

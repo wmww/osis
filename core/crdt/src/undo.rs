@@ -147,12 +147,24 @@ fn undo_at<V: View>(w: &mut Writer, u: &Undone, o: &Fragment, s: Option<&Fragmen
             let prev = chosen(b);
             let mut elems = BTreeMap::new();
             for (d, e) in &x.elems {
-                if e.frag.is_some() && u.made(d) {
+                if let Some(v) = e.removes() {
+                    // a value removal: the value back with a fresh dot, where it was live (§5.5)
+                    let f = match &prev {
+                        Some(Fragment::Set(p)) => crate::fragment::live_elems(&p.elems).find(|(_, _, x)| x == v).and_then(|(pd, x, _)| Some((pd, x.frag.as_deref()?))),
+                        _ => None,
+                    };
+                    if let Some((pd, f)) = f {
+                        w.copy_dot(pd);
+                        w.copy_from(f);
+                        let (nd, e) = crate::ops::set_elem(w, v.clone());
+                        elems.insert(nd, e);
+                    }
+                } else if e.frag.is_some() && u.made(d) {
                     elems.insert(d.clone(), Elem::tomb(&r));
                 } else if e.reset.is_some() {
                     // re-add the removed value with a fresh dot
                     let f = match &prev {
-                        Some(Fragment::Set(p)) => p.elems.get(d).and_then(|e| e.frag.as_deref()),
+                        Some(Fragment::Set(p)) => p.elems.get(d).filter(|e| !crate::fragment::hidden(e, &crate::fragment::removed(&p.elems))).and_then(|e| e.frag.as_deref()),
                         _ => None,
                     };
                     if let Some((f, v)) = f.and_then(|f| Some((f, f.read()?))) {
@@ -163,7 +175,7 @@ fn undo_at<V: View>(w: &mut Writer, u: &Undone, o: &Fragment, s: Option<&Fragmen
                     }
                 }
             }
-            Fragment::Set(Set { meta: Meta::default(), elems })
+            Fragment::Set(Set::new(Meta::default(), elems))
         }
         Fragment::Map(m) => {
             if m.meta.reset.is_some()
@@ -318,7 +330,7 @@ fn contribution<V: View>(w: &mut Writer, ev: Option<&V>, v: osis_base::Value, r:
         Some(ev) => create(w, ev, &v)?,
         None => Fragment::Register(Register { reset: None, write: Some(RegWrite { stamp: r.clone(), value: Some(v) }) }),
     };
-    Ok((d, Elem { reset: None, frag: Some(Box::new(f)) }))
+    Ok((d, Elem::of_frag(f)))
 }
 
 /// Whether undoing `u` writes back content the delta replaced (spec/crdt.md §4.6), judged by
@@ -336,7 +348,7 @@ fn restores_at(u: &Undone, o: &Fragment) -> bool {
     match o {
         Fragment::Register(r) => r.reset.is_some() || r.write.is_some(),
         Fragment::Bag(x) => x.elems.values().any(|e| e.reset.is_some()),
-        Fragment::Set(x) => x.elems.values().any(|e| e.reset.is_some()),
+        Fragment::Set(x) => x.elems.values().any(|e| e.reset.is_some() || e.gone.is_some()),
         Fragment::Map(m) => m.entries.iter().any(|(id, e)| e.reset.is_some() || (!u.made(&id.dot) && e.frag.as_deref().is_some_and(|f| restores_at(u, f)))),
         Fragment::Struct(x) => x.fields.values().any(|f| restores_at(u, f)),
         Fragment::Enum(x) => x.case.is_some() || x.payloads.values().any(|f| restores_at(u, f)),

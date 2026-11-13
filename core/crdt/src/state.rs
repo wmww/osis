@@ -208,12 +208,21 @@ fn join_opt(s: &mut Option<Box<Fragment>>, d: Option<Box<Fragment>>, e: Option<&
     }
 }
 
+/// A value removal below `e` goes (§4.2, §5.5).
+fn prune_gone(g: &mut Option<(Stamp, Value)>, e: Option<&Stamp>, ch: &mut Changes) {
+    if g.as_ref().is_some_and(|(s, _)| e.is_some_and(|e| s < e)) {
+        *g = None;
+        ch.touch();
+    }
+}
+
 /// Prunes a set or bag element; `false` when the record goes (§4.2).
 fn prune_elem(el: &mut Elem, e: Option<&Stamp>, ch: &mut Changes) -> bool {
     prune_write(&mut el.reset, e, ch);
+    prune_gone(&mut el.gone, e, ch);
     let ee = max_opt(e.cloned(), el.reset.clone());
     prune_opt(&mut el.frag, ee.as_ref(), ch);
-    el.reset.is_some() || el.frag.is_some()
+    el.holds()
 }
 
 fn prune_elems(elems: &mut BTreeMap<Dot, Elem>, e: Option<&Stamp>, ch: &mut Changes) {
@@ -231,7 +240,13 @@ fn join_elems(s: &mut BTreeMap<Dot, Elem>, d: BTreeMap<Dot, Elem>, e: Option<&St
                     prune_opt(&mut se.frag, ee.as_ref(), ch);
                 }
                 join_opt(&mut se.frag, de.frag, ee.as_ref(), ch);
-                if se.reset.is_none() && se.frag.is_none() {
+                // a value removal is a write of its own: of copies of one dot, the greatest (§5.5)
+                if de.gone > se.gone {
+                    se.gone = de.gone;
+                    ch.touch();
+                }
+                prune_gone(&mut se.gone, e, ch);
+                if !se.holds() {
                     s.remove(&dot);
                 }
             }
@@ -428,7 +443,7 @@ pub(crate) fn embed(r: &Register, target: Encoding) -> Option<Fragment> {
             let mut elems = BTreeMap::new();
             if let Some(w) = &r.write {
                 let reg = Register { reset: None, write: Some(w.clone()) };
-                elems.insert(w.stamp.dot.clone(), Elem { reset: None, frag: Some(Box::new(Fragment::Register(reg))) });
+                elems.insert(w.stamp.dot.clone(), Elem::of_frag(Fragment::Register(reg)));
             }
             Fragment::Bag(Bag { kind: target.bag_kind()?, meta, elems })
         }
@@ -436,7 +451,7 @@ pub(crate) fn embed(r: &Register, target: Encoding) -> Option<Fragment> {
         Encoding::List => Fragment::Seq(Seq::new(false, meta, BTreeMap::new())),
         Encoding::Struct => Fragment::Struct(Struct { meta, fields: BTreeMap::new() }),
         Encoding::Enum => Fragment::Enum(Enum { meta, case: None, payloads: BTreeMap::new() }),
-        Encoding::Set => Fragment::Set(Set { meta, elems: BTreeMap::new() }),
+        Encoding::Set => Fragment::Set(Set::new(meta, BTreeMap::new())),
         Encoding::Map => Fragment::Map(Map { meta, ..Map::default() }),
     })
 }
@@ -591,7 +606,11 @@ impl Fragment {
             }
             Fragment::Bag(_) => {}
             Fragment::Struct(Struct { fields: m, .. }) | Fragment::Enum(Enum { payloads: m, .. }) => m.values().for_each(|x| x.each_value(f)),
-            Fragment::Set(s) => s.elems.values().filter_map(|e| e.frag.as_deref()).for_each(|x| x.each_value(f)),
+            // an element a value removal hides is dead (§4.8, §5.5)
+            Fragment::Set(s) => {
+                let gone = crate::fragment::removed(&s.elems);
+                s.elems.values().filter(|e| !crate::fragment::hidden(e, &gone)).filter_map(|e| e.frag.as_deref()).for_each(|x| x.each_value(f));
+            }
             Fragment::Map(m) => {
                 for (id, e) in &m.entries {
                     if let Some(k) = id.key().filter(|_| e.created.is_some()) {
@@ -742,7 +761,8 @@ impl Fragment {
             Fragment::Register(r) => reg_written(r).is_some(),
             Fragment::Slots(_) => self.chosen_slot().by(|r| reg_written(r).is_some(), Fragment::live_value),
             f if f.meta().is_some_and(|m| m.w_valued().is_some()) => true,
-            Fragment::Bag(Bag { elems, .. }) | Fragment::Set(Set { elems, .. }) => elems.values().any(|e| e.frag.as_deref().is_some_and(Fragment::present)),
+            Fragment::Bag(Bag { elems, .. }) => elems.values().any(|e| e.frag.as_deref().is_some_and(Fragment::present)),
+            Fragment::Set(s) => crate::fragment::live_elems(&s.elems).next().is_some(),
             Fragment::Struct(s) => s.fields.values().any(Fragment::live_value),
             Fragment::Enum(s) => s.case.as_ref().is_some_and(|k| k.case.is_some()),
             Fragment::Map(m) => m.entries.keys().any(|id| m.is_live(id)),
@@ -754,7 +774,7 @@ impl Fragment {
     fn inner_any(&self) -> bool {
         let slot = |m: &SlotRef| m.present() || m.reset().is_some();
         let child = |f: &Fragment| slot(&SlotRef::Frag(f));
-        let elems_any = |elems: &BTreeMap<Dot, Elem>| elems.values().any(|e| e.reset.is_some() || e.frag.as_deref().is_some_and(child));
+        let elems_any = |elems: &BTreeMap<Dot, Elem>| elems.values().any(|e| e.reset.is_some() || e.gone.is_some() || e.frag.as_deref().is_some_and(child));
         match self {
             Fragment::Register(r) => r.write.as_ref().is_some_and(|w| w.value.is_some()),
             Fragment::Slots(_) => self.slots().iter().any(slot),
@@ -771,7 +791,7 @@ impl Fragment {
     pub(crate) fn inner_max(&self, valued: bool) -> Option<Stamp> {
         let slot = |m: &SlotRef| if valued { max_opt(m.written(), m.reset()) } else { m.all_max() };
         let child = |f: &Fragment| slot(&SlotRef::Frag(f));
-        let elems_max = |elems: &BTreeMap<Dot, Elem>| elems.values().fold(None, |m, e| max_opt(max_opt(m, e.reset.clone()), e.frag.as_deref().and_then(child)));
+        let elems_max = |elems: &BTreeMap<Dot, Elem>| elems.values().fold(None, |m, e| max_opt(max_opt(max_opt(m, e.reset.clone()), e.gone.as_ref().map(|g| g.0.clone())), e.frag.as_deref().and_then(child)));
         match self {
             Fragment::Register(r) => r.write.as_ref().filter(|w| !valued || w.value.is_some()).map(|w| w.stamp.clone()),
             Fragment::Slots(_) => self.slots().iter().fold(None, |x, m| max_opt(x, slot(m))),
@@ -892,7 +912,8 @@ impl Fragment {
             Fragment::Set(s) => {
                 // `collect` keeps the last of equal values, so backwards: of equal links, the lowest
                 // live dot's (§5.5).
-                Some(Value::Set(s.elems.values().rev().filter_map(|e| e.frag.as_ref()?.read()).collect()))
+                let live: Vec<Value> = crate::fragment::live_elems(&s.elems).map(|(_, _, v)| v).collect();
+                Some(Value::Set(live.into_iter().rev().collect()))
             }
             Fragment::Map(m) => {
                 let mut by_key: BTreeMap<&Value, Fragment> = BTreeMap::new();

@@ -50,7 +50,12 @@ impl Fragment {
                     f(v);
                 }
             }
-            Fragment::Bag(crate::fragment::Bag { elems, .. }) | Fragment::Set(crate::fragment::Set { elems, .. }) => elems.values().filter_map(|e| e.frag.as_deref()).for_each(|x| x.values(f)),
+            Fragment::Bag(crate::fragment::Bag { elems, .. }) => elems.values().filter_map(|e| e.frag.as_deref()).for_each(|x| x.values(f)),
+            // a value removal names no value it holds; an element it hides is dead (§4.8, §5.5)
+            Fragment::Set(s) => {
+                let gone = crate::fragment::removed(&s.elems);
+                s.elems.values().filter(|e| !crate::fragment::hidden(e, &gone)).filter_map(|e| e.frag.as_deref()).for_each(|x| x.values(f));
+            }
             Fragment::Struct(s) => s.fields.values().for_each(|x| x.values(f)),
             Fragment::Enum(e) => e.payloads.values().for_each(|x| x.values(f)),
             Fragment::Map(m) => {
@@ -98,15 +103,17 @@ impl Fragment {
         }
     }
 
-    /// The set element created at `at` in the set at struct field `field` of this state (§4.2,
-    /// §5.5): live, dead (also once a reset above `at` pruned it), or not held. `Unknown` when the
-    /// state has no such struct of sets.
-    pub fn set_elem(&self, field: u64, at: &Stamp) -> Held {
+    /// The set element of value `v` created at `at` in the set at struct field `field` of this
+    /// state (§4.2, §5.5): live, dead (also once a reset or a removal of `v` above `at` pruned
+    /// it), or not held. `Unknown` when the state has no such struct of sets.
+    pub fn set_elem(&self, field: u64, at: &Stamp, v: &Value) -> Held {
         let Some((set, e)) = self.struct_set(field) else { return Held::Unknown };
+        let gone = set.map(|s| crate::fragment::removed(&s.elems)).unwrap_or_default();
+        let removed = gone.get(v).map(|g| (*g).clone());
         match set.and_then(|s| s.elems.get(&at.dot)) {
-            Some(el) if el.frag.as_deref().and_then(Fragment::read).is_some() => Held::Live,
+            Some(el) if !crate::fragment::hidden(el, &gone) && el.frag.as_deref().and_then(Fragment::read).is_some() => Held::Live,
             Some(_) => Held::Dead,
-            None if e.is_some_and(|e| e > *at) => Held::Dead,
+            None if crate::stamp::max_opt(e, removed).is_some_and(|e| e > *at) => Held::Dead,
             None => Held::Unknown,
         }
     }
@@ -115,20 +122,14 @@ impl Fragment {
     /// state (§5.5); `None` when it is not live here.
     pub fn set_elem_value(&self, field: u64, dot: &Dot) -> Option<Value> {
         let (set, _) = self.struct_set(field)?;
-        set?.elems.get(dot)?.frag.as_deref()?.read()
+        crate::fragment::live_elems(&set?.elems).find(|(d, _, _)| *d == dot).map(|(_, _, v)| v)
     }
 
     /// The greatest creation stamp of a live element of value `v` in the set at struct field
     /// `field` of this state (§5.5).
     pub fn set_live_elem(&self, field: u64, v: &Value) -> Option<Stamp> {
         let (set, _) = self.struct_set(field)?;
-        set?.elems
-            .values()
-            .filter_map(|el| match el.frag.as_deref()? {
-                Fragment::Register(r) => r.write.as_ref().filter(|w| w.value.as_ref() == Some(v)).map(|w| w.stamp.clone()),
-                _ => None,
-            })
-            .max()
+        crate::fragment::live_elems(&set?.elems).filter(|(_, _, x)| x == v).filter_map(|(_, e, _)| Some(e.written()?.1.clone())).max()
     }
     /// The stamp of a register's write (`None`: no register, or none written).
     pub fn write_stamp(&self) -> Option<&Stamp> {
@@ -246,11 +247,12 @@ impl Fragment {
     /// and values' contents; not its own `size_of`), for memory bounds: O(fragment), far cheaper
     /// than encoding it, and within a small factor of the allocations.
     pub fn approx_bytes(&self) -> usize {
-        use crate::fragment::{Bag, Enum, Set, Slots, Struct};
+        use crate::fragment::{Bag, Enum, Slots, Struct};
         let reg = |r: &crate::fragment::Register| opt_stamp(&r.reset) + r.write.as_ref().map_or(0, |w| STAMP + w.value.as_ref().map_or(0, value_bytes));
         match self {
             Fragment::Register(r) => reg(r),
-            Fragment::Bag(Bag { meta, elems, .. }) | Fragment::Set(Set { meta, elems }) => meta_bytes(meta) + tree(elems) + elems.values().map(|e| opt_stamp(&e.reset) + boxed(&e.frag)).sum::<usize>(),
+            Fragment::Bag(Bag { meta, elems, .. }) => meta_bytes(meta) + tree(elems) + elems.values().map(|e| opt_stamp(&e.reset) + boxed(&e.frag)).sum::<usize>(),
+            Fragment::Set(s) => meta_bytes(&s.meta) + tree(&s.elems) + s.elems.values().map(|e| opt_stamp(&e.reset) + boxed(&e.frag) + e.gone.as_ref().map_or(0, |(_, v)| STAMP + value_bytes(v))).sum::<usize>(),
             Fragment::Struct(Struct { meta, fields }) => meta_bytes(meta) + tree(fields) + fields.values().map(Fragment::approx_bytes).sum::<usize>(),
             Fragment::Enum(Enum { meta, case, payloads }) => meta_bytes(meta) + case.as_ref().map_or(0, |_| STAMP) + tree(payloads) + payloads.values().map(Fragment::approx_bytes).sum::<usize>(),
             Fragment::Map(m) => {

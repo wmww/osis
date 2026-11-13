@@ -66,10 +66,18 @@ pub fn random_value(r: &mut Rng, ty: &Ty, depth: u32) -> Value {
             let id = *ids[r.below(ids.len())];
             Value::Enum(id, cases[&id].as_ref().map(|t| Box::new(random_value(r, t, depth + 1))))
         }
-        Ty::Set(et) => Value::set((0..r.below(4)).map(|_| random_value(r, et, depth + 1)).collect()),
+        Ty::Set(et) => Value::set((0..r.below(4)).map(|_| elem_value(r, et, depth + 1)).collect()),
         Ty::Map(kt, vt) => Value::map((0..r.below(3)).map(|_| (random_value(r, kt, depth + 1), random_value(r, vt, depth + 1))).collect()),
         Ty::List(et) => Value::List((0..r.below(if depth > 1 { 2 } else { 4 })).map(|_| random_value(r, et, depth + 1)).collect()),
     }
+}
+
+/// A set element: a register set holds a tid half the time, removed by value (§5.5).
+fn elem_value(r: &mut Rng, et: &Ty, depth: u32) -> Value {
+    if matches!(et, Ty::Register) && r.chance(1, 2) {
+        return Value::Tid([r.below(3) as u8; 15]);
+    }
+    random_value(r, et, depth)
 }
 
 pub fn random_text(r: &mut Rng, max: usize) -> String {
@@ -187,7 +195,7 @@ pub fn random_op(r: &mut Rng, w: &mut Writer, ty: &Ty, state: Option<&Frag>) -> 
             ops::enum_set(w, Some(st), ty, &random_value(r, ty, 0))
         }
         (Ty::Set(et), _) => {
-            let v = random_value(r, et, 1);
+            let v = elem_value(r, et, 1);
             if r.chance(1, 2) {
                 ops::set_add(w, Some(st), &v)
             } else {

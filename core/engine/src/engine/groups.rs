@@ -3,7 +3,8 @@
 //! changed group and the groups above it (O(their reach)), never every group.
 
 use super::Engine;
-use osis_base::{Tid, Value};
+use crate::error::Result;
+use osis_base::{Ak, CommitId, Tid, Value};
 use osis_crdt::{Fragment, PathSeg};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -52,6 +53,41 @@ impl Engine {
         let items = ix.of.get(tid).into_iter().flatten().filter(|g| ix.defs.get(g).is_some_and(|d| d.0.contains(tid))).copied().collect();
         (items, ix.parents_of(tid).collect())
     }
+}
+
+impl Engine {
+    /// The groups whose `group.0` may list `t`, as an item and as a subgroup: what a delete of `t`
+    /// removes it from (spec/crdt.md §5.5, §4.6). `listed_in`, and every group with a valid
+    /// `group.0` part not received yet that no held reset of its `group.0` stamped after it
+    /// covers, in both: what that part lists is not known here.
+    pub fn listing_groups(&mut self, t: &Tid) -> Result<(BTreeSet<Tid>, BTreeSet<Tid>)> {
+        let t = *t;
+        self.run(|tx| listing_groups(tx, &t))
+    }
+}
+
+/// `Engine::listing_groups`.
+pub(crate) fn listing_groups(tx: &mut super::Tx<'_>, t: &Tid) -> Result<(BTreeSet<Tid>, BTreeSet<Tid>)> {
+    let (mut items, mut subs) = {
+        let ix = &tx.core.ix.groups;
+        let items: BTreeSet<Tid> = ix.of.get(t).into_iter().flatten().filter(|g| ix.defs.get(g).is_some_and(|d| d.0.contains(t))).copied().collect();
+        (items, ix.parents_of(t).collect::<BTreeSet<Tid>>())
+    };
+    let gak = Ak::new(osis_schema::RawKey::ak(&osis_schema::core_types::GROUP)).map_err(|_| crate::error::Error::Misuse("ak"))?;
+    let missing: Vec<(Tid, Vec<CommitId>)> = tx.core.ix.missing.range((gak.clone(), Tid::from_bytes([0; 15]))..).take_while(|((ak, _), _)| *ak == gak).map(|((_, g), cs)| (*g, cs.iter().copied().collect())).collect();
+    for (g, cs) in missing {
+        if g == *t || items.contains(&g) && subs.contains(&g) {
+            continue;
+        }
+        let parts: Vec<osis_base::Ts> = cs.iter().filter_map(|c| tx.core.ix.commits.get(c).filter(|m| m.aspect(&g, &gak).is_some_and(|ai| m.valid_at(ai) && m.missing(ai))).map(|m| m.view.ts)).collect();
+        let Some(newest) = parts.into_iter().max() else { continue };
+        let reset = tx.state(&g, &gak)?.and_then(Fragment::reset);
+        if reset.is_none_or(|r| newest >= r.ts) {
+            items.insert(g);
+            subs.insert(g);
+        }
+    }
+    Ok((items, subs))
 }
 
 impl Engine {

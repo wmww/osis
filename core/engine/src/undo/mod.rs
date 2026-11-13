@@ -427,7 +427,7 @@ fn lists_only(tx: &mut Tx<'_>, h: &Header, target: &CommitId, ai: usize, made: &
     let Some(own) = crate::engine::Owned::of(h, target, ai) else { return Ok(false) };
     let Some(state) = tx.state(&a.tid, &a.ak)? else { return Ok(true) };
     let listing = |w: &osis_crdt::Won| match w.path.as_slice() {
-        [osis_crdt::Place::Field(f), osis_crdt::Place::Elem(d), osis_crdt::Place::In] if w.kind == osis_crdt::Kind::Value && w.stamp.dot == *d && [crate::engine::groups::ITEMS, crate::engine::groups::SUBGROUPS].contains(f) => {
+        [osis_crdt::Place::Field(f), osis_crdt::Place::Elem(d), osis_crdt::Place::In | osis_crdt::Place::Tid(_)] if w.kind == osis_crdt::Kind::Value && w.stamp.dot == *d && [crate::engine::groups::ITEMS, crate::engine::groups::SUBGROUPS].contains(f) => {
             matches!(state.set_elem_value(*f, d), Some(Value::Tid(x)) if made.contains(&x))
         }
         _ => false,
@@ -524,8 +524,9 @@ pub(crate) fn made_by(h: &osis_commit::Header, valid: &[bool]) -> BTreeSet<Tid> 
 
 /// Undoing a creation deletes the thing (spec/crdt.md §4.6): `delete`'s writes for each of
 /// `made`, its aspects that may hold content reset (`read::deleted_aspects`; its ephemeral
-/// state is dropped, `Engine::revert_inner`) and its entries removed from every `group.0`
-/// listing it that all of `writers` may write (this node, a confined revert's actor too), each
+/// state is dropped, `Engine::revert_inner`) and removed by value from every `group.0` that may
+/// list it (`groups::listing_groups`) and all of `writers` may write (this node, a confined
+/// revert's actor too), each
 /// resolved after the undo's own delta of that aspect and
 /// joined into it (`unmake_one`). `Permission` when this node may not write one of `made`
 /// (`delete` would refuse; never a partial revert).
@@ -543,15 +544,21 @@ fn unmake_ops(tx: &mut Tx<'_>, made: &BTreeSet<Tid>, ts: Ts, node: Tid, writers:
         }
     }
     let gak = Ak::new(GROUP.ak()).map_err(|_| Error::Misuse("ak"))?;
-    for (g, (items, subs)) in &tx.core.ix.groups.defs {
-        if made.contains(g) || !writers.iter().all(|w| crate::engine::write::check_authority(tx.core, *w, &Default::default(), g, GROUP.ak(), ts).is_ok()) {
+    // per group, its fields listing each thing (`listing_groups`: what may list it, held or not)
+    let mut by_group: BTreeMap<Tid, Vec<PathOp>> = BTreeMap::new();
+    for x in made {
+        let (items, subs) = crate::engine::groups::listing_groups(tx, x)?;
+        for (field, gs) in [(crate::engine::groups::ITEMS, items), (crate::engine::groups::SUBGROUPS, subs)] {
+            for g in gs {
+                by_group.entry(g).or_default().push(PathOp { path: vec![PathSeg::Field(field)], op: Op::Remove(Value::Tid(*x)) });
+            }
+        }
+    }
+    for (g, v) in by_group {
+        if made.contains(&g) || !writers.iter().all(|w| crate::engine::write::check_authority(tx.core, *w, &Default::default(), &g, GROUP.ak(), ts).is_ok()) {
             continue;
         }
-        let rm = |field: u64, set: &BTreeSet<Tid>| set.intersection(made).map(|x| PathOp { path: vec![PathSeg::Field(field)], op: Op::Remove(Value::Tid(*x)) }).collect::<Vec<_>>();
-        let v: Vec<PathOp> = [rm(crate::engine::groups::ITEMS, items), rm(crate::engine::groups::SUBGROUPS, subs)].concat();
-        if !v.is_empty() {
-            ops.entry((*g, gak.clone())).or_default().extend(v);
-        }
+        ops.entry((g, gak.clone())).or_default().extend(v);
     }
     Ok(ops)
 }
@@ -709,8 +716,9 @@ mod tests {
     use crate::error::Error;
     use crate::local_peer::LocalPeer;
     use osis_base::{Ak, Role, Value, WallMs};
-    use osis_crdt::{Op, PathOp};
+    use osis_crdt::{Op, PathOp, PathSeg};
     use osis_schema::core_types as ct;
+    use std::collections::BTreeSet;
 
     // `check_revertible` runs the revert's own writes in a transaction rolled back after: it
     // changes nothing, whatever it answers. A creates a thing (its creation's undo would delete
@@ -1186,6 +1194,41 @@ mod tests {
         lp.sync(1, 0).unwrap();
         let e = &mut lp.peers[0].engine;
         assert_eq!((e.get(&n, &x).unwrap(), e.get(&n, &y).unwrap(), e.get(&ts[0], &x).unwrap()), (None, None, None));
+    }
+
+    // spec/crdt.md §4.6, §5.5: undoing a creation removes the thing from every group alike,
+    // whatever bodies the undoing node holds. N is an item of G (held by both) and of H, whose
+    // add B holds as a header only; B's undo of N's creation leaves N in neither once synced,
+    // as A's does.
+    #[test]
+    fn undo_creation_unlists_unfetched_adds_spec_crdt_4_6() {
+        for undoer in [0, 1] {
+            let (mut lp, ts, x, _) = writable(2);
+            let (g, h) = (ts[0], ts[1]);
+            let [a, b] = [0, 1].map(|i| lp.peers[i].engine.me());
+            let mut m = Mutation::new();
+            let n = lp.peers[0].engine.new_thing(&mut m, a);
+            m.set(n, &x, &Value::Int(1)).unwrap();
+            let c = lp.peers[0].commit(m).unwrap().unwrap();
+            lp.peers[0].engine.grant(&n, &b, &ct::Edge { role: Role::Write, until: None, invite: None, tied: None }).unwrap();
+            lp.advance(10);
+            let add = || PathOp { path: vec![PathSeg::Field(crate::engine::groups::ITEMS)], op: Op::Add(Value::Tid(n)) };
+            let mut m = Mutation::new();
+            m.op(g, &ct::GROUP, add()).unwrap();
+            lp.peers[0].commit(m).unwrap().unwrap();
+            lp.sync(0, 1).unwrap();
+            let mut m = Mutation::new();
+            m.op(h, &ct::GROUP, add()).unwrap();
+            let w = lp.peers[0].commit(m).unwrap().unwrap();
+            deliver_leaving(&mut lp, 0, 1, w, h);
+            lp.advance(10);
+            assert_eq!(lp.peers[1].engine.listed_in(&n).0, BTreeSet::from([g]), "B holds H's add as a header only");
+            lp.peers[undoer].engine.revert(&c).unwrap().unwrap();
+            lp.sync_all().unwrap();
+            for i in [0, 1] {
+                assert_eq!(lp.peers[i].engine.listed_in(&n), (BTreeSet::new(), BTreeSet::new()), "undone by {undoer}: N listed at {i}");
+            }
+        }
     }
 
     // spec/crdt.md §4.6: a part not received yet that a held reset stamped after it covers holds

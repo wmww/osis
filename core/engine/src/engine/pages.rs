@@ -240,19 +240,14 @@ fn parse_page_row(b: &[u8]) -> Result<(Range, Fragment)> {
 }
 
 /// What the index of a paged collection finds element `d` by: the keys of a map's records of
-/// `d` holding content (a tombstone's key finds nothing live), the value of a set element (and
-/// of any `Derived` element sorting right after it: a superset). Empty for a key-erased or
-/// value-less element and other encodings.
+/// `d` holding content (a tombstone's key finds nothing live), the value of a set element, the
+/// tid of a set's value removal. Empty for a key-erased or value-less element and other
+/// encodings.
 fn indexed(c: &Fragment, enc: Encoding, d: &Dot) -> Vec<Value> {
     match enc {
         Encoding::Map => c.entry_keys(d).into_iter().cloned().collect(),
-        Encoding::Set => {
-            let next = d.ctr.checked_add(1).map(|ctr| Dot { src: d.src.clone(), ctr });
-            match c.elem_range(Some(d), next.as_ref(), false).and_then(|x| x.read()) {
-                Some(Value::Set(vs)) => vs.into_iter().collect(),
-                _ => Vec::new(),
-            }
-        }
+        // an element's value, hidden or not, or the tid a value removal names (§5.5)
+        Encoding::Set => c.set_record_value(d).into_iter().collect(),
         _ => Vec::new(),
     }
 }
@@ -431,6 +426,18 @@ pub fn ensure_touch(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &mut Sta
         }
         if let Some(d) = touch.seqs.get(p) {
             prefetch(txn, tid, ak, t, set, f, d)?;
+        }
+    }
+    // a set's records of the tids the delta names (§5.5), through the value index
+    for (p, vs) in &touch.tids {
+        let Some(set) = idx.sets.get(p) else { return Ok(false) };
+        let mut dots = Vec::new();
+        for v in vs {
+            dots.extend(key_dots(txn, tid, ak, set, v)?);
+        }
+        let Some(set) = idx.sets.get_mut(p) else { return Ok(false) };
+        for d in &dots {
+            ensure_dot(txn, t, set, f, d)?;
         }
     }
     Ok(true)

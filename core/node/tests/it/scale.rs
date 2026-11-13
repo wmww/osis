@@ -3,7 +3,7 @@
 //! and asserts the growth Scale allows: `flat` for a change that costs O(change), `linear` for a
 //! cost that may grow with the data. Counts, never time (notes/coordination.md, Testing).
 
-use crate::common::{BIG, GONEMAP, TEXT, edge, net, new_thing, s, set_edge};
+use crate::common::{BIG, GONEMAP, REFS, TEXT, edge, net, new_thing, s, set_edge};
 use osis_base::{Ak, Role, Tid, Value};
 use osis_crdt::{Op, PathOp, PathSeg};
 use osis_crypto::{Epoch, KeyActorKeys, Secret32, SeededRng};
@@ -154,6 +154,53 @@ fn set_by_value_is_flat() {
     for (i, what) in ["add new", "add present", "remove", "remove absent"].iter().enumerate() {
         flat(&format!("{what}: pages loaded"), small[i].0, big[i].0);
         flat(&format!("{what}: pages written"), small[i].1, big[i].1);
+    }
+}
+
+/// A set of n tids: a removal by value of a member (spec/crdt.md §5.5, what `delete` writes in a
+/// group), a removal of a tid not held, and an add back, each in a new session: pages loaded and
+/// written, and the commit's bytes.
+fn tid_removals(n: usize) -> Vec<(u64, u64, u64)> {
+    let mut lp = net(1, 0);
+    let b = lp.peers[0].backend.clone();
+    let x = new_thing(&mut lp, 0);
+    let t = |i: usize| {
+        let mut b = [0u8; 15];
+        b[7..].copy_from_slice(&(i as u64).to_be_bytes());
+        Value::Tid(Tid::from_bytes(b))
+    };
+    let mut m = Mutation::new();
+    m.set(x, &REFS, &Value::Set((0..n).map(t).collect())).unwrap();
+    lp.peers[0].commit(m).unwrap().unwrap();
+    let mut out = Vec::new();
+    for (k, op) in [Op::Remove(t(n / 3)), Op::Remove(t(n + 7)), Op::Add(t(n / 3))].into_iter().enumerate() {
+        lp.peers[0].restart(k as u64).unwrap();
+        let (c, w) = measured(&b, || {
+            let mut m = Mutation::new();
+            m.op(x, &REFS, PathOp { path: vec![], op }).unwrap();
+            lp.peers[0].commit(m).unwrap()
+        });
+        let id = c.expect("each writes");
+        let bytes = lp.packages(0).unwrap().into_iter().find(|p| p.id == id).map_or(0, |p| p.bytes.len() as u64);
+        out.push((w.loads(), w.page_writes(), bytes));
+    }
+    let Some(Value::Set(v)) = lp.peers[0].engine.get(&x, &ak("t:refs.0")).unwrap() else { panic!() };
+    assert!(v.len() == n && v.contains(&t(n / 3)));
+    out
+}
+
+// spec/crdt.md §5.5, spec/requirements.md Scale (deleting costs what changed): removing a tid from
+// a paged set by value, whatever the writer holds, and adding it back, each in a new session, loads
+// and writes only their pages (the value index finds the tid's records), and the commit is one
+// record, at n and 10n members. (A group's `group.0` is read whole after any change for the group
+// index: issues/group-change-reads-whole-group.md.)
+#[test]
+fn tid_removal_by_value_is_flat() {
+    let (small, big) = (tid_removals(4000), tid_removals(40_000));
+    for (i, what) in ["remove a member", "remove a tid not held", "add back"].iter().enumerate() {
+        flat(&format!("{what}: pages loaded"), small[i].0, big[i].0);
+        flat(&format!("{what}: pages written"), small[i].1, big[i].1);
+        flat(&format!("{what}: commit bytes"), small[i].2, big[i].2);
     }
 }
 

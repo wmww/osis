@@ -179,7 +179,8 @@ impl Fragment {
                 slots.values_mut().for_each(|f| f.strip_values(expired, ch));
             }
             Fragment::Register(r) => reg(r),
-            Fragment::Bag(Bag { elems, .. }) | Fragment::Set(Set { elems, .. }) => elems.values_mut().filter_map(|e| e.frag.as_mut()).for_each(|f| f.strip_values(expired, ch)),
+            Fragment::Bag(Bag { elems, .. }) => elems.values_mut().filter_map(|e| e.frag.as_mut()).for_each(|f| f.strip_values(expired, ch)),
+            Fragment::Set(x) => x.elems.values_mut().filter_map(|e| e.frag.as_mut()).for_each(|f| f.strip_values(expired, ch)),
             Fragment::Struct(s) => s.fields.values_mut().for_each(|f| f.strip_values(expired, ch)),
             Fragment::Enum(e) => {
                 if let Some(c) = &mut e.case
@@ -287,8 +288,11 @@ impl Fragment {
                 if !keep.stays(el.reset.is_some() && el.reset == t.reset) {
                     el.reset = None;
                 }
+                if !keep.stays(el.gone.is_some() && el.gone.as_ref().map(|g| &g.0) == t.gone.as_ref().map(|g| &g.0)) {
+                    el.gone = None;
+                }
                 sub(&mut el.frag, t.frag.as_deref());
-                el.reset.is_some() || el.frag.is_some()
+                el.holds()
             });
         };
         let children = |c: &mut BTreeMap<u64, Fragment>, tc: &BTreeMap<u64, Fragment>| {
@@ -308,7 +312,8 @@ impl Fragment {
                     r.write = None;
                 }
             }
-            (Fragment::Bag(Bag { elems: es, .. }), Fragment::Bag(Bag { elems: te, .. })) | (Fragment::Set(Set { elems: es, .. }), Fragment::Set(Set { elems: te, .. })) => elems(es, te),
+            (Fragment::Bag(Bag { elems: es, .. }), Fragment::Bag(Bag { elems: te, .. })) => elems(es, te),
+            (Fragment::Set(a), Fragment::Set(b)) => elems(&mut a.elems, &b.elems),
             (Fragment::Struct(a), Fragment::Struct(b)) => children(&mut a.fields, &b.fields),
             (Fragment::Enum(a), Fragment::Enum(b)) => {
                 let held = a.case.is_some() && a.case.as_ref().map(|c| &c.stamp) == b.case.as_ref().map(|c| &c.stamp);
@@ -487,7 +492,8 @@ impl Fragment {
             }
         }
         match self {
-            Fragment::Bag(Bag { elems, .. }) | Fragment::Set(Set { elems, .. }) => remove_writes_elems(elems, pred),
+            Fragment::Bag(Bag { elems, .. }) => remove_writes_elems(elems, pred),
+            Fragment::Set(x) => remove_writes_elems(&mut x.elems, pred),
             Fragment::Struct(s) => s.fields.retain(|_, f| {
                 f.remove_writes(pred);
                 !f.is_empty()
@@ -703,13 +709,16 @@ fn remove_writes_elems(elems: &mut BTreeMap<Dot, Elem>, pred: &dyn Fn(&Dot) -> b
         if el.reset.as_ref().is_some_and(|r| pred(r.dot.origin())) {
             el.reset = None;
         }
+        if el.gone.as_ref().is_some_and(|g| pred(g.0.dot.origin())) {
+            el.gone = None;
+        }
         if let Some(f) = &mut el.frag {
             f.remove_writes(pred);
             if f.is_empty() {
                 el.frag = None;
             }
         }
-        el.reset.is_some() || el.frag.is_some()
+        el.holds()
     });
 }
 

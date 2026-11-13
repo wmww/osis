@@ -30,7 +30,7 @@ fn settled(seed: u64, types: &[Ty]) {
         Fragment::Register(Register { reset: None, write: Some(RegWrite { stamp: stamp.clone(), value: Some(osis_base::Value::Int(1)) }) }),
         Fragment::Register(Register { reset: Some(stamp.clone()), write: None }),
         Fragment::Struct(Struct { meta: meta.clone(), fields: Default::default() }),
-        Fragment::Set(Set { meta: meta.clone(), elems: Default::default() }),
+        Fragment::Set(Set::new(meta.clone(), Default::default())),
         Fragment::Bag(Bag { kind: BagKind::Counter, meta: meta.clone(), elems: Default::default() }),
         Fragment::Enum(Enum { meta: meta.clone(), case: None, payloads: Default::default() }),
         Fragment::Map(Map::new(meta.clone(), Default::default())),
@@ -84,7 +84,7 @@ mod direct {
     }
     /// A bag of `kind` with contributions `vs`, element `i` node 1's dot `i + 1`.
     fn bag(kind: BagKind, vs: &[Value]) -> Fragment {
-        let elems = vs.iter().enumerate().map(|(k, v)| (Dot::new(src(1), k as u64 + 1), Elem { reset: None, frag: Some(Box::new(reg(st(1, k as u64 + 1), v.clone()))) })).collect();
+        let elems = vs.iter().enumerate().map(|(k, v)| (Dot::new(src(1), k as u64 + 1), Elem { reset: None, frag: Some(Box::new(reg(st(1, k as u64 + 1), v.clone()))), gone: None })).collect();
         Fragment::Bag(Bag { kind, meta: Meta::default(), elems })
     }
     fn f(x: f64) -> Value {
@@ -143,17 +143,17 @@ mod direct {
     /// value-less write does not count.
     #[test]
     fn presence_spec_4_3() {
-        let set = |meta: Meta, elems: Vec<(Dot, Elem)>| Fragment::Set(Set { meta, elems: elems.into_iter().collect() });
+        let set = |meta: Meta, elems: Vec<(Dot, Elem)>| Fragment::Set(Set::new(meta, elems.into_iter().collect()));
         let empty = Value::Set(Default::default());
         assert_eq!(set(Meta { reset: None, w: Some(st(1, 1)), ..Meta::default() }, vec![]).read(), Some(empty.clone()));
-        let mut s = set(Meta::default(), vec![(Dot::new(src(1), 1), Elem { reset: None, frag: Some(Box::new(reg(st(1, 1), Value::Int(4)))) })]);
+        let mut s = set(Meta::default(), vec![(Dot::new(src(1), 1), Elem { reset: None, frag: Some(Box::new(reg(st(1, 1), Value::Int(4)))), gone: None })]);
         s.join(set(Meta::default(), vec![(Dot::new(src(1), 1), Elem::tomb(&st(2, 1)))]));
         assert_eq!(s.read(), Some(empty));
         s.join(set(Meta { reset: Some(st(3, 1)), w: None, ..Meta::default() }, vec![]));
         assert_eq!(s.read(), None, "remove_aspect: absent");
         let valueless = Fragment::Register(Register { reset: None, write: Some(RegWrite { stamp: st(1, 1), value: None }) });
         assert_eq!(valueless.read(), None);
-        let s = set(Meta::default(), vec![(Dot::new(src(1), 1), Elem { reset: None, frag: Some(Box::new(valueless)) })]);
+        let s = set(Meta::default(), vec![(Dot::new(src(1), 1), Elem { reset: None, frag: Some(Box::new(valueless)), gone: None })]);
         assert!(!s.present(), "a value-less creation is no presence");
     }
 

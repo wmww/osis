@@ -371,6 +371,7 @@ impl Frag {
                 if let Some(fr) = &el.frag {
                     fr.walk_own(own, f);
                 }
+                opt(&el.gone.as_ref().map(|g| g.0.clone()), f);
             }
         }
         fn anchor(a: &Anchor, f: &mut dyn FnMut(Ref)) {
@@ -472,7 +473,7 @@ impl Frag {
     fn levels_at(&self, lo: u64) -> bool {
         let at = |s: &Option<Stamp>| s.as_ref().map_or(true, |s| s.dot.ctr == lo);
         let comp = |c: &Composite| at(&c.reset) && at(&c.w);
-        let elems = |e: &BTreeMap<Dot, Elem>| e.values().all(|x| at(&x.reset) && x.frag.as_ref().map_or(true, |f| f.levels_at(lo)));
+        let elems = |e: &BTreeMap<Dot, Elem>| e.values().all(|x| at(&x.reset) && at(&x.gone.as_ref().map(|g| g.0.clone())) && x.frag.as_ref().map_or(true, |f| f.levels_at(lo)));
         match self {
             Frag::Register { reset, write } => at(reset) && at(&write.as_ref().map(|w| w.0.clone())),
             Frag::Bag { c, elems: e, .. } | Frag::Set { c, elems: e } => comp(c) && elems(e),
@@ -523,7 +524,8 @@ impl Frag {
             Frag::Register { .. } => {}
             Frag::Bag { elems, .. } | Frag::Set { elems, .. } => {
                 for (d, el) in elems {
-                    if d.source == *own && el.frag.is_some() {
+                    // an element's creation, or a value removal's own dot (§5.5)
+                    if d.source == *own && (el.frag.is_some() || el.gone.is_some()) {
                         take(used, d.ctr)?;
                     }
                     if let Some(f) = &el.frag {
@@ -621,7 +623,14 @@ fn enc_elems(elems: &BTreeMap<Dot, Elem>, cx: &Ctx) -> Item {
     Item::Array(
         wire_sorted(elems, &cx.own)
             .into_iter()
-            .map(|(d, e)| Item::Array(vec![enc_dot(d, cx), enc_opt_stamp(&e.reset, cx), Item::Array(e.frag.iter().map(|f| encode(f, cx)).collect())]))
+            .map(|(d, e)| {
+                // a value removal after the element's parts (§3.2)
+                let mut a = vec![enc_dot(d, cx), enc_opt_stamp(&e.reset, cx), Item::Array(e.frag.iter().map(|f| encode(f, cx)).collect())];
+                if let Some((s, v)) = &e.gone {
+                    a.extend([enc_stamp(s, cx), v.to_item()]);
+                }
+                Item::Array(a)
+            })
             .collect(),
     )
 }
@@ -822,12 +831,12 @@ fn dec_opt_frag(it: &Item, cx: &Ctx) -> Result<Option<Box<Frag>>, Error> {
         _ => Err(Error::Bad("opt frag")),
     }
 }
-fn dec_elems(it: &Item, cx: &Ctx) -> Result<BTreeMap<Dot, Elem>, Error> {
+fn dec_elems(it: &Item, cx: &Ctx, set: bool) -> Result<BTreeMap<Dot, Elem>, Error> {
     let mut m = BTreeMap::new();
     let mut last: Option<Dot> = None;
     for e in it.array()? {
         let a = e.array()?;
-        if a.len() != 3 {
+        if a.len() != 3 && a.len() != 5 {
             return Err(Error::Bad("elem"));
         }
         let d = dec_dot(&a[0], cx)?;
@@ -835,6 +844,17 @@ fn dec_elems(it: &Item, cx: &Ctx) -> Result<BTreeMap<Dot, Elem>, Error> {
             return Err(Error::Bad("elem order"));
         }
         last = Some(d.clone());
+        // a value removal: a set's, of a tid (§3.2, §3.3 rule 7)
+        let gone = match a.get(3..5) {
+            Some([s, v]) => {
+                let v = Value::from_item(v).map_err(|_| Error::Bad("value removal"))?;
+                if !set || !matches!(v, Value::Tid(_)) {
+                    return Err(Error::Bad("value removal"));
+                }
+                Some((dec_stamp(s, cx)?, v))
+            }
+            _ => None,
+        };
         let frag = dec_opt_frag(&a[2], cx)?;
         // a set or bag element's value is one register (spec §3.2), written only by the element's creation, so by
         // its dot's source (§3.3 rule 7)
@@ -846,10 +866,10 @@ fn dec_elems(it: &Item, cx: &Ctx) -> Result<BTreeMap<Dot, Elem>, Error> {
         }
         let reset = dec_opt_stamp(&a[1], cx)?;
         // a record carrying no write is no record (§3.3 rule 7)
-        if reset.is_none() && frag.as_deref().map_or(true, deep_empty) {
+        if reset.is_none() && gone.is_none() && frag.as_deref().map_or(true, deep_empty) {
             return Err(Error::Bad("record without a write"));
         }
-        m.insert(d, Elem { reset, frag });
+        m.insert(d, Elem { reset, frag, gone });
     }
     Ok(m)
 }
@@ -896,7 +916,7 @@ fn decode_at(it: &Item, cx: &Ctx, top: bool) -> Result<Frag, Error> {
         (0, 4) => Frag::Register { reset: dec_opt_stamp(&a[1], cx)?, write: Some((dec_stamp(&a[2], cx)?, Some(Value::from_item(&a[3])?))) },
         (1..=3, 4) => {
             let kind = [BagKind::Counter, BagKind::Max, BagKind::Min][enc as usize - 1];
-            Frag::Bag { kind, c: composite(a, cx)?, elems: dec_elems(&a[3], cx)? }
+            Frag::Bag { kind, c: composite(a, cx)?, elems: dec_elems(&a[3], cx, false)? }
         }
         (4, 4) => Frag::Struct { c: composite(a, cx)?, fields: dec_fields(&a[3], cx)? },
         (5, 5) => {
@@ -911,7 +931,7 @@ fn decode_at(it: &Item, cx: &Ctx, top: bool) -> Result<Frag, Error> {
             };
             Frag::Enum { c: composite(a, cx)?, case, payloads: dec_fields(&a[4], cx)? }
         }
-        (6, 4) => Frag::Set { c: composite(a, cx)?, elems: dec_elems(&a[3], cx)? },
+        (6, 4) => Frag::Set { c: composite(a, cx)?, elems: dec_elems(&a[3], cx, true)? },
         (7, 4) => {
             let mut entries = BTreeMap::new();
             let mut last: Option<(Dot, Option<Value>)> = None;

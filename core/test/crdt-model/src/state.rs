@@ -20,10 +20,20 @@ pub struct Composite {
     pub w_valueless: bool,
 }
 
+/// Whether set element `e` is hidden by a value removal of its tid among `elems` stamped after
+/// its write (§5.5): it stays held and reads as nothing.
+pub fn hidden(e: &Elem, elems: &BTreeMap<Dot, Elem>) -> bool {
+    let Some(Frag::Register { write: Some((s, Some(v))), .. }) = e.frag.as_deref() else { return false };
+    elems.values().any(|x| x.gone.as_ref().is_some_and(|(r, g)| g == v && r > s))
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct Elem {
     pub reset: Option<Stamp>,
     pub frag: Option<Box<Frag>>,
+    /// A set's value removal (§5.5), a write of its own: its stamp and the tid whose elements below
+    /// it it hides.
+    pub gone: Option<(Stamp, Value)>,
 }
 
 /// A map entry record's identity (§5.6): the entry's dot and key; no key for the dot's key-erased record (§4.7).
@@ -312,7 +322,7 @@ impl Frag {
     /// `W` rule (§3.3 rule 4).
     pub fn inner_max(&self, valued: bool) -> Option<Stamp> {
         let child = |f: &Frag| if valued { max_opt(f.written(), f.reset()) } else { f.all_max() };
-        let elems_max = |elems: &BTreeMap<Dot, Elem>| elems.values().fold(None, |m, e| max_opt(max_opt(m, e.reset.clone()), e.frag.as_deref().and_then(child)));
+        let elems_max = |elems: &BTreeMap<Dot, Elem>| elems.values().fold(None, |m, e| max_opt(max_opt(max_opt(m, e.reset.clone()), e.gone.as_ref().map(|g| g.0.clone())), e.frag.as_deref().and_then(child)));
         match self {
             Frag::Register { write, .. } => write.as_ref().filter(|w| !valued || w.1.is_some()).map(|w| w.0.clone()),
             Frag::Slots { .. } => self.slots().into_iter().fold(None, |m, f| max_opt(m, child(f))),
@@ -395,7 +405,7 @@ impl Frag {
                         a.insert(d, eb);
                     }
                     Some(ea) => {
-                        a.insert(d, Elem { reset: max_opt(ea.reset, eb.reset), frag: jopt(ea.frag, eb.frag) });
+                        a.insert(d, Elem { reset: max_opt(ea.reset, eb.reset), frag: jopt(ea.frag, eb.frag), gone: ea.gone.max(eb.gone) });
                     }
                 }
             }
@@ -565,7 +575,7 @@ impl Frag {
                         el.frag = None;
                     }
                 }
-                el.reset.is_some() || el.frag.is_some()
+                el.reset.is_some() || el.frag.is_some() || el.gone.is_some()
             });
         }
         match self {
@@ -583,8 +593,18 @@ impl Frag {
                     }
                 }
             }
-            Frag::Bag { c, elems, .. } | Frag::Set { c, elems } => {
+            Frag::Bag { c, elems, .. } => {
                 prune_written(c, e);
+                prune_elems(elems, e);
+            }
+            Frag::Set { c, elems } => {
+                prune_written(c, e);
+                // a value removal is a write of its own (§5.5)
+                for el in elems.values_mut() {
+                    if el.gone.as_ref().is_some_and(|(r, _)| !survives(r, e)) {
+                        el.gone = None;
+                    }
+                }
                 prune_elems(elems, e);
             }
             Frag::Struct { c, fields } => {
@@ -723,7 +743,8 @@ impl Frag {
             Frag::Register { write, .. } => write.as_ref().is_some_and(|w| w.1.is_some()),
             Frag::Slots { .. } => self.chosen().live_value(),
             f if f.composite().is_some_and(|c| c.w.is_some() && !c.w_valueless) => true,
-            Frag::Bag { elems, .. } | Frag::Set { elems, .. } => elems.values().any(|e| e.frag.as_ref().is_some_and(|f| f.present())),
+            Frag::Bag { elems, .. } => elems.values().any(|e| e.frag.as_ref().is_some_and(|f| f.present())),
+            Frag::Set { elems, .. } => !crate::ops::live_elems(elems).is_empty(),
             Frag::Struct { fields, .. } => fields.values().any(|f| f.live_value()),
             Frag::Enum { case, .. } => case.as_ref().is_some_and(|k| k.1.is_some()),
             Frag::Map { entries, .. } => !live_records(entries).is_empty(),
@@ -781,7 +802,7 @@ impl Frag {
                 let (_, Some(id)) = case.as_ref()? else { return None };
                 Value::Enum(*id, payloads.get(id).and_then(|f| f.read()).map(Box::new))
             }
-            Frag::Set { elems, .. } => Value::set(elems.values().filter_map(|e| e.frag.as_ref().and_then(|f| f.read())).collect()),
+            Frag::Set { elems, .. } => Value::set(crate::ops::live_elems(elems).into_iter().map(|(_, v)| v).collect()),
             Frag::Map { entries, .. } => {
                 let mut by_key: BTreeMap<Value, Frag> = BTreeMap::new();
                 for ((_, k), f) in live_records(entries) {
@@ -955,8 +976,11 @@ impl Frag {
                 if !k(&el.reset) {
                     el.reset = None;
                 }
+                if !el.gone.as_ref().is_some_and(|g| keep(origin(&g.0.dot))) {
+                    el.gone = None;
+                }
                 keep_in(&mut el.frag, keep);
-                el.reset.is_some() || el.frag.is_some()
+                el.reset.is_some() || el.frag.is_some() || el.gone.is_some()
             }),
             Frag::Struct { fields: m, .. } => m.retain(|_, f| {
                 f.keep_writes(keep);

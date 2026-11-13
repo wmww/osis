@@ -237,6 +237,11 @@ impl std::fmt::Debug for Verdicts {
 }
 
 /// The coverers the dropped parts of `m` name (`Dropped::covered_by`).
+/// The aspects of `m`'s parts not held (`Indexes::missing`).
+fn missing_of(m: &Meta) -> BTreeSet<(Ak, Tid)> {
+    m.view.aspects.iter().enumerate().filter(|(ai, _)| m.missing(*ai)).map(|(_, a)| (a.ak.clone(), a.tid)).collect()
+}
+
 fn covers_of(m: &Meta) -> BTreeSet<CommitId> {
     m.dropped_parts().flat_map(|(_, d)| d.covered_by.iter().copied()).collect()
 }
@@ -733,6 +738,9 @@ indexes! {
     pub commits: JMap<CommitId, Meta>,
     /// Commits with a part invalid here, per aspect (`Core::index_validity`).
     pub invalid: JSetMap<(Tid, Ak), CommitId>,
+    /// Held commits with a part not held (`Hold::Missing`), per aspect, AK first: the groups whose
+    /// `group.0` may list what a delete removes (`Engine::listing_groups`).
+    pub missing: JSetMap<(Ak, Tid), CommitId>,
     /// Held commits per aspect their header lists: (`ts`, commit), whatever the part's validity
     /// and whether its body is held. Invariant (also for `by_thing`): it finds
     /// commits, never decides anything alone, since any signer's header can list any aspect.
@@ -2374,6 +2382,8 @@ impl Core {
     /// Sets `id`'s meta: every change to what a part holds goes through here or `take_meta`, so
     /// the indexes derived from it stay exact.
     pub(crate) fn put_meta(&mut self, id: CommitId, m: Meta) {
+        let had = self.ix.commits.get(&id).map(missing_of).unwrap_or_default();
+        self.index_missing(&id, &had, &missing_of(&m));
         let was = self.ix.commits.get(&id).map(signers_elsewhere).unwrap_or_default();
         self.note_signed(&was, &signers_elsewhere(&m));
         self.index_own(&id, &m, true);
@@ -2391,6 +2401,7 @@ impl Core {
 
     pub(crate) fn take_meta(&mut self, id: &CommitId) -> Option<Meta> {
         let m = self.ix.commits.remove(id)?;
+        self.index_missing(id, &missing_of(&m), &BTreeSet::new());
         self.note_signed(&signers_elsewhere(&m), &[]);
         self.note_rotation(&m);
         self.index_own(id, &m, false);
@@ -2398,6 +2409,16 @@ impl Core {
         self.note_none(&m);
         self.touches.note(id, &m);
         Some(m)
+    }
+
+    /// Moves commit `id` in `Indexes::missing` from aspects `was` to `now` (`missing_of`).
+    fn index_missing(&mut self, id: &CommitId, was: &BTreeSet<(Ak, Tid)>, now: &BTreeSet<(Ak, Tid)>) {
+        for k in was.difference(now) {
+            self.ix.missing.remove(k, id);
+        }
+        for k in now.difference(was) {
+            self.ix.missing.insert(k.clone(), *id);
+        }
     }
 
     /// Moves commit `id` in `Indexes::covered_under` from coverers `was` to `now` (`covers_of`).

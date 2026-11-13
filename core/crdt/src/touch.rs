@@ -23,7 +23,8 @@ pub enum Seg {
 pub type Pos = Vec<Seg>;
 
 /// Every position `f` writes (unsorted; duplicates possible). A map record keyed `k` of dot `d`
-/// gives `[.., Dot(d)]` and `[.., Key(k), Dot(d)]`, so a key's positions name its records' dots.
+/// gives `[.., Dot(d)]` and `[.., Key(k), Dot(d)]`, so a key's positions name its records' dots;
+/// a set's tid element or value removal likewise under its tid.
 pub fn touches(f: &Fragment) -> Vec<Pos> {
     let mut out = Vec::new();
     walk(f, &mut Vec::new(), &mut out);
@@ -42,7 +43,18 @@ fn walk(f: &Fragment, at: &mut Pos, out: &mut Vec<Pos>) {
     match f {
         Fragment::Register(_) | Fragment::Slots(_) => out.push(at.clone()),
         Fragment::Bag(x) => x.elems.keys().for_each(|d| under(Seg::Dot(d.clone()), out)),
-        Fragment::Set(x) => x.elems.keys().for_each(|d| under(Seg::Dot(d.clone()), out)),
+        // a tid element or value removal under its tid too: a removal's undo reads every
+        // element of its value (§5.5)
+        Fragment::Set(x) => {
+            for (d, e) in &x.elems {
+                under(Seg::Dot(d.clone()), out);
+                for v in e.tids() {
+                    let mut p = at.clone();
+                    p.extend([Seg::Key(Key(std::sync::Arc::new(v.clone()))), Seg::Dot(d.clone())]);
+                    out.push(p);
+                }
+            }
+        }
         Fragment::Map(m) => {
             for id in m.entries.keys() {
                 under(Seg::Dot(id.dot.clone()), out);

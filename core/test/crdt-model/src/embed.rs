@@ -24,7 +24,7 @@ pub fn embed(a: &Frag, target: u8) -> Option<Frag> {
             };
             let mut elems = BTreeMap::new();
             if let Some((s, v)) = write {
-                elems.insert(s.dot.clone(), Elem { reset: None, frag: Some(Box::new(Frag::Register { reset: None, write: Some((s, v)) })) });
+                elems.insert(s.dot.clone(), Elem { reset: None, frag: Some(Box::new(Frag::Register { reset: None, write: Some((s, v)) })), gone: None });
             }
             Some(Frag::Bag { kind, c, elems })
         }

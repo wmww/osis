@@ -29,7 +29,7 @@ fn unembedded_slots_are_embedded_spec_7() {
     let counter = Fragment::Bag(Bag {
         kind: BagKind::Counter,
         meta: Meta::default(),
-        elems: BTreeMap::from([(c.dot.clone(), Elem { reset: None, frag: Some(Box::new(Fragment::Register(reg(c.clone(), 3)))) })]),
+        elems: BTreeMap::from([(c.dot.clone(), Elem { reset: None, frag: Some(Box::new(Fragment::Register(reg(c.clone(), 3)))), gone: None })]),
     });
     let snap = Fragment::Slots(Slots { reg: Some(reg(st(10, 1, 1), 5)), slots: BTreeMap::from([(Encoding::Counter, counter)]) });
     let mut x = Fragment::default();

@@ -474,8 +474,9 @@ pub(crate) fn overlay(acc: Fragment, d: Fragment, w: &Writer) -> Fragment {
             Fragment::Bag(Bag { kind: a.kind, meta, elems })
         }
         (Fragment::Set(a), Fragment::Set(b)) => {
-            let (meta, elems) = overlay_elems(a.meta, a.elems, b.meta, b.elems, w);
-            Fragment::Set(Set { meta, elems })
+            let (am, bm) = (a.meta.clone(), b.meta.clone());
+            let (meta, elems) = overlay_elems(am, a.elems, bm, b.elems, w);
+            Fragment::Set(Set::new(meta, elems))
         }
         (Fragment::Struct(a), Fragment::Struct(b)) => {
             let (meta, fields) = overlay_children(a.meta, a.fields, b.meta, b.fields, w);
@@ -551,6 +552,17 @@ fn overlay_elems(am: Meta, ae: BTreeMap<Dot, Elem>, bm: Meta, be: BTreeMap<Dot, 
     let (mut meta, mut elems) = start(am, ae, bm);
     let mut omitted = false;
     for (dot, de) in be {
+        if let Some(v) = de.removes() {
+            // a value removal: the batch's elements of its value go (§4.5), one removal stays
+            let gone: Vec<Dot> = elems.iter().filter(|(_, x)| x.written().is_some_and(|(x, _)| x == Some(v))).map(|(d, _)| d.clone()).collect();
+            for d in gone {
+                omitted |= elems.remove(&d).is_some();
+            }
+            if !elems.values().any(|x| x.removes() == Some(v)) {
+                elems.insert(dot, de);
+            }
+            continue;
+        }
         if de.reset.is_some() && w.made(&dot) {
             // created and removed in this commit: omitted (§4.5)
             omitted |= elems.remove(&dot).is_some();
@@ -558,7 +570,7 @@ fn overlay_elems(am: Meta, ae: BTreeMap<Dot, Elem>, bm: Meta, be: BTreeMap<Dot, 
         }
         let prev = elems.remove(&dot).unwrap_or_default();
         let frag = overlay_opt(prev.frag, de.frag, de.reset.is_some(), w);
-        elems.insert(dot, Elem { reset: de.reset.or(prev.reset), frag });
+        elems.insert(dot, Elem { reset: de.reset.or(prev.reset), frag, gone: prev.gone });
     }
     keep_present(&mut meta, omitted && elems.is_empty(), w);
     (meta, elems)

@@ -878,3 +878,47 @@ fn diff_writes_every_stored_key_of_a_projected_key_spec_9() {
     assert_eq!((records(0).count(), records(2).count()), (2, 2));
     assert_eq!(sort(got), sort(want));
 }
+
+/// §5.5: removing a tid writes a value removal, whatever the remover holds. It hides every
+/// element of the tid stamped below it, joined in any order, received by the remover or not; an
+/// add stamped after it shows; undoing the removal adds the tid back where it was live.
+#[test]
+fn tid_removal_by_value_spec_5_5() {
+    let view = TyView(Ty::Set(Box::new(Ty::Register)));
+    let t = Value::Tid(Tid::from_bytes([7; 15]));
+    let one = |n: u8, at: u64, op: Op, st: Option<&Fragment>| {
+        let mut w = Writer::new(ts(at << 16), sess(Tid::from_bytes([n; 15])), 1);
+        crate::ops::leaf(&mut w, st, &view, &op, true).unwrap().unwrap()
+    };
+    let add_a = one(1, 1, Op::Add(t.clone()), None);
+    let add_b = one(2, 2, Op::Add(t.clone()), None);
+    // C holds A's add only, B's is not received yet: its removal names the value, not A's dot
+    let mut held = Fragment::default();
+    held.join(add_a.clone());
+    let rm = one(3, 3, Op::Remove(t.clone()), Some(&held));
+    // nothing held at all: a removal all the same
+    let rm_blind = one(4, 3, Op::Remove(t.clone()), None);
+    let Fragment::Set(s) = &rm_blind else { panic!("set") };
+    assert!(s.elems.values().all(|e| e.removes() == Some(&t)), "a value removal: {rm_blind:?}");
+    let add_late = one(5, 4, Op::Add(t.clone()), None);
+    let empty = Some(Value::Set(Default::default()));
+    for order in [[&add_a, &add_b, &rm], [&rm, &add_b, &add_a], [&add_b, &rm, &add_a]] {
+        let mut st = Fragment::default();
+        for d in order {
+            st.join((*d).clone());
+        }
+        assert_eq!(st.read(), empty, "every add below the removal is hidden, received or not");
+        let mut later = st.clone();
+        later.join(add_late.clone());
+        assert_eq!(later.read(), Some(Value::Set([t.clone()].into())), "an add after it shows");
+        // undoing the removal against the state before it adds the tid back
+        let mut before = Fragment::default();
+        before.join(add_a.clone());
+        let mut w = Writer::new(ts(9 << 16), sess(Tid::from_bytes([9; 15])), 1);
+        let src = sess(Tid::from_bytes([3; 15]));
+        let u = undo(&mut w, &Undone { delta: &rm, source: &src, range: CounterRange { lo: 1, hi: 2 } }, &st, &before, &view).unwrap().unwrap();
+        let mut back = st.clone();
+        back.join(u);
+        assert_eq!(back.read(), Some(Value::Set([t.clone()].into())), "undone");
+    }
+}

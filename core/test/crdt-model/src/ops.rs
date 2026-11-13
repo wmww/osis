@@ -87,7 +87,7 @@ fn comp(reset: Option<Stamp>) -> Composite {
 
 /// Live elements of a set/bag: dot -> value.
 pub fn live_elems(elems: &BTreeMap<Dot, Elem>) -> Vec<(&Dot, Value)> {
-    elems.iter().filter_map(|(d, e)| e.frag.as_ref().and_then(|f| f.read()).map(|v| (d, v))).collect()
+    elems.iter().filter(|(_, e)| !crate::state::hidden(e, elems)).filter_map(|(d, e)| e.frag.as_ref().and_then(|f| f.read()).map(|v| (d, v))).collect()
 }
 /// Live map entry records: key -> live records (ascending).
 pub fn live_entries(entries: &BTreeMap<Eid, Entry>) -> BTreeMap<Value, Vec<Eid>> {
@@ -140,7 +140,7 @@ pub fn create(w: &mut Writer, ty: &Ty, v: &Value) -> Frag {
             };
             let d = w.stamp().dot;
             let mut elems = BTreeMap::new();
-            elems.insert(d, Elem { reset: None, frag: Some(Box::new(register(w, v.clone()))) });
+            elems.insert(d, Elem { reset: None, frag: Some(Box::new(register(w, v.clone()))), gone: None });
             Frag::Bag { kind, c: comp(None), elems }
         }
         (Ty::Text, Value::Str(s)) => {
@@ -181,7 +181,7 @@ pub fn create(w: &mut Writer, ty: &Ty, v: &Value) -> Frag {
             }
             for it in items {
                 let d = w.stamp().dot;
-                elems.insert(d, Elem { reset: None, frag: Some(Box::new(register(w, it.clone()))) });
+                elems.insert(d, Elem { reset: None, frag: Some(Box::new(register(w, it.clone()))), gone: None });
             }
             Frag::Set { c, elems }
         }
@@ -257,7 +257,7 @@ fn seq_delta(text: bool) -> Frag {
 pub fn bag_inc(w: &mut Writer, kind: BagKind, amount: Value) -> Frag {
     let d = w.stamp().dot;
     let mut elems = BTreeMap::new();
-    elems.insert(d, Elem { reset: None, frag: Some(Box::new(register(w, amount))) });
+    elems.insert(d, Elem { reset: None, frag: Some(Box::new(register(w, amount))), gone: None });
     let f = Frag::Bag { kind, c: comp(None), elems };
     f
 }
@@ -269,7 +269,7 @@ pub fn elem_reset(w: &mut Writer, enc: u8, dots: &[Dot]) -> Frag {
     match &mut f {
         Frag::Bag { elems, .. } | Frag::Set { elems, .. } => {
             for d in dots {
-                elems.insert(d.clone(), Elem { reset: Some(s.clone()), frag: None });
+                elems.insert(d.clone(), Elem { reset: Some(s.clone()), frag: None, gone: None });
             }
         }
         _ => panic!("elem_reset"),
@@ -285,12 +285,22 @@ pub fn set_add(w: &mut Writer, state: Option<&Frag>, v: &Value) -> Option<Frag> 
     }
     let d = w.stamp().dot;
     let mut elems = BTreeMap::new();
-    elems.insert(d, Elem { reset: None, frag: Some(Box::new(register(w, v.clone()))) });
+    elems.insert(d, Elem { reset: None, frag: Some(Box::new(register(w, v.clone()))), gone: None });
     let f = Frag::Set { c: comp(None), elems };
     Some(f)
 }
 
+/// A value removal of tid `v` (§5.5): a fresh dot at the delta's stamp.
+pub fn set_removal(w: &mut Writer, v: &Value) -> (Dot, Elem) {
+    let d = w.stamp().dot;
+    (d, Elem { reset: None, frag: None, gone: Some((w.delta(), v.clone())) })
+}
+
 pub fn set_remove(w: &mut Writer, state: Option<&Frag>, v: &Value) -> Option<Frag> {
+    if matches!(v, Value::Tid(_)) {
+        let (d, e) = set_removal(w, v);
+        return Some(Frag::Set { c: comp(None), elems: BTreeMap::from([(d, e)]) });
+    }
     let Some(Frag::Set { elems, .. }) = state else { return None };
     let dots: Vec<Dot> = live_elems(elems).into_iter().filter(|(_, x)| x == v).map(|(d, _)| d.clone()).collect();
     if dots.is_empty() {

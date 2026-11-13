@@ -115,17 +115,47 @@ pub struct Register {
 }
 
 /// A set or bag element: its reset and its value register (§5.2, §5.5). A record with a reset and
-/// no content is a tombstone.
+/// no content is a tombstone. A set's record may instead (a forged copy: as well) carry a **value
+/// removal** (§5.5), a write of its own: its stamp and the tid whose elements below it it hides.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Elem {
     pub(crate) reset: Option<Stamp>,
     pub(crate) frag: Option<Box<Fragment>>,
+    pub(crate) gone: Option<(Stamp, Value)>,
 }
 
 impl Elem {
     /// A tombstone: reset `r`, no content.
     pub(crate) fn tomb(r: &Stamp) -> Elem {
-        Elem { reset: Some(r.clone()), frag: None }
+        Elem { reset: Some(r.clone()), frag: None, gone: None }
+    }
+    /// A value removal of `v` stamped `r` (§5.5).
+    pub(crate) fn removal(r: &Stamp, v: Value) -> Elem {
+        Elem { reset: None, frag: None, gone: Some((r.clone(), v)) }
+    }
+    /// The tid the record's value removal names, if it carries one.
+    pub(crate) fn removes(&self) -> Option<&Value> {
+        self.gone.as_ref().map(|g| &g.1)
+    }
+    /// Whether the record holds a write (§4.2).
+    pub(crate) fn holds(&self) -> bool {
+        self.reset.is_some() || self.frag.is_some() || self.gone.is_some()
+    }
+    /// An element holding fragment `f`.
+    pub(crate) fn of_frag(f: Fragment) -> Elem {
+        Elem { reset: None, frag: Some(Box::new(f)), gone: None }
+    }
+    /// The value and stamp of the element's register write: `(None, s)` for a value-less one
+    /// (§4.7); `None` for a tombstone or a value removal alone.
+    pub(crate) fn written(&self) -> Option<(Option<&Value>, &Stamp)> {
+        match self.frag.as_deref() {
+            Some(Fragment::Register(Register { write: Some(w), .. })) => Some((w.value.as_ref(), &w.stamp)),
+            _ => None,
+        }
+    }
+    /// The tids the record's element holds and its value removal names (§5.5).
+    pub(crate) fn tids(&self) -> impl Iterator<Item = &Value> {
+        self.removes().into_iter().chain(self.written().and_then(|w| w.0)).filter(|v| matches!(v, Value::Tid(_)))
     }
 }
 
@@ -253,6 +283,35 @@ pub struct Enum {
 pub struct Set {
     pub(crate) meta: Meta,
     pub(crate) elems: BTreeMap<Dot, Elem>,
+}
+
+impl Set {
+    pub(crate) fn new(meta: Meta, elems: BTreeMap<Dot, Elem>) -> Set {
+        Set { meta, elems }
+    }
+}
+
+/// The greatest value removal of each tid among a set's `elems` (§5.5).
+pub(crate) fn removed(elems: &BTreeMap<Dot, Elem>) -> BTreeMap<&Value, &Stamp> {
+    let mut out: BTreeMap<&Value, &Stamp> = BTreeMap::new();
+    for (r, v) in elems.values().filter_map(|e| e.gone.as_ref()) {
+        let m = out.entry(v).or_insert(r);
+        *m = (*m).max(r);
+    }
+    out
+}
+
+/// Whether element `e` is hidden by a value removal of its tid stamped after it (`removed`,
+/// §5.5): it stays in the state, as a deleted text element's creation does, and reads as nothing.
+pub(crate) fn hidden(e: &Elem, removed: &BTreeMap<&Value, &Stamp>) -> bool {
+    matches!(e.written(), Some((Some(v), s)) if removed.get(v).is_some_and(|g| s < *g))
+}
+
+/// The live elements of a set or bag's `elems` with their reads: present, and in a set not
+/// hidden by a value removal (§5.5).
+pub(crate) fn live_elems(elems: &BTreeMap<Dot, Elem>) -> impl Iterator<Item = (&Dot, &Elem, Value)> {
+    let gone = removed(elems);
+    elems.iter().filter(move |(_, e)| !hidden(e, &gone)).filter_map(|(d, e)| Some((d, e, e.frag.as_deref()?.read()?)))
 }
 
 /// §5.6.
@@ -437,7 +496,20 @@ impl Fragment {
                 }
                 Fragment::Map(Map::new(s.meta.clone(), keep))
             }
-            (Fragment::Set(s), Fragment::Set(d)) => Fragment::Set(Set { meta: s.meta.clone(), elems: d.elems.keys().filter_map(|k| Some((k.clone(), s.elems.get(k)?.clone()))).collect() }),
+                       // a set: also the records of the tids `x`'s elements and value removals name, which hide
+            // or are hidden by them (§5.5)
+            (Fragment::Set(s), Fragment::Set(d)) => {
+                let mut keep: BTreeMap<Dot, Elem> = d.elems.keys().filter_map(|k| Some((k.clone(), s.elems.get(k)?.clone()))).collect();
+                let tids: BTreeSet<&Value> = d.elems.values().flat_map(Elem::tids).collect();
+                if !tids.is_empty() {
+                    for (k, e) in &s.elems {
+                        if e.tids().any(|v| tids.contains(v)) {
+                            keep.entry(k.clone()).or_insert_with(|| e.clone());
+                        }
+                    }
+                }
+                Fragment::Set(Set { meta: s.meta.clone(), elems: keep })
+            }
             (Fragment::Bag(s), Fragment::Bag(d)) if s.kind == d.kind => Fragment::Bag(Bag { kind: s.kind, meta: s.meta.clone(), elems: d.elems.keys().filter_map(|k| Some((k.clone(), s.elems.get(k)?.clone()))).collect() }),
             (Fragment::Seq(s), Fragment::Seq(d)) if s.encoding() == d.encoding() => Fragment::Seq(s.footprint(d)),
             _ => self.clone(),
@@ -460,10 +532,10 @@ impl Fragment {
     /// element's or entry's, tombstones included; `has_reset` judges the top alone); a sequence
     /// counts as having one (its deletes and moves are not judged here).
     pub fn has_any_reset(&self) -> bool {
-        let elems = |m: &Meta, e: &BTreeMap<Dot, Elem>| m.reset.is_some() || e.values().any(|x| x.reset.is_some() || x.frag.as_deref().is_some_and(Fragment::has_any_reset));
+        let elems = |m: &Meta, e: &BTreeMap<Dot, Elem>| m.reset.is_some() || e.values().any(|x| x.reset.is_some() || x.gone.is_some() || x.frag.as_deref().is_some_and(Fragment::has_any_reset));
         match self {
             Fragment::Register(r) => r.reset.is_some(),
-            Fragment::Bag(Bag { meta, elems: e, .. }) | Fragment::Set(Set { meta, elems: e }) => elems(meta, e),
+            Fragment::Bag(Bag { meta, elems: e, .. }) | Fragment::Set(Set { meta, elems: e, .. }) => elems(meta, e),
             Fragment::Struct(s) => s.meta.reset.is_some() || s.fields.values().any(Fragment::has_any_reset),
             Fragment::Enum(x) => x.meta.reset.is_some() || x.payloads.values().any(Fragment::has_any_reset),
             Fragment::Map(m) => m.meta.reset.is_some() || m.entries.values().any(|e| e.reset.is_some() || e.frag.as_deref().is_some_and(Fragment::has_any_reset)),
@@ -477,7 +549,7 @@ impl Fragment {
     pub fn has_position_reset(&self) -> bool {
         match self {
             Fragment::Register(r) => r.reset.is_some(),
-            Fragment::Bag(Bag { meta, elems, .. }) | Fragment::Set(Set { meta, elems }) => meta.reset.is_some() || elems.values().any(|x| x.frag.as_deref().is_some_and(Fragment::has_position_reset)),
+            Fragment::Bag(Bag { meta, elems, .. }) | Fragment::Set(Set { meta, elems, .. }) => meta.reset.is_some() || elems.values().any(|x| x.frag.as_deref().is_some_and(Fragment::has_position_reset)),
             Fragment::Struct(s) => s.meta.reset.is_some() || s.fields.values().any(Fragment::has_position_reset),
             Fragment::Enum(x) => x.meta.reset.is_some() || x.payloads.values().any(Fragment::has_position_reset),
             Fragment::Map(m) => m.meta.reset.is_some() || m.entries.values().any(|e| e.frag.as_deref().is_some_and(Fragment::has_position_reset)),
