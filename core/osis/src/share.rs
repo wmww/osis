@@ -1045,7 +1045,7 @@ impl Osis {
         let (held, _joining) = if self.engine(|e| reaches(e, &target, &k)) { (true, None) } else { self.join_link(&link).await? };
         let me = self.me();
         // joined: the grant stands in a view with nothing on K pending, and the role is of use
-        // (`read::usable`: a direct link's grant comes under K's label with no inbox hint, the
+        // (`Engine::usable_role`: a direct link's grant comes under K's label with no inbox hint, the
         // target's delete keys after it), so the first write goes through; the target is
         // here, so the first read sees what it holds; and the join is at a source of K, so
         // whoever admits this node by it (the sharer's node) can
@@ -1055,7 +1055,7 @@ impl Osis {
                 return None;
             }
             let role = e.role_on(&target);
-            let done = match crate::read::usable(e, &target, role) {
+            let done = match e.usable_role(&target, role).map_err(Error::from) {
                 // reached before: it is here already (a used single-use link of its own: a call
                 // dropped while waiting for the delete keys)
                 Ok(r) if r == role && held => return Some(Ok(())),
@@ -1601,7 +1601,7 @@ impl Osis {
             let len: u64 = of(self.rcall(method::EXPORT_BUNDLE, vec![v(&groups.to_vec())])?)?;
             let mut off = 0;
             while off < len {
-                let page = self.primary_call_big(method::BUNDLE_READ, vec![Value::uint(off), Value::uint(STREAM_CHUNK as u64)], STREAM_CHUNK.saturating_add(osis_proto::window::SMALL_REPLY))?;
+                let page = self.primary().call_big(method::BUNDLE_READ, vec![Value::uint(off), Value::uint(STREAM_CHUNK as u64)], STREAM_CHUNK.saturating_add(osis_proto::window::SMALL_REPLY))?;
                 let page = bytes(page)?;
                 if page.is_empty() {
                     return Err(Error::Network("the connection to the node changed during an export: run it again".into()));

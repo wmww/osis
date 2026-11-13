@@ -637,7 +637,7 @@ impl Worker {
             }
             method::NOW => u(db.now()?.0),
             method::ADD_CLIENT => {
-                let until = a.opt_wall()?;
+                let until = a.get()?;
                 c::v(&db.add_client(until)?)
             }
             method::CLIENTS => c::v(&db.clients()?),
@@ -744,7 +744,7 @@ impl Worker {
             method::LINKS => c::v(&db.links()?),
             method::MAKE_LINK => {
                 let (t, r) = (a.tid()?, a.get()?);
-                let until = a.opt_wall()?;
+                let until = a.get()?;
                 let o = crate::LinkOpts { until, single_use: a.bool()?, direct: a.bool()? };
                 c::v(&db.make_link(t, r, o)?)
             }

@@ -180,13 +180,6 @@ pub(crate) fn lenient<T>(tid: Tid, ak: &Ak, r: std::result::Result<T, PathError>
     r.map_err(|e| report(mismatch(tid, ak, &e))).ok()
 }
 
-/// `role` on `tid` as this node can use it now: the engine's one rule for every local call that
-/// needs a role (`Engine::usable_role`, spec/crypto.md §7), for every route to a role (a grant, a
-/// link, another node of the account, a group's grant).
-pub(crate) fn usable(e: &mut Engine, tid: &Tid, role: Option<Role>) -> Result<Option<Role>> {
-    Ok(e.usable_role(tid, role)?)
-}
-
 /// One locked view of the engine: what every single read uses.
 pub(crate) struct Reader<'a> {
     pub(crate) e: &'a mut Engine,
@@ -379,7 +372,8 @@ impl Reader<'_> {
             Some(a) => self.e.actor_role(&a, &tid).filter(|_| !self.hidden(tid)),
             None => self.e.role_on(&tid),
         };
-        usable(self.e, &tid, role)
+        // the engine's one rule for every route to a role (spec/crypto.md §7)
+        Ok(self.e.usable_role(&tid, role)?)
     }
 
     /// Whether the thing is here with content: its creation is held and some aspect a `Write`

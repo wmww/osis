@@ -579,7 +579,7 @@ impl Osis {
             return Err(Error::Invalid(why));
         }
         let raw = a.list()?;
-        let expires = a.opt_wall()?.map(Expiry::At);
+        let expires = a.get::<Option<Time>>()?.map(Expiry::At);
         a.end()?;
         if raw.len() > crate::port::MAX_WRITE_OPS {
             return Err(bad("write (too many ops)"));

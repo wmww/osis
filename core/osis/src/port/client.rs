@@ -1117,11 +1117,6 @@ impl Osis {
         self.inner.client.get().is_some_and(|t| t.primary.keyed)
     }
 
-    /// `rcall` allowing a reply of `max_reply`, sent once.
-    pub(crate) fn primary_call_big(&self, m: u64, args: Vec<Value>, max_reply: usize) -> Result<Value> {
-        self.primary().call_big(m, args, max_reply)
-    }
-
     /// Fails `Unsupported` on a thin client: a call that needs this process to be the node.
     pub(crate) fn local_only(&self, what: &str) -> Result<()> {
         if !self.has_store() { Err(Error::Unsupported(format!("{what} on a thin client"))) } else { Ok(()) }
@@ -1474,7 +1469,8 @@ impl crate::handle::ReadOnly {
         c::of(r.call_big(method::BACKLINKS, vec![Value::Tid(tid), c::v(q)], PAGE_BYTES)?)
     }
 
-    fn primary(&self) -> &Arc<Connection> {
+    /// The connection of a handle with no store: where its process-wide calls go.
+    pub(crate) fn primary(&self) -> &Arc<Connection> {
         self.inner.client.get().map(|t| &t.primary).unwrap_or_else(|| unreachable!("a process-wide node call on a node's own handle"))
     }
 

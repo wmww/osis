@@ -98,10 +98,6 @@ impl Args {
     pub fn opt(&mut self) -> Result<Option<Value>> {
         self.get()
     }
-    /// An optional wall time.
-    pub fn opt_wall(&mut self) -> Result<Option<Time>> {
-        self.get()
-    }
     /// The positions not read yet.
     pub fn rest(&mut self) -> Vec<Value> {
         self.0.by_ref().collect()
