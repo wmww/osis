@@ -48,6 +48,9 @@ pub(crate) struct Link {
     pub t_max: f64,
     /// The list moved by input since the page's last layout.
     pub moved: bool,
+    /// An area to bring into view is on its way up from the content (through the view, before
+    /// the page): not the head's or the foot's, which may be pinned.
+    pub pan: bool,
 }
 
 pub(crate) type LinkRef = Arc<Mutex<Link>>;
@@ -111,7 +114,11 @@ impl Widget for View {
         ctx.register_child(&mut self.child);
     }
 
-    fn update(&mut self, _ctx: &mut UpdateCtx<'_>, _props: &mut PropertiesMut<'_>, _event: &Update) {}
+    fn update(&mut self, _ctx: &mut UpdateCtx<'_>, _props: &mut PropertiesMut<'_>, event: &Update) {
+        if let Update::RequestPanToChild(_) = event {
+            lock(&self.link).pan = true;
+        }
+    }
 
     fn layout(&mut self, ctx: &mut LayoutCtx<'_>, _props: &mut PropertiesMut<'_>, bc: &BoxConstraints) -> Size {
         if self.plain {
@@ -318,13 +325,13 @@ impl Widget for Page {
 
     fn update(&mut self, ctx: &mut UpdateCtx<'_>, _props: &mut PropertiesMut<'_>, event: &Update) {
         // bring an area (the page's coordinates) into view; the pinned head and foot always show
+        // (what is under the pinned head is content too: it comes through the view)
         let Update::RequestPanToChild(r) = event else { return };
-        let in_head = self.head.is_some() && r.y1 <= self.view_y + 0.5;
-        let in_foot = self.foot.is_some() && r.y0 >= self.view_y + self.v - 0.5;
-        if self.plain || (self.pinned && (in_head || in_foot)) {
+        let mut l = lock(&self.link);
+        let content = std::mem::take(&mut l.pan);
+        if self.plain || (self.pinned && !content) {
             return;
         }
-        let l = lock(&self.link);
         if let Some(id) = l.list {
             // where the area is in the one position's terms: what is above the list is where it
             // is, the list's rows are moved inside it by `t - s`, what is below follows all rows

@@ -824,6 +824,62 @@ fn a_focused_field_stays_in_view_when_the_space_shrinks() {
     assert!(r.y1 > 0.0 && r.y0 < 120.0, "the body in view: {r:?}");
 }
 
+/// A caret moved by keys past the bottom of the page comes into view: the page follows it.
+#[test]
+fn a_caret_moved_by_keys_stays_in_view() {
+    use osis_kit::masonry::core::TextEvent;
+    use osis_kit::masonry::core::keyboard::{Key, NamedKey};
+    let mut s = long_note(360, 300, 60);
+    let (id, _) = body(&mut s);
+    s.rr.handle_access_event(ActionRequest { action: Action::Focus, target: NodeId(id.to_raw()), data: None });
+    s.rr.redraw();
+    assert_eq!(s.rr.focused_widget(), Some(id));
+    let mut last = None;
+    for _ in 0..40 {
+        s.rr.handle_text_event(TextEvent::key_down(Key::Named(NamedKey::ArrowDown)));
+        s.rr.redraw();
+        last = caret(&s).or(last);
+    }
+    let c = last.expect("the caret was reported");
+    assert!(c.y0 >= 0.0 && c.y1 <= 300.0, "the caret forty lines down: {c:?}");
+    let (_, r) = body(&mut s);
+    assert!(r.y0 < 0.0, "the page scrolled to it: the body's top at {}", r.y0);
+    // and back up: the caret shows below the pinned bar, not under it
+    for _ in 0..40 {
+        s.rr.handle_text_event(TextEvent::key_down(Key::Named(NamedKey::ArrowUp)));
+        s.rr.redraw();
+        last = caret(&s).or(last);
+    }
+    let c = last.expect("the caret was reported");
+    let hit = s.rr.get_layer_root(0).find_widget_under_pointer(c.center()).map(|w| w.id());
+    assert_eq!(hit, Some(id), "the caret at the body's top shows: {c:?}");
+}
+
+/// Scrolling away from the focused field's caret is the user's: the page does not pull the caret
+/// back, also when the window then changes.
+#[test]
+fn a_scroll_away_from_the_caret_stays() {
+    let mut s = long_note(360, 300, 60);
+    let (id, _) = body(&mut s);
+    s.rr.handle_access_event(ActionRequest { action: Action::Focus, target: NodeId(id.to_raw()), data: None });
+    s.rr.redraw();
+    assert_eq!(s.rr.focused_widget(), Some(id));
+    // the caret a few lines down, well inside the page
+    for _ in 0..4 {
+        s.rr.handle_text_event(osis_kit::masonry::core::TextEvent::key_down(osis_kit::masonry::core::keyboard::Key::Named(osis_kit::masonry::core::keyboard::NamedKey::ArrowDown)));
+        s.rr.redraw();
+    }
+    for _ in 0..10 {
+        s.wheel(Point::new(180.0, 150.0), 100.0);
+    }
+    let (_, r) = body(&mut s);
+    assert!(r.y0 < -500.0, "scrolled down the body: its top at {}", r.y0);
+    s.resize_to(360, 280);
+    s.rr.redraw();
+    let (_, r2) = body(&mut s);
+    assert!((r2.y0 - r.y0).abs() < 0.5, "the page stayed where it was scrolled: {} -> {}", r.y0, r2.y0);
+}
+
 /// A note's body is never shorter than its text: in a window too short for it the page scrolls
 /// instead, and the body is as tall as in a window where it has room to spare beyond its text.
 #[test]

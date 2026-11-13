@@ -652,13 +652,16 @@ impl Widget for Flex {
         let mut max_above_baseline = 0_f64;
         let mut max_below_baseline = 0_f64;
 
-        // a child filling the cross axis is laid out across all of it at once, so it is not laid
-        // out a second time to fill it (which doubles the layouts below at each such Flex)
+        // under a tight cross axis (where the Flex is as wide as that, so a filling child ends up
+        // across all of it), a child filling the cross axis is laid out across it at once, so it
+        // is not laid out a second time to fill it (which doubles the layouts below at each such
+        // Flex); under a loose one the Flex is as wide as its widest child, as upstream
         let cross_max = self.direction.minor(bc.max());
+        let tight = cross_max.is_finite() && self.direction.minor(bc.min()) >= cross_max;
         let cross = self.cross_alignment;
         let direction = self.direction;
         let filled = move |bc: BoxConstraints, alignment: Option<CrossAxisAlignment>| {
-            if alignment.unwrap_or(cross) != CrossAxisAlignment::Fill || !cross_max.is_finite() {
+            if alignment.unwrap_or(cross) != CrossAxisAlignment::Fill || !tight {
                 return bc;
             }
             let min = direction.pack(direction.major(bc.min()), cross_max);
@@ -783,8 +786,7 @@ impl Widget for Flex {
                                 .direction
                                 .pack(self.direction.major(child_size), minor)
                                 .into();
-                            // laid out across the whole cross axis already, unless that was
-                            // unbounded
+                            // laid out across the whole cross axis already when it was tight
                             if child_size != fill_size {
                                 ctx.run_layout(widget, &BoxConstraints::tight(fill_size));
                             }

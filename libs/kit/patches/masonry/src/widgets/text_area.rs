@@ -332,6 +332,8 @@ impl<const EDITABLE: bool> TextArea<EDITABLE> {
             } else {
                 ctx.request_render();
                 ctx.set_ime_area(self.ime_area());
+                // a caret moved by a key comes into view
+                ctx.request_scroll_to_ime_area();
             }
             self.rendered_generation = new_generation;
         }
