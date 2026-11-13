@@ -146,17 +146,24 @@ impl SyncEngine {
         Ok(!self.parts_covered(snaps, c, h, &[ai], note)?)
     }
 
-    /// Whether a delete took body `b` from `l` (from this node's store, or at `host`: an entry of
-    /// it gone there and not present, not a wrap of no use) and it stays out: every one of its
-    /// `parts` only a blob can carry (`must_carry`) is held there (at `host`) by another genuine
-    /// blob of the commit, and no purge that fell may have been what took it (spec/sync.md §6).
+    /// Whether a delete took body `b` from `l` (a blob of the commit whose `readable` parts are the
+    /// body's, from this node's store, or at `host`: an entry of it gone there and not present,
+    /// not a wrap of no use) and it stays out: every one of its `parts` only a blob can carry
+    /// (`must_carry`) is held there (at `host`) by another genuine blob of the commit, and no purge that fell may have been what took it (spec/sync.md §6).
     /// A memory body's delete stands too while memory entries this node refused for its cap are
     /// held there (`refused_there`): a delete-key holder deletes only once the carrier is there,
     /// and this node, not reading those entries, cannot show it is not (a fresh encryption past
     /// that delete would be deleted again, forever).
     pub(super) fn delete_stands(&mut self, host: Option<&HostKey>, l: LabelId, b: &Body, parts: &[usize], snaps: &Snaps, note: &mut Note) -> Result<bool> {
-        let deleted_there = |s: &Self, h: &HostKey| s.state.entries_of(&l, &b.commit).any(|(id, e)| matches!(&e.kind, Kind::Commit { parts, .. } if *parts == b.parts) && s.state.is_gone_at(h, &l, &id) && !s.state.is_present(h, &l, &id));
-        if !self.state.body_deleted(l, b.commit, &b.parts) && !host.is_some_and(|h| deleted_there(self, h)) {
+        // compared on what the label's actor reads, as the body is: a deleted blob holding more
+        // it reads was another body (a rewrite replaced it for a dropped part)
+        let Some(g) = self.group_of(&l, None) else { return Ok(false) };
+        let mut deleted: Vec<Vec<usize>> = self.state.deleted_bodies(l, b.commit).cloned().collect();
+        if let Some(h) = host {
+            let there = self.state.entries_of(&l, &b.commit).filter(|(id, _)| self.state.is_gone_at(h, &l, id) && !self.state.is_present(h, &l, id));
+            deleted.extend(there.filter_map(|(_, e)| if let Kind::Commit { parts, .. } = &e.kind { Some(parts.clone()) } else { None }).collect::<Vec<_>>());
+        }
+        if !deleted.into_iter().any(|p| self.readable(&g, &b.commit, &p) == b.parts) {
             return Ok(false);
         }
         // expiring within the clock drift allowed: a holder whose clock is ahead took it at expiry

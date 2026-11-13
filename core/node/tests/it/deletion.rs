@@ -2159,3 +2159,96 @@ fn kept_delta_waits_for_its_carrier_spec_sync_7() {
     let kept = net.sync(a).entries(&l).into_iter().any(|(id, k)| ids.contains(&id) && matches!(k, EntryKind::Commit { commit, parts, .. } if commit == c && parts.contains(&ai)));
     assert!(kept, "the kept delta stays under the label");
 }
+
+/// Groups `f` and `s` of admin a, b and w writing both, an item of each (`top`, `inner`). b's
+/// commit on both (`GONE` on `top`, a `GONEMAP` key on `inner`) goes under each group's label as
+/// one blob, each label's actor reading one of its deltas (spec/sync.md §3). Node `by` (a or w)
+/// then covers `top` and drops b's delta there (b keeps its own: spec/sync.md §7 Own bodies):
+/// - `late`: `by` is offline meanwhile and gets the commit `MAX_DRIFT` later (its relay wait
+///   starting then);
+/// - `dead`: `by` removes the key first, so b's delta on `inner` holds no live write and nothing
+///   covers it;
+/// - `by` w: a is offline from then on, so only w dropped it, and w makes no delete of b's blob.
+///
+/// The net settles past every relay wait. Returns the net, the host, `s`'s label and the commit.
+fn unread_part_dropped(by: usize, dead: bool, late: bool) -> (Net, usize, osis_base::LabelId, osis_base::CommitId) {
+    let mut net = net::Net::new();
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let b = net.node(2, &[host]);
+    let w = net.node(3, &[host]);
+    let f = net.group(a, &[(b, Role::Write), (w, Role::Write)], &[host]);
+    let g = net.group(a, &[(b, Role::Write), (w, Role::Write)], &[host]);
+    let top = net.item(a, f, f, "t");
+    let inner = net.item(a, g, g, "i");
+    net.run();
+    if late {
+        net.set_online(by, false);
+    }
+    let mut m = Mutation::new();
+    m.set(top, &GONE, &s("t1")).unwrap();
+    m.op(inner, &GONEMAP, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(s("k"))], op: osis_crdt::Op::Set(s("i1")) }).unwrap();
+    let c = net.engine(b).commit(m).unwrap().unwrap();
+    net.run();
+    if late {
+        net.advance(osis_base::format::MAX_DRIFT_MS + 60_000);
+        net.set_online(by, true);
+        net.run();
+    }
+    if dead {
+        let mut m = Mutation::new();
+        m.op(inner, &GONEMAP, osis_crdt::PathOp { path: vec![], op: osis_crdt::Op::Remove(s("k")) }).unwrap();
+        net.engine(by).commit(m).unwrap().unwrap();
+        net.run();
+    }
+    if by == w {
+        net.set_online(a, false);
+    }
+    let gone = Ak::new(GONE.ak()).unwrap();
+    let acts = net.sync(by).compact_now(&top, &gone).unwrap();
+    net.actions(by, acts);
+    net.run();
+    net.advance(60_000);
+    assert!(!net.engine(by).body_not_dropped(&c, &top, &gone) && net.engine(b).body_not_dropped(&c, &top, &gone));
+    let l = net.group_labels(b).into_iter().find(|x| x.0 == g).unwrap().1.id;
+    (net, host, l, c)
+}
+
+/// The blobs of `c` under `l` at `host` (their aspect index sets, as node b knows them), and how
+/// many deletes nodes a, b and w sent there.
+fn unread_part_outcome(net: &mut Net, host: usize, l: &osis_base::LabelId, c: osis_base::CommitId) -> (Vec<Vec<usize>>, [usize; 3]) {
+    let ids = net.host_ids(host, l);
+    let mut left: Vec<Vec<usize>> = net.sync(1).entries(l).into_iter().filter(|(id, _)| ids.contains(id)).filter_map(|(_, k)| match k {
+        EntryKind::Commit { commit, ais, .. } if commit == c => Some(ais),
+        _ => None,
+    }).collect();
+    left.sort();
+    let deletes = [0, 1, 2].map(|n| net.deleted.iter().filter(|((x, y, _), _)| *x == n && y == l).map(|(_, k)| *k).sum());
+    (left, deletes)
+}
+
+// spec/sync.md §6, §7: a, getting b's commit late, deletes its blob under `s`'s label at once (its
+// own rewrite waiting to be relayed) for the delta on `top` it dropped, which `s`'s actor may not
+// read; the dead delta on `inner` needs no carrier. b, judging by what `s`'s actor reads, finds
+// that blob was its body there, and the delete stands: no fresh encryption for a to delete
+// again, nor a rewrite from a.
+#[test]
+fn a_delete_for_an_unread_dropped_delta_stands_spec_sync_6() {
+    let (mut net, host, l, c) = unread_part_dropped(0, true, true);
+    let (left, deletes) = unread_part_outcome(&mut net, host, &l, c);
+    assert!(left.is_empty(), "the delete stands: {left:?}");
+    assert_eq!(deletes, [1, 0, 0], "deletes by a, b and w");
+}
+
+// spec/sync.md §7 Carriers, Duplicates: w drops b's delta on `top` (making no delete of b's blob),
+// so its rewrite of b's commit under `s`'s label, without that delta, carries the live one on
+// `inner` there. b, not having dropped that delta, does not take the rewrite for a duplicate of
+// its blob (they hold different delta sets, alike in what the label's actor reads): both stay,
+// and nobody deletes either.
+#[test]
+fn a_rewrite_without_an_unread_delta_is_no_duplicate_spec_sync_7() {
+    let (mut net, host, l, c) = unread_part_dropped(2, false, false);
+    let (left, deletes) = unread_part_outcome(&mut net, host, &l, c);
+    assert!(left.len() == 2 && left.iter().any(|x| x.len() == 1), "b's blob and w's rewrite: {left:?}");
+    assert_eq!(deletes, [0, 0, 0], "deletes by a, b and w");
+}

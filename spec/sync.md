@@ -296,7 +296,7 @@ Each operation names a label. Writes are signed with the role keys of the host's
   After syncing:
   - **Writer**: logs every must-hold body the label lacks, as a fresh encryption if the old blob ID is tombstoned or its entry counts as lacking there (§5). A blob of the commit that is not must-not-hold and holds every delta of the body that no snapshot under the label covers holds it.
   - **Reader**: sends each must-hold entry it holds that the label lacks: relayed under its stamp when the head's write key verifies it, else deposited while it judges the body valid (any author's, judged by its author's rights when promoted, §5).
-  - **Neither** logs nor relays a body a delete removed from the label (an entry of it that is not a certificate copy, within `TOMBSTONE_LIFETIME`) while both of these hold:
+  - **Neither** logs nor relays a body a delete removed from the label (an entry of it that is not a certificate copy, within `TOMBSTONE_LIFETIME`: a blob of the commit whose deltas the label's actor may read are the body's, whatever else it holds) while both of these hold:
     - each of its deltas only a blob carries (as for a strict subset above) is held there by another blob of the commit that is not must-not-hold;
     - no held purge request signed by ones that could hold the right (spec/commits.md §4) names a delta of it without dropping it (spec/permissions.md §6).
     - So once a delete took a delta covered by a snapshot under the label, no one places it again, even a node that judges it replaced later (holding other bodies, spec/commits.md §5) and still keeps it: the host keeps the snapshot's live state, not that delta's history before its keep-at-least bound. Once no valid snapshot under the label covers it, its holders place it again.
@@ -337,7 +337,7 @@ Each operation names a label. Writes are signed with the role keys of the host's
   - It writes a snapshot of the aspect from its whole state (spec/commits.md §2) and places it like any must-hold body, unless it already wrote one from that same state for that node.
   - It judges each entry once per suspect list.
   - It SHOULD report every entry it judged (a diagnostic), repaired or not.
-- **Duplicates**: of two blobs of one commit with the same delta set under one label, a delete-key holder deletes the one with the higher blob ID. Of two at a host where one counts as lacking (§5), that one, and it counts as no copy of the other.
+- **Duplicates**: of two blobs of one commit with the same delta set under one label (deltas the label's actor may not read included), a delete-key holder deletes the one with the higher blob ID. Of two at a host where one counts as lacking (§5), that one, and it counts as no copy of the other.
 
 ## 8. Pushes
 A node sends a push (a Stream, §10, or a client-port Notify) only while its bytes not yet taken by the transport on that connection, the push included, stay within `REPLY_BUDGET`, or none are. Otherwise the push waits, continuing from where it stopped once it fits, and a relay-only entry that does not fit is not pushed on that connection.

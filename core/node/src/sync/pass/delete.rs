@@ -109,7 +109,7 @@ impl SyncEngine {
     fn judge(&mut self, at: &At, id: &BlobId, e: &Entry, desired: &Desired, note: &mut Note) -> Result<Option<Judged>> {
         let (g, l, host, snaps, settled) = (&at.g, &at.l, at.host.as_ref(), at.snaps, at.settled);
         let now = self.now();
-        let Kind::Commit { commit, parts: opened, .. } = &e.kind else { return Ok(None) };
+        let Kind::Commit { commit, parts: opened, ais } = &e.kind else { return Ok(None) };
         // judged on the parts the label's actor reads (`readable`), as every node of it does
         let parts = &self.readable(g, commit, opened);
         let Some(m) = self.engine.core.ix.commits.get(commit).cloned() else { return Ok(self.judge_forgotten(commit, opened, note)) };
@@ -179,8 +179,9 @@ impl SyncEngine {
                 self.state.memory_in_closure.insert((*l, *id));
             }
             // the duplicate with the higher blob ID goes (spec/sync.md §7): the same delta set
-            // (each encryption has its own salt), only a genuine one (a forged duplicate must not
-            // get the real entry deleted); one whose wrap is of no use there counts as no copy,
+            // (each encryption has its own salt), deltas the label's actor may not read included
+            // (a blob holding one another node dropped is must-not-hold there, no copy), only a
+            // genuine one (a forged duplicate must not get the real entry deleted); one whose wrap is of no use there counts as no copy,
             // and goes itself once there is one, whatever its ID
             // (in this node's own store: useless at a source, where another encryption replaces it;
             // one whose bytes it dropped is no copy either, as `entry_for` places the body anew)
@@ -188,11 +189,11 @@ impl SyncEngine {
                 Some(s) => self.state.is_gone_at(s, l, id),
                 None => self.state.useless_anywhere(l, id),
             };
-            let same: Vec<BlobId> = self.state.entries_of(l, commit).filter(|(b, o)| (b < id || (useless && b != id)) && !o.cert && matches!(&o.kind, Kind::Commit { .. }) && match host {
+            let same: Vec<BlobId> = self.state.entries_of(l, commit).filter(|(b, o)| (b < id || (useless && b != id)) && !o.cert && matches!(&o.kind, Kind::Commit { ais: a, .. } if a == ais) && match host {
                 Some(s) => self.state.holds_at(s, l, b),
                 None => !self.state.useless_anywhere(l, b) && self.engine.has_blob(b),
             }).map(|(b, _)| b).collect();
-            f.duplicate_higher = same.into_iter().any(|b| self.others_readable(g, l, &b) == *parts && self.genuine(&b));
+            f.duplicate_higher = same.into_iter().any(|b| self.genuine(&b));
         } else if desired.iter().any(|d| d.iter().all(|p| parts.contains(p))) {
             // a superset: more of the commit than the label's bodies ask for holds them too
             f.required = true;

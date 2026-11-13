@@ -12,7 +12,6 @@ ephemeral::random_window_one_capped_host_large OSIS_EPH_START=1811714465 issues/
 runtime::a_paired_peer_serves_what_it_reads_in_process_spec_data_model_9 - issues/paired-peer-runtime-flake.md Unsynced \{ groups
 sim-sweep:malformed_blobs 72407225782/72407225792 issues/malformed-blobs-host-refusal.md the host refused a malformed blob: Code\(2\)
 tests_laws::entry_copies::forged_entry_copies_join_and_expire_alike_spec_5_6 OSIS_CRDT_SEED=2854516606 issues/forged-entry-copies-expiry-seed.md before the joins
-sim-sweep:folders 636429852973/636429852979 issues/folders-sim-message-storm.md message storm: \d+ deliveries without the queue emptying
 sim-sweep:ephemeral 0/43 issues/ephemeral-sim-reader-holds-unlisted-commits.md ephemeral divergence on
 ephemeral::ephemeral_reverts_with_restarts_alike_large_spec_crdt_4_6 OSIS_EPH_START=704201441278 issues/ephemeral-restarts-reader-loses-value-seed.md failed: seed \d+: Tid\(\w+\)$
 sim-sweep:work_sets 43254590189/43254590194 issues/work-sets-delete-storm-194.md message storm: 5000 deliveries

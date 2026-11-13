@@ -445,8 +445,8 @@ pub struct State {
     /// (`SyncEngine::log_events_from`).
     pub tombs: BTreeMap<(LabelId, BlobId), Tomb>,
     /// Bodies (commit and delta set) whose entry (not a certificate copy) left a label by a
-    /// delete, by when (`remove_entry`): such a body (or one it is a purge rewrite of,
-    /// `body_deleted`) is not placed there again while its live writes are carried (spec/sync.md
+    /// delete, by when (`remove_entry`): such a body (one the label's actor reads alike,
+    /// `SyncEngine::delete_stands`) is not placed there again while its live writes are carried (spec/sync.md
     /// §6). In memory, from `tombs` at load where the blob's record is known;
     /// forgotten with the tombstone (`TOMBSTONE_LIFETIME`, minor consequence: at 0 a right
     /// holder whose bounds are dated later logs it again every pass until its own bound, at
@@ -1451,13 +1451,9 @@ impl State {
         self.leftover_charge.insert(c, (labels, n));
     }
 
-    /// Whether a body of commit `c` sharing a delta with `parts` (sorted) left `l` by a delete
-    /// (`deleted`): bodies of one commit hold disjoint delta sets, so this is that body or a
-    /// purge rewrite of it.
-    /// Whether a delete took a blob of `c` holding exactly `parts` from `l` (spec/sync.md §6): a
-    /// deleted blob holding more (a rewrite replaced it for a dropped part) was another body.
-    pub fn body_deleted(&self, l: LabelId, c: CommitId, parts: &[usize]) -> bool {
-        self.deleted.range((l, c, Vec::new())..).take_while(|((x, y, _), _)| *x == l && *y == c).any(|((_, _, p), _)| p == parts)
+    /// The parts of each blob of `c` a delete took from `l` (spec/sync.md §6).
+    pub fn deleted_bodies(&self, l: LabelId, c: CommitId) -> impl Iterator<Item = &Vec<usize>> {
+        self.deleted.range((l, c, Vec::new())..).take_while(move |((x, y, _), _)| *x == l && *y == c).map(|((_, _, p), _)| p)
     }
 
     /// Forgets an entry, tombstoned (`tombs`).
