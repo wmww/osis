@@ -1698,7 +1698,8 @@ fn tests_per_arrival(steps: usize) -> (u64, u64) {
     ((after.tested - before.tested) / arrivals, after.walk_tests - before.walk_tests)
 }
 
-// issues/net-one-peer.md 3h2 (Stale head: cost), spec/requirements.md (Scale): a reader on the
+// spec/sync.md §10 (Shared set, Testing), issues/net-one-peer.md 3h2 (Stale head: cost),
+// spec/requirements.md (Scale): a reader on the
 // newest head tests one credential per sync ID at each arrival of a peer's filter whatever the
 // number of steps the label went through (n and 10n rotations), and walks nothing.
 #[test]
