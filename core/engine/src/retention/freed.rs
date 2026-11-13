@@ -110,9 +110,10 @@ fn rows(tx: &mut Tx<'_>, prefix: &[u8]) -> Result<Vec<Freed>> {
     Ok(out)
 }
 
-/// The things a freed link is held of: deleting it needs the delete keys along their chains.
+/// The things and authors a freed link is held of: deleting it needs the delete keys along their
+/// chains.
 pub(crate) fn things_with_links(tx: &mut Tx<'_>) -> Result<BTreeSet<Tid>> {
-    Ok(rows(tx, records::FREED)?.into_iter().map(|f| f.tid).collect())
+    Ok(rows(tx, records::FREED)?.into_iter().flat_map(|f| [f.tid, f.author]).collect())
 }
 
 /// The links part `ai` of held commit `c` holds: its delta's tree roots and pages, or, held as its
@@ -400,11 +401,13 @@ impl Engine {
         }
         self.run(|tx| {
             for (t, b) in done {
-                tx.txn.remove_local(&key(b, t), Shred::Yes)?;
                 // a destroyed thing's secrets held for this delete are judged again
-                if tx.core.ix.destroyed_secrets.contains(t) {
-                    tx.core.destroyed_secrets_due.insert(*t);
+                if let Some(v) = tx.txn.get_local(&key(b, t))? {
+                    let f = Freed::decode(&[&b.0[..], t.as_bytes()].concat(), &v)?;
+                    let keyed = [f.tid, f.author].into_iter().filter(|x| tx.core.ix.destroyed_secrets.contains(x));
+                    tx.core.destroyed_secrets_due.extend(keyed.collect::<Vec<_>>());
                 }
+                tx.txn.remove_local(&key(b, t), Shred::Yes)?;
             }
             Ok(())
         })

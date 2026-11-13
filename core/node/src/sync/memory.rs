@@ -181,7 +181,7 @@ pub(crate) struct Refused {
 pub(crate) struct DestroyedSecrets {
     /// To judge at the next step.
     due: BTreeSet<Tid>,
-    /// Those judged waiting, by a commit with a part on them whose entry or delete was known then:
+    /// Those judged waiting, by a commit keyed by them whose entry or delete was known then:
     /// judged again when that commit is due for forgetting (an entry, blob or delete of it went).
     waits: BTreeMap<CommitId, BTreeSet<Tid>>,
 }
@@ -404,30 +404,34 @@ impl SyncEngine {
     }
 
     /// Drops the secrets the engine holds for destroyed things (keeping nothing) once this node may
-    /// delete nothing more by the delete keys derived from them (`Core::delete_chain`): under the
-    /// labels it syncs (only their passes delete), no entry of a commit whose sections list a part
-    /// on one (deleting it signs for each commitment group, spec/wire.md §5) and no delete of a
-    /// commit with a part on one within its tombstone (a host that got the entry late announces
-    /// it again); nor a blob of such a commit kept here. A commit is held by the engine or
-    /// forgotten with its header kept here (`Memory::forgotten`), so this runs after
-    /// `memory_step`: a commit forgotten in this step is in one or the other. One left waiting is
-    /// judged again when such a commit is due for forgetting (`forget_forgettable`: an entry, blob
-    /// or delete of it went), and every one after a start (a label no longer synced frees it
-    /// then). O(commits on the thing + forgotten headers) per judgment.
+    /// delete nothing more by the delete keys derived from them (`Core::delete_chain`), of a commit
+    /// keyed by one (a part on it, or acting for it: `retention::destroy::hold_secrets`): under the
+    /// labels it syncs (only their passes delete), no entry of one whose sections list a part on it
+    /// (any, of one acting for it: deleting it signs for each commitment group, spec/wire.md §5),
+    /// no delete of one within its tombstone (a host that got the entry late announces it again),
+    /// nor a blob of one is kept here. A commit is held by the engine or forgotten with its header
+    /// kept here (`Memory::forgotten`), so this runs after `memory_step`: a commit forgotten in this
+    /// step is in one or the other. One left waiting is judged again when such a commit is due for
+    /// forgetting (`forget_forgettable`: an entry, blob or delete of it went), and every one after a
+    /// start (a label no longer synced frees it then). O(commits keyed by the thing + forgotten
+    /// headers) per judgment.
     pub(crate) fn drop_destroyed_secrets(&mut self) -> Result<()> {
         let fresh = self.engine.take_destroyed_secrets_due();
         self.destroyed_secrets.due.extend(fresh);
         if self.destroyed_secrets.due.is_empty() {
             return Ok(());
         }
-        let due = std::mem::take(&mut self.destroyed_secrets.due);
+        let mut due = std::mem::take(&mut self.destroyed_secrets.due);
+        // kept again, fallen or dropped since it waited
+        due.retain(|t| self.engine.core.ix.destroyed_secrets.contains(t));
         let synced: BTreeSet<LabelId> = self.labels().iter().map(|(_, gl)| gl.id).collect();
         let mut clear = BTreeSet::new();
         for t in due {
-            let forgotten = self.memory.forgotten.iter().filter(|(_, f)| f.header.aspects.iter().any(|a| a.tid == t)).map(|(c, f)| (*c, f.header.clone()));
-            let held = self.engine.commits_on(&t).into_iter().filter_map(|c| Some((c, self.engine.header(&c)?)));
+            let keyed = |h: &osis_commit::Header| h.actor == t || h.aspects.iter().any(|a| a.tid == t);
+            let forgotten = self.memory.forgotten.iter().filter(|(_, f)| keyed(&f.header)).map(|(c, f)| (*c, f.header.clone()));
+            let held = self.engine.commits_keyed_by(&t).into_iter().filter_map(|c| Some((c, self.engine.header(&c)?)));
             let commits: Vec<(CommitId, Arc<osis_commit::Header>)> = held.chain(forgotten).collect();
-            let lists_t = |h: &osis_commit::Header, e: &Entry| matches!(&e.kind, Kind::Commit { ais, .. } if ais.iter().any(|ai| h.aspects.get(*ai).is_some_and(|a| a.tid == t)));
+            let lists_t = |h: &osis_commit::Header, e: &Entry| matches!(&e.kind, Kind::Commit { ais, .. } if h.actor == t || ais.iter().any(|ai| h.aspects.get(*ai).is_some_and(|a| a.tid == t)));
             let entry = |c: &CommitId, h: &osis_commit::Header| self.entries_of_commit(c).iter().any(|k| synced.contains(&k.0) && self.state.entries.get(k).is_some_and(|e| lists_t(h, e)));
             let deleted = |c: &CommitId| synced.iter().any(|l| self.state.deleted_bodies(*l, *c).next().is_some());
             let known: Vec<CommitId> = commits.iter().filter(|(c, h)| entry(c, h) || deleted(c) || self.state.by_commit.contains_key(c)).map(|(c, _)| *c).collect();

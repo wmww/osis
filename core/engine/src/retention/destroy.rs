@@ -551,12 +551,16 @@ fn forget_released(tx: &mut Tx<'_>, t: &Tid) -> Result<()> {
 /// Invariant: a destroyed thing's own secrets (`Indexes::secrets`, its `k/` row) are held while it
 /// keeps (`keeps`: a dependent's content may be keyed by its epochs, reached up its record chain)
 /// and, once it keeps nothing, exactly while this node may still delete something by the delete
-/// keys `Core::delete_chain` derives from them: a freed link of it (judged here), or, under a label
-/// node-sync syncs, an entry whose sections list a part on it or a delete of a commit with a part
-/// on it within its tombstone (judged by node-sync, `SyncEngine::drop_destroyed_secrets`, when the
-/// thing is noted here, after each start, and when such an entry, delete or freed link goes).
-/// Nothing else needs them: the thing reads as absent, nothing is written on it, and a dependent
-/// reaching this node later brings what reads its parts (spec/commits.md §5 Destruction).
+/// keys `Core::delete_chain` derives from them, of a commit **keyed by it** (a part on it: levels 1
+/// and 3; acting for it: level 2, the author chain, spec/crypto.md §7): a freed link of its thing
+/// or author (judged here), or, under a label node-sync syncs, an entry of such a commit whose
+/// sections list a part on it (any, of one acting for it) or a delete of one within its tombstone
+/// (judged by node-sync, `SyncEngine::drop_destroyed_secrets`, when the thing is noted here, after
+/// each start, and when such an entry, delete or freed link goes). Nothing else needs them: the
+/// thing reads as absent, nothing is written on it or for it (a valid write acting for it is on a
+/// thing that needs it), and a dependent reaching this node later brings what reads its parts
+/// (spec/commits.md §5 Destruction). Limit: an entry left awaiting a record (`Kind::Awaits`) keeps
+/// no header to tell, so one of a commit keyed by it stays at hosts once the secrets went.
 fn hold_secrets(tx: &mut Tx<'_>, t: &Tid) -> Result<()> {
     if tx.core.ix.secrets.get(t).is_none() || tx.core.ix.destroyed_secrets.contains(t) {
         return Ok(());
@@ -578,19 +582,19 @@ fn unhold_secrets(tx: &mut Tx<'_>, t: &Tid) -> Result<()> {
 impl crate::engine::Engine {
     /// The destroyed things whose own secrets are held for node-sync's deletes alone (`hold_secrets`)
     /// to judge again since the last call: node-sync drops each (`drop_destroyed_secrets`) once it
-    /// knows no entry of a commit with a part on it.
+    /// knows no entry of a commit keyed by it.
     pub fn take_destroyed_secrets_due(&mut self) -> BTreeSet<Tid> {
         let due = std::mem::take(&mut self.core.destroyed_secrets_due);
         due.into_iter().filter(|t| self.core.ix.destroyed_secrets.contains(t)).collect()
     }
 
-    /// The held commits with a part on `t` (their headers name the delete keys of its parts).
-    pub fn commits_on(&self, t: &Tid) -> Vec<CommitId> {
-        self.core.on_thing(t).collect()
+    /// The held commits keyed by destroyed `t` (`hold_secrets`): with a part on it or acting for it.
+    pub fn commits_keyed_by(&self, t: &Tid) -> BTreeSet<CommitId> {
+        self.core.on_thing(t).chain(self.core.acting_for(t)).collect()
     }
 
     /// Drops the secrets of each of `ts` held for node-sync alone (`hold_secrets`), node-sync
-    /// knowing no entry of a commit with a part on it: its `k/` row and `Indexes::secrets` entry go.
+    /// knowing no entry of a commit keyed by it: its `k/` row and `Indexes::secrets` entry go.
     /// One with a freed link left (`retention::freed`) stays: `freed_done` hands it back. One whose
     /// record is held again keeps them as its own.
     pub fn drop_destroyed_secrets(&mut self, ts: &BTreeSet<Tid>) -> Result<()> {
