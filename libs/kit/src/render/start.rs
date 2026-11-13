@@ -16,7 +16,7 @@ use crate::platform::Platform;
 use crate::store::Data;
 use crate::theme::{Look, Theme};
 use crate::widgets::style::{self, Text};
-use crate::widgets::{Chip, ChipMark, ChipPress, Limit, Panel, PanelKind, Root};
+use crate::widgets::{Chip, ChipMark, ChipPress, Page, Panel, PanelKind, Root};
 use crate::window::Waker;
 use osis::{Address, Osis};
 use std::path::{Path, PathBuf};
@@ -101,7 +101,7 @@ impl Failed {
             col = col.with_child(style::prose(&look, &says, Text::Muted)).with_child(NewWidget::new(Flex::row().with_child(chip)));
         }
         let col = NewWidget::new_with_props(col, Properties::new().with(Padding::from_vh(look.sp(48.0), look.sp(16.0))));
-        let w: NewWidget<dyn Widget> = NewWidget::new(Limit::new(col, 940.0)).erased();
+        let w: NewWidget<dyn Widget> = NewWidget::new(Page::new(col, look.clone())).erased();
         rr.edit_widget_with_tag(ROOT, |mut r| {
             Root::set_look(&mut r, look, 0);
             Root::set_child(&mut r, w);
