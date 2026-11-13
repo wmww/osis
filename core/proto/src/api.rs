@@ -7,9 +7,6 @@ use crate::Error;
 use crate::dec::Fields;
 use osis_base::Value;
 
-pub use crate::window::SMALL_REPLY;
-pub use crate::session::REPLY_BUDGET;
-
 /// Subscriptions per connection, counted apart from open labels (code 4 past it). Resource
 /// bound: each holds a dirty flag and a filter at the serving side; 0 forbids watching remotely,
 /// infinity lets one connection grow the dirty-flag table and the per-change filter walk without

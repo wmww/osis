@@ -1695,7 +1695,7 @@ fn pages_past_large_bodies() {
     let x = node();
     let k = ak("t:big.0");
     let (_, _, c) = x.client(Role::Read);
-    let half = osis_proto::api::REPLY_BUDGET / 2;
+    let half = osis_proto::session::REPLY_BUDGET / 2;
     let fits = half - osis::internals::COMMIT_PAGE * 512 / 2 - 60;
     keep_forever(&x.n, x.t, &k);
     let key = || osis::DynamicAspectKey::untyped(k.clone());
