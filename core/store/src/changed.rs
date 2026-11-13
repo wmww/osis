@@ -45,7 +45,7 @@ impl Transaction<'_> {
     }
 
     /// The sequence's end: the position `changed_note` last gave, 0 before any.
-    pub fn changed_end(&mut self) -> Result<u64, Error> {
+    fn changed_end(&mut self) -> Result<u64, Error> {
         self.cat_get(END)?.map_or(Ok(0), |v| R::new(&v).u64())
     }
 

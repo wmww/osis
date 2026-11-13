@@ -60,21 +60,6 @@ impl WriteBatch {
     pub fn delete_blob(&mut self, id: BlobId) {
         self.ops.push(Op::DeleteBlob(id));
     }
-    pub fn is_empty(&self) -> bool {
-        self.ops.is_empty()
-    }
-    /// Payload bytes, for spill decisions.
-    pub fn bytes(&self) -> usize {
-        self.ops
-            .iter()
-            .map(|o| match o {
-                Op::Put(k, v) => k.len() + v.len(),
-                Op::Delete(k) => k.len(),
-                Op::PutBlob(_, b) => 32 + b.len(),
-                Op::DeleteBlob(_) => 32,
-            })
-            .sum()
-    }
 }
 
 /// Transactional ordered KV with a blob area. Reads see the last committed batch (one handle,

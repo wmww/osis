@@ -177,9 +177,8 @@ impl MemoryBackend {
     }
     /// The bytes held: row keys and values, and blobs (measures).
     pub fn held_bytes(&self) -> u64 {
-        let d = self.lock();
-        let rows: usize = d.kv.iter().map(|(k, v)| k.len() + v.len()).sum();
-        (rows + d.blobs.values().map(Vec::len).sum::<usize>()) as u64
+        let (rows, blobs, _) = self.held_split();
+        rows + blobs
     }
     /// The bytes held in rows, and in blobs with their number (measures).
     pub fn held_split(&self) -> (u64, u64, u64) {
