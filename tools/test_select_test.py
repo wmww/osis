@@ -94,6 +94,12 @@ check("dev edge selects and stops", t, "crates selected: 2 of 6", "held-model: m
 t = out("--paths", "core/base/src/lib.rs")
 check("low crate", t, "crates selected: 4 of 6", "(nearly everything", "base_prop_large", "base_inline_large", "base_after_comment_large", "top_exhaustive", "every scenario", absent=["leaf_large", "model_large", "decoy_large"])
 
+t = out("--paths", "core/base/testenv-known.txt")
+check("pinned by policy.py", t, "selects nothing: core/base/testenv-known.txt (tools/policy.py", "crates touched: none", "nothing to run", absent=["base_prop_large"])
+
+t = out("--paths", "core/base/testenv-known.txt", "core/leaf/src/lib.rs")
+check("pinned beside code", t, "crates touched: osis-leaf", "crates selected: 1 of 6", "leaf_large", absent=["base_prop_large"])
+
 t = out("--paths", "Cargo.lock")
 check("workspace config", t, "crates selected: 6 of 6", "every crate", "leaf_large", "model_large", "not read: core/leaf/src/lib.rs:5")
 

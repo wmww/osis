@@ -10,6 +10,7 @@ The default base is the merge base with origin/main as last fetched, as in the g
 
 The set: every property test, at small size, of the crates the paths touch and their dependents
 (the Cargo graph), and every sim scenario if osis-sim is one of those; `--all` selects every crate.
+A file in PINNED (run-time data an instant check fixes completely) selects nothing.
 A dependent is reached through normal and build edges; a dev edge selects that one crate and
 stops, since a dev dependency is linked only into that crate's own tests.
 
@@ -40,6 +41,12 @@ OUTSIDE = (
     ("tools/", "the tools' own tests, in the gate"),
     ("core/test/tla/", "core/test/tla/run.sh <module> for an edited module"),
     ("core/test/fuzz/", "fuzz targets, by hand"),
+)
+# Files inside a crate that compile into nothing and whose whole content an instant check fixes
+# from the sources: an edit that could change what a test sees fails that check, so no test is
+# selected. A file listed here must be read at run time only (no include_str!, no build.rs).
+PINNED = (
+    ("core/base/testenv-known.txt", "tools/policy.py keeps it equal to the OSIS_* names the sources use"),
 )
 
 
@@ -94,7 +101,10 @@ def classify(paths, dirs):
     touched, whole, nothing = set(), False, {}
     for p in paths:
         c = owner(p, dirs)
-        if c:
+        pinned = next((why for f, why in PINNED if p == f), None)
+        if pinned:
+            nothing[p] = pinned
+        elif c:
             touched.add(c)
         elif p.startswith(WHOLE):
             whole = True
