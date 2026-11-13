@@ -799,6 +799,52 @@ impl<'a> Decoder<'a> {
         Ok(())
     }
 
+    /// An array's or map's count of `per`-item entries, opened at nesting `level` and promised.
+    fn open(&mut self, ib: u8, level: usize, per: usize) -> Result<usize, DecodeError> {
+        self.enter(level)?;
+        let n = self.len(ib, per)?;
+        self.promise(n * per)?;
+        Ok(n)
+    }
+
+    /// A set's element count, its tag's content opened at nesting `inner`.
+    fn set_head(&mut self, inner: usize) -> Result<usize, DecodeError> {
+        self.enter(inner + 1)?;
+        let ib = self.byte()?;
+        if ib >> 5 != MAJOR_ARRAY {
+            return Err(DecodeError::TagContent(TAG_SET));
+        }
+        let n = self.len(ib, 1)?;
+        self.promise(n)?;
+        Ok(n)
+    }
+
+    /// An enum's case and whether a payload follows, its tag's content opened at nesting `inner`.
+    fn enum_head(&mut self, inner: usize) -> Result<(u64, bool), DecodeError> {
+        const T: DecodeError = DecodeError::TagContent(TAG_ENUM);
+        self.enter(inner + 1)?;
+        let n = self.expect(MAJOR_ARRAY, TAG_ENUM)?;
+        if n != 1 && n != 2 {
+            return Err(T);
+        }
+        let case = self.expect(MAJOR_UINT, TAG_ENUM)?;
+        if i64::try_from(case).is_err() {
+            return Err(DecodeError::IntOutOfRange);
+        }
+        Ok((case, n == 2))
+    }
+
+    /// `err` unless the item read since `start` sorts strictly after `prev` by canonical bytes
+    /// (`prev` empty before the first: every item is at least one byte); it becomes `prev`.
+    fn in_order(&self, start: usize, prev: &mut &'a [u8], err: DecodeError) -> Result<(), DecodeError> {
+        let raw = self.buf.get(start..self.pos).unwrap_or(&[]);
+        if !prev.is_empty() && raw <= *prev {
+            return Err(err);
+        }
+        *prev = raw;
+        Ok(())
+    }
+
     /// Steps over one item inside `depth` arrays, maps and tags.
     fn skip(&mut self, depth: usize) -> Result<(), DecodeError> {
         self.walk(depth, Place::Other, &mut |_, _, _| {})
@@ -911,9 +957,7 @@ impl<'a> Decoder<'a> {
                 std::str::from_utf8(self.take(n)?).map_err(|_| DecodeError::InvalidUtf8)?;
             }
             MAJOR_ARRAY => {
-                self.enter(depth + 1)?;
-                let n = self.len(ib, 1)?;
-                self.promise(n)?;
+                let n = self.open(ib, depth + 1, 1)?;
                 let mut link = false;
                 for _ in 0..n {
                     link |= self.check(depth + 1)?;
@@ -921,20 +965,13 @@ impl<'a> Decoder<'a> {
                 return Ok(link);
             }
             MAJOR_MAP => {
-                self.enter(depth + 1)?;
-                let n = self.len(ib, 2)?;
-                self.promise(n * 2)?;
+                let n = self.open(ib, depth + 1, 2)?;
                 let (mut keys, mut values) = (false, false);
-                let buf = self.buf;
                 let mut prev: &[u8] = &[];
                 for _ in 0..n {
                     let start = self.pos;
                     keys |= self.check(depth + 1)?;
-                    let raw = buf.get(start..self.pos).unwrap_or(&[]);
-                    if !prev.is_empty() && raw <= prev {
-                        return Err(DecodeError::MapKeyOrder);
-                    }
-                    prev = raw;
+                    self.in_order(start, &mut prev, DecodeError::MapKeyOrder)?;
                     values |= self.check(depth + 1)?;
                 }
                 self.link_keys |= keys && n > 1;
@@ -962,40 +999,21 @@ impl<'a> Decoder<'a> {
         self.enter(inner)?;
         match tag {
             TAG_SET => {
-                self.enter(inner + 1)?;
-                let ib = self.byte()?;
-                if ib >> 5 != MAJOR_ARRAY {
-                    return Err(DecodeError::TagContent(tag));
-                }
-                let n = self.len(ib, 1)?;
-                self.promise(n)?;
-                let buf = self.buf;
+                let n = self.set_head(inner)?;
                 let mut prev: &[u8] = &[];
                 let mut link = false;
                 for _ in 0..n {
                     let start = self.pos;
                     link |= self.check(inner + 1)?;
-                    let raw = buf.get(start..self.pos).unwrap_or(&[]);
-                    if !prev.is_empty() && raw <= prev {
-                        return Err(DecodeError::SetOrder);
-                    }
-                    prev = raw;
+                    self.in_order(start, &mut prev, DecodeError::SetOrder)?;
                 }
                 self.link_keys |= link && n > 1;
                 Ok(link)
             }
             TAG_TID => self.fixed_bytes::<TID_LEN>(tag).map(|_| false),
             TAG_ENUM => {
-                self.enter(inner + 1)?;
-                let n = self.expect(MAJOR_ARRAY, tag)?;
-                if n != 1 && n != 2 {
-                    return Err(DecodeError::TagContent(tag));
-                }
-                let case = self.expect(MAJOR_UINT, tag)?;
-                if i64::try_from(case).is_err() {
-                    return Err(DecodeError::IntOutOfRange);
-                }
-                if n == 2 { self.check(inner + 1) } else { Ok(false) }
+                let (_, payload) = self.enum_head(inner)?;
+                if payload { self.check(inner + 1) } else { Ok(false) }
             }
             TAG_LINK => {
                 self.enter(inner + 1)?;
@@ -1033,9 +1051,7 @@ impl<'a> Decoder<'a> {
                 Ok(Value::Str(s.to_owned()))
             }
             MAJOR_ARRAY => {
-                self.enter(depth + 1)?;
-                let n = self.len(ib, 1)?;
-                self.promise(n)?;
+                let n = self.open(ib, depth + 1, 1)?;
                 let mut l = Vec::with_capacity(n);
                 for _ in 0..n {
                     l.push(self.item(depth + 1)?);
@@ -1043,20 +1059,13 @@ impl<'a> Decoder<'a> {
                 Ok(Value::List(l))
             }
             MAJOR_MAP => {
-                self.enter(depth + 1)?;
-                let n = self.len(ib, 2)?;
-                self.promise(n * 2)?;
+                let n = self.open(ib, depth + 1, 2)?;
                 let mut m = Vec::with_capacity(n);
                 let mut prev: &[u8] = &[];
                 for _ in 0..n {
                     let start = self.pos;
                     let k = self.item(depth + 1)?;
-                    let raw = self.buf.get(start..self.pos).unwrap_or(&[]);
-                    // Empty `prev` only before the first key; every item is at least one byte.
-                    if !prev.is_empty() && raw <= prev {
-                        return Err(DecodeError::MapKeyOrder);
-                    }
-                    prev = raw;
+                    self.in_order(start, &mut prev, DecodeError::MapKeyOrder)?;
                     m.push((k, self.item(depth + 1)?));
                 }
                 // Distinct bytes, one value: links with one content hash.
@@ -1117,39 +1126,20 @@ impl<'a> Decoder<'a> {
         self.enter(inner)?;
         match tag {
             TAG_SET => {
-                self.enter(inner + 1)?;
-                let ib = self.byte()?;
-                if ib >> 5 != MAJOR_ARRAY {
-                    return Err(DecodeError::TagContent(tag));
-                }
-                let n = self.len(ib, 1)?;
-                self.promise(n)?;
+                let n = self.set_head(inner)?;
                 let mut s = Vec::with_capacity(n);
                 let mut prev: &[u8] = &[];
                 for _ in 0..n {
                     let start = self.pos;
-                    let e = self.item(inner + 1)?;
-                    let raw = self.buf.get(start..self.pos).unwrap_or(&[]);
-                    if !prev.is_empty() && raw <= prev {
-                        return Err(DecodeError::SetOrder);
-                    }
-                    prev = raw;
-                    s.push(e);
+                    s.push(self.item(inner + 1)?);
+                    self.in_order(start, &mut prev, DecodeError::SetOrder)?;
                 }
                 ValueSet::from_decoded(s).map(Value::Set).ok_or(DecodeError::EqualLinks)
             }
             TAG_TID => Ok(Value::Tid(Tid::from_bytes(self.fixed_bytes::<TID_LEN>(tag)?))),
             TAG_ENUM => {
-                self.enter(inner + 1)?;
-                let n = self.expect(MAJOR_ARRAY, tag)?;
-                if n != 1 && n != 2 {
-                    return Err(DecodeError::TagContent(tag));
-                }
-                let case = self.expect(MAJOR_UINT, tag)?;
-                if i64::try_from(case).is_err() {
-                    return Err(DecodeError::IntOutOfRange);
-                }
-                let payload = if n == 2 { Some(Box::new(self.item(inner + 1)?)) } else { None };
+                let (case, payload) = self.enum_head(inner)?;
+                let payload = if payload { Some(Box::new(self.item(inner + 1)?)) } else { None };
                 Ok(Value::Enum(case, payload))
             }
             TAG_LINK => {
