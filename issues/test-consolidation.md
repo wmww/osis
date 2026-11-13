@@ -216,6 +216,6 @@ Width, open: crdt `tests_winners` (`seq_winners_from_scratch`, `winners_from_scr
   - whether the crdt Slots mode reaches a deleted embedded character
 - **Doc follow-ups if the removals land:**
   - notes/crdt.md "Beside it" list
-  - notes/engine-validity.md (names `unmerge_spec_4_6`)
+  - notes/engine-validity-rebuild.md (names `unmerge_spec_4_6`)
   - issues/no-server-audit.md row 15
 

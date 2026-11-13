@@ -64,7 +64,7 @@ A map by area, not a full list (rustdoc has that).
 ## The engine-* notes
 - notes/engine-store.md: store records and index tables, the persisted index, open, lazy headers, saved walks.
 - notes/engine-apply.md: receiving commits (examine, pending, parts waiting alone, the `created.0` rules, re-examination, late parts, junk), counters and the HLC, the writer-side rules, apply costs.
-- notes/engine-validity.md: re-judging validity, the rebuild (un-merge and re-merge), snapshot authority, carried writes and vouching, uncovering.
+- notes/engine-validity.md: index of the validity notes: re-judging, the epoch rule, the rebuild (un-merge and re-merge), snapshot authority and carried writes, uncovering.
 - notes/engine-retention.md: index of the retention notes (history, dating, trigger, covers, purge); bodies, invalid bodies, bodies coming back.
 - notes/engine-suspects.md: suspect flags and their repair.
 - notes/engine-roles.md: role commits in the engine (edge writes, `secrets.0` and `keys.0`, established epochs, writer-side role rules, flows readings, rotation invariants, the cover check's own self-removals).

@@ -3,7 +3,7 @@
 > Priority: low
 > Tags: engine, node-sync, performance
 
-Gone: the per-pass secrets decode (`Core::secrets_read`, `held_for`, `head_keys`, `Work::beats_*`, `mark_dirty_of`); an add's full pass of the label and the engine's walk of the label's commits (roles move only upstream of the changed grant's holder: `work::RoleMoves`, `Core::stale_authors`, notes/node-sync-work-sets.md, notes/engine-validity.md Validity); `secrets.0` decoded whole per add (`keys::secrets_patch`); the liveness cache walked per role write (`Core::forget_live`); finding a general update's region read a component's things once per thing of it, T^2 per add (`region_reads_each_component_once`); departures read every edge write of the component per thing below the chat, M^2 per add (`Timeline::applied_on`, `applied_on_indexes_a_timeline_once`).
+Gone: the per-pass secrets decode (`Core::secrets_read`, `held_for`, `head_keys`, `Work::beats_*`, `mark_dirty_of`); an add's full pass of the label and the engine's walk of the label's commits (roles move only upstream of the changed grant's holder: `work::RoleMoves`, `Core::stale_authors`, notes/node-sync-work-sets.md, notes/engine-validity-rejudge.md); `secrets.0` decoded whole per add (`keys::secrets_patch`); the liveness cache walked per role write (`Core::forget_live`); finding a general update's region read a component's things once per thing of it, T^2 per add (`region_reads_each_component_once`); departures read every edge write of the component per thing below the chat, M^2 per add (`Timeline::applied_on`, `applied_on_indexes_a_timeline_once`).
 
 Left, largest first:
 
