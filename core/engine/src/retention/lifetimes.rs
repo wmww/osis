@@ -66,8 +66,7 @@ pub(crate) fn queue(tx: &mut Tx<'_>, t: &Tid) -> Result<()> {
     if tx.txn.is_memory() || status(tx.core, t, &BTreeSet::new()) != Status::Known {
         return Ok(());
     }
-    tx.txn.put_local(&[WORK, t.as_bytes()].concat(), &[], Shred::No)?;
-    Ok(())
+    set(tx, WORK, t, true)
 }
 
 /// Queues the things listing `t`, and `t` while known: its status changed (known, destroyed,
@@ -79,9 +78,7 @@ pub(crate) fn queue_with_listers(tx: &mut Tx<'_>, t: &Tid) -> Result<()> {
     if status(tx.core, t, &BTreeSet::new()) == Status::Known {
         set(tx, WORK, t, true)?;
     } else {
-        set(tx, WORK, t, false)?;
-        set(tx, HELD, t, false)?;
-        set(tx, PENDING, t, false)?;
+        unqueue(tx, t)?;
     }
     for l in refs::listers(tx, t)? {
         queue(tx, &l)?;
@@ -203,6 +200,13 @@ fn heard_thing(core: &Core, t: &Tid, heard: &dyn Fn(&Tid) -> bool) -> bool {
     heard(t) && core.ix.groups.of.get(t).is_none_or(|gs| gs.iter().all(heard))
 }
 
+/// `t` leaves every row: a thing not known has nothing to judge.
+fn unqueue(tx: &mut Tx<'_>, t: &Tid) -> Result<()> {
+    set(tx, WORK, t, false)?;
+    set(tx, HELD, t, false)?;
+    set(tx, PENDING, t, false)
+}
+
 /// Judges the work list (with `held`, the held things; every pending thing when `rights` may have
 /// changed): each thing whose walk read only things `heard` says are heard out. Unreachable ones
 /// this node may destroy go in `release` with their cascade; the rest of the unreachable ones are
@@ -220,9 +224,7 @@ pub(crate) fn judge(tx: &mut Tx<'_>, heard: &dyn Fn(&Tid) -> bool, held: bool, r
     let mut waiting = BTreeSet::new();
     while let Some(x) = queue.pop() {
         if status(tx.core, &x, &gone) != Status::Known {
-            set(tx, WORK, &x, false)?;
-            set(tx, HELD, &x, false)?;
-            set(tx, PENDING, &x, false)?;
+            unqueue(tx, &x)?;
             continue;
         }
         out.judged += 1;
@@ -238,13 +240,13 @@ pub(crate) fn judge(tx: &mut Tx<'_>, heard: &dyn Fn(&Tid) -> bool, held: bool, r
         set(tx, HELD, &x, false)?;
         let pending = has(tx, PENDING, &x)?;
         if unreachable {
-            if may_end(tx, &x) {
+            let ends = may_end(tx, &x);
+            if ends {
                 gone.insert(x);
                 out.release.push(x);
-                // until the request destroys it (`judge_lifetimes`)
-                set(tx, PENDING, &x, true)?;
-                queue.extend(below(tx, &x)?);
-            } else if !pending {
+            }
+            // pending until the request destroys it (`judge_lifetimes`)
+            if ends || !pending {
                 set(tx, PENDING, &x, true)?;
                 queue.extend(below(tx, &x)?);
             }
@@ -255,11 +257,6 @@ pub(crate) fn judge(tx: &mut Tx<'_>, heard: &dyn Fn(&Tid) -> bool, held: bool, r
     }
     out.waiting = waiting.len();
     Ok(out)
-}
-
-/// The things judged unreachable here and not destroyed (`PENDING`).
-pub(crate) fn pending(tx: &mut Tx<'_>) -> Result<Vec<Tid>> {
-    rows(tx, PENDING)
 }
 
 impl crate::engine::Engine {
@@ -310,7 +307,7 @@ impl crate::engine::Engine {
 
     /// The things judged unreachable here and not destroyed (`PENDING`).
     pub fn lifetimes_pending(&mut self) -> Result<Vec<Tid>> {
-        self.run(pending)
+        self.run(|tx| rows(tx, PENDING))
     }
 
     /// How the lifetime judgment reads `t` here (known, destroyed, unknown).

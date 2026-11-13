@@ -745,7 +745,7 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
     }
     // expiry and purges for the late parts (a late snapshot part carrying purged values too)
     crate::retention::stripped_joined(tx, id, &parts.stripped_joined(), &mut j.changed)?;
-    crate::retention::on_late(tx, id, &late, &mut j.changed)?;
+    crate::retention::on_late(tx, id, Some(&late), &mut j.changed)?;
     if edges && let Some(all) = edge_parts {
         tx.core.ix.held.remove(id);
         validity::add_role_commit(tx.core, &meta.view, id, all);

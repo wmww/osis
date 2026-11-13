@@ -169,18 +169,7 @@ pub(crate) fn forget(tx: &mut Tx<'_>, lost: &[Tid], held: &BTreeMap<Tid, u64>) -
     }
     // pending and parked commits (and late parts waiting under an applied commit's ID)
     let mut pend = Vec::new();
-    let mut after: Option<CommitId> = None;
-    loop {
-        let page = tx.txn.pending(after.as_ref(), 256)?;
-        let n = page.len();
-        for (id, k, bytes) in page {
-            after = Some(id);
-            pend.push((id, k, bytes));
-        }
-        if n < 256 {
-            break;
-        }
-    }
+    tx.each_pending(|id, k, bytes| pend.push((id, k, bytes)))?;
     for (id, k, bytes) in pend {
         // unreadable by this build: its header names nothing we can judge
         let Ok(blob) = CommitBlob::decode_stored(&bytes) else { continue };

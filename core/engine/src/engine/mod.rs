@@ -3022,6 +3022,22 @@ impl Tx<'_> {
     }
 
     /// Scans local records under `prefix` (keys returned without it).
+    /// Every stored pending or parked copy, a page at a time: commit, kind, bytes.
+    pub(crate) fn each_pending(&mut self, mut f: impl FnMut(CommitId, osis_store::PendingKind, Vec<u8>)) -> Result<()> {
+        let mut after: Option<CommitId> = None;
+        loop {
+            let page = self.txn.pending(after.as_ref(), SCAN_PAGE)?;
+            let n = page.len();
+            for (id, k, bytes) in page {
+                after = Some(id);
+                f(id, k, bytes);
+            }
+            if n < SCAN_PAGE {
+                return Ok(());
+            }
+        }
+    }
+
     /// Removes, shredded, every local record under `prefix` whose key past it `pred` takes.
     pub(crate) fn remove_scanned(&mut self, prefix: &[u8], pred: impl Fn(&[u8]) -> Result<bool>) -> Result<()> {
         let mut gone = Vec::new();

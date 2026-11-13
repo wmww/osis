@@ -948,25 +948,24 @@ pub(crate) fn persist_valueless(tx: &mut Tx<'_>) -> Result<()> {
 /// After a commit applied: its expiry (now or by timer), its purge request against held
 /// deltas, and earlier purge requests against its deltas.
 pub(crate) fn on_apply(tx: &mut Tx<'_>, id: &CommitId, changed: &mut BTreeSet<(Tid, Ak)>) -> Result<()> {
-    let Some(h) = tx.core.ix.commits.get(id).map(|m| m.header.clone()) else { return Ok(()) };
-    let mut purged = BTreeSet::new();
-    on_parts(tx, id, &h, &(0..h.aspects.len()).collect(), &mut purged, changed)?;
-    purge::apply_request(tx, id, &h, &mut purged)?;
-    // a further minting of a held thing may bring it back after its expiry (`destroy::apply_destructions`)
-    for a in h.aspects.iter().filter(|a| a.ak.as_str() == osis_commit::retention::CREATED) {
-        if tx.core.mintings(&a.tid).nth(1).is_some() {
-            tx.core.valueless_dirty.insert((a.tid, a.ak.clone()));
-        }
-    }
-    purged_changed(tx, purged, changed);
-    Ok(())
+    on_late(tx, id, None, changed)
 }
 
-/// After late parts `ais` of applied commit `id` joined: `on_apply` for them.
-pub(crate) fn on_late(tx: &mut Tx<'_>, id: &CommitId, ais: &BTreeSet<usize>, changed: &mut BTreeSet<(Tid, Ak)>) -> Result<()> {
+/// After late parts `ais` of applied commit `id` joined: `on_apply` for them (`None`: the commit
+/// applied, every part and its request).
+pub(crate) fn on_late(tx: &mut Tx<'_>, id: &CommitId, ais: Option<&BTreeSet<usize>>, changed: &mut BTreeSet<(Tid, Ak)>) -> Result<()> {
     let Some(h) = tx.core.ix.commits.get(id).map(|m| m.header.clone()) else { return Ok(()) };
     let mut purged = BTreeSet::new();
-    on_parts(tx, id, &h, ais, &mut purged, changed)?;
+    on_parts(tx, id, &h, ais.cloned().unwrap_or_else(|| (0..h.aspects.len()).collect()), &mut purged, changed)?;
+    if ais.is_none() {
+        purge::apply_request(tx, id, &h, &mut purged)?;
+        // a further minting of a held thing may bring it back after its expiry (`destroy::apply_destructions`)
+        for a in h.aspects.iter().filter(|a| a.ak.as_str() == osis_commit::retention::CREATED) {
+            if tx.core.mintings(&a.tid).nth(1).is_some() {
+                tx.core.valueless_dirty.insert((a.tid, a.ak.clone()));
+            }
+        }
+    }
     purged_changed(tx, purged, changed);
     Ok(())
 }
@@ -976,8 +975,8 @@ pub(crate) fn on_late(tx: &mut Tx<'_>, id: &CommitId, ais: &BTreeSet<usize>, cha
 /// or covers. One held value-less (a copy of an expired or purged delta, joined stripped) is held
 /// as its leftover: the list holds only what is past its expiry or a standing purge drops
 /// (`rejudge_purges` takes the rest out; `drop_gone`).
-fn on_parts(tx: &mut Tx<'_>, id: &CommitId, h: &Header, ais: &BTreeSet<usize>, purged: &mut BTreeSet<(Tid, Ak)>, changed: &mut BTreeSet<(Tid, Ak)>) -> Result<()> {
-    for ai in ais.iter().copied() {
+fn on_parts(tx: &mut Tx<'_>, id: &CommitId, h: &Header, ais: BTreeSet<usize>, purged: &mut BTreeSet<(Tid, Ak)>, changed: &mut BTreeSet<(Tid, Ak)>) -> Result<()> {
+    for &ai in &ais {
         if h.aspects.get(ai).is_none() {
             continue;
         }

@@ -707,15 +707,20 @@ pub(super) fn apply_request(tx: &mut Tx<'_>, id: &CommitId, h: &Header, purged: 
     Ok(())
 }
 
+/// The list a request item is noted on (`note_requests`): by the stamp it names, else by aspect.
+fn request_key(item: &PurgeItem) -> Vec<u8> {
+    match item {
+        PurgeItem::Commit { tid, ak, ts, src } => records::purges_named_key(tid, ak, *ts, src),
+        _ => records::aspect_key(records::PURGES, item.tid(), item.ak()),
+    }
+}
+
 /// Notes request `id` (header `h`) on the lists later deltas find it by (`requests_on`), before
 /// its commit's joins: a kill and the request naming the killed body in one commit purges it,
 /// its leftover bare, so no cover drops it.
 pub(crate) fn note_requests(tx: &mut Tx<'_>, id: &CommitId, h: &Header) -> Result<()> {
     for item in h.requests().iter() {
-        let key = match item {
-            PurgeItem::Commit { tid, ak, ts, src } => records::purges_named_key(tid, ak, *ts, src),
-            _ => records::aspect_key(records::PURGES, item.tid(), item.ak()),
-        };
+        let key = request_key(item);
         note_request(tx, &key, id)?;
     }
     Ok(())
@@ -725,10 +730,7 @@ pub(crate) fn note_requests(tx: &mut Tx<'_>, id: &CommitId, h: &Header) -> Resul
 /// with it.
 pub(crate) fn unnote_requests(tx: &mut Tx<'_>, id: &CommitId, h: &Header) -> Result<()> {
     for item in h.requests().iter() {
-        let key = match item {
-            PurgeItem::Commit { tid, ak, ts, src } => records::purges_named_key(tid, ak, *ts, src),
-            _ => records::aspect_key(records::PURGES, item.tid(), item.ak()),
-        };
+        let key = request_key(item);
         let Some(b) = tx.txn.get_local(&key)? else { continue };
         let rest: Vec<u8> = b.chunks(32).filter(|x| *x != id.0).flatten().copied().collect();
         if rest.is_empty() {

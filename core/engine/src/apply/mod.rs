@@ -2012,18 +2012,7 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
     crate::rotation::load_kept(tx)?;
     crate::retention::leaving::load(tx)?;
     let mut pend = Vec::new();
-    let mut after: Option<CommitId> = None;
-    loop {
-        let page = tx.txn.pending(after.as_ref(), 256)?;
-        let n = page.len();
-        for (id, k, _) in page {
-            pend.push((id, k));
-            after = Some(id);
-        }
-        if n < 256 {
-            break;
-        }
-    }
+    tx.each_pending(|id, k, _| pend.push((id, k)))?;
     for (id, k) in pend {
         tx.core.ix.pending.insert(id, if k == PendingKind::Parked { Reason::Parked } else { Reason::Unexamined });
     }
