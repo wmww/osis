@@ -1,5 +1,0 @@
-# test-profile-4
-- The heavy lock was held about 50 min by another branch's gate whose osis `it` hung at load 1 (its test binary idle for 40+ min): every queued all-core run waited behind it. Whole-binary instruction counts and profiles were taken at 6 threads outside the lock instead (not every core; instructions do not depend on the thread count).
-- `libtest` captures a test's `eprintln!`: a throwaway counter needs `--nocapture`, or it prints nothing and looks like a never-called path.
-- Parallelising the forensic attack's section tries by candidate runs doubled its instructions: each section's `find_map` stops at the first opening candidate (often an early one, the node's own secrets come first), and every other run then scans its whole share. One thread per envelope keeps the early stop.
-- Review: the new memo test was inserted between `an_amend_is_kept_only_over_what_it_accounts_for` and its `// spec:` comment, so the gate's `spec_map --uncited` failed after a 15 s start; run `python3 tools/spec_map.py --uncited` before handing a branch over.

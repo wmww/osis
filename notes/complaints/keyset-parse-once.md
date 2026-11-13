@@ -1,2 +1,0 @@
-- Every engine edit costs a 2-4 min relink of osis-node's and osis's `it` before a probe or whole-binary icount can run; a whole-binary `tools/icount` of osis-node `it` is 2-5 more minutes. Editing sources while a background build runs gives a binary of mixed sources: wait for the build before the next edit.
-- `tools/cpuprof_report.py` symbolizes `--no-inlines`, so an inlined parse (`proofs_of`, `keyset_recs`) shows under its caller; finding who calls what took a throwaway script over the sample file (parents of a frame).
