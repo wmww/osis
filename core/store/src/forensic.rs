@@ -21,8 +21,8 @@
 //! a row the store sealed is tried with the one key that opens it (`Evidence::sealed`, a note
 //! checked by opening the row under it), if held; a candidate is prepared once
 //! (`osis_crypto::Trial`) and rules itself out of a blob or a wrap by one keystream byte before
-//! the AEAD pass decides; a candidate that did not open a section in an earlier attack on the
-//! same thread is not tried on it again (`Failed`).
+//! the AEAD pass decides; a candidate that did not open a section or a blob in an earlier attack
+//! on the same thread is not tried on it again (`Failed`).
 
 use crate::KeyValue;
 use crate::btree::forensic_leaf;
@@ -189,16 +189,27 @@ impl Bits {
     }
 }
 
-/// The section tries that failed in this thread's attacks so far. A test attacks a device again
-/// after each step and other devices holding the same commits, so most of an attack's tries were
-/// made before; whether a candidate opens a section is a function of the two (`Section::bytes`),
-/// so a failed try is not made again. Per thread: a test's own, gone with it.
+/// The section and blob tries that failed in this thread's attacks so far. A test attacks a
+/// device again after each step and other devices holding the same commits, so most of an
+/// attack's tries were made before; whether a candidate opens a section is a function of the two
+/// (`Section::bytes`), whether it opens a blob as its key of the blob's ID and bytes, and through
+/// its wraps of those and the wraps, so a failed try is not made again. Per thread: a test's own,
+/// gone with it.
 #[derive(Default)]
 struct Failed {
     /// Every candidate met, numbered.
     ids: HashMap<[u8; 32], usize, std::hash::BuildHasherDefault<Fold>>,
     /// Per section (its bytes), the candidates that did not open it.
     on: HashMap<Vec<u8>, Bits>,
+    /// Per blob (its ID and bytes), its tries that failed.
+    blobs: HashMap<(BlobId, Vec<u8>), BlobFailed>,
+}
+
+/// The candidates that did not open a blob: as its key, and through the wraps they were tried on.
+#[derive(Default)]
+struct BlobFailed {
+    key: Bits,
+    wraps: (Vec<Vec<u8>>, Bits),
 }
 
 thread_local! {
@@ -375,7 +386,10 @@ pub fn attack(ev: &Evidence, ciphers: Option<&Ciphers>) -> Vec<Recovered> {
     }
     // Blobs: every candidate as a key and, through every wrap, as a read secret.
     let mut cands: Vec<[u8; 32]> = ev.secrets.clone();
-    let mut seen: HashSet<[u8; 32], std::hash::BuildHasherDefault<Fold>> = cands.iter().copied().collect();
+    // room for the first harvest's windows, at most one per byte recovered
+    let room = cands.len() + out.iter().filter(|r| !matches!(r.from, Source::RawRow(_) | Source::RawBlob(_))).map(|r| r.plain.len()).sum::<usize>();
+    let mut seen: HashSet<[u8; 32], std::hash::BuildHasherDefault<Fold>> = HashSet::with_capacity_and_hasher(room, Default::default());
+    seen.extend(cands.iter().copied());
     let mut harvest = |plain: &[u8], cands: &mut Vec<[u8; 32]>| {
         for k in random_windows(plain) {
             if seen.insert(k) {
@@ -406,25 +420,70 @@ pub fn attack(ev: &Evidence, ciphers: Option<&Ciphers>) -> Vec<Recovered> {
         done = cands.len();
         // sections of blobs opened before: every candidate as a read secret or section key
         open_sections(&mut envelopes, &trials, &nums, &blobs, &mut out, &mut |p| harvest(p, &mut cands));
-        let batch = trials.get(from..).unwrap_or_default();
-        // every candidate as the blob's key, then through every wrap of it as a read secret
-        let try_blob = |i: usize| -> Option<(usize, Vec<u8>, bool)> {
+        let batch = trials.iter().zip(&nums).skip(from);
+        let no_wraps = Vec::new();
+        // every candidate as the blob's key, then through every wrap of it as a read secret, but
+        // those this thread's earlier tries ruled out (`Failed`)
+        let try_blob = |i: usize, failed: &mut BlobFailed| -> Option<(Vec<u8>, bool)> {
             let (id, blob) = blobs.get(i)?;
-            let ct = (c.prefix)(blob).and_then(|n| blob.get(n..));
-            if let Some(ct) = ct
-                && let Some(p) = batch.iter().filter(|t| t.may_open_blob(ct)).find_map(|t| (c.open)(blob, t.key().expose()))
-            {
-                return Some((i, p, false));
+            if let Some(ct) = (c.prefix)(blob).and_then(|n| blob.get(n..)) {
+                for (t, n) in batch.clone() {
+                    if failed.key.has(*n) {
+                        continue;
+                    }
+                    if let Some(p) = t.may_open_blob(ct).then(|| (c.open)(blob, t.key().expose())).flatten() {
+                        return Some((p, false));
+                    }
+                    failed.key.add(*n);
+                }
             }
-            let ws = wraps.get(i).filter(|w| !w.is_empty())?;
-            batch.iter().find_map(|t| t.unwraps(id, ws).iter().find_map(|k| (c.open)(blob, k.expose()))).map(|p| (i, p, true))
+            let ws = wraps.get(i).unwrap_or(&no_wraps);
+            if ws.is_empty() {
+                return None;
+            }
+            if failed.wraps.0 != *ws {
+                failed.wraps = (ws.clone(), Bits::default());
+            }
+            for (t, n) in batch.clone() {
+                if failed.wraps.1.has(*n) {
+                    continue;
+                }
+                if let Some(p) = t.unwraps(id, ws).iter().find_map(|k| (c.open)(blob, k.expose())) {
+                    return Some((p, true));
+                }
+                failed.wraps.1.add(*n);
+            }
+            None
         };
         let try_blob = &try_blob;
+        let jobs: Vec<(usize, BlobFailed)> = FAILED.with_borrow_mut(|f| {
+            let todo = blobs.iter().enumerate().filter(|(i, _)| open_blobs.get(*i) != Some(&true));
+            todo.map(|(i, (id, b))| (i, f.blobs.remove(&(*id, b.clone())).unwrap_or_default())).collect()
+        });
         // tens of thousands of candidates per blob: one thread per blob keeps a test's wall short
-        let found: Vec<(usize, Vec<u8>, bool)> = std::thread::scope(|sc| {
-            let todo = (0..blobs.len()).filter(|i| open_blobs.get(*i) != Some(&true));
-            let hs: Vec<_> = todo.map(|i| sc.spawn(move || try_blob(i))).collect();
-            hs.into_iter().filter_map(|h| h.join().unwrap_or_else(|e| std::panic::resume_unwind(e))).collect()
+        let tried: Vec<(usize, BlobFailed, Option<(Vec<u8>, bool)>)> = std::thread::scope(|sc| {
+            let hs: Vec<_> = jobs
+                .into_iter()
+                .map(|(i, mut failed)| {
+                    sc.spawn(move || {
+                        let found = try_blob(i, &mut failed);
+                        (i, failed, found)
+                    })
+                })
+                .collect();
+            hs.into_iter().map(|h| h.join().unwrap_or_else(|e| std::panic::resume_unwind(e))).collect()
+        });
+        let mut found = Vec::new();
+        FAILED.with_borrow_mut(|f| {
+            for (i, failed, p) in tried {
+                if let Some((id, b)) = blobs.get(i) {
+                    // an opened blob's failures too: the next attack goes straight to its opener
+                    f.blobs.insert((*id, b.clone()), failed);
+                }
+                if let Some((p, wrapped)) = p {
+                    found.push((i, p, wrapped));
+                }
+            }
         });
         for (i, p, wrapped) in found {
             if let (Some(o), Some((id, _))) = (open_blobs.get_mut(i), blobs.get(i)) {
