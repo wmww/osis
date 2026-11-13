@@ -10,9 +10,11 @@ false alarms beyond macros building names). tools/dead_pub_allow.txt lists the h
 purpose: `<crate>::<name>  <reason>`; a reason starting `deferred:` marks one left for a branch
 in that area. Every entry must still be a hit.
 Usage: python3 tools/dead_pub.py   (exit 1 on any unlisted hit or stale entry; policy.py runs it)"""
-import glob, os, re, sys, tomllib
+import os, re, sys
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from rustsrc import ROOT, members, mod_paths, rs_files, sanitize
+
 ALLOW = os.path.join(ROOT, "tools/dead_pub_allow.txt")
 
 IDENT = re.compile(r"\b[A-Za-z_][A-Za-z0-9_]*\b")
@@ -20,42 +22,6 @@ DEF = re.compile(r"\bpub\s+(?:const\s+|async\s+|unsafe\s+|extern\s+\"[^\"]*\"\s+
 TEST_CFG = re.compile(r"#\[cfg\((test|doctest|any\(test,\s*fuzzing\))\)\]")
 USE = re.compile(r"\b(?:pub(?:\([^)]*\))?\s+)?use\s+[^;]*;")
 IMPL = re.compile(r"\bimpl\b[^{;]*\{")
-
-def blank(text):
-    """Comments, strings and char literals replaced by spaces (offsets and newlines kept)."""
-    out, i, n = [], 0, len(text)
-    pat = re.compile(r"//[^\n]*|/\*|r(#*)\"|b?\"|b?'(?:\\.|[^\\'\n])'")
-    while i < n:
-        m = pat.search(text, i)
-        if not m:
-            out.append(text[i:])
-            break
-        out.append(text[i:m.start()])
-        s, tok = m.start(), m.group(0)
-        if tok.startswith("//"):
-            e = m.end()
-        elif tok == "/*":
-            depth, e = 1, m.end()
-            while depth and e < n:
-                if text.startswith("/*", e):
-                    depth, e = depth + 1, e + 2
-                elif text.startswith("*/", e):
-                    depth, e = depth - 1, e + 2
-                else:
-                    e += 1
-        elif tok.startswith("r") and tok.endswith('"'):
-            end = text.find('"' + m.group(1), m.end())
-            e = n if end < 0 else end + 1 + len(m.group(1))
-        elif tok.endswith('"'):
-            e = m.end()
-            while e < n and text[e] != '"':
-                e += 2 if text[e] == "\\" else 1
-            e += 1
-        else:
-            e = m.end()
-        out.append(re.sub(r"[^\n]", " ", text[s:e]))
-        i = e
-    return "".join(out)
 
 def item_end(text, i):
     """End of the item starting at `i` (after its attributes): its `;` or its matching `}`."""
@@ -80,16 +46,10 @@ def item_end(text, i):
             break
     return i, j
 
-def module_files(src, name):
-    d = os.path.dirname(src)
-    if os.path.basename(src) not in ("lib.rs", "mod.rs", "main.rs"):
-        d = os.path.join(d, os.path.splitext(os.path.basename(src))[0])
-    return [os.path.join(d, name + ".rs"), os.path.join(d, name)]
-
 class File:
     def __init__(self, path, crate, test):
         self.path, self.crate = path, crate
-        self.text = blank(open(path, errors="replace").read())
+        self.text = sanitize(open(path, errors="replace").read(), " ")
         self.test_all = test
         self.test_spans, self.child_tests = [], []
         if not test:
@@ -98,7 +58,7 @@ class File:
                 self.test_spans.append((m.start(), end))
                 mm = re.match(r"\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+([A-Za-z_]\w*)\s*;", self.text[start:end])
                 if mm:
-                    self.child_tests += module_files(path, mm.group(1))
+                    self.child_tests += mod_paths(path, mm.group(1))
         self.use_spans = [m.span() for m in USE.finditer(self.text)]
         self.impl_spans = [m.span() for m in IMPL.finditer(self.text)]
 
@@ -108,40 +68,18 @@ class File:
 def inside(spans, pos):
     return any(a <= pos < b for a, b in spans)
 
-def members():
-    ws = tomllib.load(open(os.path.join(ROOT, "Cargo.toml"), "rb"))
-    out = {}
-    # core/test/fuzz is outside the workspace (cargo-fuzz), its targets still users
-    for pat in ws["workspace"]["members"] + ["core/test/*"]:
-        for m in glob.glob(os.path.join(ROOT, pat)):
-            man = os.path.join(m, "Cargo.toml")
-            if os.path.isfile(man):
-                out[os.path.normpath(m)] = tomllib.load(open(man, "rb"))["package"]["name"]
-    return out
-
 def scan():
-    crates = members()
+    # core/test/fuzz is outside the workspace (cargo-fuzz), its targets still users
+    crates = members(["core/test/*"])
     files = []
     for m, name in sorted(crates.items()):
-        paths = []
-        for p in glob.glob(os.path.join(m, "**/*.rs"), recursive=True):
-            r = os.path.relpath(p, m)
-            if r.startswith(("target/", "patches/")):
-                continue
-            # a member nested in this one (app/android in app) is its own crate
-            if any(o != m and p.startswith(o + os.sep) and o.startswith(m + os.sep) for o in crates):
-                continue
-            paths.append(p)
         test_mods = set()
-        built = []
-        for p in sorted(paths, key=lambda p: (p.count(os.sep), os.path.basename(p) not in ("lib.rs", "mod.rs", "main.rs"))):
+        for p in sorted(rs_files(m, crates), key=lambda p: (p.count(os.sep), os.path.basename(p) not in ("lib.rs", "mod.rs", "main.rs"))):
             r = os.path.relpath(p, m)
-            test = r.startswith(("tests/", "benches/", "examples/")) or any(p == t or p.startswith(t + os.sep) or p == t + ".rs" for t in test_mods)
+            test = r.startswith(("tests/", "benches/", "examples/")) or any(p.startswith(t) for t in test_mods)
             f = File(p, name, test)
-            for c in f.child_tests:
-                test_mods.add(c[:-3] if c.endswith(".rs") else c)
-            built.append(f)
-        files += built
+            test_mods.update(f.child_tests)
+            files.append(f)
     return crates, files
 
 def hits():

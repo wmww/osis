@@ -15,86 +15,12 @@ import re
 import subprocess
 import sys
 
+from rustsrc import mod_paths, sanitize, toml
+
 VENDORED = ("libs/kit/patches/",)
 TEST_DIRS = ("tests", "benches", "fuzz_targets")
 ITEM_KW = {"fn", "mod", "impl", "struct", "enum", "trait", "union", "macro_rules"}
 QUALIFIERS = {"pub", "async", "unsafe", "const", "extern", "default", "safe"}
-
-
-def sanitize(src):
-    """Blank comments; replace string/char contents with 'x'. Newlines kept."""
-    out = []
-    i, n = 0, len(src)
-    prev_ident = False  # previous char was part of an identifier
-
-    def blank(s):
-        return "".join("\n" if c == "\n" else " " for c in s)
-
-    def fill(s):
-        return "".join("\n" if c == "\n" else "x" for c in s)
-
-    while i < n:
-        c = src[i]
-        if c == "/" and src.startswith("//", i):
-            j = src.find("\n", i)
-            j = n if j < 0 else j
-            out.append(blank(src[i:j]))
-            i = j
-            prev_ident = False
-            continue
-        if c == "/" and src.startswith("/*", i):
-            depth, j = 1, i + 2
-            while j < n and depth:
-                if src.startswith("/*", j):
-                    depth += 1
-                    j += 2
-                elif src.startswith("*/", j):
-                    depth -= 1
-                    j += 2
-                else:
-                    j += 1
-            out.append(blank(src[i:j]))
-            i = j
-            prev_ident = False
-            continue
-        # raw strings: r"..", r#".."#, br, cr
-        if not prev_ident and c in "rbc":
-            m = re.match(r'(?:b|c)?r(#*)"', src[i:i + 300])
-            if m:
-                close = '"' + m.group(1)
-                start = i + m.end()
-                j = src.find(close, start)
-                j = n if j < 0 else j
-                out.append(src[i:start] + fill(src[start:j]) + close)
-                i = j + len(close)
-                prev_ident = False
-                continue
-        if c == '"':
-            j = i + 1
-            while j < n and src[j] != '"':
-                j += 2 if src[j] == "\\" else 1
-            out.append('"' + fill(src[i + 1:j]) + '"')
-            i = j + 1
-            prev_ident = False
-            continue
-        if c == "'":
-            # char literal ('a', '\n', '\u{..}') vs lifetime/label ('a)
-            if i + 1 < n and src[i + 1] == "\\":
-                j = src.find("'", i + 3)
-                j = n if j < 0 else j
-                out.append("'" + fill(src[i + 1:j]) + "'")
-                i = j + 1
-                prev_ident = False
-                continue
-            if i + 2 < n and src[i + 2] == "'":
-                out.append("'x'")
-                i += 3
-                prev_ident = False
-                continue
-        out.append(c)
-        prev_ident = c.isalnum() or c == "_"
-        i += 1
-    return "".join(out)
 
 
 def match_close(s, i):
@@ -198,29 +124,6 @@ def analyze(path):
     return code, test, mods, whole
 
 
-def mod_paths(file, name):
-    d = os.path.dirname(file)
-    base = os.path.basename(file)
-    if base not in ("lib.rs", "main.rs", "mod.rs"):
-        d = os.path.join(d, base[:-3])
-    sub = os.path.join(d, name)
-    return [sub + ".rs", sub + os.sep]
-
-
-def crate_name(toml):
-    in_pkg = False
-    with open(toml) as f:
-        for line in f:
-            line = line.strip()
-            if line.startswith("["):
-                in_pkg = line == "[package]"
-            elif in_pkg:
-                m = re.match(r'name\s*=\s*"([^"]+)"', line)
-                if m:
-                    return m.group(1)
-    return None
-
-
 def main():
     args = sys.argv[1:]
     include_all = "--all" in args
@@ -234,7 +137,7 @@ def main():
     crates = {}  # dir -> name
     for f in files:
         if os.path.basename(f) == "Cargo.toml":
-            name = crate_name(f)
+            name = toml(f).get("package", {}).get("name")
             if name:
                 crates[os.path.dirname(f)] = name
     rs = [f for f in files if f.endswith(".rs")]
