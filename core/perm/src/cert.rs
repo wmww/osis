@@ -57,9 +57,18 @@ impl Timeline {
         x
     }
 
-    /// The chain certificates of `node` for writes on `thing` (§4).
+    /// The chain certificates of `node` for writes on `thing` (§4): once per pair while this
+    /// timeline stands.
     pub fn certificates(&self, node: &Tid, thing: &Tid) -> Certificates {
-        self.closure(vec![(*node, *thing)])
+        let key = (*node, *thing);
+        if let Some(x) = self.memo.certificates.lock().ok().and_then(|m| m.get(&key).cloned()) {
+            return x;
+        }
+        let x = self.closure(vec![key]);
+        if let Ok(mut m) = self.memo.certificates.lock() {
+            m.insert(key, x.clone());
+        }
+        x
     }
 
     /// What a verifier needs to judge edge write `id` as this timeline does: its author's

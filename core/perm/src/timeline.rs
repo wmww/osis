@@ -110,6 +110,8 @@ pub(crate) struct Memo {
     /// every pass) and the authors on its chains; and the walks made for it (a measure).
     pub forward: Mutex<BTreeMap<Tid, Arc<BTreeSet<Tid>>>>,
     pub forward_walks: std::sync::atomic::AtomicU64,
+    /// `certificates` per (node, thing) asked.
+    pub certificates: Mutex<BTreeMap<(Tid, Tid), crate::cert::Certificates>>,
     /// `roles_ever` calls so far (a measure).
     pub ever_walks: std::sync::atomic::AtomicU64,
     /// Held records by the edges and things they write, for certificates.
@@ -143,6 +145,7 @@ impl Clone for Memo {
             roles_walks: n(&self.roles_walks),
             forward: get(&self.forward),
             forward_walks: n(&self.forward_walks),
+            certificates: get(&self.certificates),
             ever_walks: n(&self.ever_walks),
             certs: self.certs.clone(),
             on_target: self.on_target.clone(),
@@ -520,6 +523,7 @@ impl Timeline {
         self.memo.on_target = std::sync::OnceLock::new();
         self.memo.held_on_target = std::sync::OnceLock::new();
         *self.memo.forward.get_mut().unwrap_or_else(|e| e.into_inner()) = BTreeMap::new();
+        *self.memo.certificates.get_mut().unwrap_or_else(|e| e.into_inner()) = BTreeMap::new();
         *self.memo.roles_now.get_mut().unwrap_or_else(|e| e.into_inner()) = BTreeMap::new();
         self.placed = 0;
         for (j, c) in new.iter().enumerate() {
