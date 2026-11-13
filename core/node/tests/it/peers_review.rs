@@ -292,24 +292,30 @@ fn a_charged_source_costs_its_row_until_judged_spec_sync_5() {
         reach(&mut net, b, 0xb1);
         net.blocked_peers.insert((a, b));
         let g = net.group_at(a, &[(b, Role::Write)], vec![]);
-        // each write keeps its own commit and entry (else the trigger compacts them)
-        net.keep(a, g, &[(osis_schema::RawKey::ak(&crate::net::REG), osis_schema::History::FOREVER)]);
+        // each write keeps its own commit and entry (else the trigger compacts them, and b drops
+        // the entries of the bodies its later writes cover): b takes the setting with them
+        let keep = net.keep(a, g, &[(osis_schema::RawKey::ak(&crate::net::REG), osis_schema::History::FOREVER)]);
         net.run();
         let (l, la) = (net.label(b), net.label(a));
+        let added = |net: &mut Net, c: osis_base::CommitId| {
+            let blob_id = net.sync(a).entries(&la).into_iter().find(|(_, x)| matches!(x, EntryKind::Commit { commit, .. } if *commit == c)).expect("a placed it").0;
+            let (wrap, _) = net.sync(a).entry_meta(&la, &blob_id).unwrap();
+            let blob = net.engine(a).blob(&blob_id).unwrap().unwrap();
+            (blob_id, osis_proto::Event::Added { blob_id, blob: Some(blob), wrap, stamp: None })
+        };
+        let mut events = vec![(l, added(&mut net, keep).1)];
         net.set_skew(a, 2 * 3_600_000);
-        let mut events = Vec::new();
+        let mut ids = Vec::new();
         for i in 0..n {
             let c = net.write(a, g, &format!("ahead {i:03}"));
             let acts = net.sync(a).handle(Event::Local);
             net.actions(a, acts);
             net.run();
-            let blob_id = net.sync(a).entries(&la).into_iter().find(|(_, x)| matches!(x, EntryKind::Commit { commit, .. } if *commit == c)).expect("a placed it").0;
-            let (wrap, _) = net.sync(a).entry_meta(&la, &blob_id).unwrap();
-            let blob = net.engine(a).blob(&blob_id).unwrap().unwrap();
-            events.push((l, osis_proto::Event::Added { blob_id, blob: Some(blob), wrap, stamp: None }));
+            let (id, e) = added(&mut net, c);
+            ids.push(id);
+            events.push((l, e));
         }
         net.set_skew(a, 0);
-        let ids: Vec<osis_base::BlobId> = events.iter().filter_map(|(_, e)| if let osis_proto::Event::Added { blob_id, .. } = e { Some(*blob_id) } else { None }).collect();
         let (mut p, evs) = member_pulled(&mut net, b, a, l);
         let id = evs.iter().find_map(|e| if let Message::Pull(x) = e { Some(x.id) } else { None }).expect("b pulls its member");
         let reply = osis_proto::msg::PullReply { id, events, cursor: Some(vec![1; 8]), whole: false, more: false, report: false, trimmed: false, joins: Vec::new() };

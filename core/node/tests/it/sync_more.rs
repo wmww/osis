@@ -194,9 +194,9 @@ fn pages_and_lazy_chunks_spec_sync_6() {
 /// Reader B holds v0 of a purge-on-replace aspect; offline, A replaces it 5 times and the peer
 /// deletes the replaced bodies; with `age` B stays away past `TOMBSTONE_LIFETIME`, so the peer's
 /// node log drops those deletions (its deletion horizon passes B's position); `wipe`: the peer
-/// then loses everything (a new log) and A registers again and the peer pulls; `restart`: B
-/// restarts before coming back. B back online: whether it still knows v0's entry, and whether
-/// its entries are the peer's.
+/// then loses everything (a new log), B lists it while A is away, then A registers again and the
+/// peer pulls; `restart`: B restarts before coming back. Whether B still knows v0's entry once
+/// back (`wipe`: once it listed the new log), and whether its entries end as the peer's.
 fn stale_entry_after_away(age: bool, wipe: bool, restart: bool) -> (bool, bool) {
     let mut net = Net::new();
     let host = net.add_host();
@@ -228,16 +228,23 @@ fn stale_entry_after_away(age: bool, wipe: bool, restart: bool) -> (bool, bool) 
         let horizon = net.hosts[host].hub.store().node_log(|t| t.log_horizon()).unwrap();
         assert!(horizon > 0, "the peer's sweep dropped the deletions");
     }
+    if restart {
+        net.restart(b, 23);
+    }
+    let knows_v0 = |net: &mut Net| net.sync(b).entries(&l).into_iter().any(|(_, k)| matches!(k, EntryKind::Commit { commit, .. } if commit == v0));
+    let mut kept = None;
     if wipe {
         net.set_online(a, false);
         net.wipe_host(host);
+        // b lists the new log before a places v5 there again: once b holds v5 it drops v0's
+        // entry by its own judgment (spec/sync.md §5 Placed), whatever the listing said
+        net.set_online(b, true);
+        net.run();
+        kept = Some(knows_v0(&mut net));
         net.set_online(a, true);
         net.run();
         net.advance(120_000);
         net.run();
-    }
-    if restart {
-        net.restart(b, 23);
     }
     net.set_online(b, true);
     net.run();
@@ -245,7 +252,7 @@ fn stale_entry_after_away(age: bool, wipe: bool, restart: bool) -> (bool, bool) 
     net.run();
     assert_eq!(net.engine(b).get(&t, &ak).unwrap(), Some(s("v5")));
     let known: BTreeSet<_> = net.sync(b).entries(&l).into_iter().map(|(id, _)| id).collect();
-    let kept = net.sync(b).entries(&l).into_iter().any(|(_, k)| matches!(k, EntryKind::Commit { commit, .. } if commit == v0));
+    let kept = kept.unwrap_or_else(|| knows_v0(&mut net));
     let at_the_peer: BTreeSet<_> = net.host_ids(host, &l).into_iter().collect();
     (kept, known == at_the_peer)
 }

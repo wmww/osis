@@ -41,7 +41,7 @@ impl SyncEngine {
                 }
                 match fate {
                     Fate::Wait => continue,
-                    Fate::Delete(..) => {
+                    Fate::Delete(..) | Fate::Drop => {
                         self.state.remove_entry(l, id);
                         self.forget_entry_blob(&id)?;
                         continue;
@@ -92,6 +92,17 @@ impl SyncEngine {
             // judged again once a write on its aspects changes liveness (a carrier is a trigger)
             note.waits.extend(aspects);
             return Ok(Fate::Wait);
+        }
+        // Invariant: a delete key authorizes a delete at another node, never in this node's own
+        // store. What this node judges must-not-hold there goes once carried, whatever keys it
+        // holds, as its engine drops a body under any held valid writer's cover whatever its
+        // rights (spec/sync.md §5 Placed, §7). So a node that dropped what a right holder's
+        // cover covers ends without those entries even once the right holder's deletions aged
+        // out of every log it could read. Every input is one this node verified: the cover is a
+        // held valid snapshot (an invalid or forged one covers nothing, so drops nothing) and
+        // a carrier stands in its store (`carried`), so what goes is redundant there.
+        if at.source.is_none() {
+            return Ok(Fate::Drop);
         }
         // a Delete needs every commitment group signed (spec/sync.md §5)
         Ok(match self.delete_for(at.keys, &at.l, id, e)? {
@@ -485,7 +496,7 @@ impl SyncEngine {
                 left.waits.held_back.insert(commit);
             }
             match fate {
-                Fate::Keep | Fate::Wait => {}
+                Fate::Keep | Fate::Wait | Fate::Drop => {}
                 Fate::Delete(_, item) => {
                     left.commits.insert(commit);
                     if !busy(self, &sent, &id) {

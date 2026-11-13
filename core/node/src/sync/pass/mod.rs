@@ -90,6 +90,8 @@ enum Fate {
     Wait,
     /// Goes, for this reason, by this delete item.
     Delete(Why, osis_label::DeleteItem),
+    /// Goes from this node's own served state: no delete item (`SyncEngine::deletable`).
+    Drop,
 }
 
 /// Aspects not settled yet (`None`: every aspect; `SyncEngine::unsettled_sets`).

@@ -76,6 +76,8 @@ fn a_readers_write_reaches_a_co_reader_by_its_pull_spec_sync_10() {
 #[test]
 fn a_readers_deletion_leaves_the_entry_spec_sync_10() {
     let (mut net, a, b, gs) = paired(1);
+    // no compaction of the item's `group.0` write: `a` would drop the entry for its rewrite
+    net.keep(b, gs[0], &[("group.0", osis_schema::History::FOREVER)]);
     let t = net.item(b, gs[0], gs[0], "kept");
     net.run();
     let l = label_of(&mut net, b, gs[0]);
@@ -620,6 +622,26 @@ fn a_host_and_a_co_reader_both_answering_store_once_and_settle_spec_sync_10() {
     }
 }
 
+/// Node `n`'s entries under `g`'s labels holding a part of commit `c` on `(t, ak)`, with whether
+/// `n` dropped that part.
+fn entries_holding(net: &mut Net, n: usize, g: Tid, c: &osis_base::CommitId, t: Tid, ak: &str) -> Vec<bool> {
+    let ak = osis_base::Ak::new(ak).unwrap();
+    let Some(ai) = net.engine(n).header(c).and_then(|h| h.aspect_index(&t, ak.as_str())) else { return Vec::new() };
+    let dropped = !net.engine(n).body_not_dropped(c, &t, &ak);
+    let ls: Vec<_> = net.group_labels(n).into_iter().filter(|(x, _)| *x == g).map(|(_, l)| l.id).collect();
+    ls.iter().flat_map(|l| net.sync(n).entries(l)).filter(|(_, k)| matches!(k, osis_node::sync::EntryKind::Commit { commit, parts, .. } if commit == c && parts.contains(&ai))).map(|_| dropped).collect()
+}
+
+/// Node `n`'s commits under `g`'s labels writing `g`'s `group.0`.
+fn group_writes(net: &mut Net, n: usize, g: Tid) -> Vec<osis_base::CommitId> {
+    let ls: Vec<_> = net.group_labels(n).into_iter().filter(|(x, _)| *x == g).map(|(_, l)| l.id).collect();
+    let cs: std::collections::BTreeSet<_> = ls.iter().flat_map(|l| net.sync(n).entries(l)).filter_map(|(_, k)| match k {
+        osis_node::sync::EntryKind::Commit { commit, .. } => Some(commit),
+        _ => None,
+    }).collect();
+    cs.into_iter().filter(|c| net.engine(n).header(c).is_some_and(|h| h.aspect_index(&g, "group.0").is_some())).collect()
+}
+
 /// Pulls node `a` sends once back after `b`'s log aged out the deletions of what `a` held, at
 /// `n` sync IDs, and whether `a` then holds what `b` holds; and the shared set's messages both
 /// sent meanwhile (Offers, Lost, Members) and the joins their Pulls named.
@@ -627,9 +649,6 @@ fn back_after_aging(n: usize) -> (usize, bool, bool, usize) {
     let (mut net, a, b, gs) = paired(n);
     let day = 86_400_000;
     for (i, g) in gs.iter().enumerate() {
-        // the items' creations write g's `group.0`: kept history, so no compaction deletes
-        // there while `a` is away (issues/aged-cover-deletions.md)
-        net.keep(b, *g, &[("group.0", osis_schema::History::FOREVER)]);
         let t = net.item(b, *g, *g, &format!("keep{i}"));
         let gone = net.item(b, *g, *g, "gone");
         // an aspect of its own: its expiry is covered once quiet (spec/sync.md §7 Trigger), and a
@@ -642,6 +661,8 @@ fn back_after_aging(n: usize) -> (usize, bool, bool, usize) {
         let _ = t;
     }
     net.run();
+    // the items' creations write g's `group.0`, which the trigger compacts at b
+    let writes: Vec<(Tid, Vec<osis_base::CommitId>)> = gs.iter().map(|g| (*g, group_writes(&mut net, a, *g))).collect();
     net.set_online(a, false);
     net.run();
     // the entries expire at b, and b's log drops their deletions with its tombstone life
@@ -671,12 +692,68 @@ fn back_after_aging(n: usize) -> (usize, bool, bool, usize) {
         same &= at(&mut net, a) == at(&mut net, b);
     }
     let whole = seen.borrow().replies.iter().any(|(w, _)| *w);
+    // spec/sync.md §5 Placed: `a` holds the cover of the `group.0` parts it dropped and
+    // no delete key for them; its store ends without every entry holding one
+    let (mut dropped, mut stale) = (0, 0);
+    for (g, cs) in &writes {
+        for c in cs {
+            dropped += usize::from(!net.engine(a).body_not_dropped(c, g, &osis_base::Ak::new("group.0").unwrap()));
+            stale += entries_holding(&mut net, a, *g, c, *g, "group.0").into_iter().filter(|d| *d).count();
+        }
+    }
+    assert!(dropped >= n, "a dropped {dropped} `group.0` parts under b's covers");
+    assert_eq!(stale, 0, "entries at a holding a part it dropped");
     (pulls, same, whole, per_id)
+}
+
+// spec/sync.md §5 (Placed), §7: a node drops from its own store, whatever delete keys it holds,
+// an entry holding a body it dropped under a held valid cover; an invalid cover (a writer's snapshot
+// stamped after its demotion, unknown to it) drops nothing there, a valid one then does
+#[test]
+fn only_a_valid_cover_drops_from_a_nodes_own_store_spec_sync_5() {
+    let (mut net, [a, b, c], g) = mesh();
+    let reg = osis_base::Ak::new("t:reg.0").unwrap();
+    let t = net.item(b, g, g, "x");
+    net.run();
+    let first = net.engine(a).core.durable_on(&(t, reg.clone())).collect::<Vec<_>>();
+    let [first] = first[..] else { panic!("one body of t at a: {first:?}") };
+    net.write(a, t, "y");
+    net.run();
+    let held = |net: &mut Net| entries_holding(net, a, g, &first, t, "t:reg.0");
+    assert_eq!(held(&mut net), [false], "a holds b's first write and its entry");
+    // c, away, is made a reader; its snapshot of t, stamped after, covers nothing at a
+    net.set_online(c, false);
+    let tc = net.tid(c);
+    let edge = osis_schema::core_types::Edge { role: Role::Read, until: None, invite: None, tied: None };
+    let d = osis_node::flows::Demotion { holder: tc, new: Some(edge), retain: None };
+    let done = net.engine(b).demote(&g, &d).unwrap();
+    let acts = net.sync(b).carry_out(done).unwrap();
+    net.actions(b, acts);
+    net.run();
+    net.advance(1_000);
+    let s = net.engine(c).snapshot(&t, &reg).unwrap().expect("c, holding its old edge, compacts t");
+    let bytes = net.engine(c).commit_bytes(&s).unwrap().unwrap();
+    net.engine(a).ingest(&bytes, Vec::new()).unwrap();
+    assert!(net.engine(a).header(&s).is_some(), "a holds c's snapshot");
+    for _ in 0..3 {
+        net.advance(osis_base::format::MAX_DRIFT_MS + 60_000);
+    }
+    assert_eq!(held(&mut net), [false], "an invalid cover drops nothing at a");
+    // b's snapshot covers it: a drops the body, and the entry goes from its store
+    let acts = net.sync(b).compact_now(&t, &reg).unwrap();
+    net.actions(b, acts);
+    net.run();
+    for _ in 0..3 {
+        net.advance(osis_base::format::MAX_DRIFT_MS + 60_000);
+    }
+    assert!(!net.engine(a).body_not_dropped(&first, &t, &reg), "a dropped the body under b's cover");
+    assert_eq!(held(&mut net), Vec::<bool>::new(), "no entry at a holds it");
 }
 
 // issues/net-reconnect.md (Back after a long absence; Deletions): a node back after the peer's
 // log dropped deletions past its cursor converges by one stream, whatever the number of sync IDs
-// (counted at n and 10n); a deletion older than the log reaches it by its own judgment (expiry)
+// (counted at n and 10n); a deletion older than the log reaches it by its own judgment (expiry,
+// and a cover it holds: spec/sync.md §5 Placed)
 #[test]
 fn back_after_aged_deletions_converges_in_one_stream_spec_sync_10() {
     let (p1, same1, whole1, s1) = back_after_aging(1);
