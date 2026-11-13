@@ -255,17 +255,6 @@ fn read(tx: &mut Tx<'_>, dedup: &Secret32, link: &Link) -> Result<Read> {
     }
 }
 
-/// The answer from each source's trees (`trees`): the blobs among `blobs` one links, and the
-/// node blobs they lack.
-fn answer(trees: impl IntoIterator<Item = Trees>, blobs: &BTreeSet<BlobId>) -> Trees {
-    let mut out = Trees::default();
-    for x in trees {
-        out.blobs.extend(blobs.iter().filter(|b| x.blobs.contains(b)));
-        out.missing.extend(x.missing.iter().copied());
-    }
-    out
-}
-
 /// `Engine::tree_refs` in transaction `tx`.
 pub(crate) fn tree_refs_in(tx: &mut Tx<'_>, t: &Tid, blobs: &BTreeSet<BlobId>) -> Result<Trees> {
     refs_in(tx, t, blobs, false)
@@ -290,13 +279,21 @@ pub(crate) fn sources_of(tx: &mut Tx<'_>, t: &Tid) -> Result<BTreeSet<Source>> {
 }
 
 /// The answer of a fresh walk of every source of `t` (the states alone if `states`) but those
-/// `gone` names.
+/// `gone` names: the blobs among `blobs` one links, and the node blobs they lack.
 fn walked(tx: &mut Tx<'_>, t: &Tid, blobs: &BTreeSet<BlobId>, states: bool, gone: &dyn Fn(&Source) -> bool) -> Result<Trees> {
-    let mut all = Vec::new();
+    let all = walked_all(tx, t, states, gone)?;
+    Ok(Trees { blobs: blobs.intersection(&all.blobs).copied().collect(), missing: all.missing })
+}
+
+/// Every blob a fresh walk of those sources reaches, and the node blobs they lack.
+fn walked_all(tx: &mut Tx<'_>, t: &Tid, states: bool, gone: &dyn Fn(&Source) -> bool) -> Result<Trees> {
+    let mut out = Trees::default();
     for s in sources(tx, t, states)?.into_iter().filter(|s| !gone(s)) {
-        all.push(trees_of(tx, t, &s)?);
+        let x = trees_of(tx, t, &s)?;
+        out.blobs.extend(x.blobs);
+        out.missing.extend(x.missing);
     }
-    Ok(answer(all, blobs))
+    Ok(out)
 }
 
 fn refs_in(tx: &mut Tx<'_>, t: &Tid, blobs: &BTreeSet<BlobId>, states: bool) -> Result<Trees> {
@@ -310,20 +307,30 @@ fn refs_in(tx: &mut Tx<'_>, t: &Tid, blobs: &BTreeSet<BlobId>, states: bool) -> 
     if !states {
         r.bodies.update(tx, &t, dedup.as_ref(), bodies)?;
     }
+    let asked = || [Some(&r.states), (!states).then_some(&r.bodies)].into_iter().flatten();
     let mut out = Trees::default();
-    for x in [Some(&r.states), (!states).then_some(&r.bodies)].into_iter().flatten() {
+    for x in asked() {
         out.blobs.extend(blobs.iter().filter(|b| x.links_to(b)));
         out.missing.extend(x.missing.iter().map(|o| o.0));
     }
+    // debug builds, at every question: what is counted differs from a fresh walk (any blob, not
+    // only those asked: a count gone wrong shows at once) leaves a linked chunk unprotected
+    #[cfg(debug_assertions)]
+    let counted = {
+        let mut all = Trees::default();
+        for x in asked() {
+            all.blobs.extend(x.links.keys().map(|o| o.0));
+            all.missing.extend(x.missing.iter().map(|o| o.0));
+        }
+        all
+    };
     if !(r.states.is_empty() && r.bodies.is_empty()) {
         tx.core.tree_reach.insert(t, r);
     }
-    // debug builds, at every question: an answer that differs from a fresh walk leaves a linked
-    // chunk unprotected (questions come with dropped chunks, rarely)
     #[cfg(debug_assertions)]
     {
-        let fresh = crate::costs::paused(|| crate::engine::memo::unrecorded(|| walked(tx, &t, blobs, states, &|_| false)))?;
-        assert_eq!(out, fresh, "tree refs of {t:?} counted apart from a fresh walk");
+        let fresh = crate::costs::paused(|| crate::engine::memo::unrecorded(|| walked_all(tx, &t, states, &|_| false)))?;
+        assert_eq!(counted, fresh, "tree refs of {t:?} counted apart from a fresh walk");
     }
     Ok(out)
 }
