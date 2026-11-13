@@ -22,7 +22,6 @@ impl LargeParams {
     pub const FORMAT: LargeParams = LargeParams { chunk: ChunkParams::FORMAT, threshold: CHUNK_THRESHOLD };
 }
 
-
 /// Parses the canonical byte or text string head that starts a large blob or string's bytes:
 /// `(major, len, head bytes)`, or `None` when `b` is too short to tell.
 pub fn string_head(b: &[u8]) -> Result<Option<(u8, u64, usize)>, Error> {
@@ -57,78 +56,22 @@ pub fn chunk_value(sink: &mut dyn TreeSink, params: LargeParams, v: &Value) -> R
     Ok(Value::link(write_tree(sink, params.chunk, &bytes)?))
 }
 
-/// Streams the canonical bytes of a large value from its root link, fetching chunks on demand.
-/// At the end the value must exceed the threshold (a chunked small value is bad input).
-struct LargeReader<'a> {
-    tree: TreeReader,
-    dedup: &'a Secret32,
-    src: &'a mut dyn LinkSource,
-    threshold: usize,
-    max_len: usize,
-    chunk: Vec<u8>,
-    pos: usize,
-    total: usize,
-    done: bool,
-}
-
-impl<'a> LargeReader<'a> {
-    /// `max_len`: the most bytes the caller accepts (`TooLarge` beyond).
-    fn new(root: Link, dedup: &'a Secret32, src: &'a mut dyn LinkSource, params: LargeParams, max_len: usize) -> LargeReader<'a> {
-        LargeReader { tree: TreeReader::new(root, params.chunk.min, max_len), dedup, src, threshold: params.threshold, max_len, chunk: Vec::new(), pos: 0, total: 0, done: false }
-    }
-
-    /// The unread rest of the current chunk, fetching the next chunk when it is used up; empty
-    /// at the end. A `Missing` chunk can be fetched and the call retried.
-    fn fill(&mut self) -> Result<&[u8], Error> {
-        while self.pos >= self.chunk.len() && !self.done {
-            let next = self.tree.next_chunk(self.dedup, self.src)?;
-            if self.tree.total().is_some_and(|t| t > u64::try_from(self.max_len).unwrap_or(u64::MAX)) {
-                return Err(Error::TooLarge("value"));
-            }
-            match next {
-                Some(c) => {
-                    self.total = self.total.saturating_add(c.len());
-                    if self.total > self.max_len {
-                        return Err(Error::TooLarge("value"));
-                    }
-                    self.chunk = c;
-                    self.pos = 0;
-                }
-                None => {
-                    if self.total <= self.threshold {
-                        return Err(Error::Malformed("chunked value at or below CHUNK_THRESHOLD"));
-                    }
-                    self.chunk = Vec::new();
-                    self.pos = 0;
-                    self.done = true;
-                }
-            }
-        }
-        Ok(self.chunk.get(self.pos..).unwrap_or_default())
-    }
-
-    fn consume(&mut self, n: usize) {
-        self.pos = self.pos.saturating_add(n).min(self.chunk.len());
-    }
-
-    /// Reads the whole value's canonical bytes.
-    fn read_all(mut self) -> Result<Vec<u8>, Error> {
-        let mut out = Vec::new();
-        loop {
-            let b = self.fill()?;
-            if b.is_empty() {
-                return Ok(out);
-            }
-            out.extend_from_slice(b);
-            let n = b.len();
-            self.consume(n);
-        }
-    }
-}
-
-/// Reads a whole large value (set element, map key, or a value read in full) and decodes it.
+/// Reads a whole large value (set element, map key, or a value read in full) and decodes it:
+/// `TooLarge` above `max_len` bytes (as soon as the root claims more), `Malformed` for a chunked
+/// value at or below the threshold.
 pub fn read_value(root: Link, dedup: &Secret32, src: &mut dyn LinkSource, params: LargeParams, max_len: usize) -> Result<Value, Error> {
-    let bytes = LargeReader::new(root, dedup, src, params, max_len).read_all()?;
+    let mut tree = TreeReader::new(root, params.chunk.min, max_len);
+    let max = u64::try_from(max_len).unwrap_or(u64::MAX);
+    let mut bytes = Vec::new();
+    while let Some(c) = tree.next_chunk(dedup, src)? {
+        if tree.total().is_some_and(|t| t > max) || bytes.len().saturating_add(c.len()) > max_len {
+            return Err(Error::TooLarge("value"));
+        }
+        bytes.extend_from_slice(&c);
+    }
+    if bytes.len() <= params.threshold {
+        return Err(Error::Malformed("chunked value at or below CHUNK_THRESHOLD"));
+    }
     Ok(decode(&bytes, &Limits { max_depth: MAX_VALUE_DEPTH, max_bytes: bytes.len() })?)
 }
 
@@ -224,55 +167,6 @@ mod tests {
         let Value::Link(root) = chunk_value(&mut BlobWriter::new(&f, &mut store, &mut rng), SMALL, &s).unwrap() else { panic!() };
         let mut r = BlobReader::new(&f.dedup, &mut store);
         assert_eq!(read_value(*root, &f.dedup, &mut r, SMALL, usize::MAX).unwrap(), s);
-    }
-
-    /// Serves blobs from a store but only those in `allow`, counting fetches.
-    struct Gate<'a> {
-        store: &'a mut MemoryBlobs,
-        fetches: usize,
-        missing_once: Option<osis_base::BlobId>,
-    }
-    impl crate::tree::BlobFetch for Gate<'_> {
-        fn fetch(&mut self, id: &osis_base::BlobId) -> Result<Vec<u8>, Error> {
-            if self.missing_once == Some(*id) {
-                self.missing_once = None;
-                return Err(Error::Missing);
-            }
-            self.fetches += 1;
-            self.store.fetch(id)
-        }
-    }
-
-    // spec/wire.md §6 (TreeReader), spec/sync.md §6: a Missing chunk mid-stream leaves the
-    // reader in place; the retry continues with the same bytes.
-    #[test]
-    fn resume_mid_stream() {
-        let f = framing();
-        let mut store = MemoryBlobs::default();
-        let mut rng = SeededRng::from_u64(0);
-        let d = data(3000, 0);
-        let Value::Link(root) = write_bytes(&mut store, &f, &mut rng, &d) else { panic!() };
-        let root = *root;
-        let victim = *store.0.keys().next().unwrap();
-        let mut gate = Gate { store: &mut store, fetches: 0, missing_once: Some(victim) };
-        let mut r = BlobReader::new(&f.dedup, &mut gate);
-        let mut lr = LargeReader::new(root, &f.dedup, &mut r, SMALL, usize::MAX);
-        let mut out = Vec::new();
-        let mut misses = 0;
-        loop {
-            match lr.fill() {
-                Ok([]) => break,
-                Ok(b) => {
-                    let n = b.len();
-                    out.extend_from_slice(b);
-                    lr.consume(n);
-                }
-                Err(Error::Missing) => misses += 1,
-                Err(e) => panic!("{e}"),
-            }
-        }
-        assert_eq!(misses, 1);
-        assert_eq!(out, encode(&Value::Bytes(d)));
     }
 
     // spec/wire.md §6: content hashes cover lengths, so a tree whose nodes lie about them has
@@ -439,9 +333,7 @@ mod tests {
                     let mut r = BlobReader::new(&f.dedup, &mut store);
                     prop_assert_eq!(read_value(root, &f.dedup, &mut r, SMALL, usize::MAX).unwrap(), Value::Bytes(d));
                     let mut r = BlobReader::new(&f.dedup, &mut store);
-                    prop_assert_eq!(LargeReader::new(root, &f.dedup, &mut r, SMALL, usize::MAX).read_all().unwrap(), enc.clone());
-                    let mut r = BlobReader::new(&f.dedup, &mut store);
-                    prop_assert!(matches!(LargeReader::new(root, &f.dedup, &mut r, SMALL, enc.len() - 1).read_all(), Err(Error::TooLarge(_))));
+                    prop_assert!(matches!(read_value(root, &f.dedup, &mut r, SMALL, enc.len() - 1), Err(Error::TooLarge(_))));
                 }
                 v => {
                     prop_assert!(enc.len() <= SMALL.threshold);
