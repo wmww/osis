@@ -912,13 +912,7 @@ fn out_of_history_goes_under_any_writers_cover_spec_sync_7() {
 // every node's clock agrees (a local drop changes only this node's reads)
 #[test]
 fn host_delete_waits_drift_past_history_spec_sync_7() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let g = net.group(a, &[(b, Role::Write)], &[host]);
-    let t = net.item(a, g, g, "x");
-    net.run();
+    let (mut net, host, [a, b], _, [t]) = hosted::<2, 1>(&[(1, Role::Write)], ["x"], true);
     let k = Ak::new(REG.ak()).unwrap();
     net.keep(a, t, &[(REG.ak(), osis_schema::History::Keep { until: None, after: Some(600_000) })]);
     net.run();
@@ -1453,13 +1447,7 @@ fn log_len(net: &Net, host: usize, l: &osis_base::LabelId) -> usize {
 #[test]
 fn fallen_carrier_carries_nothing_spec_sync_7() {
     use osis_crdt::{Op, PathOp, PathSeg};
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let g = net.group(a, &[(b, Role::Write)], &[host]);
-    let t = net.item(a, g, g, "x");
-    net.run();
+    let (mut net, host, [a, b], g, [t]) = hosted::<2, 1>(&[(1, Role::Write)], ["x"], true);
     let l = net.label(a);
     let (map, seq) = (Ak::new(GONEMAP.ak()).unwrap(), Ak::new(SEQ.ak()).unwrap());
     let key = |k: &str, v: &str| PathOp { path: vec![PathSeg::Key(s(k))], op: Op::Set(s(v)) };
@@ -1511,13 +1499,7 @@ fn fallen_carrier_carries_nothing_spec_sync_7() {
 // again: X's blobs leave the host once and the label goes quiet (no log and delete repeat).
 #[test]
 fn one_side_lacking_the_setting_no_log_delete_repeat_spec_sync_7() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let g = net.group(a, &[(b, Role::Write)], &[host]);
-    let t = net.item(a, g, g, "x");
-    net.run();
+    let (mut net, host, [a, b], _, [t]) = hosted::<2, 1>(&[(1, Role::Write)], ["x"], true);
     let l = net.label(a);
     let k = Ak::new(REG.ak()).unwrap();
     net.set_online(b, false);
@@ -1562,13 +1544,7 @@ fn one_side_lacking_the_setting_no_log_delete_repeat_spec_sync_7() {
 #[test]
 fn purge_beside_invalid_delta_leaves_host_spec_perm_6() {
     for with_bad in [false, true] {
-        let mut net = Net::new();
-        let host = net.add_host();
-        let a = net.node(1, &[host]);
-        let b = net.node(2, &[host]);
-        let g = net.group(a, &[(b, Role::Write)], &[host]);
-        let t = net.item(a, g, g, "v1");
-        net.run();
+        let (mut net, host, [a, b], _, [t]) = hosted::<2, 1>(&[(1, Role::Write)], ["v1"], true);
         let settle = |net: &mut Net| {
             net.run();
             net.advance(10_000);

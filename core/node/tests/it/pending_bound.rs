@@ -71,13 +71,7 @@ fn reader_flood_of_pending_stays_within_the_cap_spec_sync_3() {
 // pending through passes and a restart, with nothing reported, and applies when its time comes.
 #[test]
 fn held_pending_survives_passes_and_restart_spec_commits_4() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let g = net.group(a, &[(b, Role::Write)], &[host]);
-    let t = net.item(a, g, g, "v1");
-    net.run();
+    let (mut net, _, [a, b], _, [t]) = hosted::<2, 1>(&[(1, Role::Write)], ["v1"], true);
     net.set_skew(b, HOURS_2);
     net.write(b, t, "ahead");
     net.set_skew(b, 0);
@@ -101,13 +95,7 @@ fn held_pending_survives_passes_and_restart_spec_commits_4() {
 // received.
 #[test]
 fn pending_row_goes_with_its_last_entry_spec_commits_4() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let g = net.group(a, &[(b, Role::Write)], &[host]);
-    let t = net.item(a, g, g, "v1");
-    net.run();
+    let (mut net, host, [a, b], _, [t]) = hosted::<2, 1>(&[(1, Role::Write)], ["v1"], true);
     net.set_skew(b, HOURS_2);
     let c = net.write(b, t, "ahead");
     net.set_skew(b, 0);

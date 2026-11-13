@@ -5800,13 +5800,7 @@ fn revert_run_with(seed: u64, restarts: bool) {
 // (`ephemeral_reverts_with_restarts_alike_large_spec_crdt_4_6` seed 751305619689)
 #[test]
 fn fallen_snapshot_fetches_covered_back_spec_sync_9() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let g = net.group(a, &[(b, Role::Write)], &[host]);
-    let t = net.item(a, g, g, "t");
-    net.run();
+    let (mut net, _, [a, b], g, [t]) = hosted::<2, 1>(&[(1, Role::Write)], ["t"], true);
     let tb = net.tid(b);
     let mut m = Mutation::new();
     m.set(t, &eph(STATE), &s("x")).unwrap();
@@ -5839,13 +5833,7 @@ fn fallen_snapshot_fetches_covered_back_spec_sync_9() {
 // falls with the snapshot (seed 196 of the same property)
 #[test]
 fn fallen_snapshot_lifts_own_tombstone_spec_sync_9() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let g = net.group(a, &[(b, Role::Write)], &[host]);
-    let t = net.item(a, g, g, "t");
-    net.run();
+    let (mut net, host, [a, b], g, [t]) = hosted::<2, 1>(&[(1, Role::Write)], ["t"], true);
     let tb = net.tid(b);
     let mut m = Mutation::new();
     m.set(t, &eph(STATE), &s("y")).unwrap();
@@ -6168,13 +6156,7 @@ fn dead_expiring_ephemeral_write_covered_before_expiry_spec_commits_5() {
 // no longer takes, so it deposits it (spec/sync.md §5 Deposit) and a promotes it
 #[test]
 fn reader_copy_after_rotation_goes_as_a_deposit_spec_sync_5() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let g = net.group(a, &[(b, Role::Write)], &[host]);
-    let t = net.item(a, g, g, "t");
-    net.run();
+    let (mut net, host, [a, b], g, [t]) = hosted::<2, 1>(&[(1, Role::Write)], ["t"], true);
     let mut m = Mutation::new();
     m.set(t, &eph(STATE), &s("v")).unwrap();
     net.engine(a).write(m).unwrap();

@@ -440,11 +440,7 @@ fn a_copied_store_resumes_the_same_record_at_a_live_peer_spec_sync_10() {
 #[test]
 fn changed_at_moves_through_a_cycle_of_rosters() {
     for grant_on_second in [false, true] {
-        let mut net = Net::new();
-        let host = net.add_host();
-        let a = net.node(1, &[host]);
-        let g = net.group(a, &[], &[host]);
-        net.run();
+        let (mut net, host, [a], g, []) = hosted::<1, 0>(&[], [], true);
         let lg = net.label(a);
         let h = net.group_at(a, &[], vec![net.address(host)]);
         net.run();

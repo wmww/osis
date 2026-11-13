@@ -134,12 +134,7 @@ fn body_judged_once_per_body_spec_requirements_scale() {
     use osis_schema::core_types as ct;
     use osis_schema::{PurgeBy, Retention};
     let n = 120u64;
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let g = net.group(a, &[(b, Role::Write)], &[host]);
-    let t = net.item(a, g, g, "x");
+    let (mut net, _, [a, b], _, [t]) = hosted::<2, 1>(&[(1, Role::Write)], ["x"], false);
     let mut m = Mutation::new();
     m.set(t, &ct::RETENTION, &ct::RetentionSetting { default: Some(ct::RetentionEntry { history: Some(crate::common::DAY), ..Default::default() }), ..Default::default() }).unwrap();
     net.engine(a).commit(m).unwrap();

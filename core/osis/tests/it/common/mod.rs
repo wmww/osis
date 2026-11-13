@@ -305,6 +305,18 @@ impl CreateIn for osis::Write<'_> {
 }
 
 
+/// A world with one host and an account per seed of `seeds` at it, nothing run: built once per
+/// `seeds` (`World::cached`). Returns (world, host, accounts).
+pub fn hosted_accounts<const N: usize>(seeds: [u64; N]) -> (World, usize, [Osis; N]) {
+    let (w, dbs, host) = World::cached(&format!("common::hosted_accounts/{seeds:?}"), || {
+        let mut w = World::new();
+        let host = w.add_host();
+        let dbs = seeds.map(|s| w.account(s, &[host]));
+        (w, dbs, host)
+    });
+    (w, host, dbs)
+}
+
 /// Alice and `n` other accounts on one peer; each other account's card imported by Alice: built
 /// once per `n` (`World::cached`).
 pub fn people(n: usize) -> (World, Osis, Vec<Osis>, Vec<Tid>) {

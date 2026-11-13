@@ -118,10 +118,7 @@ fn serving_listed_then_open_spec_sync_5() {
 // names her address alone; Bob, granted it, syncs it there and reads it.
 #[test]
 fn a_reader_serves_what_it_reads_with_no_setup_spec_data_model_9() {
-    let mut w = World::new();
-    let base = w.add_host();
-    let alice = w.account(1, &[base]);
-    let bob = w.account(2, &[base]);
+    let (mut w, _, [alice, bob]) = hosted_accounts([1, 2]);
     let ha = alice.listen(&["quic://alice:1".parse().unwrap()]).unwrap().remove(0);
     w.run();
     let b = w.until(alice.import_contact(&bob.contact_card().unwrap()), 1000, 10).unwrap();
@@ -155,10 +152,7 @@ fn label_of(db: &Osis, g: Tid) -> LabelId {
 /// Alice (listening on a test peer) and Bob, contacts both ways: (world, alice, bob, base peer,
 /// Alice's peer address, Alice's account as Bob knows it, Bob's as Alice knows it).
 fn pair() -> (World, Osis, Osis, usize, Address, Tid, Tid) {
-    let mut w = World::new();
-    let base = w.add_host();
-    let alice = w.account(1, &[base]);
-    let bob = w.account(2, &[base]);
+    let (mut w, base, [alice, bob]) = hosted_accounts([1, 2]);
     w.run();
     let ha = alice.listen(&["quic://alice:1".parse().unwrap()]).unwrap().remove(0);
     w.run();

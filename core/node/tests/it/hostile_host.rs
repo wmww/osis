@@ -152,12 +152,7 @@ fn junk_under_opened_label_kept_nowhere_spec_sync_3() {
 #[test]
 fn purged_chunks_leave_the_host_spec_sync_5() {
     use osis_schema::RawKey;
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let g = net.group(a, &[(b, Role::Write)], &[host]);
-    let t = net.item(a, g, g, "x");
+    let (mut net, host, [a, _], _, [t]) = hosted::<2, 1>(&[(1, Role::Write)], ["x"], false);
     net.keep(a, t, &[("t:gone.0", PURGE)]);
     let big: String = (0..300_000u32).map(|i| char::from(b'a' + (i.wrapping_mul(2654435761) >> 27) as u8 % 26)).collect();
     let mut m = osis_node::Mutation::new();
@@ -184,12 +179,7 @@ fn purged_chunks_leave_the_host_spec_sync_5() {
 #[test]
 fn writer_purge_deletes_chunks_by_delete_key_spec_crypto_7() {
     use osis_schema::RawKey;
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let g = net.group(a, &[(b, Role::Write)], &[host]);
-    let t = net.item(a, g, g, "x");
+    let (mut net, host, [a, b], _, [t]) = hosted::<2, 1>(&[(1, Role::Write)], ["x"], false);
     net.keep(a, t, &[("t:gone.0", PURGE)]);
     let big: String = (0..300_000u32).map(|i| char::from(b'a' + (i.wrapping_mul(2654435761) >> 27) as u8 % 26)).collect();
     let mut m = osis_node::Mutation::new();

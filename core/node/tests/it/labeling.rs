@@ -2,7 +2,7 @@
 //! Labeling on hand-built groups (spec/sync.md §1-§3, §5; spec/crypto.md §5, §7): entitlement,
 //! one blob per commit with its prefix groups, wraps, head keys, delete keys.
 
-use crate::net::local_nodes;
+use crate::net::{hosted, local_nodes};
 use crate::net;
 use net::*;
 use osis_base::{Role, WallMs};
@@ -163,11 +163,7 @@ fn head_keys_and_delete_keys_spec_sync_5() {
 #[test]
 fn old_claim_sets_dropped_spec_sync_2() {
     use osis_schema::core_types as ct;
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let g = net.group(a, &[], &[host]);
-    net.run();
+    let (mut net, _, [a], g, []) = hosted::<1, 0>(&[], [], true);
     let l = net.label(a);
     let label = |net: &mut Net| net.engine(a).get_typed(&g, &ct::LABEL).unwrap().unwrap().remove(&l).unwrap();
     let head = |net: &mut Net| osis_label::tips(&label(net)).unwrap()[0];

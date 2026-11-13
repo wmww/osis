@@ -44,9 +44,7 @@ fn x(db: &Osis, t: Tid) -> Option<Value> {
 // label registers at its peer; status turns Synced and wait_synced resolves after a write.
 #[test]
 fn create_syncs_home_spec_sync_2() {
-    let mut w = World::new();
-    let host = w.add_host();
-    let db = w.account(0, &[host]);
+    let (mut w, _, [db]) = hosted_accounts([0]);
     w.run();
     let st = db.status().unwrap();
     assert_eq!(st.groups.get(&db.home()).map(|g| g.state), Some(SyncState::Synced), "{st:?}");
@@ -61,9 +59,7 @@ fn create_syncs_home_spec_sync_2() {
 // account, reads the home group and its writes reach the first node.
 #[test]
 fn pairing_spec_permissions_1() {
-    let mut w = World::new();
-    let host = w.add_host();
-    let da = w.account(1, &[host]);
+    let (mut w, _, [da]) = hosted_accounts([1]);
     w.run();
     let t = item(&da, da.me(), da.home(), "before pairing");
     for i in 0..10 {
@@ -99,10 +95,7 @@ fn pairing_spec_permissions_1() {
 // spec: none (API surface, notes/api.md)
 #[test]
 fn delete_reaches_other_node_spec_api_writes() {
-    let mut w = World::new();
-    let host = w.add_host();
-    let alice = w.account(1, &[host]);
-    let bob = w.account(2, &[host]);
+    let (mut w, _, [alice, bob]) = hosted_accounts([1, 2]);
     w.run();
     let g = group(&alice);
     let ro = group(&alice);
@@ -140,10 +133,7 @@ fn group(db: &Osis) -> Tid {
 // spec/permissions.md §4, spec/sync.md §10, notes/client-port.md §3 (attribution): a thin client's commit, written by its node as the client's actor, reaches another account holding the group through sync, applied there with that actor and that node in its header (the actor's creation record travels with its grant); its grants to the actor reach the account's other node through the home group
 #[test]
 fn client_commit_reaches_a_third_node() {
-    let mut w = World::new();
-    let host = w.add_host();
-    let alice = w.account(1, &[host]);
-    let bob = w.account(2, &[host]);
+    let (mut w, _, [alice, bob]) = hosted_accounts([1, 2]);
     w.run();
     let g = group(&alice);
     let card: osis::ContactCard = bob.contact_card().unwrap().to_string().parse().unwrap();
@@ -176,10 +166,7 @@ fn client_commit_reaches_a_third_node() {
 // stay unshared, notes/sync.md).
 #[test]
 fn grant_by_inbox_spec_sync_3() {
-    let mut w = World::new();
-    let host = w.add_host();
-    let alice = w.account(1, &[host]);
-    let bob = w.account(2, &[host]);
+    let (mut w, _, [alice, bob]) = hosted_accounts([1, 2]);
     w.run();
     let g = group(&alice);
     let card: osis::ContactCard = bob.contact_card().unwrap().to_string().parse().unwrap();
@@ -611,9 +598,7 @@ const TEXT_SCHEMA: &str = "revision 1;\naspect n:body.0: text;\n";
 // spec/crdt.md §5.7
 #[test]
 fn text_sessions_merge_spec_crdt_5_7() {
-    let mut w = World::new();
-    let host = w.add_host();
-    let da = w.account(1, &[host]);
+    let (mut w, _, [da]) = hosted_accounts([1]);
     w.run();
     let join = osis::internals::pair(w.cfg(2, &[]), &da.pair_offer().unwrap()).unwrap();
     let (_, reply) = da.pair_accept(join.request()).unwrap();
@@ -651,9 +636,7 @@ fn text_sessions_merge_spec_crdt_5_7() {
 /// Two paired nodes with a text thing `t` reading "hello world", and a session on it from
 /// the first.
 fn text_pair() -> (World, Osis, Osis, Tid, osis::TextSession) {
-    let mut w = World::new();
-    let host = w.add_host();
-    let da = w.account(1, &[host]);
+    let (mut w, _, [da]) = hosted_accounts([1]);
     w.run();
     let join = osis::internals::pair(w.cfg(2, &[]), &da.pair_offer().unwrap()).unwrap();
     let (_, reply) = da.pair_accept(join.request()).unwrap();
@@ -884,9 +867,7 @@ fn wait_synced_scopes_deliveries() {
 // spec: none (API surface, notes/api.md)
 #[test]
 fn wait_synced_waits_for_deliveries_without_peered_groups() {
-    let mut w = World::new();
-    let h = w.add_host();
-    let bob = w.account(2, &[h]);
+    let (mut w, h, [bob]) = hosted_accounts([2]);
     let carol = osis::internals::create(w.cfg(9, &[])).unwrap();
     w.run();
     let card = bob.contact_card().unwrap();
@@ -1539,9 +1520,7 @@ fn a_joiners_removal_overrides_the_default_spec_permissions_3() {
 // spec/permissions.md §2: an account's retain default does not reach a node's removal: the node erases.
 #[test]
 fn an_accounts_default_does_not_reach_a_node_spec_permissions_2() {
-    let mut w = World::new();
-    let host = w.add_host();
-    let da = w.account(1, &[host]);
+    let (mut w, _, [da]) = hosted_accounts([1]);
     let t = item(&da, da.me(), da.home(), "before");
     let join = osis::internals::pair(w.cfg(2, &[]), &da.pair_offer().unwrap()).unwrap();
     let (_, reply) = da.pair_accept(join.request()).unwrap();

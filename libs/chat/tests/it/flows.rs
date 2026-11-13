@@ -119,12 +119,15 @@ struct Room {
     bob: Tid,
 }
 
-/// A world of `N` accounts (1 to `N`) on one host, run.
+/// A world of `N` accounts (1 to `N`) on one host, run: built once (`World::cached`).
 fn accounts<const N: usize>() -> (World, [Osis; N]) {
-    let mut w = World::new();
-    let host = w.add_host();
-    let dbs = std::array::from_fn(|i| w.account(i as u64 + 1, &[host]));
-    w.run();
+    let (w, dbs, ()) = World::cached(&format!("chat::accounts/{N}"), || {
+        let mut w = World::new();
+        let host = w.add_host();
+        let dbs = std::array::from_fn(|i| w.account(i as u64 + 1, &[host]));
+        w.run();
+        (w, dbs, ())
+    });
     (w, dbs)
 }
 
@@ -134,12 +137,17 @@ fn meet(w: &mut World, a: &Osis, b: &Osis) -> Tid {
     w.until(a.import_contact(&card), 1000, 10).unwrap()
 }
 
+/// `accounts`, Bob in Alice's contacts, her chat made with `o` and Bob a writer of it: built once
+/// per `o` (`World::cached`).
 fn room(o: Options) -> Room {
-    let (mut w, [a, b]) = accounts();
-    let bob = meet(&mut w, &a, &b);
-    let c = create(&a, &o).unwrap();
-    a.grant(c, bob, Role::Write, Default::default()).unwrap();
-    w.run();
+    let (w, [a, b], (c, bob)) = World::cached(&format!("chat::room/{o:?}"), || {
+        let (mut w, [a, b]) = accounts();
+        let bob = meet(&mut w, &a, &b);
+        let c = create(&a, &o).unwrap();
+        a.grant(c, bob, Role::Write, Default::default()).unwrap();
+        w.run();
+        (w, [a, b], (c, bob))
+    });
     Room { w, a, b, c, bob }
 }
 
