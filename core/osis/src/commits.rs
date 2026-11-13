@@ -403,13 +403,13 @@ impl ReadOnly {
             // the commit's aspects at `a` the caller may read: judged from the commit, never from
             // the whole scope
             let at = |r: &Reader<'_>, t: Tid, k: &Ak| !r.hidden(t) && a.holds(t, k, |g| t == g || r.e.groups_of(&t).contains(&g));
-            let row = match fired {
+            match fired {
                 Some(mut row) => {
                     row.parts.retain(|p| !r.hidden(p.tid));
                     if !row.parts.iter().any(|p| at(&r, p.tid, &p.ak)) {
                         return Ok(None);
                     }
-                    row
+                    commit_of(&mut r, &mut Relations::default(), row, mat).map(Some)
                 }
                 None => {
                     let Some(h) = r.e.header(&id.0) else { return Ok(None) };
@@ -417,14 +417,9 @@ impl ReadOnly {
                     if !r.e.listed_at(&id.0, &aks)? {
                         return Ok(None);
                     }
-                    let shown = move |e: &mut osis_node::Engine, t: &Tid| actor.is_none_or(|a| e.readable_by(&a, t));
-                    match r.e.commit_row(&id.0, &shown, mat)? {
-                        Some(row) => row,
-                        None => return Ok(None),
-                    }
+                    commit_in(&mut r, id)
                 }
-            };
-            commit_of(&mut r, &mut Relations::default(), row, mat).map(Some)
+            }
         })?;
         Ok(c.map(|c| c.reporting(self)))
     }
