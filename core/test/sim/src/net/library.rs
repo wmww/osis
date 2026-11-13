@@ -838,12 +838,15 @@ pub fn purge_tombstones(s: Seeds) -> Res<Report> {
     })?;
     let mut d = Dice::new(sim.seed ^ 0x7b);
     let forever = Retention { by: PurgeBy::AuthorOrAdmin };
-    let mut messages = Vec::new();
+    let mut messages: Vec<(CommitId, usize)> = Vec::new();
     let mut purged = BTreeSet::new();
     let mut said = 0u32;
     for round in 0..12u32 {
         said += 1;
+        // the last round is writer `b`'s when it has written none: its aspect-wide request below
+        // must name a message it may purge, or its writer refuses it (`Permission`)
         let n = if d.pct(50) { a } else { b };
+        let n = if round == 11 && !messages.iter().any(|x| x.1 == b) { b } else { n };
         let mut m = Mutation::new();
         m.retention(t, &workload::NOTE, forever).map_err(|x| sim.fail(x.to_string()))?;
         m.set(t, &workload::NOTE, &Value::Str(format!("message {said}"))).map_err(|x| sim.fail(x.to_string()))?;
