@@ -5,11 +5,11 @@ use crate::args::*;
 use crate::json::{self, J};
 use crate::text::{self, Ty};
 use crate::write::{self, Did};
-use crate::{Ctx, StoreSel, exit, open, opt_ts, parse_ak, usage};
+use crate::{Ctx, exit, open, opt_ts, parse_ak, usage};
 use anyhow::{Context as _, anyhow};
 use osis::internals::Internals as _;
 use osis::{
-    Change, CommitId, CommitKind, CommitQuery, DynamicAspectKey, Error, GrantOpts, LinkOpts, Member, Origin, Osis, Role, SetRoleOpts, SyncScope, SyncState, Tid, Value,
+    Change, Store, CommitId, CommitKind, CommitQuery, DynamicAspectKey, Error, GrantOpts, LinkOpts, Member, Origin, Osis, Role, SetRoleOpts, SyncScope, SyncState, Tid, Value,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
@@ -275,7 +275,7 @@ pub(crate) fn deliver(ctx: &mut Ctx<'_>, what: Delivers) -> anyhow::Result<()> {
 }
 
 /// Runs one parsed command.
-pub fn dispatch(cli: Cli, store: Option<StoreSel>, stdin: &mut dyn BufRead, out: &mut dyn std::io::Write, err: &mut (dyn std::io::Write + Send), tty: bool) -> anyhow::Result<()> {
+pub fn dispatch(cli: Cli, store: Option<Store>, stdin: &mut dyn BufRead, out: &mut dyn std::io::Write, err: &mut (dyn std::io::Write + Send), tty: bool) -> anyhow::Result<()> {
     let g = cli.g.clone();
     let sel = crate::store_sel(&g, store)?;
     // Commands that do not open a store.
@@ -285,7 +285,7 @@ pub fn dispatch(cli: Cli, store: Option<StoreSel>, stdin: &mut dyn BufRead, out:
         Cmd::Schema(SchemaCmd::Add { file }) => return schema_reg(&sel, file, true),
         Cmd::Schema(SchemaCmd::Rm { file }) => return schema_reg(&sel, file, false),
         Cmd::Schema(SchemaCmd::Ls) => {
-            let StoreSel::Dir(d) = &sel else { return Err(usage("schemas register with a store directory")) };
+            let Store::Dir(d) = &sel else { return Err(usage("schemas register with a store directory")) };
             let list = crate::registered(d)?;
             let lines: Vec<String> = list.iter().map(|p| p.display().to_string()).collect();
             let text = if g.json { J::strs(&lines).text() + "\n" } else { lines.iter().map(|l| format!("{l}\n")).collect() };
@@ -300,7 +300,7 @@ pub fn dispatch(cli: Cli, store: Option<StoreSel>, stdin: &mut dyn BufRead, out:
             // the app carries two messages: print the request, read the reply
             let cfg = crate::config(&g, crate::Network::Node);
             let offer: osis::PairOffer = offer.parse()?;
-            let join = Osis::pair(crate::store_of(&sel), &seed(peer)?, &offer, cfg)?;
+            let join = Osis::pair(sel.clone(), &seed(peer)?, &offer, cfg)?;
             writeln!(out, "{}", join.request())?;
             out.flush()?;
             let mut line = String::new();
@@ -694,8 +694,8 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
 fn whoami(ctx: &mut Ctx<'_>) -> anyhow::Result<()> {
     let db = ctx.db.clone();
     let store = match &ctx.sel {
-        StoreSel::Dir(d) => d.display().to_string(),
-        StoreSel::Memory(_) => "(memory)".into(),
+        Store::Dir(d) => d.display().to_string(),
+        Store::Memory(_) => "(memory)".into(),
     };
     let peers = own_peers(&db)?;
     let sw = format!("osis {}", env!("CARGO_PKG_VERSION"));
@@ -1519,8 +1519,8 @@ fn schema_gen(file: &std::path::Path, dir: &std::path::Path, out: &mut dyn std::
     Ok(())
 }
 
-fn schema_reg(sel: &StoreSel, file: &std::path::Path, add: bool) -> anyhow::Result<()> {
-    let StoreSel::Dir(d) = sel else { return Err(usage("schemas register with a store directory")) };
+fn schema_reg(sel: &Store, file: &std::path::Path, add: bool) -> anyhow::Result<()> {
+    let Store::Dir(d) = sel else { return Err(usage("schemas register with a store directory")) };
     if !d.join("db.redb").exists() {
         return Err(exit(8, format!("no store at {} (run osis init)", d.display())));
     }

@@ -6,9 +6,9 @@
 
 use osis::internals::Internals as _;
 use clap::CommandFactory;
-use osis::MemStore;
+use osis::{MemStore, Store};
 use osis_cli::args::Cli;
-use osis_cli::{Io, StoreSel, run};
+use osis_cli::{Io, run};
 use std::path::PathBuf;
 
 struct Out {
@@ -25,13 +25,13 @@ impl Out {
 
 /// One store; every call is one invocation, with `pre` before its arguments.
 struct S {
-    sel: StoreSel,
+    sel: Store,
     pre: Vec<String>,
 }
 
 impl S {
     fn mem() -> S {
-        let s = S { sel: StoreSel::Memory(MemStore::new()), pre: Vec::new() };
+        let s = S { sel: Store::Memory(MemStore::new()), pre: Vec::new() };
         assert_eq!(s.ok(&["init"]).code, 0);
         s
     }

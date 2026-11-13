@@ -17,7 +17,7 @@ use anyhow::anyhow;
 use args::{Cli, Global};
 use clap::Parser;
 use json::J;
-use osis::{AppConfig, Config, DynamicAspectKey, Error, MemStore, Osis, Store, Tid};
+use osis::{AppConfig, Config, DynamicAspectKey, Error, Osis, Store, Tid};
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::io::{BufRead, Write};
@@ -62,13 +62,6 @@ pub fn category(e: &Error) -> (i32, &'static str) {
     }
 }
 
-/// Where the store lives: a directory, or (tests) a memory store.
-#[derive(Clone, Debug)]
-pub enum StoreSel {
-    Dir(PathBuf),
-    Memory(MemStore),
-}
-
 /// Standard streams of one invocation.
 pub struct Io<'a> {
     pub stdin: &'a mut dyn BufRead,
@@ -89,7 +82,7 @@ where
 }
 
 /// `main_with` with an explicit store (a memory store in tests) and terminal flag.
-pub fn run<I, T>(args: I, store: Option<StoreSel>, io: Io<'_>) -> i32
+pub fn run<I, T>(args: I, store: Option<Store>, io: Io<'_>) -> i32
 where
     I: IntoIterator<Item = T>,
     T: Into<OsString> + Clone,
@@ -145,19 +138,11 @@ fn default_store() -> anyhow::Result<PathBuf> {
     Ok(base.join("osis/default"))
 }
 
-fn store_sel(g: &Global, given: Option<StoreSel>) -> anyhow::Result<StoreSel> {
+fn store_sel(g: &Global, given: Option<Store>) -> anyhow::Result<Store> {
     match (given, &g.store) {
         (Some(s), _) => Ok(s),
-        (None, Some(d)) => Ok(StoreSel::Dir(d.clone())),
-        (None, None) => Ok(StoreSel::Dir(default_store()?)),
-    }
-}
-
-/// The store selected.
-pub(crate) fn store_of(sel: &StoreSel) -> Store {
-    match sel {
-        StoreSel::Dir(d) => Store::Dir(d.clone()),
-        StoreSel::Memory(m) => Store::Memory(m.clone()),
+        (None, Some(d)) => Ok(Store::Dir(d.clone())),
+        (None, None) => Ok(Store::Dir(default_store()?)),
     }
 }
 
@@ -228,17 +213,17 @@ fn lock_err(dir: &Path, e: Error) -> anyhow::Error {
 /// Opens an existing store (exit 8 when missing or locked). Locked by a daemon (`osis serve`)
 /// whose socket answers, the invocation is that daemon's client instead (`use_daemon`, unless the
 /// command must hold the store itself: `inspect`).
-fn open(sel: &StoreSel, g: &Global, net: Network, use_daemon: bool) -> anyhow::Result<Osis> {
+fn open(sel: &Store, g: &Global, net: Network, use_daemon: bool) -> anyhow::Result<Osis> {
     if g.node.is_some() {
         return if use_daemon { client_of_node(g) } else { Err(usage("this command holds a store: not with --node")) };
     }
     match sel {
-        StoreSel::Dir(d) => {
+        Store::Dir(d) => {
             if !d.join("db.redb").exists() {
                 return Err(exit(8, format!("no store at {} (run osis init)", d.display())));
             }
             let login = connect_flags(g)?;
-            let db = match Osis::open(store_of(sel), config(g, net)) {
+            let db = match Osis::open(sel.clone(), config(g, net)) {
                 Ok(db) => db,
                 Err(Error::Storage(m)) if use_daemon && m.contains("already open") => match daemon(d, g) {
                     Some(db) => return Ok(db),
@@ -256,7 +241,7 @@ fn open(sel: &StoreSel, g: &Global, net: Network, use_daemon: bool) -> anyhow::R
             }
             Ok(db)
         }
-        StoreSel::Memory(_) => Osis::open(store_of(sel), config(g, net)).map_err(|e| match e {
+        Store::Memory(_) => Osis::open(sel.clone(), config(g, net)).map_err(|e| match e {
             Error::Storage(m) if m.contains("not an osis store") => exit(8, "no store (run osis init)"),
             e => e.into(),
         }),
@@ -279,8 +264,8 @@ fn client_of_node(g: &Global) -> anyhow::Result<Osis> {
 }
 
 /// Serves the client port while `serve` runs, on the store's socket. A memory store has none.
-pub(crate) fn listen(sel: &StoreSel, db: &Osis) -> anyhow::Result<()> {
-    let StoreSel::Dir(_) = sel else { return Ok(()) };
+pub(crate) fn listen(sel: &Store, db: &Osis) -> anyhow::Result<()> {
+    let Store::Dir(_) = sel else { return Ok(()) };
     match db.listen_socket() {
         // a socket directory another user made first (no XDG_RUNTIME_DIR, `/tmp/osis-<uid>`) costs
         // the clients, never the daemon
@@ -291,19 +276,19 @@ pub(crate) fn listen(sel: &StoreSel, db: &Osis) -> anyhow::Result<()> {
 }
 
 /// Creates a store with its home group syncing with `peers`; refuses a non-empty directory.
-fn create(sel: &StoreSel, g: &Global, peers: Vec<osis::Address>) -> anyhow::Result<Osis> {
-    if let StoreSel::Dir(d) = sel
+fn create(sel: &Store, g: &Global, peers: Vec<osis::Address>) -> anyhow::Result<Osis> {
+    if let Store::Dir(d) = sel
         && d.read_dir().is_ok_and(|mut r| r.next().is_some())
     {
         return Err(exit(8, format!("{} is not empty", d.display())));
     }
     // `init` runs sync only to reach the peers it is given
     let net = if peers.is_empty() { Network::None } else { Network::Sync };
-    let db = Osis::create(store_of(sel), &peers, config(g, net)).map_err(|e| match sel {
-        StoreSel::Dir(d) => lock_err(d, e),
+    let db = Osis::create(sel.clone(), &peers, config(g, net)).map_err(|e| match sel {
+        Store::Dir(d) => lock_err(d, e),
         _ => e.into(),
     })?;
-    if let StoreSel::Dir(d) = sel {
+    if let Store::Dir(d) = sel {
         let _ = std::fs::write(d.join(PID_FILE), std::process::id().to_string());
     }
     Ok(db)
@@ -361,19 +346,19 @@ pub(crate) struct Ctx<'a> {
     pub out: &'a mut dyn Write,
     pub stdin: &'a mut dyn BufRead,
     pub tty: bool,
-    pub sel: StoreSel,
+    pub sel: Store,
     pub vars: BTreeMap<String, Tid>,
     /// (tid, AK) this script wrote; AK "" for the whole thing (created or deleted).
     pub pending: std::collections::BTreeSet<(Tid, String)>,
 }
 
 impl Ctx<'_> {
-    fn new<'a>(g: Global, db: Osis, sel: StoreSel, out: &'a mut dyn Write, stdin: &'a mut dyn BufRead, tty: bool) -> anyhow::Result<Ctx<'a>> {
+    fn new<'a>(g: Global, db: Osis, sel: Store, out: &'a mut dyn Write, stdin: &'a mut dyn BufRead, tty: bool) -> anyhow::Result<Ctx<'a>> {
         let mut paths = match &sel {
             // a thin client has no store, so no registered schemas
-            StoreSel::Dir(_) if g.node.is_some() => Vec::new(),
-            StoreSel::Dir(d) => registered(d)?,
-            StoreSel::Memory(_) => Vec::new(),
+            Store::Dir(_) if g.node.is_some() => Vec::new(),
+            Store::Dir(d) => registered(d)?,
+            Store::Memory(_) => Vec::new(),
         };
         paths.extend(g.schemas.iter().cloned());
         for p in paths {
