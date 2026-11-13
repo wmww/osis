@@ -62,6 +62,8 @@ jiff = "0.2"
 # libcrux-platform enable them.
 rand = "0.10"
 libc = "0.2"
+# osis-store uses `fs` (dropping a file's cached pages); the rest as the GUI stack (x11rb, winit) enables them.
+rustix = { version = "1.1", features = ["event", "fs", "net", "pipe", "process", "shm", "std", "system", "time"] }
 # As the GUI stack enables them: bitflags (wgpu-types), num-traits (half under naga), tracing and
 # tracing-core with defaults (masonry); in core they come in through proptest and quinn.
 bitflags = { version = "2.13", features = ["serde", "std"] }

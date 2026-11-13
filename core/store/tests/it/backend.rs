@@ -93,13 +93,17 @@ fn memory_faults() {
     let reopened = b.clone();
     assert_eq!(reopened.get(b"c2").unwrap(), Some(b"v".to_vec()));
     assert_eq!(reopened.get(b"d").unwrap(), None);
-    // a failed sync: reads as written, and a power cut drops it though later syncs succeeded
+    // a failed sync: the next call reads what the disk holds, as a reopen dropping the cache
+    // does; a power cut drops it too though later syncs succeeded
     faults.at(0, Fault::Unsynced);
     assert_eq!(b.commit(batch(b"f")), Err(BackendError::Unsynced));
-    assert_eq!(b.get(b"f").unwrap(), Some(b"v".to_vec()));
-    b.commit(batch(b"g")).unwrap();
+    assert_eq!(b.get(b"f").unwrap(), None);
+    faults.at(0, Fault::Unsynced);
+    assert_eq!(b.commit(batch(b"f")), Err(BackendError::Unsynced));
     b.power_cut();
     assert_eq!(b.get(b"f").unwrap(), None);
+    b.commit(batch(b"g")).unwrap();
+    b.power_cut();
     assert_eq!(b.get(b"g").unwrap(), Some(b"v".to_vec()));
     assert_eq!(b.get(b"c").unwrap(), Some(b"v".to_vec()));
 }

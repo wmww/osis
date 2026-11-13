@@ -16,19 +16,37 @@ fn io(e: impl std::fmt::Display) -> BackendError {
     BackendError::Io(e.to_string())
 }
 
-/// Opens the database, again after each failed call.
-type Opener = Box<dyn Fn() -> Result<Database, BackendError> + Send>;
+/// Opens the database, again after each failed call; given whether a sync of the file failed
+/// since this backend first opened it.
+type Opener = Box<dyn Fn(bool) -> Result<Database, BackendError> + Send>;
 
 /// A redb database file. `commit` uses redb's immediate durability (fsync before returning).
 /// redb refuses every call after an I/O error until opened again, so a failed call closes the
 /// database and the next call opens it again (redb repairs on open): it reads the file as an open
 /// would, and fails while the open does. A call during which a sync of the file failed fails
-/// `Unsynced`: what the file reads may not be on disk.
+/// `Unsynced`: what the file reads may not be on disk. Every open first drops the file's cached
+/// pages (`drop_cache`), so it reads what the disk holds, never pages whose sync failed; where
+/// the platform cannot (all but Linux and Android), an open after a failed sync fails.
 pub struct RedbBackend {
     open: Opener,
     db: RefCell<Option<Database>>,
     /// A sync of the file failed since the last call began.
     unsynced: Arc<AtomicBool>,
+    /// A sync of the file failed since this backend opened it.
+    sync_failed: std::cell::Cell<bool>,
+}
+
+/// Drops the file's cached pages, so what is read next comes from the disk: an fsync first (its
+/// result does not matter: a failed one leaves its pages clean), as only clean pages are dropped.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn drop_cache(file: &std::fs::File) -> std::io::Result<()> {
+    let _ = file.sync_all();
+    rustix::fs::fadvise(file, 0, None, rustix::fs::Advice::DontNeed).map_err(std::io::Error::from)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "android")))]
+fn drop_cache(_file: &std::fs::File) -> std::io::Result<()> {
+    Err(std::io::ErrorKind::Unsupported.into())
 }
 
 /// Storage that notes a failed sync.
@@ -63,25 +81,28 @@ impl RedbBackend {
         // best effort; the `osis` handle reports what it could not tighten
         let _ = crate::backend::restrict_to_owner(path);
         let path = path.to_owned();
-        RedbBackend::with_storage(move || {
+        RedbBackend::with_storage(move |sync_failed| {
             let file = std::fs::OpenOptions::new().read(true).write(true).open(&path)?;
+            // best effort, unless a sync failed: then reading the cache could see its pages
+            drop_cache(&file).or_else(|e| if sync_failed { Err(e) } else { Ok(()) })?;
             FileBackend::new(file).map_err(std::io::Error::other)
         })
     }
 
     /// Opens or creates a database on the storage `open` gives, called again for each reopen
-    /// (tests inject faults through it).
-    pub fn with_storage<S: StorageBackend>(open: impl Fn() -> std::io::Result<S> + Send + 'static) -> Result<RedbBackend, BackendError> {
+    /// with whether a sync failed since the first: it must then read what the disk holds, never
+    /// pages whose sync failed (`drop_cache`), or fail. Tests inject faults through it.
+    pub fn with_storage<S: StorageBackend>(open: impl Fn(bool) -> std::io::Result<S> + Send + 'static) -> Result<RedbBackend, BackendError> {
         let unsynced = Arc::new(AtomicBool::new(false));
         let watch = unsynced.clone();
-        let open = move || Builder::new().create_with_backend(Watched { inner: open().map_err(io)?, unsynced: watch.clone() }).map_err(io);
-        let b = RedbBackend { open: Box::new(open), db: RefCell::new(None), unsynced };
+        let open = move |sync_failed| Builder::new().create_with_backend(Watched { inner: open(sync_failed).map_err(io)?, unsynced: watch.clone() }).map_err(io);
+        let b = RedbBackend { open: Box::new(open), db: RefCell::new(None), unsynced, sync_failed: std::cell::Cell::new(false) };
         b.call(|_| Ok(()))?;
         Ok(b)
     }
 
     fn open_db(&self) -> Result<Database, BackendError> {
-        let db = (self.open)()?;
+        let db = (self.open)(self.sync_failed.get())?;
         let w = db.begin_write().map_err(io)?;
         w.open_table(KV).map_err(io)?;
         w.open_table(BLOBS).map_err(io)?;
@@ -104,7 +125,10 @@ impl RedbBackend {
                 *slot = Some(db);
                 Ok(v)
             }
-            Err(_) if self.unsynced.load(Ordering::SeqCst) => Err(BackendError::Unsynced),
+            Err(_) if self.unsynced.load(Ordering::SeqCst) => {
+                self.sync_failed.set(true);
+                Err(BackendError::Unsynced)
+            }
             Err(e) => Err(e),
         }
     }

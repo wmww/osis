@@ -16,7 +16,8 @@ pub enum Fault {
     /// That write reaches storage but its sync fails (`BackendError::Unsynced`): it reads as
     /// written, and a power cut (`MemoryBackend::power_cut`, `MemoryRoot::power_cut`) drops it.
     /// Later syncs never make it durable (a failed fsync drops the pages from write-back); only
-    /// writing it again does.
+    /// writing it again does. A `MemoryBackend` reads it until its next call, which reads what
+    /// the disk holds, as a file backend's reopen after the failed call does (`RedbBackend`).
     Unsynced,
 }
 
@@ -150,6 +151,8 @@ struct Data {
     live: Image,
     /// What a power cut leaves, where it differs from `live` (a write whose sync failed).
     disk: Option<Image>,
+    /// A commit's sync failed: the next call reads `disk`, as a file backend's reopen does.
+    reopen: bool,
     /// Every value ever written, if recording: what a forensic look at freed pages could find.
     history: Option<Vec<KeyValue>>,
     /// Every blob put (`Some`) and free (`None`), if recording.
@@ -274,18 +277,28 @@ impl MemoryBackend {
     fn lock(&self) -> MutexGuard<'_, Data> {
         lock(&self.data)
     }
+    /// The data as a call sees it: after a commit whose sync failed, what the disk holds.
+    fn open(&self) -> MutexGuard<'_, Data> {
+        let mut d = self.lock();
+        if std::mem::take(&mut d.reopen)
+            && let Some(disk) = d.disk.take()
+        {
+            d.live = disk;
+        }
+        d
+    }
 }
 
 impl Backend for MemoryBackend {
     fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, BackendError> {
-        let mut d = self.lock();
+        let mut d = self.open();
         let v = d.live.kv.get(key).cloned();
         d.io.read(v.as_ref().map(|v| key.len() + v.len()));
         Ok(v)
     }
 
     fn scan(&self, start: &[u8], end: Option<&[u8]>, limit: usize) -> Result<Vec<KeyValue>, BackendError> {
-        let mut d = self.lock();
+        let mut d = self.open();
         let hi = match end {
             Some(e) => Bound::Excluded(e),
             None => Bound::Unbounded,
@@ -301,8 +314,8 @@ impl Backend for MemoryBackend {
     }
 
     fn commit(&mut self, batch: WriteBatch) -> Result<(), BackendError> {
+        let mut d = self.open();
         let sync = self.faults.check()?;
-        let mut d = self.lock();
         let d = &mut *d;
         if sync == Synced::No {
             // the old disk image stays; an earlier failed sync's one stays as it was
@@ -334,6 +347,7 @@ impl Backend for MemoryBackend {
             d.live.apply(op);
         }
         if sync == Synced::No {
+            d.reopen = true;
             return Err(BackendError::Unsynced);
         }
         Ok(())
@@ -349,14 +363,14 @@ impl Backend for MemoryBackend {
     }
 
     fn read_blob(&self, id: &BlobId, offset: u64, len: usize) -> Result<Option<Vec<u8>>, BackendError> {
-        let mut d = self.lock();
+        let mut d = self.open();
         let b = d.live.blobs.get(id).map(|b| blob_slice(b, offset, len));
         d.io.read(b.as_ref().map(Vec::len));
         Ok(b)
     }
 
     fn blob_len(&self, id: &BlobId) -> Result<Option<u64>, BackendError> {
-        Ok(self.lock().live.blobs.get(id).map(|b| b.len() as u64))
+        Ok(self.open().live.blobs.get(id).map(|b| b.len() as u64))
     }
 
     fn test_copy_boxed(&self) -> Option<Box<dyn Backend>> {

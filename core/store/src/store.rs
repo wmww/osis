@@ -150,7 +150,9 @@ impl Store {
         self.pager.pages_decoded()
     }
 
-    /// Starts a transaction; reads see its own writes. Drop it to abort.
+    /// Starts a transaction; reads see its own writes. Drop it to abort. After a failed write the
+    /// store first recovers in place as `open` would; after one whose outcome is unknown, at once
+    /// and then after waits of 1 s doubling to 60 s while that fails (`Error::Broken` between).
     pub fn transaction<'a>(&'a mut self, rng: &'a mut dyn CryptoRngCore) -> Result<Transaction<'a>, Error> {
         let d = self.pager.begin()?;
         Ok(Transaction { pager: &mut self.pager, d, rng, mem: MemTxn { o: &mut self.mem, undo: Vec::new(), done: false }, memory: false })
@@ -219,10 +221,14 @@ impl Suspended {
 /// Durable writes of one open of a store: commits that landed, and failed writes (a commit, a
 /// spill, a rollback), each of which the store recovered from, so an owner holding state beside
 /// it in memory knows to read it again; a store taking commits again after one is working.
+/// `unknown` counts the failures whose outcome was unknown (a sync failed): a commit answered
+/// `Err` may then have landed after all, as the store reads it once it works again, so an owner
+/// reads everything again, as an open does.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Writes {
     pub committed: u64,
     pub failed: u64,
+    pub unknown: u64,
 }
 
 /// A point in a transaction to undo back to (`Transaction::rollback_to`) or keep
@@ -284,8 +290,8 @@ impl Transaction<'_> {
     /// (finishing or rolling back) and reads whether it landed (a shredding commit whose root
     /// record was stored did: `Ok`); `Ok` is always durable. `Err` leaves the store as before the
     /// transaction and takes the next one; only if a backend sync failed, or recovering fails
-    /// too, is the outcome unknown, and every call fails `Error::Broken` until the store is
-    /// opened again.
+    /// too, is the outcome unknown (`Writes::unknown`), and every call fails `Error::Broken`
+    /// until the store recovers in place on its own (`Store::transaction`).
     pub fn commit(self) -> Result<(), Error> {
         if self.d.open_savepoints() > 0 {
             return Err(Error::Misuse("commit with a savepoint open"));

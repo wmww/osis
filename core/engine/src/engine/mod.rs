@@ -3141,6 +3141,8 @@ pub struct Engine {
     blob_seq: u64,
     /// A transaction's commit or its releases failed: `settle_blobs` runs before the next.
     blobs_unsettled: bool,
+    /// The store's `Writes::unknown` when this engine last read it whole (`load`).
+    unknown_seen: u64,
     pub(crate) rng: Box<dyn osis_crypto::NodeRng>,
     #[doc(hidden)]
     pub core: Core,
@@ -3222,7 +3224,7 @@ impl Engine {
         let store_rng = SeededRng::from_seed(seed);
         let id = Identity::generate(&mut *rng);
         let (session, expiring) = sessions(id.tid(), &mut *rng);
-        let mut e = Engine { store, store_rng, blobs, blob_seq: 1, blobs_unsettled: false, rng, core: Core::new(id, clock.clone(), session, expiring), eph: crate::ephemeral::Eph::default(), clock, cfg, #[cfg(debug_assertions)] index_checks: [0; 2], #[cfg(test)] index_poked: false, #[cfg(test)] check_every_tx: false };
+        let mut e = Engine { store, store_rng, blobs, blob_seq: 1, blobs_unsettled: false, unknown_seen: 0, rng, core: Core::new(id, clock.clone(), session, expiring), eph: crate::ephemeral::Eph::default(), clock, cfg, #[cfg(debug_assertions)] index_checks: [0; 2], #[cfg(test)] index_poked: false, #[cfg(test)] check_every_tx: false };
         let seed_bytes = e.core.id.seed().expose().to_vec();
         // a new store: its (empty) persisted index is current
         e.run(|tx| {
@@ -3247,22 +3249,29 @@ impl Engine {
         let s: [u8; 32] = s.as_slice().try_into().map_err(|_| Error::Corrupt("seed"))?;
         let id = Identity::from_seed(osis_crypto::Secret32::from_bytes(s));
         let (session, expiring) = sessions(id.tid(), &mut *rng);
-        let mut e = Engine { store, store_rng, blobs, blob_seq: 1, blobs_unsettled: false, rng, core: Core::new(id, clock.clone(), session, expiring), eph: crate::ephemeral::Eph::default(), clock, cfg, #[cfg(debug_assertions)] index_checks: [0; 2], #[cfg(test)] index_poked: false, #[cfg(test)] check_every_tx: false };
-        e.settle_blobs()?;
-        e.reload()?;
-        e.take_account()?;
-        e.reexamine()?;
+        let mut e = Engine { store, store_rng, blobs, blob_seq: 1, blobs_unsettled: false, unknown_seen: 0, rng, core: Core::new(id, clock.clone(), session, expiring), eph: crate::ephemeral::Eph::default(), clock, cfg, #[cfg(debug_assertions)] index_checks: [0; 2], #[cfg(test)] index_poked: false, #[cfg(test)] check_every_tx: false };
+        e.load()?;
+        Ok(e)
+    }
+
+    /// Reads the store whole, as an open does: at open, and in place once the store works again
+    /// after a write whose outcome was unknown (`run`).
+    fn load(&mut self) -> Result<()> {
+        self.settle_blobs()?;
+        self.reload()?;
+        self.take_account()?;
+        self.reexamine()?;
         // a leftover held from before goes uncovered no longer than a quiet time from here
         // (spec/sync.md §7 Trigger)
-        let quiet = e.now().0.saturating_add(crate::retention::compact::QUIET_MS);
-        let held: Vec<(Tid, Ak)> = e.core.ix.valueless.iter().filter(|(k, l)| !l.is_empty() && crate::retention::compact::compactable(&k.1)).map(|(k, _)| k.clone()).collect();
+        let quiet = self.now().0.saturating_add(crate::retention::compact::QUIET_MS);
+        let held: Vec<(Tid, Ak)> = self.core.ix.valueless.iter().filter(|(k, l)| !l.is_empty() && crate::retention::compact::compactable(&k.1)).map(|(k, _)| k.clone()).collect();
         for k in held {
-            e.core.compaction.arm(k, quiet);
+            self.core.compaction.arm(k, quiet);
         }
         // what this node may not write could not be compacted: weighed once it may
-        e.owe_unwritable_held()?;
-        e.core.timer_floor = e.next_timer()?.unwrap_or(u64::MAX);
-        Ok(e)
+        self.owe_unwritable_held()?;
+        self.core.timer_floor = self.next_timer()?.unwrap_or(u64::MAX);
+        Ok(())
     }
 
     /// The ciphertext store's notes against this store (`blobs::Cipher`): a transaction this
@@ -3453,6 +3462,18 @@ impl Engine {
         let _s = crate::costs::span("tx");
         // a memo running `f` reads what `f` reads: the transaction's own work around it (settling,
         // its end's follow-ups, persisting, checks) is no part of `f`'s answer
+        // a store write's outcome was unknown (its sync failed): a commit answered `Err` may have
+        // landed after all, so once the store works again everything is read as an open reads
+        // it, under a fresh session (that commit's counters may be taken)
+        let unknown = self.store.writes().unknown;
+        if unknown != self.unknown_seen {
+            let seen = std::mem::replace(&mut self.unknown_seen, unknown);
+            self.core.fresh_session();
+            if let Err(e) = memo::unrecorded(|| self.load()) {
+                self.unknown_seen = seen;
+                return Err(e);
+            }
+        }
         if self.blobs_unsettled {
             memo::unrecorded(|| self.settle_blobs())?;
         }

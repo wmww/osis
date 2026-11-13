@@ -666,7 +666,7 @@ impl SyncEngine {
         // what the failed step's engine events told is read again from the store
         while self.events.try_recv().is_ok() {}
         if let Err(e) = self.start() {
-            self.diag(format!("sync restart after a store error: {e}"));
+            self.diag_kind(DiagnosticKind::Storage, format!("sync restart after a store error: {e}"));
         }
     }
 
@@ -732,11 +732,21 @@ impl SyncEngine {
     }
 
     pub(crate) fn diag(&mut self, detail: String) {
+        self.diag_kind(DiagnosticKind::BadInput, detail);
+    }
+
+    /// A step's error: `Storage` when the store failed (`Broken` while it recovers on its own).
+    fn diag_err(&mut self, e: &crate::error::Error) {
+        let kind = if matches!(e, crate::error::Error::Store(_)) { DiagnosticKind::Storage } else { DiagnosticKind::BadInput };
+        self.diag_kind(kind, format!("sync: {e}"));
+    }
+
+    fn diag_kind(&mut self, kind: DiagnosticKind, detail: String) {
         if self.diagnostics.len() < 256 {
             self.diagnostics.push(detail.clone());
         }
         let now = self.engine.now();
-        self.engine.core.events.diagnostic(Diagnostic { kind: DiagnosticKind::BadInput, tids: Vec::new(), commit: None, peer: None, detail }, now);
+        self.engine.core.events.diagnostic(Diagnostic { kind, tids: Vec::new(), commit: None, peer: None, detail }, now);
         self.engine.core.events.flush();
     }
 
@@ -757,7 +767,7 @@ impl SyncEngine {
             return;
         }
         if let Err(e) = self.run_engine_timers() {
-            self.diag(format!("sync: {e}"));
+            self.diag_err(&e);
         }
     }
 
@@ -857,14 +867,14 @@ impl SyncEngine {
         let r = self.step(ev, out).and_then(|()| self.redeliver());
         let mut ok = r.is_ok();
         if let Err(e) = r {
-            self.diag(format!("sync: {e}"));
+            self.diag_err(&e);
         }
         // what the passes marked changed: judged by the next pass
         if self.engine.core.changed.as_ref().is_some_and(|c| !c.is_empty())
             && let Err(e) = self.engine_events()
         {
             ok = false;
-            self.diag(format!("sync: {e}"));
+            self.diag_err(&e);
         }
         ok
     }

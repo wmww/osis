@@ -104,6 +104,17 @@ impl Disk {
     }
 }
 
+impl Disk {
+    /// An open's cache drop: an fsync attempt, then the file reads its bytes on disk (Linux keeps
+    /// pages whose sync failed in the cache, clean, until dropped).
+    fn drop_cache(&mut self, path: &std::path::Path) {
+        self.sync(true);
+        if path.exists() {
+            std::fs::write(path, &self.synced).unwrap();
+        }
+    }
+}
+
 impl FileDevice {
     /// A redb file and a file root in a fresh temp directory (default-test disk rule: own temp dir only).
     pub fn new(name: &str) -> FileDevice {
@@ -124,7 +135,10 @@ impl Drop for FileDevice {
 impl Device for FileDevice {
     fn backend(&self) -> Box<dyn Backend> {
         let (path, faults, trap, sync_trap, disk) = (self.dir.join("db"), self.faults.clone(), self.trap.clone(), self.sync_trap.clone(), self.disk.clone());
-        let inner = osis_store::RedbBackend::with_storage(move || {
+        let inner = osis_store::RedbBackend::with_storage(move |_sync_failed| {
+            // every open drops the cache, as `RedbBackend::open` does: after an fsync attempt,
+            // the file reads what the disk holds
+            disk.lock().unwrap().drop_cache(&path);
             let mut o = std::fs::OpenOptions::new();
             // created owner-only, as `RedbBackend::open` creates it
             #[cfg(unix)]

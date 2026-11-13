@@ -18,6 +18,10 @@ osis-base.workspace = true
 osis-crypto.workspace = true
 redb.workspace = true
 
+# dropping the redb file's cached pages before an open (`file.rs`)
+[target.'cfg(any(target_os = "linux", target_os = "android"))'.dependencies]
+rustix.workspace = true
+
 [dev-dependencies]
 redb.workspace = true
 proptest.workspace = true

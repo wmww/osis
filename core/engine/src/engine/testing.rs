@@ -34,6 +34,7 @@ impl Engine {
                 blobs: self.blobs.clone().test_copy(clock.clone())?,
                 blob_seq: self.blob_seq,
                 blobs_unsettled: self.blobs_unsettled,
+                unknown_seen: self.unknown_seen,
                 store_rng: self.store_rng.test_copy(),
                 rng: self.rng.test_copy(),
                 core: self.core.test_copy(clock.clone()),

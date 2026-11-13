@@ -165,6 +165,49 @@ fn a_failed_write_at_any_write_of_a_purging_commit_needs_no_restart() {
     }
 }
 
+// spec/commits.md §4 (all or none; notes/local-store.md, Failed writes): a failed sync
+// (`Fault::Unsynced`: the device stays up) at any write of a purging commit leaves its outcome
+// unknown; with no restart the node reads as a fresh open of its store would and its next write
+// works, and every write answered `Ok` survives a later power cut
+#[test]
+fn a_failed_sync_at_any_write_of_a_purging_commit_needs_no_restart() {
+    let reg = ak("t:reg.0");
+    for n in 0.. {
+        let dev = Dev::new();
+        let (mut e, t, secret) = setup(&dev);
+        dev.faults.at(n, Fault::Unsynced);
+        let r = e.commit(purge(t, secret));
+        if dev.faults.writes() <= n {
+            assert!(r.is_ok());
+            assert!(n >= 3, "a shredding commit is at least batch, root, cleanup: {n}");
+            return;
+        }
+        dev.clock.advance(5);
+        set(&mut e, t, "later");
+        assert_eq!(e.get(&t, &reg).unwrap(), Some(s("later")), "write {n}: the next write works");
+        e.check_index();
+        let mut fresh = dev.open_copy();
+        let ids = |e: &Engine| {
+            let mut v = e.commit_ids();
+            v.sort();
+            v
+        };
+        assert_eq!(ids(&e), ids(&fresh), "write {n}: commits as a restart reads them");
+        assert_eq!(e.body_not_dropped(&secret, &t, &reg), fresh.body_not_dropped(&secret, &t, &reg), "write {n}");
+        assert_eq!(fresh.get(&t, &reg).unwrap(), Some(s("later")), "write {n}");
+        let landed = !e.body_not_dropped(&secret, &t, &reg);
+        assert!(landed || r.is_err(), "write {n}: Ok, yet not landed");
+        drop((e, fresh));
+        for (b, root) in [(&dev.backend, &dev.root), (&dev.blob_disk.0, &dev.blob_disk.1)] {
+            b.power_cut();
+            root.power_cut();
+        }
+        let mut e = dev.open().unwrap();
+        assert_eq!(e.get(&t, &reg).unwrap(), Some(s("later")), "write {n}: survives a power cut");
+        assert!(r.is_err() || !e.body_not_dropped(&secret, &t, &reg), "write {n}: the purge answered Ok survives a power cut");
+    }
+}
+
 // spec/crdt.md §2.1 (a session per open; two copies of one store are two sessions),
 // spec/commits.md §4: two live copies of one store (an old phone kept in use, a backup restored
 // beside the original) write the same aspect concurrently; neither commit is void and both

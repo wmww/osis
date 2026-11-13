@@ -238,6 +238,41 @@ fn a_failed_write_taking_bytes_needs_no_restart() {
     }
 }
 
+// spec: none (notes/local-store.md, Failed writes): a failed sync (the device stays up, the write's
+// outcome unknown) at any write while a connected node takes a pushed event with its bytes: the
+// node's stores recover in place on their own and it goes on with no restart, its log matching
+// what it holds, converges, and its own writes reach the others
+#[test]
+fn a_failed_sync_taking_bytes_needs_no_restart() {
+    for n in 0.. {
+        let f = osis_store::Faults::new();
+        let mut net = Net::new();
+        let host = net.add_host();
+        let a = net.node(1, &[host]);
+        let b = net.forensic_node(2, &[host], &f);
+        let g = net.group(a, &[(b, Role::Write)], &[host]);
+        let t = net.item(a, g, g, "before");
+        net.run();
+        net.write(a, t, "after");
+        f.at(n, osis_store::Fault::Unsynced);
+        net.feed(a, osis_node::sync::Event::Local);
+        net.run();
+        let reached = f.writes() > n;
+        f.revive();
+        compare(&mut net, b);
+        net.feed(b, osis_node::sync::Event::Local);
+        net.run();
+        assert_eq!(net.read(b, t), Some(s("after")), "failed sync at write {n}: converges");
+        compare(&mut net, b);
+        net.write(b, t, "from b");
+        net.run();
+        assert_eq!(net.read(a, t), Some(s("from b")), "failed sync at write {n}: b writes on");
+        if !reached {
+            return;
+        }
+    }
+}
+
 // issues/net-one-peer.md step 4 (one store): co-readers with no host, each serving the group to the
 // other from its one store: every entry a node holds bytes of is one row there, and the blobs on
 // its disk are exactly the distinct blobs of those entries (a body read and served is stored once).

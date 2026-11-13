@@ -26,6 +26,7 @@ use osis_crypto::aead::{self, NONCE_LEN};
 use osis_crypto::{CryptoRngCore, Secret32, Zeroizing, padme};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 /// Shape and budgets. `arity`, `depth` and `page_max` are fixed when the store is created
 /// (stored in the meta); the rest are per open.
@@ -479,8 +480,9 @@ pub(crate) struct Pager {
     /// recovers in place first.
     failed: bool,
     /// A write's outcome is unknown (its sync failed, or recovering in place after a failed
-    /// commit failed too), so every call fails until the store is opened again.
-    lost: bool,
+    /// commit failed too): every call fails `Broken` until a recovery in place (`begin`, at the
+    /// earliest at the retry's time) reads what the disk holds.
+    lost: Option<Retry>,
     /// `Store::writes`.
     writes: crate::Writes,
     /// `Store::changes`.
@@ -492,6 +494,28 @@ static CHANGES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new
 
 fn next_change() -> u64 {
     CHANGES.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
+/// The wait after a store whose write's outcome is unknown first fails to recover, doubling up
+/// to `RETRY_MAX` (minor consequence: each attempt reopens the backend, which may scan the file;
+/// at 0 a failing device costs that on every call, at infinity it never recovers in place).
+const RETRY_FIRST: Duration = Duration::from_secs(1);
+/// The longest wait between attempts (minor consequence: recovery comes up to this late after
+/// the device works again; at 0 as `RETRY_FIRST`'s, at infinity it stops retrying).
+const RETRY_MAX: Duration = Duration::from_secs(60);
+
+/// When a lost store next tries to recover in place, and the wait after that.
+#[derive(Clone, Copy, Debug)]
+struct Retry {
+    at: Instant,
+    wait: Duration,
+}
+
+impl Retry {
+    fn failed(&mut self) {
+        self.at = Instant::now() + self.wait;
+        self.wait = (self.wait * 2).min(RETRY_MAX);
+    }
 }
 
 impl Pager {
@@ -519,7 +543,7 @@ impl Pager {
 
     #[allow(clippy::too_many_arguments)]
     fn new(backend: Box<dyn Backend>, root: Box<dyn RootStorage>, cfg: StoreConfig, epoch: u64, root_key: Secret32, top_ver: u64, meta: Meta, top: Node) -> Pager {
-        Pager { backend, root, cfg, epoch, root_key, top_ver, next_ver: meta.next_ver, open_spills: BTreeSet::new(), meta, top, nodes: HashMap::new(), units: HashMap::new(), unit_bytes: 0, decoded: 0, failed: false, lost: false, writes: crate::Writes::default(), changes: next_change() }
+        Pager { backend, root, cfg, epoch, root_key, top_ver, next_ver: meta.next_ver, open_spills: BTreeSet::new(), meta, top, nodes: HashMap::new(), units: HashMap::new(), unit_bytes: 0, decoded: 0, failed: false, lost: None, writes: crate::Writes::default(), changes: next_change() }
     }
 
     /// Opens a store, finishing or rolling back an interrupted commit. The stored shape wins
@@ -533,7 +557,17 @@ impl Pager {
     /// reused. A sync failing in it loses the store.
     fn recover_in_place(&mut self) -> Result<(), Error> {
         let mut cfg = self.cfg;
-        let (epoch, key, ver, meta, top) = recover(&mut *self.backend, &mut *self.root, &mut cfg).inspect_err(|e| self.lost |= unsynced(e))?;
+        let (epoch, key, ver, meta, top) = match recover(&mut *self.backend, &mut *self.root, &mut cfg) {
+            Ok(r) => r,
+            Err(e) => {
+                match &mut self.lost {
+                    Some(r) => r.failed(),
+                    None if unsynced(&e) => self.lose(),
+                    None => {}
+                }
+                return Err(e);
+            }
+        };
         self.next_ver = self.next_ver.max(meta.next_ver);
         (self.cfg, self.epoch, self.root_key, self.top_ver, self.meta, self.top) = (cfg, epoch, key, ver, meta, top);
         self.open_spills.clear();
@@ -541,6 +575,7 @@ impl Pager {
         self.units.clear();
         self.unit_bytes = 0;
         self.failed = false;
+        self.lost = None;
         self.changes = next_change();
         Ok(())
     }
@@ -556,8 +591,20 @@ impl Pager {
     /// A write failed: its transaction goes no further. One whose sync failed loses the store.
     fn write_failed(&mut self, e: &Error) {
         self.failed = true;
-        self.lost |= unsynced(e);
+        if unsynced(e) {
+            self.lose();
+        }
         self.writes.failed += 1;
+    }
+
+    /// A write's outcome is unknown: every call fails `Broken`, the next `begin` recovers in
+    /// place (reading what the disk holds: a backend's open after a failed sync must, notes/local-store.md),
+    /// later ones after a wait if that fails.
+    fn lose(&mut self) {
+        if self.lost.is_none() {
+            self.lost = Some(Retry { at: Instant::now(), wait: RETRY_FIRST });
+            self.writes.unknown += 1;
+        }
     }
 
     /// Tests only (`Store::test_copy`).
@@ -586,7 +633,7 @@ impl Pager {
         &*self.backend
     }
     fn check(&self) -> Result<(), Error> {
-        if self.failed || self.lost { Err(Error::Broken) } else { Ok(()) }
+        if self.failed || self.lost.is_some() { Err(Error::Broken) } else { Ok(()) }
     }
 
     fn arity(&self) -> u64 {
@@ -734,10 +781,14 @@ impl Pager {
         self.spill_if_due(d, rng)
     }
 
-    /// Starts a transaction, first recovering in place after a failed write, or rolling back
-    /// the spills of aborted transactions.
+    /// Starts a transaction, first recovering in place after a failed write (one whose outcome
+    /// is unknown once its retry is due: `Broken` before), or rolling back the spills of aborted
+    /// transactions.
     pub fn begin(&mut self) -> Result<Dirty, Error> {
-        if self.failed && !self.lost {
+        if self.lost.is_some_and(|r| Instant::now() < r.at) {
+            return Err(Error::Broken);
+        }
+        if self.failed || self.lost.is_some() {
             self.recover_in_place()?;
         }
         self.check()?;
@@ -892,7 +943,7 @@ impl Pager {
         };
         self.writes.failed += 1;
         if unsynced(&e) {
-            self.lost = true;
+            self.lose();
             return Err(e);
         }
         match self.recover_in_place() {
@@ -902,7 +953,7 @@ impl Pager {
             }
             Ok(()) => Err(e),
             Err(_) => {
-                self.lost = true;
+                self.lose();
                 Err(e)
             }
         }

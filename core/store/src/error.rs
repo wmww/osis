@@ -13,7 +13,8 @@ pub enum Error {
     Corrupt(&'static str),
     /// A write of this transaction failed, so it goes no further (the next transaction recovers
     /// the store in place); or a write's outcome is unknown (its sync failed, or a commit failed
-    /// and so did recovering), so nothing works until the store is opened again.
+    /// and so did recovering), so nothing works until the store recovers in place, which it
+    /// retries on its own.
     Broken,
     /// No store here (open), or a store already exists (create).
     NoStore,
@@ -26,7 +27,7 @@ osis_base::impl_error!(Error {
     Backend(e) => ("{e}"),
     Root(e) => ("root storage: {e}"),
     Corrupt(what) => ("store corrupt: {what}"),
-    Broken => ("a store write failed"),
+    Broken => ("a store write failed (the store recovers on its own)"),
     NoStore => ("no store"),
     Exists => ("store exists"),
     Misuse(what) => ("store misuse: {what}"),

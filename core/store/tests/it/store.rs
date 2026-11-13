@@ -508,22 +508,13 @@ fn failed_commit_recovers_in_place_on(dev: &dyn Device) {
     }
 }
 
-/// Commits `k` and, shredding, overwrites `x`; reads `Ok` from `commit` and whether the store
-/// works on (`false`: the outcome is unknown, `Broken` until a reopen).
-fn put_k(s: &mut Store, rng: &mut SeededRng, k: &[u8], shred: Shred) -> (bool, bool) {
+/// Commits `k` and, shredding, overwrites `x`; whether `commit` answered `Ok`.
+fn put_k(s: &mut Store, rng: &mut SeededRng, k: &[u8], shred: Shred) -> bool {
     let mut t = s.transaction(rng).unwrap();
     let tb = t.table(&tid(1), &ak("t.0"), 0).unwrap().unwrap();
     t.table_put(tb, k, vec![1], Shred::No).unwrap();
     t.table_put(tb, b"x", k.to_vec(), shred).unwrap();
-    let ok = t.commit().is_ok();
-    let works = match s.transaction(rng) {
-        Ok(_) => true,
-        Err(e) => {
-            assert_eq!(e, Error::Broken);
-            false
-        }
-    };
-    (ok, works)
+    t.commit().is_ok()
 }
 
 fn has(s: &mut Store, rng: &mut SeededRng, k: &[u8]) -> bool {
@@ -532,19 +523,26 @@ fn has(s: &mut Store, rng: &mut SeededRng, k: &[u8]) -> bool {
     t.table_get(tb, k).unwrap().is_some()
 }
 
+/// A store holding `x` among filler rows enough for many units, so a later commit leaves some
+/// of the backend's pages as an earlier one wrote them.
 fn put_x(dev: &dyn Device, rng: &mut SeededRng) -> Store {
     let mut s = create(dev, rng);
     let mut t = s.transaction(rng).unwrap();
     let tb = t.create_table(&tid(1), &ak("t.0"), 0).unwrap();
     t.table_put(tb, b"x", vec![], Shred::No).unwrap();
+    for i in 0..200u32 {
+        t.table_put(tb, format!("m{i:03}").as_bytes(), vec![7; 40], Shred::No).unwrap();
+    }
     t.commit().unwrap();
     s
 }
 
 // spec/commits.md §4 (notes/local-store.md, Failed writes): a commit reported landed is
 // durable. A write whose sync fails reads as written but a power cut drops it (as a failed fsync
-// does), at any durable write of a commit, plain or shredding: an `Ok` commit survives the cut,
-// and the store opens after it.
+// does), at any durable write of a commit, plain or shredding: the outcome is unknown (`Err`),
+// the store recovers in place on its own at the next transaction, reading what the disk holds,
+// and works on with no reopen; every commit reported landed, those after the failure included,
+// survives a later power cut, and the store opens after it.
 #[test]
 fn a_commit_whose_sync_failed_is_never_reported_landed() {
     for dev in devices("unsynced") {
@@ -556,19 +554,25 @@ fn a_commit_whose_sync_failed_is_never_reported_landed() {
             let (mut landed, mut lost) = (false, false);
             for n in 0.. {
                 let k = format!("k-{shred:?}-{n}").into_bytes();
+                let unknown = s.writes().unknown;
                 dev.faults().at(n, Fault::Unsynced);
-                let (ok, works) = put_k(&mut s, &mut rng, &k, shred);
+                let ok = put_k(&mut s, &mut rng, &k, shred);
                 let reached = dev.faults().writes() > n;
                 dev.faults().revive();
                 if !reached {
-                    assert!(ok && works, "{name} {shred:?}: no fault, committed");
+                    assert!(ok, "{name} {shred:?}: no fault, committed");
                     break;
                 }
-                assert!(works || !ok, "{name} {shred:?}: a store that lost track reports Err (write {n})");
-                (landed, lost) = (landed || ok, lost || !works);
+                let unsure = s.writes().unknown > unknown;
+                assert!(!unsure || !ok, "{name} {shred:?}: an unknown outcome is Err (write {n})");
+                (landed, lost) = (landed || ok, lost || unsure);
                 if ok {
                     kept.push(k.clone());
                 }
+                // no reopen: the store recovers on its own and works on
+                let after = format!("after-{shred:?}-{n}").into_bytes();
+                assert!(put_k(&mut s, &mut rng, &after, shred), "{name} {shred:?}: works on after write {n}'s sync failed");
+                kept.push(after);
                 drop(s);
                 dev.power_cut();
                 s = reopen(&*dev);
@@ -585,10 +589,10 @@ fn a_commit_whose_sync_failed_is_never_reported_landed() {
 }
 
 // spec/commits.md §4 (notes/local-store.md, Failed writes): a spill whose sync failed leaves
-// what the backend reads unknown as a commit's does: `Broken` until a reopen, and after a power
-// cut the store opens at its last commit.
+// what the backend reads unknown as a commit's does; the next transaction recovers in place at
+// the last commit, and what it commits survives a power cut.
 #[test]
-fn a_spill_whose_sync_failed_leaves_the_store_broken() {
+fn a_spill_whose_sync_failed_recovers_in_place() {
     for dev in devices("unsynced-spill") {
         let name = dev.name();
         let mut rng = SeededRng::from_u64(0);
@@ -602,19 +606,43 @@ fn a_spill_whose_sync_failed_leaves_the_store_broken() {
         assert!(r.is_err() && dev.faults().writes() == 1, "{name}: the first spill's sync failed");
         drop(t);
         dev.faults().revive();
-        assert_eq!(s.transaction(&mut rng).err(), Some(Error::Broken), "{name}: outcome unknown");
+        assert_eq!(s.writes().unknown, 1, "{name}: outcome unknown");
+        assert!(has(&mut s, &mut rng, b"x") && !has(&mut s, &mut rng, &0u32.to_be_bytes()), "{name}: recovered at the last commit");
+        assert!(put_k(&mut s, &mut rng, b"k", Shred::Yes), "{name}: works on");
         drop(s);
         dev.power_cut();
         let mut s = Store::open(dev.backend(), dev.root(), cfg).unwrap();
-        assert!(has(&mut s, &mut rng, b"x") && !has(&mut s, &mut rng, &0u32.to_be_bytes()), "{name}: last commit");
-        assert!(put_k(&mut s, &mut rng, b"k", Shred::Yes) == (true, true), "{name}: works on");
+        assert!(has(&mut s, &mut rng, b"k") && !has(&mut s, &mut rng, &0u32.to_be_bytes()), "{name}: the commit after survives a power cut");
     }
+}
+
+// spec: none (notes/local-store.md, Failed writes): while the device still fails, a store whose write's
+// outcome is unknown fails `Broken` at once, touching nothing, until its retry is due; the
+// first retry comes at the next transaction.
+#[test]
+fn a_lost_store_retries_after_a_wait() {
+    let dev = MemDevice::new();
+    let mut rng = SeededRng::from_u64(0);
+    let mut s = put_x(&dev, &mut rng);
+    // a shredding commit's last batch: recovery finishes it from the journal, a write
+    dev.faults.at(2, Fault::Unsynced);
+    assert!(!put_k(&mut s, &mut rng, b"k", Shred::Yes));
+    assert_eq!(s.writes().unknown, 1);
+    // that write fails too: the device is still down
+    dev.faults.at(0, Fault::Crash);
+    assert!(s.transaction(&mut rng).is_err());
+    assert!(dev.faults.crashed(), "the first retry ran at once");
+    dev.faults.revive();
+    let io = dev.backend.io();
+    assert_eq!(s.transaction(&mut rng).err(), Some(Error::Broken), "the next waits");
+    assert_eq!(dev.backend.io(), io, "touching nothing");
 }
 
 // spec/commits.md §4 on redb: a write of the file can fail anywhere in redb's commit, its sync
 // included (which drops the writes since the last sync at a power cut). A failed write reports
-// the outcome it leaves; a failed sync leaves it unknown (`Err`, the store `Broken`); either way
-// an `Ok` commit survives a power cut
+// the outcome it leaves; a failed sync leaves it unknown (`Err`) and the store recovers in place
+// at the next call, reading what the disk holds; with no reopen, every `Ok` commit, those after
+// a failed sync included, survives a power cut
 #[test]
 fn a_failed_redb_write_anywhere_in_a_commit_reports_its_outcome() {
     let dev = FileDevice::new("redb-any-write");
@@ -625,22 +653,21 @@ fn a_failed_redb_write_anywhere_in_a_commit_reports_its_outcome() {
         let (mut landed, mut failed, mut lost) = (false, false, false);
         for n in 1.. {
             let k = format!("k-{shred:?}-{n}").into_bytes();
+            let unknown = s.writes().unknown;
             dev.trap.store(n, std::sync::atomic::Ordering::SeqCst);
-            let (ok, works) = put_k(&mut s, &mut rng, &k, shred);
+            let ok = put_k(&mut s, &mut rng, &k, shred);
             let reached = dev.trap.swap(0, std::sync::atomic::Ordering::SeqCst) == 0;
-            if !works {
-                drop(s);
-                dev.power_cut();
-                s = reopen(&dev);
-            }
-            assert!(ok || !has(&mut s, &mut rng, &k) || !works, "{shred:?}: fault at file write {n}: Err, yet landed");
-            assert!(!ok || has(&mut s, &mut rng, &k), "{shred:?}: fault at file write {n}: Ok, yet absent");
+            let unsure = s.writes().unknown > unknown;
+            // the store recovers at once (the trap is off)
+            let present = has(&mut s, &mut rng, &k);
+            assert!(ok || unsure || !present, "{shred:?}: fault at file write {n}: Err, yet landed");
+            assert!(!ok || present, "{shred:?}: fault at file write {n}: Ok, yet absent");
             outcomes.push((k, ok));
             if !reached {
                 assert!(ok, "{shred:?}: no fault, committed");
                 break;
             }
-            (landed, failed, lost) = (landed || ok, failed || !ok, lost || !works);
+            (landed, failed, lost) = (landed || ok, failed || !ok, lost || unsure);
         }
         assert!(failed && lost, "{shred:?}: faults both before the commit point and at its sync");
         if shred == Shred::Yes {

@@ -185,6 +185,7 @@ Each was a number that only made a bug unlikely (class X); the code ends by a fi
 | crdt `BLOCK` 256, `STEP` 8, `SIBS` 256, `isqrt().max(64)`, work `max(1024)`, `LIN_MIN` 64, `MAX_D` 512, `CTX` 32 | P | |
 | store `arity` 256, `depth` 5 | R: 2^40 unit slots, never reused; exhaustion refuses writes for good, after about 35 years at 1000 unit writes/s | |
 | store `page_max` 8 KiB, `spill_bytes` 16 MiB, `node_cache` 4096, `unit_cache_bytes` 16 MiB | P | |
+| store `RETRY_FIRST` 1 s doubling to `RETRY_MAX` 60 s (`pager.rs`: waits between a lost store's attempts to recover in place after its first, which comes at the next call) | M (each attempt reopens the backend, which may scan the file; recovery comes up to a minute late once the device works) | a failing device costs a reopen on every call / the store never recovers until it is opened again |
 | store row padding `UNIT_MIN` 512 B (`pager.rs`; above it Padmé, spec/wire.md §5) | M (length leak of small units; notes/local-store.md, Row padding) | 0: units below a few hundred bytes show their length to within Padmé's 1-16 bytes, so a small page's drop shows / every unit that big. At 512 Padmé's class width is 32 B; measured cost on engine tests' unit rows: 3.7% (Padmé alone 2.3%, 1024: 6.5%) |
 | schema `MAX_EXPAND`, `MAX_TYPE_DEPTH`, `MAX_INSTANCES`, `MAX_CHECK_WORK`, `MAX_NEST`, `MAX_CHECK_DEPTH` | R (refuse; sign-off: not specced) | |
 | osis `DEFAULT_LIMIT` 64 MiB | R (error past it) | |
