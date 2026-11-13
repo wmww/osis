@@ -603,12 +603,12 @@ fn write_in_flight_across_a_restart_is_unknown() {
 // spec/wire.md §11.2, notes/client-port.md §1: a write sent again and marked so, to a session the node holds nothing for (evicted, or never seen), is unknown: it may have run, never again; unmarked it is new; a marked one the node remembers has its first result
 #[test]
 fn resent_nonce_of_an_unknown_session_is_unknown() {
-    use osis_proto::{Command, Outcome};
+    use osis_proto::Outcome;
     const WRITE: u64 = 10;
     let x = world();
     let ep = x.net.endpoint("r");
     let mut raw = crate::port::Raw::over(&ep, osis_transport::Address { url: x.nc.url().to_string(), key: x.nc.key() });
-    let a = raw.ask(Command::Auth { token: 0, session: [5; 16], secret: Some(osis_crypto::Secret32::from_bytes(*x.secret.expose())) }, 0);
+    let a = raw.auth_by([5; 16], Some(osis_crypto::Secret32::from_bytes(*x.secret.expose())));
     assert!(matches!(a, Ok(Outcome::Ok { .. })), "{a:?}");
     let resent = 1u64 << 62;
     let batch = |nonce: u64, v: &str| crate::port::set_write(nonce, x.actor, x.t, &title(), s(v));
@@ -1096,12 +1096,12 @@ fn a_sharing_flow_overtaken_by_a_move_fails() {
 // spec/wire.md §11.2: a resent write the node does not remember, in a session whose state it lost, never runs, also after the first such resend recreated the session's entry: two writes that ran, then lost state, are two unknowns
 #[test]
 fn every_resent_nonce_of_a_lost_session_is_unknown() {
-    use osis_proto::{Command, Outcome};
+    use osis_proto::Outcome;
     const WRITE: u64 = 10;
     let x = world();
     let ep = x.net.endpoint("r");
     let mut raw = crate::port::Raw::over(&ep, osis_transport::Address { url: x.nc.url().to_string(), key: x.nc.key() });
-    let a = raw.ask(Command::Auth { token: 0, session: [6; 16], secret: Some(osis_crypto::Secret32::from_bytes(*x.secret.expose())) }, 0);
+    let a = raw.auth_by([6; 16], Some(osis_crypto::Secret32::from_bytes(*x.secret.expose())));
     assert!(matches!(a, Ok(Outcome::Ok { .. })), "{a:?}");
     let resent = 1u64 << 62;
     let batch = |nonce: u64, v: &str| crate::port::set_write(nonce, x.actor, x.t, &title(), s(v));

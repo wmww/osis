@@ -13,7 +13,7 @@ use osis_node::sync::credentials::Credential;
 use osis_node::sync::ConnId;
 use osis_proto::filter::{beacon_value, encode_gcs, filter_width};
 use osis_proto::msg::OfferItem;
-use osis_proto::{ClientEvent, ClientInput, Code, Command, Message};
+use osis_proto::{Code, Message};
 
 /// Two holders of one group with a record, only `b` dialable (`net_records::dialed`); `a`
 /// offline, so the only connection using their record is the hand dialer's: built once
@@ -42,11 +42,11 @@ pub(crate) fn dial_as(net: &mut Net, a: usize, b: usize, challenge: [u8; 32]) ->
 /// A hand dialer that proved `a` and resumed the record whose key is `r`, holding an empty S: its
 /// digest and empty list close what `b`'s record held (issues/net-reconnect.md, Agreement), and
 /// `b`'s first filter comes back.
-fn resumed(net: &mut Net, a: usize, b: usize, r: &[u8; 32], challenge: [u8; 32]) -> (Dialer, Vec<ClientEvent>) {
+fn resumed(net: &mut Net, a: usize, b: usize, r: &[u8; 32], challenge: [u8; 32]) -> (Dialer, Vec<Message>) {
     let mut p = dial_as(net, a, b, challenge);
     let tag = resume_tag(r, &LISTENER, &challenge, &p.hello);
     let now = net.now();
-    let outs = p.cs.handle(now, ClientInput::Command(Command::Resume { nonce: [5; 32], tags: vec![tag] }));
+    let (_, outs) = p.cs.request(now, |id| Message::Resume { id, nonce: [5; 32], tags: vec![tag] });
     let mut evs = pump(net, b, &mut p, outs);
     assert!(net.sync(b).connection_record(p.conn).is_some(), "the record is bound");
     let theirs = shared_of(&evs).into_iter().find_map(|m| if let Message::Digest { digest } = m { Some(digest) } else { None }).expect("b's digest first");
@@ -59,14 +59,17 @@ fn resumed(net: &mut Net, a: usize, b: usize, r: &[u8; 32], challenge: [u8; 32])
     (p, evs)
 }
 
-pub(crate) fn send(net: &mut Net, b: usize, p: &mut Dialer, m: Message) -> Vec<ClientEvent> {
+/// The hand dialer sends `m` (a request under its own id, an answer or a push) and the exchange
+/// runs: what came back.
+pub(crate) fn send(net: &mut Net, b: usize, p: &mut Dialer, m: Message) -> Vec<Message> {
     let now = net.now();
-    let outs = p.cs.handle(now, ClientInput::Command(Command::Peer(Box::new(m))));
+    let outs = p.cs.send(now, m);
     pump(net, b, p, outs)
 }
 
-pub(crate) fn shared_of(evs: &[ClientEvent]) -> Vec<Message> {
-    evs.iter().filter_map(|e| if let ClientEvent::Peer(m) = e { Some((**m).clone()) } else { None }).collect()
+/// The shared set's and the stream's messages among `evs` (`Message::for_node`).
+pub(crate) fn shared_of(evs: &[Message]) -> Vec<Message> {
+    evs.iter().filter(|m| m.for_node()).cloned().collect()
 }
 
 /// `a`'s read-secret match value for L (it holds L's read role).
@@ -425,7 +428,7 @@ fn the_same_connection_survives_whatever_the_order_spec_sync_10() {
         for (p, ch, nonce) in [(first, ch1, [5; 32]), (second, ch2, [6; 32])] {
             let tag = resume_tag(&r, &LISTENER, &ch, &p.hello);
             let now = net.now();
-            let outs = p.cs.handle(now, ClientInput::Command(Command::Resume { nonce, tags: vec![tag] }));
+            let (_, outs) = p.cs.request(now, |id| Message::Resume { id, nonce, tags: vec![tag] });
             pump(&mut net, b, p, outs);
         }
         let (win, lose) = if o1 < o2 { (&p1, &p2) } else { (&p2, &p1) };

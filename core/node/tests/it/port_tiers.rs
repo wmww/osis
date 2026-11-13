@@ -11,7 +11,7 @@ use osis_node::Mutation;
 use osis_node::sync::{Action, ConnId, Event, SyncConfig, Tier};
 use osis_schema::Codec;
 use osis_schema::core_types as ct;
-use osis_proto::{ClientConfig, ClientInput, ClientOutput, ClientSession, Command, Message, Outcome};
+use osis_proto::{Message, Outcome, SessionOutput};
 use osis_transport::Peer;
 
 const LOCAL: [u8; 32] = [0x42; 32];
@@ -21,12 +21,12 @@ const LOCAL: [u8; 32] = [0x42; 32];
 struct Cl {
     conn: ConnId,
     hc: ConnId,
-    cs: ClientSession,
+    cs: osis_proto::examples::Dialer,
 }
 
 /// Node `n` carries out `acts`, the client's frames go in, the node's come back; the node's
 /// client-port actions meanwhile.
-fn feed(net: &mut Net, n: usize, c: &mut Cl, outs: Vec<ClientOutput>, acts: Vec<Action>) -> Vec<Action> {
+fn feed(net: &mut Net, n: usize, c: &mut Cl, outs: Vec<SessionOutput>, acts: Vec<Action>) -> Vec<Action> {
     net.hand_exchange(n, c.hc, &mut c.cs, acts, outs, false);
     net.take_port(n)
 }
@@ -40,11 +40,11 @@ fn step(net: &mut Net, n: usize, ev: Event) -> Vec<Action> {
 
 fn client_on(net: &mut Net, n: usize, key: [u8; 32], peer: Peer) -> Cl {
     let (hc, sent) = net.hand_accept(n, key, peer);
-    let mut c = Cl { conn: 0, hc, cs: ClientSession::new(ClientConfig { peer_static_key: key, challenge: [7; 32] }) };
+    let mut c = Cl { conn: 0, hc, cs: osis_proto::examples::Dialer::new(key, [7; 32]) };
     let now = net.now();
-    let mut outs = c.cs.handle(now, ClientInput::Start);
+    let mut outs = c.cs.start(now);
     for f in sent {
-        outs.extend(c.cs.handle(now, ClientInput::Bytes(f)));
+        outs.extend(c.cs.bytes(now, f));
     }
     feed(net, n, &mut c, outs, Vec::new());
     c.conn = net.served(n, hc);
@@ -57,7 +57,7 @@ fn client(net: &mut Net, n: usize, peer: Peer) -> Cl {
 
 fn auth(net: &mut Net, n: usize, c: &mut Cl) -> Vec<Action> {
     let now = net.now();
-    let outs = c.cs.handle(now, ClientInput::Command(Command::Auth { token: 1, session: [3; 16], secret: None }));
+    let (_, outs) = c.cs.request(now, |id| Message::Auth { id, session: [3; 16], secret: None });
     feed(net, n, c, outs, Vec::new())
 }
 
@@ -111,7 +111,7 @@ fn a_client_acts_on_the_dialable_key_only_after_auth() {
     let actor = Tid::from_bytes([5; 15]);
     set_entry(&mut net, a, actor, Some(entry(&SECRET, None)));
     let mut c = client_on(&mut net, a, key, Peer::Key([9; 32]));
-    let call = Message::Call { id: 3, max_reply: osis_proto::client::SMALL_REPLY as u64, method: 0, args: vec![] };
+    let call = Message::Call { id: 3, max_reply: osis_proto::window::SMALL_REPLY as u64, method: 0, args: vec![] };
     assert_eq!(raw(&mut net, a, &c, &call), vec![Message::Error { id: 3, code: osis_proto::Code::REFUSED }]);
     assert!(net.take_port(a).is_empty(), "nothing goes up before Auth");
     let (got, code) = bearer(&mut net, a, &mut c, Some(SECRET));
@@ -168,17 +168,15 @@ fn entry(secret: &[u8; 32], until: Option<u64>) -> ct::Client {
 /// A bearer Auth over a keyed session: the client-port actions, and the code the node answered with.
 fn bearer(net: &mut Net, n: usize, c: &mut Cl, secret: Option<[u8; 32]>) -> (Vec<Action>, Option<osis_proto::Code>) {
     let now = net.now();
-    let outs = c.cs.handle(now, ClientInput::Command(Command::Auth { token: 1, session: [3; 16], secret: secret.map(Secret32::from_bytes) }));
+    let (_, outs) = c.cs.request(now, |id| Message::Auth { id, session: [3; 16], secret: secret.map(Secret32::from_bytes) });
     let mut code = None;
-    for o in outs {
-        if let ClientOutput::Send(bytes) = o {
-            for f in net.hand_input(n, c.hc, bytes) {
-                if let Ok(Message::Error { code: x, .. }) = Message::decode(&f[4..]) {
-                    code = Some(x);
-                }
-                let now = net.now();
-                c.cs.handle(now, ClientInput::Bytes(f));
+    for bytes in osis_proto::examples::frames(&outs) {
+        for f in net.hand_input(n, c.hc, bytes) {
+            if let Ok(Message::Error { code: x, .. }) = Message::decode(&f[4..]) {
+                code = Some(x);
             }
+            let now = net.now();
+            c.cs.bytes(now, f);
         }
     }
     (net.take_port(n), code)

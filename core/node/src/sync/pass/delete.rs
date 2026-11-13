@@ -573,18 +573,9 @@ impl SyncEngine {
         // re-encrypted (`relink_lost`), reviving a purged or replaced value. So every delete
         // waits until the source holds what this node places there (`At::behind`; at most the
         // relay delay and a pull; `relay_at` schedules the pass)
-        if !at.behind {
-            if let Some(c) = self.conns.get_mut(&conn) {
-                for id in &sent {
-                    c.req.deleting.insert((l, *id), (now, crate::sync::UNTAGGED));
-                }
-            }
-            if !items.is_empty() {
-                self.command(conn, Command::Delete { label: l, items }, out)?;
-            }
+        if !at.behind && !items.is_empty() {
+            self.delete(conn, l, items, out)?;
         }
-        // tags this pass's earlier requests too (`clear_deposits`' deletes)
-        self.given(conn);
         Ok(())
     }
 

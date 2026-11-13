@@ -197,7 +197,7 @@ Width, not applied: crdt `tests_winners` (`seq_winners_from_scratch`, `winners_f
 | one real-time `until` | 3 copies | osis keep_clients, sources, port |
 | `recv_all(&n, t)`; `arrive(..)`; `assert_eq!(check(..), None)` | 27, ~16 and 23 sites | perm scenarios/queries/content; incremental |
 | crdt `testutil::{via_snapshot, joined, node}`; `Pager::run_until_loaded` | ~13, 4 and ~100 sites; 9 loops | crdt test files |
-| move `s32`, `events_of`, `statuses`, `added`, `sync`, `sent` into `osis_proto::examples`; a ClientSession Start+Hello helper | 2 copies each; ~12 sites | host common vs proto loopback; loopback, slow_link, hostile_peer |
+| move `s32`, `events_of`, `statuses`, `added`, `sync`, `sent` into `osis_proto::examples`; a dialer Start+Hello helper (`examples::Dialer` has the session part) | 2 copies each; ~12 sites | host common vs proto loopback; loopback, slow_link, hostile_peer |
 | one `samples()` | 2 copies | schema `core_types.rs` vs vectors `subjects/schema.rs` |
 
 ## Not covered

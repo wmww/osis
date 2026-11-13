@@ -27,7 +27,7 @@ pub(crate) fn entry(net: &mut Net, _from: usize, keys: usize, g: Tid, plaintext:
 
 fn push(net: &mut Net, n: usize, host: usize, l: LabelId, e: osis_proto::Event, at: u64) {
     let conn = net.conn_to(n, host).expect("connected");
-    net.feed(n, Event::Bytes { conn, bytes: frame(crate::net::stream_msg(l, vec![e], (1 << 40) + at)) });
+    net.receive(n, conn, frame(crate::net::stream_msg(l, vec![e], (1 << 40) + at)));
     net.settle(10_000);
 }
 

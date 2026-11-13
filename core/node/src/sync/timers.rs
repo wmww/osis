@@ -50,13 +50,13 @@ impl SyncEngine {
                 self.fill_more(conn, l, out)?;
             }
         }
-        let due: Vec<ConnId> = self.conns.iter().filter(|(_, c)| c.timer.is_some_and(|t| t <= now)).map(|(id, _)| *id).collect();
+        // dialed connections' pings (`PING_INTERVAL_MS`)
+        let due: Vec<ConnId> = self.conns.iter().filter(|(_, c)| c.is_ready() && c.next_ping <= now).map(|(id, _)| *id).collect();
         for conn in due {
             if let Some(c) = self.conns.get_mut(&conn) {
-                c.timer = None;
-                let o = c.session.handle(now, ClientInput::Timer);
-                self.outputs(conn, o, out)?;
+                c.next_ping = now.saturating_add(osis_proto::hello::PING_INTERVAL_MS);
             }
+            self.ping(conn, out);
         }
         self.stream_retry(out)?;
         self.shared_retry(out)?;
@@ -108,7 +108,7 @@ impl SyncEngine {
         Ok(())
     }
 
-    /// When the next Tick is wanted (wall ms): session timers, one tick per `resync_ms` while
+    /// When the next Tick is wanted (wall ms): dialed connections' pings, one tick per `resync_ms` while
     /// anything is open (a label's own resync only when something waits for it), served sessions'
     /// idle ends, redials, inbox retries and the engine's retention (expiry, purge floor) and
     /// lost-access timers. Never before `MIN_WAKE_MS` after the last Tick, so an item due but not
@@ -122,8 +122,8 @@ impl SyncEngine {
             at(self.last_tick.saturating_add(resync));
         }
         for c in self.conns.values() {
-            if let Some(x) = c.timer {
-                at(x);
+            if c.is_ready() {
+                at(c.next_ping);
             }
             for l in c.labels.values() {
                 // a label not open re-tries after `resync_ms`; an open one needs no time of its
@@ -178,19 +178,16 @@ impl SyncEngine {
     }
 
     /// Catches up at the caller's word (an app's refresh, at any rate): every open label judges
-    /// again (the streams bring what their sources get, so nothing is asked). A connection
-    /// quiet for `retry_ms` gets a ping: after a network change it may be dead with nothing in flight
-    /// to find out by (the stall timeout), and a live label would hear nothing.
+    /// again (the streams bring what their sources get, so nothing is asked). A dialed connection
+    /// with no request of this node's out and nothing sent or heard for `retry_ms` gets a ping:
+    /// after a network change it may be dead with nothing in flight to find out by (the stall
+    /// timeout), and a live label would hear nothing; polling a live one sends nothing.
     pub fn refresh(&mut self) -> Vec<Action> {
         let mut out = Vec::new();
         let (now, quiet) = (self.now(), self.cfg.retry_ms);
-        let conns: Vec<ConnId> = self.conns.keys().copied().collect();
-        for conn in conns {
-            let Some(c) = self.conns.get_mut(&conn) else { continue };
-            let o = c.session.ping_if_quiet(now, quiet);
-            if let Err(e) = self.outputs(conn, o, &mut out) {
-                self.diag(format!("sync: {e}"));
-            }
+        let quiet: Vec<ConnId> = self.conns.iter().filter(|(_, c)| c.pending.is_empty() && c.heard.saturating_add(quiet) <= now).map(|(id, _)| *id).collect();
+        for conn in quiet {
+            self.ping(conn, &mut out);
         }
         self.pass_due = true;
         out.extend(self.handle(Event::Local));

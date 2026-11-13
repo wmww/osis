@@ -33,9 +33,9 @@ fn a_superseded_write_key_gets_9_spec_sync_5() {
     assert_eq!(pull_all(&w, H, &l, [1]), vec![Code::OK]);
     let old = l.head_keys().clone();
     let (s1, cs1) = l.rotate(20);
-    w.run(c, Command::Register { label: l.id, step: s1.clone(), claim_set: Some(cs1) });
+    w.run(c, |id| Message::Register { id, label: l.id, step: s1.clone(), claim_set: Some(cs1) });
     let (s2, cs2) = l.rotate(40);
-    w.run(c, Command::Register { label: l.id, step: s2, claim_set: Some(cs2) });
+    w.run(c, |id| Message::Register { id, label: l.id, step: s2, claim_set: Some(cs2) });
     assert_eq!(pull(&w, H, &l, &l.entry_by(blob(2), &old.write)), Code::NOT_HEAD);
 }
 
@@ -52,14 +52,14 @@ fn reader_cannot_write() {
     assert_eq!(deposit_verified(&w, H, l.deposit(blob(2), &sk)), (Code::REFUSED, false));
     assert_eq!(pull_all(&w, H, &l, [3]), vec![Code::OK]);
     let item = DeleteItem::sign(&sk, &l.id, bid(3)).unwrap();
-    assert_eq!(statuses(&w.run(c, Command::Delete { label: l.id, items: vec![item] })), vec![Code::REFUSED]);
+    assert_eq!(statuses(&w.run(c, |id| Message::Delete { id, label: l.id, items: vec![item] })), vec![Code::REFUSED]);
     // a register under a stranger's key: code 9 alone, never the head (spec/sync.md §5)
     let mut fork = Label::new(3);
     let (child, _) = fork.rotate(60);
     let mut forged = child.clone();
     forged.sig.0[0] ^= 1;
-    let ev = w.run(c, Command::Register { label: l.id, step: forged, claim_set: None });
-    assert!(matches!(&ev[..], [ClientEvent::Refused { code: Code::NOT_HEAD, .. }]), "{ev:?}");
+    let ev = w.run(c, |id| Message::Register { id, label: l.id, step: forged, claim_set: None });
+    assert!(matches!(&ev[..], [Message::Error { code: Code::NOT_HEAD, .. }]), "{ev:?}");
 }
 
 // spec/sync.md §5 Delete, spec/crypto.md §7: a delete-key signature deletes only the body whose prefix commits to it (under that body's salt), at its level
@@ -83,10 +83,10 @@ fn delete_key_deletes_only_its_own_body() {
     // needs the sync key); the right key at another level; another blob's salt
     let forged = DeleteItem::sign_by(&k.sync, &[(1, &osis_crypto::DeleteSecret::derive(&s32(2)))], &salt(10), &HB, &l.id, osis_label::blob_id(&mine)).unwrap();
     let wrong_label_key = DeleteItem::sign_by(&k.write, &[(1, &dk)], &salt(10), &HB, &l.id, osis_label::blob_id(&mine)).unwrap();
-    let ev = w.run(c, Command::Delete { label: l.id, items: vec![forged, wrong_label_key, item(&other, 11, 1), item(&plain, 12, 1), item(&mine, 10, 2), item(&mine, 11, 1), item(&mine, 10, 1)] });
+    let ev = w.run(c, |id| Message::Delete { id, label: l.id, items: vec![forged, wrong_label_key, item(&other, 11, 1), item(&plain, 12, 1), item(&mine, 10, 2), item(&mine, 11, 1), item(&mine, 10, 1)] });
     assert_eq!(statuses(&ev), vec![Code::REFUSED, Code::REFUSED, Code::REFUSED, Code::REFUSED, Code::REFUSED, Code::REFUSED, Code::OK]);
     // a delete for a body no longer held is refused (it cannot be checked, nor a tombstone revealed)
-    assert_eq!(statuses(&w.run(c, Command::Delete { label: l.id, items: vec![item(&mine, 10, 1)] })), vec![Code::REFUSED]);
+    assert_eq!(statuses(&w.run(c, |id| Message::Delete { id, label: l.id, items: vec![item(&mine, 10, 1)] })), vec![Code::REFUSED]);
     // the same body under another label is untouched
     let l2 = Label::new(4);
     w.setup(c, &l2);
@@ -108,7 +108,7 @@ fn budget_and_tombstone() {
     }
     assert_eq!(deposit(&w, H, l.deposit(blob(max), &dk)), Code::BUDGET_FULL);
     let item = DeleteItem::sign(&l.head_keys().delete, &l.id, bid(0)).unwrap();
-    assert_eq!(statuses(&w.run(c, Command::Delete { label: l.id, items: vec![item] })), vec![Code::OK]);
+    assert_eq!(statuses(&w.run(c, |id| Message::Delete { id, label: l.id, items: vec![item] })), vec![Code::OK]);
     assert_eq!(deposit(&w, H, l.deposit(blob(0), &dk)), Code::TOMBSTONED);
     assert_eq!(pull_all(&w, H, &l, [0]), vec![Code::TOMBSTONED]);
 }
@@ -123,10 +123,10 @@ fn registration_squatting() {
     let (s1, cs1) = l.rotate(20);
     let (s2, cs2) = l.rotate(40);
     // a grandchild is not a child of the head
-    let ev = w.run(c, Command::Register { label: l.id, step: s2.clone(), claim_set: Some(cs2.clone()) });
-    assert!(matches!(&ev[..], [ClientEvent::Refused { code: Code::NOT_HEAD, .. }]), "{ev:?}");
-    assert_eq!(w.run(c, Command::Register { label: l.id, step: s1, claim_set: Some(cs1) }), vec![ClientEvent::Registered { label: l.id }]);
-    assert_eq!(w.run(c, Command::Register { label: l.id, step: s2, claim_set: Some(cs2) }), vec![ClientEvent::Registered { label: l.id }]);
-    let ev = w.run(c, l.register_cmd(0));
-    assert!(matches!(&ev[..], [ClientEvent::Refused { code: Code::NOT_HEAD, .. }]), "{ev:?}");
+    let ev = w.run(c, |id| Message::Register { id, label: l.id, step: s2.clone(), claim_set: Some(cs2.clone()) });
+    assert!(matches!(&ev[..], [Message::Error { code: Code::NOT_HEAD, .. }]), "{ev:?}");
+    assert!(matches!(w.run(c, |id| Message::Register { id, label: l.id, step: s1, claim_set: Some(cs1) })[..], [Message::Ok { .. }]));
+    assert!(matches!(w.run(c, |id| Message::Register { id, label: l.id, step: s2, claim_set: Some(cs2) })[..], [Message::Ok { .. }]));
+    let ev = w.run(c, |id| l.register(id, 0));
+    assert!(matches!(&ev[..], [Message::Error { code: Code::NOT_HEAD, .. }]), "{ev:?}");
 }

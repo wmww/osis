@@ -42,7 +42,7 @@ use osis_base::{BlobId, CommitId, LabelId, Tid};
 use osis_crypto::kdf::{Side, beacon, beacon_hit, beacon_reply};
 use osis_proto::filter::{BEACON_P, Page, beacon_value, decode_gcs, encode_gcs, filter_width, pages};
 use osis_proto::msg::{MAX_MEMBERS, MAX_SHARED_ITEMS, OfferItem};
-use osis_proto::{Code, Command, Message};
+use osis_proto::{Code, Message};
 use osis_store::{At, Filter, RecordId};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
@@ -214,7 +214,7 @@ pub(crate) struct Shared {
     /// A Deposit item of this side is unanswered (one at a time per connection).
     deposit_out: bool,
     /// Deposits the peer refused (14) on this connection: not offered here again until what this
-    /// node holds changes.
+    /// node holds changes or the peer's next filter arrives (what it holds changed).
     deposits_refused: BTreeSet<(LabelId, BlobId)>,
 }
 
@@ -416,7 +416,7 @@ impl SyncEngine {
             return Ok(());
         }
         let (binding, by_listener) = match self.conns.get(&conn) {
-            Some(c) => (c.session.binding(), false),
+            Some(c) => (c.binding, false),
             None => (self.served_binding(conn), true),
         };
         let Some((dialer, listener, key)) = binding else { return Ok(()) };
@@ -654,12 +654,8 @@ impl SyncEngine {
     }
 
     pub(super) fn shared_send(&mut self, conn: ConnId, m: Message, out: &mut Vec<Action>) -> Result<()> {
-        if self.conns.contains_key(&conn) {
-            self.command(conn, Command::Peer(Box::new(m)), out)
-        } else {
-            self.hub_down(conn, osis_host::Down::Message(Box::new(m)), out);
-            Ok(())
-        }
+        self.hub_down(conn, osis_host::Down::Message(Box::new(m)), out);
+        Ok(())
     }
 
     /// A request of this node to `conn`'s peer outside the shared set's own exchange (Stranded,
@@ -710,8 +706,7 @@ impl SyncEngine {
         if self.served_has(conn) {
             self.close_served(conn, out);
         } else {
-            out.push(Action::Close { conn });
-            self.lost(conn);
+            self.close_dialed(conn, out);
         }
         Ok(())
     }
@@ -774,6 +769,8 @@ impl SyncEngine {
         s.arrivals += 1;
         s.sync_due = true;
         s.test_due = true;
+        // what the peer refused it judged by what it held then: its holdings moved
+        s.deposits_refused.clear();
         let record = s.record;
         self.stats.filters_received += 1;
         if let Some(c) = self.conns.get_mut(&conn) {
@@ -1118,7 +1115,7 @@ impl SyncEngine {
         let (challenge, listener) = (if s.by_listener { s.listener } else { s.dialer }, s.key);
         // the steps one reply holds: Behind answers read no more per Offer (notes/flow-control.md,
         // Hub stall bounds)
-        let full = osis_proto::serving::REPLY_BUDGET / osis_proto::msg::MAX_STEP_WIRE;
+        let full = osis_proto::session::REPLY_BUDGET / osis_proto::msg::MAX_STEP_WIRE;
         let mut budget = full;
         for (i, l, step, key, sig) in behinds {
             let answer = match self.unread_behind(&l, step.as_ref(), &key, &sig, &challenge, &listener, &mut budget)? {
@@ -1334,7 +1331,8 @@ impl SyncEngine {
     /// The peer's answer to Deposit item `(l, b)`: taken, it leaves the outbox (the pending
     /// deliveries) and ends the back-off of the others under `l`; refused for now, it backs off as a host's refusal does (`budget`); refused,
     /// it is signed again with the current deposit key if that differs and offered again, else
-    /// not offered on this connection again until what this node holds changes.
+    /// not offered on this connection again until what this node holds changes or the peer's next
+    /// filter arrives.
     fn shared_deposit_answered(&mut self, conn: ConnId, l: LabelId, b: BlobId, code: Code) -> Result<()> {
         if let Some(s) = self.records.shared.get_mut(&conn) {
             s.deposit_out = false;

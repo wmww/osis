@@ -406,8 +406,8 @@ impl Message {
     /// and Resume, the shared set's and the stream's messages (spec/wire.md §11.2 Beacons to
     /// NoRecord, Pull to Applied), and any message with an id in the node's range (`NODE_IDS`):
     /// a peer node's own request (a Fetch of the stream's bodies) or the answer to one of this
-    /// node's. Proved and Resumed go by id: a dialing `ClientSession` sends Prove and Resume
-    /// with its own ids and takes their answers itself.
+    /// node's. Proved and Resumed go by id: answers to the upper layer's own Prove and Resume,
+    /// handed up as every answer is (`Session`).
     pub fn for_node(&self) -> bool {
         matches!(self.kind(), 30..=32 | 34 | 36..=46) || self.id() & NODE_IDS != 0
     }
@@ -637,7 +637,7 @@ fn suspect_entry(v: Value) -> Result<SuspectEntry, Error> {
 /// A reply allowance: `SMALL_REPLY..=REPLY_BUDGET` (spec/wire.md §11.2).
 fn max_reply(f: &mut Fields) -> Result<u64, Error> {
     let m = f.uint()?;
-    if m < crate::client::SMALL_REPLY as u64 || m > crate::serving::REPLY_BUDGET as u64 {
+    if m < crate::window::SMALL_REPLY as u64 || m > crate::session::REPLY_BUDGET as u64 {
         return Err(Error::Malformed("max_reply"));
     }
     Ok(m)

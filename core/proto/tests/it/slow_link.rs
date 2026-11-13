@@ -1,12 +1,12 @@
-//! A client against a listener over a throttled link with the drivers' send queues (spec/sync.md
+//! A dialer against a listener over a throttled link with the drivers' send queues (spec/sync.md
 //! §6: the request window and the stall timeout): bulk deposits and fetches between nodes on a
 //! slow link finish on one connection, and neither side's queue outgrows `WINDOW_QUEUE`.
 
 use osis_base::BlobId;
-use osis_proto::client::{STALL_TIMEOUT_MS, WINDOW, WINDOW_QUEUE};
-use osis_proto::examples::{Label, blob_sized};
+use osis_proto::window::{STALL_TIMEOUT_MS, WINDOW, WINDOW_QUEUE};
+use osis_proto::examples::{Dialer, Label, blob_sized, frames, up};
 use osis_proto::msg::{NODE_IDS, OfferItem};
-use osis_proto::serving::REPLY_BUDGET;
+use osis_proto::session::REPLY_BUDGET;
 use osis_proto::*;
 use std::collections::{HashMap, VecDeque};
 
@@ -54,13 +54,15 @@ impl Pipe {
 
 struct Run {
     now: u64,
-    client: ClientSession,
-    host: ServingSession,
+    client: Dialer,
+    host: Session,
     store: MemoryLabelStore,
     up: Pipe,
     down: Pipe,
-    timer: Option<u64>,
-    events: Vec<ClientEvent>,
+    /// What the dialer's session handed up.
+    events: Vec<Message>,
+    /// The dialer's requests not answered yet.
+    outstanding: usize,
     /// The listener's node: the blobs deposited with it.
     held: HashMap<BlobId, Vec<u8>>,
 }
@@ -69,46 +71,46 @@ impl Run {
     fn new() -> Run {
         let mut r = Run {
             now: T0,
-            client: ClientSession::new(ClientConfig { peer_static_key: [0x5e; 32], challenge: [0x80; 32] }),
-            host: ServingSession::new(ServingConfig { static_key: [0x5e; 32], challenge: [0x40; 32] }),
+            client: Dialer::new([0x5e; 32], [0x80; 32]),
+            host: Session::new(SessionConfig { listener_key: [0x5e; 32], challenge: [0x40; 32], dialed: false }),
             store: MemoryLabelStore::new(),
             // the node's `MAX_QUEUED` and the host's default `max_queued_bytes`
             up: Pipe::new(64 << 20),
             down: Pipe::new(64 << 20),
-            timer: None,
             events: Vec::new(),
+            outstanding: 0,
             held: HashMap::new(),
         };
-        let so = r.host.handle(T0, &mut r.store, ServingInput::Start);
+        let so = r.host.handle(T0, &mut r.store, SessionInput::Start);
         r.host_out(so);
-        r.input(ClientInput::Start);
+        r.input(SessionInput::Start);
         r
     }
 
-    fn input(&mut self, i: ClientInput) {
-        for o in self.client.handle(self.now, i) {
-            match o {
-                ClientOutput::Send(b) => self.up.push(b, "client"),
-                ClientOutput::Event(e) => self.events.push(e),
-                ClientOutput::SetTimer(t) => self.timer = Some(t),
-                ClientOutput::Close => panic!("client closed the session at {} s: {:?}", (self.now - T0) / 1000, self.events.last()),
-            }
+    fn input(&mut self, i: SessionInput) {
+        let out = self.client.handle(self.now, i);
+        assert!(!out.iter().any(|o| matches!(o, SessionOutput::Close | SessionOutput::PeerError(_))), "dialer closed at {} s: {out:?}", (self.now - T0) / 1000);
+        for f in frames(&out) {
+            self.up.push(f, "dialer");
         }
+        let answers = up(&out);
+        self.outstanding -= answers.len();
+        self.events.extend(answers);
     }
 
-    fn host_out(&mut self, out: Vec<ServingOutput>) {
+    fn host_out(&mut self, out: Vec<SessionOutput>) {
         for o in out {
             match o {
-                ServingOutput::Send(b) => self.down.push(b, "host"),
-                ServingOutput::Close => panic!("host closed"),
-                ServingOutput::StoreError(e) => panic!("{e}"),
+                SessionOutput::Send(b) => self.down.push(b, "host"),
+                SessionOutput::Close => panic!("host closed"),
+                SessionOutput::StoreError(e) => panic!("{e}"),
                 // the listener's node answers its peer's requests at once
-                ServingOutput::Peer(m) => {
+                SessionOutput::Peer(m) => {
                     let reply = self.answer(*m);
-                    let so = self.host.handle(self.now, &mut self.store, ServingInput::Peer(Box::new(reply)));
+                    let so = self.host.handle(self.now, &mut self.store, SessionInput::Peer(Box::new(reply)));
                     self.host_out(so);
                 }
-                ServingOutput::PeerError(_) | ServingOutput::Request(_) | ServingOutput::Room { .. } => {}
+                SessionOutput::PeerError(_) | SessionOutput::Request(_) | SessionOutput::Room { .. } => {}
             }
         }
     }
@@ -134,7 +136,7 @@ impl Run {
 
     /// Steps the link (`rate` bytes per direction per `step_ms`) until nothing is outstanding.
     fn settle(&mut self, rate: usize, step_ms: u64) {
-        while self.client.outstanding() > 0 || self.client.in_flight() > 0 || self.client.unsent() > 0 || self.up.queued > 0 || self.down.queued > 0 {
+        while self.outstanding > 0 || self.up.queued > 0 || self.down.queued > 0 {
             self.step(rate, step_ms);
         }
     }
@@ -144,31 +146,30 @@ impl Run {
         self.now += step_ms;
         let b = self.up.take(rate);
         if !b.is_empty() {
-            self.input(ClientInput::Taken(self.up.taken));
-            let so = self.host.handle(self.now, &mut self.store, ServingInput::Bytes(b));
+            self.input(SessionInput::Taken(self.up.taken));
+            let so = self.host.handle(self.now, &mut self.store, SessionInput::Bytes(b));
             self.host_out(so);
         }
         let b = self.down.take(rate);
         if !b.is_empty() {
             // the driver reports what the transport took (before input and at ticks)
-            let so = self.host.handle(self.now, &mut self.store, ServingInput::Taken(self.down.taken));
+            let so = self.host.handle(self.now, &mut self.store, SessionInput::Taken(self.down.taken));
             self.host_out(so);
-            self.input(ClientInput::Bytes(b));
+            self.input(SessionInput::Bytes(b));
         }
-        if self.timer.is_some_and(|t| t <= self.now) {
-            self.timer = None;
-            self.input(ClientInput::Timer);
-        }
+        // the driver closes a stalled connection
+        assert!(self.client.session.stall_at().is_none_or(|t| self.now < t), "stalled at {} s", (self.now - T0) / 1000);
         assert!(self.now - T0 < 1 << 40, "no end");
     }
 
     /// The node's own messages to the listener, sent as the window allows; the answers.
     fn peer(&mut self, ms: Vec<Message>, rate: usize, step_ms: u64) -> Vec<Message> {
         for m in ms {
-            self.input(ClientInput::Command(Command::Peer(Box::new(m))));
+            self.outstanding += 1;
+            self.input(SessionInput::Peer(Box::new(m)));
         }
         self.settle(rate, step_ms);
-        std::mem::take(&mut self.events).into_iter().filter_map(|e| if let ClientEvent::Peer(m) = e { Some(*m) } else { None }).collect()
+        std::mem::take(&mut self.events)
     }
 }
 
@@ -209,67 +210,74 @@ fn crawling_link_spec_sync_6() {
     round_trip(2, 1 << 20, 1_000, 1_000);
 }
 
+/// A dialer past the Hellos.
+fn ready() -> Dialer {
+    let mut c = Dialer::new([1; 32], [2; 32]);
+    c.start(T0);
+    c.bytes(T0, encode_frame(&Hello::new(T0, [3; 32]).encode()));
+    c
+}
+
+fn sent(out: &[SessionOutput]) -> Vec<Message> {
+    frames(out).iter().filter_map(|f| Message::decode(&f[4..]).ok()).collect()
+}
+
+/// A node's Fetch that may bring back a whole message.
+fn whole_fetch(l: &Label, k: u32) -> Message {
+    Message::Fetch { id: NODE_IDS | k, label: l.id, max_reply: REPLY_BUDGET as u64, ids: vec![osis_label::blob_id(&k.to_le_bytes())] }
+}
+
 // spec/sync.md §6: requests beyond the window wait for answers; one always goes
 #[test]
 fn window_holds_requests_back_spec_sync_6() {
-    let mut c = ClientSession::new(ClientConfig { peer_static_key: [1; 32], challenge: [2; 32] });
-    c.handle(T0, ClientInput::Start);
-    c.handle(T0, ClientInput::Bytes(encode_frame(&Hello::new(T0, [3; 32]).encode())));
+    let mut c = ready();
     let l = Label::new(1);
-    let sent = |out: &[ClientOutput]| out.iter().filter_map(|o| if let ClientOutput::Send(f) = o { Message::decode(&f[4..]).ok() } else { None }).collect::<Vec<_>>();
-    // each Fetch may bring back a whole message
     let mut first = Vec::new();
     for k in 0..4u32 {
-        let fetch = Message::Fetch { id: NODE_IDS | k, label: l.id, max_reply: REPLY_BUDGET as u64, ids: vec![osis_label::blob_id(&k.to_le_bytes())] };
-        first.extend(sent(&c.handle(T0, ClientInput::Command(Command::Peer(Box::new(fetch))))));
+        first.extend(sent(&c.send(T0, whole_fetch(&l, k))));
     }
-    assert_eq!(first.len(), 2, "two fetches fit the window (after the pings)");
-    assert_eq!(c.unsent(), 2);
-    assert!(c.in_flight() >= WINDOW);
-    let Message::Fetch { id, .. } = first[0] else { panic!() };
-    let out = c.handle(T0, ClientInput::Bytes(encode_frame(&Message::FetchReply { id, items: vec![] }.encode())));
-    assert_eq!(sent(&out).len(), 1, "an answer makes room for the next");
-    assert_eq!(c.unsent(), 1);
+    assert_eq!(first, vec![whole_fetch(&l, 0), whole_fetch(&l, 1)], "two fetches fit the window");
+    for k in 0..2u32 {
+        let out = c.bytes(T0, encode_frame(&Message::FetchReply { id: NODE_IDS | k, items: vec![] }.encode()));
+        assert_eq!(sent(&out), vec![whole_fetch(&l, k + 2)], "an answer makes room for the next");
+    }
 }
 
-// spec/sync.md §6: a request is unanswered while it waits for room in the window, however long
-// (the node's resend timer asks this, not the time it was given)
+// spec/sync.md §6: a request waiting for room in the window, however long, is not out: it goes
+// in the order made once answers make room, its stall clock starts when it goes, and its answer
+// comes up then
 #[test]
 fn held_back_requests_count_unanswered_spec_sync_6() {
-    let mut c = ClientSession::new(ClientConfig { peer_static_key: [1; 32], challenge: [2; 32] });
-    c.handle(T0, ClientInput::Start);
+    let mut c = Dialer::new([1; 32], [2; 32]);
+    c.start(T0);
     let l = Label::new(1);
-    // given before the Hellos
-    c.handle(T0, ClientInput::Command(Command::Register { label: l.id, step: l.steps[0].clone(), claim_set: None }));
-    let first = c.commands();
-    assert!(!c.answered(first));
-    let sent = |out: &[ClientOutput]| out.iter().filter_map(|o| if let ClientOutput::Send(f) = o { Message::decode(&f[4..]).ok() } else { None }).collect::<Vec<_>>();
+    c.bytes(T0, encode_frame(&Hello::new(T0, [3; 32]).encode()));
+    // the node's Fetches fill the window; a Register made after them waits behind them
     let mut pending: VecDeque<Message> = VecDeque::new();
-    pending.extend(sent(&c.handle(T0, ClientInput::Bytes(encode_frame(&Hello::new(T0, [3; 32]).encode())))));
-    // the node's Fetches fill the window; a command made after them waits behind them
     for k in 0..4u32 {
-        let fetch = Message::Fetch { id: NODE_IDS | k, label: l.id, max_reply: REPLY_BUDGET as u64, ids: vec![osis_label::blob_id(&k.to_le_bytes())] };
-        pending.extend(sent(&c.handle(T0, ClientInput::Command(Command::Peer(Box::new(fetch))))));
+        pending.extend(sent(&c.send(T0, whole_fetch(&l, k))));
     }
-    pending.extend(sent(&c.handle(T0, ClientInput::Command(Command::Register { label: l.id, step: l.steps[0].clone(), claim_set: None }))));
-    let big = c.commands();
-    assert!(c.unsent() > 0);
+    let (reg, out) = c.request(T0, |id| l.register(id, 0));
+    assert!(sent(&out).is_empty(), "held back");
     // answer every request sent, an hour later each time, until the queue drains
     let mut now = T0;
-    let mut answered_first = false;
+    let mut answers = Vec::new();
     while let Some(m) = pending.pop_front() {
         now += 3_600_000;
-        assert!(!c.answered(big), "a request of the command is still unanswered");
+        assert!(!answers.contains(&reg), "the Register is still unanswered");
         let reply = match m {
             Message::Fetch { id, .. } => Message::FetchReply { id, items: vec![] },
-            Message::Ping { id, .. } => Message::Pong { id, wall_ms: now },
             Message::Register { id, .. } => Message::Error { id, code: Code::REFUSED },
-            _ => continue,
+            m => panic!("{m:?}"),
         };
-        let out = c.handle(now, ClientInput::Bytes(encode_frame(&reply.encode())));
-        pending.extend(sent(&out));
-        answered_first |= c.answered(first);
+        let out = c.bytes(now, encode_frame(&reply.encode()));
+        answers.extend(up(&out).iter().map(Message::id));
+        let next = sent(&out);
+        if !next.is_empty() {
+            assert_eq!(c.session.stall_at(), Some(now + STALL_TIMEOUT_MS), "its clock starts as it goes");
+        }
+        pending.extend(next);
     }
-    assert!(answered_first);
-    assert!(c.answered(big) && c.unsent() == 0);
+    assert_eq!(answers, vec![NODE_IDS, NODE_IDS | 1, NODE_IDS | 2, NODE_IDS | 3, reg]);
+    assert_eq!(c.session.stall_at(), None);
 }

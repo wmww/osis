@@ -23,7 +23,7 @@ impl SyncEngine {
                 let host = l.hosts.iter().find(|a| a.key == c.host);
                 let Some(x) = c.labels.get(&l.id) else {
                     // labels are started once the session is ready
-                    st.opening += usize::from(c.up && !c.session.is_ready() && host.is_some());
+                    st.opening += usize::from(c.up && !c.is_ready() && host.is_some());
                     continue;
                 };
                 if x.phase.is_failed() && host.is_some() {
@@ -33,7 +33,7 @@ impl SyncEngine {
                 // a host the label no longer names is on its way out: no source of it
                 if c.up && x.phase.is_open() && host.is_some() {
                     st.sources += 1;
-                    if x.idle() && c.session.outstanding() == 0 {
+                    if x.idle() && c.pending.is_empty() {
                         st.idle += 1;
                     }
                 }
@@ -195,7 +195,7 @@ impl SyncEngine {
     /// Whether every open label on every connection has completed a pass and nothing is
     /// outstanding (tests, simulator quiescence).
     pub fn is_idle(&self) -> bool {
-        !self.passes_due() && self.conns.values().all(|c| c.session.outstanding() == 0 && c.labels.values().all(|l| !l.phase.is_open() || l.settled()))
+        !self.passes_due() && self.conns.values().all(|c| c.pending.is_empty() && c.labels.values().all(|l| !l.phase.is_open() || l.settled()))
     }
 
     /// A one-line summary of each label on each connection (tests, diagnostics).
@@ -207,12 +207,12 @@ impl SyncEngine {
                     "conn {id} {l:?}: {:?} up {} ready {} synced {} registering {} writer {} sync {} outstanding {} head {:?} lacking {} full {}",
                     x.phase,
                     c.up,
-                    c.session.is_ready(),
+                    c.is_ready(),
                     x.synced,
                     x.registering.is_some(),
                     x.keys.is_writer(),
                     x.keys.epochs[0].is_some(),
-                    c.session.outstanding(),
+                    c.pending.len(),
                     x.head.as_ref().map(|h| h.id().0[0]),
                     x.lacking,
                     x.full

@@ -46,11 +46,13 @@ pub struct Host {
 
 #[derive(Clone)]
 enum Msg {
-    Up(usize, ConnId),
+    /// Node `db`'s dial `conn` is up, as connection `hc` of its hub `s`, to the listener of
+    /// `key` (`relayed`: the transport's word).
+    Up { db: usize, conn: ConnId, s: usize, hc: u64, key: [u8; 32], relayed: bool },
     ToHub(usize, u64, Vec<u8>),
-    ToDb(usize, ConnId, Vec<u8>),
+    /// Node `db`'s dial `conn` failed (never up).
     Down(usize, ConnId),
-    /// A node closed its end: the hub connection ends after the bytes sent before it, as a
+    /// The other end closed: the hub connection ends after the bytes sent before it, as a
     /// transport link finishes after what is queued (`osis_transport::link::LinkTx`).
     Closed(usize, u64),
 }
@@ -70,11 +72,16 @@ pub struct World {
     pub hosts: Vec<Host>,
     /// Every node made with `cfg`, by start order (also those a future opened).
     pub net: ManualNet,
-    /// (db, conn) -> (host, hub conn)
-    links: BTreeMap<(usize, ConnId), (usize, u64)>,
-    /// A peer connection, by its dialer's end: (node, conn) -> (node dialed, its hub, the route).
+    /// Both directions: (hub, its conn) -> (hub, its conn). Every connection runs between two
+    /// hubs: a node's dialed ones are sessions of its own hub (`node_hub`).
+    links: BTreeMap<(usize, u64), (usize, u64)>,
+    /// The dialer's end of each connection a node dialed: (its hub, conn) -> the node.
+    dialed: BTreeMap<(usize, u64), usize>,
+    /// Dials not up yet: (node, its node sync's conn) -> (its hub, conn).
+    dials: BTreeMap<(usize, ConnId), (usize, u64)>,
+    /// A peer connection, by its dialer's end: (hub, conn) -> (dialer, node dialed, the route).
     /// The connection is in `links` too.
-    peer_links: BTreeMap<(usize, ConnId), (usize, usize, Route)>,
+    peer_links: BTreeMap<(usize, u64), (usize, usize, Route)>,
     /// Nodes by their key (`node_hub`).
     node_keys: BTreeMap<[u8; 32], usize>,
     /// Pairs a partition separates on peer links (`set_peer_reachable`).
@@ -129,6 +136,8 @@ impl World {
             hosts: Vec::new(),
             net: ManualNet::new(),
             links: BTreeMap::new(),
+            dialed: BTreeMap::new(),
+            dials: BTreeMap::new(),
             peer_links: BTreeMap::new(),
             node_keys: BTreeMap::new(),
             peer_cut: BTreeSet::new(),
@@ -188,6 +197,8 @@ impl World {
                 hosts,
                 net,
                 links: self.links.clone(),
+                dialed: self.dialed.clone(),
+                dials: self.dials.clone(),
                 peer_links: self.peer_links.clone(),
                 node_keys: self.node_keys.clone(),
                 peer_cut: self.peer_cut.clone(),
@@ -327,15 +338,24 @@ impl World {
         }
     }
 
-    /// Closes every connection into host `s` (both sides told).
-    fn close_hub(&mut self, s: usize) {
-        let gone: Vec<((usize, ConnId), u64)> = self.links.iter().filter(|(_, (x, _))| *x == s).map(|(k, (_, hc))| (*k, *hc)).collect();
-        for ((db, c), hc) in gone {
-            self.links.remove(&(db, c));
-            self.peer_links.remove(&(db, c));
-            let out = self.hosts.get_mut(s).map(|h| h.hub.closed(hc)).unwrap_or_default();
-            self.hub_out(s, out);
-            self.send_msg(Msg::Down(db, c));
+    /// Ends the connection of hub `s`'s `hc` (both ways): the other end, if it was up.
+    fn unlink(&mut self, s: usize, hc: u64) -> Option<(usize, u64)> {
+        let other = self.links.remove(&(s, hc))?;
+        self.links.remove(&other);
+        for e in [(s, hc), other] {
+            self.peer_links.remove(&e);
+            self.dialed.remove(&e);
+        }
+        Some(other)
+    }
+
+    /// Ends the connection of hub `s`'s `hc` at once, both ends told.
+    fn cut_link(&mut self, s: usize, hc: u64) {
+        if let Some((t, thc)) = self.unlink(s, hc) {
+            for (x, c) in [(s, hc), (t, thc)] {
+                let out = self.hosts.get_mut(x).map(|h| h.hub.closed(c)).unwrap_or_default();
+                self.hub_out(x, out);
+            }
         }
     }
 
@@ -516,32 +536,29 @@ impl World {
         }
         if !on {
             self.drop_peer_links(|n, _, _| n == i);
-            let mine: Vec<(ConnId, (usize, u64))> = self.links.iter().filter(|((d, _), _)| *d == i).map(|((_, c), v)| (*c, *v)).collect();
-            for (c, (s, hc)) in mine {
-                self.links.remove(&(i, c));
-                let out = self.hosts.get_mut(s).map(|host| host.hub.closed(hc)).unwrap_or_default();
-                self.hub_out(s, out);
-                db.feed(Event::Down { conn: c });
+            // its hub's connections, dialed and served (a dial not up yet fails at its `Up`)
+            if let Some(s) = self.host_of(i) {
+                let mine: Vec<u64> = self.links.keys().filter(|(x, _)| *x == s).map(|(_, hc)| *hc).collect();
+                for hc in mine {
+                    self.cut_link(s, hc);
+                }
             }
             // offline: its dials fail, nothing it sends goes
             let acts = db.take_actions();
             self.actions(i, acts);
-            if let Some(s) = self.host_of(i) {
-                self.close_hub(s);
-            }
         }
     }
 
     /// Ends the peer connections whose (dialer, node dialed, route) `which` picks: both ends told.
     fn drop_peer_links(&mut self, which: impl Fn(usize, usize, Route) -> bool) {
-        let gone: Vec<(usize, ConnId)> = self.peer_links.iter().filter(|(k, v)| which(k.0, v.0, v.2)).map(|(k, _)| *k).collect();
-        for k in gone {
-            self.peer_links.remove(&k);
-            if let Some((s, hc)) = self.links.remove(&k) {
-                let out = self.hosts.get_mut(s).map(|h| h.hub.closed(hc)).unwrap_or_default();
-                self.hub_out(s, out);
+        let gone: Vec<(usize, u64)> = self.peer_links.iter().filter(|(_, v)| which(v.0, v.1, v.2)).map(|(k, _)| *k).collect();
+        for (s, dc) in gone {
+            // the dialed end at once, the dialer after what is on its way
+            if let Some((t, hc)) = self.unlink(s, dc) {
+                let out = self.hosts.get_mut(t).map(|h| h.hub.closed(hc)).unwrap_or_default();
+                self.hub_out(t, out);
+                self.send_msg(Msg::Closed(s, dc));
             }
-            self.send_msg(Msg::Down(k.0, k.1));
         }
     }
 
@@ -562,12 +579,9 @@ impl World {
             return;
         }
         self.cut.insert((i, host));
-        let mine: Vec<(ConnId, u64)> = self.links.iter().filter(|((d, _), (s, _))| *d == i && *s == host).map(|((_, c), (_, h))| (*c, *h)).collect();
-        for (c, hc) in mine {
-            self.links.remove(&(i, c));
-            let out = self.hosts.get_mut(host).map(|host| host.hub.closed(hc)).unwrap_or_default();
-            self.hub_out(host, out);
-            db.feed(Event::Down { conn: c });
+        let mine: Vec<(usize, u64)> = self.dialed.iter().filter(|(e, d)| **d == i && self.links.get(e).is_some_and(|(s, _)| *s == host)).map(|(e, _)| *e).collect();
+        for (s, dc) in mine {
+            self.cut_link(s, dc);
         }
     }
 
@@ -598,8 +612,8 @@ impl World {
                     };
                     let hc = self.next_hub;
                     self.next_hub += 1;
-                    self.links.insert((d, conn), (s, hc));
-                    self.send_msg(Msg::Up(d, conn));
+                    let (sd, dc) = self.new_dial(d, conn, (s, hc));
+                    self.send_msg(Msg::Up { db: d, conn, s: sd, hc: dc, key: address.key, relayed: false });
                     let now = self.now();
                     let out = match self.hosts.get_mut(s) {
                         Some(host) => host.hub.accept(now, hc, address.key, osis_host::Remote::key([0xe0; 32])),
@@ -607,19 +621,12 @@ impl World {
                     };
                     self.hub_out(s, out);
                 }
-                Action::Send { conn, bytes } => {
-                    if let Some((s, hc)) = self.links.get(&(d, conn)).copied() {
-                        if let Some(t) = self.traffic.get_mut(d) {
-                            t.up += bytes.len() as u64;
-                        }
-                        self.count(d, conn, &bytes, false);
-                        self.send_msg(Msg::ToHub(s, hc, bytes));
-                    }
-                }
+                // a dial given up before it was up (once up, node sync closes it at its hub)
                 Action::Close { conn } => {
-                    self.peer_links.remove(&(d, conn));
-                    if let Some((s, hc)) = self.links.remove(&(d, conn)) {
-                        self.send_msg(Msg::Closed(s, hc));
+                    if let Some((sd, dc)) = self.dials.remove(&(d, conn))
+                        && let Some(other) = self.unlink(sd, dc)
+                    {
+                        self.send_msg(Msg::Closed(other.0, other.1));
                     }
                 }
                 Action::Host(cfg) => self.host(d, cfg),
@@ -665,12 +672,9 @@ impl World {
         self.next_hub += 1;
         // both ends tell a relayed connection, as the driver does from the transport
         let relayed = matches!(route, Route::Relay(_));
-        if relayed && let Some(me) = dbs.get(d).and_then(|x| x.clone()) {
-            me.sync_engine(|e| e.set_relayed(conn));
-        }
-        self.links.insert((d, conn), (s, hc));
-        self.peer_links.insert((d, conn), (m, s, route));
-        self.send_msg(Msg::Up(d, conn));
+        let (sd, dc) = self.new_dial(d, conn, (s, hc));
+        self.peer_links.insert((sd, dc), (d, m, route));
+        self.send_msg(Msg::Up { db: d, conn, s: sd, hc: dc, key: address.key, relayed });
         let now = self.now();
         let remote = osis_host::Remote { peer: osis_transport::Peer::Key(peer), relayed };
         let out = match self.hosts.get_mut(s) {
@@ -678,6 +682,19 @@ impl World {
             None => Vec::new(),
         };
         self.hub_out(s, out);
+    }
+
+    /// A connection of node `d`'s hub for its dial `conn` to `to` (hub, conn), linked; up at its
+    /// `Msg::Up`.
+    fn new_dial(&mut self, d: usize, conn: ConnId, to: (usize, u64)) -> (usize, u64) {
+        let sd = self.node_hub(d);
+        let dc = self.next_hub;
+        self.next_hub += 1;
+        self.links.insert((sd, dc), to);
+        self.links.insert(to, (sd, dc));
+        self.dialed.insert((sd, dc), d);
+        self.dials.insert((d, conn), (sd, dc));
+        (sd, dc)
     }
 
     /// How many `peer://` dials `from` made so far to the node `to` listens as, whether they
@@ -753,7 +770,7 @@ impl World {
     /// How `db`'s peer connections connect.
     pub fn peer_routes(&mut self, db: &Osis) -> Vec<Route> {
         let Some(i) = self.index(db) else { return Vec::new() };
-        self.peer_links.iter().filter(|(k, v)| k.0 == i || v.0 == i).map(|(_, v)| v.2).collect()
+        self.peer_links.values().filter(|v| v.0 == i || v.1 == i).map(|v| v.2).collect()
     }
 
     /// Closes `db` and opens the node again from the same store with `cfg`: its place in the
@@ -782,10 +799,6 @@ impl World {
         new
     }
 
-    fn link_of(&self, s: usize, hc: u64) -> Option<(usize, ConnId)> {
-        self.links.iter().find(|(_, (x, h))| *x == s && *h == hc).map(|(k, _)| *k)
-    }
-
     fn hub_out(&mut self, s: usize, out: Vec<HubOutput>) {
         let mut ups = Vec::new();
         let mut moved = false;
@@ -793,14 +806,19 @@ impl World {
             match o {
                 HubOutput::Moved => moved = true,
                 HubOutput::Send(hc, bytes) => {
-                    if let Some((d, c)) = self.link_of(s, hc) {
-                        self.send_msg(Msg::ToDb(d, c, bytes));
+                    if let Some((t, thc)) = self.links.get(&(s, hc)).copied() {
+                        if let Some(d) = self.dialed.get(&(s, hc)).copied() {
+                            if let Some(t) = self.traffic.get_mut(d) {
+                                t.up += bytes.len() as u64;
+                            }
+                            self.count(d, hc, &bytes, false);
+                        }
+                        self.send_msg(Msg::ToHub(t, thc, bytes));
                     }
                 }
                 HubOutput::Close(hc) => {
-                    if let Some((d, c)) = self.link_of(s, hc) {
-                        self.links.remove(&(d, c));
-                        self.send_msg(Msg::Down(d, c));
+                    if let Some((t, thc)) = self.unlink(s, hc) {
+                        self.send_msg(Msg::Closed(t, thc));
                     }
                 }
                 HubOutput::Diagnostic(_) => {}
@@ -830,7 +848,7 @@ impl World {
                     let out = self.hosts.get_mut(s).map(|h| h.hub.down(now, vec![(conn, down)])).unwrap_or_default();
                     self.hub_out(s, out);
                 }
-                Action::Dial { .. } | Action::Send { .. } | Action::Close { .. } => panic!("host {s} dialed: {a:?}"),
+                Action::Dial { .. } | Action::Close { .. } => panic!("host {s} dialed: {a:?}"),
                 _ => {}
             }
         }
@@ -879,7 +897,6 @@ impl World {
                 if let Some(seen) = seen.as_deref_mut() {
                     for a in &acts {
                         let k = match a {
-                            Action::Send { .. } => continue,
                             Action::Dial { .. } => "dial",
                             Action::Close { .. } => "close",
                             Action::Wake { .. } => "wake",
@@ -901,9 +918,8 @@ impl World {
         self.hop = self.hop.max(hop);
         if let Some(seen) = seen {
             let k = match &m {
-                Msg::Up(d, c) => format!("up db {d} conn {c:?}"),
-                Msg::ToHub(s, hc, b) => format!("db {:?} -> host {s}: {}", self.links.iter().find(|(_, v)| **v == (*s, *hc)).map(|(k, _)| k.0), kind(b)),
-                Msg::ToDb(d, _, b) => format!("host -> db {d}: {}", kind(b)),
+                Msg::Up { db, conn, .. } => format!("up db {db} conn {conn:?}"),
+                Msg::ToHub(s, hc, b) => format!("{} -> {}: {}", self.links.get(&(*s, *hc)).map_or("?".into(), |x| self.party(x.0)), self.party(*s), kind(b)),
                 Msg::Down(d, c) => format!("down db {d} conn {c:?}"),
                 Msg::Closed(s, _) => format!("closed at host {s}"),
             };
@@ -911,8 +927,27 @@ impl World {
         }
         let now = self.now();
         match m {
-            Msg::Up(d, c) => self.with(d, |db| db.feed(Event::Up { conn: c })),
+            Msg::Up { db: d, conn, s, hc, key, relayed } => {
+                if self.dials.remove(&(d, conn)).is_none() {
+                    return true;
+                }
+                // cut before it was up: the dial failed
+                if !self.links.contains_key(&(s, hc)) {
+                    self.with(d, |db| db.feed(Event::Down { conn }));
+                    return true;
+                }
+                let remote = osis_host::Remote { peer: osis_transport::Peer::Key(key), relayed };
+                let out = self.hosts.get_mut(s).map(|h| h.hub.dial(now, hc, key, remote)).unwrap_or_default();
+                self.with(d, |db| db.feed(Event::Up { conn, hub: hc }));
+                self.hub_out(s, out);
+            }
             Msg::ToHub(s, hc, b) => {
+                if let Some(d) = self.dialed.get(&(s, hc)).copied() {
+                    if let Some(t) = self.traffic.get_mut(d) {
+                        t.down += b.len() as u64;
+                    }
+                    self.count(d, hc, &b, true);
+                }
                 let t = Instant::now();
                 let out = match self.hosts.get_mut(s) {
                     Some(host) => host.hub.input(now, hc, b),
@@ -921,13 +956,6 @@ impl World {
                 self.hub_busy += t.elapsed();
                 self.hub_out(s, out);
             }
-            Msg::ToDb(d, c, b) => {
-                if let Some(t) = self.traffic.get_mut(d) {
-                    t.down += b.len() as u64;
-                }
-                self.count(d, c, &b, true);
-                self.with(d, |db| db.feed(Event::Bytes { conn: c, bytes: b }))
-            }
             Msg::Down(d, c) => self.with(d, |db| db.feed(Event::Down { conn: c })),
             Msg::Closed(s, hc) => {
                 let out = self.hosts.get_mut(s).map(|host| host.hub.closed(hc)).unwrap_or_default();
@@ -935,6 +963,14 @@ impl World {
             }
         }
         true
+    }
+
+    /// Who runs hub `s` (trace).
+    fn party(&self, s: usize) -> String {
+        match self.hosts.get(s).and_then(|h| h.node) {
+            Some(d) => format!("db {d}"),
+            None => format!("host {s}"),
+        }
     }
 
     /// Moves time on by `ms`: host ticks, node ticks, then everything settles.

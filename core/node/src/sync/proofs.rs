@@ -130,8 +130,7 @@ impl SyncEngine {
             }
         }
         for (conn, host) in stale {
-            out.push(super::Action::Close { conn });
-            self.lost(conn);
+            self.close_dialed(conn, out);
             // closed here, not lost: no pause before the redial
             self.retry.remove(&host);
         }

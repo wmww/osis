@@ -44,7 +44,7 @@ fn stored_bytes_hold_no_plaintext_identifiers() {
     }
     assert_eq!(deposit(&w, h, l.deposit(blobs[2].clone(), &l.head_keys().deposit.clone())), Code::OK);
     let item = DeleteItem::sign(&l.head_keys().delete, &l.id, osis_label::blob_id(&blobs[0])).unwrap();
-    w.run(a, Command::Delete { label: l.id, items: vec![item] });
+    w.run(a, |id| Message::Delete { id, label: l.id, items: vec![item] });
     let env = osis_label::frame(&Prefix::new([9; 16], Some(WallMs(w.now() + osis_base::format::MAX_DRIFT_MS)), vec![]).unwrap().with_class(osis_label::Class::Relay), &plaintext, &mut rng).unwrap().1;
     assert_eq!(pull(&w, h, &l, &l.entry(env)), Code::OK);
     w.advance(1_000);

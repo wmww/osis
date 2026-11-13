@@ -1,6 +1,6 @@
 //! The hub in the node driver's loop over osis-transport's `InProcess` (perfect network: under
-//! tokio nothing needs stepping): a node keeping labels by its `host^.0` serves scripted clients
-//! (osis-proto `ClientSession`) end to end, with node sync above every hub session (proofs, the
+//! tokio nothing needs stepping): a node keeping labels by its `host^.0` serves scripted dialers
+//! (an osis-proto dialer `Session`, `examples::Dialer`) end to end, with node sync above every hub session (proofs, the
 //! shared set, the stream), and serves connections in turns (spec/sync.md §5-§10).
 //! Event-driven only: a timeout guards against a hang. The slow-reader cap is a unit test of
 //! `osis_transport::link` (`InProcess` has no flow control to stall a writer).
@@ -99,11 +99,14 @@ impl Host {
     }
 }
 
-/// A scripted `ClientSession` over a `Link`.
+/// A scripted dialer over a `Link`: its requests' answers and the node's own messages come back.
 struct Client {
-    s: ClientSession,
+    d: osis_proto::examples::Dialer,
     link: Link,
-    events: Vec<ClientEvent>,
+    /// What the session handed up and nobody took yet.
+    got: Vec<Message>,
+    /// Its requests not answered yet.
+    asked: std::collections::BTreeSet<u32>,
     /// The connection's shared set started (its NoRecord answered).
     shared: bool,
 }
@@ -111,22 +114,30 @@ struct Client {
 impl Client {
     async fn start(link: Link, key: [u8; 32]) -> Client {
         assert_eq!(link.peer_key, key);
-        let mut c = Client { s: ClientSession::new(ClientConfig { peer_static_key: key, challenge: [9; 32] }), link, events: vec![], shared: false };
-        let out = c.s.handle(T0, ClientInput::Start);
+        let mut c = Client { d: osis_proto::examples::Dialer::new(key, [9; 32]), link, got: vec![], asked: Default::default(), shared: false };
+        let out = c.d.start(T0);
         c.out(out);
-        while !c.s.is_ready() {
+        while c.d.session.version().is_none() {
             c.recv().await;
         }
-        c.wait().await;
-        c.events.clear();
+        c.got.clear();
         c
     }
 
-    fn out(&mut self, out: Vec<ClientOutput>) {
+    fn out(&mut self, out: Vec<SessionOutput>) {
         for o in out {
             match o {
-                ClientOutput::Send(b) => assert!(self.link.tx.send(b, usize::MAX)),
-                ClientOutput::Event(e) => self.events.push(e),
+                SessionOutput::Send(b) => assert!(self.link.tx.send(b, usize::MAX)),
+                SessionOutput::Peer(m) => {
+                    if !m.is_request() {
+                        self.asked.remove(&m.id());
+                    }
+                    let m = match *m {
+                        Message::Proved { id, proofs } => Message::Proved { id, proofs: self.d.verified(proofs) },
+                        m => m,
+                    };
+                    self.got.push(m);
+                }
                 _ => {}
             }
         }
@@ -134,28 +145,33 @@ impl Client {
 
     async fn recv(&mut self) {
         let b = tokio::time::timeout(GUARD, self.link.rx.recv()).await.expect("no reply").expect("link closed");
-        let out = self.s.handle(T0, ClientInput::Bytes(b));
+        let out = self.d.bytes(T0, b);
         self.out(out);
     }
 
-    async fn wait(&mut self) {
-        while self.s.outstanding() > 0 {
-            self.recv().await;
-        }
-    }
-
-    async fn run(&mut self, cmd: Command) -> Vec<ClientEvent> {
-        let out = self.s.handle(T0, ClientInput::Command(cmd));
+    /// Request `m` under the dialer's next id: what came up until it was answered.
+    async fn run(&mut self, m: impl FnOnce(u32) -> Message) -> Vec<Message> {
+        let (id, out) = self.d.request(T0, m);
+        self.asked.insert(id);
         self.out(out);
-        self.wait().await;
-        std::mem::take(&mut self.events)
-    }
-
-    async fn next(&mut self) -> Vec<ClientEvent> {
-        while self.events.is_empty() {
+        while self.asked.contains(&id) {
             self.recv().await;
         }
-        std::mem::take(&mut self.events)
+        std::mem::take(&mut self.got)
+    }
+
+    /// The dialer's Prove of `provers`: what came up until it was answered.
+    async fn prove(&mut self, provers: &[Prover]) -> Vec<Message> {
+        let (_, listener, key) = self.d.session.binding().unwrap();
+        let proofs: Vec<ActorProof> = provers.iter().map(|p| p.sign(false, &listener, &key)).collect();
+        self.run(|id| Message::Prove { id, proofs }).await
+    }
+
+    async fn next(&mut self) -> Vec<Message> {
+        while self.got.is_empty() {
+            self.recv().await;
+        }
+        std::mem::take(&mut self.got)
     }
 
     /// A Hit on `l`'s head sync key with its open signature, as a reader opens a label the node
@@ -166,7 +182,7 @@ impl Client {
             assert!(matches!(got.last(), Some(Message::Shared { codes, .. }) if codes[0].0 == Code::OK), "{got:?}");
             self.shared = true;
         }
-        let (dialer, listener, key) = self.s.binding().unwrap();
+        let (dialer, listener, key) = self.d.session.binding().unwrap();
         let r = *pair_key(&dialer, &listener).expose();
         let sync = l.head_keys().sync.clone();
         let value = sync.verifying_key().to_bytes();
@@ -191,14 +207,14 @@ impl Client {
     /// Sends a node-kind message; returns the node-kind messages that came, up to its answer.
     async fn peer(&mut self, m: Message) -> Vec<Message> {
         let id = m.id();
-        let out = self.s.handle(T0, ClientInput::Command(Command::Peer(Box::new(m))));
+        let out = self.d.send(T0, m);
         self.out(out);
         let mut got = vec![];
         loop {
-            for e in self.next().await {
-                if let ClientEvent::Peer(m) = e {
+            for m in self.next().await {
+                if m.for_node() {
                     let done = m.id() == id && !m.is_request();
-                    got.push(*m);
+                    got.push(m);
                     if done {
                         return got;
                     }
@@ -206,7 +222,6 @@ impl Client {
             }
         }
     }
-
 }
 
 fn sorted(mut v: Vec<BlobId>) -> Vec<BlobId> {
@@ -228,16 +243,17 @@ async fn take(host: &Host, l: &Label, blobs: Vec<Vec<u8>>) {
         let mut hub = hub.lock().unwrap();
         let k = osis_proto::LabelStore::head_keys(&*hub, &id).unwrap().unwrap();
         for e in entries {
-            let t = osis_proto::serving::pulled(&mut *hub, now, &id, &k, &e.blob, e.wrap, e.stamp, &mut false).unwrap();
-            assert!(matches!(t, osis_proto::serving::Taken::Code(Code::OK)));
+            let t = osis_proto::session::pulled(&mut *hub, now, &id, &k, &e.blob, e.wrap, e.stamp, &mut false).unwrap();
+            assert!(matches!(t, osis_proto::session::Taken::Code(Code::OK)));
         }
     })
     .await;
 }
 
 /// A Register of `l`'s head again: answered Ok, a probe that reads nothing much.
-fn probe(l: &Label) -> Command {
-    Command::Register { label: l.id, step: l.steps.last().unwrap().clone(), claim_set: None }
+fn probe(l: &Label) -> impl FnOnce(u32) -> Message + use<> {
+    let (label, step) = (l.id, l.steps.last().unwrap().clone());
+    move |id| Message::Register { id, label, step, claim_set: None }
 }
 
 // spec/sync.md §5, §10: clients of a node keeping a label it cannot read (multi-thread runtime:
@@ -252,18 +268,18 @@ async fn clients_end_to_end() {
     let clients = tnet.endpoint("clients");
     let (mut a, mut b) = (host.client(&clients).await, host.client(&clients).await);
     let l = Label::new(3);
-    assert_eq!(a.run(l.register_cmd(0)).await, vec![ClientEvent::Registered { label: l.id }]);
+    assert!(matches!(&a.run(|id| l.register(id, 0)).await[..], [Message::Ok { .. }]));
     take(&host, &l, (0..3).map(blob).collect()).await;
     assert_eq!(held(&host, l.id).await, sorted((0..3).map(bid).collect()));
     let item = osis_label::DeleteItem::sign(&l.head_keys().delete, &l.id, bid(1)).unwrap();
-    let ev = b.run(Command::Delete { label: l.id, items: vec![item.clone()] }).await;
-    assert!(matches!(&ev[..], [ClientEvent::Refused { code: Code::NOT_OPENED, .. }]), "{ev:?}");
+    let ev = b.run(|id| Message::Delete { id, label: l.id, items: vec![item.clone()] }).await;
+    assert!(matches!(&ev[..], [Message::Error { code: Code::NOT_OPENED, .. }]), "{ev:?}");
     for c in [&mut a, &mut b] {
         c.open(&l).await;
     }
     // the node's own shared-set and stream messages (Beacons, a Pull of L) may come between
-    let ev: Vec<ClientEvent> = a.run(Command::Delete { label: l.id, items: vec![item] }).await.into_iter().filter(|e| !matches!(e, ClientEvent::Peer(_))).collect();
-    assert!(matches!(&ev[..], [ClientEvent::DeleteStatus { codes, .. }] if codes == &[Code::OK]), "{ev:?}");
+    let ev: Vec<Message> = a.run(|id| Message::Delete { id, label: l.id, items: vec![item] }).await.into_iter().filter(|e| !e.for_node()).collect();
+    assert!(matches!(&ev[..], [Message::Status { codes, .. }] if codes == &[Code::OK]), "{ev:?}");
     assert_eq!(held(&host, l.id).await, sorted([0, 2].into_iter().map(bid).collect()));
     host.stop().await;
 }
@@ -282,7 +298,7 @@ async fn stopping_closes_what_opened_the_host_store() {
     let mut a = host.client(&clients).await;
     let mut idle = host.client(&clients).await;
     let l = Label::new(3);
-    a.run(l.register_cmd(0)).await;
+    a.run(|id| l.register(id, 0)).await;
     a.open(&l).await;
     host.call(|s: &mut SyncEngine| {
         let me = s.engine_mut().tid();
@@ -312,7 +328,7 @@ async fn flood_does_not_delay_others() {
     let host = Host::start(keep, tnet.endpoint("s"), net.clock.clone()).await;
     let l = Label::new(3);
     let mut a = host.client(&tnet.endpoint("a")).await;
-    a.run(l.register_cmd(0)).await;
+    a.run(|id| l.register(id, 0)).await;
     a.open(&l).await;
     take(&host, &l, (0..FLOOD).map(|n| blob(1000 + n)).collect()).await;
     let mut b = host.client(&tnet.endpoint("b")).await;
@@ -365,15 +381,15 @@ async fn one_connection_serves_hosted_and_read_labels() {
     let mut c = host.client(&tnet.endpoint("clients")).await;
     // L, which the node cannot read: the hub's store
     let l = Label::new(3);
-    assert_eq!(c.run(l.register_cmd(0)).await, vec![ClientEvent::Registered { label: l.id }]);
+    assert!(matches!(&c.run(|id| l.register(id, 0)).await[..], [Message::Ok { .. }]));
     // M, which it reads: node sync proves to a dialer it knows and runs the shared set
-    let ev = c.run(Command::Prove(provers)).await;
-    assert!(matches!(&ev[..], [ClientEvent::Proved { proofs }] if !proofs.is_empty()), "{ev:?}");
+    let ev = c.prove(&provers).await;
+    assert!(matches!(&ev[..], [Message::Proved { proofs, .. }] if !proofs.is_empty()), "{ev:?}");
     let got = c.peer(Message::NoRecord { id: 1 << 31 }).await;
     assert!(matches!(got.last(), Some(Message::Shared { codes, .. }) if codes[0].0 == Code::OK), "{got:?}");
     c.shared = true;
     c.open(&l).await;
-    let (dialer, listener, key) = c.s.binding().unwrap();
+    let (dialer, listener, key) = c.d.session.binding().unwrap();
     let r = *pair_key(&dialer, &listener).expose();
     let hit = beacon_hit(&value, &m.0, &beacon(&value, &m.0, &r), (false, &key, &dialer, &listener));
     let got = c.peer(Message::Offer { id: NODE_IDS | 77, items: vec![OfferItem::Hit(hit, None)] }).await;
@@ -393,8 +409,7 @@ async fn one_connection_serves_hosted_and_read_labels() {
     let pushed = tokio::time::timeout(GUARD, async {
         loop {
             for e in c.next().await {
-                if let ClientEvent::Peer(x) = e
-                    && let Message::Stream(st) = *x
+                if let Message::Stream(st) = e
                     && st.cursor.is_some()
                 {
                     return st.events;
@@ -407,8 +422,8 @@ async fn one_connection_serves_hosted_and_read_labels() {
     assert!(pushed.iter().any(|(x, e)| *x == m && matches!(e, osis_proto::Event::Added { blob_id, .. } if !held.contains(blob_id))), "{pushed:?}");
     // and L still, on the same connection: open there (its Deletes taken)
     let item = osis_label::DeleteItem::sign(&l.head_keys().delete, &l.id, bid(5)).unwrap();
-    let ev = c.run(Command::Delete { label: l.id, items: vec![item] }).await;
-    assert!(matches!(&ev[..], [ClientEvent::DeleteStatus { .. }]), "{ev:?}");
+    let ev: Vec<Message> = c.run(|id| Message::Delete { id, label: l.id, items: vec![item] }).await.into_iter().filter(|e| !e.for_node()).collect();
+    assert!(matches!(&ev[..], [Message::Status { .. }]), "{ev:?}");
     host.stop().await;
 }
 
@@ -426,10 +441,10 @@ async fn a_stranger_gets_no_proof_spec_sync_10() {
     let keep = Host::keep(&mut net, n, "mem://s");
     let host = Host::start(keep, tnet.endpoint("s"), net.clock.clone()).await;
     let mut c = host.client(&tnet.endpoint("clients")).await;
-    let ev = c.run(Command::Prove(provers)).await;
-    assert!(matches!(&ev[..], [ClientEvent::Proved { proofs }] if proofs.is_empty()), "{ev:?}");
-    let ev = c.run(Command::Resume { nonce: [5; 32], tags: vec![[6; 32]] }).await;
-    assert!(matches!(&ev[..], [ClientEvent::Refused { kind: Request::Resume, code: Code::REFUSED, .. }]), "{ev:?}");
+    let ev = c.prove(&provers).await;
+    assert!(matches!(&ev[..], [Message::Proved { proofs, .. }] if proofs.is_empty()), "{ev:?}");
+    let ev = c.run(|id| Message::Resume { id, nonce: [5; 32], tags: vec![[6; 32]] }).await;
+    assert!(matches!(&ev[..], [Message::Error { code: Code::REFUSED, .. }]), "{ev:?}");
     // its NoRecord starts the set: a filter of nothing the node reads (it keeps nothing unread)
     let got = c.peer(Message::NoRecord { id: 1 << 31 }).await;
     assert!(got.iter().any(|m| matches!(m, Message::Beacons { gcs, .. } if gcs.is_empty())), "{got:?}");

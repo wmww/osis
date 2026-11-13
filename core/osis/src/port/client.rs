@@ -1,6 +1,6 @@
 //! The client side of the client port (notes/client-port.md §1, §2, §6): a `Connection` is one
-//! connection to a node: a proto `ClientSession` on a thread of its own that a call blocks on until
-//! its Reply. A handle sends tid-addressed calls to it (`crate::sources`). Watches are
+//! connection to a node: a dialer `osis_proto::Session` (over a store that admits nothing) on a
+//! thread of its own that a call blocks on until its Reply. A handle sends tid-addressed calls to it (`crate::sources`). Watches are
 //! subscriptions whose Reply and Notifies enter the handle's dispatcher queue in wire order, so
 //! node callbacks run on the dispatcher like local ones. Writes carry a nonce from 1 per session.
 //!
@@ -29,9 +29,11 @@ use crate::error::{Error, Result};
 use crate::handle::{AppConfig, Config, Osis, WeakOsis};
 use crate::watch::{Callback, Change, Delivery, Filter, Msg, PortEvent, Origin, Subscription, lock};
 use osis_base::{Clock, Tid, Value};
-use osis_proto::client::SMALL_REPLY;
-use osis_proto::serving::REPLY_BUDGET;
-use osis_proto::{ClientEvent, ClientInput, ClientOutput, ClientSession, Code, Command, Outcome, Payload};
+use osis_proto::window::SMALL_REPLY;
+use osis_proto::session::REPLY_BUDGET;
+use osis_proto::hello::PING_INTERVAL_MS;
+use osis_proto::msg::{Id, NODE_IDS};
+use osis_proto::{Code, MemoryLabelStore, Message, Outcome, Payload, Session, SessionConfig, SessionInput, SessionOutput};
 use osis_transport::{Address, Unix};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -41,9 +43,9 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::time::Instant;
 
-/// Bytes queued for the node and not yet taken before the connection is dropped (as the
-/// driver's `MAX_QUEUED`; a session within its window never comes near it).
-const MAX_QUEUED: usize = 64 * 1024 * 1024;
+/// Bytes queued for the node and not yet taken before the connection is dropped: what a session
+/// within its window can have unwritten (`SEND_QUEUE`), so a compliant one never reaches it.
+const MAX_QUEUED: usize = osis_proto::session::SEND_QUEUE;
 /// First pause before a redial, doubled after each failure up to `RETRY_MAX`. Minor: 0 redials in
 /// a tight loop (each dial is real work on both sides); infinity never redials, so a dropped
 /// connection stays `Network`; `RETRY_MAX` is how late a client notices its node came back.
@@ -392,21 +394,43 @@ enum Started {
     HandleGone,
 }
 
-/// The session driver: the proto client session over a link, on its own thread; survives
-/// reconnects, the session itself (`cs`) renewed per connection.
+/// A request on the connection's session, by id: what its answer goes to.
+enum Asked {
+    /// An Auth or Call: its token.
+    Call(u64),
+    /// A Sub: its token (the subscription's id is the request's).
+    Sub(u64),
+    /// An Unsub of this subscription id.
+    Unsub(Id),
+    /// A keepalive: while it is out the stall clock runs.
+    Ping,
+}
+
+/// The session driver: a dialer session over a link, on its own thread; survives reconnects,
+/// the session and its ids (`sess`, `asked`, `sub_ids`) renewed per connection.
 struct Io {
-    cs: ClientSession,
+    sess: Session,
+    /// The dialer's store: empty, so the node's Register or Delete here is refused.
+    store: MemoryLabelStore,
     peer_key: [u8; 32],
     secret: Option<osis_crypto::Secret32>,
     /// The client's 16 random bytes in Auth: the same across reconnects.
     session: [u8; 16],
+    /// The last request id taken (ids below `NODE_IDS`).
+    next_id: Id,
+    /// Requests sent (or waiting in the session's window) and not answered.
+    asked: BTreeMap<Id, Asked>,
+    /// Subscription ids reserved (spec/wire.md §11.1): from their Sub until a refusal, a
+    /// `Lapsed` Notify or the Unsub's answer; the token while delivered (none once unsubscribing).
+    sub_ids: BTreeMap<Id, Option<u64>>,
+    /// When to ping if nothing is asked: so a dead idle connection stalls.
+    next_ping: u64,
     calls: BTreeMap<u64, CallReply>,
     writes: BTreeMap<u64, Held>,
     /// While down: when held writes fail.
     give_up: Option<Instant>,
     subs: BTreeMap<u64, SubEntry>,
     schemas: Vec<(String, String)>,
-    timer: Option<u64>,
     taken: u64,
     /// The next write nonce of this session (from 1).
     nonce: u64,
@@ -422,8 +446,8 @@ fn random<const N: usize>() -> [u8; N] {
     b
 }
 
-fn new_session(peer_static_key: [u8; 32]) -> ClientSession {
-    ClientSession::new(osis_proto::ClientConfig { peer_static_key, challenge: random() })
+fn new_session(listener_key: [u8; 32]) -> Session {
+    Session::new(SessionConfig { listener_key, challenge: random(), dialed: true })
 }
 
 /// How a session ends when its Auth is not answered by a Reply. `keyed`: it sent a secret.
@@ -467,60 +491,136 @@ impl Io {
         false
     }
 
+    fn feed(&mut self, input: SessionInput) -> Vec<SessionOutput> {
+        let now = self.now();
+        self.sess.handle(now, &mut self.store, input)
+    }
+
+    /// Sends request `m` under a free id: below `NODE_IDS`, neither asked nor a subscription's.
+    fn request(&mut self, asked: Asked, m: impl FnOnce(Id) -> Message) -> Vec<SessionOutput> {
+        loop {
+            self.next_id = self.next_id.wrapping_add(1) & !NODE_IDS;
+            if self.next_id != 0 && !self.asked.contains_key(&self.next_id) && !self.sub_ids.contains_key(&self.next_id) {
+                break;
+            }
+        }
+        let id = self.next_id;
+        if let Asked::Sub(token) = asked {
+            self.sub_ids.insert(id, Some(token));
+        }
+        self.asked.insert(id, asked);
+        self.feed(SessionInput::Peer(Box::new(m(id))))
+    }
+
+    fn call(&mut self, token: u64, max_reply: usize, method: u64, args: Vec<Value>) -> Vec<SessionOutput> {
+        self.request(Asked::Call(token), |id| Message::Call { id, max_reply: max_reply as u64, method, args })
+    }
+
+    fn sub(&mut self, token: u64, filter: Value) -> Vec<SessionOutput> {
+        self.request(Asked::Sub(token), |id| Message::Sub { id, max_reply: REPLY_BUDGET as u64, filter })
+    }
+
     /// Carries out the session's outputs; `false` once it closed.
-    fn outputs(&mut self, link: &osis_transport::link::LinkTx, out: Vec<ClientOutput>) -> bool {
-        for o in out {
+    fn outputs(&mut self, link: &osis_transport::link::LinkTx, out: Vec<SessionOutput>) -> bool {
+        let mut out = std::collections::VecDeque::from(out);
+        while let Some(o) = out.pop_front() {
             match o {
-                ClientOutput::Send(b) => {
+                SessionOutput::Send(b) => {
                     if !link.send(b, MAX_QUEUED) {
                         return false;
                     }
                 }
-                ClientOutput::Close => return false,
-                ClientOutput::SetTimer(t) => self.timer = Some(t),
-                ClientOutput::Event(ClientEvent::Reply { token, reply }) => {
-                    if let Some(h) = self.writes.remove(&token) {
-                        // a protocol error answers this send only: an earlier one may have run
-                        let _ = h.reply.send(if h.resent && reply.is_err() { Ok(outcome_err(&Error::OutcomeUnknown)) } else { reply });
-                    } else if let Some(r) = self.calls.remove(&token) {
-                        let _ = r.send(reply);
-                    } else if let Some(s) = self.subs.get_mut(&token) {
-                        match reply {
-                            Ok(Outcome::Ok { value }) => (s.sink)(PortEvent::Initial(value)),
-                            Ok(Outcome::Err { code, detail }) => {
-                                (s.sink)(PortEvent::Initial(outcome_err(&c::error_of(code, detail)).to_value()));
-                                self.subs.remove(&token);
-                            }
-                            Err(_) => {
-                                (s.sink)(PortEvent::Closed);
-                                self.subs.remove(&token);
-                            }
-                        }
-                    }
-                }
-                ClientOutput::Event(ClientEvent::Notify { token, payload }) => {
-                    let lapsed = payload == Payload::Lapsed;
-                    if let Some(s) = self.subs.get_mut(&token) {
-                        (s.sink)(PortEvent::Notify(payload));
-                    }
-                    if lapsed {
-                        self.subs.remove(&token);
-                    }
-                }
-                ClientOutput::Event(_) => {}
+                SessionOutput::Close => return false,
+                SessionOutput::Peer(m) => out.extend(self.peer(*m)),
+                // the node's client-port request: a client serves none (an Unsub is answered already)
+                SessionOutput::Request(m) if !matches!(*m, Message::Unsub { .. }) => out.extend(self.feed(SessionInput::Reply { id: m.id(), reply: Err(Code::UNSUPPORTED) })),
+                SessionOutput::Request(_) | SessionOutput::PeerError(_) | SessionOutput::StoreError(_) | SessionOutput::Room { .. } => {}
             }
         }
         true
     }
 
-    fn input(&mut self, c: Command) -> Vec<ClientOutput> {
-        let now = self.now();
-        self.cs.handle(now, ClientInput::Command(c))
+    /// A message the session hands up: an answer to a request of this side's, a Notify, or a
+    /// request of the node's kinds (refused: the session answers Pings itself).
+    fn peer(&mut self, m: Message) -> Vec<SessionOutput> {
+        use Message as M;
+        match m {
+            M::Notify { sub, payload } => {
+                let lapsed = payload == Payload::Lapsed;
+                if let Some(Some(token)) = self.sub_ids.get(&sub).copied() {
+                    self.notify(token, payload);
+                }
+                if lapsed {
+                    self.sub_ids.remove(&sub);
+                }
+            }
+            m if m.is_request() => return self.feed(SessionInput::Peer(Box::new(M::Error { id: m.id(), code: Code::UNSUPPORTED }))),
+            m => {
+                let id = m.id();
+                let r = match m {
+                    M::Reply { outcome, .. } => Ok(outcome),
+                    M::Error { code, .. } => Err(code),
+                    _ => Err(Code::MALFORMED),
+                };
+                match self.asked.remove(&id) {
+                    Some(Asked::Call(token)) => self.reply(token, r),
+                    Some(Asked::Sub(token)) => {
+                        let live = self.sub_ids.get(&id).copied();
+                        if !matches!(r, Ok(Outcome::Ok { .. })) {
+                            self.sub_ids.remove(&id);
+                        }
+                        // a Sub unsubscribed before its reply: nobody waits for it any more
+                        if live != Some(None) {
+                            self.reply(token, r);
+                        }
+                    }
+                    Some(Asked::Unsub(sub)) => {
+                        if self.sub_ids.get(&sub) == Some(&None) {
+                            self.sub_ids.remove(&sub);
+                        }
+                    }
+                    Some(Asked::Ping) | None => {}
+                }
+            }
+        }
+        Vec::new()
+    }
+
+    /// The answer to the Auth, Call or Sub of `token`.
+    fn reply(&mut self, token: u64, reply: std::result::Result<Outcome, Code>) {
+        if let Some(h) = self.writes.remove(&token) {
+            // a protocol error answers this send only: an earlier one may have run
+            let _ = h.reply.send(if h.resent && reply.is_err() { Ok(outcome_err(&Error::OutcomeUnknown)) } else { reply });
+        } else if let Some(r) = self.calls.remove(&token) {
+            let _ = r.send(reply);
+        } else if let Some(s) = self.subs.get_mut(&token) {
+            match reply {
+                Ok(Outcome::Ok { value }) => (s.sink)(PortEvent::Initial(value)),
+                Ok(Outcome::Err { code, detail }) => {
+                    (s.sink)(PortEvent::Initial(outcome_err(&c::error_of(code, detail)).to_value()));
+                    self.subs.remove(&token);
+                }
+                Err(_) => {
+                    (s.sink)(PortEvent::Closed);
+                    self.subs.remove(&token);
+                }
+            }
+        }
+    }
+
+    fn notify(&mut self, token: u64, payload: Payload) {
+        let lapsed = payload == Payload::Lapsed;
+        if let Some(s) = self.subs.get_mut(&token) {
+            (s.sink)(PortEvent::Notify(payload));
+        }
+        if lapsed {
+            self.subs.remove(&token);
+        }
     }
 
     /// A command while the connection is up.
-    fn command(&mut self, cmd: Cmd) -> Vec<ClientOutput> {
-        let c = match cmd {
+    fn command(&mut self, cmd: Cmd) -> Vec<SessionOutput> {
+        match cmd {
             Cmd::Call { token, max_reply, method, mut args, nonce, reply } => {
                 if let Some(slot) = nonce {
                     let resent = self.stamp(&slot, &mut args);
@@ -528,24 +628,26 @@ impl Io {
                 } else {
                     self.calls.insert(token, reply);
                 }
-                Command::Call { token, max_reply: max_reply as u64, method, args }
+                self.call(token, max_reply, method, args)
             }
             Cmd::Sub { token, filter, again, sink } => {
                 self.subs.insert(token, SubEntry { filter: filter.clone(), again, sink });
-                Command::Sub { token, max_reply: REPLY_BUDGET as u64, filter }
+                self.sub(token, filter)
             }
             Cmd::Unsub { token } => {
                 self.subs.remove(&token);
-                Command::Unsub { token }
+                let Some(sub) = self.sub_ids.iter().find(|(_, t)| **t == Some(token)).map(|(i, _)| *i) else { return Vec::new() };
+                self.sub_ids.insert(sub, None);
+                // a Sub still unanswered: its reply comes first, the id stays reserved until this one's
+                self.request(Asked::Unsub(sub), |id| Message::Unsub { id, sub })
             }
             Cmd::Schema { file, src } => {
                 if !self.schemas.iter().any(|(f, s)| *f == file && *s == src) {
                     self.schemas.push((file, src));
                 }
-                return Vec::new();
+                Vec::new()
             }
-        };
-        self.input(c)
+        }
     }
 
     /// A command while the connection is down: never sent (so a write's failure is definite).
@@ -592,36 +694,65 @@ impl Io {
         }
     }
 
-    /// A timer or the idle poll: reports what the transport took, ticks the session.
-    fn timer_fired(&mut self, tx: &osis_transport::link::LinkTx) -> bool {
-        let mut up = true;
-        let now = self.now();
-        if tx.taken() != self.taken {
-            self.taken = tx.taken();
-            let o = self.cs.handle(now, ClientInput::Taken(self.taken));
-            up = self.outputs(tx, o);
+    /// Reports what the transport took, if it took more.
+    fn report_taken(&mut self, tx: &osis_transport::link::LinkTx) -> bool {
+        if tx.taken() == self.taken {
+            return true;
         }
-        self.timer = None;
-        let o = self.cs.handle(now, ClientInput::Timer);
-        up && self.outputs(tx, o)
+        self.taken = tx.taken();
+        let o = self.feed(SessionInput::Taken(self.taken));
+        self.outputs(tx, o)
     }
 
+    /// Bytes from the node.
+    fn bytes(&mut self, tx: &osis_transport::link::LinkTx, b: Vec<u8>) -> bool {
+        if !self.report_taken(tx) {
+            return false;
+        }
+        let o = self.feed(SessionInput::Bytes(b));
+        self.outputs(tx, o)
+    }
+
+    /// The timer: reports what the transport took; closes a stalled connection; pings one with
+    /// nothing asked, so the stall clock runs on it.
+    fn timer_fired(&mut self, tx: &osis_transport::link::LinkTx) -> bool {
+        if !self.report_taken(tx) {
+            return false;
+        }
+        let now = self.now();
+        if self.sess.stall_at().is_some_and(|t| t <= now) {
+            return false;
+        }
+        if self.next_ping <= now {
+            self.next_ping = now.saturating_add(PING_INTERVAL_MS);
+            if self.asked.is_empty() {
+                let o = self.request(Asked::Ping, |id| Message::Ping { id, wall_ms: now });
+                return self.outputs(tx, o);
+            }
+        }
+        true
+    }
+
+    /// Until the next ping, or the oldest request's stall.
     fn wake_in(&self) -> Duration {
-        self.timer.map_or(Duration::from_secs(60), |t| Duration::from_millis(t.saturating_sub(self.now())))
+        let t = self.sess.stall_at().map_or(self.next_ping, |s| s.min(self.next_ping));
+        Duration::from_millis(t.saturating_sub(self.now()))
     }
 
     /// Auth and `whoami` on a new connection, within `wait`.
     async fn start(&mut self, tx: &osis_transport::link::LinkTx, lrx: &mut osis_transport::link::LinkRx, rx: &mut mpsc::UnboundedReceiver<Cmd>) -> Started {
-        self.cs = new_session(self.peer_key);
-        self.timer = None;
+        self.sess = new_session(self.peer_key);
+        self.asked.clear();
+        self.sub_ids.clear();
         self.taken = 0;
+        self.next_ping = self.now().saturating_add(PING_INTERVAL_MS);
         let keyed = self.secret.is_some();
-        let now = self.now();
-        let o = self.cs.handle(now, ClientInput::Start);
+        let o = self.feed(SessionInput::Start);
         let mut up = self.outputs(tx, o);
         let (rtx, rrx) = std::sync::mpsc::channel();
         self.calls.insert(AUTH_TOKEN, rtx.clone());
-        let o = self.input(Command::Auth { token: AUTH_TOKEN, session: self.session, secret: self.secret.clone() });
+        let (secret, session) = (self.secret.clone(), self.session);
+        let o = self.request(Asked::Call(AUTH_TOKEN), |id| Message::Auth { id, secret, session });
         up = up && self.outputs(tx, o);
         let end = Instant::now() + self.wait;
         let mut authed = false;
@@ -637,7 +768,7 @@ impl Io {
                     }
                     authed = true;
                     self.calls.insert(WHO_TOKEN, rtx.clone());
-                    let o = self.input(Command::Call { token: WHO_TOKEN, max_reply: SMALL_REPLY as u64, method: method::WHOAMI, args: Vec::new() });
+                    let o = self.call(WHO_TOKEN, SMALL_REPLY, method::WHOAMI, Vec::new());
                     up = up && self.outputs(tx, o);
                     continue;
                 }
@@ -662,11 +793,7 @@ impl Io {
             let wake = self.wake_in();
             tokio::select! {
                 b = lrx.recv() => match b {
-                    Some(b) => {
-                        let now = self.now();
-                        let o = self.cs.handle(now, ClientInput::Bytes(b));
-                        up = self.outputs(tx, o);
-                    }
+                    Some(b) => up = self.bytes(tx, b),
                     None => up = false,
                 },
                 c = rx.recv() => match c {
@@ -686,11 +813,7 @@ impl Io {
             let wake = self.wake_in();
             tokio::select! {
                 b = lrx.recv() => match b {
-                    Some(b) => {
-                        let now = self.now();
-                        let o = self.cs.handle(now, ClientInput::Bytes(b));
-                        up = self.outputs(tx, o);
-                    }
+                    Some(b) => up = self.bytes(tx, b),
                     None => up = false,
                 },
                 c = rx.recv() => match c {
@@ -713,12 +836,12 @@ impl Io {
             let (rtx, _) = std::sync::mpsc::channel();
             let token = next_token();
             self.calls.insert(token, rtx);
-            let o = self.input(Command::Call { token, max_reply: SMALL_REPLY as u64, method: method::REGISTER_SCHEMA, args: vec![Value::Str(file), Value::Str(src)] });
+            let o = self.call(token, SMALL_REPLY, method::REGISTER_SCHEMA, vec![Value::Str(file), Value::Str(src)]);
             self.outputs(tx, o);
         }
         let subs: Vec<(u64, Value)> = self.subs.iter().map(|(t, s)| (*t, s.filter.clone())).collect();
         for (token, filter) in subs {
-            let o = self.input(Command::Sub { token, max_reply: REPLY_BUDGET as u64, filter });
+            let o = self.sub(token, filter);
             self.outputs(tx, o);
         }
         // in nonce order, marked: the first send may have run, the node's memory tells
@@ -731,8 +854,8 @@ impl Io {
             if let Some(first) = args.first_mut() {
                 *first = u(n | NONCE_RESENT);
             }
-            let (max_reply, method) = (h.max_reply as u64, h.method);
-            let o = self.input(Command::Call { token, max_reply, method, args });
+            let (max_reply, method) = (h.max_reply, h.method);
+            let o = self.call(token, max_reply, method, args);
             self.outputs(tx, o);
         }
     }
@@ -746,7 +869,6 @@ impl Io {
             s.again
         });
     }
-
 }
 
 /// The handle is gone, or the thread died of a panic: calls and writes fail, subscriptions
@@ -844,7 +966,7 @@ fn spawn_connection(via: Via, addr: Address, shown: crate::Address, secret: Opti
     let session = random();
     let link = Arc::new(LinkState::default());
     let (keyed, kept) = (secret.is_some(), secret.clone());
-    let io = Io { cs: new_session(addr.key), peer_key: addr.key, secret, session, calls: BTreeMap::new(), writes: BTreeMap::new(), give_up: None, subs: BTreeMap::new(), schemas: Vec::new(), timer: None, taken: 0, nonce: 1, wait, clock, link: link.clone() };
+    let io = Io { sess: new_session(addr.key), store: MemoryLabelStore::new(), peer_key: addr.key, secret, session, next_id: 0, asked: BTreeMap::new(), sub_ids: BTreeMap::new(), next_ping: 0, calls: BTreeMap::new(), writes: BTreeMap::new(), give_up: None, subs: BTreeMap::new(), schemas: Vec::new(), taken: 0, nonce: 1, wait, clock, link: link.clone() };
     std::thread::Builder::new()
         .name("osis-port-client".into())
         .spawn(move || {

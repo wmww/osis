@@ -149,7 +149,7 @@ fn slow_readers_drain_their_shares() {
             taken[id as usize] = (taken[id as usize] + (64 << 10) * if id == 6 { 1 } else { 8 }).min(wr.of(id));
             (id, taken[id as usize])
         }).collect();
-        now += osis_proto::serving::PUSH_POLL_MS;
+        now += osis_proto::session::PUSH_POLL_MS;
         let mut out = hub.sent(now, &reports);
         out.extend(hub.tick(now));
         wr.add(&out);
@@ -197,7 +197,7 @@ fn tricklers_slow_only_themselves() {
             (id, taken[id as usize])
         }).collect();
         reports.push((16, wr.of(16)));
-        now += osis_proto::serving::PUSH_POLL_MS;
+        now += osis_proto::session::PUSH_POLL_MS;
         let mut out = hub.sent(now, &reports);
         out.extend(hub.tick(now));
         wr.add(&out);
@@ -238,10 +238,10 @@ fn a_big_reply_waits_its_turn() {
     let out = [hub.sent(now, &[(2, t2 + (64 << 10))]), hub.input(now, 2, ping(20))].concat();
     assert!(answers(&out, 2).is_empty() && hub.waits(2));
     // within the report period nothing closes
-    let half = now + osis_proto::serving::PUSH_POLL_MS / 2;
+    let half = now + osis_proto::session::PUSH_POLL_MS / 2;
     let out = [hub.sent(half, &[(2, t2 + (128 << 10))]), hub.tick(half)].concat();
     assert!(closed(&out).is_empty());
-    let at = now + osis_proto::serving::PUSH_POLL_MS;
+    let at = now + osis_proto::session::PUSH_POLL_MS;
     let out = [hub.sent(at, &[(2, t2 + (192 << 10))]), hub.tick(at)].concat();
     assert_eq!(closed(&out), vec![1], "the biggest of those not moving, and only it");
     assert_eq!(answers(&out, 3), vec![30], "3 runs once it fits");
@@ -296,7 +296,7 @@ fn a_queue_behind_stuck_holders_runs_at_once() {
     }
     let mut ran = std::collections::BTreeMap::new();
     for p in 1..=3u32 {
-        now += osis_proto::serving::PUSH_POLL_MS;
+        now += osis_proto::session::PUSH_POLL_MS;
         let out = hub.tick(now);
         eprintln!("p{p} held {} conns {} closes {:?} waits {:?}", hub.held(), hub.connections(), closed(&out), (9..=11).map(|i| hub.waits(i)).collect::<Vec<_>>());
         for id in 9..=11u64 {
@@ -327,14 +327,14 @@ fn a_waiting_request_runs_within_half_the_stall_time() {
     // 5 asks for more than the four drain in half the stall time at 16 KiB a period each
     let out = hub.input(now, 5, asking(50, 3 * mib + 4 * mib / 5));
     assert!(answers(&out, 5).is_empty() && hub.waits(5));
-    let periods = osis_proto::client::STALL_TIMEOUT_MS / 2 / osis_proto::serving::PUSH_POLL_MS;
+    let periods = osis_proto::window::STALL_TIMEOUT_MS / 2 / osis_proto::session::PUSH_POLL_MS;
     let mut ran = None;
     for p in 1..=periods + 1 {
         let reports: Vec<(u64, u64)> = (1..=4u64).map(|id| {
             taken[id as usize] += 16 << 10;
             (id, taken[id as usize])
         }).collect();
-        now += osis_proto::serving::PUSH_POLL_MS;
+        now += osis_proto::session::PUSH_POLL_MS;
         let mut out = hub.sent(now, &reports);
         out.extend(hub.tick(now));
         let gone = closed(&out);
@@ -365,7 +365,7 @@ fn a_reservation_is_not_output_that_stalls() {
     hub.down(now, vec![(2, push(2, 300 * kib))]);
     let out = hub.input(now, 3, asking(30, 400 * kib));
     assert!(answers(&out, 3).is_empty() && hub.waits(3));
-    now += osis_proto::serving::PUSH_POLL_MS;
+    now += osis_proto::session::PUSH_POLL_MS;
     let out = [hub.sent(now, &[]), hub.tick(now)].concat();
     assert_eq!(closed(&out), vec![2]);
     assert_eq!(answers(&out, 3), vec![30]);
@@ -415,7 +415,7 @@ fn one_commit_per_message() {
     let before = w.faults[h].writes();
     let key = l.head_keys().delete.clone();
     let items = (0..1024).map(|n| DeleteItem::sign(&key, &l.id, osis_label::blob_id(&blob(n))).unwrap()).collect();
-    assert_eq!(statuses(&w.run(c, Command::Delete { label: l.id, items })), vec![Code::OK; 1024]);
+    assert_eq!(statuses(&w.run(c, |id| Message::Delete { id, label: l.id, items })), vec![Code::OK; 1024]);
     assert!(w.faults[h].writes() - before <= 3, "{} durable writes of a delete", w.faults[h].writes() - before);
     assert!(live(&w, h, &l).is_empty());
 }
@@ -440,7 +440,7 @@ fn failed_commit_sends_nothing() {
         w.open(a, &l);
         w.faults[h].at(at, Fault::Fail);
         let items = ids.iter().map(|id| DeleteItem::sign(&key, &l.id, *id).unwrap()).collect();
-        let ev = w.run(a, Command::Delete { label: l.id, items });
+        let ev = w.run(a, |id| Message::Delete { id, label: l.id, items });
         let landed = at == 2;
         assert_eq!(statuses(&ev), if landed { vec![Code::OK; 2] } else { vec![] }, "write {at}: {ev:?}");
         assert_eq!(w.link_open(a), landed, "write {at}");
@@ -450,7 +450,7 @@ fn failed_commit_sends_nothing() {
     let a3 = w.connect(h);
     w.open(a3, &l);
     let item = DeleteItem::sign(&key, &l.id, osis_label::blob_id(&blob(10))).unwrap();
-    assert_eq!(statuses(&w.run(a3, Command::Delete { label: l.id, items: vec![item] })), vec![Code::OK]);
+    assert_eq!(statuses(&w.run(a3, |id| Message::Delete { id, label: l.id, items: vec![item] })), vec![Code::OK]);
     assert!(!live(&w, h, &l).contains(&osis_label::blob_id(&blob(10))));
 }
 
@@ -463,8 +463,8 @@ fn host_wide_caps() {
     let (l1, l2, l3) = (Label::new(3), Label::new(4), Label::new(5));
     w.setup(c, &l1);
     w.setup(c, &l2);
-    let ev = w.run(c, l3.register_cmd(0));
-    assert!(matches!(&ev[..], [ClientEvent::Refused { code: Code::STORAGE_CAP, .. }]), "{ev:?}");
+    let ev = w.run(c, |id| l3.register(id, 0));
+    assert!(matches!(&ev[..], [Message::Error { code: Code::STORAGE_CAP, .. }]), "{ev:?}");
     assert_eq!(pull_all(&w, h, &l1, 0..2), vec![Code::OK; 2]);
     assert_eq!(pull_all(&w, h, &l2, 2..4), vec![Code::OK, Code::STORAGE_CAP]);
     assert_eq!(w.hubs[h].store().totals().unwrap().entries, 3);
@@ -499,7 +499,7 @@ fn big_request(node: bool, size: usize) -> Vec<u8> {
         let item = osis_proto::msg::OfferItem::Deposit { label: osis_base::LabelId([1; 16]), blob: vec![1; size], wrap: [0; osis_crypto::WRAP_LEN], sig: osis_crypto::Signature([0; 64]) };
         Message::Offer { id: osis_proto::msg::NODE_IDS | 7, items: vec![item] }
     } else {
-        Message::Call { id: 7, max_reply: osis_proto::client::SMALL_REPLY as u64, method: 0, args: vec![osis_base::Value::bytes(&vec![1; size])] }
+        Message::Call { id: 7, max_reply: osis_proto::window::SMALL_REPLY as u64, method: 0, args: vec![osis_base::Value::bytes(&vec![1; size])] }
     };
     encode_frame(&msg.encode())
 }

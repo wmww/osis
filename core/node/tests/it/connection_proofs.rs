@@ -9,7 +9,7 @@ use crate::peers::reach_ed;
 use osis_base::{Role, Tid};
 use osis_crypto::{Secret32, SigningSecret};
 use osis_node::sync::ConnId;
-use osis_proto::{ActorProof, ClientConfig, ClientEvent, ClientInput, ClientOutput, ClientSession, Code, Command, Message, Prover, encode_frame};
+use osis_proto::{ActorProof, Code, Message, Prover, SessionOutput, encode_frame};
 use std::collections::BTreeSet;
 
 /// The key dialed in these tests: the listener's static key.
@@ -21,14 +21,19 @@ pub(crate) struct Dialer {
     /// The served session at the node (its engine's ID) and its hub connection.
     pub(crate) conn: ConnId,
     pub(crate) hc: ConnId,
-    pub(crate) cs: ClientSession,
+    pub(crate) cs: osis_proto::examples::Dialer,
     /// The listener's Hello challenge.
     pub(crate) hello: [u8; 32],
 }
 
-/// One round of the session: frames to node `n`'s hub, its answers back; the events gathered.
-pub(crate) fn pump(net: &mut Net, n: usize, p: &mut Dialer, outs: Vec<ClientOutput>) -> Vec<ClientEvent> {
-    net.hand_exchange(n, p.hc, &mut p.cs, Vec::new(), outs, false)
+/// One round of the session: frames to node `n`'s hub, its answers back; what the dialer's
+/// session handed up, a Proved's proofs those that verify over this connection.
+pub(crate) fn pump(net: &mut Net, n: usize, p: &mut Dialer, outs: Vec<SessionOutput>) -> Vec<Message> {
+    let got = net.hand_exchange(n, p.hc, &mut p.cs, Vec::new(), outs, false);
+    got.into_iter().map(|m| match m {
+        Message::Proved { id, proofs } => Message::Proved { id, proofs: p.cs.verified(proofs) },
+        m => m,
+    }).collect()
 }
 
 fn dial(net: &mut Net, n: usize) -> Dialer {
@@ -39,20 +44,20 @@ fn dial(net: &mut Net, n: usize) -> Dialer {
 pub(crate) fn dial_with(net: &mut Net, n: usize, challenge: [u8; 32]) -> Dialer {
     let (hc, sent) = net.hand_accept(n, LISTENER, osis_transport::Peer::Key([0x43; 32]));
     let hello = sent.iter().find_map(|b| osis_proto::Hello::decode(&b[4..]).ok()).unwrap().challenge;
-    let mut p = Dialer { conn: 0, hc, cs: ClientSession::new(ClientConfig { peer_static_key: LISTENER, challenge }), hello };
+    let mut p = Dialer { conn: 0, hc, cs: osis_proto::examples::Dialer::new(LISTENER, challenge), hello };
     let now = net.now();
-    let mut outs = p.cs.handle(now, ClientInput::Start);
+    let mut outs = p.cs.start(now);
     for f in sent {
-        outs.extend(p.cs.handle(now, ClientInput::Bytes(f)));
+        outs.extend(p.cs.bytes(now, f));
     }
     pump(net, n, &mut p, outs);
     p.conn = net.served(n, hc);
     p
 }
 
-pub(crate) fn prove(net: &mut Net, n: usize, p: &mut Dialer, provers: Vec<Prover>) -> Vec<ClientEvent> {
+pub(crate) fn prove(net: &mut Net, n: usize, p: &mut Dialer, provers: Vec<Prover>) -> Vec<Message> {
     let now = net.now();
-    let outs = p.cs.handle(now, ClientInput::Command(Command::Prove(provers)));
+    let (_, outs) = p.cs.prove(now, &provers).expect("past the Hellos");
     pump(net, n, p, outs)
 }
 
@@ -61,8 +66,8 @@ fn prove_raw(net: &mut Net, n: usize, p: &Dialer, id: u32, proofs: Vec<ActorProo
     net.hand_input(n, p.hc, encode_frame(&Message::Prove { id, proofs }.encode())).iter().filter_map(|b| Message::decode(&b[4..]).ok()).collect()
 }
 
-pub(crate) fn proved_by(evs: &[ClientEvent]) -> Vec<ActorProof> {
-    evs.iter().find_map(|e| if let ClientEvent::Proved { proofs } = e { Some(proofs.clone()) } else { None }).expect("a Proved answer")
+pub(crate) fn proved_by(evs: &[Message]) -> Vec<ActorProof> {
+    evs.iter().find_map(|e| if let Message::Proved { proofs, .. } = e { Some(proofs.clone()) } else { None }).expect("a Proved answer")
 }
 
 /// A node with an account of its own: (node, account).
@@ -313,16 +318,16 @@ fn no_session_reports_an_actor_it_did_not_prove_spec_sync_10() {
         assert!(!seen.contains(&th), "round {round}: h's actor on a connection M dialed: {seen:?}");
         // the dialer target: honest h dialing M, which echoes h's own Hello challenge at it
         let ch = [round as u8 + 50; 32];
-        let mut cs = ClientSession::new(ClientConfig { peer_static_key: KM, challenge: ch });
+        let mut cs = osis_proto::examples::Dialer::new(KM, ch);
         let now = net.now();
-        cs.handle(now, ClientInput::Start);
-        cs.handle(now, ClientInput::Bytes(encode_frame(&osis_proto::Hello::new(now, ch).encode())));
-        let out = cs.handle(now, ClientInput::Command(Command::Prove(h_provers.clone())));
-        let (id, sent) = out.iter().find_map(|o| if let ClientOutput::Send(f) = o { match Message::decode(&f[4..]) { Ok(Message::Prove { id, proofs }) => Some((id, proofs)), _ => None } } else { None }).expect("h proves");
+        cs.start(now);
+        cs.bytes(now, encode_frame(&osis_proto::Hello::new(now, ch).encode()));
+        let (_, out) = cs.prove(now, &h_provers).expect("past the Hellos");
+        let (id, sent) = osis_proto::examples::frames(&out).iter().find_map(|f| match Message::decode(&f[4..]) { Ok(Message::Prove { id, proofs }) => Some((id, proofs)), _ => None }).expect("h proves");
         // M answers with h's own proof as made, or as re-signed by it over h's challenge
         let reply: Vec<ActorProof> = if pick(2) == 0 { sent } else { h_provers.iter().map(|x| x.sign(false, &ch, &KM)).collect() };
-        let out = cs.handle(now, ClientInput::Bytes(encode_frame(&Message::Proved { id, proofs: reply }.encode())));
-        let got = out.iter().find_map(|o| if let ClientOutput::Event(ClientEvent::Proved { proofs }) = o { Some(proofs.clone()) } else { None }).expect("an answer");
+        let out = cs.bytes(now, encode_frame(&Message::Proved { id, proofs: reply }.encode()));
+        let got = osis_proto::examples::up(&out).into_iter().find_map(|m| if let Message::Proved { proofs, .. } = m { Some(cs.verified(proofs)) } else { None }).expect("an answer");
         assert!(actors(&got).is_disjoint(&h_set), "round {round}: h proved to itself by its own reflected proof");
     }
 }

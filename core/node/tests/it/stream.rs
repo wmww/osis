@@ -371,7 +371,7 @@ fn silent_co_reader(a_dials: bool, wait: u64) -> bool {
 // from an honest co-reader. Not before: one source at a time
 #[test]
 fn a_silent_co_reader_holds_a_body_for_the_stall_time_only_spec_sync_6() {
-    let stall = osis_proto::client::STALL_TIMEOUT_MS;
+    let stall = osis_proto::window::STALL_TIMEOUT_MS;
     for a_dials in [true, false] {
         assert!(!silent_co_reader(a_dials, stall - 30_000), "not from c before the stall time (a dials: {a_dials})");
         assert!(silent_co_reader(a_dials, stall + 60_000), "from c after the stall time (a dials: {a_dials})");
@@ -431,7 +431,7 @@ fn trickling_co_reader(release: bool) -> (Option<u64>, bool, usize, usize, bool)
 // one stall time: then the next source that announced it is asked too, and the connection stays
 #[test]
 fn a_trickling_co_reader_holds_a_body_for_the_stall_time_only_spec_sync_10() {
-    let stall = osis_proto::client::STALL_TIMEOUT_MS;
+    let stall = osis_proto::window::STALL_TIMEOUT_MS;
     let (at, up, before, _, _) = trickling_co_reader(false);
     let at = at.expect("a reads the write from c");
     assert!(at >= stall - 30_000 && at <= stall + 30_000, "read {at} ms after the write");
@@ -454,7 +454,7 @@ fn both_sources_answering_store_once_and_settle_spec_sync_10() {
 // other body for about one stall time from when it was first asked, not one more per answer
 #[test]
 fn a_partial_answer_does_not_restart_the_stall_time_spec_sync_10() {
-    let stall = osis_proto::client::STALL_TIMEOUT_MS;
+    let stall = osis_proto::window::STALL_TIMEOUT_MS;
     let (mut net, [a, b, c], g) = mesh();
     let probe = net.item(b, g, g, "probe");
     net.run();
@@ -565,7 +565,7 @@ fn trickling_first_source(host: bool, release: bool) -> (Option<u64>, usize, usi
 // source is asked when the first passes the stall time (a wake of its own, not the next resync)
 #[test]
 fn a_trickling_source_of_either_kind_holds_a_body_for_the_stall_time_only_spec_sync_10() {
-    let stall = osis_proto::client::STALL_TIMEOUT_MS;
+    let stall = osis_proto::window::STALL_TIMEOUT_MS;
     for host in [false, true] {
         let (at, asked, _, _) = trickling_first_source(host, false);
         let at = at.unwrap_or_else(|| panic!("a reads the write from the other source (host trickles: {host})"));
@@ -940,7 +940,7 @@ fn a_filter_answered_error_settles_spec_wire_11_2() {
 fn smallest_pulls(m: &osis_proto::Message) -> Option<osis_proto::Message> {
     let osis_proto::Message::Pull(p) = m else { return None };
     let mut p = (**p).clone();
-    p.max_reply = osis_proto::client::SMALL_REPLY as u64;
+    p.max_reply = osis_proto::window::SMALL_REPLY as u64;
     p.inline_limit = 0;
     Some(osis_proto::Message::Pull(Box::new(p)))
 }
@@ -1141,7 +1141,7 @@ fn memory_entries_page_within_max_reply_spec_sync_10() {
     net.tamper = Some(Box::new(move |m| match m {
         osis_proto::Message::Pull(p) => {
             let mut p = (**p).clone();
-            p.max_reply = osis_proto::client::SMALL_REPLY as u64;
+            p.max_reply = osis_proto::window::SMALL_REPLY as u64;
             Some(osis_proto::Message::Pull(Box::new(p)))
         }
         osis_proto::Message::PullReply(_) | osis_proto::Message::Stream(_) => {
@@ -1154,7 +1154,7 @@ fn memory_entries_page_within_max_reply_spec_sync_10() {
     net.advance(60_000);
     let got = ts.iter().filter(|t| net.eph_read(a, **t, "t:typing+.0") == Some(s("typing"))).count();
     assert_eq!(got, ts.len(), "every memory entry arrived");
-    assert!(largest.get() <= osis_proto::client::SMALL_REPLY, "a reply of {} bytes", largest.get());
+    assert!(largest.get() <= osis_proto::window::SMALL_REPLY, "a reply of {} bytes", largest.get());
 }
 
 /// Node `b`'s end of `a`'s connection to it, and `a`'s.
@@ -1348,7 +1348,7 @@ fn purged_chunks_served(local: bool) -> (usize, usize) {
         net.feed(b, osis_node::sync::Event::Local);
     }
     let (ac, _) = conn_to(&net, a, b);
-    net.inject(a, ac, &osis_proto::Message::Fetch { id: osis_proto::msg::NODE_IDS | 7, label: l, max_reply: osis_proto::serving::REPLY_BUDGET as u64, ids: chunks.clone() });
+    net.inject(a, ac, &osis_proto::Message::Fetch { id: osis_proto::msg::NODE_IDS | 7, label: l, max_reply: osis_proto::session::REPLY_BUDGET as u64, ids: chunks.clone() });
     net.settle(200_000);
     net.run();
     net.advance(60_000);

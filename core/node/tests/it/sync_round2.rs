@@ -160,7 +160,7 @@ fn delete_resent_after_cut_spec_sync_7() {
     net.engine(a).commit(m).unwrap();
     // the host's pull and the delete are lost with the connection
     let lost = net.sync(a).handle(Event::Local);
-    assert!(lost.iter().any(|x| matches!(x, Action::Send { .. })));
+    assert!(lost.iter().any(|x| matches!(x, Action::Hub { .. })));
     net.set_online(a, false);
     net.set_online(a, true);
     // past the redial pause

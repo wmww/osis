@@ -18,7 +18,7 @@ use osis_crypto::kdf::{beacon, beacon_hit, pair_key};
 use osis_proto::examples::{Label, blob};
 use osis_proto::filter::{beacon_value, decode_gcs};
 use osis_proto::msg::{DeleteItem, OfferItem, Pull, PullReply};
-use osis_proto::{ClientEvent, ClientInput, Code, Command, Event as Ev, Message};
+use osis_proto::{Code, Event as Ev, Message};
 use std::collections::BTreeSet;
 
 const PULL_ID: u32 = 1 << 31 | 1 << 30 | 9;
@@ -46,7 +46,7 @@ fn setup() -> Setup {
     net.sync(b).hub_store().lock().unwrap().set_admission(osis_host::Admission::Open, Default::default());
     let mut p = dial_with(&mut net, b, CHALLENGE);
     let l = Label::new(0x51);
-    command(&mut net, b, &mut p, l.register_cmd(0));
+    request(&mut net, b, &mut p, |id| l.register(id, 0));
     for n in [1, 2] {
         put(&mut net, b, &l, l.entry(blob(n)));
     }
@@ -70,8 +70,8 @@ fn put(net: &mut Net, b: usize, l: &Label, e: osis_proto::examples::Stamped) {
     let hub = net.sync(b).hub_store();
     let mut hub = hub.lock().unwrap();
     let k = osis_proto::LabelStore::head_keys(&*hub, &l.id).unwrap().unwrap();
-    let taken = osis_proto::serving::pulled(&mut *hub, now, &l.id, &k, &e.blob, e.wrap, e.stamp, &mut false).unwrap();
-    assert!(matches!(taken, osis_proto::serving::Taken::Code(Code::OK)), "taken");
+    let taken = osis_proto::session::pulled(&mut *hub, now, &l.id, &k, &e.blob, e.wrap, e.stamp, &mut false).unwrap();
+    assert!(matches!(taken, osis_proto::session::Taken::Code(Code::OK)), "taken");
 }
 
 /// `put`, then what node `b` sent the hand dialer since, as messages.
@@ -80,13 +80,14 @@ fn take(s: &mut Setup, e: osis_proto::examples::Stamped) -> Vec<Message> {
     s.net.run();
     let now = s.net.now();
     let frames = s.net.hand_sent(s.b, s.p.hc);
-    let outs: Vec<_> = frames.into_iter().flat_map(|f| s.p.cs.handle(now, ClientInput::Bytes(f))).collect();
+    let outs: Vec<_> = frames.into_iter().flat_map(|f| s.p.cs.bytes(now, f)).collect();
     shared_of(&pump(&mut s.net, s.b, &mut s.p, outs))
 }
 
-fn command(net: &mut Net, b: usize, p: &mut Dialer, c: Command) -> Vec<ClientEvent> {
+/// The hand dialer's request `m` (under an id it picks) and the exchange: what came back.
+fn request(net: &mut Net, b: usize, p: &mut Dialer, m: impl FnOnce(u32) -> Message) -> Vec<Message> {
     let now = net.now();
-    let outs = p.cs.handle(now, ClientInput::Command(c));
+    let (_, outs) = p.cs.request(now, m);
     pump(net, b, p, outs)
 }
 
@@ -188,7 +189,7 @@ fn a_reader_opens_an_unread_label_by_sync_key_pulls_takes_and_deletes_spec_sync_
     let msgs = take(&mut s, e);
     assert!(added(&pushed(&msgs), l).contains(&third_id), "an entry taken is pushed to the follower: {msgs:?}");
     let item = DeleteItem::sign(&s.l.head_keys().delete, &l, third_id).unwrap();
-    let evs = command(&mut s.net, s.b, &mut s.p, Command::Delete { label: l, items: vec![item] });
+    let evs = request(&mut s.net, s.b, &mut s.p, |id| Message::Delete { id, label: l, items: vec![item] });
     assert!(pushed(&shared_of(&evs)).iter().any(|(x, e)| *x == l && *e == Ev::Deleted(third_id)), "and its deletion: {evs:?}");
 }
 
@@ -227,7 +228,7 @@ fn a_head_change_ends_the_open_after_its_event_spec_sync_10() {
     let reply = opened(&mut s);
     send(&mut s.net, s.b, &mut s.p, Message::Applied { cursor: reply.cursor.clone().unwrap() });
     s.l.rotate(0x61);
-    let evs = command(&mut s.net, s.b, &mut s.p, s.l.register_cmd(1));
+    let evs = request(&mut s.net, s.b, &mut s.p, |id| s.l.register(id, 1));
     let msgs = shared_of(&evs);
     let streams: Vec<osis_proto::msg::Stream> = msgs.iter().filter_map(|m| if let Message::Stream(x) = m { Some((**x).clone()) } else { None }).collect();
     let last = streams.iter().rev().find(|x| x.cursor.is_some()).expect("a push");
@@ -869,7 +870,7 @@ fn a_behind_item_gets_its_steps_child_spec_sync_5() {
     for b in [0x61, 0x62] {
         s.l.rotate(b);
         let i = s.l.steps.len() - 1;
-        command(&mut s.net, s.b, &mut s.p, s.l.register_cmd(i));
+        request(&mut s.net, s.b, &mut s.p, |id| s.l.register(id, i));
     }
     let (p, l) = (&s.p, &s.l);
     let mut wrong_key = behind_item(p, l, 0, true);
@@ -918,11 +919,11 @@ fn a_removed_reader_learns_at_most_the_next_rotation_spec_sync_5() {
     let mut s = setup();
     // step 1 keeps step 0's sync key; steps 2-4 each rotate it (step 2 removes the reader)
     s.l.rotate_keeping_sync(0x41);
-    command(&mut s.net, s.b, &mut s.p, s.l.register_cmd(1));
+    request(&mut s.net, s.b, &mut s.p, |id| s.l.register(id, 1));
     for b in [0x61, 0x63, 0x65] {
         s.l.rotate(b);
         let i = s.l.steps.len() - 1;
-        command(&mut s.net, s.b, &mut s.p, s.l.register_cmd(i));
+        request(&mut s.net, s.b, &mut s.p, |id| s.l.register(id, i));
     }
     assert_eq!(s.l.steps[1].keys.sync, s.l.steps[0].keys.sync);
     s.net.advance(osis_base::format::ROLE_KEEP_MS + 61_000);
@@ -948,7 +949,7 @@ fn a_revoked_link_learns_at_most_the_next_rotation_spec_sync_5() {
     for b in [0x61, 0x63, 0x65] {
         s.l.rotate(b);
         let i = s.l.steps.len() - 1;
-        command(&mut s.net, s.b, &mut s.p, s.l.register_cmd(i));
+        request(&mut s.net, s.b, &mut s.p, |id| s.l.register(id, i));
     }
     let by = |p: &Dialer, l: &Label, step: Option<osis_label::StepId>| OfferItem::Behind { label: l.id, step, key: l.key_actor.verifying_key().to_bytes(), sig: osis_crypto::sign_open(&l.key_actor, &l.id, &p.hello, &LISTENER) };
     let (p, l) = (&s.p, &s.l);
@@ -976,7 +977,7 @@ fn behind_items_on_genesis_read_a_step_each_spec_sync_5() {
         for k in 0..rotations {
             s.l.rotate(0x61 + 2 * k);
             let i = s.l.steps.len() - 1;
-            command(&mut s.net, s.b, &mut s.p, s.l.register_cmd(i));
+            request(&mut s.net, s.b, &mut s.p, |id| s.l.register(id, i));
         }
         let items = (0..1024).map(|_| behind_item(&s.p, &s.l, 0, true)).collect();
         let before = s.net.sync(s.b).pass_stats();
@@ -999,10 +1000,10 @@ fn an_offers_behind_answers_stop_at_the_step_bound_spec_sync_5() {
     for k in 0..29u8 {
         s.l.rotate_keeping_sync(0x61 + 2 * k);
         let i = s.l.steps.len() - 1;
-        command(&mut s.net, s.b, &mut s.p, s.l.register_cmd(i));
+        request(&mut s.net, s.b, &mut s.p, |id| s.l.register(id, i));
     }
     let run = s.l.steps.len() - 1;
-    let bound = osis_proto::serving::REPLY_BUDGET / osis_proto::msg::MAX_STEP_WIRE;
+    let bound = osis_proto::session::REPLY_BUDGET / osis_proto::msg::MAX_STEP_WIRE;
     assert!(1024 * run > bound, "past the bound");
     let items = (0..1024).map(|_| behind_item(&s.p, &s.l, 0, true)).collect();
     let before = s.net.sync(s.b).pass_stats().behind_steps;
@@ -1033,7 +1034,7 @@ fn an_offers_behind_answers_stop_at_the_step_bound_spec_sync_5() {
 fn a_behind_item_by_a_static_entry_gets_the_heads_box_spec_sync_5() {
     let mut s = setup();
     s.l.rotate(0x61);
-    command(&mut s.net, s.b, &mut s.p, s.l.register_cmd(1));
+    request(&mut s.net, s.b, &mut s.p, |id| s.l.register(id, 1));
     let by = |p: &Dialer, l: &Label, k: &osis_crypto::SigningSecret, step: Option<osis_label::StepId>| OfferItem::Behind { label: l.id, step, key: k.verifying_key().to_bytes(), sig: osis_crypto::sign_open(k, &l.id, &p.hello, &LISTENER) };
     let stranger = osis_crypto::SigningSecret::from_seed(&osis_crypto::Secret32::from_bytes([0x77; 32]));
     let (p, l) = (&s.p, &s.l);
@@ -1059,20 +1060,20 @@ fn a_delete_is_taken_only_under_an_open_spec_sync_5() {
     let l = s.l.id;
     let delete = |s: &mut Setup, n: u64| {
         let item = DeleteItem::sign(&s.l.head_keys().delete, &l, osis_label::blob_id(&blob(n))).unwrap();
-        command(&mut s.net, s.b, &mut s.p, Command::Delete { label: l, items: vec![item] })
+        request(&mut s.net, s.b, &mut s.p, |id| Message::Delete { id, label: l, items: vec![item] })
     };
-    let refused = |ev: &[ClientEvent]| ev.iter().any(|e| matches!(e, ClientEvent::Refused { code: Code::NOT_OPENED, .. }));
+    let refused = |ev: &[Message]| ev.iter().any(|e| matches!(e, Message::Error { code: Code::NOT_OPENED, .. }));
     let ev = delete(&mut s, 1);
     assert!(refused(&ev), "not opened: {ev:?}");
     let held = |s: &mut Setup, n: u64| osis_proto::LabelStore::entry(&*s.net.sync(s.b).hub_store().lock().unwrap(), &l, &osis_label::blob_id(&blob(n))).unwrap().is_some();
     assert!(held(&mut s, 1), "kept");
     opened(&mut s);
     let ev = delete(&mut s, 1);
-    assert!(ev.iter().any(|e| matches!(e, ClientEvent::DeleteStatus { codes, .. } if codes == &[Code::OK])), "{ev:?}");
+    assert!(ev.iter().any(|e| matches!(e, Message::Status { codes, .. } if codes == &[Code::OK])), "{ev:?}");
     assert!(!held(&mut s, 1), "deleted");
     // a step with another sync key ends the open
     s.l.rotate(0x61);
-    command(&mut s.net, s.b, &mut s.p, s.l.register_cmd(1));
+    request(&mut s.net, s.b, &mut s.p, |id| s.l.register(id, 1));
     let ev = delete(&mut s, 2);
     assert!(refused(&ev), "the open ended with the head's sync key: {ev:?}");
 }

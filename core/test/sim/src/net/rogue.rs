@@ -1,5 +1,5 @@
-//! Hand-driven client sessions (adversaries): an osis-proto `ClientSession` connected straight to
-//! a host's `Hub`, its requests and the replies exchanged synchronously, no faults. Whatever
+//! Hand-driven dialers (adversaries): a dialer `Session` (osis-proto `examples::Dialer`) connected
+//! straight to a host's `Hub`, its requests and the replies exchanged synchronously, no faults. Whatever
 //! keys and steps the scenario builds go on the wire as they are: a removed holder's stale opens
 //! and steps, frames that are no message. Entries a hostile writer would serve the host are
 //! taken into the host's store as its pull takes them (`host_put`).
@@ -10,7 +10,8 @@ use osis_base::{BlobId, LabelId, Tid};
 use osis_crypto::Secret32;
 use osis_label::Step;
 use osis_node::labeling::HeadKeys;
-use osis_proto::{ClientConfig, ClientEvent, ClientInput, ClientOutput, ClientSession, Code, Command, LabelStore};
+use osis_proto::examples::Dialer;
+use osis_proto::{Code, LabelStore, Message, SessionOutput};
 use osis_host::HubOutput;
 use std::collections::VecDeque;
 
@@ -20,9 +21,9 @@ const ROGUE_STORM: usize = 100_000;
 pub struct Rogue {
     pub s: usize,
     hc: u64,
-    pub session: ClientSession,
-    /// Every event so far.
-    pub events: Vec<ClientEvent>,
+    pub dialer: Dialer,
+    /// Every message its session handed up so far (answers, the host's requests and pushes).
+    pub events: Vec<Message>,
     pub closed: bool,
 }
 
@@ -80,18 +81,19 @@ impl NetSim {
         }
         let mut peer = [0u8; 32];
         peer[..8].copy_from_slice(&self.dice.u64().to_le_bytes());
-        let mut r = Rogue { s, hc, session: ClientSession::new(ClientConfig { peer_static_key: key, challenge }), events: Vec::new(), closed: false };
+        let mut r = Rogue { s, hc, dialer: Dialer::new(key, challenge), events: Vec::new(), closed: false };
         let now = self.now();
         let out = self.hosts.get_mut(s).and_then(|x| x.hub.as_mut()).map(|h| h.accept(now, hc, key, osis_host::Remote::key(peer))).unwrap_or_default();
-        self.pump(&mut r, out, vec![ClientInput::Start])?;
-        if !r.session.is_ready() {
+        let start = r.dialer.start(now);
+        self.pump(&mut r, out, start)?;
+        if r.dialer.session.binding().is_none() {
             return Err(self.fail(format!("rogue session at host {s} not ready: {:?}", r.events)));
         }
         Ok(r)
     }
 
     /// A stamped entry of `label` taken into host `s`'s store as its pull from the writer takes
-    /// one (`serving::pulled`: the stamp checked under the head's keys, then the store's rules);
+    /// one (`session::pulled`: the stamp checked under the head's keys, then the store's rules);
     /// its node sync then serves it. The code (a relay-only blob passed on: OK).
     pub fn host_put(&mut self, s: usize, label: LabelId, e: &Stamped) -> Res<Code> {
         let now = self.now();
@@ -99,14 +101,14 @@ impl NetSim {
         let taken = {
             let mut st = hub.store();
             match st.head_keys(&label) {
-                Ok(Some(k)) => osis_proto::serving::pulled(&mut *st, now, &label, &k, &e.blob, e.wrap, e.stamp, &mut false),
-                Ok(None) => Ok(osis_proto::serving::Taken::Code(Code::UNKNOWN_LABEL)),
+                Ok(Some(k)) => osis_proto::session::pulled(&mut *st, now, &label, &k, &e.blob, e.wrap, e.stamp, &mut false),
+                Ok(None) => Ok(osis_proto::session::Taken::Code(Code::UNKNOWN_LABEL)),
                 Err(x) => Err(x),
             }
         };
         let code = match taken.map_err(|x| self.fail(format!("host {s} put: {x}")))? {
-            osis_proto::serving::Taken::Code(c) => c,
-            osis_proto::serving::Taken::Relay(_) => Code::OK,
+            osis_proto::session::Taken::Code(c) => c,
+            osis_proto::session::Taken::Relay(_) => Code::OK,
         };
         self.note(format!("host {s} took {:?} by hand: {code:?}", e.id));
         self.host_feed(s, osis_node::sync::Event::Local)?;
@@ -114,7 +116,7 @@ impl NetSim {
     }
 
     /// A Deposit item of `label` taken at host `s` as its node sync takes one from a peer
-    /// (`serving::deposit`: the signature under the head's deposit key, then the store's budget,
+    /// (`session::deposit`: the signature under the head's deposit key, then the store's budget,
     /// rates and caps). The code.
     pub fn host_deposit(&mut self, s: usize, label: LabelId, blob: &[u8], wrap: osis_proto::msg::Wrap, sig: &osis_crypto::Signature) -> Res<Code> {
         let now = self.now();
@@ -122,7 +124,7 @@ impl NetSim {
         let taken = {
             let mut st = hub.store();
             match st.head_keys(&label) {
-                Ok(Some(k)) => osis_proto::serving::deposit(&mut *st, now, &label, &k, blob, wrap, sig, &mut false).map(|x| x.0),
+                Ok(Some(k)) => osis_proto::session::deposit(&mut *st, now, &label, &k, blob, wrap, sig, &mut false).map(|x| x.0),
                 Ok(None) => Ok(Code::UNKNOWN_LABEL),
                 Err(x) => Err(x),
             }
@@ -142,19 +144,20 @@ impl NetSim {
         Ok(st.policy().deposit_factor.max(1) * (64 + 4 * claims))
     }
 
-    /// Sends one command; returns the events it caused.
-    pub fn rogue_do(&mut self, r: &mut Rogue, cmd: Command) -> Res<Vec<ClientEvent>> {
+    /// Sends one request (under an id the dialer picks); returns the messages it caused.
+    pub fn rogue_do(&mut self, r: &mut Rogue, req: impl FnOnce(osis_proto::msg::Id) -> Message) -> Res<Vec<Message>> {
         self.report.rogue_sent = self.report.rogue_sent.saturating_add(1);
         let k = r.events.len();
-        self.pump(r, Vec::new(), vec![ClientInput::Command(cmd)])?;
-        let evs: Vec<ClientEvent> = r.events.get(k..).map(|x| x.to_vec()).unwrap_or_default();
-        let refused = evs.iter().filter(|e| matches!(e, ClientEvent::Refused { .. })).count();
+        let (id, out) = r.dialer.request(self.now(), req);
+        self.pump(r, Vec::new(), out)?;
+        let evs: Vec<Message> = r.events.get(k..).map(|x| x.to_vec()).unwrap_or_default();
+        let refused = evs.iter().filter(|e| matches!(e, Message::Error { id: x, .. } if *x == id)).count();
         self.report.rogue_refused = self.report.rogue_refused.saturating_add(refused as u64);
         Ok(evs)
     }
 
     /// Raw bytes on the connection (a frame the session would never write).
-    pub fn rogue_raw(&mut self, r: &mut Rogue, bytes: Vec<u8>) -> Res<Vec<ClientEvent>> {
+    pub fn rogue_raw(&mut self, r: &mut Rogue, bytes: Vec<u8>) -> Res<Vec<Message>> {
         self.report.rogue_sent = self.report.rogue_sent.saturating_add(1);
         let k = r.events.len();
         let now = self.now();
@@ -171,10 +174,10 @@ impl NetSim {
         r.closed = true;
     }
 
-    /// Exchanges until neither side has anything to say.
-    fn pump(&mut self, r: &mut Rogue, hub: Vec<HubOutput>, client: Vec<ClientInput>) -> Res<()> {
-        let mut to_client: VecDeque<ClientInput> = client.into();
-        let mut to_hub: VecDeque<Vec<u8>> = VecDeque::new();
+    /// Exchanges until neither side has anything to say, starting from what the hub and the
+    /// dialer put out.
+    fn pump(&mut self, r: &mut Rogue, hub: Vec<HubOutput>, dialer: Vec<SessionOutput>) -> Res<()> {
+        let mut from_dialer: VecDeque<SessionOutput> = dialer.into();
         let mut from_hub: VecDeque<HubOutput> = hub.into();
         let mut k = 0usize;
         loop {
@@ -185,34 +188,35 @@ impl NetSim {
             let now = self.now();
             if let Some(o) = from_hub.pop_front() {
                 match o {
-                    HubOutput::Send(hc, b) if hc == r.hc => to_client.push_back(ClientInput::Bytes(b)),
+                    HubOutput::Send(hc, b) if hc == r.hc => {
+                        if !r.closed {
+                            from_dialer.extend(r.dialer.bytes(now, b));
+                        }
+                    }
                     HubOutput::Close(hc) if hc == r.hc => r.closed = true,
                     other => self.hub_out(r.s, vec![other])?,
                 }
                 continue;
             }
-            if let Some(b) = to_hub.pop_front() {
-                if r.closed || !self.hosts.get(r.s).is_some_and(|x| x.up) {
-                    continue;
-                }
-                let out = self.hosts.get_mut(r.s).and_then(|x| x.hub.as_mut()).map(|h| h.input(now, r.hc, b)).unwrap_or_default();
-                from_hub.extend(out);
-                continue;
-            }
-            if let Some(i) = to_client.pop_front() {
-                if r.closed {
-                    continue;
-                }
-                for o in r.session.handle(now, i) {
-                    match o {
-                        ClientOutput::Send(b) => to_hub.push_back(b),
-                        ClientOutput::Close => self.rogue_close(r),
-                        ClientOutput::SetTimer(_) => {}
-                        ClientOutput::Event(e) => {
-                            self.note(format!("rogue at s{}: {}", r.s, format!("{e:?}").chars().take(140).collect::<String>()));
-                            r.events.push(e);
+            if let Some(o) = from_dialer.pop_front() {
+                match o {
+                    SessionOutput::Send(b) => {
+                        if r.closed || !self.hosts.get(r.s).is_some_and(|x| x.up) {
+                            continue;
+                        }
+                        let out = self.hosts.get_mut(r.s).and_then(|x| x.hub.as_mut()).map(|h| h.input(now, r.hc, b)).unwrap_or_default();
+                        from_hub.extend(out);
+                    }
+                    SessionOutput::Close => {
+                        if !r.closed {
+                            self.rogue_close(r);
                         }
                     }
+                    SessionOutput::Peer(m) => {
+                        self.note(format!("rogue at s{}: {}", r.s, format!("{m:?}").chars().take(140).collect::<String>()));
+                        r.events.push(*m);
+                    }
+                    other => self.note(format!("rogue at s{}: {}", r.s, format!("{other:?}").chars().take(140).collect::<String>())),
                 }
                 continue;
             }

@@ -1626,7 +1626,7 @@ impl Osis {
             let len = Args::of(vec![self.rcall(method::EXPORT_BUNDLE, vec![v(&groups.to_vec())])?]).uint()?;
             let mut off = 0;
             while off < len {
-                let page = self.primary_call_big(method::BUNDLE_READ, vec![Value::uint(off), Value::uint(STREAM_CHUNK as u64)], STREAM_CHUNK.saturating_add(osis_proto::client::SMALL_REPLY))?;
+                let page = self.primary_call_big(method::BUNDLE_READ, vec![Value::uint(off), Value::uint(STREAM_CHUNK as u64)], STREAM_CHUNK.saturating_add(osis_proto::window::SMALL_REPLY))?;
                 let page = Args::of(vec![page]).bytes()?;
                 if page.is_empty() {
                     return Err(Error::Network("the connection to the node changed during an export: run it again".into()));

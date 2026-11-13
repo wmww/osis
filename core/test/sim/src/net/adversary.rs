@@ -20,7 +20,7 @@ use std::collections::{BTreeMap, BTreeSet};
 /// Per honest node: the commits it had authored when it first held the removal.
 type Knew = BTreeMap<Tid, BTreeSet<CommitId>>;
 use osis_crypto::SeededRng;
-use osis_proto::{ClientEvent, Code, Command, LabelStore};
+use osis_proto::{Code, LabelStore, Message};
 
 /// A blob framing `plaintext` with a fresh salt and no commitments: (ID, bytes, key).
 pub fn seal(sim: &mut NetSim, plaintext: &[u8]) -> Res<(BlobId, Vec<u8>, osis_crypto::Secret32)> {
@@ -142,8 +142,8 @@ pub fn removed_replayer(s: Seeds) -> Res<Report> {
     add_tag(&mut sim, m, t, "m-after")?;
     // the replay, by hand
     let mut r = sim.rogue(s)?;
-    let stale = sim.rogue_do(&mut r, Command::Register { label: old.label, step: old.head.clone(), claim_set: None })?;
-    if stale.iter().any(|e| matches!(e, ClientEvent::Registered { .. })) {
+    let stale = sim.rogue_do(&mut r, |id| Message::Register { id, label: old.label, step: old.head.clone(), claim_set: None })?;
+    if stale.iter().any(|e| matches!(e, Message::Ok { .. })) {
         return Err(sim.fail(format!("the host accepted a stale step from the removed holder: {stale:?}")));
     }
     sim.rogue_close(&mut r);

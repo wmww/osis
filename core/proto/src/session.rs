@@ -1,7 +1,9 @@
-//! Serving side of one connection (spec/sync.md §4-§9, spec/wire.md §11): a sans-I/O state machine
-//! answering the store's requests from a `LabelStore` and handing node-kind messages and
-//! client-port requests to the upper layer. The driver feeds stream bytes and carries out the
-//! outputs.
+//! One connection, whichever side dialed it (spec/sync.md §4-§10, spec/wire.md §11): a sans-I/O
+//! state machine answering the store's requests (Ping, Register, Delete) from a `LabelStore`,
+//! handing node-kind messages and client-port requests to the upper layer, and sending the upper
+//! layer's requests within the request window (`window`), each answer to one of them handed back
+//! up. It sends no request of its own; the upper layer picks every id (spec/wire.md §11.2). The
+//! driver feeds stream bytes and carries out the outputs.
 
 use crate::Error;
 use crate::frame::{FrameDecoder, encode_frame, send};
@@ -36,23 +38,26 @@ const MAX_CACHED: usize = 64;
 pub const PUSH_QUEUE: usize = MAX_MESSAGE + 4;
 /// Bytes a peer can have unwritten to a compliant subscriber: its windowed replies plus the
 /// pushes it holds. A send queue cap at or above it never closes such a connection.
-pub const SEND_QUEUE: usize = crate::client::WINDOW_QUEUE + PUSH_QUEUE;
-/// How often a driver reports `ServingInput::Taken` while a connection holds pushes back
-/// (`ServingSession::held`; ms). Minor consequence: pushes resume up to this late after the
+pub const SEND_QUEUE: usize = crate::window::WINDOW_QUEUE + PUSH_QUEUE;
+/// How often a driver reports `SessionInput::Taken` while a connection holds pushes back
+/// (`Session::held`; ms). Minor consequence: pushes resume up to this late after the
 /// queue has room; 0 spins the driver while a slow subscriber drains, infinity leaves them to
 /// the next unrelated tick.
 pub const PUSH_POLL_MS: u64 = 1000;
 
 #[derive(Clone, Debug)]
-pub struct ServingConfig {
-    /// This side's static key (bound by open signatures).
-    pub static_key: [u8; 32],
+pub struct SessionConfig {
+    /// The listener's static key: this side's when it accepted the connection, the key dialed
+    /// when it dialed (bound by open signatures and connection proofs).
+    pub listener_key: [u8; 32],
     /// This side's Hello challenge: 32 random bytes per connection.
     pub challenge: [u8; 32],
+    /// This side dialed the connection.
+    pub dialed: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum ServingInput {
+pub enum SessionInput {
     /// The connection is up: send Hello.
     Start,
     /// Bytes received on the stream.
@@ -62,21 +67,21 @@ pub enum ServingInput {
     /// delivers instantly (no push is held back); one that does reports it before input bytes,
     /// at ticks, and every `PUSH_POLL_MS` while `held`.
     Taken(u64),
-    /// The answer to a client-port request handed out as `ServingOutput::Request` (Auth, Call,
+    /// The answer to a client-port request handed out as `SessionOutput::Request` (Auth, Call,
     /// Sub): a Reply, or an Error with this code (Auth refused: 1). A reply above the request's
     /// `max_reply` goes as `TooLarge`.
     Reply { id: Id, reply: Result<crate::api::Outcome, Code> },
-    /// Notify pushes, sent in order (as many as the last `ServingOutput::Room` allowed); one for
+    /// Notify pushes, sent in order (as many as the last `SessionOutput::Room` allowed); one for
     /// a subscription no longer live is dropped, one above its `max_reply` goes as `Lapsed`.
     /// Each ends the grant: none gives it back.
     Notify(Vec<(Id, crate::api::Payload)>),
-    /// A shared-set or stream message to send: a request within the request window (spec/sync.md
-    /// §6), sent once it fits; an answer to a request handed up frees its charge; a relay-only
-    /// push (a Stream without cursor) without room is dropped.
+    /// A message of the upper layer's to send: a request (its id the upper layer's) within the
+    /// request window (spec/sync.md §6), sent once it fits; an answer to a request handed up frees
+    /// its charge; a relay-only push (a Stream without cursor) without room is dropped.
     Peer(Box<Message>),
-    /// The upper layer has Notifies to send: `ServingOutput::Room` when the push rule allows.
+    /// The upper layer has Notifies to send: `SessionOutput::Room` when the push rule allows.
     WantRoom,
-    /// The node's room for this connection grew (`ServingSession::set_room`): held requests,
+    /// The node's room for this connection grew (`Session::set_room`): held requests,
     /// pushes and room go on as at a `Taken`.
     Resume,
     /// Node sync opened the label here by a sync-key or static-entry Hit: Deletes of it are
@@ -109,7 +114,7 @@ impl Charge {
     }
 }
 
-/// A frame received and not yet run (`ServingSession::admit`).
+/// A frame received and not yet run (`Session::admit`).
 #[derive(Clone, Debug)]
 struct Pending {
     msg: Result<Message, crate::msg::Rejected>,
@@ -121,13 +126,13 @@ impl Pending {
     /// The room it needs to run: its reply allowance (an Error for a frame that does not
     /// decode).
     fn need(&self) -> usize {
-        if self.msg.is_err() { crate::client::SMALL_REPLY } else { self.allowance }
+        if self.msg.is_err() { crate::window::SMALL_REPLY } else { self.allowance }
     }
 }
 
 /// Bytes of the `Send` outputs in `out`.
-fn sent_bytes(out: &[ServingOutput]) -> u64 {
-    out.iter().map(|o| if let ServingOutput::Send(b) = o { b.len() as u64 } else { 0 }).sum()
+fn sent_bytes(out: &[SessionOutput]) -> u64 {
+    out.iter().map(|o| if let SessionOutput::Send(b) = o { b.len() as u64 } else { 0 }).sum()
 }
 
 /// A relay-only entry (spec/sync.md §5): accepted by stamp, passed on to the label's other
@@ -143,21 +148,22 @@ pub struct Relayed {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum ServingOutput {
+pub enum SessionOutput {
     /// A frame to write.
     Send(Vec<u8>),
     Close,
     /// The peer broke a protocol rule (diagnostic).
     PeerError(Error),
     StoreError(StoreError),
-    /// A client-port request (Auth, Call, Sub) to answer by `ServingInput::Reply`; an Unsub
+    /// A client-port request (Auth, Call, Sub) to answer by `SessionInput::Reply`; an Unsub
     /// (already answered: drop the subscription).
     Request(Box<Message>),
-    /// A shared-set message (spec/wire.md §11.2 Beacons, Offer, Lost, Shared) for the upper layer,
-    /// which answers and sends by `ServingInput::Peer`; likewise the stream's (Pull to Applied).
-    /// A request keeps its frame and reply allowance against `MAX_UNANSWERED` until answered.
+    /// For the upper layer: a node-kind message (`Message::for_node`: the shared set's, the
+    /// stream's, Prove, Resume, Stranded, Suspect), which it answers by `SessionInput::Peer` (a
+    /// request keeps its frame and reply allowance against `MAX_UNANSWERED` until answered); every
+    /// answer to one of its own requests (a reply kind whose id the window knows); a Notify.
     Peer(Box<Message>),
-    /// Notifies of up to `budget` bytes may go now (after `ServingInput::WantRoom`).
+    /// Notifies of up to `budget` bytes may go now (after `SessionInput::WantRoom`).
     Room { budget: usize },
 }
 
@@ -198,12 +204,12 @@ fn check_entry(k: &HeadKeys, key: StepKey, plain: Domain, digest: &[u8; 32], sig
 
 #[derive(Clone)]
 
-pub struct ServingSession {
-    cfg: ServingConfig,
+pub struct Session {
+    cfg: SessionConfig,
     decoder: FrameDecoder,
     version: Option<u64>,
     closed: bool,
-    /// Labels node sync opened here by a sync-key or static-entry Hit (`ServingInput::Open`), by
+    /// Labels node sync opened here by a sync-key or static-entry Hit (`SessionInput::Open`), by
     /// the sync key of the head then (spec/sync.md §5): a head with another sync key ends it
     /// (`still_open`). A Delete is taken only for one of them.
     opened: BTreeMap<LabelId, osis_crypto::VerifyingKey>,
@@ -211,16 +217,16 @@ pub struct ServingSession {
     keys: HashMap<LabelId, HeadKeys>,
     /// A signature of the message being handled verified under no key (`check`).
     struck: bool,
-    /// The dialer's Hello challenge: what this side's connection proofs sign (`binding`).
+    /// The peer's Hello challenge (`binding`).
     peer_challenge: Option<[u8; 32]>,
     /// Bytes of `Send` outputs so far.
     written: u64,
-    /// The last `ServingInput::Taken` (none: never reported, no flow control).
+    /// The last `SessionInput::Taken` (none: never reported, no flow control).
     taken: Option<u64>,
     /// Client-port requests handed out and not answered: their kind (24 Auth, 25 Call, 27 Sub),
     /// reply bound and charge.
     asked: BTreeMap<Id, (u64, usize, Charge)>,
-    /// Node-kind requests handed up (`ServingOutput::Peer`) and not answered: their charge.
+    /// Node-kind requests handed up (`SessionOutput::Peer`) and not answered: their charge.
     node_asked: BTreeMap<Id, Charge>,
     /// The charges in `asked` and `node_asked`: counted against `MAX_UNANSWERED` by every input
     /// until answered; their frames are input held (`buffered`), their allowances output
@@ -243,11 +249,11 @@ pub struct ServingSession {
     pending: VecDeque<Pending>,
     /// What the last own request held back for room needs (`need`).
     flush_need: Option<usize>,
-    /// The push room last granted (`ServingOutput::Room`), reserved until the upper layer's
+    /// The push room last granted (`SessionOutput::Room`), reserved until the upper layer's
     /// pushes (or an empty `Notify`, giving it back) arrive.
     granted: usize,
-    /// The node's own requests to the dialer (`ServingInput::Peer`), within the request window.
-    requests: crate::client::Window,
+    /// The upper layer's requests (`SessionInput::Peer`), within the request window.
+    requests: crate::window::Window,
 }
 
 /// The label's head keys, reloaded when the head changed (a store read, never the path); none
@@ -267,9 +273,9 @@ fn head_keys<'a>(keys: &'a mut HashMap<LabelId, HeadKeys>, store: &dyn LabelStor
     Ok(keys.get(label))
 }
 
-impl ServingSession {
-    pub fn new(cfg: ServingConfig) -> ServingSession {
-        ServingSession {
+impl Session {
+    pub fn new(cfg: SessionConfig) -> Session {
+        Session {
             cfg,
             decoder: FrameDecoder::new(),
             version: None,
@@ -292,7 +298,7 @@ impl ServingSession {
             pending: VecDeque::new(),
             flush_need: None,
             granted: 0,
-            requests: crate::client::Window::default(),
+            requests: crate::window::Window::default(),
         }
     }
 
@@ -310,12 +316,12 @@ impl ServingSession {
 
     /// What the connection holds against the node's bound: its own output (`own`), and the
     /// reply allowances of requests handed up and not answered.
-    pub fn holding(&self, out: &[ServingOutput]) -> usize {
+    pub fn holding(&self, out: &[SessionOutput]) -> usize {
         self.own(out).saturating_add(self.asked_bytes.allowance)
     }
 
     /// Its output: bytes written and not taken, and push room granted and not used.
-    fn own(&self, out: &[ServingOutput]) -> usize {
+    fn own(&self, out: &[SessionOutput]) -> usize {
         self.unsent(out).saturating_add(self.granted)
     }
 
@@ -336,17 +342,17 @@ impl ServingSession {
         if let Some(p) = self.pending.front() {
             return Some(p.need());
         }
-        self.flush_need.or_else(|| self.held().then_some(crate::client::SMALL_REPLY))
+        self.flush_need.or_else(|| self.held().then_some(crate::window::SMALL_REPLY))
     }
 
     /// The node's bytes left for this connection, with `out` written.
-    fn left(&self, out: &[ServingOutput]) -> usize {
+    fn left(&self, out: &[SessionOutput]) -> usize {
         self.slack.saturating_sub(self.holding(out).saturating_sub(self.base))
     }
 
     /// Whether `size` more bytes of output fit the room: the share (or no output of its own:
     /// a reservation for a reply to come is not held against what answers it) and what is left.
-    fn fits(&self, out: &[ServingOutput], size: usize) -> bool {
+    fn fits(&self, out: &[SessionOutput], size: usize) -> bool {
         (self.own(out) == 0 || self.holding(out).saturating_add(size) <= self.share) && size <= self.left(out)
     }
 
@@ -362,9 +368,11 @@ impl ServingSession {
     }
 
     /// Whose challenges and static key this connection binds: `(dialer challenge, listener
-    /// challenge, listener key)`, once the dialer's Hello arrived.
+    /// challenge, listener key)`, whichever side dialed, once the peer's Hello arrived.
     pub fn binding(&self) -> Option<([u8; 32], [u8; 32], [u8; 32])> {
-        self.peer_challenge.map(|p| (p, self.cfg.challenge, self.cfg.static_key))
+        let p = self.peer_challenge?;
+        let (mine, key) = (self.cfg.challenge, self.cfg.listener_key);
+        Some(if self.cfg.dialed { (mine, p, key) } else { (p, mine, key) })
     }
 
     /// Labels node sync opened on this connection (an open a new head ended stays listed until a
@@ -405,14 +413,14 @@ impl ServingSession {
     }
 
     /// Whether the upper layer's push room waits for the transport to take bytes
-    /// (`ServingInput::Taken`).
+    /// (`SessionInput::Taken`).
     pub fn held(&self) -> bool {
         self.room_wanted
     }
 
     /// Push room for Notifies: what fits `REPLY_BUDGET` behind the unwritten bytes (all of it
     /// when none are unwritten) and the node's room (`fits`); none below `SMALL_REPLY`.
-    fn room(&self, out: &[ServingOutput]) -> Option<usize> {
+    fn room(&self, out: &[SessionOutput]) -> Option<usize> {
         let r = match self.backlog(out) {
             0 => REPLY_BUDGET,
             b => REPLY_BUDGET.saturating_sub(b),
@@ -421,33 +429,32 @@ impl ServingSession {
         // pushes (a client-port settle) does not hold back the room that answers it
         let o = self.own(out);
         let share = if o == 0 { usize::MAX } else { self.share.saturating_sub(o) };
-        Some(r.min(share).min(self.left(out))).filter(|r| *r >= crate::client::SMALL_REPLY)
+        Some(r.min(share).min(self.left(out))).filter(|r| *r >= crate::window::SMALL_REPLY)
     }
 
     /// Bytes written and not taken by the transport, with those in `out` (0 without reports).
-    fn backlog(&self, out: &[ServingOutput]) -> usize {
+    fn backlog(&self, out: &[SessionOutput]) -> usize {
         let Some(t) = self.taken else { return 0 };
-        let o: usize = out.iter().map(|x| if let ServingOutput::Send(b) = x { b.len() } else { 0 }).sum();
+        let o: usize = out.iter().map(|x| if let SessionOutput::Send(b) = x { b.len() } else { 0 }).sum();
         usize::try_from(self.written.saturating_sub(t)).unwrap_or(usize::MAX).saturating_add(o)
     }
 
     /// Bytes written and not taken (as far as reported), with those in `out`.
-    fn unsent(&self, out: &[ServingOutput]) -> usize {
-        let o: usize = out.iter().map(|x| if let ServingOutput::Send(b) = x { b.len() } else { 0 }).sum();
+    fn unsent(&self, out: &[SessionOutput]) -> usize {
+        let o: usize = out.iter().map(|x| if let SessionOutput::Send(b) = x { b.len() } else { 0 }).sum();
         let w = self.taken.map_or(0, |t| usize::try_from(self.written.saturating_sub(t)).unwrap_or(usize::MAX));
         w.saturating_add(o)
     }
 
     /// Whether a push of about `size` bytes waits: something is unwritten and it would not fit
     /// `REPLY_BUDGET` behind it, or it does not fit the node's room.
-    fn no_room(&self, out: &[ServingOutput], size: usize) -> bool {
+    fn no_room(&self, out: &[SessionOutput], size: usize) -> bool {
         let b = self.backlog(out);
         b > 0 && b.saturating_add(size) > REPLY_BUDGET || !self.fits(out, size)
     }
 
-    /// When this side's oldest request to the dialer stalls (`client::STALL_TIMEOUT_MS`, the
-    /// requester's rule whichever side dialed): the driver closes the connection then. None while
-    /// none is out.
+    /// When this side's oldest request stalls (`window::STALL_TIMEOUT_MS`, the requester's rule
+    /// whichever side dialed): the driver closes the connection then. None while none is out.
     pub fn stall_at(&self) -> Option<u64> {
         self.requests.stall_at()
     }
@@ -458,13 +465,13 @@ impl ServingSession {
         self.pending.iter().fold(self.decoder.pending().saturating_add(self.asked_bytes.frame), |b, p| b.saturating_add(p.frame))
     }
 
-    /// Bytes written and not taken by the transport, as far as reported (`ServingInput::Taken`;
+    /// Bytes written and not taken by the transport, as far as reported (`SessionInput::Taken`;
     /// none before the first report).
     pub fn unread(&self) -> usize {
         self.unsent(&[])
     }
 
-    pub fn handle(&mut self, now: u64, store: &mut dyn LabelStore, input: ServingInput) -> Vec<ServingOutput> {
+    pub fn handle(&mut self, now: u64, store: &mut dyn LabelStore, input: SessionInput) -> Vec<SessionOutput> {
         let mut out = Vec::new();
         if self.closed {
             return out;
@@ -487,7 +494,7 @@ impl ServingSession {
                     }
                     ok
                 },
-                |f| sends.push(ServingOutput::Send(f)),
+                |f| sends.push(SessionOutput::Send(f)),
             );
             out.extend(sends);
         }
@@ -495,12 +502,12 @@ impl ServingSession {
         out
     }
 
-    fn input(&mut self, now: u64, store: &mut dyn LabelStore, input: ServingInput, out: &mut Vec<ServingOutput>) {
+    fn input(&mut self, now: u64, store: &mut dyn LabelStore, input: SessionInput, out: &mut Vec<SessionOutput>) {
         match input {
-            ServingInput::Peer(m) if m.is_request() => self.requests.queue(*m),
+            SessionInput::Peer(m) if m.is_request() => self.requests.queue(*m),
             // a relay-only push (no cursor) without room is dropped, as the session's own relays
-            ServingInput::Peer(m) if matches!(&*m, Message::Stream(s) if s.cursor.is_none() && self.no_room(out, s.events.iter().map(|(_, e)| event_size(e)).sum())) => {}
-            ServingInput::Peer(m) => {
+            SessionInput::Peer(m) if matches!(&*m, Message::Stream(s) if s.cursor.is_none() && self.no_room(out, s.events.iter().map(|(_, e)| event_size(e)).sum())) => {}
+            SessionInput::Peer(m) => {
                 // the stream's push spends the room granted
                 if matches!(&*m, Message::Stream(s) if s.cursor.is_some()) {
                     self.granted = 0;
@@ -512,8 +519,8 @@ impl ServingSession {
                 }
                 send(out, *m)
             }
-            ServingInput::Start => out.push(ServingOutput::Send(encode_frame(&Hello::new(now, self.cfg.challenge).encode()))),
-            ServingInput::Bytes(b) => {
+            SessionInput::Start => out.push(SessionOutput::Send(encode_frame(&Hello::new(now, self.cfg.challenge).encode()))),
+            SessionInput::Bytes(b) => {
                 self.decoder.push(&b);
                 // frame bytes plus reply allowances of the requests received and not run, all
                 // unanswered when the last was sent, and of those handed out earlier and still
@@ -529,7 +536,7 @@ impl ServingSession {
                         }
                         Ok(None) => break,
                         Err(e) => {
-                            out.push(ServingOutput::PeerError(e));
+                            out.push(SessionOutput::PeerError(e));
                             send(out, Message::Error { id: 0, code: Code::MALFORMED });
                             self.close(out);
                         }
@@ -537,29 +544,29 @@ impl ServingSession {
                 }
                 self.requests.tail_in(self.decoder.partial(), self.decoder.pending(), now);
             }
-            ServingInput::Taken(n) => {
+            SessionInput::Taken(n) => {
                 self.taken = Some(self.taken.map_or(n, |t| t.max(n)));
                 self.requests.taken(n, now);
                 self.resume(out);
             }
-            ServingInput::Resume => {
+            SessionInput::Resume => {
                 self.run_pending(now, store, out);
                 self.resume(out);
             }
-            ServingInput::WantRoom => match self.room(out) {
+            SessionInput::WantRoom => match self.room(out) {
                 Some(budget) => self.grant(budget, out),
                 None => self.room_wanted = true,
             },
-            ServingInput::Reply { id, reply } => self.api_reply(id, reply, out),
-            ServingInput::Open(l) => match self.head(store, &l) {
+            SessionInput::Reply { id, reply } => self.api_reply(id, reply, out),
+            SessionInput::Open(l) => match self.head(store, &l) {
                 Ok(Some(h)) => {
                     self.opened.insert(l, h.keys.sync);
                 }
                 Ok(None) => self.end_open(&l),
-                Err(e) => out.push(ServingOutput::StoreError(e)),
+                Err(e) => out.push(SessionOutput::StoreError(e)),
             },
-            ServingInput::Shut(l) => self.end_open(&l),
-            ServingInput::Notify(notes) => {
+            SessionInput::Shut(l) => self.end_open(&l),
+            SessionInput::Notify(notes) => {
                 // spends the room granted, or gives it back (none)
                 self.granted = 0;
                 self.notify(notes, out)
@@ -568,7 +575,7 @@ impl ServingSession {
     }
 
     /// Held pushes go on, labels in turn, then the room the upper layer waits for.
-    fn resume(&mut self, out: &mut Vec<ServingOutput>) {
+    fn resume(&mut self, out: &mut Vec<SessionOutput>) {
         if self.room_wanted
             && let Some(budget) = self.room(out)
         {
@@ -578,13 +585,13 @@ impl ServingSession {
     }
 
     /// Grants the upper layer push room, reserved until its pushes or an empty `Notify` come.
-    fn grant(&mut self, budget: usize, out: &mut Vec<ServingOutput>) {
+    fn grant(&mut self, budget: usize, out: &mut Vec<SessionOutput>) {
         self.granted = budget;
-        out.push(ServingOutput::Room { budget });
+        out.push(SessionOutput::Room { budget });
     }
 
     /// Notify pushes, in order, within the room last granted.
-    fn notify(&mut self, notes: Vec<(Id, crate::api::Payload)>, out: &mut Vec<ServingOutput>) {
+    fn notify(&mut self, notes: Vec<(Id, crate::api::Payload)>, out: &mut Vec<SessionOutput>) {
         for (sub, payload) in notes {
             let Some(max) = self.api_subs.get(&sub).copied() else { continue };
             let mut m = Message::Notify { sub, payload };
@@ -596,13 +603,13 @@ impl ServingSession {
             if matches!(m, Message::Notify { payload: crate::api::Payload::Lapsed, .. }) {
                 self.api_subs.remove(&sub);
             }
-            out.push(ServingOutput::Send(encode_frame(&body)));
+            out.push(SessionOutput::Send(encode_frame(&body)));
         }
     }
 
     /// Answers a client-port request: the reply bounded by its `max_reply`; a refused or failed
     /// Sub frees its id; a Reply to Auth authenticates the session.
-    fn api_reply(&mut self, id: Id, reply: Result<crate::api::Outcome, Code>, out: &mut Vec<ServingOutput>) {
+    fn api_reply(&mut self, id: Id, reply: Result<crate::api::Outcome, Code>, out: &mut Vec<SessionOutput>) {
         let Some((kind, max, charge)) = self.asked.remove(&id) else { return };
         self.asked_bytes.sub(charge);
         let ok = matches!(reply, Ok(crate::api::Outcome::Ok { .. }));
@@ -622,20 +629,20 @@ impl ServingSession {
                     }
                     body = Message::Reply { id, outcome: crate::api::Outcome::too_large(max) }.encode();
                 }
-                out.push(ServingOutput::Send(encode_frame(&body)));
+                out.push(SessionOutput::Send(encode_frame(&body)));
             }
         }
     }
 
-    fn close(&mut self, out: &mut Vec<ServingOutput>) {
+    fn close(&mut self, out: &mut Vec<SessionOutput>) {
         self.closed = true;
-        out.push(ServingOutput::Close);
+        out.push(SessionOutput::Close);
     }
 
     /// Takes a received frame: the peer's Hello at once; any other decoded and charged
     /// (`MAX_UNANSWERED`), to run in order once its reply allowance fits the room
     /// (`run_pending`).
-    fn admit(&mut self, body: &[u8], charged: &mut usize, out: &mut Vec<ServingOutput>) {
+    fn admit(&mut self, body: &[u8], charged: &mut usize, out: &mut Vec<SessionOutput>) {
         if self.version.is_none() {
             match Hello::decode(body).and_then(|h| negotiate(&[PROTOCOL_VERSION], &h.versions).map(|v| (v, h.challenge))) {
                 Ok((v, challenge)) => {
@@ -643,7 +650,7 @@ impl ServingSession {
                     self.peer_challenge = Some(challenge);
                 }
                 Err(e) => {
-                    out.push(ServingOutput::PeerError(e));
+                    out.push(SessionOutput::PeerError(e));
                     self.close(out);
                 }
             }
@@ -656,10 +663,10 @@ impl ServingSession {
         // one that does is closed before the request runs, so one input costs at most a few
         // requests' reads (a Reconcile reads its ranges' live IDs: up to the whole label), and
         // the requests waiting for room stay within its window
-        let allowance = msg.as_ref().map_or(0, crate::client::allowance);
+        let allowance = msg.as_ref().map_or(0, crate::window::allowance);
         *charged = charged.saturating_add(allowance);
-        if *charged > crate::client::MAX_UNANSWERED {
-            out.push(ServingOutput::PeerError(Error::Cap("requests past the request window")));
+        if *charged > crate::window::MAX_UNANSWERED {
+            out.push(SessionOutput::PeerError(Error::Cap("requests past the request window")));
             self.close(out);
             return;
         }
@@ -667,7 +674,7 @@ impl ServingSession {
     }
 
     /// Runs the frames waiting, in order, while each one's reply fits the room (`fits`).
-    fn run_pending(&mut self, now: u64, store: &mut dyn LabelStore, out: &mut Vec<ServingOutput>) {
+    fn run_pending(&mut self, now: u64, store: &mut dyn LabelStore, out: &mut Vec<SessionOutput>) {
         while let Some(p) = self.pending.front() {
             if self.closed {
                 self.pending.clear();
@@ -685,19 +692,21 @@ impl ServingSession {
             // node's own requests unanswered may be unwritten too (an answered one was
             // delivered).
             if self.unsent(out) > SEND_QUEUE.saturating_add(self.requests.in_flight()) {
-                out.push(ServingOutput::PeerError(Error::Cap("replies past the request window")));
+                out.push(SessionOutput::PeerError(Error::Cap("replies past the request window")));
                 self.close(out);
             }
         }
     }
 
-    fn run(&mut self, now: u64, store: &mut dyn LabelStore, p: Pending, out: &mut Vec<ServingOutput>) {
+    fn run(&mut self, now: u64, store: &mut dyn LabelStore, p: Pending, out: &mut Vec<SessionOutput>) {
         let msg = match p.msg {
             Ok(m) => m,
             Err(r) => {
-                let code = r.code();
-                out.push(ServingOutput::PeerError(r.error));
-                send(out, Message::Error { id: r.id, code });
+                // a request (or unknown kind) is answered; a broken reply or push is dropped
+                if r.wants_answer() {
+                    send(out, Message::Error { id: r.id, code: r.code() });
+                }
+                out.push(SessionOutput::PeerError(r.error));
                 return;
             }
         };
@@ -714,7 +723,7 @@ impl ServingSession {
             Ok(Some(reply)) => send(out, reply),
             Ok(None) => {}
             Err(e) => {
-                out.push(ServingOutput::StoreError(e));
+                out.push(SessionOutput::StoreError(e));
                 send(out, Message::Error { id, code: Code::REFUSED });
             }
         }
@@ -730,18 +739,26 @@ impl ServingSession {
 
     /// `charge`: the request's frame bytes plus reply allowance (a node request handed up keeps it
     /// against `MAX_UNANSWERED` until the upper layer answers).
-    fn dispatch(&mut self, now: u64, store: &mut dyn LabelStore, msg: Message, charge: Charge, out: &mut Vec<ServingOutput>) -> Result<Option<Message>, StoreError> {
+    fn dispatch(&mut self, now: u64, store: &mut dyn LabelStore, msg: Message, charge: Charge, out: &mut Vec<SessionOutput>) -> Result<Option<Message>, StoreError> {
         use Message as M;
-        if msg.for_node() {
-            if !msg.is_request() {
-                self.requests.answered(msg.id(), now);
-            } else if let std::collections::btree_map::Entry::Vacant(e) = self.node_asked.entry(msg.id()) {
+        // an answer goes up to the request it answers; one to nothing breaks the protocol
+        if crate::msg::is_reply_kind(msg.kind()) {
+            if self.requests.answered(msg.id(), now) {
+                out.push(SessionOutput::Peer(Box::new(msg)));
+            } else {
+                out.push(SessionOutput::PeerError(Error::Malformed("reply to no request")));
+            }
+            return Ok(None);
+        }
+        if msg.for_node() || matches!(msg, M::Notify { .. }) {
+            if msg.is_request() {
+                let std::collections::btree_map::Entry::Vacant(e) = self.node_asked.entry(msg.id()) else {
+                    return Ok(Some(M::Error { id: msg.id(), code: Code::MALFORMED }));
+                };
                 e.insert(charge);
                 self.asked_bytes.add(charge);
-            } else {
-                return Ok(Some(M::Error { id: msg.id(), code: Code::MALFORMED }));
             }
-            out.push(ServingOutput::Peer(Box::new(msg)));
+            out.push(SessionOutput::Peer(Box::new(msg)));
             return Ok(None);
         }
         Ok(Some(match msg {
@@ -757,7 +774,6 @@ impl ServingSession {
             }
             // a Fetch is the stream's alone (spec/wire.md §11.2: its id in the node's range)
             M::Fetch { id, .. } => M::Error { id, code: Code::UNSUPPORTED },
-            // Replies and pushes: this side sends no requests.
             _ => return Ok(None),
         }))
     }
@@ -766,7 +782,7 @@ impl ServingSession {
     /// except what the protocol answers itself: a Call, Sub or Unsub before Auth (Error 1), a
     /// Sub reusing a live subscription's id (2) or past `MAX_SUBS` (4), an Unsub (Ok). One handed
     /// out keeps its `charge` against `MAX_UNANSWERED` until answered.
-    fn api_request(&mut self, msg: Message, charge: Charge, out: &mut Vec<ServingOutput>) -> Option<Message> {
+    fn api_request(&mut self, msg: Message, charge: Charge, out: &mut Vec<SessionOutput>) -> Option<Message> {
         use Message as M;
         let id = msg.id();
         if self.asked.contains_key(&id) {
@@ -774,7 +790,7 @@ impl ServingSession {
         }
         match &msg {
             M::Auth { .. } => {
-                self.asked.insert(id, (24, crate::client::SMALL_REPLY, charge));
+                self.asked.insert(id, (24, crate::window::SMALL_REPLY, charge));
             }
             M::Call { max_reply, .. } | M::Sub { max_reply, .. } => {
                 let sub = matches!(msg, M::Sub { .. });
@@ -796,13 +812,13 @@ impl ServingSession {
             M::Unsub { .. } if !self.authed => return Some(M::Error { id, code: Code::REFUSED }),
             M::Unsub { sub, .. } => {
                 self.api_subs.remove(sub);
-                out.push(ServingOutput::Request(Box::new(msg)));
+                out.push(SessionOutput::Request(Box::new(msg)));
                 return Some(M::Ok { id });
             }
             _ => return None,
         }
         self.asked_bytes.add(charge);
-        out.push(ServingOutput::Request(Box::new(msg)));
+        out.push(SessionOutput::Request(Box::new(msg)));
         None
     }
 
@@ -982,9 +998,9 @@ pub fn deposit(store: &mut dyn LabelStore, now: u64, label: &LabelId, k: &HeadKe
     Ok((store.put(label, Put { blob_id, blob, wrap, stamp: None, expiry, ephemeral: class.in_memory(), now, role })?, true))
 }
 
-impl From<Vec<u8>> for ServingOutput {
-    fn from(frame: Vec<u8>) -> ServingOutput {
-        ServingOutput::Send(frame)
+impl From<Vec<u8>> for SessionOutput {
+    fn from(frame: Vec<u8>) -> SessionOutput {
+        SessionOutput::Send(frame)
     }
 }
 
@@ -996,8 +1012,8 @@ mod tests {
     use crate::examples::{CHALLENGE, Fixture, STATIC_KEY};
     use crate::store::MemoryLabelStore;
 
-    fn reply(out: &[ServingOutput]) -> Message {
-        out.iter().find_map(|o| if let ServingOutput::Send(b) = o { Message::decode(&b[4..]).ok() } else { None }).unwrap()
+    fn reply(out: &[SessionOutput]) -> Message {
+        out.iter().find_map(|o| if let SessionOutput::Send(b) = o { Message::decode(&b[4..]).ok() } else { None }).unwrap()
     }
 
     // spec/sync.md §10 (Connection proofs, Pair key): Prove and Resume are the node's, not the
@@ -1005,14 +1021,14 @@ mod tests {
     #[test]
     fn prove_and_resume_go_up() {
         let mut store = MemoryLabelStore::new();
-        let mut c = ServingSession::new(ServingConfig { static_key: STATIC_KEY, challenge: CHALLENGE });
-        c.handle(0, &mut store, ServingInput::Bytes(encode_frame(&Hello::new(0, [2; 32]).encode())));
+        let mut c = Session::new(SessionConfig { listener_key: STATIC_KEY, challenge: CHALLENGE, dialed: false });
+        c.handle(0, &mut store, SessionInput::Bytes(encode_frame(&Hello::new(0, [2; 32]).encode())));
         for m in [Message::Prove { id: 1, proofs: vec![] }, Message::Resume { id: 2, nonce: [3; 32], tags: vec![[4; 32]] }] {
-            let out = c.handle(0, &mut store, ServingInput::Bytes(encode_frame(&m.encode())));
-            assert_eq!(out, vec![ServingOutput::Peer(Box::new(m))]);
+            let out = c.handle(0, &mut store, SessionInput::Bytes(encode_frame(&m.encode())));
+            assert_eq!(out, vec![SessionOutput::Peer(Box::new(m))]);
         }
         for m in [Message::Proved { id: 1, proofs: vec![] }, Message::Resumed { id: 2, nonce: [5; 32], tag: None }] {
-            let out = c.handle(0, &mut store, ServingInput::Peer(Box::new(m.clone())));
+            let out = c.handle(0, &mut store, SessionInput::Peer(Box::new(m.clone())));
             assert_eq!(reply(&out), m);
         }
         assert!(!c.is_closed());
@@ -1026,39 +1042,39 @@ mod tests {
         let mut store = MemoryLabelStore::new();
         let fetch = |k: u32| Message::Fetch { id: crate::msg::NODE_IDS | k, label: LabelId([9; 16]), max_reply: REPLY_BUDGET as u64, ids: vec![BlobId([1; 32])] };
         let start = |store: &mut MemoryLabelStore| {
-            let mut c = ServingSession::new(ServingConfig { static_key: STATIC_KEY, challenge: CHALLENGE });
-            c.handle(0, store, ServingInput::Bytes(encode_frame(&Hello::new(0, [2; 32]).encode())));
+            let mut c = Session::new(SessionConfig { listener_key: STATIC_KEY, challenge: CHALLENGE, dialed: false });
+            c.handle(0, store, SessionInput::Bytes(encode_frame(&Hello::new(0, [2; 32]).encode())));
             c
         };
         let mut c = start(&mut store);
         for k in 0..10 {
-            let out = c.handle(0, &mut store, ServingInput::Bytes(encode_frame(&fetch(k).encode())));
-            assert_eq!(out, vec![ServingOutput::Peer(Box::new(fetch(k)))]);
-            let out = c.handle(0, &mut store, ServingInput::Peer(Box::new(Message::FetchReply { id: crate::msg::NODE_IDS | k, items: vec![] })));
+            let out = c.handle(0, &mut store, SessionInput::Bytes(encode_frame(&fetch(k).encode())));
+            assert_eq!(out, vec![SessionOutput::Peer(Box::new(fetch(k)))]);
+            let out = c.handle(0, &mut store, SessionInput::Peer(Box::new(Message::FetchReply { id: crate::msg::NODE_IDS | k, items: vec![] })));
             assert!(matches!(reply(&out), Message::FetchReply { .. }));
         }
         assert!(!c.is_closed());
         let mut c = start(&mut store);
         let mut up = 0;
         for k in 0..10 {
-            let out = c.handle(0, &mut store, ServingInput::Bytes(encode_frame(&fetch(k).encode())));
-            up += out.iter().filter(|o| matches!(o, ServingOutput::Peer(_))).count();
+            let out = c.handle(0, &mut store, SessionInput::Bytes(encode_frame(&fetch(k).encode())));
+            up += out.iter().filter(|o| matches!(o, SessionOutput::Peer(_))).count();
             if c.is_closed() {
-                assert!(out.iter().any(|o| matches!(o, ServingOutput::PeerError(Error::Cap("requests past the request window")))), "{out:?}");
+                assert!(out.iter().any(|o| matches!(o, SessionOutput::PeerError(Error::Cap("requests past the request window")))), "{out:?}");
                 break;
             }
         }
         assert!(c.is_closed());
-        let each = encode_frame(&fetch(0).encode()).len() + crate::client::allowance(&fetch(0));
-        assert_eq!(up, crate::client::MAX_UNANSWERED / each);
+        let each = encode_frame(&fetch(0).encode()).len() + crate::window::allowance(&fetch(0));
+        assert_eq!(up, crate::window::MAX_UNANSWERED / each);
     }
 
     /// A session past the Hellos, the transport having taken what it wrote.
-    fn started(store: &mut MemoryLabelStore) -> ServingSession {
-        let mut c = ServingSession::new(ServingConfig { static_key: STATIC_KEY, challenge: CHALLENGE });
-        c.handle(0, store, ServingInput::Bytes(encode_frame(&Hello::new(0, [2; 32]).encode())));
+    fn started(store: &mut MemoryLabelStore) -> Session {
+        let mut c = Session::new(SessionConfig { listener_key: STATIC_KEY, challenge: CHALLENGE, dialed: false });
+        c.handle(0, store, SessionInput::Bytes(encode_frame(&Hello::new(0, [2; 32]).encode())));
         let taken = c.written;
-        c.handle(0, store, ServingInput::Taken(taken));
+        c.handle(0, store, SessionInput::Taken(taken));
         c
     }
 
@@ -1068,8 +1084,8 @@ mod tests {
     }
 
     /// The Pongs in `out`.
-    fn pongs(out: &[ServingOutput]) -> usize {
-        out.iter().filter(|o| matches!(o, ServingOutput::Send(b) if matches!(Message::decode(&b[4..]), Ok(Message::Pong { .. })))).count()
+    fn pongs(out: &[SessionOutput]) -> usize {
+        out.iter().filter(|o| matches!(o, SessionOutput::Send(b) if matches!(Message::decode(&b[4..]), Ok(Message::Pong { .. })))).count()
     }
 
     // spec/sync.md §6 (request window), spec/requirements.md (peer input never causes unbounded
@@ -1080,19 +1096,19 @@ mod tests {
         let mut store = MemoryLabelStore::new();
         let mut c = started(&mut store);
         // as many Pings per input as the unanswered bound takes
-        let per = crate::client::MAX_UNANSWERED / (ping(1).len() + crate::client::SMALL_REPLY);
+        let per = crate::window::MAX_UNANSWERED / (ping(1).len() + crate::window::SMALL_REPLY);
         let mut sent = 0;
         for round in 0..1_000_000u32 {
             let bytes: Vec<u8> = (0..per as u32).flat_map(|k| ping(10 + round * per as u32 + k)).collect();
-            let out = c.handle(0, &mut store, ServingInput::Bytes(bytes));
-            sent += out.iter().map(|x| if let ServingOutput::Send(b) = x { b.len() } else { 0 }).sum::<usize>();
+            let out = c.handle(0, &mut store, SessionInput::Bytes(bytes));
+            sent += out.iter().map(|x| if let SessionOutput::Send(b) = x { b.len() } else { 0 }).sum::<usize>();
             if c.is_closed() {
-                assert!(out.iter().any(|o| matches!(o, ServingOutput::PeerError(Error::Cap("replies past the request window")))), "{out:?}");
+                assert!(out.iter().any(|o| matches!(o, SessionOutput::PeerError(Error::Cap("replies past the request window")))), "{out:?}");
                 break;
             }
         }
         assert!(c.is_closed());
-        assert!(sent > SEND_QUEUE && sent <= SEND_QUEUE + 2 * crate::client::SMALL_REPLY, "{sent}");
+        assert!(sent > SEND_QUEUE && sent <= SEND_QUEUE + 2 * crate::window::SMALL_REPLY, "{sent}");
     }
 
     // spec/sync.md §10 (Served connections): with a room set, requests are taken but each runs,
@@ -1103,34 +1119,34 @@ mod tests {
     fn replies_wait_for_room_spec_sync_10() {
         let mut store = MemoryLabelStore::new();
         let mut c = started(&mut store);
-        let allowance = crate::client::SMALL_REPLY;
-        let ids = |out: &[ServingOutput]| out.iter().filter_map(|o| if let ServingOutput::Send(b) = o { Message::decode(&b[4..]).ok().map(|m| m.id()) } else { None }).collect::<Vec<_>>();
+        let allowance = crate::window::SMALL_REPLY;
+        let ids = |out: &[SessionOutput]| out.iter().filter_map(|o| if let SessionOutput::Send(b) = o { Message::decode(&b[4..]).ok().map(|m| m.id()) } else { None }).collect::<Vec<_>>();
         // a reply, framed
         let pong = encode_frame(&Message::Pong { id: 100, wall_ms: 0 }.encode()).len();
         // two replies and an allowance fit; three and an allowance do not
         let share = 2 * pong + allowance + pong / 2;
         c.set_room(share, 64 << 20);
-        let out = c.handle(0, &mut store, ServingInput::Bytes((100..108).flat_map(ping).collect()));
+        let out = c.handle(0, &mut store, SessionInput::Bytes((100..108).flat_map(ping).collect()));
         assert_eq!(ids(&out), vec![100, 101, 102], "three fit the share");
         assert!(c.holding(&[]) <= share);
         assert!(!c.takes_input() && c.need() == Some(allowance));
         // the transport takes them: the next three
         let mut taken = c.written;
         c.set_room(share, 64 << 20);
-        let out = c.handle(0, &mut store, ServingInput::Taken(taken));
+        let out = c.handle(0, &mut store, SessionInput::Taken(taken));
         assert_eq!(ids(&out), vec![103, 104, 105]);
         // the node has nothing left: none runs, even holding nothing
         taken = c.written;
         c.set_room(share, 0);
-        let out = c.handle(0, &mut store, ServingInput::Taken(taken));
+        let out = c.handle(0, &mut store, SessionInput::Taken(taken));
         assert!(ids(&out).is_empty() && c.holding(&[]) == 0 && c.need() == Some(allowance));
         // a share smaller than one reply: one at a time, each alone
         c.set_room(pong / 2, 64 << 20);
-        let out = c.handle(0, &mut store, ServingInput::Resume);
+        let out = c.handle(0, &mut store, SessionInput::Resume);
         assert_eq!(ids(&out), vec![106]);
         taken = c.written;
         c.set_room(pong / 2, 64 << 20);
-        let out = c.handle(0, &mut store, ServingInput::Taken(taken));
+        let out = c.handle(0, &mut store, SessionInput::Taken(taken));
         assert_eq!(ids(&out), vec![107]);
         assert!(c.takes_input() && c.need().is_none());
     }
@@ -1142,26 +1158,26 @@ mod tests {
     #[test]
     fn granted_room_is_reserved_spec_sync_10() {
         let mut store = MemoryLabelStore::new();
-        let mut c = ServingSession::new(ServingConfig { static_key: STATIC_KEY, challenge: CHALLENGE });
-        c.handle(0, &mut store, ServingInput::Bytes(encode_frame(&Hello::new(0, [2; 32]).encode())));
+        let mut c = Session::new(SessionConfig { listener_key: STATIC_KEY, challenge: CHALLENGE, dialed: false });
+        c.handle(0, &mut store, SessionInput::Bytes(encode_frame(&Hello::new(0, [2; 32]).encode())));
         let taken = c.written;
-        c.handle(0, &mut store, ServingInput::Taken(taken));
-        let small = crate::client::SMALL_REPLY;
+        c.handle(0, &mut store, SessionInput::Taken(taken));
+        let small = crate::window::SMALL_REPLY;
         let share = small + small / 2;
         c.set_room(share, 1 << 20);
         // a request handed up: its reply allowance is held for it (its frame is input held)
         let fetch = Message::Fetch { id: crate::msg::NODE_IDS | 1, label: LabelId([9; 16]), max_reply: small as u64, ids: vec![BlobId([1; 32])] };
-        let out = c.handle(0, &mut store, ServingInput::Bytes(encode_frame(&fetch.encode())));
-        assert_eq!(out, vec![ServingOutput::Peer(Box::new(fetch))]);
+        let out = c.handle(0, &mut store, SessionInput::Bytes(encode_frame(&fetch.encode())));
+        assert_eq!(out, vec![SessionOutput::Peer(Box::new(fetch))]);
         let asked = c.holding(&[]);
         assert!(asked == small && asked + small > share);
         // room for the pushes it waits on all the same, reserved once granted
         c.set_room(share, 1 << 20);
-        let out = c.handle(0, &mut store, ServingInput::WantRoom);
-        let budget = out.iter().find_map(|o| if let ServingOutput::Room { budget } = o { Some(*budget) } else { None }).expect("room granted");
+        let out = c.handle(0, &mut store, SessionInput::WantRoom);
+        let budget = out.iter().find_map(|o| if let SessionOutput::Room { budget } = o { Some(*budget) } else { None }).expect("room granted");
         assert_eq!(c.holding(&[]), asked + budget);
         // given back unused
-        c.handle(0, &mut store, ServingInput::Notify(Vec::new()));
+        c.handle(0, &mut store, SessionInput::Notify(Vec::new()));
         assert_eq!(c.holding(&[]), asked);
     }
 
@@ -1175,18 +1191,18 @@ mod tests {
         // three filter pages just under 8 MiB each: below `WINDOW` before the third
         let page = |k: u32| Message::Beacons { id: crate::msg::NODE_IDS | k, generation: 1, base: None, f: 8, lo: 0, hi: 256, gcs: vec![0; (8 << 20) - (64 << 10)], more: false };
         for k in 1..=3 {
-            c.handle(0, &mut store, ServingInput::Peer(Box::new(page(k))));
+            c.handle(0, &mut store, SessionInput::Peer(Box::new(page(k))));
         }
-        assert!(c.requests.in_flight() > crate::client::WINDOW);
+        assert!(c.requests.in_flight() > crate::window::WINDOW);
         // a dialer within its window: requests while what it has in flight is below `WINDOW`
         let (mut bytes, mut in_flight, mut n) = (Vec::new(), 0, 0u32);
-        while in_flight < crate::client::WINDOW {
+        while in_flight < crate::window::WINDOW {
             let f = ping(10 + n);
-            in_flight += f.len() + crate::client::SMALL_REPLY;
+            in_flight += f.len() + crate::window::SMALL_REPLY;
             bytes.extend(f);
             n += 1;
         }
-        let out = c.handle(0, &mut store, ServingInput::Bytes(bytes));
+        let out = c.handle(0, &mut store, SessionInput::Bytes(bytes));
         assert!(!c.is_closed());
         assert_eq!(pongs(&out), n as usize);
     }
@@ -1200,16 +1216,16 @@ mod tests {
         let mut c = started(&mut store);
         // within the bound: three per input, input after input
         for round in 0..4u32 {
-            let out = c.handle(0, &mut store, ServingInput::Bytes((0..3).flat_map(|k| ping(10 + 3 * round + k)).collect()));
+            let out = c.handle(0, &mut store, SessionInput::Bytes((0..3).flat_map(|k| ping(10 + 3 * round + k)).collect()));
             assert_eq!(pongs(&out), 3);
         }
         assert!(!c.is_closed());
         // past it in one input: closed before any of them runs (frames are taken, then run)
         let mut c = started(&mut store);
-        let n = crate::client::MAX_UNANSWERED / crate::client::SMALL_REPLY + 1;
-        let out = c.handle(0, &mut store, ServingInput::Bytes((0..n as u32).flat_map(|k| ping(10 + k)).collect()));
+        let n = crate::window::MAX_UNANSWERED / crate::window::SMALL_REPLY + 1;
+        let out = c.handle(0, &mut store, SessionInput::Bytes((0..n as u32).flat_map(|k| ping(10 + k)).collect()));
         assert!(c.is_closed());
-        assert!(out.iter().any(|o| matches!(o, ServingOutput::PeerError(Error::Cap("requests past the request window")))), "{out:?}");
+        assert!(out.iter().any(|o| matches!(o, SessionOutput::PeerError(Error::Cap("requests past the request window")))), "{out:?}");
         assert_eq!(pongs(&out), 0);
     }
 
@@ -1219,16 +1235,16 @@ mod tests {
     }
 
     /// A session on which node sync opened `label` (its Deletes taken).
-    fn opened_on(store: &mut MemoryLabelStore, label: LabelId) -> ServingSession {
-        let mut c = ServingSession::new(ServingConfig { static_key: STATIC_KEY, challenge: CHALLENGE });
-        c.handle(0, store, ServingInput::Bytes(encode_frame(&Hello::new(0, [2; 32]).encode())));
-        c.handle(0, store, ServingInput::Open(label));
+    fn opened_on(store: &mut MemoryLabelStore, label: LabelId) -> Session {
+        let mut c = Session::new(SessionConfig { listener_key: STATIC_KEY, challenge: CHALLENGE, dialed: false });
+        c.handle(0, store, SessionInput::Bytes(encode_frame(&Hello::new(0, [2; 32]).encode())));
+        c.handle(0, store, SessionInput::Open(label));
         c
     }
 
     /// The codes of a Delete of `items` on a connection.
-    fn delete_codes(c: &mut ServingSession, store: &mut MemoryLabelStore, id: Id, label: LabelId, items: Vec<DeleteItem>) -> Vec<Code> {
-        let out = c.handle(0, store, ServingInput::Bytes(encode_frame(&Message::Delete { id, label, items }.encode())));
+    fn delete_codes(c: &mut Session, store: &mut MemoryLabelStore, id: Id, label: LabelId, items: Vec<DeleteItem>) -> Vec<Code> {
+        let out = c.handle(0, store, SessionInput::Bytes(encode_frame(&Message::Delete { id, label, items }.encode())));
         let Message::Status { codes, .. } = reply(&out) else { panic!("{out:?}") };
         codes
     }
@@ -1316,8 +1332,8 @@ mod tests {
         let mut item = DeleteItem::sign_by(&f.sync, &[(2, &dk)], &[0x7d; 16], &[0x7e; 16], &f.label, blob_id).unwrap();
         item.sig = Signature([0; 64]);
         store.blob_reads.set(0);
-        let out = c.handle(0, &mut store, ServingInput::Bytes(encode_frame(&Message::Delete { id: 2, label: f.label, items: vec![item; 64] }.encode())));
-        let codes = out.iter().find_map(|o| if let ServingOutput::Send(b) = o { if let Ok(Message::Status { codes, .. }) = Message::decode(&b[4..]) { Some(codes) } else { None } } else { None }).unwrap();
+        let out = c.handle(0, &mut store, SessionInput::Bytes(encode_frame(&Message::Delete { id: 2, label: f.label, items: vec![item; 64] }.encode())));
+        let codes = out.iter().find_map(|o| if let SessionOutput::Send(b) = o { if let Ok(Message::Status { codes, .. }) = Message::decode(&b[4..]) { Some(codes) } else { None } } else { None }).unwrap();
         assert_eq!(codes, vec![Code::REFUSED; 64]);
         assert_eq!(store.blob_reads.get(), 0);
     }
@@ -1338,7 +1354,7 @@ mod tests {
         let item = DeleteItem::sign_by(&f.sync, &[(2, &dk)], &[1; 16], &[0x7e; 16], &f.label, blob_id).unwrap();
         let wrong = DeleteItem::sign_by(&f.sync, &[(2, &dk)], &[2; 16], &[0x7e; 16], &f.label, blob_id).unwrap();
         store.blob_reads.set(0);
-        let out = c.handle(0, &mut store, ServingInput::Bytes(encode_frame(&Message::Delete { id: 2, label: f.label, items: vec![wrong, item] }.encode())));
+        let out = c.handle(0, &mut store, SessionInput::Bytes(encode_frame(&Message::Delete { id: 2, label: f.label, items: vec![wrong, item] }.encode())));
         let Message::Status { codes, .. } = reply(&out) else { panic!("{out:?}") };
         assert_eq!(codes, vec![Code::REFUSED, Code::OK]);
         assert_eq!(store.blob_reads.get(), 0);
@@ -1392,18 +1408,89 @@ mod tests {
     #[test]
     fn relay_push_without_room_is_dropped_spec_sync_6() {
         let mut store = MemoryLabelStore::new();
-        let mut c = ServingSession::new(ServingConfig { static_key: STATIC_KEY, challenge: CHALLENGE });
-        c.handle(0, &mut store, ServingInput::Bytes(encode_frame(&Hello::new(0, [2; 32]).encode())));
+        let mut c = Session::new(SessionConfig { listener_key: STATIC_KEY, challenge: CHALLENGE, dialed: false });
+        c.handle(0, &mut store, SessionInput::Bytes(encode_frame(&Hello::new(0, [2; 32]).encode())));
         let taken = c.written;
-        c.handle(0, &mut store, ServingInput::Taken(taken));
+        c.handle(0, &mut store, SessionInput::Taken(taken));
         let push = |n: usize, cursor: Option<Vec<u8>>| {
             let ev = Event::Added { blob_id: BlobId([n as u8; 32]), blob: Some(vec![1; n]), wrap: [0; WRAP_LEN], stamp: None };
-            ServingInput::Peer(Box::new(Message::Stream(Box::new(crate::msg::Stream { events: vec![(LabelId([7; 16]), ev)], cursor, report: false }))))
+            SessionInput::Peer(Box::new(Message::Stream(Box::new(crate::msg::Stream { events: vec![(LabelId([7; 16]), ev)], cursor, report: false }))))
         };
         // 8 MiB unwritten
         assert_eq!(c.handle(0, &mut store, push(8 << 20, Some(vec![1; 72]))).len(), 1);
         assert!(c.handle(0, &mut store, push(1 << 20, None)).is_empty(), "no room: dropped");
         assert_eq!(c.handle(0, &mut store, push(100, None)).len(), 1);
         assert_eq!(c.handle(0, &mut store, push(1 << 20, Some(vec![2; 72]))).len(), 1, "a cursor push goes");
+    }
+
+    /// A dialer of `STATIC_KEY` past the Hellos, its challenge `[1; 32]`, the listener's `[2; 32]`.
+    fn dialer(store: &mut MemoryLabelStore) -> Session {
+        let mut c = Session::new(SessionConfig { listener_key: STATIC_KEY, challenge: [1; 32], dialed: true });
+        c.handle(0, store, SessionInput::Start);
+        c.handle(0, store, SessionInput::Bytes(encode_frame(&Hello::new(0, [2; 32]).encode())));
+        c
+    }
+
+    // spec/sync.md §10 (Connection proofs): both sides bind the same (dialer challenge, listener
+    // challenge, listener key): a dialed session its own challenge first and the key it dialed,
+    // an accepted one the peer's first and its own key; none before the peer's Hello
+    #[test]
+    fn binding_orders_dialer_first_spec_sync_10() {
+        let mut store = MemoryLabelStore::new();
+        let mut acc = Session::new(SessionConfig { listener_key: STATIC_KEY, challenge: [2; 32], dialed: false });
+        acc.handle(0, &mut store, SessionInput::Start);
+        assert_eq!(acc.binding(), None);
+        acc.handle(0, &mut store, SessionInput::Bytes(encode_frame(&Hello::new(0, [1; 32]).encode())));
+        let dialed = dialer(&mut store);
+        assert_eq!(dialed.binding(), Some(([1; 32], [2; 32], STATIC_KEY)));
+        assert_eq!(acc.binding(), dialed.binding());
+    }
+
+    // spec/sync.md §6 (request window), spec/wire.md §11.2: every answer to one of the upper
+    // layer's requests (ids below `NODE_IDS`) comes up, by its id, the session answering none; a
+    // reply to no request in flight (answered already, or never asked) is a protocol error,
+    // handed up to nobody
+    #[test]
+    fn answers_to_upper_requests_come_up_spec_sync_6() {
+        let mut store = MemoryLabelStore::new();
+        let mut c = dialer(&mut store);
+        let l = crate::examples::Label::new(3);
+        let reqs = [
+            Message::Ping { id: 1, wall_ms: 0 },
+            l.register(2, 0),
+            Message::Delete { id: 3, label: l.id, items: vec![DeleteItem::sign(&l.head_keys().delete, &l.id, BlobId([1; 32])).unwrap()] },
+            Message::Auth { id: 4, secret: None, session: [0; 16] },
+            Message::Prove { id: 5, proofs: vec![] },
+        ];
+        for m in reqs.clone() {
+            assert_eq!(reply(&c.handle(0, &mut store, SessionInput::Peer(Box::new(m.clone())))), m);
+        }
+        let answers = vec![
+            Message::Pong { id: 1, wall_ms: 7 },
+            Message::Ok { id: 2 },
+            Message::Status { id: 3, codes: vec![Code::OK] },
+            Message::Error { id: 4, code: Code::REFUSED },
+            Message::Proved { id: 5, proofs: vec![] },
+        ];
+        let bytes: Vec<u8> = answers.iter().flat_map(|m| encode_frame(&m.encode())).collect();
+        let out = c.handle(1, &mut store, SessionInput::Bytes(bytes));
+        assert_eq!(out, answers.into_iter().map(|m| SessionOutput::Peer(Box::new(m))).collect::<Vec<_>>());
+        assert_eq!(c.stall_at(), None, "none out");
+        for stray in [Message::Ok { id: 2 }, Message::Pong { id: 9, wall_ms: 0 }] {
+            let out = c.handle(2, &mut store, SessionInput::Bytes(encode_frame(&stray.encode())));
+            assert_eq!(out, vec![SessionOutput::PeerError(Error::Malformed("reply to no request"))], "{stray:?}");
+        }
+    }
+
+    // spec/wire.md §11.2 (Ping): a dialer answers the listener's Ping as a listener does, from
+    // the session, handing nothing up
+    #[test]
+    fn dialer_answers_ping_spec_wire_11_2() {
+        let mut store = MemoryLabelStore::new();
+        let mut c = dialer(&mut store);
+        let out = c.handle(42, &mut store, SessionInput::Bytes(ping(3)));
+        assert_eq!(out.len(), 1, "{out:?}");
+        assert_eq!(reply(&out), Message::Pong { id: 3, wall_ms: 42 });
+        assert_eq!(c.stall_at(), None, "the answer is no request of its own");
     }
 }

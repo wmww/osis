@@ -1,7 +1,11 @@
-//! Connections to hosts and co-readers: dialing, the labels on each, requests in flight, and the
-//! session's outputs and events.
+//! Connections this node dialed: dialing, the labels on each, its own requests in flight and their
+//! answers. Every dialed connection is a session of the node's hub (`osis_host::Hub::dial`), as
+//! every served one is; node sync sends its requests through it, picking their ids, and takes
+//! their answers back (`dialed_up`).
 
 use super::*;
+use osis_proto::Message;
+use osis_proto::msg::{Id, NODE_IDS};
 
 /// A Deposit item or delete whose request was answered without settling it (a refusal, an entry
 /// the source's stream does not show) goes again at the first pass this long after it was given
@@ -11,14 +15,23 @@ use super::*;
 /// 0 retries at every pass, infinity never retries on this connection (the next one does).
 const RESEND_MS: u64 = 30_000;
 
-/// A request recorded in `Requests` before the command carrying it is given: never answered
-/// until `Requests::given` tags it.
-pub(crate) const UNTAGGED: u64 = u64::MAX;
+/// Whether a request for `k` on `c` is still unanswered (the id it went under, 0 for none), or
+/// was given less than `RESEND_MS` before `now`.
+pub(crate) fn in_flight(c: &Conn, m: &BTreeMap<(LabelId, osis_base::BlobId), (u64, Id)>, k: (LabelId, osis_base::BlobId), now: u64) -> bool {
+    m.get(&k).is_some_and(|(t, id)| now < t.saturating_add(RESEND_MS) || (*id != 0 && c.pending.contains_key(id)))
+}
 
-/// Whether a request for `k` on `c` is still unanswered, or was given less than `RESEND_MS`
-/// before `now`.
-pub(crate) fn in_flight(c: &Conn, m: &BTreeMap<(LabelId, osis_base::BlobId), (u64, u64)>, k: (LabelId, osis_base::BlobId), now: u64) -> bool {
-    m.get(&k).is_some_and(|(t, tag)| now < t.saturating_add(RESEND_MS) || !c.session.answered(*tag))
+/// A request this node sent on a dialed connection and has no answer to yet (ids below
+/// `NODE_IDS`; the shared set's and the stream's are theirs).
+#[derive(Clone, Debug)]
+pub(crate) enum Pending {
+    /// A clock sample's start (spec/sync.md §6), wall ms.
+    Ping { sent: u64 },
+    Prove,
+    Resume,
+    Register(LabelId),
+    /// The entries a Delete names.
+    Delete(LabelId, Vec<osis_base::BlobId>),
 }
 
 /// Open state of a label on a connection: one per (connection, label), and `Open` exactly while
@@ -146,15 +159,33 @@ pub(crate) struct Conn {
     pub address: Address,
     /// A co-reader node, not a host.
     pub peer: bool,
-    pub session: ClientSession,
+    /// The hub's connection, once the transport is up (`Event::Up`).
+    pub hub: Option<osis_host::ConnId>,
+    /// `(dialer challenge, listener challenge, listener key)`, once the peer's Hello arrived
+    /// (`Up::Start`): requests go from then on.
+    pub binding: Option<([u8; 32], [u8; 32], [u8; 32])>,
+    /// This node's requests not answered yet, by id (`request`), and the last id taken.
+    pub pending: BTreeMap<Id, Pending>,
+    pub next_id: Id,
+    /// When the next Ping goes (`PING_INTERVAL_MS`), and the Pongs' clock samples.
+    pub next_ping: u64,
+    /// When node sync last sent or got a message on it (wall ms; `refresh`).
+    pub heard: u64,
+    pub clock: osis_proto::ClockSamples,
     /// What this connection's peer proved (spec/sync.md §10), read by `SyncEngine::proven`.
     pub proven: super::proofs::Proven,
     /// The actors this node proved on it (its Prove), read by `SyncEngine::proved`.
     pub proved: BTreeSet<Tid>,
     pub up: bool,
     pub labels: BTreeMap<LabelId, LConn>,
-    pub timer: Option<u64>,
     pub req: Requests,
+}
+
+impl Conn {
+    /// The peer's Hello arrived: requests may go.
+    pub(crate) fn is_ready(&self) -> bool {
+        self.binding.is_some()
+    }
 }
 
 /// Requests on a connection not answered yet, and what its host would not deliver: they go
@@ -162,10 +193,10 @@ pub(crate) struct Conn {
 #[derive(Clone, Default)]
 pub(crate) struct Requests {
     /// Bodies sent to this connection's source as Deposit items (`deposit_items`), with when
-    /// (wall ms): passes skip them within `RESEND_MS` (`in_flight`).
-    pub sent: BTreeMap<(LabelId, osis_base::BlobId), (u64, u64)>,
-    /// Deletes sent, likewise.
-    pub deleting: BTreeMap<(LabelId, osis_base::BlobId), (u64, u64)>,
+    /// (wall ms) and no request id: passes skip them within `RESEND_MS` (`in_flight`).
+    pub sent: BTreeMap<(LabelId, osis_base::BlobId), (u64, Id)>,
+    /// Deletes sent, with when and the Delete's id: skipped while it is unanswered too.
+    pub deleting: BTreeMap<(LabelId, osis_base::BlobId), (u64, Id)>,
     /// Blobs the host did not deliver when fetched (since it last announced them).
     pub missing: BTreeSet<osis_base::BlobId>,
     /// Labels walked because they were not members after a filter arrival, with that arrival's
@@ -190,15 +221,6 @@ impl Requests {
         self.registered.retain(|l, _| !gone(l));
         self.refused.retain(|(l, _)| !gone(l));
     }
-
-    /// The commands carrying the `UNTAGGED` requests were given, the last tagged `tag`.
-    pub fn given(&mut self, tag: u64) {
-        for v in self.sent.values_mut().chain(self.deleting.values_mut()) {
-            if v.1 == UNTAGGED {
-                v.1 = tag;
-            }
-        }
-    }
 }
 
 impl SyncEngine {
@@ -209,7 +231,7 @@ impl SyncEngine {
     /// answers first settles it (spec/sync.md §10, Bodies).
     pub(crate) fn asked(&self, b: &osis_base::BlobId) -> Option<u64> {
         let now = self.now();
-        self.stream_asks(b).map(|at| at.saturating_add(osis_proto::client::STALL_TIMEOUT_MS)).filter(|t| *t > now).max()
+        self.stream_asks(b).map(|at| at.saturating_add(osis_proto::window::STALL_TIMEOUT_MS)).filter(|t| *t > now).max()
     }
 
     /// `asked`, with a pass of `l` (`settle_by`) when it ends: what skipped or waited on `b` for
@@ -241,6 +263,10 @@ impl SyncEngine {
     pub(crate) fn lost(&mut self, conn: ConnId) {
         // its requests not answered go with it (asked again on the next connection)
         if let Some(c) = self.conns.remove(&conn) {
+            if let Some(h) = c.hub {
+                self.hub_conns.remove(&h);
+            }
+            self.rooms.remove(&conn);
             self.records.conn_gone(conn);
             self.streams.remove(&conn);
             if let Err(e) = self.memory_lost(conn, c.host) {
@@ -339,11 +365,8 @@ impl SyncEngine {
             self.retry.remove(&key);
             let conn = self.next_conn;
             self.next_conn += 1;
-            let mut challenge = [0u8; 32];
-            self.rng.fill_bytes(&mut challenge);
-            // the key the transport authenticates (a LAN address presents its own)
-            let session = ClientSession::new(ClientConfig { peer_static_key: addr.key, challenge });
-            self.conns.insert(conn, Conn { host: key, address: addr.clone(), peer, session, proven: super::proofs::Proven::default(), proved: BTreeSet::new(), up: false, labels: BTreeMap::new(), timer: None, req: Requests::default() });
+            let c = Conn { host: key, address: addr.clone(), peer, hub: None, binding: None, pending: BTreeMap::new(), next_id: 0, next_ping: 0, heard: 0, clock: Default::default(), proven: super::proofs::Proven::default(), proved: BTreeSet::new(), up: false, labels: BTreeMap::new(), req: Requests::default() };
+            self.conns.insert(conn, c);
             out.push(Action::Dial { conn, address: addr });
         }
     }
@@ -357,79 +380,156 @@ impl SyncEngine {
         let wanted: BTreeSet<HostKey> = if self.cfg.peers { self.peers().keys().copied().chain(self.link_routes().into_keys()).collect() } else { BTreeSet::new() };
         let gone: Vec<ConnId> = self.conns.iter().filter(|(_, c)| c.peer && !wanted.contains(&c.host)).map(|(id, _)| *id).collect();
         for conn in gone {
-            out.push(Action::Close { conn });
-            self.lost(conn);
+            self.close_dialed(conn, out);
         }
     }
 
-    /// Runs the session's outputs: frames out, timers, events in.
-    pub(crate) fn outputs(&mut self, conn: ConnId, outputs: Vec<ClientOutput>, out: &mut Vec<Action>) -> Result<()> {
-        for o in outputs {
-            match o {
-                ClientOutput::Send(bytes) => out.push(Action::Send { conn, bytes }),
-                ClientOutput::Close => {
-                    out.push(Action::Close { conn });
-                    self.lost(conn);
-                }
-                ClientOutput::SetTimer(t) => {
-                    if let Some(c) = self.conns.get_mut(&conn) {
-                        c.timer = Some(t);
-                    }
-                }
-                ClientOutput::Event(e) => self.session_event(conn, e, out)?,
+    /// Closes dialed connection `conn` from this side: its hub session, or its dial while not
+    /// up yet.
+    pub(crate) fn close_dialed(&mut self, conn: ConnId, out: &mut Vec<Action>) {
+        match self.conns.get(&conn).map(|c| c.hub) {
+            Some(Some(hub)) => out.push(Action::Hub { conn: hub, down: osis_host::Down::Close }),
+            Some(None) => out.push(Action::Close { conn }),
+            None => return,
+        }
+        self.lost(conn);
+    }
+
+    /// The transport of dialed connection `conn` is up as the hub's connection `hub`, whose
+    /// session sent its Hello.
+    pub(super) fn dialed(&mut self, conn: ConnId, hub: osis_host::ConnId, out: &mut Vec<Action>) {
+        // a dial this node gave up meanwhile closes
+        let Some(c) = self.conns.get_mut(&conn) else {
+            out.push(Action::Hub { conn: hub, down: osis_host::Down::Close });
+            return;
+        };
+        c.up = true;
+        c.hub = Some(hub);
+        self.hub_conns.insert(hub, conn);
+        if c.peer {
+            let (k, a) = (c.host, c.address.clone());
+            if self.lan_up(k, &a) {
+                self.lan_switched(conn, k, out);
             }
+        }
+    }
+
+    /// Sends request `msg` (under an id this picks, below `NODE_IDS`) on dialed connection
+    /// `conn`, its answer awaited as `p`; none before the peer's Hello. Returns the id.
+    pub(crate) fn request(&mut self, conn: ConnId, msg: impl FnOnce(Id) -> Message, p: Pending, out: &mut Vec<Action>) -> Option<Id> {
+        let now = self.now();
+        let c = self.conns.get_mut(&conn)?;
+        let hub = c.hub.filter(|_| c.is_ready())?;
+        let id = loop {
+            c.next_id = c.next_id.wrapping_add(1) & !NODE_IDS;
+            if c.next_id != 0 && !c.pending.contains_key(&c.next_id) {
+                break c.next_id;
+            }
+        };
+        c.pending.insert(id, p);
+        c.heard = now;
+        out.push(Action::Hub { conn: hub, down: osis_host::Down::Message(Box::new(msg(id))) });
+        Some(id)
+    }
+
+    /// A Ping on `conn` (a clock sample; a request out, so its stall clock finds a dead
+    /// connection).
+    pub(crate) fn ping(&mut self, conn: ConnId, out: &mut Vec<Action>) {
+        let now = self.now();
+        self.request(conn, |id| Message::Ping { id, wall_ms: now }, Pending::Ping { sent: now }, out);
+    }
+
+    /// A Delete of `items` of `l` on `conn`, `MAX_ITEMS` per request, each entry recorded with the
+    /// id it went under (`Requests::deleting`). An item that cannot be encoded refuses the delete
+    /// of `l` whole (`refused`), as a malformed answer would.
+    pub(crate) fn delete(&mut self, conn: ConnId, l: LabelId, items: Vec<osis_proto::msg::DeleteItem>, out: &mut Vec<Action>) -> Result<()> {
+        let (items, bad): (Vec<_>, Vec<_>) = items.into_iter().partition(|i| i.to_value().is_ok());
+        let now = self.now();
+        for chunk in items.chunks(osis_proto::msg::MAX_ITEMS) {
+            let ids: Vec<osis_base::BlobId> = chunk.iter().map(|i| i.blob).collect();
+            let Some(id) = self.request(conn, |id| Message::Delete { id, label: l, items: chunk.to_vec() }, Pending::Delete(l, ids.clone()), out) else { break };
+            if let Some(c) = self.conns.get_mut(&conn) {
+                for b in ids {
+                    c.req.deleting.insert((l, b), (now, id));
+                }
+            }
+        }
+        if !bad.is_empty() {
+            self.refused(conn, &Pending::Delete(l, Vec::new()), Code::MALFORMED, out)?;
         }
         Ok(())
     }
 
-    /// Sends a command on a connection.
-    pub(crate) fn command(&mut self, conn: ConnId, cmd: Command, out: &mut Vec<Action>) -> Result<()> {
+    /// The peer's Hello on dialed connection `conn` arrived (`Up::Start`): pings, this node's
+    /// proofs signed over the binding, and every label the peer may hold starts opening.
+    pub(super) fn dialed_start(&mut self, conn: ConnId, binding: ([u8; 32], [u8; 32], [u8; 32]), relayed: bool, out: &mut Vec<Action>) -> Result<()> {
         let now = self.now();
         let Some(c) = self.conns.get_mut(&conn) else { return Ok(()) };
-        let o = c.session.handle(now, ClientInput::Command(cmd));
-        self.outputs(conn, o, out)
-    }
-
-    /// Tags the requests recorded on `conn` before their commands were given (`Requests::given`).
-    pub(crate) fn given(&mut self, conn: ConnId) {
-        if let Some(c) = self.conns.get_mut(&conn) {
-            let tag = c.session.commands();
-            c.req.given(tag);
+        c.binding = Some(binding);
+        c.next_ping = now.saturating_add(osis_proto::hello::PING_INTERVAL_MS);
+        let host = c.host;
+        if relayed {
+            self.set_relayed(conn);
         }
+        let (_, listener, key) = binding;
+        for _ in 0..osis_proto::hello::INITIAL_PINGS {
+            self.ping(conn, out);
+        }
+        // to a key this node chose to dial, a co-reader's or a host's (spec/sync.md §10): the
+        // shared set follows on either; signed over the listener's challenge and key
+        let own = self.dials_own_node(&host);
+        let provers = proofs::provers(&mut self.engine, own)?;
+        if let Some(c) = self.conns.get_mut(&conn) {
+            c.proved = provers.iter().map(|p| p.record.tid()).collect();
+        }
+        let proofs = provers.iter().map(|p| p.sign(false, &listener, &key)).collect();
+        self.request(conn, |id| Message::Prove { id, proofs }, Pending::Prove, out);
+        self.add_new_labels(out)
     }
 
-    pub(super) fn session_event(&mut self, conn: ConnId, e: ClientEvent, out: &mut Vec<Action>) -> Result<()> {
-        use ClientEvent as E;
-        match e {
-            // the node's own dials send no client-port requests
-            E::Reply { .. } | E::Notify { .. } => {}
-            E::Proved { proofs } => {
+    /// A message on dialed connection `conn`: an answer to one of this node's requests here
+    /// (below `NODE_IDS`), or the shared set's and the stream's (`peer_message`). A reply to
+    /// nothing never comes up (the session refuses it).
+    pub(super) fn dialed_message(&mut self, conn: ConnId, m: Message, out: &mut Vec<Action>) -> Result<()> {
+        if m.for_node() || !osis_proto::msg::is_reply_kind(m.kind()) {
+            // a Notify: this side made no subscription
+            if matches!(m, Message::Notify { .. }) {
+                return Ok(());
+            }
+            return self.peer_message(conn, m, out);
+        }
+        let Some(p) = self.conns.get_mut(&conn).and_then(|c| c.pending.remove(&m.id())) else { return Ok(()) };
+        let now = self.now();
+        use Message as M;
+        match (p, m) {
+            (Pending::Ping { sent }, M::Pong { wall_ms, .. }) => {
+                let sample = osis_proto::OffsetSample { sent, peer: wall_ms, received: now };
+                let offset = self.conns.get_mut(&conn).and_then(|c| c.clock.pong(sample));
+                // a diagnostic only: nothing another node sends moves this node's clock (spec/sync.md §6)
+                if let Some(offset_ms) = offset.filter(|o| o.unsigned_abs() > osis_proto::hello::OFFSET_DIAGNOSTIC_MS)
+                    && let Some(c) = self.conns.get(&conn)
+                {
+                    let detail = format!("the clock of {} is {offset_ms:+} ms from this node's", osis_label::address_to_text(&c.address));
+                    self.engine.core.events.diagnostic(Diagnostic { kind: DiagnosticKind::ClockSkew, tids: Vec::new(), commit: None, peer: None, detail }, self.engine.now());
+                    self.engine.core.events.flush();
+                }
+            }
+            (Pending::Prove, M::Proved { proofs, .. }) => {
+                // proved over this side's challenge and the key it dialed: a proof of any other
+                // connection, or the listener's relayed from one, does not verify
+                let Some((dialer, _, key)) = self.conns.get(&conn).and_then(|c| c.binding) else { return Ok(()) };
+                let proofs = osis_proto::prove::verified(proofs, true, &dialer, &key);
                 let proven = super::proofs::proven_actors(&mut self.engine, &proofs)?;
                 if let Some(c) = self.conns.get_mut(&conn) {
                     c.proven = proven;
                 }
                 self.send_resume(conn, out)?;
             }
-            E::Resumed { nonce, tag } => self.resumed(conn, nonce, tag, out)?,
-            E::Peer(m) => self.peer_message(conn, *m, out)?,
-            // Hellos done: every label this host holds starts opening
-            E::Ready { .. } => self.add_new_labels(out)?,
-            // a diagnostic only: nothing another node sends moves this node's clock (spec/sync.md §6)
-            E::ClockOffset { offset_ms, diagnostic } => {
-                if diagnostic && let Some(c) = self.conns.get(&conn) {
-                    let detail = format!("the clock of {} is {offset_ms:+} ms from this node's", osis_label::address_to_text(&c.address));
-                    let now = self.engine.now();
-                    self.engine.core.events.diagnostic(Diagnostic { kind: DiagnosticKind::ClockSkew, tids: Vec::new(), commit: None, peer: None, detail }, now);
-                    self.engine.core.events.flush();
-                }
-            }
-            E::Registered { label } => self.registered(conn, label, out)?,
-            E::DeleteStatus { label, blob_ids, codes } => self.delete_status(conn, label, blob_ids, codes)?,
-            // the listener keeps no record of this side (it refused the proofs or the Resume): the
-            // set still runs
-            E::Refused { kind: osis_proto::client::Request::Prove | osis_proto::client::Request::Resume, .. } => self.no_record(conn, out)?,
-            E::Refused { label, kind, code, .. } => self.refused(conn, label, kind, code, out)?,
-            E::PeerError(e) => self.diag(format!("host: {e}")),
+            (Pending::Resume, M::Resumed { nonce, tag, .. }) => self.resumed(conn, nonce, tag, out)?,
+            (Pending::Register(l), M::Ok { .. }) => self.registered(conn, l, out)?,
+            (Pending::Delete(l, blob_ids), M::Status { codes, .. }) if codes.len() == blob_ids.len() => self.delete_status(conn, l, blob_ids, codes)?,
+            (p, M::Error { code, .. }) => self.refused(conn, &p, code, out)?,
+            (_, _) => self.diag("peer: reply of the wrong kind".into()),
         }
         Ok(())
     }
@@ -448,7 +548,7 @@ impl SyncEngine {
     /// Starts every wanted label not yet on a ready connection to one of its hosts.
     pub(super) fn add_new_labels(&mut self, out: &mut Vec<Action>) -> Result<()> {
         // a host's: a peer's sync IDs are its shared set's, read by the stream (`stream`)
-        let conns: Vec<(ConnId, HostKey)> = self.conns.iter().filter(|(_, c)| c.session.is_ready() && !c.peer).map(|(id, c)| (*id, c.host)).collect();
+        let conns: Vec<(ConnId, HostKey)> = self.conns.iter().filter(|(_, c)| c.is_ready() && !c.peer).map(|(id, c)| (*id, c.host)).collect();
         if conns.is_empty() {
             return Ok(());
         }

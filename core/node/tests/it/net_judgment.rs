@@ -13,7 +13,7 @@ use osis_node::sync::credentials::{Credential, head_credentials};
 use osis_node::sync::ConnId;
 use osis_node::identity::Identity;
 use osis_engine::Mutation;
-use osis_proto::{ClientConfig, ClientEvent, ClientInput, ClientSession, Command, Prover};
+use osis_proto::{Message, Prover};
 
 const LISTENER: [u8; 32] = [0x42; 32];
 
@@ -21,16 +21,16 @@ const LISTENER: [u8; 32] = [0x42; 32];
 /// number of actors the Proved answer names.
 fn prove(net: &mut Net, n: usize, provers: Vec<Prover>) -> (ConnId, usize) {
     let (hc, sent) = net.hand_accept(n, LISTENER, osis_transport::Peer::Key([0x43; 32]));
-    let mut cs = ClientSession::new(ClientConfig { peer_static_key: LISTENER, challenge: [7; 32] });
+    let mut cs = osis_proto::examples::Dialer::new(LISTENER, [7; 32]);
     let now = net.now();
-    let mut outs = cs.handle(now, ClientInput::Start);
+    let mut outs = cs.start(now);
     for f in sent {
-        outs.extend(cs.handle(now, ClientInput::Bytes(f)));
+        outs.extend(cs.bytes(now, f));
     }
     net.hand_exchange(n, hc, &mut cs, Vec::new(), outs, false);
-    let outs = cs.handle(now, ClientInput::Command(Command::Prove(provers)));
+    let (_, outs) = cs.prove(now, &provers).expect("past the Hellos");
     let evs = net.hand_exchange(n, hc, &mut cs, Vec::new(), outs, false);
-    let answered = evs.iter().find_map(|e| if let ClientEvent::Proved { proofs } = e { Some(proofs.len()) } else { None }).unwrap_or(0);
+    let answered = evs.into_iter().find_map(|e| if let Message::Proved { proofs, .. } = e { Some(cs.verified(proofs).len()) } else { None }).unwrap_or(0);
     (net.served(n, hc), answered)
 }
 

@@ -228,7 +228,7 @@ impl SyncEngine {
                 Phase::Failed { .. } | Phase::Refused { .. } => refused = true,
                 Phase::Open { .. } => {
                     open += 1;
-                    if x.idle() && c.session.outstanding() == 0 {
+                    if x.idle() && c.pending.is_empty() {
                         idle += 1;
                     }
                 }

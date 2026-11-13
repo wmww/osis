@@ -11,31 +11,13 @@ use osis_base::format::MAX_DRIFT_MS;
 use osis_base::{Ak, LabelId, Role, Value};
 use osis_crypto::{Epoch, LabelRole, Secret32, SeededRng, label_role_key};
 use osis_label::{Parent, StepKeys, genesis_label, register};
-use osis_node::sync::{Action, ConnId, Event};
-use osis_proto::{FrameDecoder, Message, encode_frame};
+use osis_node::sync::{Action, Event};
+use osis_proto::{Message, encode_frame};
 
 fn frame(m: Message) -> Vec<u8> {
     encode_frame(&m.encode())
 }
 
-/// Messages a node sent in `acts` on `conn`.
-fn sent(acts: &[Action], conn: ConnId) -> Vec<Message> {
-    let mut out = Vec::new();
-    for a in acts {
-        if let Action::Send { conn: c, bytes } = a
-            && *c == conn
-        {
-            let mut d = FrameDecoder::new();
-            d.push(bytes);
-            while let Ok(Some(body)) = d.next_frame() {
-                if let Ok(m) = Message::decode(&body) {
-                    out.push(m);
-                }
-            }
-        }
-    }
-    out
-}
 
 /// A valid genesis step of some other label.
 pub(crate) fn foreign_step(b: u8) -> osis_label::Step {
@@ -57,7 +39,7 @@ fn unsolicited_push_stores_nothing_spec_wire_11_2() {
     let junk = LabelId([0x77; 16]);
     let blobs: Vec<Vec<u8>> = (0..50u8).map(|i| vec![i; 64]).collect();
     let events = blobs.iter().map(|b| osis_proto::Event::Added { blob_id: osis_label::blob_id(b), blob: Some(b.clone()), wrap: [1; osis_crypto::WRAP_LEN], stamp: None }).collect();
-    net.feed(a, Event::Bytes { conn, bytes: frame(crate::net::stream_msg(junk, events, 1)) });
+    net.receive(a, conn, frame(crate::net::stream_msg(junk, events, 1)));
     net.settle(10_000);
     assert!(net.sync(a).entries(&junk).is_empty(), "no entry under a label not opened");
     for b in &blobs {
@@ -67,8 +49,8 @@ fn unsolicited_push_stores_nothing_spec_wire_11_2() {
 
 /// The first relay-only entry sent on `conn` (a cursorless Stream carrying its bytes): its label
 /// and event.
-fn relay_sent(acts: &[Action], conn: osis_node::sync::ConnId) -> Option<(osis_base::LabelId, osis_proto::Event)> {
-    sent(acts, conn).into_iter().find_map(|m| match m {
+fn relay_sent(acts: &[Action], hc: osis_node::sync::ConnId) -> Option<(osis_base::LabelId, osis_proto::Event)> {
+    Net::sent_on(acts, hc).into_iter().find_map(|m| match m {
         Message::Stream(x) if x.cursor.is_none() => x.events.into_iter().find(|(_, e)| matches!(e, osis_proto::Event::Added { blob: Some(b), stamp: Some(_), .. } if osis_label::Prefix::parse(b).is_ok_and(|p| p.class() == osis_label::Class::Relay))),
         _ => None,
     })
@@ -85,18 +67,18 @@ fn replayed_ephemeral_signal_dropped_spec_sync_9() {
     m.set(t, &crate::common::ak("t:typing+~0"), &Value::Bool(true)).unwrap();
     net.engine(a).write(m).unwrap();
     let acts = net.sync(a).handle(Event::Local);
-    let conn_a = net.conn_to(a, host).unwrap();
+    let conn_a = net.link_conn(a, net.conn_to(a, host).unwrap());
     let (label, entry) = relay_sent(&acts, conn_a).expect("relay-only entry sent");
     net.actions(a, acts);
     net.settle(10_000);
     assert_eq!(fired(&rx).len(), 1, "delivered once");
     let push = |e: &osis_proto::Event| crate::net::stream_msg(label, vec![e.clone()], 0);
     let conn_b = net.conn_to(b, host).unwrap();
-    net.feed(b, Event::Bytes { conn: conn_b, bytes: frame(push(&entry)) });
+    net.receive(b, conn_b, frame(push(&entry)));
     assert!(fired(&rx).is_empty(), "a duplicate fires nothing");
     net.clock.advance(MAX_DRIFT_MS + 60_000);
     let conn_b = net.conn_to(b, host).unwrap();
-    net.feed(b, Event::Bytes { conn: conn_b, bytes: frame(push(&entry)) });
+    net.receive(b, conn_b, frame(push(&entry)));
     assert!(fired(&rx).is_empty(), "a stale replay fires nothing");
 }
 
@@ -112,7 +94,7 @@ fn junk_relays_raise_no_floor_spec_sync_9() {
         m.set(t, &crate::common::ak("t:typing+~0"), &Value::Bool(v)).unwrap();
         net.engine(a).write(m).unwrap();
         let acts = net.sync(a).handle(Event::Local);
-        let conn_a = net.conn_to(a, host).unwrap();
+        let conn_a = net.link_conn(a, net.conn_to(a, host).unwrap());
         let (label, _) = relay_sent(&acts, conn_a).expect("relay-only entry sent");
         net.actions(a, acts);
         net.settle(10_000);
@@ -132,7 +114,7 @@ fn junk_relays_raise_no_floor_spec_sync_9() {
         .collect();
     for chunk in junk.chunks(4096) {
         let conn_b = net.conn_to(b, host).unwrap();
-        net.feed(b, Event::Bytes { conn: conn_b, bytes: frame(crate::net::stream_msg(label, chunk.to_vec(), 0)) });
+        net.receive(b, conn_b, frame(crate::net::stream_msg(label, chunk.to_vec(), 0)));
     }
     net.clock.advance(1_000);
     signal(&mut net, false);
@@ -154,7 +136,7 @@ fn junk_under_opened_label_kept_nowhere_spec_sync_3() {
     let conn = net.conn_to(a, host).expect("connected");
     let blobs: Vec<Vec<u8>> = (0..50u8).map(|i| vec![i; 4096]).collect();
     let events = blobs.iter().map(|b| osis_proto::Event::Added { blob_id: osis_label::blob_id(b), blob: Some(b.clone()), wrap: [1; osis_crypto::WRAP_LEN], stamp: None }).collect();
-    net.feed(a, Event::Bytes { conn, bytes: frame(crate::net::stream_msg(l, events, 1 << 40)) });
+    net.receive(a, conn, frame(crate::net::stream_msg(l, events, 1 << 40)));
     net.settle(10_000);
     for b in &blobs {
         assert!(!net.sync(a).holds_blob(&osis_label::blob_id(b)), "no junk blob kept");
@@ -284,7 +266,7 @@ fn header_list_chunks_level_2_only_spec_wire_5() {
             items.push(osis_label::DeleteItem::sign_by(&sync, &[(level, dk)], p.salt(), &osis_crypto::thing_blind(&osis_crypto::link_blind(&keys[b]), h.actor.as_bytes()), &l, *b).unwrap());
         }
         let conn = net.conn_to(a, host).expect("connected");
-        net.actions(a, vec![Action::Send { conn, bytes: frame(Message::Delete { id, label: l, items }) }]);
+        net.actions(a, vec![Action::Hub { conn: net.link_conn(a, conn), down: osis_host::Down::Message(Box::new(Message::Delete { id, label: l, items })) }]);
         net.settle(10_000);
         lists.iter().filter(|id| net.host_ids(host, &l).contains(id)).count()
     };
@@ -321,7 +303,7 @@ fn linked_header_prefix_checked_spec_commits_4() {
     let mut events: Vec<osis_proto::Event> = pk.blobs.iter().map(|(bid, bytes)| osis_proto::Event::Added { blob_id: *bid, blob: Some(bytes.clone()), wrap: [1; osis_crypto::WRAP_LEN], stamp: None }).collect();
     events.push(osis_proto::Event::Added { blob_id: id, blob: Some(blob), wrap, stamp: None });
     let conn = net.conn_to(b, host).expect("connected");
-    net.feed(b, Event::Bytes { conn, bytes: frame(crate::net::stream_msg(l, events, 1 << 40)) });
+    net.receive(b, conn, frame(crate::net::stream_msg(l, events, 1 << 40)));
     net.settle(10_000);
     // the lists came with it, so the prefix is checked at opening: nothing of the forged blob
     // applies and the entry is bad input
@@ -368,10 +350,10 @@ fn unvouched_cap_per_host_spec_sync_3() {
     let l = net.label(a);
     let (c1, c2) = (net.conn_to(a, s1).expect("s1"), net.conn_to(a, s2).expect("s2"));
     let (_, flood) = junk(&l, 1, 40, None);
-    net.feed(a, Event::Bytes { conn: c1, bytes: frame(flood) });
+    net.receive(a, c1, frame(flood));
     net.settle(10_000);
     let (ids, other) = junk(&l, 2, 1, None);
-    net.feed(a, Event::Bytes { conn: c2, bytes: frame(other) });
+    net.receive(a, c2, frame(other));
     net.settle(10_000);
     assert!(net.sync(a).entries(&l).iter().any(|(b, _)| *b == ids[0]), "s2's entry crowded out by s1's junk");
 }
@@ -408,7 +390,7 @@ fn host_lists_invalid(n: usize, memory: bool) -> usize {
         flood.push(id);
         events.push(ev);
     }
-    net.feed(b, Event::Bytes { conn, bytes: push(l, events) });
+    net.receive(b, conn, push(l, events));
     net.settle(10_000);
     net.advance(1_000);
     flood.iter().filter(|c| net.engine(b).header(c).is_some()).count()
@@ -453,7 +435,7 @@ fn old_step_stamp_vouches_nothing_spec_sync_5() {
     let before = net.sync(a).entries(&l).len();
     let conn = net.conn_to(a, host).expect("connected");
     let (ids, push) = junk(&l, 3, 40, Some(&old_write));
-    net.feed(a, Event::Bytes { conn, bytes: frame(push) });
+    net.receive(a, conn, frame(push));
     net.settle(10_000);
     for id in &ids {
         assert!(!net.sync(a).holds_blob(id), "junk bytes kept on an old-step stamp");
@@ -503,12 +485,12 @@ fn wrap_not_opening_to_known_key_ignored_spec_sync_5() {
     let added = |wrap| vec![osis_proto::Event::Added { blob_id: id, blob: None, wrap, stamp: None }];
     let other_key = osis_crypto::wrap(&secrets[0], &id, &Secret32::from_bytes([0x42; 32]), 1).unwrap();
     for w in [[0x13; osis_crypto::WRAP_LEN], other_key] {
-        net.feed(r, Event::Bytes { conn, bytes: push(l, added(w)) });
+        net.receive(r, conn, push(l, added(w)));
         net.settle(10_000);
         assert_eq!(net.sync(r).entry_meta(&l, &id).unwrap().0, wrap0);
     }
     let rewrap = osis_crypto::wrap(&secrets[0], &id, &key, 1).unwrap();
-    net.feed(r, Event::Bytes { conn, bytes: push(l, added(rewrap)) });
+    net.receive(r, conn, push(l, added(rewrap)));
     net.settle(10_000);
     assert_eq!(net.sync(r).entry_meta(&l, &id).unwrap().0, rewrap, "a re-wrap of the known key is taken");
 }
@@ -528,9 +510,9 @@ fn relayed_stamp_checked_against_head_spec_sync_5() {
     let forger = label_role_key(LabelRole::Write, &Secret32::from_bytes([0x66; 32]), 0);
     let conn = net.conn_to(r, host).expect("connected");
     let (forged, p) = junk(&l, 5, 1, Some(&forger));
-    net.feed(r, Event::Bytes { conn, bytes: frame(p) });
+    net.receive(r, conn, frame(p));
     let (honest, p) = junk(&l, 6, 1, Some(&head_write));
-    net.feed(r, Event::Bytes { conn, bytes: frame(p) });
+    net.receive(r, conn, frame(p));
     net.settle(10_000);
     let kept = net.sync(r).entry_meta(&l, &forged[0]).expect("the forged entry is kept, unstamped");
     assert_eq!(kept.1, None, "a stamp not under the head's key kept");
@@ -552,7 +534,7 @@ fn outside_delete_waits_for_settled_view_spec_sync_6() {
     let blocker = osis_base::BlobId([0x99; 32]);
     let wrap = osis_crypto::wrap(&read, &blocker, &Secret32::from_bytes([1; 32]), 1).unwrap();
     let conn = net.conn_to(a, host).expect("connected");
-    net.feed(a, Event::Bytes { conn, bytes: push(old, vec![osis_proto::Event::Added { blob_id: blocker, blob: None, wrap, stamp: None }]) });
+    net.receive(a, conn, push(old, vec![osis_proto::Event::Added { blob_id: blocker, blob: None, wrap, stamp: None }]));
     net.settle(10_000);
     let (new, acts) = net.sync(a).replace_label(&g, &old).unwrap();
     net.actions(a, acts);
@@ -563,7 +545,7 @@ fn outside_delete_waits_for_settled_view_spec_sync_6() {
     assert!(v.unsettled.contains(&None), "{:?}", v.unsettled);
     assert!(ids.iter().all(|i| net.host_ids(host, &old).contains(i)), "deleted as outside on an unsettled view");
     // the host drops the unexplained entry: the view settles and the content goes
-    net.feed(a, Event::Bytes { conn, bytes: push(old, vec![osis_proto::Event::Deleted(blocker)]) });
+    net.receive(a, conn, push(old, vec![osis_proto::Event::Deleted(blocker)]));
     net.settle(10_000);
     net.advance(61_000);
     assert!(ids.iter().all(|i| !net.host_ids(host, &old).contains(i)), "content kept under the replaced label on a settled view");
@@ -629,7 +611,7 @@ fn thing_admin_deletes_writer_blobs_by_delete_key_spec_crypto_7() {
         items.push(osis_label::DeleteItem::sign_by(&sync, &[(1, &wk)], p.salt(), &rhb, &l, *b).unwrap());
     }
     let conn = net.conn_to(w, host).expect("connected");
-    net.actions(w, vec![Action::Send { conn, bytes: frame(Message::Delete { id: 900_010, label: l, items }) }]);
+    net.actions(w, vec![Action::Hub { conn: net.link_conn(w, conn), down: osis_host::Down::Message(Box::new(Message::Delete { id: 900_010, label: l, items })) }]);
     net.settle(10_000);
     assert!(rblobs.iter().all(|id| net.host_ids(host, &l).contains(id)), "the writer deleted an admin body");
 
@@ -703,7 +685,7 @@ fn removed_writer_stale_label_key_refused_spec_sync_5() {
         items.push(osis_label::DeleteItem::sign_by(&sync, &[(level, &dk)], salt, &hb, &l, *b).unwrap());
     }
     let conn = net.conn_to(w, host).expect("connected");
-    net.actions(w, vec![Action::Send { conn, bytes: frame(Message::Delete { id: 900_020, label: l, items }) }]);
+    net.actions(w, vec![Action::Hub { conn: net.link_conn(w, conn), down: osis_host::Down::Message(Box::new(Message::Delete { id: 900_020, label: l, items })) }]);
     net.settle(10_000);
     assert!(blobs.iter().all(|(id, _)| net.host_ids(host, &l).contains(id)), "a removed holder's delete went through");
 }

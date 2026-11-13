@@ -781,7 +781,7 @@ fn policy_knobs_by_name() {
     assert_eq!((p.cap_bytes, p.deposits), (1000, 3));
     assert!(p.set("bogus", 1).is_err());
     assert!(p.set("deposits", u64::from(u32::MAX) + 1).is_err());
-    let q = (osis_proto::serving::SEND_QUEUE + osis_proto::client::WINDOW_QUEUE) as u64;
+    let q = (osis_proto::session::SEND_QUEUE + osis_proto::window::WINDOW_QUEUE) as u64;
     assert!(p.set("max_queued_bytes", q - 1).is_err());
     p.set("max_queued_bytes", q).unwrap();
     assert!(HostPolicy::default().max_queued_bytes as u64 >= q);

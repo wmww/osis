@@ -85,16 +85,11 @@ pub enum Event {
     Tick,
     /// The engine changed through local calls (commits): look at its events.
     Local,
-    /// A connection asked for by `Dial` is up.
-    Up { conn: ConnId },
-    /// Bytes arrived on a connection.
-    Bytes { conn: ConnId, bytes: Vec<u8> },
-    /// The transport took bytes sent on these connections since the last `Sent`, with how many it
-    /// took in all: progress for the session stall timeout, room for a served session's pushes
-    /// (`osis_proto::ServingInput::Taken`). The driver reports it before a `Tick` and before a
-    /// connection's `Bytes`; a driver that never does delivers instantly.
-    Sent { conns: Vec<(ConnId, u64)> },
-    /// A connection is gone, or its dial failed.
+    /// The transport of a connection asked for by `Dial` is up, handed to the node's hub as its
+    /// connection `hub` (`osis_host::Hub::dial`): its bytes and what the transport took go to the
+    /// hub from then on, its session's start, messages and end come up by `Event::Hub`.
+    Up { conn: ConnId, hub: osis_host::ConnId },
+    /// A dial asked for by `Dial` failed (it never came up).
     Down { conn: ConnId },
     /// The answer to an `Action::Request` (Auth, Call, Sub; notes/client-port.md §2).
     Reply { conn: ConnId, id: osis_proto::msg::Id, reply: std::result::Result<osis_proto::Outcome, osis_proto::Code> },
@@ -133,10 +128,11 @@ pub enum Tier {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Action {
     /// Open a connection to `address` (checking the host's key against it, spec/sync.md §10)
-    /// with an ephemeral transport key, and report `Up` or `Down`. A co-reader learns this node
-    /// by its connection proofs (spec/sync.md §10).
+    /// with an ephemeral transport key, hand it to the node's hub (`osis_host::Hub::dial`, its key
+    /// `address.key`) and report `Up`, or `Down` if it fails. A co-reader learns this node by its
+    /// connection proofs (spec/sync.md §10).
     Dial { conn: ConnId, address: Address },
-    Send { conn: ConnId, bytes: Vec<u8> },
+    /// Abandon a dial not up yet (once up, a connection closes by its hub session).
     Close { conn: ConnId },
     /// Deliver `Event::Tick` at this wall ms (the driver's clock; replaces earlier ones).
     Wake { at: u64 },
@@ -155,7 +151,7 @@ pub enum Action {
     /// A served session that made client-port requests ended: drop its subscriptions.
     Ended { conn: ConnId },
     /// For the node's hub (`osis_host::Hub::down`, consecutive ones in one call): a message, a
-    /// push room request or a close for one of its connections.
+    /// push room request or a close for one of its connections, dialed or served.
     Hub { conn: osis_host::ConnId, down: osis_host::Down },
 }
 

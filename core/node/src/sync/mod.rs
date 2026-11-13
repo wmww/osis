@@ -1,7 +1,7 @@
 //! The sans-I/O sync engine (notes/node-sync.md; notes/architecture.md §2): one synchronous
-//! state machine per node, `SyncEngine::handle(Event) -> Vec<Action>`, holding the engine, one
-//! osis-proto `ClientSession` per connection it dialed, the labeling decisions and the convergence
-//! loop (spec/sync.md §5-§9). Two drivers move its bytes and timers: the tokio driver
+//! state machine per node, `SyncEngine::handle(Event) -> Vec<Action>`, holding the engine, the
+//! upper layer of every session of the node's hub (dialed and served alike), the labeling
+//! decisions and the convergence loop (spec/sync.md §5-§9). Two drivers move its bytes and timers: the tokio driver
 //! (`driver`, feature `driver`) and the simulator's step driver. No sync logic lives in a driver.
 //!
 //! Per host and label: open (sync key of the head, else walk by stale key or claim key),
@@ -48,13 +48,13 @@ use crate::events::{Diagnostic, DiagnosticKind, Origin};
 use crate::labeling::{GroupLabel, HeadKeys};
 use osis_base::{Ak, LabelId, Tid};
 use osis_label::{Address, Step};
-use osis_proto::{ClientConfig, ClientEvent, ClientInput, ClientOutput, ClientSession, Code, Command};
+use osis_proto::Code;
 use state::{HostKey, State};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::sync::mpsc::Receiver;
 
-pub(crate) use conn::{Conn, LConn, Phase, UNTAGGED, in_flight};
+pub(crate) use conn::{Conn, LConn, Phase, in_flight};
 pub use host::{host_policy, host_policy_known, hub_store, hub_store_on};
 pub use osis_host::HostPolicy;
 pub use io::{Action, ConnId, Event, LabelStatus, MAX_CONNS_PER_CLIENT, PassStats, SyncConfig, Tier};
@@ -300,8 +300,10 @@ pub struct SyncEngine {
     pub(crate) touched: work::Touched,
     /// The connections this node's hub serves (spec/sync.md §5, §10).
     pub(crate) served: BTreeMap<ConnId, serve::Served>,
-    /// Those by the hub's connection ID.
+    /// The hub's connection IDs of the served connections and the dialed ones up.
     pub(crate) hub_conns: BTreeMap<osis_host::ConnId, ConnId>,
+    /// Push room per connection, dialed or served (`serve::Room`).
+    pub(crate) rooms: BTreeMap<ConnId, serve::Room>,
     /// Registrations a host refused for now in a row, per (host, label), whatever connection
     /// (the back-off doubles per refusal), with the last refusal's code (status shows a label not
     /// admitted, code 14). Bounded by labels times hosts.
@@ -469,6 +471,7 @@ impl SyncEngine {
             synced_of: crate::engine::memo::Memo::new("labels synced"),
             served: Default::default(),
             hub_conns: Default::default(),
+            rooms: Default::default(),
             refusals: Default::default(),
             covered_judged: Default::default(),
             stats: Default::default(),
@@ -902,28 +905,7 @@ impl SyncEngine {
                 self.relink_lost()?;
             }
             Event::Local => {}
-            Event::Up { conn } => {
-                let now = self.now();
-                if let Some(c) = self.conns.get_mut(&conn) {
-                    c.up = true;
-                    let mut o = c.session.handle(now, ClientInput::Start);
-                    let lan = c.peer.then(|| (c.host, c.address.clone()));
-                    // to a key this node chose to dial, a co-reader's or a host's (spec/sync.md
-                    // §10): the shared set follows on either
-                    let host = c.host;
-                    let own = self.dials_own_node(&host);
-                    let provers = proofs::provers(&mut self.engine, own)?;
-                    let Some(c) = self.conns.get_mut(&conn) else { return Ok(()) };
-                    c.proved = provers.iter().map(|p| p.record.tid()).collect();
-                    o.extend(c.session.handle(now, ClientInput::Command(Command::Prove(provers))));
-                    self.outputs(conn, o, out)?;
-                    if let Some((k, a)) = lan
-                        && self.lan_up(k, &a)
-                    {
-                        self.lan_switched(conn, k, out);
-                    }
-                }
-            }
+            Event::Up { conn, hub } => self.dialed(conn, hub, out),
             Event::Reply { conn, id, reply } => self.hub_down(conn, osis_host::Down::Reply { id, reply }, out),
             Event::Notify { conn, notes } => self.port_notify(conn, notes, out),
             Event::WantRoom { conn } => self.port_wants_room(conn, out),
@@ -937,23 +919,7 @@ impl SyncEngine {
                     self.close_served(conn, out);
                 }
             }
-            Event::Bytes { conn, bytes } => {
-                let now = self.now();
-                if let Some(c) = self.conns.get_mut(&conn) {
-                    let o = c.session.handle(now, ClientInput::Bytes(bytes));
-                    self.outputs(conn, o, out)?;
-                }
-            }
             Event::Down { conn } => self.lost(conn),
-            Event::Sent { conns } => {
-                let now = self.now();
-                for (conn, n) in conns {
-                    if let Some(c) = self.conns.get_mut(&conn) {
-                        let o = c.session.handle(now, ClientInput::Taken(n));
-                        self.outputs(conn, o, out)?;
-                    }
-                }
-            }
         }
         // links expired or used: a removal of the link key (spec/permissions.md §7)
         self.finalize_links()?;
@@ -1188,7 +1154,9 @@ mod tests {
             if down {
                 s.handle(Event::Down { conn });
             } else {
-                s.outputs(conn, vec![ClientOutput::Close], &mut Vec::new()).unwrap();
+                // up, then its hub session ends (closed on a stall, or the transport went down)
+                s.handle(Event::Up { conn, hub: 1 });
+                s.handle(Event::Hub { ups: vec![(1, osis_host::Up::End)] });
             }
             assert!(s.outbox.values().all(|o| o.sent.is_none()), "the deposit goes again");
             assert_eq!(s.deliveries_pending(), 1);

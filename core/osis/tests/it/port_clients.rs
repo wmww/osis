@@ -7,11 +7,11 @@ use crate::common::watched;
 use crate::common::MembersOf as _;
 use crate::common::TestWrites as _;
 use crate::common::{T0, ak, block_on, kept, page, typed_any};
-use crate::port::{Raw, set_write};
+use crate::port::{Raw, call, set_write, sub};
 use osis::internals::Internals as _;
 use osis::{SetRoleOpts, ClientSecret, CommitQuery, Error, Address, LinkOpts, MemStore, Osis, Role, Runtime, Scope, Store, Tid, Value, Time};
 use osis::internals::{ManualClock};
-use osis_proto::{Command, Outcome};
+use osis_proto::Outcome;
 use osis_schema::core_types as ct;
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -126,7 +126,7 @@ impl Node {
     fn raw(&self, secret: &ClientSecret) -> Raw {
         let ep = self.net.endpoint(&format!("r{}", NAMES.fetch_add(1, Ordering::Relaxed)));
         let mut r = Raw::over(&ep, osis_transport::Address { url: "mem://n-peer".into(), key: self.key() });
-        let a = r.ask(Command::Auth { token: 0, session: [1; 16], secret: Some(osis_crypto::Secret32::from_bytes(*secret.expose())) }, 0);
+        let a = r.auth_by([1; 16], Some(osis_crypto::Secret32::from_bytes(*secret.expose())));
         assert!(matches!(a, Ok(Outcome::Ok { .. })), "{a:?}");
         r
     }
@@ -580,10 +580,10 @@ fn queued_request_rechecked_at_execution() {
         let _ = hold_rx.recv();
     });
     in_rx.recv_timeout(Duration::from_secs(20)).unwrap();
-    r.send(Command::Call { token: 1, max_reply: osis_proto::client::SMALL_REPLY as u64, method: SETTLE, args: vec![] });
+    r.send(call(1, SETTLE, vec![]));
     r.pump(100);
     // queued behind the settle
-    r.send(Command::Call { token: 2, max_reply: osis_proto::client::SMALL_REPLY as u64, method: WRITE, args: set_write(1, a, x.t, &name, Value::Int(7)) });
+    r.send(call(2, WRITE, set_write(1, a, x.t, &name, Value::Int(7))));
     // both requests are at the worker (the sync engine answered nothing yet); revoke the entry alone
     r.pump(200);
     let node = x.n.node();
@@ -784,7 +784,7 @@ fn backlinks_notify_only_a_changed_page() {
     let (_, s, _c) = x.client(Role::Read);
     let mut r = x.raw(&s);
     let filter = Value::List(vec![Value::uint(7), Value::Tid(x.out), Value::List(vec![Value::opt(None), Value::opt(None)])]);
-    r.ask(Command::Sub { token: 1, max_reply: osis_proto::client::SMALL_REPLY as u64, filter }, 1).unwrap();
+    r.ask(sub(1, osis_proto::window::SMALL_REPLY, filter)).unwrap();
     x.n.commit_set(x.u, link.clone(), &Value::Tid(x.out)).unwrap();
     let (other, _) = x.n.add_client(None).unwrap();
     x.n.grant(x.h, other, Role::Read, Default::default()).unwrap();

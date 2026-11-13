@@ -83,7 +83,7 @@ impl SyncEngine {
         if let Some(lc) = self.lc_mut(conn, &l) {
             lc.registering = Some((step.clone(), set.clone()));
         }
-        self.command(conn, Command::Register { label: l, step, claim_set: Some(set) }, out)?;
+        self.request(conn, |id| osis_proto::Message::Register { id, label: l, step, claim_set: Some(set) }, crate::sync::conn::Pending::Register(l), out);
         Ok(true)
     }
 

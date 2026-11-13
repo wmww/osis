@@ -217,7 +217,7 @@ impl Osis {
     pub fn pair_accept(&self, req: &PairRequest) -> Result<(Tid, PairReply)> {
         if !self.has_store() {
             // once: a `TooLarge` retry would find the offer used
-            let v = self.primary_call_big(crate::port::method::PAIR_ACCEPT, vec![Value::Str(req.to_string())], osis_proto::serving::REPLY_BUDGET)?;
+            let v = self.primary_call_big(crate::port::method::PAIR_ACCEPT, vec![Value::Str(req.to_string())], osis_proto::session::REPLY_BUDGET)?;
             let mut a = crate::port::codec::Args::new(v)?;
             return Ok((a.tid()?, a.text()?.parse()?));
         }

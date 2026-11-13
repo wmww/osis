@@ -414,8 +414,7 @@ impl SyncEngine {
             return;
         }
         for c in old {
-            out.push(Action::Close { conn: c });
-            self.lost(c);
+            self.close_dialed(c, out);
         }
         // the peer is connected: no pause from the closed route
         self.retry.remove(&peer);

@@ -1,9 +1,9 @@
 //! The hub in the node driver's loop (notes/serving.md, The hub in the node): the driver owns
 //! osis-host's sans-I/O `Hub` and moves its bytes beside the sync engine's, one call at a time on
 //! the same task. Every listener of the node feeds it (`listen`: the dialable key's, the LAN's,
-//! the unix socket's), each connection served under the key of the listener that took it; the
-//! node's own dials of a key it listens under reach it over an in-process `link::pair`
-//! (`accept_own`). Per link a reader task hands the loop one
+//! the unix socket's), each connection served under the key of the listener that took it; every
+//! connection node sync dials is one of its sessions too (`dial`); the node's own dials of a key
+//! it listens under reach it over an in-process `link::pair` (`accept_own`). Per link a reader task hands the loop one
 //! read at a time (the next once the hub took the last), served in turns round-robin by source
 //! (`Turns`); a connection whose received requests wait for room in the hub's output bound
 //! (`Hub::waits`) is parked with its read until the hub resumes it (its reads wait in the
@@ -36,7 +36,7 @@ struct ConnState {
     tx: LinkTx,
     reader: JoinHandle<()>,
     source: Option<Source>,
-    /// The listener group that took it (none: the node's own dial).
+    /// The listener group that took it (none: a dial, the node's own or node sync's).
     group: Option<u64>,
     /// The read waiting for its turn (the reader sends the next only after `turn`).
     input: Option<Vec<u8>>,
@@ -236,6 +236,17 @@ impl HubRun {
     /// The node's own session to its key `key` (an in-process pair's far end).
     pub fn accept_own(&mut self, key: [u8; 32], link: Link) {
         self.accept(key, link, None);
+    }
+
+    /// A connection node sync dialed to `key`, up: a dialer session of the hub (`Hub::dial`).
+    /// Returns its connection ID.
+    pub fn dial(&mut self, key: [u8; 32], link: Link) -> ConnId {
+        let remote = osis_host::Remote { peer: link.peer, relayed: link.relayed };
+        let id = self.add(link, None);
+        let now = self.now();
+        let out = blocking(|| self.hub.dial(now, id, key, remote));
+        self.apply(out);
+        id
     }
 
     pub fn event(&mut self, ev: HubEv) {

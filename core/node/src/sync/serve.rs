@@ -63,7 +63,6 @@ pub(crate) struct Served {
     tier: super::Tier,
     /// It made a client-port request (`Action::Ended` when it goes).
     ported: bool,
-    room: Room,
     /// What this connection's dialer proved (spec/sync.md §10), read by `SyncEngine::proven`.
     proven: super::proofs::Proven,
     /// The actors this node proved to it in answer (`SyncEngine::proved`).
@@ -85,12 +84,12 @@ enum Pusher {
     Stream,
 }
 
-/// A served connection's push room (`Down::WantRoom`, `Up::Room`), shared by its pushers one
+/// A connection's push room (`Down::WantRoom`, `Up::Room`), shared by its pushers one
 /// grant at a time, in the order they asked: the holder of a grant gives it back when its push
 /// went (the stream's page, the port's Notifies) or it had none (an empty `Down::Notify`: the
 /// session reserves a grant against its output bound until then), and the next asks again.
 #[derive(Clone, Default)]
-struct Room {
+pub(crate) struct Room {
     waiting: VecDeque<Pusher>,
     /// A `WantRoom` went down and no `Room` came back yet.
     asked: bool,
@@ -189,6 +188,32 @@ impl SyncEngine {
     /// pusher whose turn it is, its end ends the session.
     pub(super) fn hub_up(&mut self, id: osis_host::ConnId, up: osis_host::Up, out: &mut Vec<Action>) -> Result<()> {
         use osis_host::Up;
+        // a connection this node dialed
+        if let Some(conn) = self.hub_conns.get(&id).copied().filter(|c| self.conns.contains_key(c)) {
+            let now = self.now();
+            if let Some(c) = self.conns.get_mut(&conn) {
+                c.heard = now;
+            }
+            match up {
+                Up::Start(b) => {
+                    self.rooms.insert(conn, Room::default());
+                    self.dialed_start(conn, (b.dialer, b.listener, b.key), b.remote.relayed, out)?;
+                }
+                Up::Message(m) => {
+                    self.state.now = self.now();
+                    self.dialed_message(conn, *m, out)?;
+                }
+                // the client port on a dialed connection: refused (issues/net-one-peer.md 3i3c)
+                Up::Request(m) => {
+                    if !matches!(*m, osis_proto::Message::Unsub { .. }) {
+                        self.hub_down(conn, Down::Reply { id: m.id(), reply: Err(osis_proto::Code::UNSUPPORTED) }, out);
+                    }
+                }
+                Up::Room { budget } => self.room_granted(conn, budget, out),
+                Up::End => self.lost(conn),
+            }
+            return Ok(());
+        }
         if let Up::Start(b) = up {
             let conn = self.next_conn;
             self.next_conn += 1;
@@ -197,7 +222,8 @@ impl SyncEngine {
                 osis_transport::Peer::Unix { uid } if osis_transport::unix::own_uid().is_ok_and(|o| o == uid) => super::Tier::Main,
                 _ => super::Tier::Keyed,
             };
-            self.served.insert(conn, Served { hub: id, binding: (b.dialer, b.listener, b.key), tier, ported: false, room: Room::default(), proven: super::proofs::Proven::default(), proved: BTreeSet::new(), answered: false, asked: Asked::Nothing, client: None });
+            self.served.insert(conn, Served { hub: id, binding: (b.dialer, b.listener, b.key), tier, ported: false, proven: super::proofs::Proven::default(), proved: BTreeSet::new(), answered: false, asked: Asked::Nothing, client: None });
+            self.rooms.insert(conn, Room::default());
             self.hub_conns.insert(id, conn);
             // both ends tell a relayed connection alike, before its first message
             if b.remote.relayed {
@@ -224,33 +250,40 @@ impl SyncEngine {
                     Err((id, code)) => self.hub_down(conn, Down::Reply { id, reply: Err(code) }, out),
                 }
             }
-            Up::Room { budget } => {
-                let Some(r) = self.served.get_mut(&conn).map(|s| &mut s.room) else { return Ok(()) };
-                r.asked = false;
-                if let Some(p) = r.waiting.pop_front() {
-                    r.held = Some((p, budget));
-                    if p == Pusher::Port {
-                        out.push(Action::Room { conn, budget });
-                    }
-                }
-            }
+            Up::Room { budget } => self.room_granted(conn, budget, out),
             Up::End => self.end_served(conn, out),
-            // a relay-only entry of a sync ID kept unread, past the hub's relay gate: to the
-            // readers sharing it here but its sender
         }
         Ok(())
     }
 
-    /// A message, answer or close for served session `conn`, to its hub session.
-    pub(crate) fn hub_down(&mut self, conn: ConnId, down: Down, out: &mut Vec<Action>) {
-        if let Some(s) = self.served.get(&conn) {
-            out.push(Action::Hub { conn: s.hub, down });
+    /// The session of `conn` granted push room: to the pusher whose turn it is.
+    fn room_granted(&mut self, conn: ConnId, budget: usize, out: &mut Vec<Action>) {
+        let Some(r) = self.rooms.get_mut(&conn) else { return };
+        r.asked = false;
+        if let Some(p) = r.waiting.pop_front() {
+            r.held = Some((p, budget));
+            if p == Pusher::Port {
+                out.push(Action::Room { conn, budget });
+            }
         }
     }
 
-    /// Pusher `p` of served session `conn` waits for room (behind those that asked first).
+    /// A message, answer or close for connection `conn`, dialed or served, to its hub session.
+    pub(crate) fn hub_down(&mut self, conn: ConnId, down: Down, out: &mut Vec<Action>) {
+        let now = self.now();
+        let hub = self.served.get(&conn).map(|s| s.hub).or_else(|| {
+            let c = self.conns.get_mut(&conn)?;
+            c.heard = now;
+            c.hub
+        });
+        if let Some(hub) = hub {
+            out.push(Action::Hub { conn: hub, down });
+        }
+    }
+
+    /// Pusher `p` of connection `conn` waits for room (behind those that asked first).
     fn want_room(&mut self, conn: ConnId, p: Pusher, out: &mut Vec<Action>) {
-        let Some(r) = self.served.get_mut(&conn).map(|s| &mut s.room) else { return };
+        let Some(r) = self.rooms.get_mut(&conn) else { return };
         if r.held.is_some_and(|(h, _)| h == p) || r.waiting.contains(&p) {
             return;
         }
@@ -260,7 +293,7 @@ impl SyncEngine {
 
     /// Asks the session for room when someone waits and no grant is out or asked.
     fn ask_room(&mut self, conn: ConnId, out: &mut Vec<Action>) {
-        let Some(r) = self.served.get_mut(&conn).map(|s| &mut s.room) else { return };
+        let Some(r) = self.rooms.get_mut(&conn) else { return };
         if r.held.is_none() && !r.asked && !r.waiting.is_empty() {
             r.asked = true;
             self.hub_down(conn, Down::WantRoom, out);
@@ -269,7 +302,7 @@ impl SyncEngine {
 
     /// Pusher `p` is done with the room it held: the next in line asks.
     fn release_room(&mut self, conn: ConnId, p: Pusher, out: &mut Vec<Action>) {
-        let Some(r) = self.served.get_mut(&conn).map(|s| &mut s.room) else { return };
+        let Some(r) = self.rooms.get_mut(&conn) else { return };
         if r.held.is_some_and(|(h, _)| h == p) {
             r.held = None;
             self.ask_room(conn, out);
@@ -288,12 +321,10 @@ impl SyncEngine {
         self.want_room(conn, Pusher::Port, out);
     }
 
-    /// Bytes a stream push on `conn` may take now: a whole reply's on a dialed connection, a
-    /// served one's only within the room its session granted the stream; none: it waits (room
-    /// asked in its turn).
+    /// Bytes a stream push on `conn` may take now: only within the room its session granted the
+    /// stream, dialed or served; none: it waits (room asked in its turn).
     pub(super) fn push_room(&mut self, conn: ConnId, out: &mut Vec<Action>) -> Option<usize> {
-        let Some(s) = self.served.get(&conn) else { return Some(osis_proto::serving::REPLY_BUDGET) };
-        if let Some((Pusher::Stream, b)) = s.room.held {
+        if let Some((Pusher::Stream, b)) = self.rooms.get(&conn)?.held {
             return Some(b);
         }
         self.want_room(conn, Pusher::Stream, out);
@@ -305,10 +336,10 @@ impl SyncEngine {
         self.release_room(conn, Pusher::Stream, out);
     }
 
-    /// Served connections whose stream holds room it did not use in this step (its push went
-    /// elsewhere or nothing was due): given back.
+    /// Connections whose stream holds room it did not use in this step (its push went elsewhere
+    /// or nothing was due): given back.
     pub(super) fn stream_room_unused(&mut self, pushed: &BTreeSet<ConnId>, out: &mut Vec<Action>) {
-        let holding: Vec<ConnId> = self.served.iter().filter(|(c, s)| matches!(s.room.held, Some((Pusher::Stream, _))) && !pushed.contains(c)).map(|(c, _)| *c).collect();
+        let holding: Vec<ConnId> = self.rooms.iter().filter(|(c, r)| matches!(r.held, Some((Pusher::Stream, _))) && !pushed.contains(c)).map(|(c, _)| *c).collect();
         for c in holding {
             // the session's reservation of it too
             self.hub_down(c, Down::Notify(Vec::new()), out);
@@ -676,10 +707,10 @@ impl SyncEngine {
         self.hub_conns.get(&id).copied()
     }
 
-    /// The hub's connection served session `conn` runs on (test harnesses).
+    /// The hub's connection `conn` runs on, dialed or served (test harnesses).
     #[doc(hidden)]
     pub fn hub_conn(&self, conn: ConnId) -> Option<osis_host::ConnId> {
-        self.served.get(&conn).map(|s| s.hub)
+        self.served.get(&conn).map(|s| s.hub).or_else(|| self.conns.get(&conn).and_then(|c| c.hub))
     }
 
     pub(crate) fn served_has(&self, conn: ConnId) -> bool {
@@ -690,6 +721,7 @@ impl SyncEngine {
         self.records.conn_gone(conn);
         self.streams.remove(&conn);
         let Some(s) = self.served.remove(&conn) else { return };
+        self.rooms.remove(&conn);
         self.hub_conns.remove(&s.hub);
         if s.ported {
             out.push(Action::Ended { conn });

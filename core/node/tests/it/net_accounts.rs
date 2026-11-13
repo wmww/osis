@@ -13,7 +13,7 @@ use osis_base::{Role, Tid};
 use osis_crypto::kdf::resume_tag;
 use osis_engine::flows::Demotion;
 use osis_node::labeling::Judgment;
-use osis_proto::{ClientEvent, ClientInput, Command, Request};
+use osis_proto::Message;
 use std::collections::BTreeSet;
 
 fn records(net: &mut Net, n: usize, actor: Tid) -> Vec<osis_store::Record> {
@@ -80,9 +80,9 @@ fn a_node_key_alone_reaches_nothing_at_another_account_spec_sync_10() {
     let label = net.label(a);
     assert_eq!(net.sync(a).judgments(p.conn, &[label]).unwrap()[&label], Judgment::Unknown, "J reads no account from a node key");
     let now = net.now();
-    let outs = p.cs.handle(now, ClientInput::Command(Command::Resume { nonce: [5; 32], tags: vec![] }));
+    let (id, outs) = p.cs.request(now, |id| Message::Resume { id, nonce: [5; 32], tags: vec![] });
     let evs = crate::connection_proofs::pump(&mut net, a, &mut p, outs);
-    assert!(evs.iter().any(|e| matches!(e, ClientEvent::Refused { kind: Request::Resume, .. })), "{evs:?}");
+    assert!(evs.iter().any(|e| matches!(e, Message::Error { id: x, .. } if *x == id)), "{evs:?}");
     assert_eq!(net.sync(a).connection_record(p.conn), None);
     assert!(net.sync(a).shared_members(p.conn).is_empty());
     let _ = g;
@@ -126,9 +126,9 @@ fn a_removed_node_after_the_rotation_matches_no_record_spec_sync_10() {
     assert!(!net.sync(b).proven(p.conn).unwrap().contains(&account), "P not proved by a closed epoch");
     let tag = resume_tag(&r, &LISTENER, &ch, &p.hello);
     let now = net.now();
-    let outs = p.cs.handle(now, ClientInput::Command(Command::Resume { nonce: [5; 32], tags: vec![tag] }));
+    let (id, outs) = p.cs.request(now, |id| Message::Resume { id, nonce: [5; 32], tags: vec![tag] });
     let evs = crate::connection_proofs::pump(&mut net, b, &mut p, outs);
-    assert!(evs.iter().any(|e| matches!(e, ClientEvent::Refused { kind: Request::Resume, .. })), "no record found: {evs:?}");
+    assert!(evs.iter().any(|e| matches!(e, Message::Error { id: x, .. } if *x == id)), "no record found: {evs:?}");
     assert_eq!(net.sync(b).connection_record(p.conn), None);
     assert!(net.sync(b).shared_members(p.conn).is_empty(), "opens nothing");
     let record = net.engine(b).core.created(&account).unwrap().clone();

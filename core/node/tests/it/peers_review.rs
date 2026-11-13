@@ -9,7 +9,7 @@ use osis_base::{LabelId, Role};
 use osis_crypto::SigningSecret;
 use osis_label::Address;
 use osis_node::sync::{Action, ConnId, EntryKind, Event, SyncConfig};
-use osis_proto::{ClientConfig, ClientEvent, ClientInput, ClientOutput, ClientSession, Command};
+use osis_proto::{Message, SessionOutput};
 
 const LOCAL: [u8; 32] = [0x42; 32];
 
@@ -17,29 +17,37 @@ const LOCAL: [u8; 32] = [0x42; 32];
 struct Dialer {
     conn: ConnId,
     hc: ConnId,
-    cs: ClientSession,
+    cs: osis_proto::examples::Dialer,
 }
 
-fn exchange(net: &mut Net, n: usize, p: &mut Dialer, acts: Vec<Action>, outs: Vec<ClientOutput>) -> Vec<ClientEvent> {
+fn exchange(net: &mut Net, n: usize, p: &mut Dialer, acts: Vec<Action>, outs: Vec<SessionOutput>) -> Vec<Message> {
     net.hand_exchange(n, p.hc, &mut p.cs, acts, outs, true)
 }
 
-fn dial_in(net: &mut Net, n: usize) -> (Dialer, Vec<ClientEvent>) {
+fn dial_in(net: &mut Net, n: usize) -> (Dialer, Vec<Message>) {
     let (hc, sent) = net.hand_accept(n, LOCAL, osis_transport::Peer::Key([0x43; 32]));
-    let mut p = Dialer { conn: 0, hc, cs: ClientSession::new(ClientConfig { peer_static_key: LOCAL, challenge: [7; 32] }) };
+    let mut p = Dialer { conn: 0, hc, cs: osis_proto::examples::Dialer::new(LOCAL, [7; 32]) };
     let now = net.now();
-    let mut outs = p.cs.handle(now, ClientInput::Start);
+    let mut outs = p.cs.start(now);
     for f in sent {
-        outs.extend(p.cs.handle(now, ClientInput::Bytes(f)));
+        outs.extend(p.cs.bytes(now, f));
     }
     let evs = exchange(net, n, &mut p, Vec::new(), outs);
     p.conn = net.served(n, hc);
     (p, evs)
 }
 
-fn command(net: &mut Net, n: usize, p: &mut Dialer, cmd: Command) -> Vec<ClientEvent> {
+/// The dialer sends `m` (an answer or a push of its own) and the exchange runs.
+fn send(net: &mut Net, n: usize, p: &mut Dialer, m: Message) -> Vec<Message> {
     let now = net.now();
-    let outs = p.cs.handle(now, ClientInput::Command(cmd));
+    let outs = p.cs.send(now, m);
+    exchange(net, n, p, Vec::new(), outs)
+}
+
+/// The dialer proves `provers` and the exchange runs.
+fn prove(net: &mut Net, n: usize, p: &mut Dialer, provers: &[osis_proto::Prover]) -> Vec<Message> {
+    let now = net.now();
+    let (_, outs) = p.cs.prove(now, provers).expect("past the Hellos");
     exchange(net, n, p, Vec::new(), outs)
 }
 
@@ -49,11 +57,11 @@ fn member_session(net: &mut Net, n: usize, proven_as: usize, l: LabelId) -> Dial
 }
 
 /// `member_session`, with what `n` sent it once `l` joined (its Pull).
-fn member_pulled(net: &mut Net, n: usize, proven_as: usize, l: LabelId) -> (Dialer, Vec<ClientEvent>) {
+fn member_pulled(net: &mut Net, n: usize, proven_as: usize, l: LabelId) -> (Dialer, Vec<Message>) {
     let (mut p, _) = dial_in(net, n);
     let own = net.engine(proven_as).account_tid().is_some_and(|x| net.engine(n).account_tid() == Some(x));
     let provers = net.sync(proven_as).provers(own).unwrap();
-    command(net, n, &mut p, Command::Prove(provers));
+    prove(net, n, &mut p, &provers);
     let mut out = Vec::new();
     net.sync(n).shared_admit(p.conn, l, &mut out).unwrap();
     let evs = exchange(net, n, &mut p, out, Vec::new());
@@ -78,12 +86,12 @@ fn kept_from_reader(peer_bytes: u64) -> bool {
     net.run();
     let l = net.label(b);
     let (mut p, evs) = member_pulled(&mut net, b, a, l);
-    let id = evs.iter().find_map(|e| if let ClientEvent::Peer(m) = e { if let osis_proto::Message::Pull(x) = &**m { Some(x.id) } else { None } } else { None }).expect("b pulls its member");
+    let id = evs.iter().find_map(|e| if let Message::Pull(x) = e { Some(x.id) } else { None }).expect("b pulls its member");
     let blob = vec![0x5a; 1000];
     let blob_id = osis_label::blob_id(&blob);
     let ev = osis_proto::Event::Added { blob_id, blob: Some(blob), wrap: [0x11; osis_crypto::WRAP_LEN], stamp: None };
     let reply = osis_proto::msg::PullReply { id, events: vec![(l, ev)], cursor: Some(vec![1; 8]), whole: false, trimmed: false, more: false, report: false, joins: Vec::new() };
-    command(&mut net, b, &mut p, Command::Peer(Box::new(osis_proto::Message::PullReply(Box::new(reply)))));
+    send(&mut net, b, &mut p, osis_proto::Message::PullReply(Box::new(reply)));
     net.sync(b).entries(&l).iter().any(|(x, _)| *x == blob_id)
 }
 
@@ -121,10 +129,10 @@ fn pending_kept_from_reader(peer_bytes: u64) -> (bool, bool) {
     let (wrap, _) = net.sync(a).entry_meta(&la, &blob_id).unwrap();
     let blob = net.engine(a).blob(&blob_id).unwrap().unwrap();
     let (mut p, evs) = member_pulled(&mut net, b, a, l);
-    let id = evs.iter().find_map(|e| if let ClientEvent::Peer(m) = e { if let osis_proto::Message::Pull(x) = &**m { Some(x.id) } else { None } } else { None }).expect("b pulls its member");
+    let id = evs.iter().find_map(|e| if let Message::Pull(x) = e { Some(x.id) } else { None }).expect("b pulls its member");
     let ev = osis_proto::Event::Added { blob_id, blob: Some(blob), wrap, stamp: None };
     let reply = osis_proto::msg::PullReply { id, events: vec![(l, ev)], cursor: Some(vec![1; 8]), whole: false, trimmed: false, more: false, report: false, joins: Vec::new() };
-    command(&mut net, b, &mut p, Command::Peer(Box::new(osis_proto::Message::PullReply(Box::new(reply)))));
+    send(&mut net, b, &mut p, osis_proto::Message::PullReply(Box::new(reply)));
     let kept = net.sync(b).entries(&l).iter().any(|(x, _)| *x == blob_id);
     let pending = net.engine(b).pending().iter().any(|(x, _)| *x == c);
     (kept, pending)
@@ -185,10 +193,10 @@ fn budget_across_restart(pending: bool, restart: bool) -> (usize, usize) {
             net.sync(b).config_mut().peer_bytes = budget;
         }
         let (mut p, evs) = member_pulled(&mut net, b, a, l);
-        let id = evs.iter().find_map(|e| if let ClientEvent::Peer(m) = e { if let osis_proto::Message::Pull(x) = &**m { Some(x.id) } else { None } } else { None }).expect("b pulls its member");
+        let id = evs.iter().find_map(|e| if let Message::Pull(x) = e { Some(x.id) } else { None }).expect("b pulls its member");
         let evs = batch.iter().map(|(blob_id, blob, wrap)| (l, osis_proto::Event::Added { blob_id: *blob_id, blob: Some(blob.clone()), wrap: *wrap, stamp: None })).collect();
         let reply = osis_proto::msg::PullReply { id, events: evs, cursor: Some(vec![1 + i as u8; 8]), whole: false, more: false, report: false, trimmed: false, joins: Vec::new() };
-        command(&mut net, b, &mut p, Command::Peer(Box::new(osis_proto::Message::PullReply(Box::new(reply)))));
+        send(&mut net, b, &mut p, osis_proto::Message::PullReply(Box::new(reply)));
     }
     let held = net.sync(b).entries(&l);
     let count = |batch: &[(osis_base::BlobId, Vec<u8>, [u8; osis_crypto::WRAP_LEN])]| batch.iter().filter(|(x, _, _)| held.iter().any(|(y, _)| y == x)).count();
@@ -238,16 +246,16 @@ fn second_kept(fresh: bool) -> bool {
         if fresh {
             provers.extend(net.sync(s).provers(false).unwrap());
         }
-        command(&mut net, b, &mut p, Command::Prove(provers));
+        prove(&mut net, b, &mut p, &provers);
         let mut out = Vec::new();
         net.sync(b).shared_admit(p.conn, l, &mut out).unwrap();
         let evs = exchange(&mut net, b, &mut p, out, Vec::new());
-        let id = evs.iter().find_map(|e| if let ClientEvent::Peer(m) = e { if let osis_proto::Message::Pull(x) = &**m { Some(x.id) } else { None } } else { None }).expect("b pulls its member");
+        let id = evs.iter().find_map(|e| if let Message::Pull(x) = e { Some(x.id) } else { None }).expect("b pulls its member");
         let blob = vec![0x5a + i as u8; 1000];
         let blob_id = osis_label::blob_id(&blob);
         let ev = osis_proto::Event::Added { blob_id, blob: Some(blob), wrap: [0x11; osis_crypto::WRAP_LEN], stamp: None };
         let reply = osis_proto::msg::PullReply { id, events: vec![(l, ev)], cursor: Some(vec![1; 8]), whole: false, trimmed: false, more: false, report: false, joins: Vec::new() };
-        command(&mut net, b, &mut p, Command::Peer(Box::new(osis_proto::Message::PullReply(Box::new(reply)))));
+        send(&mut net, b, &mut p, osis_proto::Message::PullReply(Box::new(reply)));
         kept = net.sync(b).entries(&l).iter().any(|(x, _)| *x == blob_id);
     }
     kept
@@ -303,9 +311,9 @@ fn a_charged_source_costs_its_row_until_judged_spec_sync_5() {
         net.set_skew(a, 0);
         let ids: Vec<osis_base::BlobId> = events.iter().filter_map(|(_, e)| if let osis_proto::Event::Added { blob_id, .. } = e { Some(*blob_id) } else { None }).collect();
         let (mut p, evs) = member_pulled(&mut net, b, a, l);
-        let id = evs.iter().find_map(|e| if let ClientEvent::Peer(m) = e { if let osis_proto::Message::Pull(x) = &**m { Some(x.id) } else { None } } else { None }).expect("b pulls its member");
+        let id = evs.iter().find_map(|e| if let Message::Pull(x) = e { Some(x.id) } else { None }).expect("b pulls its member");
         let reply = osis_proto::msg::PullReply { id, events, cursor: Some(vec![1; 8]), whole: false, more: false, report: false, trimmed: false, joins: Vec::new() };
-        command(&mut net, b, &mut p, Command::Peer(Box::new(osis_proto::Message::PullReply(Box::new(reply)))));
+        send(&mut net, b, &mut p, osis_proto::Message::PullReply(Box::new(reply)));
         let charged = entry_rows(&mut net, b, l);
         assert!(ids.iter().all(|x| charged.contains_key(x)), "n {n}: every entry kept pending");
         net.advance(2 * 3_600_000 + 60_000);
@@ -341,7 +349,7 @@ fn reader_flood(n: usize, memory: bool) -> (usize, usize, bool) {
     let l = net.label(b);
     // the item reaches b (a host-less label: a's stream)
     let la = net.label(a);
-    let pull = |evs: &[ClientEvent]| evs.iter().find_map(|e| if let ClientEvent::Peer(m) = e { if let osis_proto::Message::Pull(x) = &**m { Some(x.id) } else { None } } else { None });
+    let pull = |evs: &[Message]| evs.iter().find_map(|e| if let Message::Pull(x) = e { Some(x.id) } else { None });
     let a_events = |net: &mut Net| -> Vec<(LabelId, osis_proto::Event)> {
         net.sync(a).entries(&la).into_iter().filter_map(|(blob_id, _)| {
             let (wrap, _) = net.sync(a).entry_meta(&la, &blob_id)?;
@@ -353,7 +361,7 @@ fn reader_flood(n: usize, memory: bool) -> (usize, usize, bool) {
     let id = pull(&evs).expect("b pulls a");
     let events = a_events(&mut net);
     let reply = osis_proto::msg::PullReply { id, events, cursor: Some(vec![1; 8]), whole: false, more: false, report: false, trimmed: false, joins: Vec::new() };
-    command(&mut net, b, &mut pa, Command::Peer(Box::new(osis_proto::Message::PullReply(Box::new(reply)))));
+    send(&mut net, b, &mut pa, osis_proto::Message::PullReply(Box::new(reply)));
     assert_eq!(net.read(b, t), Some(s("doc")), "the item reached b");
     let mut flood = Vec::new();
     let mut events = Vec::new();
@@ -375,7 +383,7 @@ fn reader_flood(n: usize, memory: bool) -> (usize, usize, bool) {
     let (mut pr, evs) = member_pulled(&mut net, b, r, l);
     let id = pull(&evs).expect("b pulls r");
     let reply = osis_proto::msg::PullReply { id, events, cursor: Some(vec![1; 8]), whole: false, more: false, report: false, trimmed: false, joins: Vec::new() };
-    command(&mut net, b, &mut pr, Command::Peer(Box::new(osis_proto::Message::PullReply(Box::new(reply)))));
+    send(&mut net, b, &mut pr, osis_proto::Message::PullReply(Box::new(reply)));
     // a tick forgets what no entry carries
     net.advance(1_000);
     let known = flood.iter().filter(|c| net.engine(b).header(c).is_some()).count();
@@ -386,7 +394,7 @@ fn reader_flood(n: usize, memory: bool) -> (usize, usize, bool) {
     net.actions(a, acts);
     let events: Vec<_> = a_events(&mut net).into_iter().filter(|(_, e)| matches!(e, osis_proto::Event::Added { blob_id, .. } if net.engine(b).blob(blob_id).ok().flatten().is_none())).collect();
     let st = osis_proto::msg::Stream { events, cursor: Some(vec![2; 8]), report: false };
-    command(&mut net, b, &mut pa, Command::Peer(Box::new(osis_proto::Message::Stream(Box::new(st)))));
+    send(&mut net, b, &mut pa, osis_proto::Message::Stream(Box::new(st)));
     let applied = net.read(b, t) == Some(s("after"));
     (known, stored, applied)
 }

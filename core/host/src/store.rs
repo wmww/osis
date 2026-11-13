@@ -78,7 +78,7 @@ pub struct HostPolicy {
     /// A connection without the peer's Hello this long after accept is closed.
     pub hello_ms: u64,
     /// Bytes queued for one connection beyond which it is dropped (a peer that does not read);
-    /// at least `osis_proto::serving::SEND_QUEUE` plus `osis_proto::client::WINDOW_QUEUE`
+    /// at least `osis_proto::session::SEND_QUEUE` plus `osis_proto::window::WINDOW_QUEUE`
     /// (windowed replies and held pushes, and node sync's own requests, spec/sync.md §6).
     pub max_queued_bytes: usize,
     /// Bytes the hub holds for connections in each direction, over all of them: partially
@@ -121,7 +121,7 @@ impl Default for HostPolicy {
     }
 }
 
-const _: () = assert!(64 << 20 >= osis_proto::serving::SEND_QUEUE + osis_proto::client::WINDOW_QUEUE);
+const _: () = assert!(64 << 20 >= osis_proto::session::SEND_QUEUE + osis_proto::window::WINDOW_QUEUE);
 
 impl HostPolicy {
     /// Sets the knob named like its field (the `policy` map of `host^.0`); an unknown name or a
@@ -150,7 +150,7 @@ impl HostPolicy {
             "hello_ms" => self.hello_ms = v,
             "max_queued_bytes" => {
                 let q = nz()?;
-                let least = osis_proto::serving::SEND_QUEUE + osis_proto::client::WINDOW_QUEUE;
+                let least = osis_proto::session::SEND_QUEUE + osis_proto::window::WINDOW_QUEUE;
                 if q < least {
                     return Err(format!("{name}: below {least} (a peer's window plus a reply and a push, and this node's own window, spec/sync.md §6)"));
                 }

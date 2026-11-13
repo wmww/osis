@@ -209,12 +209,11 @@ impl SyncEngine {
                 continue;
             }
             if let Some(item) = delete_item(keys, &l, id, None, &[]) {
-                c.req.deleting.insert((l, id), (now, crate::sync::UNTAGGED));
                 items.push(item);
             }
         }
         if !items.is_empty() {
-            self.command(conn, Command::Delete { label: l, items }, out)?;
+            self.delete(conn, l, items, out)?;
         }
         Ok(())
     }

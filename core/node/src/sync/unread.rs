@@ -314,9 +314,9 @@ impl SyncEngine {
                     },
                 };
                 let mut struck = false;
-                match osis_proto::serving::pulled(&mut *hub, now, &l, &k, &bytes, wrap, stamp, &mut struck).map_err(hub_err)? {
-                    osis_proto::serving::Taken::Relay(r) => relays.push(r),
-                    osis_proto::serving::Taken::Code(c) => {
+                match osis_proto::session::pulled(&mut *hub, now, &l, &k, &bytes, wrap, stamp, &mut struck).map_err(hub_err)? {
+                    osis_proto::session::Taken::Relay(r) => relays.push(r),
+                    osis_proto::session::Taken::Code(c) => {
                         if c == Code::OK {
                             taken.push(blob_id);
                         } else if c == Code::STORAGE_CAP {
@@ -474,7 +474,7 @@ impl SyncEngine {
             // its label is (spec/sync.md §5)
             let Some(k) = hub.head_keys(&l).map_err(hub_err)? else { return Ok(if hub.admits(&l) { Code::RATE_LIMITED } else { Code::NOT_ADMITTED }) };
             let mut struck = false;
-            let (code, signed) = osis_proto::serving::deposit(&mut *hub, now, &l, &k, blob, wrap, sig, &mut struck).map_err(hub_err)?;
+            let (code, signed) = osis_proto::session::deposit(&mut *hub, now, &l, &k, blob, wrap, sig, &mut struck).map_err(hub_err)?;
             // refused for now passes on (spec/sync.md §10, Deposit items); any other refusal is 14
             match code {
                 Code::OK | Code::RATE_LIMITED | Code::BUDGET_FULL | Code::STORAGE_CAP if signed => code,

@@ -6,7 +6,7 @@
 Each item is done inside the job named, not as a job of its own: the job's design says what the one structure holds.
 
 ## (a) One connection record
-Two records describe a connection by who dialed: `Conn` (conn.rs: a dialed connection, its `labels: BTreeMap<LabelId, LConn>` with phases, passes and cursors, its `Requests`) and `Served` (serve.rs: an accepted `ServingSession`, its tier, idle times, client binding). A label open on a served connection has no `LConn`: nothing runs a pass on it, status sees it only in `peers_connected`. One record per connection, whoever dialed, holding the session, the proven actors, the shared set S with each member's state, and the pass state; the dialed/served difference is a field read by nothing but the dial logic.
+Two records describe a connection by who dialed: `Conn` (conn.rs: a dialed connection, its `labels: BTreeMap<LabelId, LConn>` with phases, passes and cursors, its `Requests`) and `Served` (serve.rs: an accepted `Session`, its tier, idle times, client binding). A label open on a served connection has no `LConn`: nothing runs a pass on it, status sees it only in `peers_connected`. One record per connection, whoever dialed, holding the session, the proven actors, the shared set S with each member's state, and the pass state; the dialed/served difference is a field read by nothing but the dial logic.
 Unblocks: issues/net-honest-status.md (both sides judge: a pass runs over every connection with L open); issues/net-reconnect.md (one record per peer; two connections to one peer are one record, the older closing).
 
 ## (b) One `sources(L)`

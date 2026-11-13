@@ -115,6 +115,7 @@ impl SyncEngine {
                 touched: self.touched.clone(),
                 served: self.served.clone(),
                 hub_conns: self.hub_conns.clone(),
+                rooms: self.rooms.clone(),
                 lan: self.lan.clone(),
                 lan_rotate: self.lan_rotate.clone(),
                 reach_account: self.reach_account.clone(),

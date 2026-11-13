@@ -37,26 +37,12 @@ pub(crate) fn sealed(net: &mut Net, w: usize, g: Tid, c: &osis_commit::CommitBlo
 pub(crate) fn push(net: &mut Net, n: usize, host: usize, l: osis_base::LabelId, events: Vec<osis_proto::Event>) -> Vec<osis_node::sync::Action> {
     let conn = net.conn_to(n, host).unwrap();
     let bytes = osis_proto::encode_frame(&crate::net::stream_msg(l, events, 0).encode());
-    net.sync(n).handle(Event::Bytes { conn, bytes })
+    net.hub_in(n, conn, bytes)
 }
 
-/// Messages node actions `acts` send on `conn`.
-fn sent(acts: &[osis_node::sync::Action], conn: osis_node::sync::ConnId) -> Vec<osis_proto::Message> {
-    let mut out = Vec::new();
-    for a in acts {
-        if let osis_node::sync::Action::Send { conn: c, bytes } = a
-            && *c == conn
-        {
-            let mut d = osis_proto::FrameDecoder::new();
-            d.push(bytes);
-            while let Ok(Some(body)) = d.next_frame() {
-                if let Ok(m) = osis_proto::Message::decode(&body) {
-                    out.push(m);
-                }
-            }
-        }
-    }
-    out
+/// Messages node `n`'s actions `acts` send on `conn` (its engine's ID).
+fn sent(net: &Net, n: usize, acts: &[osis_node::sync::Action], conn: osis_node::sync::ConnId) -> Vec<osis_proto::Message> {
+    Net::sent_on(acts, net.link_conn(n, conn))
 }
 
 const STATE: &str = "win:state+.0";
@@ -1739,7 +1725,7 @@ fn author_crash_before_cover_lands_keeps_state_spec_sync_9() {
     assert_eq!(want.len(), 2);
     let conn = net.conn_to(a, host).unwrap();
     let acts = net.sync(a).compact_ephemeral_now().unwrap();
-    let frames = sent(&acts, conn);
+    let frames = sent(&net, a, &acts, conn);
     assert!(!frames.iter().any(|m| matches!(m, osis_proto::Message::Delete { .. })), "nothing deleted before the cover is held there");
     // what it sent never arrives
     net.restart(a, 77);
@@ -2790,7 +2776,7 @@ fn replayed_covered_entry_dropped_spec_sync_9() {
     let acts = push(&mut net, b, host, l, vec![ev]);
     assert!(!net.engine(b).holds_memory(&old.id), "a replay is not held again");
     let conn = net.conn_to(b, host).unwrap();
-    let deletes: Vec<osis_base::BlobId> = sent(&acts, conn).into_iter().flat_map(|m| if let osis_proto::Message::Delete { items, .. } = m { items.into_iter().map(|i| i.blob).collect() } else { vec![] }).collect();
+    let deletes: Vec<osis_base::BlobId> = sent(&net, b, &acts, conn).into_iter().flat_map(|m| if let osis_proto::Message::Delete { items, .. } = m { items.into_iter().map(|i| i.blob).collect() } else { vec![] }).collect();
     assert_eq!(deletes, vec![id], "deleted where it came back");
     net.actions(b, acts);
     net.run();

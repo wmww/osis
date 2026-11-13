@@ -11,7 +11,8 @@ use crate::labeling::{GroupLabel, HeadKeys};
 use osis_base::{LabelId, Role, Tid};
 use osis_crypto::{LabelRole, SigningSecret, X25519Secret, label_role_key, role_kem};
 use osis_label::{ClaimSet, Step, StepId};
-use osis_proto::{Code, Command, Request};
+use osis_proto::Code;
+use super::conn::Pending;
 use osis_crdt::{Op, PathOp, PathSeg};
 use osis_schema::Codec;
 use std::collections::{BTreeMap, BTreeSet};
@@ -781,21 +782,29 @@ impl SyncEngine {
         }
     }
 
-    /// A request about `l` was refused.
-    pub(crate) fn refused(&mut self, conn: ConnId, l: Option<LabelId>, kind: Request, code: Code, out: &mut Vec<super::Action>) -> Result<()> {
-        let Some(l) = l else { return Ok(()) };
-        // a delete refused whole goes again at a later pass
-        if kind == Request::Delete
-            && let Some(c) = self.conns.get_mut(&conn)
-        {
-            c.req.deleting.retain(|(x, _), _| *x != l);
-        }
+    /// This node's request `p` on `conn` was refused (Error `code`).
+    pub(crate) fn refused(&mut self, conn: ConnId, p: &Pending, code: Code, out: &mut Vec<super::Action>) -> Result<()> {
+        let l = match p {
+            // the listener keeps no record of this side (it refused the proofs or the Resume): the
+            // set still runs
+            Pending::Prove | Pending::Resume => return self.no_record(conn, out),
+            Pending::Ping { .. } => return Ok(()),
+            // a delete refused whole goes again at a later pass
+            Pending::Delete(l, _) => {
+                if let Some(c) = self.conns.get_mut(&conn) {
+                    c.req.deleting.retain(|(x, _), _| x != l);
+                }
+                self.diag(format!("label {l:?}: delete refused: code {}", code.0));
+                return Ok(());
+            }
+            Pending::Register(l) => *l,
+        };
         let phase = self.lc(conn, &l).map(|x| x.phase.clone());
-        match (kind, phase) {
+        match phase {
             // a pass's step refused for now (a full peer, the rate, not admitted): the open stays,
             // a later pass registers again after a back-off (else every pass sent it again), and
             // the pass that waited for the step runs now under the peer's head
-            (Request::Register, Some(Phase::Open { .. })) if matches!(code, Code::STORAGE_CAP | Code::RATE_LIMITED | Code::NOT_ADMITTED) => {
+            Some(Phase::Open { .. }) if matches!(code, Code::STORAGE_CAP | Code::RATE_LIMITED | Code::NOT_ADMITTED) => {
                 let (now, first, cap) = (self.now(), self.cfg.retry_ms, self.cfg.resync_ms);
                 if let Some(lc) = self.lc_mut(conn, &l) {
                     lc.registering = None;
@@ -810,7 +819,7 @@ impl SyncEngine {
             }
             // registering a path refused for now (not admitted: a peer learns what it admits by
             // syncing, spec/data-model.md §9): tested again after a back-off
-            (Request::Register, Some(Phase::Registering { .. })) if matches!(code, Code::STORAGE_CAP | Code::RATE_LIMITED | Code::NOT_ADMITTED) => {
+            Some(Phase::Registering { .. }) if matches!(code, Code::STORAGE_CAP | Code::RATE_LIMITED | Code::NOT_ADMITTED) => {
                 self.refused_for_now(conn, l, code);
                 Ok(())
             }
@@ -818,7 +827,7 @@ impl SyncEngine {
             // not a child of its head): the steps after it still register. The last answered
             // 9: a genesis alone is asked past by a Behind item; a longer path's Behind item was
             // refused (or none could go): the peer holds L off this node's path
-            (Request::Register, Some(Phase::Registering { .. })) if code == Code::NOT_HEAD => {
+            Some(Phase::Registering { .. }) if code == Code::NOT_HEAD => {
                 let Some(Phase::Registering { path }) = self.lc_mut(conn, &l).map(|x| &mut x.phase) else { return Ok(()) };
                 if !path.is_empty() {
                     path.remove(0);
@@ -836,7 +845,7 @@ impl SyncEngine {
             // new one, or the peer holds a sibling sharing its keys): doubted, never registered
             // under again (`doubt`); a child of a head the stream moved past since: the next pass
             // registers under the new one
-            (Request::Register, Some(Phase::Open { .. })) => {
+            Some(Phase::Open { .. }) => {
                 let head = self.lc(conn, &l).and_then(|x| x.head.as_ref().map(Step::id));
                 let Some(lc) = self.lc_mut(conn, &l) else { return Ok(()) };
                 let under_head = lc.registering.take().is_some_and(|(s, _)| s.prev.is_some() && s.prev == head);
@@ -849,16 +858,12 @@ impl SyncEngine {
             }
             // a child step refused after the open ended, or the rest of a path's steps whose
             // registration ended
-            (Request::Register, _) => {
+            _ => {
                 if let Some(lc) = self.lc_mut(conn, &l) {
                     lc.registering = None;
                 }
                 self.diag(format!("label {l:?}: step refused (code {})", code.0));
                 self.mark_labels(&[l]);
-                Ok(())
-            }
-            _ => {
-                self.diag(format!("{kind:?} refused: code {}", code.0));
                 Ok(())
             }
         }
@@ -901,7 +906,7 @@ impl SyncEngine {
             lc.phase = Phase::Registering { path: path.iter().map(|(s, _)| s.clone()).collect() };
         }
         for (step, claim_set) in path {
-            self.command(conn, Command::Register { label: l, step, claim_set }, out)?;
+            self.request(conn, |id| osis_proto::Message::Register { id, label: l, step, claim_set }, Pending::Register(l), out);
         }
         Ok(())
     }

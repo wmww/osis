@@ -20,7 +20,7 @@ use crate::error::Result;
 use crate::labeling::{Body, BodyCtx, Facts, HeadKeys, Hold, Parts, Why, classify, delete_item, delete_item_by_level, may_delete};
 use osis_commit::Kind as CKind;
 use osis_base::{Ak, BlobId, CommitId, LabelId, Role, Tid, WallMs};
-use osis_proto::Command;
+
 use osis_schema::core_types as ct;
 use std::collections::{BTreeMap, BTreeSet};
 

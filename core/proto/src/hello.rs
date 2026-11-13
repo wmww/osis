@@ -10,6 +10,16 @@ pub const PROTOCOL_VERSION: u64 = 1;
 pub const MAX_HELLO_VERSIONS: usize = 16;
 /// Clock offsets beyond this are reported as a diagnostic (spec/sync.md §6: "a few seconds").
 pub const OFFSET_DIAGNOSTIC_MS: u64 = 5_000;
+/// Pings a dialer sends when its connection starts (clock offset samples, spec/sync.md §6).
+pub const INITIAL_PINGS: usize = 3;
+/// Interval of a dialer's later pings: offset samples, and a request out so the stall clock finds
+/// a dead connection. Minor: 0 pings in a loop, infinity finds a dead idle connection only by
+/// the next request.
+pub const PING_INTERVAL_MS: u64 = 5 * 60 * 1000;
+/// Clock samples kept (`ClockSamples`).
+const MAX_SAMPLES: usize = 9;
+/// Pongs before a clock offset is reported (one outlier among three moves nothing).
+const MIN_PONGS: usize = 3;
 
 /// `Hello := ["osis", [version+], wall_ms, challenge]`.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -94,6 +104,30 @@ pub fn estimate_offset(samples: &[OffsetSample]) -> Option<i64> {
     offsets.get(offsets.len().checked_sub(1)? / 2).copied()
 }
 
+/// A connection's Ping round trips (spec/sync.md §6): the newest `MAX_SAMPLES`, and the offset
+/// once `MIN_PONGS` came back.
+#[derive(Clone, Debug, Default)]
+pub struct ClockSamples {
+    samples: std::collections::VecDeque<OffsetSample>,
+    pongs: usize,
+}
+
+impl ClockSamples {
+    /// A Ping sent at `sent` answered by a Pong of the peer's `peer` wall ms, received at
+    /// `received`: the offset estimate (peer minus local), once enough came back.
+    pub fn pong(&mut self, sample: OffsetSample) -> Option<i64> {
+        if self.samples.len() == MAX_SAMPLES {
+            self.samples.pop_front();
+        }
+        self.samples.push_back(sample);
+        self.pongs += 1;
+        if self.pongs < MIN_PONGS {
+            return None;
+        }
+        estimate_offset(self.samples.make_contiguous())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -145,5 +179,15 @@ mod tests {
         let mut mixed = held.to_vec();
         mixed.push(s(day + 100, day + 1150, day + 200));
         assert_eq!(estimate_offset(&mixed), Some(1000));
+    }
+
+    // spec/sync.md §6: no offset before three Pongs, then the median of the samples kept
+    #[test]
+    fn offset_after_three_pongs() {
+        let s = |sent, peer, received| OffsetSample { sent, peer, received };
+        let mut c = ClockSamples::default();
+        assert_eq!(c.pong(s(100, 1150, 200)), None);
+        assert_eq!(c.pong(s(300, 1340, 360)), None);
+        assert_eq!(c.pong(s(400, 90_000, 402)), Some(1010));
     }
 }

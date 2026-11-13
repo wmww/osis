@@ -38,7 +38,7 @@ fn a_blob_read_and_served_is_stored_once() {
     }
     assert_eq!(blobs(&w), 1, "stored once");
     let item = DeleteItem::sign(&l.head_keys().delete, &l.id, xi).unwrap();
-    w.run(a, Command::Delete { label: l.id, items: vec![item] });
+    w.run(a, |id| Message::Delete { id, label: l.id, items: vec![item] });
     assert_eq!(blobs(&w), 1, "the engine still holds it");
     {
         let mut s = w.hubs[h].store();
@@ -61,7 +61,7 @@ fn a_blob_read_and_served_is_stored_once() {
         assert_eq!(s.blob(&yi).unwrap(), Some(y), "the hub still serves it");
     }
     let item = DeleteItem::sign(&l.head_keys().delete, &l.id, yi).unwrap();
-    w.run(a, Command::Delete { label: l.id, items: vec![item] });
+    w.run(a, |id| Message::Delete { id, label: l.id, items: vec![item] });
     assert_eq!(blobs(&w), 0);
 }
 

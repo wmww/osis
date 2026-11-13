@@ -513,7 +513,7 @@ fn redeem_cut_off_mid_read_is_no_verdict_spec_permissions_7() {
 // spec/permissions.md §7 (Redeem), §3: a link read while the pull of its maker's entries stalled, K's head there and K's commits not: the failed redemption drops what the head gave, and a retry opens K's label anew and joins (the steps stop the pull at points inside that stretch)
 #[test]
 fn retry_after_a_stalled_pull_spec_permissions_7() {
-    for cut in [14, 20, 26] {
+    for cut in [12, 18, 24] {
         let mut w = World::new();
         let host = w.add_host();
         let alice = w.account(1, &[host]);

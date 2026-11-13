@@ -16,7 +16,7 @@ use crate::error::Result;
 use osis_base::Tid;
 use osis_crypto::kdf::{connection_order, pair_key, resume_tag, resumed_tag};
 use crate::engine::Engine;
-use osis_proto::{ClientInput, Command, MAX_RESUME_TAGS};
+use osis_proto::MAX_RESUME_TAGS;
 use osis_store::{RECORD_BUDGET, Record, RecordId};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -140,7 +140,7 @@ impl SyncEngine {
     /// The peer's proofs are in: a dialer that met a known actor lists its records for it.
     pub(super) fn send_resume(&mut self, conn: ConnId, out: &mut Vec<Action>) -> Result<()> {
         let Some(c) = self.conns.get(&conn) else { return Ok(()) };
-        let Some((dialer, listener, key)) = c.session.binding() else { return Ok(()) };
+        let Some((dialer, listener, key)) = c.binding else { return Ok(()) };
         let actors = counted_actors(&self.engine, &c.proven);
         if actors.is_empty() {
             return self.no_record(conn, out);
@@ -152,10 +152,8 @@ impl SyncEngine {
         let tags = recs.iter().take(MAX_RESUME_TAGS).map(|r| resume_tag(&r.r, &key, &dialer, &listener)).collect();
         let expect = recs.iter().take(MAX_RESUME_TAGS).map(|r| (resumed_tag(&r.r, &key, &dialer, &listener), r.id)).collect();
         self.records.sent.insert(conn, ResumeSent { nonce, actors, expect });
-        let now = self.now();
-        let Some(c) = self.conns.get_mut(&conn) else { return Ok(()) };
-        let o = c.session.handle(now, ClientInput::Command(Command::Resume { nonce, tags }));
-        self.outputs(conn, o, out)
+        self.request(conn, |id| osis_proto::Message::Resume { id, nonce, tags }, super::conn::Pending::Resume, out);
+        Ok(())
     }
 
     /// This dialed connection keeps no record (the listener proved no known actor, or refused
@@ -164,11 +162,7 @@ impl SyncEngine {
     /// the filter it receives (first contact, issues/net-first-contact.md).
     pub(super) fn no_record(&mut self, conn: ConnId, out: &mut Vec<Action>) -> Result<()> {
         self.records.sent.remove(&conn);
-        let now = self.now();
-        if let Some(c) = self.conns.get_mut(&conn) {
-            let o = c.session.handle(now, ClientInput::Command(Command::Peer(Box::new(osis_proto::Message::NoRecord { id: super::shared::NO_RECORD_ID }))));
-            self.outputs(conn, o, out)?;
-        }
+        self.hub_down(conn, osis_host::Down::Message(Box::new(osis_proto::Message::NoRecord { id: super::shared::NO_RECORD_ID })), out);
         self.shared_begin(conn, None, out)
     }
 
@@ -194,8 +188,8 @@ impl SyncEngine {
         self.bind_record(conn, bound, out)
     }
 
-    /// The transport carries `conn` through a relay (the driver says so before the connection's
-    /// first event): it ranks after a direct connection of its record (`bind_record`).
+    /// The transport carries `conn` through a relay (its hub session's start says so, before its
+    /// first message): it ranks after a direct connection of its record (`bind_record`).
     pub fn set_relayed(&mut self, conn: ConnId) {
         self.records.relayed.insert(conn);
     }
@@ -210,7 +204,7 @@ impl SyncEngine {
     /// (`stand_in`).
     pub(super) fn bind_record(&mut self, conn: ConnId, (id, moved): (RecordId, bool), out: &mut Vec<Action>) -> Result<()> {
         let (acked, r) = self.engine.run(|tx| Ok(tx.txn.record(&id)?.map_or((0, [0; 32]), |r| (r.acked_pos, r.r))))?;
-        let Some((dialer, listener)) = self.conns.get(&conn).and_then(|c| c.session.binding()).or_else(|| self.served_binding(conn)).map(|(d, l, _)| (d, l)) else { return Ok(()) };
+        let Some((dialer, listener)) = self.conns.get(&conn).and_then(|c| c.binding).or_else(|| self.served_binding(conn)).map(|(d, l, _)| (d, l)) else { return Ok(()) };
         let order = (self.records.relayed.contains(&conn), connection_order(&r, &dialer, &listener));
         self.records.order.insert(conn, order);
         self.records.bound.insert(conn, ConnRecord::new(id, acked));
@@ -234,8 +228,7 @@ impl SyncEngine {
     /// peer is connected by `keep` (`stand_in` when the peer dialed it).
     fn close_duplicate(&mut self, conn: ConnId, keep: ConnId, out: &mut Vec<Action>) {
         if let Some(host) = self.conns.get(&conn).map(|c| c.host) {
-            out.push(Action::Close { conn });
-            self.lost(conn);
+            self.close_dialed(conn, out);
             self.retry.remove(&host);
             if self.served.contains_key(&keep) {
                 self.stand_in.insert(host, keep);

@@ -450,8 +450,8 @@ fn no_pass_before_order_0(hosts: usize, write: bool) {
     assert!(!held.is_empty());
     let mut f = Chat { net, host: hs[0], a, c, g, t, l };
     f.net.set_online(c, true);
-    f.until(|s| s.net.sync(c).entries(&l).len() > N / 2);
-    // listed: the fetch's reply waits
+    // every host's listing in: the fetch's reply waits
+    f.until(|s| s.net.sync(c).entries(&l).len() > N / 2 && s.net.sync(c).fills_listed(&l) == hosts);
     f.net.hold_blobs.extend(held);
     assert!(f.net.sync(c).fill_before_passes());
     if write {
@@ -463,7 +463,7 @@ fn no_pass_before_order_0(hosts: usize, write: bool) {
     // while the fetch counts as asked (past it, `a_fill_waits_on_its_trickled_batch_...`)
     f.net.fetched.insert(c, Vec::new());
     let start = f.net.now();
-    while f.net.now() + 1_000 < start + osis_proto::client::STALL_TIMEOUT_MS {
+    while f.net.now() + 1_000 < start + osis_proto::window::STALL_TIMEOUT_MS {
         f.net.round();
         if f.net.queue_len() == 0 {
             f.net.tick(1_000);
@@ -753,7 +753,7 @@ fn fill_with_a_trickling_host(hosts: usize, batch: Option<usize>, trickle: bool,
 // reply is in (a next batch would wait behind it there).
 #[test]
 fn a_trickled_order_0_batch_holds_the_label_for_the_stall_time_only_spec_sync_6() {
-    let stall = osis_proto::client::STALL_TIMEOUT_MS;
+    let stall = osis_proto::window::STALL_TIMEOUT_MS;
     let x = fill_with_a_trickling_host(2, None, true, false);
     let within = |t: Option<u64>, what: &str| assert!(t.is_some_and(|t| (stall..=stall + 1_000).contains(&t)), "{what} {t:?} ms after the other host's release");
     within(x.passed, "first pass");
@@ -776,7 +776,7 @@ fn an_honest_fill_at_two_hosts_fetches_each_body_once_spec_sync_6() {
 // order 0 takes, as one answering it without the bytes would not hold them at all
 #[test]
 fn a_fill_waits_on_its_trickled_batch_for_the_stall_time_only_spec_sync_6() {
-    let stall = osis_proto::client::STALL_TIMEOUT_MS;
+    let stall = osis_proto::window::STALL_TIMEOUT_MS;
     for batch in [None, Some(1)] {
         let passed = fill_with_a_trickling_host(1, batch, true, false).passed;
         assert!(passed.is_some_and(|t| (stall..=stall + 1_000).contains(&t)), "first pass {passed:?} ms after the start, batch {batch:?}");
@@ -789,7 +789,7 @@ fn a_fill_waits_on_its_trickled_batch_for_the_stall_time_only_spec_sync_6() {
 // batch still comes from it within the stall time and two steps
 #[test]
 fn a_body_skipped_for_a_trickled_fetch_comes_from_a_slow_host_by_the_stall_time_spec_sync_10() {
-    let stall = osis_proto::client::STALL_TIMEOUT_MS;
+    let stall = osis_proto::window::STALL_TIMEOUT_MS;
     let x = fill_with_a_trickling_host(2, Some(1), true, true);
     assert!(x.trickled.is_some_and(|t| t <= stall + 50_000), "the trickled batch here {:?} ms after the start", x.trickled);
     assert!(x.read.is_none_or(|t| t > stall + 50_000), "the other host's fill not slower: read {:?} ms after the start", x.read);

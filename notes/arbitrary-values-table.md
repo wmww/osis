@@ -11,7 +11,7 @@ Each was a number that only made a bug unlikely (class X); the code ends by a fi
 | rotation `MAX_DEPTH` | `engine/rotation/mod.rs` | departures one per covers class, a fixpoint over the holder graph (polynomial), cascade iterative, each actor once: any depth rotates | `rotation::tests::removal_twelve_deep_rotates_every_level_spec_crypto_4` |
 | `HINT_INDEXES` | `node/sync/open.rs` | inbox things carry the label index (spec/wire.md §9), links and cards name index 0 | `inbox_retry::hint_opens_a_label_replaced_many_times_spec_wire_9` |
 | `MAX_INBOX_TRIES` | `node/sync/local.rs`, `inbound.rs` | a refused deposit is retried at the capped back-off until taken or moot (delivery forgotten or re-sealed, label replaced) | `inbox_retry::inbox_deposit_retried_for_hours_spec_sync_5` |
-| queue caps and a request timeout as flow control | `node/sync/driver.rs`, `host/`, `proto/client.rs` | the request window `WINDOW` (spec/sync.md §6 Flow control) keeps both queues under `WINDOW_QUEUE`; `STALL_TIMEOUT_MS` counts from the oldest request's last move; pushes wait while the connection's unwritten bytes leave no room for one (`ServingInput::Taken`), so a subscriber's queue stays under `SEND_QUEUE` | `slow_link::*` |
+| queue caps and a request timeout as flow control | `host/`, `proto/window.rs` | the request window `WINDOW` (spec/sync.md §6 Flow control) keeps both queues under `WINDOW_QUEUE`; `STALL_TIMEOUT_MS` counts from the oldest request's last move; pushes wait while the connection's unwritten bytes leave no room for one (`SessionInput::Taken`), so a subscriber's queue stays under `SEND_QUEUE` | `slow_link::*` |
 | `HANDSHAKE_TIMEOUT` | `transport/quic.rs`, `p2p.rs` | no deadline; QUIC's idle timeout ends a silent handshake, a listener drops its oldest handshake past `MAX_INCOMING` | `quic::tests::handshakes_evict_oldest` |
 | `CLOSE_WAIT` | `osis/handle.rs` | user handles counted: `close` fails `StillOpen` while others exist, else waits for the callback, engine call or timer to end (and the driver task on the app's multi-thread runtime) | `api::close_waits_or_names_holders_spec_api_handle` |
 
@@ -44,7 +44,7 @@ Each was a number that only made a bug unlikely (class X); the code ends by a fi
 | value | class | 0 / ∞ |
 |---|---|---|
 | `INITIAL_PINGS` 3, `MIN_PONGS` 3, `MAX_SAMPLES` 9 | M | no offset / slow start, memory |
-| `PING_INTERVAL_MS` 5 min | M | ping storm / offset never refreshed |
+| `PING_INTERVAL_MS` 5 min | M (also keeps a request out, so the stall clock finds a dead idle dialed connection) | ping storm / offset never refreshed, a dead idle connection kept until the next request |
 | `OFFSET_DIAGNOSTIC_MS` 5 s | M (diagnostic only) | always reported / never |
 | `MAX_SAMPLE_RTT_MS` 10 s | M (spec: ignore long round trips) | no samples / suspend-length errors |
 | `STALL_TIMEOUT_MS` 2 min | M (liveness: the oldest request in flight did not move, either side; half of it bounds how long a served request waits in the hub's queue for the output bound's room before the biggest holders are closed) | every connection with a request out closes, and every stream body is asked of a second source at once / a peer answering nothing holds its fetches; a link moving under one `WRITE_CHUNK` per timeout counts as stalled |
@@ -110,7 +110,6 @@ Each was a number that only made a bug unlikely (class X); the code ends by a fi
 | stream `SCAN_ROWS` 2^16, `MAX_CROSSED` 2^14 | R (rows a reply reads) / M (bytes inlined back past it) | no reply moves / one request reads the whole log; nothing remembered / unbounded set |
 | stream `MAX_WAITING` 1024 (positions not settled, and bodies they owe, from which a stream takes no new position) | R (flow control: no Pull, pushes not taken and read again from the cursor; past it only the Pull in flight's reply and the last push taken add, each within a message; `pushes_past_the_bound_grow_nothing_and_lose_nothing`) | the stream never moves / a source that never serves makes the requester keep a position per push and an id per announcement |
 | stream `MAX_UNREPORTED` 16 | R (unreported replies and pushes kept apart; past it the oldest two merge) | 0 would drop members unreported, so at least 1; at 1 a member waits for the latest report while pushes keep coming / a requester that never reports grows it per push |
-| `MAX_QUEUED` 64 MiB (at least `SEND_QUEUE + WINDOW_QUEUE`, asserted: both sides of a peer connection request) | R (a peer that does not read) | sessions keeping the window closed / unbounded buffer |
 | link `WRITE_CHUNK` 16 KiB | M (grain of send progress for the stall timeout) | no progress shown / a link under a chunk per stall timeout counts as stalled |
 | `work_max` 2^14 (osis-node `SyncConfig`, changes from elsewhere a label's work set takes in before its pass) | R (past it the set goes and the label's next pass is full, always correct, O(what the label holds): over about 270 changes/s sustained, every resync) | a pass after any change full / 32 B per message since the pass, per label |
 | `max_clients` 64 (osis-node `SyncConfig`, client port (b), (c)) | R (connections authenticated as client actors: a further Auth is Error 4; also the nonce sessions kept for the main session) | no client served / clients take every connection |
@@ -139,7 +138,7 @@ Each was a number that only made a bug unlikely (class X); the code ends by a fi
 | unix `MAX_PATH` 107 bytes (osis-transport `unix`) | O (`sun_path`, the OS's) | |
 | unix `ACCEPT_RETRY` 100 ms (osis-transport `unix`, wait after an accept error) | M (a client waits up to this long once the cause, e.g. EMFILE, is gone) | spins on a lasting error / the listener ends at the first one |
 | `MAX_IDLE` 60 s, `MIN_WAKE_MS` 1 s, `FINISH_WAIT` 10 s, `RELISTEN_RETRY` 5 s | M | |
-| `RESEND_MS` 30 s | M (retry pacing after an answer that did not settle the entry; never while its request is unanswered, `ClientSession::answered`) | retry every pass / no retry on this connection |
+| `RESEND_MS` 30 s | M (retry pacing after an answer that did not settle the entry; never while its request is unanswered: a Delete's id in `Conn::pending`) | retry every pass / no retry on this connection |
 | `LAN_JOIN_REPEATS` 2, `LAN_JOIN_GAP` 1 s (provisional) | M | a lost first announcement waits `LAN_ANNOUNCE` / one datagram per gap for ever |
 | `LAN_ANNOUNCE` 30 s, `LAN_REJOIN_MIN` 30 s (provisional) | M | repeats at the loop's speed, a network change rejoins at once / one announcement per join, a network change never rejoins |
 | `LAN_FRESH_MS` 2 windows, `PEERS_TTL_MS` 60 s | M (dialing only; opens check access) | |

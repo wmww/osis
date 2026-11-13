@@ -26,8 +26,8 @@ fn register_and_open() {
     w.open(a, &l);
     w.open(b, &l);
     let other = Label::new(4);
-    let ev = w.run(a, Command::Register { label: l.id, step: other.steps[0].clone(), claim_set: None });
-    assert!(matches!(&ev[..], [ClientEvent::Refused { code: Code::MALFORMED, .. }]), "{ev:?}");
+    let ev = w.run(a, |id| Message::Register { id, label: l.id, step: other.steps[0].clone(), claim_set: None });
+    assert!(matches!(&ev[..], [Message::Error { code: Code::MALFORMED, .. }]), "{ev:?}");
 }
 
 // spec/sync.md §5 (Register): a claim set must hash to the step's
@@ -38,8 +38,8 @@ fn claim_set_must_hash_to_the_steps_spec_sync_5() {
     let h = w.add_hub(HostPolicy::default());
     let a = w.connect(h);
     let l = Label::new(3);
-    let ev = w.run(a, Command::Register { label: l.id, step: l.steps[0].clone(), claim_set: Some(Label::new(4).sets[0].clone()) });
-    assert!(matches!(&ev[..], [ClientEvent::Refused { code: Code::MALFORMED, .. }]), "{ev:?}");
+    let ev = w.run(a, |id| Message::Register { id, label: l.id, step: l.steps[0].clone(), claim_set: Some(Label::new(4).sets[0].clone()) });
+    assert!(matches!(&ev[..], [Message::Error { code: Code::MALFORMED, .. }]), "{ev:?}");
     w.setup(a, &l);
 }
 
@@ -92,12 +92,12 @@ fn deletes_and_tombstones() {
     let k = l.head_keys().clone();
     let by = |b: &[u8], n: u64, level: u8, t: &osis_crypto::Secret32, signer: &SigningSecret| DeleteItem::sign_by(signer, &[(level, &dk(t))], &salt(n), &HB, &l.id, osis_label::blob_id(b)).unwrap();
     let plain_by = |signer: &SigningSecret| DeleteItem::sign(signer, &l.id, osis_label::blob_id(&plain)).unwrap();
-    let ev = w.run(a, Command::Delete { label: l.id, items: vec![by(&b3, 10, 3, &t3, &k.sync), by(&b3, 10, 3, &t1, &k.write), by(&b1, 11, 1, &t1, &k.sync), plain_by(&k.write)] });
+    let ev = w.run(a, |id| Message::Delete { id, label: l.id, items: vec![by(&b3, 10, 3, &t3, &k.sync), by(&b3, 10, 3, &t1, &k.write), by(&b1, 11, 1, &t1, &k.sync), plain_by(&k.write)] });
     assert_eq!(statuses(&ev), vec![Code::REFUSED, Code::REFUSED, Code::OK, Code::REFUSED]);
-    let ev = w.run(a, Command::Delete { label: l.id, items: vec![by(&b3, 10, 3, &t3, &k.write), plain_by(&k.delete)] });
+    let ev = w.run(a, |id| Message::Delete { id, label: l.id, items: vec![by(&b3, 10, 3, &t3, &k.write), plain_by(&k.delete)] });
     assert_eq!(statuses(&ev), vec![Code::OK, Code::OK]);
     // deleting again is fine; the identical blob is refused while tombstoned, accepted after
-    assert_eq!(statuses(&w.run(a, Command::Delete { label: l.id, items: vec![plain_by(&k.delete)] })), vec![Code::OK]);
+    assert_eq!(statuses(&w.run(a, |id| Message::Delete { id, label: l.id, items: vec![plain_by(&k.delete)] })), vec![Code::OK]);
     assert_eq!(pull(&w, h, &l, &l.entry(plain.clone())), Code::TOMBSTONED);
     w.advance(osis_base::format::TOMBSTONE_LIFETIME_MS);
     assert_eq!(pull(&w, h, &l, &l.entry(plain)), Code::OK);
@@ -127,7 +127,7 @@ fn deletes_and_expiry() {
     let eid = osis_label::blob_id(&expiring);
     assert_eq!(live(&w, h, &l), vec![tid]);
     assert!(!w.hubs[h].store().tombstoned(&l.id, &eid).unwrap());
-    assert_eq!(statuses(&w.run(a, Command::Delete { label: l.id, items: vec![DeleteItem::sign(&dk, &l.id, tid).unwrap()] })), vec![Code::OK]);
+    assert_eq!(statuses(&w.run(a, |id| Message::Delete { id, label: l.id, items: vec![DeleteItem::sign(&dk, &l.id, tid).unwrap()] })), vec![Code::OK]);
     assert!(live(&w, h, &l).is_empty());
     assert!(w.hubs[h].store().tombstoned(&l.id, &tid).unwrap());
     assert_eq!(pull(&w, h, &l, &l.entry(expiring)), Code::EXPIRED);
@@ -161,7 +161,7 @@ fn relays_are_held_by_nobody() {
     let stored_rows = w.hubs[h].store().rows().unwrap();
     let relay = relay_blob(&w, 5);
     let rid = osis_label::blob_id(&relay);
-    assert!(matches!(pull_taken(&w, h, &l, &l.entry(relay.clone())), serving::Taken::Relay(r) if r.blob_id == rid));
+    assert!(matches!(pull_taken(&w, h, &l, &l.entry(relay.clone())), session::Taken::Relay(r) if r.blob_id == rid));
     assert_eq!(w.hubs[h].store().rows().unwrap(), stored_rows, "relays store nothing");
     assert!(w.hubs[h].store().entry(&l.id, &rid).unwrap().is_none());
     assert_eq!(deposit(&w, h, l.deposit(relay, &l.head_keys().deposit.clone())), Code::REFUSED);
@@ -179,7 +179,7 @@ fn relay_replay_flood_bounded_spec_sync_5() {
     let l = Label::new(3);
     w.setup(a, &l);
     let relay = relay_blob(&w, 5);
-    let passed = (0..200).filter(|_| matches!(pull_taken(&w, h, &l, &l.entry(relay.clone())), serving::Taken::Relay(_))).count();
+    let passed = (0..200).filter(|_| matches!(pull_taken(&w, h, &l, &l.entry(relay.clone())), session::Taken::Relay(_))).count();
     assert_eq!(pull(&w, h, &l, &l.entry(relay)), Code::OK, "seen: OK, not passed on");
     assert_eq!(passed, 1);
     let drift = osis_base::format::MAX_DRIFT_MS;
@@ -195,8 +195,8 @@ fn relay_replay_flood_bounded_spec_sync_5() {
     }
     let taken: Vec<Option<Code>> = (10..16)
         .map(|n| match pull_taken(&w, h, &l, &l.entry(relay_blob(&w, n))) {
-            serving::Taken::Relay(_) => None,
-            serving::Taken::Code(c) => Some(c),
+            session::Taken::Relay(_) => None,
+            session::Taken::Code(c) => Some(c),
         })
         .collect();
     assert_eq!(taken, [None, None, None, None, Some(Code::RATE_LIMITED), Some(Code::RATE_LIMITED)], "the label's rate");
@@ -243,7 +243,7 @@ fn restart_keeps_state() {
     w.open(a, &l);
     assert_eq!(pull_all(&w, h, &l, 0..5), vec![Code::OK; 5]);
     let item = DeleteItem::sign(&l.head_keys().delete, &l.id, bid(0)).unwrap();
-    assert_eq!(statuses(&w.run(a, Command::Delete { label: l.id, items: vec![item] })), vec![Code::OK]);
+    assert_eq!(statuses(&w.run(a, |id| Message::Delete { id, label: l.id, items: vec![item] })), vec![Code::OK]);
     w.restart(h, HostPolicy::default());
     w.advance(1_000);
     assert_eq!(live(&w, h, &l), sorted((1..5).map(bid).collect()));
@@ -274,10 +274,10 @@ fn node_kinds_go_up_answers_come_down() {
     w.setup(a, &l);
     w.open(a, &l);
     assert!(w.ups.is_empty(), "{:?}", w.ups);
-    w.send(a, Command::Prove(vec![]));
+    w.send(a, |id| Message::Prove { id, proofs: vec![] });
     w.pump();
-    let pull = osis_proto::msg::Pull { id: osis_proto::msg::NODE_IDS | 7, cursor: None, joins: vec![], inline_limit: 0, max_reply: osis_proto::serving::REPLY_BUDGET as u64, follow: true, ephemeral: false };
-    w.send(a, Command::Peer(Box::new(Message::Pull(Box::new(pull.clone())))));
+    let pull = osis_proto::msg::Pull { id: osis_proto::msg::NODE_IDS | 7, cursor: None, joins: vec![], inline_limit: 0, max_reply: osis_proto::session::REPLY_BUDGET as u64, follow: true, ephemeral: false };
+    w.send_as(a, Message::Pull(Box::new(pull.clone())));
     w.pump();
     let ups: Vec<Message> = w.ups.drain(..).map(|(_, c, u)| match u {
         osis_host::Up::Message(m) if c == conn => *m,
@@ -288,7 +288,7 @@ fn node_kinds_go_up_answers_come_down() {
     let prove_id = ups[0].id();
     w.down(h, vec![(conn, osis_host::Down::Message(Box::new(Message::Proved { id: prove_id, proofs: vec![] }))), (conn, osis_host::Down::Message(Box::new(Message::Error { id: pull.id, code: Code::NOT_ADMITTED })))]);
     let ev = std::mem::take(&mut w.events[a]);
-    assert!(matches!(&ev[..], [ClientEvent::Proved { proofs }, ClientEvent::Peer(e)] if proofs.is_empty() && matches!(**e, Message::Error { id, code: Code::NOT_ADMITTED } if id == pull.id)), "{ev:?}");
+    assert!(matches!(&ev[..], [Message::Proved { id, proofs }, Message::Error { id: e, code: Code::NOT_ADMITTED }] if *id == prove_id && proofs.is_empty() && *e == pull.id), "{ev:?}");
     w.down(h, vec![(conn, osis_host::Down::Close)]);
     assert_eq!(w.ups, vec![(h, conn, osis_host::Up::End)]);
 }
@@ -302,18 +302,62 @@ fn a_stalled_node_request_closes_spec_sync_6() {
     let h = w.add_hub(HostPolicy::default());
     let a = w.connect(h);
     let conn = started(&w, h);
-    w.run(a, Command::Prove(vec![]));
+    w.run(a, |id| Message::Prove { id, proofs: vec![] });
     let Some((_, _, osis_host::Up::Message(prove))) = w.ups.last() else { panic!("{:?}", w.ups) };
     let id = prove.id();
     w.down(h, vec![(conn, osis_host::Down::Message(Box::new(Message::Proved { id, proofs: vec![] })))]);
     w.events[a].clear();
     w.ups.clear();
-    let pull = osis_proto::msg::Pull { id: osis_proto::msg::NODE_IDS | 7, cursor: None, joins: vec![], inline_limit: 0, max_reply: osis_proto::serving::REPLY_BUDGET as u64, follow: true, ephemeral: false };
+    let pull = osis_proto::msg::Pull { id: osis_proto::msg::NODE_IDS | 7, cursor: None, joins: vec![], inline_limit: 0, max_reply: osis_proto::session::REPLY_BUDGET as u64, follow: true, ephemeral: false };
     w.down(h, vec![(conn, osis_host::Down::Message(Box::new(Message::Pull(Box::new(pull)))))]);
-    assert!(matches!(&w.events[a][..], [ClientEvent::Peer(m)] if matches!(**m, Message::Pull(_))), "{:?}", w.events[a]);
-    w.advance(osis_proto::client::STALL_TIMEOUT_MS - 1);
+    assert!(matches!(&w.events[a][..], [Message::Pull(_)]), "{:?}", w.events[a]);
+    w.advance(osis_proto::window::STALL_TIMEOUT_MS - 1);
     assert!(w.ups.is_empty() && w.hubs[h].connections() == 1);
     w.advance(1);
     assert_eq!(w.ups, vec![(h, conn, osis_host::Up::End)]);
     assert_eq!(w.hubs[h].connections(), 0);
+}
+
+/// The binding of hub `h`'s connection `c` (its `Up::Start`).
+fn binding(w: &World, h: usize, c: osis_host::ConnId) -> osis_host::Binding {
+    w.ups.iter().find_map(|(x, y, u)| match u {
+        osis_host::Up::Start(b) if (*x, *y) == (h, c) => Some(*b),
+        _ => None,
+    }).expect("a start")
+}
+
+// spec/sync.md §10 (Connection proofs), §6 (Stall): a connection the hub dials starts at the
+// listener's Hello, binding the key dialed and both challenges dialer first, as the listener
+// binds them; node sync's request on it stalls and closes it at tick as on a served one; its
+// end goes up even when it closes before the listener's Hello (the Hello deadline, or the
+// transport gone)
+#[test]
+fn dialed_connections_spec_sync_10() {
+    let mut w = World::new();
+    let (h, g) = (w.add_hub(HostPolicy::default()), w.add_hub(HostPolicy::default()));
+    let (dc, ac) = w.dial(h, g);
+    let (d, a) = (binding(&w, h, dc), binding(&w, g, ac));
+    assert_eq!((d.dialer, d.listener, d.key), (a.dialer, a.listener, a.key));
+    assert_eq!((d.key, d.remote), (hub_key(g), osis_host::Remote::key(hub_key(g))));
+    assert_ne!(d.dialer, d.listener);
+    w.ups.clear();
+    let pull = osis_proto::msg::Pull { id: osis_proto::msg::NODE_IDS | 7, cursor: None, joins: vec![], inline_limit: 0, max_reply: osis_proto::session::REPLY_BUDGET as u64, follow: true, ephemeral: false };
+    w.down(h, vec![(dc, osis_host::Down::Message(Box::new(Message::Pull(Box::new(pull.clone())))))]);
+    assert_eq!(w.ups, vec![(g, ac, osis_host::Up::Message(Box::new(Message::Pull(Box::new(pull)))))], "the listener's node is asked");
+    w.ups.clear();
+    w.advance(osis_proto::window::STALL_TIMEOUT_MS - 1);
+    assert!(w.ups.is_empty() && w.hubs[h].connections() == 1);
+    w.advance(1);
+    assert!(w.ups.contains(&(h, dc, osis_host::Up::End)), "{:?}", w.ups);
+    assert_eq!(w.hubs[h].connections(), 0);
+    // before any Hello: the deadline, the transport gone
+    w.ups.clear();
+    let (_, late) = w.dial_silent(h);
+    assert!(w.ups.is_empty(), "no start without the listener's Hello: {:?}", w.ups);
+    w.advance(HostPolicy::default().hello_ms);
+    assert_eq!(w.ups, vec![(h, late, osis_host::Up::End)]);
+    w.ups.clear();
+    let (link, gone) = w.dial_silent(h);
+    w.cut(link);
+    assert_eq!(w.ups, vec![(h, gone, osis_host::Up::End)]);
 }

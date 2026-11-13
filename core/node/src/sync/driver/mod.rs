@@ -1,10 +1,10 @@
-//! The tokio driver (feature `driver`; notes/architecture.md §2): moves the `SyncEngine`'s bytes
-//! over osis-transport `link` sessions (one dialed stream per connection, an ephemeral transport
-//! key per connection, the peer's key checked by the transport, spec/sync.md §10) and fires its
-//! timers. Every session a peer opens on one of the node's listeners is a session of its hub
-//! (`hub`, osis-host's sans-I/O `Hub`, driven in this loop with node sync above it): the
-//! dialable key's listeners (`Control::Reach`, `Control::Listen`), the unix socket's
-//! (`Control::Socket`) and the LAN loop's per-network one. `Control::Lan` runs the LAN loop
+//! The tokio driver (feature `driver`; notes/architecture.md §2): dials what the `SyncEngine` asks
+//! for over osis-transport `link` sessions (one stream per connection, an ephemeral transport key
+//! per connection, the peer's key checked by the transport, spec/sync.md §10) and fires its
+//! timers. Every connection is a session of the node's hub (`hub`, osis-host's sans-I/O `Hub`,
+//! driven in this loop with node sync above it): each dialed one once up, and each a peer opens
+//! on one of the node's listeners: the dialable key's (`Control::Reach`, `Control::Listen`), the
+//! unix socket's (`Control::Socket`) and the LAN loop's per-network one. `Control::Lan` runs the LAN loop
 //! (spec/sync.md §10): per network a fresh transport key and listener, announced on join and
 //! every `LAN_ANNOUNCE`; announcements heard go to `SyncEngine::lan_seen`. No sync logic lives
 //! here: every input is an `Event`, every output an `Action`. Engine calls run under
@@ -24,7 +24,7 @@ use osis_host::HostPolicy;
 use osis_crypto::RngCore;
 use hub::HubRun;
 use osis_host::HostConfig;
-use osis_transport::link::{self, Link, LinkTx, blocking};
+use osis_transport::link::{self, Link, blocking};
 use osis_transport::lan::Announce;
 use osis_transport::{Address, ListenConfig, Listener, StaticSecret, Transport};
 use std::collections::{BTreeSet, HashMap};
@@ -37,12 +37,6 @@ use tokio::task::JoinHandle;
 pub const MAX_IDLE: Duration = Duration::from_secs(60);
 /// How long a session's end waits for the host to take our last bytes.
 pub const FINISH_WAIT: Duration = Duration::from_secs(10);
-/// Bytes queued for a connection and not yet taken by the transport before it is dropped: a peer
-/// that does not read (resource bound; a connection's replies and pushes stay within `SEND_QUEUE`,
-/// its own requests within `WINDOW_QUEUE` more, spec/sync.md §6). 0 drops every session with a
-/// request queued behind another, infinity buffers a non-reading peer without end.
-pub const MAX_QUEUED: usize = 64 * 1024 * 1024;
-const _: () = assert!(MAX_QUEUED >= osis_proto::serving::SEND_QUEUE + osis_proto::client::WINDOW_QUEUE);
 /// How often the LAN loop repeats an announcement (`LanConfig::announce`; provisional, minor: a
 /// lost one costs this much longer to find a neighbour; 0: a busy loop, infinity: one chance).
 pub const LAN_ANNOUNCE: Duration = Duration::from_secs(30);
@@ -139,23 +133,15 @@ pub type PeerKeys = Arc<dyn Fn(&BTreeSet<[u8; 32]>) + Send + Sync>;
 pub type Log = Arc<dyn Fn(&str) + Send + Sync>;
 
 enum Ev {
-    /// A dialed connection is up: its sending half, and whether a relay carries it.
-    Up(ConnId, LinkTx, bool),
+    /// A dial is up.
+    Up(ConnId, Link),
     Failed(ConnId, String),
-    Bytes(ConnId, Vec<u8>),
-    Closed(ConnId),
 }
 
-/// Forwards a session's bytes to the driver, then its end.
-async fn forward(conn: ConnId, rx: link::LinkRx, ev: mpsc::Sender<Ev>) {
-    link::forward(rx, ev, move |b| Ev::Bytes(conn, b), Ev::Closed(conn)).await
-}
-
-struct Conn {
-    tx: Option<LinkTx>,
+/// A dial not up yet: its task and the key it dials.
+struct Dialing {
     task: JoinHandle<()>,
-    /// `LinkTx::taken` when last reported (`Event::Sent`; `u64::MAX` before the first report).
-    taken: u64,
+    key: [u8; 32],
 }
 
 /// Where the sync engine lives while a driver runs.
@@ -235,7 +221,8 @@ struct Driver<T: Transport, H: Shared> {
     transport: Arc<T>,
     clock: Arc<dyn Clock>,
     log: Log,
-    conns: HashMap<ConnId, Conn>,
+    /// Dials not up yet (up, a connection is the hub's).
+    dials: HashMap<ConnId, Dialing>,
     wake: Option<u64>,
     ev_tx: mpsc::Sender<Ev>,
     lan: Option<LanLoop>,
@@ -311,34 +298,24 @@ impl<T: Transport, H: Shared> Driver<T, H> {
                         self.hub.accept_own(addr.key, theirs);
                         mine
                     });
+                    let key = addr.key;
                     let task = tokio::spawn(async move {
                         let dialed = match own {
                             Some(mine) => Ok(mine),
                             None => link::dial(&*t, &addr, None, FINISH_WAIT).await.map_err(|e| e.to_string()),
                         };
-                        let link = match dialed {
-                            Ok(l) => l,
-                            Err(e) => {
-                                let _ = ev.send(Ev::Failed(conn, e)).await;
-                                return;
-                            }
-                        };
-                        let Link { tx, rx, relayed, .. } = link;
-                        if ev.send(Ev::Up(conn, tx, relayed)).await.is_ok() {
-                            forward(conn, rx, ev).await;
-                        }
+                        let _ = ev.send(match dialed {
+                            Ok(l) => Ev::Up(conn, l),
+                            Err(e) => Ev::Failed(conn, e),
+                        }).await;
                     });
-                    self.conns.insert(conn, Conn { tx: None, task, taken: u64::MAX });
+                    self.dials.insert(conn, Dialing { task, key });
                 }
-                Action::Send { conn, bytes } => {
-                    let ok = self.conns.get(&conn).and_then(|c| c.tx.as_ref()).is_some_and(|tx| tx.send(bytes, MAX_QUEUED));
-                    if !ok {
-                        (self.log)(&format!("connection {conn}: closed (slow or gone)"));
-                        self.close(conn);
-                        self.feed(Event::Down { conn });
+                Action::Close { conn } => {
+                    if let Some(d) = self.dials.remove(&conn) {
+                        d.task.abort();
                     }
                 }
-                Action::Close { conn } => self.close(conn),
                 Action::Wake { at } => self.wake = Some(at),
                 Action::Reach => self.relisten = true,
                 Action::Host(cfg) => self.host_want = Some(cfg),
@@ -349,18 +326,7 @@ impl<T: Transport, H: Shared> Driver<T, H> {
         }
     }
 
-    /// Reports the connections whose bytes the transport took since the last report, then ticks.
     fn tick(&mut self) {
-        let mut moved = Vec::new();
-        for (id, c) in &mut self.conns {
-            if let Some(n) = c.tx.as_ref().map(LinkTx::taken).filter(|n| *n != c.taken) {
-                c.taken = n;
-                moved.push((*id, n));
-            }
-        }
-        if !moved.is_empty() {
-            self.feed(Event::Sent { conns: moved });
-        }
         self.feed(Event::Tick);
         self.give_peer_keys(false);
     }
@@ -374,14 +340,6 @@ impl<T: Transport, H: Shared> Driver<T, H> {
         if let Some((sink, last)) = self.peer_keys.as_mut().filter(|(_, last)| force || *last != keys) {
             sink(&keys);
             *last = keys;
-        }
-    }
-
-    fn close(&mut self, conn: ConnId) {
-        if let Some(c) = self.conns.remove(&conn) {
-            // dropping the sending end finishes the stream; the dialer's connection then closes
-            drop(c.tx);
-            c.task.abort();
         }
     }
 
@@ -487,33 +445,16 @@ impl<T: Transport, H: Shared> Driver<T, H> {
 
     fn event(&mut self, ev: Ev) {
         match ev {
-            Ev::Up(conn, tx, relayed) => {
-                if let Some(c) = self.conns.get_mut(&conn) {
-                    c.tx = Some(tx);
-                    if relayed {
-                        self.call(&mut |s| {
-                            s.set_relayed(conn);
-                            Vec::new()
-                        });
-                    }
-                    self.feed(Event::Up { conn });
+            Ev::Up(conn, link) => {
+                // a dial abandoned meanwhile (`Action::Close`) drops its link
+                if let Some(d) = self.dials.remove(&conn) {
+                    let hub = self.hub.dial(d.key, link);
+                    self.feed(Event::Up { conn, hub });
                 }
             }
             Ev::Failed(conn, e) => {
-                (self.log)(&format!("connection {conn}: {e}"));
-                self.conns.remove(&conn);
-                self.feed(Event::Down { conn });
-            }
-            Ev::Bytes(conn, bytes) => {
-                let Some(c) = self.conns.get_mut(&conn) else { return };
-                if let Some(n) = c.tx.as_ref().map(LinkTx::taken).filter(|n| *n != c.taken) {
-                    c.taken = n;
-                    self.feed(Event::Sent { conns: vec![(conn, n)] });
-                }
-                self.feed(Event::Bytes { conn, bytes });
-            }
-            Ev::Closed(conn) => {
-                if self.conns.remove(&conn).is_some() {
+                if self.dials.remove(&conn).is_some() {
+                    (self.log)(&format!("connection {conn}: {e}"));
                     self.feed(Event::Down { conn });
                 }
             }
@@ -797,7 +738,7 @@ pub async fn run_shared<T: Transport, H: Shared>(shared: H, transport: T, listen
         transport: Arc::new(transport),
         clock,
         log,
-        conns: HashMap::new(),
+        dials: HashMap::new(),
         wake: None,
         ev_tx,
         lan: None,
@@ -871,9 +812,8 @@ pub async fn run_shared<T: Transport, H: Shared>(shared: H, transport: T, listen
     let ups = d.hub.stop();
     d.hub_ups.extend(ups);
     d.hub_pump();
-    let ids: Vec<ConnId> = d.conns.keys().copied().collect();
-    for id in ids {
-        d.close(id);
+    for (_, x) in d.dials.drain() {
+        x.task.abort();
     }
     d.shared
 }

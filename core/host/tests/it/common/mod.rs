@@ -1,4 +1,4 @@
-//! Scripted clients (osis-proto `ClientSession`) and hosts (`Hub` over `HostStore` on a
+//! Scripted dialers (osis-proto `examples::Dialer`) and hosts (`Hub` over `HostStore` on a
 //! `MemoryBackend` and `MemoryRoot` sharing a fault plan) wired by in-memory byte queues; entries
 //! put as node sync puts them (`pull`, `deposit`); a label with rotations; blobs.
 #![allow(dead_code)]
@@ -6,7 +6,8 @@
 use osis_base::{BlobId, Clock, ManualClock, WallMs};
 use osis_crypto::{SeededRng, Secret32};
 use osis_proto::*;
-pub use osis_proto::examples::{Label, Stamped, bid, blob, blob_with, salt};
+pub use osis_proto::examples::{Dialer, Label, Stamped, bid, blob, blob_with, salt};
+use osis_proto::msg::Id;
 use osis_host::{HostStore, ConnId, Down, Hub, HubOutput, HostPolicy, Up};
 use osis_store::{Faults, MemoryBackend, MemoryRoot, Store, StoreConfig};
 use std::collections::VecDeque;
@@ -42,8 +43,9 @@ pub struct World {
     pub backends: Vec<MemoryBackend>,
     pub roots: Vec<MemoryRoot>,
     pub faults: Vec<Faults>,
-    pub clients: Vec<ClientSession>,
-    pub events: Vec<Vec<ClientEvent>>,
+    pub clients: Vec<Dialer>,
+    /// What each dialer's session handed up (answers to its requests, the hub's requests).
+    pub events: Vec<Vec<Message>>,
     pub diagnostics: Vec<String>,
     /// What hubs handed up for node sync (none runs here): (hub, connection, up).
     pub ups: Vec<(usize, ConnId, Up)>,
@@ -93,10 +95,10 @@ impl World {
         self.hubs[i] = Hub::new(std::sync::Arc::new(std::sync::Mutex::new(store)), Box::new(SeededRng::from_seed([0x90 + i as u8; 32])));
     }
 
-    /// A client connected to hub `h`; returns the client index.
+    /// A dialer connected to hub `h` past the Hellos; returns the client index.
     pub fn connect(&mut self, h: usize) -> usize {
         let c = self.clients.len();
-        self.clients.push(ClientSession::new(ClientConfig { peer_static_key: hub_key(h), challenge: [0xc0 + c as u8; 32] }));
+        self.clients.push(Dialer::new(hub_key(h), [0xc0 + c as u8; 32]));
         self.events.push(vec![]);
         let conn = self.next_conn;
         self.next_conn += 1;
@@ -104,11 +106,10 @@ impl World {
         let now = self.now();
         let out = self.hubs[h].accept(now, conn, hub_key(h), osis_host::Remote::key([0xe0 + c as u8; 32]));
         self.hub_out(h, out);
-        let out = self.clients[c].handle(now, ClientInput::Start);
+        let out = self.clients[c].start(now);
         self.client_out(c, out);
         self.pump();
-        let ev = std::mem::take(&mut self.events[c]);
-        assert!(matches!(ev.first(), Some(ClientEvent::Ready { .. })), "{ev:?}");
+        assert_eq!(self.clients[c].session.version(), Some(PROTOCOL_VERSION));
         c
     }
 
@@ -141,13 +142,14 @@ impl World {
         }
     }
 
-    fn client_out(&mut self, c: usize, out: Vec<ClientOutput>) {
+    fn client_out(&mut self, c: usize, out: Vec<SessionOutput>) {
         for o in out {
             match o {
-                ClientOutput::Send(b) => self.route(End::Client(c), b),
-                ClientOutput::Event(e) => self.events[c].push(e),
-                ClientOutput::Close => self.close(End::Client(c)),
-                ClientOutput::SetTimer(_) => {}
+                SessionOutput::Send(b) => self.route(End::Client(c), b),
+                SessionOutput::Peer(m) => self.events[c].push(*m),
+                SessionOutput::Close => self.close(End::Client(c)),
+                SessionOutput::StoreError(e) => panic!("{e}"),
+                SessionOutput::PeerError(_) | SessionOutput::Request(_) | SessionOutput::Room { .. } => {}
             }
         }
     }
@@ -169,7 +171,7 @@ impl World {
         match to {
             End::Sink(_) => {}
             End::Client(c) => {
-                let out = self.clients[c].handle(now, ClientInput::Bytes(bytes));
+                let out = self.clients[c].bytes(now, bytes);
                 self.client_out(c, out);
             }
             End::Hub(h, c) => {
@@ -213,18 +215,19 @@ impl World {
         self.pump();
     }
 
-    /// Hands a command to client `c` without delivering anything yet.
-    pub fn send(&mut self, c: usize, cmd: Command) {
+    /// Hands client `c` a request under the id it picks (or, `Dialer::send`, any message) without
+    /// delivering anything yet: the id.
+    pub fn send(&mut self, c: usize, m: impl FnOnce(Id) -> Message) -> Id {
         let now = self.now();
-        let out = self.clients[c].handle(now, ClientInput::Command(cmd));
+        let (id, out) = self.clients[c].request(now, m);
         self.client_out(c, out);
+        id
     }
 
-    /// Runs a command to quiescence (hubs' due work included) and returns the client's events.
-    pub fn run(&mut self, c: usize, cmd: Command) -> Vec<ClientEvent> {
-        let now = self.now();
-        let out = self.clients[c].handle(now, ClientInput::Command(cmd));
-        self.client_out(c, out);
+    /// Runs a request of client `c` to quiescence (hubs' due work included) and returns what its
+    /// session handed up.
+    pub fn run(&mut self, c: usize, m: impl FnOnce(Id) -> Message) -> Vec<Message> {
+        self.send(c, m);
         self.pump();
         self.settle();
         std::mem::take(&mut self.events[c])
@@ -265,18 +268,53 @@ impl World {
         (self.links.len() - 1, conn)
     }
 
+    /// Hub `h` dials hub `g` (`Hub::dial` to `g`'s key; `g` accepts): the dialed and the
+    /// accepted connection.
+    pub fn dial(&mut self, h: usize, g: usize) -> (ConnId, ConnId) {
+        let (dc, ac) = (self.next_conn, self.next_conn + 1);
+        self.next_conn += 2;
+        self.links.push(Link { a: End::Hub(h, dc), b: End::Hub(g, ac), to_b: VecDeque::new(), to_a: VecDeque::new(), open: true });
+        let now = self.now();
+        let out = self.hubs[h].dial(now, dc, hub_key(g), osis_host::Remote::key(hub_key(g)));
+        self.hub_out(h, out);
+        let out = self.hubs[g].accept(now, ac, hub_key(g), osis_host::Remote::key(hub_key(h)));
+        self.hub_out(g, out);
+        self.pump();
+        (dc, ac)
+    }
+
+    /// Hub `h` dials a peer that never speaks: the link index and the dialed connection.
+    pub fn dial_silent(&mut self, h: usize) -> (usize, ConnId) {
+        let conn = self.next_conn;
+        self.next_conn += 1;
+        self.links.push(Link { a: End::Sink(self.links.len()), b: End::Hub(h, conn), to_b: VecDeque::new(), to_a: VecDeque::new(), open: true });
+        let now = self.now();
+        let out = self.hubs[h].dial(now, conn, [0xd1; 32], osis_host::Remote::key([0xd1; 32]));
+        self.hub_out(h, out);
+        self.pump();
+        (self.links.len() - 1, conn)
+    }
+
+    /// Hands client `c` a message as is (an answer, or a request under an id of the caller's)
+    /// without delivering anything yet.
+    pub fn send_as(&mut self, c: usize, m: Message) {
+        let now = self.now();
+        let out = self.clients[c].send(now, m);
+        self.client_out(c, out);
+    }
+
     pub fn link_open(&self, link: usize) -> bool {
         self.links[link].open
     }
 
-    pub fn take(&mut self, c: usize) -> Vec<ClientEvent> {
+    pub fn take(&mut self, c: usize) -> Vec<Message> {
         std::mem::take(&mut self.events[c])
     }
 
     /// Registers `l`'s genesis step by client `c`, and opens it on `c`'s connection.
     pub fn setup(&mut self, c: usize, l: &Label) {
-        let ev = self.run(c, l.register_cmd(0));
-        assert_eq!(ev, vec![ClientEvent::Registered { label: l.id }]);
+        let ev = self.run(c, |id| l.register(id, 0));
+        assert!(matches!(ev[..], [Message::Ok { .. }]), "{ev:?}");
         self.open(c, l);
     }
 
@@ -291,10 +329,10 @@ impl World {
     }
 }
 
-pub fn statuses(ev: &[ClientEvent]) -> Vec<Code> {
+pub fn statuses(ev: &[Message]) -> Vec<Code> {
     ev.iter()
         .flat_map(|e| match e {
-            ClientEvent::DeleteStatus { codes, .. } => codes.clone(),
+            Message::Status { codes, .. } => codes.clone(),
             _ => vec![],
         })
         .collect()
@@ -305,19 +343,19 @@ pub fn sorted(mut v: Vec<BlobId>) -> Vec<BlobId> {
     v
 }
 
-/// Stamped entry `e` of `l` put at hub `h` as node sync's pull puts it (`serving::pulled`: its
+/// Stamped entry `e` of `l` put at hub `h` as node sync's pull puts it (`session::pulled`: its
 /// stamp checked under the head keys).
-pub fn pull_taken(w: &World, h: usize, l: &Label, e: &Stamped) -> serving::Taken {
+pub fn pull_taken(w: &World, h: usize, l: &Label, e: &Stamped) -> session::Taken {
     let mut s = w.hubs[h].store();
     let k = s.head_keys(&l.id).unwrap().expect("a registered label");
-    serving::pulled(&mut *s, w.now(), &l.id, &k, &e.blob, e.wrap, e.stamp, &mut false).unwrap()
+    session::pulled(&mut *s, w.now(), &l.id, &k, &e.blob, e.wrap, e.stamp, &mut false).unwrap()
 }
 
 /// `pull_taken`'s code (a relay-only blob passed on: OK).
 pub fn pull(w: &World, h: usize, l: &Label, e: &Stamped) -> Code {
     match pull_taken(w, h, l, e) {
-        serving::Taken::Code(c) => c,
-        serving::Taken::Relay(_) => Code::OK,
+        session::Taken::Code(c) => c,
+        session::Taken::Relay(_) => Code::OK,
     }
 }
 
@@ -326,13 +364,13 @@ pub fn pull_all(w: &World, h: usize, l: &Label, ns: impl IntoIterator<Item = u64
     ns.into_iter().map(|n| pull(w, h, l, &l.entry(blob(n)))).collect()
 }
 
-/// A Deposit item put at hub `h` as node sync puts one (`serving::deposit`): its code, and whether
+/// A Deposit item put at hub `h` as node sync puts one (`session::deposit`): its code, and whether
 /// its signature verified (only then may the depositor learn more than the code).
 pub fn deposit_verified(w: &World, h: usize, item: msg::OfferItem) -> (Code, bool) {
     let msg::OfferItem::Deposit { label, blob, wrap, sig } = item else { panic!("not a deposit") };
     let mut s = w.hubs[h].store();
     let k = s.head_keys(&label).unwrap().expect("a registered label");
-    serving::deposit(&mut *s, w.now(), &label, &k, &blob, wrap, &sig, &mut false).unwrap()
+    session::deposit(&mut *s, w.now(), &label, &k, &blob, wrap, &sig, &mut false).unwrap()
 }
 
 /// `deposit_verified`'s code.

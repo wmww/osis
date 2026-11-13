@@ -28,10 +28,10 @@ fn hostile_put(net: &mut Net, h: usize, host: usize, (g, l): (Tid, &LabelId), id
     let mut struck = false;
     if as_who == WRITER {
         let stamp = osis_label::sign_stamp(keys.write.as_ref().unwrap(), l, &id, &wrap, false);
-        osis_proto::serving::pulled(&mut *store, now, l, &k, &blob, wrap, stamp, &mut struck).unwrap();
+        osis_proto::session::pulled(&mut *store, now, l, &k, &blob, wrap, stamp, &mut struck).unwrap();
     } else {
         let sig = osis_label::sign_deposit(keys.deposit.as_ref().unwrap(), l, &id, &wrap, false);
-        osis_proto::serving::deposit(&mut *store, now, l, &k, &blob, wrap, &sig, &mut struck).unwrap();
+        osis_proto::session::deposit(&mut *store, now, l, &k, &blob, wrap, &sig, &mut struck).unwrap();
     }
     drop(store);
     net.run();
@@ -302,7 +302,7 @@ fn keyless_node_keeps_the_wrap_that_opens_spec_sync_5() {
     let push = |net: &mut Net, id: BlobId, wrap: [u8; WRAP_LEN], stamped: bool| {
         let stamp = stamped.then(|| osis_label::sign_stamp(&write, &l, &id, &wrap, false));
         let m = crate::net::stream_msg(l, vec![osis_proto::Event::Added { blob_id: id, blob: None, wrap, stamp }], 0);
-        net.feed(f, osis_node::sync::Event::Bytes { conn, bytes: encode_frame(&m.encode()) });
+        net.receive(f, conn, encode_frame(&m.encode()));
         net.settle(10_000);
         net.sync(f).entry_meta(&l, &id).unwrap().0
     };
@@ -447,7 +447,7 @@ fn poison_stamped_before_a_rotation_still_repaired_spec_sync_5() {
 fn announce(net: &mut Net, n: usize, host: usize, l: &LabelId, id: BlobId, wrap: [u8; WRAP_LEN], stamp: osis_crypto::Signature) {
     let conn = net.conn_to(n, host).unwrap();
     let m = crate::net::stream_msg(*l, vec![osis_proto::Event::Added { blob_id: id, blob: None, wrap, stamp: Some(stamp) }], 1 << 40);
-    net.feed(n, osis_node::sync::Event::Bytes { conn, bytes: encode_frame(&m.encode()) });
+    net.receive(n, conn, encode_frame(&m.encode()));
 }
 
 // spec/sync.md §5, §6: writer `m`, its bytes on their way, holds the good wrap and hears the useless

@@ -1,14 +1,14 @@
 //! `Hub`: a node's connections over one store, sans-I/O (spec/sync.md §5-§10). One osis-proto
-//! `ServingSession` per accepted connection, under the key of the listener that took it; bounded
-//! sweeps, Hello deadlines and stalls of the upper layer's requests. Node sync is every
-//! session's upper layer (issues/net-one-peer.md step 3): the hub hands it each connection's
-//! start, node-kind messages, client-port requests, push room and end (`HubOutput::Up`) and takes its messages, answers and closes down (`Hub::down`),
-//! judging none of them. The node's driver and the simulator only move bytes, pass `Up` and
+//! `Session` per connection, accepted under the key of the listener that took it or dialed to a
+//! key (`dial`); bounded sweeps, Hello deadlines and stalls of the upper layer's requests. Node
+//! sync is every session's upper layer: the hub hands it each connection's start, node-kind
+//! messages, answers to its requests, client-port requests, push room and end (`HubOutput::Up`)
+//! and takes its requests, answers and closes down (`Hub::down`), judging none of them. The node's driver and the simulator only move bytes, pass `Up` and
 //! `Down` between the hub and node sync, and call `tick` when `next_due` says.
 
 use crate::store::HostStore;
 use std::sync::{Arc, Mutex, MutexGuard};
-use osis_proto::{Message, ServingConfig, ServingSession, ServingInput, ServingOutput};
+use osis_proto::{Message, SessionConfig, Session, SessionInput, SessionOutput};
 use osis_transport::Peer;
 use std::collections::{BTreeMap, VecDeque};
 
@@ -35,34 +35,36 @@ pub enum HubOutput {
     Moved,
 }
 
-/// What a served connection hands node sync.
+/// What a connection hands node sync.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Up {
-    /// The dialer's Hello arrived: what the connection binds. Every other `Up` of it comes after.
+    /// The peer's Hello arrived: what the connection binds. Every other `Up` of it but a dialed
+    /// connection's `End` comes after.
     Start(Binding),
-    /// A node-kind message (`Message::for_node`): node sync answers each request by `Down`.
+    /// A node-kind message (`Message::for_node`), which node sync answers by `Down` if a request;
+    /// an answer to one of node sync's requests; a Notify.
     Message(Box<Message>),
     /// A client-port request (Auth, Call, Sub: answered by `Down::Reply`; an Unsub, already
     /// answered).
     Request(Box<Message>),
     /// Pushes of up to `budget` bytes may go now (after `Down::WantRoom`).
     Room { budget: usize },
-    /// The connection is gone (after a `Start`).
+    /// The connection is gone (after a `Start`, or a dialed one at any time).
     End,
 }
 
-/// A served connection's binding (spec/sync.md §10, Connection proofs).
+/// A connection's binding (spec/sync.md §10, Connection proofs).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Binding {
-    /// The dialer's and this side's Hello challenges, and the static key of the listener that
-    /// took the connection.
+    /// The dialer's and the listener's Hello challenges, and the listener's static key (this
+    /// side's listener's, or the key dialed).
     pub dialer: [u8; 32],
     pub listener: [u8; 32],
     pub key: [u8; 32],
     pub remote: Remote,
 }
 
-/// The dialer of a served connection as the transport tells it.
+/// The peer of a connection as the transport tells it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Remote {
     /// Who it is (a key it authenticated, or a unix peer's uid).
@@ -78,11 +80,11 @@ impl Remote {
     }
 }
 
-/// What node sync hands a served connection.
+/// What node sync hands a connection.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Down {
-    /// A message to send: a request within the session's request window, anything else at once
-    /// (a relay-only push without room is dropped).
+    /// A message to send: a request (its id node sync's) within the session's request window,
+    /// anything else at once (a relay-only push without room is dropped).
     Message(Box<Message>),
     /// The answer to an `Up::Request`.
     Reply { id: osis_proto::msg::Id, reply: Result<osis_proto::Outcome, osis_proto::Code> },
@@ -91,7 +93,7 @@ pub enum Down {
     /// Pushes wait: `Up::Room` when the session's push rule allows.
     WantRoom,
     /// Node sync opened the label here by a sync-key or static-entry Hit: the session takes its
-    /// Deletes (`ServingInput::Open`).
+    /// Deletes (`SessionInput::Open`).
     Open(osis_base::LabelId),
     /// That open ended.
     Shut(osis_base::LabelId),
@@ -99,16 +101,17 @@ pub enum Down {
     Close,
 }
 
-/// A served connection. `buffered`: received bytes it holds (`ServingSession::buffered`); `hold`:
-/// what it holds against the output bound (`ServingSession::holding`); `alone`: no output of its
-/// own (`ServingSession::alone`); `need`: the room its first waiting reply, push or request needs
-/// (`ServingSession::need`); `queued`: in `queue` since then; `paused`: received frames wait for
+/// A connection. `dialed`: this node dialed it (its `Up::End` goes even before a `Start`); `buffered`: received bytes it holds (`Session::buffered`); `hold`:
+/// what it holds against the output bound (`Session::holding`); `alone`: no output of its
+/// own (`Session::alone`); `need`: the room its first waiting reply, push or request needs
+/// (`Session::need`); `queued`: in `queue` since then; `paused`: received frames wait for
 /// room, so it takes no input (`Hub::waits`); `taken`: the last report (`Hub::sent`); `moved`: a
 /// report took more since the last check; `started`: its `Up::Start` went.
 #[derive(Clone)]
 struct Conn {
-    c: Box<ServingSession>,
+    c: Box<Session>,
     remote: Remote,
+    dialed: bool,
     hello_by: Option<u64>,
     buffered: usize,
     hold: usize,
@@ -131,12 +134,12 @@ pub struct Hub {
     sweep_hold: u64,
     /// The last sweep ran out of budget.
     sweep_more: bool,
-    /// Received bytes held for all served connections (`ServingSession::buffered`).
+    /// Received bytes held for all connections (`Session::buffered`).
     buffered: usize,
-    /// What all served connections hold against `max_buffered_bytes`: bytes written and not
+    /// What all connections hold against `max_buffered_bytes`: bytes written and not
     /// taken by the transport (as reported), and reply allowances handed up and not answered.
     hold: usize,
-    /// Served connections holding something or needing room: each one's share of the bound is
+    /// Connections holding something or needing room: each one's share of the bound is
     /// the bound over their number.
     active: usize,
     /// Connections with no output of their own whose need waits for the node's room, in arrival
@@ -233,11 +236,21 @@ impl Hub {
     /// connections a node serves is node sync's rule (it closes by `Down::Close`); the hub caps
     /// none.
     pub fn accept(&mut self, now: u64, id: ConnId, key: [u8; 32], remote: Remote) -> Vec<HubOutput> {
+        self.start(now, id, key, remote, false)
+    }
+
+    /// A connection node sync dialed to static key `key`, up now (`remote`: the transport's
+    /// word on it): start its session (sends Hello). Its `Up::End` goes whenever it ends.
+    pub fn dial(&mut self, now: u64, id: ConnId, key: [u8; 32], remote: Remote) -> Vec<HubOutput> {
+        self.start(now, id, key, remote, true)
+    }
+
+    fn start(&mut self, now: u64, id: ConnId, key: [u8; 32], remote: Remote, dialed: bool) -> Vec<HubOutput> {
         self.now = now;
-        let cfg = ServingConfig { static_key: key, challenge: self.challenge() };
+        let cfg = SessionConfig { listener_key: key, challenge: self.challenge(), dialed };
         let hello_by = Some(now.saturating_add(self.store().policy().hello_ms));
-        self.conns.insert(id, Conn { c: Box::new(ServingSession::new(cfg)), remote, hello_by, buffered: 0, hold: 0, alone: true, need: None, queued: None, paused: false, taken: 0, moved: false, started: false });
-        self.batch(|h, st, out| h.serve(st, now, id, ServingInput::Start, out))
+        self.conns.insert(id, Conn { c: Box::new(Session::new(cfg)), remote, dialed, hello_by, buffered: 0, hold: 0, alone: true, need: None, queued: None, paused: false, taken: 0, moved: false, started: false });
+        self.batch(|h, st, out| h.serve(st, now, id, SessionInput::Start, out))
     }
 
 
@@ -281,14 +294,14 @@ impl Hub {
         self.now = now;
         self.batch(|h, st, out| {
             if h.conns.contains_key(&id) {
-                h.serve(st, now, id, ServingInput::Bytes(bytes), out);
+                h.serve(st, now, id, SessionInput::Bytes(bytes), out);
                 h.limit_buffered(st, out);
             }
         })
     }
 
     /// The transport took bytes sent on these connections since the last report, with how many
-    /// it took in all: room for a connection's pushes (`ServingInput::Taken`). The driver reports it before `tick`, before
+    /// it took in all: room for a connection's pushes (`SessionInput::Taken`). The driver reports it before `tick`, before
     /// a connection's input bytes, and at `PUSH_POLL_MS` while one holds pushes (`next_due`).
     pub fn sent(&mut self, now: u64, ids: &[(ConnId, u64)]) -> Vec<HubOutput> {
         self.now = now;
@@ -299,7 +312,7 @@ impl Hub {
                         c.taken = *n;
                         c.moved = true;
                     }
-                    h.serve(st, now, *id, ServingInput::Taken(*n), out);
+                    h.serve(st, now, *id, SessionInput::Taken(*n), out);
                 }
             }
         })
@@ -311,7 +324,7 @@ impl Hub {
         self.batch(|h, _, _| h.remove(id))
     }
 
-    /// Node sync's messages, answers, Notifies, push room requests and closes for served
+    /// Node sync's messages, answers, Notifies, push room requests and closes for its
     /// connections, in order (one batch). Those of a connection gone are dropped.
     pub fn down(&mut self, now: u64, downs: Vec<(ConnId, Down)>) -> Vec<HubOutput> {
         self.now = now;
@@ -321,12 +334,12 @@ impl Hub {
                     continue;
                 }
                 match d {
-                    Down::Message(m) => h.serve(st, now, id, ServingInput::Peer(m), out),
-                    Down::Reply { id: r, reply } => h.serve(st, now, id, ServingInput::Reply { id: r, reply }, out),
-                    Down::Notify(n) => h.serve(st, now, id, ServingInput::Notify(n), out),
-                    Down::WantRoom => h.serve(st, now, id, ServingInput::WantRoom, out),
-                    Down::Open(l) => h.serve(st, now, id, ServingInput::Open(l), out),
-                    Down::Shut(l) => h.serve(st, now, id, ServingInput::Shut(l), out),
+                    Down::Message(m) => h.serve(st, now, id, SessionInput::Peer(m), out),
+                    Down::Reply { id: r, reply } => h.serve(st, now, id, SessionInput::Reply { id: r, reply }, out),
+                    Down::Notify(n) => h.serve(st, now, id, SessionInput::Notify(n), out),
+                    Down::WantRoom => h.serve(st, now, id, SessionInput::WantRoom, out),
+                    Down::Open(l) => h.serve(st, now, id, SessionInput::Open(l), out),
+                    Down::Shut(l) => h.serve(st, now, id, SessionInput::Shut(l), out),
                     Down::Close => {
                         h.remove(id);
                         out.push(HubOutput::Close(id));
@@ -338,18 +351,18 @@ impl Hub {
 
     /// Forgets a connection and what it holds (`Up::End` once the batch ends).
     fn remove(&mut self, id: ConnId) {
-        let Some(Conn { buffered, hold, need, started, .. }) = self.conns.remove(&id) else { return };
+        let Some(Conn { buffered, hold, need, started, dialed, .. }) = self.conns.remove(&id) else { return };
         self.buffered = self.buffered.saturating_sub(buffered);
         self.hold = self.hold.saturating_sub(hold);
         if hold > 0 || need.is_some() {
             self.active = self.active.saturating_sub(1);
         }
-        if started {
+        if started || dialed {
             self.ended.push(id);
         }
     }
 
-    /// What all served connections hold against `max_buffered_bytes` (bytes written and not
+    /// What all connections hold against `max_buffered_bytes` (bytes written and not
     /// taken, reply allowances handed up and not answered): never more than it.
     pub fn held(&self) -> usize {
         self.hold
@@ -388,7 +401,7 @@ impl Hub {
         }
     }
 
-    /// Back-pressure on the output (spec/sync.md §10 Served connections): each served
+    /// Back-pressure on the output (spec/sync.md §10 Served connections): each
     /// connection's replies, pushes and own requests go only within its share of
     /// `max_buffered_bytes` (the bound over the active connections) and the bytes the bound has
     /// left; its received requests wait for room in order, and it takes no input meanwhile. One
@@ -412,7 +425,7 @@ impl Hub {
             };
             if need > max.saturating_sub(self.hold) || kicks == 0 {
                 if self.check_at.is_none() {
-                    self.check_at = Some(self.now.saturating_add(osis_proto::serving::PUSH_POLL_MS));
+                    self.check_at = Some(self.now.saturating_add(osis_proto::session::PUSH_POLL_MS));
                     self.unmove();
                 }
                 return;
@@ -420,7 +433,7 @@ impl Hub {
             kicks -= 1;
             // run while still first, so the room kept for it is its own; it leaves the queue
             // once it needs nothing more of the bound (the loop above), else stays first
-            self.serve(st, self.now, id, ServingInput::Resume, out);
+            self.serve(st, self.now, id, SessionInput::Resume, out);
         }
         self.check_at = None;
     }
@@ -437,7 +450,7 @@ impl Hub {
     fn first_due(&self) -> Option<u64> {
         let f = self.queue.front()?;
         match self.conns.get(f) {
-            Some(Conn { queued: Some(t), .. }) => Some(t.saturating_add(osis_proto::client::STALL_TIMEOUT_MS / 2)),
+            Some(Conn { queued: Some(t), .. }) => Some(t.saturating_add(osis_proto::window::STALL_TIMEOUT_MS / 2)),
             _ => None,
         }
     }
@@ -459,7 +472,7 @@ impl Hub {
             // output of its own that did not move: a reservation alone (a reply to come) has no
             // bytes to move
             self.close_biggest(st, needs, |id, c| matches!(c, Conn { moved: false, alone: false, queued: None, .. }) && id != first, "not moving", out);
-            self.check_at = Some(now.saturating_add(osis_proto::serving::PUSH_POLL_MS));
+            self.check_at = Some(now.saturating_add(osis_proto::session::PUSH_POLL_MS));
             self.unmove();
         }
         if self.first_due().is_some_and(|t| t <= now) {
@@ -487,7 +500,7 @@ impl Hub {
         }
     }
 
-    /// Received bytes held for all served connections: partial frames, frames waiting to run,
+    /// Received bytes held for all connections: partial frames, frames waiting to run,
     /// requests handed up and not answered.
     pub fn buffered(&self) -> usize {
         self.buffered
@@ -540,12 +553,12 @@ impl Hub {
     pub fn next_due(&self, now: u64) -> Option<u64> {
         let sweep = if self.sweep_more { Some(now) } else { self.store().next_due().ok().flatten() }.map(|t| t.max(self.sweep_hold));
         // bytes not yet reported taken: the driver reports at the next tick (shares count them)
-        let unread = (self.hold > 0).then(|| now.saturating_add(osis_proto::serving::PUSH_POLL_MS)).into_iter().chain(self.check_at).chain(self.first_due());
-        let conns = self.conns.values().filter_map(|Conn { c, hello_by, .. }| [c.held().then(|| now.saturating_add(osis_proto::serving::PUSH_POLL_MS)), *hello_by, c.stall_at()].into_iter().flatten().min());
+        let unread = (self.hold > 0).then(|| now.saturating_add(osis_proto::session::PUSH_POLL_MS)).into_iter().chain(self.check_at).chain(self.first_due());
+        let conns = self.conns.values().filter_map(|Conn { c, hello_by, .. }| [c.held().then(|| now.saturating_add(osis_proto::session::PUSH_POLL_MS)), *hello_by, c.stall_at()].into_iter().flatten().min());
         sweep.into_iter().chain(unread).chain(conns).min()
     }
 
-    fn serve(&mut self, st: &mut HostStore, now: u64, id: ConnId, input: ServingInput, out: &mut Vec<HubOutput>) {
+    fn serve(&mut self, st: &mut HostStore, now: u64, id: ConnId, input: SessionInput, out: &mut Vec<HubOutput>) {
         let (share, slack) = (self.share(st), self.slack(st, id));
         let Some(Conn { c, remote, hello_by, buffered, hold, alone, need, queued, paused, started, .. }) = self.conns.get_mut(&id) else { return };
         c.set_room(share, slack);
@@ -580,17 +593,17 @@ impl Hub {
         *paused = now_paused;
         for o in outputs {
             match o {
-                ServingOutput::Send(b) => out.push(HubOutput::Send(id, b)),
-                ServingOutput::Close => {
+                SessionOutput::Send(b) => out.push(HubOutput::Send(id, b)),
+                SessionOutput::Close => {
                     self.remove(id);
                     out.push(HubOutput::Close(id));
                 }
-                ServingOutput::PeerError(e) => out.push(HubOutput::Diagnostic(format!("connection {id}: {e}"))),
-                ServingOutput::StoreError(e) => out.push(HubOutput::Diagnostic(e.to_string())),
+                SessionOutput::PeerError(e) => out.push(HubOutput::Diagnostic(format!("connection {id}: {e}"))),
+                SessionOutput::StoreError(e) => out.push(HubOutput::Diagnostic(e.to_string())),
                 // node sync's, judged there (proofs, records, the shared set, the stream, the port)
-                ServingOutput::Peer(m) => out.push(HubOutput::Up(id, Up::Message(m))),
-                ServingOutput::Request(m) => out.push(HubOutput::Up(id, Up::Request(m))),
-                ServingOutput::Room { budget } => out.push(HubOutput::Up(id, Up::Room { budget })),
+                SessionOutput::Peer(m) => out.push(HubOutput::Up(id, Up::Message(m))),
+                SessionOutput::Request(m) => out.push(HubOutput::Up(id, Up::Request(m))),
+                SessionOutput::Room { budget } => out.push(HubOutput::Up(id, Up::Room { budget })),
             }
         }
     }

@@ -7,7 +7,7 @@ use super::state::Kind;
 use super::{ConnId, HostKey, LConn, SyncEngine};
 use crate::error::Result;
 use osis_base::{BlobId, LabelId};
-use osis_proto::client::STALL_TIMEOUT_MS;
+use osis_proto::window::STALL_TIMEOUT_MS;
 use std::collections::BTreeSet;
 
 /// Queue rank of what judging needs (order 0).
@@ -186,6 +186,12 @@ impl SyncEngine {
         // looked at again when the batch goes stale (`timers`), if no answer came first
         self.settle_by(now.saturating_add(STALL_TIMEOUT_MS), l);
         self.fetch_on(conn, l, ids, out)
+    }
+
+    /// The connections where `l`'s fill has its listing (tests).
+    #[doc(hidden)]
+    pub fn fills_listed(&self, l: &LabelId) -> usize {
+        self.conns.values().filter(|c| c.labels.get(l).is_some_and(|x| x.fill.as_ref().is_some_and(|f| f.listed))).count()
     }
 
     /// Whether a fill has not all that judging needs: the group memberships among it. A label not

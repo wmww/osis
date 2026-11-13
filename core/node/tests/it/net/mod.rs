@@ -1,9 +1,9 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing, dead_code)]
 //! Sync engines and hosts in process, no tokio: `SyncEngine`s exchanging bytes with
 //! osis-host `Hub`s over in-memory queues, one manual clock (nodes may run off it: `set_skew`).
-//! Every node serves peers through a hub of its own (`Node::hub`, node sync above it as in the
-//! driver, on the node's clock); its hub's connection IDs are at least `HUB_BASE`, so one `ConnId`
-//! space names both ends of a peer link. Group setup stands in for pairing
+//! Every node's connections, dialed and served, are sessions of a hub of its own (`Node::hub`,
+//! node sync above it as in the driver, on the node's clock); its hub's connection IDs are at
+//! least `HUB_BASE`, so one `ConnId` space names both ends of a link. Group setup stands in for pairing
 //! (direct delivery of the setup commits).
 
 use osis_base::{Clock, CommitId, ManualClock, Role, Tid, Value, WallMs};
@@ -83,8 +83,8 @@ pub struct Node {
 /// numbers connections from 1 again, so the old connection's bytes would land on a new one).
 #[derive(Clone)]
 enum Msg {
-    /// node, life, conn -> hub
-    Up(usize, u64, ConnId),
+    /// A dial of node, life, conn is up as the node's hub connection, to the key dialed.
+    Up(usize, u64, ConnId, ConnId, [u8; 32]),
     ToHub(usize, ConnId, Vec<u8>),
     ToNode(usize, u64, ConnId, Vec<u8>),
     Close(usize, u64, ConnId),
@@ -101,7 +101,7 @@ pub struct Net {
     pub clock: Arc<ManualClock>,
     pub nodes: Vec<Node>,
     pub hosts: Vec<Host>,
-    /// (node, conn) -> (host, hub conn)
+    /// (node, its hub's conn) -> (host, the host hub's conn)
     links: BTreeMap<(usize, ConnId), (usize, u64)>,
     queue: VecDeque<Msg>,
     next_hub_conn: u64,
@@ -109,8 +109,8 @@ pub struct Net {
     pub steps: usize,
     /// (node, host) pairs that cannot connect.
     pub blocked: BTreeSet<(usize, usize)>,
-    /// Node-to-node sessions, both directions: (node, conn) -> (node, conn), the dialed side's
-    /// conn the dialer's engine's, the served side's its hub's (`HUB_BASE` and up).
+    /// Node-to-node sessions, both directions: (node, conn) -> (node, conn), each side's its
+    /// hub's (`HUB_BASE` and up).
     plinks: BTreeMap<(usize, ConnId), (usize, ConnId)>,
     /// (node, node) pairs that cannot connect.
     pub blocked_peers: BTreeSet<(usize, usize)>,
@@ -173,7 +173,7 @@ pub struct Net {
     /// Nodes whose host bytes are held back until `release` (a node reading nothing for a while).
     pub held_to: BTreeSet<usize>,
     /// Host messages announcing or carrying one of these blobs are held back until `release`
-    /// (a slow fetch of one entry).
+    /// (a slow fetch of one entry), and what follows such a fetch reply on its connection.
     pub hold_blobs: BTreeSet<osis_base::BlobId>,
     /// Per node, blobs whose announcements and fetch replies hosts never deliver to it (the
     /// rest of each message is): a node that never hears of one entry.
@@ -754,8 +754,8 @@ impl Net {
         self.nodes[n].sync.as_ref().and_then(|s| s.served_conn(c)).unwrap_or(c)
     }
 
-    /// Node `n`'s engine connection `c` as the link names it (a served one by its hub's ID).
-    fn link_conn(&self, n: usize, c: ConnId) -> ConnId {
+    /// Node `n`'s engine connection `c` as the link names it: its hub's ID.
+    pub fn link_conn(&self, n: usize, c: ConnId) -> ConnId {
         self.nodes[n].sync.as_ref().and_then(|s| s.hub_conn(c)).unwrap_or(c)
     }
 
@@ -800,6 +800,43 @@ impl Net {
     pub fn inject(&mut self, n: usize, c: ConnId, m: &osis_proto::Message) {
         let (to, pc) = self.plinks[&(n, self.link_conn(n, c))];
         self.queue.push_back(Msg::ToNode(to, self.nodes[to].life, pc, osis_proto::encode_frame(&m.encode())));
+    }
+
+    /// Bytes arrive at once on node `n`'s connection `c` (its engine's ID), dialed or served, as
+    /// if its peer sent them: into its hub's session, what that hands up to its node sync.
+    pub fn receive(&mut self, n: usize, c: ConnId, bytes: Vec<u8>) {
+        let hc = self.link_conn(n, c);
+        let now = self.node_now(n);
+        let out = self.nodes[n].hub.input(now, hc, bytes);
+        self.node_hub_out(n, out);
+    }
+
+    /// `receive`, returning the actions node sync takes for what the hub handed up instead of
+    /// carrying them out (the hub's own output goes).
+    pub fn hub_in(&mut self, n: usize, c: ConnId, bytes: Vec<u8>) -> Vec<Action> {
+        let hc = self.link_conn(n, c);
+        let now = self.node_now(n);
+        let (mut ups, mut rest, mut moved) = (Vec::new(), Vec::new(), false);
+        for o in self.nodes[n].hub.input(now, hc, bytes) {
+            match o {
+                HubOutput::Up(h, u) => ups.push((h, u)),
+                HubOutput::Moved => moved = true,
+                x => rest.push(x),
+            }
+        }
+        self.node_hub_out(n, rest);
+        if ups.is_empty() && !moved {
+            return Vec::new();
+        }
+        self.sync(n).handle(Event::Hub { ups })
+    }
+
+    /// The messages node actions `acts` send on hub connection `hc` (`link_conn`).
+    pub fn sent_on(acts: &[Action], hc: ConnId) -> Vec<osis_proto::Message> {
+        acts.iter().filter_map(|a| match a {
+            Action::Hub { conn, down: osis_host::Down::Message(m) } if *conn == hc => Some((**m).clone()),
+            _ => None,
+        }).collect()
     }
 
     pub fn sync(&mut self, n: usize) -> &mut SyncEngine {
@@ -885,18 +922,8 @@ impl Net {
             self.plinks.remove(&(m, pc));
             self.queue.push_back(Msg::Close(m, self.nodes[m].life, pc));
             self.forget_conn(n, c);
-            if c >= HUB_BASE {
-                let out = self.nodes[n].hub.closed(c);
-                self.node_hub_out(n, out);
-                continue;
-            }
-            if let Some(sy) = self.nodes[n].sync.as_mut() {
-                // dials made while going offline fail at once
-                let mut down = vec![c];
-                while let Some(d) = down.pop() {
-                    down.extend(sy.handle(Event::Down { conn: d }).iter().filter_map(|a| if let Action::Dial { conn, .. } = a { Some(*conn) } else { None }));
-                }
-            }
+            let out = self.nodes[n].hub.closed(c);
+            self.node_hub_out(n, out);
         }
         let hosts: Vec<usize> = self.links.iter().filter(|((x, _), _)| *x == n).map(|(_, (s, _))| *s).collect();
         for s in hosts {
@@ -906,7 +933,7 @@ impl Net {
 
     /// Nothing more reaches node `n` on its closed connection `c`, queued or held back.
     fn forget_conn(&mut self, n: usize, c: ConnId) {
-        let to = |m: &Msg| matches!(m, Msg::Up(x, _, y) | Msg::ToNode(x, _, y, _) | Msg::Close(x, _, y) if *x == n && *y == c);
+        let to = |m: &Msg| matches!(m, Msg::Up(x, _, _, y, _) | Msg::ToNode(x, _, y, _) | Msg::Close(x, _, y) if *x == n && *y == c);
         self.queue.retain(|m| !to(m));
         self.held_messages.retain(|m| !to(m));
     }
@@ -920,9 +947,8 @@ impl Net {
             self.forget_conn(n, c);
             let out = self.hosts[s].hub.closed(hc);
             self.hub_out(s, out);
-            if let Some(sy) = self.nodes[n].sync.as_mut() {
-                sy.handle(Event::Down { conn: c });
-            }
+            let out = self.nodes[n].hub.closed(c);
+            self.node_hub_out(n, out);
         }
     }
 
@@ -953,15 +979,6 @@ impl Net {
         if !self.nodes[n].online {
             return;
         }
-        if std::env::var_os("OSIS_SYNC_TRACE").is_some()
-            && let Event::Bytes { conn, bytes } = &ev
-        {
-            let mut d = osis_proto::FrameDecoder::new();
-            d.push(bytes);
-            while let Ok(Some(body)) = d.next_frame() {
-                eprintln!("node {n} conn {conn} recv {}", format!("{:?}", osis_proto::Message::decode(&body)).chars().take(300).collect::<String>());
-            }
-        }
         let t = std::time::Instant::now();
         let mut acts = self.sync(n).handle(ev);
         if self.nodes[n].accepts {
@@ -983,15 +1000,7 @@ impl Net {
     pub fn actions(&mut self, n: usize, acts: Vec<Action>) {
         for a in acts {
             if std::env::var_os("OSIS_SYNC_TRACE").is_some() {
-                if let Action::Send { conn, bytes } = &a {
-                    let mut d = osis_proto::FrameDecoder::new();
-                    d.push(bytes);
-                    while let Ok(Some(body)) = d.next_frame() {
-                        eprintln!("node {n} conn {conn} send {}", format!("{:?}", osis_proto::Message::decode(&body)).chars().take(300).collect::<String>());
-                    }
-                } else {
-                    eprintln!("node {n} action {}", format!("{a:?}").chars().take(120).collect::<String>());
-                }
+                eprintln!("node {n} action {}", format!("{a:?}").chars().take(300).collect::<String>());
             }
             if let Action::Dial { address, .. } = &a {
                 self.dialed.push((n, address.clone()));
@@ -1005,11 +1014,11 @@ impl Net {
                         self.queue.push_back(Msg::Close(n, self.nodes[n].life, conn));
                         continue;
                     };
-                    let pc = self.next_node_hub;
-                    self.next_node_hub += 1;
-                    self.plinks.insert((n, conn), (m, pc));
-                    self.plinks.insert((m, pc), (n, conn));
-                    self.queue.push_back(Msg::Up(n, self.nodes[n].life, conn));
+                    let (dc, pc) = (self.next_node_hub, self.next_node_hub + 1);
+                    self.next_node_hub += 2;
+                    self.plinks.insert((n, dc), (m, pc));
+                    self.plinks.insert((m, pc), (n, dc));
+                    self.queue.push_back(Msg::Up(n, self.nodes[n].life, conn, dc, address.key));
                     let now = self.node_now(m);
                     let out = self.nodes[m].hub.accept(now, pc, address.key, osis_host::Remote::key([0xd0 + n as u8; 32]));
                     self.node_hub_out(m, out);
@@ -1021,145 +1030,17 @@ impl Net {
                     };
                     let hc = self.next_hub_conn;
                     self.next_hub_conn += 1;
-                    self.links.insert((n, conn), (s, hc));
-                    self.queue.push_back(Msg::Up(n, self.nodes[n].life, conn));
+                    let dc = self.next_node_hub;
+                    self.next_node_hub += 1;
+                    self.links.insert((n, dc), (s, hc));
+                    self.queue.push_back(Msg::Up(n, self.nodes[n].life, conn, dc, address.key));
                     let now = self.now_at(s);
                     let key = self.hosts[s].address.key;
                     let out = self.hosts[s].hub.accept(now, hc, key, osis_host::Remote::key([0xe0; 32]));
                     self.hub_out(s, out);
                 }
-                Action::Send { conn, bytes } if self.plinks.contains_key(&(n, conn)) => self.peer_send(n, conn, bytes),
-                Action::Close { conn } if self.plinks.contains_key(&(n, conn)) => {
-                    self.peer_closes += 1;
-                    let (m, pc) = self.plinks.remove(&(n, conn)).unwrap();
-                    self.plinks.remove(&(m, pc));
-                    self.queue.push_back(Msg::Close(m, self.nodes[m].life, pc));
-                }
-                Action::Send { conn, mut bytes } => {
-                    self.sent_bytes += bytes.len();
-                    let unpulled = self.unpulled.contains(&n) || self.links.get(&(n, conn)).is_some_and(|(s, _)| self.unpulled_at.contains(&(n, *s)));
-                    let mut d = osis_proto::FrameDecoder::new();
-                    d.push(&bytes);
-                    let mut kept = Vec::new();
-                    while let Ok(Some(body)) = d.next_frame() {
-                        if let Ok(m) = osis_proto::Message::decode(&body) {
-                            *self.sent_kinds.entry(m.kind()).or_default() += 1;
-                            let events = match &m {
-                                osis_proto::Message::Stream(x) => &x.events[..],
-                                osis_proto::Message::PullReply(r) => &r.events[..],
-                                _ => &[],
-                            };
-                            for (label, e) in events {
-                                if let osis_proto::Event::Added { blob_id, blob, wrap, stamp } = e {
-                                    *self.shown.entry((n, *label, *blob_id, stamp.map(|x| x.0))).or_default() += 1;
-                                    let held = self.links.get(&(n, conn)).and_then(|(s, _)| osis_proto::LabelStore::entry(&*self.hosts[*s].hub.store(), label, blob_id).ok().flatten());
-                                    if matches!(m, osis_proto::Message::Stream(_)) {
-                                        *self.pushed.entry((n, *label, *blob_id, stamp.map(|x| x.0))).or_default() += 1;
-                                    }
-                                    if matches!(m, osis_proto::Message::Stream(_)) && held.is_some_and(|h| h.wrap == *wrap && h.stamp == *stamp) {
-                                        *self.shown_held.entry((n, *label, *blob_id, stamp.map(|x| x.0))).or_default() += 1;
-                                    }
-                                    if let Some(b) = blob {
-                                        *self.crossed.entry(*blob_id).or_default() += b.len();
-                                    }
-                                }
-                            }
-                            if let osis_proto::Message::Offer { items, .. } = &m {
-                                for i in items {
-                                    if let osis_proto::msg::OfferItem::Deposit { label, blob, .. } = i {
-                                        *self.shown.entry((n, *label, osis_label::blob_id(blob), None)).or_default() += 1;
-                                    }
-                                }
-                            }
-                            if let osis_proto::Message::FetchReply { items, .. } = &m {
-                                for f in items {
-                                    if let Some((b, ..)) = &f.entry {
-                                        *self.crossed.entry(f.blob_id).or_default() += b.len();
-                                    }
-                                }
-                            }
-                            if let osis_proto::Message::Delete { label, items, .. } = &m {
-                                for i in items {
-                                    *self.deleted.entry((n, *label, i.blob)).or_default() += 1;
-                                }
-                            }
-                            // a node's deposited entries reach the peer by its stream, or as Deposit
-                            // items: lost there
-                            if !self.lose_deposits.is_empty() {
-                                let lost = |l: &osis_base::LabelId, b: &osis_base::BlobId| self.carries(l, b, &self.lose_deposits);
-                                let added = |(l, e): &(osis_base::LabelId, osis_proto::Event)| matches!(e, osis_proto::Event::Added { blob_id, .. } if lost(l, blob_id));
-                                match m {
-                                    osis_proto::Message::Stream(mut x) if x.events.iter().any(added) => {
-                                        x.events.retain(|x| !added(x));
-                                        kept.extend(osis_proto::encode_frame(&osis_proto::Message::Stream(x).encode()));
-                                        continue;
-                                    }
-                                    osis_proto::Message::PullReply(mut r) if r.events.iter().any(added) => {
-                                        r.events.retain(|x| !added(x));
-                                        kept.extend(osis_proto::encode_frame(&osis_proto::Message::PullReply(r).encode()));
-                                        continue;
-                                    }
-                                    osis_proto::Message::Offer { id, mut items } if items.iter().any(|i| matches!(i, osis_proto::msg::OfferItem::Deposit { label, blob, .. } if lost(label, &osis_label::blob_id(blob)))) => {
-                                        items.retain(|i| !matches!(i, osis_proto::msg::OfferItem::Deposit { label, blob, .. } if lost(label, &osis_label::blob_id(blob))));
-                                        if !items.is_empty() {
-                                            kept.extend(osis_proto::encode_frame(&osis_proto::Message::Offer { id, items }.encode()));
-                                        }
-                                        continue;
-                                    }
-                                    // or as fetched bodies
-                                    osis_proto::Message::FetchReply { id, mut items } => {
-                                        let labels = self.nodes[n].sync.as_ref().map(|s| s.shared_members(conn)).unwrap_or_default();
-                                        for f in &mut items {
-                                            if labels.iter().any(|l| lost(l, &f.blob_id)) {
-                                                f.entry = None;
-                                            }
-                                        }
-                                        kept.extend(osis_proto::encode_frame(&osis_proto::Message::FetchReply { id, items }.encode()));
-                                        continue;
-                                    }
-                                    _ => {}
-                                }
-                            }
-                            if unpulled {
-                                match m {
-                                    osis_proto::Message::Stream(mut x) => {
-                                        x.events.retain(|(_, e)| !matches!(e, osis_proto::Event::Added { .. }));
-                                        if !x.events.is_empty() {
-                                            kept.extend(osis_proto::encode_frame(&osis_proto::Message::Stream(x).encode()));
-                                        }
-                                        continue;
-                                    }
-                                    osis_proto::Message::PullReply(mut r) => {
-                                        r.events.retain(|(_, e)| !matches!(e, osis_proto::Event::Added { .. }));
-                                        kept.extend(osis_proto::encode_frame(&osis_proto::Message::PullReply(r).encode()));
-                                        continue;
-                                    }
-                                    osis_proto::Message::FetchReply { id, mut items } => {
-                                        for f in &mut items {
-                                            f.entry = None;
-                                        }
-                                        kept.extend(osis_proto::encode_frame(&osis_proto::Message::FetchReply { id, items }.encode()));
-                                        continue;
-                                    }
-                                    _ => {}
-                                }
-                            }
-                        }
-                        kept.extend(osis_proto::encode_frame(&body));
-                    }
-                    if unpulled || !self.lose_deposits.is_empty() {
-                        bytes = kept;
-                    }
-                    if let Some((s, hc)) = self.links.get(&(n, conn)).copied() {
-                        self.queue.push_back(Msg::ToHub(s, hc as ConnId, bytes));
-                    }
-                }
-                Action::Close { conn } => {
-                    if let Some((s, hc)) = self.links.remove(&(n, conn)) {
-                        let out = self.hosts[s].hub.closed(hc);
-                        self.hub_out(s, out);
-                    }
-                }
+                // a dial given up before it was up: its `Up` closes it (node sync)
+                Action::Close { .. } => {}
                 Action::Wake { at } => self.nodes[n].wake = Some(at),
                 // peers are found by their current `reach.0`
                 Action::Hub { conn, down } => {
@@ -1173,8 +1054,129 @@ impl Net {
         }
     }
 
-    /// Bytes node `n` sends on its end `conn` of a peer link (its engine's, or its hub's for a
-    /// served one), through the link's faults.
+    /// Bytes node `n`'s hub sends on its connection `conn` to a host, through the link's faults
+    /// and counters.
+    fn host_send(&mut self, n: usize, conn: ConnId, mut bytes: Vec<u8>) {
+        self.sent_bytes += bytes.len();
+        let unpulled = self.unpulled.contains(&n) || self.links.get(&(n, conn)).is_some_and(|(s, _)| self.unpulled_at.contains(&(n, *s)));
+        let mut d = osis_proto::FrameDecoder::new();
+        d.push(&bytes);
+        let mut kept = Vec::new();
+        while let Ok(Some(body)) = d.next_frame() {
+            if let Ok(m) = osis_proto::Message::decode(&body) {
+                *self.sent_kinds.entry(m.kind()).or_default() += 1;
+                let events = match &m {
+                    osis_proto::Message::Stream(x) => &x.events[..],
+                    osis_proto::Message::PullReply(r) => &r.events[..],
+                    _ => &[],
+                };
+                for (label, e) in events {
+                    if let osis_proto::Event::Added { blob_id, blob, wrap, stamp } = e {
+                        *self.shown.entry((n, *label, *blob_id, stamp.map(|x| x.0))).or_default() += 1;
+                        let held = self.links.get(&(n, conn)).and_then(|(s, _)| osis_proto::LabelStore::entry(&*self.hosts[*s].hub.store(), label, blob_id).ok().flatten());
+                        if matches!(m, osis_proto::Message::Stream(_)) {
+                            *self.pushed.entry((n, *label, *blob_id, stamp.map(|x| x.0))).or_default() += 1;
+                        }
+                        if matches!(m, osis_proto::Message::Stream(_)) && held.is_some_and(|h| h.wrap == *wrap && h.stamp == *stamp) {
+                            *self.shown_held.entry((n, *label, *blob_id, stamp.map(|x| x.0))).or_default() += 1;
+                        }
+                        if let Some(b) = blob {
+                            *self.crossed.entry(*blob_id).or_default() += b.len();
+                        }
+                    }
+                }
+                if let osis_proto::Message::Offer { items, .. } = &m {
+                    for i in items {
+                        if let osis_proto::msg::OfferItem::Deposit { label, blob, .. } = i {
+                            *self.shown.entry((n, *label, osis_label::blob_id(blob), None)).or_default() += 1;
+                        }
+                    }
+                }
+                if let osis_proto::Message::FetchReply { items, .. } = &m {
+                    for f in items {
+                        if let Some((b, ..)) = &f.entry {
+                            *self.crossed.entry(f.blob_id).or_default() += b.len();
+                        }
+                    }
+                }
+                if let osis_proto::Message::Delete { label, items, .. } = &m {
+                    for i in items {
+                        *self.deleted.entry((n, *label, i.blob)).or_default() += 1;
+                    }
+                }
+                // a node's deposited entries reach the peer by its stream, or as Deposit
+                // items: lost there
+                if !self.lose_deposits.is_empty() {
+                    let lost = |l: &osis_base::LabelId, b: &osis_base::BlobId| self.carries(l, b, &self.lose_deposits);
+                    let added = |(l, e): &(osis_base::LabelId, osis_proto::Event)| matches!(e, osis_proto::Event::Added { blob_id, .. } if lost(l, blob_id));
+                    match m {
+                        osis_proto::Message::Stream(mut x) if x.events.iter().any(added) => {
+                            x.events.retain(|x| !added(x));
+                            kept.extend(osis_proto::encode_frame(&osis_proto::Message::Stream(x).encode()));
+                            continue;
+                        }
+                        osis_proto::Message::PullReply(mut r) if r.events.iter().any(added) => {
+                            r.events.retain(|x| !added(x));
+                            kept.extend(osis_proto::encode_frame(&osis_proto::Message::PullReply(r).encode()));
+                            continue;
+                        }
+                        osis_proto::Message::Offer { id, mut items } if items.iter().any(|i| matches!(i, osis_proto::msg::OfferItem::Deposit { label, blob, .. } if lost(label, &osis_label::blob_id(blob)))) => {
+                            items.retain(|i| !matches!(i, osis_proto::msg::OfferItem::Deposit { label, blob, .. } if lost(label, &osis_label::blob_id(blob))));
+                            if !items.is_empty() {
+                                kept.extend(osis_proto::encode_frame(&osis_proto::Message::Offer { id, items }.encode()));
+                            }
+                            continue;
+                        }
+                        // or as fetched bodies
+                        osis_proto::Message::FetchReply { id, mut items } => {
+                            let labels = self.nodes[n].sync.as_ref().map(|s| s.shared_members(self.engine_conn(n, conn))).unwrap_or_default();
+                            for f in &mut items {
+                                if labels.iter().any(|l| lost(l, &f.blob_id)) {
+                                    f.entry = None;
+                                }
+                            }
+                            kept.extend(osis_proto::encode_frame(&osis_proto::Message::FetchReply { id, items }.encode()));
+                            continue;
+                        }
+                        _ => {}
+                    }
+                }
+                if unpulled {
+                    match m {
+                        osis_proto::Message::Stream(mut x) => {
+                            x.events.retain(|(_, e)| !matches!(e, osis_proto::Event::Added { .. }));
+                            if !x.events.is_empty() {
+                                kept.extend(osis_proto::encode_frame(&osis_proto::Message::Stream(x).encode()));
+                            }
+                            continue;
+                        }
+                        osis_proto::Message::PullReply(mut r) => {
+                            r.events.retain(|(_, e)| !matches!(e, osis_proto::Event::Added { .. }));
+                            kept.extend(osis_proto::encode_frame(&osis_proto::Message::PullReply(r).encode()));
+                            continue;
+                        }
+                        osis_proto::Message::FetchReply { id, mut items } => {
+                            for f in &mut items {
+                                f.entry = None;
+                            }
+                            kept.extend(osis_proto::encode_frame(&osis_proto::Message::FetchReply { id, items }.encode()));
+                            continue;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            kept.extend(osis_proto::encode_frame(&body));
+        }
+        if unpulled || !self.lose_deposits.is_empty() {
+            bytes = kept;
+        }
+        if let Some((s, hc)) = self.links.get(&(n, conn)).copied() {
+            self.queue.push_back(Msg::ToHub(s, hc as ConnId, bytes));
+        }
+    }
+
+    /// Bytes node `n`'s hub sends on its end `conn` of a peer link, through the link's faults.
     fn peer_send(&mut self, n: usize, conn: ConnId, mut bytes: Vec<u8>) {
         let (m, pc) = self.plinks[&(n, conn)];
         {
@@ -1262,7 +1264,7 @@ impl Net {
         let life = self.nodes[m].life;
         if self.held.contains(&(n, m)) {
             self.held_messages.push(Msg::ToNode(m, life, pc, bytes));
-        } else if let Some(Msg::ToNode(_, _, _, b)) = self.queue.iter_mut().rev().find(|x| matches!(x, Msg::Up(y, _, c) | Msg::ToNode(y, _, c, _) | Msg::Close(y, _, c) if *y == m && *c == pc)).filter(|x| self.batch_reads && matches!(x, Msg::ToNode(_, l, ..) if *l == life)) {
+        } else if let Some(Msg::ToNode(_, _, _, b)) = self.queue.iter_mut().rev().find(|x| matches!(x, Msg::Up(y, _, _, c, _) | Msg::ToNode(y, _, c, _) | Msg::Close(y, _, c) if *y == m && *c == pc)).filter(|x| self.batch_reads && matches!(x, Msg::ToNode(_, l, ..) if *l == life)) {
             b.extend(bytes);
         } else {
             self.queue.push_back(Msg::ToNode(m, life, pc, bytes));
@@ -1316,32 +1318,30 @@ impl Net {
         self.node_hub_out(n, out);
     }
 
-    /// A hand peer's session `cs` on node `n`'s hub connection `hc`: node `n` carries out `acts`,
+    /// A hand peer's dialer `d` on node `n`'s hub connection `hc`: node `n` carries out `acts`,
     /// then frames go both ways until neither side has more (with `settle`, the network settles
-    /// between rounds); the session's events.
-    pub fn hand_exchange(&mut self, n: usize, hc: ConnId, cs: &mut osis_proto::ClientSession, acts: Vec<Action>, mut outs: Vec<osis_proto::ClientOutput>, settle: bool) -> Vec<osis_proto::ClientEvent> {
-        use osis_proto::{ClientInput, ClientOutput};
+    /// between rounds), starting with what `d` put out in `outs`; the messages `d`'s session
+    /// handed up (answers to its requests, the node's own requests and pushes).
+    pub fn hand_exchange(&mut self, n: usize, hc: ConnId, d: &mut osis_proto::examples::Dialer, acts: Vec<Action>, mut outs: Vec<osis_proto::SessionOutput>, settle: bool) -> Vec<osis_proto::Message> {
         self.actions(n, acts);
-        let mut evs = Vec::new();
+        let mut got = Vec::new();
         loop {
             let now = self.now();
             let mut frames = self.hand_sent(n, hc);
-            for o in std::mem::take(&mut outs) {
-                match o {
-                    ClientOutput::Send(b) => frames.extend(self.hand_input(n, hc, b)),
-                    ClientOutput::Event(e) => evs.push(e),
-                    _ => {}
-                }
+            got.extend(osis_proto::examples::up(&outs));
+            for b in osis_proto::examples::frames(&outs) {
+                frames.extend(self.hand_input(n, hc, b));
             }
+            outs.clear();
             if settle {
                 self.settle(100_000);
                 frames.extend(self.hand_sent(n, hc));
             }
             if frames.is_empty() {
-                return evs;
+                return got;
             }
             for f in frames {
-                outs.extend(cs.handle(now, ClientInput::Bytes(f)));
+                outs.extend(d.bytes(now, f));
             }
         }
     }
@@ -1380,6 +1380,8 @@ impl Net {
                 HubOutput::Send(hc, bytes) => {
                     if self.plinks.contains_key(&(n, hc)) {
                         self.peer_send(n, hc, bytes);
+                    } else if self.links.contains_key(&(n, hc)) {
+                        self.host_send(n, hc, bytes);
                     }
                 }
                 HubOutput::Close(hc) => {
@@ -1387,6 +1389,9 @@ impl Net {
                         self.peer_closes += 1;
                         self.plinks.remove(&(m, c));
                         self.queue.push_back(Msg::Close(m, self.nodes[m].life, c));
+                    } else if let Some((s, c)) = self.links.remove(&(n, hc)) {
+                        let out = self.hosts[s].hub.closed(c);
+                        self.hub_out(s, out);
                     }
                 }
                 HubOutput::Diagnostic(_) => {}
@@ -1432,7 +1437,10 @@ impl Net {
                                 continue;
                             }
                         }
-                        let held = self.held_to.contains(n) || (!self.hold_blobs.is_empty() && told_ids(&bytes).iter().any(|b| self.hold_blobs.contains(b)));
+                        // a connection delivers in order: what follows a held fetch reply waits too
+                        // (a later reply arriving first says the peer skipped it)
+                        let behind = self.held_messages.iter().any(|m| matches!(m, Msg::ToNode(x, _, y, b) if x == n && y == c && fetched_ids(b).iter().any(|b| self.hold_blobs.contains(b))));
+                        let held = self.held_to.contains(n) || behind || (!self.hold_blobs.is_empty() && told_ids(&bytes).iter().any(|b| self.hold_blobs.contains(b)));
                         let m = Msg::ToNode(*n, self.nodes[*n].life, *c, bytes);
                         if self.held_hosts.contains(&s) || held {
                             self.held_messages.push(m);
@@ -1469,7 +1477,7 @@ impl Net {
                     let out = self.hosts[s].hub.down(now, vec![(conn, down)]);
                     self.hub_out(s, out);
                 }
-                Action::Dial { .. } | Action::Send { .. } | Action::Close { .. } => panic!("host {s} dialed: {a:?}"),
+                Action::Dial { .. } | Action::Close { .. } => panic!("host {s} dialed: {a:?}"),
                 _ => {}
             }
         }
@@ -1537,9 +1545,44 @@ impl Net {
 
     fn deliver(&mut self, m: Msg) {
         match m {
-            Msg::Up(n, l, _) | Msg::ToNode(n, l, _, _) | Msg::Close(n, l, _) if l != self.nodes[n].life => {}
-            Msg::Up(n, _, c) => self.feed(n, Event::Up { conn: c }),
+            Msg::Up(n, l, ..) | Msg::ToNode(n, l, _, _) | Msg::Close(n, l, _) if l != self.nodes[n].life => {}
+            Msg::Up(n, _, c, dc, key) if !self.nodes[n].online => {
+                // up while it went offline: it never comes up (dials it makes meanwhile fail too)
+                self.plinks.remove(&(n, dc)).map(|(m, pc)| self.plinks.remove(&(m, pc)));
+                self.links.remove(&(n, dc));
+                let _ = key;
+                if let Some(sy) = self.nodes[n].sync.as_mut() {
+                    let mut down = vec![c];
+                    while let Some(d) = down.pop() {
+                        down.extend(sy.handle(Event::Down { conn: d }).iter().filter_map(|a| if let Action::Dial { conn, .. } = a { Some(*conn) } else { None }));
+                    }
+                }
+            }
+            Msg::Up(n, _, c, dc, key) => {
+                let now = self.node_now(n);
+                let out = self.nodes[n].hub.dial(now, dc, key, osis_host::Remote::key(key));
+                self.feed(n, Event::Up { conn: c, hub: dc });
+                self.node_hub_out(n, out);
+            }
             Msg::ToNode(n, _, c, b) if c >= HUB_BASE => {
+                if std::env::var_os("OSIS_SYNC_TRACE").is_some() {
+                    let mut d = osis_proto::FrameDecoder::new();
+                    d.push(&b);
+                    while let Ok(Some(body)) = d.next_frame() {
+                        eprintln!("node {n} conn {c} recv {}", format!("{:?}", osis_proto::Message::decode(&body)).chars().take(300).collect::<String>());
+                    }
+                }
+                if self.links.contains_key(&(n, c)) {
+                    if let Some(told) = self.told.get_mut(&n) {
+                        told.extend(told_ids(&b));
+                    }
+                    if let Some(f) = self.fetched.get_mut(&n) {
+                        f.extend(fetched_ids(&b));
+                    }
+                    if self.deaf.contains(&n) {
+                        return;
+                    }
+                }
                 let now = self.node_now(n);
                 let out = self.nodes[n].hub.input(now, c, b);
                 self.node_hub_out(n, out);
@@ -1555,17 +1598,8 @@ impl Net {
                 self.hub_busy += t.elapsed();
                 self.hub_out(s, out);
             }
-            Msg::ToNode(n, _, c, b) => {
-                if let Some(told) = self.told.get_mut(&n) {
-                    told.extend(told_ids(&b));
-                }
-                if let Some(f) = self.fetched.get_mut(&n) {
-                    f.extend(fetched_ids(&b));
-                }
-                if !self.deaf.contains(&n) {
-                    self.feed(n, Event::Bytes { conn: c, bytes: b })
-                }
-            }
+            Msg::ToNode(..) => unreachable!("bytes go to a node's hub"),
+            // a dial that failed
             Msg::Close(n, _, c) => self.feed(n, Event::Down { conn: c }),
         }
         for s in 0..self.hosts.len() {
@@ -1834,7 +1868,7 @@ impl Net {
         let code = {
             let mut store = self.hosts[s].hub.store();
             let k = osis_proto::LabelStore::head_keys(&*store, l).unwrap().unwrap();
-            osis_proto::serving::deposit(&mut *store, now, l, &k, blob, wrap, sig, &mut false).unwrap().0
+            osis_proto::session::deposit(&mut *store, now, l, &k, blob, wrap, sig, &mut false).unwrap().0
         };
         self.run();
         code
@@ -1864,13 +1898,14 @@ impl Net {
 
     /// Host `s` sends node `n` message `m` on their connection (a hostile host's own frame).
     pub fn host_inject(&mut self, s: usize, n: usize, m: &osis_proto::Message) {
-        let c = self.conn_to(n, s).unwrap();
+        let c = self.link_conn(n, self.conn_to(n, s).unwrap());
         self.queue.push_back(Msg::ToNode(n, self.nodes[n].life, c, osis_proto::encode_frame(&m.encode())));
     }
 
-    /// Node `n`'s connection to host `s`, if up (to inject a hostile host's frames).
+    /// Node `n`'s connection to host `s` (its engine's ID), if up (to inject a hostile host's
+    /// frames).
     pub fn conn_to(&self, n: usize, s: usize) -> Option<ConnId> {
-        self.links.iter().find(|((x, _), (y, _))| *x == n && *y == s).map(|((_, c), _)| *c)
+        self.links.iter().find(|((x, _), (y, _))| *x == n && *y == s).map(|((_, c), _)| self.engine_conn(n, *c))
     }
 
     pub fn labels_at(&self, s: usize) -> Vec<osis_base::LabelId> {

@@ -11,7 +11,7 @@ use osis_base::{LabelId, Role, Tid};
 use osis_crypto::kdf::{pair_key, resume_tag, resumed_tag};
 use osis_node::sync::ConnId;
 use osis_node::sync::records::ConnRecord;
-use osis_proto::{ClientEvent, ClientInput, Command, Code, Message, Request};
+use osis_proto::{Code, Message};
 use std::collections::BTreeSet;
 use osis_store::{Record, RecordId};
 
@@ -39,19 +39,25 @@ fn dialing_pair(net: &mut Net) -> (usize, usize) {
     (a, b)
 }
 
-/// Resume on a hand-driven dialer: the events back.
-fn resume(net: &mut Net, n: usize, p: &mut Dialer, nonce: [u8; 32], tags: Vec<[u8; 32]>) -> Vec<ClientEvent> {
+/// Resume on a hand-driven dialer: its id, and what came back.
+fn resume_id(net: &mut Net, n: usize, p: &mut Dialer, nonce: [u8; 32], tags: Vec<[u8; 32]>) -> (u32, Vec<Message>) {
     let now = net.now();
-    let outs = p.cs.handle(now, ClientInput::Command(Command::Resume { nonce, tags }));
-    pump(net, n, p, outs)
+    let (id, outs) = p.cs.request(now, |id| Message::Resume { id, nonce, tags });
+    (id, pump(net, n, p, outs))
 }
 
-fn refused(evs: &[ClientEvent]) -> bool {
-    evs.iter().any(|e| matches!(e, ClientEvent::Refused { kind: Request::Resume, .. }))
+/// `resume_id`'s answers to the Resume (an Error refusing it, or Resumed).
+fn resume(net: &mut Net, n: usize, p: &mut Dialer, nonce: [u8; 32], tags: Vec<[u8; 32]>) -> Vec<Message> {
+    let (id, got) = resume_id(net, n, p, nonce, tags);
+    got.into_iter().filter(|m| m.id() == id).collect()
 }
 
-fn resumed_tag_of(evs: &[ClientEvent]) -> (Option<[u8; 32]>, [u8; 32]) {
-    evs.iter().find_map(|e| if let ClientEvent::Resumed { tag, nonce } = e { Some((*tag, *nonce)) } else { None }).expect("a Resumed answer")
+fn refused(evs: &[Message]) -> bool {
+    evs.iter().any(|e| matches!(e, Message::Error { .. }))
+}
+
+fn resumed_tag_of(evs: &[Message]) -> (Option<[u8; 32]>, [u8; 32]) {
+    evs.iter().find_map(|e| if let Message::Resumed { tag, nonce, .. } = e { Some((*tag, *nonce)) } else { None }).expect("a Resumed answer")
 }
 
 // spec/sync.md §10 (Pair key): each side keeps one record of the other, holding the same r, which
@@ -136,7 +142,7 @@ fn resume_is_once_a_connection_and_only_after_a_prove_spec_sync_10() {
     let before = records(&mut net, b, ta).len();
     assert!(refused(&resume(&mut net, b, &mut p, [6; 32], vec![])), "a second is an error");
     assert_eq!(records(&mut net, b, ta).len(), before, "and makes nothing");
-    let code = resume(&mut net, b, &mut p, [7; 32], vec![]).into_iter().find_map(|e| if let ClientEvent::Refused { code, .. } = e { Some(code) } else { None });
+    let code = resume(&mut net, b, &mut p, [7; 32], vec![]).into_iter().find_map(|e| if let Message::Error { code, .. } = e { Some(code) } else { None });
     assert_eq!(code, Some(Code::MALFORMED));
 }
 
@@ -635,21 +641,11 @@ fn a_role_change_is_one_pass_over_the_sync_ids() {
 }
 
 /// Messages node sync sent on `conn` in `acts`.
-fn sent_on(acts: &[osis_node::sync::Action], conn: ConnId) -> Vec<Message> {
-    let mut d = osis_proto::FrameDecoder::new();
-    for a in acts {
-        if let osis_node::sync::Action::Send { conn: c, bytes } = a
-            && *c == conn
-        {
-            d.push(bytes);
-        }
-    }
-    std::iter::from_fn(|| d.next_frame().ok().flatten()).filter_map(|b| Message::decode(&b).ok()).collect()
-}
-
 /// A dial from a node knowing `b` to a listener played by hand, which refuses the dialer's Prove
-/// (`at_prove`) or its Resume: what the dialer sends after the refusal.
+/// (`at_prove`) or its Resume: what the dialer sends after the refusal. The node's hub is played
+/// too: its session's start and answers come up to node sync by hand.
 fn refused_dial(at_prove: bool) -> Vec<Message> {
+    use osis_node::sync::Event;
     let (mut net, host, [a, b]) = hosted_nodes::<2>();
     let addr = net.address(host);
     net.group_at(a, &[(b, Role::Write)], vec![addr.clone()]);
@@ -661,24 +657,24 @@ fn refused_dial(at_prove: bool) -> Vec<Message> {
     let mut se = net.take(a);
     let acts = se.follow(ka, ka, LabelId([0x42; 16]), vec![addr.clone()]);
     let conn = acts.iter().find_map(|x| if let osis_node::sync::Action::Dial { conn, .. } = x { Some(*conn) } else { None }).expect("dial");
-    let mut acts = se.handle(osis_node::sync::Event::Up { conn });
-    let hello = osis_proto::Hello::new(net.now(), [9; 32]);
-    acts.extend(se.handle(osis_node::sync::Event::Bytes { conn, bytes: osis_proto::encode_frame(&hello.encode()) }));
-    // the dialer's Hello is its first frame: its challenge signs the listener's proofs
-    let mut d = osis_proto::FrameDecoder::new();
-    acts.iter().for_each(|x| if let osis_node::sync::Action::Send { conn: c, bytes } = x && *c == conn { d.push(bytes) });
-    let challenge = osis_proto::Hello::decode(&d.next_frame().unwrap().unwrap()).unwrap().challenge;
-    let id = sent_on(&acts, conn).into_iter().find_map(|m| if let Message::Prove { id, .. } = m { Some(id) } else { None }).expect("a dial to a host proves too");
+    let hub: ConnId = 1 << 50;
+    se.handle(Event::Up { conn, hub });
+    // the dialer's challenge signs the listener's proofs
+    let challenge = [8; 32];
+    let start = osis_host::Binding { dialer: challenge, listener: [9; 32], key: addr.key, remote: osis_host::Remote::key(addr.key) };
+    let up = |se: &mut osis_node::sync::SyncEngine, u: osis_host::Up| Net::sent_on(&se.handle(Event::Hub { ups: vec![(hub, u)] }), hub);
+    let id = up(&mut se, osis_host::Up::Start(start)).into_iter().find_map(|m| if let Message::Prove { id, .. } = m { Some(id) } else { None }).expect("a dial to a host proves too");
+    let answer = |m: Message| osis_host::Up::Message(Box::new(m));
     if at_prove {
-        return sent_on(&se.handle(osis_node::sync::Event::Bytes { conn, bytes: osis_proto::encode_frame(&Message::Error { id, code: Code::REFUSED }.encode()) }), conn);
+        return up(&mut se, answer(Message::Error { id, code: Code::REFUSED }));
     }
     let proofs = provers.iter().map(|p| p.sign(true, &challenge, &addr.key)).collect();
-    let acts = se.handle(osis_node::sync::Event::Bytes { conn, bytes: osis_proto::encode_frame(&Message::Proved { id, proofs }.encode()) });
-    let id = sent_on(&acts, conn).into_iter().find_map(|m| if let Message::Resume { id, .. } = m { Some(id) } else { None }).expect("b is known: Resume");
-    assert!(!sent_on(&acts, conn).iter().any(|m| matches!(m, Message::NoRecord { .. })));
-    let acts = se.handle(osis_node::sync::Event::Bytes { conn, bytes: osis_proto::encode_frame(&Message::Error { id, code: Code::REFUSED }.encode()) });
+    let sent = up(&mut se, answer(Message::Proved { id, proofs }));
+    let id = sent.iter().find_map(|m| if let Message::Resume { id, .. } = m { Some(*id) } else { None }).expect("b is known: Resume");
+    assert!(!sent.iter().any(|m| matches!(m, Message::NoRecord { .. })));
+    let sent = up(&mut se, answer(Message::Error { id, code: Code::REFUSED }));
     assert_eq!(se.connection_record(conn), None);
-    sent_on(&acts, conn)
+    sent
 }
 
 // spec/sync.md §10 (Pair key, Shared set): a dialer whose Prove or Resume is refused keeps no

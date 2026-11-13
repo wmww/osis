@@ -809,7 +809,7 @@ impl SyncEngine {
             let members = self.stream_members(conn);
             let starts: BTreeMap<LabelId, (u64, u64)> = members.iter().map(|l| (*l, (at, untils.get(l).copied().unwrap_or(u64::MAX)))).collect();
             let scan = self.engine.run(|tx| Ok(super::state::hub(tx)?.node_log(|t| scan(t, at, &starts))?))?;
-            let mut budget = room.min(osis_proto::serving::REPLY_BUDGET).saturating_sub(256);
+            let mut budget = room.min(osis_proto::session::REPLY_BUDGET).saturating_sub(256);
             let live: BTreeSet<LabelId> = members.iter().filter(|l| !untils.contains_key(l)).copied().collect();
             let (mut events, memory_cut) = self.stream_memory(conn, &BTreeSet::new(), &live, &mut budget)?;
             let (durable, cut) = self.stream_events(conn, &scan.events, &mut budget, events.is_empty())?;
@@ -1179,7 +1179,7 @@ impl SyncEngine {
         let ephemeral = !p.started || std::mem::take(&mut p.relist);
         p.started = true;
         p.pulls += 1;
-        let pull = Pull { id, cursor: p.cursor.clone(), joins, inline_limit, max_reply: osis_proto::serving::REPLY_BUDGET as u64, follow: true, ephemeral };
+        let pull = Pull { id, cursor: p.cursor.clone(), joins, inline_limit, max_reply: osis_proto::session::REPLY_BUDGET as u64, follow: true, ephemeral };
         // its end is a pass end at a peer that cannot read L only past the role commits applied before it (`stream_read`)
         let seq = self.seq;
         if let Some(c) = self.conns.get_mut(&conn) {
@@ -1564,11 +1564,11 @@ impl SyncEngine {
             return Ok(());
         }
         let Some(p) = self.streams.get_mut(&conn).map(|s| &mut s.pulling) else { return Ok(()) };
-        let budget = osis_proto::serving::REPLY_BUDGET;
+        let budget = osis_proto::session::REPLY_BUDGET;
         let mut msgs = Vec::new();
         for batch in ids.chunks(osis_proto::msg::MAX_ITEMS) {
             let (id, seq) = p.next();
-            let max_reply = if again.is_some() { budget } else { osis_proto::client::FIRST_REPLY.saturating_mul(batch.len()).min(budget) } as u64;
+            let max_reply = if again.is_some() { budget } else { osis_proto::window::FIRST_REPLY.saturating_mul(batch.len()).min(budget) } as u64;
             p.fetching.insert(id, Fetching { seq, label: l, ids: batch.to_vec(), max_reply, at: again.unwrap_or(now) });
             msgs.push(Message::Fetch { id, label: l, max_reply, ids: batch.to_vec() });
         }
@@ -1585,7 +1585,7 @@ impl SyncEngine {
     fn stream_serve_fetch(&mut self, conn: ConnId, id: u32, l: LabelId, max_reply: u64, ids: Vec<BlobId>, out: &mut Vec<Action>) -> Result<()> {
         let member = self.records.shared.get(&conn).is_some_and(|s| s.has(&l));
         let until = self.shared_untils(conn).get(&l).copied();
-        let mut budget = osis_proto::serving::reply_bound(max_reply);
+        let mut budget = osis_proto::session::reply_bound(max_reply);
         let mut items = Vec::new();
         for b in ids {
             let shown = match until {
@@ -1625,7 +1625,7 @@ impl SyncEngine {
         let rest: Vec<BlobId> = f.ids.into_iter().filter(|b| !answered.contains(b)).collect();
         // the rest is asked again before what came is applied: applying asks for what is still
         // lacking, at `FIRST_REPLY`, which a body past it never fits (a storm)
-        let unfetched = none && f.max_reply >= osis_proto::serving::REPLY_BUDGET as u64;
+        let unfetched = none && f.max_reply >= osis_proto::session::REPLY_BUDGET as u64;
         if !rest.is_empty() && !unfetched {
             self.stream_fetch(conn, l, rest.clone(), Some(f.at), out)?;
         }

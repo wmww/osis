@@ -6,7 +6,10 @@ use crate::common::TestWrites as _;
 use crate::common::{ak, typed_any};
 use osis::internals::Internals as _;
 use osis::{SetRoleOpts, Ak, Change, CommitQuery, MemStore, Osis, Runtime, Scope, Origin, Store, Value};
-use osis_proto::{ClientConfig, ClientEvent, ClientInput, ClientOutput, ClientSession, Code, Command, Outcome};
+use osis_proto::examples::Dialer;
+use osis_proto::msg::{Id, NODE_IDS};
+use osis_proto::window::SMALL_REPLY;
+use osis_proto::{Code, Message, Outcome, SessionOutput};
 use std::path::PathBuf;
 use std::sync::mpsc::channel;
 use std::time::Duration;
@@ -181,20 +184,33 @@ fn too_large_then_stream_read() {
     assert_eq!(n.close().unwrap(), osis::Close::Closed);
 }
 
-/// A raw protocol session (tests of the wire rules).
+/// A raw protocol session (tests of the wire rules): a dialer whose requests take the ids given.
 pub(crate) struct Raw {
     rt: tokio::runtime::Runtime,
-    cs: ClientSession,
+    d: Dialer,
     link: osis_transport::Link,
-    events: Vec<ClientEvent>,
+    /// Answers and Notifies handed up and not yet taken.
+    events: Vec<Message>,
+}
+
+/// The id of `Raw`'s Auth: apart from the ids tests give.
+const AUTH_ID: Id = NODE_IDS - 1;
+
+/// The answer `m` gives to request `id`, if it is one.
+fn answer_to(m: &Message, id: Id) -> Option<Result<Outcome, Code>> {
+    match m {
+        Message::Reply { id: i, outcome } if *i == id => Some(Ok(outcome.clone())),
+        Message::Error { id: i, code } if *i == id => Some(Err(*code)),
+        _ => None,
+    }
 }
 
 impl Raw {
     pub(crate) fn over<T: osis_transport::Transport>(t: &T, addr: osis_transport::Address) -> Raw {
         let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
         let link = rt.block_on(osis_transport::link::dial(t, &addr, None, W)).unwrap();
-        let mut r = Raw { rt, cs: ClientSession::new(ClientConfig { peer_static_key: addr.key, challenge: [3; 32] }), link, events: Vec::new() };
-        let o = r.cs.handle(0, ClientInput::Start);
+        let mut r = Raw { rt, d: Dialer::new(addr.key, [3; 32]), link, events: Vec::new() };
+        let o = r.d.start(0);
         r.out(o);
         r
     }
@@ -208,34 +224,38 @@ impl Raw {
         Raw::over(&osis_transport::Unix, osis_transport::Address { url: osis_transport::unix::url_of(sock), key: osis_transport::unix::uid_key(uid) })
     }
 
-    fn out(&mut self, o: Vec<ClientOutput>) {
+    fn out(&mut self, o: Vec<SessionOutput>) {
         for x in o {
             match x {
-                ClientOutput::Send(b) => assert!(self.link.tx.send(b, usize::MAX)),
-                ClientOutput::Event(e) => self.events.push(e),
+                SessionOutput::Send(b) => assert!(self.link.tx.send(b, usize::MAX)),
+                SessionOutput::Peer(m) => self.events.push(*m),
                 _ => {}
             }
         }
     }
 
-    /// Sends `cmd` and waits for the reply of `token`.
-    pub(crate) fn ask(&mut self, cmd: Command, token: u64) -> Result<Outcome, Code> {
-        let o = self.cs.handle(0, ClientInput::Command(cmd));
+    /// Reads one input off the link (`W` at most).
+    fn read(&mut self) {
+        let b = self.rt.block_on(async { tokio::time::timeout(W, self.link.rx.recv()).await }).unwrap().expect("connection closed");
+        let o = self.d.bytes(0, b);
         self.out(o);
+    }
+
+    /// Sends request `m` and waits for its answer.
+    pub(crate) fn ask(&mut self, m: Message) -> Result<Outcome, Code> {
+        let id = m.id();
+        self.send(m);
         loop {
-            if let Some(i) = self.events.iter().position(|e| matches!(e, ClientEvent::Reply { token: t, .. } if *t == token)) {
-                let ClientEvent::Reply { reply, .. } = self.events.remove(i) else { unreachable!() };
-                return reply;
+            if let Some(i) = self.events.iter().position(|e| answer_to(e, id).is_some()) {
+                return answer_to(&self.events.remove(i), id).unwrap();
             }
-            let b = self.rt.block_on(async { tokio::time::timeout(W, self.link.rx.recv()).await }).unwrap().expect("connection closed");
-            let o = self.cs.handle(0, ClientInput::Bytes(b));
-            self.out(o);
+            self.read();
         }
     }
 
-    /// Sends `cmd` without waiting for its reply.
-    pub(crate) fn send(&mut self, cmd: Command) {
-        let o = self.cs.handle(0, ClientInput::Command(cmd));
+    /// Sends `m` without waiting for its answer.
+    pub(crate) fn send(&mut self, m: Message) {
+        let o = self.d.send(0, m);
         self.out(o);
     }
 
@@ -244,30 +264,56 @@ impl Raw {
         self.rt.block_on(async { tokio::time::sleep(Duration::from_millis(ms)).await });
     }
 
-    /// Notifies of `token` received by now, read off the link for `ms` first.
-    pub(crate) fn notifies(&mut self, token: u64, ms: u64) -> Vec<osis_proto::api::Payload> {
+    /// Waits for the first Notify of subscription `sub`.
+    fn notify(&mut self, sub: Id) -> osis_proto::api::Payload {
+        loop {
+            if let Some(i) = self.events.iter().position(|e| matches!(e, Message::Notify { sub: s, .. } if *s == sub)) {
+                let Message::Notify { payload, .. } = self.events.remove(i) else { unreachable!() };
+                return payload;
+            }
+            self.read();
+        }
+    }
+
+    /// Notifies of subscription `sub` received by now, read off the link for `ms` first.
+    pub(crate) fn notifies(&mut self, sub: Id, ms: u64) -> Vec<osis_proto::api::Payload> {
         let until = std::time::Instant::now() + Duration::from_millis(ms);
         while let Some(left) = until.checked_duration_since(std::time::Instant::now()) {
             let Ok(Some(b)) = self.rt.block_on(async { tokio::time::timeout(left, self.link.rx.recv()).await }) else { break };
-            let o = self.cs.handle(0, ClientInput::Bytes(b));
+            let o = self.d.bytes(0, b);
             self.out(o);
         }
-        let (got, rest) = std::mem::take(&mut self.events).into_iter().partition(|e| matches!(e, ClientEvent::Notify { token: t, .. } if *t == token));
+        let (got, rest) = std::mem::take(&mut self.events).into_iter().partition(|e| matches!(e, Message::Notify { sub: s, .. } if *s == sub));
         self.events = rest;
-        got.into_iter().filter_map(|e| if let ClientEvent::Notify { payload, .. } = e { Some(payload) } else { None }).collect()
+        got.into_iter().filter_map(|e| if let Message::Notify { payload, .. } = e { Some(payload) } else { None }).collect()
     }
 
     fn auth(&mut self, session: [u8; 16]) -> Result<Outcome, Code> {
-        self.ask(Command::Auth { token: 0, session, secret: None }, 0)
+        self.auth_by(session, None)
     }
 
-    pub(crate) fn call_at(&mut self, token: u64, method: u64, args: Vec<Value>) -> Outcome {
-        self.call(token, method, args)
+    /// Auth by `secret`.
+    pub(crate) fn auth_by(&mut self, session: [u8; 16], secret: Option<osis_crypto::Secret32>) -> Result<Outcome, Code> {
+        self.ask(Message::Auth { id: AUTH_ID, secret, session })
     }
 
-    fn call(&mut self, token: u64, method: u64, args: Vec<Value>) -> Outcome {
-        self.ask(Command::Call { token, max_reply: osis_proto::client::SMALL_REPLY as u64, method, args }, token).unwrap()
+    pub(crate) fn call_at(&mut self, id: u64, method: u64, args: Vec<Value>) -> Outcome {
+        self.call(id, method, args)
     }
+
+    fn call(&mut self, id: u64, method: u64, args: Vec<Value>) -> Outcome {
+        self.ask(call(id, method, args)).unwrap()
+    }
+}
+
+/// A Call of `method` under id `id`, its reply allowed `SMALL_REPLY`.
+pub(crate) fn call(id: u64, method: u64, args: Vec<Value>) -> Message {
+    Message::Call { id: Id::try_from(id).unwrap(), max_reply: SMALL_REPLY as u64, method, args }
+}
+
+/// A Sub of `filter` under id `id`, its replies allowed `max_reply`.
+pub(crate) fn sub(id: Id, max_reply: usize, filter: Value) -> Message {
+    Message::Sub { id, max_reply: max_reply as u64, filter }
 }
 
 /// A `write` call's args setting `k` of `t` to `v` (the port's commit form: nonce, actor, keys, ops).
@@ -346,7 +392,7 @@ fn keyed_peer_is_never_main() {
     let key = osis_transport::InProcess::public_key(&osis_transport::StaticSecret::from_bytes(*secret.expose()));
     let mut r = Raw::over(&net.endpoint("intruder"), osis_transport::Address { url: "mem://n-peer".into(), key });
     assert_eq!(r.auth([1; 16]), Err(Code::REFUSED));
-    let call = r.ask(Command::Call { token: 5, max_reply: osis_proto::client::SMALL_REPLY as u64, method: 0, args: vec![] }, 5);
+    let call = r.ask(call(5, 0, vec![]));
     assert_eq!(call, Err(Code::REFUSED));
     // over the socket, the same Auth is answered
     let mut u = Raw::unix(&sock);
@@ -481,7 +527,7 @@ fn too_large_sub_is_not_kept() {
     let net = osis_transport::Net::new(0);
     let n = node(&MemStore::new(), &net, &sock, true);
     let k = ak("f:blob.0");
-    let small = osis_proto::client::SMALL_REPLY;
+    let small = osis_proto::window::SMALL_REPLY;
     let mut w = n.write();
     let t = w.create().unwrap();
     w.at(t, osis::DynamicAspectKey::untyped(k.clone())).set(&Value::Bytes(vec![7; small + 1000])).unwrap();
@@ -491,8 +537,8 @@ fn too_large_sub_is_not_kept() {
     r.auth([1; 16]).unwrap();
     let filter = Value::List(vec![Value::uint(0), Value::Tid(t), Value::Str(k.as_str().into()), Value::List(vec![])]);
     // fewer than MAX_SUBS suffice: each one kept would show in the worker's registrations
-    for tok in 1..=300u64 {
-        let rep = r.ask(Command::Sub { token: tok, max_reply: small as u64, filter: filter.clone() }, tok);
+    for tok in 1..=300 {
+        let rep = r.ask(sub(tok, small, filter.clone()));
         assert_eq!(rep, Ok(Outcome::too_large(small)), "sub {tok}");
     }
     // the protocol's call settles behind every Sub: none is held by the worker
@@ -794,7 +840,7 @@ fn pair_reply_above_the_small_allowance() {
     pc.runtime = Runtime::Own;
     pc.app.internals.transport = Some(net.endpoint("p"));
     let join = osis::internals::pair(pc, &c.pair_offer().unwrap()).unwrap();
-    osis::internals::Internals::port_pad_pair_reply(&n, osis_proto::client::SMALL_REPLY * 2);
+    osis::internals::Internals::port_pad_pair_reply(&n, osis_proto::window::SMALL_REPLY * 2);
     let (node, reply) = c.pair_accept(join.request()).unwrap();
     let p = join.finish(&reply).unwrap();
     assert_eq!(p.node(), node);
@@ -1011,20 +1057,13 @@ fn path_listener_through_a_thin_client() {
     r.auth([1; 16]).unwrap();
     let path = Value::List(vec![Value::List(vec![Value::uint(2), Value::Str("a".into())])]);
     let filter = Value::List(vec![Value::uint(0), Value::Tid(t), Value::Str("t:m.0".into()), path]);
-    r.ask(Command::Sub { token: 1, max_reply: osis_proto::client::SMALL_REPLY as u64, filter }, 1).unwrap();
+    r.ask(sub(1, SMALL_REPLY, filter)).unwrap();
     n.commit_with(|w| w.at(t, k()).path(osis::p!["b"]).set(&Value::Int(5))).unwrap();
     n.settle();
     r.pump(100);
     n.commit_with(|w| w.at(t, k()).path(osis::p!["a"]).set(&Value::Int(7))).unwrap();
     let read = |v: Option<Value>| Value::List(vec![Value::uint(0), Value::opt(v)]);
-    let notify = loop {
-        if let Some(i) = r.events.iter().position(|e| matches!(e, ClientEvent::Notify { token: 1, .. })) {
-            break r.events.remove(i);
-        }
-        let b = r.rt.block_on(async { tokio::time::timeout(W, r.link.rx.recv()).await }).unwrap().expect("connection closed");
-        let o = r.cs.handle(0, ClientInput::Bytes(b));
-        r.out(o);
-    };
-    let ClientEvent::Notify { payload: osis_proto::api::Payload::Delivery { value: Value::List(v) }, .. } = notify else { panic!("{notify:?}") };
+    let notify = r.notify(1);
+    let osis_proto::api::Payload::Delivery { value: Value::List(v) } = notify else { panic!("{notify:?}") };
     assert_eq!(v.get(2), Some(&read(Some(Value::Int(7)))), "the first Notify is the `a` write's: {v:?}");
 }

@@ -15,7 +15,7 @@ use osis_node::sync::EntryKind;
 use osis_crypto::kdf::{beacon, members_digest, resume_tag};
 use osis_proto::filter::{beacon_value, decode_gcs};
 use osis_proto::msg::{OfferItem, Pull, PullReply};
-use osis_proto::{ClientInput, Code, Command, Event as Ev, Message};
+use osis_proto::{Code, Event as Ev, Message};
 use std::collections::BTreeSet;
 
 const PULL_ID: u32 = 1 << 31 | 1 << 30 | 7;
@@ -80,7 +80,7 @@ fn resume(net: &mut Net, a: usize, b: usize, r: &[u8; 32], challenge: [u8; 32], 
     let mut p = dial_as(net, a, b, challenge);
     let tag = resume_tag(r, &LISTENER, &challenge, &p.hello);
     let now = net.now();
-    let outs = p.cs.handle(now, ClientInput::Command(Command::Resume { nonce: [5; 32], tags: vec![tag] }));
+    let (_, outs) = p.cs.request(now, |id| Message::Resume { id, nonce: [5; 32], tags: vec![tag] });
     let mut msgs = shared_of(&pump(net, b, &mut p, outs));
     let theirs = msgs.iter().find_map(|m| if let Message::Digest { digest } = m { Some(*digest) } else { None }).expect("b's digest first");
     let mine = members_digest(r, members.iter().map(|l| &l.0));
@@ -110,7 +110,7 @@ fn step(net: &mut Net, b: usize, p: &mut Dialer) -> Vec<Message> {
         let acts = net.sync(b).handle(osis_node::sync::Event::Local);
         net.actions(b, acts);
         let now = net.now();
-        let outs: Vec<_> = net.hand_sent(b, p.hc).into_iter().flat_map(|f| p.cs.handle(now, osis_proto::ClientInput::Bytes(f))).collect();
+        let outs: Vec<_> = net.hand_sent(b, p.hc).into_iter().flat_map(|f| p.cs.bytes(now, f)).collect();
         msgs.extend(shared_of(&pump(net, b, p, outs)));
     }
     msgs

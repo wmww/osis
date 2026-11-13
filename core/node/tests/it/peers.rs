@@ -368,12 +368,15 @@ fn co_reader_redialed_at_once_after_up() {
     reach(&mut net, b, 0xb4);
     let _g = net.group_at(a, &[(b, Role::Read)], vec![]);
     let kb = [0xb4; 32];
+    // up as hub connection `hub`, then that session ends
+    let ends = |net: &mut Net, conn, hub| {
+        net.sync(a).handle(Event::Up { conn, hub });
+        net.sync(a).handle(Event::Hub { ups: vec![(hub, osis_host::Up::End)] })
+    };
     let conn = dial_to(&net.sync(a).handle(Event::Local), kb).expect("dialed");
-    net.sync(a).handle(Event::Up { conn });
-    let conn = dial_to(&net.sync(a).handle(Event::Down { conn }), kb).expect("redialed at once");
+    let conn = dial_to(&ends(&mut net, conn, 1 << 50), kb).expect("redialed at once");
     // again within the pause: it waits
-    net.sync(a).handle(Event::Up { conn });
-    assert_eq!(dial_to(&net.sync(a).handle(Event::Down { conn }), kb), None);
+    assert_eq!(dial_to(&ends(&mut net, conn, (1 << 50) + 1), kb), None);
     net.clock.advance(60_001);
     let conn = dial_to(&net.sync(a).handle(Event::Tick), kb).expect("dialed after the pause");
     // never up: it waits
