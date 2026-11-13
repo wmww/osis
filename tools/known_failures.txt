@@ -16,3 +16,4 @@ sim-sweep:ephemeral 0/43 issues/ephemeral-sim-reader-holds-unlisted-commits.md e
 ephemeral::ephemeral_reverts_with_restarts_alike_large_spec_crdt_4_6 OSIS_EPH_START=704201441278 issues/ephemeral-restarts-reader-loses-value-seed.md failed: seed \d+: Tid\(\w+\)$
 sim-sweep:work_sets 43254590189/43254590194 issues/work-sets-delete-storm-194.md message storm: 5000 deliveries
 sim-sweep:member_churn 720956814942/720956814950 issues/work-sets-delete-storm-194.md message storm: \d+ deliveries without the queue emptying
+store::a_failed_redb_write_anywhere_in_a_commit_reports_its_outcome - issues/redb-any-write-flake.md faults both before the commit point and at its sync
