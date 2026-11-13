@@ -14,7 +14,7 @@ pub fn key(n: &Name) -> Name {
 /// The stamp of a write by name.
 pub fn stamp(n: &Name) -> &Stamp {
     match n.last() {
-        Some(Step::Reset(s) | Step::W(s) | Step::Write(s) | Step::Case(s) | Step::Created(s) | Step::Pos(s) | Step::Flag(s)) => s,
+        Some(Step::Reset(s) | Step::Gone(s) | Step::W(s) | Step::Write(s) | Step::Case(s) | Step::Created(s) | Step::Pos(s) | Step::Flag(s)) => s,
         _ => panic!("a write's name ends with its stamp"),
     }
 }
@@ -35,7 +35,25 @@ pub fn winning(f: &Frag) -> BTreeSet<Name> {
                 reg.iter_mut().for_each(|r| only(r));
                 slots.values_mut().for_each(only);
             }
-            Frag::Bag { elems, .. } | Frag::Set { elems, .. } => elems.values_mut().filter_map(|e| e.frag.as_deref_mut()).for_each(only),
+            Frag::Bag { elems, .. } => elems.values_mut().filter_map(|e| e.frag.as_deref_mut()).for_each(only),
+            // of a tid's value removals only the greatest wins, and an element it hides does not (§5.5)
+            Frag::Set { elems, .. } => {
+                let hidden: Vec<bool> = elems.values().map(|e| crate::state::hidden(e, elems)).collect();
+                let mut top: std::collections::BTreeMap<crate::value::Value, Stamp> = std::collections::BTreeMap::new();
+                for (s, v) in elems.values().filter_map(|e| e.gone.as_ref()) {
+                    let m = top.entry(v.clone()).or_insert_with(|| s.clone());
+                    *m = m.clone().max(s.clone());
+                }
+                for (e, h) in elems.values_mut().zip(hidden) {
+                    if h {
+                        e.frag = None;
+                    }
+                    if e.gone.as_ref().is_some_and(|(s, v)| top.get(v) != Some(s)) {
+                        e.gone = None;
+                    }
+                    e.frag.as_deref_mut().into_iter().for_each(only);
+                }
+            }
             Frag::Struct { fields, .. } | Frag::Enum { payloads: fields, .. } => fields.values_mut().for_each(only),
             Frag::Map { entries, .. } => entries.values_mut().filter_map(|e| e.frag.as_deref_mut()).for_each(only),
             Frag::Seq { text, elems, .. } => {
