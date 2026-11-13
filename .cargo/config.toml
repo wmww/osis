@@ -4,6 +4,9 @@
 # Default-test settings (notes/testing.md). An explicit environment value wins.
 [env]
 PROPTEST_CASES = "32"
+# Never write proptest-regressions files: a failure prints its minimal input; a seed worth keeping
+# becomes a named reproducer (notes/coordination.md, Never pin a failing seed).
+PROPTEST_DISABLE_FAILURE_PERSISTENCE = "1"
 
 # Debug sections compressed at link time: line tables keep file:line in backtraces at about 40% of
 # the uncompressed binary size (notes/build.md). zstd is not read by the backtrace symbolizer; zlib is.
