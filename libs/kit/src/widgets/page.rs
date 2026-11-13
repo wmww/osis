@@ -11,7 +11,7 @@
 //! when everything fits. One bar shows: the list's when its rows scroll, else the page's. A page
 //! inside another page is plain content of the outer one.
 
-use super::vlist::{GUTTER, MIN_THUMB, paint_thumb};
+use super::vlist::{GUTTER, MIN_THUMB, paint_thumb, track};
 use crate::theme::Look;
 use masonry::accesskit::{Action, Node, Role};
 use masonry::core::{AccessCtx, AccessEvent, BoxConstraints, ChildrenIds, EventCtx, LayoutCtx, NewWidget, PaintCtx, PointerEvent, PointerScrollEvent, PropertiesMut, PropertiesRef, RegisterCtx, ScrollDelta, Update, UpdateCtx, Widget, WidgetId, WidgetPod};
@@ -36,15 +36,30 @@ pub(crate) struct Link {
     pub at_end: bool,
     /// The list follows its end.
     pub stuck: bool,
-    /// The list shows its own bar.
+    /// The list's rows scroll (the one bar is the list's).
     pub bar: bool,
-    /// The page's viewport: its top in window coordinates, its height.
+    /// The list's bar, from its last layout; the page draws it over the part of the list it shows.
+    pub thumb: Option<Thumb>,
+    /// The page's viewport: its top left in window coordinates, its height.
+    pub page_x: f64,
     pub page_y: f64,
     pub view: f64,
     /// How far the page is scrolled.
     pub s: f64,
-    /// The list's top in the page's content, from the last paint.
+    /// The list's top in the page's content and its left in the page, from the last paint.
     pub a: Option<f64>,
+    pub ax: f64,
+}
+
+/// A list's bar: the gutter's left in the list, the list's height, the part of its rows seen and
+/// where (0 top, 1 end), and whether the thumb is held.
+#[derive(Clone, Copy)]
+pub(crate) struct Thumb {
+    pub x: f64,
+    pub vh: f64,
+    pub seen: f64,
+    pub at: f64,
+    pub held: bool,
 }
 
 pub(crate) type LinkRef = Arc<Mutex<Link>>;
@@ -185,11 +200,12 @@ impl Widget for Page {
     }
 
     fn update(&mut self, ctx: &mut UpdateCtx<'_>, _props: &mut PropertiesMut<'_>, event: &Update) {
-        // as Portal: bring a focused widget's area (content coordinates) into view
+        // bring an area (the page's coordinates) into view, its top if it is taller than the page
         if let Update::RequestPanToChild(r) = event
             && !self.plain
         {
-            let to = if r.y0 < self.s { r.y0 } else if r.y1 > self.s + self.view { r.y1 - self.view } else { self.s };
+            let (y0, y1) = (r.y0 + self.s, r.y1 + self.s);
+            let to = if y0 < self.s { y0 } else if y1 > self.s + self.view { (y1 - self.view).min(y0) } else { self.s };
             let to = to.clamp(0.0, self.range);
             if to != self.s {
                 self.s = to;
@@ -266,10 +282,26 @@ impl Widget for Page {
         if self.plain {
             return;
         }
-        lock(&self.link).page_y = ctx.window_origin().y;
+        let o = ctx.window_origin();
+        let mut l = lock(&self.link);
+        (l.page_x, l.page_y) = (o.x, o.y);
+        drop(l);
         if let Some((h, y)) = self.thumb() {
             paint_thumb(scene, &self.look, ctx.size().width - GUTTER, y, h, self.grab.is_some());
         }
+    }
+
+    // the list's bar, over the list's rows: what the page shows of the list moves with the
+    // page's scroll, which lays out the page and not the list
+    fn post_paint(&mut self, _ctx: &mut PaintCtx<'_>, _props: &PropertiesRef<'_>, scene: &mut Scene) {
+        if self.plain {
+            return;
+        }
+        let l = lock(&self.link);
+        let (Some(_), Some(a), Some(b)) = (l.list, l.a, l.thumb) else { return };
+        let top = a - l.s;
+        let t = track(b.seen, b.at, -top, l.view - top, b.vh);
+        paint_thumb(scene, &self.look, l.ax + b.x, top + t.y, t.thumb, b.held);
     }
 
     fn accessibility_role(&self) -> Role {

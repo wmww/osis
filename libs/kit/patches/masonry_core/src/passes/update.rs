@@ -715,7 +715,8 @@ pub(crate) fn run_update_scroll_pass(root: &mut RenderRoot) {
         let mut target_rect = rect;
 
         run_targeted_update_pass(root, Some(target), |widget, ctx, props| {
-            let event = Update::RequestPanToChild(rect);
+            // each widget on the way up gets the area in its own coordinates
+            let event = Update::RequestPanToChild(target_rect);
             widget.update(ctx, props, &event);
 
             // TODO - We should run the compose method after this, so

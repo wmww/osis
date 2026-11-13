@@ -1,0 +1,34 @@
+--- src/passes/update.rs
++++ src/passes/update.rs
+@@ -715,7 +715,8 @@
+         let mut target_rect = rect;
+ 
+         run_targeted_update_pass(root, Some(target), |widget, ctx, props| {
+-            let event = Update::RequestPanToChild(rect);
++            // each widget on the way up gets the area in its own coordinates
++            let event = Update::RequestPanToChild(target_rect);
+             widget.update(ctx, props, &event);
+ 
+             // TODO - We should run the compose method after this, so
+--- src/passes/event.rs
++++ src/passes/event.rs
+@@ -369,7 +369,7 @@
+         }
+         accesskit::Action::ScrollIntoView if !handled.is_handled() => {
+             let widget_state = root.widget_arena.get_state(target);
+-            let rect = widget_state.layout_rect();
++            let rect = widget_state.size().to_rect();
+             root.global_state
+                 .scroll_request_targets
+                 .push((target, rect));
+--- src/core/contexts.rs
++++ src/core/contexts.rs
+@@ -416,7 +416,7 @@
+ 
+     /// Send a signal to parent widgets to scroll this widget into view.
+     pub fn request_scroll_to_this(&mut self) {
+-        let rect = self.widget_state.layout_rect();
++        let rect = self.widget_state.size().to_rect();
+         self.global_state
+             .scroll_request_targets
+             .push((self.widget_state.id, rect));

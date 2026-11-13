@@ -6,7 +6,7 @@
 use crate::view_tree::data;
 use osis::core::NAME;
 use osis_kit::schema::{Arrange, COLLECTION, Collection, CollectionOrder as Order, CollectionSource as Source};
-use osis_kit::masonry::accesskit::{Action, Node, Role};
+use osis_kit::masonry::accesskit::{Action, ActionRequest, Node, NodeId, Role};
 use osis_kit::masonry::app::{RenderRoot, RenderRootOptions, WindowSizePolicy};
 use osis_kit::masonry::core::{PointerEvent, PointerId, PointerInfo, PointerScrollEvent, PointerState, PointerType, ScrollDelta, Widget, WidgetId, WidgetRef, WindowEvent};
 use osis_kit::masonry::dpi::{PhysicalPosition, PhysicalSize};
@@ -297,4 +297,43 @@ fn rewrapping_keeps_the_top_row() {
     assert!(s.shown().contains("fav 0"));
     s.resize_to(360, 900);
     assert!(s.shown().contains("fav 0"), "{:?}", s.shown());
+}
+
+/// The bar shows on what scrolls: where the rows fit the window but the page around them does
+/// not, the one thing offering to scroll moves the page.
+#[test]
+fn the_bar_is_on_what_scrolls() {
+    let n = 8;
+    let mut s = Screen::home(900, 700, n);
+    assert_eq!(s.shown().len(), n, "every row fits");
+    let nodes = s.nodes();
+    let scrolls: Vec<u64> = nodes.iter().filter(|(_, n)| n.supports_action(Action::ScrollDown)).map(|(id, _)| *id).collect();
+    assert_eq!(scrolls.len(), 1, "the page around the rows does not fit");
+    let top = |s: &mut Screen| s.tiles().iter().map(|t| t.2.y0).fold(f64::INFINITY, f64::min);
+    let before = top(&mut s);
+    s.rr.handle_access_event(ActionRequest { action: Action::ScrollDown, target: NodeId(scrolls[0]), data: None });
+    s.rr.redraw();
+    assert!(top(&mut s) < before - 1.0, "the rows moved from {before} to {}", top(&mut s));
+}
+
+/// Bringing something into view (a screen reader's scroll-into-view) scrolls the page to it:
+/// in a short window, what is at the end of a note's page comes into view.
+#[test]
+fn scroll_into_view_shows_it() {
+    let mut s = Screen::new("glass", 360);
+    s.resize_to(360, 190);
+    let nodes = s.nodes();
+    let id = *nodes.iter().find(|(_, n)| n.label() == Some("Undo")).expect("Undo").0;
+    fn find(w: WidgetRef<'_, dyn Widget>, id: u64) -> Option<Rect> {
+        if w.id().to_raw() == id {
+            return Some(Rect::from_origin_size(w.ctx().window_origin(), w.ctx().size()));
+        }
+        w.children().into_iter().find_map(|c| find(c, id))
+    }
+    let rect = |s: &Screen| find(s.rr.get_layer_root(0), id).unwrap();
+    assert!(rect(&s).y0 >= 190.0, "starts below the window: {:?}", rect(&s));
+    s.rr.handle_access_event(ActionRequest { action: Action::ScrollIntoView, target: NodeId(id), data: None });
+    s.rr.redraw();
+    let r = rect(&s);
+    assert!(r.y0 >= 0.0 && r.y1 <= 190.0, "in the window: {r:?}");
 }

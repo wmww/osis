@@ -71,11 +71,20 @@ struct Bar {
 /// The bar as drawn (the list's own coordinates): its track is the part of the list its page
 /// shows.
 #[derive(Clone, Copy)]
-struct Track {
-    start: f64,
-    len: f64,
-    thumb: f64,
-    y: f64,
+pub(crate) struct Track {
+    pub start: f64,
+    pub len: f64,
+    pub thumb: f64,
+    pub y: f64,
+}
+
+/// The track over the part of a list `vh` tall from `start` to `end` (list coordinates, clamped
+/// to the list), with the thumb for the part of its rows `seen`, `at` (0 top, 1 end).
+pub(crate) fn track(seen: f64, at: f64, start: f64, end: f64, vh: f64) -> Track {
+    let start = start.clamp(0.0, vh);
+    let len = end.clamp(start, vh) - start;
+    let thumb = (len * seen).clamp(MIN_THUMB.min(len), len);
+    Track { start, len, thumb, y: start + at.clamp(0.0, 1.0) * (len - thumb) }
 }
 
 pub struct VirtualList {
@@ -290,14 +299,11 @@ impl VirtualList {
         let (start, end) = match &self.page {
             Some(p) => {
                 let l = lock(p);
-                let start = (l.page_y - y).clamp(0.0, self.vh);
-                (start, (l.page_y + l.view - y).clamp(start, self.vh))
+                (l.page_y - y, l.page_y + l.view - y)
             }
             None => (0.0, self.vh),
         };
-        let len = end - start;
-        let thumb = (len * b.seen).clamp(MIN_THUMB.min(len), len);
-        Some(Track { start, len, thumb, y: start + b.at.clamp(0.0, 1.0) * (len - thumb) })
+        Some(track(b.seen, b.at, start, end, self.vh))
     }
 
     fn end_drag(this: &mut WidgetMut<'_, Self>) {
@@ -516,15 +522,16 @@ impl Widget for VirtualList {
             return bc.constrain(Size::new(width, bc.max().height));
         }
         let vh = if bounded { bc.max().height } else { UNBOUNDED };
-        // rows narrow for the bar once there is more than fits
+        // rows narrow for the bar once there is more than fits (by a pixel: layout places on
+        // whole pixels, and a page laying the list out whole gives it its height to a fraction)
         let (mut tops, mut y) = self.place_rows(ctx, width, gap);
-        let scrolls = self.more_before || self.more_after || (y - gap) > vh;
+        let scrolls = self.more_before || self.more_after || (y - gap) > vh + 0.5;
         if scrolls {
             (tops, y) = self.place_rows(ctx, (width - GUTTER).max(0.0), gap);
         }
         let content = if self.children.is_empty() { 0.0 } else { y - gap };
         let height = if bounded { vh } else { content.min(vh) };
-        let max_top = (content - height).max(0.0);
+        let max_top = if scrolls { (content - height).max(0.0) } else { 0.0 };
         self.anchor = self.anchor.min(self.children.len().saturating_sub(1));
         let anchor_top = tops.get(self.anchor).copied().unwrap_or(0.0);
         // going past what is loaded stops at its edge until the new window arrives
@@ -567,6 +574,10 @@ impl Widget for VirtualList {
             };
             Bar { x: width - GUTTER, seen, at, rows }
         });
+        if let Some(p) = &self.page {
+            let held = self.grab.is_some();
+            lock(p).thumb = self.bar.map(|b| page::Thumb { x: b.x, vh: height, seen: b.seen, at: b.at, held });
+        }
         // the rows wanted around the viewport, from their measured height
         let n = self.children.len();
         if n > 0 && !self.stuck {
@@ -595,11 +606,13 @@ impl Widget for VirtualList {
     }
 
     fn paint(&mut self, ctx: &mut PaintCtx<'_>, _props: &PropertiesRef<'_>, scene: &mut Scene) {
+        let o = ctx.window_origin();
         if let Some(p) = &self.page {
+            // the page draws the bar (`Page::post_paint`)
             let mut l = lock(p);
-            l.a = Some(ctx.window_origin().y - l.page_y + l.s);
-        }
-        if let (Some(b), Some(t)) = (self.bar, self.track(ctx.window_origin().y)) {
+            l.a = Some(o.y - l.page_y + l.s);
+            l.ax = o.x - l.page_x;
+        } else if let (Some(b), Some(t)) = (self.bar, self.track(o.y)) {
             paint_thumb(scene, &self.look, b.x, t.y, t.thumb, self.grab.is_some());
         }
         let Some(d) = self.drop else { return };
