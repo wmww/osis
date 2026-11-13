@@ -1164,4 +1164,57 @@ mod tests {
             assert!(e.compactions().unwrap().is_empty(), "restart {restart}: owed once");
         }
     }
+
+    // spec/sync.md §7 (Trigger): a writer whose held bodies passed the trigger while the thing's
+    // delete keys were not here (`MayWrite::Later`: a first holder's grant gave the thing secrets
+    // of its own, its `keys.0` not yet received) compacts them once the keys arrive, with no write
+    // of the aspect between (`replace::wake_covers` wakes the owed weighing).
+    #[test]
+    fn writer_compacts_once_its_delete_keys_arrive_spec_sync_7() {
+        use osis_base::Role;
+        use osis_schema::{core_types as ct, Codec};
+        let mut lp = LocalPeer::fresh(3, osis_base::WallMs(1_700_000_000_000));
+        lp.sync_all().unwrap();
+        let [a, b, c] = [0, 1, 2].map(|i| lp.peers[i].engine.me());
+        let edge = |role| ct::Edge { role, until: None, invite: None, tied: None };
+        // bob writes `t` by a raw edge write: `t` keeps its first admin's secrets
+        let mut m = Mutation::new();
+        let t = lp.peers[0].engine.new_thing(&mut m, a);
+        m.op(t, &ct::ROLES, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(Value::Tid(b))], op: osis_crdt::Op::Set(edge(Role::Write).to_value()) }).unwrap();
+        lp.peers[0].commit(m).unwrap();
+        lp.sync(0, 1).unwrap();
+        let m_ak = Ak::new("x:m.0").unwrap();
+        for i in 0..8 {
+            lp.advance(10);
+            let mut m = Mutation::new();
+            m.op(t, &m_ak, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(Value::Str(format!("k{i}")))], op: osis_crdt::Op::Set(Value::Int(1)) }).unwrap();
+            lp.peers[1].commit(m).unwrap().unwrap();
+        }
+        // a first holder by the flow gives `t` secrets of its own, its `keys.0` in that commit:
+        // bob gets the rest first
+        lp.peers[0].engine.grant(&t, &c, &edge(Role::Read)).unwrap();
+        lp.peers[0].engine.grant(&t, &b, &edge(Role::Write)).unwrap();
+        let keys = Ak::new("keys.0").unwrap();
+        let pks = lp.packages(0).unwrap();
+        let carries = |id: &CommitId| lp.peers[0].engine.header(id).unwrap().aspects.iter().any(|x| x.tid == t && x.ak == keys);
+        let (key_pks, rest): (Vec<_>, Vec<_>) = pks.into_iter().partition(|pk| carries(&pk.id));
+        assert!(!key_pks.is_empty());
+        for pk in &rest {
+            lp.deliver(1, pk).unwrap();
+        }
+        let e = &mut lp.peers[1].engine;
+        assert!(!e.holds_delete_keys(&t).unwrap(), "t's delete keys are not here");
+        let l = e.compaction_load().unwrap().into_iter().find(|l| l.ak == m_ak).unwrap();
+        assert!(l.bodies >= 8 && l.held > FACTOR * l.snapshot, "over the trigger: {l:?}");
+        assert!(e.compactions().unwrap().is_empty(), "no snapshot without the delete keys");
+        assert!(e.compactions().unwrap().is_empty());
+        for pk in &key_pks {
+            lp.deliver(1, pk).unwrap();
+        }
+        let e = &mut lp.peers[1].engine;
+        assert!(e.holds_delete_keys(&t).unwrap());
+        let snaps = e.compactions().unwrap();
+        assert_eq!(snaps.iter().map(|x| (x.0, x.1.clone())).collect::<Vec<_>>(), vec![(t, m_ak.clone())], "compacted once the keys came");
+        assert!(e.compactions().unwrap().is_empty(), "owed once");
+    }
 }
