@@ -220,6 +220,14 @@ impl Journal {
         r.end()?;
         Ok(Journal { new_rows, new_blobs, old_rows, old_blobs })
     }
+
+    /// Adds to `batch` the deletes that settle this record: what its transaction superseded
+    /// once committed (`committed`), else what it wrote.
+    fn settle(&self, committed: bool, batch: &mut WriteBatch) {
+        let (rows, blobs) = if committed { (&self.old_rows, &self.old_blobs) } else { (&self.new_rows, &self.new_blobs) };
+        rows.iter().for_each(|r| batch.delete(r.clone()));
+        blobs.iter().for_each(|b| batch.delete_blob(*b));
+    }
 }
 
 /// Deletes what the journal records under `prefix` say was written, and the records.
@@ -231,9 +239,7 @@ fn rollback(backend: &mut dyn Backend, prefix: &[u8]) -> Result<(), Error> {
         }
         let mut batch = WriteBatch::new();
         for (k, v) in journals {
-            let j = Journal::decode(&v)?;
-            j.new_rows.into_iter().for_each(|r| batch.delete(r));
-            j.new_blobs.into_iter().for_each(|b| batch.delete_blob(b));
+            Journal::decode(&v)?.settle(false, &mut batch);
             batch.delete(k);
         }
         backend.commit(batch)?;
@@ -405,17 +411,14 @@ fn recover(backend: &mut dyn Backend, root: &mut dyn RootStorage, cfg: &mut Stor
     let rec = root.load().map_err(Error::Root)?.ok_or(Error::NoStore)?;
     if let Some(p) = backend.get(ROW_P)? {
         let (p_epoch, p_ver) = read_pointer(&p)?;
-        let journals = backend.scan_prefix(&W::new().u8(JOURNAL).u64(p_ver).0, usize::MAX)?;
+        // the root record stored was the commit point: finish, else roll back
+        let committed = p_epoch == rec.epoch;
         let mut batch = WriteBatch::new();
-        for (k, v) in &journals {
-            let j = Journal::decode(v)?;
-            let finish = p_epoch == rec.epoch;
-            let (rows, blobs) = if finish { (j.old_rows, j.old_blobs) } else { (j.new_rows, j.new_blobs) };
-            rows.into_iter().for_each(|r| batch.delete(r));
-            blobs.into_iter().for_each(|b| batch.delete_blob(b));
-            batch.delete(k.clone());
+        for (k, v) in backend.scan_prefix(&W::new().u8(JOURNAL).u64(p_ver).0, usize::MAX)? {
+            Journal::decode(&v)?.settle(committed, &mut batch);
+            batch.delete(k);
         }
-        if p_epoch == rec.epoch {
+        if committed {
             batch.put(ROW_R.to_vec(), pointer(p_epoch, p_ver));
         }
         batch.delete(ROW_P.to_vec());
@@ -485,7 +488,6 @@ fn next_change() -> u64 {
 }
 
 impl Pager {
-    /// Creates an empty store. Refuses if the root storage already holds a root.
     /// Creates a store whose catalog root (slot 0) holds `catalog`, in one batch, then stores
     /// the root record: a crash before that leaves no root, and `create` can run again.
     /// Refuses if the root storage already holds a root.
@@ -831,22 +833,18 @@ impl Pager {
     pub fn txn_get_blob(&self, d: &Dirty, id: &BlobId, offset: u64, len: usize) -> Result<Option<Vec<u8>>, Error> {
         self.check()?;
         match d.blobs.get(id) {
-            Some(None) => return Ok(None),
-            Some(Some(b)) => return Ok(Some(crate::backend::blob_slice(b, offset, len))),
-            None => {}
+            Some(b) => Ok(b.as_ref().map(|b| crate::backend::blob_slice(b, offset, len))),
+            None => Ok(self.backend.read_blob(id, offset, len)?),
         }
-        Ok(self.backend.read_blob(id, offset, len)?)
     }
 
     /// The byte length of a blob as the transaction sees it, without reading it.
     pub fn txn_blob_len(&self, d: &Dirty, id: &BlobId) -> Result<Option<u64>, Error> {
         self.check()?;
         match d.blobs.get(id) {
-            Some(None) => return Ok(None),
-            Some(Some(b)) => return Ok(Some(b.len() as u64)),
-            None => {}
+            Some(b) => Ok(b.as_ref().map(|b| b.len() as u64)),
+            None => Ok(self.backend.blob_len(id)?),
         }
-        Ok(self.backend.blob_len(id)?)
     }
 
     /// `seal`, the key noted to the backend in debug builds (the forensic attack,
@@ -1036,14 +1034,16 @@ impl Pager {
                 None => j.old_blobs.push(id),
             }
         }
-        let journals: Vec<Vec<u8>> = (0..d.spills).map(|k| journal_row(ver, k)).collect();
-
+        // what a committed transaction leaves: the superseded rows and blobs and its journals
+        // gone, the pointer at its top
+        let settle = |b: &mut WriteBatch, epoch| {
+            j.settle(true, b);
+            (0..d.spills).for_each(|k| b.delete(journal_row(ver, k)));
+            b.put(ROW_R.to_vec(), pointer(epoch, ver));
+        };
         let mut epoch = self.epoch;
         if !rotating {
-            j.old_rows.iter().for_each(|r| batch.delete(r.clone()));
-            j.old_blobs.iter().for_each(|b| batch.delete_blob(*b));
-            journals.iter().for_each(|r| batch.delete(r.clone()));
-            batch.put(ROW_R.to_vec(), pointer(epoch, ver));
+            settle(&mut batch, epoch);
             self.backend.commit(batch)?;
         } else {
             epoch += 1;
@@ -1052,15 +1052,10 @@ impl Pager {
             self.backend.commit(batch)?;
             self.root.store(&RootRecord { epoch, key: top_key.clone() }).map_err(Error::Root)?;
             // Committed: the old root is gone. Clean up.
-            self.root_key = top_key.clone();
-            self.epoch = epoch;
             let mut b = WriteBatch::new();
-            j.old_rows.iter().for_each(|r| b.delete(r.clone()));
-            j.old_blobs.iter().for_each(|id| b.delete_blob(*id));
-            journals.iter().for_each(|r| b.delete(r.clone()));
+            settle(&mut b, epoch);
             b.delete(journal_row(ver, FINAL));
             b.delete(ROW_P.to_vec());
-            b.put(ROW_R.to_vec(), pointer(epoch, ver));
             self.backend.commit(b)?;
         }
         self.root_key = top_key;
