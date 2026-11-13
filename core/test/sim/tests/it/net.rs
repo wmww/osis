@@ -193,3 +193,38 @@ fn a_cursor_dead_at_its_only_carrier_is_owed_to_nobody_spec_sync_9() {
         s.finish().unwrap();
     }
 }
+
+// spec: none (test harness): the sim drives a node as its driver does (`NetSim::actions`): a store write failing restarts
+// node sync in place, closing its served sessions through the hub, whose ends it is fed before
+// the restarting call's actions are done. The wake the node last asked is the one held, or the
+// node, asking for none again, never ticks (a timed relay of another's commit never placed:
+// sim `no_host_chain`).
+#[test]
+fn a_restart_in_place_with_served_peers_keeps_the_latest_wake() {
+    use osis_base::Value;
+    use osis_node::Mutation;
+    use osis_sim::dice::Dice;
+    use osis_sim::net::scenarios::{clock, peer_group};
+    use osis_sim::net::{NetConfig, NetSim};
+    use osis_sim::reach::Uplink;
+    use osis_sim::workload::REG;
+    use osis_store::Fault;
+
+    let mut d = Dice::new(0);
+    let mut s = NetSim::new("restart_wake", 0, NetConfig::default());
+    let ns = [s.add_node(&[], clock(&mut d)).unwrap(), s.add_node(&[], clock(&mut d)).unwrap()];
+    for n in ns {
+        s.reach.place(n, &[1], Uplink::None, &[]);
+    }
+    let g = peer_group(&mut s, &ns).unwrap();
+    let i = s.item(ns[0], g).unwrap();
+    s.quiet(40).unwrap();
+    let n = ns[1];
+    s.nodes[n].faults.at(0, Fault::Fail);
+    let mut m = Mutation::new();
+    m.set(i, &REG, &Value::Str("x".into())).unwrap();
+    let _ = s.commit(n, m);
+    s.settle().unwrap();
+    let asked = s.nodes[n].sync.as_ref().unwrap().asked_wake();
+    assert_eq!(s.nodes[n].wake_at(), asked, "the driver holds the wake the node last asked");
+}

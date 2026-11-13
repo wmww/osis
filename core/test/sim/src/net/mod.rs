@@ -955,8 +955,12 @@ impl NetSim {
         Ok(())
     }
 
-    /// Carries out a node's actions.
+    /// Carries out a node's actions in the order made, as its driver does: the hub takes the
+    /// downs after the rest (`hub_pump`), so what it hands up is fed back only then. Fed back
+    /// at once, a later call's `Wake` would land before this call's own and be overwritten by
+    /// it: the node, having asked for the later one, would never tick again.
     pub fn actions(&mut self, n: usize, acts: Vec<Action>) -> Res<()> {
+        let mut downs = Vec::new();
         for a in acts {
             match a {
                 Action::Dial { conn, address, .. } => self.dial(n, conn, &address)?,
@@ -973,15 +977,16 @@ impl NetSim {
                 }
                 Action::Wake { at } => self.node(n)?.wake = Some(at),
                 Action::Reach => self.relisten(n)?,
-                Action::Hub { conn, down } => {
-                    let at = self.nodes.get(n).map_or(0, |x| x.clock.now_wall_ms().0);
-                    let out = self.nodes.get_mut(n).and_then(|x| x.hub.as_mut()).map(|h| h.down(at, vec![(conn, down)])).unwrap_or_default();
-                    self.node_hub_out(n, out)?;
-                }
+                Action::Hub { conn, down } => downs.push((conn, down)),
                 Action::Host(_) | Action::Request { .. } | Action::Room { .. } | Action::Ended { .. } => {}
             }
         }
-        Ok(())
+        if downs.is_empty() {
+            return Ok(());
+        }
+        let at = self.nodes.get(n).map_or(0, |x| x.clock.now_wall_ms().0);
+        let out = self.nodes.get_mut(n).and_then(|x| x.hub.as_mut()).map(|h| h.down(at, downs)).unwrap_or_default();
+        self.node_hub_out(n, out)
     }
 
     /// A host just took `bytes`: what they delete (a Delete, Deleted events) of which it now holds no copy under any label
