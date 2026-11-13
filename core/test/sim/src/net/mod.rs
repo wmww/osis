@@ -2277,7 +2277,6 @@ impl NetSim {
             self.node(n)?.faults.revive();
         }
         let mut last = None;
-        let heads0 = check::log_heads(self);
         let mut stable = 0;
         for round in 0..max_rounds {
             self.settle()?;
@@ -2300,10 +2299,10 @@ impl NetSim {
             self.advance(61_000)?;
         }
         let busy: Vec<String> = (0..self.nodes.len()).filter_map(|n| self.nodes.get(n).and_then(|x| x.sync.as_ref()).filter(|s| !s.is_idle()).map(|s| format!("node {n}: {:?}", s.describe()))).collect();
-        // what the rounds changed at the hosts
+        // what one more round changes at the hosts
         self.watch = true;
         self.observe()?;
-        let heads = heads0;
+        let heads = check::log_heads(self);
         self.advance(61_000)?;
         self.settle()?;
         self.observe()?;
