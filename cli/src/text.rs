@@ -515,21 +515,16 @@ impl<'a> Parser<'a> {
     fn expect(&mut self, c: char) -> Result<(), String> {
         if self.eat(c) { Ok(()) } else { Err(self.err(&format!("expected `{c}`"))) }
     }
+    /// The run of characters `f` (by byte offset in the run, and char) accepts.
+    fn take(&mut self, f: impl Fn(usize, char) -> bool) -> &'a str {
+        let r = self.rest();
+        let n = r.char_indices().find(|&(i, c)| !f(i, c)).map_or(r.len(), |(i, _)| i);
+        self.pos += n;
+        r.get(..n).unwrap_or("")
+    }
     /// A run of word characters.
     fn word(&mut self) -> &'a str {
-        let r = self.rest();
-        let n = r.find(|c: char| !is_word(c)).unwrap_or(r.len());
-        let w = r.get(..n).unwrap_or("");
-        self.pos += n;
-        w
-    }
-    /// A run of characters that may form a bare duration (`-1h30m`).
-    fn bare(&mut self) -> &'a str {
-        let r = self.rest();
-        let n = r.char_indices().find(|&(i, c)| !(c.is_ascii_alphanumeric() || (i == 0 && c == '-'))).map_or(r.len(), |(i, _)| i);
-        let w = r.get(..n).unwrap_or("");
-        self.pos += n;
-        w
+        self.take(|_, c| is_word(c))
     }
 
     fn value(&mut self, ty: Ty<'_>) -> Result<Value, String> {
@@ -558,7 +553,8 @@ impl<'a> Parser<'a> {
         }
         if matches!(k, Kind::Duration) && (c.is_ascii_digit() || c == '-') {
             let start = self.pos;
-            let w = self.bare().to_string();
+            // a run that may form a bare duration (`-1h30m`)
+            let w = self.take(|i, c| c.is_ascii_alphanumeric() || (i == 0 && c == '-')).to_string();
             if w.ends_with(|c: char| c.is_ascii_alphabetic()) {
                 let end = self.pos;
                 self.pos = start;
@@ -588,8 +584,8 @@ impl<'a> Parser<'a> {
         }
         if r.starts_with("osis://") {
             self.pos += 7;
-            let w = self.tid_chars();
-            return Tid::parse(&w).map(Value::Tid).map_err(|_| self.err("bad tid"));
+            let w = self.take(|_, c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+            return Tid::parse(w).map(Value::Tid).map_err(|_| self.err("bad tid"));
         }
         if r.starts_with("tag(") {
             self.pos += 4;
@@ -732,13 +728,6 @@ impl<'a> Parser<'a> {
                 return Ok(out);
             }
         }
-    }
-
-    fn tid_chars(&mut self) -> String {
-        let r = self.rest();
-        let n = r.find(|c: char| !(c.is_ascii_alphanumeric() || c == '-' || c == '_')).unwrap_or(r.len());
-        self.pos += n;
-        r.get(..n).unwrap_or("").to_string()
     }
 
     fn until_quote(&mut self) -> Result<String, String> {
