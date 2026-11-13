@@ -2,7 +2,7 @@
 > Summary: How sync connections stay bounded and live: reply allowances (`max_reply`, `SMALL_REPLY`, `FIRST_REPLY`), the client's request window, push holding by bytes taken, stall timeouts and resends, the drivers' queue caps, and the host hub's per-input bounds with turns by source (measured costs, rejected alternatives). Rules: spec/sync.md §6 Flow control. Neighbours: notes/sync-protocol.md (the engines), notes/serving.md (the hub and driver), notes/networking.md (transport windows).
 
 ## Reply allowances
-- A Pull or Fetch reserving `MAX_MESSAGE` (9 MiB) of `WINDOW` (16 MiB) would allow two per round trip, so Pull and Fetch carry `max_reply`, Path pages hold 48 steps, and every small reply's allowance is `SMALL_REPLY` (16 KiB): about 1000 such requests per round trip.
+- A Pull or Fetch reserving `MAX_MESSAGE` (9 MiB) of `WINDOW` (16 MiB) would allow two per round trip, so Pull and Fetch carry `max_reply`, and every small reply's allowance is `SMALL_REPLY` (16 KiB): about 1000 such requests per round trip.
 - A Pull asks `REPLY_BUDGET` (`MAX_MESSAGE` − 64 KiB). A Fetch asks `FIRST_REPLY` (64 KiB) per ID (a batch of 144 fills the budget); an empty reply is asked again under `REPLY_BUDGET`. (At `SMALL_REPLY` a role commit, about 15 KiB with its boxes, would be asked twice.)
 - A host answers neither by reading a blob that does not fit `max_reply`: with a thousand small requests per round trip that would be 8 GiB read per trip for no reply bytes.
 - A stream Fetch is sized as any Fetch (`FIRST_REPLY` per ID, the rest of an answered one under `REPLY_BUDGET`), so a mesh's bodies of many labels share the window rather than taking a `REPLY_BUDGET` each (two per round trip).

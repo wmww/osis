@@ -939,8 +939,8 @@ impl SyncEngine {
     /// The peer's latest filter was tested and every Offer of it answered: each label on this
     /// connection to a peer that cannot read it, not open there, waiting for no Register, is walked, once per filter
     /// arrival (issues/net-one-peer.md 3h2, Stale head): the credentials of its recorded steps,
-    /// newest first, but the one this arrival tested, against the same filter; the first shown is
-    /// Hit, none shown registers the recorded path. Every move of a peer's head changes its
+    /// deepest first, but the one this arrival tested, against the same filter; the first shown is
+    /// Hit, none shown asks by a Behind item or registers the recorded path (`walked`). Every move of a peer's head changes its
     /// filter, so an arrival follows each; one still waiting `resync_ms` after its walk (a Hit
     /// refused, a registration ended, the filter unchanged) is tested and walked again
     /// (`timers`). O(labels on `conn`), and O(steps) per label walked.

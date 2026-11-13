@@ -218,9 +218,11 @@ pub enum OfferItem {
     /// A Hit on a static entry with its key actor's signing key and an open signature by it
     /// (spec/sync.md §10, Shared set): opens where the key's static entry is the credential hit.
     Static { hit: [u8; 32], key: [u8; 32], sig: Signature },
-    /// The sender is behind the peer's head of `label`: it holds sync key `key` of step `step`
-    /// (none: the newest step bearing it), proven by an open signature by that key (spec/sync.md
-    /// §5, Behind). Answered with the step's child.
+    /// The sender is behind the peer's head of `label`: it holds credential key `key` of step
+    /// `step` (a sync key, a claim, or a key actor's signing key; none: by a sync key, the newest
+    /// step bearing it, by a signing key, the head), proven by an open signature by that key
+    /// (spec/sync.md §5, Behind). Answered with the steps after it to the head, or a Static
+    /// item's grant.
     Behind { label: LabelId, step: Option<StepId>, key: [u8; 32], sig: Signature },
 }
 
@@ -235,7 +237,7 @@ pub type SharedCode = (Code, Option<[u8; 32]>, Option<Box<Grant>>);
 
 /// Steps an answer carries: for an accepted Hit on the tester's static entry, the box the head's
 /// claim set keeps for that entry and the label's path from its genesis step to that head; for
-/// an accepted Behind item, the step's child alone (both without claim sets).
+/// an accepted Behind item, the steps after the named one to the head (both without claim sets).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Grant {
     pub entry_box: Option<SecretBox>,

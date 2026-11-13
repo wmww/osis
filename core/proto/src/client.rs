@@ -31,8 +31,8 @@ pub const WINDOW: usize = 16 << 20;
 /// can have waiting to be written (the window plus one request or reply that overshoots it, and
 /// its frame header): a send queue cap at or above it (plus pushes) never closes such a session.
 pub const WINDOW_QUEUE: usize = WINDOW + MAX_MESSAGE + 4;
-/// Reply allowance of a request whose reply is bounded small (Status of 1024 codes, Opened, a Path
-/// page of `MAX_PATH_STEPS`, Pong, Ok, Error) and the smallest `max_reply`: the requests per
+/// Reply allowance of a request whose reply is bounded small (Status of 1024 codes, Pong, Ok,
+/// Error) and the smallest `max_reply`: the requests per
 /// round trip are `WINDOW` over it. 0 fits no reply; at `MAX_MESSAGE` two go per round trip.
 pub const SMALL_REPLY: usize = 16 << 10;
 /// What a Fetch asks per ID at first: most replies fit (a role commit with its boxes is about

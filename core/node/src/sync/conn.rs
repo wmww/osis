@@ -173,7 +173,7 @@ pub(crate) struct Requests {
     /// to the walk (a filter keeps a moved head's entries until a whole one is sent).
     pub refused: BTreeSet<(LabelId, [u8; 32])>,
     /// Labels whose recorded path the peer took to its newest step since they were last open
-    /// here, with the filter arrival and time then: a walk at a later arrival, or `resync_ms`
+    /// or started here (`start_label` clears it), with the filter arrival and time then: a walk at a later arrival, or `resync_ms`
     /// on (a registration the peer held already changes no filter), that finds no credential
     /// shown strands the label (`shared_unopened`) instead of registering again.
     pub registered: BTreeMap<LabelId, (u64, u64)>,

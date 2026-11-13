@@ -335,9 +335,9 @@ pub fn host_loses_data(s: Seeds) -> Res<Report> {
     sim.finish()
 }
 
-/// A node offline across rotations walks the steps (spec/sync.md §5 Open, Claim): a reader is
+/// A node offline across rotations catches up (spec/sync.md §5 Opens, Behind): a reader is
 /// off while the admin removes a reader and then a writer (two rotations, two steps) and keeps
-/// writing; back online it walks by its stale sync key and reads; the removed holders hold no
+/// writing; back online it asks by its stale sync key and reads; the removed holders hold no
 /// later epoch.
 pub fn offline_rotation(s: Seeds) -> Res<Report> {
     let (mut sim, (a, b, c, e, pb, pe, g)) = setup("offline_rotation", s, NetWeights::default(), |sim| {

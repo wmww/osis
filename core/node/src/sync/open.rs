@@ -2,7 +2,7 @@
 //! head): the credential of the newest step this node knows is tested against the peer's filter
 //! and Hit; not shown, the recorded path's earlier credentials are walked, then the path is
 //! registered from genesis; a peer whose head is past the recorded path is caught up with by
-//! Behind items, each answered with a step's child, verified under its parent's delete key. No
+//! a Behind item, answered with the steps to its head, each verified under the one before. No
 //! credential of the newest step held reports the label stranded (`reports`).
 
 use super::{ConnId, LConn, Phase, SyncEngine};
@@ -114,8 +114,11 @@ impl SyncEngine {
             let mut lc = Self::new_lc(g, index);
             lc.last_sync = now;
             c.labels.insert(l, lc);
-            // a start (or a retry once a back-off passed) walks against the latest filter
+            // a start (or a retry once a back-off passed) walks against the latest filter, from
+            // scratch: a path registered before is no reason to strand (the peer's head may have
+            // moved past it since, which only a Behind item finds)
             c.req.walked.remove(&l);
+            c.req.registered.remove(&l);
         }
         if self.strands(conn, l, out)? {
             return Ok(());
@@ -368,7 +371,7 @@ impl SyncEngine {
     /// Learns the read secret an accepted static-entry Hit's grant carries (spec/sync.md §10,
     /// Shared set): the path verified from the genesis step, the head's box opened by the key
     /// actor whose static entry `entry` is, and its sync secret deriving the head's sync key.
-    /// The head is the newest step known at `conn` (`LConn::walk`) and the path's write keys vouch
+    /// The head is the newest step known at `conn` (`LConn::head`) and the path's write keys vouch
     /// for entries there before `label.0` records it. Whether it held.
     pub(crate) fn granted(&mut self, conn: ConnId, l: LabelId, entry: &[u8; 32], grant: &osis_proto::msg::Grant) -> Result<bool> {
         let things = self.things();
@@ -451,7 +454,7 @@ impl SyncEngine {
     /// The peer on `conn` holds `l` at a head past the newest step this node knows there, or lacks
     /// it (its filter shows no credential of it, a stream head off it): a Behind item on that step,
     /// by a credential of it this node holds (its sync key, else the key it opened by there,
-    /// else its claim keys), asks for its child (spec/sync.md §5, Behind). A hint's label, knowing no step, asks by
+    /// else its claim keys), asks for the steps after it to the peer's head (spec/sync.md §5, Behind). A hint's label, knowing no step, asks by
     /// every sync key it holds at once, naming none. Not open there and holding no sync key to ask
     /// by, a link's label asks by its key actor's signing key, naming no step: answered with the
     /// head's entry box for its static entry, or refused (the head does not list it). Holding no
