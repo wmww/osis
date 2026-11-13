@@ -1,0 +1,3 @@
+# cleanup-label
+- tools/dead_pub.py misses a pub method defined under one name on two types (`BlobWriter::with_page_params` and `BlobReader::with_page_params`, used only by osis-label's tests): each definition reads as the other's use. It also does not flag items that are `pub` but used only inside their own crate (`entry_domain`, `by_from_value`, `verify_path`, `address_from_value`, `MAX_GROUPS` were); a narrower-visibility report would have found them.
+- Making `DeleteItem::{sign, sign_by, to_value}` infallible (they cannot fail now that `delete_digest` is infallible) needs core/node edits (`sync/conn.rs` partitions unencodable items, tests `.unwrap()`), held back while net-3i3c2 is in review.
