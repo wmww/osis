@@ -1,5 +1,5 @@
 //! Memory-class retention: superseded memory parts vanish whole (spec/sync.md §9 Superseded
-//! parts), as do a thing's memory parts at its delete here; an expired one is held as its
+//! parts); an expired one is held as its
 //! leftover like a durable one (spec/crdt.md §4.7) and drops once covered (`drop_covered`). A
 //! memory commit no part of which is held any more is forgotten, header included
 //! (`apply::unindex_commit`; issues/session-sources.md rule 8, memory half). Invariant: a memory
@@ -7,12 +7,8 @@
 //! memory commits read alike whatever was superseded when.
 
 use crate::engine::Tx;
-use crate::engine::write::{Creates, check_authority};
 use crate::error::Result;
-use crate::events::{Cause, Event};
-use osis_base::{Ak, CommitId, Tid, Ts};
-use osis_schema::RawKey;
-use osis_schema::core_types::CREATED;
+use osis_base::{Ak, CommitId, Tid};
 use osis_commit::EphClass;
 use osis_crdt::Fragment;
 use std::collections::BTreeSet;
@@ -47,44 +43,6 @@ pub(crate) fn forget_if_spent(tx: &mut Tx<'_>, c: &CommitId) -> Result<()> {
     crate::apply::unindex_commit(tx, c)
 }
 
-
-/// Whether each of `writers` may delete each of `things` at `ts` (spec/crdt.md §4.6): write on
-/// the thing, judged before anything is written (a thing in `creates` by its record there). A
-/// delete needs it whether or not a commit carries it (`Engine::write`, an undone creation).
-pub(crate) fn check_delete(tx: &Tx<'_>, writers: &[Tid], creates: &Creates, things: &BTreeSet<Tid>, ts: Ts) -> Result<()> {
-    for w in writers {
-        for t in things {
-            check_authority(tx.core, *w, creates, t, CREATED.ak(), ts)?;
-        }
-    }
-    Ok(())
-}
-
-/// A delete's ephemeral side (spec/commits.md §2, notes/ephemeral.md Deletion): every held part
-/// on an ephemeral aspect of `things` vanishes here (`vanish`) and the commits spent by it are
-/// forgotten; nothing is written, so other holders keep their copies. No commit carries the
-/// drop, so listeners hear it as derived (`Cause::Deleted`).
-pub(crate) fn drop_things(tx: &mut Tx<'_>, things: &BTreeSet<Tid>) -> Result<()> {
-    tx.in_class(true, |tx| {
-        let mut changed = BTreeSet::new();
-        let mut spent = BTreeSet::new();
-        for t in things {
-            let held: Vec<(Ak, CommitId)> = tx.core.aspects_of(t).filter(|((_, ak), _)| ak.ephemeral()).flat_map(|((_, ak), cs)| cs.iter().map(move |(_, c)| (ak.clone(), *c))).collect();
-            for (ak, c) in held {
-                let Some(ai) = tx.core.ix.commits.get(&c).filter(|m| m.view.memory).and_then(|m| m.aspect(t, &ak)) else { continue };
-                changed.extend(vanish(tx, &c, ai)?);
-                spent.insert(c);
-            }
-        }
-        for c in &spent {
-            forget_if_spent(tx, c)?;
-        }
-        if !changed.is_empty() {
-            tx.core.events.queue(Event::Changed { cause: Cause::Deleted, changed: changed.into_iter().collect() });
-        }
-        Ok(())
-    })
-}
 
 /// spec/sync.md §9 (Superseded parts): on `aspects`, each held part of a plain memory commit a
 /// valid held part of another commit of its author supersedes (`supersedes`) vanishes whole. Run when parts of a memory aspect turn valid (each commit judged

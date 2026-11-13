@@ -148,8 +148,7 @@ mod tests {
     }
 
     // issues/session-sources.md rule 8 (memory half): memory commits on a durable thing that
-    // are superseded, or dropped with the thing's ephemeral state (a delete here), are
-    // forgotten: every journaled index (and perm's view) as if they had never applied, the
+    // are superseded, or whose last part vanishes, are forgotten: every journaled index (and perm's view) as if they had never applied, the
     // state too, but for the newest forgotten `ts` per aspect. spec: none (internal)
     #[test]
     fn forget_equals_never_indexed() {
@@ -169,7 +168,12 @@ mod tests {
             e.commit_in_memory(m).unwrap().unwrap();
         }
         assert_eq!(e.core.ix.commits.values().filter(|m| m.view.memory).count(), 1, "superseded moves are forgotten");
-        e.run(|tx| crate::retention::memory::drop_things(tx, &[g].into())).unwrap();
+        let last = *e.core.ix.commits.iter().find(|(_, m)| m.view.memory).unwrap().0;
+        e.run(|tx| {
+            crate::retention::memory::vanish(tx, &last, 0)?;
+            crate::retention::memory::forget_if_spent(tx, &last)
+        })
+        .unwrap();
         assert_eq!(digest(e), before);
         assert_eq!(e.get(&g, &ak("t:m+.0")).unwrap(), None);
         assert!(e.core.ix.forgotten.get(&(g, ak("t:m+.0"))).is_some(), "an undo still counts them (`undo::replaced_kept`)");

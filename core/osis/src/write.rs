@@ -265,10 +265,9 @@ impl<'d> Write<'d> {
     /// this node may write that may list it (one it may not keeps listing it; it reads deleted
     /// there): the adds of it this node holds, and those in parts it holds as headers only, so
     /// an add it never heard of stays. Afterwards `has_content(tid)` is `false`; the tid stays
-    /// valid and a later write recreates the thing. Its ephemeral (`+`) values are dropped here
-    /// and not written (their listeners hear `DerivedFrom::Deleted`; with nothing durable to
-    /// remove the write commits nothing): other nodes holding them keep them until they restart
-    /// or the values end (expiry, their author leaving), in no group they read.
+    /// valid and a later write recreates the thing. Its ephemeral (`+`) values written before
+    /// the delete are purged by the same commit, at every node that applies it; one written
+    /// later stands. With nothing to remove the write commits nothing.
     pub fn delete(&mut self, tid: Tid) -> Result<()> {
         let t = self.known(tid)?;
         self.ops.push(WriteOp::Delete(t));
@@ -529,8 +528,8 @@ impl<'d> Write<'d> {
                 }
                 WriteOp::Delete(t) => {
                     // the durable aspects that may hold content, bodies held or not
-                    // (`Engine::deleted_aspects`): its ephemeral state is dropped here, not written
-                    // (`Mutation::deleting`). Each removal typed as `aspect_key` types it, so it
+                    // (`Engine::deleted_aspects`); its ephemeral state the engine purges in the
+                    // same commit (`Mutation::deleting`). Each removal typed as `aspect_key` types it, so it
                     // keeps the history its schema keeps and the delete undoes (spec/crdt.md §4.6)
                     let aks = if r.hidden(t) { Vec::new() } else { r.e.deleted_aspects(&t)? };
                     for ak in &aks {

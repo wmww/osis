@@ -315,8 +315,15 @@ pub(crate) fn undo_in(tx: &mut Tx<'_>, target: CommitId, actor: Tid, ts: Option<
     if confined {
         crate::engine::acting::check_undo(tx, actor, &deltas, ts)?;
     }
+    // the things it deletes have their ephemeral state purged, as a delete's (`unmake_ops`)
+    let mut purge = Vec::new();
+    if let Some(m) = tx.core.ix.commits.get(&target).cloned() {
+        for t in made_by(&m.header, &m.valid) {
+            purge.extend(crate::engine::write::delete_purges(tx, &t)?);
+        }
+    }
     // an undo writes under this open's session, like any content commit (spec/commits.md §3)
-    let plan = CommitPlan { kind: Kind::Content, ts, actor, form: Form::Session(nonce), creates: Default::default(), purge: Vec::new(), undoes: Some(target), frontier: None, signer: node, blind: crate::engine::write::draw_blind(&mut *tx.rng), expires: None, restores: false, rotation: None };
+    let plan = CommitPlan { kind: Kind::Content, ts, actor, form: Form::Session(nonce), creates: Default::default(), purge, undoes: Some(target), frontier: None, signer: node, blind: crate::engine::write::draw_blind(&mut *tx.rng), expires: None, restores: false, rotation: None };
     build_one(tx, plan, deltas)
 }
 
@@ -372,7 +379,8 @@ fn undo_writes(tx: &mut Tx<'_>, target: CommitId, actor: Tid, ts: Ts, confined: 
 
 /// The parts of content commit `target` its undo inverts, each with its delta and its writer's
 /// source. Left out: one invalid here, a signal's (it reads absent before and after), the creation
-/// record and the parts on things the commit created (those are deleted, `unmake_ops`). Every
+/// record, a `purge.0` part (it only places a request, and a purge is never undone,
+/// spec/commits.md §5) and the parts on things the commit created (those are deleted, `unmake_ops`). Every
 /// other part is reverted, or there is no undo (`NotKept`): it is not received yet; or it is not
 /// in kept history by its thing's setting at the undo's `ts` (spec/commits.md §7:
 /// `bounds::setting_keeps`, whatever is held, so an undo is the same on every node whatever
@@ -388,7 +396,7 @@ fn undone_parts(tx: &mut Tx<'_>, target: &CommitId, ts: Ts, writers: &[Tid]) -> 
     let now = ts.wall_ms().0;
     let mut parts = Vec::new();
     for (ai, a) in h.aspects.iter().enumerate() {
-        if !m.valid_at(ai) || a.ak.signal() || a.ak.as_str() == CREATED.ak() || a.ak.as_str() == osis_commit::retention::RETENTION || made.contains(&a.tid) {
+        if !m.valid_at(ai) || a.ak.signal() || a.ak.as_str() == CREATED.ak() || a.ak.as_str() == osis_commit::retention::RETENTION || a.ak.as_str() == osis_commit::retention::PURGE || made.contains(&a.tid) {
             continue;
         }
         if m.missing(ai) {
@@ -524,7 +532,7 @@ pub(crate) fn made_by(h: &osis_commit::Header, valid: &[bool]) -> BTreeSet<Tid> 
 
 /// Undoing a creation deletes the thing (spec/crdt.md §4.6): `delete`'s writes for each of
 /// `made`, its aspects that may hold content reset (`read::deleted_aspects`; its ephemeral
-/// state is dropped, `Engine::revert_inner`) and removed from every `group.0` that may list it
+/// state purged, `undo_in`) and removed from every `group.0` that may list it
 /// (`groups::listing_groups`) and all of `writers` may write (this node, a confined revert's
 /// actor too), each
 /// resolved after the undo's own delta of that aspect and
@@ -539,7 +547,13 @@ fn unmake_ops(tx: &mut Tx<'_>, made: &BTreeSet<Tid>, ts: Ts, node: Tid, writers:
         if crate::engine::write::role_of(tx.core, &node, x, ts) < Some(Role::Write) {
             return Err(Error::Permission { tid: *x });
         }
-        for ak in crate::engine::read::deleted_aspects(tx, x)? {
+        let resets = crate::engine::read::deleted_aspects(tx, x)?;
+        // its ephemeral state is purged by the undo commit (`undo_in`), placed on `x` by a
+        // `purge.0` write when nothing else of it is
+        if resets.is_empty() && !crate::engine::write::delete_purges(tx, x)?.is_empty() {
+            ops.entry((*x, Ak::new(osis_schema::core_types::PURGE.ak()).map_err(|_| Error::Misuse("ak"))?)).or_default().push(crate::engine::write::purge_placer(ts));
+        }
+        for ak in resets {
             ops.entry((*x, ak)).or_default().push(PathOp { path: Vec::new(), op: Op::RemoveAspect });
         }
     }
@@ -646,8 +660,8 @@ impl Engine {
 
     /// `revert_commit`; `confined`: held to `actor`'s rights on every write it really makes
     /// (`Engine::revert_as`), before anything applies. Undoing a creation deletes the thing
-    /// (spec/crdt.md §4.6): the undo commit deletes it durably and its ephemeral state is dropped
-    /// here, as a delete does (`retention::memory::check_delete`, `drop_things`).
+    /// (spec/crdt.md §4.6) as a delete does (`write::check_delete`), its ephemeral state purged
+    /// by the undo commit (`undo_in`).
     pub(crate) fn revert_inner(&mut self, c: CommitId, actor: Tid, confined: bool) -> Result<Reverted> {
         let mut del: BTreeSet<Tid> = BTreeSet::new();
         let mut memory = false;
@@ -666,14 +680,12 @@ impl Engine {
             if !del.is_empty() {
                 check_acts(tx.core, node, &|_| None, &actor, ts)?;
             }
-            crate::retention::memory::check_delete(tx, writers, &Default::default(), &del, ts)?;
+            crate::engine::write::check_delete(tx, writers, &Default::default(), &del, ts)?;
             let mut m = Mutation::new();
             m.act_as(actor).undo(c);
             m.confined = confined;
             m.ts = Some(ts);
-            let Some(u) = tx.in_class(memory, |tx| crate::engine::write::commit_in(tx, m))? else { return Ok(None) };
-            crate::retention::memory::drop_things(tx, &del)?;
-            Ok(Some(u))
+            tx.in_class(memory, |tx| crate::engine::write::commit_in(tx, m))
         });
         match done {
             Ok(Some(u)) => Ok(Reverted::Written(self.written(u))),

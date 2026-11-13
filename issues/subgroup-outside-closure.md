@@ -1,0 +1,9 @@
+# A subgroup's own definition never reaches its parent's label
+> Summary: The engine's closure of G (`Groups::reach`) holds G and its members (items, and items of subgroups at any depth) but not the subgroup things themselves, so an unlabeled subgroup's `group.0` (what lists its items) is placed under no label G's readers sync. Another reader of G never learns those items are in G: it does not show them as members and judges their bodies outside G's closure.
+> Priority: normal
+> Tags: sync, engine
+
+- spec/sync.md §3 says the blobs of G are the commits touching any thing in G's "transitive closure (through `group.0`)"; spec/data-model.md §8 defines members as items plus subgroups' members, which leaves the subgroup thing out. The code follows the members reading for the closure too.
+- Seen: osis-node `ephemeral::subgroup_edge_brings_parked_writes_spec_sync_9` setup (sub, an unlabeled group under g's admin, holds w; then sub becomes a subgroup of g). The writer places w's bodies under g's label (its own `group.0` of sub tells it w is inside), but reader b never holds sub (`knows(sub)` false), its `closure(g)` is `{g}` and `groups_of(w)` empty, though it holds g's `group.0` naming sub and w's durable values.
+- Durable effect: b judges w's bodies Outside once settled and deletes them at the host (tombstoned, so no storm, but a later reader of g gets none of them). Ephemeral effect: the same delete, then the writer re-places under a fresh encryption past the short memory tombstone, a storm; today hidden by the memory-only guard `State::memory_in_closure` (issues/eph-parity.md Unplaced bodies), which is what removing that guard ran into.
+- Likely fix: the closure includes subgroup things (their `group.0` placed under the parent's label), keeping `groups_of`/members as they are; decide which spec sentence is the rule and make both say it.

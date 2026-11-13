@@ -30,9 +30,6 @@ pub enum Cause {
     LostAccess,
     /// A blob arrived that a read of these aspects had missed (spec/data-model.md §6).
     Fetched,
-    /// A delete or an undone creation here dropped its things' ephemeral state, which no commit
-    /// carries (notes/ephemeral.md Deletion).
-    Deleted,
 }
 
 /// A commit whose listed form at one aspect may read otherwise (`Event::Commits`).

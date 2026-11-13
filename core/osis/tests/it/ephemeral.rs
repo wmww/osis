@@ -422,9 +422,8 @@ fn durable_beside_ephemeral_refused_spec_commits_2() {
 }
 
 // notes/ephemeral.md Deletion: deleting a thing ends its ephemeral aspects here too and takes it
-// out of its groups, in one durable commit: no memory commit is written; listeners hear the drop
-// once, as derived. spec/data-model.md §1,
-// spec/commits.md §2
+// out of its groups, in one durable commit: no memory commit is written; listeners hear the
+// change once, from that commit. spec/data-model.md §1, spec/commits.md §2, spec/sync.md §9
 #[test]
 fn delete_resets_ephemeral_aspects_spec_data_model_1() {
     let (db, _c) = setup(0);
@@ -440,15 +439,17 @@ fn delete_resets_ephemeral_aspects_spec_data_model_1() {
     let (tx, rx) = channel();
     let _sub = db.at(x, osis::DynamicAspectKey::untyped(draft.clone())).on_change(move |_, c| tx.send(c).unwrap()).unwrap();
     recv(&rx);
-    let memory = |db: &Osis| db.engine(|e| e.memory_commits().into_iter().map(|(c, _, _)| c).collect::<std::collections::BTreeSet<_>>());
+    // memory content commits (a purge's own compaction snapshot aside)
+    let memory = |db: &Osis| db.engine(|e| e.memory_commits().into_iter().map(|(c, _, _)| c).filter(|c| !e.header(c).unwrap().kind.is_compaction()).collect::<std::collections::BTreeSet<_>>());
     let held = memory(&db);
     let mut w = db.write();
     w.delete(x).unwrap();
     let c = w.commit().unwrap().unwrap().stamp.id.raw();
     assert!(!db.engine(|e| e.holds_memory(&c)));
-    assert!(memory(&db).is_subset(&held), "no memory commit written");
+    assert!(memory(&db).is_subset(&held), "no memory content commit written");
     let ch = recv(&rx);
-    assert_eq!((ch.value, ch.origin), (Ok(None), Origin::Derived(osis::DerivedFrom::Deleted)), "no commit carries the drop");
+    assert_eq!(ch.value, Ok(None));
+    assert!(matches!(ch.origin, Origin::Local(ref i) if i.id.raw() == c), "the delete's commit carries it: {:?}", ch.origin);
     db.settle();
     assert!(rx.try_recv().is_err(), "told once");
     assert!(!db.has_content(x).unwrap());
@@ -456,9 +457,9 @@ fn delete_resets_ephemeral_aspects_spec_data_model_1() {
 }
 
 // notes/ephemeral.md Deletion: a delete of a thing whose only content left is ephemeral (its
-// durable aspects removed, in no group) has nothing durable to commit, yet drops its ephemeral
-// values here as any delete does, with their backlinks; their listeners hear it once, as derived
-// (no commit carries it), and `retainers^.0` stays (a delete keeps it)
+// durable aspects removed, in no group) commits its purge request alone, which drops its
+// ephemeral values as any delete does, with their backlinks; their listeners hear it once, from
+// that commit, and `retainers^.0` stays (a delete keeps it)
 // spec/data-model.md §1
 #[test]
 fn delete_of_ephemeral_only_thing_drops_its_values_spec_data_model_1() {
@@ -481,13 +482,12 @@ fn delete_of_ephemeral_only_thing_drops_its_values_spec_data_model_1() {
     let (btx, brx) = channel();
     let _bsub = db.on_backlinks_change(y, &Default::default(), move |_, p| btx.send(p.unwrap().backlinks.len()).unwrap()).unwrap();
     assert_eq!(recv(&brx), 1);
-    let marks = durable_marks(&db);
     let mut w = db.write();
     w.delete(x).unwrap();
-    assert!(w.commit().unwrap().is_none(), "nothing durable to commit");
-    assert_eq!(durable_marks(&db), marks);
+    let id = w.commit().unwrap().expect("the purge request's commit").stamp.id.raw();
     let c = recv(&rx);
-    assert_eq!((c.value, c.origin), (Ok(None), Origin::Derived(osis::DerivedFrom::Deleted)));
+    assert_eq!(c.value, Ok(None));
+    assert!(matches!(c.origin, Origin::Local(ref i) if i.id.raw() == id), "{:?}", c.origin);
     assert_eq!(db.at(x, cursor).get().unwrap(), None);
     assert_eq!(recv(&brx), 0, "its backlinks go with it");
     assert!(db.backlinks(y, &Default::default()).unwrap().backlinks.is_empty());
@@ -644,8 +644,7 @@ fn a_thing_with_only_expiring_content_spec_commits_6() {
 }
 
 // notes/ephemeral.md API (Watches), Deletion: a local ephemeral write, its revert, a delete and
-// an undone creation each reach a listener once: the two commits as local changes naming their
-// commit, the two drops as derived (no commit carries them). spec/data-model.md §1,
+// an undone creation each reach a listener once, as local changes naming their commit. spec/data-model.md §1,
 // spec/crdt.md §4.6
 #[test]
 fn local_ephemeral_changes_reach_listeners_once_spec_data_model_1() {
@@ -681,17 +680,17 @@ fn local_ephemeral_changes_reach_listeners_once_spec_data_model_1() {
     // a delete: derived
     let mut w = db.write();
     w.delete(x).unwrap();
-    w.commit().unwrap();
+    let del = w.commit().unwrap().unwrap();
     let ch = recv(&rx);
-    assert_eq!((ch.value, ch.origin), (Ok(None), Origin::Derived(osis::DerivedFrom::Deleted)));
+    assert_eq!((ch.value, local(ch.origin)), (Ok(None), del.stamp.id));
     // an undone creation: derived
     let made = db.commit_with(|w| { let y = w.create()?; w.at(y, osis::DynamicAspectKey::untyped(ak("app:n.0"))).set(&Value::Int(0))?; Ok(y) }).unwrap();
     let created = db.created(made).unwrap().unwrap().id;
     db.commit_set(made, draft.clone(), &Value::Int(3)).unwrap();
     let (_sub2, rx2) = listen(made);
-    db.revert(created).unwrap();
+    let undo = db.revert(created).unwrap();
     let ch = recv(&rx2);
-    assert_eq!((ch.value, ch.origin), (Ok(None), Origin::Derived(osis::DerivedFrom::Deleted)));
+    assert_eq!((ch.value, local(ch.origin)), (Ok(None), undo.stamp.id));
     db.settle();
     assert!(rx.try_recv().is_err() && rx2.try_recv().is_err(), "told once each");
 }

@@ -55,10 +55,9 @@ impl Engine {
 
     /// Writes `m` as one commit, durable or memory. `Clash` when the ops ask for both (a new
     /// thing's record is durable, so a `+` write on a thing created in the same batch is one), or
-    /// signals beside either. A delete (`Mutation::deleting`) drops its things' ephemeral state
-    /// here in its durable commit's transaction and writes none (`retention::memory::drop_things`),
-    /// with no commit when nothing durable changes. When the commit or any op fails, nothing
-    /// applies. `None` when no commit is written.
+    /// signals beside either. A delete (`Mutation::deleting`) purges its things' ephemeral state
+    /// in its durable commit (`write::delete_purges`), writing no memory commit. When the commit
+    /// or any op fails, nothing applies. `None` when no commit is written.
     pub fn write(&mut self, mut m: Mutation) -> Result<Option<Written>> {
         let node = self.core.writer()?;
         let actor = m.actor.unwrap_or(node);
@@ -82,13 +81,9 @@ impl Engine {
             let creates = m.creates.clone();
             let writers: &[Tid] = if m.unchecked { &[] } else { &[node] };
             let ts = Ts::make(self.now(), 0).unwrap_or_default();
-            // a delete drops its things' ephemeral state whether or not it has durable writes
-            // to commit: one with none is a drop alone, no commit
             let id = self.run(|tx| {
-                crate::retention::memory::check_delete(tx, writers, &creates, &deleting, ts)?;
-                let id = commit_in(tx, m)?;
-                crate::retention::memory::drop_things(tx, &deleting)?;
-                Ok(id)
+                crate::engine::write::check_delete(tx, writers, &creates, &deleting, ts)?;
+                commit_in(tx, m)
             })?;
             return Ok(id.map(|id| self.written(id)));
         }

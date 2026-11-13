@@ -439,42 +439,78 @@ fn second_label_gets_held_state_spec_sync_3() {
     assert_eq!(net.eph_read(c, w, STATE), Some(s("old")), "the second label's reader gets the state");
 }
 
-// notes/ephemeral.md Deletion: a delete is one durable commit; the deleter drops the thing's
-// ephemeral state with no memory commit, and it does not come back from a holder's copy (the
-// holder keeps its copy: the stated limit).
+// spec/sync.md §9 Delete: a delete is one durable commit, which purges the thing's ephemeral
+// writes made before it at every holder, a holder offline at the delete included; a later
+// ephemeral write stands
 #[test]
-fn deleted_thing_stays_deleted_at_holders_spec_sync_9() {
-    let (mut net, _host, [a, b], g, []) = hosted::<2, 0>(&[(1, Role::Write)], [], true);
+fn delete_purges_ephemeral_state_at_every_holder_spec_sync_9() {
+    let (mut net, _host, [a, b, c], g, []) = hosted::<3, 0>(&[(1, Role::Write), (2, Role::Write)], [], true);
     let w = window(&mut net, a, g, "secret");
     note(&mut net, a, w, "k1", "v1");
     net.run();
-    assert_eq!(net.eph_read(b, w, STATE), Some(s("secret")));
+    note(&mut net, b, w, "k2", "v2");
+    net.run();
+    for n in [a, b, c] {
+        assert_eq!(net.eph_read(n, w, STATE), Some(s("secret")));
+        assert_eq!(notes(&mut net, n, w).len(), 2);
+    }
+    net.set_online(c, false);
     let held = memory_ids(&mut net, a);
     let mut m = Mutation::new();
     m.op(g, &ct::GROUP, PathOp { path: vec![PathSeg::Field(0)], op: Op::Remove(Value::Tid(w)) }).unwrap();
     m.deleting(w);
     let id = net.engine(a).write(m).unwrap().unwrap().id;
-    assert!(matches!(id, c if !net.engine(a).holds_memory(&c)));
+    assert!(!net.engine(a).holds_memory(&id));
     assert!(memory_ids(&mut net, a).is_subset(&held), "no memory commit written");
-    assert_eq!((net.eph_read(a, w, STATE), net.eph_read(a, w, NOTES)), (None, None), "dropped at the deleter");
+    assert_eq!((net.eph_read(a, w, STATE), net.eph_read(a, w, NOTES)), (None, None), "gone at the deleter");
     local(&mut net, a);
     net.run();
     net.advance(15_000);
-    // a holder's later write (a cursor, say), with no membership
+    assert_eq!((net.eph_read(b, w, STATE), net.eph_read(b, w, NOTES)), (None, None), "gone at a holder");
+    net.set_online(c, true);
+    net.advance(15_000);
+    assert_eq!((net.eph_read(c, w, STATE), net.eph_read(c, w, NOTES)), (None, None), "gone at the holder offline at the delete");
+    // a write after the delete stands where w still syncs (added back to g)
+    let mut m = Mutation::new();
+    m.op(g, &ct::GROUP, PathOp { path: vec![PathSeg::Field(0)], op: Op::Add(Value::Tid(w)) }).unwrap();
+    net.engine(a).write(m).unwrap();
+    local(&mut net, a);
+    net.run();
     note(&mut net, b, w, "b", "later");
     net.run();
     net.advance(15_000);
-    // past the host's tombstone, b reconnects
-    net.set_online(b, false);
-    net.advance(3_700_000);
-    net.set_online(b, true);
-    net.advance(15_000);
-    assert_eq!(net.eph_read(a, w, STATE), None, "nor back at the deleter");
+    for n in [a, b, c] {
+        assert_eq!((net.eph_read(n, w, STATE), notes(&mut net, n, w)), (None, map(&[("b", "later")])), "node {n}");
+    }
 }
 
-// notes/ephemeral.md Deletion: a synced thing (g itself) in no group with only ephemeral content:
-// its delete writes no commit, yet drops the values at the deleter, whose entries leave the host
-// as any delete's do
+// spec/sync.md §9 Delete: a delete that leaves the thing in a group (g2, here as one the deleter
+// could not write) leaves it in g2's closure, and purges its ephemeral state at g2's holders, a
+// reader of g2 alone included
+#[test]
+fn delete_purges_ephemeral_state_where_the_thing_stays_spec_sync_9() {
+    let (mut net, host, [a, b, c], g, []) = hosted::<3, 0>(&[(1, Role::Write)], [], true);
+    let w = window(&mut net, a, g, "secret");
+    net.run();
+    let g2 = reading_group(&mut net, a, g, w, &[(c, Role::Read)], host);
+    net.advance(15_000);
+    assert_eq!(net.eph_read(c, w, STATE), Some(s("secret")), "c holds it through g2");
+    let mut m = Mutation::new();
+    m.op(g, &ct::GROUP, PathOp { path: vec![PathSeg::Field(0)], op: Op::Remove(Value::Tid(w)) }).unwrap();
+    m.deleting(w);
+    net.engine(a).write(m).unwrap();
+    local(&mut net, a);
+    net.run();
+    net.advance(15_000);
+    for n in [a, b, c] {
+        assert_eq!(net.eph_read(n, w, STATE), None, "node {n}");
+    }
+    assert!(net.engine(c).groups_of(&w).contains(&g2), "still in g2");
+}
+
+// spec/sync.md §9 Delete: a synced thing (g itself) in no group with only ephemeral content:
+// its delete is a commit of its purge request alone, which clears the values at every holder;
+// their entries leave the host
 #[test]
 fn delete_of_ephemeral_only_thing_leaves_the_host_spec_sync_9() {
     let (mut net, host, [a, b], g, []) = hosted::<2, 0>(&[(1, Role::Write)], [], true);
@@ -486,15 +522,17 @@ fn delete_of_ephemeral_only_thing_leaves_the_host_spec_sync_9() {
     net.run();
     assert_eq!(net.eph_read(b, w, STATE), Some(s("secret")));
     let l = net.label(a);
-    let before = net.hosts[host].hub.store().ephemeral_bytes(&l);
+    let before = net.hosts[host].hub.store().ephemeral_ids(&l);
+    assert_eq!(before.len(), 1);
     let mut m = Mutation::new();
     m.deleting(w);
-    assert_eq!(net.engine(a).write(m).unwrap(), None, "nothing durable to commit");
-    assert_eq!(net.eph_read(a, w, STATE), None, "dropped at the deleter");
+    assert!(net.engine(a).write(m).unwrap().is_some(), "the purge request's commit");
+    assert_eq!(net.eph_read(a, w, STATE), None, "gone at the deleter");
     local(&mut net, a);
     net.run();
-    assert!(net.hosts[host].hub.store().ephemeral_bytes(&l) < before, "its entry left the host");
-    assert_eq!(net.eph_read(a, w, STATE), None, "nor back at the deleter");
+    let after = net.hosts[host].hub.store().ephemeral_ids(&l);
+    assert!(!after.contains(&before[0]), "its entry left the host: {after:?}");
+    assert_eq!((net.eph_read(a, w, STATE), net.eph_read(b, w, STATE)), (None, None), "gone at both");
 }
 
 /// The memory commits `n` holds.
@@ -5745,8 +5783,8 @@ fn written(r: osis_node::ephemeral::Reverted) -> CommitId {
 }
 
 // spec/crdt.md §4.6: the undo of a creation removes the membership at the group's holders and
-// resets the thing: one durable commit; the reverter drops its ephemeral state with no memory
-// commit (a holder keeps its copy, notes/ephemeral.md Deletion).
+// resets the thing: one durable commit, which purges its ephemeral state as a delete's does
+// (spec/sync.md §9 Delete), at the reverter and the holders alike.
 #[test]
 fn undo_of_creation_reaches_holders_spec_crdt_4_6() {
     let (mut net, a, b, g, tb, w, id) = undo_world();
@@ -5755,10 +5793,10 @@ fn undo_of_creation_reaches_holders_spec_crdt_4_6() {
     let undo = written(net.engine(b).revert_commit(id, tb).unwrap());
     assert!(matches!(undo, c if !net.engine(b).holds_memory(&c)));
     assert!(memory_ids(&mut net, b).is_subset(&held), "no memory commit written");
-    assert_eq!(net.eph_read(b, w, STATE), None, "dropped at the reverter");
+    assert_eq!(net.eph_read(b, w, STATE), None, "gone at the reverter");
     local(&mut net, b);
     net.run();
-    assert_eq!(net.eph_read(b, w, STATE), None);
+    assert_eq!((net.eph_read(a, w, STATE), net.eph_read(b, w, STATE)), (None, None));
     assert!(!net.engine(a).groups_of(&w).contains(&g));
 }
 

@@ -69,7 +69,7 @@ fn index_enums_read_by_position() {
     index(&[HolderKind::Actor, HolderKind::Link, HolderKind::Key]);
     index(&[CommitKind::Content, CommitKind::Revert, CommitKind::Role, CommitKind::Snapshot]);
     index(&[SyncState::Synced, SyncState::Syncing, SyncState::NotConnected, SyncState::Refused, SyncState::Stranded]);
-    index(&[DerivedFrom::ValidityChanged, DerivedFrom::Expired, DerivedFrom::Purged, DerivedFrom::Arrived, DerivedFrom::LostAccess, DerivedFrom::Deleted, DerivedFrom::Recovered]);
+    index(&[DerivedFrom::ValidityChanged, DerivedFrom::Expired, DerivedFrom::Purged, DerivedFrom::Arrived, DerivedFrom::LostAccess, DerivedFrom::Recovered]);
     use DiagnosticKind::*;
     index(&[
         BadInput, CollidingRecord, Parked, Pending, OverlappingCounters, Removed, Callback, NotSynced, Stranded, Uncommitted, EphemeralRefused, Mismatch, Storage, Repair, OwnWriteInvalid,
@@ -92,7 +92,7 @@ fn tagged_enums_read_as_case_and_payload() {
     assert_eq!(same::<Origin>(l(vec![u(0)])), Origin::Initial);
     assert!(matches!(same::<Origin>(l(vec![u(1), stamp()])), Origin::Local(_)));
     assert!(matches!(same::<Origin>(l(vec![u(2), stamp()])), Origin::Remote(_)));
-    assert_eq!(same::<Origin>(l(vec![u(3), u(5)])), Origin::Derived(DerivedFrom::Deleted));
+    assert_eq!(same::<Origin>(l(vec![u(3), u(4)])), Origin::Derived(DerivedFrom::LostAccess));
     refused::<Origin>(l(vec![u(0), u(0)]));
     refused::<Origin>(l(vec![u(4)]));
 

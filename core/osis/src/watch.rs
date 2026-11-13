@@ -51,9 +51,6 @@ pub enum DerivedFrom {
     Arrived,
     /// This node lost read access.
     LostAccess,
-    /// The thing was deleted here (or its creation undone), dropping its ephemeral values on
-    /// this node.
-    Deleted,
     /// After a failed write the store was read again and a commit reported failed had landed
     /// after all.
     Recovered,
@@ -68,7 +65,6 @@ impl From<Cause> for DerivedFrom {
             Cause::Purge => DerivedFrom::Purged,
             Cause::LateDelta | Cause::Fetched => DerivedFrom::Arrived,
             Cause::LostAccess => DerivedFrom::LostAccess,
-            Cause::Deleted => DerivedFrom::Deleted,
         }
     }
 }

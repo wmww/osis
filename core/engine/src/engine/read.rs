@@ -251,11 +251,23 @@ impl Engine {
 /// delete leaves the same reads at every node, whichever bodies it held; an aspect that cannot
 /// hold content needs no reset (it would change no read).
 pub(crate) fn deleted_aspects(tx: &mut super::Tx<'_>, t: &Tid) -> Result<Vec<Ak>> {
+    may_hold(tx, t, false)
+}
+
+/// The ephemeral aspects a delete of `t` purges (spec/sync.md §9 Delete): of its `+` value
+/// aspects some held commit header names, each that may hold content, as `deleted_aspects`
+/// judges the durable ones.
+pub(crate) fn purged_aspects(tx: &mut super::Tx<'_>, t: &Tid) -> Result<Vec<Ak>> {
+    may_hold(tx, t, true)
+}
+
+/// `deleted_aspects` (`ephemeral` false) or `purged_aspects` (true).
+fn may_hold(tx: &mut super::Tx<'_>, t: &Tid, ephemeral: bool) -> Result<Vec<Ak>> {
     // each named aspect with the newest `ts` of its valid parts not received yet
     let named: Vec<(Ak, Option<osis_base::Ts>)> = tx
         .core
         .aspects_of(t)
-        .filter(|((_, ak), _)| ct::deletable(ak.as_str()) && !ak.ephemeral() && !ak.signal())
+        .filter(|((_, ak), _)| ct::deletable(ak.as_str()) && ak.ephemeral() == ephemeral && !ak.signal())
         .map(|((_, ak), cs)| (ak.clone(), cs.iter().rev().find(|(_, c)| tx.core.ix.commits.get(c).is_some_and(|m| m.aspect(t, ak).is_some_and(|ai| m.valid_at(ai) && m.missing(ai)))).map(|(ts, _)| *ts)))
         .collect();
     let mut out = Vec::new();

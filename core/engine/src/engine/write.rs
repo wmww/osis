@@ -156,8 +156,8 @@ impl Mutation {
         Ok(e)
     }
 
-    /// Marks `tid` deleted by this batch (`delete`): `Engine::write` drops its ephemeral state
-    /// here with the durable commit, writing none.
+    /// Marks `tid` deleted by this batch (`delete`): the durable commit purges its ephemeral
+    /// state (`delete_purges`).
     pub fn deleting(&mut self, tid: Tid) -> &mut Self {
         self.deleting.insert(tid);
         self
@@ -740,6 +740,33 @@ impl Engine {
     }
 }
 
+/// Whether each of `writers` may delete each of `things` at `ts` (spec/crdt.md §4.6): write on
+/// the thing, judged before anything is written (a thing in `creates` by its record there). A
+/// delete needs it whether or not a commit carries it (`Engine::write`, an undone creation).
+pub(crate) fn check_delete(tx: &Tx<'_>, writers: &[Tid], creates: &Creates, things: &BTreeSet<Tid>, ts: Ts) -> Result<()> {
+    for w in writers {
+        for t in things {
+            check_authority(tx.core, *w, creates, t, CREATED.ak(), ts)?;
+        }
+    }
+    Ok(())
+}
+
+/// A delete's ephemeral side (spec/sync.md §9 Delete): its durable commit carries a purge request
+/// naming each of `t`'s ephemeral aspects that may hold content (`read::purged_aspects`), so every
+/// node applying it, this one first, holds `t`'s ephemeral writes stamped before it value-less,
+/// as a reset leaves its durable ones dead. The items; with no other part on `t` the commit places
+/// the request by a `purge.0` write (`purge_placer`).
+pub(crate) fn delete_purges(tx: &mut Tx<'_>, t: &Tid) -> Result<Vec<PurgeItem>> {
+    Ok(super::read::purged_aspects(tx, t)?.into_iter().map(|ak| PurgeItem::Aspect { tid: *t, ak }).collect())
+}
+
+/// The `purge.0` write placing a purge request on its thing (spec/commits.md §5 Purge).
+pub(crate) fn purge_placer(ts: Ts) -> PathOp {
+    use osis_schema::Codec;
+    PathOp { path: Vec::new(), op: Op::Replace(ts.wall_ms().to_value()) }
+}
+
 /// Commits `m` in `tx` as one commit (`one_commit`); none when it changes nothing.
 pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<CommitId>> {
     let node = match m.signer {
@@ -772,6 +799,13 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
         return Err(Error::Misuse(if memory { "a memory commit writes ephemeral aspects only" } else { "a durable commit writes durable aspects only" }));
     }
     let ts = m.ts.unwrap_or_else(|| tx.core.hlc.next());
+    for t in m.deleting.clone() {
+        let items = delete_purges(tx, &t)?;
+        if !items.is_empty() && !m.aspects.keys().any(|(x, _)| *x == t) {
+            m.op(t, &osis_schema::core_types::PURGE, purge_placer(ts))?;
+        }
+        m.purge.extend(items);
+    }
     for (&t, rec) in &m.creates {
         let e = m.aspects.entry((t, Ak::new(CREATED.ak()).map_err(|_| Error::Misuse("ak"))?)).or_default();
         e.schema = Some(core_schema.clone());
