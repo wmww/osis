@@ -1,17 +1,16 @@
 //! `osis-app DIR [--peer ADDR]... [--demo] [--theme ID] [--auto|--light|--dark]`: opens the store
-//! in DIR (creating it, with its home group syncing with those peers, when DIR holds none) and shows the app.
+//! in DIR (creating it, with its home group syncing with those peers, when DIR holds none) and shows the app;
+//! a store that cannot open shows why, in the window and on stderr.
 //! `--demo` adds demo data once; the look flags set the account's theme and mode (as the app's
 //! own picker does).
 #![forbid(unsafe_code)]
 
 use osis_app::store as app_store;
-use osis_kit::render::{Ui, tree};
-use osis_kit::store as data;
+use osis_kit::render::{Start, tree};
 use osis_kit::schema::Mode;
 use osis_kit::theme::Theme;
 use osis_kit::window::App;
 use std::process::ExitCode;
-use std::sync::Arc;
 
 const USAGE: &str = "usage: osis-app DIR [--peer ADDR]... [--demo] [--theme ID] [--auto|--light|--dark]";
 
@@ -44,25 +43,31 @@ fn run() -> Result<(), String> {
         }
     }
     let dir = dir.ok_or(USAGE)?;
-    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    if let Some(t) = &theme
+        && !Theme::defaults().iter().any(|x| x.id == t)
+    {
+        return Err(format!("no theme {t}: {}", Theme::defaults().iter().map(|x| x.id).collect::<Vec<_>>().join(", ")));
+    }
     let app = App::new().map_err(|e| e.to_string())?;
-    let waker = app.waker();
-    let db = data::open(&dir, peers, Arc::new(move || waker.wake())).map_err(|e| format!("{}: {e}", dir.display()))?;
-    let data = app_store::data(db);
-    data.main_group().map_err(|e| e.to_string())?;
-    if let Some(t) = theme {
-        if !Theme::defaults().iter().any(|x| x.id == t) {
-            return Err(format!("no theme {t}: {}", Theme::defaults().iter().map(|x| x.id).collect::<Vec<_>>().join(", ")));
+    // the look flags and demo data go into whichever store opens: this one, or a fresh one
+    let data = move |db| {
+        let data = app_store::data(db);
+        if let Some(t) = &theme {
+            data.set_theme(t).map_err(|e| e.to_string())?;
         }
-        data.set_theme(&t).map_err(|e| e.to_string())?;
+        if let Some(m) = &mode {
+            data.set_mode(m.clone()).map_err(|e| e.to_string())?;
+        }
+        if demo {
+            osis_app::demo::add(&data).map_err(|e| format!("demo data: {e}"))?;
+        }
+        Ok(data)
+    };
+    let ui = Start { dir, peers, waker: app.waker(), data: Box::new(data) }.open();
+    // from a terminal the error shows there too; the window offers to start fresh
+    if let Some(e) = ui.error() {
+        eprintln!("osis-app: {e}");
     }
-    if let Some(m) = mode {
-        data.set_mode(m).map_err(|e| e.to_string())?;
-    }
-    if demo {
-        osis_app::demo::add(&data).map_err(|e| format!("demo data: {e}"))?;
-    }
-    let ui = Ui::new(data, app.waker()).map_err(|e| e.to_string())?;
     let root = tree(ui.look());
     app.run("osis", (1100.0, 720.0), root, ui).map_err(|e| e.to_string())
 }

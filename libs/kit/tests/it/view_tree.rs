@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 
 /// One group, made on first use.
 #[derive(Default)]
-struct Small(Mutex<Option<Tid>>);
+pub(crate) struct Small(Mutex<Option<Tid>>);
 
 impl Account for Small {
     fn groups(&self, _: &osis::ReadOnly) -> Result<Vec<Tid>> {

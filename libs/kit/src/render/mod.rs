@@ -5,6 +5,9 @@
 //! its model changes, so editors keep their caret.
 
 mod blocks;
+mod start;
+
+pub use start::{Start, Started};
 
 use crate::edit::{map_byte, shown_edits};
 use crate::facets::members::ToggleCreating;
@@ -828,6 +831,13 @@ impl Ui {
     }
 }
 
+/// Gives Root `insets` (physical px) in logical px at `scale`.
+fn set_root_insets(rr: &mut RenderRoot, scale: f64, insets: [f64; 4]) {
+    let (s, i) = (scale.max(0.1), insets);
+    let i = crate::masonry::kurbo::Insets::new(i[0] / s, i[1] / s, i[2] / s, i[3] / s);
+    rr.edit_widget_with_tag(ROOT, |mut r| Root::set_insets(&mut r, i));
+}
+
 /// Keeps the first failure of several things all tried.
 fn keep_err(failed: &mut Option<osis::Error>, r: osis::Result<()>) {
     if let Err(e) = r {
@@ -853,12 +863,17 @@ fn short(t: Tid) -> String {
 }
 
 /// What a platform shell calls: it owns the window and its `RenderRoot`, and calls these on the UI
-/// thread (desktop: `window::App`; Android: osis-android).
+/// thread (desktop: `window::App`; Android: osis-android), through `Started` (start.rs).
 impl Ui {
     /// The window exists: register the fonts, run what is due, update once. `platform` is the
     /// shell's, `scale` physical pixels per logical pixel, `dark` the system's dark mode.
     pub fn start(&mut self, rr: &mut RenderRoot, platform: Box<dyn Platform>, scale: f64, dark: bool) {
         crate::fonts::register(rr);
+        self.attach(platform, scale, dark);
+    }
+
+    /// `start` for a window whose fonts are registered.
+    fn attach(&mut self, platform: Box<dyn Platform>, scale: f64, dark: bool) {
         self.attached = Some(Attached { input: Pointers::new(platform.thresholds()), platform });
         self.scale = scale;
         self.system_dark = dark;
@@ -914,9 +929,7 @@ impl Ui {
 
     /// Gives Root the insets in logical px at the current scale.
     fn root_insets(&mut self, rr: &mut RenderRoot) {
-        let (s, i) = (self.scale.max(0.1), self.insets);
-        let i = crate::masonry::kurbo::Insets::new(i[0] / s, i[1] / s, i[2] / s, i[3] / s);
-        rr.edit_widget_with_tag(ROOT, |mut r| Root::set_insets(&mut r, i));
+        set_root_insets(rr, self.scale, self.insets);
     }
 
     /// A pointer event, on its way to `rr` through the gestures (`input`).

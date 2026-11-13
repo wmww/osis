@@ -1,4 +1,5 @@
-//! The UI behind the view, on the UI thread: Masonry's `RenderRoot` with kit's `Ui`, drawn by
+//! The UI behind the view, on the UI thread: Masonry's `RenderRoot` with kit's `Started` (the
+//! UI, or why its store could not open), drawn by
 //! `Gpu`, fed the view's events, with the keyboard's input connection over the focused text.
 //!
 //! Every view callback runs to its end here and leaves `Effect`s for the view, made after the
@@ -14,7 +15,7 @@ use osis_kit::masonry::core::keyboard::{Key, KeyState, KeyboardEvent, Modifiers,
 use osis_kit::masonry::core::{Handled, Ime, ImeText, TextEdit, TextEvent, WindowEvent};
 use osis_kit::masonry::dpi::PhysicalSize;
 use osis_kit::platform::{Platform, SelectionMenu, Thresholds};
-use osis_kit::render::{Ui, tree};
+use osis_kit::render::{Started, tree};
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -63,7 +64,7 @@ impl Platform for Android {
 pub struct Shell {
     root: RenderRoot,
     signals: Receiver<RenderRootSignal>,
-    ui: Ui,
+    ui: Started,
     gpu: Gpu,
     scale: f64,
     sync: Sync,
@@ -78,7 +79,7 @@ pub struct Shell {
 }
 
 impl Shell {
-    pub fn new(ui: Ui, scale: f64, dark: bool, thresholds: Thresholds) -> Shell {
+    pub fn new(ui: Started, scale: f64, dark: bool, thresholds: Thresholds) -> Shell {
         let (tx, signals) = channel();
         let opts = RenderRootOptions {
             default_properties: Arc::new(osis_kit::masonry::theme::default_property_set()),
@@ -95,6 +96,11 @@ impl Shell {
         sh.ui.start(&mut sh.root, platform, scale, dark);
         sh.pump();
         sh
+    }
+
+    /// Drops the UI and closes its store (`Started::close`).
+    pub fn close(self) -> osis::Result<osis::Close> {
+        self.ui.close()
     }
 
     // --- the view

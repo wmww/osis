@@ -8,7 +8,7 @@
 use super::Waker;
 use crate::masonry::core::PointerEvent;
 use crate::platform::{Platform, SelectionMenu, Thresholds};
-use crate::render::Ui;
+use crate::render::Started;
 use std::time::Duration;
 use masonry::app::RenderRoot;
 use masonry::core::{ErasedAction, NewWidget, Widget, WidgetId};
@@ -42,7 +42,7 @@ impl App {
     }
 
     /// Opens the window with `root` and runs `ui` until it closes.
-    pub fn run(self, title: &str, size: (f64, f64), root: NewWidget<dyn Widget>, ui: Ui) -> Result<(), EventLoopError> {
+    pub fn run(self, title: &str, size: (f64, f64), root: NewWidget<dyn Widget>, ui: Started) -> Result<(), EventLoopError> {
         let attrs = Window::default_attributes().with_title(title).with_resizable(true).with_inner_size(LogicalSize::new(size.0, size.1));
         let w = NewWindow::new_with_id(self.window, attrs, root).with_base_color(ui.base_color());
         masonry_winit::app::run_with(self.event_loop, vec![w], Desktop { ui, window: self.window }, masonry::theme::default_property_set())
@@ -80,16 +80,16 @@ impl Platform for DesktopPlatform {
     }
 }
 
-/// `Ui` as masonry_winit's driver.
+/// `Started` (the UI, or why its store could not open) as masonry_winit's driver.
 struct Desktop {
-    ui: Ui,
+    ui: Started,
     window: WindowId,
 }
 
 impl Desktop {
     /// Runs `f` on the window's root with its scale and the system's dark mode, then keeps the
     /// window's clear colour the look's.
-    fn with(&mut self, w: &mut masonry_winit::app::Window, f: impl FnOnce(&mut Ui, &mut RenderRoot, f64, bool)) {
+    fn with(&mut self, w: &mut masonry_winit::app::Window, f: impl FnOnce(&mut Started, &mut RenderRoot, f64, bool)) {
         let (scale, dark) = (w.handle().scale_factor(), w.handle().theme() == Some(Theme::Dark));
         f(&mut self.ui, w.render_root(), scale, dark);
         *w.base_color() = self.ui.base_color();

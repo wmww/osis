@@ -6,6 +6,7 @@ mod ime;
 mod input;
 mod layout;
 mod list;
+mod start;
 mod tags;
 mod theme;
 mod view_tree;

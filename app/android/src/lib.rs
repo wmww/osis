@@ -1,8 +1,9 @@
 //! The osis app on Android (experimental; notes/android.md): the same UI as desktop in a View of
 //! our own (java/: `OsisActivity`, `OsisView`, `OsisInputConnection`). Each of the view's natives
 //! is here; all run on the UI thread, where `shell::Shell` lives, but `nativeWake`'s post. The
-//! store lives in the app's private files dir, made without a peer (desktop's `--peer`): pasting
-//! an address into the search field adds one.
+//! store lives in the app's private files dir, opened by kit's `Start` (a store that cannot open
+//! shows why), made without a peer (desktop's `--peer`): pasting an address into the search field
+//! adds one.
 #![cfg(target_os = "android")]
 
 mod gpu;
@@ -21,12 +22,11 @@ use osis_app::store as app_store;
 use osis_kit::ime::android;
 use osis_kit::platform::Thresholds;
 use std::time::Duration;
-use osis_kit::render::Ui;
-use osis_kit::store as data;
+use osis_kit::render::Start;
 use osis_kit::window::Waker;
 use shell::{Effect, Shell};
 use std::cell::RefCell;
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 
 type R<T> = jni::errors::Result<T>;
 
@@ -153,30 +153,27 @@ fn native_create<'l>(env: &mut Env<'l>, this: JObject<'l>, dir: JString<'l>, den
     gestures.get_region(env, 0, &mut g)?;
     let (ms, px) = (|i: jint| Duration::from_millis(u64::try_from(i).unwrap_or(0)), |i: jint| f64::from(i) / f64::from(density).max(0.1));
     let thresholds = Thresholds { double_tap: ms(g[0]), double_tap_slop: px(g[1]), long_press: ms(g[2]), touch_slop: px(g[3]) };
-    match open(&dir) {
-        Ok(ui) => {
-            let sh = Shell::new(ui, f64::from(density), dark, thresholds);
-            SHELL.with(|c| *c.borrow_mut() = Some(sh));
-            with_shell(env, &this, |_| ());
-        }
-        Err(e) => log::error!("osis-app: {e}"),
+    let start = Start { dir, peers: Vec::new(), waker: Waker::new(wake_view), data: Box::new(|db| Ok(app_store::data(db))) };
+    let ui = start.open();
+    if let Some(e) = ui.error() {
+        log::error!("osis-app: {e}");
     }
+    let sh = Shell::new(ui, f64::from(density), dark, thresholds);
+    SHELL.with(|c| *c.borrow_mut() = Some(sh));
+    with_shell(env, &this, |_| ());
     Ok(())
 }
 
-fn open(dir: &std::path::Path) -> Result<Ui, String> {
-    std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    let waker = Waker::new(wake_view);
-    let w = waker.clone();
-    let db = data::open(dir, Vec::new(), Arc::new(move || w.wake())).map_err(|e| format!("{}: {e}", dir.display()))?;
-    let data = app_store::data(db);
-    data.main_group().map_err(|e| e.to_string())?;
-    Ui::new(data, waker).map_err(|e| e.to_string())
-}
-
 fn native_destroy<'l>(_env: &mut Env<'l>, _this: JObject<'l>) -> R<()> {
-    // drop the UI (and close the store) before forgetting the view its waker calls
-    drop(SHELL.with(|c| c.borrow_mut().take()));
+    // close the store (so a new view can open it at once) before forgetting the view its waker
+    // calls
+    if let Some(sh) = SHELL.with(|c| c.borrow_mut().take()) {
+        match sh.close() {
+            Ok(osis::Close::Closed) => {}
+            Ok(osis::Close::StillOpen { handles }) => log::warn!("store still open: {handles} handles"),
+            Err(e) => log::warn!("closing the store: {e}"),
+        }
+    }
     if let Ok(mut v) = VIEW.lock() {
         *v = None;
     }
