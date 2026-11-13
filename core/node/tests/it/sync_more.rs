@@ -683,15 +683,23 @@ fn logged_commits(net: &mut Net, s: usize, n: usize, l: &osis_base::LabelId) -> 
 
 // spec/permissions.md §3 (removal placed first): a content write, then a removal, both before the
 // next sync; that sync places the removal (which carries the group's new `keys.0`) under both of
-// the group's labels before the earlier content write.
+// the group's labels before the earlier content write, at each host whichever reader's copy it
+// takes first. Over several seeds, so the commits' blob IDs sort both ways: nothing on the way
+// orders by blob ID.
 #[test]
 fn removal_placed_first_under_every_label_spec_perm_3() {
+    for seeds in [[1, 2, 3], [4, 5, 6], [11, 12, 13], [21, 22, 23]] {
+        removal_placed_first(seeds);
+    }
+}
+
+fn removal_placed_first([sa, sb, sc]: [u64; 3]) {
     use osis_node::flows::{Delivery, Demotion};
     let mut net = Net::new();
     let (s0, s1) = (net.add_host(), net.add_host());
-    let a = net.node(1, &[s0, s1]);
-    let b = net.node(2, &[s0, s1]);
-    let c = net.node(3, &[s0, s1]);
+    let a = net.node(sa, &[s0, s1]);
+    let b = net.node(sb, &[s0, s1]);
+    let c = net.node(sc, &[s0, s1]);
     let g = net.group(a, &[(b, Role::Write), (c, Role::Read)], &[s0]);
     let addr = net.address(s1);
     let (l1, done) = net.engine(a).create_label(&g, &[addr]).unwrap();
@@ -717,7 +725,7 @@ fn removal_placed_first_under_every_label_spec_perm_3() {
     for (s, l) in [(s0, labels.iter().find(|l| **l != l1).copied().unwrap()), (s1, l1)] {
         let order = logged_commits(&mut net, s, a, &l);
         let (r, w) = (order.iter().position(|x| *x == removal), order.iter().position(|x| *x == after));
-        assert!(r.is_some() && w.is_some() && r < w, "host {s}: removal at {r:?}, later content at {w:?}");
+        assert!(r.is_some() && w.is_some() && r < w, "seeds {sa} {sb} {sc}, host {s}: removal at {r:?}, later content at {w:?}");
     }
     assert_eq!(net.read(b, t), Some(s("after")));
 }

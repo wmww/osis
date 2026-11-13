@@ -206,8 +206,6 @@ impl SyncEngine {
         let mut fresh_memory: Vec<(BlobId, usize)> = Vec::new();
         let mut touched = Vec::new();
         let mut fetch: Vec<BlobId> = Vec::new();
-        // the wraps of a reader's announcements that make no row (their bytes not held)
-        let mut unlisted: BTreeMap<BlobId, [u8; osis_crypto::WRAP_LEN]> = BTreeMap::new();
         let mut announced = false;
         // an entry held here newly shown at the source: its part of a pass acts on it
         let mut shown = false;
@@ -360,7 +358,6 @@ impl SyncEngine {
                         None if reader.is_some() && blob.is_none() && !self.engine.has_blob(&blob_id) => {
                             if !self.memory_skips(&l, &blob_id) {
                                 fetch.push(blob_id);
-                                unlisted.insert(blob_id, wrap);
                             }
                             continue;
                         }
@@ -526,11 +523,10 @@ impl SyncEngine {
             }
         } else if let Some(c) = reader {
             // every body announced without its bytes, as if it came inline (an inline limit
-            // changes where bytes come from, not which): one that does not open yet is held for
-            // a secret that may come later, which no reader announces again
-            let secrets = self.group_of(&l, None).map(|g| self.read_secrets(&g)).unwrap_or_default();
-            let (mut want, rest): (Vec<BlobId>, Vec<BlobId>) = fetch.into_iter().partition(|b| self.state.entries.get(&(l, *b)).map(|e| &e.wrap).or(unlisted.get(b)).is_some_and(|w| osis_label::unwrap_any(secrets.iter(), b, w).is_some()));
-            want.extend(rest);
+            // changes where bytes come from, not which), in the order announced (spec/permissions.md
+            // §3): one that does not open yet is held for a secret that may come later, which no
+            // reader announces again
+            let mut want = fetch;
             want.extend(self.waiting_blobs()?);
             self.stream_fetch(c, l, want, None, out)?;
             // bytes that came over this connection are not sent back on it inline

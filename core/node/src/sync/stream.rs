@@ -1305,7 +1305,7 @@ impl SyncEngine {
         let mut report = None;
         while let Some(owed) = self.streams.get(&conn).and_then(|s| s.pulling.unsettled.front()).map(|u| u.owed.clone()) {
             self.unread_take_held(conn, &owed, out)?;
-            let left: BTreeSet<(LabelId, BlobId)> = owed.into_iter().filter(|(l, b)| self.wants(l, b)).collect();
+            let left: BTreeSet<(LabelId, BlobId)> = owed.into_iter().filter(|(l, b)| self.wants(l, b) || self.unread_waits(l, b)).collect();
             let Some(p) = self.streams.get_mut(&conn).map(|s| &mut s.pulling) else { break };
             let Some(front) = p.unsettled.front_mut() else { break };
             if !left.is_empty() {
@@ -1378,7 +1378,8 @@ impl SyncEngine {
                     ask.entry(l).or_default().push(b);
                 }
             }
-            for (l, ids) in ask {
+            for (l, mut ids) in ask {
+                self.unread_order(&l, &mut ids);
                 self.stream_fetch(conn, l, ids, None, out)?;
             }
         }

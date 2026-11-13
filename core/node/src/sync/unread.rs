@@ -36,12 +36,24 @@ pub(crate) struct Unread {
     streamed: BTreeSet<LabelId>,
     /// A head moved since the last step: its opens are judged before the step's event.
     pub(super) moved: bool,
-    /// Stamped entries announced without bytes while the store lacked the blob, with their wrap
-    /// and stamp: taken once the blob is held, whichever sync ID's fetch brought it
-    /// (`unread_take_held`); kept while some stream owes them.
-    pending: BTreeMap<(LabelId, BlobId), ([u8; WRAP_LEN], Signature)>,
+    /// Stamped entries announced without bytes while the store lacked the blob, with their wrap,
+    /// stamp and announcement number: taken once the blob is held, whichever sync ID's fetch
+    /// brought it, in the order they were announced (`unread_take_held`); kept while some stream
+    /// owes them.
+    pending: BTreeMap<(LabelId, BlobId), Pending>,
+    /// The next announcement number of `pending`.
+    announced: u64,
     /// Sync IDs full here: an entry pulled for them was refused for room (`Full`).
     full: BTreeMap<LabelId, Full>,
+}
+
+/// An entry announced without bytes and not taken yet (`Unread::pending`): its wrap, stamp and
+/// announcement number.
+#[derive(Clone)]
+struct Pending {
+    wrap: [u8; WRAP_LEN],
+    stamp: Signature,
+    n: u64,
 }
 
 /// A sync ID full here (spec/sync.md §10, Full): what its refusals found used, the entries
@@ -181,8 +193,9 @@ impl SyncEngine {
     /// sharing `l`. A deposited entry (no stamp) is not taken: it carries no deposit signature,
     /// so deposits reach this node only as Deposit items. Deletions and heads do nothing (a
     /// delete comes by a delete-key holder's Delete, a head by Register). One refused for this
-    /// store's tombstone is told to the reader as a Deleted event. Returns the stamped
-    /// entries announced without bytes that the store lacks: owed until fetched.
+    /// store's tombstone is told to the reader as a Deleted event. Returns the stamped entries
+    /// announced without bytes that the store lacks: owed until fetched, then taken in the order
+    /// announced (`unread_take_held`).
     pub(crate) fn unread_events(&mut self, conn: ConnId, l: LabelId, events: Vec<osis_proto::Event>, out: &mut Vec<Action>) -> Result<BTreeSet<BlobId>> {
         let now = self.now();
         let mut owed = BTreeSet::new();
@@ -238,7 +251,9 @@ impl SyncEngine {
             }
         }
         for (b, wrap, stamp) in pending {
-            self.unread.pending.insert((l, b), (wrap, stamp));
+            let n = self.unread.announced;
+            self.unread.announced += 1;
+            self.unread.pending.entry((l, b)).or_insert(Pending { wrap, stamp, n });
         }
         if !refused.is_empty() {
             self.unread_refused(conn, l, refused, out)?;
@@ -257,28 +272,52 @@ impl SyncEngine {
     }
 
     /// Owed entries of unread sync IDs whose blob the store holds now (fetched under another
-    /// sync ID: bytes cross once) are taken by its rules for a stamped entry, as `unread_events` takes one
-    /// with its bytes.
+    /// sync ID: bytes cross once) are taken by its rules for a stamped entry, as `unread_events`
+    /// takes one with its bytes: per sync ID in the order they were announced, up to the first
+    /// whose blob is still lacking, so this store logs them in the reader's order (a removal
+    /// before the content placed beside it, spec/permissions.md §3), never by which fetch came
+    /// first.
     pub(crate) fn unread_take_held(&mut self, conn: ConnId, owed: &BTreeSet<(LabelId, BlobId)>, out: &mut Vec<Action>) -> Result<()> {
-        let held: Vec<(LabelId, BlobId)> = {
-            let hub = self.hub();
-            let mut v = Vec::new();
-            for (l, b) in owed {
-                if self.unread.pending.contains_key(&(*l, *b)) && hub.blob(b).map_err(hub_err)?.is_some() {
-                    v.push((*l, *b));
+        let mut by_label: BTreeMap<LabelId, Vec<(u64, BlobId)>> = BTreeMap::new();
+        for (l, b) in owed {
+            if let Some(p) = self.unread.pending.get(&(*l, *b)) {
+                by_label.entry(*l).or_default().push((p.n, *b));
+            }
+        }
+        for (l, mut ids) in by_label {
+            ids.sort();
+            let mut held = Vec::new();
+            {
+                let hub = self.hub();
+                for (_, b) in ids {
+                    if hub.blob(&b).map_err(hub_err)?.is_none() {
+                        break;
+                    }
+                    held.push(b);
                 }
             }
-            v
-        };
-        let mut by_label: BTreeMap<LabelId, Vec<osis_proto::Event>> = BTreeMap::new();
-        for (l, b) in held {
-            let Some((wrap, stamp)) = self.unread.pending.remove(&(l, b)) else { continue };
-            by_label.entry(l).or_default().push(osis_proto::Event::Added { blob_id: b, blob: None, wrap, stamp: Some(stamp) });
-        }
-        for (l, evs) in by_label {
-            self.unread_events(conn, l, evs, out)?;
+            let mut evs = Vec::new();
+            for b in held {
+                let Some(p) = self.unread.pending.remove(&(l, b)) else { continue };
+                evs.push(osis_proto::Event::Added { blob_id: b, blob: None, wrap: p.wrap, stamp: Some(p.stamp) });
+            }
+            if !evs.is_empty() {
+                self.unread_events(conn, l, evs, out)?;
+            }
         }
         Ok(())
+    }
+
+    /// Whether entry `b` of unread `l` is held here and waits to be taken behind one announced
+    /// before it (`unread_take_held`): owed on its stream until then.
+    pub(crate) fn unread_waits(&self, l: &LabelId, b: &BlobId) -> bool {
+        self.unread.pending.contains_key(&(*l, *b)) && self.hub().blob(b).is_ok_and(|x| x.is_some())
+    }
+
+    /// `ids` of unread `l` in the order they were announced without bytes (`pending`), the rest
+    /// after them as they were: what this store fetches and takes keeps the reader's order.
+    pub(crate) fn unread_order(&self, l: &LabelId, ids: &mut [BlobId]) {
+        ids.sort_by_key(|b| self.unread.pending.get(&(*l, *b)).map_or(u64::MAX, |p| p.n));
     }
 
     /// Drops what `unread_take_held` keeps for entries no stream owes any more.

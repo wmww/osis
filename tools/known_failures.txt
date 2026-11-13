@@ -13,4 +13,3 @@ runtime::a_paired_peer_serves_what_it_reads_in_process_spec_data_model_9 - issue
 sim-sweep:team_reads_member_thing 72407225782/72407225794 issues/team-reads-local-snaps-storm.md message storm: .*kind Some\(Content\)
 sim-sweep:malformed_blobs 72407225782/72407225792 issues/malformed-blobs-host-refusal.md the host refused a malformed blob: Code\(2\)
 sim-sweep:three_accounts_two_hosts 971000000000/971000000009 issues/three-accounts-crash-quiescence.md not quiescent after \d+ rounds
-sync_more::removal_placed_first_under_every_label_spec_perm_3 - issues/removal-placed-by-blob-id.md host \d+: removal at Some\(\d+\), later content at Some\(\d+\)

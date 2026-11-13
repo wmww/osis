@@ -523,6 +523,11 @@ impl SyncEngine {
                     cands.extend(&ours);
                 }
                 let role: BTreeSet<BlobId> = sends.iter().filter(|o| o.prio <= 1).map(|o| o.id).collect();
+                // logged in the sends' order, role commits first (spec/permissions.md §3: a
+                // removal before anything else placed), never by blob ID
+                let rank: BTreeMap<BlobId, usize> = sends.iter().enumerate().map(|(i, o)| (o.id, i)).collect();
+                let mut cands: Vec<BlobId> = cands.into_iter().collect();
+                cands.sort_by_key(|id| (!role.contains(id), rank.get(id).copied().unwrap_or(usize::MAX)));
                 for id in cands {
                     let Some(e) = self.state.entries.get(&(l, id)).cloned() else { continue };
                     if e.stamp.is_none() && (e.cert || ours.contains(&id)) {

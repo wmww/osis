@@ -1,4 +1,4 @@
-//! Deleting by link (issues/chunk-list-in-tree.md, step 0): the freed judgment over random small
+//! Deleting by link (notes/chunk-links.md): the freed judgment over random small
 //! worlds (reuse across authors and epochs, two labels, forged cross-thing links, false Del,
 //! nodes lacking node blobs), drops interleaved with judging, and scripted cases.
 use held_model::freed::*;

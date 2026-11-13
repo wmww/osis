@@ -1,4 +1,4 @@
-//! Deleting a large value's pieces by link (issues/chunk-list-in-tree.md): a link carries its
+//! Deleting a large value's pieces by link (notes/chunk-links.md): a link carries its
 //! blob's salt and delete keys (Del, the writer's claim); a node dropping a body records the
 //! body's links in a durable per-thing **freed set** and, link by link, judges each against the
 //! sources of its thing it still holds (bodies and live states): a piece one of them reaches stays;
