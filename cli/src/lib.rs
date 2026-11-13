@@ -325,20 +325,6 @@ fn save_registered(dir: &Path, paths: &[PathBuf]) -> anyhow::Result<()> {
     std::fs::write(dir.join(SCHEMAS_FILE), s).map_err(|e| anyhow!("{}: {e}", dir.join(SCHEMAS_FILE).display()))
 }
 
-/// Reads an argument: a literal, `@FILE`, or `-` (stdin): a secret (a link, a pairing offer)
-/// need not appear in the process list or shell history.
-pub(crate) fn arg_text(stdin: &mut dyn BufRead, s: &str) -> anyhow::Result<String> {
-    if s == "-" {
-        let mut b = String::new();
-        stdin.read_to_string(&mut b)?;
-        Ok(b.trim_end_matches('\n').to_string())
-    } else if let Some(f) = s.strip_prefix('@') {
-        Ok(std::fs::read_to_string(f).map_err(|e| usage(format!("{f}: {e}")))?.trim_end_matches('\n').to_string())
-    } else {
-        Ok(s.to_string())
-    }
-}
-
 /// One invocation's state: the open store, flags, output, script variables.
 pub(crate) struct Ctx<'a> {
     pub g: Global,
@@ -426,9 +412,18 @@ impl Ctx<'_> {
         }
     }
 
-    /// Reads an argument: a literal, `@FILE`, or `-` (stdin).
+    /// Reads an argument: a literal, `@FILE`, or `-` (stdin): a secret (a link, a pairing offer)
+    /// need not appear in the process list or shell history.
     pub fn arg_text(&mut self, s: &str) -> anyhow::Result<String> {
-        arg_text(&mut *self.stdin, s)
+        if s == "-" {
+            let mut b = String::new();
+            self.stdin.read_to_string(&mut b)?;
+            Ok(b.trim_end_matches('\n').to_string())
+        } else if let Some(f) = s.strip_prefix('@') {
+            Ok(std::fs::read_to_string(f).map_err(|e| usage(format!("{f}: {e}")))?.trim_end_matches('\n').to_string())
+        } else {
+            Ok(s.to_string())
+        }
     }
 
     /// Parses a value argument at a type.
