@@ -209,7 +209,7 @@ pub struct Entry {
     pub source: Option<Tid>,
     /// An ephemeral blob (its prefix class, spec/sync.md §9): the entry and everything recorded
     /// about it (presence, blob record, tombstone) live in memory only, never in the sync
-    /// records, and go with a restart.
+    /// records, and go when the node restarts (kept through a restart in place, `State::reload`).
     pub memory: bool,
 }
 
