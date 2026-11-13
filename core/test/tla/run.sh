@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Run one TLA+ module's TLC instances. Usage: run.sh <module> [cfg...]
-#   <module>: sync, sides, rotation, merge, depth0, lockout, finalize, cover, tail, authority, account, netstream, netshared, netblind
+#   <module>: sync, sides, rotation, merge, depth0, lockout, cut, finalize, cover, tail, authority, account, netstream, netshared, netblind
 #   no cfg: the module's instances listed below (each module under 3 min at
 #   one worker); with cfg names: those instances instead (the larger ones
 #   in the module's README, by hand), judged only if listed below.
@@ -55,6 +55,13 @@ instances=(
   "depth0 rotation Depth0MC D0_destroyed_cycle_old.cfg fail" # negative control: a frozen holder always keyed closes the key cycle
   "lockout rotation Lockout L_rogue.cfg pass"    # notes/crypto.md (Lockouts)
   "lockout rotation Lockout L_none.cfg fail"     # negative control: no re-key
+  "cut rotation Cut X_names.cfg pass"            # history cuts (issues/history-less-grant.md)
+  "cut rotation Cut X_race.cfg pass"
+  "cut rotation Cut X_cut_old.cfg fail"          # negative control: no floor
+  "cut rotation Cut X_cut_oldadd.cfg fail"       # negative control: the History add without the carry rule
+  "cut rotation Cut X_cut_nocarry.cfg fail"      # negative control: carry rule off
+  "cut rotation Cut X_cut_nofloor.cfg fail"      # negative control: boxing rule off
+  "cut rotation Cut X_names_noreplace.cfg fail"  # negative control: no re-placing of role commits
   "finalize rotation Finalize F_named_bogus.cfg pass" # notes/permissions.md (Keys)
   "finalize rotation Finalize F_old_seed3.cfg fail"   # negative control: a name met by its commit alone
   "cover rotation Cover C_drop.cfg pass"         # notes/crypto.md (The pin)
@@ -137,7 +144,7 @@ for line in "${instances[@]}"; do
   [ "$m" = "$module" ] && dir=$d tla=$t
 done
 if [ -z "$dir" ]; then
-  echo "usage: $0 sync|sides|rotation|merge|depth0|lockout|finalize|cover|tail|authority|account|netstream|netshared|netblind [cfg...]" >&2
+  echo "usage: $0 sync|sides|rotation|merge|depth0|lockout|cut|finalize|cover|tail|authority|account|netstream|netshared|netblind [cfg...]" >&2
   exit 2
 fi
 
