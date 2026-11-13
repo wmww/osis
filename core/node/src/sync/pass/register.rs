@@ -1,4 +1,4 @@
-//! A new step of a label (spec/sync.md §5): when one is due, and registering it at a host.
+//! A new step of a label (spec/sync.md §5): when one is due, and registering it at a source.
 
 use super::*;
 
@@ -34,13 +34,13 @@ impl SyncEngine {
         keys.deposit.is_none() && self.engine.deposit_seed(g).is_ok_and(|s| s.is_some()) && self.keys_caught_up(g, l)
     }
 
-    /// No entry under `l` this node can open, present at a host it is connected to that has
+    /// No entry under `l` this node can open, present at a source it is connected to that has
     /// not said it lacks it, is unopened (in flight, or not fetched), and no pending commit by an
-    /// admin writes the actor's `keys.0` (`Engine::keys_write_pending`). Entries only a host out
+    /// admin writes the actor's `keys.0` (`Engine::keys_write_pending`). Entries only a source out
     /// of reach lists do not count: one that never comes back would hold the step back for good.
     pub(super) fn keys_caught_up(&mut self, g: &Tid, l: &LabelId) -> bool {
         let secrets = self.read_secrets(g);
-        let fetchable: BTreeSet<BlobId> = self.conns.values().filter(|c| c.up()).filter_map(|c| c.key().map(|k| (c, k))).flat_map(|(c, k)| self.state.present_at(&k, l).into_iter().filter(|b| !c.req.missing.contains(b))).collect();
+        let fetchable: BTreeSet<BlobId> = self.conns.values().filter(|c| c.up()).filter_map(|c| c.peer.map(|k| (c, k))).flat_map(|(c, k)| self.state.present_at(&k, l).into_iter().filter(|b| !c.req.missing.contains(b))).collect();
         let unopened = fetchable.into_iter().any(|b| self.state.entries.get(&(*l, b)).is_some_and(|e| e.unopened(&b, &secrets)));
         if unopened {
             return false;

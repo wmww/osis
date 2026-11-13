@@ -143,7 +143,7 @@ impl SyncEngine {
         if let Some(x) = self.stream_wake().into_iter().chain(self.shared_wake()).min() {
             at(x);
         }
-        for (_, x) in self.retry.values() {
+        for (_, x, _) in self.retry.values() {
             at(*x);
         }
         if let Some(x) = self.settle_at.keys().next() {

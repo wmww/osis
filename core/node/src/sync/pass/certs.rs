@@ -21,8 +21,8 @@ impl SyncEngine {
     /// aspects no entry under the label holds yet, as this node's one copy of those parts
     /// (`place`, `State::own_copy`). Another
     /// node's entry counts only when this node checked it genuine (`genuine`), it is present at
-    /// every host this node syncs the label with (the decision is the label's, not one
-    /// host's), and a newcomer can open it: one granted after a rotation gets the history
+    /// every source this node syncs the label with (the decision is the label's, not one
+    /// source's), and a newcomer can open it: one granted after a rotation gets the history
     /// boxes with its grant (spec/crypto.md §4) and opens entries under older epochs like the
     /// label's older content, except a rotation commit of the label's actor, which is wrapped
     /// under the epoch it supersedes (spec/crypto.md §5): such an entry counts only when it
@@ -77,7 +77,7 @@ impl SyncEngine {
             // them once the label's actor reads the thing no more
             let inside = if own_removals.contains(&c) { Default::default() } else { self.engine.header(&c).map(|h| inside(&h, &closure)).unwrap_or_default() };
             let missing: BTreeSet<usize> = want.difference(&have).filter(|ai| !inside.contains(ai)).copied().collect();
-            // this node's own copy placed before and gone since (deleted at the host): not
+            // this node's own copy placed before and gone since (deleted at the source): not
             // placed again, but for its own card while it reads the label's actor (admins delete
             // a departed node's card; a re-grant wants it back, spec/permissions.md §4)
             if missing.is_empty() || mine.is_empty() && self.state.certs.contains(&(l, c)) && !self.own_card_read(g, &c, &missing) {
@@ -95,7 +95,7 @@ impl SyncEngine {
             self.place_copy(g, l, &c, &missing, body)?;
         }
         // headers alone (the witnesses of things whose records go, and destroyed ones' requests)
-        let hosts = self.counted_at(g, l);
+        let sources = self.counted_at(g, l);
         let mut needed: Option<BTreeSet<Tid>> = None;
         for c in wanted.headers {
             // none where the label carries the header already: a durable commit copied with
@@ -105,7 +105,7 @@ impl SyncEngine {
             let durable = h.expires.is_none();
             let core = &self.engine.core;
             let in_bodies = h.aspects.iter().filter(|a| a.ak.as_str() == osis_commit::retention::CREATED).all(|a| closure.contains(&a.tid) && !core.destroyed(&a.tid)) && h.requests().is_empty();
-            if copied.contains(&c) && durable || in_bodies || self.header_held_at(l, &c, hosts.as_deref()) {
+            if copied.contains(&c) && durable || in_bodies || self.header_held_at(l, &c, sources.as_deref()) {
                 continue;
             }
             // nor this node's own copy placed before and gone since (views differing while a
@@ -128,7 +128,7 @@ impl SyncEngine {
             // nor a witness where the label holds a minting standing as it does: a tie places
             // nothing new (spec/commits.md §5, A thing's mintings travel with its record)
             let minted: Vec<Tid> = h.aspects.iter().filter(|a| a.ak.as_str() == osis_commit::retention::CREATED).map(|a| a.tid).collect();
-            if !minted.is_empty() && minted.iter().all(|t| self.witness_held_at(l, t, hosts.as_deref(), Some(&c))) {
+            if !minted.is_empty() && minted.iter().all(|t| self.witness_held_at(l, t, sources.as_deref(), Some(&c))) {
                 continue;
             }
             let Some(body) = self.engine.header_body(&c) else { continue };
@@ -211,29 +211,29 @@ impl SyncEngine {
     }
 
     /// The records entries under `l` hold: this node's own record blobs, another node's present at
-    /// each of `hosts` (`None`: every one), as `held_parts_at` counts copies; for a promotion
+    /// each of `sources` (`None`: every one), as `held_parts_at` counts copies; for a promotion
     /// (`stamped`), another node's only stamped. A record blob proves itself, but a deposited one
     /// is a reader's word on what to store (any made-up records may pad one real one): a promoter
     /// never counts it, so never stamps it, and places its own; it waits for clearing.
-    pub(super) fn held_records_at(&self, l: LabelId, hosts: Option<&[HostKey]>, stamped: bool) -> BTreeSet<Tid> {
+    pub(super) fn held_records_at(&self, l: LabelId, sources: Option<&[PeerKey]>, stamped: bool) -> BTreeSet<Tid> {
         let mut out = BTreeSet::new();
         for id in self.state.of_kind(&l, Kind::TAG_RECORDS) {
             let Some(e) = self.state.entries.get(&(l, id)) else { continue };
             let Kind::Records(ts) = &e.kind else { continue };
-            if e.cert || (!stamped || e.stamp.is_some()) && hosts.is_none_or(|ss| !ss.is_empty() && ss.iter().all(|s| self.state.holds_at(s, &l, &id))) {
+            if e.cert || (!stamped || e.stamp.is_some()) && sources.is_none_or(|ss| !ss.is_empty() && ss.iter().all(|s| self.state.holds_at(s, &l, &id))) {
                 out.extend(ts.iter().copied());
             }
         }
         out
     }
 
-    /// Places the records of `want` that no entry under `l` holds at the hosts this node syncs it
+    /// Places the records of `want` that no entry under `l` holds at the sources this node syncs it
     /// with (`held_records_at`) as one record blob of this node's (spec/wire.md §3); records this
     /// node does not hold are left out (`stamped`: as a promoter counts them). Whether every one of
     /// `want` is held there now.
     pub(crate) fn place_records(&mut self, g: &Tid, l: LabelId, want: &BTreeSet<Tid>, stamped: bool) -> Result<bool> {
-        let hosts = self.counted_at(g, l);
-        let held = self.held_records_at(l, hosts.as_deref(), stamped);
+        let sources = self.counted_at(g, l);
+        let held = self.held_records_at(l, sources.as_deref(), stamped);
         let missing: Vec<osis_base::CreationRecord> = want.iter().filter(|t| !held.contains(t)).filter_map(|t| self.engine.core.created(t).cloned()).collect();
         let all = missing.len() == want.iter().filter(|t| !held.contains(t)).count();
         if missing.is_empty() {
@@ -252,18 +252,18 @@ impl SyncEngine {
         Ok(all)
     }
 
-    /// Whether entries under `l` at `hosts` hold a minting of `t` standing as its witness does
+    /// Whether entries under `l` at `sources` hold a minting of `t` standing as its witness does
     /// (`Engine::witness`), other than `but`: a tie stands in for it.
-    pub(super) fn witness_held_at(&mut self, l: LabelId, t: &Tid, hosts: Option<&[HostKey]>, but: Option<&CommitId>) -> bool {
+    pub(super) fn witness_held_at(&mut self, l: LabelId, t: &Tid, sources: Option<&[PeerKey]>, but: Option<&CommitId>) -> bool {
         let Some(w) = self.engine.witness(t) else { return false };
         let ties: Vec<CommitId> = self.engine.mintings_of(t).into_iter().filter(|m| m.standing == w.standing && Some(&m.commit) != but).map(|m| m.commit).collect();
-        ties.iter().any(|c| self.header_held_at(l, c, hosts))
+        ties.iter().any(|c| self.header_held_at(l, c, sources))
     }
 
     /// Whether an entry under `l` carries commit `c`'s header (a body, a copy of any part of it,
     /// a header alone), counted as `held_parts_at` counts copies.
-    pub(super) fn header_held_at(&mut self, l: LabelId, c: &CommitId, hosts: Option<&[HostKey]>) -> bool {
-        let present: Vec<(BlobId, bool)> = self.state.entries_of(&l, c).filter(|(id, e)| matches!(e.kind, Kind::Commit { .. }) && (e.cert || hosts.is_none_or(|ss| !ss.is_empty() && ss.iter().all(|s| self.state.holds_at(s, &l, id))))).map(|(id, e)| (id, e.cert)).collect();
+    pub(super) fn header_held_at(&mut self, l: LabelId, c: &CommitId, sources: Option<&[PeerKey]>) -> bool {
+        let present: Vec<(BlobId, bool)> = self.state.entries_of(&l, c).filter(|(id, e)| matches!(e.kind, Kind::Commit { .. }) && (e.cert || sources.is_none_or(|ss| !ss.is_empty() && ss.iter().all(|s| self.state.holds_at(s, &l, id))))).map(|(id, e)| (id, e.cert)).collect();
         present.into_iter().any(|(id, mine)| mine || self.genuine(&id))
     }
 
@@ -303,24 +303,24 @@ impl SyncEngine {
     /// if it opens under the newest read secret (spec/permissions.md §4). Not `held_at` (whether
     /// this node's own commit is placed).
     pub(super) fn held_parts(&mut self, g: &Tid, l: LabelId, c: &CommitId) -> Result<(Parts, Parts)> {
-        let hosts = self.counted_at(g, l);
-        self.held_parts_at(g, l, c, hosts.as_deref())
+        let sources = self.counted_at(g, l);
+        self.held_parts_at(g, l, c, sources.as_deref())
     }
 
     /// Where another node's entry under `l` counts as held: present at every peer its `label.0`
     /// names that this node is connected to, or, for a label whose `label.0` names none, in
     /// this node's own store (`None`), so what it places does not move with which peers happen
     /// to be connected.
-    pub(super) fn counted_at(&mut self, g: &Tid, l: LabelId) -> Option<Vec<HostKey>> {
+    pub(super) fn counted_at(&mut self, g: &Tid, l: LabelId) -> Option<Vec<PeerKey>> {
         if self.group_label(g, &l).is_some_and(|gl| crate::sync::peers::hostless(&gl.hosts)) {
             return None;
         }
-        Some(self.conns.values().filter(|x| x.labels.contains_key(&l)).filter_map(crate::sync::Conn::listed).collect())
+        Some(self.conns.values().filter(|x| x.labels.contains_key(&l)).filter_map(|x| x.peer).collect())
     }
 
-    /// `held_parts` with another node's entries counted when present at each of `hosts`
-    /// (`None`: this node's own served state, a label served with no host: every entry).
-    pub(super) fn held_parts_at(&mut self, g: &Tid, l: LabelId, c: &CommitId, hosts: Option<&[HostKey]>) -> Result<(Parts, Parts)> {
+    /// `held_parts` with another node's entries counted when present at each of `sources`
+    /// (`None`: this node's own served state, a label served with no source: every entry).
+    pub(super) fn held_parts_at(&mut self, g: &Tid, l: LabelId, c: &CommitId, sources: Option<&[PeerKey]>) -> Result<(Parts, Parts)> {
         let newest = self.engine.wrap_secret(g, None)?;
         let mut mine: BTreeSet<usize> = BTreeSet::new();
         let mut others: Vec<(BlobId, Vec<usize>)> = Vec::new();
@@ -328,7 +328,7 @@ impl SyncEngine {
             let Kind::Commit { parts, .. } = &e.kind else { continue };
             if e.cert {
                 mine.extend(parts.iter().copied());
-            } else if hosts.is_none_or(|ss| !ss.is_empty() && ss.iter().all(|s| self.state.holds_at(s, &l, &id)))
+            } else if sources.is_none_or(|ss| !ss.is_empty() && ss.iter().all(|s| self.state.holds_at(s, &l, &id)))
                 && (!self.engine.carries_secrets(g, c, parts) || newest.as_ref().is_some_and(|k| osis_crypto::unwrap(k, &id, &e.wrap).is_ok()))
             {
                 others.push((id, parts.clone()));

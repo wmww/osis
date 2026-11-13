@@ -1,6 +1,6 @@
-//! The pass at one host for one label after its log was read to the end (spec/sync.md §5-§7;
+//! The pass at one source for one label after its log was read to the end (spec/sync.md §5-§7;
 //! spec/permissions.md §4): re-registration first when this admin holds newer epochs than the
-//! head (the actor's role commits the host lacks, then the step; the rest after it is
+//! head (the actor's role commits the source lacks, then the step; the rest after it is
 //! registered), then logging of must-hold bodies (role commits first) or relays of stamped ones,
 //! this node's certificates and node card, and deletions of must-not-hold bodies (`delete`: by
 //! the label delete key or a delete key, carriers first), then re-seals (`reseal`).
@@ -13,7 +13,7 @@ mod promote;
 mod register;
 mod reseal;
 
-use super::state::{BlobRec, Entry, Kind, HostKey, Touch};
+use super::state::{BlobRec, Entry, Kind, PeerKey, Touch};
 use super::work::{Inputs, Left, Note, Scope, Work};
 use super::{ConnId, SyncEngine};
 use crate::error::Result;
@@ -24,7 +24,7 @@ use osis_base::{Ak, BlobId, CommitId, LabelId, Role, Tid, WallMs};
 use osis_schema::core_types as ct;
 use std::collections::{BTreeMap, BTreeSet};
 
-/// A node's verdicts on one label at one host (`SyncEngine::verdicts`).
+/// A node's verdicts on one label at one source (`SyncEngine::verdicts`).
 #[derive(Clone, Debug, Default)]
 pub struct Verdicts {
     /// It stamps here (logs what it judges must-hold).
@@ -60,7 +60,7 @@ struct Out {
     id: BlobId,
     /// Placed by this pass (a new encryption, or a linked blob's entry added).
     fresh: bool,
-    /// What is judged again until the host has it (`Left`).
+    /// What is judged again until the source has it (`Left`).
     of: Option<Touch>,
 }
 
@@ -113,12 +113,12 @@ struct J {
 /// A label's snapshots by aspect (`drop_label_covered`).
 pub(crate) type Snaps = BTreeMap<(Tid, Ak), Vec<CommitId>>;
 
-/// A pass's label of group `g` at `host` (`None`: the local pass) and head, with the keys
+/// A pass's label of group `g` at `source` (`None`: the local pass) and head, with the keys
 /// this node may use there (`usable_keys`).
 pub(crate) struct Head {
     pub(crate) g: Tid,
     pub(crate) l: LabelId,
-    pub(crate) host: Option<HostKey>,
+    pub(crate) source: Option<PeerKey>,
     pub(crate) id: osis_label::StepId,
     /// The head's write key: the stamps it takes (spec/sync.md §5 Stamp).
     pub(crate) stamps: osis_crypto::VerifyingKey,
@@ -128,17 +128,17 @@ pub(crate) struct Head {
 
 impl Head {
     fn at<'a>(&'a self, snaps: &'a Snaps, settled: bool, behind: bool, full: bool) -> At<'a> {
-        At { g: self.g, l: self.l, host: self.host, keys: &self.keys, snaps, settled, behind, full }
+        At { g: self.g, l: self.l, source: self.source, keys: &self.keys, snaps, settled, behind, full }
     }
 }
 
-/// Where entries are judged (`judge`, `deletable` and below): label `l` of `g` at `host`
+/// Where entries are judged (`judge`, `deletable` and below): label `l` of `g` at `source`
 /// (`None`: this node's own served state, where every entry counts as present), under the
 /// head's keys, with the label's snapshots and whether the view is settled.
 struct At<'a> {
     g: Tid,
     l: LabelId,
-    host: Option<HostKey>,
+    source: Option<PeerKey>,
     keys: &'a HeadKeys,
     snaps: &'a Snaps,
     settled: bool,
@@ -358,7 +358,7 @@ impl SyncEngine {
         let mut fresh = Vec::new();
         for (id, c) in &self.conns {
             for (l, x) in &c.labels {
-                if c.up() && x.phase.is_open() && x.ready() && x.keys.epochs[0].is_some() && !self.work.get(l).is_some_and(|w| w.acted.contains(id)) && self.read_as_host(*id, l) {
+                if c.up() && x.phase.is_open() && x.ready() && x.keys.epochs[0].is_some() && !self.work.get(l).is_some_and(|w| w.acted.contains(id)) && self.read_as_store(*id, l) {
                     fresh.push(*l);
                 }
             }
@@ -426,7 +426,7 @@ impl SyncEngine {
     /// opened it by a sync-key or claim Hit and whose stream read it to their log's end, with
     /// nothing registering there. A peer that reads it is none (it judges its own store).
     pub(crate) fn sources(&self, l: &LabelId) -> Vec<ConnId> {
-        self.conns.iter().filter(|(id, c)| c.up() && c.labels.get(l).is_some_and(|x| x.phase.is_open() && x.ready()) && self.read_as_host(**id, l) && !self.shared_reads(**id, l)).map(|(id, _)| *id).collect()
+        self.conns.iter().filter(|(id, c)| c.up() && c.labels.get(l).is_some_and(|x| x.phase.is_open() && x.ready()) && self.read_as_store(**id, l) && !self.shared_reads(**id, l)).map(|(id, _)| *id).collect()
     }
 
     /// The keys of `head` this node may use, and whether it may place under read: never encrypt
@@ -469,7 +469,7 @@ impl SyncEngine {
         // no secret of the served head's sync epoch: each source is read first, then the label
         // reported stranded there (`at_source`)
         let own = read_ok && keys.epochs[0].is_some() && (keys.is_writer() || keys.deposit.is_some());
-        let p = Head { g, l, host: None, id: head.id(), stamps: head.keys.write, keys, read_ok };
+        let p = Head { g, l, source: None, id: head.id(), stamps: head.keys.write, keys, read_ok };
         self.with_work(&g, l, |s, ctx, w| s.run_pass(&p, own, ctx, w, out))
     }
 
@@ -544,11 +544,11 @@ impl SyncEngine {
         }
         w.acted.clear();
         for conn in sources {
-            let host = self.conns.get(&conn).and_then(crate::sync::Conn::key);
+            let source = self.conns.get(&conn).and_then(|c| c.peer);
             let here = match &scope {
                 Scope::Some { commits, blobs } => {
                     let (mut cs, mut bs) = (commits.clone(), blobs.clone());
-                    for (x, _) in shown.iter().filter(|(_, s)| Some(*s) == host) {
+                    for (x, _) in shown.iter().filter(|(_, s)| Some(*s) == source) {
                         match x {
                             Touch::Commit(c) => cs.insert(*c),
                             Touch::Blob(b) => bs.insert(*b),
@@ -584,7 +584,7 @@ impl SyncEngine {
     fn at_source(&mut self, conn: ConnId, own: &Head, w: &Work, (sends, behind): (&[Out], bool), bodies: &[Body], snaps: &Snaps, scope: &Scope, settled: bool, left: &mut Left, out: &mut Vec<super::Action>) -> Result<bool> {
         let (g, l) = (own.g, own.l);
         let Some(c) = self.conns.get(&conn) else { return Ok(false) };
-        let Some(host) = c.key() else { return Ok(false) };
+        let Some(source) = c.peer else { return Ok(false) };
         let Some(lc) = c.labels.get(&l) else { return Ok(false) };
         let Some(head) = lc.head.clone() else { return Ok(false) };
         // secrets may have arrived since the head was accepted
@@ -596,7 +596,7 @@ impl SyncEngine {
         // no secret of the head's sync epoch: read first (spec/sync.md §5, reading without it),
         // stranded only once nothing more here opens
         if keys.epochs[0].is_none() {
-            if self.read_first(conn, host, &g, l, out)? {
+            if self.read_first(conn, source, &g, l, out)? {
                 leave_all(sends, left);
                 return Ok(false);
             }
@@ -614,14 +614,14 @@ impl SyncEngine {
             leave_all(sends, left);
             return Ok(false);
         }
-        self.refetch(conn, host, l, w, out)?;
-        let p = Head { g, l, host: Some(host), id: head.id(), stamps: head.keys.write, keys, read_ok };
-        let lacks = |s: &Self, id: &BlobId| !s.state.is_present(&host, &l, id) && !s.state.is_gone_at(&host, &l, id);
+        self.refetch(conn, source, l, w, out)?;
+        let p = Head { g, l, source: Some(source), id: head.id(), stamps: head.keys.write, keys, read_ok };
+        let lacks = |s: &Self, id: &BlobId| !s.state.is_present(&source, &l, id) && !s.state.is_gone_at(&source, &l, id);
         let mut behind_here = behind;
         let full = self.label_at(conn, &l).is_some_and(|x| x.full);
         let mut deposits = Vec::new();
         let on_head = p.id == own.id;
-        let again = self.encrypt_again(host, own, (sends, behind), bodies, snaps, left)?;
+        let again = self.encrypt_again(source, own, (sends, behind), bodies, snaps, left)?;
         let (mut lacking, mut refused_here) = (0, 0);
         for o in sends.iter().chain(&again) {
             if !lacks(self, &o.id) {
@@ -640,10 +640,10 @@ impl SyncEngine {
             // refused there (spec/sync.md §10, Refused) under its stamp and the source's head
             // now: not taken there, nothing waits for it. Either changed since: offered again, a
             // stamp changed by its own event, a head moved by showing it again here
-            let refused = match self.state.refused_at(&host, &l, &o.id) {
+            let refused = match self.state.refused_at(&source, &l, &o.id) {
                 Some((s, at)) if Some(s) == e.stamp && at == p.id => true,
                 Some((s, _)) => {
-                    self.state.set_refused(host, l, o.id, None);
+                    self.state.set_refused(source, l, o.id, None);
                     if Some(s) == e.stamp {
                         self.state.relog(l, o.id);
                     }
@@ -686,7 +686,7 @@ impl SyncEngine {
             lc.refused = refused_here;
         }
         self.deposit_items(conn, &p, deposits, out)?;
-        self.clear_deposits(conn, host, &p, out)?;
+        self.clear_deposits(conn, source, &p, out)?;
         self.deletions(conn, &p.at(snaps, settled, behind_here, full), bodies, scope, left, out)?;
         Ok(true)
     }
@@ -695,8 +695,8 @@ impl SyncEngine {
     /// registered there: the last first-logged position of a role commit it lacks; `None` when it
     /// read them all (taken, or refused: a full peer's step must not wait for room).
     fn roles_unreported(&mut self, conn: ConnId, l: LabelId, sends: &[Out]) -> Result<Option<u64>> {
-        let Some(host) = self.conns.get(&conn).and_then(crate::sync::Conn::key) else { return Ok(None) };
-        let lacking: Vec<BlobId> = sends.iter().filter(|o| o.prio <= 1 && !self.state.is_present(&host, &l, &o.id) && !self.state.is_gone_at(&host, &l, &o.id)).map(|o| o.id).collect();
+        let Some(source) = self.conns.get(&conn).and_then(|c| c.peer) else { return Ok(None) };
+        let lacking: Vec<BlobId> = sends.iter().filter(|o| o.prio <= 1 && !self.state.is_present(&source, &l, &o.id) && !self.state.is_gone_at(&source, &l, &o.id)).map(|o| o.id).collect();
         if lacking.is_empty() {
             return Ok(None);
         }
@@ -721,21 +721,21 @@ impl SyncEngine {
         self.sources(&l).iter().filter_map(|c| self.label_at(*c, &l)?.head.as_ref().map(|h| h.keys.write)).any(|k| osis_label::verify_stamp(&k, &l, &id, &e.wrap, &stamp).is_ok())
     }
 
-    /// Must-hold bodies whose entry source `host` deleted while this node's judgment finds the
+    /// Must-hold bodies whose entry source `source` deleted while this node's judgment finds the
     /// delete does not stand (`delete_stands`), or holds under a wrap of no use: the source
     /// refuses that blob ID while its tombstone lasts, or keeps its stamped wrap, so each is encrypted again (`place`) and the old entry dropped here; the
     /// source pulls the new one. While a role commit this node must hold waits for its relay
     /// (`behind`), the deleter may judge by an older role view: nothing is encrypted again and
     /// the label's role commits are placed at once instead (`relay_now`), so the source learns
     /// them first (issues: churn seed 361's storm).
-    fn encrypt_again(&mut self, host: HostKey, own: &Head, (sends, behind): (&[Out], bool), bodies: &[Body], snaps: &Snaps, left: &mut Left) -> Result<Vec<Out>> {
+    fn encrypt_again(&mut self, source: PeerKey, own: &Head, (sends, behind): (&[Out], bool), bodies: &[Body], snaps: &Snaps, left: &mut Left) -> Result<Vec<Out>> {
         let (g, l) = (own.g, own.l);
         let mut again = Vec::new();
         let mut note = Note::default();
         for o in sends {
             let Some(Touch::Commit(c)) = o.of else { continue };
             // gone there: deleted, or held under a wrap of no use (`set_gone`)
-            if !self.state.is_gone_at(&host, &l, &o.id) {
+            if !self.state.is_gone_at(&source, &l, &o.id) {
                 continue;
             }
             let Some((Kind::Commit { parts, .. }, cert)) = self.state.entries.get(&(l, o.id)).map(|e| (e.kind.clone(), e.cert)) else { continue };
@@ -743,7 +743,7 @@ impl SyncEngine {
             // there carries them (the delete stands: a duplicate went); a body: when its delete
             // does not stand and no other encryption held there carries it
             let b = if cert {
-                let held: Vec<BlobId> = self.state.entries_of(&l, &c).filter(|(id, e)| matches!(&e.kind, Kind::Commit { parts: p, .. } if parts.iter().all(|x| p.contains(x))) && self.state.holds_at(&host, &l, id)).map(|(id, _)| id).collect();
+                let held: Vec<BlobId> = self.state.entries_of(&l, &c).filter(|(id, e)| matches!(&e.kind, Kind::Commit { parts: p, .. } if parts.iter().all(|x| p.contains(x))) && self.state.holds_at(&source, &l, id)).map(|(id, _)| id).collect();
                 if held.into_iter().any(|id| self.genuine(&id)) {
                     continue;
                 }
@@ -752,7 +752,7 @@ impl SyncEngine {
             } else {
                 let readable = self.readable(&g, &c, &parts);
                 let Some(b) = bodies.iter().find(|b| b.commit == c && b.parts == readable).cloned() else { continue };
-                if self.delete_stands(Some(&host), l, &b, &b.parts, snaps, &mut note)? || self.entry_for(Some(&host), &l, &b).is_some_and(|x| self.state.is_present(&host, &l, &x)) {
+                if self.delete_stands(Some(&source), l, &b, &b.parts, snaps, &mut note)? || self.entry_for(Some(&source), &l, &b).is_some_and(|x| self.state.is_present(&source, &l, &x)) {
                     continue;
                 }
                 note.leave(c, left);
@@ -770,7 +770,7 @@ impl SyncEngine {
             }
             // a useless entry the source holds stays known until its delete there (`judge`: the
             // useless one goes, whatever the IDs)
-            if !self.state.is_present(&host, &l, &o.id) {
+            if !self.state.is_present(&source, &l, &o.id) {
                 self.state.drop_entry(l, o.id);
             }
             again.push(Out { prio: o.prio, id, fresh: true, of: o.of });
@@ -904,40 +904,40 @@ impl SyncEngine {
         Ok(snaps)
     }
 
-    /// Entries present at `host` that unwrap under a held read secret and were never opened:
+    /// Entries present at `source` that unwrap under a held read secret and were never opened:
     /// opened now, or fetched again when their bytes are not here (a fetch lost to a cut or
     /// crash, secrets that arrived later).
-    fn refetch(&mut self, conn: ConnId, host: HostKey, l: LabelId, w: &Work, out: &mut Vec<super::Action>) -> Result<()> {
+    fn refetch(&mut self, conn: ConnId, source: PeerKey, l: LabelId, w: &Work, out: &mut Vec<super::Action>) -> Result<()> {
         // a fill asks for them in order
         if self.label_at(conn, &l).is_some_and(|x| x.fill.is_some()) {
             return Ok(());
         }
         let ids: Vec<BlobId> = w.unopened.iter().copied().collect();
-        self.open_or_fetch(conn, host, l, ids, out).map(|_| ())
+        self.open_or_fetch(conn, source, l, ids, out).map(|_| ())
     }
 
     /// `refetch` of every entry of `l` for a node holding no secret of the head's read epoch
     /// (its pass stops there, so the work set's `unopened` is not kept). Invariant: such a node
-    /// is stranded only when no entry present at `host` unwraps under a read secret it holds
+    /// is stranded only when no entry present at `source` unwraps under a read secret it holds
     /// and is unopened. An entry listed before the secret its wrap opens under arrived was not
     /// fetched then: the head's rotation commit is one when it is wrapped under an epoch this
     /// node learned later, another rotation's or a fork's (spec/crypto.md §5; member_churn
     /// seeds 9, 9390: an admin that never read it never registered or logged again). True
     /// while something is fetched or opened.
-    fn read_first(&mut self, conn: ConnId, host: HostKey, g: &Tid, l: LabelId, out: &mut Vec<super::Action>) -> Result<bool> {
+    fn read_first(&mut self, conn: ConnId, source: PeerKey, g: &Tid, l: LabelId, out: &mut Vec<super::Action>) -> Result<bool> {
         let secrets = self.read_secrets(g);
         let ids: Vec<BlobId> = self.state.of_kind(&l, Kind::TAG_UNKNOWN).into_iter().filter(|b| self.state.entries.get(&(l, *b)).is_some_and(|e| e.unopened(b, &secrets))).collect();
         let busy = ids.iter().any(|b| self.asked_for(l, b));
-        Ok(self.open_or_fetch(conn, host, l, ids, out)? || busy)
+        Ok(self.open_or_fetch(conn, source, l, ids, out)? || busy)
     }
 
     /// Of unopened entries `ids` of `l`: those that open from what is here (`opens_here`) are
-    /// opened under the secrets held now, the rest present at `host` fetched (a fetch lost to a
+    /// opened under the secrets held now, the rest present at `source` fetched (a fetch lost to a
     /// cut or crash, secrets that arrived later, a wrap shredded). Whether any was fetched or
     /// opened.
-    fn open_or_fetch(&mut self, conn: ConnId, host: HostKey, l: LabelId, ids: Vec<BlobId>, out: &mut Vec<super::Action>) -> Result<bool> {
+    fn open_or_fetch(&mut self, conn: ConnId, source: PeerKey, l: LabelId, ids: Vec<BlobId>, out: &mut Vec<super::Action>) -> Result<bool> {
         let missing = |s: &Self, b: &BlobId| s.conns.get(&conn).is_some_and(|c| c.req.missing.contains(b));
-        let ids: Vec<BlobId> = ids.into_iter().filter(|b| !missing(self, b) && !self.asked_for(l, b) && self.state.is_present(&host, &l, b) && !self.memory_skips(&l, b)).collect();
+        let ids: Vec<BlobId> = ids.into_iter().filter(|b| !missing(self, b) && !self.asked_for(l, b) && self.state.is_present(&source, &l, b) && !self.memory_skips(&l, b)).collect();
         let (held, want): (Vec<BlobId>, Vec<BlobId>) = ids.into_iter().partition(|b| self.opens_here(&l, b));
         if !held.is_empty() {
             self.open_entries(Some(conn), l, &held)?;
@@ -955,7 +955,7 @@ impl SyncEngine {
     /// must-hold: those of pending snapshots (pages not fetched, deltas missing), and every aspect
     /// (`None`) while an entry of the label that opens under a held secret is asked (`fetching`,
     /// `asked`; it may be a snapshot). Other pending commits settle nothing there, nor do
-    /// entries that do not open as a commit or whose bytes no host delivers.
+    /// entries that do not open as a commit or whose bytes no source delivers.
     pub(super) fn unsettled_sets(&mut self, unopened: bool, fetching: bool) -> Result<(Unsettled, Unsettled)> {
         // what pends moves only with the engine
         let at = (self.engine.core.generation, self.engine.core.memory_generation);

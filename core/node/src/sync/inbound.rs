@@ -5,7 +5,7 @@
 //! open with nothing held are retried when new secrets arrive; pages of waiting commits are
 //! fetched before apply; ephemeral entries go to the ephemeral lane (`ephemeral`).
 
-use super::state::{BlobRec, Entry, Hint, Kind, HostKey};
+use super::state::{BlobRec, Entry, Hint, Kind, PeerKey};
 use super::{ConnId, RELINK_BACKOFF_MAX_MS, RELINK_BACKOFF_MS, SyncEngine};
 use crate::error::Result;
 use crate::Ingested;
@@ -235,13 +235,13 @@ impl SyncEngine {
         let from = match src {
             Src::Served(c) => super::memory::RelayFrom::Served(c),
             Src::Reader(c) => super::memory::RelayFrom::Reader(c),
-            _ => super::memory::RelayFrom::Host(conn.and_then(|c| self.conns.get(&c)).and_then(super::Conn::key)),
+            _ => super::memory::RelayFrom::Host(conn.and_then(|c| self.conns.get(&c)).and_then(|c| c.peer)),
         };
         let served_write = match reader {
             Some(_) => self.served_labels().get(&l).and_then(|s| s.head()).map(|h| h.keys.write),
             None => None,
         };
-        let host: Option<HostKey> = conn.and_then(|c| self.conns.get(&c)).and_then(super::Conn::key);
+        let host: Option<PeerKey> = conn.and_then(|c| self.conns.get(&c)).and_then(|c| c.peer);
         let mut crossed = Vec::new();
         let mut fresh_here = Vec::new();
         let mut blobs = Vec::new();
@@ -331,7 +331,7 @@ impl SyncEngine {
                 let e = Entry { wrap: *wrap, stamp: None, cert: false, salt: None, expires: None, size: None, kind: Kind::Unknown, source: None, memory: true };
                 match self.state.entries.get(&(l, *blob_id)) {
                     Some(o) if !o.memory => {
-                        let up: BTreeSet<HostKey> = self.conns.values().filter(|c| c.up()).filter_map(super::Conn::key).collect();
+                        let up: BTreeSet<PeerKey> = self.conns.values().filter(|c| c.up()).filter_map(|c| c.peer).collect();
                         self.state.reclass_memory(l, *blob_id, e, &up);
                     }
                     Some(_) => {}
@@ -602,7 +602,7 @@ impl SyncEngine {
     /// `stamped`: under the head's write key; `held_stamped`: the host holds it stamped under any
     /// (a hostile host saying so loses only its own entry here).
     #[allow(clippy::too_many_arguments)]
-    fn take_wrap(&mut self, conn: Option<ConnId>, host: Option<HostKey>, l: LabelId, b: BlobId, e: &mut Entry, wrap: &[u8; osis_crypto::WRAP_LEN], stamped: bool, held_stamped: bool) -> bool {
+    fn take_wrap(&mut self, conn: Option<ConnId>, host: Option<PeerKey>, l: LabelId, b: BlobId, e: &mut Entry, wrap: &[u8; osis_crypto::WRAP_LEN], stamped: bool, held_stamped: bool) -> bool {
         if e.wrap == *wrap {
             return true;
         }
@@ -679,7 +679,7 @@ impl SyncEngine {
     /// `Work::unopened`): an entry fetched because it unwraps is kept, so it is never asked for
     /// again. Judged under another connection's group, the bytes would be dropped and asked for
     /// again at every pass.
-    fn drop_unvouched(&mut self, conn: Option<ConnId>, host: HostKey, l: LabelId, ids: &[(BlobId, bool)]) -> Result<()> {
+    fn drop_unvouched(&mut self, conn: Option<ConnId>, host: PeerKey, l: LabelId, ids: &[(BlobId, bool)]) -> Result<()> {
         if ids.is_empty() {
             return Ok(());
         }
@@ -1936,7 +1936,7 @@ impl SyncEngine {
     /// what came before it there (spec/permissions.md §3 Complete pass), so a pass end is asked
     /// again (a fresh Pull).
     pub(crate) fn stream_read(&mut self, conn: ConnId, l: LabelId, out: &mut Vec<super::Action>) -> Result<()> {
-        let Some(host) = self.conns.get(&conn).and_then(super::Conn::key) else { return Ok(()) };
+        let Some(host) = self.conns.get(&conn).and_then(|c| c.peer) else { return Ok(()) };
         // read there to its end the first time since it joined, which listed the memory entries
         // it holds there: one with no body here (its commit forgotten, or known only for a part
         // dropped while invalid; not one opened and not fetched yet) that it lacks has nothing to
@@ -1997,7 +1997,7 @@ impl SyncEngine {
         self.fetch_waiting(conn, l, out)
     }
 
-    pub(crate) fn bump_pass(&mut self, host: HostKey, l: LabelId) -> Result<()> {
+    pub(crate) fn bump_pass(&mut self, host: PeerKey, l: LabelId) -> Result<()> {
         let at = self.pass_end(l)?;
         self.passes.insert((host, l), at);
         Ok(())
@@ -2037,7 +2037,7 @@ impl SyncEngine {
         let mut seen = BTreeSet::new();
         let ids: Vec<BlobId> = ids.into_iter().filter(|b| seen.insert(*b) && !missing(self, b) && self.may_ask(conn, l, b)).collect();
         // fetched by the stream's Fetch where the shared set opened L; nowhere else
-        if !self.read_as_host(conn, &l) {
+        if !self.read_as_store(conn, &l) {
             return Ok(());
         }
         self.stream_fetch(conn, l, ids, None, out)
@@ -2056,7 +2056,7 @@ impl SyncEngine {
         Ok(())
     }
 
-    pub(crate) fn absent_at(&mut self, host: Option<HostKey>, l: LabelId, b: BlobId) -> Result<bool> {
+    pub(crate) fn absent_at(&mut self, host: Option<PeerKey>, l: LabelId, b: BlobId) -> Result<bool> {
         if let Some(s) = host {
             self.state.set_present(s, l, b, false);
         }
@@ -2231,7 +2231,7 @@ impl SyncEngine {
                 if !lc.phase.is_open() {
                     continue;
                 }
-                let v: Vec<BlobId> = ids.iter().filter(|b| under(l, b) && c.key().is_some_and(|k| self.state.is_present(&k, l, b))).copied().collect();
+                let v: Vec<BlobId> = ids.iter().filter(|b| under(l, b) && c.peer.is_some_and(|k| self.state.is_present(&k, l, b))).copied().collect();
                 if !v.is_empty() {
                     todo.push((*conn, *l, v));
                 }
@@ -2267,7 +2267,7 @@ impl SyncEngine {
     /// Delete statuses. Code 9 (signed under a key older than the head's) needs nothing here:
     /// the new head comes by the stream, and the pass signs again under its keys.
     pub(crate) fn delete_status(&mut self, conn: ConnId, l: LabelId, ids: Vec<BlobId>, codes: Vec<Code>) -> Result<()> {
-        let Some(host) = self.conns.get(&conn).and_then(super::Conn::key) else { return Ok(()) };
+        let Some(host) = self.conns.get(&conn).and_then(|c| c.peer) else { return Ok(()) };
         for (b, code) in ids.into_iter().zip(codes) {
             if let Some(c) = self.conns.get_mut(&conn) {
                 c.req.deleting.remove(&(l, b));

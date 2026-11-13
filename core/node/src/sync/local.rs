@@ -3,7 +3,7 @@
 //! the grantee's `keys.0`, a removal's new `keys.0`), inbox delivery (spec/sync.md §3), label
 //! creation.
 
-use super::state::{Entry, Kind, HostKey};
+use super::state::{Entry, Kind};
 use super::{Action, ConnId, Phase, SyncEngine};
 use crate::error::{Error, Result};
 use osis_base::{Ak, BlobId, CommitId, LabelId, Role, Tid, Ts};
@@ -465,7 +465,7 @@ impl SyncEngine {
     /// Drops the queued seals of inbox delivery `(holder, c)`.
     fn drop_delivery_out(&mut self, holder: &Tid, c: &CommitId) {
         let k = Some((*holder, *c));
-        let ks: Vec<(HostKey, LabelId, BlobId)> = self.state.outbox.iter().filter(|(_, o)| o.delivery == k).map(|(x, _)| *x).collect();
+        let ks: Vec<super::state::OutKey> = self.state.outbox.iter().filter(|(_, o)| o.delivery == k).map(|(x, _)| *x).collect();
         for (s, l, b) in ks {
             self.outbox.remove(&(s, l, b));
             self.state.remove_out(&s, &l, &b);
@@ -481,7 +481,7 @@ impl SyncEngine {
     /// Whether a queued deposit refused for now (`SyncEngine::budget`) is moot, so it is dropped
     /// rather than sent again: an inbox seal whose delivery is gone. Anything else waits for its
     /// label to take it.
-    pub(crate) fn deposit_moot(&mut self, host: &HostKey, l: &LabelId, b: &BlobId) -> bool {
+    pub(crate) fn deposit_moot(&mut self, host: &[u8; 32], l: &LabelId, b: &BlobId) -> bool {
         let Some(o) = self.state.outbox.get(&(*host, *l, *b)) else { return true };
         o.delivery.is_some_and(|k| !self.state.sent_inbox.contains_key(&k))
     }
@@ -489,7 +489,7 @@ impl SyncEngine {
     /// Signs queued deposit `(host, l, b)` again with the label's current deposit key (an
     /// inbox's from its actor's `keys.0`), after its host found it signed by an earlier one;
     /// false when this node holds no other key, so it can never be taken.
-    pub(crate) fn resign_deposit(&mut self, host: &HostKey, l: &LabelId, b: &BlobId) -> Result<bool> {
+    pub(crate) fn resign_deposit(&mut self, host: &[u8; 32], l: &LabelId, b: &BlobId) -> Result<bool> {
         let Some(o) = self.state.outbox.get(&(*host, *l, *b)).cloned() else { return Ok(false) };
         let seed = match o.delivery {
             Some((holder, _)) => {
@@ -645,7 +645,7 @@ impl SyncEngine {
         let Some(things) = self.state.sent_inbox.get(d).map(|s| s.things.clone()) else { return false };
         let labels = self.labels();
         labels.iter().filter(|(g, _)| things.contains(g)).any(|(_, l)| {
-            let phases = || self.conns.values().filter(|c| c.is_ready() && l.hosts.iter().any(|a| Some(a.key) == c.listed())).map(|c| c.labels.get(&l.id).map(|x| &x.phase));
+            let phases = || self.conns.values().filter(|c| c.is_ready() && l.hosts.iter().any(|a| Some(a.key) == c.dial_key())).map(|c| c.labels.get(&l.id).map(|x| &x.phase));
             phases().any(|p| p.is_none_or(|x| matches!(x, Phase::Testing { .. } | Phase::Registering { .. } | Phase::Behind { .. }))) && !phases().any(|p| matches!(p, Some(Phase::Open { .. })))
         })
     }

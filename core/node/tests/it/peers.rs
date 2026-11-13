@@ -164,6 +164,8 @@ fn lan_match_dials_announced_key_spec_sync_10() {
     let (mut net, [a, b]) = local_nodes::<2>();
     reach_ed(&mut net, a);
     let kb = reach_ed(&mut net, b);
+    // a failed dial's pause outlasts `LAN_CHANGE_MS`
+    net.sync(a).config_mut().retry_ms = 30_000;
     net.blocked_peers.insert((a, b));
     net.group_at(a, &[(b, Role::Write)], vec![]);
     net.run();
@@ -355,11 +357,12 @@ fn dial_to(acts: &[Action], key: [u8; 32]) -> Option<osis_node::sync::ConnId> {
     acts.iter().find_map(|x| if let Action::Dial { conn, address, .. } = x { (address.key == key).then_some(*conn) } else { None })
 }
 
-// spec: none (notes/peers.md, redial): a co-reader whose connection was up is redialed at once
-// (a P2P dial that punched through ends its relayed connection; the redial takes the direct
-// one), at most once per `peer_retry_ms`; a dial that never came up waits the pause.
+// spec: none (notes/peers.md, Dialing): one pace for every node dialed. A relayed connection
+// that was up is redialed at once (a P2P dial that punched through ends it; the redial takes the
+// direct one), at most once per `peer_retry_ms`; another waits `retry_ms`; a dial that never came
+// up doubles the pause, up to `peer_retry_ms`.
 #[test]
-fn co_reader_redialed_at_once_after_up() {
+fn a_relayed_connection_is_redialed_at_once_spec_sync_10() {
     use osis_node::sync::Event;
     let mut net = Net::new();
     let a = net.node(1, &[]);
@@ -368,17 +371,35 @@ fn co_reader_redialed_at_once_after_up() {
     reach(&mut net, b, 0xb4);
     let _g = net.group_at(a, &[(b, Role::Read)], vec![]);
     let kb = [0xb4; 32];
-    // up as hub connection `hub`, then that session ends
-    let ends = |net: &mut Net, conn, hub| {
+    let (retry, window) = (net.sync(a).config().retry_ms, net.sync(a).config().peer_retry_ms);
+    // up as hub connection `hub` (relayed or not), then that session ends
+    let ends = |net: &mut Net, conn, hub, relayed| {
         net.sync(a).handle(Event::Up { conn, hub });
+        if relayed {
+            net.sync(a).set_relayed(conn);
+        }
         net.sync(a).handle(Event::Hub { ups: vec![(hub, osis_host::Up::End)] })
     };
     let conn = dial_to(&net.sync(a).handle(Event::Local), kb).expect("dialed");
-    let conn = dial_to(&ends(&mut net, conn, 1 << 50), kb).expect("redialed at once");
-    // again within the pause: it waits
-    assert_eq!(dial_to(&ends(&mut net, conn, (1 << 50) + 1), kb), None);
-    net.clock.advance(60_001);
+    let conn = dial_to(&ends(&mut net, conn, 1 << 50, true), kb).expect("relayed: redialed at once");
+    // again within the window: it waits `retry_ms`
+    assert_eq!(dial_to(&ends(&mut net, conn, (1 << 50) + 1, true), kb), None);
+    assert_eq!(net.sync(a).retrying(&kb), Some(retry));
+    net.clock.advance(retry + 1);
     let conn = dial_to(&net.sync(a).handle(Event::Tick), kb).expect("dialed after the pause");
-    // never up: it waits
-    assert_eq!(dial_to(&net.sync(a).handle(Event::Down { conn }), kb), None);
+    // not relayed: it waits `retry_ms`
+    assert_eq!(dial_to(&ends(&mut net, conn, (1 << 50) + 2, false), kb), None);
+    assert_eq!(net.sync(a).retrying(&kb), Some(retry));
+    net.clock.advance(retry + 1);
+    let mut conn = dial_to(&net.sync(a).handle(Event::Tick), kb).expect("dialed after the pause");
+    // never up: the pause doubles, up to `peer_retry_ms`
+    let mut pauses = Vec::new();
+    for _ in 0..6 {
+        assert_eq!(dial_to(&net.sync(a).handle(Event::Down { conn }), kb), None);
+        let p = net.sync(a).retrying(&kb).expect("waits");
+        pauses.push(p);
+        net.clock.advance(p + 1);
+        conn = dial_to(&net.sync(a).handle(Event::Tick), kb).expect("dialed after the pause");
+    }
+    assert_eq!(pauses, [retry, 2 * retry, 4 * retry, 8 * retry, window, window]);
 }

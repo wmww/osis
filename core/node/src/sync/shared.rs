@@ -33,7 +33,8 @@
 //! (a link's redeemer) that side's filter is the only one; a connection without a record uses its
 //! own pair key, starts with whole filters and tests everything.
 
-use super::{Action, ConnId, SyncEngine};
+use super::state::PeerKey;
+use super::{Action, Conn, ConnId, SyncEngine};
 use super::credentials::Credential;
 use super::proofs::Proven;
 use super::records::ConnRecord;
@@ -330,19 +331,25 @@ impl SyncEngine {
         self.records.shared.get(&conn).and_then(|s| s.members.get(l)).is_some_and(|m| by_key(m.class))
     }
 
+    /// Whether a member of `conn`'s set was opened by its dialer's proof of the label's sync
+    /// secret: the dialer keeps it unread.
+    pub(crate) fn shared_by_proof(&self, conn: ConnId, l: &LabelId) -> bool {
+        self.records.shared.get(&conn).and_then(|s| s.members.get(l)).is_some_and(|m| m.class == PROOF)
+    }
+
     /// Whether a member of `conn`'s set was opened by read credentials: its peer reads it (no
     /// source of it, spec/sync.md §10).
     pub(crate) fn shared_reads(&self, conn: ConnId, l: &LabelId) -> bool {
         self.records.shared.get(&conn).and_then(|s| s.members.get(l)).is_some_and(|m| m.class == READ)
     }
 
-    /// Whether `l`, a label this node syncs, is open in the set of `conn`, a connection this node
-    /// dialed to a node the label lists (`label.0`, the configured hosts): read as such a node is
-    /// (`stream_apply`), its entries present there by its key, whatever opened it (this node's
-    /// sync-key or claim Hit at a peer that cannot read it, a static entry, or read credentials
-    /// at a node that reads it too). A sync ID this node keeps unread is never read so.
-    pub(crate) fn read_as_host(&self, conn: ConnId, l: &LabelId) -> bool {
-        self.conns.get(&conn).is_some_and(|c| c.listed().is_some() && c.labels.contains_key(l)) && self.records.shared.get(&conn).is_some_and(|s| s.members.contains_key(l))
+    /// Whether `l`, a label this node syncs, is open in the set of `conn` and served there as a
+    /// store (it holds a `LabelAt` there: a node the label names that this node dialed, or a peer
+    /// that proved `l`'s sync secret on a connection it dialed): read as the peer's store
+    /// (`stream_apply`), its entries present there by its key (`Conn::peer`), whatever opened
+    /// it. A sync ID this node keeps unread is never read so.
+    pub(crate) fn read_as_store(&self, conn: ConnId, l: &LabelId) -> bool {
+        self.conns.get(&conn).is_some_and(|c| c.labels.contains_key(l)) && self.records.shared.get(&conn).is_some_and(|s| s.members.contains_key(l))
     }
 
     /// The open of `l` on `conn`, at a peer that cannot read it, ended by its head moving past the
@@ -421,7 +428,7 @@ impl SyncEngine {
     pub(crate) fn shared_static_missing(&self, l: &LabelId) -> bool {
         let Some(lp) = self.state.hints.get(l).filter(|h| h.via.is_some()).and_then(|h| self.state.link_peers.get(&h.thing)) else { return false };
         self.records.shared.iter().any(|(conn, s)| {
-            s.static_missing.contains(l) && !s.members.contains_key(l) && self.conns.get(conn).is_some_and(|c| lp.peers.iter().any(|a| Some(a.key) == c.key()))
+            s.static_missing.contains(l) && !s.members.contains_key(l) && self.conns.get(conn).is_some_and(|c| lp.peers.iter().any(|a| Some(a.key) == c.dial_key()))
         })
     }
 
@@ -438,6 +445,15 @@ impl SyncEngine {
         }
         let Some((binding, by_listener)) = self.conns.get(&conn).map(|c| (c.binding, c.dial.is_none())) else { return Ok(()) };
         let Some((dialer, listener, key)) = binding else { return Ok(()) };
+        // what is kept of the peer is kept by its record, else by the node this node dialed
+        let dialed = self.conns.get(&conn).and_then(Conn::dial_key);
+        let peer = bound.map(|(id, _)| PeerKey::Record(id)).or(dialed.map(PeerKey::Node));
+        if let Some(c) = self.conns.get_mut(&conn) {
+            c.peer = peer;
+        }
+        if let (Some(k), Some(p)) = (dialed, peer) {
+            self.dialed_peers.insert(k, p);
+        }
         let Some((id, actors_changed)) = bound else {
             let r = *osis_crypto::kdf::pair_key(&dialer, &listener).expose();
             let s = Shared { r, key, dialer, listener, ..Shared::bare(by_listener) };
@@ -1015,7 +1031,7 @@ impl SyncEngine {
     fn shared_unopened(&mut self, conn: ConnId, out: &mut Vec<Action>) -> Result<()> {
         let Some(s) = self.records.shared.get(&conn).filter(|s| s.peer.is_some() && !s.test_due && s.pending.offers_unanswered == 0) else { return Ok(()) };
         let arrival = s.arrivals;
-        let Some(c) = self.conns.get(&conn).filter(|c| c.listed().is_some()) else { return Ok(()) };
+        let Some(c) = self.conns.get(&conn).filter(|c| c.dial.is_some()) else { return Ok(()) };
         let unopened: Vec<LabelId> = c.labels.iter().filter(|(l, x)| x.phase.is_testing() && x.registering.is_none() && c.req.walked.get(l) != Some(&arrival)).map(|(l, _)| *l).collect();
         if unopened.is_empty() {
             return Ok(());
@@ -1307,7 +1323,7 @@ impl SyncEngine {
         let conns: Vec<ConnId> = self.records.shared.iter().filter(|(_, s)| s.digest_read && !s.deposit_out).map(|(c, _)| *c).collect();
         for conn in conns {
             let Some(actors) = self.connection_proven(conn).map(Proven::all) else { continue };
-            let host = self.conns.get(&conn).and_then(super::Conn::key);
+            let host = self.conns.get(&conn).and_then(Conn::dial_key);
             let Some(s) = self.records.shared.get(&conn) else { continue };
             let mut judge = self.engine.core.judge(actors);
             let picked: Vec<OutKey> = due
@@ -1351,11 +1367,13 @@ impl SyncEngine {
     /// judges valid directly, again `RESEND_MS` after while the source still lacks it.
     pub(super) fn deposit_items(&mut self, conn: ConnId, p: &super::pass::Head, ids: Vec<BlobId>, out: &mut Vec<Action>) -> Result<()> {
         let (Some(d), l) = (p.keys.deposit.clone(), p.l) else { return Ok(()) };
-        let Some((host, address)) = self.conns.get(&conn).and_then(|c| c.dial.as_ref()).map(|d| (d.key, d.address.clone())) else { return Ok(()) };
+        // a node this node dialed is dialed again for its queued deposits; a source that dialed
+        // this node is not (nothing to dial it by), so what it lacks goes directly while it lacks it
+        let dialed = self.conns.get(&conn).and_then(|c| c.dial.as_ref()).map(|d| (d.key, d.address.clone()));
         let now = self.now();
         let (mut items, mut asked, mut queued) = (Vec::new(), Vec::new(), false);
         for id in ids {
-            if self.state.outbox.contains_key(&(host, l, id)) {
+            if dialed.as_ref().is_some_and(|(k, _)| self.state.outbox.contains_key(&(*k, l, id))) {
                 continue;
             }
             let Some(e) = self.state.entries.get(&(l, id)).cloned() else { continue };
@@ -1369,11 +1387,11 @@ impl SyncEngine {
             {
                 continue;
             }
-            if !e.cert && matches!(e.kind, super::state::Kind::Commit { .. }) && self.mine(&e) {
+            if let Some((_, address)) = dialed.as_ref().filter(|_| !e.cert && matches!(e.kind, super::state::Kind::Commit { .. }) && self.mine(&e)) {
                 // this node's own write placed for deposit: queued, so neither a crash nor
                 // forgetting the label recalls it
                 let role = self.role_entry(&e);
-                self.queue_deposit(l, std::slice::from_ref(&address), &d, blob, e.wrap, None, role);
+                self.queue_deposit(l, std::slice::from_ref(address), &d, blob, e.wrap, None, role);
                 queued = true;
                 continue;
             }
@@ -1484,7 +1502,10 @@ impl SyncEngine {
         // known there
         let arrival = self.records.shared.get(&conn).map_or(0, |s| s.arrivals);
         let now = self.now();
-        if let Some(c) = self.conns.get_mut(&conn)
+        // (where the peer dialed, nothing is walked: its next proof opens it again)
+        if let Some(c) = self.conns.get_mut(&conn).filter(|c| c.dial.is_none()) {
+            c.labels.remove(l);
+        } else if let Some(c) = self.conns.get_mut(&conn)
             && let Some(lc) = c.labels.get_mut(l).filter(|x| x.phase.is_open())
         {
             lc.phase = super::Phase::Testing { shown: None };
@@ -1598,9 +1619,9 @@ impl SyncEngine {
             }
             self.shared_send_lost(conn, items, out)?;
         }
-        // at a host, such a label leaves the connection: no stream reads it there any more, so it
-        // would never read to its end (nor be Hit again there)
-        if let Some(c) = self.conns.get_mut(&conn).filter(|c| !c.to_peer()) {
+        // where the peer serves it as a store, such a label leaves the connection: no stream
+        // reads it there any more, so it would never read to its end (nor be Hit again there)
+        if let Some(c) = self.conns.get_mut(&conn) {
             for l in &unsynced {
                 c.labels.remove(l);
             }

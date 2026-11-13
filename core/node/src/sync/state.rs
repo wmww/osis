@@ -15,10 +15,45 @@ use osis_label::{Address, Step};
 use osis_store::Shred;
 use std::collections::{BTreeMap, BTreeSet};
 
-/// A host, by its static key (its address key).
-pub type HostKey = [u8; 32];
+/// A peer, as what this node keeps of what it holds is found again on a later connection,
+/// whoever dialed (notes/node-sync.md, Presence): the record of the pair (spec/sync.md §10, Pair
+/// key), else, for a peer that proves no known actor, the dialable key this node dialed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum PeerKey {
+    Node([u8; 32]),
+    Record(osis_store::RecordId),
+}
+
+impl PeerKey {
+    pub const MIN: PeerKey = PeerKey::Node([0; 32]);
+    pub const MAX: PeerKey = PeerKey::Record([0xff; 16]);
+    /// Its encoding in record keys: a tag byte, then the key or the record id padded.
+    pub const LEN: usize = 33;
+
+    pub fn bytes(&self) -> [u8; PeerKey::LEN] {
+        let mut b = [0u8; PeerKey::LEN];
+        match self {
+            PeerKey::Node(k) => b[1..].copy_from_slice(k),
+            PeerKey::Record(id) => {
+                b[0] = 1;
+                b[1..17].copy_from_slice(id);
+            }
+        }
+        b
+    }
+
+    fn read(r: &mut Rd<'_>) -> Result<PeerKey> {
+        let b: [u8; PeerKey::LEN] = r.arr()?;
+        match b[0] {
+            0 => Ok(PeerKey::Node(b[1..].try_into().map_err(|_| Error::Corrupt("peer key"))?)),
+            1 => Ok(PeerKey::Record(b[1..17].try_into().map_err(|_| Error::Corrupt("peer key"))?)),
+            _ => Err(Error::Corrupt("peer key")),
+        }
+    }
+}
+
 /// An outbox key: (its destination's key, label, blob).
-pub type OutKey = (HostKey, LabelId, BlobId);
+pub type OutKey = ([u8; 32], LabelId, BlobId);
 
 const ENTRY: &[u8] = b"y/e";
 const PRESENT: &[u8] = b"y/p";
@@ -227,11 +262,11 @@ pub enum Dest {
 }
 
 /// The outbox key of `Dest::Nodes`: no host has it (an Ed25519 key of all zeros).
-pub const INBOX_NODES: HostKey = [0; 32];
+pub const INBOX_NODES: [u8; 32] = [0; 32];
 
 impl Dest {
     /// Its outbox key.
-    pub fn key(&self) -> HostKey {
+    pub fn key(&self) -> [u8; 32] {
         match self {
             Dest::Host(a) => a.key,
             Dest::Nodes(_) => INBOX_NODES,
@@ -359,21 +394,21 @@ pub struct State {
     pub cert_entries: BTreeSet<(LabelId, BlobId)>,
     pub blob_labels: BTreeSet<(BlobId, LabelId)>,
     /// `present` and `gone` by (label, blob, host).
-    present_by: BTreeSet<(LabelId, BlobId, HostKey)>,
-    gone_by: BTreeSet<(LabelId, BlobId, HostKey)>,
+    present_by: BTreeSet<(LabelId, BlobId, PeerKey)>,
+    gone_by: BTreeSet<(LabelId, BlobId, PeerKey)>,
     /// Entries, presence and certificates changed since the passes last looked, by label; and
     /// commits whose carriers changed (any label). In memory.
     pub touched: BTreeSet<(LabelId, Touch)>,
     /// Entries newly present at a source (`Touched::shown`).
-    pub shown: BTreeSet<(LabelId, Touch, HostKey)>,
+    pub shown: BTreeSet<(LabelId, Touch, PeerKey)>,
     pub touched_commits: BTreeSet<CommitId>,
     /// Commits whose blob records were added since `SyncEngine::forget_dropped` last looked (a
     /// dropped body's blob that came back).
     pub new_blobs: BTreeSet<CommitId>,
-    pub present: BTreeSet<(HostKey, LabelId, BlobId)>,
+    pub present: BTreeSet<(PeerKey, LabelId, BlobId)>,
     /// Present entries the host holds deposited (no stamp there; spec/sync.md §5): a writer
     /// promotes them at that host, whatever stamp this node knows.
-    pub deposited: BTreeSet<(HostKey, LabelId, BlobId)>,
+    pub deposited: BTreeSet<(PeerKey, LabelId, BlobId)>,
     /// Own entries a co-reader source (`SyncEngine::pass_source`) reported holding: its
     /// Applied position at or past where the node log first held them (spec/sync.md §5
     /// Placed). Recorded only for commits `placed` waits on (`SyncEngine::note_applied`), kept
@@ -382,10 +417,10 @@ pub struct State {
     /// `STREAM_AT`: what this node read of the stream of each peer that cannot read L, kept by
     /// its key (no record finds a peer that proves no known actor): a later connection's joins go on from it, and a listing
     /// from the start marked trimmed below it tells what was deleted there (`stream`).
-    pub stream_at: BTreeMap<HostKey, StreamAt>,
+    pub stream_at: BTreeMap<PeerKey, StreamAt>,
     /// `FILLING`.
-    pub filling: BTreeSet<(HostKey, LabelId)>,
-    pub heads: BTreeMap<(HostKey, LabelId), Step>,
+    pub filling: BTreeSet<(PeerKey, LabelId)>,
+    pub heads: BTreeMap<(PeerKey, LabelId), Step>,
     pub blobs: BTreeMap<BlobId, BlobRec>,
     pub by_commit: BTreeMap<CommitId, BTreeSet<BlobId>>,
     /// How many inbox or request entries carry each commit.
@@ -420,14 +455,14 @@ pub struct State {
     /// tombstoned, and entries it holds under a wrap not opening to the blob's key (a stamped
     /// entry's wrap never changes there, spec/sync.md §5). Forgotten after `TOMBSTONE_LIFETIME`,
     /// when the host's tombstone is gone too; not while the host still holds the entry.
-    pub gone: BTreeMap<(HostKey, LabelId, BlobId), u64>,
+    pub gone: BTreeMap<(PeerKey, LabelId, BlobId), u64>,
     /// Entries a peer that cannot read their label refused when it pulled them, for anything but
     /// room (spec/sync.md §10, Refused): the stamp it refused and its head here then. Not taken
     /// there while both stand; either changing, it is offered again (`SyncEngine::at_source`).
-    refused: BTreeMap<(LabelId, BlobId, HostKey), (Signature, osis_label::StepId)>,
+    refused: BTreeMap<(LabelId, BlobId, PeerKey), (Signature, osis_label::StepId)>,
     /// The wraps behind those of `gone` that opened under no read secret when heard, while the host
     /// holds the entry: possibly under an epoch not held yet (`SyncEngine::recheck_doubts`).
-    pub doubts: BTreeMap<(HostKey, LabelId, BlobId), [u8; WRAP_LEN]>,
+    pub doubts: BTreeMap<(PeerKey, LabelId, BlobId), [u8; WRAP_LEN]>,
     /// `SyncEngine::secrets_count` when `doubts` were last checked. In memory.
     pub doubts_at: usize,
     pub hints: BTreeMap<LabelId, Hint>,
@@ -458,7 +493,7 @@ pub struct State {
     /// Commits with a row in `deleted`, and how many.
     pub deleted_commits: BTreeMap<CommitId, usize>,
     /// Inbox blobs not yet answered by their host, by (host, blob).
-    pub outbox: BTreeMap<(HostKey, LabelId, BlobId), OutRec>,
+    pub outbox: BTreeMap<OutKey, OutRec>,
     /// Wall ms of the running `handle` (tombstone times).
     pub now: u64,
     /// Things forgotten whose opened inbox blobs are not yet checked (`y/f`).
@@ -780,7 +815,7 @@ impl State {
                     s.entries.insert((l, BlobId(r.arr()?)), decode_entry(&v)?);
                 }
                 b"p" => {
-                    let k = (r.arr()?, LabelId(r.arr()?), BlobId(r.arr()?));
+                    let k = (PeerKey::read(&mut r)?, LabelId(r.arr()?), BlobId(r.arr()?));
                     if v.first() == Some(&1) {
                         s.deposited.insert(k);
                     }
@@ -790,15 +825,15 @@ impl State {
                     s.applied.insert((LabelId(r.arr()?), BlobId(r.arr()?), r.tid()?));
                 }
                 b"4" => {
-                    let k: (HostKey, LabelId) = (r.arr()?, LabelId(r.arr()?));
+                    let k: (PeerKey, LabelId) = (PeerKey::read(&mut r)?, LabelId(r.arr()?));
                     s.filling.insert(k);
                 }
                 b"c" => {
-                    let host: HostKey = r.arr()?;
+                    let host = PeerKey::read(&mut r)?;
                     s.stream_at.insert(host, StreamAt::decode(&v)?);
                 }
                 b"h" => {
-                    let k = (r.arr()?, LabelId(r.arr()?));
+                    let k = (PeerKey::read(&mut r)?, LabelId(r.arr()?));
                     s.heads.insert(k, Step::parse(&v).map_err(|_| Error::Corrupt("head step"))?);
                 }
                 b"b" => {
@@ -819,13 +854,13 @@ impl State {
                     s.listed.insert((LabelId(r.arr()?), CommitId(r.arr()?), Tid::from_bytes(r.arr()?)));
                 }
                 b"g" => {
-                    s.gone.insert((r.arr()?, LabelId(r.arr()?), BlobId(r.arr()?)), Rd::new(&v).u64()?);
+                    s.gone.insert((PeerKey::read(&mut r)?, LabelId(r.arr()?), BlobId(r.arr()?)), Rd::new(&v).u64()?);
                 }
                 b"3" => {
-                    s.doubts.insert((r.arr()?, LabelId(r.arr()?), BlobId(r.arr()?)), Rd::new(&v).arr()?);
+                    s.doubts.insert((PeerKey::read(&mut r)?, LabelId(r.arr()?), BlobId(r.arr()?)), Rd::new(&v).arr()?);
                 }
                 b"R" => {
-                    let k = (LabelId(r.arr()?), BlobId(r.arr()?), r.arr()?);
+                    let k = (LabelId(r.arr()?), BlobId(r.arr()?), PeerKey::read(&mut r)?);
                     let mut x = Rd::new(&v);
                     s.refused.insert(k, (Signature(x.arr()?), osis_label::StepId(x.arr()?)));
                 }
@@ -1497,7 +1532,7 @@ impl State {
         for c in self.inbox_chain.remove(&(l, b)).unwrap_or_default() {
             self.carry(c, false);
         }
-        let refused: Vec<HostKey> = self.refused.range((l, b, [0; 32])..=(l, b, [0xff; 32])).map(|(k, _)| k.2).collect();
+        let refused: Vec<PeerKey> = self.refused.range((l, b, PeerKey::MIN)..=(l, b, PeerKey::MAX)).map(|(k, _)| k.2).collect();
         for h in refused {
             self.set_refused(h, l, b, None);
         }
@@ -1530,10 +1565,10 @@ impl State {
     /// with it as they were: each stream shows an entry once, so a row dropped here never comes
     /// back (the writer put the entry up there again every pass while others deleted it). Its
     /// rows at other peers go, from the store too.
-    pub fn reclass_memory(&mut self, l: LabelId, b: BlobId, e: Entry, up: &BTreeSet<HostKey>) {
-        type Row = (HostKey, bool, bool, Option<u64>, Option<[u8; WRAP_LEN]>);
-        let mut peers: BTreeSet<HostKey> = self.hosts_of(&l, &b).into_iter().collect();
-        peers.extend(self.gone_by.range((l, b, [0; 32])..=(l, b, [0xff; 32])).map(|(_, _, s)| *s));
+    pub fn reclass_memory(&mut self, l: LabelId, b: BlobId, e: Entry, up: &BTreeSet<PeerKey>) {
+        type Row = (PeerKey, bool, bool, Option<u64>, Option<[u8; WRAP_LEN]>);
+        let mut peers: BTreeSet<PeerKey> = self.hosts_of(&l, &b).into_iter().collect();
+        peers.extend(self.gone_by.range((l, b, PeerKey::MIN)..=(l, b, PeerKey::MAX)).map(|(_, _, s)| *s));
         let rows: Vec<Row> = peers.iter().map(|s| (*s, self.is_present(s, &l, &b), self.deposited.contains(&(*s, l, b)), self.gone.get(&(*s, l, b)).copied(), self.doubts.get(&(*s, l, b)).copied())).collect();
         for s in &peers {
             self.clear_gone(*s, l, b);
@@ -1557,7 +1592,7 @@ impl State {
 
     /// Forgets an entry and its presence at every peer, no tombstone.
     fn forget_entry(&mut self, l: LabelId, b: BlobId) {
-        let hosts: Vec<HostKey> = self.present_by.range((l, b, [0u8; 32])..).take_while(|(x, y, _)| *x == l && *y == b).map(|(_, _, s)| *s).collect();
+        let hosts: Vec<PeerKey> = self.present_by.range((l, b, PeerKey::MIN)..).take_while(|(x, y, _)| *x == l && *y == b).map(|(_, _, s)| *s).collect();
         for s in hosts {
             self.set_present(s, l, b, false);
         }
@@ -1591,12 +1626,12 @@ impl State {
     pub fn expire_tombs(&mut self, now: u64) {
         // a memory entry's tombstone lasts `MAX_DRIFT`, as a host's does (spec/sync.md §5)
         let life = |memory: bool| if memory { osis_base::format::MAX_DRIFT_MS } else { osis_base::format::TOMBSTONE_LIFETIME_MS };
-        let old: Vec<(HostKey, LabelId, BlobId)> = self.gone.iter().filter(|((s, l, b), t)| t.saturating_add(life(self.memory_entries.contains(&(*l, *b)))) <= now && !self.is_present(s, l, b)).map(|(k, _)| *k).collect();
+        let old: Vec<(PeerKey, LabelId, BlobId)> = self.gone.iter().filter(|((s, l, b), t)| t.saturating_add(life(self.memory_entries.contains(&(*l, *b)))) <= now && !self.is_present(s, l, b)).map(|(k, _)| *k).collect();
         for (s, l, b) in old {
             self.gone.remove(&(s, l, b));
             self.gone_by.remove(&(l, b, s));
             self.touch(l, b);
-            self.del_of(&l, &b, key(GONE, &[&s, &l.0, &b.0]));
+            self.del_of(&l, &b, key(GONE, &[&s.bytes(), &l.0, &b.0]));
         }
         let old: Vec<(LabelId, BlobId)> = self.tombs.iter().filter(|((l, b), t)| t.at.saturating_add(life(self.memory_entries.contains(&(*l, *b)))) <= now).map(|(k, _)| *k).collect();
         for (l, b) in old {
@@ -1626,8 +1661,8 @@ impl State {
         self.reach_secret = Some(s);
     }
 
-    pub fn set_present(&mut self, s: HostKey, l: LabelId, b: BlobId, on: bool) {
-        let k = key(PRESENT, &[&s, &l.0, &b.0]);
+    pub fn set_present(&mut self, s: PeerKey, l: LabelId, b: BlobId, on: bool) {
+        let k = key(PRESENT, &[&s.bytes(), &l.0, &b.0]);
         if on {
             // shown there: no verdict here changes (`Touched::shown`)
             if self.present.insert((s, l, b)) {
@@ -1654,8 +1689,8 @@ impl State {
 
     /// Records that host `s` refused entry `b` of `l` under `at` (its stamp, the host's head
     /// here), or clears that (`refused`).
-    pub fn set_refused(&mut self, s: HostKey, l: LabelId, b: BlobId, at: Option<(Signature, osis_label::StepId)>) {
-        let k = key(REFUSED, &[&l.0, &b.0, &s]);
+    pub fn set_refused(&mut self, s: PeerKey, l: LabelId, b: BlobId, at: Option<(Signature, osis_label::StepId)>) {
+        let k = key(REFUSED, &[&l.0, &b.0, &s.bytes()]);
         match at {
             Some(at) => {
                 if self.refused.insert((l, b, s), at) != Some(at) {
@@ -1671,19 +1706,19 @@ impl State {
     }
 
     /// What host `s` refused entry `b` of `l` under (`refused`).
-    pub fn refused_at(&self, s: &HostKey, l: &LabelId, b: &BlobId) -> Option<(Signature, osis_label::StepId)> {
+    pub fn refused_at(&self, s: &PeerKey, l: &LabelId, b: &BlobId) -> Option<(Signature, osis_label::StepId)> {
         self.refused.get(&(*l, *b, *s)).copied()
     }
 
     /// Marks a present entry deposited at a host, or not (stamped there).
-    pub fn set_deposited(&mut self, s: HostKey, l: LabelId, b: BlobId, on: bool) {
+    pub fn set_deposited(&mut self, s: PeerKey, l: LabelId, b: BlobId, on: bool) {
         if !self.present.contains(&(s, l, b)) {
             return;
         }
         let changed = if on { self.deposited.insert((s, l, b)) } else { self.deposited.remove(&(s, l, b)) };
         if changed {
             self.touch(l, b);
-            self.put_of(&l, &b, key(PRESENT, &[&s, &l.0, &b.0]), if on { vec![1] } else { Vec::new() });
+            self.put_of(&l, &b, key(PRESENT, &[&s.bytes(), &l.0, &b.0]), if on { vec![1] } else { Vec::new() });
         }
     }
 
@@ -1700,13 +1735,13 @@ impl State {
         self.applied.range((*l, *b, Tid::from_bytes([0; 15]))..=(*l, *b, Tid::from_bytes([0xff; 15]))).map(|x| x.2)
     }
 
-    pub fn is_present(&self, s: &HostKey, l: &LabelId, b: &BlobId) -> bool {
+    pub fn is_present(&self, s: &PeerKey, l: &LabelId, b: &BlobId) -> bool {
         self.present.contains(&(*s, *l, *b))
     }
 
     /// Whether any host holds the entry.
     pub fn present_anywhere(&self, l: &LabelId, b: &BlobId) -> bool {
-        self.present_by.range((*l, *b, [0; 32])..=(*l, *b, [0xff; 32])).next().is_some()
+        self.present_by.range((*l, *b, PeerKey::MIN)..=(*l, *b, PeerKey::MAX)).next().is_some()
     }
 
     /// Whether some host holds the entry under a wrap of use.
@@ -1715,28 +1750,28 @@ impl State {
     }
 
     /// Whether the host holds the entry under a wrap of use (`gone`).
-    pub fn holds_at(&self, s: &HostKey, l: &LabelId, b: &BlobId) -> bool {
+    pub fn holds_at(&self, s: &PeerKey, l: &LabelId, b: &BlobId) -> bool {
         self.is_present(s, l, b) && !self.is_gone_at(s, l, b)
     }
 
     /// The hosts holding the entry.
-    pub fn hosts_of(&self, l: &LabelId, b: &BlobId) -> Vec<HostKey> {
-        self.present_by.range((*l, *b, [0; 32])..=(*l, *b, [0xff; 32])).map(|(_, _, s)| *s).collect()
+    pub fn hosts_of(&self, l: &LabelId, b: &BlobId) -> Vec<PeerKey> {
+        self.present_by.range((*l, *b, PeerKey::MIN)..=(*l, *b, PeerKey::MAX)).map(|(_, _, s)| *s).collect()
     }
 
     /// Entry IDs known present at a host for a label.
-    pub fn present_at(&self, s: &HostKey, l: &LabelId) -> Vec<BlobId> {
+    pub fn present_at(&self, s: &PeerKey, l: &LabelId) -> Vec<BlobId> {
         self.present.range((*s, *l, BlobId([0; 32]))..=(*s, *l, BlobId([0xff; 32]))).map(|(_, _, b)| *b).collect()
     }
 
     /// Entries deposited at a host under a label.
-    pub fn deposited_at(&self, s: &HostKey, l: &LabelId) -> Vec<BlobId> {
+    pub fn deposited_at(&self, s: &PeerKey, l: &LabelId) -> Vec<BlobId> {
         self.deposited.range((*s, *l, BlobId([0; 32]))..=(*s, *l, BlobId([0xff; 32]))).map(|(_, _, b)| *b).collect()
     }
 
     /// What was read of peer `s`'s stream (none: forgotten).
-    pub fn set_stream_at(&mut self, s: HostKey, at: Option<StreamAt>) {
-        let k = key(STREAM_AT, &[&s]);
+    pub fn set_stream_at(&mut self, s: PeerKey, at: Option<StreamAt>) {
+        let k = key(STREAM_AT, &[&s.bytes()]);
         match at {
             Some(at) => {
                 self.put(k, at.encode());
@@ -1749,8 +1784,8 @@ impl State {
         }
     }
 
-    pub fn set_filling(&mut self, s: HostKey, l: LabelId, on: bool) {
-        let k = key(FILLING, &[&s, &l.0]);
+    pub fn set_filling(&mut self, s: PeerKey, l: LabelId, on: bool) {
+        let k = key(FILLING, &[&s.bytes(), &l.0]);
         if on {
             if self.filling.insert((s, l)) {
                 self.put(k, Vec::new());
@@ -1760,8 +1795,8 @@ impl State {
         }
     }
 
-    pub fn set_head(&mut self, s: HostKey, l: LabelId, step: &Step) {
-        self.put(key(HEAD, &[&s, &l.0]), step.to_bytes());
+    pub fn set_head(&mut self, s: PeerKey, l: LabelId, step: &Step) {
+        self.put(key(HEAD, &[&s.bytes(), &l.0]), step.to_bytes());
         self.heads.insert((s, l), step.clone());
     }
 
@@ -1937,53 +1972,91 @@ impl State {
         }
     }
 
-    pub fn set_gone(&mut self, s: HostKey, l: LabelId, b: BlobId) {
+    pub fn set_gone(&mut self, s: PeerKey, l: LabelId, b: BlobId) {
         if !self.gone.contains_key(&(s, l, b)) {
             self.losses += 1;
             self.gone.insert((s, l, b), self.now);
             self.gone_by.insert((l, b, s));
             self.touch(l, b);
             self.version += 1;
-            self.put_of(&l, &b, key(GONE, &[&s, &l.0, &b.0]), Wr::new().u64(self.now).take());
+            self.put_of(&l, &b, key(GONE, &[&s.bytes(), &l.0, &b.0]), Wr::new().u64(self.now).take());
         }
     }
 
     /// `set_gone` for a wrap that opened under no read secret held.
-    pub fn set_doubtful(&mut self, s: HostKey, l: LabelId, b: BlobId, wrap: [u8; WRAP_LEN]) {
+    pub fn set_doubtful(&mut self, s: PeerKey, l: LabelId, b: BlobId, wrap: [u8; WRAP_LEN]) {
         self.set_gone(s, l, b);
         self.doubts.insert((s, l, b), wrap);
-        self.put_of(&l, &b, key(DOUBT, &[&s, &l.0, &b.0]), wrap.to_vec());
+        self.put_of(&l, &b, key(DOUBT, &[&s.bytes(), &l.0, &b.0]), wrap.to_vec());
     }
 
-    pub fn drop_doubt(&mut self, s: HostKey, l: LabelId, b: BlobId) {
+    pub fn drop_doubt(&mut self, s: PeerKey, l: LabelId, b: BlobId) {
         if self.doubts.remove(&(s, l, b)).is_some() {
-            self.del_of(&l, &b, key(DOUBT, &[&s, &l.0, &b.0]));
+            self.del_of(&l, &b, key(DOUBT, &[&s.bytes(), &l.0, &b.0]));
         }
     }
 
+    /// Forgets everything kept of peer `p` (its record is gone: no later connection finds it).
+    pub fn forget_peer(&mut self, p: PeerKey) {
+        let at = |k: &PeerKey| *k == p;
+        let present: Vec<(LabelId, BlobId)> = self.present.iter().filter(|x| at(&x.0)).map(|x| (x.1, x.2)).collect();
+        for (l, b) in present {
+            self.set_present(p, l, b, false);
+        }
+        let gone: Vec<(LabelId, BlobId)> = self.gone.keys().filter(|x| at(&x.0)).map(|x| (x.1, x.2)).collect();
+        for (l, b) in gone {
+            self.clear_gone(p, l, b);
+        }
+        let refused: Vec<(LabelId, BlobId)> = self.refused.keys().filter(|x| at(&x.2)).map(|x| (x.0, x.1)).collect();
+        for (l, b) in refused {
+            self.set_refused(p, l, b, None);
+        }
+        let heads: Vec<LabelId> = self.heads.keys().filter(|x| at(&x.0)).map(|x| x.1).collect();
+        for l in heads {
+            self.heads.remove(&(p, l));
+            self.del(key(HEAD, &[&p.bytes(), &l.0]));
+        }
+        let filling: Vec<LabelId> = self.filling.iter().filter(|x| at(&x.0)).map(|x| x.1).collect();
+        for l in filling {
+            self.set_filling(p, l, false);
+        }
+        if self.stream_at.contains_key(&p) {
+            self.set_stream_at(p, None);
+        }
+    }
+
+    /// The peers kept by a record (`PeerKey::Record`).
+    pub fn recorded_peers(&self) -> BTreeSet<osis_store::RecordId> {
+        let rec = |k: &PeerKey| match k {
+            PeerKey::Record(id) => Some(*id),
+            PeerKey::Node(_) => None,
+        };
+        self.present.iter().map(|x| &x.0).chain(self.gone.keys().map(|x| &x.0)).chain(self.refused.keys().map(|x| &x.2)).chain(self.heads.keys().map(|x| &x.0)).chain(self.filling.iter().map(|x| &x.0)).filter_map(rec).collect()
+    }
+
     /// The host's entry is of use after all.
-    pub fn clear_gone(&mut self, s: HostKey, l: LabelId, b: BlobId) {
+    pub fn clear_gone(&mut self, s: PeerKey, l: LabelId, b: BlobId) {
         self.drop_doubt(s, l, b);
         if self.gone.remove(&(s, l, b)).is_some() {
             self.gone_by.remove(&(l, b, s));
             self.touch(l, b);
             self.version += 1;
-            self.del_of(&l, &b, key(GONE, &[&s, &l.0, &b.0]));
+            self.del_of(&l, &b, key(GONE, &[&s.bytes(), &l.0, &b.0]));
         }
     }
 
-    pub fn is_gone_at(&self, s: &HostKey, l: &LabelId, b: &BlobId) -> bool {
+    pub fn is_gone_at(&self, s: &PeerKey, l: &LabelId, b: &BlobId) -> bool {
         self.gone.contains_key(&(*s, *l, *b))
     }
 
     /// Whether a peer holds entry `b` under a wrap of no use (present there and gone: `set_gone`
     /// from its wrap, not a delete).
     pub fn useless_anywhere(&self, l: &LabelId, b: &BlobId) -> bool {
-        self.gone_by.range((*l, *b, [0; 32])..=(*l, *b, [0xff; 32])).any(|(_, _, s)| self.is_present(s, l, b))
+        self.gone_by.range((*l, *b, PeerKey::MIN)..=(*l, *b, PeerKey::MAX)).any(|(_, _, s)| self.is_present(s, l, b))
     }
 
     pub fn is_gone(&self, l: &LabelId, b: &BlobId) -> bool {
-        self.gone_by.range((*l, *b, [0; 32])..=(*l, *b, [0xff; 32])).next().is_some()
+        self.gone_by.range((*l, *b, PeerKey::MIN)..=(*l, *b, PeerKey::MAX)).next().is_some()
     }
 
     /// Adds a carrier of `body` (a snapshot of one of its aspects).
@@ -2091,7 +2164,7 @@ impl State {
         self.version += 1;
     }
 
-    pub fn remove_out(&mut self, s: &HostKey, l: &LabelId, b: &BlobId) {
+    pub fn remove_out(&mut self, s: &[u8; 32], l: &LabelId, b: &BlobId) {
         if self.outbox.remove(&(*s, *l, *b)).is_some() {
             self.version += 1;
             self.del(key(OUTBOX, &[s, &l.0, &b.0]));
@@ -2191,7 +2264,7 @@ fn forget_records(tx: &mut Tx<'_>, labels: &BTreeSet<LabelId>, things: &BTreeSet
                 }
                 gone
             }
-            b"p" | b"h" | b"g" | b"3" | b"d" => lab(rest.get(32..).unwrap_or_default())?,
+            b"p" | b"h" | b"g" | b"3" | b"4" => lab(rest.get(PeerKey::LEN..).unwrap_or_default())?,
             b"t" | b"A" => lab(rest)?,
             b"k" => {
                 let mut r = Rd::new(rest);
@@ -2322,7 +2395,7 @@ fn owe_tx(tx: &mut Tx<'_>, d: &Delivery, owed: bool) -> Result<()> {
     Ok(())
 }
 
-fn decode_out(k: &[u8], v: &[u8]) -> Result<((HostKey, LabelId, BlobId), OutRec)> {
+fn decode_out(k: &[u8], v: &[u8]) -> Result<(OutKey, OutRec)> {
     let mut r = Rd::new(k);
     let key = (r.arr()?, LabelId(r.arr()?), BlobId(r.arr()?));
     let mut x = Rd::new(v);
@@ -2509,7 +2582,7 @@ mod tests {
     // useless past `TOMBSTONE_LIFETIME` while the host holds it.
     #[test]
     fn useless_entry_held_nowhere_spec_sync_5() {
-        let (h1, h2, l, b) = ([7u8; 32], [8u8; 32], LabelId([1; 16]), BlobId([2; 32]));
+        let (h1, h2, l, b) = (PeerKey::Node([7u8; 32]), PeerKey::Record([8u8; 16]), LabelId([1; 16]), BlobId([2; 32]));
         let mut s = State { now: 1_000, ..State::default() };
         s.set_present(h1, l, b, true);
         assert!(s.held_anywhere(&l, &b));
@@ -2531,7 +2604,7 @@ mod tests {
     fn a_reclassed_entry_keeps_its_rows_at_connected_peers_spec_sync_9() {
         let mut node = crate::sync::host::on_hub(one_peer().peers.remove(0));
         let e = &mut node;
-        let (up, down, l, b) = ([7u8; 32], [8u8; 32], LabelId([1; 16]), BlobId([2; 32]));
+        let (up, down, l, b) = (PeerKey::Node([7u8; 32]), PeerKey::Record([8u8; 16]), LabelId([1; 16]), BlobId([2; 32]));
         let mut s = State { now: 1_000, ..State::default() };
         s.set_entry(l, b, entry(1));
         for h in [up, down] {
@@ -2560,7 +2633,7 @@ mod tests {
         let mut node = crate::sync::host::on_hub(one_peer().peers.remove(0));
         let e = &mut node;
         let life = osis_base::format::TOMBSTONE_LIFETIME_MS;
-        let (h, l, b) = ([7u8; 32], LabelId([1; 16]), BlobId([2; 32]));
+        let (h, l, b) = (PeerKey::Record([7u8; 16]), LabelId([1; 16]), BlobId([2; 32]));
         let (body, mid, snap, other) = (CommitId([3; 32]), CommitId([4; 32]), CommitId([5; 32]), CommitId([6; 32]));
         let mut s = State { now: 1_000, ..State::default() };
         s.set_present(h, l, b, true);

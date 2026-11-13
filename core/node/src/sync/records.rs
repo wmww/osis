@@ -77,6 +77,11 @@ impl Records {
         self.live.keys().copied().collect()
     }
 
+    /// Whether a relay carries `conn` (`SyncEngine::set_relayed`).
+    pub(crate) fn carried_by_relay(&self, conn: ConnId) -> bool {
+        self.relayed.contains(&conn)
+    }
+
     /// `conn` keeps its shared set but no longer its record: its actors are unknown here now.
     pub(crate) fn unbind(&mut self, conn: ConnId) {
         if let Some(b) = self.bound.remove(&conn)
@@ -227,7 +232,7 @@ impl SyncEngine {
     /// Closes `conn`, the duplicate of `keep`. A dialed one is not dialed again at once: its
     /// peer is connected by `keep` (`stand_in` when the peer dialed it).
     fn close_duplicate(&mut self, conn: ConnId, keep: ConnId, out: &mut Vec<Action>) {
-        let key = self.conns.get(&conn).and_then(super::Conn::key);
+        let key = self.conns.get(&conn).and_then(super::Conn::dial_key);
         let keep_served = self.conns.get(&keep).is_some_and(|c| c.dial.is_none());
         self.close(conn, out);
         if let Some(key) = key {

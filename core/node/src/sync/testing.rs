@@ -38,7 +38,6 @@ impl SyncEngine {
                 retry: self.retry.clone(),
                 redialed: self.redialed.clone(),
                 stand_in: self.stand_in.clone(),
-                redeeming: self.redeeming.clone(),
                 provers_mark: self.provers_mark.clone(),
                 own_key: self.own_key,
                 state: self.state.clone(),
@@ -137,6 +136,7 @@ impl SyncEngine {
                 prefix_checked: self.prefix_checked.clone(),
                 memory: self.memory.clone(),
                 refusals: self.refusals.clone(),
+                dialed_peers: self.dialed_peers.clone(),
                 hosting: self.hosting.clone(),
             })
         })

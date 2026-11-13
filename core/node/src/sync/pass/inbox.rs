@@ -109,13 +109,13 @@ impl SyncEngine {
         let now = self.now();
         // what the last passes found all there (`InboxCopied`): a pass walks only what is new
         self.inbox_copied.lost(self.state.losses);
-        let mut hosts = self.counted_at(g, l);
-        if let Some(hs) = hosts.as_mut() {
+        let mut sources = self.counted_at(g, l);
+        if let Some(hs) = sources.as_mut() {
             hs.sort();
             hs.dedup();
         }
         let epoch = self.engine.epochs(g).and_then(|e| osis_keys::wrap_epoch(&e.read));
-        self.inbox_copied.counted(l, crate::sync::work::InboxAt { hosts, epoch });
+        self.inbox_copied.counted(l, crate::sync::work::InboxAt { sources, epoch });
         for (b, c) in opened {
             let copied = self.inbox_copied.has(&l, &b);
             #[cfg(not(debug_assertions))]

@@ -48,7 +48,7 @@ pub(crate) fn hostless(hosts: &[Address]) -> bool {
 
 /// The keys of the hosts a label at `hosts` syncs with, whatever their scheme: an address
 /// names a node by its key (a `peer://` one is dialed by key with hints, spec/sync.md §10).
-pub(crate) fn host_keys(hosts: &[Address]) -> impl Iterator<Item = super::state::HostKey> + '_ {
+pub(crate) fn host_keys(hosts: &[Address]) -> impl Iterator<Item = [u8; 32]> + '_ {
     hosts.iter().map(|a| a.key)
 }
 
@@ -140,7 +140,7 @@ impl SyncEngine {
     }
 
     /// This node's key once it has a dialable secret, cached: a node is never its own peer
-    /// (`wanted_hosts`), whatever address names it (its account's saved peer, a label's host).
+    /// (`wanted_nodes`), whatever address names it (its account's saved peer, a label's host).
     pub(crate) fn own_key(&mut self) -> Option<[u8; 32]> {
         if self.own_key.is_none() {
             self.own_key = self.state.reach_secret.as_ref().map(|s| SigningSecret::from_seed(s).verifying_key().to_bytes());
@@ -409,7 +409,7 @@ impl SyncEngine {
     /// it (a relay route it ran over before) close; its labels go on over the LAN connection
     /// from their cursors (spec/sync.md §10: the proven route first).
     pub(crate) fn lan_switched(&mut self, conn: super::ConnId, peer: [u8; 32], out: &mut Vec<Action>) {
-        let old: Vec<super::ConnId> = self.conns.iter().filter(|(id, c)| **id != conn && c.key() == Some(peer)).map(|(id, _)| *id).collect();
+        let old: Vec<super::ConnId> = self.conns.iter().filter(|(id, c)| **id != conn && c.dial_key() == Some(peer)).map(|(id, _)| *id).collect();
         if old.is_empty() {
             return;
         }
@@ -420,10 +420,11 @@ impl SyncEngine {
         self.retry.remove(&peer);
     }
 
-    /// Connections to co-readers: dialable key, the address dialed (a LAN route or `peer://`
-    /// with relays) and whether it is up.
-    pub fn peer_routes(&self) -> Vec<([u8; 32], Address, bool)> {
-        self.conns.values().filter_map(|c| c.dial.as_ref().filter(|d| d.peer).map(|d| (d.key, d.address.clone(), c.up()))).collect()
+    /// Connections dialed to co-readers found by `reach.0` or a followed link: dialable key, the
+    /// address dialed (a LAN route or `peer://` with relays) and whether it is up.
+    pub fn peer_routes(&mut self) -> Vec<([u8; 32], Address, bool)> {
+        let peers: BTreeSet<[u8; 32]> = self.peer_addresses().into_keys().chain(self.link_routes().into_keys()).collect();
+        self.conns.values().filter_map(|c| c.dial.as_ref().filter(|d| peers.contains(&d.key)).map(|d| (d.key, d.address.clone(), c.up()))).collect()
     }
 
     /// Records the sharer node a followed link names (`peers`: its `peer://` addresses, from
@@ -437,14 +438,7 @@ impl SyncEngine {
             return;
         }
         self.state.set_link_peer(k, super::state::LinkPeer { target, peers });
-        self.redeeming.insert(k);
         let _ = self.state.flush(&mut self.engine);
-    }
-
-    /// The redemption of followed link `k` ended: its sharer node, while it stays a route, is
-    /// redialed like a co-reader (`lost`).
-    pub fn link_redeemed(&mut self, k: &Tid) {
-        self.redeeming.remove(k);
     }
 
     /// The sharer nodes of followed links (their dialable keys).
@@ -461,7 +455,6 @@ impl SyncEngine {
             self.diag(format!("forgetting a link: {e}"));
         }
         self.state.remove_link_peer(&k);
-        self.redeeming.remove(&k);
         let hinted: Vec<LabelId> = self.state.hints.iter().filter(|(_, h)| h.thing == k && h.via.is_some()).map(|(l, _)| *l).collect();
         for l in hinted {
             self.state.remove_hint(&l);
@@ -492,7 +485,6 @@ impl SyncEngine {
         let idle: Vec<Tid> = self.link_labels().into_iter().filter(|(_, ls)| ls.is_empty()).map(|(k, _)| k).collect();
         for k in idle {
             self.state.remove_link_peer(&k);
-            self.redeeming.remove(&k);
         }
     }
 
@@ -649,8 +641,8 @@ impl SyncEngine {
         }
         // nothing to do while its pause holds, or while a connection to the peer runs but over
         // a relay, where the LAN route is dialed beside it (`lan_probe`)
-        let running = self.conns.values().any(|c| c.key() == Some(k));
-        if running && !self.lan_probe(&k, &dialed) || !running && self.retry.get(&k).is_some_and(|(_, t)| *t > now) {
+        let running = self.conns.values().any(|c| c.dial_key() == Some(k));
+        if running && !self.lan_probe(&k, &dialed) || !running && self.retry.get(&k).is_some_and(|(_, t, _)| *t > now) {
             return (Some(k), Vec::new());
         }
         (Some(k), self.handle(Event::Local))

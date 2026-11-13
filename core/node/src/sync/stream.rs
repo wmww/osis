@@ -909,10 +909,10 @@ impl SyncEngine {
         let lag = if self.is_unread(&l)? { None } else { lag };
         // a peer that cannot read L, read before with no record of it: on from what was read there
         let lag = lag.or_else(|| {
-            let host = self.conns.get(&conn).filter(|_| self.read_as_host(conn, &l))?.key()?;
+            let host = self.conns.get(&conn).filter(|_| self.read_as_store(conn, &l))?.unrecorded()?;
             self.state.stream_at.get(&host).and_then(|x| x.lag(&l))
         });
-        if self.read_as_host(conn, &l) {
+        if self.read_as_store(conn, &l) {
             self.known_join(conn, l, lag.is_none());
         }
         let p = &mut self.streams.entry(conn).or_default().pulling;
@@ -927,7 +927,7 @@ impl SyncEngine {
     /// it was, a fill it left unfinished included. One listed from the start is read to the
     /// peer's end again before a pass judges it there (`stream_read`).
     fn known_join(&mut self, conn: ConnId, l: LabelId, whole: bool) {
-        let Some(host) = self.conns.get(&conn).and_then(super::Conn::key) else { return };
+        let Some(host) = self.conns.get(&conn).and_then(|c| c.peer) else { return };
         if whole {
             let before = self.state.present_at(&host, &l);
             for b in &before {
@@ -956,7 +956,7 @@ impl SyncEngine {
     /// position is kept as `stop` says for a rejoin, and the record re-marks it pending (below
     /// `changed_at`) in the same transaction.
     pub(super) fn stream_leave(&mut self, conn: ConnId, l: &LabelId, changed_at: u64, stop: Stop) -> Result<()> {
-        let host = self.conns.get(&conn).and_then(super::Conn::listed);
+        let host = self.conns.get(&conn).and_then(super::Conn::unrecorded);
         let Some(s) = self.streams.get_mut(&conn) else { return Ok(()) };
         s.serving.pulled.remove(l);
         s.serving.own.remove(l);
@@ -1015,7 +1015,7 @@ impl SyncEngine {
     /// this side kept, which may be past events the peer skipped for a member it had ended
     /// (`until`). The kept lag, by the peer's key or in the record, becomes the Lost's.
     pub(super) fn stream_lost_closed(&mut self, conn: ConnId, l: &LabelId, c: Option<Vec<u8>>) -> Result<()> {
-        if let Some(host) = self.conns.get(&conn).and_then(super::Conn::listed)
+        if let Some(host) = self.conns.get(&conn).and_then(super::Conn::unrecorded)
             && let Some(mut x) = self.state.stream_at.get(&host).cloned()
         {
             x.stream.remove(l);
@@ -1036,8 +1036,8 @@ impl SyncEngine {
     /// The connections `l` comes by now: hosts with it open, and readers with it in their shared
     /// set.
     pub(crate) fn sources_of(&self, l: &LabelId) -> Vec<ConnId> {
-        let hosts = self.conns.iter().filter(|(_, c)| c.up() && c.listed().is_some() && c.labels.get(l).is_some_and(|x| x.phase.is_open())).map(|(id, _)| *id);
-        let readers = self.records.shared.iter().filter(|(id, s)| s.has(l) && !self.conns.get(id).is_some_and(|c| c.listed().is_some())).map(|(id, _)| *id);
+        let hosts = self.conns.iter().filter(|(_, c)| c.up() && c.labels.get(l).is_some_and(|x| x.phase.is_open())).map(|(id, _)| *id);
+        let readers = self.records.shared.iter().filter(|(id, s)| s.has(l) && !self.conns.get(id).is_some_and(|c| c.labels.contains_key(l))).map(|(id, _)| *id);
         hosts.chain(readers).collect()
     }
 
@@ -1121,7 +1121,7 @@ impl SyncEngine {
     /// until the new reply are dropped, and no position reached before is stored.
     pub(crate) fn stream_restart_known(&mut self) {
         let now = self.now();
-        let unread: Vec<ConnId> = self.streams.keys().filter(|c| self.conns.get(c).is_some_and(|x| x.listed().is_some())).copied().collect();
+        let unread: Vec<ConnId> = self.streams.keys().filter(|c| self.conns.get(c).is_some_and(|x| !x.labels.is_empty())).copied().collect();
         for conn in unread {
             let Some(p) = self.streams.get_mut(&conn).map(|s| &mut s.pulling) else { continue };
             p.cursor = None;
@@ -1244,7 +1244,7 @@ impl SyncEngine {
             // the stream of a peer that cannot read L: its entries are present there (`known`) and
             // judged as such a peer's, bodies fetched there as wanted (lazily, or in a fill's order), so
             // it owes none
-            if self.read_as_host(conn, &l) {
+            if self.read_as_store(conn, &l) {
                 self.log_events(Some(conn), l, evs, out)?;
                 continue;
             }
@@ -1399,8 +1399,8 @@ impl SyncEngine {
     fn stream_store(&mut self, conn: ConnId, cursor: Option<Vec<u8>>, merged: &[LabelId], paging: &[(LabelId, Vec<u8>)]) -> Result<()> {
         let Some(p) = self.streams.get(&conn).map(|s| &s.pulling) else { return Ok(()) };
         // a peer that cannot read L: what was read there, by its key, with the state it covers (`stream_at`)
-        if let (Some(host), Some(c)) = (self.conns.get(&conn).and_then(super::Conn::listed), cursor.as_ref()) {
-            let stream: BTreeSet<LabelId> = p.in_stream.iter().filter(|l| self.read_as_host(conn, l)).copied().collect();
+        if let (Some(host), Some(c)) = (self.conns.get(&conn).and_then(super::Conn::unrecorded), cursor.as_ref()) {
+            let stream: BTreeSet<LabelId> = p.in_stream.iter().filter(|l| self.read_as_store(conn, l)).copied().collect();
             let mut x = self.state.stream_at.get(&host).cloned().unwrap_or_default();
             x.lags.retain(|l, _| !stream.contains(l));
             for (l, c) in paging {
@@ -1438,7 +1438,7 @@ impl SyncEngine {
         let relisted: Vec<LabelId> = if r.whole { p.in_stream.iter().copied().chain(sent.iter().filter(|l| p.joins.get(*l).is_some_and(Option::is_some)).copied()).collect() } else { Vec::new() };
         self.stream_skipped(conn, seq, out)?;
         for l in relisted {
-            if self.read_as_host(conn, &l) {
+            if self.read_as_store(conn, &l) {
                 self.known_join(conn, l, true);
                 // the peer's store is the one this node read before, trimmed past where it read:
                 // what the listing lacks of what it held there was deleted there
@@ -1487,7 +1487,7 @@ impl SyncEngine {
         let passed: Vec<LabelId> = if done { p.in_stream.iter().copied().collect() } else { Vec::new() };
         // read to the end where it is opened (at a peer that cannot read it, or one that reads it
         // and shares it as a reader): its pass there may run (`stream_read`)
-        let opened: Vec<LabelId> = passed.iter().filter(|l| self.read_as_host(conn, l)).copied().collect();
+        let opened: Vec<LabelId> = passed.iter().filter(|l| self.read_as_store(conn, l)).copied().collect();
         let passed = passed.into_iter().filter(|l| !opened.contains(l)).collect();
         self.stream_reached(conn, Unsettled { cursor: r.cursor, owed, merged, paging, report: r.report, passed }, out)?;
         for l in opened {
@@ -1651,7 +1651,7 @@ impl SyncEngine {
         }
         // a peer that cannot read L: what it did not deliver is not asked there again until it
         // announces it, and what it delivered is applied as its stream's events are
-        if self.read_as_host(conn, &l) {
+        if self.read_as_store(conn, &l) {
             let mut gone = false;
             for b in &failed {
                 gone |= self.conns.get_mut(&conn).is_some_and(|c| c.req.missing.insert(*b));

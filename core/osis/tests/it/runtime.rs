@@ -817,9 +817,9 @@ async fn redeem_direct_writes_at_once_in_process_spec_crypto_7() {
 
 // spec/permissions.md §7 (first contact: a direct link's redeemer dials the sharer's node): a
 // dial to the sharer that fails before coming up (here a partition; under load, the sharer not yet
-// listening with the key the link carries) is retried after the host pause, not the co-reader
-// one (60 s), so the redemption goes through once the sharer answers. Once redeemed, the sharer
-// (kept as a route) is paced like any co-reader: an offline one is not redialed every few seconds.
+// listening with the key the link carries) is first retried after `retry_ms`, as any node's, so
+// the redemption goes through once the sharer answers. Away for longer, the sharer (kept as a
+// route) is dialed less and less often: each failed dial doubles the pause, as for any node.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn redeem_direct_redials_sharer_spec_permissions_7() {
     let h = hosts(0).await;
@@ -838,11 +838,11 @@ async fn redeem_direct_redials_sharer_spec_permissions_7() {
     alice.sync(g, &[]).unwrap();
     let link = alice.make_link(g, osis::Role::Write, osis::LinkOpts { direct: true, ..Default::default() }).unwrap();
     let sharer = osis_label::ShareLink::from_text(&link.to_string()).unwrap().peers[0].dialable;
-    let pause = |b: osis::Osis| async move {
+    let pause = |b: osis::Osis, past: u64| async move {
         tokio::time::timeout(GUARD, async {
             loop {
                 // a pause of 0: an up connection's first redial, not a failed dial's pause
-                if let Some(p) = b.sync_engine(|s| s.retrying(&sharer)).filter(|p| *p > 0) {
+                if let Some(p) = b.sync_engine(|s| s.retrying(&sharer)).filter(|p| *p > past) {
                     return p;
                 }
                 tokio::time::sleep(Duration::from_millis(10)).await;
@@ -863,13 +863,13 @@ async fn redeem_direct_redials_sharer_spec_permissions_7() {
     cut(true);
     let b = bob.clone();
     let redeem = tokio::spawn(async move { b.redeem(&link).await });
-    assert!(pause(bob.clone()).await <= 100, "a host's pause while redeeming");
+    assert!(pause(bob.clone(), 0).await <= 100, "the first pause is `retry_ms`");
     cut(false);
-    assert_eq!(tokio::time::timeout(GUARD, redeem).await.expect("redialed only after the co-reader pause").unwrap().unwrap(), g);
+    assert_eq!(tokio::time::timeout(GUARD, redeem).await.expect("not redialed").unwrap().unwrap(), g);
     cut(true);
     net.disconnect("a", "b");
     net.disconnect("r", "b");
-    assert!(pause(bob.clone()).await > 100, "a co-reader's pause once redeemed");
+    assert!(pause(bob.clone(), 100).await > 100, "the pause doubles while dials fail");
 }
 
 /// A node with a store of its own on the LAN model, at `at` on segment `seg`, `lan` as given.

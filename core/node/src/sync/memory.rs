@@ -10,7 +10,7 @@
 //! writes while an own entry is not yet pulled (`coalesce_own`), and relay-only commits (ephemeral signals:
 //! delivered and passed on, held by nobody).
 
-use super::state::{Entry, HostKey, Kind};
+use super::state::{Entry, PeerKey, Kind};
 use super::{Action, ConnId, SyncEngine};
 use crate::engine::MemoryDrop;
 use crate::error::Result;
@@ -28,7 +28,7 @@ use std::sync::Arc;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum RelayFrom {
     /// A host or a peer this node dialed (`None`: a bundle, nobody).
-    Host(Option<HostKey>),
+    Host(Option<PeerKey>),
     /// A session this node serves.
     Served(ConnId),
     /// A reader's stream.
@@ -683,7 +683,7 @@ impl SyncEngine {
     /// peer that cannot read L only as learned on the connection up now (spec/sync.md §9: a
     /// restarted peer lost them, and its durable log says nothing of it; the next connection's
     /// stream lists those it holds), so the next connection's peer pulls what it lacks.
-    pub(crate) fn memory_lost(&mut self, host: HostKey) -> Result<()> {
+    pub(crate) fn memory_lost(&mut self, host: PeerKey) -> Result<()> {
         let gone: Vec<(LabelId, BlobId)> = self.state.memory_entries.iter().filter(|(l, b)| self.state.is_present(&host, l, b)).copied().collect();
         for (l, b) in gone {
             self.state.set_present(host, l, b, false);
@@ -855,11 +855,12 @@ impl SyncEngine {
         out
     }
 
-    /// Tests: the entries of ephemeral commit `c` held here, with the hosts this node counts
-    /// them present at (by host key).
+    /// Tests: the entries of ephemeral commit `c` held here, with the nodes this node dialed that
+    /// it counts them present at (by dialable key).
     #[doc(hidden)]
     pub fn ephemeral_entries_of(&self, c: &CommitId) -> Vec<(LabelId, BlobId, Vec<[u8; 32]>)> {
-        self.entries_of_commit(c).into_iter().filter(|(l, b)| self.state.is_memory(l, b)).map(|(l, b)| (l, b, self.state.hosts_of(&l, &b))).collect()
+        let nodes = |at: Vec<PeerKey>| self.dialed_peers.iter().filter(|(_, p)| at.contains(p)).map(|(k, _)| *k).collect();
+        self.entries_of_commit(c).into_iter().filter(|(l, b)| self.state.is_memory(l, b)).map(|(l, b)| (l, b, nodes(self.state.hosts_of(&l, &b)))).collect()
     }
 
     /// Tests, diagnostics: the memory entries under `l` as text, one per line (commit, own,
@@ -867,7 +868,7 @@ impl SyncEngine {
     #[doc(hidden)]
     pub fn ephemeral_dump(&self, l: &LabelId) -> String {
         use std::fmt::Write;
-        let key = |s: &[u8; 32]| osis_base::hex::encode(&s[..4]);
+        let key = |s: &PeerKey| osis_base::hex::encode(&s.bytes()[..5]);
         let rows: Vec<(BlobId, Kind)> = self.memory_entries_of(l).map(|(b, e)| (b, e.kind.clone())).collect();
         let mut out = String::new();
         for (b, kind) in rows {

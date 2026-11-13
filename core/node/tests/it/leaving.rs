@@ -8,7 +8,8 @@
 use crate::net;
 use crate::peers::reach_ed;
 use net::*;
-use osis_base::{Role, Tid};
+use osis_base::{BlobId, Role, Tid};
+use std::collections::BTreeSet;
 use osis_node::flows::Demotion;
 use osis_store::{Fault, Faults};
 
@@ -238,9 +239,9 @@ fn an_until_under_no_host_with_no_co_reader_drops_at_the_wait_spec_perm_2() {
 }
 
 // spec/permissions.md §2: a co-reader whose own `until` ended and that dropped the label (it
-// keeps the sync ID unread, so the label stays in the shared set) refuses nothing: the node keeps
-// its unsent write. `c` read `g` until an hour before `b`'s grant ended, and dropped at its own
-// wait while apart.
+// keeps the sync ID unread, so the label stays in the shared set) refuses nothing: the node's
+// unsent write is not lost, it goes up to `c`'s store (`b` drops only once it is placed there).
+// `c` read `g` until an hour before `b`'s grant ended, and dropped at its own wait while apart.
 #[test]
 fn an_until_under_no_host_a_co_reader_past_its_own_until_refuses_nothing_spec_perm_2() {
     let mut net = Net::new();
@@ -262,7 +263,10 @@ fn an_until_under_no_host_a_co_reader_past_its_own_until_refuses_nothing_spec_pe
     net.run();
     net.set_online(a, false);
     net.set_online(c, false);
-    let t = net.item(b, g, g, "unsent");
+    net.item(b, g, g, "unsent");
+    let l = net.label(b);
+    let unsent: BTreeSet<BlobId> = net.sync(b).entries(&l).into_iter().map(|x| x.0).collect();
+    assert!(!unsent.is_empty());
     net.set_online(b, false);
     net.set_online(c, true);
     // each finds its loss just past its `until`
@@ -273,6 +277,10 @@ fn an_until_under_no_host_a_co_reader_past_its_own_until_refuses_nothing_spec_pe
     assert!(holds(&mut net, b, g), "b's has not: kept");
     net.set_online(b, true);
     net.advance(60_000);
-    assert!(holds(&mut net, b, g), "c is no holder now: its settled set refuses nothing");
-    assert_eq!(net.read(b, t), Some(s("unsent")));
+    let at_c: BTreeSet<BlobId> = {
+        let hub = net.sync(c).hub_store();
+        let hub = hub.lock().unwrap();
+        osis_proto::LabelStore::live_ids(&*hub, &l).unwrap().into_iter().collect()
+    };
+    assert!(unsent.is_subset(&at_c), "c is no holder now: its settled set refuses nothing, and b's write went up there");
 }

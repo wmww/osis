@@ -15,11 +15,13 @@ pub struct SyncConfig {
     pub inline_limit: u64,
     /// Re-sync interval of opened labels without a subscription.
     pub resync_ms: u64,
-    /// Pause before re-dialing a host.
+    /// Pause before re-dialing a node whose connection ended, and a failed dial's first one
+    /// (`SyncEngine::lost`).
     pub retry_ms: u64,
     /// Dial co-reader nodes known from their `reach.0` (spec/sync.md §5, §10).
     pub peers: bool,
-    /// Pause before re-dialing a co-reader node.
+    /// The longest pause before re-dialing a node whose dials fail (the pause doubles from
+    /// `retry_ms`), and how often a relayed connection's end redials at once.
     pub peer_retry_ms: u64,
     /// Co-readers dialed per label and in total (by node tid).
     pub max_peers_per_label: usize,

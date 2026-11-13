@@ -14,24 +14,28 @@ impl SyncEngine {
             let leaving = self.leaving().any(|a| *a == self.engine.group_actor(&g));
             let mut failed = BTreeSet::new();
             let passed = self.state.passed.contains(&l.id);
-            // the hosts whose last answer refused it (code 14), connected now or not, and those
-            // full for it or refusing a body this node logs for it (`LabelAt::full`, `refused`)
-            let full = |k: &HostKey| self.conns.values().any(|c| c.up() && c.listed() == Some(*k) && c.labels.get(&l.id).is_some_and(|x| x.full || x.refused > 0));
-            let refused_by = l.hosts.iter().filter(|a| self.refusals.get(&(a.key, l.id)).is_some_and(|(_, code)| *code == Code::NOT_ADMITTED) || full(&a.key)).cloned().collect();
+            // the nodes it names whose last answer refused it (code 14), connected now or not, and
+            // those full for it or refusing a body this node logs for it (`LabelAt::full`,
+            // `refused`)
+            let full = |k: &[u8; 32]| self.conns.values().any(|c| c.up() && c.dial_key() == Some(*k) && c.labels.get(&l.id).is_some_and(|x| x.full || x.refused > 0));
+            let refused = |k: &[u8; 32]| self.dialed_peers.get(k).and_then(|p| self.refusals.get(&(*p, l.id))).is_some_and(|(_, code)| *code == Code::NOT_ADMITTED);
+            let refused_by = l.hosts.iter().filter(|a| refused(&a.key) || full(&a.key)).cloned().collect();
             let mut st = LabelStatus { group: g, label: l.id, hosts: l.hosts.len(), sources: 0, idle: 0, opening: 0, stranded: false, refused_by, leaving, last_sync: None, passed };
-            for (c, key) in self.conns.values().filter_map(|c| c.listed().map(|k| (c, k))) {
-                let host = l.hosts.iter().find(|a| a.key == key);
+            // peers serving it as a store: a node it names that this node dialed, or a peer that
+            // dialed this node and proved its sync secret
+            for c in self.conns.values() {
+                let named = c.dial_key().is_some_and(|k| l.hosts.iter().any(|a| a.key == k));
                 let Some(x) = c.labels.get(&l.id) else {
                     // labels are started once the session is ready
-                    st.opening += usize::from(c.up() && !c.is_ready() && host.is_some());
+                    st.opening += usize::from(c.up() && !c.is_ready() && named);
                     continue;
                 };
-                if x.phase.is_failed() && host.is_some() {
-                    failed.insert(key);
+                if x.phase.is_failed() && named {
+                    failed.extend(c.dial_key());
                 }
-                st.opening += usize::from(c.up() && matches!(x.phase, Phase::Testing { .. } | Phase::Behind { .. }) && host.is_some());
-                // a host the label no longer names is on its way out: no source of it
-                if c.up() && x.phase.is_open() && host.is_some() {
+                st.opening += usize::from(c.up() && matches!(x.phase, Phase::Testing { .. } | Phase::Behind { .. }) && named);
+                // a node the label no longer names is on its way out: no source of it
+                if c.up() && x.phase.is_open() && (named || c.dial.is_none()) {
                     st.sources += 1;
                     if x.idle() && c.pending.is_empty() {
                         st.idle += 1;
@@ -42,9 +46,9 @@ impl SyncEngine {
             // up both ways (`stream_idle`); one still finding what it shares is opening: a
             // connection this node dialed, or one it serves whose shared set began. A peer
             // counts once whatever connections it has (`pass_source`).
-            // (a connection to a peer that cannot read L is counted above: its stream reads it so)
-            let host_conn = |id: &ConnId| self.conns.get(id).is_some_and(|c| c.listed().is_some());
-            let readers: BTreeSet<ConnId> = self.conns.iter().filter(|(_, c)| c.to_peer() && c.up()).map(|(id, _)| *id).chain(self.records.shared.keys().copied()).filter(|id| !host_conn(id)).collect();
+            // (a connection where L is served as a store is counted above: its stream reads it so)
+            let host_conn = |id: &ConnId| self.conns.get(id).is_some_and(|c| c.labels.contains_key(&l.id) || c.dial_key().is_some_and(|k| l.hosts.iter().any(|a| a.key == k)));
+            let readers: BTreeSet<ConnId> = self.conns.iter().filter(|(_, c)| c.dial.is_some() && c.up()).map(|(id, _)| *id).chain(self.records.shared.keys().copied()).filter(|id| !host_conn(id)).collect();
             for id in readers {
                 if !self.shared_member(id, &l.id) && !self.shared_settled(id) {
                     st.opening += 1;
@@ -79,7 +83,7 @@ impl SyncEngine {
     pub fn static_entry_refused(&mut self, l: &LabelId) -> bool {
         let routes = self.wanted_labels().into_iter().find(|(_, x, _)| x == l).map_or(Vec::new(), |(_, _, r)| r);
         let on: Vec<&LabelAt> = self.conns.values().filter_map(|c| c.labels.get(l)).collect();
-        let failed = |h: &state::HostKey| self.conns.values().any(|c| c.listed() == Some(*h) && c.labels.get(l).is_some_and(|x| x.phase.is_failed()));
+        let failed = |h: &[u8; 32]| self.conns.values().any(|c| c.dial_key() == Some(*h) && c.labels.get(l).is_some_and(|x| x.phase.is_failed()));
         let refused = on.iter().any(|x| matches!(x.phase, Phase::Failed { entry_refused: true })) || self.shared_static_missing(l);
         routes.iter().all(failed) && on.iter().all(|x| x.phase.is_failed()) && refused
     }
@@ -228,7 +232,7 @@ impl SyncEngine {
     /// How long (ms) a dial to `key` still waits for its retry pause, if it waits (tests).
     #[doc(hidden)]
     pub fn retrying(&self, key: &[u8; 32]) -> Option<u64> {
-        self.retry.get(key).map(|(_, t)| t.saturating_sub(self.now()))
+        self.retry.get(key).map(|(_, t, _)| t.saturating_sub(self.now()))
     }
 
     /// Diagnostics since the last call (tests).

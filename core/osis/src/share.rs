@@ -1038,7 +1038,7 @@ impl Osis {
         let (k, target) = (link.k, link.target);
         // nothing to join when this account reaches the target at the link's role already: no link
         // is followed or judged
-        // the link key and the redemption's redials last this call (`join_link`)
+        // the link key lasts this call (`join_link`)
         let (held, _joining) = if self.engine(|e| reaches(e, &target, &k)) { (true, None) } else { self.join_link(&link).await? };
         let me = self.me();
         // joined: the grant stands in a view with nothing on K pending, and the role is of use
@@ -1068,15 +1068,13 @@ impl Osis {
     }
 
     /// `redeem`'s join: follows the link, waits until it can be judged, and redeems it. `true`:
-    /// this account came to reach the target meanwhile, and joined nothing. Returns the link key
-    /// and the redemption's pace, for the caller to hold until the join is at a source: the key
+    /// this account came to reach the target meanwhile, and joined nothing. Returns the link key,
+    /// for the caller to hold until the join is at a source: the key
     /// proves L on a new connection to the sharer's node, which does not know this node before it
     /// holds the join (spec/permissions.md §7).
-    async fn join_link(&self, link: &osis_label::ShareLink) -> Result<(bool, Option<(KeyGuard, Redeeming)>)> {
+    async fn join_link(&self, link: &osis_label::ShareLink) -> Result<(bool, Option<KeyGuard>)> {
         let (k, target) = (link.k, link.target);
         let key = self.follow_link(link)?;
-        // its sharer node is redialed at a host's pace until the redemption ends, whatever the outcome
-        let redeeming = Redeeming { db: self.downgrade(), k };
         let l = key.l;
         // L must be on K's roster in a view with nothing on K pending: a commit on K waiting
         // for its chain may be (or follow) an earlier redemption that removed L
@@ -1131,7 +1129,7 @@ impl Osis {
         }
         let mut key = key;
         key.link = None;
-        Ok((held, (!held).then_some((key, redeeming))))
+        Ok((held, (!held).then_some(key)))
     }
 
     /// Holds a link's key and follows K's label at its hosts and at the sharer's node when
@@ -1738,20 +1736,6 @@ impl Drop for KeyGuard {
             if let Some(k) = self.link {
                 db.act(|x| x.sync.forget_link(k));
             }
-        }
-    }
-}
-
-/// A link redemption under way (`SyncEngine::link_redeemed` when it goes).
-struct Redeeming {
-    db: crate::handle::WeakOsis,
-    k: Tid,
-}
-
-impl Drop for Redeeming {
-    fn drop(&mut self) {
-        if let Some(db) = self.db.hold() {
-            db.locked(|x| x.sync.link_redeemed(&self.k));
         }
     }
 }

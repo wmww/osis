@@ -4,7 +4,7 @@
 use super::*;
 
 impl SyncEngine {
-    /// Whether this writer promotes deposited entry `id` under `l` (of `g`) at `host` (`None`:
+    /// Whether this writer promotes deposited entry `id` under `l` (of `g`) at `source` (`None`:
     /// its served state; spec/sync.md §5 Promotion): a commit it applied with a valid part the
     /// label must hold that no stamped copy there holds yet (`stamped_parts`). By part, not
     /// `judged_valid`: a single-use race loser's role commit holds a void grant beside the valid
@@ -20,10 +20,10 @@ impl SyncEngine {
     /// duplicate; else anything on an authority path into the label (a reader's own account,
     /// edges it writes there) would be stamped for good. Never an entry whose bytes this node
     /// dropped (`forget_blob`: it holds a part gone here, a body the label must not hold), nor
-    /// one it removed within its tombstone that a host still holds (recorded again only to be
+    /// one it removed within its tombstone that a source still holds (recorded again only to be
     /// deleted there, spec/sync.md §6 Tombstones: its stamp is not kept, and stamping it would
     /// serve the deleted blob on and place its chain again).
-    pub(super) fn would_promote(&mut self, g: &Tid, l: LabelId, host: Option<&HostKey>, id: &BlobId) -> Result<bool> {
+    pub(super) fn would_promote(&mut self, g: &Tid, l: LabelId, source: Option<&PeerKey>, id: &BlobId) -> Result<bool> {
         let Some(Entry { kind: Kind::Commit { commit, parts, .. }, cert: false, .. }) = self.state.entries.get(&(l, *id)).cloned() else { return Ok(false) };
         if !self.state.blobs.contains_key(id) || self.state.tombs.contains_key(&(l, *id)) {
             return Ok(false);
@@ -46,15 +46,15 @@ impl SyncEngine {
         if need.is_empty() {
             return Ok(false);
         }
-        let held = self.stamped_parts(g, l, &commit, host, id)?;
+        let held = self.stamped_parts(g, l, &commit, source, id)?;
         Ok(need.iter().any(|ai| !held.contains(ai)))
     }
 
-    /// The parts of commit `c` that entries under `l` other than `except` hold stamped at `host`
+    /// The parts of commit `c` that entries under `l` other than `except` hold stamped at `source`
     /// (`None`: this node's served state): this node's certificate copies, and another genuine
-    /// entry there that the host holds stamped or this node stamped (a promotion on its way); a
+    /// entry there that the source holds stamped or this node stamped (a promotion on its way); a
     /// rotation of the label's actor only opening under the newest read secret (`held_parts_at`).
-    fn stamped_parts(&mut self, g: &Tid, l: LabelId, c: &CommitId, host: Option<&HostKey>, except: &BlobId) -> Result<Parts> {
+    fn stamped_parts(&mut self, g: &Tid, l: LabelId, c: &CommitId, source: Option<&PeerKey>, except: &BlobId) -> Result<Parts> {
         let newest = self.engine.wrap_secret(g, None)?;
         let mut held = Parts::new();
         let mut others: Vec<(BlobId, Vec<usize>)> = Vec::new();
@@ -67,7 +67,7 @@ impl SyncEngine {
                 held.extend(parts.iter().copied());
                 continue;
             }
-            let stamped = match host {
+            let stamped = match source {
                 Some(s) => self.state.holds_at(s, &l, &id) && (e.stamp.is_some() || !self.state.deposited.contains(&(*s, l, id))),
                 None => e.stamp.is_some(),
             };
@@ -84,11 +84,11 @@ impl SyncEngine {
     }
 
     /// Places the parts of the author's chain for `parts` of `c` that no entry under `l` holds
-    /// at `host` (`chain_missing`) as this node's certificate copies, when it holds them all.
-    /// Returns whether the chain is complete under `l` now (`None` host: this node's served
+    /// at `source` (`chain_missing`) as this node's certificate copies, when it holds them all.
+    /// Returns whether the chain is complete under `l` now (`None` source: this node's served
     /// state, where a copy is in place once placed); `None` for a commit not applied here.
-    pub(super) fn complete_chain(&mut self, host: Option<HostKey>, g: &Tid, l: LabelId, c: &CommitId, parts: &[usize]) -> Result<Option<bool>> {
-        let Some(missing) = self.chain_missing(host, g, l, c, parts)? else { return Ok(None) };
+    pub(super) fn complete_chain(&mut self, source: Option<PeerKey>, g: &Tid, l: LabelId, c: &CommitId, parts: &[usize]) -> Result<Option<bool>> {
+        let Some(missing) = self.chain_missing(source, g, l, c, parts)? else { return Ok(None) };
         if missing.is_empty() {
             return Ok(Some(true));
         }
@@ -104,7 +104,7 @@ impl SyncEngine {
         if missing.records.iter().any(|t| self.engine.core.created(t).is_none()) {
             return Ok(Some(false));
         }
-        let mut complete = host.is_none();
+        let mut complete = source.is_none();
         for (x, p, b) in bodies {
             complete &= self.place_copy(g, l, &x, &p, b)?;
         }
@@ -113,7 +113,7 @@ impl SyncEngine {
             complete &= self.place_copy(g, l, x, &Parts::new(), b)?;
         }
         if !missing.records.is_empty() {
-            complete &= self.place_records(g, l, &missing.records, true)? && host.is_none();
+            complete &= self.place_records(g, l, &missing.records, true)? && source.is_none();
         }
         Ok(Some(complete))
     }
@@ -155,7 +155,7 @@ impl SyncEngine {
         Ok(())
     }
 
-    /// An admin keeps at most `DEPOSITS_WAITING` entries and bytes of the deposits at a host it can
+    /// An admin keeps at most `DEPOSITS_WAITING` entries and bytes of the deposits at a source it can
     /// do nothing with, under any label (spec/sync.md §5, Clearing deposits): every one but a
     /// commit it judges valid (the judgment a reader deposits by: a writer promotes it), an inbox
     /// blob it stamps, and an inbox blob still waiting to apply. A deposit whose bytes never
@@ -165,12 +165,12 @@ impl SyncEngine {
     /// invite, and the rest of the budget stays free. A request goes only past `DEPOSITS_WAITING`
     /// of them. Counted by size, not bytes held: this node drops the bytes of what it judged
     /// invalid or cannot open.
-    pub(super) fn clear_deposits(&mut self, conn: ConnId, host: HostKey, p: &Head, out: &mut Vec<crate::sync::Action>) -> Result<()> {
+    pub(super) fn clear_deposits(&mut self, conn: ConnId, source: PeerKey, p: &Head, out: &mut Vec<crate::sync::Action>) -> Result<()> {
         let (l, keys) = (p.l, &p.keys);
         if keys.delete.is_none() {
             return Ok(());
         }
-        let deposited = self.state.deposited_at(&host, &l);
+        let deposited = self.state.deposited_at(&source, &l);
         if deposited.is_empty() {
             return Ok(());
         }
@@ -179,7 +179,7 @@ impl SyncEngine {
         for id in deposited {
             let Some((kind, Some(size))) = self.state.entries.get(&(l, id)).map(|e| (e.kind.clone(), e.size)) else { continue };
             let idle = match &kind {
-                Kind::Commit { .. } => !self.would_promote(&p.g, l, Some(&host), &id)?,
+                Kind::Commit { .. } => !self.would_promote(&p.g, l, Some(&source), &id)?,
                 Kind::Inbox(Some(c)) => {
                     // unapplied: it waits, as its inbox bytes do, until its turn past `latest`
                     let pending = !self.engine.core.ix.commits.contains_key(c) && self.inbox_opened(&l, &id)?.is_some_and(|o| o.until <= latest);
@@ -237,19 +237,19 @@ impl SyncEngine {
     }
 
     /// The parts of the author's chain for `parts` of commit `c` (`chain_under`) that
-    /// no entry under `l` holds at `host` (`held_parts_at`: the promotion or deletion is
-    /// that host's; `None`: this node's served state); `None` when this node has not applied
+    /// no entry under `l` holds at `source` (`held_parts_at`: the promotion or deletion is
+    /// that source's; `None`: this node's served state); `None` when this node has not applied
     /// `c`.
-    pub(super) fn chain_missing(&mut self, host: Option<HostKey>, g: &Tid, l: LabelId, c: &CommitId, parts: &[usize]) -> Result<Option<crate::labeling::Certs>> {
+    pub(super) fn chain_missing(&mut self, source: Option<PeerKey>, g: &Tid, l: LabelId, c: &CommitId, parts: &[usize]) -> Result<Option<crate::labeling::Certs>> {
         let Some(chain) = self.chain_under(c, &parts.iter().copied().collect()) else { return Ok(None) };
         let closure = self.engine.closure(g);
         let mut out = crate::labeling::Certs::default();
         // records travel raw, also those of the label's own things: a creation's body goes when
         // its thing is destroyed, and what depends on it lives on (spec/permissions.md §4)
-        let held = self.held_records_at(l, host.as_ref().map(std::slice::from_ref), true);
+        let held = self.held_records_at(l, source.as_ref().map(std::slice::from_ref), true);
         out.records = chain.records.difference(&held).copied().collect();
         for (x, want) in chain.commits {
-            let (_, held) = self.held_parts_at(g, l, &x, host.as_ref().map(std::slice::from_ref))?;
+            let (_, held) = self.held_parts_at(g, l, &x, source.as_ref().map(std::slice::from_ref))?;
             // closure bodies carry what is on the label's own things
             let inside = self.engine.header(&x).map(|h| inside(&h, &closure)).unwrap_or_default();
             let missing: Parts = want.difference(&held).filter(|ai| !inside.contains(ai)).copied().collect();
@@ -258,7 +258,7 @@ impl SyncEngine {
             }
         }
         for x in chain.headers {
-            if !self.header_held_at(l, &x, host.as_ref().map(std::slice::from_ref)) {
+            if !self.header_held_at(l, &x, source.as_ref().map(std::slice::from_ref)) {
                 out.headers.insert(x);
             }
         }
@@ -275,7 +275,7 @@ impl SyncEngine {
         RELAY_MIN_MS + u64::from_le_bytes(x) % (SETTLE_MS - RELAY_MIN_MS)
     }
 
-    /// When this node logs commit `c` for a host lacking it, or relays it there (wall ms; a wake
+    /// When this node logs commit `c` for a source lacking it, or relays it there (wall ms; a wake
     /// is set for then), `None` for now: its own (made here, a held key actor's included, or placed
     /// first by a flow) at once, another node's once `relay_delay` has passed since it arrived here.
     pub(super) fn relay_at(&mut self, l: LabelId, c: &CommitId) -> Option<u64> {

@@ -4,7 +4,7 @@
 //! order, and when the pass ends.
 
 use super::state::Kind;
-use super::{ConnId, HostKey, LabelAt, SyncEngine};
+use super::{ConnId, PeerKey, LabelAt, SyncEngine};
 use crate::error::Result;
 use osis_base::{BlobId, LabelId};
 use osis_proto::window::STALL_TIMEOUT_MS;
@@ -47,7 +47,7 @@ impl Fill {
 impl SyncEngine {
     /// The rank of entry `b`. Everything listed is fetched, as a replay brought it inline; what
     /// no writer vouched for and does not open then goes (`drop_unvouched`).
-    fn rank(&self, secrets: &[osis_crypto::Secret32], host: HostKey, l: &LabelId, b: &BlobId, wrap: &[u8]) -> u64 {
+    fn rank(&self, secrets: &[osis_crypto::Secret32], host: PeerKey, l: &LabelId, b: &BlobId, wrap: &[u8]) -> u64 {
         match osis_label::wrap_order(secrets.iter(), b, wrap) {
             // newest first; never `LAST`, and a wrap's own word can do no more than `FIRST`
             Some(t) => if t == FIRST { FIRST } else { (LAST - 1).saturating_sub(t) },
@@ -63,7 +63,7 @@ impl SyncEngine {
     /// Starts `l`'s fill on `conn`: the entries known there and not fetched are queued (a stream
     /// resumed mid-fill lists no more than what came since). Marked in the store until it ends.
     pub(crate) fn fill_start(&mut self, conn: ConnId, l: LabelId) {
-        let Some(host) = self.conns.get(&conn).and_then(super::Conn::key) else { return };
+        let Some(host) = self.conns.get(&conn).and_then(|c| c.peer) else { return };
         self.state.set_filling(host, l, true);
         let secrets = self.fill_secrets(conn, &l);
         let mut queue = BTreeSet::new();
@@ -85,7 +85,7 @@ impl SyncEngine {
         if ids.is_empty() {
             return;
         }
-        let Some(host) = self.conns.get(&conn).and_then(super::Conn::key) else { return };
+        let Some(host) = self.conns.get(&conn).and_then(|c| c.peer) else { return };
         let secrets = self.fill_secrets(conn, &l);
         let ranked: Vec<(u64, BlobId)> = ids.iter().filter_map(|b| self.state.entries.get(&(l, *b)).map(|e| (self.rank(&secrets, host, &l, b, &e.wrap), *b))).collect();
         if let Some(f) = self.label_at_mut(conn, &l).and_then(|x| x.fill.as_mut()) {
@@ -112,7 +112,7 @@ impl SyncEngine {
     pub(crate) fn fill_more(&mut self, conn: ConnId, l: LabelId, out: &mut Vec<super::Action>) -> Result<()> {
         let (secrets_now, now) = (self.secrets_count(), self.now());
         let Some(c) = self.conns.get_mut(&conn) else { return Ok(()) };
-        let Some(host) = c.key() else { return Ok(()) };
+        let Some(host) = c.peer else { return Ok(()) };
         let Some(lc) = c.labels.get_mut(&l) else { return Ok(()) };
         if !lc.phase.is_open() || !lc.fill.as_ref().is_some_and(|f| f.listed) {
             return Ok(());

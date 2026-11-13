@@ -1,0 +1,4 @@
+# net-3i3c2
+- Seven node tests failed only because hosts got the co-readers' at-once redial (offline nodes hear nothing in `Net`, so a test's timing decided whether a stale dial ever came up). Finding that took a run per pacing variant; the tests encode dial timing rather than the property in several places (`leaving::an_until_under_no_host_a_co_reader_past_its_own_until_refuses_nothing` passed only because b never reconnected in its window).
+- No counter of what a node's stream shows another node on a peer link (the `Net::shown` family counts node-to-host links only): a reconnect test had to read raw messages through `tamper` and `tamper_link`.
+- Dropping `HostKey` touched ~110 sites; the type was a bare `[u8; 32]`, so dial keys, outbox destinations and peer state shared one alias and only a newtype/enum split them apart.

@@ -185,6 +185,12 @@ pub(crate) struct Conn {
     pub answered: bool,
     /// Push room (`serve::Room`).
     pub room: super::serve::Room,
+    /// What this node keeps of the peer is kept by (`PeerKey`), from the start of its shared set
+    /// (`shared_begin`): none where it dialed this node and keeps no record with it.
+    pub peer: Option<PeerKey>,
+    /// Labels the peer serves as a store it cannot read (`LabelAt`): on a connection this node
+    /// dialed, each label naming the dialed node; on one the peer dialed, each it opened by
+    /// proving the label's sync secret.
     pub labels: BTreeMap<LabelId, LabelAt>,
     pub req: Requests,
 }
@@ -192,13 +198,11 @@ pub(crate) struct Conn {
 /// A connection this node dialed: what the dial logic reads.
 #[derive(Clone)]
 pub(crate) struct Dial {
-    /// The key dialed: a node a label lists (its dialable key), or a co-reader node's dialable
-    /// key (its LAN address may present another transport key). What a peer that cannot read L
-    /// holds is kept by it (`State::present`; issues/net-one-peer.md 6c).
+    /// The key dialed: a node's dialable key (its LAN address may present another transport key).
     pub key: [u8; 32],
     pub address: Address,
-    /// A co-reader node, not one a label lists.
-    pub peer: bool,
+    /// The pause before this dial (`lost` doubles it while dials fail).
+    pub pause: u64,
     /// When the next Ping goes (`PING_INTERVAL_MS`), and the Pongs' clock samples.
     pub next_ping: u64,
     pub clock: osis_proto::ClockSamples,
@@ -206,13 +210,13 @@ pub(crate) struct Dial {
 
 impl Conn {
     /// A connection this node dialed to `key` at `address`, not up yet.
-    fn dialing(key: [u8; 32], address: Address, peer: bool) -> Conn {
-        let dial = Dial { key, address, peer, next_ping: 0, clock: Default::default() };
+    fn dialing(key: [u8; 32], address: Address, pause: u64) -> Conn {
+        let dial = Dial { key, address, pause, next_ping: 0, clock: Default::default() };
         Conn::new(Some(dial), None, super::Tier::Keyed)
     }
 
     pub(crate) fn new(dial: Option<Dial>, hub: Option<osis_host::ConnId>, tier: super::Tier) -> Conn {
-        Conn { dial, hub, binding: None, tier, ported: false, client: None, pending: BTreeMap::new(), next_id: 0, heard: 0, proven: Default::default(), proved: BTreeSet::new(), asked: super::serve::Asked::Nothing, answered: false, room: Default::default(), labels: BTreeMap::new(), req: Requests::default() }
+        Conn { dial, hub, binding: None, tier, ported: false, client: None, pending: BTreeMap::new(), next_id: 0, heard: 0, proven: Default::default(), proved: BTreeSet::new(), asked: super::serve::Asked::Nothing, answered: false, room: Default::default(), peer: None, labels: BTreeMap::new(), req: Requests::default() }
     }
 
     /// The session started (the peer's Hello arrived): requests may go.
@@ -225,20 +229,15 @@ impl Conn {
         self.hub.is_some()
     }
 
+    /// The peer's key where no record holds what this node read of its stream (`StreamAt`): a
+    /// node it dialed that proves no known actor (spec/sync.md §10, At a store).
+    pub(crate) fn unrecorded(&self) -> Option<PeerKey> {
+        self.peer.filter(|p| matches!(p, PeerKey::Node(_)))
+    }
+
     /// The key this node dialed, none for a connection the peer dialed.
-    pub(crate) fn key(&self) -> Option<[u8; 32]> {
+    pub(crate) fn dial_key(&self) -> Option<[u8; 32]> {
         self.dial.as_ref().map(|d| d.key)
-    }
-
-    /// Dialed to a node a label lists (not a co-reader): what it holds of a label is kept by its
-    /// key, and labels are tested and walked there.
-    pub(crate) fn listed(&self) -> Option<[u8; 32]> {
-        self.dial.as_ref().filter(|d| !d.peer).map(|d| d.key)
-    }
-
-    /// Dialed to a co-reader node.
-    pub(crate) fn to_peer(&self) -> bool {
-        self.dial.as_ref().is_some_and(|d| d.peer)
     }
 }
 
@@ -321,6 +320,7 @@ impl SyncEngine {
         if let Some(h) = c.hub {
             self.hub_conns.remove(&h);
         }
+        let relayed = self.records.carried_by_relay(conn);
         self.records.conn_gone(conn);
         self.streams.remove(&conn);
         // deposits not answered on this connection go out again on the next one
@@ -330,41 +330,39 @@ impl SyncEngine {
         if c.ported {
             out.push(Action::Ended { conn });
         }
-        let Some(d) = c.dial else { return };
-        if let Err(e) = self.memory_lost(d.key) {
+        if let Some(peer) = c.peer
+            && let Err(e) = self.memory_lost(peer)
+        {
             self.diag(format!("forgetting a connection's memory entries: {e}"));
         }
+        let Some(d) = c.dial else { return };
         let up = c.hub.is_some();
         // a LAN address that never came up: back off that address, not the peer (the next
         // route is dialed at once)
-        if d.peer && !up && self.lan_failed(d.key, &d.address) {
+        if !up && self.lan_failed(d.key, &d.address) {
             return;
         }
         // another route failed while a LAN candidate waited: it goes now (once per pause)
-        if d.peer && !up && self.lan_cut(d.key) {
+        if !up && self.lan_cut(d.key) {
             return;
         }
-        // a co-reader whose connection was up is redialed at once, at most once per
+        // a relayed connection that was up is redialed at once, at most once per
         // `peer_retry_ms` (a peer closing every session must not make a dial loop): a P2P dial
-        // that punched through ends its relayed connection and the redial takes the direct
-        // one (notes/networking.md, switching)
+        // that punched through ends its relayed connection and the redial takes the direct one
+        // (notes/networking.md, switching). Another that was up waits `retry_ms`; the pause
+        // doubles per dial that never came up, from `retry_ms` to `peer_retry_ms`.
         let now = self.now();
-        let pause = self.cfg.peer_retry_ms;
-        self.redialed.retain(|_, t| t.saturating_add(pause) > now);
-        let quick = d.peer && up && !self.redialed.contains_key(&d.key);
-        // the sharer node of a link being redeemed is that redemption's one route (first
-        // contact, its key perhaps not listened on yet): redialed after a listed node's pause,
-        // not a co-reader's; once redeemed it is paced like any co-reader
-        let sharer = d.peer && self.state.link_peers.iter().any(|(k, lp)| self.redeeming.contains(k) && lp.peers.iter().any(|a| a.key == d.key));
-        let pause = match (quick, d.peer && !sharer) {
-            (true, _) => {
-                self.redialed.insert(d.key, now);
-                0
-            }
-            (false, true) => pause,
-            (false, false) => self.cfg.retry_ms,
+        let window = self.cfg.peer_retry_ms;
+        self.redialed.retain(|_, t| t.saturating_add(window) > now);
+        let pause = if up && relayed && !self.redialed.contains_key(&d.key) {
+            self.redialed.insert(d.key, now);
+            0
+        } else if up {
+            self.cfg.retry_ms
+        } else {
+            d.pause.saturating_mul(2).clamp(self.cfg.retry_ms, window.max(self.cfg.retry_ms))
         };
-        self.retry.insert(d.key, (d.address, now.saturating_add(pause)));
+        self.retry.insert(d.key, (d.address, now.saturating_add(pause), if up { 0 } else { pause }));
     }
 
     /// Closes connection `conn` from this side: its hub session, or its dial while not up yet.
@@ -377,30 +375,33 @@ impl SyncEngine {
         self.lost(conn, out);
     }
 
-    /// The hosts and co-reader nodes to keep connections to (true: a node).
-    pub(super) fn wanted_hosts(&mut self) -> BTreeMap<HostKey, (Address, bool)> {
-        let mut m: BTreeMap<HostKey, (Address, bool)> = self.cfg.hosts.iter().map(|a| (a.key, (a.clone(), false))).collect();
+    /// The nodes to keep a connection to, by dialable key: the configured ones, those the
+    /// labels and hints name, a queued deposit's, and, with `peers`, co-readers by `reach.0` and
+    /// the sharer nodes of followed links.
+    pub(super) fn wanted_nodes(&mut self) -> BTreeMap<[u8; 32], Address> {
+        let mut m: BTreeMap<[u8; 32], Address> = BTreeMap::new();
         // an address names a node by its key, whatever its scheme
-        fn add<'a>(m: &mut BTreeMap<HostKey, (Address, bool)>, hosts: impl IntoIterator<Item = &'a Address>) {
-            for a in hosts {
-                m.entry(a.key).or_insert_with(|| (a.clone(), false));
+        fn add<'a>(m: &mut BTreeMap<[u8; 32], Address>, nodes: impl IntoIterator<Item = &'a Address>) {
+            for a in nodes {
+                m.entry(a.key).or_insert_with(|| a.clone());
             }
         }
+        add(&mut m, &self.cfg.hosts.clone());
         for (_, l) in self.labels() {
             add(&mut m, &l.hosts);
         }
         for h in self.state.hints.values() {
             add(&mut m, &h.hosts);
         }
-        // a queued deposit's host until it takes it (an inbox host of no label synced here)
+        // a queued deposit's node until it takes it (an inbox's of no label synced here)
         add(&mut m, self.state.outbox.values().filter_map(|o| if let super::state::Dest::Host(a) = &o.to { Some(a) } else { None }));
         if self.cfg.peers {
             for (k, (a, _)) in self.peer_addresses() {
-                m.entry(k).or_insert((a, true));
+                m.entry(k).or_insert(a);
             }
-            // a link's sharer node (first contact, spec/permissions.md §7) is dialed as a co-reader
+            // a link's sharer node (first contact, spec/permissions.md §7)
             for (k, (a, _)) in self.link_routes() {
-                m.entry(k).or_insert((a, true));
+                m.entry(k).or_insert(a);
             }
         }
         if let Some(me) = self.own_key() {
@@ -409,43 +410,42 @@ impl SyncEngine {
         m
     }
 
-    /// Dials wanted hosts without a connection (after their retry time); adds labels to
-    /// open connections.
+    /// Dials wanted nodes without a connection (after their retry time).
     pub(super) fn connect(&mut self, out: &mut Vec<Action>) {
         let now = self.now();
-        let wanted = self.wanted_hosts();
-        // a host no longer wanted keeps no retry time (it would hold the wake in the past)
+        let wanted = self.wanted_nodes();
+        // a node no longer wanted keeps no retry time (it would hold the wake in the past)
         self.retry.retain(|k, _| wanted.contains_key(k));
         // a peer connected by a session it dialed is not dialed (`bind_record`)
         self.stand_in.retain(|_, c| self.conns.get(c).is_some_and(|x| x.dial.is_none()));
-        for (key, (addr, peer)) in wanted {
+        for (key, addr) in wanted {
             if self.stand_in.contains_key(&key) {
                 continue;
             }
-            // a co-reader reached off the LAN that is heard on it: its LAN route is dialed beside
-            // the running connection, which goes once that is up (`lan_switched`)
-            if self.conns.values().any(|c| c.key() == Some(key)) && !(peer && self.lan_probe(&key, &addr)) {
+            // a node reached off the LAN that is heard on it: its LAN route is dialed beside the
+            // running connection, which goes once that is up (`lan_switched`)
+            if self.conns.values().any(|c| c.dial_key() == Some(key)) && !self.lan_probe(&key, &addr) {
                 continue;
             }
-            if self.retry.get(&key).is_some_and(|(_, t)| *t > now) {
+            if self.retry.get(&key).is_some_and(|(_, t, _)| *t > now) {
                 continue;
             }
-            self.retry.remove(&key);
+            let pause = self.retry.remove(&key).map_or(0, |(_, _, p)| p);
             let conn = self.next_conn;
             self.next_conn += 1;
-            self.conns.insert(conn, Conn::dialing(key, addr.clone(), peer));
+            self.conns.insert(conn, Conn::dialing(key, addr.clone(), pause));
             out.push(Action::Dial { conn, address: addr });
         }
     }
 
-    /// Closes connections to co-readers no longer wanted (removed, or sharing only labels
-    /// whose `reach.0` this node withholds).
-    pub(super) fn drop_unwanted_peers(&mut self, out: &mut Vec<Action>) {
-        if !self.conns.values().any(Conn::to_peer) {
+    /// Closes dialed connections to nodes no longer wanted (a label no longer naming them, a
+    /// co-reader removed, or sharing only labels whose `reach.0` this node withholds).
+    pub(super) fn drop_unwanted(&mut self, out: &mut Vec<Action>) {
+        if !self.conns.values().any(|c| c.dial.is_some()) {
             return;
         }
-        let wanted: BTreeSet<HostKey> = if self.cfg.peers { self.peers().keys().copied().chain(self.link_routes().into_keys()).collect() } else { BTreeSet::new() };
-        let gone: Vec<ConnId> = self.conns.iter().filter(|(_, c)| c.dial.as_ref().is_some_and(|d| d.peer && !wanted.contains(&d.key))).map(|(id, _)| *id).collect();
+        let wanted = self.wanted_nodes();
+        let gone: Vec<ConnId> = self.conns.iter().filter(|(_, c)| c.dial_key().is_some_and(|k| !wanted.contains_key(&k))).map(|(id, _)| *id).collect();
         for conn in gone {
             self.close(conn, out);
         }
@@ -461,7 +461,7 @@ impl SyncEngine {
         };
         c.hub = Some(hub);
         self.hub_conns.insert(hub, conn);
-        if let Some(d) = c.dial.as_ref().filter(|d| d.peer) {
+        if let Some(d) = c.dial.as_ref() {
             let (k, a) = (d.key, d.address.clone());
             if self.lan_up(k, &a) {
                 self.lan_switched(conn, k, out);
@@ -609,8 +609,8 @@ impl SyncEngine {
     }
 
     /// Labels to open, with their group and host keys: the synced labels and inbox hints.
-    pub(super) fn wanted_labels(&mut self) -> Vec<(Tid, LabelId, Vec<HostKey>)> {
-        let mut want: Vec<(Tid, LabelId, Vec<HostKey>)> = self.labels().into_iter().map(|(g, l)| (g, l.id, l.hosts.iter().map(|a| a.key).collect())).collect();
+    pub(super) fn wanted_labels(&mut self) -> Vec<(Tid, LabelId, Vec<[u8; 32]>)> {
+        let mut want: Vec<(Tid, LabelId, Vec<[u8; 32]>)> = self.labels().into_iter().map(|(g, l)| (g, l.id, l.hosts.iter().map(|a| a.key).collect())).collect();
         for (l, h) in &self.state.hints {
             if !want.iter().any(|(_, x, _)| x == l) {
                 want.push((h.thing, *l, h.hosts.iter().map(|a| a.key).collect()));
@@ -626,7 +626,7 @@ impl SyncEngine {
     /// `shared_proof_keys`), so a connection holds a member per label its dialer proved and nothing
     /// for the rest.
     pub(super) fn add_new_labels(&mut self, out: &mut Vec<Action>) -> Result<()> {
-        let conns: Vec<(ConnId, HostKey)> = self.conns.iter().filter(|(_, c)| c.is_ready()).filter_map(|(id, c)| c.listed().map(|k| (*id, k))).collect();
+        let conns: Vec<(ConnId, [u8; 32])> = self.conns.iter().filter(|(_, c)| c.is_ready()).filter_map(|(id, c)| c.dial_key().map(|k| (*id, k))).collect();
         if conns.is_empty() {
             return Ok(());
         }

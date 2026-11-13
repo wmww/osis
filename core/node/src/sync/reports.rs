@@ -82,7 +82,7 @@ impl SyncEngine {
     /// there (`LabelAt::head`), else the last of a path being registered, else the head last known
     /// there, else the newest step `label.0` records; all zeros knowing none.
     fn reached_key(&mut self, conn: ConnId, g: &Tid, l: &LabelId) -> [u8; 32] {
-        let host = self.conns.get(&conn).and_then(super::Conn::key);
+        let host = self.conns.get(&conn).and_then(|c| c.peer);
         let known = self.label_at(conn, l).and_then(|x| x.head.clone().or_else(|| match &x.phase {
             super::Phase::Registering { path } => path.last().cloned(),
             _ => None,

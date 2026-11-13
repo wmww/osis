@@ -1,5 +1,5 @@
-//! Pass work sets (spec/sync.md §6, §7; spec/requirements.md, Scale): what a pass at one host,
-//! or a local pass of a label served with no host (`SyncEngine::work`), judges again. A verdict on a commit's bodies and entries changes only through a trigger:
+//! Pass work sets (spec/sync.md §6, §7; spec/requirements.md, Scale): what a pass at one source,
+//! or a local pass of a label served with no source (`SyncEngine::work`), judges again. A verdict on a commit's bodies and entries changes only through a trigger:
 //! its entries or their presence or certificate records changed (`State::touch`),
 //! the engine marked it changed (`Engine::take_changed`: applied, late parts, a drop, a fired
 //! timer, its thing's creation record, its validity flipped, it may have been replaced), a snapshot or a
@@ -40,7 +40,7 @@ pub(crate) struct Touched {
     /// Entries held here newly shown at a source (`State::shown`): no verdict here changes, so
     /// the own part does not judge them again; they wake what waits on them (a delete waiting
     /// for its carrier there) and each source's part judges them there.
-    pub shown: BTreeSet<(Touch, super::state::HostKey)>,
+    pub shown: BTreeSet<(Touch, super::state::PeerKey)>,
     /// Things whose record chains changed (`Held::below` of new record links), or those `roles` reach.
     pub moved: BTreeSet<Tid>,
     /// Whose roles changed and where.
@@ -57,7 +57,7 @@ pub(crate) struct Touched {
 /// The inbox blobs whose copy a home label's pass found all there (`inbox_certificates`), so
 /// passes do not walk them again: a person's grants of 90 days per pass. Kept per label under
 /// what "held" was counted against (`InboxAt`); dropped when a thing that moves the answer
-/// changes, when an entry or a host's copy goes, and by a pass that judges all.
+/// changes, when an entry or a source's copy goes, and by a pass that judges all.
 #[derive(Clone, Default)]
 pub(crate) struct InboxCopied {
     blobs: BTreeMap<(LabelId, BlobId), BTreeSet<Tid>>,
@@ -66,12 +66,12 @@ pub(crate) struct InboxCopied {
     losses: u64,
 }
 
-/// What a label's held parts are counted against (`held_parts`): the hosts another node's entry
-/// must be present at (`counted_at`, sorted; `None`: served with no host) and the newest read
+/// What a label's held parts are counted against (`held_parts`): the sources another node's
+/// entry must be present at (`counted_at`, sorted; `None`: served with none) and the newest read
 /// epoch a copy carrying a rotation must open under.
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct InboxAt {
-    pub hosts: Option<Vec<super::state::HostKey>>,
+    pub sources: Option<Vec<super::state::PeerKey>>,
     pub epoch: Option<osis_crypto::Epoch>,
 }
 
@@ -234,7 +234,7 @@ impl Waits {
     }
 }
 
-/// One label's work set at one connection's host (`LabelAt::work`).
+/// One label's work set at one connection's source (`LabelAt::work`).
 #[derive(Clone, Default)]
 pub(crate) struct Work {
     /// What changed: judged by the next pass.
@@ -313,7 +313,7 @@ impl Work {
 
     /// Notes `n` more changes from elsewhere. Past `max` since the last pass, the next pass judges
     /// everything instead (`SyncConfig::work_max`). What the pass left and the label's own touches
-    /// do not count: at most what the label holds, and entries a host has yet to pull would make
+    /// do not count: at most what the label holds, and entries a source has yet to pull would make
     /// every pass full.
     pub fn bound(&mut self, n: usize, max: usize) {
         self.elsewhere = self.elsewhere.saturating_add(n);
@@ -370,7 +370,7 @@ pub(crate) struct Left {
     pub commits: BTreeSet<CommitId>,
     pub blobs: BTreeSet<BlobId>,
     pub waits: Waits,
-    /// Something outside the set waits for a later pass: a relay the host lacks, a deposit not
+    /// Something outside the set waits for a later pass: a relay the source lacks, a deposit not
     /// promoted.
     pub again: bool,
 }

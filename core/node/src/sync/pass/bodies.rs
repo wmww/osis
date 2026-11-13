@@ -5,13 +5,13 @@ use super::*;
 
 impl SyncEngine {
     /// The entries the must-hold bodies of `l` need (spec/sync.md §6), by priority: the entry of
-    /// each body (at `host` if there, else any genuine one; `None`: this node's own served
+    /// each body (at `source` if there, else any genuine one; `None`: this node's own served
     /// state, any entry), else a fresh placement when this node may log or deposit it, with
-    /// the blobs it links when this node writes. Another node's body not at `host` waits for
+    /// the blobs it links when this node writes. Another node's body not at `source` waits for
     /// its author or a co-writer (`relay_at`). `behind`: this node writes here and a must-hold role
-    /// commit not at the host waits for its relay (`At::behind`).
+    /// commit not at the source waits for its relay (`At::behind`).
     pub(super) fn body_sends(&mut self, p: &Head, bodies: &[Body], snaps: &Snaps, snapping: &Unsettled, left: &mut Left, behind: &mut bool) -> Result<Vec<Out>> {
-        let (g, l, keys, read_ok, host) = (&p.g, p.l, &p.keys, p.read_ok, p.host.as_ref());
+        let (g, l, keys, read_ok, source) = (&p.g, p.l, &p.keys, p.read_ok, p.source.as_ref());
         let mut sends = Vec::new();
         self.stats.bodies += bodies.len() as u64;
         let mut note = Note::default();
@@ -31,20 +31,20 @@ impl SyncEngine {
                 left.waits.held_back.insert(b.commit);
             }
             let Some(needed) = needed else { continue };
-            let entry = self.entry_for(host, &l, b);
+            let entry = self.entry_for(source, &l, b);
             // another blob of the commit holding every needed delta holds it (a rewrite a
             // right holder dropped covered deltas from, a superset), unless it is must-not-hold
             // (`holds_nothing`, spec/sync.md §6)
-            let here = entry.is_some_and(|id| host.is_none_or(|s| self.state.is_present(s, &l, &id)));
-            if !here && self.carried_by(host, &l, &b.commit, &needed) {
+            let here = entry.is_some_and(|id| source.is_none_or(|s| self.state.is_present(s, &l, &id)));
+            if !here && self.carried_by(source, &l, &b.commit, &needed) {
                 continue;
             }
             // a right holder deleted it here: its keep bounds, judged from what it holds, passed
             // there (spec/commits.md §5); not placed again while its live writes are carried
-            if !here && self.delete_stands(host, l, b, &needed, snaps, &mut note)? {
+            if !here && self.delete_stands(source, l, b, &needed, snaps, &mut note)? {
                 continue;
             }
-            // another node's commit not at this host: its author (or a co-writer) first
+            // another node's commit not at this source: its author (or a co-writer) first
             if !here && self.relay_at(p.l, &b.commit).is_some() {
                 left.commits.insert(b.commit);
                 *behind |= b.role_commit && keys.is_writer();
@@ -133,7 +133,7 @@ impl SyncEngine {
     /// kept (`part_kept`) or holding a live write, and no snapshot under the label (`snaps`)
     /// covers it. A blob missing such a part (a rewrite that dropped it) is healed by placing
     /// the commit's blob again.
-    /// Invariant: what one honest node deletes at a host no other's `must_carry` puts back.
+    /// Invariant: what one honest node deletes at a source no other's `must_carry` puts back.
     /// When a body was replaced is judged from the bodies each node holds (spec/commits.md §5), so
     /// a right holder may drop a covered body as past keep-at-least while a holder of other bodies
     /// judges it replaced later, or not at all, and kept. Both sides read the covering snapshot under the
@@ -147,20 +147,20 @@ impl SyncEngine {
     }
 
     /// Whether a delete took body `b` from `l` (a blob of the commit whose `readable` parts are the
-    /// body's, from this node's store, or at `host`: an entry of it gone there and not present,
+    /// body's, from this node's store, or at `source`: an entry of it gone there and not present,
     /// not a wrap of no use) and it stays out: every one of its `parts` only a blob can carry
-    /// (`must_carry`) is held there (at `host`) by another genuine blob of the commit, and no
+    /// (`must_carry`) is held there (at `source`) by another genuine blob of the commit, and no
     /// purge that fell may have been what took it (spec/sync.md §6).
     /// A memory body's delete stands too while memory entries this node refused for its cap are
     /// held there (`refused_there`): a delete-key holder deletes only once the carrier is there,
     /// and this node, not reading those entries, cannot show it is not (a fresh encryption past
     /// that delete would be deleted again, forever).
-    pub(super) fn delete_stands(&mut self, host: Option<&HostKey>, l: LabelId, b: &Body, parts: &[usize], snaps: &Snaps, note: &mut Note) -> Result<bool> {
+    pub(super) fn delete_stands(&mut self, source: Option<&PeerKey>, l: LabelId, b: &Body, parts: &[usize], snaps: &Snaps, note: &mut Note) -> Result<bool> {
         // compared on what the label's actor reads, as the body is: a deleted blob holding more
         // it reads was another body (a rewrite replaced it for a dropped part)
         let Some(g) = self.group_of(&l, None) else { return Ok(false) };
         let mut deleted: Vec<Vec<usize>> = self.state.deleted_bodies(l, b.commit).cloned().collect();
-        if let Some(h) = host {
+        if let Some(h) = source {
             let there = self.state.entries_of(&l, &b.commit).filter(|(id, _)| self.state.is_gone_at(h, &l, id) && !self.state.is_present(h, &l, id));
             deleted.extend(there.filter_map(|(_, e)| if let Kind::Commit { parts, .. } = &e.kind { Some(parts.clone()) } else { None }).collect::<Vec<_>>());
         }
@@ -173,9 +173,9 @@ impl SyncEngine {
         }
         let Some(h) = self.engine.header(&b.commit) else { return Ok(false) };
         let keeps = self.engine.part_keeps(&b.commit)?;
-        let unjudged = h.ephemeral.is_some() && self.refused_there(host, &l);
+        let unjudged = h.ephemeral.is_some() && self.refused_there(source, &l);
         for ai in parts {
-            if self.must_carry(&h, &b.commit, &keeps, *ai, snaps, note)? && !self.carried_by(host, &l, &b.commit, &[*ai]) && !unjudged {
+            if self.must_carry(&h, &b.commit, &keeps, *ai, snaps, note)? && !self.carried_by(source, &l, &b.commit, &[*ai]) && !unjudged {
                 return Ok(false);
             }
         }
@@ -223,17 +223,17 @@ impl SyncEngine {
     }
 
     /// Whether memory entries of `l` this node refused for its cap (unopened here, any of them a
-    /// possible carrier) are held at `host` (`None`: known anywhere).
-    fn refused_there(&self, host: Option<&HostKey>, l: &LabelId) -> bool {
+    /// possible carrier) are held at `source` (`None`: known anywhere).
+    fn refused_there(&self, source: Option<&PeerKey>, l: &LabelId) -> bool {
         let refused = |b: &BlobId| self.memory.unfit.contains(*l, *b) || self.memory.refused.get(l).is_some_and(|r| r.ids.contains(b));
-        self.memory_entries_of(l).any(|(b, _)| refused(&b) && host.is_none_or(|s| self.state.is_present(s, l, &b)))
+        self.memory_entries_of(l).any(|(b, _)| refused(&b) && source.is_none_or(|s| self.state.is_present(s, l, &b)))
     }
 
-    /// Whether an entry of commit `c` holding `parts` is present at `host` under `l` (any
+    /// Whether an entry of commit `c` holding `parts` is present at `source` under `l` (any
     /// entry when `None`: this node's own served state), checked genuine: a forged blob listing
     /// the parts holds nothing, nor a must-not-hold one (`holds_nothing`).
-    pub(super) fn carried_by(&mut self, host: Option<&HostKey>, l: &LabelId, c: &CommitId, parts: &[usize]) -> bool {
-        let ids: Vec<BlobId> = self.state.entries_of(l, c).filter(|(id, e)| !e.cert && matches!(&e.kind, Kind::Commit { parts: p, .. } if parts.iter().all(|x| p.contains(x)) && !self.holds_nothing(c, p)) && host.is_none_or(|s| self.state.holds_at(s, l, id))).map(|(id, _)| id).collect();
+    pub(super) fn carried_by(&mut self, source: Option<&PeerKey>, l: &LabelId, c: &CommitId, parts: &[usize]) -> bool {
+        let ids: Vec<BlobId> = self.state.entries_of(l, c).filter(|(id, e)| !e.cert && matches!(&e.kind, Kind::Commit { parts: p, .. } if parts.iter().all(|x| p.contains(x)) && !self.holds_nothing(c, p)) && source.is_none_or(|s| self.state.holds_at(s, l, id))).map(|(id, _)| id).collect();
         ids.into_iter().any(|id| self.genuine(&id))
     }
 
@@ -282,20 +282,20 @@ impl SyncEngine {
         Ok(out)
     }
 
-    /// The genuine entry under `l` holding exactly this body, not tombstoned at `host` (with no
-    /// host: whose bytes this node holds), whoever placed it (a certificate copy of the same parts holds it too: other nodes see one entry).
-    /// One present at `host` first: the label then holds the body (spec/sync.md §6), and
+    /// The genuine entry under `l` holding exactly this body, not tombstoned at `source` (with no
+    /// source: whose bytes this node holds), whoever placed it (a certificate copy of the same parts holds it too: other nodes see one entry).
+    /// One present at `source` first: the label then holds the body (spec/sync.md §6), and
     /// logging another encryption (this node's own, whose pull was lost) would only add a
     /// duplicate for the tiebreak of §7 to delete. `None`: any entry (this node's served state).
-    pub(super) fn entry_for(&mut self, host: Option<&HostKey>, l: &LabelId, b: &Body) -> Option<BlobId> {
+    pub(super) fn entry_for(&mut self, source: Option<&PeerKey>, l: &LabelId, b: &Body) -> Option<BlobId> {
         let g = self.group_of(l, None)?;
-        let cands: Vec<(BlobId, Vec<usize>)> = self.state.entries_of(l, &b.commit).filter(|(id, e)| matches!(&e.kind, Kind::Commit { .. }) && host.is_none_or(|s| !self.state.is_gone_at(s, l, id))).filter_map(|(id, e)| if let Kind::Commit { parts, .. } = &e.kind { Some((id, parts.clone())) } else { None }).collect();
-        // this node's served state (`host` `None`) serves only what it holds: an entry whose
+        let cands: Vec<(BlobId, Vec<usize>)> = self.state.entries_of(l, &b.commit).filter(|(id, e)| matches!(&e.kind, Kind::Commit { .. }) && source.is_none_or(|s| !self.state.is_gone_at(s, l, id))).filter_map(|(id, e)| if let Kind::Commit { parts, .. } = &e.kind { Some((id, parts.clone())) } else { None }).collect();
+        // this node's served state (`source` `None`) serves only what it holds: an entry whose
         // bytes it dropped (a snapshot dropped a part of the blob it does not serve here, on
         // another thing) is no entry of the body, which is placed again as a blob of its own
-        let mut ids: Vec<BlobId> = cands.into_iter().filter(|(id, parts)| self.readable(&g, &b.commit, parts) == b.parts && (host.is_some() || self.engine.has_blob(id))).map(|(id, _)| id).collect();
-        match host {
-            Some(host) => ids.sort_by_key(|id| !self.state.is_present(host, l, id)),
+        let mut ids: Vec<BlobId> = cands.into_iter().filter(|(id, parts)| self.readable(&g, &b.commit, parts) == b.parts && (source.is_some() || self.engine.has_blob(id))).map(|(id, _)| id).collect();
+        match source {
+            Some(source) => ids.sort_by_key(|id| !self.state.is_present(source, l, id)),
             // one useless at no source first
             None => ids.sort_by_key(|id| self.state.useless_anywhere(l, id)),
         }
@@ -455,10 +455,12 @@ impl SyncEngine {
         b.role_commit || self.engine.core.ix.commits.get(&b.commit).is_some_and(|m| m.view.purges)
     }
 
-    /// This node's verdicts on label `l` at `host` under the keys its last pass there used
-    /// (simulator invariants, spec/sync.md §6); `None` when the label is not open there.
-    pub fn verdicts(&mut self, host: &HostKey, l: &LabelId) -> Result<Option<Verdicts>> {
-        let Some(lc) = self.conns.values().filter(|c| c.key() == Some(*host)).find_map(|c| c.labels.get(l).filter(|x| x.phase.is_open())) else { return Ok(None) };
+    /// This node's verdicts on label `l` at node `node` it dialed under the keys its last pass
+    /// there used (simulator invariants, spec/sync.md §6); `None` when the label is not open
+    /// there.
+    pub fn verdicts(&mut self, node: &[u8; 32], l: &LabelId) -> Result<Option<Verdicts>> {
+        let Some((lc, source)) = self.conns.values().filter(|c| c.dial_key() == Some(*node)).find_map(|c| c.labels.get(l).filter(|x| x.phase.is_open()).zip(c.peer)) else { return Ok(None) };
+        let source = &source;
         let (g, keys) = (lc.group, lc.keys.clone());
         let mut v = Verdicts { writer: keys.is_writer(), ..Verdicts::default() };
         let bodies = self.engine.label_bodies_meta(&g)?;
@@ -473,7 +475,7 @@ impl SyncEngine {
             if let Some(needed) = self.must_hold(b, &snaps, &snapping, &mut note)? {
                 // not placed again (`body_sends`); one held there is checked whatever deletes of
                 // other copies of it took (a duplicate's, the luck of the order a pass drew)
-                if !self.carried_by(Some(host), l, &b.commit, &needed) && self.delete_stands(Some(host), *l, b, &needed, &snaps, &mut note)? {
+                if !self.carried_by(Some(source), l, &b.commit, &needed) && self.delete_stands(Some(source), *l, b, &needed, &snaps, &mut note)? {
                     continue;
                 }
                 v.must_hold.push((b.commit, needed));
@@ -481,8 +483,8 @@ impl SyncEngine {
         }
         let desired = desired(&bodies);
         let entries: Vec<(BlobId, Entry)> = self.state.label_entries(l).map(|(b, e)| (b, e.clone())).collect();
-        let full = self.conns.values().filter(|c| c.key() == Some(*host)).any(|c| c.labels.get(l).is_some_and(|x| x.full));
-        let at = At { g, l: *l, host: Some(*host), keys: &keys, snaps: &snaps, settled: unsettled.is_empty(), behind: false, full };
+        let full = self.conns.values().filter(|c| c.peer == Some(*source)).any(|c| c.labels.get(l).is_some_and(|x| x.full));
+        let at = At { g, l: *l, source: Some(*source), keys: &keys, snaps: &snaps, settled: unsettled.is_empty(), behind: false, full };
         for (id, e) in entries {
             if let Fate::Delete(why, _) = self.deletable(&at, &id, &e, &desired, false, &mut note)? {
                 v.must_not.push((id, format!("{why:?}")));

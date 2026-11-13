@@ -316,9 +316,12 @@ impl SyncEngine {
     /// by a held sync key no known step bears (the walk's), or a hint's label knowing no step, it
     /// opens with no head: the stream's head event names it (`new_head`).
     pub(crate) fn member_unread_there(&mut self, conn: ConnId, l: LabelId, restored: bool, out: &mut Vec<super::Action>) -> Result<()> {
-        // labels are tested and walked only where this node dialed a node the label lists
         let Some(c) = self.conns.get(&conn) else { return Ok(()) };
-        let Some(host) = c.listed() else { return Ok(()) };
+        if c.dial.is_none() {
+            return self.member_proved_there(conn, l, restored, out);
+        }
+        let Some(host) = c.peer else { return Ok(()) };
+        // labels are tested and walked only where this node dialed a node the label names
         let Some(lc) = c.labels.get(&l).filter(|x| !x.phase.is_open()) else { return Ok(()) };
         let g = lc.group;
         let shown = match &lc.phase {
@@ -356,7 +359,36 @@ impl SyncEngine {
         }
         self.stream_source_gained(conn, &l, out)?;
         // a stream resumed by the record read it to the peer's end already: a pass end there
-        if self.read_as_host(conn, &l) && self.stream_read_through(conn, &l) {
+        if self.read_as_store(conn, &l) && self.stream_read_through(conn, &l) {
+            self.stream_read(conn, l, out)?;
+        }
+        Ok(())
+    }
+
+    /// Member `l` of `conn`, a connection the peer dialed, opened by its proof of `l`'s sync
+    /// secret (spec/sync.md §5 Opens): the peer keeps `l` unread and serves it as a store, so it
+    /// holds a `LabelAt` here, open from the start (this node walks nothing and Hits nothing
+    /// there), at the head kept for the peer (`restored`) or the newest step `label.0` records
+    /// (its proof was of that step's sync key); its stream's Head events move it. Only with a
+    /// record (`Conn::peer`, spec/sync.md §10 At a store).
+    fn member_proved_there(&mut self, conn: ConnId, l: LabelId, restored: bool, out: &mut Vec<super::Action>) -> Result<()> {
+        let proved = self.shared_by_proof(conn, &l);
+        // a dialer keeping no record with this node: nothing would find what it holds
+        let Some(c) = self.conns.get(&conn).filter(|c| proved && c.peer.is_some() && !c.labels.contains_key(&l)) else { return Ok(()) };
+        let peer = c.peer;
+        let Some(g) = self.labels().into_iter().find(|(_, x)| x.id == l).map(|(g, _)| g) else { return Ok(()) };
+        let mut lc = Self::new_label_at(g);
+        lc.phase = Phase::Open { by: None, doubted: None };
+        lc.last_sync = self.now();
+        if let Some(c) = self.conns.get_mut(&conn) {
+            c.labels.insert(l, lc);
+        }
+        let kept = peer.filter(|_| restored).and_then(|p| self.state.heads.get(&(p, l)).cloned());
+        if let Some(step) = kept.or_else(|| self.newest_step(&g, &l)) {
+            self.set_head(conn, l, step)?;
+        }
+        self.stream_source_gained(conn, &l, out)?;
+        if self.read_as_store(conn, &l) && self.stream_read_through(conn, &l) {
             self.stream_read(conn, l, out)?;
         }
         Ok(())
@@ -543,8 +575,13 @@ impl SyncEngine {
     }
 
     /// `behind` on step `from` (none: a hint's, knowing no step). A step the peer refused a
-    /// Behind item on in this walk is not asked again.
+    /// Behind item on in this walk is not asked again. None goes to a peer that dialed this node
+    /// (signed by a sync key or claim, spec/sync.md §10 Offer): its stream's Head events move
+    /// the head there.
     fn behind_from(&mut self, conn: ConnId, l: LabelId, from: Option<Step>, out: &mut Vec<super::Action>) -> Result<()> {
+        if self.conns.get(&conn).is_some_and(|c| c.dial.is_none()) {
+            return Ok(());
+        }
         let Some(lc) = self.label_at(conn, &l) else { return Ok(()) };
         let (g, open) = (lc.group, lc.phase.is_open());
         let at_head = from.as_ref().is_some_and(|s| lc.head.as_ref().is_some_and(|h| h.id() == s.id()));
@@ -873,7 +910,7 @@ impl SyncEngine {
     fn refused_for_now(&mut self, conn: ConnId, l: LabelId, code: Code) {
         let now = self.now();
         let (first, cap) = (self.cfg.retry_ms, self.cfg.resync_ms);
-        let Some(key) = self.conns.get(&conn).and_then(super::Conn::key) else { return };
+        let Some(key) = self.conns.get(&conn).and_then(|c| c.peer) else { return };
         let (n, last) = self.refusals.entry((key, l)).or_insert((0, code));
         let wait = backoff(first, cap, *n);
         *n = n.saturating_add(1);
@@ -924,7 +961,7 @@ impl SyncEngine {
                 }
                 // deposits refused while the label was unknown there go now, not after their
                 // back-off (a node's own deposits under a label it just created)
-                if let Some(host) = self.conns.get(&conn).and_then(super::Conn::key) {
+                if let Some(host) = self.conns.get(&conn).and_then(super::Conn::dial_key) {
                     for (_, o) in self.outbox.range_mut((host, l, osis_base::BlobId([0; 32]))..=(host, l, osis_base::BlobId([0xff; 32]))) {
                         o.after = 0;
                     }
@@ -972,7 +1009,7 @@ impl SyncEngine {
     /// Takes `step` as the head of `l` on `conn`: its keys derived, recorded for the peer, a
     /// pass wanted (judging everything when the head moved).
     pub(crate) fn set_head(&mut self, conn: ConnId, l: LabelId, step: Step) -> Result<()> {
-        let host = self.conns.get(&conn).and_then(super::Conn::key);
+        let host = self.conns.get(&conn).and_then(|c| c.peer);
         let Some(lc) = self.label_at(conn, &l) else { return Ok(()) };
         let g = lc.group;
         let keys = self.engine.head_keys(&g, &step)?;

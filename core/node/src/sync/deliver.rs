@@ -5,7 +5,7 @@
 //! placed under a label (spec/permissions.md §3, re-seal).
 
 use super::conn::Phase;
-use super::{Action, ConnId, HostKey, SyncEngine};
+use super::{Action, ConnId, PeerKey, SyncEngine};
 use crate::error::Result;
 use crate::flows::{Delivery, Done, SyncState};
 use crate::rotation::{Dropped, Leaving, LostScope};
@@ -323,7 +323,7 @@ impl SyncEngine {
         // what this node read of the streams of peers that cannot read L is no longer what it
         // holds (labels forgotten, or the entries of forgotten things under labels kept): later
         // joins there list from the start (a rare path, brute force: every such peer's)
-        let keys: Vec<HostKey> = self.state.stream_at.keys().copied().collect();
+        let keys: Vec<PeerKey> = self.state.stream_at.keys().copied().collect();
         for h in keys {
             self.state.set_stream_at(h, None);
         }
@@ -607,9 +607,9 @@ impl SyncEngine {
         self.labels();
         for (h, until) in due {
             let k = h.k;
-            let labels: Vec<(LabelId, &Vec<HostKey>)> = self.synced.by_actor.get(&k).into_iter().flatten().filter_map(|id| self.synced.actors.get(id).map(|(_, s)| (*id, s))).collect();
+            let labels: Vec<(LabelId, &Vec<[u8; 32]>)> = self.synced.by_actor.get(&k).into_iter().flatten().filter_map(|id| self.synced.actors.get(id).map(|(_, s)| (*id, s))).collect();
             let hostless = !labels.is_empty() && labels.iter().all(|(_, s)| s.is_empty());
-            let after = labels.iter().all(|(id, s)| s.iter().all(|host| self.passes.get(&(*host, *id)).is_some_and(|p| until.is_none_or(|u| p.1 >= u.0))));
+            let after = labels.iter().all(|(id, s)| s.iter().all(|node| self.passed_at(node, id).is_some_and(|p| until.is_none_or(|u| p.1 >= u.0))));
             let ready = if hostless { h.here } else { after && self.complete_pass(&k) };
             if self.links_failed.contains(&k) || !ready {
                 continue;
@@ -794,7 +794,7 @@ impl SyncEngine {
             let since = self.role_change.get(&a).map_or(0, |x| x.0);
             for l in self.synced.by_actor.get(&a).into_iter().flatten() {
                 let Some((_, hosts)) = self.synced.actors.get(l) else { continue };
-                for (id, c, key) in self.conns.iter().filter_map(|(id, c)| c.listed().filter(|k| hosts.contains(k)).map(|k| (id, c, k))) {
+                for (id, c, key) in self.conns.iter().filter_map(|(id, c)| c.dial_key().filter(|k| hosts.contains(k)).zip(c.peer).map(|(_, p)| (id, c, p))) {
                     let live = c.labels.get(l).is_some_and(|x| x.phase.is_open() && x.synced && x.fill.is_none());
                     if live && self.passes.get(&(key, *l)).is_none_or(|p| p.0 <= since) {
                         ask.push(*id);
@@ -810,17 +810,22 @@ impl SyncEngine {
         Ok(())
     }
 
+    /// The last pass end of `l` at node `node` this node dialed (`passes`, by its peer key).
+    fn passed_at(&self, node: &[u8; 32], l: &LabelId) -> Option<&(u64, u64)> {
+        self.passes.get(&(*self.dialed_peers.get(node)?, *l))
+    }
+
     /// Whether label `l` (held under `thing`) passed completely after `since`
-    /// (spec/permissions.md §3): at each of `hosts` and, until `waited`, at each source it was
+    /// (spec/permissions.md §3): at each node of `hosts` (the label's `label.0`) and, until `waited`, at each source it was
     /// received from that still reads it, connected or not (`peer_received`). With neither,
     /// nothing upstream holds what it lacks: it passes once `waited` (a node serving it alone,
     /// spec/sync.md §5, else never re-seals or unties).
-    fn label_passed(&self, l: &LabelId, thing: &Tid, hosts: impl Iterator<Item = HostKey>, since: u64, waited: bool) -> bool {
+    fn label_passed(&self, l: &LabelId, thing: &Tid, hosts: impl Iterator<Item = [u8; 32]>, since: u64, waited: bool) -> bool {
         let after = |p: Option<&(u64, u64)>| p.is_some_and(|p| p.0 > since);
         let mut any = false;
         for h in hosts {
             any = true;
-            if !after(self.passes.get(&(h, *l))) {
+            if !after(self.passed_at(&h, l)) {
                 return false;
             }
         }

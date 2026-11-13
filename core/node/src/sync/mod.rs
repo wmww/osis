@@ -49,7 +49,7 @@ use crate::labeling::{GroupLabel, HeadKeys};
 use osis_base::{Ak, LabelId, Tid};
 use osis_label::{Address, Step};
 use osis_proto::Code;
-use state::{HostKey, State};
+use state::{PeerKey, State};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::sync::mpsc::Receiver;
@@ -85,7 +85,7 @@ pub(crate) struct Synced {
     pub(crate) ids: BTreeSet<LabelId>,
     /// Per label, the actor its keys derive from and its hosts' keys (`complete_pass`,
     /// `peers::host_keys`).
-    pub actors: BTreeMap<LabelId, (Tid, Vec<HostKey>)>,
+    pub actors: BTreeMap<LabelId, (Tid, Vec<[u8; 32]>)>,
     /// `actors` by actor: the labels of each.
     pub by_actor: BTreeMap<Tid, BTreeSet<LabelId>>,
 }
@@ -109,17 +109,15 @@ pub struct SyncEngine {
     pub(crate) cfg: SyncConfig,
     pub(crate) conns: BTreeMap<ConnId, Conn>,
     next_conn: ConnId,
-    /// Hosts not connected: when to dial again.
-    retry: BTreeMap<HostKey, (Address, u64)>,
-    /// Co-readers redialed at once after an up connection ended, and when (wall ms): at most
-    /// once per `peer_retry_ms` each.
-    redialed: BTreeMap<HostKey, u64>,
-    /// Co-readers whose dialed connection closed as the duplicate of one they dialed here: not
+    /// Nodes not connected, by dialable key: where, when to dial again, and the pause that
+    /// led there (`lost`).
+    retry: BTreeMap<[u8; 32], (Address, u64, u64)>,
+    /// Nodes redialed at once after an up relayed connection ended, and when (wall ms): at most once per
+    /// `peer_retry_ms` each.
+    redialed: BTreeMap<[u8; 32], u64>,
+    /// Nodes whose dialed connection closed as the duplicate of one they dialed here: not
     /// dialed while that session lasts (`bind_record`).
-    pub(crate) stand_in: BTreeMap<HostKey, ConnId>,
-    /// Followed links (by K) whose redemption is under way: their sharer nodes are redialed after
-    /// `retry_ms`, not `peer_retry_ms` (`lost`). Memory only: no redemption outlives the process.
-    redeeming: BTreeSet<Tid>,
+    pub(crate) stand_in: BTreeMap<[u8; 32], ConnId>,
     /// The role generation and key actors `reprove` last looked at.
     provers_mark: Option<(u64, Vec<Tid>)>,
     /// `own_key`'s cache: the dialable secret's key.
@@ -127,13 +125,13 @@ pub struct SyncEngine {
     pub(crate) state: State,
     /// Event counter: pass completions and remote role commits are ordered by it.
     pub(crate) seq: u64,
-    /// Per (host, label), the last pass end: its `seq` and when (wall ms).
+    /// Per (source, label), the last pass end: its `seq` and when (wall ms).
     /// Kept across disconnects on purpose: readers ask "a pass ended after X", never "on the live
     /// connection". `complete_pass` counts only passes after the actor's last remote role
     /// commit (`role_change`), and finalizing an expired link only those ended after `until`;
     /// what reached the host after a pass end is the same race online, and a duplicate re-seal
     /// costs a box. Clearing would block re-seal and link finalization while one host is down.
-    pub(crate) passes: BTreeMap<(HostKey, LabelId), (u64, u64)>,
+    pub(crate) passes: BTreeMap<(PeerKey, LabelId), (u64, u64)>,
     wake: Option<u64>,
     /// Per label, when it last had every source caught up (wall ms; `label_status`, memory only).
     last_synced: BTreeMap<LabelId, u64>,
@@ -148,7 +146,7 @@ pub struct SyncEngine {
     restarted_at: Option<[u64; 2]>,
     /// Where each queued deposit (`State::outbox`: inbox blobs, a non-writer's own writes)
     /// stands: waiting for its host, or sent and not answered yet.
-    pub(crate) outbox: BTreeMap<(HostKey, LabelId, osis_base::BlobId), local::Outgoing>,
+    pub(crate) outbox: BTreeMap<state::OutKey, local::Outgoing>,
     /// Deposits for a label this node syncs with nobody: logged here, as a peer's deposit would
     /// be (`send_outbox`).
     pub(crate) local_inbox: Vec<(LabelId, Vec<u8>, [u8; osis_crypto::WRAP_LEN])>,
@@ -229,7 +227,7 @@ pub struct SyncEngine {
     /// The work sets of the passes, by label.
     pub(crate) work: BTreeMap<osis_base::LabelId, work::Work>,
     /// When this node first saw each entry deposited at a host (wall ms; the promotion wait).
-    pub(crate) deposit_seen: BTreeMap<(HostKey, LabelId, osis_base::BlobId), u64>,
+    pub(crate) deposit_seen: BTreeMap<(PeerKey, LabelId, osis_base::BlobId), u64>,
     /// Stranded reports sent (`reports::stranded`): (label, sync key of the step reached,
     /// recipient). In memory: after a restart each goes once more.
     pub(crate) stranded_sent: BTreeSet<(LabelId, [u8; 32], reports::To)>,
@@ -298,12 +296,16 @@ pub struct SyncEngine {
     pub(crate) touched: work::Touched,
     /// The hub's connection IDs of the connections up.
     pub(crate) hub_conns: BTreeMap<osis_host::ConnId, ConnId>,
-    /// Registrations a host refused for now in a row, per (host, label), whatever connection
+    /// Registrations a peer refused for now in a row, per (peer, label), whatever connection
     /// (the back-off doubles per refusal), with the last refusal's code (status shows a label not
-    /// admitted, code 14). Bounded by labels times hosts.
-    pub(crate) refusals: BTreeMap<(HostKey, LabelId), (u32, Code)>,
+    /// admitted, code 14). Bounded by labels times peers kept.
+    pub(crate) refusals: BTreeMap<(PeerKey, LabelId), (u32, Code)>,
     /// Co-readers found on the LAN: their address there and when (wall ms).
-    pub(crate) lan: BTreeMap<HostKey, peers::LanRoute>,
+    pub(crate) lan: BTreeMap<[u8; 32], peers::LanRoute>,
+    /// The peer key of each node this node dialed, as its last connection's shared set began
+    /// (`shared_begin`): a node a label names, found by its dialable key (`peer_of`). Memory
+    /// only, as what it finds (`passes`, `refusals`) is.
+    pub(crate) dialed_peers: BTreeMap<[u8; 32], PeerKey>,
     /// The next `publish_reach` writes a fresh lan secret.
     pub(crate) lan_rotate: bool,
     /// The account `reach.0` was last checked against (`republish_reach`).
@@ -397,7 +399,6 @@ impl SyncEngine {
             retry: Default::default(),
             redialed: Default::default(),
             stand_in: Default::default(),
-            redeeming: Default::default(),
             provers_mark: Default::default(),
             own_key: Default::default(),
             state: Default::default(),
@@ -463,6 +464,7 @@ impl SyncEngine {
             synced_of: crate::engine::memo::Memo::new("labels synced"),
             hub_conns: Default::default(),
             refusals: Default::default(),
+            dialed_peers: Default::default(),
             covered_judged: Default::default(),
             stats: Default::default(),
             records: Default::default(),
@@ -515,7 +517,7 @@ impl SyncEngine {
         let started_ = self.engine.now().0;
         let SyncEngine {
             engine: _, events: _, rng: _, cfg: _, hub_store: _, next_conn: _, diagnostics: _, store_writes: _, restart_due: _, restarted_at: _, hosting: _,
-            forget_seeded, pending_seeded, unvouched_reported, conns, retry, redialed, stand_in, redeeming, provers_mark, own_key, state, seq, passes, wake, last_tick, outbox, local_inbox, left, lifetimes_heard, first, relay_now, body_links, inbox_opened, vetted, hint_failed, inbox_copied, secrets_counted, reading_counted, unsettled_memo, relink_backoff, relink_pending, reask, relink_at, deferred, genuine, reread_boxes, start_look, redelivered, awaits_secrets, retry_inbox, inbox_awaits, inbox_plain, unchecked_swept, settle_at, held_since, pass_due, due_labels, own_wrote, fill_due, passed_at, passing, work, deposit_seen, stranded_sent, stranded_on, stranded_asks, resealed, suspects_sent, suspects_gen, suspects_due, repair_state, links_failed, joined_touched, joined_failed, tied, synced, synced_of, hub_conns, refusals, covered_judged, stats, records, streams, changed_due, changed_gen, touched, own_keys, lan, lan_rotate, reach_account, served_cache, unread, charges, blob_sizes, swept, peer_cache, peer_received, peer_passes, sources_gen, shared_dirty, changed_moved, role_change, pass_wanted, started, rotation_at, placed_cache, placed_waiting, rotated, last_synced, clients_moved, prefix_checked, memory,
+            forget_seeded, pending_seeded, unvouched_reported, conns, retry, redialed, stand_in, provers_mark, own_key, state, seq, passes, wake, last_tick, outbox, local_inbox, left, lifetimes_heard, first, relay_now, body_links, inbox_opened, vetted, hint_failed, inbox_copied, secrets_counted, reading_counted, unsettled_memo, relink_backoff, relink_pending, reask, relink_at, deferred, genuine, reread_boxes, start_look, redelivered, awaits_secrets, retry_inbox, inbox_awaits, inbox_plain, unchecked_swept, settle_at, held_since, pass_due, due_labels, own_wrote, fill_due, passed_at, passing, work, deposit_seen, stranded_sent, stranded_on, stranded_asks, resealed, suspects_sent, suspects_gen, suspects_due, repair_state, links_failed, joined_touched, joined_failed, tied, synced, synced_of, hub_conns, refusals, dialed_peers, covered_judged, stats, records, streams, changed_due, changed_gen, touched, own_keys, lan, lan_rotate, reach_account, served_cache, unread, charges, blob_sizes, swept, peer_cache, peer_received, peer_passes, sources_gen, shared_dirty, changed_moved, role_change, pass_wanted, started, rotation_at, placed_cache, placed_waiting, rotated, last_synced, clients_moved, prefix_checked, memory,
         } = self;
         *forget_seeded = false;
         *pending_seeded = false;
@@ -524,7 +526,6 @@ impl SyncEngine {
         *retry = BTreeMap::new();
         *redialed = BTreeMap::new();
         *stand_in = BTreeMap::new();
-        *redeeming = BTreeSet::new();
         *provers_mark = None;
         *own_key = None;
         *state = loaded;
@@ -586,6 +587,7 @@ impl SyncEngine {
         *synced_of = crate::engine::memo::Memo::new("labels synced");
         *hub_conns = BTreeMap::new();
         *refusals = BTreeMap::new();
+        *dialed_peers = BTreeMap::new();
         *covered_judged = BTreeSet::new();
         *stats = PassStats::default();
         *records = records::Records::default();
@@ -622,6 +624,13 @@ impl SyncEngine {
         // durable commits forgotten whole whose entries were not yet deleted at hosts
         for (c, header) in self.state.forgotten.clone() {
             self.memory.forgotten.insert(c, memory::Forgotten { header, why: crate::engine::MemoryDrop::Gone });
+        }
+        // what was kept of peers whose record went (evicted, or never committed before a crash):
+        // no connection finds it again
+        let peers = self.state.recorded_peers();
+        let gone: Vec<osis_store::RecordId> = self.engine.run(|tx| Ok(peers.into_iter().filter_map(|id| tx.txn.record(&id).map(|r| r.is_none().then_some(id)).transpose()).collect::<std::result::Result<Vec<_>, _>>()?))?;
+        for id in gone {
+            self.state.forget_peer(PeerKey::Record(id));
         }
         // a forgetting a crash interrupted before its inbox check
         self.forget_inbox()?;
@@ -946,7 +955,7 @@ impl SyncEngine {
         self.stream_settle_all(out)?;
         // after the re-judging and settling: a peer no longer wanted gets this node's reports
         // of what it applied from it (spec/sync.md §5 Placed: its removal's Applied) first
-        self.drop_unwanted_peers(out);
+        self.drop_unwanted(out);
         // the unread sync IDs shared now, their memory entries before the pushes
         self.unread_restream()?;
         // pushes after the re-judging: nothing of this step goes to a member it ended
@@ -992,7 +1001,7 @@ impl SyncEngine {
             }
             labels.extend(self.engine.labels_read(&g)?.into_iter().map(|l| (g, l)));
         }
-        let actors: BTreeMap<LabelId, (Tid, Vec<HostKey>)> = labels.iter().map(|(g, l)| (l.id, (self.keys_actor(g), peers::host_keys(&l.hosts).collect()))).collect();
+        let actors: BTreeMap<LabelId, (Tid, Vec<[u8; 32]>)> = labels.iter().map(|(g, l)| (l.id, (self.keys_actor(g), peers::host_keys(&l.hosts).collect()))).collect();
         let mut by_actor: BTreeMap<Tid, BTreeSet<LabelId>> = BTreeMap::new();
         for (l, (a, _)) in &actors {
             by_actor.entry(*a).or_default().insert(*l);

@@ -1,6 +1,6 @@
 //! A pass's deletion judgment (spec/sync.md §5-§7): which entries under the label are
 //! must-not-hold and may go now (`judge`, `deletable`), carriers first, by the label delete key
-//! or a delete key, freed links of the scope (`freed_now`); at a host (`deletions`) and in this node's own served state (`local_deletions`).
+//! or a delete key, freed links of the scope (`freed_now`); at a source (`deletions`) and in this node's own served state (`local_deletions`).
 
 use super::*;
 use crate::engine::MemoryDrop;
@@ -56,7 +56,7 @@ impl SyncEngine {
                 self.state.drop_entry(l, id);
             }
         }
-        // the blobs certificate copies linked, as a pass at a host deletes them (the bytes
+        // the blobs certificate copies linked, as a pass at a source deletes them (the bytes
         // stay: they are the engine's own): of the copies in `scope`, of every one when a
         // linked entry is
         let copied = self.copies_in(&l, scope);
@@ -76,7 +76,7 @@ impl SyncEngine {
 
     /// What may become of entry `id` under `l` (spec/sync.md §6, §7): `judge`, then a body
     /// with a delta to carry goes only with a carrier (`carried`; else a covering snapshot is asked for,
-    /// `snapshot_first`, when `carrier`) and by a delete item this node can make. `host`
+    /// `snapshot_first`, when `carrier`) and by a delete item this node can make. `source`
     /// `None`: this node's own served state.
     pub(super) fn deletable(&mut self, at: &At, id: &BlobId, e: &Entry, desired: &Desired, carrier: bool, note: &mut Note) -> Result<Fate> {
         let Some((Hold::MustNot(why), to_carry, aspects)) = self.judge(at, id, e, desired, note)? else { return Ok(Fate::Keep) };
@@ -104,10 +104,10 @@ impl SyncEngine {
     }
 
     /// Facts about an entry under the label (spec/sync.md §6): `None` when this node cannot
-    /// judge it (may-hold). `host` `None`: this node's own served state (every entry counts
+    /// judge it (may-hold). `source` `None`: this node's own served state (every entry counts
     /// as present).
     fn judge(&mut self, at: &At, id: &BlobId, e: &Entry, desired: &Desired, note: &mut Note) -> Result<Option<Judged>> {
-        let (g, l, host, snaps, settled) = (&at.g, &at.l, at.host.as_ref(), at.snaps, at.settled);
+        let (g, l, source, snaps, settled) = (&at.g, &at.l, at.source.as_ref(), at.snaps, at.settled);
         let now = self.now();
         let Kind::Commit { commit, parts: opened, ais } = &e.kind else { return Ok(None) };
         // judged on the parts the label's actor reads (`readable`), as every node of it does
@@ -118,7 +118,7 @@ impl SyncEngine {
         // a minting's header alone its things' witnesses supersede (spec/commits.md §5, A thing's
         // mintings travel with its record)
         if opened.is_empty() && settled && !desired.get(commit).is_some_and(|d| d.iter().any(|p| p.is_empty())) {
-            match self.superseded_minting(g, l, host, commit, &h) {
+            match self.superseded_minting(g, l, source, commit, &h) {
                 Some(true) => return Ok(Some((Hold::MustNot(Why::Outside), false, Vec::new()))),
                 // its witness not up yet: judged again next pass
                 Some(false) => note.unsure = true,
@@ -150,7 +150,7 @@ impl SyncEngine {
             return Ok(Some((Hold::MustNot(Why::Outside), false, Vec::new())));
         }
         if opened.iter().any(|p| m.body_gone(*p) && !self.engine.left_at_hosts(commit, *p)) {
-            // a body dropped as covered leaves hosts `MAX_DRIFT` past its keep-at-least bound, once
+            // a body dropped as covered leaves sources `MAX_DRIFT` past its keep-at-least bound, once
             // every node's clock agrees it may go (spec/commits.md §5 Keep bounds)
             let from = opened.iter().filter_map(|p| m.dropped(*p)).map(|d| d.hosts_from).max().unwrap_or(0);
             if from > now {
@@ -164,7 +164,7 @@ impl SyncEngine {
             return Ok(Some((Hold::MustNot(Why::Dropped), to_carry, aspects)));
         }
         // a delta dropped here while invalid: no right deletes it (spec/permissions.md §6), so
-        // the hosts keep the copy a re-grant fetches, unless a right dropped another (above)
+        // the sources keep the copy a re-grant fetches, unless a right dropped another (above)
         if opened.iter().any(|p| self.engine.left_at_hosts(commit, *p)) {
             return Ok(None);
         }
@@ -186,11 +186,11 @@ impl SyncEngine {
             // whatever its ID
             // (in this node's own store: useless at a source, where another encryption replaces it;
             // one whose bytes it dropped is no copy either, as `entry_for` places the body anew)
-            let useless = match host {
+            let useless = match source {
                 Some(s) => self.state.is_gone_at(s, l, id),
                 None => self.state.useless_anywhere(l, id),
             };
-            let same: Vec<BlobId> = self.state.entries_of(l, commit).filter(|(b, o)| (b < id || (useless && b != id)) && !o.cert && matches!(&o.kind, Kind::Commit { ais: a, .. } if a == ais) && match host {
+            let same: Vec<BlobId> = self.state.entries_of(l, commit).filter(|(b, o)| (b < id || (useless && b != id)) && !o.cert && matches!(&o.kind, Kind::Commit { ais: a, .. } if a == ais) && match source {
                 Some(s) => self.state.holds_at(s, l, b),
                 None => !self.state.useless_anywhere(l, b) && self.engine.has_blob(b),
             }).map(|(b, _)| b).collect();
@@ -206,9 +206,9 @@ impl SyncEngine {
             } else {
                 self.state
                     .entries_of(l, commit)
-                    .filter(|(b, _)| b != id && host.is_none_or(|s| self.state.holds_at(s, l, b)))
+                    .filter(|(b, _)| b != id && source.is_none_or(|s| self.state.holds_at(s, l, b)))
                     .filter_map(|(b, o)| match &o.kind {
-                        // a must-not-hold superset counts for nothing, nor one at another host (the
+                        // a must-not-hold superset counts for nothing, nor one at another source (the
                         // label there lacks the writes this one carries: the superset goes up first)
                         Kind::Commit { parts: p2, .. } if !self.holds_nothing(commit, p2) => Some((b, p2.clone())),
                         _ => None,
@@ -296,19 +296,19 @@ impl SyncEngine {
     /// Whether a header alone of commit `c` (header `h`) under `l` is a superseded minting of the
     /// things it mints, all outside `g`'s closure (spec/commits.md §5, A thing's mintings travel
     /// with its record): standing lower than each one's witness and expiring before it (or a
-    /// minting tying it). `Some(true)`: the label holds such a witness at `host`, so it goes;
+    /// minting tying it). `Some(true)`: the label holds such a witness at `source`, so it goes;
     /// `Some(false)`: not yet (judged again each pass); `None`: no such header. Any node judges it:
     /// one that lacks a request dropping its witness ranks that one no lower than it stands, so
     /// what stays reads the thing live while it is, and once it is destroyed its witness is placed
     /// again (`certificates`). Expiry orders copies alike in every view, so two nodes whose
     /// standings differ never delete each other's copy in one round: the latest-expiring copy stays.
-    fn superseded_minting(&mut self, g: &Tid, l: &LabelId, host: Option<&HostKey>, c: &CommitId, h: &osis_commit::Header) -> Option<bool> {
+    fn superseded_minting(&mut self, g: &Tid, l: &LabelId, source: Option<&PeerKey>, c: &CommitId, h: &osis_commit::Header) -> Option<bool> {
         let minted: BTreeSet<Tid> = h.aspects.iter().filter(|a| a.ak.as_str() == osis_commit::retention::CREATED).map(|a| a.tid).collect();
         let closure = self.engine.closure(g);
         if minted.is_empty() || !h.requests().is_empty() || minted.iter().any(|t| closure.contains(t)) {
             return None;
         }
-        let hosts = host.map(std::slice::from_ref);
+        let sources = source.map(std::slice::from_ref);
         let mut held = true;
         for t in &minted {
             let w = self.engine.witness(t)?;
@@ -324,7 +324,7 @@ impl SyncEngine {
             if ties.is_empty() {
                 return None;
             }
-            held &= ties.iter().any(|z| self.header_held_at(*l, z, hosts));
+            held &= ties.iter().any(|z| self.header_held_at(*l, z, sources));
         }
         Some(held)
     }
@@ -367,7 +367,7 @@ impl SyncEngine {
     /// An entry of a memory commit the engine forgot whole (spec/sync.md §9: covered,
     /// superseded, expired, freed): must-not-hold, with live writes to carry when a snapshot or
     /// superseder covers it (`carried`), none otherwise. Judged again every pass until it goes
-    /// (`unsure`: what it waits for is the carrier's presence at the host, no state change here).
+    /// (`unsure`: what it waits for is the carrier's presence at the source, no state change here).
     /// A superseded body is its author's to delete, nobody else's.
     fn judge_forgotten(&mut self, commit: &CommitId, parts: &[usize], note: &mut Note) -> Option<Judged> {
         let f = self.memory.forgotten.get(commit)?;
@@ -394,7 +394,7 @@ impl SyncEngine {
     /// `node.0` and `reach.0`, the node departed (a departed node is never dialed; its `keys.0`
     /// stays while chains of its old writes may need it).
     fn stale_card(&mut self, at: &At, c: &CommitId, h: &osis_commit::Header, parts: &[usize]) -> bool {
-        let (g, l, host) = (&at.g, &at.l, at.host.as_ref());
+        let (g, l, source) = (&at.g, &at.l, at.source.as_ref());
         // a card is the node's own write
         let me = self.engine.tid();
         let aks: BTreeSet<&str> = parts.iter().filter_map(|ai| h.aspects.get(*ai)).filter(|a| a.tid == h.author).map(|a| a.ak.as_str()).collect();
@@ -433,19 +433,19 @@ impl SyncEngine {
             if x == *c || !self.engine.header(&x).is_some_and(|n| n.ts > h.ts) {
                 return false;
             }
-            let ids: Vec<BlobId> = self.state.entries_of(l, &x).filter(|(id, _)| host.is_none_or(|s| self.state.holds_at(s, l, id))).map(|(id, _)| id).collect();
+            let ids: Vec<BlobId> = self.state.entries_of(l, &x).filter(|(id, _)| source.is_none_or(|s| self.state.holds_at(s, l, id))).map(|(id, _)| id).collect();
             ids.into_iter().any(|id| self.genuine(&id))
         })
     }
 
-    /// Deletes must-not-hold entries present at the host, carriers first (spec/sync.md §6,
+    /// Deletes must-not-hold entries present at the source, carriers first (spec/sync.md §6,
     /// §7). Judges the entries and bodies of `scope`; what waits goes into `left`.
     pub(super) fn deletions(&mut self, conn: ConnId, at: &At, bodies: &[Body], scope: &Scope, left: &mut Left, out: &mut Vec<crate::sync::Action>) -> Result<()> {
         let (l, keys, settled) = (at.l, at.keys, at.settled);
-        let Some(host) = at.host else { return Ok(()) };
+        let Some(source) = at.source else { return Ok(()) };
         let ids: Vec<BlobId> = match scope {
-            Scope::All => self.state.present_at(&host, &l),
-            Scope::Some { .. } => self.scope_entries(&l, scope).into_iter().filter(|b| self.state.is_present(&host, &l, b)).collect(),
+            Scope::All => self.state.present_at(&source, &l),
+            Scope::Some { .. } => self.scope_entries(&l, scope).into_iter().filter(|b| self.state.is_present(&source, &l, b)).collect(),
         };
         self.stats.entries += ids.len() as u64;
         let desired = desired(bodies);
@@ -483,12 +483,12 @@ impl SyncEngine {
         let (waiting, judged): (Vec<BlobId>, Vec<BlobId>) = ids.iter().partition(|id| busy(self, &BTreeSet::new(), id));
         left.blobs.extend(waiting);
         let freed = self.freed_now(judged)?;
-        let wants: Vec<BlobId> = self.engine.freed_wants().filter(|b| self.state.is_present(&host, &l, b)).copied().collect();
+        let wants: Vec<BlobId> = self.engine.freed_wants().filter(|b| self.state.is_present(&source, &l, b)).copied().collect();
         left.blobs.extend(wants.iter().copied());
         self.fetch_on(conn, l, wants, out)?;
         for f in &freed {
             let id = f.link.blob;
-            if !self.state.is_present(&host, &l, &id) {
+            if !self.state.is_present(&source, &l, &id) {
                 continue;
             }
             left.blobs.insert(id);
@@ -508,7 +508,7 @@ impl SyncEngine {
             let copied = self.copies_in(&l, scope);
             let mut gone = BTreeSet::new();
             for b in self.copy_links(&l, copied)? {
-                if self.state.is_present(&host, &l, &b) {
+                if self.state.is_present(&source, &l, &b) {
                     left.blobs.insert(b);
                     if !busy(self, &sent, &b) {
                         gone.insert(b);
@@ -516,7 +516,7 @@ impl SyncEngine {
                 }
             }
             if !gone.is_empty() {
-                let present = self.state.present_at(&host, &l);
+                let present = self.state.present_at(&source, &l);
                 for b in self.linked_by(&l, present)? {
                     gone.remove(&b);
                 }
@@ -529,7 +529,7 @@ impl SyncEngine {
             }
         }
         // a delete is judged by this node's role view (a carrier's validity, a purge's or a
-        // compaction's rights); the label's other holders at the host judge by what the host
+        // compaction's rights); the label's other holders at the source judge by what the source
         // holds. While a role commit or a superseding body this node holds there is still on
         // its way, a holder lacking it may still hold what goes: a body it places again under a
         // fresh encryption past the tombstone, every pass; a large value's chunks it writes again
@@ -566,7 +566,7 @@ impl SyncEngine {
         self.part_live(&m.header, c, ai) || self.part_kept(keeps, ai, note)
     }
 
-    /// Whether other entries under the label at the host carry every delta of must-not-hold
+    /// Whether other entries under the label at the source carry every delta of must-not-hold
     /// entry `e` the label's actor may read that needs a carrier (`part_to_carry`, spec/sync.md
     /// §7 Carriers), and the aspects only a snapshot this node writes can carry.
     /// A held delta's: a blob of the commit holding it that is not must-not-hold (the dropping
@@ -574,11 +574,11 @@ impl SyncEngine {
     /// rewrite is this node's to place. A dropped delta's: the snapshot that covered it when it
     /// was dropped.
     fn carried(&mut self, at: &At, e: &Entry) -> Result<Carriage> {
-        let (g, l, host) = (&at.g, &at.l, at.host.as_ref());
+        let (g, l, source) = (&at.g, &at.l, at.source.as_ref());
         let Kind::Commit { commit, parts, .. } = &e.kind else { return Ok((false, Vec::new())) };
         // a forgotten memory commit not held again: carried once an entry of what covered or
-        // superseded it is held at the host (spec/sync.md §9); nothing here to snapshot for it.
-        // A superseded one, its author's own to delete, goes at a host full for the label too:
+        // superseded it is held at the source (spec/sync.md §9); nothing here to snapshot for it.
+        // A superseded one, its author's own to delete, goes at a source full for the label too:
         // its superseder waits there for the room it holds, and no other node places it again.
         // Not a covered one: a co-writer lacking the cover there places what it covers again
         // (or covers it anew) into the room freed, the cover is refused again, and the two loop.
@@ -591,7 +591,7 @@ impl SyncEngine {
             // what covers or supersedes it now: a coverer forgotten in turn (superseded before
             // it was placed, covered by a later snapshot) stands for what covers that
             let by = self.carriers_of_forgotten(commit);
-            let carried = (at.full && superseded && !by.is_empty()) || by.iter().any(|s| self.state.entries_of(l, s).any(|(b, _)| host.is_none_or(|host| self.state.holds_at(host, l, &b))));
+            let carried = (at.full && superseded && !by.is_empty()) || by.iter().any(|s| self.state.entries_of(l, s).any(|(b, _)| source.is_none_or(|source| self.state.holds_at(source, l, &b))));
             return Ok((carried, Vec::new()));
         }
         let Some(m) = self.engine.core.ix.commits.get(commit).cloned() else { return Ok((false, Vec::new())) };
@@ -608,7 +608,7 @@ impl SyncEngine {
                 continue;
             }
             let dropped = m.body_gone(ai);
-            if !dropped && self.carried_by(host, l, commit, &[ai]) || self.snapshot_carries(at, commit, &t, &a, dropped)? {
+            if !dropped && self.carried_by(source, l, commit, &[ai]) || self.snapshot_carries(at, commit, &t, &a, dropped)? {
                 continue;
             }
             all = false;
@@ -621,21 +621,21 @@ impl SyncEngine {
         Ok((all, need))
     }
 
-    /// Whether a later snapshot of `(t, a)` under the label at the host carries body `body`'s
+    /// Whether a later snapshot of `(t, a)` under the label at the source carries body `body`'s
     /// writes there. A held delta: one covering it, the same test its holders' must-hold asks
     /// (a recorded carrier that covers it no more, turned invalid, carries nothing). A `dropped`
     /// delta (its content is gone, so `covered` checks only the frontier): the snapshot that
     /// covered it when it was dropped, or one covering that whose frontier holds the body's
     /// counters (a co-writer's that went up in its place).
     fn snapshot_carries(&mut self, at: &At, body: &CommitId, t: &Tid, a: &Ak, dropped: bool) -> Result<bool> {
-        let (l, host, snaps) = (&at.l, at.host.as_ref(), at.snaps);
+        let (l, source, snaps) = (&at.l, at.source.as_ref(), at.snaps);
         let carrier = if dropped { self.carrier_of(body, t, a) } else { None };
         let candidates: Vec<CommitId> = match carrier {
             None if dropped => Vec::new(),
             _ => carrier.into_iter().chain(snaps.get(&(*t, a.clone())).cloned().unwrap_or_default()).collect(),
         };
         for s in candidates {
-            if s == *body || !self.state.entries_of(l, &s).any(|(b, _)| host.is_none_or(|host| self.state.holds_at(host, l, &b))) {
+            if s == *body || !self.state.entries_of(l, &s).any(|(b, _)| source.is_none_or(|source| self.state.holds_at(source, l, &b))) {
                 continue;
             }
             let covers = self.engine.covered(&s, body, t, a)? == Some(true);
@@ -699,7 +699,7 @@ impl SyncEngine {
             if !self.snapshots_on(&t, &a) {
                 continue;
             }
-            // a snapshot the purge stripped goes at hosts (`snapshot_first`): only a whole, valid
+            // a snapshot the purge stripped goes at sources (`snapshot_first`): only a whole, valid
             // one carries (and with no named body applied here, it alone decides)
             let snaps: Vec<CommitId> = self.engine.core.ix.snapshots.get(&(t, a.clone())).into_iter().flatten().map(|x| x.1).filter(|s| self.engine.holds_valid_snapshot(s, &t, &a)).collect();
             let mut covered = false;
@@ -811,7 +811,7 @@ impl SyncEngine {
 
     /// A delete item for freed link `f` under `l`: the label delete key when the blob's held
     /// prefix bore the link (`Freed::borne`), else the delete keys it names that this node holds,
-    /// signed for the link's salt and thing blind, which the host checks against the prefix.
+    /// signed for the link's salt and thing blind, which the source checks against the prefix.
     fn freed_delete(&self, keys: &HeadKeys, l: &LabelId, f: &crate::retention::freed::Freed) -> Option<osis_label::DeleteItem> {
         if keys.delete.is_some() && f.borne {
             return delete_item(keys, l, f.link.blob, None, &[]);

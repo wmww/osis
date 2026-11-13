@@ -124,7 +124,7 @@ impl SyncEngine {
         // past the peer's Hello: what a dialed connection proves is fixed then (`conn_start`); a
         // served one counts only where this node answered with its proofs (a dialer it answered
         // with none, unknown then, is not closed when it becomes known)
-        let ready: Vec<(ConnId, Option<[u8; 32]>)> = self.conns.iter().filter(|(_, c)| c.is_ready() && (c.dial.is_some() || c.answered)).map(|(id, c)| (*id, c.key())).collect();
+        let ready: Vec<(ConnId, Option<[u8; 32]>)> = self.conns.iter().filter(|(_, c)| c.is_ready() && (c.dial.is_some() || c.answered)).map(|(id, c)| (*id, c.dial_key())).collect();
         let mut stale = Vec::new();
         for (conn, key) in ready {
             let own = match key {

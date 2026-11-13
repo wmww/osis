@@ -14,7 +14,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 /// Every message the nodes send on peer links from now on: its kind, encoded size and the message.
-fn record_messages(net: &mut Net) -> Rc<RefCell<Vec<(u64, usize, Message)>>> {
+pub(crate) fn record_messages(net: &mut Net) -> Rc<RefCell<Vec<(u64, usize, Message)>>> {
     let seen = Rc::new(RefCell::new(Vec::new()));
     let s = seen.clone();
     net.tamper = Some(Box::new(move |m| {

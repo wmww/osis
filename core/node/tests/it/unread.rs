@@ -401,7 +401,7 @@ fn kept(net: &mut Net, p: usize, l: &LabelId) -> BTreeSet<BlobId> {
 // spec/sync.md §10 (Offer, Stream: each side pulls, whoever dialed), §5 Opens: a node that
 // cannot read L, holding L's sync secret (Sync on its group), dials a reader of L and pulls L
 // from it: its own Hit on L's sync key, signed by it, opens L on the connection; the reader holds
-// no per-label state there and shares only what the dialer proved.
+// per-label state there only for what the dialer proved, and shares only that.
 #[test]
 fn a_peer_that_cannot_read_pulls_from_a_reader_it_dialed_spec_sync_10() {
     let (mut net, a, p, g, l) = dialing_node(true);
@@ -416,7 +416,8 @@ fn a_peer_that_cannot_read_pulls_from_a_reader_it_dialed_spec_sync_10() {
     let opened = net.sync(a).served_opened();
     assert!(opened.values().any(|m| m.contains(&l)), "L open on the connection p dialed: {opened:?}");
     assert!(opened.values().all(|m| m.iter().all(|x| *x == l)), "only what p proved: {opened:?}");
-    assert!(net.sync(a).served_label_states().values().all(|n| *n == 0), "no per-label state where the peer dialed");
+    let states = net.sync(a).served_label_states();
+    assert!(opened.iter().all(|(c, m)| states.get(c) == Some(&m.len())), "per-label state for what p proved alone: {states:?}");
 }
 
 // spec/sync.md §5 Opens (one sync-key run per proof): a dialer's proof of L's sync secret opens
@@ -440,6 +441,57 @@ fn a_dialers_proof_ends_at_the_next_sync_key_spec_sync_5() {
     net.item(a, g, g, "after");
     net.advance(61_000);
     assert_eq!(kept(&mut net, p, &l), held, "nothing after the rotation reaches p");
+}
+
+// spec/sync.md §10 (Stream, a store's presence), §6: a reader judges a peer that cannot read L
+// and dialed it as a source of L, as one it dialed: what it must not hold there is deleted there
+// (a purge's deletes reach the dialer's store).
+#[test]
+fn a_reader_deletes_at_a_peer_that_dialed_it_spec_sync_10() {
+    let (mut net, a, p, g, l) = dialing_node(true);
+    let before = kept(&mut net, p, &l);
+    let t = net.item(a, g, g, "doomed");
+    net.advance(61_000);
+    let doomed: BTreeSet<BlobId> = kept(&mut net, p, &l).difference(&before).copied().collect();
+    assert!(!doomed.is_empty(), "the dialer pulled the write");
+    use osis_schema::RawKey;
+    let mut m = Mutation::new();
+    m.set(t, &osis_schema::core_types::PURGE, &osis_base::WallMs(net.now())).unwrap();
+    m.purge(osis_commit::PurgeItem::Aspect { tid: t, ak: osis_base::Ak::new(osis_schema::core_types::CREATED.ak()).unwrap() });
+    net.engine(a).commit(m).unwrap().unwrap();
+    net.feed(a, osis_node::sync::Event::Local);
+    net.advance(61_000);
+    let after = kept(&mut net, p, &l);
+    assert!(!doomed.is_subset(&after), "the purged write left the dialer's store");
+}
+
+// spec/sync.md §10 (Pair key, Stream: a store's presence kept by the record): what a reader keeps
+// of a peer that cannot read L and dialed it is kept by their record, so a reconnect resumes
+// where it left: the dialer's store is not listed to the reader again.
+#[test]
+fn a_dialer_reconnecting_is_not_listed_again_spec_sync_10() {
+    let (mut net, a, p, g, l) = dialing_node(true);
+    net.item(a, g, g, "before");
+    net.advance(61_000);
+    assert!(net.sync(a).served_opened().values().any(|m| m.contains(&l)));
+    net.tamper_link = Some((p, a));
+    let seen = crate::reconnect::record_messages(&mut net);
+    net.set_online(p, false);
+    net.run();
+    net.set_online(p, true);
+    net.advance(120_000);
+    assert!(net.sync(a).served_opened().values().any(|m| m.contains(&l)), "open again");
+    let listed: usize = seen.borrow().iter().map(|(_, _, m)| match m {
+        Message::PullReply(r) => r.events.iter().filter(|(x, e)| *x == l && matches!(e, Ev::Added { .. })).count(),
+        Message::Stream(r) => r.events.iter().filter(|(x, e)| *x == l && matches!(e, Ev::Added { .. })).count(),
+        _ => 0,
+    }).sum();
+    assert_eq!(listed, 0, "nothing the dialer holds is shown to the reader again");
+    net.tamper = None;
+    net.item(a, g, g, "after");
+    net.advance(61_000);
+    let mine: BTreeSet<BlobId> = net.sync(a).entries(&l).into_iter().map(|x| x.0).collect();
+    assert!(mine.is_subset(&kept(&mut net, p, &l)), "and it pulls on");
 }
 
 // spec/sync.md §10 (Offer), §5 (Opens): a node that keeps L unread and holds only L's public

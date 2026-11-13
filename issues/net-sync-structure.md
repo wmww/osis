@@ -1,19 +1,18 @@
 # Node sync structure for the rework
-> Summary: The structural refactors in core/node/src/sync that the networking rework's jobs need, each tied to the job it unblocks: one connection record (built; per-label state keyed by a dialed key left), one `sources(L)` in place of five per-label peer sets, the LAN route machinery deleted with issues/net-connect.md, one retry rule for nine, one serving implementation (osis-host's `Hub`, built: issues/net-one-peer.md 3d). Two low bugs in the code they replace. Part of issues/net-rework.md.
+> Summary: The structural refactors in core/node/src/sync that the networking rework's jobs need, each tied to the job it unblocks: one connection record (built, what is kept of a peer by its record), one `sources(L)` in place of five per-label peer sets, the LAN route machinery deleted with issues/net-connect.md, one retry rule for six, one serving implementation (osis-host's `Hub`, built: issues/net-one-peer.md 3d). Two low bugs in the code they replace. Part of issues/net-rework.md.
 > Priority: normal
 > Tags: node, sync
 
 Each item is done inside the job named, not as a job of its own: the job's design says what the one structure holds.
 
 ## (a) One connection record
-One `Conn` per connection, whoever dialed (conn.rs; `Conn::dial` holds the dial logic's part). Left: what is kept of a peer that cannot read L (presence, stream position, head, refusals, pass ends) is keyed by the key this node dialed (`read_as_host`, `Conn::listed`), so only a dialed connection to a key a label lists is a source with a pass; a peer that dialed this node is tested and pulls, but is no source. One rule (a pass over every connection with L open, its peer's state kept by what the connection proves) comes with issues/net-one-peer.md 6c.
+One `Conn` per connection, whoever dialed (conn.rs; `Conn::dial` holds the dial logic's part), what is kept of its peer by `Conn::peer` (the pair's record, else a dialed node's key: issues/net-one-peer.md 3i3c2). Left: a source is a connection where L is served as a store (a `LabelAt`: a node a label names that this node dialed, or a dialer that proved L's sync secret); one rule (a pass over every connection with L open, by the credential's class) comes with issues/net-one-peer.md 6c.
 Unblocks: issues/net-honest-status.md (both sides judge: a pass runs over every connection with L open); issues/net-reconnect.md (one record per peer; two connections to one peer are one record, the older closing).
 
 ## (b) One `sources(L)`
-Five computations each answer "which nodes does L sync with" over different inputs, and they disagree at the edges (audit rows 13, 15-18, 36):
-- `wanted_hosts` (conn.rs): the hosts to dial, from config, labels' and hints' hosts, queued deposits' hosts, then `peer_addresses` and `link_routes`;
+Four computations each answer "which nodes does L sync with" over different inputs, and they disagree at the edges (audit rows 13, 15-18, 36):
+- `wanted_nodes` (conn.rs): the nodes to dial, from config, labels' and hints' hosts, queued deposits' hosts, then `peer_addresses` and `link_routes` (also what `drop_unwanted` keeps);
 - `wanted_labels` (conn.rs): per label, the host keys to open it at, co-readers' and link routes' keys appended;
-- `drop_unwanted_peers`' set (conn.rs): `peers()` keys plus `link_routes()`, closing every peer connection outside it;
 - `group_peers` (status.rs): a group's hosts, co-readers and link routes, for the API;
 - `Synced.actors` (mod.rs): per label its actor and hosts, `peer://` left out, read by `complete_pass` and `passed_since` (deliver.rs).
 Not one of them: the sources a complete pass waits for (`peer_received`) are proven identities kept across disconnects (spec/permissions.md §3, notes/peers.md Complete passes), not connections up.
@@ -25,17 +24,14 @@ Unblocks: issues/net-honest-status.md step 1 (states and waits read `sources`); 
 Unblocks: issues/net-connect.md.
 
 ## (d) One retry rule
-Nine rules decide when something is tried again:
-1. a host redialed after `retry_ms` (conn.rs `lost`);
-2. a co-reader after `peer_retry_ms`;
-3. a co-reader whose connection was up redialed at once, once per `peer_retry_ms` (`redialed`);
-4. a link's sharer being redeemed redialed after a host's pause, not a co-reader's;
-5. a LAN address that failed backed off per address, the next route dialed at once (`lan_failed`);
-6. a waiting LAN candidate skipping the peer's pause once per pause (`lan_cut`);
-7. a label registration refused for now: `backoff(retry_ms, resync_ms, refusals)` doubling (open.rs `step_retry`);
-8. an open refused: `Phase::Refused { retry_at }` with the same back-off (open.rs);
-9. a refused deposit: `retry_ms` doubling to `DEPOSIT_RETRY_CAP_MS` (local.rs), and `MAX_INBOX_RESENDS` per `INBOX_LIFETIME`.
-Under the rework an open is never retried: it is judged, and re-judged on any change to what the node holds (issues/net-shared-set.md Opens), so 7-8 have no event to wait for. A refused deposit is an Offer item sent again on the next change or connection (issues/net-shared-set.md Deposits). What remains is one dial rule: a node not connected is dialed again after one pause, the pause reset by any change this node knows of (a new sync ID, a new delivery, an announcement heard), at most once per pause per node (issues/net-connect.md Keeping; the number passes notes/arbitrary-values.md as a performance switch: 0 dials in a loop, infinity never redials).
+Six rules decide when something is tried again:
+1. a node dialed (conn.rs `lost`): a relayed connection that was up at once, once per `peer_retry_ms` (`redialed`); another that was up after `retry_ms`; a failed dial's pause doubling from `retry_ms` to `peer_retry_ms`;
+2. a LAN address that failed backed off per address, the next route dialed at once (`lan_failed`);
+3. a waiting LAN candidate skipping the peer's pause once per pause (`lan_cut`);
+4. a label registration refused for now: `backoff(retry_ms, resync_ms, refusals)` doubling (open.rs `step_retry`);
+5. an open refused: `Phase::Refused { retry_at }` with the same back-off (open.rs);
+6. a refused deposit: `retry_ms` doubling to `DEPOSIT_RETRY_CAP_MS` (local.rs), and `MAX_INBOX_RESENDS` per `INBOX_LIFETIME`.
+Under the rework an open is never retried: it is judged, and re-judged on any change to what the node holds (issues/net-shared-set.md Opens), so 4-5 have no event to wait for. A refused deposit is an Offer item sent again on the next change or connection (issues/net-shared-set.md Deposits). What remains is one dial rule: a node not connected is dialed again after one pause, the pause reset by any change this node knows of (a new sync ID, a new delivery, an announcement heard), at most once per pause per node (issues/net-connect.md Keeping; the number passes notes/arbitrary-values.md as a performance switch: 0 dials in a loop, infinity never redials).
 Unblocks: issues/net-connect.md (dialing), issues/net-shared-set.md (opens), issues/net-reconnect.md (Lost and Offers retried by connection, not by timer).
 
 ## (f) One serving implementation

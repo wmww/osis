@@ -295,7 +295,7 @@ impl SyncEngine {
         self.conns.iter().filter(|(_, c)| c.dial.is_none()).map(|(c, _)| (*c, self.shared_members(*c).into_iter().collect())).collect()
     }
 
-    /// Each served connection's per-label states (`LabelAt`; tests: none where the peer dialed).
+    /// Each served connection's per-label states (`LabelAt`; tests: only what its dialer proved).
     #[doc(hidden)]
     pub fn served_label_states(&self) -> BTreeMap<ConnId, usize> {
         self.conns.iter().filter(|(_, c)| c.dial.is_none()).map(|(id, c)| (*id, c.labels.len())).collect()

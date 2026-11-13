@@ -223,7 +223,7 @@ impl SyncEngine {
                 w.again = true;
                 w.touched.add(*x);
             }
-            for (_, x, s) in shown.range((*l, state::Touch::Commit(osis_base::CommitId([0; 32])), [0; 32])..).take_while(|(x, _, _)| x == l) {
+            for (_, x, s) in shown.range((*l, state::Touch::Commit(osis_base::CommitId([0; 32])), state::PeerKey::MIN)..).take_while(|(x, _, _)| x == l) {
                 w.again = true;
                 w.touched.shown.insert((*x, *s));
             }
