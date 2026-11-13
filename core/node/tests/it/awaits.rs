@@ -206,6 +206,11 @@ fn reach_arriving_applies_its_part_spec_commits_4() {
 // blob again under each label, though the first fetch brings the bytes the other entry names,
 // and every entry opens (taking only the bytes, the other stayed unopened for good; a writer
 // placed the commit there again, for another to delete, without end).
+// spec/sync.md §6 (Reader; a delete stands once it took a body placed again past one): the host
+// never lists `r` to b, so b, holding `r` but no entry of it, judges the parts of g's group
+// record that `r` covers must-hold and a deposits; a, holding `r`, deletes them as covered. b
+// places each again once per label, not once per round trip (a storm of hundreds of fresh blobs,
+// cut only by the host's rate limit), and nothing more over later passes.
 #[test]
 fn a_part_missing_again_is_fetched_under_every_label_spec_sync_6() {
     let mut net = net::Net::new();
@@ -250,6 +255,11 @@ fn a_part_missing_again_is_fetched_under_every_label_spec_sync_6() {
     let shredded = |net: &mut net::Net, l: &osis_base::LabelId| net.sync(b).entry_meta(l, &blob[0]).is_some_and(|m| m.0 == [0; osis_crypto::WRAP_LEN]);
     assert!(labels.iter().all(|l| shredded(&mut net, l)), "c's copy went, its wraps with it");
     // the record by hand (as pairing brings it)
+    let logged = |net: &mut net::Net, l: &osis_base::LabelId| {
+        let (added, removed) = net.logged_at(host, l);
+        added.into_iter().chain(removed).collect::<std::collections::BTreeSet<_>>()
+    };
+    let known: Vec<_> = labels.iter().map(|l| logged(&mut net, l)).collect();
     let pr = net.engine(a).package(&r).unwrap().unwrap();
     net.engine(b).ingest(&pr.bytes, pr.blobs).unwrap();
     net.run();
@@ -258,4 +268,12 @@ fn a_part_missing_again_is_fetched_under_every_label_spec_sync_6() {
     for l in &labels {
         assert_eq!(of_c(&mut net, b, l), blob, "{l:?}: c's entry opened");
     }
+    let placed = |net: &mut net::Net| labels.iter().zip(&known).map(|(l, k)| logged(net, l).difference(k).count()).collect::<Vec<_>>();
+    let after = placed(&mut net);
+    // g's creation and x's: each placed again once per label
+    assert_eq!(after, [2, 2], "fresh blobs per label");
+    for _ in 0..5 {
+        net.advance(31_000);
+    }
+    assert_eq!(placed(&mut net), after, "nothing placed over later passes");
 }

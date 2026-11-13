@@ -398,8 +398,11 @@ impl SyncEngine {
     /// tombstoned there; for a certificate copy, this node's own copy of exactly its parts), else
     /// a fresh one (`Engine::seal`: every held part in sections, the sections this node could not
     /// open copied verbatim; a copy: `Engine::seal_to`); wrapped for the label.
-    /// `again`: placed past a delete at that label head (`BlobRec::again`, kept on a blob sealed
-    /// now).
+    /// `again`: placed past a delete at that label head (`BlobRec::again`), always sealed now.
+    /// Invariant: each placement again is a blob of its own recording its own label's head, so
+    /// a delete of it stands under that label (`again_deleted`); a reused blob (sealed for
+    /// another label's placement again, or none) would carry another head or none, and the body
+    /// would go again under this label after its delete.
     pub(crate) fn place(&mut self, g: &Tid, l: LabelId, b: &Body, cert: bool, again: Option<osis_label::StepId>) -> Result<Option<BlobId>> {
         let Some(secret) = self.engine.wrap_secret(g, Some((&b.commit, &b.parts)))? else { return Ok(None) };
         // a memory commit's blobs carry its class and live in memory (spec/sync.md §9)
@@ -414,7 +417,7 @@ impl SyncEngine {
         // fullest; one sealed here may lack parts this node holds no secret for)
         // not one deleted under `l` (a peer refuses it while its tombstone lasts)
         let skip = |id: &BlobId| self.state.is_gone(&l, id) || self.state.entries.contains_key(&(l, *id)) || self.state.tombs.contains_key(&(l, *id));
-        let reuse = if b.to_label {
+        let reuse = if b.to_label || again.is_some() {
             None
         } else if cert {
             self.state.own_copy(&b.commit, &b.parts, skip)
