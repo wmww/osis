@@ -321,7 +321,7 @@ fn a_removed_nodes_fork_is_merged_out_spec_permissions_5_4() {
     send(&mut lp, 0, 3, &done.commits[1..]);
     // the removed node, unaware, writes and rotates: its rotation lists the write
     let late = write(&mut lp, 2, t, "removed");
-    let fork = lp.peers[2].engine.run(|tx| crate::flows::signing::rotate_in(tx, a.account, &[])).unwrap().unwrap();
+    let fork = lp.peers[2].engine.run(|tx| crate::flows::signing::rotate_in(tx, a.account, &[], &mut Done::default())).unwrap().unwrap();
     for to in [0, 1, 3] {
         send(&mut lp, 2, to, &[late, fork]);
     }
@@ -513,6 +513,80 @@ fn an_ignorant_fork_ordered_after_a_removal_covers_nothing_spec_crypto_4() {
     assert!(!openable(&mut lp, 2, &[t, x], l, known).contains(&(x, Role::Read, w)), "L opens nothing N3 writes under X");
 }
 
+// spec/crypto.md §4 (Encrypting under, an account's epochs): as the ignorant fork above, but N3
+// never receives N2's commits: it holds L's removal, r1 and T's keyset boxing P at r2, which it
+// cannot open (only r2's seed does). Sealing T there is judged by T's box to N3's own account at
+// an epoch whose rotation it does not hold, so it shows no cover of L's removal: N3 rotates X
+// leaving T out, and L opens nothing N3 writes under X.
+#[test]
+fn a_keyset_boxing_the_account_at_an_epoch_not_held_is_not_sealed_to_spec_crypto_4() {
+    use super::tests::{group, held_by, newest_read, openable};
+    let (mut lp, a, _) = world(6, 5);
+    let p = a.account;
+    let t = group(&mut lp, 5);
+    lp.peers[5].engine.grant(&t, &p, &edge(Role::Read)).unwrap();
+    lp.sync_all().unwrap();
+    let x = group(&mut lp, 2);
+    lp.sync_all().unwrap();
+    lp.peers[2].engine.grant(&x, &t, &edge(Role::Read)).unwrap();
+    lp.sync_all().unwrap();
+    let l = lp.peers[1].engine.tid();
+    let p0 = read_box_at(&mut lp, 5, t, p).unwrap();
+    let mut known = held_by(&lp, 1, &[t, x]);
+    let r1 = remove(&mut lp, 0, a.devices, 1);
+    lp.advance(1000);
+    remove(&mut lp, 3, a.devices, 4);
+    let n2 = lp.peers[3].engine.commit_ids();
+    send(&mut lp, 3, 5, &n2);
+    let (rt, _) = lp.peers[5].engine.ensure_rotated(&t).unwrap();
+    let p2 = read_box_at(&mut lp, 5, t, p).unwrap();
+    assert_ne!(p2, p0, "T's admin moves T onto r2");
+    known.extend(osis_keys::ROLES.into_iter().flat_map(|r| [(p, r, p0), (p, r, p2)]));
+    send(&mut lp, 5, 2, &rt.commits);
+    lp.advance(1000);
+    send(&mut lp, 0, 2, &r1.commits);
+    let _ = lp.peers[2].engine.ensure_rotated(&x).unwrap();
+    let w = newest_read(&lp, 2, x).unwrap();
+    assert!(!openable(&mut lp, 2, &[t, x], l, known).contains(&(x, Role::Read, w)), "L opens nothing N3 writes under X");
+}
+
+// spec/crypto.md §9 (a node takes a seed up only under an established epoch of D): N1 (peer 0)
+// removes Y (peer 4, rotation r0), then L (peer 1, r1; the D epoch it mints, which r1's seed sits
+// under, names both removals). N2 (peer 2) holds L's removal and r1 but not Y's removal: that D
+// epoch opens for it but is not established, so it takes up no seed of r1 and signs nothing at
+// r1, its removal of Z (peer 5) and the rotation from r1 among them; that rotation would seal the
+// new seed under N2's own D epoch, boxing Y, on a line naming Y's removal, so a node knowing it
+// would write under it. Once N2 holds Y's removal it takes the seed up, and its rotation for Z's
+// removal goes under a D epoch boxing neither.
+#[test]
+fn a_seed_under_a_devices_epoch_not_established_is_not_taken_up_spec_crypto_9() {
+    let (mut lp, a, _) = world(6, 6);
+    let p = a.account;
+    let ry = remove(&mut lp, 0, a.devices, 4);
+    lp.advance(1000);
+    let rl = remove(&mut lp, 0, a.devices, 1);
+    send(&mut lp, 0, 2, &ry.commits[1..]);
+    send(&mut lp, 0, 2, &rl.commits);
+    assert_eq!(seeds(&lp, 2, p), 1, "N2 takes up no seed under a D epoch whose names it has not met");
+    lp.advance(1000);
+    let z = lp.peers[5].engine.tid();
+    assert!(lp.peers[2].engine.demote(&a.devices, &Demotion { holder: z, new: None, retain: None }).is_err(), "N2 signs nothing at r1 without its seed");
+    send(&mut lp, 0, 2, &ry.commits[..1]);
+    lp.peers[2].engine.signing_due().unwrap();
+    assert_eq!(seeds(&lp, 2, p), 3, "Y's removal held: r0's and r1's seeds taken up");
+    let rz = remove(&mut lp, 2, a.devices, 5);
+    assert_eq!(rz.commits.len(), 2, "the removal, then the rotation");
+    let rot = rz.commits[1];
+    // the new seed goes under a D epoch boxing neither Y nor Z
+    let key = lp.peers[2].engine.header(&rot).unwrap().rotation.as_ref().unwrap().signing_key;
+    let acct = lp.peers[2].engine.get_typed(&a.devices, &ct::ACCOUNT).unwrap().unwrap();
+    let under = acct.seeds.get(key.to_bytes().as_slice()).unwrap().under.clone();
+    let boxes = lp.peers[2].engine.get_typed(&a.devices, &ct::SECRETS).unwrap().unwrap().boxes;
+    let gone = [lp.peers[4].engine.tid(), z];
+    assert!(boxes.keys().any(|k| k.role == Role::Read && k.epoch == under), "D's epoch boxes the nodes left");
+    assert!(!boxes.keys().any(|k| k.role == Role::Read && k.epoch == under && gone.contains(&k.holder)), "Y and Z open no new seed");
+}
+
 // spec/permissions.md §3 (a removal's rotation), spec/crypto.md §4 (an account's epochs): a removal
 // is covered only by a rotation D's roster authorizes. N1 (peer 0) removes L (peer 1); N2 (peer
 // 2) then removes N1, so N1's rotation no longer covers L's removal and N2's next rotation names
@@ -675,7 +749,7 @@ fn a_reader_the_fork_reached_first_is_told_and_switches_spec_permissions_5_4() {
 #[test]
 fn a_node_follows_the_merge_over_a_removed_nodes_earlier_rotation_spec_permissions_5_4() {
     let (mut lp, a, t) = world(4, 3);
-    let x0 = lp.peers[2].engine.run(|tx| crate::flows::signing::rotate_in(tx, a.account, &[])).unwrap().unwrap();
+    let x0 = lp.peers[2].engine.run(|tx| crate::flows::signing::rotate_in(tx, a.account, &[], &mut Done::default())).unwrap().unwrap();
     send(&mut lp, 2, 1, &[x0]);
     lp.advance(5);
     let done = remove(&mut lp, 0, a.devices, 2);

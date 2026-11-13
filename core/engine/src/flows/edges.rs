@@ -375,7 +375,7 @@ pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &D
         && !selfr
         && let Some(p) = tx.core.devices_of(&target).filter(|p| tx.core.accounts.contains_key(p))
         && removing.iter().any(|x| tx.core.is_key_actor(x))
-        && let Some(r) = super::signing::rotate_in(tx, p, &[])?
+        && let Some(r) = super::signing::rotate_in(tx, p, &[], &mut done)?
     {
         done.add(Some(r));
         done.deliveries.push(super::owe(tx, Delivery::First { commits: vec![r], under: vec![target] })?);

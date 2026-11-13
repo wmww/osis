@@ -366,11 +366,18 @@ codec_struct! {
     pub struct Tag { 0 color: Option<String> }
 }
 
+codec_struct! {
+    /// An account epoch's seed and the devices actor's read epoch its writer encrypted it under
+    /// (spec/data-model.md §9).
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub struct AccountSeed { 0 seed: Vec<u8>, 1 under: Epoch }
+}
+
 /// `account.0` on an account's devices actor (spec/data-model.md §9): per epoch, its signing
 /// public key to its seed.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Account {
-    pub seeds: BTreeMap<Vec<u8>, Vec<u8>>,
+    pub seeds: BTreeMap<Vec<u8>, AccountSeed>,
 }
 
 #[doc(hidden)]

@@ -57,8 +57,9 @@ type PerThing = (BTreeSet<CommitId>, Vec<(osis_base::WallMs, CommitId)>);
 /// names, by the cutoff (`nameable`: at an open epoch every one received), cut per thing it has
 /// a delta on or acts for; within the bound, plain content past it left to this node's listings.
 /// `None`: an authorized head's seed is not held here, or no head is authorized.
-pub(crate) fn rotate_in(tx: &mut Tx<'_>, p: Tid, also: &[CommitId]) -> Result<Option<CommitId>> {
+pub(crate) fn rotate_in(tx: &mut Tx<'_>, p: Tid, also: &[CommitId], done: &mut Done) -> Result<Option<CommitId>> {
     let held = tx.core.accounts.get(&p).cloned().ok_or(Error::Misuse("not an account held here"))?;
+    let Some(under) = seed_under(tx, &p, &held.devices, done)? else { return Ok(None) };
     let v = tx.core.account_view(&p).ok_or(Error::Misuse("no signing chain for the account"))?;
     let signing = tx.core.account_signing(&p).ok().flatten();
     let mut names = Vec::new();
@@ -143,7 +144,7 @@ pub(crate) fn rotate_in(tx: &mut Tx<'_>, p: Tid, also: &[CommitId]) -> Result<Op
     m.set(p, &ct::KEYS, &k)?;
     let ak = osis_base::Ak::new("account.0").map_err(|_| Error::Misuse("ak"))?;
     let mut acct: ct::Account = tx.state(&held.devices, &ak)?.and_then(osis_crdt::Fragment::read).and_then(|x| osis_schema::Codec::from_value(&x).ok()).unwrap_or_default();
-    acct.seeds.insert(signing.to_bytes().to_vec(), seed.expose().to_vec());
+    acct.seeds.insert(signing.to_bytes().to_vec(), ct::AccountSeed { seed: seed.expose().to_vec(), under: osis_keys::aspects::to_schema(&under) });
     m.set(held.devices, &ct::ACCOUNT, &acct)?;
     let lists = leaves.into_iter().zip(paths).map(|((i, l), path)| (i, path.siblings, l)).collect();
     let mut sup = supersedes;
@@ -151,6 +152,18 @@ pub(crate) fn rotate_in(tx: &mut Tx<'_>, p: Tid, also: &[CommitId]) -> Result<Op
     m.rotation = Some(AccountRotation { header: RotationHeader { signing_key: signing, kem_key: keys.kem.public().clone(), supersedes: sup, names, list_root: root }, merge_keys, lists, at });
     // the new seed is taken up from `account.0` as the commit applies (`take_seeds`)
     Engine::commit_tx(tx, m)
+}
+
+/// D's read epoch the seed of a rotation of account `p` by this node goes under: the one it
+/// encrypts D's content under (`wrap_epoch`), so a node taking the seed up holds the removals
+/// from D this node held (`usable_seeds`). Encrypting under D, it rotates D first where due
+/// (`ensure_rotated`: a removal from D it knows that D's epoch does not cover, so the removed
+/// node would open the seed); `None` while D's read stays blocked.
+fn seed_under(tx: &mut Tx<'_>, p: &Tid, d: &Tid, done: &mut Done) -> Result<Option<osis_crypto::Epoch>> {
+    if crate::rotation::ensure_rotated(tx, *p, *d, done)?.contains(&osis_base::Role::Read) {
+        return Ok(None);
+    }
+    Ok(tx.core.epochs(d).and_then(|e| osis_keys::wrap_epoch(&e.read)))
 }
 
 /// An `account.0` entry's epoch keys, by their signing key: `None` when the entry is not that
@@ -161,9 +174,36 @@ pub(crate) fn epoch_keys(key: &[u8], seed: &[u8]) -> Option<(VerifyingKey, Arc<A
     (pk.as_bytes()[..] == *key).then(|| (pk, Arc::new(keys)))
 }
 
-/// Takes up the seeds D's `account.0` holds as it now reads, where D is the devices actor of an
-/// account held here (a rotation of it applied): an entry that is not its epoch's seed opens and
-/// signs nothing.
+/// The seeds of `acct`, on devices actor `d`, this node takes up besides those in `have`
+/// (spec/crypto.md §9): each entry that is its epoch's seed and whose D read epoch (`under`) is
+/// established here with its secret held for use, its names met. A node uses only established
+/// epochs: so it holds every removal from D the entry's writer held before it signs at, or
+/// rotates from, that epoch, and a line it extends names no removal it does not hold. An entry
+/// that is not its epoch's seed opens and signs nothing.
+pub(crate) fn usable_seeds(core: &crate::engine::Core, d: &Tid, acct: ct::Account, have: &BTreeMap<VerifyingKey, Arc<AccountEpochKeys>>) -> BTreeMap<VerifyingKey, Arc<AccountEpochKeys>> {
+    // D's epochs, judged only when an entry is new here
+    let epochs = std::cell::OnceCell::new();
+    let usable = |e: &ct::Epoch| {
+        let Some(epochs) = epochs.get_or_init(|| core.epochs(d)) else { return false };
+        osis_keys::aspects::from_schema(e).is_ok_and(|e| epochs.read.is_established(&e) && epochs.read.secret(&e).is_some())
+    };
+    let mut out = BTreeMap::new();
+    for (k, v) in acct.seeds {
+        if let Ok(pk) = VerifyingKey::from_slice(&k)
+            && !have.contains_key(&pk)
+            && usable(&v.under)
+            && let Some((pk, e)) = epoch_keys(&k, &v.seed)
+        {
+            out.insert(pk, e);
+        }
+    }
+    out
+}
+
+/// Takes up the seeds D's `account.0` holds as it now reads (`usable_seeds`), where D is the
+/// devices actor of an account held here: when `account.0` moves (a rotation of it applied) and
+/// at the end of a pass (`rotations_due`: D's epochs established may have moved with a removal
+/// or secret that arrived).
 pub(crate) fn take_seeds(tx: &mut Tx<'_>, d: &Tid) -> Result<()> {
     let Some((p, a)) = tx.core.accounts.iter().find(|(_, a)| a.devices == *d).map(|(p, a)| (*p, a.clone())) else { return Ok(()) };
     if !tx.core.of_devices(d) {
@@ -172,14 +212,7 @@ pub(crate) fn take_seeds(tx: &mut Tx<'_>, d: &Tid) -> Result<()> {
     let ak = osis_base::Ak::new("account.0").map_err(|_| Error::Misuse("ak"))?;
     let Some(acct) = tx.state(d, &ak)?.and_then(osis_crdt::Fragment::read).and_then(|x| <ct::Account as osis_schema::Codec>::from_value(&x).ok()) else { return Ok(()) };
     let mut keys = a.keys.clone();
-    for (k, v) in acct.seeds {
-        if let Ok(pk) = VerifyingKey::from_slice(&k)
-            && !keys.contains_key(&pk)
-            && let Some((pk, e)) = epoch_keys(&k, &v)
-        {
-            keys.insert(pk, e);
-        }
-    }
+    keys.extend(usable_seeds(tx.core, d, acct, &a.keys));
     if keys.len() != a.keys.len() {
         let mut n = (*a).clone();
         n.keys = keys;
@@ -360,12 +393,15 @@ pub(crate) fn leave(tx: &mut Tx<'_>, p: Tid, d: Tid) -> Result<()> {
 /// a node that did not rotate or was removed since, or above a fork a merge rejected), naming
 /// it. Looked at when the account's commits moved (`Core::signing_due`); D's role history is
 /// its device count's.
-pub(crate) fn rotations_due(tx: &mut Tx<'_>) -> Result<Option<CommitId>> {
+pub(crate) fn rotations_due(tx: &mut Tx<'_>, done: &mut Done) -> Result<Option<CommitId>> {
     if !std::mem::take(&mut tx.core.signing_due) {
         return Ok(None);
     }
     let Some(p) = tx.core.member() else { return Ok(None) };
     let Some(d) = tx.core.accounts.get(&p).map(|a| a.devices) else { return Ok(None) };
+    take_seeds(tx, &d)?;
+    // a seed taken up moves what the account's epochs judge
+    crate::apply::rejudged(tx, false)?;
     let Some(v) = tx.core.account_view(&p) else { return Ok(None) };
     let roles = osis_base::Ak::new("roles.0").map_err(|_| Error::Misuse("ak"))?;
     let removals: Vec<CommitId> = tx.core.ix.by_aspect.get(&(d, roles)).into_iter().flatten().map(|(_, c)| *c).filter(|c| {
@@ -386,7 +422,7 @@ pub(crate) fn rotations_due(tx: &mut Tx<'_>) -> Result<Option<CommitId>> {
     if merging && !merger(tx, &v) || !merging && unnamed.is_empty() {
         return Ok(None);
     }
-    rotate_in(tx, p, &unnamed)
+    rotate_in(tx, p, &unnamed, done)
 }
 
 /// Whether this node merges the heads (one merger, so the merges do not fork again): the node
@@ -401,8 +437,8 @@ impl Engine {
     /// of a complete pass of its devices actor's labels (node-sync), so a removal and its
     /// rotation that arrive apart, or two forks and the merge of another node, are both in.
     pub fn signing_due(&mut self) -> Result<Done> {
-        let c = self.run(rotations_due)?;
         let mut done = Done::default();
+        let c = self.run(|tx| rotations_due(tx, &mut done))?;
         done.add(c);
         if let (Some(r), Some((_, d))) = (c, self.core.account_devices()) {
             done.deliveries.push(self.run(|tx| super::owe(tx, super::Delivery::First { commits: vec![r], under: vec![d] }))?);

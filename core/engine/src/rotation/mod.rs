@@ -81,7 +81,11 @@ pub fn blocked_roles_of(tx: &mut Tx<'_>, who: &Tid, a: &Tid, deps: &[Departure],
 /// revokes) under the actor's labels meanwhile, the holder actors' new `keys.0` among them, which
 /// is how the rotators learn of the staleness. Only epochs whose secret this node holds are
 /// walked past (it reads that actor's labels, so it learns the actor's next keyset and re-seals
-/// it), and only other parties' departures count (`others`).
+/// it), and only other parties' departures count (`others`); past any other epoch (but for
+/// placing) only a box to this node's own account is judged, at any depth: an account epoch it
+/// cannot show covers a removal from its devices actor it knows (`uncovered`) blocks the keyset
+/// boxing it, secret held or not (it learns its account's next epochs from its devices actor's
+/// labels, and so re-seals once either moves).
 ///
 /// Invariant: a node holding M's secrets that knows a departure from M seals nothing at a keyset
 /// of M not covering it (`members::sealed` leaves M out), and writes no box or history entry
@@ -91,21 +95,48 @@ pub fn blocked_roles_of(tx: &mut Tx<'_>, who: &Tid, a: &Tid, deps: &[Departure],
 /// (actor, epoch) once (boxes may cycle).
 pub(crate) fn blocked_epoch(tx: &mut Tx<'_>, who: &Tid, a: &Tid, r: Role, e: &osis_crypto::Epoch, deps: &[Departure], walk: Walk) -> Result<bool> {
     let mut seen = BTreeSet::from([(*a, *e)]);
-    let mut todo = vec![(*a, *e)];
-    while let Some((x, k)) = todo.pop() {
-        let known = if x == *a { deps.to_vec() } else { keyset_departures(tx, &x)? };
-        let deps = others(tx.core, known);
-        if uncovered(tx, &x, r, &k, &deps)? {
-            return Ok(true);
+    // past epochs whose secret this node lacks only while it knows a removal from its devices
+    // actor, found when first needed
+    let mut own: Option<bool> = None;
+    // each with whether every epoch above it on the walk is one whose secret this node holds
+    let mut todo = vec![(*a, *e, true)];
+    while let Some((x, k, read)) = todo.pop() {
+        if read || tx.core.me() == Some(x) {
+            let known = if x == *a { deps.to_vec() } else { keyset_departures(tx, &x)? };
+            let deps = others(tx.core, known);
+            if uncovered(tx, &x, r, &k, &deps)? {
+                return Ok(true);
+            }
         }
         // sealing at a keyset whose epoch, or one it boxes, names a superseded keyset hands the
         // new secret to what that keyset's departed party opens; the box and keysets are state,
         // so judged without the epoch's secret; an account boxes only its key actors, which have
         // no keysets to go stale (its `secrets.0` is not read for it)
-        if walk == Walk::Seal && !tx.core.is_account(&x) && members::stale_at(tx, &x, r, &k)? {
+        if read && walk == Walk::Seal && !tx.core.is_account(&x) && members::stale_at(tx, &x, r, &k)? {
             return Ok(true);
         }
-        if !tx.core.epochs(&x).is_some_and(|ep| ep.role(r).is_established(&k) && ep.role(r).secret(&k).is_some()) {
+        if !read || !tx.core.epochs(&x).is_some_and(|ep| ep.role(r).is_established(&k) && ep.role(r).secret(&k).is_some()) {
+            // past an epoch whose secret this node lacks: boxes to its own account, at any depth
+            let own = match own {
+                Some(b) => b,
+                None => {
+                    let b = match tx.core.me() {
+                        Some(p) if walk != Walk::Place => {
+                            let known = keyset_departures(tx, &p)?;
+                            !others(tx.core, known).is_empty()
+                        }
+                        _ => false,
+                    };
+                    *own.insert(b)
+                }
+            };
+            if own {
+                for (m, j) in members::boxed_keysets(tx, &x, r, &k)? {
+                    if seen.insert((m, j)) {
+                        todo.push((m, j, false));
+                    }
+                }
+            }
             continue;
         }
         let rotator = may_rotate(tx.core, who, &x).contains(&r);
@@ -117,7 +148,7 @@ pub(crate) fn blocked_epoch(tx: &mut Tx<'_>, who: &Tid, a: &Tid, r: Role, e: &os
         }
         for (m, j) in members::boxed_keysets(tx, &x, r, &k)? {
             if seen.insert((m, j)) {
-                todo.push((m, j));
+                todo.push((m, j, true));
             }
         }
     }
@@ -139,21 +170,20 @@ pub(crate) fn keyset_departures(tx: &mut Tx<'_>, x: &Tid) -> Result<Vec<Departur
 /// (its rotator held none of them), read from the earliest held valid body of the keyset
 /// (`HeldKeyset::since`). An account's epoch, by descent: it covers a removal from its devices
 /// actor D only descending from a rotation D's roster authorizes whose thing list for D names
-/// every write a covering epoch must name (`Departure::needed`); the first epoch covers none
-/// (not by order: a concurrent rotation ordered after the removal by a node not holding it
-/// sealed its seed under D's epoch the removed node opens). A departure no keyset of
+/// every write a covering epoch must name (`Departure::needed`); the first epoch covers none,
+/// nor one of which this node holds no counting rotation (not by order: a concurrent rotation
+/// ordered after the removal by a node not holding it sealed its seed under D's epoch the
+/// removed node opens). A departure no keyset of
 /// `x` held is known to cover leaves `x` out until one is (a stranded report carries it,
 /// spec/permissions.md §4).
 fn uncovered(tx: &mut Tx<'_>, x: &Tid, r: Role, k: &osis_crypto::Epoch, deps: &[Departure]) -> Result<bool> {
     if tx.core.is_account(x) {
         // only the account's own nodes hold D's departures
         let (Some(d), Some(v)) = (tx.core.accounts.get(x).map(|h| h.devices), tx.core.account_view(x)) else { return Ok(false) };
-        // an epoch not held is judged by nothing, as a keyset not held
-        if !v.holds_name(k) {
-            return Ok(false);
-        }
+        // an epoch no counting rotation of which is held here shows no line: it covers nothing
+        let held = v.holds_name(k);
         for key in deps.iter().filter(|d| d.concerns(r)).flat_map(|d| d.needed(r)) {
-            if !crate::flows::lists::names_of(tx, &key.commit)?.iter().any(|(t, s)| *t == d && v.descends_authorized(k, s)) {
+            if !held || !crate::flows::lists::names_of(tx, &key.commit)?.iter().any(|(t, s)| *t == d && v.descends_authorized(k, s)) {
                 return Ok(true);
             }
         }

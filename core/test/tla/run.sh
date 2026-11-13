@@ -87,7 +87,9 @@ instances=(
   "authority rotation AuthorityMC A_held_nobase.cfg fail" # negative control: keysets read as held now give two fixpoints
   "account rotation Account Acc_descent.cfg pass"   # an account epoch covers a removal by descent (spec/crypto.md §4 Encrypting under)
   "account rotation Account Acc_order.cfg fail"     # negative control: judged by order, an ignorant fork ordered after the removal covers it
-  "account rotation Account Acc_nomet.cfg fail"     # the stated limit: a line extended past a removal its maker does not hold
+  "account rotation Account Acc_nomet.cfg fail"     # negative control: a seed taken under a D epoch whose names are unmet extends a line past a removal its maker does not hold
+  "account rotation Account Acc_unread.cfg pass"    # a box to the writer's account behind a keyset it cannot open is judged (spec/crypto.md §4 Encrypting under)
+  "account rotation Account Acc_unread_stop.cfg fail" # negative control: the walk stops at that keyset
   "account rotation Account Acc_namer_anyline.cfg fail" # negative control: a removal named off the open line owes no rotation
   "netstream net MCStream S_loss.cfg pass"
   "netstream net MCStream S_restore.cfg pass"

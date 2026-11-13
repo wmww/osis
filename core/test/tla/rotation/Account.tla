@@ -15,17 +15,25 @@
 (* Rule "order": an epoch is blocked when a known removal is ordered after  *)
 (* its rotation (the first epoch: after creation). Rule "descent": when a   *)
 (* known removal is named by no rotation on the epoch's line whose maker    *)
-(* the node does not know removed. `Met`: a node rotates only holding      *)
-(* every removal the maker of each rotation on the line it extends held    *)
-(* (`know`: the names of D's epoch that rotation's seed sits under, met    *)
-(* where that epoch is established; without it a D epoch whose names a     *)
-(* node has not met still opens the seed for reading).                     *)
+(* the node does not know removed. `Met`: a node takes up a rotation's seed *)
+(* only once D's epoch it sits under (`know`: its maker's removals) is     *)
+(* established, its names met, so it rotates (from parents whose seeds it  *)
+(* holds) only holding what their makers held; without it a D epoch whose  *)
+(* names a node has not met still opens the seed for reading.              *)
+(* A holder actor T (another account's) boxes the account at any of its    *)
+(* epochs per keyset (`tks`); a writer seals T at any keyset it holds,     *)
+(* opening it (P's seed held) or not. Rule `Walk` "stop": a keyset whose   *)
+(* secret the writer lacks is not walked past (T has no departures to      *)
+(* judge it by); "own": its box to the writer's own account is judged:     *)
+(* blocked at an epoch the writer holds no rotation of, while it knows a   *)
+(* removal, or one blocked at it.                                          *)
 (* `Rogue`: lost node L, once removed, rotates at an epoch whose seed it    *)
 (* holds, naming any removals made, at any clock, boxing anyone. NoLeak: a  *)
 (* removed node opens no content written by a node that knew of the        *)
-(* removal, unless Rogue L opens it too (what L holds it can hand anyone).  *)
-(* Settles: a node holding everything and owing no rotation has an epoch   *)
-(* to write under.                                                          *)
+(* removal, under the account's epochs or through T, unless Rogue L opens  *)
+(* it too (what L holds it can hand anyone). Settles: a node holding       *)
+(* everything and owing no rotation has an epoch to write under, and seals *)
+(* T at any keyset boxing the account at an epoch not blocked at it.       *)
 EXTENDS Naturals, FiniteSets, Sequences
 
 CONSTANTS Honest,   \* the account's honest nodes
@@ -33,10 +41,12 @@ CONSTANTS Honest,   \* the account's honest nodes
           Y,        \* another node, passive
           Targets,  \* nodes some honest node may remove (each at most once)
           Rule,     \* "order" or "descent"
-          Met,      \* a rotation needs the removals named on its line held
+          Met,      \* a seed is taken up only under an established D epoch
+          Walk,     \* "stop" or "own": sealing T at a keyset whose secret the writer lacks
           Rogue,    \* L forks after its removal
           AnyLine,  \* a removal named on any held line owes no rotation
           MaxRot,   \* bound on rotations
+          MaxT,     \* bound on T's keysets
           MaxTs     \* bound on clocks
 
 Nodes == Honest \cup {L, Y}
@@ -46,9 +56,11 @@ VARIABLES rots,    \* the rotations: [maker, line, sup, names, box, know, ts]; e
           hasR,    \* hasR[n]: the rotations honest node n holds
           hasX,    \* hasX[n]: the removals n holds
           clk,     \* clk[n]: n's clock
-          forged   \* L's fork made
+          forged,  \* L's fork made
+          tks,     \* tks[j]: the account's epoch T's keyset j boxes it at
+          hasT     \* hasT[n]: T's keysets n holds
 
-vars == <<rots, rm, hasR, hasX, clk, forged>>
+vars == <<rots, rm, hasR, hasX, clk, forged, tks, hasT>>
 \* the clocks a commit may take after clock c: under "descent" order is read by nothing,
 \* so one value (a removal's 1 marks it made)
 After(c) == IF Rule = "order" THEN (c + 1)..(MaxTs - 1) ELSE {1}
@@ -74,6 +86,15 @@ Due(n) == Cardinality(Heads(n)) > 1 \/
 
 Live(n) == n \in Honest /\ (n \in Targets => rm[n] = 0)
 
+\* n holds epoch e's seed: its rotation, and (`Met`) D's epoch it sits under established
+Seeded(n, e) == e = 0 \/ (e \in hasR[n] /\ (Met => rots[e].know \subseteq hasX[n]))
+
+\* sealing T at keyset j is blocked at n: through T's box to the account at e
+BlockedT(n, j) ==
+  LET e == tks[j]
+  IN IF Walk = "own" THEN IF e \in {0} \cup hasR[n] THEN Blocked(n, e) ELSE hasX[n] \ {n} # {}
+     ELSE Seeded(n, e) /\ Blocked(n, e)
+
 Init ==
   /\ rots = <<>>
   /\ rm = [x \in Targets |-> 0]
@@ -81,6 +102,8 @@ Init ==
   /\ hasX = [n \in Honest |-> {}]
   /\ clk = [n \in Honest |-> 0]
   /\ forged = FALSE
+  /\ tks = <<>>
+  /\ hasT = [n \in Honest |-> {}]
 
 \* n's rotation, after removing x (x = n: none, a merge or a due naming)
 Rotate(n, x) ==
@@ -94,14 +117,14 @@ Rotate(n, x) ==
            pl == UNION {Line(p) : p \in parents}
            id == Len(rots) + 1
        IN /\ parents # {}
-          /\ Met => \A q \in pl : rots[q].know \subseteq k
+          /\ \A q \in parents : Seeded(n, q)
           /\ rots' = Append(rots, [maker |-> n, line |-> pl \cup {id}, sup |-> hs,
                                    names |-> (k \ {n}) \ NamedOn(k, pl), box |-> Nodes \ k, know |-> k, ts |-> t + 1])
           /\ rm' = IF x = n THEN rm ELSE [rm EXCEPT ![x] = t]
           /\ hasR' = [hasR EXCEPT ![n] = @ \cup {id}]
           /\ hasX' = [hasX EXCEPT ![n] = k]
           /\ clk' = [clk EXCEPT ![n] = t + 1]
-  /\ UNCHANGED forged
+  /\ UNCHANGED <<forged, tks, hasT>>
 
 \* L, removed, forks at an epoch whose seed it holds
 Forge ==
@@ -111,35 +134,50 @@ Forge ==
        IN rots' = Append(rots, [maker |-> L, line |-> Line(p) \cup {id}, sup |-> {p},
                                 names |-> nm, box |-> Nodes, know |-> {}, ts |-> t])
   /\ forged' = TRUE
-  /\ UNCHANGED <<rm, hasR, hasX, clk>>
+  /\ UNCHANGED <<rm, hasR, hasX, clk, tks, hasT>>
 
 GetRot(n, r) ==
   /\ n \in Honest /\ r \notin hasR[n] /\ Line(r) \ {r} \subseteq hasR[n]
   /\ hasR' = [hasR EXCEPT ![n] = @ \cup {r}]
   /\ clk' = [clk EXCEPT ![n] = Max(@, rots[r].ts)]
-  /\ UNCHANGED <<rots, rm, hasX, forged>>
+  /\ UNCHANGED <<rots, rm, hasX, forged, tks, hasT>>
 
 GetRm(n, x) ==
   /\ n \in Honest /\ rm[x] > 0 /\ x \notin hasX[n]
   /\ hasX' = [hasX EXCEPT ![n] = @ \cup {x}]
   /\ clk' = [clk EXCEPT ![n] = Max(@, rm[x])]
-  /\ UNCHANGED <<rots, rm, hasR, forged>>
+  /\ UNCHANGED <<rots, rm, hasR, forged, tks, hasT>>
+
+\* T's admin, outside the account, boxes it at any epoch made
+TKey ==
+  /\ Len(tks) < MaxT
+  /\ \E e \in {0} \cup Ids : tks' = Append(tks, e)
+  /\ UNCHANGED <<rots, rm, hasR, hasX, clk, forged, hasT>>
+
+GetT(n, j) ==
+  /\ n \in Honest /\ j \notin hasT[n]
+  /\ hasT' = [hasT EXCEPT ![n] = @ \cup {j}]
+  /\ UNCHANGED <<rots, rm, hasR, hasX, clk, forged, tks>>
 
 Next ==
   \/ \E n \in Honest : \E x \in Targets \cup {n} : Rotate(n, x)
   \/ Forge
   \/ \E n \in Honest, r \in Ids : GetRot(n, r)
   \/ \E n \in Honest, x \in Targets : GetRm(n, x)
+  \/ TKey
+  \/ \E n \in Honest, j \in 1..Len(tks) : GetT(n, j)
 
 Spec == Init /\ [][Next]_vars
 
 \* what a live node may write under (knowledge only grows, so a state invariant is every write),
 \* unless hostile L opens it: what L holds it can hand any party (Cover.tla's excuse)
 NoLeak == \A n \in Honest : Live(n) =>
-  \A e \in {0} \cup hasR[n] : ~Blocked(n, e) /\ ~(Rogue /\ L \in Box(e)) => \A x \in hasX[n] \ {n} : x \notin Box(e)
+  /\ \A e \in {0} \cup hasR[n] : ~Blocked(n, e) /\ ~(Rogue /\ L \in Box(e)) => \A x \in hasX[n] \ {n} : x \notin Box(e)
+  /\ \A j \in hasT[n] : ~BlockedT(n, j) /\ ~(Rogue /\ L \in Box(tks[j])) => \A x \in hasX[n] \ {n} : x \notin Box(tks[j])
 
 \* a live node holding everything, owing no rotation, has an epoch to write under
 Settles == \A n \in Honest :
   (Live(n) /\ hasR[n] = Ids /\ hasX[n] = {x \in Targets : rm[x] > 0} /\ ~Due(n))
-    => \E e \in {0} \cup hasR[n] : ~Blocked(n, e)
+    => /\ \E e \in {0} \cup hasR[n] : ~Blocked(n, e)
+       /\ \A j \in hasT[n] : ~Blocked(n, tks[j]) => ~BlockedT(n, j)
 =============================================================================

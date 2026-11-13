@@ -762,13 +762,7 @@ impl Engine {
         let Some(CreationRecord::KeyActor { public_key, account: true, .. }) = self.core.created(p).cloned() else { return Err(Error::UnknownThing(*p)) };
         let first = VerifyingKey::from_slice(&public_key).map_err(|_| Error::Misuse("account key"))?;
         let stored = self.get_typed(d, &ct::ACCOUNT)?.ok_or(Error::UnknownThing(*d))?;
-        let mut keys = BTreeMap::new();
-        for (k, v) in stored.seeds {
-            // an entry that is not its epoch's seed opens and signs nothing
-            if let Some((k, e)) = super::signing::epoch_keys(&k, &v) {
-                keys.insert(k, e);
-            }
-        }
+        let keys = super::signing::usable_seeds(&self.core, d, stored, &BTreeMap::new());
         if keys.is_empty() || !self.core.of_devices(d) {
             return Err(Error::Misuse("no seed of the account readable here"));
         }
@@ -944,7 +938,8 @@ fn create_account_in(tx: &mut Tx<'_>, record: CreationRecord, d_record: Creation
     m.set(p, &ct::KEYS, &Keys { inbox: Some(ct::Inbox { label, hosts: hosts.to_vec() }), deposit_seed: Some(dep), ..osis_keys::aspects::account_keys(keys) })?;
     put_edge(&mut m, d, me, &admin_edge())?;
     let signing = keys.signing.verifying_key().to_bytes().to_vec();
-    m.set(d, &ct::ACCOUNT, &ct::Account { seeds: [(signing, keys.seed().expose().to_vec())].into() })?;
+    let under = osis_keys::aspects::to_schema(&rot.role(Role::Read).ok_or(Error::Misuse("D's first read epoch"))?.epoch);
+    m.set(d, &ct::ACCOUNT, &ct::Account { seeds: [(signing, ct::AccountSeed { seed: keys.seed().expose().to_vec(), under })].into() })?;
     let c = Engine::commit_tx(tx, m)?;
     rotation::record(tx, d, &rot)?;
     Ok((profile, c))
