@@ -651,8 +651,9 @@ impl SyncEngine {
             let Some(e) = self.state.entries.get(&(l, o.id)).cloned() else { continue };
             let stamped = e.stamp.is_some_and(|s| osis_label::verify_stamp(&p.stamps, &l, &o.id, &e.wrap, &s).is_ok());
             // what it pulls once it reads it: stamped for its head now or by this pass (a
-            // deposit is the outbox's to wait for)
-            let takes = stamped || (own.keys.write.is_some() && (on_head || !self.stamp_serves_a_source(l, o.id, &e)));
+            // deposit is the outbox's to wait for; an older head's key this node lacks stamps
+            // nothing)
+            let takes = stamped || (own.keys.write.is_some() && (on_head || (p.keys.write.is_some() && !self.stamp_serves_a_source(l, o.id, &e))));
             lacking += usize::from(takes);
             // what the source takes once it pulls it, on this node's head or an older one:
             // deletes wait for it (a delete judged by a role commit or a cover it lacks shows
