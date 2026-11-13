@@ -1226,6 +1226,24 @@ mod tests {
         b.dump().iter().filter(|(k, _)| k.first() == Some(&prefix)).count()
     }
 
+    // notes/local-store.md: a row is `nonce || AEAD(padded plaintext)` under a fresh nonce: the
+    // same row and plaintext sealed twice share no nonce and no ciphertext, and neither holds the
+    // plaintext.
+    #[test]
+    fn a_row_seals_under_a_fresh_nonce() {
+        let mut rng = SeededRng::from_u64(1);
+        let key = Secret32::random(&mut rng);
+        let (row, pt) = (b"u row".as_slice(), [7u8; 40]);
+        let (a, b) = (seal(&key, row, &pt, &mut rng).unwrap(), seal(&key, row, &pt, &mut rng).unwrap());
+        assert_ne!(a[..NONCE_LEN], b[..NONCE_LEN], "a nonce used twice");
+        assert_ne!(a[NONCE_LEN..], b[NONCE_LEN..]);
+        for v in [&a, &b] {
+            assert!(!v.windows(pt.len()).any(|w| w == pt), "the row holds its plaintext");
+            assert_eq!(v.len(), NONCE_LEN + padded_len(row, pt.len()) + TAG_LEN);
+            assert_eq!(open(&key, row, v).unwrap(), pt);
+        }
+    }
+
     // spec/commits.md §5: dropping destroys every local copy; notes/local-store.md, Key tree: units round-trip and survive reopen; rows hold ciphertext.
     #[test]
     fn units_roundtrip_and_reopen() {

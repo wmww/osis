@@ -652,7 +652,7 @@ impl std::fmt::Debug for LazyHeader {
 }
 
 /// The rebuild of one aspect `apply::run_batched` runs.
-#[derive(Default, Clone)]
+#[derive(Default, Clone, PartialEq)]
 pub struct Batched {
     /// Asked in the memory class.
     pub memory: bool,
@@ -1887,6 +1887,32 @@ impl Core {
     fn changed_since(&mut self, m: &CoreMark) -> bool {
         // a record written alone (`put_commit`, `leftover::put`) changes no index: its stamp says
         self.dirty || self.written.len() > m.written || self.ix.mark() != m.ix || self.records_read.changes() != m.records
+    }
+
+    /// What `rollback_to` would restore that moved since `m`, by name (`Engine::read`'s check).
+    #[cfg(debug_assertions)]
+    fn moved_since(&mut self, m: &CoreMark) -> Vec<&'static str> {
+        let stale = (&self.stale_things, &self.stale_authors, &self.stale_under, &self.stale_commits, self.stale_all);
+        [
+            ("indexes", self.ix.mark() != m.ix),
+            ("sides", self.sides.journaled() > m.sides.0 + m.sides.1),
+            ("schemas", self.schemas.mark() != m.schemas),
+            ("memory.dropped", self.memory.dropped.len() != m.dropped),
+            ("written", self.written.len() != m.written),
+            ("events", self.events.queued() != m.events),
+            ("commits_named", self.commits_named.len() != m.commits_named),
+            ("listed_before", self.listed_before.len() != m.listed_before),
+            ("killed", self.killed.len() != m.killed),
+            ("to_date", self.to_date.len() != m.to_date),
+            ("stale", stale != (&m.stale.0, &m.stale.1, &m.stale.2, &m.stale.3, m.stale.4)),
+            ("batched", self.batched != m.batched),
+            ("memory_tx", self.memory_tx != m.memory_tx),
+            ("dirty", self.dirty != m.dirty),
+            ("records", self.records_read.changes() != m.records),
+        ]
+        .into_iter()
+        .filter_map(|(f, moved)| moved.then_some(f))
+        .collect()
     }
 
     /// Undoes every change to the indexes, the sides, the queued events and the work lists of the
@@ -3443,7 +3469,7 @@ impl Engine {
     /// of a transaction's end work (`run`): that work follows changes, and a read keeps none.
     /// Caches it filled stay (they hold what is stored). Only for an `f` that changes nothing it
     /// should keep: a change (a lazy take-up) would be undone, dropping every cache, at each call,
-    /// so a debug build panics at one that changed the store or the indexes.
+    /// so a debug build panics at one that changed anything it undoes, the store or blobs.
     pub(crate) fn read<T>(&mut self, f: impl FnOnce(&mut Tx<'_>) -> Result<T>) -> Result<T> {
         let _s = crate::costs::span("read");
         if self.blobs_unsettled {
@@ -3461,9 +3487,14 @@ impl Engine {
         let r = f(&mut tx);
         // a read that changed something would have its change undone, and every cache dropped, at
         // every call
-        let wrote = tx.txn.wrote();
+        #[cfg(debug_assertions)]
+        {
+            let mut moved = tx.core.moved_since(&start);
+            moved.extend(tx.txn.wrote().then_some("store"));
+            moved.extend(tx.blobs.changed().then_some("blobs"));
+            assert!(moved.is_empty(), "Engine::read changed {moved:?}");
+        }
         drop(tx);
-        debug_assert!(!wrote && !self.core.changed_since(&start), "Engine::read changed the store or the indexes");
         self.core.rollback_to(start);
         self.core.cut_subs.clear();
         r
@@ -3915,7 +3946,7 @@ mod tests {
     // caught (debug builds) rather than undone at every call.
     #[test]
     #[cfg(debug_assertions)]
-    #[should_panic(expected = "Engine::read changed the store or the indexes")]
+    #[should_panic(expected = "Engine::read changed")]
     fn a_read_that_writes_is_caught() {
         let mut lp = LocalPeer::fresh(1, WallMs(1_700_000_000_000));
         let p = &mut lp.peers[0];

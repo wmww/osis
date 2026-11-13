@@ -112,6 +112,11 @@ impl<'a> Cipher<'a> {
         self.removals.push(op);
     }
 
+    /// Whether this transaction held, released or deferred anything (`Engine::read`'s check).
+    pub fn changed(&self) -> bool {
+        !self.held.is_empty() || !self.journal.is_empty() || !self.removals.is_empty()
+    }
+
     /// A point `rollback_to` goes back to.
     pub fn mark(&self) -> CipherMark {
         CipherMark(self.held.len(), self.journal.len(), self.removals.len())
