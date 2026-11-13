@@ -246,13 +246,13 @@ impl Core {
         expand_destroyed(actor, |t| self.edge_holders(t), |m| self.destroyed_actor(m))
     }
 
-    /// The holders of `actor` for keys with key access to it (spec/crypto.md §4, Key access,
-    /// Destroyed), `keyless` the keyless grants (`rotation::members::key_access`): `key_holders`
-    /// walked over grants with key access only, so a destroyed actor's frozen holder has it only
-    /// when every grant on some path to it does.
-    pub(crate) fn keyed_holders(&self, actor: &Tid, keyless: &BTreeSet<(Tid, Tid)>) -> BTreeSet<Tid> {
+    /// The holders of `actor` for keys with key access to it, each at its role so (spec/crypto.md
+    /// §4, Key access, Destroyed), `keyless` the keyless grants (`rotation::members::key_access`):
+    /// `key_holders` walked over grants with key access only, so a destroyed actor's frozen holder
+    /// has it only when every grant on some path to it does, at the greatest role over such paths.
+    pub(crate) fn keyed_holders(&self, actor: &Tid, keyless: &BTreeSet<(Tid, Tid)>) -> BTreeMap<Tid, Role> {
         let edges = |t: &Tid| self.edge_holders(t).into_iter().filter(|(m, _)| !keyless.contains(&(*t, *m))).collect();
-        expand_destroyed(actor, edges, |m| self.destroyed_actor(m)).into_iter().map(|x| x.0).collect()
+        expand_destroyed(actor, edges, |m| self.destroyed_actor(m)).into_iter().collect()
     }
 
     /// The direct holders of `actor` for keys (`key_holders` without the destroyed actors' frozen

@@ -67,7 +67,7 @@ pub fn blocked_roles_of(tx: &mut Tx<'_>, who: &Tid, a: &Tid, deps: &[Departure],
 /// Whether `who` may not encrypt under epoch `e` of role `r` of `a` (spec/crypto.md §4,
 /// encrypting under), `deps` the departures from `a` counted: `e` does not cover one of them
 /// (`uncovered`); or `who` may rotate `r` and `e` has a stale box to a holder actor (rule 2) or
-/// boxes a holder whose grant on `a` is keyless (rule 4); or `e` boxes a holder actor M at a
+/// boxes a holder past its key access to `a` (rule 4); or `e` boxes a holder actor M at a
 /// keyset of M under which `who` may not encrypt, by this same rule with every departure from M
 /// this node knows (sealing at that keyset was encrypting under it). Stale and keyless bind
 /// rotators only: they say a rotation is due, not that a departed party opens `e`. Sealing a
@@ -758,7 +758,6 @@ fn own_secrets_rot(tx: &mut Tx<'_>, t: Tid, hosts: Option<&[Address]>, also: &[c
 pub(crate) fn own_secrets_candidates(core: &Core, a: &Tid) -> Vec<Tid> {
     let Some(me) = core.me() else { return Vec::new() };
     let plain = |t: &Tid| !core.has_own_secrets(t) && !core.is_key_actor(t) && core.secret_actor(t) == Some(*a) && core.role_now(&me, t) == Some(Role::Admin);
-    let keyless = members::key_access(core);
     // a scan per call; only plain targets and holders go further
     let mut out = BTreeSet::new();
     for ((x, _), m) in core.ix.holder_keys.iter() {
@@ -767,7 +766,7 @@ pub(crate) fn own_secrets_candidates(core: &Core, a: &Tid) -> Vec<Tid> {
         }
         // a plain thing holds its plain record children by derivation: only an actor with secrets
         // of its own seals to its holders
-        if !out.contains(m) && plain(m) && core.has_own_secrets(x) && core.keyed_holders(x, &keyless).contains(m) {
+        if !out.contains(m) && plain(m) && core.has_own_secrets(x) && core.key_holders(x).iter().any(|(h, _)| h == m) && members::keyed(core, x, m) {
             out.insert(*m);
         }
     }

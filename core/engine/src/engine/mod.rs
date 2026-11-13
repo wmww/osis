@@ -1040,6 +1040,9 @@ pub struct Core {
     /// The keyless actor grants (target, holder) over those held (`rotation::members::key_access`;
     /// `memo`): O(edges) to build.
     pub(crate) key_access: memo::Memo<(), Arc<BTreeSet<(Tid, Tid)>>>,
+    /// Per actor, each holder for keys at its role and its role with key access
+    /// (`rotation::members::key_roles`; `memo`): a walk of its holders through destroyed actors.
+    pub(crate) key_roles: memo::Memo<Tid, Arc<crate::rotation::members::KeyRoles>>,
     /// `Core::acting` (`memo`).
     acting_of: memo::Memo<(), Arc<Vec<Tid>>>,
     /// `Engine::inbox_actors` (`memo`).
@@ -1346,6 +1349,7 @@ impl Core {
             account_epochs_of: self.account_epochs_of.clone(),
             epochs_judged_from: self.epochs_judged_from.clone(),
             key_access: self.key_access.clone(),
+            key_roles: self.key_roles.clone(),
             acting_of: self.acting_of.clone(),
             inbox_actors: self.inbox_actors.clone(),
             pages: self.pages.clone(),
@@ -1955,6 +1959,7 @@ impl Core {
             head_keys: _,
             holders_named: _,
             key_access: _,
+            key_roles: _,
             inbox_actors: _,
             acting_of: _,
             labels: _,
@@ -2143,6 +2148,7 @@ impl Core {
             account_epochs_of: memo::Memo::new("account epochs"),
             epochs_judged_from: None,
             key_access: memo::Memo::new("key access"),
+            key_roles: memo::Memo::new("key roles"),
             acting_of: memo::Memo::new("acting"),
             inbox_actors: memo::Memo::new("inbox actors"),
             pages: HashMap::new(),

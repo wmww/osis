@@ -1941,3 +1941,41 @@ fn frozen_holder_through_a_keyless_grant_is_boxed_nothing_spec_crypto_4() {
     assert!(!boxes(&mut lp, 0, x, g), "X boxes G: a key cycle");
     assert!(boxes(&mut lp, 1, g, x), "G boxes X");
 }
+
+// spec/crypto.md §4 (Holders for keys, Destroyed; Key access): a frozen holder's role for keys
+// with key access is the greatest over paths with key access at every grant, the lesser role
+// along the way. M holds X read through T and admin through T2 and U, where U's grant on T2 is
+// keyless (T2 holds U first); once all three are destroyed, X's admin boxes M read alone: the
+// admin path never gave M's members X's admin secret, and its destruction gives them nothing
+#[test]
+fn frozen_holder_keyed_at_the_role_of_its_keyed_paths_spec_crypto_4() {
+    let mut lp = LocalPeer::new(2, 0, T0).unwrap();
+    let me = lp.peers[0].engine.me();
+    let mut m = Mutation::new();
+    let [t, t2, u] = [(); 3].map(|_| lp.peers[0].engine.new_thing(&mut m, me));
+    for x in [t, t2, u] {
+        m.set(x, &osis_base::Ak::new("x:a.0").unwrap(), &osis_base::Value::Int(0)).unwrap();
+    }
+    m.expires_all(WallMs(T0.0 + 50_000));
+    lp.peers[0].commit(m).unwrap();
+    for x in [t, t2, u] {
+        lp.peers[0].engine.give_own_secrets(&x).unwrap();
+    }
+    let (x, mm) = (group(&mut lp, 0), group(&mut lp, 1));
+    lp.sync_all().unwrap();
+    lp.peers[0].engine.grant(&x, &t, &edge(Role::Read)).unwrap();
+    lp.peers[0].engine.grant(&x, &t2, &edge(Role::Admin)).unwrap();
+    lp.peers[0].engine.grant(&u, &t2, &edge(Role::Admin)).unwrap();
+    lp.peers[0].engine.grant(&t2, &u, &edge(Role::Admin)).unwrap();
+    lp.sync_all().unwrap();
+    lp.peers[0].engine.grant(&t, &mm, &edge(Role::Admin)).unwrap();
+    lp.peers[0].engine.grant(&u, &mm, &edge(Role::Admin)).unwrap();
+    lp.sync_all().unwrap();
+    assert!(lp.peers[0].engine.run(|tx| Ok(super::members::key_access(tx.core).contains(&(t2, u)))).unwrap(), "U's grant on T2 is keyless");
+    expire_t(&mut lp, t);
+    assert!([t2, u].iter().all(|y| lp.peers[0].engine.core.destroyed(y)));
+    assert!(lp.peers[0].engine.core.key_holders(&x).contains(&(mm, Role::Admin)), "M holds X admin in T2's place");
+    settle(&mut lp, &[0], &[x]);
+    let roles: BTreeSet<Role> = lp.peers[0].engine.get_typed(&x, &ct::SECRETS).unwrap().unwrap().boxes.keys().filter(|k| k.holder == mm).map(|k| k.role).collect();
+    assert!(roles.contains(&Role::Read) && roles.iter().all(|r| *r <= Role::Read), "X boxes M read and below alone: {roles:?}");
+}
