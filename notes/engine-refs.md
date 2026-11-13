@@ -1,5 +1,5 @@
 # Reference index
-> Summary: The engine's local, rebuildable index of references in held readable data (`engine/refs.rs`): rows (target, source thing, AK) with a count, what counts as a reference, how every state change keeps the rows in its own transaction, the paged read and change event backlinks use, costs and checks. Serves backlinks (notes/api.md Backlinks) and the lifetime judgment (issues/thing-lifetimes.md).
+> Summary: The engine's local, rebuildable index of references in held readable data (`engine/refs.rs`): rows (target, source thing, AK) with a count, what counts as a reference, how every state change keeps the rows in its own transaction, the paged read and change event backlinks use, costs and checks. Serves backlinks (notes/api.md Backlinks) and the lifetime judgment (notes/lifetimes.md).
 
 ## Principle
 A row says exactly what the source's held state on that aspect holds: it changes in the transaction that changes the state and never outlives the value it came from.

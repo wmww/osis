@@ -5,8 +5,6 @@
 # (tools/gate_failures.py).
 order::held_set_decides_plain OSIS_ORDER_START=539131766525 issues/order-required-floor-plain.md held_set_decides: \w+ seeds ran, but not
 order::held_set_decides_plain OSIS_ORDER_START=632680797673 issues/order-required-floor-plain.md held_set_decides: none of \d+ Undo steps made a commit
-rotation::tests_property::rotation_holds_large_spec_crypto_4 OSIS_ROTATION_START=1044279127 issues/rotation-holder-lacks-box-seed.md with key access lacks a box
 runtime::a_paired_peer_serves_what_it_reads_in_process_spec_data_model_9 - issues/paired-peer-runtime-flake.md Unsynced \{ groups
 tests_laws::entry_copies::forged_entry_copies_join_and_expire_alike_spec_5_6 OSIS_CRDT_SEED=2854516606 issues/forged-entry-copies-expiry-seed.md before the joins
-sim-sweep:work_sets 43254590189/43254590194 issues/work-sets-delete-storm-194.md message storm: 5000 deliveries
-sim-sweep:member_churn 720956814942/720956814950 issues/work-sets-delete-storm-194.md message storm: \d+ deliveries without the queue emptying
+props::arrival_orders_read_alike_after_repair_large_spec_commits_5 OSIS_HELD_START=428367310133 issues/held-model-arrival-order-seed.md order \d+: \[\(\(\d+, Aspect \{.*\}\), None, Some\(

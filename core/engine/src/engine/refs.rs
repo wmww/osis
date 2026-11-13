@@ -1,4 +1,4 @@
-//! The reference index (issues/thing-lifetimes.md, Index and backlinks; notes/engine-refs.md): per
+//! The reference index (notes/lifetimes.md, Index and backlinks; notes/engine-refs.md): per
 //! (target, source thing, AK) how many times the target's tid occurs in the held values of the
 //! source's state on that aspect. Local and rebuildable (`write_all`), in two store index tables,
 //! kept in the transaction that changes a state: a join counts the tids at its reach before and
@@ -242,7 +242,7 @@ pub(crate) fn listers(tx: &mut Tx<'_>, target: &Tid) -> Result<Vec<Tid>> {
 }
 
 /// Whether `source` references `target` for lifetime: a durable row other than `retainers^.0`
-/// (issues/thing-lifetimes.md, What a reference is).
+/// (notes/lifetimes.md, What a reference is).
 pub(crate) fn references(tx: &mut Tx<'_>, source: &Tid, target: &Tid) -> Result<bool> {
     let to = tx.txn.index(TO)?;
     let pre = [target.as_bytes().as_slice(), source.as_bytes()].concat();
@@ -351,7 +351,7 @@ mod tests {
     use super::*;
     use osis_base::{CanonicalBytes, Unknown};
 
-    // issues/thing-lifetimes.md (What a reference is: found without a schema): a tid at any depth,
+    // notes/lifetimes.md (What a reference is: found without a schema): a tid at any depth,
     // map keys, set elements, enum payloads and unknown tags' content included; not in a string
     #[test]
     fn tids_at_any_depth() {

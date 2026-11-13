@@ -3,6 +3,8 @@
 > Priority: normal
 > Tags: security, sync, tess-call
 
+**Tess question:** should a reader's grant of a role to the group be kept only once a writer or admin accepts it, or should requirements' "small budget" for readers count such grants like other readers' changes?
+
 Probe: `promotion::a_readers_grants_to_the_group_stay_within_the_budget_spec_sync_5` (ignored; 39 of 40 stamped, about 700 B each, plus the promoter's copies of each creation).
 
 Not the shape the question first suggests: sharing a thing with the group does not put the thing in the label's closure (`group.0` only, which a reader cannot write), so a reader's later writes on it are not promoted. Only the grant (and each rotation's box to the group) is.

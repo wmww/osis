@@ -1,4 +1,4 @@
-//! Thing lifetimes through the API (issues/thing-lifetimes.md, API; notes/api.md Lifetimes):
+//! Thing lifetimes through the API (notes/lifetimes.md, API; notes/api.md Lifetimes):
 //! `core::RETAINERS`, `AspectWrite::retaining`, `Write::release`, and the writer refusing its own
 //! list change that leaves a thing unreachable. The judgment itself is node-sync's (node
 //! `lifetimes::`); a thing under no label is judged at once, after each call.
@@ -34,7 +34,7 @@ fn chat_with_file(db: &Osis) -> (Tid, Tid) {
     (chat, file)
 }
 
-// issues/thing-lifetimes.md (API, One motion): creating a thing referenced by a retainer is one
+// notes/lifetimes.md (API, One motion): creating a thing referenced by a retainer is one
 // commit; it lives while the reference does, and goes once the reference goes.
 #[test]
 fn a_thing_created_retained_lives_by_its_reference() {
@@ -47,7 +47,7 @@ fn a_thing_created_retained_lives_by_its_reference() {
     assert!(alive(&db, chat));
 }
 
-// issues/thing-lifetimes.md (API, One motion): `retaining` with no reference from that aspect after
+// notes/lifetimes.md (API, One motion): `retaining` with no reference from that aspect after
 // the commit is refused, nothing applied; an existing reference is enough.
 #[test]
 fn retaining_needs_the_reference() {
@@ -77,7 +77,7 @@ fn retaining_needs_the_reference() {
     assert!(matches!(r, Err(Error::Invalid(m)) if m.contains("Write::group")));
 }
 
-// issues/thing-lifetimes.md (API, Move): a move is one `Write`: retained by the new place, out of
+// notes/lifetimes.md (API, Move): a move is one `Write`: retained by the new place, out of
 // the old; it is never released.
 #[test]
 fn a_one_commit_move_keeps_the_thing() {
@@ -94,7 +94,7 @@ fn a_one_commit_move_keeps_the_thing() {
     assert!(alive(&db, file));
 }
 
-// issues/thing-lifetimes.md (API): a write's own change of a thing's list that leaves it
+// notes/lifetimes.md (API): a write's own change of a thing's list that leaves it
 // unreachable as this node judges it is refused, nothing applied: a list with no referencing
 // retainer, an emptied list, a move under a thing that does not reference it. A list naming a
 // thing this node does not hold is not judged.
@@ -129,7 +129,7 @@ fn db2_thing() -> Tid {
     other.commit_with(|w| w.create()).unwrap()
 }
 
-// issues/thing-lifetimes.md (The release, API): `release` releases a retained thing at once, at
+// notes/lifetimes.md (The release, API): `release` releases a retained thing at once, at
 // every node it reaches, and it stays released where its referencer is held; a release is a
 // commit of its own; a delete leaves the list.
 #[test]

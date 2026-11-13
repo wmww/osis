@@ -1,5 +1,5 @@
 # A minting of a thing destroyed for good brings its record back for good
-> Summary: node-sync relearns a destroyed thing's record from a held record blob whenever something awaits it (`settle_batch`, `Engine::destroyed_records_awaited`). A minting of a thing destroyed for good awaits its record too, so where a record blob carrying it is held the record comes back (`learn_record` notes it kept) and nothing judges its keep again: it stays for good, with the minting awaiting forever. No revival, cost as main's per-purged-thing record; a leftover the branch meant to remove.
+> Summary: node-sync relearns a destroyed thing's record from a held record blob whenever something awaits it (`settle_batch`, `Engine::destroyed_records_awaited`). A minting of a thing destroyed for good awaits its record too, so where a record blob carrying it is held the record comes back (`learn_record` notes it kept) and nothing judges its keep again: it stays for good, with the minting awaiting forever. No revival; the cost is one kept record per such thing.
 > Priority: low
 > Tags: engine, sync
 

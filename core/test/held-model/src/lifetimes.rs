@@ -1,4 +1,4 @@
-//! Greenfield model of thing lifetimes by reference (issues/thing-lifetimes.md). Not wired into
+//! Greenfield model of thing lifetimes by reference (notes/lifetimes.md). Not wired into
 //! `evaluate`: it is the oracle for the engine's judgment and its work list when they are built.
 //!
 //! The rule: a thing with no list is standalone and kept. A thing with a list is kept while some

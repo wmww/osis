@@ -3,5 +3,5 @@
 > Priority: low
 > Tags: sync, tests
 
-- Seen while fixing the shredded-wrap storm (`opens_here`): adding both (reopened entries into `reask`; a reasked entry kept while its blob is asked elsewhere) also fixed that seed, but neither was needed for it.
+- Candidate fixes: reopened entries into `reask`; a reasked entry kept while its blob is asked under another label.
 - First a default test: two co-readers, no host, a part missing again under two labels (`awaits::a_part_missing_again_is_fetched_under_every_label_spec_sync_6` has the host-side shape).

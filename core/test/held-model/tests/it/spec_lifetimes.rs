@@ -1,4 +1,4 @@
-//! Thing lifetimes by reference (issues/thing-lifetimes.md, held_model::lifetimes): the
+//! Thing lifetimes by reference (notes/lifetimes.md, held_model::lifetimes): the
 //! judgment's properties, each over every small world, so a failure names a minimal counterexample.
 use held_model::lifetimes::*;
 

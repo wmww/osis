@@ -456,7 +456,7 @@ impl<'d> Write<'d> {
                         return Err(Error::Invalid(format!("{} is a signal: it is fired, not written (fire)", k.ak)));
                     }
                     // the writer refuses its own change of a list that leaves the thing
-                    // unreachable (issues/thing-lifetimes.md, API)
+                    // unreachable (notes/lifetimes.md, API)
                     if k.ak.as_str() == RETAINERS.ak() {
                         b.m.require_kept(tid);
                     }

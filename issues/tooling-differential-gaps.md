@@ -3,7 +3,7 @@
 > Priority: low
 > Tags: tests, tools
 
-Each met by several agents (complaints digested by the watchdog):
+Each met by several agents:
 - **Library differential**: comparing a library crate's behaviour with main's (not a binary, so `tools/bin-at` does not help) is done by `git checkout origin/main -- <crate>/src` and back, which twice dropped uncommitted edits and once pulled in main's newer sibling crate that did not build. A `tools/src-at REV <crate>` that wip-commits, swaps the sources in at the merge base, builds, and swaps back would make it safe. Until then: wip-commit first, check out from `$(git merge-base HEAD origin/main)`, and `git reset --hard` back (a path checkout leaves files the other side added).
 - **`tools/bin-at --bin NAME`**: main's `osis` CLI binary for a text differential came from the `target/debug/osis` a test-binary build left behind. After any `bin-at`, `target/debug/deps/it-*` holds REV's build until the next `cargo test --no-run`: copy the branch's binary out first.
 - **Comment-only manifest edits**: gate.sh and test_select.py treat any root `Cargo.toml`/`.cargo/` change as build configuration: every crate selected plus the unification check (about 2000 CPU-s), even for a comment (prose-testing; policy's pointer check can force such a comment edit). Ignoring a diff whose changed lines are all TOML comments or blank, in both places, would fix it.

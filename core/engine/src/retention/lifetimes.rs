@@ -1,4 +1,4 @@
-//! Thing lifetimes by reference (issues/thing-lifetimes.md; oracle: held-model `lifetimes`). A
+//! Thing lifetimes by reference (notes/lifetimes.md; oracle: held-model `lifetimes`). A
 //! thing listing retainers (`retainers^.0`) is kept while a listed retainer that is itself kept
 //! references it, or a listed retainer is unknown here; a thing with no list is standalone and
 //! kept. A thing judged unreachable is released by a node holding the right to destroy it; one
@@ -271,7 +271,7 @@ impl crate::engine::Engine {
         })
     }
 
-    /// Judges the things changes touched (issues/thing-lifetimes.md, The judgment), and with
+    /// Judges the things changes touched (notes/lifetimes.md, The judgment), and with
     /// `held` the things held at an earlier judgment: each whose walk read only things heard out
     /// (each group holding it, itself included, `heard` says is: node-sync, every label of the
     /// group is; a thing under no group is), the rest held. Node-sync passes `held` once a label

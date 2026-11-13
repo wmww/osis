@@ -26,7 +26,7 @@ Severity: **fails** (error or never happens), **silent** (claims success or does
 | 14 | `SyncFirst::Try` | Gone: nothing waits before a removal | share.rs | ok |
 | 15 | `wait_synced(All)` | Waits with nobody connected on any group in scope: nothing reports `Ok` over a group no node has open | share.rs | ok |
 | 16 | `wait_synced(Thing)` | Ends `Ok` once caught up with every connected node; fails only on `Stranded` or no group holding it | share.rs | ok |
-| 17 | Status | `Synced` needs at least one connected node with it open, each caught up (`NotConnected` for none); served-only connections read `Syncing` at the served side (issues/net-honest-status.md step 2) | share.rs, status.rs | ok |
+| 17 | Status | `Synced` needs at least one connected node with it open, each caught up (`NotConnected` for none); served-only connections read `Syncing` at the served side | share.rs, status.rs | ok |
 | 18 | History `complete` | False while a pass with a connected node is unfinished or about to run, or before a first pass; true offline after | share.rs | ok |
 | 19 | Restore, recover | Gone from the API until a design exists (issues/recovery-redesign.md) | - | n/a |
 | 20 | Data between nodes that know each other | Works: writes both ways, a 3 MB value, reader deposits | p02, p05, p12; `driver_p2p_localhost`, LAN loop (by hand) | ok |
@@ -46,7 +46,7 @@ Severity: **fails** (error or never happens), **silent** (claims success or does
 | 34 | LAN tag vs clock | Tags tolerate 10-20 min of skew, `MAX_DRIFT` allows 60. Past it nodes never match | peers.rs:525; p10 window | fails |
 | 35 | Clock pulled by a peer | Nothing a peer sends moves a node's clock; an offset over 5 s is a `ClockSkew` diagnostic. Bob connected to Alice alone, 120 min slow, redeems her link and takes Carol's writes | `a_slow_peer_does_not_move_a_nodes_clock_row_35_spec_sync_6` | ok |
 | 36 | Co-reader cap | At most 8 per label, chosen by node tid, and LAN tags come from that same list: an unreachable 8 hide a reachable 9th | peers.rs:303-315,524 (read) | degraded |
-| 37 | Link expiry, K with no saved peer | Only the node that made the link finalizes it (`h.here`) | deliver.rs:485 (read) | degraded |
+| 37 | Link expiry, K with no saved peer | Only the node that made the link finalizes it (`h.here`) | deliver.rs `h.here` (read) | degraded |
 
 ## Builds (`lan` on by default)
 P2P is in every build; `lan` (socket2 only) is the one networking feature left.
@@ -61,4 +61,3 @@ The fixes, their order and what is open: issues/net-rework.md and its job issues
 - **By probe**: rows marked with `p`/`q`, by-hand tests. In-process results say nothing about finding a peer: only p20, p21 and the by-hand tests ran real sockets, and all on localhost, never between machines.
 - **By reading only**: 3's "never syncs" (`Runtime::None` under the CLI needs real sockets to see), 31, 32, the "works, read" part of 12; 9's removal notices and re-seals; causes in 21, 24, 33; deny for libs/kit; everything on Android.
 - **Not checked**: real devices, Wi-Fi client isolation, ephemeral values and ephemeral signals over peers beyond existing tests, thin clients with no saved peers, disk-backed restart of link peers.
-- notes/networking.md is out of date where it says a contact card may carry a dialable key, and names `sync_policy`, which does not exist.

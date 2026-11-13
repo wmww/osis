@@ -3,6 +3,8 @@
 > Priority: low
 > Tags: tess-call, schema, api
 
+**Tess question:** go ahead with schema templates as proposed below (and, if so, fixed values or parameters, flat or composed)?
+
 ## Proposal
 - Things have no kind (ECS entities, not classes), so per-thing properties that a schema would like to suggest (a history setting, an expiry, starting values) have nowhere to come from except the writes that create the thing.
 - A template is declared in a schema: a name and the aspects with initial values it writes. `create from template` makes exactly those writes, in the creating commit, plus whatever else the caller writes.

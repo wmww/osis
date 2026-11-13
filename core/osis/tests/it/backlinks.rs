@@ -1,4 +1,4 @@
-//! Backlinks (notes/api.md Backlinks; issues/thing-lifetimes.md, Index and backlinks): the things
+//! Backlinks (notes/api.md Backlinks; notes/lifetimes.md, Index and backlinks): the things
 //! whose current values reference a thing, paged, as the acting actor may read them, and live.
 //! spec: none (a local read over a rebuildable index; notes/engine-refs.md).
 
@@ -51,7 +51,7 @@ impl Heard {
     }
 }
 
-// issues/thing-lifetimes.md (Backlinks): a note linking a note shows, at any depth and on any
+// notes/lifetimes.md (Backlinks): a note linking a note shows, at any depth and on any
 // aspect, ephemeral ones included, and a group listing it (`group.0`) like any other; a string
 // spelling the tid does not; it stops showing when the reference goes, and the target need not
 // be known.
@@ -84,7 +84,7 @@ fn a_reference_shows_and_stops_showing() {
     assert_eq!(all(&db, ghost), vec![bl(b, "t:link.0")]);
 }
 
-// issues/thing-lifetimes.md (Backlinks): another node shows the writer's backlinks, in any arrival
+// notes/lifetimes.md (Backlinks): another node shows the writer's backlinks, in any arrival
 // order of the commits that wrote them.
 #[test]
 fn backlinks_follow_writes_in_any_arrival_order() {

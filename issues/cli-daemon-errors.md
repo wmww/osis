@@ -3,10 +3,10 @@
 > Priority: normal
 > Tags: cli, osis
 
-Seen in use: `osis -s STORE --timeout 10 status` beside a daemon printed `store in use by pid N`.
+Seen: `osis -s STORE --timeout 10 status` beside a daemon printed `store in use by pid N`.
 
 - cli/src/lib.rs `open`/`daemon`: `Osis::connect_socket` makes one attempt and `.ok()?` drops every failure, so a socket path that differs (`XDG_RUNTIME_DIR` set differently from the daemon's shell), a bad `--timeout`, or the window between `open` and `listen` in `serve` all read as the lock message. `daemon()` should return its error ("daemon at SOCK: why"). `connect_socket` could retry within the caller's timeout.
-- cli/src/lib.rs detects the lock by `m.contains("already open")`, redb's wording: a change there turns daemon routing off (exit 8 everywhere). Match a typed error.
+- cli/src/lib.rs detects the lock by `m.contains("already open")`, redb's wording: a change there turns daemon routing off (exit 8 everywhere). Match the typed in-use error issues/store-in-use-error.md asks of osis.
 - `<store>/pid` is written by every one-shot command and never removed, and the app writes none, so the pid named can be long dead. Drop the file: the useful answer is the daemon's error or "locked by another process".
 - core/osis/src/port/codec.rs: status over the port drops `node_connections`, so a thin client's `status()` differs from in-process.
-- cli/src/cmd.rs `status` omits `refused_by` and `leaving`, which notes/cli.md says it shows.
+- cli/src/cmd.rs `status` omits `GroupSync::leaving`.

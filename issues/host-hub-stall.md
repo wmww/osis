@@ -1,5 +1,5 @@
 # One hub thread: what is left of the stall bounds
-> Summary: the host runs every connection's input on one hub thread. Per-input work is bounded and close to honest work (notes/flow-control.md, Hub stall bounds). Left: sources a transport cannot tell apart (many addresses), no node-wide relay rate with a shared replay memory, and everything still serial on one thread. Low.
+> Summary: the host runs every connection's input on one hub thread. Per-input work is bounded and close to honest work (notes/flow-control.md, Hub stall bounds). Left: sources a transport cannot tell apart (many addresses), no node-wide relay rate with a shared replay memory, and everything still serial on one thread.
 > Priority: low
 > Tags: security, host
 

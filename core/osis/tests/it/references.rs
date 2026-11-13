@@ -1,4 +1,4 @@
-//! The reference index (issues/thing-lifetimes.md, Index and backlinks; notes/engine-refs.md),
+//! The reference index (notes/lifetimes.md, Index and backlinks; notes/engine-refs.md),
 //! read through `internals`: rows follow the held values, whatever changes them.
 //! spec: none (a local, rebuildable index; notes/engine-refs.md).
 
@@ -27,7 +27,7 @@ fn row(t: Tid, k: &str, n: u64) -> (Tid, String, u64) {
     (t, k.to_string(), n)
 }
 
-// issues/thing-lifetimes.md (What a reference is): a tid at any depth of a held value counts,
+// notes/lifetimes.md (What a reference is): a tid at any depth of a held value counts,
 // map keys and set elements included, per aspect and class; a string spelling one does not;
 // `retainers^.0` is indexed too, as a list; rows follow every write, and leave with the value.
 #[test]
@@ -61,7 +61,7 @@ fn rows_follow_the_values() {
     assert_eq!(rows(&db, r), [row(y, "retainers^.0", 1)].into(), "the deleter drops its ephemeral state too; a delete leaves the list");
 }
 
-// issues/thing-lifetimes.md (Index): another node's rows are the writer's, in any arrival order of
+// notes/lifetimes.md (Index): another node's rows are the writer's, in any arrival order of
 // the commits that wrote them.
 #[test]
 fn rows_follow_the_value_in_any_arrival_order() {
@@ -99,7 +99,7 @@ fn rows_follow_the_value_in_any_arrival_order() {
     }
 }
 
-// issues/thing-lifetimes.md (What a reference is: not a value-less write): an expiry and a purge
+// notes/lifetimes.md (What a reference is: not a value-less write): an expiry and a purge
 // remove the rows of the values they take.
 #[test]
 fn an_expiry_and_a_purge_remove_rows() {
@@ -120,7 +120,7 @@ fn an_expiry_and_a_purge_remove_rows() {
     assert_eq!(rows(&db, r), BTreeSet::new(), "purged");
 }
 
-// issues/thing-lifetimes.md (Disputes, validity): a reference whose write turns invalid (its
+// notes/lifetimes.md (Disputes, validity): a reference whose write turns invalid (its
 // writer removed with a frontier that omits it) leaves the index.
 #[test]
 fn a_validity_flip_removes_rows() {
@@ -153,7 +153,7 @@ fn a_validity_flip_removes_rows() {
     assert_eq!(rows(&alice, g), BTreeSet::new());
 }
 
-// issues/thing-lifetimes.md (The judgment: an unknown retainer keeps): a node that loses access to
+// notes/lifetimes.md (The judgment: an unknown retainer keeps): a node that loses access to
 // a thing keeps no row of it.
 #[test]
 fn lost_access_leaves_no_rows() {
@@ -177,7 +177,7 @@ fn lost_access_leaves_no_rows() {
     assert!(bob.engine(|e| e.references_to(&g).unwrap()).is_empty());
 }
 
-// issues/thing-lifetimes.md (Cost): a path write into a map of n and 10n entries reads the values
+// notes/lifetimes.md (Cost): a path write into a map of n and 10n entries reads the values
 // it writes and those it replaces, and changes their rows: no other entry.
 #[test]
 fn a_path_write_costs_what_it_writes() {

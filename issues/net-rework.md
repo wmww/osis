@@ -48,18 +48,15 @@ The registry of old words stays issues/deprecated-terms.md. Renames come after t
 - IP consent: any positive action is consent (spec/sync.md §10). Relaying for co-readers by default, for strangers only when the user turns it on; no default relay in builds. Privacy concerns go to issues/privacy.md.
 
 ## Jobs and order
-Depends on issues/account-signing.md: what a connection proves (3, 5-6), the peer record (6) and what groups list (8) build on it. It needs no job here first.
+Depends on issues/account-signing.md: what a connection proves, the peer record and what groups list build on it.
 
-1. issues/net-tests.md: tests that can fail. Its steps 1 and 5 (in-process P2P with routes, the audit's probes as ignored repro tests) come before every other job.
-2. issues/net-honest-status.md step 1: one idea of a group's sources (the connections with it open, whoever dialed, `sources(L)` of issues/net-sync-structure.md) and the API: status and waits stop lying. Its step 2 (the served side judging by its own pull) lands with 6.
-3. issues/net-connect.md: connect to every LAN node and recognise known actors privately, off the LAN only known addresses and own nodes, one stable listening key, LAN rules. The LAN route machinery goes here and not before (issues/net-sync-structure.md).
-4. issues/net-role-sync.md: role and sync paired. Engine and spec work; can land before 8.
-5. issues/net-shared-set.md and 6. issues/net-reconnect.md: one mechanism. One beacon filter per peer keyed by credentials' match values (read secrets, key actors' static entries, a served head's sync and deposit keys) plus role offers between known actors; deposits are offers to proved holders of the inbox; a durable per-peer record found by a pair key both nodes hold and one node-wide log, so a reconnect sends what changed and any node, however long away, catches up in one stream. A peer may recognise a device across connections (Tess; spec/requirements.md). `SyncEngine::proven` reads chain certificates from the connection's proof exchange, never from group data (issues/account-signing.md step 7 removes them there).
-7. issues/net-first-contact.md: links, contact cards and grants work with no server, through 3 and 5.
-8. issues/net-one-peer.md: one kind of peer: one key, one serving path, one store; sync IDs leave the API; replacement goes.
-9. issues/net-rename.md: spec, then code, in the new words.
+Built, leftovers in each issue: issues/net-tests.md (the harness), issues/net-honest-status.md (status and waits judge `sources`), issues/net-role-sync.md (role and sync paired), issues/net-shared-set.md and issues/net-reconnect.md (one mechanism: a beacon filter per peer, role offers, deposits as offers, a durable per-peer record found by a pair key, one node-wide log and stream; `SyncEngine::proven` reads only the connection's proof exchange). Open, in order:
+1. issues/net-connect.md: connect to every LAN node and recognise known actors privately; off the LAN only known addresses and own nodes; one stable listening key; LAN rules. The LAN route machinery goes here (issues/net-sync-structure.md (c)).
+2. issues/net-first-contact.md: links, contact cards and grants work with no server, through net-connect and the shared set.
+3. issues/net-one-peer.md: one kind of peer (one key, one serving path, one store); sync IDs leave the API; replacement goes. Carries issues/net-shared-set.md step 9.
+4. issues/net-rename.md: spec, then code, in the new words.
 
-5-6 decide much of 2, 7 and 8 (what an open is, what a peer must know), so their design is settled first. 3 and 4 can run beside them. The LAN rules in 3 are independent. The structural refactors each job needs: issues/net-sync-structure.md. Related, owned elsewhere: issues/p2p-own.md (relays), issues/recovery-redesign.md (its peer side needs 8), issues/client-auth.md (client credentials), issues/privacy.md.
+The structural refactors each job needs: issues/net-sync-structure.md. Related, owned elsewhere: issues/p2p-own.md (relays), issues/recovery-redesign.md (its peer side needs net-one-peer), issues/client-auth.md (client credentials), issues/privacy.md.
 
 ## Open (whole project)
 - (design) The node's tick per sync ID (issues/idle-pass-per-label.md): the one per-sync-ID cost that still bounds the pairing and the shared set (issues/net-shared-set.md, Costs).

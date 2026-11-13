@@ -181,7 +181,7 @@ pub(crate) fn released(core: &Core, t: &Tid, now: u64) -> bool {
     release_state(core, t, now).is_some()
 }
 
-/// Whether something held here needs the evidence that `t` was destroyed (issues/thing-lifetimes.md,
+/// Whether something held here needs the evidence that `t` was destroyed (notes/lifetimes.md,
 /// What is kept): a dependent (`dependents`), or another held thing listing it in
 /// `retainers^.0` or referencing it in a live durable value other than `group.0` (the
 /// reference index, `needs_from`). One rule

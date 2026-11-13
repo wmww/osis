@@ -3,4 +3,4 @@
 > Priority: low
 > Tags: rotation
 
-Untested; found reviewing rotation-seeds. Options: rewrite only boxes Authority allows (show M, or skip M's held boxes and put the missing ones), or refuse up front with a named error. The stranded holder still gets boxes from any other re-sealer.
+Untested. Options: rewrite only boxes Authority allows (show M, or skip M's held boxes and put the missing ones), or refuse up front with a named error. The stranded holder still gets boxes from any other re-sealer.

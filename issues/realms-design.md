@@ -1,4 +1,6 @@
 # Realm design
-> Summary: Parked (Tess). Design realms (notes/realms.md): a thing's place in a realm (plain grant, recommended, vs tied to membership), roles, who renames, role on joining, removed members' copies, things made in a realm (realm as first admin), equal admins by default, admission. Recommendations in notes/realms.md, Open questions.
+> Summary: Parked (Tess). Realms (notes/realms.md) need Tess's answers before anything is built: the eight open questions at the end of notes/realms.md, each with a recommendation, and whether realms and tags are one concept.
 > Priority: low
 > Tags: permissions, tess-call
+
+**Tess question:** do you accept notes/realms.md's recommendations (plain grants for contents, realm as first admin of things made in it, equal admins, write on joining, keep on removal), and are realms and tags one concept?

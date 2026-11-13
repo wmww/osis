@@ -172,7 +172,7 @@ impl Mutation {
     }
 
     /// The commit fails `Error::Clash` when, after it, `tid` is known and unreachable as this
-    /// node judges it (issues/thing-lifetimes.md, The judgment): the writer refusing its own
+    /// node judges it (notes/lifetimes.md, The judgment): the writer refusing its own
     /// change of a thing's retainers, never a rule receivers apply.
     pub fn require_kept(&mut self, tid: Tid) -> &mut Self {
         self.kept.push(tid);

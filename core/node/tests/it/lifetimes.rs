@@ -1,7 +1,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
-//! Thing lifetimes by reference (issues/thing-lifetimes.md): the engine's judgment against
+//! Thing lifetimes by reference (notes/lifetimes.md): the engine's judgment against
 //! held-model `lifetimes` (the walk, the work list, `pending`), and over several nodes.
-//! spec: none yet (issues/thing-lifetimes.md step 4 writes it).
+//! spec/commits.md §5 (Lifetimes).
 
 use crate::net;
 use held_model::lifetimes as hm;
@@ -90,7 +90,7 @@ fn things(net: &mut Net, a: usize, n: usize) -> Vec<Tid> {
     out
 }
 
-// issues/thing-lifetimes.md (The judgment; Steps 3): over random worlds of lists, references and
+// notes/lifetimes.md (The judgment): over random worlds of lists, references and
 // ends, every batch of changes judged together: the engine releases exactly what the model's
 // from-scratch judgment of the engine's held view says is unreachable (this node holds every
 // right), in batches of one to three changes in one commit or several.
@@ -146,7 +146,7 @@ fn the_judgment_releases_what_the_model_judges_unreachable() {
     assert!(released > 40, "{released}");
 }
 
-// issues/thing-lifetimes.md (Cost): a root referencing n children, each listing it and
+// notes/lifetimes.md (Cost): a root referencing n children, each listing it and
 // referencing a child of its own: unreferencing one child judges it and its child, at n and 10n.
 #[test]
 fn a_change_judges_what_it_touches_at_n_and_10n() {
@@ -174,7 +174,7 @@ fn a_change_judges_what_it_touches_at_n_and_10n() {
     assert_eq!(count(100), 2);
 }
 
-// issues/thing-lifetimes.md (The judgment: an unknown retainer keeps): a node holding a thing but
+// notes/lifetimes.md (The judgment: an unknown retainer keeps): a node holding a thing but
 // not its retainer releases nothing and keeps nothing pending, though it may destroy the thing; the
 // node holding both keeps it while the retainer references it.
 #[test]
@@ -211,7 +211,7 @@ fn a_node_missing_a_retainer_releases_nothing() {
     }
 }
 
-// issues/thing-lifetimes.md (The judgment; Cascade): a thing created with its list in one commit
+// notes/lifetimes.md (The judgment; Cascade): a thing created with its list in one commit
 // is judged; a walk not heard out waits and leaves nothing pending; judged, an unreachable thing
 // takes what only it kept, and the work list is empty after.
 #[test]
@@ -238,7 +238,7 @@ fn a_new_listed_thing_is_judged_once_heard_out() {
     assert_eq!(e.lifetimes_due().unwrap(), (false, false));
 }
 
-// issues/thing-lifetimes.md (The release; Cascade), spec/commits.md §5 (Destruction): r, an actor first
+// notes/lifetimes.md (The release; Cascade), spec/commits.md §5 (Destruction): r, an actor first
 // admin of x and y, lives by root's reference; x lives by r's. Unreferenced, r is released with x
 // in one request (x's right comes through r, judged with it), at both nodes; y, which r is first
 // admin of but does not keep, lives on as r's dependent and is written through r's frozen edges
@@ -286,7 +286,7 @@ fn a_cascade_releases_an_actor_and_what_it_kept_in_one_commit() {
     assert_eq!(net.engine(a).get(&y, &refs_ak()).unwrap(), Some(Value::Set([Value::Tid(root)].into())), "y written through r's frozen edges");
 }
 
-// issues/thing-lifetimes.md (The release): the judgment and the release request are two
+// notes/lifetimes.md (The release): the judgment and the release request are two
 // transactions; a released thing stays pending until the request, applied, destroys it, so a request
 // that fails to be written (here the store refuses it once) is judged again at the next open
 // and released then. Without the pending row nothing would queue it again.
@@ -325,7 +325,7 @@ fn a_release_that_fails_to_be_written_is_judged_again_at_the_next_open() {
     assert!(!e.lifetimes_due().unwrap().0);
 }
 
-// issues/thing-lifetimes.md (The release: Forgotten, Comes back after), spec/commits.md §5
+// notes/lifetimes.md (The release: Forgotten, Comes back after), spec/commits.md §5
 // (Forgetting, Never received): x, kept by r's reference, is released once r lets go; at its
 // request's expiry, with nothing listing or referencing it, the node forgets it whole: x reads
 // unknown and no header of a commit on it stays, the request's included. A stale copy then comes
@@ -378,7 +378,7 @@ fn a_released_thing_is_forgotten_at_its_requests_expiry_and_a_stale_copy_is_judg
     assert_eq!(e.lifetime_status(&x), Status::Destroyed);
 }
 
-// issues/thing-lifetimes.md (The release: Forgotten), spec/commits.md §5 (Never received): x made
+// notes/lifetimes.md (The release: Forgotten), spec/commits.md §5 (Never received): x made
 // in one commit with r's reference to it; once its release is forgotten that commit keeps its
 // header for r's part, and its parts on x count as never received: x is unknown, and a copy of the
 // commit arriving again brings x back to be judged
@@ -448,7 +448,7 @@ fn a_forgotten_released_thing_takes_its_role_commits() {
     assert_eq!(net.engine(a).lifetime_status(&x), Status::Unknown);
 }
 
-// issues/thing-lifetimes.md (What is kept; Cost): what a label's certificates read of destroyed things
+// notes/lifetimes.md (What is kept; Cost): what a label's certificates read of destroyed things
 // is bounded by what live things need, not by what destroyed: with n and 10n purged things nothing
 // references, finding the one released thing r references reads as many candidates (after the
 // first look leaves out the unneeded)
@@ -520,7 +520,7 @@ fn a_request_going_whole_after_one_of_its_things_leaves_no_row_of_it() {
     }
 }
 
-// Node sync's trigger (issues/thing-lifetimes.md, The release: When): a node judges once it has
+// Node sync's trigger (notes/lifetimes.md, The release: When): a node judges once it has
 // heard out every label holding a thing the walk read, and writes the release request itself.
 
 /// `r`, an item of `g`, referencing `x`, an item of `g` listing `r` (both first admin `g`), and a
@@ -549,7 +549,7 @@ fn at_the_peer(net: &mut Net, n: usize, l: &osis_base::LabelId, f: impl Fn(Commi
     held.into_iter().any(|c| net.engine(n).header(&c).is_some_and(|h| f(c, &h)))
 }
 
-// issues/thing-lifetimes.md (The release: When, Applying): b drops r's reference to x; node sync
+// notes/lifetimes.md (The release: When, Applying): b drops r's reference to x; node sync
 // judges x unreachable once g's label is heard out and releases it, so x is destroyed at every node. The
 // request is at the host before x's write leaves it, checked after every message
 #[test]
@@ -587,7 +587,7 @@ fn unreferencing_releases_at_every_node_once_heard_out() {
     assert!(at_the_peer(&mut net, a, &l, released) || at_the_peer(&mut net, b, &l, released), "the request at the host");
 }
 
-// issues/thing-lifetimes.md (The release: When): a thing under no label is judged at once
+// notes/lifetimes.md (The release: When): a thing under no label is judged at once
 #[test]
 fn a_thing_under_no_label_is_released_at_once() {
     let (mut net, [a]) = local_nodes::<1>();
@@ -608,7 +608,7 @@ fn a_thing_under_no_label_is_released_at_once() {
     assert_eq!(net.engine(a).lifetime_status(&x), Status::Destroyed);
 }
 
-// issues/thing-lifetimes.md (The release: When): offline (its link to the host down), a node
+// notes/lifetimes.md (The release: When): offline (its link to the host down), a node
 // releases nothing: g's label is not heard out, so x is held, not judged, and steps that follow
 // do not walk it again. Back online and heard out, it releases x
 #[test]
@@ -638,7 +638,7 @@ fn an_offline_node_releases_nothing_until_heard_out() {
     assert_eq!(net.engine(a).lifetime_status(&x), Status::Destroyed, "heard out: released");
 }
 
-// issues/thing-lifetimes.md (The judgment: a one-commit move keeps): x moves from r1 to r2 in one
+// notes/lifetimes.md (The judgment: a one-commit move keeps): x moves from r1 to r2 in one
 // commit; no node releases it
 #[test]
 fn a_one_commit_move_releases_nothing() {
@@ -665,7 +665,7 @@ fn a_one_commit_move_releases_nothing() {
     }
 }
 
-// issues/thing-lifetimes.md (The release: When): x moves from r1 to r2 in two commits (r2
+// notes/lifetimes.md (The release: When): x moves from r1 to r2 in two commits (r2
 // references x, then r1 lets go). b, a right holder, receives them in the bad order while its link
 // is down: after the second alone x reads unreachable, but g's label is not heard out, so b
 // releases nothing; back online it judges x kept
@@ -710,7 +710,7 @@ fn a_two_commit_move_received_in_the_bad_order_releases_nothing() {
     }
 }
 
-// issues/thing-lifetimes.md (The judgment; Cascade): x keeps y, y and z keep each other (a cycle).
+// notes/lifetimes.md (The judgment; Cascade): x keeps y, y and z keep each other (a cycle).
 // r lets go of x: node sync releases the subtree, the cycle included, at every node
 #[test]
 fn a_subtree_and_a_cycle_release_at_every_node() {
@@ -747,7 +747,7 @@ fn a_subtree_and_a_cycle_release_at_every_node() {
     }
 }
 
-// issues/thing-lifetimes.md (The release: When): under a label with no host, heard out is its
+// notes/lifetimes.md (The release: When): under a label with no host, heard out is its
 // status reading Synced (a co-reader connected, its stream caught up both ways). x moves from r1
 // to r2 in two commits; b, a right holder, holds only the second. With no co-reader connected b
 // releases nothing; once a reconnects, nothing either while a's stream is not caught up (checked

@@ -19,7 +19,7 @@ role now, for keys and by any path (`Timeline::role` at `At::KEYS`), departed th
 to nothing (`rotation::departures::direct_departures`; spec/crypto.md §4 Departure). So M's epoch
 P made is uncovered once P leaves A, the admin rotates M before sealing it into A, and P opens
 nothing new (`tests_members::maker_through_keyless_grant_opens_nothing_new_spec_crypto_4`).
-This holds however a rotation came to be valid, so the possession gap no longer leaks.
+This holds however a rotation came to be valid, so the possession gap leaks nothing.
 
 ## Left
 Whether possession should also judge a rotation saved by a frontier or a re-grant, by the path its

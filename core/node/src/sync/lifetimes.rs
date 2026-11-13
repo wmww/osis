@@ -1,4 +1,4 @@
-//! The lifetime judgment's trigger (issues/thing-lifetimes.md, The release, When;
+//! The lifetime judgment's trigger (notes/lifetimes.md, The release, When;
 //! notes/engine-lifetimes.md): a thing is judged once every label this node syncs whose closure
 //! holds a thing its walk read is heard out, its status Synced (`LabelStatus::synced`); a thing
 //! under no label at once. With no source connected (offline, or no co-reader up under a label

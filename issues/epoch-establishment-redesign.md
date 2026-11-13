@@ -1,8 +1,0 @@
-# Epoch establishment by names, frozen coverage: the review
-> Summary: Names establishment and frozen coverage (spec/crypto.md §4) are built for an actor's direct holders; holder actors are judged at depth 0 (notes/crypto.md, Holder actors at depth 0). Left: the review of the direct-holder model (study C2) and its open cases.
-> Priority: normal
-> Tags: security, keys, engine, tla
-
-- Rule and invariants: `osis_keys::covers` (by names), `EpochInfo::names_met`, `rotation::departures::{edge_logs, names}`; notes/crypto.md (Frozen coverage).
-- Tests: C2 `fork_sibling_reseal_spec_crypto_4`, the rotation property's withheld admin (`rotation::tests_property`), `forged_rotation_withheld_removal_spec_crypto_4` and its kin; TLA `MC_c2*`, `MC_withhold` (core/test/tla/rotation).
-- Name completeness (every departure must be named, else a rotator never covers what it knows: a livelock) holds by construction: departures and `names` read the same `edge_logs` (notes/crypto.md).

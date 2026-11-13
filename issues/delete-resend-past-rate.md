@@ -3,6 +3,6 @@
 > Priority: low
 > Tags: sync
 
-- Seen in the chunk-tree-2 review (freed sets): the judgment now costs what a pass sends (`SyncEngine::freed_now` skips deletes in flight), so this is the send itself.
+- The judgment costs only what a pass sends (`SyncEngine::freed_now` skips deletes in flight), so the cost is the send itself.
 - Fix direction: send no more per window than the host takes (the host's policy is known only by its answers: stop at the first `RATE_LIMITED` of a command and resume when the window rolls), or have the host answer with when to come back. Either way the in-flight set stays the batch.
-- Not measured in a test yet: a node test dropping a value of 3× the rate with a small test policy, counting items sent.
+- Not measured: a node test dropping a value of 3× the rate with a small test policy, counting items sent.

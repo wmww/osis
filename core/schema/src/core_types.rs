@@ -34,7 +34,7 @@ pub fn is_content(ak: &str) -> bool {
 
 /// Whether a delete resets `ak` and `has_content` reads it: content, but the thing's retainer
 /// list, which says what keeps the thing, not what it holds (a deleted thing stays judged by its
-/// retainers, issues/thing-lifetimes.md Interactions), and `purge.0`, which only places a purge
+/// retainers, notes/lifetimes.md Interactions), and `purge.0`, which only places a purge
 /// request (spec/commits.md §5 Purge; a delete's own, spec/sync.md §9 Delete).
 pub fn deletable(ak: &str) -> bool {
     is_content(ak) && ak != "retainers^.0" && ak != "purge.0"
@@ -425,7 +425,7 @@ pub const PURGE: Aspect<WallMs> = Aspect::new("purge.0", &CORE);
 pub const RELEASED: Aspect<WallMs> = Aspect::new("released.0", &CORE);
 pub const GROUP: Aspect<Group> = Aspect::new("group.0", &CORE);
 pub const GROUPS: Aspect<BTreeSet<Tid>> = Aspect::new("groups.0", &CORE);
-/// `retainers^.0`: the things that keep this thing alive (issues/thing-lifetimes.md); admin-only.
+/// `retainers^.0`: the things that keep this thing alive (notes/lifetimes.md); admin-only.
 pub const RETAINERS: Aspect<BTreeSet<Tid>> = Aspect::new("retainers^.0", &CORE);
 pub const NAME: Aspect<String> = Aspect::new("name.0", &CORE);
 pub const BODY: Aspect<String> = Aspect::new("body.0", &CORE);

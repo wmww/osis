@@ -1693,7 +1693,7 @@ fn retained(net: &mut Net, n: usize, g: Tid) -> (Tid, Tid, CommitId) {
     (r, x, c)
 }
 
-// issues/thing-lifetimes.md (What is kept; The release: Final while held), spec/commits.md §5
+// notes/lifetimes.md (What is kept; The release: Final while held), spec/commits.md §5
 // (Destruction, Forgetting): x, listing r and referenced by it, is released on purpose. Past its
 // request's expiry every node still holds that x was destroyed (r references it), and a node granted g
 // afterwards gets that evidence under g's label: it reads x destroyed, not unknown, and a stale copy
@@ -1727,7 +1727,7 @@ fn a_referenced_released_thing_stays_destroyed_past_its_expiry_and_for_a_newcome
     assert!(!net.engine(d).knows(&x));
 }
 
-// issues/thing-lifetimes.md (What is kept; Interactions: Expiry): rr, an expiring retainer,
+// notes/lifetimes.md (What is kept; Interactions: Expiry): rr, an expiring retainer,
 // references cx, which lists it. rr expires while its admins are offline (not heard out: cx
 // stays). A node granted g afterwards receives cx with rr's destruction under g's label (cx lists rr),
 // so it reads rr destroyed, judges cx unreachable and releases it, rather than reading rr unknown and
@@ -1792,7 +1792,7 @@ fn an_expired_retainers_child_is_judged_and_released_at_a_later_node_spec_commit
     assert_eq!(net.engine(a).lifetime_status(&cx), Status::Destroyed, "a: released");
 }
 
-// issues/thing-lifetimes.md (The release: Applying; Limits 5), spec/sync.md §6: a right holder
+// notes/lifetimes.md (The release: Applying; Limits 5), spec/sync.md §6: a right holder
 // places the release request at a host before any of the released thing's blobs is deleted
 // there, so no host holds neither (else a holder that missed the request logs the thing
 // again and right holders release it again, round for good): checked after every message
@@ -1819,7 +1819,7 @@ fn a_release_request_is_at_the_host_before_the_things_blobs_leave_spec_sync_6() 
     assert!(!at_host_of(&mut net, c, &l, w) && at_host_of(&mut net, c, &l, req), "t's write deleted at the host, the request there");
 }
 
-// issues/thing-lifetimes.md (Cost; The release: Not erasure, Forgotten), spec/commits.md §5
+// notes/lifetimes.md (Cost; The release: Not erasure, Forgotten), spec/commits.md §5
 // (Lasting, Forgetting), spec/sync.md §6: t is released and g's list lets go of it, so nothing
 // held lists or references it. No header of t lasts (its write leaves the host whole), and past
 // the request's expiry nothing of t is held anywhere: no node holds the request or t's write, and
@@ -1856,7 +1856,7 @@ fn nothing_of_a_released_thing_nothing_needs_outlasts_its_request_spec_commits_5
     }
 }
 
-// issues/thing-lifetimes.md (What is kept), spec/commits.md §5 (Destruction, Forgetting): a group
+// notes/lifetimes.md (What is kept), spec/commits.md §5 (Destruction, Forgetting): a group
 // contains its members, it does not need them told destroyed. t, released while still listed in g's
 // `group.0`, is forgotten at its request's expiry at every node: no record, no header of a commit
 // only on it, nothing of them at the host

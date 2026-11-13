@@ -3,7 +3,7 @@
 > Priority: low
 > Tags: tests
 
-How to use: every entry left needs both tests read side by side before it goes (line numbers drift: find tests by name). `tools/spec_map.py` counts the `§` citations in the comment above a test or in the file's `//!` header, so a merged test takes the deleted one's citation with it. Three citations are cut off from their tests today by a `/// A header blind` const between the comment and `#[test]`: proto `loopback::handshake_and_clock_offset`, host `hub::register_open_sync_download`, host `limits::stale_sync_key_gets_exactly_one_step`. Format of an entry: `file:line test | action | why safe | confidence`.
+How to use: every entry left needs both tests read side by side before it goes (line numbers drift: find tests by name). `tools/spec_map.py` counts the `§` citations in the comment above a test or in the file's `//!` header, so a merged test takes the deleted one's citation with it.
 
 ## Candidates
 Format: `file:line test | action | why safe | confidence`.
@@ -206,7 +206,7 @@ Width, open: crdt `tests_winners` (`seq_winners_from_scratch`, `winners_from_scr
   - leaf crates: keys `established`/`names`, store `nodelog`/`record`, roles-model addenda/epochs/forget/edges/trust bodies, sim `scale`/`work_sets`.
 - **Cross-layer comparisons not made:** osis ephemeral vs node ephemeral, watch/tracking vs engine, sync_basics vs node `sync*`, serving vs node `local_serve`, port_clients vs node `port_tiers`; engine retention/apply bodies vs node; the sim vs node tombstone, shred and required. More duplicates are likely there.
 - **Not done:**
-  - the ephemeral random harnesses (left to test-design step 9)
+  - the ephemeral random harnesses
   - whether `judgment_vectors_spec_permissions_5_2`'s replay repeats `check()`
   - whether the crdt Slots mode reaches a deleted embedded character
 - **Doc follow-ups if the removals land:**

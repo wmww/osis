@@ -228,7 +228,7 @@ impl Engine {
     }
 
     /// The destroyed things held here whose evidence the closure of `g` needs (spec/commits.md §5
-    /// Destruction, issues/thing-lifetimes.md What is kept): on an authority path into it
+    /// Destruction, notes/lifetimes.md What is kept): on an authority path into it
     /// (`destroyed_upstream`), or listed in `retainers^.0` or referenced in a live durable value by
     /// a live thing of it. O(kept destroyed things something needs and the reference rows naming
     /// them): bounded by live things, not by what was destroyed.

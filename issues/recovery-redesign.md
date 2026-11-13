@@ -1,13 +1,13 @@
 # Recovery, from scratch
-> Summary: no recovery exists: an account is reached again only through one of its other nodes. Tess wants it designed from scratch (optional, none by default); open questions and her idea of an optional key below. Not urgent.
+> Summary: No recovery exists: an account is reached again only through one of its other nodes. Tess wants it designed from scratch (optional, none by default); open questions and her idea of an optional key below. Not urgent.
 > Priority: low
 > Tags: api, permissions, tess-call
 
-Tess wants it rethought whole. notes/disputes.md records her direction: no recovery key by default, and a stolen unlocked device accepted. notes/disputes-plan.md makes a recovery card an ordinary key holding an admin role.
+**Tess question:** when should recovery be designed, and is the optional recovery key below the direction?
 
-Until then an account is reached again only through one of its other nodes.
+notes/disputes.md records her direction: no recovery key by default, and a stolen unlocked device accepted. notes/disputes-plan.md makes a recovery card an ordinary key holding an admin role.
 
-Nothing of recovery is in the engine. Accounts as built (spec/permissions.md §1) have no owner key apart from their epoch seeds on D, so an account with no node left is not recoverable; a redesign starts from the epoch seeds. The spec says nothing of recovery cards. A redesign that claims a label by a static entry must handle a head moving while the fresh node reads (the removed build stranded such a restore).
+Nothing of recovery is in the engine or spec. Accounts (spec/permissions.md §1) have no owner key apart from their epoch seeds on D, so an account with no node left is not recoverable; a design starts from the epoch seeds. One that claims a label by a static entry must handle a head moving while the fresh node reads.
 
 ## Questions for the design
 - Is recovery an explicit act after `create`, any time, with or without peers?

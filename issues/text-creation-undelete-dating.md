@@ -3,4 +3,4 @@
 > Priority: low
 > Tags: retention, crdt
 
-Seen as held-model's `keep-for-D dated later` tally (core/test/held-model/AMBIGUITIES.md item 27). Fixing it needs either the spec to say an undelete revives the creation, or deaths judged against more than the winners of the state (the delete is gone from it).
+held-model counts it as the `keep-for-D dated later` tally (core/test/held-model/AMBIGUITIES.md item 27). Fixing it needs either the spec to say an undelete revives the creation, or deaths judged against more than the winners of the state (the delete is gone from it).

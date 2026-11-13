@@ -3,6 +3,8 @@
 > Priority: low
 > Tags: tess-call, spec
 
+**Question for Tess:** review the values below (each trades one real thing against another); keep, change, or move each into config. Not urgent ("lets handle the magic numbers later").
+
 ## Values awaiting the review
 Values no choice makes free; each is in the spec or should be. Listed with what it trades.
 
