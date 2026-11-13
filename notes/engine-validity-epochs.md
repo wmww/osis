@@ -18,7 +18,7 @@
 - The followed head's closers count too: a later merge's cutoff still runs from the other heads' receipt, so a removed node holding a sibling's concurrent epoch gains nothing.
 - The chain is rebuilt when `account_view`'s key moves (held rotations, side, seeds, own D's roster).
 - Doubt (`Chain::in_doubt`) is told once on its rise (`Event::AccountDisputed`) and listed (`Engine::account_disputes`); never at a node of the account.
-- A merge finds heads by `at` and accepted names, never by a supersedes list, which a removed node's fork may fill (`a_removed_nodes_fork_is_merged_out_spec_permissions_5_4`).
+- A merge finds heads by `at` and accepted names, never by a supersedes list, which a removed node's fork may fill. It names only the heads D's roster authorizes: naming a removed node's fork would accept it and every later fork from its epoch (`a_removed_nodes_fork_is_merged_out_spec_permissions_5_4`).
 
 ## JudgedEpochs
 - What the rule says per account is kept in `ix.epochs` and persisted (`node/epochs`): a standing is a lookup, and an open builds no chain and reads no list. `named` holds only held commits (`unindex_commit`), so it is bounded by the store.

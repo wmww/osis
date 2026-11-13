@@ -8,6 +8,8 @@
 - Commits whose void, required-role or overreach inputs changed (`stale_commits`), and those acting for a thing whose timeline changed (`acts_for`).
 - Everything after a rebuild at open (`stale_all`).
 
+No delta's validity depends on its thing's `retention^.0` setting: a setting is judged as an admin-only delta and only moves what history keeps (notes/engine-retention-history.md). A rollback restores validity flags with the journal.
+
 `rejudge_all` repeats while a rebuild left something stale (a part `retention::uncover` made missing); it ends, as `uncover` never turns parts back.
 
 Rejected: re-judging every held delta per role commit (O(held commits) each); a grant re-judges no content commit (`scale::grant_is_flat_in_content_commits`).
