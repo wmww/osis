@@ -2491,8 +2491,6 @@ fn move_unplaced_record_converges_spec_5_7() {
     }
 }
 
-
-
 /// §5.7 paste: a paste whose dots no longer lie in the placement in the clipboard's order fails
 /// (the caller inserts), so a paste reads as the clipboard's text. Here a paste re-anchors `d`
 /// (below `x`, outside the pasted slice) at `f`, before `q`.
