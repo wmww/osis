@@ -44,44 +44,7 @@ impl Fragment {
     /// in records live or not (a write into another's entry carries no creation and reads as
     /// nothing alone, §5.6 Live; its values are still its).
     pub fn values(&self, f: &mut dyn FnMut(&Value)) {
-        match self {
-            Fragment::Register(r) => {
-                if let Some(v) = r.write.as_ref().and_then(|w| w.value.as_ref()) {
-                    f(v);
-                }
-            }
-            Fragment::Bag(crate::fragment::Bag { elems, .. }) => elems.values().filter_map(|e| e.frag.as_deref()).for_each(|x| x.values(f)),
-            // a value removal names no value it holds; an element it hides is dead (§4.8, §5.5)
-            Fragment::Set(s) => {
-                let gone = crate::fragment::removed(&s.elems);
-                s.elems.iter().filter(|(d, e)| !crate::fragment::hidden(d, e, &gone)).filter_map(|(_, e)| e.frag.as_deref()).for_each(|x| x.values(f));
-            }
-            Fragment::Struct(s) => s.fields.values().for_each(|x| x.values(f)),
-            Fragment::Enum(e) => e.payloads.values().for_each(|x| x.values(f)),
-            Fragment::Map(m) => {
-                for (id, e) in &m.entries {
-                    if let Some(k) = id.key() {
-                        f(k);
-                    }
-                    if let Some(x) = e.frag.as_deref() {
-                        x.values(f);
-                    }
-                }
-            }
-            Fragment::Seq(s) => {
-                for e in s.elems().values() {
-                    if let crate::seq::SeqContent::Frag(x) = &e.content {
-                        x.values(f);
-                    }
-                }
-            }
-            Fragment::Slots(sl) => {
-                if let Some(r) = &sl.reg {
-                    Fragment::Register(r.clone()).values(f);
-                }
-                sl.slots.values().for_each(|x| x.values(f));
-            }
-        }
+        self.values_with(true, f);
     }
 
     /// The set at field `field` of this struct state (or of its struct slot), with the effective

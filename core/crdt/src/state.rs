@@ -594,33 +594,40 @@ impl Fragment {
     /// elements, list items' content, and the keys of map records holding their creation
     /// (a value-less write holds none; text chars and bag numbers are not values).
     pub fn each_value(&self, f: &mut dyn FnMut(&Value)) {
+        self.values_with(false, f);
+    }
+
+    /// `values` (`all`) or `each_value`: bag contributions and the keys of map records without
+    /// their creation count only for the former.
+    pub(crate) fn values_with(&self, all: bool, f: &mut dyn FnMut(&Value)) {
         match self {
             Fragment::Register(r) => {
                 if let Some(v) = r.write.as_ref().and_then(|w| w.value.as_ref()) {
                     f(v);
                 }
             }
+            Fragment::Struct(Struct { fields: m, .. }) | Fragment::Enum(Enum { payloads: m, .. }) => m.values().for_each(|x| x.values_with(all, f)),
+            Fragment::Bag(Bag { elems, .. }) if all => elems.values().filter_map(|e| e.frag.as_deref()).for_each(|x| x.values_with(all, f)),
             Fragment::Bag(_) => {}
-            Fragment::Struct(Struct { fields: m, .. }) | Fragment::Enum(Enum { payloads: m, .. }) => m.values().for_each(|x| x.each_value(f)),
-            // an element a value removal hides is dead (§4.8, §5.5)
+            // a value removal names no value it holds; an element it hides is dead (§4.8, §5.5)
             Fragment::Set(s) => {
                 let gone = crate::fragment::removed(&s.elems);
-                s.elems.iter().filter(|(d, e)| !crate::fragment::hidden(d, e, &gone)).filter_map(|(_, e)| e.frag.as_deref()).for_each(|x| x.each_value(f));
+                s.elems.iter().filter(|(d, e)| !crate::fragment::hidden(d, e, &gone)).filter_map(|(_, e)| e.frag.as_deref()).for_each(|x| x.values_with(all, f));
             }
             Fragment::Map(m) => {
                 for (id, e) in &m.entries {
-                    if let Some(k) = id.key().filter(|_| e.created.is_some()) {
+                    if let Some(k) = id.key().filter(|_| all || e.created.is_some()) {
                         f(k);
                     }
                     if let Some(x) = e.frag.as_deref() {
-                        x.each_value(f);
+                        x.values_with(all, f);
                     }
                 }
             }
             Fragment::Seq(s) => {
                 for e in s.elems().values() {
                     if let SeqContent::Frag(x) = &e.content {
-                        x.each_value(f);
+                        x.values_with(all, f);
                     }
                 }
             }
@@ -628,7 +635,7 @@ impl Fragment {
                 if let Some(v) = s.reg.as_ref().and_then(|r| r.write.as_ref()).and_then(|w| w.value.as_ref()) {
                     f(v);
                 }
-                s.slots.values().for_each(|x| x.each_value(f));
+                s.slots.values().for_each(|x| x.values_with(all, f));
             }
         }
     }
