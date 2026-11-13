@@ -96,12 +96,12 @@ pub(crate) fn moved() -> Error {
     Error::Network("the group's source moved: watch it again".into())
 }
 
-/// Whether the group has a live label here.
+/// Whether the group has a label here.
 pub(crate) fn labeled(l: &mut Locked, g: &Tid) -> bool {
-    l.sync.engine_mut().labels_of(g).iter().any(|x| !x.replaced)
+    !l.sync.engine_mut().labels_of(g).is_empty()
 }
 
-/// The group syncs here: a live label, not handed off.
+/// The group syncs here: a label, not handed off.
 fn syncs_here(l: &mut Locked, g: &Tid) -> bool {
     !l.sync.handed_off().contains(g) && labeled(l, g)
 }

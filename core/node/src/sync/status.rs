@@ -18,7 +18,7 @@ impl SyncEngine {
             // full for it or refusing a body this node logs for it (`LConn::full`, `refused`)
             let full = |k: &HostKey| self.conns.values().any(|c| c.up && c.host == *k && c.labels.get(&l.id).is_some_and(|x| x.full || x.refused > 0));
             let refused_by = l.hosts.iter().filter(|a| self.refusals.get(&(a.key, l.id)).is_some_and(|(_, code)| *code == Code::NOT_ADMITTED) || full(&a.key)).cloned().collect();
-            let mut st = LabelStatus { group: g, label: l.id, hosts: l.hosts.len(), sources: 0, idle: 0, opening: 0, stranded: false, refused_by, leaving, last_sync: None, passed, replaced: l.replaced };
+            let mut st = LabelStatus { group: g, label: l.id, hosts: l.hosts.len(), sources: 0, idle: 0, opening: 0, stranded: false, refused_by, leaving, last_sync: None, passed };
             for c in self.conns.values().filter(|c| !c.peer) {
                 let host = l.hosts.iter().find(|a| a.key == c.host);
                 let Some(x) = c.labels.get(&l.id) else {
@@ -89,12 +89,12 @@ impl SyncEngine {
         self.conns.values().filter(|c| c.up).count() + self.served.keys().filter(|c| self.records.shared.contains_key(c)).count()
     }
 
-    /// The addresses `g` syncs with as this node knows them: its live labels' hosts, then the
+    /// The addresses `g` syncs with as this node knows them: its labels' hosts, then the
     /// co-readers it dials for them (`reach.0`, a link's sharer), each by its lasting `peer://`
     /// address: a read leaves the LAN routes (`peer_addresses` expires them) alone.
     pub fn group_peers(&mut self, g: &Tid) -> Vec<Address> {
-        let ids: BTreeSet<LabelId> = self.labels().iter().filter(|(x, l)| x == g && !l.replaced).map(|(_, l)| l.id).collect();
-        let mut out: Vec<Address> = self.labels().iter().filter(|(x, l)| x == g && !l.replaced).flat_map(|(_, l)| l.hosts.clone()).collect();
+        let ids: BTreeSet<LabelId> = self.labels().iter().filter(|(x, _)| x == g).map(|(_, l)| l.id).collect();
+        let mut out: Vec<Address> = self.labels().iter().filter(|(x, _)| x == g).flat_map(|(_, l)| l.hosts.clone()).collect();
         if self.cfg.peers {
             let co_readers: Vec<Address> = self.peers().iter().filter(|(_, p)| !p.labels.is_disjoint(&ids)).map(|(k, p)| Address { url: osis_transport::peer_url(&p.reach.items), key: *k }).collect();
             out.extend(co_readers);
@@ -241,11 +241,10 @@ impl SyncEngine {
         self.stranded_on.contains(l)
     }
 
-    /// Inbox deliveries to `holder` this node keeps: commit, re-sends so far and the label it
-    /// last went under (tests).
+    /// Inbox deliveries to `holder` this node keeps: commit and re-sends so far (tests).
     #[doc(hidden)]
-    pub fn inbox_deliveries(&self, holder: &Tid) -> Vec<(osis_base::CommitId, u32, Option<LabelId>)> {
-        self.state.sent_inbox.values().filter(|s| s.holder == *holder).map(|s| (s.commit, s.tries, s.label)).collect()
+    pub fn inbox_deliveries(&self, holder: &Tid) -> Vec<(osis_base::CommitId, u32)> {
+        self.state.sent_inbox.values().filter(|s| s.holder == *holder).map(|s| (s.commit, s.tries)).collect()
     }
 
     /// Entries this node knows under a label (tests).

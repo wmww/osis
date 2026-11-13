@@ -1670,9 +1670,9 @@ impl Net {
         }
     }
 
-    /// A group whose first admin is node `admin`, with secrets of its own, `holders` granted with their roles
-    /// (rotation boxing every holder), a deposit seed and a label at `hosts`; the setup
-    /// commits delivered to the holders directly.
+    /// A group whose first admin is node `admin`, `holders` granted with their roles, then given
+    /// secrets of its own with its sync ID at `hosts` (the rotation boxing every holder, a deposit
+    /// seed; spec/sync.md §2); the setup commits delivered to the holders directly.
     pub fn group(&mut self, admin: usize, holders: &[(usize, Role)], hosts: &[usize]) -> Tid {
         let addrs: Vec<Address> = hosts.iter().map(|s| self.hosts[*s].address.clone()).collect();
         self.group_at(admin, holders, addrs)
@@ -1680,11 +1680,6 @@ impl Net {
 
     /// `group` with host addresses.
     pub fn group_at(&mut self, admin: usize, holders: &[(usize, Role)], addrs: Vec<Address>) -> Tid {
-        self.group_seeded(admin, holders, addrs, 1)
-    }
-
-    /// `group_at` with the rotation's rng seed (mixed with the group's ID by `rotation`).
-    pub fn group_seeded(&mut self, admin: usize, holders: &[(usize, Role)], addrs: Vec<Address>, rng: u64) -> Tid {
         for (m, _) in holders {
             self.pair(*m, admin);
         }
@@ -1694,17 +1689,12 @@ impl Net {
         let g = e.new_thing(&mut m, me);
         m.set(g, &ct::GROUP, &ct::Group::default()).unwrap();
         e.commit(m).unwrap();
-        let mut recipients = vec![recipient(e, me, Role::Admin)];
-        let mtids: Vec<(Tid, Role)> = holders.iter().map(|(n, r)| (self.tid(*n), *r)).collect();
-        for (t, r) in &mtids {
-            let e = self.engine(admin);
+        for (n, r) in holders {
+            let t = self.tid(*n);
             // bare edges: the rotation below boxes every holder before any pass (a grant by hand)
-            set_edge(e, g, *t, *r);
-            recipients.push(recipient(e, *t, *r));
+            set_edge(self.engine(admin), g, t, *r);
         }
-        let e = self.engine(admin);
-        rotation(e, g, &recipients, rng, true);
-        self.engine(admin).create_label(&g, &addrs).unwrap();
+        self.engine(admin).give_own_secrets_on(&g, &addrs).unwrap();
         for (m, _) in holders {
             self.pair(admin, *m);
         }

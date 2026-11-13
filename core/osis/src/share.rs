@@ -409,7 +409,7 @@ fn add_label(groups: &mut BTreeMap<Tid, GroupSync>, s: &osis_node::sync::LabelSt
 /// Each group's sync as `status` folds it from its labels (tests).
 pub(crate) fn groups_of_labels(labels: &[osis_node::sync::LabelStatus]) -> BTreeMap<Tid, GroupSync> {
     let mut groups = BTreeMap::new();
-    for s in live_labels(labels) {
+    for s in labels {
         add_label(&mut groups, s);
     }
     groups
@@ -459,7 +459,7 @@ pub(crate) fn fetched(l: &mut crate::handle::Locked, t: Tid) -> bool {
     let mut groups = e.groups_of(&t);
     groups.insert(t);
     let stale = l.sync.handed_off().iter().any(|g| groups.contains(g));
-    !stale && live_labels(&l.sync.label_status()).filter(|s| groups.contains(&s.group)).all(|s| s.passed && s.opening == 0 && label_state(s) != SyncState::Syncing)
+    !stale && l.sync.label_status().iter().filter(|s| groups.contains(&s.group)).all(|s| s.passed && s.opening == 0 && label_state(s) != SyncState::Syncing)
 }
 
 /// The synced groups `t` travels under: itself when it has sync IDs of its own, and every
@@ -489,8 +489,8 @@ fn group_synced(sync: &mut SyncEngine, t: Tid, was_carried: bool) -> Option<Resu
         return if away { Some(Err(Error::Unsynced { groups: vec![t] })) } else { (was_carried && sync.engine().role_on(&t).is_none()).then_some(Ok(())) };
     }
     let all = scoped_labels(sync, Some(&groups));
-    let sourced = live_labels(&all).any(|s| s.sources > 0);
-    let labels: Vec<_> = live_labels(&all).filter(|s| !sourced || s.sources > 0).collect();
+    let sourced = all.iter().any(|s| s.sources > 0);
+    let labels: Vec<_> = all.iter().filter(|s| !sourced || s.sources > 0).collect();
     if let Err(e) = labels_done(&labels)? {
         return Some(Err(e));
     }
@@ -500,12 +500,12 @@ fn group_synced(sync: &mut SyncEngine, t: Tid, was_carried: bool) -> Option<Resu
     deliveries_taken(sync, Some(&about)).then_some(Ok(()))
 }
 
-/// The sync wait's check (`Osis::groups_synced`): every live label of `groups` (`None`: of every
+/// The sync wait's check (`Osis::groups_synced`): every label of `groups` (`None`: of every
 /// group) is `Synced` and none is stranded (`Unsynced`), then the pending deliveries about `about`
 /// were taken (`None`: every one).
 fn synced(sync: &mut SyncEngine, groups: Option<&[Tid]>, about: Option<&BTreeSet<Tid>>) -> Option<Result<()>> {
     let all = scoped_labels(sync, groups);
-    let labels: Vec<_> = live_labels(&all).collect();
+    let labels: Vec<_> = all.iter().collect();
     let done = labels_done(&labels)?;
     if done.is_err() {
         return Some(done);
@@ -541,27 +541,20 @@ fn deliveries_taken(sync: &mut SyncEngine, about: Option<&BTreeSet<Tid>>) -> boo
 /// `Unsynced` on a stranded label, as every sync wait (`synced`).
 fn arrived(sync: &mut SyncEngine, t: Tid) -> Option<Result<()>> {
     let all: Vec<_> = sync.label_status().into_iter().filter(|s| s.group == t).collect();
-    if live_labels(&all).any(|s| label_state(s) == SyncState::Stranded) {
+    if all.iter().any(|s| label_state(s) == SyncState::Stranded) {
         return Some(Err(Error::Unsynced { groups: vec![t] }));
     }
-    (!all.is_empty() && live_labels(&all).all(|s| s.idle > 0)).then_some(Ok(()))
+    (!all.is_empty() && all.iter().all(|s| s.idle > 0)).then_some(Ok(()))
 }
 
-/// Whether what this node wrote under `k` is at a source: a live label of `k` is idle at one (a host
+/// Whether what this node wrote under `k` is at a source: a label of `k` is idle at one (a host
 /// stored the entries, a reader's node reported applying them).
 fn delivered(sync: &mut SyncEngine, k: Tid) -> bool {
     let all: Vec<_> = sync.label_status().into_iter().filter(|s| s.group == k).collect();
-    live_labels(&all).any(|s| s.idle > 0)
+    all.iter().any(|s| s.idle > 0)
 }
 
-/// `all` but a replaced label with no peer beside another of its group: it takes nothing (it
-/// retires after ROLE_KEEP), and waiting on it would fail until then.
-fn live_labels(all: &[osis_node::sync::LabelStatus]) -> impl Iterator<Item = &osis_node::sync::LabelStatus> {
-    let gone = |s: &osis_node::sync::LabelStatus| s.hosts == 0 && s.replaced;
-    all.iter().filter(move |s| !gone(s) || !all.iter().any(|x| x.group == s.group && !gone(x)))
-}
-
-/// What `wait_synced(Thing(g))` would answer now, of a group with a live label here, so carried (`Osis::group_source`).
+/// What `wait_synced(Thing(g))` would answer now, of a group with a label here, so carried (`Osis::group_source`).
 pub(crate) fn synced_now(l: &mut crate::handle::Locked, g: Tid) -> Option<Result<()>> {
     group_synced(&mut l.sync, g, true)
 }
@@ -1503,16 +1496,16 @@ impl Osis {
             if !home {
                 self.guard_local(x, &[group])?;
             }
-            if !named.is_empty() && x.engine().group_labels(&group)?.iter().any(|l| !l.replaced && !same_set(&l.hosts, &named)) {
+            if !named.is_empty() && x.engine().group_labels(&group)?.iter().any(|l| !same_set(&l.hosts, &named)) {
                 return Err(Error::Invalid(format!("{group} already syncs with other peers")));
             }
             self.make_label(x, group, hosts)
         })
     }
 
-    /// A live label for `g` unless it has one.
+    /// A label for `g` unless it has one.
     fn make_label(&self, x: &mut crate::handle::Locked, g: Tid, hosts: Vec<osis_label::Address>) -> Result<()> {
-        if x.engine().group_labels(&g)?.iter().any(|l| !l.replaced) {
+        if !x.engine().group_labels(&g)?.is_empty() {
             return Ok(());
         }
         let done = x.engine().give_own_secrets_on(&g, &hosts)?;
@@ -1640,7 +1633,7 @@ impl Osis {
             let mut labels = Vec::new();
             for g in groups {
                 let g = *g;
-                labels.extend(x.engine().group_labels(&g)?.into_iter().filter(|l| !l.replaced).map(|l| l.id));
+                labels.extend(x.engine().group_labels(&g)?.into_iter().map(|l| l.id));
             }
             Ok(x.sync.export_bundle(&labels)?)
         })?;
@@ -1702,9 +1695,9 @@ fn follow_labels(e: &mut osis_node::Engine, me: Tid, fixed: &BTreeSet<Tid>, old:
         if holders.iter().any(|x| e.first_admin(x).is_none() && !e.core.is_account(x)) || new.is_empty() && !holders.is_empty() {
             continue;
         }
-        for l in e.group_labels(&g)?.into_iter().filter(|l| !l.replaced && same_set(&l.hosts, old)) {
+        for l in e.group_labels(&g)?.into_iter().filter(|l| same_set(&l.hosts, old)) {
             any = true;
-            let path = vec![osis_crdt::PathSeg::Key(l.id.to_value()), osis_crdt::PathSeg::Field(2)];
+            let path = vec![osis_crdt::PathSeg::Key(l.id.to_value()), osis_crdt::PathSeg::Field(1)];
             m.op(g, &ct::LABEL, osis_crdt::PathOp { path, op: osis_crdt::Op::Set(list.clone()) })?;
         }
     }

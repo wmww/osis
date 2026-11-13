@@ -386,8 +386,8 @@ impl SyncEngine {
     }
 
     /// Blobs the body's own delta values link (trees of large values, pages): reused chunks and
-    /// a snapshot's values belong to the closure too (spec/sync.md §3), so a reader under a new
-    /// label (replacement, a move) gets them. Those held here or already an entry under `l`; the
+    /// a snapshot's values belong to the closure too (spec/sync.md §3), so a reader under a label
+    /// new to the body (a move) gets them. Those held here or already an entry under `l`; the
     /// walk is cached per body once complete.
     pub(super) fn body_blobs(&mut self, l: &LabelId, b: &Body, left: &mut Left) -> Result<Vec<BlobId>> {
         let (all, missing) = self.body_walk(b)?;
@@ -453,7 +453,7 @@ impl SyncEngine {
         let Some(lc) = self.conns.values().filter(|c| c.host == *host).find_map(|c| c.labels.get(l).filter(|x| x.phase.is_open())) else { return Ok(None) };
         let (g, keys) = (lc.group, lc.keys.clone());
         let mut v = Verdicts { writer: keys.is_writer(), ..Verdicts::default() };
-        let bodies = self.bodies_under(&g, l)?;
+        let bodies = self.engine.label_bodies_meta(&g)?;
         let mut w = Work::fresh();
         self.rebuild(&g, l, &mut w);
         let snaps: Snaps = w.snaps.iter().map(|(k, v)| (k.clone(), v.iter().map(|(_, c)| *c).collect())).collect();
@@ -481,20 +481,6 @@ impl SyncEngine {
             }
         }
         Ok(Some(v))
-    }
-
-    /// The bodies label `l` of `g` should hold: the closure's; under a replaced label
-    /// role-class ones only (spec/sync.md §2: its content entries go).
-    pub(in crate::sync) fn bodies_under(&mut self, g: &Tid, l: &LabelId) -> Result<Vec<Body>> {
-        let mut bodies = self.engine.label_bodies_meta(g)?;
-        if self.is_replaced(g, l) {
-            bodies.retain(|b| b.role_commit);
-        }
-        Ok(bodies)
-    }
-
-    pub(crate) fn is_replaced(&mut self, g: &Tid, l: &LabelId) -> bool {
-        self.engine.labels_of(g).iter().any(|x| x.id == *l && x.replaced)
     }
 
     /// Prefix vs header for commit blobs whose header lists went by link (spec/commits.md §4):

@@ -108,7 +108,6 @@ struct J {
     judged: BTreeSet<CommitId>,
     unsettled: Unsettled,
     snapping: Unsettled,
-    replaced: bool,
 }
 
 /// A label's snapshots by aspect (`drop_label_covered`).
@@ -159,14 +158,6 @@ pub(super) fn is_snapshot(k: CKind) -> bool {
 /// A node card's aspects (spec/permissions.md §4).
 pub(super) fn is_card(ak: &str) -> bool {
     matches!(ak, "node.0" | "reach.0" | "keys.0")
-}
-
-/// Whether an entry or commit on aspects `aks` is content under a replaced label, which goes
-/// there (spec/sync.md §2): one with any part beside role-class writes, creation records and
-/// node cards. A creation record that shares its commit with content (a thing's first value)
-/// goes with it: the replacement label holds that commit.
-pub(crate) fn replaced_content<'a>(mut aks: impl Iterator<Item = &'a osis_base::Ak>) -> bool {
-    aks.any(|ak| !(ct::is_role_class(ak.as_str()) || matches!(ak.as_str(), "created.0" | "node.0" | "reach.0")))
 }
 
 /// Every part of `h` on the aspects `keep` admits.
@@ -291,12 +282,10 @@ impl SyncEngine {
         self.check_linked_prefixes(l, &scope)?;
         let fetching = w.unopened.iter().any(|b| self.asked_for(l, b));
         let sets = self.unsettled_sets(!w.unopened.is_empty(), fetching)?;
-        let replaced = self.is_replaced(g, &l);
         let inputs = Inputs {
             head: Some(p.id),
             epochs: keys.epochs,
             roles: Inputs::roles(keys, p.read_ok),
-            replaced,
             actor: self.engine.group_actor(g),
             published: ctx.published.clone(),
             may_rotate: self.may_rotate_read(g),
@@ -309,20 +298,20 @@ impl SyncEngine {
         let mut left = Left::default();
         let entries = w.snaps.clone();
         let snaps = self.drop_label_covered(&entries, &mut scope, &mut left)?;
-        let bodies = self.bodies_in(ctx, g, &l, &scope)?;
+        let bodies = self.bodies_in(ctx, g, &scope)?;
         let judged: BTreeSet<CommitId> = match &scope {
             Scope::Some { commits, .. } => commits.clone(),
             Scope::All => BTreeSet::new(),
         };
-        Ok(J { scope, left, snaps, bodies, judged, unsettled, snapping, replaced })
+        Ok(J { scope, left, snaps, bodies, judged, unsettled, snapping })
     }
 
     /// Entries touched during the pass are judged against their commits' bodies too: the bodies
     /// of the commits `scope` gained since `judged`.
-    fn judge_touched(&mut self, ctx: &BodyCtx, g: &Tid, l: &LabelId, scope: &Scope, judged: &BTreeSet<CommitId>, bodies: &mut Vec<Body>) -> Result<()> {
+    fn judge_touched(&mut self, ctx: &BodyCtx, g: &Tid, scope: &Scope, judged: &BTreeSet<CommitId>, bodies: &mut Vec<Body>) -> Result<()> {
         if let Scope::Some { commits, .. } = scope {
             let more = Scope::Some { commits: commits.difference(judged).copied().collect(), blobs: BTreeSet::new() };
-            bodies.extend(self.bodies_in(ctx, g, l, &more)?);
+            bodies.extend(self.bodies_in(ctx, g, &more)?);
         }
         Ok(())
     }
@@ -397,20 +386,20 @@ impl SyncEngine {
             self.passing = false;
             return Ok(());
         }
-        let labels: Vec<(Tid, LabelId, u64)> = self.labels().into_iter().map(|(g, l)| (g, l.id, l.index)).collect();
+        let labels: Vec<(Tid, LabelId)> = self.labels().into_iter().map(|(g, l)| (g, l.id)).collect();
         self.passing = !labels.is_empty();
         if labels.is_empty() {
             return Ok(());
         }
         let served = self.served_labels();
-        let ids: BTreeSet<LabelId> = labels.iter().map(|(_, l, _)| *l).collect();
+        let ids: BTreeSet<LabelId> = labels.iter().map(|(_, l)| *l).collect();
         self.work.retain(|x, _| ids.contains(x));
         let now = self.now();
         self.held_since.retain(|x, _| ids.contains(x));
         for l in &ids {
             self.held_since.entry(*l).or_insert(now);
         }
-        for (g, l, index) in labels {
+        for (g, l) in labels {
             // a label never passed here passes at the first passes it is in (its marks may have
             // come while nothing passed)
             if !all && !due.contains(&l) && !fill_due.contains(&l) && self.work.contains_key(&l) {
@@ -425,7 +414,7 @@ impl SyncEngine {
                 continue;
             }
             // one label's failure stops neither the others nor the handle
-            if let Err(e) = self.label_pass(g, l, index, head, out) {
+            if let Err(e) = self.label_pass(g, l, head, out) {
                 self.diag(format!("pass of {l:?}: {e}"));
             }
             self.schedule_pass(l);
@@ -444,8 +433,8 @@ impl SyncEngine {
     /// under a blocked epoch, so rotate first (flows' cascade), else hold back what the blocked
     /// roles would sign or wrap. Read blocked for encrypting but not for placing leaves only
     /// certificates and the node's own role commits to place (no write key: nothing fresh else).
-    fn usable_keys(&mut self, g: &Tid, index: u64, head: &osis_label::Step) -> Result<(HeadKeys, bool)> {
-        let mut keys = self.engine.head_keys(g, index, head)?;
+    fn usable_keys(&mut self, g: &Tid, head: &osis_label::Step) -> Result<(HeadKeys, bool)> {
+        let mut keys = self.engine.head_keys(g, head)?;
         let still = self.uncovered(g, true)?;
         let read = still.encrypt.contains(&Role::Read);
         if read || still.encrypt.contains(&Role::Write) {
@@ -463,15 +452,15 @@ impl SyncEngine {
     /// One label's pass: with no source, a newer established epoch first issues a child step of
     /// the served head when that head is recorded in `label.0` (recorded there, so the served
     /// head moves; `reregister` registers it at a source later), and the pass goes on under it.
-    fn label_pass(&mut self, g: Tid, l: LabelId, index: u64, head: &osis_label::Step, out: &mut Vec<super::Action>) -> Result<()> {
+    fn label_pass(&mut self, g: Tid, l: LabelId, head: &osis_label::Step, out: &mut Vec<super::Action>) -> Result<()> {
         let _s = crate::costs::span("pass");
-        let (mut keys, read_ok) = self.usable_keys(&g, index, head)?;
+        let (mut keys, read_ok) = self.usable_keys(&g, head)?;
         if self.sources(&l).is_empty() && self.step_due(&g, &l, &head.id(), &keys) && self.step_settled(&g, l) {
             let (step, done) = self.engine.issue_step(&g, &l, &head.id(), false)?;
             self.take_done(done)?;
             if let Some((step, _)) = step {
                 self.served_cache = None;
-                keys = self.usable_keys(&g, index, &step)?.0;
+                keys = self.usable_keys(&g, &step)?.0;
             }
         }
         if read_ok {
@@ -495,7 +484,7 @@ impl SyncEngine {
         }
         let (full, scope) = self.begin(&g, &l, w, &ctx.closure);
         let shown = std::mem::take(&mut w.touched.shown);
-        let J { mut scope, mut left, snaps, mut bodies, judged, unsettled, snapping, replaced } = self.judging(p, ctx, w, scope, full)?;
+        let J { mut scope, mut left, snaps, mut bodies, judged, unsettled, snapping } = self.judging(p, ctx, w, scope, full)?;
         let mut sends = Vec::new();
         // a role commit this node must hold waits for its relay (`relay_at`): no source has it
         // from here yet
@@ -504,10 +493,8 @@ impl SyncEngine {
             sends = self.body_sends(p, &bodies, &snaps, &snapping, &mut left, &mut behind)?;
             self.relay_now.remove(&l);
             let ours: BTreeSet<BlobId> = sends.iter().filter(|o| o.fresh).map(|o| o.id).collect();
-            if !replaced {
-                let authors: BTreeSet<Tid> = w.unjudged.values().copied().collect();
-                self.certificates(&g, l, &authors)?;
-            }
+            let authors: BTreeSet<Tid> = w.unjudged.values().copied().collect();
+            self.certificates(&g, l, &authors)?;
             if let Some(wk) = &keys.write {
                 self.local_promote(&g, l, wk, &scope, &ours, &mut left)?;
             }
@@ -537,7 +524,7 @@ impl SyncEngine {
             }
         }
         let settled = unsettled.is_empty();
-        self.judge_touched(ctx, &g, &l, &scope, &judged, &mut bodies)?;
+        self.judge_touched(ctx, &g, &scope, &judged, &mut bodies)?;
         // what a source lacked at the last pass that this one did not judge again: its verdict
         // stands, acted on at each source as it was (not while this node may not place here)
         let lacked = std::mem::take(&mut w.lacked);
@@ -552,7 +539,7 @@ impl SyncEngine {
         if let Scope::Some { commits, .. } = &scope {
             let more: BTreeSet<CommitId> = shown.iter().filter_map(|(x, _)| if let Touch::Commit(c) = x { Some(*c) } else { None }).filter(|c| !commits.contains(c)).collect();
             if !more.is_empty() {
-                bodies.extend(self.bodies_in(ctx, &g, &l, &Scope::Some { commits: more, blobs: BTreeSet::new() })?);
+                bodies.extend(self.bodies_in(ctx, &g, &Scope::Some { commits: more, blobs: BTreeSet::new() })?);
             }
         }
         w.acted.clear();
@@ -598,10 +585,10 @@ impl SyncEngine {
         let Some(c) = self.conns.get(&conn) else { return Ok(false) };
         let host = c.host;
         let Some(lc) = c.labels.get(&l) else { return Ok(false) };
-        let (index, Some(head)) = (lc.index, lc.head.clone()) else { return Ok(false) };
+        let Some(head) = lc.head.clone() else { return Ok(false) };
         // secrets may have arrived since the head was accepted
         self.recheck_doubts();
-        let (keys, read_ok) = self.usable_keys(&g, index, &head)?;
+        let (keys, read_ok) = self.usable_keys(&g, &head)?;
         if let Some(lc) = self.lc_mut(conn, &l) {
             lc.keys = keys.clone();
         }
@@ -699,11 +686,7 @@ impl SyncEngine {
         }
         self.deposit_items(conn, &p, deposits, out)?;
         self.clear_deposits(conn, host, &p, out)?;
-        let quiet = self.is_replaced(&g, &l) && sends.iter().all(|o| !lacks(self, &o.id));
         self.deletions(conn, &p.at(snaps, settled, behind_here, full), bodies, scope, left, out)?;
-        if quiet && settled {
-            self.retire_at(host, &g, l)?;
-        }
         Ok(true)
     }
 

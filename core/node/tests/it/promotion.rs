@@ -31,9 +31,8 @@ fn stamped(net: &Net, host: usize, l: &LabelId, id: &BlobId) -> bool {
 /// Reader `r` deposits at `host` under `g`'s label `l` `n` fresh encryptions of each of
 /// `commits` (its parts there), as Deposit items: the IDs per commit.
 fn flood(net: &mut Net, r: usize, (host, g, l): (usize, Tid, LabelId), commits: &BTreeMap<CommitId, Vec<usize>>, n: usize) -> BTreeMap<CommitId, Vec<BlobId>> {
-    let (_, gl) = net.group_labels(r).into_iter().find(|(_, x)| x.id == l).unwrap();
     let head = net.host_path(host, &l).last().unwrap().clone();
-    let keys = net.engine(r).head_keys(&g, gl.index, &head).unwrap();
+    let keys = net.engine(r).head_keys(&g, &head).unwrap();
     let deposit = keys.deposit.unwrap();
     let secret = net.engine(r).wrap_secret(&g, None).unwrap().unwrap();
     let mut rng = osis_crypto::SeededRng::from_u64(7);
@@ -62,7 +61,7 @@ fn a_readers_copies_are_promoted_once_spec_sync_5() {
     let (mut net, host, [a, r]) = hosted_nodes::<2>();
     let g = net.group(a, &[(r, Role::Read)], &[host]);
     let addr = net.hosts[host].address.clone();
-    let h = net.group_seeded(a, &[(r, Role::Read)], vec![addr], 2);
+    let h = net.group_at(a, &[(r, Role::Read)], vec![addr]);
     net.run();
     net.advance(60_000);
     let label = |net: &mut Net, x: Tid| net.group_labels(a).into_iter().find(|(y, _)| *y == x).unwrap().1.id;

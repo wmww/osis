@@ -181,7 +181,7 @@ fn known_stays_here_and_unknown_goes_to_the_node() {
     drop(x.host);
 }
 
-// spec/sync.md §10, notes/client-port.md §6 Moving: to Node this node stops syncing for itself alone (N keeps syncing: the group's label is not replaced), reads and writes go to N at once, P's copy stays and is not read; back to Local it catches up before calls come home; a move refused changes nothing
+// spec/sync.md §10, notes/client-port.md §6 Moving: to Node this node stops syncing for itself alone (N keeps syncing the group's label), reads and writes go to N at once, P's copy stays and is not read; back to Local it catches up before calls come home; a move refused changes nothing
 #[test]
 fn moving_a_group_both_ways() {
     let x = world();

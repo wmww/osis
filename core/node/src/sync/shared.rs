@@ -1455,7 +1455,7 @@ impl SyncEngine {
         let mut judge = self.engine.core.judge(actors);
         let Some(s) = self.records.shared.get_mut(&conn) else { return Ok(()) };
         let (mut gone, mut ending, mut stays, mut unread_ending) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
-        // members this node no longer syncs at all (a replaced label it stopped syncing)
+        // members this node no longer syncs at all (a group it handed off or stopped reading)
         let mut unsynced = Vec::new();
         for (l, m) in &s.members {
             let Some(t) = things.get(l) else {

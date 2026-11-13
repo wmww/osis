@@ -195,9 +195,9 @@ mod tests {
     fn entry_signatures() {
         let g = Group::new(30);
         let mut rng = SeededRng::from_u64(0);
-        let (s0, _) = register(Parent::Genesis(&g.delete(0)), g.keys(0), &[], (&TG, epoch(0), &g.read), g.sync_at(), &mut rng).unwrap();
+        let (s0, _) = register(Parent::Genesis(&g.delete()), g.keys(), &[], (&TG, epoch(0), &g.read), g.sync_at(), &mut rng).unwrap();
         let (l, b, w) = (s0.label, BlobId([1; 32]), [2u8; 49]);
-        let write = label_role_key(LabelRole::Write, &g.write, 0);
+        let write = label_role_key(LabelRole::Write, &g.write);
         let stamp = sign_stamp(&write, &l, &b, &w, false);
         verify_stamp(&s0.keys.write, &l, &b, &w, &stamp).unwrap();
         assert!(verify_stamp(&s0.keys.sync, &l, &b, &w, &stamp).is_err());
@@ -214,16 +214,16 @@ mod tests {
     fn deletes() {
         let g = Group::new(40);
         let mut rng = SeededRng::from_u64(0);
-        let (s0, _) = register(Parent::Genesis(&g.delete(0)), g.keys(0), &[], (&TG, epoch(0), &g.read), g.sync_at(), &mut rng).unwrap();
+        let (s0, _) = register(Parent::Genesis(&g.delete()), g.keys(), &[], (&TG, epoch(0), &g.read), g.sync_at(), &mut rng).unwrap();
         let l = s0.label;
-        let (sync, write) = (label_role_key(LabelRole::Sync, &g.sync, 0), label_role_key(LabelRole::Write, &g.write, 0));
+        let (sync, write) = (label_role_key(LabelRole::Sync, &g.sync), label_role_key(LabelRole::Write, &g.write));
         let salt = [5u8; 16];
         let (d2, d3) = (DeleteSecret::derive(&Secret32::from_bytes([1; 32])), DeleteSecret::derive(&Secret32::from_bytes([2; 32])));
         let hb = [7u8; 16];
         let prefix = Prefix::for_keys(salt, &hb, None, &[(2, d2.verifying_key()), (3, d3.verifying_key())]).unwrap();
         let b = BlobId([9; 32]);
         let by = |key: &SigningSecret, dks: &[(Level, &DeleteSecret)], salt: &[u8; 16], hb: &[u8; 16]| DeleteItem::sign_by(key, dks, salt, hb, &l, b).unwrap();
-        DeleteItem::sign(&g.delete(0), &l, b).unwrap().verify(&s0, None).unwrap();
+        DeleteItem::sign(&g.delete(), &l, b).unwrap().verify(&s0, None).unwrap();
         by(&sync, &[(2, &d2)], &salt, &hb).verify(&s0, Some(&prefix)).unwrap();
         by(&write, &[(3, &d3)], &salt, &hb).verify(&s0, Some(&prefix)).unwrap();
         // level 3 needs the write key, level 2 the sync key; both levels at once the write key
@@ -279,7 +279,7 @@ mod tests {
         // spec/sync.md §5: a stamp binds the wrap: any altered wrap byte fails.
         #[test]
         fn stamp_binds_wrap(i in 0usize..49, x in 1u8..=255) {
-            let write = label_role_key(LabelRole::Write, &Secret32::from_bytes([1; 32]), 0);
+            let write = label_role_key(LabelRole::Write, &Secret32::from_bytes([1; 32]));
             let (l, b, w) = (LabelId([1; 16]), BlobId([2; 32]), [3u8; 49]);
             let stamp = sign_stamp(&write, &l, &b, &w, false);
             let mut w2 = w;

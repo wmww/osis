@@ -313,10 +313,10 @@ pub(crate) fn inbox_of(tx: &mut Tx<'_>, holder: &Tid) -> Result<Option<(Tid, Inb
     Ok(Core::keys_in(tx, holder)?.and_then(|k| k.inbox).map(|i| (*holder, i)))
 }
 
-/// The newest unreplaced label of `tid`: ID, index, hosts.
-pub(crate) fn own_label(tx: &mut Tx<'_>, tid: &Tid) -> Result<Option<(LabelId, u64, Vec<Address>)>> {
+/// The label of `tid` (two admins giving it secrets at once made two: the higher ID): ID, hosts.
+pub(crate) fn own_label(tx: &mut Tx<'_>, tid: &Tid) -> Result<Option<(LabelId, Vec<Address>)>> {
     let labels = tx.state(tid, &ak("label.0")?)?.and_then(Fragment::read).and_then(|v| ct::LABEL.decode(&v).ok()).unwrap_or_default();
-    Ok(labels.into_iter().filter(|(_, l)| !l.replaced).max_by_key(|(_, l)| l.index).map(|(id, l)| (id, l.index, l.hosts)))
+    Ok(labels.into_iter().next_back().map(|(id, l)| (id, l.hosts)))
 }
 
 /// Whether key actor `t` is a node (it has a `node.0` card), not a link key.

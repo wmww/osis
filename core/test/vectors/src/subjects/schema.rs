@@ -48,7 +48,7 @@ fn samples() -> Vec<(&'static str, &'static str, Value)> {
     };
     let labels: Labels = BTreeMap::from([(
         LabelId([22; 16]),
-        Label { index: 0, steps: BTreeMap::from([([23; 32], StepRecord { step: vec![24; 10], claims: None })]), hosts: vec![], replaced: false },
+        Label { steps: BTreeMap::from([([23; 32], StepRecord { step: vec![24; 10], claims: None })]), hosts: vec![] },
     )]);
     vec![
         ("created thing", "created.0", CREATED.encode(&CreationRecord::Thing { admin: tid(1), nonce: [2; 32], link: None })),

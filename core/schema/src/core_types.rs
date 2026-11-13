@@ -197,7 +197,7 @@ codec_struct! {
 codec_struct! {
     /// A label of a synced group; steps by step ID.
     #[derive(Clone, Debug, PartialEq, Eq)]
-    pub struct Label { 0 index: u64, 1 steps: BTreeMap<[u8; 32], StepRecord>, 2 hosts: Vec<Address>, 3 replaced: bool }
+    pub struct Label { 0 steps: BTreeMap<[u8; 32], StepRecord>, 1 hosts: Vec<Address> }
 }
 codec_struct! {
     /// `keys.0`: keysets per role (actors other than key actors), a key actor's KEM key, inbox,

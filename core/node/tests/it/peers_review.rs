@@ -673,7 +673,7 @@ fn complete_pass_drops_removed_coreader_spec_permissions_3() {
     reach_ed(&mut net, a);
     reach_ed(&mut net, x);
     let g = net.group(a, &[(x, Role::Write), (b, Role::Read)], &[host]);
-    let g2 = net.group_seeded(a, &[(x, Role::Read)], vec![net.address(host)], 2);
+    let g2 = net.group_at(a, &[(x, Role::Read)], vec![net.address(host)]);
     net.item(x, g, g, "from x");
     net.run();
     assert!(net.sync(a).complete_pass(&g) && net.sync(a).complete_pass(&g2));

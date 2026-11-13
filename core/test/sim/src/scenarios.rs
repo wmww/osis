@@ -51,8 +51,6 @@ pub const SCENARIOS: &[(&str, Scenario)] = &[
     ("chat_join_leave", library::chat_join_leave),
     ("team_reads_member_thing", library::team_reads_member_thing),
     ("folders", library::folders),
-    ("label_replacement", library::label_replacement),
-    ("label_replacement_offline", library::label_replacement_offline),
     ("bundles", library::bundles),
     ("disappearing", library::disappearing),
     ("purge_on_replace", library::purge_on_replace),

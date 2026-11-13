@@ -41,13 +41,13 @@ pub struct StepKeys {
 }
 
 impl StepKeys {
-    /// Role public keys at `index` from the group's role secrets, deposit key from the actor's
+    /// Role public keys from the group's role secrets, deposit key from the actor's
     /// deposit seed (spec/sync.md §2).
-    pub fn derive(sync: &Secret32, write: &Secret32, admin: &Secret32, index: u64, deposit_seed: &Secret32, label: &LabelId) -> StepKeys {
+    pub fn derive(sync: &Secret32, write: &Secret32, admin: &Secret32, deposit_seed: &Secret32, label: &LabelId) -> StepKeys {
         StepKeys {
-            sync: label_role_key(LabelRole::Sync, sync, index).verifying_key(),
-            write: label_role_key(LabelRole::Write, write, index).verifying_key(),
-            delete: label_role_key(LabelRole::Delete, admin, index).verifying_key(),
+            sync: label_role_key(LabelRole::Sync, sync).verifying_key(),
+            write: label_role_key(LabelRole::Write, write).verifying_key(),
+            delete: label_role_key(LabelRole::Delete, admin).verifying_key(),
             deposit: deposit_key(deposit_seed, label).verifying_key(),
         }
     }
@@ -61,15 +61,15 @@ impl StepKeys {
     }
 }
 
-/// Label ID of the label at `index` whose genesis derives from `admin` (spec/sync.md §2).
-pub fn genesis_label(admin: &Secret32, index: u64) -> LabelId {
-    label_id(&label_role_key(LabelRole::Delete, admin, index).verifying_key())
+/// Label ID of the label whose genesis derives from `admin` (spec/sync.md §2).
+pub fn genesis_label(admin: &Secret32) -> LabelId {
+    label_id(&label_role_key(LabelRole::Delete, admin).verifying_key())
 }
 
-/// Index into `candidates` of the role secret whose label key at `index` is `pk`: which held
+/// Index into `candidates` of the role secret whose label key is `pk`: which held
 /// epoch a host's head registers (spec/sync.md §2).
-pub fn match_secret<'a>(pk: &VerifyingKey, role: LabelRole, index: u64, candidates: impl IntoIterator<Item = &'a Secret32>) -> Option<usize> {
-    candidates.into_iter().position(|s| label_role_key(role, s, index).verifying_key() == *pk)
+pub fn match_secret<'a>(pk: &VerifyingKey, role: LabelRole, candidates: impl IntoIterator<Item = &'a Secret32>) -> Option<usize> {
+    candidates.into_iter().position(|s| label_role_key(role, s).verifying_key() == *pk)
 }
 
 /// Limits for steps, claim sets and the structures holding them (spec/wire.md §13).
@@ -419,15 +419,15 @@ pub(crate) mod tests {
         pub fn new(b: u8) -> Group {
             Group { read: Secret32::from_bytes([b; 32]), write: Secret32::from_bytes([b + 1; 32]), admin: Secret32::from_bytes([b + 2; 32]), deposit: Secret32::from_bytes([b + 3; 32]), sync: Secret32::from_bytes([b + 4; 32]) }
         }
-        pub fn keys(&self, index: u64) -> StepKeys {
-            StepKeys::derive(&self.sync, &self.write, &self.admin, index, &self.deposit, &genesis_label(&self.admin, index))
+        pub fn keys(&self) -> StepKeys {
+            StepKeys::derive(&self.sync, &self.write, &self.admin, &self.deposit, &genesis_label(&self.admin))
         }
         /// The sync epoch (n 0) of the test group thing and its secret.
         pub fn sync_at(&self) -> (Epoch, &Secret32) {
             (Epoch::derive(&TG, osis_base::Role::Sync, 0, &self.sync).unwrap_or(Epoch::ZERO), &self.sync)
         }
-        pub fn delete(&self, index: u64) -> SigningSecret {
-            label_role_key(LabelRole::Delete, &self.admin, index)
+        pub fn delete(&self) -> SigningSecret {
+            label_role_key(LabelRole::Delete, &self.admin)
         }
     }
 
@@ -445,8 +445,8 @@ pub(crate) mod tests {
     fn steps_and_paths() {
         let mut rng = SeededRng::from_u64(0);
         let g = Group::new(10);
-        let (s0, c0) = register(Parent::Genesis(&g.delete(0)), g.keys(0), &[], (&TG, epoch(0), &g.read), g.sync_at(), &mut rng).unwrap();
-        assert_eq!(s0.label, genesis_label(&g.admin, 0));
+        let (s0, c0) = register(Parent::Genesis(&g.delete()), g.keys(), &[], (&TG, epoch(0), &g.read), g.sync_at(), &mut rng).unwrap();
+        assert_eq!(s0.label, genesis_label(&g.admin));
         assert_eq!(Step::parse(&s0.to_bytes()).unwrap(), s0);
         assert_eq!(s0.id().0, osis_base::hash::hash(&s0.to_bytes()));
         assert_eq!(s0.claims_hash, c0.hash());
@@ -454,12 +454,12 @@ pub(crate) mod tests {
         s0.verify_genesis().unwrap();
         // Rotation: new admin secret, step signed by the old delete key.
         let g2 = Group::new(20);
-        let k1 = StepKeys::derive(&g2.sync, &g2.write, &g2.admin, 0, &g.deposit, &s0.label);
-        let (s1, _) = register(Parent::Child { step: &s0, delete: &g.delete(0) }, k1, &[], (&TG, epoch(1), &g2.read), g2.sync_at(), &mut rng).unwrap();
+        let k1 = StepKeys::derive(&g2.sync, &g2.write, &g2.admin, &g.deposit, &s0.label);
+        let (s1, _) = register(Parent::Child { step: &s0, delete: &g.delete() }, k1, &[], (&TG, epoch(1), &g2.read), g2.sync_at(), &mut rng).unwrap();
         s1.verify_child(&s0).unwrap();
         assert!(s1.verify_genesis().is_err());
         // Step without rotation: same keys, fresh step key.
-        let (s2, _) = register(Parent::Child { step: &s1, delete: &g2.delete(0) }, s1.keys, &[], (&TG, epoch(1), &g2.read), g2.sync_at(), &mut rng).unwrap();
+        let (s2, _) = register(Parent::Child { step: &s1, delete: &g2.delete() }, s1.keys, &[], (&TG, epoch(1), &g2.read), g2.sync_at(), &mut rng).unwrap();
         assert_eq!(s2.keys, s1.keys);
         assert_ne!(s2.step_key, s1.step_key);
         verify_path(&s0.label, &[s0.clone(), s1.clone(), s2.clone()]).unwrap();
@@ -469,14 +469,14 @@ pub(crate) mod tests {
         let map: BTreeMap<StepId, Step> = [&s0, &s1, &s2].into_iter().map(|s| (s.id(), s.clone())).collect();
         assert_eq!(path_to(&map, &s2.id()).unwrap(), vec![s0.clone(), s1.clone(), s2.clone()]);
         // Signer checks.
-        assert!(register(Parent::Child { step: &s1, delete: &g.delete(0) }, s1.keys, &[], (&TG, epoch(1), &g2.read), g2.sync_at(), &mut rng).is_err());
-        assert!(register(Parent::Genesis(&g.delete(1)), g.keys(0), &[], (&TG, epoch(0), &g.read), g.sync_at(), &mut rng).is_err());
+        assert!(register(Parent::Child { step: &s1, delete: &g.delete() }, s1.keys, &[], (&TG, epoch(1), &g2.read), g2.sync_at(), &mut rng).is_err());
+        assert!(register(Parent::Genesis(&g2.delete()), g.keys(), &[], (&TG, epoch(0), &g.read), g.sync_at(), &mut rng).is_err());
         // A tampered field fails the signature.
         let mut t = s1.clone();
         t.claims_hash[0] ^= 1;
         assert!(t.verify_child(&s0).is_err());
         // Role key matching.
-        assert_eq!(match_secret(&s1.keys.sync, LabelRole::Sync, 0, [&g.sync, &g2.sync]), Some(1));
+        assert_eq!(match_secret(&s1.keys.sync, LabelRole::Sync, [&g.sync, &g2.sync]), Some(1));
     }
 
     // spec/wire.md §8, §1: step decoder rejections: wrong length, bad prev, bad key.
@@ -484,7 +484,7 @@ pub(crate) mod tests {
     fn step_rejections() {
         let mut rng = SeededRng::from_u64(0);
         let g = Group::new(30);
-        let (s0, _) = register(Parent::Genesis(&g.delete(0)), g.keys(0), &[], (&TG, epoch(0), &g.read), g.sync_at(), &mut rng).unwrap();
+        let (s0, _) = register(Parent::Genesis(&g.delete()), g.keys(), &[], (&TG, epoch(0), &g.read), g.sync_at(), &mut rng).unwrap();
         let Value::List(items) = s0.to_value() else { panic!() };
         let mut short = items.clone();
         short.pop();
@@ -520,7 +520,7 @@ pub(crate) mod tests {
             Reader::Static { signing: link.signing.verifying_key(), kem: link.kem.public() },
         ];
         let e3 = Epoch::derive(&TG, Role::Read, 3, &g.read).unwrap();
-        let (s0, c0) = register(Parent::Genesis(&g.delete(0)), g.keys(0), &readers, (&TG, e3, &g.read), g.sync_at(), &mut rng).unwrap();
+        let (s0, c0) = register(Parent::Genesis(&g.delete()), g.keys(), &readers, (&TG, e3, &g.read), g.sync_at(), &mut rng).unwrap();
         assert_eq!(c0.claims.len(), 4);
         assert_eq!(ClaimSet::parse(&c0.to_bytes()).unwrap(), c0);
         assert_eq!(s0.claims_hash, c0.hash());
@@ -537,17 +537,17 @@ pub(crate) mod tests {
         let other = Tid::from_bytes([1; 15]);
         assert_ne!(open_entry_box(b, &s0, &card.kem, &other).unwrap().epoch, e3);
         // a registrar naming an epoch the secret does not name boxes nothing
-        assert!(register(Parent::Genesis(&g.delete(0)), g.keys(0), &readers, (&TG, epoch(3), &g.read), g.sync_at(), &mut rng).is_err());
+        assert!(register(Parent::Genesis(&g.delete()), g.keys(), &readers, (&TG, epoch(3), &g.read), g.sync_at(), &mut rng).is_err());
         let b = c0.entry_box(&s0.label, &link.signing.verifying_key()).unwrap();
         assert_eq!(open_entry_box(b, &s0, &link.kem, &TG).unwrap(), want);
         assert!(open_entry_box(b, &s0, &card.kem, &TG).is_err());
         // Another step's slot does not open it.
-        let (s1, _) = register(Parent::Child { step: &s0, delete: &g.delete(0) }, s0.keys, &[], (&TG, e3, &g.read), g.sync_at(), &mut rng).unwrap();
+        let (s1, _) = register(Parent::Child { step: &s0, delete: &g.delete() }, s0.keys, &[], (&TG, e3, &g.read), g.sync_at(), &mut rng).unwrap();
         let b = c0.entry_box(&s0.label, &card.signing.verifying_key()).unwrap();
         assert!(open_entry_box(b, &s1, &card.kem, &TG).is_err());
         // the earlier read secret travels with it (spec/sync.md §2)
         let e2 = Epoch::derive(&TG, osis_base::Role::Read, 2, &g.write).unwrap();
-        let (s2, c2) = register_with(Parent::Child { step: &s0, delete: &g.delete(0) }, s0.keys, &readers, (&TG, e3, &g.read), g.sync_at(), Some((e2, &g.write)), &mut rng).unwrap();
+        let (s2, c2) = register_with(Parent::Child { step: &s0, delete: &g.delete() }, s0.keys, &readers, (&TG, e3, &g.read), g.sync_at(), Some((e2, &g.write)), &mut rng).unwrap();
         let b = c2.entry_box(&s2.label, &card.signing.verifying_key()).unwrap();
         assert_eq!(open_entry_box(b, &s2, &card.kem, &TG).unwrap(), EntryItem { earlier: Some((e2, g.write.clone())), ..want });
     }
@@ -596,7 +596,7 @@ pub(crate) mod tests {
             let g = Group::new(50);
             let ms: Vec<[u8; 32]> = (0..n).map(|_| X25519Secret::random(&mut rng).public()).collect();
             let readers: Vec<Reader> = ms.iter().map(|m| Reader::Dh(*m)).collect();
-            let (_, c) = register(Parent::Genesis(&g.delete(0)), g.keys(0), &readers, (&TG, epoch(0), &g.read), g.sync_at(), &mut rng).unwrap();
+            let (_, c) = register(Parent::Genesis(&g.delete()), g.keys(), &readers, (&TG, epoch(0), &g.read), g.sync_at(), &mut rng).unwrap();
             prop_assert_eq!(c.claims.len(), n.max(1).next_power_of_two());
             prop_assert!(c.claims.iter().all(|k| VerifyingKey::from_bytes(k).is_ok()));
         }
@@ -608,8 +608,8 @@ pub(crate) mod tests {
             let g = Group::new(60);
             let m = X25519Secret::random(&mut rng);
             let r = [Reader::Dh(m.public())];
-            let (s0, c0) = register(Parent::Genesis(&g.delete(0)), g.keys(0), &r, (&TG, epoch(0), &g.read), g.sync_at(), &mut rng).unwrap();
-            let (s1, c1) = register(Parent::Child { step: &s0, delete: &g.delete(0) }, s0.keys, &r, (&TG, epoch(0), &g.read), g.sync_at(), &mut rng).unwrap();
+            let (s0, c0) = register(Parent::Genesis(&g.delete()), g.keys(), &r, (&TG, epoch(0), &g.read), g.sync_at(), &mut rng).unwrap();
+            let (s1, c1) = register(Parent::Child { step: &s0, delete: &g.delete() }, s0.keys, &r, (&TG, epoch(0), &g.read), g.sync_at(), &mut rng).unwrap();
             let k0 = s0.claim_key(&m).unwrap().verifying_key().to_bytes();
             let k1 = s1.claim_key(&m).unwrap().verifying_key().to_bytes();
             prop_assert!(c0.contains(&k0) && c1.contains(&k1));

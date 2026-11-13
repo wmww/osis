@@ -964,7 +964,7 @@ fn second_label_gets_kept_bodies_spec_sync_6() {
         net.run();
         let l = net.label(a);
         let addrs = vec![net.hosts[host].address.clone()];
-        let g2 = net.group_seeded(a, &[(b, Role::Write)], addrs, 2);
+        let g2 = net.group_at(a, &[(b, Role::Write)], addrs);
         let l2 = net.group_labels(a).into_iter().find(|x| x.0 == g2).unwrap().1.id;
         // the new group's actor reads the thing
         net.grant(a, g, g2, Role::Read);
@@ -1954,8 +1954,8 @@ fn forged_link_keeps(author: usize) {
 fn losing_a_thing_keeps_chunks_another_thing_links_spec_sync_7() {
     let (mut net, host, [a, v, f]) = hosted_nodes::<3>();
     let at = vec![net.address(host)];
-    let g1 = net.group_seeded(a, &[(v, Role::Write), (f, Role::Write)], at.clone(), 1);
-    let g2 = net.group_seeded(a, &[(v, Role::Read), (f, Role::Write)], at, 2);
+    let g1 = net.group_at(a, &[(v, Role::Write), (f, Role::Write)], at.clone());
+    let g2 = net.group_at(a, &[(v, Role::Read), (f, Role::Write)], at);
     let t1 = net.item(a, g1, g1, "x");
     let t2 = net.item(a, g2, g2, "y");
     // the forged t1 commit kept while t1 is held (`chunks_linked_from_another_thing_stay_spec_crypto_7`)

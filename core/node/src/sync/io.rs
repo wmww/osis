@@ -233,8 +233,6 @@ pub struct LabelStatus {
     pub last_sync: Option<u64>,
     /// A pass finished here once, or this node made it: no first download is outstanding.
     pub passed: bool,
-    /// Replaced (an admin syncs it until it retires, `retire_replaced`).
-    pub replaced: bool,
 }
 
 impl LabelStatus {

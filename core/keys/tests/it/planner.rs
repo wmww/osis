@@ -134,8 +134,8 @@ fn label_epochs() {
     let mut a = person(0x20);
     let [s, r, w, ad] = registration_epochs(&a).unwrap();
     assert_eq!((s.0, r.0, w.0, ad.0), (ep(1, 0x20), ep(1, 0x20), ep(1, 0x20), ep(1, 0x20)));
-    let key = label_role_key(LabelRole::Sync, s.1, 3).verifying_key();
-    assert_ne!(label_role_key(LabelRole::Sync, r.1, 3).verifying_key(), key, "the sync key derives from the sync secret");
+    let key = label_role_key(LabelRole::Sync, s.1).verifying_key();
+    assert_ne!(label_role_key(LabelRole::Sync, r.1).verifying_key(), key, "the sync key derives from the sync secret");
     let head = [Some(ep(1, 0x20)), Some(ep(1, 0x20)), Some(ep(1, 0x20))];
     a.read.set_history(ep(2, 1), BTreeSet::new(), [ep(1, 0x20)]);
     a.read.set_established(ep(2, 1), osis_keys::Provenance::Fixed);
@@ -144,8 +144,8 @@ fn label_epochs() {
     a.sync.set_history(ep(2, 1), BTreeSet::new(), [ep(1, 0x20)]);
     a.sync.set_established(ep(2, 1), osis_keys::Provenance::Fixed);
     a.sync.set_secret(ep(2, 1), Secret32::from_bytes([8; 32]));
-    assert_eq!(registered_epoch(&a, LabelRole::Sync, 3, &key), Some(ep(1, 0x20)));
-    assert_eq!(registered_epoch(&a, LabelRole::Sync, 4, &key), None);
+    assert_eq!(registered_epoch(&a, LabelRole::Sync, &key), Some(ep(1, 0x20)));
+    assert_eq!(registered_epoch(&a, LabelRole::Sync, &label_role_key(LabelRole::Sync, &Secret32::from_bytes([8; 32])).verifying_key()), Some(ep(2, 1)));
     assert!(newer_than_head(&a, head));
     assert!(!newer_than_head(&a, [Some(ep(2, 1)), Some(ep(1, 0x20)), Some(ep(1, 0x20))]));
     assert!(!newer_than_head(&a, [None, Some(ep(1, 0x20)), Some(ep(1, 0x20))]));

@@ -34,7 +34,7 @@ fn refused_inbox_deposit_retried_spec_sync_3() {
     let g = e.new_thing(&mut m, alice.account);
     m.set(g, &ct::GROUP, &ct::Group::default()).unwrap();
     e.commit(m).unwrap();
-    let (_, done) = net.engine(a).create_label(&g, std::slice::from_ref(&addr)).unwrap();
+    let done = net.engine(a).give_own_secrets_on(&g, std::slice::from_ref(&addr)).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
     let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
@@ -88,7 +88,8 @@ fn invite_goes_after_the_labels_registration_spec_sync_3() {
     let g = e.new_thing(&mut m, alice.account);
     m.set(g, &ct::GROUP, &ct::Group::default()).unwrap();
     e.commit(m).unwrap();
-    let (l, done) = net.engine(a).create_label(&g, std::slice::from_ref(&addr)).unwrap();
+    let done = net.engine(a).give_own_secrets_on(&g, std::slice::from_ref(&addr)).unwrap();
+    let l = net.engine(a).label_of(&g).unwrap().unwrap().0;
     let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
     let mut acts = net.sync(a).carry_out(done).unwrap();
     let done = net.engine(a).grant(&g, &bob.account, &edge).unwrap();
@@ -134,7 +135,8 @@ fn silent_host_of_the_label_holds_no_invite_back_spec_sync_3() {
     m.set(g, &ct::GROUP, &ct::Group::default()).unwrap();
     e.commit(m).unwrap();
     net.held_hosts.insert(silent);
-    let (l, done) = net.engine(a).create_label(&g, &[addr, other]).unwrap();
+    let done = net.engine(a).give_own_secrets_on(&g, &[addr, other]).unwrap();
+    let l = net.engine(a).label_of(&g).unwrap().unwrap().0;
     let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
     let mut acts = net.sync(a).carry_out(done).unwrap();
     let done = net.engine(a).grant(&g, &bob.account, &edge).unwrap();
@@ -147,9 +149,9 @@ fn silent_host_of_the_label_holds_no_invite_back_spec_sync_3() {
 }
 
 /// Nodes a (Alice's) and b (Bob's), accounts at one peer, Bob's node cut from it
-/// (his inbox label unregistered); Alice's group `g` with a label replaced `replaced` times and
-/// an item in it. Returns (net, a, b, bob's account, g, the item).
-fn persons(replaced: usize) -> (Net, usize, usize, osis_base::Tid, osis_base::Tid, osis_base::Tid) {
+/// (his inbox label unregistered); Alice's group `g` with an item in it, granted to Bob. Returns
+/// (net, a, b, bob's account, g, the item).
+fn persons() -> (Net, usize, usize, osis_base::Tid, osis_base::Tid, osis_base::Tid) {
     let mut net = Net::bare();
     let host = net.add_host();
     let a = net.node(1, &[host]);
@@ -169,18 +171,11 @@ fn persons(replaced: usize) -> (Net, usize, usize, osis_base::Tid, osis_base::Ti
     let g = e.new_thing(&mut m, alice.account);
     m.set(g, &ct::GROUP, &ct::Group::default()).unwrap();
     e.commit(m).unwrap();
-    let (mut l, done) = net.engine(a).create_label(&g, std::slice::from_ref(&addr)).unwrap();
+    let done = net.engine(a).give_own_secrets_on(&g, std::slice::from_ref(&addr)).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
     let item = net.item(a, g, g, "inside");
     net.run();
-    for _ in 0..replaced {
-        let (new, acts) = net.sync(a).replace_label(&g, &l).unwrap();
-        net.actions(a, acts);
-        net.run();
-        l = new;
-    }
-    assert_eq!(net.engine(a).group_labels(&g).unwrap().iter().find(|x| x.id == l).unwrap().index, replaced as u64);
     let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
     let done = net.engine(a).grant(&g, &bob.account, &edge).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
@@ -195,7 +190,7 @@ fn persons(replaced: usize) -> (Net, usize, usize, osis_base::Tid, osis_base::Ti
 // replaces the queued one.
 #[test]
 fn inbox_deposit_retried_for_hours_spec_sync_5() {
-    let (mut net, a, b, _, g, item) = persons(0);
+    let (mut net, a, b, _, g, item) = persons();
     assert_ne!(net.engine(b).role_on(&g), Some(Role::Read), "no inbox label yet");
     for _ in 0..12 {
         net.advance(1_800_000);
@@ -212,20 +207,6 @@ fn inbox_deposit_retried_for_hours_spec_sync_5() {
     }
     assert_eq!(net.engine(b).role_on(&g), Some(Role::Read), "the grant arrived");
     assert_eq!(net.read(b, item), Some(s("inside")));
-    assert_eq!(net.sync(a).deliveries_pending(), 0);
-}
-
-// spec/wire.md §9, spec/sync.md §2: an inbox blob names each label with its index, so a group
-// whose label was replaced several times opens from the grant's hint alone.
-#[test]
-fn hint_opens_a_label_replaced_many_times_spec_wire_9() {
-    let (mut net, a, b, _, g, item) = persons(6);
-    net.blocked.clear();
-    for _ in 0..4 {
-        net.advance(60_000);
-    }
-    assert_eq!(net.engine(b).role_on(&g), Some(Role::Read), "the grant arrived");
-    assert_eq!(net.read(b, item), Some(s("inside")), "the label opened from the hint");
     assert_eq!(net.sync(a).deliveries_pending(), 0);
 }
 
@@ -385,7 +366,9 @@ fn junk_under_any_label_goes_down_to_the_cap_spec_sync_5() {
         m.set(g, &ct::GROUP, &ct::Group::default()).unwrap();
         e.commit(m).unwrap();
         let addr = net.address(host);
-        let (l, acts) = net.sync(a).create_label(&g, vec![addr]).unwrap();
+        let done = net.engine(a).give_own_secrets_on(&g, &[addr]).unwrap();
+        let l = net.engine(a).label_of(&g).unwrap().unwrap().0;
+    let acts = net.sync(a).carry_out(done).unwrap();
         net.actions(a, acts);
         net.run();
         (g, l)
@@ -427,7 +410,7 @@ fn cleared_share_sent_again_after_the_holder_acted_elsewhere_spec_sync_3() {
     let g = e.new_thing(&mut m, alice);
     m.set(g, &ct::GROUP, &ct::Group::default()).unwrap();
     e.commit(m).unwrap();
-    let (_, done) = net.engine(a).create_label(&g, std::slice::from_ref(&addr)).unwrap();
+    let done = net.engine(a).give_own_secrets_on(&g, std::slice::from_ref(&addr)).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
     net.run();

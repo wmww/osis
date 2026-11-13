@@ -1622,7 +1622,8 @@ fn removal_refreshes_deposit_seed_spec_crypto_3() {
     let pp = lp.peers[1].engine.me();
     let t = thing_of(&mut lp, 2, pa);
     lp.peers[2].engine.grant(&t, &pp, &edge_of(Role::Read)).unwrap();
-    let (card, _) = lp.peers[2].engine.create_label(&t, &hosts()).unwrap();
+    lp.peers[2].engine.give_own_secrets_on(&t, &hosts()).unwrap();
+    let card = lp.peers[2].engine.label_of(&t).unwrap().unwrap().0;
     spread(&mut lp);
     assert_ne!(pp, p);
     let labels = lp.peers[2].engine.get_typed(&t, &ct::LABEL).unwrap().unwrap();
@@ -1816,26 +1817,26 @@ fn write_link_rotates_as_signer_spec_perm_3() {
     assert_eq!(sealed_write(&mut lp, 0, d, "after"), BTreeSet::from([2]), "the removed joiner reads nothing new");
 }
 
-// spec/crypto.md §4, spec/sync.md §2: signing a label's genesis step and sealing its entry
-// boxes encrypt under the group's epochs: after a node left the account that administers the
-// team, the team rotates before its label is created.
+// spec/crypto.md §4, spec/sync.md §5: signing a step and sealing its entry boxes encrypt under
+// the group's epochs: after a node left the account that administers the team, the team rotates
+// before an admin issues its next step.
 #[test]
-fn create_label_after_inside_removal_spec_sync_2() {
+fn issue_step_after_inside_removal_spec_sync_5() {
     let (mut lp, p, pa, _) = nodes_and_alice();
     let d1 = lp.peers[0].engine.tid();
     let t = thing_of(&mut lp, 2, pa);
     lp.peers[2].engine.grant(&t, &p, &edge_of(Role::Admin)).unwrap();
     spread(&mut lp);
     let t0 = newest_read(&lp, 1, t).unwrap();
+    let label = lp.peers[1].engine.label_of(&t).unwrap().unwrap().0;
+    let labels = lp.peers[1].engine.get_typed(&t, &ct::LABEL).unwrap().unwrap();
+    let genesis = osis_label::StepId(*labels.get(&label).unwrap().steps.keys().next().unwrap());
     lp.peers[1].engine.demote(&p, &Demotion { holder: d1, new: None, retain: None }).unwrap();
-    let (label, done) = lp.peers[1].engine.create_label(&t, &hosts()).unwrap();
-    assert_eq!(done.commits.len(), 2, "T's rotation, then the label");
+    let (step, _) = lp.peers[1].engine.issue_step(&t, &label, &genesis, false).unwrap().0.unwrap();
     let t1 = newest_read(&lp, 1, t).unwrap();
     assert_ne!(t0, t1);
-    let labels = lp.peers[1].engine.get_typed(&t, &ct::LABEL).unwrap().unwrap();
-    let (step, _) = osis_label::parse_record(labels.get(&label).unwrap().steps.values().next().unwrap()).unwrap();
     let (_, sync) = lp.peers[1].engine.epochs(&t).unwrap().sync.newest_held().map(|(e, s)| (e, s.clone())).unwrap();
-    assert_eq!(step.keys.sync, osis_crypto::label_role_key(osis_crypto::LabelRole::Sync, &sync, labels.get(&label).unwrap().index).verifying_key());
+    assert_eq!(step.keys.sync, osis_crypto::label_role_key(osis_crypto::LabelRole::Sync, &sync).verifying_key());
 }
 
 // spec/crypto.md §4 (covers by names), spec/permissions.md §2 (finalize). A node granted write

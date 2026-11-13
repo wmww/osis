@@ -97,21 +97,20 @@ impl SyncEngine {
         self.engine.labels_of(g).into_iter().find(|x| x.id == *l)
     }
 
-    /// Follows `thing`'s label known only by ID and hosts (a
-    /// link's label: the thing's first, index 0, spec/wire.md §10): opened by the static entry
+    /// Follows `thing`'s label known only by ID and hosts (a link's label, spec/wire.md §10):
+    /// opened by the static entry
     /// of `via`, a held key actor, or a held read secret.
     pub fn follow(&mut self, via: Tid, thing: Tid, label: LabelId, hosts: Vec<osis_label::Address>) -> Vec<super::Action> {
-        self.state.add_hint(label, super::state::Hint { thing, index: 0, hosts, via: Some(via), inbox: None });
+        self.state.add_hint(label, super::state::Hint { thing, hosts, via: Some(via), inbox: None });
         self.handle(super::Event::Local)
     }
 
     /// Starts `l` on `conn`: it waits for the peer's filter to show the credential of the newest
     /// recorded head, or of a hint's (`Phase::Testing`), then walks (`shared_unopened`).
     pub(crate) fn start_label(&mut self, conn: ConnId, g: Tid, l: LabelId, out: &mut Vec<super::Action>) -> Result<()> {
-        let index = self.group_label(&g, &l).map(|gl| gl.index).or_else(|| self.state.hints.get(&l).map(|h| h.index)).unwrap_or(0);
         let now = self.now();
         if let Some(c) = self.conns.get_mut(&conn) {
-            let mut lc = Self::new_lc(g, index);
+            let mut lc = Self::new_lc(g);
             lc.last_sync = now;
             c.labels.insert(l, lc);
             // a start (or a retry once a back-off passed) walks against the latest filter, from
@@ -127,10 +126,9 @@ impl SyncEngine {
         self.shared_retest(conn, out)
     }
 
-    fn new_lc(group: Tid, index: u64) -> LConn {
+    fn new_lc(group: Tid) -> LConn {
         LConn {
             group,
-            index,
             phase: Phase::Testing { shown: None },
             head: None,
             keys: HeadKeys::default(),
@@ -159,8 +157,8 @@ impl SyncEngine {
     /// The key a Hit on `step`'s credential signs with: its sync key when this node holds the
     /// epoch's sync secret, else this node's claim key on it (as `claimants`) while the step's
     /// claim set is held and lists it.
-    pub(crate) fn step_key(&mut self, g: &Tid, index: u64, l: &LabelId, step: &Step) -> Option<SigningSecret> {
-        match self.step_keys(g, index, l, step) {
+    pub(crate) fn step_key(&mut self, g: &Tid, l: &LabelId, step: &Step) -> Option<SigningSecret> {
+        match self.step_keys(g, l, step) {
             (keys, true) => keys.into_iter().next(),
             (_, false) => None,
         }
@@ -170,9 +168,9 @@ impl SyncEngine {
     /// be its: its sync key when held; else, while the step's claim set is held, this node's claim
     /// key it lists; else every claim key of this node's on it (as `claimants`), which only its
     /// filter tells apart (the walk's, `walk_candidates`).
-    fn step_keys(&mut self, g: &Tid, index: u64, l: &LabelId, step: &Step) -> (Vec<SigningSecret>, bool) {
+    fn step_keys(&mut self, g: &Tid, l: &LabelId, step: &Step) -> (Vec<SigningSecret>, bool) {
         if let Some(e) = self.engine.epochs(g)
-            && let Some(k) = e.sync.held_newest_first().into_iter().map(|(_, s)| label_role_key(LabelRole::Sync, s, index)).find(|k| k.verifying_key() == step.keys.sync)
+            && let Some(k) = e.sync.held_newest_first().into_iter().map(|(_, s)| label_role_key(LabelRole::Sync, s)).find(|k| k.verifying_key() == step.keys.sync)
         {
             return (vec![k], true);
         }
@@ -199,8 +197,8 @@ impl SyncEngine {
     /// this node's claim key its held claim set lists, else (the set not held) the claim key of
     /// this node's on it that the peer's latest filter shows and did not refuse since.
     pub(crate) fn test_key(&mut self, conn: ConnId, l: &LabelId, step: &Step) -> Option<SigningSecret> {
-        let (g, index) = self.lc(conn, l).map(|x| (x.group, x.index))?;
-        match self.step_keys(&g, index, l, step) {
+        let g = self.lc(conn, l).map(|x| x.group)?;
+        match self.step_keys(&g, l, step) {
             (keys, true) => keys.into_iter().next(),
             (keys, false) => keys.into_iter().find(|k| {
                 let v = k.verifying_key().to_bytes();
@@ -210,13 +208,13 @@ impl SyncEngine {
     }
 
     /// The sync key a hint's label (no step known) is Hit by at `conn`: of the sync secrets held
-    /// of its thing, at the hint's index, the newest the peer's latest filter shows and did not
+    /// of its thing, the newest the peer's latest filter shows and did not
     /// refuse since (a filter keeps a moved head's entries until a whole one goes), else the
     /// newest (the head need not bear the newest epoch: one made and not established yet).
     /// Whatever head bears it at a peer opens; nothing else does. O(sync epochs held).
-    pub(crate) fn hint_key(&mut self, conn: ConnId, l: &LabelId, g: &Tid, index: u64) -> Option<SigningSecret> {
+    pub(crate) fn hint_key(&mut self, conn: ConnId, l: &LabelId, g: &Tid) -> Option<SigningSecret> {
         let e = self.engine.epochs(g)?;
-        let keys: Vec<SigningSecret> = e.sync.held_newest_first().into_iter().map(|(_, s)| label_role_key(LabelRole::Sync, s, index)).collect();
+        let keys: Vec<SigningSecret> = e.sync.held_newest_first().into_iter().map(|(_, s)| label_role_key(LabelRole::Sync, s)).collect();
         let refused = |s: &Self, k: &[u8; 32]| s.conns.get(&conn).is_some_and(|c| c.req.refused.contains(&(*l, *k)));
         let shown = keys.iter().position(|k| {
             let v = k.verifying_key().to_bytes();
@@ -232,16 +230,16 @@ impl SyncEngine {
     /// no step fails so when it holds neither a sync key nor the static entry it follows by.
     /// Whether it is.
     pub(crate) fn strands(&mut self, conn: ConnId, l: LabelId, out: &mut Vec<super::Action>) -> Result<bool> {
-        let Some((g, index)) = self.lc(conn, &l).map(|x| (x.group, x.index)) else { return Ok(false) };
+        let Some(g) = self.lc(conn, &l).map(|x| x.group) else { return Ok(false) };
         let Some(newest) = self.newest_known(conn, &l) else {
             let via = self.state.hints.get(&l).is_some_and(|h| h.via.is_some());
-            if via || self.hint_key(conn, &l, &g, index).is_some() {
+            if via || self.hint_key(conn, &l, &g).is_some() {
                 return Ok(false);
             }
             self.fail(conn, l);
             return Ok(true);
         };
-        if !self.step_keys(&g, index, &l, &newest).0.is_empty() || self.static_listed_at(&g, &l, &newest) {
+        if !self.step_keys(&g, &l, &newest).0.is_empty() || self.static_listed_at(&g, &l, &newest) {
             return Ok(false);
         }
         self.fail(conn, l);
@@ -257,19 +255,19 @@ impl SyncEngine {
 
     /// The walk's credentials of `l` at `conn` (issues/net-one-peer.md 3h2, Stale head): of the
     /// recorded steps, every branch of the tree (two admins' concurrent children: the peer holds
-    /// one), deepest first, then every held sync key at L's index, newest first (the peer's head
+    /// one), deepest first, then every held sync key, newest first (the peer's head
     /// may be a step this node never recorded: one made while it was out, whose `label.0` comes
     /// only by L), each distinct one once, but `tested` (what the arrival's test offered); a held
     /// key's step is the one the stream names (`new_head`). O(steps + sync epochs held).
     pub(crate) fn walk_candidates(&mut self, conn: ConnId, l: LabelId, tested: Option<[u8; 32]>) -> Result<Vec<(Option<Step>, SigningSecret)>> {
-        let Some((g, index)) = self.lc(conn, &l).map(|x| (x.group, x.index)) else { return Ok(Vec::new()) };
+        let Some(g) = self.lc(conn, &l).map(|x| x.group) else { return Ok(Vec::new()) };
         let steps = self.group_label(&g, &l).map(|gl| deepest_first(&gl.steps)).unwrap_or_default();
         let mut keys: Vec<(Option<Step>, SigningSecret)> = Vec::new();
         for step in steps {
-            keys.extend(self.step_keys(&g, index, &l, &step).0.into_iter().map(|k| (Some(step.clone()), k)));
+            keys.extend(self.step_keys(&g, &l, &step).0.into_iter().map(|k| (Some(step.clone()), k)));
         }
         if let Some(e) = self.engine.epochs(&g) {
-            keys.extend(e.sync.held_newest_first().into_iter().map(|(_, s)| (None, label_role_key(LabelRole::Sync, s, index))));
+            keys.extend(e.sync.held_newest_first().into_iter().map(|(_, s)| (None, label_role_key(LabelRole::Sync, s))));
         }
         let mut seen: BTreeSet<[u8; 32]> = tested.into_iter().collect();
         let mut out = Vec::new();
@@ -297,9 +295,9 @@ impl SyncEngine {
                 self.shared_retest(conn, out)
             }
             None => {
-                let Some((g, index)) = self.lc(conn, &l).map(|x| (x.group, x.index)) else { return Ok(()) };
+                let Some(g) = self.lc(conn, &l).map(|x| x.group) else { return Ok(()) };
                 let newest = self.newest_known(conn, &l);
-                let held = newest.as_ref().is_some_and(|s| !self.step_keys(&g, index, &l, s).0.is_empty());
+                let held = newest.as_ref().is_some_and(|s| !self.step_keys(&g, &l, s).0.is_empty());
                 // a genesis alone costs one Register, as a Behind item does, and covers a
                 // peer lacking L (a new label); a 9 to it is answered by a Behind item
                 let genesis = newest.as_ref().is_none_or(|s| s.prev.is_none());
@@ -321,7 +319,7 @@ impl SyncEngine {
         let Some(c) = self.conns.get(&conn).filter(|c| !c.peer) else { return Ok(()) };
         let host = c.host;
         let Some(lc) = c.labels.get(&l).filter(|x| !x.phase.is_open()) else { return Ok(()) };
-        let (g, index) = (lc.group, lc.index);
+        let g = lc.group;
         let shown = match &lc.phase {
             Phase::Testing { shown } => shown.as_deref().cloned(),
             _ => None,
@@ -341,7 +339,7 @@ impl SyncEngine {
                     let key = self.test_key(conn, &l, &step);
                     (Some(step), key)
                 }
-                None => (None, self.hint_key(conn, &l, &g, index)),
+                None => (None, self.hint_key(conn, &l, &g)),
             },
         };
         if let Some(step) = step {
@@ -370,7 +368,7 @@ impl SyncEngine {
         let Some(lc) = self.lc_mut(conn, &l) else { return };
         lc.phase = Phase::Failed { entry_refused: false };
         lc.last_sync = now;
-        let tried = (l, lc.group, lc.index);
+        let tried = (l, lc.group);
         if self.state.hints.get(&l).is_some_and(|h| h.via.is_none()) {
             self.hint_failed.insert(tried);
             self.vetted = None;
@@ -386,7 +384,6 @@ impl SyncEngine {
         let things = self.things();
         let Some(g) = things.get(&l).copied() else { return Ok(false) };
         let Some(entry_box) = &grant.entry_box else { return Ok(false) };
-        let index = self.group_label(&g, &l).map(|gl| gl.index).or_else(|| self.state.hints.get(&l).map(|h| h.index)).unwrap_or(0);
         let mut prev: Option<&Step> = None;
         for st in &grant.steps {
             let ok = match prev {
@@ -409,7 +406,7 @@ impl SyncEngine {
                 return Ok(false);
             }
         };
-        if osis_label::match_secret(&head.keys.sync, LabelRole::Sync, index, [&item.sync.1]).is_none() {
+        if osis_label::match_secret(&head.keys.sync, LabelRole::Sync, [&item.sync.1]).is_none() {
             self.diag("entry box sync secret does not derive the head's sync key".into());
             return Ok(false);
         }
@@ -548,7 +545,7 @@ impl SyncEngine {
     /// Behind item on in this walk is not asked again.
     fn behind_from(&mut self, conn: ConnId, l: LabelId, from: Option<Step>, out: &mut Vec<super::Action>) -> Result<()> {
         let Some(lc) = self.lc(conn, &l) else { return Ok(()) };
-        let (g, index, open) = (lc.group, lc.index, lc.phase.is_open());
+        let (g, open) = (lc.group, lc.phase.is_open());
         let at_head = from.as_ref().is_some_and(|s| lc.head.as_ref().is_some_and(|h| h.id() == s.id()));
         let (by, refused) = match &lc.phase {
             // the key it opened by is a credential of the open head only (a claim key is per step)
@@ -558,13 +555,13 @@ impl SyncEngine {
         };
         let from = from.filter(|s| !refused.contains(&s.id()));
         let none_left = from.is_none() && !refused.is_empty();
-        let held: Vec<SigningSecret> = self.engine.epochs(&g).map(|e| e.sync.held_newest_first().into_iter().map(|(_, x)| label_role_key(LabelRole::Sync, x, index)).collect()).unwrap_or_default();
+        let held: Vec<SigningSecret> = self.engine.epochs(&g).map(|e| e.sync.held_newest_first().into_iter().map(|(_, x)| label_role_key(LabelRole::Sync, x)).collect()).unwrap_or_default();
         let mut asks: Vec<(Option<Step>, SigningSecret)> = match from {
             // the step's sync key, else (the open head) the key it opened by there, else its claim keys
             Some(s) => {
                 let keys = match held.into_iter().find(|k| k.verifying_key() == s.keys.sync).or(by) {
                     Some(k) => vec![k],
-                    None => self.step_keys(&g, index, &l, &s).0,
+                    None => self.step_keys(&g, &l, &s).0,
                 };
                 keys.into_iter().map(|k| (Some(s.clone()), k)).collect()
             }
@@ -703,7 +700,7 @@ impl SyncEngine {
     /// The nearest recorded step before `step` whose credential this node holds and that the peer
     /// on `conn` did not refuse a Behind item on in this walk.
     fn asked_before(&mut self, conn: ConnId, l: LabelId, step: &Step) -> Option<Step> {
-        let (g, index) = self.lc(conn, &l).map(|x| (x.group, x.index))?;
+        let g = self.lc(conn, &l).map(|x| x.group)?;
         let gl = self.group_label(&g, &l)?;
         let mut cur = step.prev;
         let mut n = 0;
@@ -714,7 +711,7 @@ impl SyncEngine {
                 return None;
             }
             let refused = self.lc(conn, &l).is_some_and(|x| matches!(&x.phase, Phase::Behind { refused } if refused.contains(&id)));
-            if !refused && !self.step_keys(&g, index, &l, &st).0.is_empty() {
+            if !refused && !self.step_keys(&g, &l, &st).0.is_empty() {
                 return Some(st);
             }
             cur = st.prev;
@@ -727,12 +724,12 @@ impl SyncEngine {
     /// asks on by a credential of it held; else `l` fails there, stranded (spec/permissions.md §4)
     /// unless the step was taken on the peer's word (`verified` false: a hint's).
     fn step_known(&mut self, conn: ConnId, l: LabelId, step: Step, verified: bool, out: &mut Vec<super::Action>) -> Result<()> {
-        let Some((g, index)) = self.lc(conn, &l).map(|x| (x.group, x.index)) else { return Ok(()) };
+        let Some(g) = self.lc(conn, &l).map(|x| x.group) else { return Ok(()) };
         if let Some(lc) = self.lc_mut(conn, &l) {
             lc.phase = Phase::Testing { shown: None };
         }
         let refused = |s: &Self, k: &[u8; 32]| s.conns.get(&conn).is_some_and(|c| c.req.refused.contains(&(l, *k)));
-        let keys: Vec<SigningSecret> = self.step_keys(&g, index, &l, &step).0.into_iter().filter(|k| !refused(self, &k.verifying_key().to_bytes())).collect();
+        let keys: Vec<SigningSecret> = self.step_keys(&g, &l, &step).0.into_iter().filter(|k| !refused(self, &k.verifying_key().to_bytes())).collect();
         let held = !keys.is_empty();
         let shown = keys.into_iter().find(|k| self.shared_shows(conn, &l, &k.verifying_key().to_bytes()));
         match shown {
@@ -976,8 +973,8 @@ impl SyncEngine {
     pub(crate) fn set_head(&mut self, conn: ConnId, l: LabelId, step: Step) -> Result<()> {
         let Some(host) = self.conns.get(&conn).map(|c| c.host) else { return Ok(()) };
         let Some(lc) = self.lc(conn, &l) else { return Ok(()) };
-        let (g, index) = (lc.group, lc.index);
-        let keys = self.engine.head_keys(&g, index, &step)?;
+        let g = lc.group;
+        let keys = self.engine.head_keys(&g, &step)?;
         self.state.set_head(host, l, &step);
         let mut moved = false;
         if let Some(lc) = self.lc_mut(conn, &l) {
@@ -1009,7 +1006,7 @@ impl SyncEngine {
         for s in new {
             let set = claims.as_ref().filter(|(id, _)| *id == s.id()).map(|(_, c)| c);
             let rec = osis_label::step_record(s, set);
-            let path = vec![PathSeg::Key(l.to_value()), PathSeg::Field(1), PathSeg::Key(s.id().0.to_value())];
+            let path = vec![PathSeg::Key(l.to_value()), PathSeg::Field(0), PathSeg::Key(s.id().0.to_value())];
             m.op(*g, &osis_schema::core_types::LABEL, PathOp { path, op: Op::Set(rec.to_value()) })?;
         }
         self.engine.drop_old_claims(&mut m, g)?;

@@ -620,16 +620,11 @@ fn history_complete_needs_a_first_pass_and_stands_offline() {
 #[test]
 fn a_group_is_the_worst_of_its_sync_ids() {
     let g = Tid::from_bytes([1; 15]);
-    let label = |sources: usize, idle: usize, last_sync: Option<u64>| osis_node::sync::LabelStatus { group: g, label: osis_schema::osis_base::LabelId([sources as u8; 16]), hosts: 0, sources, idle, opening: 0, stranded: false, refused_by: Vec::new(), leaving: false, last_sync, passed: true, replaced: false };
+    let label = |sources: usize, idle: usize, last_sync: Option<u64>| osis_node::sync::LabelStatus { group: g, label: osis_schema::osis_base::LabelId([sources as u8; 16]), hosts: 0, sources, idle, opening: 0, stranded: false, refused_by: Vec::new(), leaving: false, last_sync, passed: true };
     let groups = osis::internals::groups_of_labels(&[label(1, 1, Some(30)), label(0, 0, None)]);
     assert_eq!((groups[&g].state, groups[&g].last_sync), (SyncState::NotConnected, None));
     let groups = osis::internals::groups_of_labels(&[label(1, 1, Some(30)), label(2, 1, Some(20))]);
     assert_eq!((groups[&g].state, groups[&g].last_sync), (SyncState::Syncing, Some(osis::Time(20))));
-    // a replaced label with no peer beside a live one does not count
-    let gone = osis_node::sync::LabelStatus { replaced: true, ..label(0, 0, None) };
-    let groups = osis::internals::groups_of_labels(&[gone.clone(), label(1, 1, Some(30))]);
-    assert_eq!((groups[&g].state, groups[&g].last_sync), (SyncState::Synced, Some(osis::Time(30))));
-    assert_eq!(osis::internals::groups_of_labels(&[gone])[&g].state, SyncState::NotConnected, "the only one still counts");
 }
 
 /// Steps the world after a reconnect; at each step while `holder`, connected on `g`, holds `text`

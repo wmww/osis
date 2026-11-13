@@ -144,7 +144,7 @@ fn a_record_restored_so_s_differs_is_repaired_by_the_shared_set_spec_sync_10() {
 fn a_lost_costs_other_peers_nothing_spec_sync_10() {
     let (mut net, [a, b, c]) = local_nodes::<3>();
     reach_ed(&mut net, b);
-    let g = net.group_seeded(b, &[(a, Role::Write), (c, Role::Write)], vec![], 10);
+    let g = net.group_at(b, &[(a, Role::Write), (c, Role::Write)], vec![]);
     net.run();
     net.advance(120_000);
     let l = label_of(&mut net, b, g);
@@ -217,7 +217,7 @@ fn a_generation_lost_with_its_connection_is_not_built_on_spec_sync_10() {
     net.advance(120_000);
     net.tamper_link = Some((a, b));
     net.tamper = Some(Box::new(|m| matches!(m, Message::Beacons { .. }).then(|| Message::Applied { cursor: vec![0; 72] })));
-    let more: Vec<Tid> = (0..20).map(|i| net.group_seeded(b, &[(a, Role::Write)], vec![], 40 + i)).collect();
+    let more: Vec<Tid> = (0..20).map(|_| net.group_at(b, &[(a, Role::Write)], vec![])).collect();
     net.run();
     net.set_online(a, false);
     net.run();
@@ -328,7 +328,7 @@ fn nothing_is_offered_or_pulled_before_the_peers_digest_spec_sync_10() {
     let (mut net, a, b, _) = paired(1);
     net.set_online(a, false);
     net.run();
-    net.group_seeded(b, &[(a, Role::Write)], vec![], 40);
+    net.group_at(b, &[(a, Role::Write)], vec![]);
     net.run();
     net.tamper_link = Some((a, b));
     net.tamper = Some(Box::new(|m| matches!(m, Message::Digest { .. }).then(|| Message::Applied { cursor: vec![0; 72] })));

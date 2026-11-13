@@ -91,7 +91,7 @@ pub fn deliver_parts(tx: &mut Tx<'_>, holder: Tid, c: CommitId, things: &[Tid], 
     let mut seen = BTreeSet::new();
     for t in things {
         if seen.insert(*t) {
-            let label = own_label(tx, t)?.map(|(id, index, hosts)| InboxLabel { id, index, hosts });
+            let label = own_label(tx, t)?.map(|(id, hosts)| InboxLabel { id, hosts });
             let delete_keys = crate::engine::secrets::own_delete_keys(tx, t)?;
             ts.push(InboxThing { tid: *t, label, delete_keys });
         }

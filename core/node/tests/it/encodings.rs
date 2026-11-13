@@ -374,7 +374,7 @@ fn label_claim_set_above_the_threshold_stays_inline_spec_dm_6() {
     let t = new_thing(&mut lp, 0);
     let claims = osis_label::ClaimSet { claims: vec![[1; 32]; 4096], entries: Default::default() }.to_bytes();
     assert!(claims.len() > osis_base::format::CHUNK_THRESHOLD);
-    let l = ct::Label { index: 0, steps: [([9; 32], ct::StepRecord { step: vec![1; 200], claims: Some(claims) })].into_iter().collect(), hosts: Vec::new(), replaced: false };
+    let l = ct::Label { steps: [([9; 32], ct::StepRecord { step: vec![1; 200], claims: Some(claims) })].into_iter().collect(), hosts: Vec::new() };
     let mut m = Mutation::new();
     m.op(t, &ct::LABEL, PathOp { path: vec![PathSeg::Key(Value::Bytes(vec![5; 16]))], op: Op::Set(osis_schema::Codec::to_value(&l)) }).unwrap();
     lp.peers[0].commit(m).unwrap().unwrap();

@@ -368,7 +368,7 @@ pub fn chat_join_leave(s: Seeds) -> Res<Report> {
         let b = sim.add_node(&[s], clock(&mut d))?;
         let c = sim.add_node(&[s], clock(&mut d))?;
         let [pa, pb, pc] = persons(sim, [a, b, c], [s, s, s])?;
-        let chat = sim.group_with(a, pa, &[s], true)?;
+        let chat = sim.group(a, pa, &[s])?;
         sim.quiet(40)?;
         for p in [pb, pc] {
             sim.grant(a, chat, p, Role::Write)?;
@@ -425,7 +425,7 @@ pub fn team_reads_member_thing(s: Seeds) -> Res<Report> {
         let b = sim.add_node(&[s], clock(&mut d))?;
         let c = sim.add_node(&[s], clock(&mut d))?;
         let [pa, pb, pc] = persons(sim, [a, b, c], [s, s, s])?;
-        let team = sim.group_with(a, pa, &[s], true)?;
+        let team = sim.group(a, pa, &[s])?;
         sim.quiet(40)?;
         for p in [pb, pc] {
             sim.grant(a, team, p, Role::Write)?;
@@ -508,10 +508,10 @@ pub fn folders(s: Seeds) -> Res<Report> {
         let b = sim.add_node(&[s], clock(&mut d))?;
         let c = sim.add_node(&[s], clock(&mut d))?;
         let [pa, pb, pc] = persons(sim, [a, b, c], [s, s, s])?;
-        let folder = sim.group_with(a, pa, &[s], true)?;
+        let folder = sim.group(a, pa, &[s])?;
         sim.quiet(40)?;
         let top = sim.item(a, folder)?;
-        let sub = sim.group_with(a, folder, &[s], true)?;
+        let sub = sim.group(a, folder, &[s])?;
         let inner = sim.item(a, sub)?;
         let mut grp = sim.engine(a)?.get_typed(&folder, &ct::GROUP).map_err(|e| sim.fail(e.to_string()))?.unwrap_or_default();
         grp.subgroups.insert(sub);
@@ -534,71 +534,6 @@ pub fn folders(s: Seeds) -> Res<Report> {
     expect_tags(&mut sim, &[a, b, c], inner, &["inner"], &["inner"])?;
     if sim.engine(c)?.role_on(&top).is_some() || sim.engine(c)?.knows(&top) && !tags(&mut sim, c, top)?.is_empty() {
         return Err(sim.fail("the subfolder's reader reads the folder's own items"));
-    }
-    sim.finish()
-}
-
-/// Label replacement (spec/sync.md §2): the admin replaces a group's label; holders follow the
-/// new label and converge. (Old-label cleanup is checked by `label_replacement_offline`.)
-pub fn label_replacement(s: Seeds) -> Res<Report> {
-    replacement("label_replacement", s, false)
-}
-
-/// Label replacement with a holder offline (spec/sync.md §2: the replacement `label.0` commit
-/// stays under the old label, whose content entries the admin deletes, so a node that knows only
-/// the old label finds the new one).
-pub fn label_replacement_offline(s: Seeds) -> Res<Report> {
-    replacement("label_replacement_offline", s, true)
-}
-
-fn replacement(name: &str, s: Seeds, offline: bool) -> Res<Report> {
-    use osis_proto::LabelStore;
-    let (mut sim, (s, a, b, g)) = setup(name, s, NetWeights::default(), |sim| {
-        let mut d = Dice::new(sim.seed ^ 0x1a);
-        let s = sim.add_host()?;
-        let a = sim.add_node(&[s], clock(&mut d))?;
-        let b = sim.add_node(&[s], clock(&mut d))?;
-        let [pa, pb] = persons(sim, [a, b], [s, s])?;
-        let g = shared_group(sim, a, pa, &[s], &[(pb, Role::Write)])?;
-        sim.item(a, g)?;
-        sim.reconnect_all();
-        sim.quiet(40)?;
-        Ok((s, a, b, g))
-    })?;
-    sim.run(40)?;
-    sim.quiet(40)?;
-    sim.observe()?;
-    if offline {
-        sim.node_down(b)?;
-    }
-    let old = sim.sync(a)?.labels().into_iter().find(|(t, _)| *t == g).map(|x| x.1.id).ok_or_else(|| sim.fail("no label"))?;
-    let r = sim.sync(a)?.replace_label(&g, &old);
-    let (new, acts) = r.map_err(|e| sim.fail(format!("replace_label: {e}")))?;
-    sim.actions(a, acts)?;
-    sim.run(60)?;
-    sim.run_until_quiescent(60)?;
-    let bl: Vec<_> = sim.sync(b)?.labels().into_iter().filter(|(t, _)| *t == g).map(|x| x.1.id).collect();
-    if !bl.contains(&new) {
-        return Err(sim.fail(format!("the holder does not follow the replacement label: {bl:?}")));
-    }
-    if offline {
-        // the old label keeps role-class commits and certificates (chain certificates,
-        // node cards: they verify what stays, spec/permissions.md §4) only
-        let live = sim.hub(s).map(|h| h.store().live_ids(&old).unwrap_or_default()).unwrap_or_default();
-        let kept = |ak: &str| ct::is_role_class(ak) || matches!(ak, "created.0" | "node.0" | "reach.0" | "keys.0");
-        let mut content = 0;
-        for ((l, b), (c, parts)) in &sim.known {
-            if *l != old || !live.contains(b) {
-                continue;
-            }
-            let Some(h) = sim.nodes.iter().find_map(|n| n.sync.as_ref().and_then(|x| x.engine().header(c))) else { continue };
-            if parts.iter().filter_map(|ai| h.aspects.get(*ai)).any(|a| !kept(a.ak.as_str())) {
-                content += 1;
-            }
-        }
-        if content > 0 {
-            return Err(sim.fail(format!("the replaced label still holds {content} content entries ({} live)", live.len())));
-        }
     }
     sim.finish()
 }
@@ -1113,7 +1048,7 @@ pub fn honest_flows(seed: u64) -> Res<Report> {
     let g1 = shared_group(&mut sim, a, pa, &[s], &[(pb, Role::Read)])?;
     let g2 = shared_group(&mut sim, a, pa, &[s], &[(pb, Role::Write), (pc, Role::Read)])?;
     let h = shared_group(&mut sim, a, pa, &[s], &[(pb, Role::Read), (pc, Role::Read)])?;
-    let g3 = sim.group_with(a, pa, &[s], true)?;
+    let g3 = sim.group(a, pa, &[s])?;
     sim.item(a, g3)?;
     let gb = shared_group(&mut sim, b, pb, &[s], &[(pa, Role::Read)])?;
     let gb2 = shared_group(&mut sim, b, pb, &[s], &[(pc, Role::Write)])?;

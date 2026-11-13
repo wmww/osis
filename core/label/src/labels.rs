@@ -63,10 +63,10 @@ mod tests {
         let mut rng = SeededRng::from_u64(0);
         let g = Group::new(10);
         let e = Epoch::new(0, [0; 32]).unwrap();
-        let (s0, c0) = register(Parent::Genesis(&g.delete(0)), g.keys(0), &[], (&TG, e, &g.read), g.sync_at(), &mut rng).unwrap();
-        let (s1, c1) = register(Parent::Child { step: &s0, delete: &g.delete(0) }, s0.keys, &[], (&TG, e, &g.read), g.sync_at(), &mut rng).unwrap();
-        let (s2, _) = register(Parent::Child { step: &s0, delete: &g.delete(0) }, s0.keys, &[], (&TG, e, &g.read), g.sync_at(), &mut rng).unwrap();
-        let mut label = Label { index: 0, steps: BTreeMap::new(), hosts: vec![], replaced: false };
+        let (s0, c0) = register(Parent::Genesis(&g.delete()), g.keys(), &[], (&TG, e, &g.read), g.sync_at(), &mut rng).unwrap();
+        let (s1, c1) = register(Parent::Child { step: &s0, delete: &g.delete() }, s0.keys, &[], (&TG, e, &g.read), g.sync_at(), &mut rng).unwrap();
+        let (s2, _) = register(Parent::Child { step: &s0, delete: &g.delete() }, s0.keys, &[], (&TG, e, &g.read), g.sync_at(), &mut rng).unwrap();
+        let mut label = Label { steps: BTreeMap::new(), hosts: vec![] };
         label.steps.insert(s0.id().0, step_record(&s0, Some(&c0)));
         label.steps.insert(s1.id().0, step_record(&s1, Some(&c1)));
         label.steps.insert(s2.id().0, step_record(&s2, None));

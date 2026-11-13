@@ -27,7 +27,7 @@ fn junk_entry_does_not_stall_logging_spec_versioning_2() {
     let (mut net, host, [a, b], g, [t]) = hosted::<2, 1>(&[(1, Role::Write)], ["v1"], true);
     let (_, gl) = net.group_labels(a).into_iter().next().unwrap();
     let head = gl.steps.values().next().unwrap().0.clone();
-    let keys = net.engine(a).head_keys(&g, gl.index, &head).unwrap();
+    let keys = net.engine(a).head_keys(&g, &head).unwrap();
     let read = net.engine(a).wrap_secret(&g, None).unwrap().unwrap();
     let mut rng = SeededRng::from_u64(0);
     let prefix = osis_label::Prefix::new(osis_label::Prefix::random_salt(&mut rng), None, Vec::new()).unwrap();

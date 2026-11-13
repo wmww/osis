@@ -548,8 +548,8 @@ fn self_removal_shared_subgroup_spec_permissions_3() {
     let h2 = net.add_host();
     let a = net.node(1, &[h1, h2]);
     let b = net.node(2, &[h1, h2]);
-    let g1 = net.group_seeded(a, &[(b, Role::Write)], vec![net.hosts[h1].address.clone()], 1);
-    let g2 = net.group_seeded(a, &[(b, Role::Write)], vec![net.hosts[h2].address.clone()], 2);
+    let g1 = net.group_at(a, &[(b, Role::Write)], vec![net.hosts[h1].address.clone()]);
+    let g2 = net.group_at(a, &[(b, Role::Write)], vec![net.hosts[h2].address.clone()]);
     let at = net.tid(a);
     // S: listed in both groups, each a reader of it, with secrets of its own
     let sub = net.item(a, g1, at, "s");
@@ -877,9 +877,8 @@ fn link_joiner_leave_forks_converge_spec_crypto_4() {
     let c = e.new_thing(&mut m, pa);
     m.set(c, &REG, &s("hi")).unwrap();
     e.commit(m).unwrap();
-    let done = net.engine(a).give_own_secrets(&c).unwrap();
-    carry(&mut net, a, done);
-    let (_, acts) = net.sync(a).create_label(&c, home.clone()).unwrap();
+    let done = net.engine(a).give_own_secrets_on(&c, &home).unwrap();
+    let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
     net.run();
     let spec = osis_node::flows::LinkSpec { target: c, role: Role::Write, until: None, hosts: home.clone(), peers: Vec::new(), single_use: false };
@@ -920,11 +919,11 @@ fn link_joiner_leave_forks_converge_spec_crypto_4() {
 #[test]
 fn no_secret_of_the_heads_read_epoch_is_stranded_spec_sync_5() {
     let (mut net, host, [a, b, r, c]) = hosted_nodes::<4>();
-    let m = net.group_seeded(b, &[(r, Role::Read), (c, Role::Read)], vec![net.address(host)], 1);
+    let m = net.group_at(b, &[(r, Role::Read), (c, Role::Read)], vec![net.address(host)]);
     net.name_inbox_elsewhere(b, m);
     net.pair(b, a);
     // B reads G directly too, so it syncs G's label and places M's new keyset there for A
-    let g = net.group_seeded(a, &[(b, Role::Read)], vec![net.address(host)], 2);
+    let g = net.group_at(a, &[(b, Role::Read)], vec![net.address(host)]);
     let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
     let done = net.engine(a).grant(&g, &m, &edge).unwrap();
     carry(&mut net, a, done);
@@ -1061,7 +1060,8 @@ fn a_node_judging_itself_out_claims_as_an_actor_a_held_write_names_spec_sync_5()
     let t = e.new_thing(&mut m, pa);
     m.set(t, &ct::GROUP, &ct::Group::default()).unwrap();
     e.commit(m).unwrap();
-    let (_, acts) = net.sync(a).create_label(&t, home.clone()).unwrap();
+    let done = net.engine(a).give_own_secrets_on(&t, &home).unwrap();
+    let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
     net.run();
     let spec = osis_node::flows::LinkSpec { target: t, role: Role::Read, until: None, hosts: vec![net.address(s1)], peers: Vec::new(), single_use: true };
@@ -1138,7 +1138,8 @@ fn walk_out_of_keys_is_stranded_spec_permissions_4() {
     let t = e.new_thing(&mut m, pa);
     m.set(t, &ct::GROUP, &ct::Group::default()).unwrap();
     e.commit(m).unwrap();
-    let (_, acts) = net.sync(a).create_label(&t, home.clone()).unwrap();
+    let done = net.engine(a).give_own_secrets_on(&t, &home).unwrap();
+    let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
     net.run();
     let spec = osis_node::flows::LinkSpec { target: t, role: Role::Read, until: None, hosts: home.clone(), peers: Vec::new(), single_use: false };
@@ -1361,7 +1362,7 @@ fn stranded_reports_keep_nothing_beyond_the_holders_chain_spec_permissions_4() {
     let holder = net.tid(c);
     let mut sent: Vec<(osis_base::Tid, Vec<osis_base::CommitId>)> = Vec::new();
     for i in 0..4u32 {
-        let x = if i == 0 { t } else { net.group_seeded(d, &[(e, Role::Read)], Vec::new(), 100 + u64::from(i)) };
+        let x = if i == 0 { t } else { net.group_at(d, &[(e, Role::Read)], Vec::new()) };
         let (commits, record) = role_history(&mut net, d, x);
         let ids = commits.iter().map(|v| osis_commit::CommitBlob::decode(&osis_base::encode(v)).unwrap().id()).collect();
         sent.push((x, ids));

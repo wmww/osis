@@ -18,7 +18,7 @@ use std::collections::{BTreeMap, BTreeSet};
 pub(crate) const DEPOSIT_RETRY_CAP_MS: u64 = 3_600_000;
 
 /// Re-sends of an inbox delivery whose holder never acts (local policy; one per
-/// `INBOX_LIFETIME`, or at once for each replacement of its inbox the sender sees).
+/// `INBOX_LIFETIME`).
 const MAX_INBOX_RESENDS: u32 = 3;
 
 /// Where a queued deposit (`State::outbox`, `SyncEngine::queue_deposit`) stands, in memory: a
@@ -34,25 +34,6 @@ pub(crate) struct Outgoing {
 }
 
 impl SyncEngine {
-    /// Creates a label for group `g` at `hosts` (an admin; spec/sync.md §2) and connects.
-    pub fn create_label(&mut self, g: &Tid, hosts: Vec<Address>) -> Result<(LabelId, Vec<Action>)> {
-        let (l, done) = self.engine.create_label(g, &hosts)?;
-        self.take_done(done)?;
-        Ok((l, self.handle(super::Event::Local)))
-    }
-
-    /// Replaces label `old` of `g` (spec/sync.md §2; an admin, `Engine::replace_label`: the
-    /// admin rotation if the loss calls for it, a new label at the same hosts, the old one
-    /// marked replaced); passes then log the live blobs under the new label, and under the
-    /// old one (an admin keeps syncing it until done there, `labels`) only role-class
-    /// commits, the replacement's `label.0` among them, deleting its content entries;
-    /// certificates stay.
-    pub fn replace_label(&mut self, g: &Tid, old: &LabelId) -> Result<(LabelId, Vec<Action>)> {
-        let (new, done) = self.engine.replace_label(g, old)?;
-        self.take_done(done)?;
-        Ok((new, self.handle(super::Event::Local)))
-    }
-
     /// Tests and the sim: compacts `(t, ak)` now, whatever the trigger says (spec/sync.md §7):
     /// writes a snapshot from this node's state, then drops what it covers (`compacted`).
     #[doc(hidden)]
@@ -299,7 +280,7 @@ impl SyncEngine {
     /// other nodes may hold parts of the commit from elsewhere and wait for the rest. `owed`:
     /// the flow's delivery it carries out (`take_done`), kept while the copy waits.
     pub(crate) fn place_certificate_in(&mut self, g: &Tid, c: &CommitId, aspects: &BTreeSet<usize>, owed: Option<[u8; 32]>) -> Result<()> {
-        let labels: Vec<(LabelId, Vec<Address>)> = self.engine.group_labels(g)?.into_iter().filter(|l| !l.replaced).map(|l| (l.id, l.hosts)).collect();
+        let labels: Vec<(LabelId, Vec<Address>)> = self.engine.group_labels(g)?.into_iter().map(|l| (l.id, l.hosts)).collect();
         if labels.is_empty() {
             return Ok(());
         }
@@ -372,33 +353,6 @@ impl SyncEngine {
         Ok(true)
     }
 
-    /// After a settled pass of replaced label `l` of `g` at `host` that had nothing left to
-    /// log (`quiet`): done there when no content entry is present any more (spec/sync.md §2:
-    /// role-class commits, the replacement's `label.0` among them, and certificates stay);
-    /// once done at every host of the label (or no key opens it there), this admin stops
-    /// syncing it for good; `labels` retires it after `ROLE_KEEP` whatever.
-    pub(crate) fn retire_at(&mut self, host: super::state::HostKey, g: &Tid, l: LabelId) -> Result<()> {
-        // content commits' chunks and pages go too
-        if !self.replaced_leftovers(g, &host, &l)?.is_empty() {
-            return Ok(());
-        }
-        for b in self.state.present_at(&host, &l) {
-            let Some(Kind::Commit { commit, parts, .. }) = self.state.entries.get(&(l, b)).map(|e| &e.kind) else { continue };
-            let Some(h) = self.engine.header(commit) else { return Ok(()) };
-            if super::pass::replaced_content(parts.iter().filter_map(|ai| h.aspects.get(*ai)).map(|a| &a.ak)) {
-                return Ok(());
-            }
-        }
-        self.retired_at.insert((host, l));
-        let hosts: Vec<_> = self.engine.group_labels(g)?.into_iter().find(|x| x.id == l).map(|x| x.hosts).unwrap_or_default();
-        // a host where no key opens the label (taken by whoever replaced it) counts as done
-        let failed = |k: &super::state::HostKey| self.conns.values().any(|c| c.host == *k && c.labels.get(&l).is_some_and(|x| x.phase.is_failed()));
-        if hosts.iter().all(|a| self.retired_at.contains(&(a.key, l)) || failed(&a.key)) {
-            self.state.retire(l);
-        }
-        Ok(())
-    }
-
     /// The blobs a certificate copy of `parts` of `c` links (header lists, linked frontiers) as
     /// certificate entries under `l` (spec/sync.md §3), so a verifier that syncs nothing else
     /// under the label resolves them.
@@ -426,7 +380,7 @@ impl SyncEngine {
         let mut things: Vec<InboxThing> = Vec::new();
         let tids: BTreeSet<Tid> = cut.header.aspects.iter().map(|a| a.tid).collect();
         for t in tids {
-            let label = self.engine.group_labels(&t)?.into_iter().find(|gl| !gl.replaced).map(|gl| InboxLabel { id: gl.id, index: gl.index, hosts: gl.hosts });
+            let label = self.engine.group_labels(&t)?.into_iter().next_back().map(|gl| InboxLabel { id: gl.id, hosts: gl.hosts });
             let delete_keys = self.engine.own_delete_keys(&t)?;
             things.push(InboxThing { tid: t, label, delete_keys });
         }
@@ -440,22 +394,12 @@ impl SyncEngine {
 
     /// Inbox deliveries from their records (spec/sync.md §3, §5): one not sent yet (`at` 0) is
     /// sealed and sent at once; one whose holder has not acted is sealed again (to its newest
-    /// keyset) and sent again when `INBOX_LIFETIME` old or once the label it went under is no
-    /// longer the holder's inbox (replaced: nobody reads it), at most `MAX_INBOX_RESENDS` times
-    /// in all; one whose commit is gone, or whose holder acted or (for a grant or re-seal) left,
+    /// keyset) and sent again when `INBOX_LIFETIME` old, at most `MAX_INBOX_RESENDS` times in all; one whose commit is gone, or whose holder acted or (for a grant or re-seal) left,
     /// is forgotten.
     pub(crate) fn send_inbox(&mut self) -> Result<()> {
         let now = self.now();
-        let mut due: BTreeMap<(Tid, CommitId), super::state::SentInbox> =
+        let due: BTreeMap<(Tid, CommitId), super::state::SentInbox> =
             self.state.sent_inbox.iter().filter(|(_, s)| s.at == 0 || s.at.saturating_add(osis_base::format::INBOX_LIFETIME_MS) <= now).map(|(k, s)| (*k, s.clone())).collect();
-        for h in std::mem::take(&mut self.inbox_moved) {
-            let inbox = self.engine.inbox(&h);
-            for (k, s) in self.state.sent_inbox.range((h, CommitId([0; 32]))..=(h, CommitId([0xff; 32]))) {
-                if s.label.is_some() && s.label != inbox {
-                    due.insert(*k, s.clone());
-                }
-            }
-        }
         for s in due.into_values() {
             let first = s.at == 0;
             let ts = self.engine.header(&s.commit).map(|h| h.ts);
@@ -489,16 +433,16 @@ impl SyncEngine {
             }
             // a new seal replaces the earlier one still queued
             self.drop_delivery_out(&s.holder, &s.commit);
-            let mut sent = None;
+            let mut sent = false;
             for d in r.unwrap_or_default() {
                 if let crate::flows::Delivery::Inbox { to, inbox, blob, .. } = d {
                     let inbox_actor = self.inbox_actor(&to, &inbox.label)?.unwrap_or(to);
                     self.queue_inbox(&inbox_actor, inbox.label, &inbox.hosts, blob, Some((s.holder, s.commit)))?;
-                    sent = Some(inbox.label);
+                    sent = true;
                 }
             }
-            if let Some(label) = sent {
-                self.state.note_sent(s.holder, s.commit, s.things.clone(), s.edge_only, now, label);
+            if sent {
+                self.state.note_sent(s.holder, s.commit, s.things.clone(), s.edge_only, now);
             } else {
                 // no inbox or keys for the holder any more
                 self.forget_delivery(&s.holder, &s.commit);
@@ -535,15 +479,11 @@ impl SyncEngine {
     }
 
     /// Whether a queued deposit refused for now (`SyncEngine::budget`) is moot, so it is dropped
-    /// rather than sent again: an inbox seal whose delivery is gone, or a deposit under a label
-    /// this node sees replaced (spec/sync.md §2: no new step is issued for it, and what still
-    /// matters goes under the new label). Anything else waits for its label to take it.
+    /// rather than sent again: an inbox seal whose delivery is gone. Anything else waits for its
+    /// label to take it.
     pub(crate) fn deposit_moot(&mut self, host: &HostKey, l: &LabelId, b: &BlobId) -> bool {
         let Some(o) = self.state.outbox.get(&(*host, *l, *b)) else { return true };
-        if let Some(k) = o.delivery {
-            return !self.state.sent_inbox.contains_key(&k);
-        }
-        self.group_of(l, None).is_some_and(|g| self.is_replaced(&g, l))
+        o.delivery.is_some_and(|k| !self.state.sent_inbox.contains_key(&k))
     }
 
     /// Signs queued deposit `(host, l, b)` again with the label's current deposit key (an
@@ -704,7 +644,7 @@ impl SyncEngine {
     pub(crate) fn names_label_opening(&mut self, d: &(Tid, CommitId)) -> bool {
         let Some(things) = self.state.sent_inbox.get(d).map(|s| s.things.clone()) else { return false };
         let labels = self.labels();
-        labels.iter().filter(|(g, l)| things.contains(g) && !l.replaced).any(|(_, l)| {
+        labels.iter().filter(|(g, _)| things.contains(g)).any(|(_, l)| {
             let phases = || self.conns.values().filter(|c| c.is_ready() && l.hosts.iter().any(|a| a.key == c.host)).map(|c| c.labels.get(&l.id).map(|x| &x.phase));
             phases().any(|p| p.is_none_or(|x| matches!(x, Phase::Testing { .. } | Phase::Registering { .. } | Phase::Behind { .. }))) && !phases().any(|p| matches!(p, Some(Phase::Open { .. })))
         })

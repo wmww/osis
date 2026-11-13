@@ -19,7 +19,7 @@ fn mesh() -> (Net, [usize; 3], Tid) {
         let (mut net, [a, b, c]) = local_nodes::<3>();
         reach_ed(&mut net, b);
         reach_ed(&mut net, c);
-        let g = net.group_seeded(b, &[(a, Role::Write), (c, Role::Write)], vec![], 10);
+        let g = net.group_at(b, &[(a, Role::Write), (c, Role::Write)], vec![]);
         // each item's creation writes g's `group.0`: kept history, so no compaction snapshot
         // stands in for the bodies a test fetches (spec/sync.md §7 Trigger)
         net.keep(b, g, &[("group.0", osis_schema::History::FOREVER)]);
@@ -47,7 +47,7 @@ fn pair(net: &mut Net, n: usize) -> (usize, usize, Vec<Tid>) {
     let a = net.node(1, &[]);
     let b = net.node(2, &[]);
     reach_ed(net, b);
-    let gs = (0..n).map(|i| net.group_seeded(b, &[(a, Role::Write)], vec![], 10 + i as u64)).collect();
+    let gs = (0..n).map(|_| net.group_at(b, &[(a, Role::Write)], vec![])).collect();
     net.run();
     (a, b, gs)
 }
@@ -296,7 +296,7 @@ fn mesh_bodies_of_many_labels_fetched_at_once_spec_sync_6() {
     let c = net.node(3, &[]);
     reach_ed(&mut net, b);
     reach_ed(&mut net, c);
-    let gs: Vec<Tid> = (0..4).map(|i| net.group_seeded(b, &[(a, Role::Write), (c, Role::Write)], vec![], 10 + i)).collect();
+    let gs: Vec<Tid> = (0..4).map(|_| net.group_at(b, &[(a, Role::Write), (c, Role::Write)], vec![])).collect();
     net.pair(c, a);
     net.pair(b, c);
     net.run();
@@ -340,7 +340,7 @@ fn silent_co_reader(a_dials: bool, wait: u64) -> bool {
     let (mut net, [a, b, c]) = local_nodes::<3>();
     reach_ed(&mut net, if a_dials { b } else { a });
     reach_ed(&mut net, c);
-    let g = net.group_seeded(b, &[(a, Role::Write), (c, Role::Write)], vec![], 10);
+    let g = net.group_at(b, &[(a, Role::Write), (c, Role::Write)], vec![]);
     net.pair(c, a);
     net.pair(b, c);
     net.run();
@@ -506,7 +506,7 @@ fn trickling_first_source(host: bool, release: bool) -> (Option<u64>, usize, usi
     let a = net.add_node(1, osis_node::sync::SyncConfig { hosts: vec![net.address(h)], inline_limit: 0, resync_ms: 50_000, ..Default::default() });
     let b = net.node(2, &[h]);
     reach_ed(&mut net, b);
-    let g = net.group_seeded(b, &[(a, Role::Write)], vec![net.address(h)], 10);
+    let g = net.group_at(b, &[(a, Role::Write)], vec![net.address(h)]);
     net.run();
     net.advance(120_000);
     let probe = net.item(b, g, g, "probe");
@@ -686,7 +686,7 @@ fn stream_run(seed: u64, paged: bool) {
             4 => {
                 // a group shared with `a` once its entries are written and the stream has moved
                 // past them: it joins from the start, behind the stream's position
-                let g = net.group_seeded(b, &[], vec![], 50 + step);
+                let g = net.group_at(b, &[], vec![]);
                 let t = net.item(b, g, g, &format!("early{step}"));
                 // more events than one page holds before the join
                 for i in 0..bulk {
@@ -917,10 +917,10 @@ fn a_filter_answered_error_settles_spec_wire_11_2() {
     let a = net.node(1, &[]);
     let b = net.node(2, &[]);
     reach_ed(&mut net, b);
-    let g = net.group_seeded(b, &[(a, Role::Write)], vec![], 10);
+    let g = net.group_at(b, &[(a, Role::Write)], vec![]);
     // a group each holds alone
-    net.group_seeded(a, &[], vec![], 11);
-    net.group_seeded(b, &[], vec![], 12);
+    net.group_at(a, &[], vec![]);
+    net.group_at(b, &[], vec![]);
     net.run();
     net.item(b, g, g, "x");
     net.run();
@@ -960,7 +960,7 @@ fn a_join_pages_behind_the_stream_spec_sync_10() {
         smallest_pulls(m)
     }));
     // a group shared with `a` once its entries are written and the stream moved past them
-    let g = net.group_seeded(b, &[], vec![], 50);
+    let g = net.group_at(b, &[], vec![]);
     let t = net.item(b, g, g, "early");
     // kept history: every write keeps its own entry (no compaction snapshot stands for them)
     net.keep(b, t, &[(osis_schema::RawKey::ak(&REG), osis_schema::History::FOREVER)]);

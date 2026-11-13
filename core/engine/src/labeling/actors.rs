@@ -15,11 +15,9 @@ use std::sync::Arc;
 pub struct GroupLabel {
     pub group: Tid,
     pub id: LabelId,
-    pub index: u64,
     /// Steps by ID with their claim sets when recorded.
     pub steps: BTreeMap<StepId, (Step, Option<ClaimSet>)>,
     pub hosts: Vec<Address>,
-    pub replaced: bool,
 }
 
 impl GroupLabel {
@@ -118,13 +116,12 @@ impl Engine {
         Memo::get_in(self, |e| &e.core.inbox_actors, &(), read).unwrap_or_default()
     }
 
-    /// Whether `g` has a live (unreplaced) label here.
+    /// Whether `g` has a label here.
     pub fn labeled(&mut self, g: &Tid) -> bool {
-        self.labels_of(g).iter().any(|l| !l.replaced)
+        !self.labels_of(g).is_empty()
     }
 
-    /// The labels `label.0` of `g` records, replaced ones included; records that do not parse
-    /// are skipped.
+    /// The labels `label.0` of `g` records; records that do not parse are skipped.
     pub fn group_labels(&mut self, g: &Tid) -> Result<Vec<GroupLabel>> {
         Ok(self.labels_of(g).iter().map(|l| (**l).clone()).collect())
     }
@@ -145,7 +142,7 @@ impl Engine {
             let mut out = Vec::new();
             for (id, l) in &e.get_typed(g, &ct::LABEL)?.unwrap_or_default() {
                 let Ok(steps) = osis_label::label_steps(l) else { continue };
-                out.push(Arc::new(GroupLabel { group: *g, id: *id, index: l.index, steps, hosts: l.hosts.clone(), replaced: l.replaced }));
+                out.push(Arc::new(GroupLabel { group: *g, id: *id, steps, hosts: l.hosts.clone() }));
             }
             Ok::<_, crate::error::Error>(out)
         })

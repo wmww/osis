@@ -493,7 +493,7 @@ fn group_admin_learns_removal_elsewhere() {
     assert!(stale.is_empty(), "the removal reached everyone; not {stale:?}");
     assert_ne!(seed(&bob), old, "the removal refreshed the card's deposit seed");
     // and the deletes are not undone again: nothing of the card is back under the tag's label
-    let l = carol.engine(|e| e.group_labels(&g).unwrap().into_iter().find(|x| !x.replaced).unwrap().id);
+    let l = carol.engine(|e| e.group_labels(&g).unwrap().into_iter().next().unwrap().id);
     let of_card = |db: &Osis| {
         let entries = db.sync_engine(|s| s.entries(&l));
         entries.into_iter().filter(|(_, k)| matches!(k, EntryKind::Commit { commit, .. } if db.engine(|e| e.header(commit).is_some_and(|h| h.aspects.iter().any(|a| a.tid == t))))).count()

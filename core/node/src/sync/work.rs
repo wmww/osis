@@ -186,7 +186,6 @@ pub(crate) struct Inputs {
     pub head: Option<osis_label::StepId>,
     pub epochs: [Option<osis_crypto::Epoch>; 3],
     pub roles: (bool, bool, bool, bool, bool),
-    pub replaced: bool,
     pub actor: Tid,
     pub published: Arc<BTreeSet<Tid>>,
     pub may_rotate: bool,
@@ -700,18 +699,12 @@ impl SyncEngine {
         }
     }
 
-    /// The bodies label `l` of `g` should hold among the commits of `scope`
-    /// (`bodies_under`).
-    pub(super) fn bodies_in(&mut self, ctx: &BodyCtx, g: &Tid, l: &LabelId, scope: &Scope) -> Result<Vec<Body>> {
-        let Scope::Some { commits, .. } = scope else { return self.bodies_under(g, l) };
-        let replaced = self.is_replaced(g, l);
+    /// The bodies a label of `g` should hold among the commits of `scope` (the closure's).
+    pub(super) fn bodies_in(&mut self, ctx: &BodyCtx, g: &Tid, scope: &Scope) -> Result<Vec<Body>> {
+        let Scope::Some { commits, .. } = scope else { return self.engine.label_bodies_meta(g) };
         let mut out = Vec::new();
         for c in commits {
-            let mut bs = self.engine.commit_bodies_under(ctx, c)?;
-            if replaced {
-                bs.retain(|b| b.role_commit);
-            }
-            out.extend(bs);
+            out.extend(self.engine.commit_bodies_under(ctx, c)?);
         }
         Ok(out)
     }

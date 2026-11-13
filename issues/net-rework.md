@@ -40,7 +40,7 @@ The registry of old words stays issues/deprecated-terms.md. Renames come after t
 - Who may store data on a node that it cannot read: a node holds exactly the sync IDs under its synced group, which its account writes; one it cannot read it holds by a sync-only grant, accepted like any grant. Keeping data unread takes no other kind of node: readability is per (node, sync ID) (issues/net-one-peer.md, Sync model).
 - Stores, serving paths, keys and names: ours to decide.
 - Unify the concepts before or with the rename, never rename first.
-- Sync IDs leave the public API; `unsync` goes; sync ID replacement (index > 0) goes (in job 8, where the serving path that made it necessary goes; it stays until then).
+- Sync IDs leave the public API; `unsync` goes.
 - Role and sync are paired, strong form (issues/net-role-sync.md); spec/requirements.md "add to synced groups" becomes "add to synced groups or share them".
 - Two layers: connecting, then finding the shared sync IDs. On a LAN a node connects to every osis node, both exchange identity, and the shared set runs only with known actors (issues/net-connect.md). A node shows its identity only to nodes of actors it already knows (spec/requirements.md, Offline and network); a first build may break this on the LAN as a listed gap. Two accounts that don't know each other don't share directly, for now.
 - `set_role` writes at once; an app catches up first with `wait_synced` (issues/revocation-without-arbiter.md).

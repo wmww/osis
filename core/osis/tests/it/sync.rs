@@ -932,7 +932,7 @@ fn add_peer_scope_spec_sync_2() {
     alice.make_link(mine, Role::Read, osis::LinkOpts::default()).unwrap();
     let k = alice.links_of(mine).unwrap()[0].id.actor();
     w.run();
-    let hosts = |g: Tid| alice.engine(|e| e.group_labels(&g).unwrap().into_iter().find(|l| !l.replaced).unwrap().hosts.len());
+    let hosts = |g: Tid| alice.engine(|e| e.group_labels(&g).unwrap().into_iter().next().unwrap().hosts.len());
     alice.add_peer(&w.addr(s1).unwrap()).unwrap();
     w.run();
     assert_eq!((hosts(alice.home()), hosts(mine), hosts(his), hosts(k)), (2, 2, 1, 1));

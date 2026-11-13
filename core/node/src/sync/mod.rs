@@ -161,13 +161,10 @@ pub struct SyncEngine {
     /// What `vet_inbox_hints` last ran on: the engine, the entries, and when an inbox blob it
     /// counted expires.
     pub(crate) vetted: Option<(u64, u64, u64)>,
-    /// (label, thing, index) a hinted label failed under since its last retry
+    /// (label, thing) a hinted label failed under since its last retry
     /// (`vet_inbox_hints`); at most one per inbox blob, and a restart forgets them: tried again.
-    pub(crate) hint_failed: BTreeSet<(LabelId, Tid, u64)>,
+    pub(crate) hint_failed: BTreeSet<(LabelId, Tid)>,
     pub(crate) inbox_copied: work::InboxCopied,
-    /// Holders of recorded inbox deliveries whose `keys.0` changed since `send_inbox` last
-    /// looked (every one at a start): a delivery under a label no longer their inbox is due.
-    pub(crate) inbox_moved: BTreeSet<osis_base::Tid>,
     /// `secrets_count` at this engine generation (both).
     pub(crate) secrets_counted: std::cell::Cell<Option<((u64, u64), usize)>>,
     /// `secrets_shape`'s count of reading-only secrets, per engine state.
@@ -185,8 +182,6 @@ pub struct SyncEngine {
     /// (`stream_settle_all`).
     pub(crate) reask: BTreeSet<(LabelId, osis_base::BlobId)>,
     pub(crate) relink_at: u64,
-    /// Hosts where a replaced label is done with (`retire_at`).
-    pub(crate) retired_at: BTreeSet<(HostKey, LabelId)>,
     /// Certificate copies waiting for a rotation.
     pub(crate) deferred: Vec<Deferred>,
     /// Commit blobs whose every delta was checked against its header hash (`true`) or found
@@ -278,8 +273,8 @@ pub struct SyncEngine {
     /// The synced labels as last computed (`labels()`).
     /// The labels synced as `labels` last answered: what reads between two asks go by.
     pub(crate) synced: Arc<Synced>,
-    /// `labels` (`engine::memo`): built again when what it read of the engine, of the retired
-    /// and handed-off sets or, where it judged an admin role, of the time (`Core::time`) changed.
+    /// `labels` (`engine::memo`): built again when what it read of the engine or of the
+    /// handed-off set changed.
     synced_of: crate::engine::memo::Memo<(), Arc<Synced>>,
     /// (snapshot, body, aspect) judgments settled with the body kept (spec/sync.md §7); a pair
     /// goes once either body is dropped.
@@ -426,7 +421,6 @@ impl SyncEngine {
             vetted: Default::default(),
             hint_failed: Default::default(),
             inbox_copied: Default::default(),
-            inbox_moved: Default::default(),
             secrets_counted: Default::default(),
             reading_counted: Default::default(),
             unsettled_memo: Default::default(),
@@ -434,7 +428,6 @@ impl SyncEngine {
             relink_pending: Default::default(),
             reask: Default::default(),
             relink_at: Default::default(),
-            retired_at: Default::default(),
             deferred: Default::default(),
             genuine: Default::default(),
             reread_boxes: Default::default(),
@@ -522,11 +515,10 @@ impl SyncEngine {
         let loaded = State::load(&mut self.engine)?;
         // deposits not answered before a restart go again
         let outbox_ = loaded.outbox.keys().map(|k| (*k, local::Outgoing::default())).collect();
-        let inbox_moved_ = loaded.sent_inbox.keys().map(|k| k.0).collect();
         let started_ = self.engine.now().0;
         let SyncEngine {
             engine: _, events: _, rng: _, cfg: _, hub_store: _, next_conn: _, diagnostics: _, store_writes: _, restart_due: _, restarted_at: _, hosting: _,
-            forget_seeded, pending_seeded, unvouched_reported, conns, retry, redialed, stand_in, redeeming, provers_mark, own_key, state, seq, passes, wake, last_tick, outbox, local_inbox, left, lifetimes_heard, first, relay_now, body_links, inbox_opened, vetted, hint_failed, inbox_copied, inbox_moved, secrets_counted, reading_counted, unsettled_memo, relink_backoff, relink_pending, reask, relink_at, retired_at, deferred, genuine, reread_boxes, start_look, redelivered, awaits_secrets, retry_inbox, inbox_awaits, inbox_plain, unchecked_swept, settle_at, held_since, pass_due, due_labels, own_wrote, fill_due, passed_at, passing, work, deposit_seen, stranded_sent, stranded_on, stranded_asks, resealed, suspects_sent, suspects_gen, suspects_due, repair_state, links_failed, joined_touched, joined_failed, tied, synced, synced_of, served, hub_conns, rooms, refusals, covered_judged, stats, records, streams, changed_due, changed_gen, touched, own_keys, lan, lan_rotate, reach_account, served_cache, unread, charges, blob_sizes, swept, peer_cache, peer_received, peer_passes, sources_gen, shared_dirty, changed_moved, role_change, pass_wanted, started, rotation_at, placed_cache, placed_waiting, rotated, last_synced, clients_moved, prefix_checked, memory,
+            forget_seeded, pending_seeded, unvouched_reported, conns, retry, redialed, stand_in, redeeming, provers_mark, own_key, state, seq, passes, wake, last_tick, outbox, local_inbox, left, lifetimes_heard, first, relay_now, body_links, inbox_opened, vetted, hint_failed, inbox_copied, secrets_counted, reading_counted, unsettled_memo, relink_backoff, relink_pending, reask, relink_at, deferred, genuine, reread_boxes, start_look, redelivered, awaits_secrets, retry_inbox, inbox_awaits, inbox_plain, unchecked_swept, settle_at, held_since, pass_due, due_labels, own_wrote, fill_due, passed_at, passing, work, deposit_seen, stranded_sent, stranded_on, stranded_asks, resealed, suspects_sent, suspects_gen, suspects_due, repair_state, links_failed, joined_touched, joined_failed, tied, synced, synced_of, served, hub_conns, rooms, refusals, covered_judged, stats, records, streams, changed_due, changed_gen, touched, own_keys, lan, lan_rotate, reach_account, served_cache, unread, charges, blob_sizes, swept, peer_cache, peer_received, peer_passes, sources_gen, shared_dirty, changed_moved, role_change, pass_wanted, started, rotation_at, placed_cache, placed_waiting, rotated, last_synced, clients_moved, prefix_checked, memory,
         } = self;
         *forget_seeded = false;
         *pending_seeded = false;
@@ -554,7 +546,6 @@ impl SyncEngine {
         *vetted = None;
         *hint_failed = BTreeSet::new();
         *inbox_copied = work::InboxCopied::default();
-        *inbox_moved = inbox_moved_;
         *secrets_counted = std::cell::Cell::new(None);
         *reading_counted = std::cell::Cell::new(None);
         *unsettled_memo = None;
@@ -562,7 +553,6 @@ impl SyncEngine {
         *relink_pending = BTreeMap::new();
         *reask = BTreeSet::new();
         *relink_at = 0;
-        *retired_at = BTreeSet::new();
         *deferred = Vec::new();
         *genuine = BTreeMap::new();
         *reread_boxes = true;
@@ -886,7 +876,6 @@ impl SyncEngine {
 
     fn step(&mut self, ev: Event, out: &mut Vec<Action>) -> Result<()> {
         // before the event uses a label (`group_of`), and again after the engine's changes
-        self.retire_replaced();
         // what is due goes before any event, not only a Tick: an expiry goes before the pass that
         // would place what it strips (spec/commits.md §6)
         if matches!(ev, Event::Tick) || self.engine.timers_due() {
@@ -938,7 +927,6 @@ impl SyncEngine {
         if self.leave_ended_links()? {
             self.engine_events()?;
         }
-        self.retire_replaced();
         self.reprove(out)?;
         self.stamp_changes()?;
         if std::mem::take(&mut self.clients_moved) {
@@ -972,10 +960,7 @@ impl SyncEngine {
         crate::flows::SyncState::complete_pass(self, actor)
     }
 
-    /// Labels this node syncs: every non-replaced label of a labeled group it holds read
-    /// secrets of; an admin also keeps its replaced labels until done with them at every host
-    /// (spec/sync.md §2: it places the role-class commits there, the replacement's
-    /// `label.0` among them, and deletes the content entries; `retire_at`, `retire_replaced`).
+    /// Labels this node syncs: every label of a labeled group it holds read secrets of.
     pub fn labels(&mut self) -> Vec<(Tid, Arc<GroupLabel>)> {
         let now = self.now();
         self.engine.core.time.set(now);
@@ -994,22 +979,15 @@ impl SyncEngine {
         self.synced.labels.clone()
     }
 
-    /// `labels`, with roles at the time last asked (`Core::time`), read only where a replaced label
-    /// asks for a role.
+    /// `labels`.
     fn compute_synced(&mut self) -> Result<Synced> {
-        let me = self.engine.account_tid();
         let mut labels = Vec::new();
         for g in self.engine.labeled_groups() {
             // handed off (`set_handed_off`): never synced
             if self.state.handed_off.contains(&g) || self.engine.epochs(&g).is_none_or(|e| !e.read.holds_any()) {
                 continue;
             }
-            let of = self.engine.labels_read(&g)?;
-            let admin = of.iter().any(|l| l.replaced) && {
-                let ts = osis_base::Ts::make(osis_base::WallMs(self.engine.core.time.get()), 0).unwrap_or_default();
-                me.is_some_and(|me| crate::engine::write::role_of(&self.engine.core, &me, &g, ts) == Some(osis_base::Role::Admin))
-            };
-            labels.extend(of.into_iter().filter(|l| !l.replaced || admin && !self.state.retired.contains(&l.id)).map(|l| (g, l)));
+            labels.extend(self.engine.labels_read(&g)?.into_iter().map(|l| (g, l)));
         }
         let actors: BTreeMap<LabelId, (Tid, Vec<HostKey>)> = labels.iter().map(|(g, l)| (l.id, (self.keys_actor(g), peers::host_keys(&l.hosts).collect()))).collect();
         let mut by_actor: BTreeMap<Tid, BTreeSet<LabelId>> = BTreeMap::new();
@@ -1018,18 +996,6 @@ impl SyncEngine {
         }
         let ids = labels.iter().map(|(_, l)| l.id).collect();
         Ok(Synced { labels, ids, actors, by_actor })
-    }
-
-    /// Retires the replaced labels an admin still syncs once `ROLE_KEEP_MS` passed since it
-    /// first saw them replaced: a host where the label was lost may never settle a pass.
-    fn retire_replaced(&mut self) {
-        let now = self.now();
-        let replaced: Vec<LabelId> = self.labels().iter().filter(|(_, l)| l.replaced).map(|(_, l)| l.id).collect();
-        for l in replaced {
-            if self.state.replaced_seen(l, now).saturating_add(osis_base::format::ROLE_KEEP_MS) <= now {
-                self.state.retire(l);
-            }
-        }
     }
 
     /// Replaces the hosts kept connected besides those the labels name.

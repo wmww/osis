@@ -161,8 +161,8 @@ fn stored_sizes_are_padme() {
 fn labels_share_no_wrap_or_salt() {
     let (mut net, host, [a, b]) = hosted_nodes::<2>();
     let addr = vec![net.address(host)];
-    let g1 = net.group_seeded(a, &[(b, Role::Write)], addr.clone(), 11);
-    let g2 = net.group_seeded(a, &[(b, Role::Write)], addr, 12);
+    let g1 = net.group_at(a, &[(b, Role::Write)], addr.clone());
+    let g2 = net.group_at(a, &[(b, Role::Write)], addr);
     net.item(a, g1, g1, "one");
     net.item(b, g2, g2, "two");
     net.run();
@@ -189,9 +189,9 @@ fn claim_sets_hide_reader_counts() {
     let n: Vec<usize> = (1..=5).map(|i| net.node(i, &[host])).collect();
     let readers = |k: usize| n[1..=k].iter().map(|x| (*x, Role::Read)).collect::<Vec<_>>();
     let addr = vec![net.address(host)];
-    let g3 = net.group_seeded(n[0], &readers(2), addr.clone(), 13);
-    let g4 = net.group_seeded(n[0], &readers(3), addr.clone(), 14);
-    let g5 = net.group_seeded(n[0], &readers(4), addr, 15);
+    let g3 = net.group_at(n[0], &readers(2), addr.clone());
+    let g4 = net.group_at(n[0], &readers(3), addr.clone());
+    let g5 = net.group_at(n[0], &readers(4), addr);
     net.run();
     let set = |net: &mut Net, g: Tid| {
         let l = label_of(net, n[0], g);

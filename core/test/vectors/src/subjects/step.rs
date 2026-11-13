@@ -1,5 +1,5 @@
 //! `step/`: registration steps and claim sets (spec/wire.md §8, spec/sync.md §2). Generated.
-//! Group `07*15` with secrets: read `0a`, write `0b`, admin `09`, deposit seed `0c`, index 0,
+//! Group `07*15` with secrets: read `0a`, write `0b`, admin `09`, deposit seed `0c`,
 //! read epoch 0 (its nonce by spec/crypto.md §4). Randomness in draw order (`osis_label::register`): `step-secret`, per sealed
 //! entry box `ephemeral` then `mlkem-m`, 32 bytes per `padding` key, 8 bytes per `shuffle` swap.
 
@@ -34,8 +34,8 @@ fn step_fields(r: Record, s: &Step, c: &ClaimSet) -> Record {
 
 pub fn steps() -> VecFile {
     let (read, write, admin, deposit, sync) = (s32(0x0a), s32(0x0b), s32(0x09), s32(0x0c), s32(0x0d));
-    let label = genesis_label(&admin, 0);
-    let keys = StepKeys::derive(&sync, &write, &admin, 0, &deposit, &label);
+    let label = genesis_label(&admin);
+    let keys = StepKeys::derive(&sync, &write, &admin, &deposit, &label);
     let group = osis_base::Tid::from_bytes([0x07; 15]);
     let epoch = Epoch::derive(&group, osis_base::Role::Read, 0, &read).unwrap();
     let sync_epoch = Epoch::derive(&group, osis_base::Role::Sync, 0, &sync).unwrap();
@@ -46,7 +46,7 @@ pub fn steps() -> VecFile {
         Reader::Static { signing: card.signing.verifying_key(), kem: card.kem.public() },
     ];
     let (sk, eph, m, pad, shuf) = ([0x31u8; 32], [0x32u8; 32], [0x33u8; 32], [0x34u8; 32], [0x35u8; 24]);
-    let delete0 = label_role_key(LabelRole::Delete, &admin, 0);
+    let delete0 = label_role_key(LabelRole::Delete, &admin);
     let mut rng = FixedRng::new(&[&sk, &eph, &m, &pad, &shuf]);
     let (s0, c0) = register(Parent::Genesis(&delete0), keys, &readers, (&group, epoch, &read), (sync_epoch, &sync), &mut rng).unwrap();
     drop(rng);
@@ -65,7 +65,6 @@ pub fn steps() -> VecFile {
             .with("write-secret", hex(write.expose()))
             .with("admin-secret", hex(admin.expose()))
             .with("deposit-seed", hex(deposit.expose()))
-            .with("index", "0")
             .with("group", hex(group.as_bytes()))
             .with("read-epoch-n", "0")
             .with("read-epoch-nonce", hex(epoch.nonce()))
@@ -88,7 +87,7 @@ pub fn steps() -> VecFile {
     // Child step: a rotation of every role (secrets 1a, 1b, 19, sync 1d), signed by the genesis
     // delete key.
     let (r1, w1, a1, y1) = (s32(0x1a), s32(0x1b), s32(0x19), s32(0x1d));
-    let keys1 = StepKeys::derive(&y1, &w1, &a1, 0, &deposit, &label);
+    let keys1 = StepKeys::derive(&y1, &w1, &a1, &deposit, &label);
     let sk1 = [0x41u8; 32];
     let mut rng = FixedRng::new(&[&sk1]);
     let (s1, c1) = register(Parent::Child { step: &s0, delete: &delete0 }, keys1, &[Reader::Dh(m1.kem.public().x25519())], (&group, Epoch::new(1, [0x0e; 32]).unwrap(), &r1), (Epoch::new(1, [0x0f; 32]).unwrap(), &y1), &mut rng).unwrap();
@@ -98,7 +97,6 @@ pub fn steps() -> VecFile {
         case("child step, one DH reader", SPEC)
             .with("parent-step-id", hex(&s0.id().0))
             .with("signer-admin-secret", hex(admin.expose()))
-            .with("signer-index", "0")
             .with("read-secret", hex(r1.expose()))
             .with("sync-secret", hex(y1.expose()))
             .with("write-secret", hex(w1.expose()))

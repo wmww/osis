@@ -100,11 +100,11 @@ fn head_keys_and_delete_keys_spec_sync_5() {
     let g = net.group(a, &[(b, Role::Write), (r, Role::Read)], &[]);
     let (_, l) = net.group_labels(a).into_iter().next().unwrap();
     let head = l.steps.values().next().unwrap().0.clone();
-    let ka = net.engine(a).head_keys(&g, l.index, &head).unwrap();
+    let ka = net.engine(a).head_keys(&g, &head).unwrap();
     assert!(ka.sync.is_some() && ka.write.is_some() && ka.delete.is_some() && ka.deposit.is_some());
-    let kb = net.engine(b).head_keys(&g, l.index, &head).unwrap();
+    let kb = net.engine(b).head_keys(&g, &head).unwrap();
     assert!(kb.sync.is_some() && kb.write.is_some() && kb.delete.is_none());
-    let kr = net.engine(r).head_keys(&g, l.index, &head).unwrap();
+    let kr = net.engine(r).head_keys(&g, &head).unwrap();
     assert!(kr.sync.is_some() && kr.write.is_none() && kr.delete.is_none() && kr.deposit.is_some());
     let t = net.item(a, g, g, "x");
     net.keep(a, t, &[("t:gone.0", PURGE)]);
@@ -158,7 +158,7 @@ fn registration_of_thousands_of_readers() {
     use osis_crypto::{Epoch, KeyActorKeys, Secret32};
     use osis_keys::{HolderKeys, Recipient, rotate};
     use osis_schema::core_types as ct;
-    use osis_schema::{Codec, RawKey};
+    use osis_schema::Codec;
     use std::collections::{BTreeMap, BTreeSet};
     let mut lp = crate::common::net(1, 0);
     let e = &mut lp.peers[0].engine;
@@ -202,13 +202,9 @@ fn registration_of_thousands_of_readers() {
         }
         e.commit_hostile(m).unwrap().unwrap();
     }
-    let view = e.epochs(&a).unwrap();
-    let state = e.get(&a, &crate::common::ak("secrets.0")).unwrap().map(|v| ct::SECRETS.decode(&v).unwrap()).unwrap_or_default();
-    let r = rotate(&a, &BTreeSet::from([Role::Read]), &view, &state, &holders, &osis_keys::Names::default(), &mut SeededRng::from_u64(1)).unwrap();
-    let mut m = Mutation::new();
-    write(&mut m, &r);
-    e.commit_hostile(m).unwrap().unwrap();
-    let (label, _) = e.create_label(&a, &[]).unwrap();
+    // the rotation boxing every holder, with the sync ID (spec/sync.md §2)
+    e.give_own_secrets(&a).unwrap();
+    let label = e.label_of(&a).unwrap().unwrap().0;
     let labels = e.get_typed(&a, &ct::LABEL).unwrap().unwrap();
     let claims = labels.values().flat_map(|l| l.steps.values()).filter_map(|s| s.claims.as_ref()).map(Vec::len).max().unwrap();
     println!("label {label:?} for 2100 readers: {claims} B of claims");

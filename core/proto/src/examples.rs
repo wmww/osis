@@ -17,7 +17,7 @@ fn s32(b: u8) -> Secret32 {
     Secret32::from_bytes([b; 32])
 }
 
-/// One group's label at index 0: a genesis step and a child without rotation, each with a claim
+/// One group's label: a genesis step and a child without rotation, each with a claim
 /// set listing one DH reader and one key actor (entry box sealed to a KEM key from `b+6`).
 pub struct Fixture {
     pub label: LabelId,
@@ -40,9 +40,9 @@ impl Fixture {
     /// sync secret `b+8`.
     pub fn new(b: u8) -> Fixture {
         let (read, write, admin, dseed, sync) = (s32(b), s32(b + 1), s32(b + 2), s32(b + 3), s32(b + 8));
-        let label = genesis_label(&admin, 0);
-        let keys = StepKeys::derive(&sync, &write, &admin, 0, &dseed, &label);
-        let delete = label_role_key(LabelRole::Delete, &admin, 0);
+        let label = genesis_label(&admin);
+        let keys = StepKeys::derive(&sync, &write, &admin, &dseed, &label);
+        let delete = label_role_key(LabelRole::Delete, &admin);
         let reader = X25519Secret::from_secret(&s32(b + 4));
         let key_actor = SigningSecret::from_seed(&s32(b + 5));
         let kem = KemSecret::derive(&s32(b + 6));
@@ -59,8 +59,8 @@ impl Fixture {
             genesis_claims,
             child,
             child_claims,
-            sync: label_role_key(LabelRole::Sync, &sync, 0),
-            write: label_role_key(LabelRole::Write, &write, 0),
+            sync: label_role_key(LabelRole::Sync, &sync),
+            write: label_role_key(LabelRole::Write, &write),
             delete,
             deposit: osis_crypto::deposit_key(&dseed, &label),
             reader,
@@ -122,7 +122,7 @@ const DEPOSIT_SEED: u8 = 0x30;
 
 impl Label {
     pub fn new(admin: u8) -> Label {
-        let id = genesis_label(&s32(admin), 0);
+        let id = genesis_label(&s32(admin));
         let mut l = Label { id, keys: vec![], steps: vec![], sets: vec![], reader: X25519Secret::from_secret(&s32(0x31)), key_actor: SigningSecret::from_seed(&s32(0x32)), admin, syncs: vec![] };
         l.step_with(1, 1, None);
         l
@@ -133,11 +133,11 @@ impl Label {
     fn step_with(&mut self, b: u8, sync: u8, parent: Option<SigningSecret>) -> (Step, ClaimSet) {
         self.syncs.push(sync);
         let (read, write, adm, sync) = (s32(b), s32(b + 1), s32(self.admin), s32(sync ^ 0x80));
-        let pk = StepKeys::derive(&sync, &write, &adm, 0, &s32(DEPOSIT_SEED), &self.id);
+        let pk = StepKeys::derive(&sync, &write, &adm, &s32(DEPOSIT_SEED), &self.id);
         let keys = Keys {
-            sync: label_role_key(LabelRole::Sync, &sync, 0),
-            write: label_role_key(LabelRole::Write, &write, 0),
-            delete: label_role_key(LabelRole::Delete, &adm, 0),
+            sync: label_role_key(LabelRole::Sync, &sync),
+            write: label_role_key(LabelRole::Write, &write),
+            delete: label_role_key(LabelRole::Delete, &adm),
             deposit: osis_crypto::deposit_key(&s32(DEPOSIT_SEED), &self.id),
         };
         let kem = KemSecret::derive(&s32(0x33));

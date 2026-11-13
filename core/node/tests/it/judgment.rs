@@ -67,11 +67,11 @@ struct Lab {
 /// `base`, write `base + 1`, admin `base - 1`, deposit seed `base + 2`.
 fn label(base: u8, rng: &mut SeededRng) -> Lab {
     let (r, w, a) = (s32(base), s32(base + 1), s32(base - 1));
-    let id = genesis_label(&a, 0);
-    let keys = StepKeys::derive(&r, &w, &a, 0, &s32(base + 2), &id);
-    let delete = label_role_key(LabelRole::Delete, &a, 0);
+    let id = genesis_label(&a);
+    let keys = StepKeys::derive(&r, &w, &a, &s32(base + 2), &id);
+    let delete = label_role_key(LabelRole::Delete, &a);
     let (step, claims) = register(Parent::Genesis(&delete), keys, &[], (&Tid::from_bytes([base - 3; 15]), Epoch::new(0, [0; 32]).unwrap(), &r), (Epoch::new(0, [0; 32]).unwrap(), &r), rng).unwrap();
-    Lab { id: step.label, path: Record::Path { label: step.label, steps: vec![(step, Some(claims))] }, read: r, stamp: label_role_key(LabelRole::Write, &w, 0) }
+    Lab { id: step.label, path: Record::Path { label: step.label, steps: vec![(step, Some(claims))] }, read: r, stamp: label_role_key(LabelRole::Write, &w) }
 }
 
 /// What `bundle` lays out: the bytes, each entry's commit index, the entries that are referenced

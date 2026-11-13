@@ -2108,28 +2108,19 @@ impl NetSim {
         Ok(())
     }
 
-    /// Node `n` creates a group whose first admin is `admin`, with a label at `hosts`.
+    /// Node `n` creates a group whose first admin is `admin`, with secrets of its own and so its
+    /// sync ID, at `hosts` (spec/sync.md §2).
     pub fn group(&mut self, n: usize, admin: Tid, hosts: &[usize]) -> Res<Tid> {
-        self.group_with(n, admin, hosts, false)
-    }
-
-    /// `group`, with secrets of its own before the label when `own`.
-    pub fn group_with(&mut self, n: usize, admin: Tid, hosts: &[usize], own: bool) -> Res<Tid> {
         let e = self.engine(n)?;
         let mut m = Mutation::new();
         let g = e.new_thing(&mut m, admin);
         m.set(g, &ct::GROUP, &ct::Group::default()).map_err(|e| self.fail(e.to_string()))?;
         let r = self.engine(n)?.commit(m);
         r.map_err(|e| self.fail(format!("node {n} group: {e}")))?;
-        if own {
-            let r = self.engine(n)?.give_own_secrets(&g);
-            let done = r.map_err(|e| self.fail(format!("node {n} own secrets: {e}")))?;
-            self.carry(n, done)?;
-        }
         let addrs = self.addresses(hosts);
-        let r = self.sync(n)?.create_label(&g, addrs);
-        let (_, acts) = r.map_err(|e| self.fail(format!("node {n} create_label: {e}")))?;
-        self.after_node(n, acts)?;
+        let r = self.engine(n)?.give_own_secrets_on(&g, &addrs);
+        let done = r.map_err(|e| self.fail(format!("node {n} own secrets: {e}")))?;
+        self.carry(n, done)?;
         self.groups.push(Group { g, first_admin: admin, items: Vec::new() });
         Ok(g)
     }

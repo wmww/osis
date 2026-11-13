@@ -470,7 +470,8 @@ pub(crate) fn record(tx: &mut Tx<'_>, a: Tid, rot: &Rotation) -> Result<()> {
 }
 
 /// Rotates `roles` of `a` in a commit of its own (a cascade rotation: changes no edge), signed
-/// by `who`.
+/// by `who` (the tests' rotation by hand).
+#[cfg(test)]
 pub(crate) fn rotate_now(tx: &mut Tx<'_>, who: Tid, a: Tid, roles: &BTreeSet<Role>) -> Result<Done> {
     let mut done = Done::default();
     let holders = recipients_merging(tx, &who, &a, &[], &mut done)?.ok_or(SEAL_WAITS)?;
@@ -738,7 +739,7 @@ fn own_secrets_rot(tx: &mut Tx<'_>, t: Tid, hosts: Option<&[Address]>, also: &[c
     // the rule (spec/sync.md §2): role secrets of its own and its one sync ID, its home and inbox,
     // in this one commit
     let (label, at) = match crate::flows::own_label(tx, &t)? {
-        Some((label, _, at)) => (label, at),
+        Some((label, at)) => (label, at),
         None => {
             let at = match hosts {
                 Some(h) => h.to_vec(),
@@ -754,7 +755,7 @@ fn own_secrets_rot(tx: &mut Tx<'_>, t: Tid, hosts: Option<&[Address]>, also: &[c
             (label, at)
         }
     };
-    if crate::flows::labels::takes_inbox(tx, &t, None)? {
+    if crate::flows::labels::takes_inbox(tx, &t)? {
         crate::flows::labels::name_inbox(&mut m, t, label, &at)?;
     }
     let to = unreached(tx, &t, &rot)?;

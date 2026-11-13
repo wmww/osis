@@ -14,10 +14,10 @@ const SPEC: &str = "spec/wire.md §12";
 
 /// A genesis step with no readers: `sync` derives its sync key.
 fn genesis(sync: &Secret32, write: &Secret32, admin: &Secret32, step: u8) -> (osis_label::Step, osis_label::ClaimSet) {
-    let label = genesis_label(admin, 0);
-    let keys = StepKeys::derive(sync, write, admin, 0, &s32(0x0c), &label);
+    let label = genesis_label(admin);
+    let keys = StepKeys::derive(sync, write, admin, &s32(0x0c), &label);
     let e = Epoch::new(0, [0; 32]).unwrap();
-    let delete = label_role_key(LabelRole::Delete, admin, 0);
+    let delete = label_role_key(LabelRole::Delete, admin);
     register(Parent::Genesis(&delete), keys, &[], (&osis_base::Tid::from_bytes([0x07; 15]), e, sync), (e, sync), &mut FixedRng::new(&[&[step; 32], &[step + 1; 32]])).unwrap()
 }
 
@@ -31,8 +31,8 @@ pub fn bundle() -> VecFile {
     let (_, b2) = frame(&p, b"two", &mut FixedRng::new(&[&[0x57; 32]])).unwrap();
     let (i1, i2) = (osis_label::blob_id(&b1), osis_label::blob_id(&b2));
     let (w1s, w1t) = (wrap(&r0, &i1, &k1, 1).unwrap(), wrap(&r1, &i1, &k1, 1).unwrap());
-    let st0 = sign_stamp(&label_role_key(LabelRole::Write, &w0, 0), &s0.label, &i1, &w1s, false);
-    let st1 = sign_stamp(&label_role_key(LabelRole::Write, &w1, 0), &t0.label, &i1, &w1t, false);
+    let st0 = sign_stamp(&label_role_key(LabelRole::Write, &w0), &s0.label, &i1, &w1s, false);
+    let st1 = sign_stamp(&label_role_key(LabelRole::Write, &w1), &t0.label, &i1, &w1t, false);
     let recs = vec![
         Record::Path { label: s0.label, steps: vec![(s0.clone(), Some(c0))] },
         Record::Path { label: t0.label, steps: vec![(t0.clone(), None)] },

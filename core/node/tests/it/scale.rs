@@ -653,7 +653,7 @@ fn role_passes(n: usize) -> [([u64; 5], [u64; 5]); 2] {
     let b = net.node(2, &[host]);
     let c = net.node(3, &[host]);
     let addr = net.address(host);
-    let groups: Vec<Tid> = (0..3).map(|i| net.group_seeded(a, &[(b, Role::Read)], vec![addr.clone()], 1 + i)).collect();
+    let groups: Vec<Tid> = (0..3).map(|_| net.group_at(a, &[(b, Role::Read)], vec![addr.clone()])).collect();
     for g in &groups {
         let things: Vec<Tid> = (0..5).map(|i| net.item(a, *g, *g, &format!("t{i}"))).collect();
         for i in 0..n {
@@ -1314,9 +1314,9 @@ fn stale_walk_claims(n: usize) -> u64 {
     let c = net.node(3, &[host]);
     let g = net.group(a, &[(b, Role::Read), (c, Role::Read)], &[host]);
     let addrs = vec![net.address(host)];
-    for i in 0..n {
-        net.group_seeded(b, &[], addrs.clone(), 100 + i as u64);
-        let f = net.group_seeded(a, &[], addrs.clone(), 200 + i as u64);
+    for _ in 0..n {
+        net.group_at(b, &[], addrs.clone());
+        let f = net.group_at(a, &[], addrs.clone());
         net.grant(a, g, f, Role::Read);
     }
     let t = net.item(a, g, g, "before");
@@ -1662,7 +1662,7 @@ fn role_entries_under_churn(n: usize, churn: usize) -> [u64; 2] {
     let a = net.node(1, &[host]);
     let b = net.node(2, &[host]);
     let g = net.group(a, &[(b, Role::Write)], &[host]);
-    let mut members: Vec<Tid> = (0..n).map(|i| net.group_seeded(a, &[], vec![], 100 + i as u64)).collect();
+    let mut members: Vec<Tid> = (0..n).map(|_| net.group_at(a, &[], vec![])).collect();
     for f in &members {
         net.grant(a, g, *f, Role::Read);
     }
@@ -1673,8 +1673,8 @@ fn role_entries_under_churn(n: usize, churn: usize) -> [u64; 2] {
     let l = net.group_labels(a).into_iter().find(|(t, _)| *t == g).unwrap().1.id;
     let role = |net: &crate::net::Net| net.host_ids(host, &l).len() as u64 - net.capped_entries(host, &l);
     let before = role(&net);
-    for i in 0..churn {
-        let f = net.group_seeded(a, &[], vec![], 10_000 + i as u64);
+    for _ in 0..churn {
+        let f = net.group_at(a, &[], vec![]);
         net.grant(a, g, f, Role::Read);
         members.push(f);
         let holder = members.remove(0);

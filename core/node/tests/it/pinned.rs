@@ -133,7 +133,7 @@ fn crossed_snapshots_drop_alike_spec_sync_7() {
 fn record_step_again(net: &mut Net, n: usize, g: Tid, l: LabelId) {
     let gl = net.engine(n).group_labels(&g).unwrap().into_iter().find(|x| x.id == l).unwrap();
     let (id, (step, _)) = gl.steps.iter().next_back().unwrap();
-    let path = vec![PathSeg::Key(l.to_value()), PathSeg::Field(1), PathSeg::Key(id.0.to_value())];
+    let path = vec![PathSeg::Key(l.to_value()), PathSeg::Field(0), PathSeg::Key(id.0.to_value())];
     let mut m = Mutation::new();
     m.op(g, &ct::LABEL, PathOp { path, op: Op::Set(osis_label::step_record(step, None).to_value()) }).unwrap();
     net.engine(n).commit(m).unwrap().unwrap();

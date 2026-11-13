@@ -88,13 +88,13 @@ fn deposit_seed(tx: &mut Tx<'_>, group: &Tid) -> Result<Secret32> {
     Ok(Secret32::from_bytes(k))
 }
 
-/// Issues a step of `group` at the newest established epochs: a genesis step of a new label at `index`
+/// Issues a step of `group` at the newest established epochs: a genesis step of a new label
 /// when `parent` is none, else a child of the parent step (signed by the parent's delete key,
 /// from the admin secret of the epoch it registers).
-pub(crate) fn issue(tx: &mut Tx<'_>, group: &Tid, epochs: &ActorEpochs, index: u64, parent: Option<(&Step, &Secret32)>, readers: &[ReaderKey], deposit: &Secret32) -> Result<(Step, ClaimSet)> {
+pub(crate) fn issue(tx: &mut Tx<'_>, group: &Tid, epochs: &ActorEpochs, parent: Option<(&Step, &Secret32)>, readers: &[ReaderKey], deposit: &Secret32) -> Result<(Step, ClaimSet)> {
     let [(se, ss), (re, rs), (_, ws), (_, adm)] = registration_epochs(epochs).ok_or(Error::Misuse("an admin registers: every role's newest secret is needed"))?;
-    let label = parent.map_or_else(|| genesis_label(adm, index), |(p, _)| p.label);
-    let keys = StepKeys::derive(ss, ws, adm, index, deposit, &label);
+    let label = parent.map_or_else(|| genesis_label(adm), |(p, _)| p.label);
+    let keys = StepKeys::derive(ss, ws, adm, deposit, &label);
     let rk: Vec<Reader> = readers
         .iter()
         .map(|r| match r {
@@ -102,7 +102,7 @@ pub(crate) fn issue(tx: &mut Tx<'_>, group: &Tid, epochs: &ActorEpochs, index: u
             ReaderKey::Static(vk, kem) => Reader::Static { signing: *vk, kem },
         })
         .collect();
-    let del = label_role_key(LabelRole::Delete, parent.map_or(adm, |(_, a)| a), index);
+    let del = label_role_key(LabelRole::Delete, parent.map_or(adm, |(_, a)| a));
     let p = match parent {
         None => Parent::Genesis(&del),
         Some((step, _)) => Parent::Child { step, delete: &del },
@@ -111,14 +111,14 @@ pub(crate) fn issue(tx: &mut Tx<'_>, group: &Tid, epochs: &ActorEpochs, index: u
 }
 
 /// `label.0` write: a new label of `group` with its genesis step, or a step added.
-pub(crate) fn put_label(m: &mut Mutation, group: Tid, label: LabelId, index: u64, step: &Step, set: &ClaimSet, hosts: Option<&[Address]>) -> Result<()> {
+pub(crate) fn put_label(m: &mut Mutation, group: Tid, label: LabelId, step: &Step, set: &ClaimSet, hosts: Option<&[Address]>) -> Result<()> {
     match hosts {
         Some(hosts) => {
-            let l = ct::Label { index, steps: [(step.id().0, step_record(step, Some(set)))].into_iter().collect(), hosts: hosts.to_vec(), replaced: false };
+            let l = ct::Label { steps: [(step.id().0, step_record(step, Some(set)))].into_iter().collect(), hosts: hosts.to_vec() };
             m.op(group, &ct::LABEL, PathOp { path: vec![PathSeg::Key(label.to_value())], op: Op::Set(l.to_value()) })?;
         }
         None => {
-            let path = vec![PathSeg::Key(label.to_value()), PathSeg::Field(1), PathSeg::Key(Value::Bytes(step.id().0.to_vec()))];
+            let path = vec![PathSeg::Key(label.to_value()), PathSeg::Field(0), PathSeg::Key(Value::Bytes(step.id().0.to_vec()))];
             m.op(group, &ct::LABEL, PathOp { path, op: Op::Set(step_record(step, Some(set)).to_value()) })?;
         }
     }
@@ -137,7 +137,7 @@ pub(crate) fn drop_old_claims(tx: &mut Tx<'_>, m: &mut Mutation, group: Tid) -> 
         let Ok(steps) = label_steps(rec) else { continue };
         // when each step's record was written
         let written = |id: &StepId| {
-            let path = [PathSeg::Key(label.to_value()), PathSeg::Field(1), PathSeg::Key(Value::Bytes(id.0.to_vec())), PathSeg::Field(0)];
+            let path = [PathSeg::Key(label.to_value()), PathSeg::Field(0), PathSeg::Key(Value::Bytes(id.0.to_vec())), PathSeg::Field(0)];
             state.at(&path).and_then(|f| f.write_stamp().map(|s| s.ts.wall_ms().0))
         };
         for (id, (_, claims)) in &steps {
@@ -146,7 +146,7 @@ pub(crate) fn drop_old_claims(tx: &mut Tx<'_>, m: &mut Mutation, group: Tid) -> 
             }
             let superseded = steps.iter().filter(|(_, (c, _))| c.prev == Some(*id)).filter_map(|(c, _)| written(c)).min();
             if superseded.is_some_and(|t| t.saturating_add(osis_base::format::ROLE_KEEP_MS) <= now) {
-                let path = vec![PathSeg::Key(label.to_value()), PathSeg::Field(1), PathSeg::Key(Value::Bytes(id.0.to_vec())), PathSeg::Field(1)];
+                let path = vec![PathSeg::Key(label.to_value()), PathSeg::Field(0), PathSeg::Key(Value::Bytes(id.0.to_vec())), PathSeg::Field(1)];
                 m.op(group, &ct::LABEL, PathOp { path, op: Op::Replace(None::<Vec<u8>>.to_value()) })?;
             }
         }
@@ -157,9 +157,8 @@ pub(crate) fn drop_old_claims(tx: &mut Tx<'_>, m: &mut Mutation, group: Tid) -> 
 /// A new label of `group` (its home label when `group` is an actor): genesis step at its
 /// newest epochs, written to `label.0` in `m`. Returns the label ID.
 pub(crate) fn new_label(tx: &mut Tx<'_>, m: &mut Mutation, group: Tid, epochs: &ActorEpochs, readers: &[ReaderKey], deposit: &Secret32, hosts: &[Address]) -> Result<LabelId> {
-    let index = labels_of(tx, &group)?.values().map(|l| l.index.saturating_add(1)).max().unwrap_or(0);
-    let (step, set) = issue(tx, &group, epochs, index, None, readers, deposit)?;
-    put_label(m, group, step.label, index, &step, &set, Some(hosts))?;
+    let (step, set) = issue(tx, &group, epochs, None, readers, deposit)?;
+    put_label(m, group, step.label, &step, &set, Some(hosts))?;
     drop_old_claims(tx, m, group)?;
     tx.core.made_labels.push(step.label);
     Ok(step.label)
@@ -180,30 +179,16 @@ pub(crate) fn inherited_hosts(tx: &mut Tx<'_>, t: &Tid) -> Result<Vec<Address>> 
         if tx.core.is_account(&x) {
             return Ok(Core::keys_in(tx, &x)?.and_then(|k| k.inbox).map(|i| i.hosts).unwrap_or_default());
         }
-        if let Some((_, _, hosts)) = own_label(tx, &x)? {
+        if let Some((_, hosts)) = own_label(tx, &x)? {
             return Ok(hosts);
         }
     }
     Ok(Vec::new())
 }
 
-/// Whether a new live label of actor `a` becomes its inbox (spec/sync.md §2): its `keys.0`
-/// names none, or names `old`, the label it replaces.
-pub(crate) fn takes_inbox(tx: &mut Tx<'_>, a: &Tid, old: Option<LabelId>) -> Result<bool> {
-    let named = Core::keys_in(tx, a)?.and_then(|k| k.inbox).map(|i| i.label);
-    Ok(named.is_none() || named == old)
-}
-
-/// Whether `group`'s newest admin epoch is one a step of `label` registers (its delete key).
-fn admin_registered(tx: &mut Tx<'_>, group: &Tid, label: &ct::Label) -> Result<bool> {
-    let Some(epochs) = tx.core.epochs(group) else { return Ok(false) };
-    let Some((newest, _)) = epochs.role(Role::Admin).newest_held() else { return Ok(false) };
-    for (step, _) in label_steps(label)?.values() {
-        if osis_keys::registered_epoch(&epochs, LabelRole::Delete, label.index, &step.keys.delete) == Some(newest) {
-            return Ok(true);
-        }
-    }
-    Ok(false)
+/// Whether a new label of actor `a` becomes its inbox (spec/sync.md §2): its `keys.0` names none.
+pub(crate) fn takes_inbox(tx: &mut Tx<'_>, a: &Tid) -> Result<bool> {
+    Ok(Core::keys_in(tx, a)?.and_then(|k| k.inbox).is_none())
 }
 
 pub(crate) fn labels_of(tx: &mut Tx<'_>, group: &Tid) -> Result<ct::Labels> {
@@ -226,30 +211,6 @@ impl Engine {
         })?;
         done.add(c);
         Ok(done)
-    }
-
-    /// Gives `group` a sync ID on `hosts` beside the rule's one (`give_own_secrets`): genesis step
-    /// at its newest epochs, recorded in `label.0` (spec/sync.md §2). node-sync registers it.
-    pub fn create_label(&mut self, group: &Tid, hosts: &[Address]) -> Result<(LabelId, Done)> {
-        let g = *group;
-        self.run(|tx| {
-            // signing the step and sealing entry boxes encrypt under the group's epochs
-            let mut done = Done::default();
-            let me = tx.core.writer()?;
-            rotation::require_covered(tx, me, g, &ROLES.into_iter().collect(), &mut done)?;
-            let epochs = tx.core.epochs(&g).ok_or(Error::Misuse("no secrets held for the group"))?;
-            let deposit = deposit_seed(tx, &g)?;
-            let (re, _) = epochs.role(Role::Read).newest_held().ok_or(Error::Misuse("no read secret"))?;
-            let rs = readers(tx, &g, &re)?;
-            let inbox = tx.core.has_own_secrets(&g) && takes_inbox(tx, &g, None)?;
-            let mut m = Mutation::new();
-            let id = new_label(tx, &mut m, g, &epochs, &rs, &deposit, hosts)?;
-            if inbox {
-                name_inbox(&mut m, g, id, hosts)?;
-            }
-            done.add(Engine::commit_tx(tx, m)?);
-            Ok((id, done))
-        })
     }
 
     /// The step an admin issues at a host whose head is `head` of `group`'s label `label`
@@ -275,7 +236,7 @@ impl Engine {
             let (head, _) = steps.get(&h).ok_or(Error::Misuse("unknown head step"))?.clone();
             let epochs = tx.core.epochs(&g).ok_or(Error::Misuse("no secrets held for the group"))?;
             // the head's epochs per role, where held
-            let at = LabelRole::ALL.map(|l| osis_keys::registered_epoch(&epochs, l, rec.index, head.keys.get(l)));
+            let at = LabelRole::ALL.map(|l| osis_keys::registered_epoch(&epochs, l, head.keys.get(l)));
             let [_, _, Some(head_admin)] = at else { return Ok(None) };
             let deposit = deposit_seed(tx, &g)?;
             let deposit_key = osis_crypto::deposit_key(&deposit, &head.label).verifying_key();
@@ -290,61 +251,20 @@ impl Engine {
             // a child of the head already recorded at these epochs (another admin's, or this
             // node's own for another host): reused, so one rotation gives one step
             if !fresh {
-                let current = |c: &Step| c.keys.deposit == deposit_key && LabelRole::ALL.into_iter().zip([se, we, ae]).all(|(l, e)| osis_keys::registered_epoch(&epochs, l, rec.index, c.keys.get(l)) == Some(e));
+                let current = |c: &Step| c.keys.deposit == deposit_key && LabelRole::ALL.into_iter().zip([se, we, ae]).all(|(l, e)| osis_keys::registered_epoch(&epochs, l, c.keys.get(l)) == Some(e));
                 if let Some((c, Some(set))) = steps.values().filter(|(c, _)| c.prev == Some(h) && current(c)).min_by_key(|(c, _)| c.id()) {
                     return Ok(Some((c.clone(), set.clone())));
                 }
             }
             let rs = readers(tx, &g, &re)?;
-            let (step, set) = issue(tx, &g, &epochs, rec.index, Some((&head, &admin_secret)), &rs, &deposit)?;
+            let (step, set) = issue(tx, &g, &epochs, Some((&head, &admin_secret)), &rs, &deposit)?;
             let mut m = Mutation::new();
-            put_label(&mut m, g, l, rec.index, &step, &set, None)?;
+            put_label(&mut m, g, l, &step, &set, None)?;
             drop_old_claims(tx, &mut m, g)?;
             done.add(Engine::commit_tx(tx, m)?);
             Ok(Some((step, set)))
         })?;
         Ok((step, done))
-    }
-
-    /// Replaces label `old` of `group` (spec/sync.md §2; an admin), in one transaction: rotates
-    /// the admin secret first when the newest admin epoch is one a step of the old label
-    /// registers (whoever took the label may hold it; a plain group gets secrets of its own),
-    /// then writes a new label one index above the highest at the old label's hosts and marks
-    /// the old one replaced, in one commit. node-sync uploads the live blobs under the new label
-    /// and deletes the old label's content entries.
-    pub fn replace_label(&mut self, group: &Tid, old: &LabelId) -> Result<(LabelId, Done)> {
-        let (g, o) = (*group, *old);
-        self.run(|tx| {
-            let me = tx.core.writer()?;
-            if crate::engine::secrets::usable_role_now(tx, &me, &g)? != Some(Role::Admin) {
-                return Err(Error::Permission { tid: g });
-            }
-            let rec = labels_of(tx, &g)?.get(&o).cloned().ok_or(Error::Misuse("no such label"))?;
-            let mut done = Done::default();
-            rotation::require_covered(tx, me, g, &ROLES.into_iter().collect(), &mut done)?;
-            if admin_registered(tx, &g, &rec)? {
-                if tx.core.has_own_secrets(&g) {
-                    done.extend(rotation::rotate_now(tx, me, g, &[Role::Admin].into_iter().collect())?);
-                } else {
-                    rotation::own_secrets(tx, g, &mut done)?;
-                }
-            }
-            let epochs = tx.core.epochs(&g).ok_or(Error::Misuse("no secrets held for the group"))?;
-            let deposit = deposit_seed(tx, &g)?;
-            let (re, _) = epochs.role(Role::Read).newest_held().ok_or(Error::Misuse("no read secret"))?;
-            let rs = readers(tx, &g, &re)?;
-            let owner = tx.core.home_owner(&g);
-            let inbox = tx.core.has_own_secrets(&g) && takes_inbox(tx, &owner, Some(o))?;
-            let mut m = Mutation::new();
-            let id = new_label(tx, &mut m, g, &epochs, &rs, &deposit, &rec.hosts)?;
-            if inbox {
-                name_inbox(&mut m, owner, id, &rec.hosts)?;
-            }
-            let path = vec![PathSeg::Key(o.to_value()), PathSeg::Field(3)];
-            m.op(g, &ct::LABEL, PathOp { path, op: Op::Set(Value::Bool(true)) })?;
-            done.add(Engine::commit_tx(tx, m)?);
-            Ok((id, done))
-        })
     }
 
     /// `drop_old_claims` into `m`, a `label.0` write of `group` by this admin.
@@ -353,10 +273,10 @@ impl Engine {
         self.run(|tx| drop_old_claims(tx, m, g))
     }
 
-    /// The newest label of `group` with its hosts.
+    /// The label of `group` with its hosts (`own_label`).
     pub fn label_of(&mut self, group: &Tid) -> Result<Option<(LabelId, Vec<Address>)>> {
         let g = *group;
-        Ok(self.run(|tx| own_label(tx, &g))?.map(|(id, _, hosts)| (id, hosts)))
+        self.run(|tx| own_label(tx, &g))
     }
 }
 

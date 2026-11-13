@@ -18,9 +18,8 @@ const READER: u8 = 1;
 /// `h`'s entry `id` with `wrap` reaches `host` first, taken by its store's rules: as pulled from
 /// `h` (`WRITER`: stamped with the head's write key) or as `h`'s Deposit item (`READER`).
 fn hostile_put(net: &mut Net, h: usize, host: usize, (g, l): (Tid, &LabelId), id: BlobId, wrap: [u8; WRAP_LEN], as_who: u8) {
-    let (_, gl) = net.group_labels(h).into_iter().find(|(_, x)| x.id == *l).unwrap();
     let head = net.host_path(host, l).last().unwrap().clone();
-    let keys = net.engine(h).head_keys(&g, gl.index, &head).unwrap();
+    let keys = net.engine(h).head_keys(&g, &head).unwrap();
     let blob = net.engine(h).blob(&id).unwrap().unwrap();
     let now = net.now_at(host);
     let mut store = net.hosts[host].hub.store();
@@ -296,9 +295,8 @@ fn keyless_node_keeps_the_wrap_that_opens_spec_sync_5() {
     fx.net.hide_blobs.insert(f, ids.iter().copied().collect());
     connect(&mut fx, &[host], 33);
     let conn = fx.net.conn_to(f, host).unwrap();
-    let (_, gl) = fx.net.group_labels(h).into_iter().find(|(_, x)| x.id == l).unwrap();
     let head = fx.net.host_path(host, &l).last().unwrap().clone();
-    let write = fx.net.engine(h).head_keys(&g, gl.index, &head).unwrap().write.unwrap();
+    let write = fx.net.engine(h).head_keys(&g, &head).unwrap().write.unwrap();
     let push = |net: &mut Net, id: BlobId, wrap: [u8; WRAP_LEN], stamped: bool| {
         let stamp = stamped.then(|| osis_label::sign_stamp(&write, &l, &id, &wrap, false));
         let m = crate::net::stream_msg(l, vec![osis_proto::Event::Added { blob_id: id, blob: None, wrap, stamp }], 0);

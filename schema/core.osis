@@ -257,13 +257,9 @@ type step_record = struct {
 };
 
 type label = struct {
-    /// 0 for the group's first label; a replacement takes the next.
-    index 0: int,
     /// Registration steps, by step ID.
-    steps 1: map<blob, step_record>,
-    hosts 2: list<address>,
-    /// A newer label took over; nobody syncs this one.
-    replaced 3: bool,
+    steps 0: map<blob, step_record>,
+    hosts 1: list<address>,
 };
 
 /// A synced group's labels, by 16-byte label ID.

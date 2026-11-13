@@ -51,21 +51,21 @@ fn newest(db: &Osis, g: Tid, r: Role) -> osis_crypto::Epoch {
     db.engine(|e| e.epochs(&g).and_then(|x| x.role(r).newest())).unwrap()
 }
 
-/// The sync keys of every step of `g`'s labels at `db` (its `label.0`), with each label's index.
-fn step_sync_keys(db: &Osis, g: Tid) -> Vec<(u64, VerifyingKey)> {
-    db.engine(|e| e.group_labels(&g).unwrap().into_iter().flat_map(|l| l.steps.into_values().map(move |(s, _)| (l.index, s.keys.sync))).collect())
+/// The sync keys of every step of `g`'s labels at `db` (its `label.0`).
+fn step_sync_keys(db: &Osis, g: Tid) -> Vec<VerifyingKey> {
+    db.engine(|e| e.group_labels(&g).unwrap().into_iter().flat_map(|l| l.steps.into_values().map(|(s, _)| s.keys.sync)).collect())
 }
 
-/// The label sync keys `secrets` derive at `index`.
-fn derived(secrets: &[Secret32], index: u64) -> BTreeSet<[u8; 32]> {
-    secrets.iter().map(|s| label_role_key(LabelRole::Sync, s, index).verifying_key().to_bytes()).collect()
+/// The label sync keys `secrets` derive.
+fn derived(secrets: &[Secret32]) -> BTreeSet<[u8; 32]> {
+    secrets.iter().map(|s| label_role_key(LabelRole::Sync, s).verifying_key().to_bytes()).collect()
 }
 
 /// The sync keys of the steps Alice's newest sync epoch registers.
 fn newest_step_keys(alice: &Osis, g: Tid) -> BTreeSet<[u8; 32]> {
     let s = secrets(alice, g, Role::Sync);
-    let mine = |i| derived(&s[..1], i);
-    step_sync_keys(alice, g).into_iter().filter(|(i, k)| mine(*i).contains(&k.to_bytes())).map(|(_, k)| k.to_bytes()).collect()
+    let mine = derived(&s[..1]);
+    step_sync_keys(alice, g).into_iter().map(|k| k.to_bytes()).filter(|k| mine.contains(k)).collect()
 }
 
 // spec/permissions.md §1, spec/sync.md §2-§3: a sync grant reaches Bob by his inbox with his box of
@@ -82,8 +82,7 @@ fn a_sync_only_holder_derives_the_sync_key_and_opens_no_section_spec_permissions
     }
     let keys = newest_step_keys(&alice, g);
     assert!(!keys.is_empty(), "a step registers Alice's newest sync epoch");
-    let index = step_sync_keys(&alice, g)[0].0;
-    assert!(keys.is_subset(&derived(&held, index)), "Bob derives the head's sync key");
+    assert!(keys.is_subset(&derived(&held)), "Bob derives the head's sync key");
     assert_eq!(bob.at(t, osis::DynamicAspectKey::untyped(ak("t:x.0"))).get().unwrap(), None, "no section opens");
 }
 
@@ -101,8 +100,7 @@ fn removing_a_sync_holder_moves_the_sync_key_and_not_the_read_epoch_spec_permiss
     assert_eq!(newest(&alice, g, Role::Read), read0, "read kept its epoch");
     let keys = newest_step_keys(&alice, g);
     assert!(!keys.is_empty(), "a step registers the new sync epoch");
-    let index = step_sync_keys(&alice, g)[0].0;
-    assert!(keys.is_disjoint(&derived(&held, index)), "Bob's secrets derive no new sync key");
+    assert!(keys.is_disjoint(&derived(&held)), "Bob's secrets derive no new sync key");
 }
 
 // spec/permissions.md §3: a reader's removal leaves sync too, so both rotate.
@@ -189,9 +187,8 @@ fn a_rotation_reaches_a_sync_only_holder_by_its_inbox_spec_sync_3() {
     w.run();
     assert_ne!(newest(&alice, g, Role::Sync), sync0, "sync rotated");
     let keys = newest_step_keys(&alice, g);
-    let index = step_sync_keys(&alice, g)[0].0;
-    assert!(!keys.is_empty() && keys.is_subset(&derived(&secrets(bob, g, Role::Sync), index)), "Bob derives the new sync key");
-    assert!(keys.is_disjoint(&derived(&secrets(carol, g, Role::Sync), index)), "Carol does not");
+    assert!(!keys.is_empty() && keys.is_subset(&derived(&secrets(bob, g, Role::Sync))), "Bob derives the new sync key");
+    assert!(keys.is_disjoint(&derived(&secrets(carol, g, Role::Sync))), "Carol does not");
 }
 
 // spec/permissions.md §3, spec/sync.md §3, spec/wire.md §9: a removed holder learns its removal

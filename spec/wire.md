@@ -199,10 +199,10 @@ ClaimSet := [[claim+], {entry: box}]
 - AD = `[recipient, "inbox", prefix bytes]` (`"inbox"` a text string).
 - Payload: the padded (§5) canonical bytes of `InboxPayload`:
   ```
-  InboxPayload := [CommitBlobPlaintext, [[tid, Opt([label_id, index, [address*]]), Opt([admin_pk, write_pk])]*], [CommitBlobPlaintext*], [creation*]]
+  InboxPayload := [CommitBlobPlaintext, [[tid, Opt([label_id, [address*]]), Opt([admin_pk, write_pk])]*], [CommitBlobPlaintext*], [creation*]]
   ```
   - **Position 0**: the role commit with the parts about the recipient (§4).
-  - **Position 1**: for each thing it names, sorted by tid: if the thing has a label of its own (its `label.0`, never a group's holding it), that label's ID, index (uint, spec/sync.md §2) and host addresses (`address` values, spec/data-model.md §9) and, for a thing with secrets of its own, its current admin and write delete keys (spec/crypto.md §7).
+  - **Position 1**: for each thing it names, sorted by tid: if the thing has a label of its own (its `label.0`, never a group's holding it), that label's ID and host addresses (`address` values, spec/data-model.md §9) and, for a thing with secrets of its own, its current admin and write delete keys (spec/crypto.md §7).
   - **Positions 2 and 3**: empty unless a thing the commit touches has no label of its own or the recipient holds less than read on it now, as the sender judges it (sync alone, or removed: it reads no label of it). Then they hold, a chain that would not fit the blob left out:
     - the author's chain certificates for the carried parts (spec/permissions.md §4): its commits, each projected to its chain deltas and without any `keys.0` but the author's own, in position 2, and its creation records, ascending by tid and distinct, in position 3;
     - when the commit boxes the recipient (a grant, a re-seal), the current `keys.0` commit of each thing it boxes it on, projected to that delta, in position 2.
@@ -216,7 +216,7 @@ Link := [1, seed, target, k, k_label, [address*], [peer*], ? flags]
 peer := [dialable, [relay*]]
 ```
 - `Link` (spec/permissions.md §7): format 1, L's 32-byte seed, the target tid, K's tid, K's label ID, host addresses of K's label, and the sharer node's P2P reach for first contact: `dialable` its 32-byte dialable key, `relay` its relays as `peer://` relay items (the relay items of `reach.0`, spec/data-model.md §9, spec/sync.md §10). A redeemer with no common host dials a peer, which serves K's label as a co-reader peer (spec/sync.md §5). `flags` (uint): bit 0 single use (the redemption removes L's own grant, spec/permissions.md §7); other bits are reserved and MUST be zero; present only when nonzero (a link with `flags` 0 or a reserved bit set is malformed).
-- The label a link names is K's first label (index 0, spec/sync.md §2): K is created with it.
+- The label a link names is K's label (spec/sync.md §2): K is created with it.
 - Caps: at most 8 addresses, 4 peers, 4 relays per peer; URLs at most 256 bytes (§13).
 - Text form: `osis://link/` followed by the unpadded base64url of the canonical bytes.
 

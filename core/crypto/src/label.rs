@@ -29,14 +29,14 @@ impl LabelRole {
     }
 }
 
-/// `kdf("label <role>", secret, le64(index))` as an Ed25519 seed.
-pub fn label_role_key(role: LabelRole, secret: &Secret32, index: u64) -> SigningSecret {
+/// `kdf("label <role>", secret, "")` as an Ed25519 seed.
+pub fn label_role_key(role: LabelRole, secret: &Secret32) -> SigningSecret {
     let purpose = match role {
         LabelRole::Sync => kdf::LABEL_SYNC,
         LabelRole::Write => kdf::LABEL_WRITE,
         LabelRole::Delete => kdf::LABEL_DELETE,
     };
-    SigningSecret::from_seed(&kdf(purpose, secret.expose(), &index.to_le_bytes()))
+    SigningSecret::from_seed(&kdf(purpose, secret.expose(), &[]))
 }
 
 /// Deposit key `kdf("label deposit", deposit seed, label ID)`.
@@ -100,21 +100,21 @@ mod tests {
     use super::*;
     use crate::{KeyActorKeys, SeededRng};
 
-    // spec/sync.md §2: role keys differ per role, secret and index; deposit keys per label.
+    // spec/sync.md §2: role keys differ per role and secret; deposit keys per label.
     #[test]
     fn role_keys() {
         let s = Secret32::from_bytes([9; 32]);
-        let pk = |r, i| label_role_key(r, &s, i).verifying_key();
-        assert_ne!(pk(LabelRole::Sync, 0), pk(LabelRole::Sync, 1));
-        assert_ne!(pk(LabelRole::Sync, 0), pk(LabelRole::Write, 0));
-        assert_ne!(pk(LabelRole::Delete, 0), pk(LabelRole::Write, 0));
-        let expect = SigningSecret::from_seed(&kdf("label delete", &[9; 32], &1u64.to_le_bytes()));
-        assert_eq!(pk(LabelRole::Delete, 1), expect.verifying_key());
+        let pk = |r| label_role_key(r, &s).verifying_key();
+        assert_ne!(pk(LabelRole::Sync), label_role_key(LabelRole::Sync, &Secret32::from_bytes([8; 32])).verifying_key());
+        assert_ne!(pk(LabelRole::Sync), pk(LabelRole::Write));
+        assert_ne!(pk(LabelRole::Delete), pk(LabelRole::Write));
+        let expect = SigningSecret::from_seed(&kdf("label delete", &[9; 32], &[]));
+        assert_eq!(pk(LabelRole::Delete), expect.verifying_key());
         let seed = Secret32::from_bytes([1; 32]);
         assert_ne!(deposit_key(&seed, &LabelId([1; 16])).verifying_key(), deposit_key(&seed, &LabelId([2; 16])).verifying_key());
-        let id = label_id(&pk(LabelRole::Delete, 0));
+        let id = label_id(&pk(LabelRole::Delete));
         let mut h = blake3::Hasher::new();
-        h.update(b"osis v1 label id").update(&pk(LabelRole::Delete, 0).to_bytes());
+        h.update(b"osis v1 label id").update(&pk(LabelRole::Delete).to_bytes());
         assert_eq!(id.0, h.finalize().as_bytes()[..16]);
     }
 
@@ -138,7 +138,7 @@ mod tests {
     // spec/wire.md §11.2: an open signature binds label, challenge and static key.
     #[test]
     fn open_signature() {
-        let k = label_role_key(LabelRole::Sync, &Secret32::from_bytes([1; 32]), 0);
+        let k = label_role_key(LabelRole::Sync, &Secret32::from_bytes([1; 32]));
         let (l, c, s) = (LabelId([1; 16]), [2; 32], [3; 32]);
         let sig = sign_open(&k, &l, &c, &s);
         let pk = k.verifying_key();

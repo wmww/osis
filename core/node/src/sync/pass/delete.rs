@@ -158,11 +158,9 @@ impl SyncEngine {
                 return Ok(None);
             }
             // every delta only a blob carries counts, the kept ones too (spec/sync.md §7,
-            // `carried`); under a replaced label no content entry stays, carried there or not:
-            // its replacement holds the content (spec/sync.md §2)
-            let content_gone = self.is_replaced(g, l) && super::replaced_content(opened.iter().filter_map(|ai| h.aspects.get(*ai)).map(|a| &a.ak));
+            // `carried`)
             let keeps = self.engine.part_keeps(commit)?;
-            let to_carry = !content_gone && opened.iter().any(|ai| self.part_to_carry(commit, &m, &keeps, *ai, note));
+            let to_carry = opened.iter().any(|ai| self.part_to_carry(commit, &m, &keeps, *ai, note));
             return Ok(Some((Hold::MustNot(Why::Dropped), to_carry, aspects)));
         }
         // a delta dropped here while invalid: no right deletes it (spec/permissions.md §6), so
@@ -388,30 +386,6 @@ impl SyncEngine {
         Some((Hold::MustNot(Why::Dropped), live, aspects))
     }
 
-    /// Unopened entries present at `host` under replaced label `l` of `g` that the deltas of a
-    /// held content commit of the closure link (their chunks, tree nodes and pages) and no
-    /// role-class commit's do: no role-class commit or certificate kept there needs them
-    /// (spec/sync.md §2). A blob no held commit links stays, and every one while a role-class
-    /// commit's trees are not all held. Walks the closure's bodies (cached per body once
-    /// complete): a replaced label's path alone.
-    pub(crate) fn replaced_leftovers(&mut self, g: &Tid, host: &HostKey, l: &LabelId) -> Result<Vec<BlobId>> {
-        let unknown: BTreeSet<BlobId> = self.state.present_at(host, l).into_iter().filter(|b| self.state.entries.get(&(*l, *b)).is_some_and(|e| e.kind == Kind::Unknown)).collect();
-        if unknown.is_empty() {
-            return Ok(Vec::new());
-        }
-        let (mut content, mut kept) = (BTreeSet::new(), BTreeSet::new());
-        for b in self.engine.label_bodies_meta(g)? {
-            let Some(h) = self.engine.header(&b.commit) else { continue };
-            let is_content = super::replaced_content(h.aspects.iter().map(|a| &a.ak));
-            let (links, missing) = self.body_walk(&b)?;
-            if !is_content && !missing.is_empty() {
-                return Ok(Vec::new());
-            }
-            if is_content { &mut content } else { &mut kept }.extend(links);
-        }
-        Ok(unknown.into_iter().filter(|b| content.contains(b) && !kept.contains(b)).collect())
-    }
-
     /// Whether an entry of commit `c` holding `parts` is another node's card that no holder
     /// needs (spec/permissions.md §4): every part is its author's `node.0`, `reach.0` or `keys.0`,
     /// and each is superseded by a newer commit on that aspect present here under `l`, or, for
@@ -465,7 +439,7 @@ impl SyncEngine {
     /// Deletes must-not-hold entries present at the host, carriers first (spec/sync.md §6,
     /// §7). Judges the entries and bodies of `scope`; what waits goes into `left`.
     pub(super) fn deletions(&mut self, conn: ConnId, at: &At, bodies: &[Body], scope: &Scope, left: &mut Left, out: &mut Vec<crate::sync::Action>) -> Result<()> {
-        let (g, l, keys, settled) = (&at.g, at.l, at.keys, at.settled);
+        let (l, keys, settled) = (at.l, at.keys, at.settled);
         let Some(host) = at.host else { return Ok(()) };
         let ids: Vec<BlobId> = match scope {
             Scope::All => self.state.present_at(&host, &l),
@@ -522,19 +496,6 @@ impl SyncEngine {
             if let Some(item) = self.freed_delete(keys, &l, f) {
                 sent.insert(id);
                 items.push(item);
-            }
-        }
-        // under a replaced label the chunk and page entries of content commits go with them
-        // (spec/sync.md §2: only role-class commits and certificates stay)
-        if keys.delete.is_some() && self.is_replaced(g, &l) {
-            for b in self.replaced_leftovers(g, &host, &l)? {
-                if busy(self, &sent, &b) {
-                    continue;
-                }
-                if let Some(item) = delete_item(keys, &l, b, None, &[]) {
-                    sent.insert(b);
-                    items.push(item);
-                }
             }
         }
         // the blobs certificate copies link (`place_linked`) once this node knows no entry of

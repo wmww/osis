@@ -338,7 +338,7 @@ fn other_live_parts_carry_the_header_spec_commits_5() {
 fn the_other_part_on_another_label_is_not_waited_for_spec_commits_4() {
     let Chat { mut net, host, a, b, n, t, l } = chat();
     let addrs = vec![net.hosts[host].address.clone()];
-    let g2 = net.group_seeded(a, &[(b, Role::Write)], addrs, 2);
+    let g2 = net.group_at(a, &[(b, Role::Write)], addrs);
     let u = kept_item(&mut net, a, g2, g2, "y");
     net.run();
     let mut m = Mutation::new();
@@ -647,7 +647,7 @@ fn a_fallen_purge_shows_no_tombstone_spec_perm_6() {
 fn second_label(c: &mut Chat, n_too: bool) -> Tid {
     let addrs = vec![c.net.hosts[c.host].address.clone()];
     let holders: Vec<(usize, Role)> = if n_too { vec![(c.b, Role::Write), (c.n, Role::Read)] } else { vec![(c.b, Role::Write)] };
-    let g2 = c.net.group_seeded(c.a, &holders, addrs, 2);
+    let g2 = c.net.group_at(c.a, &holders, addrs);
     let u = c.net.item(c.a, g2, g2, "y");
     c.net.run();
     u

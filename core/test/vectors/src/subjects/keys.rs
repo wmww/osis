@@ -52,12 +52,12 @@ pub fn seed() -> VecFile {
             .with("signing-key", hex(&k.signing.verifying_key().to_bytes()))
             .with("entry", hex(&static_entry(&label, &k.signing.verifying_key()))),
     );
-    for i in [0u64, 1] {
-        let mut c = case(&format!("label keys index {i}"), "spec/sync.md §2").with("secret", hex(seed.expose())).with("index", i.to_string());
+    {
+        let mut c = case("label keys", "spec/sync.md §2").with("secret", hex(seed.expose()));
         for (n, r) in [("sync", LabelRole::Sync), ("write", LabelRole::Write), ("delete", LabelRole::Delete)] {
-            c = c.with(&format!("{n}-public"), hex(&label_role_key(r, &seed, i).verifying_key().to_bytes()));
+            c = c.with(&format!("{n}-public"), hex(&label_role_key(r, &seed).verifying_key().to_bytes()));
         }
-        let id = label_id(&label_role_key(LabelRole::Delete, &seed, i).verifying_key());
+        let id = label_id(&label_role_key(LabelRole::Delete, &seed).verifying_key());
         c = c.with("label-id-from-delete", hex(&id.0)).with("deposit-seed", hex(seed.expose())).with("deposit-public", hex(&deposit_key(&seed, &id).verifying_key().to_bytes()));
         cases.push(c);
     }

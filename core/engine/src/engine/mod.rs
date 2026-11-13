@@ -1018,8 +1018,8 @@ pub struct Core {
     /// join (`apply::atomic`, `Memo::amend`). A pass reads it many times and it grows with the
     /// roster.
     pub(crate) secrets_read: memo::Memo<Tid, Arc<osis_schema::core_types::Secrets>>,
-    /// `Engine::head_keys` per (group, index, step) (`memo`): deriving them is some curve work.
-    pub(crate) head_keys: memo::Memo<(Tid, u64, osis_label::StepId), crate::labeling::HeadKeys>,
+    /// `Engine::head_keys` per (group, step) (`memo`): deriving them is some curve work.
+    pub(crate) head_keys: memo::Memo<(Tid, osis_label::StepId), crate::labeling::HeadKeys>,
     /// `Engine::holders_named` per commit (`memo`): an admin's pass reads it for every inbox
     /// copy, and it decodes role parts.
     pub(crate) holders_named: memo::Memo<CommitId, Arc<BTreeMap<usize, BTreeSet<Tid>>>>,

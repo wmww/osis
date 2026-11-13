@@ -247,7 +247,7 @@ fn a_group_read_and_served_is_stored_once() {
     let a = net.node(1, &[]);
     let b = net.node(2, &[]);
     crate::peers::reach_ed(&mut net, a);
-    let g = net.group_seeded(a, &[(b, Role::Write)], vec![], 11);
+    let g = net.group_at(a, &[(b, Role::Write)], vec![]);
     let t = net.item(a, g, g, "one");
     net.run();
     net.write(b, t, "two");

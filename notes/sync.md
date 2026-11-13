@@ -5,7 +5,7 @@ The requirements behind sync: spec/requirements.md, Data a node cannot read and 
 
 ## The sync notes
 - notes/sync.md (this): core design reasons, policy defaults, open items.
-- notes/label-access.md: steps, sync-key gating, claim keys, opens, re-seal, entry boxes and static entries, replacement labels; lockout and stranding limits; node sync's open and registration.
+- notes/label-access.md: steps, sync-key gating, claim keys, opens, re-seal, entry boxes and static entries; lockout and stranding limits; node sync's open and registration.
 - notes/sync-convergence.md: the convergence rule, compaction, purge, carriers, tombstones, header-only blobs, why no recycle bin; node sync's deletion judgments and their invariants.
 - notes/inbox.md: deposits and their budget, the inbox (grants, invites, clearing, stamping, hints), delivery of flows' results (outbox, crash safety), relay wait and promotion.
 - notes/unreadable-data.md: what a node learns about data it cannot read, and the choices that keep it that small.

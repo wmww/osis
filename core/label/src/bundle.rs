@@ -276,16 +276,16 @@ pub(crate) mod tests {
     pub(crate) fn sample(rng: &mut SeededRng) -> (Vec<Record>, Vec<u8>) {
         let (g, h) = (Group::new(10), Group::new(20));
         let e = Epoch::new(0, [0; 32]).unwrap();
-        let (s0, c0) = register(Parent::Genesis(&g.delete(0)), g.keys(0), &[], (&TG, e, &g.read), g.sync_at(), rng).unwrap();
-        let (t0, _) = register(Parent::Genesis(&h.delete(0)), h.keys(0), &[], (&TG, e, &h.read), h.sync_at(), rng).unwrap();
+        let (s0, c0) = register(Parent::Genesis(&g.delete()), g.keys(), &[], (&TG, e, &g.read), g.sync_at(), rng).unwrap();
+        let (t0, _) = register(Parent::Genesis(&h.delete()), h.keys(), &[], (&TG, e, &h.read), h.sync_at(), rng).unwrap();
         let p = Prefix::new([1; 16], None, vec![]).unwrap();
         let (k1, b1) = frame(&p, b"one", rng).unwrap();
         let (_, b2) = frame(&p, b"two", rng).unwrap();
         let (i1, i2) = (blob_id(&b1), blob_id(&b2));
         let w1 = wrap(&g.read, &i1, &k1, 1).unwrap();
         let w1h = wrap(&h.read, &i1, &k1, 1).unwrap();
-        let st = sign_stamp(&label_role_key(LabelRole::Write, &g.write, 0), &s0.label, &i1, &w1, false);
-        let sth = sign_stamp(&label_role_key(LabelRole::Write, &h.write, 0), &t0.label, &i1, &w1h, false);
+        let st = sign_stamp(&label_role_key(LabelRole::Write, &g.write), &s0.label, &i1, &w1, false);
+        let sth = sign_stamp(&label_role_key(LabelRole::Write, &h.write), &t0.label, &i1, &w1h, false);
         let recs = vec![
             Record::Path { label: s0.label, steps: vec![(s0.clone(), Some(c0))] },
             Record::Path { label: t0.label, steps: vec![(t0.clone(), None)] },
@@ -337,8 +337,8 @@ pub(crate) mod tests {
         let mut rng = SeededRng::from_u64(0);
         let g = Group::new(10);
         let e = Epoch::new(0, [0; 32]).unwrap();
-        let (s0, _) = register(Parent::Genesis(&g.delete(0)), g.keys(0), &[], (&TG, e, &g.read), g.sync_at(), &mut rng).unwrap();
-        let child = |p: &Step, rng: &mut SeededRng| register(Parent::Child { step: p, delete: &g.delete(0) }, p.keys, &[], (&TG, e, &g.read), g.sync_at(), rng).unwrap().0;
+        let (s0, _) = register(Parent::Genesis(&g.delete()), g.keys(), &[], (&TG, e, &g.read), g.sync_at(), &mut rng).unwrap();
+        let child = |p: &Step, rng: &mut SeededRng| register(Parent::Child { step: p, delete: &g.delete() }, p.keys, &[], (&TG, e, &g.read), g.sync_at(), rng).unwrap().0;
         let (a, b) = (child(&s0, &mut rng), child(&s0, &mut rng));
         let a2 = child(&a, &mut rng);
         let path = |steps: &[&Step]| Record::Path { label: s0.label, steps: steps.iter().map(|s| ((*s).clone(), None)).collect() };

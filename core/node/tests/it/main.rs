@@ -63,7 +63,6 @@ mod peers;
 mod peers_review;
 mod port_tiers;
 mod receive;
-mod replaced_chunks;
 mod retention;
 mod sessions;
 mod review;

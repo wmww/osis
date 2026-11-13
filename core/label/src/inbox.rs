@@ -3,7 +3,7 @@
 //! commit layout, kept here).
 
 use crate::addr::{Address, address_from_value};
-use crate::cbor::{get_bytes, get_key, get_opt, get_tid, get_uint, tid, uint};
+use crate::cbor::{get_bytes, get_key, get_opt, get_tid, tid};
 use crate::blob::Prefix;
 use crate::step::OBJECT_LIMITS;
 use crate::Error;
@@ -13,12 +13,10 @@ use osis_base::{CreationRecord, LabelId, Tid, Value, WallMs};
 use osis_crypto::{CryptoRngCore, KemPublicKey, KemSecret, VerifyingKey, open_inbox, seal_inbox};
 use osis_schema::Codec;
 
-/// A label of the thing's own: its ID, index (its role keys derive from it, spec/sync.md §2) and
-/// host addresses.
+/// A label of the thing's own: its ID and host addresses.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InboxLabel {
     pub id: LabelId,
-    pub index: u64,
     pub hosts: Vec<Address>,
 }
 
@@ -33,7 +31,7 @@ pub struct InboxThing {
     pub delete_keys: Option<(VerifyingKey, VerifyingKey)>,
 }
 
-/// `InboxPayload := [CommitBlobPlaintext, [[tid, Opt([label_id, index, [address*]]),
+/// `InboxPayload := [CommitBlobPlaintext, [[tid, Opt([label_id, [address*]]),
 /// Opt([admin_pk, write_pk])]*], [CommitBlobPlaintext*], [creation*]]`, things sorted by tid,
 /// distinct, records ascending by tid, distinct.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -56,7 +54,7 @@ impl InboxPayload {
         let mut things = Vec::with_capacity(self.things.len());
         for t in &self.things {
             let label = match &t.label {
-                Some(l) => vec![Value::List(vec![Value::bytes(&l.id.0), uint(l.index)?, Value::List(l.hosts.iter().map(Codec::to_value).collect())])],
+                Some(l) => vec![Value::List(vec![Value::bytes(&l.id.0), Value::List(l.hosts.iter().map(Codec::to_value).collect())])],
                 None => Vec::new(),
             };
             things.push(Value::List(vec![
@@ -96,9 +94,9 @@ impl InboxPayload {
             let label = match get_opt(label, "inbox label")? {
                 None => None,
                 Some(Value::List(l)) => {
-                    let [id, index, Value::List(hosts)] = l.as_slice() else { return Err(Error::Malformed("inbox label")) };
+                    let [id, Value::List(hosts)] = l.as_slice() else { return Err(Error::Malformed("inbox label")) };
                     let hosts = hosts.iter().map(address_from_value).collect::<Result<_, _>>()?;
-                    Some(InboxLabel { id: LabelId(get_bytes(id, "inbox label")?), index: get_uint(index, "inbox label index")?, hosts })
+                    Some(InboxLabel { id: LabelId(get_bytes(id, "inbox label")?), hosts })
                 }
                 Some(_) => return Err(Error::Malformed("inbox label")),
             };
@@ -249,7 +247,7 @@ mod tests {
             records: vec![CreationRecord::Thing { admin: Tid::from_bytes([4; 15]), nonce: [4; 32], link: None }],
             commit: Value::List(vec![Value::List(vec![]), Value::Int(0), Value::List(vec![])]),
             things: vec![
-                InboxThing { tid: Tid::from_bytes([1; 15]), label: Some(InboxLabel { id: LabelId([2; 16]), index: 0, hosts: vec![a.clone()] }), delete_keys: None },
+                InboxThing { tid: Tid::from_bytes([1; 15]), label: Some(InboxLabel { id: LabelId([2; 16]), hosts: vec![a.clone()] }), delete_keys: None },
                 InboxThing { tid: Tid::from_bytes([3; 15]), label: None, delete_keys: Some((dk(1), dk(2))) },
             ],
         }

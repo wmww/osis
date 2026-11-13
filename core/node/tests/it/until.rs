@@ -55,7 +55,7 @@ fn opened_with(hosted: bool, other: bool) -> (Setup, Option<usize>) {
     net.group_at(b, &[(a, Role::Read)], vec![]);
     let addrs = hosts.iter().map(|s| net.address(*s)).collect();
     let holders: Vec<(usize, Role)> = c.iter().map(|c| (*c, Role::Admin)).collect();
-    let g = net.group_seeded(b, &holders, addrs, 2);
+    let g = net.group_at(b, &holders, addrs);
     let l = net.engine(b).labels_of(&g)[0].id;
     net.item(b, g, g, "before");
     net.run();

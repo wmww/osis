@@ -24,18 +24,18 @@ pub fn registration_epochs(a: &ActorEpochs) -> Option<[(Epoch, &Secret32); 4]> {
     Some([get(Role::Sync)?, get(Role::Read)?, get(Role::Write)?, get(Role::Admin)?])
 }
 
-/// The held epoch of `l`'s group role whose label key at `index` is `key` (a host head's
+/// The held epoch of `l`'s group role whose label key is `key` (a host head's
 /// registered key): the node talks to that host with it (spec/sync.md §2). Any held secret,
 /// established or not: opening a label is not encrypting under (spec/crypto.md §4). A stamp,
 /// step or delete under it needs `RoleEpochs::is_established`.
-pub fn registered_epoch(a: &ActorEpochs, l: LabelRole, index: u64, key: &VerifyingKey) -> Option<Epoch> {
-    registered_key(a, l, index, key).map(|(e, _)| e)
+pub fn registered_epoch(a: &ActorEpochs, l: LabelRole, key: &VerifyingKey) -> Option<Epoch> {
+    registered_key(a, l, key).map(|(e, _)| e)
 }
 
 /// `registered_epoch` with the label key it derives (reading-only secrets included): found by
 /// deriving each held secret's, so the one found is not derived again.
-pub fn registered_key(a: &ActorEpochs, l: LabelRole, index: u64, key: &VerifyingKey) -> Option<(Epoch, SigningSecret)> {
-    a.role(l.role()).held_newest_first().into_iter().map(|(e, s)| (e, label_role_key(l, s, index))).find(|(_, k)| k.verifying_key() == *key)
+pub fn registered_key(a: &ActorEpochs, l: LabelRole, key: &VerifyingKey) -> Option<(Epoch, SigningSecret)> {
+    a.role(l.role()).held_newest_first().into_iter().map(|(e, s)| (e, label_role_key(l, s))).find(|(_, k)| k.verifying_key() == *key)
 }
 
 /// Whether an admin holds an established epoch newer than a head registers, per label role

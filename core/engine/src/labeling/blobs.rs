@@ -156,10 +156,10 @@ impl std::fmt::Debug for HeadKeys {
     }
 }
 
-/// The held epoch of `l`'s group role whose label key at `index` is `pk`, with that key and
+/// The held epoch of `l`'s group role whose label key is `pk`, with that key and
 /// whether that secret may be encrypted under (not reading-only, spec/crypto.md §4).
-fn matching(e: &ActorEpochs, l: LabelRole, index: u64, pk: &osis_crypto::VerifyingKey) -> Option<(Epoch, SigningSecret, bool)> {
-    let (ep, k) = osis_keys::registered_key(e, l, index, pk)?;
+fn matching(e: &ActorEpochs, l: LabelRole, pk: &osis_crypto::VerifyingKey) -> Option<(Epoch, SigningSecret, bool)> {
+    let (ep, k) = osis_keys::registered_key(e, l, pk)?;
     Some((ep, k, e.role(l.role()).secret(&ep).is_some()))
 }
 
@@ -560,28 +560,28 @@ impl Engine {
         Ok(self.get_typed(&x, &ct::KEYS)?.and_then(|k| k.deposit_seed).map(Secret32::from_bytes))
     }
 
-    /// The keys this node holds for `head` of label `index` of `g` (spec/sync.md §2, §5): any
+    /// The keys this node holds for `head` of a label of `g` (spec/sync.md §2, §5): any
     /// held secret opens; stamps and deletes need an established epoch (spec/crypto.md §4).
-    pub fn head_keys(&mut self, g: &Tid, index: u64, head: &Step) -> Result<HeadKeys> {
-        Memo::get_in(self, |e| &e.core.head_keys, &(*g, index, head.id()), |e| e.head_keys_derived(g, index, head))
+    pub fn head_keys(&mut self, g: &Tid, head: &Step) -> Result<HeadKeys> {
+        Memo::get_in(self, |e| &e.core.head_keys, &(*g, head.id()), |e| e.head_keys_derived(g, head))
     }
 
-    fn head_keys_derived(&mut self, g: &Tid, index: u64, head: &Step) -> Result<HeadKeys> {
+    fn head_keys_derived(&mut self, g: &Tid, head: &Step) -> Result<HeadKeys> {
         let mut k = HeadKeys::default();
         if let Some(e) = self.epochs(g) {
-            if let Some((ep, s, _)) = matching(&e, LabelRole::Sync, index, &head.keys.sync) {
+            if let Some((ep, s, _)) = matching(&e, LabelRole::Sync, &head.keys.sync) {
                 k.sync = Some(s);
                 k.sync_established = self.established(g, &e, Role::Sync, &ep);
                 k.epochs[0] = Some(ep);
             }
             // stamps and deletes are encrypting under: never from a reading-only secret
-            if let Some((ep, s, checked)) = matching(&e, LabelRole::Write, index, &head.keys.write) {
+            if let Some((ep, s, checked)) = matching(&e, LabelRole::Write, &head.keys.write) {
                 if checked && self.established(g, &e, Role::Write, &ep) {
                     k.write = Some(s);
                 }
                 k.epochs[1] = Some(ep);
             }
-            if let Some((ep, s, checked)) = matching(&e, LabelRole::Delete, index, &head.keys.delete) {
+            if let Some((ep, s, checked)) = matching(&e, LabelRole::Delete, &head.keys.delete) {
                 if checked && self.established(g, &e, Role::Admin, &ep) {
                     k.delete = Some(s);
                 }
@@ -798,10 +798,10 @@ mod tests {
         let mut a = ActorEpochs::default();
         a.write.set_reading_secret(e, s.clone(), osis_keys::Unchecked { author: Tid::from_bytes([1; 15]), commit: CommitId([1; 32]) });
         a.write.set_established(e, osis_keys::Provenance::Rotated);
-        let pk = osis_crypto::label_role_key(LabelRole::Write, &s, 0).verifying_key();
-        let (ep, got, checked) = matching(&a, LabelRole::Write, 0, &pk).unwrap();
+        let pk = osis_crypto::label_role_key(LabelRole::Write, &s).verifying_key();
+        let (ep, got, checked) = matching(&a, LabelRole::Write, &pk).unwrap();
         assert_eq!((ep, got.verifying_key(), checked), (e, pk, false));
         a.write.set_secret(e, s.clone());
-        assert!(matching(&a, LabelRole::Write, 0, &pk).unwrap().2);
+        assert!(matching(&a, LabelRole::Write, &pk).unwrap().2);
     }
 }

@@ -708,9 +708,6 @@ impl SyncEngine {
         };
         let mut sealed: Option<crate::labeling::Sealed> = None;
         for (g, gl) in self.labels() {
-            if gl.replaced {
-                continue;
-            }
             let l = gl.id;
             let closure = self.engine.closure(&g);
             let actor = self.engine.group_actor(&g);
@@ -734,8 +731,8 @@ impl SyncEngine {
     fn relay_stamp_key(&mut self, g: &Tid, l: &LabelId) -> Option<osis_crypto::SigningSecret> {
         let served = self.served_labels();
         let head = served.get(l)?.head()?.clone();
-        let index = self.group_label(g, l).map(|gl| gl.index)?;
-        self.engine.head_keys(g, index, &head).ok()?.write
+        self.group_label(g, l)?;
+        self.engine.head_keys(g, &head).ok()?.write
     }
 
     /// Sends a relay-only entry to every peer sharing `l` (`stream_relay`): a reader, or a peer

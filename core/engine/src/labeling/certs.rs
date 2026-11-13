@@ -1,7 +1,7 @@
 //! Certificate blobs (spec/permissions.md §4; spec/sync.md §3): this node's chain certificates
 //! for a group and its node card as (commit, parts) to place, partial bodies of a commit and the
 //! blobs its parts link.
-//! Labels and steps are role flows' (`Engine::create_label`, `Engine::issue_step`).
+//! Labels come with secrets of their own (`rotation::own_secrets`), steps by `Engine::issue_step`.
 
 use super::blobs::Body;
 use crate::engine::memo::Memo;

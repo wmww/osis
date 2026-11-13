@@ -169,7 +169,7 @@ fn grant_without_handover(sim: &mut NetSim, a: usize, b: usize) {
     let pb = sim.account(b, &[]).unwrap().account;
     sim.listen_peer(b).unwrap();
     sim.introduce(b, a).unwrap();
-    let g = sim.group_with(a, pa, &[], true).unwrap();
+    let g = sim.group(a, pa, &[]).unwrap();
     sim.grant(a, g, pb, osis::Role::Write).unwrap();
 }
 

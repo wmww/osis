@@ -183,7 +183,8 @@ fn link_setup_at(net: &mut Net, k: &[usize]) -> (usize, usize, osis_base::Tid, o
     let t = e.new_thing(&mut m, pa.account);
     m.set(t, &ct::GROUP, &ct::Group::default()).unwrap();
     e.commit(m).unwrap();
-    let (_, acts) = net.sync(a).create_label(&t, home.clone()).unwrap();
+    let done = net.engine(a).give_own_secrets_on(&t, &home).unwrap();
+    let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
     net.run();
     let spec = osis_node::flows::LinkSpec { target: t, role: Role::Read, until: None, hosts: k.iter().map(|s| net.address(*s)).collect(), peers: Vec::new(), single_use: true };
@@ -322,7 +323,7 @@ fn removal_copies_not_held_spec_permissions_3() {
     let b = net.node(2, &[s0, s1]);
     // K (label at s1) with holder b, a holder of T (label at s0)
     let k = net.group(a, &[(b, Role::Write)], &[s1]);
-    let t = net.group_seeded(a, &[], vec![net.address(s0)], 2);
+    let t = net.group_at(a, &[], vec![net.address(s0)]);
     let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
     let done = net.engine(a).grant(&t, &k, &edge).unwrap();
     carry(&mut net, a, done);
@@ -433,7 +434,7 @@ fn holder_group(net: &mut Net) -> (usize, usize, osis_base::Tid, osis_base::Tid)
     let a = net.node(1, &[s0, s1]);
     let b = net.node(2, &[s0, s1]);
     let k = net.group(a, &[(b, Role::Write)], &[s1]);
-    let t = net.group_seeded(a, &[], vec![net.address(s0)], 2);
+    let t = net.group_at(a, &[], vec![net.address(s0)]);
     let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
     let done = net.engine(a).grant(&t, &k, &edge).unwrap();
     carry(net, a, done);
@@ -466,7 +467,7 @@ fn first_copy_survives_a_crash_spec_permissions_3() {
             let b = net.node(2, &[s0, s1]);
             let b2 = net.node(3, &[s0, s1]);
             let k = net.group(a, &[(b, Role::Write), (b2, Role::Write)], &[s1]);
-            let t = net.group_seeded(a, &[], vec![net.address(s0)], 2);
+            let t = net.group_at(a, &[], vec![net.address(s0)]);
             let done = net.engine(a).grant(&t, &k, &read).unwrap();
             carry(&mut net, a, done);
             net.run();
@@ -556,7 +557,8 @@ fn link_card_survives_a_crash_spec_permissions_7() {
             let t = e.new_thing(&mut m, pa.account);
             m.set(t, &ct::GROUP, &ct::Group::default()).unwrap();
             e.commit(m).unwrap();
-            let (_, acts) = net.sync(a).create_label(&t, home).unwrap();
+            let done = net.engine(a).give_own_secrets_on(&t, &home).unwrap();
+            let acts = net.sync(a).carry_out(done).unwrap();
             net.actions(a, acts);
             net.run();
             (net, (s1, a, pa, t))

@@ -13,10 +13,10 @@ use osis_schema::core_types as ct;
 use osis_store::Backend;
 use std::collections::{BTreeMap, BTreeSet};
 
-/// The label write key node `n` stamps with (the group's newest write epoch, label index 0).
+/// The label write key node `n` stamps with (the group's newest write epoch).
 pub(crate) fn write_key(net: &mut Net, n: usize, g: Tid) -> osis_crypto::SigningSecret {
     let w = net.engine(n).epochs(&g).unwrap().write.newest_held().unwrap().1.clone();
-    osis_crypto::label_role_key(osis_crypto::LabelRole::Write, &w, 0)
+    osis_crypto::label_role_key(osis_crypto::LabelRole::Write, &w)
 }
 
 /// Seals ephemeral commit `c` under `g`'s label as node `w` would, stamped with `stamp` when
@@ -284,10 +284,10 @@ fn removed_member_stops_syncing_spec_sync_3() {
     assert_eq!(notes(&mut net, b, w), map(&[("k0", "v0"), ("k2", "v2")]));
 }
 
-/// A group of admin `a` (rng `seed`) that may read `x` (a read edge on it) and has `w` as a member.
-fn reading_group(net: &mut Net, a: usize, x: Tid, w: Tid, holders: &[(usize, Role)], host: usize, seed: u64) -> Tid {
+/// A group of admin `a` that may read `x` (a read edge on it) and has `w` as a member.
+fn reading_group(net: &mut Net, a: usize, x: Tid, w: Tid, holders: &[(usize, Role)], host: usize) -> Tid {
     let addr = net.hosts[host].address.clone();
-    let g = net.group_seeded(a, holders, vec![addr], seed);
+    let g = net.group_at(a, holders, vec![addr]);
     let done = net.engine(a).grant(&x, &g, &crate::common::edge(Role::Read)).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
@@ -316,16 +316,16 @@ fn moved_thing_leaves_old_label_spec_sync_3() {
     let (mut net, host, [a]) = hosted_nodes::<1>();
     let c = net.node(3, &[host]);
     let addr = net.hosts[host].address.clone();
-    let x = net.group_seeded(a, &[], vec![addr], 1);
+    let x = net.group_at(a, &[], vec![addr]);
     net.run();
     let w = made(&mut net, a, x, None);
     net.eph_write(a, w, &eph(STATE), s("v"));
-    let ga = reading_group(&mut net, a, x, w, &[(c, Role::Read)], host, 2);
+    let ga = reading_group(&mut net, a, x, w, &[(c, Role::Read)], host);
     let la = label_of(&mut net, a, ga);
     assert!(!entries_under(&mut net, a, &la).is_empty(), "under A while a member");
     assert_eq!(net.eph_read(c, w, STATE), Some(s("v")));
     // moved from A to B
-    let gb = reading_group(&mut net, a, x, w, &[], host, 3);
+    let gb = reading_group(&mut net, a, x, w, &[], host);
     let lb = label_of(&mut net, a, gb);
     let mut m = Mutation::new();
     m.op(ga, &ct::GROUP, PathOp { path: vec![PathSeg::Field(0)], op: Op::Remove(Value::Tid(w)) }).unwrap();
@@ -376,10 +376,8 @@ fn written_outside_goes_on_any_way_in_spec_sync_9() {
     let w = window(&mut net, a, h, "label");
     net.run();
     assert!(!synced(&mut net, a, w));
-    let recipients = recipients_of(net.engine(a), &[(me, Role::Admin)]);
-    rotation(net.engine(a), h, &recipients, 7, true);
     let addr = net.hosts[host].address.clone();
-    net.engine(a).create_label(&h, &[addr]).unwrap();
+    net.engine(a).give_own_secrets_on(&h, &[addr]).unwrap();
     local(&mut net, a);
     net.run();
     assert!(synced(&mut net, a, w));
@@ -430,11 +428,11 @@ fn second_label_gets_held_state_spec_sync_3() {
     let (mut net, host, [a]) = hosted_nodes::<1>();
     let c = net.node(3, &[host]);
     let addr = net.hosts[host].address.clone();
-    let x = net.group_seeded(a, &[], vec![addr], 1);
+    let x = net.group_at(a, &[], vec![addr]);
     net.run();
     let w = window(&mut net, a, x, "old");
     net.run();
-    reading_group(&mut net, a, x, w, &[(c, Role::Read)], host, 2);
+    reading_group(&mut net, a, x, w, &[(c, Role::Read)], host);
     for _ in 0..5 {
         net.advance(15_000);
     }
@@ -3605,8 +3603,9 @@ fn large_value_chunks_syncs_and_goes_spec_data_model_6() {
 }
 
 // spec/sync.md §6, §9 (walk cost): an edit of a large ephemeral value reusing its tree brings a
-// holder only what it changed: the blobs fetched and the blobs its walks open are the same for a
-// value of n and of 10n chunks (the gate and the tree fetch pass held nodes below a root by)
+// holder only what it changed: the blobs its walks open are the same for a value of n and of 10n
+// chunks, and the blobs fetched a few at either (the gate and the tree fetch pass held nodes below
+// a root by)
 #[test]
 fn edit_of_a_large_value_walks_what_it_changed_spec_sync_9() {
     fn edit(mb: u32) -> (usize, u64, usize) {
@@ -3643,7 +3642,10 @@ fn edit_of_a_large_value_walks_what_it_changed_spec_sync_9() {
     let (n10, o10, f10) = edit(20);
     assert!(n10 >= 8 * n1, "trees of n and 10n chunks: {n1}, {n10}");
     assert!(o1 > 0 && f1 > 0, "{o1} {f1}");
-    assert_eq!((o10, f10), (o1, f1), "opened, new blobs at n: {o1}, {f1}; at 10n: {o10}, {f10}");
+    // new blobs: the edited chunk (two where the edit moves a content-defined boundary, which
+    // the group's secrets decide) and the nodes above it, whatever the size
+    assert_eq!(o10, o1, "opened at n: {o1}; at 10n: {o10}");
+    assert!(f1 <= 5 && f10 <= 5, "new blobs at n: {f1}; at 10n: {f10}");
 }
 
 // spec/sync.md §7 Freed links, §9: an ephemeral value's tree carried by another writer's snapshot
@@ -5424,7 +5426,7 @@ fn memory_regranted_writer_covered_spec_sync_9() {
 fn ephemeral_revert_needs_write_spec_crdt_4_6() {
     let (mut net, host, [a, b], g, []) = hosted::<2, 0>(&[(1, Role::Write)], [], false);
     let addr = net.hosts[host].address.clone();
-    let keep = net.group_seeded(a, &[(b, Role::Write)], vec![addr], 2);
+    let keep = net.group_at(a, &[(b, Role::Write)], vec![addr]);
     let t = net.item(a, g, g, "t");
     // kept history: only rights refuse these reverts (spec/commits.md §7)
     net.keep(a, t, &[(FLAG, crate::common::DAY)]);
@@ -5503,7 +5505,7 @@ fn revert_run_with(seed: u64, restarts: bool) {
         let a = net.node(1, &[host]);
         let b = net.node(2, &[host]);
         let addr = net.hosts[host].address.clone();
-        let groups = [net.group(a, &[(b, Role::Write)], &[host]), net.group_seeded(a, &[(b, Role::Write)], vec![addr], 2)];
+        let groups = [net.group(a, &[(b, Role::Write)], &[host]), net.group_at(a, &[(b, Role::Write)], vec![addr])];
         let things: Vec<Tid> = groups.iter().map(|g| net.item(a, *g, *g, "t")).collect();
         net.run();
         (net, (host, a, b, groups, things))

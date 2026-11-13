@@ -35,8 +35,8 @@ fn known_pair_default() -> (Net, (usize, usize)) {
 
 /// A group of `a`'s with one item, granted to `to` (a delivery to `to`'s inbox): the group and
 /// the item.
-fn granted(net: &mut Net, a: usize, to: Tid, rng: u64) -> (Tid, Tid) {
-    let t = net.group_seeded(a, &[], vec![], rng);
+fn granted(net: &mut Net, a: usize, to: Tid) -> (Tid, Tid) {
+    let t = net.group_at(a, &[], vec![]);
     let item = net.item(a, t, t, "granted");
     net.run();
     net.grant(a, t, to, Role::Read);
@@ -51,7 +51,7 @@ fn granted(net: &mut Net, a: usize, to: Tid, rng: u64) -> (Tid, Tid) {
 fn a_grant_between_known_accounts_lands_over_a_direct_link_spec_sync_10() {
     let (mut net, (a, b)) = known_pair_default();
     let tb = net.tid(b);
-    let (_, item) = granted(&mut net, a, tb, 2);
+    let (_, item) = granted(&mut net, a, tb);
     net.run();
     assert_eq!(net.sync(a).pass_stats().deposits_sent, 1, "one Deposit item");
     assert_eq!(net.sync(a).deliveries_pending(), 0, "taken");
@@ -70,7 +70,7 @@ fn a_deposit_goes_to_no_peer_not_proved_a_holder_and_stays_pending_spec_sync_10(
     net.pair(c, a);
     net.run();
     let tc = net.tid(c);
-    let (t, item) = granted(&mut net, a, tc, 2);
+    let (t, item) = granted(&mut net, a, tc);
     net.run();
     for _ in 0..3 {
         net.advance(3_600_000);
@@ -148,8 +148,8 @@ fn a_deposit_refused_for_now_is_offered_again_and_lands_spec_sync_10() {
     let cfg = SyncConfig { peer_bytes: 6_000, ..SyncConfig::default() };
     let (a, b) = known_pair(&mut net, cfg);
     let tb = net.tid(b);
-    let (_, one) = granted(&mut net, a, tb, 2);
-    let (_, two) = granted(&mut net, a, tb, 3);
+    let (_, one) = granted(&mut net, a, tb);
+    let (_, two) = granted(&mut net, a, tb);
     net.run();
     assert_eq!((net.sync(a).pass_stats().deposits_sent, net.sync(a).deliveries_pending()), (2, 1), "the second refused for now, kept");
     for _ in 0..4 {
@@ -179,7 +179,7 @@ fn a_refused_deposit_is_offered_again_only_at_the_peers_next_filter_spec_sync_10
     let ta = net.tid(a);
     net.set_online(a, false);
     net.run();
-    granted(&mut net, b, ta, 2);
+    granted(&mut net, b, ta);
     net.run();
     assert_eq!(net.sync(b).deliveries_pending(), 1, "a is offline: pending");
     let mut p = dial_as(&mut net, a, b, CHALLENGE);

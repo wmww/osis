@@ -89,10 +89,8 @@ fn promotion_waits_for_the_chain_at_the_host_spec_sync_5() {
     // bare edges: the rotation below boxes every holder before any pass (a grant by hand)
     set_edge(e, g, wt, Role::Write);
     set_edge(e, g, rt, Role::Read);
-    let rs = recipients_of(e, &[(at, Role::Admin), (wt, Role::Write), (rt, Role::Read)]);
-    rotation(e, g, &rs, 1, true);
     let addr = net.hosts[host].address.clone();
-    net.engine(a).create_label(&g, &[addr]).unwrap();
+    net.engine(a).give_own_secrets_on(&g, &[addr]).unwrap();
     for id in net.engine(a).commit_ids() {
         let pk = net.engine(a).package(&id).unwrap().unwrap();
         let bytes = if keys.contains(&id) { osis_commit::rewrite(&osis_commit::CommitBlob::decode(&pk.bytes).unwrap(), |_| true).encode() } else { pk.bytes };
@@ -341,12 +339,9 @@ fn label_published_under_home_label_spec_sync_2() {
     let g2 = e.new_thing(&mut m, p);
     m.set(g2, &ct::GROUP, &ct::Group::default()).unwrap();
     e.commit(m).unwrap();
-    let at = net.tid(a);
-    let e = net.engine(a);
-    let rs = recipients_of(e, &[(at, Role::Admin), (p, Role::Admin)]);
-    rotation(e, g2, &rs, 71, true);
     let addr = net.address(host);
-    let acts = net.sync(a).create_label(&g2, vec![addr]).unwrap().1;
+    let done = net.engine(a).give_own_secrets_on(&g2, &[addr]).unwrap();
+    let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
     let t = net.item(a, g2, g2, "inside");
     net.run();
@@ -357,147 +352,6 @@ fn label_published_under_home_label_spec_sync_2() {
     // B is listed by P's claim key (P is the group's first admin): it claims, downloads the rotation under
     // the epoch it superseded (derived from P's), opens its boxes and reads
     assert_eq!(net.read(b, t), Some(s("inside")));
-}
-
-// spec/sync.md §2 (replacement): the admin secret the old label registers is rotated first; a
-// new label at the next index takes the live blobs; the old one is marked replaced and no
-// longer synced by holders; the admin places the replacement's `label.0` commit under it,
-// deletes its content entries there, and then stops syncing it.
-#[test]
-fn label_replacement_spec_sync_2() {
-    let (mut net, host, [a, b], g, [t]) = hosted::<2, 1>(&[(1, Role::Write)], ["kept"], true);
-    let old = net.label(a);
-    let before: BTreeSet<_> = commits_under(&mut net, a, &old).into_iter().map(|x| x.0).collect();
-    let admin0 = net.engine(a).epochs(&g).unwrap().admin.newest_held().unwrap().0;
-    let (new, acts) = net.sync(a).replace_label(&g, &old).unwrap();
-    net.actions(a, acts);
-    assert_ne!(net.engine(a).epochs(&g).unwrap().admin.newest_held().unwrap().0, admin0, "the admin secret rotated");
-    // the admin restarts before syncing: it reopens the replaced label as well
-    net.restart(a, 9);
-    net.run();
-    net.run();
-    net.trace(&[a, b]);
-    assert_ne!(new, old);
-    let labels: Vec<_> = net.group_labels(b).into_iter().map(|(_, l)| (l.id, l.index)).collect();
-    assert_eq!(labels, vec![(new, 1)], "only the new label is synced");
-    assert!(!net.host_ids(host, &new).is_empty());
-    let live: BTreeSet<_> = net.host_ids(host, &old).into_iter().collect();
-    let under: Vec<_> = net.sync(a).entries(&old).into_iter().filter(|(id, _)| live.contains(id)).collect();
-    let mut labels_after = 0;
-    for (_, k) in under {
-        let EntryKind::Commit { commit, .. } = k else { continue };
-        let h = net.engine(a).header(&commit).unwrap();
-        assert!(h.aspects.iter().all(|x| x.tid != t), "content of the item left under the old label");
-        labels_after += usize::from(!before.contains(&commit) && h.aspects.iter().any(|x| x.ak.as_str() == "label.0"));
-    }
-    // the new label's record with the old one marked replaced
-    assert_eq!(labels_after, 1, "the replacement's label.0 commit under the old label");
-    let labels: Vec<_> = net.group_labels(a).into_iter().map(|(_, l)| l.id).collect();
-    assert_eq!(labels, vec![new], "the admin is done with the old label");
-    net.write(b, t, "on the new label");
-    net.run();
-    assert_eq!(net.read(a, t), Some(s("on the new label")));
-    assert_eq!(net.host_ids(host, &old).into_iter().collect::<BTreeSet<_>>(), live, "nothing more under the old label");
-}
-
-/// Whether label `l` at host `s` holds a commit carrying a `label.0` write the admin `n` made
-/// after `before`.
-fn label_commit_at(net: &mut Net, n: usize, s: usize, l: &osis_base::LabelId, before: &BTreeSet<osis_base::CommitId>) -> bool {
-    let live: BTreeSet<_> = net.host_ids(s, l).into_iter().collect();
-    let entries: Vec<_> = net.sync(n).entries(l).into_iter().filter(|(id, _)| live.contains(id)).collect();
-    entries.into_iter().any(|(_, k)| matches!(k, EntryKind::Commit { commit, .. } if !before.contains(&commit) && net.engine(n).header(&commit).is_some_and(|h| h.aspects.iter().any(|x| x.ak.as_str() == "label.0"))))
-}
-
-// spec/sync.md §2 (replacement): at a host that lost the old label the admin registers its
-// recorded path again so the replacement's `label.0` commit is found there, then is done.
-#[test]
-fn replaced_label_reregistered_where_lost_spec_sync_2() {
-    let mut net = Net::new();
-    let (s0, s1) = (net.add_host(), net.add_host());
-    let a = net.node(1, &[s0, s1]);
-    let b = net.node(2, &[s0, s1]);
-    let g = net.group(a, &[(b, Role::Write)], &[s0, s1]);
-    net.item(a, g, g, "kept");
-    net.run();
-    let old = net.label(a);
-    let before: BTreeSet<_> = commits_under(&mut net, a, &old).into_iter().map(|x| x.0).collect();
-    net.set_online(a, false);
-    net.wipe_host(s1);
-    assert!(net.host_path(s1, &old).is_empty());
-    net.set_online(a, true);
-    let (new, acts) = net.sync(a).replace_label(&g, &old).unwrap();
-    net.actions(a, acts);
-    net.run();
-    // past the redial backoff
-    net.advance(120_000);
-    net.run();
-    net.run();
-    assert!(!net.host_path(s1, &old).is_empty(), "the old label registered again where it was lost");
-    assert!(label_commit_at(&mut net, a, s1, &old, &before), "the replacement label.0 commit is found there");
-    let labels: Vec<_> = net.group_labels(a).into_iter().map(|(_, l)| l.id).collect();
-    assert_eq!(labels, vec![new], "done at both hosts");
-}
-
-// spec/sync.md §2 (replacement): a host of the old label the admin cannot reach never settles a
-// pass; the admin stops syncing the old label after `ROLE_KEEP` all the same.
-#[test]
-fn replaced_label_retired_with_host_unreachable_spec_sync_2() {
-    let mut net = Net::new();
-    let (s0, s1) = (net.add_host(), net.add_host());
-    let a = net.node(1, &[s0, s1]);
-    let b = net.node(2, &[s0, s1]);
-    let g = net.group(a, &[(b, Role::Write)], &[s0, s1]);
-    net.item(a, g, g, "kept");
-    net.run();
-    let old = net.label(a);
-    net.set_online(a, false);
-    net.blocked.insert((a, s1));
-    net.set_online(a, true);
-    let (new, acts) = net.sync(a).replace_label(&g, &old).unwrap();
-    net.actions(a, acts);
-    net.run();
-    net.run();
-    let labels: BTreeSet<_> = net.group_labels(a).into_iter().map(|(_, l)| l.id).collect();
-    assert_eq!(labels, BTreeSet::from([new, old]), "not done at the unreachable host");
-    net.advance(osis_base::format::ROLE_KEEP_MS + 1);
-    net.run();
-    let labels: Vec<_> = net.group_labels(a).into_iter().map(|(_, l)| l.id).collect();
-    assert_eq!(labels, vec![new], "retired after ROLE_KEEP");
-}
-
-// spec/sync.md §2 (replacement), spec/permissions.md §2 (`until`): an admin keeps a replaced
-// label only while it is admin; once its admin edge passes its `until` the label is no longer
-// synced, also when nothing else changed since the synced labels were last listed.
-#[test]
-fn replaced_label_dropped_when_admin_edge_expires_spec_sync_2() {
-    let mut net = Net::new();
-    let (s0, s1) = (net.add_host(), net.add_host());
-    let a = net.node(1, &[s0, s1]);
-    let b = net.node(2, &[s0, s1]);
-    let g = net.group(a, &[], &[s0, s1]);
-    net.pair(b, a);
-    let until = osis_base::WallMs(net.now() + 3_600_000);
-    let bt = net.tid(b);
-    let done = net.engine(a).grant(&g, &bt, &ct::Edge { role: Role::Admin, until: Some(until), invite: None, tied: None }).unwrap();
-    let acts = net.sync(a).carry_out(done).unwrap();
-    net.actions(a, acts);
-    net.pair(a, b);
-    net.run();
-    assert_eq!(net.engine(b).role_on(&g), Some(Role::Admin));
-    let old = net.label(b);
-    // the old label never settles at a host b cannot reach: b keeps it
-    net.set_online(b, false);
-    net.blocked.insert((b, s1));
-    net.set_online(b, true);
-    let (new, acts) = net.sync(b).replace_label(&g, &old).unwrap();
-    net.actions(b, acts);
-    net.run();
-    let labels: BTreeSet<_> = net.group_labels(b).into_iter().map(|(_, l)| l.id).collect();
-    assert_eq!(labels, BTreeSet::from([new, old]), "kept by the admin");
-    net.clock.set(osis_base::WallMs(until.0 + 1));
-    assert_ne!(net.engine(b).role_on(&g), Some(Role::Admin), "the edge passed its until");
-    let labels: BTreeSet<_> = net.group_labels(b).into_iter().map(|(_, l)| l.id).collect();
-    assert_eq!(labels, BTreeSet::from([new]), "no longer admin: the replaced label goes");
 }
 
 // spec/sync.md §3 (inbox), spec/crypto.md §4 (secrets of a pending commit kept for reading;
@@ -529,7 +383,7 @@ fn grant_by_inbox_end_to_end_spec_sync_3() {
         let g = e.new_thing(&mut m, alice.account);
         m.set(g, &ct::GROUP, &ct::Group::default()).unwrap();
         e.commit(m).unwrap();
-        let (_, done) = net.engine(a).create_label(&g, &[addr]).unwrap();
+        let done = net.engine(a).give_own_secrets_on(&g, &[addr]).unwrap();
         let acts = net.sync(a).carry_out(done).unwrap();
         net.actions(a, acts);
         // content first, synced up, then the grant; or the grant, content, then the first sync
@@ -682,12 +536,12 @@ fn logged_commits(net: &mut Net, s: usize, n: usize, l: &osis_base::LabelId) -> 
 }
 
 // spec/permissions.md §3 (removal placed first): a content write, then a removal, both before the
-// next sync; that sync places the removal (which carries the group's new `keys.0`) under both of
-// the group's labels before the earlier content write, at each host whichever reader's copy it
+// next sync; that sync places the removal (which carries the group's new `keys.0`) under the
+// group's label before the earlier content write, at each of its hosts whichever reader's copy it
 // takes first. Over several seeds, so the commits' blob IDs sort both ways: nothing on the way
 // orders by blob ID.
 #[test]
-fn removal_placed_first_under_every_label_spec_perm_3() {
+fn removal_placed_first_at_every_host_spec_perm_3() {
     for seeds in [[1, 2, 3], [4, 5, 6], [11, 12, 13], [21, 22, 23]] {
         removal_placed_first(seeds);
     }
@@ -700,16 +554,10 @@ fn removal_placed_first([sa, sb, sc]: [u64; 3]) {
     let a = net.node(sa, &[s0, s1]);
     let b = net.node(sb, &[s0, s1]);
     let c = net.node(sc, &[s0, s1]);
-    let g = net.group(a, &[(b, Role::Write), (c, Role::Read)], &[s0]);
-    let addr = net.address(s1);
-    let (l1, done) = net.engine(a).create_label(&g, &[addr]).unwrap();
-    let acts = net.sync(a).carry_out(done).unwrap();
-    net.actions(a, acts);
+    let g = net.group(a, &[(b, Role::Write), (c, Role::Read)], &[s0, s1]);
     let t = net.item(a, g, g, "before");
     net.run();
-    let labels: Vec<osis_base::LabelId> = net.group_labels(a).into_iter().filter(|(x, _)| *x == g).map(|(_, l)| l.id).collect();
-    assert_eq!(labels.len(), 2);
-    assert!(labels.contains(&l1));
+    let l = net.engine(a).label_of(&g).unwrap().unwrap().0;
     assert_eq!(net.read(c, t), Some(s("before")));
     let ct_ = net.tid(c);
     // a content write not yet logged, then the removal
@@ -722,7 +570,7 @@ fn removal_placed_first([sa, sb, sc]: [u64; 3]) {
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
     net.run();
-    for (s, l) in [(s0, labels.iter().find(|l| **l != l1).copied().unwrap()), (s1, l1)] {
+    for s in [s0, s1] {
         let order = logged_commits(&mut net, s, a, &l);
         let (r, w) = (order.iter().position(|x| *x == removal), order.iter().position(|x| *x == after));
         assert!(r.is_some() && w.is_some() && r < w, "seeds {sa} {sb} {sc}, host {s}: removal at {r:?}, later content at {w:?}");
@@ -759,12 +607,12 @@ fn reused_blob(net: &mut Net, a: usize, b: usize, role: Role, host: usize) -> (o
     (t, Ak::new(BLOB.ak()).unwrap(), [c1, c2], v2, shared, unique)
 }
 
-// spec/sync.md §3 (closure: the chunk and tree-node blobs the commits reference), §2
-// (replacement): chunks the live value reuses are listed only by the version that introduced
-// them; once that version is purged and the label replaced, the writer still logs them under
-// the new label with the live body, so a reader there reads the value.
+// spec/sync.md §3 (closure: the chunk and tree-node blobs the commits reference), §5
+// (re-registration): chunks the live value reuses are listed only by the version that introduced
+// them; once that version is purged and the host lost the label, the writer still logs them there
+// with the live body, so a reader there reads the value.
 #[test]
-fn reused_chunks_follow_a_new_label_spec_sync_3() {
+fn reused_chunks_follow_the_live_body_to_a_wiped_host_spec_sync_3() {
     let (mut net, host, [a, b]) = hosted_nodes::<2>();
     let (t, blob_ak, [c1, _], v2, shared, _) = reused_blob(&mut net, a, b, Role::Read, host);
     let mut m = Mutation::new();
@@ -772,15 +620,19 @@ fn reused_chunks_follow_a_new_label_spec_sync_3() {
     m.purge_commit(c1, t, blob_ak.clone());
     net.engine(a).commit(m).unwrap().unwrap();
     net.run();
-    let g = net.engine(a).groups_of(&t).into_iter().next().unwrap();
-    let old = net.label(a);
-    let (new, acts) = net.sync(a).replace_label(&g, &old).unwrap();
-    net.actions(a, acts);
+    let l = net.label(a);
+    net.set_online(a, false);
+    net.set_online(b, false);
+    net.wipe_host(host);
+    net.set_online(a, true);
+    net.set_online(b, true);
+    // past the redial backoff
+    net.advance(120_000);
     net.run();
     net.run();
     net.trace(&[a, b]);
-    let under: BTreeSet<_> = net.host_ids(host, &new).into_iter().collect();
-    assert!(shared.is_subset(&under), "reused chunks under the new label: {} of {}", shared.intersection(&under).count(), shared.len());
+    let under: BTreeSet<_> = net.host_ids(host, &l).into_iter().collect();
+    assert!(shared.is_subset(&under), "reused chunks at the wiped host: {} of {}", shared.intersection(&under).count(), shared.len());
     let acts = net.sync(b).fetch_missing();
     net.actions(b, acts);
     net.settle(100_000);
@@ -1300,8 +1152,8 @@ fn inbox_hints_only_from_admin_grants_spec_crypto_7() {
 fn role_change_judges_only_its_labels_spec_sync_6() {
     let (mut net, host, [a, b, c]) = hosted_nodes::<3>();
     let addr = net.address(host);
-    let g0 = net.group_seeded(a, &[(b, Role::Read)], vec![addr.clone()], 1);
-    let g1 = net.group_seeded(a, &[(b, Role::Read)], vec![addr], 2);
+    let g0 = net.group_at(a, &[(b, Role::Read)], vec![addr.clone()]);
+    let g1 = net.group_at(a, &[(b, Role::Read)], vec![addr]);
     for g in [g0, g1] {
         for i in 0..3 {
             let t = net.item(a, g, g, &format!("t{i}"));
@@ -1342,7 +1194,7 @@ fn role_change_judges_only_its_labels_spec_sync_6() {
 fn marked_by_a_pass_passes_in_the_same_step_spec_sync_6() {
     let (mut net, host, [a, b, c]) = hosted_nodes::<3>();
     let addr = net.address(host);
-    let g = net.group_seeded(a, &[(b, Role::Read)], vec![addr], 1);
+    let g = net.group_at(a, &[(b, Role::Read)], vec![addr]);
     for i in 0..3 {
         let t = net.item(a, g, g, &format!("t{i}"));
         net.write(a, t, "v");
@@ -1367,8 +1219,8 @@ fn marked_by_a_pass_passes_in_the_same_step_spec_sync_6() {
 fn work_waiting_bounded_spec_sync_6() {
     let (mut net, host, [a, b]) = hosted_nodes::<2>();
     let addr = net.address(host);
-    let g0 = net.group_seeded(a, &[(b, Role::Read)], vec![addr.clone()], 1);
-    let _idle = net.group_seeded(a, &[(b, Role::Read)], vec![addr], 2);
+    let g0 = net.group_at(a, &[(b, Role::Read)], vec![addr.clone()]);
+    let _idle = net.group_at(a, &[(b, Role::Read)], vec![addr]);
     let t = net.item(a, g0, g0, "t");
     net.run();
     net.advance(61_000);
@@ -1404,7 +1256,7 @@ fn work_left_by_a_pass_is_not_waiting_spec_sync_6() {
     let a = net.node(1, &[host]);
     let b = net.node(2, &[host]);
     let addr = net.address(host);
-    let g0 = net.group_seeded(a, &[(b, Role::Read)], vec![addr], 1);
+    let g0 = net.group_at(a, &[(b, Role::Read)], vec![addr]);
     let t = net.item(a, g0, g0, "t");
     net.run();
     let cap = 16;
@@ -1624,7 +1476,7 @@ fn suspect_report_on_no_state_writes_nothing_spec_sync_7() {
 fn suspect_report_outside_the_shared_set_is_ignored_spec_permissions_4() {
     let (mut net, [a, b, c], _, l) = suspect_world();
     let addr = net.address(0);
-    let g2 = net.group_seeded(a, &[(b, Role::Write)], vec![addr], 2);
+    let g2 = net.group_at(a, &[(b, Role::Write)], vec![addr]);
     let t = net.item(a, g2, g2, "v1");
     net.run();
     let l2 = net.sync(b).labels().into_iter().find(|x| x.0 == g2).expect("b syncs g2's label").1.id;
@@ -1694,7 +1546,7 @@ fn in_groups(k: usize) -> (Net, usize, usize, usize, usize, Vec<osis_base::Tid>)
     let mut gs = Vec::new();
     for i in 0..k {
         let holders: &[(usize, Role)] = if i == 0 { &[(a, Role::Write), (c, Role::Read)] } else { &[(a, Role::Write)] };
-        gs.push(net.group_seeded(b, holders, vec![addr.clone()], i as u64 + 1));
+        gs.push(net.group_at(b, holders, vec![addr.clone()]));
     }
     net.run();
     (net, a, b, c, host, gs)
@@ -1776,7 +1628,7 @@ fn chain_copy_shared_reader_of_one_label_spec_sync_3() {
 #[test]
 fn reused_chain_copy_tombstoned_placed_fresh_spec_sync_3() {
     let (mut net, a, b, _, host, gs) = in_groups(1);
-    let g2 = net.group_seeded(b, &[], vec![net.address(host)], 7);
+    let g2 = net.group_at(b, &[], vec![net.address(host)]);
     net.run();
     let (_, old, _) = chain_blobs(&mut net, a, host, &gs);
     let l2 = net.group_labels(b).into_iter().find(|(g, _)| *g == g2).map(|(_, l)| l.id).unwrap();

@@ -82,8 +82,6 @@ impl Phase {
 #[derive(Clone)]
 pub(crate) struct LConn {
     pub group: Tid,
-    /// The label's index (recorded, or the hint's).
-    pub index: u64,
     pub phase: Phase,
     /// The newest step of the label known at the peer here: its head while open (its stream
     /// names each move), else where a Behind walk, a static entry's grant or the last open there
@@ -574,10 +572,9 @@ impl SyncEngine {
         let labels = self.wanted_labels();
         for (conn, host) in conns {
             for (g, l, hosts) in &labels {
-                // failed under another thing or a hint's other index (a hint's sender named this
-                // label so): it starts again as what wants it now
-                let index = self.state.hints.get(l).filter(|h| h.via.is_none() && h.thing == *g).map(|h| h.index);
-                let known = self.conns.get(&conn).and_then(|c| c.labels.get(l)).is_some_and(|x| (x.group == *g && index.is_none_or(|i| i == x.index)) || !matches!(x.phase, Phase::Failed { .. } | Phase::Refused { .. }));
+                // failed under another thing (a hint's sender named this label so): it starts
+                // again as what wants it now
+                let known = self.conns.get(&conn).and_then(|c| c.labels.get(l)).is_some_and(|x| x.group == *g || !matches!(x.phase, Phase::Failed { .. } | Phase::Refused { .. }));
                 if !known && hosts.contains(&host) {
                     self.start_label(conn, *g, *l, out)?;
                 }

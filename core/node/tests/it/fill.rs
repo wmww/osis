@@ -262,9 +262,8 @@ fn a_deposit_comes_after_order_0_spec_sync_6() {
         net.engine(a).commit(m).unwrap().unwrap();
     });
     let (a, c, g, l, host) = (f.a, f.c, f.g, f.l, f.host);
-    let (_, gl) = f.net.group_labels(a).into_iter().find(|(_, x)| x.id == l).unwrap();
     let head = f.net.host_path(host, &l).last().unwrap().clone();
-    let keys = f.net.engine(a).head_keys(&g, gl.index, &head).unwrap();
+    let keys = f.net.engine(a).head_keys(&g, &head).unwrap();
     let mut rng = osis_crypto::SeededRng::from_u64(0);
     let prefix = osis_label::Prefix::new(osis_label::Prefix::random_salt(&mut rng), None, Vec::new()).unwrap();
     let (_, blob) = osis_label::frame(&prefix, b"deposit", &mut rng).unwrap();
@@ -403,9 +402,8 @@ fn junk_listed_goes_when_it_comes_spec_sync_6() {
     let mut f = chat(Role::Read);
     let (c, host, l, g) = (f.c, f.host, f.l, f.g);
     let a = f.a;
-    let (_, gl) = f.net.group_labels(a).into_iter().find(|(_, x)| x.id == l).unwrap();
     let head = f.net.host_path(host, &l).last().unwrap().clone();
-    let keys = f.net.engine(a).head_keys(&g, gl.index, &head).unwrap();
+    let keys = f.net.engine(a).head_keys(&g, &head).unwrap();
     let mut rng = osis_crypto::SeededRng::from_u64(0);
     let prefix = osis_label::Prefix::new(osis_label::Prefix::random_salt(&mut rng), None, Vec::new()).unwrap();
     let (_, blob) = osis_label::frame(&prefix, b"junk", &mut rng).unwrap();

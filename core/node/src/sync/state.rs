@@ -44,8 +44,6 @@ const FORGET: &[u8] = b"y/f";
 /// while entries of them are known here: what deleting them at hosts reads after a restart
 /// (`SyncEngine::sweep_forgotten` removes them with the rest).
 const FORGOTTEN: &[u8] = b"y/G";
-/// Replaced labels this admin is done with (`SyncEngine::retire_at`).
-const RETIRED: &[u8] = b"y/q";
 /// Inbox deliveries re-sent after `INBOX_LIFETIME` while unanswered (`SyncEngine::resend_inbox`).
 const SENT_INBOX: &[u8] = b"y/v";
 /// Commits for a node over a direct connection, until the app takes them (`take_direct`).
@@ -268,8 +266,6 @@ pub struct SentInbox {
     pub at: u64,
     /// Re-sends so far.
     pub tries: u32,
-    /// The inbox label it last went under (`None`: not sent yet).
-    pub label: Option<LabelId>,
 }
 
 impl SentInbox {
@@ -284,8 +280,6 @@ impl SentInbox {
 #[derive(Clone, Debug)]
 pub struct Hint {
     pub thing: Tid,
-    /// The label's index (its role keys derive from it, spec/sync.md §2).
-    pub index: u64,
     pub hosts: Vec<Address>,
     /// The key actor whose static entry may open it; no other key actor's is presented.
     pub via: Option<Tid>,
@@ -472,11 +466,6 @@ pub struct State {
     /// Durable commits forgotten whole with entries known here, their headers (`y/G`; read
     /// into `Memory::forgotten`).
     pub forgotten: BTreeMap<CommitId, std::sync::Arc<osis_commit::Header>>,
-    /// Replaced labels this admin no longer syncs (`y/q`, spec/sync.md §2).
-    pub retired: crate::engine::memo::StampedSet<LabelId>,
-    /// When this admin first saw each replaced label it still syncs (wall ms, `y/q`
-    /// with a time): retired after `ROLE_KEEP` whatever its hosts say.
-    pub replaced_seen: BTreeMap<LabelId, u64>,
     /// Inbox deliveries by (holder, commit), until the holder acts or the re-sends run out.
     pub sent_inbox: BTreeMap<(Tid, CommitId), SentInbox>,
     /// Commits for nodes over a direct connection (pairing), until the app takes them.
@@ -859,14 +848,6 @@ impl State {
                     let (k, o) = decode_out(rest, &v).map_err(|_| Error::Corrupt("sync outbox record"))?;
                     s.outbox.insert(k, o);
                 }
-                b"q" => {
-                    let l = LabelId(r.arr()?);
-                    if v.is_empty() {
-                        s.retired.insert(l);
-                    } else {
-                        s.replaced_seen.insert(l, Rd::new(&v).u64()?);
-                    }
-                }
                 b"f" => {
                     s.forget.insert(r.tid()?);
                 }
@@ -912,12 +893,11 @@ impl State {
                     let l = LabelId(r.arr()?);
                     let mut x = Rd::new(&v);
                     let thing = x.tid()?;
-                    let index = x.u64()?;
                     let hosts = decode_addrs(&mut x, "hint")?;
                     let flags = x.u8()?;
                     let via = if flags & 1 != 0 { Some(x.tid()?) } else { None };
                     let inbox = if flags & 2 != 0 { Some(InboxSource { label: LabelId(x.arr()?), blob: BlobId(x.arr()?), until: x.u64()? }) } else { None };
-                    s.hints.insert(l, Hint { thing, index, hosts, via, inbox });
+                    s.hints.insert(l, Hint { thing, hosts, via, inbox });
                 }
                 _ => {}
             }
@@ -1888,31 +1868,13 @@ impl State {
         }
     }
 
-    pub fn retire(&mut self, l: LabelId) {
-        self.replaced_seen.remove(&l);
-        if self.retired.insert(l) {
-            self.put(key(RETIRED, &[&l.0]), Vec::new());
-        }
-    }
-
-    /// When a replaced label was first seen (recorded now if not yet).
-    pub fn replaced_seen(&mut self, l: LabelId, now: u64) -> u64 {
-        if let Some(t) = self.replaced_seen.get(&l) {
-            return *t;
-        }
-        self.replaced_seen.insert(l, now);
-        self.put(key(RETIRED, &[&l.0]), Wr::new().u64(now).take());
-        now
-    }
-
     /// Records an inbox delivery, or a re-send of one (counted).
-    pub fn note_sent(&mut self, holder: Tid, commit: CommitId, things: Vec<Tid>, edge_only: bool, at: u64, label: LabelId) {
-        let label = Some(label);
+    pub fn note_sent(&mut self, holder: Tid, commit: CommitId, things: Vec<Tid>, edge_only: bool, at: u64) {
         let x = match self.sent_inbox.get(&(holder, commit)) {
             // the first send of a delivery queued unsent (`at` 0) is no re-send
-            Some(old) if old.at == 0 => SentInbox { at, label, ..old.clone() },
-            Some(old) => SentInbox { at, label, tries: old.tries.saturating_add(1), ..old.clone() },
-            None => SentInbox { holder, commit, things, edge_only, at, tries: 0, label },
+            Some(old) if old.at == 0 => SentInbox { at, ..old.clone() },
+            Some(old) => SentInbox { at, tries: old.tries.saturating_add(1), ..old.clone() },
+            None => SentInbox { holder, commit, things, edge_only, at, tries: 0 },
         };
         self.put(key(SENT_INBOX, &[holder.as_bytes(), &commit.0]), encode_sent(&x));
         self.sent_inbox.insert((holder, commit), x);
@@ -1924,7 +1886,7 @@ impl State {
         if self.sent_inbox.contains_key(&(holder, commit)) {
             return;
         }
-        let x = SentInbox { holder, commit, things, edge_only, at: 0, tries: 0, label: None };
+        let x = SentInbox { holder, commit, things, edge_only, at: 0, tries: 0 };
         self.put(key(SENT_INBOX, &[holder.as_bytes(), &commit.0]), encode_sent(&x));
         self.sent_inbox.insert((holder, commit), x);
     }
@@ -2147,7 +2109,7 @@ impl State {
             h.via = self.hints.get(&l).and_then(|x| x.via);
         }
         let flags = u8::from(h.via.is_some()) | u8::from(h.inbox.is_some()) << 1;
-        let mut w = encode_addrs(Wr::new().raw(h.thing.as_bytes()).u64(h.index), &h.hosts).u8(flags);
+        let mut w = encode_addrs(Wr::new().raw(h.thing.as_bytes()), &h.hosts).u8(flags);
         if let Some(v) = &h.via {
             w = w.raw(v.as_bytes());
         }
@@ -2286,10 +2248,7 @@ fn encode_sent(x: &SentInbox) -> Vec<u8> {
     for t in &x.things {
         w = w.raw(t.as_bytes());
     }
-    match &x.label {
-        Some(l) => w.u8(1).raw(&l.0).take(),
-        None => w.u8(0).take(),
-    }
+    w.take()
 }
 
 /// `State::note_unsent` inside a flow's transaction (the commit's own): a crash before
@@ -2297,7 +2256,7 @@ fn encode_sent(x: &SentInbox) -> Vec<u8> {
 fn note_unsent_tx(tx: &mut Tx<'_>, holder: Tid, commit: CommitId, things: Vec<Tid>, edge_only: bool) -> Result<()> {
     let k = key(SENT_INBOX, &[holder.as_bytes(), &commit.0]);
     if tx.txn.get_local(&k)?.is_none() {
-        let x = SentInbox { holder, commit, things, edge_only, at: 0, tries: 0, label: None };
+        let x = SentInbox { holder, commit, things, edge_only, at: 0, tries: 0 };
         tx.txn.put_local(&k, &encode_sent(&x), Shred::No)?;
     }
     Ok(())
@@ -2408,8 +2367,10 @@ fn decode_sent(v: &[u8]) -> Result<SentInbox> {
     for _ in 0..n {
         things.push(r.tid()?);
     }
-    let label = if r.u8()? == 1 { Some(LabelId(r.arr()?)) } else { None };
-    Ok(SentInbox { holder, commit, things, edge_only, at, tries, label })
+    if !r.is_empty() {
+        return Err(Error::Corrupt("sent inbox"));
+    }
+    Ok(SentInbox { holder, commit, things, edge_only, at, tries })
 }
 
 /// The records engine transactions touch (`Engine::set_sync_records`).
@@ -2515,12 +2476,12 @@ mod tests {
         let mut s = State::default();
         let src = InboxSource { label: LabelId([4; 16]), blob: BlobId([5; 32]), until: 77 };
         let addr = Address { url: "quic://s".into(), key: [6; 32] };
-        s.add_hint(LabelId([1; 16]), Hint { thing: Tid::from_bytes([2; 15]), index: 3, hosts: vec![addr], via: Some(Tid::from_bytes([3; 15])), inbox: Some(src) });
-        s.add_hint(LabelId([2; 16]), Hint { thing: Tid::from_bytes([2; 15]), index: 0, hosts: Vec::new(), via: None, inbox: None });
+        s.add_hint(LabelId([1; 16]), Hint { thing: Tid::from_bytes([2; 15]), hosts: vec![addr], via: Some(Tid::from_bytes([3; 15])), inbox: Some(src) });
+        s.add_hint(LabelId([2; 16]), Hint { thing: Tid::from_bytes([2; 15]), hosts: Vec::new(), via: None, inbox: None });
         s.flush(e).unwrap();
         let back = State::load(e).unwrap();
         let h = back.hints.get(&LabelId([1; 16])).unwrap();
-        assert_eq!((h.index, h.via, h.inbox, h.hosts.len()), (3, Some(Tid::from_bytes([3; 15])), Some(src), 1));
+        assert_eq!((h.via, h.inbox, h.hosts.len()), (Some(Tid::from_bytes([3; 15])), Some(src), 1));
         let h = back.hints.get(&LabelId([2; 16])).unwrap();
         assert_eq!((h.via, h.inbox), (None, None));
     }
@@ -2531,8 +2492,8 @@ mod tests {
     fn inbox_hint_keeps_followed_key_actor_spec_sync_5() {
         let mut s = State::default();
         let (l, t, k) = (LabelId([1; 16]), Tid::from_bytes([2; 15]), Tid::from_bytes([3; 15]));
-        s.add_hint(l, Hint { thing: t, index: 0, hosts: Vec::new(), via: Some(k), inbox: None });
-        s.add_hint(l, Hint { thing: t, index: 0, hosts: Vec::new(), via: None, inbox: None });
+        s.add_hint(l, Hint { thing: t, hosts: Vec::new(), via: Some(k), inbox: None });
+        s.add_hint(l, Hint { thing: t, hosts: Vec::new(), via: None, inbox: None });
         assert_eq!(s.hints.get(&l).and_then(|h| h.via), Some(k));
     }
 

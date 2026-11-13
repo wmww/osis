@@ -45,7 +45,7 @@ fn alice_and_bob_on(net: &mut Net, host: usize, a: usize, b: usize, extra: Vec<o
     e.commit(m).unwrap();
     let mut at = vec![addr];
     at.extend(extra);
-    let (_, done) = net.engine(a).create_label(&g, &at).unwrap();
+    let done = net.engine(a).give_own_secrets_on(&g, &at).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
     net.run();
@@ -151,12 +151,17 @@ fn inbox_at_another_group_gets_no_copy_spec_sync_3() {
     let h = e.new_thing(&mut m, bob);
     m.set(h, &ct::GROUP, &ct::Group::default()).unwrap();
     e.commit(m).unwrap();
-    // a plain group of Bob's account: its label's deposit key derives from Bob's deposit seed
-    let (hl, acts) = net.sync(b).create_label(&h, vec![addr.clone()]).unwrap();
+    let done = net.engine(b).give_own_secrets_on(&h, std::slice::from_ref(&addr)).unwrap();
+    let hl = net.engine(b).label_of(&h).unwrap().unwrap().0;
+    let acts = net.sync(b).carry_out(done).unwrap();
     net.actions(b, acts);
+    // Bob's `keys.0` names H's label as his inbox, with H's deposit seed (a sender derives the
+    // inbox's deposit key from it)
+    let seed = net.engine(b).get_typed(&h, &ct::KEYS).unwrap().unwrap().deposit_seed.unwrap();
     let mut m = Mutation::new();
     let inbox = ct::Inbox { label: hl, hosts: vec![addr] };
     m.op(bob, &ct::KEYS, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Field(4)], op: osis_crdt::Op::Replace(osis_schema::Codec::to_value(&Some(inbox))) }).unwrap();
+    m.op(bob, &ct::KEYS, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Field(5)], op: osis_crdt::Op::Replace(osis_schema::Codec::to_value(&Some(seed))) }).unwrap();
     net.engine(b).commit(m).unwrap();
     net.run();
     net.pair(b, a);
@@ -194,7 +199,7 @@ fn inbox_copy_names_only_touched_things_spec_sync_3() {
     let keys = net.engine(a).get_typed(&bob, &ct::KEYS).unwrap().unwrap();
     let ct::KemKey::X25519MlKem768(kb) = &keys.key.or(keys.read.map(|k| k.kem_key)).unwrap();
     let kem = osis_crypto::KemPublicKey::from_slice(kb).unwrap();
-    let payload = osis_label::InboxPayload { chain: Vec::new(), records: Vec::new(), commit, things: vec![osis_label::InboxThing { tid: p, label: Some(osis_label::InboxLabel { id: home, index: 0, hosts: vec![net.address(host)] }), delete_keys: None }] };
+    let payload = osis_label::InboxPayload { chain: Vec::new(), records: Vec::new(), commit, things: vec![osis_label::InboxThing { tid: p, label: Some(osis_label::InboxLabel { id: home, hosts: vec![net.address(host)] }), delete_keys: None }] };
     let now = osis_base::WallMs(net.now());
     let blob = osis_label::seal_inbox_blob(&bob, &kem, &payload, now, &mut osis_crypto::SeededRng::from_u64(0)).unwrap();
     let id = osis_label::blob_id(&blob);
@@ -267,7 +272,7 @@ fn stranger_inbox_commit_not_copied_nor_dialed_spec_sync_3() {
     net.run();
     let c = net.engine(a).commit_ids().into_iter().find(|c| net.engine(a).header(c).is_some_and(|h| h.aspects.iter().any(|x| x.tid == t && x.ak.as_str() == "created.0"))).unwrap();
     let rogue = osis_label::Address { url: "quic://rogue".into(), key: [0x77; 32] };
-    let things = vec![osis_label::InboxThing { tid: t, label: Some(osis_label::InboxLabel { id: LabelId([0x55; 16]), index: 0, hosts: vec![rogue.clone()] }), delete_keys: None }];
+    let things = vec![osis_label::InboxThing { tid: t, label: Some(osis_label::InboxLabel { id: LabelId([0x55; 16]), hosts: vec![rogue.clone()] }), delete_keys: None }];
     let exp = net.now() + INBOX_LIFETIME_MS;
     net.set_online(b, false);
     let id = plant_inbox(&mut net, a, (host, &home), bob, &c, things, exp);
@@ -300,7 +305,7 @@ fn grant_undelivered(net: &mut Net, a: usize, b: usize, host: usize, home: &Labe
     let now = net.now();
     osis_proto::LabelStore::delete(&mut *net.hosts[host].hub.store(), home, &fresh[0], now).unwrap();
     let gl = net.sync(a).labels().into_iter().find(|(x, _)| *x == g).unwrap().1;
-    (c, osis_label::InboxThing { tid: g, label: Some(osis_label::InboxLabel { id: gl.id, index: gl.index, hosts: gl.hosts.clone() }), delete_keys: None })
+    (c, osis_label::InboxThing { tid: g, label: Some(osis_label::InboxLabel { id: gl.id, hosts: gl.hosts.clone() }), delete_keys: None })
 }
 
 // spec/sync.md §3: an inbox blob whose expiry is far below `INBOX_LIFETIME` gets no copy (its
@@ -328,7 +333,7 @@ fn inbox_hint_goes_with_its_blob_spec_sync_3() {
     let (mut net, host, a, b, _, bob, g, home) = alice_and_bob();
     let (c, mut thing) = grant_undelivered(&mut net, a, b, host, &home, g, bob);
     let rogue = osis_label::Address { url: "quic://rogue".into(), key: [0x77; 32] };
-    thing.label = Some(osis_label::InboxLabel { id: LabelId([0x55; 16]), index: 0, hosts: vec![rogue.clone()] });
+    thing.label = Some(osis_label::InboxLabel { id: LabelId([0x55; 16]), hosts: vec![rogue.clone()] });
     let ttl = 10 * 60_000;
     let exp = net.now() + ttl;
     plant_inbox(&mut net, a, (host, &home), bob, &c, vec![thing], exp);
@@ -540,7 +545,7 @@ fn connected_sender_invite_goes_through_spec_sync_3() {
     m.set(g2, &ct::GROUP, &ct::Group::default()).unwrap();
     e.commit(m).unwrap();
     let addr = net.address(0);
-    let (_, done) = net.engine(a).create_label(&g2, &[addr]).unwrap();
+    let done = net.engine(a).give_own_secrets_on(&g2, &[addr]).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
     let t = net.item(a, g2, g2, "second");
@@ -667,7 +672,7 @@ fn removed_holder_invite_is_request_spec_sync_3() {
     let gc = e.new_thing(&mut m, carol.account);
     m.set(gc, &ct::GROUP, &ct::Group::default()).unwrap();
     e.commit(m).unwrap();
-    let (_, done) = net.engine(c).create_label(&gc, &[addr]).unwrap();
+    let done = net.engine(c).give_own_secrets_on(&gc, &[addr]).unwrap();
     let acts = net.sync(c).carry_out(done).unwrap();
     net.actions(c, acts);
     let x = grant_commit(&mut net, c, gc, bob);
@@ -767,7 +772,7 @@ fn inbox_blob_cannot_rename_a_groups_label_spec_sync_3() {
     net.advance(61_000);
     let gl = net.sync(a).labels().into_iter().find(|(x, _)| *x == g).unwrap().1;
     let c = net.engine(a).commit_ids().into_iter().rev().find(|c| net.engine(a).header(c).is_some_and(|h| h.aspects.iter().any(|x| x.tid == t && x.ak.as_str() == "secrets.0") && h.aspects.iter().any(|x| x.tid == t && x.ak.as_str() == "roles.0"))).unwrap();
-    let thing = osis_label::InboxThing { tid: t, label: Some(osis_label::InboxLabel { id: gl.id, index: gl.index, hosts: gl.hosts.clone() }), delete_keys: None };
+    let thing = osis_label::InboxThing { tid: t, label: Some(osis_label::InboxLabel { id: gl.id, hosts: gl.hosts.clone() }), delete_keys: None };
     let exp = net.now() + INBOX_LIFETIME_MS;
     net.set_online(b, false);
     let id = plant_inbox(&mut net, a, (host, &home), bob, &c, vec![thing], exp);
@@ -795,7 +800,7 @@ fn hint_under_another_thing_gives_way_to_the_group_spec_sync_3() {
     net.advance(61_000);
     let gl = net.sync(a).labels().into_iter().find(|(x, _)| *x == g).unwrap().1;
     let c = net.engine(a).commit_ids().into_iter().rev().find(|c| net.engine(a).header(c).is_some_and(|h| h.aspects.iter().any(|x| x.tid == t && x.ak.as_str() == "secrets.0") && h.aspects.iter().any(|x| x.tid == t && x.ak.as_str() == "roles.0"))).unwrap();
-    let thing = osis_label::InboxThing { tid: t, label: Some(osis_label::InboxLabel { id: gl.id, index: gl.index, hosts: gl.hosts.clone() }), delete_keys: None };
+    let thing = osis_label::InboxThing { tid: t, label: Some(osis_label::InboxLabel { id: gl.id, hosts: gl.hosts.clone() }), delete_keys: None };
     let exp = net.now() + INBOX_LIFETIME_MS;
     plant_inbox(&mut net, a, (host, &home), bob, &c, vec![thing], exp);
     net.advance(61_000);
@@ -821,7 +826,7 @@ fn hint_first_then_group_grant(hosts: impl Fn(&[ct::Address]) -> Vec<ct::Address
     grant(&mut net, a, g, bob);
     net.advance(61_000);
     let first = net.host_ids(host, &home).into_iter().min().unwrap();
-    let thing = osis_label::InboxThing { tid: t, label: Some(osis_label::InboxLabel { id: gl.id, index: gl.index, hosts: hosts(&gl.hosts) }), delete_keys: None };
+    let thing = osis_label::InboxThing { tid: t, label: Some(osis_label::InboxLabel { id: gl.id, hosts: hosts(&gl.hosts) }), delete_keys: None };
     let mut exp = net.now() + INBOX_LIFETIME_MS;
     while plant_inbox(&mut net, a, (host, &home), bob, &c, vec![thing.clone()], exp) > first {
         exp -= 1;
@@ -883,7 +888,7 @@ fn hint_at_a_silent_host_does_not_hold_off_the_group_spec_sync_3() {
     grant(&mut net, a, g, bob);
     net.advance(61_000);
     let first = net.host_ids(host, &home).into_iter().min().unwrap();
-    let thing = osis_label::InboxThing { tid: t, label: Some(osis_label::InboxLabel { id: gl.id, index: gl.index, hosts: vec![net.address(silent)] }), delete_keys: None };
+    let thing = osis_label::InboxThing { tid: t, label: Some(osis_label::InboxLabel { id: gl.id, hosts: vec![net.address(silent)] }), delete_keys: None };
     let mut exp = net.now() + INBOX_LIFETIME_MS;
     while plant_inbox(&mut net, a, (host, &home), bob, &c, vec![thing.clone()], exp) > first {
         exp -= 1;
@@ -925,7 +930,7 @@ fn hint_at_a_claiming_host_does_not_hold_off_the_group_spec_sync_3() {
     net.advance(61_000);
     claiming_host(&mut net, evil, host, &gl.id);
     let first = net.host_ids(host, &home).into_iter().min().unwrap();
-    let thing = osis_label::InboxThing { tid: t, label: Some(osis_label::InboxLabel { id: gl.id, index: gl.index, hosts: vec![net.address(evil)] }), delete_keys: None };
+    let thing = osis_label::InboxThing { tid: t, label: Some(osis_label::InboxLabel { id: gl.id, hosts: vec![net.address(evil)] }), delete_keys: None };
     let mut exp = net.now() + INBOX_LIFETIME_MS;
     while plant_inbox(&mut net, a, (host, &home), bob, &c, vec![thing.clone()], exp) > first {
         exp -= 1;
@@ -958,8 +963,7 @@ fn claiming_host(net: &mut Net, evil: usize, host: usize, l: &LabelId) {
     }
 }
 
-/// One seed of `hint_turns`: blobs naming `g`'s label under other things (some at a wrong index),
-/// at any of the real host, hosts that never answer, hosts that hold its real path and none of
+/// One seed of `hint_turns`: blobs naming `g`'s label under other things, at any of the real host, hosts that never answer, hosts that hold its real path and none of
 /// its entries, and hosts without the label, in any order with the
 /// group's own grant, while time passes and the real host's replies lag.
 fn hint_turns_seed(seed: u64) {
@@ -999,8 +1003,7 @@ fn hint_turns_seed(seed: u64) {
     for (t, c) in &planted {
         for _ in 0..1 + rng(2) {
             let hosts: Vec<_> = named.iter().filter(|_| rng(2) == 0).map(|h| net.address(*h)).collect();
-            let index = gl.index + rng(2);
-            let thing = osis_label::InboxThing { tid: *t, label: Some(osis_label::InboxLabel { id: gl.id, index, hosts }), delete_keys: None };
+            let thing = osis_label::InboxThing { tid: *t, label: Some(osis_label::InboxLabel { id: gl.id, hosts }), delete_keys: None };
             plant_inbox(&mut net, a, (host, &home), bob, c, vec![thing], exp);
             exp -= 1;
         }
@@ -1193,9 +1196,10 @@ fn reseals_stay_in_the_budget_spec_sync_3() {
     assert_eq!(budget_left(&mut net, host, &home), left - 6, "not stamped");
 }
 
-// spec/sync.md §3: a copied grant's thing gets a new `label.0`: the copy under home gains it
+// spec/sync.md §3: a copied grant's thing gets a new `label.0` write (a step registering a
+// refreshed deposit seed): the copy under home gains it
 #[test]
-fn copied_grant_gains_a_new_label_spec_sync_3() {
+fn copied_grant_gains_a_new_step_spec_sync_3() {
     let (mut net, _, a, b, _, bob, g, home) = alice_and_bob();
     grant(&mut net, a, g, bob);
     for _ in 0..4 {
@@ -1205,15 +1209,15 @@ fn copied_grant_gains_a_new_label_spec_sync_3() {
     let copies = |net: &mut Net, c: &osis_base::CommitId| net.sync(b).entries(&home).iter().any(|(_, k)| matches!(k, osis_node::sync::EntryKind::Commit { commit, .. } if commit == c));
     let first = net.engine(b).aspect_commit(&g, "label.0").expect("Bob holds the label").0;
     assert!(copies(&mut net, &first), "the first label's copy under home");
-    let old = net.engine(a).labels_of(&g).iter().find(|l| !l.replaced).unwrap().id;
-    let (_, acts) = net.sync(a).replace_label(&g, &old).unwrap();
+    let done = net.engine(a).refresh_deposit_seed(&g).unwrap();
+    let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
     for _ in 0..4 {
         net.advance(70_000);
     }
     let next = net.engine(b).aspect_commit(&g, "label.0").expect("Bob holds the label").0;
     assert_ne!(first, next);
-    assert!(copies(&mut net, &next), "the new label's copy under home");
+    assert!(copies(&mut net, &next), "the new step's copy under home");
 }
 
 // spec/sync.md §3: a blob expiring later than an honest sender's could is not stamped, its expiry being the sender's word; another blob of the commit is
@@ -1471,7 +1475,9 @@ fn readers_burst_under_a_group_inbox_stays_spec_sync_5() {
     let (o, done) = net.engine(a).create_with_admin(&alice.account).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
-    let (l, acts) = net.sync(a).create_label(&o, vec![addr.clone()]).unwrap();
+    let done = net.engine(a).give_own_secrets_on(&o, std::slice::from_ref(&addr)).unwrap();
+    let l = net.engine(a).label_of(&o).unwrap().unwrap().0;
+    let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
     net.run();
     let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
@@ -1598,20 +1604,26 @@ fn hostile_inbox_blob_peak_is_bounded_spec_sync_3() {
 }
 
 // spec/sync.md §2: an actor's home label is the inbox its `keys.0` names, from the commit that
-// makes the label: a sender holding only the actor's `keys.0` finds it there. A plain group's
-// label is no inbox until the group is shared (secrets of its own).
+// makes the label: a sender holding only the actor's `keys.0` finds it there. A plain group has
+// no label and no inbox until it is shared (secrets of its own and its sync ID).
 #[test]
 fn a_home_label_is_named_the_inbox_spec_sync_2() {
     let (mut net, host, [a]) = hosted_nodes::<1>();
     let c = net.node(3, &[host]);
     let g = net.group(a, &[(c, Role::Read)], &[host]);
-    let l = net.engine(a).labels_of(&g).iter().find(|x| !x.replaced).unwrap().id;
+    let l = net.engine(a).labels_of(&g).first().unwrap().id;
     let c0 = net.engine(a).aspect_commit(&g, "keys.0").unwrap().0;
     assert_eq!(net.engine(a).aspect_commit(&g, "label.0").map(|x| x.0), Some(c0), "one commit");
     for n in [a, c] {
         assert_eq!(net.engine(n).inbox_of_actor(&g).unwrap().map(|(o, i)| (o, i.label)), Some((g, l)), "node {n}");
     }
-    let (mut net, _, a, _, _, bob, plain, _) = alice_and_bob();
+    let (mut net, _, a, _, alice, bob, _, _) = alice_and_bob();
+    let e = net.engine(a);
+    let mut m = Mutation::new();
+    let plain = e.new_thing(&mut m, alice);
+    m.set(plain, &ct::GROUP, &ct::Group::default()).unwrap();
+    e.commit(m).unwrap();
+    assert!(net.engine(a).labels_of(&plain).is_empty(), "a plain group has no label");
     assert_eq!(net.engine(a).get_typed(&plain, &ct::KEYS).unwrap().and_then(|k| k.inbox), None, "a plain group names none");
     assert_eq!(net.engine(a).inbox(&plain), None, "and has no inbox: no fallback to its first admin's");
     // shared, it gets secrets of its own, and its label is named in the same commit
@@ -1619,31 +1631,11 @@ fn a_home_label_is_named_the_inbox_spec_sync_2() {
     let done = net.engine(a).grant(&plain, &bob, &edge).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
-    let pl = net.engine(a).labels_of(&plain).iter().find(|x| !x.replaced).unwrap().id;
+    let pl = net.engine(a).labels_of(&plain).first().unwrap().id;
     let c0 = net.engine(a).aspect_commit(&plain, "keys.0").unwrap().0;
     assert_eq!(net.engine(a).get_typed(&plain, &ct::KEYS).unwrap().and_then(|k| k.inbox).map(|i| i.label), Some(pl));
     assert!(net.engine(a).header(&c0).unwrap().aspects.iter().any(|x| x.tid == plain && x.ak.as_str() == "secrets.0"), "with its secrets");
     assert_eq!(net.engine(a).inbox(&plain), Some(pl));
-}
-
-// spec/sync.md §2: replacing the label an actor's `keys.0` names as its inbox names the new one
-// in the same commit, so grants reach it there (a replaced label is not synced).
-#[test]
-fn a_replaced_inbox_is_named_again_spec_sync_2() {
-    let (mut net, _, a, b, _, bob, g, home) = alice_and_bob();
-    let d = net.engine(b).account().unwrap().unwrap().1;
-    let (new, acts) = net.sync(b).replace_label(&d, &home).unwrap();
-    net.actions(b, acts);
-    net.run();
-    net.pair(b, a);
-    for n in [a, b] {
-        assert_eq!(net.engine(n).inbox_of_actor(&bob).unwrap().map(|(_, i)| i.label), Some(new), "node {n}");
-    }
-    grant(&mut net, a, g, bob);
-    for _ in 0..4 {
-        net.advance(70_000);
-    }
-    assert_eq!(net.engine(b).role_on(&g), Some(Role::Read));
 }
 
 // spec/sync.md §2 (one sync ID per actor): a shared thing costs one sync ID and one commit of about
@@ -1715,53 +1707,6 @@ fn an_actor_naming_someone_elses_inbox_hides_nothing_spec_sync_2() {
     assert_eq!(net.engine(b).role_on(&t), Some(Role::Read), "his inbox still opens for him");
 }
 
-// spec/sync.md §3: a grant deposited under Bob's inbox after he replaced it, by a sender still
-// holding his earlier `keys.0`, is read by nobody there: once the sender sees the new inbox it
-// sends again at once (one re-send per replacement it sees, none for another `keys.0` change),
-// not after `INBOX_LIFETIME`.
-#[test]
-fn a_delivery_under_a_replaced_inbox_is_sent_again_spec_sync_3() {
-    let (mut net, _, a, b, _, bob, g, home) = alice_and_bob();
-    let d = net.engine(b).account().unwrap().unwrap().1;
-    let (new, acts) = net.sync(b).replace_label(&d, &home).unwrap();
-    net.actions(b, acts);
-    net.run();
-    grant(&mut net, a, g, bob);
-    for _ in 0..4 {
-        net.advance(70_000);
-    }
-    assert_eq!(net.engine(b).role_on(&g), None, "nobody reads the replaced inbox");
-    let sent = net.sync(a).inbox_deliveries(&bob);
-    assert!(matches!(sent.as_slice(), [(_, 0, Some(l))] if *l == home), "{sent:?}");
-    net.pair(b, a);
-    for _ in 0..4 {
-        net.advance(70_000);
-    }
-    assert_eq!(net.engine(b).role_on(&g), Some(Role::Read));
-    let sent = net.sync(a).inbox_deliveries(&bob);
-    assert!(matches!(sent.as_slice(), [(_, 1, Some(l))] if *l == new), "one re-send: {sent:?}");
-    // a start looks at every holder: one still under its inbox is not sent again
-    net.restart(a, 7);
-    net.advance(70_000);
-    let sent = net.sync(a).inbox_deliveries(&bob);
-    assert!(matches!(sent.as_slice(), [(_, 1, Some(l))] if *l == new), "no re-send at a start: {sent:?}");
-    // churn: each replacement the sender sees costs one re-send, within `MAX_INBOX_RESENDS` in all
-    let mut l = new;
-    for n in 2..=4u32 {
-        let (next, acts) = net.sync(b).replace_label(&d, &l).unwrap();
-        net.actions(b, acts);
-        net.run();
-        net.pair(b, a);
-        for _ in 0..2 {
-            net.advance(70_000);
-        }
-        l = next;
-        let sent = net.sync(a).inbox_deliveries(&bob);
-        let want = if n <= 3 { vec![(n, Some(l))] } else { Vec::new() };
-        assert_eq!(sent.iter().map(|x| (x.1, x.2)).collect::<Vec<_>>(), want, "replacement {n}");
-    }
-}
-
 // spec/sync.md §5 (Promotion): records are unsigned with a free nonce, so a reader can pad one
 // record of its own chain with made-up ones; such a deposited record blob counts toward no chain
 // and is never stamped, though the reader's later card is promoted (the promoter places its own
@@ -1778,7 +1723,9 @@ fn a_padded_record_blob_is_never_stamped_spec_sync_5() {
     let (o, done) = net.engine(a).create_with_admin(&alice.account).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
-    let (l, acts) = net.sync(a).create_label(&o, vec![addr.clone()]).unwrap();
+    let done = net.engine(a).give_own_secrets_on(&o, std::slice::from_ref(&addr)).unwrap();
+    let l = net.engine(a).label_of(&o).unwrap().unwrap().0;
+    let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
     net.run();
     let r = net.node(10, &[host]);

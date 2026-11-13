@@ -231,7 +231,7 @@ impl NetSim {
         let head = hub.store().head(&gl.id).ok().flatten();
         let head = head.and_then(|h| hub.store().step(&gl.id, &h).ok().flatten());
         let head = head.ok_or_else(|| self.fail(format!("host {s} holds no head of {:?}", gl.id)))?;
-        let keys = self.engine(n)?.head_keys(g, gl.index, &head);
+        let keys = self.engine(n)?.head_keys(g, &head);
         let keys = keys.map_err(|x| self.fail(format!("head keys: {x}")))?;
         let read = self.engine(n)?.epochs(g).and_then(|x| x.read.newest_held().map(|y| y.1.clone()));
         Ok(LabelKeys { g: *g, label: gl.id, head, keys, read })

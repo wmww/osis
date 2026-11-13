@@ -106,7 +106,7 @@ impl SyncEngine {
                 if !timed_labels.contains_key(a) {
                     let lost = BTreeSet::from([*a]);
                     let forgets = |t: &Tid| self.engine.would_forget(&lost, t);
-                    let affected: Vec<(LabelId, bool)> = labels.iter().filter(|(g, gl)| !gl.replaced && (forgets(g) || self.engine.closure(g).iter().any(forgets))).map(|(_, gl)| (gl.id, super::peers::hostless(&gl.hosts))).collect();
+                    let affected: Vec<(LabelId, bool)> = labels.iter().filter(|(g, _)| forgets(g) || self.engine.closure(g).iter().any(forgets)).map(|(_, gl)| (gl.id, super::peers::hostless(&gl.hosts))).collect();
                     let mut hear = Vec::with_capacity(affected.len());
                     for (id, hostless) in affected {
                         hear.push((id, if hostless { Hear::CoReaders(self.last_own(&id)?) } else { Hear::Hosts }));
@@ -302,7 +302,7 @@ impl SyncEngine {
         let mut moot = Vec::new();
         for x in std::mem::take(&mut self.deferred) {
             // `place_certificate_in` places nothing there any more
-            if self.engine.group_labels(&x.0).is_ok_and(|ls| ls.iter().all(|l| l.replaced)) {
+            if self.engine.group_labels(&x.0).is_ok_and(|ls| ls.is_empty()) {
                 moot.extend(x.3);
             } else {
                 self.deferred.push(x);
@@ -425,7 +425,7 @@ impl SyncEngine {
         let closure = self.engine.closure(g);
         let minted: BTreeSet<Tid> = self.engine.header(c).map(|h| h.aspects.iter().filter(|a| a.ak.as_str() == "created.0").map(|a| a.tid).collect()).unwrap_or_default();
         if !minted.is_empty() {
-            for l in self.engine.group_labels(g)?.into_iter().filter(|l| !l.replaced) {
+            for l in self.engine.group_labels(g)? {
                 self.place_records(g, l.id, &minted, false)?;
             }
         }
@@ -502,7 +502,7 @@ impl SyncEngine {
         let Some(h) = self.engine.header(c) else { return Ok(true) };
         let Some(body) = self.engine.body(c)? else { return Ok(true) };
         for (g, gl) in self.labels() {
-            if gl.replaced || !self.under_own_label(&g, c) {
+            if !self.under_own_label(&g, c) {
                 continue;
             }
             let ctx = self.engine.body_ctx(&g);

@@ -446,7 +446,7 @@ fn changed_at_moves_through_a_cycle_of_rosters() {
         let g = net.group(a, &[], &[host]);
         net.run();
         let lg = net.label(a);
-        let h = net.group_seeded(a, &[], vec![net.address(host)], 2);
+        let h = net.group_at(a, &[], vec![net.address(host)]);
         net.run();
         net.grant(a, g, h, Role::Read);
         net.grant(a, h, g, Role::Read);
@@ -552,8 +552,8 @@ fn resume_history(seed: u64) -> usize {
         reach_ed(&mut net, *n);
     }
     let mut groups = Vec::new();
-    for (i, (p, q)) in [(0, 1), (0, 2), (1, 2)].into_iter().enumerate() {
-        let g = net.group_seeded(nodes[p], &[(nodes[q], Role::Write)], vec![], i as u64 + 1);
+    for (p, q) in [(0, 1), (0, 2), (1, 2)] {
+        let g = net.group_at(nodes[p], &[(nodes[q], Role::Write)], vec![]);
         groups.push((g, nodes[p], nodes[q]));
     }
     net.run();
@@ -618,8 +618,8 @@ fn stamp_work(n: u64) -> (u64, u64) {
     let (mut net, host, [a]) = hosted_nodes::<1>();
     let addr = net.address(host);
     let mut last = None;
-    for i in 0..n {
-        last = Some(net.group_seeded(a, &[], vec![addr.clone()], i + 1));
+    for _ in 0..n {
+        last = Some(net.group_at(a, &[], vec![addr.clone()]));
     }
     let x = net.node(3, &[host]);
     let tx_ = net.tid(x);

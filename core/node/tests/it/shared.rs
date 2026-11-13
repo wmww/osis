@@ -337,7 +337,7 @@ fn a_right_gained_and_lost_mid_connection_opens_and_closes_spec_sync_5() {
     reach_ed(&mut net, b);
     net.group_at(a, &[(b, Role::Write)], vec![]);
     net.run();
-    let g2 = net.group_seeded(a, &[(b, Role::Write)], vec![], 2);
+    let g2 = net.group_at(a, &[(b, Role::Write)], vec![]);
     let t = net.item(a, g2, g2, "gained");
     net.run();
     assert_eq!(net.read(b, t), Some(s("gained")), "the new group opened on the running connection");
@@ -394,8 +394,8 @@ fn a_static_entry_hit_opens_only_for_its_proved_key_actor_spec_wire_11_2() {
 fn first_contact_cost(n: usize) -> (u64, u64, u64) {
     let (mut net, [a, b]) = local_nodes::<2>();
     reach_ed(&mut net, b);
-    for i in 0..n {
-        net.group_seeded(a, &[(b, Role::Write)], vec![], i as u64 + 1);
+    for _ in 0..n {
+        net.group_at(a, &[(b, Role::Write)], vec![]);
     }
     net.run();
     let st = net.sync(a).pass_stats();
@@ -480,7 +480,7 @@ fn a_credential_open_outlasts_the_peers_being_known_spec_sync_10() {
     let (mut net, [a, b]) = local_nodes::<2>();
     reach_ed(&mut net, b);
     let g1 = net.group_at(b, &[(a, Role::Read)], vec![]);
-    let g2 = net.group_seeded(b, &[], vec![], 2);
+    let g2 = net.group_at(b, &[], vec![]);
     let l2 = net.engine(b).labels_of(&g2)[0].id;
     net.run();
     let ta = net.tid(a);

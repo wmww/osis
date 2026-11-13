@@ -19,7 +19,7 @@ fn left_while_apart(faults: &Faults) -> (Net, usize, usize, Tid, osis_base::Labe
     let a = net.node(1, &[]);
     let b = net.forensic_node(2, &[], faults);
     reach_ed(&mut net, a);
-    let g = net.group_seeded(a, &[(b, Role::Write)], vec![], 11);
+    let g = net.group_at(a, &[(b, Role::Write)], vec![]);
     net.run();
     let l = net.group_labels(b).into_iter().find(|(x, _)| *x == g).map(|(_, gl)| gl.id).unwrap();
     net.set_online(a, false);
@@ -97,7 +97,7 @@ fn a_strangers_report_counts_for_nothing_spec_sync_5() {
     let (mut net, a, b, _, l) = left_while_apart(&Faults::new());
     let c = net.node(3, &[]);
     reach_ed(&mut net, c);
-    let other = net.group_seeded(c, &[(b, Role::Write)], vec![], 12);
+    let other = net.group_at(c, &[(b, Role::Write)], vec![]);
     net.run();
     net.tamper_link = Some((c, b));
     net.tamper = Some(Box::new(move |m| match m {
@@ -127,9 +127,9 @@ fn timed_while_apart() -> (Net, [usize; 3], Tid, Tid) {
     let c = net.node(3, &[]);
     reach_ed(&mut net, a);
     reach_ed(&mut net, c);
-    let g = net.group_seeded(a, &[(b, Role::Write), (c, Role::Read)], vec![], 13);
+    let g = net.group_at(a, &[(b, Role::Write), (c, Role::Read)], vec![]);
     // `c` also shares `h` with `b`, so it proves its account to `b` whatever it judges of `g`
-    net.group_seeded(c, &[(b, Role::Read)], vec![], 14);
+    net.group_at(c, &[(b, Role::Read)], vec![]);
     let until = osis_base::WallMs(net.now() + 3_600_000);
     let tb = net.tid(b);
     let edge = osis_schema::core_types::Edge { role: Role::Write, until: Some(until), invite: None, tied: None };
@@ -220,7 +220,7 @@ fn an_until_under_no_host_a_forged_reach_refuses_nothing_spec_perm_2() {
     let mut m = osis_engine::Mutation::new();
     m.replace(me, &osis_schema::core_types::REACH, &r).unwrap();
     net.engine(d).commit(m).unwrap();
-    net.group_seeded(d, &[(b, Role::Read)], vec![], 15);
+    net.group_at(d, &[(b, Role::Read)], vec![]);
     net.advance(60_000);
     net.advance(60_000);
     assert!(holds(&mut net, b, g), "a non-co-reader claiming c's account refused nothing");
@@ -249,8 +249,8 @@ fn an_until_under_no_host_a_co_reader_past_its_own_until_refuses_nothing_spec_pe
     let c = net.node(3, &[]);
     reach_ed(&mut net, a);
     reach_ed(&mut net, c);
-    let g = net.group_seeded(a, &[(b, Role::Write), (c, Role::Read)], vec![], 13);
-    net.group_seeded(c, &[(b, Role::Read)], vec![], 14);
+    let g = net.group_at(a, &[(b, Role::Write), (c, Role::Read)], vec![]);
+    net.group_at(c, &[(b, Role::Read)], vec![]);
     for (n, ms) in [(b, 2 * 3_600_000), (c, 3_600_000)] {
         let until = osis_base::WallMs(net.now() + ms);
         let t = net.tid(n);

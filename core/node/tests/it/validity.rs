@@ -639,7 +639,7 @@ fn void_grant_by_leaver_keeps_no_secrets_spec_perm_3() {
 fn forged_role_class_unmerged_spec_perm_1() {
     use osis_schema::{RawKey, core_types as ct};
     let (mut lp, d, _, _) = setup();
-    let label = ct::Label { index: 0, steps: BTreeMap::new(), hosts: Vec::new(), replaced: false };
+    let label = ct::Label { steps: BTreeMap::new(), hosts: Vec::new() };
     let labels: ct::Labels = BTreeMap::from([(osis_base::LabelId([5; 16]), label)]);
     let a = ak(ct::LABEL.ak());
     let before = lp.peers[0].engine.get(&d, &a).unwrap();

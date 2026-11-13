@@ -140,9 +140,9 @@ fn departed_through_a_roster_path_spec_sync_10() {
     assert_eq!(net.engine(a).core.judge([actor]).of(&g), Judgment::Holder, "a grant after the removal stands");
 
     // the other end of the path: the actor removed from a roster that still holds the thing
-    let team2 = net.group_seeded(a, &[], vec![], 3);
+    let team2 = net.group_at(a, &[], vec![]);
     set_edge(net.engine(a), team2, actor, Role::Admin);
-    let g2 = net.group_seeded(a, &[], vec![], 4);
+    let g2 = net.group_at(a, &[], vec![]);
     set_edge(net.engine(a), g2, team2, Role::Read);
     assert_eq!(net.engine(a).core.judge([actor]).of(&g2), Judgment::Holder, "through its roster");
     let rec = recipients_of(net.engine(a), &[(me, Role::Admin)]);
@@ -263,14 +263,14 @@ fn judgment_work_does_not_grow_with_things_asked_spec_sync_10() {
         let a = net.node(1, &[]);
         let actor = Tid::from_bytes([7; 15]);
         let mut things = Vec::new();
-        for i in 0..n {
-            let g = net.group_seeded(a, &[], vec![], i as u64 + 1);
+        for _ in 0..n {
+            let g = net.group_at(a, &[], vec![]);
             // bare: a made-up actor with no keys to grant to, judged by roster alone
             set_edge(net.engine(a), g, actor, Role::Read);
             things.push(g);
         }
         let other = Tid::from_bytes([8; 15]);
-        let lone = net.group_seeded(a, &[], vec![], n as u64 + 1);
+        let lone = net.group_at(a, &[], vec![]);
         set_edge(net.engine(a), lone, other, Role::Read);
         // the actor holds every thing; nothing departed
         let tl = net.engine(a).core.timelines.get(&things[0]).unwrap();

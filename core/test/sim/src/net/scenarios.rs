@@ -392,7 +392,7 @@ pub fn grant_to_group(s: Seeds) -> Res<Report> {
         let e = sim.add_node(&[s], clock(&mut d))?;
         let [pa, pb, pc, pe] = persons(sim, [a, b, c, e], [s, s, s, s])?;
         let h = shared_group(sim, a, pa, &[s], &[(pb, Role::Read), (pc, Role::Read)])?;
-        let t = sim.group_with(a, pa, &[s], true)?;
+        let t = sim.group(a, pa, &[s])?;
         sim.item(a, t)?;
         sim.quiet(40)?;
         sim.grant(a, t, h, Role::Read)?;
@@ -1007,7 +1007,7 @@ pub fn peer_group(sim: &mut NetSim, ns: &[usize]) -> Res<Tid> {
     for n in ns.iter().skip(1) {
         sim.direct(*n, a)?;
     }
-    let g = sim.group_with(a, pa, &[], true)?;
+    let g = sim.group(a, pa, &[])?;
     for p in persons.iter().skip(1) {
         sim.grant(a, g, *p, Role::Write)?;
     }

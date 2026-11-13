@@ -22,8 +22,8 @@ fn frame(m: Message) -> Vec<u8> {
 /// A valid genesis step of some other label.
 pub(crate) fn foreign_step(b: u8) -> osis_label::Step {
     let (read, write, admin, dep) = (Secret32::from_bytes([b; 32]), Secret32::from_bytes([b + 1; 32]), Secret32::from_bytes([b + 2; 32]), Secret32::from_bytes([b + 3; 32]));
-    let keys = StepKeys::derive(&read, &write, &admin, 0, &dep, &genesis_label(&admin, 0));
-    let delete = label_role_key(LabelRole::Delete, &admin, 0);
+    let keys = StepKeys::derive(&read, &write, &admin, &dep, &genesis_label(&admin));
+    let delete = label_role_key(LabelRole::Delete, &admin);
     register(Parent::Genesis(&delete), keys, &[], (&osis_base::Tid::from_bytes([b; 15]), Epoch::new(0, [0; 32]).unwrap(), &read), (Epoch::new(0, [0; 32]).unwrap(), &read), &mut SeededRng::from_u64(b as u64)).unwrap().0
 }
 
@@ -239,9 +239,8 @@ fn header_list_chunks_level_2_only_spec_wire_5() {
     let mut ds = net.engine(a).delete_secrets_of(&c, &[0]).remove(0);
     assert_eq!(ds.iter().map(|x| x.0).collect::<Vec<_>>(), vec![1, 2]);
     let (chain, admin) = (ds.pop().unwrap().1, ds.pop().unwrap().1);
-    let gl = net.group_labels(a).into_iter().find(|(x, _)| *x == g).unwrap().1;
     let head = net.host_path(host, &l).last().unwrap().clone();
-    let sync = net.engine(a).head_keys(&g, gl.index, &head).unwrap().sync.unwrap();
+    let sync = net.engine(a).head_keys(&g, &head).unwrap().sync.unwrap();
     // each blob's commitments are blinded by its link blind bound to the header's actor
     // (spec/crypto.md §7): the header's link to the list's tree, and the tree's nodes, give
     // every blob's key
@@ -425,7 +424,7 @@ fn old_step_stamp_vouches_nothing_spec_sync_5() {
     net.run();
     let l = net.label(a);
     let old = net.engine(a).epochs(&g).unwrap().write.newest_held().unwrap().1.clone();
-    let old_write = label_role_key(LabelRole::Write, &old, 0);
+    let old_write = label_role_key(LabelRole::Write, &old);
     let (at, bt) = (net.tid(a), net.tid(b));
     let e = net.engine(a);
     let rs = recipients_of(e, &[(at, Role::Admin)]);
@@ -506,8 +505,8 @@ fn relayed_stamp_checked_against_head_spec_sync_5() {
     net.run();
     let l = net.label(r);
     let w = net.engine(a).epochs(&g).unwrap().write.newest_held().unwrap().1.clone();
-    let head_write = label_role_key(LabelRole::Write, &w, 0);
-    let forger = label_role_key(LabelRole::Write, &Secret32::from_bytes([0x66; 32]), 0);
+    let head_write = label_role_key(LabelRole::Write, &w);
+    let forger = label_role_key(LabelRole::Write, &Secret32::from_bytes([0x66; 32]));
     let conn = net.conn_to(r, host).expect("connected");
     let (forged, p) = junk(&l, 5, 1, Some(&forger));
     net.receive(r, conn, frame(p));
@@ -519,36 +518,42 @@ fn relayed_stamp_checked_against_head_spec_sync_5() {
     assert!(net.sync(r).entry_meta(&l, &honest[0]).and_then(|m| m.1).is_some(), "a head-key stamp dropped");
 }
 
-// spec/sync.md §2 (a replaced label's content entries are deleted by an admin), §6
-// (must-not-hold: outside the label's bodies; deletions wait while an entry that opens is not
-// applied, spec/sync.md §3: a receiver keeps what it cannot explain yet): after a label
-// replacement the item's content entries under the old label go only once the view is settled.
+// spec/sync.md §6 (must-not-hold: outside the label's bodies; deletions wait while an entry that
+// opens is not applied, spec/sync.md §3: a receiver keeps what it cannot explain yet): once an item
+// leaves the group, its content entries under the label go only once the view is settled.
 #[test]
 fn outside_delete_waits_for_settled_view_spec_sync_6() {
     let (mut net, host, [a], g, [t]) = hosted::<1, 1>(&[], ["x"], true);
-    let old = net.label(a);
-    let ids = entries_of(&mut net, a, &old, t);
-    assert!(!ids.is_empty() && ids.iter().all(|i| net.host_ids(host, &old).contains(i)));
+    let l = net.label(a);
+    // a write on the item alone (its first commit also writes the group's membership)
+    let before = entries_of(&mut net, a, &l, t);
+    net.write(a, t, "y");
+    net.run();
+    let ids: Vec<_> = entries_of(&mut net, a, &l, t).into_iter().filter(|i| !before.contains(i)).collect();
+    assert!(!ids.is_empty() && ids.iter().all(|i| net.host_ids(host, &l).contains(i)));
     // a host announces an entry that opens under the group's read secret, without its bytes
     let read = net.engine(a).epochs(&g).unwrap().read.newest_held().unwrap().1.clone();
     let blocker = osis_base::BlobId([0x99; 32]);
     let wrap = osis_crypto::wrap(&read, &blocker, &Secret32::from_bytes([1; 32]), 1).unwrap();
     let conn = net.conn_to(a, host).expect("connected");
-    net.receive(a, conn, push(old, vec![osis_proto::Event::Added { blob_id: blocker, blob: None, wrap, stamp: None }]));
+    net.receive(a, conn, push(l, vec![osis_proto::Event::Added { blob_id: blocker, blob: None, wrap, stamp: None }]));
     net.settle(10_000);
-    let (new, acts) = net.sync(a).replace_label(&g, &old).unwrap();
-    net.actions(a, acts);
+    // the item leaves the group: its entries are outside the label's bodies
+    let mut items = net.engine(a).get_typed(&g, &osis_schema::core_types::GROUP).unwrap().unwrap_or_default();
+    items.items.remove(&t);
+    let mut m = osis_node::Mutation::new();
+    m.set(g, &osis_schema::core_types::GROUP, &items).unwrap();
+    net.engine(a).commit(m).unwrap();
     net.run();
-    assert!(!net.host_ids(host, &new).is_empty());
     let key = net.address(host).key;
-    let v = net.sync(a).verdicts(&key, &old).unwrap().unwrap();
+    let v = net.sync(a).verdicts(&key, &l).unwrap().unwrap();
     assert!(v.unsettled.contains(&None), "{:?}", v.unsettled);
-    assert!(ids.iter().all(|i| net.host_ids(host, &old).contains(i)), "deleted as outside on an unsettled view");
+    assert!(ids.iter().all(|i| net.host_ids(host, &l).contains(i)), "deleted as outside on an unsettled view");
     // the host drops the unexplained entry: the view settles and the content goes
-    net.receive(a, conn, push(old, vec![osis_proto::Event::Deleted(blocker)]));
+    net.receive(a, conn, push(l, vec![osis_proto::Event::Deleted(blocker)]));
     net.settle(10_000);
     net.advance(61_000);
-    assert!(ids.iter().all(|i| !net.host_ids(host, &old).contains(i)), "content kept under the replaced label on a settled view");
+    assert!(ids.iter().all(|i| !net.host_ids(host, &l).contains(i)), "content outside the group kept on a settled view");
 }
 
 // spec/crypto.md §7, spec/sync.md §5, spec/permissions.md §6: a thing's admin who is no admin of
@@ -598,9 +603,8 @@ fn thing_admin_deletes_writer_blobs_by_delete_key_spec_crypto_7() {
     let rblobs: Vec<_> = net.sync(c).entries(&l).into_iter().filter(|(_, k)| matches!(k, EntryKind::Commit { commit, .. } if *commit == rot)).map(|(id, _)| id).collect();
     assert!(!rblobs.is_empty());
     let wk = osis_crypto::DeleteSecret::derive(net.engine(w).epochs(&t).unwrap().write.newest_held().unwrap().1);
-    let gl = net.group_labels(w).into_iter().find(|(x, _)| *x == g).unwrap().1;
     let head = net.host_path(host, &l).last().unwrap().clone();
-    let keys = net.engine(w).head_keys(&g, gl.index, &head).unwrap();
+    let keys = net.engine(w).head_keys(&g, &head).unwrap();
     let (sync, write) = (keys.sync.unwrap(), keys.write.unwrap());
     let rhb = net.engine(c).header(&rot).unwrap().blind;
     let mut items = Vec::new();
@@ -623,8 +627,7 @@ fn thing_admin_deletes_writer_blobs_by_delete_key_spec_crypto_7() {
     net.run();
     net.pair(c, w);
     assert_ne!(net.engine(c).epochs(&t).unwrap().admin.newest_held().map(|(_, s)| osis_crypto::DeleteSecret::derive(s).verifying_key()).unwrap(), admin_now);
-    let gl = net.group_labels(c).into_iter().find(|(x, _)| *x == g).unwrap().1;
-    assert!(net.engine(c).head_keys(&g, gl.index, &head).unwrap().delete.is_none(), "c is no group admin");
+    assert!(net.engine(c).head_keys(&g, &head).unwrap().delete.is_none(), "c is no group admin");
     net.set_online(a, false);
     net.set_online(w, false);
     let mut m = osis_node::Mutation::new();
@@ -660,9 +663,8 @@ fn removed_writer_stale_label_key_refused_spec_sync_5() {
     // w's keys before its removal: its author-chain delete key and the head's sync key
     let mut ds = net.engine(w).delete_secrets_of(&cw, &[0]).remove(0);
     let (level, dk) = ds.iter().position(|x| x.0 == 2).map(|i| ds.remove(i)).expect("w holds its level-2 key");
-    let gl = net.group_labels(w).into_iter().find(|(x, _)| *x == g).unwrap().1;
     let old_head = net.host_path(host, &l).last().unwrap().clone();
-    let sync = net.engine(w).head_keys(&g, gl.index, &old_head).unwrap().sync.unwrap();
+    let sync = net.engine(w).head_keys(&g, &old_head).unwrap().sync.unwrap();
     let hb = net.engine(w).header(&cw).unwrap().blind;
     // positive control: the same delete verifies against the head before the removal
     let salts: Vec<[u8; 16]> = blobs.iter().map(|(b, _)| *osis_label::Prefix::parse(&net.engine(w).blob(b).unwrap().unwrap()).unwrap().salt()).collect();
@@ -738,10 +740,10 @@ fn a_removed_entry_shown_again_is_not_promoted_spec_sync_5() {
 /// carrying `real`'s sync key (an open by it lasts) and the forger's other keys.
 fn forged_chain(real: &osis_label::Step) -> Vec<osis_label::Step> {
     let k = |b: u8| Secret32::from_bytes([b; 32]);
-    let own = label_role_key(LabelRole::Delete, &k(0xf0), 0);
+    let own = label_role_key(LabelRole::Delete, &k(0xf0));
     let mut head = real.clone();
     head.keys.delete = own.verifying_key();
-    let mut keys = StepKeys::derive(&k(0xf1), &k(0xf2), &k(0xf3), 0, &k(0xf4), &real.label);
+    let mut keys = StepKeys::derive(&k(0xf1), &k(0xf2), &k(0xf3), &k(0xf4), &real.label);
     keys.sync = real.keys.sync;
     let at = Epoch::new(0, [0; 32]).unwrap();
     let child = register(Parent::Child { step: &head, delete: &own }, keys, &[], (&osis_base::Tid::from_bytes([0xf5; 15]), at, &k(0xf6)), (at, &k(0xf7)), &mut SeededRng::from_u64(0xf8)).unwrap().0;
@@ -857,7 +859,7 @@ fn a_forged_head_and_its_child_are_never_recorded_spec_sync_5() {
 fn no_step_under_an_unrecorded_head_spec_sync_5() {
     let forge = |real: &osis_label::Step| {
         let mut head = real.clone();
-        head.keys.deposit = label_role_key(LabelRole::Delete, &Secret32::from_bytes([0xf0; 32]), 0).verifying_key();
+        head.keys.deposit = label_role_key(LabelRole::Delete, &Secret32::from_bytes([0xf0; 32])).verifying_key();
         vec![head]
     };
     let (mut net, [s, _, c], l, _, before) = opened_on_forged_heads(forge);

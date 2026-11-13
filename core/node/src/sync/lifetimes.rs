@@ -33,9 +33,6 @@ impl SyncEngine {
         let mut groups: BTreeMap<Tid, bool> = BTreeMap::new();
         let mut heard = BTreeSet::new();
         for s in self.label_status() {
-            if s.replaced {
-                continue;
-            }
             let out = s.synced();
             if out {
                 heard.insert(s.label);

@@ -480,10 +480,8 @@ impl SyncEngine {
             }
         }
         // a chunk a live value here links, deleted by a purger that had not seen its reuse:
-        // written again re-encrypted, one commit for the batch (spec/sync.md §1); not one a
-        // replaced label lost (its content goes, the replacement holds it)
-        let group = self.group_of(&l, conn).filter(|g| !self.is_replaced(g, &l));
-        if let Some(g) = group.filter(|_| !lost.is_empty()) {
+        // written again re-encrypted, one commit for the batch (spec/sync.md §1)
+        if let Some(g) = self.group_of(&l, conn).filter(|_| !lost.is_empty()) {
             self.relink_pending.entry(g).or_default().extend(lost);
             self.relink_at = 0;
             self.relink_lost()?;
@@ -1800,17 +1798,17 @@ impl SyncEngine {
                                 h.hosts.push(a);
                             }
                         }
-                        let failed = |thing, index| self.hint_failed.contains(&(at.id, thing, index));
-                        if (h.thing, h.index) == (t.tid, at.index) {
+                        let failed = |thing| self.hint_failed.contains(&(at.id, thing));
+                        if h.thing == t.tid {
                             if h.inbox.is_some_and(|i| i.until < o.until) {
                                 h.inbox = Some(src);
                             }
-                        } else if failed(h.thing, h.index) && !failed(t.tid, at.index) {
-                            (h.thing, h.index, h.inbox) = (t.tid, at.index, Some(src));
+                        } else if failed(h.thing) && !failed(t.tid) {
+                            (h.thing, h.inbox) = (t.tid, Some(src));
                         }
                     }
                     None => {
-                        want.insert(at.id, Hint { thing: t.tid, index: at.index, hosts: hosts.collect(), via: None, inbox: Some(src) });
+                        want.insert(at.id, Hint { thing: t.tid, hosts: hosts.collect(), via: None, inbox: Some(src) });
                     }
                 }
                 break;
@@ -1824,7 +1822,7 @@ impl SyncEngine {
         self.hint_failed.retain(|x| want.contains_key(&x.0));
         for (l, h) in want {
             let old = self.state.hints.get(&l);
-            if old.is_some_and(|x| x.via.is_some() || (x.thing, x.index, &x.hosts, x.inbox) == (h.thing, h.index, &h.hosts, h.inbox)) {
+            if old.is_some_and(|x| x.via.is_some() || (x.thing, &x.hosts, x.inbox) == (h.thing, &h.hosts, h.inbox)) {
                 continue;
             }
             self.state.add_hint(l, h);
@@ -1934,7 +1932,7 @@ impl SyncEngine {
                     lost.insert(b);
                 }
             }
-            if let Some(g) = self.group_of(&l, Some(conn)).filter(|g| !lost.is_empty() && !self.is_replaced(g, &l)) {
+            if let Some(g) = self.group_of(&l, Some(conn)).filter(|_| !lost.is_empty()) {
                 self.relink_pending.entry(g).or_default().extend(lost);
                 self.relink_at = 0;
                 self.relink_lost()?;
@@ -2245,12 +2243,6 @@ impl SyncEngine {
                 Code::NOT_HEAD => {}
                 c => self.diag(format!("delete refused: code {}", c.0)),
             }
-        }
-        // a replaced label is judged done after its deletions (`retire_at`): pass again
-        if let Some(g) = self.lc(conn, &l).map(|x| x.group)
-            && self.is_replaced(&g, &l)
-        {
-            self.mark_labels(&[l]);
         }
         Ok(())
     }
