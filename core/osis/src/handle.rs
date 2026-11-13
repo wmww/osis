@@ -516,14 +516,9 @@ fn open_salt(store: &Store, cfg: &Config) -> Result<u64> {
     Ok(n.wrapping_add(1).wrapping_mul(0x9e37_79b9_7f4a_7c15))
 }
 
-/// The node's one store beside the engine (the hub's: what it serves, notes/serving.md):
-/// `<store>/host.redb` with its key root `<store>/host.root`, or the memory store's.
-/// The engine's ciphertext store (`Engine::open`).
+/// The engine's ciphertext store (`Engine::open`) over the hub's store (`parts`).
 fn hub_store(store: &Store, clock: &Arc<dyn Clock>) -> Result<Arc<dyn osis_store::Ciphertext>> {
-    let (b, r): (Box<dyn osis_store::Backend>, Box<dyn osis_store::RootStorage>) = match store {
-        Store::Memory(m) => (Box::new(m.host.clone()), Box::new(m.host_root.clone())),
-        Store::Dir(p) => (Box::new(osis_store::RedbBackend::open(&p.join("host.redb")).map_err(|e| Error::Storage(e.to_string()))?), Box::new(osis_store::FileRoot::new(p.join("host.root")))),
-    };
+    let (b, r) = parts(store, true)?;
     Ok(osis_node::sync::hub_store_on(b, r, clock.clone(), Box::new(osis_crypto::OsRng))?)
 }
 
