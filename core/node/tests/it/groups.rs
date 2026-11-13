@@ -79,3 +79,16 @@ fn group_index_follows_concurrent_changes_spec_data_model_8() {
     lp.sync_all().unwrap();
     assert_eq!(agrees(&mut lp, g, &probe), BTreeSet::from([1]));
 }
+
+// spec/data-model.md §8: a group written only by item ops (no definition write) lists its one
+// item, and removing it unlists it (the refresh of a group whose state is present only through
+// its items).
+#[test]
+fn group_index_follows_item_ops_alone_spec_data_model_8() {
+    let mut lp = net(1, 0);
+    let g = crate::common::new_thing(&mut lp, 0);
+    op(&mut lp, 0, g, vec![Op::Add(Value::Tid(t(1)))]);
+    assert!(lp.peers[0].engine.groups_of(&t(1)).contains(&g));
+    op(&mut lp, 0, g, vec![Op::Remove(Value::Tid(t(1)))]);
+    assert!(!lp.peers[0].engine.groups_of(&t(1)).contains(&g));
+}
