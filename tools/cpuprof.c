@@ -4,6 +4,7 @@
 // the preload writes its own, or none if it took no samples).
 #define _GNU_SOURCE
 #include <dlfcn.h>
+#include <limits.h>
 #include <execinfo.h>
 #include <signal.h>
 #include <stdatomic.h>
@@ -37,12 +38,21 @@ static void dump(void) {
     FILE *f = fopen(fn, "w");
     if (!f) return;
     Dl_info info;
+    // objects by absolute path: the main binary's dli_fname is as it was run (often relative), and
+    // the report may run from another directory. One cached name: frames mostly share an object.
+    const char *last = NULL;
+    char abs[PATH_MAX];
     for (int i = 0; i < m; i++) {
         // frames 0-1 are the handler and the signal trampoline
         for (int j = 2; j < depth[i]; j++) {
             void *a = buf[i][j];
-            if (dladdr(a, &info) && info.dli_fname)
-                fprintf(f, "%s:%lx ", info.dli_fname, (unsigned long)((char *)a - (char *)info.dli_fbase) - 1);
+            if (dladdr(a, &info) && info.dli_fname) {
+                if (info.dli_fname != last) {
+                    last = info.dli_fname;
+                    if (!realpath(last, abs)) snprintf(abs, sizeof abs, "%s", last);
+                }
+                fprintf(f, "%s:%lx ", abs, (unsigned long)((char *)a - (char *)info.dli_fbase) - 1);
+            }
         }
         fputc('\n', f);
     }
