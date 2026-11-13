@@ -122,24 +122,8 @@ def run(cmd, name):
     return 128 - rc if rc < 0 else rc
 
 
-def read_log(since=0.0):
-    out = []
-    for path in (LOG + ".1", LOG):
-        try:
-            for line in open(path):
-                try:
-                    o = json.loads(line)
-                except ValueError:
-                    continue
-                if o.get("t", 0) >= since:
-                    out.append(o)
-        except OSError:
-            pass
-    return out
-
-
 def report(hours):
-    ev = read_log(time.time() - hours * 3600 if hours else 0)
+    ev = limits.jsonl((LOG + ".1", LOG), time.time() - hours * 3600 if hours else 0)
     if not ev:
         sys.exit(f"no events in {LOG}")
     ncpu = os.cpu_count()

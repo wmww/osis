@@ -108,7 +108,7 @@ def shares(whole, since):
     if not parts:
         return
     here = os.getcwd()
-    hit = [o for o in read_log(since) if o["name"] in parts and o.get("who") == here and o["over"]]
+    hit = [o for o in jsonl([LOG], since) if o["name"] in parts and o.get("who") == here and o["over"]]
     for o in hit:
         print(f"   over its share of {whole}: " + hit_line(o).split(f" {o['box']} ", 1)[1])
     if not hit:
@@ -182,18 +182,22 @@ def safe_check(name, cpu, wall):
         print(f"   limit {name}: unchecked ({type(e).__name__}: {e})")
 
 
-def read_log(since):
+def jsonl(paths, since=0):
+    """The objects of JSON-lines logs (limits.log, tools/heavy's) from epoch second `since` on;
+    a missing file or a bad line is skipped."""
     out = []
-    try:
-        for line in open(LOG):
+    for path in paths:
+        try:
+            lines = open(path).readlines()
+        except OSError:
+            continue
+        for line in lines:
             try:
                 o = json.loads(line)
             except ValueError:
                 continue
             if o.get("t", 0) >= since:
                 out.append(o)
-    except OSError:
-        pass
     return out
 
 
@@ -215,7 +219,7 @@ def digested(record):
 
 
 def summary(hours, every):
-    ev = read_log(time.time() - hours * 3600 if hours else 0)
+    ev = jsonl([LOG], time.time() - hours * 3600 if hours else 0)
     hits = [o for o in ev if o["over"]]
     for o in (ev if every else hits):
         print(hit_line(o) if o["over"] else f"  {stamp(o['t'])} {o['box']} `{o['name']}` CPU {o['cpu']:.0f}/{o['cpu_lim']:.0f} s, "

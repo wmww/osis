@@ -25,6 +25,9 @@ local time (yesterday if later than now); an ISO date-time must carry its UTC of
 """
 import datetime as dt, glob, json, os, re, statistics, subprocess, sys
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import limits  # noqa: E402
+
 hook = sys.excepthook
 sys.excepthook = lambda t, v, tb: os._exit(0) if t is BrokenPipeError else hook(t, v, tb)  # quiet under head
 
@@ -395,22 +398,13 @@ def heavy_runs():
     """tools/heavy's finished runs in this session: (acq, rel) event pairs."""
     log = os.path.expanduser("~/.cache/osis/heavy.log")
     open_, out = {}, []
-    for path in (log + ".1", log):
-        try:
-            lines = open(path).readlines()
-        except OSError:
+    for o in limits.jsonl((log + ".1", log)):
+        if o.get("sess") and o["sess"] != os.path.basename(sess):
             continue
-        for line in lines:
-            try:
-                o = json.loads(line)
-            except ValueError:
-                continue
-            if o.get("sess") and o["sess"] != os.path.basename(sess):
-                continue
-            if o["ev"] == "acq":
-                open_[o["pid"]] = o
-            elif o["ev"] == "rel" and o["pid"] in open_:
-                out.append((open_.pop(o["pid"]), o))
+        if o["ev"] == "acq":
+            open_[o["pid"]] = o
+        elif o["ev"] == "rel" and o["pid"] in open_:
+            out.append((open_.pop(o["pid"]), o))
     return out
 
 
