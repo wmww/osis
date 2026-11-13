@@ -886,7 +886,8 @@ const FORENSIC_CIPHERS: osis_store::Ciphers = osis_store::Ciphers {
 };
 
 /// A section of a commit blob as the forensic attack tries it (`osis_store::Section`): its
-/// bytes are the commit ID, the wrap and the ciphertext.
+/// bytes are the commit ID, the wrap and the ciphertext, all `open` reads (the ID and the wrap
+/// of fixed length, `Envelope::decode` checks, so no two sections join to the same bytes).
 struct ForensicSection {
     id: CommitId,
     s: osis_commit::Section,
@@ -960,5 +961,39 @@ mod tests {
         }
         tried.sort();
         assert_eq!(tried, [2, 31], "each thing's creation and its aspects");
+    }
+
+    // spec: none (forensic test support): a key that failed on a section in one attack still
+    // opens a section of the same commit at the same place in a later attack when that one was
+    // sealed again under it (the attack's memo of failed tries is by a section's bytes).
+    #[test]
+    fn forensic_retries_a_resealed_section() {
+        use osis_base::{Value, WallMs};
+        let mut lp = crate::local_peer::LocalPeer::fresh(1, WallMs(1_700_000_000_000));
+        let e = &mut lp.peers[0].engine;
+        let me = e.me();
+        let mut m = crate::Mutation::new();
+        let t = e.new_thing(&mut m, me);
+        m.set(t, &Ak::new("x:a.0").unwrap(), &Value::Str("RESEALED".into())).unwrap();
+        let id = e.commit(m).unwrap().unwrap();
+        let body = e.body(&id).unwrap().unwrap();
+        let reads = e.read_secrets(&t);
+        let mut seal = |seed| {
+            let sealed = e.seal(&body, osis_label::Class::Durable, &[], &mut osis_crypto::SeededRng::from_u64(seed)).unwrap().unwrap();
+            let env = osis_commit::Envelope::decode(&osis_label::open(&sealed.blob, &sealed.key).unwrap().1).unwrap();
+            let keys: Vec<[u8; 32]> = env.sections.iter().filter_map(|s| reads.iter().find_map(|r| osis_crypto::unwrap_section(r, &env.id(), &s.wrap).ok())).map(|k| *k.expose()).collect();
+            (sealed, env, keys)
+        };
+        let (a, env_a, keys_a) = seal(0);
+        let (b, env_b, keys_b) = seal(1);
+        assert_eq!(env_a.id(), env_b.id(), "one commit");
+        assert!(!keys_b.is_empty() && keys_b.iter().all(|k| !keys_a.contains(k)), "sealed again under other keys");
+        let attack = |s: &crate::labeling::Sealed, keys: &[[u8; 32]]| {
+            let secrets = [&[*s.key.expose()][..], keys].concat();
+            let ev = osis_store::Evidence { secrets, blobs: vec![(s.id, Some(s.blob.clone()))], ..Default::default() };
+            osis_store::attack(&ev, Some(&FORENSIC_CIPHERS)).into_iter().any(|r| r.plain.windows(8).any(|w| w == b"RESEALED"))
+        };
+        assert!(!attack(&a, &keys_b), "b's keys fail on a's sections");
+        assert!(attack(&b, &keys_b), "and open b's");
     }
 }
