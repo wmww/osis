@@ -236,8 +236,8 @@ fn undo_at<V: View>(w: &mut Writer, u: &Undone, o: &Fragment, s: Option<&Fragmen
                 // into those now live, else into the records the edit wrote
                 let Some(&first) = ids.first() else { continue };
                 let live = cur.map(|c| c.live_ids(k)).unwrap_or_default();
-                let sub = cur.and_then(|c| if live.is_empty() { c.record_frag(first).map(|f| f.into_owned()) } else { key_state(c, &live) });
-                let pre = prev.as_ref().and_then(|p| entry_frag(p, first, k));
+                let sub = cur.and_then(|c| entry_frag(c, first, k));
+                let pre = if let Some(Fragment::Map(p)) = &prev { entry_frag(p, first, k) } else { None };
                 let Some(c) = undo_at(w, u, &f, sub.as_ref(), pre.as_ref(), here, &vview, false)? else { continue };
                 match cur {
                     Some(m) if !live.is_empty() => entries.extend(crate::ops::key_writes(m, &live, c)),
@@ -331,10 +331,9 @@ fn undo_at<V: View>(w: &mut Writer, u: &Undone, o: &Fragment, s: Option<&Fragmen
     Ok((!out.is_empty()).then_some(out))
 }
 
-/// What a nested edit into record `id` of key `k` saw before the commit: the join of the key's
-/// live records (§5.6 path ops), or the record alone if none is live.
-fn entry_frag(p: &Fragment, id: &Eid, k: &osis_base::Value) -> Option<Fragment> {
-    let Fragment::Map(m) = p else { return None };
+/// What a nested edit into record `id` of key `k` reads in map `m`: the join of the key's live
+/// records (§5.6 path ops), or the record alone if none is live.
+fn entry_frag(m: &Map, id: &Eid, k: &osis_base::Value) -> Option<Fragment> {
     key_state(m, &m.live_ids(k)).or_else(|| m.record_frag(id).map(|f| f.into_owned()))
 }
 
