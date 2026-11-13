@@ -334,6 +334,7 @@ A commit of account P names the epoch it is signed at (spec/wire.md §4); §5.4 
   - a delta of a role commit: the timeline and the possible holders read every held edge write, of any validity (§5.1, spec/commits.md §4), and a label holds the commit whole (a deposit is promoted whole, spec/sync.md §5);
   - a delta of its own commit: its user is told the write was refused and may write it again from it.
   - An ephemeral delta goes alike. A commit with no part held left and a part so dropped stays known only while an entry of it is (spec/commits.md §5 Forgetting, spec/sync.md §9 Forgetting); unstamped such entries count against the node's bounds on unvouched input (spec/commits.md §4 Pending storage).
+  - A delta judged invalid drops as invalid even where a held snapshot covers it, never as covered.
   - A delta dropped so that turns valid again counts as never received and is fetched from any holder; with none it stays gone, at every node alike. The drop is no right's: no node deletes it at hosts for it (spec/sync.md §6).
 - What the right promises is that honest nodes keep the body. Which hosts carry it follows the thing's labels: a thing leaving a group leaves that label's hosts whatever its retention (spec/sync.md §6), and holders keep their copies.
 

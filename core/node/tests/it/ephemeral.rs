@@ -5330,6 +5330,50 @@ fn memory_snapshot_turned_valid_covers_spec_sync_9() {
     }
 }
 
+// spec/permissions.md §6 (a part dropped while invalid is fetched again once valid), spec/sync.md
+// §7 (covered-equal snapshots: the higher ID goes), memory class (random churn seed 434801186884
+// shrunk): 1 and 0 snapshot the same state at one `ts`. Holder 2, not knowing 1's re-grant, gets
+// 0's snapshot, then 1's, invalid on arrival and covered by 0's: it drops it as invalid, known,
+// never as covered (forgotten, nothing would fetch it once valid, and 2 would keep the other
+// snapshot uncovered, placing it again at hosts while 1 deletes it there). Valid again, it is
+// fetched and 2 holds the lower snapshot as 1 does
+#[test]
+fn memory_snapshot_invalid_on_arrival_not_covered_spec_permissions_6() {
+    let (mut lp, d) = memory_trio();
+    let n1 = lp.peers[1].engine.me();
+    let x = memory_op(&mut lp, 0, d, "t:tags+.0", Vec::new(), Op::Add(s("X")), None);
+    for i in [1, 2] {
+        memory_deliver(&mut lp, i, &x);
+    }
+    let edge = |lp: &mut osis_node::local_peer::LocalPeer, e: Option<ct::Edge>| {
+        lp.advance(10);
+        let id = crate::common::set_edge(&mut lp.peers[0].engine, d, n1, e, None);
+        lp.peers[0].engine.package(&id).unwrap().unwrap()
+    };
+    let gone = edge(&mut lp, None);
+    let back = edge(&mut lp, Some(crate::common::edge(Role::Write)));
+    for i in [1, 2] {
+        lp.deliver(i, &gone).unwrap();
+    }
+    lp.deliver(1, &back).unwrap();
+    lp.advance(10);
+    let s1 = memory_snapshot(&mut lp, 1, d);
+    let s0 = memory_snapshot(&mut lp, 0, d);
+    let ts = |i: usize, c: &osis_base::CommitId| lp.peers[i].engine.header(c).unwrap().ts;
+    assert_eq!(ts(1, &s1.0), ts(0, &s0.0), "covered-equal");
+    assert!(s1.0 < s0.0, "1's is the lower");
+    memory_deliver(&mut lp, 1, &s0);
+    memory_deliver(&mut lp, 2, &s0);
+    memory_deliver(&mut lp, 2, &s1);
+    assert!(holds_commit(&lp, 2, &s1.0) && !holds_body(&lp, 2, &s1.0), "invalid: dropped, known");
+    lp.deliver(2, &back).unwrap();
+    // valid again: fetched again (spec/permissions.md §6), as node-sync does
+    memory_deliver(&mut lp, 2, &s1);
+    for i in [1, 2] {
+        assert!(holds_body(&lp, i, &s1.0) && !holds_commit(&lp, i, &s0.0), "{i} holds the lower alone");
+    }
+}
+
 // spec/sync.md §9 (Compaction, memory class), spec/crdt.md §2.1, spec/permissions.md §5.2: 1 is
 // removed by a frontier listing none of its commits and granted write again with an `until` (no
 // re-grant: its earlier memory body stays invalid); what it writes after that goes under a fresh

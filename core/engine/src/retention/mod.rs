@@ -192,6 +192,10 @@ fn drop_part_for(tx: &mut Tx<'_>, c: &CommitId, ai: usize, why: DropFor) -> Resu
     tx.core.touch();
     let Some(mut m) = tx.core.ix.commits.get(c).cloned() else { return Ok(()) };
     let Some(a) = m.header.aspects.get(ai).cloned() else { return Ok(()) };
+    // a part judged invalid drops as invalid, whatever else asks (spec/permissions.md §6): it
+    // stays at hosts and comes back once valid. As covered, a memory one would be forgotten,
+    // and a holder judging it valid again would find it gone for good
+    let why = if why == DropFor::Cover && goes_invalid(tx.core, &m, ai) { DropFor::Invalid } else { why };
     let invalid = why == DropFor::Invalid;
     // a bare leftover stays but past its expiry under a cover, or while invalid: then it gives
     // nothing; a signal's gives nothing ever, and goes at its keep bound
