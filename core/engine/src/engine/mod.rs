@@ -3473,6 +3473,9 @@ impl Engine {
                 self.unknown_seen = seen;
                 return Err(e);
             }
+            // what it read is durable: subscribers read everything again
+            self.core.events.queue(crate::events::Event::Reloaded);
+            self.core.events.flush();
         }
         if self.blobs_unsettled {
             memo::unrecorded(|| self.settle_blobs())?;

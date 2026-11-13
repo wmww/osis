@@ -78,6 +78,9 @@ pub enum Event {
     /// signals fired. One per transaction, or per fire; only once a commit watch was asked for
     /// (`Engine::watch_commits`).
     Commits(Arc<Vec<CommitChange>>),
+    /// The store was read whole again in place (`Engine::run`, after a write whose outcome was
+    /// unknown): a commit answered `Err` may have landed, so any read may answer otherwise.
+    Reloaded,
     /// Sync status changed (node-sync fills it).
     SyncStatus { label: osis_base::LabelId, detail: String },
     /// An admin dispute was detected and a side taken by default (`crate::sides`): `author`'s

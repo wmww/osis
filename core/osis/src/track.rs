@@ -241,6 +241,7 @@ impl ReadOnly {
                 (Filter::Commits(a), Box::new(move |db, d| {
                     match d {
                         Delivery::Commit { id, .. } if mine(id) => gate.fire(&w, db),
+                        Delivery::Reread => gate.fire(&w, db),
                         Delivery::Moved => gate.ended(&w, db),
                         _ => {}
                     }

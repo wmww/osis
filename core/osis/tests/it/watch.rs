@@ -692,3 +692,60 @@ fn path_listener_hears_an_expiry_and_a_purge() {
     assert_eq!(heard(&db, &cc), vec![Ok(None)], "the purged write's entry");
     assert!(heard(&db, &a).is_empty() && heard(&db, &b).is_empty(), "the entries beside it");
 }
+
+// notes/local-store.md Failed writes: a failed sync at any write of a purging commit, then a write
+// elsewhere, which reads the store again in place. A commit answered `Err` that landed after all
+// reaches the watches on what it changed with no restart: a value watch, a thing watch and a
+// commit listener hear it, and what a watch last heard is what reads now.
+#[test]
+fn a_commit_found_landed_after_a_failed_sync_reaches_watches() {
+    let k = "t:reg.0";
+    let s = |x: &str| Value::Str(x.into());
+    let mut landed = 0;
+    for n in 0.. {
+        let faults = osis::internals::Faults::new();
+        let db = osis::internals::create(cfg(0, osis::internals::faulty_store(faults.clone()), &clock())).unwrap();
+        let t = thing(&db);
+        db.commit_set(t, untyped(k), &s("one")).unwrap();
+        db.commit_set(t, untyped(k), &s("secret")).unwrap();
+        let secret = db.at(t, untyped(k)).writes(&osis::CommitQuery { from: osis::CommitFrom::Newest, limit: Some(1), ..Default::default() }).unwrap().commits[0].stamp.id;
+        let (_v, value) = at_path(&db, t, k, osis::p![]);
+        let (tx, things) = channel();
+        let _t = db
+            .on_thing_change(t, move |_, c| {
+                if c.ak == ak(k) {
+                    tx.send(c.value).unwrap();
+                }
+            })
+            .unwrap();
+        let (tx, commits) = channel();
+        let _c = db.at(t, untyped(k)).on_write(move |_, e| tx.send(e).unwrap()).unwrap();
+        db.settle();
+        let _ = (value.try_iter().count(), things.try_iter().count(), commits.try_iter().count());
+        faults.at(n, osis::internals::Fault::Unsynced);
+        let r = db.commit_with(|w| {
+            w.at(t, untyped(k)).set(&s("public"))?;
+            w.at(t, untyped(k)).purge(osis::Purge::Commit(secret))
+        });
+        if faults.writes() <= n {
+            assert!(r.is_ok());
+            break;
+        }
+        thing(&db);
+        db.settle();
+        let now = db.at(t, untyped(k)).get().unwrap();
+        let heard: Vec<_> = value.try_iter().map(|x| x.0.unwrap()).collect();
+        let thing_heard: Vec<_> = things.try_iter().map(|x| x.unwrap()).collect();
+        let commits_heard = commits.try_iter().count();
+        if r.is_ok() || now == Some(s("public")) {
+            landed += usize::from(r.is_err());
+            assert_eq!(heard.last(), Some(&now), "write {n}: the value watch");
+            assert_eq!(thing_heard.last(), Some(&now), "write {n}: the thing watch");
+            assert!(commits_heard > 0, "write {n}: the commit listener");
+        } else {
+            assert_eq!(now, Some(s("secret")), "write {n}");
+            assert!(heard.is_empty() && thing_heard.is_empty(), "write {n}: nothing changed: {heard:?} {thing_heard:?}");
+        }
+    }
+    assert!(landed > 0, "some write's failed sync leaves a landed commit answered Err");
+}

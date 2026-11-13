@@ -25,6 +25,7 @@ pub use osis_node::sync::MAX_CONNS_PER_CLIENT;
 pub use osis_schema as schema;
 pub use osis_schema::core_types;
 pub use osis_transport::{InProcess, MemUdp};
+pub use osis_store::{Fault, Faults};
 
 /// `group.0`'s field of items, for path reads and writes of it (spec/data-model.md §8).
 pub const GROUP_ITEMS: osis_schema::FieldId = osis_schema::FieldId(0);
@@ -107,6 +108,11 @@ pub fn stream_work(s: &crate::ValueStream) -> (u64, usize) {
 /// A joining node's node tid, before it has finished.
 pub fn joining_node(j: &crate::Joining) -> osis_base::Tid {
     j.node()
+}
+
+/// A store in memory whose engine store (rows and key root) fails as `faults` plans.
+pub fn faulty_store(faults: Faults) -> crate::MemStore {
+    crate::MemStore { backend: osis_store::MemoryBackend::with_faults(faults.clone()), root: osis_store::MemoryRoot::with_faults(faults), ..Default::default() }
 }
 
 /// What tests measure of a `MemStore`.

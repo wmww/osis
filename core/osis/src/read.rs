@@ -14,7 +14,7 @@ use osis_schema::{AspectKey, ValueKey};
 use osis_schema::core_types::GROUP;
 use crate::track::{thing, thing_key};
 use osis_schema::{Codec, Path, PathError, PathErrorKind, Schema, Step, Type, misplaced_link, type_at, typed_read, value_at};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// A role granted to one holder (`Osis::grants`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -582,6 +582,24 @@ impl Osis {
                 Delivery::Aspect { tid, ak, origin, value } if value.is_err() || last.get(&ak) != Some(&digest(&value)) => {
                     last.insert(ak.clone(), digest(&value));
                     f(db, Change { tid, ak, value, origin });
+                }
+                // every aspect it showed or holds now, read again: those that differ are told
+                Delivery::Reread => {
+                    let reads: Vec<(Ak, Result<Option<Value>>)> = db.read_local(|r| {
+                        let mut aks: BTreeSet<Ak> = last.keys().cloned().collect();
+                        aks.extend(r.aspects(tid).unwrap_or_default());
+                        aks.into_iter().map(|ak| {
+                            let v = r.value(tid, &ak);
+                            (ak, v)
+                        }).collect()
+                    });
+                    for (ak, value) in reads {
+                        if value.is_ok() && last.get(&ak) == Some(&digest(&value)) {
+                            continue;
+                        }
+                        last.insert(ak.clone(), digest(&value));
+                        f(db, Change { tid, ak, value, origin: Origin::Derived(crate::DerivedFrom::Recovered) });
+                    }
                 }
                 Delivery::Moved => f(db, Change { tid, ak: osis_schema::core_types::TID.name(), value: Err(crate::sources::moved()), origin: Origin::Initial }),
                 _ => {}

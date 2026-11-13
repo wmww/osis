@@ -864,8 +864,9 @@ impl Worker {
                 }
                 Delivery::Commit { id, fired: None, .. } => lock(&p).note_commit(id, &held2),
                 Delivery::Grants | Delivery::Status(_) | Delivery::Due => lock(&p).dirty = true,
-                // this node's own source for it moved: the client's subscription ends
-                Delivery::Moved => lock(&p).lapsed = true,
+                // this node's own source for it moved: the client's subscription ends; so does
+                // one that must read everything again (the client subscribes again)
+                Delivery::Moved | Delivery::Reread => lock(&p).lapsed = true,
                 Delivery::Diagnostic(x) => queue(&mut lock(&p), c::v(&x)),
                 _ => return,
             }

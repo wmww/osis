@@ -54,6 +54,9 @@ pub enum DerivedFrom {
     /// The thing was deleted here (or its creation undone), dropping its ephemeral values on
     /// this node.
     Deleted,
+    /// After a failed write the store was read again and a commit reported failed had landed
+    /// after all.
+    Recovered,
 }
 
 #[doc(hidden)]
@@ -261,6 +264,9 @@ pub(crate) enum Delivery {
     Moved,
     /// A `Filter::Due` read may answer otherwise.
     Due,
+    /// Anything the subscription shows may read otherwise (`Event::Reloaded`): read it all again.
+    /// Only `Filter::Thing` and `Filter::Commits` hear it; the others hear their own deliveries.
+    Reread,
 }
 
 pub(crate) enum Msg {
@@ -592,6 +598,28 @@ fn targets(sh: &Shared, db: &Osis, seq: u64, m: &Msg) -> Vec<(Arc<Sub>, Pre)> {
         }
         ids.into_iter().filter_map(|id| r.sub(id, seq)).map(|s| (s, Pre::Ready(d.clone()))).collect()
     };
+    if let Msg::Event(Event::Reloaded) = m {
+        // a commit answered `Err` may have landed: every subscription on what the store holds reads
+        // again, each as its own deliveries read
+        let origin = Origin::Derived(DerivedFrom::Recovered);
+        return r
+            .subs
+            .keys()
+            .filter_map(|id| r.sub(*id, seq))
+            .filter_map(|s| {
+                let pre = match &s.filter {
+                    Filter::Aspect(t, ak, _) => Pre::Aspect { tid: *t, ak: ak.clone(), origin },
+                    Filter::Grants(_) => Pre::Ready(Delivery::Grants),
+                    Filter::Due(_) => Pre::Ready(Delivery::Due),
+                    Filter::Thing(_) | Filter::Commits(_) => Pre::Ready(Delivery::Reread),
+                    // events, not reads (status follows every change on its own); a session's
+                    // merge hears its aspect's; another node's store did not move
+                    Filter::Diagnostics | Filter::Disputes | Filter::Status | Filter::Text | Filter::Port(..) => return None,
+                };
+                Some((s, pre))
+            })
+            .collect();
+    }
     if let Some((changed, origin)) = aspect_event(m) {
         // a role change told by no `Event::Roster` (an expiry, a purge, lost access): its grants too
         let derived = matches!(m, Msg::Event(Event::Changed { .. }));

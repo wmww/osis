@@ -69,7 +69,7 @@ fn index_enums_read_by_position() {
     index(&[HolderKind::Actor, HolderKind::Link, HolderKind::Key]);
     index(&[CommitKind::Content, CommitKind::Revert, CommitKind::Role, CommitKind::Snapshot]);
     index(&[SyncState::Synced, SyncState::Syncing, SyncState::NotConnected, SyncState::Refused, SyncState::Stranded]);
-    index(&[DerivedFrom::ValidityChanged, DerivedFrom::Expired, DerivedFrom::Purged, DerivedFrom::Arrived, DerivedFrom::LostAccess, DerivedFrom::Deleted]);
+    index(&[DerivedFrom::ValidityChanged, DerivedFrom::Expired, DerivedFrom::Purged, DerivedFrom::Arrived, DerivedFrom::LostAccess, DerivedFrom::Deleted, DerivedFrom::Recovered]);
     use DiagnosticKind::*;
     index(&[
         BadInput, CollidingRecord, Parked, Pending, OverlappingCounters, Removed, Callback, NotSynced, Stranded, Uncommitted, EphemeralRefused, Mismatch, Storage, Repair, OwnWriteInvalid,

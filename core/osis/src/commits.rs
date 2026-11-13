@@ -101,8 +101,9 @@ pub enum CommitEvent {
         /// It as it reads now.
         commit: Option<Commit>,
     },
-    /// Events may have been missed: a connection to the node dropped or came back, or a commit
-    /// did not fit. Read the pages shown again; the subscription goes on.
+    /// Events may have been missed: a connection to the node dropped or came back, a commit
+    /// did not fit, or the store found a write reported failed had landed after all. Read the
+    /// pages shown again; the subscription goes on.
     Reread,
     /// The subscription is over (its group's source moved, or the node ended it): subscribe again.
     Ended(Error),
@@ -456,6 +457,7 @@ impl Osis {
                         Err(e) => f(db, CommitEvent::Ended(e)),
                     }
                 }
+                Delivery::Reread => f(db, CommitEvent::Reread),
                 Delivery::Moved => f(db, CommitEvent::Ended(crate::sources::moved())),
                 _ => {}
             })
