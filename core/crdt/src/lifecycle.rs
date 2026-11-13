@@ -391,7 +391,9 @@ impl Fragment {
                 let mut entries = BTreeMap::new();
                 for (id, en) in &m.entries {
                     if m.is_live(id) {
-                        if let Some(inner) = en.frag.as_deref().and_then(|f| f.sweep_at_most(r, reflected, left)) {
+                        // judged on what the record reads as: its fragment joined with its dot's
+                        // key-erased record's (§5.6), where an expired creation sits
+                        if let Some(inner) = m.record_frag(id).and_then(|f| f.sweep_at_most(r, reflected, left)) {
                             entries.insert(id.clone(), Entry { frag: Some(Box::new(inner)), ..Entry::default() });
                         }
                     } else if id.key.is_some() || en.frag.is_some() {
@@ -405,7 +407,13 @@ impl Fragment {
                         }
                     }
                 }
-                (!entries.is_empty()).then(|| Fragment::Map(Map::new(Meta::default(), entries)))
+                // live records of one dot under several keys share the key-erased record's
+                // content: prune puts each write in one record (§5.6)
+                (!entries.is_empty()).then(|| {
+                    let mut out = Fragment::Map(Map::new(Meta::default(), entries));
+                    out.prune(None, &mut Changes::new());
+                    out
+                })
             }
             Fragment::Seq(s) if s.text => {
                 let mut out = Seq::empty(true);

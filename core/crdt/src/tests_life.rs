@@ -839,6 +839,26 @@ fn sweep_takes_only_what_is_hidden_spec_sync_7() {
     assert!(!gone.holds_write(&Dot::new(y, 1)));
 }
 
+/// spec/sync.md §7, §5.6 Live: a live map record reads as its fragment joined with its dot's
+/// key-erased record's, and the sweep judges it so. x puts `{k: [1]}`, y edits the element to 2, x's
+/// commit expires: the element's creation moves, value-less, to the key-erased record while y's
+/// write stays under `k`. The element shows y's value; it is not swept though x's delta is reflected.
+#[test]
+fn sweep_reads_a_live_record_with_its_key_erased_record_spec_sync_7() {
+    use crate::ops::{Writer, create};
+    let (x, y) = (sess(Tid::from_bytes([1; 15])), sess(Tid::from_bytes([2; 15])));
+    let ty = crate::testutil::TyView(Ty::Map(Box::new(Ty::Register), Box::new(Ty::List(Box::new(Ty::Register)))));
+    let val = |i: i64| Value::Map([(Value::Str("k".into()), Value::List(vec![Value::Int(i)]))].into_iter().collect());
+    let put = create(&mut Writer::new(ts(5), x.clone(), 1), &ty, &val(1)).unwrap();
+    let edit = crate::diff(&mut Writer::new(ts(9), y.clone(), 1), Some(&put), &ty, &val(2)).unwrap().unwrap();
+    let mut st = put;
+    st.join(edit);
+    let xs = [(x, 1, 9)];
+    st.strip(&in_ranges(&xs));
+    assert_eq!(st.read(), Some(val(2)));
+    assert_eq!(st.sweep(&Writer::new(ts(20), y, 5).delta_stamp(), &in_ranges(&xs)), None, "the element shows");
+}
+
 /// spec/sync.md §7: a creation a parent's reset pruned is dead once the state reflects its delta, so
 /// what was written into its record since goes (a map entry, a list element, a text undelete's
 /// char); the record merely lacking its creation (not received, or its delta invalid) stays, and so
@@ -966,9 +986,11 @@ fn sweep_is_bounded_and_finishes_spec_sync_7() {
 }
 
 /// `v` with empty collections left out: a sweep's reset is a write, so a collection another writer
-/// reset meanwhile may read empty rather than absent, as under any concurrent removal (§4.3).
+/// reset meanwhile may read empty rather than absent, as under any concurrent removal (§4.3), an
+/// enum's payload too.
 fn shown(v: Value) -> Option<Value> {
     match v {
+        Value::Enum(c, p) => Some(Value::Enum(c, p.and_then(|p| shown(*p)).map(Box::new))),
         Value::Map(m) => {
             let m: osis_base::ValueMap = m.into_iter().filter_map(|(k, v)| Some((k, shown(v)?))).collect();
             (!m.is_empty()).then_some(Value::Map(m))
