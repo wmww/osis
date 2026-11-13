@@ -466,8 +466,7 @@ impl SyncEngine {
     fn label_pass(&mut self, g: Tid, l: LabelId, index: u64, head: &osis_label::Step, out: &mut Vec<super::Action>) -> Result<()> {
         let _s = crate::costs::span("pass");
         let (mut keys, read_ok) = self.usable_keys(&g, index, head)?;
-        let recorded = self.group_label(&g, &l).is_some_and(|gl| gl.steps.contains_key(&head.id()));
-        if self.sources(&l).is_empty() && recorded && self.step_due(&g, &l, &keys) && self.step_settled(&g, l) {
+        if self.sources(&l).is_empty() && self.step_due(&g, &l, &head.id(), &keys) && self.step_settled(&g, l) {
             let (step, done) = self.engine.issue_step(&g, &l, &head.id(), false)?;
             self.take_done(done)?;
             if let Some((step, _)) = step {

@@ -22,9 +22,10 @@ impl SyncEngine {
     /// holds, established, the head's epochs (`keys`) and a newer one, or the head's deposit key
     /// is not the one the actor's deposit seed derives (refreshed) and nothing under `l` that
     /// could carry a newer seed waits to be opened or applied (`keys_caught_up`: else a lagging
-    /// admin would register its older seed back); a replaced label never.
-    pub(super) fn step_due(&mut self, g: &Tid, l: &LabelId, keys: &HeadKeys) -> bool {
-        if keys.delete.is_none() || keys.write.is_none() || self.is_replaced(g, l) {
+    /// admin would register its older seed back); a replaced label never. Only under `head`
+    /// recorded in `label.0`: a step a peer named alone (an open with no head) may be forged.
+    pub(super) fn step_due(&mut self, g: &Tid, l: &LabelId, head: &osis_label::StepId, keys: &HeadKeys) -> bool {
+        if keys.delete.is_none() || keys.write.is_none() || self.is_replaced(g, l) || !self.group_label(g, l).is_some_and(|gl| gl.steps.contains_key(head)) {
             return false;
         }
         if self.engine.epochs(g).is_some_and(|e| osis_keys::newer_than_head(&e, keys.epochs)) {
@@ -71,7 +72,7 @@ impl SyncEngine {
             None => {
                 // a replaced label is never stepped again (spec/sync.md §2: its replacement
                 // carries on)
-                if !self.step_due(&g, &l, &keys) || !self.step_settled(&g, l) {
+                if !self.step_due(&g, &l, &head.id(), &keys) || !self.step_settled(&g, l) {
                     return Ok(false);
                 }
                 let (step, done) = self.engine.issue_step(&g, &l, &head.id(), false)?;

@@ -732,3 +732,136 @@ fn a_removed_entry_shown_again_is_not_promoted_spec_sync_5() {
     net.run();
     assert_eq!(net.host_ids(host, &l), before, "the writer placed something for the removed entry");
 }
+
+/// A forged chain on `real`, the head of a label (spec/sync.md §5 Opens): `real` with the delete
+/// key swapped for the forger's own (it verifies under nothing), then a child signed by that key,
+/// carrying `real`'s sync key (an open by it lasts) and the forger's other keys.
+fn forged_chain(real: &osis_label::Step) -> Vec<osis_label::Step> {
+    let k = |b: u8| Secret32::from_bytes([b; 32]);
+    let own = label_role_key(LabelRole::Delete, &k(0xf0), 0);
+    let mut head = real.clone();
+    head.keys.delete = own.verifying_key();
+    let mut keys = StepKeys::derive(&k(0xf1), &k(0xf2), &k(0xf3), 0, &k(0xf4), &real.label);
+    keys.sync = real.keys.sync;
+    let at = Epoch::new(0, [0; 32]).unwrap();
+    let child = register(Parent::Child { step: &head, delete: &own }, keys, &[], (&osis_base::Tid::from_bytes([0xf5; 15]), at, &k(0xf6)), (at, &k(0xf7)), &mut SeededRng::from_u64(0xf8)).unwrap().0;
+    child.verify_child(&head).unwrap();
+    vec![head, child]
+}
+
+/// An admin `c` of a group with admin `a` at peer `s` opens its label `l` with no head (spec/
+/// sync.md §5 Walk: L rotated while c was away, and c learned the newest secrets alone, as an
+/// inbox grant would bring them, so it holds a sync key no recorded step bears), while `s` names
+/// the steps `forge(real head)` gives wherever it would name its head, and `a` is away. c writes
+/// an item meanwhile. Checked: c records none of the named steps in `label.0`, nor any step
+/// under them, and registers nothing under them. Returns the net, `[s, a, c]`, `l`, the
+/// item and the host's entries of `l` before it, the tamper still on.
+fn opened_on_forged_heads(forge: impl Fn(&osis_label::Step) -> Vec<osis_label::Step>) -> (Net, [usize; 3], LabelId, osis_base::Tid, Vec<osis_base::BlobId>) {
+    use osis_proto::Event as Ev;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    let (mut net, s, [a, c]) = hosted_nodes::<2>();
+    let g = net.group(a, &[(c, Role::Admin)], &[s]);
+    net.item(a, g, g, "item");
+    net.run();
+    net.advance(61_000);
+    let l = net.label(a);
+    net.set_online(c, false);
+    let (at, ct_) = (net.tid(a), net.tid(c));
+    let rs = recipients_of(net.engine(a), &[(at, Role::Admin), (ct_, Role::Admin)]);
+    rotation(net.engine(a), g, &rs, 61, false);
+    net.run();
+    net.advance(61_000);
+    let real = net.host_path(s, &l).last().unwrap().clone();
+    assert!(!net.group_labels(c).iter().any(|(_, gl)| gl.steps.contains_key(&real.id())), "c never recorded the head");
+    for r in [Role::Sync, Role::Read, Role::Write, Role::Admin] {
+        let ep = net.engine(a).epochs(&g).unwrap();
+        let (e, secret) = ep.role(r).held_newest_first().into_iter().next().map(|(e, x)| (e, x.clone())).unwrap();
+        net.engine(c).learn_secret(&g, r, e, secret).unwrap();
+    }
+    net.set_online(a, false);
+    let named = forge(&real);
+    let forged: Vec<_> = named.iter().map(|x| x.id()).collect();
+    let heads: Vec<Ev> = named.into_iter().map(Ev::Head).collect();
+    let swap = move |evs: &[(LabelId, Ev)]| -> Vec<(LabelId, Ev)> {
+        evs.iter()
+            .flat_map(|(x, e)| match e {
+                Ev::Head(_) if *x == l => heads.iter().map(|h| (l, h.clone())).collect(),
+                _ => vec![(*x, e.clone())],
+            })
+            .collect()
+    };
+    net.host_tamper = Some(Box::new(move |m| match m {
+        Message::Stream(st) if st.events.iter().any(|(_, e)| matches!(e, Ev::Head(_))) => Some(Message::Stream(Box::new(osis_proto::msg::Stream { events: swap(&st.events), ..(**st).clone() }))),
+        Message::PullReply(r) if r.events.iter().any(|(_, e)| matches!(e, Ev::Head(_))) => Some(Message::PullReply(Box::new(osis_proto::msg::PullReply { events: swap(&r.events), ..(**r).clone() }))),
+        _ => None,
+    }));
+    // what c registers at the peer meanwhile
+    let registered = Rc::new(RefCell::new(Vec::new()));
+    let r2 = registered.clone();
+    net.tamper_link = Some((c, s));
+    net.tamper = Some(Box::new(move |m| {
+        if let Message::Register { step, .. } = m {
+            r2.borrow_mut().push(step.clone());
+        }
+        None
+    }));
+    net.set_online(c, true);
+    for _ in 0..3 {
+        net.run();
+        net.advance(61_000);
+    }
+    let conn = net.conn_to(c, s).expect("connected");
+    assert!(net.sync(c).shared_members(conn).contains(&l), "L open at the peer: {:?}", net.sync(c).describe());
+    let before = net.host_ids(s, &l);
+    let t = net.item(c, g, g, "meanwhile");
+    for _ in 0..3 {
+        net.run();
+        net.advance(61_000);
+    }
+    let under = |x: &osis_label::Step| forged.contains(&x.id()) || x.prev.is_some_and(|p| forged.contains(&p));
+    for (_, gl) in net.group_labels(c) {
+        assert!(!gl.steps.values().any(|(x, _)| under(x)), "a named step, or one under it, in label.0");
+    }
+    assert!(!registered.borrow().iter().any(under), "a step registered under the named ones");
+    (net, [s, a, c], l, t, before)
+}
+
+// spec/sync.md §5 (Opens, Walk: a sync key no recorded step bears opens at the head the stream
+// names), §2 (label.0 records the path): a peer that cannot read L names a forged head carrying
+// L's sync key under its own delete key, then a child signed by it, to an admin that opened L
+// with no head. The admin records neither step in `label.0` and registers nothing under them;
+// once the peer is honest again, its write made meanwhile reaches the others.
+#[test]
+fn a_forged_head_and_its_child_are_never_recorded_spec_sync_5() {
+    let (mut net, [_, a, c], _, t, _) = opened_on_forged_heads(forged_chain);
+    net.host_tamper = None;
+    net.tamper = None;
+    net.tamper_link = None;
+    net.set_online(c, false);
+    net.set_online(c, true);
+    net.set_online(a, true);
+    for _ in 0..4 {
+        net.run();
+        net.advance(61_000);
+    }
+    assert_eq!(net.read(a, t), Some(net::s("meanwhile")));
+}
+
+// spec/sync.md §5 (Re-registration: an admin issues a child of a head recorded in `label.0`): a
+// peer names a head carrying L's real keys but another deposit key to an admin that opened L
+// with no head. Such a head would be due a child (its deposit key is not the actor's), but the
+// admin issues none under a head the peer alone named: none of its passes fails, and its write
+// reaches the peer meanwhile.
+#[test]
+fn no_step_under_an_unrecorded_head_spec_sync_5() {
+    let forge = |real: &osis_label::Step| {
+        let mut head = real.clone();
+        head.keys.deposit = label_role_key(LabelRole::Delete, &Secret32::from_bytes([0xf0; 32]), 0).verifying_key();
+        vec![head]
+    };
+    let (mut net, [s, _, c], l, _, before) = opened_on_forged_heads(forge);
+    let d = net.diagnostics(c);
+    assert!(!d.iter().any(|x| x.contains("pass of")), "every pass ran: {d:?}");
+    assert!(net.host_ids(s, &l).len() > before.len(), "c's write reached the peer");
+}
