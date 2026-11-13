@@ -335,7 +335,8 @@ pub(crate) struct Dirty {
     blobs: HashMap<BlobId, Option<Vec<u8>>>,
     /// Spill journal records written (`0..spills`).
     spills: u32,
-    /// Slots whose spilled row must go at commit (deleted after spilling).
+    /// Slots changed after spilling: their spilled row is rewritten at the next spill or the
+    /// commit, or deleted at commit if the slot is then deleted.
     dead_spills: BTreeSet<u64>,
     /// What the first change of each slot and blob under each open savepoint replaced, oldest
     /// first (`DirtyMark`): bounded by what the savepoint touched, not by how often.
@@ -369,18 +370,11 @@ impl Dirty {
     /// Sets a slot's state, keeping `plain_bytes` and `dead_spills`.
     fn set_unit(&mut self, slot: u64, u: DirtyUnit) {
         let dead = self.dead_spills.contains(&slot);
-        let plain = matches!(u, DirtyUnit::Plain { .. } | DirtyUnit::Page { .. } | DirtyUnit::Taken { .. });
         self.plain_bytes = self.plain_bytes.saturating_add(u.plain_len());
         let old = self.units.insert(slot, u);
         self.plain_bytes = self.plain_bytes.saturating_sub(old.as_ref().map_or(0, DirtyUnit::plain_len));
-        match &old {
-            Some(DirtyUnit::Spilled { .. }) if !plain => {
-                self.dead_spills.insert(slot);
-            }
-            _ => {}
-        }
-        if plain {
-            self.dead_spills.remove(&slot);
+        if matches!(old, Some(DirtyUnit::Spilled { .. })) {
+            self.dead_spills.insert(slot);
         }
         if self.open.last_mut().is_some_and(|l| l.0.insert(slot)) {
             self.undo.push(DirtyUndo::Unit(slot, old, dead));
@@ -1374,6 +1368,30 @@ mod tests {
         p.commit(d, &mut rng).unwrap();
         assert_eq!(rows(&b, b'n'), 0);
         assert_eq!(rows(&b, b'u'), 0);
+    }
+
+    // spec/commits.md §5; notes/local-store.md, Key tree: a unit spilled, written again and
+    // deleted leaves no row at commit.
+    #[test]
+    fn spilled_rewritten_deleted_unit_leaves_no_row() {
+        let cfg = StoreConfig { spill_bytes: 100, ..small() };
+        let (mut p, b, _r, mut rng) = fresh(cfg);
+        let mut d = p.begin().unwrap();
+        let s0 = p.alloc(&mut d).unwrap();
+        p.txn_write(&mut d, s0, vec![1; 10], false, &mut rng).unwrap();
+        p.commit(d, &mut rng).unwrap();
+        let u0 = rows(&b, b'u');
+        let mut d = p.begin().unwrap();
+        for _ in 0..10 {
+            let s = p.alloc(&mut d).unwrap();
+            p.txn_write(&mut d, s, vec![s as u8; 40], false, &mut rng).unwrap();
+        }
+        p.txn_write(&mut d, s0, vec![9; 300], false, &mut rng).unwrap();
+        assert!(matches!(d.units.get(&s0), Some(DirtyUnit::Spilled { .. })));
+        p.txn_write(&mut d, s0, vec![8; 5], false, &mut rng).unwrap();
+        p.txn_delete(&mut d, s0, false);
+        p.commit(d, &mut rng).unwrap();
+        assert_eq!(rows(&b, b'u'), u0 - 1 + 10, "a stray spilled row");
     }
 
     // spec/commits.md §4: one storage transaction per commit applied; spilled rows are invisible until commit, readable inside
