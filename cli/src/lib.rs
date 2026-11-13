@@ -406,6 +406,11 @@ impl Ctx<'_> {
         }
     }
 
+    /// Emits text lines, or the JSON array of them.
+    pub fn list(&mut self, lines: &[String]) -> anyhow::Result<()> {
+        self.emit(lines, J::strs(lines))
+    }
+
     /// The `--timeout` bound (default 30 s; `0`: none).
     pub fn timeout(&self) -> anyhow::Result<Option<Duration>> {
         timeout_of(&self.g, Some(DEFAULT_WAIT))

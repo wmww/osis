@@ -32,6 +32,12 @@ impl J {
     pub fn opt(o: Option<J>) -> J {
         o.unwrap_or(J::Null)
     }
+    pub fn tids<'t>(ts: impl IntoIterator<Item = &'t Tid>) -> J {
+        J::Arr(ts.into_iter().map(|t| J::tid(*t)).collect())
+    }
+    pub fn strs<S: ToString>(xs: impl IntoIterator<Item = S>) -> J {
+        J::Arr(xs.into_iter().map(|x| J::Str(x.to_string())).collect())
+    }
 
     pub fn write(&self, o: &mut String) {
         match self {

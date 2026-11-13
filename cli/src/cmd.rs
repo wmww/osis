@@ -143,6 +143,11 @@ fn not_admitted(db: &Osis, e: Error) -> anyhow::Error {
     if hint.is_empty() { e.into() } else { anyhow::Error::from(e).context(hint.join("; ")) }
 }
 
+/// `NAME\tTID` lines, each list under its name.
+fn tagged(rel: &[(&str, &Vec<Tid>)]) -> Vec<String> {
+    rel.iter().flat_map(|(n, v)| v.iter().map(move |t| format!("{n}\t{}", t.to_uri()))).collect()
+}
+
 fn links_j(ls: &[osis::LinkInfo]) -> J {
     J::Arr(ls.iter().map(|l| J::obj([("id", J::str(l.id.to_string())), ("target", J::tid(l.target)), ("role", J::str(role_text(l.role).to_string())), ("single_use", J::Bool(l.single_use))])).collect())
 }
@@ -310,8 +315,8 @@ pub fn dispatch(cli: Cli, store: Option<StoreSel>, stdin: &mut dyn BufRead, out:
             let StoreSel::Dir(d) = &sel else { return Err(usage("schemas register with a store directory")) };
             let list = crate::registered(d)?;
             let lines: Vec<String> = list.iter().map(|p| p.display().to_string()).collect();
-            let j = J::Arr(lines.iter().map(|l| J::str(l.clone())).collect());
-            return if g.json { writeln!(out, "{}", j.text()).map_err(Into::into) } else { lines.iter().try_for_each(|l| writeln!(out, "{l}")).map_err(Into::into) };
+            let text = if g.json { J::strs(&lines).text() + "\n" } else { lines.iter().map(|l| format!("{l}\n")).collect() };
+            return Ok(out.write_all(text.as_bytes())?);
         }
         _ => {}
     }
@@ -432,7 +437,7 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
                 Some(g) => db.peers(ctx.tid(&g)?)?,
                 None => db.saved_peers()?,
             };
-            ctx.emit(&s.iter().map(|s| s.to_string()).collect::<Vec<_>>(), J::Arr(s.iter().map(|s| J::str(s.to_string())).collect()))
+            ctx.list(&s.iter().map(ToString::to_string).collect::<Vec<_>>())
         }
         Cmd::Peers(PeersCmd::Add { addr }) => Ok(db.add_peer(&ctx.arg_text(&addr)?.parse()?)?),
         Cmd::Peers(PeersCmd::Rm { addr }) => Ok(db.remove_peer(&ctx.arg_text(&addr)?.parse()?)?),
@@ -442,9 +447,7 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
         Cmd::Serving(ServingCmd::Ids { g }) => {
             let t = ctx.tid(&g)?;
             let t = if t == db.me() { db.home() } else { t };
-            let ids: Vec<String> = db.sync_ids(t)?.iter().map(ToString::to_string).collect();
-            let j = J::Arr(ids.iter().map(|x| J::str(x.clone())).collect());
-            ctx.emit(&ids, j)
+            ctx.list(&db.sync_ids(t)?.iter().map(ToString::to_string).collect::<Vec<_>>())
         }
         Cmd::Clients(c) => clients(ctx, &c),
         Cmd::Serve { serving, listen, .. } => serve(ctx, serving, &listen),
@@ -463,7 +466,7 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
         Cmd::Show { t, width } => show(ctx, &t, width),
         Cmd::Aspects { t } => {
             let a = db.aspects(ctx.tid(&t)?)?;
-            ctx.emit(&a.iter().map(|a| a.as_str().to_string()).collect::<Vec<_>>(), J::Arr(a.iter().map(|a| J::str(a.as_str())).collect()))
+            ctx.list(&a.iter().map(|a| a.as_str().to_string()).collect::<Vec<_>>())
         }
         Cmd::Ls { .. } => Err(not_built("query")),
         Cmd::Backlinks { t, watch: false, .. } => {
@@ -549,19 +552,14 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
         Cmd::Groups { t } => {
             let gs = db.groups_of(ctx.tid(&t)?)?;
             let rel = [("item", &gs.item_of), ("subgroup", &gs.subgroup_of), ("within", &gs.within)];
-            let lines = rel.iter().flat_map(|(n, v)| v.iter().map(move |g| format!("{n}\t{}", g.to_uri()))).collect::<Vec<_>>();
-            let arr = |v: &[Tid]| J::Arr(v.iter().map(|g| J::tid(*g)).collect());
-            ctx.emit(&lines, J::obj([("item_of", arr(&gs.item_of)), ("subgroup_of", arr(&gs.subgroup_of)), ("within", arr(&gs.within))]))
+            ctx.emit(&tagged(&rel), J::obj([("item_of", J::tids(&gs.item_of)), ("subgroup_of", J::tids(&gs.subgroup_of)), ("within", J::tids(&gs.within))]))
         }
         Cmd::Members { g } => {
             let g = ctx.tid(&g)?;
             let members = db.members(g)?;
             let of = |want: fn(Member) -> Option<Tid>| members.iter().copied().filter_map(want).collect::<Vec<_>>();
             let (items, subs) = (of(|m| if let Member::Item(t) = m { Some(t) } else { None }), of(|m| if let Member::Subgroup(t) = m { Some(t) } else { None }));
-            let rel = [("item", &items), ("subgroup", &subs)];
-            let lines = rel.iter().flat_map(|(n, v)| v.iter().map(move |t| format!("{n}\t{}", t.to_uri()))).collect::<Vec<_>>();
-            let arr = |v: &[Tid]| J::Arr(v.iter().map(|t| J::tid(*t)).collect());
-            ctx.emit(&lines, J::obj([("items", arr(&items)), ("subgroups", arr(&subs))]))
+            ctx.emit(&tagged(&[("item", &items), ("subgroup", &subs)]), J::obj([("items", J::tids(&items)), ("subgroups", J::tids(&subs))]))
         }
         Cmd::Grants { t, watch: false, .. } => grants(ctx, &t),
         Cmd::Grants { t, watch: true, count } => {
@@ -589,7 +587,7 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
                 let via = if h.through.is_empty() { String::new() } else { format!(" via {}", h.through.iter().map(|t| t.to_uri()).collect::<Vec<_>>().join(",")) };
                 format!("{} {:?} {} {}{via}", h.actor.to_uri(), h.kind, role_text(h.role), h.until.map_or("-".into(), |u| ts_text(raw, u.0)))
             }).collect();
-            let j = J::Arr(hs.iter().map(|h| J::obj([("actor", J::tid(h.actor)), ("kind", J::str(format!("{:?}", h.kind))), ("role", J::str(role_text(h.role))), ("until", J::opt(h.until.map(|u| J::int(u.0)))), ("through", J::Arr(h.through.iter().map(|t| J::tid(*t)).collect()))])).collect());
+            let j = J::Arr(hs.iter().map(|h| J::obj([("actor", J::tid(h.actor)), ("kind", J::str(format!("{:?}", h.kind))), ("role", J::str(role_text(h.role))), ("until", J::opt(h.until.map(|u| J::int(u.0)))), ("through", J::tids(&h.through))])).collect());
             ctx.emit(&lines, j)
         }
         Cmd::Now => {
@@ -617,12 +615,7 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
             Ok(db.leave(holder, ctx.tid(&t)?)?)
         }
         Cmd::Retained { drop: Some(a) } => Ok(db.drop_retained_copy(ctx.tid(&a)?)?),
-        Cmd::Retained { drop: None } => {
-            for a in db.retained_copies()? {
-                println!("{}", a.to_uri());
-            }
-            Ok(())
-        }
+        Cmd::Retained { drop: None } => ctx.list(&db.retained_copies()?.iter().map(Tid::to_uri).collect::<Vec<_>>()),
         Cmd::AddWithGrant { t, g, role, subgroup } => {
             let t = ctx.tid(&t)?;
             let member = if subgroup { Member::Subgroup(t) } else { Member::Item(t) };
@@ -696,7 +689,7 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
                         ds.iter()
                             .map(|d| match d {
                                 osis::Dispute::Removal { id, target, author, holder, side: s, .. } => J::obj([("id", J::str(id.to_string())), ("target", J::tid(*target)), ("author", J::tid(*author)), ("holder", J::tid(*holder)), ("side", J::str(side(*s))), ("chosen", flag(d))]),
-                                osis::Dispute::Account { id, account, versions, side: s, .. } => J::obj([("id", J::str(id.to_string())), ("account", J::tid(*account)), ("versions", J::Arr(versions.iter().map(|l| J::str(l.to_string())).collect())), ("side", J::str(side(*s))), ("chosen", flag(d))]),
+                                osis::Dispute::Account { id, account, versions, side: s, .. } => J::obj([("id", J::str(id.to_string())), ("account", J::tid(*account)), ("versions", J::strs(versions)), ("side", J::str(side(*s))), ("chosen", flag(d))]),
                             })
                             .collect(),
                     ),
@@ -786,7 +779,7 @@ fn whoami(ctx: &mut Ctx<'_>) -> anyhow::Result<()> {
         ("me", J::tid(db.me())),
         ("home", J::tid(db.home())),
         ("node", J::tid(db.node())),
-        ("peers", J::Arr(peers.iter().map(|s| J::str(s.to_string())).collect())),
+        ("peers", J::strs(&peers)),
         ("store", J::str(store)),
         ("software", J::str(sw)),
     ]);
@@ -968,8 +961,8 @@ fn show(ctx: &mut Ctx<'_>, t: &str, width: usize) -> anyhow::Result<()> {
         ("tid", J::tid(t)),
         ("aspects", J::Obj(fields)),
         ("empty", J::Bool(!known)),
-        ("groups", J::Arr(groups.within.iter().map(|g| J::tid(*g)).collect())),
-        ("subgroup_of", J::Arr(groups.subgroup_of.iter().map(|g| J::tid(*g)).collect())),
+        ("groups", J::tids(&groups.within)),
+        ("subgroup_of", J::tids(&groups.subgroup_of)),
         ("role", J::opt(role.map(|r| J::str(role_text(r))))),
         ("created", J::opt(created.map(stamp_json))),
         ("changed", J::opt(changed.map(stamp_json))),
@@ -1193,7 +1186,7 @@ fn commit_j(c: &osis::Commit) -> J {
         ("kind", J::str(kind_text(c.kind))),
         ("in_effect", J::Bool(c.in_effect)),
         ("reverts", J::opt(c.reverts.as_ref().map(|r| J::str(r.to_string())))),
-        ("reverted_by", J::Arr(c.reverted_by.iter().map(|r| J::str(r.to_string())).collect())),
+        ("reverted_by", J::strs(&c.reverted_by)),
         ("parts", J::Arr(parts)),
     ])
 }
@@ -1246,7 +1239,7 @@ fn status_lines(s: &osis::Status, raw: bool) -> Vec<String> {
 
 fn status_json(s: &osis::Status) -> J {
     let groups = s.groups.iter().map(|(g, x)| J::obj([("group", J::tid(*g)), ("state", J::str(format!("{:?}", x.state))), ("last_sync", J::opt(x.last_sync.map(|t| J::int(t.0))))]));
-    J::obj([("groups", J::Arr(groups.collect())), ("connected", J::int(s.connected as u64)), ("two_sources", J::Arr(s.two_sources.iter().map(|t| J::tid(*t)).collect()))])
+    J::obj([("groups", J::Arr(groups.collect())), ("connected", J::int(s.connected as u64)), ("two_sources", J::tids(&s.two_sources))])
 }
 
 /// One diagnostic as `diag` prints it (text or a JSON line): its kind, what it names, its detail.
@@ -1273,7 +1266,7 @@ fn diag_line(d: &osis::Diagnostic, json: bool) -> String {
     if json {
         J::obj([
             ("kind", J::str(kind)),
-            ("tids", J::Arr(tids.iter().map(|t| J::tid(*t)).collect())),
+            ("tids", J::tids(&tids)),
             ("commit", J::opt(commit.as_ref().map(|c| J::str(c.to_string())))),
             ("peer", J::opt(peer.map(J::tid))),
             ("detail", J::str(detail)),
@@ -1412,8 +1405,7 @@ fn inspect(ctx: &mut Ctx<'_>, i: InspectCmd) -> anyhow::Result<()> {
             }
         }
     }
-    let j = J::Arr(lines.iter().map(|l| J::str(l.clone())).collect());
-    ctx.emit(&lines, j)
+    ctx.list(&lines)
 }
 
 /// What `serve` listens on when serving with no listen URL (osis's default port, spec/sync.md §10).
@@ -1526,7 +1518,7 @@ fn serving_show(ctx: &mut Ctx<'_>) -> anyhow::Result<()> {
     lines.extend(h.caps.iter().map(|(l, c)| format!("cap {l} {} {}", c.entries, c.bytes)));
     let j = J::obj([
         ("admit", J::str(admit)),
-        ("admitted", J::Arr(h.admitted.iter().map(|l| J::str(l.to_string())).collect())),
+        ("admitted", J::strs(&h.admitted)),
         ("policy", J::Obj(knobs.iter().map(|(k, n)| (k.clone(), J::int(*n))).collect())),
         ("caps", J::Obj(h.caps.iter().map(|(l, c)| (l.to_string(), J::obj([("entries", J::int(c.entries)), ("bytes", J::int(c.bytes))]))).collect())),
     ]);

@@ -93,7 +93,7 @@ fn message_line(db: &ReadOnly, c: Tid, json: bool, k: &Commit) -> anyhow::Result
                 ("deleted_by", deleted_by(&part.body)),
                 ("reply_to", opt_str(reply_to.map(|r| r.to_string()))),
                 ("edited", J::Bool(part.edited.is_some())),
-                ("earlier", J::Arr(earlier.into_iter().map(J::str).collect())),
+                ("earlier", J::strs(earlier)),
                 ("valid", J::Bool(part.valid)),
             ])
             .text(),
