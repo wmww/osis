@@ -1,5 +1,5 @@
 # Requirements wording for expired writes a node missed
-> Summary: spec/requirements.md (Convergence limits) says nodes can read differently "until a writer of that data next writes it or notices the difference"; for an expiring edit a node missed, the build converges once a writer holding its leftover has been quiet for `MAX_DRIFT` (or its cost trigger fires), not at the writer's next write. Proposed wording for Tess.
+> Summary: spec/requirements.md (Decentralization) says nodes can read differently "until a writer of that data next writes it or notices the difference"; for an expiring edit a node missed, the build converges once a writer holding its leftover has been quiet for `MAX_DRIFT` (or its cost trigger fires), not at the writer's next write. Proposed wording for Tess.
 > Priority: low
 > Tags: tess-call, retention, ephemeral
 
@@ -9,7 +9,7 @@ An expired write's body is deleted at hosts at T and its leftover uploads nowher
 ## The mismatch
 "Next writes it" does not hold: one more write does not carry the leftover unless it sets off the cost trigger. "Notices the difference" holds only loosely (the writer acts on holding an uncovered leftover, not on seeing a difference).
 
-## Proposed wording (Convergence limits, last sentence)
+## Proposed wording (Decentralization, the sentence above)
 > Nodes can read differently until a writer of that data notices the difference or writes enough more of it; for an expired edit, at most until a writer that held it has seen the data unchanged for about an hour.
 
 The hour is `MAX_DRIFT`, the window in which nodes already disagree about an expiry by their clocks. The hour is scoped to expiry: the sentence also covers purged edits and dropped invalid ones, and the quiet rule covers only expired writes' leftovers (a purged write's leftover is never dropped as covered, spec/commits.md §6). "Unchanged" is the quiet time: a stream of writes less than an hour apart postpones it, bounded then only by the cost trigger.

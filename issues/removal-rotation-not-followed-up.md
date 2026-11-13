@@ -6,7 +6,7 @@
 Calling `rotate_above` after the removal's rotation commit fixes the count but changes what a
 removal returns (its `Done` gains the rotations above): 13 engine tests that step a removal and
 its cascade apart (`tests_possession::removed_holding`, `removal_twelve_deep_*`,
-`diamond_and_lattice_*`, `maker_lowered_*`) and node tests reading a removal's `Done` as one
+`diamond_and_lattice_*`, `maker_through_keyless_grant_*`) and node tests reading a removal's `Done` as one
 commit (the keep flows: `keep::the_removal_overrides_the_default_spec_perm_3` and five others,
 `flows::revoke_joiner_one_rotation_spec_commits_2`, `deposit_queue::first_copy_survives_a_crash_*`)
 fail. Options: follow it upward in the same transaction but as a separate `Done` the callers

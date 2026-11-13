@@ -3,7 +3,7 @@
 > Priority: low
 > Tags: tests, store
 
-Tests seen: `ephemeral::restart_forgets_ephemeral`, `port::listen_socket_names_the_store`, `serving::own_runtime_close_frees_serving_store`, `serving::stop_serving_erases_its_store`, `runtime::own_runtime_reopen_right_after_close`.
+Tests seen: `ephemeral::restart_forgets_ephemeral`, `port::listen_socket_names_the_store`, `serving::own_runtime_close_frees_serving_store`, `serving::stop_serving_drops_what_it_kept_spec_data_model_9`, `runtime::own_runtime_reopen_right_after_close`.
 
 - All five open real directories under `temp_dir()`. Create fails only through `std::fs` and redb in `parts()` (`Error::Storage`). One of the five has no runtime and none binds a real LAN socket, so no per-store socket or LAN port is involved. `ulimit -n` is 524288.
 - A store open failure names the directory (`handle.rs` `parts`, test `runtime::a_store_it_cannot_write_names_the_file`), so the next failure's panic says which store and why.

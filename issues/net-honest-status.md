@@ -1,5 +1,5 @@
 # Honest status and waits
-> Summary: Status, `wait_synced` and history `complete` judge every sync ID over one set, the nodes connected now with it open whoever dialed: a host by this node's pass, a reader by this node's pull and the reader's reports of this node's log. Synced needs at least one such node and no connection still finding what it shares. Built; what remains is `Refused` by the judged holder and deliveries with nowhere to go. Part of issues/net-rework.md.
+> Summary: Status, `wait_synced` and history `complete` judge every sync ID over one set, the nodes connected now with it open whoever dialed: a host by this node's pass, a reader by this node's pull and the reader's reports of this node's log. Synced needs at least one such node and no connection still finding what it shares. Built; what remains is `Refused` by the judged holder. Part of issues/net-rework.md.
 > Priority: normal
 > Tags: api, node, sync
 
@@ -11,7 +11,6 @@ Step 1: `sources(L)` in `SyncEngine::label_status`, the states, the `All`/`Thing
 
 ## Remaining
 - `Refused` names saved peers answering 14 (the current mechanism's "a node I hold to serve it"); issues/net-shared-set.md's judged holder replaces it.
-- A delivery with nowhere to go (`SentInbox::nowhere`) is retried at `INBOX_LIFETIME`, not when the recipient's inbox gets a node: issues/net-first-contact.md replaces it with offers.
 
 ## Gaps in step 1
 - A `leave` that lands and forgets before the `Thing` wait begins reads as never carried, so the wait runs to its timeout (a spurious exit 6). Nothing tells a forgotten thing from one never held; a rule ending the wait when nothing carries `t` and no role is held, whether or not it was carried, would close it, but ends a wait on a thing that is not here yet.

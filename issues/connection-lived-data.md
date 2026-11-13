@@ -5,6 +5,6 @@
 
 - Connected set: each node holds the accounts it reaches through current connections. Indirect reach is learned from neighbours with the path (path-vector), event-driven (sent on change only), so a loop cannot keep a departed account alive; the connection layer's idle timeout bounds detection of an abrupt drop.
 - Nodes may briefly disagree on who is connected during partitions; such data then shows at some nodes and not others until it settles (stated).
-- Granularity: a whole thing (chosen over per commit: no wire field, the drop is a local held-set rule like any other, and a reconnecting keeper re-sends the thing by ordinary sync). Per-session churn of such things relies on issues/creation-record-ordinary.md (no kept creation record).
+- Granularity: a whole thing (chosen over per commit: no wire field, the drop is a local held-set rule like any other, and a reconnecting keeper re-sends the thing by ordinary sync). Per-session churn of such things relies on creations being ordinary writes (no kept creation record, notes/expiry-creation-design.md).
 - Listing other accounts as keepers only keeps one's own data alive longer while they are online; it grants nothing.
 - Invalid memory parts: memory parts are the one non-edge, non-own class kept while invalid (spec/permissions.md §6; notes/ephemeral.md What follows from memory), since a memory commit forgotten whole cannot come back when valid again. This model should drop them like durable invalid bodies (a reconnecting keeper re-sends what turns valid) and remove that carve-out.

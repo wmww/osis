@@ -1,6 +1,6 @@
-# Rename the "person actor" to "account"
-> Summary: the engine still calls the account actor (its nodes are its admins) the "person actor" (`create_person`, `set_person`); the name misleads, as nothing ties it 1:1 to a human (Tess). Everything public says account.
+# Rename the "person" leftovers to "account"
+> Summary: the account actor is "account" everywhere public and in the engine's API; "person" for it remains in test helpers (`persons`, `person` in node, keys and sim tests, sim `NetSim::person` scenarios), osis `share.rs` `person_links`, node-sync `set_contact(person, ..)` and a few engine and node comments. Rename them; nothing ties an account 1:1 to a human (Tess).
 > Priority: low
-> Tags: spec, api, naming
+> Tags: naming, tests
 
-Tess's direction. Pre-stability; no wire change. The API, CLI, app, chat, notes and spec prose are done. Left: engine and node names (`create_person`, `set_person`, `flows`, `c.person`, the `person` local record).
+The app's **Person** kind (an address-book contact) is another sense and stays (issues/deprecated-terms.md).

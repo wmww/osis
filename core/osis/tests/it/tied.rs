@@ -412,7 +412,7 @@ fn invalidated_membership_removes_the_tied_grant() {
 // it): Bob, the card's admin, removes the tag's hand-granted grant on his card added to the tag;
 // the tag's admin and its other writer drop it from their roster and reach and lose the card
 // (the removal leaves the tag's closure bodies, so only that membership tells Carol). Whether Carol
-// reads the card's fresh deposit seed through its own sync ID: issues/removed-holder-reads-fresh-deposit-seed.md.
+// reads the card's fresh deposit seed through its own sync ID: issues/fresh-deposit-seed-readable-by-departed.md.
 #[test]
 fn group_holders_learn_grant_removal() {
     let Setup { mut w, alice, bob, carol, g } = setup();
@@ -433,7 +433,7 @@ fn group_holders_learn_grant_removal() {
     }
     assert_eq!(text(&carol, t), None, "Carol lost the card");
     assert_ne!(seed(&bob), old, "the removal refreshed the card's deposit seed");
-    // the seed itself, Carol may learn: issues/removed-holder-reads-fresh-deposit-seed.md
+    // the seed itself, Carol may learn: issues/fresh-deposit-seed-readable-by-departed.md
 }
 
 // spec/sync.md §2 (an actor naming no inbox uses its first admin's), §3: Bob grants the tag (which names
@@ -462,7 +462,7 @@ fn inherited_inbox_opens() {
 // the card added to G and H; Alice, G's admin, learns it through H and places it under G's
 // label, so Carol learns it too (before, she logged the card's bodies Alice deleted there
 // again on every pass). The card's new deposit seed: not from that copy; Carol still reaches the
-// card's own sync ID (issues/removed-holder-reads-fresh-deposit-seed.md).
+// card's own sync ID (issues/fresh-deposit-seed-readable-by-departed.md).
 #[test]
 fn group_admin_learns_removal_elsewhere() {
     let Setup { mut w, alice, bob, carol, g } = setup();
@@ -504,7 +504,7 @@ fn group_admin_learns_removal_elsewhere() {
     assert_eq!(of_card(&carol), before, "Carol logs nothing of the card again");
 }
 
-// spec/sync.md §3: a removal by someone who knows the group's keys comes by its inbox: the admin's copy, with the remover's chain, leaves out the thing's newest `keys.0` (a later reader of the group never learns the fresh seed: `zoe` below; Carol, a reader until the removal, can: issues/removed-holder-reads-fresh-deposit-seed.md)
+// spec/sync.md §3: a removal by someone who knows the group's keys comes by its inbox: the admin's copy, with the remover's chain, leaves out the thing's newest `keys.0` (a later reader of the group never learns the fresh seed: `zoe` below; Carol, a reader until the removal, can: issues/fresh-deposit-seed-readable-by-departed.md)
 #[test]
 fn group_admin_copies_removal_without_new_keys() {
     let Setup { mut w, alice, bob, carol, g } = setup();

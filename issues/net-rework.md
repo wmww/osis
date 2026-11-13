@@ -43,7 +43,7 @@ The registry of old words stays issues/deprecated-terms.md. Renames come after t
 - Sync IDs leave the public API; `unsync` goes.
 - Role and sync are paired, strong form (issues/net-role-sync.md); spec/requirements.md "add to synced groups" becomes "add to synced groups or share them".
 - Two layers: connecting, then finding the shared sync IDs. On a LAN a node connects to every osis node, both exchange identity, and the shared set runs only with known actors (issues/net-connect.md). A node shows its identity only to nodes of actors it already knows (spec/requirements.md, Offline and network); a first build may break this on the LAN as a listed gap. Two accounts that don't know each other don't share directly, for now.
-- `set_role` writes at once; an app catches up first with `wait_synced` (issues/revocation-without-arbiter.md).
+- `set_role` writes at once; an app catches up first with `wait_synced` (notes/api.md, Demotion and addenda).
 - **No per-node data in groups**: a group names accounts, never its holders' nodes (issues/account-signing.md, which goes first). Off-LAN discovery of other accounts' nodes is not solved in this rework: better unsolved than built on per-group node data. The rework's end state holds on a LAN, through a reachable node and at known addresses.
 - IP consent: any positive action is consent (spec/sync.md §10). Relaying for co-readers by default, for strangers only when the user turns it on; no default relay in builds. Privacy concerns go to issues/privacy.md.
 

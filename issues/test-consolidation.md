@@ -12,8 +12,6 @@ Format: `file:line test | action | why safe | confidence`.
 
 **node**
 - `keep.rs` explicit `check_index()` in `copy_survives_restart`: keep it; a reopen runs no `check_index` (probed), so it is the only oracle run after the first reopen
-- `required.rs:374 required_after_reopen_spec_commits_5` | delete | `ix.required` is in `index_digest`, so `check_index` compares it in every required.rs test; its assert is near-vacuous | medium
-- `required.rs:217` `fixed_retention` assert | drop the line | the header assert at :221 restates it | medium
 - `growth.rs:67 replace_census_probe` | delete | ignored probe with no assert; `single_writer_replace_grows_nothing` checks the property | medium
 - `parts.rs:554 history_plays_past_a_no_op_write` | delete | tests only the `play` harness of a deleted differential (a seed 9350074 prefix) | medium-high
 
@@ -69,7 +67,6 @@ Format: `file:line test | action | why safe | confidence`.
 - `:113` | merge into `:691` | same world and pairing | medium
 
 **node `sync_more.rs`**
-- `:212 reconciliation_fallback` | delete | `trimmed_log_reconcile_deletes_absent_entries` asserts a superset | medium
 - `:1369` | move its exact checks into `scale.rs:597 role_change_judges_its_labels_only`, then delete | same world | medium-high
 
 **node `keep.rs`**
@@ -130,7 +127,7 @@ Format: `file:line test | action | why safe | confidence`.
 - label `step.rs claim_key_per_step` | one seed | low
 
 ### Category 3: cross-crate duplication
-- **host `hub.rs` / `limits.rs` vs proto `loopback`.** Seven host tests (`register_open_sync_download`, `deposits_and_budget`, `deletes_and_tombstones`, `subscriptions_and_relays`, `horizon_falls_back_to_reconciliation`, `claims_and_static_entries`, `stale_sync_key_gets_exactly_one_step`) run the same scripts as their loopback twins; only the store differs, and host `agrees_with_reference_and_replays` ties the two stores. Delete the host copies after moving their unique asserts (genesis delete key, deposit count, tombstone lifetime) into loopback. `claims_and_static_entries` is the only citer of the "sync §5 (claim set hash)" anchor, so move its refusal and citation first. Medium.
+- **host `hub.rs` vs proto `loopback`.** Two host tests (`deposits_and_budget`, `deletes_and_tombstones`) run the same scripts as their loopback twins; only the store differs, and host `agrees_with_reference_and_replays` ties the two stores. Delete the host copies after moving their unique asserts (deposit count, tombstone lifetime) into loopback. Medium.
 - keys `covers.rs grant_raced_by_rotation` | delete | node `flows::reseal_raced_grant` | medium
 - keys `props.rs departures_and_current_holders` | maybe delete | a keys-level copy of engine `rotation::tests_property`; its unique part is the `snapshot_keyed` / `may_compact_secrets` check | low
 - node `listing.rs:136 page_stops_at_its_byte_bound` | delete | covered by osis `listing::page_bound_counts_large_values` | medium-high
