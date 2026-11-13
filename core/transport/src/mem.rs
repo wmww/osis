@@ -135,7 +135,7 @@ impl Conn {
         let ([k0, k1], [e0, e1]) = (&self.keys, &self.ends);
         let (peer, end) = if side == 0 { (*k1, e1) } else { (*k0, e0) };
         let source = remote.map_or_else(|| name_source(end), |r| crate::ip_source(r.ip()));
-        MemConn(Arc::new(Handle { net: net.clone(), id, side, peer, source, remote }))
+        MemConn(Arc::new(Handle { net: net.clone(), id, side, peer, source }))
     }
 }
 
@@ -626,8 +626,6 @@ struct Handle {
     peer: PublicKey,
     /// The other end's endpoint name hashed, or (a NAT-model socket) its address's source.
     source: crate::Source,
-    /// Where a NAT-model socket's connection sees the other end (`nat`).
-    remote: Option<SocketAddr>,
 }
 
 fn name_source(name: &str) -> crate::Source {
@@ -726,11 +724,6 @@ impl Connection for MemConn {
 }
 
 impl MemConn {
-    /// Where the other end is seen from here (connections of NAT-model sockets only).
-    pub fn remote(&self) -> Option<SocketAddr> {
-        self.0.remote
-    }
-
     fn halves(&self, s: u64) -> (MemSend, MemRecv) {
         (MemSend { h: self.0.clone(), s }, MemRecv { h: self.0.clone(), s })
     }

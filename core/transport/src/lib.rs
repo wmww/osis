@@ -87,13 +87,6 @@ pub struct Address {
     pub key: PublicKey,
 }
 
-impl Address {
-    /// The URL scheme (before `://`), if any.
-    pub fn scheme(&self) -> Option<&str> {
-        self.url.split_once("://").map(|(s, _)| s)
-    }
-}
-
 /// Scheme of P2P addresses (spec/sync.md §10): a node dialed by its dialable key at the socket
 /// addresses and through the relays the URL lists (`peer://` then items separated by single
 /// spaces, `p2p::items`). The key is `Address::key`.
