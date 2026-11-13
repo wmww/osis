@@ -750,3 +750,33 @@ fn purge_goes_under_its_thing_and_reaches_what_it_names_spec_commits_5() {
     assert!(done.parts().any(|(x, _, _)| x == t), "a delta on the purged thing: {done:?}");
     assert!(matches!(bodies(&db, t, &msg())[..], [Body::Purged { .. }]));
 }
+
+// notes/api.md `delete`, spec/crdt.md §5.5: a delete removes the thing from every group it may
+// write alike, whatever adds the deleting node holds. N is an item of G and of H; B holds H's add
+// as a header only (its part not received yet) when it deletes N: once synced, N is in neither
+// group, at A as at B, and H's late part does not bring it back.
+#[test]
+fn delete_unlists_an_add_not_received_spec_crdt_5_5() {
+    let (a, b, _) = paired();
+    let (g, h, n) = a.commit_with(|w| Ok((w.create()?, w.create()?, w.create()?))).unwrap();
+    a.commit_set(n, untyped(msg()), &s("x")).unwrap();
+    a.commit_with(|w| w.group(g).add(osis::Member::Item(n))).unwrap();
+    deliver(&a, &b);
+    let mut w = a.write();
+    w.group(h).add(osis::Member::Item(n)).unwrap();
+    let add_h = w.commit().unwrap().unwrap().stamp.id;
+    let pk = a.engine(|e| e.commit_ids().into_iter().find(|id| CommitId::from(*id) == add_h).and_then(|id| e.package(&id).unwrap())).unwrap();
+    let blob = osis_commit::CommitBlob::decode(&pk.bytes).unwrap();
+    let header_only = osis_commit::rewrite(&blob, |ai| blob.header.aspects[ai].tid == h).encode();
+    b.engine(|e| e.ingest(&header_only, pk.blobs.clone()).unwrap());
+    assert_eq!((b.groups_of(n).unwrap().item_of, a.groups_of(n).unwrap().item_of.len()), (vec![g], 2), "B holds H's add of N as a header only");
+    b.commit_with(|w| w.delete(n)).unwrap();
+    for _ in 0..2 {
+        deliver(&b, &a);
+        deliver(&a, &b);
+        for (who, d) in [("A", &a), ("B", &b)] {
+            assert_eq!(d.groups_of(n).unwrap().item_of, Vec::<Tid>::new(), "N listed at {who}");
+            assert!(!d.has_content(n).unwrap(), "N deleted at {who}");
+        }
+    }
+}

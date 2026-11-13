@@ -496,7 +496,7 @@ impl Fragment {
                 }
                 Fragment::Map(Map::new(s.meta.clone(), keep))
             }
-                       // a set: also the records of the tids `x`'s elements and value removals name, which hide
+            // a set: also the records of the tids `x`'s elements and value removals name, which hide
             // or are hidden by them (§5.5)
             (Fragment::Set(s), Fragment::Set(d)) => {
                 let mut keep: BTreeMap<Dot, Elem> = d.elems.keys().filter_map(|k| Some((k.clone(), s.elems.get(k)?.clone()))).collect();

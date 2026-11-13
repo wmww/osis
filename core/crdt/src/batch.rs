@@ -474,8 +474,7 @@ pub(crate) fn overlay(acc: Fragment, d: Fragment, w: &Writer) -> Fragment {
             Fragment::Bag(Bag { kind: a.kind, meta, elems })
         }
         (Fragment::Set(a), Fragment::Set(b)) => {
-            let (am, bm) = (a.meta.clone(), b.meta.clone());
-            let (meta, elems) = overlay_elems(am, a.elems, bm, b.elems, w);
+            let (meta, elems) = overlay_elems(a.meta, a.elems, b.meta, b.elems, w);
             Fragment::Set(Set::new(meta, elems))
         }
         (Fragment::Struct(a), Fragment::Struct(b)) => {
