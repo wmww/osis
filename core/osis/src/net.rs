@@ -536,9 +536,7 @@ impl crate::Osis {
         });
         Pending { slot }
     }
-}
 
-impl crate::Osis {
     /// Serves clients on this store's own unix socket: by default, processes of this uid that
     /// connect (`Osis::connect_socket` with this store's directory) act as this node's main actor
     /// with no authentication (there is no security boundary between them); others are refused by

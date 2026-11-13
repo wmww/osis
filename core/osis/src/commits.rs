@@ -387,9 +387,7 @@ impl ReadOnly {
         self.commit_here(c)
     }
 
-}
 
-impl ReadOnly {
     /// What a listener at `a` is told of `id` at this engine: the commit read now, or `fired`, an
     /// ephemeral signal's commit as it arrived (nobody holds it); `None` when it is not listed at
     /// `a` the caller may read.
@@ -645,9 +643,7 @@ impl crate::handle::ReadOnly {
             Source::Local => self.listing_here(a, q, usize::MAX),
         }
     }
-}
 
-impl crate::handle::ReadOnly {
     /// `target`'s commit at this engine.
     fn target_id(&self, scope: &Scope, redo: bool) -> Result<Option<CommitId>> {
         let found = self.found(scope)?;
@@ -668,9 +664,7 @@ impl crate::handle::ReadOnly {
             }
         })
     }
-}
 
-impl crate::handle::ReadOnly {
     /// Commit `id` at this engine with every listed part the caller may read; `None` when it is
     /// not held here.
     pub(crate) fn commit_here(&self, id: CommitId) -> Result<Option<Commit>> {
@@ -678,9 +672,7 @@ impl crate::handle::ReadOnly {
         let c = self.locked(|l| commit_in(&mut Reader { e: l.engine(), limit: mat, actor }, id))?;
         Ok(c.map(|c| c.reporting(self)))
     }
-}
 
-impl crate::handle::ReadOnly {
     /// Where calls at `a` go.
     pub(crate) fn source_address(&self, a: &Address) -> Result<Source> {
         match a {
@@ -688,9 +680,7 @@ impl crate::handle::ReadOnly {
             Address::Fired(t, _) | Address::Versions(t, _, _) => Ok(self.source(*t)),
         }
     }
-}
 
-impl crate::handle::ReadOnly {
     /// A page of the commits listed at `a` at this engine, at most `budget` bytes of bodies.
     pub(crate) fn listing_here(&self, a: &Address, q: &CommitQuery, budget: usize) -> Result<CommitPage> {
         let aks = self.address_aspects(a)?;
@@ -756,9 +746,7 @@ impl crate::handle::ReadOnly {
             Ok(CommitPage { commits, more, complete })
         })
     }
-}
 
-impl crate::handle::ReadOnly {
     /// The held commits validly touching `scope`, newest first, with relations judged over every
     /// held commit that can revert one of them (on their `Engine::revert_reach`).
     fn found(&self, scope: &Scope) -> Result<Vec<Found>> {
@@ -813,9 +801,7 @@ impl crate::handle::ReadOnly {
         });
         Ok(found)
     }
-}
 
-impl crate::handle::ReadOnly {
     /// The commit undo (redo) of the scope of `found` reverts: this actor's newest commit in
     /// effect (a redo counts as a commit); for redo its newest undo in effect, unless a new commit
     /// of this actor came after it.
@@ -828,9 +814,7 @@ impl crate::handle::ReadOnly {
             mine.find(|f| f.in_effect && f.depth % 2 == 0)
         }
     }
-}
 
-impl crate::handle::ReadOnly {
     /// The aspects an address lists at.
     fn address_aspects(&self, a: &Address) -> Result<Vec<(Tid, Ak)>> {
         match a {
@@ -838,9 +822,7 @@ impl crate::handle::ReadOnly {
             Address::Fired(t, ak) | Address::Versions(t, ak, _) => Ok(if ak.signal() && !self.read_local(|r| r.hidden(*t)) { vec![(*t, ak.clone())] } else { Vec::new() }),
         }
     }
-}
 
-impl crate::handle::ReadOnly {
     /// The value aspects of `s` the caller may read.
     fn scope_aspects(&self, s: &Scope) -> Result<Vec<(Tid, Ak)>> {
         // acting as an actor: of what it may read only

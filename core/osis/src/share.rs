@@ -1791,9 +1791,7 @@ impl crate::handle::ReadOnly {
     fn host_addrs(&self) -> Vec<osis_label::Address> {
         self.locked(|x| x.sync.config().hosts.clone())
     }
-}
 
-impl crate::handle::ReadOnly {
     /// Tells tracked `saved_peers` reads the list moved.
     fn saved_peers_moved(&self, l: &mut Locked) {
         l.seq += 1;

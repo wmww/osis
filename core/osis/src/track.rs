@@ -100,9 +100,7 @@ impl ReadSet {
         drop(g);
         drop(dropped);
     }
-}
 
-impl ReadSet {
     /// Every address listened to and how often the last pass read it: test harnesses' view
     /// (`internals::read_counts`).
     pub(crate) fn counts(&self) -> Vec<(String, u32)> {

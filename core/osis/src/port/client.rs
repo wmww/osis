@@ -1316,40 +1316,30 @@ impl crate::handle::ReadOnly {
         let v = r.call(method::BYTE_LEN, vec![Value::Tid(tid), c::v(ak), c::v(path)])?;
         c::of(v)
     }
-}
 
-impl crate::handle::ReadOnly {
     /// `get` / `get_path` at `r`.
     pub(crate) fn node_get(&self, r: &Connection, tid: Tid, ak: &osis_base::Ak, path: &osis_schema::Path) -> Result<Option<Value>> {
         c::of(r.call(method::GET, vec![Value::Tid(tid), c::v(ak), c::v(path)])?)?
     }
-}
 
-impl crate::handle::ReadOnly {
     /// Whether this handle has a store of its own: `false` on a thin client (`connect`,
     /// `connect_socket`).
     #[inline]
     pub fn has_store(&self) -> bool {
         self.inner.client.get().is_none()
     }
-}
 
-impl crate::handle::ReadOnly {
     /// A process-wide call at the node of a handle with no store.
     pub(crate) fn rcall(&self, m: u64, args: Vec<Value>) -> Result<Value> {
         self.primary().call(m, args)
     }
-}
 
-impl crate::handle::ReadOnly {
     /// One `stream_read` page.
     pub(crate) fn node_read(&self, r: &Connection, tid: Tid, ak: &osis_base::Ak, path: &osis_schema::Path, offset: u64, n: usize) -> Result<Vec<u8>> {
         let v = r.call_big(method::STREAM_READ, vec![Value::Tid(tid), c::v(ak), c::v(path), u(offset), u(n as u64)], n.saturating_add(SMALL_REPLY))?;
         c::bytes(v)
     }
-}
 
-impl crate::handle::ReadOnly {
     /// `on_write` / `on_fire` at the connected node. A reconnect's Reply says `Reread`: what changed
     /// in the gap was not told.
     pub(crate) fn node_on_commits(&self, r: &Arc<Connection>, at: crate::commits::Address, mut f: CallbackOf<crate::CommitEvent>) -> Result<Subscription> {
@@ -1373,9 +1363,7 @@ impl crate::handle::ReadOnly {
         let filter = Value::List(vec![u(super::filter::COMMITS), c::v(&at)]);
         Ok(self.node_sub(r, at.things().first().copied(), filter, true, cb)?.0)
     }
-}
 
-impl crate::handle::ReadOnly {
     /// `on_status_change` at the node of a handle with no store.
     pub(crate) fn node_on_status_change(&self, mut f: CallbackOf<Result<crate::share::Status>>) -> Result<Subscription> {
         // every change, and the connection going down or up, shows as the merged status now
@@ -1386,9 +1374,7 @@ impl crate::handle::ReadOnly {
         });
         self.node_sub_kept(self.primary(), None, Value::List(vec![u(super::filter::STATUS)]), cb)
     }
-}
 
-impl crate::handle::ReadOnly {
     /// `on_change` at `path` at a connected node: the initial value, then each change that
     /// differs from the last delivered (an error always).
     pub(crate) fn node_on_change(&self, r: &Arc<Connection>, tid: Tid, ak: osis_base::Ak, path: osis_schema::Path, mut f: ChangeFn) -> Result<Subscription> {
@@ -1421,9 +1407,7 @@ impl crate::handle::ReadOnly {
         });
         Ok(self.node_sub(r, Some(tid), aspect_filter(tid, &ak, &path), true, cb)?.0)
     }
-}
 
-impl crate::handle::ReadOnly {
     /// `on_thing_change` at the connected node.
     pub(crate) fn node_on_thing_change(&self, r: &Arc<Connection>, tid: Tid, mut f: ChangeFn) -> Result<Subscription> {
         let mut last: BTreeMap<osis_base::Ak, Result<Option<Value>>> = BTreeMap::new();
@@ -1466,9 +1450,7 @@ impl crate::handle::ReadOnly {
         });
         Ok(self.node_sub(r, Some(tid), Value::List(vec![u(super::filter::THING), Value::Tid(tid)]), true, cb)?.0)
     }
-}
 
-impl crate::handle::ReadOnly {
     /// `on_grants_change` at the connected node.
     pub(crate) fn node_on_grants_change(&self, r: &Arc<Connection>, thing: Tid, mut f: CallbackOf<Result<crate::read::Grants>>) -> Result<Subscription> {
         let mut last = None;
@@ -1493,9 +1475,7 @@ impl crate::handle::ReadOnly {
         });
         Ok(self.node_sub(r, Some(thing), Value::List(vec![u(super::filter::GRANTS), Value::Tid(thing)]), true, cb)?.0)
     }
-}
 
-impl crate::handle::ReadOnly {
     /// `backlinks` at the connected node, bounded by the largest page: a page always fits.
     pub(crate) fn node_backlinks(&self, r: &Connection, tid: Tid, q: &crate::BacklinkQuery) -> Result<crate::BacklinkPage> {
         // a backlink's encoding: its AK and a tid, each with a few bytes of framing
@@ -1528,15 +1508,11 @@ impl crate::handle::ReadOnly {
         let filter = Value::List(vec![u(super::filter::BACKLINKS), Value::Tid(tid), c::v(q)]);
         Ok(self.node_sub(r, Some(tid), filter, true, cb)?.0)
     }
-}
 
-impl crate::handle::ReadOnly {
     fn primary(&self) -> &Arc<Connection> {
         self.inner.client.get().map(|t| &t.primary).unwrap_or_else(|| unreachable!("a process-wide node call on a node's own handle"))
     }
-}
 
-impl crate::handle::ReadOnly {
     /// A page of the commits at `at` at the connected node, within what one reply carries.
     /// `LISTED_COMMIT`: commit `id` as listed at `at` at the node.
     pub(crate) fn node_listed_commit(&self, r: &Connection, at: &crate::commits::Address, id: crate::CommitId) -> Result<Option<crate::Commit>> {
@@ -1551,9 +1527,7 @@ impl crate::handle::ReadOnly {
         page.commits = page.commits.into_iter().map(|c| c.reporting(self)).collect();
         Ok(page)
     }
-}
 
-impl crate::handle::ReadOnly {
     /// Registers `cb` for a subscription at the connected node: its Reply (`PortEvent::Initial`)
     /// and Notifies reach `cb` through the dispatcher, in wire order. Returns the subscription
     /// and the initial value (or the Sub's error).
@@ -1572,9 +1546,7 @@ impl crate::handle::ReadOnly {
         }
         Ok((sub, v))
     }
-}
 
-impl crate::handle::ReadOnly {
     /// `node_sub` for a watch that needs no answer to start: with the node down the callback
     /// hears `Closed` now and the first value when it is up (a live one's reconnect).
     fn node_sub_kept(&self, r: &Arc<Connection>, on: Option<Tid>, filter: Value, cb: Callback) -> Result<Subscription> {
@@ -1589,18 +1561,14 @@ impl crate::handle::ReadOnly {
         }
         Ok(sub)
     }
-}
 
-impl crate::handle::ReadOnly {
     /// The dispatcher's side of a subscription at `r`.
     fn port_register(&self, r: &Arc<Connection>, token: u64, on: Option<Tid>, cb: Callback) -> Subscription {
         let mut sub = self.locked(|l| self.inner.dispatch.register(l.seq + 1, Filter::Port(token, on), cb));
         sub.port = Some((Arc::downgrade(r), token));
         sub
     }
-}
 
-impl crate::handle::ReadOnly {
     /// What a subscription's events do: reach the dispatcher in wire order; the first value also
     /// goes to `first`, whose end says it will not come.
     fn port_sink(&self, token: u64, first: Option<std::sync::mpsc::Sender<Value>>) -> Sink {
