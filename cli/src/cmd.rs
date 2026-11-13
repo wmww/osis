@@ -53,7 +53,7 @@ fn emit_commit(ctx: &mut Ctx<'_>, c: Option<CommitId>) -> anyhow::Result<()> {
     ctx.emit(&c.iter().cloned().collect::<Vec<_>>(), J::obj([("commit", J::opt(c.map(J::str)))]))
 }
 
-fn parse_id(s: &str) -> anyhow::Result<CommitId> {
+pub(crate) fn parse_id(s: &str) -> anyhow::Result<CommitId> {
     s.parse().map_err(|_| usage(format!("not a commit id: {s}")))
 }
 
@@ -767,10 +767,7 @@ fn get(ctx: &mut Ctx<'_>, t: &str, ak: &str, path: Option<&str>, stream: bool, l
     let key = ctx.aspect_key(ak)?;
     let db = ctx.db.clone();
     if stream || len {
-        let p = match path {
-            None | Some("") => osis::Path::root(),
-            Some(p) => write::path(ctx, t, &key, p, false)?,
-        };
+        let p = write::path(ctx, t, &key, path.unwrap_or(""), false)?;
         let s = db.at(t, key.clone()).path(p).stream()?;
         let Some(mut s) = s else { return Err(absent(t, ak)) };
         if len {

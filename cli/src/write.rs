@@ -25,7 +25,7 @@ pub fn groups(ctx: &Ctx<'_>, p: &GroupsArgs) -> anyhow::Result<Vec<Tid>> {
     p.in_.iter().chain(&p.in_all).map(|g| ctx.tid(g)).collect()
 }
 
-/// Parses a path. `[n]` on an untyped position: for a read, a list index if the saved value
+/// Parses a path (empty: the whole aspect). `[n]` on an untyped position: for a read, a list index if the saved value
 /// there is a list, else a map key; for a write (`write: true`), a map key, and an error when
 /// the saved value there is a list (untyped lists take no index writes) or when this script
 /// already wrote the aspect (its pending state is invisible, so the saved one cannot decide).
@@ -181,10 +181,7 @@ fn fire(ctx: &mut Ctx<'_>, w: &mut osis::Write<'_>, a: &FireArgs) -> anyhow::Res
 fn rm(ctx: &mut Ctx<'_>, w: &mut osis::Write<'_>, a: &RmArgs) -> anyhow::Result<()> {
     let t = ctx.tid(&a.t)?;
     let key = ctx.aspect_key(&a.ak)?;
-    let p = match a.path.as_deref() {
-        None | Some("") => Path::root(),
-        Some(s) => path(ctx, t, &key, s, true)?,
-    };
+    let p = path(ctx, t, &key, a.path.as_deref().unwrap_or(""), true)?;
     w.at(t, key).path(p).remove()?;
     Ok(())
 }

@@ -3,19 +3,15 @@
 
 use crate::args::ChatCmd;
 use crate::Ctx;
-use crate::cmd::{deliver, parse_role};
+use crate::cmd::{deliver, parse_id, parse_role};
 use crate::json::J;
 use crate::{exit, parse_dur, usage};
 use osis::core::RETENTION;
-use osis::{Body, Commit, CommitEvent, CommitFrom, CommitId, CommitKind, CommitQuery, GrantOpts, HolderKind, LinkOpts, Osis, PurgeBy, ReadOnly, Role, SetRoleOpts, Tid};
+use osis::{Body, Commit, CommitEvent, CommitFrom, CommitKind, CommitQuery, GrantOpts, HolderKind, LinkOpts, PurgeBy, ReadOnly, Role, SetRoleOpts, Tid};
 use osis_chat::schema::{self, EditMode, MSG, SETTINGS};
 use osis_chat::{Cursor, Options};
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, mpsc};
-
-fn id(s: &str) -> anyhow::Result<CommitId> {
-    Ok(s.parse::<CommitId>()?)
-}
 
 fn opt_str(s: Option<String>) -> J {
     J::opt(s.map(J::str))
@@ -107,7 +103,7 @@ fn message_line(db: &ReadOnly, c: Tid, json: bool, k: &Commit) -> anyhow::Result
 
 /// Message `i` of chat `c`, as listed here.
 fn find(ctx: &Ctx<'_>, c: Tid, i: &str) -> anyhow::Result<Commit> {
-    ctx.db.at(c, MSG).commit(id(i)?)?.ok_or_else(|| exit(3, format!("no message {i}")))
+    ctx.db.at(c, MSG).commit(parse_id(i)?)?.ok_or_else(|| exit(3, format!("no message {i}")))
 }
 
 /// Prints `messages`, then the cursor line: the first line out of the way of a reader of it.
@@ -126,11 +122,6 @@ fn print_since(ctx: &mut Ctx<'_>, t: Tid, s: &osis_chat::Since, from: Option<&Cu
     } else {
         Ok(())
     }
-}
-
-/// Fires `m` on chat `c`: its id.
-fn fire(db: &Osis, c: Tid, m: &schema::Message) -> anyhow::Result<CommitId> {
-    Ok(osis_chat::send(db, c, m)?)
 }
 
 pub(crate) fn run(ctx: &mut Ctx<'_>, c: ChatCmd) -> anyhow::Result<()> {
@@ -178,13 +169,8 @@ pub(crate) fn run(ctx: &mut Ctx<'_>, c: ChatCmd) -> anyhow::Result<()> {
         }
         ChatCmd::Kick { chat, account, erase, retain_copy, purge } => {
             let (t, p) = (ctx.tid(&chat)?, ctx.tid(&account)?);
-            let retain_copy = if erase {
-                Some(false)
-            } else if retain_copy {
-                Some(true)
-            } else {
-                None
-            };
+            // clap keeps --erase and --retain-copy apart: at most one is given
+            let retain_copy = (erase || retain_copy).then_some(retain_copy);
             db.set_role(t, p, None, SetRoleOpts { retain_copy })?;
             if purge {
                 let mut w = db.write();
@@ -197,8 +183,8 @@ pub(crate) fn run(ctx: &mut Ctx<'_>, c: ChatCmd) -> anyhow::Result<()> {
             let t = ctx.tid(&chat)?;
             let body = ctx.arg_text(&text)?;
             let text = subject.map_or_else(|| body.clone(), |s| format!("{s}\n\n{body}"));
-            let reply_to = reply_to.as_deref().map(id).transpose()?.map(|r| r.to_string());
-            let m = fire(&db, t, &schema::Message { text, name: from, reply_to })?;
+            let reply_to = reply_to.as_deref().map(parse_id).transpose()?.map(|r| r.to_string());
+            let m = osis_chat::send(&db, t, &schema::Message { text, name: from, reply_to })?;
             send_out(ctx, None)?;
             ctx.emit(&[m.to_string()], J::obj([("id", J::str(m.to_string()))]))
         }
@@ -282,7 +268,7 @@ pub(crate) fn run(ctx: &mut Ctx<'_>, c: ChatCmd) -> anyhow::Result<()> {
         }
         ChatCmd::Edit { chat, id: i, text } => {
             let t = ctx.tid(&chat)?;
-            let m = id(&i)?;
+            let m = parse_id(&i)?;
             osis_chat::edit(&db, t, m, &text)?;
             send_out(ctx, None)?;
             ctx.emit(&[m.to_string()], J::obj([("id", J::str(m.to_string()))]))
@@ -297,7 +283,7 @@ pub(crate) fn run(ctx: &mut Ctx<'_>, c: ChatCmd) -> anyhow::Result<()> {
             if part.valid || k.stamp.actor != db.me() {
                 return Err(exit(1, "only one's own undelivered message is sent again"));
             }
-            let new = fire(&db, t, &body)?;
+            let new = osis_chat::send(&db, t, &body)?;
             send_out(ctx, None)?;
             ctx.emit(&[new.to_string()], J::obj([("id", J::str(new.to_string()))]))
         }
