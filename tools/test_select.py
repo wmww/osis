@@ -48,7 +48,7 @@ def run(*cmd, cwd=None):
 
 
 def metadata():
-    """The workspace: root, {name: dir relative to root}, {name: [(dependent, kinds)]}."""
+    """The workspace: {name: dir relative to root}, {name: [(dependent, kinds)]}."""
     m = json.loads(run("cargo", "metadata", "--format-version", "1", "--locked"))
     root = m["workspace_root"]
     names = {}
@@ -65,7 +65,7 @@ def metadata():
             if d["pkg"] in names:
                 kinds = {k["kind"] or "normal" for k in d["dep_kinds"]}
                 users[names[d["pkg"]]].append((names[node["id"]], kinds))
-    return root, dirs, users
+    return dirs, users
 
 
 def changed(base):
@@ -197,7 +197,7 @@ def main():
     if offset is None:
         offset = random.randrange(10**12)
 
-    root, dirs, users = metadata()
+    dirs, users = metadata()
     touched, whole, nothing = classify(paths, dirs)
     whole = whole or every
     selected = set(dirs) if whole else closure(touched, users)

@@ -1,32 +1,14 @@
 #!/bin/sh
-# The merge gate (notes/gate.md): every check in order,
-# each with its wall time and CPU-s. The checks before the tests (instant checks, lints, builds,
-# deny) fail fast; every test stage runs to its end whatever an earlier one did, and the gate then
-# prints every failure, KNOWN (tools/known_failures.txt) or NEW (tools/gate_failures.py). Exit 0
-# on a pass, 3 when only KNOWN failures failed, 1 on a NEW one, 2 on bad use. Run it in the task's
-# worktree after `git fetch && git rebase origin/main` (it refuses a HEAD without origin/main);
-# main is only ever fast-forwarded, never built.
-# Usage: tools/gate.sh [--all] [--base REV] [--plan]   (from the worktree root)
-# Its tests: the default tests (`cargo test`) plus the branch's selection from tools/test_select.py
-# (properties and sim scenarios at small size, from the crates the branch touched and their
-# dependents), all run in one hold of the heavy lock; every build and lint before it runs unlocked.
-# Per project (notes/gate.md, Components pay for themselves): the GUI (osis-kit libs/kit/, osis-app
-# app/, osis-android app/android/: workspace members outside default-members) has its own steps. A
-# diff touching only libs/kit/ or app/ runs only the GUI steps; any other diff runs the core steps,
-# whose lint covers the GUI too (an osis API change must not silently break the app); both, both. The
-# unification check runs when a Cargo.toml, Cargo.lock or .cargo/ changed. On origin/main itself, with no
-# merge base, or with --all, everything runs and the selection is every crate. The base is the merge
-# base with origin/main, fetched first (local main lags: coordinators push from worktrees); --base
-# REV compares against REV instead. --plan prints the step selection (core, gui,
-# unify, select: all, diff or none) and exits (tested by tools/gate_select_test.sh); the tests a
-# `select=diff` picks: tools/test_select.py [--base REV].
-# A diff whose non-GUI paths are all Markdown under spec/, notes/ and issues/ (core=docs) runs the
-# instant checks only (plus the GUI steps if it touched libs/kit/ or app/): no build, tests, lints or deny.
+# The merge gate (notes/gate.md: steps, selection, summary, exit codes).
+# Usage: tools/gate.sh [--all] [--base REV] [--plan]   (from the worktree root, after
+# `git fetch && git rebase origin/main`; never under tools/heavy: it takes the lock itself)
+# Exit 0 passed, 3 only KNOWN failures, 1 a NEW one, 2 bad use or refused. The checks before the
+# tests fail fast; every test stage runs to its end. --plan prints the step selection (tested by
+# tools/gate_select_test.sh).
 set -e
 tools=$(cd "$(dirname "$0")" && pwd)
 cd "$(git rev-parse --show-toplevel)"
-# a gate on a half-rebased tree passes on the wrong code (watchdog 13i: eight agents piped a
-# stopped rebase into the gate)
+# a gate on a half-rebased tree passes on the wrong code
 gd=$(git rev-parse --git-dir)
 if [ -d "$gd/rebase-merge" ] || [ -d "$gd/rebase-apply" ] || [ -f "$gd/MERGE_HEAD" ] || [ -n "$(git diff --name-only --diff-filter=U)" ]; then
   echo "gate: a rebase or merge is in progress or conflicts remain; finish it first" >&2; exit 2
@@ -222,7 +204,7 @@ if [ "$select" = all ]; then from=--all; else from="--base $base"; fi
 step python3 tools/test_select.py $from --offset "$offset"
 # shellcheck disable=SC2086
 python3 tools/test_select.py --emit $from --offset "$offset" >> "$sel"
-# lints before tests: a lint failure found after minutes of tests wasted them (watchdog 13h);
+# lints before tests: a lint failure found after minutes of tests wastes them;
 # core's, then the GUI's on the same artifacts (the core crates are linted already)
 limited gate.clippy cargo clippy --all-targets --locked -- -D warnings
 gui_lint

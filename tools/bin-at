@@ -36,7 +36,7 @@ while [ $# -gt 0 ]; do
 done
 root=$(git rev-parse --show-toplevel)
 cd "$root"
-[ "$(git rev-parse --git-dir)" != "$(git rev-parse --git-common-dir)" ] || { echo "bin-at: main checkout; run it in a task worktree (tools/wt claim)" >&2; exit 1; }
+[ "$(git rev-parse --git-dir)" != "$(git rev-parse --git-common-dir)" ] || { echo "bin-at: main checkout; run it in a task worktree (wt claim)" >&2; exit 1; }
 [ -z "$(git status --porcelain --untracked-files=no)" ] || { echo "bin-at: uncommitted changes; wip-commit them first" >&2; exit 1; }
 sha=$(git rev-parse --verify "$rev^{commit}")
 back=$(git symbolic-ref -q --short HEAD || git rev-parse HEAD)
