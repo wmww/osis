@@ -52,7 +52,16 @@ int main(int argc, char **argv) {
     uint64_t n = 0;
     if (fd >= 0 && read(fd, &n, sizeof n) == sizeof n)
         fprintf(stderr, "INSTR %llu\n", (unsigned long long)n);
-    else
-        fprintf(stderr, "INSTR unavailable\n");
+    else {
+        // the usual cause: kernel.perf_event_paranoid above 2 (/etc/sysctl.d/60-perf.conf sets 2)
+        char lvl[16] = "?";
+        FILE *f = fopen("/proc/sys/kernel/perf_event_paranoid", "r");
+        if (f) {
+            if (!fgets(lvl, sizeof lvl, f)) strcpy(lvl, "?");
+            lvl[strcspn(lvl, "\n")] = 0;
+            fclose(f);
+        }
+        fprintf(stderr, "INSTR unavailable (kernel.perf_event_paranoid=%s, needs <= 2)\n", lvl);
+    }
     return WIFEXITED(st) ? WEXITSTATUS(st) : 128 + WTERMSIG(st);
 }
