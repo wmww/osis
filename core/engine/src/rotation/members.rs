@@ -91,12 +91,12 @@ pub(crate) type KeyRoles = BTreeMap<Tid, (Role, Option<Role>)>;
 /// (`Core::keyed_holders`; a key actor's grant is never keyless), `None` without one. `None`
 /// when no grant held is keyless (the usual case): every holder keyed at its role for keys.
 fn key_roles(core: &Core, a: &Tid) -> Option<Arc<KeyRoles>> {
-    let keyless = key_access(core);
-    if keyless.is_empty() {
+    if key_access(core).is_empty() {
         return None;
     }
+    // `key_access` read inside: the answer depends on it
     Some(core.key_roles.get(a, || {
-        let keyed = core.keyed_holders(a, &keyless);
+        let keyed = core.keyed_holders(a, &key_access(core));
         Arc::new(core.key_holders(a).into_iter().map(|(h, r)| (h, (r, keyed.get(&h).copied()))).collect())
     }))
 }
@@ -216,7 +216,7 @@ fn held_invalid(tx: &mut Tx<'_>, m: &Tid, r: Role, k: &Epoch) -> Result<bool> {
 /// (`key_roles`): without key access at `r`, or at their role for keys if lower (a box above
 /// that is a demotion's departure, not a key cycle). None in the usual case, with no cycle among
 /// the grants held.
-fn keyless_holders(core: &Core, a: &Tid, r: Role) -> BTreeSet<Tid> {
+pub(super) fn keyless_holders(core: &Core, a: &Tid, r: Role) -> BTreeSet<Tid> {
     let Some(roles) = key_roles(core, a) else { return BTreeSet::new() };
     roles.iter().filter(|(_, (role, keyed))| *keyed < Some(r.min(*role))).map(|(h, _)| *h).collect()
 }

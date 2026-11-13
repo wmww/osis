@@ -1978,4 +1978,7 @@ fn frozen_holder_keyed_at_the_role_of_its_keyed_paths_spec_crypto_4() {
     settle(&mut lp, &[0], &[x]);
     let roles: BTreeSet<Role> = lp.peers[0].engine.get_typed(&x, &ct::SECRETS).unwrap().unwrap().boxes.keys().filter(|k| k.holder == mm).map(|k| k.role).collect();
     assert!(roles.contains(&Role::Read) && roles.iter().all(|r| *r <= Role::Read), "X boxes M read and below alone: {roles:?}");
+    // taint per role: a box to M of X's admin goes past M's key access, one of its read does not
+    let core = &lp.peers[0].engine.core;
+    assert!(super::members::keyless_holders(core, &x, Role::Admin).contains(&mm) && !super::members::keyless_holders(core, &x, Role::Read).contains(&mm));
 }
