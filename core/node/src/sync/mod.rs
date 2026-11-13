@@ -511,7 +511,8 @@ impl SyncEngine {
 
     /// What a start of node sync holds, read from the store: every field but the engine, its
     /// event subscription, the generator, the config, the hub's store, the host config, the
-    /// connection IDs (never repeated), the diagnostics not yet taken and the store writes seen. `new`, and `restart_in_place` after a store write failed.
+    /// connection IDs (never repeated), the diagnostics not yet taken and the store writes seen.
+    /// Run by `new`, and by `restart_in_place` after a store write failed.
     fn start(&mut self) -> Result<()> {
         // keeps the changed commits from now on (`Engine::take_changed`)
         self.engine.take_changed();

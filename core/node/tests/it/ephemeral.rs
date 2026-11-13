@@ -6168,3 +6168,51 @@ fn purge_falling_past_the_tombstone_reads_as_never_received_spec_permissions_6()
     assert_eq!(net.eph_read(b, t, "doc:n+.0"), None);
     assert!(net.engine(b).purged_on(&t, &crate::common::ak("doc:n+.0")).unwrap().is_empty(), "the purge fell");
 }
+
+// notes/node-sync.md Failed writes: a one-off failed write (the device stays up) restarts node
+// sync in place while the engine keeps its ephemeral commits; ephemeral state held, written
+// offline before it or received before it still converges, as do writes after it
+#[test]
+fn ephemeral_state_converges_across_a_failed_write_spec_sync_6() {
+    for case in ["online", "offline", "received"] {
+        let f = osis_store::Faults::new();
+        let mut net = Net::new();
+        let host = net.add_host();
+        let a = net.forensic_node(1, &[host], &f);
+        let b = net.node(2, &[host]);
+        let g = net.group(a, &[(b, Role::Write)], &[host]);
+        let t = net.item(a, g, g, "x");
+        let w = window(&mut net, a, g, "v");
+        note(&mut net, a, w, "k0", "0");
+        net.run();
+        let mut want = vec![("k0", "0"), ("k2", "2"), ("kb2", "b2")];
+        match case {
+            "offline" => {
+                net.set_online(a, false);
+                note(&mut net, a, w, "k1", "1");
+                want.push(("k1", "1"));
+            }
+            "received" => {
+                note(&mut net, b, w, "kb", "b");
+                net.run();
+                want.push(("kb", "b"));
+            }
+            _ => {}
+        }
+        f.at(0, osis_store::Fault::Fail);
+        let mut m = Mutation::new();
+        m.set(t, &net::REG, &s("y")).unwrap();
+        assert!(net.engine(a).commit(m).is_err(), "{case}");
+        assert!(f.take_failed(), "{case}");
+        local(&mut net, a);
+        net.set_online(a, true);
+        net.advance(10_000);
+        note(&mut net, a, w, "k2", "2");
+        note(&mut net, b, w, "kb2", "b2");
+        net.run();
+        net.advance(10_000);
+        for n in [a, b] {
+            assert_eq!(notes(&mut net, n, w), map(&want), "{case}: node {n}");
+        }
+    }
+}
