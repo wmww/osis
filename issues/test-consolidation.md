@@ -145,7 +145,6 @@ Helpers are listed in (c). Per-test items:
 - engine `apply/keys.rs:714 spread`: quadratic; replace with `sync_all` or deliver only missing commits | medium
 - engine `tests_addenda.rs:150` inlines `forge_addendum` | high
 - osis `sharing.rs:627`, `:639`: must-fail `try_until(…, 200)` walks all 200 steps | high
-- osis `notes.rs:148 large_body_streams` (23 s): shrink to just above `CHUNK_THRESHOLD` | low
 - osis `sync.rs:823`: builds `text_pair` and uses one node; move to text.rs | high
 
 ### Category 5: regressions a property now covers

@@ -404,13 +404,13 @@ impl Engine {
     /// Whether blob `b` was judged freed here: its bytes are not kept, whoever brings them.
     pub fn is_freed(&mut self, b: &BlobId) -> Result<bool> {
         let prefix = [records::FREED, &b.0].concat();
-        self.run(|tx| Ok(rows(tx, &prefix)?.iter().any(|f| f.judged)))
+        self.read(|tx| Ok(rows(tx, &prefix)?.iter().any(|f| f.judged)))
     }
 
     /// Every freed link held.
     #[cfg(test)]
     pub(crate) fn freed_links(&mut self) -> Result<Vec<Freed>> {
-        self.run(|tx| rows(tx, records::FREED))
+        self.read(|tx| rows(tx, records::FREED))
     }
 
     /// The delete secrets this node holds for the keys freed link `f` names (spec/crypto.md §7:

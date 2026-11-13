@@ -384,7 +384,7 @@ impl Engine {
         let Some(ai) = m.aspect(tid, ak) else { return Ok(None) };
         let valid = m.valid_at(ai);
         let (c, tid, ak) = (*c, *tid, ak.clone());
-        self.run(|tx| Ok(Some(PartRow { tid, ak, valid, body: part_body(tx, &c, ai, budget)?, version: None })))
+        self.read(|tx| Ok(Some(PartRow { tid, ak, valid, body: part_body(tx, &c, ai, budget)?, version: None })))
     }
 
     /// What is here of each commit's part on `(tid, ak)`, listed or not: at most `limit` from
@@ -425,7 +425,7 @@ impl Engine {
         let Some(m) = self.core.ix.commits.get(c) else { return Ok(false) };
         let on: Vec<usize> = aspects.iter().filter_map(|(t, a)| m.aspect(t, a)).collect();
         let c = *c;
-        self.run(|tx| {
+        self.read(|tx| {
             for ai in on {
                 let Some(a) = tx.core.ix.commits.get(&c).and_then(|m| m.view.aspects.get(ai)) else { continue };
                 let (tid, ak) = (a.tid, a.ak.clone());
@@ -456,7 +456,7 @@ impl Engine {
         let things: Vec<(usize, Tid, bool)> = m.view.aspects.iter().enumerate().map(|(ai, a)| (ai, a.tid, itself.as_ref().is_some_and(|(t, k)| *t == a.tid && *k == a.ak))).collect();
         let on: Vec<(usize, bool)> = things.into_iter().filter(|(_, t, _)| shown(self, t)).map(|(ai, _, own)| (ai, own)).collect();
         let c = *c;
-        let parts = self.run(|tx| {
+        let parts = self.read(|tx| {
             let mut parts = Vec::new();
             for (ai, own) in on {
                 if let Some(p) = listed_part(tx, &c, ai, budget, own)? {

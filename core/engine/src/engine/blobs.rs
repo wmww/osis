@@ -285,7 +285,7 @@ impl crate::engine::Engine {
 
     pub fn has_blob(&mut self, id: &BlobId) -> bool {
         let id = *id;
-        self.run(|tx| tx.blobs.held(&id)).unwrap_or(false)
+        self.read(|tx| tx.blobs.held(&id)).unwrap_or(false)
     }
 }
 

@@ -169,7 +169,7 @@ impl Engine {
     /// `commit_bodies_under`'s).
     pub fn body(&mut self, c: &CommitId) -> Result<Option<Body>> {
         let id = *c;
-        let Some(blob) = self.run(|tx| tx.get_commit(&id))? else { return Ok(None) };
+        let Some(blob) = self.read(|tx| tx.get_commit(&id))? else { return Ok(None) };
         if blob.parts.is_empty() {
             return Ok(None);
         }
@@ -369,7 +369,7 @@ impl Engine {
             return Ok(b.plaintext.clone());
         }
         let id = b.commit;
-        let Some(c) = self.run(|tx| tx.get_commit(&id))? else { return Ok(Vec::new()) };
+        let Some(c) = self.read(|tx| tx.get_commit(&id))? else { return Ok(Vec::new()) };
         // a lasting header (`commit_bodies_under`) carries no part
         if b.parts.is_empty() {
             return Ok(osis_commit::rewrite(&c, |_| true).encode());

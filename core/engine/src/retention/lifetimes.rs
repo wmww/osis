@@ -265,7 +265,7 @@ impl crate::engine::Engine {
     /// label to be heard out). Two store seeks.
     pub fn lifetimes_due(&mut self) -> Result<(bool, bool)> {
         let rights = self.core.lifetimes_rights;
-        self.run(|tx| {
+        self.read(|tx| {
             let due = !tx.txn.scan_local(WORK, &[], 1)?.is_empty() || (rights && !tx.txn.scan_local(PENDING, &[], 1)?.is_empty());
             Ok((due, !tx.txn.scan_local(HELD, &[], 1)?.is_empty()))
         })

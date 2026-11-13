@@ -512,7 +512,7 @@ impl Engine {
     pub fn live_trees(&mut self, tid: &Tid) -> Result<Trees> {
         let aks = self.aspects(tid)?;
         let tid = *tid;
-        self.run(|tx| {
+        self.read(|tx| {
             let mut out = Trees::default();
             let Some(dedup) = tx.core.dedup(&tid) else { return Ok(out) };
             let mut roots = Vec::new();
@@ -537,7 +537,7 @@ impl Engine {
     /// commit's retention and expiry. `allow` gates each aspect (the caller's back-off). Needs
     /// write on the thing and the aspect's schema registered here. One commit, if any.
     pub fn relink(&mut self, lost: &BTreeSet<BlobId>, things: &BTreeSet<Tid>, allow: &mut dyn FnMut(&Tid, &Ak) -> bool) -> Result<Option<CommitId>> {
-        let held: BTreeSet<BlobId> = self.run(|tx| {
+        let held: BTreeSet<BlobId> = self.read(|tx| {
             let mut out = BTreeSet::new();
             for b in lost {
                 if tx.blobs.held(b)? {
@@ -554,7 +554,7 @@ impl Engine {
         // states link one (the tree memo; a rare path, so every thing of the closure is asked)
         let mut cands: BTreeSet<(Tid, Ak)> = BTreeSet::new();
         for t in things {
-            if self.run(|tx| crate::engine::tree_refs::state_refs_in(tx, t, &held))?.blobs.is_empty() {
+            if self.read(|tx| crate::engine::tree_refs::state_refs_in(tx, t, &held))?.blobs.is_empty() {
                 continue;
             }
             cands.extend(self.aspects(t)?.into_iter().map(|ak| (*t, ak)));
@@ -593,7 +593,7 @@ impl Engine {
         let commits: Vec<CommitId> = self.core.ix.by_aspect.get(&(*tid, ak.clone())).map(|s| s.iter().rev().map(|x| x.1).filter(|c| self.core.ix.commits.get(c).is_some_and(|m| matches!(m.header.kind, osis_commit::Kind::Content | osis_commit::Kind::ContentSnapshot))).collect()).unwrap_or_default();
         let (k, held2) = ((*tid, ak.clone()), held.clone());
         // (newest linking commit and its aspect index, whether an own commit links one)
-        let found = self.run(|tx| {
+        let found = self.read(|tx| {
             let Some(dedup) = tx.core.dedup(&k.0) else { return Ok((None, false)) };
             let mut newest = None;
             for c in commits {
@@ -639,7 +639,7 @@ impl Engine {
             let Some(path) = segs(&l) else { continue };
             let Some(link) = base_at(&state, &[], &l) else { continue };
             let t = *tid;
-            let hit = self.run(|tx| {
+            let hit = self.read(|tx| {
                 let Some(dedup) = tx.core.dedup(&t) else { return Ok(false) };
                 tree_hits(tx, &dedup, &[link], held)
             })?;
@@ -663,7 +663,7 @@ impl Engine {
     pub fn body_links(&mut self, plaintext: &[u8]) -> Result<Trees> {
         let Ok(cb) = osis_commit::CommitBlob::decode(plaintext) else { return Ok(Trees::default()) };
         let Some(h) = self.header(&cb.id()) else { return Ok(Trees::default()) };
-        self.run(|tx| {
+        self.read(|tx| {
             let mut out = Trees::default();
             for p in &cb.parts {
                 let Some(dedup) = h.aspects.get(p.ai).and_then(|a| tx.core.dedup(&a.tid)) else { continue };
@@ -677,7 +677,7 @@ impl Engine {
     /// (the API's materialization bound).
     pub fn read_large_max(&mut self, tid: &Tid, link: &Link, max_len: usize) -> Result<Value> {
         let (tid, link) = (*tid, *link);
-        self.run(|tx| {
+        self.read(|tx| {
             let dedup = tx.core.dedup(&tid).ok_or(Error::UnknownThing(tid))?;
             let mut blobs = TxBlobs::new(&mut tx.blobs, tx.txn.is_memory());
             let mut r = BlobReader::new(&dedup, &mut blobs);
@@ -690,7 +690,7 @@ impl Engine {
     /// `None` at the end. Memory: one chunk plus the tree path.
     pub fn next_chunk(&mut self, tid: &Tid, r: &mut osis_label::TreeReader) -> Result<Option<Vec<u8>>> {
         let tid = *tid;
-        self.run(|tx| {
+        self.read(|tx| {
             let dedup = tx.core.dedup(&tid).ok_or(Error::UnknownThing(tid))?;
             let mut blobs = TxBlobs::new(&mut tx.blobs, tx.txn.is_memory());
             let mut src = BlobReader::new(&dedup, &mut blobs);
@@ -705,7 +705,7 @@ impl Engine {
     /// are not held (nothing could be read either).
     pub fn tree_missing(&mut self, tid: &Tid, link: &Link) -> Result<Vec<BlobId>> {
         let (tid, link) = (*tid, *link);
-        self.run(|tx| {
+        self.read(|tx| {
             let dedup = tx.core.dedup(&tid).ok_or(Error::UnknownThing(tid))?;
             let mut out = Trees::default();
             tree_blobs(tx, &dedup, &[link], &mut out)?;

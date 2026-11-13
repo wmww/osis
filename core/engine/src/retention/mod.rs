@@ -1196,7 +1196,7 @@ impl Engine {
 
     /// When the next retention timer is due (wall ms).
     pub fn next_timer(&mut self) -> Result<Option<u64>> {
-        self.run(|tx| {
+        self.read(|tx| {
             let first = tx.txn.scan_local(records::TIMER, &[], 1)?;
             let part = first.first().and_then(|(k, _)| k.get(records::TIMER.len()..)).and_then(|k| records::parse_timer(k).ok()).map(|(t, _, _)| t);
             let aspect = tx.core.ix.leave_due.keys().next().copied();

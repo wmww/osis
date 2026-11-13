@@ -633,9 +633,9 @@ impl Engine {
     /// `check_revertible` acting as `actor`; `confined` as `revert_inner`.
     pub(crate) fn check_revert(&mut self, c: CommitId, actor: Tid, confined: bool) -> Result<bool> {
         let memory = self.core.ix.commits.get(&c).is_some_and(|m| m.view.memory);
-        // a probe stamps nothing: the clock is not stepped
+        // a read stamps nothing: the clock is not stepped
         let ts = self.core.hlc.peek();
-        self.probe(|tx| tx.in_class(memory, |tx| undo_writes(tx, c, actor, ts, confined)).map(|w| w.is_some()))
+        self.read(|tx| tx.in_class(memory, |tx| undo_writes(tx, c, actor, ts, confined)).map(|w| w.is_some()))
     }
 
     /// Reverts commit `id`, durable or ephemeral, acting as `actor`, by an undo commit of its

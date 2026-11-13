@@ -196,7 +196,7 @@ mod tests {
         let (blob, meta) = (e.run(|tx| tx.get_commit(&c)).unwrap().unwrap(), e.core.ix.commits.get(&c).cloned().unwrap());
         e.run(|tx| tx.put_commit(&c, &blob, &meta, osis_store::Shred::No, None)).unwrap();
         assert_eq!(decodes(e), (1, 1), "a write of its record decodes again");
-        let gone = e.probe(|tx| {
+        let gone = e.read(|tx| {
             tx.remove_commit(&c)?;
             crate::apply::held_part(tx, &c, 0)
         });

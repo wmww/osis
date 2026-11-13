@@ -1673,7 +1673,7 @@ impl Engine {
     /// The blob ciphertext `id`, if held (pages, chunks, header-list trees).
     pub fn blob(&mut self, id: &BlobId) -> Result<Option<Vec<u8>>> {
         let id = *id;
-        self.run(|tx| tx.blobs.get(&id))
+        self.read(|tx| tx.blobs.get(&id))
     }
 
     /// IDs of applied durable commits (no memory commit), in (`ts`, ID) order.

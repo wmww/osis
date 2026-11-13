@@ -33,13 +33,13 @@ impl Engine {
     /// The reference index's rows naming `target` (`refs`): who holds its tid in a held value,
     /// on which aspect, how many times.
     pub fn references_to(&mut self, target: &Tid) -> Result<Vec<super::refs::Reference>> {
-        self.run(|tx| super::refs::to(tx, target))
+        self.read(|tx| super::refs::to(tx, target))
     }
 
     /// Up to `n` of the reference index's rows naming `target` after `after` (source, AK;
     /// exclusive), in (source, AK) order: O(n) rows read.
     pub fn references_page(&mut self, target: &Tid, after: Option<(&Tid, &Ak)>, n: usize) -> Result<Vec<(Tid, Ak)>> {
-        self.run(|tx| super::refs::to_page(tx, target, after, n))
+        self.read(|tx| super::refs::to_page(tx, target, after, n))
     }
 
     /// Turns `Event::References` on for this open; it stays on (as `watch_commits`).
@@ -49,7 +49,7 @@ impl Engine {
 
     /// The reference index's rows of `source`'s values, every aspect.
     pub fn references_from(&mut self, source: &Tid) -> Result<Vec<super::refs::Reference>> {
-        self.run(|tx| super::refs::from(tx, source))
+        self.read(|tx| super::refs::from(tx, source))
     }
 
     /// The value of `(tid, ak)` as this node reads it; `None` if absent.
@@ -66,7 +66,7 @@ impl Engine {
                 let r = self.core.roster_of(&tid);
                 (!r.is_empty()).then(|| Value::Map(r.iter().map(|(m, e)| (Value::Tid(*m), edge_value(e))).collect()))
             }
-            _ => self.run(|tx| Ok(tx.state(&tid, &ak)?.and_then(Fragment::read)))?,
+            _ => self.read(|tx| Ok(tx.state(&tid, &ak)?.and_then(Fragment::read)))?,
         };
         Ok(v)
     }
@@ -97,7 +97,7 @@ impl Engine {
         }
         let path = self.lookup_path(tid, path)?;
         // a paged state loads only the pages on the path
-        let v = self.run(|tx| {
+        let v = self.read(|tx| {
             tx.ensure_paths(tid, ak, std::slice::from_ref(&path))?;
             Ok(tx.cached(tid, ak).and_then(|f| f.read_at(&path)))
         })?;
@@ -115,7 +115,7 @@ impl Engine {
             return Ok(None);
         }
         let path = self.lookup_path(tid, path)?;
-        let v = self.run(|tx| tx.read_range(tid, ak, &path, r))?;
+        let v = self.read(|tx| tx.read_range(tid, ak, &path, r))?;
         Ok(v)
     }
 
@@ -131,7 +131,7 @@ impl Engine {
     /// The aspects a delete of `tid` resets (`deleted_aspects`).
     pub fn deleted_aspects(&mut self, tid: &Tid) -> Result<Vec<Ak>> {
         let tid = *tid;
-        self.run(|tx| deleted_aspects(tx, &tid))
+        self.read(|tx| deleted_aspects(tx, &tid))
     }
 
     /// AKs present on the thing (`aspects.0`).
@@ -140,7 +140,7 @@ impl Engine {
         if !self.core.exists(&tid) {
             return Ok(Vec::new());
         }
-        let mut out = self.run(|tx| {
+        let mut out = self.read(|tx| {
             let mut aks = Vec::new();
             let prefix = [records::ASPECTS, tid.as_bytes()].concat();
             tx.scan(&prefix, |k, _| {
@@ -168,7 +168,7 @@ impl Engine {
             return Ok(false);
         }
         let tid = *tid;
-        self.run(|tx| {
+        self.read(|tx| {
             let mut aks = Vec::new();
             let prefix = [records::ASPECTS, tid.as_bytes()].concat();
             tx.scan(&prefix, |k, _| {
@@ -210,7 +210,7 @@ impl Engine {
     /// The local state fragment of `(tid, ak)` (tests, simulator invariants).
     pub fn state(&mut self, tid: &Tid, ak: &Ak) -> Result<Option<Fragment>> {
         let (tid, ak) = (*tid, ak.clone());
-        self.run(|tx| Ok(tx.state(&tid, &ak)?.cloned()))
+        self.read(|tx| Ok(tx.state(&tid, &ak)?.cloned()))
     }
 
     /// The epochs this node holds for actor `tid` (its own, opened ones with their
@@ -232,7 +232,7 @@ impl Engine {
 
     /// Every aspect with a held state, as `(tid, ak)` (simulator invariants).
     pub fn all_aspects(&mut self) -> Result<Vec<(Tid, Ak)>> {
-        self.run(|tx| {
+        self.read(|tx| {
             let mut out = Vec::new();
             tx.scan(records::ASPECTS, |k, _| {
                 let mut r = records::Rd::new(k);

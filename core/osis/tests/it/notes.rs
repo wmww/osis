@@ -151,21 +151,22 @@ fn share_notebook_with_a_second_account() {
     assert_eq!(title(&alice, packing).unwrap().as_deref(), Some("Packing"), "his earlier note stays");
 }
 
-// spec/data-model.md §6 (large atomic values), notes/api.md Large values (materialization bound,
-// streams): a large body syncs to the other node, which reads it by stream and length while a
-// whole read fails `TooLarge` explicitly.
+// spec/sync.md §6, notes/api.md Large values (materialization bound, streams): a body past the read limit and
+// past a first Fetch reply (`proto::window::FIRST_REPLY`) syncs to the other node, which reads it
+// by stream and length while a whole read fails `TooLarge` explicitly. A large atomic value:
+// `api::stream_len_set_stream_spec_data_model_6`.
 #[test]
 fn large_body_streams() {
     let mut w = World::new();
     let host = w.add_host();
     let laptop = account(&mut w, 1, host);
     let mut cfg = w.cfg(2, &[]);
-    cfg.app.read_limit = 64 << 10;
+    cfg.app.read_limit = 8 << 10;
     let phone = add_node(&laptop, cfg).unwrap();
     let nb = new_tag(&laptop, "Books").unwrap();
     let note = new_note(&laptop, nb, "Draft").unwrap();
-    // just above `CHUNK_THRESHOLD`: a large value
-    let doc: String = (0..13_000).map(|i| format!("line {i}\n")).collect();
+    // just past `FIRST_REPLY` (64 KiB)
+    let doc: String = (0..7_000).map(|i| format!("line {i}\n")).collect();
     laptop.commit_with(|w| w.at(note, BODY).path(osis::p![]).set_stream(doc.as_bytes())).unwrap();
     w.run();
     assert!(matches!(phone.at(note, BODY).get(), Err(Error::TooLarge { .. })));

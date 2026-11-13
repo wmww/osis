@@ -429,7 +429,7 @@ impl Engine {
     /// Whether key actor `t` is a node (`is_node`): it has a `node.0` card here.
     pub fn is_node(&mut self, t: &Tid) -> Result<bool> {
         let t = *t;
-        self.run(|tx| is_node(tx, &t))
+        self.read(|tx| is_node(tx, &t))
     }
 
     /// How many key actors this node holds now (tests: a redeemer forgets the seed).

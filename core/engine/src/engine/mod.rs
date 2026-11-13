@@ -3327,7 +3327,7 @@ impl Engine {
     /// A local record of the API layer (`osis`), never synced.
     pub fn app_record(&mut self, name: &str) -> Result<Option<Vec<u8>>> {
         let k = [records::APP, name.as_bytes()].concat();
-        self.run(|tx| Ok(tx.txn.get_local(&k)?))
+        self.read(|tx| Ok(tx.txn.get_local(&k)?))
     }
 
     /// Writes a local record of the API layer.
@@ -3424,18 +3424,27 @@ impl Engine {
         self.core.changed.get_or_insert_with(Changed::default).wakes.take()
     }
 
-    /// What `f` returns run in one store transaction rolled back after: it changes nothing.
-    pub(crate) fn probe<T>(&mut self, f: impl FnOnce(&mut Tx<'_>) -> Result<T>) -> Result<T> {
-        const ROLLBACK: &str = "probe rolled back";
-        let mut out = None;
-        match self.run(|tx| {
-            out = Some(f(tx)?);
-            Err::<(), _>(Error::Misuse(ROLLBACK))
-        }) {
-            Err(Error::Misuse(ROLLBACK)) => out.ok_or(Error::Misuse(ROLLBACK)),
-            Err(e) => Err(e),
-            Ok(()) => Err(Error::Misuse(ROLLBACK)),
+    /// What `f` returns, run as a read: in a store transaction dropped after, and whatever `f`
+    /// changed in memory undone (`Core::rollback_to`), so it changes nothing. A read does none
+    /// of a transaction's end work (`run`): that work follows changes, and a read keeps none.
+    /// Caches it filled stay (they hold what is stored).
+    pub(crate) fn read<T>(&mut self, f: impl FnOnce(&mut Tx<'_>) -> Result<T>) -> Result<T> {
+        let _s = crate::costs::span("read");
+        if self.blobs_unsettled {
+            memo::unrecorded(|| self.settle_blobs())?;
         }
+        let now = self.now().0;
+        self.core.time.set(now);
+        #[cfg(debug_assertions)]
+        {
+            self.core.tx_store = self.store.changes();
+        }
+        let start = self.core.mark();
+        let txn = self.store.transaction(&mut self.store_rng)?;
+        let r = f(&mut Tx { txn, blobs: blobs::Cipher::new(&*self.blobs, self.blob_seq), core: &mut self.core, rng: &mut *self.rng });
+        self.core.rollback_to(start);
+        self.core.cut_subs.clear();
+        r
     }
 
     /// Runs `f` in one store transaction; events go out once it is durable.
@@ -3862,6 +3871,39 @@ mod tests {
 
     fn write(m: &mut Mutation, t: Tid, v: &str) {
         m.set(t, &Ak::new("t:reg.0").unwrap(), &Value::Str(v.into())).unwrap();
+    }
+
+    // spec: none (engine internals). A read changes nothing (`Engine::read`): a commit written
+    // inside one leaves the indexes, the values read and the store as they were, and the next
+    // write goes on from there.
+    #[test]
+    fn a_read_changes_nothing() {
+        let mut lp = LocalPeer::fresh(1, WallMs(1_700_000_000_000));
+        let p = &mut lp.peers[0];
+        let a = p.engine.me();
+        let mut m = Mutation::new();
+        let t = p.engine.new_thing(&mut m, a);
+        write(&mut m, t, "old");
+        p.engine.commit(m).unwrap();
+        let reg = Ak::new("t:reg.0").unwrap();
+        let before = digest(p);
+        let id = p
+            .engine
+            .read(|tx| {
+                let mut m = Mutation::new();
+                write(&mut m, t, "read");
+                super::Engine::commit_tx(tx, m)
+            })
+            .unwrap();
+        assert!(id.is_some(), "the commit was made inside the read");
+        assert_eq!(digest(p), before, "a read changed the indexes");
+        assert_eq!(p.engine.get(&t, &reg).unwrap(), Some(Value::Str("old".into())));
+        p.engine.check_index();
+        let mut m = Mutation::new();
+        write(&mut m, t, "new");
+        p.engine.commit(m).unwrap();
+        assert_eq!(p.engine.get(&t, &reg).unwrap(), Some(Value::Str("new".into())));
+        p.engine.check_index();
     }
 
     // spec/commits.md §4 (one storage transaction per commit): a transaction whose store commit
