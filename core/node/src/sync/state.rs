@@ -991,11 +991,12 @@ impl State {
     /// `reload` keeps the rest, as `retention::forget` removes the stored ones): the entries and
     /// tombstones under `labels`, the entries of `commits` (forgotten whole: their charge goes),
     /// the leftover charges and carriers of `commits`, leftover charges under `labels`. The
-    /// memory blobs of the entries dropped and of `commits`, for `SyncEngine::forget_blob`.
+    /// memory blobs of the entries dropped, for `SyncEngine::forget_blob`; those holding a
+    /// forgotten part go as the stored ones (`memory_blobs_forgotten`).
     pub fn forget_memory(&mut self, labels: &BTreeSet<LabelId>, commits: &BTreeSet<CommitId>) -> Vec<BlobId> {
         let of = |s: &State, l: &LabelId, b: &BlobId| labels.contains(l) || matches!(s.entries.get(&(*l, *b)).map(|e| &e.kind), Some(Kind::Commit { commit, .. }) if commits.contains(commit));
         let dropped: Vec<(LabelId, BlobId)> = self.memory_entries.iter().filter(|(l, b)| of(self, l, b)).copied().collect();
-        let mut blobs: Vec<BlobId> = commits.iter().flat_map(|c| self.by_commit.get(c).into_iter().flatten()).copied().filter(|b| self.blobs.get(b).is_some_and(|r| r.memory)).collect();
+        let mut blobs = Vec::new();
         for (l, b) in dropped {
             self.drop_entry(l, b);
             self.tombs.remove(&(l, b));
@@ -1012,6 +1013,12 @@ impl State {
         self.carriers.retain(|c, x| !(x.memory && commits.contains(c)));
         self.memory_commits.retain(|c| !commits.contains(c));
         blobs
+    }
+
+    /// The memory blobs holding a part the engine forgot (`forgets_blob`, the stored ones'
+    /// rule): `SyncEngine::drop_blob` forgets key and bytes, their entries left shredded.
+    pub fn memory_blobs_forgotten(&self, commits: &BTreeSet<CommitId>, parts: &BTreeMap<CommitId, BTreeSet<usize>>) -> Vec<BlobId> {
+        parts.keys().chain(commits).flat_map(|c| self.by_commit.get(c).into_iter().flatten()).copied().filter(|b| self.blobs.get(b).is_some_and(|r| r.memory && forgets_blob(commits, parts, &r.commit, &r.parts))).collect::<BTreeSet<_>>().into_iter().collect()
     }
 
     /// The hub's store is the truth for ciphertext (issues/net-one-peer.md step 4): at load every
@@ -2311,16 +2318,32 @@ impl State {
 
 /// Removes, shredded, the sync records of what the engine forgets (inside its transaction,
 /// `retention::forget`): everything about `labels`, the blob records of `commits` and of blobs
-/// holding forgotten `parts`, carriers and certificates of `commits`, hints naming `things`; adds
-/// `things` to the inbox work list. Returns the blobs among those dropped and `extra` that no
-/// kept entry or blob record names (their ciphertexts may go).
+/// holding forgotten `parts` (`forgets_blob`; their entries under other labels stay with their
+/// wraps shredded, as `SyncEngine::drop_blob` leaves them), carriers and certificates of
+/// `commits`, hints naming `things`; adds `things` to the inbox work list. Returns the blobs
+/// among those dropped and `extra` that no kept entry or blob record names, and the blobs
+/// holding forgotten parts (their ciphertexts may go).
 fn forget_records(tx: &mut Tx<'_>, labels: &BTreeSet<LabelId>, things: &BTreeSet<Tid>, commits: &BTreeSet<CommitId>, parts: &BTreeMap<CommitId, BTreeSet<usize>>, extra: BTreeSet<BlobId>) -> Result<BTreeSet<BlobId>> {
     let mut recs = Vec::new();
     tx.scan(b"y/", |k, v| {
         recs.push((k.to_vec(), v));
         Ok(())
     })?;
+    // the blobs holding a forgotten part: neither key nor wrap of them stays
+    let mut gone_blobs: BTreeSet<BlobId> = BTreeSet::new();
+    for (k, v) in &recs {
+        if let Some(rest) = k.strip_prefix(b"b") {
+            let mut x = Rd::new(v);
+            let c = CommitId(x.arr()?);
+            let _key: [u8; 32] = x.arr()?;
+            let _cert = x.u8()?;
+            if forgets_blob(commits, parts, &c, &decode_ais(&mut x)?) {
+                gone_blobs.insert(BlobId(Rd::new(rest).arr()?));
+            }
+        }
+    }
     let mut drop: Vec<Vec<u8>> = Vec::new();
+    let mut shred: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
     let mut freed = extra;
     let mut kept: BTreeSet<BlobId> = BTreeSet::new();
     let lab = |b: &[u8]| -> Result<bool> { Ok(labels.contains(&LabelId(Rd::new(b).arr()?))) };
@@ -2333,10 +2356,20 @@ fn forget_records(tx: &mut Tx<'_>, labels: &BTreeSet<LabelId>, things: &BTreeSet
                 let b = BlobId(r.arr()?);
                 let gone = labels.contains(&l);
                 if p == b"e" {
-                    if gone {
+                    if gone || gone_blobs.contains(&b) {
                         freed.insert(b);
                     } else {
                         kept.insert(b);
+                    }
+                    if !gone && gone_blobs.contains(&b) {
+                        // the hub's row (wrap, bytes) goes with the ciphertext
+                        tx.blobs.defer(osis_host::HostStore::removal(&l, &b, false));
+                        let mut e = decode_entry(&v)?;
+                        if !e.shredded() {
+                            e.wrap = [0; WRAP_LEN];
+                            e.stamp = None;
+                            shred.push(([b"y/".as_slice(), &k].concat(), encode_entry(&e)));
+                        }
                     }
                 }
                 gone
@@ -2354,8 +2387,7 @@ fn forget_records(tx: &mut Tx<'_>, labels: &BTreeSet<LabelId>, things: &BTreeSet
                 let c = CommitId(x.arr()?);
                 let _key: [u8; 32] = x.arr()?;
                 let _cert = x.u8()?;
-                let ps = decode_ais(&mut x)?;
-                let gone = commits.contains(&c) || parts.get(&c).is_some_and(|s| ps.iter().any(|ai| s.contains(ai)));
+                let gone = forgets_blob(commits, parts, &c, &decode_ais(&mut x)?);
                 if gone {
                     freed.insert(b);
                 } else {
@@ -2378,6 +2410,9 @@ fn forget_records(tx: &mut Tx<'_>, labels: &BTreeSet<LabelId>, things: &BTreeSet
     for k in drop {
         tx.txn.remove_local(&k, Shred::Yes)?;
     }
+    for (k, v) in shred {
+        tx.txn.put_local(&k, &v, Shred::Yes)?;
+    }
     // no deletion events: this node stopped holding them, nobody deleted them
     for l in labels {
         tx.blobs.defer(osis_host::HostStore::forgetting(l));
@@ -2387,6 +2422,12 @@ fn forget_records(tx: &mut Tx<'_>, labels: &BTreeSet<LabelId>, things: &BTreeSet
         tx.txn.put_local(&key(FORGET, &[t.as_bytes()]), &[], Shred::No)?;
     }
     Ok(freed.difference(&kept).copied().collect())
+}
+
+/// Whether a commit blob of `c` holding `held` parts goes with what the engine forgot: the
+/// commit forgotten whole, or a part it holds forgotten (stored or memory, one rule).
+pub(crate) fn forgets_blob(commits: &BTreeSet<CommitId>, parts: &BTreeMap<CommitId, BTreeSet<usize>>, c: &CommitId, held: &[usize]) -> bool {
+    commits.contains(c) || parts.get(c).is_some_and(|s| held.iter().any(|ai| s.contains(ai)))
 }
 
 fn encode_sent(x: &SentInbox) -> Vec<u8> {

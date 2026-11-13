@@ -6542,3 +6542,62 @@ fn losing_one_label_keeps_ephemeral_entries_of_another_spec_sync_9() {
     assert_eq!(net.eph_read(r, w1, STATE), Some(s("v")));
     assert_eq!(net.eph_read(a, w1, STATE), Some(s("v")), "the reader brought it back");
 }
+
+// notes/node-sync.md Failed writes, spec/permissions.md §3: forgetting lost things drops a
+// memory blob holding a forgotten part as the store drops a stored one: key and bytes go, its
+// entries stay shredded. One ephemeral commit writes w1 (g's) and w2 (x's, an item of g, which
+// reads x); the reader of g loses x as g does, keeps g, and alone holds w1's value when it places
+// it again
+#[test]
+fn partly_forgotten_ephemeral_commit_keeps_no_key_of_the_lost_part_spec_permissions_3() {
+    let mut net = Net::new();
+    let (h1, h2) = (net.add_host(), net.add_host());
+    let a = net.node(1, &[h1, h2]);
+    let r = net.node(2, &[h1, h2]);
+    let g = net.group(a, &[(r, Role::Write)], &[h1]);
+    let addr = net.hosts[h2].address.clone();
+    let x = net.group_at(a, &[], vec![addr]);
+    let done = net.engine(a).grant(&x, &g, &crate::common::edge(Role::Read)).unwrap();
+    let acts = net.sync(a).carry_out(done).unwrap();
+    net.actions(a, acts);
+    net.run();
+    let w1 = made(&mut net, a, g, Some(g));
+    let w2 = made(&mut net, a, x, Some(g));
+    net.run();
+    let mut m = Mutation::new();
+    m.set(w1, &eph(STATE), &s("v")).unwrap();
+    m.set(w2, &eph(STATE), &s("x")).unwrap();
+    net.engine(a).write(m).unwrap();
+    local(&mut net, a);
+    net.run();
+    assert_eq!((net.eph_read(r, w1, STATE), net.eph_read(r, w2, STATE)), (Some(s("v")), Some(s("x"))));
+    let lg = label_of(&mut net, r, g);
+    let held = entries_under(&mut net, r, &lg);
+    assert_eq!(held.len(), 1, "one blob of both parts under g's label");
+    let b = *held.iter().next().unwrap();
+    assert!(net.engine(r).blob(&b).unwrap().is_some());
+    assert_eq!(net.sync(r).memory_kept()[4], 1, "its blob record");
+    net.blocked.insert((r, h1));
+    net.drop_link(r, h1);
+    net.restart_host(h1);
+    net.restart(a, 11);
+    net.run();
+    assert_eq!(net.eph_read(a, w1, STATE), None, "lost with the restarts");
+    let done = net.engine(a).demote(&x, &osis_node::flows::Demotion { holder: g, new: None, retain: None }).unwrap();
+    let acts = net.sync(a).carry_out(done).unwrap();
+    net.actions(a, acts);
+    for _ in 0..3 {
+        net.advance(31_000);
+    }
+    let rt = net.tid(r);
+    assert!(!net.engine(r).may_read(&rt, &w2), "the reader lost x");
+    assert_eq!((net.eph_read(r, w1, STATE), net.eph_read(r, w2, STATE)), (Some(s("v")), None));
+    assert_eq!(net.sync(r).memory_kept()[4], 0, "no key of the blob holding w2's part");
+    assert!(net.engine(r).blob(&b).unwrap().is_none(), "nor its bytes");
+    net.blocked.remove(&(r, h1));
+    for _ in 0..3 {
+        net.advance(31_000);
+    }
+    assert_eq!(net.eph_read(a, w1, STATE), Some(s("v")), "the reader placed w1's part again");
+    assert_eq!(net.eph_read(a, w2, STATE), None, "and not w2's");
+}

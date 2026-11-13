@@ -2090,7 +2090,7 @@ impl SyncEngine {
 
     /// Forgets commit blob `b`'s key and ciphertext; its entries stay (deletes at hosts need no
     /// copy) with their wraps shredded.
-    fn drop_blob(&mut self, b: &BlobId) -> Result<()> {
+    pub(crate) fn drop_blob(&mut self, b: &BlobId) -> Result<()> {
         let ls: Vec<LabelId> = self.state.labels_of(b);
         for l in ls {
             if let Some(mut e) = self.state.entries.get(&(l, *b)).cloned() {

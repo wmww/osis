@@ -304,6 +304,9 @@ impl SyncEngine {
         // what the passes knew of entries is gone with them: everything is judged again
         self.touched.full = true;
         self.state.now = now;
+        for b in self.state.memory_blobs_forgotten(&f.commits, &f.parts) {
+            self.drop_blob(&b)?;
+        }
         for b in blobs {
             self.forget_blob(&b)?;
         }

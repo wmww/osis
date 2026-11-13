@@ -50,6 +50,9 @@ pub struct Forgotten {
     pub labels: BTreeSet<LabelId>,
     /// Commits deleted whole.
     pub commits: BTreeSet<CommitId>,
+    /// The forgotten aspect indices of each commit with a forgotten part (those of `commits`
+    /// too): node sync drops the blobs holding one (`SyncRecords::forget` for the stored ones).
+    pub parts: BTreeMap<CommitId, BTreeSet<usize>>,
 }
 
 /// Whether a held path reads `t` (the node's or a held key actor's effective role on it).
@@ -255,5 +258,6 @@ pub(crate) fn forget(tx: &mut Tx<'_>, lost: &[Tid], held: &BTreeMap<Tid, u64>) -
     if !aspects.is_empty() {
         tx.core.events.queue(Event::Changed { cause: Cause::LostAccess, changed: aspects.into_iter().collect() });
     }
+    out.parts = parts;
     Ok(out)
 }
