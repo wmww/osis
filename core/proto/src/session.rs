@@ -134,14 +134,26 @@ fn fits(own: usize, holding: usize, share: usize, left: usize, size: usize) -> b
     (own == 0 || holding.saturating_add(size) <= share) && size <= left
 }
 
-/// Bytes of the `Send` outputs in `out`.
-fn sent_bytes(out: &[SessionOutput]) -> usize {
-    out.iter().map(|o| if let SessionOutput::Send(b) = o { b.len() } else { 0 }).sum()
+/// One call's outputs, the bytes of its `Send`s counted as they go in: the room checks read
+/// the count, not the outputs.
+#[derive(Default)]
+struct Out {
+    items: Vec<SessionOutput>,
+    sent: usize,
 }
 
-/// Frames `msg` as an output.
-fn send(out: &mut Vec<SessionOutput>, msg: Message) {
-    out.push(SessionOutput::Send(encode_frame(&msg.encode())));
+impl Out {
+    fn push(&mut self, o: SessionOutput) {
+        if let SessionOutput::Send(b) = &o {
+            self.sent = self.sent.saturating_add(b.len());
+        }
+        self.items.push(o);
+    }
+
+    /// Frames `msg` as an output.
+    fn send(&mut self, msg: Message) {
+        self.push(SessionOutput::Send(encode_frame(&msg.encode())));
+    }
 }
 
 /// A relay-only entry (spec/sync.md §5): accepted by stamp, passed on to the label's other
@@ -320,24 +332,29 @@ impl Session {
     pub fn set_room(&mut self, share: usize, slack: usize) {
         self.share = share;
         self.slack = slack;
-        self.base = self.holding(&[]);
+        self.base = self.holding();
     }
 
     /// What the connection holds against the node's bound: its own output (`own`), and the
     /// reply allowances of requests handed up and not answered.
-    pub fn holding(&self, out: &[SessionOutput]) -> usize {
+    pub fn holding(&self) -> usize {
+        self.holding_with(&Out::default())
+    }
+
+    /// `holding` with `out` written.
+    fn holding_with(&self, out: &Out) -> usize {
         self.own(out).saturating_add(self.asked_bytes.allowance)
     }
 
     /// Its output: bytes written and not taken, and push room granted and not used.
-    fn own(&self, out: &[SessionOutput]) -> usize {
+    fn own(&self, out: &Out) -> usize {
         self.unsent(out).saturating_add(self.granted)
     }
 
     /// Whether it has no output of its own (`holding` aside from reservations for replies to
     /// come): then one reply or push may go past its share, within what the node has left.
     pub fn alone(&self) -> bool {
-        self.own(&[]) == 0
+        self.own(&Out::default()) == 0
     }
 
     /// Whether input may come: no received frame waits for room.
@@ -355,14 +372,14 @@ impl Session {
     }
 
     /// The node's bytes left for this connection, with `out` written.
-    fn left(&self, out: &[SessionOutput]) -> usize {
-        self.slack.saturating_sub(self.holding(out).saturating_sub(self.base))
+    fn left(&self, out: &Out) -> usize {
+        self.slack.saturating_sub(self.holding_with(out).saturating_sub(self.base))
     }
 
     /// Whether `size` more bytes of output fit the room: the share (or no output of its own:
     /// a reservation for a reply to come is not held against what answers it) and what is left.
-    fn fits(&self, out: &[SessionOutput], size: usize) -> bool {
-        fits(self.own(out), self.holding(out), self.share, self.left(out), size)
+    fn fits(&self, out: &Out, size: usize) -> bool {
+        fits(self.own(out), self.holding_with(out), self.share, self.left(out), size)
     }
 
     /// Whether an Auth was answered by a Reply (notes/client-port.md §3): the session counts as
@@ -425,7 +442,7 @@ impl Session {
 
     /// Push room for Notifies: what fits `REPLY_BUDGET` behind the unwritten bytes (all of it
     /// when none are unwritten) and the node's room (`fits`); none below `SMALL_REPLY`.
-    fn room(&self, out: &[SessionOutput]) -> Option<usize> {
+    fn room(&self, out: &Out) -> Option<usize> {
         let r = REPLY_BUDGET.saturating_sub(self.backlog(out));
         // the share against the connection's own output only: a request waiting for these
         // pushes (a client-port settle) does not hold back the room that answers it
@@ -435,19 +452,19 @@ impl Session {
     }
 
     /// Bytes written and not taken by the transport, with those in `out` (0 without reports).
-    fn backlog(&self, out: &[SessionOutput]) -> usize {
+    fn backlog(&self, out: &Out) -> usize {
         if self.taken.is_none() { 0 } else { self.unsent(out) }
     }
 
     /// Bytes written and not taken (as far as reported), with those in `out`.
-    fn unsent(&self, out: &[SessionOutput]) -> usize {
+    fn unsent(&self, out: &Out) -> usize {
         let w = self.taken.map_or(0, |t| usize::try_from(self.written.saturating_sub(t)).unwrap_or(usize::MAX));
-        w.saturating_add(sent_bytes(out))
+        w.saturating_add(out.sent)
     }
 
     /// Whether a push of about `size` bytes waits: something is unwritten and it would not fit
     /// `REPLY_BUDGET` behind it, or it does not fit the node's room.
-    fn no_room(&self, out: &[SessionOutput], size: usize) -> bool {
+    fn no_room(&self, out: &Out, size: usize) -> bool {
         let b = self.backlog(out);
         b > 0 && b.saturating_add(size) > REPLY_BUDGET || !self.fits(out, size)
     }
@@ -465,18 +482,17 @@ impl Session {
     }
 
     pub fn handle(&mut self, now: u64, store: &mut dyn LabelStore, input: SessionInput) -> Vec<SessionOutput> {
-        let mut out = Vec::new();
+        let mut out = Out::default();
         if self.closed {
-            return out;
+            return out.items;
         }
         self.input(now, store, input, &mut out);
         self.run_pending(now, store, &mut out);
         if !self.closed {
             // the node's own requests go within the room too
-            let before = self.written.saturating_add(sent_bytes(&out) as u64);
-            let (h, o, left, share) = (self.holding(&out), self.own(&out), self.left(&out), self.share);
+            let before = self.written.saturating_add(out.sent as u64);
+            let (h, o, left, share) = (self.holding_with(&out), self.own(&out), self.left(&out), self.share);
             let mut extra = 0usize;
-            let mut sends = Vec::new();
             self.flush_need = self.requests.flush_while(
                 before,
                 now,
@@ -487,15 +503,14 @@ impl Session {
                     }
                     ok
                 },
-                |f| sends.push(SessionOutput::Send(f)),
+                |f| out.push(SessionOutput::Send(f)),
             );
-            out.extend(sends);
         }
-        self.written = self.written.saturating_add(sent_bytes(&out) as u64);
-        out
+        self.written = self.written.saturating_add(out.sent as u64);
+        out.items
     }
 
-    fn input(&mut self, now: u64, store: &mut dyn LabelStore, input: SessionInput, out: &mut Vec<SessionOutput>) {
+    fn input(&mut self, now: u64, store: &mut dyn LabelStore, input: SessionInput, out: &mut Out) {
         match input {
             SessionInput::Peer(m) if m.is_request() => self.requests.queue(*m),
             // a relay-only push (no cursor) without room is dropped, as the session's own relays
@@ -510,7 +525,7 @@ impl Session {
                 {
                     self.asked_bytes.sub(c);
                 }
-                send(out, *m)
+                out.send(*m)
             }
             SessionInput::Start => out.push(SessionOutput::Send(encode_frame(&Hello::new(now, self.cfg.challenge).encode()))),
             SessionInput::Bytes(b) => {
@@ -530,7 +545,7 @@ impl Session {
                         Ok(None) => break,
                         Err(e) => {
                             out.push(SessionOutput::PeerError(e));
-                            send(out, Message::Error { id: 0, code: Code::MALFORMED });
+                            out.send(Message::Error { id: 0, code: Code::MALFORMED });
                             self.close(out);
                         }
                     }
@@ -572,7 +587,7 @@ impl Session {
     }
 
     /// Held pushes go on, labels in turn, then the room the upper layer waits for.
-    fn resume(&mut self, out: &mut Vec<SessionOutput>) {
+    fn resume(&mut self, out: &mut Out) {
         if self.room_wanted
             && let Some(budget) = self.room(out)
         {
@@ -582,13 +597,13 @@ impl Session {
     }
 
     /// Grants the upper layer push room, reserved until its pushes or an empty `Notify` come.
-    fn grant(&mut self, budget: usize, out: &mut Vec<SessionOutput>) {
+    fn grant(&mut self, budget: usize, out: &mut Out) {
         self.granted = budget;
         out.push(SessionOutput::Room { budget });
     }
 
     /// Notify pushes, in order, within the room last granted.
-    fn notify(&mut self, notes: Vec<(Id, crate::api::Payload)>, out: &mut Vec<SessionOutput>) {
+    fn notify(&mut self, notes: Vec<(Id, crate::api::Payload)>, out: &mut Out) {
         for (sub, payload) in notes {
             let Some(max) = self.api_subs.get(&sub).copied() else { continue };
             let mut m = Message::Notify { sub, payload };
@@ -606,7 +621,7 @@ impl Session {
 
     /// Answers a client-port request: the reply bounded by its `max_reply`; a refused or failed
     /// Sub frees its id; a Reply to Auth authenticates the session.
-    fn api_reply(&mut self, id: Id, reply: Result<crate::api::Outcome, Code>, out: &mut Vec<SessionOutput>) {
+    fn api_reply(&mut self, id: Id, reply: Result<crate::api::Outcome, Code>, out: &mut Out) {
         let Some((kind, max, charge)) = self.asked.remove(&id) else { return };
         self.asked_bytes.sub(charge);
         let ok = matches!(reply, Ok(crate::api::Outcome::Ok { .. }));
@@ -614,7 +629,7 @@ impl Session {
             self.api_subs.remove(&id);
         }
         match reply {
-            Err(code) => send(out, Message::Error { id, code }),
+            Err(code) => out.send(Message::Error { id, code }),
             Ok(outcome) => {
                 if kind == 24 && ok {
                     self.authed = true;
@@ -631,7 +646,7 @@ impl Session {
         }
     }
 
-    fn close(&mut self, out: &mut Vec<SessionOutput>) {
+    fn close(&mut self, out: &mut Out) {
         self.closed = true;
         out.push(SessionOutput::Close);
     }
@@ -639,7 +654,7 @@ impl Session {
     /// Takes a received frame: the peer's Hello at once; any other decoded and charged
     /// (`MAX_UNANSWERED`), to run in order once its reply allowance fits the room
     /// (`run_pending`).
-    fn admit(&mut self, body: &[u8], charged: &mut usize, out: &mut Vec<SessionOutput>) {
+    fn admit(&mut self, body: &[u8], charged: &mut usize, out: &mut Out) {
         if self.version.is_none() {
             match Hello::decode(body).and_then(|h| negotiate(&[PROTOCOL_VERSION], &h.versions).map(|v| (v, h.challenge))) {
                 Ok((v, challenge)) => {
@@ -671,7 +686,7 @@ impl Session {
     }
 
     /// Runs the frames waiting, in order, while each one's reply fits the room (`fits`).
-    fn run_pending(&mut self, now: u64, store: &mut dyn LabelStore, out: &mut Vec<SessionOutput>) {
+    fn run_pending(&mut self, now: u64, store: &mut dyn LabelStore, out: &mut Out) {
         while let Some(p) = self.pending.front() {
             if self.closed {
                 self.pending.clear();
@@ -695,13 +710,13 @@ impl Session {
         }
     }
 
-    fn run(&mut self, now: u64, store: &mut dyn LabelStore, p: Pending, out: &mut Vec<SessionOutput>) {
+    fn run(&mut self, now: u64, store: &mut dyn LabelStore, p: Pending, out: &mut Out) {
         let msg = match p.msg {
             Ok(m) => m,
             Err(r) => {
                 // a request (or unknown kind) is answered; a broken reply or push is dropped
                 if r.wants_answer() {
-                    send(out, Message::Error { id: r.id, code: r.code() });
+                    out.send(Message::Error { id: r.id, code: r.code() });
                 }
                 out.push(SessionOutput::PeerError(r.error));
                 return;
@@ -711,17 +726,17 @@ impl Session {
         let charge = p.charge;
         if matches!(msg, Message::Auth { .. } | Message::Call { .. } | Message::Sub { .. } | Message::Unsub { .. }) {
             if let Some(reply) = self.api_request(msg, charge, out) {
-                send(out, reply);
+                out.send(reply);
             }
             return;
         }
         self.struck = false;
         match self.dispatch(now, store, msg, charge, out) {
-            Ok(Some(reply)) => send(out, reply),
+            Ok(Some(reply)) => out.send(reply),
             Ok(None) => {}
             Err(e) => {
                 out.push(SessionOutput::StoreError(e));
-                send(out, Message::Error { id, code: Code::REFUSED });
+                out.send(Message::Error { id, code: Code::REFUSED });
             }
         }
     }
@@ -736,7 +751,7 @@ impl Session {
 
     /// `charge`: the request's frame bytes plus reply allowance (a node request handed up keeps it
     /// against `MAX_UNANSWERED` until the upper layer answers).
-    fn dispatch(&mut self, now: u64, store: &mut dyn LabelStore, msg: Message, charge: Charge, out: &mut Vec<SessionOutput>) -> Result<Option<Message>, StoreError> {
+    fn dispatch(&mut self, now: u64, store: &mut dyn LabelStore, msg: Message, charge: Charge, out: &mut Out) -> Result<Option<Message>, StoreError> {
         use Message as M;
         // an answer goes up to the request it answers; one to nothing breaks the protocol
         if crate::msg::is_reply_kind(msg.kind()) {
@@ -779,7 +794,7 @@ impl Session {
     /// except what the protocol answers itself: a Call, Sub or Unsub before Auth (Error 1), a
     /// Sub reusing a live subscription's id (2) or past `MAX_SUBS` (4), an Unsub (Ok). One handed
     /// out keeps its `charge` against `MAX_UNANSWERED` until answered.
-    fn api_request(&mut self, msg: Message, charge: Charge, out: &mut Vec<SessionOutput>) -> Option<Message> {
+    fn api_request(&mut self, msg: Message, charge: Charge, out: &mut Out) -> Option<Message> {
         use Message as M;
         let id = msg.id();
         if self.asked.contains_key(&id) {
@@ -1106,7 +1121,7 @@ mod tests {
         c.set_room(share, 64 << 20);
         let out = c.handle(0, &mut store, SessionInput::Bytes((100..108).flat_map(ping).collect()));
         assert_eq!(ids(&out), vec![100, 101, 102], "three fit the share");
-        assert!(c.holding(&[]) <= share);
+        assert!(c.holding() <= share);
         assert!(!c.takes_input() && c.need() == Some(allowance));
         // the transport takes them: the next three
         let mut taken = c.written;
@@ -1117,7 +1132,7 @@ mod tests {
         taken = c.written;
         c.set_room(share, 0);
         let out = c.handle(0, &mut store, SessionInput::Taken(taken));
-        assert!(ids(&out).is_empty() && c.holding(&[]) == 0 && c.need() == Some(allowance));
+        assert!(ids(&out).is_empty() && c.holding() == 0 && c.need() == Some(allowance));
         // a share smaller than one reply: one at a time, each alone
         c.set_room(pong / 2, 64 << 20);
         let out = c.handle(0, &mut store, SessionInput::Resume);
@@ -1147,16 +1162,16 @@ mod tests {
         let fetch = Message::Fetch { id: crate::msg::NODE_IDS | 1, label: LabelId([9; 16]), max_reply: small as u64, ids: vec![BlobId([1; 32])] };
         let out = c.handle(0, &mut store, SessionInput::Bytes(encode_frame(&fetch.encode())));
         assert_eq!(out, vec![SessionOutput::Peer(Box::new(fetch))]);
-        let asked = c.holding(&[]);
+        let asked = c.holding();
         assert!(asked == small && asked + small > share);
         // room for the pushes it waits on all the same, reserved once granted
         c.set_room(share, 1 << 20);
         let out = c.handle(0, &mut store, SessionInput::WantRoom);
         let budget = out.iter().find_map(|o| if let SessionOutput::Room { budget } = o { Some(*budget) } else { None }).expect("room granted");
-        assert_eq!(c.holding(&[]), asked + budget);
+        assert_eq!(c.holding(), asked + budget);
         // given back unused
         c.handle(0, &mut store, SessionInput::Notify(Vec::new()));
-        assert_eq!(c.holding(&[]), asked);
+        assert_eq!(c.holding(), asked);
     }
 
     // spec/sync.md §6 (Requester, Closing): the node's own requests to the dialer, unwritten

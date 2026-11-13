@@ -575,7 +575,7 @@ impl Hub {
         self.buffered = self.buffered.saturating_sub(*buffered).saturating_add(now_buffered);
         *buffered = now_buffered;
         let was_active = *hold > 0 || need.is_some();
-        let now_hold = c.holding(&[]);
+        let now_hold = c.holding();
         self.hold = self.hold.saturating_sub(*hold).saturating_add(now_hold);
         *hold = now_hold;
         *alone = c.alone();
