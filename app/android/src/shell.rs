@@ -190,12 +190,13 @@ impl Shell {
         self.pump();
     }
 
-    /// The selection menu's item `code` was picked.
+    /// The selection menu's item `code` was picked: not the keyboard's input, so a cut restarts it
+    /// (`ime::Sync`), as any other change to the text does.
     pub fn menu_pick(&mut self, code: i32) {
         if let Some(c) = command_of(code) {
             self.ui.menu_pick(&mut self.root, c);
         }
-        self.input_done();
+        self.pump();
     }
 
     /// The system closed the selection menu by itself.

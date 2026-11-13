@@ -153,9 +153,18 @@ impl Input {
         self.menu.as_ref().and_then(|m| m.drawn)
     }
 
-    /// kit's menu is drawn in `look` from its next showing on.
-    pub fn set_look(&mut self, look: Arc<Look>) {
+    /// kit's menu drawn in `look`.
+    pub fn with_look(mut self, look: Arc<Look>) -> Input {
         self.look = look;
+        self
+    }
+
+    /// kit's menu is drawn in `look` (one shown is drawn again).
+    pub fn set_look(&mut self, rr: &mut RenderRoot, platform: &mut dyn Platform, look: Arc<Look>) {
+        self.look = look;
+        if self.drawn_menu().is_some() {
+            self.present(rr, platform);
+        }
     }
 
     /// Delivers `e` to `rr` as part of the gesture it belongs to.

@@ -199,7 +199,7 @@ impl Started {
             Shown::Ui(ui) => ui.attach(platform, scale, dark),
             Shown::Failed(f) => {
                 // no long press here: nothing on the failure screen has a meaning for one
-                self.attached = Some(Attached::new(platform, Box::new(|_, _| {})));
+                self.attached = Some(Attached::new(platform, Box::new(|_, _| {}), f.look.clone()));
                 f.show(rr, dark);
             }
         }

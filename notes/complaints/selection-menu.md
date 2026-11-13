@@ -3,3 +3,4 @@
 - The kit test harnesses (gestures.rs, input.rs) each have their own `Screen`; a new test module reusing one needs its fields made `pub(crate)`.
 - Regenerating a vendored patch's `.diff` needs the base it was made against (the commit before the patch was introduced); nothing records it, so it comes from `git log` on the diff.
 - adb taps on Android's floating toolbar right after a Copy sometimes land on the clipboard overlay instead (a paste looked lost; it was not).
+- (review) The patch diffs are `-p0` against the crates.io sources; masonry_winit's regenerate only in the order clipboard, hooks, text-input, a11y, platform, which notes/app.md Patches implies but doesn't list.

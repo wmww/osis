@@ -175,8 +175,8 @@ struct Attached {
 }
 
 impl Attached {
-    fn new(platform: Box<dyn Platform>, alarm: crate::input::Alarm) -> Attached {
-        Attached { input: Pointers::new(platform.thresholds(), alarm), platform, ticking: false }
+    fn new(platform: Box<dyn Platform>, alarm: crate::input::Alarm, look: Arc<Look>) -> Attached {
+        Attached { input: Pointers::new(platform.thresholds(), alarm).with_look(look), platform, ticking: false }
     }
 
     /// A pointer event, on its way to `rr` through the gestures.
@@ -345,6 +345,10 @@ impl Ui {
             }
             self.status(rr, format!("error: {e}"));
         }
+        // what was rebuilt or merged may have moved, changed or removed the focused field
+        if let Some(a) = self.attached.as_mut() {
+            a.follow(rr);
+        }
     }
 
     fn update_inner(&mut self, rr: &mut RenderRoot, force: bool) -> osis::Result<()> {
@@ -371,7 +375,7 @@ impl Ui {
         if rebuild {
             self.look = Arc::new(look);
             if let Some(a) = self.attached.as_mut() {
-                a.input.set_look(self.look.clone());
+                a.input.set_look(rr, &mut *a.platform, self.look.clone());
             }
             // before the new screen's slots exist: what leaves takes its slot along
             let mut tree = std::mem::take(&mut self.tree);
@@ -903,9 +907,7 @@ impl Ui {
                 }
             });
         });
-        let mut a = Attached::new(platform, alarm);
-        a.input.set_look(self.look.clone());
-        self.attached = Some(a);
+        self.attached = Some(Attached::new(platform, alarm, self.look.clone()));
         self.scale = scale;
         self.system_dark = dark;
         self.data.db.settle();
@@ -920,6 +922,14 @@ impl Ui {
             self.root_insets(rr);
         }
         self.rail_check(rr);
+        self.follow(rr);
+    }
+
+    /// The layout may have moved the focused field's selection: the selection menu follows it.
+    fn follow(&mut self, rr: &mut RenderRoot) {
+        if let Some(a) = self.attached.as_mut() {
+            a.follow(rr);
+        }
     }
 
     fn rail_check(&mut self, rr: &mut RenderRoot) {
@@ -961,6 +971,7 @@ impl Ui {
         self.insets = insets;
         self.root_insets(rr);
         self.rail_check(rr);
+        self.follow(rr);
     }
 
     /// Gives Root the insets in logical px at the current scale.
@@ -1054,9 +1065,6 @@ impl Ui {
             }
         }
         self.update(rr, false);
-        if let Some(a) = self.attached.as_mut() {
-            a.follow(rr);
-        }
     }
 
     /// A widget submitted an action.

@@ -1,0 +1,6 @@
+# Android selection menu lacks other apps' text actions
+> Summary: on a plain View the floating `ActionMode` gets no `PROCESS_TEXT` items (Translate, other apps), which TextView adds itself; osis-android would add them.
+> Priority: low
+> Tags: android, app
+
+Wanted (as TextView's `Editor` does): when the menu opens with a selection, query `PackageManager.queryIntentActivities(new Intent(ACTION_PROCESS_TEXT).setType("text/plain"), 0)` (needs a `<queries>` entry for that intent in the manifest), add one item per activity (its label, after kit's items, `SHOW_AS_ACTION_IF_ROOM`), and on a click start it with `EXTRA_PROCESS_TEXT` (the selected text, which the view would read from Rust) and `EXTRA_PROCESS_TEXT_READONLY` for read-only text. For an editable field, start it for a result and replace the selection with `EXTRA_PROCESS_TEXT` from the result, only if the field, its text revision and selection are still those it was started for (the activity is in front meanwhile; a merge may change the text): a `Ui` entry taking the text and the menu's (field, revision, selection), common code, not a paste. Not checkable on the stock emulator image: its one handler (TalkBack's Select to Speak) returns no text.
