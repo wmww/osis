@@ -453,7 +453,7 @@ fn lost_node_opens_nothing_through_a_team_its_account_reads_spec_crypto_4() {
 // from D but not yet P's rotation for it seals P at no epoch the removed node holds: it leaves P
 // out of X until that rotation arrives.
 #[test]
-fn node_knowing_a_removal_seals_its_account_at_no_epoch_minted_before_spec_crypto_4() {
+fn node_knowing_a_removal_seals_its_account_at_no_epoch_before_its_rotation_spec_crypto_4() {
     use super::tests::{group, newest_read, openable};
     let (mut lp, a, _) = world(3, 3);
     let p = a.account;
@@ -469,6 +469,71 @@ fn node_knowing_a_removal_seals_its_account_at_no_epoch_minted_before_spec_crypt
     let w = newest_read(&lp, 2, x).unwrap();
     assert_ne!(read_box_at(&mut lp, 2, x, p), Some(p1), "P not sealed at the epoch L holds");
     assert!(!openable(&mut lp, 2, &[x], l, start).contains(&(x, Role::Read, w)), "L opens nothing of X's new epoch");
+}
+
+// spec/crypto.md §4 (Encrypting under, an account's epochs): order is not knowledge. N1 (peer 0)
+// removes lost node L (peer 1) from D, rotating P (r1). N2 (peer 3), not holding that, later
+// removes Y (peer 4): its rotation r2 of P, ordered after L's removal, seals r2's seed under D's
+// epoch boxing L. T's admin (peer 5) moves T onto r2; N3 (peer 2) holds X boxing T and receives
+// r2 first, so follows it (r2 is open there: T's box to P at r2 is not stale). N3, then holding
+// everything, judges r2 by descent: no rotation naming L's removal is on r2's line, so N3
+// rotates X leaving T out, and L opens nothing N3 writes under X.
+#[test]
+fn an_ignorant_fork_ordered_after_a_removal_covers_nothing_spec_crypto_4() {
+    use super::tests::{group, held_by, newest_read, openable};
+    let (mut lp, a, _) = world(6, 5);
+    let p = a.account;
+    let t = group(&mut lp, 5);
+    lp.peers[5].engine.grant(&t, &p, &edge(Role::Read)).unwrap();
+    lp.sync_all().unwrap();
+    let x = group(&mut lp, 2);
+    lp.sync_all().unwrap();
+    lp.peers[2].engine.grant(&x, &t, &edge(Role::Read)).unwrap();
+    lp.sync_all().unwrap();
+    let l = lp.peers[1].engine.tid();
+    let p0 = read_box_at(&mut lp, 5, t, p).unwrap();
+    let mut known = held_by(&lp, 1, &[t, x]);
+    let r1 = remove(&mut lp, 0, a.devices, 1);
+    lp.advance(1000);
+    remove(&mut lp, 3, a.devices, 4);
+    let n2 = lp.peers[3].engine.commit_ids();
+    send(&mut lp, 3, 5, &n2);
+    let (rt, _) = lp.peers[5].engine.ensure_rotated(&t).unwrap();
+    let p2 = read_box_at(&mut lp, 5, t, p).unwrap();
+    assert_ne!(p2, p0, "T's admin moves T onto r2");
+    // L holds r2's seed: D's epoch it sits under boxes L
+    known.extend(osis_keys::ROLES.into_iter().flat_map(|r| [(p, r, p0), (p, r, p2)]));
+    send(&mut lp, 3, 2, &n2);
+    send(&mut lp, 5, 2, &rt.commits);
+    lp.advance(1000);
+    send(&mut lp, 0, 2, &r1.commits);
+    assert_eq!(read_box_at(&mut lp, 2, t, p), Some(p2), "N3 holds T boxing P at r2");
+    let _ = lp.peers[2].engine.ensure_rotated(&x).unwrap();
+    let w = newest_read(&lp, 2, x).unwrap();
+    assert!(!openable(&mut lp, 2, &[t, x], l, known).contains(&(x, Role::Read, w)), "L opens nothing N3 writes under X");
+}
+
+// spec/permissions.md §3 (a removal's rotation), spec/crypto.md §4 (an account's epochs): a removal
+// is covered only by a rotation D's roster authorizes. N1 (peer 0) removes L (peer 1); N2 (peer
+// 2) then removes N1, so N1's rotation no longer covers L's removal and N2's next rotation names
+// it again: the epoch it mints covers both removals, so N2 seals P at it.
+#[test]
+fn a_removal_named_by_a_removed_node_is_named_again_spec_permissions_3() {
+    use super::tests::group;
+    let (mut lp, a, _) = world(3, 3);
+    let p = a.account;
+    let r1 = remove(&mut lp, 0, a.devices, 1);
+    send(&mut lp, 0, 2, &r1.commits);
+    lp.advance(1000);
+    remove(&mut lp, 2, a.devices, 0);
+    let again = lp.peers[2].engine.signing_due().unwrap();
+    assert_eq!(again.commits.len(), 1, "L's removal named again");
+    let lists = lp.peers[2].engine.rotation_lists(&again.commits[0]).unwrap();
+    assert!(lists.iter().any(|(_, ids)| ids.contains(&r1.commits[0])), "the new rotation names L's removal");
+    assert!(lp.peers[2].engine.signing_due().unwrap().commits.is_empty(), "nothing more is due");
+    let x = group(&mut lp, 2);
+    let _ = lp.peers[2].engine.ensure_rotated(&x).unwrap();
+    assert!(read_box_at(&mut lp, 2, x, p).is_some(), "N2 seals P into its own group");
 }
 
 /// A plain fork of `a`'s chain from its first epoch to a fresh epoch from `seed`, as removed

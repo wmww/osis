@@ -131,9 +131,17 @@ impl Departure {
     /// `r` or more that counts; `None` when no edge shows it or none is needed. An epoch whose
     /// rotator held nothing ordered after it covers nothing.
     pub fn newest_needed(&self, r: Role) -> Option<Key> {
-        let (tail, held) = self.edge.as_ref()?.tail(r);
+        self.needed(r).into_iter().max()
+    }
+
+    /// Every write an epoch of `r` covering it names (spec/crypto.md §4, Covers): the earliest
+    /// tail write that may take the holder below `r`, when one is needed, and every tail write
+    /// giving `r` or more that counts; empty when no edge shows it.
+    pub fn needed(&self, r: Role) -> Vec<Key> {
+        let Some(edge) = &self.edge else { return Vec::new() };
+        let (tail, held) = edge.tail(r);
         let below = tail.iter().find(|w| w.role < Some(r) && w.takes).filter(|_| held).map(|w| w.key);
-        tail.iter().filter(|w| w.role >= Some(r) && w.counts).map(|w| w.key).chain(below).max()
+        tail.iter().filter(|w| w.role >= Some(r) && w.counts).map(|w| w.key).chain(below).collect()
     }
 }
 

@@ -95,7 +95,7 @@ pub(crate) fn blocked_epoch(tx: &mut Tx<'_>, who: &Tid, a: &Tid, r: Role, e: &os
     while let Some((x, k)) = todo.pop() {
         let known = if x == *a { deps.to_vec() } else { keyset_departures(tx, &x)? };
         let deps = others(tx.core, known);
-        if uncovered(tx.core, &x, r, &k, &deps) {
+        if uncovered(tx, &x, r, &k, &deps)? {
             return Ok(true);
         }
         // sealing at a keyset whose epoch, or one it boxes, names a superseded keyset hands the
@@ -125,8 +125,7 @@ pub(crate) fn blocked_epoch(tx: &mut Tx<'_>, who: &Tid, a: &Tid, r: Role, e: &os
 }
 
 /// The departures from holder actor `x` its keysets must cover, as this node knows them: an
-/// account's are those from its devices actor, which only the account's own nodes hold (a node
-/// removed from it held the account's seed at every epoch minted before).
+/// account's are those from its devices actor, which only the account's own nodes hold.
 pub(crate) fn keyset_departures(tx: &mut Tx<'_>, x: &Tid) -> Result<Vec<Departure>> {
     match tx.core.accounts.get(x).map(|h| h.devices) {
         Some(d) => departures(tx, &d),
@@ -137,21 +136,35 @@ pub(crate) fn keyset_departures(tx: &mut Tx<'_>, x: &Tid) -> Result<Vec<Departur
 /// Whether epoch `k` of role `r` of `x` does not cover one of `deps` as this node can tell
 /// (spec/crypto.md §4, Encrypting under): by its history entries where it holds `k`'s secret
 /// established; else by order: an epoch covers no departure ordered after its minting rotation
-/// (its rotator held none of them), read from an account's epoch chain, or from the earliest
-/// held valid body of another actor's keyset (`HeldKeyset::since`). A departure no keyset of
+/// (its rotator held none of them), read from the earliest held valid body of the keyset
+/// (`HeldKeyset::since`). An account's epoch, by descent: it covers a removal from its devices
+/// actor D only descending from a rotation D's roster authorizes whose thing list for D names
+/// every write a covering epoch must name (`Departure::needed`); the first epoch covers none
+/// (not by order: a concurrent rotation ordered after the removal by a node not holding it
+/// sealed its seed under D's epoch the removed node opens). A departure no keyset of
 /// `x` held is known to cover leaves `x` out until one is (a stranded report carries it,
 /// spec/permissions.md §4).
-fn uncovered(core: &Core, x: &Tid, r: Role, k: &osis_crypto::Epoch, deps: &[Departure]) -> bool {
+fn uncovered(tx: &mut Tx<'_>, x: &Tid, r: Role, k: &osis_crypto::Epoch, deps: &[Departure]) -> Result<bool> {
+    if tx.core.is_account(x) {
+        // only the account's own nodes hold D's departures
+        let (Some(d), Some(v)) = (tx.core.accounts.get(x).map(|h| h.devices), tx.core.account_view(x)) else { return Ok(false) };
+        // an epoch not held is judged by nothing, as a keyset not held
+        if !v.holds_name(k) {
+            return Ok(false);
+        }
+        for key in deps.iter().filter(|d| d.concerns(r)).flat_map(|d| d.needed(r)) {
+            if !crate::flows::lists::names_of(tx, &key.commit)?.iter().any(|(t, s)| *t == d && v.descends_authorized(k, s)) {
+                return Ok(true);
+            }
+        }
+        return Ok(false);
+    }
     let point = |k: osis_keys::Key| osis_base::Ts::from_u64(k.ts).map(|ts| osis_perm::Point { ts, node: k.node, commit: k.commit });
-    let after = |before: &dyn Fn(&osis_perm::Point) -> bool| deps.iter().any(|d| d.concerns(r) && d.newest_needed(r).and_then(point).is_some_and(|p| before(&p)));
-    if core.is_account(x) {
-        let Some(v) = core.account_view(x) else { return false };
-        return after(&|p| v.minted_before(k, p));
-    }
-    match core.epochs(x).filter(|ep| ep.role(r).is_established(k) && ep.role(r).secret(k).is_some()) {
+    let core = &*tx.core;
+    Ok(match core.epochs(x).filter(|ep| ep.role(r).is_established(k) && ep.role(r).secret(k).is_some()) {
         Some(epochs) => !osis_keys::uncovered(&epochs, r, k, deps, &core.names_held(x)).is_empty(),
-        None => core.ix.keysets.get(&(*x, r, *k)).is_some_and(|held| after(&|p| held.held_before(p))),
-    }
+        None => core.ix.keysets.get(&(*x, r, *k)).is_some_and(|held| deps.iter().any(|d| d.concerns(r) && d.newest_needed(r).and_then(point).is_some_and(|p| held.held_before(&p)))),
+    })
 }
 
 /// `deps` less this node's own departures (its account's or its own): the departed party is the

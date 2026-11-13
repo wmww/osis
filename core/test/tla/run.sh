@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Run one TLA+ module's TLC instances. Usage: run.sh <module> [cfg...]
-#   <module>: sync, sides, rotation, merge, depth0, lockout, finalize, cover, tail, authority, netstream, netshared, netblind
+#   <module>: sync, sides, rotation, merge, depth0, lockout, finalize, cover, tail, authority, account, netstream, netshared, netblind
 #   no cfg: the module's instances listed below (each module under 3 min at
 #   one worker); with cfg names: those instances instead (the larger ones
 #   in the module's README, by hand), judged only if listed below.
@@ -71,6 +71,10 @@ instances=(
   "authority rotation AuthorityMC A_order_nobase.cfg pass" # keysets read as of the commit's key (spec/crypto.md §4, Possession)
   "authority rotation AuthorityMC A_order_3.cfg pass"
   "authority rotation AuthorityMC A_held_nobase.cfg fail" # negative control: keysets read as held now give two fixpoints
+  "account rotation Account Acc_descent.cfg pass"   # an account epoch covers a removal by descent (spec/crypto.md §4 Encrypting under)
+  "account rotation Account Acc_order.cfg fail"     # negative control: judged by order, an ignorant fork ordered after the removal covers it
+  "account rotation Account Acc_nomet.cfg fail"     # the stated limit: a line extended past a removal its maker does not hold
+  "account rotation Account Acc_namer_anyline.cfg fail" # negative control: a removal named off the open line owes no rotation
   "netstream net MCStream S_loss.cfg pass"
   "netstream net MCStream S_restore.cfg pass"
   "netstream net MCStream S_copies.cfg pass"
@@ -133,7 +137,7 @@ for line in "${instances[@]}"; do
   [ "$m" = "$module" ] && dir=$d tla=$t
 done
 if [ -z "$dir" ]; then
-  echo "usage: $0 sync|sides|rotation|merge|depth0|lockout|finalize|cover|tail|authority|netstream|netshared|netblind [cfg...]" >&2
+  echo "usage: $0 sync|sides|rotation|merge|depth0|lockout|finalize|cover|tail|authority|account|netstream|netshared|netblind [cfg...]" >&2
   exit 2
 fi
 

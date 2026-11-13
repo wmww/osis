@@ -355,10 +355,11 @@ pub(crate) fn leave(tx: &mut Tx<'_>, p: Tid, d: Tid) -> Result<()> {
 
 /// What a node of this node's account owes its signing chain (spec/permissions.md §3, §5.5),
 /// made now: in a fork, the merge of the heads, by one node (`merger`); and the
-/// rotation a counting removal from D requires that no counting rotation's list names (one made
-/// beside another rotation it did not hold, or by a node that did not rotate), naming it. Looked
-/// at when the account's commits moved (`Core::signing_due`); D's role history is its device
-/// count's.
+/// rotation a counting removal from D requires that no counting rotation on the open epoch's
+/// line that D's roster authorizes names (one made beside another rotation it did not hold, by
+/// a node that did not rotate or was removed since, or above a fork a merge rejected), naming
+/// it. Looked at when the account's commits moved (`Core::signing_due`); D's role history is
+/// its device count's.
 pub(crate) fn rotations_due(tx: &mut Tx<'_>) -> Result<Option<CommitId>> {
     if !std::mem::take(&mut tx.core.signing_due) {
         return Ok(None);
@@ -374,7 +375,10 @@ pub(crate) fn rotations_due(tx: &mut Tx<'_>) -> Result<Option<CommitId>> {
     }).collect();
     let mut unnamed = Vec::new();
     for c in removals {
-        if !super::lists::names_of(tx, &c)?.iter().any(|(t, s)| *t == d && v.rotation_counts(s)) {
+        // an account epoch covers a removal only by an authorized rotation on its line naming it
+        // (`rotation::uncovered`): one named only off the open line (a merge rejected the fork
+        // above it) or by a minter removed since is named again
+        if !super::lists::names_of(tx, &c)?.iter().any(|(t, s)| *t == d && v.rotation_counts(s) && v.authorized_by(s).is_some() && v.on_open_line(s)) {
             unnamed.push(c);
         }
     }
