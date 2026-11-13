@@ -7,4 +7,3 @@ order::held_set_decides_plain OSIS_ORDER_START=539131766525 issues/order-require
 order::held_set_decides_plain OSIS_ORDER_START=632680797673 issues/order-required-floor-plain.md held_set_decides: none of \d+ Undo steps made a commit
 runtime::a_paired_peer_serves_what_it_reads_in_process_spec_data_model_9 - issues/paired-peer-runtime-flake.md Unsynced \{ groups
 tests_laws::entry_copies::forged_entry_copies_join_and_expire_alike_spec_5_6 OSIS_CRDT_SEED=2854516606 issues/forged-entry-copies-expiry-seed.md before the joins
-ephemeral::ephemeral_reverts_with_restarts_alike_large_spec_crdt_4_6 OSIS_EPH_START=750697698832 issues/eph-revert-restart-reads-differ.md failed: seed \d+: Tid\([^)]*\)(?! listed)
