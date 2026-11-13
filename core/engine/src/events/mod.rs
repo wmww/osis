@@ -107,7 +107,7 @@ pub enum DiagnosticKind {
     Callback,
     /// A thing reaches no synced group (spec/requirements.md Offline and network): placed only
     /// in groups none holds (the `osis` API), or a subgroup cut here by any cause, a write here
-    /// or elsewhere or an expiry, held it and no synced group carries it now (`Core::report_cut`).
+    /// or elsewhere or an expiry, held it and no synced group carries it now (`Engine::report_cut`).
     NotSynced,
     /// This node cannot open a label it should read: it waits for a re-seal
     /// (spec/permissions.md §3).

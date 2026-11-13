@@ -197,7 +197,7 @@ pub struct Judged {
 
 /// Whether every group holding `t` (itself included) is heard out: a thing under no label is.
 fn heard_thing(core: &Core, t: &Tid, heard: &dyn Fn(&Tid) -> bool) -> bool {
-    heard(t) && core.ix.groups.of.get(t).is_none_or(|gs| gs.iter().all(heard))
+    core.ix.groups.enclosing(t).iter().all(heard)
 }
 
 /// `t` leaves every row: a thing not known has nothing to judge.

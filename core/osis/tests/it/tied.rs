@@ -228,8 +228,6 @@ fn nested_tied_grants() {
     bob.add_with_grant(Member::Subgroup(sub), g, Role::Read).unwrap();
     assert_eq!(reach_of(&bob, sub, g).map(|r| r.tie), Some(Tie::Tied(Role::Read)));
     bob.add_with_grant(Member::Item(t), sub, Role::Write).unwrap();
-    // the sub-tag's own aspects (its roster among them) sync as an item of the tag
-    bob.commit_with(|w| w.group(g).add(osis::Member::Item(sub))).unwrap();
     w.run();
     assert_eq!(text(&carol, t).as_deref(), Some("deep"), "tag -> sub-tag -> card");
     assert_eq!(carol.role_on(t).unwrap(), Some(Role::Read), "the minimum along the path");

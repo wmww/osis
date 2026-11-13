@@ -99,7 +99,7 @@ Values are CBOR (RFC 8949) restricted to the following profile. A decoder MUST r
 
 ## 8. Groups
 - A **group** is a thing with a `group.0` aspect: `items: set<tid>`, `subgroups: set<tid>`. Its members are the items of its `group.0` plus, transitively, the members of their subgroups. Groups may overlap, nest and be cyclic; membership changes over time.
-- Member, membership and member of a group mean only this listing, which grants no rights (spec/permissions.md §1). Groups are the sync unit (spec/sync.md §3).
+- Member, membership and member of a group mean only this listing, which grants no rights (spec/permissions.md §1). A subgroup is no member. Groups are the sync unit: a group's closure is its members, itself and its subgroups (spec/sync.md §3).
 - `groups.0` (synthetic) on a thing: the locally known groups containing it, directly or transitively.
 
 ## 9. Core schema

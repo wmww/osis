@@ -23,7 +23,7 @@ pub fn found(d: &Data, q: &str) -> osis_kit::view::search::Found {
     search(&Cx::new(d, &w, false), q).unwrap()
 }
 
-/// One account group, an item and subgroup of home with no `tag.0`, holding the four seeds, which
+/// One account group, a subgroup of home (no item of it) with no `tag.0`, holding the four seeds, which
 /// start as the favorites.
 #[test]
 fn app_group_and_seeds() {
@@ -31,7 +31,7 @@ fn app_group_and_seeds() {
     let g = d.main_group().unwrap();
     assert_eq!(d.main_group().unwrap(), g);
     let home = d.db.at(d.db.home(), GROUP).get().unwrap().unwrap();
-    assert!(home.items.contains(&g) && home.subgroups.contains(&g));
+    assert!(!home.items.contains(&g) && home.subgroups.contains(&g));
     assert_eq!(d.db.at(g, TAG).get().unwrap(), None);
     assert_eq!(d.collections().unwrap().len(), 4);
     let favs: Vec<String> = d.favorites().unwrap().iter().map(|t| d.name(*t).unwrap()).collect();

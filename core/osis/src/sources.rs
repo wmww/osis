@@ -113,9 +113,7 @@ fn touched_by(e: &Engine, id: RawCommitId) -> Option<Vec<Tid>> {
 
 /// S of the module comment.
 fn scope_of(e: &Engine, t: Tid) -> BTreeSet<Tid> {
-    let mut s = e.groups_of(&t);
-    s.insert(t);
-    s
+    e.enclosing(&t)
 }
 
 fn node_named(l: &Locked, addr: &Address) -> Arc<Connection> {
@@ -539,7 +537,7 @@ impl Osis {
                 self.wait_synced_pending(SyncScope::Thing(group)).await?;
             }
             let moved = self.locked(|l| {
-                let parents: Vec<Tid> = l.engine().groups_of(&group).into_iter().filter(|p| *p != group && !l.group_sources.contains_key(p)).collect();
+                let parents: Vec<Tid> = l.engine().enclosing(&group).into_iter().filter(|p| *p != group && !l.group_sources.contains_key(p)).collect();
                 if parents.iter().any(|p| syncs_here(l, p)) {
                     // every write in it would be refused (the module's split)
                     return Err(Error::Invalid("this group stays synced here through a group holding it: move that one".into()));

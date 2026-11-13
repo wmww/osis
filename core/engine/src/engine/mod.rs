@@ -1267,7 +1267,7 @@ pub struct Core {
     /// bytes go and their entries are judged again.
     pub freed_new: BTreeSet<osis_base::BlobId>,
     /// Subgroups cut this transaction from under a synced group (`Core::note_cut`): what they
-    /// held is reported at its end where nothing carries it now (`Core::report_cut`); forgotten with
+    /// held is reported at its end where nothing carries it now (`Core::stranded_by_cut`); forgotten with
     /// the journal.
     pub cut_subs: BTreeSet<Tid>,
     /// The commits on durable signal aspects `edits::settle` refolds besides those the journal
@@ -1551,11 +1551,10 @@ impl Changed {
 pub(crate) type EpochIntro = JMap<(Tid, osis_base::Role, osis_crypto::Epoch), (Ts, CommitId)>;
 
 impl Core {
-    /// Whether the node syncs `t`: it was asked to, or a `group.0` it holds puts `t` in a group it
-    /// was asked to (a function of held data, whenever it was learned; spec/sync.md §3).
+    /// Whether the node syncs `t`: it was asked to, or a `group.0` it holds puts `t` in the
+    /// closure of a group it was asked to (a function of held data, whenever it was learned; spec/sync.md §3).
     pub fn syncs(&self, t: &Tid) -> bool {
-        let s = &self.ix.syncing;
-        s.contains(t) || self.ix.groups.of.get(t).is_some_and(|gs| !gs.is_disjoint(s))
+        self.ix.groups.enclosing(t).iter().any(|g| self.ix.syncing.contains(g))
     }
 
     /// The held durable commits with a delta on `k` (`by_aspect` without memory commits).
@@ -3632,8 +3631,9 @@ impl Engine {
                     self.core.timelines.aside().saved(d);
                 }
                 let now = self.now();
-                self.core.report_cut(now);
+                let stranded = self.core.stranded_by_cut();
                 self.core.commit_journal();
+                self.report_cut(stranded, now);
                 self.core.memory_tx = false;
                 self.core.events.flush();
                 #[cfg(test)]

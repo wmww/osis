@@ -258,7 +258,7 @@ impl SyncEngine {
         }
         let mut groups: BTreeSet<Tid> = things.clone();
         for t in things {
-            groups.extend(self.engine.groups_of(t));
+            groups.extend(self.engine.enclosing(t));
         }
         let labels: Vec<LabelId> = self.labels().into_iter().filter(|(g, _)| groups.contains(g)).map(|(_, l)| l.id).collect();
         self.mark_labels(&labels);

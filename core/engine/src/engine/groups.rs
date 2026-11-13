@@ -45,6 +45,12 @@ impl Engine {
         self.core.ix.groups.of.get(tid).cloned().unwrap_or_default()
     }
 
+    /// The groups whose closure holds the thing (spec/sync.md §3): itself, the groups containing
+    /// it, and the groups above it through subgroup lists.
+    pub fn enclosing(&self, tid: &Tid) -> BTreeSet<Tid> {
+        self.core.ix.groups.enclosing(tid)
+    }
+
     /// The groups whose `group.0` lists the thing directly: (as an item, as a subgroup). From
     /// the in-memory group index, rebuilt from the definitions at open.
     pub fn listed_in(&self, tid: &Tid) -> (BTreeSet<Tid>, BTreeSet<Tid>) {
@@ -120,8 +126,7 @@ pub(crate) fn header_only_parts(tx: &mut super::Tx<'_>, tid: &Tid, ak: &Ak) -> R
 }
 
 impl Engine {
-    /// Whether a synced group carries `t`: `t` has a label, or a labeled group contains it. A
-    /// subgroup's own aspects go by its own memberships, not by what it contains.
+    /// Whether a synced group carries `t`: a labeled group's closure holds it (`enclosing`).
     pub fn carried(&self, t: &Tid) -> bool {
         self.core.carried(t)
     }
@@ -130,8 +135,7 @@ impl Engine {
 impl super::Core {
     /// `Engine::carried`.
     pub(crate) fn carried(&self, t: &Tid) -> bool {
-        let l = &self.ix.labeled;
-        l.contains(t) || self.ix.groups.of.get(t).is_some_and(|gs| gs.iter().any(|g| l.contains(g)))
+        self.ix.groups.enclosing(t).iter().any(|g| self.ix.labeled.contains(g))
     }
 
     /// Before group `g`'s definition becomes `def`: each subgroup it cuts while a synced group
@@ -144,21 +148,29 @@ impl super::Core {
         }
     }
 
-    /// At the end of a transaction (before its journal is committed): a `NotSynced` diagnostic
-    /// for each thing the subgroups it cut held when it began and that no synced group carries
-    /// now (spec/requirements.md, Offline and network): it stays on this node. A destroyed thing
-    /// stays as nothing.
-    pub(crate) fn report_cut(&mut self, now: osis_base::WallMs) {
+    /// At the end of a transaction (before its journal is committed): the things the closures
+    /// of the subgroups it cut held when it began (each subgroup itself included) that no synced
+    /// group carries now, destroyed ones aside (`Engine::report_cut`).
+    pub(crate) fn stranded_by_cut(&mut self) -> Vec<Tid> {
         let cut = std::mem::take(&mut self.cut_subs);
         if cut.is_empty() {
-            return;
+            return Vec::new();
         }
         let was = self.ix.groups.before();
-        let held: BTreeSet<Tid> = cut.iter().flat_map(|s| self.ix.groups.reach_before(&was, s).into_iter().filter(move |t| t != s)).collect();
-        for t in held {
-            if !self.carried(&t) && !self.destroyed(&t) {
+        let held: BTreeSet<Tid> = cut.iter().flat_map(|s| self.ix.groups.reach_before(&was, s)).collect();
+        held.into_iter().filter(|t| !self.carried(t) && !self.destroyed(t)).collect()
+    }
+}
+
+impl Engine {
+    /// After a transaction: a `NotSynced` diagnostic for each thing of `stranded`
+    /// (`Core::stranded_by_cut`) that holds content (spec/requirements.md, Offline and network):
+    /// it stays on this node. A deleted thing stays as nothing.
+    pub(crate) fn report_cut(&mut self, stranded: Vec<Tid>, now: osis_base::WallMs) {
+        for t in stranded {
+            if self.has_content(&t).unwrap_or(true) {
                 let detail = "a subgroup left the synced group that held it: this stays on this node".into();
-                self.events.diagnostic(crate::events::Diagnostic { kind: crate::events::DiagnosticKind::NotSynced, tids: vec![t], commit: None, peer: None, detail }, now);
+                self.core.events.diagnostic(crate::events::Diagnostic { kind: crate::events::DiagnosticKind::NotSynced, tids: vec![t], commit: None, peer: None, detail }, now);
             }
         }
     }
@@ -173,9 +185,9 @@ pub struct Groups {
     parents: BTreeMap<Tid, BTreeSet<Tid>>,
     /// Thing -> groups containing it, transitively (`groups.0`).
     pub of: BTreeMap<Tid, BTreeSet<Tid>>,
-    /// Group -> its closure: itself and the things it contains, transitively (groups that
-    /// contain something). The same `Arc` while the closure does not change, so node-sync
-    /// reuses what it derived from it (`Arc::ptr_eq`).
+    /// Group -> its closure (spec/sync.md §3): itself, its subgroups and the things it contains,
+    /// transitively (groups listing something). The same `Arc` while the closure does not
+    /// change, so node-sync reuses what it derived from it (`Arc::ptr_eq`).
     pub closures: BTreeMap<Tid, Arc<BTreeSet<Tid>>>,
     /// Definitions replaced by the running transaction (`Journaled`).
     log: Vec<(Tid, Option<Def>)>,
@@ -184,8 +196,9 @@ pub struct Groups {
 }
 
 impl Groups {
-    /// Things `g` contains through its definition and its subgroups'.
-    fn reach(&self, g: &Tid) -> BTreeSet<Tid> {
+    /// What `g` reaches through its definition and its subgroups': (the things it contains,
+    /// its closure). The closure adds `g` and every subgroup on the way.
+    fn reach(&self, g: &Tid) -> (BTreeSet<Tid>, BTreeSet<Tid>) {
         let mut out = BTreeSet::new();
         let mut seen = BTreeSet::new();
         let mut stack = vec![*g];
@@ -198,7 +211,8 @@ impl Groups {
                 stack.extend(subs.iter().copied());
             }
         }
-        out
+        seen.extend(out.iter().copied());
+        (out, seen)
     }
 
     /// The definitions the running transaction's journal replaced, as they were when it began.
@@ -210,8 +224,8 @@ impl Groups {
         was
     }
 
-    /// What `g` reached when the running transaction began: `reach` over `was` (`before`) and
-    /// the definitions it did not replace.
+    /// `g`'s closure when the running transaction began: `reach` over `was` (`before`) and the
+    /// definitions it did not replace.
     fn reach_before(&self, was: &BTreeMap<Tid, Option<&Def>>, g: &Tid) -> BTreeSet<Tid> {
         let mut out = BTreeSet::new();
         let mut seen = BTreeSet::new();
@@ -225,6 +239,7 @@ impl Groups {
                 stack.extend(subs.iter().copied());
             }
         }
+        out.extend(seen);
         out
     }
 
@@ -240,10 +255,18 @@ impl Groups {
         seen
     }
 
+    /// The groups whose closure holds `t`: `t`, the groups containing it and those above it.
+    pub(crate) fn enclosing(&self, t: &Tid) -> BTreeSet<Tid> {
+        let mut out = self.above(t);
+        out.extend(self.of.get(t).into_iter().flatten().copied());
+        out
+    }
+
     /// Removes `a`'s closure and what derives from it; the closure, if any.
     fn unlist(&mut self, a: &Tid) -> Option<Arc<BTreeSet<Tid>>> {
         let old = self.closures.remove(a)?;
-        // `a` itself is in `of[a]` only when `a` reaches itself: removing it is right either way
+        // `a` is in `of[a]` only when it reaches itself, a subgroup in its closure is in `of[a]`
+        // only when also contained: removing `a` is right either way
         for x in old.iter() {
             if let Some(s) = self.of.get_mut(x) {
                 s.remove(a);
@@ -257,13 +280,11 @@ impl Groups {
 
     /// Lists `a`'s closure, keeping `old` (its closure before) when it is unchanged.
     fn list(&mut self, a: &Tid, old: Option<Arc<BTreeSet<Tid>>>) {
-        let r = self.reach(a);
+        let (r, c) = self.reach(a);
         for x in &r {
             self.of.entry(*x).or_default().insert(*a);
         }
-        if !r.is_empty() {
-            let mut c = r;
-            c.insert(*a);
+        if c.len() > 1 || !r.is_empty() {
             let c = match old {
                 Some(o) if *o == c => o,
                 _ => Arc::new(c),
@@ -277,7 +298,7 @@ impl Groups {
         self.parents.get(g).into_iter().flatten().copied()
     }
 
-    /// The closure of `g`: itself and every thing it contains.
+    /// The closure of `g`: itself, its subgroups and every thing it contains, transitively.
     pub fn closure(&self, g: &Tid) -> Arc<BTreeSet<Tid>> {
         self.closures.get(g).cloned().unwrap_or_else(|| Arc::new(BTreeSet::from([*g])))
     }
@@ -398,7 +419,7 @@ mod tests {
         let mut g = Groups { defs: defs.clone(), ..Default::default() };
         let mut out: BTreeMap<Tid, BTreeSet<Tid>> = BTreeMap::new();
         for k in defs.keys() {
-            for x in g.reach(k) {
+            for x in g.reach(k).0 {
                 out.entry(x).or_default().insert(*k);
             }
         }
@@ -430,18 +451,25 @@ mod tests {
             };
             g.set(k, def);
             assert_eq!(g.of, naive(&defs));
-            let mut inv: BTreeMap<Tid, BTreeSet<Tid>> = BTreeMap::new();
-            for (x, gs) in &g.of {
-                for a in gs {
-                    inv.entry(*a).or_default().insert(*x);
+            // spec/sync.md §3: a closure is the group, its subgroups at any depth and their items
+            for a in defs.keys() {
+                let (mut want, mut seen) = (BTreeSet::new(), BTreeSet::new());
+                let mut stack = vec![*a];
+                while let Some(x) = stack.pop() {
+                    if seen.insert(x) && let Some((items, subs)) = defs.get(&x) {
+                        want.extend(items.iter().copied());
+                        stack.extend(subs.iter().copied());
+                    }
+                }
+                want.extend(seen);
+                assert_eq!(*g.closure(a), want);
+                for t in &want {
+                    assert!(g.enclosing(t).contains(a));
                 }
             }
             for (a, c) in &g.closures {
-                let mut want = inv.remove(a).unwrap_or_default();
-                want.insert(*a);
-                assert_eq!(**c, want);
+                assert!(defs.contains_key(a) && c.len() > 1 || g.of.get(a).is_some_and(|s| s.contains(a)));
             }
-            assert!(inv.is_empty());
         }
     }
 }

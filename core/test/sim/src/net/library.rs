@@ -474,10 +474,8 @@ fn member_thing(sim: &mut NetSim, n: usize, p: Tid, team: Tid) -> Res<Tid> {
     let done = r.map_err(|e| sim.fail(format!("node {n} thing secrets: {e}")))?;
     sim.carry(n, done)?;
     sim.grant(n, t, team, Role::Read)?;
-    // an item too: the thing's own writes (`created.0`, `group.0`, secrets) are in T's closure
-    // only as a member (spec/data-model.md §8: members are items and the subgroups' members)
+    // a subgroup: it and its items are in T's closure (spec/sync.md §3)
     let mut grp = sim.engine(n)?.get_typed(&team, &ct::GROUP).map_err(|e| sim.fail(e.to_string()))?.unwrap_or_default();
-    grp.items.insert(t);
     grp.subgroups.insert(t);
     let mut m = Mutation::new();
     m.set(team, &ct::GROUP, &grp).map_err(|e| sim.fail(e.to_string()))?;

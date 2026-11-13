@@ -9,6 +9,7 @@ use osis_base::{Role, WallMs};
 use osis_label::Prefix;
 use osis_node::Mutation;
 use osis_crypto::SeededRng;
+use osis_schema::core_types as ct;
 
 // spec/sync.md §3 (entitlement): a shared folder's label holds what its actor may read: items
 // below it and the folder's own writes; an item under another first admin dropped into `group.0` without
@@ -34,6 +35,40 @@ fn shared_folder_entitlement_spec_sync_3() {
     assert!(touched(inside, e));
     assert!(!touched(outside, e), "a thing the group's actor cannot read is not under its label");
     assert!(touched(g, e));
+}
+
+// spec/sync.md §3 (closure through `group.0`), spec/data-model.md §8: an unlabeled group nested
+// below g as a subgroup only (no item of g) carries its items to g's readers: they read them, list
+// them in g, and a reader arriving later finds them at the host (no reader deletes them there).
+#[test]
+fn nested_subgroup_items_reach_readers_spec_sync_3() {
+    let (mut net, _host, [a, b, c], g, []) = crate::net::hosted::<3, 0>(&[(1, Role::Write), (2, Role::Read)], [], true);
+    net.set_online(c, false);
+    let e = net.engine(a);
+    let mut m = Mutation::new();
+    let (sub, inner) = (e.new_thing(&mut m, g), e.new_thing(&mut m, g));
+    m.set(sub, &ct::GROUP, &ct::Group { items: Default::default(), subgroups: [inner].into() }).unwrap();
+    e.commit(m).unwrap();
+    let w = net.item(a, inner, g, "w");
+    net.run();
+    let mut def = net.engine(a).get_typed(&g, &ct::GROUP).unwrap().unwrap_or_default();
+    def.subgroups.insert(sub);
+    let mut m = Mutation::new();
+    m.set(g, &ct::GROUP, &def).unwrap();
+    net.engine(a).commit(m).unwrap();
+    net.run();
+    for _ in 0..3 {
+        net.advance(15_000);
+    }
+    assert_eq!(net.read(b, w), Some(s("w")), "a reader of g reads it");
+    assert!(net.engine(b).groups_of(&w).contains(&g), "and lists it in g");
+    net.set_online(a, false);
+    net.set_online(b, false);
+    net.set_online(c, true);
+    for _ in 0..3 {
+        net.advance(15_000);
+    }
+    assert_eq!(net.read(c, w), Some(s("w")), "a later reader finds it at the host");
 }
 
 // spec/sync.md §1, §3, spec/wire.md §5: one blob per commit whatever its retention classes; its

@@ -33,8 +33,8 @@ pub fn new_tag(db: &Osis, name: &str) -> Result<Tid> {
     Ok(t)
 }
 
-/// An account's private tag: a tag group in its home, an item (its own aspects sync) and a
-/// subgroup (its items sync), so every node has it and nobody else does.
+/// An account's private tag: a tag group in its home, an item and a subgroup (it and its items
+/// sync), so every node has it and nobody else does.
 pub fn private_tag(db: &Osis, name: &str) -> Result<Tid> {
     db.commit_with(|w| {
         let t = w.create_in(db.me(), &[db.home()])?;

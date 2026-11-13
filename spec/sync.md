@@ -73,8 +73,8 @@
   - An account's inbox is its D's home label (spec/permissions.md §1). Other key actors have none: a node receives its grant on D only over a direct connection to a node of the account (pairing); a link key holds its label from its link and claims the current step by its static entry (§5).
 
 ## 3. What goes under a label
-- **Closure**: the blobs of group G are the commits touching any thing in G's transitive closure (through `group.0`, spec/data-model.md §8), plus the chunk, tree-node and page blobs their deltas link (through their pages and trees).
-  - Each node tags commits with their things' `groups.0` and retags when group membership changes.
+- **Closure**: G's closure is G, the groups its `group.0` lists as subgroups, transitively, and the items of all of these: G's members (spec/data-model.md §8) plus G and its subgroups as things. The blobs of group G are the commits touching any thing in G's closure, plus the chunk, tree-node and page blobs their deltas link (through their pages and trees).
+  - Each node tags commits with the groups whose closures hold their things and retags when a `group.0` changes.
 - **Entitlement**: a thing's **reader actor** is the thing if it has secrets of its own, else the nearest actor up its record chain that has them (a key actor is its own). G's actor is the group thing if it has secrets of its own, else its base actor (spec/crypto.md §3). G's actor may read a thing iff the thing's secrets derive from its own or it holds read or above on the thing's reader actor. A commit's blob belongs under G's label iff G's actor may read a part of it on a thing of the closure (or published there, §2).
   - Only a writer of G stamps entries (§5).
   - A node that is not one deposits what it must place there (its account's chain certificates, rotations and thing lists, its invite grant or self-removal, its listings, its history adds (spec/permissions.md §3), and the revokes it must place by spec/permissions.md §4) and relays or deposits the must-hold entries it holds (§6).

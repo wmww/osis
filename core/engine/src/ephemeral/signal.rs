@@ -59,7 +59,7 @@ impl Engine {
         }
         let c = self.build_relay(actor, ts, deltas)?;
         let id = c.id;
-        if signals.iter().any(|(t, _, _)| self.core.syncs(t) || self.groups_of(t).iter().any(|g| self.core.syncs(g))) {
+        if signals.iter().any(|(t, _, _)| self.core.syncs(t)) {
             self.eph.signals.push(c);
         }
         let (node, received) = (self.core.writer()?, self.now());

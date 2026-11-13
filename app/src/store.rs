@@ -45,13 +45,11 @@ impl Account for AppAccount {
             return Ok(*g);
         }
         let mut w = db.write();
-        // an item of home (its own aspects sync) and a subgroup (its items sync: a group's
-        // members are its items and its subgroups' members, not its items' items)
+        // a subgroup of home: it and its items sync with home (spec/sync.md §3)
         let g = w.create()?;
         keep_a_day(&mut w, g)?;
         w.at(g, APP).set(&true)?;
         w.at(g, COLLECTION).set(&Collection { source: Source::Favorites, having: Default::default(), order: Order::Own, arrange: Arrange::Cards, element: None })?;
-        w.group(db.home()).add(Member::Item(g))?;
         w.group(db.home()).add(Member::Subgroup(g))?;
         let mut favs = Vec::new();
         for (v, name, color) in seeds() {

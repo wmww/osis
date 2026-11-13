@@ -117,9 +117,7 @@ fn made_synced(net: &mut Net, n: usize, g: Tid) -> Tid {
 
 /// Whether `t` is in some labeled closure at `n`.
 fn synced(net: &mut Net, n: usize, t: Tid) -> bool {
-    let e = net.engine(n);
-    let l = e.labeled_groups();
-    l.contains(&t) || e.groups_of(&t).iter().any(|g| l.contains(g))
+    net.engine(n).carried(&t)
 }
 
 /// Node `n` sets key `k` of `win:notes.0` of `w` to `v`.

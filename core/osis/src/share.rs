@@ -458,8 +458,7 @@ fn needs_admin(e: osis_node::Error) -> Error {
 /// (issues/partial-history-fetch.md): a node that chose not to fetch says `false` too.
 pub(crate) fn fetched(l: &mut crate::handle::Locked, t: Tid) -> bool {
     let e = l.sync.engine();
-    let mut groups = e.groups_of(&t);
-    groups.insert(t);
+    let groups = e.enclosing(&t);
     let stale = l.sync.handed_off().iter().any(|g| groups.contains(g));
     !stale && l.sync.label_status().iter().filter(|s| groups.contains(&s.group)).all(|s| s.passed && s.opening == 0 && label_state(s) != SyncState::Syncing)
 }
@@ -467,9 +466,7 @@ pub(crate) fn fetched(l: &mut crate::handle::Locked, t: Tid) -> bool {
 /// The synced groups `t` travels under: itself when it has sync IDs of its own, and every
 /// group whose closure holds it.
 fn carrying(sync: &mut SyncEngine, status: &Status, t: Tid) -> Vec<Tid> {
-    let mut groups = sync.engine().groups_of(&t);
-    groups.insert(t);
-    groups.into_iter().filter(|g| status.groups.contains_key(g)).collect()
+    sync.engine().enclosing(&t).into_iter().filter(|g| status.groups.contains_key(g)).collect()
 }
 
 /// The check of `wait_synced(Thing(t))`: every sync ID carrying `t` with at least one source

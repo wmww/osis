@@ -1224,9 +1224,10 @@ fn aspects_agrees_with_reads_after_a_purge() {
     assert!(!db.aspects(t).unwrap().contains(&k));
 }
 
-// notes/api.md Group ops: the check is of what the cut took away. A cut below a subgroup of the synced
-// group strands the same; a cut under a group that never synced strands nothing; deleting a tag tells
-// of its items that went with it, never of the deleted tag.
+// notes/api.md Group ops: the check is of what the cut took away, the cut subgroup's closure (itself
+// included, spec/sync.md §3). A cut below a subgroup of the synced group strands the same; a cut under
+// a group that never synced strands nothing; deleting a tag tells of its items that went with it,
+// never of the deleted tag, which holds nothing.
 // spec: none (API surface, notes/api.md)
 #[test]
 fn a_cut_tells_exactly_what_it_took_out_of_sync() {
@@ -1249,7 +1250,7 @@ fn a_cut_tells_exactly_what_it_took_out_of_sync() {
     w.group(mid).add(osis::Member::Subgroup(low)).unwrap();
     w.group(plain).add(osis::Member::Subgroup(far)).unwrap();
     w.group(synced).add(osis::Member::Subgroup(tag)).unwrap();
-    // `dual` is an item too: its own aspects keep syncing, its items do not
+    // `dual` is an item too: it keeps syncing, its items do not
     w.group(synced).add(osis::Member::Subgroup(dual)).unwrap();
     w.group(synced).add(osis::Member::Item(dual)).unwrap();
     let (below, never, in_tag, also_synced, in_dual) = (w.create().unwrap(), w.create().unwrap(), w.create().unwrap(), w.create_with_admin(synced).unwrap(), w.create().unwrap());
@@ -1272,7 +1273,7 @@ fn a_cut_tells_exactly_what_it_took_out_of_sync() {
     let mut w = db.write();
     w.group(mid).remove(osis::Member::Subgroup(low)).unwrap();
     w.commit().unwrap();
-    assert_eq!(told(&rx), BTreeSet::from([below]), "a level down");
+    assert_eq!(told(&rx), BTreeSet::from([low, below]), "a level down");
     let mut w = db.write();
     w.group(plain).remove(osis::Member::Subgroup(far)).unwrap();
     w.commit().unwrap();
@@ -1288,7 +1289,7 @@ fn a_cut_tells_exactly_what_it_took_out_of_sync() {
 }
 
 // notes/api.md Group ops: cutting a subgroup out of the synced group that was its only way there
-// tells of the items it strands; an item still carried otherwise is not told of.
+// tells of it and the items it strands; an item still carried otherwise is not told of.
 // spec: none (API surface, notes/api.md)
 #[test]
 fn cutting_a_subgroup_reports_what_it_strands() {
@@ -1322,7 +1323,7 @@ fn cutting_a_subgroup_reports_what_it_strands() {
     w.commit().unwrap();
     db.settle();
     let told: BTreeSet<osis::Tid> = rx.try_iter().flatten().collect();
-    assert_eq!(told, BTreeSet::from([stranded]), "a subgroup is no member: its own aspects never went through this group");
+    assert_eq!(told, BTreeSet::from([sub, stranded]), "the subgroup went through this group too");
 }
 
 // notes/api.md Group ops: a subgroup whose membership expires strands what it held as a write
@@ -1365,13 +1366,14 @@ fn an_expiring_subgroup_reports_what_it_strands() {
     commit_with(&db, |w| w.group(synced).remove(osis::Member::Subgroup(cut)));
     db.settle();
     let by_write: Vec<_> = rx.try_iter().collect();
-    assert_eq!(by_write.iter().map(|d| d.0).collect::<Vec<_>>(), vec![in_cut]);
+    assert_eq!(by_write.iter().map(|d| d.0).collect::<BTreeSet<_>>(), BTreeSet::from([cut, in_cut]));
     c.advance(61_000);
     db.engine(|e| e.tick()).unwrap();
     db.settle();
     assert!(db.members(synced).unwrap().iter().all(|m| *m != osis::Member::Subgroup(expiring)), "it left by itself");
     let by_expiry: Vec<_> = rx.try_iter().collect();
-    assert_eq!(by_expiry, vec![(in_expiring, by_write[0].1.clone())], "the stranded item, as a write cutting it tells; not what another way still carries");
+    let detail = by_write[0].1.clone();
+    assert_eq!(by_expiry.into_iter().collect::<BTreeSet<_>>(), BTreeSet::from([(expiring, detail.clone()), (in_expiring, detail)]), "the stranded subgroup and item, as a write cutting it tells; not what another way still carries");
 }
 
 // spec: none (client surface: notes/api.md Writes). The empty path is the whole value: each whole-value op there reads as the aspect's

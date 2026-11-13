@@ -540,9 +540,6 @@ pub struct State {
     pub leftover_charge: BTreeMap<CommitId, (BTreeSet<LabelId>, u64)>,
     /// Encoded size of each memory entry's blob while held here (tests, diagnostics).
     pub memory_sizes: BTreeMap<(LabelId, BlobId), usize>,
-    /// Memory entries judged or placed while their body was in the label's closure here: only
-    /// those are deleted for leaving it (`pass/delete`, spec/sync.md §9).
-    pub memory_in_closure: BTreeSet<(LabelId, BlobId)>,
     writes: BTreeMap<Vec<u8>, Option<Vec<u8>>>,
     /// Node log events of those writes, in order: they go in the same transaction.
     log: Vec<LogWrite>,
@@ -1540,7 +1537,6 @@ impl State {
         self.losses += 1;
         if e.memory {
             self.memory_entries.remove(&(l, b));
-            self.memory_in_closure.remove(&(l, b));
             self.charge_memory(l, b, None);
             self.memory_sizes.remove(&(l, b));
             // the class marks go last: `drop_entry` of a memory entry writes nothing

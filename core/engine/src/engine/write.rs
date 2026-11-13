@@ -163,9 +163,9 @@ impl Mutation {
         self
     }
 
-    /// The commit fails `Error::Unsynced` when, after it, `tid` is durable and reaches no
-    /// synced (labeled) group while `group`'s own data does: a membership in a group that is
-    /// an item of a synced group but no subgroup of one (spec/data-model.md §8).
+    /// The commit fails `Error::Unsynced` when, after it, `tid` is durable and in no synced
+    /// (labeled) group's closure while `group` is: a membership in a group that is an item of a
+    /// synced group but no subgroup of one (spec/sync.md §3).
     pub fn require_synced(&mut self, tid: Tid, group: Tid) -> &mut Self {
         self.synced.push((tid, group));
         self
@@ -1027,10 +1027,8 @@ fn check_lifetimes(tx: &mut Tx<'_>, kept: &[Tid], references: &[(Tid, Ak, Tid)])
 
 /// `Mutation::require_synced`, over the state the commit left.
 fn check_synced(core: &Core, memberships: &[(Tid, Tid)]) -> Result<()> {
-    let lab = &core.ix.labeled;
-    let in_synced = |x: &Tid| core.ix.groups.of.get(x).is_some_and(|s| s.iter().any(|h| lab.contains(h)));
     for (t, g) in memberships {
-        if core.created(t).is_some() && !lab.contains(t) && !in_synced(t) && in_synced(g) {
+        if core.created(t).is_some() && !core.carried(t) && core.carried(g) {
             return Err(Error::Unsynced { tid: *t, group: *g });
         }
     }

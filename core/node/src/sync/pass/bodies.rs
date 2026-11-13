@@ -382,9 +382,6 @@ impl SyncEngine {
         let wrap = osis_crypto::wrap(&secret, &id, &key, b.order)?;
         self.state.set_entry(l, id, Entry { wrap, stamp: None, cert, salt: Some(salt), expires, size: None, kind: Kind::Commit { commit: b.commit, parts, ais }, source: None, memory });
         self.state.note_memory_size(l, id, bytes.len());
-        if memory {
-            self.state.memory_in_closure.insert((l, id));
-        }
         Ok(Some(id))
     }
 

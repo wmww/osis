@@ -714,11 +714,10 @@ impl<'w, 'd> GroupWrite<'w, 'd> {
     /// (`Write::expires`) the member leaves by itself at that time: a disappearing message leaves
     /// its group.
     ///
-    /// A group's items sync only through groups listing it as a subgroup: its members are its
-    /// items and its subgroups' members, not its items' items. So when an item is in no synced
-    /// group, and the group's own aspects sync (the group is an item of a synced
-    /// group, no subgroup of one), the commit fails `Invalid` before anything applies: add the
-    /// group as a subgroup too. An item only in groups that do not sync at all (node-local
+    /// A group's items sync only through groups listing it as a subgroup (a synced group carries
+    /// itself, its subgroups and their items, not its items' items). So when an item is carried
+    /// by no synced group, and the group is (an item of a synced group, no subgroup of one), the
+    /// commit fails `Invalid` before anything applies: add the group as a subgroup. An item only in groups that do not sync at all (node-local
     /// data) is allowed and reported by a `NotSynced` diagnostic, as is one in a synced group
     /// whose holders may not read it: it does not reach them (`Osis::add_with_grant`).
     pub fn add(&mut self, member: Member) -> Result<()> {
