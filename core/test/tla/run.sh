@@ -51,6 +51,8 @@ instances=(
   "depth0 rotation Depth0MC D0_order.cfg pass"   # a keyset whose secret the node lacks is judged by order (spec/crypto.md §4)
   "depth0 rotation Depth0MC D0_destroyed_live.cfg pass" # a destroyed holder actor's frozen holders boxed in its place (spec/crypto.md §4 Destroyed)
   "depth0 rotation Depth0MC D0_destroyed_off.cfg fail"  # negative control: a destroyed actor boxed as any other strands a newcomer
+  "depth0 rotation Depth0MC D0_destroyed_cycle.cfg pass" # a frozen holder keyed only through keyed grants (spec/crypto.md §4 Destroyed)
+  "depth0 rotation Depth0MC D0_destroyed_cycle_old.cfg fail" # negative control: a frozen holder always keyed closes the key cycle
   "lockout rotation Lockout L_rogue.cfg pass"    # notes/crypto.md (Lockouts)
   "lockout rotation Lockout L_none.cfg fail"     # negative control: no re-key
   "finalize rotation Finalize F_named_bogus.cfg pass" # notes/permissions.md (Keys)

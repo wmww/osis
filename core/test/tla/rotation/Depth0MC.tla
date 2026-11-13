@@ -276,4 +276,19 @@ nrDeps == {<<"E", "T2", "t2">>}
 nrG == << <<"X", "T">>, <<"T", "T2">>, <<"T2", "G">> >>
 nrUnaware == {<<"d", "T">>, <<"d", "T2">>}
 nrDestroyable == {"T", "T2"}
+\* a destroyed actor in a key cycle (spec/crypto.md \S 4 Holder actors,
+\* Destroyed; Key access): X holds G, G holds T granted first, T holding X
+\* last (keyless: X's key yields T's). T may be destroyed; g1 removes D from G
+\* and writes G. x1, X's admin, must not box G in T's place on X: the path
+\* runs through the keyless grant (X boxing G would close the cycle G -> X ->
+\* G, so D, holding G's old keyset, opens X's epoch and through it G's next).
+\* kcOld: the rule judging only grants (a frozen holder always keyed)
+kcActs == <<"X", "G", "T">>
+kcMem == {<<"X", "x1">>, <<"X", "T">>, <<"G", "X">>, <<"G", "g1">>, <<"G", "D">>, <<"T", "G">>}
+kcAdm == {<<"X", "x1">>, <<"G", "g1">>}
+kcLearners == {"x1", "g1"}
+kcDeps == {<<"D", "G", "g1">>}
+kcG == << <<"G", "X">>, <<"T", "G">>, <<"X", "T">> >>
+kcDestroyable == {"T"}
+kcOld == FALSE
 =============================================================================

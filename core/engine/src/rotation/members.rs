@@ -12,7 +12,6 @@ use crate::flows::{recipient, secrets_in};
 use osis_base::{Role, Tid};
 use osis_crypto::Epoch;
 use osis_keys::{Grant, HolderKeys, Keysets, ROLES, Recipient, Seal};
-use osis_schema::core_types::Secrets;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -67,9 +66,10 @@ pub(crate) fn role_for_keys(core: &Core, who: &Tid, a: &Tid) -> Option<Role> {
     tl.roles_without(who, osis_perm::At::KEYS, &keyless).get(a).copied()
 }
 
-/// Whether holder actor `h` of `a` has key access to it (a key actor always has).
-pub(crate) fn keyed(core: &mut Core, a: &Tid, h: &Tid) -> bool {
-    core.is_key_actor(h) || !key_access(core).contains(&(*a, *h))
+/// Whether holder actor `h` of `a` has key access to it: unless it is among `keyless_holders`
+/// (a holder not yet granted is judged by `grant_keyless`).
+pub(crate) fn keyed(core: &Core, a: &Tid, h: &Tid) -> bool {
+    !keyless_holders(core, a).contains(h)
 }
 
 /// Whether a grant of `holder` on `target` written now would be keyless (spec/crypto.md §4): a
@@ -183,37 +183,34 @@ fn held_invalid(tx: &mut Tx<'_>, m: &Tid, r: Role, k: &Epoch) -> Result<bool> {
     Ok(false)
 }
 
-/// The tainted keysets of role `r` of actor `m` (spec/crypto.md §4, 4b): the epochs at which
-/// the boxes of `m`'s `secrets.0` state box a holder whose grant on `m` is keyless.
-fn tainted(tx: &mut Tx<'_>, m: &Tid, r: Role) -> Result<BTreeSet<Epoch>> {
-    if !has_keyless(tx.core, m) {
+/// The holders of `a` for keys without key access to it: none in the usual case, with no cycle
+/// among the grants held. A holder has key access when every grant on some path from it to `a`
+/// has it, through destroyed actors standing in their frozen holders' place
+/// (`Core::keyed_holders`); a key actor always has (nothing holds one, so boxing it closes no
+/// cycle).
+fn keyless_holders(core: &Core, a: &Tid) -> BTreeSet<Tid> {
+    let keyless = key_access(core);
+    if keyless.is_empty() {
+        return BTreeSet::new();
+    }
+    let keyed = core.keyed_holders(a, &keyless);
+    core.key_holders(a).into_iter().map(|x| x.0).filter(|h| !core.is_key_actor(h) && !keyed.contains(h)).collect()
+}
+
+/// The tainted keysets of role `r` of actor `a` (spec/crypto.md §4, Tainted): the epochs at
+/// which `a`'s `secrets.0` state boxes a holder without key access to it
+/// (`osis_keys::boxing_keyless`), which for an actor this node may rotate its knowing re-key
+/// leaves. `a`'s `secrets.0` is read only when such a holder exists.
+fn tainted(tx: &mut Tx<'_>, a: &Tid, r: Role) -> Result<BTreeSet<Epoch>> {
+    // a box to a holder that departed is a departure from `a` (its own rotators' covers rule),
+    // not a key cycle
+    let none = keyless_holders(tx.core, a);
+    if none.is_empty() {
         return Ok(BTreeSet::new());
     }
-    let s = secrets_in(tx, m)?;
-    Ok(keyless_boxed(tx.core, m, &s, r))
-}
-
-/// Whether some grant on `a` is keyless: else no box of `a` goes through one (the usual case,
-/// with no cycle among the grants held: `a`'s `secrets.0` is not read for it).
-fn has_keyless(core: &mut Core, a: &Tid) -> bool {
-    key_access(core).range((*a, Tid::from_bytes([0; 15]))..).next().is_some_and(|x| x.0 == *a)
-}
-
-/// The epochs of role `r` of `a` at which `s` (`a`'s `secrets.0` state) boxes a holder whose
-/// grant on `a` is keyless (`osis_keys::boxing_keyless`): `a`'s tainted keysets, or, for an actor this
-/// node may rotate, the epochs its knowing re-key leaves.
-fn keyless_boxed(core: &mut Core, a: &Tid, s: &Secrets, r: Role) -> BTreeSet<Epoch> {
+    let s = secrets_in(tx, a)?;
     let boxes: Vec<(Tid, Epoch)> = s.boxes.iter().map(|x| x.0).filter(|k| k.role == r).filter_map(|k| Some((k.holder, osis_keys::aspects::from_schema(&k.epoch).ok()?))).collect();
-    // holders whose grant is keyless; a box to a holder that departed is a departure from `a`
-    // (its own rotators' covers rule), not a key cycle
-    let holders: BTreeSet<Tid> = core.key_holders(a).into_iter().map(|x| x.0).collect();
-    let mut none = BTreeSet::new();
-    for h in boxes.iter().map(|x| x.0).filter(|h| holders.contains(h)).collect::<BTreeSet<Tid>>() {
-        if !keyed(core, a, &h) {
-            none.insert(h);
-        }
-    }
-    osis_keys::boxing_keyless(boxes, |h| none.contains(h))
+    Ok(osis_keys::boxing_keyless(boxes, |h| none.contains(h)))
 }
 
 /// The anchors of holder actor `m` for role `r` of `a` (spec/crypto.md §4): the epochs of `m`
@@ -451,15 +448,11 @@ pub(crate) fn stale_at(tx: &mut Tx<'_>, a: &Tid, r: Role, e: &Epoch) -> Result<b
     Ok(false)
 }
 
-/// Whether `a`'s epoch `e` of role `r` boxes a holder whose grant on `a` is keyless, by a box of
+/// Whether `a`'s epoch `e` of role `r` boxes a holder without key access to `a`, by a box of
 /// its `secrets.0` state (spec/crypto.md §4, rule 4: a node that may rotate `a` re-keys while a current
 /// epoch does).
 pub(crate) fn keyless_at(tx: &mut Tx<'_>, a: &Tid, r: Role, e: &Epoch) -> Result<bool> {
-    if !has_keyless(tx.core, a) {
-        return Ok(false);
-    }
-    let s = secrets_in(tx, a)?;
-    Ok(keyless_boxed(tx.core, a, &s, r).contains(e))
+    Ok(tainted(tx, a, r)?.contains(e))
 }
 
 /// The held rotation commits of the keysets the boxes `w` writes to holder actors name, and those

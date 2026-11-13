@@ -767,7 +767,7 @@ pub(crate) fn own_secrets_candidates(core: &Core, a: &Tid) -> Vec<Tid> {
         }
         // a plain thing holds its plain record children by derivation: only an actor with secrets
         // of its own seals to its holders
-        if !out.contains(m) && plain(m) && core.has_own_secrets(x) && !keyless.contains(&(*x, *m)) && core.key_holders(x).iter().any(|(h, _)| h == m) {
+        if !out.contains(m) && plain(m) && core.has_own_secrets(x) && core.keyed_holders(x, &keyless).contains(m) {
             out.insert(*m);
         }
     }

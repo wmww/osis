@@ -195,6 +195,12 @@ Order == TRUE
 \* other (the negative control: a newcomer reading it
 \* through its holders never reads)
 Expand == TRUE
+\* spec/crypto.md \S 4 Holder actors, Destroyed: a frozen holder stands in a
+\* destroyed actor's place with key access only through grants with key
+\* access, every grant on its path keyed; FALSE: through any grant (a frozen
+\* holder reached through a keyless grant is boxed as keyed, the negative
+\* control: it closes the key cycle the keyless grant broke)
+KeyedPath == TRUE
 
 DK(d) == [t |-> "d", d |-> d, k |-> 0]
 KK(k) == [t |-> "k", d |-> "", k |-> k]
@@ -274,8 +280,13 @@ KH(x, a) == KeyIn(kg[x] \ {<<dp[2], dp[1]>> : dp \in {q \in Known(x) : ActDep(q)
 MemD(x, a, extra) == KH(x, a) \ {dp[1] : dp \in {q \in Known(x) \cup extra : q[2] = a}}
 \* the holders x boxes for a: a destroyed one replaced by its frozen holders as x
 \* sees them, and so on (Expand); a itself never
-MemV(x, a, extra) == IF ~Expand THEN MemD(x, a, extra) ELSE
+\* (~KeyedPath: a destroyed actor's frozen holders through any grant, keyless
+\* ones included)
+RmD(x, a, extra) == Holders(a) \ {dp[1] : dp \in {q \in Known(x) \cup extra : q[2] = a}}
+MemV(x, a, extra) == IF ~Expand THEN MemD(x, a, extra) ELSE IF KeyedPath THEN
   Fix(LAMBDA S : S \cup UNION {MemD(x, t, {}) : t \in S \cap dst}, MemD(x, a, extra)) \ (dst \cup {a})
+  ELSE Fix(LAMBDA S : S \cup UNION {RmD(x, t, {}) : t \in S \cap dst},
+           MemD(x, a, extra) \cup (dst \cap RmD(x, a, extra))) \ (dst \cup {a})
 
 RsBox(r) == [h |-> r.h, key |-> r.key, by |-> r.by]
 BoxesAt(x, e) == ep[e].bx \cup {RsBox(r) : r \in {q \in krs[x] : q.e = e}}
