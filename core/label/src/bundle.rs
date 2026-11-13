@@ -1,7 +1,7 @@
 //! File bundles (spec/wire.md §12, spec/sync.md §11): `osisbndl`, then length-framed canonical
 //! CBOR records. `BundleWriter` streams records out; `BundleReader` streams them in;
-//! `Importer` verifies paths, stamps and blob IDs as a host does and yields the events a
-//! peer's log would.
+//! `Importer` verifies paths, stamps and blob IDs as a peer does and yields the events its
+//! log would.
 
 use crate::auth::verify_stamp;
 use crate::cbor::{get_bytes, get_opt, get_uint, uint};
@@ -206,7 +206,7 @@ pub enum BundleEvent {
     Deleted { label: LabelId, blob: BlobId },
 }
 
-/// Verifies bundle records as a host does: paths step by step, stamps against the path's head,
+/// Verifies bundle records as a peer does: paths step by step, stamps against the path's head,
 /// entries only for blobs given earlier. Unknown records are skipped.
 #[derive(Default)]
 pub struct Importer {
@@ -229,7 +229,7 @@ impl Importer {
             Record::Path { label, steps } => {
                 let path: Vec<Step> = steps.iter().map(|(s, _)| s.clone()).collect();
                 verify_path(&label, &path)?;
-                // Like a host: a later path must pass through the current head (extend it).
+                // Like a peer: a later path must pass through the current head (extend it).
                 if let Some(cur) = self.heads.get(&label) {
                     let id = cur.id();
                     if !path.iter().any(|s| s.id() == id) {
@@ -271,8 +271,7 @@ pub(crate) mod tests {
     use crate::step::{Parent, register};
     use osis_crypto::{Epoch, LabelRole, SeededRng, label_role_key, wrap};
 
-    /// A bundle: one label path, two blobs (one under two labels), entries, a deletion and a
-    /// timed deletion.
+    /// A bundle: two label paths, two blobs (one under both labels), entries and a deletion.
     pub(crate) fn sample(rng: &mut SeededRng) -> (Vec<Record>, Vec<u8>) {
         let (g, h) = (Group::new(10), Group::new(20));
         let e = Epoch::new(0, [0; 32]).unwrap();

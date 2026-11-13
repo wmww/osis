@@ -1,5 +1,5 @@
-//! Links (spec/wire.md §10, spec/permissions.md §7): canonical layouts, caps
-//! and text forms `osis://link/` / `osis://card/` + unpadded base64url.
+//! Links (spec/wire.md §10, spec/permissions.md §7): the canonical layout, caps and the text
+//! form `osis://link/` + unpadded base64url.
 
 use crate::addr::{Address, address_from_value};
 use osis_base::base64url;
@@ -11,9 +11,9 @@ use osis_base::{LabelId, Tid, Value};
 use osis_crypto::Secret32;
 use osis_schema::Codec;
 
-pub const MAX_ADDRESSES: usize = 8;
-pub const MAX_PEERS: usize = 4;
-pub const MAX_RELAYS: usize = 4;
+const MAX_ADDRESSES: usize = 8;
+const MAX_PEERS: usize = 4;
+const MAX_RELAYS: usize = 4;
 const FORMAT: i64 = 1;
 const LINK_PREFIX: &str = "osis://link/";
 /// Far above the largest layout the caps allow.
@@ -41,7 +41,7 @@ pub struct ShareLink {
 }
 
 /// `flags` bit 0 of a link.
-pub const FLAG_SINGLE_USE: i64 = 1;
+const FLAG_SINGLE_USE: i64 = 1;
 
 fn check_url(u: &str) -> Result<(), Error> {
     if u.len() > MAX_URL_BYTES {
@@ -71,14 +71,6 @@ fn format_of(v: &Value) -> Result<(), Error> {
         1 => Ok(()),
         n => Err(Error::UnknownVersion(n)),
     }
-}
-
-fn from_text(s: &str, prefix: &str) -> Result<Value, Error> {
-    let rest = s.strip_prefix(prefix).ok_or(Error::Malformed("text form prefix"))?;
-    if rest.len() > LIMITS.max_bytes * 2 {
-        return Err(Error::Malformed("text form too long"));
-    }
-    Ok(decode(&base64url::decode(rest).ok_or(Error::Malformed("base64url"))?, &LIMITS)?)
 }
 
 impl ShareLink {
@@ -166,7 +158,11 @@ impl ShareLink {
     }
 
     pub fn from_text(s: &str) -> Result<ShareLink, Error> {
-        ShareLink::from_value(&from_text(s, LINK_PREFIX)?)
+        let rest = s.strip_prefix(LINK_PREFIX).ok_or(Error::Malformed("text form prefix"))?;
+        if rest.len() > LIMITS.max_bytes * 2 {
+            return Err(Error::Malformed("text form too long"));
+        }
+        ShareLink::from_value(&decode(&base64url::decode(rest).ok_or(Error::Malformed("base64url"))?, &LIMITS)?)
     }
 }
 
@@ -186,9 +182,8 @@ pub(crate) mod tests {
         }
     }
 
-    // spec/wire.md §10 (FC-3): `flags` is present only with a bit set; a seven-item link is
-    // single use; a zero or unknown flag is refused.
-    // spec/wire.md §10 (reserved flags)
+    // spec/wire.md §10 (reserved flags): `flags` is present only with a bit set; a zero or
+    // unknown flag is refused.
     #[test]
     fn flags() {
         let mut l = link();
@@ -206,7 +201,7 @@ pub(crate) mod tests {
         }
     }
 
-    // spec/wire.md §10: link and card layouts and text forms round trip, with and without peers;
+    // spec/wire.md §10: the link layout and text form round trip, with and without peers;
     // the seed is not printed by Debug.
     #[test]
     fn round_trips() {
@@ -221,8 +216,8 @@ pub(crate) mod tests {
         assert!(!format!("{l:?}").contains("[1, 1"));
     }
 
-    // spec/wire.md §10: caps (8 addresses, 4 peers, 4 relays, 256-byte URLs), a card needs an
-    // address, an unknown format parks.
+    // spec/wire.md §10: caps (8 addresses, 4 peers, 4 relays, 256-byte URLs); an unknown format
+    // parks.
     #[test]
     fn caps() {
         let a = Address { url: "quic://a".into(), key: [5; 32] };

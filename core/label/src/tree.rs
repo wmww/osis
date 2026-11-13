@@ -4,7 +4,7 @@
 //! blob-backed `TreeSink` and `LinkSource`, and implement osis-crdt's `PageSink`/`PageSource` for
 //! pages and link pages.
 
-pub use osis_commit::tree::{HashSink, Kid, LinkSource, TreeReader, TreeSink, TreeWriter, kids_len, node_hash, node_plaintext, parse_node, read_tree, write_tree};
+pub use osis_commit::tree::{HashSink, Kid, LinkSource, TreeReader, TreeSink, TreeWriter, node_hash, node_plaintext, parse_node, read_tree, write_tree};
 
 use crate::blob::{Level, Prefix, frame_under, open};
 use crate::Error;
@@ -296,7 +296,7 @@ impl Reuse {
         Ok(Some((prefix, level, kids)))
     }
 
-    /// Never reuses `blob` (a chunk or node a host deleted, spec/sync.md §1): it is written
+    /// Never reuses `blob` (a chunk or node a peer deleted, spec/sync.md §1): it is written
     /// afresh, and so is every node above it.
     pub fn exclude(&mut self, blob: &BlobId) {
         self.chunks.retain(|_, l| l.blob != *blob);
@@ -442,7 +442,7 @@ mod tests {
         assert!(parse_node(&node_plaintext(49, &[(root, 1)]).unwrap()).is_err());
         assert!(parse_node(&node_plaintext(1, &[]).unwrap()).is_err());
         assert!(parse_node(&encode(&Value::List(vec![Value::Int(1), Value::List(vec![Value::Int(0)]), Value::List(vec![Value::Int(0)])]))).is_err());
-        // The old two-item layout does not parse.
+        // A node without lengths does not parse.
         assert!(parse_node(&encode(&Value::List(vec![Value::Int(1), Value::List(vec![Value::link(root)])]))).is_err());
     }
 

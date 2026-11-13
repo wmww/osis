@@ -44,7 +44,7 @@ pub fn verify_deposit(head_deposit: &VerifyingKey, label: &LabelId, blob: &BlobI
 
 /// The signing domain of an entry's stamp or deposit signature (`plain`: `Stamp` or
 /// `Deposit`): `RoleEntry` for one deletes are judged by.
-pub fn entry_domain(plain: Domain, role: bool) -> Domain {
+fn entry_domain(plain: Domain, role: bool) -> Domain {
     if role { Domain::RoleEntry } else { plain }
 }
 
@@ -74,22 +74,21 @@ pub struct DeleteItem {
 }
 
 /// Digest of a delete: BLAKE3 of canonical `[label_id, blob_id, [level*]]`.
-pub fn delete_digest(label: &LabelId, blob: &BlobId, levels: &[Level]) -> Result<[u8; 32], Error> {
+pub fn delete_digest(label: &LabelId, blob: &BlobId, levels: &[Level]) -> [u8; 32] {
     let v = Value::List(vec![Value::bytes(&label.0), Value::bytes(&blob.0), Value::List(levels.iter().map(|l| Value::Int(i64::from(*l))).collect())]);
-    Ok(osis_base::hash::hash(&encode(&v)))
+    osis_base::hash::hash(&encode(&v))
 }
 
 impl DeleteItem {
     /// Signed by the head's delete key alone.
     pub fn sign(delete: &SigningSecret, label: &LabelId, blob: BlobId) -> Result<DeleteItem, Error> {
-        let sig = delete.sign(Domain::Delete, &delete_digest(label, &blob, &[])?);
+        let sig = delete.sign(Domain::Delete, &delete_digest(label, &blob, &[]));
         Ok(DeleteItem { blob, by: Vec::new(), sig })
     }
 
     /// Signed by the delete keys `dks` (one per level used, levels distinct) under the blob's
     /// prefix `salt` and its blind `hb` (a commit blob's header blind, a linked blob's link
     /// blind), and by the label key `key_for_levels` names.
-    #[allow(clippy::too_many_arguments)]
     pub fn sign_by(key: &SigningSecret, dks: &[(Level, &DeleteSecret)], salt: &[u8; 16], hb: &[u8; 16], label: &LabelId, blob: BlobId) -> Result<DeleteItem, Error> {
         let mut dks: Vec<(Level, &DeleteSecret)> = dks.to_vec();
         dks.sort_by_key(|(l, _)| *l);
@@ -97,7 +96,7 @@ impl DeleteItem {
         if !levels.is_sorted_by(|a, b| a < b) || levels.is_empty() {
             return Err(Error::Malformed("delete levels"));
         }
-        let d = delete_digest(label, &blob, &levels)?;
+        let d = delete_digest(label, &blob, &levels);
         let by = dks.iter().map(|(l, dk)| (*l, dk.sign(salt, hb, &d))).collect();
         Ok(DeleteItem { blob, by, sig: key.sign(Domain::Delete, &d) })
     }
@@ -107,13 +106,13 @@ impl DeleteItem {
         self.by.iter().map(|(l, _)| *l).collect()
     }
 
-    /// Host check against its head and the entry's blob prefix (none: unknown framing, no
+    /// The check at a node that cannot read the label, against its head and the entry's blob prefix (none: unknown framing, no
     /// commitments): without levels the delete key; with them, each delete-key signature under
     /// a group's commitment at its level, every group covered by one, and the label key the
     /// levels need (spec/sync.md §5).
     pub fn verify(&self, head: &Step, prefix: Option<&Prefix>) -> Result<(), Error> {
         let levels = self.levels();
-        let d = delete_digest(&head.label, &self.blob, &levels)?;
+        let d = delete_digest(&head.label, &self.blob, &levels);
         let role = key_for_levels(&levels)?;
         if !self.by.is_empty() {
             if !levels.is_sorted_by(|a, b| a < b) {
@@ -152,17 +151,16 @@ impl DeleteItem {
     pub fn from_value(v: &Value) -> Result<DeleteItem, Error> {
         let Value::List(items) = v else { return Err(Error::Malformed("delete item")) };
         let [blob, by, sig] = items.as_slice() else { return Err(Error::Malformed("delete item")) };
-        let by = by_from_value(by)?;
         Ok(DeleteItem {
             blob: BlobId(get_bytes(blob, "delete blob")?),
-            by,
+            by: by_from_value(by)?,
             sig: Signature(get_bytes(sig, "delete signature")?),
         })
     }
 }
 
 /// `[[level, dsig]*]`: levels ascending and distinct, within 1..=3.
-pub fn by_from_value(v: &Value) -> Result<Vec<(Level, Signature)>, Error> {
+fn by_from_value(v: &Value) -> Result<Vec<(Level, Signature)>, Error> {
     let Value::List(xs) = v else { return Err(Error::Malformed("delete levels")) };
     let mut out: Vec<(Level, Signature)> = Vec::with_capacity(xs.len());
     for x in xs {

@@ -875,7 +875,7 @@ impl Session {
     fn delete_auth(&mut self, store: &dyn LabelStore, label: &LabelId, item: &DeleteItem) -> Result<Code, StoreError> {
         let Some(k) = head_keys(&mut self.keys, store, label)? else { return Ok(Code::UNKNOWN_LABEL) };
         let levels = item.levels();
-        let Ok(digest) = delete_digest(label, &item.blob, &levels) else { return Ok(Code::MALFORMED) };
+        let digest = delete_digest(label, &item.blob, &levels);
         let key = match key_for_levels(&levels) {
             Ok(role) => key_of_role(role),
             Err(_) => return Ok(Code::REFUSED),

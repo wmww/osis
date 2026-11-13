@@ -1,4 +1,4 @@
-//! Host addresses (spec/sync.md §10, spec/data-model.md §9 `address`): strict value decoding,
+//! Peer addresses (spec/sync.md §10, spec/data-model.md §9 `address`): strict value decoding,
 //! the text form (key in osis-base's unpadded base64url).
 
 use crate::Error;
@@ -8,7 +8,7 @@ use osis_schema::Codec;
 pub use osis_schema::core_types::Address;
 
 /// An `address` value, strictly (re-encodes to itself), URL at most 256 bytes.
-pub fn address_from_value(v: &Value) -> Result<Address, Error> {
+pub(crate) fn address_from_value(v: &Value) -> Result<Address, Error> {
     let a = Address::from_value(v).map_err(|_| Error::Malformed("address"))?;
     if a.to_value() != *v || a.url.len() > MAX_URL_BYTES {
         return Err(Error::Malformed("address"));
@@ -34,7 +34,7 @@ pub fn address_from_text(s: &str) -> Result<Address, Error> {
 mod tests {
     use super::*;
 
-    // spec/sync.md §10: an address is a URL and the host's 32-byte key; text form round trips.
+    // spec/sync.md §10: an address is a URL and the peer's 32-byte key; text form round trips.
     #[test]
     fn address_text() {
         let a = Address { url: "quic://example.org:4433".into(), key: [7; 32] };

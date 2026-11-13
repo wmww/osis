@@ -67,7 +67,7 @@ pub fn genesis_label(admin: &Secret32) -> LabelId {
 }
 
 /// Index into `candidates` of the role secret whose label key is `pk`: which held
-/// epoch a host's head registers (spec/sync.md §2).
+/// epoch a peer's head registers (spec/sync.md §2).
 pub fn match_secret<'a>(pk: &VerifyingKey, role: LabelRole, candidates: impl IntoIterator<Item = &'a Secret32>) -> Option<usize> {
     candidates.into_iter().position(|s| label_role_key(role, s).verifying_key() == *pk)
 }
@@ -180,7 +180,7 @@ impl Step {
 
 /// Verifies a registration path: the genesis step of `label`, then each step a child of the one
 /// before (spec/sync.md §5).
-pub fn verify_path(label: &LabelId, path: &[Step]) -> Result<(), Error> {
+pub(crate) fn verify_path(label: &LabelId, path: &[Step]) -> Result<(), Error> {
     let (first, rest) = path.split_first().ok_or(Error::Verify("empty path"))?;
     if first.label != *label {
         return Err(Error::Verify("path of another label"));

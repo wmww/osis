@@ -97,7 +97,6 @@ pub enum Message {
     Register { id: Id, label: LabelId, step: Step, claim_set: Option<ClaimSet> },
     /// One code per item of a Delete, in order.
     Status { id: Id, codes: Vec<Code> },
-    /// Items with `at` above 2^63 - 1 cannot be encoded (check with `osis_label::delete_digest`).
     Delete { id: Id, label: LabelId, items: Vec<DeleteItem> },
     Fetch { id: Id, label: LabelId, max_reply: u64, ids: Vec<BlobId> },
     FetchReply { id: Id, items: Vec<Fetched> },
@@ -427,7 +426,6 @@ impl Message {
             M::Ping { wall_ms, .. } | M::Pong { wall_ms, .. } => vec![k, id, Value::uint(*wall_ms)],
             M::Register { label, step, claim_set, .. } => vec![k, id, l(label), step_value(step), Value::opt(claim_set.as_ref().map(|c| Value::Bytes(c.to_bytes())))],
             M::Status { codes, .. } => vec![k, id, Value::List(codes.iter().map(|c| Value::uint(c.0)).collect())],
-            // An unencodable item (at above 2^63 - 1) becomes `[]`, which the peer rejects.
             M::Delete { label, items, .. } => vec![k, id, l(label), Value::List(items.iter().map(|i| i.to_value().unwrap_or(Value::List(vec![]))).collect())],
             M::Fetch { label, max_reply, ids, .. } => vec![k, id, l(label), Value::uint(*max_reply), ids_value(ids)],
             M::FetchReply { items, .. } => vec![
