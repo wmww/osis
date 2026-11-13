@@ -280,8 +280,15 @@ fn read_pointer(b: &[u8]) -> Result<(u64, u64), Error> {
 /// A unit's state inside a transaction.
 #[derive(Clone)]
 enum DirtyUnit {
-    /// `page`: the table page `data` encodes, when it was written or read as one.
+    /// Written as bytes; `page`: those bytes decoded, when read as a table page.
     Plain { data: Vec<u8>, shred: bool, page: Option<Arc<Page>> },
+    /// A table page written, encoded (`len` bytes) only where its bytes are needed (a spill, the
+    /// commit, a read of its bytes): a transaction changing one page many times encodes it once.
+    Page { page: Arc<Page>, len: usize, shred: bool },
+    /// A table page out for change (`txn_take_page`) until written back. Every table operation
+    /// that takes a page writes it back or deletes it, so only one that failed part way leaves
+    /// one: reading it fails, and so does the commit.
+    Taken { shred: bool },
     /// Written early as row `u slot ver` under `key` (memory only until commit).
     Spilled { key: Secret32, shred: bool },
     Deleted { shred: bool },
@@ -290,7 +297,29 @@ enum DirtyUnit {
 impl DirtyUnit {
     fn shred(&self) -> bool {
         match self {
-            DirtyUnit::Plain { shred, .. } | DirtyUnit::Spilled { shred, .. } | DirtyUnit::Deleted { shred } => *shred,
+            DirtyUnit::Plain { shred, .. } | DirtyUnit::Page { shred, .. } | DirtyUnit::Taken { shred } | DirtyUnit::Spilled { shred, .. } | DirtyUnit::Deleted { shred } => *shred,
+        }
+    }
+
+    /// Its unspilled bytes (`Dirty::plain_bytes`).
+    fn plain_len(&self) -> usize {
+        match self {
+            DirtyUnit::Plain { data, .. } => data.len(),
+            DirtyUnit::Page { len, .. } => *len,
+            DirtyUnit::Taken { .. } | DirtyUnit::Spilled { .. } | DirtyUnit::Deleted { .. } => 0,
+        }
+    }
+
+    /// Its bytes, if written in this transaction and not spilled.
+    fn plain(&self) -> Option<std::borrow::Cow<'_, [u8]>> {
+        match self {
+            DirtyUnit::Plain { data, .. } => Some(std::borrow::Cow::Borrowed(data)),
+            DirtyUnit::Page { page, len, .. } => {
+                let data = page.encode();
+                debug_assert_eq!(data.len(), *len);
+                Some(std::borrow::Cow::Owned(data))
+            }
+            DirtyUnit::Taken { .. } | DirtyUnit::Spilled { .. } | DirtyUnit::Deleted { .. } => None,
         }
     }
 }
@@ -340,13 +369,11 @@ impl Dirty {
     /// Sets a slot's state, keeping `plain_bytes` and `dead_spills`.
     fn set_unit(&mut self, slot: u64, u: DirtyUnit) {
         let dead = self.dead_spills.contains(&slot);
-        let plain = matches!(u, DirtyUnit::Plain { .. });
-        if let DirtyUnit::Plain { data, .. } = &u {
-            self.plain_bytes = self.plain_bytes.saturating_add(data.len());
-        }
+        let plain = matches!(u, DirtyUnit::Plain { .. } | DirtyUnit::Page { .. } | DirtyUnit::Taken { .. });
+        self.plain_bytes = self.plain_bytes.saturating_add(u.plain_len());
         let old = self.units.insert(slot, u);
+        self.plain_bytes = self.plain_bytes.saturating_sub(old.as_ref().map_or(0, DirtyUnit::plain_len));
         match &old {
-            Some(DirtyUnit::Plain { data, .. }) => self.plain_bytes = self.plain_bytes.saturating_sub(data.len()),
             Some(DirtyUnit::Spilled { .. }) if !plain => {
                 self.dead_spills.insert(slot);
             }
@@ -768,6 +795,8 @@ impl Pager {
         match d.units.get_mut(&slot) {
             Some(DirtyUnit::Plain { page: Some(p), .. }) => Ok(p.clone()),
             Some(DirtyUnit::Plain { data, page, .. }) => Ok(page.insert(Arc::new(self.decode(data)?)).clone()),
+            Some(DirtyUnit::Page { page, .. }) => Ok(page.clone()),
+            Some(DirtyUnit::Taken { .. }) => Err(Error::Corrupt("table page left out for change")),
             Some(_) => {
                 let data = self.txn_read(d, slot)?.ok_or(Error::Corrupt("table page missing"))?;
                 self.decode(&data).map(Arc::new)
@@ -776,8 +805,15 @@ impl Pager {
         }
     }
 
-    /// `txn_page` to change and write back: the transaction's own copy when it has one.
+    /// `txn_page` to change and write back: the transaction's own copy when it has one. A page
+    /// written in this transaction is out (`DirtyUnit::Taken`) until `txn_put_page` or
+    /// `txn_delete`; a savepoint keeps a copy of it as it was.
     pub fn txn_take_page(&mut self, d: &mut Dirty, slot: u64) -> Result<Page, Error> {
+        if let Some(DirtyUnit::Page { page, shred, .. }) = d.units.get(&slot) {
+            let (p, shred) = (page.clone(), *shred);
+            d.set_unit(slot, DirtyUnit::Taken { shred });
+            return Ok(Arc::unwrap_or_clone(p));
+        }
         if let Some(DirtyUnit::Plain { page, .. }) = d.units.get_mut(&slot)
             && let Some(p) = page.take()
         {
@@ -786,11 +822,11 @@ impl Pager {
         Ok(Arc::unwrap_or_clone(self.txn_page(d, slot)?))
     }
 
-    /// Writes table page `page` as unit `slot` (`txn_write` of its bytes).
+    /// Writes table page `page` as unit `slot` (`txn_write` of its bytes, encoded when needed).
     pub fn txn_put_page(&mut self, d: &mut Dirty, slot: u64, page: Page, shred: bool, rng: &mut dyn CryptoRngCore) -> Result<(), Error> {
         self.check()?;
         let shred = shred || d.units.get(&slot).is_some_and(DirtyUnit::shred);
-        d.set_unit(slot, DirtyUnit::Plain { data: page.encode(), shred, page: Some(Arc::new(page)) });
+        d.set_unit(slot, DirtyUnit::Page { len: page.size(), page: Arc::new(page), shred });
         self.spill_if_due(d, rng)
     }
 
@@ -835,7 +871,8 @@ impl Pager {
     /// A unit's bytes as the transaction sees them.
     pub fn txn_read(&mut self, d: &Dirty, slot: u64) -> Result<Option<Vec<u8>>, Error> {
         match d.units.get(&slot) {
-            Some(DirtyUnit::Plain { data, .. }) => Ok(Some(data.clone())),
+            Some(DirtyUnit::Taken { .. }) => Err(Error::Corrupt("table page left out for change")),
+            Some(u @ (DirtyUnit::Plain { .. } | DirtyUnit::Page { .. })) => Ok(u.plain().map(|b| b.into_owned())),
             Some(DirtyUnit::Deleted { .. }) => Ok(None),
             Some(DirtyUnit::Spilled { key, .. }) => {
                 let row = unit_row(slot, d.ver);
@@ -911,14 +948,16 @@ impl Pager {
     fn spill(&mut self, d: &mut Dirty, rng: &mut dyn CryptoRngCore) -> Result<(), Error> {
         let mut batch = WriteBatch::new();
         let mut j = Journal::default();
+        // a page out for change stays: the operation that took it writes it back
         for (slot, u) in d.units.iter_mut() {
-            if let DirtyUnit::Plain { data, shred, .. } = u {
-                let key = Secret32::random(rng);
-                let row = unit_row(*slot, d.ver);
-                batch.put(row.clone(), self.seal(&key, &row, data, rng)?);
-                j.new_rows.push(row);
-                *u = DirtyUnit::Spilled { key, shred: *shred };
-            }
+            let Some(data) = u.plain() else { continue };
+            let key = Secret32::random(rng);
+            let row = unit_row(*slot, d.ver);
+            let sealed = self.seal(&key, &row, &data, rng)?;
+            drop(data);
+            batch.put(row.clone(), sealed);
+            j.new_rows.push(row);
+            *u = DirtyUnit::Spilled { key, shred: u.shred() };
         }
         debug_assert!(d.open.is_empty(), "a spill under a savepoint");
         let puts: Vec<BlobId> = d.blobs.iter().filter(|(_, b)| b.is_some()).map(|(id, _)| *id).collect();
@@ -947,6 +986,9 @@ impl Pager {
         self.check()?;
         if d.is_empty() && d.meta == self.meta {
             return Ok(());
+        }
+        if d.units.values().any(|u| matches!(u, DirtyUnit::Taken { .. })) {
+            return Err(Error::Corrupt("table page left out for change"));
         }
         self.changes = next_change();
         let ver = d.ver;
@@ -994,6 +1036,16 @@ impl Pager {
                     cached.push((slot, Some((data, page))));
                     Some(Entry { key, ver })
                 }
+                DirtyUnit::Page { page, len, .. } => {
+                    let data = page.encode();
+                    debug_assert_eq!(data.len(), len);
+                    let key = Secret32::random(rng);
+                    batch.put(row.clone(), self.seal(&key, &row, &data, rng)?);
+                    j.new_rows.push(row);
+                    cached.push((slot, Some((data, Some(page)))));
+                    Some(Entry { key, ver })
+                }
+                DirtyUnit::Taken { .. } => return Err(Error::Corrupt("table page left out for change")),
                 DirtyUnit::Spilled { key, .. } => {
                     cached.push((slot, None));
                     Some(Entry { key, ver })

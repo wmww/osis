@@ -788,3 +788,50 @@ fn savepoint_release_spills() {
     assert!(dev.faults.writes() > w0, "released: spilled");
     t.commit().unwrap();
 }
+
+// spec: none (internal: notes/local-store.md, Savepoints). Table pages a transaction changed
+// and keeps unencoded (`DirtyUnit::Page`) change again under a savepoint and roll back to it,
+// and removals of absent keys change nothing: what the transaction then reads, commits and
+// reopens is the model's.
+#[test]
+fn unspilled_pages_roll_back_and_absent_removals_change_nothing() {
+    let dev = MemDevice::new();
+    let mut rng = SeededRng::from_u64(0);
+    let mut s = create(&dev, &mut rng);
+    let mut t = s.transaction(&mut rng).unwrap();
+    let tb = t.create_table(&tid(1), &ak("t.0"), 0).unwrap();
+    let mut model = std::collections::BTreeMap::new();
+    // several leaves and an interior level (page_max 512), none spilled
+    for i in 0..120u32 {
+        let (k, v) = ((i * 2).to_be_bytes().to_vec(), vec![i as u8; 20]);
+        t.table_put(tb, &k, v.clone(), Shred::No).unwrap();
+        model.insert(k, v);
+    }
+    let rows = |t: &mut osis_store::Transaction<'_>| t.table_range(tb, &[], None, usize::MAX).unwrap();
+    let want: Vec<_> = model.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+    // absent: between keys, below the first, past the last
+    for k in [7u32, 0x8000_0001, 1_000_000] {
+        assert!(!t.table_remove(tb, &k.to_be_bytes(), Shred::No).unwrap());
+    }
+    assert_eq!(rows(&mut t), want, "absent removals");
+    let sp = t.savepoint();
+    for i in 0..120u32 {
+        let k = (i * 2).to_be_bytes();
+        if i % 3 == 0 {
+            t.table_remove(tb, &k, Shred::Yes).unwrap();
+        } else {
+            t.table_put(tb, &k, vec![0xee; 30], Shred::No).unwrap();
+        }
+        t.table_put(tb, &(i * 2 + 1).to_be_bytes(), vec![1; 10], Shred::No).unwrap();
+    }
+    t.rollback_to(sp);
+    assert_eq!(rows(&mut t), want, "rolled back");
+    t.commit().unwrap();
+    let mut t = s.transaction(&mut rng).unwrap();
+    assert_eq!(rows(&mut t), want, "committed");
+    drop(t);
+    drop(s);
+    let mut s = reopen(&dev);
+    let mut t = s.transaction(&mut rng).unwrap();
+    assert_eq!(rows(&mut t), want, "reopened");
+}

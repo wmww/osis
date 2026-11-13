@@ -1,0 +1,4 @@
+# test-optimizer-5
+- A storm landed on main unnoticed: `awaits::a_part_missing_again_*` went 1.5 G -> 30 G (600 deposit/delete turns) and still passed, because the host's rate limit ends it before `SETTLE_ROUNDS`. Only a per-test count against an older profile showed it (issues/reader-deposit-storm.md). A pertest compare against the last profile is a cheap regression check worth running more often.
+- issues/tests-4x.md's "in scale tests ~90% of measured work is the debug checks after a restart" read as a lever; measured, every index check in node `it` is 359 G (10.5%) and the scale module's share 43 G: the 90% is of the measured changes, not of the tests' cost.
+- `tools/cpuprof` over a whole binary leaves a second, child-process sample file (`OUT.<pid>` twice); the larger is the test binary.

@@ -19,7 +19,8 @@ pub(crate) trait Units {
     /// The table page unit `slot` holds: decoded once per write of the unit and kept beside its
     /// bytes, so a lookup decodes no page it has seen.
     fn page(&mut self, slot: u64) -> Result<Arc<Page>, Error>;
-    /// The page of unit `slot` to change and write back (`put_page`).
+    /// The page of unit `slot` to change. Every operation writes back (`put_page`) or deletes
+    /// each page it takes: until then the unit may read as gone (a transaction's own page).
     fn take_page(&mut self, slot: u64) -> Result<Page, Error> {
         Ok(Arc::unwrap_or_clone(self.page(slot)?))
     }
@@ -74,7 +75,7 @@ fn inner_size(e: &InnerE) -> usize {
 }
 
 impl Page {
-    fn size(&self) -> usize {
+    pub(crate) fn size(&self) -> usize {
         HEADER
             + match self {
                 Page::Leaf(es) => es.iter().map(leaf_size).sum::<usize>(),
@@ -366,19 +367,34 @@ struct After {
 }
 
 /// Removes `key` below `slot`; `None` if absent, else the node's page after the op (already
-/// saved unless empty).
+/// saved unless empty). A page is taken only once the key is found below it: every page taken
+/// is written back or deleted (`Units::take_page`).
 fn del(u: &mut dyn Units, slot: u64, key: &[u8], shred: bool) -> Result<Option<After>, Error> {
+    // the leaf entry's index, or the child's and what removing below it left
+    let found = match &*u.page(slot)? {
+        Page::Leaf(es) => match es.binary_search_by(|e| e.key[..].cmp(key)) {
+            Ok(i) => Ok(i),
+            Err(_) => return Ok(None),
+        },
+        Page::Inner(es) => {
+            let i = child_index(es, key);
+            Err((i, es.get(i).ok_or(Error::Corrupt("empty interior page"))?.child))
+        }
+    };
+    let below = match found {
+        Ok(_) => None,
+        Err((_, child_slot)) => match del(u, child_slot, key, shred)? {
+            Some(child) => Some(child),
+            None => return Ok(None),
+        },
+    };
     let mut page = u.take_page(slot)?;
-    match &mut page {
-        Page::Leaf(es) => {
-            let Ok(i) = es.binary_search_by(|e| e.key[..].cmp(key)) else { return Ok(None) };
+    match (&mut page, found, below) {
+        (Page::Leaf(es), Ok(i), None) => {
             let e = es.remove(i);
             free_val(u, &e.val, shred);
         }
-        Page::Inner(es) => {
-            let i = child_index(es, key);
-            let child_slot = es.get(i).ok_or(Error::Corrupt("empty interior page"))?.child;
-            let Some(child) = del(u, child_slot, key, shred)? else { return Ok(None) };
+        (Page::Inner(es), Err((i, child_slot)), Some(child)) => {
             if child.empty {
                 es.remove(i);
                 u.delete(child_slot, shred);
@@ -392,6 +408,7 @@ fn del(u: &mut dyn Units, slot: u64, key: &[u8], shred: bool) -> Result<Option<A
                 }
             }
         }
+        _ => return Err(Error::Corrupt("table page changed under a removal")),
     }
     let after = After { empty: page.is_empty(), size: page.size(), entry: entry(&page, slot) };
     if !after.empty {

@@ -1,0 +1,8 @@
+# A reader's deposit and a writer's delete loop until the host rate-limits
+> Summary: Since a non-writer deposits any must-hold body it judges valid and holds no entry of (`may_deposit`, core/node/src/sync/pass/bodies.rs), reader b in node `awaits::a_part_missing_again_is_fetched_under_every_label_spec_sync_6` deposits a fresh encryption of a body under both labels, writer a deletes it, and b deposits again: about 600 deposits and 600 deletes, ended only by the host's `RATE_LIMITED` answers. The test still passes; its cost went from 1.5 G to 30 G instructions.
+> Priority: critical
+> Tags: sync, tests
+
+- Repro: `OSIS_SYNC_TRACE=1 <osis-node it> --exact awaits::a_part_missing_again_is_fetched_under_every_label_spec_sync_6 --nocapture 2>&1 | grep -c 'node 1 action Hub.*Offer.*Deposit'` prints about 600 (a fresh blob ID each turn: about 310 distinct). The turns start in the setup (before b goes offline) and run at an even rate to the end of the trace, where the host answers `Shared` with `Code(4)`.
+- Cause: the `|| self.engine.judged_valid(..)` arm of `may_deposit`. With it reverted the test costs 1.5 G again (and `ephemeral::reader_alone_holding_a_value_deposits_it_spec_sync_6` fails, as expected). The two rules disagree on the body: the reader judges it must-hold and absent, the writer judges the deposit something to delete (a duplicate or must-not-hold under the label, spec/sync.md §6-7). One of them is wrong for this body; a fix makes them agree, not a turn count.
+- A test for it: the settle helpers assert quiescence by rounds (`SETTLE_ROUNDS` 2000), which a host's rate limit satisfies. A count of deposits and deletes per `run` (or a quiescence check that a rate-limited answer is not quiet) would have failed this test.
