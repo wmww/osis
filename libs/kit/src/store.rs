@@ -1,8 +1,8 @@
 //! The account's own state (notes/app.md Layers), toolkit-free: its groups, favorites, the look, the
 //! open thing, and the universe of things.
 //!
-//! The account group (found by the app: `Account`) is an item and a subgroup of home: its own
-//! aspects sync (favorites, the collections) and so do its items. Every thing the app makes is an
+//! The account group (found by the app: `Account`) is a subgroup of home: it syncs (favorites,
+//! the collections) and so do its items. Every thing the app makes is an
 //! item of it; tags are also its subgroups, so their items sync too. Nodes that start before
 //! syncing each make one: every group the app reports is read, and writes go to the smallest tid
 //! (notes/app.md kit and app).
