@@ -666,7 +666,7 @@ fn shared_window_merges_over_peer_link_spec_sync_5() {
     assert_eq!(notes(&mut net, b, w), want);
 }
 
-// notes/ephemeral.md Holders: a restarted node forgets the ephemeral state and gets it back from
+// notes/ephemeral.md Restarts and lost access: a restarted node forgets the ephemeral state and gets it back from
 // the host (its first sync of the label reconciles: its cursor had passed those entries)
 #[test]
 fn restarted_node_gets_state_back_spec_sync_6() {
