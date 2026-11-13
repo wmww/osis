@@ -838,7 +838,7 @@ fn redial(s: &mut Setup) {
     shared_of(&send(&mut s.net, s.b, &mut s.p, Message::NoRecord { id: 1 << 31 }));
 }
 
-// spec/sync.md §5 (Behind), notes/label-access.md (One step at a time): a reader removed at a
+// spec/sync.md §5 (Behind), notes/label-access.md (One sync key at a time): a reader removed at a
 // rotation keeps its old sync secret, and no time ends a sync key as a credential: long past
 // `ROLE_KEEP` (claim sets dropped), its Behind items, naming its step or none, learn the steps
 // under its own sync key and the first rotation past them, and nothing after: not how many
@@ -917,6 +917,40 @@ fn behind_items_on_genesis_read_a_step_each_spec_sync_5() {
     };
     assert_eq!(reads(2), (1024, 1024));
     assert_eq!(reads(12), (1024, 1024), "flat in the steps past genesis");
+}
+
+// spec/sync.md §5 (Behind), spec/wire.md §11.2 (Offer): the Behind answers of one Offer carry at
+// most ⌊REPLY_BUDGET / 326⌋ steps: the item reaching the bound gets the steps it read, the items
+// after it 4 (refused for now), and a later Offer is answered.
+#[test]
+fn an_offers_behind_answers_stop_at_the_step_bound_spec_sync_5() {
+    let mut s = setup();
+    // 29 steps under the genesis sync key: 1024 items on genesis would read 29 696
+    for k in 0..29u8 {
+        s.l.rotate_keeping_sync(0x61 + 2 * k);
+        let i = s.l.steps.len() - 1;
+        command(&mut s.net, s.b, &mut s.p, s.l.register_cmd(i));
+    }
+    let run = s.l.steps.len() - 1;
+    let bound = osis_proto::serving::REPLY_BUDGET / osis_proto::msg::MAX_STEP_WIRE;
+    assert!(1024 * run > bound, "past the bound");
+    let items = (0..1024).map(|_| behind_item(&s.p, &s.l, 0, true)).collect();
+    let before = s.net.sync(s.b).pass_stats().behind_steps;
+    let ans = behind_answers(&mut s, items);
+    assert_eq!(s.net.sync(s.b).pass_stats().behind_steps - before, bound as u64, "the bound read");
+    let (whole, part) = (bound / run, bound % run);
+    assert!(part > 0, "an item reaches the bound part way");
+    let steps = s.l.steps.clone();
+    for (i, a) in ans.iter().enumerate() {
+        match i {
+            i if i < whole => assert_eq!(a, &(Code::OK, Some(steps[1..].to_vec())), "item {i}: the run"),
+            i if i == whole => assert_eq!(a, &(Code::OK, Some(steps[1..=part].to_vec())), "item {i}: the steps read"),
+            i => assert_eq!(a, &(Code::RATE_LIMITED, None), "item {i}: refused for now"),
+        }
+    }
+    let item = behind_item(&s.p, &s.l, 0, true);
+    let ans = behind_answers(&mut s, vec![item]);
+    assert_eq!(ans, vec![(Code::OK, Some(steps[1..].to_vec()))], "a later Offer is answered");
 }
 
 // spec/sync.md §5 (Behind), spec/wire.md §11.2 (Offer): a Behind item by a key actor's signing

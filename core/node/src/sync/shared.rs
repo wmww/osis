@@ -1127,7 +1127,7 @@ impl SyncEngine {
         let (challenge, listener) = (if s.by_listener { s.listener } else { s.dialer }, s.key);
         // the steps one reply holds: Behind answers read no more per Offer (notes/flow-control.md,
         // Hub stall bounds)
-        let full = osis_proto::serving::REPLY_BUDGET / osis_proto::msg::MAX_STEP_BYTES;
+        let full = osis_proto::serving::REPLY_BUDGET / osis_proto::msg::MAX_STEP_WIRE;
         let mut budget = full;
         for (i, l, step, key, sig) in behinds {
             let answer = match self.unread_behind(&l, step.as_ref(), &key, &sig, &challenge, &listener, &mut budget)? {

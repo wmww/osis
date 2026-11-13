@@ -19,6 +19,8 @@ pub type Wrap = [u8; WRAP_LEN];
 pub const MAX_ITEMS: usize = 1024;
 /// A canonical `Step` is at most this long (spec/wire.md §8: nine fixed-size items).
 pub const MAX_STEP_BYTES: usize = 323;
+/// A step's greatest encoding in a message: its bytes as a CBOR byte string (3 header bytes).
+pub const MAX_STEP_WIRE: usize = MAX_STEP_BYTES + 3;
 /// Request ids are below 2^32 (spec/wire.md §11.1).
 pub type Id = u32;
 /// The ids a node draws for the shared set's and the stream's requests (spec/wire.md §11.2):
