@@ -223,7 +223,7 @@ def read_log(since):
 
 
 def stamp(t):
-    return time.strftime("%Y-%m-%d %H:%M", time.localtime(t))
+    return time.strftime("%Y-%m-%d %H:%M", time.gmtime(t))
 
 
 def hit_line(o):
