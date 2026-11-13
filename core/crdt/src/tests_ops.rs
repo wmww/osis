@@ -1022,7 +1022,9 @@ fn values_and_each_value_differ_in_bags_and_uncreated_keys_spec_5_6() {
     let d = write(&st, 2, 2, &[at_k(&y), PathOp { path: vec![PathSeg::Field(1)], op: Op::Inc(Value::Int(5)) }]);
     let set = |f: &Fragment, all: bool| {
         let mut out = std::collections::BTreeSet::new();
-        let mut add = |v: &Value| drop(out.insert(v.clone()));
+        let mut add = |v: &Value| {
+            out.insert(v.clone());
+        };
         if all { f.values(&mut add) } else { f.each_value(&mut add) }
         out
     };
