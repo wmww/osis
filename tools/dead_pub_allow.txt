@@ -22,7 +22,6 @@ osis-perm::may_purge  test hook: §6 purge rights at a point (the engine asks `p
 osis-perm::set_general_only  test hook: the general path against the fast one
 osis-perm::trusted_active  test hook: trusted ops in force
 osis-host::unlimited  test hook: a policy with no count caps
-osis-proto::drop_claim_set  test hook: a claim set gone as after ROLE_KEEP
 osis-store::record_lag  test hook: reads a lag without spending it (`record_take_lag`)
 osis-store::records_total  test hook: bytes RECORD_BUDGET bounds
 osis-transport::ADDRESS  table: the NAT kinds
@@ -31,7 +30,6 @@ osis-transport::is_relayed  test hook
 osis-transport::relayed_keys  test hook
 osis-transport::set_faults  test hook: memory network faults
 osis-transport::set_max_steps  test hook: scheduler step cap
-osis-transport::close_gracefully  deferred: the dialer's graceful close, called only by the transport tests; node sync (3h2) decides whether sessions use it
 
 osis-engine::body_min_ts  deferred: durable-compaction/chunk-blind (retention/bounds.rs)
 
