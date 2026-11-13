@@ -152,45 +152,32 @@ impl Gen {
             }
         };
         match &it.body {
-            Type::Struct(st) => {
-                let _ = writeln!(self.out, "{P}::codec_struct! {{");
+            Type::Struct(_) | Type::Enum(_) => {
+                // (id, name, doc, type): every field has one, a case one if it has a payload
+                let (kw, ids, members) = match &it.body {
+                    Type::Struct(st) => ("struct", "Field", st.fields.iter().map(|(id, f)| (*id, &f.name, &f.doc, Some(&f.ty))).collect::<Vec<_>>()),
+                    Type::Enum(en) => ("enum", "Case", en.cases.iter().map(|(id, c)| (*id, &c.name, &c.doc, c.payload.as_ref())).collect()),
+                    _ => ("", "", Vec::new()),
+                };
+                let _ = writeln!(self.out, "{P}::codec_{kw}! {{");
                 doc(&mut self.out, "    ");
-                let _ = writeln!(self.out, "    {derive}\n    pub struct {}{generics} {{", it.rust);
+                let _ = writeln!(self.out, "    {derive}\n    pub {kw} {}{generics} {{", it.rust);
                 let mut consts = String::new();
-                for (id, f) in &st.fields {
-                    let t = self.rust_type(&f.ty, &format!("{}{}", it.rust, camel(&f.name)), false)?;
-                    if let Some(d) = &f.doc {
+                for (id, name, d, ty) in members {
+                    let t = ty.map(|t| self.rust_type(t, &format!("{}{}", it.rust, camel(name)), false)).transpose()?;
+                    if let Some(d) = d {
                         doc_lines(&mut self.out, d, "        ");
                     }
-                    let _ = writeln!(self.out, "        {id} {}: {t},", field_ident(&f.name));
-                    let _ = writeln!(consts, "        {} = {id},", f.name.to_uppercase());
+                    let m = match (kw, t) {
+                        ("struct", Some(t)) => format!("{}: {t}", field_ident(name)),
+                        (_, Some(t)) => format!("{}(x: {t})", camel(name)),
+                        (_, None) => camel(name),
+                    };
+                    let _ = writeln!(self.out, "        {id} {m},");
+                    let _ = writeln!(consts, "        {} = {id},", name.to_uppercase());
                 }
                 let _ = writeln!(self.out, "    }}\n}}");
-                let _ = writeln!(self.out, "{P}::ids! {{\n    /// Field IDs of `{}`.\n    pub mod {}: FieldId {{\n{consts}    }}\n}}", it.rust, snake(&it.rust));
-            }
-            Type::Enum(en) => {
-                let _ = writeln!(self.out, "{P}::codec_enum! {{");
-                doc(&mut self.out, "    ");
-                let _ = writeln!(self.out, "    {derive}\n    pub enum {}{generics} {{", it.rust);
-                let mut consts = String::new();
-                for (id, c) in &en.cases {
-                    let v = camel(&c.name);
-                    if let Some(d) = &c.doc {
-                        doc_lines(&mut self.out, d, "        ");
-                    }
-                    match &c.payload {
-                        None => {
-                            let _ = writeln!(self.out, "        {id} {v},");
-                        }
-                        Some(p) => {
-                            let t = self.rust_type(p, &format!("{}{v}", it.rust), false)?;
-                            let _ = writeln!(self.out, "        {id} {v}(x: {t}),");
-                        }
-                    }
-                    let _ = writeln!(consts, "        {} = {id},", c.name.to_uppercase());
-                }
-                let _ = writeln!(self.out, "    }}\n}}");
-                let _ = writeln!(self.out, "{P}::ids! {{\n    /// Case IDs of `{}`.\n    pub mod {}: CaseId {{\n{consts}    }}\n}}", it.rust, snake(&it.rust));
+                let _ = writeln!(self.out, "{P}::ids! {{\n    /// {ids} IDs of `{}`.\n    pub mod {}: {ids}Id {{\n{consts}    }}\n}}", it.rust, snake(&it.rust));
             }
             _ => {
                 let t = self.rust_type(&it.body, &it.rust, false)?;
