@@ -86,7 +86,7 @@ fn write_and_watch_without_commit_spec_data_model_2() {
     assert!(db.aspects(db.me()).unwrap().contains(&ak("app:selection+.0")));
 }
 
-// notes/ephemeral.md Local engine (Restart): on a `Dir` store, reopening forgets every
+// notes/ephemeral.md Restarts and lost access: on a `Dir` store, reopening forgets every
 // ephemeral aspect; durable data is intact. spec/requirements.md (data model: ephemeral state in
 // memory)
 // spec/data-model.md §1

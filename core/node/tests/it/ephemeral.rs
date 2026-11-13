@@ -1,4 +1,4 @@
-//! Synced ephemeral data (notes/ephemeral.md step 3, spec/sync.md §4-§6): ephemeral commits held
+//! Synced ephemeral data (notes/ephemeral.md Synced ephemeral data, spec/sync.md §4-§6): ephemeral commits held
 //! in memory at nodes and hosts, carried by the ordinary sync path; signals as relay-only
 //! commits.
 
@@ -185,7 +185,7 @@ pub(crate) fn rows(b: &osis_store::MemoryBackend) -> usize {
     b.scan(&[], None, usize::MAX).unwrap().len()
 }
 
-// notes/ephemeral.md step 3, spec/sync.md §4: a window's ephemeral state in a synced group
+// notes/ephemeral.md Synced ephemeral data, spec/sync.md §4: a window's ephemeral state in a synced group
 // reaches the other holder's reads and watches; neither its store nor the host's gains a row
 // (the host reserves log numbers in its label meta, the same row)
 #[test]
@@ -5179,7 +5179,7 @@ fn memory_snapshot_covers_held_bodies_spec_sync_9() {
     for i in 0..3 {
         for c in [&a1, &a2, &b1] {
             // an author keeps its own body until one of its own snapshots covers it
-            // (notes/ephemeral.md, covers drop live bodies)
+            // (notes/ephemeral.md, Own bodies under own covers)
             assert_eq!(holds_commit(&lp, i, &c.0), i == 1 && c.0 == b1.0, "{i}: covered, forgotten");
         }
         assert!(holds_commit(&lp, i, &snap.0) && holds_commit(&lp, i, &e1.0), "{i}");
@@ -5208,7 +5208,7 @@ fn memory_snapshot_covers_held_bodies_spec_sync_9() {
 
 // spec/sync.md §7 (covered-equal snapshots: only the higher commit ID goes), memory class: two
 // writers snapshot the same state; a holder keeps the lower one; each writer keeps its own
-// (until one of its own snapshots covers it, notes/ephemeral.md, covers drop live bodies) and the other's
+// (until one of its own snapshots covers it, notes/ephemeral.md, Own bodies under own covers) and the other's
 // when it is the lower
 #[test]
 fn memory_covered_equal_snapshots_keep_lower_spec_sync_7() {
@@ -5394,7 +5394,7 @@ fn memory_random_demotion(seed: u64) {
         let reads: Vec<_> = (0..4).map(|i| aks.iter().map(|ak| lp.peers[i].engine.get(&d, &eph(ak)).unwrap()).collect::<Vec<_>>()).collect();
         assert!(reads.iter().all(|r| *r == reads[0]), "seed {seed} round {round}: {reads:?}\n{}", log.join("\n"));
         // alike at every node but an author's own bodies, which it keeps until its own snapshot
-        // covers them (notes/ephemeral.md, covers drop live bodies): per author, the other nodes agree
+        // covers them (notes/ephemeral.md, Own bodies under own covers): per author, the other nodes agree
         let held: Vec<BTreeMap<Tid, BTreeSet<osis_base::CommitId>>> = (0..4)
             .map(|i| {
                 let mut by: BTreeMap<Tid, BTreeSet<osis_base::CommitId>> = BTreeMap::new();
@@ -6480,7 +6480,7 @@ fn ephemeral_state_converges_across_a_failed_write_spec_sync_6() {
     }
 }
 
-// notes/node-sync.md Failed writes, notes/ephemeral.md Holders: a node forgetting what it lost
+// notes/node-sync.md Failed writes, notes/ephemeral.md Restarts and lost access: a node forgetting what it lost
 // access to keeps its records of the ephemeral entries under the labels it still syncs, and
 // forgets those of the labels it lost. A reader alone holds a value of G1 (its host and its
 // writer restarted while the reader could not reach that host) when it loses G2; it still places

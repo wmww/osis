@@ -4,7 +4,7 @@
 > Tags: ephemeral, engine, sync
 
 ## Leaving a closure
-- Today (notes/ephemeral.md Holders, Open): a node that stops syncing a label or loses read access keeps the ephemeral state of the things it held through that label until restart; caps are per label, so that state is under no cap. Durable holders keep their copies, so this is a memory rule, not a parity gap in itself.
+- Today (notes/ephemeral.md Restarts and lost access): a node that stops syncing a label while it still reads the things keeps the ephemeral state of the things it held through that label until restart; caps are per label, so that state is under no cap. Durable holders keep their copies, so this is a memory rule, not a parity gap in itself.
 - Plan: a node drops a thing's ephemeral state, its own writes included, when the thing leaves every closure the node syncs. Judged only for things the node had inside a settled closure (after a start the closure is what has arrived so far). Forgets locally without deleting at hosts (a new `MemoryDrop` kind; host entries go by the existing outside-closure deletes). A thing coming back into a closure is fetched again (the label reconciled).
 - Not needed for deletes: a delete's purge request reaches holders through the groups its removals are on (notes/ephemeral.md Deletion).
 - Tests: a thing removed from its only group and added back reads its ephemeral state again from the holders and hosts that kept it; a restarted node's partial closure drops nothing.
