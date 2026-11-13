@@ -609,8 +609,8 @@ impl SyncEngine {
         Ok((out, None))
     }
 
-    /// An entry as the stream shows it: only one whose bytes are held here (an entry kept with
-    /// its bytes dropped has nothing to serve), inline when it fits. Of a sync ID kept unread,
+    /// An entry as the stream shows it: only one that opens here (`opens_here`: an entry kept
+    /// with its bytes or its wrap dropped has nothing to serve), inline when it fits. Of a sync ID kept unread,
     /// as the hub's store holds it.
     fn stream_added(&mut self, l: LabelId, b: BlobId, inline: u64, crossed: &BTreeSet<BlobId>, budget: usize) -> Result<Option<Event>> {
         let Some(e) = self.state.entries.get(&(l, b)) else {
@@ -620,7 +620,7 @@ impl SyncEngine {
             return Ok(Some(Event::Added { blob_id: b, blob: fits.then_some(bytes), wrap, stamp }));
         };
         let (wrap, stamp) = (e.wrap, e.stamp);
-        if !self.engine.has_blob(&b) {
+        if !self.opens_here(&l, &b) {
             return Ok(None);
         }
         let size = match self.blob_sizes.get(&b) {

@@ -2167,6 +2167,11 @@ impl SyncEngine {
     /// Fetches blobs by ID from an open label holding them (lazy chunk reads), but those in
     /// flight.
     pub fn fetch(&mut self, ids: &[BlobId]) -> Vec<super::Action> {
+        self.fetch_under(ids, |_, _| true)
+    }
+
+    /// `fetch` of those of `ids` under the labels `under` names.
+    fn fetch_under(&mut self, ids: &[BlobId], under: impl Fn(&LabelId, &BlobId) -> bool) -> Vec<super::Action> {
         let mut out = Vec::new();
         let mut todo: Vec<(ConnId, LabelId, Vec<BlobId>)> = Vec::new();
         for (conn, c) in &self.conns {
@@ -2174,7 +2179,7 @@ impl SyncEngine {
                 if lc.phase != Phase::Open {
                     continue;
                 }
-                let v: Vec<BlobId> = ids.iter().filter(|b| self.state.is_present(&c.host, l, b)).copied().collect();
+                let v: Vec<BlobId> = ids.iter().filter(|b| under(l, b) && self.state.is_present(&c.host, l, b)).copied().collect();
                 if !v.is_empty() {
                     todo.push((*conn, *l, v));
                 }
@@ -2198,11 +2203,13 @@ impl SyncEngine {
         Ok(self.fetch(&ids))
     }
 
-    /// Fetches every entry not held yet from the hosts holding it (lazy chunks, on demand).
+    /// Fetches every unopened entry that does not open from what is here (`opens_here`) from
+    /// the hosts holding it under its label (lazy chunks, on demand).
     pub fn fetch_missing(&mut self) -> Vec<super::Action> {
-        let ids: Vec<BlobId> = self.state.entries.iter().filter(|(_, e)| e.kind == Kind::Unknown).map(|((_, b), _)| *b).collect();
-        let ids: Vec<BlobId> = ids.into_iter().filter(|b| !self.engine.has_blob(b)).collect();
-        self.fetch(&ids)
+        let keys: Vec<(LabelId, BlobId)> = self.state.entries.iter().filter(|(_, e)| e.kind == Kind::Unknown).map(|(k, _)| *k).collect();
+        let want: BTreeSet<(LabelId, BlobId)> = keys.into_iter().filter(|(l, b)| !self.opens_here(l, b)).collect();
+        let ids: Vec<BlobId> = want.iter().map(|(_, b)| *b).collect::<BTreeSet<_>>().into_iter().collect();
+        self.fetch_under(&ids, |l, b| want.contains(&(*l, *b)))
     }
 
     /// Delete statuses. Code 9 (signed under a key older than the head's) needs nothing here:
