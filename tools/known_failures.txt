@@ -14,3 +14,5 @@ tests_laws::entry_copies::forged_entry_copies_join_and_expire_alike_spec_5_6 OSI
 tests_life::sweep_laws_spec_sync_7 OSIS_CRDT_SEED=917311 issues/sweep-laws-view-read-seed.md the view's read
 sim-sweep:evil_host_drops 0/117 issues/evil-host-drops-s0-churn.md labels changed after quiescence \(ping-pong\)
 sim-sweep:evil_host_drops 0/138 issues/evil-host-drops-s0-churn.md not quiescent after \d+ rounds
+rotation::tests_property::rotation_holds_large_spec_crypto_4 OSIS_ROTATION_START=636429853021 issues/rotation-departed-opens-seed.md made by a rotator that saw it depart
+sim-sweep:folders 636429852973/636429852979 issues/folders-sim-message-storm.md message storm: \d+ deliveries without the queue emptying
