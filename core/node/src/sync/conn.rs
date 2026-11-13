@@ -495,10 +495,8 @@ impl SyncEngine {
     }
 
     /// A Delete of `items` of `l` on `conn`, `MAX_ITEMS` per request, each entry recorded with the
-    /// id it went under (`Requests::deleting`). An item that cannot be encoded refuses the delete
-    /// of `l` whole (`refused`), as a malformed answer would.
+    /// id it went under (`Requests::deleting`).
     pub(crate) fn delete(&mut self, conn: ConnId, l: LabelId, items: Vec<osis_proto::msg::DeleteItem>, out: &mut Vec<Action>) -> Result<()> {
-        let (items, bad): (Vec<_>, Vec<_>) = items.into_iter().partition(|i| i.to_value().is_ok());
         let now = self.now();
         for chunk in items.chunks(osis_proto::msg::MAX_ITEMS) {
             let ids: Vec<osis_base::BlobId> = chunk.iter().map(|i| i.blob).collect();
@@ -508,9 +506,6 @@ impl SyncEngine {
                     c.req.deleting.insert((l, b), (now, id));
                 }
             }
-        }
-        if !bad.is_empty() {
-            self.refused(conn, &Pending::Delete(l, Vec::new()), Code::MALFORMED, out)?;
         }
         Ok(())
     }

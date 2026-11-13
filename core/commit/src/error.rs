@@ -10,7 +10,7 @@ pub enum Error {
     Malformed(&'static str),
     /// Violates a rule of spec/commits.md (kinds, retention, expiry, purge). BadInput.
     Invalid(&'static str),
-    /// A format version above ours (a commit, link, card, bundle; spec/versioning.md §2). Parked.
+    /// A format version above ours (a commit, link, bundle; spec/versioning.md §2). Parked.
     UnknownVersion(u64),
     /// A blob framing version this build does not know: store and relay it as a blob with no
     /// expiry and no commitments (spec/wire.md §5). Parked.

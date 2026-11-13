@@ -143,9 +143,9 @@ impl DeleteItem {
         head.keys.get(role).verify(Domain::Delete, &d, &self.sig).map_err(|_| Error::Verify("delete signature"))
     }
 
-    pub fn to_value(&self) -> Result<Value, Error> {
+    pub fn to_value(&self) -> Value {
         let by = Value::List(self.by.iter().map(|(l, s)| Value::List(vec![Value::Int(i64::from(*l)), Value::bytes(&s.0)])).collect());
-        Ok(Value::List(vec![Value::bytes(&self.blob.0), by, Value::bytes(&self.sig.0)]))
+        Value::List(vec![Value::bytes(&self.blob.0), by, Value::bytes(&self.sig.0)])
     }
 
     pub fn from_value(v: &Value) -> Result<DeleteItem, Error> {
@@ -259,13 +259,13 @@ mod tests {
         let none = Prefix::new(salt, None, vec![]).unwrap();
         assert!(by(&sync, &[(2, &d2)], &salt, &hb).verify(&s0, Some(&none)).is_err());
         let item = by(&sync, &[(2, &d2)], &salt, &hb);
-        assert_eq!(DeleteItem::from_value(&item.to_value().unwrap()).unwrap(), item);
-        let mut v = item.to_value().unwrap();
+        assert_eq!(DeleteItem::from_value(&item.to_value()).unwrap(), item);
+        let mut v = item.to_value();
         if let Value::List(x) = &mut v {
             x[2] = Value::List(vec![Value::List(vec![Value::Int(4), Value::bytes(&[0; 64])])]);
         }
         assert!(DeleteItem::from_value(&v).is_err());
-        let mut v = item.to_value().unwrap();
+        let mut v = item.to_value();
         if let Value::List(x) = &mut v {
             x[2] = Value::List(vec![Value::List(vec![Value::Int(3), Value::bytes(&[0; 64])]), Value::List(vec![Value::Int(2), Value::bytes(&[0; 64])])]);
         }

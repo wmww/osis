@@ -1,5 +1,5 @@
-//! Unpadded base64url (RFC 4648 §5): tid text form (spec/data-model.md §1), address, link and
-//! card text forms (spec/wire.md §10).
+//! Unpadded base64url (RFC 4648 §5): tid text form (spec/data-model.md §1), address and link
+//! text forms (spec/wire.md §10).
 
 const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
 
