@@ -150,6 +150,18 @@ impl Engine {
 }
 
 impl Engine {
+    /// Whether `g`'s closure is known whole here: no group in it holds a part of its `group.0` as
+    /// a header only (`partial_groups`), whose list may hold any thing (spec/sync.md §6).
+    pub fn closure_whole(&mut self, g: &Tid) -> Result<bool> {
+        let closure = self.closure(g);
+        let missing = missing_groups(&self.core, |x| closure.contains(x))?;
+        // no transaction where nothing is missing (the usual case)
+        if missing.is_empty() {
+            return Ok(true);
+        }
+        self.run(|tx| Ok(partial_groups(tx, missing)?.is_empty()))
+    }
+
     /// The groups whose `group.0` may list `t`, as an item and as a subgroup: what a delete of `t`
     /// removes it from (spec/crdt.md §5.5, §4.6). `listed_in`, and every group with a part of its
     /// `group.0` held as a header only (`header_only_parts`), in both: what that part lists is not
@@ -167,18 +179,35 @@ pub(crate) fn listing_groups(tx: &mut super::Tx<'_>, t: &Tid) -> Result<(BTreeSe
         let items: BTreeSet<Tid> = ix.of.get(t).into_iter().flatten().filter(|g| ix.defs.get(g).is_some_and(|d| d.0.contains(t))).copied().collect();
         (items, ix.parents_of(t).collect::<BTreeSet<Tid>>())
     };
-    let gak = Ak::new(osis_schema::RawKey::ak(&osis_schema::core_types::GROUP)).map_err(|_| crate::error::Error::Misuse("ak"))?;
-    let partial: Vec<Tid> = tx.core.ix.missing.range((gak.clone(), Tid::from_bytes([0; 15]))..).take_while(|((ak, _), _)| *ak == gak).map(|((_, g), _)| *g).collect();
-    for g in partial {
-        if g == *t || items.contains(&g) && subs.contains(&g) {
-            continue;
-        }
-        if !header_only_parts(tx, &g, &gak)?.is_empty() {
-            items.insert(g);
-            subs.insert(g);
-        }
+    let missing = missing_groups(tx.core, |g| g != t && !(items.contains(g) && subs.contains(g)))?;
+    for g in partial_groups(tx, missing)? {
+        items.insert(g);
+        subs.insert(g);
     }
     Ok((items, subs))
+}
+
+/// The groups `of` picks with a part of their `group.0` not held (`Hold::Missing`).
+fn missing_groups(core: &super::Core, of: impl Fn(&Tid) -> bool) -> Result<Vec<Tid>> {
+    let gak = group_ak()?;
+    Ok(core.ix.missing.range((gak.clone(), Tid::from_bytes([0; 15]))..).take_while(|((ak, _), _)| *ak == gak).map(|((_, g), _)| *g).filter(|g| of(g)).collect())
+}
+
+/// Of `groups`, those holding a part of their `group.0` as a header only (`header_only_parts`):
+/// what that part lists is not known here.
+fn partial_groups(tx: &mut super::Tx<'_>, groups: Vec<Tid>) -> Result<Vec<Tid>> {
+    let gak = group_ak()?;
+    let mut out = Vec::new();
+    for g in groups {
+        if !header_only_parts(tx, &g, &gak)?.is_empty() {
+            out.push(g);
+        }
+    }
+    Ok(out)
+}
+
+fn group_ak() -> Result<Ak> {
+    Ak::new(osis_schema::RawKey::ak(&osis_schema::core_types::GROUP)).map_err(|_| crate::error::Error::Misuse("ak"))
 }
 
 /// `w` for ops `ops` on aspect `(tid, ak)`: a removal of a tid among them covers the parts held

@@ -288,7 +288,7 @@ Each operation names a label. Writes are signed with the role keys of the host's
   - **must-not-hold**, any of:
     - purged;
     - expired (its blob's prefix expiry, §3, whatever of it the label's actor reads);
-    - outside the required set;
+    - outside the required set, judged only while no group of the closure holds a part of its `group.0` as a header only (spec/crdt.md §5.5): what that part lists may be in the closure;
     - a blob of commit C whose delta set is a strict subset of another held blob of C under that label that is not itself must-not-hold and whose extra deltas include one only a blob carries: kept or holding a live write, and covered by no snapshot under the label, established as for must-hold (not while an entry under the label is being fetched or pending);
     - under D's home label (target, issues/account-signing.md step 7), another node's card commit (spec/permissions.md §4) once a later valid card commit of that node writing the same aspect is under the label (an entry of it this node opened and checked against its header);
     - under D's home label, another node's card commit, for `node.0` and `reach.0`, once that node is a node of the account no more after an applied edge write on D ended its grant (removed it, or its `until` passed).

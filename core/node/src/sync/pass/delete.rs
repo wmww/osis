@@ -277,6 +277,12 @@ impl SyncEngine {
                 if !opened.iter().all(|p| held.contains(p)) || !settled {
                     return Ok(None);
                 }
+                // nor while a group of the closure holds part of its `group.0` as a header only
+                // (a body to come again, as under a snapshot that fell): that part may list the
+                // thing, and a holder of its body places the entry again until it comes
+                if !self.engine.closure_whole(g)? {
+                    return Ok(None);
+                }
             }
         }
         // a body outside the required set holds no write this label must keep

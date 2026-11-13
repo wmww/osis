@@ -5874,6 +5874,51 @@ fn fallen_snapshot_lifts_own_tombstone_spec_sync_9() {
     assert_eq!(net.eph_read(a, t, STATE), Some(s("y")));
 }
 
+// spec/sync.md §6 (outside the required set), §7 (A snapshot turning invalid): writer b's
+// snapshot S2 of the group's list covers its S1, which covers the commit listing window w; S2
+// falls with b's demotion (the admin never received it), so b holds the earlier parts of that
+// list as headers only until the admin, still holding S1, logs it again (after its relay delay).
+// What they list is not known at b: b, restarted, deletes no entry of w as outside the closure
+// meanwhile (the admin, reading w in it, would place it again at once: a storm), and gets w's
+// value once S1 comes.
+#[test]
+fn header_only_list_keeps_what_it_may_list_spec_sync_6() {
+    let (mut net, _host, [a, b], g, []) = hosted::<2, 0>(&[(1, Role::Write)], [], false);
+    let tb = net.tid(b);
+    let gak = osis_base::Ak::new("group.0").unwrap();
+    let (w, _) = made_window(&mut net, b, g, "v");
+    local(&mut net, b);
+    net.run();
+    // past the admin's relay delay for b's write on w: it places it again at once where it lacks
+    net.advance(30_000);
+    net.run();
+    let acts = net.sync(b).compact_now(&g, &gak).unwrap();
+    net.actions(b, acts);
+    net.run();
+    assert_eq!(net.eph_read(a, w, STATE), Some(s("v")));
+    // a reads nothing from the host for a while
+    net.held_to.insert(a);
+    made_window(&mut net, b, g, "u");
+    let acts = net.sync(b).compact_now(&g, &gak).unwrap();
+    net.actions(b, acts);
+    local(&mut net, b);
+    net.run();
+    let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
+    let d = osis_node::flows::Demotion { holder: tb, new: Some(edge), retain: None };
+    let done = net.engine(a).demote(&g, &d).unwrap();
+    let acts = net.sync(a).carry_out(done).unwrap();
+    net.actions(a, acts);
+    net.release();
+    net.run();
+    assert!(!net.engine(b).groups_of(&w).contains(&g), "w's listing is a header only at b");
+    net.restart(b, 7);
+    net.run();
+    net.advance(30_000);
+    net.run();
+    assert!(net.engine(b).groups_of(&w).contains(&g), "the admin logged S1 again");
+    assert_eq!(net.eph_read(b, w, STATE), Some(s("v")));
+}
+
 // spec/crdt.md §4.6: an ephemeral undo or redo needs the rights of a write, and leaves the nodes alike.
 #[test]
 fn ephemeral_reverts_within_rights_alike_spec_crdt_4_6() {
