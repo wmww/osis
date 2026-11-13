@@ -913,10 +913,8 @@ impl NetSim {
         if self.watch || self.count_placed {
             self.observe_node(n);
         }
-        if self.nodes.get(n).is_some_and(|x| x.faults.crashed()) {
-            self.report.crashes = self.report.crashes.saturating_add(1);
-            self.note(format!("node {n} crashed mid-write"));
-            return self.node_down(n);
+        if self.node_crashed_mid_write(n)? {
+            return Ok(());
         }
         self.actions(n, acts)
     }
@@ -1279,6 +1277,10 @@ impl NetSim {
 
     /// What node `n`'s hub handed out: bytes and closes on its peer links, ups to its node sync.
     fn node_hub_out(&mut self, n: usize, out: Vec<HubOutput>) -> Res<()> {
+        // its hub shares the node's disk
+        if self.node_crashed_mid_write(n)? {
+            return Ok(());
+        }
         let mut ups = Vec::new();
         let mut moved = false;
         for o in out {
@@ -1299,12 +1301,6 @@ impl NetSim {
                 HubOutput::Diagnostic(d) => self.note(format!("node {n} hub diagnostic: {}", d.chars().take(160).collect::<String>())),
             }
         }
-        // its hub shares the node's disk: a write there that crashed takes the node down
-        if self.nodes.get(n).is_some_and(|x| x.up && x.faults.crashed()) {
-            self.report.crashes = self.report.crashes.saturating_add(1);
-            self.note(format!("node {n} crashed mid-write"));
-            return self.node_down(n);
-        }
         if ups.is_empty() && !moved {
             return Ok(());
         }
@@ -1312,10 +1308,10 @@ impl NetSim {
     }
 
     fn hub_out(&mut self, s: usize, out: Vec<HubOutput>) -> Res<()> {
-        let ups = self.hub_outputs(s, out);
         if self.host_crashed_mid_write(s)? {
             return Ok(());
         }
+        let ups = self.hub_outputs(s, out);
         // node sync above the hub, by function call as the node's driver does
         match ups {
             Some(ups) => self.host_feed(s, Event::Hub { ups }),
@@ -1323,8 +1319,20 @@ impl NetSim {
         }
     }
 
-    /// After any call into host `s` (its hub or its node sync): a write that crashed its store
-    /// takes it down, as power loss would, before anything else of it runs.
+    /// After any call into node `n` (its node sync or its hub), before any of the call's
+    /// outputs go: a write that crashed its store takes it down, as power loss would (the
+    /// driver carries out a call's outputs after it returns, so none of them went).
+    fn node_crashed_mid_write(&mut self, n: usize) -> Res<bool> {
+        if !self.nodes.get(n).is_some_and(|x| x.up && x.faults.crashed()) {
+            return Ok(false);
+        }
+        self.report.crashes = self.report.crashes.saturating_add(1);
+        self.note(format!("node {n} crashed mid-write"));
+        self.node_down(n)?;
+        Ok(true)
+    }
+
+    /// `node_crashed_mid_write` for host `s` (its hub or its node sync).
     fn host_crashed_mid_write(&mut self, s: usize) -> Res<bool> {
         if !self.hosts.get(s).is_some_and(|x| x.up && x.faults.crashed()) {
             return Ok(false);
@@ -1335,8 +1343,7 @@ impl NetSim {
         Ok(true)
     }
 
-    /// Carries out a hub's outputs (a crash mid-write is `host_crashed_mid_write`'s to act on); what goes up to
-    /// node sync, if anything.
+    /// Carries out a hub's outputs; what goes up to node sync, if anything.
     fn hub_outputs(&mut self, s: usize, out: Vec<HubOutput>) -> Option<Vec<(u64, osis_host::Up)>> {
         let mut ups = Vec::new();
         let mut moved = false;
@@ -1783,7 +1790,19 @@ impl NetSim {
                 self.advance(dt)?;
             }
         }
-        Ok(())
+        self.no_dead_store_up()
+    }
+
+    /// Fails if a device is up on a store that crashed: a call into it whose crash nothing acted
+    /// on (`node_crashed_mid_write`, `host_crashed_mid_write`). Checked after every scheduler
+    /// step and before quiescence revives the stores.
+    fn no_dead_store_up(&self) -> Res<()> {
+        let n = self.nodes.iter().position(|x| x.up && x.faults.crashed()).map(Party::N);
+        let s = self.hosts.iter().position(|x| x.up && x.faults.crashed()).map(Party::S);
+        match n.or(s) {
+            Some(p) => Err(self.fail(format!("{p:?} left up on a crashed store"))),
+            None => Ok(()),
+        }
     }
 
     pub fn run(&mut self, n: u64) -> Res<()> {
@@ -2186,6 +2205,7 @@ impl NetSim {
         for r in 0..self.reach.relay_count() {
             self.reach.set_relay_up(r, true);
         }
+        self.no_dead_store_up()?;
         for s in 0..self.hosts.len() {
             if !self.hosts.get(s).is_some_and(|x| x.up) {
                 self.restart_host(s)?;
