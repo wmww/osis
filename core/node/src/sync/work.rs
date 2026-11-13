@@ -633,6 +633,19 @@ impl SyncEngine {
             let blobs: Vec<BlobId> = self.state.entries_of(l, c).map(|(b, _)| b).collect();
             let Some(h) = self.engine.header(c) else {
                 w.unjudged.remove(c);
+                // a memory snapshot forgotten here stays one of the label's while an entry of it
+                // is there: what it may cover is not established uncovered (`must_hold`)
+                if let Some(f) = self.memory.forgotten.get(c).filter(|f| is_snapshot(f.header.kind)) {
+                    for a in &f.header.aspects {
+                        let k = (a.tid, a.ak.clone());
+                        let set = w.snaps.entry(k.clone()).or_default();
+                        set.retain(|(_, x)| x != c);
+                        set.extend(blobs.iter().map(|b| (*b, *c)));
+                        if set.is_empty() {
+                            w.snaps.remove(&k);
+                        }
+                    }
+                }
                 continue;
             };
             for a in &h.aspects {

@@ -378,6 +378,40 @@ fn a_silent_co_reader_holds_a_body_for_the_stall_time_only_spec_sync_6() {
     }
 }
 
+// spec/sync.md §6 (stall): a co-reader that answers none of a node's requests while it keeps
+// pushing keeps the connection (its pushes move the stall clock, within `MAX_AHEAD`); the node
+// sends it no Ping while one is unanswered, so none pile up for as long as it holds out
+#[test]
+fn no_pings_pile_up_at_a_peer_answering_none_spec_sync_6() {
+    let (mut net, [a, b, c]) = local_nodes::<3>();
+    reach_ed(&mut net, b);
+    reach_ed(&mut net, c);
+    let g = net.group_at(b, &[(a, Role::Write), (c, Role::Write)], vec![]);
+    net.pair(c, a);
+    net.pair(b, c);
+    net.run();
+    net.advance(120_000);
+    net.silent.insert((b, a));
+    let pings = std::rc::Rc::new(std::cell::Cell::new(0usize));
+    let p2 = pings.clone();
+    net.tamper_link = Some((a, b));
+    net.tamper = Some(Box::new(move |m| {
+        if matches!(m, osis_proto::Message::Ping { .. }) {
+            p2.set(p2.get() + 1);
+        }
+        None
+    }));
+    let closes = net.peer_closes;
+    // four ping intervals
+    for i in 0..40 {
+        net.advance(30_000);
+        net.item(b, g, g, &format!("later {i}"));
+        net.run();
+    }
+    assert_eq!(net.peer_closes, closes, "the connection stays up");
+    assert!(pings.get() <= 1, "{} pings", pings.get());
+}
+
 /// Node `a` with co-readers `b` (the writer, dialed by `a`) and `c`; from its first reply to
 /// `a` on, `b` trickles: 16 bytes at once, then one byte every 30 s, so the stall clock always
 /// moves. `b` writes, `a` asks `b` for the body. Then: ms after the write until `a` reads it

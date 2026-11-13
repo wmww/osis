@@ -50,13 +50,19 @@ impl SyncEngine {
                 self.fill_more(conn, l, out)?;
             }
         }
-        // dialed connections' pings (`PING_INTERVAL_MS`)
+        // dialed connections' pings (`PING_INTERVAL_MS`); none while one is unanswered: the
+        // oldest request is what the stall clock times, and a peer that never answers would
+        // otherwise gather one more every interval
         let due: Vec<ConnId> = self.conns.iter().filter(|(_, c)| c.is_ready() && c.dial.as_ref().is_some_and(|d| d.next_ping <= now)).map(|(id, _)| *id).collect();
         for conn in due {
-            if let Some(d) = self.conns.get_mut(&conn).and_then(|c| c.dial.as_mut()) {
+            let Some(c) = self.conns.get_mut(&conn) else { continue };
+            let pinging = c.pending.values().any(|p| matches!(p, conn::Pending::Ping { .. }));
+            if let Some(d) = c.dial.as_mut() {
                 d.next_ping = now.saturating_add(osis_proto::hello::PING_INTERVAL_MS);
             }
-            self.ping(conn, out);
+            if !pinging {
+                self.ping(conn, out);
+            }
         }
         self.stream_retry(out)?;
         self.shared_retry(out)?;
