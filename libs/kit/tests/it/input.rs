@@ -127,8 +127,7 @@ impl Screen {
                 RenderRootSignal::ClipboardStore(t) => self.platform.set_clipboard(t),
                 RenderRootSignal::ClipboardRead => {
                     asked = true;
-                    let t = self.platform.clipboard().unwrap_or_default();
-                    self.root.handle_text_event(TextEvent::ClipboardPaste(t));
+                    osis_kit::input::paste(&mut self.root, &mut self.platform);
                 }
                 _ => {}
             }
@@ -227,4 +226,13 @@ fn cut_copy_and_paste_go_through_the_platforms_clipboard() {
     assert_eq!(s.text(A), " world");
     assert!(s.clipboard_signals());
     assert_eq!(s.text(A), "hi world");
+    // an empty clipboard pastes nothing: the selection stays
+    s.tap(p, 1000);
+    s.tap(p, 100);
+    assert_eq!(s.selected(), "hi");
+    s.platform.clipboard = Some(String::new());
+    s.shortcut("v");
+    assert!(s.clipboard_signals());
+    assert_eq!(s.text(A), "hi world");
+    assert_eq!(s.selected(), "hi");
 }

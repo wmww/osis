@@ -6,7 +6,7 @@
 //! field does, and so does a field focused for the user to type in now (`type_in`).
 
 use crate::masonry::app::RenderRoot;
-use crate::masonry::core::{PointerEvent, PointerId, PointerUpdate, WidgetId};
+use crate::masonry::core::{PointerEvent, PointerId, PointerUpdate, TextEvent, WidgetId};
 use crate::masonry::kurbo::Point;
 use crate::platform::{Platform, Thresholds};
 
@@ -87,6 +87,19 @@ impl Input {
         if rr.focus_on(Some(id)) && focused_field(rr) == Some(id) {
             platform.keyboard(true);
         }
+    }
+}
+
+/// The clipboard's text, `None` when it holds none: an empty clipboard pastes nothing.
+pub fn clipboard(platform: &mut dyn Platform) -> Option<String> {
+    platform.clipboard().filter(|t| !t.is_empty())
+}
+
+/// The focused widget asked to paste: the clipboard's text replaces its selection (ending any
+/// composition). An empty clipboard leaves the field as it is.
+pub fn paste(rr: &mut RenderRoot, platform: &mut dyn Platform) {
+    if let Some(text) = clipboard(platform) {
+        rr.handle_text_event(TextEvent::ClipboardPaste(text));
     }
 }
 

@@ -424,8 +424,8 @@ pub const DARK: Local<bool> = Local::new("dark", || false);
 pub const TICK: Local<u64> = Local::new("tick", || 0);
 /// Bumped on every keystroke in an editor: what shows pending typing depends on it.
 pub const TYPED: Local<u64> = Local::new("typed", || 0);
-/// A thing just made here: its title wants typing (`UseOffer` sets it; the shell clears it once
-/// the field took the keyboard).
+/// A thing just made here: its title wants typing (`UseOffer` sets it; `Ui` clears it after the
+/// next update, which built the thing's page).
 pub const NAMING: Local<Option<Tid>> = Local::new("naming", || None);
 
 pub struct WindowInner {

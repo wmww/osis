@@ -22,7 +22,7 @@ use osis::{Subscription, Tid};
 use crate::masonry::app::RenderRoot;
 use crate::masonry::peniko::Color;
 use crate::masonry::core::{Capitalize, EnterKey, TextInputHints, TextPurpose};
-use crate::masonry::core::{ErasedAction, NewWidget, PointerEvent, Properties, TextEvent, Widget, WidgetId, WidgetTag};
+use crate::masonry::core::{ErasedAction, NewWidget, PointerEvent, Properties, Widget, WidgetId, WidgetTag};
 use crate::masonry::properties::Padding;
 use crate::masonry::properties::types::{CrossAxisAlignment, Length};
 use crate::masonry::widgets::{Flex, IndexedStack, Portal, Prose, SizedBox, TextAction, TextArea};
@@ -350,7 +350,8 @@ impl Ui {
     }
 
     /// Fields that appeared wanting typing take the focus and want the keyboard; served, the flag
-    /// goes from their slot's model (as the view will say once `NAMING` is cleared).
+    /// goes from their slot's model (as the view will say once `NAMING` is cleared). `NAMING`
+    /// lasts one update: the one after the action built the new thing's page, or never will.
     fn serve_typing(&mut self, rr: &mut RenderRoot) {
         for (key, id) in std::mem::take(&mut self.typing) {
             if !rr.has_widget(id) {
@@ -368,6 +369,8 @@ impl Ui {
                     }
                 }
             }
+        }
+        if self.state.graph.peek(NAMING).is_some() {
             self.state.set_local(NAMING, None);
         }
     }
@@ -673,19 +676,22 @@ impl Ui {
         match e.paste {
             None => {}
             Some(PasteTo::Search) => {
-                let text = self.clipboard().unwrap_or_default();
-                self.state.set_local(QUERY, text.trim().to_string());
-                self.enter_search(rr);
+                if let Some(text) = self.clipboard() {
+                    self.state.set_local(QUERY, text.trim().to_string());
+                    self.enter_search(rr);
+                }
             }
             Some(PasteTo::Action(d)) => {
-                let text = self.clipboard().unwrap_or_default();
-                self.run(rr, d, Input::Text(text));
+                if let Some(text) = self.clipboard() {
+                    self.run(rr, d, Input::Text(text));
+                }
             }
         }
     }
 
+    /// The clipboard's text; `None` when it holds none (nothing to paste).
     fn clipboard(&mut self) -> Option<String> {
-        self.attached.as_mut().and_then(|a| a.platform.clipboard())
+        self.attached.as_mut().and_then(|a| crate::input::clipboard(&mut *a.platform))
     }
 
     fn enter_search(&mut self, rr: &mut RenderRoot) {
@@ -931,10 +937,11 @@ impl Ui {
     }
 
     /// The focused widget asked to paste (`RenderRootSignal::ClipboardRead`): the clipboard's
-    /// text goes to it.
+    /// text replaces its selection (`input::paste`).
     pub fn paste(&mut self, rr: &mut RenderRoot) {
-        let text = self.clipboard().unwrap_or_default();
-        rr.handle_text_event(TextEvent::ClipboardPaste(text));
+        if let Some(a) = self.attached.as_mut() {
+            crate::input::paste(rr, &mut *a.platform);
+        }
     }
 
     /// A widget cut or copied `text` (`RenderRootSignal::ClipboardStore`).
