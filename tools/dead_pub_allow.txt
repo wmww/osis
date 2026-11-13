@@ -13,7 +13,6 @@ osis::stream_work  test hook (internals)
 osis-base::TAG_STRUCT_RESERVED  table: the spec's reserved CBOR tags, named for the codec tests
 osis-crdt::cut_dots  the spec's Paste op (§5.7) takes its dots; the API's cut/paste is deferred (issues/api-deferred.md)
 osis-schema::GROUPS  table: one handle per core aspect
-osis-schema::TID  table: one handle per core aspect
 
 osis-perm::applied_on_built  test hook: counts index builds
 osis-perm::certificate_set  test hook: certificate records as a held set
