@@ -30,7 +30,7 @@ A link is the whole authority to read and to delete its blob: whoever holds the 
 - **Trigger** (spec/sync.md §7): a body weighs the tree its links free (a walk stopping at blobs a live state links); the estimate grows per join by what the unlinked trees hold beyond the linked ones (a level-aligned walk, flat in value size); a snapshot weighs its encoded state alone.
 - **Repair** (spec/sync.md §1): `Engine::relink` asks each thing of the closures that lost a blob whether its live states link it (memoized tree walks; a rare path, no index).
 - **Relay-only commits** never page (spec/commits.md §2): a delta linking a page is bad input (`verify::NoPages`).
-- **Commit size**: no list bounds it; one commit blob (`MAX_BLOB`) does (issues/commit-size-below-requirement.md).
+- **Commit size**: no list bounds it; one commit blob (`MAX_BLOB`) does, which Tess judged ample (notes/whole-commits.md).
 
 ## Security, per attack class
 - **Forged listing** (a writer of t1 copies t2's link into t1): under t1's tid the blob bears no commitment, so the host refuses a delete by level and a holder checks before using the label key. The judgment is per thing, so t1's link keeps nothing of t2 alive.
