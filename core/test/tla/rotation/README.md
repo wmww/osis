@@ -114,6 +114,16 @@ A holder actor M of A whose anchors fork (spec/crypto.md §4, Seal): M's admins 
 
 Depth0.tla keeps single-keyset sealing: a rotation over forked anchors is not made there (a subset of the build's behaviours), so its fork instances are this model's.
 
+## Joint box blocked (`JointRule.tla`)
+When a joint box to holder actor M is blocked (spec/crypto.md §4, Seal; issues/joint-seal-blocked-by-one-fork.md). Static: every configuration at once as initial states, no steps. M forked into two keysets; M's direct holders device x and holder actors N, P (members among x, q); known departures from M and from N, P. Each fork covers or misses each removal from M (no box to the removed holder, or one) and boxes N, P at their old or new keyset; a fork misses each departure edge it leaves open (what Blocked finds, directly or by the box clause). `Rule`: `"any"` (some fork misses some departure: the build), `"edge"` (one edge every fork misses), `"party"` (one departed party every fork misses), `"every"` (every fork misses some departure). `NoLeak`: no departed device opens both forks of a joint box made; `NoPooledLeak`: no two departed devices pooling their secrets do; `Seals`: a fork missing nothing seals M. Each run 162,000 states, under 10 s at one worker, cfgs written per run (`CONSTANT Rule = ...`, `INVARIANT ...`).
+
+| rule | `NoLeak` | `NoPooledLeak` | `Seals` |
+|---|---|---|---|
+| any | pass | pass | **fails** (M left out while one fork misses nothing) |
+| edge | **fails** | **fails** | pass |
+| party | **fails**: q in N and P; N removed from M (fork 1 boxes N, fork 2 does not), q removed from P (fork 1 boxes P at its new keyset, fork 2 at its old); fork 1 misses party N, fork 2 party q, and q opens fork 1 through N, fork 2 through P | **fails** | pass |
+| every | pass | pass | pass |
+
 ## Timed grants and finalizes (`Finalize.tla`)
 notes/permissions.md (Keys). One group, read role, writers A, B, X (admins), readers D1, D2. Edge writes are entries (spec/crdt.md §5.6): A's `until` writes on D1, D2 and its renewal of D2 (before any finalize) each reset the entry their author held live; a finalize resets the live entry of each ended grant (erase, or keep: an `until` 0 entry beside) and carries a rotation naming the departures its author applied, its own by the departs mark. Any delivery order, commits whole; boxes are global and secrets are the closure over boxes and history boxes. `Rule`: `named` (the rule) or `old` (a name met by its commit alone; the negative control). Invariants: `NoLeak` (content written knowing a departure that stands with every commit held is not readable by the departed reader; every honest writer writes whenever it may), `Settles` (once all is delivered and nobody has a key action left, the honest writers agree on the current epochs and may encrypt, and every holder, a renewed one included, holds each of them).
 
