@@ -75,6 +75,12 @@ r0Mem == rMem \ {<<"X2", "R">>}
 r0Learners == rLearners \ {"R"}
 \* ... W may rotate G once unprompted (sealing X1 at a keyset it opens)
 rEagerW == {<<"W", "G">>}
+\* ... or W rotates G once unprompted with proofs not judged: at a keyset of X1
+\* it made up, or backdated at X1's newest keyset it knows (Bogus)
+rBogusMade == {<<"W", "G", "made">>}
+rBogusBack == {<<"W", "G", "back">>}
+\* ... or W rotates X1 itself past X1's knowing keyset, then G (Rogue)
+rRogue == {<<"W", "X1", "G">>}
 \* blind box in a cycle (D0_box_ok): 3-cycle,
 \* B in A, C in B, A in C; p the admin of A and B (so p holds a role on C
 \* through A), q of C; p removes D from A. In order B in A, A in C, then C in
