@@ -1373,6 +1373,24 @@ impl SyncEngine {
                 Ok(o) => {
                     let parts = o.parts();
                     let commit = o.commit.id();
+                    // a copy's parts the label carries no more (a revocation since it was placed):
+                    // none taken, no byte kept, the entry left as a dropped body's until this node
+                    // reads their things again (spec/permissions.md §3, spec/sync.md §3)
+                    let stale = if o.copy { self.engine.copy_stale(&g, &o.commit) } else { BTreeSet::new() };
+                    if !stale.is_empty() {
+                        self.engine.await_reading(&commit, &o.commit.header, &stale);
+                        e.salt = prefix.as_ref().map(|p| *p.salt());
+                        e.kind = Kind::Commit { commit, parts, ais: o.ais };
+                        e.wrap = [0; osis_crypto::WRAP_LEN];
+                        e.stamp = None;
+                        self.state.set_entry(l, b, e);
+                        self.delete_blobs(&[b])?;
+                        let c = osis_commit::rewrite(&o.commit, |ai| stale.contains(&ai));
+                        if !c.parts.is_empty() {
+                            commits.push(ToIngest { label: l, blob: b, size: bytes.len(), plaintext: c.encode(), commit: c });
+                        }
+                        return Ok(());
+                    }
                     if !self.state.blobs.contains_key(&b) {
                         self.state.add_blob(b, BlobRec { commit, parts: parts.clone(), ais: o.ais.clone(), key, cert: e.cert || o.copy, memory: e.memory });
                     }
@@ -2140,7 +2158,11 @@ impl SyncEngine {
         let ix = &self.engine.core.ix;
         // a slot whose record is away too: what the refetch awaits takes a destroyed actor's record
         // again (spec/commits.md §5 Destruction)
-        let again = |c: &osis_base::CommitId, parts: &[usize]| commits.is_none_or(|cs| cs.contains(c)) && ix.commits.get(c).is_some_and(|m| parts.iter().any(|p| m.missing(*p)));
+        // (a woken commit not held at all: its copy's parts were all left out, `copy_stale`)
+        let again = |c: &osis_base::CommitId, parts: &[usize]| match (commits, ix.commits.get(c)) {
+            (Some(cs), m) => cs.contains(c) && m.is_none_or(|m| parts.iter().any(|p| m.missing(*p))),
+            (None, m) => m.is_some_and(|m| parts.iter().any(|p| m.missing(*p))),
+        };
         // at start, bytes still held are a part waiting or one the engine has not taken yet
         let ids: Vec<(LabelId, BlobId)> = match commits {
             Some(cs) => cs.iter().flat_map(|c| self.entries_of_commit(c)).filter(|k| matches!(self.state.entries.get(k).map(|e| &e.kind), Some(Kind::Commit { commit, parts, .. }) if again(commit, parts))).collect(),

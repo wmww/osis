@@ -41,6 +41,10 @@ pub(crate) struct Waits {
     /// names: any arriving may let a part apply), by record; in memory, with `things_of`.
     on_record: BTreeMap<Tid, BTreeSet<CommitId>>,
     records_of: BTreeMap<CommitId, Vec<Tid>>,
+    /// Commits whose copy's parts on things this node cannot read were not taken
+    /// (`Engine::copy_stale`), by those things' secret actor: fetched again once the node holds
+    /// secrets of it (`read_again`). In memory: a restart fetches every missing part again.
+    unread: BTreeMap<Tid, BTreeSet<CommitId>>,
 }
 
 impl Waits {
@@ -126,6 +130,16 @@ impl Waits {
     /// Whether a commit touching `t` cannot be judged here (`Engine::awaits_on`).
     pub fn awaits_on(&self, t: &Tid) -> bool {
         self.on_thing.contains_key(t)
+    }
+
+    /// Commit `id` has parts not taken on content under `actor`, which the node cannot read.
+    pub fn awaits_reading(&mut self, actor: Tid, id: CommitId) {
+        self.unread.entry(actor).or_default().insert(id);
+    }
+
+    /// The commits waiting for the node to read `actor` (`awaits_reading`), taken.
+    pub fn read_again(&mut self, actor: &Tid) -> BTreeSet<CommitId> {
+        self.unread.remove(actor).unwrap_or_default()
     }
 
     /// `id`'s reading-only secrets went, or it no longer awaits.

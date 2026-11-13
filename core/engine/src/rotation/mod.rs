@@ -33,7 +33,7 @@ pub use lost::{Dropped, Leaving, LostScope, LOST_HEARD_WAIT_MS};
 pub(crate) use lost::{load_kept, without_frozen};
 pub(crate) use departures::{departures, key_role};
 pub(crate) use members::{Boxing, Sealed, grant_keyless, sealed};
-pub(crate) use lost::{arm_untils, boxes_kept, load_lost_due, mark_lost_due};
+pub(crate) use lost::{arm_untils, boxes_kept, load_lost_due, mark_lost_due, may_learn, may_take};
 
 /// How far `blocked_epoch` follows boxes to holder actors (spec/crypto.md §4, Encrypting under).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

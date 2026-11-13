@@ -311,8 +311,9 @@ fn a_later_default_touches_no_past_removal_spec_perm_3() {
         let mut x = setup(edge);
         let d = x.d;
         removed(&mut x);
-        set_default(&mut x.lp, 0, d, !keep);
-        spread(&mut x.lp);
+        // the change alone reaches bob (a sync pass gives a node nothing of what it cannot read)
+        let c = set_default(&mut x.lp, 0, d, !keep);
+        send(&mut x.lp, 0, 1, &[c]);
         x.lp.peers[1].engine.drop_lost_secrets().unwrap();
         if keep {
             assert_kept(&mut x);

@@ -430,6 +430,29 @@ impl Engine {
         parts.iter().filter(|ai| h.aspects.get(**ai).is_some_and(|a| self.reads(ctx, &a.tid))).copied().collect()
     }
 
+    /// The parts of copy `c`, opened under a label of `g`, that the label carries no more
+    /// (spec/sync.md §3: a label carries the parts its group's actor may read): content on a
+    /// thing under an actor with secrets of its own that the group's actor may not read now, left
+    /// by a revocation since the per-label copy was placed
+    /// (spec/permissions.md §3). Node-sync takes none of them and keeps no byte of the copy;
+    /// each is fetched again once this node holds secrets of its thing's secret actor
+    /// (`Engine::await_reading`).
+    pub fn copy_stale(&self, g: &Tid, c: &CommitBlob) -> BTreeSet<usize> {
+        let actor = self.group_actor(g);
+        let h = &c.header;
+        let stale = |a: &osis_commit::AspectEntry| !crate::retention::forget::certificate(&a.ak) && self.core.secret_actor(&a.tid).is_some_and(|x| self.core.ix.own_keys.contains(&x)) && !self.actor_reads(&actor, &a.tid);
+        c.parts.iter().map(|p| p.ai).filter(|ai| h.aspects.get(*ai).is_some_and(stale)).collect()
+    }
+
+    /// Fetch commit `c` again once this node holds secrets of the secret actor of any of its
+    /// parts `ais` (`copy_stale`): `Changed::wakes` names it then.
+    pub fn await_reading(&mut self, c: &CommitId, h: &osis_commit::Header, ais: &BTreeSet<usize>) {
+        let actors: BTreeSet<Tid> = ais.iter().filter_map(|ai| h.aspects.get(*ai)).filter_map(|a| self.core.secret_actor(&a.tid)).collect();
+        for a in actors {
+            self.core.waits.awaits_reading(a, *c);
+        }
+    }
+
     /// Whether the actor of `ctx` may read `t` (spec/sync.md §3).
     pub(super) fn reads(&self, ctx: &BodyCtx, t: &Tid) -> bool {
         self.actor_reads(&ctx.actor, t)

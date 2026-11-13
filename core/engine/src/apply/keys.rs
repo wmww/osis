@@ -685,15 +685,17 @@ impl crate::engine::Engine {
     /// Records a read or sync secret learned from a label's entry box (a link key opening
     /// by static entry, spec/sync.md §2) when it is the secret of epoch `e` of `g`'s role `r` (spec/crypto.md
     /// §4; anyone holding the head's step key, a removed admin among them, can write the box, so
-    /// it establishes nothing). False when it is not.
+    /// it establishes nothing). False when it is not, or when the node lost `g` (`rotation::may_learn`,
+    /// spec/permissions.md §3).
     pub fn learn_secret(&mut self, g: &Tid, r: Role, e: osis_crypto::Epoch, secret: osis_crypto::Secret32) -> Result<bool> {
-        if !e.names(g, r, &secret) {
+        if !e.names(g, r, &secret) || !crate::rotation::may_learn(&self.core, g, r) {
             return Ok(false);
         }
         let g = *g;
         self.run(|tx| {
             tx.core.touch();
             tx.core.ix.secrets.entry_or_default(g).role_mut(r).set_secret(e, secret);
+            tx.core.read_again(&g);
             // what the secret opens: `g`'s own history boxes, then the boxes sealed to `g`
             let (s, alts) = (crate::flows::secrets_in(tx, &g)?, crate::flows::secrets_alts(tx, &g)?);
             tx.core.ingest_secrets(&g, &s, crate::engine::secrets::SecretsRead::State, &alts);
@@ -1002,15 +1004,21 @@ mod tests {
 
     // spec/crypto.md §4: what a node holds is a function of the secrets it holds, however it
     // learned them: a secret from an entry box opens the boxes sealed to its epoch at once, as a
-    // rebuild of the store would.
+    // rebuild of the store would. Node 1 reads g, which reads t; g's and t's next epochs box
+    // node 1 nothing.
     #[test]
     fn a_learned_read_secret_opens_the_boxes_sealed_to_it_spec_crypto_4() {
         let mut lp = LocalPeer::fresh(2, WallMs(1_700_000_000_000));
+        lp.sync_all().unwrap();
         let a = lp.peers[0].engine.me();
+        let b = lp.peers[1].engine.me();
         let g = thing_of(&mut lp, 0, a);
         let t = thing_of(&mut lp, 0, a);
         let read = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
         lp.peers[0].engine.grant(&t, &g, &read).unwrap();
+        lp.peers[0].engine.grant(&g, &b, &read).unwrap();
+        lp.peers[0].engine.rotate_boxing_only(&[g], &[Role::Read], &[a]).unwrap();
+        lp.peers[0].engine.rotate_boxing_only(&[t], &[Role::Read], &[a, g]).unwrap();
         let e0 = lp.peers[0].engine.epochs(&g).unwrap();
         let eg = e0.read.newest().unwrap();
         let sg = e0.read.secret(&eg).cloned().unwrap();

@@ -23,6 +23,7 @@ mod compaction;
 mod deletion;
 mod destruction;
 mod lifetimes;
+mod lost_secrets;
 mod disputes;
 mod edits;
 mod deposit_queue;

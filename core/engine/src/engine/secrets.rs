@@ -245,7 +245,17 @@ impl Core {
         let Some(epochs) = self.ingest_view(actor, secrets, read, alts) else { return false };
         self.ix.secrets.insert(*actor, epochs);
         self.role_changed();
+        self.read_again(actor);
         true
+    }
+
+    /// The node holds secrets of `actor` again: the parts left out of copies while it could not
+    /// read what is under it are fetched again (`Waits::awaits_reading`).
+    pub(crate) fn read_again(&mut self, actor: &Tid) {
+        let again = self.waits.read_again(actor);
+        if let Some(ch) = &mut self.changed {
+            ch.wakes.woken.extend(again);
+        }
     }
 
     /// Whether the reading-only budget has no room for `actor`, which holds nothing yet.
@@ -305,6 +315,18 @@ impl Core {
         for t in self.accounts.keys().filter(|t| holders.contains(t)) {
             let keys = self.account_keys_by_name(t);
             let _ = osis_keys::ingest_with(actor, secrets, alts, &Opener::Account { holder: *t, keys: &keys }, &mut epochs, unchecked);
+        }
+        // a node holds no secret of an actor it cannot read (spec/permissions.md §3): an applied
+        // box gives a role's secrets only where the node's roles give them now (`may_take`),
+        // whatever the box (a forgotten part rejoining, a late rotation, a holder actor's chain);
+        // a pending one's are a grant's still to be judged, read until it is
+        // (`keys::forget_unchecked`)
+        if unchecked.is_none() {
+            for r in ROLES {
+                if !crate::rotation::may_take(self, actor, r) {
+                    *epochs.role_mut(r) = before.as_ref().map(|b| b.role(r).clone()).unwrap_or_default();
+                }
+            }
         }
         let held_any = epochs.holds_any();
         (held_any && Some(&epochs) != before.as_ref()).then_some(epochs)
@@ -974,7 +996,13 @@ mod tests {
     #[test]
     fn whole_read_keeps_only_what_live_entries_say() {
         let mut lp = crate::local_peer::LocalPeer::fresh(1, osis_base::WallMs(1_700_000_000_000));
-        let actor = Tid::from_bytes([3; 15]);
+        // a thing the node reads (its first admin): boxes give it secrets (`rotation::may_take`)
+        let e = &mut lp.peers[0].engine;
+        let mut m = crate::Mutation::new();
+        let me = e.me();
+        let actor = e.new_thing(&mut m, me);
+        m.set(actor, &osis_base::Ak::new("x:a.0").unwrap(), &osis_base::Value::Int(1)).unwrap();
+        e.commit(m).unwrap().unwrap();
         let (held, unheld) = (Epoch::new(1, [1; 32]).unwrap(), Epoch::new(2, [2; 32]).unwrap());
         let mut seed = ActorEpochs::default();
         seed.read.set_secret(held, Secret32::from_bytes([1; 32]));

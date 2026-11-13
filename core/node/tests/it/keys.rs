@@ -21,6 +21,13 @@ fn rcpt(lp: &mut LocalPeer, i: usize, role: Role) -> Recipient {
     Recipient { holder, role, keys }
 }
 
+/// Node 0 grants node 1 read on `a`: its boxes then give node 1 `a`'s secrets
+/// (spec/permissions.md §3: a node holds no secret of an actor it cannot read).
+fn read_by_1(lp: &mut LocalPeer, a: Tid) {
+    let b = lp.peers[1].engine.me();
+    lp.peers[0].engine.grant(&a, &b, &edge(Role::Read)).unwrap();
+}
+
 /// A read rotation of `a` from node 0's view, written as one role commit naming `names`.
 fn rotation_commit(lp: &mut LocalPeer, a: Tid, seed: u64, roles: BTreeSet<Role>, names: &Names) -> (osis_base::CommitId, Rotation) {
     let holders = [rcpt(lp, 0, Role::Admin), rcpt(lp, 1, Role::Read)];
@@ -58,6 +65,7 @@ fn rotation_out_of_order_spec_crypto_4() {
     let mut lp = net(2, 0);
     lp.sync_all().unwrap();
     let a = new_thing(&mut lp, 0);
+    read_by_1(&mut lp, a);
     let (c1, r1) = rotation_commit(&mut lp, a, 1, BTreeSet::from(Role::ALL), &Names::default());
     let e1 = r1.rotated.iter().find(|x| x.role == Role::Read).unwrap().epoch;
     let v0 = lp.peers[0].engine.epochs(&a).unwrap();
@@ -98,6 +106,7 @@ fn history_chain_from_state_spec_crypto_4() {
     let mut lp = net(2, 0);
     lp.sync_all().unwrap();
     let a = new_thing(&mut lp, 0);
+    read_by_1(&mut lp, a);
     let roles = BTreeSet::from([Role::Read]);
     let only0 = [rcpt(&mut lp, 0, Role::Admin)];
     // secrets of its own are all three roles' (spec/crypto.md §3); then two read rotations
