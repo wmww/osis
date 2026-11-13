@@ -72,6 +72,30 @@ pub fn random_value(r: &mut Rng, ty: &Ty, depth: u32) -> Value {
     }
 }
 
+/// Parts a remover holds as headers only (§5.5): none half the time, else one or two counter
+/// ranges of the sessions other writers use (a node holds its own parts), ascending and apart.
+pub fn random_seen(r: &mut Rng, own: &crate::stamp::Source) -> Vec<(crate::stamp::Dot, u64)> {
+    let mut out: Vec<(crate::stamp::Dot, u64)> = Vec::new();
+    if r.chance(1, 2) {
+        return out;
+    }
+    let mut v: Vec<(crate::stamp::Dot, u64)> = (0..1 + r.below(2))
+        .map(|_| {
+            let lo = 1 + r.below(6) as u64;
+            (crate::stamp::Dot { source: crate::stamp::Source::session(1 + r.below(4) as u8, 0), ctr: lo }, lo + 1 + r.below(6) as u64)
+        })
+        .filter(|(d, _)| d.source != *own)
+        .collect();
+    v.sort();
+    for (d, hi) in v {
+        match out.last_mut() {
+            Some((l, lhi)) if l.source == d.source && d.ctr <= *lhi => *lhi = (*lhi).max(hi),
+            _ => out.push((d, hi)),
+        }
+    }
+    out
+}
+
 /// A set element: a register set holds a tid half the time, removed by value (§5.5).
 fn elem_value(r: &mut Rng, et: &Ty, depth: u32) -> Value {
     if matches!(et, Ty::Register) && r.chance(1, 2) {
@@ -199,7 +223,8 @@ pub fn random_op(r: &mut Rng, w: &mut Writer, ty: &Ty, state: Option<&Frag>) -> 
             if r.chance(1, 2) {
                 ops::set_add(w, Some(st), &v)
             } else {
-                ops::set_remove(w, Some(st), &v)
+                let seen = random_seen(r, &w.source);
+                ops::set_remove(w, Some(st), &v, &seen)
             }
         }
         (Ty::Map(kt, vt), Frag::Map { entries, .. }) => {

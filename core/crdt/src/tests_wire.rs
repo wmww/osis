@@ -528,28 +528,37 @@ fn snapshot_carries_no_own_writes_spec_2_4() {
     assert!(decode_snapshot(&b, &scx, &mut Interner::new(), None).is_err());
 }
 
-/// §3.2, §3.3 rule 7: a set's value removal `[Dot, R, Opt(Fragment), Stamp, Value]` names a tid;
-/// one naming another value, a record with no write, or a removal in a bag is bad input. Model
-/// and implementation agree on each.
+/// §3.2, §3.3 rule 7: a set's value removal `[Dot, R, Opt(Fragment), Stamp, Value, [Seen+]]`
+/// names a tid and the parts it covers, ascending and apart. One naming another value or no
+/// part, parts out of order, touching or empty, a record with no write, or a removal in a bag is
+/// bad input. Model and implementation agree on each.
 #[test]
 fn value_removal_form_spec_3_2() {
+    use crate::fragment::Removal;
+    use crate::stamp::DotRange;
     let mw = crdt_model::ops::Writer::new(MSource::session(1, 0), 1 << 16, 1);
     let cx = writer_cx(&mw);
     let own = |c| Dot::new(source(&mw.source), c);
     let r = Stamp::new(ts(1 << 16), source(&mw.source), 1);
-    let rm = |v: Value, st: Option<Stamp>| Elem { reset: None, frag: None, gone: st.map(|s| (s, v)) };
+    let part = |n: u8, lo: u64, hi: u64| DotRange { first: Dot::new(sess(tid(n)), lo), hi };
+    let rm = |v: Value, seen: Option<Vec<DotRange>>| Elem { reset: None, frag: None, gone: seen.map(|seen| Removal { stamp: r.clone(), value: v, seen }) };
+    let set = |e: Elem| Fragment::Set(Set::new(Meta::default(), BTreeMap::from([(own(1), e)])));
     let t = Value::Tid(tid(3));
-    let ok = Fragment::Set(Set::new(Meta::default(), BTreeMap::from([(own(1), rm(t.clone(), Some(r.clone())))])));
+    let ok = set(rm(t.clone(), Some(vec![part(2, 1, 3), part(2, 4, 5), part(4, 1, 9)])));
     let bytes = encode_delta(&Delta { nonce: [1; 16], fragment: ok.clone() }, &cx, None).unwrap();
     assert_eq!(decode_delta(&bytes, &cx, &mut Interner::new(), None).unwrap().fragment, ok);
     assert!(crdt_model::wire::decode_delta(&bytes, &mut Ctx::writer(mw.ts, mw.source.clone(), mw.lo, mw.hi())).is_ok(), "the model reads it");
     for bad in [
-        Fragment::Set(Set::new(Meta::default(), BTreeMap::from([(own(1), rm(Value::Int(3), Some(r.clone())))]))),
-        Fragment::Set(Set::new(Meta::default(), BTreeMap::from([(own(1), rm(t.clone(), None))]))),
-        Fragment::Bag(crate::fragment::Bag { kind: crate::fragment::BagKind::Counter, meta: Meta::default(), elems: BTreeMap::from([(own(1), rm(t.clone(), Some(r.clone())))]) }),
+        set(rm(Value::Int(3), Some(vec![part(2, 1, 3)]))),
+        set(rm(t.clone(), Some(vec![]))),
+        set(rm(t.clone(), Some(vec![part(2, 1, 3), part(2, 3, 5)]))),
+        set(rm(t.clone(), Some(vec![part(2, 4, 5), part(2, 1, 3)]))),
+        set(rm(t.clone(), Some(vec![part(2, 3, 3)]))),
+        set(rm(t.clone(), None)),
+        Fragment::Bag(crate::fragment::Bag { kind: crate::fragment::BagKind::Counter, meta: Meta::default(), elems: BTreeMap::from([(own(1), rm(t.clone(), Some(vec![part(2, 1, 3)])))]) }),
     ] {
-        let bytes = encode_delta(&Delta { nonce: [1; 16], fragment: bad }, &cx, None).unwrap();
-        assert_eq!(decode_delta(&bytes, &cx, &mut Interner::new(), None).unwrap_err().class(), ErrorClass::BadInput);
-        assert!(crdt_model::wire::decode_delta(&bytes, &mut Ctx::writer(mw.ts, mw.source.clone(), mw.lo, mw.hi())).is_err(), "the model refuses it");
+        let bytes = encode_delta(&Delta { nonce: [1; 16], fragment: bad.clone() }, &cx, None).unwrap();
+        assert_eq!(decode_delta(&bytes, &cx, &mut Interner::new(), None).unwrap_err().class(), ErrorClass::BadInput, "{bad:?}");
+        assert!(crdt_model::wire::decode_delta(&bytes, &mut Ctx::writer(mw.ts, mw.source.clone(), mw.lo, mw.hi())).is_err(), "the model refuses it: {bad:?}");
     }
 }

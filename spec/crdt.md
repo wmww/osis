@@ -112,7 +112,8 @@ Slots    := [10, Opt(Register), [Fragment*]]  ; §7: register slot, then non-reg
 Bag      := [1|2|3, R, W, [Elem*]]           ; Elem as in Set; the value register holds int|float (anything else, only from §7, reads as nothing)
 Struct   := [4, R, W, {field_id: Fragment}]          ; or paged: [Link+], §8
 Enum     := [5, R, W, Case, {case_id: Fragment}]   Case := Opt([Stamp, case_id] | [Stamp])   ; payload map paged: [Link+], §8
-Set      := [6, R, W, [Elem*]]               Elem  := [Dot, R, Opt(Fragment)] | [Dot, R, Opt(Fragment), Stamp, Value]   ; the second carries a value removal (§5.5), sets only
+Set      := [6, R, W, [Elem*]]               Elem  := [Dot, R, Opt(Fragment)] | [Dot, R, Opt(Fragment), Stamp, Value, [Seen+]]   ; the second carries a value removal (§5.5), sets only
+Seen     := [Dot, n]                         ; the dots of Dot's source with counters in [ctr, ctr + n), n >= 1
 Map      := [7, R, W, [Entry*]]              Entry := [Dot, Opt(Ci), R, Value, Opt(Fragment)] | [Dot, Opt(Ci), R, Opt(Fragment)]   ; Value is the key; omitted: key not carried. Opt(Ci) here is the bare Ci or nothing: the entry's creation commit (§5.6), carried for a creation of another commit than this one
 Seq      := [8|9, R, W, [Run*]]
 Run      := [Dot, n, Creation, Content, [PosW*], [FlagW*]]
@@ -196,7 +197,7 @@ FlagW    := [i_from, i_to, Stamp, bool] | [i_from, i_to, Stamp, false, string]  
      - a non-empty `Content` whose length differs from the number of content-carrying elements of the run;
      - a `PosW` sibling key whose `ts` is not below its stamp's.
    - **Records**: a set, bag or map entry record carrying no write (no reset, no creation, and a fragment absent or empty, §4.2 Emptiness), as a run carrying none above.
-   - **Value removals**: one in a bag, one whose value is not a tid (§5.5).
+   - **Value removals**: one in a bag, one whose value is not a tid (§5.5), one whose `Seen` parts are not ascending by first dot (§2.2) and apart (on one source, each starting above the previous one's last counter plus one), and a part whose last counter overflows.
    - **Registers and set or bag elements**
      - a `Register` with a reset below a nested level (only aspect roots and the slots of a `Slots` carry one);
      - a set or bag element whose fragment is not a `Register`, or whose register write has another source than the element's dot (only its creation writes it, §5.5).
@@ -268,7 +269,7 @@ Every fragment has an **effective reset** `E = max(E_parent, own R)`, with `E_ro
 Defined per encoding in §5. Reading a fragment that is not present yields "absent"; inside a struct that is a missing field (reader default or typed-read error, spec/versioning.md §5); inside a map entry or list element it means the element is not live.
 
 ### 4.5 Writes an op produces; a commit is a net effect
-Local ops are resolved against local state at write time (index paths, keys, values become dots), so a removal names only observed dots. They produce one delta per touched aspect; sections 5.x list each op's writes.
+Local ops are resolved against local state at write time (index paths, keys, values become dots), so a removal names only observed dots, a tid's removal also the counter ranges of parts the writer holds as headers only (§5.5). They produce one delta per touched aspect; sections 5.x list each op's writes.
 
 A delta is a state fragment, so a commit carries the **net effect** of the ops batched into it, not their history:
 - A register written twice carries the last value.
@@ -281,7 +282,7 @@ An **undo commit** sets `undoes` (spec/commits.md §7). Its deltas are ordinary 
 - MUST hold the rights any write of the same deltas needs (write on each thing it deletes or brings back, the required role on every aspect it writes), else there is no undo; likewise for ephemeral undo and redo.
 - MUST NOT write back content it holds value-less (§4.7: expired by the undo's `wall_ms(ts)`, named by a purge request it holds, an ephemeral write it no longer holds), nor content outside kept history, and MUST NOT undo a commit outside it (spec/commits.md §7).
 - MUST give the commit an expiry no later than that of any write whose content it writes back (a receiver does not check it: writing a value back is writing it again), and MUST NOT write back in one commit the content of writes that expire at different times (no expiry counting as one): such an undo is refused until the sooner ones have expired.
-- SHOULD make each aspect the undone commit wrote read as it did just before that commit, as kept history gives that state (spec/commits.md §7), where only undo commits changed it since. Undoing a thing's creation so deletes the thing (its durable aspects reset as a delete resets them: each one but `retainers^.0` (spec/commits.md §5 Lifetimes) present, or written by a valid part not received yet that no held root reset stamped after it covers; its ephemeral state dropped locally as a delete drops it (spec/sync.md §9 Sending), and a value removal of it (§5.5) written in each field of every group the node may write whose `group.0` may list it: held listing it, or with a valid part not received yet that no held reset of that `group.0` stamped after it covers).
+- SHOULD make each aspect the undone commit wrote read as it did just before that commit, as kept history gives that state (spec/commits.md §7), where only undo commits changed it since. Undoing a thing's creation so deletes the thing (its durable aspects reset as a delete resets them: each one but `retainers^.0` (spec/commits.md §5 Lifetimes) present, or written by a valid part not received yet that no held root reset stamped after it covers; its ephemeral state dropped locally as a delete drops it (spec/sync.md §9 Sending), and its removal (§5.5) written in each field of every group the node may write whose `group.0` may list it: held listing it, or with a part held as a header only).
 - MUST NOT undo a delta whose inverse **restores** replaced content unless every part it may have replaced is kept (spec/commits.md §7). Judged by the delta's writes alone: it restores when it holds a register write, a case write, a reset, an element or record removal (a set's value removal included), a sequence position or flag write, or such a write nested in a record it did not create; taking away its own creations (a sequence insert, a set or bag element, a map record, with all nested in them) restores nothing.
 
 Writes of deltas the node judges invalid are not undone. A signal delta is written back as nothing: a signal reads absent before it (spec/commits.md §7). Redo is an undo of the undo commit.
@@ -329,7 +330,7 @@ A write is **dead** at a node once the join has superseded it:
 - its element deleted or tombstoned, or a set element hidden by a value removal (§5.5);
 - its value gone by expiry (§4.7).
 
-**Which write.** A write is its position, kind and stamp, never its stamp alone (one op stamps many writes: every value of a map set). Positions: a struct field, an enum payload, a set or bag element, a set's value removals of one tid (§5.5), a map entry by its dot (the dot's records are one entry, §5.6), a sequence element per element (a range record is one per element), and the content of an entry or element, below that one's own writes; a `Slots` position's slots are one position, a slot's embedding of the register the register's writes (§7). A fragment's **winning writes** are the writes it holds but:
+**Which write.** A write is its position, kind and stamp, never its stamp alone (one op stamps many writes: every value of a map set). Positions: a struct field, an enum payload, a set or bag element, a set's value removal by its dot (§5.5), a map entry by its dot (the dot's records are one entry, §5.6), a sequence element per element (a range record is one per element), and the content of an entry or element, below that one's own writes; a `Slots` position's slots are one position, a slot's embedding of the register the register's writes (§7). A fragment's **winning writes** are the writes it holds but:
 - of a sequence element's position writes only `cur`, when it is not the creation's own (`prev` is beaten);
 - not a text element's creation while its winning flag is a delete, but for an embedded char (§7), which dies with its register's write;
 - of a map dot's records, the writes of their join (a write beaten at its position by one in another record of the dot is beaten).
@@ -387,12 +388,12 @@ Each encoding below gives: state, delta shape (= grammar of §3.2, restated wher
 - Ops: `set_case(id, payload)` where id differs from the current case → `[5, [D], [], [[D, id]], {id: payload fragment}]` (reset, case write, payload). Same case with a changed payload → `[5, [], [], [], {id: diff-delta}]` (no case write). `option<T>`: `none` is a case without payload: `[5, [D], [], [[D, 0]], {}]`.
 
 ### 5.5 Set (6)
-- State: `R`, `written`, elements `{dot: (R_elem, value register, removal)}`. The value register's first write has the element's creation stamp. A **value removal** `(stamp, v)` is a write of its own naming a tid `v` (spec/data-model.md §2); a writer puts it on a fresh dot holding nothing else (a commit-level write: its stamp is `D`).
-- Join: union by dot; per element `R` max, register max, removal max by `(stamp, v)`; prune (§4.2: a removal below `E_parent` goes). A tombstone is `(dot, R_elem)`.
-- Live: an element whose register is present under `E_elem` and that no value removal of its value in the set stamped above its register write hides. A hidden element stays in the state, as a deleted text element's creation does; its write is dead (§4.8).
+- State: `R`, `written`, elements `{dot: (R_elem, value register, removal)}`. The value register's first write has the element's creation stamp. A **value removal** `(stamp, v, parts)` is a write of its own naming a tid `v` (spec/data-model.md §2) and one or more counter ranges of sources (`Seen`, §3.2); a writer puts it on a fresh dot holding nothing else (a commit-level write: its stamp is `D`).
+- Join: union by dot; per element `R` max, register max, removal max by `(stamp, v, parts)` (`v` by its bytes, parts as the sequence of their `(first dot (§2.2), end)`); prune (§4.2: a removal below `E_parent` goes). A tombstone is `(dot, R_elem)`.
+- Live: an element whose register is present under `E_elem` and that no value removal in the set hides. A removal hides an element whose value is its `v`, whose dot lies in one of its parts and whose register write is stamped below it. A hidden element stays in the state, as a deleted text element's creation does; its write is dead (§4.8).
 - Read: the set of distinct values of live elements. Equal values from several elements read once. Large values compare by keyed content hash (spec/data-model.md §6); of equal links the read shows the one of the lowest live element in dot order (§2.2).
-- Ops (resolved locally): `add v`: if an element with value v is live locally, no write; else `[6, [], [], [[k, [], [[0, [], D, v]]]]]`. `remove v`: a tid `v`, whatever the state holds: a value removal `[k, [], [], 0, v]`; any other value: for every live local element with value v a record `[dot, [D], []]`; all removed elements share the one reset stamp `D`. `replace {v1..}` → fragment reset `D`, then adds with fresh counters.
-- Tombstone lifetime: until the set fragment is reset (`R_elem` and removals are pruned like any write below `E_parent`). Until then a tombstone drops a late-arriving older add and a removal hides one. No other GC.
+- Ops (resolved locally): `add v`: if an element with value v is live locally, no write; else `[6, [], [], [[k, [], [[0, [], D, v]]]]]`. `remove v`: for every live local element with value v a record `[dot, [D], []]`, all sharing the one reset stamp `D`; for a tid `v` also, when the writer holds parts of the aspect as headers only, a value removal `[k, [], [], 0, v, [Seen+]]` naming each such part's counter range (§2.4: valid at the writer, body not received, not stamped below a held reset of the aspect root), nothing else. `replace {v1..}` → fragment reset `D`, then adds with fresh counters.
+- Tombstone lifetime: until the set fragment is reset (`R_elem` and removals are pruned like any write below `E_parent`). Until then a tombstone drops a late-arriving older add and a removal hides one in its parts. No other GC.
 
 ### 5.6 Map (7)
 - State: `R`, `written`, entry records `{(dot, key): (R_rec, creation, fragment)}`, plus a local index `key -> live records` (not part of the lattice).

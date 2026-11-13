@@ -552,11 +552,7 @@ fn overlay_elems(am: Meta, ae: BTreeMap<Dot, Elem>, bm: Meta, be: BTreeMap<Dot, 
     let mut omitted = false;
     for (dot, de) in be {
         if let Some(v) = de.removes() {
-            // a value removal: the batch's elements of its value go (§4.5), one removal stays
-            let gone: Vec<Dot> = elems.iter().filter(|(_, x)| x.written().is_some_and(|(x, _)| x == Some(v))).map(|(d, _)| d.clone()).collect();
-            for d in gone {
-                omitted |= elems.remove(&d).is_some();
-            }
+            // a value removal: one per tid in a commit, every one naming the same parts (§5.5)
             if !elems.values().any(|x| x.removes() == Some(v)) {
                 elems.insert(dot, de);
             }

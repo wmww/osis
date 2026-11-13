@@ -122,7 +122,7 @@ fn meta(c: &m::Composite) -> Meta {
 }
 
 fn elems(e: &BTreeMap<crdt_model::stamp::Dot, m::Elem>) -> BTreeMap<Dot, Elem> {
-    e.iter().map(|(d, e)| (dot(d), Elem { reset: ostamp(&e.reset), frag: e.frag.as_ref().map(|f| Box::new(frag(f))), gone: e.gone.as_ref().map(|(s, v)| (stamp(s), value(v))) })).collect()
+    e.iter().map(|(d, e)| (dot(d), Elem { reset: ostamp(&e.reset), frag: e.frag.as_ref().map(|f| Box::new(frag(f))), gone: e.gone.as_ref().map(|g| crate::fragment::Removal { stamp: stamp(&g.stamp), value: value(&g.value), seen: g.seen.iter().map(|(d, hi)| crate::stamp::DotRange { first: dot(d), hi: *hi }).collect() }) })).collect()
 }
 
 fn anchor(a: &m::Anchor) -> Anchor {

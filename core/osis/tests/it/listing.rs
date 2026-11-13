@@ -752,9 +752,9 @@ fn purge_goes_under_its_thing_and_reaches_what_it_names_spec_commits_5() {
 }
 
 // notes/api.md `delete`, spec/crdt.md §5.5: a delete removes the thing from every group it may
-// write alike, whatever adds the deleting node holds. N is an item of G and of H; B holds H's add
-// as a header only (its part not received yet) when it deletes N: once synced, N is in neither
-// group, at A as at B, and H's late part does not bring it back.
+// write alike, its adds held and those held as a commit header only. N is an item of G and of H;
+// B holds H's add as a header only (its part not received yet) when it deletes N: once synced, N
+// is in neither group, at A as at B, and H's late part does not bring it back.
 #[test]
 fn delete_unlists_an_add_not_received_spec_crdt_5_5() {
     let (a, b, _) = paired();
@@ -776,6 +776,30 @@ fn delete_unlists_an_add_not_received_spec_crdt_5_5() {
         deliver(&a, &b);
         for (who, d) in [("A", &a), ("B", &b)] {
             assert_eq!(d.groups_of(n).unwrap().item_of, Vec::<Tid>::new(), "N listed at {who}");
+            assert!(!d.has_content(n).unwrap(), "N deleted at {who}");
+        }
+    }
+}
+
+// spec/requirements.md (Data model: removing drops only what the remover had seen), spec/crdt.md
+// §5.5: an add the deleting node never heard of, not even its commit header, survives the delete.
+// N is an item of G at both; A adds it to H too, which B has not received at all when it deletes
+// N: once synced, N is out of G and still listed in H, at A as at B, its content deleted.
+#[test]
+fn delete_keeps_an_add_never_seen_spec_crdt_5_5() {
+    let (a, b, _) = paired();
+    let (g, h, n) = a.commit_with(|w| Ok((w.create()?, w.create()?, w.create()?))).unwrap();
+    a.commit_set(n, untyped(msg()), &s("x")).unwrap();
+    a.commit_with(|w| w.group(g).add(osis::Member::Item(n))).unwrap();
+    deliver(&a, &b);
+    a.commit_with(|w| w.group(h).add(osis::Member::Item(n))).unwrap();
+    assert_eq!(b.groups_of(n).unwrap().item_of, vec![g], "B has not heard of H's add");
+    b.commit_with(|w| w.delete(n)).unwrap();
+    for _ in 0..2 {
+        deliver(&b, &a);
+        deliver(&a, &b);
+        for (who, d) in [("A", &a), ("B", &b)] {
+            assert_eq!(d.groups_of(n).unwrap().item_of, vec![h], "N listed in H alone at {who}");
             assert!(!d.has_content(n).unwrap(), "N deleted at {who}");
         }
     }

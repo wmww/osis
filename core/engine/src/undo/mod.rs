@@ -524,9 +524,9 @@ pub(crate) fn made_by(h: &osis_commit::Header, valid: &[bool]) -> BTreeSet<Tid> 
 
 /// Undoing a creation deletes the thing (spec/crdt.md §4.6): `delete`'s writes for each of
 /// `made`, its aspects that may hold content reset (`read::deleted_aspects`; its ephemeral
-/// state is dropped, `Engine::revert_inner`) and removed by value from every `group.0` that may
-/// list it (`groups::listing_groups`) and all of `writers` may write (this node, a confined
-/// revert's actor too), each
+/// state is dropped, `Engine::revert_inner`) and removed from every `group.0` that may list it
+/// (`groups::listing_groups`) and all of `writers` may write (this node, a confined revert's
+/// actor too), each
 /// resolved after the undo's own delta of that aspect and
 /// joined into it (`unmake_one`). `Permission` when this node may not write one of `made`
 /// (`delete` would refuse; never a partial revert).
@@ -544,7 +544,7 @@ fn unmake_ops(tx: &mut Tx<'_>, made: &BTreeSet<Tid>, ts: Ts, node: Tid, writers:
         }
     }
     let gak = Ak::new(GROUP.ak()).map_err(|_| Error::Misuse("ak"))?;
-    // per group, its fields listing each thing (`listing_groups`: what may list it, held or not)
+    // per group, its fields that may list each thing (`listing_groups`: held, or as a header only)
     let mut by_group: BTreeMap<Tid, Vec<PathOp>> = BTreeMap::new();
     for x in made {
         let (items, subs) = crate::engine::groups::listing_groups(tx, x)?;
@@ -581,7 +581,7 @@ fn unmake_one(tx: &mut Tx<'_>, (tid, ak): (Tid, Ak), ops: Vec<PathOp>, ts: Ts, o
     };
     let schema = schema_of(tx.core, &ak);
     let view = schema.as_ref().and_then(|s| s.view(ak.as_str()));
-    let w = Writer::new(ts, own.clone(), lo).resume(resume).keyed_removals(osis_schema::core_types::is_role_class(ak.as_str()));
+    let w = crate::engine::groups::seeing(tx, &tid, &ak, &ops, Writer::new(ts, own.clone(), lo).resume(resume).keyed_removals(osis_schema::core_types::is_role_class(ak.as_str())))?;
     let out = match &view {
         Some(v) => crate::engine::write::run_ops(&state, w, &ops, v)?,
         None => crate::engine::write::run_ops(&state, w, &ops, &AnyView)?,
@@ -1196,10 +1196,10 @@ mod tests {
         assert_eq!((e.get(&n, &x).unwrap(), e.get(&n, &y).unwrap(), e.get(&ts[0], &x).unwrap()), (None, None, None));
     }
 
-    // spec/crdt.md §4.6, §5.5: undoing a creation removes the thing from every group alike,
-    // whatever bodies the undoing node holds. N is an item of G (held by both) and of H, whose
-    // add B holds as a header only; B's undo of N's creation leaves N in neither once synced,
-    // as A's does.
+    // spec/crdt.md §4.6, §5.5: undoing a creation removes the thing from every group alike, its
+    // adds held and those held as a header only. N is an item of G (held by both) and of H, whose
+    // add B holds as a header only; B's undo of N's creation leaves N in neither once synced, as
+    // A's does.
     #[test]
     fn undo_creation_unlists_unfetched_adds_spec_crdt_4_6() {
         for undoer in [0, 1] {

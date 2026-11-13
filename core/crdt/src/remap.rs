@@ -47,7 +47,12 @@ fn elems(m: &mut BTreeMap<Dot, Elem>, f: DotFn<'_>) {
         .map(|(d, mut e)| {
             opt(&mut e.reset, f);
             if let Some(g) = &mut e.gone {
-                stamp(&mut g.0, f);
+                stamp(&mut g.stamp, f);
+                for r in &mut g.seen {
+                    let first = dot(&r.first, f);
+                    r.hi = first.ctr.saturating_add(r.hi - r.first.ctr);
+                    r.first = first;
+                }
             }
             if let Some(x) = &mut e.frag {
                 x.map_dots(f);
@@ -154,7 +159,7 @@ pub(crate) fn walk(v: &mut dyn Visit, f: &Fragment) -> bool {
     match f {
         Fragment::Register(r) => reg_v(v, r),
         // a value removal's stamp with its record's reset (§5.5)
-        Fragment::Bag(Bag { meta: m, elems: e, .. }) | Fragment::Set(Set { meta: m, elems: e, .. }) => meta_v(v, m) || e.iter().any(|(d, x)| rec_v(v, Rec::Elem(d, x), &x.reset, x.frag.as_deref()) || x.gone.as_ref().is_some_and(|g| v.stamp(&g.0))),
+        Fragment::Bag(Bag { meta: m, elems: e, .. }) | Fragment::Set(Set { meta: m, elems: e, .. }) => meta_v(v, m) || e.iter().any(|(d, x)| rec_v(v, Rec::Elem(d, x), &x.reset, x.frag.as_deref()) || x.gone.as_ref().is_some_and(|g| v.stamp(&g.stamp))),
         Fragment::Struct(Struct { meta: m, fields }) => meta_v(v, m) || fields.values().any(|f| walk(v, f)),
         Fragment::Enum(Enum { meta: m, case, payloads }) => meta_v(v, m) || case.as_ref().is_some_and(|c| v.stamp(&c.stamp)) || payloads.values().any(|f| walk(v, f)),
         Fragment::Map(mp) => meta_v(v, &mp.meta) || mp.entries.iter().any(|(id, e)| rec_v(v, Rec::Entry(id, e), &e.reset, e.frag.as_deref())),
@@ -188,7 +193,7 @@ impl Visit for Writes {
                 // the value register is written only by the element's creation (§5.5)
                 let ts = match x.frag.as_deref() {
                     Some(Fragment::Register(r)) => r.write.as_ref().filter(|w| w.stamp.dot.src == d.src).map(|w| w.stamp.ts),
-                    _ => x.gone.as_ref().filter(|g| g.0.dot.src == d.src).map(|g| g.0.ts),
+                    _ => x.gone.as_ref().filter(|g| g.stamp.dot.src == d.src).map(|g| g.stamp.ts),
                 };
                 self.0.push((d.origin().clone(), ts));
             }

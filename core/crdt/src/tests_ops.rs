@@ -879,46 +879,49 @@ fn diff_writes_every_stored_key_of_a_projected_key_spec_9() {
     assert_eq!(sort(got), sort(want));
 }
 
-/// §5.5: removing a tid writes a value removal, whatever the remover holds. It hides every
-/// element of the tid stamped below it, joined in any order, received by the remover or not; an
-/// add stamped after it shows; undoing the removal adds the tid back where it was live.
+/// §5.5, spec/requirements.md (Data model: removing drops only what the remover had seen): a
+/// tid's removal drops the adds of it the remover held and those in parts it held as headers
+/// only, in any join order; an add it never saw, and one after it, shows. Undoing it adds the tid
+/// back. Another value names no part.
 #[test]
-fn tid_removal_by_value_spec_5_5() {
+fn tid_removal_covers_what_the_remover_saw_spec_5_5() {
+    use crate::stamp::DotRange;
     let view = TyView(Ty::Set(Box::new(Ty::Register)));
     let t = Value::Tid(Tid::from_bytes([7; 15]));
-    let one = |n: u8, at: u64, op: Op, st: Option<&Fragment>| {
-        let mut w = Writer::new(ts(at << 16), sess(Tid::from_bytes([n; 15])), 1);
-        crate::ops::leaf(&mut w, st, &view, &op, true).unwrap().unwrap()
-    };
-    let add_a = one(1, 1, Op::Add(t.clone()), None);
-    let add_b = one(2, 2, Op::Add(t.clone()), None);
-    // C holds A's add only, B's is not received yet: its removal names the value, not A's dot
+    let node = |n: u8| sess(Tid::from_bytes([n; 15]));
+    let writer = |n: u8, at: u64| Writer::new(ts(at << 16), node(n), 1);
+    let one = |w: &mut Writer, op: Op, st: Option<&Fragment>| crate::ops::leaf(w, st, &view, &op, true).unwrap().unwrap();
+    let add_a = one(&mut writer(1, 1), Op::Add(t.clone()), None);
+    let add_b = one(&mut writer(2, 2), Op::Add(t.clone()), None);
+    let add_d = one(&mut writer(4, 2), Op::Add(t.clone()), None);
+    // C holds A's add, and B's part as a header only (its dots 1..2); D's not even that
     let mut held = Fragment::default();
     held.join(add_a.clone());
-    let rm = one(3, 3, Op::Remove(t.clone()), Some(&held));
-    // nothing held at all: a removal all the same
-    let rm_blind = one(4, 3, Op::Remove(t.clone()), None);
-    let Fragment::Set(s) = &rm_blind else { panic!("set") };
-    assert!(s.elems.values().all(|e| e.removes() == Some(&t)), "a value removal: {rm_blind:?}");
-    let add_late = one(5, 4, Op::Add(t.clone()), None);
-    let empty = Some(Value::Set(Default::default()));
+    let seen = vec![DotRange { first: Dot::new(node(2), 1), hi: 2 }];
+    let rm = one(&mut writer(3, 3).seen_headers(seen.clone()), Op::Remove(t.clone()), Some(&held));
+    let other = crate::ops::leaf(&mut writer(3, 3).seen_headers(seen), None, &view, &Op::Remove(Value::Int(1)), true).unwrap();
+    assert!(other.is_none(), "another value: only held elements, none here");
+    let add_late = one(&mut writer(5, 4), Op::Add(t.clone()), None);
+    let (empty, just_t) = (Some(Value::Set(Default::default())), Some(Value::Set([t.clone()].into())));
     for order in [[&add_a, &add_b, &rm], [&rm, &add_b, &add_a], [&add_b, &rm, &add_a]] {
         let mut st = Fragment::default();
         for d in order {
             st.join((*d).clone());
         }
-        assert_eq!(st.read(), empty, "every add below the removal is hidden, received or not");
-        let mut later = st.clone();
-        later.join(add_late.clone());
-        assert_eq!(later.read(), Some(Value::Set([t.clone()].into())), "an add after it shows");
+        assert_eq!(st.read(), empty, "A's held add and B's add seen by header go");
+        for (d, what) in [(&add_d, "an add never seen"), (&add_late, "an add after it")] {
+            let mut x = st.clone();
+            x.join(d.clone());
+            assert_eq!(x.read(), just_t, "{what} shows");
+        }
         // undoing the removal against the state before it adds the tid back
         let mut before = Fragment::default();
         before.join(add_a.clone());
-        let mut w = Writer::new(ts(9 << 16), sess(Tid::from_bytes([9; 15])), 1);
-        let src = sess(Tid::from_bytes([3; 15]));
-        let u = undo(&mut w, &Undone { delta: &rm, source: &src, range: CounterRange { lo: 1, hi: 2 } }, &st, &before, &view).unwrap().unwrap();
+        before.join(add_b.clone());
+        let mut w = Writer::new(ts(9 << 16), node(9), 1);
+        let u = undo(&mut w, &Undone { delta: &rm, source: &node(3), range: CounterRange { lo: 1, hi: 2 } }, &st, &before, &view).unwrap().unwrap();
         let mut back = st.clone();
         back.join(u);
-        assert_eq!(back.read(), Some(Value::Set([t.clone()].into())), "undone");
+        assert_eq!(back.read(), just_t, "undone");
     }
 }

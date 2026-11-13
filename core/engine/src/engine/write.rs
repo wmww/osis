@@ -918,9 +918,10 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
         let keyed = osis_schema::core_types::is_role_class(ak.as_str());
         // a hostile writer (tests) mints a held record again: as over no state
         let remint = tx.core.skip_writer_rules && ak.as_str() == CREATED.ak();
+        let w = super::groups::seeing(tx, &tid, &ak, &am.ops, Writer::new(ts, own_source(form, node), lo).keyed_removals(keyed))?;
         let run = |tx: &Tx<'_>| {
             let state = if remint { &empty } else { tx.cached(&tid, &ak).unwrap_or(&empty) };
-            let w = Writer::new(ts, own_source(form, node), lo).keyed_removals(keyed);
+            let w = w.clone();
             match &view {
                 Some(v) => run_ops(state, w, &am.ops, v),
                 None => run_ops(state, w, &am.ops, &AnyView),

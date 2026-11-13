@@ -20,20 +20,29 @@ pub struct Composite {
     pub w_valueless: bool,
 }
 
-/// Whether set element `e` is hidden by a value removal of its tid among `elems` stamped after
-/// its write (§5.5): it stays held and reads as nothing.
-pub fn hidden(e: &Elem, elems: &BTreeMap<Dot, Elem>) -> bool {
+/// Whether set element `e` at dot `d` is hidden by a value removal among `elems` (§5.5): one of
+/// its tid, stamped after its write, naming a part `d` lies in. It stays held and reads as
+/// nothing.
+pub fn hidden(d: &Dot, e: &Elem, elems: &BTreeMap<Dot, Elem>) -> bool {
     let Some(Frag::Register { write: Some((s, Some(v))), .. }) = e.frag.as_deref() else { return false };
-    elems.values().any(|x| x.gone.as_ref().is_some_and(|(r, g)| g == v && r > s))
+    elems.values().any(|x| x.gone.as_ref().is_some_and(|g| g.value == *v && g.stamp > *s && g.seen.iter().any(|(f, hi)| f.source == d.source && f.ctr <= d.ctr && d.ctr < *hi)))
+}
+
+/// A set's value removal (§5.5), a write of its own: its stamp, the tid it removes and the parts
+/// it covers, each `(first dot, hi)`: the dots of the first's source in `[first.ctr, hi)`.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Removal {
+    pub stamp: Stamp,
+    pub value: Value,
+    pub seen: Vec<(Dot, u64)>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct Elem {
     pub reset: Option<Stamp>,
     pub frag: Option<Box<Frag>>,
-    /// A set's value removal (§5.5), a write of its own: its stamp and the tid whose elements below
-    /// it it hides.
-    pub gone: Option<(Stamp, Value)>,
+    /// A set's value removal (§5.5).
+    pub gone: Option<Removal>,
 }
 
 /// A map entry record's identity (§5.6): the entry's dot and key; no key for the dot's key-erased record (§4.7).
@@ -322,7 +331,7 @@ impl Frag {
     /// `W` rule (§3.3 rule 4).
     pub fn inner_max(&self, valued: bool) -> Option<Stamp> {
         let child = |f: &Frag| if valued { max_opt(f.written(), f.reset()) } else { f.all_max() };
-        let elems_max = |elems: &BTreeMap<Dot, Elem>| elems.values().fold(None, |m, e| max_opt(max_opt(max_opt(m, e.reset.clone()), e.gone.as_ref().map(|g| g.0.clone())), e.frag.as_deref().and_then(child)));
+        let elems_max = |elems: &BTreeMap<Dot, Elem>| elems.values().fold(None, |m, e| max_opt(max_opt(max_opt(m, e.reset.clone()), e.gone.as_ref().map(|g| g.stamp.clone())), e.frag.as_deref().and_then(child)));
         match self {
             Frag::Register { write, .. } => write.as_ref().filter(|w| !valued || w.1.is_some()).map(|w| w.0.clone()),
             Frag::Slots { .. } => self.slots().into_iter().fold(None, |m, f| max_opt(m, child(f))),
@@ -601,7 +610,7 @@ impl Frag {
                 prune_written(c, e);
                 // a value removal is a write of its own (§5.5)
                 for el in elems.values_mut() {
-                    if el.gone.as_ref().is_some_and(|(r, _)| !survives(r, e)) {
+                    if el.gone.as_ref().is_some_and(|g| !survives(&g.stamp, e)) {
                         el.gone = None;
                     }
                 }
@@ -976,7 +985,7 @@ impl Frag {
                 if !k(&el.reset) {
                     el.reset = None;
                 }
-                if !el.gone.as_ref().is_some_and(|g| keep(origin(&g.0.dot))) {
+                if !el.gone.as_ref().is_some_and(|g| keep(origin(&g.stamp.dot))) {
                     el.gone = None;
                 }
                 keep_in(&mut el.frag, keep);

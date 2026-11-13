@@ -209,8 +209,8 @@ fn join_opt(s: &mut Option<Box<Fragment>>, d: Option<Box<Fragment>>, e: Option<&
 }
 
 /// A value removal below `e` goes (§4.2, §5.5).
-fn prune_gone(g: &mut Option<(Stamp, Value)>, e: Option<&Stamp>, ch: &mut Changes) {
-    if g.as_ref().is_some_and(|(s, _)| e.is_some_and(|e| s < e)) {
+fn prune_gone(g: &mut Option<crate::fragment::Removal>, e: Option<&Stamp>, ch: &mut Changes) {
+    if g.as_ref().is_some_and(|r| e.is_some_and(|e| r.stamp < *e)) {
         *g = None;
         ch.touch();
     }
@@ -609,7 +609,7 @@ impl Fragment {
             // an element a value removal hides is dead (§4.8, §5.5)
             Fragment::Set(s) => {
                 let gone = crate::fragment::removed(&s.elems);
-                s.elems.values().filter(|e| !crate::fragment::hidden(e, &gone)).filter_map(|e| e.frag.as_deref()).for_each(|x| x.each_value(f));
+                s.elems.iter().filter(|(d, e)| !crate::fragment::hidden(d, e, &gone)).filter_map(|(_, e)| e.frag.as_deref()).for_each(|x| x.each_value(f));
             }
             Fragment::Map(m) => {
                 for (id, e) in &m.entries {
@@ -791,7 +791,7 @@ impl Fragment {
     pub(crate) fn inner_max(&self, valued: bool) -> Option<Stamp> {
         let slot = |m: &SlotRef| if valued { max_opt(m.written(), m.reset()) } else { m.all_max() };
         let child = |f: &Fragment| slot(&SlotRef::Frag(f));
-        let elems_max = |elems: &BTreeMap<Dot, Elem>| elems.values().fold(None, |m, e| max_opt(max_opt(max_opt(m, e.reset.clone()), e.gone.as_ref().map(|g| g.0.clone())), e.frag.as_deref().and_then(child)));
+        let elems_max = |elems: &BTreeMap<Dot, Elem>| elems.values().fold(None, |m, e| max_opt(max_opt(max_opt(m, e.reset.clone()), e.gone.as_ref().map(|g| g.stamp.clone())), e.frag.as_deref().and_then(child)));
         match self {
             Fragment::Register(r) => r.write.as_ref().filter(|w| !valued || w.value.is_some()).map(|w| w.stamp.clone()),
             Fragment::Slots(_) => self.slots().iter().fold(None, |x, m| max_opt(x, slot(m))),

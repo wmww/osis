@@ -47,7 +47,7 @@ impl Copies {
                 for x in e.iter().filter(|(d, _)| !d.src.is_derived()).map(|(_, x)| x) {
                     self.opt(&x.reset);
                     if let Some(g) = &x.gone {
-                        self.put(&g.0);
+                        self.put(&g.stamp);
                     }
                     if let Some(f) = &x.frag {
                         self.frag(f);

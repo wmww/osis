@@ -288,7 +288,7 @@ impl Fragment {
                 if !keep.stays(el.reset.is_some() && el.reset == t.reset) {
                     el.reset = None;
                 }
-                if !keep.stays(el.gone.is_some() && el.gone.as_ref().map(|g| &g.0) == t.gone.as_ref().map(|g| &g.0)) {
+                if !keep.stays(el.gone.is_some() && el.gone.as_ref().map(|g| &g.stamp) == t.gone.as_ref().map(|g| &g.stamp)) {
                     el.gone = None;
                 }
                 sub(&mut el.frag, t.frag.as_deref());
@@ -709,7 +709,7 @@ fn remove_writes_elems(elems: &mut BTreeMap<Dot, Elem>, pred: &dyn Fn(&Dot) -> b
         if el.reset.as_ref().is_some_and(|r| pred(r.dot.origin())) {
             el.reset = None;
         }
-        if el.gone.as_ref().is_some_and(|g| pred(g.0.dot.origin())) {
+        if el.gone.as_ref().is_some_and(|g| pred(g.stamp.dot.origin())) {
             el.gone = None;
         }
         if let Some(f) = &mut el.frag {

@@ -371,7 +371,10 @@ impl Frag {
                 if let Some(fr) = &el.frag {
                     fr.walk_own(own, f);
                 }
-                opt(&el.gone.as_ref().map(|g| g.0.clone()), f);
+                if let Some(g) = &el.gone {
+                    opt(&Some(g.stamp.clone()), f);
+                    g.seen.iter().for_each(|(d, _)| f(Ref::Dot(d)));
+                }
             }
         }
         fn anchor(a: &Anchor, f: &mut dyn FnMut(Ref)) {
@@ -473,7 +476,7 @@ impl Frag {
     fn levels_at(&self, lo: u64) -> bool {
         let at = |s: &Option<Stamp>| s.as_ref().map_or(true, |s| s.dot.ctr == lo);
         let comp = |c: &Composite| at(&c.reset) && at(&c.w);
-        let elems = |e: &BTreeMap<Dot, Elem>| e.values().all(|x| at(&x.reset) && at(&x.gone.as_ref().map(|g| g.0.clone())) && x.frag.as_ref().map_or(true, |f| f.levels_at(lo)));
+        let elems = |e: &BTreeMap<Dot, Elem>| e.values().all(|x| at(&x.reset) && at(&x.gone.as_ref().map(|g| g.stamp.clone())) && x.frag.as_ref().map_or(true, |f| f.levels_at(lo)));
         match self {
             Frag::Register { reset, write } => at(reset) && at(&write.as_ref().map(|w| w.0.clone())),
             Frag::Bag { c, elems: e, .. } | Frag::Set { c, elems: e } => comp(c) && elems(e),
@@ -626,8 +629,8 @@ fn enc_elems(elems: &BTreeMap<Dot, Elem>, cx: &Ctx) -> Item {
             .map(|(d, e)| {
                 // a value removal after the element's parts (§3.2)
                 let mut a = vec![enc_dot(d, cx), enc_opt_stamp(&e.reset, cx), Item::Array(e.frag.iter().map(|f| encode(f, cx)).collect())];
-                if let Some((s, v)) = &e.gone {
-                    a.extend([enc_stamp(s, cx), v.to_item()]);
+                if let Some(g) = &e.gone {
+                    a.extend([enc_stamp(&g.stamp, cx), g.value.to_item(), Item::Array(g.seen.iter().map(|(d, hi)| Item::Array(vec![enc_dot(d, cx), u(hi - d.ctr)])).collect())]);
                 }
                 Item::Array(a)
             })
@@ -836,7 +839,7 @@ fn dec_elems(it: &Item, cx: &Ctx, set: bool) -> Result<BTreeMap<Dot, Elem>, Erro
     let mut last: Option<Dot> = None;
     for e in it.array()? {
         let a = e.array()?;
-        if a.len() != 3 && a.len() != 5 {
+        if a.len() != 3 && a.len() != 6 {
             return Err(Error::Bad("elem"));
         }
         let d = dec_dot(&a[0], cx)?;
@@ -844,14 +847,31 @@ fn dec_elems(it: &Item, cx: &Ctx, set: bool) -> Result<BTreeMap<Dot, Elem>, Erro
             return Err(Error::Bad("elem order"));
         }
         last = Some(d.clone());
-        // a value removal: a set's, of a tid (§3.2, §3.3 rule 7)
-        let gone = match a.get(3..5) {
-            Some([s, v]) => {
+        // a value removal: a set's, of a tid, naming parts ascending and apart (§3.2, §3.3 rule 7)
+        let gone = match a.get(3..6) {
+            Some([s, v, parts]) => {
                 let v = Value::from_item(v).map_err(|_| Error::Bad("value removal"))?;
                 if !set || !matches!(v, Value::Tid(_)) {
                     return Err(Error::Bad("value removal"));
                 }
-                Some((dec_stamp(s, cx)?, v))
+                let mut seen: Vec<(Dot, u64)> = Vec::new();
+                for p in parts.array()? {
+                    let p = p.array()?;
+                    if p.len() != 2 {
+                        return Err(Error::Bad("value removal part"));
+                    }
+                    let first = dec_dot(&p[0], cx)?;
+                    let n = p[1].uint()?;
+                    let hi = if n == 0 { None } else { first.ctr.checked_add(n) }.ok_or(Error::Bad("value removal part"))?;
+                    if seen.last().is_some_and(|(l, lhi)| first <= *l || (l.source == first.source && first.ctr <= *lhi)) {
+                        return Err(Error::Bad("value removal parts"));
+                    }
+                    seen.push((first, hi));
+                }
+                if seen.is_empty() {
+                    return Err(Error::Bad("value removal without a part"));
+                }
+                Some(crate::state::Removal { stamp: dec_stamp(s, cx)?, value: v, seen })
             }
             _ => None,
         };

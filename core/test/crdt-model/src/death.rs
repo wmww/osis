@@ -36,20 +36,12 @@ pub fn winning(f: &Frag) -> BTreeSet<Name> {
                 slots.values_mut().for_each(only);
             }
             Frag::Bag { elems, .. } => elems.values_mut().filter_map(|e| e.frag.as_deref_mut()).for_each(only),
-            // of a tid's value removals only the greatest wins, and an element it hides does not (§5.5)
+            // a value removal wins while held; an element it hides does not (§5.5)
             Frag::Set { elems, .. } => {
-                let hidden: Vec<bool> = elems.values().map(|e| crate::state::hidden(e, elems)).collect();
-                let mut top: std::collections::BTreeMap<crate::value::Value, Stamp> = std::collections::BTreeMap::new();
-                for (s, v) in elems.values().filter_map(|e| e.gone.as_ref()) {
-                    let m = top.entry(v.clone()).or_insert_with(|| s.clone());
-                    *m = m.clone().max(s.clone());
-                }
+                let hidden: Vec<bool> = elems.iter().map(|(d, e)| crate::state::hidden(d, e, elems)).collect();
                 for (e, h) in elems.values_mut().zip(hidden) {
                     if h {
                         e.frag = None;
-                    }
-                    if e.gone.as_ref().is_some_and(|(s, v)| top.get(v) != Some(s)) {
-                        e.gone = None;
                     }
                     e.frag.as_deref_mut().into_iter().for_each(only);
                 }

@@ -263,7 +263,8 @@ impl<'d> Write<'d> {
     /// Removes every durable aspect of `tid` that may hold content (present here, or written by a
     /// part not received yet and not covered by a held reset) and its memberships in every group
     /// this node may write that may list it (one it may not keeps listing it; it reads deleted
-    /// there): every add of it written before the delete, received here or not. Afterwards `has_content(tid)` is `false`; the tid stays
+    /// there): the adds of it this node holds, and those in parts it holds as headers only, so
+    /// an add it never heard of stays. Afterwards `has_content(tid)` is `false`; the tid stays
     /// valid and a later write recreates the thing. Its ephemeral (`+`) values are dropped here
     /// and not written (their listeners hear `DerivedFrom::Deleted`; with nothing durable to
     /// remove the write commits nothing): other nodes holding them keep them until they restart
@@ -434,7 +435,6 @@ impl<'d> Write<'d> {
         if releases > 0 && (releases < ops.len() || expires.is_some()) {
             return Err(Error::Invalid("a release is a commit of its own: write it in a Write with no other op and no expiry".into()));
         }
-        let mut adds = std::collections::BTreeSet::new();
         for op in ops {
             match op {
                 WriteOp::Create(rec) => {
@@ -448,19 +448,7 @@ impl<'d> Write<'d> {
                     b.m.create(rec);
                 }
                 WriteOp::Group { add: false, .. } | WriteOp::Delete(_) | WriteOp::PurgeThing(_) if expires.is_some() => return Err(Error::Invalid("a removal from a group, a delete or a purge of a thing does not expire: this write has an expiry, so write it as a commit of its own".into())),
-                // a removal names the member, not the adds it saw (spec/crdt.md §5.5): written
-                // where the group may list it, here or in a part not received yet, or this write
-                // added it
-                WriteOp::Group { g, member, items, add: false } => {
-                    let (item_of, subgroup_of) = r.e.listing_groups(&member)?;
-                    if (if items { item_of } else { subgroup_of }).contains(&g) || adds.contains(&(g, member, items)) {
-                        b.group(&gk, g, member, items, false)?;
-                    }
-                }
-                WriteOp::Group { g, member, items, add: true } => {
-                    adds.insert((g, member, items));
-                    b.group(&gk, g, member, items, true)?;
-                }
+                WriteOp::Group { g, member, items, add } => b.group(&gk, g, member, items, add)?,
                 // a dynamic key's kind is known only now: a write of the other kind never
                 // silently does nothing
                 WriteOp::Path { tid, key: k, op } => {
@@ -548,9 +536,9 @@ impl<'d> Write<'d> {
                     for ak in &aks {
                         b.m.remove_aspect(t, &db.aspect_key(ak.as_str())?)?;
                     }
-                    // removed by value from every group that may list it, whatever this node
-                    // holds of its adds (`Engine::listing_groups`, spec/crdt.md §5.5), where it
-                    // may write
+                    // removed from every group that may list it, its adds held here and those in
+                    // parts held as headers only (`Engine::listing_groups`, spec/crdt.md §5.5),
+                    // where it may write
                     let (item_of, subgroup_of) = r.e.listing_groups(&t)?;
                     let mut writable = |g: &Tid| -> Result<bool> { Ok(*g != t && !r.hidden(*g) && (created.contains(g) || r.holds(*g)) && matches!(r.role_on(*g)?, Some(Role::Write | Role::Admin))) };
                     let mut out = Vec::new();
@@ -738,8 +726,8 @@ impl<'w, 'd> GroupWrite<'w, 'd> {
         self.w.member(self.group, member, true)
     }
 
-    /// Removes a member: every add of it to the group written before, whether this node has
-    /// received it yet or not; a later add puts it back. A grant made with the membership (`Osis::add_with_grant`) goes in a
+    /// Removes a member: the adds of it to the group this node holds, or holds as a commit
+    /// header only; an add it never heard of, or a later one, keeps it. A grant made with the membership (`Osis::add_with_grant`) goes in a
     /// commit right after when this node may remove it as a self-removal; otherwise a node that
     /// may remove it does so later. What a removed subgroup was the last way into a synced group
     /// for stops syncing, each reported `NotSynced` (as when a subgroup's expiring membership ends). `commit` fails `Invalid` in a commit that

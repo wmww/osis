@@ -87,7 +87,7 @@ fn comp(reset: Option<Stamp>) -> Composite {
 
 /// Live elements of a set/bag: dot -> value.
 pub fn live_elems(elems: &BTreeMap<Dot, Elem>) -> Vec<(&Dot, Value)> {
-    elems.iter().filter(|(_, e)| !crate::state::hidden(e, elems)).filter_map(|(d, e)| e.frag.as_ref().and_then(|f| f.read()).map(|v| (d, v))).collect()
+    elems.iter().filter(|(d, e)| !crate::state::hidden(d, e, elems)).filter_map(|(d, e)| e.frag.as_ref().and_then(|f| f.read()).map(|v| (d, v))).collect()
 }
 /// Live map entry records: key -> live records (ascending).
 pub fn live_entries(entries: &BTreeMap<Eid, Entry>) -> BTreeMap<Value, Vec<Eid>> {
@@ -290,23 +290,24 @@ pub fn set_add(w: &mut Writer, state: Option<&Frag>, v: &Value) -> Option<Frag> 
     Some(f)
 }
 
-/// A value removal of tid `v` (§5.5): a fresh dot at the delta's stamp.
-pub fn set_removal(w: &mut Writer, v: &Value) -> (Dot, Elem) {
-    let d = w.stamp().dot;
-    (d, Elem { reset: None, frag: None, gone: Some((w.delta(), v.clone())) })
-}
-
-pub fn set_remove(w: &mut Writer, state: Option<&Frag>, v: &Value) -> Option<Frag> {
-    if matches!(v, Value::Tid(_)) {
-        let (d, e) = set_removal(w, v);
-        return Some(Frag::Set { c: comp(None), elems: BTreeMap::from([(d, e)]) });
+/// `remove v` (§5.5): an element reset of each live element of `v` held, and for a tid a value
+/// removal over `seen`, the parts the writer holds as headers only (each `(first dot, hi)`,
+/// ascending and apart), on a fresh dot at the delta's stamp.
+pub fn set_remove(w: &mut Writer, state: Option<&Frag>, v: &Value, seen: &[(Dot, u64)]) -> Option<Frag> {
+    let dots: Vec<Dot> = match state {
+        Some(Frag::Set { elems, .. }) => live_elems(elems).into_iter().filter(|(_, x)| x == v).map(|(d, _)| d.clone()).collect(),
+        _ => Vec::new(),
+    };
+    let mut f = if dots.is_empty() { Frag::Set { c: comp(None), elems: BTreeMap::new() } } else { elem_reset(w, 6, &dots) };
+    if matches!(v, Value::Tid(_)) && !seen.is_empty() {
+        let Frag::Set { elems, .. } = &mut f else { unreachable!() };
+        let d = w.stamp().dot;
+        elems.insert(d, Elem { reset: None, frag: None, gone: Some(crate::state::Removal { stamp: w.delta(), value: v.clone(), seen: seen.to_vec() }) });
     }
-    let Some(Frag::Set { elems, .. }) = state else { return None };
-    let dots: Vec<Dot> = live_elems(elems).into_iter().filter(|(_, x)| x == v).map(|(d, _)| d.clone()).collect();
-    if dots.is_empty() {
-        return None;
+    match &f {
+        Frag::Set { elems, .. } if elems.is_empty() => None,
+        _ => Some(f),
     }
-    Some(elem_reset(w, 6, &dots))
 }
 
 pub fn map_put(w: &mut Writer, state: Option<&Frag>, vt: &Ty, k: &Value, v: &Value) -> Option<Frag> {

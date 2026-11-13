@@ -2,7 +2,7 @@
 //! deltas share it; a state holds every stamp in full. Sequences live in `seq`.
 
 use crate::seq::Seq;
-use crate::stamp::{Dot, Stamp};
+use crate::stamp::{Dot, DotRange, Stamp};
 use osis_base::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -116,12 +116,28 @@ pub struct Register {
 
 /// A set or bag element: its reset and its value register (§5.2, §5.5). A record with a reset and
 /// no content is a tombstone. A set's record may instead (a forged copy: as well) carry a **value
-/// removal** (§5.5), a write of its own: its stamp and the tid whose elements below it it hides.
+/// removal** (§5.5), a write of its own.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Elem {
     pub(crate) reset: Option<Stamp>,
     pub(crate) frag: Option<Box<Fragment>>,
-    pub(crate) gone: Option<(Stamp, Value)>,
+    pub(crate) gone: Option<Removal>,
+}
+
+/// A value removal (§5.5): it hides the elements of tid `value` stamped below `stamp` whose dots
+/// lie in `seen`, the parts its writer held as headers only.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Removal {
+    pub(crate) stamp: Stamp,
+    pub(crate) value: Value,
+    pub(crate) seen: Vec<DotRange>,
+}
+
+impl Removal {
+    /// Whether it hides the element of its value at dot `d` written at `s`.
+    pub(crate) fn hides(&self, d: &Dot, s: &Stamp) -> bool {
+        *s < self.stamp && self.seen.iter().any(|r| r.covers(d))
+    }
 }
 
 impl Elem {
@@ -129,13 +145,13 @@ impl Elem {
     pub(crate) fn tomb(r: &Stamp) -> Elem {
         Elem { reset: Some(r.clone()), frag: None, gone: None }
     }
-    /// A value removal of `v` stamped `r` (§5.5).
-    pub(crate) fn removal(r: &Stamp, v: Value) -> Elem {
-        Elem { reset: None, frag: None, gone: Some((r.clone(), v)) }
+    /// A value removal (§5.5).
+    pub(crate) fn removal(r: Removal) -> Elem {
+        Elem { reset: None, frag: None, gone: Some(r) }
     }
     /// The tid the record's value removal names, if it carries one.
     pub(crate) fn removes(&self) -> Option<&Value> {
-        self.gone.as_ref().map(|g| &g.1)
+        self.gone.as_ref().map(|g| &g.value)
     }
     /// Whether the record holds a write (§4.2).
     pub(crate) fn holds(&self) -> bool {
@@ -291,27 +307,26 @@ impl Set {
     }
 }
 
-/// The greatest value removal of each tid among a set's `elems` (§5.5).
-pub(crate) fn removed(elems: &BTreeMap<Dot, Elem>) -> BTreeMap<&Value, &Stamp> {
-    let mut out: BTreeMap<&Value, &Stamp> = BTreeMap::new();
-    for (r, v) in elems.values().filter_map(|e| e.gone.as_ref()) {
-        let m = out.entry(v).or_insert(r);
-        *m = (*m).max(r);
+/// A set's value removals by the tid each names (§5.5).
+pub(crate) fn removed(elems: &BTreeMap<Dot, Elem>) -> BTreeMap<&Value, Vec<&Removal>> {
+    let mut out: BTreeMap<&Value, Vec<&Removal>> = BTreeMap::new();
+    for r in elems.values().filter_map(|e| e.gone.as_ref()) {
+        out.entry(&r.value).or_default().push(r);
     }
     out
 }
 
-/// Whether element `e` is hidden by a value removal of its tid stamped after it (`removed`,
-/// §5.5): it stays in the state, as a deleted text element's creation does, and reads as nothing.
-pub(crate) fn hidden(e: &Elem, removed: &BTreeMap<&Value, &Stamp>) -> bool {
-    matches!(e.written(), Some((Some(v), s)) if removed.get(v).is_some_and(|g| s < *g))
+/// Whether element `e` at dot `d` is hidden by a value removal of its tid (`removed`, §5.5): it
+/// stays in the state, as a deleted text element's creation does, and reads as nothing.
+pub(crate) fn hidden(d: &Dot, e: &Elem, removed: &BTreeMap<&Value, Vec<&Removal>>) -> bool {
+    matches!(e.written(), Some((Some(v), s)) if removed.get(v).is_some_and(|rs| rs.iter().any(|r| r.hides(d, s))))
 }
 
 /// The live elements of a set or bag's `elems` with their reads: present, and in a set not
 /// hidden by a value removal (§5.5).
 pub(crate) fn live_elems(elems: &BTreeMap<Dot, Elem>) -> impl Iterator<Item = (&Dot, &Elem, Value)> {
     let gone = removed(elems);
-    elems.iter().filter(move |(_, e)| !hidden(e, &gone)).filter_map(|(d, e)| Some((d, e, e.frag.as_deref()?.read()?)))
+    elems.iter().filter(move |(d, e)| !hidden(d, e, &gone)).filter_map(|(d, e)| Some((d, e, e.frag.as_deref()?.read()?)))
 }
 
 /// §5.6.

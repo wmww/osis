@@ -702,7 +702,7 @@ fn map_removal_is_final_and_set_semantics() {
     apply(&mut st, ops::set_add(&mut a, None, &Value::Int(5)).unwrap());
     let base = st.unwrap();
     let mut b = Writer::new(Source::session(2, 0), 3 << 16, 1);
-    let rm = ops::set_remove(&mut b, Some(&base), &Value::Int(5)).unwrap();
+    let rm = ops::set_remove(&mut b, Some(&base), &Value::Int(5), &[]).unwrap();
     let mut c = Writer::new(Source::session(3, 0), 2 << 16, 1);
     let add = ops::set_add(&mut c, None, &Value::Int(5)).unwrap();
     let mut s = base.clone();

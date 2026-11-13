@@ -9,7 +9,7 @@ use crate::fragment::{Bag, CaseWrite, Eid, Elem, Encoding, Entry, Enum, Fragment
 use crate::page::{PageError, PageParams, PageSink, PageSource};
 use crate::paging::Step;
 use crate::seq::{self, Seq};
-use crate::stamp::{Dot, Interner, Source, SourceKind, Stamp};
+use crate::stamp::{Dot, DotRange, Interner, Source, SourceKind, Stamp};
 use crate::wire::{Dec, Delta, DeltaCtx, DeltaKind, Enc, Frontiers, NONCE_LEN, Snapshot, as_array, as_uint};
 use osis_base::cbor::{Item, List, encode_into, head_len, link_len, put_array, put_bool, put_bytes, put_link, put_map, put_tid, put_uint};
 use osis_base::format::{MAX_BLOB, MAX_OBJECT_DEPTH, MAX_VALUE_DEPTH};
@@ -275,15 +275,21 @@ pub(crate) fn link_groups(links: &[Link], fanout: usize) -> Vec<&[Link]> {
 }
 
 /// A bag or set element `[Dot, R, Opt(Fragment)]`, with a value removal
-/// `[Dot, R, Opt(Fragment), Stamp, Value]` (§3.2).
+/// `[Dot, R, Opt(Fragment), Stamp, Value, [Seen+]]`, `Seen := [Dot, n]` (§3.2).
 pub(crate) fn encode_elem(cx: &mut Enc, out: &mut Vec<u8>, d: &Dot, e: &Elem) -> Result<(), Error> {
-    put_array(out, if e.gone.is_some() { 5 } else { 3 });
+    put_array(out, if e.gone.is_some() { 6 } else { 3 });
     cx.dot(out, d);
     cx.opt_stamp(out, e.reset.as_ref());
     opt_frag(cx, out, e.frag.as_deref())?;
-    if let Some((st, v)) = &e.gone {
-        cx.stamp(out, st);
-        encode_into(v, out);
+    if let Some(g) = &e.gone {
+        cx.stamp(out, &g.stamp);
+        encode_into(&g.value, out);
+        put_array(out, g.seen.len());
+        for r in &g.seen {
+            put_array(out, 2);
+            cx.dot(out, &r.first);
+            put_uint(out, r.hi - r.first.ctr);
+        }
     }
     Ok(())
 }
@@ -672,20 +678,38 @@ pub(crate) fn decode_elem_items(cx: &mut Dec, items: List, set: bool, out: &mut 
         let a = as_array(e)?;
         let (d, r, f, gone) = match (a.tuple(), a.tuple()) {
             (Some([d, r, f]), _) => (d, r, f, None),
-            (_, Some([d, r, f, g, v])) => (d, r, f, Some((g, v))),
+            (_, Some([d, r, f, g, v, seen])) => (d, r, f, Some((g, v, seen))),
             _ => return Err(Error::Malformed("element")),
         };
         let dot = cx.dot(d)?;
         let reset = cx.opt_level_stamp(r)?;
-        // a value removal: a set's, naming a tid (§3.3 rule 7)
+        // a value removal: a set's, naming a tid and at least one part, its parts ascending and
+        // apart (§3.3 rule 7)
         let gone = match gone {
-            Some((g, v)) => {
-                let g = cx.level_stamp(g)?;
-                let v = v.to_value()?;
-                if !set || !matches!(v, Value::Tid(_)) {
+            Some((g, v, seen)) => {
+                let stamp = cx.level_stamp(g)?;
+                let value = v.to_value()?;
+                if !set || !matches!(value, Value::Tid(_)) {
                     return Err(Error::Malformed("value removal"));
                 }
-                Some((g, v))
+                let mut out: Vec<DotRange> = Vec::new();
+                for x in as_array(seen)? {
+                    let Some([first, n]) = as_array(x)?.tuple() else { return Err(Error::Malformed("value removal part")) };
+                    let first = cx.dot(first)?;
+                    let hi = match as_uint(n)? {
+                        0 => None,
+                        n => first.ctr.checked_add(n),
+                    };
+                    let Some(hi) = hi else { return Err(Error::Malformed("value removal part")) };
+                    if out.last().is_some_and(|l| first <= l.first || (l.first.src == first.src && first.ctr <= l.hi)) {
+                        return Err(Error::Malformed("value removal parts not ascending and apart"));
+                    }
+                    out.push(DotRange { first, hi });
+                }
+                if out.is_empty() {
+                    return Err(Error::Malformed("value removal without a part"));
+                }
+                Some(crate::fragment::Removal { stamp, value, seen: out })
             }
             None => None,
         };
@@ -860,7 +884,7 @@ pub(crate) fn derived_ok(f: &Fragment) -> bool {
     match f {
         Fragment::Register(r) => ok(r.reset.as_ref()) && ok(r.write.as_ref().map(|w| &w.stamp)),
         Fragment::Bag(Bag { meta: m, elems, .. }) => meta(m) && elems.values().all(|e| ok(e.reset.as_ref())),
-        Fragment::Set(s) => meta(&s.meta) && s.elems.values().all(|e| ok(e.reset.as_ref()) && ok(e.gone.as_ref().map(|g| &g.0))),
+        Fragment::Set(s) => meta(&s.meta) && s.elems.values().all(|e| ok(e.reset.as_ref()) && ok(e.gone.as_ref().map(|g| &g.stamp))),
         Fragment::Struct(x) => meta(&x.meta),
         Fragment::Enum(x) => meta(&x.meta) && ok(x.case.as_ref().map(|c| &c.stamp)),
         Fragment::Map(x) => meta(&x.meta) && x.entries.values().all(|e| ok(e.reset.as_ref()) && ok(e.created.as_ref())),

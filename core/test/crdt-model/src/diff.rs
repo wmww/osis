@@ -87,15 +87,9 @@ pub fn diff(w: &mut Writer, st: Option<&Frag>, ty: &Ty, v: &Value) -> Option<Fra
         (Ty::Enum(..), _, _) => return crate::ops::enum_set(w, Some(st), ty, v),
         (Ty::Set(_), Frag::Set { elems, .. }, Value::Set(items)) => {
             let live = live_elems(elems);
-            let gone: Vec<_> = live.iter().filter(|(_, x)| !items.contains(x) && !matches!(x, Value::Tid(_))).map(|(d, _)| (*d).clone()).collect();
+            let gone: Vec<_> = live.iter().filter(|(_, x)| !items.contains(x)).map(|(d, _)| (*d).clone()).collect();
             let mut f = if gone.is_empty() { Frag::Set { c: comp(), elems: BTreeMap::new() } } else { elem_reset(w, 6, &gone) };
             let Frag::Set { elems: de, .. } = &mut f else { unreachable!() };
-            // a tid goes by value (§5.5)
-            let tids: std::collections::BTreeSet<&Value> = live.iter().map(|(_, x)| x).filter(|x| !items.contains(*x) && matches!(x, Value::Tid(_))).collect();
-            for v in tids {
-                let (d, e) = crate::ops::set_removal(w, v);
-                de.insert(d, e);
-            }
             for it in items {
                 if !live.iter().any(|(_, x)| x == it) {
                     let d = w.stamp().dot;

@@ -5,7 +5,7 @@ use crate::changes::Changes;
 use crate::error::Error;
 use crate::fragment::{Bag, BagKind, CaseWrite, Eid, Elem, Encoding, Entry, Enum, Fragment, Map, Meta, RegWrite, Register, Set, Struct};
 use crate::seq;
-use crate::stamp::{CounterRange, Dot, Source, Stamp};
+use crate::stamp::{CounterRange, Dot, DotRange, Source, Stamp};
 use crate::view::View;
 use osis_base::{Float, Value};
 use std::collections::{BTreeMap, BTreeSet};
@@ -24,13 +24,14 @@ pub struct Writer {
     next: u64,
     keyed: bool,
     copied: BTreeSet<Dot>,
+    seen: Vec<DotRange>,
 }
 
 impl Writer {
     /// `lo` is the first unused counter of `src` for this aspect (≥ 1). Map removals are keyless.
     pub fn new(ts: osis_base::Ts, src: Source, lo: u64) -> Writer {
         let lo = lo.max(1);
-        Writer { ts, src, lo, next: lo, keyed: false, copied: BTreeSet::new() }
+        Writer { ts, src, lo, next: lo, keyed: false, copied: BTreeSet::new(), seen: Vec::new() }
     }
     /// Continues a delta whose counters below `next` are taken: commit-level writes keep its
     /// delta stamp `lo` (§2.3), creations and position writes go on from `next`.
@@ -42,6 +43,20 @@ impl Writer {
     /// §5.6); else a removal is the dot's key-erased record.
     pub fn keyed_removals(mut self, on: bool) -> Writer {
         self.keyed = on;
+        self
+    }
+    /// The parts of this aspect the writer holds as headers only (§2.4): a removal of a tid
+    /// covers their elements of it (§5.5). Sorted and merged here.
+    pub fn seen_headers(mut self, mut seen: Vec<DotRange>) -> Writer {
+        seen.sort();
+        let mut out: Vec<DotRange> = Vec::with_capacity(seen.len());
+        for r in seen.into_iter().filter(|r| r.hi > r.first.ctr) {
+            match out.last_mut() {
+                Some(l) if l.first.src == r.first.src && r.first.ctr <= l.hi => l.hi = l.hi.max(r.hi),
+                _ => out.push(r),
+            }
+        }
+        self.seen = out;
         self
     }
     /// The origin dots of the writes whose content an undo wrote back (§4.6: from the undo
@@ -184,10 +199,14 @@ pub(crate) fn set_elem(w: &mut Writer, v: Value) -> (Dot, Elem) {
     (d, Elem::of_frag(reg(w, v)))
 }
 
-/// A value removal of tid `v` (§5.5): a fresh dot, stamped as the delta's resets.
-pub(crate) fn set_removal(w: &mut Writer, v: Value) -> (Dot, Elem) {
+/// A value removal of tid `v` over the parts the writer holds as headers only (§5.5): a fresh
+/// dot, stamped as the delta's resets; `None` when there are none.
+pub(crate) fn set_removal(w: &mut Writer, v: &Value) -> Option<(Dot, Elem)> {
+    if w.seen.is_empty() || !matches!(v, Value::Tid(_)) {
+        return None;
+    }
     let d = w.fresh().dot;
-    (d, Elem::removal(&w.delta_stamp(), v))
+    Some((d, Elem::removal(crate::fragment::Removal { stamp: w.delta_stamp(), value: v.clone(), seen: w.seen.clone() })))
 }
 
 fn contribution(w: &mut Writer, kind: BagKind, v: Value) -> Fragment {
@@ -417,22 +436,11 @@ pub fn diff<V: View>(w: &mut Writer, st: Option<&Fragment>, view: &V, v: &Value)
             let mut elems = BTreeMap::new();
             let r = w.delta_stamp();
             visited(live.len());
-            let mut removed = BTreeSet::new();
             for (d, p) in &live {
-                // opaque elements are never removed (§9); a tid by value (§5.5)
-                match p {
-                    Some(p @ Value::Tid(_)) if !items.contains(p) => {
-                        removed.insert(p.clone());
-                    }
-                    Some(p) if !items.contains(p) => {
-                        elems.insert((*d).clone(), Elem::tomb(&r));
-                    }
-                    _ => {}
+                // opaque elements are never removed (§9)
+                if p.as_ref().is_some_and(|p| !items.contains(p)) {
+                    elems.insert((*d).clone(), Elem::tomb(&r));
                 }
-            }
-            for v in removed {
-                let (d, e) = set_removal(w, v);
-                elems.insert(d, e);
             }
             for it in items {
                 if !held.contains(it) {
@@ -532,15 +540,16 @@ pub(crate) fn leaf<V: View>(w: &mut Writer, cur: Option<&Fragment>, view: &V, op
             let enc = view.encoding().or_else(|| cur.map(|c| c.chosen().encoding()));
             let slot = enc.and_then(|e| present_slot(cur, e));
             match (enc, slot.as_deref()) {
-                // a tid goes by value, whatever this state holds (§5.5)
-                (Some(Encoding::Set), _) if matches!(x, Value::Tid(_)) => Ok(Some(Fragment::Set(Set::new(Meta::default(), BTreeMap::from([set_removal(w, x.clone())]))))),
-                (Some(Encoding::Set), Some(Fragment::Set(s))) => {
-                    let ev = view.element().ok_or(Error::Mismatch("set without element type"))?;
-                    let elems: BTreeMap<Dot, Elem> = live_elems(&s.elems)
-                        .into_iter()
-                        .filter(|(_, v)| projected(&ev, v).as_ref() == Some(x))
-                        .map(|(d, _)| (d.clone(), Elem::tomb(&r)))
-                        .collect();
+                // the live elements held, and a tid's elements in parts held as headers (§5.5)
+                (Some(Encoding::Set), slot @ (Some(Fragment::Set(_)) | None)) => {
+                    let mut elems: BTreeMap<Dot, Elem> = match slot {
+                        Some(Fragment::Set(s)) => {
+                            let ev = view.element().ok_or(Error::Mismatch("set without element type"))?;
+                            live_elems(&s.elems).into_iter().filter(|(_, v)| projected(&ev, v).as_ref() == Some(x)).map(|(d, _)| (d.clone(), Elem::tomb(&r))).collect()
+                        }
+                        _ => BTreeMap::new(),
+                    };
+                    elems.extend(set_removal(w, x));
                     Ok((!elems.is_empty()).then(|| Fragment::Set(Set::new(Meta::default(), elems))))
                 }
                 (Some(Encoding::Map), Some(Fragment::Map(m))) => {
@@ -553,7 +562,7 @@ pub(crate) fn leaf<V: View>(w: &mut Writer, cur: Option<&Fragment>, view: &V, op
                         .collect();
                     Ok((!entries.is_empty()).then(|| Fragment::Map(Map::new(Meta::default(), entries))))
                 }
-                (Some(Encoding::Set | Encoding::Map), None) => Ok(None),
+                (Some(Encoding::Map), None) => Ok(None),
                 _ => Err(Error::Mismatch("remove needs a set or map")),
             }
         }

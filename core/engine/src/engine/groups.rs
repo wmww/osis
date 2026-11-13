@@ -5,7 +5,7 @@
 use super::Engine;
 use crate::error::Result;
 use osis_base::{Ak, CommitId, Tid, Value};
-use osis_crdt::{Fragment, PathSeg};
+use osis_crdt::{Dot, DotRange, Fragment, PathSeg};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -57,9 +57,9 @@ impl Engine {
 
 impl Engine {
     /// The groups whose `group.0` may list `t`, as an item and as a subgroup: what a delete of `t`
-    /// removes it from (spec/crdt.md §5.5, §4.6). `listed_in`, and every group with a valid
-    /// `group.0` part not received yet that no held reset of its `group.0` stamped after it
-    /// covers, in both: what that part lists is not known here.
+    /// removes it from (spec/crdt.md §5.5, §4.6). `listed_in`, and every group with a part of its
+    /// `group.0` held as a header only (`header_only_parts`), in both: what that part lists is not
+    /// known here.
     pub fn listing_groups(&mut self, t: &Tid) -> Result<(BTreeSet<Tid>, BTreeSet<Tid>)> {
         let t = *t;
         self.run(|tx| listing_groups(tx, &t))
@@ -74,20 +74,49 @@ pub(crate) fn listing_groups(tx: &mut super::Tx<'_>, t: &Tid) -> Result<(BTreeSe
         (items, ix.parents_of(t).collect::<BTreeSet<Tid>>())
     };
     let gak = Ak::new(osis_schema::RawKey::ak(&osis_schema::core_types::GROUP)).map_err(|_| crate::error::Error::Misuse("ak"))?;
-    let missing: Vec<(Tid, Vec<CommitId>)> = tx.core.ix.missing.range((gak.clone(), Tid::from_bytes([0; 15]))..).take_while(|((ak, _), _)| *ak == gak).map(|((_, g), cs)| (*g, cs.iter().copied().collect())).collect();
-    for (g, cs) in missing {
+    let partial: Vec<Tid> = tx.core.ix.missing.range((gak.clone(), Tid::from_bytes([0; 15]))..).take_while(|((ak, _), _)| *ak == gak).map(|((_, g), _)| *g).collect();
+    for g in partial {
         if g == *t || items.contains(&g) && subs.contains(&g) {
             continue;
         }
-        let parts: Vec<osis_base::Ts> = cs.iter().filter_map(|c| tx.core.ix.commits.get(c).filter(|m| m.aspect(&g, &gak).is_some_and(|ai| m.valid_at(ai) && m.missing(ai))).map(|m| m.view.ts)).collect();
-        let Some(newest) = parts.into_iter().max() else { continue };
-        let reset = tx.state(&g, &gak)?.and_then(Fragment::reset);
-        if reset.is_none_or(|r| newest >= r.ts) {
+        if !header_only_parts(tx, &g, &gak)?.is_empty() {
             items.insert(g);
             subs.insert(g);
         }
     }
     Ok((items, subs))
+}
+
+/// `w` for ops `ops` on aspect `(tid, ak)`: a removal of a tid among them covers the parts held
+/// as headers only too (`header_only_parts`, spec/crdt.md §5.5).
+pub(crate) fn seeing(tx: &mut super::Tx<'_>, tid: &Tid, ak: &Ak, ops: &[osis_crdt::PathOp], w: osis_crdt::Writer) -> Result<osis_crdt::Writer> {
+    if !ops.iter().any(|o| matches!(o.op, osis_crdt::Op::Remove(Value::Tid(_)))) {
+        return Ok(w);
+    }
+    Ok(w.seen_headers(header_only_parts(tx, tid, ak)?))
+}
+
+/// The parts of aspect `(tid, ak)` this node holds as headers only, by their dots (spec/crdt.md
+/// §2.4): valid here, not received yet (`Hold::Missing`, but one forgotten with its released
+/// thing), and not stamped below a held root reset, which leaves them nothing. What a removal of
+/// a tid there covers beside the elements held (§5.5).
+pub(crate) fn header_only_parts(tx: &mut super::Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Vec<DotRange>> {
+    let cs: Vec<CommitId> = tx.core.ix.missing.get(&(ak.clone(), *tid)).into_iter().flatten().copied().collect();
+    if cs.is_empty() {
+        return Ok(Vec::new());
+    }
+    // the root's reset, held whatever pages are loaded
+    tx.load_lazy(tid, ak)?;
+    let reset = tx.cached(tid, ak).and_then(Fragment::reset).map(|r| r.ts);
+    let mut out = Vec::new();
+    for c in cs {
+        let Some(m) = tx.core.ix.commits.get(&c) else { continue };
+        let Some(a) = m.aspect(tid, ak).filter(|ai| m.valid_at(*ai) && m.missing(*ai) && m.missing_as(*ai) != Some(super::Missing::Forgot)).and_then(|ai| m.view.aspects.get(ai)) else { continue };
+        if a.lo < a.hi && reset.is_none_or(|r| m.view.ts >= r) {
+            out.push(DotRange { first: Dot::new(m.view.form.own_source(m.view.author, c), a.lo), hi: a.hi });
+        }
+    }
+    Ok(out)
 }
 
 impl Engine {

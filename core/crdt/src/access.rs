@@ -54,7 +54,7 @@ impl Fragment {
             // a value removal names no value it holds; an element it hides is dead (§4.8, §5.5)
             Fragment::Set(s) => {
                 let gone = crate::fragment::removed(&s.elems);
-                s.elems.values().filter(|e| !crate::fragment::hidden(e, &gone)).filter_map(|e| e.frag.as_deref()).for_each(|x| x.values(f));
+                s.elems.iter().filter(|(d, e)| !crate::fragment::hidden(d, e, &gone)).filter_map(|(_, e)| e.frag.as_deref()).for_each(|x| x.values(f));
             }
             Fragment::Struct(s) => s.fields.values().for_each(|x| x.values(f)),
             Fragment::Enum(e) => e.payloads.values().for_each(|x| x.values(f)),
@@ -109,11 +109,11 @@ impl Fragment {
     pub fn set_elem(&self, field: u64, at: &Stamp, v: &Value) -> Held {
         let Some((set, e)) = self.struct_set(field) else { return Held::Unknown };
         let gone = set.map(|s| crate::fragment::removed(&s.elems)).unwrap_or_default();
-        let removed = gone.get(v).map(|g| (*g).clone());
+        let removed = gone.get(v).is_some_and(|rs| rs.iter().any(|r| r.hides(&at.dot, at)));
         match set.and_then(|s| s.elems.get(&at.dot)) {
-            Some(el) if !crate::fragment::hidden(el, &gone) && el.frag.as_deref().and_then(Fragment::read).is_some() => Held::Live,
+            Some(el) if !crate::fragment::hidden(&at.dot, el, &gone) && el.frag.as_deref().and_then(Fragment::read).is_some() => Held::Live,
             Some(_) => Held::Dead,
-            None if crate::stamp::max_opt(e, removed).is_some_and(|e| e > *at) => Held::Dead,
+            None if removed || e.is_some_and(|e| e > *at) => Held::Dead,
             None => Held::Unknown,
         }
     }
@@ -252,7 +252,7 @@ impl Fragment {
         match self {
             Fragment::Register(r) => reg(r),
             Fragment::Bag(Bag { meta, elems, .. }) => meta_bytes(meta) + tree(elems) + elems.values().map(|e| opt_stamp(&e.reset) + boxed(&e.frag)).sum::<usize>(),
-            Fragment::Set(s) => meta_bytes(&s.meta) + tree(&s.elems) + s.elems.values().map(|e| opt_stamp(&e.reset) + boxed(&e.frag) + e.gone.as_ref().map_or(0, |(_, v)| STAMP + value_bytes(v))).sum::<usize>(),
+            Fragment::Set(s) => meta_bytes(&s.meta) + tree(&s.elems) + s.elems.values().map(|e| opt_stamp(&e.reset) + boxed(&e.frag) + e.gone.as_ref().map_or(0, |g| STAMP + value_bytes(&g.value) + g.seen.len() * STAMP)).sum::<usize>(),
             Fragment::Struct(Struct { meta, fields }) => meta_bytes(meta) + tree(fields) + fields.values().map(Fragment::approx_bytes).sum::<usize>(),
             Fragment::Enum(Enum { meta, case, payloads }) => meta_bytes(meta) + case.as_ref().map_or(0, |_| STAMP) + tree(payloads) + payloads.values().map(Fragment::approx_bytes).sum::<usize>(),
             Fragment::Map(m) => {

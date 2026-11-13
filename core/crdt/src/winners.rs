@@ -4,7 +4,7 @@
 
 use crate::fragment::{Bag, Elem, Enum, Fragment, Key, Map, Meta, Register, Set, Slots, Struct};
 use crate::seq::{Seq, SeqContent, SeqElem};
-use crate::stamp::{Dot, Stamp};
+use crate::stamp::{Dot, DotRange, Stamp};
 use osis_base::Ts;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -27,8 +27,9 @@ pub enum Place {
     /// A set element's register holding a tid, in place of `In`: what a value removal of the
     /// tid prunes (§5.5).
     Tid(Key),
-    /// A set's value removals of a tid, beside its elements (§5.5).
-    Gone(Key),
+    /// A set's value removal, beside its elements (§5.5): its tid, its record's dot and the parts
+    /// it names.
+    Gone(Key, Dot, Vec<DotRange>),
 }
 
 /// Which write at a position.
@@ -153,13 +154,17 @@ impl<T> ByWrite<T> {
         let mut best: Option<Ts> = None;
         // a set element's tid: the value removals of it, which hide it (§5.5)
         if w.kind == Kind::Value
-            && let [up @ .., Place::Elem(_), Place::Tid(t)] = w.path.as_slice()
+            && let [up @ .., Place::Elem(d), Place::Tid(t)] = w.path.as_slice()
         {
-            let gone = |p: &Vec<Place>| matches!(p.split_last(), Some((Place::Gone(g), at)) if at == up && g == t);
+            let tid = |p: &Vec<Place>| match p.split_last() {
+                Some((Place::Gone(g, _, seen), at)) if at == up && g == t => Some(seen.iter().any(|r| r.covers(d))),
+                _ => None,
+            };
             let mut from = up.to_vec();
-            // the least key: the encoding 0x00
-            from.push(Place::Gone(Key(std::sync::Arc::new(osis_base::Value::Int(0)))));
-            for (_, s) in self.0.range(from..).take_while(|(p, _)| p.starts_with(up)).filter(|(p, _)| gone(p)) {
+            // the least dot: a session of zeros, counter 0
+            let least = Dot::new(crate::stamp::Source::session(crate::stamp::Session { node: osis_base::Tid::from_bytes([0; 15]), nonce: [0; crate::stamp::SESSION_NONCE_LEN] }), 0);
+            from.push(Place::Gone(t.clone(), least, Vec::new()));
+            for (_, s) in self.0.range(from..).map_while(|(p, s)| Some((tid(p)?, s))).filter(|(c, _)| *c) {
                 for ((_, st), t) in s.range((Kind::Reset, w.stamp.clone())..).take_while(|x| x.0.0 == Kind::Reset) {
                     if *st > w.stamp
                         && let Some(d) = date(st, t)
@@ -309,15 +314,13 @@ fn reg<S: Sink>(out: &mut S, path: &[Place], r: &Register) {
 
 fn elems<S: Sink>(out: &mut S, path: &mut Vec<Place>, m: &Meta, es: &BTreeMap<Dot, Elem>) {
     meta(out, path, m);
-    // of a tid's value removals only the greatest wins (one position), and an element of the
-    // tid stamped below it does not: it stays hidden (§5.5)
+    // a value removal wins while held, at its tid and parts; an element it hides does not: it
+    // stays hidden (§5.5)
     let gone = if S::ALL { BTreeMap::new() } else { crate::fragment::removed(es) };
     for (d, e) in es {
-        if let Some((s, v)) = &e.gone
-            && (S::ALL || gone.get(v) == Some(&s))
-        {
-            path.push(Place::Gone(Key(std::sync::Arc::new(v.clone()))));
-            out.put(path, Kind::Reset, s);
+        if let Some(g) = &e.gone {
+            path.push(Place::Gone(Key(std::sync::Arc::new(g.value.clone())), d.clone(), g.seen.clone()));
+            out.put(path, Kind::Reset, &g.stamp);
             path.pop();
         }
         path.push(Place::Elem(d.clone()));
@@ -325,7 +328,7 @@ fn elems<S: Sink>(out: &mut S, path: &mut Vec<Place>, m: &Meta, es: &BTreeMap<Do
         match (e.frag.as_deref(), e.written()) {
             (Some(Fragment::Register(r)), Some((Some(v @ osis_base::Value::Tid(_)), _))) => {
                 path.push(Place::Tid(Key(std::sync::Arc::new(v.clone()))));
-                if !crate::fragment::hidden(e, &gone) {
+                if !crate::fragment::hidden(d, e, &gone) {
                     reg(out, path, r);
                 }
                 path.pop();

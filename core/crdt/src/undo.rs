@@ -145,35 +145,43 @@ fn undo_at<V: View>(w: &mut Writer, u: &Undone, o: &Fragment, s: Option<&Fragmen
                 return Ok(Some(f));
             }
             let prev = chosen(b);
+            let pe = match &prev {
+                Some(Fragment::Set(p)) => Some(&p.elems),
+                _ => None,
+            };
+            let hiding = pe.map(crate::fragment::removed).unwrap_or_default();
+            // a held element of `prev` live there: its value and content
+            let live = |d: &Dot, e: &'_ Elem| -> Option<osis_base::Value> { if crate::fragment::hidden(d, e, &hiding) { None } else { e.frag.as_deref()?.read() } };
             let mut elems = BTreeMap::new();
+            // what the undone delta removed and was live before it: a removed dot, or an element
+            // of a value removal's tid in the parts it names (§5.5); each value back once, with a
+            // fresh dot
+            let mut back: BTreeMap<osis_base::Value, (&Dot, &Fragment)> = BTreeMap::new();
             for (d, e) in &x.elems {
-                if let Some(v) = e.removes() {
-                    // a value removal: the value back with a fresh dot, where it was live (§5.5)
-                    let f = match &prev {
-                        Some(Fragment::Set(p)) => crate::fragment::live_elems(&p.elems).find(|(_, _, x)| x == v).and_then(|(pd, x, _)| Some((pd, x.frag.as_deref()?))),
-                        _ => None,
-                    };
-                    if let Some((pd, f)) = f {
-                        w.copy_dot(pd);
-                        w.copy_from(f);
-                        let (nd, e) = crate::ops::set_elem(w, v.clone());
-                        elems.insert(nd, e);
-                    }
-                } else if e.frag.is_some() && u.made(d) {
+                if e.frag.is_some() && u.made(d) {
                     elems.insert(d.clone(), Elem::tomb(&r));
-                } else if e.reset.is_some() {
-                    // re-add the removed value with a fresh dot
-                    let f = match &prev {
-                        Some(Fragment::Set(p)) => p.elems.get(d).filter(|e| !crate::fragment::hidden(e, &crate::fragment::removed(&p.elems))).and_then(|e| e.frag.as_deref()),
-                        _ => None,
-                    };
-                    if let Some((f, v)) = f.and_then(|f| Some((f, f.read()?))) {
-                        w.copy_dot(d);
-                        w.copy_from(f);
-                        let (nd, e) = crate::ops::set_elem(w, v);
-                        elems.insert(nd, e);
+                    continue;
+                }
+                let Some(pe) = pe else { continue };
+                if e.reset.is_some()
+                    && let Some((pd, el)) = pe.get_key_value(d)
+                    && let (Some(v), Some(f)) = (live(pd, el), el.frag.as_deref())
+                {
+                    back.entry(v).or_insert((pd, f));
+                }
+                if let Some(g) = &e.gone {
+                    for (pd, el) in pe.iter().filter(|(pd, _)| g.seen.iter().any(|s| s.covers(pd))) {
+                        if let (Some(v), Some(f)) = (live(pd, el).filter(|v| *v == g.value), el.frag.as_deref()) {
+                            back.entry(v).or_insert((pd, f));
+                        }
                     }
                 }
+            }
+            for (v, (pd, f)) in back {
+                w.copy_dot(pd);
+                w.copy_from(f);
+                let (nd, e) = crate::ops::set_elem(w, v);
+                elems.insert(nd, e);
             }
             Fragment::Set(Set::new(Meta::default(), elems))
         }

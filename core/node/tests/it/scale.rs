@@ -157,9 +157,8 @@ fn set_by_value_is_flat() {
     }
 }
 
-/// A set of n tids: a removal by value of a member (spec/crdt.md §5.5, what `delete` writes in a
-/// group), a removal of a tid not held, and an add back, each in a new session: pages loaded and
-/// written, and the commit's bytes.
+/// A set of n tids: a removal of a member (spec/crdt.md §5.5, what `delete` writes in a group) and
+/// an add back, each in a new session: pages loaded and written, and the commit's bytes.
 fn tid_removals(n: usize) -> Vec<(u64, u64, u64)> {
     let mut lp = net(1, 0);
     let b = lp.peers[0].backend.clone();
@@ -173,7 +172,7 @@ fn tid_removals(n: usize) -> Vec<(u64, u64, u64)> {
     m.set(x, &REFS, &Value::Set((0..n).map(t).collect())).unwrap();
     lp.peers[0].commit(m).unwrap().unwrap();
     let mut out = Vec::new();
-    for (k, op) in [Op::Remove(t(n / 3)), Op::Remove(t(n + 7)), Op::Add(t(n / 3))].into_iter().enumerate() {
+    for (k, op) in [Op::Remove(t(n / 3)), Op::Add(t(n / 3))].into_iter().enumerate() {
         lp.peers[0].restart(k as u64).unwrap();
         let (c, w) = measured(&b, || {
             let mut m = Mutation::new();
@@ -190,14 +189,14 @@ fn tid_removals(n: usize) -> Vec<(u64, u64, u64)> {
 }
 
 // spec/crdt.md §5.5, spec/requirements.md Scale (deleting costs what changed): removing a tid from
-// a paged set by value, whatever the writer holds, and adding it back, each in a new session, loads
-// and writes only their pages (the value index finds the tid's records), and the commit is one
-// record, at n and 10n members. (A group's `group.0` is read whole after any change for the group
-// index: issues/group-change-reads-whole-group.md.)
+// a paged set and adding it back, each in a new session, loads and writes only their pages (the
+// value index finds the tid's records), and the commit is one record, at n and 10n members. (A
+// group's `group.0` is read whole after any change for the group index:
+// issues/group-change-reads-whole-group.md.)
 #[test]
-fn tid_removal_by_value_is_flat() {
+fn tid_removal_is_flat() {
     let (small, big) = (tid_removals(4000), tid_removals(40_000));
-    for (i, what) in ["remove a member", "remove a tid not held", "add back"].iter().enumerate() {
+    for (i, what) in ["remove a member", "add back"].iter().enumerate() {
         flat(&format!("{what}: pages loaded"), small[i].0, big[i].0);
         flat(&format!("{what}: pages written"), small[i].1, big[i].1);
         flat(&format!("{what}: commit bytes"), small[i].2, big[i].2);

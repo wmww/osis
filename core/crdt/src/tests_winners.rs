@@ -75,9 +75,9 @@ fn walk(f: &Fragment, path: &mut Vec<Place>, out: &mut Vec<Raw>) {
         Fragment::Set(b) => {
             meta(out, path, &b.meta);
             for (d, e) in &b.elems {
-                if let Some((s, v)) = &e.gone {
-                    path.push(Place::Gone(Key(std::sync::Arc::new(v.clone()))));
-                    put(out, path, Kind::Reset, s);
+                if let Some(g) = &e.gone {
+                    path.push(Place::Gone(Key(std::sync::Arc::new(g.value.clone())), d.clone(), g.seen.clone()));
+                    put(out, path, Kind::Reset, &g.stamp);
                     path.pop();
                 }
                 path.push(Place::Elem(d.clone()));
@@ -161,7 +161,7 @@ fn walk(f: &Fragment, path: &mut Vec<Place>, out: &mut Vec<Raw>) {
 fn pruned(w: &Raw, all: &[Raw]) -> bool {
     let prefix = |p: &[Place]| w.w.path.starts_with(p);
     // a value removal of a set: its tid's elements there, hidden (§5.5)
-    let removes = |s: &Raw| matches!((s.w.path.split_last(), w.w.path.as_slice()), (Some((Place::Gone(g), at)), [up @ .., Place::Elem(_), Place::Tid(t)]) if at == up && g == t);
+    let removes = |s: &Raw| matches!((s.w.path.split_last(), w.w.path.as_slice()), (Some((Place::Gone(g, _, seen), at)), [up @ .., Place::Elem(d), Place::Tid(t)]) if at == up && g == t && seen.iter().any(|r| r.covers(d)));
     all.iter().any(|s| {
         s.w.stamp > w.w.stamp
             && match s.w.kind {

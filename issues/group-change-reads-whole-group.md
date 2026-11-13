@@ -3,6 +3,6 @@
 > Priority: normal
 > Tags: engine
 
-Measured while writing `scale::tid_removal_by_value_is_flat`: removing one member of a 10 000-item group by value loaded all 39 pages of its `group.0` (the same op on a plain `set<tid>` aspect loads 2-3). The set ops themselves page (the value index); the group index (`groups::def_of`) wants the whole definition. spec/requirements.md Scale: deleting costs what changed.
+Measured while writing `scale::tid_removal_is_flat`: removing one member of a 10 000-item group loaded all 39 pages of its `group.0` (the same op on a plain `set<tid>` aspect loads 2-3). The set ops themselves page (the value index); the group index (`groups::def_of`) wants the whole definition. spec/requirements.md Scale: deleting costs what changed.
 
 Fix direction: refresh the index from the delta (`groups::gains` is a start: what a delta newly lists, and what its value removals and element resets hide or drop), reading only the touched records, as refs do (`refs::Delta::reach`).

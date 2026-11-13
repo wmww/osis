@@ -233,6 +233,20 @@ impl fmt::Debug for Dot {
     }
 }
 
+/// The dots of one source with counters in `[first.ctr, hi)`: a part's counter range (§2.4), as a
+/// value removal names the parts it saw (§5.5).
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct DotRange {
+    pub first: Dot,
+    pub hi: u64,
+}
+
+impl DotRange {
+    pub fn covers(&self, d: &Dot) -> bool {
+        d.src == self.first.src && self.first.ctr <= d.ctr && d.ctr < self.hi
+    }
+}
+
 /// `(ts, dot)` with the total order of §2.2: `ts`, then the dot (`dot_cmp`). Distinct writes compare equal
 /// only when they share a commit's delta stamp (§2.3).
 #[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
