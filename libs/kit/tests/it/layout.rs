@@ -26,6 +26,8 @@ struct Screen {
     ui: Ui,
     rr: RenderRoot,
     d: Data,
+    /// What widgets reported.
+    signals: Receiver<RenderRootSignal>,
 }
 
 impl Screen {
@@ -67,8 +69,9 @@ impl Screen {
             scale_factor: 1.0,
             test_font: None,
         };
-        let rr = RenderRoot::new(tree(ui.look()), |_| {}, opts);
-        let mut s = Screen { ui, rr, d };
+        let (tx, signals) = channel();
+        let rr = RenderRoot::new(tree(ui.look()), move |s| drop(tx.send(s)), opts);
+        let mut s = Screen { ui, rr, d, signals };
         s.ui.start(&mut s.rr, Box::new(crate::input::Recorder::default()), 1.0, false);
         s.ui.wake(&mut s.rr);
         s
@@ -153,6 +156,45 @@ impl Screen {
         self.rr.handle_pointer_event(PointerEvent::Scroll(PointerScrollEvent { pointer, delta: ScrollDelta::PixelDelta(PhysicalPosition::new(0.0, -dy)), state }));
         self.ui.wake(&mut self.rr);
         self.rr.redraw();
+    }
+
+    /// A touch at `at`, moved by `dy` logical px in ten steps over `ms`, then lifted: a swipe
+    /// (`dy` < 0 moves the content up). Returns the time it lifted, ns.
+    fn swipe(&mut self, at: Point, dy: f64, ms: u64, t0: u64) -> u64 {
+        let pointer = PointerInfo { pointer_id: Some(PointerId::PRIMARY), persistent_device_id: None, pointer_type: PointerType::Touch };
+        let state = |p: Point, t: u64| PointerState { time: t, position: PhysicalPosition::new(p.x, p.y), scale_factor: 1.0, ..PointerState::default() };
+        let mut t = t0;
+        self.ui.pointer(&mut self.rr, PointerEvent::Down(osis_kit::masonry::core::PointerButtonEvent { button: None, pointer, state: state(at, t) }));
+        for i in 1..=10 {
+            t += ms * 100_000;
+            let p = at + (0.0, dy * f64::from(i) / 10.0);
+            self.ui.pointer(&mut self.rr, PointerEvent::Move(osis_kit::masonry::core::PointerUpdate { pointer, current: state(p, t), coalesced: vec![], predicted: vec![] }));
+        }
+        self.ui.pointer(&mut self.rr, PointerEvent::Up(osis_kit::masonry::core::PointerButtonEvent { button: None, pointer, state: state(at + (0.0, dy), t) }));
+        self.ui.wake(&mut self.rr);
+        self.rr.redraw();
+        t
+    }
+
+    /// Animation frames of 16 ms, each through what Root reports, as a shell runs them; how many
+    /// ran before Root stopped asking (at most `n`).
+    fn frames(&mut self, n: usize) -> usize {
+        for i in 0..n {
+            let mut asked = false;
+            for s in self.signals.try_iter().collect::<Vec<_>>() {
+                match s {
+                    RenderRootSignal::RequestAnimFrame => asked = true,
+                    RenderRootSignal::Action(a, w) => self.ui.action(&mut self.rr, w, a),
+                    _ => {}
+                }
+            }
+            if !asked {
+                return i;
+            }
+            self.rr.handle_window_event(WindowEvent::AnimFrame(std::time::Duration::from_millis(16)));
+            self.rr.redraw();
+        }
+        n
     }
 
     /// How many things on screen scroll (offer to scroll or show a bar), and how many of those
@@ -417,12 +459,12 @@ fn a_new_things_title_asks_for_the_keyboard_once() {
     };
     let rr = RenderRoot::new(tree(ui.look()), move |s| drop(tx.send(s)), opts);
     let keys = Rc::new(RefCell::new(Vec::new()));
-    let mut s = Screen { ui, rr, d };
+    let mut s = Screen { ui, rr, d, signals };
     s.ui.start(&mut s.rr, Box::new(Keys(keys.clone())), 1.0, false);
     s.ui.wake(&mut s.rr);
     let mut seen = Vec::new();
-    press(&mut s.ui, &mut s.rr, &signals, &mut seen, "New");
-    press(&mut s.ui, &mut s.rr, &signals, &mut seen, "Note");
+    press(&mut s.ui, &mut s.rr, &s.signals, &mut seen, "New");
+    press(&mut s.ui, &mut s.rr, &s.signals, &mut seen, "Note");
     let t = s.d.opened().unwrap().unwrap();
     assert_ne!(t, first);
     assert_eq!(*keys.borrow(), vec![true]);
@@ -437,4 +479,45 @@ fn a_new_things_title_asks_for_the_keyboard_once() {
     s.ui.wake(&mut s.rr);
     assert_ne!(s.rr.focused_ime_text().map(|(id, _)| id), Some(typing), "rebuilt");
     assert_eq!(*keys.borrow(), vec![true]);
+}
+
+/// Touch scrolls the page as the wheel does, in its one-scroll order: in a window too short for
+/// home, swipes at one place reach every favorite and back to the top, one thing scrolling at a
+/// time; a flick carries on after the lift and stops.
+#[test]
+fn touch_scrolls_the_page_in_order() {
+    let n = 8;
+    let mut s = Screen::home(360, 190, n);
+    let (low, high) = (Point::new(180.0, 175.0), Point::new(180.0, 15.0));
+    let top = |s: &mut Screen| s.tiles().iter().map(|t| t.2.y0).fold(f64::INFINITY, f64::min);
+    let start = top(&mut s);
+    let mut seen = BTreeSet::new();
+    let mut t = 1_000_000_000;
+    for _ in 0..100 {
+        let nodes = s.nodes();
+        seen.extend(s.shown_in(&nodes));
+        let (count, nested) = scrollables_in(&nodes);
+        assert!(count <= 1 && nested == 0, "{count} scrollables, {nested} nested");
+        if seen.len() == n {
+            break;
+        }
+        // slow: no fling
+        t = s.swipe(low, -150.0, 2000, t) + 1_000_000_000;
+        s.frames(1000);
+    }
+    assert_eq!(seen.len(), n, "reached {seen:?}");
+    for _ in 0..100 {
+        if (top(&mut s) - start).abs() < 0.5 {
+            break;
+        }
+        t = s.swipe(high, 150.0, 2000, t) + 1_000_000_000;
+        s.frames(1000);
+    }
+    assert!((top(&mut s) - start).abs() < 0.5, "back at the top: {start} -> {}", top(&mut s));
+    // a flick: the page goes on moving after the lift, then stops asking for frames
+    s.swipe(low, -40.0, 50, t);
+    let lifted = top(&mut s);
+    let ran = s.frames(10_000);
+    assert!(ran > 1 && ran < 10_000, "{ran} frames");
+    assert!(top(&mut s) < lifted - 10.0, "{lifted} -> {}", top(&mut s));
 }

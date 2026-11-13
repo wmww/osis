@@ -170,6 +170,39 @@ impl Surface for Draw<'_> {
 struct Attached {
     platform: Box<dyn Platform>,
     input: Pointers,
+    /// Root reports animation frames (a fling goes on).
+    ticking: bool,
+}
+
+impl Attached {
+    fn new(platform: Box<dyn Platform>, alarm: crate::input::Alarm) -> Attached {
+        Attached { input: Pointers::new(platform.thresholds(), alarm), platform, ticking: false }
+    }
+
+    /// A pointer event, on its way to `rr` through the gestures.
+    fn pointer(&mut self, rr: &mut RenderRoot, e: PointerEvent) {
+        self.input.pointer(rr, &mut *self.platform, e);
+        self.tick(rr);
+    }
+
+    /// An animation frame Root reported (`Frame`): a fling moves on; with none going on Root
+    /// stops reporting (also when an `Attached` before this one asked it to).
+    fn frame(&mut self, rr: &mut RenderRoot, interval: u64) {
+        self.input.frame(rr, interval);
+        if !self.input.flinging() {
+            self.ticking = false;
+            rr.edit_widget_with_tag(ROOT, |mut r| Root::set_ticking(&mut r, false));
+        }
+    }
+
+    /// Root reports animation frames while a fling goes on.
+    fn tick(&mut self, rr: &mut RenderRoot) {
+        let on = self.input.flinging();
+        if on != self.ticking {
+            self.ticking = on;
+            rr.edit_widget_with_tag(ROOT, |mut r| Root::set_ticking(&mut r, on));
+        }
+    }
 }
 
 pub struct Ui {
@@ -198,8 +231,6 @@ pub struct Ui {
     searching: bool,
     /// The platform and the pointer input through it, from `start` on.
     attached: Option<Attached>,
-    /// Root reports animation frames (a fling goes on).
-    ticking: bool,
     /// Fields built to type in (`TYPE_IN`), served after the update.
     typing: Vec<WidgetId>,
     /// The widgets that report an action and what it does.
@@ -260,7 +291,6 @@ impl Ui {
             search_stacks: Vec::new(),
             searching: false,
             attached: None,
-            ticking: false,
             typing: Vec::new(),
             acts: blocks::Acts::default(),
             _diag_sub: diag_sub,
@@ -880,7 +910,7 @@ impl Ui {
                 }
             });
         });
-        self.attached = Some(Attached { input: Pointers::new(platform.thresholds(), alarm), platform });
+        self.attached = Some(Attached::new(platform, alarm));
         self.scale = scale;
         self.system_dark = dark;
         self.data.db.settle();
@@ -941,20 +971,10 @@ impl Ui {
     /// A pointer event, on its way to `rr` through the gestures (`input`).
     pub fn pointer(&mut self, rr: &mut RenderRoot, e: PointerEvent) {
         match self.attached.as_mut() {
-            Some(a) => a.input.pointer(rr, &mut *a.platform, e),
+            Some(a) => a.pointer(rr, e),
             None => {
                 rr.handle_pointer_event(e);
             }
-        }
-        self.tick(rr);
-    }
-
-    /// Root reports animation frames while a fling goes on.
-    fn tick(&mut self, rr: &mut RenderRoot) {
-        let on = self.attached.as_ref().is_some_and(|a| a.input.flinging());
-        if on != self.ticking {
-            self.ticking = on;
-            rr.edit_widget_with_tag(ROOT, |mut r| Root::set_ticking(&mut r, on));
         }
     }
 
@@ -1015,9 +1035,8 @@ impl Ui {
     pub fn action(&mut self, rr: &mut RenderRoot, id: WidgetId, action: ErasedAction) {
         if let Some(Frame(interval)) = action.downcast_ref::<Frame>().copied() {
             if let Some(a) = self.attached.as_mut() {
-                a.input.frame(rr, interval);
+                a.frame(rr, interval);
             }
-            self.tick(rr);
         } else if action.is::<Press>() {
             if let Some(d) = self.acts.pressed(id) {
                 self.run(rr, d, Input::Press);

@@ -5,7 +5,6 @@
 //! opens a new one in its place. With nothing at the path there is nothing to move and no action.
 
 use super::{Attached, ROOT, Ui, set_root_insets};
-use crate::input::Input as Pointers;
 use crate::masonry::app::RenderRoot;
 use crate::masonry::core::{ErasedAction, NewWidget, PointerEvent, Properties, Widget, WidgetId};
 use crate::masonry::peniko::Color;
@@ -16,7 +15,7 @@ use crate::platform::Platform;
 use crate::store::Data;
 use crate::theme::{Look, Theme};
 use crate::widgets::style::{self, Text};
-use crate::widgets::{Chip, ChipMark, ChipPress, Page, Panel, PanelKind, Root};
+use crate::widgets::{Chip, ChipMark, ChipPress, Frame, Page, Panel, PanelKind, Root};
 use crate::window::Waker;
 use osis::{Address, Osis};
 use std::path::{Path, PathBuf};
@@ -199,7 +198,8 @@ impl Started {
         match &mut self.shown {
             Shown::Ui(ui) => ui.attach(platform, scale, dark),
             Shown::Failed(f) => {
-                self.attached = Some(Attached { input: Pointers::new(platform.thresholds()), platform });
+                // no long press here: nothing on the failure screen has a meaning for one
+                self.attached = Some(Attached::new(platform, Box::new(|_, _| {})));
                 f.show(rr, dark);
             }
         }
@@ -243,7 +243,7 @@ impl Started {
     pub fn pointer(&mut self, rr: &mut RenderRoot, e: PointerEvent) {
         match (&mut self.shown, self.attached.as_mut()) {
             (Shown::Ui(ui), _) => ui.pointer(rr, e),
-            (Shown::Failed(_), Some(a)) => a.input.pointer(rr, &mut *a.platform, e),
+            (Shown::Failed(_), Some(a)) => a.pointer(rr, e),
             (Shown::Failed(_), None) => drop(rr.handle_pointer_event(e)),
         }
     }
@@ -289,7 +289,9 @@ impl Started {
         match &mut self.shown {
             Shown::Ui(ui) => ui.action(rr, id, action),
             Shown::Failed(f) => {
-                if f.fresh == Some(id) && action.downcast_ref::<ChipPress>().is_some() {
+                if let (Some(Frame(interval)), Some(a)) = (action.downcast_ref::<Frame>().copied(), self.attached.as_mut()) {
+                    a.frame(rr, interval);
+                } else if f.fresh == Some(id) && action.downcast_ref::<ChipPress>().is_some() {
                     self.start_fresh(rr);
                 }
             }
