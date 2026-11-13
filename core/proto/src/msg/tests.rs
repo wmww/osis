@@ -21,11 +21,37 @@ fn every_kind_is_in_the_decode_table() {
     }
 }
 
-// spec/wire.md §11.2: a message takes exactly its layout's fields: one more or one fewer is
-// malformed; a kind with an id that is no request is a reply
+// spec/wire.md §11.2: a message of every kind takes exactly its layout's fields: one more or
+// one fewer is malformed; a kind with an id that is no request is a reply
 #[test]
 fn exact_arity_spec_wire_11_2() {
-    for (name, m) in messages() {
+    use crate::api::{Outcome, Payload};
+    let max = crate::window::SMALL_REPLY as u64;
+    let v = || Value::Int(5);
+    let mut ms: Vec<(String, Message)> = messages().into_iter().map(|(n, m)| (n.to_string(), m)).collect();
+    ms.extend(
+        [
+            Message::Auth { id: 1, secret: None, session: [1; 16] },
+            Message::Call { id: 1, max_reply: max, method: 2, args: vec![v()] },
+            Message::Reply { id: 1, outcome: Outcome::Ok { value: v() } },
+            Message::Sub { id: 1, max_reply: max, filter: v() },
+            Message::Unsub { id: 1, sub: 2 },
+            Message::Notify { sub: 2, payload: Payload::Delivery { value: v() } },
+            Message::Prove { id: 1, proofs: vec![] },
+            Message::Proved { id: 1, proofs: vec![] },
+            Message::Resume { id: 1, nonce: [1; 32], tags: vec![[2; 32]] },
+            Message::Resumed { id: 1, nonce: [1; 32], tag: Some([2; 32]) },
+        ]
+        .map(|m| (format!("kind {}", m.kind()), m)),
+    );
+    let mut covered: Vec<u64> = ms.iter().map(|(_, m)| m.kind()).collect();
+    covered.sort_unstable();
+    covered.dedup();
+    let mut all = kinds();
+    all.sort_unstable();
+    assert_eq!(covered, all);
+    for (name, m) in ms {
+        assert_eq!(Message::decode(&m.encode()).as_ref(), Ok(&m), "{name}");
         let Value::List(items) = m.to_value() else { unreachable!() };
         let mut more = items.clone();
         more.push(Value::Int(0));
