@@ -19,7 +19,9 @@
 (* dropped epoch boxes it to a holder allowed it that the holder cannot     *)
 (* open from the live boxes (the tip add). A rotation places again,         *)
 (* projected to their roles.0 deltas and under its own epoch, the role      *)
-(* commits it holds wrapped only under epochs below its floor (Replace).    *)
+(* commits it holds wrapped only under epochs below its floor (Replace). m's *)
+(* re-add also boxes m at each epoch its removal's rotation listed (a new   *)
+(* node of a member opens what its other nodes do).                         *)
 (* Hostile parties (a writer, history-less or not) rotate with any listing  *)
 (* of the epochs they know of and any floor the validity rule lets through; *)
 (* the rest of their rotation follows the rules from that keyset (what else *)
@@ -31,15 +33,14 @@
 (* before: any earlier secret; the rest as the rule), "nomaker" (the carry *)
 (* rule judges e's floor alone), "nogfloor" (a grant with history gives     *)
 (* floor 0 whoever writes it), "nolist" (floors read as written), "nocap"   *)
-(* (a floor above n is valid), "keepgone" (a rotation leaves a departed    *)
-(* holder's boxes at epochs it does not carry); Replace FALSE.              *)
+(* (a floor above n is valid), "noreadd" (m's re-add boxes only at the   *)
+(* cut); Replace FALSE.                                                     *)
 (* Commits arrive in any order a node can read them: wrapped under an epoch *)
 (* it holds, boxing it, granting it, or placed again under a cut it holds.   *)
 (* Box removal is observed-remove: a rotation removes the boxes it holds at *)
-(* the epochs its history box carries, and those of each holder it knows   *)
-(* departed at every epoch. Know(x): every secret x ever opens (all boxes  *)
-(* and entries ever written); Fresh(x): what a new node of x opens from the *)
-(* live state.                                                              *)
+(* the epochs its history box carries. Know(x): every secret x ever opens  *)
+(* (all boxes and entries ever written); Fresh(x): what a new node of x     *)
+(* opens from the live state.                                               *)
 EXTENDS Naturals, FiniteSets
 
 CONSTANTS Rule, Replace, Admins, Readers, CutTo, HistTo, RemoveM, MaxRot, MaxMerge, MaxDue, MaxC,
@@ -50,7 +51,7 @@ InitH == Admins \cup Readers \cup (IF RemoveM THEN {M} ELSE {})
 Parties == InitH \cup CutTo \cup HistTo
 Honest == Parties \ (Hostile \cup Accomp)
 \* the rule, or one of its parts off that adds to the floor rules (the rest are older controls)
-RuleOn == Rule \in {"cut", "nomaker", "nogfloor", "nolist", "nocap", "keepgone"}
+RuleOn == Rule \in {"cut", "nomaker", "nogfloor", "nolist", "nocap", "noreadd"}
 
 Base == [ep |-> FALSE, n |-> 0, floor |-> 0, cut |-> FALSE, by |-> "a", lists |-> {},
          ents |-> {}, boxes |-> {}, unbox |-> {}, names |-> {}, knows |-> {}, rm |-> "",
@@ -158,12 +159,12 @@ Rot(v, ls, n, fl, cut, gr, rm) ==
       names == {i \in held[v] \cup proj[v] : C[i].rm # ""}
       \* the role commits v holds wrapped only under epochs below the new floor
       again == {i \in held[v] \cup proj[v] : (C[i].rm # "" \/ C[i].gr # "") /\ \A w \in C[i].wraps : Fl(v, w) < fl}
+      \* m's re-add: a box at each epoch its removal's rotation (held whole) listed that v opens
+      readd == IF gr = M /\ Rule # "noreadd" THEN UNION {C[i].lists \cap Sec(v) : i \in {j \in held[v] : C[j].rm = M}} ELSE {}
   IN [Base EXCEPT !.ep = TRUE, !.n = n, !.floor = fl, !.cut = cut, !.by = v, !.lists = ls,
-        !.ents = {<<id, carry>>}, !.boxes = {<<x, id>> : x \in boxed},
-        \* the boxes it holds at the epochs it carries, and a departed holder's at every epoch
-        !.unbox = UNION {{<<b[1], b[2], i>> : b \in {bb \in C[i].boxes : bb[2] \in carry
-                                                    \/ (RuleOn /\ Rule # "keepgone" /\ bb[1] \in Departed(v) \cup {rm})}}
-                         : i \in held[v]},
+        !.ents = {<<id, carry>>}, !.boxes = {<<x, id>> : x \in boxed} \cup {<<M, e>> : e \in readd},
+        \* the boxes it holds at the epochs it carries
+        !.unbox = UNION {{<<b[1], b[2], i>> : b \in {bb \in C[i].boxes : bb[2] \in carry}} : i \in held[v]},
         !.names = names, !.knows = Departed(v) \cup (IF rm = "" THEN {} ELSE {rm}),
         !.rm = rm, !.gr = gr, !.replace = IF Replace THEN again ELSE {},
         !.wraps = ls \cap Sec(v)]
@@ -310,12 +311,12 @@ NewReads == Settled => \A x \in Final \ Full : {CutOf(x)} \cup Desc(CutOf(x)) \s
 \* settled: every holder holds every current epoch, established, and all alike
 Unlocked == Settled => \A v \in Final : Cur(v) # {} /\ Cur(v) \subseteq Sec(v)
 Alike == Settled => \A v, w \in Final : Cur(v) = Cur(w)
-\* probe: a re-added m's new node opens what it read before its removal (fails: the removal's
-\* rotation removed those boxes; m's own nodes keep the secrets)
+\* settled: a re-added m's new node opens every epoch its removal's rotator held
 ReaddFresh == Settled /\ RemoveM /\ CutGranted(M) => Anc(RmC) \subseteq Fresh(M)
-\* settled: a removed m's new node opens no epoch its removal's rotator knew of
-GoneFresh == Settled /\ RemoveM /\ HasRm /\ ~Granted(M) => Fresh(M) \cap Anc(RmC) = {}
+\* a removed m's new node opens no epoch made knowing its removal (before its re-add)
+GoneFresh == RemoveM /\ HasRm =>
+  Fresh(M) \cap ({RmC} \cup Desc(RmC)) \cap (IF CutGranted(M) THEN Anc(CutOf(M)) ELSE EIds) = {}
 \* vacuity probe (must fail): no settled state follows every step the bounds allow
 NoFullRun == ~(/\ Settled /\ nrot = MaxRot /\ nmerge = MaxMerge /\ nhost = MaxHost
-               /\ \A x \in (CutTo \cup HistTo) \ {M} : Granted(x) /\ (RemoveM => HasRm))
+               /\ \A x \in CutTo \cup HistTo : Granted(x) /\ (RemoveM => HasRm))
 ===============================================================================

@@ -68,7 +68,9 @@ instances=(
   "cut rotation Cut X_acc_nogfloor.cfg fail"     # negative control: a history-less admin grants history
   "cut rotation Cut X_cap_nocap.cfg fail"        # negative control: a floor above n
   "cut rotation Cut X_host2_nolist.cfg fail"     # negative control: floors read as written
-  "cut rotation Cut X_gone_keep.cfg fail"        # negative control: a departed holder's boxes left where nothing is carried
+  "cut rotation Cut X_readd_fresh.cfg pass"      # a re-added member's new node opens what it read before its removal
+  "cut rotation Cut X_readd_fresh_noreadd.cfg fail" # negative control: the re-add boxes m only at the cut
+  "cut rotation Cut X_two_strict.cfg fail"       # accepted: two history-less adds at once each read content beside the other's
   "finalize rotation Finalize F_named_bogus.cfg pass" # notes/permissions.md (Keys)
   "finalize rotation Finalize F_old_seed3.cfg fail"   # negative control: a name met by its commit alone
   "cover rotation Cover C_drop.cfg pass"         # notes/crypto.md (The pin)
@@ -205,7 +207,7 @@ for r in "${runs[@]}"; do
   printf '%-24s %-5s (expected %-4s) %10s states %5ss  %s\n' \
     "$cfg" "$got" "$expect" "${states:-?}" "$secs" "$verdict"
   if [ "$verdict" = FAILED ]; then grep -E 'Error|violated' "$log" | head -n 5 | sed 's/^/    /'; fi
-  if [ -n "${TLC_KEEP_LOGS:-}" ]; then cp "$log" "$TLC_KEEP_LOGS/$dir-$cfg.log"; fi
+  if [ -n "${TLC_KEEP_LOGS:-}" ]; then mkdir -p "$TLC_KEEP_LOGS" && cp "$log" "$TLC_KEEP_LOGS/$dir-$cfg.log"; fi
 done
 echo "$module: $(( $(date +%s) - total ))s at $workers worker(s)"
 exit $failed
