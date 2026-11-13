@@ -1,0 +1,2 @@
+- Reviewer: `tools/bin-at main` for an osis-store comparison, then the gate in the same worktree, rebuilt every osis-store dependent twice (gate `build` 1601 CPU-s, `unify` 2319 CPU-s). Gate first, compare after, or compare from a separate warm worktree.
+- `AtomicUsize::fetch_update` is deprecated on the toolchain, its replacement `try_update` is above the MSRV: clippy rejects both; plain load/store in single-threaded test code.
