@@ -13,3 +13,4 @@ runtime::a_paired_peer_serves_what_it_reads_in_process_spec_data_model_9 - issue
 sim-sweep:team_reads_member_thing 72407225782/72407225794 issues/team-reads-local-snaps-storm.md message storm: .*kind Some\(Content\)
 sim-sweep:malformed_blobs 72407225782/72407225792 issues/malformed-blobs-host-refusal.md the host refused a malformed blob: Code\(2\)
 sim-sweep:three_accounts_two_hosts 971000000000/971000000009 issues/three-accounts-crash-quiescence.md not quiescent after \d+ rounds
+ephemeral::random_churn_converges_large OSIS_EPH_START=434801186884 issues/churn-seed-884-loop.md no quiescence after \d+ rounds
