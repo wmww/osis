@@ -2793,9 +2793,9 @@ fn a_purge_stamped_before_the_named_commit_names_nothing_spec_commits_5() {
 }
 
 
-// spec/crypto.md §4 (merge of a fork): two nodes of one account rotating at once fork the thing's
-// epochs, and only the node that made the older one merges: both reading as its maker (they share
-// an author) would merge alike and fork again on every round, without end.
+// spec/crypto.md §4 (Forks stand): two nodes of one account rotating at once fork the thing's
+// epochs; nothing rotates for the fork (they share an author: both rotating for it would fork
+// again on every round, without end), so it ends quiet with both forks current alike.
 #[test]
 fn a_fork_by_two_siblings_ends_quiet_spec_crypto_4() {
     let (mut lp, _) = account_two_nodes();
@@ -2815,7 +2815,7 @@ fn a_fork_by_two_siblings_ends_quiet_spec_crypto_4() {
     for _ in 0..8 {
         let mut n = 0;
         for i in 0..2 {
-            // what is due at once, then the merge a complete pass's end decides
+            // what is due at once, then what a complete pass's end decides
             n += lp.peers[i].engine.ensure_rotated(&t).unwrap().0.commits.len();
             n += lp.peers[i].engine.reseal_due(&t, &Pass).unwrap().commits.len();
         }
@@ -2824,6 +2824,6 @@ fn a_fork_by_two_siblings_ends_quiet_spec_crypto_4() {
     }
     assert_eq!(made[5..], [0, 0, 0], "quiet: {made:?}");
     let cur = |lp: &LocalPeer, i: usize| lp.peers[i].engine.epochs(&t).unwrap().read.current();
-    assert_eq!(cur(&lp, 0).len(), 1);
+    assert_eq!(cur(&lp, 0).len(), 2, "the fork stands");
     assert_eq!(cur(&lp, 0), cur(&lp, 1));
 }
