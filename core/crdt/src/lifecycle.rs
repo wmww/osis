@@ -465,12 +465,7 @@ impl Fragment {
                 // prunes (§7)
                 let Fragment::Slots(Slots { reg, slots }) = std::mem::take(self) else { return };
                 let reg = reg.map(|mut r| {
-                    if bad(&r.reset) {
-                        r.reset = None;
-                    }
-                    if r.write.as_ref().is_some_and(|w| pred(w.stamp.dot.origin())) {
-                        r.write = None;
-                    }
+                    remove_reg_writes(&mut r, pred);
                     r
                 });
                 let slots = slots.into_iter().map(|(k, mut f)| {
@@ -480,14 +475,7 @@ impl Fragment {
                 *self = crate::state::assemble(reg, slots.collect());
                 return;
             }
-            Fragment::Register(r) => {
-                if bad(&r.reset) {
-                    r.reset = None;
-                }
-                if r.write.as_ref().is_some_and(|w| pred(w.stamp.dot.origin())) {
-                    r.write = None;
-                }
-            }
+            Fragment::Register(r) => remove_reg_writes(r, pred),
             _ => {}
         }
         if let Some(m) = self.meta_mut() {
@@ -515,23 +503,11 @@ impl Fragment {
                     !f.is_empty()
                 });
             }
+            // an entry's creation whose own dot stays is kept, though nothing else is left in
+            // it: a write of its own (§5.6)
             Fragment::Map(Map { entries, .. }) => entries.retain(|id, en| {
-                let d = &id.dot;
-                if en.reset.as_ref().is_some_and(|r| pred(r.dot.origin())) {
-                    en.reset = None;
-                }
-                if pred(d.origin()) {
-                    en.created = None;
-                }
-                if let Some(f) = &mut en.frag {
-                    f.remove_writes(pred);
-                    if f.is_empty() {
-                        en.frag = None;
-                    }
-                }
-                // an entry's creation whose own dot stays is kept, though nothing else is left
-                // in it: a write of its own (§5.6)
-                en.reset.is_some() || en.frag.is_some() || en.created.is_some()
+                en.remove_writes(&id.dot, pred);
+                en.holds()
             }),
             Fragment::Seq(s) => seq::remove_writes(s, pred),
             Fragment::Register(_) | Fragment::Slots(_) => {}
@@ -709,6 +685,15 @@ impl Visit for DotsIn<'_> {
             Rec::Seq(d, el) => (0..el.span).any(|k| pred(crate::seq_span::nth(d, k).origin())) || el.deleted.as_ref().is_some_and(|x| pred(x.0.dot.origin())) || el.pos.iter().any(|p| pred(p.0.dot.origin())),
         };
         if held { Next::Stop } else { Next::On }
+    }
+}
+
+fn remove_reg_writes(r: &mut Register, pred: &dyn Fn(&Dot) -> bool) {
+    if r.reset.as_ref().is_some_and(|x| pred(x.dot.origin())) {
+        r.reset = None;
+    }
+    if r.write.as_ref().is_some_and(|w| pred(w.stamp.dot.origin())) {
+        r.write = None;
     }
 }
 

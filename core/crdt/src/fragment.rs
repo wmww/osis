@@ -248,7 +248,7 @@ impl Entry {
     }
     /// Removes record `dot`'s writes whose origin dot `pred` accepts (`Fragment::remove_writes`):
     /// its reset, its creation (the dot's) and those in its content.
-    fn remove_writes(&mut self, dot: &Dot, pred: &dyn Fn(&Dot) -> bool) {
+    pub(crate) fn remove_writes(&mut self, dot: &Dot, pred: &dyn Fn(&Dot) -> bool) {
         if self.reset.as_ref().is_some_and(|r| pred(r.dot.origin())) {
             self.reset = None;
         }
