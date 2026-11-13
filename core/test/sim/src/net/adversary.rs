@@ -505,7 +505,7 @@ pub fn tombstone_liar(s: Seeds) -> Res<Report> {
     });
     let cursor = cursor.map_err(|e| sim.fail(e.to_string()))?;
     let events = events.into_iter().map(|e| (label, e)).collect();
-    let push = osis_proto::encode_frame(&osis_proto::Message::Stream(Box::new(osis_proto::msg::Stream { events, cursor, report: false })).encode());
+    let push = osis_proto::encode_frame(&osis_proto::Message::Stream(Box::new(osis_proto::msg::Stream { events, cursor, report: false, seq: 0 })).encode());
     sim.watched.extend(ids.iter().copied());
     let mut told = 0;
     for n in [a, b, c] {

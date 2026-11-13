@@ -342,7 +342,7 @@ impl SyncEngine {
         // node to take it nor offers it again until its stamp or this node's head changes
         if !told.is_empty() {
             let events = told.into_iter().map(|(b, c)| (l, osis_proto::Event::Refused(b, c))).collect();
-            self.shared_send(conn, osis_proto::Message::Stream(Box::new(osis_proto::msg::Stream { events, cursor: None, report: false })), out)?;
+            self.shared_send(conn, osis_proto::Message::Stream(Box::new(osis_proto::msg::Stream { events, cursor: None, report: false, seq: 0 })), out)?;
         }
         self.stream_crossed(conn, taken);
         for r in relays {
@@ -419,7 +419,7 @@ impl SyncEngine {
             }
         }
         if f.told.insert(conn) {
-            self.shared_send(conn, osis_proto::Message::Stream(Box::new(osis_proto::msg::Stream { events: vec![(l, osis_proto::Event::Full(true))], cursor: None, report: false })), out)?;
+            self.shared_send(conn, osis_proto::Message::Stream(Box::new(osis_proto::msg::Stream { events: vec![(l, osis_proto::Event::Full(true))], cursor: None, report: false, seq: 0 })), out)?;
         }
         Ok(())
     }
@@ -443,7 +443,7 @@ impl SyncEngine {
             let Some(f) = self.unread.full.remove(&l) else { continue };
             for conn in f.told {
                 if self.records.shared.get(&conn).is_some_and(|s| s.has(&l)) {
-                    self.shared_send(conn, osis_proto::Message::Stream(Box::new(osis_proto::msg::Stream { events: vec![(l, osis_proto::Event::Full(false))], cursor: None, report: false })), out)?;
+                    self.shared_send(conn, osis_proto::Message::Stream(Box::new(osis_proto::msg::Stream { events: vec![(l, osis_proto::Event::Full(false))], cursor: None, report: false, seq: 0 })), out)?;
                 }
             }
             self.stream_rejoin(&l, out)?;

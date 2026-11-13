@@ -96,6 +96,7 @@ fn push(n: u8, size: usize) -> osis_host::Down {
         events: vec![(osis_base::LabelId([1; 16]), Event::Added { blob_id: BlobId([n; 32]), blob: Some(vec![n; size]), wrap: [0; osis_crypto::WRAP_LEN], stamp: None })],
         cursor: Some(vec![n]),
         report: false,
+        seq: 0,
     }))))
 }
 

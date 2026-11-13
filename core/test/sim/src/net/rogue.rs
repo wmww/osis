@@ -48,18 +48,35 @@ pub struct Stamped {
 
 impl NetSim {
     /// Bytes as if host `s` sent them to node `n` on its open connections there (a lying
-    /// host's word, in order after what is in flight); how many connections got them.
+    /// host's word, in order after what is in flight: a push holding a cursor numbered as the
+    /// host's next, `Stream::seq`); how many connections got them.
     pub fn host_says(&mut self, s: usize, n: usize, bytes: &[u8]) -> usize {
-        let to: Vec<(u64, End)> = self
+        let to: Vec<(u64, End, u64)> = self
             .links
             .iter()
             .filter_map(|(id, l)| match (l.dialer, l.acceptor) {
-                (End::Node(x, c), End::Hub(y, _)) | (End::Hub(y, _), End::Node(x, c)) if x == n && y == s => Some((*id, End::Node(x, c))),
+                (End::Node(x, c), End::Hub(y, hc)) | (End::Hub(y, hc), End::Node(x, c)) if x == n && y == s => Some((*id, End::Node(x, c), hc)),
                 _ => None,
             })
             .collect();
-        for (id, e) in &to {
-            self.send(*id, *e, Payload::Bytes(bytes.to_vec()));
+        for (id, e, hc) in &to {
+            let mut d = osis_proto::FrameDecoder::default();
+            d.push(bytes);
+            let mut out = Vec::new();
+            while let Ok(Some(f)) = d.next_frame() {
+                match osis_proto::Message::decode(&f) {
+                    Ok(osis_proto::Message::Stream(mut st)) if st.cursor.is_some() => {
+                        let sync = self.hosts.get_mut(s).and_then(|h| h.sync.as_mut());
+                        st.seq = sync.map_or(0, |sy| {
+                            let c = sy.served_conn(*hc).unwrap_or(*hc);
+                            sy.stream_push_sent(c)
+                        });
+                        out.extend(osis_proto::encode_frame(&osis_proto::Message::Stream(st).encode()));
+                    }
+                    _ => out.extend(osis_proto::encode_frame(&f)),
+                }
+            }
+            self.send(*id, *e, Payload::Bytes(out));
         }
         to.len()
     }

@@ -199,12 +199,15 @@ pub struct PullReply {
     pub joins: Vec<Join>,
 }
 
-/// `Stream [43, 0, [[label_id, event]*], Opt(cursor), report]`.
+/// `Stream [43, 0, [[label_id, event]*], Opt(cursor), report, seq]`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Stream {
     pub events: Vec<(LabelId, Event)>,
     pub cursor: Option<Vec<u8>>,
     pub report: bool,
+    /// Pushes with a cursor the sender sent on the connection since its last PullReply (0 in
+    /// one without a cursor): a requester takes a push only in that order (spec/wire.md §11.2).
+    pub seq: u64,
 }
 
 /// One Offer item (spec/wire.md §11.2).
@@ -456,7 +459,7 @@ impl Message {
             M::Shared { codes, .. } => vec![k, id, Value::List(codes.iter().map(|(c, t, g)| Value::List(vec![Value::uint(c.0), Value::opt(t.as_ref().map(|t| Value::bytes(t))), Value::opt(g.as_ref().map(|g| Value::List(vec![Value::opt(g.entry_box.as_ref().map(|e| Value::Bytes(box_bytes(e)))), Value::List(g.steps.iter().map(step_value).collect())])))])).collect())],
             M::Pull(p) => vec![k, id, opt_cursor(&p.cursor), joins_value(&p.joins), Value::uint(p.inline_limit), Value::uint(p.max_reply), Value::Bool(p.follow), Value::Bool(p.ephemeral)],
             M::PullReply(r) => vec![k, id, stream_events_value(&r.events), opt_cursor(&r.cursor), Value::Bool(r.whole), Value::Bool(r.trimmed), Value::Bool(r.more), Value::Bool(r.report), joins_value(&r.joins)],
-            M::Stream(s) => vec![k, id, stream_events_value(&s.events), opt_cursor(&s.cursor), Value::Bool(s.report)],
+            M::Stream(s) => vec![k, id, stream_events_value(&s.events), opt_cursor(&s.cursor), Value::Bool(s.report), Value::uint(s.seq)],
             M::Applied { cursor } => vec![k, id, Value::bytes(cursor)],
             M::Digest { digest } => vec![k, id, Value::bytes(digest)],
             M::Members { labels, more } => vec![k, id, Value::List(labels.iter().map(l).collect()), Value::Bool(*more)],
@@ -554,7 +557,7 @@ fn decode_body(kind: u64, id: Id, v: Value) -> Result<Message, Error> {
             report: f.bool()?,
             joins: joins(f.list(0, usize::MAX, "joins")?)?,
         })),
-        43 => Message::Stream(Box::new(Stream { events: stream_events(f.list(0, usize::MAX, "events")?)?, cursor: opt_cursor_of(&mut f)?, report: f.bool()? })),
+        43 => Message::Stream(Box::new(Stream { events: stream_events(f.list(0, usize::MAX, "events")?)?, cursor: opt_cursor_of(&mut f)?, report: f.bool()?, seq: f.uint()? })),
         44 => Message::Applied { cursor: f.bytes(crate::MAX_CURSOR_BYTES)? },
         45 => Message::Digest { digest: f.fixed()? },
         46 => Message::Members { labels: labels(f.list(0, MAX_MEMBERS, "members")?)?, more: f.bool()? },

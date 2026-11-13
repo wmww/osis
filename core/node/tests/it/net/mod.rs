@@ -441,7 +441,7 @@ const SETTLE_ROUNDS: usize = 2_000;
 /// What a peer that cannot read `l` streams to a reader: `events` of `l` at a position `at`
 /// names (a hostile peer's push, or a replay).
 pub fn stream_msg(l: osis_base::LabelId, events: Vec<osis_proto::Event>, at: u64) -> osis_proto::Message {
-    osis_proto::Message::Stream(Box::new(osis_proto::msg::Stream { events: events.into_iter().map(|e| (l, e)).collect(), cursor: Some(at.to_be_bytes().to_vec()), report: false }))
+    osis_proto::Message::Stream(Box::new(osis_proto::msg::Stream { events: events.into_iter().map(|e| (l, e)).collect(), cursor: Some(at.to_be_bytes().to_vec()), report: false, seq: 0 }))
 }
 
 pub fn host_key(i: usize) -> [u8; 32] {
@@ -799,21 +799,80 @@ impl Net {
     /// peer's message).
     pub fn inject(&mut self, n: usize, c: ConnId, m: &osis_proto::Message) {
         let (to, pc) = self.plinks[&(n, self.link_conn(n, c))];
-        self.queue.push_back(Msg::ToNode(to, self.nodes[to].life, pc, osis_proto::encode_frame(&m.encode())));
+        let bytes = self.in_order(to, self.engine_conn(to, pc), osis_proto::encode_frame(&m.encode()), true);
+        self.queue.push_back(Msg::ToNode(to, self.nodes[to].life, pc, bytes));
     }
 
     /// Bytes arrive at once on node `n`'s connection `c` (its engine's ID), dialed or served, as
     /// if its peer sent them: into its hub's session, what that hands up to its node sync.
     pub fn receive(&mut self, n: usize, c: ConnId, bytes: Vec<u8>) {
+        let bytes = self.in_order(n, c, bytes, false);
         let hc = self.link_conn(n, c);
         let now = self.node_now(n);
         let out = self.nodes[n].hub.input(now, hc, bytes);
         self.node_hub_out(n, out);
     }
 
+    /// `bytes` with each push holding a cursor numbered as the next node `n` takes on `c`, its
+    /// peer counting it as its own
+    /// (`Stream::seq`): a hand-made push comes in order, as a peer's would.
+    /// `queued`: they go behind what is queued on `c` (`inject`), else at once (`receive`).
+    fn in_order(&mut self, n: usize, c: ConnId, bytes: Vec<u8>, queued: bool) -> Vec<u8> {
+        let mut next = self.sync(n).stream_next_push(c);
+        if queued {
+            let hc = self.link_conn(n, c);
+            let pushes = |b: &[u8]| {
+                let mut d = osis_proto::FrameDecoder::new();
+                d.push(b);
+                let mut k = 0;
+                while let Ok(Some(f)) = d.next_frame() {
+                    k += u64::from(matches!(osis_proto::Message::decode(&f), Ok(osis_proto::Message::Stream(st)) if st.cursor.is_some()));
+                }
+                k
+            };
+            next += self.queue.iter().map(|m| match m {
+                Msg::ToNode(x, _, y, b) if *x == n && *y == hc => pushes(b),
+                _ => 0,
+            }).sum::<u64>();
+        }
+        let mut d = osis_proto::FrameDecoder::new();
+        d.push(&bytes);
+        let mut out = Vec::new();
+        while let Ok(Some(body)) = d.next_frame() {
+            match osis_proto::Message::decode(&body) {
+                Ok(osis_proto::Message::Stream(mut st)) if st.cursor.is_some() => {
+                    st.seq = next;
+                    next += 1;
+                    self.sent_in_place(n, c);
+                    out.extend(osis_proto::encode_frame(&osis_proto::Message::Stream(st).encode()));
+                }
+                _ => out.extend(osis_proto::encode_frame(&body)),
+            }
+        }
+        out
+    }
+
+    /// The peer of node `n` on its connection `c` counts a push a test sent in its place
+    /// (`SyncEngine::stream_push_sent`).
+    fn sent_in_place(&mut self, n: usize, c: ConnId) {
+        let hc = self.link_conn(n, c);
+        if let Some((s, shc)) = self.links.get(&(n, hc)).copied() {
+            if let Some(sync) = self.hosts[s].sync.as_mut() {
+                let sc = sync.served_conn(shc).unwrap_or(shc);
+                let _ = sync.stream_push_sent(sc);
+            }
+        } else if let Some((m, pc)) = self.plinks.get(&(n, hc)).copied() {
+            let mc = self.engine_conn(m, pc);
+            if let Some(sync) = self.nodes[m].sync.as_mut() {
+                let _ = sync.stream_push_sent(mc);
+            }
+        }
+    }
+
     /// `receive`, returning the actions node sync takes for what the hub handed up instead of
     /// carrying them out (the hub's own output goes).
     pub fn hub_in(&mut self, n: usize, c: ConnId, bytes: Vec<u8>) -> Vec<Action> {
+        let bytes = self.in_order(n, c, bytes, false);
         let hc = self.link_conn(n, c);
         let now = self.node_now(n);
         let (mut ups, mut rest, mut moved) = (Vec::new(), Vec::new(), false);
@@ -1920,8 +1979,10 @@ impl Net {
 
     /// Host `s` sends node `n` message `m` on their connection (a hostile host's own frame).
     pub fn host_inject(&mut self, s: usize, n: usize, m: &osis_proto::Message) {
-        let c = self.link_conn(n, self.conn_to(n, s).unwrap());
-        self.queue.push_back(Msg::ToNode(n, self.nodes[n].life, c, osis_proto::encode_frame(&m.encode())));
+        let ec = self.conn_to(n, s).unwrap();
+        let c = self.link_conn(n, ec);
+        let bytes = self.in_order(n, ec, osis_proto::encode_frame(&m.encode()), true);
+        self.queue.push_back(Msg::ToNode(n, self.nodes[n].life, c, bytes));
     }
 
     /// Node `n`'s connection to host `s` (its engine's ID), if up (to inject a hostile host's

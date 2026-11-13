@@ -258,7 +258,7 @@ fn a_lost_after_a_dropped_push_names_a_reported_position_spec_sync_10() {
     let cursor = net.sync(a).stream_cursor(c);
     for i in 0..20 {
         let events = (0..100).map(|j| (l, osis_proto::Event::Added { blob_id: osis_label::blob_id(format!("unserved {i} {j}").as_bytes()), blob: None, wrap: [0; osis_crypto::WRAP_LEN], stamp: None })).collect();
-        net.inject(b, pc, &Message::Stream(Box::new(osis_proto::msg::Stream { events, cursor: cursor.clone(), report: false })));
+        net.inject(b, pc, &Message::Stream(Box::new(osis_proto::msg::Stream { events, cursor: cursor.clone(), report: false, seq: 0 })));
     }
     net.run();
     assert!(net.sync(a).stream_waiting(c).1 >= 1024, "a waits on bodies");
@@ -269,7 +269,7 @@ fn a_lost_after_a_dropped_push_names_a_reported_position_spec_sync_10() {
     // b says it holds none of what a waits on: a settles, the dropped push still unread
     for i in 0..20 {
         let events = (0..100).map(|j| (l, osis_proto::Event::Deleted(osis_label::blob_id(format!("unserved {i} {j}").as_bytes())))).collect();
-        net.inject(b, pc, &Message::Stream(Box::new(osis_proto::msg::Stream { events, cursor: None, report: false })));
+        net.inject(b, pc, &Message::Stream(Box::new(osis_proto::msg::Stream { events, cursor: None, report: false, seq: 0 })));
     }
     net.run();
     assert_eq!(net.sync(a).stream_waiting(c), (0, 0), "settled");
@@ -300,7 +300,7 @@ fn a_lost_crossing_an_own_close_sets_where_the_rejoin_starts_spec_sync_10() {
     // b's pushes reach a without their events: a's position moves past a write it never got
     net.tamper_link = Some((b, a));
     net.tamper = Some(Box::new(|m| match m {
-        Message::Stream(st) if st.cursor.is_some() => Some(Message::Stream(Box::new(osis_proto::msg::Stream { events: Vec::new(), cursor: st.cursor.clone(), report: st.report }))),
+        Message::Stream(st) if st.cursor.is_some() => Some(Message::Stream(Box::new(osis_proto::msg::Stream { events: Vec::new(), cursor: st.cursor.clone(), report: st.report, seq: st.seq }))),
         _ => None,
     }));
     let t = net.item(b, gs[0], gs[0], "skipped");

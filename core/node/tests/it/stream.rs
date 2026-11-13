@@ -1175,7 +1175,7 @@ fn flood(net: &mut Net, a: usize, b: usize, l: osis_base::LabelId, pushes: usize
                 (l, osis_proto::Event::Added { blob_id, blob: None, wrap: [0; osis_crypto::WRAP_LEN], stamp: None })
             })
             .collect();
-        net.inject(b, pc, &osis_proto::Message::Stream(Box::new(osis_proto::msg::Stream { events, cursor: cursor.clone(), report: false })));
+        net.inject(b, pc, &osis_proto::Message::Stream(Box::new(osis_proto::msg::Stream { events, cursor: cursor.clone(), report: false, seq: 0 })));
     }
 }
 
@@ -1279,7 +1279,7 @@ fn a_position_never_passes_a_dropped_push_spec_sync_10() {
     // the source says it holds none of what a waits on: a settles and pulls again, its reply lost
     for i in 0..20 {
         let events = (0..100).map(|j| (l, osis_proto::Event::Deleted(osis_label::blob_id(format!("unserved {i} {j}").as_bytes())))).collect();
-        net.inject(b, pc, &osis_proto::Message::Stream(Box::new(osis_proto::msg::Stream { events, cursor: None, report: false })));
+        net.inject(b, pc, &osis_proto::Message::Stream(Box::new(osis_proto::msg::Stream { events, cursor: None, report: false, seq: 0 })));
     }
     net.run();
     assert_eq!(net.sync(a).stream_waiting(c), (0, 0), "settled");
@@ -1290,6 +1290,35 @@ fn a_position_never_passes_a_dropped_push_spec_sync_10() {
     net.run();
     net.advance(60_000);
     assert_eq!(net.read(a, t), Some(s("pushed while full")));
+}
+
+// spec/sync.md §10 (Stream): a push the peer lost on the way (a dishonest host or co-reader
+// dropping it) is found by the next one, which does not follow on from the last taken: the stream
+// reads again from its cursor, so the lost push's write arrives with no reconnect or restart
+#[test]
+fn a_push_lost_on_the_way_is_read_again_spec_sync_10() {
+    let (mut net, a, b, gs) = paired(1);
+    net.item(b, gs[0], gs[0], "x");
+    net.run();
+    let l = label_of(&mut net, b, gs[0]);
+    let lost = std::rc::Rc::new(std::cell::Cell::new(false));
+    let gone = lost.clone();
+    net.tamper_link = Some((b, a));
+    net.tamper = Some(Box::new(move |m| match m {
+        osis_proto::Message::Stream(x) if !gone.get() && x.cursor.is_some() && x.events.iter().any(|(y, e)| *y == l && matches!(e, osis_proto::Event::Added { .. })) => {
+            gone.set(true);
+            Some(osis_proto::Message::Applied { cursor: vec![] })
+        }
+        _ => None,
+    }));
+    let t = net.item(b, gs[0], gs[0], "in the lost push");
+    net.run();
+    assert!(lost.get(), "a push was lost");
+    assert_eq!(net.read(a, t), None, "not read yet");
+    let u = net.item(b, gs[0], gs[0], "in the next push");
+    net.run();
+    assert_eq!(net.read(a, u), Some(s("in the next push")));
+    assert_eq!(net.read(a, t), Some(s("in the lost push")), "the lost push's write arrived");
 }
 
 // spec/sync.md §10 (Bodies): an announcement without bytes in a Stream with no cursor is
@@ -1304,7 +1333,7 @@ fn cursorless_announcements_are_not_fetched_spec_sync_10() {
     let (_, pc) = conn_to(&net, a, b);
     let fetches = net.peer_sent(a, 19);
     let events = (0..100).map(|j| (l, osis_proto::Event::Added { blob_id: osis_label::blob_id(format!("unserved {j}").as_bytes()), blob: None, wrap: [0; osis_crypto::WRAP_LEN], stamp: None })).collect();
-    net.inject(b, pc, &osis_proto::Message::Stream(Box::new(osis_proto::msg::Stream { events, cursor: None, report: false })));
+    net.inject(b, pc, &osis_proto::Message::Stream(Box::new(osis_proto::msg::Stream { events, cursor: None, report: false, seq: 0 })));
     net.run();
     assert_eq!(net.peer_sent(a, 19), fetches, "no fetch asked");
 }

@@ -949,7 +949,7 @@ fn a_refused_entry_holds_no_delete_back_and_comes_again_once_the_head_moves_spec
     let refused = of(&mut net, e);
     assert!(!refused.is_empty() && refused.iter().all(|id| !net.host_ids(host, &l).contains(id)), "not at the peer");
     let events = refused.iter().map(|id| (l, Ev::Refused(*id, Code::REFUSED))).collect();
-    net.host_inject(host, a, &Message::Stream(Box::new(osis_proto::msg::Stream { events, cursor: None, report: false })));
+    net.host_inject(host, a, &Message::Stream(Box::new(osis_proto::msg::Stream { events, cursor: None, report: false, seq: 0 })));
     net.run();
     assert!(net.refused_at(a, &l), "status names the peer");
     net.restart(a, 9);

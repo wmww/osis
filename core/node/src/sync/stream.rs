@@ -165,6 +165,8 @@ pub(crate) struct Serving {
     own: BTreeMap<LabelId, Own>,
     /// Replies and pushes sent, counted (`Own::merged`, `Unreported::seq`).
     seq: u64,
+    /// Pushes sent since the last reply: the next one's `Stream::seq`.
+    pushes: u64,
     /// Per member, the highest position a reported message carrying its events brought it to
     /// (an ended member's at most its `until`): what the requester stored of it, standing
     /// after the member closed (`placed`: a co-reader that judged this node departed closes
@@ -324,9 +326,11 @@ pub(crate) struct Pulling {
     /// Requests of the stream sent on this connection (Pulls and Fetches): answered in this order
     /// (`stream_skipped`).
     sent: u64,
-    /// A push was not taken (`MAX_WAITING`): none is until the next reply, which reads it again
-    /// from `cursor`.
+    /// A push was not taken (`MAX_WAITING`, or one not following on from the last taken): none
+    /// is until the next reply, which reads it again from `cursor`.
     dropped: bool,
+    /// Pushes taken since the last reply taken: the `Stream::seq` the next one must carry.
+    pushes: u64,
     /// Positions reached whose bodies announced without bytes are not all held here yet, oldest
     /// first (`stream_settle`).
     unsettled: std::collections::VecDeque<Unsettled>,
@@ -775,6 +779,7 @@ impl SyncEngine {
         s.pulled.extend(p.joins.iter().map(|(l, _)| *l).filter(|l| members.contains(l)));
         let merged: Vec<LabelId> = if whole { s.own.keys().copied().collect() } else { joined.iter().map(|(l, _)| *l).filter(|l| !still.iter().any(|(x, _)| x == l)).collect() };
         let report = s.sent(&cursor, labels, stream_at, &merged, still, &untils);
+        s.pushes = 0;
         let reply = PullReply { id: p.id, events, cursor, whole, trimmed, more, report, joins };
         self.shared_send(conn, Message::PullReply(Box::new(reply)), out)
     }
@@ -827,9 +832,11 @@ impl SyncEngine {
             let labels: BTreeSet<LabelId> = events.iter().map(|(l, _)| *l).collect();
             let Some(s) = self.streams.get_mut(&conn).map(|s| &mut s.serving) else { continue };
             let report = s.sent(&cursor, labels, end, &[], Vec::new(), &untils);
+            let seq = s.pushes;
+            s.pushes += 1;
             pushed.insert(conn);
             self.room_used(conn, out);
-            self.shared_send(conn, Message::Stream(Box::new(Stream { events, cursor, report })), out)?;
+            self.shared_send(conn, Message::Stream(Box::new(Stream { events, cursor, report, seq })), out)?;
         }
         self.stream_room_unused(&pushed, out);
         Ok(())
@@ -1432,6 +1439,7 @@ impl SyncEngine {
         }
         // the reply reads from the cursor: pushes go on from its end
         p.dropped = false;
+        p.pushes = 0;
         // a reply from the start (the cursor named no position there) lists each member there
         // again from nothing
         // (a join from a position too: one from the start was listed so at its join, `known_join`)
@@ -1506,15 +1514,17 @@ impl SyncEngine {
             return Ok(());
         };
         // flow control: a push is not taken while the stream waits on bodies, nor after one was
-        // not until a reply reads from the cursor again (pushes follow on from each other). Its
-        // memory part has no position to read from again: the next Pull lists the live memory
-        // entries again (`relist`)
-        if p.dropped || p.full() {
+        // not until a reply reads from the cursor again (pushes follow on from each other); nor
+        // one not following on from the last taken (one lost or held back on the way, or
+        // replayed: spec/wire.md §11.2). Its memory part has no position to read from again: the
+        // next Pull lists the live memory entries again (`relist`)
+        if p.dropped || p.full() || s.seq != p.pushes {
             p.dropped = true;
             p.caught_up = false;
             p.relist |= !s.events.is_empty();
             return self.stream_ask(conn, false, out);
         }
+        p.pushes += 1;
         let owed = self.stream_apply(conn, s.events, out)?;
         let Some(p) = self.streams.get_mut(&conn).map(|s| &mut s.pulling) else { return Ok(()) };
         p.cursor = Some(c.clone());
@@ -1531,7 +1541,7 @@ impl SyncEngine {
         let to: Vec<ConnId> = self.records.shared.iter().filter(|(c, s)| Some(**c) != except && s.live(&l)).map(|(c, _)| *c).collect();
         for c in to {
             let ev = Event::Added { blob_id, blob: Some(blob.to_vec()), wrap, stamp };
-            self.shared_send(c, Message::Stream(Box::new(Stream { events: vec![(l, ev)], cursor: None, report: false })), out)?;
+            self.shared_send(c, Message::Stream(Box::new(Stream { events: vec![(l, ev)], cursor: None, report: false, seq: 0 })), out)?;
         }
         Ok(())
     }
@@ -1703,6 +1713,19 @@ impl SyncEngine {
     /// `conn`'s stream position in the peer's log (tests).
     pub fn stream_cursor(&self, conn: ConnId) -> Option<Vec<u8>> {
         self.streams.get(&conn).and_then(|s| s.pulling.cursor.clone())
+    }
+
+    /// The `Stream::seq` the next push on `conn`'s stream must carry to be taken (tests).
+    pub fn stream_next_push(&self, conn: ConnId) -> u64 {
+        self.streams.get(&conn).map_or(0, |s| s.pulling.pushes)
+    }
+
+    /// A push a test sends on `conn` in this node's place counts as this node's own, so its
+    /// next push follows on from it: the `Stream::seq` it carries (tests).
+    pub fn stream_push_sent(&mut self, conn: ConnId) -> u64 {
+        let Some(s) = self.streams.get_mut(&conn) else { return 0 };
+        s.serving.pushes += 1;
+        s.serving.pushes - 1
     }
 
     /// Whether `conn`'s stream read the peer's log to its end with nothing waiting (tests).

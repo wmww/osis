@@ -54,7 +54,6 @@ osis-node::memory_kept  deferred: 3h2
 osis-node::pass_source_held  deferred: 3h2
 osis-node::proven_connections  deferred: 3h2
 osis-node::record_lookups  deferred: 3h2
-osis-node::served_conn  deferred: 3h2
 osis-node::set_peers  deferred: 3h2; no uses
 osis-node::shared_admit  deferred: 3h2
 osis-node::shared_drop  deferred: 3h2
@@ -64,6 +63,7 @@ osis-node::shared_work  deferred: 3h2
 osis-node::stranded_at  deferred: 3h2
 osis-node::stream_caught_up  deferred: 3h2
 osis-node::stream_cursor  deferred: 3h2
+osis-node::stream_next_push  test hook (the node harness numbers hand-made pushes)
 osis-node::stream_pulls  deferred: 3h2; no uses
 osis-node::stream_waiting  deferred: 3h2
 osis-node::sync_row_sizes  deferred: 3h2

@@ -330,7 +330,7 @@ fn filler(total: usize) -> Vec<Vec<u8>> {
 
 /// A Stream of one event.
 fn stream(l: LabelId, ev: Event, cursor: Option<Vec<u8>>) -> Message {
-    Message::Stream(Box::new(osis_proto::msg::Stream { events: vec![(l, ev)], cursor, report: false }))
+    Message::Stream(Box::new(osis_proto::msg::Stream { events: vec![(l, ev)], cursor, report: false, seq: 0 }))
 }
 
 /// A node's Fetch of one blob asking `max_reply`.

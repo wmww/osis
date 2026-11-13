@@ -1407,7 +1407,7 @@ mod tests {
         c.handle(0, &mut store, SessionInput::Taken(taken));
         let push = |n: usize, cursor: Option<Vec<u8>>| {
             let ev = Event::Added { blob_id: BlobId([n as u8; 32]), blob: Some(vec![1; n]), wrap: [0; WRAP_LEN], stamp: None };
-            SessionInput::Peer(Box::new(Message::Stream(Box::new(crate::msg::Stream { events: vec![(LabelId([7; 16]), ev)], cursor, report: false }))))
+            SessionInput::Peer(Box::new(Message::Stream(Box::new(crate::msg::Stream { events: vec![(LabelId([7; 16]), ev)], cursor, report: false, seq: 0 }))))
         };
         // 8 MiB unwritten
         assert_eq!(c.handle(0, &mut store, push(8 << 20, Some(vec![1; 72]))).len(), 1);

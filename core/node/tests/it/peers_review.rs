@@ -393,7 +393,7 @@ fn reader_flood(n: usize, memory: bool) -> (usize, usize, bool) {
     let acts = net.sync(a).handle(Event::Local);
     net.actions(a, acts);
     let events: Vec<_> = a_events(&mut net).into_iter().filter(|(_, e)| matches!(e, osis_proto::Event::Added { blob_id, .. } if net.engine(b).blob(blob_id).ok().flatten().is_none())).collect();
-    let st = osis_proto::msg::Stream { events, cursor: Some(vec![2; 8]), report: false };
+    let st = osis_proto::msg::Stream { events, cursor: Some(vec![2; 8]), report: false, seq: 0 };
     send(&mut net, b, &mut pa, osis_proto::Message::Stream(Box::new(st)));
     let applied = net.read(b, t) == Some(s("after"));
     (known, stored, applied)

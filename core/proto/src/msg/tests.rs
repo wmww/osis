@@ -137,7 +137,7 @@ fn examples_name_every_kind() {
 // `until`, asking a report) is a message
 #[test]
 fn a_stream_with_no_events_round_trips_spec_wire_11_2() {
-    let m = Message::Stream(Box::new(crate::msg::Stream { events: vec![], cursor: Some(vec![0x30; 72]), report: true }));
+    let m = Message::Stream(Box::new(crate::msg::Stream { events: vec![], cursor: Some(vec![0x30; 72]), report: true, seq: 0 }));
     assert_eq!(Message::decode(&m.encode()), Ok(m));
 }
 
@@ -146,7 +146,7 @@ fn a_stream_with_no_events_round_trips_spec_wire_11_2() {
 fn cursorless_events_round_trip_spec_wire_11_2() {
     let l = LabelId([0x0a; 16]);
     let events = vec![(l, Event::Full(true)), (l, Event::Refused(BlobId([0xb1; 32]), Code::NOT_HEAD)), (l, Event::Refused(BlobId([0xb2; 32]), Code::TOMBSTONED))];
-    let m = Message::Stream(Box::new(crate::msg::Stream { events, cursor: None, report: false }));
+    let m = Message::Stream(Box::new(crate::msg::Stream { events, cursor: None, report: false, seq: 0 }));
     assert_eq!(Message::decode(&m.encode()), Ok(m));
 }
 
