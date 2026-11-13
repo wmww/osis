@@ -59,10 +59,10 @@ pub struct Case {
 }
 
 /// Standard named types (spec/data-model.md §3) with their parameter count.
-pub const STANDARD: &[(&str, usize)] = &[("option", 1), ("markdown", 0), ("timestamp", 0), ("duration", 0), ("date", 0), ("localtime", 0)];
+pub(crate) const STANDARD: &[(&str, usize)] = &[("option", 1), ("markdown", 0), ("timestamp", 0), ("duration", 0), ("date", 0), ("localtime", 0)];
 
 /// Names a schema type may not take: builtins and standard named types.
-pub fn is_reserved_name(n: &str) -> bool {
+pub(crate) fn is_reserved_name(n: &str) -> bool {
     STANDARD.iter().any(|(s, _)| *s == n)
         || matches!(
             n,
@@ -74,9 +74,6 @@ pub fn is_reserved_name(n: &str) -> bool {
 impl Type {
     pub fn named(n: &str) -> Type {
         Type::Named(n.to_string(), Vec::new())
-    }
-    pub fn option(t: Type) -> Type {
-        Type::Named("option".into(), vec![t])
     }
     /// `option<T>` = `enum { none 0, some 1 (T) }`.
     pub fn option_body(t: Type) -> Type {

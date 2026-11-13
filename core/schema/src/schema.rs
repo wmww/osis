@@ -1,7 +1,7 @@
 //! A parsed schema (spec/data-model.md §2, §10): types, aspects with retention, expiry and flags;
 //! expansion of named types; validation.
 
-use crate::types::{Case, EnumType, Field, StructType, Type, is_reserved_name};
+use crate::types::{EnumType, Field, StructType, Type, is_reserved_name};
 pub use osis_base::PurgeBy;
 use osis_base::{Ak, Markers, Value};
 use osis_crdt::Encoding;
@@ -50,12 +50,6 @@ pub enum Flag {
 
 impl Flag {
     pub const ALL: [Flag; 2] = [Flag::Synthetic, Flag::Guaranteed];
-    pub fn name(self) -> &'static str {
-        match self {
-            Flag::Synthetic => "synthetic",
-            Flag::Guaranteed => "guaranteed",
-        }
-    }
     pub fn from_id(id: u64) -> Option<Flag> {
         Flag::ALL.into_iter().find(|f| *f as u64 == id)
     }
@@ -580,17 +574,4 @@ fn check_ids<'a>(
 pub(crate) fn is_ident(s: &str) -> bool {
     let mut c = s.chars();
     matches!(c.next(), Some(ch) if ch.is_ascii_alphabetic() || ch == '_') && c.all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
-}
-
-/// Keeps `Case` and `Field` constructors short in parser and value form.
-impl Field {
-    pub fn new(name: &str, ty: Type) -> Field {
-        Field { name: name.into(), ty, default: None, succeeds: BTreeSet::new(), doc: None }
-    }
-}
-
-impl Case {
-    pub fn new(name: &str, payload: Option<Type>) -> Case {
-        Case { name: name.into(), payload, succeeds: BTreeSet::new(), doc: None }
-    }
 }

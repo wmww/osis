@@ -1,6 +1,5 @@
 //! Schemas embedded as source and parsed on first use (the core schema, generated code).
 
-use crate::error::ParseError;
 use crate::parse::parse;
 use crate::schema::Schema;
 use std::sync::OnceLock;
@@ -11,27 +10,15 @@ use std::sync::OnceLock;
 pub struct StaticSchema {
     file: &'static str,
     src: &'static str,
-    cell: OnceLock<Result<Schema, ParseError>>,
+    cell: OnceLock<Schema>,
 }
-
-static BROKEN: OnceLock<Schema> = OnceLock::new();
 
 impl StaticSchema {
     pub const fn new(file: &'static str, src: &'static str) -> StaticSchema {
         StaticSchema { file, src, cell: OnceLock::new() }
     }
-    fn parsed(&self) -> &Result<Schema, ParseError> {
-        self.cell.get_or_init(|| parse(self.file, self.src))
-    }
     pub fn get(&self) -> &Schema {
-        match self.parsed() {
-            Ok(s) => s,
-            Err(_) => BROKEN.get_or_init(|| Schema::new(0)),
-        }
-    }
-    /// The parse error, if the embedded source is broken.
-    pub fn error(&self) -> Option<&ParseError> {
-        self.parsed().as_ref().err()
+        self.cell.get_or_init(|| parse(self.file, self.src).unwrap_or_else(|_| Schema::new(0)))
     }
     pub fn file(&self) -> &'static str {
         self.file

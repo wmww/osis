@@ -23,9 +23,6 @@ impl<'s> SchemaView<'s> {
     pub fn new(schema: &'s Schema, ty: Type) -> SchemaView<'s> {
         SchemaView { schema, ty, atomic: false }
     }
-    pub fn ty(&self) -> &Type {
-        &self.ty
-    }
     fn child(&self, ty: Type, atomic: bool) -> SchemaView<'s> {
         SchemaView { schema: self.schema, ty, atomic: self.atomic || atomic }
     }

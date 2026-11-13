@@ -22,10 +22,6 @@ pub fn meta_schema() -> &'static Schema {
 fn st(fields: Vec<Value>) -> Value {
     Value::Map(fields.into_iter().enumerate().map(|(i, v)| (Value::uint(i as u64), v)).collect())
 }
-/// A struct value with the given field ids (a retired id stays unused).
-fn st_fields(fields: Vec<(u64, Value)>) -> Value {
-    Value::Map(fields.into_iter().map(|(i, v)| (Value::uint(i), v)).collect())
-}
 fn opt(v: Option<Value>) -> Value {
     match v {
         None => Value::Enum(0, None),
@@ -42,7 +38,7 @@ fn case(id: u64, payload: Value) -> Value {
     Value::Enum(id, Some(Box::new(payload)))
 }
 /// `type_expr` value of a type.
-pub fn type_value(t: &Type) -> Value {
+fn type_value(t: &Type) -> Value {
     let b = |t: &Type| type_value(t);
     match t {
         Type::String => Value::Enum(0, None),
@@ -113,7 +109,7 @@ impl Schema {
                 (Value::Str(ak.clone()), st(vec![type_value(&a.ty), retention, opt(a.expires.map(Value::uint)), flags, succ, doc(&a.doc)]))
             })
             .collect();
-        st_fields(vec![(0, Value::uint(self.revision)), (1, Value::Map(types)), (2, Value::Map(aspects)), (3, doc(&self.doc))])
+        st(vec![Value::uint(self.revision), Value::Map(types), Value::Map(aspects), doc(&self.doc)])
     }
 
     /// Canonical form: the canonical encoding of `to_value`.
@@ -225,7 +221,7 @@ impl<'a> Fields<'a> {
 }
 
 /// A `type_expr` value (already typed by the schema of schemas).
-pub fn read_type(v: &Value) -> Result<Type, Error> {
+fn read_type(v: &Value) -> Result<Type, Error> {
     let Value::Enum(c, p) = v else { return form("expected type_expr") };
     let p = p.as_deref();
     let inner = || match p {

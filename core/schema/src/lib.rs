@@ -28,7 +28,7 @@ pub use check::{Rule, Violation, check};
 pub use codec::Codec;
 pub use codegen::{Generated, generate, generate_file};
 pub use error::{Error, ParseError};
-pub use form::{META_SRC, meta_schema, read_type, type_value};
+pub use form::{META_SRC, meta_schema};
 pub use keys::{Aspect, AspectKey, RawKey, Signal, SignalKey, ValueKey};
 pub use parse::parse;
 pub use path::{CaseId, FieldId, Path, PathError, PathErrorKind, Step};
@@ -36,4 +36,4 @@ pub use schema::{AspectDef, AspectDefaults, FOREVER, Flag, History, Invalid, Pur
 pub use statics::{CORE, CORE_SRC, StaticSchema, core_schema};
 pub use typed::{misplaced_link, type_at, typed_read, validate_write, value_at};
 pub use view::{Large, SchemaView, large_positions, link_positions};
-pub use types::{Case, EnumType, Field, STANDARD, StructType, Type, is_reserved_name};
+pub use types::{Case, EnumType, Field, StructType, Type};

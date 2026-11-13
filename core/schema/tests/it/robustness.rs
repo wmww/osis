@@ -46,7 +46,16 @@ fn checker_refuses_unvalidated_irregular_schemas() {
     let good = parse("t.osis", &src("aspect x:y.0: int;")).unwrap();
     let mut bad = good.clone();
     let body = Type::Struct(StructType {
-        fields: BTreeMap::from([(0, Field::new("a", Type::List(Box::new(Type::Named("t".into(), vec![Type::List(Box::new(Type::Param("T".into())))])))))]),
+        fields: BTreeMap::from([(
+            0,
+            Field {
+                name: "a".into(),
+                ty: Type::List(Box::new(Type::Named("t".into(), vec![Type::List(Box::new(Type::Param("T".into())))]))),
+                default: None,
+                succeeds: BTreeSet::new(),
+                doc: None,
+            },
+        )]),
         reserved: BTreeSet::new(),
     });
     bad.types.insert("t".into(), TypeDef { params: vec!["T".into()], body, doc: None });
