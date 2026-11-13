@@ -724,7 +724,7 @@ impl SyncEngine {
         self.labels();
         let due: Vec<(Tid, Tid)> = self.tied.due.iter().filter(|p| !self.tied.failed.contains(p)).copied().collect();
         for (t, g) in due {
-            let Some(how) = self.engine.may_remove(&t, &g) else { continue };
+            let Some(how) = self.engine.may_remove(&t, &g)? else { continue };
             // a pair or scope reaching a handed-off group is left to its holders:
             // its state here is stale and nothing would go under its labels from here
             let explicit = how == crate::flows::Untie::Explicit;

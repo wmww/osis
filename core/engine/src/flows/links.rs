@@ -244,7 +244,7 @@ fn key_actor_keys(m: &mut Mutation, t: Tid, keys: &KeyActorKeys) -> Result<()> {
 
 fn create_link_in(tx: &mut Tx<'_>, sharer: Tid, spec: &LinkSpec, l: Tid, seed: &Secret32) -> Result<(Tid, osis_base::LabelId, Tid, Done)> {
     let me = tx.core.writer()?;
-    if tx.core.role_now(&me, &sharer) != Some(Role::Admin) {
+    if crate::engine::secrets::usable_role_now(tx, &me, &sharer)? != Some(Role::Admin) {
         return Err(Error::Permission { tid: sharer });
     }
     let mut done = Done::default();

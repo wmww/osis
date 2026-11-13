@@ -531,7 +531,7 @@ pub(crate) fn settle(core: &Core, memory: bool, kind: Kind, ts: Ts, tid: &Tid, a
 /// spec/wire.md §5). `published`: [`super::secrets::published_keys`] of the commit's things.
 pub(crate) fn framing_for(core: &Core, memory: bool, plan: &CommitPlan, published: &BTreeMap<(Tid, osis_base::Role), osis_crypto::VerifyingKey>, tid: &Tid, retention: &Retention) -> Result<Framing> {
     // a role is of use once its delete keys are here (spec/crypto.md §7): until then this node
-    // writes nothing on the thing, whatever the delta's retention (`Engine::holds_delete_keys`)
+    // writes nothing on the thing, whatever the delta's retention (`secrets::usable_role`)
     if !super::secrets::holds_listed_keys(core, &plan.creates, published, tid) {
         return Err(Error::Permission { tid: *tid });
     }

@@ -680,3 +680,38 @@ fn purged_part_lists_until_its_expiry_spec_commits_7() {
     db.engine(|e| e.tick().unwrap());
     assert_eq!(listed(&db), [(lasting, true)], "a permanent one's for good");
 }
+
+// spec/requirements.md (Decentralization: a commit holds at least 2 000 changes, of values of
+// any size): the worst shape for the floor, 2 000 changes on 2 000 different things (each its own
+// keys and framing), with one large value beside them (in blobs of its own, past `MAX_BLOB`
+// itself), is one commit within `MAX_BLOB` that another node applies whole.
+#[test]
+fn two_thousand_changes_on_as_many_things_spec_requirements_decentralization() {
+    let (a, b, _c) = paired();
+    let mut things = Vec::new();
+    for _ in 0..4 {
+        let mut w = a.write();
+        things.extend((0..500).map(|_| w.create().unwrap()));
+        w.commit().unwrap();
+    }
+    deliver(&a, &b);
+    let key = osis::DynamicAspectKey::untyped(ak("t:x.0"));
+    let big: Vec<u8> = (0..osis_base::format::MAX_BLOB + 1).map(|i| (i % 251) as u8).collect();
+    let before: std::collections::BTreeSet<_> = a.engine(|e| e.commit_ids()).into_iter().collect();
+    let mut w = a.write();
+    let large = w.create().unwrap();
+    w.at(large, key.clone()).path(osis::p![]).set_stream(&big[..]).unwrap();
+    for (i, t) in things.iter().enumerate() {
+        w.at(*t, key.clone()).set(&Value::Int(i as i64)).unwrap();
+    }
+    w.commit().unwrap();
+    let new: Vec<_> = a.engine(|e| e.commit_ids()).into_iter().filter(|id| !before.contains(id)).collect();
+    assert_eq!(new.len(), 1, "one commit");
+    let pk = a.engine(|e| e.package(&new[0]).unwrap().unwrap());
+    assert!(pk.bytes.len() <= osis_base::format::MAX_BLOB, "{} bytes", pk.bytes.len());
+    b.engine(|e| e.ingest(&pk.bytes, pk.blobs.clone()).unwrap());
+    for (i, t) in things.iter().enumerate() {
+        assert_eq!(b.at(*t, key.clone()).get().unwrap(), Some(Value::Int(i as i64)), "thing {i}");
+    }
+    assert_eq!(b.at(large, key).get().unwrap(), Some(Value::Bytes(big)));
+}

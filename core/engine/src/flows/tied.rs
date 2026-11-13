@@ -112,27 +112,27 @@ impl Engine {
     }
 
     /// Whether this node may grant `holder` `role` on `target` now (spec/permissions.md §2):
-    /// admin on the target, or an effective invite of at least `role` with no current edge of
-    /// the holder (an invite grant).
-    pub fn may_grant(&self, target: &Tid, holder: &Tid, role: Role) -> bool {
-        let Some(me) = self.core.me() else { return false };
-        if self.core.role_now(&me, target) == Some(Role::Admin) {
-            return true;
+    /// admin on the target (`usable_role`), or an effective invite of at least `role` with no
+    /// current edge of the holder (an invite grant).
+    pub fn may_grant(&mut self, target: &Tid, holder: &Tid, role: Role) -> Result<bool> {
+        let Some(me) = self.core.me() else { return Ok(false) };
+        if self.usable_role(target, self.core.role_now(&me, target))? == Some(Role::Admin) {
+            return Ok(true);
         }
         let at = osis_perm::At::now(now_ts(&self.core));
-        let Some(tl) = self.core.timelines.get(target) else { return false };
-        !tl.roster(target, at).contains_key(holder) && tl.invite(&me, target, at).is_some_and(|i| role <= i)
+        let Some(tl) = self.core.timelines.get(target) else { return Ok(false) };
+        Ok(!tl.roster(target, at).contains_key(holder) && tl.invite(&me, target, at).is_some_and(|i| role <= i))
     }
 
     /// How this node may remove `holder`'s edge on `target` now, if at all: a self-removal
     /// (admin on the holder actor its only authority for it, spec/permissions.md §2), or an
-    /// explicit demotion (admin on the target).
-    pub fn may_remove(&self, target: &Tid, holder: &Tid) -> Option<Untie> {
-        let me = self.core.me()?;
+    /// explicit demotion (admin on the target, `usable_role`).
+    pub fn may_remove(&mut self, target: &Tid, holder: &Tid) -> Result<Option<Untie>> {
+        let Some(me) = self.core.me() else { return Ok(None) };
         if crate::apply::validity::self_removal(&self.core, &me, target, holder, now_ts(&self.core)) {
-            return Some(Untie::SelfRemoval);
+            return Ok(Some(Untie::SelfRemoval));
         }
-        (self.core.role_now(&me, target) == Some(Role::Admin)).then_some(Untie::Explicit)
+        Ok((self.usable_role(target, self.core.role_now(&me, target))? == Some(Role::Admin)).then_some(Untie::Explicit))
     }
 
     /// The tied edges whose placement this node holds dead (`tie_dead`), as (target, group):

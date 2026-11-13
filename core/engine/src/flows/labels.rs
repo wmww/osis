@@ -316,7 +316,7 @@ impl Engine {
         let (g, o) = (*group, *old);
         self.run(|tx| {
             let me = tx.core.writer()?;
-            if tx.core.role_now(&me, &g) != Some(Role::Admin) {
+            if crate::engine::secrets::usable_role_now(tx, &me, &g)? != Some(Role::Admin) {
                 return Err(Error::Permission { tid: g });
             }
             let rec = labels_of(tx, &g)?.get(&o).cloned().ok_or(Error::Misuse("no such label"))?;

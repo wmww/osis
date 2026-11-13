@@ -124,7 +124,7 @@ pub(crate) fn grant_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, holder
         return Err(Error::Misuse("`until` 0 is a removal's saying retain"));
     }
     let role = tx.core.role_now(&who, &target);
-    let admin = role == Some(Role::Admin);
+    let admin = crate::engine::secrets::usable_role(tx, &target, role)? == Some(Role::Admin);
     // a non-writer of the target's label deposits its invite grant (spec/sync.md §5)
     let deposit = role < Some(Role::Write);
     let ts = now_ts(tx.core);
@@ -284,7 +284,7 @@ pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &D
         gone.push((*o, e));
     }
     let selfr = old.is_some() && crate::apply::validity::self_removal(tx.core, &who, &target, &holder, ts);
-    let admin = tx.core.role_now(&who, &target) == Some(Role::Admin);
+    let admin = crate::engine::secrets::usable_role_now(tx, &who, &target)? == Some(Role::Admin);
     if !selfr && !admin || selfr && !gone.is_empty() {
         return Err(Error::Permission { tid: target });
     }

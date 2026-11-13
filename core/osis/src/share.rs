@@ -62,8 +62,8 @@ pub enum HolderKind {
 }
 
 /// Whether this node may end `holder`'s grant on `t` for `Osis::leave`.
-fn leave_allowed(e: &osis_node::Engine, holder: Tid, t: Tid, own: bool) -> Result<()> {
-    match e.may_remove(&t, &holder) {
+fn leave_allowed(e: &mut osis_node::Engine, holder: Tid, t: Tid, own: bool) -> Result<()> {
+    match e.may_remove(&t, &holder)? {
         Some(flows::Untie::Explicit) if !own => Err(Error::Invalid(format!("this node is an admin of {t}: use set_role"))),
         None if !own => Err(Error::Permission { tid: holder, needs: Role::Admin }),
         _ => Ok(()),
@@ -745,7 +745,7 @@ impl Osis {
         let retie = existing.is_some_and(|x| x.with_membership) && self.engine(|e| e.tie_dead(&tid, &group))?;
         let role = existing.filter(|_| retie).map_or(role, |x| x.role.max(role));
         let grant = retie || existing.is_none_or(|e| e.role < role);
-        if grant && !self.engine(|e| e.may_grant(&tid, &group, role)) {
+        if grant && !self.engine(|e| e.may_grant(&tid, &group, role))? {
             return Err(Error::Permission { tid, needs: Role::Admin });
         }
         if grant && existing.is_none() && self.engine(|e| below_held(e, &tid, &group, role)) {
@@ -784,7 +784,7 @@ impl Osis {
     pub(crate) fn untie_now(&self, pairs: &[(Tid, Tid)]) {
         for (t, g) in pairs {
             let done = self.engine(|e| {
-                let due = e.may_remove(t, g) == Some(flows::Untie::SelfRemoval) && e.tie_dead(t, g).unwrap_or(false);
+                let due = e.may_remove(t, g).ok().flatten() == Some(flows::Untie::SelfRemoval) && e.tie_dead(t, g).unwrap_or(false);
                 if due { e.untie(t, g).ok() } else { None }
             });
             if let Some(done) = done {

@@ -1585,7 +1585,7 @@ fn set_role_keeps_what_was_synced_first_spec_permissions_5_3() {
 // delete keys are not here yet (no inbox hint, the thing's `keys.0` in a later batch: another node
 // of the grantee's account, a group's grant learned from its certificate copy) reads as `Read`
 // and a content write on it is `Permission`, until the keys come; then both say the role. An
-// admin's grant fails meanwhile too (issues/admin-before-keys-error.md: not yet `Permission`).
+// admin's calls are `Permission { needs: Admin }` meanwhile alike, by the same rule.
 #[test]
 fn role_before_delete_keys_reads_as_read_spec_crypto_7() {
     for role in [Role::Write, Role::Admin] {
@@ -1618,7 +1618,11 @@ fn role_before_delete_keys_reads_as_read_spec_crypto_7() {
         assert!(matches!(write("two"), Err(Error::Permission { tid, needs: Role::Write }) if tid == t));
         let grant = || bob.grant(t, dave.me(), Role::Read, Default::default());
         if role == Role::Admin {
-            assert!(grant().is_err());
+            let r = grant();
+            assert!(matches!(r, Err(Error::Permission { tid, needs: Role::Admin }) if tid == t), "grant: {r:?}");
+            let r = bob.set_role(t, carol.me(), None, SetRoleOpts::default());
+            assert!(matches!(r, Err(Error::Permission { tid, needs: Role::Admin }) if tid == t), "set_role: {r:?}");
+            assert_eq!(bob.grants(t).unwrap().get(&carol.me()).map(|g| g.role), Some(Role::Read), "nothing written");
         }
         for (_, pk) in &later {
             bob.engine(|e| e.ingest(&pk.bytes, pk.blobs.clone()).unwrap());

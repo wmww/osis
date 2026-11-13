@@ -596,7 +596,7 @@ pub(crate) fn published_keys(tx: &mut crate::engine::Tx<'_>, created: &crate::en
 
 /// Whether a content write on `tid` can list its admin and write delete keys (`CommitSecrets`,
 /// `published` from `published_keys`): what every write on it needs, whatever its retention, so a
-/// write and `Engine::holds_delete_keys` agree.
+/// write and [`usable_role`] agree.
 pub(crate) fn holds_listed_keys(core: &Core, created: &crate::engine::write::Creates, published: &BTreeMap<(Tid, Role), VerifyingKey>, tid: &Tid) -> bool {
     // a node that joined no account writes only its own card, as itself
     let s = CommitSecrets { core, actor: core.me().unwrap_or(core.id.tid()), created, published };
@@ -604,11 +604,29 @@ pub(crate) fn holds_listed_keys(core: &Core, created: &crate::engine::write::Cre
 }
 
 /// Whether this node holds the delete keys every write on `t` lists (`framing_for`'s check), in
-/// `tx`: what answers and covers wait for (`Engine::holds_delete_keys`).
+/// `tx`: what answers and covers wait for, and what [`usable_role`] asks.
 pub(crate) fn holds_delete_keys_in(tx: &mut crate::engine::Tx<'_>, t: &Tid) -> Result<bool> {
     let created = Default::default();
     let published = published_keys(tx, &created, [*t])?;
     Ok(holds_listed_keys(tx.core, &created, &published, t))
+}
+
+/// `role` on `t` as this node can use it now (spec/crypto.md §7): a write or admin role counts as
+/// read until this node holds the delete keys every write on `t` lists ([`holds_delete_keys_in`]),
+/// as it writes nothing on `t` before. The one rule for every local call that needs a role (a
+/// content write, a grant, a removal, a link, `Osis::role_on`), so each fails `Permission` alike
+/// meanwhile; never for judging a received commit.
+pub(crate) fn usable_role(tx: &mut crate::engine::Tx<'_>, t: &Tid, role: Option<Role>) -> Result<Option<Role>> {
+    Ok(match role {
+        Some(r) if r >= Role::Write && !holds_delete_keys_in(tx, t)? => Some(Role::Read),
+        r => r,
+    })
+}
+
+/// `who`'s role on `t` now as this node can use it ([`usable_role`]).
+pub(crate) fn usable_role_now(tx: &mut crate::engine::Tx<'_>, who: &Tid, t: &Tid) -> Result<Option<Role>> {
+    let role = tx.core.role_now(who, t);
+    usable_role(tx, t, role)
 }
 
 /// The admin and write delete keys of `t` from its delete base `b` (`e` its held epochs): from
@@ -635,11 +653,17 @@ impl crate::Engine {
         self.run(|tx| own_delete_keys(tx, &t))
     }
 
-    /// Whether this node holds the delete keys a write on `t` lists (spec/crypto.md §7): a
-    /// writer without them cannot write `t` yet (`holds_listed_keys`).
-    pub fn holds_delete_keys(&mut self, t: &Tid) -> Result<bool> {
+    /// [`holds_delete_keys_in`], for tests.
+    #[cfg(test)]
+    pub(crate) fn holds_delete_keys(&mut self, t: &Tid) -> Result<bool> {
         let t = *t;
         self.run(|tx| holds_delete_keys_in(tx, &t))
+    }
+
+    /// [`usable_role`]: `role` on `t` as this node can use it now.
+    pub fn usable_role(&mut self, t: &Tid, role: Option<Role>) -> Result<Option<Role>> {
+        let t = *t;
+        self.run(|tx| usable_role(tx, &t, role))
     }
 
     /// Notes the delete keys the inbox payload of commit `c` names (spec/wire.md §9) as

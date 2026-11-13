@@ -180,16 +180,11 @@ pub(crate) fn lenient<T>(tid: Tid, ak: &Ak, r: std::result::Result<T, PathError>
     r.map_err(|e| report(mismatch(tid, ak, &e))).ok()
 }
 
-/// `role` on `tid` as this node can use it now: a write or admin role reads as read until the
-/// thing's admin and write delete keys are here (spec/crypto.md §7: a write lists those its
-/// retention calls for; this node writes nothing on the thing before, whatever the retention,
-/// so the role does not depend on the retention, `write::framing_for`). The one rule
-/// for every route to a role (a grant, a link, another node of the account, a group's grant).
+/// `role` on `tid` as this node can use it now: the engine's one rule for every local call that
+/// needs a role (`Engine::usable_role`, spec/crypto.md §7), for every route to a role (a grant, a
+/// link, another node of the account, a group's grant).
 pub(crate) fn usable(e: &mut Engine, tid: &Tid, role: Option<Role>) -> Result<Option<Role>> {
-    Ok(match role {
-        Some(r) if r >= Role::Write && !e.holds_delete_keys(tid)? => Some(Role::Read),
-        r => r,
-    })
+    Ok(e.usable_role(tid, role)?)
 }
 
 /// One locked view of the engine: what every single read uses.
