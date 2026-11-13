@@ -534,7 +534,7 @@ fn forked_anchors() -> (LocalPeer, Tid, Tid, Epoch, Epoch) {
 // spec/crypto.md §4 (Seal: jointly where the anchors fork; model `Joint.tla` `J_safety`): A's two
 // current epochs anchor M at k1 and k2. m1 removes reader D from M (k3, listing k1 only), ordered
 // before k2 (m2's clock is ahead), so a1, holding neither secret, judges k2 by order as covering
-// it (`fork_missing_a_known_removal_leaves_holder_out_spec_crypto_4`: ordered after). a1,
+// it (`fork_missing_a_known_removal_seals_jointly_spec_crypto_4`: ordered after). a1,
 // holding the removal's keyset, rotates A at once (its box at k1 is stale), sealing M jointly at
 // k3 and k2: D, boxed at k2 but not k3, opens none of it; m2, holding both, does. Nothing waits
 // for a keyset of M past both anchors (a merge only M's admins could make). Sealing M at k2
@@ -588,37 +588,82 @@ fn forked_holder_with_its_admins_gone_rotates_spec_permissions_3() {
     assert!(lp.peers[1].engine.core.key_holders(&m).iter().any(|h| h.0 == d));
 }
 
-// spec/crypto.md §4 (Seal: a keyset Seal gives blocked at the node leaves M out; Encrypting
-// under: by order): as `forked_anchors_seal_jointly_spec_crypto_4`, with m1's removal of D
-// ordered after k2, so k2 misses a departure a1 knows. A joint box is encrypting under each
-// keyset it names: a1 rotates A leaving M out (conservative: D, lacking k3, could open no joint
-// box at k2 and k3; issues/joint-seal-blocked-by-one-fork.md). k2 owes M's knowing re-key; once
-// m2 makes it, A is re-sealed to M and m2 reads A.
+// spec/crypto.md §4 (Seal: a joint box held back by departures only where every keyset it names
+// misses one; Encrypting under: by order; model `JointRule.tla`): as
+// `forked_anchors_seal_jointly_spec_crypto_4`, with m1's removal of D ordered after k2, so k2
+// misses a departure a1 knows. k3 covers it, so a1 seals M jointly at k2 and k3 at once: D,
+// lacking k3, opens none of it, and m2 reads A with no rotation of M (M's admins may all be gone).
 #[test]
-fn fork_missing_a_known_removal_leaves_holder_out_spec_crypto_4() {
+fn fork_missing_a_known_removal_seals_jointly_spec_crypto_4() {
     let none = BTreeSet::new();
-    let (mut lp, m, a, _, _) = forked_anchors();
-    let (d, m2) = (lp.peers[1].engine.me(), lp.peers[2].engine.me());
+    let (mut lp, m, a, _, k2) = forked_anchors();
+    let d = lp.peers[1].engine.me();
     let mut start = held_by(&lp, 1, &[m, a]);
     for i in [3, 4] {
         start = openable(&mut lp, i, &[m, a], d, start);
     }
     lp.peers[0].clock.advance(60_000);
     removal(&mut lp, 0, m, d);
+    let k3 = lp.peers[0].engine.epochs(&m).unwrap().read.newest_held().unwrap().0;
     send_skipping(&mut lp, 0, 3, &none);
     let (done, still) = lp.peers[3].engine.ensure_rotated(&a).unwrap();
     assert!(!done.commits.is_empty() && still.is_empty(), "a1 rotates A at once");
-    assert!(sealed_keysets(&mut lp, 3, a, m).is_empty(), "M left out: k2 misses the removal");
+    assert_eq!(sealed_keysets(&mut lp, 3, a, m), BTreeSet::from([k2, k3]), "M sealed jointly though k2 misses the removal");
     let w = newest_read(&lp, 3, a).unwrap();
-    assert!(!openable(&mut lp, 3, &[m, a], d, start.clone()).contains(&(a, Role::Read, w)));
+    assert!(!openable(&mut lp, 3, &[m, a], d, start.clone()).contains(&(a, Role::Read, w)), "D opens none of what a1 writes");
     lp.sync_all().unwrap();
-    assert!(lp.peers[2].engine.epochs(&a).unwrap().read.secret(&w).is_none(), "m2 reads nothing of A meanwhile");
-    settle(&mut lp, &[0, 2, 3, 4], &[m, a]);
-    let w = newest_read(&lp, 3, a).unwrap();
-    assert!(!sealed_keysets(&mut lp, 3, a, m).is_empty(), "M's re-key made, M re-sealed to A");
-    assert!(lp.peers[2].engine.epochs(&a).unwrap().read.secret(&w).is_some(), "m2 reads A");
-    assert!(lp.peers[2].engine.core.key_holders(&m).iter().any(|h| h.0 == m2));
+    assert!(lp.peers[2].engine.epochs(&a).unwrap().read.secret(&w).is_some(), "m2 reads A's new epoch, M not re-keyed");
     assert_eq!(leaked(&mut lp, 3, &[m, a], d, start), Vec::<Tid>::new());
+}
+
+// spec/crypto.md §4 (Seal: a joint box held back where every keyset it names misses a departure;
+// model `JointRule.tla` `NoPooledLeak`): A's anchors for M fork at k1 and k2 (as
+// `forked_anchors`), and a1 reads M too, so it judges M's keysets by their history. m1 removes D1
+// (k3, listing k1) and m2 removes D2 (k4, listing k2) concurrently: each fork misses the other's
+// removal. D1 opens k4 and D2 k3, so pooled they would open a joint box at k3 and k4: a1 leaves
+// M out of A until a rotator of M re-keys it knowing both.
+#[test]
+fn each_fork_missing_a_different_removal_leaves_holder_out_spec_crypto_4() {
+    let roles = BTreeSet::from([Role::Sync, Role::Read]);
+    let none = BTreeSet::new();
+    let mut lp = synced(6);
+    let [_, d1, m2, a1, a2, d2] = std::array::from_fn(|i| lp.peers[i].engine.me());
+    let m = group(&mut lp, 0);
+    let a = group(&mut lp, 3);
+    lp.peers[0].engine.grant(&m, &m2, &edge(Role::Admin)).unwrap();
+    for h in [d1, d2, a1] {
+        lp.peers[0].engine.grant(&m, &h, &edge(Role::Read)).unwrap();
+    }
+    lp.peers[3].engine.grant(&a, &a2, &edge(Role::Admin)).unwrap();
+    lp.sync_all().unwrap();
+    lp.peers[3].engine.grant(&a, &m, &edge(Role::Read)).unwrap();
+    lp.sync_all().unwrap();
+    rotate_leaving_out(&mut lp, 0, m, &roles, &[]);
+    lp.peers[2].clock.advance(1_000);
+    rotate_leaving_out(&mut lp, 2, m, &roles, &[]);
+    send_skipping(&mut lp, 0, 3, &none);
+    send_skipping(&mut lp, 2, 4, &none);
+    lp.peers[3].engine.ensure_rotated(&a).unwrap();
+    lp.peers[4].engine.ensure_rotated(&a).unwrap();
+    send_skipping(&mut lp, 4, 3, &none);
+    assert_eq!(lp.peers[3].engine.epochs(&a).unwrap().read.current().len(), 2, "A forked over M's two keysets");
+    let mut starts = [held_by(&lp, 1, &[m, a]), held_by(&lp, 5, &[m, a])];
+    for (s, d) in starts.iter_mut().zip([d1, d2]) {
+        for i in [3, 4] {
+            *s = openable(&mut lp, i, &[m, a], d, s.clone());
+        }
+    }
+    removal(&mut lp, 0, m, d1);
+    removal(&mut lp, 2, m, d2);
+    send_skipping(&mut lp, 0, 3, &none);
+    send_skipping(&mut lp, 2, 3, &none);
+    let (done, _) = lp.peers[3].engine.ensure_rotated(&a).unwrap();
+    assert!(!done.commits.is_empty(), "a1 rotates A");
+    assert!(sealed_keysets(&mut lp, 3, a, m).is_empty(), "M left out: each fork misses a removal");
+    let w = newest_read(&lp, 3, a).unwrap();
+    for (s, d) in starts.into_iter().zip([d1, d2]) {
+        assert!(!openable(&mut lp, 3, &[m, a], d, s).contains(&(a, Role::Read, w)), "neither removed party opens A's new epoch");
+    }
 }
 
 // spec/crypto.md §4 (Held keyset: valid; Descends; Stale: held invalid; model

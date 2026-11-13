@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Run one TLA+ module's TLC instances. Usage: run.sh <module> [cfg...]
-#   <module>: sync, sides, rotation, joint, depth0, lockout, cut, finalize, cover, tail, authority, account, netstream, netshared, netblind
+#   <module>: sync, sides, rotation, joint, jointrule, depth0, lockout, cut, finalize, cover, tail, authority, account, netstream, netshared, netblind
 #   no cfg: the module's instances listed below (each module under 3 min at
 #   one worker); with cfg names: those instances instead (the larger ones
 #   in the module's README, by hand), judged only if listed below.
@@ -39,6 +39,9 @@ instances=(
   "joint rotation JointMC J_stay.cfg pass"        # ... every member no fork removes reads A, with one admin of M staying
   "joint rotation JointMC J_wait_gone.cfg fail"   # negative control: waiting for M's merge stalls A's rotation
   "joint rotation JointMC J_newest.cfg fail"      # negative control: M sealed at its newest keyset leaks
+  "jointrule rotation JointRule JR_every.cfg pass"    # a joint box blocked by departures only when every keyset misses one
+  "jointrule rotation JointRule JR_party.cfg fail"    # negative control: per departed party leaks
+  "jointrule rotation JointRule JR_any.cfg fail"      # negative control: blocked by any keyset leaves M out needlessly
   "depth0 rotation Depth0MC D0_nc.cfg pass"      # rule 4, no key cycles (notes/crypto.md (Holder actors at depth 0))
   "depth0 rotation Depth0MC D0_nc3.cfg pass"
   "depth0 rotation Depth0MC D0_fa_flip.cfg pass" # first admin removed: a keyless grant turns keyed
@@ -156,7 +159,7 @@ for line in "${instances[@]}"; do
   [ "$m" = "$module" ] && dir=$d tla=$t
 done
 if [ -z "$dir" ]; then
-  echo "usage: $0 sync|sides|rotation|joint|depth0|lockout|cut|finalize|cover|tail|authority|account|netstream|netshared|netblind [cfg...]" >&2
+  echo "usage: $0 sync|sides|rotation|joint|jointrule|depth0|lockout|cut|finalize|cover|tail|authority|account|netstream|netshared|netblind [cfg...]" >&2
   exit 2
 fi
 

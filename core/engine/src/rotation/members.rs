@@ -4,7 +4,8 @@
 //! with the authority its proofs show). The rules
 //! are osis-keys' (`osis_keys::members`, `osis_keys::possession`); this gathers their inputs.
 //! A departure from a holder actor counts only as what this node may encrypt under
-//! (`super::blocked_epoch`): sealing at a keyset is encrypting under it.
+//! (`super::blocking`): sealing at a keyset is encrypting under it, and a joint box is held back
+//! by departures only where every keyset it names misses one.
 
 use crate::engine::{Core, Tx};
 use crate::error::Result;
@@ -226,15 +227,15 @@ pub(crate) enum Sealed {
 /// or a key actor it signs as) boxes it (spec/crypto.md §4), up to `role` capped at its key
 /// access (`keyed_role`; none without it): a key actor whole; a holder actor per role, at the keysets Seal gives
 /// (`osis_keys::seal_keyset`): one, symmetric (signed: it shows possession) where this node holds that
-/// established epoch's secret, or several jointly; cut at the first role with none or with a keyset `who` may not
-/// encrypt under (`super::blocked_epoch`: a departure from `m` it knows that keyset does not
-/// cover, say), left out of it and the roles above.
+/// established epoch's secret, or several jointly; cut at the first role with none or whose box
+/// `who` may not make (`seal_blocked`: a departure from `m` it knows that keyset, or every keyset
+/// of a joint box, does not cover, say), left out of it and the roles above.
 pub(crate) fn sealed(tx: &mut Tx<'_>, who: &Tid, a: &Tid, m: &Tid, role: Role) -> Result<Sealed> {
     Ok(sealing(tx, who, a, m, role)?.0)
 }
 
-/// `sealed`, with the keysets Seal gives at each role up to `role` that `who` may not encrypt
-/// under (`super::blocked_epoch`), the roles above the cut included: what a rotation leaving `m`
+/// `sealed`, with the keysets Seal gives at each role up to `role` that leave `m` out
+/// (`seal_blocked`), the roles above the cut included: what a rotation leaving `m`
 /// out records (`left_out`).
 pub(crate) fn sealing(tx: &mut Tx<'_>, who: &Tid, a: &Tid, m: &Tid, role: Role) -> Result<(Sealed, BTreeMap<Role, BTreeSet<Epoch>>)> {
     let mut blocked = BTreeMap::new();
@@ -260,13 +261,7 @@ pub(crate) fn sealing(tx: &mut Tx<'_>, who: &Tid, a: &Tid, m: &Tid, role: Role) 
                 continue;
             }
         };
-        // a joint box is encrypting under each keyset it names
-        let mut out = BTreeSet::new();
-        for k in &ks {
-            if super::blocked_epoch(tx, who, m, r, k, &deps, super::Walk::Seal)? {
-                out.insert(*k);
-            }
-        }
+        let out = seal_blocked(tx, who, m, r, &ks, &deps)?;
         if !out.is_empty() {
             blocked.insert(r, out);
             cut = true;
@@ -298,6 +293,19 @@ pub(crate) fn sealing(tx: &mut Tx<'_>, who: &Tid, a: &Tid, m: &Tid, role: Role) 
     Ok((sealed, blocked))
 }
 
+/// The keysets `ks` Seal gives for `m` at `r` that leave `m` out (`super::joint_blocked`): a box
+/// naming them is encrypting under each (`super::blocking`), and a joint one opens only for a
+/// holder of every one, so it waits on a missed departure only when every keyset misses one.
+fn seal_blocked(tx: &mut Tx<'_>, who: &Tid, m: &Tid, r: Role, ks: &BTreeSet<Epoch>, deps: &[osis_keys::Departure]) -> Result<BTreeSet<Epoch>> {
+    let mut why = BTreeMap::new();
+    for k in ks {
+        if let Some(b) = super::blocking(tx, who, m, r, k, deps, super::Walk::Seal)? {
+            why.insert(*k, b);
+        }
+    }
+    Ok(super::joint_blocked(why, ks.len()))
+}
+
 /// `sealing` for account `m`: one keyset names every role (spec/crypto.md §3), so its boxes up
 /// to `role` go at the epochs Seal gives past every role's anchors and left-out keysets (one, or
 /// several jointly); left out where a role of one of them is blocked at this node.
@@ -315,12 +323,7 @@ fn sealed_to_account(tx: &mut Tx<'_>, who: &Tid, a: &Tid, m: &Tid, role: Role) -
     let deps = super::keyset_departures(tx, m)?;
     let mut top = None;
     for r in ROLES.into_iter().filter(|r| *r <= role) {
-        let mut b = BTreeSet::new();
-        for k in &ks {
-            if super::blocked_epoch(tx, who, m, r, k, &deps, super::Walk::Seal)? {
-                b.insert(*k);
-            }
-        }
+        let b = seal_blocked(tx, who, m, r, &ks, &deps)?;
         if !b.is_empty() {
             blocked.insert(r, b);
         } else if blocked.is_empty() {
@@ -406,15 +409,15 @@ pub(crate) fn authority(core: &Core, who: &Tid, a: &Tid, roles: &BTreeSet<Role>,
     avoid.is_empty() || on_a(&avoid) >= Some(needed) || on_a(&BTreeSet::new()) < Some(needed)
 }
 
-/// The holder actors `a`'s epoch `e` of role `r` boxes, each with the keyset its box names, by
-/// the boxes of `a`'s `secrets.0` state.
-pub(crate) fn boxed_keysets(tx: &mut Tx<'_>, a: &Tid, r: Role, e: &Epoch) -> Result<Vec<(Tid, Epoch)>> {
+/// The holder actors `a`'s epoch `e` of role `r` boxes, each with the keysets its box names (one,
+/// or several jointly), by the boxes of `a`'s `secrets.0` state.
+pub(crate) fn boxed_keysets(tx: &mut Tx<'_>, a: &Tid, r: Role, e: &Epoch) -> Result<Vec<(Tid, Vec<Epoch>)>> {
     let s = secrets_in(tx, a)?;
     Ok(s.boxes
         .iter()
         .filter(|(k, _)| k.role == r && osis_keys::aspects::from_schema(&k.epoch).is_ok_and(|x| x == *e))
         .filter(|(k, _)| !tx.core.is_key_actor(&k.holder) || tx.core.is_account(&k.holder))
-        .flat_map(|(k, b)| osis_keys::box_keysets(b).into_iter().map(|e| (k.holder, e)))
+        .map(|(k, b)| (k.holder, osis_keys::box_keysets(b)))
         .collect())
 }
 
@@ -433,7 +436,7 @@ fn proved_keysets(core: &Core, a: &Tid, r: Role, e: &Epoch) -> Vec<(Tid, Epoch)>
 /// `secrets.0` state to a holder actor, or a proof of `e`'s keyset, naming a keyset of it held
 /// invalid, tainted, or listed by a held valid keyset of it.
 pub(crate) fn stale_at(tx: &mut Tx<'_>, a: &Tid, r: Role, e: &Epoch) -> Result<bool> {
-    let mut named = boxed_keysets(tx, a, r, e)?;
+    let mut named: Vec<(Tid, Epoch)> = boxed_keysets(tx, a, r, e)?.into_iter().flat_map(|(m, ks)| ks.into_iter().map(move |k| (m, k))).collect();
     named.extend(proved_keysets(tx.core, a, r, e));
     for (m, k) in named {
         let held = keysets_of(tx, &m, r, Some(&k))?;

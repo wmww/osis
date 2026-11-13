@@ -10,10 +10,10 @@
 (* each departure edge it so leaves open: what the build's Blocked finds   *)
 (* (directly, or by the box clause through N, P). Rule decides when the    *)
 (* joint box naming both forks is blocked:                                 *)
-(*   "any":   some fork misses some departure (the build);                 *)
+(*   "any":   some fork misses some departure;                             *)
 (*   "edge":  one departure edge every fork misses;                        *)
 (*   "party": one departed party (the removed holder) every fork misses;   *)
-(*   "every": every fork misses some departure.                            *)
+(*   "every": every fork misses some departure (the build).                *)
 EXTENDS FiniteSets
 
 CONSTANT Rule
