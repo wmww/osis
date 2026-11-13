@@ -1,3 +1,0 @@
-# store-reopen
-- The power-cut tests' store held one table page, so every commit rewrote every redb page and a reopen without the cache drop still passed. With 200 filler rows (`put_x`) the later commit keeps a page of the failed one, and the no-drop mutant fails with "All roots are corrupted". A durability test needs a store big enough that a commit leaves pages alone.
-- Moving the open-time steps of `Engine::open` into `Engine::load` was needed because an `Err` commit can land late (a shredding commit's last batch); the engine-level test only fails without the reload, not the store tests: check the owner too, not only the store.
