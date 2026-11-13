@@ -212,6 +212,7 @@ Each operation names a label. Writes are signed with the role keys of the host's
     - A promoter completes the chain it holds, placing the missing deltas as its own certificate copies with the promotion.
     - A record blob counts toward the chain only stamped or the promoter's own; a deposited record blob is never promoted (it waits for clearing).
     - A writer that holds neither the commit applied nor the chain leaves the deposit unpromoted.
+    - It never promotes an entry it removed within its tombstone that a host still shows (§6 Tombstones: recorded again only to be judged there; its stamp is not kept).
     - The author's chain under a label leaves out every `keys.0` but the author's own.
     - A certificate copy is never deleted for an incomplete chain.
 - **Clearing deposits**: a node holding the delete key of a label keeps at most `DEPOSITS_WAITING` entries and `DEPOSITS_WAITING_BYTES` bytes per host of the deposits there it can do nothing with.

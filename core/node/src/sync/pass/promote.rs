@@ -19,10 +19,13 @@ impl SyncEngine {
     /// hold, which the promoter places itself (`complete_chain`), so a deposited one is a
     /// duplicate; else anything on an authority path into the label (a reader's own account,
     /// edges it writes there) would be stamped for good. Never an entry whose bytes this node
-    /// dropped (`forget_blob`: it holds a part gone here, a body the label must not hold).
+    /// dropped (`forget_blob`: it holds a part gone here, a body the label must not hold), nor
+    /// one it removed within its tombstone that a host still holds (recorded again only to be
+    /// deleted there, spec/sync.md §6 Tombstones: its stamp is not kept, and stamping it would
+    /// serve the deleted blob on and place its chain again).
     pub(super) fn would_promote(&mut self, g: &Tid, l: LabelId, host: Option<&HostKey>, id: &BlobId) -> Result<bool> {
         let Some(Entry { kind: Kind::Commit { commit, parts, .. }, cert: false, .. }) = self.state.entries.get(&(l, *id)).cloned() else { return Ok(false) };
-        if !self.state.blobs.contains_key(id) {
+        if !self.state.blobs.contains_key(id) || self.state.tombs.contains_key(&(l, *id)) {
             return Ok(false);
         }
         let Some(valid) = self.engine.valid_parts(&commit) else { return Ok(false) };
