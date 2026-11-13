@@ -1677,30 +1677,58 @@ fn ways(db: &Osis, g: Tid, through: &[Tid]) -> Vec<(Tid, HolderKind, Role)> {
     db.holders(g).unwrap().into_iter().filter(|h| h.through == through).map(|h| (h.actor, h.kind, h.role)).collect()
 }
 
-// spec/permissions.md §7, spec/wire.md §3: a link's actor reads as a link on another holder's node, before and after its single use; its joiner reads as an actor at the lesser role; an account reads as an actor, its nodes as keys
+/// Alice's group `g` Bob writes in, Alice's single-use write link to it (its actor `k`) made
+/// and redeemed by Carol, who wrote `t` in `g`: (world, alice, bob, carol, (g, k, t)).
+fn link_spent() -> (World, Osis, Osis, Osis, (Tid, Tid, Tid)) {
+    let (w, [alice, bob, carol], x) = World::cached("sharing::link_spent", || {
+        let (mut w, alice, bob, g) = alice_bob(Role::Write);
+        let carol = w.account(3, &[0]);
+        let once = alice.make_link(g, Role::Write, osis::LinkOpts { single_use: true, ..Default::default() }).unwrap();
+        let k = alice.links_of(g).unwrap()[0].id.actor();
+        w.run();
+        w.until(carol.redeem(&once), 1000, 30).unwrap();
+        w.run();
+        let t = item(&carol, g, g, "from a joiner");
+        w.run();
+        (w, [alice, bob, carol], (g, k, t))
+    });
+    (w, alice, bob, carol, x)
+}
+
+// spec/permissions.md §7, spec/wire.md §3: a link's actor reads as a link on another holder's
+// node; an account reads as an actor, its nodes as keys; the link's key while it works
 #[test]
 fn holders_say_what_each_actor_is_spec_permissions_7() {
     let (mut w, alice, bob, g) = alice_bob(Role::Write);
-    let carol = w.account(3, &[0]);
-    let once = alice.make_link(g, Role::Write, osis::LinkOpts { single_use: true, ..Default::default() }).unwrap();
+    alice.make_link(g, Role::Write, osis::LinkOpts { single_use: true, ..Default::default() }).unwrap();
     let k = alice.links_of(g).unwrap()[0].id.actor();
     w.run();
     assert!(ways(&bob, g, &[]).contains(&(k, HolderKind::Link, Role::Write)), "a link, on a node that did not make it");
     assert!(ways(&bob, g, &[]).contains(&(alice.me(), HolderKind::Actor, Role::Admin)), "an account");
     assert!(ways(&bob, g, &[alice.me()]).is_empty(), "an account's nodes are its own");
     assert!(ways(&alice, g, &[k]).iter().any(|(_, kind, _)| *kind == HolderKind::Key), "the link's key, while it works");
-    w.until(carol.redeem(&once), 1000, 30).unwrap();
-    w.run();
-    let t = item(&carol, g, g, "from a joiner");
-    w.run();
+}
+
+// spec/permissions.md §7, spec/wire.md §3: a single-use link's actor still reads as a link once
+// spent, its key gone; its joiner reads as an actor at the lesser role along the way
+#[test]
+fn a_spent_link_reads_as_a_link_its_joiner_as_an_actor_spec_permissions_7() {
+    let (mut w, alice, bob, carol, (g, k, t)) = link_spent();
+    let carol = carol.me();
     assert!(x(&bob, t).is_some());
     assert!(ways(&bob, g, &[]).contains(&(k, HolderKind::Link, Role::Write)), "still a link once spent: its key is gone");
     assert!(!ways(&bob, g, &[k]).iter().any(|(_, kind, _)| *kind == HolderKind::Key), "the key is gone");
-    assert!(ways(&bob, g, &[k]).contains(&(carol.me(), HolderKind::Actor, Role::Write)), "the joiner");
+    assert!(ways(&bob, g, &[k]).contains(&(carol, HolderKind::Actor, Role::Write)), "the joiner");
     alice.set_role(g, k, Some(Role::Read), SetRoleOpts::default()).unwrap();
     w.run();
-    assert!(ways(&bob, g, &[k]).contains(&(carol.me(), HolderKind::Actor, Role::Read)), "the lesser role along the way");
-    // one who reaches g only through a team made after the link was spent still reads K's record
+    assert!(ways(&bob, g, &[k]).contains(&(carol, HolderKind::Actor, Role::Read)), "the lesser role along the way");
+}
+
+// spec/permissions.md §7, spec/wire.md §3: one who reaches g only through a team made after a
+// single-use link was spent still reads its actor's record: a link
+#[test]
+fn a_spent_link_reads_as_a_link_through_a_team_spec_permissions_7() {
+    let (mut w, alice, _bob, _carol, (g, k, _)) = link_spent();
     let dave = w.account(4, &[0]);
     let card = dave.contact_card().unwrap();
     w.run();
@@ -1709,7 +1737,7 @@ fn holders_say_what_each_actor_is_spec_permissions_7() {
     alice.grant(team, d, Role::Write, Default::default()).unwrap();
     alice.grant(g, team, Role::Read, Default::default()).unwrap();
     w.run();
-    assert!(ways(&dave, g, &[]).contains(&(k, HolderKind::Link, Role::Read)), "a link, through a team, after its single use");
+    assert!(ways(&dave, g, &[]).contains(&(k, HolderKind::Link, Role::Write)), "a link, through a team, after its single use");
 }
 
 // notes/api.md Sharing (`leave`): ends one's own grant and a link join, one call; a team the account holds through stays; through a team alone it is Invalid and nothing changes
