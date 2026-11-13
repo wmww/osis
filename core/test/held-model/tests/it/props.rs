@@ -206,9 +206,8 @@ fn purge_on_replace_gone(h: &Held, o: &Outcome, seed: u64) {
                 let f = o.fates[&(c.id, i)];
                 assert!(matches!(f, Fate::Leftover(LeftoverWhy::Expired | LeftoverWhy::Purged) | Fate::Keep(KeepWhy::Until)), "seed {seed}: {} part {i} is replaced and held at a right holder as {f:?}", c.id);
             }
-            if let Body::Dropped(by) = p.body {
-                let purged = h.commits.iter().any(|q| q.id == by && !q.purge.is_empty());
-                assert!(purged || h.now >= kept_until(c), "seed {seed}: {} part {i} dropped before its purge floor", c.id);
+            if matches!(p.body, Body::Dropped(_)) {
+                assert!(h.now >= kept_until(c), "seed {seed}: {} part {i} dropped as covered before its purge floor", c.id);
             }
             // history() shows a replaced write only while the settings keep it, at every node
             // alike: no body the node may drop has an entry
