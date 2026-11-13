@@ -25,6 +25,24 @@ fn two_nodes_converge_spec_sync_6() {
     assert!(net.steps - before < 8, "a quiet round exchanged {} messages", net.steps - before);
 }
 
+// spec: none (tests, simulator quiescence, `is_idle`): a session with a host whose Hello has not
+// come is a pass not started, so the node is not idle. Counted idle, a host dropping a node's
+// Hello let the sim call the system quiet before that node's late pass changed the other host
+// (sim `evil_host_drops`).
+#[test]
+fn idle_waits_for_the_hosts_hello() {
+    let (mut net, host, [a, _b], _g, _) = hosted::<2, 1>(&[(1, Role::Write)], ["hello"], true);
+    assert!(net.sync(a).is_idle());
+    net.drop_link(a, host);
+    net.held_hosts.insert(host);
+    net.advance(osis_node::sync::SyncConfig::default().retry_ms);
+    assert!(net.sync(a).describe().is_empty(), "redialed, nothing opened yet");
+    assert!(!net.sync(a).is_idle(), "the host's Hello is held back: its pass has not started");
+    net.release();
+    net.run();
+    assert!(net.sync(a).is_idle());
+}
+
 // spec/sync.md §5, §6: a reader relays the stamped must-hold entries it holds to a host
 // lacking them; it originates nothing it may not (no stamp of its own).
 #[test]

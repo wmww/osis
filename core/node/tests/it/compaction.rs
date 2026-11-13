@@ -553,3 +553,40 @@ fn snapshot_size_flat_in_value_size_spec_wire_4() {
     assert!(large.2 >= 5 * small.2, "the values grew: {small:?} {large:?}");
     assert_eq!((small.0, small.1), (large.0, large.1), "the snapshot did not");
 }
+
+// spec/sync.md §7 Trigger, Own bodies, Other nodes: a body a held snapshot already covers counts
+// for nothing, since it drops without a new snapshot. A keeps its two own tags under B's snapshot
+// S (S is not its own), too few to compact; B's body x, which S covers, then arrives late (a host
+// that still shows it). A writes no snapshot for it: else whether a quiet writer compacts would
+// turn on whether a redundant body passed through before its drop.
+#[test]
+fn covered_body_arriving_late_triggers_nothing_spec_sync_7() {
+    use crate::common::*;
+    let mut lp = net(2, 0);
+    lp.sync_all().unwrap();
+    let t = new_thing(&mut lp, 0);
+    let w = lp.peers[1].engine.me();
+    set_edge(&mut lp.peers[0].engine, t, w, Some(edge(Role::Write)), None);
+    lp.sync_all().unwrap();
+    let tags = Ak::new("t:tags.0").unwrap();
+    let add = |lp: &mut osis_node::local_peer::LocalPeer, i: usize, v: &str| {
+        let mut m = Mutation::new();
+        m.op(t, &TAGS, PathOp { path: Vec::new(), op: Op::Add(s(v)) }).unwrap();
+        lp.peers[i].commit(m).unwrap().unwrap()
+    };
+    let ours = [add(&mut lp, 0, "a"), add(&mut lp, 0, "b")];
+    lp.sync_all().unwrap();
+    let x = add(&mut lp, 1, "x");
+    lp.advance(1_000);
+    let snap = lp.peers[1].engine.snapshot(&t, &tags).unwrap().unwrap();
+    let pks = packages(&mut lp, 1);
+    lp.deliver(0, pks.iter().find(|p| p.id == snap).unwrap()).unwrap();
+    lp.advance(1_000);
+    let fired = |lp: &mut osis_node::local_peer::LocalPeer| lp.peers[0].engine.compactions().unwrap().into_iter().filter(|c| c.0 == t && c.1 == tags).count();
+    assert_eq!(fired(&mut lp), 0, "two own bodies alone are under the threshold");
+    lp.deliver(0, pks.iter().find(|p| p.id == x).unwrap()).unwrap();
+    let e = &mut lp.peers[0].engine;
+    assert_eq!(e.covered(&snap, &x, &t, &tags).unwrap(), Some(true), "S covers x");
+    assert!(ours.iter().all(|c| e.covered(&snap, c, &t, &tags).unwrap() == Some(true)), "S covers A's own tags too");
+    assert_eq!(fired(&mut lp), 0, "x drops under S: no new snapshot for it");
+}

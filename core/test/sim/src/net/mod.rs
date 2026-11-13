@@ -2281,9 +2281,9 @@ impl NetSim {
         for round in 0..max_rounds {
             self.settle()?;
             let fp = self.fingerprint();
-            let idle = self.nodes.iter().all(|n| !n.up || n.sync.as_ref().is_some_and(|s| s.is_idle()));
+            let busy: Vec<usize> = (0..self.nodes.len()).filter(|n| !self.idle(*n)).collect();
+            let idle = busy.is_empty();
             if self.verbose {
-                let busy: Vec<usize> = (0..self.nodes.len()).filter(|n| self.nodes.get(*n).is_some_and(|x| x.up && !x.sync.as_ref().is_some_and(|s| s.is_idle()))).collect();
                 self.note(format!("round {round}: idle {idle} busy {busy:?} fp {fp:?}"));
             }
             if idle && last.as_ref() == Some(&fp) {
@@ -2298,7 +2298,7 @@ impl NetSim {
             last = Some(fp);
             self.advance(61_000)?;
         }
-        let busy: Vec<String> = (0..self.nodes.len()).filter_map(|n| self.nodes.get(n).and_then(|x| x.sync.as_ref()).filter(|s| !s.is_idle()).map(|s| format!("node {n}: {:?}", s.describe()))).collect();
+        let busy: Vec<String> = (0..self.nodes.len()).filter(|n| !self.idle(*n)).filter_map(|n| self.nodes.get(n).and_then(|x| x.sync.as_ref()).map(|s| format!("node {n}: {:?}", s.describe()))).collect();
         // what one more round changes at the hosts
         self.watch = true;
         self.observe()?;
@@ -2309,6 +2309,16 @@ impl NetSim {
         let churn = check::churn(self, &heads);
         let fp = self.fingerprint();
         Err(self.fail(format!("not quiescent after {max_rounds} rounds; one more round changes {churn:?}; busy: {busy:?}; fingerprint {last:?} -> {fp:?}")))
+    }
+
+    /// Node `n` is down, or idle (`SyncEngine::is_idle`) and waits to dial again no up host it
+    /// can reach: a host it wants and is not connected to (its session ended by a stall, a host
+    /// dropping its Hello) is a pass still to come.
+    fn idle(&self, n: usize) -> bool {
+        let Some(x) = self.nodes.get(n).filter(|x| x.up) else { return true };
+        let Some(sync) = x.sync.as_ref() else { return false };
+        let waits = |s: usize| self.hosts.get(s).is_some_and(|h| h.up && sync.retrying(&h.key).is_some()) && !self.is_blocked(Party::N(n), Party::S(s));
+        sync.is_idle() && !(0..self.hosts.len()).any(waits)
     }
 
     /// What changes while the system is still moving: nodes' commits and pending, hosts' node logs.

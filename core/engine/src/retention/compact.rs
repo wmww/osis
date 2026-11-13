@@ -5,7 +5,8 @@
 //! the pages they link, the tree blobs its values link that no live state links (`body_bytes`,
 //! `freed_under`), `PART_OVERHEAD` per part (`apply::memory::part_weight`, what the node cap
 //! charges) and `ENTRY_CHARGE`. Bodies kept by history (a replaced one in history, a live one
-//! kept while live, spec/commits.md §5) are not counted: no snapshot drops them. An aspect
+//! kept while live, spec/commits.md §5) are not counted: no snapshot drops them; nor are bodies a
+//! held snapshot already covers (`covered_already`): they drop without a new one. An aspect
 //! holding an expired write's leftover is also compacted once quiet for `QUIET_MS`, whatever
 //! `FACTOR` says (`Trigger::quiet`): the snapshot is the leftover's only carrier.
 
@@ -552,6 +553,9 @@ fn candidates(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, me: Tid) -> Result<(Vec<Candi
             }
             continue;
         }
+        if !snapshot && !memory && covered_already(tx, &c, ai, tid, ak)? {
+            continue;
+        }
         let Some(blob) = tx.get_commit(&c)? else { continue };
         weighed.push((c, ai, body_bytes(tx, &blob, ai)?, snapshot, leftover));
     }
@@ -573,6 +577,41 @@ fn candidates(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, me: Tid) -> Result<(Vec<Candi
         }
     }
     Ok((out, stops))
+}
+
+/// Whether a held valid content snapshot of `(tid, ak)` already covers durable body `c` (part
+/// `ai`) so that it drops whether or not this node writes one (node-sync's covered drops, the
+/// compaction agreement): a new snapshot frees nothing by it, and counting it would make the
+/// trigger turn on whether a redundant body (a stale host's, a lagging holder's) passed through
+/// before its drop. A live own body that is not replaced drops only under an own snapshot
+/// (spec/sync.md §9 Own bodies), so another node's snapshot leaves it counted.
+fn covered_already(tx: &mut Tx<'_>, c: &CommitId, ai: usize, tid: &Tid, ak: &Ak) -> Result<bool> {
+    let own = |tx: &Tx<'_>, x: &CommitId| tx.core.ix.commits.get(x).is_some_and(|m| m.origin == crate::events::Origin::Local);
+    let snaps: Vec<CommitId> = tx.core.ix.snapshots.get(&(*tid, ak.clone())).into_iter().flatten().map(|x| x.1).filter(|s| s != c).collect();
+    let mut own_live = None;
+    for s in snaps {
+        let held = tx.core.ix.commits.get(&s).is_some_and(|m| m.view.kind.is_compaction() && m.aspect(tid, ak).is_some_and(|si| !m.body_gone(si) && !m.missing(si) && m.valid_at(si)));
+        if !held {
+            continue;
+        }
+        if !own(tx, &s) && own(tx, c) {
+            let kept = match own_live {
+                Some(k) => k,
+                // as `Engine::replaced`: a bare part is never replaced
+                None => {
+                    let bare = tx.core.ix.commits.get(c).is_none_or(|m| m.bare(ai));
+                    *own_live.insert(bare || !super::replace::replaced(tx, c, ai, tid, ak)?)
+                }
+            };
+            if kept {
+                continue;
+            }
+        }
+        if super::snapshot::covered(tx, &s, c, tid, ak)? == Some(true) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 /// Per session source, the first counter its frontier walk did not pass (`Est::stops`).

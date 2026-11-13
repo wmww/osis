@@ -196,10 +196,14 @@ impl SyncEngine {
         self.work.values().map(|w| w.touched.size()).max().unwrap_or(0)
     }
 
-    /// Whether every open label on every connection has completed a pass and nothing is
-    /// outstanding (tests, simulator quiescence).
+    /// Whether every session with a host this node dialed has started, every open label on
+    /// every connection has completed a pass and nothing is outstanding (tests, simulator
+    /// quiescence). A session waiting for the host's Hello is a pass not started (a host
+    /// dropping it holds the pass back until the stall closes the connection). A host waiting
+    /// to be dialed again (`retrying`) is no work in flight here: whether it can be reached is
+    /// the caller's to know.
     pub fn is_idle(&self) -> bool {
-        !self.passes_due() && self.conns.values().all(|c| c.pending.is_empty() && c.labels.values().all(|l| !l.phase.is_open() || l.settled()))
+        !self.passes_due() && self.conns.values().all(|c| (c.is_ready() || c.listed().is_none()) && c.pending.is_empty() && c.labels.values().all(|l| !l.phase.is_open() || l.settled()))
     }
 
     /// A one-line summary of each label on each connection (tests, diagnostics).
