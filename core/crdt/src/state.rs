@@ -435,25 +435,21 @@ fn below_embedding(f: &Fragment, r: &Register) -> bool {
 
 /// The embedding of register `r` into encoding `target` (§7); `None` for register and slots.
 pub(crate) fn embed(r: &Register, target: Encoding) -> Option<Fragment> {
-    let reset = max_opt(r.reset.clone(), r.write.as_ref().map(|w| w.stamp.clone()));
-    let meta = Meta { reset, ..Meta::default() };
-    Some(match target {
-        Encoding::Register | Encoding::Slots => return None,
+    let mut f = match target {
         Encoding::Counter | Encoding::Max | Encoding::Min => {
             let mut elems = BTreeMap::new();
             if let Some(w) = &r.write {
                 let reg = Register { reset: None, write: Some(w.clone()) };
                 elems.insert(w.stamp.dot.clone(), Elem::of_frag(Fragment::Register(reg)));
             }
-            Fragment::Bag(Bag { kind: target.bag_kind()?, meta, elems })
+            Fragment::Bag(Bag { kind: target.bag_kind()?, meta: Meta::default(), elems })
         }
-        Encoding::Text => Fragment::Seq(Seq::new(true, meta, seq::embed_text(r))),
-        Encoding::List => Fragment::Seq(Seq::new(false, meta, BTreeMap::new())),
-        Encoding::Struct => Fragment::Struct(Struct { meta, fields: BTreeMap::new() }),
-        Encoding::Enum => Fragment::Enum(Enum { meta, case: None, payloads: BTreeMap::new() }),
-        Encoding::Set => Fragment::Set(Set::new(meta, BTreeMap::new())),
-        Encoding::Map => Fragment::Map(Map { meta, ..Map::default() }),
-    })
+        Encoding::Text => Fragment::Seq(Seq::new(true, Meta::default(), seq::embed_text(r))),
+        _ => Fragment::empty(target)?,
+    };
+    // `None` for a register: it has no meta
+    f.meta_mut()?.reset = max_opt(r.reset.clone(), r.write.as_ref().map(|w| w.stamp.clone()));
+    Some(f)
 }
 
 impl Fragment {
