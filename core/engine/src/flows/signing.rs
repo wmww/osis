@@ -109,7 +109,7 @@ pub(crate) fn rotate_in(tx: &mut Tx<'_>, p: Tid, also: &[CommitId], done: &mut D
     for (t, (special, mut plain)) in per {
         plain.sort();
         let plain: Vec<CommitId> = plain.into_iter().map(|x| x.1).collect();
-        // inline lists only (linked thing lists are not written yet: issues/account-signing.md)
+        // inline lists only (linked thing lists are not written yet: issues/linked-thing-lists.md)
         let (ids, _) = fit_list(&special, &plain, CHUNK_THRESHOLD).ok_or(Error::Misuse("the account's role and purge changes since its last rotation pass the list bound on a thing"))?;
         let index = loop {
             let i = u64::from(tx.rng.next_u32());

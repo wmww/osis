@@ -3,7 +3,8 @@
 use crate::tests::{dkey, sample_header, t, ts};
 use crate::retention::purge_keep_until;
 use crate::*;
-use osis_base::{Ak, CommitId, Value};
+use crate::header::aspect_order;
+use osis_base::{Ak, CommitId, Tid, Value};
 use osis_schema::{PurgeBy, Retention};
 
 fn invalid(h: &Header) -> Error {
@@ -313,4 +314,52 @@ fn validate_release_request_spec_wire_4() {
     x.aspects[0].lo = 0;
     x.aspects[0].hi = 0;
     assert!(invalid(&x).to_string().contains("released.0"), "in a snapshot: {}", invalid(&x));
+}
+
+// spec/wire.md §4: the sort keys order as canonical bytes do: aspects by `[tid, ak]` (the text
+// head's width steps at 24, 256 and 65536 bytes), delete keys by `[level, key]` (any u8 level)
+#[test]
+fn sort_orders_match_canonical_bytes() {
+    use osis_base::cbor::{put_array, put_bytes, put_text, put_uint};
+    let mut aks = Vec::new();
+    for len in [0, 1, 2, 22, 23, 24, 25, 254, 255, 256, 257, 65535, 65536, 65537] {
+        for fill in *b"az" {
+            let mut s = vec![fill; len];
+            if let Some(last) = s.last_mut() {
+                *last = b'm';
+            }
+            aks.push(String::from_utf8(s).unwrap());
+        }
+    }
+    let items: Vec<(Tid, String, Vec<u8>)> = [t(0), t(1), t(0xff)]
+        .into_iter()
+        .flat_map(|tid| aks.iter().map(move |ak| (tid, ak.clone())))
+        .map(|(tid, ak)| {
+            let mut b = Vec::new();
+            put_array(&mut b, 2);
+            put_bytes(&mut b, tid.as_bytes());
+            put_text(&mut b, &ak);
+            (tid, ak, b)
+        })
+        .collect();
+    for (ta, aa, ba) in &items {
+        for (tb, ab, bb) in &items {
+            assert_eq!(aspect_order(ta, aa).cmp(&aspect_order(tb, ab)), ba.cmp(bb), "{} {}", aa.len(), ab.len());
+        }
+    }
+    let keys: Vec<(DeleteKey, Vec<u8>)> = (0..=255u8)
+        .flat_map(|level| [[0u8; 32], [1; 32], [0xff; 32]].map(|key| DeleteKey { level, key }))
+        .map(|k| {
+            let mut b = Vec::new();
+            put_array(&mut b, 2);
+            put_uint(&mut b, u64::from(k.level));
+            put_bytes(&mut b, &k.key);
+            (k, b)
+        })
+        .collect();
+    for (ka, ba) in &keys {
+        for (kb, bb) in &keys {
+            assert_eq!(ka.cmp(kb), ba.cmp(bb));
+        }
+    }
 }

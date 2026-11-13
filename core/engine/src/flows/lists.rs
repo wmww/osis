@@ -137,7 +137,7 @@ impl Engine {
 
     /// Holds list blob plaintext `plain` (spec/sync.md §3, List blobs): every cert of one
     /// rotation, each verified against that rotation's list root. A list whose IDs are linked
-    /// is kept without its names (linked thing lists are not read yet: issues/account-signing.md).
+    /// is kept without its names (linked thing lists are not read yet: issues/linked-thing-lists.md).
     pub fn hold_lists(&mut self, plain: &[u8]) -> Result<ListsHeld> {
         let Ok(certs) = decode_list_blob(plain) else { return Ok(ListsHeld::Bad) };
         let Some(r) = certs.first().map(|c| c.rotation) else { return Ok(ListsHeld::Bad) };
