@@ -11,12 +11,12 @@ use crate::input::{self, Motion};
 use ndk::native_window::NativeWindow;
 use osis_kit::ime::{Seen, Sync, Tell, android};
 use osis_kit::masonry::app::{RenderRoot, RenderRootOptions, RenderRootSignal, WindowSizePolicy};
-use osis_kit::masonry::core::keyboard::{Key, KeyState, KeyboardEvent, Modifiers, NamedKey};
-use osis_kit::masonry::core::{Handled, Ime, ImeText, TextEdit, TextEvent, WindowEvent};
+use osis_kit::masonry::core::keyboard::{Key, NamedKey};
+use osis_kit::masonry::core::{Handled, Ime, ImeText, TextCommand, TextEdit, TextEvent, WindowEvent};
 use osis_kit::masonry::dpi::PhysicalSize;
 use osis_kit::platform::{Platform, SelectionMenu, Thresholds};
 use osis_kit::render::{Started, tree};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, channel};
@@ -33,18 +33,43 @@ pub enum Effect {
     /// `updateSelection`: selection start and end, composing start and end, in UTF-16 units.
     Selection([i32; 4]),
     SetClipboard(String),
+    /// Show or change the selection menu (a floating `ActionMode`): its items (`command_code`)
+    /// beside `rect` (view pixels: left, top, right, bottom).
+    Menu { items: Vec<i32>, rect: [i32; 4] },
+    HideMenu,
 }
 
-/// Android's `Platform`: the clipboard over JNI, the keyboard through the view (its effects wait
-/// in `fx` for the shell to hand them over after its own), no selection menu yet.
+/// The view's code for a text command (OsisView's `COMMANDS` order).
+fn command_code(c: TextCommand) -> i32 {
+    match c {
+        TextCommand::Cut => 0,
+        TextCommand::Copy => 1,
+        TextCommand::Paste => 2,
+        TextCommand::SelectAll => 3,
+    }
+}
+
+/// The text command of a view's code.
+pub fn command_of(code: i32) -> Option<TextCommand> {
+    [TextCommand::Cut, TextCommand::Copy, TextCommand::Paste, TextCommand::SelectAll].into_iter().find(|c| command_code(*c) == code)
+}
+
+/// Android's `Platform`: the clipboard over JNI, the keyboard and the selection menu (a floating
+/// `ActionMode`, which also carries the system's text actions) through the view (its effects wait
+/// in `fx` for the shell to hand them over after its own).
 struct Android {
     fx: Rc<RefCell<Vec<Effect>>>,
     thresholds: Thresholds,
+    /// Physical pixels per logical pixel (the menu's rect is in view pixels).
+    scale: Rc<Cell<f64>>,
 }
 
 impl Platform for Android {
     fn clipboard(&mut self) -> Option<String> {
         crate::clipboard()
+    }
+    fn has_clipboard_text(&mut self) -> bool {
+        crate::has_clipboard_text()
     }
     fn set_clipboard(&mut self, text: String) {
         self.fx.borrow_mut().push(Effect::SetClipboard(text));
@@ -52,10 +77,16 @@ impl Platform for Android {
     fn keyboard(&mut self, wanted: bool) {
         self.fx.borrow_mut().push(if wanted { Effect::ShowKeyboard } else { Effect::HideKeyboard });
     }
-    fn show_selection_menu(&mut self, _menu: &SelectionMenu) -> bool {
-        false
+    fn show_selection_menu(&mut self, menu: &SelectionMenu) -> bool {
+        let r = menu.at.rect().scale_from_origin(self.scale.get());
+        let px = |v: f64| v.round() as i32;
+        let rect = [px(r.x0), px(r.y0), px(r.x1), px(r.y1)];
+        self.fx.borrow_mut().push(Effect::Menu { items: menu.items.iter().map(|c| command_code(*c)).collect(), rect });
+        true
     }
-    fn hide_selection_menu(&mut self) {}
+    fn hide_selection_menu(&mut self) {
+        self.fx.borrow_mut().push(Effect::HideMenu);
+    }
     fn thresholds(&self) -> Thresholds {
         self.thresholds
     }
@@ -67,6 +98,8 @@ pub struct Shell {
     ui: Started,
     gpu: Gpu,
     scale: f64,
+    /// `scale`, shared with the platform.
+    platform_scale: Rc<Cell<f64>>,
     sync: Sync,
     /// The keyboard's open batch edits: it is told about changes when the last ends.
     batch: u32,
@@ -91,8 +124,9 @@ impl Shell {
         };
         let root = RenderRoot::new(tree(ui.look()), move |s| drop(tx.send(s)), opts);
         let platform_fx = Rc::new(RefCell::new(Vec::new()));
-        let mut sh = Shell { root, signals, ui, gpu: Gpu::new(), scale, sync: Sync::default(), batch: 0, pending: Tell::Nothing, animating: None, platform_fx: platform_fx.clone(), fx: Vec::new() };
-        let platform = Box::new(Android { fx: platform_fx, thresholds });
+        let platform_scale = Rc::new(Cell::new(scale));
+        let mut sh = Shell { root, signals, ui, gpu: Gpu::new(), scale, platform_scale: platform_scale.clone(), sync: Sync::default(), batch: 0, pending: Tell::Nothing, animating: None, platform_fx: platform_fx.clone(), fx: Vec::new() };
+        let platform = Box::new(Android { fx: platform_fx, thresholds, scale: platform_scale });
         sh.ui.start(&mut sh.root, platform, scale, dark);
         sh.pump();
         sh
@@ -146,14 +180,27 @@ impl Shell {
 
     pub fn key(&mut self, action: i32, keycode: i32, unicode: i32, meta: i32, repeat: i32) -> bool {
         let Some(k) = input::key_event(action, keycode, unicode, meta, repeat) else { return false };
-        let handled = self.root.handle_text_event(TextEvent::Keyboard(k));
+        let handled = self.ui.text_event(&mut self.root, TextEvent::Keyboard(k));
         self.input_done();
         handled == Handled::Yes
     }
 
     pub fn focus(&mut self, focused: bool) {
-        self.root.handle_text_event(TextEvent::WindowFocusChange(focused));
+        self.ui.text_event(&mut self.root, TextEvent::WindowFocusChange(focused));
         self.pump();
+    }
+
+    /// The selection menu's item `code` was picked.
+    pub fn menu_pick(&mut self, code: i32) {
+        if let Some(c) = command_of(code) {
+            self.ui.menu_pick(&mut self.root, c);
+        }
+        self.input_done();
+    }
+
+    /// The system closed the selection menu by itself.
+    pub fn menu_gone(&mut self) {
+        self.ui.menu_gone();
     }
 
     pub fn insets(&mut self, insets: [f64; 4]) {
@@ -164,6 +211,7 @@ impl Shell {
     pub fn config(&mut self, scale: f64, dark: bool) {
         if scale != self.scale {
             self.scale = scale;
+            self.platform_scale.set(scale);
             self.root.handle_window_event(WindowEvent::Rescale(scale));
             self.ui.resized(&mut self.root, scale);
         }
@@ -297,7 +345,7 @@ impl Shell {
     pub fn edit(&mut self, f: impl FnOnce(&dyn ImeText) -> Option<TextEdit>) -> bool {
         let Some(t) = self.focused() else { return false };
         if let Some(e) = f(t) {
-            self.root.handle_text_event(TextEvent::Ime(Ime::Edit(e)));
+            self.ui.text_event(&mut self.root, TextEvent::Ime(Ime::Edit(e)));
         }
         self.input_done();
         true
@@ -308,23 +356,20 @@ impl Shell {
         if self.focused().is_none() {
             return false;
         }
-        self.root.handle_text_event(TextEvent::key_down(Key::Named(NamedKey::Enter)));
-        self.root.handle_text_event(TextEvent::key_up(Key::Named(NamedKey::Enter)));
+        self.ui.text_event(&mut self.root, TextEvent::key_down(Key::Named(NamedKey::Enter)));
+        self.ui.text_event(&mut self.root, TextEvent::key_up(Key::Named(NamedKey::Enter)));
         self.input_done();
         true
     }
 
-    /// The keyboard's Select all, Cut, Copy and Paste buttons: the field's own shortcuts (Ctrl
-    /// with `letter`), as a hardware keyboard sends them. True when the field took it.
-    pub fn shortcut(&mut self, letter: &str) -> bool {
+    /// The keyboard's Select all, Cut, Copy and Paste buttons: the field's own commands (as
+    /// its shortcuts run them). True when the field took it.
+    pub fn command(&mut self, code: i32) -> bool {
+        let Some(c) = command_of(code) else { return false };
         if self.focused().is_none() {
             return false;
         }
-        let mut took = false;
-        for state in [KeyState::Down, KeyState::Up] {
-            let k = KeyboardEvent { state, key: Key::Character(letter.into()), modifiers: Modifiers::CONTROL, ..Default::default() };
-            took |= self.root.handle_text_event(TextEvent::Keyboard(k)) == Handled::Yes;
-        }
+        let took = self.ui.text_event(&mut self.root, TextEvent::Command(c)) == Handled::Yes;
         self.input_done();
         took
     }

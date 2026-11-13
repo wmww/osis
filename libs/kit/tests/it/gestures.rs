@@ -19,7 +19,7 @@ use std::sync::Arc;
 use std::sync::mpsc::{Receiver, channel};
 
 const ROWS: [WidgetTag<Tile>; 4] = [WidgetTag::new("r0"), WidgetTag::new("r1"), WidgetTag::new("r2"), WidgetTag::new("r3")];
-const FIELD: WidgetTag<TextArea<true>> = WidgetTag::new("field");
+pub(crate) const FIELD: WidgetTag<TextArea<true>> = WidgetTag::new("field");
 
 /// What widgets reported: presses and reorders.
 #[derive(Debug, PartialEq)]
@@ -28,11 +28,11 @@ enum Did {
     Reorder(usize, usize),
 }
 
-struct Screen {
-    root: RenderRoot,
-    signals: Receiver<RenderRootSignal>,
-    input: Input,
-    platform: Recorder,
+pub(crate) struct Screen {
+    pub(crate) root: RenderRoot,
+    pub(crate) signals: Receiver<RenderRootSignal>,
+    pub(crate) input: Input,
+    pub(crate) platform: Recorder,
     /// Long-press timers started.
     alarms: Rc<RefCell<Vec<u64>>>,
     /// Event time, ns.
@@ -42,11 +42,11 @@ struct Screen {
 }
 
 impl Screen {
-    fn new(w: NewWidget<dyn Widget>) -> Screen {
+    pub(crate) fn new(w: NewWidget<dyn Widget>) -> Screen {
         Screen::scaled(w, 1.0)
     }
 
-    fn scaled(w: NewWidget<dyn Widget>, scale: f64) -> Screen {
+    pub(crate) fn scaled(w: NewWidget<dyn Widget>, scale: f64) -> Screen {
         let (tx, signals) = channel();
         let opts = RenderRootOptions {
             default_properties: Arc::new(osis_kit::masonry::theme::default_property_set()),
@@ -81,13 +81,18 @@ impl Screen {
     }
 
     /// A text field at the top of a page that scrolls.
-    fn text() -> Screen {
+    pub(crate) fn text() -> Screen {
         Screen::text_scaled(1.0)
     }
 
     fn text_scaled(scale: f64) -> Screen {
+        Screen::text_with("hello world", scale)
+    }
+
+    /// A text field holding `text` at the top of a page that scrolls.
+    pub(crate) fn text_with(text: &str, scale: f64) -> Screen {
         let font = osis_kit::masonry::core::StyleProperty::FontStack(osis_kit::masonry::parley::FontStack::Source("Inter".into()));
-        let a = NewWidget::new_with_tag(TextArea::new_editable("hello world").with_style(font), FIELD);
+        let a = NewWidget::new_with_tag(TextArea::new_editable(text).with_style(font), FIELD);
         let mut col = Flex::column().cross_axis_alignment(CrossAxisAlignment::Fill).with_child(a);
         for _ in 0..40 {
             col = col.with_child(NewWidget::new(SizedBox::empty().height(Length::px(50.0))));
@@ -95,19 +100,19 @@ impl Screen {
         Screen::scaled(NewWidget::new(Portal::new(NewWidget::new(col)).constrain_horizontal(true)).erased(), scale)
     }
 
-    fn rect<W: Widget>(&self, tag: WidgetTag<W>) -> Rect {
+    pub(crate) fn rect<W: Widget>(&self, tag: WidgetTag<W>) -> Rect {
         self.root.get_widget_with_tag(tag).unwrap().ctx().bounding_rect()
     }
 
-    fn event(&mut self, e: PointerEvent) {
+    pub(crate) fn event(&mut self, e: PointerEvent) {
         self.input.pointer(&mut self.root, &mut self.platform, e);
     }
 
-    fn info(ty: PointerType) -> PointerInfo {
+    pub(crate) fn info(ty: PointerType) -> PointerInfo {
         PointerInfo { pointer_id: Some(PointerId::PRIMARY), persistent_device_id: None, pointer_type: ty }
     }
 
-    fn state(&mut self, p: Point, ms: u64, button: Option<PointerButton>) -> PointerState {
+    pub(crate) fn state(&mut self, p: Point, ms: u64, button: Option<PointerButton>) -> PointerState {
         self.now += ms * 1_000_000;
         let mut buttons = PointerButtons::new();
         if let Some(b) = button {
@@ -116,31 +121,31 @@ impl Screen {
         PointerState { time: self.now, position: PhysicalPosition::new(p.x * self.scale, p.y * self.scale), buttons, count: 1, scale_factor: self.scale, ..Default::default() }
     }
 
-    fn down_with(&mut self, ty: PointerType, button: PointerButton, p: Point, ms: u64) {
+    pub(crate) fn down_with(&mut self, ty: PointerType, button: PointerButton, p: Point, ms: u64) {
         let state = self.state(p, ms, Some(button));
         self.event(PointerEvent::Down(PointerButtonEvent { button: Some(button), pointer: Self::info(ty), state }));
     }
 
-    fn down(&mut self, ty: PointerType, p: Point, ms: u64) {
+    pub(crate) fn down(&mut self, ty: PointerType, p: Point, ms: u64) {
         self.down_with(ty, PointerButton::Primary, p, ms);
     }
 
-    fn move_to(&mut self, ty: PointerType, p: Point, ms: u64) {
+    pub(crate) fn move_to(&mut self, ty: PointerType, p: Point, ms: u64) {
         let current = self.state(p, ms, Some(PointerButton::Primary));
         self.event(PointerEvent::Move(PointerUpdate { pointer: Self::info(ty), current, coalesced: Vec::new(), predicted: Vec::new() }));
     }
 
-    fn up_with(&mut self, ty: PointerType, button: PointerButton, p: Point, ms: u64) {
+    pub(crate) fn up_with(&mut self, ty: PointerType, button: PointerButton, p: Point, ms: u64) {
         let state = self.state(p, ms, None);
         self.event(PointerEvent::Up(PointerButtonEvent { button: Some(button), pointer: Self::info(ty), state }));
     }
 
-    fn up(&mut self, ty: PointerType, p: Point, ms: u64) {
+    pub(crate) fn up(&mut self, ty: PointerType, p: Point, ms: u64) {
         self.up_with(ty, PointerButton::Primary, p, ms);
     }
 
     /// A drag from `a` to `b` in ten steps over `ms`, lifted at `b` at once.
-    fn drag(&mut self, ty: PointerType, a: Point, b: Point, ms: u64) {
+    pub(crate) fn drag(&mut self, ty: PointerType, a: Point, b: Point, ms: u64) {
         self.down(ty, a, 1000);
         for i in 1..=10 {
             self.move_to(ty, a.lerp(b, f64::from(i) / 10.0), ms / 10);
@@ -149,7 +154,7 @@ impl Screen {
     }
 
     /// The long-press timer of the touch held runs out.
-    fn hold(&mut self) {
+    pub(crate) fn hold(&mut self) {
         let seq = *self.alarms.borrow().last().unwrap();
         self.now += THRESHOLDS.long_press.as_nanos() as u64;
         self.input.long_press(&mut self.root, &mut self.platform, seq);
@@ -179,18 +184,18 @@ impl Screen {
         out
     }
 
-    fn selected(&self) -> String {
+    pub(crate) fn selected(&self) -> String {
         let (_, t) = self.root.focused_ime_text().unwrap();
         let (a, f) = t.selection();
         t.text()[a.min(f)..a.max(f)].to_string()
     }
 
-    fn field(&self) -> &TextArea<true> {
+    pub(crate) fn field(&self) -> &TextArea<true> {
         self.root.get_widget_with_tag(FIELD).unwrap().inner()
     }
 
     /// Where the focused field's handle for `end` is, in the window.
-    fn handle(&self, end: SelectionEnd) -> Point {
+    pub(crate) fn handle(&self, end: SelectionEnd) -> Point {
         let w = self.root.get_widget_with_tag(FIELD).unwrap();
         let (_, c) = w.inner().handle_centres().into_iter().find(|(e, _)| *e == end).unwrap();
         w.ctx().to_window(c)
@@ -349,7 +354,7 @@ fn a_long_press_selects_a_word_and_its_handles_adjust_it() {
     assert_eq!(s.selected(), "hello");
     assert!(s.field().has_handles());
     // the selection menu is asked for; the keyboard is not
-    assert_eq!(s.platform.menus, 1);
+    assert_eq!(s.platform.menus.len(), 1);
     assert_eq!(s.platform.keyboard, Vec::<bool>::new());
     // the focus handle dragged to the end of the line takes the selection there
     let h = s.handle(SelectionEnd::Focus);
@@ -359,9 +364,10 @@ fn a_long_press_selects_a_word_and_its_handles_adjust_it() {
     s.up(PointerType::Touch, Point::new(r.x1 - 1.0, h.y), 20);
     assert_eq!(s.selected(), "hello world");
     assert!(s.field().has_handles());
-    // a tap places a caret: the handles go
-    s.down(PointerType::Touch, p, 1000);
-    s.up(PointerType::Touch, p, 50);
+    // a tap off the selection places a caret: the handles go
+    let off = Point::new(r.x1 - 40.0, r.center().y);
+    s.down(PointerType::Touch, off, 1000);
+    s.up(PointerType::Touch, off, 50);
     assert_eq!(s.selected(), "");
     assert!(!s.field().has_handles());
 }

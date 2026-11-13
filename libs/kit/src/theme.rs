@@ -411,6 +411,37 @@ pub fn over(under: Color, over: Color) -> Color {
     mix(under.with_alpha(1.0), over.with_alpha(1.0), f64::from(over.components[3]))
 }
 
+/// How opaque a field's fill is at least (a look parameter, as the theme's own numbers are).
+const FIELD_ALPHA: f32 = 0.62;
+
+/// `c`, opaque, with its lightness moved to at least `text`'s distance from `on` on `text`'s side.
+/// A colour moved out of sRGB is drawn toward `text` (the same lightness) until it fits.
+fn legible(c: Color, text: Color, on: Color) -> Color {
+    let mut o: AlphaColor<Oklab> = c.with_alpha(1.0).convert();
+    let t: AlphaColor<Oklab> = text.with_alpha(1.0).convert();
+    let l = t.components[0];
+    if (o.components[0] - l) * (lightness(on) as f32 - l) <= 0.0 {
+        return srgb(o);
+    }
+    o.components[0] = l;
+    let fits = |k: f32| {
+        let c: Color = o.lerp_rect(t, k).convert();
+        c.components[..3].iter().all(|x| (-1e-4..=1.0001).contains(x))
+    };
+    // the least move toward `text` that fits (bisection to below a colour's f32 precision; `text`
+    // itself fits)
+    let (mut lo, mut hi) = (0.0_f32, 1.0_f32);
+    if !fits(0.0) {
+        for _ in 0..20 {
+            let m = (lo + hi) / 2.0;
+            if fits(m) { hi = m } else { lo = m }
+        }
+    } else {
+        hi = 0.0;
+    }
+    srgb(o.lerp_rect(t, hi))
+}
+
 /// Oklab lightness of `c` (0 black .. 1 white).
 pub fn lightness(c: Color) -> f64 {
     let o: AlphaColor<Oklab> = c.convert();
@@ -456,8 +487,11 @@ pub struct Look {
     pub muted: Color,
     /// Titles, the brand, section labels.
     pub heading: Color,
-    /// Links and the caret.
+    /// Links.
     pub accent: Color,
+    /// The caret and the selection handles: the accent, as far in lightness from a field's
+    /// background as the text is, at least, so it reads as well as the text.
+    pub caret: Color,
     pub outline: Color,
     pub shadow: Color,
     /// Text selection.
@@ -470,18 +504,22 @@ impl Look {
         let t = theme;
         let fg = t.text.of(dark, main);
         let panel = t.panel.of(dark, main);
+        let bg = t.bg1.of(dark, main).with_alpha(1.0);
+        let accent = t.accent.of(dark, main);
+        let field = over(bg, panel.with_alpha(panel.components[3].max(FIELD_ALPHA)));
         Look {
             theme: theme.clone(),
             dark,
             main,
-            bg: t.bg1.of(dark, main).with_alpha(1.0),
+            bg,
             deco: t.bg2.of(dark, main),
             panel,
             surface: panel.with_alpha(1.0),
             fg,
             muted: fade(fg, 0.58),
             heading: t.heading.of(dark, main),
-            accent: t.accent.of(dark, main),
+            accent,
+            caret: legible(accent, fg, field),
             outline: t.outline.of(dark, main),
             shadow: t.shadow.of(dark, main),
             selection: fade(main, 0.45),
@@ -521,9 +559,10 @@ impl Look {
         f64::from(self.panel.components[3])
     }
 
-    /// A field's fill: the panel colour, at least 62% opaque so it shows on see-through panels.
+    /// A field's fill: the panel colour, at least `FIELD_ALPHA` opaque so it shows on see-through
+    /// panels.
     pub fn field(&self) -> Color {
-        self.panel.with_alpha(self.panel.components[3].max(0.62))
+        self.panel.with_alpha(self.panel.components[3].max(FIELD_ALPHA))
     }
 
     /// Whether text on cards is white (card bottom takes more than about half of its colour).

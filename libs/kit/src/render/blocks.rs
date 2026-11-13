@@ -2,7 +2,7 @@
 
 use crate::store::Data;
 use crate::view::paged::{Item, List, ListRow, Style};
-use crate::view::{Block, ChipMark, Composer, Do, Entry, FormRow, Mark, PasteTo, Pick, TYPE_IN, TextRole, WindowState};
+use crate::view::{Block, ChipMark, Composer, Do, Entry, FormRow, Mark, Pick, TYPE_IN, TextRole, WindowState};
 use osis::Tid;
 use crate::icons::Icon;
 use crate::masonry::core::{Capitalize, EnterKey, NewWidget, Properties, TextInputHints, Widget, WidgetId};
@@ -15,17 +15,6 @@ use crate::list::{KeyedList, Rows};
 use crate::widgets::{Chip as KChip, ChipMark as KMark, Panel, PanelKind, Tile, TileGrid, TileIcon, TileStyle, Page, VirtualList, Wrap};
 use std::collections::HashMap;
 use std::sync::Arc;
-
-/// Pastes the clipboard into the search field (a stand-in for the selection menu's Paste on touch).
-#[derive(Clone, Debug, PartialEq)]
-pub struct PasteSearch;
-
-impl crate::view::Action for PasteSearch {
-    fn run(&self, act: &crate::view::Act, _: &crate::view::Input) -> osis::Result<()> {
-        act.effects.borrow_mut().paste = Some(PasteTo::Search);
-        Ok(())
-    }
-}
 
 /// A form input: what it saves, the value last saved, the text it shows now.
 struct FormInput {
@@ -515,9 +504,7 @@ impl R<'_> {
                 self.acts.enter.insert(id, c.send.clone());
                 let send = NewWidget::new(KChip::new("Send", None, KMark::Icon(Icon::Plus), look.clone()));
                 self.press(send.id(), c.send.clone());
-                let paste = NewWidget::new(KChip::new("Paste and send", None, KMark::Icon(Icon::Plus), look.clone()));
-                self.press(paste.id(), Do::new(PasteAndSend(c.send.clone())));
-                let row = Flex::row().with_gap(Length::px(look.sp(8.0))).with_flex_child(panel, 1.0).with_child(send).with_child(paste);
+                let row = Flex::row().with_gap(Length::px(look.sp(8.0))).with_flex_child(panel, 1.0).with_child(send);
                 col = col.with_child(NewWidget::new(row));
             } else {
                 col = col.with_child(panel);
@@ -538,16 +525,5 @@ impl R<'_> {
             g = g.with_child(w);
         }
         NewWidget::new(g).erased()
-    }
-}
-
-/// Runs a composer's send on the clipboard's text (a stand-in for the selection menu's Paste).
-#[derive(Clone, Debug, PartialEq)]
-struct PasteAndSend(Do);
-
-impl crate::view::Action for PasteAndSend {
-    fn run(&self, act: &crate::view::Act, _: &crate::view::Input) -> osis::Result<()> {
-        act.effects.borrow_mut().paste = Some(PasteTo::Action(self.0.clone()));
-        Ok(())
     }
 }

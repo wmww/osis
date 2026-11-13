@@ -6,7 +6,7 @@
 
 use super::{Attached, ROOT, Ui, set_root_insets};
 use crate::masonry::app::RenderRoot;
-use crate::masonry::core::{ErasedAction, NewWidget, PointerEvent, Properties, Widget, WidgetId};
+use crate::masonry::core::{ErasedAction, Handled, NewWidget, PointerEvent, Properties, TextCommand, TextEvent, Widget, WidgetId};
 use crate::masonry::peniko::Color;
 use crate::masonry::properties::Padding;
 use crate::masonry::properties::types::{CrossAxisAlignment, Length};
@@ -245,6 +245,30 @@ impl Started {
             (Shown::Ui(ui), _) => ui.pointer(rr, e),
             (Shown::Failed(_), Some(a)) => a.pointer(rr, e),
             (Shown::Failed(_), None) => drop(rr.handle_pointer_event(e)),
+        }
+    }
+
+    pub fn text_event(&mut self, rr: &mut RenderRoot, e: TextEvent) -> Handled {
+        match (&mut self.shown, self.attached.as_mut()) {
+            (Shown::Ui(ui), _) => ui.text_event(rr, e),
+            (Shown::Failed(_), Some(a)) => a.text_event(rr, e),
+            (Shown::Failed(_), None) => rr.handle_text_event(e),
+        }
+    }
+
+    pub fn menu_pick(&mut self, rr: &mut RenderRoot, c: TextCommand) {
+        match (&mut self.shown, self.attached.as_mut()) {
+            (Shown::Ui(ui), _) => ui.menu_pick(rr, c),
+            (Shown::Failed(_), Some(a)) => a.pick(rr, c),
+            (Shown::Failed(_), None) => {}
+        }
+    }
+
+    pub fn menu_gone(&mut self) {
+        match (&mut self.shown, self.attached.as_mut()) {
+            (Shown::Ui(ui), _) => ui.menu_gone(),
+            (Shown::Failed(_), Some(a)) => a.input.menu_gone(),
+            (Shown::Failed(_), None) => {}
         }
     }
 

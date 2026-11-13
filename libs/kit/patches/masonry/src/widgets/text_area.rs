@@ -17,9 +17,9 @@ use vello::peniko::Fill;
 use crate::core::keyboard::{Key, KeyState, NamedKey};
 use crate::core::{
     AccessCtx, AccessEvent, BoxConstraints, BrushIndex, ChildrenIds, CursorIcon, EventCtx, Ime,
-    ImeText, LayoutCtx, TextEdit, TextInputHints, PaintCtx, PointerButton, PointerButtonEvent, PointerEvent, PointerType, PointerUpdate,
+    ImeText, LayoutCtx, TextCommand, TextEdit, TextInputHints, PaintCtx, PointerButton, PointerButtonEvent, PointerEvent, PointerUpdate,
     PropertiesMut, PropertiesRef, QueryCtx, RegisterCtx, StyleProperty, TextEvent, Update,
-    UpdateCtx, Widget, WidgetId, WidgetMut, render_text,
+    UpdateCtx, Widget, WidgetId, WidgetMut, is_long_press, render_text,
 };
 use crate::properties::{
     CaretColor, ContentColor, DisabledContentColor, SelectionColor, UnfocusedSelectionColor,
@@ -287,6 +287,56 @@ impl<const EDITABLE: bool> TextArea<EDITABLE> {
         self.compose.take().is_some()
     }
 
+    /// Runs an editing command (its shortcut, or `TextEvent::Command`): cut and copy put a
+    /// non-empty selection on the clipboard, paste asks the platform (which answers with
+    /// `TextEvent::ClipboardPaste`); cut and paste only where the text is editable.
+    fn command(&mut self, ctx: &mut EventCtx<'_>, command: TextCommand) {
+        let selected = self.editor.selected_text().filter(|t| !t.is_empty()).map(str::to_string);
+        let mut edited = false;
+        match command {
+            TextCommand::Cut if EDITABLE => {
+                if let Some(text) = selected {
+                    let (fctx, lctx) = ctx.text_contexts();
+                    self.editor.driver(fctx, lctx).delete_selection();
+                    edited = true;
+                    ctx.set_clipboard(text);
+                }
+            }
+            TextCommand::Copy => {
+                if let Some(text) = selected {
+                    ctx.set_clipboard(text);
+                }
+            }
+            TextCommand::Paste if EDITABLE => ctx.request_paste(),
+            TextCommand::SelectAll => {
+                let (fctx, lctx) = ctx.text_contexts();
+                self.editor.driver(fctx, lctx).select_all();
+            }
+            TextCommand::Cut | TextCommand::Paste => return,
+        }
+        ctx.set_handled();
+        self.key_edited(ctx, edited);
+    }
+
+    /// After a key or command: what changed is shown, and an edit (`edited`) is reported.
+    fn key_edited(&mut self, ctx: &mut EventCtx<'_>, edited: bool) {
+        let new_generation = self.editor.generation();
+        if new_generation != self.rendered_generation {
+            self.end_compose();
+            if edited {
+                self.revision += 1;
+                ctx.submit_action::<TextAction>(TextAction::Changed(
+                    self.text().into_iter().collect(),
+                ));
+                ctx.request_layout();
+            } else {
+                ctx.request_render();
+                ctx.set_ime_area(self.ime_area());
+            }
+            self.rendered_generation = new_generation;
+        }
+    }
+
     /// Applies an input method's edit. Returns whether the text changed, or `None` if the edit
     /// does not fit the text (out of bounds or off a char boundary) and was ignored.
     fn apply_edit(
@@ -528,6 +578,41 @@ impl<const EDITABLE: bool> TextArea<EDITABLE> {
             .map(|(end, v, _)| (end, v))
     }
 
+    /// The selection's boxes (local coordinates), one per line it covers; none when collapsed.
+    pub fn selection_boxes(&self) -> Vec<Rect> {
+        self.editor.selection_geometry().into_iter().map(|(b, _)| bounding_box_to_rect(b)).collect()
+    }
+
+    /// What the selection covers on screen (local coordinates): its boxes, or the caret when it
+    /// is collapsed, and the handles when they show. `None` before the first layout.
+    pub fn selection_area(&self) -> Option<Rect> {
+        let layout = self.editor.try_layout()?;
+        let caret = bounding_box_to_rect(self.editor.raw_selection().focus().geometry(layout, 1.5));
+        let text = self.selection_boxes().into_iter().reduce(|a, b| a.union(b)).unwrap_or(caret);
+        Some(self.handle_shapes().into_iter().fold(text, |a, (_, _, c, r)| a.union(Rect::from_center_size(c, (2.0 * r, 2.0 * r)))))
+    }
+
+    /// Selects the word at `p` (local); on whitespace, the word nearest it (by characters), as a
+    /// long press picks a word to act on.
+    fn select_word_near(&mut self, fctx: &mut parley::FontContext, lctx: &mut parley::LayoutContext<BrushIndex>, p: Point) {
+        self.editor.driver(fctx, lctx).select_word_at_point(p.x as f32, p.y as f32);
+        let (a, f) = self.selection_bytes();
+        let text = self.editor.raw_text();
+        if !text[a.min(f)..a.max(f)].chars().all(char::is_whitespace) {
+            return;
+        }
+        let Some(layout) = self.editor.try_layout() else { return };
+        let at = parley::Cursor::from_point(layout, p.x as f32, p.y as f32).index();
+        // the last character of a word before `at` and the first after, each with its distance
+        let before = text[..at].char_indices().rev().enumerate().find(|(_, (_, c))| !c.is_whitespace()).map(|(n, (i, c))| (n, i + c.len_utf8(), true));
+        let after = text[at..].char_indices().enumerate().find(|(_, (_, c))| !c.is_whitespace()).map(|(n, (i, _))| (n, at + i, false));
+        let Some((_, edge, ends)) = [before, after].into_iter().flatten().min_by_key(|(n, ..)| *n) else { return };
+        let c = parley::Cursor::from_byte_index(layout, edge, Affinity::Downstream);
+        let other = if ends { c.previous_logical_word(layout) } else { c.next_logical_word(layout) };
+        let (start, end) = if ends { (other.index(), edge) } else { (edge, other.index()) };
+        self.editor.driver(fctx, lctx).select_byte_range(start, end);
+    }
+
     /// Moves the `end` of the selection to the text nearest `p` (local), keeping the other. The
     /// selection never collapses: an end dragged onto the other stays where it was.
     pub fn drag_handle(this: &mut WidgetMut<'_, Self>, end: SelectionEnd, p: Point) {
@@ -644,16 +729,12 @@ impl<const EDITABLE: bool> Widget for TextArea<EDITABLE> {
         event: &PointerEvent,
     ) {
         match event {
-            // a touch's long press (kit delivers it as the touch's secondary press): the word
-            // under it, with handles to adjust the selection; moving on extends it by words
-            PointerEvent::Down(PointerButtonEvent {
-                button: Some(PointerButton::Secondary),
-                pointer,
-                state,
-            }) if pointer.pointer_type != PointerType::Mouse => {
-                let p = ctx.local_position(state.position);
+            // a touch's long press: the word under it (or nearest it), with handles to adjust the
+            // selection; moving on extends it by words
+            PointerEvent::Down(e) if is_long_press(e) => {
+                let p = ctx.local_position(e.state.position);
                 let (fctx, lctx) = ctx.text_contexts();
-                self.editor.driver(fctx, lctx).select_word_at_point(p.x as f32, p.y as f32);
+                self.select_word_near(fctx, lctx, p);
                 self.end_compose();
                 self.handles = EDITABLE.then_some(self.revision);
                 self.rendered_generation = self.editor.generation();
@@ -661,6 +742,26 @@ impl<const EDITABLE: bool> Widget for TextArea<EDITABLE> {
                 ctx.set_ime_area(self.ime_area());
                 ctx.request_focus();
                 ctx.capture_pointer();
+                ctx.set_handled();
+            }
+            // a secondary click (for the selection menu): the caret goes there unless it is on
+            // the selection, which stays
+            PointerEvent::Down(PointerButtonEvent {
+                button: Some(PointerButton::Secondary),
+                state,
+                ..
+            }) if EDITABLE => {
+                let p = ctx.local_position(state.position);
+                if !self.selection_boxes().iter().any(|r| r.contains(p)) {
+                    self.handles = None;
+                    let (fctx, lctx) = ctx.text_contexts();
+                    self.editor.driver(fctx, lctx).move_to_point(p.x as f32, p.y as f32);
+                    self.end_compose();
+                    self.rendered_generation = self.editor.generation();
+                    ctx.request_render();
+                    ctx.set_ime_area(self.ime_area());
+                }
+                ctx.request_focus();
                 ctx.set_handled();
             }
             PointerEvent::Down(PointerButtonEvent {
@@ -741,45 +842,28 @@ impl<const EDITABLE: bool> Widget for TextArea<EDITABLE> {
                         key_event.modifiers.ctrl()
                     },
                 );
+                // the clipboard and select-all shortcuts are the commands (`TextEvent::Command`)
+                if let Key::Character(c) = &key_event.key
+                    && action_mod
+                {
+                    let command = match c.to_ascii_lowercase().as_str() {
+                        "x" => Some(TextCommand::Cut),
+                        "c" => Some(TextCommand::Copy),
+                        "v" => Some(TextCommand::Paste),
+                        "a" if !shift => Some(TextCommand::SelectAll),
+                        _ => None,
+                    };
+                    if let Some(command) = command {
+                        self.command(ctx, command);
+                        return;
+                    }
+                }
                 let (fctx, lctx) = ctx.text_contexts();
                 // Whether the text was changed.
                 let mut edited = false;
                 match &key_event.key {
-                    // Cut
-                    Key::Character(x)
-                        if EDITABLE && action_mod && x.as_str().eq_ignore_ascii_case("x") =>
-                    {
-                        if let Some(text) = self.editor.selected_text()
-                            && !text.is_empty()
-                        {
-                            let text = text.to_string();
-                            self.editor.driver(fctx, lctx).delete_selection();
-                            edited = true;
-                            ctx.set_clipboard(text);
-                        }
-                    }
-                    // Copy
-                    Key::Character(c) if action_mod && c.as_str().eq_ignore_ascii_case("c") => {
-                        if let Some(text) = self.editor.selected_text()
-                            && !text.is_empty()
-                        {
-                            ctx.set_clipboard(text.to_string());
-                        }
-                    }
-                    // Paste: the platform answers with `TextEvent::ClipboardPaste`
-                    Key::Character(v)
-                        if EDITABLE && action_mod && v.as_str().eq_ignore_ascii_case("v") =>
-                    {
-                        ctx.request_paste();
-                    }
-                    Key::Character(a) if action_mod && a.as_str().eq_ignore_ascii_case("a") => {
-                        let mut drv = self.editor.driver(fctx, lctx);
-
-                        if shift {
-                            drv.collapse_selection();
-                        } else {
-                            drv.select_all();
-                        }
+                    Key::Character(a) if action_mod && shift && a.as_str().eq_ignore_ascii_case("a") => {
+                        self.editor.driver(fctx, lctx).collapse_selection();
                     }
                     Key::Named(NamedKey::ArrowLeft) => {
                         let mut drv = self.editor.driver(fctx, lctx);
@@ -915,22 +999,10 @@ impl<const EDITABLE: bool> Widget for TextArea<EDITABLE> {
                     }
                 }
                 ctx.set_handled();
-                let new_generation = self.editor.generation();
-                if new_generation != self.rendered_generation {
-                    self.end_compose();
-                    if edited {
-                        self.revision += 1;
-                        ctx.submit_action::<Self::Action>(TextAction::Changed(
-                            self.text().into_iter().collect(),
-                        ));
-                        ctx.request_layout();
-                    } else {
-                        ctx.request_render();
-                        ctx.set_ime_area(self.ime_area());
-                    }
-                    self.rendered_generation = new_generation;
-                }
+                self.key_edited(ctx, edited);
             }
+
+            TextEvent::Command(command) => self.command(ctx, *command),
 
             TextEvent::WindowFocusChange(_) => {
                 // To use a different selection color when unfocused.
@@ -1138,9 +1210,8 @@ impl<const EDITABLE: bool> Widget for TextArea<EDITABLE> {
                     &bounding_box_to_rect(cursor),
                 );
             };
-            // the selection handles, in the selection's colour: a stem down each end and a disc
-            // below it
-            let handle = props.get::<SelectionColor>().color;
+            // the selection handles, in the caret's colour: a stem down each end and a disc below
+            let handle = caret_color;
             for (_, caret, c, r) in self.handle_shapes() {
                 let stem = Rect::new(caret.x0, caret.y0, caret.x1, c.y);
                 scene.fill(Fill::NonZero, Affine::IDENTITY, handle, None, &stem);

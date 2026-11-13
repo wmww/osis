@@ -18,7 +18,6 @@ pub use graph::{Costs, Graph, Local};
 pub use tree::{Surface, Tree};
 use sessions::Sessions;
 use std::any::Any;
-use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::fmt::Debug;
 use std::ops::Deref;
@@ -261,8 +260,7 @@ pub struct ComposerField {
     pub placeholder: String,
 }
 
-/// Fields written and sent as one. `send` runs on the last field's Enter and on the press; it
-/// takes `Input::Text` for text from elsewhere (Android's clipboard).
+/// Fields written and sent as one. `send` runs on the last field's Enter and on the press.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Composer {
     pub fields: Vec<ComposerField>,
@@ -527,27 +525,10 @@ impl Cx {
     }
 }
 
-/// What an action asks of the shell beyond osis writes and local cells.
-#[derive(Clone, Debug, Default)]
-pub struct Effects {
-    /// Paste the clipboard's text there.
-    pub paste: Option<PasteTo>,
-}
-
-/// Where the clipboard's text goes.
-#[derive(Clone, Debug)]
-pub enum PasteTo {
-    /// The search field, then as Enter there.
-    Search,
-    /// This action, as its text.
-    Action(Do),
-}
-
-/// An action's context: writes (through `Data`), node state, untracked reads, effects.
+/// An action's context: writes (through `Data`), node state, untracked reads.
 pub struct Act<'a> {
     pub data: &'a Data,
     pub window: &'a WindowState,
-    pub effects: RefCell<Effects>,
 }
 
 impl Deref for Act<'_> {
@@ -559,7 +540,7 @@ impl Deref for Act<'_> {
 
 impl<'a> Act<'a> {
     pub fn new(data: &'a Data, window: &'a WindowState) -> Act<'a> {
-        Act { data, window, effects: RefCell::default() }
+        Act { data, window }
     }
 
     /// Sets a local cell.

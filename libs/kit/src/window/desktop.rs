@@ -1,12 +1,12 @@
-//! The desktop shell: masonry_winit with one window. Its `Platform`: masonry_winit's clipboard,
-//! no selection menu of its own, and gesture thresholds of its own (winit exposes the system's
+//! The desktop shell: masonry_winit with one window, its pointer and text events through `Ui`.
+//! Its `Platform`: masonry_winit's clipboard, no selection menu of its own (kit draws it), and gesture thresholds of its own (winit exposes the system's
 //! none). The soft keyboard is the input method's: masonry_winit allows it while a text field has
 //! the focus (`set_ime_allowed`), which on Wayland is also the on-screen keyboard's request, so an
 //! on-screen keyboard there follows focus, not the keyboard rule (winit has one switch for both;
 //! tying it to the rule would stop input methods typing into a field focused without a click).
 
 use super::Waker;
-use crate::masonry::core::PointerEvent;
+use crate::masonry::core::{PointerEvent, TextEvent};
 use crate::platform::{Platform, SelectionMenu, Thresholds};
 use crate::render::Started;
 use std::time::Duration;
@@ -67,6 +67,9 @@ impl Platform for DesktopPlatform {
     fn clipboard(&mut self) -> Option<String> {
         self.0.get()
     }
+    fn has_clipboard_text(&mut self) -> bool {
+        self.0.get().is_some_and(|t| !t.is_empty())
+    }
     fn set_clipboard(&mut self, text: String) {
         self.0.set(text);
     }
@@ -115,6 +118,12 @@ impl AppDriver for Desktop {
 
     fn on_pointer_event(&mut self, _w: WindowId, ctx: &mut DriverCtx<'_, '_>, event: PointerEvent) {
         self.with(ctx.window(self.window), |ui, root, _, _| ui.pointer(root, event));
+    }
+
+    fn on_text_event(&mut self, _w: WindowId, ctx: &mut DriverCtx<'_, '_>, event: TextEvent) {
+        self.with(ctx.window(self.window), |ui, root, _, _| {
+            ui.text_event(root, event);
+        });
     }
 
     fn on_clipboard_store(&mut self, _w: WindowId, _ctx: &mut DriverCtx<'_, '_>, text: String) {

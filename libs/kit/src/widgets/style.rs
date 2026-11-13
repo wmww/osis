@@ -97,8 +97,8 @@ pub fn heading(look: &Look, text: &str, t: Text) -> NewWidget<dyn Widget> {
     marked(look, label(look, text, t), t, false)
 }
 
-/// Read-only text in a text role that can be selected and copied (click, then Ctrl+C), broken at
-/// word boundaries. It takes all the width it is offered: not for a non-flex child of a row.
+/// Read-only text in a text role, broken at word boundaries (not selectable yet:
+/// issues/read-only-text-selection.md). It takes all the width it is offered: not for a non-flex child of a row.
 pub fn prose(look: &Look, text: &str, t: Text) -> NewWidget<Prose> {
     let color = role(look, t).2;
     let mut area = TextArea::new_immutable(text);
@@ -123,15 +123,15 @@ pub fn input(look: &Look, text: &str, placeholder: &str, t: Text, multiline: boo
     if multiline {
         area = area.with_insert_newline(InsertNewline::OnEnter).with_style(StyleProperty::LineHeight(masonry::parley::LineHeight::FontSizeRelative(1.55)));
     }
-    let props = Properties::new()
-        .with(ContentColor::new(color))
-        .with(CaretColor { color: look.accent })
-        .with(SelectionColor { color: look.selection })
-        .with(UnfocusedSelectionColor(SelectionColor { color: crate::theme::fade(look.selection, 0.5) }));
-    let area = NewWidget::new_with_props(area, props);
+    let area = NewWidget::new_with_props(area, Properties::new().with(ContentColor::new(color)));
     let id = area.id();
     let input = TextInput::from_text_area(area).with_placeholder(placeholder.to_string());
+    // the caret and selection colours are the input's: it hands them to its text area (over any
+    // the area had)
     let props = Properties::new()
+        .with(CaretColor { color: look.caret })
+        .with(SelectionColor { color: look.selection })
+        .with(UnfocusedSelectionColor(SelectionColor { color: crate::theme::fade(look.selection, 0.5) }))
         .with(BorderWidth { width: 0.0 })
         .with(Background::Color(Color::TRANSPARENT))
         .with(Padding::all(0.0))

@@ -391,6 +391,9 @@ impl Platform for Keys {
     fn clipboard(&mut self) -> Option<String> {
         None
     }
+    fn has_clipboard_text(&mut self) -> bool {
+        false
+    }
     fn set_clipboard(&mut self, _: String) {}
     fn keyboard(&mut self, wanted: bool) {
         self.0.borrow_mut().push(wanted);

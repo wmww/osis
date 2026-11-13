@@ -48,7 +48,7 @@
          }
  
          // TODO: move this check to modification of base_color once winit exposes window transparency state
-@@ -670,31 +672,19 @@
+@@ -670,31 +672,21 @@
          {
              match wet {
                  WindowEventTranslation::Keyboard(k) => {
@@ -71,8 +71,10 @@
 -                    } else {
 -                        window.render_root.handle_text_event(TextEvent::Keyboard(k));
 -                    }
-+                    // osis-kit patch: paste is the widget's (`RenderRootSignal::ClipboardRead`)
-+                    window.render_root.handle_text_event(TextEvent::Keyboard(k));
++                    // osis-kit patch: through the app driver; paste is the widget's
++                    // (`RenderRootSignal::ClipboardRead`)
++                    let id = window.id;
++                    app_driver.on_text_event(id, &mut DriverCtx::new(self, event_loop), TextEvent::Keyboard(k));
                  }
                  WindowEventTranslation::Pointer(p) => {
 -                    window.render_root.handle_pointer_event(p);
@@ -88,7 +90,31 @@
  
          match event {
              WinitWindowEvent::ScaleFactorChanged { scale_factor, .. } => {
-@@ -807,7 +797,7 @@
+@@ -717,16 +709,18 @@
+             WinitWindowEvent::ThemeChanged(theme) => {
+                 app_driver.on_theme_changed(window.id, &mut DriverCtx::new(self, event_loop), theme);
+             }
++            // osis-kit patch: text events through the app driver
+             WinitWindowEvent::Ime(ime) => {
+                 let target = window.render_root.focused_ime_text().map(|(_, t)| t);
+-                for ime in winit_ime_to_masonry(ime, target) {
+-                    window.render_root.handle_text_event(TextEvent::Ime(ime));
++                let events = winit_ime_to_masonry(ime, target);
++                let id = window.id;
++                for ime in events {
++                    app_driver.on_text_event(id, &mut DriverCtx::new(self, event_loop), TextEvent::Ime(ime));
+                 }
+             }
+             WinitWindowEvent::Focused(new_focus) => {
+-                window
+-                    .render_root
+-                    .handle_text_event(TextEvent::WindowFocusChange(new_focus));
++                let id = window.id;
++                app_driver.on_text_event(id, &mut DriverCtx::new(self, event_loop), TextEvent::WindowFocusChange(new_focus));
+             }
+             _ => (),
+         }
+@@ -807,7 +801,7 @@
      pub fn handle_exiting(&mut self, _: &ActiveEventLoop) {
          // osis-kit patch: the Wayland clipboard's thread uses the loop's wl_display, which
          // `run_app` drops before this state: stop it while the display is alive.
@@ -97,7 +123,7 @@
      }
  
      pub fn handle_memory_warning(&mut self, _: &ActiveEventLoop) {}
-@@ -859,9 +849,12 @@
+@@ -859,9 +853,12 @@
                      handle.set_ime_cursor_area(position, size);
                  }
                  RenderRootSignal::ClipboardStore(text) => {
@@ -113,7 +139,7 @@
                  }
                  RenderRootSignal::RequestRedraw => {
                      need_redraw.insert(*handle_id);
-@@ -957,6 +950,11 @@
+@@ -957,6 +954,11 @@
          self.window_mut(window_id)
      }
  
@@ -125,7 +151,7 @@
      pub fn is_suspended(&self) -> bool {
          self.is_suspended
      }
-@@ -994,6 +992,25 @@
+@@ -994,6 +996,25 @@
      .unwrap()
  }
  
@@ -162,7 +188,7 @@
  use tracing::field::DisplayValue;
  use winit::dpi::PhysicalSize;
  use winit::event_loop::ActiveEventLoop;
-@@ -95,6 +95,24 @@
+@@ -95,6 +95,31 @@
      ///
      /// The current theme is `ctx.window(window_id).handle().theme()`.
      fn on_theme_changed(&mut self, window_id: WindowId, ctx: &mut DriverCtx<'_, '_>, theme: Theme) {}
@@ -171,6 +197,13 @@
 +    /// recognise gestures before the render root gets it. The default passes it on unchanged.
 +    fn on_pointer_event(&mut self, window_id: WindowId, ctx: &mut DriverCtx<'_, '_>, event: PointerEvent) {
 +        ctx.render_root(window_id).handle_pointer_event(event);
++    }
++
++    /// A hook called with each text event of a window (keys, input-method events, the window's
++    /// focus; osis-kit patch): the driver sees them before the render root. The default passes it
++    /// on unchanged.
++    fn on_text_event(&mut self, window_id: WindowId, ctx: &mut DriverCtx<'_, '_>, event: TextEvent) {
++        ctx.render_root(window_id).handle_text_event(event);
 +    }
 +
 +    /// A widget cut or copied `text` (osis-kit patch). The default puts it on the clipboard.
@@ -187,7 +220,7 @@
  }
  
  impl DriverCtx<'_, '_> {
-@@ -136,6 +154,11 @@
+@@ -136,6 +161,11 @@
          self.state.close_window(window_id);
      }
  

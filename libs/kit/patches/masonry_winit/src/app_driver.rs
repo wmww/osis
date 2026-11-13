@@ -102,6 +102,13 @@ pub trait AppDriver {
         ctx.render_root(window_id).handle_pointer_event(event);
     }
 
+    /// A hook called with each text event of a window (keys, input-method events, the window's
+    /// focus; osis-kit patch): the driver sees them before the render root. The default passes it
+    /// on unchanged.
+    fn on_text_event(&mut self, window_id: WindowId, ctx: &mut DriverCtx<'_, '_>, event: TextEvent) {
+        ctx.render_root(window_id).handle_text_event(event);
+    }
+
     /// A widget cut or copied `text` (osis-kit patch). The default puts it on the clipboard.
     fn on_clipboard_store(&mut self, window_id: WindowId, ctx: &mut DriverCtx<'_, '_>, text: String) {
         ctx.clipboard().set(text);

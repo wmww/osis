@@ -86,6 +86,12 @@ fn effect(env: &mut Env<'_>, view: &JObject<'_>, e: Effect) -> R<()> {
             let s = env.new_string(s)?;
             env.call_method(view, jni_str!("setClipboard"), jni_sig!((s: JString) -> void), &[JValue::Object(&s)]).map(drop)
         }
+        Effect::Menu { items, rect: [l, t, r, b] } => {
+            let items = int_array(env, &items)?;
+            let sig = jni_sig!((items: jint[], l: jint, t: jint, r: jint, b: jint) -> void);
+            env.call_method(view, jni_str!("showMenu"), sig, &[JValue::Object(&items), JValue::Int(l), JValue::Int(t), JValue::Int(r), JValue::Int(b)]).map(drop)
+        }
+        Effect::HideMenu => call(env, jni_str!("hideMenu"), &[]),
     }
 }
 
@@ -138,7 +144,9 @@ mod natives {
     const _: NativeMethod = native_method! { java_type = "net.osis.app.OsisView", extern fn native_set_selection(start: jint, end: jint) -> jboolean };
     const _: NativeMethod = native_method! { java_type = "net.osis.app.OsisView", extern fn native_delete_surrounding(before: jint, after: jint, code_points: jboolean) -> jboolean };
     const _: NativeMethod = native_method! { java_type = "net.osis.app.OsisView", extern fn native_editor_action(action: jint) -> jboolean };
-    const _: NativeMethod = native_method! { java_type = "net.osis.app.OsisView", extern fn native_shortcut(letter: JString) -> jboolean };
+    const _: NativeMethod = native_method! { java_type = "net.osis.app.OsisView", extern fn native_command(code: jint) -> jboolean };
+    const _: NativeMethod = native_method! { java_type = "net.osis.app.OsisView", extern fn native_menu_item(code: jint) };
+    const _: NativeMethod = native_method! { java_type = "net.osis.app.OsisView", extern fn native_menu_gone() };
     const _: NativeMethod = native_method! { java_type = "net.osis.app.OsisView", extern fn native_batch(begin: jboolean) -> jboolean };
     const _: NativeMethod = native_method! { java_type = "net.osis.app.OsisView", extern fn native_close_connection() };
 }
@@ -349,9 +357,18 @@ fn native_editor_action<'l>(env: &mut Env<'l>, this: JObject<'l>, _action: jint)
     Ok(with_shell(env, &this, Shell::editor_action).unwrap_or(false))
 }
 
-fn native_shortcut<'l>(env: &mut Env<'l>, this: JObject<'l>, letter: JString<'l>) -> R<jboolean> {
-    let letter = letter.try_to_string(env)?;
-    Ok(with_shell(env, &this, |s| s.shortcut(&letter)).unwrap_or(false))
+fn native_command<'l>(env: &mut Env<'l>, this: JObject<'l>, code: jint) -> R<jboolean> {
+    Ok(with_shell(env, &this, |s| s.command(code)).unwrap_or(false))
+}
+
+fn native_menu_item<'l>(env: &mut Env<'l>, this: JObject<'l>, code: jint) -> R<()> {
+    with_shell(env, &this, |s| s.menu_pick(code));
+    Ok(())
+}
+
+fn native_menu_gone<'l>(env: &mut Env<'l>, this: JObject<'l>) -> R<()> {
+    with_shell(env, &this, Shell::menu_gone);
+    Ok(())
 }
 
 fn native_batch<'l>(env: &mut Env<'l>, this: JObject<'l>, begin: jboolean) -> R<jboolean> {
@@ -391,13 +408,41 @@ impl Drop for Logcat {
     }
 }
 
+/// The application context and its `ClipboardManager`.
+fn clipboard_manager<'l>(env: &mut Env<'l>) -> R<(JObject<'l>, JObject<'l>)> {
+    let ctx = env.call_static_method(jni_str!("android/app/ActivityThread"), jni_str!("currentApplication"), jni_sig!("()Landroid/app/Application;"), &[])?.l()?;
+    let name = env.new_string("clipboard")?;
+    let cm = env.call_method(&ctx, jni_str!("getSystemService"), jni_sig!("(Ljava/lang/String;)Ljava/lang/Object;"), &[JValue::Object(&name)])?.l()?;
+    Ok((ctx, cm))
+}
+
+/// Whether the primary clip is text, from its description (which, unlike reading the clip, shows
+/// the user no "pasted from" toast): `hasPrimaryClip()` and its description's `text/*`.
+pub(crate) fn has_clipboard_text() -> bool {
+    let Ok(vm) = jni::JavaVM::singleton() else { return false };
+    let r = vm.attach_current_thread(|env| -> R<bool> {
+        let (_, cm) = clipboard_manager(env)?;
+        if !env.call_method(&cm, jni_str!("hasPrimaryClip"), jni_sig!("()Z"), &[])?.z()? {
+            return Ok(false);
+        }
+        let d = env.call_method(&cm, jni_str!("getPrimaryClipDescription"), jni_sig!("()Landroid/content/ClipDescription;"), &[])?.l()?;
+        if d.is_null() {
+            return Ok(false);
+        }
+        let mime = env.new_string("text/*")?;
+        env.call_method(&d, jni_str!("hasMimeType"), jni_sig!("(Ljava/lang/String;)Z"), &[JValue::Object(&mime)])?.z()
+    });
+    r.unwrap_or_else(|e| {
+        log::warn!("clipboard: {e}");
+        false
+    })
+}
+
 /// The primary clip as text (any thread): `ClipboardManager.getPrimaryClip().getItemAt(0).coerceToText()`.
 pub(crate) fn clipboard() -> Option<String> {
     let vm = jni::JavaVM::singleton().ok()?;
     let r = vm.attach_current_thread(|env| -> R<Option<String>> {
-        let ctx = env.call_static_method(jni_str!("android/app/ActivityThread"), jni_str!("currentApplication"), jni_sig!("()Landroid/app/Application;"), &[])?.l()?;
-        let name = env.new_string("clipboard")?;
-        let cm = env.call_method(&ctx, jni_str!("getSystemService"), jni_sig!("(Ljava/lang/String;)Ljava/lang/Object;"), &[JValue::Object(&name)])?.l()?;
+        let (ctx, cm) = clipboard_manager(env)?;
         let clip = env.call_method(&cm, jni_str!("getPrimaryClip"), jni_sig!("()Landroid/content/ClipData;"), &[])?.l()?;
         if clip.is_null() || env.call_method(&clip, jni_str!("getItemCount"), jni_sig!("()I"), &[])?.i()? == 0 {
             return Ok(None);

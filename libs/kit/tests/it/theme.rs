@@ -1,5 +1,5 @@
 //! Theme resolution: every default resolves in both modes to readable text on its background and
-//! cards, and each colour takes the contextual colour by its dynamic.
+//! cards, a readable caret on its fields, and each colour takes the contextual colour by its dynamic.
 use osis_kit::theme::{Look, Theme, lightness, mix, over, parse};
 
 /// Text on a card: its bottom (where the name sits), on what is under it.
@@ -18,6 +18,11 @@ fn defaults_resolve_readably() {
             let gap = (lightness(l.fg) - lightness(l.bg)).abs();
             assert!(gap > 0.5, "{} dark={dark}: text on background {gap}", t.id);
             assert!(card_gap(&l, pink) > 0.25, "{} dark={dark}: text on a card", t.id);
+            // the caret and the selection handles (one colour) read on a field at least as well as
+            // its text
+            let field = lightness(over(l.bg, l.field()));
+            let (caret, text) = ((lightness(l.caret) - field).abs(), (lightness(l.fg) - field).abs());
+            assert!(caret >= text - 1e-3 && caret > 0.5, "{} dark={dark}: caret on a field {caret}, text {text}", t.id);
             let base = if dark { t.bg1.dark } else { t.bg1.light };
             assert_eq!(l.bg, mix(base.with_alpha(1.0), pink.unwrap(), t.bg1.dynamic));
         }
@@ -44,7 +49,7 @@ fn odd_main_colours_resolve_sanely() {
                 let l = Look::new(&t, dark, main);
                 let what = format!("{s} {} dark={dark}", t.id);
                 let c = l.card(main);
-                for (c, n) in [(l.bg, "bg"), (l.deco, "deco"), (l.panel, "panel"), (l.accent, "accent"), (l.selection, "selection"), (l.main, "main"), (c.top, "card top"), (c.bottom, "card bottom")] {
+                for (c, n) in [(l.bg, "bg"), (l.deco, "deco"), (l.panel, "panel"), (l.accent, "accent"), (l.caret, "caret"), (l.selection, "selection"), (l.main, "main"), (c.top, "card top"), (c.bottom, "card bottom")] {
                     ok(c, &format!("{what} {n}"));
                 }
                 assert_eq!(l.bg.components[3], 1.0, "{what}: opaque background");
@@ -83,4 +88,29 @@ fn extreme_parameters_stay_finite() {
             }
         }
     }
+}
+
+/// A kit text input draws its caret, handles and selection in the look's colours (masonry's
+/// `TextInput` hands its own to its text area, over the area's).
+#[test]
+fn a_text_input_takes_the_looks_caret_and_selection() {
+    use osis_kit::masonry::app::{RenderRoot, RenderRootOptions, WindowSizePolicy};
+    use osis_kit::masonry::core::TextInputHints;
+    use osis_kit::masonry::dpi::PhysicalSize;
+    use osis_kit::masonry::properties::{CaretColor, SelectionColor};
+    let look = Look::new(&Theme::named(None), false, None);
+    let (w, id) = osis_kit::widgets::style::input(&look, "hello", "", osis_kit::widgets::style::Text::Body, false, TextInputHints::default());
+    let opts = RenderRootOptions {
+        default_properties: std::sync::Arc::new(osis_kit::masonry::theme::default_property_set()),
+        use_system_fonts: false,
+        size_policy: WindowSizePolicy::User,
+        size: PhysicalSize::new(200, 100),
+        scale_factor: 1.0,
+        test_font: None,
+    };
+    let mut rr = RenderRoot::new(w.erased(), |_| {}, opts);
+    let _ = rr.redraw();
+    let area = rr.get_widget(id).unwrap();
+    assert_eq!(area.get_prop::<CaretColor>().color, look.caret);
+    assert_eq!(area.get_prop::<SelectionColor>().color, look.selection);
 }

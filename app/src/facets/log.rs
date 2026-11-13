@@ -157,17 +157,13 @@ fn reply_of(cx: &Reader, node: &str) -> Result<Option<CommitId>> {
 #[derive(Clone, Debug, PartialEq)]
 struct Send(Tid, String);
 impl Action for Send {
-    fn run(&self, act: &Act, input: &Input) -> Result<()> {
+    fn run(&self, act: &Act, _: &Input) -> Result<()> {
         let c = self.0;
         let node = &self.1;
         // the drafts' sessions commit what is pending, so the drafts hold all of it
         act.window.sessions.commit(act.data.window()?)?;
         let read = |name| -> Result<String> { Ok(act.state(DRAFT, &field(node, name))?.unwrap_or_default()) };
-        let text = match input {
-            Input::Text(t) => t.clone(),
-            _ => read("text")?,
-        };
-        send(&act.data.db, c, &read("subject")?, &text, reply_of(act, node)?)?;
+        send(&act.data.db, c, &read("subject")?, &read("text")?, reply_of(act, node)?)?;
         act.clear_state(DRAFT, &field(node, "subject"))?;
         act.clear_state(DRAFT, &field(node, "text"))?;
         act.clear_state(REPLY_TO, node)

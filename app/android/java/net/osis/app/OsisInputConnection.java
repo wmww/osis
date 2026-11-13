@@ -101,19 +101,19 @@ final class OsisInputConnection implements InputConnection {
         return view.nativeEditorAction(editorAction);
     }
 
-    /** The keyboard's own Select all, Cut, Copy and Paste buttons: the field's own shortcuts, as a
-     * hardware keyboard's Ctrl+A, X, C and V reach it (so the one clipboard path serves them). */
+    /** The keyboard's own Select all, Cut, Copy and Paste buttons: the field's own commands, as
+     * its shortcuts and the selection menu run them (so the one clipboard path serves them). */
     @Override
     public boolean performContextMenuAction(int id) {
         switch (id) {
-            case android.R.id.selectAll:
-                return view.nativeShortcut("a");
             case android.R.id.cut:
-                return view.nativeShortcut("x");
+                return view.nativeCommand(OsisView.CUT);
             case android.R.id.copy:
-                return view.nativeShortcut("c");
+                return view.nativeCommand(OsisView.COPY);
             case android.R.id.paste:
-                return view.nativeShortcut("v");
+                return view.nativeCommand(OsisView.PASTE);
+            case android.R.id.selectAll:
+                return view.nativeCommand(OsisView.SELECT_ALL);
             default:
                 return false;
         }

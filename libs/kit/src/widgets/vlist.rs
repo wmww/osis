@@ -385,11 +385,11 @@ impl Widget for VirtualList {
                 let p = ctx.local_position(e.state.position);
                 let n = self.movable();
                 // a drag is the primary button's, or a touch's after a long press
-                let drags = matches!(e.button, None | Some(PointerButton::Primary)) || crate::input::is_long_press(e);
+                let drags = matches!(e.button, None | Some(PointerButton::Primary)) || masonry::core::is_long_press(e);
                 self.press = self.rects.iter().take(n).position(|r| drags && r.contains(p)).map(|i| (i, p));
                 self.drop = None;
                 // a long press picks the row up at once (a mouse picks it up once it moves)
-                if crate::input::is_long_press(e)
+                if masonry::core::is_long_press(e)
                     && let Some((i, _)) = self.press
                 {
                     self.drop = Some(i);

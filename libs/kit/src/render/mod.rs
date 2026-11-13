@@ -16,7 +16,7 @@ use crate::store::{Data, Reader};
 use crate::view::search::{Paste, classify, search};
 use crate::input::Input as Pointers;
 use crate::platform::Platform;
-use crate::view::{Act, Block, Cx, DARK, Do, Graph, Icon, Input, Open, PasteTo, QUERY, Section, Surface, TICK, TYPE_IN, Tree, ViewSpec, WindowState};
+use crate::view::{Act, Block, Cx, DARK, Do, Graph, Icon, Input, Open, QUERY, Section, Surface, TICK, TYPE_IN, Tree, ViewSpec, WindowState};
 use crate::view::keyed::{self, ListSteps};
 use crate::view::paged::{Item, LIST_WINDOW, ListRow, ListWindow};
 use crate::view::sessions::Key;
@@ -25,13 +25,13 @@ use osis::{Subscription, Tid};
 use crate::masonry::app::RenderRoot;
 use crate::masonry::peniko::Color;
 use crate::masonry::core::{Capitalize, EnterKey, TextInputHints, TextPurpose};
-use crate::masonry::core::{ErasedAction, NewWidget, PointerEvent, Properties, Widget, WidgetId, WidgetTag};
+use crate::masonry::core::{ErasedAction, Handled, NewWidget, PointerEvent, Properties, TextCommand, TextEvent, Widget, WidgetId, WidgetTag};
 use crate::masonry::properties::Padding;
 use crate::masonry::properties::types::{CrossAxisAlignment, Length};
 use crate::masonry::widgets::{Flex, IndexedStack, Prose, SizedBox, TextAction, TextArea};
 use crate::theme::{Look, Mode, Theme, parse};
 use crate::widgets::style::{self, Text};
-use crate::widgets::{Blur, ChipPress, Frame, GUTTER, ListAction, Page, Panel, PanelKind, Press, ROW_MIN, Root, VirtualList};
+use crate::widgets::{Blur, ChipPress, Frame, GUTTER, ListAction, MenuPick, Page, Panel, PanelKind, Press, ROW_MIN, Root, VirtualList};
 use crate::window::Waker;
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
@@ -183,6 +183,21 @@ impl Attached {
     fn pointer(&mut self, rr: &mut RenderRoot, e: PointerEvent) {
         self.input.pointer(rr, &mut *self.platform, e);
         self.tick(rr);
+    }
+
+    /// A text event, on its way to `rr` past the selection menu.
+    fn text_event(&mut self, rr: &mut RenderRoot, e: TextEvent) -> Handled {
+        self.input.text_event(rr, &mut *self.platform, e)
+    }
+
+    /// The focused field may have changed: the selection menu follows it.
+    fn follow(&mut self, rr: &mut RenderRoot) {
+        self.input.follow(rr, &mut *self.platform);
+    }
+
+    /// The selection menu's item `c` was picked.
+    fn pick(&mut self, rr: &mut RenderRoot, c: TextCommand) {
+        self.input.pick(rr, &mut *self.platform, c);
     }
 
     /// An animation frame Root reported (`Frame`): a fling moves on; with none going on Root
@@ -355,6 +370,9 @@ impl Ui {
         let in_search = rr.focused_widget().and_then(|f| self.search_ids.iter().position(|i| *i == f));
         if rebuild {
             self.look = Arc::new(look);
+            if let Some(a) = self.attached.as_mut() {
+                a.input.set_look(self.look.clone());
+            }
             // before the new screen's slots exist: what leaves takes its slot along
             let mut tree = std::mem::take(&mut self.tree);
             tree.clear(&self.state.clone(), &mut Draw { ui: self, rr });
@@ -491,10 +509,7 @@ impl Ui {
         let (input, id) = style::input(&look, &query, if big { "Search notes, people, tags, views…" } else { "Search" }, Text::Body, false, hints);
         self.search_ids.push(id);
         let pad = if big { (14.0, 18.0) } else { (8.0, 12.0) };
-        let panel = NewWidget::new(Panel::new(input, look.clone(), PanelKind::Field, pad)).erased();
-        let chip = NewWidget::new(crate::widgets::Chip::new("Paste", None, crate::widgets::ChipMark::Icon(Icon::Plus), look.clone()));
-        self.acts.press(chip.id(), Do::new(blocks::PasteSearch));
-        NewWidget::new(Flex::row().with_gap(Length::px(look.sp(8.0))).with_flex_child(panel, 1.0).with_child(chip)).erased()
+        NewWidget::new(Panel::new(input, look.clone(), PanelKind::Field, pad)).erased()
     }
 
     fn build(&mut self, rr: &mut RenderRoot, l: &Layout) {
@@ -696,31 +711,9 @@ impl Ui {
 
     /// Runs an action on the UI thread, then applies what it asked of the shell.
     fn run(&mut self, rr: &mut RenderRoot, d: Do, input: Input) {
-        let act = Act::new(&self.data, &self.state);
-        let r = d.run(&act, &input);
-        let e = act.effects.borrow().clone();
-        if let Err(e) = r {
+        if let Err(e) = d.run(&Act::new(&self.data, &self.state), &input) {
             self.status(rr, format!("error: {e}"));
         }
-        match e.paste {
-            None => {}
-            Some(PasteTo::Search) => {
-                if let Some(text) = self.clipboard() {
-                    self.state.set_local(QUERY, text.trim().to_string());
-                    self.enter_search(rr);
-                }
-            }
-            Some(PasteTo::Action(d)) => {
-                if let Some(text) = self.clipboard() {
-                    self.run(rr, d, Input::Text(text));
-                }
-            }
-        }
-    }
-
-    /// The clipboard's text; `None` when it holds none (nothing to paste).
-    fn clipboard(&mut self) -> Option<String> {
-        self.attached.as_mut().and_then(|a| crate::input::clipboard(&mut *a.platform))
     }
 
     fn enter_search(&mut self, rr: &mut RenderRoot) {
@@ -910,7 +903,9 @@ impl Ui {
                 }
             });
         });
-        self.attached = Some(Attached::new(platform, alarm));
+        let mut a = Attached::new(platform, alarm);
+        a.input.set_look(self.look.clone());
+        self.attached = Some(a);
         self.scale = scale;
         self.system_dark = dark;
         self.data.db.settle();
@@ -942,9 +937,14 @@ impl Ui {
         }
     }
 
-    /// The system's Back: an open thing goes home (as its bar's back button does). False when there
-    /// is nowhere to go back to, so the system handles it.
+    /// The system's Back: an open selection menu closes; else an open thing goes home (as its bar's
+    /// back button does). False when there is nowhere to go back to, so the system handles it.
     pub fn back(&mut self, rr: &mut RenderRoot) -> bool {
+        if let Some(a) = self.attached.as_mut()
+            && a.input.back(rr, &mut *a.platform)
+        {
+            return true;
+        }
         if !matches!(self.data.opened(), Ok(Some(_))) {
             return false;
         }
@@ -978,10 +978,34 @@ impl Ui {
         }
     }
 
+    /// A text event (a key, an input method's edit, a command such as a keyboard's own Copy
+    /// button, the window's focus), on its way to `rr`: every shell's go through here.
+    pub fn text_event(&mut self, rr: &mut RenderRoot, e: TextEvent) -> Handled {
+        match self.attached.as_mut() {
+            Some(a) => a.text_event(rr, e),
+            None => rr.handle_text_event(e),
+        }
+    }
+
+    /// The platform's selection menu had item `c` picked.
+    pub fn menu_pick(&mut self, rr: &mut RenderRoot, c: TextCommand) {
+        if let Some(a) = self.attached.as_mut() {
+            a.pick(rr, c);
+        }
+    }
+
+    /// The platform closed its selection menu by itself.
+    pub fn menu_gone(&mut self) {
+        if let Some(a) = self.attached.as_mut() {
+            a.input.menu_gone();
+        }
+    }
+
     /// An input-method session started or ended (a text field gained or lost the focus).
     pub fn text_focus(&mut self, rr: &mut RenderRoot) {
         if let Some(a) = self.attached.as_mut() {
             a.input.text_focus(rr, &mut *a.platform);
+            a.follow(rr);
         }
     }
 
@@ -990,6 +1014,7 @@ impl Ui {
     pub fn paste(&mut self, rr: &mut RenderRoot) {
         if let Some(a) = self.attached.as_mut() {
             crate::input::paste(rr, &mut *a.platform);
+            a.follow(rr);
         }
     }
 
@@ -1029,6 +1054,9 @@ impl Ui {
             }
         }
         self.update(rr, false);
+        if let Some(a) = self.attached.as_mut() {
+            a.follow(rr);
+        }
     }
 
     /// A widget submitted an action.
@@ -1073,8 +1101,15 @@ impl Ui {
             if let Some(d) = d {
                 self.run(rr, d, Input::Press);
             }
+        } else if let Some(MenuPick(c)) = action.downcast_ref::<MenuPick>().copied() {
+            if let Some(a) = self.attached.as_mut() {
+                a.pick(rr, c);
+            }
         } else if let Ok(a) = action.downcast::<TextAction>() {
             self.typed(rr, id, *a);
+            if let Some(a) = self.attached.as_mut() {
+                a.follow(rr);
+            }
         }
     }
 }

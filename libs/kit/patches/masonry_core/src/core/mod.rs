@@ -28,7 +28,8 @@ pub use contexts::{
 };
 pub use cursor_icon::CursorIcon;
 pub use events::{
-    AccessEvent, Handled, Ime, ResizeDirection, TextEvent, Update, WindowEvent, WindowTheme,
+    AccessEvent, Handled, Ime, ResizeDirection, TextCommand, TextEvent, Update, WindowEvent,
+    WindowTheme, is_long_press,
 };
 pub use properties::{
     DefaultProperties, HasProperty, Properties, PropertiesMut, PropertiesRef, Property,

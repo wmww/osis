@@ -5,9 +5,14 @@ import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.res.Configuration;
 import android.graphics.Insets;
+import android.graphics.Rect;
+import android.view.ActionMode;
 import android.view.Choreographer;
 import android.view.KeyEvent;
+import android.view.Menu;
+import android.view.MenuItem;
 import android.view.MotionEvent;
+import android.view.View;
 import android.view.SurfaceHolder;
 import android.view.SurfaceView;
 import android.view.ViewConfiguration;
@@ -25,6 +30,14 @@ import android.view.inputmethod.InputMethodManager;
 final class OsisView extends SurfaceView implements SurfaceHolder.Callback, Choreographer.FrameCallback {
     private final InputMethodManager imm;
     private boolean framePosted;
+    /** The text commands, by the code Rust uses for each (osis-android shell.rs `command_code`). */
+    static final int CUT = 0, COPY = 1, PASTE = 2, SELECT_ALL = 3;
+    private static final int[] COMMAND_IDS = {android.R.id.cut, android.R.id.copy, android.R.id.paste, android.R.id.selectAll};
+    private static final int[] COMMAND_TITLES = {android.R.string.cut, android.R.string.copy, android.R.string.paste, android.R.string.selectAll};
+    /** The selection menu shown (a floating action mode), its items' codes and the rect beside which it floats. */
+    private ActionMode menu;
+    private int[] menuItems = {};
+    private final Rect menuRect = new Rect();
     /** The extracted-text request an input method monitors, if any (getExtractedText). */
     int extractToken = -1;
     boolean extracting;
@@ -88,6 +101,74 @@ final class OsisView extends SurfaceView implements SurfaceHolder.Callback, Chor
         imm.updateSelection(this, selStart, selEnd, composeStart, composeEnd);
         if (extracting) {
             imm.updateExtractedText(this, extractToken, extracted());
+        }
+    }
+
+    /** Shows the selection menu with `items` (command codes) beside the rect (view pixels), or
+     * changes the one shown. What it holds and where is Rust's (kit); the system may add its own. */
+    void showMenu(int[] items, int left, int top, int right, int bottom) {
+        menuItems = items;
+        menuRect.set(left, top, right, bottom);
+        if (menu == null) {
+            menu = startActionMode(new MenuCallback(), ActionMode.TYPE_FLOATING);
+        } else {
+            menu.invalidate();
+            menu.invalidateContentRect();
+        }
+    }
+
+    void hideMenu() {
+        ActionMode m = menu;
+        menu = null;
+        if (m != null) {
+            m.finish();
+        }
+    }
+
+    private final class MenuCallback extends ActionMode.Callback2 {
+        private void fill(Menu m) {
+            m.clear();
+            for (int i = 0; i < menuItems.length; i++) {
+                int c = menuItems[i];
+                m.add(Menu.NONE, COMMAND_IDS[c], i, COMMAND_TITLES[c]).setShowAsAction(MenuItem.SHOW_AS_ACTION_ALWAYS);
+            }
+        }
+
+        @Override
+        public boolean onCreateActionMode(ActionMode mode, Menu m) {
+            fill(m);
+            return true;
+        }
+
+        @Override
+        public boolean onPrepareActionMode(ActionMode mode, Menu m) {
+            fill(m);
+            return true;
+        }
+
+        @Override
+        public boolean onActionItemClicked(ActionMode mode, MenuItem item) {
+            for (int c = 0; c < COMMAND_IDS.length; c++) {
+                if (COMMAND_IDS[c] == item.getItemId()) {
+                    nativeMenuItem(c);
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        @Override
+        public void onDestroyActionMode(ActionMode mode) {
+            // the system closed it (hideMenu forgets it first)
+            if (menu == mode) {
+                menu = null;
+                nativeMenuGone();
+            }
+        }
+
+        @Override
+        public void onGetContentRect(ActionMode mode, View view, Rect out) {
+            out.set(menuRect);
         }
     }
 
@@ -238,8 +319,12 @@ final class OsisView extends SurfaceView implements SurfaceHolder.Callback, Chor
     native boolean nativeSetSelection(int start, int end);
     native boolean nativeDeleteSurrounding(int before, int after, boolean codePoints);
     native boolean nativeEditorAction(int action);
-    /** The field's shortcut Ctrl+letter (the keyboard's Select all, Cut, Copy, Paste). */
-    native boolean nativeShortcut(String letter);
+    /** The field's command `code` (CUT...: the keyboard's Select all, Cut, Copy, Paste). */
+    native boolean nativeCommand(int code);
+    /** The selection menu's item `code` was picked. */
+    private native void nativeMenuItem(int code);
+    /** The system closed the selection menu. */
+    private native void nativeMenuGone();
     native boolean nativeBatch(boolean begin);
     native void nativeCloseConnection();
 }

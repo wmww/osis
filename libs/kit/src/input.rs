@@ -13,21 +13,39 @@
 //!   press, then moves and a release with that button: a widget that acts on a primary press
 //!   ignores it, one that has a long-press meaning (text, a reorderable list) takes it.
 //!
-//! A touch on the focused field's selection handle drags that handle. While held still a touch
-//! shows as a hover; lifted, or once it scrolls, nothing is hovered. A touch that lands on a fling
-//! stops it and is nothing else. Other fingers while one is followed are left out.
+//! A touch on the focused field's selection handle drags that handle once it moves past the slop;
+//! lifted before, it is a tap on what is under it (the handle hangs over the next line). While
+//! held still a touch shows as a hover; lifted, or once it scrolls, nothing is hovered. A touch
+//! that lands on a fling stops it and is nothing else. Other fingers while one is followed are
+//! left out.
 //!
 //! The soft keyboard: focus never shows it by itself; a tap or click (a primary press released
 //! within the slop of where it went down) over the focused text field does, and so does a field
 //! focused for the user to type in now (`type_in`).
+//!
+//! The selection menu (the focused field's cut, copy, paste and select all, as its selection and
+//! the clipboard allow) is for the field's selection as it was when it opened. It opens after a
+//! touch's long press in the field, on a touch's first tap on the selection (which places no
+//! caret; a tap with the menu open closes it), and on a secondary click in the field (at the pointer). It
+//! closes at the next press (one on a handle adjusts its selection and keeps it; one on kit's menu
+//! is the menu's), a wheel scroll, Escape, Back, a pick, and when the field loses focus, its text
+//! changes or its selection collapses; any other change of the selection (a handle dragged,
+//! Select all) moves it along. The platform shows its own menu where it has one; else kit draws it
+//! (`widgets::Menu`), taking presses on it here, since it acts on the focused field and must not
+//! take the focus. A pick runs the field's own command (`TextEvent::Command`), as its shortcut
+//! does.
 
 use crate::masonry::app::RenderRoot;
-use crate::masonry::core::{Handled, PointerButton, PointerButtonEvent, PointerEvent, PointerId, PointerInfo, PointerScrollEvent, PointerState, PointerType, PointerUpdate, ScrollDelta, TextEvent, WidgetId};
+use crate::masonry::core::keyboard::{Key, KeyState, NamedKey};
+use crate::masonry::core::{Handled, NewWidget, PointerButton, PointerButtonEvent, PointerEvent, PointerId, PointerInfo, PointerScrollEvent, PointerState, PointerType, PointerUpdate, ScrollDelta, TextCommand, TextEvent, WidgetId};
 use crate::masonry::core::pointer::PointerButtons;
 use crate::masonry::dpi::PhysicalPosition;
 use crate::masonry::kurbo::{Point, Vec2};
 use crate::masonry::widgets::{SelectionEnd, TextArea};
-use crate::platform::{MenuItem, Platform, SelectionMenu, Thresholds};
+use crate::platform::{Place, Platform, SelectionMenu, Thresholds};
+use crate::theme::{Look, Theme};
+use crate::widgets::Menu;
+use std::sync::Arc;
 use std::time::Duration;
 
 /// A fling's speed falls by a factor e every this many seconds (Minor: how far a flick carries;
@@ -43,12 +61,14 @@ const VELOCITY_WINDOW: u64 = 100_000_000;
 pub type Alarm = Box<dyn FnMut(u64, Duration)>;
 
 /// The last tap or click: its pointer, where it went down (logical), when it went up (ns, `None`
-/// while held), how many taps it ends.
+/// while held), how many taps it ends, and whether it follows none (a fourth tap counts 1 again,
+/// but still follows).
 struct Tap {
     pointer: Option<PointerId>,
     at: Point,
     up: Option<u64>,
     count: u8,
+    fresh: bool,
 }
 
 /// The mouse press held: a click unless it moved past the slop or was not the primary button.
@@ -58,10 +78,14 @@ struct Click {
     click: bool,
 }
 
+/// A handle of `field`'s selection: which end, and the offset from a touch to its caret.
+type Handle = (WidgetId, SelectionEnd, Vec2);
+
 /// The touch followed, by what it is so far.
 enum Touch {
     /// Down, nothing delivered but a hover. `caught`: it landed on a fling, so it is no tap.
-    Held { down: PointerButtonEvent, seq: u64, caught: bool },
+    /// `handle`: it landed on a selection handle, which it drags once it moves.
+    Held { down: PointerButtonEvent, seq: u64, caught: bool, handle: Option<Handle> },
     /// Delivered as a long press (the secondary press).
     Long { pointer: PointerInfo },
     /// Scrolling what is under `at` (where it went down); `samples` (time, point) for the speed.
@@ -86,6 +110,20 @@ struct Fling {
     v: Vec2,
 }
 
+/// The selection menu shown: for the focused field's selection as it was then.
+struct Shown {
+    field: WidgetId,
+    revision: u64,
+    selection: (usize, usize),
+    /// Opened at a pointer (a secondary click): it stays there; else beside the selection.
+    pointer: Option<Point>,
+    /// The clipboard had text to paste when it opened.
+    paste: bool,
+    menu: SelectionMenu,
+    /// kit's drawing of it (its layer's root), where the platform has no menu of its own.
+    drawn: Option<WidgetId>,
+}
+
 pub struct Input {
     thresholds: Thresholds,
     alarm: Alarm,
@@ -95,34 +133,102 @@ pub struct Input {
     fling: Option<Fling>,
     /// The last long-press timer started.
     seq: u64,
-    /// The selection menu was asked to show.
-    menu: bool,
+    menu: Option<Shown>,
+    /// The menu was open at the last press (a tap on the selection then closes it, opens none).
+    was_open: bool,
+    /// A press on kit's menu: its pointer and the item it went down on.
+    pressing: Option<(Option<PointerId>, Option<TextCommand>)>,
+    /// What kit's menu is drawn in.
+    look: Arc<Look>,
 }
 
 impl Input {
     pub fn new(thresholds: Thresholds, alarm: Alarm) -> Input {
-        Input { thresholds, alarm, last: None, click: None, touch: None, fling: None, seq: 0, menu: false }
+        let look = Arc::new(Look::new(&Theme::named(None), false, None));
+        Input { thresholds, alarm, last: None, click: None, touch: None, fling: None, seq: 0, menu: None, was_open: false, pressing: None, look }
+    }
+
+    /// kit's drawing of the selection menu, if it shows: its layer's root (a `widgets::Menu`).
+    pub fn drawn_menu(&self) -> Option<WidgetId> {
+        self.menu.as_ref().and_then(|m| m.drawn)
+    }
+
+    /// kit's menu is drawn in `look` from its next showing on.
+    pub fn set_look(&mut self, look: Arc<Look>) {
+        self.look = look;
     }
 
     /// Delivers `e` to `rr` as part of the gesture it belongs to.
     pub fn pointer(&mut self, rr: &mut RenderRoot, platform: &mut dyn Platform, e: PointerEvent) {
+        if self.on_menu(rr, platform, &e) {
+            return;
+        }
         let touch = info(&e).is_some_and(|p| matches!(p.pointer_type, PointerType::Touch | PointerType::Pen));
-        if matches!(e, PointerEvent::Down(_)) && std::mem::take(&mut self.menu) {
-            platform.hide_selection_menu();
+        if let PointerEvent::Down(b) = &e {
+            self.was_open = self.menu.is_some();
+            if !(touch && handle_under(rr, b.state.logical_point(), self.thresholds.touch_slop).is_some()) {
+                self.close(rr, platform);
+            }
+        }
+        if matches!(e, PointerEvent::Scroll(_)) {
+            self.close(rr, platform);
         }
         if touch {
             self.touch(rr, platform, e);
         } else {
             self.mouse(rr, platform, e);
         }
+        self.follow(rr, platform);
+    }
+
+    /// A press on kit's menu and what follows it, which go to the menu alone: true when `e` was
+    /// one of them.
+    fn on_menu(&mut self, rr: &mut RenderRoot, platform: &mut dyn Platform, e: &PointerEvent) -> bool {
+        let Some(id) = self.menu.as_ref().and_then(|m| m.drawn) else { return false };
+        let pointer = info(e).and_then(|p| p.pointer_id);
+        let pressing = self.pressing.is_some_and(|(p, _)| p == pointer);
+        let item_at = |rr: &RenderRoot, p: Point| rr.get_widget(id).and_then(|w| Menu::item_at(&w, p));
+        match e {
+            PointerEvent::Down(b) => {
+                let p = b.state.logical_point();
+                let inside = rr.get_widget(id).and_then(|w| w.downcast::<Menu>().map(|m| m.inner().bounds().contains(p))).unwrap_or(false);
+                if inside {
+                    self.pressing = Some((pointer, item_at(rr, p)));
+                }
+                inside
+            }
+            PointerEvent::Up(b) if pressing => {
+                let item = self.pressing.take().and_then(|(_, i)| i);
+                if let Some(c) = item.filter(|c| item_at(rr, b.state.logical_point()) == Some(*c)) {
+                    self.pick(rr, platform, c);
+                }
+                true
+            }
+            PointerEvent::Cancel(_) if pressing => {
+                self.pressing = None;
+                true
+            }
+            PointerEvent::Move(u) if pressing => {
+                // a mouse still shows what it is over
+                if u.pointer.pointer_type == PointerType::Mouse {
+                    rr.handle_pointer_event(e.clone());
+                }
+                true
+            }
+            _ => false,
+        }
     }
 
     fn mouse(&mut self, rr: &mut RenderRoot, platform: &mut dyn Platform, mut e: PointerEvent) {
         let mut clicked = None;
+        let mut secondary = None;
         match &mut e {
             PointerEvent::Down(b) => {
                 b.state.count = self.count(b);
                 self.click = Some(Click { pointer: b.pointer.pointer_id, at: b.state.logical_point(), click: primary(b) });
+                if b.button == Some(PointerButton::Secondary) {
+                    secondary = Some(b.state.logical_point());
+                }
             }
             PointerEvent::Up(b) => {
                 self.lifted(b);
@@ -154,6 +260,12 @@ impl Input {
         if let Some(at) = clicked {
             tapped(rr, platform, at);
         }
+        // a secondary click in a field (which put the caret there, or kept the selection under it)
+        if let Some(at) = secondary
+            && in_focused_field(rr, at)
+        {
+            self.open(rr, platform, Some(at));
+        }
     }
 
     fn touch(&mut self, rr: &mut RenderRoot, platform: &mut dyn Platform, e: PointerEvent) {
@@ -170,22 +282,27 @@ impl Input {
         match e {
             PointerEvent::Down(mut b) => {
                 let caught = self.fling.take().is_some();
-                let at = b.state.logical_point();
-                if let Some((field, end, offset)) = handle_under(rr, at, slop) {
-                    self.touch = Some(Touch::Handle { pointer: b.pointer, field, end, offset });
-                    return;
-                }
+                let handle = handle_under(rr, b.state.logical_point(), slop);
                 b.state.count = self.count(&b);
                 if caught {
                     self.last = None;
                 }
                 self.seq += 1;
-                (self.alarm)(self.seq, self.thresholds.long_press);
+                // on a handle a touch held still is no long press: it drags the handle or taps
+                if handle.is_none() {
+                    (self.alarm)(self.seq, self.thresholds.long_press);
+                }
                 hover(rr, &b);
-                self.touch = Some(Touch::Held { down: b, seq: self.seq, caught });
+                self.touch = Some(Touch::Held { down: b, seq: self.seq, caught, handle });
             }
             PointerEvent::Move(u) => match self.touch.take() {
-                Some(Touch::Held { down, seq, caught }) => {
+                Some(Touch::Held { down, handle: Some((field, end, offset)), .. }) if (u.current.logical_point() - down.state.logical_point()).hypot() > slop => {
+                    self.last = None;
+                    leave(rr, down.pointer);
+                    self.touch = Some(Touch::Handle { pointer: down.pointer, field, end, offset });
+                    drag_handle(rr, field, end, u.current.logical_point() + offset);
+                }
+                Some(Touch::Held { down, seq, caught, handle }) => {
                     let p = u.current.logical_point();
                     let held = u.current.time.saturating_sub(down.state.time);
                     if (p - down.state.logical_point()).hypot() > slop {
@@ -196,8 +313,8 @@ impl Input {
                         self.touch = Some(Touch::Scroll { pointer: down.pointer, at: down.state.clone(), last: start, samples: vec![(down.state.time, start)] });
                         self.scroll_to(rr, p, u.current.time);
                     } else {
-                        self.touch = Some(Touch::Held { down, seq, caught });
-                        if !caught && u128::from(held) >= self.thresholds.long_press.as_nanos() {
+                        self.touch = Some(Touch::Held { down, seq, caught, handle });
+                        if !caught && handle.is_none() && u128::from(held) >= self.thresholds.long_press.as_nanos() {
                             self.long_press(rr, platform, seq);
                             self.touch(rr, platform, PointerEvent::Move(u));
                         }
@@ -223,7 +340,16 @@ impl Input {
             },
             PointerEvent::Up(mut b) => match self.touch.take() {
                 Some(Touch::Held { down, caught, .. }) => {
-                    if !caught {
+                    if caught {
+                        // it only stopped a fling
+                    } else if self.last.as_ref().is_some_and(|t| t.fresh) && on_selection(rr, down.state.logical_point()) {
+                        // a tap on the selection opens the menu (closes it, if it was open)
+                        // and leaves the selection; a tap following taps selects as it counts
+                        self.lifted(&mut b);
+                        if !self.was_open {
+                            self.open(rr, platform, None);
+                        }
+                    } else {
                         self.lifted(&mut b);
                         b.state.count = down.state.count;
                         let at = b.state.logical_point();
@@ -274,11 +400,11 @@ impl Input {
         let at = b.state.logical_point();
         let ns = u128::from(b.state.time);
         let window = self.thresholds.double_tap.as_nanos();
-        let count = match &self.last {
-            Some(Tap { up: Some(up), at: last, count, .. }) if ns.saturating_sub(u128::from(*up)) <= window && (at - *last).hypot() <= self.thresholds.double_tap_slop => count % 3 + 1,
-            _ => 1,
+        let (count, fresh) = match &self.last {
+            Some(Tap { up: Some(up), at: last, count, .. }) if ns.saturating_sub(u128::from(*up)) <= window && (at - *last).hypot() <= self.thresholds.double_tap_slop => (count % 3 + 1, false),
+            _ => (1, true),
         };
-        self.last = Some(Tap { pointer: b.pointer.pointer_id, at, up: None, count });
+        self.last = Some(Tap { pointer: b.pointer.pointer_id, at, up: None, count, fresh });
         count
     }
 
@@ -306,7 +432,7 @@ impl Input {
     /// The long-press timer `seq` ran out: a touch still held where it went down is a long press,
     /// delivered as the touch's secondary press.
     pub fn long_press(&mut self, rr: &mut RenderRoot, platform: &mut dyn Platform, seq: u64) {
-        let Some(Touch::Held { down, seq: s, caught: false }) = &self.touch else { return };
+        let Some(Touch::Held { down, seq: s, caught: false, handle: None }) = &self.touch else { return };
         if *s != seq {
             return;
         }
@@ -316,8 +442,11 @@ impl Input {
         d.state.time = d.state.time.saturating_add(u64::try_from(self.thresholds.long_press.as_nanos()).unwrap_or(u64::MAX));
         self.last = None;
         self.touch = Some(Touch::Long { pointer: d.pointer });
+        let at = d.state.logical_point();
         rr.handle_pointer_event(PointerEvent::Down(d));
-        self.selection_menu(rr, platform);
+        if in_focused_field(rr, at) {
+            self.open(rr, platform, None);
+        }
     }
 
     /// A fling is going on: the shell is to call `frame` every animation frame.
@@ -359,27 +488,126 @@ impl Input {
         }
     }
 
-    /// The selection menu, after a long press left a selection in the focused field. Step 3 of
-    /// issues/platform-input.md builds the rest: kit's own menu where the platform has none (both
-    /// shells answer false), a tap on the selection opening it, a secondary click.
-    fn selection_menu(&mut self, rr: &RenderRoot, platform: &mut dyn Platform) {
-        let Some((id, t)) = rr.focused_ime_text() else { return };
-        let (a, f) = t.selection();
-        if a == f {
+    /// A text event (a key, an input method's edit, a command, the window's focus), on its way
+    /// to `rr`: Escape closes the menu (and goes no further); what changes the selection moves or
+    /// closes it.
+    pub fn text_event(&mut self, rr: &mut RenderRoot, platform: &mut dyn Platform, e: TextEvent) -> Handled {
+        if let TextEvent::Keyboard(k) = &e
+            && k.state == KeyState::Down
+            && k.key == Key::Named(NamedKey::Escape)
+            && self.menu.is_some()
+        {
+            self.close(rr, platform);
+            return Handled::Yes;
+        }
+        let h = rr.handle_text_event(e);
+        self.follow(rr, platform);
+        h
+    }
+
+    /// The system's Back: it closes the menu, if one is open (true).
+    pub fn back(&mut self, rr: &mut RenderRoot, platform: &mut dyn Platform) -> bool {
+        let open = self.menu.is_some();
+        self.close(rr, platform);
+        open
+    }
+
+    /// The menu's item `c` was picked (on the platform's menu, or kit's by a screen reader): the
+    /// focused field runs it. The menu closes, but after Select all, which leaves a selection to act
+    /// on, it follows that.
+    pub fn pick(&mut self, rr: &mut RenderRoot, platform: &mut dyn Platform, c: TextCommand) {
+        if self.menu.is_none() {
             return;
         }
-        let all = a.min(f) == 0 && a.max(f) == t.text().len();
-        let at = rr.get_widget(id).map(|w| w.ctx().bounding_rect()).unwrap_or_default();
-        let mut items = vec![MenuItem::Cut, MenuItem::Copy];
-        if clipboard(platform).is_some() {
-            items.push(MenuItem::Paste);
+        if c != TextCommand::SelectAll {
+            self.close(rr, platform);
         }
-        if !all {
-            items.push(MenuItem::SelectAll);
-        }
-        platform.show_selection_menu(&SelectionMenu { at, items });
-        self.menu = true;
+        rr.handle_text_event(TextEvent::Command(c));
+        self.follow(rr, platform);
     }
+
+    /// The platform closed its menu by itself.
+    pub fn menu_gone(&mut self) {
+        if self.menu.as_ref().is_some_and(|m| m.drawn.is_none()) {
+            self.menu = None;
+        }
+    }
+
+    /// Opens the menu for the focused field's selection, beside it or at `pointer`; none when it
+    /// would hold nothing.
+    fn open(&mut self, rr: &mut RenderRoot, platform: &mut dyn Platform, pointer: Option<Point>) {
+        self.close(rr, platform);
+        let Some((field, t)) = rr.focused_ime_text() else { return };
+        let (revision, selection) = (t.revision(), t.selection());
+        let paste = platform.has_clipboard_text();
+        let Some(menu) = menu_of(rr, field, pointer, paste) else { return };
+        self.menu = Some(Shown { field, revision, selection, pointer, paste, menu, drawn: None });
+        self.present(rr, platform);
+    }
+
+    /// Shows the menu as it is: the platform's, or kit's drawing.
+    fn present(&mut self, rr: &mut RenderRoot, platform: &mut dyn Platform) {
+        let Some(m) = self.menu.as_mut() else { return };
+        if let Some(id) = m.drawn.take() {
+            rr.remove_layer(id);
+        }
+        if !platform.show_selection_menu(&m.menu) {
+            let w = NewWidget::new(Menu::new(&m.menu, self.look.clone()));
+            m.drawn = Some(w.id());
+            rr.add_layer(w, Point::ORIGIN);
+        }
+    }
+
+    fn close(&mut self, rr: &mut RenderRoot, platform: &mut dyn Platform) {
+        self.pressing = None;
+        match self.menu.take().map(|m| m.drawn) {
+            Some(Some(id)) => rr.remove_layer(id),
+            Some(None) => platform.hide_selection_menu(),
+            None => {}
+        }
+    }
+
+    /// After anything that may change the focused field: the menu closes when the field lost the
+    /// focus, its text changed or its selection collapsed; else it moves with the selection.
+    pub fn follow(&mut self, rr: &mut RenderRoot, platform: &mut dyn Platform) {
+        let Some(m) = &self.menu else { return };
+        let now = rr.focused_ime_text().map(|(id, t)| (id, t.revision(), t.selection()));
+        let menu = match now {
+            Some((id, rev, sel)) if id == m.field && rev == m.revision && (sel == m.selection || sel.0 != sel.1) => menu_of(rr, id, m.pointer, m.paste).map(|menu| (sel, menu)),
+            _ => None,
+        };
+        let Some((sel, menu)) = menu else { return self.close(rr, platform) };
+        let Some(m) = self.menu.as_mut() else { return };
+        m.selection = sel;
+        if menu != m.menu {
+            m.menu = menu;
+            self.present(rr, platform);
+        }
+    }
+}
+
+/// The menu for `field`'s selection as it is now, at `pointer` or beside the selection, with
+/// Paste when `paste`; `None` when it would hold nothing.
+fn menu_of(rr: &RenderRoot, field: WidgetId, pointer: Option<Point>, paste: bool) -> Option<SelectionMenu> {
+    let w = rr.get_widget(field)?;
+    let area = w.downcast::<TextArea<true>>()?.inner().selection_area()?;
+    let (_, t) = rr.focused_ime_text()?;
+    let (a, f) = t.selection();
+    let at = match pointer {
+        Some(p) => Place::Pointer(p),
+        None => Place::Selection(w.ctx().window_transform().transform_rect_bbox(area)),
+    };
+    let mut items = Vec::new();
+    if a != f {
+        items.extend([TextCommand::Cut, TextCommand::Copy]);
+    }
+    if paste {
+        items.push(TextCommand::Paste);
+    }
+    if a.min(f) > 0 || a.max(f) < t.text().len() {
+        items.push(TextCommand::SelectAll);
+    }
+    (!items.is_empty()).then_some(SelectionMenu { at, items })
 }
 
 /// The pointer an event is from.
@@ -401,11 +629,6 @@ fn secondary_buttons() -> PointerButtons {
     let mut b = PointerButtons::new();
     b.insert(PointerButton::Secondary);
     b
-}
-
-/// Whether `e` is a touch's long press (`Input` delivers it as the touch's secondary press).
-pub fn is_long_press(e: &PointerButtonEvent) -> bool {
-    e.button == Some(PointerButton::Secondary) && e.pointer.pointer_type != PointerType::Mouse
 }
 
 /// A touch held at `b`'s point shows what is under it as hovered.
@@ -438,9 +661,21 @@ fn velocity(samples: &[(u64, Point)], now: u64) -> Vec2 {
 
 /// A tap or click ended at `at`: over the focused text field, the keyboard is wanted.
 fn tapped(rr: &RenderRoot, platform: &mut dyn Platform, at: Point) {
-    if focused_field(rr).is_some_and(|id| rr.get_widget(id).is_some_and(|w| w.ctx().bounding_rect().contains(at))) {
+    if in_focused_field(rr, at) {
         platform.keyboard(true);
     }
+}
+
+/// Whether `at` (window, logical) is over the focused text field.
+fn in_focused_field(rr: &RenderRoot, at: Point) -> bool {
+    focused_field(rr).is_some_and(|id| rr.get_widget(id).is_some_and(|w| w.ctx().bounding_rect().contains(at)))
+}
+
+/// Whether `at` (window, logical) is on the focused field's selection.
+fn on_selection(rr: &RenderRoot, at: Point) -> bool {
+    let Some(w) = focused_field(rr).and_then(|id| rr.get_widget(id)) else { return false };
+    let local = w.ctx().window_transform().inverse() * at;
+    w.downcast::<TextArea<true>>().is_some_and(|t| t.inner().selection_boxes().iter().any(|r| r.contains(local)))
 }
 
 /// The focused field's selection handle under `at` (window, logical), within `slop` of it.

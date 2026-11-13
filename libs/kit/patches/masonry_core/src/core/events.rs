@@ -4,6 +4,7 @@
 //! Events.
 
 use ui_events::keyboard::{Code, Key, KeyState, KeyboardEvent};
+use ui_events::pointer::{PointerButton, PointerButtonEvent, PointerType};
 use vello::kurbo::Rect;
 
 use crate::core::TextEdit;
@@ -39,6 +40,28 @@ pub enum TextEvent {
     // TODO - Handle rich text copy-pasting
     /// The user pasted content in.
     ClipboardPaste(String),
+    /// An editing command for the focused text, as its shortcut would run it (osis-kit patch: a
+    /// selection menu's items, a keyboard's own buttons).
+    Command(TextCommand),
+}
+
+/// The commands a text widget runs for its shortcuts and its selection menu (osis-kit patch).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TextCommand {
+    /// Put the selection on the clipboard and delete it.
+    Cut,
+    /// Put the selection on the clipboard.
+    Copy,
+    /// Ask for the clipboard's text to replace the selection.
+    Paste,
+    /// Select the whole text.
+    SelectAll,
+}
+
+/// Whether `e` is a touch's long press (osis-kit patch): osis-kit's gestures deliver one as the
+/// touch's secondary press, which a mouse never makes.
+pub fn is_long_press(e: &PointerButtonEvent) -> bool {
+    e.button == Some(PointerButton::Secondary) && e.pointer.pointer_type != PointerType::Mouse
 }
 
 /// An accessibility event.
@@ -186,6 +209,7 @@ impl TextEvent {
             Self::Ime(Ime::Edit(_)) => "Ime::Edit",
             Self::WindowFocusChange(_) => "WindowFocusChange",
             Self::ClipboardPaste(_) => "ClipboardPaste",
+            Self::Command(_) => "Command",
         }
     }
 }

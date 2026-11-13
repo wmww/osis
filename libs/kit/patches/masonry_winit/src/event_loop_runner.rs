@@ -672,8 +672,10 @@ impl MasonryState<'_> {
         {
             match wet {
                 WindowEventTranslation::Keyboard(k) => {
-                    // osis-kit patch: paste is the widget's (`RenderRootSignal::ClipboardRead`)
-                    window.render_root.handle_text_event(TextEvent::Keyboard(k));
+                    // osis-kit patch: through the app driver; paste is the widget's
+                    // (`RenderRootSignal::ClipboardRead`)
+                    let id = window.id;
+                    app_driver.on_text_event(id, &mut DriverCtx::new(self, event_loop), TextEvent::Keyboard(k));
                 }
                 WindowEventTranslation::Pointer(p) => {
                     // osis-kit patch: through the app driver (its gestures)
@@ -707,16 +709,18 @@ impl MasonryState<'_> {
             WinitWindowEvent::ThemeChanged(theme) => {
                 app_driver.on_theme_changed(window.id, &mut DriverCtx::new(self, event_loop), theme);
             }
+            // osis-kit patch: text events through the app driver
             WinitWindowEvent::Ime(ime) => {
                 let target = window.render_root.focused_ime_text().map(|(_, t)| t);
-                for ime in winit_ime_to_masonry(ime, target) {
-                    window.render_root.handle_text_event(TextEvent::Ime(ime));
+                let events = winit_ime_to_masonry(ime, target);
+                let id = window.id;
+                for ime in events {
+                    app_driver.on_text_event(id, &mut DriverCtx::new(self, event_loop), TextEvent::Ime(ime));
                 }
             }
             WinitWindowEvent::Focused(new_focus) => {
-                window
-                    .render_root
-                    .handle_text_event(TextEvent::WindowFocusChange(new_focus));
+                let id = window.id;
+                app_driver.on_text_event(id, &mut DriverCtx::new(self, event_loop), TextEvent::WindowFocusChange(new_focus));
             }
             _ => (),
         }

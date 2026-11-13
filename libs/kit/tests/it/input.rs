@@ -24,13 +24,19 @@ pub(crate) const THRESHOLDS: Thresholds = Thresholds { double_tap: Duration::fro
 pub(crate) struct Recorder {
     pub(crate) keyboard: Vec<bool>,
     pub(crate) clipboard: Option<String>,
-    /// Selection menus asked for.
-    pub(crate) menus: usize,
+    /// Selection menus asked for, each showing or changing the one shown.
+    pub(crate) menus: Vec<SelectionMenu>,
+    /// The platform's menu shows (`native`: it has one).
+    pub(crate) shown: bool,
+    pub(crate) native: bool,
 }
 
 impl Platform for Recorder {
     fn clipboard(&mut self) -> Option<String> {
         self.clipboard.clone()
+    }
+    fn has_clipboard_text(&mut self) -> bool {
+        self.clipboard.as_ref().is_some_and(|t| !t.is_empty())
     }
     fn set_clipboard(&mut self, text: String) {
         self.clipboard = Some(text);
@@ -38,11 +44,15 @@ impl Platform for Recorder {
     fn keyboard(&mut self, wanted: bool) {
         self.keyboard.push(wanted);
     }
-    fn show_selection_menu(&mut self, _: &SelectionMenu) -> bool {
-        self.menus += 1;
-        false
+    fn show_selection_menu(&mut self, menu: &SelectionMenu) -> bool {
+        self.menus.push(menu.clone());
+        self.shown = self.native;
+        self.native
     }
-    fn hide_selection_menu(&mut self) {}
+    fn hide_selection_menu(&mut self) {
+        assert!(self.shown, "hid a menu the platform did not show");
+        self.shown = false;
+    }
     fn thresholds(&self) -> Thresholds {
         THRESHOLDS
     }
