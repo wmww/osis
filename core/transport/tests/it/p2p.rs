@@ -694,6 +694,21 @@ async fn registered(l: &P2pListener<QuicUdp>, n: usize) {
     }
 }
 
+/// Dials `key` through `relay` (real QUIC), its key pinned, and runs a `session` on it.
+async fn session_through(relay: &Relay, key: PublicKey) {
+    let a = P2p::new(QuicUdp::new());
+    let addr = Address { url: peer_url(&[relay.item()]), key };
+    let c = a.dial(&addr).await.unwrap();
+    assert_eq!(c.peer_key(), key);
+    if let Err(e) = session(&c).await {
+        // a relayed connection closes once the direct one completes; the next dial takes that
+        assert!(c.relayed(), "{e:?}");
+        let d = a.dial(&addr).await.unwrap();
+        assert!(!d.relayed());
+        session(&d).await.unwrap();
+    }
+}
+
 /// Sends, reads the echo, finishes and reads the end.
 async fn session<C: Connection>(c: &C) -> Result<(), Error> {
     let (mut tx, mut rx) = c.open_stream().await?;
@@ -749,17 +764,7 @@ fn quic_relay_loopback_spec_sync_10() {
                 tokio::spawn(quic_echo(lb.accept().await.unwrap()));
             }
         });
-        let a = P2p::new(QuicUdp::new());
-        let addr = Address { url: peer_url(&[relay.item()]), key: kb };
-        let c = a.dial(&addr).await.unwrap();
-        assert_eq!(c.peer_key(), kb);
-        if let Err(e) = session(&c).await {
-            // a relayed connection closes once the direct one completes; the next dial takes that
-            assert!(c.relayed(), "{e:?}");
-            let d = a.dial(&addr).await.unwrap();
-            assert!(!d.relayed());
-            session(&d).await.unwrap();
-        }
+        session_through(&relay, kb).await;
         echo.abort();
     });
 }
@@ -1012,17 +1017,7 @@ fn quic_relay_dual_stack_spec_sync_10() {
             }
         });
         for relay in &relays {
-            let a = P2p::new(QuicUdp::new());
-            let addr = Address { url: peer_url(&[relay.item()]), key: kb };
-            let c = a.dial(&addr).await.unwrap();
-            assert_eq!(c.peer_key(), kb);
-            if let Err(e) = session(&c).await {
-                // a relayed connection closes once the direct one completes; the next dial takes that
-                assert!(c.relayed(), "{e:?}");
-                let d = a.dial(&addr).await.unwrap();
-                assert!(!d.relayed());
-                session(&d).await.unwrap();
-            }
+            session_through(relay, kb).await;
         }
         echo.abort();
     });
