@@ -1,0 +1,2 @@
+- The `pub(crate)` probe is blind on model crates: their callers are other crates' tests, so turning every `pub` private flags everything (and flipping crdt-model breaks held-model's build, hiding its warnings). What worked: keep `pub` on names any file outside the crate mentions, `pub(crate)` the rest, then read rustc's list (found only crdt-model `max_pair` and two unused held-model re-exports).
+- `tools/policy.py` does not check `file §N Name` citations; a throwaway script found the stale ones (`spec/commits.md §4 (What a wait holds)`, `§4 Purged`, `§5 Keep at most`).
