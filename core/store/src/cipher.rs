@@ -7,6 +7,8 @@
 //! `BlobArea` is the plain one, a store of blobs only, for an engine with no node (tests).
 
 use crate::backend::lock;
+use crate::codec::{R, W};
+use crate::store::tail;
 use crate::{Error, Store, Suspended};
 use osis_base::BlobId;
 use std::any::Any;
@@ -107,21 +109,30 @@ pub trait CipherHost: Send + Any {
 /// Local record prefix of the engine transactions' notes (`CipherTx::note`).
 const NOTE: &[u8] = b"cipher/note/";
 
-fn decode_note(k: &[u8], v: &[u8]) -> Option<Note> {
-    let u64_at = |b: &[u8], i: usize| b.get(i..i + 8).and_then(|x| <[u8; 8]>::try_from(x).ok()).map(u64::from_be_bytes);
-    let seq = u64_at(k, NOTE.len())?;
-    let (h, r) = (usize::try_from(u64_at(v, 0)?).ok()?, usize::try_from(u64_at(v, 8)?).ok()?);
-    let ids_end = h.checked_add(r)?.checked_mul(32)?.checked_add(16)?;
-    let ids: Vec<BlobId> = v.get(16..ids_end)?.as_chunks::<32>().0.iter().map(|c| BlobId(*c)).collect();
-    let (holds, releases) = (ids.get(..h)?.to_vec(), ids.get(h..)?.to_vec());
-    let mut removals = Vec::new();
-    let mut rest = v.get(ids_end..)?;
-    while !rest.is_empty() {
-        let n = usize::try_from(u32::from_be_bytes(rest.get(..4)?.try_into().ok()?)).ok()?;
-        removals.push(rest.get(4..4 + n)?.to_vec());
-        rest = rest.get(4 + n..)?;
+/// A note's row value: hold and release counts, their IDs, then each removal length-prefixed.
+fn encode_note(n: &Note) -> Vec<u8> {
+    let mut w = W::new();
+    w.u64(n.holds.len() as u64).u64(n.releases.len() as u64);
+    for id in n.holds.iter().chain(&n.releases) {
+        w.raw(&id.0);
     }
-    Some(Note { seq, holds, releases, removals })
+    for op in &n.removals {
+        w.bytes(op);
+    }
+    w.take()
+}
+
+/// A note from its local record (key `NOTE || seq`).
+fn decode_note(k: &[u8], v: &[u8]) -> Result<Note, Error> {
+    let mut r = R::new(v);
+    let (h, n) = (r.u64()?, r.u64()?);
+    let ids = |r: &mut R, n: u64| (0..n).map(|_| r.array().map(BlobId)).collect::<Result<Vec<_>, Error>>();
+    let (holds, releases) = (ids(&mut r, h)?, ids(&mut r, n)?);
+    let mut removals = Vec::new();
+    while !r.is_empty() {
+        removals.push(r.bytes()?.to_vec());
+    }
+    Ok(Note { seq: u64::from_be_bytes(tail(k)?), holds, releases, removals })
 }
 
 /// Tests only: `store`'s copy inside a world copy (`osis_base::copying::remap`), so every holder
@@ -173,17 +184,7 @@ impl<T: CipherHost> CipherTx for HostTx<'_, T> {
         self.g.finish(op)
     }
     fn note(&mut self, n: &Note) -> Result<(), Error> {
-        let mut v = Vec::with_capacity(16 + 32 * (n.holds.len() + n.releases.len()));
-        v.extend_from_slice(&(n.holds.len() as u64).to_be_bytes());
-        v.extend_from_slice(&(n.releases.len() as u64).to_be_bytes());
-        for id in n.holds.iter().chain(&n.releases) {
-            v.extend_from_slice(&id.0);
-        }
-        for op in &n.removals {
-            v.extend_from_slice(&(op.len() as u32).to_be_bytes());
-            v.extend_from_slice(op);
-        }
-        let k = [NOTE, &n.seq.to_be_bytes()].concat();
+        let (k, v) = ([NOTE, &n.seq.to_be_bytes()].concat(), encode_note(n));
         self.g.local(&mut |t| t.put_local(&k, &v, crate::Shred::No))
     }
     fn notes(&mut self) -> Result<Vec<Note>, Error> {
@@ -192,7 +193,7 @@ impl<T: CipherHost> CipherTx for HostTx<'_, T> {
             rows = t.scan_local(NOTE, &[], usize::MAX)?;
             Ok(())
         })?;
-        rows.into_iter().map(|(k, v)| decode_note(&k, &v).ok_or(Error::Corrupt("blob note"))).collect()
+        rows.into_iter().map(|(k, v)| decode_note(&k, &v)).collect()
     }
     fn unnote(&mut self, seq: u64) -> Result<(), Error> {
         let k = [NOTE, &seq.to_be_bytes()].concat();
