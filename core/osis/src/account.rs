@@ -19,47 +19,18 @@ const OFFER: &str = "osis://pair/";
 const REQUEST: &str = "osis://pair-request/";
 const REPLY: &str = "osis://pair-reply/";
 
-macro_rules! pair_text {
-    ($(#[$m:meta])* $n:ident, $prefix:expr) => {
-        $(#[$m])*
-        #[derive(Clone, PartialEq, Eq)]
-        pub struct $n(String);
-        impl std::str::FromStr for $n {
-            type Err = Error;
-            fn from_str(s: &str) -> Result<$n> {
-                let s = s.trim();
-                unpack(s, $prefix)?;
-                Ok($n(s.to_string()))
-            }
-        }
-        impl std::fmt::Display for $n {
-            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                f.write_str(&self.0)
-            }
-        }
-        impl std::fmt::Debug for $n {
-            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                f.write_str(concat!(stringify!($n), "(..)"))
-            }
-        }
-    };
-}
-
-pair_text!(
+crate::share::secret_text!(
     /// A short-lived offer to pair a new node, made on an existing one (holds a one-time
     /// secret: show it only to the new node).
-    PairOffer,
-    OFFER
+    PairOffer, Vec<Value>, |s| unpack(s, OFFER)
 );
-pair_text!(
+crate::share::secret_text!(
     /// The new node's answer to an offer, for `Osis::pair_accept` on the offering node.
-    PairRequest,
-    REQUEST
+    PairRequest, Vec<Value>, |s| unpack(s, REQUEST)
 );
-pair_text!(
+crate::share::secret_text!(
     /// The offering node's answer to a request, for `Joining::finish` on the new node.
-    PairReply,
-    REPLY
+    PairReply, Vec<Value>, |s| unpack(s, REPLY)
 );
 
 fn pack(prefix: &str, v: &Value) -> String {
@@ -165,7 +136,7 @@ impl Joining {
 
     /// Takes the offering node's reply and returns the node, now a node of the account.
     pub fn finish(self, reply: &PairReply) -> Result<Osis> {
-        let items = unpack(&reply.0, REPLY)?;
+        let items = reply.parse()?;
         let [_, Value::Bytes(grant), pks, Value::Bytes(_)] = items.as_slice() else { return Err(Error::Invalid("malformed pairing reply".into())) };
         if !tag_ok(&self.secret, "osis pair reply", &items) {
             return Err(Error::Invalid("pairing reply does not match the offer".into()));
@@ -220,7 +191,7 @@ impl Osis {
             let mut a = crate::port::codec::Args::new(v)?;
             return Ok((a.tid()?, a.get()?));
         }
-        let items = unpack(&req.0, REQUEST)?;
+        let items = req.parse()?;
         let [_, Value::Tid(node), pks, Value::Bytes(_)] = items.as_slice() else { return Err(Error::Invalid("malformed pairing request".into())) };
         let now = self.inner.clock.now_wall_ms().0;
         let secret = self
@@ -251,7 +222,7 @@ impl Osis {
     /// offer's peers join `peers`.
     pub fn pair(store: Store, peers: &[Address], offer: &PairOffer, cfg: Config) -> Result<Joining> {
         cfg.check(peers)?;
-        let items = unpack(&offer.0, OFFER)?;
+        let items = offer.parse()?;
         let [_, Value::Tid(account), Value::Tid(home), Value::Tid(_), Value::Bytes(secret), Value::List(addrs)] = items.as_slice() else { return Err(Error::Invalid("malformed pairing offer".into())) };
         let secret: [u8; 32] = secret.as_slice().try_into().map_err(|_| Error::Invalid("malformed pairing offer".into()))?;
         let addrs = addrs.iter().map(|a| if let Value::Str(s) = a { s.parse() } else { Err(Error::Invalid("malformed pairing offer".into())) }).collect::<Result<_>>()?;

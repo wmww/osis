@@ -171,22 +171,22 @@ fn bad(what: &str) -> impl Fn(osis_label::Error) -> Error + '_ {
     move |e| Error::Invalid(format!("{what}: {e}"))
 }
 
-/// A secret-bearing text form: checked when parsed, redacted in `Debug`.
-macro_rules! text_type {
-    ($(#[$m:meta])* $n:ident, $inner:ty, $parse:path, $what:literal) => {
+/// A secret-bearing text form: checked by `$parse` when parsed (`parse` reads it), redacted in `Debug`.
+macro_rules! secret_text {
+    ($(#[$m:meta])* $n:ident, $inner:ty, $parse:expr) => {
         $(#[$m])*
         #[derive(Clone, PartialEq, Eq)]
         pub struct $n(pub(crate) String);
         impl $n {
             pub(crate) fn parse(&self) -> Result<$inner> {
-                $parse(&self.0).map_err(bad($what))
+                ($parse)(self.0.as_str())
             }
         }
         impl std::str::FromStr for $n {
             type Err = Error;
             fn from_str(s: &str) -> Result<$n> {
                 let s = s.trim();
-                $parse(s).map_err(bad($what))?;
+                ($parse)(s)?;
                 Ok($n(s.to_string()))
             }
         }
@@ -203,10 +203,12 @@ macro_rules! text_type {
     };
 }
 
-text_type!(
+pub(crate) use secret_text;
+
+secret_text!(
     /// A share link (`osis://link/...`): whoever holds this text can redeem it, so hand it over as a
     /// secret.
-    ShareLink, osis_label::ShareLink, osis_label::ShareLink::from_text, "link"
+    ShareLink, osis_label::ShareLink, |s| osis_label::ShareLink::from_text(s).map_err(bad("link"))
 );
 impl ShareLink {
     /// The thing the link shares.
@@ -214,9 +216,9 @@ impl ShareLink {
         Ok(self.parse()?.target)
     }
 }
-text_type!(
+secret_text!(
     /// A contact card: a read link to an account's profile.
-    ContactCard, osis_label::ShareLink, osis_label::ShareLink::from_text, "contact card"
+    ContactCard, osis_label::ShareLink, |s| osis_label::ShareLink::from_text(s).map_err(bad("contact card"))
 );
 
 /// A transport URL, such as `quic://example.org:4040`: where something listens or is dialed.
