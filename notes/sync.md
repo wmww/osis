@@ -54,7 +54,7 @@ The requirements behind sync: spec/requirements.md, Data a node cannot read and 
 - Elsewhere: rejected deletion designs in notes/sync-convergence.md, rejected access designs in notes/label-access.md, plain grants under a shared label in notes/inbox.md.
 
 ## Policy defaults (non-normative, tune freely)
-- Compaction: every writer runs the trigger each step (notes/engine-retention.md The trigger); a thing whose admins want its current parts kept says so in its setting (spec/commits.md §5 Kept while live).
+- Compaction: every writer runs the trigger each step (notes/engine-retention-trigger.md); a thing whose admins want its current parts kept says so in its setting (spec/commits.md §5 Kept while live).
 - Deposit budget and deposit order: notes/inbox.md. `TOMBSTONE_LIFETIME` 30 days (notes/sync-convergence.md). `INBOX_LIFETIME` 90 days (format constant, matching `ROLE_KEEP`).
 - Fetching from a node that cannot read them, a client cannot put permission commits first before decrypting, so it downloads everything and applies role commits first.
 - Clients may batch uploads to blur timing.

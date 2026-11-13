@@ -155,7 +155,7 @@ fn part_replaced_at(tx: &mut Tx<'_>, h: &Header, c: &CommitId, ai: usize) -> Res
 /// write is dead, so it is past a relative bound. So a cover dropping a body redates nothing in
 /// history: no date is read from which body holds a write, the cover carries the body's live
 /// writes with their stamps, and any write it alone dated was replaced no later than it
-/// (notes/engine-retention.md Replaced, the covered-drop invariant). A node holding more bodies
+/// (notes/engine-retention-dating.md Invariant). A node holding more bodies
 /// dates no later. Invalid parts and bare leftovers (no values to keep) are not judged. A memo
 /// (`Core::replaced_dates`): judged again only when what it read moved (the aspect's held
 /// bodies, their validity and the state), the aspect's held bodies read once for every

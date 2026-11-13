@@ -80,7 +80,7 @@ pub struct Policy {
     pub removal_snapshot: bool,
     pub grace: u32,
     /// A writer's previous snapshot stays until its next one lands: forgotten only once two
-    /// newer own valid held snapshots cover it (`OWN_PREV`; not built: notes/engine-retention.md Own replaces and forgetting).
+    /// newer own valid held snapshots cover it (`OWN_PREV`; not built: notes/engine-retention-covers.md Forgetting).
     pub keep_prev: bool,
 }
 

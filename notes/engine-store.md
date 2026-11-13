@@ -11,7 +11,7 @@ Layouts in `engine/records.rs` (and the module named); all are `*_local` records
 | `t/`+tid | creation records |
 | `a/`+aspect | aspects with a state (`aspects.0`) |
 | `v/`+aspect | value-less deltas (expired, purged): the join-time strip list |
-| `w/`+aspect+commit+ai | leftovers (notes/engine-retention.md) |
+| `w/`+aspect+commit+ai | leftovers (notes/engine-retention-purge.md) |
 | `p/`+aspect, `pn/`+aspect+commit, `z/`+commit+tid | purge requests on a whole aspect or author; requests naming a commit; a request that dropped a permanent delta (`retention::lasting`) |
 | `x/`+T+commit+ai | timers (expiry, keep bounds) |
 | `s/`+tid | things this node was asked to sync |

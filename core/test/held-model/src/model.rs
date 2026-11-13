@@ -916,7 +916,7 @@ fn fate(
     // spec/commits.md §5 The setting: in history, kept (compaction may not drop it); under purge on
     // replace, gone at every node once a right holder covers it and the clock reaches its
     // replacement, owed by a right holder until then; out of history, any valid writer's cover
-    // drops it (Tess's decision 4, notes/engine-retention.md History). A live delta (held valid,
+    // drops it (Tess's decision 4, notes/engine-retention-history.md). A live delta (held valid,
     // not replaced) is kept to its aspect's live bound, then drops under any cover as a replaced
     // one out of history (spec/commits.md §5 Kept while live; its author's own covers only is
     // node-sync's rule, spec/sync.md §7 Own bodies, AMBIGUITIES 70). A live delta held invalid

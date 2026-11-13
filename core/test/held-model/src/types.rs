@@ -172,7 +172,7 @@ pub enum Body {
 }
 
 /// Who may purge a write (spec/commits.md §5): admins always may. `Nobody` is fixed retention's
-/// only (`created.0`, `retention^.0`); content has the other three (Tess's decision 2, notes/engine-retention.md History).
+/// only (`created.0`, `retention^.0`); content has the other three (Tess's decision 2, notes/engine-retention-history.md).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum PurgeBy {
     Nobody,

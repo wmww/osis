@@ -1,4 +1,4 @@
-//! Thing-level history (spec/commits.md §5 The setting, notes/engine-retention.md History; held_model::thing_history): the judgment's
+//! Thing-level history (spec/commits.md §5 The setting, notes/engine-retention-history.md; held_model::thing_history): the judgment's
 //! properties, each over every small world, so a failure names a minimal counterexample: first on
 //! the greenfield functions, then (`ev_`) through `evaluate`, on held sets of settings and register
 //! writes or fires of one thing, in hours.
@@ -374,7 +374,7 @@ fn ev_in_force_from_its_own_commit() {
     assert!(listed(&h, REG).is_empty());
 }
 
-// spec/commits.md §5 (The setting, In force; notes/engine-retention.md History, Tess's decision 3): settings are in force by key from their own
+// spec/commits.md §5 (The setting, In force; notes/engine-retention-history.md Tess's decision 3): settings are in force by key from their own
 // stamps, whatever order they are held in. From a newer setting's stamp on, a node also holding
 // an older-stamped one shows what a node holding only the newer shows, unless the older set purge
 // on replace and the newer keeps (one way: then neither keeps anything). Of two admins' settings at
@@ -417,7 +417,7 @@ fn ev_in_force_by_key_from_its_own_stamp() {
     }
 }
 
-// notes/engine-retention.md History (Tess's decision 1): a setting arriving late (stamped before ones already
+// notes/engine-retention-history.md (Tess's decision 1): a setting arriving late (stamped before ones already
 // held) can put a body still held back in history
 #[test]
 fn ev_a_late_setting_can_reshow_a_held_body() {
@@ -430,7 +430,7 @@ fn ev_a_late_setting_can_reshow_a_held_body() {
     assert!(listed(&world(3, &[long, short], false, bodies()), REG).is_empty());
 }
 
-// spec/commits.md §5 (Purge on replace; notes/engine-retention.md History, Tess's decision 3): content replaced under purge on replace
+// spec/commits.md §5 (Purge on replace; notes/engine-retention-history.md Tess's decision 3): content replaced under purge on replace
 // is never history, however late a node dates the replacement (holding fewer bodies)
 #[test]
 fn ev_purge_on_replace_content_is_never_history_however_dated() {
@@ -469,7 +469,7 @@ fn ev_keep_after_purge_on_replace_keeps_nothing() {
     }
 }
 
-// notes/engine-retention.md History (Tess's decision 2): who may purge a body changes nothing of its history
+// notes/engine-retention-history.md (Tess's decision 2): who may purge a body changes nothing of its history
 #[test]
 fn ev_who_may_purge_changes_no_history() {
     for tl in ev_timelines(1, &[0, 2, 4, 6], &all_opts()) {

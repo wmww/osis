@@ -7,7 +7,7 @@
 - Erasing a thing is purging or expiring its creation (`created.0`). After that the thing never comes back, not even by a new creation: the request covers every creation of the thing while in its window, and past it each node keeps the verdict alone (the thing's tid, destroyed for good), dropping every later creation. Expiry is purge on a timer and promises the same for the commits it covers.
 
 ## Storage reclaim: nothing builds up, no trace
-- **History leaving** under its thing's `retention^.0` setting (a keep window passing or shortened, no history promised, purge on replace: notes/engine-retention.md History), and **releasing a thing** (thing lifetimes, issues/thing-lifetimes.md).
+- **History leaving** under its thing's `retention^.0` setting (a keep window passing or shortened, no history promised, purge on replace: notes/engine-retention-history.md), and **releasing a thing** (thing lifetimes, issues/thing-lifetimes.md).
 - Their purpose is that nothing accumulates over time, so they leave no trace: no tombstone, no request kept, nothing that grows with what was removed.
 - In exchange they promise nothing about the data never returning: a new write, or a node that still holds a copy, may bring it back. History is judged from the settings held, so a copy arriving later is judged out of history again, while a setting arriving late may re-show a body a node still holds (never one it dropped); a released thing is not self-describing, so a stale copy may revive it.
 - Purge on replace sits on this side as a setting (it changes, leaves no request, and covers only content replaced while it is set), though its drop is prompt: the replacing writer's cover drops the body everywhere it arrives, and an invalid replacement does not bring it back.

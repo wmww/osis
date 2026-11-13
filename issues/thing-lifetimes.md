@@ -72,7 +72,7 @@ Built as notes/api.md Lifetimes says: `core::RETAINERS` (beside `core::RETENTION
 - One commit per structural change is what makes part-received data safe; the API gives no way to write a move as two commits by accident beyond writing two `Write`s.
 
 ## Interactions
-- **History** (notes/engine-retention.md History): independent. A removal releases at once whatever the retainer's history keeps; undo of a removed reference restores a tid that may dangle (reads as gone). Releasing X ends X's own history with it.
+- **History** (notes/engine-retention-history.md): independent. A removal releases at once whatever the retainer's history keeps; undo of a removed reference restores a tid that may dangle (reads as gone). Releasing X ends X's own history with it.
 - **`delete(R)`** resets R's content and memberships: R references nothing live, so what it kept is released. **`delete(X)`** removes X's memberships, so a thing living by its group is released at once.
 - **Purge** of the write holding a reference releases at once ("delete for everyone" on a message releases its attachment).
 - **Expiry**: an expiring write's reference counts until T. A thing referenced by an expiring thing should be created in the same expiring commit: then every node destroys both at T with nobody online. Otherwise a node that may destroy it releases it: the expired retainer's minting headers stay with the lister and travel under its labels (What is kept), so the retainer reads destroyed wherever the lister is held. Limit: a lister whose holders never held them reads its retainer unknown and leaks.

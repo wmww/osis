@@ -409,7 +409,7 @@ fn two_admins_at_one_stamp_ordered_by_key_spec_commits_5() {
     assert!(seen.contains(&true) && seen.contains(&false), "{seen:?}");
 }
 
-// notes/engine-retention.md Replaced (When), spec/crdt.md §4.8 When: a write dies at its superseder's own
+// notes/engine-retention-dating.md When, spec/crdt.md §4.8 When: a write dies at its superseder's own
 // stamp, read from any held body holding it. x1 is replaced by x2, kept 10 minutes; a snapshot
 // taken later carries x2, and x2's body drops under it: x1 still dies at x2's stamp, so its
 // listing and keep stay (dated at the snapshot, x1 was listed again)
@@ -437,7 +437,7 @@ fn a_covered_drop_redates_nothing_spec_commits_5() {
 /// Drops, in `order`, each held body of `(d, a)` that `s` covers once its keep-at-least bound
 /// allows (`Engine::drop_from` on the node's clock, as node-sync does), and checks after each
 /// drop that every commit in `watch` still held is listed and kept (in history: its keep bound
-/// ahead of the clock) as before (notes/engine-retention.md Replaced, Invariant). Returns the
+/// ahead of the clock) as before (notes/engine-retention-dating.md Invariant). Returns the
 /// bodies dropped.
 fn drop_allowed(p: &mut Peer, d: Tid, a: &str, s: CommitId, order: &[CommitId], watch: &[CommitId]) -> Vec<CommitId> {
     let k = ak(a);
@@ -460,7 +460,7 @@ fn drop_allowed(p: &mut Peer, d: Tid, a: &str, s: CommitId, order: &[CommitId], 
     dropped
 }
 
-// notes/engine-retention.md Replaced (When), spec/commits.md §5 Bodies and deaths: a body is replaced at
+// notes/engine-retention-dating.md When, spec/commits.md §5 Bodies and deaths: a body is replaced at
 // the latest death among its writes. W sets field 1; B sets fields 0 and 1; C replaces B's field
 // 0 at once, X its field 1 twelve minutes later (kept 10 minutes). B stays in history from X's
 // stamp, so it drops only after every dead write it alone holds has left; W, which only B's
@@ -495,7 +495,7 @@ fn a_body_dies_at_its_latest_death_spec_commits_5() {
     }
 }
 
-// notes/engine-retention.md Replaced (When, text), spec/crdt.md §4.8 When: a text element's creation dies at
+// notes/engine-retention-dating.md When, spec/crdt.md §4.8 When: a text element's creation dies at
 // the earliest held delete stamped after its latest held undelete. Inserted, deleted, undeleted
 // (an undo of the delete) and deleted again twelve minutes later (kept 10 minutes): the
 // creation dies at the second delete, so dropping the first delete's body (out of history,
@@ -527,7 +527,7 @@ fn text_creation_dies_at_delete_after_undelete_spec_crdt_4_8() {
     assert!(dropped.contains(&del), "{dropped:?}: the first delete is out of history");
 }
 
-// spec/crdt.md §4.8 When, notes/engine-retention.md Replaced (the covered-drop invariant): a
+// spec/crdt.md §4.8 When, notes/engine-retention-dating.md Invariant: a
 // valid snapshot's copy of an invalid delta's write counts as the write itself. W is replaced by
 // Bob's X; snapshot B carries X; Bob is removed (X invalid, vouched by B), and W still dies at X's
 // own stamp. Ten minutes on W is out of history; snapshot S covers B (no dead write: it drops at
@@ -666,7 +666,7 @@ fn covered_drops_history(seed: u64) -> usize {
     dropped
 }
 
-// notes/engine-retention.md Replaced (the covered-drop invariant), spec/crdt.md §4.8 When,
+// notes/engine-retention-dating.md Invariant, spec/crdt.md §4.8 When,
 // spec/commits.md §5 Dated only where history is kept: random small histories on a kept and an
 // unkept aspect, some commits writing both, every covered part past its
 // keep bound dropped in random order; no drop moves the listing, in-history status, keep bounds
@@ -691,8 +691,8 @@ fn covered_drops_replay(s: u64) -> String {
     format!("OSIS_COVERED_START={s} OSIS_COVERED_SEEDS=1 cargo test -p osis-node --test it -- --ignored --exact setting::covered_drops_move_nothing_large_spec_commits_5")
 }
 
-// spec/commits.md §5 Dated only where history is kept, notes/engine-retention.md Replaced (the
-// covered-drop invariant): W writes a kept aspect (10 minutes) and an unkept one in one
+// spec/commits.md §5 Dated only where history is kept (notes/engine-retention-dating.md
+// Invariant): W writes a kept aspect (10 minutes) and an unkept one in one
 // commit; B replaces the unkept write, E replaces B fifteen minutes later. W's unkept part is
 // dated by nothing (no history on its aspect), so B, also undated, drops at once under a
 // snapshot and moves none of W's bounds. Dated across the commit, W was out by B's date and came
@@ -774,7 +774,7 @@ fn leaving_history_is_told_in_any_order_spec_commits_5() {
     }
 }
 
-// spec/commits.md §5 The setting (notes/engine-retention.md History, Tess's decision 1): a setting arriving late, stamped while a body was
+// spec/commits.md §5 The setting (notes/engine-retention-history.md Tess's decision 1): a setting arriving late, stamped while a body was
 // still in history, brings back a body that left meanwhile where it is still held: listed and told
 // again; a later shortening by its stamp takes it out again, told
 #[test]
@@ -824,7 +824,7 @@ fn first_keeping_setting_arriving_late_shows_and_tells_spec_commits_5() {
     assert!(!listed(&mut lp.peers[0], &v1, d) && told(&mut lp.peers[0], d).contains(&v1), "and as it leaves");
 }
 
-// notes/engine-retention.md Leaving history, notes/api.md Commits (listeners): a snapshot whose
+// notes/engine-retention-history.md Leaving history, notes/api.md Commits (listeners): a snapshot whose
 // carried write a later write kills leaves the listing at its keep bound, and is told then.
 #[test]
 fn a_snapshot_is_told_leaving_history_spec_commits_5() {

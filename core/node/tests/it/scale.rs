@@ -1502,7 +1502,7 @@ fn history_moves(n: usize) -> [Work; 3] {
     [change, pass, shorten]
 }
 
-// notes/engine-retention.md Leaving history; spec/commits.md §5, spec/requirements.md Scale: a setting change that moves no body
+// notes/engine-retention-history.md Leaving history; spec/commits.md §5, spec/requirements.md Scale: a setting change that moves no body
 // in or out of history, a window passing over a constant number of bodies and a setting change
 // moving a constant number out, read no body and walk no commit that stays listed: every counted phase, the commits marked for node-sync and
 // told the listener, and the store rows read and written are flat in the history held.
@@ -1533,7 +1533,7 @@ fn kept_overwrite(n: usize) -> Work {
     measured_at(&mut lp, 0, |lp| put(lp, "last".into())).1
 }
 
-// notes/engine-retention.md Leaving history; spec/commits.md §5, spec/requirements.md Scale: an overwrite of a kept register sets
+// notes/engine-retention-history.md Leaving history; spec/commits.md §5, spec/requirements.md Scale: an overwrite of a kept register sets
 // the replaced body's history row from the killing write's stamp (`leaving::Dating::Killed`),
 // reading no held body, at n and 10n.
 #[test]

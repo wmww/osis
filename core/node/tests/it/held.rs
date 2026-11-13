@@ -817,7 +817,7 @@ pub(crate) fn compare(e: &mut Engine, hist: &History, cov: &mut Coverage, drops:
     // last seen, with every fresh drop held: in history, or dated ahead of the clock where a
     // setting keeps the aspect, it was kept (spec/commits.md §5 Keep bounds); live, before its
     // aspect's live bound, it was kept too (Kept while live). A covered drop redates nothing in
-    // history (notes/engine-retention.md Replaced, When), so the step's drops are judged
+    // history (notes/engine-retention-dating.md When), so the step's drops are judged
     // together. A leftover holding no value of its own writes is never dropped for keep bounds:
     // past its expiry it drops as covered, purged it does not (spec/commits.md §5 Purge, Dropping
     // a body); a body past its commit's expiry left by expiry, its leftover with it. A part last

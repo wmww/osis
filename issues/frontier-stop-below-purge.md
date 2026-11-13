@@ -5,4 +5,4 @@
 
 ## To settle
 - Check every other reader of a snapshot's frontier and `Absorbed` (`unseen_by` for memory bodies, `receipt::settled`, demotion frontiers, spec/sync.md §9) for a reason to keep it.
-- If none: drop the stop, the fresh session in `purge_one`, the spec lines (crdt.md §1 "or is held value-less for a purge request", §8 `ctr` and `Absorbed` exclusions), and the notes bullet (notes/engine-retention.md Frontier below a purged body).
+- If none: drop the stop, the fresh session in `purge_one`, the spec lines (crdt.md §1 "or is held value-less for a purge request", §8 `ctr` and `Absorbed` exclusions), and the notes bullet (notes/engine-retention-purge.md Frontier below a purged body).
