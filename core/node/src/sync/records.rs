@@ -204,7 +204,7 @@ impl SyncEngine {
     /// (`stand_in`).
     pub(super) fn bind_record(&mut self, conn: ConnId, (id, moved): (RecordId, bool), out: &mut Vec<Action>) -> Result<()> {
         let (acked, r) = self.engine.run(|tx| Ok(tx.txn.record(&id)?.map_or((0, [0; 32]), |r| (r.acked_pos, r.r))))?;
-        let Some((dialer, listener)) = self.conns.get(&conn).and_then(|c| c.binding).or_else(|| self.served_binding(conn)).map(|(d, l, _)| (d, l)) else { return Ok(()) };
+        let Some((dialer, listener)) = self.conns.get(&conn).and_then(|c| c.binding).map(|(d, l, _)| (d, l)) else { return Ok(()) };
         let order = (self.records.relayed.contains(&conn), connection_order(&r, &dialer, &listener));
         self.records.order.insert(conn, order);
         self.records.bound.insert(conn, ConnRecord::new(id, acked));
@@ -227,14 +227,14 @@ impl SyncEngine {
     /// Closes `conn`, the duplicate of `keep`. A dialed one is not dialed again at once: its
     /// peer is connected by `keep` (`stand_in` when the peer dialed it).
     fn close_duplicate(&mut self, conn: ConnId, keep: ConnId, out: &mut Vec<Action>) {
-        if let Some(host) = self.conns.get(&conn).map(|c| c.host) {
-            self.close_dialed(conn, out);
-            self.retry.remove(&host);
-            if self.served.contains_key(&keep) {
-                self.stand_in.insert(host, keep);
+        let key = self.conns.get(&conn).and_then(super::Conn::key);
+        let keep_served = self.conns.get(&keep).is_some_and(|c| c.dial.is_none());
+        self.close(conn, out);
+        if let Some(key) = key {
+            self.retry.remove(&key);
+            if keep_served {
+                self.stand_in.insert(key, keep);
             }
-        } else {
-            self.close_served(conn, out);
         }
     }
 

@@ -5,7 +5,7 @@
 //! a Behind item, answered with the steps to its head, each verified under the one before. No
 //! credential of the newest step held reports the label stranded (`reports`).
 
-use super::{ConnId, LConn, Phase, SyncEngine};
+use super::{ConnId, LabelAt, Phase, SyncEngine};
 use crate::error::Result;
 use crate::labeling::{GroupLabel, HeadKeys};
 use osis_base::{LabelId, Role, Tid};
@@ -110,7 +110,7 @@ impl SyncEngine {
     pub(crate) fn start_label(&mut self, conn: ConnId, g: Tid, l: LabelId, out: &mut Vec<super::Action>) -> Result<()> {
         let now = self.now();
         if let Some(c) = self.conns.get_mut(&conn) {
-            let mut lc = Self::new_lc(g);
+            let mut lc = Self::new_label_at(g);
             lc.last_sync = now;
             c.labels.insert(l, lc);
             // a start (or a retry once a back-off passed) walks against the latest filter, from
@@ -126,8 +126,8 @@ impl SyncEngine {
         self.shared_retest(conn, out)
     }
 
-    fn new_lc(group: Tid) -> LConn {
-        LConn {
+    fn new_label_at(group: Tid) -> LabelAt {
+        LabelAt {
             group,
             phase: Phase::Testing { shown: None },
             head: None,
@@ -185,11 +185,11 @@ impl SyncEngine {
         }
     }
 
-    /// The newest step of `l` this node knows at `conn` (`LConn::head`: the head there while
+    /// The newest step of `l` this node knows at `conn` (`LabelAt::head`: the head there while
     /// open, else where a walk, a grant or the last open there got to), else the newest recorded
     /// head.
     pub(crate) fn newest_known(&mut self, conn: ConnId, l: &LabelId) -> Option<Step> {
-        let (g, head) = self.lc(conn, l).map(|x| (x.group, x.head.clone()))?;
+        let (g, head) = self.label_at(conn, l).map(|x| (x.group, x.head.clone()))?;
         head.or_else(|| self.newest_step(&g, l))
     }
 
@@ -197,7 +197,7 @@ impl SyncEngine {
     /// this node's claim key its held claim set lists, else (the set not held) the claim key of
     /// this node's on it that the peer's latest filter shows and did not refuse since.
     pub(crate) fn test_key(&mut self, conn: ConnId, l: &LabelId, step: &Step) -> Option<SigningSecret> {
-        let g = self.lc(conn, l).map(|x| x.group)?;
+        let g = self.label_at(conn, l).map(|x| x.group)?;
         match self.step_keys(&g, l, step) {
             (keys, true) => keys.into_iter().next(),
             (keys, false) => keys.into_iter().find(|k| {
@@ -230,7 +230,7 @@ impl SyncEngine {
     /// no step fails so when it holds neither a sync key nor the static entry it follows by.
     /// Whether it is.
     pub(crate) fn strands(&mut self, conn: ConnId, l: LabelId, out: &mut Vec<super::Action>) -> Result<bool> {
-        let Some(g) = self.lc(conn, &l).map(|x| x.group) else { return Ok(false) };
+        let Some(g) = self.label_at(conn, &l).map(|x| x.group) else { return Ok(false) };
         let Some(newest) = self.newest_known(conn, &l) else {
             let via = self.state.hints.get(&l).is_some_and(|h| h.via.is_some());
             if via || self.hint_key(conn, &l, &g).is_some() {
@@ -260,7 +260,7 @@ impl SyncEngine {
     /// only by L), each distinct one once, but `tested` (what the arrival's test offered); a held
     /// key's step is the one the stream names (`new_head`). O(steps + sync epochs held).
     pub(crate) fn walk_candidates(&mut self, conn: ConnId, l: LabelId, tested: Option<[u8; 32]>) -> Result<Vec<(Option<Step>, SigningSecret)>> {
-        let Some(g) = self.lc(conn, &l).map(|x| x.group) else { return Ok(Vec::new()) };
+        let Some(g) = self.label_at(conn, &l).map(|x| x.group) else { return Ok(Vec::new()) };
         let steps = self.group_label(&g, &l).map(|gl| deepest_first(&gl.steps)).unwrap_or_default();
         let mut keys: Vec<(Option<Step>, SigningSecret)> = Vec::new();
         for step in steps {
@@ -289,13 +289,13 @@ impl SyncEngine {
     pub(crate) fn walked(&mut self, conn: ConnId, l: LabelId, shown: Option<(Option<Step>, SigningSecret)>, out: &mut Vec<super::Action>) -> Result<()> {
         match shown {
             Some(x) => {
-                if let Some(lc) = self.lc_mut(conn, &l) {
+                if let Some(lc) = self.label_at_mut(conn, &l) {
                     lc.phase = Phase::Testing { shown: Some(Box::new(x)) };
                 }
                 self.shared_retest(conn, out)
             }
             None => {
-                let Some(g) = self.lc(conn, &l).map(|x| x.group) else { return Ok(()) };
+                let Some(g) = self.label_at(conn, &l).map(|x| x.group) else { return Ok(()) };
                 let newest = self.newest_known(conn, &l);
                 let held = newest.as_ref().is_some_and(|s| !self.step_keys(&g, &l, s).0.is_empty());
                 // a genesis alone costs one Register, as a Behind item does, and covers a
@@ -316,19 +316,23 @@ impl SyncEngine {
     /// by a held sync key no known step bears (the walk's), or a hint's label knowing no step, it
     /// opens with no head: the stream's head event names it (`new_head`).
     pub(crate) fn member_unread_there(&mut self, conn: ConnId, l: LabelId, restored: bool, out: &mut Vec<super::Action>) -> Result<()> {
-        let Some(c) = self.conns.get(&conn).filter(|c| !c.peer) else { return Ok(()) };
-        let host = c.host;
+        let Some(c) = self.conns.get(&conn) else { return Ok(()) };
+        let host = c.listed();
+        // on any other connection only this node's Hit at a peer that cannot read L opens it
+        if host.is_none() && !self.shared_by_key(conn, &l) {
+            return Ok(());
+        }
         let Some(lc) = c.labels.get(&l).filter(|x| !x.phase.is_open()) else { return Ok(()) };
         let g = lc.group;
         let shown = match &lc.phase {
             Phase::Testing { shown } => shown.as_deref().cloned(),
             _ => None,
         };
-        let known = if restored { self.state.heads.get(&(host, l)).cloned() } else { None };
+        let known = host.filter(|_| restored).and_then(|h| self.state.heads.get(&(h, l)).cloned());
         let (step, by) = match shown {
             Some((None, k)) => {
                 // no step: whatever a walk reached here is not the head it opened at
-                if let Some(lc) = self.lc_mut(conn, &l) {
+                if let Some(lc) = self.label_at_mut(conn, &l) {
                     (lc.head, lc.keys) = (None, HeadKeys::default());
                 }
                 (None, Some(k))
@@ -347,15 +351,20 @@ impl SyncEngine {
         }
         if let Some(c) = self.conns.get_mut(&conn) {
             c.req.registered.remove(&l);
-            self.refusals.remove(&(host, l));
+            if let Some(h) = host {
+                self.refusals.remove(&(h, l));
+            }
         }
-        if let Some(lc) = self.lc_mut(conn, &l) {
+        if let Some(lc) = self.label_at_mut(conn, &l) {
             lc.phase = Phase::Open { by: by.map(Box::new), doubted: None };
             (lc.step_retry, lc.step_refusals) = (0, 0);
+            // a peer that dialed this node is read as a reader is (`read_as_host`): nothing to
+            // read to its end here, it pulls what this node places
+            lc.synced |= host.is_none();
         }
         self.stream_source_gained(conn, &l, out)?;
         // a stream resumed by the record read it to the peer's end already: a pass end there
-        if self.stream_read_through(conn, &l) {
+        if self.read_as_host(conn, &l) && self.stream_read_through(conn, &l) {
             self.stream_read(conn, l, out)?;
         }
         Ok(())
@@ -365,7 +374,7 @@ impl SyncEngine {
     /// the next thing a blob names it under gets its turn (`vet_inbox_hints`).
     pub(crate) fn fail(&mut self, conn: ConnId, l: LabelId) {
         let now = self.now();
-        let Some(lc) = self.lc_mut(conn, &l) else { return };
+        let Some(lc) = self.label_at_mut(conn, &l) else { return };
         lc.phase = Phase::Failed { entry_refused: false };
         lc.last_sync = now;
         let tried = (l, lc.group);
@@ -378,7 +387,7 @@ impl SyncEngine {
     /// Learns the read secret an accepted static-entry Hit's grant carries (spec/sync.md §10,
     /// Shared set): the path verified from the genesis step, the head's box opened by the key
     /// actor whose static entry `entry` is, and its sync secret deriving the head's sync key.
-    /// The head is the newest step known at `conn` (`LConn::head`) and the path's write keys vouch
+    /// The head is the newest step known at `conn` (`LabelAt::head`) and the path's write keys vouch
     /// for entries there before `label.0` records it. Whether it held.
     pub(crate) fn granted(&mut self, conn: ConnId, l: LabelId, entry: &[u8; 32], grant: &osis_proto::msg::Grant) -> Result<bool> {
         let things = self.things();
@@ -411,7 +420,7 @@ impl SyncEngine {
             return Ok(false);
         }
         self.record_steps(&g, &l, &grant.steps, None)?;
-        if let Some(lc) = self.lc_mut(conn, &l) {
+        if let Some(lc) = self.label_at_mut(conn, &l) {
             lc.head = Some(head.clone());
             for st in &grant.steps {
                 if !lc.writers.contains(&st.keys.write) {
@@ -468,8 +477,8 @@ impl SyncEngine {
     /// `resync_ms`). Open there, on the open head (`doubt`): L stays open, the answer moves its
     /// head.
     pub(crate) fn behind(&mut self, conn: ConnId, l: LabelId, out: &mut Vec<super::Action>) -> Result<()> {
-        let Some(open) = self.lc(conn, &l).map(|x| x.phase.is_open()) else { return Ok(()) };
-        let from = if open { self.lc(conn, &l).and_then(|x| x.head.clone()) } else { self.newest_known(conn, &l) };
+        let Some(open) = self.label_at(conn, &l).map(|x| x.phase.is_open()) else { return Ok(()) };
+        let from = if open { self.label_at(conn, &l).and_then(|x| x.head.clone()) } else { self.newest_known(conn, &l) };
         self.behind_from(conn, l, from, out)
     }
 
@@ -481,7 +490,7 @@ impl SyncEngine {
     /// nearest earlier step holding a credential asks next (`doubt_answered`). L stays open; the
     /// answer, or a head the stream names, moves its head. Once per head.
     pub(crate) fn doubt(&mut self, conn: ConnId, l: LabelId, out: &mut Vec<super::Action>) -> Result<()> {
-        let Some(lc) = self.lc_mut(conn, &l) else { return Ok(()) };
+        let Some(lc) = self.label_at_mut(conn, &l) else { return Ok(()) };
         let head = lc.head.as_ref().map(Step::id);
         let Phase::Open { doubted, .. } = &mut lc.phase else { return Ok(()) };
         if head.is_none() || *doubted == head {
@@ -494,7 +503,7 @@ impl SyncEngine {
     /// Whether `l` is open on `conn` at a head the peer refused a child of or named another head
     /// past (`doubt`): nothing is registered under it until the head moves.
     pub(crate) fn doubting(&self, conn: ConnId, l: &LabelId) -> bool {
-        self.lc(conn, l).is_some_and(|x| matches!(&x.phase, Phase::Open { doubted: Some(d), .. } if x.head.as_ref().is_some_and(|h| h.id() == *d)))
+        self.label_at(conn, l).is_some_and(|x| matches!(&x.phase, Phase::Open { doubted: Some(d), .. } if x.head.as_ref().is_some_and(|h| h.id() == *d)))
     }
 
     /// A Behind item on `asked`, asked while doubting the open head (`doubt`), was refused: 4,
@@ -506,7 +515,7 @@ impl SyncEngine {
     fn doubt_answered(&mut self, conn: ConnId, l: LabelId, asked: &Step, code: Code, out: &mut Vec<super::Action>) -> Result<()> {
         if code == Code::RATE_LIMITED {
             let (now, first, cap) = (self.now(), self.cfg.retry_ms, self.cfg.resync_ms);
-            let Some(lc) = self.lc_mut(conn, &l) else { return Ok(()) };
+            let Some(lc) = self.label_at_mut(conn, &l) else { return Ok(()) };
             if let Phase::Open { doubted, .. } = &mut lc.phase {
                 *doubted = None;
             }
@@ -529,7 +538,7 @@ impl SyncEngine {
     /// another (a new sync key, or the open was by a claim, which is the old step's) the open by
     /// the old one ends, and L tests the new head's credential (`shared_end`).
     pub(crate) fn open_moved(&mut self, conn: ConnId, l: LabelId, step: Step, out: &mut Vec<super::Action>) -> Result<()> {
-        let Some(lc) = self.lc(conn, &l) else { return Ok(()) };
+        let Some(lc) = self.label_at(conn, &l) else { return Ok(()) };
         if lc.head.as_ref().is_some_and(|h| h.id() == step.id()) {
             return Ok(());
         }
@@ -544,7 +553,7 @@ impl SyncEngine {
     /// `behind` on step `from` (none: a hint's, knowing no step). A step the peer refused a
     /// Behind item on in this walk is not asked again.
     fn behind_from(&mut self, conn: ConnId, l: LabelId, from: Option<Step>, out: &mut Vec<super::Action>) -> Result<()> {
-        let Some(lc) = self.lc(conn, &l) else { return Ok(()) };
+        let Some(lc) = self.label_at(conn, &l) else { return Ok(()) };
         let (g, open) = (lc.group, lc.phase.is_open());
         let at_head = from.as_ref().is_some_and(|s| lc.head.as_ref().is_some_and(|h| h.id() == s.id()));
         let (by, refused) = match &lc.phase {
@@ -583,7 +592,7 @@ impl SyncEngine {
             }
             return Ok(());
         }
-        if let Some(lc) = self.lc_mut(conn, &l).filter(|_| !open) {
+        if let Some(lc) = self.label_at_mut(conn, &l).filter(|_| !open) {
             lc.phase = Phase::Behind { refused };
         }
         if !self.shared_behind(conn, l, asks, by_static, out)? && !open {
@@ -607,7 +616,7 @@ impl SyncEngine {
     /// (`asked_before`).
     pub(crate) fn behind_answered(&mut self, conn: ConnId, l: LabelId, asked: Option<Step>, steps: Vec<Step>, code: Code, out: &mut Vec<super::Action>) -> Result<()> {
         let unknown = code == Code::UNKNOWN_LABEL;
-        let Some((g, phase)) = self.lc(conn, &l).map(|x| (x.group, x.phase.clone())) else { return Ok(()) };
+        let Some((g, phase)) = self.label_at(conn, &l).map(|x| (x.group, x.phase.clone())) else { return Ok(()) };
         // each step a child of the one before, the first of the asked one (a hint's: the peer's word)
         let mut parent = asked.as_ref();
         let mut verified = true;
@@ -649,7 +658,7 @@ impl SyncEngine {
                     }
                     // a step the peer gave as a child (on its path): its head, showing none of
                     // this node's credentials: stranded there (spec/permissions.md §4)
-                    Some(a) if self.lc(conn, &l).and_then(|x| x.head.as_ref()).is_some_and(|w| w.id() == a.id()) => {
+                    Some(a) if self.label_at(conn, &l).and_then(|x| x.head.as_ref()).is_some_and(|w| w.id() == a.id()) => {
                         self.fail(conn, l);
                         self.stranded(conn, g, l, out)
                     }
@@ -657,7 +666,7 @@ impl SyncEngine {
                     // or its head showing none of this node's credentials: the nearest recorded
                     // step before it holding a credential asks next, each step once a walk
                     Some(a) => {
-                        if let Some(Phase::Behind { refused }) = self.lc_mut(conn, &l).map(|x| &mut x.phase) {
+                        if let Some(Phase::Behind { refused }) = self.label_at_mut(conn, &l).map(|x| &mut x.phase) {
                             refused.push(a.id());
                         }
                         match self.asked_before(conn, l, &a) {
@@ -677,7 +686,7 @@ impl SyncEngine {
             path.extend(steps.iter().cloned());
             self.record_steps(&g, &l, &path, None)?;
         }
-        if let Some(lc) = self.lc_mut(conn, &l) {
+        if let Some(lc) = self.label_at_mut(conn, &l) {
             for st in &steps {
                 if !lc.writers.contains(&st.keys.write) {
                     lc.writers.push(st.keys.write);
@@ -688,7 +697,7 @@ impl SyncEngine {
             // asked on the doubted open head or a step before it: the last is on the peer's path
             Phase::Open { .. } if doubting && asked.is_some() => self.open_moved(conn, l, last, out),
             Phase::Behind { .. } => {
-                if let Some(lc) = self.lc_mut(conn, &l) {
+                if let Some(lc) = self.label_at_mut(conn, &l) {
                     lc.head = Some(last.clone());
                 }
                 self.step_known(conn, l, last, asked.is_some(), out)
@@ -700,7 +709,7 @@ impl SyncEngine {
     /// The nearest recorded step before `step` whose credential this node holds and that the peer
     /// on `conn` did not refuse a Behind item on in this walk.
     fn asked_before(&mut self, conn: ConnId, l: LabelId, step: &Step) -> Option<Step> {
-        let g = self.lc(conn, &l).map(|x| x.group)?;
+        let g = self.label_at(conn, &l).map(|x| x.group)?;
         let gl = self.group_label(&g, &l)?;
         let mut cur = step.prev;
         let mut n = 0;
@@ -710,7 +719,7 @@ impl SyncEngine {
             if n > gl.steps.len() {
                 return None;
             }
-            let refused = self.lc(conn, &l).is_some_and(|x| matches!(&x.phase, Phase::Behind { refused } if refused.contains(&id)));
+            let refused = self.label_at(conn, &l).is_some_and(|x| matches!(&x.phase, Phase::Behind { refused } if refused.contains(&id)));
             if !refused && !self.step_keys(&g, &l, &st).0.is_empty() {
                 return Some(st);
             }
@@ -724,8 +733,8 @@ impl SyncEngine {
     /// asks on by a credential of it held; else `l` fails there, stranded (spec/permissions.md §4)
     /// unless the step was taken on the peer's word (`verified` false: a hint's).
     fn step_known(&mut self, conn: ConnId, l: LabelId, step: Step, verified: bool, out: &mut Vec<super::Action>) -> Result<()> {
-        let Some(g) = self.lc(conn, &l).map(|x| x.group) else { return Ok(()) };
-        if let Some(lc) = self.lc_mut(conn, &l) {
+        let Some(g) = self.label_at(conn, &l).map(|x| x.group) else { return Ok(()) };
+        if let Some(lc) = self.label_at_mut(conn, &l) {
             lc.phase = Phase::Testing { shown: None };
         }
         let refused = |s: &Self, k: &[u8; 32]| s.conns.get(&conn).is_some_and(|c| c.req.refused.contains(&(l, *k)));
@@ -752,7 +761,7 @@ impl SyncEngine {
     /// one Offer (tried again after a back-off); else its head does not list the entry: refused there
     /// (`static_entry_refused`).
     pub(crate) fn static_answered(&mut self, conn: ConnId, l: LabelId, entry: &[u8; 32], code: Code, grant: Option<&osis_proto::msg::Grant>, out: &mut Vec<super::Action>) -> Result<()> {
-        if self.lc(conn, &l).is_none_or(|x| !matches!(x.phase, Phase::Behind { .. })) {
+        if self.label_at(conn, &l).is_none_or(|x| !matches!(x.phase, Phase::Behind { .. })) {
             return Ok(());
         }
         match (code, grant) {
@@ -771,7 +780,7 @@ impl SyncEngine {
             _ => {
                 self.diag(format!("label {l:?}: the peer's head does not list this node's static entry"));
                 self.fail(conn, l);
-                if let Some(lc) = self.lc_mut(conn, &l) {
+                if let Some(lc) = self.label_at_mut(conn, &l) {
                     lc.phase = Phase::Failed { entry_refused: true };
                 }
                 Ok(())
@@ -796,14 +805,14 @@ impl SyncEngine {
             }
             Pending::Register(l) => *l,
         };
-        let phase = self.lc(conn, &l).map(|x| x.phase.clone());
+        let phase = self.label_at(conn, &l).map(|x| x.phase.clone());
         match phase {
             // a pass's step refused for now (a full peer, the rate, not admitted): the open stays,
             // a later pass registers again after a back-off (else every pass sent it again), and
             // the pass that waited for the step runs now under the peer's head
             Some(Phase::Open { .. }) if matches!(code, Code::STORAGE_CAP | Code::RATE_LIMITED | Code::NOT_ADMITTED) => {
                 let (now, first, cap) = (self.now(), self.cfg.retry_ms, self.cfg.resync_ms);
-                if let Some(lc) = self.lc_mut(conn, &l) {
+                if let Some(lc) = self.label_at_mut(conn, &l) {
                     lc.registering = None;
                     lc.step_retry = now.saturating_add(backoff(first, cap, lc.step_refusals));
                     lc.step_refusals = lc.step_refusals.saturating_add(1);
@@ -825,7 +834,7 @@ impl SyncEngine {
             // 9: a genesis alone is asked past by a Behind item; a longer path's Behind item was
             // refused (or none could go): the peer holds L off this node's path
             Some(Phase::Registering { .. }) if code == Code::NOT_HEAD => {
-                let Some(Phase::Registering { path }) = self.lc_mut(conn, &l).map(|x| &mut x.phase) else { return Ok(()) };
+                let Some(Phase::Registering { path }) = self.label_at_mut(conn, &l).map(|x| &mut x.phase) else { return Ok(()) };
                 if !path.is_empty() {
                     path.remove(0);
                 }
@@ -843,8 +852,8 @@ impl SyncEngine {
             // under again (`doubt`); a child of a head the stream moved past since: the next pass
             // registers under the new one
             Some(Phase::Open { .. }) => {
-                let head = self.lc(conn, &l).and_then(|x| x.head.as_ref().map(Step::id));
-                let Some(lc) = self.lc_mut(conn, &l) else { return Ok(()) };
+                let head = self.label_at(conn, &l).and_then(|x| x.head.as_ref().map(Step::id));
+                let Some(lc) = self.label_at_mut(conn, &l) else { return Ok(()) };
                 let under_head = lc.registering.take().is_some_and(|(s, _)| s.prev.is_some() && s.prev == head);
                 self.diag(format!("label {l:?}: step refused (code {})", code.0));
                 if under_head {
@@ -856,7 +865,7 @@ impl SyncEngine {
             // a child step refused after the open ended, or the rest of a path's steps whose
             // registration ended
             _ => {
-                if let Some(lc) = self.lc_mut(conn, &l) {
+                if let Some(lc) = self.label_at_mut(conn, &l) {
                     lc.registering = None;
                 }
                 self.diag(format!("label {l:?}: step refused (code {})", code.0));
@@ -872,12 +881,12 @@ impl SyncEngine {
     fn refused_for_now(&mut self, conn: ConnId, l: LabelId, code: Code) {
         let now = self.now();
         let (first, cap) = (self.cfg.retry_ms, self.cfg.resync_ms);
-        let Some(c) = self.conns.get_mut(&conn) else { return };
-        let (n, last) = self.refusals.entry((c.host, l)).or_insert((0, code));
+        let Some(key) = self.conns.get(&conn).and_then(super::Conn::key) else { return };
+        let (n, last) = self.refusals.entry((key, l)).or_insert((0, code));
         let wait = backoff(first, cap, *n);
         *n = n.saturating_add(1);
         *last = code;
-        if let Some(lc) = c.labels.get_mut(&l) {
+        if let Some(lc) = self.label_at_mut(conn, &l) {
             lc.phase = Phase::Refused { retry_at: now.saturating_add(wait) };
         }
         self.diag(format!("label {l:?}: not opened for now (code {}), again in {} s", code.0, wait / 1000));
@@ -886,7 +895,7 @@ impl SyncEngine {
     /// The host does not hold the label: register the recorded path from the genesis step
     /// along the deepest branch (relayable by any node, spec/sync.md §5), then open.
     fn register_path(&mut self, conn: ConnId, l: LabelId, out: &mut Vec<super::Action>) -> Result<()> {
-        let Some(g) = self.lc(conn, &l).map(|x| x.group) else { return Ok(()) };
+        let Some(g) = self.label_at(conn, &l).map(|x| x.group) else { return Ok(()) };
         // nothing to register with: it is not at this host yet (an inbox blob's sender still
         // registering it, a card whose first admin has not), so no other key would open it either
         let Some(path) = self.group_label(&g, &l).and_then(|gl| deepest_path(&gl.steps).map(|p| p.into_iter().cloned().collect::<Vec<_>>())) else {
@@ -899,7 +908,7 @@ impl SyncEngine {
             // a hint's label: the peer may hold it at a head past the sync keys held
             return self.behind(conn, l, out);
         };
-        if let Some(lc) = self.lc_mut(conn, &l) {
+        if let Some(lc) = self.label_at_mut(conn, &l) {
             lc.phase = Phase::Registering { path: path.iter().map(|(s, _)| s.clone()).collect() };
         }
         for (step, claim_set) in path {
@@ -911,7 +920,7 @@ impl SyncEngine {
     /// A Register was accepted: the next step of a path registration, or the child step a pass
     /// issued.
     pub(crate) fn registered(&mut self, conn: ConnId, l: LabelId, out: &mut Vec<super::Action>) -> Result<()> {
-        let Some(lc) = self.lc_mut(conn, &l) else { return Ok(()) };
+        let Some(lc) = self.label_at_mut(conn, &l) else { return Ok(()) };
         if let Phase::Registering { path } = &mut lc.phase {
             if !path.is_empty() {
                 path.remove(0);
@@ -923,7 +932,7 @@ impl SyncEngine {
                 }
                 // deposits refused while the label was unknown there go now, not after their
                 // back-off (a node's own deposits under a label it just created)
-                if let Some(host) = self.conns.get(&conn).map(|c| c.host) {
+                if let Some(host) = self.conns.get(&conn).and_then(super::Conn::key) {
                     for (_, o) in self.outbox.range_mut((host, l, osis_base::BlobId([0; 32]))..=(host, l, osis_base::BlobId([0xff; 32]))) {
                         o.after = 0;
                     }
@@ -959,7 +968,7 @@ impl SyncEngine {
     /// credential; a member of the connection's set already (the peer's Hit came while this node
     /// registered L there, `member_unread_there` waiting for no Testing then) is open there at once.
     pub(crate) fn retest_label(&mut self, conn: ConnId, l: LabelId, out: &mut Vec<super::Action>) -> Result<()> {
-        if let Some(lc) = self.lc_mut(conn, &l) {
+        if let Some(lc) = self.label_at_mut(conn, &l) {
             lc.phase = Phase::Testing { shown: None };
         }
         if self.shared_member(conn, &l) {
@@ -971,13 +980,15 @@ impl SyncEngine {
     /// Takes `step` as the head of `l` on `conn`: its keys derived, recorded for the peer, a
     /// pass wanted (judging everything when the head moved).
     pub(crate) fn set_head(&mut self, conn: ConnId, l: LabelId, step: Step) -> Result<()> {
-        let Some(host) = self.conns.get(&conn).map(|c| c.host) else { return Ok(()) };
-        let Some(lc) = self.lc(conn, &l) else { return Ok(()) };
+        let host = self.conns.get(&conn).and_then(super::Conn::key);
+        let Some(lc) = self.label_at(conn, &l) else { return Ok(()) };
         let g = lc.group;
         let keys = self.engine.head_keys(&g, &step)?;
-        self.state.set_head(host, l, &step);
+        if let Some(host) = host {
+            self.state.set_head(host, l, &step);
+        }
         let mut moved = false;
-        if let Some(lc) = self.lc_mut(conn, &l) {
+        if let Some(lc) = self.label_at_mut(conn, &l) {
             moved = lc.head.as_ref().is_some_and(|h| h.id() != step.id());
             lc.head = Some(step);
             lc.keys = keys;

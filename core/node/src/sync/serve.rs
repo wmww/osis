@@ -1,9 +1,9 @@
-//! Served connections (spec/sync.md §5, §10): every connection a peer opens on one of this
-//! node's listeners is a session of the node's hub (`osis_host::Hub`), which answers the store's
-//! kinds; node sync is its upper layer and keeps it here as a `Served` by the hub's connection
-//! ID (`hub_up`): proofs, records, the shared set, the stream and the client port run on it as
-//! on a dialed connection, its messages going down as `Action::Hub`. It serves any number of
-//! connections (spec/sync.md §10 Served connections). What a peer's stream or Deposit items bring is charged to
+//! Connections at the hub (spec/sync.md §5, §10): every connection, dialed or one a peer opens
+//! on one of this node's listeners, is a session of the node's hub (`osis_host::Hub`), which
+//! answers the store's kinds; node sync is its upper layer (`hub_up`) and keeps one record of
+//! it (`Conn`): proofs, records, the shared set, the stream, push room and the client port run
+//! on it alike, its messages going down as `Action::Hub`. It serves any number of connections
+//! (spec/sync.md §10 Served connections). What a peer's stream or Deposit items bring is charged to
 //! its source (`Proven::source`) when known here, else the label (dialer keys are fresh per
 //! connection), and to a node-wide total (`SyncConfig` `peer_bytes`, `peer_total_bytes`) while
 //! it gives nothing held and is at no host; the source is kept with the entry (`Entry::source`).
@@ -53,31 +53,7 @@ impl ServedLabel {
     }
 }
 
-/// A connection the hub serves.
-#[derive(Clone)]
-pub(crate) struct Served {
-    /// The hub's connection ID.
-    hub: osis_host::ConnId,
-    /// `(dialer challenge, listener challenge, listener key)`.
-    binding: ([u8; 32], [u8; 32], [u8; 32]),
-    tier: super::Tier,
-    /// It made a client-port request (`Action::Ended` when it goes).
-    ported: bool,
-    /// What this connection's dialer proved (spec/sync.md §10), read by `SyncEngine::proven`.
-    proven: super::proofs::Proven,
-    /// The actors this node proved to it in answer (`SyncEngine::proved`).
-    proved: BTreeSet<Tid>,
-    /// The dialer proved a known actor, so this node answered with its own proofs (`reprove`).
-    answered: bool,
-    /// How far its proof exchange went: Prove, then Resume, each at most once (spec/wire.md
-    /// §11.2).
-    asked: Asked,
-    /// A thin client's: the hash of the secret it authenticated with and its entry's end
-    /// (wall ms). The session ends with the entry, with that hash, at that end.
-    client: Option<ClientBinding>,
-}
-
-/// Who pushes on a served connection: the client port's Notifies or the stream.
+/// Who pushes on a connection: the client port's Notifies or the stream.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Pusher {
     Port,
@@ -96,15 +72,17 @@ pub(crate) struct Room {
     held: Option<(Pusher, usize)>,
 }
 
+/// How far a dialer's proof exchange went (`Conn::asked`).
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Asked {
+pub(crate) enum Asked {
     Nothing,
     Prove,
     Resume,
 }
 
+/// A thin client's: the hash of the secret it authenticated with and its entry's end (wall ms).
 #[derive(Clone, Copy)]
-struct ClientBinding {
+pub(crate) struct ClientBinding {
     hash: [u8; 32],
     until: Option<u64>,
 }
@@ -182,68 +160,36 @@ fn charge_key(source: Option<Tid>, label: &LabelId) -> [u8; 32] {
 }
 
 impl SyncEngine {
-    /// What the node's hub handed up for its connection `id` (`osis_host::Up`): its start makes
-    /// a served session, its node-kind messages are judged here, its
-    /// client-port requests go to the holder of the engine (`admit`), its push room to the
-    /// pusher whose turn it is, its end ends the session.
+    /// What the node's hub handed up for its connection `id` (`osis_host::Up`), dialed or served:
+    /// a served one's start makes its record, its start starts it (`conn_start`), its node-kind
+    /// messages are judged here, its client-port requests go to the holder of the engine
+    /// (`admit`), its push room to the pusher whose turn it is, its end ends it.
     pub(super) fn hub_up(&mut self, id: osis_host::ConnId, up: osis_host::Up, out: &mut Vec<Action>) -> Result<()> {
         use osis_host::Up;
-        // a connection this node dialed
-        if let Some(conn) = self.hub_conns.get(&id).copied().filter(|c| self.conns.contains_key(c)) {
-            let now = self.now();
-            if let Some(c) = self.conns.get_mut(&conn) {
-                c.heard = now;
-            }
-            match up {
-                Up::Start(b) => {
-                    self.rooms.insert(conn, Room::default());
-                    self.dialed_start(conn, (b.dialer, b.listener, b.key), b.remote.relayed, out)?;
-                }
-                Up::Message(m) => {
-                    self.state.now = self.now();
-                    self.dialed_message(conn, *m, out)?;
-                }
-                // the client port on a dialed connection: refused (issues/net-one-peer.md 3i3c)
-                Up::Request(m) => {
-                    if !matches!(*m, osis_proto::Message::Unsub { .. }) {
-                        self.hub_down(conn, Down::Reply { id: m.id(), reply: Err(osis_proto::Code::UNSUPPORTED) }, out);
-                    }
-                }
-                Up::Room { budget } => self.room_granted(conn, budget, out),
-                Up::End => self.lost(conn),
-            }
-            return Ok(());
-        }
-        if let Up::Start(b) = up {
+        // a connection a peer dialed: its record from its start
+        if matches!(up, Up::Start(_)) && !self.hub_conns.contains_key(&id) {
             let conn = self.next_conn;
             self.next_conn += 1;
-            // the main actor's tier comes from the transport type alone, never a key value
-            let tier = match b.remote.peer {
-                osis_transport::Peer::Unix { uid } if osis_transport::unix::own_uid().is_ok_and(|o| o == uid) => super::Tier::Main,
-                _ => super::Tier::Keyed,
-            };
-            self.served.insert(conn, Served { hub: id, binding: (b.dialer, b.listener, b.key), tier, ported: false, proven: super::proofs::Proven::default(), proved: BTreeSet::new(), answered: false, asked: Asked::Nothing, client: None });
-            self.rooms.insert(conn, Room::default());
+            self.conns.insert(conn, super::Conn::new(None, Some(id), super::Tier::Keyed));
             self.hub_conns.insert(id, conn);
-            // both ends tell a relayed connection alike, before its first message
-            if b.remote.relayed {
-                self.set_relayed(conn);
-            }
-            return Ok(());
         }
         let Some(conn) = self.hub_conns.get(&id).copied() else { return Ok(()) };
+        let now = self.now();
+        if let Some(c) = self.conns.get_mut(&conn) {
+            c.heard = now;
+        }
         match up {
-            Up::Start(_) => {}
+            Up::Start(b) => self.conn_start(conn, b, out)?,
             Up::Message(m) => {
                 self.state.now = self.now();
-                if let Some(bound) = self.served_peer(conn, *m, out)? {
+                if let Some(bound) = self.conn_message(conn, *m, out)? {
                     self.bind_record(conn, bound, out)?;
                 }
             }
             // nothing of an unauthenticated keyed session goes on, and no secret ever does
             Up::Request(msg) => {
-                if let Some(s) = self.served.get_mut(&conn) {
-                    s.ported = true;
+                if let Some(c) = self.conns.get_mut(&conn) {
+                    c.ported = true;
                 }
                 match self.admit(conn, *msg) {
                     Ok((tier, msg)) => out.push(Action::Request { conn, tier, msg: Box::new(msg) }),
@@ -251,14 +197,14 @@ impl SyncEngine {
                 }
             }
             Up::Room { budget } => self.room_granted(conn, budget, out),
-            Up::End => self.end_served(conn, out),
+            Up::End => self.lost(conn, out),
         }
         Ok(())
     }
 
     /// The session of `conn` granted push room: to the pusher whose turn it is.
     fn room_granted(&mut self, conn: ConnId, budget: usize, out: &mut Vec<Action>) {
-        let Some(r) = self.rooms.get_mut(&conn) else { return };
+        let Some(r) = self.conns.get_mut(&conn).map(|c| &mut c.room) else { return };
         r.asked = false;
         if let Some(p) = r.waiting.pop_front() {
             r.held = Some((p, budget));
@@ -271,19 +217,16 @@ impl SyncEngine {
     /// A message, answer or close for connection `conn`, dialed or served, to its hub session.
     pub(crate) fn hub_down(&mut self, conn: ConnId, down: Down, out: &mut Vec<Action>) {
         let now = self.now();
-        let hub = self.served.get(&conn).map(|s| s.hub).or_else(|| {
-            let c = self.conns.get_mut(&conn)?;
-            c.heard = now;
-            c.hub
-        });
-        if let Some(hub) = hub {
+        let Some(c) = self.conns.get_mut(&conn) else { return };
+        c.heard = now;
+        if let Some(hub) = c.hub {
             out.push(Action::Hub { conn: hub, down });
         }
     }
 
     /// Pusher `p` of connection `conn` waits for room (behind those that asked first).
     fn want_room(&mut self, conn: ConnId, p: Pusher, out: &mut Vec<Action>) {
-        let Some(r) = self.rooms.get_mut(&conn) else { return };
+        let Some(r) = self.conns.get_mut(&conn).map(|c| &mut c.room) else { return };
         if r.held.is_some_and(|(h, _)| h == p) || r.waiting.contains(&p) {
             return;
         }
@@ -293,7 +236,7 @@ impl SyncEngine {
 
     /// Asks the session for room when someone waits and no grant is out or asked.
     fn ask_room(&mut self, conn: ConnId, out: &mut Vec<Action>) {
-        let Some(r) = self.rooms.get_mut(&conn) else { return };
+        let Some(r) = self.conns.get_mut(&conn).map(|c| &mut c.room) else { return };
         if r.held.is_none() && !r.asked && !r.waiting.is_empty() {
             r.asked = true;
             self.hub_down(conn, Down::WantRoom, out);
@@ -302,7 +245,7 @@ impl SyncEngine {
 
     /// Pusher `p` is done with the room it held: the next in line asks.
     fn release_room(&mut self, conn: ConnId, p: Pusher, out: &mut Vec<Action>) {
-        let Some(r) = self.rooms.get_mut(&conn) else { return };
+        let Some(r) = self.conns.get_mut(&conn).map(|c| &mut c.room) else { return };
         if r.held.is_some_and(|(h, _)| h == p) {
             r.held = None;
             self.ask_room(conn, out);
@@ -324,7 +267,7 @@ impl SyncEngine {
     /// Bytes a stream push on `conn` may take now: only within the room its session granted the
     /// stream, dialed or served; none: it waits (room asked in its turn).
     pub(super) fn push_room(&mut self, conn: ConnId, out: &mut Vec<Action>) -> Option<usize> {
-        if let Some((Pusher::Stream, b)) = self.rooms.get(&conn)?.held {
+        if let Some((Pusher::Stream, b)) = self.conns.get(&conn)?.room.held {
             return Some(b);
         }
         self.want_room(conn, Pusher::Stream, out);
@@ -339,7 +282,7 @@ impl SyncEngine {
     /// Connections whose stream holds room it did not use in this step (its push went elsewhere
     /// or nothing was due): given back.
     pub(super) fn stream_room_unused(&mut self, pushed: &BTreeSet<ConnId>, out: &mut Vec<Action>) {
-        let holding: Vec<ConnId> = self.rooms.iter().filter(|(c, r)| matches!(r.held, Some((Pusher::Stream, _))) && !pushed.contains(c)).map(|(c, _)| *c).collect();
+        let holding: Vec<ConnId> = self.conns.iter().filter(|(c, x)| matches!(x.room.held, Some((Pusher::Stream, _))) && !pushed.contains(c)).map(|(c, _)| *c).collect();
         for c in holding {
             // the session's reservation of it too
             self.hub_down(c, Down::Notify(Vec::new()), out);
@@ -347,30 +290,9 @@ impl SyncEngine {
         }
     }
 
-    /// Each served session's shared set's members (tests, diagnostics).
+    /// Each served connection's shared set's members (tests, diagnostics).
     pub fn served_opened(&self) -> BTreeMap<ConnId, BTreeSet<LabelId>> {
-        self.served.keys().map(|c| (*c, self.shared_members(*c).into_iter().collect())).collect()
-    }
-
-    pub(super) fn served_proven_all(&self) -> Vec<(ConnId, BTreeSet<Tid>)> {
-        self.served.iter().map(|(c, s)| (*c, s.proven.all())).collect()
-    }
-
-    /// The actors served session `conn` proved (`SyncEngine::proven`).
-    pub(super) fn served_proven(&self, conn: ConnId) -> Option<&super::proofs::Proven> {
-        self.served.get(&conn).map(|s| &s.proven)
-    }
-
-    /// Served sessions this node answered with its proofs that lack one it would prove now
-    /// (`reprove`): `now` is its proofs to a node of another account, then to one of its own.
-    pub(super) fn served_stale(&self, now: &(BTreeSet<Tid>, BTreeSet<Tid>)) -> Vec<ConnId> {
-        let mine = |s: &Served| if super::proofs::own_peer(&self.engine, &s.proven) { &now.1 } else { &now.0 };
-        self.served.iter().filter(|(_, s)| s.answered && !mine(s).is_subset(&s.proved)).map(|(c, _)| *c).collect()
-    }
-
-    /// What this node proved to served session `conn`'s dialer.
-    pub(super) fn served_proved(&self, conn: ConnId) -> Option<&BTreeSet<Tid>> {
-        self.served.get(&conn).map(|s| &s.proved)
+        self.conns.iter().filter(|(_, c)| c.dial.is_none()).map(|(c, _)| (*c, self.shared_members(*c).into_iter().collect())).collect()
     }
 
     /// The labels this node serves to readers: those it syncs, at the deepest recorded step.
@@ -533,26 +455,14 @@ impl SyncEngine {
         self.charges.full = false;
     }
 
-    /// A node-kind message from served session `conn`'s dialer. Returns the record a Resume
-    /// bound, for `bind_record` once the answer is out: the shared set's first messages follow
-    /// it on the wire, so the dialer has begun its own set when they arrive.
-    fn served_peer(&mut self, conn: ConnId, m: osis_proto::Message, out: &mut Vec<Action>) -> Result<Option<(osis_store::RecordId, bool)>> {
-        match m {
-            osis_proto::Message::Prove { id, proofs } => self.served_prove(conn, id, proofs, out)?,
-            osis_proto::Message::Resume { id, nonce, tags } => return Ok(self.served_resume(conn, id, nonce, tags, out)?.filter(|_| self.served.contains_key(&conn))),
-            m => self.peer_message(conn, m, out)?,
-        }
-        Ok(None)
-    }
-
-    /// A served dialer's Prove (spec/sync.md §10): its proofs over this side's challenge and
+    /// The Prove of `conn`'s dialer, on a connection the peer dialed (spec/sync.md §10): its proofs over this side's challenge and
     /// key count (one made for another connection or listener proves nothing here); this node
     /// answers its own, over the dialer's challenge, only to a dialer that proved an actor it
     /// knows. At most one per connection, after the dialer's Hello.
-    fn served_prove(&mut self, conn: ConnId, id: osis_proto::msg::Id, proofs: Vec<osis_proto::ActorProof>, out: &mut Vec<Action>) -> Result<()> {
+    pub(super) fn answer_prove(&mut self, conn: ConnId, id: osis_proto::msg::Id, proofs: Vec<osis_proto::ActorProof>, out: &mut Vec<Action>) -> Result<()> {
         use osis_proto::{Code, Message};
-        let Some(s) = self.served.get_mut(&conn) else { return Ok(()) };
-        let Some((dialer, ch, key)) = (s.asked == Asked::Nothing).then_some(s.binding) else {
+        let Some(s) = self.conns.get_mut(&conn) else { return Ok(()) };
+        let Some((dialer, ch, key)) = s.binding.filter(|_| s.asked == Asked::Nothing) else {
             self.hub_down(conn, Down::Message(Box::new(Message::Error { id, code: Code::MALFORMED })), out);
             return Ok(());
         };
@@ -574,7 +484,7 @@ impl SyncEngine {
                 return Ok(());
             }
         };
-        if let Some(s) = self.served.get_mut(&conn) {
+        if let Some(s) = self.conns.get_mut(&conn) {
             s.proven = proven;
             s.proved = mine.iter().map(|p| p.actor()).collect();
             s.answered = known;
@@ -583,14 +493,14 @@ impl SyncEngine {
         Ok(())
     }
 
-    /// A served dialer's Resume (spec/sync.md §10, Pair key): answered with a record of the
+    /// The Resume of `conn`'s dialer, on a connection the peer dialed (spec/sync.md §10, Pair key): answered with a record of the
     /// actors it proved that are known here, found by its tags or made; Error 1 when it proved
     /// none. At most one per connection, after its Prove. Returns the record for `bind_record`,
     /// which waits until the answer is out (`serve_with`).
-    fn served_resume(&mut self, conn: ConnId, id: osis_proto::msg::Id, nonce: [u8; 32], tags: Vec<[u8; 32]>, out: &mut Vec<Action>) -> Result<Option<(osis_store::RecordId, bool)>> {
+    pub(super) fn answer_resume(&mut self, conn: ConnId, id: osis_proto::msg::Id, nonce: [u8; 32], tags: Vec<[u8; 32]>, out: &mut Vec<Action>) -> Result<Option<(osis_store::RecordId, bool)>> {
         use osis_proto::{Code, Message};
-        let Some(s) = self.served.get_mut(&conn) else { return Ok(None) };
-        let Some((dialer, ch, key)) = (s.asked == Asked::Prove).then_some(s.binding) else {
+        let Some(s) = self.conns.get_mut(&conn) else { return Ok(None) };
+        let Some((dialer, ch, key)) = s.binding.filter(|_| s.asked == Asked::Prove) else {
             self.hub_down(conn, Down::Message(Box::new(Message::Error { id, code: Code::MALFORMED })), out);
             return Ok(None);
         };
@@ -613,7 +523,7 @@ impl SyncEngine {
         Ok(Some(bound))
     }
 
-    /// Decides what a served session's client-port request goes up as (notes/client-port.md §3).
+    /// Decides what a connection's client-port request goes up as (notes/client-port.md §3).
     /// A main session's Auth without a secret; a keyed session's with a secret matching a current
     /// `clients^.0` entry, which binds the session to that client actor, its secret stripped;
     /// any other Auth (a second one too) is Error 1. Proto refuses Call, Sub and Unsub before an
@@ -621,7 +531,7 @@ impl SyncEngine {
     fn admit(&mut self, conn: ConnId, msg: osis_proto::Message) -> std::result::Result<(super::Tier, osis_proto::Message), (osis_proto::msg::Id, osis_proto::Code)> {
         use super::Tier;
         use osis_proto::{Code, Message};
-        let tier = self.served.get(&conn).map_or(Tier::Keyed, |s| s.tier);
+        let tier = self.conns.get(&conn).map_or(Tier::Keyed, |s| s.tier);
         let id = msg.id();
         let Message::Auth { secret, session, .. } = msg else {
             return if tier == Tier::Keyed { Err((id, Code::REFUSED)) } else { Ok((tier, msg)) };
@@ -631,12 +541,12 @@ impl SyncEngine {
             (Tier::Keyed, Some(secret)) => {
                 let hash = osis_base::hash::hash(secret.expose());
                 let Some((actor, until)) = self.client_entry_by_hash(&hash) else { return Err((id, Code::REFUSED)) };
-                let of_it = self.served.values().filter(|s| s.tier == Tier::Client(actor)).count();
-                let all = self.served.values().filter(|s| matches!(s.tier, Tier::Client(_))).count();
+                let of_it = self.conns.values().filter(|s| s.tier == Tier::Client(actor)).count();
+                let all = self.conns.values().filter(|s| matches!(s.tier, Tier::Client(_))).count();
                 if of_it >= super::MAX_CONNS_PER_CLIENT || all >= self.cfg.max_clients {
                     return Err((id, Code::RATE_LIMITED));
                 }
-                let Some(s) = self.served.get_mut(&conn) else { return Err((id, Code::REFUSED)) };
+                let Some(s) = self.conns.get_mut(&conn) else { return Err((id, Code::REFUSED)) };
                 s.tier = Tier::Client(actor);
                 s.client = Some(ClientBinding { hash, until });
                 Ok((s.tier, Message::Auth { id, secret: None, session }))
@@ -665,12 +575,12 @@ impl SyncEngine {
         hit.filter(|(_, until)| until.is_none_or(|u| u > now))
     }
 
-    /// The client actor served session `conn` runs as now: none unless the session is bound to
+    /// The client actor connection `conn` runs as now: none unless the session is bound to
     /// a client whose entry is still there, under the same secret, and not past its `until`.
     /// The port asks at every request and every send, so no answer outlives the entry.
     pub fn client_of(&mut self, conn: ConnId) -> Option<Tid> {
         let now = self.now();
-        let (super::Tier::Client(actor), Some(b)) = self.served.get(&conn).map(|s| (s.tier, s.client))? else { return None };
+        let (super::Tier::Client(actor), Some(b)) = self.conns.get(&conn).map(|s| (s.tier, s.client))? else { return None };
         let e = self.client_entries().remove(&actor)?;
         b.holds(&e, now).then_some(actor)
     }
@@ -678,13 +588,13 @@ impl SyncEngine {
     /// After a `clients^.0` change: sessions of a client removed, rotated or past its `until` end;
     /// the others take their entry's `until` (the timer `serve_timers` closes them by).
     pub(crate) fn clients_changed(&mut self, out: &mut Vec<Action>) {
-        if !self.served.values().any(|s| s.client.is_some()) {
+        if !self.conns.values().any(|s| s.client.is_some()) {
             return;
         }
         let entries = self.client_entries();
         let now = self.now();
         let mut stale = Vec::new();
-        for (c, s) in self.served.iter_mut() {
+        for (c, s) in self.conns.iter_mut() {
             let (super::Tier::Client(actor), Some(b)) = (s.tier, s.client.as_mut()) else { continue };
             match entries.get(&actor) {
                 Some(e) if b.holds(e, now) => b.until = e.until.map(|u| u.0),
@@ -692,16 +602,11 @@ impl SyncEngine {
             }
         }
         for c in stale {
-            self.close_served(c, out);
+            self.close(c, out);
         }
     }
 
-    /// A served session's `(dialer challenge, listener challenge, listener key)`.
-    pub(crate) fn served_binding(&self, conn: ConnId) -> Option<([u8; 32], [u8; 32], [u8; 32])> {
-        self.served.get(&conn).map(|s| s.binding)
-    }
-
-    /// The served session the hub runs as its connection `id` (test harnesses).
+    /// The connection the hub runs as its connection `id`, dialed or served (test harnesses).
     #[doc(hidden)]
     pub fn served_conn(&self, id: osis_host::ConnId) -> Option<ConnId> {
         self.hub_conns.get(&id).copied()
@@ -710,28 +615,7 @@ impl SyncEngine {
     /// The hub's connection `conn` runs on, dialed or served (test harnesses).
     #[doc(hidden)]
     pub fn hub_conn(&self, conn: ConnId) -> Option<osis_host::ConnId> {
-        self.served.get(&conn).map(|s| s.hub).or_else(|| self.conns.get(&conn).and_then(|c| c.hub))
-    }
-
-    pub(crate) fn served_has(&self, conn: ConnId) -> bool {
-        self.served.contains_key(&conn)
-    }
-
-    pub(crate) fn end_served(&mut self, conn: ConnId, out: &mut Vec<Action>) {
-        self.records.conn_gone(conn);
-        self.streams.remove(&conn);
-        let Some(s) = self.served.remove(&conn) else { return };
-        self.rooms.remove(&conn);
-        self.hub_conns.remove(&s.hub);
-        if s.ported {
-            out.push(Action::Ended { conn });
-        }
-    }
-
-    /// Ends served session `conn` from this side.
-    pub(crate) fn close_served(&mut self, conn: ConnId, out: &mut Vec<Action>) {
-        self.hub_down(conn, Down::Close, out);
-        self.end_served(conn, out);
+        self.conns.get(&conn).and_then(|c| c.hub)
     }
 
     /// Closes the sessions of a client past its `until`; expires the memory log's deletions and this node's
@@ -740,9 +624,9 @@ impl SyncEngine {
     pub(crate) fn serve_timers(&mut self, out: &mut Vec<Action>) {
         let now = self.now();
         // a thin client's `until` passed: no other change is needed to end it
-        let stale: Vec<ConnId> = self.served.iter().filter(|(_, s)| s.client.is_some_and(|b| b.until.is_some_and(|u| u <= now))).map(|(c, _)| *c).collect();
+        let stale: Vec<ConnId> = self.conns.iter().filter(|(_, s)| s.client.is_some_and(|b| b.until.is_some_and(|u| u <= now))).map(|(c, _)| *c).collect();
         for c in stale {
-            self.close_served(c, out);
+            self.close(c, out);
         }
         let wall = self.state.now;
         self.state.mem_log.expire(wall);
@@ -767,6 +651,6 @@ impl SyncEngine {
 
     /// When the next client's `until` comes.
     pub(crate) fn serve_wake(&self) -> Option<u64> {
-        self.served.values().filter_map(|s| s.client.and_then(|b| b.until)).min()
+        self.conns.values().filter_map(|s| s.client.and_then(|b| b.until)).min()
     }
 }

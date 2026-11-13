@@ -54,7 +54,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::sync::mpsc::Receiver;
 
-pub(crate) use conn::{Conn, LConn, Phase, in_flight};
+pub(crate) use conn::{Conn, LabelAt, Phase, in_flight};
 pub use host::{host_policy, host_policy_known, hub_store, hub_store_on};
 pub use osis_host::HostPolicy;
 pub use io::{Action, ConnId, Event, LabelStatus, MAX_CONNS_PER_CLIENT, PassStats, SyncConfig, Tier};
@@ -296,12 +296,8 @@ pub struct SyncEngine {
     pub(crate) changed_moved: BTreeSet<LabelId>,
     /// Engine changes not yet spread to the labels' work sets (`spread_touches`).
     pub(crate) touched: work::Touched,
-    /// The connections this node's hub serves (spec/sync.md §5, §10).
-    pub(crate) served: BTreeMap<ConnId, serve::Served>,
-    /// The hub's connection IDs of the served connections and the dialed ones up.
+    /// The hub's connection IDs of the connections up.
     pub(crate) hub_conns: BTreeMap<osis_host::ConnId, ConnId>,
-    /// Push room per connection, dialed or served (`serve::Room`).
-    pub(crate) rooms: BTreeMap<ConnId, serve::Room>,
     /// Registrations a host refused for now in a row, per (host, label), whatever connection
     /// (the back-off doubles per refusal), with the last refusal's code (status shows a label not
     /// admitted, code 14). Bounded by labels times hosts.
@@ -465,9 +461,7 @@ impl SyncEngine {
             tied: Default::default(),
             synced: Default::default(),
             synced_of: crate::engine::memo::Memo::new("labels synced"),
-            served: Default::default(),
             hub_conns: Default::default(),
-            rooms: Default::default(),
             refusals: Default::default(),
             covered_judged: Default::default(),
             stats: Default::default(),
@@ -521,7 +515,7 @@ impl SyncEngine {
         let started_ = self.engine.now().0;
         let SyncEngine {
             engine: _, events: _, rng: _, cfg: _, hub_store: _, next_conn: _, diagnostics: _, store_writes: _, restart_due: _, restarted_at: _, hosting: _,
-            forget_seeded, pending_seeded, unvouched_reported, conns, retry, redialed, stand_in, redeeming, provers_mark, own_key, state, seq, passes, wake, last_tick, outbox, local_inbox, left, lifetimes_heard, first, relay_now, body_links, inbox_opened, vetted, hint_failed, inbox_copied, secrets_counted, reading_counted, unsettled_memo, relink_backoff, relink_pending, reask, relink_at, deferred, genuine, reread_boxes, start_look, redelivered, awaits_secrets, retry_inbox, inbox_awaits, inbox_plain, unchecked_swept, settle_at, held_since, pass_due, due_labels, own_wrote, fill_due, passed_at, passing, work, deposit_seen, stranded_sent, stranded_on, stranded_asks, resealed, suspects_sent, suspects_gen, suspects_due, repair_state, links_failed, joined_touched, joined_failed, tied, synced, synced_of, served, hub_conns, rooms, refusals, covered_judged, stats, records, streams, changed_due, changed_gen, touched, own_keys, lan, lan_rotate, reach_account, served_cache, unread, charges, blob_sizes, swept, peer_cache, peer_received, peer_passes, sources_gen, shared_dirty, changed_moved, role_change, pass_wanted, started, rotation_at, placed_cache, placed_waiting, rotated, last_synced, clients_moved, prefix_checked, memory,
+            forget_seeded, pending_seeded, unvouched_reported, conns, retry, redialed, stand_in, redeeming, provers_mark, own_key, state, seq, passes, wake, last_tick, outbox, local_inbox, left, lifetimes_heard, first, relay_now, body_links, inbox_opened, vetted, hint_failed, inbox_copied, secrets_counted, reading_counted, unsettled_memo, relink_backoff, relink_pending, reask, relink_at, deferred, genuine, reread_boxes, start_look, redelivered, awaits_secrets, retry_inbox, inbox_awaits, inbox_plain, unchecked_swept, settle_at, held_since, pass_due, due_labels, own_wrote, fill_due, passed_at, passing, work, deposit_seen, stranded_sent, stranded_on, stranded_asks, resealed, suspects_sent, suspects_gen, suspects_due, repair_state, links_failed, joined_touched, joined_failed, tied, synced, synced_of, hub_conns, refusals, covered_judged, stats, records, streams, changed_due, changed_gen, touched, own_keys, lan, lan_rotate, reach_account, served_cache, unread, charges, blob_sizes, swept, peer_cache, peer_received, peer_passes, sources_gen, shared_dirty, changed_moved, role_change, pass_wanted, started, rotation_at, placed_cache, placed_waiting, rotated, last_synced, clients_moved, prefix_checked, memory,
         } = self;
         *forget_seeded = false;
         *pending_seeded = false;
@@ -590,9 +584,7 @@ impl SyncEngine {
         *tied = deliver::TiedWork { all: true, ..Default::default() };
         *synced = Default::default();
         *synced_of = crate::engine::memo::Memo::new("labels synced");
-        *served = BTreeMap::new();
         *hub_conns = BTreeMap::new();
-        *rooms = BTreeMap::new();
         *refusals = BTreeMap::new();
         *covered_judged = BTreeSet::new();
         *stats = PassStats::default();
@@ -661,15 +653,15 @@ impl SyncEngine {
     /// starts again from the store as an open does, every connection closed (dialed again as at
     /// a start), so what it had taken is fetched again.
     fn restart_in_place(&mut self, out: &mut Vec<Action>) {
-        // a dialed connection up is the hub's session; one not up yet is its dial
+        // a connection up is the hub's session; a dial not up yet is its dial
         for (conn, c) in &self.conns {
             out.push(match c.hub {
                 Some(hub) => Action::Hub { conn: hub, down: osis_host::Down::Close },
                 None => Action::Close { conn: *conn },
             });
-        }
-        for conn in self.served.keys().copied().collect::<Vec<_>>() {
-            self.close_served(conn, out);
+            if c.ported {
+                out.push(Action::Ended { conn: *conn });
+            }
         }
         // what the failed step's engine events told is read again from the store
         while self.events.try_recv().is_ok() {}
@@ -912,11 +904,9 @@ impl SyncEngine {
                 }
             }
             Event::End { conn } => {
-                if self.served.contains_key(&conn) {
-                    self.close_served(conn, out);
-                }
+                self.close(conn, out);
             }
-            Event::Down { conn } => self.lost(conn),
+            Event::Down { conn } => self.lost(conn, out),
         }
         // links expired or used: a removal of the link key (spec/permissions.md §7)
         self.finalize_links()?;

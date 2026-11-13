@@ -794,9 +794,9 @@ impl SyncEngine {
             let since = self.role_change.get(&a).map_or(0, |x| x.0);
             for l in self.synced.by_actor.get(&a).into_iter().flatten() {
                 let Some((_, hosts)) = self.synced.actors.get(l) else { continue };
-                for (id, c) in self.conns.iter().filter(|(_, c)| !c.peer && hosts.contains(&c.host)) {
+                for (id, c, key) in self.conns.iter().filter_map(|(id, c)| c.listed().filter(|k| hosts.contains(k)).map(|k| (id, c, k))) {
                     let live = c.labels.get(l).is_some_and(|x| x.phase.is_open() && x.synced && x.fill.is_none());
-                    if live && self.passes.get(&(c.host, *l)).is_none_or(|p| p.0 <= since) {
+                    if live && self.passes.get(&(key, *l)).is_none_or(|p| p.0 <= since) {
                         ask.push(*id);
                     }
                 }

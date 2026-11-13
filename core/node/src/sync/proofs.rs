@@ -85,7 +85,7 @@ impl SyncEngine {
 
     /// Every connection's proven actors (diagnostics, tests).
     pub fn proven_connections(&self) -> Vec<(ConnId, BTreeSet<Tid>)> {
-        self.conns.iter().map(|(c, x)| (*c, x.proven.all())).chain(self.served_proven_all()).collect()
+        self.conns.iter().map(|(c, x)| (*c, x.proven.all())).collect()
     }
 
     /// The actors `conn` proved on its own proof exchange (spec/sync.md §10), whoever dialed;
@@ -98,12 +98,12 @@ impl SyncEngine {
     /// The actors this node proved on `conn` (its Prove as the dialer, its Proved as the
     /// listener): what a connection's peer may judge it by, never what it could prove now.
     pub(super) fn proved(&self, conn: ConnId) -> Option<&BTreeSet<Tid>> {
-        self.conns.get(&conn).map(|c| &c.proved).or_else(|| self.served_proved(conn))
+        self.conns.get(&conn).map(|c| &c.proved)
     }
 
     /// `proven`, by how each actor was proved.
     pub(super) fn connection_proven(&self, conn: ConnId) -> Option<&Proven> {
-        self.conns.get(&conn).map(|c| &c.proven).or_else(|| self.served_proven(conn))
+        self.conns.get(&conn).map(|c| &c.proven)
     }
 
     /// A connection proves what this node held when it came up, once (spec/sync.md §10,
@@ -121,23 +121,27 @@ impl SyncEngine {
         self.provers_mark = Some(mark);
         let tids = |p: Vec<Prover>| p.iter().map(|p| p.record.tid()).collect::<BTreeSet<Tid>>();
         let now = (tids(provers(&mut self.engine, false)?), tids(provers(&mut self.engine, true)?));
-        // past the peer's Hello: what a dialed connection proves is fixed then (`dialed_start`)
-        let up: Vec<(ConnId, [u8; 32])> = self.conns.iter().filter(|(_, c)| c.is_ready()).map(|(id, c)| (*id, c.host)).collect();
+        // past the peer's Hello: what a dialed connection proves is fixed then (`conn_start`); a
+        // served one counts only where this node answered with its proofs (a dialer it answered
+        // with none, unknown then, is not closed when it becomes known)
+        let ready: Vec<(ConnId, Option<[u8; 32]>)> = self.conns.iter().filter(|(_, c)| c.is_ready() && (c.dial.is_some() || c.answered)).map(|(id, c)| (*id, c.key())).collect();
         let mut stale = Vec::new();
-        for (conn, host) in up {
-            let mine = if self.dials_own_node(&host) { &now.1 } else { &now.0 };
-            if self.conns.get(&conn).is_some_and(|c| !mine.is_subset(&c.proved)) {
-                stale.push((conn, host));
+        for (conn, key) in ready {
+            let own = match key {
+                Some(k) => self.dials_own_node(&k),
+                None => self.conns.get(&conn).is_some_and(|c| own_peer(&self.engine, &c.proven)),
+            };
+            if self.conns.get(&conn).is_some_and(|c| !(if own { &now.1 } else { &now.0 }).is_subset(&c.proved)) {
+                stale.push((conn, key));
             }
         }
-        for (conn, host) in stale {
-            self.close_dialed(conn, out);
-            // closed here, not lost: no pause before the redial
-            self.retry.remove(&host);
-        }
-        // a served dialer redials as after any loss
-        for conn in self.served_stale(&now) {
-            self.close_served(conn, out);
+        for (conn, key) in stale {
+            self.close(conn, out);
+            // closed here, not lost: no pause before the redial (a served dialer redials as
+            // after any loss)
+            if let Some(k) = key {
+                self.retry.remove(&k);
+            }
         }
         Ok(())
     }

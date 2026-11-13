@@ -40,7 +40,7 @@ impl SyncEngine {
     /// of reach lists do not count: one that never comes back would hold the step back for good.
     pub(super) fn keys_caught_up(&mut self, g: &Tid, l: &LabelId) -> bool {
         let secrets = self.read_secrets(g);
-        let fetchable: BTreeSet<BlobId> = self.conns.values().filter(|c| c.up).flat_map(|c| self.state.present_at(&c.host, l).into_iter().filter(|b| !c.req.missing.contains(b))).collect();
+        let fetchable: BTreeSet<BlobId> = self.conns.values().filter(|c| c.up()).filter_map(|c| c.key().map(|k| (c, k))).flat_map(|(c, k)| self.state.present_at(&k, l).into_iter().filter(|b| !c.req.missing.contains(b))).collect();
         let unopened = fetchable.into_iter().any(|b| self.state.entries.get(&(*l, b)).is_some_and(|e| e.unopened(&b, &secrets)));
         if unopened {
             return false;
@@ -57,7 +57,7 @@ impl SyncEngine {
     /// once it is registered, or under the source's head while the step waits or is refused for
     /// now. True while a step is in flight.
     pub(super) fn reregister(&mut self, conn: ConnId, l: LabelId, out: &mut Vec<crate::sync::Action>) -> Result<bool> {
-        let Some(lc) = self.lc(conn, &l) else { return Ok(false) };
+        let Some(lc) = self.label_at(conn, &l) else { return Ok(false) };
         let (g, keys, head, retry) = (lc.group, lc.keys.clone(), lc.head.clone(), lc.step_retry);
         // a step refused for now goes again only after its back-off; meanwhile the pass runs
         // under the source's head: what it places is wrapped under the newest read epoch, so a
@@ -79,7 +79,7 @@ impl SyncEngine {
                 x
             }
         };
-        if let Some(lc) = self.lc_mut(conn, &l) {
+        if let Some(lc) = self.label_at_mut(conn, &l) {
             lc.registering = Some((step.clone(), set.clone()));
         }
         self.request(conn, |id| osis_proto::Message::Register { id, label: l, step, claim_set: Some(set) }, crate::sync::conn::Pending::Register(l), out);

@@ -190,7 +190,7 @@ pub(crate) struct Inner {
     /// Serializes undo and redo: candidate selection and commit.
     pub undo: Mutex<()>,
     pub net: Net,
-    /// The client port this node serves: requests its served sessions make.
+    /// The client port this node serves: requests its connections make.
     pub port: crate::port::serve::Port,
     /// A process with no store of its own (`Osis::connect`): the scratch node stands in.
     pub client: std::sync::OnceLock<ClientOf>,

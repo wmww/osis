@@ -234,7 +234,7 @@ impl Waits {
     }
 }
 
-/// One label's work set at one connection's host (`LConn::work`).
+/// One label's work set at one connection's host (`LabelAt::work`).
 #[derive(Clone, Default)]
 pub(crate) struct Work {
     /// What changed: judged by the next pass.

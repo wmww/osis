@@ -103,13 +103,13 @@ impl SyncEngine {
     /// connection holding it (an open one first: a hint's thing may still be opening at a host
     /// its sender named), else the hint's thing.
     pub(crate) fn group_of(&mut self, l: &LabelId, conn: Option<ConnId>) -> Option<Tid> {
-        if let Some(x) = conn.and_then(|c| self.lc(c, l)) {
+        if let Some(x) = conn.and_then(|c| self.label_at(c, l)) {
             return Some(x.group);
         }
         if let Some((g, _)) = self.labels().into_iter().find(|(_, gl)| gl.id == *l) {
             return Some(g);
         }
-        let on: Vec<&super::LConn> = self.conns.values().filter_map(|c| c.labels.get(l)).collect();
+        let on: Vec<&super::LabelAt> = self.conns.values().filter_map(|c| c.labels.get(l)).collect();
         if let Some(x) = on.iter().find(|x| x.phase.is_open()).or(on.first()) {
             return Some(x.group);
         }
@@ -235,13 +235,13 @@ impl SyncEngine {
         let from = match src {
             Src::Served(c) => super::memory::RelayFrom::Served(c),
             Src::Reader(c) => super::memory::RelayFrom::Reader(c),
-            _ => super::memory::RelayFrom::Host(conn.and_then(|c| self.conns.get(&c)).map(|c| c.host)),
+            _ => super::memory::RelayFrom::Host(conn.and_then(|c| self.conns.get(&c)).and_then(super::Conn::key)),
         };
         let served_write = match reader {
             Some(_) => self.served_labels().get(&l).and_then(|s| s.head()).map(|h| h.keys.write),
             None => None,
         };
-        let host: Option<HostKey> = conn.and_then(|c| self.conns.get(&c)).map(|c| c.host);
+        let host: Option<HostKey> = conn.and_then(|c| self.conns.get(&c)).and_then(super::Conn::key);
         let mut crossed = Vec::new();
         let mut fresh_here = Vec::new();
         let mut blobs = Vec::new();
@@ -258,11 +258,11 @@ impl SyncEngine {
         // host cannot make one; a superseded step's key may be a removed writer's)
         let mut unvouched = Vec::new();
         // the head's write key now (a Head event in the batch moves it)
-        let head_write = |s: &Self| conn.and_then(|c| s.lc(c, &l)).and_then(|x| x.head.as_ref()).map(|h| h.keys.write).or(served_write);
+        let head_write = |s: &Self| conn.and_then(|c| s.label_at(c, &l)).and_then(|x| x.head.as_ref()).map(|h| h.keys.write).or(served_write);
         let first_write = head_write(self);
         let mut writers: Vec<VerifyingKey> = Vec::new();
         if first_write.is_none() && host.is_some() && events.iter().any(|e| matches!(e, LogEvent::Added { .. })) {
-            writers = conn.and_then(|c| self.lc(c, &l)).map(|x| x.writers.clone()).unwrap_or_default();
+            writers = conn.and_then(|c| self.label_at(c, &l)).map(|x| x.writers.clone()).unwrap_or_default();
             if let Some(g) = self.group_of(&l, conn)
                 && let Some(gl) = self.group_label(&g, &l)
             {
@@ -331,7 +331,7 @@ impl SyncEngine {
                 let e = Entry { wrap: *wrap, stamp: None, cert: false, salt: None, expires: None, size: None, kind: Kind::Unknown, source: None, memory: true };
                 match self.state.entries.get(&(l, *blob_id)) {
                     Some(o) if !o.memory => {
-                        let up: BTreeSet<HostKey> = self.conns.values().filter(|c| c.up).map(|c| c.host).collect();
+                        let up: BTreeSet<HostKey> = self.conns.values().filter(|c| c.up()).filter_map(super::Conn::key).collect();
                         self.state.reclass_memory(l, *blob_id, e, &up);
                     }
                     Some(_) => {}
@@ -470,7 +470,7 @@ impl SyncEngine {
                 // (one connection carries both in order); a claim only stops this node waiting
                 // for it there (`at_source`)
                 LogEvent::Refused(b, code) if code != Code::TOMBSTONED => {
-                    let at = conn.and_then(|c| self.lc(c, &l)?.head.as_ref().map(|h| h.id()));
+                    let at = conn.and_then(|c| self.label_at(c, &l)?.head.as_ref().map(|h| h.id()));
                     let stamp = self.state.entries.get(&(l, b)).and_then(|e| e.stamp);
                     if let (Some(s), Some(at), Some(stamp)) = (host, at, stamp)
                         && !self.state.is_present(&s, &l, &b)
@@ -512,9 +512,9 @@ impl SyncEngine {
                     }
                 }
                 // a peer that cannot read L takes no more of it for now, or has room again: what
-                // it lacks is judged there so (`LConn::full`)
+                // it lacks is judged there so (`LabelAt::full`)
                 LogEvent::Full(full) => {
-                    if let Some(x) = conn.and_then(|c| self.lc_mut(c, &l))
+                    if let Some(x) = conn.and_then(|c| self.label_at_mut(c, &l))
                         && x.full != full
                     {
                         x.full = full;
@@ -527,7 +527,7 @@ impl SyncEngine {
         // written again re-encrypted at the label's pass, by what this batch brought too
         // (spec/sync.md §1)
         self.relink_later(l, lost);
-        let filling = conn.is_some_and(|c| self.lc(c, &l).is_some_and(|x| x.fill.is_some()));
+        let filling = conn.is_some_and(|c| self.label_at(c, &l).is_some_and(|x| x.fill.is_some()));
         // a push to a stream read to its end brings the log to its end: a pass end
         let pushed = conn.and_then(|c| self.conns.get(&c)).and_then(|c| c.labels.get(&l)).is_some_and(|x| x.synced && x.fill.is_none());
         // the label changed under us: a pass decides again (carriers, retags); not per batch of a fill
@@ -1906,7 +1906,7 @@ impl SyncEngine {
     /// on its credential opens anything). A child is recorded only under a recorded head: one
     /// taken on the peer's word proves no path.
     pub(crate) fn new_head(&mut self, conn: ConnId, l: LabelId, step: Step, out: &mut Vec<super::Action>) -> Result<()> {
-        let Some(lc) = self.lc(conn, &l) else { return Ok(()) };
+        let Some(lc) = self.label_at(conn, &l) else { return Ok(()) };
         let super::Phase::Open { by, .. } = &lc.phase else { return Ok(()) };
         let by = by.as_ref().map(|k| k.verifying_key());
         let cur = lc.head.clone();
@@ -1937,13 +1937,13 @@ impl SyncEngine {
     /// what came before it there (spec/permissions.md §3 Complete pass), so a pass end is asked
     /// again (a fresh Pull).
     pub(crate) fn stream_read(&mut self, conn: ConnId, l: LabelId, out: &mut Vec<super::Action>) -> Result<()> {
-        let Some(host) = self.conns.get(&conn).map(|c| c.host) else { return Ok(()) };
+        let Some(host) = self.conns.get(&conn).and_then(super::Conn::key) else { return Ok(()) };
         // read there to its end the first time since it joined, which listed the memory entries
         // it holds there: one with no body here (its commit forgotten, or known only for a part
         // dropped while invalid; not one opened and not fetched yet) that it lacks has nothing to
         // put up, so it goes once held nowhere, untombstoned: nothing deleted it, and one put up
         // again is fetched again (a tombstone kept a part valid again from ever arriving)
-        if self.lc(conn, &l).is_some_and(|x| !x.synced) {
+        if self.label_at(conn, &l).is_some_and(|x| !x.synced) {
             let dead = |s: &Self, c: &CommitId| s.memory.forgotten.contains_key(c) || (s.engine.holds_memory(c) && !s.engine.memory_body_held(c));
             let gone: Vec<BlobId> = self.memory_entries_of(&l).filter(|(b, e)| !self.state.is_present(&host, &l, b) && matches!(&e.kind, Kind::Commit { commit, .. } if dead(self, commit))).map(|(b, _)| b).collect();
             for b in gone {
@@ -1953,7 +1953,7 @@ impl SyncEngine {
                 }
             }
         }
-        if self.lc(conn, &l).is_some_and(|x| x.fill.is_some()) {
+        if self.label_at(conn, &l).is_some_and(|x| x.fill.is_some()) {
             self.fill_listed(conn, l, out)?;
             return self.fetch_waiting(conn, l, out);
         }
@@ -1961,7 +1961,7 @@ impl SyncEngine {
         // its deletions since not all in its log), what it lacks of what was present there was
         // deleted there, as a Deleted event says; else its absence proves nothing (a wiped or
         // restored store), and only presence went (`known_join`)
-        let relisted = self.lc_mut(conn, &l).and_then(|x| x.relisted.take());
+        let relisted = self.label_at_mut(conn, &l).and_then(|x| x.relisted.take());
         if let Some((before, true)) = relisted {
             let mut lost = BTreeSet::new();
             for b in before {
@@ -1981,14 +1981,14 @@ impl SyncEngine {
         // nothing to put up, so it goes once held nowhere (`absent_at`)
         // read to its end the first time since it joined (from the start, a listing): the
         // label's work set judges everything at its next pass
-        if let Some(lc) = self.lc_mut(conn, &l)
+        if let Some(lc) = self.label_at_mut(conn, &l)
             && !std::mem::replace(&mut lc.synced, true)
         {
             self.work_mut(l).touched.full = true;
             self.mark_labels(&[l]);
         }
         self.engine_events()?;
-        let sent = self.lc(conn, &l).map_or(u64::MAX, |x| x.sync_seq);
+        let sent = self.label_at(conn, &l).map_or(u64::MAX, |x| x.sync_seq);
         let later = self.synced.actors.get(&l).and_then(|(a, _)| self.role_change.get(a)).is_some_and(|r| r.0 > sent);
         if later {
             self.stream_ask(conn, true, out)?;
@@ -2232,7 +2232,7 @@ impl SyncEngine {
                 if !lc.phase.is_open() {
                     continue;
                 }
-                let v: Vec<BlobId> = ids.iter().filter(|b| under(l, b) && self.state.is_present(&c.host, l, b)).copied().collect();
+                let v: Vec<BlobId> = ids.iter().filter(|b| under(l, b) && c.key().is_some_and(|k| self.state.is_present(&k, l, b))).copied().collect();
                 if !v.is_empty() {
                     todo.push((*conn, *l, v));
                 }
@@ -2268,7 +2268,7 @@ impl SyncEngine {
     /// Delete statuses. Code 9 (signed under a key older than the head's) needs nothing here:
     /// the new head comes by the stream, and the pass signs again under its keys.
     pub(crate) fn delete_status(&mut self, conn: ConnId, l: LabelId, ids: Vec<BlobId>, codes: Vec<Code>) -> Result<()> {
-        let Some(host) = self.conns.get(&conn).map(|c| c.host) else { return Ok(()) };
+        let Some(host) = self.conns.get(&conn).and_then(super::Conn::key) else { return Ok(()) };
         for (b, code) in ids.into_iter().zip(codes) {
             if let Some(c) = self.conns.get_mut(&conn) {
                 c.req.deleting.remove(&(l, b));

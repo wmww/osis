@@ -645,7 +645,7 @@ impl SyncEngine {
         let Some(things) = self.state.sent_inbox.get(d).map(|s| s.things.clone()) else { return false };
         let labels = self.labels();
         labels.iter().filter(|(g, _)| things.contains(g)).any(|(_, l)| {
-            let phases = || self.conns.values().filter(|c| c.is_ready() && l.hosts.iter().any(|a| a.key == c.host)).map(|c| c.labels.get(&l.id).map(|x| &x.phase));
+            let phases = || self.conns.values().filter(|c| c.is_ready() && l.hosts.iter().any(|a| Some(a.key) == c.listed())).map(|c| c.labels.get(&l.id).map(|x| &x.phase));
             phases().any(|p| p.is_none_or(|x| matches!(x, Phase::Testing { .. } | Phase::Registering { .. } | Phase::Behind { .. }))) && !phases().any(|p| matches!(p, Some(Phase::Open { .. })))
         })
     }

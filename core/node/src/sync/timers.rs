@@ -51,10 +51,10 @@ impl SyncEngine {
             }
         }
         // dialed connections' pings (`PING_INTERVAL_MS`)
-        let due: Vec<ConnId> = self.conns.iter().filter(|(_, c)| c.is_ready() && c.next_ping <= now).map(|(id, _)| *id).collect();
+        let due: Vec<ConnId> = self.conns.iter().filter(|(_, c)| c.is_ready() && c.dial.as_ref().is_some_and(|d| d.next_ping <= now)).map(|(id, _)| *id).collect();
         for conn in due {
-            if let Some(c) = self.conns.get_mut(&conn) {
-                c.next_ping = now.saturating_add(osis_proto::hello::PING_INTERVAL_MS);
+            if let Some(d) = self.conns.get_mut(&conn).and_then(|c| c.dial.as_mut()) {
+                d.next_ping = now.saturating_add(osis_proto::hello::PING_INTERVAL_MS);
             }
             self.ping(conn, out);
         }
@@ -78,7 +78,7 @@ impl SyncEngine {
         }
         // labels no key opened, and registrations refused for now once their back-off passed: try
         // again from scratch
-        let again = |l: &LConn| match l.phase {
+        let again = |l: &LabelAt| match l.phase {
             Phase::Failed { .. } => l.last_sync.saturating_add(self.cfg.resync_ms) <= now,
             Phase::Refused { retry_at } => retry_at <= now,
             _ => false,
@@ -87,7 +87,7 @@ impl SyncEngine {
         for (conn, label, g) in reopen {
             // every thing a hint names this label under gets a new turn; not at a refusal's
             // retry (its back-off is short, and a host named by a sender could cut every round)
-            if self.lc(conn, &label).is_some_and(|x| x.phase.is_failed()) {
+            if self.label_at(conn, &label).is_some_and(|x| x.phase.is_failed()) {
                 let hints = self.hint_failed.len();
                 self.hint_failed.retain(|x| x.0 != label);
                 if self.hint_failed.len() != hints {
@@ -109,8 +109,8 @@ impl SyncEngine {
     }
 
     /// When the next Tick is wanted (wall ms): dialed connections' pings, one tick per `resync_ms` while
-    /// anything is open (a label's own resync only when something waits for it), served sessions'
-    /// idle ends, redials, inbox retries and the engine's retention (expiry, purge floor) and
+    /// anything is open (a label's own resync only when something waits for it), clients'
+    /// `until`s, redials, inbox retries and the engine's retention (expiry, purge floor) and
     /// lost-access timers. Never before `MIN_WAKE_MS` after the last Tick, so an item due but not
     /// serviceable yet cannot spin (and later events do not push a due wake back).
     pub(super) fn next_wake(&mut self) -> Option<u64> {
@@ -122,8 +122,8 @@ impl SyncEngine {
             at(self.last_tick.saturating_add(resync));
         }
         for c in self.conns.values() {
-            if c.is_ready() {
-                at(c.next_ping);
+            if let Some(d) = c.dial.as_ref().filter(|_| c.is_ready()) {
+                at(d.next_ping);
             }
             for l in c.labels.values() {
                 // a label not open re-tries after `resync_ms`; an open one needs no time of its

@@ -131,7 +131,7 @@ impl Node {
         r
     }
 
-    /// Served sessions now.
+    /// Connections served now.
     fn served(&self) -> usize {
         self.n.sync_engine(|s| s.served_opened().len())
     }

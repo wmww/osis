@@ -683,12 +683,11 @@ impl SyncEngine {
     /// peer that cannot read L only as learned on the connection up now (spec/sync.md §9: a
     /// restarted peer lost them, and its durable log says nothing of it; the next connection's
     /// stream lists those it holds), so the next connection's peer pulls what it lacks.
-    pub(crate) fn memory_lost(&mut self, conn: ConnId, host: HostKey) -> Result<()> {
+    pub(crate) fn memory_lost(&mut self, host: HostKey) -> Result<()> {
         let gone: Vec<(LabelId, BlobId)> = self.state.memory_entries.iter().filter(|(l, b)| self.state.is_present(&host, l, b)).copied().collect();
         for (l, b) in gone {
             self.state.set_present(host, l, b, false);
         }
-        let _ = conn;
         Ok(())
     }
 

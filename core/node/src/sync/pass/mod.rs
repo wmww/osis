@@ -358,7 +358,7 @@ impl SyncEngine {
         let mut fresh = Vec::new();
         for (id, c) in &self.conns {
             for (l, x) in &c.labels {
-                if c.up && x.phase.is_open() && x.ready() && x.keys.epochs[0].is_some() && !self.work.get(l).is_some_and(|w| w.acted.contains(id)) && self.read_as_host(*id, l) {
+                if c.up() && x.phase.is_open() && x.ready() && x.keys.epochs[0].is_some() && !self.work.get(l).is_some_and(|w| w.acted.contains(id)) && self.read_as_host(*id, l) {
                     fresh.push(*l);
                 }
             }
@@ -426,7 +426,7 @@ impl SyncEngine {
     /// opened it by a sync-key or claim Hit and whose stream read it to their log's end, with
     /// nothing registering there. A peer that reads it is none (it judges its own store).
     pub(crate) fn sources(&self, l: &LabelId) -> Vec<ConnId> {
-        self.conns.iter().filter(|(id, c)| c.up && c.labels.get(l).is_some_and(|x| x.phase.is_open() && x.ready()) && self.read_as_host(**id, l) && !self.shared_reads(**id, l)).map(|(id, _)| *id).collect()
+        self.conns.iter().filter(|(id, c)| c.up() && c.labels.get(l).is_some_and(|x| x.phase.is_open() && x.ready()) && self.read_as_host(**id, l) && !self.shared_reads(**id, l)).map(|(id, _)| *id).collect()
     }
 
     /// The keys of `head` this node may use, and whether it may place under read: never encrypt
@@ -544,7 +544,7 @@ impl SyncEngine {
         }
         w.acted.clear();
         for conn in sources {
-            let host = self.conns.get(&conn).map(|c| c.host);
+            let host = self.conns.get(&conn).and_then(crate::sync::Conn::key);
             let here = match &scope {
                 Scope::Some { commits, blobs } => {
                     let (mut cs, mut bs) = (commits.clone(), blobs.clone());
@@ -584,13 +584,13 @@ impl SyncEngine {
     fn at_source(&mut self, conn: ConnId, own: &Head, w: &Work, (sends, behind): (&[Out], bool), bodies: &[Body], snaps: &Snaps, scope: &Scope, settled: bool, left: &mut Left, out: &mut Vec<super::Action>) -> Result<bool> {
         let (g, l) = (own.g, own.l);
         let Some(c) = self.conns.get(&conn) else { return Ok(false) };
-        let host = c.host;
+        let Some(host) = c.key() else { return Ok(false) };
         let Some(lc) = c.labels.get(&l) else { return Ok(false) };
         let Some(head) = lc.head.clone() else { return Ok(false) };
         // secrets may have arrived since the head was accepted
         self.recheck_doubts();
         let (keys, read_ok) = self.usable_keys(&g, &head)?;
-        if let Some(lc) = self.lc_mut(conn, &l) {
+        if let Some(lc) = self.label_at_mut(conn, &l) {
             lc.keys = keys.clone();
         }
         // no secret of the head's sync epoch: read first (spec/sync.md §5, reading without it),
@@ -607,7 +607,7 @@ impl SyncEngine {
         // goes once the source has read, under its head, the role commits it lacks (a removed
         // reader reads its removal only there); the rest of the pass runs meanwhile
         let unreported = self.roles_unreported(conn, l, sends)?;
-        if let Some(lc) = self.lc_mut(conn, &l) {
+        if let Some(lc) = self.label_at_mut(conn, &l) {
             lc.report_at = unreported;
         }
         if unreported.is_none() && self.reregister(conn, l, out)? {
@@ -618,7 +618,7 @@ impl SyncEngine {
         let p = Head { g, l, host: Some(host), id: head.id(), stamps: head.keys.write, keys, read_ok };
         let lacks = |s: &Self, id: &BlobId| !s.state.is_present(&host, &l, id) && !s.state.is_gone_at(&host, &l, id);
         let mut behind_here = behind;
-        let full = self.lc(conn, &l).is_some_and(|x| x.full);
+        let full = self.label_at(conn, &l).is_some_and(|x| x.full);
         let mut deposits = Vec::new();
         let on_head = p.id == own.id;
         let again = self.encrypt_again(host, own, (sends, behind), bodies, snaps, left)?;
@@ -681,7 +681,7 @@ impl SyncEngine {
                 None => {}
             }
         }
-        if let Some(lc) = self.lc_mut(conn, &l) {
+        if let Some(lc) = self.label_at_mut(conn, &l) {
             lc.lacking = lacking;
             lc.refused = refused_here;
         }
@@ -695,7 +695,7 @@ impl SyncEngine {
     /// registered there: the last first-logged position of a role commit it lacks; `None` when it
     /// read them all (taken, or refused: a full peer's step must not wait for room).
     fn roles_unreported(&mut self, conn: ConnId, l: LabelId, sends: &[Out]) -> Result<Option<u64>> {
-        let Some(host) = self.conns.get(&conn).map(|c| c.host) else { return Ok(None) };
+        let Some(host) = self.conns.get(&conn).and_then(crate::sync::Conn::key) else { return Ok(None) };
         let lacking: Vec<BlobId> = sends.iter().filter(|o| o.prio <= 1 && !self.state.is_present(&host, &l, &o.id) && !self.state.is_gone_at(&host, &l, &o.id)).map(|o| o.id).collect();
         if lacking.is_empty() {
             return Ok(None);
@@ -718,7 +718,7 @@ impl SyncEngine {
     /// Whether entry `id`'s stamp verifies under the head of a source of `l`.
     fn stamp_serves_a_source(&self, l: LabelId, id: BlobId, e: &Entry) -> bool {
         let Some(stamp) = e.stamp else { return false };
-        self.sources(&l).iter().filter_map(|c| self.lc(*c, &l)?.head.as_ref().map(|h| h.keys.write)).any(|k| osis_label::verify_stamp(&k, &l, &id, &e.wrap, &stamp).is_ok())
+        self.sources(&l).iter().filter_map(|c| self.label_at(*c, &l)?.head.as_ref().map(|h| h.keys.write)).any(|k| osis_label::verify_stamp(&k, &l, &id, &e.wrap, &stamp).is_ok())
     }
 
     /// Must-hold bodies whose entry source `host` deleted while this node's judgment finds the
@@ -909,7 +909,7 @@ impl SyncEngine {
     /// crash, secrets that arrived later).
     fn refetch(&mut self, conn: ConnId, host: HostKey, l: LabelId, w: &Work, out: &mut Vec<super::Action>) -> Result<()> {
         // a fill asks for them in order
-        if self.lc(conn, &l).is_some_and(|x| x.fill.is_some()) {
+        if self.label_at(conn, &l).is_some_and(|x| x.fill.is_some()) {
             return Ok(());
         }
         let ids: Vec<BlobId> = w.unopened.iter().copied().collect();

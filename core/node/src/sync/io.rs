@@ -93,12 +93,12 @@ pub enum Event {
     Down { conn: ConnId },
     /// The answer to an `Action::Request` (Auth, Call, Sub; notes/client-port.md §2).
     Reply { conn: ConnId, id: osis_proto::msg::Id, reply: std::result::Result<osis_proto::Outcome, osis_proto::Code> },
-    /// Notifies for a served session's subscriptions, after an `Action::Room` (batched per
+    /// Notifies for a connection's subscriptions, after an `Action::Room` (batched per
     /// engine change).
     Notify { conn: ConnId, notes: Vec<(osis_proto::msg::Id, osis_proto::Payload)> },
-    /// Notifies wait for a served session: `Action::Room` when the push rule allows.
+    /// Notifies wait for a connection: `Action::Room` when the push rule allows.
     WantRoom { conn: ConnId },
-    /// The holder of the engine ends a served session (its client was revoked).
+    /// The holder of the engine ends a connection (its client was revoked).
     End { conn: ConnId },
     /// What the node's hub handed up for its connections, in order (`osis_host::Up`): node sync
     /// is every hub session's upper layer.
@@ -110,8 +110,8 @@ pub enum Event {
 /// `max_clients` pool.
 pub const MAX_CONNS_PER_CLIENT: usize = 8;
 
-/// The tier of a served session (notes/client-port.md §0), decided at accept by the transport
-/// type, never by a key value.
+/// The tier a connection's client-port requests run as (notes/client-port.md §0), decided at
+/// its start by the transport type, never by a key value.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tier {
     /// A unix-socket peer of this process's uid, the same person at the keyboard: it acts as the
@@ -143,12 +143,12 @@ pub enum Action {
     /// Host with this config (`host^.0`; the hub's store is the host store of its run, erased
     /// once `hosts` is false), or stop (none: the hub serves an empty store).
     Host(Option<Box<osis_host::HostConfig>>),
-    /// A client-port request on a served session (Auth, Call, Sub: answer by `Event::Reply`;
+    /// A client-port request on a connection (Auth, Call, Sub: answer by `Event::Reply`;
     /// Unsub: already answered). Not for the driver: the holder of the engine runs it.
     Request { conn: ConnId, tier: Tier, msg: Box<osis_proto::Message> },
     /// Notifies of up to `budget` bytes may go to `conn` now (`Event::Notify`).
     Room { conn: ConnId, budget: usize },
-    /// A served session that made client-port requests ended: drop its subscriptions.
+    /// A connection that made client-port requests ended: drop its subscriptions.
     Ended { conn: ConnId },
     /// For the node's hub (`osis_host::Hub::down`, consecutive ones in one call): a message, a
     /// push room request or a close for one of its connections, dialed or served.

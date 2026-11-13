@@ -1,12 +1,12 @@
 # Node sync structure for the rework
-> Summary: The structural refactors in core/node/src/sync that the networking rework's jobs need, each tied to the job it unblocks: one connection record (`Conn` + `Served`), one `sources(L)` in place of five per-label peer sets, the LAN route machinery deleted with issues/net-connect.md, one retry rule for nine, one serving implementation (osis-host's `Hub`, built: issues/net-one-peer.md 3d). Two low bugs in the code they replace. Part of issues/net-rework.md.
+> Summary: The structural refactors in core/node/src/sync that the networking rework's jobs need, each tied to the job it unblocks: one connection record (built; per-label state keyed by a dialed key left), one `sources(L)` in place of five per-label peer sets, the LAN route machinery deleted with issues/net-connect.md, one retry rule for nine, one serving implementation (osis-host's `Hub`, built: issues/net-one-peer.md 3d). Two low bugs in the code they replace. Part of issues/net-rework.md.
 > Priority: normal
 > Tags: node, sync
 
 Each item is done inside the job named, not as a job of its own: the job's design says what the one structure holds.
 
 ## (a) One connection record
-Two records describe a connection by who dialed: `Conn` (conn.rs: a dialed connection, its `labels: BTreeMap<LabelId, LConn>` with phases, passes and cursors, its `Requests`) and `Served` (serve.rs: an accepted `Session`, its tier, idle times, client binding). A label open on a served connection has no `LConn`: nothing runs a pass on it, status sees it only in `peers_connected`. One record per connection, whoever dialed, holding the session, the proven actors, the shared set S with each member's state, and the pass state; the dialed/served difference is a field read by nothing but the dial logic.
+One `Conn` per connection, whoever dialed (conn.rs; `Conn::dial` holds the dial logic's part). Left: what is kept of a peer that cannot read L (presence, stream position, head, refusals, pass ends) is keyed by the key this node dialed (`read_as_host`, `Conn::listed`), so only a dialed connection to a key a label lists is a source with a pass; a peer that dialed this node is tested and pulls, but is no source. One rule (a pass over every connection with L open, its peer's state kept by what the connection proves) comes with issues/net-one-peer.md 6c.
 Unblocks: issues/net-honest-status.md (both sides judge: a pass runs over every connection with L open); issues/net-reconnect.md (one record per peer; two connections to one peer are one record, the older closing).
 
 ## (b) One `sources(L)`

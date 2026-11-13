@@ -843,6 +843,11 @@ impl Net {
         self.nodes[n].sync.as_mut().unwrap()
     }
 
+    /// Host `s`'s node sync.
+    pub fn host_sync(&mut self, s: usize) -> &mut SyncEngine {
+        self.hosts[s].sync.as_mut().unwrap()
+    }
+
     pub fn engine(&mut self, n: usize) -> &mut Engine {
         self.sync(n).engine_mut()
     }
@@ -1466,7 +1471,7 @@ impl Net {
     }
 
     /// Feeds an event to host `s`'s node sync and carries out its actions: what it hands its
-    /// hub; it dials nothing (no group, no peer).
+    /// hub, and its dials of nodes by their dialable keys (`SyncEngine::set_hosts`).
     pub fn host_feed(&mut self, s: usize, ev: Event) {
         let Some(sync) = self.hosts[s].sync.as_mut() else { return };
         let acts = sync.handle(ev);
@@ -1477,7 +1482,9 @@ impl Net {
                     let out = self.hosts[s].hub.down(now, vec![(conn, down)]);
                     self.hub_out(s, out);
                 }
-                Action::Dial { .. } | Action::Close { .. } => panic!("host {s} dialed: {a:?}"),
+                Action::Dial { conn, address, .. } => self.host_dial(s, conn, address.key),
+                // a dial given up before it was up: its `Up` closes it (node sync)
+                Action::Close { .. } => {}
                 _ => {}
             }
         }
@@ -1541,6 +1548,27 @@ impl Net {
             self.steps += 1;
             self.deliver(m);
         }
+    }
+
+    /// Host `s` dials the node whose dialable key is `key` (its connection `conn`): up at once,
+    /// or down when no such node is online (`blocked` holds only the node's dials).
+    fn host_dial(&mut self, s: usize, conn: ConnId, key: [u8; 32]) {
+        let target = (0..self.nodes.len()).find(|m| self.nodes[*m].online && self.nodes[*m].sync.as_mut().and_then(|x| x.own_reach()).is_some_and(|r| r.dialable == key));
+        let Some(m) = target else {
+            self.host_feed(s, Event::Down { conn });
+            return;
+        };
+        let (hc, pc) = (self.next_hub_conn, self.next_node_hub);
+        self.next_hub_conn += 1;
+        self.next_node_hub += 1;
+        self.links.insert((m, pc), (s, hc));
+        let now = self.node_now(m);
+        let accepted = self.nodes[m].hub.accept(now, pc, key, osis_host::Remote::key([0xe1; 32]));
+        let now = self.now_at(s);
+        let dialed = self.hosts[s].hub.dial(now, hc, key, osis_host::Remote::key(key));
+        self.host_feed(s, Event::Up { conn, hub: hc });
+        self.hub_out(s, dialed);
+        self.node_hub_out(m, accepted);
     }
 
     fn deliver(&mut self, m: Msg) {

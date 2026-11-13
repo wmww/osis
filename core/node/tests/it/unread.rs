@@ -363,6 +363,27 @@ fn a_write_reaches_a_peer_that_cannot_read_by_its_pull_spec_sync_10() {
     assert_eq!(net.read(b, t), Some(osis_base::Value::Str("pulled".into())));
 }
 
+// spec/sync.md §10 (Stream: each side pulls, whoever dialed): a node that cannot read L and
+// dialed a reader of L pulls L from it: the reader's Hit on its filter opens L on the connection
+// it serves.
+#[test]
+fn a_peer_that_cannot_read_pulls_from_a_reader_it_dialed_spec_sync_10() {
+    let (mut net, host, [a], g, []) = hosted::<1, 0>(&[], [], true);
+    let l = net.label(a);
+    // the reader no longer dials the peer; the peer dials the reader
+    net.blocked.insert((a, host));
+    net.drop_link(a, host);
+    let key = crate::peers::reach_ed(&mut net, a);
+    net.host_sync(host).set_hosts(vec![osis_label::Address { url: "peer://reader".into(), key }]);
+    let before = net.host_ids(host, &l).len();
+    net.item(a, g, g, "pulled by its dialer");
+    net.advance(61_000);
+    let mine: BTreeSet<BlobId> = net.sync(a).entries(&l).into_iter().map(|x| x.0).collect();
+    let held: BTreeSet<BlobId> = net.host_ids(host, &l).into_iter().collect();
+    assert!(held.len() > before, "the dialer pulled the new write");
+    assert!(mine.is_subset(&held), "the dialer holds every entry of the reader's store");
+}
+
 // spec/sync.md §10 (Stream): a peer that cannot read L, restored from a backup taken before a
 // write, pulls it again from a reader at the next connection, and a second reader gets it from
 // that peer with the writer offline.

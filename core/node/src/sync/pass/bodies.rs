@@ -450,7 +450,7 @@ impl SyncEngine {
     /// This node's verdicts on label `l` at `host` under the keys its last pass there used
     /// (simulator invariants, spec/sync.md §6); `None` when the label is not open there.
     pub fn verdicts(&mut self, host: &HostKey, l: &LabelId) -> Result<Option<Verdicts>> {
-        let Some(lc) = self.conns.values().filter(|c| c.host == *host).find_map(|c| c.labels.get(l).filter(|x| x.phase.is_open())) else { return Ok(None) };
+        let Some(lc) = self.conns.values().filter(|c| c.key() == Some(*host)).find_map(|c| c.labels.get(l).filter(|x| x.phase.is_open())) else { return Ok(None) };
         let (g, keys) = (lc.group, lc.keys.clone());
         let mut v = Verdicts { writer: keys.is_writer(), ..Verdicts::default() };
         let bodies = self.engine.label_bodies_meta(&g)?;
@@ -473,7 +473,7 @@ impl SyncEngine {
         }
         let desired = desired(&bodies);
         let entries: Vec<(BlobId, Entry)> = self.state.label_entries(l).map(|(b, e)| (b, e.clone())).collect();
-        let full = self.conns.values().filter(|c| c.host == *host).any(|c| c.labels.get(l).is_some_and(|x| x.full));
+        let full = self.conns.values().filter(|c| c.key() == Some(*host)).any(|c| c.labels.get(l).is_some_and(|x| x.full));
         let at = At { g, l: *l, host: Some(*host), keys: &keys, snaps: &snaps, settled: unsettled.is_empty(), behind: false, full };
         for (id, e) in entries {
             if let Fate::Delete(why, _) = self.deletable(&at, &id, &e, &desired, false, &mut note)? {

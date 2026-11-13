@@ -160,7 +160,7 @@ impl SyncEngine {
     pub(super) fn peer_creds(&mut self, conn: ConnId, labels: &[LabelId]) -> BTreeMap<LabelId, ([u8; 32], osis_crypto::SigningSecret)> {
         let mut out = BTreeMap::new();
         for l in labels {
-            let Some(lc) = self.conns.get(&conn).filter(|c| !c.peer).and_then(|c| c.labels.get(l)) else { continue };
+            let Some(lc) = self.conns.get(&conn).and_then(|c| c.labels.get(l)) else { continue };
             let (g, phase, sync, head) = (lc.group, lc.phase.clone(), lc.keys.sync.clone(), lc.head.clone());
             let key = match phase {
                 // the head's: its sync key held, else this node's claim key its set lists, else the

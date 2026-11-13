@@ -15,23 +15,23 @@ impl SyncEngine {
             let mut failed = BTreeSet::new();
             let passed = self.state.passed.contains(&l.id);
             // the hosts whose last answer refused it (code 14), connected now or not, and those
-            // full for it or refusing a body this node logs for it (`LConn::full`, `refused`)
-            let full = |k: &HostKey| self.conns.values().any(|c| c.up && c.host == *k && c.labels.get(&l.id).is_some_and(|x| x.full || x.refused > 0));
+            // full for it or refusing a body this node logs for it (`LabelAt::full`, `refused`)
+            let full = |k: &HostKey| self.conns.values().any(|c| c.up() && c.listed() == Some(*k) && c.labels.get(&l.id).is_some_and(|x| x.full || x.refused > 0));
             let refused_by = l.hosts.iter().filter(|a| self.refusals.get(&(a.key, l.id)).is_some_and(|(_, code)| *code == Code::NOT_ADMITTED) || full(&a.key)).cloned().collect();
             let mut st = LabelStatus { group: g, label: l.id, hosts: l.hosts.len(), sources: 0, idle: 0, opening: 0, stranded: false, refused_by, leaving, last_sync: None, passed };
-            for c in self.conns.values().filter(|c| !c.peer) {
-                let host = l.hosts.iter().find(|a| a.key == c.host);
+            for (c, key) in self.conns.values().filter_map(|c| c.listed().map(|k| (c, k))) {
+                let host = l.hosts.iter().find(|a| a.key == key);
                 let Some(x) = c.labels.get(&l.id) else {
                     // labels are started once the session is ready
-                    st.opening += usize::from(c.up && !c.is_ready() && host.is_some());
+                    st.opening += usize::from(c.up() && !c.is_ready() && host.is_some());
                     continue;
                 };
                 if x.phase.is_failed() && host.is_some() {
-                    failed.insert(c.host);
+                    failed.insert(key);
                 }
-                st.opening += usize::from(c.up && matches!(x.phase, Phase::Testing { .. } | Phase::Behind { .. }) && host.is_some());
+                st.opening += usize::from(c.up() && matches!(x.phase, Phase::Testing { .. } | Phase::Behind { .. }) && host.is_some());
                 // a host the label no longer names is on its way out: no source of it
-                if c.up && x.phase.is_open() && host.is_some() {
+                if c.up() && x.phase.is_open() && host.is_some() {
                     st.sources += 1;
                     if x.idle() && c.pending.is_empty() {
                         st.idle += 1;
@@ -43,8 +43,8 @@ impl SyncEngine {
             // connection this node dialed, or one it serves whose shared set began. A peer
             // counts once whatever connections it has (`pass_source`).
             // (a connection to a peer that cannot read L is counted above: its stream reads it so)
-            let host_conn = |id: &ConnId| self.conns.get(id).is_some_and(|c| !c.peer);
-            let readers: BTreeSet<ConnId> = self.conns.iter().filter(|(_, c)| c.peer && c.up).map(|(id, _)| *id).chain(self.records.shared.keys().copied()).filter(|id| !host_conn(id)).collect();
+            let host_conn = |id: &ConnId| self.conns.get(id).is_some_and(|c| c.listed().is_some());
+            let readers: BTreeSet<ConnId> = self.conns.iter().filter(|(_, c)| c.to_peer() && c.up()).map(|(id, _)| *id).chain(self.records.shared.keys().copied()).filter(|id| !host_conn(id)).collect();
             for id in readers {
                 if !self.shared_member(id, &l.id) && !self.shared_settled(id) {
                     st.opening += 1;
@@ -78,15 +78,15 @@ impl SyncEngine {
     /// connected yet, or down) says nothing: one host's word is no end while another may serve it.
     pub fn static_entry_refused(&mut self, l: &LabelId) -> bool {
         let routes = self.wanted_labels().into_iter().find(|(_, x, _)| x == l).map_or(Vec::new(), |(_, _, r)| r);
-        let on: Vec<&LConn> = self.conns.values().filter_map(|c| c.labels.get(l)).collect();
-        let failed = |h: &state::HostKey| self.conns.values().any(|c| c.host == *h && c.labels.get(l).is_some_and(|x| x.phase.is_failed()));
+        let on: Vec<&LabelAt> = self.conns.values().filter_map(|c| c.labels.get(l)).collect();
+        let failed = |h: &state::HostKey| self.conns.values().any(|c| c.listed() == Some(*h) && c.labels.get(l).is_some_and(|x| x.phase.is_failed()));
         let refused = on.iter().any(|x| matches!(x.phase, Phase::Failed { entry_refused: true })) || self.shared_static_missing(l);
         routes.iter().all(failed) && on.iter().all(|x| x.phase.is_failed()) && refused
     }
 
     /// Sync connections up, whichever side dialed: a client's session is none.
     pub fn connected(&self) -> usize {
-        self.conns.values().filter(|c| c.up).count() + self.served.keys().filter(|c| self.records.shared.contains_key(c)).count()
+        self.conns.iter().filter(|(id, c)| c.up() && (c.dial.is_some() || self.records.shared.contains_key(id))).count()
     }
 
     /// The addresses `g` syncs with as this node knows them: its labels' hosts, then the
@@ -206,7 +206,7 @@ impl SyncEngine {
                 v.push(format!(
                     "conn {id} {l:?}: {:?} up {} ready {} synced {} registering {} writer {} sync {} outstanding {} head {:?} lacking {} full {}",
                     x.phase,
-                    c.up,
+                    c.up(),
                     c.is_ready(),
                     x.synced,
                     x.registering.is_some(),

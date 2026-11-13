@@ -1,7 +1,7 @@
-//! Connections this node dialed: dialing, the labels on each, its own requests in flight and their
-//! answers. Every dialed connection is a session of the node's hub (`osis_host::Hub::dial`), as
-//! every served one is; node sync sends its requests through it, picking their ids, and takes
-//! their answers back (`dialed_up`).
+//! Connections, whoever dialed: the one record of each (`Conn`), dialing, the labels on each,
+//! this node's own requests in flight and their answers. Every connection is a session of the
+//! node's hub (`osis_host::Hub::dial` or `accept`); node sync sends its requests through it,
+//! picking their ids, and takes their answers back (`conn_message`).
 
 use super::*;
 use osis_proto::Message;
@@ -21,7 +21,7 @@ pub(crate) fn in_flight(c: &Conn, m: &BTreeMap<(LabelId, osis_base::BlobId), (u6
     m.get(&k).is_some_and(|(t, id)| now < t.saturating_add(RESEND_MS) || (*id != 0 && c.pending.contains_key(id)))
 }
 
-/// A request this node sent on a dialed connection and has no answer to yet (ids below
+/// A request this node sent on a connection and has no answer to yet (ids below
 /// `NODE_IDS`; the shared set's and the stream's are theirs).
 #[derive(Clone, Debug)]
 pub(crate) enum Pending {
@@ -80,7 +80,7 @@ impl Phase {
 
 /// One label on one connection.
 #[derive(Clone)]
-pub(crate) struct LConn {
+pub(crate) struct LabelAt {
     pub group: Tid,
     pub phase: Phase,
     /// The newest step of the label known at the peer here: its head while open (its stream
@@ -93,7 +93,7 @@ pub(crate) struct LConn {
     pub sync_seq: u64,
     /// The stream read it to the peer's end since it last joined there (`stream_read`).
     pub synced: bool,
-    /// The label's first sync at this host is under way (`fill`).
+    /// The label's first sync at this peer is under way (`fill`).
     pub fill: Option<fill::Fill>,
     /// A child step sent for registration.
     pub registering: Option<(Step, osis_label::ClaimSet)>,
@@ -127,7 +127,7 @@ pub(crate) struct LConn {
     pub writers: Vec<osis_crypto::VerifyingKey>,
 }
 
-impl LConn {
+impl LabelAt {
     /// The log was read to its end and nothing runs.
     pub(super) fn ready(&self) -> bool {
         self.synced && self.registering.is_none()
@@ -149,44 +149,100 @@ impl LConn {
     }
 }
 
+/// One connection, whoever dialed it: a session of the node's hub (issues/net-sync-structure.md
+/// (a)). Its proofs, records, shared set, stream, client port and push room run alike either
+/// way; which side dialed is read by the dial logic alone (`Dial`) and by the proof exchange's
+/// order (spec/sync.md §10, Connection proofs).
 #[derive(Clone)]
 pub(crate) struct Conn {
-    /// A host's address key, or a co-reader node's dialable key (its LAN address may present
-    /// another transport key).
-    pub host: HostKey,
-    pub address: Address,
-    /// A co-reader node, not a host.
-    pub peer: bool,
-    /// The hub's connection, once the transport is up (`Event::Up`).
+    /// What this node dialed; none when the peer dialed one of its listeners.
+    pub dial: Option<Dial>,
+    /// The hub's connection: a served one's from its start, a dialed one's once its transport is
+    /// up (`Event::Up`).
     pub hub: Option<osis_host::ConnId>,
-    /// `(dialer challenge, listener challenge, listener key)`, once the peer's Hello arrived
-    /// (`Up::Start`): requests go from then on.
+    /// `(dialer challenge, listener challenge, listener key)`, once the session started
+    /// (`Up::Start`, after the peer's Hello): requests go from then on.
     pub binding: Option<([u8; 32], [u8; 32], [u8; 32])>,
+    /// Who the client port runs its requests as (`admit`), from the transport type alone.
+    pub tier: super::Tier,
+    /// It made a client-port request (`Action::Ended` when it goes).
+    pub ported: bool,
+    /// A thin client's binding: the session ends with its `clients^.0` entry.
+    pub client: Option<super::serve::ClientBinding>,
     /// This node's requests not answered yet, by id (`request`), and the last id taken.
     pub pending: BTreeMap<Id, Pending>,
     pub next_id: Id,
-    /// When the next Ping goes (`PING_INTERVAL_MS`), and the Pongs' clock samples.
-    pub next_ping: u64,
     /// When node sync last sent or got a message on it (wall ms; `refresh`).
     pub heard: u64,
-    pub clock: osis_proto::ClockSamples,
     /// What this connection's peer proved (spec/sync.md §10), read by `SyncEngine::proven`.
     pub proven: super::proofs::Proven,
-    /// The actors this node proved on it (its Prove), read by `SyncEngine::proved`.
+    /// The actors this node proved on it, read by `SyncEngine::proved`.
     pub proved: BTreeSet<Tid>,
-    pub up: bool,
-    pub labels: BTreeMap<LabelId, LConn>,
+    /// How far the peer's proof exchange went on a connection it dialed: Prove, then Resume,
+    /// each at most once (spec/wire.md §11.2).
+    pub asked: super::serve::Asked,
+    /// The dialer proved a known actor, so this node answered with its own proofs (`reprove`).
+    pub answered: bool,
+    /// Push room (`serve::Room`).
+    pub room: super::serve::Room,
+    pub labels: BTreeMap<LabelId, LabelAt>,
     pub req: Requests,
 }
 
+/// A connection this node dialed: what the dial logic reads.
+#[derive(Clone)]
+pub(crate) struct Dial {
+    /// The key dialed: a node a label lists (its dialable key), or a co-reader node's dialable
+    /// key (its LAN address may present another transport key). What a peer that cannot read L
+    /// holds is kept by it (`State::present`; issues/net-one-peer.md 6c).
+    pub key: [u8; 32],
+    pub address: Address,
+    /// A co-reader node, not one a label lists.
+    pub peer: bool,
+    /// When the next Ping goes (`PING_INTERVAL_MS`), and the Pongs' clock samples.
+    pub next_ping: u64,
+    pub clock: osis_proto::ClockSamples,
+}
+
 impl Conn {
-    /// The peer's Hello arrived: requests may go.
+    /// A connection this node dialed to `key` at `address`, not up yet.
+    fn dialing(key: [u8; 32], address: Address, peer: bool) -> Conn {
+        let dial = Dial { key, address, peer, next_ping: 0, clock: Default::default() };
+        Conn::new(Some(dial), None, super::Tier::Keyed)
+    }
+
+    pub(crate) fn new(dial: Option<Dial>, hub: Option<osis_host::ConnId>, tier: super::Tier) -> Conn {
+        Conn { dial, hub, binding: None, tier, ported: false, client: None, pending: BTreeMap::new(), next_id: 0, heard: 0, proven: Default::default(), proved: BTreeSet::new(), asked: super::serve::Asked::Nothing, answered: false, room: Default::default(), labels: BTreeMap::new(), req: Requests::default() }
+    }
+
+    /// The session started (the peer's Hello arrived): requests may go.
     pub(crate) fn is_ready(&self) -> bool {
         self.binding.is_some()
     }
+
+    /// Its session is up: a served one always, a dialed one once its transport is.
+    pub(crate) fn up(&self) -> bool {
+        self.hub.is_some()
+    }
+
+    /// The key this node dialed, none for a connection the peer dialed.
+    pub(crate) fn key(&self) -> Option<[u8; 32]> {
+        self.dial.as_ref().map(|d| d.key)
+    }
+
+    /// Dialed to a node a label lists (not a co-reader): what it holds of a label is kept by its
+    /// key, and labels are tested and walked there.
+    pub(crate) fn listed(&self) -> Option<[u8; 32]> {
+        self.dial.as_ref().filter(|d| !d.peer).map(|d| d.key)
+    }
+
+    /// Dialed to a co-reader node.
+    pub(crate) fn to_peer(&self) -> bool {
+        self.dial.as_ref().is_some_and(|d| d.peer)
+    }
 }
 
-/// Requests on a connection not answered yet, and what its host would not deliver: they go
+/// Requests on a connection not answered yet, and what its peer would not deliver: they go
 /// with the connection (asked again on the next one).
 #[derive(Clone, Default)]
 pub(crate) struct Requests {
@@ -195,7 +251,7 @@ pub(crate) struct Requests {
     pub sent: BTreeMap<(LabelId, osis_base::BlobId), (u64, Id)>,
     /// Deletes sent, with when and the Delete's id: skipped while it is unanswered too.
     pub deleting: BTreeMap<(LabelId, osis_base::BlobId), (u64, Id)>,
-    /// Blobs the host did not deliver when fetched (since it last announced them).
+    /// Blobs the peer did not deliver when fetched (since it last announced them).
     pub missing: BTreeSet<osis_base::BlobId>,
     /// Labels walked because they were not members after a filter arrival, with that arrival's
     /// number: once per arrival (`shared_unopened`).
@@ -223,7 +279,7 @@ impl Requests {
 
 impl SyncEngine {
     /// Until when blob `b` counts as asked (wall ms), `None` when it is asked nowhere now. One rule
-    /// for every source, a host or a reader: a fetch counts while it is younger than
+    /// for every source, a peer that cannot read the label or a reader: a fetch counts while it is younger than
     /// `STALL_TIMEOUT_MS`; older, it may be held behind a reply its source trickles (the stall
     /// rule only wants the oldest request to move), so the next source is asked too and whichever
     /// answers first settles it (spec/sync.md §10, Bodies).
@@ -248,63 +304,77 @@ impl SyncEngine {
     }
 
     /// Label `l` on connection `conn`.
-    pub(crate) fn lc(&self, conn: ConnId, l: &LabelId) -> Option<&LConn> {
+    pub(crate) fn label_at(&self, conn: ConnId, l: &LabelId) -> Option<&LabelAt> {
         self.conns.get(&conn)?.labels.get(l)
     }
 
 
-    pub(crate) fn lc_mut(&mut self, conn: ConnId, l: &LabelId) -> Option<&mut LConn> {
+    pub(crate) fn label_at_mut(&mut self, conn: ConnId, l: &LabelId) -> Option<&mut LabelAt> {
         self.conns.get_mut(&conn)?.labels.get_mut(l)
     }
 
-    /// A dialed connection ended (or was closed here): redial after the retry pause.
-    pub(crate) fn lost(&mut self, conn: ConnId) {
+    /// Connection `conn` ended (its session's end, a dial that never came up, or closed here):
+    /// what was asked on it goes with it; a dialed one is dialed again after its pause.
+    pub(crate) fn lost(&mut self, conn: ConnId, out: &mut Vec<Action>) {
         // its requests not answered go with it (asked again on the next connection)
-        if let Some(c) = self.conns.remove(&conn) {
-            if let Some(h) = c.hub {
-                self.hub_conns.remove(&h);
-            }
-            self.rooms.remove(&conn);
-            self.records.conn_gone(conn);
-            self.streams.remove(&conn);
-            if let Err(e) = self.memory_lost(conn, c.host) {
-                self.diag(format!("forgetting a connection's memory entries: {e}"));
-            }
-            // deposits not answered on this connection go out again on the next one
-            for o in self.outbox.values_mut().filter(|o| o.sent == Some(conn)) {
-                o.sent = None;
-            }
-            // a LAN address that never came up: back off that address, not the peer (the next
-            // route is dialed at once)
-            if c.peer && !c.up && self.lan_failed(c.host, &c.address) {
-                return;
-            }
-            // another route failed while a LAN candidate waited: it goes now (once per pause)
-            if c.peer && !c.up && self.lan_cut(c.host) {
-                return;
-            }
-            // a co-reader whose connection was up is redialed at once, at most once per
-            // `peer_retry_ms` (a peer closing every session must not make a dial loop): a P2P dial
-            // that punched through ends its relayed connection and the redial takes the direct
-            // one (notes/networking.md, switching)
-            let now = self.now();
-            let pause = self.cfg.peer_retry_ms;
-            self.redialed.retain(|_, t| t.saturating_add(pause) > now);
-            let quick = c.peer && c.up && !self.redialed.contains_key(&c.host);
-            // the sharer node of a link being redeemed is that redemption's one route (first
-            // contact, its key perhaps not listened on yet): redialed after a host's pause, not a
-            // co-reader's; once redeemed it is paced like any co-reader
-            let sharer = c.peer && self.state.link_peers.iter().any(|(k, lp)| self.redeeming.contains(k) && lp.peers.iter().any(|a| a.key == c.host));
-            let pause = match (quick, c.peer && !sharer) {
-                (true, _) => {
-                    self.redialed.insert(c.host, now);
-                    0
-                }
-                (false, true) => pause,
-                (false, false) => self.cfg.retry_ms,
-            };
-            self.retry.insert(c.host, (c.address, self.now().saturating_add(pause)));
+        let Some(c) = self.conns.remove(&conn) else { return };
+        if let Some(h) = c.hub {
+            self.hub_conns.remove(&h);
         }
+        self.records.conn_gone(conn);
+        self.streams.remove(&conn);
+        // deposits not answered on this connection go out again on the next one
+        for o in self.outbox.values_mut().filter(|o| o.sent == Some(conn)) {
+            o.sent = None;
+        }
+        if c.ported {
+            out.push(Action::Ended { conn });
+        }
+        let Some(d) = c.dial else { return };
+        if let Err(e) = self.memory_lost(d.key) {
+            self.diag(format!("forgetting a connection's memory entries: {e}"));
+        }
+        let up = c.hub.is_some();
+        // a LAN address that never came up: back off that address, not the peer (the next
+        // route is dialed at once)
+        if d.peer && !up && self.lan_failed(d.key, &d.address) {
+            return;
+        }
+        // another route failed while a LAN candidate waited: it goes now (once per pause)
+        if d.peer && !up && self.lan_cut(d.key) {
+            return;
+        }
+        // a co-reader whose connection was up is redialed at once, at most once per
+        // `peer_retry_ms` (a peer closing every session must not make a dial loop): a P2P dial
+        // that punched through ends its relayed connection and the redial takes the direct
+        // one (notes/networking.md, switching)
+        let now = self.now();
+        let pause = self.cfg.peer_retry_ms;
+        self.redialed.retain(|_, t| t.saturating_add(pause) > now);
+        let quick = d.peer && up && !self.redialed.contains_key(&d.key);
+        // the sharer node of a link being redeemed is that redemption's one route (first
+        // contact, its key perhaps not listened on yet): redialed after a listed node's pause,
+        // not a co-reader's; once redeemed it is paced like any co-reader
+        let sharer = d.peer && self.state.link_peers.iter().any(|(k, lp)| self.redeeming.contains(k) && lp.peers.iter().any(|a| a.key == d.key));
+        let pause = match (quick, d.peer && !sharer) {
+            (true, _) => {
+                self.redialed.insert(d.key, now);
+                0
+            }
+            (false, true) => pause,
+            (false, false) => self.cfg.retry_ms,
+        };
+        self.retry.insert(d.key, (d.address, now.saturating_add(pause)));
+    }
+
+    /// Closes connection `conn` from this side: its hub session, or its dial while not up yet.
+    pub(crate) fn close(&mut self, conn: ConnId, out: &mut Vec<Action>) {
+        match self.conns.get(&conn).map(|c| c.hub) {
+            Some(Some(hub)) => out.push(Action::Hub { conn: hub, down: osis_host::Down::Close }),
+            Some(None) => out.push(Action::Close { conn }),
+            None => return,
+        }
+        self.lost(conn, out);
     }
 
     /// The hosts and co-reader nodes to keep connections to (true: a node).
@@ -347,14 +417,14 @@ impl SyncEngine {
         // a host no longer wanted keeps no retry time (it would hold the wake in the past)
         self.retry.retain(|k, _| wanted.contains_key(k));
         // a peer connected by a session it dialed is not dialed (`bind_record`)
-        self.stand_in.retain(|_, c| self.served.contains_key(c));
+        self.stand_in.retain(|_, c| self.conns.get(c).is_some_and(|x| x.dial.is_none()));
         for (key, (addr, peer)) in wanted {
             if self.stand_in.contains_key(&key) {
                 continue;
             }
             // a co-reader reached off the LAN that is heard on it: its LAN route is dialed beside
             // the running connection, which goes once that is up (`lan_switched`)
-            if self.conns.values().any(|c| c.host == key) && !(peer && self.lan_probe(&key, &addr)) {
+            if self.conns.values().any(|c| c.key() == Some(key)) && !(peer && self.lan_probe(&key, &addr)) {
                 continue;
             }
             if self.retry.get(&key).is_some_and(|(_, t)| *t > now) {
@@ -363,8 +433,7 @@ impl SyncEngine {
             self.retry.remove(&key);
             let conn = self.next_conn;
             self.next_conn += 1;
-            let c = Conn { host: key, address: addr.clone(), peer, hub: None, binding: None, pending: BTreeMap::new(), next_id: 0, next_ping: 0, heard: 0, clock: Default::default(), proven: super::proofs::Proven::default(), proved: BTreeSet::new(), up: false, labels: BTreeMap::new(), req: Requests::default() };
-            self.conns.insert(conn, c);
+            self.conns.insert(conn, Conn::dialing(key, addr.clone(), peer));
             out.push(Action::Dial { conn, address: addr });
         }
     }
@@ -372,25 +441,14 @@ impl SyncEngine {
     /// Closes connections to co-readers no longer wanted (removed, or sharing only labels
     /// whose `reach.0` this node withholds).
     pub(super) fn drop_unwanted_peers(&mut self, out: &mut Vec<Action>) {
-        if self.conns.values().all(|c| !c.peer) {
+        if !self.conns.values().any(Conn::to_peer) {
             return;
         }
         let wanted: BTreeSet<HostKey> = if self.cfg.peers { self.peers().keys().copied().chain(self.link_routes().into_keys()).collect() } else { BTreeSet::new() };
-        let gone: Vec<ConnId> = self.conns.iter().filter(|(_, c)| c.peer && !wanted.contains(&c.host)).map(|(id, _)| *id).collect();
+        let gone: Vec<ConnId> = self.conns.iter().filter(|(_, c)| c.dial.as_ref().is_some_and(|d| d.peer && !wanted.contains(&d.key))).map(|(id, _)| *id).collect();
         for conn in gone {
-            self.close_dialed(conn, out);
+            self.close(conn, out);
         }
-    }
-
-    /// Closes dialed connection `conn` from this side: its hub session, or its dial while not
-    /// up yet.
-    pub(crate) fn close_dialed(&mut self, conn: ConnId, out: &mut Vec<Action>) {
-        match self.conns.get(&conn).map(|c| c.hub) {
-            Some(Some(hub)) => out.push(Action::Hub { conn: hub, down: osis_host::Down::Close }),
-            Some(None) => out.push(Action::Close { conn }),
-            None => return,
-        }
-        self.lost(conn);
     }
 
     /// The transport of dialed connection `conn` is up as the hub's connection `hub`, whose
@@ -401,11 +459,10 @@ impl SyncEngine {
             out.push(Action::Hub { conn: hub, down: osis_host::Down::Close });
             return;
         };
-        c.up = true;
         c.hub = Some(hub);
         self.hub_conns.insert(hub, conn);
-        if c.peer {
-            let (k, a) = (c.host, c.address.clone());
+        if let Some(d) = c.dial.as_ref().filter(|d| d.peer) {
+            let (k, a) = (d.key, d.address.clone());
             if self.lan_up(k, &a) {
                 self.lan_switched(conn, k, out);
             }
@@ -458,56 +515,75 @@ impl SyncEngine {
         Ok(())
     }
 
-    /// The peer's Hello on dialed connection `conn` arrived (`Up::Start`): pings, this node's
-    /// proofs signed over the binding, and every label the peer may hold starts opening.
-    pub(super) fn dialed_start(&mut self, conn: ConnId, binding: ([u8; 32], [u8; 32], [u8; 32]), relayed: bool, out: &mut Vec<Action>) -> Result<()> {
+    /// Connection `conn`'s session started (`Up::Start`, the peer's Hello arrived): the binding
+    /// and tier; on one this node dialed, pings and its proofs signed over the binding (the
+    /// dialer proves first, spec/sync.md §10); either way every label the peer may hold starts
+    /// opening.
+    pub(super) fn conn_start(&mut self, conn: ConnId, b: osis_host::Binding, out: &mut Vec<Action>) -> Result<()> {
         let now = self.now();
+        // the main actor's tier comes from the transport type alone, never a key value
+        let tier = match b.remote.peer {
+            osis_transport::Peer::Unix { uid } if osis_transport::unix::own_uid().is_ok_and(|o| o == uid) => super::Tier::Main,
+            _ => super::Tier::Keyed,
+        };
         let Some(c) = self.conns.get_mut(&conn) else { return Ok(()) };
-        c.binding = Some(binding);
-        c.next_ping = now.saturating_add(osis_proto::hello::PING_INTERVAL_MS);
-        let host = c.host;
-        if relayed {
+        c.binding = Some((b.dialer, b.listener, b.key));
+        c.tier = tier;
+        // both ends tell a relayed connection alike, before its first message
+        if b.remote.relayed {
             self.set_relayed(conn);
         }
-        let (_, listener, key) = binding;
-        for _ in 0..osis_proto::hello::INITIAL_PINGS {
-            self.ping(conn, out);
+        if let Some(key) = self.conns.get_mut(&conn).and_then(|c| c.dial.as_mut()).map(|d| {
+            d.next_ping = now.saturating_add(osis_proto::hello::PING_INTERVAL_MS);
+            d.key
+        }) {
+            for _ in 0..osis_proto::hello::INITIAL_PINGS {
+                self.ping(conn, out);
+            }
+            // to a key this node chose to dial (spec/sync.md §10): signed over the listener's
+            // challenge and key
+            let own = self.dials_own_node(&key);
+            let provers = proofs::provers(&mut self.engine, own)?;
+            if let Some(c) = self.conns.get_mut(&conn) {
+                c.proved = provers.iter().map(|p| p.record.tid()).collect();
+            }
+            let proofs = provers.iter().map(|p| p.sign(false, &b.listener, &b.key)).collect();
+            self.request(conn, |id| Message::Prove { id, proofs }, Pending::Prove, out);
         }
-        // to a key this node chose to dial, a co-reader's or a host's (spec/sync.md §10): the
-        // shared set follows on either; signed over the listener's challenge and key
-        let own = self.dials_own_node(&host);
-        let provers = proofs::provers(&mut self.engine, own)?;
-        if let Some(c) = self.conns.get_mut(&conn) {
-            c.proved = provers.iter().map(|p| p.record.tid()).collect();
-        }
-        let proofs = provers.iter().map(|p| p.sign(false, &listener, &key)).collect();
-        self.request(conn, |id| Message::Prove { id, proofs }, Pending::Prove, out);
         self.add_new_labels(out)
     }
 
-    /// A message on dialed connection `conn`: an answer to one of this node's requests here
-    /// (below `NODE_IDS`), or the shared set's and the stream's (`peer_message`). A reply to
-    /// nothing never comes up (the session refuses it).
-    pub(super) fn dialed_message(&mut self, conn: ConnId, m: Message, out: &mut Vec<Action>) -> Result<()> {
-        if m.for_node() || !osis_proto::msg::is_reply_kind(m.kind()) {
+    /// A message on connection `conn`: the dialer's Prove or Resume where the peer dialed, an
+    /// answer to one of this node's requests here (below `NODE_IDS`), or the shared set's and
+    /// the stream's (`peer_message`). A reply to nothing never comes up (the session refuses
+    /// it). Returns the record a Resume bound, for `bind_record` once the answer is out.
+    pub(super) fn conn_message(&mut self, conn: ConnId, m: Message, out: &mut Vec<Action>) -> Result<Option<(osis_store::RecordId, bool)>> {
+        let served = self.conns.get(&conn).is_some_and(|c| c.dial.is_none());
+        match m {
+            Message::Prove { id, proofs } if served => self.answer_prove(conn, id, proofs, out)?,
+            Message::Resume { id, nonce, tags } if served => return Ok(self.answer_resume(conn, id, nonce, tags, out)?.filter(|_| self.conns.contains_key(&conn))),
             // a Notify: this side made no subscription
-            if matches!(m, Message::Notify { .. }) {
-                return Ok(());
-            }
-            return self.peer_message(conn, m, out);
+            Message::Notify { .. } => {}
+            m if m.for_node() || !osis_proto::msg::is_reply_kind(m.kind()) => self.peer_message(conn, m, out)?,
+            m => self.answered(conn, m, out)?,
         }
+        Ok(None)
+    }
+
+    /// The answer `m` to one of this node's requests on `conn`.
+    fn answered(&mut self, conn: ConnId, m: Message, out: &mut Vec<Action>) -> Result<()> {
         let Some(p) = self.conns.get_mut(&conn).and_then(|c| c.pending.remove(&m.id())) else { return Ok(()) };
         let now = self.now();
         use Message as M;
         match (p, m) {
             (Pending::Ping { sent }, M::Pong { wall_ms, .. }) => {
                 let sample = osis_proto::OffsetSample { sent, peer: wall_ms, received: now };
-                let offset = self.conns.get_mut(&conn).and_then(|c| c.clock.pong(sample));
+                let offset = self.conns.get_mut(&conn).and_then(|c| c.dial.as_mut()).and_then(|d| d.clock.pong(sample));
                 // a diagnostic only: nothing another node sends moves this node's clock (spec/sync.md §6)
                 if let Some(offset_ms) = offset.filter(|o| o.unsigned_abs() > osis_proto::hello::OFFSET_DIAGNOSTIC_MS)
-                    && let Some(c) = self.conns.get(&conn)
+                    && let Some(d) = self.conns.get(&conn).and_then(|c| c.dial.as_ref())
                 {
-                    let detail = format!("the clock of {} is {offset_ms:+} ms from this node's", osis_label::address_to_text(&c.address));
+                    let detail = format!("the clock of {} is {offset_ms:+} ms from this node's", osis_label::address_to_text(&d.address));
                     self.engine.core.events.diagnostic(Diagnostic { kind: DiagnosticKind::ClockSkew, tids: Vec::new(), commit: None, peer: None, detail }, self.engine.now());
                     self.engine.core.events.flush();
                 }
@@ -543,10 +619,13 @@ impl SyncEngine {
         want
     }
 
-    /// Starts every wanted label not yet on a ready connection to one of its hosts.
+    /// Starts every wanted label not yet on a ready connection: one this node dialed to a node
+    /// the label lists (tested, and walked when its credential is not shown), and one a peer
+    /// dialed (tested only: its Hit opens it where the peer's filter shows it, so a node that
+    /// cannot read L and dials a reader of L pulls L from it). A co-reader's sync IDs are its
+    /// shared set's, read by the stream.
     pub(super) fn add_new_labels(&mut self, out: &mut Vec<Action>) -> Result<()> {
-        // a host's: a peer's sync IDs are its shared set's, read by the stream (`stream`)
-        let conns: Vec<(ConnId, HostKey)> = self.conns.iter().filter(|(_, c)| c.is_ready() && !c.peer).map(|(id, c)| (*id, c.host)).collect();
+        let conns: Vec<(ConnId, Option<HostKey>)> = self.conns.iter().filter(|(_, c)| c.is_ready() && !c.to_peer()).map(|(id, c)| (*id, c.key())).collect();
         if conns.is_empty() {
             return Ok(());
         }
@@ -575,7 +654,7 @@ impl SyncEngine {
                 // failed under another thing (a hint's sender named this label so): it starts
                 // again as what wants it now
                 let known = self.conns.get(&conn).and_then(|c| c.labels.get(l)).is_some_and(|x| x.group == *g || !matches!(x.phase, Phase::Failed { .. } | Phase::Refused { .. }));
-                if !known && hosts.contains(&host) {
+                if !known && host.is_none_or(|h| hosts.contains(&h)) {
                     self.start_label(conn, *g, *l, out)?;
                 }
             }

@@ -315,7 +315,7 @@ impl SyncEngine {
         if self.group_label(g, &l).is_some_and(|gl| crate::sync::peers::hostless(&gl.hosts)) {
             return None;
         }
-        Some(self.conns.values().filter(|x| x.labels.contains_key(&l)).map(|x| x.host).collect())
+        Some(self.conns.values().filter(|x| x.labels.contains_key(&l)).filter_map(crate::sync::Conn::listed).collect())
     }
 
     /// `held_parts` with another node's entries counted when present at each of `hosts`

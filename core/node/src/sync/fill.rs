@@ -4,7 +4,7 @@
 //! order, and when the pass ends.
 
 use super::state::Kind;
-use super::{ConnId, HostKey, LConn, SyncEngine};
+use super::{ConnId, HostKey, LabelAt, SyncEngine};
 use crate::error::Result;
 use osis_base::{BlobId, LabelId};
 use osis_proto::window::STALL_TIMEOUT_MS;
@@ -63,7 +63,7 @@ impl SyncEngine {
     /// Starts `l`'s fill on `conn`: the entries known there and not fetched are queued (a stream
     /// resumed mid-fill lists no more than what came since). Marked in the store until it ends.
     pub(crate) fn fill_start(&mut self, conn: ConnId, l: LabelId) {
-        let Some(host) = self.conns.get(&conn).map(|c| c.host) else { return };
+        let Some(host) = self.conns.get(&conn).and_then(super::Conn::key) else { return };
         self.state.set_filling(host, l, true);
         let secrets = self.fill_secrets(conn, &l);
         let mut queue = BTreeSet::new();
@@ -75,7 +75,7 @@ impl SyncEngine {
             }
         }
         let n = self.secrets_count();
-        if let Some(lc) = self.lc_mut(conn, &l) {
+        if let Some(lc) = self.label_at_mut(conn, &l) {
             lc.fill = Some(Fill { queue, secrets: n, ..Fill::default() });
         }
     }
@@ -85,10 +85,10 @@ impl SyncEngine {
         if ids.is_empty() {
             return;
         }
-        let Some(host) = self.conns.get(&conn).map(|c| c.host) else { return };
+        let Some(host) = self.conns.get(&conn).and_then(super::Conn::key) else { return };
         let secrets = self.fill_secrets(conn, &l);
         let ranked: Vec<(u64, BlobId)> = ids.iter().filter_map(|b| self.state.entries.get(&(l, *b)).map(|e| (self.rank(&secrets, host, &l, b, &e.wrap), *b))).collect();
-        if let Some(f) = self.lc_mut(conn, &l).and_then(|x| x.fill.as_mut()) {
+        if let Some(f) = self.label_at_mut(conn, &l).and_then(|x| x.fill.as_mut()) {
             f.queue.extend(ranked);
         }
     }
@@ -96,10 +96,10 @@ impl SyncEngine {
     /// The listing ended (the stream read `l` to the peer's end): the fill fetches on. Whether
     /// `l` fills on `conn`.
     pub(crate) fn fill_listed(&mut self, conn: ConnId, l: LabelId, out: &mut Vec<super::Action>) -> Result<bool> {
-        let Some(f) = self.lc_mut(conn, &l).and_then(|x| x.fill.as_mut()) else { return Ok(false) };
+        let Some(f) = self.label_at_mut(conn, &l).and_then(|x| x.fill.as_mut()) else { return Ok(false) };
         f.listed = true;
         // listed: the label's work set judges everything at its next pass (`stream_read`)
-        if let Some(lc) = self.lc_mut(conn, &l)
+        if let Some(lc) = self.label_at_mut(conn, &l)
             && !std::mem::replace(&mut lc.synced, true)
         {
             self.work_mut(l).touched.full = true;
@@ -112,7 +112,7 @@ impl SyncEngine {
     pub(crate) fn fill_more(&mut self, conn: ConnId, l: LabelId, out: &mut Vec<super::Action>) -> Result<()> {
         let (secrets_now, now) = (self.secrets_count(), self.now());
         let Some(c) = self.conns.get_mut(&conn) else { return Ok(()) };
-        let host = c.host;
+        let Some(host) = c.key() else { return Ok(()) };
         let Some(lc) = c.labels.get_mut(&l) else { return Ok(()) };
         if !lc.phase.is_open() || !lc.fill.as_ref().is_some_and(|f| f.listed) {
             return Ok(());
@@ -167,7 +167,7 @@ impl SyncEngine {
             }
         }
         if ids.is_empty() {
-            if let Some(lc) = self.lc_mut(conn, &l) {
+            if let Some(lc) = self.label_at_mut(conn, &l) {
                 lc.fill = None;
             }
             self.fill_due.insert(l);
@@ -177,7 +177,7 @@ impl SyncEngine {
             return self.stream_ask(conn, false, out);
         }
         f.asked = ids.clone();
-        if let Some(lc) = self.lc_mut(conn, &l) {
+        if let Some(lc) = self.label_at_mut(conn, &l) {
             lc.fill = Some(f);
         }
         if first_now {
@@ -197,12 +197,12 @@ impl SyncEngine {
     /// Whether a fill has not all that judging needs: the group memberships among it. A label not
     /// open at a host waits for nobody (a host refusing it may do so for good).
     pub fn fill_before_passes(&self) -> bool {
-        self.conns.values().any(|c| c.labels.values().any(LConn::first_waits))
+        self.conns.values().any(|c| c.labels.values().any(LabelAt::first_waits))
     }
 
     /// `fill_before_passes`, of `l`.
     pub(crate) fn fill_first_waits(&self, l: &LabelId) -> bool {
-        self.conns.values().any(|c| c.labels.get(l).is_some_and(LConn::first_waits))
+        self.conns.values().any(|c| c.labels.get(l).is_some_and(LabelAt::first_waits))
     }
 
     /// Whether `l` is filling at a host it is open at: entries that open may be unfetched.
