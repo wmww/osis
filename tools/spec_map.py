@@ -32,6 +32,8 @@ MODELS = ("core/test/crdt-model/", "core/test/roles-model/", "core/test/held-mod
 CITE = re.compile(r"(spec/[\w-]+\.md)?\s*§\s*(\d+(?:\.\d+)*)(?=\s*\(([^()§]*)\))?")
 FN = re.compile(r"^\s*(?:pub\s+)?(?:async\s+)?fn\s+(\w+)")
 SHOWN = 8
+# A numbered spec section heading: (number, title).
+HEADING = re.compile(r"^#{2,4}\s+(\d+(?:\.\d+)*)\.?\s+(.*)")
 
 
 # A section of an outside standard ("RFC 8949 §4.2.1"), not of a spec file.
@@ -100,7 +102,7 @@ def spec_sections():
     for path in sorted(glob.glob(os.path.join(ROOT, "spec/*.md"))):
         rel = os.path.relpath(path, ROOT)
         for line in open(path):
-            m = re.match(r"^#{2,4}\s+(\d+(?:\.\d+)*)\.?\s+(.*)", line)
+            m = HEADING.match(line)
             if m:
                 secs.setdefault(rel, []).append((m.group(1), m.group(2).strip()))
     return secs
@@ -195,7 +197,7 @@ def spec_sentences():
     for path in sorted(glob.glob(os.path.join(ROOT, "spec/*.md"))):
         rel, sec = os.path.relpath(path, ROOT), "0"
         for line in open(path):
-            m = re.match(r"^#{2,4}\s+(\d+(?:\.\d+)*)\.?\s+(.*)", line)
+            m = HEADING.match(line)
             if m:
                 sec = m.group(1)
                 continue
