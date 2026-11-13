@@ -1,6 +1,6 @@
 //! Carrying out what role flows produce (`flows::Done`, `flows::Delivery`) and the sync
 //! state flows ask about (`flows::SyncState`): inbox blobs deposited at the inbox's hosts,
-//! direct commits handed to the app's pairing channel, placements before any other upload,
+//! direct commits handed to the app's pairing channel, placements before any other entry,
 //! certificate copies under a home label, deposits; commits that travel by inbox only are never
 //! placed under a label (spec/permissions.md §3, re-seal).
 
@@ -513,7 +513,7 @@ impl SyncEngine {
             }
             // a report counts from a source that passes the commit on to whoever this node
             // would have reached: under a label with no host any co-reader's; under one with
-            // hosts only an admin of the label's actor, which uploads the actor's role commits
+            // hosts only an admin of the label's actor, which places the actor's role commits
             // a host lacks when it re-registers there (spec/sync.md §5, Re-registration)
             let carrier = if super::peers::hostless(&gl.hosts) {
                 None

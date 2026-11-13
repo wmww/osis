@@ -193,10 +193,10 @@ fn new_node_sees_a_purge_by_author_spec_commits_5() {
     assert_eq!(of(other).body, PartBody::Held(Some(s("kept"))));
 }
 
-// spec/commits.md §5: lost at the host, a holder uploads the header-only blob again, as any
+// spec/commits.md §5: lost at the host, a holder places the header-only blob again, as any
 // must-hold body; a new node fetches it from there.
 #[test]
-fn a_lost_tombstone_is_uploaded_again_spec_sync_6() {
+fn a_lost_tombstone_is_placed_again_spec_sync_6() {
     let Chat { mut net, host, a, b, n, t, l } = chat();
     let c = msg(&mut net, b, t, "SECRET", permanent());
     net.run();
@@ -587,7 +587,7 @@ fn a_forged_header_only_blob_is_no_tombstone_spec_commits_5() {
 
 // spec/permissions.md §6, spec/commits.md §5: an admin's purge falls when its demotion stamped earlier
 // arrives. Nodes that had dropped the body take it again from the holder that kept it, no purge is
-// shown, and a new node reads the message; nobody deletes it again, no upload and delete for good.
+// shown, and a new node reads the message; nobody deletes it again, no placing and delete for good.
 #[test]
 fn a_fallen_purge_shows_no_tombstone_spec_perm_6() {
     let mut net = Net::new();
@@ -636,7 +636,7 @@ fn a_fallen_purge_shows_no_tombstone_spec_perm_6() {
         net.advance(120_000);
         net.run();
     }
-    assert_eq!(known_entries(&mut net, a, host), before, "an upload and delete loop");
+    assert_eq!(known_entries(&mut net, a, host), before, "a placing and delete loop");
     for x in [a, b, n] {
         assert!(holds(&mut net, x), "at {x}: still");
     }
@@ -823,7 +823,7 @@ fn known_entries(net: &mut Net, n: usize, host: usize) -> usize {
 // delete would keep it out; but the request falls there, so the holder places it again and the
 // writer that dropped it takes it.
 #[test]
-fn a_holder_that_saw_a_fallen_purges_delete_uploads_again_spec_sync_6() {
+fn a_holder_that_saw_a_fallen_purges_delete_places_again_spec_sync_6() {
     let mut net = Net::new();
     let host = net.add_host();
     let (a, b, x, h) = (net.node(1, &[host]), net.node(2, &[host]), net.node(4, &[host]), net.node(5, &[host]));
@@ -861,7 +861,7 @@ fn a_holder_that_saw_a_fallen_purges_delete_uploads_again_spec_sync_6() {
 
 // spec/sync.md §6, spec/permissions.md §6: a purge that fell after every holder dropped the body: it
 // is gone for good (no holder), the part missing at each, no purge shown. The header-only blobs up
-// by then stay, judged lasting by nobody: no upload and delete for good.
+// by then stay, judged lasting by nobody: no placing and delete for good.
 #[test]
 fn a_header_only_some_judge_lasting_is_left_alone_spec_sync_6() {
     let mut net = Net::new();
@@ -890,7 +890,7 @@ fn a_header_only_some_judge_lasting_is_left_alone_spec_sync_6() {
     for _ in 0..6 {
         net.advance(120_000);
     }
-    assert_eq!(known_entries(&mut net, a, host), before, "an upload and delete loop");
+    assert_eq!(known_entries(&mut net, a, host), before, "a placing and delete loop");
     let l = net.labels_at(host).into_iter().find(|l| !at_the_peer(&mut net, a, host, l, p).is_empty()).expect("the holders' copy stays");
     assert_eq!(at_the_peer(&mut net, a, host, &l, m), vec![Vec::<usize>::new()]);
 }

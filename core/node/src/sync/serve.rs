@@ -236,7 +236,7 @@ impl SyncEngine {
             }
             Up::End => self.end_served(conn, out),
             // a relay-only entry of a sync ID kept unread, past the hub's relay gate: to the
-            // readers sharing it here but its uploader
+            // readers sharing it here but its sender
         }
         Ok(())
     }

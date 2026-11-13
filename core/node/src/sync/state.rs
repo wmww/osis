@@ -420,7 +420,7 @@ pub struct State {
     pub certs: BTreeSet<(LabelId, CommitId)>,
     /// The thing lists this node placed under a label: (label, rotation, thing).
     pub listed: BTreeSet<(LabelId, CommitId, Tid)>,
-    /// Blob IDs of no use at a host, by when (wall ms): uploads it refused as
+    /// Blob IDs of no use at a host, by when (wall ms): entries it refused as
     /// tombstoned, and entries it holds under a wrap not opening to the blob's key (a stamped
     /// entry's wrap never changes there, spec/sync.md §5). Forgotten after `TOMBSTONE_LIFETIME`,
     /// when the host's tombstone is gone too; not while the host still holds the entry.
@@ -449,7 +449,7 @@ pub struct State {
     /// `body_deleted`) is not placed there again while its live writes are carried (spec/sync.md
     /// §6). In memory, from `tombs` at load where the blob's record is known;
     /// forgotten with the tombstone (`TOMBSTONE_LIFETIME`, minor consequence: at 0 a right
-    /// holder whose bounds are dated later re-uploads it every pass until its own bound, at
+    /// holder whose bounds are dated later places it again every pass until its own bound, at
     /// infinity memory grows with deletions; live writes are carried either way).
     pub deleted: BTreeMap<DeletedBody, u64>,
     /// Commits to look at for forgetting (`forget_forgettable`): one's last part dropped, entry
@@ -932,7 +932,7 @@ impl State {
     /// The hub's store is the truth for ciphertext (issues/net-one-peer.md step 4): at load every
     /// entry and row once (brute force), then the node log past `hub_pos` as the hub changes it
     /// (`hub_changes`). Add before, remove after (`HostStore::removal`), so a row with no entry
-    /// here is an arrival the engine's store did not commit or another's upload, derived again (an
+    /// here is an arrival the engine's store did not commit or another's entry, derived again (an
     /// entry not opened yet, its bytes held again where its row keeps them: opened at start,
     /// `rederived`); an entry whose bytes are held with no row was removed there (the hub's sweep,
     /// a delete), dropped here; a row whose wrap or stamp differs is taken.
@@ -969,7 +969,7 @@ impl State {
         Ok(())
     }
 
-    /// The hub's changes past `hub_pos` (`HostStore::take_moved`): entries others uploaded to a
+    /// The hub's changes past `hub_pos` (`HostStore::take_moved`): entries others sent to a
     /// sync ID this node reads, and removals there (its sweep, a delete). The entries derived
     /// with their bytes held, to open (`SyncEngine::open_entries`).
     pub fn hub_changes(&mut self, engine: &mut Engine) -> Result<HubChanges> {

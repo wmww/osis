@@ -88,7 +88,7 @@ pub(crate) enum Src {
     Bundle,
     /// A connection to a peer that cannot read the label.
     Host(ConnId),
-    /// A session this node serves, by an upload to it.
+    /// A session this node serves, by what its peer sent on it.
     Served(ConnId),
     /// A reader's stream, or bodies fetched from it (`stream`).
     Reader(ConnId),
@@ -233,7 +233,7 @@ impl SyncEngine {
         let mut lost = BTreeSet::new();
         for ev in events {
             // an entry this node deleted or saw deleted, announced again within its tombstone
-            // (a host an upload reached, its answer lost, a stale push crossing the deletion, a
+            // (a host that pulled it, its report lost, a stale push crossing the deletion, a
             // peer echoing an announcement): not stored, fetched or served on, as a host's
             // tombstone keeps the identical blob out (spec/sync.md §5); a source's is recorded as
             // present there as it was, so the pass judges it there as any. Bytes
@@ -275,7 +275,7 @@ impl SyncEngine {
                 if class == osis_label::Class::Relay {
                     let head = head_write(self);
                     // a stamp counts if it verifies under the head's write key (a served peer's
-                    // upload was checked by the host engine)
+                    // entry was checked by the host engine)
                     let stamp = stamp.filter(|s| head.as_ref().map_or(trusted, |w| osis_label::verify_stamp(w, &l, blob_id, wrap, s).is_ok()));
                     self.relay_in(from, l, *blob_id, blob.clone(), *wrap, stamp, out)?;
                     continue;
@@ -313,8 +313,8 @@ impl SyncEngine {
                     let echo = host.is_some()
                         && self.engine.has_blob(&blob_id)
                         && self.state.entries.get(&(l, blob_id)).is_some_and(|e| !e.memory && e.kind != Kind::Unknown && e.wrap == wrap && (stamp.is_none() || e.stamp == stamp));
-                    // presence comes only from what the peer shows, an own upload's echo
-                    // included, never from an upload's OK (a store restored from a backup lost
+                    // presence comes only from what the peer shows, an own entry's echo
+                    // included, never from a report's position alone (a store restored from a backup lost
                     // what it acknowledged)
                     if let Some(s) = host {
                         self.state.set_present(s, l, blob_id, true);
@@ -486,7 +486,7 @@ impl SyncEngine {
                 self.mark_labels(&[l]);
             }
         }
-        // bodies waiting for a linked blob upload it now it is here (`Left::links`)
+        // bodies waiting for a linked blob place it now it is here (`Left::links`)
         self.touched.blobs.extend(blobs.iter().map(|(b, _)| *b));
         // an entry these bytes make servable logs in their transaction, with its row
         if !blobs.is_empty() {
@@ -543,7 +543,7 @@ impl SyncEngine {
     /// (spec/sync.md §5): no wrap from anyone, a writer included, replaces one that opens to the
     /// blob's key, and a body stays readable through a host whose wrap is useless: a node knowing
     /// the key takes only a wrap opening to it and counts the host giving any other as lacking
-    /// the entry (`State::holds_at`), so a writer uploads a fresh encryption there. Knowing
+    /// the entry (`State::holds_at`), so a writer places a fresh encryption. Knowing
     /// no key, it prefers what opens; a wrap that opened to a wrong key (`Kind::Bad`) gives way.
     /// `stamped`: under the head's write key; `held_stamped`: the host holds it stamped under any
     /// (a hostile host saying so loses only its own entry here).
@@ -2020,7 +2020,7 @@ impl SyncEngine {
     /// key and ciphertext: a dropped body's copies go, spec/commits.md §5). A pending commit's true copy
     /// goes so too, a junk copy perhaps holding its slot (`redeliver` then finds nothing): keeping it
     /// would store what a sender floods and deletes, and the deletion is what a body's holders repair
-    /// by uploading it again.
+    /// by placing it again.
     pub(crate) fn forget_blob(&mut self, b: &BlobId) -> Result<()> {
         let Some(r) = self.state.blobs.get(b).cloned() else { return Ok(()) };
         let unused = !self.state.named(b);
@@ -2073,7 +2073,7 @@ impl SyncEngine {
     /// that fell, or dropped while invalid and valid since, §6): unopened again, so a pass fetches
     /// them where present (`refetch`), the reply bringing the wrap back. Bytes still held (the
     /// drop and its undoing in one step, before `forget_dropped`) go first: the fetch is the one
-    /// way back. A body deleted everywhere comes back only as a holder's new upload. `None`:
+    /// way back. A body deleted everywhere comes back only when a holder places it again. `None`:
     /// every commit (at start: a crash may have come between the engine's change and this).
     pub(crate) fn reopen_undropped(&mut self, commits: Option<&BTreeSet<osis_base::CommitId>>) -> Result<()> {
         if commits.is_some_and(BTreeSet::is_empty) {

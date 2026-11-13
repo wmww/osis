@@ -122,7 +122,7 @@ impl World {
 }
 
 // spec/crypto.md §4 (established; history boxes of established secrets only), spec/sync.md §5
-// (register before upload), spec/permissions.md §3–§4 (stranded, re-seal); TLC R9: a1
+// (register before placing), spec/permissions.md §3–§4 (stranded, re-seal); TLC R9: a1
 // re-seals a2 at e1 before e1's commit reaches a2. a2 holds e1's secret but not the removal: it
 // boxes e1 nowhere (re-seal, grant, history box), so m1 opens nothing of e1 through a2's fork.
 #[test]
@@ -130,7 +130,7 @@ fn r9_reseal_before_rotation_commit() {
     let mut w = World::new();
     let (r1, a1v1, s1) = w.remove_m1();
     let e1 = r1.role(Role::Read).unwrap().epoch;
-    // a2 is stranded at the head (e1 registered, its commit not uploaded); a1 re-seals it.
+    // a2 is stranded at the head (e1 registered, its commit not placed); a1 re-seals it.
     let reseal = box_holder(&w.a, &a1v1, &hist(&w.a, &a1v1, &s1), &w.rcpt(w.a2), &read(), &mut w.rng).unwrap().unwrap();
     assert!(reseal.history.contains_key(&history_key(Role::Read, &e1)));
     let mut s2 = w.s0.clone();
@@ -178,7 +178,7 @@ fn r9_reseal_before_rotation_commit() {
 }
 
 // spec/crypto.md §4 (names), spec/permissions.md §3; TLC `MC_reorder`: a1 removes m1 (e1, commit
-// R1) and rotates again (e2, naming R1), registering before uploading; a1 re-seals stranded a2 at
+// R1) and rotates again (e2, naming R1), registering before placing; a1 re-seals stranded a2 at
 // e2, so a2 holds e1's secret by e2's history box. a2 gets e2's commit from a peer, not R1:
 // neither is established (e2's names unmet), a complete pass reports no re-seal of m1 and none
 // can box e2. Once R1 arrives, both are.

@@ -1,7 +1,7 @@
 //! The pass at one host for one label after its log was read to the end (spec/sync.md §5-§7;
 //! spec/permissions.md §4): re-registration first when this admin holds newer epochs than the
 //! head (the actor's role commits the host lacks, then the step; the rest after it is
-//! registered), then uploads of must-hold bodies (role commits first) or relays of stamped ones,
+//! registered), then placing of must-hold bodies (role commits first) or relays of stamped ones,
 //! this node's certificates and node card, and deletions of must-not-hold bodies (`delete`: by
 //! the label delete key or a delete key, carriers first), then re-seals (`reseal`).
 
@@ -27,7 +27,7 @@ use std::collections::{BTreeMap, BTreeSet};
 /// A node's verdicts on one label at one host (`SyncEngine::verdicts`).
 #[derive(Clone, Debug, Default)]
 pub struct Verdicts {
-    /// It stamps here (uploads what it judges must-hold).
+    /// It stamps here (places what it judges must-hold).
     pub writer: bool,
     /// Bodies it judges must-hold: (commit, the delta parts no snapshot under the label covers).
     /// A live entry of the commit holding those parts and no dropped delta holds the body.
@@ -145,7 +145,7 @@ struct At<'a> {
     settled: bool,
     /// A body this node places there that the source takes now (a role commit or request, or
     /// one stamped for its head) is not at the source yet (its relay waits, or the source has
-    /// not pulled it): deletions there wait (`deletions`), as an upload went before a delete.
+    /// not pulled it): deletions there wait (`deletions`), as a placing went before a delete.
     behind: bool,
     /// The source is full for the label (spec/sync.md §10 Full): it takes nothing until room
     /// appears, so no delete waits for it to take a carrier.
@@ -943,7 +943,7 @@ impl SyncEngine {
     /// and is unopened. An entry listed before the secret its wrap opens under arrived was not
     /// fetched then: the head's rotation commit is one when it is wrapped under an epoch this
     /// node learned later, another rotation's or a fork's (spec/crypto.md §5; member_churn
-    /// seeds 9, 9390: an admin that never read it never registered or uploaded again). True
+    /// seeds 9, 9390: an admin that never read it never registered or placed again). True
     /// while something is fetched or opened.
     fn read_first(&mut self, conn: ConnId, host: HostKey, g: &Tid, l: LabelId, out: &mut Vec<super::Action>) -> Result<bool> {
         let secrets = self.read_secrets(g);

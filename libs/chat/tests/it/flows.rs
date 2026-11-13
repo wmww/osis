@@ -955,7 +955,7 @@ fn link_join_name_reply_cursor_spec_perm_7() {
 // spec: none (cost, spec/requirements.md Scale: no operation O(history)): the bytes a post sends
 // do not grow with the messages before it, n against 10n (counted traffic).
 #[test]
-fn post_upload_flat_in_history() {
+fn post_cost_flat_in_history() {
     let per_post = |before: usize| {
         let Room { mut w, a, c, .. } = room(Options::default());
         for i in 0..before {

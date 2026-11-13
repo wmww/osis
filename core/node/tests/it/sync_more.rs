@@ -40,7 +40,7 @@ fn certificates_spec_permissions_4() {
     let under = commits_under(&mut net, a, &l);
     let by_r: Vec<&BTreeSet<String>> = under.iter().filter(|(_, au, _)| *au == rt).map(|(_, _, a)| a).collect();
     assert!(by_r.iter().any(|a| a.contains("node.0")), "the reader's node card: {under:?}");
-    // the writer promoted the reader's deposited card (re-uploaded stamped)
+    // the writer promoted the reader's deposited card (placed again stamped)
     let entries = net.sync(a).entries(&l);
     let store = net.hosts[host].hub.store();
     let mut card = 0;
@@ -712,7 +712,7 @@ fn removal_placed_first([sa, sb, sc]: [u64; 3]) {
     assert!(labels.contains(&l1));
     assert_eq!(net.read(c, t), Some(s("before")));
     let ct_ = net.tid(c);
-    // a content write not yet uploaded, then the removal
+    // a content write not yet placed, then the removal
     let after = net.write(a, t, "after");
     let done = net.engine(a).demote(&g, &Demotion { holder: ct_, new: None, retain: None }).unwrap();
     assert!(done.deliveries.iter().any(|d| matches!(d, Delivery::First { .. })));
@@ -761,7 +761,7 @@ fn reused_blob(net: &mut Net, a: usize, b: usize, role: Role, host: usize) -> (o
 
 // spec/sync.md §3 (closure: the chunk and tree-node blobs the commits reference), §2
 // (replacement): chunks the live value reuses are listed only by the version that introduced
-// them; once that version is purged and the label replaced, the writer still uploads them under
+// them; once that version is purged and the label replaced, the writer still places them under
 // the new label with the live body, so a reader there reads the value.
 #[test]
 fn reused_chunks_follow_a_new_label_spec_sync_3() {
@@ -788,7 +788,7 @@ fn reused_chunks_follow_a_new_label_spec_sync_3() {
 }
 
 // spec/sync.md §3 (closure): a commit touching a thing of the group and another thing of the
-// same reader actor outside the group's closure uploads under the label only what its own
+// same reader actor outside the group's closure places under the label only what its own
 // deltas link: never the outside thing's large value.
 #[test]
 fn body_links_stay_in_the_closure_spec_sync_3() {

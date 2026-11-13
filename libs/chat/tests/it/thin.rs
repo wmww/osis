@@ -126,9 +126,9 @@ fn wait_state(db: &Osis, c: osis::Tid, done: impl Fn(&osis::GroupSync) -> bool) 
     }
 }
 
-// notes/chat.md Create, spec/data-model.md §9: the maker's own serving node reads its chat, so serves it with nothing admitted for others; another account's chat it refuses
+// notes/chat.md Create, spec/data-model.md §9: the maker's own peer reads its chat, so syncs it with nothing admitted for others; another account's chat it refuses
 #[test]
-fn a_serving_node_takes_its_accounts_chat_spec_data_model_9() {
+fn an_own_peer_takes_its_accounts_chat_unadmitted_spec_data_model_9() {
     use osis::internals::Internals;
     let net = osis_transport::Net::new(0);
     let cfg = |ep: &str, hosts: Vec<Address>| {

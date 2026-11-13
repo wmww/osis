@@ -214,7 +214,7 @@ A **holder actor** of A is a holder for keys of A (its first admin included whil
 - **Order**: 0 for a commit with a purge request or a part on a role-class aspect, `created.0`, `retention^.0` or `group.0`, else the commit's `ts` (a header-only blob too). It is read only to order a node's first sync (spec/sync.md §6), and a wrong one changes nothing else.
 - A wrap names no epoch: a reader tries the read secrets it holds, newest first.
 - **Who wraps under what**:
-  - An uploader wraps under the newest current read epoch whose secret it holds (§4).
+  - A node placing an entry wraps under the newest current read epoch whose secret it holds (§4).
   - A node holding no current secret places nothing: it is stranded (spec/permissions.md §4).
   - Exception: a commit carrying boxes of a read epoch e (a rotation) is wrapped, under every label whose read secret derives from that actor's, under the read epoch e supersedes whose secret the rotator holds with the greatest n, ties by lowest nonce (n, not order n, §4).
 - Label role keys for a host are those of the epochs its current step registers (spec/sync.md §5).

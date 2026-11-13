@@ -119,7 +119,7 @@ pub(crate) fn confirm<T>(ctx: &Ctx<'_>, f: impl Future<Output = osis::Result<T>>
     race(ctx.timeout()?, f).unwrap_or_else(|| Err(Error::Network("could not confirm this link yet; trying again is safe".into()))).map_err(Into::into)
 }
 
-/// `wait_synced` within `limit`; past it `Network`, or the serving nodes that do not admit a group (state
+/// `wait_synced` within `limit`; past it `Network`, or the peers that do not admit a group (state
 /// `Refused`) when there are any.
 fn wait_sync(ctx: &Ctx<'_>, s: SyncScope, limit: Option<Duration>) -> anyhow::Result<()> {
     let db = ctx.db.clone();
@@ -132,7 +132,7 @@ fn wait_sync(ctx: &Ctx<'_>, s: SyncScope, limit: Option<Duration>) -> anyhow::Re
     }
 }
 
-/// `e` with the serving nodes that do not admit the groups it names (state `Refused`), if any.
+/// `e` with the peers that do not admit the groups it names (state `Refused`), if any.
 fn not_admitted(db: &Osis, e: Error) -> anyhow::Error {
     let (Error::Unsynced { groups }, Ok(st)) = (&e, db.status()) else { return e.into() };
     let hint: Vec<String> = groups

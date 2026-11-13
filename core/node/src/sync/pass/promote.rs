@@ -273,7 +273,7 @@ impl SyncEngine {
         RELAY_MIN_MS + u64::from_le_bytes(x) % (SETTLE_MS - RELAY_MIN_MS)
     }
 
-    /// When this node uploads or relays commit `c` at a host lacking it (wall ms; a wake
+    /// When this node places or relays commit `c` at a host lacking it (wall ms; a wake
     /// is set for then), `None` for now: its own (made here, a held key actor's included, or placed
     /// first by a flow) at once, another node's once `relay_delay` has passed since it arrived here.
     pub(super) fn relay_at(&mut self, l: LabelId, c: &CommitId) -> Option<u64> {

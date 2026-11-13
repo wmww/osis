@@ -11,7 +11,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 pub use ct::{Admit, HostCaps as ServingCaps};
 
-/// What a serving node knows a group's data by, opaque and saying nothing else about the group: for
+/// What a node that cannot read a group knows its data by, opaque and saying nothing else about the group: for
 /// its rules (`Serving::admitted`, `Serving::caps`). A group's holders ask `Osis::sync_ids` and pass
 /// the text form (`Display`, `FromStr`) to whoever runs that node.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -37,7 +37,7 @@ impl std::str::FromStr for SyncId {
     }
 }
 
-/// How much a serving node takes on. Past any of these it refuses what is new; nothing it holds is
+/// How much a node takes on of the groups it cannot read. Past any of these it refuses what is new; nothing it holds is
 /// lost.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ServingPolicy {
@@ -182,8 +182,8 @@ impl Osis {
         Ok(())
     }
 
-    /// What a serving node knows `group` by (several while it moves from one to another, none when it
-    /// does not sync). Pass them to whoever runs that node, for `Serving::admitted` or `caps`.
+    /// What a node that cannot read `group` knows it by (several while it moves from one to another, none when it
+    /// does not sync). Pass them to whoever runs such a node, for `Serving::admitted` or `caps`.
     /// `Unsupported` on a client with its own actor.
     pub fn sync_ids(&self, group: Tid) -> Result<Vec<SyncId>> {
         let ids = |v: osis_base::Value| crate::port::codec::Args::of(vec![v]).list()?.into_iter().map(|x| crate::port::codec::Args::of(vec![x]).text()?.parse()).collect();

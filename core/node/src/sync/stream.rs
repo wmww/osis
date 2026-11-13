@@ -570,7 +570,7 @@ impl SyncEngine {
         self.shared_members(conn)
     }
 
-    /// Blobs uploaded over `conn`: not inlined back on its stream.
+    /// Blobs that came over `conn`: not inlined back on its stream.
     pub(super) fn stream_crossed(&mut self, conn: ConnId, ids: Vec<BlobId>) {
         let s = &mut self.streams.entry(conn).or_default().serving;
         if s.crossed.len() + ids.len() > MAX_CROSSED {

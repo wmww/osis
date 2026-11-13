@@ -1,4 +1,4 @@
-//! Relay-only uploads at a host or a co-reader peer serving a label (spec/sync.md §5): admitted
+//! Relay-only entries at a host or a co-reader peer serving a label (spec/sync.md §5): admitted
 //! by prefix expiry and size, counted against a per-label rate, and pushed once per blob within
 //! its expiry window (a repeat is answered OK and pushed to nobody).
 
@@ -7,7 +7,7 @@ use osis_base::format::{MAX_DRIFT_MS, MAX_RELAY_BLOB};
 use osis_base::{BlobId, LabelId};
 use std::collections::{BTreeSet, HashMap, HashSet};
 
-/// What becomes of a relay-only upload.
+/// What becomes of a relay-only entry.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RelayVerdict {
     /// New: push it to the label's subscribers.
@@ -127,7 +127,7 @@ mod tests {
         BlobId(b)
     }
 
-    // spec/sync.md §5 (relay-only uploads): a replay within the window is pushed once; expiry,
+    // spec/sync.md §5 (relay-only entries): a replay within the window is pushed once; expiry,
     // size and rate bound what one replayer can make a host push
     #[test]
     fn replay_pushed_once_and_bounded_spec_sync_5() {

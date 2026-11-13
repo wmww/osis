@@ -167,7 +167,7 @@ fn relays_are_held_by_nobody() {
     assert_eq!(deposit(&w, h, l.deposit(relay, &l.head_keys().deposit.clone())), Code::REFUSED);
 }
 
-// spec/sync.md §5 (relay-only uploads; security review H1): a reader or removed holder holding
+// spec/sync.md §5 (relay-only entries; security review H1): a reader or removed holder holding
 // one stamped relay blob re-sends it in a loop: it is passed on once; a blob without an expiry,
 // expired, expiring far ahead or over `MAX_RELAY_BLOB` is refused; past the label's relay rate
 // fresh relays get code 4

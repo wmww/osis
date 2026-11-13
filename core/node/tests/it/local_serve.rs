@@ -698,7 +698,7 @@ fn own_write_placed_under_a_hosted_label_with_no_host_connected_spec_sync_5() {
     assert_eq!(placed.len(), 1, "placed in its own store with no host connected");
     net.blocked.remove(&(a, h));
     net.advance(60_000);
-    assert!(placed.iter().all(|b| net.host_ids(h, &l).contains(b)), "the host pass uploads that entry");
+    assert!(placed.iter().all(|b| net.host_ids(h, &l).contains(b)), "the host pass places that entry");
 }
 
 /// Node `n` writes `v` to `t`'s register, expiring a year out: below the compaction trigger,
@@ -744,15 +744,15 @@ fn own_entries_covered_while_the_host_is_away_leave_spec_sync_5() {
     assert_eq!(of_c.len(), 1, "the newest write stays placed");
     net.blocked.remove(&(a, h));
     net.advance(60_000);
-    assert!(of_c.iter().all(|b| net.host_ids(h, &l).contains(b)), "the host pass uploads the newest write");
+    assert!(of_c.iter().all(|b| net.host_ids(h, &l).contains(b)), "the host pass places the newest write");
     assert_eq!(net.read(a, t), Some(s("v00000112")));
 }
 
-// spec/sync.md §5 (Placed, deleting at a host), §6 (Tombstones): an own entry whose upload is
+// spec/sync.md §5 (Placed, deleting at a host), §6 (Tombstones): an own entry whose placing is
 // unanswered when newer own writes cover it leaves the node's store, and the host's late OK
 // records it again as present there, so the host pass deletes it there too.
 #[test]
-fn covered_own_entry_mid_upload_leaves_the_host_too_spec_sync_5() {
+fn covered_own_entry_mid_pull_leaves_the_host_too_spec_sync_5() {
     let (mut net, h, [a], _g, [t]) = hosted::<1, 1>(&[], ["first"], false);
     let acts = net.sync(a).publish_reach([1; 32], Vec::new()).unwrap();
     net.actions(a, acts);
@@ -843,7 +843,7 @@ fn own_duplicate_case(v: &str) -> bool {
     net.drop_link(a, h1);
     net.run();
     assert_eq!(of(&mut net, a), at_h1, "a's own copy went as the higher duplicate");
-    assert!(!net.host_ids(h1, &l).contains(&own[0]), "never uploaded");
+    assert!(!net.host_ids(h1, &l).contains(&own[0]), "never placed");
     net.blocked.remove(&(a, h2));
     net.advance(60_000);
     net.run();
@@ -852,7 +852,7 @@ fn own_duplicate_case(v: &str) -> bool {
     true
 }
 
-// spec/sync.md §5 (Placed, deleting at a host): an own entry whose upload the host took but
+// spec/sync.md §5 (Placed, deleting at a host): an own entry whose placing the host took but
 // whose answer was lost with the connection, covered meanwhile, leaves the host once the node
 // is back, whatever it dropped of it locally: the tombstone keeps what the entry was, so the
 // host announcing it records it as present there and the host pass deletes it; a restart
@@ -872,7 +872,7 @@ fn lost_answer(restart: bool, days: u64) {
     let of = |net: &mut Net, c| net.sync(a).entries(&l).into_iter().filter(|(_, k)| matches!(k, EntryKind::Commit { commit, .. } if *commit == c)).map(|(id, _)| id).collect::<Vec<_>>();
     let e2 = of(&mut net, c2);
     assert_eq!(e2.len(), 1, "v2 placed");
-    assert!(net.host_ids(h, &l).contains(&e2[0]), "the host took v2's upload");
+    assert!(net.host_ids(h, &l).contains(&e2[0]), "the host took v2's placing");
     net.blocked.insert((a, h));
     net.drop_link(a, h);
     // its answers, held, are for a connection gone
@@ -1094,7 +1094,7 @@ fn wrong_bytes_for_a_node_walk_nothing_spec_sync_7() {
 }
 
 /// spec/sync.md §6 (Tombstones), §3 (certificate copies' linked blobs), spec/commits.md §5: a
-/// certificate copy and the blobs it links, whose upload answers were lost with the connection
+/// certificate copy and the blobs it links, whose placing answers were lost with the connection
 /// (`lost`) or arrive after the purge, leave the host once the copied delta is purged and the
 /// host reports them.
 fn certificate_copy_answered_late(lost: bool) {
@@ -1171,7 +1171,7 @@ fn certificate_copy_whose_answers_were_lost_leaves_the_host_with_its_links_spec_
 }
 
 #[test]
-fn certificate_copy_mid_upload_leaves_the_host_with_its_links_spec_sync_6() {
+fn certificate_copy_mid_pull_leaves_the_host_with_its_links_spec_sync_6() {
     certificate_copy_answered_late(false);
 }
 
@@ -1179,7 +1179,7 @@ fn certificate_copy_mid_upload_leaves_the_host_with_its_links_spec_sync_6() {
 // x under a label a serves with no host, then b and c go away. At the request's expiry a, alone,
 // forgets it and its entry: no entry, no row, no bytes
 #[test]
-fn a_release_request_leaves_the_serving_node_alone_at_its_expiry_spec_sync_5() {
+fn a_release_request_leaves_a_node_keeping_it_unread_alone_at_its_expiry_spec_sync_5() {
     let (mut net, [a, b, c]) = local_nodes::<3>();
     let g = net.group(a, &[(b, Role::Write), (c, Role::Admin)], &[]);
     let acts = net.sync(a).publish_reach([1; 32], Vec::new()).unwrap();
@@ -1211,7 +1211,7 @@ fn a_release_request_leaves_the_serving_node_alone_at_its_expiry_spec_sync_5() {
 // serves, which the node cannot open, goes with its entry and bytes at its prefix expiry as at
 // any host
 #[test]
-fn an_unopened_row_another_wrote_leaves_the_serving_node_at_its_expiry_spec_sync_5() {
+fn an_unopened_row_another_wrote_leaves_a_node_keeping_it_unread_at_its_expiry_spec_sync_5() {
     let (mut net, [a, b]) = local_nodes::<2>();
     let _g = net.group(a, &[(b, Role::Write)], &[]);
     net.run();

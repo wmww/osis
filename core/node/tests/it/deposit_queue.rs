@@ -311,7 +311,7 @@ fn inbox_goes_when_one_host_refuses_spec_sync_5() {
 }
 
 // spec/permissions.md §3 (a removal goes under the labels the removed party could read in the
-// same sync, before any other upload), spec/commits.md §4: with the
+// same sync, before any other placing), spec/commits.md §4: with the
 // target's host down, the removal's copy under another label still goes.
 #[test]
 fn removal_copies_not_held_spec_permissions_3() {

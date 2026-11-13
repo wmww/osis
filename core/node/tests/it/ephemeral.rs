@@ -587,7 +587,7 @@ fn restarted_node_gets_state_back_spec_sync_6() {
 // them back (they list what they hold in their first Sync, the host wants what it lacks), so a
 // node arriving later still gets the state
 #[test]
-fn host_restart_holders_upload_again_spec_sync_4() {
+fn host_restart_holders_place_again_spec_sync_4() {
     let (mut net, host, [a, b, c], g, []) = hosted::<3, 0>(&[(1, Role::Write), (2, Role::Read)], [], false);
     net.set_online(c, false);
     net.run();
@@ -599,7 +599,7 @@ fn host_restart_holders_upload_again_spec_sync_4() {
     assert_eq!(net.hosts[host].hub.store().ephemeral_bytes(&l), 0);
     net.run();
     net.advance(10_000);
-    assert!(net.hosts[host].hub.store().ephemeral_bytes(&l) > 0, "uploaded again");
+    assert!(net.hosts[host].hub.store().ephemeral_bytes(&l) > 0, "placed again");
     net.set_online(a, false);
     net.set_online(b, false);
     net.set_online(c, true);
@@ -1569,7 +1569,7 @@ fn snapshot_survives_rebuild_spec_crdt_4_6() {
 // Shape: c's automatic compaction is stamped last, so its snapshot covers every snapshot and
 // body at d and at the host (writers deleted them there); c's removal invalidates it, and d
 // holds nothing until a and b, still holding their own, snapshot afresh
-// (`Engine::take_fallen`; a re-upload of the deleted entries would meet the host's
+// (`Engine::take_fallen`; a placing again of the deleted entries would meet the host's
 // delete tombstone).
 #[test]
 fn compacted_write_of_removed_holder_stays_spec_permissions_5_2() {
@@ -1832,7 +1832,7 @@ fn random_window_run(seed: u64) {
 /// `single`: one host only, always capped (what it holds is all others get): holders read
 /// alike unless an entry a holder has stays out of it because it genuinely does not fit there.
 /// `inflight`: half the steps end after one hop of delivery instead of settling, so later
-/// writes meet uploads still in flight (coalesced, spec/sync.md §9), and the second host is
+/// writes meet placings not yet pulled (coalesced, spec/sync.md §9), and the second host is
 /// at times slow (its messages held back for some steps).
 fn random_window_run_on(seed: u64, single: bool, inflight: bool) {
     let mut x = seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1;
@@ -2103,7 +2103,7 @@ fn random_window_converges_large() {
 }
 
 // the same with half the steps ending while messages are in flight, so writes meet unanswered
-// uploads and are coalesced (spec/sync.md §9)
+// placings and are coalesced (spec/sync.md §9)
 #[test]
 fn random_window_inflight_spec_sync_9() {
     for seed in 0..2 {
@@ -2351,7 +2351,7 @@ fn random_churn_converges_large() {
 // invalid at b, which keeps its entry with no body. Both hosts restart and want it from b, which
 // has nothing to give: the entry is held nowhere and goes, with no tombstone (a tombstone would
 // take the host's later announcement for the deleted entry recorded again, never fetched). The
-// re-grant makes the write valid again with no entry of it known at b; when c uploads it again,
+// re-grant makes the write valid again with no entry of it known at b; when c places it again,
 // b fetches it
 #[test]
 fn invalid_part_tombstoned_then_valid_fetched_spec_permissions_6() {
@@ -2637,7 +2637,7 @@ fn commit_entries_at(net: &mut Net, host: usize, n: usize, l: &osis_base::LabelI
     net.sync(n).entries(l).into_iter().filter(|(x, k)| held.contains(x) && matches!(k, osis_node::sync::EntryKind::Commit { commit, .. } if *commit == c)).count()
 }
 
-// spec/sync.md §6 (a writer stamps every ephemeral entry it uploads; held at a host only as
+// spec/sync.md §6 (a writer stamps every ephemeral entry it places; held at a host only as
 // learned on the current connection; random churn seed 154 shrunk): a restarted author's
 // commit, invalid while it is demoted, is fetched back by the holders to wait apart; the hosts
 // restart and lose it, the admin too; once the author is promoted the holders hold it valid
@@ -2822,7 +2822,7 @@ fn invalid_on_arrival_held_once_valid_spec_sync_9() {
     deliver(&mut net, d, &ok.blob);
     assert_eq!(notes(&mut net, d, w).get("r"), None, "promotion not seen here yet");
     assert!(net.engine(d).holds_memory(&ok.id) && !net.engine(d).memory_body_held(&ok.id), "dropped while invalid, known");
-    // r uploads it and goes: the host is the one source left (spec/permissions.md §6)
+    // r places it and goes: the host is the one source left (spec/permissions.md §6)
     net.feed(r, Event::Local);
     net.run();
     net.set_online(r, false);
@@ -2877,7 +2877,7 @@ fn reader_flood_takes_no_cap_spec_permissions_6() {
     assert!(notes(&mut net, b, w).get("a") == Some(&big), "a writer's write still applies");
     assert!(notes(&mut net, b, w).keys().all(|k| !k.starts_with('r')), "the flood joins nothing");
     // on the next connection the host lacks them (it never held them) and no body is here to
-    // upload, so the entries go; each header goes with its entry's tombstone (`MAX_DRIFT`)
+    // placing, so the entries go; each header goes with its entry's tombstone (`MAX_DRIFT`)
     net.set_online(b, false);
     net.run();
     net.set_online(b, true);
@@ -3134,7 +3134,7 @@ fn many_authors_under_a_peers_rates_by_hand() {
 }
 
 // spec/sync.md §9 (an unsent write superseded by a later one expiring no earlier is not sent):
-// cursor moves made before the next take (an upload in flight), each expiring at its own time,
+// cursor moves made before the next take (a placing in flight), each expiring at its own time,
 // go as one commit, the last move's, not one per expiry
 #[test]
 fn superseded_unsent_moves_one_commit_spec_sync_9() {
@@ -3370,7 +3370,7 @@ fn ephemeral_signals_not_held_back_spec_sync_9() {
 }
 
 // spec/sync.md §9 (own plain writes wait only while every connection of the label has an own
-// upload unanswered): with one host slow to answer, each edit reaches B through the other at
+// placing unanswered): with one host slow to answer, each edit reaches B through the other at
 // once
 #[test]
 fn slow_host_holds_nothing_back_spec_sync_9() {
@@ -3396,7 +3396,7 @@ fn slow_host_holds_nothing_back_spec_sync_9() {
 }
 
 /// A writes notes while host `slow` holds its answers, then compacts: the covered entries'
-/// uploads are unanswered there. `reconnect`: the connection to `slow` ends before it answers
+/// placings are unanswered there. `reconnect`: the connection to `slow` ends before it answers
 /// and is made again; else `slow` answers. B only reads (it deletes nothing). Returns what each
 /// host then holds under the label.
 fn covered_while_slow(reconnect: bool) -> (BTreeSet<osis_base::BlobId>, BTreeSet<osis_base::BlobId>) {
@@ -3431,7 +3431,7 @@ fn covered_while_slow(reconnect: bool) -> (BTreeSet<osis_base::BlobId>, BTreeSet
     (net.host_ids(fast, &l).into_iter().collect(), net.host_ids(slow, &l).into_iter().collect())
 }
 
-// spec/sync.md §9 (a covered entry deleted where it was uploaded, once that upload is
+// spec/sync.md §9 (a covered entry deleted where it was placed, once that placing is
 // answered): a slow host ends holding what the fast one does
 #[test]
 fn covered_while_slow_deleted_once_answered_spec_sync_9() {
@@ -3914,7 +3914,7 @@ fn tiny_entries(net: &mut Net, a: usize, w: Tid, n: usize) -> (osis_commit::Comm
     (blob, pages)
 }
 
-// spec/sync.md §9 Caps: a writer uploading a paged commit's root before its pages makes a holder
+// spec/sync.md §9 Caps: a writer placing a paged commit's root before its pages makes a holder
 // decode nothing past its cap: the root waits for its pages undecoded (nothing examined), and
 // once they are held its bound, pages included, is checked against the room left before any
 // decode: past it the commit is refused (reported), nothing of it held, and the holder's charge
@@ -5664,7 +5664,7 @@ fn fallen_snapshot_fetches_covered_back_spec_sync_9() {
 }
 
 // the same where the writer had deleted its covered write at the host under its snapshot and
-// the host restarted: the admin uploads the write again, and the writer's own tombstone of it
+// the host restarted: the admin places the write again, and the writer's own tombstone of it
 // falls with the snapshot (seed 196 of the same property)
 #[test]
 fn fallen_snapshot_lifts_own_tombstone_spec_sync_9() {
@@ -5828,7 +5828,7 @@ fn reverting_second_undo_leaves_thing_undone_spec_crdt_4_6() {
 }
 
 // spec/sync.md §9 (records about ephemeral commits in memory only; tombstones last `MAX_DRIFT`):
-// a writer typing through a host stores no row, however its bodies go (coalesced, uploaded and
+// a writer typing through a host stores no row, however its bodies go (coalesced, placed and
 // deleted; its cursor row only moves), and once `MAX_DRIFT` passes nothing is left of them but
 // the last entries
 #[test]
@@ -5844,7 +5844,7 @@ fn typing_leaves_nothing_stored_or_kept_spec_sync_9() {
         m.set(w, &eph(STATE), &s(&format!("v{i}"))).unwrap();
         net.engine(a).write(m).unwrap();
         local(&mut net, a);
-        // some writes coalesce behind an upload in flight, some go alone
+        // some writes coalesce behind a placing in flight, some go alone
         if i % 3 == 0 {
             net.round();
         } else if i % 7 == 0 {

@@ -548,7 +548,7 @@ fn arrived(sync: &mut SyncEngine, t: Tid) -> Option<Result<()>> {
 }
 
 /// Whether what this node wrote under `k` is at a source: a live label of `k` is idle at one (a host
-/// stored the uploads, a reader's node reported applying them).
+/// stored the entries, a reader's node reported applying them).
 fn delivered(sync: &mut SyncEngine, k: Tid) -> bool {
     let all: Vec<_> = sync.label_status().into_iter().filter(|s| s.group == k).collect();
     live_labels(&all).any(|s| s.idle > 0)
@@ -1028,7 +1028,7 @@ impl Osis {
 
     /// Redeems a link: reaches what it names and joins it, returning the thing. A link known to have
     /// ended (used, revoked, expired, its peers no longer knowing it) fails `Invalid` at once. A link
-    /// that cannot be judged yet, its maker's upload on the way or nobody answering, waits until
+    /// that cannot be judged yet, its maker's entry on the way or nobody answering, waits until
     /// dropped: nothing says it will not work, and calling again is safe. What the link holds is
     /// forgotten on every outcome, a dropped future included; dropped once joined, the join stands.
     /// A link to a thing this account already reaches for good at the link's role or above returns

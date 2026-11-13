@@ -1340,7 +1340,7 @@ fn moves_differential(seed: u64) -> (usize, usize) {
             _ => match x.p.at(m.t, osis::DynamicAspectKey::untyped(title())).get() {
                 Ok(Some(Value::Str(v))) => {
                     if at_node {
-                        // the node may not have pulled what this node uploaded before moving: wait
+                        // the node may not have pulled what this node placed before moving: wait
                         until("the node's copy caught up", || {
                             let _ = x.n.nudge_sync();
                             let now = x.p.at(m.t, osis::DynamicAspectKey::untyped(title())).get().unwrap();
@@ -1882,7 +1882,7 @@ fn connect_node_keeps_trying_a_node_that_is_down() {
     drop(x.host);
 }
 
-// spec: none (API surface); notes/client-port.md §6: `disconnect_node` ends the connection for whoever holds it: a move home waiting for the node to upload hears it is gone and goes on without it
+// spec: none (API surface); notes/client-port.md §6: `disconnect_node` ends the connection for whoever holds it: a move home waiting for the node to sync hears it is gone and goes on without it
 #[test]
 fn disconnecting_ends_a_wait_on_the_node() {
     let x = world();
@@ -1896,7 +1896,7 @@ fn disconnecting_ends_a_wait_on_the_node() {
     std::thread::spawn(move || {
         let _ = tx.send(block_on(p.group_source(g, GroupSource::Local)));
     });
-    assert!(rx.recv_timeout(Duration::from_millis(300)).is_err(), "the node has not uploaded");
+    assert!(rx.recv_timeout(Duration::from_millis(300)).is_err(), "the node has not synced");
     assert!(x.p.disconnect_node(&x.nc).unwrap());
     rx.recv_timeout(W).expect("still waiting on a node disconnected").unwrap();
     assert!(x.p.group_sources().is_empty());

@@ -554,7 +554,7 @@ pub enum ServingCmd {
     Show,
     /// Start or change serving: each flag given replaces its field, the rest kept
     Set(ServingFlags),
-    /// The sync IDs of a synced group, for a serving node's `--admitted` and `--cap`, one per line
+    /// The sync IDs of a synced group, for the `--admitted` and `--cap` of a node that cannot read it, one per line
     Ids { g: String },
     /// Stop serving (what was stored is dropped; a later start begins empty)
     Off,
@@ -646,7 +646,7 @@ pub enum ChatCmd {
         /// A kicked participant erases what it holds, unless the kick says otherwise
         #[arg(long)]
         no_retain_copy: bool,
-        /// Who it syncs with (default: the store's saved peers); a serving node that does not read the group must admit it
+        /// Who it syncs with (default: the store's saved peers); a peer that does not read the group must admit it
         #[arg(long, value_name = "ADDR")]
         peer: Vec<String>,
     },

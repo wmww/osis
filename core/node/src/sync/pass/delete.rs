@@ -252,7 +252,7 @@ impl SyncEngine {
                 // another node's card nobody needs any more goes (spec/permissions.md §4). A copy
                 // is not judged by its author's chain: the chain moves after it (the granter's
                 // edge lowered, a removal of him), a judge cannot tell a chain that will not come
-                // from one still uploading, and a copy deleted is a grant its group's later
+                // from one still placing it, and a copy deleted is a grant its group's later
                 // readers never find
                 if settled && self.stale_card(at, commit, &h, opened) {
                     return Ok(Some((Hold::MustNot(Why::Outside), false, aspects)));
@@ -282,7 +282,7 @@ impl SyncEngine {
                 }
                 // a memory entry never in this label's closure here: after a start the closure is
                 // what has arrived so far, and the placement may still be on its way (deleting
-                // it here while a holder uploads it again is a storm until that placement comes)
+                // it here while a holder places it again is a storm until that placement comes)
                 if e.memory && !self.state.memory_in_closure.contains(&(*l, *id)) {
                     return Ok(None);
                 }

@@ -271,7 +271,7 @@ fn new_chunk_bytes(old: &[u8], new: &[u8]) -> usize {
 
 // spec/requirements.md (Scale: a change inside a huge value costs O(change)); spec/sync.md §1
 // (a chunk reused by a later delta keeps its blob and prefix): editing a value of many chunks
-// writes, and adds for upload, only the chunks the edit changed plus the tree's root node.
+// writes, and adds for placing, only the chunks the edit changed plus the tree's root node.
 #[test]
 fn large_edit_reuses_chunks_spec_sync_1() {
     let mut p = peer(0);

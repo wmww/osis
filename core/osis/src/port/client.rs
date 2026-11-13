@@ -1147,7 +1147,7 @@ impl Osis {
     /// down, or goes down, or does not report the group (a client's actor no longer reads it):
     /// nothing more can be learned from it. `Unsynced` when it never can be (stranded
     /// there). A status subscription, not a `wait_synced`: a client by a secret has no rows that wait.
-    pub(crate) async fn node_uploaded(&self, r: &Arc<Connection>, g: Tid) -> Result<()> {
+    pub(crate) async fn node_synced(&self, r: &Arc<Connection>, g: Tid) -> Result<()> {
         if r.down().is_some() {
             return Ok(());
         }

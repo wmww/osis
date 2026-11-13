@@ -7,7 +7,7 @@
 //! Per host and label: open (sync key of the head, else walk by stale key or claim key),
 //! verify the head, download (cursor sync, reconciliation fallback), apply role commits
 //! first, then the pass: re-registration when an admin holds newer epochs (the actor's
-//! role commits the host lacks first, then the step, then the rest), uploads of
+//! role commits the host lacks first, then the step, then the rest), placing of
 //! must-hold bodies, relays, certificates, deletions of must-not-hold bodies. Stranded and
 //! suspect reports go over connections and inboxes (`reports`).
 
@@ -186,7 +186,7 @@ pub struct SyncEngine {
     pub(crate) deferred: Vec<Deferred>,
     /// Commit blobs whose every delta was checked against its header hash (`true`) or found
     /// forged (`false`; the entry is `Bad`): only checked blobs stand in for this node's own
-    /// uploads or justify deleting another entry (`SyncEngine::genuine`).
+    /// placings or justify deleting another entry (`SyncEngine::genuine`).
     pub(crate) genuine: BTreeMap<osis_base::BlobId, bool>,
     /// New secrets: the boxes of pending commits' other copies are read again (`redeliver`).
     pub(crate) reread_boxes: bool,
@@ -258,7 +258,7 @@ pub struct SyncEngine {
     /// (groups whose `group.0` changed, things whose `roles.0` or roster changed, or all), the
     /// (target, group) pairs whose placement is gone, and those whose removal failed in this run.
     pub(crate) tied: deliver::TiedWork,
-    /// Commits placed before any other upload (`Delivery::First`).
+    /// Commits placed before any other entry (`Delivery::First`).
     pub(crate) first: BTreeSet<osis_base::CommitId>,
     /// Labels whose role commits are placed without their relay wait at the next pass: a source
     /// deleted a body this node must hold (`encrypt_again`).
@@ -649,7 +649,7 @@ impl SyncEngine {
             self.wake = None;
             self.last_tick = self.now();
         }
-        // what the hub changed of the sync IDs this node reads (others' uploads, its sweep)
+        // what the hub changed of the sync IDs this node reads (what its peers sent, its sweep)
         if self.hub_store.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take_moved()
             && let Err(e) = self.hub_changed()
         {

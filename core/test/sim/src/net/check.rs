@@ -535,7 +535,7 @@ fn labels(sim: &mut NetSim) -> Res<()> {
                         return Err(sim.fail(format!("host {s}: label {l:?} still holds {b:?}, must-not-hold ({why}) for node {n}")));
                     }
                 }
-                // spec/sync.md §5: a writer re-uploads stamped the deposited commits it verified
+                // spec/sync.md §5: a writer places again, stamped, the deposited commits it verified
                 if v.writer {
                     for (dl, db) in &deposited {
                         if *dl != l {

@@ -35,7 +35,7 @@ pub(crate) struct Touched {
     pub commits: BTreeSet<CommitId>,
     /// The aspects of changed commits: the commits waiting on their state.
     pub states: BTreeSet<(Tid, Ak)>,
-    /// Blobs that arrived or came with a changed commit (a body linking them uploads them now).
+    /// Blobs that arrived or came with a changed commit (a body linking them places them now).
     pub blobs: BTreeSet<BlobId>,
     /// Entries held here newly shown at a source (`State::shown`): no verdict here changes, so
     /// the own part does not judge them again; they wake what waits on them (a delete waiting
@@ -209,7 +209,7 @@ pub(crate) struct Waits {
     /// Commits whose verdict waits on an aspect's state (liveness).
     pub aspects: BTreeMap<(Tid, Ak), BTreeSet<CommitId>>,
     /// Blobs a body links that this node neither holds nor has an entry of: the commits that
-    /// upload them once they arrive.
+    /// place them once they arrive.
     pub links: BTreeMap<BlobId, BTreeSet<CommitId>>,
     /// Commits whose delete waits for a delete key this node lacks: judged again when held
     /// epochs may have changed.
@@ -314,7 +314,7 @@ impl Work {
 
     /// Notes `n` more changes from elsewhere. Past `max` since the last pass, the next pass judges
     /// everything instead (`SyncConfig::work_max`). What the pass left and the label's own touches
-    /// do not count: at most what the label holds, and uploads a host has yet to take would make
+    /// do not count: at most what the label holds, and entries a host has yet to pull would make
     /// every pass full.
     pub fn bound(&mut self, n: usize, max: usize) {
         self.elsewhere = self.elsewhere.saturating_add(n);

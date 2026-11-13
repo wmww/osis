@@ -107,7 +107,7 @@ fn purged_superset_holds_nothing_spec_sync_6() {
     let q: Vec<_> = blobs_of(&mut net, a, &l, &c).into_iter().filter(|id| !p.contains(id)).collect();
     assert_eq!(q.len(), 1, "a's rewrite placed");
     let ids = net.host_ids(host, &l);
-    assert!(ids.contains(&q[0]), "q uploaded at once");
+    assert!(ids.contains(&q[0]), "q placed at once");
     net.run();
     net.run();
     net.set_online(b, true);
@@ -307,9 +307,9 @@ fn from_elsewhere(net: &mut Net, a: usize, b: usize, c: usize, g: Tid, role: Rol
 }
 
 // spec/sync.md §6-§7 (positive uncovered): a compactor deletes covered bodies; a writer that
-// has not fetched the snapshot yet treats them as may-hold and re-uploads nothing.
+// has not fetched the snapshot yet treats them as may-hold and places nothing again.
 #[test]
-fn no_reupload_ping_pong_spec_sync_6() {
+fn no_place_again_ping_pong_spec_sync_6() {
     let (mut net, host, [a]) = hosted_nodes::<1>();
     let b = net.add_node(2, SyncConfig { hosts: vec![net.address(host)], inline_limit: 0, ..SyncConfig::default() });
     let g = net.group(a, &[(b, Role::Write)], &[host]);
@@ -326,7 +326,7 @@ fn no_reupload_ping_pong_spec_sync_6() {
     net.advance(70_000);
     net.advance(70_000);
     net.trace(&[a, b]);
-    assert_eq!(net.host_ids(host, &l), n1, "settled: nothing re-uploaded, nothing deleted again");
+    assert_eq!(net.host_ids(host, &l), n1, "settled: nothing placed again, nothing deleted again");
     assert_eq!(net.read(b, t), Some(s("v3")));
 }
 
@@ -661,7 +661,7 @@ fn duplicate_encryptions_higher_goes_spec_sync_7() {
 // spec/sync.md §6 (a strict subset is must-not-hold beside a superset under the label, judged
 // per host): writer a purges one delta of commit c, so h1 holds its rewrite q and no longer p;
 // b, back without hearing of the purge commit, still sees p at h2. At h1, q is no strict subset
-// for b (p is not there), so b keeps it, its own uploads (p again) failing meanwhile.
+// for b (p is not there), so b keeps it, its own placings (p again) failing meanwhile.
 #[test]
 fn strict_subset_needs_superset_at_that_host_spec_sync_6() {
     let mut net = Net::new();
@@ -707,7 +707,7 @@ fn strict_subset_needs_superset_at_that_host_spec_sync_6() {
     assert_eq!(q.len(), 1, "a's rewrite placed");
     let ids = net.host_ids(h1, &l);
     assert!(ids.contains(&q[0]) && !ids.contains(&p[0]), "h1 holds q, not p");
-    // b back, its uploads failing
+    // b back, its placings failing
     net.unpulled.insert(b);
     net.set_online(b, true);
     // past the redial pause
@@ -784,7 +784,7 @@ fn reader_copy_after_rotation_goes_as_a_deposit_durable_spec_sync_5() {
     assert_eq!(net.read(a, t), Some(s("v")));
 }
 
-// spec/sync.md §6 (no upload of a body a delete removed, keyed per body): commit c writes a plain
+// spec/sync.md §6 (no placing of a body a delete removed, keyed per body): commit c writes a plain
 // register and a purge-on-replace one, two bodies; both are overwritten, the second's body is
 // deleted past its bound, and the host is wiped: the first's body (must-hold: kept history, so no
 // compaction snapshot covers it) goes up again though another body of c was deleted
@@ -823,7 +823,7 @@ fn deleted_body_withholds_only_itself_spec_sync_6() {
     net.advance(120_000);
     net.run();
     let at_the_peer = net.host_ids(host, &l);
-    assert!(reg_body(&mut net).iter().any(|id| at_the_peer.contains(id)), "the register's body uploaded again");
+    assert!(reg_body(&mut net).iter().any(|id| at_the_peer.contains(id)), "the register's body placed again");
 }
 
 fn carry(net: &mut Net, n: usize, done: osis_node::flows::Done) {
@@ -856,7 +856,7 @@ fn join(net: &mut Net, x: usize, px: osis_base::Tid, link: &osis_label::ShareLin
 // rotate K (a fork) and then C (its box to K stale); the joiner, reading C through K, gets the
 // sharer's fork of C only once the K keyset its box names arrives. Merging before that would
 // supersede an epoch it cannot read (nothing re-seals a superseded one), lose the sharer's
-// write key for the head and leave its own commits unuploadable for good: the thing splits with
+// write key for the head and leave its own commits unplaceable for good: the thing splits with
 // both sides synced. With the rule, the joiner waits for the secret, merges holding every fork,
 // and the sharer reads its later write.
 #[test]

@@ -1950,7 +1950,7 @@ impl NetSim {
 
     // ---- setup helpers (flows)
 
-    /// Carries out a flow's result on node `n`: uploads and inbox blobs through its sync
+    /// Carries out a flow's result on node `n`: entries and inbox blobs through its sync
     /// engine, direct commits to the nodes they name (pairing).
     pub fn carry(&mut self, n: usize, done: Done) -> Res<()> {
         let acts = self.sync(n)?.carry_out(done).map_err(|e| self.fail(format!("node {n} carry_out: {e}")))?;

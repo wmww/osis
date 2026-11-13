@@ -168,7 +168,7 @@ fn revoke_on_an_unrelated_thing_brings_no_keys() {
 // spec/crdt.md §4.6 (Removed: an invalid delta loses only its own writes): A removes B while B
 // and C are away; B, not knowing, creates map record "ash"; C gets it from B directly, writes
 // into it, then learns of the removal (B's delta invalid there, its body dropped, never
-// uploaded, its header forgotten with no entry of it known). A never holds B's delta. Both read C's nested write in a record with no creation
+// placed, its header forgotten with no entry of it known). A never holds B's delta. Both read C's nested write in a record with no creation
 // held alike: holding an invalid delta changes no value.
 #[test]
 fn others_writes_in_an_invalid_record_read_alike_spec_crdt_4_6() {
@@ -196,7 +196,7 @@ fn others_writes_in_an_invalid_record_read_alike_spec_crdt_4_6() {
     let mut m = osis_node::Mutation::new();
     m.op(t, &map, PathOp { path: vec![key("ash"), key("y")], op: Op::Set(Value::Int(2)) }).unwrap();
     net.engine(c).commit(m).unwrap().unwrap();
-    // C learns of the removal before it uploads anything
+    // C learns of the removal before it places anything
     net.pair(a, c);
     net.set_online(c, true);
     for _ in 0..3 {

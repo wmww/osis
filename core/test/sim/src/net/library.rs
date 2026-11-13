@@ -1095,7 +1095,7 @@ pub fn concurrent_writers(s: Seeds) -> Res<Report> {
 
 /// Honest flows across labels, no faults (`work_sets::honest_flows_wait_for_no_resync`): each step
 /// settles with time standing still, then a few resyncs pass. A label a step concerns and that
-/// was left out of its marks shows as an upload at the next resync: a node paired, writes by
+/// was left out of its marks shows as a new entry at the next resync: a node paired, writes by
 /// each, grants, a thing's first label, removals of an account and of a node, a role lowered, a
 /// holder group and its reader removed, a link made, redeemed and revoked.
 pub fn honest_flows(seed: u64) -> Res<Report> {

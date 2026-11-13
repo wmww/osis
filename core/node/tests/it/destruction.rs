@@ -265,7 +265,7 @@ fn repro_first_admin_removal_after_destruction() {
 }
 
 // spec/commits.md §5 (Destruction), spec/sync.md §5: a removal of the first admin racing a destruction, in
-// both arrival orders: the nodes agree the destruction fell, and then nothing is uploaded or deleted at
+// both arrival orders: the nodes agree the destruction fell, and then nothing is placed or deleted at
 // hosts over and over
 #[test]
 fn removal_racing_a_destruction_converges_in_both_orders_spec_commits_5() {
@@ -1770,7 +1770,7 @@ fn an_expired_retainers_child_is_judged_and_released_at_a_later_node_spec_commit
 
 // issues/thing-lifetimes.md (The release: Applying; Limits 5), spec/sync.md §6: a right holder
 // places the release request at a host before any of the released thing's blobs is deleted
-// there, so no host holds neither (else a holder that missed the request uploads the thing
+// there, so no host holds neither (else a holder that missed the request places the thing
 // again and right holders release it again, round for good): checked after every message
 #[test]
 fn a_release_request_is_at_the_host_before_the_things_blobs_leave_spec_sync_6() {

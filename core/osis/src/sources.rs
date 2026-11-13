@@ -594,7 +594,7 @@ impl Osis {
         // what was written at the node reaches a saved peer first, else this engine would catch up
         // without it; not asked of a node that is gone
         if let Some(r) = at.as_ref().map(|a| self.locked(|l| node_named(l, a))) {
-            self.node_uploaded(&r, group).await?;
+            self.node_synced(&r, group).await?;
         }
         self.wait_synced_pending(SyncScope::Thing(group)).await?;
         self.locked(|l| {

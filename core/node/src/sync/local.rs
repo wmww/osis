@@ -43,7 +43,7 @@ impl SyncEngine {
 
     /// Replaces label `old` of `g` (spec/sync.md §2; an admin, `Engine::replace_label`: the
     /// admin rotation if the loss calls for it, a new label at the same hosts, the old one
-    /// marked replaced); passes then upload the live blobs under the new label, and under the
+    /// marked replaced); passes then place the live blobs under the new label, and under the
     /// old one (an admin keeps syncing it until done there, `labels`) only role-class
     /// commits, the replacement's `label.0` among them, deleting its content entries;
     /// certificates stay.
@@ -76,7 +76,7 @@ impl SyncEngine {
 
     /// Drops the bodies of `(t, ak)` this node's new durable snapshot `s` covers whose
     /// keep-at-least bound has passed (out of history: no purge right asked); a later pass
-    /// uploads the snapshot and deletes the dropped bodies at hosts once the snapshot is there and
+    /// places the snapshot and deletes the dropped bodies at hosts once the snapshot is there and
     /// `MAX_DRIFT` more has passed (`Dropped::hosts_from`).
     fn compacted(&mut self, t: &Tid, ak: &Ak, s: &CommitId) -> Result<()> {
         let dropped: BTreeSet<CommitId> = self.drop_covered(t, ak, s, None, &mut super::work::Left::default())?.into_iter().collect();
@@ -245,7 +245,7 @@ impl CoverPass<'_> {
             }
             // covered-equal snapshots (equal `ts`): only the higher commit ID goes (spec/sync.md
             // §7), as in the must-hold judgment, or this node drops the one a co-writer keeps
-            // uploading
+            // placing
             if super::pass::is_snapshot(h.kind) && c < s && self.engine.covered(&c, &s, t, ak)? == Some(true) {
                 self.covered_judged.insert(k);
                 continue;
@@ -287,7 +287,7 @@ impl CoverPass<'_> {
 impl SyncEngine {
     /// Places commit `c`'s deltas on `aspects` as a certificate copy under every label of `g`
     /// (spec/permissions.md §3, §4): one blob of those parts, wrapped per label (spec/sync.md §3),
-    /// uploaded or deposited at the label's next pass.
+    /// placed or deposited at the label's next pass.
     pub fn place_certificate(&mut self, g: &Tid, c: &CommitId, aspects: &BTreeSet<usize>) -> Result<Vec<Action>> {
         self.place_certificate_in(g, c, aspects, None)?;
         Ok(self.handle(super::Event::Local))
@@ -373,7 +373,7 @@ impl SyncEngine {
     }
 
     /// After a settled pass of replaced label `l` of `g` at `host` that had nothing left to
-    /// upload (`quiet`): done there when no content entry is present any more (spec/sync.md §2:
+    /// placing (`quiet`): done there when no content entry is present any more (spec/sync.md §2:
     /// role-class commits, the replacement's `label.0` among them, and certificates stay);
     /// once done at every host of the label (or no key opens it there), this admin stops
     /// syncing it for good; `labels` retires it after `ROLE_KEEP` whatever.

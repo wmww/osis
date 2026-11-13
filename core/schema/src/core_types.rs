@@ -224,13 +224,13 @@ codec_struct! {
     pub struct Reach { 0 dialable: [u8; 32], 1 items: Vec<String>, 2 lan_secret: [u8; 32], 3 account: Option<Tid> }
 }
 codec_enum! {
-    /// Which groups a serving node stores for others (it serves the groups it reads whatever this
+    /// Which groups a node keeps unread for others (it syncs the groups it reads whatever this
     /// says): `Listed`, those `labels` names; `Open`, any group within the caps.
     #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
     pub enum Admit { #[default] 0 Listed, 1 Open }
 }
 codec_struct! {
-    /// One group's limits at a serving node, in place of its policy's.
+    /// One group's limits at a node that cannot read it, in place of its policy's.
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     pub struct HostCaps { 0 entries: u64, 1 bytes: u64 }
 }

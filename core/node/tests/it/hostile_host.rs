@@ -185,7 +185,7 @@ fn purged_chunks_leave_the_host_spec_sync_5() {
     let l = net.label(a);
     let chunks: Vec<osis_base::BlobId> = crate::common::linked_blobs(net.engine(a), &c);
     assert!(!chunks.is_empty(), "a chunked value");
-    assert!(chunks.iter().all(|id| net.host_ids(host, &l).contains(id)), "chunks uploaded");
+    assert!(chunks.iter().all(|id| net.host_ids(host, &l).contains(id)), "chunks placed");
     let mut m = osis_node::Mutation::new();
     m.purge_commit(c, t, Ak::new(GONE.ak()).unwrap());
     m.remove_aspect(t, &GONE).unwrap();
@@ -217,7 +217,7 @@ fn writer_purge_deletes_chunks_by_delete_key_spec_crypto_7() {
     let l = net.label(a);
     let chunks: Vec<osis_base::BlobId> = crate::common::linked_blobs(net.engine(a), &c);
     assert!(!chunks.is_empty(), "a chunked value");
-    assert!(chunks.iter().all(|id| net.host_ids(host, &l).contains(id)), "chunks uploaded");
+    assert!(chunks.iter().all(|id| net.host_ids(host, &l).contains(id)), "chunks placed");
     // the admin (holder of the delete key) is gone: only the writer's delete key can delete
     net.set_online(a, false);
     let mut m = osis_node::Mutation::new();
@@ -252,7 +252,7 @@ fn header_list_chunks_level_2_only_spec_wire_5() {
     assert!(h.keys.iter().any(|x| x.level == 1), "the commit has a thing-admin key");
     let lists: Vec<osis_base::BlobId> = net.engine(a).package(&c).unwrap().unwrap().blobs.iter().map(|(id, _)| *id).collect();
     assert!(lists.len() > 1, "chunks and a tree node");
-    assert!(lists.iter().all(|id| net.host_ids(host, &l).contains(id)), "header-list blobs uploaded");
+    assert!(lists.iter().all(|id| net.host_ids(host, &l).contains(id)), "header-list blobs placed");
     // the commit's own delete secrets per level, found by the header's delete keys
     let mut ds = net.engine(a).delete_secrets_of(&c, &[0]).remove(0);
     assert_eq!(ds.iter().map(|x| x.0).collect::<Vec<_>>(), vec![1, 2]);
@@ -608,7 +608,7 @@ fn thing_admin_deletes_writer_blobs_by_delete_key_spec_crypto_7() {
     net.run();
     let l = net.label(a);
     let blobs: Vec<_> = net.sync(w).entries(&l).into_iter().filter(|(_, k)| matches!(k, EntryKind::Commit { commit, .. } if *commit == cw)).map(|(id, _)| id).collect();
-    assert!(!blobs.is_empty() && blobs.iter().all(|id| net.host_ids(host, &l).contains(id)), "w's body uploaded");
+    assert!(!blobs.is_empty() && blobs.iter().all(|id| net.host_ids(host, &l).contains(id)), "w's body placed");
 
     // levels stay apart: w signs for c's rotation commit (admin retention: level 1 only) with
     // its write key at level 3 and at level 1; the host refuses both

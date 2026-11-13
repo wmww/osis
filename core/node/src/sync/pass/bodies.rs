@@ -6,7 +6,7 @@ use super::*;
 impl SyncEngine {
     /// The entries the must-hold bodies of `l` need (spec/sync.md §6), by priority: the entry of
     /// each body (at `host` if there, else any genuine one; `None`: this node's own served
-    /// state, any entry), else a fresh placement when this node may upload or deposit it, with
+    /// state, any entry), else a fresh placement when this node may place or deposit it, with
     /// the blobs it links when this node writes. Another node's body not at `host` waits for
     /// its author or a co-writer (`relay_at`). `behind`: this node writes here and a must-hold role
     /// commit not at the host waits for its relay (`At::behind`).
@@ -277,7 +277,7 @@ impl SyncEngine {
     /// The genuine entry under `l` holding exactly this body, not tombstoned at `host` (with no
     /// host: whose bytes this node holds), whoever placed it (a certificate copy of the same parts holds it too: other nodes see one entry).
     /// One present at `host` first: the label then holds the body (spec/sync.md §6), and
-    /// uploading another encryption (this node's own, whose upload was lost) would only add a
+    /// placing another encryption (this node's own, whose pull was lost) would only add a
     /// duplicate for the tiebreak of §7 to delete. `None`: any entry (this node's served state).
     pub(super) fn entry_for(&mut self, host: Option<&HostKey>, l: &LabelId, b: &Body) -> Option<BlobId> {
         let g = self.group_of(l, None)?;

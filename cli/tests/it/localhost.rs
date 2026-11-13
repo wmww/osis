@@ -141,7 +141,7 @@ fn two_accounts_three_nodes_one_peer_localhost() {
 
     // a bundle carries the home group to the other node by hand
     let n = osis(&a1, &["create", "--in", "home", "t:x.0", "\"by hand\""]);
-    // a bundle holds what is uploaded under the sync ID: a pass uploads it (the node syncs; a2 does not)
+    // a bundle holds what is placed under the sync ID: a pass places it (the node syncs; a2 does not)
     osis(&a1, &["sync"]);
     let bundle = osis_in(&a1, &["bundle", "export", "home"], b"");
     osis_in(&a2, &["bundle", "import"], &bundle);

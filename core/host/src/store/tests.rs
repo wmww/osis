@@ -115,7 +115,7 @@ fn promotion_and_deposited_flag() {
     let m = e.store.entry(&l, &id(3)).unwrap().unwrap();
     assert_eq!((m.wrap, m.stamp.is_some()), ([9; WRAP_LEN], true));
     let end = log_end(&mut e.store);
-    // identical re-upload: nothing logged
+    // identical entry again: nothing logged
     e.store.put(&l, p).unwrap();
     assert_eq!(log_end(&mut e.store), end);
 }
@@ -230,7 +230,7 @@ fn rate_limits() {
 }
 
 // spec/sync.md §5, randomized differential of both stores against the rule: a stamped entry's wrap
-// and stamp never change while it lives; a deposit changes nothing held; a stamped upload takes a
+// and stamp never change while it lives; a deposit changes nothing held; a stamped entry pulled takes a
 // deposited entry, once; anything that changes nothing logs nothing (the node log).
 #[test]
 fn stamped_entry_never_changes_randomized() {
@@ -363,7 +363,7 @@ fn eph_blob(n: u32, len: usize) -> Vec<u8> {
     b
 }
 
-// ephemeral security review H2: a stranger looping upload and delete of ephemeral entries on its
+// ephemeral security review H2: a stranger looping entries and deletes of ephemeral entries on its
 // own label grows no memory without bound: entries are charged to the label's cap, tombstones to
 // the host-wide total, deletes are rate-limited, tombstones go after `EPH_TOMBSTONE_MS`, and the due-time index
 // empties

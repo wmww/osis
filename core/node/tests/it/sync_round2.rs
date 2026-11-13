@@ -19,11 +19,11 @@ fn blobs_of(net: &mut Net, n: usize, l: &osis_base::LabelId, c: &osis_base::Comm
 }
 
 // spec/versioning.md §2 (malformed data is rejected), spec/sync.md §6: a well-framed, stamped
-// blob of junk under the label is marked bad once; the writers keep uploading their must-hold
-// bodies (one such entry used to stop every upload under the label).
+// blob of junk under the label is marked bad once; the writers keep placing their must-hold
+// bodies (one such entry used to stop every placing under the label).
 // spec/versioning.md §2 (reject malformed)
 #[test]
-fn junk_entry_does_not_stall_uploads_spec_versioning_2() {
+fn junk_entry_does_not_stall_placing_spec_versioning_2() {
     let (mut net, host, [a, b], g, [t]) = hosted::<2, 1>(&[(1, Role::Write)], ["v1"], true);
     let (_, gl) = net.group_labels(a).into_iter().next().unwrap();
     let head = gl.steps.values().next().unwrap().0.clone();
@@ -53,7 +53,7 @@ fn junk_entry_does_not_stall_uploads_spec_versioning_2() {
 // no snapshot (here held for drift) does not make a writer's own body on the same aspect
 // may-hold (two writers' pending commits used to withhold exactly what the other waited for).
 #[test]
-fn pending_commit_does_not_withhold_uploads_spec_sync_6() {
+fn pending_commit_does_not_withhold_placing_spec_sync_6() {
     let (mut net, host, [a, b], _g, [t]) = hosted::<2, 1>(&[(1, Role::Write)], ["v1"], true);
     // b writes two hours ahead: a holds it pending for drift
     net.set_skew(b, 2 * 3_600_000);
@@ -158,7 +158,7 @@ fn delete_resent_after_cut_spec_sync_7() {
     let mut m = Mutation::new();
     m.set(t, &GONE, &s("two")).unwrap();
     net.engine(a).commit(m).unwrap();
-    // the pass's upload and delete are lost with the connection
+    // the pass's placing and delete are lost with the connection
     let lost = net.sync(a).handle(Event::Local);
     assert!(lost.iter().any(|x| matches!(x, Action::Send { .. })));
     net.set_online(a, false);

@@ -1,5 +1,5 @@
 //! Memory class in node-sync (spec/sync.md §9, notes/ephemeral.md): the bodies of memory
-//! commits are judged, placed, uploaded, relayed and deleted like durable bodies (the pass,
+//! commits are judged, placed, relayed and deleted like durable bodies (the pass,
 //! `pass/`), with every record about them kept in memory (`State::memory_entries`, the store's
 //! memory overlay for their blobs). What stays particular to the class is here: the node cap on
 //! what others make this node hold per label (`SyncConfig::ephemeral_bytes`: a received memory
@@ -7,7 +7,7 @@
 //! and after waiting, `apply_waiting`), entries that never fit, the restart reconciliation (the entries a
 //! persisted cursor passed are in no memory after a start), the headers of forgotten memory
 //! commits (their entries are deleted at hosts by them), the hold-back and coalescing of own
-//! writes while an own upload is in flight (`coalesce_own`), and relay-only commits (ephemeral signals:
+//! writes while an own entry is not yet pulled (`coalesce_own`), and relay-only commits (ephemeral signals:
 //! delivered and passed on, held by nobody).
 
 use super::state::{Entry, HostKey, Kind};
@@ -91,7 +91,7 @@ impl PerLabel {
 /// Never-fitting entries remembered per label (`Memory::unfit`). Resource bound: about 100 bytes
 /// each, 400 KiB per label at the bound; a host's cap holds a few hundred such entries per
 /// label (about 25 KB each at the least), so honest hosts never reach it (0: each is fetched
-/// again at every reconciliation; infinity: a writer uploading and deleting such entries grows
+/// again at every reconciliation; infinity: a writer placing and deleting such entries grows
 /// the set for good).
 const UNFIT_MAX: usize = 1 << 12;
 
@@ -244,7 +244,7 @@ impl SyncEngine {
     /// wait unopened: whatever brings their bytes again opens them), and the streams carrying a
     /// label whose closure holds `t` list their memory entries again (`stream_relist`). A durable
     /// commit forgotten under the fallen snapshot left no tombstone: it reads as never received,
-    /// and a holder's must-hold upload brings it.
+    /// and a holder placing it as must-hold brings it.
     fn relist_fallen(&mut self, t: &Tid, ak: &osis_base::Ak, out: &mut Vec<Action>) -> Result<()> {
         let on = |f: &Forgotten| matches!(f.why, MemoryDrop::Covered { .. } | MemoryDrop::Superseded { .. }) && f.header.aspects.iter().any(|a| a.tid == *t && a.ak == *ak);
         let memory: Vec<CommitId> = self.memory.forgotten.iter().filter(|(c, f)| on(f) && !self.engine.holds_memory(c)).map(|(c, _)| *c).collect();
@@ -682,7 +682,7 @@ impl SyncEngine {
     /// A connection ended: what waited on it goes with it. A memory entry counts as present at a
     /// peer that cannot read L only as learned on the connection up now (spec/sync.md §9: a
     /// restarted peer lost them, and its durable log says nothing of it; the next connection's
-    /// stream lists those it holds), so the next connection's passes upload what it lacks.
+    /// stream lists those it holds), so the next connection's peer pulls what it lacks.
     pub(crate) fn memory_lost(&mut self, conn: ConnId, host: HostKey) -> Result<()> {
         let gone: Vec<(LabelId, BlobId)> = self.state.memory_entries.iter().filter(|(l, b)| self.state.is_present(&host, l, b)).copied().collect();
         for (l, b) in gone {
@@ -754,7 +754,7 @@ impl SyncEngine {
         Ok(())
     }
 
-    /// A relay-only entry (a push, a fetch, a served session's upload, a reader's stream; `from`
+    /// A relay-only entry (a push, a fetch, a peer's push, a reader's stream; `from`
     /// where it came from): dropped unopened when too large, outside its prefix window or seen
     /// before (`RelaySeen`); else verified and its signals delivered once, then passed on to
     /// every other peer sharing the label (spec/sync.md §5, §9).
