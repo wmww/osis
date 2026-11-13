@@ -2,7 +2,7 @@
 //! spec/wire.md §3) and their typed keys. Byte lengths the spec fixes are enforced here (a wrong
 //! length is a type mismatch); unknown agility cases are `UnknownCase` (parked).
 
-use crate::codec::{Codec, rt};
+use crate::codec::{Codec, mismatch, rt};
 use crate::{codec_enum, codec_struct};
 use crate::keys::Aspect;
 use crate::path::{Path, PathError, PathErrorKind};
@@ -43,10 +43,6 @@ pub fn deletable(ak: &str) -> bool {
 /// §2), declared there or not.
 pub fn is_core_key(ak: &str) -> bool {
     osis_base::Ak::new(ak).is_ok_and(|a| a.tid().is_none() && a.segments().count() == 1)
-}
-
-fn mismatch(expected: &'static str) -> PathError {
-    PathError::new(Path::root(), PathErrorKind::Mismatch { expected })
 }
 
 /// One-case agility enum over a blob with an optional fixed length.

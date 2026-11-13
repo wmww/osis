@@ -21,7 +21,7 @@ pub trait Codec: Sized {
     fn from_value(v: &Value) -> Result<Self, PathError>;
 }
 
-fn mismatch(expected: &'static str) -> PathError {
+pub(crate) fn mismatch(expected: &'static str) -> PathError {
     PathError::new(crate::Path::root(), PathErrorKind::Mismatch { expected })
 }
 
@@ -158,9 +158,8 @@ impl Codec for Role {
     }
     fn from_value(v: &Value) -> Result<Role, PathError> {
         match v {
-            Value::Enum(c, None) => Role::from_id(*c).ok_or_else(|| PathError::new(crate::Path::root(), PathErrorKind::UnknownCase(*c))),
-            Value::Enum(c, Some(_)) => Err(PathError::new(crate::Path::root(), PathErrorKind::UnknownCase(*c))),
-            _ => Err(mismatch("enum")),
+            Value::Enum(c, None) => Role::from_id(*c).ok_or_else(|| rt::unknown_case(v)),
+            _ => Err(rt::unknown_case(v)),
         }
     }
 }

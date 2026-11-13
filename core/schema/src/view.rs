@@ -99,8 +99,7 @@ pub struct Large {
 /// does not describe are classified by the value's kind (as `any`).
 pub fn large_positions(schema: &Schema, v: &Value, ty: &Type) -> Vec<Large> {
     let mut out = Vec::new();
-    let mut path = Vec::new();
-    large(schema, v, Some(ty), &mut path, &mut out, false);
+    large(schema, v, Some(ty), &mut Vec::new(), &mut out, false);
     out
 }
 
@@ -108,8 +107,7 @@ pub fn large_positions(schema: &Schema, v: &Value, ty: &Type) -> Vec<Large> {
 /// typed like `large_positions`.
 pub fn link_positions(schema: &Schema, v: &Value, ty: &Type) -> Vec<Large> {
     let mut out = Vec::new();
-    let mut path = Vec::new();
-    large(schema, v, Some(ty), &mut path, &mut out, true);
+    large(schema, v, Some(ty), &mut Vec::new(), &mut out, true);
     out
 }
 
