@@ -779,7 +779,8 @@ fn make_leftover(tx: &mut Tx<'_>, c: &CommitId, ai: usize, o: &[Owned], extra: &
 
 /// Snapshot part `ai` of `c` carries a copy of a value of a write on its aspect's value-less list
 /// (spec/crdt.md §4.7 Copies, spec/commits.md §5): held as its leftover from now on, those copies
-/// value-less. Store only: the caller rebuilds the aspect.
+/// value-less. Store only: the state took the copies stripped (`apply::join_into_state`), or the
+/// caller rebuilds the aspect.
 pub(crate) fn strip_carried(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()> {
     let mut body: Option<Fragment> = None;
     let held = crate::apply::each_held_piece(tx, c, ai, &mut |_, f| {

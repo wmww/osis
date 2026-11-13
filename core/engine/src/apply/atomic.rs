@@ -1142,8 +1142,8 @@ fn text_diff(kept: &str, rebuilt: &str) -> String {
 /// under the original's dot (a snapshot's), and none loses a value of a write not so held. Kept
 /// where it can break: while the aspect's value-less list changed in this transaction, this walk
 /// reads every held body and holds each snapshot carrying a listed value as its leftover
-/// (`retention::strip_carried`, which lists nothing); a body arriving later is judged on its join
-/// (`retention::drop_gone`). An expiry no held snapshot's bound meets changes the state in place
+/// (`retention::strip_carried`, which lists nothing); a body arriving later joins stripped and is
+/// stored as its leftover (`retention::drop_gone`, no rebuild). An expiry no held snapshot's bound meets changes the state in place
 /// instead (`strip_state`).
 pub(crate) fn rebuild(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
     // a signal has no state: a validity change or a drop only changes which bodies count
