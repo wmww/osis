@@ -1036,16 +1036,11 @@ impl<U: Udp> Registration<U> {
 }
 
 /// A stream the relay at `via` forwarded: serve TLS over it, exchange addresses (ours `at`, as
-/// that relay sees it) and punch to the dialer's if `punchable`, then queue the connection for `accept`. Counted in `fwd`
-/// until queued, which may end it first.
-async fn incoming<U: Udp>(sock: Arc<U::Sock>, secret: StaticSecret, via: SocketAddr, at: SocketAddr, (s, r): (<SConn<U> as Connection>::Send, <SConn<U> as Connection>::Recv), tx: mpsc::Sender<P2pConn<SConn<U>>>, fwd: Arc<Forwarded>) {
+/// that relay sees it) and punch to the dialer's if `punchable`, then queue the connection for
+/// `accept`. Counted in `fwd` until queued, which may end it first.
+async fn incoming<U: Udp>(sock: Arc<U::Sock>, secret: StaticSecret, via: SocketAddr, at: SocketAddr, (mut s, mut r): (<SConn<U> as Connection>::Send, <SConn<U> as Connection>::Recv), tx: mpsc::Sender<P2pConn<SConn<U>>>, fwd: Arc<Forwarded>) {
     let (id, gate) = fwd.start();
-    let _ = race(&gate, serve_forwarded::<U>(sock, secret, via, at, s, r, tx)).await;
-    fwd.end(id);
-}
-
-async fn serve_forwarded<U: Udp>(sock: Arc<U::Sock>, secret: StaticSecret, via: SocketAddr, at: SocketAddr, mut s: <SConn<U> as Connection>::Send, mut r: <SConn<U> as Connection>::Recv, tx: mpsc::Sender<P2pConn<SConn<U>>>) -> Result<(), Error> {
-    let res: Result<Relayed<SConn<U>>, Error> = async {
+    let serve = async {
         let mut tag: Source = [0; 16];
         read_exact(&mut r, &mut tag).await?;
         let cfg = Arc::new(quic::server_tls(quic::keypair(secret.as_bytes())?.1, &[ALPN])?);
@@ -1058,10 +1053,11 @@ async fn serve_forwarded<U: Udp>(sock: Arc<U::Sock>, secret: StaticSecret, via: 
         if punchable(theirs, via) {
             sock.punch(theirs);
         }
-        Ok(Relayed::new(peer, tag, false, (ts, tr), None))
-    }
-    .await;
-    tx.send(P2pConn::Relayed(Arc::new(res?))).await.map_err(|_| Error::Closed)
+        let c = Relayed::<SConn<U>>::new(peer, tag, false, (ts, tr), None);
+        tx.send(P2pConn::Relayed(Arc::new(c))).await.map_err(|_| Error::Closed)
+    };
+    let _ = race(&gate, serve).await;
+    fwd.end(id);
 }
 
 impl<U: Udp> Transport for P2p<U> {
