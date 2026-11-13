@@ -566,7 +566,7 @@ impl Data {
     }
     /// Tags `t` with `tag`: a thing becomes an item of it, a tag is nested in it (a subgroup,
     /// core's sub-tag: notes/tags.md). Membership grants nothing, so tagging shares nothing;
-    /// sharing through a tag waits on core (issues/group-access-follows-membership.md).
+    /// sharing a tag is core's `add_with_grant` (notes/tags.md, Sharing a tag), unused here.
     pub fn add_tag(&self, t: Tid, tag: Tid) -> Result<()> {
         let nest = self.db.at(t, TAG).get()?.is_some();
         let mut w = self.db.write();
@@ -588,7 +588,6 @@ impl Data {
     /// Undoes my newest commit to `t` (made on any of my nodes; never someone else's); `false`
     /// when there is none. Its creation is not undone: that commit also added it to the app
     /// group, so reverting it would leave the thing in no group, gone from the app but not deleted.
-    /// Works around issues/undo-creation-unplaces.md.
     pub fn undo(&self, t: Tid) -> Result<bool> {
         if !self.can_undo(t)? {
             return Ok(false);

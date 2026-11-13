@@ -1,5 +1,5 @@
-//! What a node keeps pending is bounded by the entries carrying it (notes/node-sync.md, Unjudged
-//! input; spec/sync.md §3 Unjudged blobs; spec/requirements.md: peer input never causes
+//! What a node keeps pending is bounded by the entries carrying it (notes/node-sync.md, Input giving
+//! nothing; spec/sync.md §3 Unjudged blobs; spec/requirements.md: peer input never causes
 //! unbounded storage).
 
 use crate::net::*;

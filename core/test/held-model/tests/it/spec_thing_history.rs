@@ -417,7 +417,7 @@ fn ev_in_force_by_key_from_its_own_stamp() {
     }
 }
 
-// notes/engine-retention-history.md (Tess's decision 1): a setting arriving late (stamped before ones already
+// notes/engine-retention-history.md (Tess's decisions, 1): a setting arriving late (stamped before ones already
 // held) can put a body still held back in history
 #[test]
 fn ev_a_late_setting_can_reshow_a_held_body() {
@@ -469,7 +469,7 @@ fn ev_keep_after_purge_on_replace_keeps_nothing() {
     }
 }
 
-// notes/engine-retention-history.md (Tess's decision 2): who may purge a body changes nothing of its history
+// notes/engine-retention-history.md (Tess's decisions, 2): who may purge a body changes nothing of its history
 #[test]
 fn ev_who_may_purge_changes_no_history() {
     for tl in ev_timelines(1, &[0, 2, 4, 6], &all_opts()) {

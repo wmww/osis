@@ -13,7 +13,7 @@ edition = "2024"
 rust-version = "1.88"  # slice::as_chunks
 license = "MIT"
 
-# Every external dependency needs its line in notes/architecture.md (Dependency policy).
+# Every external dependency needs its line in notes/architecture.md (Dependency allowlist).
 [workspace.dependencies]
 osis-base = { path = "core/base" }
 osis-crypto = { path = "core/crypto" }

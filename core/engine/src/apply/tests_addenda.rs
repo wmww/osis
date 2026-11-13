@@ -1,5 +1,4 @@
-//! Addenda (spec/permissions.md §5.2, Addenda; issues/revocation-without-arbiter.md's expected
-//! outcomes): writers vouch for a removed holder's edits the remover never received.
+//! Addenda (spec/permissions.md §5.2, Addenda): writers vouch for a removed holder's edits the remover never received.
 #![allow(clippy::unwrap_used, clippy::indexing_slicing)]
 
 use crate::flows::Demotion;
@@ -114,8 +113,7 @@ fn received_after_the_removal_is_not_vouched_for_spec_perm_5_2() {
     assert!(!valid(&lp, 0, &e, t, "x:e.0"));
 }
 
-// spec/permissions.md §5.2 (Addenda, rule 5), issues/revocation-without-arbiter.md "skip then
-// coverage falls": Carol vouched for Bob's edit; Alice then removes Carol without having received
+// spec/permissions.md §5.2 (Addenda, rule 5): Carol vouched for Bob's edit; Alice then removes Carol without having received
 // Carol's addendum, so it falls and the edit with it; Dave, a writer who received Carol's addendum
 // before her removal, vouches for the addendum in turn, and the edit is back everywhere.
 #[test]

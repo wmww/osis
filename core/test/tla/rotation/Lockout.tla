@@ -1,5 +1,5 @@
 ------------------------------- MODULE Lockout --------------------------------
-(* Rotating needs only the right to rotate (notes/crypto.md, Rotation needs  *)
+(* Rotating needs only the right to rotate (notes/crypto.md, Rotating needs  *)
 (* no secret). One actor, one key role (read and write rotate together),     *)
 (* nodes a (admin), h (honest writer), the rogue writers Rogues and j        *)
 (* (granted by a's first removal). Each rogue rotates boxing itself and WBox *)

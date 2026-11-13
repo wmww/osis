@@ -1,5 +1,5 @@
 //! Two accounts (commits delivered by hand, as in `sync`): who can see a thing, tagging (adds or
-//! nests only: sharing through a tag waits on issues/tag-sharing-op.md), undo across accounts.
+//! nests only: sharing a tag is `add_with_grant`, notes/tags.md, Sharing a tag), undo across accounts.
 use osis::internals::Internals as _;
 use osis::core::NAME;
 use osis::{GrantOpts, MemStore, Osis, Role, Store, Time};
@@ -55,7 +55,7 @@ fn shared_tag(a: &Data, b: &Data, role: Role) -> osis::Tid {
 }
 
 /// Tagging adds to a tag and shares nothing, even into a shared tag: the thing stays "Only you" and
-/// Bob does not reach it (sharing through a tag waits on core, issues/tag-sharing-op.md).
+/// Bob does not reach it (sharing a tag is `add_with_grant`, which the app does not use yet).
 #[test]
 fn tagging_shares_nothing() {
     let (a, b) = two_people();

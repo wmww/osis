@@ -44,7 +44,7 @@ instances=(
   "depth0 rotation Depth0MC D0_fa_flip.cfg pass" # first admin removed: a keyless grant turns keyed
   "depth0 rotation Depth0MC D0_fa_dmerge.cfg pass" # liveness: a derived write is merged
   "depth0 rotation Depth0MC D0_rm_possess0.cfg pass" # possession
-  "depth0 rotation Depth0MC D0_readers.cfg fail" # issues/blocked-walk-stops-at-readers.md
+  "depth0 rotation Depth0MC D0_readers.cfg fail" # negative control: Walk "rotator" leaks above (README)
   "depth0 rotation Depth0MC D0_half.cfg fail"    # negative control: Authority judged on secrets.0 alone leaks
   "depth0 rotation Depth0MC D0_half_keys_ns.cfg pass" # Authority judged from the keyset's proofs (spec/crypto.md §4)
   "depth0 rotation Depth0MC D0_gone_live.cfg pass" # a node's own departure blocks nothing (spec/crypto.md §4)

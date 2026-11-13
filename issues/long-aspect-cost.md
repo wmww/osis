@@ -7,7 +7,7 @@ Counted in the default tests: osis-node `scale::long_aspect_writes_are_flat` (a 
 
 In order of damage:
 
-1. **A kick over about 1.9*10^6 commits cannot be sent.** The frontier passes `MAX_LIST_BYTES`, so `demote` fails with `Commit(TooLarge("header list"))` and the member stays. Tess chose IDs only (spec/requirements.md Cost); ID batches are the fallback (notes/frontier-study.md (ID batches)).
+1. **A kick over about 1.9*10^6 commits cannot be sent.** The frontier passes `MAX_LIST_BYTES`, so `demote` fails with `Commit(TooLarge("header list"))` and the member stays. Tess chose IDs only (spec/requirements.md Cost); ID batches are the fallback (notes/frontier-study.md (Fallback: ID batches)).
 2. **Every flip walks the thing's commits**, under the engine lock (`validity::rejudge_all`, its `judge` over `by_thing`): 0.6 s at 10^6 for one flipped write. The first after an open also decodes every header: 3 s more and resident from 2.6 to 4.7 GiB. 
 3. **Open at 10^6**: 5 s CPU, 2.6 GiB resident (2.6 KB per message). Lazy headers: issues/node-core-gaps.md. The first open after a long fill also rewrites the index.
 4. **An aspect written in parts still reads every body on a rise or a fallen winner** (a map's entries, a list's inserts; a whole-value write of any encoding stops it). A map's rebuild would need an index of which bodies hold what lies under each delta (issues/node-core-gaps.md).

@@ -7,7 +7,7 @@ osis-host cannot reach decryption (`host_blind`), and no test can bind the real 
 announce on the real LAN (`real_lan_tests`), and world copies stay test-only (`test_copies`), and only the engine's `apply::checked`
 vouches for checked delta bytes (`checked_bytes`), and every tools/known_failures.txt line names
 an existing issue file, an existing test or sim scenario and a valid pattern (`known_failures`),
-and no code names a thing's destruction by the old word "ended" (`ended_names`), and no core `pub`
+and no code names a thing's destruction by the old word "ended" (`ended_names`), and every pointer into notes/, issues/ or spec/ names an existing file and section (`doc_refs`), and no core `pub`
 item is used only by its own crate's tests or not at all unless tools/dead_pub_allow.txt lists it (tools/dead_pub.py).
 Usage: python3 tools/policy.py   (every workspace member, the GUI's included; vendored crates under
 libs/kit/patches/ are not ours and are skipped; exit 1 on any violation)"""
@@ -286,7 +286,7 @@ def real_lan_tests():
                     if rel.startswith("cli/tests/") and CLI_RUN.search(line) and "--no-lan" not in line and "const OSIS" not in line:
                         yield f"{rel}: runs osis without --no-lan: {line.strip()[:80]}"
 
-# notes/engine-apply.md (Ingest): a test peer runs what is due through `Peer::tick`/`Peer::reexamine`,
+# notes/engine-apply.md (Unjudgeable commits and parts): a test peer runs what is due through `Peer::tick`/`Peer::reexamine`,
 # which fetch again what the step woke, as node-sync does; `<peer>.engine.tick()` skips that.
 PEER_TICK = re.compile(r"(?<!\bself)\.engine\.(tick|reexamine)\(")
 
@@ -385,11 +385,57 @@ def ended_names():
                     if m:
                         yield f"{rel}:{n}: `{m.group(0)}`: a thing is destroyed, not ended (issues/deprecated-terms.md)"
 
+# A pointer into notes/, issues/ or spec/ names a file that exists, and a `<notes or spec file>, Section`
+# or `<file> (Section)` pointer names a heading, a bold lead, a list item's start or a `Lead:` paragraph of
+# the file. Deleted issues and renamed sections otherwise leave pointers that rot unseen. Skipped: docs/
+# (may lag), vendored patches, complaints (consumed), the tools' own test fixtures.
+DOC_REF = re.compile(r"\b((?:notes|issues|spec)/[A-Za-z0-9_-]+(?:/[A-Za-z0-9_-]+)*\.md)(?=(,\s*|\s+\()([A-Z].{0,100}))?", re.S)
+WRAP = re.compile(r"\s*\n\s*(?://[/!]?|#|\(\*|\*)?\s*")
+
+def doc_refs():
+    import subprocess
+    tracked = subprocess.run(["git", "ls-files"], cwd=ROOT, capture_output=True, text=True).stdout.split()
+    ignored = {l.strip() for l in open(os.path.join(ROOT, ".gitignore")) if l.strip().endswith(".md")}
+    norm = lambda s: re.sub(r"\s+", " ", re.sub(r"[`*_§]", "", s)).strip().lower()
+    leads = {}
+    def leads_of(p):
+        if p not in leads:
+            t = open(os.path.join(ROOT, p), errors="replace").read()
+            c = [re.sub(r"^#+\s*", "", l) for l in t.splitlines() if l.startswith("#")]
+            c += re.findall(r"\*\*([^*\n]+)\*\*", t)
+            c += [re.sub(r"^\s*([-*]|\d+\.)\s+", "", l) for l in t.splitlines() if re.match(r"^\s*([-*]|\d+\.)\s", l)]
+            c += [m.group(1) for m in re.finditer(r"^([A-Z][^:\n]{2,60}):", t, re.M)]
+            c = [norm(re.sub(r"\s*\([^)]*\)\s*$", "", x)) for x in c]
+            leads[p] = [x for x in c if x] + [re.sub(r"^\d+(\.\d+)*\.? ", "", x) for x in c if x]
+        return leads[p]
+    for rel in tracked:
+        if rel.startswith(("docs/", "libs/kit/patches/", "notes/complaints/")) or re.match(r"tools/\w+_test\.", rel) \
+                or not rel.endswith((".md", ".rs", ".py", ".sh", ".tla", ".cfg", ".toml", ".txt", ".osis")) \
+                or not os.path.isfile(os.path.join(ROOT, rel)):
+            continue
+        text = open(os.path.join(ROOT, rel), errors="replace").read()
+        for m in DOC_REF.finditer(text):
+            p, rest = m.group(1), m.group(3)
+            where = lambda: f"{rel}:{text.count(chr(10), 0, m.start()) + 1}"
+            if not os.path.isfile(os.path.join(ROOT, p)):
+                if p not in ignored:
+                    yield f"{where()}: {p} does not exist"
+                continue
+            if rest is None or p.startswith("issues/"):
+                continue
+            terms = {norm(re.split(r"[):;.,]| \(| —", s)[0]) for s in (rest.split("\n")[0], WRAP.sub(" ", rest))}
+            r = norm(WRAP.sub(" ", rest))
+            if not any(r.startswith(x) or any(term.startswith(x) or (len(term) > 2 and x.startswith(term)) for term in terms)
+                       for x in leads_of(p)):
+                term = max(terms, key=len)
+                yield f"{where()}: {p}, \"{term}\": no such section, bold lead, list item or `Lead:` paragraph there"
+
 def dead_pub():
     sys.path.insert(0, os.path.join(ROOT, "tools"))
     import dead_pub
     yield from dead_pub.check()
 
+errs.extend(doc_refs())
 errs.extend(ended_names())
 errs.extend(dead_pub())
 errs.extend(known_failures())
