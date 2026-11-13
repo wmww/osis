@@ -1,0 +1,5 @@
+# known_failures.txt gets lines added at its end by concurrent reviews: union keeps both sides of a
+# conflicting hunk. A line one side removed beside the other's addition comes back, which
+# tools/policy.py refuses once the fix deleted its issue. Not for notes/time-limits.md: a digest
+# deleting hits beside an append would bring the hits back.
+tools/known_failures.txt merge=union
