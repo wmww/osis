@@ -324,8 +324,8 @@ impl SyncEngine {
         self.records.shared.get(&conn).is_some_and(|s| s.members.contains_key(l))
     }
 
-    /// Whether a member of `conn`'s set was opened by a sync key or claim (this node's Hit at a
-    /// peer that cannot read it, or that peer's proof as a dialer): its peer cannot read it.
+    /// Whether a member of `conn`'s set was opened by a sync key, a claim or a dialer's proof of a
+    /// sync key: one side of the connection cannot read it.
     pub(crate) fn shared_by_key(&self, conn: ConnId, l: &LabelId) -> bool {
         self.records.shared.get(&conn).and_then(|s| s.members.get(l)).is_some_and(|m| by_key(m.class))
     }
