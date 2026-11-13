@@ -71,3 +71,47 @@ fn reseal_reaches_grantee_left_out_spec_permissions_3() {
     assert_eq!(net.read(t1, t), Some(s("later")), "t1 reads what f0 wrote after the fork");
 }
 
+// spec/sync.md §5 (Sending: an inbox blob for an inbox listing no host goes to a node of the
+// inbox): the same left-out grantee with its account's inbox at no host reads nothing f1 writes
+// while no connection joins them (the re-seal stays pending at f1), and reads it once one does.
+// The harness dials t1 by the `reach.0` f1 is handed; any connection between them would do.
+#[test]
+fn reseal_to_hostless_inbox_waits_for_a_connection_spec_sync_5() {
+    let (mut net, host, [f0, f1, t1, x]) = hosted_nodes::<4>();
+    let f = net.group(f0, &[(f1, Role::Admin), (x, Role::Read)], &[host]);
+    let t = net.item(f0, f, f, "first");
+    net.run();
+    net.set_online(f1, false);
+    net.pair(t1, f0);
+    let t1t = net.tid(t1);
+    net.grant(f0, t, t1t, Role::Read);
+    // the grant is pending too (no connection): handed over
+    net.pair(f0, t1);
+    net.run();
+    assert_eq!(net.read(t1, t), Some(s("first")), "t1 reads T");
+    let xt = net.tid(x);
+    let done = net.engine(f1).demote(&f, &Demotion { holder: xt, new: None, retain: None }).unwrap();
+    let acts = net.sync(f1).carry_out(done).unwrap();
+    net.actions(f1, acts);
+    net.set_online(f0, false);
+    net.set_online(f1, true);
+    for _ in 0..3 {
+        net.advance(15_000);
+    }
+    net.write(f1, t, "after");
+    for _ in 0..3 {
+        net.advance(15_000);
+    }
+    let pending = net.sync(f1).deliveries_pending();
+    assert!(pending > 0, "f1's re-seal of t1 waits for a node of t1's inbox");
+    assert_eq!(net.read(t1, t), Some(s("first")), "t1, left out, reads nothing new without it");
+    let acts = net.sync(t1).publish_reach([0x71; 32], Vec::new()).unwrap();
+    net.actions(t1, acts);
+    net.pair(t1, f1);
+    for _ in 0..3 {
+        net.advance(15_000);
+    }
+    assert!(!net.peer_conns(f1).is_empty(), "f1 and t1 connected");
+    assert_eq!(net.read(t1, t), Some(s("after")), "the re-seal reached t1 over the connection");
+    assert!(net.sync(f1).deliveries_pending() < pending);
+}
