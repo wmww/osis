@@ -1861,9 +1861,11 @@ impl SyncEngine {
     /// A new head in the log of a peer that cannot read `l`, open there: a child of the current
     /// one or a recorded step moves on (`open_moved`: when its credential is another the open by
     /// the old one ends). Any other doubts the current one (`doubt`): Behind items walk from it to
-    /// the peer's path (spec/sync.md §5, Behind). A hint's label opened knowing no step takes the
-    /// first head bearing the sync key it opened by; another ends the open, the head taken on the
-    /// peer's word (only a Hit on its credential opens anything).
+    /// the peer's path (spec/sync.md §5, Behind). Opened with no head (a hint's label knowing no
+    /// step, or by a held sync key no recorded step bears) it takes the first head bearing the
+    /// sync key it opened by; another ends the open, the head taken on the peer's word (only a Hit
+    /// on its credential opens anything). A child is recorded only under a recorded head: one
+    /// taken on the peer's word proves no path.
     pub(crate) fn new_head(&mut self, conn: ConnId, l: LabelId, step: Step, out: &mut Vec<super::Action>) -> Result<()> {
         let Some(lc) = self.lc(conn, &l) else { return Ok(()) };
         let super::Phase::Open { by, .. } = &lc.phase else { return Ok(()) };
@@ -1878,13 +1880,14 @@ impl SyncEngine {
             self.set_head(conn, l, step)?;
             return if ended { self.shared_end(conn, l, out) } else { Ok(()) };
         };
-        let recorded = self.group_label(&g, &l).is_some_and(|gl| gl.steps.contains_key(&step.id()));
+        let steps = self.group_label(&g, &l);
+        let recorded = |x: &Step| steps.as_ref().is_some_and(|gl| gl.steps.contains_key(&x.id()));
         let child = step.verify_child(&h).is_ok();
-        if !child && !recorded {
+        if !child && !recorded(&step) {
             return self.doubt(conn, l, out);
         }
-        if child {
-            self.record_steps(&g, &l, &[h, step.clone()], None)?;
+        if child && recorded(&h) {
+            self.record_steps(&g, &l, std::slice::from_ref(&step), None)?;
         }
         self.open_moved(conn, l, step, out)
     }

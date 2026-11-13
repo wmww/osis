@@ -14,7 +14,7 @@ use osis_label::{ClaimSet, Step, StepId};
 use osis_proto::{Code, Command, Request};
 use osis_crdt::{Op, PathOp, PathSeg};
 use osis_schema::Codec;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// Recorded steps by ID with their claim sets (`GroupLabel::steps`).
 pub(crate) type Steps = BTreeMap<StepId, (Step, Option<ClaimSet>)>;
@@ -270,14 +270,12 @@ impl SyncEngine {
         if let Some(e) = self.engine.epochs(&g) {
             keys.extend(e.sync.held_newest_first().into_iter().map(|(_, s)| (None, label_role_key(LabelRole::Sync, s, index))));
         }
-        let mut seen: Vec<[u8; 32]> = tested.into_iter().collect();
+        let mut seen: BTreeSet<[u8; 32]> = tested.into_iter().collect();
         let mut out = Vec::new();
         for (step, k) in keys {
-            let v = k.verifying_key().to_bytes();
-            if seen.contains(&v) {
+            if !seen.insert(k.verifying_key().to_bytes()) {
                 continue;
             }
-            seen.push(v);
             self.stats.walk_tests += 1;
             out.push((step, k));
         }
