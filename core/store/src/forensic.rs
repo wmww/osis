@@ -154,10 +154,7 @@ fn contains(hay: &[u8], needle: &[u8]) -> bool {
 /// `keys` prepared as trials (`Trial::new`), on every core.
 fn prepare(keys: &[[u8; 32]]) -> Vec<Trial> {
     let n = if keys.len() < 1024 { 1 } else { std::thread::available_parallelism().map_or(1, |n| n.get()) };
-    std::thread::scope(|sc| {
-        let hs: Vec<_> = keys.chunks(keys.len().div_ceil(n).max(1)).map(|c| sc.spawn(move || c.iter().map(Trial::new).collect::<Vec<_>>())).collect();
-        hs.into_iter().flat_map(|h| h.join().unwrap_or_else(|e| std::panic::resume_unwind(e))).collect()
-    })
+    par_map(keys.chunks(keys.len().div_ceil(n).max(1)).collect(), |c| c.iter().map(Trial::new).collect::<Vec<_>>()).into_iter().flatten().collect()
 }
 
 /// An opened commit blob: its sealed sections, those opened so far.

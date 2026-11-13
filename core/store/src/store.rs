@@ -378,8 +378,7 @@ impl Transaction<'_> {
         if let Some(v) = self.mem.o.cat.get(key) {
             return Ok(Some(v.clone()));
         }
-        let c = self.catalog();
-        btree::get(self, c, key)
+        self.durable_get(key)
     }
     fn cat_put(&mut self, key: &[u8], val: Vec<u8>, shred: Shred) -> Result<(), Error> {
         let m = self.memory;
