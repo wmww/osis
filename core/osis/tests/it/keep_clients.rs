@@ -693,7 +693,7 @@ fn a_commit_beside_a_copy_spec_permissions_3() {
     assert_eq!(b.retained_copies().unwrap(), vec![g]);
 }
 
-// spec/permissions.md §3 (Keep; logs and serves nothing of it): what Bob's node holds of a copy goes nowhere: added to a group of his, shared, it does not reach that group's reader; his own write on it, unsent at the kick, stays out at Alice's
+// spec/permissions.md §3 (The copy; logs and serves nothing of it): what Bob's node holds of a copy goes nowhere: added to a group of his, shared, it does not reach that group's reader; his own write on it, unsent at the kick, stays out at Alice's
 #[test]
 fn a_copy_goes_nowhere_spec_permissions_3() {
     let (mut w, a, b, bob, g, m) = sim(Some(true));
@@ -742,7 +742,7 @@ fn a_copy_goes_nowhere_spec_permissions_3() {
     assert!(c.at(m, osis::DynamicAspectKey::untyped(text())).get().ok().flatten().is_none(), "its name at most");
 }
 
-// spec/permissions.md §3 (Keep; it writes nothing there), notes/client-port.md §3: a client that reads a copy cannot place it in a group it writes
+// spec/permissions.md §3 (The copy; it writes nothing there), notes/client-port.md §3: a client that reads a copy cannot place it in a group it writes
 #[test]
 fn a_client_adds_no_copy_spec_permissions_3() {
     let c = chat(GrantOpts::default(), Role::Write);
@@ -755,7 +755,7 @@ fn a_client_adds_no_copy_spec_permissions_3() {
     assert!(matches!(app.commit_with(|w| w.group(own).add(osis::Member::Item(c.m))), Err(Error::Permission { .. })));
 }
 
-// spec/permissions.md §3 (Keep; ephemeral aspects are not part of a copy, and hold until restart as on any lost thing: issue ephemeral-data (closed)): an ephemeral write reaches no copy, and neither the node nor its client writes one
+// spec/permissions.md §3 (The copy; ephemeral aspects are not part of a copy, and hold until restart as on any lost thing: issue ephemeral-data (closed)): an ephemeral write reaches no copy, and neither the node nor its client writes one
 #[test]
 fn ephemeral_data_and_a_copy_spec_permissions_3() {
     let (mut w, a, b, bob, g, m) = sim(Some(true));

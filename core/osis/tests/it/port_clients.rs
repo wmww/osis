@@ -220,7 +220,7 @@ fn reads_are_exactly_the_actors() {
     assert!(!c.status().unwrap().groups.contains_key(&x.h));
 }
 
-// spec/wire.md §11.2, notes/client-port.md §3 (Acting as the actor): a write needs the actor's rights, however wide the node's: Permission on what it only reads, its commits carry its actor and this node as author; created things need a writable first admin, its own actor refused; a commit naming another actor is refused; adding what it may not read to a group fails as unknown; a purge needs admin
+// spec/wire.md §11.2, notes/client-port.md §3 (The client's actor): a write needs the actor's rights, however wide the node's: Permission on what it only reads, its commits carry its actor and this node as author; created things need a writable first admin, its own actor refused; a commit naming another actor is refused; adding what it may not read to a group fails as unknown; a purge needs admin
 #[test]
 fn writes_are_the_actors() {
     let x = node();
@@ -308,7 +308,7 @@ fn a_clashing_write_is_refused_through_the_port_spec_commits_6() {
     assert_eq!((c.at(x.t, osis::DynamicAspectKey::untyped(name)).get().unwrap(), c.at(x.t, osis::DynamicAspectKey::untyped(brief)).get().unwrap()), (Some(Value::Int(1)), Some(Value::Int(2))));
 }
 
-// spec/permissions.md §6, notes/client-port.md §3 (Acting as the actor): a purge acting for a
+// spec/permissions.md §6, notes/client-port.md §3 (The client's actor): a purge acting for a
 // client drops what its node and the client both have the right to: a write client drops no
 // `admin` delta (the default) of its account, though the node alone may, and drops its own
 // `author_or_admin` one; an admin client drops any
@@ -351,7 +351,7 @@ fn client_purge_is_judged_by_the_actor_spec_perm_6() {
     assert_eq!(c.me(), a);
 }
 
-// spec: none (API surface); notes/api.md Sync status: `connected` counts sync connections: a client's session is none.
+// spec: none (API surface); notes/api.md Sync configuration and status: `connected` counts sync connections: a client's session is none.
 #[test]
 fn a_client_session_is_no_sync_connection() {
     let x = node();
@@ -418,7 +418,7 @@ fn tombstone_reads_through_the_client_port_spec_commits_5() {
     assert!(at_t.iter().all(|e| e.parts().all(|(t, _, _)| t != x.u)), "{at_t:?}");
 }
 
-// spec/commits.md §7, notes/client-port.md §3 (Undo/redo/revert): undo picks the actor's own commits; a revert of someone else's needs the actor's write on all it touches; a revert of what it may not read is unknown
+// spec/commits.md §7, notes/client-port.md §3 (Revert and undo): undo picks the actor's own commits; a revert of someone else's needs the actor's write on all it touches; a revert of what it may not read is unknown
 #[test]
 fn undo_and_revert_are_the_actors() {
     let x = node();
@@ -922,7 +922,7 @@ fn hidden_group_scopes_nothing() {
     assert!(matches!(x.n.at(x.t, kept(&x.n, &ak("groups.0"))).get().unwrap(), Some(Value::Set(s)) if s.len() == 2));
 }
 
-// spec/wire.md §11.2, notes/client-port.md §3 (Undo/redo/revert): a revert that would write what the actor may not read is refused naming only what it reads; an ephemeral change of a thing it may not read answers as an unknown commit
+// spec/wire.md §11.2, notes/client-port.md §3 (Revert and undo): a revert that would write what the actor may not read is refused naming only what it reads; an ephemeral change of a thing it may not read answers as an unknown commit
 #[test]
 fn revert_names_only_what_it_reads() {
     let x = node();
@@ -1308,7 +1308,7 @@ impl Rng {
     }
 }
 
-// spec/sync.md §10, spec/wire.md §11.2, notes/client-port.md §3 (Invariant: every client-session row runs as the client's actor; authority ends at revocation), spec/permissions.md §1: a random walk of grants, lowered roles, secret rotations, expiries and removals against a model of plain grants: at every step every read answers what the model says the actor may read, as an unknown tid otherwise, and every write succeeds exactly when the model says it may write
+// spec/sync.md §10, spec/wire.md §11.2, notes/client-port.md §3 (The rule: every client-session row runs as the client's actor; authority ends at revocation), spec/permissions.md §1: a random walk of grants, lowered roles, secret rotations, expiries and removals against a model of plain grants: at every step every read answers what the model says the actor may read, as an unknown tid otherwise, and every write succeeds exactly when the model says it may write
 #[test]
 fn client_session_differential_against_grants() {
     let name = "port_clients::client_session_differential_against_grants";

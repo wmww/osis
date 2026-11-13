@@ -1226,7 +1226,7 @@ mod tests {
         b.dump().iter().filter(|(k, _)| k.first() == Some(&prefix)).count()
     }
 
-    // spec/wire.md §5 (Padmé padding), notes/local-store.md: a row is `nonce || AEAD(padded
+    // spec/wire.md §5 (Padding: Padmé), notes/local-store.md: a row is `nonce || AEAD(padded
     // plaintext)` under a fresh nonce: the same row and plaintext sealed twice share no nonce and
     // no ciphertext, and neither holds the plaintext.
     #[test]

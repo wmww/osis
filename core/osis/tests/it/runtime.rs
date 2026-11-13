@@ -591,7 +591,7 @@ fn shutdown_panics(prefix: &str) -> usize {
     SHUTDOWN_PANICS.lock().unwrap_or_else(|p| p.into_inner()).iter().filter(|n| n.starts_with(prefix)).count()
 }
 
-// notes/api.md Handle and sync: `close` returns once the store is closed, also with
+// notes/api.md Handle and lifecycle: `close` returns once the store is closed, also with
 // `Runtime::Own` (whose runtime stops in the background): the store opens again at once and
 // holds every write. spec: none (an API property)
 #[test]
@@ -637,7 +637,7 @@ fn rand_suffix() -> u64 {
     h.finish()
 }
 
-// notes/api.md Handle and sync: closing a node on the app's runtime (`Runtime::Tokio`)
+// notes/api.md Handle and lifecycle: closing a node on the app's runtime (`Runtime::Tokio`)
 // and then shutting that runtime down must not let the driver poll a timer of the shut-down
 // runtime. spec: none (an API property). By hand: a race; with `close` not waiting for the
 // driver it panics in about a third of runs at 40 rounds per thread, none at 10.
@@ -705,7 +705,7 @@ async fn a_paired_peer_serves_what_it_reads_in_process_spec_data_model_9() {
     assert_eq!(bob.at(t, osis::DynamicAspectKey::untyped(ak("t:x.0"))).get().unwrap(), Some(Value::Str("hello".into())));
 }
 
-// notes/api.md Handle and sync: a sync driver that panics (inside an engine call, under the lock)
+// notes/api.md Handle and lifecycle: a sync driver that panics (inside an engine call, under the lock)
 // fails the waits pending on it and every later one with `Network` naming the panic, at once
 // rather than at their deadline (a dead driver fires no timer), and reports `SyncStopped`.
 // spec: none (an API property)
@@ -754,7 +754,7 @@ fn driver_panic_fails_waiters() {
     assert_eq!(db.close().unwrap(), osis::Close::Closed);
 }
 
-// spec: none (API surface, notes/api.md Futures): a wait known never to finish fails: a link naming no peer, on a node that dials nobody directly
+// spec: none (API surface, notes/api.md Rules): a wait known never to finish fails: a link naming no peer, on a node that dials nobody directly
 #[tokio::test]
 async fn direct_link_with_peers_off_fails_at_once() {
     let net = osis_transport::Net::new(0);
@@ -771,7 +771,7 @@ async fn direct_link_with_peers_off_fails_at_once() {
     assert!(matches!(r, Err(osis::Error::Network(_))), "{r:?}");
 }
 
-// spec: none (API surface, notes/api.md Futures): a wait holding no handle (the client port's) hears when the node goes
+// spec: none (API surface, notes/api.md Rules): a wait holding no handle (the client port's) hears when the node goes
 #[tokio::test]
 async fn node_going_answers_a_wait_with_no_handle() {
     let net = osis_transport::Net::new(0);

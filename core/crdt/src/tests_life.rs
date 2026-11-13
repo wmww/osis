@@ -839,7 +839,7 @@ fn sweep_takes_only_what_is_hidden_spec_sync_7() {
     assert!(!gone.holds_write(&Dot::new(y, 1)));
 }
 
-/// spec/sync.md §7, §5.6 Live: a live map record reads as its fragment joined with its dot's
+/// spec/sync.md §7, spec/crdt.md §5.6 Live: a live map record reads as its fragment joined with its dot's
 /// key-erased record's, and the sweep judges it so. x puts `{k: [1]}`, y edits the element to 2, x's
 /// commit expires: the element's creation moves, value-less, to the key-erased record while y's
 /// write stays under `k`. The element shows y's value; it is not swept though x's delta is reflected.

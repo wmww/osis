@@ -430,7 +430,7 @@ async fn driver_lan_loop_localhost_spec_sync_10() {
     converge_p2p(p2p(), "peer://127.0.0.1:0", p2p(), "peer://127.0.0.1:0", vec![], Direct::Loop([cfg(p, q), cfg(q, p)])).await;
 }
 
-// spec/sync.md §10 (IPv6 LAN discovery): the same over IPv6 loopback: announcements on the IPv6
+// spec/sync.md §10 (LAN discovery, over IPv6): the same over IPv6 loopback: announcements on the IPv6
 // socket carry the listener's IPv6 port and are dialed at their IPv6 source (by hand).
 // Run: `cargo test -p osis-node --test it -- --ignored driver:: --skip repro_`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

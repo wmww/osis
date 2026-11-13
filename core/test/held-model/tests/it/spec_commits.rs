@@ -298,7 +298,7 @@ fn keep_after_replaced_limits_the_compactor_spec_commits_5() {
     assert_eq!(o.history[&(T, REG)].len(), 2);
 }
 
-// spec/commits.md §5 (The setting, Out of history; notes/engine-retention-history.md Tess's decision 4): a body out of history drops
+// spec/commits.md §5 (The setting, Out of history; notes/engine-retention-history.md Tess's decisions, 4): a body out of history drops
 // under any valid writer's cover, the right or not; under purge on replace only a right holder's
 // cover forces the drop, and a right holder owes one until it is held
 #[test]

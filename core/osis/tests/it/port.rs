@@ -449,7 +449,7 @@ fn node_on(net: &osis_transport::Net, ep: &str, hosts: Vec<osis::Address>, sock:
     db
 }
 
-// spec/wire.md §11.2 (Sub, Notify), notes/client-port.md §2 (rows that wait), notes/api.md Sync status: a client handle's `wait_synced` has the node's outcomes: Ok once synced (All, and Thing after `sync` through the port), Unsynced for a group without a label, waiting while the peer is unreachable; at most `MAX_WAITS` waits at once per connection; `sync`, `grant`, `make_link`, `sync_now` and the sharing reads go through too
+// spec/wire.md §11.2 (Sub, Notify), notes/client-port.md §2 (rows that wait), notes/api.md Sync configuration and status: a client handle's `wait_synced` has the node's outcomes: Ok once synced (All, and Thing after `sync` through the port), Unsynced for a group without a label, waiting while the peer is unreachable; at most `MAX_WAITS` waits at once per connection; `sync`, `grant`, `make_link`, `sync_now` and the sharing reads go through too
 #[test]
 fn client_wait_synced_as_at_the_node() {
     use crate::common::block_on;
@@ -893,7 +893,7 @@ fn schema_bytes_per_node() {
     assert_eq!(n.close().unwrap(), osis::Close::Closed);
 }
 
-// notes/api.md Handle and sync: a client handle's connection thread that dies of a panic closes
+// notes/api.md Handle and lifecycle: a client handle's connection thread that dies of a panic closes
 // its subscriptions as it unwinds, so a `wait_synced` waiting at the node fails `Network` at once
 // instead of hanging, and so does every later call
 // spec: none (an API property)
@@ -924,7 +924,7 @@ fn client_thread_panic_fails_waits() {
     assert_eq!(m.close().unwrap(), osis::Close::Closed);
 }
 
-// spec: none (API surface); notes/client-port.md §2, notes/api.md Futures: a row that waits is answered by the connection: a client whose callbacks run on a pump needs no `settle` for it; connecting to nothing is `Network`, with nothing left trying
+// spec: none (API surface); notes/client-port.md §2, notes/api.md Rules: a row that waits is answered by the connection: a client whose callbacks run on a pump needs no `settle` for it; connecting to nothing is `Network`, with nothing left trying
 #[test]
 fn a_wait_needs_no_pump_and_connecting_to_nothing_fails() {
     let d = Dir::new();

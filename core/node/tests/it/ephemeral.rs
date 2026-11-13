@@ -4754,7 +4754,7 @@ fn memory_expiry_goes_valueless_spec_crdt_4_7() {
     assert!(faults.iter().all(|f| f.forbidden() == 0), "nothing durable written");
 }
 
-// spec/sync.md §9 (Superseded expiring writes): an expiring move of 0's cursor entry vanishes
+// spec/sync.md §9 (Superseded parts): an expiring move of 0's cursor entry vanishes
 // once its later move (expiring no earlier) is held: at the author, at 1 (older first) and at 2
 // (newer first: the older one is not kept); one expiring earlier supersedes nothing; once the
 // newer entries are removed the superseded move does not read again anywhere
@@ -4792,7 +4792,7 @@ fn memory_superseded_expiring_write_vanishes_spec_sync_9() {
     }
 }
 
-// spec/sync.md §9 (Superseded expiring writes, a function of the commits held): 2 holds 1's
+// spec/sync.md §9 (Superseded parts, a function of the commits held): 2 holds 1's
 // two moves while a removal of 1 by admin 3 makes them invalid there: nothing is superseded;
 // once 0's earlier removal of 3 arrives, 3's removal is invalid, the moves valid again, and the
 // older move goes there too
@@ -5020,7 +5020,7 @@ fn set_into_expiring_entry_reads_alike_spec_crdt_4_7() {
     assert_eq!(reads, vec![kept.clone(), kept.clone(), kept], "b's write keeps the entry everywhere");
 }
 
-// spec/crdt.md §4.7 (Ephemeral data), spec/sync.md §9 (Superseded expiring writes), issues/
+// spec/crdt.md §4.7 (Ephemeral data), spec/sync.md §9 (Superseded parts), issues/
 // eph-unify.md Step A (review differential): random memory histories (expiring and plain puts
 // at shared keys, removals, replaces, two writers) reach four nodes through the Core hooks in
 // random orders, ticked at random times: once all are delivered, every node reads alike at each

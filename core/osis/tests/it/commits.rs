@@ -428,7 +428,7 @@ fn step(db: &Osis, scope: &Scope, redo: bool) -> Option<CommitId> {
     got
 }
 
-// spec/crdt.md §4.6 Undoing a creation, notes/api.md Commits: undoing the commit that created a
+// spec/crdt.md §4.6, spec/commits.md §7, notes/api.md Commits: undoing the commit that created a
 // thing deletes it, its memberships in every group included (one made later in another group,
 // and a subgroup edge); redo brings it back with its content and memberships (`group.0` keeps
 // history). `next` reports the change each step then reverts.
@@ -546,7 +546,7 @@ fn next_reports_what_undo_and_redo_revert_api_commits() {
     assert_eq!(db.at(a, kept(&db, &k)).get().unwrap(), Some(Value::Int(1)));
 }
 
-// spec/crdt.md §4.6 Undoing a creation, shared: the undo of a creation reaches the other
+// spec/crdt.md §4.6, undoing a creation, shared: the undo of a creation reaches the other
 // holder (deleted there), redo restores it there; a writer (not admin) may revert another's
 // creation of a thing it may write; reverting the creation of a thing it may not write is
 // `Permission` and changes nothing (never a partial revert: removed but not deleted).

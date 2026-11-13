@@ -1730,7 +1730,7 @@ fn chunks_outliving_their_introducer_leave_the_host_spec_commits_5() {
     // the value written again twice: the replaces reuse every blob of its tree
     let v1 = noise(2560 << 10, 1);
     let mut first = None;
-    // two later own replaces (or a snapshot) cover the first (spec/commits.md §5 Own bodies)
+    // two later own replaces (or a snapshot) cover the first (spec/commits.md §5 Own replaces)
     for v in [&v1, &v1, &v1] {
         let mut m = Mutation::new();
         m.op(t, &BLOB, osis_crdt::PathOp { path: vec![], op: osis_crdt::Op::Replace(osis_base::Value::Bytes(v.clone())) }).unwrap();

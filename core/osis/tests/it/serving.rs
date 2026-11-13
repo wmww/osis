@@ -276,7 +276,7 @@ fn stop_serving_drops_what_it_kept_spec_data_model_9() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-// notes/api.md Handle and sync: `close` with `Runtime::Own` returns once the driver, and with it
+// notes/api.md Handle and lifecycle: `close` with `Runtime::Own` returns once the driver, and with it
 // the peer, is gone, so the serving store is free: reopening at once serves again (not "Database
 // already open"). spec: none (an API property)
 #[test]

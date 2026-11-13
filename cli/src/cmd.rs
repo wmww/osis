@@ -1,4 +1,4 @@
-//! Command bodies (notes/cli.md Command table): each one API call, plus printing.
+//! Command bodies (notes/cli.md One call): each one API call, plus printing.
 //! Tests: spec: none (client surface).
 
 use crate::args::*;
@@ -1585,7 +1585,7 @@ mod tests {
         assert!(matches!(crate::config(&cli.g, super::network(&cli.cmd)).lan, osis::Lan::On { .. }));
     }
 
-    // notes/cli.md Command table: `status` shows split things apart from groups, in both forms.
+    // `status` shows split things apart from groups, in both forms.
     #[test]
     fn status_lists_things_with_two_sources_apart_notes_cli() {
         let t = osis::Tid::from_bytes([7; 15]);

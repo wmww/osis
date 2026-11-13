@@ -847,7 +847,7 @@ fn decoded_bound_holds_random_values() {
 }
 
 proptest! {
-    /// `changes` (session splices, notes/api.md Text sessions): disjoint ascending stretches,
+    /// `changes` (session splices, notes/api.md Text editing sessions): disjoint ascending stretches,
     /// applied in order they turn `a` into `b`, and the kept chars are a common subsequence.
     #[test]
     fn changes_rebuild_new(a in "[ab]{0,12}", b in "[ab]{0,12}") {

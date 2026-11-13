@@ -347,7 +347,7 @@ fn kick_keep_erase_purge_spec_perm_3() {
     assert!(!b.has_content(c).unwrap());
 }
 
-// spec/commits.md §5 Expiry default, §6: a message expires as its sender saw the setting: a stale
+// spec/commits.md §5 The setting, §6: a message expires as its sender saw the setting: a stale
 // sender's message, written before the timer reached it, is shown everywhere and keeps the expiry
 // it carries (none); once the timer reaches it, its messages disappear on time
 #[test]

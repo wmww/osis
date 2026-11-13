@@ -78,7 +78,7 @@ pub(super) fn replaced(tx: &mut Tx<'_>, c: &CommitId, ai: usize, tid: &Tid, ak: 
 /// a writer covers what is replaced and uncovered (one snapshot per aspect), then every covered
 /// one drops (spec/commits.md §5). Either class: an ephemeral aspect's cover is a memory snapshot,
 /// and its replaced bodies drop under any writer's cover, their author's own included (no
-/// promise keeps them; notes/ephemeral.md Own bodies under own covers is for bodies nothing
+/// promise keeps them; notes/ephemeral.md (Own bodies under own covers) is for bodies nothing
 /// purges), a commit so spent forgotten (`memory::forget_if_spent`).
 pub(crate) fn settle_none(tx: &mut Tx<'_>) -> Result<()> {
     if tx.core.keep_bodies {

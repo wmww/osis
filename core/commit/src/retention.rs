@@ -198,7 +198,7 @@ impl Timeline {
         self.0.iter().all(|x| x.1 == Opt::None)
     }
 
-    /// The moment a body replaced at wall ms `r` leaves history (spec/commits.md §5 History): the
+    /// The moment a body replaced at wall ms `r` leaves history (spec/commits.md §5 The setting): the
     /// first t >= r at which the setting in force (before the first: none) does not keep it;
     /// `NEVER` if none ends it.
     pub fn out(&self, r: u64) -> u64 {
@@ -293,7 +293,7 @@ mod timeline_tests {
         Opt::Keep { after, until }
     }
 
-    // spec/commits.md §5 History: a setting acts from its own stamp; bodies leave in replaced order
+    // spec/commits.md §5 The setting: a setting acts from its own stamp; bodies leave in replaced order
     #[test]
     fn out_from_each_settings_stamp_spec_commits_5() {
         let none = Timeline::new([]);

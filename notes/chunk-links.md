@@ -22,7 +22,7 @@ A link is the whole authority to read and to delete its blob: whoever holds the 
 - A drop (cover, own replace, purge, expiry; not invalid: an invalid body stays at hosts as a refetch source) puts the body's links in a durable per-thing freed set, then drops the body.
 - Each freed link is judged when its delete is sent, against the sources of its thing held then, never once at the drop (a body fetched again or a new reuse in between keeps the piece with no extra rule; held-model step 0 found this). Linked: kept. Else a node's links join the set (nodes are immutable, so the walk stops at shared nodes) and the piece is deleted at every host of the thing's labels holding an entry of it.
 - A judgment needs every node blob on the way; one no copy of which is left blocks that thing's judgments at that node (`Trees::missing`). Deletes go in shuffled batches, no level order.
-- A judged link keeps no key, so a dropped body's pieces are unopenable at once (spec/commits.md §5 Shredding).
+- A judged link keeps no key, so a dropped body's pieces are unopenable at once (spec/sync.md §7 Freed links).
 
 ## What replaced each list use
 - **Fetch and memory gate**: by walking what a commit links (`apply/reach.rs`, `Engine::blob_wants`); the gate is staged (commit blob, pages, roots' claimed lengths), lengths are claims enforced as resolved (spec/wire.md §6).

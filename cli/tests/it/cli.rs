@@ -353,7 +353,7 @@ fn group_sync_without_peers_keeps_the_sync() {
     assert_eq!(s.code(&["--timeout", "1ms", "group", "sync", &g, "--peer", &a]), 7);
 }
 
-// notes/api.md Materialization bound: `[0]` on an untyped aspect needs its value to tell list from map:
+// notes/api.md Large values: `[0]` on an untyped aspect needs its value to tell list from map:
 // a value past the limit fails `TooLarge`, and never reads as absent.
 #[test]
 fn an_untyped_index_past_the_limit_says_so() {

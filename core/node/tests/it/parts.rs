@@ -141,7 +141,7 @@ fn on(pk: &osis_node::local_peer::Package, t: Tid) -> Vec<u8> {
     b.encode()
 }
 
-// spec/commits.md §4, §8: a paged part whose pages are away waits alone, synced or not, in either
+// spec/commits.md §4, spec/crdt.md §8: a paged part whose pages are away waits alone, synced or not, in either
 // order, and it joins when they come.
 #[test]
 fn part_missing_pages_waits_alone_spec_commits_4() {

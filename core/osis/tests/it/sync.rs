@@ -664,7 +664,7 @@ fn uncommitted(db: &Osis) -> (osis::Subscription, std::sync::mpsc::Receiver<Vec<
     (sub, rx)
 }
 
-// notes/api.md Text sessions (`on_merge` edits): a remote edit in the middle of the text
+// notes/api.md Text editing sessions (`on_merge` edits): a remote edit in the middle of the text
 // reaches the session as splices, each at the text before it; applied in order they give the
 // merged text, and a caret mapped through them stays on its char.
 // spec: none (API surface, notes/api.md)
@@ -696,7 +696,7 @@ fn text_session_remote_splices_map_caret() {
     assert_eq!(map(11), text.len(), "the end stays the end");
 }
 
-// notes/api.md Text sessions: a session whose thing another node deleted drops its pending
+// notes/api.md Text editing sessions: a session whose thing another node deleted drops its pending
 // text when it is dropped and reports it (`Uncommitted`): it never recreates the thing.
 // spec: none (API surface, notes/api.md)
 #[test]
@@ -717,7 +717,7 @@ fn text_session_after_remote_delete_drops() {
     }
 }
 
-// notes/api.md Text sessions: a session whose commit is refused (its writer lost write) says so at
+// notes/api.md Text editing sessions: a session whose commit is refused (its writer lost write) says so at
 // `commit`, keeps its edits, commits them once it can; dropped meanwhile it reports them lost.
 // spec: none (API surface, notes/api.md)
 #[test]
@@ -753,7 +753,7 @@ fn text_session_refused_commit_keeps_edits() {
     assert_eq!(recv(&rx), vec![g]);
 }
 
-// notes/api.md Text sessions: the same for a delete on the session's own node.
+// notes/api.md Text editing sessions: the same for a delete on the session's own node.
 // spec: none (API surface, notes/api.md)
 #[test]
 fn text_session_after_local_delete_drops() {
@@ -770,7 +770,7 @@ fn text_session_after_local_delete_drops() {
     }
 }
 
-// notes/api.md Text sessions: a commit after the delete fails `UnknownThing` and keeps the
+// notes/api.md Text editing sessions: a commit after the delete fails `UnknownThing` and keeps the
 // edits; once the delete is undone they commit (by `commit`, or by the session following the
 // undo's write).
 // spec: none (API surface, notes/api.md)
@@ -835,7 +835,7 @@ fn wait_synced_waits_on_a_group_with_nobody_connected() {
     assert!(w.try_until(carol.wait_synced(SyncScope::Thing(carol.home())), 1000, 10).is_none());
 }
 
-// notes/api.md Sync status (`wait_synced` scopes the deliveries): Bob's inbox is on a peer
+// notes/api.md Sync configuration and status (`wait_synced` scopes the deliveries): Bob's inbox is on a peer
 // Alice cannot reach, so her grant to him stays queued; `Group(other)` resolves meanwhile,
 // `Thing(g)` and `All` wait for it until the peer is back.
 // spec: none (API surface, notes/api.md)
@@ -861,7 +861,7 @@ fn wait_synced_scopes_deliveries() {
     w.until(alice.wait_synced(SyncScope::All), 1000, 130).unwrap();
 }
 
-// notes/api.md Sync status (`All` waits for every delivery): Carol syncs no label with peers;
+// notes/api.md Sync configuration and status (`All` waits for every delivery): Carol syncs no label with peers;
 // her grant on her peerless group to Bob is queued for his inbox peer, which she cannot
 // reach: `All` and `Thing(g)` do not resolve before it lands; removing Bob there waits for nobody.
 // spec: none (API surface, notes/api.md)
@@ -1087,7 +1087,7 @@ fn a_thing_in_a_group_shared_directly_syncs_under_both() {
     assert!(alice.status().unwrap().groups.contains_key(&u), "the grant gave it a sync ID");
 }
 
-// spec/sync.md §2 (Tess's example): T in synced G shared with Bob alone, who reads no part of G: the grant gives T its own sync ID: he reads T, and G's label stays closed to him
+// spec/sync.md §2 (the example Tess gave): T in synced G shared with Bob alone, who reads no part of G: the grant gives T its own sync ID: he reads T, and G's label stays closed to him
 #[test]
 fn a_thing_in_a_synced_group_shared_with_an_outsider() {
     let (mut w, alice, others, ids) = people(1);
@@ -1801,7 +1801,7 @@ fn reopen_under_one_seed_draws_a_new_session_spec_crdt_2_1() {
     assert!(!diags.iter().any(|d| d.contains("OverlappingCounters")), "{diags:?}");
 }
 
-// spec: none (notes/api.md Text sessions): `on_merge` is a subscription like any: its callback gets the node and may ask the session anything, and dropping it ends the calls
+// spec: none (notes/api.md Text editing sessions): `on_merge` is a subscription like any: its callback gets the node and may ask the session anything, and dropping it ends the calls
 #[test]
 fn text_on_merge_is_a_subscription() {
     let (mut w, _da, db, t, sa) = text_pair();

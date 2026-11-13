@@ -411,7 +411,7 @@ fn rejects_fragments_reading_too_deep_spec_3_3() {
     assert!(!ok(en(63)), "63 below an enum payload reads 65 deep");
 }
 
-/// spec/data-model.md §5, §3.3 rule 7: a writer refuses what a reader would reject: a case step
+/// spec/data-model.md §5, spec/crdt.md §3.3 rule 7: a writer refuses what a reader would reject: a case step
 /// counts two levels, a list item one below its list; an enum case above 2^63 - 1.
 #[test]
 fn writer_refuses_out_of_profile_values_spec_3_3() {
@@ -433,7 +433,7 @@ fn writer_refuses_out_of_profile_values_spec_3_3() {
     assert!(apply(vec![], Op::Set(Value::Enum(i64::MAX as u64, None))).is_none());
 }
 
-/// spec/data-model.md §5, §3.3 rule 7: writer and reader draw the depth line at the same
+/// spec/data-model.md §5, spec/crdt.md §3.3 rule 7: writer and reader draw the depth line at the same
 /// place: under `n` struct levels each op shape is written iff its read value nests at most 64
 /// deep, and what it writes decodes (a text's chars read at the text's depth, a list's items one
 /// below).

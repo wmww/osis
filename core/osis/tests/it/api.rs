@@ -1180,7 +1180,7 @@ fn sync_refuses_other_peers() {
     assert!(matches!(db.sync(g, &[a, b]), Err(Error::Invalid(_))));
 }
 
-// notes/api.md Reading: `has_content` is about content: a thing created and made durable with none reads
+// notes/api.md Reads: `has_content` is about content: a thing created and made durable with none reads
 // `false`, like a deleted one, and still takes writes.
 // spec: none (API surface, notes/api.md)
 #[test]
@@ -1203,7 +1203,7 @@ fn knows_is_about_content() {
     assert!(db.has_content(t).unwrap());
 }
 
-// notes/api.md Reading: `aspects` lists what reads as present: a register whose live write was
+// notes/api.md Reads: `aspects` lists what reads as present: a register whose live write was
 // purged reads absent, and is not listed.
 // spec: none (API surface, notes/api.md)
 #[test]
@@ -1224,7 +1224,7 @@ fn aspects_agrees_with_reads_after_a_purge() {
     assert!(!db.aspects(t).unwrap().contains(&k));
 }
 
-// notes/api.md Group ops: the check is of what the cut took away, the cut subgroup's closure (itself
+// notes/api.md Diagnostics: the check is of what the cut took away, the cut subgroup's closure (itself
 // included, spec/sync.md §3). A cut below a subgroup of the synced group strands the same; a cut under
 // a group that never synced strands nothing; deleting a tag tells of its items that went with it,
 // never of the deleted tag, which holds nothing.
@@ -1288,7 +1288,7 @@ fn a_cut_tells_exactly_what_it_took_out_of_sync() {
     assert_eq!(told(&rx), BTreeSet::from([in_dual]), "its items, not itself");
 }
 
-// notes/api.md Group ops: cutting a subgroup out of the synced group that was its only way there
+// notes/api.md Diagnostics: cutting a subgroup out of the synced group that was its only way there
 // tells of it and the items it strands; an item still carried otherwise is not told of.
 // spec: none (API surface, notes/api.md)
 #[test]
@@ -1326,7 +1326,7 @@ fn cutting_a_subgroup_reports_what_it_strands() {
     assert_eq!(told, BTreeSet::from([sub, stranded]), "the subgroup went through this group too");
 }
 
-// notes/api.md Group ops: a subgroup whose membership expires strands what it held as a write
+// notes/api.md Diagnostics: a subgroup whose membership expires strands what it held as a write
 // cutting it does, told by the same diagnostic.
 // spec: none (API surface, notes/api.md)
 #[test]
@@ -1704,7 +1704,7 @@ fn urls_and_serving_policy_are_typed() {
     assert!(osis::internals::host_limit(&mut bad, "max_queued_bytes", 1).is_err(), "a limit the host cannot run by");
 }
 
-// spec: none (API surface); notes/api.md Futures: what waits can go on any runtime's spawn
+// spec: none (API surface); notes/api.md Rules: what waits can go on any runtime's spawn
 #[test]
 fn waiting_calls_are_send() {
     fn send<T: Send>(_: T) {}

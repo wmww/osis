@@ -1027,7 +1027,7 @@ mod tests {
 
     // A removes entry `k` of `x:n.0`, which no setting keeps yet, then a setting keeps it a day
     // (`two`'s rules plus `x:n.0`): the parts the removal replaced are out of history, so only a
-    // kept part superseding them lets its undo restore (spec/commits.md §7 Limit). The undo.
+    // kept part superseding them lets its undo restore (spec/commits.md §7). The undo.
     fn remove_k_then_keep(lp: &mut LocalPeer, t: osis_base::Tid, x: &Ak, keep: osis_schema::Retention) -> crate::error::Result<Option<osis_base::CommitId>> {
         lp.advance(10);
         let mut m = Mutation::new();
@@ -1045,7 +1045,7 @@ mod tests {
         lp.peers[0].engine.revert(&rm)
     }
 
-    // spec/commits.md §7 Limit: a part out of history is excused by a snapshot reaching it only
+    // spec/commits.md §7: a part out of history is excused by a snapshot reaching it only
     // while the snapshot is in kept history itself, alike whether or not the node holds the part.
     // C puts `k` (after writing `j` in its own delta, when `live`) and snapshots; A, holding C's
     // put or only the snapshot, removes `k`, and a setting comes after, so the put is out of
@@ -1265,7 +1265,7 @@ mod tests {
         assert_eq!(lp.peers[1].engine.deleted_aspects(&p).unwrap(), Vec::<Ak>::new(), "the removal covers W");
     }
 
-    // spec/commits.md §7 Limit, spec/crdt.md §8: a snapshot holds an expiring delta's writes
+    // spec/commits.md §7, spec/crdt.md §8: a snapshot holds an expiring delta's writes
     // value-less, so reaching it excuses nothing. A writes `j`; C puts `k` (expiring or not) and
     // snapshots the map (kept: `j` lives in it); A removes `k`, and a setting comes after, so
     // C's put is out of history: the undo writes `k` back from the snapshot only where `k` does

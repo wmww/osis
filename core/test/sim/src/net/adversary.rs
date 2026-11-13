@@ -239,7 +239,7 @@ fn run_noting(sim: &mut NetSim, n: u64, nodes: [usize; 2], g: Tid, holder: Tid, 
 /// connection of its own. Expected: the host keeps them (it cannot judge what lies past a prefix,
 /// spec/wire.md §5), honest nodes reject them without failing, keep syncing and converge. Garbage
 /// under framing version 1 is a prefix the host must read (class, expiry, commitments: spec/wire.md
-/// §5, spec/requirements.md Privacy), so the host refuses it as malformed (code 2).
+/// §5, spec/requirements.md Data a node cannot read), so the host refuses it as malformed (code 2).
 pub fn malformed_blobs(s: Seeds) -> Res<Report> {
     let (mut sim, (s, a, b, m, g, t, c)) = setup("malformed_blobs", s, NetWeights::default(), |sim| {
         let mut d = Dice::new(sim.seed ^ 0x6a);

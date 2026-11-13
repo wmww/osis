@@ -637,7 +637,7 @@ fn one_peer_refusing_is_no_end_spec_permissions_7() {
     assert!(matches!(w.until(redeem, 1000, 10), Err(Error::Invalid(_))));
 }
 
-// notes/api.md Sync status (Stranded), Sync waits; spec/permissions.md §3: stranded means no host
+// notes/api.md Sync configuration and status (Stranded), Sync waits; spec/permissions.md §3: stranded means no host
 // can serve the label. A node removed from its account while away, its home on two peers, with one
 // of them out of reach: the peer it reaches refuses it, but the other may yet serve it, so it is
 // not stranded and `wait_synced` waits; once both refused it is, and `wait_synced` fails `Unsynced`.
@@ -671,7 +671,7 @@ fn stranded_only_when_every_host_refuses_spec_permissions_3() {
     assert!(matches!(w.until(db.wait_synced(osis::SyncScope::Thing(home)), 1000, 10), Err(Error::Unsynced { .. })));
 }
 
-// notes/api.md Sync status (watch_status, Stranded), Diagnostics: a watcher sees the home group
+// notes/api.md Sync configuration and status (watch_status, Stranded), Diagnostics: a watcher sees the home group
 // synced; a node removed while away is stranded on the home label and says so.
 // spec/permissions.md §3
 #[test]

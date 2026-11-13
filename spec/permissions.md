@@ -336,7 +336,7 @@ A commit of account P names the epoch it is signed at (spec/wire.md §4); §5.4 
 - **Who may undo a purge so**: the author of a demotion, whose frontier omits the request. A frontier may list a message and omit its purge, and the message is back wherever a copy is left. An addendum vouches for no purge request (§5.2).
 - A node deletes at hosts on its judgment after syncing, with no waiting time.
 - The same right decides whether a compaction snapshot may drop a body it covers (spec/commits.md §5); a body a right holder dropped under a snapshot whose right later falls stays dropped.
-- At hosts a delete key proves the right as of the delta and the label key current roles (spec/sync.md §5). Limit: so a holder demoted since can still delete there what its old role allowed, until a writer holding the body logs it again (spec/sync.md §6, After syncing; a reader's relay of the deleted blob meets its tombstone).
+- At hosts a delete key proves the right as of the delta and the label key current roles (spec/sync.md §5). Limit: so a holder demoted since can still delete there what its old role allowed, until a writer holding the body logs it again (spec/sync.md §6 After syncing; a reader's relay of the deleted blob meets its tombstone).
 - **Invalid deltas**: a node holds no delta it judges invalid past the transaction that judged it (spec/commits.md §5 Invalid). It keeps only:
   - a delta of a role commit: the timeline and the possible holders read every held edge write, of any validity (§5.1, spec/commits.md §4), and a label holds the commit whole (a deposit is promoted whole, spec/sync.md §5);
   - a delta of its own commit: its user is told the write was refused and may write it again from it.

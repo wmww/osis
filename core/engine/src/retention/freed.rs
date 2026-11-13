@@ -10,7 +10,7 @@
 //!
 //! A judged link keeps no key here: what it needs to delete (its blob ID, salt, Del and thing
 //! blind) stays, so a dropped body's pieces are unopenable from the store at the end of the
-//! drop's transaction (spec/commits.md §5 Shredding), where every freed set that took links is
+//! drop's transaction (spec/sync.md §7 Freed links), where every freed set that took links is
 //! judged (`settle_due`). A link waiting for a node blob keeps its key until it is walked.
 //!
 //! A held blob is checked against its link first: a prefix that does not bear the link's Del under

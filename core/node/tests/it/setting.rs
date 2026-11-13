@@ -197,7 +197,7 @@ fn history_follows_the_setting_in_any_order_spec_commits_5() {
     }
 }
 
-// spec/commits.md §5 History: a shortening hides what it ends, and a later extension does not
+// spec/commits.md §5 The setting: a shortening hides what it ends, and a later extension does not
 // bring it back (a setting acts from its own stamp)
 #[test]
 fn shortening_hides_and_extension_does_not_bring_back_spec_commits_5() {
@@ -743,7 +743,7 @@ fn told(p: &mut Peer, d: Tid) -> Vec<CommitId> {
     out
 }
 
-// notes/api.md Commits, spec/commits.md §5 History: a body leaving history as its window passes
+// notes/api.md Commits, spec/commits.md §5 The setting: a body leaving history as its window passes
 // is told to a commit listener, whatever order the setting and the bodies arrived in and across
 // a restart, and nothing that stays is told
 #[test]
@@ -774,7 +774,7 @@ fn leaving_history_is_told_in_any_order_spec_commits_5() {
     }
 }
 
-// spec/commits.md §5 The setting (notes/engine-retention-history.md Tess's decision 1): a setting arriving late, stamped while a body was
+// spec/commits.md §5 The setting (notes/engine-retention-history.md Tess's decisions, 1): a setting arriving late, stamped while a body was
 // still in history, brings back a body that left meanwhile where it is still held: listed and told
 // again; a later shortening by its stamp takes it out again, told
 #[test]

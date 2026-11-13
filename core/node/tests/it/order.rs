@@ -1462,7 +1462,7 @@ fn oracle(played: &Played, held: &[usize]) -> Oracle {
     Oracle { held: held.to_vec(), now, later }
 }
 
-/// spec/requirements.md Deterministic's limit for expiring edits: "an expiring edit still
+/// spec/requirements.md Decentralization (the arrival-order limit): "an expiring edit still
 /// incomplete at a node when it expires never applies there, so that node may read what came
 /// before it, and so may a node that never held an expiring edit", until a writer compacts. Every
 /// node checked is given the history at `played.now` or earlier, the keep-everything node at

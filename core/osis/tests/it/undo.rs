@@ -70,7 +70,7 @@ fn sets(db: &Osis, t: osis::Tid, name: &str, vs: &[i64]) -> osis::CommitId {
     last.unwrap()
 }
 
-// spec/commits.md §7 (Tess: undo touches only kept history): on an aspect no setting keeps, no
+// spec/commits.md §7 (Kept history only; Tess): on an aspect no setting keeps, no
 // write is undone, a first set and an insert (which take nothing back) included: refused at once,
 // its body held, by `undo_target`, `undo` and `revert` alike, nothing written; the same from a
 // second node of the account holding the commits, and after a reopen; ephemeral writes alike.
@@ -195,7 +195,7 @@ fn undo_alike_held_or_compacted_spec_crdt_4_6() {
     }
 }
 
-// spec/commits.md §7 (Tess: undo touches only kept history): what only takes away what it made
+// spec/commits.md §7 (Kept history only; Tess): what only takes away what it made
 // (a list insert) undoes and redoes while the setting keeps it, and is refused once it leaves
 // history by the setting's bound (the list is kept until a time `T`), its body still held: the
 // setting decides, never compaction. With history a first register set undoes to absent and
@@ -341,7 +341,7 @@ fn mixed_scope_undo_order_spec_crdt_4_6() {
     assert_eq!(state(), (int(2), int(2)));
 }
 
-// spec/crdt.md §4.6 Expiry: a commit's `expires` overrides its keys' defaults, and its undo has no use
+// spec/crdt.md §4.6, spec/commits.md §6: a commit's `expires` overrides its keys' defaults, and its undo has no use
 // for them: what the undo writes expires as what it copies back, so a commit that could be made can be
 // undone and redone. Durable and ephemeral alike.
 #[test]
