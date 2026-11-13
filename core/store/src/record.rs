@@ -13,7 +13,7 @@
 //! generation of the peer's filter, as received (a whole one replaces every row before it).
 
 use crate::codec::{R, W};
-use crate::store::{Shred, Transaction, kind};
+use crate::store::{PAGE, Shred, Transaction, kind};
 use crate::Error;
 use osis_base::{LabelId, Tid};
 use osis_base::format::TID_LEN;
@@ -26,9 +26,6 @@ pub const RECORD_BUDGET: u64 = 256 * 1024 * 1024;
 
 /// A record's row ID: random, stays in this store.
 pub type RecordId = [u8; 16];
-
-/// Rows of a scan handled in one page.
-const PAGE: usize = 256;
 
 const META: &[u8] = &[kind::RECORD, b'm'];
 const CORE: &[u8] = &[kind::RECORD, b'c'];
@@ -266,6 +263,15 @@ impl Transaction<'_> {
         Ok(seq)
     }
 
+    /// Changes record `id` by `f` and stores it with its new cost.
+    fn record_change<T>(&mut self, id: &RecordId, f: impl FnOnce(&mut Self, &mut Record) -> Result<T, Error>) -> Result<T, Error> {
+        let mut rec = self.record(id)?.ok_or(Error::Corrupt("peer record"))?;
+        let before = rec.cost();
+        let out = f(self, &mut rec)?;
+        self.record_store(&rec, before)?;
+        Ok(out)
+    }
+
     /// The record `id`.
     pub fn record(&mut self, id: &RecordId) -> Result<Option<Record>, Error> {
         self.cat_get(&core_key(id))?.map(|b| Record::decode(*id, &b)).transpose()
@@ -291,20 +297,10 @@ impl Transaction<'_> {
     pub fn records_of_actors(&mut self, actors: &[Tid]) -> Result<Vec<Record>, Error> {
         let mut ids = BTreeSet::new();
         for a in actors {
-            let prefix = [ACTOR, a.as_bytes()].concat();
-            let mut from = Vec::new();
-            loop {
-                let rows = self.cat_scan(&prefix, &from, PAGE)?;
-                let n = rows.len();
-                for (k, _) in rows {
-                    let id = tail_id(&k)?;
-                    ids.insert(id);
-                    from = [id.as_slice(), &[0]].concat();
-                }
-                if n < PAGE {
-                    break;
-                }
-            }
+            self.cat_each(&[ACTOR, a.as_bytes()].concat(), |_, k, _| {
+                ids.insert(tail_id(&k)?);
+                Ok(())
+            })?;
         }
         let mut out = Vec::with_capacity(ids.len());
         for id in ids {
@@ -318,28 +314,27 @@ impl Transaction<'_> {
 
     /// `id` was used by a connection: it becomes most recently used, naming `actors` from now on.
     pub fn record_used(&mut self, id: &RecordId, actors: &[Tid]) -> Result<(), Error> {
-        let Some(mut rec) = self.record(id)? else { return Err(Error::Corrupt("peer record")) };
-        let before = rec.cost();
-        for a in &rec.actors {
-            self.cat_remove(&actor_key(a, id), Shred::No)?;
-        }
-        for a in actors {
-            self.cat_put_to(&actor_key(a, id), Vec::new(), Shred::No, false)?;
-        }
-        self.cat_remove(&used_key(rec.used, id), Shred::No)?;
-        rec.used = self.record_next_used()?;
-        self.cat_put_to(&used_key(rec.used, id), Vec::new(), Shred::No, false)?;
-        rec.actors = actors.to_vec();
-        self.record_store(&rec, before)
+        self.record_change(id, |t, rec| {
+            for a in &rec.actors {
+                t.cat_remove(&actor_key(a, id), Shred::No)?;
+            }
+            for a in actors {
+                t.cat_put_to(&actor_key(a, id), Vec::new(), Shred::No, false)?;
+            }
+            t.cat_remove(&used_key(rec.used, id), Shred::No)?;
+            rec.used = t.record_next_used()?;
+            rec.actors = actors.to_vec();
+            t.cat_put_to(&used_key(rec.used, id), Vec::new(), Shred::No, false)
+        })
     }
 
     /// Stores the peer's cursor. Called by the transaction that applies what it covers, so a
     /// cursor never runs ahead of its data (issues/net-reconnect.md, Restart and loss).
     pub fn record_set_cursor(&mut self, id: &RecordId, cursor: Option<Vec<u8>>) -> Result<(), Error> {
-        let Some(mut rec) = self.record(id)? else { return Err(Error::Corrupt("peer record")) };
-        let before = rec.cost();
-        rec.cursor = cursor;
-        self.record_store(&rec, before)
+        self.record_change(id, |_, rec| {
+            rec.cursor = cursor;
+            Ok(())
+        })
     }
 
     /// `acked_pos` rises to `pos` (a position below it leaves it: only re-marking lowers it).
@@ -355,37 +350,26 @@ impl Transaction<'_> {
 
     /// Opens `l` in S, or replaces its member row. Row and index in this one transaction.
     pub fn record_open(&mut self, id: &RecordId, l: LabelId, m: &Member) -> Result<(), Error> {
-        let Some(mut rec) = self.record(id)? else { return Err(Error::Corrupt("peer record")) };
-        let before = rec.cost();
-        let key = member_key(id, &l);
-        let index = index_key(&l, id);
-        if let Some(old) = self.cat_get(&key)? {
-            rec.member_bytes = rec.member_bytes.saturating_sub(row_bytes(&key, &old) + index.len() as u64);
-        }
-        let v = m.encode();
-        rec.member_bytes += row_bytes(&key, &v) + index.len() as u64;
-        self.cat_put_to(&key, v, Shred::No, false)?;
-        self.cat_put_to(&index, Vec::new(), Shred::No, false)?;
-        self.record_store(&rec, before)
+        self.record_change(id, |t, rec| {
+            let (key, index) = (member_key(id, &l), index_key(&l, id));
+            if let Some(old) = t.cat_get(&key)? {
+                rec.member_bytes = rec.member_bytes.saturating_sub(row_bytes(&key, &old) + index.len() as u64);
+            }
+            let v = m.encode();
+            rec.member_bytes += row_bytes(&key, &v) + index.len() as u64;
+            t.cat_put_to(&key, v, Shred::No, false)?;
+            t.cat_put_to(&index, Vec::new(), Shred::No, false)
+        })
     }
 
     /// S of `id`, by sync ID.
     pub fn record_members(&mut self, id: &RecordId) -> Result<Vec<(LabelId, Member)>, Error> {
-        let prefix = [MEMBER, id].concat();
         let mut out = Vec::new();
-        let mut from = Vec::new();
-        loop {
-            let rows = self.cat_scan(&prefix, &from, PAGE)?;
-            let n = rows.len();
-            for (k, v) in rows {
-                let l = tail_label(&k)?;
-                from = [l.0.as_slice(), &[0]].concat();
-                out.push((l, Member::decode(&v)?));
-            }
-            if n < PAGE {
-                return Ok(out);
-            }
-        }
+        self.cat_each(&[MEMBER, id].concat(), |_, k, v| {
+            out.push((tail_label(&k)?, Member::decode(&v)?));
+            Ok(())
+        })?;
+        Ok(out)
     }
 
     /// Removes `l` from S, with its index row. No re-marking: the node stopped holding it, or it
@@ -406,18 +390,16 @@ impl Transaction<'_> {
     /// digest difference re-marks on both sides. `stop`, a `Lost`'s cursor, is kept for the
     /// rejoin unless an older one is. Returns `acked_pos`.
     pub fn record_close(&mut self, id: &RecordId, l: &LabelId, changed_at: u64, stop: Option<Vec<u8>>) -> Result<u64, Error> {
-        let Some(mut rec) = self.record(id)? else { return Err(Error::Corrupt("peer record")) };
-        let before = rec.cost();
-        self.record_drop_member(&mut rec, l)?;
-        if let Some(c) = stop
-            && self.cat_get(&lag_key(id, l))?.is_none()
-        {
-            rec.member_bytes += self.record_put_lag(id, l, c)?;
-        }
-        rec.acked_pos = rec.acked_pos.min(changed_at.saturating_sub(1));
-        let acked = rec.acked_pos;
-        self.record_store(&rec, before)?;
-        Ok(acked)
+        self.record_change(id, |t, rec| {
+            t.record_drop_member(rec, l)?;
+            if let Some(c) = stop
+                && t.cat_get(&lag_key(id, l))?.is_none()
+            {
+                rec.member_bytes += t.record_put_lag(id, l, c)?;
+            }
+            rec.acked_pos = rec.acked_pos.min(changed_at.saturating_sub(1));
+            Ok(rec.acked_pos)
+        })
     }
 
     /// Member `l` moved in the stream (`At`): its row changes if it is still a member, else
@@ -437,72 +419,61 @@ impl Transaction<'_> {
 
     /// The records holding `l` in S, with its member row there. O(records holding it).
     pub fn records_holding(&mut self, l: &LabelId) -> Result<Vec<(Record, Member)>, Error> {
-        let prefix = [INDEX, &l.0].concat();
         let mut out = Vec::new();
-        let mut from = Vec::new();
-        loop {
-            let rows = self.cat_scan(&prefix, &from, PAGE)?;
-            let n = rows.len();
-            for (k, _) in rows {
-                let id = tail_id(&k)?;
-                from = [id.as_slice(), &[0]].concat();
-                if let (Some(rec), Some(m)) = (self.record(&id)?, self.cat_get(&member_key(&id, l))?) {
-                    out.push((rec, Member::decode(&m)?));
-                }
+        self.cat_each(&[INDEX, &l.0].concat(), |t, k, _| {
+            let id = tail_id(&k)?;
+            if let (Some(rec), Some(m)) = (t.record(&id)?, t.cat_get(&member_key(&id, l))?) {
+                out.push((rec, Member::decode(&m)?));
             }
-            if n < PAGE {
-                return Ok(out);
-            }
-        }
+            Ok(())
+        })?;
+        Ok(out)
     }
 
     /// A member only one side of the record held (a digest difference, issues/net-reconnect.md
     /// Agreement): out of S with no lag kept, so its rejoin is a listing, and pending again as
     /// `record_close` re-marks. Returns `acked_pos`.
     pub fn record_drop(&mut self, id: &RecordId, l: &LabelId, changed_at: u64) -> Result<u64, Error> {
-        let Some(mut rec) = self.record(id)? else { return Err(Error::Corrupt("peer record")) };
-        let before = rec.cost();
-        self.record_drop_member(&mut rec, l)?;
-        rec.member_bytes = rec.member_bytes.saturating_sub(self.record_drop_lag(id, l)?);
-        rec.acked_pos = rec.acked_pos.min(changed_at.saturating_sub(1));
-        let acked = rec.acked_pos;
-        self.record_store(&rec, before)?;
-        Ok(acked)
+        self.record_change(id, |t, rec| {
+            t.record_drop_member(rec, l)?;
+            rec.member_bytes = rec.member_bytes.saturating_sub(t.record_drop_lag(id, l)?);
+            rec.acked_pos = rec.acked_pos.min(changed_at.saturating_sub(1));
+            Ok(rec.acked_pos)
+        })
     }
 
     /// Everything is pending again for this record (the session proved other actors than the
     /// record names: issues/net-reconnect.md, What a reconnect sends).
     pub fn record_pending_all(&mut self, id: &RecordId) -> Result<(), Error> {
-        let Some(mut rec) = self.record(id)? else { return Err(Error::Corrupt("peer record")) };
-        let before = rec.cost();
-        rec.acked_pos = 0;
-        self.record_store(&rec, before)
+        self.record_change(id, |_, rec| {
+            rec.acked_pos = 0;
+            Ok(())
+        })
     }
 
     /// This side's filter as sent and acknowledged.
     pub fn record_set_own(&mut self, id: &RecordId, own: Filter) -> Result<(), Error> {
-        let Some(mut rec) = self.record(id)? else { return Err(Error::Corrupt("peer record")) };
-        let before = rec.cost();
-        rec.own = own;
-        self.record_store(&rec, before)
+        self.record_change(id, |_, rec| {
+            rec.own = own;
+            Ok(())
+        })
     }
 
     /// A generation of the peer's filter arrived whole: `rows` its encoded values (a whole one
     /// replaces every stored row; additions add one). `peer` the filter it makes.
     pub fn record_put_peer_filter(&mut self, id: &RecordId, whole: bool, peer: Filter, row: Vec<u8>) -> Result<(), Error> {
-        let Some(mut rec) = self.record(id)? else { return Err(Error::Corrupt("peer record")) };
-        let before = rec.cost();
-        if whole {
-            for (k, v) in self.record_filter_rows(id)? {
-                rec.member_bytes = rec.member_bytes.saturating_sub(row_bytes(&k, &v));
-                self.cat_remove(&k, Shred::No)?;
+        self.record_change(id, |t, rec| {
+            if whole {
+                for (k, v) in t.record_filter_rows(id)? {
+                    rec.member_bytes = rec.member_bytes.saturating_sub(row_bytes(&k, &v));
+                    t.cat_remove(&k, Shred::No)?;
+                }
             }
-        }
-        let key = [FILTER, id, &peer.generation.to_be_bytes()].concat();
-        rec.member_bytes += row_bytes(&key, &row);
-        self.cat_put_to(&key, row, Shred::No, false)?;
-        rec.peer = peer;
-        self.record_store(&rec, before)
+            let key = [FILTER, id, &peer.generation.to_be_bytes()].concat();
+            rec.member_bytes += row_bytes(&key, &row);
+            rec.peer = peer;
+            t.cat_put_to(&key, row, Shred::No, false)
+        })
     }
 
     /// The peer's stored filter, one row per generation since its last whole one, in order.
@@ -511,20 +482,12 @@ impl Transaction<'_> {
     }
 
     fn record_filter_rows(&mut self, id: &RecordId) -> Result<Vec<crate::KeyValue>, Error> {
-        let prefix = [FILTER, id].concat();
-        let mut out: Vec<crate::KeyValue> = Vec::new();
-        let mut from = Vec::new();
-        loop {
-            let rows = self.cat_scan(&prefix, &from, PAGE)?;
-            let n = rows.len();
-            for (k, v) in rows {
-                from = [k.get(prefix.len()..).unwrap_or_default(), &[0]].concat();
-                out.push((k, v));
-            }
-            if n < PAGE {
-                return Ok(out);
-            }
-        }
+        let mut out = Vec::new();
+        self.cat_each(&[FILTER, id].concat(), |_, k, v| {
+            out.push((k, v));
+            Ok(())
+        })?;
+        Ok(out)
     }
 
     /// The lag kept for `l`'s rejoin.
@@ -552,39 +515,27 @@ impl Transaction<'_> {
     /// `l` rejoined: its lag is spent.
     pub fn record_take_lag(&mut self, id: &RecordId, l: &LabelId) -> Result<Option<Vec<u8>>, Error> {
         let Some(v) = self.cat_get(&lag_key(id, l))? else { return Ok(None) };
-        let Some(mut rec) = self.record(id)? else { return Err(Error::Corrupt("peer record")) };
-        let before = rec.cost();
-        rec.member_bytes = rec.member_bytes.saturating_sub(self.record_drop_lag(id, l)?);
-        self.record_store(&rec, before)?;
-        Ok(Some(v))
+        self.record_change(id, |t, rec| {
+            rec.member_bytes = rec.member_bytes.saturating_sub(t.record_drop_lag(id, l)?);
+            Ok(Some(v))
+        })
     }
 
     /// The node stopped holding `l`: out of every record's S, every lag of it gone, in this one
     /// transaction (issues/net-reconnect.md, Changes). O(records holding it).
     pub(crate) fn records_forget_label(&mut self, l: &LabelId) -> Result<(), Error> {
         for (prefix, is_lag) in [(INDEX, false), (LAG_INDEX, true)] {
-            let prefix = [prefix, &l.0].concat();
-            loop {
-                let rows = self.cat_scan(&prefix, b"", PAGE)?;
-                let n = rows.len();
-                for (k, _) in rows {
-                    let id = tail_id(&k)?;
-                    let Some(mut rec) = self.record(&id)? else {
-                        self.cat_remove(&k, Shred::No)?;
-                        continue;
-                    };
-                    let before = rec.cost();
-                    if is_lag {
-                        rec.member_bytes = rec.member_bytes.saturating_sub(self.record_drop_lag(&id, l)?);
-                    } else {
-                        self.record_drop_member(&mut rec, l)?;
-                    }
-                    self.record_store(&rec, before)?;
+            self.cat_each(&[prefix, &l.0].concat(), |t, k, _| {
+                let id = tail_id(&k)?;
+                let Some(mut rec) = t.record(&id)? else { return t.cat_remove(&k, Shred::No).map(drop) };
+                let before = rec.cost();
+                if is_lag {
+                    rec.member_bytes = rec.member_bytes.saturating_sub(t.record_drop_lag(&id, l)?);
+                } else {
+                    t.record_drop_member(&mut rec, l)?;
                 }
-                if n < PAGE {
-                    break;
-                }
-            }
+                t.record_store(&rec, before)
+            })?;
         }
         Ok(())
     }
@@ -596,18 +547,7 @@ impl Transaction<'_> {
         for (l, _) in self.record_members(&rec.id)? {
             self.record_drop_member(&mut rec, &l)?;
         }
-        let prefix = [LAG, &rec.id].concat();
-        loop {
-            let rows = self.cat_scan(&prefix, b"", PAGE)?;
-            let n = rows.len();
-            for (k, _) in rows {
-                let l = tail_label(&k)?;
-                self.record_drop_lag(&rec.id, &l)?;
-            }
-            if n < PAGE {
-                break;
-            }
-        }
+        self.cat_each(&[LAG, &rec.id].concat(), |t, k, _| t.record_drop_lag(&rec.id, &tail_label(&k)?).map(drop))?;
         for (k, _) in self.record_filter_rows(&rec.id)? {
             self.cat_remove(&k, Shred::No)?;
         }

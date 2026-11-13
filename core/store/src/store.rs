@@ -46,6 +46,9 @@ pub enum PendingKind {
     Parked,
 }
 
+/// Catalog rows a paged scan reads at a time.
+pub(crate) const PAGE: usize = 256;
+
 /// Catalog key kinds.
 pub(crate) mod kind {
     pub const ASPECT: u8 = 1;
@@ -412,6 +415,22 @@ impl Transaction<'_> {
         let mem = crate::overlay::range(Some(&self.mem.o.cat), &start, end.as_deref(), limit);
         let durable = btree::range(self, c, &start, end.as_deref(), limit)?;
         Ok(if mem.is_empty() { durable } else { crate::overlay::merge(mem, durable, limit) })
+    }
+    /// Runs `f` on every catalog entry under `prefix` in key order, reading a page at a time;
+    /// `f` may remove the entry it is given.
+    pub(crate) fn cat_each(&mut self, prefix: &[u8], mut f: impl FnMut(&mut Self, Vec<u8>, Vec<u8>) -> Result<(), Error>) -> Result<(), Error> {
+        let mut from = Vec::new();
+        loop {
+            let rows = self.cat_scan(prefix, &from, PAGE)?;
+            let n = rows.len();
+            for (k, v) in rows {
+                from = [k.get(prefix.len()..).unwrap_or_default(), &[0]].concat();
+                f(self, k, v)?;
+            }
+            if n < PAGE {
+                return Ok(());
+            }
+        }
     }
     /// Removes and returns the first catalog entry under `prefix`.
     fn cat_pop_prefix(&mut self, prefix: &[u8], shred: Shred) -> Result<Option<KeyValue>, Error> {

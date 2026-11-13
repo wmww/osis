@@ -13,9 +13,6 @@ use crate::store::{Shred, Transaction, kind};
 use crate::Error;
 use osis_base::LabelId;
 
-/// Rows a page of `changed_labels` reads.
-const PAGE: usize = 256;
-
 const END: &[u8] = &[kind::CHANGED, b'n'];
 const SLOT: &[u8] = &[kind::CHANGED, b'c'];
 const ORDER: &[u8] = &[kind::CHANGED, b'C'];
@@ -72,19 +69,11 @@ impl Transaction<'_> {
     /// Every sync ID with a `changed_at`.
     pub fn changed_labels(&mut self) -> Result<Vec<LabelId>, Error> {
         let mut out = Vec::new();
-        let mut from = Vec::new();
-        loop {
-            let rows = self.cat_scan(SLOT, &from, PAGE)?;
-            let n = rows.len();
-            for (k, _) in rows {
-                let l: [u8; 16] = k.get(2..18).and_then(|x| x.try_into().ok()).ok_or(Error::Corrupt("changed_at slot"))?;
-                from = [l.as_slice(), &[0]].concat();
-                out.push(LabelId(l));
-            }
-            if n < PAGE {
-                return Ok(out);
-            }
-        }
+        self.cat_each(SLOT, |_, k, _| {
+            out.push(LabelId(k.get(2..18).and_then(|x| x.try_into().ok()).ok_or(Error::Corrupt("changed_at slot"))?));
+            Ok(())
+        })?;
+        Ok(out)
     }
 
     /// `l` left this node's sync IDs: its `changed_at` goes, and it leaves every record's S.

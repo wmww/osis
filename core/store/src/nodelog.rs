@@ -30,7 +30,7 @@
 //! shreds.
 
 use crate::codec::{R, W};
-use crate::store::{Shred, Transaction, kind};
+use crate::store::{PAGE, Shred, Transaction, kind};
 use crate::Error;
 use osis_base::format::TOMBSTONE_LIFETIME_MS;
 use osis_base::{BlobId, LabelId};
@@ -45,9 +45,6 @@ pub const INCARNATIONS_KEPT: usize = 4096;
 const PLAIN_LEN: usize = 16 + 16 + 8;
 /// The bytes of a cursor: opaque to whoever holds one.
 pub const CURSOR_LEN: usize = NONCE_LEN + PLAIN_LEN + TAG_LEN;
-
-/// Rows of the sweep's and forget's scans handled in one page.
-const PAGE: usize = 256;
 
 const META: &[u8] = &[kind::LOG, b'm'];
 const ENDED: &[u8] = &[kind::LOG, b'n'];
@@ -137,6 +134,11 @@ fn pos_value(v: &[u8]) -> Result<u64, Error> {
     Ok(p)
 }
 
+/// A slot's latest event position.
+fn slot_pos(v: &[u8]) -> Result<u64, Error> {
+    R::new(v.get(..8).ok_or(Error::Corrupt("node log slot"))?).u64()
+}
+
 fn encode_event(e: &NodeEvent) -> Vec<u8> {
     match e {
         NodeEvent::Added(l, b) => W::new().u8(0).raw(&l.0).raw(&b.0).take(),
@@ -157,16 +159,18 @@ fn decode_event(v: &[u8]) -> Result<NodeEvent, Error> {
     Ok(e)
 }
 
-fn decode_ended(v: &[u8]) -> Result<Vec<([u8; 16], u64)>, Error> {
-    let mut r = R::new(v);
-    let mut out = Vec::new();
-    while !r.is_empty() {
-        out.push((r.array()?, r.u64()?));
-    }
-    Ok(out)
-}
-
 impl Transaction<'_> {
+    /// The ended incarnations, oldest first.
+    fn log_ended(&mut self) -> Result<Vec<([u8; 16], u64)>, Error> {
+        let v = self.cat_get(ENDED)?.unwrap_or_default();
+        let mut r = R::new(&v);
+        let mut out = Vec::new();
+        while !r.is_empty() {
+            out.push((r.array()?, r.u64()?));
+        }
+        Ok(out)
+    }
+
     fn log_meta(&mut self) -> Result<Option<Meta>, Error> {
         self.cat_get(META)?.map(|b| Meta::decode(&b)).transpose()
     }
@@ -181,10 +185,7 @@ impl Transaction<'_> {
         let m = match self.log_meta()? {
             Some(mut m) => {
                 if !drawn {
-                    let mut ended = match self.cat_get(ENDED)? {
-                        Some(v) => decode_ended(&v)?,
-                        None => Vec::new(),
-                    };
+                    let mut ended = self.log_ended()?;
                     ended.push((m.incarnation, m.end));
                     let extra = ended.len().saturating_sub(INCARNATIONS_KEPT);
                     ended.drain(..extra);
@@ -243,7 +244,7 @@ impl Transaction<'_> {
         let old = self.cat_get(&slot)?;
         // the subject's earlier event is replaced, not removed: it names what the new one does
         if let Some(v) = &old {
-            self.log_drop_event(pos_value(v.get(..8).ok_or(Error::Corrupt("node log slot"))?)?, Shred::No)?;
+            self.log_drop_event(slot_pos(&v)?, Shred::No)?;
         }
         let extra = extra(pos, old.as_ref().and_then(|v| v.get(8..)));
         // an overwrite keeps the slot's key: what it replaces is positions, so it shreds nothing
@@ -288,46 +289,31 @@ impl Transaction<'_> {
     /// the sync key of the head before it ends (issues/net-shared-set.md, Opens).
     pub fn log_head_at(&mut self, l: &LabelId) -> Result<Option<u64>, Error> {
         let Some(v) = self.cat_get(&head_slot(l))? else { return Ok(None) };
-        Ok(Some(pos_value(v.get(..8).ok_or(Error::Corrupt("node log slot"))?)?))
+        Ok(Some(slot_pos(&v)?))
     }
 
     /// Every sync ID's last logged head.
     pub fn log_heads(&mut self) -> Result<Vec<(LabelId, [u8; 32])>, Error> {
         let mut out = Vec::new();
-        let mut from = Vec::new();
-        loop {
-            let rows = self.cat_scan(HEAD_SLOT, &from, PAGE)?;
-            let n = rows.len();
-            for (k, v) in rows {
-                let label: [u8; 16] = k.get(2..18).and_then(|x| x.try_into().ok()).ok_or(Error::Corrupt("node log slot"))?;
-                let head: [u8; 32] = v.get(8..).and_then(|x| x.try_into().ok()).ok_or(Error::Corrupt("node log slot"))?;
-                out.push((LabelId(label), head));
-                from = [label.as_slice(), &[0]].concat();
-            }
-            if n < PAGE {
-                return Ok(out);
-            }
-        }
+        self.cat_each(HEAD_SLOT, |_, k, v| {
+            let label: [u8; 16] = k.get(2..18).and_then(|x| x.try_into().ok()).ok_or(Error::Corrupt("node log slot"))?;
+            let head: [u8; 32] = v.get(8..).and_then(|x| x.try_into().ok()).ok_or(Error::Corrupt("node log slot"))?;
+            out.push((LabelId(label), head));
+            Ok(())
+        })?;
+        Ok(out)
     }
 
     /// Drops a sync ID's every event and slot, with no deletion event: the node stopped holding
     /// it, which says nothing of the entries.
     pub fn log_forget(&mut self, l: LabelId) -> Result<(), Error> {
-        let prefix = [ENTRY_SLOT, &l.0].concat();
-        loop {
-            let rows = self.cat_scan(&prefix, b"", PAGE)?;
-            let n = rows.len();
-            for (k, v) in rows {
-                self.log_drop_event(pos_value(v.get(..8).ok_or(Error::Corrupt("node log slot"))?)?, Shred::Yes)?;
-                self.cat_remove(&k, Shred::Yes)?;
-            }
-            if n < PAGE {
-                break;
-            }
-        }
+        self.cat_each(&[ENTRY_SLOT, &l.0].concat(), |t, k, v| {
+            t.log_drop_event(slot_pos(&v)?, Shred::Yes)?;
+            t.cat_remove(&k, Shred::Yes).map(drop)
+        })?;
         let slot = head_slot(&l);
         if let Some(v) = self.cat_get(&slot)? {
-            self.log_drop_event(pos_value(v.get(..8).ok_or(Error::Corrupt("node log slot"))?)?, Shred::Yes)?;
+            self.log_drop_event(slot_pos(&v)?, Shred::Yes)?;
             self.cat_remove(&slot, Shred::Yes)?;
         }
         Ok(())
@@ -412,11 +398,7 @@ impl Transaction<'_> {
         if incarnation == m.incarnation {
             return Ok(Some(pos));
         }
-        let ended = match self.cat_get(ENDED)? {
-            Some(v) => decode_ended(&v)?,
-            None => Vec::new(),
-        };
-        Ok(ended.iter().find(|(id, _)| *id == incarnation).filter(|(_, end)| pos <= *end).map(|_| pos))
+        Ok(self.log_ended()?.iter().find(|(id, _)| *id == incarnation).filter(|(_, end)| pos <= *end).map(|_| pos))
     }
 
     /// Up to `limit` events after position `after` in log order, and the position the read
@@ -444,18 +426,8 @@ impl Transaction<'_> {
             Some(c) => self.log_position(c)?,
             None => None,
         };
-        let whole = after.is_none();
-        let from = after.unwrap_or(0).saturating_add(1);
-        let rows = self.cat_scan(EVENT, &from.to_be_bytes(), limit.saturating_add(1))?;
-        let more = rows.len() > limit;
-        let mut events = Vec::with_capacity(rows.len().min(limit));
-        for (k, v) in rows.into_iter().take(limit) {
-            let pos = R::new(k.get(2..).ok_or(Error::Corrupt("node log"))?).u64()?;
-            events.push(LoggedEvent { pos, event: decode_event(&v)? });
-        }
-        // a page's end is its last event, so nothing past it is claimed; the log's end otherwise
-        let at = if more { events.last().map_or(from.saturating_sub(1), |e| e.pos) } else { m.end };
+        let (events, at, more) = self.log_after(after.unwrap_or(0), limit)?;
         let cursor = Some(self.seal_cursor(&m, at)?);
-        Ok(LogRead { events, cursor, whole, more })
+        Ok(LogRead { events, cursor, whole: after.is_none(), more })
     }
 }
