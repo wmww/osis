@@ -666,20 +666,10 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
         }
         Cmd::Status { watch: false } => status(ctx),
         Cmd::Status { watch: true } => {
-            let (tx, rx) = mpsc::channel::<String>();
-            let _sub = db.on_status_change(move |_, st| {
-                let st = match st {
-                    Ok(st) => st,
-                    Err(e) => {
-                        let _ = tx.send(format!("error {e}"));
-                        return;
-                    }
-                };
-                let l = st.groups.iter().map(|(g, x)| format!("{} {:?}", g.to_uri(), x.state)).chain(st.two_sources.iter().map(|t| format!("{} two sources", t.to_uri()))).collect::<Vec<_>>().join(", ");
-                let _ = tx.send(format!("connected {} {l}", st.connected));
-            })?;
-            let timeout = ctx.timeout_or(None)?;
-            stream_lines(ctx, &rx, None, timeout)
+            let raw = ctx.g.raw;
+            let (mut f, rx) = page_sink(ctx.g.json, move |s: &osis::Status| (status_lines(s, raw).join(", "), status_json(s)));
+            let _sub = db.on_status_change(move |_, r| f(r))?;
+            stream_pages(ctx, &rx, None)
         }
         // `wait_synced` asks its peers to sync first: `sync` and `wait` are one call
         Cmd::Sync { group } => {
@@ -714,9 +704,7 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
         }
         Cmd::Bundle(BundleCmd::Import) => Ok(db.import_bundle(&mut *ctx.stdin)?),
         Cmd::Inspect(i) => inspect(ctx, i),
-        Cmd::Diag { follow } => {
-            diag(ctx, if follow { ctx.timeout_or(None)? } else { Some(Duration::ZERO) }, false)
-        }
+        Cmd::Diag { follow } => diag(ctx, follow, false),
     }
 }
 
@@ -983,20 +971,15 @@ fn page_sink<T>(json: bool, show: impl Fn(&T) -> (String, J) + Send + 'static) -
 
 /// Prints `page_sink`'s lines until `count` changes or `--timeout`.
 fn stream_pages(ctx: &mut Ctx<'_>, rx: &mpsc::Receiver<(String, bool)>, count: Option<usize>) -> anyhow::Result<()> {
-    let timeout = ctx.timeout_or(None)?;
-    stream(ctx, rx, count, timeout, "change", false, |_, l| l)
+    stream(ctx, rx, count, "change", false, |_, l| l)
 }
 
-/// Prints lines from `rx` until `count` lines, the timeout, or the senders are gone.
-pub(crate) fn stream_lines(ctx: &mut Ctx<'_>, rx: &mpsc::Receiver<String>, count: Option<usize>, timeout: Option<Duration>) -> anyhow::Result<()> {
-    stream(ctx, rx, count, timeout, "line", false, |_, l| (l, true))
-}
-
-/// `stream_lines` over items printed by `line`, which also says whether the item counts
-/// toward `count` (an initial value does not). `best_effort`: write errors are ignored (the
-/// lines are diagnostics, not what the command is run for).
-fn stream<T>(ctx: &mut Ctx<'_>, rx: &mpsc::Receiver<T>, count: Option<usize>, timeout: Option<Duration>, what: &str, best_effort: bool, line: impl Fn(&Ctx<'_>, T) -> (String, bool)) -> anyhow::Result<()> {
-    let end = deadline(timeout);
+/// Prints items from `rx` until `count` of them, `--timeout` (none by default), or the senders
+/// are gone. `line` prints an item and says whether it counts toward `count` (an initial value
+/// does not). `best_effort`: write errors are ignored (the lines are diagnostics, not what the
+/// command is run for).
+pub(crate) fn stream<T>(ctx: &mut Ctx<'_>, rx: &mpsc::Receiver<T>, count: Option<usize>, what: &str, best_effort: bool, line: impl Fn(&Ctx<'_>, T) -> (String, bool)) -> anyhow::Result<()> {
+    let end = deadline(ctx.timeout_or(None)?);
     let mut n = 0;
     while count.is_none_or(|c| n < c) {
         let r = match end {
@@ -1049,8 +1032,7 @@ fn watch(ctx: &mut Ctx<'_>, t: &str, ak: Option<&str>, path: Option<&str>, count
         }
         None => db.on_thing_change(t, f)?,
     };
-    let timeout = ctx.timeout_or(None)?;
-    stream(ctx, &rx, count, timeout, "change", false, |ctx, c| (change_line(ctx, &c, pty.as_ref()), !matches!(c.origin, Origin::Initial)))
+    stream(ctx, &rx, count, "change", false, |ctx, c| (change_line(ctx, &c, pty.as_ref()), !matches!(c.origin, Origin::Initial)))
 }
 
 const KINDS: [(&str, CommitKind); 4] =
@@ -1089,8 +1071,7 @@ fn listing(ctx: &mut Ctx<'_>, at: &Listed, l: &ListArgs) -> anyhow::Result<()> {
             Listed::Writes(s) => db.on_write(s, f)?,
             Listed::Fired(t, ak) | Listed::Versions(t, ak, _) => db.at(*t, DynamicAspectKey::untyped(ak.clone())).on_fire(f)?,
         };
-        let timeout = ctx.timeout_or(None)?;
-        return stream(ctx, &rx, l.count, timeout, "commit", false, |ctx, e| match e {
+        return stream(ctx, &rx, l.count, "commit", false, |ctx, e| match e {
             osis::CommitEvent::Commit { commit: Some(c), .. } => (commit_line(ctx, &c), true),
             osis::CommitEvent::Commit { id, commit: None } => (format!("{id} not-listed"), true),
             osis::CommitEvent::Reread => ("reread".to_string(), false),
@@ -1257,9 +1238,9 @@ fn diag_line(d: &osis::Diagnostic, json: bool) -> String {
     }
 }
 
-/// Prints diagnostics until `timeout` (`Some(0)`: those so far). `best_effort` (`serve`): a
+/// Prints diagnostics so far, or with `follow` until `--timeout`. `best_effort` (`serve`): a
 /// failed write (a closed stdout) is ignored, the command goes on.
-fn diag(ctx: &mut Ctx<'_>, timeout: Option<Duration>, best_effort: bool) -> anyhow::Result<()> {
+fn diag(ctx: &mut Ctx<'_>, follow: bool, best_effort: bool) -> anyhow::Result<()> {
     let db = ctx.db.clone();
     let json_out = ctx.g.json;
     let (tx, rx) = mpsc::channel::<String>();
@@ -1277,13 +1258,13 @@ fn diag(ctx: &mut Ctx<'_>, timeout: Option<Duration>, best_effort: bool) -> anyh
         }
     })?;
     db.settle();
-    if timeout == Some(Duration::ZERO) {
+    if !follow {
         while let Ok(l) = rx.try_recv() {
             ctx.line(&l)?;
         }
         return Ok(());
     }
-    stream(ctx, &rx, None, timeout, "line", best_effort, |_, l| (l, true))?;
+    stream(ctx, &rx, None, "line", best_effort, |_, l| (l, true))?;
     if stopped.load(std::sync::atomic::Ordering::Acquire) {
         return Err(exit(6, "sync stopped"));
     }
@@ -1409,8 +1390,7 @@ fn serve(ctx: &mut Ctx<'_>, serving: ServingFlags, listen: &[String]) -> anyhow:
     }
     // the address lines above are a hard failure; the diagnostics after them are best effort (a
     // caller that read only the addresses and closed the pipe does not end it)
-    let t = ctx.timeout_or(None)?;
-    diag(ctx, t, true)
+    diag(ctx, true, true)
 }
 
 /// Sets the terms of serving: each flag given replaces its field (one `''` clears it), the rest kept;

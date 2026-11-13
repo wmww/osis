@@ -257,8 +257,7 @@ pub(crate) fn run(ctx: &mut Ctx<'_>, c: ChatCmd) -> anyhow::Result<()> {
                 }
             }
             drop(wake);
-            let timeout = ctx.timeout_or(None)?;
-            let r = crate::cmd::stream_lines(ctx, &rx, count, timeout);
+            let r = crate::cmd::stream(ctx, &rx, count, "line", false, |_, l| (l, true));
             drop(sub);
             let why = ended.lock().unwrap_or_else(|e| e.into_inner()).take();
             match why {
