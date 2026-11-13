@@ -3,3 +3,4 @@
 - `run.sh depth0` takes 15+ min at one worker on a loaded box (D0_gone_live alone 472 s), past the "under 3 min per module" its header states.
 - A first TLC liveness run hung for minutes with no progress lines through `grep`: TLC prints progress once a minute, so filter the log after the run, not live.
 - Review: tools/gate_select_test.sh failed at once on this box (its bare origin took git's default branch name, master here, so the clone had no main); fixed with `git init --bare -b main`.
+- Review: the branch reached the gate with two failures a worker's crate tests miss: the spec_map rule quoting the Seal text it reworded (gate instant step), and an osis-node test asserting a fork gets merged. Run `python3 tools/spec_map.py --uncited --gaps` after a spec rewording and grep dependent crates' tests for a removed concept.
