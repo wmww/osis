@@ -3,7 +3,7 @@
 
 use crate::changes::Changes;
 use crate::error::Error;
-use crate::fragment::{Bag, BagKind, CaseWrite, Eid, Elem, Encoding, Entry, Enum, Fragment, Map, Meta, RegWrite, Register, Set, Struct};
+use crate::fragment::{Bag, BagKind, CaseWrite, Eid, Elem, Encoding, Entry, Enum, Fragment, Map, Meta, RegWrite, Register, Set, Struct, live_elems};
 use crate::seq;
 use crate::stamp::{CounterRange, Dot, DotRange, Source, Stamp};
 use crate::view::View;
@@ -320,11 +320,6 @@ fn slot_at(st: Option<&Fragment>, enc: Encoding) -> Option<std::borrow::Cow<'_, 
     Some(slot)
 }
 
-/// Live set or bag elements: dot and read.
-pub(crate) fn live_elems(elems: &BTreeMap<Dot, Elem>) -> Vec<(&Dot, Value)> {
-    crate::fragment::live_elems(elems).map(|(d, _, v)| (d, v)).collect()
-}
-
 /// Live map entry records: key to live records, ascending (§5.6).
 pub(crate) fn live_entries(m: &Map) -> BTreeMap<&Value, Vec<&Eid>> {
     let mut out: BTreeMap<&Value, Vec<&Eid>> = BTreeMap::new();
@@ -536,7 +531,7 @@ pub fn diff<V: View>(w: &mut Writer, st: Option<&Fragment>, view: &V, v: &Value)
         }
         (Encoding::Set, Fragment::Set(s), Value::Set(items)) => {
             let ev = view.element().ok_or(Error::Mismatch("set without element type"))?;
-            let live: Vec<(&Dot, Option<Value>)> = live_elems(&s.elems).into_iter().map(|(d, x)| (d, projected(&ev, &x))).collect();
+            let live: Vec<(&Dot, Option<Value>)> = live_elems(&s.elems).map(|(d, _, x)| (d, projected(&ev, &x))).collect();
             let held: BTreeSet<&Value> = live.iter().filter_map(|(_, p)| p.as_ref()).collect();
             let mut elems = BTreeMap::new();
             let r = w.delta_stamp();
@@ -632,7 +627,7 @@ pub(crate) fn leaf<V: View>(w: &mut Writer, cur: Option<&Fragment>, view: &V, op
         Op::Add(v) => {
             let ev = view.element().ok_or(Error::Mismatch("set without element type"))?;
             if let Some(Fragment::Set(s)) = present_slot(cur, Encoding::Set).as_deref()
-                && live_elems(&s.elems).iter().any(|(_, x)| projected(&ev, x).as_ref() == Some(v))
+                && live_elems(&s.elems).any(|(_, _, x)| projected(&ev, &x).as_ref() == Some(v))
             {
                 return Ok(None);
             }
@@ -649,7 +644,7 @@ pub(crate) fn leaf<V: View>(w: &mut Writer, cur: Option<&Fragment>, view: &V, op
                     let mut elems: BTreeMap<Dot, Elem> = match slot {
                         Some(Fragment::Set(s)) => {
                             let ev = view.element().ok_or(Error::Mismatch("set without element type"))?;
-                            live_elems(&s.elems).into_iter().filter(|(_, v)| projected(&ev, v).as_ref() == Some(x)).map(|(d, _)| (d.clone(), Elem::tomb(&r))).collect()
+                            live_elems(&s.elems).filter(|(_, _, v)| projected(&ev, v).as_ref() == Some(x)).map(|(d, _, _)| (d.clone(), Elem::tomb(&r))).collect()
                         }
                         _ => BTreeMap::new(),
                     };
