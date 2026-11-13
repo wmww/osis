@@ -1,6 +1,5 @@
-//! Frame-shaped sessions shared by the InProcess and QUIC loopback tests: a stand-in for proto
-//! engines (4-byte big-endian length frames, spec/wire.md §11.1) until osis-proto lands.
-#![allow(dead_code)]
+//! Frame-shaped sessions shared by the InProcess and QUIC loopback tests: 4-byte big-endian
+//! length frames (spec/wire.md §11.1), without proto.
 
 use osis_transport::*;
 
