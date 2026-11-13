@@ -152,3 +152,15 @@ fn parametric_types_compare_positionally() {
     let new = schema(2, "type p<B, C> = struct { v 0: B };\naspect n:p.0: p<int, int>;");
     assert_eq!(check(&old, &new).iter().map(|v| v.rule).collect::<Vec<_>>(), vec![Rule::TypeChanged]);
 }
+
+/// Pins the canonical bytes of the fixture's schema value and its generated code, so a refactor
+/// of the value form or codegen cannot change either unnoticed. Update both when the fixture, the
+/// form (spec/data-model.md §10) or codegen changes on purpose.
+#[test]
+fn value_form_and_codegen_bytes_pinned_spec_data_model_10() {
+    let hex = |b: &[u8]| osis_base::hash::hash(b)[..8].iter().map(|x| format!("{x:02x}")).collect::<String>();
+    let src = include_str!("../example.osis");
+    let s = parse("example.osis", src).unwrap();
+    let code = generate(&s, "example.osis", src).unwrap().code;
+    assert_eq!((hex(&s.canonical_bytes()).as_str(), hex(code.as_bytes()).as_str()), ("8c17e0732393f1a8", "7ddb6c4c55e2faeb"));
+}

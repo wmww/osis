@@ -215,7 +215,7 @@ impl<'a> Parser<'a> {
                     versions.insert(name, (version, ak.clone()));
                     self.expect(':')?;
                     def.ty = self.ty()?;
-                    if self.is_kw("succeeds") {
+                    if self.eat_kw("succeeds") {
                         def.succeeds = self.succeeds_aks()?;
                     }
                     let key = format!("aspect {ak}");
@@ -303,10 +303,12 @@ impl<'a> Parser<'a> {
     }
 
     fn succeeds_aks(&mut self) -> Result<BTreeSet<String>, ParseError> {
-        self.pos += 1;
         let ak = |p: &mut Self| p.want("an AK", |t| if let Tok::Ak(a) = t { Some(a.clone()) } else { None });
-        let aks = if self.eat('(') { self.list(')', ak)? } else { vec![ak(self)?] };
-        if aks.is_empty() { self.err("expected an AK") } else { Ok(aks.into_iter().collect()) }
+        // One AK, or a parenthesized list of at least one (an empty one fails at its `)`).
+        if !self.eat('(') || self.is(')') {
+            return Ok(BTreeSet::from([ak(self)?]));
+        }
+        Ok(self.list(')', ak)?.into_iter().collect())
     }
 
     fn ty(&mut self) -> Result<Type, ParseError> {

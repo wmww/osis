@@ -183,6 +183,11 @@ fn validation_rules_spec_data_model_3() {
         let e = err(src);
         assert!(e.msg.contains(needle), "{src}: {e}");
     }
+    // a bad or missing AK after `succeeds` is reported at that token
+    for (src, col) in [("aspect x:a.0: int succeeds ();", 29), ("aspect x:a.0: int succeeds (x:b.0 7);", 35), ("aspect x:a.0: int succeeds 7;", 28)] {
+        let e = err(src);
+        assert_eq!((e.line, e.col), (2, col), "{src}: {e}");
+    }
     // a tid-prefixed app key, its successor version, a marker run (spec/data-model.md §2)
     let s = app("aspect :AAAAAAAAAAAAAAAAAAAA:a.0: int; ephemeral admin aspect :AAAAAAAAAAAAAAAAAAAA:a+^.1: text succeeds (x:b.0, y:c.0);").unwrap();
     assert_eq!(s.aspects[":AAAAAAAAAAAAAAAAAAAA:a+^.1"].succeeds.len(), 2);
