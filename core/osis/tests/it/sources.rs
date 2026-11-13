@@ -314,6 +314,20 @@ fn a_status_listener_follows_a_group_at_its_node() {
     assert!(!s.groups.contains_key(&x.g), "{s:?}");
     x.connect_p();
     next_until("connected anew", &|s| up(s) && s.groups.contains_key(&x.g));
+    // no subscription outlives its connection, nor the listener
+    x.p.settle();
+    let here = x.p.watches();
+    for _ in 0..2 {
+        assert!(x.p.disconnect_node(&x.nc).unwrap());
+        next_until("ended", &|s| !up(s));
+        x.connect_p();
+        next_until("connected anew", &|s| up(s) && s.groups.contains_key(&x.g));
+    }
+    x.p.settle();
+    assert_eq!(x.p.watches(), here, "one status subscription per connection");
+    drop(_sub);
+    x.p.settle();
+    assert_eq!(x.p.watches(), here - 2, "the listener and its connection's subscription");
     // a thin client's listener: the node's groups at the first call and at a change there
     let c = x.thin("c1");
     let (ct, cr) = channel();

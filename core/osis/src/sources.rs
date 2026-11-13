@@ -542,6 +542,8 @@ impl ReadOnly {
                 Delivery::Initial => {
                     if let Some(s) = first.take() {
                         lock(&local).local = Some(s);
+                        // a connection made between the first follow and this registration
+                        db.follow_connections(&local);
                         feed_status(db, &local);
                     }
                 }
