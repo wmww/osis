@@ -1,8 +1,0 @@
-# pulled-refusal
-> Summary: workflow mishaps met on the pulled-refusal branch.
-
-- The test net cannot make a peer honestly refuse an entry the source judges stamped for the peer's head: the source learns a peer's head only from that peer, in order, so a keys-not-held refusal of such an entry exists only in a race (the sim's `member_churn` shows code 1 and 9 refusals often, all resolved by a restamp or a head move). The default test injects the refusal (`Net::host_inject`); a first honest attempt (an admin demoting while away from the host) produced no refusal at all, which took a probe to learn.
-- `cargo test` hides `eprintln!` of passing tests: a probe needs `--nocapture`, else it looks like the code path never ran.
-- A test whose purge "went" can pass for the wrong reason: another writer (b) deleted it. Check which node acted before trusting a pass, e.g. by making the other members readers.
-- Checking whether a sim failure is on main meant restoring main's files over the branch in the worktree (`git checkout HEAD~1 -- .`) and rebuilding; that leaves files the branch deleted staged as added, to remove by hand.
-- (review) The "head moved, same stamp" relog runs in the default test `unread::a_refused_entry_holds_no_delete_back_and_comes_again_once_the_head_moves_spec_sync_10`, but its effect is masked: every child step has a new write key, so the same pass stamps the entry again and that new stamp alone brings it. A test where only the relog brings it needs a head move keeping the write key (a sibling at the same index), which the test net cannot make; an honest two-host attempt (one host refusing registers) never showed the peer the entry before its head moved.

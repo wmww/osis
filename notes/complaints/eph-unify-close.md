@@ -1,5 +1,0 @@
-# eph-unify-close
-- The brief bundled ten items of very different size (a filter in three places vs. a node-sync holders rule); the delete item looked like "write a reset" but placement by the current closure makes a reset commit go nowhere once the delete takes the thing out of every group. Found only by reading `commit_bodies_under`; worth a line in notes/ephemeral.md Deletion (added to issues/eph-parity.md).
-- Tests that meant "an unlisted commit falls" were written as "any demotion invalidates ephemeral commits", eight of them; addenda (on by default) also vouch, so a test wanting an invalid commit must both miss the frontier and turn addenda off (`remove_listing_none` helper in osis-node `ephemeral.rs`).
-- `notes/ephemeral.md` is one 160-line file with very long lines; `cat` of it plus the issues overflowed the tool output twice.
-- Review: the branch's new frontier test passed with the frontier change reverted (the demoter's own addendum vouched instead); a test of one mechanism must turn the others off and be checked against the reverted change.

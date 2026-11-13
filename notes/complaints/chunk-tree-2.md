@@ -1,9 +1,0 @@
-# chunk-tree-2 complaints
-- The freed set first stored whole links (keys included); only the `shred::` tests caught that a set holding keys undoes a drop's shredding. Worth a line in any design that keeps links past a drop: keys go at the drop's transaction end.
-- `Engine::me()` is not `core.id.tid()`: probes printing one and tests naming nodes by the other cost a misread of which node did what.
-- Memory blobs released from a durable `Engine::run` stay held (`tx.blobs.release(b, false)`): node-sync's `delete_blobs` silently did nothing for ephemeral pieces until given the class.
-- An ephemeral author's own snapshot keeps carrying a replaced value until its next snapshot; a test expecting every node to let go after another writer's compaction reads as a bug until that rule is found (notes/ephemeral.md).
-- Review: `losing_a_thing_keeps_chunks_another_thing_links` passed with the bears check removed: node-sync's label entries kept t2's blobs anyway, and `freed::lost` released nothing at all (the lost thing's own states and bodies, still indexed mid-forget, counted as sources). A safety test needs a run with the guard removed to show it is not vacuous.
-- Cost fix: `cargo test -p osis-node --test it a b` takes one filter only (cargo rejects the second); `-- a b` takes several. Measuring the old code meant a wip commit and `git checkout HEAD~1 -- <dirs>` (no stash): worth a helper.
-- A pass's scope keeps every delete in flight (`Left::blobs`), so anything judged "per scope" pays for the in-flight set each pass unless it skips what `in_flight` would not send.
-- Second review: main's tools/known_failures.txt kept lines for two issues main had deleted (churn-seed-413-loop, rotation-opens-departed-seed), so policy failed the first gate run; the merges that deleted them did not drop their lines.

@@ -1,5 +1,0 @@
-# cert-copies
-- Measuring "before" numbers meant committing a wip, checking out main's sources over the worktree, then restoring; a `git checkout -- .` after `git checkout main -- paths` restores main's (staged) versions, not the wip: recovered from the reflog.
-- The test `Net` dropped connection closes queued for a node that went offline in the same step, leaving a served session that node never ended; a later dial then lost its record to it as a duplicate. Which connection won depended on rng-drawn challenges, so `leaving::an_until_under_no_host_refused_by_a_proven_co_reader_drops_spec_perm_2` failed only because this change draws fewer random bytes. Fixed in `Net::set_online` (closes already sent reach the node first); took long to find.
-- `Net::cached` scenarios give one label ID across runs in one test (deterministic seeds), so debug prints from a 1-group and a 10-group run interleave under one label.
-- Review: a node offline while `group_seeded` grants it a group never synced that group's label after coming back online (with or without the `set_online` change); the review test adds the holder with `grant` + `pair` instead. Not chased.
