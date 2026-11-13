@@ -1,11 +1,9 @@
-//! Connection helpers and a frame-shaped loopback session over InProcess (no tokio, no sleeps).
+//! Redial backoff and a frame-shaped loopback session over InProcess (no tokio, no sleeps).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
 use crate::common;
 
 use osis_transport::*;
-use std::cell::RefCell;
-use std::rc::Rc;
 
 // spec: none (reconnect policy): delays grow to the cap, jitter stays in [d/2, d], same seed same delays.
 #[test]
@@ -20,62 +18,6 @@ fn backoff_grows_and_is_seeded() {
     assert_eq!(d, (0..8).map(|_| b2.next_delay_ms()).collect::<Vec<_>>());
     b.reset();
     assert!(b.next_delay_ms() <= 100);
-}
-
-// spec/sync.md §10: reconnect retries network failures until the host is back.
-#[test]
-fn connect_retries_until_listening() {
-    let net = Net::new(0);
-    let mut s = Sched::new(0, Some(net.clone()));
-    let secret = StaticSecret::from_bytes([3; 32]);
-    let addr = Address { url: "mem://listener".into(), key: InProcess::public_key(&secret) };
-    // the host comes up after 50 virtual steps
-    let (n2, serving) = (net.clone(), net.endpoint("listener"));
-    let keep = Rc::new(RefCell::new(None));
-    let k2 = keep.clone();
-    s.spawn(async move {
-        n2.sleep(50).await;
-        *k2.borrow_mut() = Some(serving.listen(ListenConfig { url: "mem://listener".into(), secret }).await.unwrap());
-    });
-    let (n3, cli) = (net.clone(), net.endpoint("cli"));
-    let sleeps = Rc::new(RefCell::new(0u32));
-    let sl = sleeps.clone();
-    let c = s
-        .block_on(async move {
-            let mut b = Backoff::with(4, 40, 0);
-            // one virtual step per millisecond
-            connect(&cli, &addr, &mut b, 100, |ms| {
-                *sl.borrow_mut() += 1;
-                n3.sleep(ms)
-            })
-            .await
-        })
-        .unwrap();
-    assert!(c.is_ok());
-    assert!(net.now() >= 50);
-    assert!(*sleeps.borrow() >= 3);
-}
-
-// spec/sync.md §10: a pinned-key mismatch is not retried.
-#[test]
-fn connect_does_not_retry_key_mismatch() {
-    let net = Net::new(0);
-    let mut s = Sched::new(0, Some(net.clone()));
-    let serving = net.endpoint("listener");
-    let l = s
-        .block_on(async move { serving.listen(ListenConfig { url: "mem://listener".into(), secret: StaticSecret::from_bytes([3; 32]) }).await.unwrap() })
-        .unwrap();
-    let mut addr = l.address();
-    addr.key[0] ^= 1;
-    let cli = net.endpoint("cli");
-    let r = s
-        .block_on(async move {
-            let mut b = Backoff::new(0);
-            connect(&cli, &addr, &mut b, 100, |_| async { panic!("retried") }).await.map(|_| ())
-        })
-        .unwrap();
-    assert_eq!(r, Err(Error::KeyMismatch));
-    drop(l);
 }
 
 // spec/wire.md §11.1: framed requests and replies on one stream, then a graceful close, under

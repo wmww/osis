@@ -20,7 +20,7 @@ pub mod p2p;
 pub use error::Error;
 pub use mem::{Faults, InProcess, MemConn, MemListener, MemRecv, MemSend, Net};
 pub use sched::{Sched, Spawner};
-pub use manage::{close_gracefully, connect, Backoff};
+pub use manage::Backoff;
 pub use multi::{Multi, MultiConn, MultiListener, MultiRecv, MultiSend};
 pub use link::{Link, LinkRx, LinkTx};
 pub use quic::{Quic, QuicConn, QuicListener, QuicRecv, QuicSend, QuicSock, QuicUdp};

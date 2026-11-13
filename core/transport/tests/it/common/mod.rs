@@ -46,6 +46,24 @@ pub async fn serve<C: Connection>(c: C) {
     assert!(c.accept_stream().await.is_err());
 }
 
+/// Graceful end of a session, for the dialer: finish ours (the peer got it all), read the peer's
+/// rest until it finishes (handing each piece to `rest`), then close. The dialer closes: the
+/// accepting side finishes and then waits for the close (`accept_stream` fails), since closing
+/// first can cut the dialer's read of its tail.
+pub async fn close_gracefully<C: Connection>(c: &C, send: &mut C::Send, recv: &mut C::Recv, mut rest: impl FnMut(&[u8])) -> Result<(), Error> {
+    send.finish().await?;
+    let mut buf = [0u8; 4096];
+    loop {
+        let n = recv.read(&mut buf).await?;
+        match buf.get(..n) {
+            Some([]) | None => break,
+            Some(b) => rest(b),
+        }
+    }
+    c.close();
+    Ok(())
+}
+
 /// Client side: sends `n` requests in bursts, reads the replies, closes gracefully. Returns replies.
 pub async fn client<C: Connection>(c: C, n: usize) -> Vec<Vec<u8>> {
     let (mut tx, mut rx) = c.open_stream().await.unwrap();
