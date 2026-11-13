@@ -470,8 +470,11 @@ impl std::fmt::Debug for Inner {
 
 pub(crate) const SAVED_PEERS: &str = "saved_peers";
 
-fn parts(store: &Store) -> Result<(Box<dyn osis_store::Backend>, Box<dyn osis_store::RootStorage>)> {
+/// A store's backend and key root: the engine's (`<store>/db.redb`, `<store>/root`), or with `hub`
+/// the node's one store beside it (what it serves, notes/serving.md: `host.redb`, `host.root`).
+fn parts(store: &Store, hub: bool) -> Result<(Box<dyn osis_store::Backend>, Box<dyn osis_store::RootStorage>)> {
     match store {
+        Store::Memory(m) if hub => Ok((Box::new(m.host.clone()), Box::new(m.host_root.clone()))),
         Store::Memory(m) => Ok((Box::new(m.backend.clone()), Box::new(m.root.clone()))),
         Store::Dir(p) => {
             let mut d = std::fs::DirBuilder::new();
@@ -480,8 +483,9 @@ fn parts(store: &Store) -> Result<(Box<dyn osis_store::Backend>, Box<dyn osis_st
             std::os::unix::fs::DirBuilderExt::mode(&mut d, 0o700);
             let bad = |e: &dyn std::fmt::Display| Error::Storage(format!("{}: {e}", p.display()));
             d.create(p).map_err(|e| bad(&e))?;
-            let b = osis_store::RedbBackend::open(&p.join("db.redb")).map_err(|e| bad(&e))?;
-            Ok((Box::new(b), Box::new(osis_store::FileRoot::new(p.join("root")))))
+            let (db, root) = if hub { ("host.redb", "host.root") } else { ("db.redb", "root") };
+            let b = osis_store::RedbBackend::open(&p.join(db)).map_err(|e| bad(&e))?;
+            Ok((Box::new(b), Box::new(osis_store::FileRoot::new(p.join(root)))))
         }
     }
 }
@@ -559,7 +563,7 @@ fn sync_over(engine: Engine, cfg: &Config, hosts: &[Address]) -> Result<SyncEngi
 
 /// A new store's sync engine (its hosts set later by `set_hosts` where they change).
 pub(crate) fn fresh_engine(store: &Store, cfg: &Config, hosts: &[Address]) -> Result<Fresh> {
-    let (b, r) = parts(store)?;
+    let (b, r) = parts(store, false)?;
     let clock = clock(cfg);
     let engine = Engine::create(b, r, hub_store(store, &clock)?, engine_cfg(), clock.clone(), rng(cfg, 0))?;
     Ok(Fresh { sync: sync_over(engine, cfg, hosts)?, clock })
@@ -586,7 +590,7 @@ impl Osis {
     /// Opens an existing store. Its peers are those saved in it (`add_peer`, `remove_peer`).
     pub fn open(store: Store, cfg: Config) -> Result<Osis> {
         cfg.check(&[])?;
-        let (b, r) = parts(&store)?;
+        let (b, r) = parts(&store, false)?;
         let clock = clock(&cfg);
         let mut e = Engine::open(b, r, hub_store(&store, &clock)?, engine_cfg(), clock.clone(), rng(&cfg, open_salt(&store, &cfg)?))?;
         let (me, home) = e.account()?.ok_or_else(|| Error::Storage("no account record".into()))?;
