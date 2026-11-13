@@ -111,11 +111,11 @@ pub fn joining_node(j: &crate::Joining) -> osis_base::Tid {
 
 /// What tests measure of a `MemStore`.
 pub trait MemStoreMeasures {
-    /// The bytes the node's store holds.
+    /// The bytes the node's stores hold, the engine's and the hub's.
     fn held_bytes(&self) -> u64;
-    /// Rows in the store now.
+    /// Rows in the engine's store now.
     fn rows(&self) -> usize;
-    /// The bytes held in rows, and in blobs with their number.
+    /// The bytes held in rows, and in blobs with their number, over both stores.
     fn held_split(&self) -> (u64, u64, u64);
     /// An independent copy of the store as it is now, as a node backup takes it (the host store
     /// left out): opening it later is a restore.
@@ -126,16 +126,17 @@ pub trait MemStoreMeasures {
 
 impl MemStoreMeasures for crate::MemStore {
     fn held_bytes(&self) -> u64 {
-        crate::MemStore::held_bytes(self)
+        self.backend.held_bytes() + self.host.held_bytes()
     }
     fn rows(&self) -> usize {
-        crate::MemStore::rows(self)
+        self.backend.dump().len()
     }
     fn held_split(&self) -> (u64, u64, u64) {
-        crate::MemStore::held_split(self)
+        let (a, b) = (self.backend.held_split(), self.host.held_split());
+        (a.0 + b.0, a.1 + b.1, a.2 + b.2)
     }
     fn backup(&self) -> crate::MemStore {
-        crate::MemStore::backup(self)
+        crate::MemStore { backend: self.backend.copy(), root: self.root.copy(), opens: self.opens.clone(), host: self.host.copy(), host_root: self.host_root.copy() }
     }
     fn hub_backend(&self) -> osis_store::MemoryBackend {
         self.host.clone()

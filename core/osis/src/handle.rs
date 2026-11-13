@@ -28,12 +28,12 @@ const DEFAULT_IDLE_COMMIT: Duration = Duration::from_secs(2);
 /// A store in memory; clones share it, so a test can close a node and open it again.
 #[derive(Clone, Debug, Default)]
 pub struct MemStore {
-    backend: MemoryBackend,
-    root: MemoryRoot,
+    pub(crate) backend: MemoryBackend,
+    pub(crate) root: MemoryRoot,
     /// The node's one store beside the engine (the hub's), its own key root beside it.
     pub(crate) host: MemoryBackend,
     /// Opens under a test seed, this store's and its backups' (`open_salt`).
-    opens: Arc<std::sync::atomic::AtomicU64>,
+    pub(crate) opens: Arc<std::sync::atomic::AtomicU64>,
     pub(crate) host_root: MemoryRoot,
 }
 
@@ -41,21 +41,6 @@ impl MemStore {
     /// An empty store.
     pub fn new() -> MemStore {
         MemStore::default()
-    }
-    /// The bytes the node's stores hold, the engine's and the hub's (`internals::MemStoreMeasures`).
-    pub(crate) fn held_bytes(&self) -> u64 {
-        self.backend.held_bytes() + self.host.held_bytes()
-    }
-    pub(crate) fn rows(&self) -> usize {
-        self.backend.dump().len()
-    }
-    /// Rows' bytes, blobs' bytes and blob count, over both stores.
-    pub(crate) fn held_split(&self) -> (u64, u64, u64) {
-        let (a, b) = (self.backend.held_split(), self.host.held_split());
-        (a.0 + b.0, a.1 + b.1, a.2 + b.2)
-    }
-    pub(crate) fn backup(&self) -> MemStore {
-        MemStore { backend: self.backend.copy(), root: self.root.copy(), opens: self.opens.clone(), host: self.host.copy(), host_root: self.host_root.copy() }
     }
 }
 
