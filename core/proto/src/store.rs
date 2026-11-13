@@ -265,44 +265,29 @@ impl MemoryLabelStore {
         }
     }
 
-    /// Removes an entry, leaving a tombstone.
-    fn remove_entry(&mut self, label: &LabelId, blob_id: &BlobId, now: u64) -> Result<(), StoreError> {
+    /// Removes an entry, leaving a tombstone at `tombstone` (none: expired).
+    fn remove_entry(&mut self, label: &LabelId, blob_id: &BlobId, tombstone: Option<u64>) -> Result<(), StoreError> {
         let s = self.state_mut(label)?;
         let Some((m, _)) = s.entries.remove(blob_id) else { return Ok(()) };
-        let ephemeral = s.ephemeral.remove(blob_id);
-        if ephemeral {
+        if s.ephemeral.remove(blob_id) {
             s.ephemeral_bytes = s.ephemeral_bytes.saturating_sub(m.size);
         }
-        s.tombstones.insert(*blob_id, now);
+        if let Some(now) = tombstone {
+            s.tombstones.insert(*blob_id, now);
+        }
         self.unref(blob_id);
         Ok(())
     }
 
-
-    /// Drops a step's claim set (as after `ROLE_KEEP`).
-    pub fn drop_claim_set(&mut self, label: &LabelId, id: &StepId) {
-        if let Some((_, c)) = self.labels.get_mut(label).and_then(|s| s.steps.get_mut(id)) {
-            *c = None;
-        }
-    }
-
     /// Expires entries (no tombstone) and drops old tombstones (spec/sync.md §4).
     pub fn sweep(&mut self, now: u64) {
-        let labels: Vec<LabelId> = self.labels.keys().copied().collect();
-        for label in labels {
-            let Some(s) = self.labels.get_mut(&label) else { continue };
-            let expired: Vec<BlobId> = s.entries.iter().filter(|(_, (_, exp))| exp.is_some_and(|t| t <= now)).map(|(k, _)| *k).collect();
+        let mut expired = Vec::new();
+        for (label, s) in &mut self.labels {
             s.tombstones.retain(|_, t| t.saturating_add(TOMBSTONE_LIFETIME_MS) > now);
-            for id in &expired {
-                if let Some((m, _)) = s.entries.remove(id)
-                    && s.ephemeral.remove(id)
-                {
-                    s.ephemeral_bytes = s.ephemeral_bytes.saturating_sub(m.size);
-                }
-            }
-            for id in &expired {
-                self.unref(id);
-            }
+            expired.extend(s.entries.iter().filter(|(_, (_, exp))| exp.is_some_and(|t| t <= now)).map(|(k, _)| (*label, *k)));
+        }
+        for (label, id) in expired {
+            let _ = self.remove_entry(&label, &id, None);
         }
     }
 
@@ -405,7 +390,7 @@ impl LabelStore for MemoryLabelStore {
 
 
     fn delete(&mut self, label: &LabelId, blob_id: &BlobId, now: u64) -> Result<Code, StoreError> {
-        self.remove_entry(label, blob_id, now)?;
+        self.remove_entry(label, blob_id, Some(now))?;
         Ok(Code::OK)
     }
 
