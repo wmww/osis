@@ -68,9 +68,12 @@ pub(crate) fn unindex_commit(tx: &mut Tx<'_>, id: &CommitId) -> Result<()> {
         core.ix.names_due.remove(id);
     }
     super::validity::forget_addenda(core, id, &v.aspects);
-    core.ix.void.remove(id);
+    let void = core.ix.void.remove(id);
     core.ix.pending.remove(id);
     core.stale_commits.remove(id);
+    if void {
+        tx.txn.remove_local(&[records::VOID, &id.0[..]].concat(), Shred::No)?;
+    }
     // its retention timers (memory rows: an expiry's per part, no keep bound's)
     if let Some(t) = m.header.expires {
         for ai in 0..m.header.aspects.len() {
@@ -177,6 +180,42 @@ mod tests {
         assert_eq!(digest(e), before);
         assert_eq!(e.get(&g, &ak("t:m+.0")).unwrap(), None);
         assert!(e.core.ix.forgotten.get(&(g, ak("t:m+.0"))).is_some(), "an undo still counts them (`undo::replaced_kept`)");
+    }
+
+    // spec/commits.md §4 (overlapping counters void both commits): two opens of one store under
+    // one session nonce (a copy opened alike) write the same counter of a memory aspect; both
+    // are void at the node they reach. Forgotten, each takes its `void` row with it: the
+    // persisted index opens as a rebuild computes it.
+    #[test]
+    fn forgotten_void_commit_leaves_no_void_row_spec_commits_4() {
+        let mut lp = LocalPeer::fresh(1, WallMs(1_700_000_000_000));
+        let me = lp.peers[0].engine.me();
+        let mut m = Mutation::new();
+        let g = lp.peers[0].engine.new_thing(&mut m, me);
+        m.set(g, &ak("t:reg.0"), &Value::Str("g".into())).unwrap();
+        lp.peers[0].engine.commit(m).unwrap();
+        let mut ids = Vec::new();
+        for v in ["x", "y"] {
+            // the same seed: the same session nonce, counter 1 in each
+            let mut f = lp.peers[0].fork(7).unwrap();
+            let mut m = Mutation::new();
+            m.set(g, &ak("t:m+.0"), &Value::Str(v.into())).unwrap();
+            let id = f.engine.commit_in_memory(m).unwrap().unwrap();
+            let pk = f.engine.package(&id).unwrap().unwrap();
+            lp.peers[0].engine.ingest_memory(&pk.bytes, u64::MAX).unwrap();
+            ids.push(id);
+        }
+        let e = &mut lp.peers[0].engine;
+        assert_eq!(e.core.ix.void.iter().copied().collect::<Vec<_>>(), { ids.sort(); ids.clone() }, "overlapping counters void both");
+        for id in &ids {
+            e.run(|tx| {
+                crate::retention::memory::vanish(tx, id, 0)?;
+                crate::retention::memory::forget_if_spent(tx, id)
+            })
+            .unwrap();
+            assert!(!e.core.ix.commits.contains_key(id), "forgotten");
+        }
+        e.check_index();
     }
 
     // spec/commits.md §6: an HLC ahead of the clock (a peer's fast clock read, here the clock set
