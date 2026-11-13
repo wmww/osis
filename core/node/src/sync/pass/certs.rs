@@ -49,11 +49,12 @@ impl SyncEngine {
             authors.remove(&me);
         }
         let actor = self.engine.group_actor(g);
-        wanted.extend(self.engine.revoke_certificates(&authors, &closure, &actor));
+        let ctx = self.engine.body_ctx(g);
+        wanted.extend(self.engine.revoke_certificates(&authors, &ctx));
         // removals of the label's actor's edges on things in its closure, whoever made them
         // (spec/permissions.md §2): its holders still holding such an edge would log again
         // the thing's bodies that others delete, on every pass
-        let (removals, own_removals) = self.engine.removal_certificates(&actor, &closure);
+        let removals = self.engine.removal_certificates(&actor, &closure);
         wanted.extend(removals);
         // the things the account's commits placed here touch: their thing lists go with them
         let me = self.engine.account_tid();
@@ -73,9 +74,9 @@ impl SyncEngine {
         for (c, want) in wanted.commits {
             let (mine, have) = self.held_parts(g, l, &c)?;
             // what the label's closure bodies carry is never copied (a copy duplicating closure
-            // parts is a strict subset others delete), but a removal's own parts: no body carries
-            // them once the label's actor reads the thing no more
-            let inside = if own_removals.contains(&c) { Default::default() } else { self.engine.header(&c).map(|h| inside(&h, &closure)).unwrap_or_default() };
+            // parts is a strict subset others delete); a removal's own parts once the label's
+            // actor reads the thing no more are not carried
+            let inside = inside(&self.engine, &ctx, &c);
             let missing: BTreeSet<usize> = want.difference(&have).filter(|ai| !inside.contains(ai)).copied().collect();
             // this node's own copy placed before and gone since (deleted at the source): not
             // placed again, but for its own card while it reads the label's actor (admins delete

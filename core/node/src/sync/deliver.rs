@@ -405,39 +405,41 @@ impl SyncEngine {
             }
             Delivery::Deposit { commit, under } => {
                 for g in self.groups_holding(&under) {
-                    self.place_aspects(&g, &commit, k, |_| true)?;
+                    self.place_aspects(&g, &commit, k, |_, _| true)?;
                 }
             }
             Delivery::Removal { commit, under } => {
                 for g in self.groups_holding(&under) {
-                    self.place_aspects(&g, &commit, k, |a| !matches!(a.ak.as_str(), "secrets.0" | "keys.0"))?;
+                    self.place_aspects(&g, &commit, k, |_, a| !matches!(a.ak.as_str(), "secrets.0" | "keys.0"))?;
                 }
             }
         }
         Ok(())
     }
 
-    /// Places `c`'s certificate deltas (edges, `keys.0`: spec/permissions.md §4) on things
-    /// outside `g`'s closure as a certificate copy under `g`'s labels, and the records it mints
-    /// raw (they outlive it); deltas on things inside it go up as its closure bodies (a whole
-    /// copy duplicated them, and carried `secrets.0` boxes the label's readers cannot open).
+    /// Places `c`'s certificate deltas (edges, `keys.0`: spec/permissions.md §4) that `g`'s
+    /// bodies do not carry (`Engine::body_carried`: on things outside its closure, or that its
+    /// actor may not read) as a certificate copy under `g`'s labels, and the records it mints raw
+    /// (they outlive it); the rest go up as its closure bodies (a whole copy duplicated them, and
+    /// carried `secrets.0` boxes the label's readers cannot open).
     pub(crate) fn place_chain(&mut self, g: &Tid, c: &CommitId, owed: Option<[u8; 32]>) -> Result<()> {
-        let closure = self.engine.closure(g);
+        let ctx = self.engine.body_ctx(g);
+        let carried = self.engine.header(c).map(|h| self.engine.body_carried(&ctx, &h)).unwrap_or_default();
         let minted: BTreeSet<Tid> = self.engine.header(c).map(|h| h.aspects.iter().filter(|a| a.ak.as_str() == "created.0").map(|a| a.tid).collect()).unwrap_or_default();
         if !minted.is_empty() {
             for l in self.engine.group_labels(g)? {
                 self.place_records(g, l.id, &minted, false)?;
             }
         }
-        self.place_aspects(g, c, owed, |a| matches!(a.ak.as_str(), "roles.0" | "keys.0") && !closure.contains(&a.tid))
+        self.place_aspects(g, c, owed, |ai, a| matches!(a.ak.as_str(), "roles.0" | "keys.0") && !carried.contains(&ai))
     }
 
     /// Places the aspects of `c` that `keep` admits as a certificate copy under the labels of
     /// `g` (`Delivery::Deposit`: all of them; `Delivery::Removal`: all but `secrets.0` and
     /// `keys.0`); nothing when it admits none.
-    fn place_aspects(&mut self, g: &Tid, c: &CommitId, owed: Option<[u8; 32]>, keep: impl Fn(&osis_commit::AspectEntry) -> bool) -> Result<()> {
+    fn place_aspects(&mut self, g: &Tid, c: &CommitId, owed: Option<[u8; 32]>, keep: impl Fn(usize, &osis_commit::AspectEntry) -> bool) -> Result<()> {
         let Some(h) = self.engine.header(c) else { return Ok(()) };
-        let ais: BTreeSet<usize> = h.aspects.iter().enumerate().filter(|(_, a)| keep(a)).map(|(i, _)| i).collect();
+        let ais: BTreeSet<usize> = h.aspects.iter().enumerate().filter(|(i, a)| keep(*i, a)).map(|(i, _)| i).collect();
         if ais.is_empty() {
             return Ok(());
         }

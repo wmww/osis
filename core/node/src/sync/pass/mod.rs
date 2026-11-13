@@ -165,9 +165,9 @@ pub(crate) fn parts_of(h: &osis_commit::Header, keep: impl Fn(usize) -> bool) ->
     (0..h.aspects.len()).filter(|i| keep(*i)).collect()
 }
 
-/// The aspect indexes of `h` on things of `closure` (what the label's closure bodies carry).
-fn inside(h: &osis_commit::Header, closure: &BTreeSet<Tid>) -> BTreeSet<usize> {
-    h.aspects.iter().enumerate().filter(|(_, a)| closure.contains(&a.tid)).map(|(i, _)| i).collect()
+/// The aspect indexes of commit `c` the label's closure bodies carry (`Engine::body_carried`).
+fn inside(e: &crate::engine::Engine, ctx: &BodyCtx, c: &CommitId) -> BTreeSet<usize> {
+    e.header(c).map(|h| e.body_carried(ctx, &h)).unwrap_or_default()
 }
 
 /// Send `o` is judged again by the next pass.

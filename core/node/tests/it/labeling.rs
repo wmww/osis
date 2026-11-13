@@ -245,3 +245,51 @@ fn registration_of_thousands_of_readers() {
     println!("label {label:?} for 2100 readers: {claims} B of claims");
     assert!(claims > osis_base::format::CHUNK_THRESHOLD, "{claims}");
 }
+
+/// Writer `c` holds write on g only through team `team` (an actor with secrets of its own that g's
+/// actor may not read; `listed`: also an item of g, so in g's closure), and writes an item of g:
+/// whether reader `b`, which never reads the team, reads it.
+fn write_through_a_team(listed: bool) -> Option<osis_base::Value> {
+    let (mut net, host, [a, b, c]) = crate::net::hosted_nodes::<3>();
+    let g = net.group(a, &[(b, Role::Read)], &[host]);
+    let team = net.group(a, &[], &[host]);
+    net.grant(a, g, team, Role::Write);
+    if listed {
+        let mut def = net.engine(a).get_typed(&g, &ct::GROUP).unwrap().unwrap_or_default();
+        def.items.insert(team);
+        let mut m = Mutation::new();
+        m.set(g, &ct::GROUP, &def).unwrap();
+        net.engine(a).commit(m).unwrap();
+    }
+    net.run();
+    for _ in 0..3 {
+        net.advance(15_000);
+    }
+    // c joins the team once g's closure holds it everywhere
+    net.pair(c, a);
+    let writer = net.tid(c);
+    net.grant(a, team, writer, Role::Write);
+    net.pair(a, c);
+    net.run();
+    for _ in 0..3 {
+        net.advance(15_000);
+    }
+    assert!(!net.engine(a).may_read(&g, &team), "g's actor does not read the team");
+    let w = net.item(c, g, g, "w");
+    net.run();
+    for _ in 0..3 {
+        net.advance(15_000);
+    }
+    assert_eq!(net.read(a, w), Some(s("w")), "the team's admin reads it");
+    net.read(b, w)
+}
+
+// spec/sync.md §3 (entitlement), spec/permissions.md §4 (Placing): a part g's actor may not read
+// reaches g's readers as a certificate copy whether or not its thing is in g's closure. Writer c
+// holds write on g through a team g does not read; listed as an item of g or not, a reader of g
+// gets the team's edge to c with c's write, and reads it.
+#[test]
+fn a_chain_through_an_unread_closure_thing_reaches_readers_spec_sync_3() {
+    assert_eq!(write_through_a_team(false), Some(s("w")), "the team outside g's closure");
+    assert_eq!(write_through_a_team(true), Some(s("w")), "the team an item of g");
+}

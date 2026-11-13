@@ -408,20 +408,21 @@ impl Engine {
         judged_valid(&self.core, c, parts)
     }
 
-    /// Revokes about `authors` (of entries seen under a label), with what a verifier needs to judge
-    /// them as this node does (their own authors' chain certificates; spec/permissions.md §4):
-    /// applied edge writes lowering an author's edge on a thing outside `closure` (inside it they
-    /// are closure bodies). Keysets only of actors reading `actor`, the label's:
-    /// its rotators seal to those; a verifier needs none, and a thing the author left has a fresh
-    /// deposit seed that is not for the label's readers.
-    pub fn revoke_certificates(&mut self, authors: &BTreeSet<Tid>, closure: &BTreeSet<Tid>, actor: &Tid) -> Certs {
+    /// Revokes about `authors` (of entries seen under a label of `ctx`'s group), with what a
+    /// verifier needs to judge them as this node does (their own authors' chain certificates;
+    /// spec/permissions.md §4): applied edge writes lowering an author's edge on a thing whose
+    /// parts the label's bodies do not carry (`body_carried`). Keysets only of actors reading the
+    /// label's actor: its rotators seal to those; a verifier needs none, and a thing the author
+    /// left has a fresh deposit seed that is not for the label's readers.
+    pub fn revoke_certificates(&mut self, authors: &BTreeSet<Tid>, ctx: &super::BodyCtx) -> Certs {
+        let actor = &ctx.actor;
         let mut found: Vec<osis_perm::Certificates> = Vec::new();
         for m in authors {
             let Some(tl) = self.core.timelines.get(m) else { continue };
             for wid in tl.applied().keys() {
                 let Some(mc) = tl.role_commit(&wid.0) else { continue };
                 let Some(op) = mc.ops.get(wid.1 as usize) else { continue };
-                if op.holder != *m || closure.contains(&op.target) {
+                if op.holder != *m || ctx.closure.contains(&op.target) && self.reads(ctx, &op.target) {
                     continue;
                 }
                 let old = tl.edges_at(Some(mc.point())).get(&op.holder, &op.target).map(|e| e.role);
@@ -446,10 +447,9 @@ impl Engine {
     /// Applied writes lowering `x`'s edge on a thing inside `closure` (`x`'s label's closure)
     /// that `x`'s edge there has not been raised again since, with what judges them
     /// (spec/permissions.md §2, §4): `x`'s holders still holding the edge would re-upload the
-    /// thing's bodies its delete-key holders drop. Also the commits whose own parts these are:
-    /// placed though inside the closure (the label no longer carries them as bodies). Never a
-    /// `secrets.0` or `keys.0` delta of such a commit (`cert_parts` takes its `roles.0`).
-    pub fn removal_certificates(&mut self, x: &Tid, closure: &BTreeSet<Tid>) -> (Certs, BTreeSet<CommitId>) {
+    /// thing's bodies its delete-key holders drop. Never a `secrets.0` or `keys.0` delta of such
+    /// a removal's own commit (`cert_parts` takes its `roles.0`).
+    pub fn removal_certificates(&mut self, x: &Tid, closure: &BTreeSet<Tid>) -> Certs {
         let mut found: Vec<osis_perm::Certificates> = Vec::new();
         let mut own = BTreeSet::new();
         if let Some(tl) = self.core.timelines.get(x) {
@@ -483,7 +483,7 @@ impl Engine {
                 p.retain(|ai| h.aspects.get(*ai).is_some_and(|a| crate::apply::validity::edge_ak(a.ak.as_str())));
             }
         }
-        (out, own)
+        out
     }
 
     /// The body of commit `c` restricted to `parts` (its plaintext holds those alone): a

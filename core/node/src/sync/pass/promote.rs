@@ -242,7 +242,7 @@ impl SyncEngine {
     /// `c`.
     pub(super) fn chain_missing(&mut self, source: Option<PeerKey>, g: &Tid, l: LabelId, c: &CommitId, parts: &[usize]) -> Result<Option<crate::labeling::Certs>> {
         let Some(chain) = self.chain_under(c, &parts.iter().copied().collect()) else { return Ok(None) };
-        let closure = self.engine.closure(g);
+        let ctx = self.engine.body_ctx(g);
         let mut out = crate::labeling::Certs::default();
         // records travel raw, also those of the label's own things: a creation's body goes when
         // its thing is destroyed, and what depends on it lives on (spec/permissions.md §4)
@@ -250,8 +250,8 @@ impl SyncEngine {
         out.records = chain.records.difference(&held).copied().collect();
         for (x, want) in chain.commits {
             let (_, held) = self.held_parts_at(g, l, &x, source.as_ref().map(std::slice::from_ref))?;
-            // closure bodies carry what is on the label's own things
-            let inside = self.engine.header(&x).map(|h| inside(&h, &closure)).unwrap_or_default();
+            // closure bodies carry what its actor reads on the label's own things
+            let inside = inside(&self.engine, &ctx, &x);
             let missing: Parts = want.difference(&held).filter(|ai| !inside.contains(ai)).copied().collect();
             if !missing.is_empty() {
                 out.commits.insert(x, missing);

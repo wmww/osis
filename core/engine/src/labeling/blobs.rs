@@ -411,9 +411,21 @@ impl Engine {
     pub fn readable_parts(&self, ctx: &BodyCtx, id: &CommitId, parts: &[usize]) -> Vec<usize> {
         let Some(m) = self.core.ix.commits.get(id) else { return Vec::new() };
         let h = &m.header;
+        parts.iter().filter(|ai| h.aspects.get(**ai).is_some_and(|a| self.reads(ctx, &a.tid))).copied().collect()
+    }
+
+    /// Whether the actor of `ctx` may read `t` (spec/sync.md §3).
+    pub(super) fn reads(&self, ctx: &BodyCtx, t: &Tid) -> bool {
         // the readers of an account's devices actor are its nodes: they read what the account reads
         let reader = self.core.account_devices().filter(|x| x.1 == ctx.actor).map_or(ctx.actor, |x| x.0);
-        parts.iter().filter(|ai| h.aspects.get(**ai).is_some_and(|a| self.core.may_read(&reader, &self.core.reader_of(&a.tid)))).copied().collect()
+        self.core.may_read(&reader, &self.core.reader_of(t))
+    }
+
+    /// The parts of `h` a label of `ctx`'s group carries in its bodies (spec/sync.md §3): those on
+    /// things of its closure its actor may read. A chain certificate's part on any other thing goes
+    /// there as a certificate copy (spec/permissions.md §4).
+    pub fn body_carried(&self, ctx: &BodyCtx, h: &osis_commit::Header) -> std::collections::BTreeSet<usize> {
+        h.aspects.iter().enumerate().filter(|(_, a)| ctx.closure.contains(&a.tid) && self.reads(ctx, &a.tid)).map(|(i, _)| i).collect()
     }
 
     /// The body of commit `id` a label of the group of `ctx` must hold (`label_bodies_meta`):
