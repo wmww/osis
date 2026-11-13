@@ -13,23 +13,10 @@ pub struct RootRecord {
     pub key: Secret32,
 }
 
-/// How trustworthy erasure of the previous root is (notes/local-store.md). Below `Hardware`,
-/// diagnostics report best effort.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum RootTier {
-    /// Process memory: tests and the simulator.
-    Memory,
-    /// A small file overwritten in place with fsync: last resort.
-    FileOverwrite,
-    /// Hardware-backed keystore (not yet implemented).
-    Hardware,
-}
-
 pub trait RootStorage: Send {
     fn load(&self) -> Result<Option<RootRecord>, BackendError>;
     /// Replaces the record durably, destroying the previous one, before returning `Ok`.
     fn store(&mut self, record: &RootRecord) -> Result<(), BackendError>;
-    fn tier(&self) -> RootTier;
     /// Completes a `store` a crash interrupted, so no copy of a replaced record remains.
     /// Called on open before `load`.
     fn repair(&mut self) -> Result<(), BackendError> {
@@ -83,9 +70,6 @@ impl RootStorage for MemoryRoot {
         self.faults.check()?;
         *lock(&self.slot) = Some(record.clone());
         Ok(())
-    }
-    fn tier(&self) -> RootTier {
-        RootTier::Memory
     }
     fn erase(&mut self) -> Result<(), BackendError> {
         self.faults.check()?;
@@ -201,10 +185,6 @@ mod file {
             Ok(())
         }
 
-        fn tier(&self) -> RootTier {
-            RootTier::FileOverwrite
-        }
-
         /// A crash between the slot writes leaves the old record in one slot: overwrite it.
         fn repair(&mut self) -> Result<(), BackendError> {
             let slots = self.slots()?;
@@ -268,7 +248,6 @@ mod tests {
         assert_eq!(r.load().unwrap(), Some(rec(2, 0xb2)));
         r.store(&rec(3, 0xc3)).unwrap();
         assert_eq!(FileRoot::new(path.clone()).load().unwrap(), Some(rec(3, 0xc3)));
-        assert_eq!(r.tier(), RootTier::FileOverwrite);
         // Crash between the slot writes: the old key stays until repair.
         let faults = Faults::new();
         let mut r = FileRoot::with_faults(path.clone(), faults.clone());

@@ -592,9 +592,6 @@ impl Pager {
     pub fn epoch(&self) -> u64 {
         self.epoch
     }
-    pub fn root_tier(&self) -> crate::RootTier {
-        self.root.tier()
-    }
     pub fn backend(&self) -> &dyn Backend {
         &*self.backend
     }

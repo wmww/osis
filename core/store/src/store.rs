@@ -9,7 +9,7 @@ use crate::btree::{self, Units};
 use crate::codec::{R, W};
 use crate::overlay::{MEM_TABLE, MemTxn, Overlay};
 use crate::pager::{Dirty, DirtyMark, Pager, StoreConfig};
-use crate::root::{RootStorage, RootTier};
+use crate::root::RootStorage;
 use crate::{Error, KeyValue};
 use osis_base::{Ak, BlobId, CommitId, Tid};
 use osis_crypto::CryptoRngCore;
@@ -162,9 +162,6 @@ impl Store {
         Transaction { pager: &mut self.pager, d: s.d, rng, mem: MemTxn { o: &mut self.mem, undo: Vec::new(), done: false }, memory: false }
     }
 
-    pub fn root_tier(&self) -> RootTier {
-        self.pager.root_tier()
-    }
     /// Rotations so far (one per committed transaction that shredded).
     pub fn epoch(&self) -> u64 {
         self.pager.epoch()
