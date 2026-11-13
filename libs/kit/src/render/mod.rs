@@ -11,7 +11,9 @@ use crate::facets::members::ToggleCreating;
 use crate::schema::Mode as ModeChoice;
 use crate::store::{Data, Reader};
 use crate::view::search::{Paste, classify, search};
-use crate::view::{Act, Block, Cx, DARK, Do, Graph, Icon, Input, Open, QUERY, Section, Surface, TICK, Tree, ViewSpec, WindowState};
+use crate::input::Input as Pointers;
+use crate::platform::Platform;
+use crate::view::{Act, Block, Cx, DARK, Do, Graph, Icon, Input, NAMING, Open, PasteTo, QUERY, Section, Surface, TICK, Tree, ViewSpec, WindowState};
 use crate::view::keyed::{self, ListSteps};
 use crate::view::paged::{Item, LIST_WINDOW, ListRow, ListWindow};
 use crate::view::sessions::Key;
@@ -20,7 +22,7 @@ use osis::{Subscription, Tid};
 use crate::masonry::app::RenderRoot;
 use crate::masonry::peniko::Color;
 use crate::masonry::core::{Capitalize, EnterKey, TextInputHints, TextPurpose};
-use crate::masonry::core::{ErasedAction, NewWidget, Properties, Widget, WidgetId, WidgetTag};
+use crate::masonry::core::{ErasedAction, NewWidget, PointerEvent, Properties, TextEvent, Widget, WidgetId, WidgetTag};
 use crate::masonry::properties::Padding;
 use crate::masonry::properties::types::{CrossAxisAlignment, Length};
 use crate::masonry::widgets::{Flex, IndexedStack, Portal, Prose, SizedBox, TextAction, TextArea};
@@ -159,6 +161,12 @@ impl Surface for Draw<'_> {
     }
 }
 
+/// The platform a shell gave `Ui::start`, and the pointer input through it.
+struct Attached {
+    platform: Box<dyn Platform>,
+    input: Pointers,
+}
+
 pub struct Ui {
     data: Data,
     tx: Sender<Msg>,
@@ -183,14 +191,14 @@ pub struct Ui {
     search_stacks: Vec<WidgetId>,
     /// What the search stacks show.
     searching: bool,
-    /// A field was focused for the user to type in now (a new thing's title): on-screen keyboards
-    /// open for it (`take_keyboard_request`), as for a tap on a field.
-    keyboard_request: bool,
+    /// The platform and the pointer input through it, from `start` on.
+    attached: Option<Attached>,
+    /// Fields that appeared wanting typing (slot, widget), served after the update.
+    typing: Vec<(String, WidgetId)>,
     /// The widgets that report an action and what it does.
     acts: blocks::Acts,
     _diag_sub: Subscription,
     diag: Option<String>,
-    focus_title: bool,
     redeeming: bool,
     /// Nodes that fill the page: their foot is pinned.
     pinned: BTreeSet<String>,
@@ -244,11 +252,11 @@ impl Ui {
             search_ids: Vec::new(),
             search_stacks: Vec::new(),
             searching: false,
-            keyboard_request: false,
+            attached: None,
+            typing: Vec::new(),
             acts: blocks::Acts::default(),
             _diag_sub: diag_sub,
             diag: None,
-            focus_title: false,
             redeeming: false,
             pinned: BTreeSet::new(),
         })
@@ -315,11 +323,8 @@ impl Ui {
             self.tree = tree;
             self.build(rr, &layout);
             self.show_roots(rr, &layout, main)?;
-            // focus rule: a new page puts the keyboard in a text field (home's search, a new
-            // thing's title) or nowhere
-            let title = std::mem::take(&mut self.focus_title).then(|| self.acts.editor_of(layout.t, "name.0")).flatten();
-            self.keyboard_request |= title.is_some();
-            let id = if layout.home { self.search_ids.first().copied() } else { title };
+            // focus rule: keys go to home's search field, else nowhere until a field wants typing
+            let id = if layout.home { self.search_ids.first().copied() } else { None };
             let kept = in_search.and_then(|i| self.search_ids.get(i).copied());
             rr.focus_on(kept.or(id));
             if let Some(input) = kept {
@@ -340,7 +345,31 @@ impl Ui {
         self.tree = tree;
         r?;
         self.state.sessions.retain(|k| self.acts.editor_for(k).is_some());
+        self.serve_typing(rr);
         Ok(())
+    }
+
+    /// Fields that appeared wanting typing take the focus and want the keyboard; served, the flag
+    /// goes from their slot's model (as the view will say once `NAMING` is cleared).
+    fn serve_typing(&mut self, rr: &mut RenderRoot) {
+        for (key, id) in std::mem::take(&mut self.typing) {
+            if !rr.has_widget(id) {
+                continue;
+            }
+            if let Some(a) = self.attached.as_mut() {
+                a.input.type_in(rr, &mut *a.platform, id);
+            } else {
+                rr.focus_on(Some(id));
+            }
+            if let Some(slot) = self.slots.get_mut(&key) {
+                for b in &mut slot.model {
+                    if let Block::Editor { wants_typing, .. } = b {
+                        *wants_typing = false;
+                    }
+                }
+            }
+            self.state.set_local(NAMING, None);
+        }
     }
 
     /// The tree's roots for a screen just built.
@@ -431,14 +460,9 @@ impl Ui {
         self.search_ids.push(id);
         let pad = if big { (14.0, 18.0) } else { (8.0, 12.0) };
         let panel = NewWidget::new(Panel::new(input, look.clone(), PanelKind::Field, pad)).erased();
-        #[cfg(target_os = "android")]
-        {
-            let chip = NewWidget::new(crate::widgets::Chip::new("Paste", None, crate::widgets::ChipMark::Icon(Icon::Plus), look.clone()));
-            self.acts.press(chip.id(), Do::new(blocks::PasteSearch));
-            return NewWidget::new(Flex::row().with_gap(Length::px(look.sp(8.0))).with_flex_child(panel, 1.0).with_child(chip)).erased();
-        }
-        #[allow(unreachable_code)]
-        panel
+        let chip = NewWidget::new(crate::widgets::Chip::new("Paste", None, crate::widgets::ChipMark::Icon(Icon::Plus), look.clone()));
+        self.acts.press(chip.id(), Do::new(blocks::PasteSearch));
+        NewWidget::new(Flex::row().with_gap(Length::px(look.sp(8.0))).with_flex_child(panel, 1.0).with_child(chip)).erased()
     }
 
     fn build(&mut self, rr: &mut RenderRoot, l: &Layout) {
@@ -544,6 +568,9 @@ impl Ui {
                 TextArea::select_byte_range(&mut a, end, end);
             });
         }
+        if let Some(id) = built.typing {
+            self.typing.push((key.to_string(), id));
+        }
         for (k, c) in &built.children {
             let p = views::child_path(key, k);
             if let Some(old) = self.slots.insert(p, Slot { id: *c, model: Vec::new(), built: blocks::Built::default() }) {
@@ -643,13 +670,22 @@ impl Ui {
         if let Err(e) = r {
             self.status(rr, format!("error: {e}"));
         }
-        if e.focus_title {
-            self.focus_title = true;
+        match e.paste {
+            None => {}
+            Some(PasteTo::Search) => {
+                let text = self.clipboard().unwrap_or_default();
+                self.state.set_local(QUERY, text.trim().to_string());
+                self.enter_search(rr);
+            }
+            Some(PasteTo::Action(d)) => {
+                let text = self.clipboard().unwrap_or_default();
+                self.run(rr, d, Input::Text(text));
+            }
         }
-        if let Some(text) = e.paste {
-            self.state.set_local(QUERY, text.trim().to_string());
-            self.enter_search(rr);
-        }
+    }
+
+    fn clipboard(&mut self) -> Option<String> {
+        self.attached.as_mut().and_then(|a| a.platform.clipboard())
     }
 
     fn enter_search(&mut self, rr: &mut RenderRoot) {
@@ -813,10 +849,11 @@ fn short(t: Tid) -> String {
 /// What a platform shell calls: it owns the window and its `RenderRoot`, and calls these on the UI
 /// thread (desktop: `window::App`; Android: osis-android).
 impl Ui {
-    /// The window exists: register the fonts, run what is due, update once. `scale` is physical
-    /// pixels per logical pixel, `dark` the system's dark mode.
-    pub fn start(&mut self, rr: &mut RenderRoot, scale: f64, dark: bool) {
+    /// The window exists: register the fonts, run what is due, update once. `platform` is the
+    /// shell's, `scale` physical pixels per logical pixel, `dark` the system's dark mode.
+    pub fn start(&mut self, rr: &mut RenderRoot, platform: Box<dyn Platform>, scale: f64, dark: bool) {
         crate::fonts::register(rr);
+        self.attached = Some(Attached { input: Pointers::new(platform.thresholds()), platform });
         self.scale = scale;
         self.system_dark = dark;
         self.data.db.settle();
@@ -876,10 +913,35 @@ impl Ui {
         rr.edit_widget_with_tag(ROOT, |mut r| Root::set_insets(&mut r, i));
     }
 
-    /// Whether a field was focused for the user to type in since the last call (a shell with an
-    /// on-screen keyboard opens it; focus alone, like home's search field, does not).
-    pub fn take_keyboard_request(&mut self) -> bool {
-        std::mem::take(&mut self.keyboard_request)
+    /// A pointer event, on its way to `rr` through the gestures (`input`).
+    pub fn pointer(&mut self, rr: &mut RenderRoot, e: PointerEvent) {
+        match self.attached.as_mut() {
+            Some(a) => a.input.pointer(rr, &mut *a.platform, e),
+            None => {
+                rr.handle_pointer_event(e);
+            }
+        }
+    }
+
+    /// An input-method session started or ended (a text field gained or lost the focus).
+    pub fn text_focus(&mut self, rr: &mut RenderRoot) {
+        if let Some(a) = self.attached.as_mut() {
+            a.input.text_focus(rr, &mut *a.platform);
+        }
+    }
+
+    /// The focused widget asked to paste (`RenderRootSignal::ClipboardRead`): the clipboard's
+    /// text goes to it.
+    pub fn paste(&mut self, rr: &mut RenderRoot) {
+        let text = self.clipboard().unwrap_or_default();
+        rr.handle_text_event(TextEvent::ClipboardPaste(text));
+    }
+
+    /// A widget cut or copied `text` (`RenderRootSignal::ClipboardStore`).
+    pub fn copy(&mut self, text: String) {
+        if let Some(a) = self.attached.as_mut() {
+            a.platform.set_clipboard(text);
+        }
     }
 
     /// The colour under everything, for the shell to clear with.

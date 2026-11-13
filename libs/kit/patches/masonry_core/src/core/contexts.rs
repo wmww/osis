@@ -1392,6 +1392,16 @@ impl_context_method!(
                 .emit_signal(RenderRootSignal::ClipboardStore(contents));
         }
 
+        /// Ask the platform for the clipboard's contents: it answers with a
+        /// [`TextEvent::ClipboardPaste`](crate::core::TextEvent::ClipboardPaste) to the focused
+        /// widget (osis-kit patch).
+        ///
+        /// For example, text widgets should call this for "paste" user interactions.
+        pub fn request_paste(&mut self) {
+            trace!("request_paste");
+            self.global_state.emit_signal(RenderRootSignal::ClipboardRead);
+        }
+
         /// Start a window drag.
         ///
         /// Moves the window with the left mouse button until the button is released.

@@ -229,6 +229,10 @@ pub enum RenderRootSignal {
     ImeMoved(LogicalPosition<f64>, LogicalSize<f64>),
     /// A user interaction has sent something to the clipboard.
     ClipboardStore(String),
+    /// A user interaction asks to paste: the platform answers with
+    /// [`TextEvent::ClipboardPaste`](crate::core::TextEvent::ClipboardPaste) holding the
+    /// clipboard's text (osis-kit patch).
+    ClipboardRead,
     /// The window needs to be redrawn.
     RequestRedraw,
     /// The window should be redrawn for an animation frame. Currently this isn't really different from `RequestRedraw`.

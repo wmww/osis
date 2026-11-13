@@ -6,15 +6,17 @@
 //! at once).
 
 use crate::gpu::Gpu;
-use crate::input::{self, Motion, Taps};
+use crate::input::{self, Motion};
 use ndk::native_window::NativeWindow;
 use osis_kit::ime::{Seen, Sync, Tell, android};
 use osis_kit::masonry::app::{RenderRoot, RenderRootOptions, RenderRootSignal, WindowSizePolicy};
-use osis_kit::masonry::core::keyboard::{Key, NamedKey};
-use osis_kit::masonry::core::{Handled, Ime, ImeText, PointerEvent, TextEdit, TextEvent, WindowEvent};
+use osis_kit::masonry::core::keyboard::{Key, KeyState, KeyboardEvent, Modifiers, NamedKey};
+use osis_kit::masonry::core::{Handled, Ime, ImeText, TextEdit, TextEvent, WindowEvent};
 use osis_kit::masonry::dpi::PhysicalSize;
-use osis_kit::masonry::kurbo::Point;
+use osis_kit::platform::{Platform, SelectionMenu, Thresholds};
 use osis_kit::render::{Ui, tree};
+use std::cell::RefCell;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, channel};
 use std::time::Instant;
@@ -32,27 +34,51 @@ pub enum Effect {
     SetClipboard(String),
 }
 
+/// Android's `Platform`: the clipboard over JNI, the keyboard through the view (its effects wait
+/// in `fx` for the shell to hand them over after its own), no selection menu yet.
+struct Android {
+    fx: Rc<RefCell<Vec<Effect>>>,
+    thresholds: Thresholds,
+}
+
+impl Platform for Android {
+    fn clipboard(&mut self) -> Option<String> {
+        crate::clipboard()
+    }
+    fn set_clipboard(&mut self, text: String) {
+        self.fx.borrow_mut().push(Effect::SetClipboard(text));
+    }
+    fn keyboard(&mut self, wanted: bool) {
+        self.fx.borrow_mut().push(if wanted { Effect::ShowKeyboard } else { Effect::HideKeyboard });
+    }
+    fn show_selection_menu(&mut self, _menu: &SelectionMenu) -> bool {
+        false
+    }
+    fn hide_selection_menu(&mut self) {}
+    fn thresholds(&self) -> Thresholds {
+        self.thresholds
+    }
+}
+
 pub struct Shell {
     root: RenderRoot,
     signals: Receiver<RenderRootSignal>,
     ui: Ui,
     gpu: Gpu,
     scale: f64,
-    taps: Taps,
     sync: Sync,
     /// The keyboard's open batch edits: it is told about changes when the last ends.
     batch: u32,
     pending: Tell,
     /// When the last animation frame was drawn, while animating.
     animating: Option<Instant>,
-    /// A touch is being handled: a field it focuses gets the keyboard (Android shows the keyboard
-    /// for what the user did, never for focus the app moved on its own).
-    touching: bool,
+    /// What the UI asked of the platform, handed to `fx` after the shell's own effects.
+    platform_fx: Rc<RefCell<Vec<Effect>>>,
     pub fx: Vec<Effect>,
 }
 
 impl Shell {
-    pub fn new(ui: Ui, scale: f64, dark: bool, taps: Taps) -> Shell {
+    pub fn new(ui: Ui, scale: f64, dark: bool, thresholds: Thresholds) -> Shell {
         let (tx, signals) = channel();
         let opts = RenderRootOptions {
             default_properties: Arc::new(osis_kit::masonry::theme::default_property_set()),
@@ -63,8 +89,10 @@ impl Shell {
             test_font: None,
         };
         let root = RenderRoot::new(tree(ui.look()), move |s| drop(tx.send(s)), opts);
-        let mut sh = Shell { root, signals, ui, gpu: Gpu::new(), scale, taps, sync: Sync::default(), batch: 0, pending: Tell::Nothing, animating: None, touching: false, fx: Vec::new() };
-        sh.ui.start(&mut sh.root, scale, dark);
+        let platform_fx = Rc::new(RefCell::new(Vec::new()));
+        let mut sh = Shell { root, signals, ui, gpu: Gpu::new(), scale, sync: Sync::default(), batch: 0, pending: Tell::Nothing, animating: None, platform_fx: platform_fx.clone(), fx: Vec::new() };
+        let platform = Box::new(Android { fx: platform_fx, thresholds });
+        sh.ui.start(&mut sh.root, platform, scale, dark);
         sh.pump();
         sh
     }
@@ -101,31 +129,13 @@ impl Shell {
     }
 
     pub fn touch(&mut self, m: &Motion<'_>) -> bool {
-        let events = input::pointer_events(m, self.scale, &mut self.taps);
+        let events = input::pointer_events(m, self.scale);
         let handled = !events.is_empty();
-        self.touching = true;
         for e in events {
-            let tap = match &e {
-                PointerEvent::Up(u) => Some(u.state.logical_point()),
-                _ => None,
-            };
-            self.root.handle_pointer_event(e);
-            if let Some(at) = tap {
-                self.tapped(at);
-            }
+            self.ui.pointer(&mut self.root, e);
         }
         self.pump();
-        self.touching = false;
         handled
-    }
-
-    /// A tap on the focused text field shows the keyboard (it may have been put away while the
-    /// field kept focus).
-    fn tapped(&mut self, at: Point) {
-        let Some((id, _)) = self.root.focused_ime_text() else { return };
-        if self.root.get_widget(id).is_some_and(|w| w.ctx().bounding_rect().contains(at)) {
-            self.fx.push(Effect::ShowKeyboard);
-        }
     }
 
     pub fn key(&mut self, action: i32, keycode: i32, unicode: i32, meta: i32, repeat: i32) -> bool {
@@ -174,7 +184,8 @@ impl Shell {
                 RenderRootSignal::Action(a, id) => self.ui.action(&mut self.root, id, a),
                 RenderRootSignal::StartIme | RenderRootSignal::EndIme => session = true,
                 RenderRootSignal::RequestRedraw | RenderRootSignal::RequestAnimFrame => frame = true,
-                RenderRootSignal::ClipboardStore(s) => self.fx.push(Effect::SetClipboard(s)),
+                RenderRootSignal::ClipboardStore(s) => self.ui.copy(s),
+                RenderRootSignal::ClipboardRead => self.ui.paste(&mut self.root),
                 RenderRootSignal::NewLayer(w, at) => self.root.add_layer(w, at),
                 RenderRootSignal::RemoveLayer(id) => self.root.remove_layer(id),
                 RenderRootSignal::RepositionLayer(id, at) => self.root.reposition_layer(id, at),
@@ -183,25 +194,18 @@ impl Shell {
         }
         if session {
             // a field gained or lost the keyboard: a new session either way
-            let now = Seen::of(&self.root);
-            let shown = now.is_some();
-            self.sync.started(now);
+            self.sync.started(Seen::of(&self.root));
             self.pending = Tell::Nothing;
             // the new session reads the text and selection afresh: what input already told goes
             self.fx.retain(|e| !matches!(e, Effect::Restart | Effect::Selection(_)));
             self.fx.push(Effect::Restart);
-            if !shown {
-                self.fx.push(Effect::HideKeyboard);
-            } else if self.touching {
-                self.fx.push(Effect::ShowKeyboard);
-            }
+            self.ui.text_focus(&mut self.root);
         } else {
             let t = self.sync.after_app(Seen::of(&self.root));
             self.tell(t);
         }
-        if self.ui.take_keyboard_request() && self.focused().is_some() {
-            self.fx.push(Effect::ShowKeyboard);
-        }
+        // after the restart: the keyboard shows for the new input connection
+        self.fx.append(&mut self.platform_fx.borrow_mut());
         if frame {
             self.fx.push(Effect::Frame);
         }
@@ -300,6 +304,20 @@ impl Shell {
         }
         self.root.handle_text_event(TextEvent::key_down(Key::Named(NamedKey::Enter)));
         self.root.handle_text_event(TextEvent::key_up(Key::Named(NamedKey::Enter)));
+        self.input_done();
+        true
+    }
+
+    /// The keyboard's Select all, Cut, Copy and Paste buttons: the field's own shortcuts (Ctrl
+    /// with `letter`), as a hardware keyboard sends them.
+    pub fn shortcut(&mut self, letter: &str) -> bool {
+        if self.focused().is_none() {
+            return false;
+        }
+        for state in [KeyState::Down, KeyState::Up] {
+            let k = KeyboardEvent { state, key: Key::Character(letter.into()), modifiers: Modifiers::CONTROL, ..Default::default() };
+            self.root.handle_text_event(TextEvent::Keyboard(k));
+        }
         self.input_done();
         true
     }

@@ -104,8 +104,8 @@ use smithay_clipboard as _;
 pub mod app {
     pub use super::app_driver::{AppDriver, DriverCtx, WindowId};
     pub use super::event_loop_runner::{
-        EventLoop, EventLoopBuilder, EventLoopProxy, MasonryState, MasonryUserEvent, NewWindow,
-        Window, run, run_with,
+        Clipboard, EventLoop, EventLoopBuilder, EventLoopProxy, MasonryState, MasonryUserEvent,
+        NewWindow, Window, run, run_with,
     };
 
     pub(crate) use super::convert_winit_event::{

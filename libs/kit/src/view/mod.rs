@@ -310,7 +310,9 @@ pub enum Block {
     Days(Vec<Day>),
     Form { rows: Vec<FormRow>, wide: bool },
     /// A text field bound to `(thing, aspect)` over a text session, or to a map entry of it.
-    Editor { thing: Tid, ak: String, key: Option<String>, placeholder: String, role: TextRole, multiline: bool, lead: Option<(Mark, Option<String>)> },
+    /// `wants_typing`: when it appears, the user is to type in it now (it takes the focus and the
+    /// soft keyboard is wanted).
+    Editor { thing: Tid, ak: String, key: Option<String>, placeholder: String, role: TextRole, multiline: bool, lead: Option<(Mark, Option<String>)>, wants_typing: bool },
     Composer(Composer),
     /// A child view at `key`, inline.
     View { key: String, spec: ViewSpec },
@@ -422,6 +424,9 @@ pub const DARK: Local<bool> = Local::new("dark", || false);
 pub const TICK: Local<u64> = Local::new("tick", || 0);
 /// Bumped on every keystroke in an editor: what shows pending typing depends on it.
 pub const TYPED: Local<u64> = Local::new("typed", || 0);
+/// A thing just made here: its title wants typing (`UseOffer` sets it; the shell clears it once
+/// the field took the keyboard).
+pub const NAMING: Local<Option<Tid>> = Local::new("naming", || None);
 
 pub struct WindowInner {
     pub sessions: Sessions,
@@ -526,9 +531,17 @@ impl Cx {
 /// What an action asks of the shell beyond osis writes and local cells.
 #[derive(Clone, Debug, Default)]
 pub struct Effects {
-    pub focus_title: bool,
-    /// Text for the search field (Android's clipboard).
-    pub paste: Option<String>,
+    /// Paste the clipboard's text there.
+    pub paste: Option<PasteTo>,
+}
+
+/// Where the clipboard's text goes.
+#[derive(Clone, Debug)]
+pub enum PasteTo {
+    /// The search field, then as Enter there.
+    Search,
+    /// This action, as its text.
+    Action(Do),
 }
 
 /// An action's context: writes (through `Data`), node state, untracked reads, effects.
@@ -583,9 +596,9 @@ impl Action for UseOffer {
         let Some(o) = crate::facets::offer(act, self.0)? else { return Ok(()) };
         match self.1 {
             None => {
-                act.create_with(o.set)?;
+                let t = act.create_with(o.set)?;
                 act.set_local(QUERY, String::new());
-                act.effects.borrow_mut().focus_title = true;
+                act.set_local(NAMING, Some(t));
             }
             Some(t) => {
                 let g = act.main_group()?;

@@ -1,0 +1,31 @@
+--- src/widgets/text_area.rs
++++ src/widgets/text_area.rs
+@@ -657,7 +657,6 @@
+                 let mut edited = false;
+                 match &key_event.key {
+                     // Cut
+-                    #[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
+                     Key::Character(x)
+                         if EDITABLE && action_mod && x.as_str().eq_ignore_ascii_case("x") =>
+                     {
+@@ -671,7 +670,6 @@
+                         }
+                     }
+                     // Copy
+-                    #[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
+                     Key::Character(c) if action_mod && c.as_str().eq_ignore_ascii_case("c") => {
+                         if let Some(text) = self.editor.selected_text()
+                             && !text.is_empty()
+@@ -679,6 +677,12 @@
+                             ctx.set_clipboard(text.to_string());
+                         }
+                     }
++                    // Paste: the platform answers with `TextEvent::ClipboardPaste`
++                    Key::Character(v)
++                        if EDITABLE && action_mod && v.as_str().eq_ignore_ascii_case("v") =>
++                    {
++                        ctx.request_paste();
++                    }
+                     Key::Character(a) if action_mod && a.as_str().eq_ignore_ascii_case("a") => {
+                         let mut drv = self.editor.driver(fctx, lctx);
+ 

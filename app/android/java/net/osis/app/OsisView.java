@@ -10,6 +10,7 @@ import android.view.KeyEvent;
 import android.view.MotionEvent;
 import android.view.SurfaceHolder;
 import android.view.SurfaceView;
+import android.view.ViewConfiguration;
 import android.view.WindowInsets;
 import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.ExtractedText;
@@ -34,8 +35,9 @@ final class OsisView extends SurfaceView implements SurfaceHolder.Callback, Chor
         setFocusable(true);
         setFocusableInTouchMode(true);
         getHolder().addCallback(this);
-        android.view.ViewConfiguration vc = android.view.ViewConfiguration.get(context);
-        nativeCreate(filesDir, density(), dark(), android.view.ViewConfiguration.getDoubleTapTimeout(), vc.getScaledDoubleTapSlop());
+        ViewConfiguration vc = ViewConfiguration.get(context);
+        int[] gestures = {ViewConfiguration.getDoubleTapTimeout(), vc.getScaledDoubleTapSlop(), ViewConfiguration.getLongPressTimeout(), vc.getScaledTouchSlop()};
+        nativeCreate(filesDir, density(), dark(), gestures);
     }
 
     private float density() {
@@ -87,17 +89,6 @@ final class OsisView extends SurfaceView implements SurfaceHolder.Callback, Chor
         if (extracting) {
             imm.updateExtractedText(this, extractToken, extracted());
         }
-    }
-
-    /** The clipboard's text, or null. */
-    String clipboard() {
-        ClipboardManager cm = getContext().getSystemService(ClipboardManager.class);
-        ClipData clip = cm.getPrimaryClip();
-        if (clip == null || clip.getItemCount() == 0) {
-            return null;
-        }
-        CharSequence s = clip.getItemAt(0).coerceToText(getContext());
-        return s == null ? null : s.toString();
     }
 
     void setClipboard(String text) {
@@ -155,8 +146,10 @@ final class OsisView extends SurfaceView implements SurfaceHolder.Callback, Chor
         return nativeTouch(e.getActionMasked(), e.getActionIndex(), ids, tools, xy, pressure, e.getButtonState(), e.getMetaState(), e.getEventTime());
     }
 
+    /** The character is the key's without Ctrl and Meta (which type none), so Ctrl+V names V. */
     private boolean key(KeyEvent e) {
-        return nativeKey(e.getAction(), e.getKeyCode(), e.getUnicodeChar(e.getMetaState()), e.getMetaState(), e.getRepeatCount());
+        int typing = e.getMetaState() & ~(KeyEvent.META_CTRL_MASK | KeyEvent.META_META_MASK);
+        return nativeKey(e.getAction(), e.getKeyCode(), e.getUnicodeChar(typing), e.getMetaState(), e.getRepeatCount());
     }
 
     @Override
@@ -214,7 +207,8 @@ final class OsisView extends SurfaceView implements SurfaceHolder.Callback, Chor
 
     // --- Rust (osis-android); all on the UI thread but nativeWake's post
 
-    private native void nativeCreate(String filesDir, float density, boolean dark, int doubleTapMs, int doubleTapSlop);
+    /** gestures: double-tap timeout (ms), double-tap slop (px), long-press timeout (ms), touch slop (px). */
+    private native void nativeCreate(String filesDir, float density, boolean dark, int[] gestures);
     private native void nativeDestroy();
     private static native void nativeWake();
     private native void nativeSurface(android.view.Surface surface, int width, int height);
@@ -244,6 +238,8 @@ final class OsisView extends SurfaceView implements SurfaceHolder.Callback, Chor
     native boolean nativeSetSelection(int start, int end);
     native boolean nativeDeleteSurrounding(int before, int after, boolean codePoints);
     native boolean nativeEditorAction(int action);
+    /** The field's shortcut Ctrl+letter (the keyboard's Select all, Cut, Copy, Paste). */
+    native boolean nativeShortcut(String letter);
     native boolean nativeBatch(boolean begin);
     native void nativeCloseConnection();
 }

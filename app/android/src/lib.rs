@@ -1,15 +1,15 @@
 //! The osis app on Android (experimental; notes/android.md): the same UI as desktop in a View of
 //! our own (java/: `OsisActivity`, `OsisView`, `OsisInputConnection`). Each of the view's natives
 //! is here; all run on the UI thread, where `shell::Shell` lives, but `nativeWake`'s post. The
-//! store lives in the app's private files dir, made without a peer (desktop's `--peer`): the paste
-//! chip beside the search field adds one.
+//! store lives in the app's private files dir, made without a peer (desktop's `--peer`): pasting
+//! an address into the search field adds one.
 #![cfg(target_os = "android")]
 
 mod gpu;
 mod input;
 mod shell;
 
-use input::{Motion, Taps};
+use input::Motion;
 use jni::objects::{JClass, JFloatArray, JIntArray, JObject, JString};
 use jni::refs::Global;
 use jni::sys::{jboolean, jfloat, jint, jlong};
@@ -19,6 +19,8 @@ use jni::{NativeMethod, native_method};
 use ndk::native_window::NativeWindow;
 use osis_app::store as app_store;
 use osis_kit::ime::android;
+use osis_kit::platform::Thresholds;
+use std::time::Duration;
 use osis_kit::render::Ui;
 use osis_kit::store as data;
 use osis_kit::window::Waker;
@@ -110,7 +112,7 @@ mod natives {
     #![allow(deprecated, reason = "jni 0.22's native_method! calls AtomicBool::fetch_update")]
     use super::*;
 
-    const _: NativeMethod = native_method! { java_type = "net.osis.app.OsisView", extern fn native_create(dir: JString, density: jfloat, dark: jboolean, double_tap_ms: jint, double_tap_slop: jint) };
+    const _: NativeMethod = native_method! { java_type = "net.osis.app.OsisView", extern fn native_create(dir: JString, density: jfloat, dark: jboolean, gestures: jint[]) };
     const _: NativeMethod = native_method! { java_type = "net.osis.app.OsisView", extern fn native_destroy() };
     const _: NativeMethod = native_method! { java_type = "net.osis.app.OsisView", static extern fn native_wake() };
     const _: NativeMethod = native_method! { java_type = "net.osis.app.OsisView", extern fn native_surface(surface: android.view.Surface, width: jint, height: jint) };
@@ -136,19 +138,24 @@ mod natives {
     const _: NativeMethod = native_method! { java_type = "net.osis.app.OsisView", extern fn native_set_selection(start: jint, end: jint) -> jboolean };
     const _: NativeMethod = native_method! { java_type = "net.osis.app.OsisView", extern fn native_delete_surrounding(before: jint, after: jint, code_points: jboolean) -> jboolean };
     const _: NativeMethod = native_method! { java_type = "net.osis.app.OsisView", extern fn native_editor_action(action: jint) -> jboolean };
+    const _: NativeMethod = native_method! { java_type = "net.osis.app.OsisView", extern fn native_shortcut(letter: JString) -> jboolean };
     const _: NativeMethod = native_method! { java_type = "net.osis.app.OsisView", extern fn native_batch(begin: jboolean) -> jboolean };
     const _: NativeMethod = native_method! { java_type = "net.osis.app.OsisView", extern fn native_close_connection() };
 }
 
-fn native_create<'l>(env: &mut Env<'l>, this: JObject<'l>, dir: JString<'l>, density: jfloat, dark: jboolean, double_tap_ms: jint, double_tap_slop: jint) -> R<()> {
+/// `gestures`: `ViewConfiguration`'s double-tap timeout (ms), double-tap slop (px), long-press
+/// timeout (ms) and touch slop (px).
+fn native_create<'l>(env: &mut Env<'l>, this: JObject<'l>, dir: JString<'l>, density: jfloat, dark: jboolean, gestures: JIntArray<'l>) -> R<()> {
     init_logging();
     *VIEW.lock().map_err(|_| jni::errors::Error::JniCall(jni::errors::JniError::Unknown))? = Some(env.new_global_ref(&this)?);
-    osis_kit::platform::set_clipboard(clipboard);
     let dir = std::path::PathBuf::from(dir.try_to_string(env)?).join("store");
-    let taps = Taps::new(i64::from(double_tap_ms), f64::from(double_tap_slop));
+    let mut g = [0; 4];
+    gestures.get_region(env, 0, &mut g)?;
+    let (ms, px) = (|i: jint| Duration::from_millis(u64::try_from(i).unwrap_or(0)), |i: jint| f64::from(i) / f64::from(density).max(0.1));
+    let thresholds = Thresholds { double_tap: ms(g[0]), double_tap_slop: px(g[1]), long_press: ms(g[2]), touch_slop: px(g[3]) };
     match open(&dir) {
         Ok(ui) => {
-            let sh = Shell::new(ui, f64::from(density), dark, taps);
+            let sh = Shell::new(ui, f64::from(density), dark, thresholds);
             SHELL.with(|c| *c.borrow_mut() = Some(sh));
             with_shell(env, &this, |_| ());
         }
@@ -334,6 +341,11 @@ fn native_editor_action<'l>(env: &mut Env<'l>, this: JObject<'l>, _action: jint)
     Ok(with_shell(env, &this, Shell::editor_action).unwrap_or(false))
 }
 
+fn native_shortcut<'l>(env: &mut Env<'l>, this: JObject<'l>, letter: JString<'l>) -> R<jboolean> {
+    let letter = letter.try_to_string(env)?;
+    Ok(with_shell(env, &this, |s| s.shortcut(&letter)).unwrap_or(false))
+}
+
 fn native_batch<'l>(env: &mut Env<'l>, this: JObject<'l>, begin: jboolean) -> R<jboolean> {
     Ok(with_shell(env, &this, |s| s.batch(begin)).unwrap_or(false))
 }
@@ -372,18 +384,21 @@ impl Drop for Logcat {
 }
 
 /// The primary clip as text (any thread): `ClipboardManager.getPrimaryClip().getItemAt(0).coerceToText()`.
-fn clipboard() -> Option<String> {
+pub(crate) fn clipboard() -> Option<String> {
     let vm = jni::JavaVM::singleton().ok()?;
     let r = vm.attach_current_thread(|env| -> R<Option<String>> {
         let ctx = env.call_static_method(jni_str!("android/app/ActivityThread"), jni_str!("currentApplication"), jni_sig!("()Landroid/app/Application;"), &[])?.l()?;
         let name = env.new_string("clipboard")?;
         let cm = env.call_method(&ctx, jni_str!("getSystemService"), jni_sig!("(Ljava/lang/String;)Ljava/lang/Object;"), &[JValue::Object(&name)])?.l()?;
         let clip = env.call_method(&cm, jni_str!("getPrimaryClip"), jni_sig!("()Landroid/content/ClipData;"), &[])?.l()?;
-        if clip.is_null() {
+        if clip.is_null() || env.call_method(&clip, jni_str!("getItemCount"), jni_sig!("()I"), &[])?.i()? == 0 {
             return Ok(None);
         }
         let item = env.call_method(&clip, jni_str!("getItemAt"), jni_sig!("(I)Landroid/content/ClipData$Item;"), &[JValue::Int(0)])?.l()?;
         let text = env.call_method(&item, jni_str!("coerceToText"), jni_sig!("(Landroid/content/Context;)Ljava/lang/CharSequence;"), &[JValue::Object(&ctx)])?.l()?;
+        if text.is_null() {
+            return Ok(None);
+        }
         let s = env.call_method(&text, jni_str!("toString"), jni_sig!("()Ljava/lang/String;"), &[])?.l()?;
         Ok(Some(env.cast_local::<JString>(s)?.try_to_string(env)?))
     });

@@ -2,7 +2,7 @@
 
 use crate::store::Data;
 use crate::view::paged::{Item, List, ListRow, Style};
-use crate::view::{Block, ChipMark, Composer, Do, Entry, FormRow, Mark, Pick, TextRole, WindowState};
+use crate::view::{Block, ChipMark, Composer, Do, Entry, FormRow, Mark, PasteTo, Pick, TextRole, WindowState};
 use osis::Tid;
 use crate::icons::Icon;
 use crate::masonry::core::{Capitalize, EnterKey, NewWidget, Properties, TextInputHints, Widget, WidgetId};
@@ -16,15 +16,13 @@ use crate::widgets::{Chip as KChip, ChipMark as KMark, Panel, PanelKind, Tile, T
 use std::collections::HashMap;
 use std::sync::Arc;
 
-/// Pastes the clipboard into the search field (Android: no Ctrl+V or soft keyboard text).
-#[cfg(target_os = "android")]
+/// Pastes the clipboard into the search field (a stand-in for the selection menu's Paste on touch).
 #[derive(Clone, Debug, PartialEq)]
 pub struct PasteSearch;
 
-#[cfg(target_os = "android")]
 impl crate::view::Action for PasteSearch {
     fn run(&self, act: &crate::view::Act, _: &crate::view::Input) -> osis::Result<()> {
-        act.effects.borrow_mut().paste = crate::platform::clipboard();
+        act.effects.borrow_mut().paste = Some(PasteTo::Search);
         Ok(())
     }
 }
@@ -47,6 +45,8 @@ pub struct Built {
     pub feet: Vec<(String, WidgetId)>,
     /// Filled children, by key: their foot is pinned.
     pub pinned: Vec<String>,
+    /// The field that wants typing now (`Block::Editor::wants_typing`).
+    pub typing: Option<WidgetId>,
     /// The kept lists, by the index of their block.
     pub lists: HashMap<usize, RowList>,
     ids: Vec<WidgetId>,
@@ -101,10 +101,6 @@ impl Acts {
     /// The widget of the editor of this session.
     pub fn editor_for(&self, key: &crate::view::sessions::Key) -> Option<WidgetId> {
         self.editors.iter().find(|(_, k)| *k == key).map(|(id, _)| *id)
-    }
-    /// The widget of the first editor on `(t, ak)`.
-    pub fn editor_of(&self, t: Tid, ak: &str) -> Option<WidgetId> {
-        self.editors.iter().find(|(_, k)| k.1 == t && k.2 == ak && k.3.is_none()).map(|(id, _)| *id)
     }
     pub fn on_enter(&self, id: WidgetId) -> Option<Do> {
         self.enter.get(&id).cloned()
@@ -241,7 +237,7 @@ impl R<'_> {
             Block::Filled { key, has_foot, plain, fills, below, .. } => self.filled(key, *has_foot, *plain, *fills, below),
             Block::Bar { back, descriptor, favorite, star, more, menu } => self.bar(back, descriptor, *favorite, star, more, menu),
             Block::Form { rows, wide } => self.form(rows, *wide),
-            Block::Editor { thing, ak, key, placeholder, role, multiline, lead } => self.editor(*thing, ak, key, placeholder, *role, *multiline, lead)?,
+            Block::Editor { thing, ak, key, placeholder, role, multiline, lead, wants_typing } => self.editor(*thing, ak, key, placeholder, *role, *multiline, lead, *wants_typing)?,
             Block::Composer(c) => self.composer(c),
             Block::Pick { cols, options } => self.pick(*cols, options),
         })
@@ -476,7 +472,8 @@ impl R<'_> {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn editor(&mut self, thing: Tid, ak: &str, map: &Option<String>, placeholder: &str, role: TextRole, multiline: bool, lead: &Option<(Mark, Option<String>)>) -> Option<NewWidget<dyn Widget>> {
+    #[allow(clippy::too_many_arguments)]
+    fn editor(&mut self, thing: Tid, ak: &str, map: &Option<String>, placeholder: &str, role: TextRole, multiline: bool, lead: &Option<(Mark, Option<String>)>, wants_typing: bool) -> Option<NewWidget<dyn Widget>> {
         let look = self.look.clone();
         let key = (self.path.to_string(), thing, ak.to_string(), map.clone());
         let shown = self.window.sessions.show(self.data, &key).ok()?;
@@ -489,6 +486,9 @@ impl R<'_> {
         let (w, id): (NewWidget<TextInput>, _) = style::input(&look, &shown, placeholder, role_t, multiline, hints);
         self.acts.editors.insert(id, key);
         self.built.ids.push(id);
+        if wants_typing {
+            self.built.typing = Some(id);
+        }
         if let Some((m, c)) = lead {
             // an avatar beside the title
             let avatar = NewWidget::new(Tile::new(TileStyle::Row, tile_icon(m), "", "", tint(c), look.clone()));
@@ -516,14 +516,9 @@ impl R<'_> {
                 self.acts.enter.insert(id, c.send.clone());
                 let send = NewWidget::new(KChip::new("Send", None, KMark::Icon(Icon::Plus), look.clone()));
                 self.press(send.id(), c.send.clone());
-                #[allow(unused_mut)]
-                let mut row = Flex::row().with_gap(Length::px(look.sp(8.0))).with_flex_child(panel, 1.0).with_child(send);
-                #[cfg(target_os = "android")]
-                {
-                    let paste = NewWidget::new(KChip::new("Paste and send", None, KMark::Icon(Icon::Plus), look.clone()));
-                    self.press(paste.id(), Do::new(PasteAndSend(c.send.clone())));
-                    row = row.with_child(paste);
-                }
+                let paste = NewWidget::new(KChip::new("Paste and send", None, KMark::Icon(Icon::Plus), look.clone()));
+                self.press(paste.id(), Do::new(PasteAndSend(c.send.clone())));
+                let row = Flex::row().with_gap(Length::px(look.sp(8.0))).with_flex_child(panel, 1.0).with_child(send).with_child(paste);
                 col = col.with_child(NewWidget::new(row));
             } else {
                 col = col.with_child(panel);
@@ -547,15 +542,13 @@ impl R<'_> {
     }
 }
 
-/// Runs a composer's send on the clipboard's text (Android).
-#[cfg(target_os = "android")]
+/// Runs a composer's send on the clipboard's text (a stand-in for the selection menu's Paste).
 #[derive(Clone, Debug, PartialEq)]
 struct PasteAndSend(Do);
 
-#[cfg(target_os = "android")]
 impl crate::view::Action for PasteAndSend {
     fn run(&self, act: &crate::view::Act, _: &crate::view::Input) -> osis::Result<()> {
-        let text = crate::platform::clipboard().unwrap_or_default();
-        self.0.run(act, &crate::view::Input::Text(text))
+        act.effects.borrow_mut().paste = Some(PasteTo::Action(self.0.clone()));
+        Ok(())
     }
 }

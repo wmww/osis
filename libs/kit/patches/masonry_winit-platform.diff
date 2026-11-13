@@ -1,0 +1,214 @@
+--- src/event_loop_runner.rs
++++ src/event_loop_runner.rs
+@@ -5,13 +5,14 @@
+ 
+ use std::collections::{HashMap, HashSet};
+ use std::fmt::Debug;
++use std::cell::RefCell;
++use std::rc::Rc;
+ use std::sync::mpsc::Sender;
+ use std::sync::{Arc, mpsc};
+ 
+ use crate::a11y::{self, Adapter};
+ use copypasta::ClipboardProvider;
+ use masonry_core::app::{RenderRoot, RenderRootOptions, RenderRootSignal, WindowSizePolicy};
+-use masonry_core::core::keyboard::{Key, KeyState};
+ use masonry_core::core::{
+     DefaultProperties, ErasedAction, NewWidget, TextEvent, Widget, WidgetId, WindowEvent,
+ };
+@@ -189,8 +190,9 @@
+     windows: HashMap<HandleId, Window>,
+ 
+     // osis-kit patch: made on the first window (the platform's clipboard, Wayland included);
+-    // a nop clipboard when none can be made, instead of a panic.
+-    clipboard_cx: Option<Box<dyn ClipboardProvider>>,
++    // a nop clipboard when none can be made, instead of a panic. Shared with the app driver
++    // (`MasonryState::clipboard`).
++    clipboard_cx: Clipboard,
+ 
+     // Is `Some` if the most recently displayed frame was an animation frame.
+     last_anim: Option<Instant>,
+@@ -347,7 +349,7 @@
+             windows: HashMap::new(),
+             surfaces: HashMap::new(),
+ 
+-            clipboard_cx: None,
++            clipboard_cx: Clipboard::default(),
+ 
+             signal_sender,
+             default_properties: Arc::new(default_properties),
+@@ -412,8 +414,8 @@
+             return;
+         }
+ 
+-        if self.clipboard_cx.is_none() {
+-            self.clipboard_cx = Some(make_clipboard(event_loop));
++        if self.clipboard_cx.0.borrow().is_none() {
++            *self.clipboard_cx.0.borrow_mut() = Some(make_clipboard(event_loop));
+         }
+ 
+         // TODO: move this check to modification of base_color once winit exposes window transparency state
+@@ -670,31 +672,19 @@
+         {
+             match wet {
+                 WindowEventTranslation::Keyboard(k) => {
+-                    // TODO - Detect in Masonry code instead
+-                    let action_mod = if cfg!(target_os = "macos") {
+-                        k.modifiers.meta()
+-                    } else {
+-                        k.modifiers.ctrl()
+-                    };
+-                    if let Key::Character(c) = &k.key
+-                        && c.as_str().eq_ignore_ascii_case("v")
+-                        && action_mod
+-                        && k.state == KeyState::Down
+-                    {
+-                        window
+-                            .render_root
+-                            .handle_text_event(TextEvent::ClipboardPaste(
+-                                self.clipboard_cx.as_mut().and_then(|c| c.get_contents().ok()).unwrap_or_default(),
+-                            ));
+-                    } else {
+-                        window.render_root.handle_text_event(TextEvent::Keyboard(k));
+-                    }
++                    // osis-kit patch: paste is the widget's (`RenderRootSignal::ClipboardRead`)
++                    window.render_root.handle_text_event(TextEvent::Keyboard(k));
+                 }
+                 WindowEventTranslation::Pointer(p) => {
+-                    window.render_root.handle_pointer_event(p);
++                    // osis-kit patch: through the app driver (its gestures)
++                    let id = window.id;
++                    app_driver.on_pointer_event(id, &mut DriverCtx::new(self, event_loop), p);
+                 }
+             }
+         }
++        let Some(window) = self.windows.get_mut(&handle_id) else {
++            return;
++        };
+ 
+         match event {
+             WinitWindowEvent::ScaleFactorChanged { scale_factor, .. } => {
+@@ -807,7 +797,7 @@
+     pub fn handle_exiting(&mut self, _: &ActiveEventLoop) {
+         // osis-kit patch: the Wayland clipboard's thread uses the loop's wl_display, which
+         // `run_app` drops before this state: stop it while the display is alive.
+-        self.clipboard_cx = None;
++        *self.clipboard_cx.0.borrow_mut() = None;
+     }
+ 
+     pub fn handle_memory_warning(&mut self, _: &ActiveEventLoop) {}
+@@ -859,9 +849,12 @@
+                     handle.set_ime_cursor_area(position, size);
+                 }
+                 RenderRootSignal::ClipboardStore(text) => {
+-                    if let Some(c) = self.clipboard_cx.as_mut() {
+-                        let _ = c.set_contents(text);
+-                    }
++                    let window_id = window.id;
++                    app_driver.on_clipboard_store(window_id, &mut DriverCtx::new(self, event_loop), text);
++                }
++                RenderRootSignal::ClipboardRead => {
++                    let window_id = window.id;
++                    app_driver.on_paste(window_id, &mut DriverCtx::new(self, event_loop));
+                 }
+                 RenderRootSignal::RequestRedraw => {
+                     need_redraw.insert(*handle_id);
+@@ -957,6 +950,11 @@
+         self.window_mut(window_id)
+     }
+ 
++    /// The platform clipboard, as the widgets' cut, copy and paste use it (osis-kit patch).
++    pub fn clipboard(&self) -> Clipboard {
++        self.clipboard_cx.clone()
++    }
++
+     pub fn is_suspended(&self) -> bool {
+         self.is_suspended
+     }
+@@ -994,6 +992,25 @@
+     .unwrap()
+ }
+ 
++/// osis-kit patch: the platform clipboard, made with the first window and dropped when the loop
++/// exits (after which it is empty).
++#[derive(Clone, Default)]
++pub struct Clipboard(Rc<RefCell<Option<Box<dyn ClipboardProvider>>>>);
++
++impl Clipboard {
++    /// The clipboard's text, if any.
++    pub fn get(&self) -> Option<String> {
++        self.0.borrow_mut().as_mut().and_then(|c| c.get_contents().ok())
++    }
++
++    /// Puts `text` on the clipboard.
++    pub fn set(&self, text: String) {
++        if let Some(c) = self.0.borrow_mut().as_mut() {
++            let _ = c.set_contents(text);
++        }
++    }
++}
++
+ /// osis-kit patch: the clipboard of the event loop's display: Wayland through the loop's own
+ /// connection, else X11, else a nop clipboard (upstream unwrapped the X11 one, which panics on a
+ /// Wayland-only session).
+--- src/app_driver.rs
++++ src/app_driver.rs
+@@ -7,7 +7,7 @@
+ use std::sync::atomic::{AtomicU64, Ordering};
+ 
+ use masonry_core::app::RenderRoot;
+-use masonry_core::core::{ErasedAction, WidgetId};
++use masonry_core::core::{ErasedAction, PointerEvent, TextEvent, WidgetId};
+ use tracing::field::DisplayValue;
+ use winit::dpi::PhysicalSize;
+ use winit::event_loop::ActiveEventLoop;
+@@ -95,6 +95,24 @@
+     ///
+     /// The current theme is `ctx.window(window_id).handle().theme()`.
+     fn on_theme_changed(&mut self, window_id: WindowId, ctx: &mut DriverCtx<'_, '_>, theme: Theme) {}
++
++    /// A hook called with each pointer event of a window (osis-kit patch): the driver may
++    /// recognise gestures before the render root gets it. The default passes it on unchanged.
++    fn on_pointer_event(&mut self, window_id: WindowId, ctx: &mut DriverCtx<'_, '_>, event: PointerEvent) {
++        ctx.render_root(window_id).handle_pointer_event(event);
++    }
++
++    /// A widget cut or copied `text` (osis-kit patch). The default puts it on the clipboard.
++    fn on_clipboard_store(&mut self, window_id: WindowId, ctx: &mut DriverCtx<'_, '_>, text: String) {
++        ctx.clipboard().set(text);
++    }
++
++    /// The focused widget asked to paste (osis-kit patch). The default answers with the
++    /// clipboard's text.
++    fn on_paste(&mut self, window_id: WindowId, ctx: &mut DriverCtx<'_, '_>) {
++        let text = ctx.clipboard().get().unwrap_or_default();
++        ctx.render_root(window_id).handle_text_event(TextEvent::ClipboardPaste(text));
++    }
+ }
+ 
+ impl DriverCtx<'_, '_> {
+@@ -136,6 +154,11 @@
+         self.state.close_window(window_id);
+     }
+ 
++    /// The platform clipboard (osis-kit patch).
++    pub fn clipboard(&self) -> crate::app::Clipboard {
++        self.state.clipboard()
++    }
++
+     /// Exits the application (stops the event loop).
+     pub fn exit(&mut self) {
+         self.state.exit = true;
+--- src/lib.rs
++++ src/lib.rs
+@@ -104,8 +104,8 @@
+ pub mod app {
+     pub use super::app_driver::{AppDriver, DriverCtx, WindowId};
+     pub use super::event_loop_runner::{
+-        EventLoop, EventLoopBuilder, EventLoopProxy, MasonryState, MasonryUserEvent, NewWindow,
+-        Window, run, run_with,
++        Clipboard, EventLoop, EventLoopBuilder, EventLoopProxy, MasonryState, MasonryUserEvent,
++        NewWindow, Window, run, run_with,
+     };
+ 
+     pub(crate) use super::convert_winit_event::{

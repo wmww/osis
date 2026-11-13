@@ -1,4 +1,4 @@
-//! Android's touch and key events as Masonry's (ui-events).
+//! Android's touch and key events as Masonry's (ui-events); kit's `input` counts the taps.
 
 use osis_kit::masonry::core::keyboard::{Key, KeyState, KeyboardEvent, Modifiers, NamedKey};
 use osis_kit::masonry::core::pointer::{PointerButton, PointerButtonEvent, PointerButtons, PointerEvent, PointerId, PointerInfo, PointerState, PointerType, PointerUpdate};
@@ -30,35 +30,8 @@ pub struct Motion<'a> {
     pub time_ms: i64,
 }
 
-/// Counts taps for double and triple taps (select a word, a line): a down soon after and near
-/// the last one counts on. The platform's own limits (`ViewConfiguration`).
-pub struct Taps {
-    pub timeout_ms: i64,
-    pub slop: f64,
-    last: Option<(i64, f64, f64, u8)>,
-}
-
-impl Taps {
-    pub fn new(timeout_ms: i64, slop: f64) -> Taps {
-        Taps { timeout_ms, slop, last: None }
-    }
-
-    fn down(&mut self, time: i64, x: f64, y: f64) -> u8 {
-        let count = match self.last {
-            Some((t, lx, ly, c)) if time - t <= self.timeout_ms && (x - lx).hypot(y - ly) <= self.slop => (c % 3) + 1,
-            _ => 1,
-        };
-        self.last = Some((time, x, y, count));
-        count
-    }
-
-    fn count(&self) -> u8 {
-        self.last.map_or(1, |l| l.3)
-    }
-}
-
 /// The Masonry events of one MotionEvent.
-pub fn pointer_events(m: &Motion<'_>, scale: f64, taps: &mut Taps) -> Vec<PointerEvent> {
+pub fn pointer_events(m: &Motion<'_>, scale: f64) -> Vec<PointerEvent> {
     let at = |i: usize| -> Option<(PointerInfo, PointerState)> {
         let id = *m.ids.get(i)?;
         let pointer_type = match m.tools.get(i)? {
@@ -83,12 +56,8 @@ pub fn pointer_events(m: &Motion<'_>, scale: f64, taps: &mut Taps) -> Vec<Pointe
     };
     let button = |pointer, state| PointerButtonEvent { button: Some(PointerButton::Primary), pointer, state };
     match m.action {
-        DOWN | POINTER_DOWN => at(m.index).map(|(p, mut s)| {
-            s.count = taps.down(m.time_ms, s.position.x, s.position.y);
-            vec![PointerEvent::Down(button(p, s))]
-        }),
+        DOWN | POINTER_DOWN => at(m.index).map(|(p, s)| vec![PointerEvent::Down(button(p, s))]),
         UP | POINTER_UP => at(m.index).map(|(p, mut s)| {
-            s.count = taps.count();
             s.buttons = PointerButtons::new();
             s.pressure = 0.0;
             vec![PointerEvent::Up(button(p, s))]

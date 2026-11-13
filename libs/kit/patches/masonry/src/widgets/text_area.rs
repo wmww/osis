@@ -657,7 +657,6 @@ impl<const EDITABLE: bool> Widget for TextArea<EDITABLE> {
                 let mut edited = false;
                 match &key_event.key {
                     // Cut
-                    #[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
                     Key::Character(x)
                         if EDITABLE && action_mod && x.as_str().eq_ignore_ascii_case("x") =>
                     {
@@ -671,13 +670,18 @@ impl<const EDITABLE: bool> Widget for TextArea<EDITABLE> {
                         }
                     }
                     // Copy
-                    #[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
                     Key::Character(c) if action_mod && c.as_str().eq_ignore_ascii_case("c") => {
                         if let Some(text) = self.editor.selected_text()
                             && !text.is_empty()
                         {
                             ctx.set_clipboard(text.to_string());
                         }
+                    }
+                    // Paste: the platform answers with `TextEvent::ClipboardPaste`
+                    Key::Character(v)
+                        if EDITABLE && action_mod && v.as_str().eq_ignore_ascii_case("v") =>
+                    {
+                        ctx.request_paste();
                     }
                     Key::Character(a) if action_mod && a.as_str().eq_ignore_ascii_case("a") => {
                         let mut drv = self.editor.driver(fctx, lctx);

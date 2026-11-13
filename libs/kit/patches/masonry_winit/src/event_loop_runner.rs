@@ -5,13 +5,14 @@
 
 use std::collections::{HashMap, HashSet};
 use std::fmt::Debug;
+use std::cell::RefCell;
+use std::rc::Rc;
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, mpsc};
 
 use crate::a11y::{self, Adapter};
 use copypasta::ClipboardProvider;
 use masonry_core::app::{RenderRoot, RenderRootOptions, RenderRootSignal, WindowSizePolicy};
-use masonry_core::core::keyboard::{Key, KeyState};
 use masonry_core::core::{
     DefaultProperties, ErasedAction, NewWidget, TextEvent, Widget, WidgetId, WindowEvent,
 };
@@ -189,8 +190,9 @@ pub struct MasonryState<'a> {
     windows: HashMap<HandleId, Window>,
 
     // osis-kit patch: made on the first window (the platform's clipboard, Wayland included);
-    // a nop clipboard when none can be made, instead of a panic.
-    clipboard_cx: Option<Box<dyn ClipboardProvider>>,
+    // a nop clipboard when none can be made, instead of a panic. Shared with the app driver
+    // (`MasonryState::clipboard`).
+    clipboard_cx: Clipboard,
 
     // Is `Some` if the most recently displayed frame was an animation frame.
     last_anim: Option<Instant>,
@@ -347,7 +349,7 @@ impl MasonryState<'_> {
             windows: HashMap::new(),
             surfaces: HashMap::new(),
 
-            clipboard_cx: None,
+            clipboard_cx: Clipboard::default(),
 
             signal_sender,
             default_properties: Arc::new(default_properties),
@@ -412,8 +414,8 @@ impl MasonryState<'_> {
             return;
         }
 
-        if self.clipboard_cx.is_none() {
-            self.clipboard_cx = Some(make_clipboard(event_loop));
+        if self.clipboard_cx.0.borrow().is_none() {
+            *self.clipboard_cx.0.borrow_mut() = Some(make_clipboard(event_loop));
         }
 
         // TODO: move this check to modification of base_color once winit exposes window transparency state
@@ -670,31 +672,19 @@ impl MasonryState<'_> {
         {
             match wet {
                 WindowEventTranslation::Keyboard(k) => {
-                    // TODO - Detect in Masonry code instead
-                    let action_mod = if cfg!(target_os = "macos") {
-                        k.modifiers.meta()
-                    } else {
-                        k.modifiers.ctrl()
-                    };
-                    if let Key::Character(c) = &k.key
-                        && c.as_str().eq_ignore_ascii_case("v")
-                        && action_mod
-                        && k.state == KeyState::Down
-                    {
-                        window
-                            .render_root
-                            .handle_text_event(TextEvent::ClipboardPaste(
-                                self.clipboard_cx.as_mut().and_then(|c| c.get_contents().ok()).unwrap_or_default(),
-                            ));
-                    } else {
-                        window.render_root.handle_text_event(TextEvent::Keyboard(k));
-                    }
+                    // osis-kit patch: paste is the widget's (`RenderRootSignal::ClipboardRead`)
+                    window.render_root.handle_text_event(TextEvent::Keyboard(k));
                 }
                 WindowEventTranslation::Pointer(p) => {
-                    window.render_root.handle_pointer_event(p);
+                    // osis-kit patch: through the app driver (its gestures)
+                    let id = window.id;
+                    app_driver.on_pointer_event(id, &mut DriverCtx::new(self, event_loop), p);
                 }
             }
         }
+        let Some(window) = self.windows.get_mut(&handle_id) else {
+            return;
+        };
 
         match event {
             WinitWindowEvent::ScaleFactorChanged { scale_factor, .. } => {
@@ -807,7 +797,7 @@ impl MasonryState<'_> {
     pub fn handle_exiting(&mut self, _: &ActiveEventLoop) {
         // osis-kit patch: the Wayland clipboard's thread uses the loop's wl_display, which
         // `run_app` drops before this state: stop it while the display is alive.
-        self.clipboard_cx = None;
+        *self.clipboard_cx.0.borrow_mut() = None;
     }
 
     pub fn handle_memory_warning(&mut self, _: &ActiveEventLoop) {}
@@ -859,9 +849,12 @@ impl MasonryState<'_> {
                     handle.set_ime_cursor_area(position, size);
                 }
                 RenderRootSignal::ClipboardStore(text) => {
-                    if let Some(c) = self.clipboard_cx.as_mut() {
-                        let _ = c.set_contents(text);
-                    }
+                    let window_id = window.id;
+                    app_driver.on_clipboard_store(window_id, &mut DriverCtx::new(self, event_loop), text);
+                }
+                RenderRootSignal::ClipboardRead => {
+                    let window_id = window.id;
+                    app_driver.on_paste(window_id, &mut DriverCtx::new(self, event_loop));
                 }
                 RenderRootSignal::RequestRedraw => {
                     need_redraw.insert(*handle_id);
@@ -957,6 +950,11 @@ impl MasonryState<'_> {
         self.window_mut(window_id)
     }
 
+    /// The platform clipboard, as the widgets' cut, copy and paste use it (osis-kit patch).
+    pub fn clipboard(&self) -> Clipboard {
+        self.clipboard_cx.clone()
+    }
+
     pub fn is_suspended(&self) -> bool {
         self.is_suspended
     }
@@ -992,6 +990,25 @@ fn create_surface<'s>(
         wgpu::PresentMode::AutoVsync,
     ))
     .unwrap()
+}
+
+/// osis-kit patch: the platform clipboard, made with the first window and dropped when the loop
+/// exits (after which it is empty).
+#[derive(Clone, Default)]
+pub struct Clipboard(Rc<RefCell<Option<Box<dyn ClipboardProvider>>>>);
+
+impl Clipboard {
+    /// The clipboard's text, if any.
+    pub fn get(&self) -> Option<String> {
+        self.0.borrow_mut().as_mut().and_then(|c| c.get_contents().ok())
+    }
+
+    /// Puts `text` on the clipboard.
+    pub fn set(&self, text: String) {
+        if let Some(c) = self.0.borrow_mut().as_mut() {
+            let _ = c.set_contents(text);
+        }
+    }
 }
 
 /// osis-kit patch: the clipboard of the event loop's display: Wayland through the loop's own

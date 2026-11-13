@@ -1,5 +1,6 @@
 //! osis-kit: the first-party UI toolkit over Masonry (notes/app.md, kit and app). Holds
-//! windowing (`window`), the keyed list reconciler (`list`), themes (`theme`: parameters, the six defaults and
+//! windowing (`window`), what platform shells supply (`platform`) and the input decisions made
+//! with it (`input`), the keyed list reconciler (`list`), themes (`theme`: parameters, the six defaults and
 //! their resolution into a `Look`; `backdrop`: backgrounds), icons, text helpers and the widgets
 //! drawn from a look (`widgets`), and the view system: `view` (toolkit-free model), `views` and
 //! `facets` (generic view types and core-aspect facets), `render` (the widgets for it and the
@@ -13,7 +14,9 @@ pub mod facets;
 pub mod fonts;
 pub mod icons;
 pub mod ime;
+pub mod input;
 pub mod list;
+pub mod platform;
 pub mod render;
 pub mod store;
 pub mod time;
@@ -34,23 +37,4 @@ pub use masonry_winit;
 pub mod schema {
     use osis::generated as osis_schema;
     include!(concat!(env!("OUT_DIR"), "/ui.rs"));
-}
-
-/// What the Android packaging (app/android, notes/android.md) supplies: the system clipboard, read
-/// by the paste chips (a phone has no Ctrl+V).
-#[cfg(target_os = "android")]
-pub mod platform {
-    use std::sync::OnceLock;
-
-    static CLIPBOARD: OnceLock<fn() -> Option<String>> = OnceLock::new();
-
-    /// Sets the clipboard reader, once.
-    pub fn set_clipboard(read: fn() -> Option<String>) {
-        let _ = CLIPBOARD.set(read);
-    }
-
-    /// The clipboard's text, if any.
-    pub fn clipboard() -> Option<String> {
-        CLIPBOARD.get().and_then(|read| read())
-    }
 }

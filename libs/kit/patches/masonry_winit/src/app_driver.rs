@@ -7,7 +7,7 @@ use std::num::NonZeroU64;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use masonry_core::app::RenderRoot;
-use masonry_core::core::{ErasedAction, WidgetId};
+use masonry_core::core::{ErasedAction, PointerEvent, TextEvent, WidgetId};
 use tracing::field::DisplayValue;
 use winit::dpi::PhysicalSize;
 use winit::event_loop::ActiveEventLoop;
@@ -95,6 +95,24 @@ pub trait AppDriver {
     ///
     /// The current theme is `ctx.window(window_id).handle().theme()`.
     fn on_theme_changed(&mut self, window_id: WindowId, ctx: &mut DriverCtx<'_, '_>, theme: Theme) {}
+
+    /// A hook called with each pointer event of a window (osis-kit patch): the driver may
+    /// recognise gestures before the render root gets it. The default passes it on unchanged.
+    fn on_pointer_event(&mut self, window_id: WindowId, ctx: &mut DriverCtx<'_, '_>, event: PointerEvent) {
+        ctx.render_root(window_id).handle_pointer_event(event);
+    }
+
+    /// A widget cut or copied `text` (osis-kit patch). The default puts it on the clipboard.
+    fn on_clipboard_store(&mut self, window_id: WindowId, ctx: &mut DriverCtx<'_, '_>, text: String) {
+        ctx.clipboard().set(text);
+    }
+
+    /// The focused widget asked to paste (osis-kit patch). The default answers with the
+    /// clipboard's text.
+    fn on_paste(&mut self, window_id: WindowId, ctx: &mut DriverCtx<'_, '_>) {
+        let text = ctx.clipboard().get().unwrap_or_default();
+        ctx.render_root(window_id).handle_text_event(TextEvent::ClipboardPaste(text));
+    }
 }
 
 impl DriverCtx<'_, '_> {
@@ -134,6 +152,11 @@ impl DriverCtx<'_, '_> {
     /// Panics if the window cannot be found.
     pub fn close_window(&mut self, window_id: WindowId) {
         self.state.close_window(window_id);
+    }
+
+    /// The platform clipboard (osis-kit patch).
+    pub fn clipboard(&self) -> crate::app::Clipboard {
+        self.state.clipboard()
     }
 
     /// Exits the application (stops the event loop).

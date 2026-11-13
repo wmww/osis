@@ -94,3 +94,34 @@ fn undo_works_on_a_kit_created_thing() {
     assert!(d.things().unwrap().contains(&t), "back in its group");
     assert_eq!(d.name(t).unwrap(), "one");
 }
+
+/// Every block of a page's tree.
+fn blocks(n: &osis_kit::views::Node) -> Vec<Block> {
+    let mut out = n.out.blocks.clone();
+    for c in &n.children {
+        out.extend(blocks(c));
+    }
+    out
+}
+
+/// Whether the page of `t` has a title field wanting typing, as `w` sees it.
+fn title_wants_typing(d: &Data, w: &WindowState, t: Tid) -> bool {
+    let n = page(&Cx::new(d, w, false), t).unwrap();
+    blocks(&n).iter().any(|b| matches!(b, Block::Editor { ak, wants_typing: true, .. } if ak == "name.0"))
+}
+
+/// A thing made here from an offer wants its title typed when its page appears; once the shell
+/// served that (clearing `NAMING`), and on any other thing, it does not.
+#[test]
+fn a_new_things_title_wants_typing() {
+    use osis_kit::view::{Act, Action, Input, NAMING, UseOffer};
+    let d = data();
+    let w = WindowState::default();
+    let old = d.create_note().unwrap();
+    UseOffer("note", None).run(&Act::new(&d, &w), &Input::Press).unwrap();
+    let t = d.opened().unwrap().unwrap();
+    assert!(title_wants_typing(&d, &w, t));
+    assert!(!title_wants_typing(&d, &w, old));
+    w.set_local(NAMING, None);
+    assert!(!title_wants_typing(&d, &w, t));
+}
