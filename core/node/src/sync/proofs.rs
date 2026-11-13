@@ -121,7 +121,8 @@ impl SyncEngine {
         self.provers_mark = Some(mark);
         let tids = |p: Vec<Prover>| p.iter().map(|p| p.record.tid()).collect::<BTreeSet<Tid>>();
         let now = (tids(provers(&mut self.engine, false)?), tids(provers(&mut self.engine, true)?));
-        let up: Vec<(ConnId, [u8; 32])> = self.conns.iter().filter(|(_, c)| c.up).map(|(id, c)| (*id, c.host)).collect();
+        // past the peer's Hello: what a dialed connection proves is fixed then (`dialed_start`)
+        let up: Vec<(ConnId, [u8; 32])> = self.conns.iter().filter(|(_, c)| c.is_ready()).map(|(id, c)| (*id, c.host)).collect();
         let mut stale = Vec::new();
         for (conn, host) in up {
             let mine = if self.dials_own_node(&host) { &now.1 } else { &now.0 };
