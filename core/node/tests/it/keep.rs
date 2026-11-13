@@ -549,33 +549,36 @@ fn any_path_keeps_spec_perm_3() {
 }
 
 // spec/permissions.md §3, Retain: a copy hangs on a holder whose loss is not yet carried out (an
-// `until` passing waits for node-sync): bob's admin on P ends by its `until` under P's retain, and P's
-// edge on C ended saying retain while bob read P. Judged at once or one commit at a time, both stay.
+// `until` passing waits for node-sync): bob's admin on P ends by its `until`, and P's edge on C ended
+// saying retain while bob read P. While P waits, C hangs on it; when P drops, C follows: both stay
+// under P's retain, both go under its erase. Judged at once or one commit at a time alike.
 #[test]
 fn a_copy_hangs_on_a_holder_not_yet_dropped_spec_perm_3() {
-    let (mut lp, bob, p, c) = nested((true, false));
-    let until = osis_base::WallMs(lp.peers[0].engine.now().0 + 1_500);
-    let mut ids = lp.peers[0].engine.grant(&p, &bob, &ct::Edge { until: Some(until), ..edge_of(Role::Admin) }).unwrap().commits;
-    lp.peers[0].clock.advance(1_000);
-    ids.extend(lp.peers[0].engine.demote(&c, &saying(p, true)).unwrap().commits);
-    for q in &mut lp.peers {
-        q.clock.advance(10_000);
-    }
-    let judge = |lp: &mut LocalPeer| {
+    for keep in [true, false] {
+        let (mut lp, bob, p, c) = nested((keep, false));
+        let until = osis_base::WallMs(lp.peers[0].engine.now().0 + 1_500);
+        let mut ids = lp.peers[0].engine.grant(&p, &bob, &ct::Edge { until: Some(until), ..edge_of(Role::Admin) }).unwrap().commits;
+        lp.peers[0].clock.advance(1_000);
+        ids.extend(lp.peers[0].engine.demote(&c, &saying(p, true)).unwrap().commits);
+        for q in &mut lp.peers {
+            q.clock.advance(10_000);
+        }
+        let mut one = lp.copy().unwrap();
+        send(&mut lp, 0, 1, &ids);
         lp.peers[1].engine.drop_lost_due().unwrap();
+        assert_eq!(lp.peers[1].engine.kept_copies(), vec![c], "C hangs on P, whose drop waits");
         lp.peers[1].engine.drop_lost_secrets().unwrap();
-    };
-    let mut one = lp.copy().unwrap();
-    send(&mut lp, 0, 1, &ids);
-    judge(&mut lp);
-    for id in &ids {
-        send(&mut one, 0, 1, &[*id]);
-        judge(&mut one);
-    }
-    for lp in [&mut lp, &mut one] {
-        let kept = lp.peers[1].engine.kept_copies();
-        assert!(kept.contains(&p) && kept.contains(&c), "{kept:?}");
-        assert_eq!(read(lp, c), Some(s(&big(D_MARK))));
+        for id in &ids {
+            send(&mut one, 0, 1, &[*id]);
+            one.peers[1].engine.drop_lost_due().unwrap();
+            one.peers[1].engine.drop_lost_secrets().unwrap();
+        }
+        for lp in [&mut lp, &mut one] {
+            let kept = lp.peers[1].engine.kept_copies();
+            assert_eq!(kept.contains(&p) && kept.contains(&c), keep, "{kept:?}");
+            assert!(keep || kept.is_empty(), "{kept:?}");
+            assert_eq!(read(lp, c), keep.then(|| s(&big(D_MARK))));
+        }
     }
 }
 
