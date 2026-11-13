@@ -961,8 +961,8 @@ fn a_removed_nodes_removal_named_only_by_its_fork_is_not_named_again_spec_permis
 // spec/permissions.md §5.5 (Thing lists): a rotation's lists name nothing until it is held. Nodes
 // 0 and 1 rotate at once; node 0 writes at its own epoch, then rotates over both heads, its list
 // naming that write. A reader holding node 0's line but not node 1's rotation gets the new
-// rotation first (it waits for its other parent): what its list names stands as before. Once
-// node 1's rotation comes, the write counts by the list, as a rebuilt index reads it
+// rotation first (it waits for its other parent, across a restart): what its list names stands as
+// before. Once node 1's rotation comes, the write counts by the list, as a rebuilt index reads it
 #[test]
 fn a_rotation_waiting_for_a_head_names_nothing_until_held_spec_permissions_5_5() {
     let (mut lp, a, t) = world(4, 3);
@@ -976,6 +976,8 @@ fn a_rotation_waiting_for_a_head_names_nothing_until_held_spec_permissions_5_5()
     assert!(lp.peers[0].engine.rotation_lists(&m).unwrap().iter().any(|(_, ids)| ids.contains(&w)), "the rotation names the write");
     send(&mut lp, 0, 3, &[m]);
     assert_eq!(read(&mut lp, 3, t), Some(Value::Str("at ra".into())), "at an open epoch");
+    // the kept lists wait across a restart
+    lp.peers[3].restart(0).unwrap();
     send(&mut lp, 1, 3, &[rb]);
     assert_eq!(lp.peers[3].engine.core.account_view(&a.account).unwrap().heads(), vec![m]);
     assert_eq!(read(&mut lp, 3, t), Some(Value::Str("at ra".into())), "named by the rotation's list");

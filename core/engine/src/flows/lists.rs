@@ -39,10 +39,12 @@ fn list_key(rotation: &CommitId, thing: &Tid, index: u64) -> Vec<u8> {
     [records::LISTS, &rotation.0[..], thing.as_bytes(), &index.to_be_bytes()[..]].concat()
 }
 
-/// Records that `source` names `commits` on `thing`. With `judge` (`source` is held or being
-/// applied) each held one may stand otherwise now; a source held later judges what it names on
-/// arrival (`refresh_epochs`, a rotation whose count moved).
-pub(crate) fn put_names(tx: &mut Tx<'_>, source: &CommitId, thing: &Tid, commits: impl IntoIterator<Item = CommitId>, judge: bool) -> Result<()> {
+/// Records that `source` names `commits` on `thing`. A name is judged once its source is held: then
+/// each held one may stand otherwise now; a source held later (a rotation's lists are kept before
+/// it applies, and it may wait for a head not here) judges what it names on arrival
+/// (`refresh_epochs`, a rotation whose count moved).
+pub(crate) fn put_names(tx: &mut Tx<'_>, source: &CommitId, thing: &Tid, commits: impl IntoIterator<Item = CommitId>) -> Result<()> {
+    let judge = tx.core.ix.commits.contains_key(source);
     for c in commits {
         tx.txn.put_local(&name_key(&c, thing, source), &[], Shred::No)?;
         tx.txn.put_local(&named_by_key(source, &c, thing), &[], Shred::No)?;
@@ -97,9 +99,7 @@ pub(crate) fn keep_certs(tx: &mut Tx<'_>, certs: &[ThingCert]) -> Result<bool> {
         new = true;
         tx.txn.put_local(&key, &encode_list_blob(std::slice::from_ref(c)), Shred::No)?;
         if let ListIds::Inline(ids) = &c.list.ids {
-            // kept before its rotation is held (it may wait for a head not here), a list moves nothing yet
-            let held = tx.core.ix.commits.contains_key(&c.rotation);
-            put_names(tx, &c.rotation, &c.list.thing, ids.iter().copied(), held)?;
+            put_names(tx, &c.rotation, &c.list.thing, ids.iter().copied())?;
         }
     }
     Ok(new)
@@ -201,7 +201,7 @@ pub(crate) fn note_listing(tx: &mut Tx<'_>, h: &osis_commit::Header, id: &Commit
                 _ => None,
             }));
         }
-        put_names(tx, id, &a.tid, ids, true)?;
+        put_names(tx, id, &a.tid, ids)?;
     }
     Ok(())
 }

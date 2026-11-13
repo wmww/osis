@@ -578,7 +578,6 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Parts, o
     index_commit(tx.core, &id, &view);
     note_rotation_sigs(tx.core, &blob.header, &id, &blob.sigs);
     validity::note_addenda(tx.core, &h, &id, &parts.whole);
-    crate::flows::lists::note_listing(tx, &h, &id, &parts.whole)?;
     if tx.core.accounts.contains_key(&h.author) && origin == Origin::Remote {
         tx.core.signing_due = true;
     }
@@ -597,6 +596,8 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Parts, o
     crate::retention::fetch_fallen(tx, &h, &id, &missing)?;
     tx.core.put_meta(id, meta.clone());
     tx.core.index_validity(&id);
+    // held now: what it names is judged (`lists::put_names`)
+    crate::flows::lists::note_listing(tx, &h, &id, &parts.whole)?;
     crate::retention::note_requests(tx, &id, &h)?;
 
     let pend = super::keys::before_join(tx, &h, &id, &read, &valid)?;
