@@ -139,7 +139,7 @@ pub struct GroupsArgs {
     #[arg(long = "in", value_name = "G")]
     pub in_: Option<String>,
     /// Item of each group (comma-separated)
-    #[arg(long, value_name = "G,G", value_delimiter = ',')]
+    #[arg(long, value_name = "G,G", value_delimiter = ',', conflicts_with = "in_")]
     pub in_all: Vec<String>,
 }
 

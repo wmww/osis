@@ -19,9 +19,6 @@ pub struct Did {
 
 /// The groups a new thing goes into (none: added later, or on this node alone).
 pub fn groups(ctx: &Ctx<'_>, p: &GroupsArgs) -> anyhow::Result<Vec<Tid>> {
-    if p.in_.is_some() && !p.in_all.is_empty() {
-        return Err(usage("give at most one of --in G, --in-all G,G"));
-    }
     p.in_.iter().chain(&p.in_all).map(|g| ctx.tid(g)).collect()
 }
 
@@ -258,7 +255,7 @@ pub fn apply(ctx: &mut Ctx<'_>, w: &mut osis::Write<'_>, c: &ScriptCmd, did: &mu
     Ok(())
 }
 
-fn member(t: osis::Tid, subgroup: bool) -> Member {
+pub(crate) fn member(t: osis::Tid, subgroup: bool) -> Member {
     if subgroup { Member::Subgroup(t) } else { Member::Item(t) }
 }
 

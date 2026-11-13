@@ -584,9 +584,7 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
         Cmd::Retained { drop: Some(a) } => Ok(db.drop_retained_copy(ctx.tid(&a)?)?),
         Cmd::Retained { drop: None } => ctx.list(&db.retained_copies()?.iter().map(Tid::to_uri).collect::<Vec<_>>()),
         Cmd::AddWithGrant { t, g, role, subgroup } => {
-            let t = ctx.tid(&t)?;
-            let member = if subgroup { Member::Subgroup(t) } else { Member::Item(t) };
-            Ok(db.add_with_grant(member, ctx.tid(&g)?, parse_role(&role)?)?)
+            Ok(db.add_with_grant(write::member(ctx.tid(&t)?, subgroup), ctx.tid(&g)?, parse_role(&role)?)?)
         }
         Cmd::Chat(c) => crate::chat::run(ctx, c),
         Cmd::Link(LinkCmd::Make { t, role, until, single_use }) => {
