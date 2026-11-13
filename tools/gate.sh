@@ -4,7 +4,8 @@
 # deny) fail fast; every test stage runs to its end whatever an earlier one did, and the gate then
 # prints every failure, KNOWN (tools/known_failures.txt) or NEW (tools/gate_failures.py). Exit 0
 # on a pass, 3 when only KNOWN failures failed, 1 on a NEW one, 2 on bad use. Run it in the task's
-# worktree after `git rebase main`; main is only ever fast-forwarded, never built.
+# worktree after `git fetch && git rebase origin/main` (it refuses a HEAD without origin/main);
+# main is only ever fast-forwarded, never built.
 # Usage: tools/gate.sh [--all] [--base REV] [--plan]   (from the worktree root)
 # Its tests: the default tests (`cargo test`) plus the branch's selection from tools/test_select.py
 # (properties and sim scenarios at small size, from the crates the branch touched and their
@@ -119,6 +120,12 @@ else
   select=diff
 fi
 if [ -n "$plan" ]; then echo "core=${core:-0} gui=${gui:-0} unify=${unify:-0} select=$select"; exit 0; fi
+# a branch not on origin's main gates code other than what merges (local main lags when the other
+# box merges): refuse it
+timeout 60 git fetch -q origin main 2>/dev/null || echo "gate: fetching origin main failed; checking against the last fetched one" >&2
+if git rev-parse -q --verify refs/remotes/origin/main > /dev/null && ! git merge-base --is-ancestor refs/remotes/origin/main HEAD; then
+  echo "gate: HEAD does not contain origin/main ($(git rev-list --count HEAD..refs/remotes/origin/main) commits behind): git fetch && git rebase origin/main" >&2; exit 2
+fi
 # Feature unification is selection-invariant (notes/build.md, Feature unification): after the
 # whole-workspace build (GUI included), building the default members, or any one member alone,
 # compiles nothing.
