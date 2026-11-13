@@ -15,3 +15,4 @@ sim-sweep:evil_host_drops 0/117 issues/evil-host-drops-s0-churn.md labels change
 sim-sweep:evil_host_drops 0/138 issues/evil-host-drops-s0-churn.md not quiescent after \d+ rounds
 sim-sweep:folders 636429852973/636429852979 issues/folders-sim-message-storm.md message storm: \d+ deliveries without the queue emptying
 sim-sweep:ephemeral 0/43 issues/ephemeral-sim-reader-holds-unlisted-commits.md ephemeral divergence on
+ephemeral::ephemeral_reverts_with_restarts_alike_large_spec_crdt_4_6 OSIS_EPH_START=704201441278 issues/ephemeral-restarts-reader-loses-value-seed.md failed: seed \d+: Tid\(\w+\)$
