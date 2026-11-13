@@ -182,6 +182,10 @@ impl Seq {
     fn covered(&self) -> Covered<'_> {
         Covered { elems: &self.elems, part: self.part.as_deref() }
     }
+    /// Whether a record holds element `d` (a write of it), a miss noted outside the pages loaded.
+    pub(crate) fn holds(&self, d: &Dot) -> bool {
+        self.covered().find(d).is_some()
+    }
     /// Whether the record lookup of `d` is outside the pages loaded (a miss noted).
     fn uncovered(&self, d: &Dot) -> bool {
         self.part.as_ref().is_some_and(|p| !p.covers(d, d))

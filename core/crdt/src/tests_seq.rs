@@ -531,7 +531,7 @@ fn rejects_bad_runs_spec_3_3() {
     // segments: short, too long, of another commit's source
     bad(text_with(vec![run(i(3), 3, created(2), s("abc"), vec![], vec![])]));
     bad(text_with(vec![run(i(3), 2, created(3), s("ab"), vec![], vec![])]));
-    // own creation above the range, a creation outside the range, own counter used twice
+    // own creation above the range, a creation outside the range, a creation repeated as a PosW
     bad(text_with(vec![run(i(5), 2, created(2), s("ab"), vec![], vec![])]));
     bad(text_with(vec![run(i(1), 2, created(2), s("ab"), vec![], vec![])]));
     bad(text_with(vec![run(i(3), 1, created(1), s("a"), vec![l(vec![i(0), i(0), i(0)])], vec![])]));

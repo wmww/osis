@@ -120,9 +120,6 @@ fn rejects_own_counters_out_of_range_spec_2_3() {
     rejects(&delta(vec![], vec![], l(vec![i(0), l(vec![]), l(vec![i(0), i(2)]), i(1)])), &wcx(), ErrorClass::BadInput);
     // an own element dot at hi
     rejects(&delta(vec![], vec![], set_with(vec![elem(i(6), 1)])), &wcx(), ErrorClass::BadInput);
-    // two creations taking one counter
-    let s = l(vec![i(4), l(vec![]), l(vec![]), Value::Map([(i(1), set_with(vec![elem(i(3), 1)])), (i(2), set_with(vec![elem(i(3), 2)]))].into_iter().collect())]);
-    rejects(&delta(vec![], vec![], s), &wcx(), ErrorClass::BadInput);
 }
 
 #[test]

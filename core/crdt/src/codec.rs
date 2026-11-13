@@ -725,9 +725,6 @@ pub(crate) fn decode_elem_items(cx: &mut Dec, items: List, set: bool, out: &mut 
         if reset.is_none() && gone.is_none() && frag.as_deref().is_none_or(Fragment::is_empty) {
             return Err(Error::Malformed("record without a write"));
         }
-        if frag.is_some() || gone.is_some() {
-            cx.claim(&dot)?;
-        }
         out.insert(dot, Elem { reset, frag, gone });
     }
     Ok(())
@@ -795,9 +792,6 @@ pub(crate) fn decode_entries(cx: &mut Dec, items: List, entries: &mut BTreeMap<E
         let frag = frag?.map(Box::new);
         if let Some(k) = &key {
             check_value(cx, k)?;
-        }
-        if frag.is_some() {
-            cx.claim(dot)?;
         }
         // the creation: carried by a snapshot; implied in a writer's delta for an
         // entry created here (own dot in the range)

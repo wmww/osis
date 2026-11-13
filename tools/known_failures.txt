@@ -10,7 +10,6 @@ ephemeral::random_window_one_capped_host_large OSIS_EPH_START=1811714465 issues/
 runtime::a_paired_peer_serves_what_it_reads_in_process_spec_data_model_9 - issues/paired-peer-runtime-flake.md Unsynced \{ groups
 sim-sweep:malformed_blobs 72407225782/72407225792 issues/malformed-blobs-host-refusal.md the host refused a malformed blob: Code\(2\)
 tests_laws::entry_copies::forged_entry_copies_join_and_expire_alike_spec_5_6 OSIS_CRDT_SEED=2854516606 issues/forged-entry-copies-expiry-seed.md before the joins
-tests_life::sweep_laws_spec_sync_7 OSIS_CRDT_SEED=5 issues/multi-record-key-removal-not-final.md the view's read|the read of a node holding everything
 sim-sweep:evil_host_drops 0/117 issues/evil-host-drops-s0-churn.md labels changed after quiescence \(ping-pong\)
 sim-sweep:evil_host_drops 0/138 issues/evil-host-drops-s0-churn.md not quiescent after \d+ rounds
 sim-sweep:folders 636429852973/636429852979 issues/folders-sim-message-storm.md message storm: \d+ deliveries without the queue emptying

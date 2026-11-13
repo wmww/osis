@@ -4,7 +4,7 @@ use crate::cbor::{self, Error, Item};
 use crate::stamp::{Dot, Source, Stamp, Ts};
 use crate::state::{Anchor, BagKind, Composite, Content, Elem, Entry, Frag, SeqElem};
 use crate::value::Value;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 /// Deepest value nesting (spec/data-model.md §5).
 pub const MAX_VALUE_DEPTH: usize = 64;
@@ -271,8 +271,7 @@ impl Ctx {
             if let Some(e) = err {
                 return Err(e);
             }
-            let mut used = BTreeSet::new();
-            f.check_writer(&self.own, hi, &mut used)?;
+            f.check_writer(&self.own, hi)?;
             if !f.levels_at(self.lo) {
                 return Err(Error::Bad("commit-level write off the delta stamp"));
             }
@@ -513,47 +512,24 @@ impl Frag {
     }
 
     /// Writer-only rules (§2.3, §3.3 rule 7): no `Slots`, no `Derived` creation runs, own sequence element dots
-    /// below `hi`, and the writer's creations and position writes use distinct counters.
-    fn check_writer(&self, own: &Source, hi: u64, used: &mut BTreeSet<u64>) -> Result<(), Error> {
-        fn take(used: &mut BTreeSet<u64>, ctr: u64) -> Result<(), Error> {
-            if used.insert(ctr) {
-                Ok(())
-            } else {
-                Err(Error::Bad("repeated own counter"))
-            }
-        }
+    /// below `hi`. Distinct counters are not checked (§2.3): a repeated one is a forged copy.
+    fn check_writer(&self, own: &Source, hi: u64) -> Result<(), Error> {
         match self {
             Frag::Slots { .. } => return Err(Error::Bad("slots in a writer's delta")),
             Frag::Register { .. } => {}
             Frag::Bag { elems, .. } | Frag::Set { elems, .. } => {
-                for (d, el) in elems {
-                    // an element's creation, or a value removal's own dot (§5.5)
-                    if d.source == *own && (el.frag.is_some() || el.gone.is_some()) {
-                        take(used, d.ctr)?;
-                    }
-                    if let Some(f) = &el.frag {
-                        f.check_writer(own, hi, used)?;
-                    }
+                for f in elems.values().filter_map(|el| el.frag.as_ref()) {
+                    f.check_writer(own, hi)?;
                 }
             }
-            Frag::Struct { fields, .. } => {
-                for f in fields.values() {
-                    f.check_writer(own, hi, used)?;
-                }
-            }
-            Frag::Enum { payloads, .. } => {
-                for f in payloads.values() {
-                    f.check_writer(own, hi, used)?;
+            Frag::Struct { fields: m, .. } | Frag::Enum { payloads: m, .. } => {
+                for f in m.values() {
+                    f.check_writer(own, hi)?;
                 }
             }
             Frag::Map { entries, .. } => {
-                for ((d, _), en) in entries {
-                    if d.source == *own && en.frag.is_some() {
-                        take(used, d.ctr)?;
-                    }
-                    if let Some(f) = &en.frag {
-                        f.check_writer(own, hi, used)?;
-                    }
+                for f in entries.values().filter_map(|en| en.frag.as_ref()) {
+                    f.check_writer(own, hi)?;
                 }
             }
             Frag::Seq { elems, .. } => {
@@ -562,21 +538,11 @@ impl Frag {
                     if d.source == *own && d.ctr >= hi {
                         return Err(Error::Bad("own counter out of range"));
                     }
-                    if el.created.is_some() {
-                        if matches!(d.source, Source::Derived(_)) {
-                            return Err(Error::Bad("derived creation in a writer's delta"));
-                        }
-                        if d.source == *own {
-                            take(used, d.ctr)?;
-                        }
-                    }
-                    for p in &el.pos {
-                        if p.0.dot != *d && p.0.dot.source == *own {
-                            take(used, p.0.dot.ctr)?;
-                        }
+                    if el.created.is_some() && matches!(d.source, Source::Derived(_)) {
+                        return Err(Error::Bad("derived creation in a writer's delta"));
                     }
                     if let Content::Frag(f) = &el.content {
-                        f.check_writer(own, hi, used)?;
+                        f.check_writer(own, hi)?;
                     }
                 }
             }

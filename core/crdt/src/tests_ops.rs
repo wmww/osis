@@ -241,32 +241,46 @@ fn nested_register_replace_decodes_spec_5_1() {
     }
 }
 
-/// §5.6: a put into a live key writes into the lowest live dot; a remove resets every live dot.
+/// §5.6 Ops, spec/requirements.md Data model (a removal is final; removing drops only what the
+/// remover had seen): writes under a key of several live records follow what they touch. x and y
+/// put key 0 concurrently (`[1]`, `[2]`) and key 1 (`10`, `20`); z, holding both, writes key 0
+/// `[1, 3]` (the delete of y's element goes into y's record, the new element into both) and key
+/// 1 `30` (into both); w, who saw only x's puts, removes both keys. Key 0 reads `[3]`: y's
+/// element stays deleted and z's insert stays; key 1 reads `30`, not y's overwritten `20`. A
+/// remove resets every live record.
 #[test]
-fn map_put_lowest_dot_spec_5_6() {
+fn key_writes_follow_what_they_touch_spec_5_6() {
     let view = AnyView;
-    let a = sess(Tid::from_bytes([1; 15]));
-    let b = sess(Tid::from_bytes([2; 15]));
-    let put = |src: &Source, t: u64, v: i64| {
-        let mut w = Writer::new(ts(t << 16), src.clone(), 1);
-        create(&mut w, &view, &Value::Map([(Value::Int(0), Value::Int(v))].into_iter().collect())).unwrap()
+    let src = |i: u8| sess(Tid::from_bytes([i; 15]));
+    let list = |xs: &[i64]| Value::List(xs.iter().map(|x| Value::Int(*x)).collect());
+    let map = |kv: Vec<(i64, Value)>| Value::Map(kv.into_iter().map(|(k, v)| (Value::Int(k), v)).collect());
+    let write = |st: &Fragment, s: u8, t: u64, ops: Vec<PathOp>| {
+        let mut b = Batch::new(st, Writer::new(ts(t << 16), src(s), 1));
+        for op in &ops {
+            b.apply(op, &view).unwrap();
+        }
+        b.finish().unwrap().0
     };
-    let mut st = put(&a, 1, 1);
-    st.join(put(&b, 1, 2));
-    let mut batch = Batch::new(&st, Writer::new(ts(5 << 16), a.clone(), 2));
-    batch.apply(&PathOp { path: vec![PathSeg::Key(Value::Int(0))], op: Op::Set(Value::Int(9)) }, &view).unwrap();
-    let (d, _) = batch.finish().unwrap();
-    let Fragment::Map(m) = &d else { panic!("map") };
-    assert_eq!(m.entries.keys().map(|id| id.dot.src.clone()).collect::<Vec<_>>(), vec![a.clone()]);
-    st.join(d);
-    assert_eq!(st.read(), Some(Value::Map([(Value::Int(0), Value::Int(9))].into_iter().collect())));
-    let mut batch = Batch::new(&st, Writer::new(ts(6 << 16), a, 3));
-    batch.apply(&PathOp { path: vec![], op: Op::Remove(Value::Int(0)) }, &view).unwrap();
-    let (d, _) = batch.finish().unwrap();
-    let Fragment::Map(m) = &d else { panic!("map") };
-    assert_eq!(m.entries.len(), 2);
-    st.join(d);
-    assert_eq!(st.read(), Some(Value::Map(Default::default())));
+    let set = |path: Vec<PathSeg>, v: Value| PathOp { path, op: Op::Set(v) };
+    let key = |k: i64| vec![PathSeg::Key(Value::Int(k))];
+    let empty = Fragment::default();
+    let x = write(&empty, 1, 1, vec![set(vec![], map(vec![(0, list(&[1])), (1, Value::Int(10))]))]);
+    let y = write(&empty, 2, 2, vec![set(vec![], map(vec![(0, list(&[2])), (1, Value::Int(20))]))]);
+    let mut both = x.clone();
+    both.join(y.clone());
+    let z = write(&both, 3, 3, vec![set(key(0), list(&[1, 3])), set(key(1), Value::Int(30))]);
+    let Fragment::Map(m) = &z else { panic!("map") };
+    let srcs: Vec<_> = m.entries.keys().map(|id| id.dot.src.clone()).collect();
+    assert_eq!(srcs, vec![src(1), src(1), src(2), src(2)], "both keys' writes go into both records");
+    let w = write(&x, 4, 4, vec![PathOp { path: vec![], op: Op::Remove(Value::Int(0)) }, PathOp { path: vec![], op: Op::Remove(Value::Int(1)) }]);
+    let mut st = both.clone();
+    st.join(z);
+    assert_eq!(st.read(), Some(map(vec![(0, list(&[1, 3])), (1, Value::Int(30))])));
+    st.join(w);
+    assert_eq!(st.read(), Some(map(vec![(0, list(&[3])), (1, Value::Int(30))])));
+    let gone = write(&st, 5, 5, vec![PathOp { path: vec![], op: Op::Remove(Value::Int(0)) }, PathOp { path: vec![], op: Op::Remove(Value::Int(1)) }]);
+    st.join(gone);
+    assert_eq!(st.read(), Some(map(vec![])));
 }
 
 /// §5.6: a path op into a key with no live entry creates the entry holding the op's writes; two
@@ -818,8 +832,9 @@ fn whole_collection_diff_is_linear_spec_9() {
 }
 
 /// §9: under a view projecting several stored keys to one key, a `set` of the map writes every
-/// such stored key into its lowest live record and removes every live record of a stored key
-/// whose projection the value lacks; an opaque key is left alone.
+/// such stored key into its live records (§5.6 Ops: a register value into each) and removes
+/// every live record of a stored key whose projection the value lacks; an opaque key is left
+/// alone.
 #[test]
 fn diff_writes_every_stored_key_of_a_projected_key_spec_9() {
     /// Ints halved; 5 opaque.
@@ -867,9 +882,9 @@ fn diff_writes_every_stored_key_of_a_projected_key_spec_9() {
     let Some(Fragment::Map(d)) = diff(&mut w, Some(&state), &Halves, &v).unwrap() else { panic!("map delta") };
     // (stored key, record, written: true / removed: false); removals are keyless (§5.6)
     let got: Vec<(Value, Dot, bool)> = d.entries.iter().map(|(id, e)| (key_of[&id.dot].clone(), id.dot.clone(), e.frag.is_some())).collect();
-    let lowest = |k: i64| key_of.iter().find(|(_, x)| **x == Value::Int(k)).map(|(d, _)| d.clone()).unwrap();
     let records = |k: i64| key_of.iter().filter(move |(_, x)| **x == Value::Int(k)).map(|(d, _)| d.clone());
-    let mut want: Vec<(Value, Dot, bool)> = vec![(Value::Int(0), lowest(0), true), (Value::Int(1), lowest(1), true)];
+    let mut want: Vec<(Value, Dot, bool)> = records(0).map(|d| (Value::Int(0), d, true)).collect();
+    want.extend(records(1).map(|d| (Value::Int(1), d, true)));
     want.extend(records(2).map(|d| (Value::Int(2), d, false)));
     let sort = |mut x: Vec<(Value, Dot, bool)>| {
         x.sort();

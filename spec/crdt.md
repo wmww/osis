@@ -42,7 +42,7 @@ A **dot** is `(source, counter)`, counter ≥ 1. A dot identifies one write fore
 - **Total order on stamps**: by `ts`; then the dot.
   - Dots of `Session` and `Commit` sources order by source kind (`Session` < `Commit`), then source bytes (tid and nonce, commit ID), then counter.
   - A dot `(Derived(d), i)` orders as the sequence `(d.source, d.ctr, i)` against the `(source, ctr)` of any other dot, so an embedded write sorts right after the write it embeds and below every other greater write (§7).
-  - Two different writes never compare equal, unless they share a delta's `lo` (§2.3).
+  - Two different writes never compare equal, unless they share a delta's `lo` (§2.3) or are one write's copies in several records of a map key (§5.6 Ops).
 - "Later wins" everywhere means this order.
 
 ### 2.3 Counter consumption
@@ -55,7 +55,7 @@ A reader checks that:
 - every own-source **write** (stamp) in a delta lies in `[lo, hi)`;
 - every commit-level write has the delta stamp;
 - own-source dots used as element identities or anchors are either in `[lo, hi)` (created here) or below `lo`;
-- creations and position writes use distinct counters.
+- nothing about repeated counters: a writer gives each creation and position write its own counter, repeated only by copies of one write in several records of a map key (§5.6 Ops), and a counter repeated otherwise is a forged copy (§4.1 Copy order).
 
 ### 2.4 What the commit header provides
 - `ts` of the commit.
@@ -177,7 +177,7 @@ FlagW    := [i_from, i_to, Stamp, bool] | [i_from, i_to, Stamp, false, string]  
    - Runs are formed first. A list run is then cut into consecutive wire runs after each element at which the canonical encodings of its `Content` fragments since the last cut (as written, links included) sum to `CHUNK_MAX` bytes or more. Each piece after the first is a creation run anchored at the previous element (or a non-creation run), and a cut does not restart the `MAX_RUN` count.
 4. `W` is encoded whenever the state holds a surviving explicit presence write (§4.3). A `Slots` position lists its slots in the order of §3.2 (§7); a position with one slot is that slot, never a `Slots`.
 5. A fragment never carries writes already implied by another write in the same delta (e.g. a creation run does not list its creation position writes in `PosW`) or that its pruning drops (§4.2: a delta is prune-stable like a state), and a snapshot never carries content for deleted elements. A creation and its position write are one write: an implied position write that the top-2 of its element's position writes (in a map, of its dot's records, §5.6) leaves out is not dropped, the creation being held. A reader holds a delta as its pruned form.
-6. Own-source counters lie in the header range; creations and position writes have distinct counters (§2.3).
+6. Own-source counters lie in the header range (§2.3).
 7. A reader rejects a delta (bad input, never a panic) on any of the following.
    - **Encoding**
      - non-canonical CBOR;
@@ -414,9 +414,13 @@ Each encoding below gives: state, delta shape (= grammar of §3.2, restated wher
   - A live record reads as its fragment joined with its dot's key-erased record's fragment.
 - Read: for each key with at least one live record, `read(join of the live records' reads)`. Two live records with one key (concurrent puts) read as one merged value; with equal links as keys (spec/data-model.md §6) the read shows the key of the lowest live record in dot order (§2.2), then key order.
 - Ops:
-  - `put(key, v)`: if a live entry with that key exists, write `v` by structural diff (against the key's read, the join of its live entries) into the **lowest live dot** (lowest in §2.2 dot order) and leave the others alone; else create `[k, [], key, [fragment of v]]`.
+  - **Writes into a key**: an op into a key with live records writes against the key's read (the join of its live records) and each of its writes goes into the records it touches:
+    - a write into or onto an element of a collection (a list or text element, a set or bag element, a map entry by its dot), the outermost such below the key, goes into every live record of the key holding a write of that element, or into every live record when none does (a creation);
+    - any other write (a register value, a case write, a reset or `W` of a fragment) goes into every live record of the key.
+    So every live record carries each write to the key as a whole and each write into what it holds, and a removal of one record takes no other write.
+  - `put(key, v)`: if a live entry with that key exists, write `v` by structural diff into the key (above); else create `[k, [], key, [fragment of v]]`.
   - `remove(key)`: the reset stamp `D` on every live record of that key, as the Removal rule above says (`[dot, [D], key, []]` in a role-class aspect, else `[dot, [D], []]`).
-  - `set_field` and other path ops into an entry go to the lowest live dot. With no live entry of that key:
+  - `set_field` and other path ops into an entry write into the key (above). With no live entry of that key:
     - an op whose remaining path is empty or starts with a key creates one, `[k, [], key, [the op's writes against an absent fragment]]` (an op that writes nothing creates nothing; concurrent creations of one key are two entries read as their join);
     - an op whose remaining path starts with a field or case is refused (it would create a partial struct or enum).
   - `replace` of the map: fragment reset then puts.

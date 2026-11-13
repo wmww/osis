@@ -113,9 +113,8 @@ pub fn diff(w: &mut Writer, st: Option<&Frag>, ty: &Ty, v: &Value) -> Option<Fra
             for (k, val) in kv {
                 match live.get(k) {
                     Some(dots) => {
-                        let d = dots[0].clone();
                         if let Some(delta) = diff(w, crate::ops::key_state(entries, dots).as_ref(), vt, val) {
-                            de.insert(d, Entry { reset: None, frag: Some(Box::new(delta)), created: None });
+                            de.extend(crate::ops::key_writes(entries, dots, delta));
                         }
                     }
                     None => {

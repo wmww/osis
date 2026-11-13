@@ -97,8 +97,8 @@ pub fn live_entries(entries: &BTreeMap<Eid, Entry>) -> BTreeMap<Value, Vec<Eid>>
     }
     m
 }
-/// The value a key reads as: the join of its live records' reads (§5.6); a write by diff goes into the lowest
-/// live record but is computed against this (§9).
+/// The value a key reads as: the join of its live records' reads (§5.6); a write by diff is computed against this
+/// (§9) and goes into the records as `key_writes` says.
 pub fn key_state(entries: &BTreeMap<Eid, Entry>, ids: &[Eid]) -> Option<Frag> {
     let mut out: Option<Frag> = None;
     for (id, f) in live_records(entries) {
@@ -111,6 +111,65 @@ pub fn key_state(entries: &BTreeMap<Eid, Entry>, ids: &[Eid]) -> Option<Frag> {
     }
     out
 }
+/// Writes `d`, made against the read of a key whose live records are `ids`, into those records (§5.6 Ops): each
+/// element or entry `d` writes into or onto (the outermost below the key) goes into every record holding a write of
+/// it, or into every record when none does (a creation); every other write goes into every record.
+pub fn key_writes(entries: &BTreeMap<Eid, Entry>, ids: &[Eid], d: Frag) -> BTreeMap<Eid, Entry> {
+    let live = live_records(entries);
+    let recs: Vec<Option<Frag>> = ids.iter().map(|id| live.iter().find(|(x, _)| x == id).map(|(_, f)| f.clone())).collect();
+    let mut out = BTreeMap::new();
+    for (id, r) in ids.iter().zip(&recs) {
+        if let Some(p) = part(&d, r.as_ref(), &recs) {
+            out.insert(id.clone(), Entry { reset: None, frag: Some(Box::new(p)), created: None });
+        }
+    }
+    out
+}
+
+/// The slot of encoding `enc` at a position, a register embedded (§7).
+fn slot_at(f: Option<&Frag>, enc: u8) -> Option<Frag> {
+    let f = f?;
+    f.slot(enc).cloned().or_else(|| crate::embed::embed(f.slot(0)?, enc))
+}
+
+/// Whether position `f` holds a write of element `d` of a collection.
+fn holds(f: &Frag, d: &Dot) -> bool {
+    match f {
+        Frag::Set { elems, .. } | Frag::Bag { elems, .. } => elems.contains_key(d),
+        Frag::Map { entries, .. } => entries.keys().any(|(x, _)| x == d),
+        Frag::Seq { elems, .. } => elems.contains_key(d),
+        _ => false,
+    }
+}
+
+/// What position `me` (one of the key's records' positions `all`) takes of `d` (`key_writes`).
+fn part(d: &Frag, me: Option<&Frag>, all: &[Option<Frag>]) -> Option<Frag> {
+    let me = slot_at(me, d.enc());
+    let all: Vec<Option<Frag>> = all.iter().map(|r| slot_at(r.as_ref(), d.enc())).collect();
+    let takes = |e: &Dot| me.as_ref().is_some_and(|m| holds(m, e)) || !all.iter().flatten().any(|r| holds(r, e));
+    let child = |pick: &dyn Fn(&Frag) -> Option<&Frag>, c: &Frag| -> Option<Frag> {
+        let sub: Vec<Option<Frag>> = all.iter().map(|r| r.as_ref().and_then(pick).cloned()).collect();
+        part(c, me.as_ref().and_then(pick), &sub)
+    };
+    let out = match d {
+        Frag::Register { .. } | Frag::Slots { .. } => d.clone(),
+        Frag::Struct { c, fields } => Frag::Struct {
+            c: c.clone(),
+            fields: fields.iter().filter_map(|(id, f)| Some((*id, child(&|r| if let Frag::Struct { fields, .. } = r { fields.get(id) } else { None }, f)?))).collect(),
+        },
+        Frag::Enum { c, case, payloads } => Frag::Enum {
+            c: c.clone(),
+            case: case.clone(),
+            payloads: payloads.iter().filter_map(|(id, f)| Some((*id, child(&|r| if let Frag::Enum { payloads, .. } = r { payloads.get(id) } else { None }, f)?))).collect(),
+        },
+        Frag::Set { c, elems } => Frag::Set { c: c.clone(), elems: elems.iter().filter(|(e, _)| takes(e)).map(|(e, x)| (e.clone(), x.clone())).collect() },
+        Frag::Bag { kind, c, elems } => Frag::Bag { kind: *kind, c: c.clone(), elems: elems.iter().filter(|(e, _)| takes(e)).map(|(e, x)| (e.clone(), x.clone())).collect() },
+        Frag::Map { c, entries } => Frag::Map { c: c.clone(), entries: entries.iter().filter(|((e, _), _)| takes(e)).map(|(e, x)| (e.clone(), x.clone())).collect() },
+        Frag::Seq { text, c, elems } => Frag::Seq { text: *text, c: c.clone(), elems: elems.iter().filter(|(e, _)| takes(e)).map(|(e, x)| (e.clone(), x.clone())).collect() },
+    };
+    (!out.is_empty()).then_some(out)
+}
+
 /// Visible sequence elements: not deleted and with content.
 pub fn visible(text: bool, elems: &BTreeMap<Dot, SeqElem>) -> Vec<Dot> {
     linearize(elems, text)
@@ -314,11 +373,9 @@ pub fn map_put(w: &mut Writer, state: Option<&Frag>, vt: &Ty, k: &Value, v: &Val
     let mut entries = BTreeMap::new();
     if let Some(Frag::Map { entries: st, .. }) = state {
         if let Some(dots) = live_entries(st).get(k) {
-            let d = dots[0].clone();
             let cur = key_state(st, dots);
             let delta = crate::diff::diff(w, cur.as_ref(), vt, v)?;
-            entries.insert(d, Entry { reset: None, frag: Some(Box::new(delta)), created: None });
-            let f = Frag::Map { c: comp(None), entries };
+            let f = Frag::Map { c: comp(None), entries: key_writes(st, dots, delta) };
             return Some(f);
         }
     }

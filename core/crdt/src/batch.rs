@@ -382,10 +382,13 @@ fn resolve<'s, V: View>(w: &mut Writer, s: Option<&'s Fragment>, a: Option<&Frag
                 _ => None,
             };
             match key_lookup(s, a, e.as_ref(), k).filter(|_| put.is_none()) {
-                Some((id, ks)) => {
-                    // against what the key reads as (batch writes included), written into the lowest live record (§5.6)
-                    resolve(w, ks.as_deref(), None, None, rest, op, &vview, false, None)?
-                        .map(|c| Fragment::Map(Map::new(Meta::default(), BTreeMap::from([(id, Entry { reset: None, frag: Some(Box::new(c)), created: None })]))))
+                Some(ks) => {
+                    // against what the key reads as (batch writes included), written into its
+                    // live records (§5.6)
+                    resolve(w, ks.read.as_deref(), None, None, rest, op, &vview, false, None)?.map(|c| {
+                        let ids: Vec<&Eid> = ks.ids.iter().collect();
+                        Fragment::Map(Map::new(Meta::default(), crate::ops::key_writes(&ks.map, &ids, c).into_iter().collect()))
+                    })
                 }
                 None => {
                     // a key that is not live, or a put_new: a new entry holding the op's writes
@@ -423,12 +426,20 @@ fn resolve<'s, V: View>(w: &mut Writer, s: Option<&'s Fragment>, a: Option<&Frag
     })
 }
 
-/// The lowest live record of key `k` and what the key reads as, at a map position with state
-/// `s` and batch writes `a` under the reset `e` from above (§5.6). Only the records of the dots
-/// carrying `k` join: records are independent per dot, so this equals a lookup in the whole
-/// join, in O(log n) instead of a copy of the map; a key with one live record the batch has not
-/// written is read in place (no copy of what it holds).
-fn key_lookup<'s>(s: Option<&'s Fragment>, a: Option<&Fragment>, e: Option<&Stamp>, k: &osis_base::Value) -> Option<(Eid, Option<std::borrow::Cow<'s, Fragment>>)> {
+/// A key's live records, ascending, with what the key reads as (`read`) and a map holding at
+/// least the records (`map`, for `key_writes`).
+struct KeyAt<'s> {
+    ids: Vec<Eid>,
+    read: Option<Cow<'s, Fragment>>,
+    map: Cow<'s, Map>,
+}
+
+/// The live records of key `k` and what the key reads as, at a map position with state `s` and
+/// batch writes `a` under the reset `e` from above (§5.6). Only the records of the dots carrying
+/// `k` join: records are independent per dot, so this equals a lookup in the whole join, in
+/// O(log n) instead of a copy of the map; a key with one live record the batch has not written
+/// is read in place (no copy of what it holds).
+fn key_lookup<'s>(s: Option<&'s Fragment>, a: Option<&Fragment>, e: Option<&Stamp>, k: &osis_base::Value) -> Option<KeyAt<'s>> {
     fn map(f: Option<&Fragment>) -> Option<&Map> {
         match f {
             Some(Fragment::Map(m)) => Some(m),
@@ -441,7 +452,7 @@ fn key_lookup<'s>(s: Option<&'s Fragment>, a: Option<&Fragment>, e: Option<&Stam
         && let [id] = m.live_ids(k).as_slice()
         && am.is_none_or(|a| !a.keys.contains_key(k) && a.of_dot(&id.dot).next().is_none())
     {
-        return Some(((*id).clone(), m.record_frag(id)));
+        return Some(KeyAt { ids: vec![(*id).clone()], read: m.record_frag(id), map: Cow::Borrowed(m) });
     }
     let dots: std::collections::BTreeSet<&Dot> = [sm, am].into_iter().flatten().filter_map(|m| m.keys.get(k)).flatten().map(|id| &id.dot).collect();
     if dots.is_empty() {
@@ -450,7 +461,12 @@ fn key_lookup<'s>(s: Option<&'s Fragment>, a: Option<&Fragment>, e: Option<&Stam
     let restrict = |m: Option<&Map>| m.map(|m| Fragment::Map(Map::new(m.meta.clone(), dots.iter().flat_map(|d| m.of_dot(d).map(|(id, x)| (id.clone(), x.clone()))).collect())));
     let Some(Fragment::Map(m)) = joined(restrict(sm).as_ref(), restrict(am).as_ref(), e) else { return None };
     let ids = m.live_ids(k);
-    Some(((*ids.first()?).clone(), key_state(&m, &ids).map(std::borrow::Cow::Owned)))
+    if ids.is_empty() {
+        return None;
+    }
+    let read = key_state(&m, &ids).map(Cow::Owned);
+    let ids = ids.into_iter().cloned().collect();
+    Some(KeyAt { ids, read, map: Cow::Owned(m) })
 }
 
 /// Merges `d` (a later op of the same commit) into `acc` (§4.5 net effect).

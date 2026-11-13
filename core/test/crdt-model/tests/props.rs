@@ -1121,7 +1121,7 @@ fn decoder_rejects_writer_rule_violations() {
     // a run carrying no write is no record, in a snapshot too (§3.3 rule 7)
     let empty = (0..2).map(|i| (Dot { source: Source::session(2, 0), ctr: 3 + i }, crdt_model::state::SeqElem::write(Content::None, vec![], None))).collect();
     assert!(decode_delta(&enc(&Frag::Seq { text: true, c: Default::default(), elems: empty }), &mut Ctx::new(ts, own.clone(), 5)).is_err());
-    // repeated own counter: two set elements created with one counter
+    // set elements created by one delta
     let mut elems = std::collections::BTreeMap::new();
     let reg = |v: i64| Some(Box::new(Frag::Register { reset: None, write: Some((Stamp::new(ts, own.clone(), 5), Some(Value::Int(v)))) }));
     elems.insert(Dot { source: own.clone(), ctr: 5 }, crdt_model::state::Elem { reset: None, frag: reg(1), gone: None });

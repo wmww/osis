@@ -723,9 +723,6 @@ pub struct Dec<'a> {
     sources: Vec<Source>,
     commits: Vec<CommitEntry>,
     interner: &'a mut Interner,
-    /// Own counters taken by creations and position writes in a writer's delta (§2.3), as
-    /// disjoint runs `first -> last` (a writer's creations come in runs: sized by the input).
-    used: BTreeMap<u64, u64>,
     pub(crate) pages: Option<&'a mut dyn PageSource>,
     /// Pages fetched, with their links, for the canonical re-encode.
     pub(crate) fetched: Vec<(Vec<u8>, osis_base::Link)>,
@@ -743,7 +740,7 @@ pub struct Dec<'a> {
 impl<'a> Dec<'a> {
     pub(crate) fn new(cx: &DeltaCtx, interner: &'a mut Interner, pages: Option<&'a mut dyn PageSource>) -> Dec<'a> {
         let own = interner.intern(&cx.own);
-        Dec { ts: cx.ts, own, range: cx.range, kind: cx.kind, sources: Vec::new(), commits: Vec::new(), interner, used: BTreeMap::new(), pages, fetched: Vec::new(), links_seen: Default::default(), depth: 0, bare: 0, streaming: None }
+        Dec { ts: cx.ts, own, range: cx.range, kind: cx.kind, sources: Vec::new(), commits: Vec::new(), interner, pages, fetched: Vec::new(), links_seen: Default::default(), depth: 0, bare: 0, streaming: None }
     }
 
     pub fn kind(&self) -> DeltaKind {
@@ -757,25 +754,6 @@ impl<'a> Dec<'a> {
     }
     pub fn ts(&self) -> Ts {
         self.ts
-    }
-
-    /// In a writer's delta, records that an own creation or position write takes counter `ctr`;
-    /// two taking one counter is bad input (§2.3, §3.3 rule 6).
-    pub fn claim(&mut self, d: &Dot) -> Result<(), Error> {
-        if self.kind != DeltaKind::Writer || d.src != self.own {
-            return Ok(());
-        }
-        let c = d.ctr;
-        let before = self.used.range(..=c).next_back().map(|(a, b)| (*a, *b));
-        if before.is_some_and(|(_, b)| b >= c) {
-            return Err(Error::Malformed("own counter used twice"));
-        }
-        let after = c.checked_add(1).and_then(|n| self.used.remove(&n));
-        match before {
-            Some((a, b)) if b.checked_add(1) == Some(c) => self.used.insert(a, after.unwrap_or(c)),
-            _ => self.used.insert(c, after.unwrap_or(c)),
-        };
-        Ok(())
     }
 
     /// The table's sources in order (after `load_sources`).
@@ -1149,27 +1127,6 @@ mod tests {
         with(&foreign, |i| dec.load_commits(i)).unwrap();
         assert!(with(&Value::Int(1), |i| dec.stamp(i)).is_err()); // a write of another commit
         assert_eq!(with(&Value::Int(1), |i| dec.key_stamp(i)).unwrap().ts, ts(1, 0));
-    }
-
-    /// §2.3, §3.3 rule 6: a writer's own counter claimed twice is refused, in any claim order
-    /// (the claims are kept as runs: against a plain set).
-    #[test]
-    fn claims_as_runs_spec_3_3() {
-        let own = sess(1);
-        let cx = DeltaCtx { ts: ts(100, 0), own: own.clone(), range: CounterRange { lo: 1, hi: 64 }, kind: DeltaKind::Writer };
-        for seed in 0..200u64 {
-            let mut r = crate::testutil::rng(seed);
-            let mut interner = Interner::new();
-            let mut dec = Dec::new(&cx, &mut interner, None);
-            let mut set = std::collections::BTreeSet::new();
-            for _ in 0..40 {
-                let c = 1 + r.below(48) as u64;
-                assert_eq!(dec.claim(&Dot::new(own.clone(), c)).is_ok(), set.insert(c), "seed {seed} counter {c}");
-            }
-            let runs: u64 = dec.used.iter().map(|(a, b)| b - a + 1).sum();
-            assert_eq!(runs, set.len() as u64);
-            assert!(dec.used.iter().zip(dec.used.iter().skip(1)).all(|((_, b), (a, _))| b + 1 < *a), "runs merged");
-        }
     }
 
     /// §3.3 rule 2 clarification: the own commit-form source sorts below other commits.

@@ -108,7 +108,7 @@ impl Writer {
 pub enum PathSeg {
     /// A struct field.
     Field(u64),
-    /// A map entry by key (writes go to the lowest live dot, §5.6).
+    /// A map entry by key (writes go into its live records as `key_writes` says, §5.6).
     Key(Value),
     /// The payload of the current enum case.
     Case(u64),
@@ -302,6 +302,11 @@ pub fn reset_entries(w: &Writer, ids: &[(Dot, Value)]) -> Fragment {
 /// The slot of encoding `enc` at a position, present only. A slot not held beside a register
 /// adds nothing to the register's embedding, so it is that embedding (§7 Canonical form).
 pub(crate) fn present_slot(st: Option<&Fragment>, enc: Encoding) -> Option<std::borrow::Cow<'_, Fragment>> {
+    slot_at(st, enc).filter(|s| s.present())
+}
+
+/// The slot of encoding `enc` at a position, present or not (`present_slot`).
+fn slot_at(st: Option<&Fragment>, enc: Encoding) -> Option<std::borrow::Cow<'_, Fragment>> {
     let st = st?;
     let slot = match st.slot(enc) {
         Some(crate::state::SlotRef::Frag(f)) => std::borrow::Cow::Borrowed(f),
@@ -312,7 +317,7 @@ pub(crate) fn present_slot(st: Option<&Fragment>, enc: Encoding) -> Option<std::
             crate::state::SlotRef::Frag(_) => return None,
         },
     };
-    slot.present().then_some(slot)
+    Some(slot)
 }
 
 /// Live set or bag elements: dot and read.
@@ -343,6 +348,106 @@ pub(crate) fn key_state(m: &Map, ids: &[&Eid]) -> Option<Fragment> {
         }
     }
     out
+}
+
+/// Writes `d`, made against what a key reads as (the join of its live records `ids`), into
+/// those records (§5.6 Ops): each element or entry `d` writes into or onto, the outermost below
+/// the key, goes into every record holding a write of it, or into every record when none holds
+/// one (a creation); every other write goes into every record. A record so carries every write
+/// into its own content and every write to the key as a whole, and its removal takes no other.
+pub(crate) fn key_writes(m: &Map, ids: &[&Eid], d: Fragment) -> Vec<(Eid, Entry)> {
+    let entry = |id: &Eid, f: Fragment| (id.clone(), Entry { reset: None, frag: Some(Box::new(f)), created: None });
+    if let [id] = ids {
+        return vec![entry(id, d)];
+    }
+    let recs: Vec<Option<std::borrow::Cow<'_, Fragment>>> = ids.iter().map(|id| m.record_frag(id)).collect();
+    let recs: Vec<Option<&Fragment>> = recs.iter().map(|r| r.as_deref()).collect();
+    route(&d, &recs).into_iter().zip(ids).filter_map(|(p, id)| Some(entry(id, p?))).collect()
+}
+
+/// The part of `d` each of the positions `recs` (one per record of a key, `key_writes`) takes;
+/// `None` where it takes nothing.
+fn route(d: &Fragment, recs: &[Option<&Fragment>]) -> Vec<Option<Fragment>> {
+    let n = recs.len();
+    let slots: Vec<Option<std::borrow::Cow<'_, Fragment>>> = recs.iter().map(|r| slot_at(*r, d.encoding())).collect();
+    let recs: Vec<Option<&Fragment>> = slots.iter().map(|s| s.as_deref()).collect();
+    // the records an element goes into: those holding a write of it, else (a creation) all
+    let into = |holds: &dyn Fn(&Fragment) -> bool| -> Vec<bool> {
+        let h: Vec<bool> = recs.iter().map(|r| r.is_some_and(holds)).collect();
+        if h.contains(&true) { h } else { vec![true; n] }
+    };
+    let sub = |pick: &dyn Fn(&Fragment) -> Option<&Fragment>| -> Vec<Option<&Fragment>> { recs.iter().map(|r| r.and_then(pick)).collect() };
+    let out: Vec<Fragment> = match d {
+        Fragment::Register(_) | Fragment::Slots(_) => return vec![Some(d.clone()); n],
+        Fragment::Struct(s) => {
+            let mut out = vec![Struct { meta: s.meta.clone(), fields: BTreeMap::new() }; n];
+            for (id, f) in &s.fields {
+                let at = sub(&|r| if let Fragment::Struct(x) = r { x.fields.get(id) } else { None });
+                for (o, p) in out.iter_mut().zip(route(f, &at)) {
+                    o.fields.extend(p.map(|p| (*id, p)));
+                }
+            }
+            out.into_iter().map(Fragment::Struct).collect()
+        }
+        Fragment::Enum(e) => {
+            let mut out = vec![Enum { meta: e.meta.clone(), case: e.case.clone(), payloads: BTreeMap::new() }; n];
+            for (id, f) in &e.payloads {
+                let at = sub(&|r| if let Fragment::Enum(x) = r { x.payloads.get(id) } else { None });
+                for (o, p) in out.iter_mut().zip(route(f, &at)) {
+                    o.payloads.extend(p.map(|p| (*id, p)));
+                }
+            }
+            out.into_iter().map(Fragment::Enum).collect()
+        }
+        Fragment::Set(s) => {
+            let mut out = vec![BTreeMap::new(); n];
+            for (dot, el) in &s.elems {
+                let to = into(&|r| matches!(r, Fragment::Set(x) if x.elems.contains_key(dot)));
+                out.iter_mut().zip(to).filter(|(_, t)| *t).for_each(|(o, _)| drop(o.insert(dot.clone(), el.clone())));
+            }
+            out.into_iter().map(|elems| Fragment::Set(Set::new(s.meta.clone(), elems))).collect()
+        }
+        Fragment::Bag(b) => {
+            let mut out = vec![BTreeMap::new(); n];
+            for (dot, el) in &b.elems {
+                let to = into(&|r| matches!(r, Fragment::Bag(x) if x.elems.contains_key(dot)));
+                out.iter_mut().zip(to).filter(|(_, t)| *t).for_each(|(o, _)| drop(o.insert(dot.clone(), el.clone())));
+            }
+            out.into_iter().map(|elems| Fragment::Bag(Bag { kind: b.kind, meta: b.meta.clone(), elems })).collect()
+        }
+        Fragment::Map(x) => {
+            let mut out = vec![BTreeMap::new(); n];
+            for (id, en) in &x.entries {
+                let to = into(&|r| matches!(r, Fragment::Map(y) if y.of_dot(&id.dot).next().is_some()));
+                out.iter_mut().zip(to).filter(|(_, t)| *t).for_each(|(o, _)| drop(o.insert(id.clone(), en.clone())));
+            }
+            out.into_iter().map(|entries| Fragment::Map(Map::new(x.meta.clone(), entries))).collect()
+        }
+        Fragment::Seq(s) => {
+            let mut out = vec![crate::seq_span::Elems::new(); n];
+            for (k, e) in s.elems() {
+                // a range record is cut where the records it goes into change
+                let to_at = |i: u64| {
+                    let d = crate::seq_span::nth(k, i);
+                    into(&|r| matches!(r, Fragment::Seq(x) if x.holds(&d)))
+                };
+                let (mut from, mut to) = (0, to_at(0));
+                for i in 1..=e.span {
+                    let next = (i < e.span).then(|| to_at(i));
+                    if next.as_ref() == Some(&to) {
+                        continue;
+                    }
+                    let (pd, pe) = crate::seq_span::piece(k, e, from, i - from);
+                    out.iter_mut().zip(&to).filter(|(_, t)| **t).for_each(|(o, _)| drop(o.insert(pd.clone(), pe.clone())));
+                    if let Some(t) = next {
+                        (from, to) = (i, t);
+                    }
+                }
+            }
+            out.into_iter().map(|elems| Fragment::Seq(seq::Seq::new(s.text, s.meta.clone(), elems))).collect()
+        }
+    };
+    out.into_iter().map(|f| (!f.is_empty()).then_some(f)).collect()
 }
 
 #[cfg(test)]
@@ -473,18 +578,17 @@ pub fn diff<V: View>(w: &mut Writer, st: Option<&Fragment>, view: &V, v: &Value)
                 }
             }
             for (k, val) in kv {
-                // every stored key the view projects to `k` is written, each into its lowest live dot,
-                // against what it reads as
+                // every stored key the view projects to `k` is written against what it reads as,
+                // into its live records (`key_writes`)
                 let Some(stored) = keyed.get(k) else {
                     entries.extend(new_entry(w, k.clone(), |w| create(w, &vview, val).map(Some))?);
                     continue;
                 };
                 visited(stored.len());
                 for ids in stored {
-                    let Some(id) = ids.first() else { continue };
                     let cur = key_state(m, ids);
                     if let Some(delta) = diff(w, cur.as_ref(), &vview, val)? {
-                        entries.insert((*id).clone(), Entry { reset: None, frag: Some(Box::new(delta)), created: None });
+                        entries.extend(key_writes(m, ids, delta));
                     }
                 }
             }

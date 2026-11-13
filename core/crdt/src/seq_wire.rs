@@ -368,12 +368,8 @@ pub(crate) fn decode_elems(s: &mut Seq, runs: List, cx: &mut Dec) -> Result<(), 
                     let end = i.checked_add(k).filter(|e| *e <= n).ok_or(Error::Malformed("segments exceed the run"))?;
                     if writer && own {
                         // a writer's own counters: bounded by its header range and rule 7
-                        for j in i..end {
-                            let d = nth(&first, j);
-                            if !cx.range().contains(d.ctr) {
-                                return Err(Error::Malformed("own write outside the counter range"));
-                            }
-                            cx.claim(&d)?;
+                        if !cx.range().contains(nth(&first, i).ctr) || !cx.range().contains(nth(&first, end - 1).ctr) {
+                            return Err(Error::Malformed("own write outside the counter range"));
                         }
                     }
                     segs.push((i, end - i, base.ts));
@@ -395,7 +391,6 @@ pub(crate) fn decode_elems(s: &mut Seq, runs: List, cx: &mut Dec) -> Result<(), 
             };
             let i = index(i, n)?;
             let st = cx.stamp(st)?;
-            cx.claim(&st.dot)?;
             let a = dec_anchor(cx, a)?;
             // a sibling key is an older commit's write stamp, any commit's (§5.7, §3.3 rule 7); its
             // `ts` below the write's, so no held stamp is above an applied commit's (§2.2)

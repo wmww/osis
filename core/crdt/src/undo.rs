@@ -201,21 +201,19 @@ fn undo_at<V: View>(w: &mut Writer, u: &Undone, o: &Fragment, s: Option<&Fragmen
             // removed entries, joined per key: a key held by several entries comes back as one
             // (re-adding each at the undo's one stamp would tie their registers)
             let mut removed: BTreeMap<osis_base::Value, (Fragment, Vec<Dot>)> = BTreeMap::new();
+            // nested edits into existing entries, joined per key: one write to a key went into
+            // several of its records (§5.6 Ops), and is undone once
+            let mut edits: BTreeMap<&osis_base::Value, (Fragment, Vec<&Eid>)> = BTreeMap::new();
             for (id, e) in &m.entries {
                 if e.frag.is_some() && u.made(&id.dot) {
                     entries.insert(w.removal(id), Entry::tomb(&r));
                 } else if let (Some(f), Some(k)) = (&e.frag, id.key()) {
-                    // a nested edit into an existing entry: now and before, the key reads as
-                    // the join of its live records (§5.6)
-                    let joined = cur.and_then(|c| {
-                        let live = c.live_ids(k);
-                        (!live.is_empty() && live != [id]).then(|| key_state(c, &live)).flatten()
-                    });
-                    let own = cur.and_then(|c| c.record_frag(id));
-                    let sub = joined.as_ref().or(own.as_deref());
-                    let pre = prev.as_ref().and_then(|p| entry_frag(p, id, k));
-                    if let Some(c) = undo_at(w, u, f, sub, pre.as_ref(), here, &vview, false)? {
-                        entries.insert(id.clone(), Entry { reset: None, frag: Some(Box::new(c)), created: None });
+                    match edits.get_mut(k) {
+                        Some((acc, ids)) => {
+                            acc.join_into((**f).clone(), None, &mut crate::changes::Changes::new());
+                            ids.push(id);
+                        }
+                        None => drop(edits.insert(k, ((**f).clone(), vec![id]))),
                     }
                 } else if e.reset.is_some()
                     && let Some(Fragment::Map(p)) = &prev
@@ -235,6 +233,20 @@ fn undo_at<V: View>(w: &mut Writer, u: &Undone, o: &Fragment, s: Option<&Fragmen
                             }
                         }
                     }
+                }
+            }
+            for (k, (f, ids)) in edits {
+                // now and before, the key reads as the join of its live records; the undo goes
+                // into those now live, else into the records the edit wrote
+                let Some(&first) = ids.first() else { continue };
+                let live = cur.map(|c| c.live_ids(k)).unwrap_or_default();
+                let sub = cur.and_then(|c| if live.is_empty() { c.record_frag(first).map(|f| f.into_owned()) } else { key_state(c, &live) });
+                let pre = prev.as_ref().and_then(|p| entry_frag(p, first, k));
+                let Some(c) = undo_at(w, u, &f, sub.as_ref(), pre.as_ref(), here, &vview, false)? else { continue };
+                match cur {
+                    Some(m) if !live.is_empty() => entries.extend(crate::ops::key_writes(m, &live, c)),
+                    Some(m) => entries.extend(crate::ops::key_writes(m, &ids, c)),
+                    None => drop(entries.insert(first.clone(), Entry { reset: None, frag: Some(Box::new(c)), created: None })),
                 }
             }
             for (k, (f, dots)) in removed {
