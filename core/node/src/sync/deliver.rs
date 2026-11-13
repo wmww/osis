@@ -392,11 +392,6 @@ impl SyncEngine {
                 }
                 for t in under {
                     for g in self.groups_holding(&t) {
-                        // a group enclosing `t` that does not read it holds nothing of `t`: its
-                        // labels need `t`'s chain only where `t` holds an edge, another `under`
-                        if g != t && !self.engine.reads_in(&g, &t) {
-                            continue;
-                        }
                         for c in &commits {
                             self.place_chain(&g, c, k)?;
                         }
@@ -562,10 +557,14 @@ impl SyncEngine {
         }
     }
 
-    /// Groups with a label whose closure holds `t` (the thing itself when labeled).
+    /// Groups with a label holding `t` (spec/sync.md §3): `t` itself when labeled, and those whose
+    /// closure holds `t` and whose actor reads it. A group enclosing `t` unread (a team listed in
+    /// it) carries nothing of `t`: its readers learn none of `t`'s edge writes, and where `t`
+    /// holds an edge on it, that edge's target is a delivery target of its own.
     fn groups_holding(&mut self, t: &Tid) -> Vec<Tid> {
+        let enclosing = self.engine.enclosing(t);
         // handed-off groups: nothing goes under their labels from here
-        let mut out: Vec<Tid> = self.engine.labeled_groups().into_iter().filter(|g| !self.state.handed_off.contains(g) && self.engine.enclosing(t).contains(g)).collect();
+        let mut out: Vec<Tid> = self.engine.labeled_groups().into_iter().filter(|g| !self.state.handed_off.contains(g) && enclosing.contains(g) && (g == t || self.engine.reads_in(g, t))).collect();
         out.dedup();
         out
     }

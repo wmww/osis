@@ -327,3 +327,55 @@ fn a_removal_from_an_unread_closure_thing_stays_off_its_group_spec_permissions_3
     let named = |k: &osis_node::sync::EntryKind| matches!(k, osis_node::sync::EntryKind::Commit { commit, .. } | osis_node::sync::EntryKind::Awaits { commit, .. } if *commit == removal);
     assert!(!net.sync(b).entries(&l).iter().any(|(_, k)| named(k)), "the removal is under g's label");
 }
+
+/// Team `team` is listed in g (which does not read it) and in h (whose actor holds read on it),
+/// and holds write on `doc`; a removes the team from doc. Whether reader b of g, and of h, gets an
+/// entry of that removal under g's and h's labels.
+fn team_removal_reaches() -> (bool, bool) {
+    let (mut net, host, [a, b]) = crate::net::hosted_nodes::<2>();
+    let g = net.group(a, &[(b, Role::Read)], &[host]);
+    let h = net.group(a, &[(b, Role::Read)], &[host]);
+    let team = net.group(a, &[], &[host]);
+    let doc = net.group(a, &[], &[host]);
+    net.grant(a, doc, team, Role::Write);
+    net.grant(a, team, h, Role::Read);
+    for x in [g, h] {
+        let mut def = net.engine(a).get_typed(&x, &ct::GROUP).unwrap().unwrap_or_default();
+        def.items.insert(team);
+        let mut m = Mutation::new();
+        m.set(x, &ct::GROUP, &def).unwrap();
+        net.engine(a).commit(m).unwrap();
+    }
+    net.run();
+    for _ in 0..3 {
+        net.advance(15_000);
+    }
+    let e = net.engine(a);
+    assert!(e.closure(&g).contains(&team) && !e.may_read(&g, &team), "the team in g's closure, unread");
+    assert!(e.closure(&h).contains(&team) && e.may_read(&h, &team), "the team in h's closure, read");
+    let d = osis_node::flows::Demotion { holder: team, new: None, retain: None };
+    let done = net.engine(a).demote(&doc, &d).unwrap();
+    let removal = *done.commits.last().unwrap();
+    let acts = net.sync(a).carry_out(done).unwrap();
+    net.actions(a, acts);
+    net.run();
+    for _ in 0..3 {
+        net.advance(15_000);
+    }
+    let named = |k: &osis_node::sync::EntryKind| matches!(k, osis_node::sync::EntryKind::Commit { commit, .. } | osis_node::sync::EntryKind::Awaits { commit, .. } if *commit == removal);
+    let labels = net.group_labels(b);
+    let mut under = |x: osis_base::Tid| {
+        let l = labels.iter().find(|(y, _)| *y == x).unwrap().1.id;
+        net.sync(b).entries(&l).iter().any(|(_, k)| named(k))
+    };
+    (under(g), under(h))
+}
+
+// spec/permissions.md §3 (a removal of another actor's grant goes under the labels holding it),
+// spec/sync.md §3 (entitlement): a label holds the team only where its actor reads it. The team's
+// removal from doc stays off the label of g, which lists the team unread, and reaches the label
+// of h, which reads it.
+#[test]
+fn a_removal_of_an_unread_closure_things_grant_stays_off_its_group_spec_permissions_3() {
+    assert_eq!(team_removal_reaches(), (false, true), "(under g, under h)");
+}
