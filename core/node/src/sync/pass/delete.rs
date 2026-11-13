@@ -604,10 +604,12 @@ impl SyncEngine {
     /// with a carrier there (spec/sync.md §7): holding a live write; held and before its
     /// keep-at-least bound (must-hold whatever covers it: the deleter's side of `must_carry`,
     /// what a holder would place again); or dropped as covered (its cover is why it goes, and a
-    /// holder lacking the cover judges it uncovered, so the cover goes up first).
+    /// holder lacking the cover judges it uncovered, so the cover goes up first). A purged one
+    /// never: the purge is why it goes, whatever covered it, and no cover delays that.
     fn part_to_carry(&mut self, c: &CommitId, m: &crate::engine::Meta, keeps: &[u64], ai: usize, note: &mut Note) -> bool {
         if m.body_gone(ai) {
-            return m.dropped(ai).is_some_and(|d| d.why == crate::engine::DropFor::Cover) || self.part_live(&m.header, c, ai);
+            let covered = m.dropped(ai).is_some_and(|d| d.why == crate::engine::DropFor::Cover);
+            return (covered && !self.engine.part_valueless(&m.header, c, ai)) || self.part_live(&m.header, c, ai);
         }
         self.part_live(&m.header, c, ai) || self.part_kept(keeps, ai, note)
     }
