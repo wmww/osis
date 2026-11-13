@@ -1738,6 +1738,82 @@ fn a_destroyed_actors_secrets_go_with_the_last_entry_of_its_commits_spec_commits
     assert_eq!(holds_secrets(&mut net, b, t), (false, false), "nothing of t's secrets left at b");
 }
 
+// spec/crypto.md §7 (level 2), spec/commits.md §5: b, admin of t (secrets of its own), writes on x
+// acting for t, purgeable by its author. b, a writer of x through g, holds no admin secret of x:
+// only t's write secret (level 2) deletes that write's entries. t and x are released together and
+// forgotten at b while away; b keeps t's secrets while it knows that write's entries (no part of it
+// is on t), deletes them at the host once back, and drops the secrets past the deletes' tombstones.
+// The entries of t's own commits are known at b as long here, so a judgment missing the write
+// acting for t passes too: the window between is not reached
+#[test]
+fn a_destroyed_actors_secrets_stay_for_a_commit_acting_for_it_spec_crypto_7() {
+    use osis_node::retention::lifetimes::Status;
+    let Setup { mut net, a, b, c, g } = setup();
+    let l = net.label(a);
+    let alone = |net: &mut Net| {
+        let mut m = Mutation::new();
+        let t = net.engine(a).new_thing(&mut m, g);
+        m.set(t, &REG, &s("t")).unwrap();
+        net.engine(a).commit(m).unwrap().unwrap();
+        let mut items = net.engine(a).get_typed(&g, &ct::GROUP).unwrap().unwrap_or_default();
+        items.items.insert(t);
+        let mut m = Mutation::new();
+        m.set(g, &ct::GROUP, &items).unwrap();
+        net.engine(a).commit(m).unwrap().unwrap();
+        net.run();
+        t
+    };
+    let (t, x) = (alone(&mut net), alone(&mut net));
+    let tb = net.tid(b);
+    net.grant(a, t, tb, Role::Admin);
+    net.grant(a, x, t, Role::Write);
+    net.run();
+    // a and c, admins of x, never hear of the write: none deletes it but by t's key
+    net.set_online(a, false);
+    net.set_online(c, false);
+    let mut m = Mutation::new();
+    m.act_as(t);
+    m.set(x, &REG, &s("by t")).unwrap();
+    m.retention(x, &REG, osis_schema::Retention { by: osis_base::PurgeBy::AuthorOrAdmin }).unwrap();
+    let w = net.engine(b).commit(m).unwrap().unwrap();
+    net.run();
+    let ids: Vec<_> = net.sync(b).entries(&l).into_iter().filter(|(_, k)| matches!(k, osis_node::sync::EntryKind::Commit { commit, .. } if *commit == w)).map(|(id, _)| id).collect();
+    assert!(!ids.is_empty() && ids.iter().all(|id| net.host_ids(0, &l).contains(id)), "the write acting for t is at the host");
+    for n in [a, c] {
+        net.hide_blobs.insert(n, ids.iter().copied().collect());
+        net.set_online(n, true);
+    }
+    net.run();
+    assert_eq!(holds_secrets(&mut net, b, t), (true, true), "t has secrets of its own at b");
+    // b away, handed the release: it forgets t and x at the request's expiry, unconnected; a and
+    // c forget them too and delete their commits' entries at the host
+    net.set_online(b, false);
+    let req = net.engine(c).release(&[t, x]).unwrap().unwrap();
+    let pk = net.engine(c).package(&req).unwrap().unwrap();
+    net.engine(b).ingest(&pk.bytes, Vec::new()).unwrap();
+    for ms in [70_000, osis_base::format::ROLE_KEEP_MS, 70_000, 70_000] {
+        net.advance(ms);
+        let _ = net.sync(b).handle(osis_node::sync::Event::Tick);
+    }
+    for th in [t, x] {
+        assert_eq!(net.engine(b).lifetime_status(&th), Status::Unknown, "b forgot t and x");
+    }
+    assert!(ids.iter().all(|id| net.host_ids(0, &l).contains(id)), "the write acting for t is at the host");
+    assert_eq!(holds_secrets(&mut net, b, t), (true, true), "t's secrets held while b may delete by them");
+    // b back, after a start (issues/forgotten-unconnected-not-deleted.md): it deletes the write by
+    // t's key
+    net.restart(b, 50);
+    net.set_online(b, true);
+    for _ in 0..3 {
+        net.advance(70_000);
+    }
+    assert!(!net.host_ids(0, &l).iter().any(|id| ids.contains(id)), "b deleted the write acting for t by t's level-2 key");
+    assert_eq!(holds_secrets(&mut net, b, t), (true, true), "held while the deletes' tombstones last");
+    net.advance(osis_base::format::TOMBSTONE_LIFETIME_MS);
+    net.advance(70_000);
+    assert_eq!(holds_secrets(&mut net, b, t), (false, false), "nothing of t's secrets left at b");
+}
+
 /// Whether host 0 holds an entry of commit `c` under label `l`, as node `n` knows the entries.
 fn at_host_of(net: &mut Net, n: usize, l: &osis_base::LabelId, c: CommitId) -> bool {
     let host = net.host_ids(0, l);

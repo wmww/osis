@@ -409,7 +409,7 @@ impl SyncEngine {
     /// labels it syncs (only their passes delete), no entry of one whose sections list a part on it
     /// (any, of one acting for it: deleting it signs for each commitment group, spec/wire.md §5),
     /// no delete of one within its tombstone (a host that got the entry late announces it again),
-    /// nor a blob of one is kept here. A commit is held by the engine or forgotten with its header
+    /// nor a blob of one is kept here unnamed or under such a label. A commit is held by the engine or forgotten with its header
     /// kept here (`Memory::forgotten`), so this runs after `memory_step`: a commit forgotten in this
     /// step is in one or the other. One left waiting is judged again when such a commit is due for
     /// forgetting (`forget_forgettable`: an entry, blob or delete of it went), and every one after a
@@ -434,7 +434,13 @@ impl SyncEngine {
             let lists_t = |h: &osis_commit::Header, e: &Entry| matches!(&e.kind, Kind::Commit { ais, .. } if h.actor == t || ais.iter().any(|ai| h.aspects.get(*ai).is_some_and(|a| a.tid == t)));
             let entry = |c: &CommitId, h: &osis_commit::Header| self.entries_of_commit(c).iter().any(|k| synced.contains(&k.0) && self.state.entries.get(k).is_some_and(|e| lists_t(h, e)));
             let deleted = |c: &CommitId| synced.iter().any(|l| self.state.deleted_bodies(*l, *c).next().is_some());
-            let known: Vec<CommitId> = commits.iter().filter(|(c, h)| entry(c, h) || deleted(c) || self.state.by_commit.contains_key(c)).map(|(c, _)| *c).collect();
+            // a blob of one kept here, named under no label yet or under a synced one (one named only
+            // under labels not synced here is deleted by no pass of this node's)
+            let kept = |c: &CommitId| self.state.by_commit.get(c).into_iter().flatten().any(|b| {
+                let ls = self.state.labels_of(b);
+                ls.is_empty() || ls.iter().any(|l| synced.contains(l))
+            });
+            let known: Vec<CommitId> = commits.iter().filter(|(c, h)| entry(c, h) || deleted(c) || kept(c)).map(|(c, _)| *c).collect();
             if known.is_empty() {
                 clear.insert(t);
             }
