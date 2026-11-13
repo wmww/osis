@@ -6601,3 +6601,55 @@ fn partly_forgotten_ephemeral_commit_keeps_no_key_of_the_lost_part_spec_permissi
     assert_eq!(net.eph_read(a, w1, STATE), Some(s("v")), "the reader placed w1's part again");
     assert_eq!(net.eph_read(a, w2, STATE), None, "and not w2's");
 }
+
+// The stored twin (`forget_records`): one durable commit writes w1 (g's) and w2 (x's, read by g);
+// the reader of g loses x: the blob's key, bytes and wrap under g go, w1 still reads, and x
+// granted to g again brings w2 back from the host (the shredded entry is fetched again)
+#[test]
+fn partly_forgotten_durable_commit_keeps_no_key_of_the_lost_part_spec_permissions_3() {
+    let mut net = Net::new();
+    let (h1, h2) = (net.add_host(), net.add_host());
+    let a = net.node(1, &[h1, h2]);
+    let r = net.node(2, &[h1, h2]);
+    let g = net.group(a, &[(r, Role::Read)], &[h1]);
+    let addr = net.hosts[h2].address.clone();
+    let x = net.group_at(a, &[], vec![addr]);
+    let grant = |net: &mut Net| {
+        let done = net.engine(a).grant(&x, &g, &crate::common::edge(Role::Read)).unwrap();
+        let acts = net.sync(a).carry_out(done).unwrap();
+        net.actions(a, acts);
+    };
+    grant(&mut net);
+    net.run();
+    let w1 = made(&mut net, a, g, Some(g));
+    let w2 = made(&mut net, a, x, Some(g));
+    net.run();
+    let lg = label_of(&mut net, r, g);
+    let before: BTreeSet<_> = net.sync(r).entries(&lg).into_iter().map(|e| e.0).collect();
+    let mut m = Mutation::new();
+    m.set(w1, &crate::common::REG, &s("v")).unwrap();
+    m.set(w2, &crate::common::REG, &s("x")).unwrap();
+    net.engine(a).write(m).unwrap();
+    local(&mut net, a);
+    net.run();
+    assert_eq!((net.read(r, w1), net.read(r, w2)), (Some(s("v")), Some(s("x"))));
+    let new: Vec<_> = net.sync(r).entries(&lg).into_iter().map(|e| e.0).filter(|b| !before.contains(b)).collect();
+    assert_eq!(new.len(), 1, "one blob of both parts under g's label");
+    let b = new[0];
+    let done = net.engine(a).demote(&x, &osis_node::flows::Demotion { holder: g, new: None, retain: None }).unwrap();
+    let acts = net.sync(a).carry_out(done).unwrap();
+    net.actions(a, acts);
+    for _ in 0..3 {
+        net.advance(31_000);
+    }
+    let rt = net.tid(r);
+    assert!(!net.engine(r).may_read(&rt, &w2), "the reader lost x");
+    assert_eq!((net.read(r, w1), net.read(r, w2)), (Some(s("v")), None));
+    assert!(net.engine(r).blob(&b).unwrap().is_none(), "no bytes of the blob holding w2's part");
+    assert_eq!(net.sync(r).entry_meta(&lg, &b).map(|e| e.0), Some([0; osis_crypto::WRAP_LEN]), "its entry under g stays, shredded");
+    grant(&mut net);
+    for _ in 0..5 {
+        net.advance(31_000);
+    }
+    assert_eq!(net.read(r, w2), Some(s("x")), "a re-grant fetches the lost part again");
+}
