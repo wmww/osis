@@ -289,7 +289,7 @@ impl Db {
     }
 
     /// Applies `w` to the open transaction. A failure part way drops it (aborted: every write
-    /// since the last commit is lost) and recovers the store in place, as a failed commit does.
+    /// since the last commit is lost; the next transaction recovers the store after a failed write).
     fn apply(&mut self, w: Writes) -> Result<(), osis_store::Error> {
         let Db { store, table, rng, open } = self;
         let r = match open.take() {
@@ -321,29 +321,14 @@ impl Db {
             }
             t.suspend()
         });
-        match r {
-            Ok(s) => {
-                *open = Some(s);
-                Ok(())
-            }
-            Err(e) => {
-                // a reopen that fails leaves the store broken: every later call fails
-                let _ = store.reopen();
-                Err(e)
-            }
-        }
+        *open = Some(r?);
+        Ok(())
     }
 
-    /// Commits the open transaction. A failed commit leaves the outcome unknown: the store is
-    /// recovered in place (`Store::reopen`) and the error returned.
+    /// Commits the open transaction; the result is its outcome (`Transaction::commit`).
     fn commit(&mut self) -> Result<(), osis_store::Error> {
         let Some(s) = self.open.take() else { return Ok(()) };
-        let r = self.store.resume(s, &mut *self.rng).commit();
-        if r.is_err() {
-            // a reopen that fails leaves the store broken: every later call fails
-            let _ = self.store.reopen();
-        }
-        r
+        self.store.resume(s, &mut *self.rng).commit()
     }
 }
 

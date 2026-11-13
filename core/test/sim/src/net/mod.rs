@@ -1714,6 +1714,11 @@ impl NetSim {
     pub fn step(&mut self) -> Res<()> {
         self.report.steps = self.report.steps.saturating_add(1);
         self.dice = Dice::keyed(self.seed, "step", &[self.report.steps]);
+        // a failed write excuses an error of the step it happened in only; one nothing excused
+        // (a call that went on: node sync, the hub, a commit that landed) is counted here
+        for f in self.nodes.iter().map(|x| &x.faults).chain(self.hosts.iter().map(|x| &x.faults)) {
+            self.report.failed_writes = self.report.failed_writes.saturating_add(u64::from(f.take_failed()));
+        }
         let w = self.cfg.weights;
         let calm = self.calm;
         let any_down = self.nodes.iter().any(|n| !n.up && !n.lost);
@@ -1845,10 +1850,23 @@ impl NetSim {
                     self.note(format!("node {n} crashed during a write"));
                     return self.node_down(n);
                 }
-                return Err(self.fail(format!("node {n} write: {e}")));
+                if !self.node_write_failed(n, "a write") {
+                    return Err(self.fail(format!("node {n} write: {e}")));
+                }
             }
         }
         self.feed(n, Event::Local)
+    }
+
+    /// Whether a planned failed write (`Fault::Fail`) of node `n` happened this step: the call
+    /// that met it failed, and the node stays up (its next calls must work).
+    fn node_write_failed(&mut self, n: usize, what: &str) -> bool {
+        if !self.nodes.get(n).is_some_and(|x| x.faults.take_failed()) {
+            return false;
+        }
+        self.report.failed_writes = self.report.failed_writes.saturating_add(1);
+        self.note(format!("node {n}: a write failed during {what}"));
+        true
     }
 
     fn random_crash(&mut self) -> Res<()> {
@@ -1860,8 +1878,9 @@ impl NetSim {
             self.node_down(n)
         } else {
             let at = self.dice.below(6);
-            self.note(format!("node {n} will crash at its write {at}"));
-            self.node(n)?.faults.at(at, Fault::Crash);
+            let fault = if self.dice.pct(50) { Fault::Crash } else { Fault::Fail };
+            self.note(format!("node {n} will {fault:?} at its write {at}"));
+            self.node(n)?.faults.at(at, fault);
             Ok(())
         }
     }
@@ -1875,8 +1894,9 @@ impl NetSim {
             self.host_down(s)
         } else {
             let at = self.dice.below(8);
-            self.note(format!("host {s} will crash at its write {at}"));
-            self.host(s)?.faults.at(at, Fault::Crash);
+            let fault = if self.dice.pct(50) { Fault::Crash } else { Fault::Fail };
+            self.note(format!("host {s} will {fault:?} at its write {at}"));
+            self.host(s)?.faults.at(at, fault);
             Ok(())
         }
     }
@@ -2138,6 +2158,7 @@ impl NetSim {
                 self.node_down(n)?;
                 return Ok(None);
             }
+            Err(_) if self.node_write_failed(n, "a scenario write") => return Ok(None),
             Err(e) => return Err(self.fail(format!("node {n} commit: {e}"))),
         };
         self.written.extend(id.map(|c| (n, c)));
@@ -2157,6 +2178,7 @@ impl NetSim {
                 self.node_down(n)?;
                 return Ok(Vec::new());
             }
+            Err(_) if self.node_write_failed(n, "a scenario write") => return Ok(Vec::new()),
             Err(e) => return Err(self.fail(format!("node {n} write: {e}"))),
         };
         self.feed(n, Event::Local)?;

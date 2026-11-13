@@ -310,7 +310,8 @@ fn a_release_that_fails_to_be_written_is_judged_again_at_the_next_open() {
     // the judgment's transaction is write 0, the request's first write fails
     f.at(1, osis_store::Fault::Fail);
     assert!(e.judge_lifetimes(&|_| true, true).is_err(), "the request is not written");
-    // a failed write breaks the store until the node opens again
+    // the store recovered in place: the node reads on with no restart
+    assert_eq!(e.lifetimes_pending().unwrap(), vec![x], "judged, pending");
     net.restart(a, 2);
     let e = net.engine(a);
     assert_eq!(e.lifetime_status(&x), Status::Known);

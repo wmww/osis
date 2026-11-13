@@ -3731,8 +3731,8 @@ mod tests {
     }
 
     /// Runs `f` with the store's next write failing and checks that every journaled index is as
-    /// it was (counting the failures in `failed`), then reopens the store (a failed write
-    /// leaves it broken) and runs `f` again.
+    /// it was and equals a fresh open's (`check_index`; counting the failures in `failed`), then
+    /// runs `f` again on the same engine: the store recovered in place.
     fn failing<T>(p: &mut Peer, failed: &mut usize, mut f: impl FnMut(&mut super::Engine) -> crate::Result<T>) -> T {
         let before = digest(p);
         p.backend.faults().at(0, osis_store::Fault::Fail);
@@ -3743,7 +3743,7 @@ mod tests {
             Err(_) => {
                 *failed += 1;
                 assert_eq!(digest(p), before, "a failed transaction changed the indexes");
-                p.restart(0).unwrap();
+                p.engine.check_index();
                 f(&mut p.engine).unwrap()
             }
         }

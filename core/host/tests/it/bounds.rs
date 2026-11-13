@@ -421,9 +421,9 @@ fn one_commit_per_message() {
 }
 
 // spec/requirements.md (durability): nothing is acknowledged before its input's commit: a
-// delete's shredding commit failing at any of its writes (rows, root, cleanup) acknowledges
-// nothing, closes the connection, and leaves its entries all deleted or all live; a delete is
-// taken once writes work again
+// delete's shredding commit failing at its rows or root write acknowledges nothing, closes the
+// connection and leaves its entries live; failing at the cleanup after its commit point (the
+// root) it landed, so it is acknowledged and its entries are gone; a delete is taken after either
 #[test]
 fn failed_commit_sends_nothing() {
     let mut w = World::new();
@@ -441,11 +441,11 @@ fn failed_commit_sends_nothing() {
         w.faults[h].at(at, Fault::Fail);
         let items = ids.iter().map(|id| DeleteItem::sign(&key, &l.id, *id).unwrap()).collect();
         let ev = w.run(a, Command::Delete { label: l.id, items });
-        assert!(statuses(&ev).is_empty(), "write {at}: {ev:?}");
-        assert!(!w.link_open(a));
+        let landed = at == 2;
+        assert_eq!(statuses(&ev), if landed { vec![Code::OK; 2] } else { vec![] }, "write {at}: {ev:?}");
+        assert_eq!(w.link_open(a), landed, "write {at}");
         let held = live(&w, h, &l).iter().filter(|id| ids.contains(id)).count();
-        // the rows and the root are the commit point: the cleanup's failure comes after it
-        assert_eq!(held, if at < 2 { 2 } else { 0 }, "write {at}");
+        assert_eq!(held, if landed { 0 } else { 2 }, "write {at}");
     }
     let a3 = w.connect(h);
     w.open(a3, &l);

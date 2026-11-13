@@ -120,14 +120,6 @@ impl Store {
         }
     }
 
-    /// Recovers in place as `open` would, after a failed commit (`Error::Broken`); the memory
-    /// overlay starts empty.
-    pub fn reopen(&mut self) -> Result<(), Error> {
-        self.pager.reopen()?;
-        self.mem = Overlay::default();
-        Ok(())
-    }
-
     /// Tests only: an exact copy of this store, its caches, memory overlay and versions as they
     /// stand, over test copies of its backend and root (`Backend::test_copy_boxed`), inside a
     /// world copy (`osis_base::copying`). Never in a product: the copy continues this store's key
@@ -228,8 +220,8 @@ pub struct Savepoint {
     memory: bool,
 }
 
-/// A set of writes committed atomically. Every method fails with `Error::Broken` after a failed
-/// commit until the store is reopened.
+/// A set of writes committed atomically. After one of its writes failed every method fails
+/// `Error::Broken`; the next transaction recovers the store in place.
 ///
 /// Rows go to the memory overlay or the durable store by class (notes/local-store.md, Memory
 /// overlay): in memory mode (`set_memory`) every new row is memory; a row already held in memory
@@ -274,9 +266,11 @@ impl Transaction<'_> {
     /// Commits durably. With any `Shred::Yes` in it, returns only after the new root record is
     /// durable: from then on the shredded bytes are unrecoverable.
     ///
-    /// `Err` means the outcome is unknown: a shredding commit whose root record landed is
-    /// committed even if a later cleanup write failed. The store refuses further use; reopen it
-    /// (recovery finishes or rolls back, and may be repeated after another crash) and read back.
+    /// The result is the outcome: a failed commit recovers the store in place as `open` would
+    /// (finishing or rolling back) and reads whether it landed (a shredding commit whose root
+    /// record was stored did: `Ok`). `Err` leaves the store as before the transaction and takes
+    /// the next one; only if recovering fails too is the outcome unknown, and every call fails
+    /// `Error::Broken` until the store is opened again.
     pub fn commit(self) -> Result<(), Error> {
         if self.d.open_savepoints() > 0 {
             return Err(Error::Misuse("commit with a savepoint open"));

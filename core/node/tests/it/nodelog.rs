@@ -192,8 +192,9 @@ fn a_crash_taking_bytes_leaves_no_cursor_ahead_of_its_data() {
         {
             std::panic::resume_unwind(p);
         }
-        f.revive();
+        // its connections end with the process, on the dead device
         net.set_online(b, false);
+        f.revive();
         net.restart(b, 77);
         compare(&mut net, b);
         net.set_online(b, true);
@@ -202,6 +203,38 @@ fn a_crash_taking_bytes_leaves_no_cursor_ahead_of_its_data() {
         assert_eq!(net.read(b, t), Some(s("after")), "crash at write {n}: converges");
         compare(&mut net, b);
         if !crashed {
+            return;
+        }
+    }
+}
+
+// spec: none (issues/net-reconnect.md, One node log): a one-off failed write (the device stays up)
+// at any write while a connected node takes a pushed event with its bytes: the node goes on with
+// no restart, its log matching what it holds, and converges
+#[test]
+#[ignore = "issues/node-sync-failed-step.md"]
+fn a_failed_write_taking_bytes_needs_no_restart() {
+    for n in 0.. {
+        let f = osis_store::Faults::new();
+        let mut net = Net::new();
+        let host = net.add_host();
+        let a = net.node(1, &[host]);
+        let b = net.forensic_node(2, &[host], &f);
+        let g = net.group(a, &[(b, Role::Write)], &[host]);
+        let t = net.item(a, g, g, "before");
+        net.run();
+        net.write(a, t, "after");
+        f.at(n, osis_store::Fault::Fail);
+        net.feed(a, osis_node::sync::Event::Local);
+        net.run();
+        let failed = f.take_failed();
+        compare(&mut net, b);
+        for _ in 0..5 {
+            net.advance(61_000);
+        }
+        assert_eq!(net.read(b, t), Some(s("after")), "failed write {n}: converges");
+        compare(&mut net, b);
+        if !failed {
             return;
         }
     }

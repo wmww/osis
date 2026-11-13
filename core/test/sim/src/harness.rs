@@ -136,6 +136,8 @@ pub struct Report {
     pub parked: u64,
     pub crashes: u64,
     pub restarts: u64,
+    /// Planned one-off failed writes that happened (`Fault::Fail`: the device stays up).
+    pub failed_writes: u64,
     /// Phase B: messages duplicated, host crashes, partitions, engine and hub diagnostics.
     pub duplicated: u64,
     pub host_crashes: u64,
@@ -249,13 +251,19 @@ impl Sim {
         Ok(self.engine(i)?.me())
     }
 
-    /// An engine error on node `i`: a crash takes it down; anything else fails the run.
+    /// An engine error on node `i`: a crash takes it down; a planned failed write this step
+    /// failed the call, the node stays up; anything else fails the run.
     fn engine_err(&mut self, i: usize, what: &str, e: osis_node::Error) -> Res<()> {
         let n = self.node(i)?;
         if n.faults.crashed() {
             n.up = false;
             self.report.crashes = self.report.crashes.saturating_add(1);
             self.note(format!("node {i} crashed during {what}"));
+            return Ok(());
+        }
+        if n.faults.take_failed() {
+            self.report.failed_writes = self.report.failed_writes.saturating_add(1);
+            self.note(format!("node {i}: a write failed during {what}: {e}"));
             return Ok(());
         }
         Err(self.fail(format!("node {i} {what}: {e} ({:?})", e.class())))
@@ -426,6 +434,11 @@ impl Sim {
     pub fn step(&mut self) -> Res<()> {
         osis_base::testenv::checkpoint();
         self.report.steps = self.report.steps.saturating_add(1);
+        // a failed write excuses an error of the step it happened in only; one nothing excused
+        // (a commit that landed) is counted here
+        for n in &self.nodes {
+            self.report.failed_writes = self.report.failed_writes.saturating_add(u64::from(n.faults.take_failed()));
+        }
         let w = self.cfg.weights;
         let any_up = self.nodes.iter().any(|n| n.up);
         let any_down = self.nodes.iter().any(|n| !n.up);
@@ -542,7 +555,8 @@ impl Sim {
         Ok(())
     }
 
-    /// Crashes a random up node: now, or at one of its next few durable writes (mid-write).
+    /// Crashes a random up node: now, or at one of its next few durable writes (mid-write); or
+    /// fails one of those writes alone (the node stays up and its next calls must work).
     fn crash(&mut self) -> Res<()> {
         let ups = self.up_nodes();
         if ups.len() < 2 {
@@ -551,14 +565,18 @@ impl Sim {
         let Some(&i) = self.dice.pick(&ups) else { return Ok(()) };
         let at = self.dice.below(4);
         let now = self.dice.pct(50);
+        let crash = now || self.dice.pct(50);
         let n = self.node(i)?;
         if now {
             n.up = false;
             self.report.crashes = self.report.crashes.saturating_add(1);
             self.note(format!("node {i} crashed"));
-        } else {
+        } else if crash {
             n.faults.at(at, Fault::Crash);
             self.note(format!("node {i} will crash at its write {at}"));
+        } else {
+            n.faults.at(at, Fault::Fail);
+            self.note(format!("node {i} will fail its write {at}"));
         }
         Ok(())
     }

@@ -20,6 +20,8 @@ struct FaultState {
     writes: u64,
     plan: Option<(u64, Fault)>,
     dead: bool,
+    /// A planned `Fail` happened since the last `take_failed`.
+    failed: bool,
     /// `forbid_writes`: on, and the writes refused so far.
     forbid: bool,
     forbidden: u64,
@@ -62,6 +64,10 @@ impl Faults {
     pub fn crashed(&self) -> bool {
         self.lock().dead
     }
+    /// Whether a planned `Fail` happened since the last call.
+    pub fn take_failed(&self) -> bool {
+        std::mem::take(&mut self.lock().failed)
+    }
     /// Called before a durable write: `Err` means the write must not take effect.
     pub fn check(&self) -> Result<(), BackendError> {
         let mut s = self.lock();
@@ -75,7 +81,10 @@ impl Faults {
         let n = s.writes;
         s.writes = n.saturating_add(1);
         match s.plan {
-            Some((at, Fault::Fail)) if at == n => Err(BackendError::Fault),
+            Some((at, Fault::Fail)) if at == n => {
+                s.failed = true;
+                Err(BackendError::Fault)
+            }
             Some((at, Fault::Crash)) if at == n => {
                 s.dead = true;
                 Err(BackendError::Crashed)

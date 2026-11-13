@@ -261,11 +261,11 @@ fn garbage_and_foreign_cursors_are_no_cursor() {
 
 #[test]
 fn incarnation_list_is_capped_oldest_first() {
-    let (_d, mut s, mut rng) = Dev::new();
+    let (d, mut s, mut rng) = Dev::new();
     add(&mut s, &mut rng, 0);
     let mut cursors = vec![at_end(&mut s, &mut rng)];
     for n in 1..=INCARNATIONS_KEPT as u32 + 1 {
-        s.reopen().unwrap();
+        s = d.open();
         add(&mut s, &mut rng, n);
         cursors.push(at_end(&mut s, &mut rng));
     }

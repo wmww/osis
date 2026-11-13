@@ -465,7 +465,12 @@ pub(crate) struct Pager {
     unit_bytes: usize,
     /// Table pages decoded since the open (`Store::pages_decoded`).
     decoded: u64,
-    broken: bool,
+    /// A write failed: the transaction that made it goes no further, and the next `begin`
+    /// recovers in place first.
+    failed: bool,
+    /// A commit failed and recovering in place failed too: its outcome is unknown, so every call
+    /// fails until the store is opened again.
+    lost: bool,
     /// `Store::changes`.
     changes: u64,
 }
@@ -503,7 +508,7 @@ impl Pager {
 
     #[allow(clippy::too_many_arguments)]
     fn new(backend: Box<dyn Backend>, root: Box<dyn RootStorage>, cfg: StoreConfig, epoch: u64, root_key: Secret32, top_ver: u64, meta: Meta, top: Node) -> Pager {
-        Pager { backend, root, cfg, epoch, root_key, top_ver, next_ver: meta.next_ver, open_spills: BTreeSet::new(), meta, top, nodes: HashMap::new(), units: HashMap::new(), unit_bytes: 0, decoded: 0, broken: false, changes: next_change() }
+        Pager { backend, root, cfg, epoch, root_key, top_ver, next_ver: meta.next_ver, open_spills: BTreeSet::new(), meta, top, nodes: HashMap::new(), units: HashMap::new(), unit_bytes: 0, decoded: 0, failed: false, lost: false, changes: next_change() }
     }
 
     /// Opens a store, finishing or rolling back an interrupted commit. The stored shape wins
@@ -513,9 +518,9 @@ impl Pager {
         Ok(Pager::new(backend, root, cfg, epoch, key, ver, meta, top))
     }
 
-    /// Recovers in place as `open` would (after a failed commit left the pager broken): caches
-    /// emptied, versions not reused.
-    pub fn reopen(&mut self) -> Result<(), Error> {
+    /// Recovers in place as `open` would, after a failed write: caches emptied, versions not
+    /// reused.
+    fn recover_in_place(&mut self) -> Result<(), Error> {
         let mut cfg = self.cfg;
         let (epoch, key, ver, meta, top) = recover(&mut *self.backend, &mut *self.root, &mut cfg)?;
         self.next_ver = self.next_ver.max(meta.next_ver);
@@ -524,7 +529,7 @@ impl Pager {
         self.nodes.clear();
         self.units.clear();
         self.unit_bytes = 0;
-        self.broken = false;
+        self.failed = false;
         self.changes = next_change();
         Ok(())
     }
@@ -553,7 +558,8 @@ impl Pager {
             units: self.units.clone(),
             unit_bytes: self.unit_bytes,
             decoded: self.decoded,
-            broken: self.broken,
+            failed: self.failed,
+            lost: self.lost,
             changes: self.changes,
         })
     }
@@ -579,7 +585,7 @@ impl Pager {
         &*self.backend
     }
     fn check(&self) -> Result<(), Error> {
-        if self.broken { Err(Error::Broken) } else { Ok(()) }
+        if self.failed || self.lost { Err(Error::Broken) } else { Ok(()) }
     }
 
     fn arity(&self) -> u64 {
@@ -727,11 +733,15 @@ impl Pager {
         self.spill_if_due(d, rng)
     }
 
-    /// Starts a transaction, first rolling back the spills of aborted ones.
+    /// Starts a transaction, first recovering in place after a failed write, or rolling back
+    /// the spills of aborted transactions.
     pub fn begin(&mut self) -> Result<Dirty, Error> {
+        if self.failed && !self.lost {
+            self.recover_in_place()?;
+        }
         self.check()?;
         for ver in std::mem::take(&mut self.open_spills) {
-            rollback(&mut *self.backend, &W::new().u8(JOURNAL).u64(ver).take()).inspect_err(|_| self.broken = true)?;
+            rollback(&mut *self.backend, &W::new().u8(JOURNAL).u64(ver).take()).inspect_err(|_| self.failed = true)?;
         }
         let ver = self.next_ver;
         self.next_ver += 1;
@@ -863,23 +873,30 @@ impl Pager {
         self.open_spills.insert(d.ver);
         d.spills += 1;
         d.plain_bytes = 0;
-        self.backend.commit(batch).inspect_err(|_| self.broken = true)?;
+        self.backend.commit(batch).inspect_err(|_| self.failed = true)?;
         Ok(())
     }
 
-    /// Commits a transaction (module doc for the protocol). After an error the pager is broken
-    /// and the store must be reopened; a rotation whose root record was stored is committed.
+    /// Commits a transaction (module doc for the protocol). The result is the outcome: a commit
+    /// that fails recovers in place as `open` would and reads its outcome there (a rotation whose
+    /// root record was stored is committed: `Ok`). If that recovery fails too, the outcome is
+    /// unknown and every call fails `Broken` until the store is opened again.
     pub fn commit(&mut self, d: Dirty, rng: &mut dyn CryptoRngCore) -> Result<(), Error> {
         self.check()?;
         if d.is_empty() && d.meta == self.meta {
             return Ok(());
         }
         self.changes = next_change();
-        let r = self.commit_inner(d, rng);
-        if r.is_err() {
-            self.broken = true;
+        let ver = d.ver;
+        let Err(e) = self.commit_inner(d, rng) else { return Ok(()) };
+        match self.recover_in_place() {
+            Ok(()) if self.top_ver == ver => Ok(()),
+            Ok(()) => Err(e),
+            Err(_) => {
+                self.lost = true;
+                Err(e)
+            }
         }
-        r
     }
 
     fn commit_inner(&mut self, mut d: Dirty, rng: &mut dyn CryptoRngCore) -> Result<(), Error> {

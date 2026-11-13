@@ -11,7 +11,9 @@ pub enum Error {
     Root(BackendError),
     /// Stored bytes fail decryption or their layout: damaged storage or a bug.
     Corrupt(&'static str),
-    /// A commit failed after it began writing; reopen the store to recover.
+    /// A write of this transaction failed, so it goes no further (the next transaction recovers
+    /// the store in place); or a commit failed and so did recovering, so its outcome is unknown
+    /// and nothing works until the store is opened again.
     Broken,
     /// No store here (open), or a store already exists (create).
     NoStore,
@@ -24,7 +26,7 @@ osis_base::impl_error!(Error {
     Backend(e) => ("{e}"),
     Root(e) => ("root storage: {e}"),
     Corrupt(what) => ("store corrupt: {what}"),
-    Broken => ("store needs reopening after a failed commit"),
+    Broken => ("a store write failed"),
     NoStore => ("no store"),
     Exists => ("store exists"),
     Misuse(what) => ("store misuse: {what}"),

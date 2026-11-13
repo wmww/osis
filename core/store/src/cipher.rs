@@ -307,11 +307,7 @@ impl CipherHost for BlobArea {
     fn commit(&mut self) -> Result<(), Error> {
         let BlobArea { store, rng, open, .. } = self;
         let Some(s) = open.take() else { return Ok(()) };
-        let r = store.resume(s, &mut **rng).commit();
-        if r.is_err() {
-            let _ = store.reopen();
-        }
-        r
+        store.resume(s, &mut **rng).commit()
     }
 
     fn abort(&mut self) {

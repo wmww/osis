@@ -1,7 +1,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
-//! Crashes at every durable write of a node transaction: a local commit that also purges (a
-//! shredding transaction: counters, commit record, state, death records, deletion log), then
-//! reopen. spec/commits.md §4: a node applies all the parts it may read at once, or none of
+//! Crashes, and one-off failed writes, at every durable write of a node transaction: a local
+//! commit that also purges (a shredding transaction: counters, commit record, state, death
+//! records, deletion log), then reopen, or (a failed write) go on in place. spec/commits.md §4: a node applies all the parts it may read at once, or none of
 //! them; spec/crdt.md §2.3: counters are never reused by anything signed that left the node.
 
 use crate::common;
@@ -35,6 +35,13 @@ impl Dev {
     fn open(&self) -> osis_node::Result<Engine> {
         let c: Arc<dyn Clock> = self.clock.clone();
         Engine::open(Box::new(self.backend.clone()), Box::new(self.root.clone()), osis_node::local_peer::blob_area(&self.blob_disk, 1)?, Config::default(), c, Box::new(SeededRng::from_u64(1)))
+    }
+    /// A fresh open of a copy of the device as it stands (what a restart would read), leaving
+    /// the device alone.
+    fn open_copy(&self) -> Engine {
+        let c: Arc<dyn Clock> = self.clock.clone();
+        let blobs = (self.blob_disk.0.copy(), self.blob_disk.1.copy());
+        Engine::open(Box::new(self.backend.copy()), Box::new(self.root.copy()), osis_node::local_peer::blob_area(&blobs, 2).unwrap(), Config::default(), c, Box::new(SeededRng::from_u64(2))).unwrap()
     }
 }
 
@@ -116,6 +123,45 @@ fn crash_every_write_of_a_purging_commit() {
         drop(e);
         let mut e = dev.open().unwrap();
         assert_eq!(e.get(&t, &reg).unwrap(), Some(Value::Str("later".into())));
+    }
+}
+
+// spec/commits.md §4 (all or none): one failed write (`Fault::Fail`: the device stays up) at any
+// write of a purging commit fails it or lands it, as its answer says; the node reads as a fresh
+// open of its store would (`check_index`, and reads against a restart's), and its next write
+// works with no restart
+#[test]
+fn a_failed_write_at_any_write_of_a_purging_commit_needs_no_restart() {
+    let reg = ak("t:reg.0");
+    for n in 0.. {
+        let dev = Dev::new();
+        let (mut e, t, secret) = setup(&dev);
+        let before = e.commit_ids().len();
+        dev.faults.at(n, Fault::Fail);
+        let r = e.commit(purge(t, secret));
+        if dev.faults.writes() <= n {
+            assert!(r.is_ok());
+            assert!(n >= 3, "a shredding commit is at least batch, root, cleanup: {n}");
+            return;
+        }
+        let landed = r.is_ok();
+        assert_eq!(e.get(&t, &reg).unwrap(), Some(s(if landed { "public" } else { "secret" })), "write {n}: as answered");
+        assert_eq!(e.commit_ids().len(), before + usize::from(landed), "write {n}");
+        e.check_index();
+        let mut fresh = dev.open_copy();
+        let ids = |e: &Engine| {
+            let mut v = e.commit_ids();
+            v.sort();
+            v
+        };
+        assert_eq!(ids(&e), ids(&fresh), "write {n}: commits as a restart reads them");
+        assert_eq!(e.get(&t, &reg).unwrap(), fresh.get(&t, &reg).unwrap(), "write {n}");
+        assert_eq!(e.body_not_dropped(&secret, &t, &reg), fresh.body_not_dropped(&secret, &t, &reg), "write {n}");
+        dev.clock.advance(5);
+        set(&mut e, t, "later");
+        assert_eq!(e.get(&t, &reg).unwrap(), Some(s("later")), "write {n}: the next write works");
+        drop(e);
+        assert_eq!(dev.open().unwrap().get(&t, &reg).unwrap(), Some(s("later")), "write {n}: and is durable");
     }
 }
 

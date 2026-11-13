@@ -436,10 +436,11 @@ fn suspended_transaction_is_one() {
     assert_eq!(t.table(&tid(2), &ak("m.0"), 0).unwrap(), None);
 }
 
-// spec/commits.md §4: after a failed commit the store recovers in place (`reopen`): the failed
-// transaction is gone, earlier ones kept, and it takes commits again
+// spec/commits.md §4: a failed commit recovers the store in place and reports its outcome: `Err`
+// leaves the store as before it (earlier commits kept) and the next transaction works, with no
+// reopen; a shredding commit failing after its root record was stored landed, so it is `Ok`
 #[test]
-fn reopen_after_failed_commit() {
+fn failed_commit_recovers_in_place() {
     let dev = MemDevice::new();
     let mut rng = SeededRng::from_u64(0);
     let mut s = create(&dev, &mut rng);
@@ -456,22 +457,35 @@ fn reopen_after_failed_commit() {
     put(&mut s, &mut rng, b"gone", None).unwrap();
     for (n, shred) in [(0, Shred::No), (0, Shred::Yes), (1, Shred::Yes), (2, Shred::Yes)] {
         dev.faults.at(n, Fault::Fail);
-        assert!(put(&mut s, &mut rng, b"failed", Some(shred)).is_err());
-        assert_eq!(s.transaction(&mut rng).err(), Some(Error::Broken));
-        s.reopen().unwrap();
+        // a shredding commit writes batch A, the root (its commit point), then batch B
+        let landed = n == 2;
+        assert_eq!(put(&mut s, &mut rng, b"failed", Some(shred)).is_ok(), landed, "fault at {n}");
         let mut t = s.transaction(&mut rng).unwrap();
         let tb = t.table(&tid(1), &ak("t.0"), 0).unwrap().unwrap();
-        // a shredding commit writes batch A, the root (its commit point), then batch B: failing
-        // at batch B it is committed
-        let landed = n == 2;
         assert_eq!(t.table_get(tb, b"failed").unwrap().is_some(), landed, "fault at {n}");
         assert_eq!(t.table_get(tb, b"gone").unwrap().is_some(), !landed, "fault at {n}");
         if landed {
             t.table_remove(tb, b"failed", Shred::No).unwrap();
             t.table_put(tb, b"gone", vec![], Shred::No).unwrap();
-            t.commit().unwrap();
         }
+        t.commit().unwrap();
     }
+    // a failed spill fails its transaction; the next one recovers
+    let mut small = cfg();
+    small.spill_bytes = 64;
+    drop(s);
+    let mut s = Store::open(dev.backend(), dev.root(), small).unwrap();
+    dev.faults.at(0, Fault::Fail);
+    let mut t = s.transaction(&mut rng).unwrap();
+    let tb = t.table(&tid(1), &ak("t.0"), 0).unwrap().unwrap();
+    let r = (0..64u8).try_for_each(|i| t.table_put(tb, &[b'x', i], vec![i; 32], Shred::No).map(drop));
+    assert!(r.is_err(), "a spill fails");
+    assert!(t.table_put(tb, b"y", vec![], Shred::No).is_err(), "its transaction goes no further");
+    assert_eq!(t.commit(), Err(Error::Broken));
+    let mut t = s.transaction(&mut rng).unwrap();
+    let tb = t.table(&tid(1), &ak("t.0"), 0).unwrap().unwrap();
+    assert_eq!(t.table_get(tb, &[b'x', 0]).unwrap(), None);
+    drop(t);
     put(&mut s, &mut rng, b"after", None).unwrap();
     drop(s);
     let mut s = reopen(&dev);
