@@ -145,8 +145,14 @@ impl Run {
             let after = openable(&mut self.lp, i, &all, self.tids[j], BTreeSet::new());
             let boxed: BTreeSet<Key> = after.difference(&before).filter(|k| had.contains(k)).copied().collect();
             let carried = had.iter().filter(|k| boxed.iter().any(|b| b.1 == k.1 && k.2.n() < b.2.n()));
-            let above = after.difference(&before).filter(|k| k.0 != t);
-            for k in boxed.iter().chain(carried).chain(above).filter(|k| !self.ever[j].contains(k)) {
+            let carried: BTreeSet<Key> = carried.copied().collect();
+            // a handed secret of `t` opens every box to `t` at it written so far, at any node,
+            // not only those its author had received: the author holds the secret, so it opens
+            // them too (a secret once shared cannot be un-shared)
+            let nobody = Tid::from_bytes([0; osis_base::format::TID_LEN]);
+            let reach = opens_in(&self.lp, &self.states, &self.secrets, nobody, boxed.union(&carried).copied().collect(), &BTreeSet::new());
+            let above = after.difference(&before).chain(&reach).filter(|k| k.0 != t);
+            for k in boxed.iter().chain(&carried).chain(above).filter(|k| !self.ever[j].contains(k)) {
                 self.handed[j].entry(*k).or_insert(self.log.len());
             }
         }
