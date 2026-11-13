@@ -33,7 +33,7 @@
 
 ## 2. Labels
 - A synced thing has a **label**: the unit a host stores. A label has the role keys below.
-- **Role keys**: Ed25519 keys, the first three from the group thing's role secrets (explicit, or derived from its base actor's by tid; spec/crypto.md §3):
+- **Role keys**: Ed25519 keys, the first three from the group thing's own role secrets (spec/crypto.md §3):
   - **sync** `kdf("label sync", sync secret, "")`: every holder of sync or above derives it (spec/permissions.md §1);
   - **write** `kdf("label write", write secret, "")`;
   - **delete** `kdf("label delete", admin secret, "")`;
