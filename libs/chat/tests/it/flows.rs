@@ -14,11 +14,6 @@ fn msg(text: &str) -> schema::Message {
     schema::Message { text: text.into(), name: None, reply_to: None }
 }
 
-/// Fires `m` on chat `c`: its id.
-fn send(db: &Osis, c: Tid, m: &schema::Message) -> osis::Result<CommitId> {
-    osis_chat::send(db, c, m)
-}
-
 fn post(db: &Osis, c: Tid, text: &str) -> osis::Result<CommitId> {
     send(db, c, &msg(text))
 }
@@ -124,6 +119,15 @@ struct Room {
     bob: Tid,
 }
 
+/// A world of `N` accounts (1 to `N`) on one host, run.
+fn accounts<const N: usize>() -> (World, [Osis; N]) {
+    let mut w = World::new();
+    let host = w.add_host();
+    let dbs = std::array::from_fn(|i| w.account(i as u64 + 1, &[host]));
+    w.run();
+    (w, dbs)
+}
+
 fn meet(w: &mut World, a: &Osis, b: &Osis) -> Tid {
     let card = b.contact_card().unwrap();
     w.run();
@@ -131,11 +135,7 @@ fn meet(w: &mut World, a: &Osis, b: &Osis) -> Tid {
 }
 
 fn room(o: Options) -> Room {
-    let mut w = World::new();
-    let host = w.add_host();
-    let a = w.account(1, &[host]);
-    let b = w.account(2, &[host]);
-    w.run();
+    let (mut w, [a, b]) = accounts();
     let bob = meet(&mut w, &a, &b);
     let c = create(&a, &o).unwrap();
     a.grant(c, bob, Role::Write, Default::default()).unwrap();
@@ -207,10 +207,7 @@ fn edit_modes_spec_perm_5() {
 // notes/chat.md Edit: two nodes' edits arrive in either order; the same newest wins
 #[test]
 fn concurrent_edits_agree_spec_crdt_1() {
-    let mut w = World::new();
-    let host = w.add_host();
-    let a = w.account(1, &[host]);
-    w.run();
+    let (mut w, [a]) = accounts();
     let offer = a.pair_offer().unwrap();
     let join = osis::internals::pair(w.cfg(2, &[]), &offer).unwrap();
     let req: osis::PairRequest = join.request().to_string().parse().unwrap();
@@ -676,10 +673,7 @@ fn erased_then_added_again_spec_perm_3() {
 // spec/sync.md §2-3: the creator's node paired after the chat exists finds it, unplaced as it is
 #[test]
 fn creator_on_a_new_node_spec_sync_3() {
-    let mut w = World::new();
-    let host = w.add_host();
-    let a = w.account(1, &[host]);
-    w.run();
+    let (mut w, [a]) = accounts();
     let c = create(&a, &Options::default()).unwrap();
     post(&a, c, "hello").unwrap();
     w.run();
@@ -772,12 +766,7 @@ fn late_post_comes_after_a_cursor_spec_none() {
 // spec/permissions.md §7, §3: a link joiner leaves: its edge is on the link's key, so `leave` goes there; it writes no more, keeps its copy, the link's other joiner stays
 #[test]
 fn link_joiner_leaves_spec_perm_7() {
-    let mut w = World::new();
-    let host = w.add_host();
-    let a = w.account(1, &[host]);
-    let b = w.account(2, &[host]);
-    let d = w.account(3, &[host]);
-    w.run();
+    let (mut w, [a, b, d]) = accounts();
     let c = create(&a, &Options::default()).unwrap();
     let l = link(&a, c, Role::Write, false);
     post(&a, c, "hi").unwrap();
@@ -799,13 +788,7 @@ fn link_joiner_leaves_spec_perm_7() {
 // spec/permissions.md §7, spec/sync.md §2: a link shared in advance keeps working: someone joins by it and leaves, the next account joins by it, reads, posts; a leaver comes back by it; a kick ends it, says so, and a new link works
 #[test]
 fn link_after_leave_and_kick_spec_perm_7() {
-    let mut w = World::new();
-    let host = w.add_host();
-    let a = w.account(1, &[host]);
-    let b = w.account(2, &[host]);
-    let d = w.account(3, &[host]);
-    let e = w.account(4, &[host]);
-    w.run();
+    let (mut w, [a, b, d, e]) = accounts();
     let c = create(&a, &Options::default()).unwrap();
     let l = link(&a, c, Role::Write, false);
     post(&a, c, "hi").unwrap();
@@ -909,12 +892,7 @@ fn link_joiners_are_participants_spec_perm_7() {
 // spec/permissions.md §7, §5.2: joining by link on a store in use: the joiner is its own verified sender, its name and reply come through; a cursor gives what is new, an edit of an older message as that message; kicking a joiner leaves the link's other joiners
 #[test]
 fn link_join_name_reply_cursor_spec_perm_7() {
-    let mut w = World::new();
-    let host = w.add_host();
-    let a = w.account(1, &[host]);
-    let b = w.account(2, &[host]);
-    let d = w.account(3, &[host]);
-    w.run();
+    let (mut w, [a, b, d]) = accounts();
     let c = create(&a, &Options::default()).unwrap();
     let l = link(&a, c, Role::Write, false);
     let first = send(&a, c, &schema::Message { name: Some("alice".into()), ..msg("hi") }).unwrap();

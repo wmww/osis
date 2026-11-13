@@ -85,12 +85,16 @@ pub fn create(db: &Osis, o: &Options) -> Result<Tid> {
 
 /// The retention a message on chat `c` carries: who may delete it, as the chat's settings say.
 pub fn message_retention(db: &Osis, c: Tid) -> Result<Retention> {
-    let by = match db.at(c, SETTINGS).get()?.and_then(|s| s.purge) {
+    Ok(retention_of(db.at(c, SETTINGS).get()?.as_ref()))
+}
+
+fn retention_of(settings: Option<&schema::Settings>) -> Retention {
+    let by = match settings.and_then(|s| s.purge.as_ref()) {
         None | Some(schema::Deletes::SenderOrAdmins) => PurgeBy::AuthorOrAdmin,
         Some(schema::Deletes::Admins) => PurgeBy::Admin,
         Some(schema::Deletes::Anyone) => PurgeBy::Writer,
     };
-    Ok(Retention { by })
+    Retention { by }
 }
 
 /// Sends `m` on chat `c`, purgeable as the chat's settings say: its id.
@@ -112,8 +116,9 @@ pub fn edit(db: &Osis, c: Tid, id: CommitId, text: &str) -> Result<()> {
         _ => (None, None),
     };
     let new = schema::Message { text: text.into(), name, reply_to };
-    let purge = db.at(c, SETTINGS).get()?.is_none_or(|s| s.edit == EditMode::Purge);
-    let r = message_retention(db, c)?;
+    let settings = db.at(c, SETTINGS).get()?;
+    let purge = settings.as_ref().is_none_or(|s| s.edit == EditMode::Purge);
+    let r = retention_of(settings.as_ref());
     let write = |purge: bool| -> Result<()> {
         let mut w = db.write();
         w.at(c, MSG).retention(r).replace(id, &new)?;
