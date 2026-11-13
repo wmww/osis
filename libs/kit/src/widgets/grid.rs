@@ -11,7 +11,7 @@ use std::sync::Arc;
 pub struct TileGrid {
     children: Vec<WidgetPod<dyn Widget>>,
     look: Arc<Look>,
-    /// Least column width, px.
+    /// Least column width before spacing, px.
     min: f64,
     /// Most columns (0: no limit).
     max_cols: usize,
@@ -52,8 +52,9 @@ impl Widget for TileGrid {
 
     fn layout(&mut self, ctx: &mut LayoutCtx<'_>, _props: &mut PropertiesMut<'_>, bc: &BoxConstraints) -> Size {
         let gap = self.look.sp(self.gap);
-        let width = if bc.is_width_bounded() { bc.max().width } else { self.min * 3.0 + gap * 2.0 };
-        let mut cols = (((width + gap) / (self.min + gap)).floor() as usize).max(1);
+        let min = self.look.sp(self.min);
+        let width = if bc.is_width_bounded() { bc.max().width } else { min * 3.0 + gap * 2.0 };
+        let mut cols = (((width + gap) / (min + gap)).floor() as usize).max(1);
         if self.max_cols > 0 {
             cols = cols.min(self.max_cols);
         }

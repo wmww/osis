@@ -363,7 +363,7 @@ impl R<'_> {
             Style::Stream => (100.0, 8.0, 1),
             Style::Card => (158.0, 12.0, l.shape.cols),
             Style::Row if l.shape.cols == 1 => (100.0, 3.0, 1),
-            Style::Row => (220.0, 4.0, l.shape.cols),
+            Style::Row => (crate::widgets::ROW_MIN, 4.0, l.shape.cols),
         };
         let mut w = VirtualList::new(look, min, cols, gap, l.shape.follow_end);
         let mut keyed = KeyedList::default();

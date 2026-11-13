@@ -19,8 +19,8 @@ pub use limit::{Limit, MinHeight};
 pub use mark::Mark;
 pub use panel::{Blur, Panel, PanelKind};
 pub use root::Root;
-pub use tile::{Tile, TileIcon, TileStyle};
-pub use vlist::{ListAction, VirtualList};
+pub use tile::{ROW_MIN, Tile, TileIcon, TileStyle};
+pub use vlist::{GUTTER, ListAction, VirtualList};
 pub use wrap::Wrap;
 
 /// What a pressed kit button or tile reports.

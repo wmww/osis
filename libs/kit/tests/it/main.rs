@@ -3,6 +3,7 @@
 
 mod graph;
 mod ime;
+mod layout;
 mod list;
 mod tags;
 mod theme;

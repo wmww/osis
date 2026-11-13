@@ -17,6 +17,12 @@ use masonry::peniko::{Color, Fill};
 use masonry::vello::Scene;
 use std::sync::Arc;
 
+/// The least width a row is useful at, before spacing: its icon and a few words of its name. Lists
+/// put rows side by side only at this width each, and the rail is a column of rows this wide (Minor:
+/// below it names cut sooner; 0 squeezes rows to their icons and always shows the rail, infinity
+/// never puts rows side by side and never shows the rail).
+pub const ROW_MIN: f64 = 220.0;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TileStyle {
     Card,

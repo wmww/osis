@@ -26,7 +26,7 @@ use crate::masonry::properties::types::{CrossAxisAlignment, Length};
 use crate::masonry::widgets::{Flex, IndexedStack, Portal, Prose, SizedBox, TextAction, TextArea};
 use crate::theme::{Look, Mode, Theme, parse};
 use crate::widgets::style::{self, Text};
-use crate::widgets::{Blur, ChipPress, Limit, ListAction, MinHeight, Panel, PanelKind, Press, Root, VirtualList};
+use crate::widgets::{Blur, ChipPress, GUTTER, Limit, ListAction, MinHeight, Panel, PanelKind, Press, ROW_MIN, Root, VirtualList};
 use crate::window::Waker;
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
@@ -36,8 +36,22 @@ pub const ROOT: WidgetTag<Root> = WidgetTag::new("root");
 /// Holds the status label (a tag cannot be given together with properties).
 const STATUS: WidgetTag<SizedBox> = WidgetTag::new("status");
 
-/// Below this width (logical px) an open thing fills the window and home is a back button away.
-const NARROW: f64 = 760.0;
+/// Space around the screen's columns and between them, before spacing.
+const EDGE: f64 = 16.0;
+/// The rail panel's padding (vertical, horizontal), before spacing.
+const RAIL_PAD: (f64, f64) = (14.0, 10.0);
+
+/// The rail's width: a row at its least useful width, the bar a long list keeps, the panel's sides.
+fn rail_width(look: &Look) -> f64 {
+    look.sp(ROW_MIN) + GUTTER + 2.0 * look.sp(RAIL_PAD.1)
+}
+
+/// The least width (logical px, clear of insets) that shows the rail: the rail and a page beside
+/// it, with the screen's edges and the gap between. A page at its smallest useful width is as wide
+/// as the rail, as it holds the same rows.
+pub fn rail_needs(look: &Look) -> f64 {
+    2.0 * rail_width(look) + 3.0 * look.sp(EDGE)
+}
 
 /// What the shell hears besides graph nodes going dirty.
 #[derive(Debug)]
@@ -85,7 +99,8 @@ fn shell(r: &Reader, &(_, main): &(&'static str, Tid)) -> osis::Result<Shell> {
 struct Layout {
     t: Tid,
     home: bool,
-    narrow: bool,
+    /// The rail beside the open thing's page: it fits (`rail_needs`). Home has none.
+    rail: bool,
 }
 
 /// What `fill_blocks` did.
@@ -152,7 +167,6 @@ pub struct Ui {
     theme: Theme,
     mode: Mode,
     look: Arc<Look>,
-    narrow: bool,
     built: Option<Layout>,
     state: WindowState,
     /// The views on screen.
@@ -162,6 +176,8 @@ pub struct Ui {
     system_dark: bool,
     /// Physical pixels per logical pixel.
     scale: f64,
+    /// What the window's insets cover across (logical px, left plus right).
+    insets_across: f64,
     search_ids: Vec<WidgetId>,
     /// Stacks showing what is there without a search (child 0) or the results (child 1).
     search_stacks: Vec<WidgetId>,
@@ -218,13 +234,13 @@ impl Ui {
             theme,
             mode,
             look,
-            narrow: false,
             built: None,
             state,
             tree: Tree::default(),
             slots: HashMap::new(),
             system_dark: false,
             scale: 1.0,
+            insets_across: 0.0,
             search_ids: Vec::new(),
             search_stacks: Vec::new(),
             searching: false,
@@ -251,8 +267,9 @@ impl Ui {
         }
     }
 
-    fn is_narrow(&self, rr: &RenderRoot) -> bool {
-        f64::from(rr.size().width) / self.scale.max(0.1) < NARROW
+    /// Whether the rail fits in the window's width clear of its insets, in `look`.
+    fn rail_fits(&self, rr: &RenderRoot, look: &Look) -> bool {
+        f64::from(rr.size().width) / self.scale.max(0.1) - self.insets_across >= rail_needs(look)
     }
 
     /// Brings the screen to what the graph says.
@@ -269,7 +286,6 @@ impl Ui {
     }
 
     fn update_inner(&mut self, rr: &mut RenderRoot, force: bool) -> osis::Result<()> {
-        self.narrow = self.is_narrow(rr);
         self.data.db.settle();
         Graph::drain(&self.state.graph);
         let main = self.data.main_group()?;
@@ -284,10 +300,10 @@ impl Ui {
             self.state.set_local(TICK, t.0 / 60_000);
         }
         let look = Look::new(&self.theme, dark, sh.color.as_deref().and_then(parse));
-        let layout = Layout { t: sh.t, home: sh.home, narrow: self.narrow };
+        let layout = Layout { t: sh.t, home: sh.home, rail: !sh.home && self.rail_fits(rr, &look) };
         let rebuild = force || self.built.as_ref() != Some(&layout) || look != *self.look;
         self.searching = sh.searching;
-        // a rebuild for another reason (a synced theme, a new width class) keeps the typing in
+        // a rebuild for another reason (a synced theme, the rail coming or going) keeps the typing in
         // the search field it was in
         let in_search = rr.focused_widget().and_then(|f| self.search_ids.iter().position(|i| *i == f));
         if rebuild {
@@ -336,8 +352,9 @@ impl Ui {
             let page = if l.home {
                 ViewSpec { view_type: "opener".into(), subject: main, config: crate::view::Config::default().with("no_chrome", "true").with("title", "none") }
             } else {
+                // without the rail nothing else leads home
                 let mut s = open_spec(l.t);
-                if self.narrow {
+                if !l.rail {
                     s.config = s.config.with("back", "true");
                 }
                 s
@@ -429,7 +446,7 @@ impl Ui {
         self.search_ids.clear();
         self.search_stacks.clear();
         self.pinned.clear();
-        let w: NewWidget<dyn Widget> = if l.home { self.home_widget() } else { self.thing_widget() };
+        let w: NewWidget<dyn Widget> = if l.home { self.home_widget() } else { self.thing_widget(l.rail) };
         let seed = if l.home { 0 } else { seed_of(&l.t.to_string()) };
         let look = self.look.clone();
         rr.edit_widget_with_tag(ROOT, |mut r| {
@@ -451,13 +468,13 @@ impl Ui {
         NewWidget::new(Limit::new(col, 940.0)).erased()
     }
 
-    fn thing_widget(&mut self) -> NewWidget<dyn Widget> {
+    fn thing_widget(&mut self, rail: bool) -> NewWidget<dyn Widget> {
         let look = self.look.clone();
         let sp = |x: f64| look.sp(x);
         let page = self.slot("page");
-        if self.narrow {
+        if !rail {
             let col = Flex::column().cross_axis_alignment(CrossAxisAlignment::Fill).with_flex_child(page, 1.0).with_child(self.status_widget());
-            return NewWidget::new_with_props(col, Properties::new().with(Padding::all(sp(10.0)))).erased();
+            return NewWidget::new_with_props(col, Properties::new().with(Padding::all(sp(EDGE)))).erased();
         }
         let home = NewWidget::new(crate::widgets::Tile::new(crate::widgets::TileStyle::Row, crate::widgets::TileIcon::Icon(Icon::Home), "osis", "Home", None, look.clone()));
         self.acts.press(home.id(), Do::new(Open(None)));
@@ -478,13 +495,13 @@ impl Ui {
             .with_child(rail_new)
             .with_child(self.status_widget());
         let rail = NewWidget::new(Portal::new(NewWidget::new(MinHeight::new(NewWidget::new(rail).erased())).erased()).constrain_horizontal(true).content_must_fill(true));
-        let rail = NewWidget::new(Panel::new(rail, look.clone(), PanelKind::Panel, (14.0, 10.0)).fill_height(true));
+        let rail = NewWidget::new(Panel::new(rail, look.clone(), PanelKind::Panel, RAIL_PAD).fill_height(true));
         let row = Flex::row()
             .cross_axis_alignment(CrossAxisAlignment::Fill)
-            .with_gap(Length::px(sp(16.0)))
-            .with_child(NewWidget::new(SizedBox::new(rail).width(Length::px(264.0))))
+            .with_gap(Length::px(sp(EDGE)))
+            .with_child(NewWidget::new(SizedBox::new(rail).width(Length::px(rail_width(&look)))))
             .with_flex_child(page, 1.0);
-        NewWidget::new_with_props(row, Properties::new().with(Padding::all(sp(16.0)))).erased()
+        NewWidget::new_with_props(row, Properties::new().with(Padding::all(sp(EDGE)))).erased()
     }
 
     /// The rail, a collection view of the favorites.
@@ -806,10 +823,15 @@ impl Ui {
         self.waker.wake();
     }
 
-    /// The window's size or scale changed: a new width class rebuilds the screen.
+    /// The window's size or scale changed: the rail coming or going rebuilds the screen.
     pub fn resized(&mut self, rr: &mut RenderRoot, scale: f64) {
         self.scale = scale;
-        if self.built.is_some() && self.is_narrow(rr) != self.narrow {
+        self.rail_check(rr);
+    }
+
+    fn rail_check(&mut self, rr: &mut RenderRoot) {
+        let flips = self.built.as_ref().is_some_and(|b| !b.home && self.rail_fits(rr, &self.look) != b.rail);
+        if flips {
             self.update(rr, false);
         }
     }
@@ -836,11 +858,13 @@ impl Ui {
     }
 
     /// What covers the window's edges (physical pixels: left, top, right, bottom): the screen is
-    /// laid out clear of it, and its width is what selects the layout.
+    /// laid out clear of it, and the width that leaves is what the layout follows.
     pub fn set_insets(&mut self, rr: &mut RenderRoot, insets: [f64; 4]) {
         let s = self.scale.max(0.1);
         let i = crate::masonry::kurbo::Insets::new(insets[0] / s, insets[1] / s, insets[2] / s, insets[3] / s);
         rr.edit_widget_with_tag(ROOT, |mut r| Root::set_insets(&mut r, i));
+        self.insets_across = i.x0 + i.x1;
+        self.rail_check(rr);
     }
 
     /// Whether a field was focused for the user to type in since the last call (a shell with an

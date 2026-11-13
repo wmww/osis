@@ -42,7 +42,7 @@ const MIN_SIDE: usize = 16;
 /// non-filling slot scrolls at this height; 0 shows nothing, infinity would load everything).
 const UNBOUNDED: f64 = 480.0;
 /// Width kept for the bar (Minor: 0 could not be grabbed, infinity leaves no room for rows).
-const GUTTER: f64 = 12.0;
+pub const GUTTER: f64 = 12.0;
 /// The shortest the bar's thumb gets (Minor: below it a long list's thumb is hard to grab).
 const MIN_THUMB: f64 = 24.0;
 /// What one arrow key or wheel notch moves (Minor: a scrolling speed).
@@ -63,6 +63,7 @@ pub struct VirtualList {
     children: Vec<WidgetPod<dyn Widget>>,
     spans: Vec<bool>,
     look: Arc<Look>,
+    /// Least column width before spacing, px.
     min: f64,
     max_cols: usize,
     gap: f64,
@@ -169,7 +170,8 @@ impl VirtualList {
 
     /// Lays the rows out in lines of `width`: their tops, and the height (one gap past the last).
     fn place_rows(&mut self, ctx: &mut LayoutCtx<'_>, width: f64, gap: f64) -> (Vec<f64>, f64) {
-        let mut cols = (((width + gap) / (self.min + gap)).floor() as usize).max(1);
+        let min = self.look.sp(self.min);
+        let mut cols = (((width + gap) / (min + gap)).floor() as usize).max(1);
         if self.max_cols > 0 {
             cols = cols.min(self.max_cols);
         }
@@ -446,7 +448,7 @@ impl Widget for VirtualList {
 
     fn layout(&mut self, ctx: &mut LayoutCtx<'_>, _props: &mut PropertiesMut<'_>, bc: &BoxConstraints) -> Size {
         let gap = self.look.sp(self.gap);
-        let width = if bc.is_width_bounded() { bc.max().width } else { self.min * 3.0 + gap * 2.0 };
+        let width = if bc.is_width_bounded() { bc.max().width } else { self.look.sp(self.min) * 3.0 + gap * 2.0 };
         let bounded = bc.max().height.is_finite();
         let vh = if bounded { bc.max().height } else { UNBOUNDED };
         // rows narrow for the bar once there is more than fits

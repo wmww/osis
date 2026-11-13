@@ -192,6 +192,7 @@ Each was a number that only made a bug unlikely (class X); the code ends by a fi
 | cli `DEFAULT_WAIT` 30 s (a command with no `--timeout`), app `JOIN_WAIT` 60 s | M (the caller gets an error) | every wait fails at once / a wait nobody answers lasts for good |
 | kit `WINDOW` 64, `MIN_SIDE` 16, `MARGIN` 1, `UNBOUNDED` 480 px, `DAY_ROWS` 24; `MAX_SIDE` 512 | M (a list loads a little more or less often; a day says how many more); `MAX_SIDE`: R (a widget asks at most a screenful of rows; a request past it is clamped) | nothing shown / the whole list built |
 | kit `GUTTER` 12 px, `MIN_THUMB` 24 px, `LINE` 60 px, `MIN_PAGE` 520 px | M (the bar's size, a scroll step, how short a page lays out before it scrolls) | no bar or no room / a page that always scrolls |
+| kit `ROW_MIN` 220 px (before spacing) | M (the least width a row is laid out at: lists put rows side by side only at this width each; the rail is this wide plus its sides, and shows when it and a page as wide fit) | rows squeezed to their icons, the rail always shown / rows never side by side, the rail never shown |
 | kit `STREAM_HEAD` 64 | P (a merge reads per-thing heads) | a read per thing per page / whole histories held |
 | osis `DEFAULT_IDLE_COMMIT` 2 s | M (a crash loses at most that much typing) | |
 | osis `REFRESH_DIVISOR` 2: `KeepAlive` rewrites every half of its key's default expiry | M (past the other half's slack a holder sees the value blink off until the rewrite arrives) | 1: it blinks at every refresh / a write per moment; at 2 a holder holds about three writes per kept value |
