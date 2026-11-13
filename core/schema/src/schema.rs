@@ -299,10 +299,10 @@ impl Schema {
                 let mut refs = Vec::new();
                 named_refs(&d.body, &mut |r, _| {
                     if self.types.contains_key(r) {
-                        refs.push(r.to_string());
+                        refs.push(r);
                     }
                 });
-                (n.as_str(), refs.into_iter().filter_map(|r| self.types.get_key_value(&r).map(|(k, _)| k.as_str())).collect())
+                (n.as_str(), refs)
             })
             .collect();
         let comp = sccs(&edges);
@@ -479,7 +479,7 @@ impl Sem<'_> {
 }
 
 /// Every `Named(name, args)` inside a type (arguments included).
-fn named_refs(t: &Type, f: &mut dyn FnMut(&str, &[Type])) {
+fn named_refs<'a>(t: &'a Type, f: &mut dyn FnMut(&'a str, &'a [Type])) {
     if let Type::Named(n, a) = t {
         f(n, a);
     }

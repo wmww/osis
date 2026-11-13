@@ -20,7 +20,7 @@ pub struct SchemaView<'s> {
 }
 
 impl<'s> SchemaView<'s> {
-    pub fn new(schema: &'s Schema, ty: Type) -> SchemaView<'s> {
+    fn new(schema: &'s Schema, ty: Type) -> SchemaView<'s> {
         SchemaView { schema, ty, atomic: false }
     }
     fn child(&self, ty: Type, atomic: bool) -> SchemaView<'s> {
