@@ -18,7 +18,7 @@
 
 ## Owed weighings (`Est::owed`, `owe_unwritable`)
 - An aspect due at a node that may not write it keeps its estimate and is owed a weighing (a quiet one too, `Est::quiet`), woken by what lets it write: a role moving (`Core::timelines_changed` calls `Trigger::wake` for every thing under the moved roster) or its minting or delete keys arriving (`Later`: the thing waits in `Indexes::cover_waits`, woken by `replace::wake_covers`, as purge-on-replace covers do, notes/engine-retention-covers.md). A woken aspect is weighed whatever its estimate; one still unwritable is owed again.
-- At open (`Engine::owe_unwritable_held`) every compactable aspect of more than one body the node may not write is owed: estimates and waits are memory only. No timer: a role commit is in force from arrival at the clock the trigger asks at, and an `until` passing only takes a role away.
+- At open (`Engine::owe_unwritable_held`) every compactable aspect of more than one body the node may not write is owed: estimates and waits are memory only, and the trigger kept every writable aspect within `FACTOR` while running. No timer: a role commit is in force from arrival at the clock the trigger asks at, and an `until` passing only takes a role away.
 - Cost: a wake reads a range of the thing's estimates; an open, a permission check per multi-body compactable aspect.
 - Tests: `compact::tests::writer_compacts_once_it_may_write_again_spec_sync_7` (with and without a restart), `writer_compacts_once_its_delete_keys_arrive_spec_sync_7`.
 
