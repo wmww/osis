@@ -736,7 +736,7 @@ fn connect_to_a_silent_listener_ends() {
     let net = osis_transport::Net::new(0);
     let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(1).enable_all().build().unwrap();
     let sec = osis_transport::StaticSecret::from_bytes([3; 32]);
-    let key = osis_transport::InProcess::public_key(&sec);
+    let key = sec.public_key();
     let ep = net.endpoint("silent");
     let listener = rt.block_on(async { osis_transport::Transport::listen(&ep, osis_transport::ListenConfig { url: "mem://silent".into(), secret: sec }).await.unwrap() });
     // accepts and keeps every connection, says nothing

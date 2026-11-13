@@ -60,7 +60,7 @@ async fn echo(c: &QuicConn, data: &[u8]) -> Vec<u8> {
 fn quic_round_trip_keys() {
     rt().block_on(async {
         let (addr, keys) = echo_listener(7).await;
-        assert_eq!(addr.key, Quic::public_key(&StaticSecret::from_bytes([7; 32])).unwrap());
+        assert_eq!(addr.key, StaticSecret::from_bytes([7; 32]).public_key());
         let t = Quic::new();
         let c1 = t.dial(&addr).await.unwrap();
         let c2 = t.dial(&addr).await.unwrap();

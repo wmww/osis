@@ -127,6 +127,11 @@ impl StaticSecret {
     pub fn as_bytes(&self) -> &[u8; 32] {
         &self.0
     }
+    /// The key a listener or `dial_as` with this secret presents, on every transport but `Unix`:
+    /// Ed25519 with the secret as seed (spec/sync.md §10).
+    pub fn public_key(&self) -> PublicKey {
+        ed25519_dalek::SigningKey::from_bytes(&self.0).verifying_key().to_bytes()
+    }
 }
 
 impl core::fmt::Debug for StaticSecret {

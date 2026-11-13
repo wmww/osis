@@ -492,12 +492,6 @@ pub struct InProcess {
 }
 
 impl InProcess {
-    /// The public key a listener with `secret` presents: Ed25519 with `secret` as seed, as
-    /// `Quic` and `P2p` (spec/sync.md §10).
-    pub fn public_key(secret: &crate::StaticSecret) -> PublicKey {
-        ed25519_dalek::SigningKey::from_bytes(secret.as_bytes()).verifying_key().to_bytes()
-    }
-
     pub fn name(&self) -> &str {
         &self.name
     }
@@ -521,13 +515,13 @@ impl Transport for InProcess {
     }
 
     fn dial_as(&self, addr: &Address, secret: &StaticSecret) -> impl Future<Output = Result<MemConn, Error>> + Send {
-        std::future::ready(self.dial_with(addr, Some(InProcess::public_key(secret))))
+        std::future::ready(self.dial_with(addr, Some(secret.public_key())))
     }
 
     fn listen(&self, cfg: ListenConfig) -> impl Future<Output = Result<MemListener, Error>> + Send {
         let r = (|| {
             let name = mem_name(&cfg.url)?.to_owned();
-            let key = InProcess::public_key(&cfg.secret);
+            let key = cfg.secret.public_key();
             let mut st = lock(&self.net.0);
             if st.listeners.contains_key(&name) {
                 return Err(Error::Io(format!("address in use: {}", cfg.url)));

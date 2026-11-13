@@ -99,7 +99,7 @@ impl Node {
 
     fn key(&self) -> [u8; 32] {
         let secret = self.n.sync_engine(|s| s.dialable_secret());
-        osis_transport::InProcess::public_key(&osis_transport::StaticSecret::from_bytes(*secret.expose()))
+        osis_transport::StaticSecret::from_bytes(*secret.expose()).public_key()
     }
 
     fn connect(&self, secret: &ClientSecret) -> osis::Result<Osis> {

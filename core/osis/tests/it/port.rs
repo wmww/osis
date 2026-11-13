@@ -388,7 +388,7 @@ fn keyed_peer_is_never_main() {
     let net = osis_transport::Net::new(0);
     let n = node(&MemStore::new(), &net, &sock, true);
     let secret = n.sync_engine(|s| s.dialable_secret());
-    let key = osis_transport::InProcess::public_key(&osis_transport::StaticSecret::from_bytes(*secret.expose()));
+    let key = osis_transport::StaticSecret::from_bytes(*secret.expose()).public_key();
     let mut r = Raw::over(&net.endpoint("intruder"), osis_transport::Address { url: "mem://n-peer".into(), key });
     assert_eq!(r.auth([1; 16]), Err(Code::REFUSED));
     let call = r.ask(call(5, 0, vec![]));

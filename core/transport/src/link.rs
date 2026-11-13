@@ -227,7 +227,7 @@ pub async fn serve<L: Listener>(mut l: L, idle: Duration, wait: Duration, out: m
 mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
-    use crate::{InProcess, ListenConfig, Net};
+    use crate::{ListenConfig, Net};
 
     const W: Duration = Duration::from_secs(5);
 
@@ -244,7 +244,7 @@ mod tests {
         assert_eq!(a.peer_key, addr.key);
         assert!(a.tx.send(b"hi".to_vec(), usize::MAX));
         let mut b = incoming.recv().await.unwrap();
-        assert_eq!(b.peer_key, InProcess::public_key(&own));
+        assert_eq!(b.peer_key, own.public_key());
         assert_eq!(b.rx.recv().await.unwrap(), b"hi");
         assert!(b.tx.send(b"yo".to_vec(), usize::MAX));
         assert_eq!(a.rx.recv().await.unwrap(), b"yo");

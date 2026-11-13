@@ -898,7 +898,7 @@ impl<U: Udp> P2p<U> {
     }
 
     async fn dial_inner(&self, addr: &Address, own: Option<StaticSecret>) -> Result<P2pConn<SConn<U>>, Error> {
-        let tag = (addr.key, own.as_ref().map(crate::InProcess::public_key));
+        let tag = (addr.key, own.as_ref().map(crate::StaticSecret::public_key));
         if let Some((_, c)) = lock(&self.parked).conns.remove(&tag) {
             return Ok(P2pConn::Direct(c));
         }
@@ -972,7 +972,7 @@ impl<U: Udp> P2p<U> {
         let it = items(&cfg.url)?;
         let [bind] = it.direct.as_slice() else { return Err(Error::BadUrl(format!("{}: one socket address to bind", cfg.url))) };
         let sock = Arc::new(self.udp.bind(*bind, Some(&cfg.secret))?);
-        let key = crate::InProcess::public_key(&cfg.secret);
+        let key = cfg.secret.public_key();
         let (tx, rx) = mpsc::channel(ACCEPT_QUEUE);
         let stop = Arc::new(Gate::default());
         let observed = Arc::new(Mutex::new(BTreeMap::new()));

@@ -228,7 +228,7 @@ mod tests {
         let done = sched.block_on(async move {
             let l = b.listen(ListenConfig { url: "mem://b".into(), secret: secret.clone() }).await.unwrap();
             let key = l.address().key;
-            assert_eq!(key, InProcess::public_key(&secret));
+            assert_eq!(key, secret.public_key());
             let c = a.dial(&Address { url: "mem://b".into(), key }).await.unwrap();
             assert_eq!(c.peer_key(), key);
             let me = StaticSecret::from_bytes([6; 32]);

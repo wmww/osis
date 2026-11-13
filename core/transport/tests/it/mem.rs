@@ -60,7 +60,7 @@ fn round_trip_and_keys() {
     let mut s = Sched::new(0, Some(net.clone()));
     let l = s.block_on(mk_listener(net.clone(), "listener", 7)).unwrap();
     let addr = l.address();
-    assert_eq!(addr.key, InProcess::public_key(&secret(7)));
+    assert_eq!(addr.key, secret(7).public_key());
     echo_listener(&s.spawner(), l);
     let cli = net.endpoint("cli");
     let out = s
@@ -344,7 +344,7 @@ fn dial_as_presents_static_key() {
             l.accept().await.unwrap().peer_key()
         })
         .unwrap();
-    assert_eq!(k, InProcess::public_key(&secret(9)));
+    assert_eq!(k, secret(9).public_key());
 }
 
 type Log = Vec<(u64, usize, usize)>;

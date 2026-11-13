@@ -405,11 +405,6 @@ impl Quic {
         Quic
     }
 
-    /// The public key a listener with `secret` presents (its Ed25519 key).
-    pub fn public_key(secret: &crate::StaticSecret) -> Result<PublicKey, Error> {
-        keypair(secret.as_bytes()).map(|k| k.0)
-    }
-
     /// Dials from a fresh UDP socket.
     async fn dial_inner(&self, addr: &Address, own: Option<&crate::StaticSecret>) -> Result<QuicConn, Error> {
         let sa = resolve(&addr.url).await?;
@@ -718,7 +713,7 @@ mod tests {
             let secret = StaticSecret::from_bytes([5; 32]);
             let c = Quic::new().dial_as(&addr, &secret).await.unwrap();
             let s = tokio::time::timeout(Duration::from_secs(2), l.accept()).await.unwrap().unwrap();
-            assert_eq!(s.peer_key(), Quic::public_key(&secret).unwrap());
+            assert_eq!(s.peer_key(), secret.public_key());
             drop(c);
         });
         stall.join().unwrap();

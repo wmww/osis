@@ -16,7 +16,7 @@ workspace = true
 [dependencies]
 osis-base.workspace = true
 zeroize.workspace = true
-# InProcess keys are Ed25519 like every transport's (a dialable key verifies LAN announcements).
+# `StaticSecret::public_key` (infallible, unlike ring's key pair).
 ed25519-dalek.workspace = true
 quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-ring"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }

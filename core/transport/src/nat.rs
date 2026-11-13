@@ -360,7 +360,7 @@ impl UdpT for MemUdp {
             return Err(Error::Io(format!("address in use: {addr}")));
         }
         let id = st.id();
-        let key = secret.map(crate::InProcess::public_key);
+        let key = secret.map(crate::StaticSecret::public_key);
         st.udp.socks.insert(addr, Entry { id, endpoint: self.name.clone(), key, queue: VecDeque::new(), waker: None });
         Ok(MemSock { net: self.net.clone(), name: self.name.clone(), addr, id })
     }
@@ -452,7 +452,7 @@ impl MemSock {
             return Err(Error::KeyMismatch);
         }
         let mine = match own {
-            Some(s) => crate::InProcess::public_key(s),
+            Some(s) => s.public_key(),
             None => st.rng().bytes32(),
         };
         let limit = [crate::quic::MAX_STREAMS as usize, crate::p2p::dialer_limits(alpn, own.is_some()).0 as usize];
