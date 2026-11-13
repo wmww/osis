@@ -58,6 +58,22 @@ error: test failed, to rerun pass `--test kill`
 Caused by:
   process didn't exit successfully: `target/debug/deps/kill-3` (signal: 9, SIGKILL: kill)
 """
+# a target tools/test_watch.py stopped: one test named (libtest's 60-second notice), one finished
+HUNG = """     Running tests/hang.rs (target/debug/deps/hang-6)
+
+running 3 tests
+test fine ... ok
+test slow::spin has been running for over 60 seconds
+test quick has been running for over 60 seconds
+test quick ... ok
+gate: hung: no test finished for 110 s
+gate: hung test: slow::spin
+gate: hung: stopped 77 (hang-6), 1 processes
+error: test failed, to rerun pass `--test hang`
+
+Caused by:
+  process didn't exit successfully: `target/debug/deps/hang-6` (signal: 9, SIGKILL: kill)
+"""
 # its tests passed, then the process failed (a panic or abort after libtest's summary)
 LATE = """     Running tests/late.rs (target/debug/deps/late-4)
 
@@ -132,6 +148,8 @@ check("cargo seeds shown", got[0][2], ["seed 41 (replay: OSIS_ORDER_SEED=41 carg
 check("cargo unit: a panic without seeds", (got[1][1], got[1][2]), (["assertion failed: floor\n"], []))
 check("hung-seed exit", names(EXITED + COUNT1), [None])
 check("SIGKILL", names(KILLED + COUNT1), [None])
+check("hung", gate_failures.cargo_failures(HUNG + COUNT1), [("slow::spin", ["hung: no test finished for 110 s"], [])])
+check("hung, no test named", names(HUNG.replace("gate: hung test: slow::spin\n", "") + COUNT1), [None])
 check("crash after the summary", names(LATE + COUNT1), [None])
 check("doctest", names(DOCTEST + COUNT1), ["src/lib.rs - f (line 1)"])
 check("count off", names(KNOWN_ONLY + "error: 2 targets failed:\n"), ["order::known_plain", "other_large", None])
@@ -182,6 +200,10 @@ check("seed lines shown", "seed 42, Lists (replay: OSIS_ORDER_SEED=42 cargo test
 for what, text in [("hung-seed exit", EXITED), ("SIGKILL", KILLED), ("crash after summary", LATE), ("doctest", DOCTEST)]:
     rc, out = summary(LISTED, [("default-tests", "101", KNOWN_ONLY + text + "error: 2 targets failed:\n")])
     check(f"known + {what}: NEW", (rc, "1 NEW, 2 KNOWN" in out), (1, True))
+rc, out = summary("", [("default-tests", "101", HUNG + COUNT1)])
+check("hung test: NEW, named", (rc, "NEW   default-tests  slow::spin" in out), (1, True))
+rc, out = summary("slow::spin 1 issues/known.md ^hung: \n", [("default-tests", "101", HUNG + COUNT1)])
+check("listed hang: KNOWN", (rc, "KNOWN default-tests  slow::spin: issues/known.md" in out), (3, True))
 rc, out = summary(LISTED, [("default-tests", "137", KNOWN_ONLY)])
 check("known, then cargo killed: NEW", (rc, "1 NEW, 2 KNOWN" in out), (1, True))
 rc, out = summary(LISTED, [("gate.sim", "101", SIM_HUNG)])

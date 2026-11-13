@@ -14,9 +14,10 @@ shows it failing on main; ISSUE its issues/ file; PATTERN (the rest of the line)
 searched in each failing unit of NAME's text: each `seed N ... (replay: ...)` line of its panic
 (of each failing sim seed, its lines), or its whole panic when it names no seed. A failure is
 KNOWN when every unit matches a pattern listed for its NAME (the gate's seeds are random: its
-failing seed is never REPRO's). Anything the parser cannot account for is NEW: a stage that did
-not run, a target that ended before its summary (a crash, a signal, a hung-seed exit) or exited
-non-zero after it, an `error` cargo printed outside a target, a failed-target count that does not
+failing seed is never REPRO's). A target tools/test_watch.py stopped as hung fails each test it
+names, its unit `hung: no test finished for N s`. Anything the parser cannot account for is NEW: a
+stage that did not run, a target that ended before its summary (a crash, a signal, a hung-seed
+exit, a hang naming no test) or exited non-zero after it, an `error` cargo printed outside a target, a failed-target count that does not
 add up, a sim sweep without its closing tally. tools/policy.py checks the list (`known`).
 """
 import collections, os, re, sys
@@ -32,6 +33,9 @@ TARGETS = re.compile(r"^error: (\d+) targets? failed:$")
 SEED = re.compile(r"\b(seed \d+[^()\n]*?) \(replay: ([^;)\n]*)")
 SIM_FAILING = re.compile(r'^failing: osis_sim::replay\("(\w+)", (\d+), (\d+)\)')
 SIM_TALLY = re.compile(r"^(\w+) (\d+) (\d+)$")
+# tools/test_watch.py stopping a target: why, then each test still running
+HUNG = re.compile(r"^gate: hung: (no test finished .*)$")
+HUNG_TEST = re.compile(r"^gate: hung test: (.+)$")
 
 
 def known(root=ROOT):
@@ -97,7 +101,14 @@ def cargo_failures(text):
     out = []
     for s in segs:
         where = f"`{s['hint']}`" if s["hint"] else s["head"]
-        if s["result"] is None:
+        hung = [m.group(1) for l in s["lines"] if (m := HUNG.match(l))]
+        if s["result"] is None and hung:
+            names = list(dict.fromkeys(m.group(1) for l in s["lines"] if (m := HUNG_TEST.match(l))))
+            if not names:
+                out.append((None, f"{where} hung ({hung[0]}), no test named (libtest names one after 60 s): read its output", []))
+            for name in names:
+                out.append((name, [f"hung: {hung[0]}"], []))
+        elif s["result"] is None:
             out.append((None, f"{where} ended before its summary (a crash, a signal, a hung-seed exit): read its output", []))
         elif s["result"] == "ok" and s["hint"]:
             out.append((None, f"{where} passed its tests but exited non-zero (a crash after its summary): read its output", []))

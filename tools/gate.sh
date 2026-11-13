@@ -60,10 +60,13 @@ limited() { local n; n=$1; shift; step "$@"; python3 "$tools/limits.py" check "$
 # A test stage, `tested LIMIT LOG CMD...` (one external command): timed and checked against its
 # limit like `limited`, its output also saved to LOG, and `LIMIT EXIT LOG` appended to $results;
 # it returns 0 whatever CMD did, so no failure ends a later stage. Its stdin is /dev/null: one
-# reading stdin would eat the held runner's later lines.
+# reading stdin would eat the held runner's later lines. A stage of default tests (held to the
+# `test` limit) runs under tools/test_watch.py, which stops a target where no test finishes for a
+# multiple of that limit and names its running tests "hung" (notes/gate.md, Hung tests).
 tested() {
   local n log s c; n=$1; log=$2; shift 2
   printf '== %s\n' "$*"; s=$(date +%s); cpu; c=$cpu
+  case $n in default-tests|gate.gui-tests) set -- python3 "$tools/test_watch.py" "$@" ;; esac
   { rc=0; "$@" < /dev/null || rc=$?; echo "$rc" > "$log.rc"; } 2>&1 | tee "$log"
   cpu; step_wall=$(( $(date +%s) - s )); step_cpu=$(( cpu - c )); printf '   (%ss, %s CPU-s)\n' $step_wall $step_cpu
   python3 "$tools/limits.py" check "$n" $step_cpu $step_wall || true

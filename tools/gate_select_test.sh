@@ -116,6 +116,25 @@ held "every run, stdin closed" "exit 0: == sh -c echo 1 >> ran|== sh -c cat; ech
 printf '%s\n' "run a echo 1 >> ran" "run b echo out; exit 7" "run c echo 3 >> ran" > runs
 held "a failure ends nothing" "exit 1: == sh -c echo 1 >> ran|== sh -c echo out; exit 7|out|== sh -c echo 3 >> ran|ran: 1 3 res: a 0 b 7 c 0 " HEAVY_HELD=1
 [ "$(cat runs.2.log)" = out ] || { echo "FAIL held: runs.2.log is '$(cat runs.2.log)', want 'out'"; fail=1; }
-rm -f runs runs.* ran
+# a default-tests stage whose target hangs (a fake cargo: target a's "binary" sleeps after
+# libtest's 60-second notice): stopped after GATE_HANG_S, its running test named, target b still run
+mkdir fakebin
+cat > fakebin/cargo <<'FAKE'
+#!/bin/sh
+printf '     Running tests/a.rs (a-1)\n\nrunning 2 tests\ntest a::fine ... ok\n'
+sh -c 'echo $$ > hung.pid; echo "test a::spin has been running for over 60 seconds"; exec sleep 300'
+printf 'error: test failed, to rerun pass `--test a`\n     Running tests/b.rs (b-2)\n\nrunning 1 test\ntest b::fine ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\nerror: 1 target failed:\n    `--test a`\n'
+exit 101
+FAKE
+chmod +x fakebin/cargo
+echo "run default-tests cargo test --no-fail-fast" > runs
+s0=$(date +%s); rc=0; env HEAVY_HELD=1 GATE_HANG_S=1 PATH="$PWD/fakebin:$PATH" sh "$gate" --held runs > /dev/null 2>&1 || rc=$?
+took=$(( $(date +%s) - s0 ))
+got="exit $rc, res $(cut -d' ' -f1,2 runs.res), hung $(grep -c '^gate: hung test: a::spin$' runs.1.log), b ran $(grep -c '^test b::fine \.\.\. ok$' runs.1.log)"
+n=$((n + 1)); [ "$got" = "exit 1, res default-tests 101, hung 1, b ran 1" ] || { echo "FAIL held hang: got '$got'"; fail=1; }
+n=$((n + 1)); [ "$took" -lt 60 ] || { echo "FAIL held hang: took ${took}s"; fail=1; }
+n=$((n + 1)); ! kill -0 "$(cat hung.pid)" 2>/dev/null || { echo "FAIL held hang: the hung process $(cat hung.pid) still runs"; fail=1; kill "$(cat hung.pid)"; }
+n=$((n + 1)); [ "$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import gate_failures; print([x[0] for x in gate_failures.cargo_failures(open("runs.1.log").read())])' "$(dirname "$gate")")" = "['a::spin']" ] || { echo "FAIL held hang: the summary does not name a::spin"; fail=1; }
+rm -rf runs runs.* ran fakebin hung.pid
 echo "gate selection: $n cases, $([ $fail = 0 ] && echo ok || echo FAILED)"
 exit $fail
