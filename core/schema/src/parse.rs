@@ -30,20 +30,17 @@ const MAX_NEST: usize = 64;
 
 /// Parses and validates a schema source. `file` names it in errors.
 pub fn parse(file: &str, src: &str) -> Result<Schema, ParseError> {
-    let toks = lex(src).map_err(|e| ParseError { file: file.into(), line: e.line, col: e.col, msg: e.msg })?;
-    let first = Parser::new(file, &toks, None).file()?;
+    let toks = lex(file, src)?;
+    let valid = |(s, locs): (Schema, Locs)| match s.validate().into_iter().next() {
+        None => Ok(s),
+        Some(inv) => {
+            let (line, col) = locs.get(&inv.item).copied().unwrap_or((1, 1));
+            Err(ParseError { file: file.into(), line, col, msg: format!("{}: {}", inv.item, inv.msg) })
+        }
+    };
     // Types must be sound before pass 2 types defaults against them.
-    if let Some(inv) = first.0.validate().into_iter().next() {
-        let (line, col) = first.1.get(&inv.item).copied().unwrap_or((1, 1));
-        return Err(ParseError { file: file.into(), line, col, msg: format!("{}: {}", inv.item, inv.msg) });
-    }
-    let mut p = Parser::new(file, &toks, Some(&first.0));
-    let (schema, locs) = p.file()?;
-    if let Some(inv) = schema.validate().into_iter().next() {
-        let (line, col) = locs.get(&inv.item).copied().unwrap_or((1, 1));
-        return Err(ParseError { file: file.into(), line, col, msg: format!("{}: {}", inv.item, inv.msg) });
-    }
-    Ok(schema)
+    let first = valid(Parser::new(file, &toks, None).file()?)?;
+    valid(Parser::new(file, &toks, Some(&first)).file()?)
 }
 
 enum Lit {
@@ -110,23 +107,33 @@ impl<'a> Parser<'a> {
     fn is_kw(&self, kw: &str) -> bool {
         matches!(self.tok(), Tok::Ident(s) if s == kw)
     }
-    fn ident(&mut self, what: &str) -> Result<String, ParseError> {
-        match self.next() {
-            Tok::Ident(s) => Ok(s),
-            _ => {
-                self.pos = self.pos.saturating_sub(1);
-                self.err(format!("expected {what}"))
+    /// The current token as `f` reads it, consumed; else an error naming `what`, at it.
+    fn want<T>(&mut self, what: &str, f: impl FnOnce(&Tok) -> Option<T>) -> Result<T, ParseError> {
+        match f(self.tok()) {
+            Some(x) => {
+                self.pos += 1;
+                Ok(x)
             }
+            None => self.err(format!("expected {what}")),
         }
     }
+    fn ident(&mut self, what: &str) -> Result<String, ParseError> {
+        self.want(what, |t| if let Tok::Ident(s) = t { Some(s.clone()) } else { None })
+    }
     fn int(&mut self, what: &str) -> Result<u64, ParseError> {
-        match self.next() {
-            Tok::Int(n) => Ok(n),
-            _ => {
-                self.pos = self.pos.saturating_sub(1);
-                self.err(format!("expected {what}"))
+        self.want(what, |t| if let Tok::Int(n) = t { Some(*n) } else { None })
+    }
+    /// Items up to `close`, comma-separated, a trailing comma allowed.
+    fn list<T>(&mut self, close: char, mut item: impl FnMut(&mut Self) -> Result<T, ParseError>) -> Result<Vec<T>, ParseError> {
+        let mut out = Vec::new();
+        while !self.eat(close) {
+            out.push(item(self)?);
+            if !self.eat(',') {
+                self.expect(close)?;
+                break;
             }
         }
+        Ok(out)
     }
     fn docs(&mut self) -> Option<String> {
         let mut lines = Vec::new();
@@ -167,16 +174,7 @@ impl<'a> Parser<'a> {
                 Tok::Ident(k) if k == "type" => {
                     self.pos += 1;
                     let name = self.ident("a type name")?;
-                    let mut params = Vec::new();
-                    if self.eat('<') {
-                        while !self.eat('>') {
-                            params.push(self.ident("a type parameter")?);
-                            if !self.eat(',') {
-                                self.expect('>')?;
-                                break;
-                            }
-                        }
-                    }
+                    let params = if self.eat('<') { self.list('>', |p| p.ident("a type parameter"))? } else { Vec::new() };
                     self.expect('=')?;
                     self.params = params.clone();
                     let body = self.ty()?;
@@ -301,40 +299,14 @@ impl<'a> Parser<'a> {
     }
 
     fn ids(&mut self) -> Result<BTreeSet<u64>, ParseError> {
-        let mut out = BTreeSet::new();
-        if self.eat('(') {
-            while !self.eat(')') {
-                out.insert(self.int("an ID")?);
-                if !self.eat(',') {
-                    self.expect(')')?;
-                    break;
-                }
-            }
-        } else {
-            out.insert(self.int("an ID")?);
-        }
-        Ok(out)
+        Ok(if self.eat('(') { self.list(')', |p| p.int("an ID"))?.into_iter().collect() } else { BTreeSet::from([self.int("an ID")?]) })
     }
 
     fn succeeds_aks(&mut self) -> Result<BTreeSet<String>, ParseError> {
         self.pos += 1;
-        let mut out = BTreeSet::new();
-        let paren = self.eat('(');
-        loop {
-            match self.next() {
-                Tok::Ak(a) => {
-                    out.insert(a);
-                }
-                _ => return self.err("expected an AK"),
-            }
-            if !paren || self.eat(')') {
-                return Ok(out);
-            }
-            self.expect(',')?;
-            if self.eat(')') {
-                return Ok(out);
-            }
-        }
+        let ak = |p: &mut Self| p.want("an AK", |t| if let Tok::Ak(a) = t { Some(a.clone()) } else { None });
+        let aks = if self.eat('(') { self.list(')', ak)? } else { vec![ak(self)?] };
+        if aks.is_empty() { self.err("expected an AK") } else { Ok(aks.into_iter().collect()) }
     }
 
     fn ty(&mut self) -> Result<Type, ParseError> {
@@ -345,16 +317,7 @@ impl<'a> Parser<'a> {
             "struct" => Type::Struct(self.struct_body()?),
             "enum" => Type::Enum(self.enum_body()?),
             _ => {
-                let mut args = Vec::new();
-                if self.eat('<') {
-                    while !self.eat('>') {
-                        args.push(self.ty()?);
-                        if !self.eat(',') {
-                            self.expect('>')?;
-                            break;
-                        }
-                    }
-                }
+                let args = if self.eat('<') { self.list('>', Self::ty)? } else { Vec::new() };
                 let one = |p: &Self, args: Vec<Type>| -> Result<Box<Type>, ParseError> {
                     let mut it = args.into_iter();
                     match (it.next(), it.next()) {
@@ -395,87 +358,73 @@ impl<'a> Parser<'a> {
         Ok(t)
     }
 
-    fn struct_body(&mut self) -> Result<StructType, ParseError> {
+    /// A struct or enum body: members by ID (`what`: `field` or `case`) and reserved IDs.
+    fn body<T>(
+        &mut self,
+        what: &str,
+        mut member: impl FnMut(&mut Self, Option<String>) -> Result<(u64, T), ParseError>,
+    ) -> Result<(BTreeMap<u64, T>, BTreeSet<u64>), ParseError> {
         self.expect('{')?;
-        let mut st = StructType::default();
-        loop {
-            let doc = self.docs();
-            if self.eat('}') {
-                break;
-            }
-            let at = self.here();
-            if self.reserved_ids(true) {
-                self.pos += 1;
-                st.reserved.extend(self.ids()?);
+        let (mut items, mut reserved) = (BTreeMap::new(), BTreeSet::new());
+        self.list('}', |p| {
+            let doc = p.docs();
+            let at = p.here();
+            if p.is('}') {
+                // docs before the closing brace
+            } else if p.reserved_ids(what == "field") {
+                p.pos += 1;
+                reserved.extend(p.ids()?);
             } else {
-                let name = self.ident("a field name or `reserved`")?;
-                let id = self.int("the field's number")?;
-                self.expect(':')?;
-                let ty = self.ty()?;
-                let mut f = Field { name, ty, default: None, succeeds: BTreeSet::new(), doc };
-                if self.eat('=') {
-                    let lat = self.here();
-                    let lit = self.lit()?;
-                    if let Some(known) = self.known {
-                        match lit_value(known, &lit, &f.ty) {
-                            Ok(v) => f.default = Some(v),
-                            Err(m) => return self.err_at(lat, format!("default of {}: {m}", f.name)),
-                        }
+                let (id, m) = member(p, doc)?;
+                if items.insert(id, m).is_some() {
+                    return p.err_at(at, format!("duplicate {what} ID {id}"));
+                }
+            }
+            Ok(())
+        })?;
+        Ok((items, reserved))
+    }
+
+    fn succeeds_ids(&mut self) -> Result<BTreeSet<u64>, ParseError> {
+        if self.eat_kw("succeeds") { self.ids() } else { Ok(BTreeSet::new()) }
+    }
+
+    fn struct_body(&mut self) -> Result<StructType, ParseError> {
+        let (fields, reserved) = self.body("field", |p, doc| {
+            let name = p.ident("a field name or `reserved`")?;
+            let id = p.int("the field's number")?;
+            p.expect(':')?;
+            let ty = p.ty()?;
+            let mut default = None;
+            if p.eat('=') {
+                let lat = p.here();
+                let lit = p.lit()?;
+                if let Some(known) = p.known {
+                    match lit_value(known, &lit, &ty) {
+                        Ok(v) => default = Some(v),
+                        Err(m) => return p.err_at(lat, format!("default of {name}: {m}")),
                     }
                 }
-                if self.is_kw("succeeds") {
-                    self.pos += 1;
-                    f.succeeds = self.ids()?;
-                }
-                if st.fields.insert(id, f).is_some() {
-                    return self.err_at(at, format!("duplicate field ID {id}"));
-                }
             }
-            if !self.eat(',') {
-                self.expect('}')?;
-                break;
-            }
-        }
-        Ok(st)
+            Ok((id, Field { name, ty, default, succeeds: p.succeeds_ids()?, doc }))
+        })?;
+        Ok(StructType { fields, reserved })
     }
 
     fn enum_body(&mut self) -> Result<EnumType, ParseError> {
-        self.expect('{')?;
-        let mut en = EnumType::default();
-        loop {
-            let doc = self.docs();
-            if self.eat('}') {
-                break;
-            }
-            let at = self.here();
-            if self.reserved_ids(false) {
-                self.pos += 1;
-                en.reserved.extend(self.ids()?);
+        let (cases, reserved) = self.body("case", |p, doc| {
+            let name = p.ident("a case name or `reserved`")?;
+            let id = p.int("the case's number")?;
+            let payload = if p.eat('(') {
+                let t = p.ty()?;
+                p.expect(')')?;
+                Some(t)
             } else {
-                let name = self.ident("a case name or `reserved`")?;
-                let id = self.int("the case's number")?;
-                let payload = if self.eat('(') {
-                    let t = self.ty()?;
-                    self.expect(')')?;
-                    Some(t)
-                } else {
-                    None
-                };
-                let mut c = Case { name, payload, succeeds: BTreeSet::new(), doc };
-                if self.is_kw("succeeds") {
-                    self.pos += 1;
-                    c.succeeds = self.ids()?;
-                }
-                if en.cases.insert(id, c).is_some() {
-                    return self.err_at(at, format!("duplicate case ID {id}"));
-                }
-            }
-            if !self.eat(',') {
-                self.expect('}')?;
-                break;
-            }
-        }
-        Ok(en)
+                None
+            };
+            Ok((id, Case { name, payload, succeeds: p.succeeds_ids()?, doc }))
+        })?;
+        Ok(EnumType { cases, reserved })
     }
 
     fn lit(&mut self) -> Result<Lit, ParseError> {
@@ -502,30 +451,12 @@ impl<'a> Parser<'a> {
                 };
                 Lit::Ident(s, payload)
             }
-            Tok::Punct('[') => {
-                let mut items = Vec::new();
-                while !self.eat(']') {
-                    items.push(self.lit()?);
-                    if !self.eat(',') {
-                        self.expect(']')?;
-                        break;
-                    }
-                }
-                Lit::List(items)
-            }
-            Tok::Punct('{') => {
-                let mut items = Vec::new();
-                while !self.eat('}') {
-                    let k = self.lit()?;
-                    self.expect(':')?;
-                    items.push((k, self.lit()?));
-                    if !self.eat(',') {
-                        self.expect('}')?;
-                        break;
-                    }
-                }
-                Lit::Map(items)
-            }
+            Tok::Punct('[') => Lit::List(self.list(']', Self::lit)?),
+            Tok::Punct('{') => Lit::Map(self.list('}', |p| {
+                let k = p.lit()?;
+                p.expect(':')?;
+                Ok((k, p.lit()?))
+            })?),
             _ => {
                 self.pos = self.pos.saturating_sub(1);
                 return self.err("expected a literal");

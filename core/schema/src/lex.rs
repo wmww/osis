@@ -1,5 +1,7 @@
 //! Lexer for `*.osis` files (notes/data-model.md, Schema DSL).
 
+use crate::error::ParseError;
+
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Tok {
     Ident(String),
@@ -25,12 +27,6 @@ pub(crate) struct Token {
     pub tok: Tok,
     pub line: u32,
     pub col: u32,
-}
-
-pub(crate) struct LexError {
-    pub line: u32,
-    pub col: u32,
-    pub msg: String,
 }
 
 struct Lexer<'a> {
@@ -101,12 +97,12 @@ impl Lexer<'_> {
     }
 }
 
-pub(crate) fn lex(src: &str) -> Result<Vec<Token>, LexError> {
+pub(crate) fn lex(file: &str, src: &str) -> Result<Vec<Token>, ParseError> {
     let mut lx = Lexer { chars: src.chars().peekable(), line: 1, col: 1 };
     let mut out = Vec::new();
     loop {
         let (line, col) = (lx.line, lx.col);
-        let err = |msg: &str| LexError { line, col, msg: msg.to_string() };
+        let err = |msg: &str| ParseError { file: file.into(), line, col, msg: msg.to_string() };
         let Some(c) = lx.peek() else {
             out.push(Token { tok: Tok::Eof, line, col });
             return Ok(out);
