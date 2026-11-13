@@ -377,8 +377,8 @@ fn ways(core: &Core, actors: &BTreeSet<Tid>) -> BTreeMap<Tid, BTreeMap<Tid, Way>
 }
 
 /// The copies to keep among `lost` and the held copies `marks` (spec/permissions.md §3, Retain), each
-/// with the holders it hangs on. A copy hangs on holder H while the node still has H (it is H, or
-/// reads H, or keeps H) and the way through H is one that keeps; a holder already recorded goes
+/// with the holders it hangs on. A copy hangs on holder H while the node still has H (it is H, reads
+/// H, keeps H, or holds H's secrets not dropped in this judging) and the way through H is one that keeps; a holder already recorded goes
 /// only on the timeline's word: the edge's end now says erase. Least fixpoint, so holders
 /// cannot keep each other.
 fn keeps(core: &Core, lost: &BTreeSet<Tid>, marks: &BTreeMap<Tid, BTreeSet<Tid>>) -> BTreeMap<Tid, BTreeSet<Tid>> {
@@ -390,12 +390,15 @@ fn keeps(core: &Core, lost: &BTreeSet<Tid>, marks: &BTreeMap<Tid, BTreeSet<Tid>>
         let Some(p) = end else { return true };
         own(h) || core.timelines.get(a).is_some_and(|tl| me.iter().chain(core.key_actors.keys()).any(|x| tl.role(x, h, At::before(p)) >= Some(Role::Read)))
     };
+    // a holder lost but not dropped in this judging (left to node-sync, or held by a pending grant):
+    // the node still has it until it is judged, and a copy hanging on it is judged again then
+    let not_dropped = |h: &Tid| !all.contains(h) && core.ix.secrets.get(h).is_some_and(|e| ROLES.iter().any(|r| *r > Role::Sync && e.role(*r).holds_any()));
     let mut kept: BTreeMap<Tid, BTreeSet<Tid>> = BTreeMap::new();
     loop {
         let mut grew = false;
         for a in &all {
             let (w, old) = (ways.get(a), marks.get(a));
-            let has = |h: &Tid| own(h) || readable(core, h) || kept.contains_key(h);
+            let has = |h: &Tid| own(h) || readable(core, h) || kept.contains_key(h) || not_dropped(h);
             let mut via: BTreeSet<Tid> = w.into_iter().flatten().filter(|(h, x)| x.retain && has(h) && read_then(a, h, x.end)).map(|(h, _)| *h).collect();
             via.extend(old.into_iter().flatten().filter(|h| has(h) && w.and_then(|w| w.get(*h)).is_none_or(|x| x.retain && read_then(a, h, x.end))));
             if !via.is_empty() && kept.get(a) != Some(&via) {

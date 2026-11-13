@@ -139,7 +139,7 @@
   - An ended grant says what the last write on it on the timeline (§5.1, the writes that applied) says:
     - a removal, for itself (§2);
     - a value with another `until`, passed: the thing's default in force at its key (first `ts` at `until`, the zero tid and commit ID, or the write's key if later).
-  - It retains only while the node has H: it is H, holds read or above on H now, or retains H itself (least fixpoint, so holders cannot retain each other).
+  - It retains only while the node has H: it is H, holds read or above on H now, retains H itself, or holds H's secrets above sync not dropped in the same judging (a loss of H not yet carried out; the copy is judged again when it is) (least fixpoint, so holders cannot retain each other).
   - Everything else erases: a removal saying so, no default, a write that did not apply. A default set later changes no removal or ending before it.
   - **The copy** is what the node held when it dropped: state, bodies and their timers.
     - Its secrets and `secrets.0` go as above, and so does what it held of the things' labels: it syncs none of them, logs and serves nothing of it, and cannot write it.

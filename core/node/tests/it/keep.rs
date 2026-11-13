@@ -548,6 +548,37 @@ fn any_path_keeps_spec_perm_3() {
     assert!(lp.peers[1].engine.kept_copies().contains(&c));
 }
 
+// spec/permissions.md §3, Retain: a copy hangs on a holder whose loss is not yet carried out (an
+// `until` passing waits for node-sync): bob's admin on P ends by its `until` under P's retain, and P's
+// edge on C ended saying retain while bob read P. Judged at once or one commit at a time, both stay.
+#[test]
+fn a_copy_hangs_on_a_holder_not_yet_dropped_spec_perm_3() {
+    let (mut lp, bob, p, c) = nested((true, false));
+    let until = osis_base::WallMs(lp.peers[0].engine.now().0 + 1_500);
+    let mut ids = lp.peers[0].engine.grant(&p, &bob, &ct::Edge { until: Some(until), ..edge_of(Role::Admin) }).unwrap().commits;
+    lp.peers[0].clock.advance(1_000);
+    ids.extend(lp.peers[0].engine.demote(&c, &saying(p, true)).unwrap().commits);
+    for q in &mut lp.peers {
+        q.clock.advance(10_000);
+    }
+    let judge = |lp: &mut LocalPeer| {
+        lp.peers[1].engine.drop_lost_due().unwrap();
+        lp.peers[1].engine.drop_lost_secrets().unwrap();
+    };
+    let mut one = lp.copy().unwrap();
+    send(&mut lp, 0, 1, &ids);
+    judge(&mut lp);
+    for id in &ids {
+        send(&mut one, 0, 1, &[*id]);
+        judge(&mut one);
+    }
+    for lp in [&mut lp, &mut one] {
+        let kept = lp.peers[1].engine.kept_copies();
+        assert!(kept.contains(&p) && kept.contains(&c), "{kept:?}");
+        assert_eq!(read(lp, c), Some(s(&big(D_MARK))));
+    }
+}
+
 // spec/permissions.md §2, §3 Retain: an `until` passing is a loss the node judges by itself, with no
 // role commit behind it and through a restart; the trigger leaves it to node-sync to hear its labels
 // out (`Leaving::timed`, from when it was first judged), and the drop reads the default.
